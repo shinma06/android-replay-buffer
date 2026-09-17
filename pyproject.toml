@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "android-replay-buffer"
+version = "0.1.0"
+description = "macOS replay buffer for Android USB debugging"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = []
+
+[project.scripts]
+replayd = "replay_buffer.daemon:console_main"
+replay = "replay_buffer.cli:console_main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["replay_buffer*"]

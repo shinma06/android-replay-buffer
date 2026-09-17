@@ -1,0 +1,5 @@
+{
+  "replay_seconds": 60,
+  "output_directory": "~/Replays",
+  "segment_seconds": 5
+}
