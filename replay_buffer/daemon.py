@@ -89,7 +89,6 @@ class ReplayDaemon:
                     session = self.session_manager.on_device_connected(device)
                 except Exception as exc:  # noqa: BLE001 - keep daemon alive
                     print(f"Failed to start session: {exc}", file=sys.stderr, flush=True)
-                    self._active_serial = device.serial
                     time.sleep(2.0)
                     continue
 
@@ -98,6 +97,14 @@ class ReplayDaemon:
                 print("● Recording", flush=True)
                 print(f"Replay: {self.config.replay_seconds} sec", flush=True)
                 print("Logs: logcat", flush=True)
+            elif not self.session_manager.has_active_session(device.serial):
+                try:
+                    session = self.session_manager.on_device_connected(device)
+                except Exception as exc:  # noqa: BLE001 - keep daemon alive
+                    print(f"Failed to restart session: {exc}", file=sys.stderr, flush=True)
+                    time.sleep(2.0)
+                    continue
+                print(f"{session.device_name} session restarted", flush=True)
 
             time.sleep(1.0)
 
@@ -127,14 +134,17 @@ class ReplayDaemon:
             return IpcResponse(ok=True, message="ok", data=self.session_manager.status())
         if command == "save":
             try:
-                replay_dir = self.session_manager.save()
+                replay_dir, video_saved = self.session_manager.save()
             except Exception as exc:  # noqa: BLE001 - return to CLI
                 return IpcResponse(ok=False, message=str(exc), data={})
             print(f"Saved replay: {replay_dir}", flush=True)
             return IpcResponse(
                 ok=True,
                 message="saved",
-                data={"path": str(replay_dir)},
+                data={
+                    "path": str(replay_dir),
+                    "video_saved": video_saved,
+                },
             )
         if command == "stop":
             self._stop_event.set()

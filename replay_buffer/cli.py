@@ -80,6 +80,8 @@ def cmd_save(config_path: Path | None) -> int:
         print(response.message, file=sys.stderr)
         return 1
     path = response.data.get("path", "")
+    if path and response.data.get("video_saved") is False:
+        print("Saved logcat only (video not ready yet).", file=sys.stderr)
     print(path or response.message)
     return 0
 
@@ -112,12 +114,17 @@ def cmd_status(config_path: Path | None) -> int:
 
     device_name = data.get("device_name", "device")
     replay_seconds = data.get("replay_seconds")
-    if data.get("recording"):
+    if state == "recovering":
+        print(f"◌ {device_name} / {replay_seconds}s (recovering capture)")
+    elif data.get("recording"):
         print(f"● {device_name} / {replay_seconds}s")
     else:
         print(f"{device_name}: not recording")
 
     error = data.get("error")
+    if error and state == "recovering":
+        print(f"Note: {error}", file=sys.stderr)
+        return 0
     if error:
         print(f"Error: {error}", file=sys.stderr)
         return 1

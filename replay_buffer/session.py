@@ -60,12 +60,10 @@ class ReplaySession:
             self._video_buffer.stop()
             self._started = False
 
-    def save(self) -> Path:
+    def save(self) -> tuple[Path, bool]:
         with self._lock:
             if not self._started:
                 raise RuntimeError("No active recording session")
-            if self.error:
-                raise RuntimeError(self.error)
         return save_replay(
             video_buffer=self._video_buffer,
             log_buffer=self._log_buffer,
@@ -78,14 +76,17 @@ class ReplaySession:
 
     def status(self) -> dict[str, object]:
         uptime_sec = max(0.0, (monotonic_ms() - self.started_at_ms) / 1000.0)
-        error = self.error or self._video_buffer.error
+        video_error = self._video_buffer.error
+        log_error = self._log_buffer.error
+        recovering = self._started and (video_error is not None or log_error is not None)
         return {
             "device_serial": self.device.serial,
             "device_name": self.device_name,
-            "recording": self._started and error is None,
+            "recording": self._started,
+            "recovering": recovering,
             "replay_seconds": self.config.replay_seconds,
             "uptime_seconds": round(uptime_sec, 1),
-            "error": error,
+            "error": self.error or video_error or log_error,
         }
 
 
@@ -101,6 +102,14 @@ class SessionManager:
     def session(self) -> ReplaySession | None:
         with self._lock:
             return self._session
+
+    def has_active_session(self, serial: str) -> bool:
+        with self._lock:
+            return (
+                self._session is not None
+                and self._session.device.serial == serial
+                and self._session.status()["recording"]
+            )
 
     def on_device_connected(self, device: AdbDevice) -> ReplaySession:
         with self._lock:
@@ -145,7 +154,7 @@ class SessionManager:
             session.stop()
             time.sleep(0.2)
 
-    def save(self) -> Path:
+    def save(self) -> tuple[Path, bool]:
         with self._lock:
             if self._session is None:
                 raise RuntimeError("No Android device connected")
@@ -162,6 +171,11 @@ class SessionManager:
                 "replay_seconds": self.config.replay_seconds,
             }
         payload = session.status()
-        payload["state"] = "recording" if session.error is None else "error"
+        if session.error:
+            payload["state"] = "error"
+        elif payload.get("recovering"):
+            payload["state"] = "recovering"
+        else:
+            payload["state"] = "recording"
         return payload
 

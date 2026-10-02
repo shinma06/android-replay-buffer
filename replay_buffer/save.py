@@ -22,7 +22,7 @@ def save_replay(
     device_serial: str,
     device_name: str,
     save_host_time_ms: float | None = None,
-) -> Path:
+) -> tuple[Path, bool]:
     """Save the last N seconds of video and logcat with timeline metadata."""
     if save_host_time_ms is None:
         save_host_time_ms = time.monotonic() * 1000.0
@@ -33,6 +33,12 @@ def save_replay(
     segments = video_buffer.segments_in_window(window_start_ms, window_end_ms)
     log_records = log_buffer.records_in_window(window_start_ms, window_end_ms)
 
+    if not segments and not log_records:
+        raise RuntimeError(
+            "No replay data in buffer yet. "
+            "Wait a few seconds after connecting, then run replay save again."
+        )
+
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     replay_dir = output_directory / timestamp
     replay_dir.mkdir(parents=True, exist_ok=True)
@@ -42,7 +48,7 @@ def save_replay(
     timeline_path = replay_dir / "timeline.json"
 
     _write_logcat(logcat_path, log_records)
-    _write_video(ffmpeg_path, video_path, segments)
+    video_saved = _write_video(ffmpeg_path, video_path, segments)
     events = _build_events(log_records, save_host_time_ms)
     timeline = build_timeline(
         events=events,
@@ -50,11 +56,11 @@ def save_replay(
         replay_seconds=replay_seconds,
         device_serial=device_serial,
         device_name=device_name,
-        video_path=video_path.name,
+        video_path=video_path.name if video_saved else None,
         logcat_path=logcat_path.name,
     )
     write_timeline(timeline_path, timeline)
-    return replay_dir
+    return replay_dir, video_saved
 
 
 def _write_logcat(path: Path, records: list[LogRecord]) -> None:
@@ -66,18 +72,14 @@ def _write_logcat(path: Path, records: list[LogRecord]) -> None:
 
 def _write_video(
     ffmpeg_path: str, output_path: Path, segments: list[VideoSegment]
-) -> None:
+) -> bool:
     usable = [
         segment
         for segment in segments
         if segment.path.is_file() and segment.path.stat().st_size > 0
     ]
     if not usable:
-        raise RuntimeError(
-            "No video segments available yet. "
-            "Wait until the first segment finishes (about 5 seconds by default), "
-            "then run replay save again. If this persists, restart replayd."
-        )
+        return False
 
     ordered = sorted(usable, key=lambda segment: segment.index)
     concat_file = output_path.with_suffix(".concat.txt")
@@ -131,6 +133,7 @@ def _write_video(
     temp_mkv.unlink(missing_ok=True)
     if remux_result.returncode != 0:
         raise RuntimeError(remux_result.stderr.strip() or "ffmpeg remux failed")
+    return True
 
 
 def _build_events(

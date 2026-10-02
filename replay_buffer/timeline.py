@@ -38,7 +38,7 @@ def build_timeline(
     replay_seconds: int,
     device_serial: str,
     device_name: str,
-    video_path: str,
+    video_path: str | None,
     logcat_path: str,
 ) -> dict[str, Any]:
     """Build timeline.json payload."""

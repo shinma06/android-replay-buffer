@@ -50,21 +50,9 @@ class LogBuffer:
         self._process: subprocess.Popen[bytes] | None = None
         self._reader_thread: threading.Thread | None = None
         self._stop_event = threading.Event()
+        self.error: str | None = None
 
     def start(self) -> None:
-        command = [
-            self._adb_path,
-            "-s",
-            self._serial,
-            "logcat",
-            "-v",
-            "threadtime",
-        ]
-        self._process = subprocess.Popen(
-            command,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
         self._reader_thread = threading.Thread(
             target=self._read_loop,
             name=f"logcat-{self._serial}",
@@ -95,33 +83,74 @@ class LogBuffer:
                 if window_start_ms <= record.host_time_ms <= window_end_ms
             ]
 
+    def _spawn_logcat(self) -> subprocess.Popen[bytes] | None:
+        command = [
+            self._adb_path,
+            "-s",
+            self._serial,
+            "logcat",
+            "-v",
+            "threadtime",
+        ]
+        try:
+            process = subprocess.Popen(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+        except OSError as exc:
+            self.error = str(exc)
+            return None
+        self._process = process
+        return process
+
     def _read_loop(self) -> None:
-        process = self._process
-        if process is None or process.stdout is None:
-            return
-
+        retry_delay_sec = 1.0
         while not self._stop_event.is_set():
-            line_bytes = process.stdout.readline()
-            if not line_bytes:
-                break
-            raw = line_bytes.decode("utf-8", errors="replace").rstrip("\r\n")
-            if not raw:
+            process = self._spawn_logcat()
+            if process is None or process.stdout is None:
+                if self._stop_event.wait(retry_delay_sec):
+                    break
+                retry_delay_sec = min(retry_delay_sec * 1.5, 5.0)
                 continue
-            host_time_ms = monotonic_ms()
-            event = _parse_logcat_line(raw, host_time_ms)
-            record = LogRecord(host_time_ms=host_time_ms, raw=raw, event=event)
-            with self._lock:
-                self._records.append(record)
-                self._prune_locked(host_time_ms)
-            if self._on_status:
-                self._on_status()
 
-        stderr = ""
-        if process.stderr is not None:
-            stderr = process.stderr.read().decode("utf-8", errors="replace")
-        if not self._stop_event.is_set() and process.poll() not in (0, None):
+            retry_delay_sec = 1.0
+            while not self._stop_event.is_set():
+                line_bytes = process.stdout.readline()
+                if not line_bytes:
+                    break
+                raw = line_bytes.decode("utf-8", errors="replace").rstrip("\r\n")
+                if not raw:
+                    continue
+                host_time_ms = monotonic_ms()
+                event = _parse_logcat_line(raw, host_time_ms)
+                record = LogRecord(host_time_ms=host_time_ms, raw=raw, event=event)
+                with self._lock:
+                    self._records.append(record)
+                    self._prune_locked(host_time_ms)
+                self.error = None
+                if self._on_status:
+                    self._on_status()
+
+            if process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=3)
+
+            if self._stop_event.is_set():
+                break
+
+            stderr = ""
+            if process.stderr is not None:
+                stderr = process.stderr.read().decode("utf-8", errors="replace")
             message = stderr.strip() or f"logcat exited with code {process.returncode}"
-            raise RuntimeError(message)
+            self.error = message
+            if self._stop_event.wait(retry_delay_sec):
+                break
+            retry_delay_sec = min(retry_delay_sec * 1.5, 5.0)
 
     def _prune_locked(self, now_ms: float) -> None:
         cutoff = now_ms - (self._replay_seconds * 1000)

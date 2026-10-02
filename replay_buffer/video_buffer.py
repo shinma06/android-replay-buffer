@@ -4,12 +4,16 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import sys
 import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
 from replay_buffer.timeline import monotonic_ms
+
+_RETRY_DELAY_SEC = 1.0
+_MAX_RETRY_DELAY_SEC = 5.0
 
 
 @dataclass
@@ -53,6 +57,7 @@ class VideoBuffer:
         self._record_thread: threading.Thread | None = None
         self._stop_event = threading.Event()
         self.error: str | None = None
+        self._retry_delay_sec = _RETRY_DELAY_SEC
 
     def start(self) -> None:
         if shutil.which(self._scrcpy_path) is None:
@@ -129,7 +134,7 @@ class VideoBuffer:
                 self._scrcpy_path,
                 "--serial",
                 self._serial,
-                "--no-playback",
+                "--no-window",
                 "--no-control",
                 "--no-audio",
                 "--record",
@@ -148,8 +153,11 @@ class VideoBuffer:
             try:
                 returncode = process.wait()
             except Exception as exc:  # noqa: BLE001 - keep loop alive
-                self.error = str(exc)
-                return
+                self._register_failure(str(exc))
+                if self._stop_event.wait(self._retry_delay_sec):
+                    break
+                self._backoff_retry()
+                continue
 
             stderr = ""
             if process.stderr is not None:
@@ -158,10 +166,6 @@ class VideoBuffer:
             if self._stop_event.is_set():
                 path.unlink(missing_ok=True)
                 break
-
-            if returncode != 0:
-                self.error = stderr.strip() or f"scrcpy exited with code {returncode}"
-                return
 
             if path.is_file() and path.stat().st_size > 0:
                 end_ms = monotonic_ms()
@@ -175,11 +179,34 @@ class VideoBuffer:
                         )
                     )
                     self._prune_locked(end_ms)
-            else:
-                path.unlink(missing_ok=True)
+                self.error = None
+                self._retry_delay_sec = _RETRY_DELAY_SEC
+                index += 1
+                time.sleep(0.05)
+                continue
 
-            index += 1
-            time.sleep(0.05)
+            path.unlink(missing_ok=True)
+
+            if returncode == 0:
+                index += 1
+                time.sleep(0.05)
+                continue
+
+            detail = stderr.strip() or f"scrcpy exited with code {returncode}"
+            self._register_failure(detail)
+            if self._stop_event.wait(self._retry_delay_sec):
+                break
+            self._backoff_retry()
+
+    def _register_failure(self, detail: str) -> None:
+        self.error = detail
+        print(f"scrcpy: {detail} (retrying)", file=sys.stderr, flush=True)
+
+    def _backoff_retry(self) -> None:
+        self._retry_delay_sec = min(
+            self._retry_delay_sec * 1.5,
+            _MAX_RETRY_DELAY_SEC,
+        )
 
     def _prune_locked(self, now_ms: float) -> None:
         cutoff = now_ms - (self._replay_seconds * 1000)
