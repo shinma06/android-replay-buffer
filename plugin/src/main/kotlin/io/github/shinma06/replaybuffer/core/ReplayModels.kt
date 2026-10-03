@@ -74,6 +74,12 @@ data class ApplicationPeriodSnapshot(
     val resolved: Boolean,
 )
 
+/** Sequence-axis display of the last received image; no new image was confirmed in this range. */
+data class VideoTailSnapshot(
+    val fromNs: Long?, val toNs: Long?, val sourcePtsUs: Long, val sourceSequenceNs: Long?,
+    val clockEpoch: Int, val generation: Long, val displayHeld: Boolean,
+)
+
 data class SaveSnapshot(
     val phase: SavePhase = SavePhase.IDLE,
     val requestId: String? = null,
@@ -87,6 +93,7 @@ data class SaveSnapshot(
     val device: ReplayDevice? = null,
     val application: ApplicationTarget? = null,
     val applicationHistory: List<ApplicationPeriodSnapshot> = emptyList(),
+    val videoTail: VideoTailSnapshot? = null,
 )
 
 /** Callbacks run on replay-control, never EDT. Consumers must dispatch to EDT and reject stale revisions. */

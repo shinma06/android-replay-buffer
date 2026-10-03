@@ -15,26 +15,51 @@ import kotlin.test.assertTrue
 
 class VideoReadMonitorTest {
     @Test
-    fun partialFirstPacketDoesNotExtendTheWatchdogAndThreeSecondsDoesNotCloseTheSocket() {
+    fun normalIdleBeyondTenSecondsKeepsTheSocketButAPartialHeaderStillHasAWholePacketDeadline() {
+        val listener = ServerSocket(0, 8, InetAddress.getLoopbackAddress())
+        val client = Socket(InetAddress.getLoopbackAddress(), listener.localPort)
+        val peer = listener.accept()
+        val process = ProcessBuilder("/bin/sleep", "60").start()
+        val timer = Executors.newSingleThreadScheduledExecutor()
+        val monitor = VideoReadMonitor(client, process, timer)
+        monitor.received(true)
+        val interruptedRead = AtomicBoolean()
+        val reader = thread { runCatching { readVideo(DataInputStream(client.getInputStream()), monitor::started) }.onFailure { interruptedRead.set(true) } }
+        try {
+            Thread.sleep(11_000)
+            assertFalse(client.isClosed)
+            repeat(6) {
+                if (!client.isClosed) { peer.getOutputStream().write(0); peer.getOutputStream().flush() }
+                Thread.sleep(2000)
+            }
+            reader.join(2000)
+            assertTrue(client.isClosed && interruptedRead.get() && !reader.isAlive)
+        } finally {
+            monitor.close(); client.close(); peer.close(); listener.close(); reader.join(2000)
+            process.destroyForcibly(); process.waitFor(2, TimeUnit.SECONDS); timer.shutdownNow(); timer.awaitTermination(2, TimeUnit.SECONDS)
+        }
+    }
+
+    @Test
+    fun initialBodyTrickleDoesNotExtendTheInitialAcquisitionDeadline() {
         val listener = ServerSocket(0, 8, InetAddress.getLoopbackAddress())
         val client = Socket(InetAddress.getLoopbackAddress(), listener.localPort)
         val peer = listener.accept()
         val process = ProcessBuilder("/bin/sleep", "20").start()
         val timer = Executors.newSingleThreadScheduledExecutor()
         val monitor = VideoReadMonitor(client, process, timer)
-        val interruptedRead = AtomicBoolean()
-        val reader = thread { runCatching { readVideo(DataInputStream(client.getInputStream())) }.onFailure { interruptedRead.set(true) } }
-        val trickle = thread {
-            runCatching { repeat(6) { peer.getOutputStream().write(0); peer.getOutputStream().flush(); Thread.sleep(2000) } }
-        }
+        val output = java.io.DataOutputStream(peer.getOutputStream())
+        output.writeLong(1); output.writeInt(32); output.flush()
+        val reader = thread { runCatching { readVideo(DataInputStream(client.getInputStream()), monitor::started) } }
         try {
-            Thread.sleep(3400)
-            assertTrue(monitor.arrivalUnconfirmed)
-            assertFalse(client.isClosed)
-            reader.join(8000)
-            assertTrue(client.isClosed && interruptedRead.get() && !reader.isAlive)
+            repeat(6) {
+                if (!client.isClosed) { output.writeByte(0); output.flush() }
+                Thread.sleep(2000)
+            }
+            reader.join(2000)
+            assertTrue(client.isClosed && !reader.isAlive)
         } finally {
-            monitor.close(); client.close(); peer.close(); listener.close(); trickle.interrupt(); trickle.join(2000); reader.join(2000)
+            monitor.close(); client.close(); peer.close(); listener.close(); reader.join(2000)
             process.destroyForcibly(); process.waitFor(2, TimeUnit.SECONDS); timer.shutdownNow(); timer.awaitTermination(2, TimeUnit.SECONDS)
         }
     }
@@ -81,7 +106,6 @@ class VideoReadMonitorTest {
             while (!next.isClosed && System.nanoTime() < deadline) Thread.sleep(25)
             assertTrue(next.isClosed)
             assertFalse(old.isClosed)
-            assertFalse(first.arrivalUnconfirmed)
         } finally {
             first.close(); second.close(); old.close(); next.close(); oldPeer.close(); nextPeer.close(); listener.close()
             process.destroyForcibly(); process.waitFor(2, TimeUnit.SECONDS); timer.shutdownNow(); timer.awaitTermination(2, TimeUnit.SECONDS)

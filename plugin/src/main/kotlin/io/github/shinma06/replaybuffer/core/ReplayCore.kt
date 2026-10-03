@@ -162,7 +162,7 @@ class ReplayCore(initialSettings: ReplaySettings, private val workspace: Path, c
             if (capture.logs.any { it.app == null }) listOf("app_log") else emptyList()).distinct().let { java.util.List.copyOf(it) }
         saveState = SaveSnapshot(SavePhase.WRITING, capture.id, capture.sequence, capture.start, capture.end,
             capture.seconds, directory, missingKinds = missing, device = capture.device,
-            application = capture.settings.application, applicationHistory = capture.applicationHistory())
+            application = capture.settings.application, applicationHistory = capture.applicationHistory(), videoTail = capture.videoTail())
         publish()
         saveTask = writer.submit {
             val result = runCatching { SaveWriter().write(capture, directory, { cancellation.get() || closed.get() }) { partial, complete ->
@@ -238,7 +238,6 @@ class ReplayCore(initialSettings: ReplaySettings, private val workspace: Path, c
         }
         val data = store!!
         if (data.clock.snapshot().lastOrNull()?.received?.let { it >= backendStarted } == true) data.resume()
-        backend?.reportVideoHealth()
         data.prune(settings.replaySeconds)
         val states = data.streams(settings.replaySeconds)
         captureState = when {
