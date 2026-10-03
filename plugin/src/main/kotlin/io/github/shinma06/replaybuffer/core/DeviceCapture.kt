@@ -37,11 +37,6 @@ internal class DeviceCapture(
     var cleanupPending: Boolean = false
         private set
     @Volatile private var application = application
-    @Volatile private var videoHealth: VideoReadMonitor? = null
-
-    fun reportVideoHealth() {
-        if (videoHealth?.arrivalUnconfirmed == true) store.videoArrivalUnconfirmed(generation)
-    }
 
     fun start() {
         launch("clock", ::clock)
@@ -115,12 +110,12 @@ internal class DeviceCapture(
             socket = connectVideo(port.toInt(), server, stopping, sockets)
             socket.soTimeout = 0
             monitor = VideoReadMonitor(socket, server, timer)
-            videoHealth = monitor
             val input = DataInputStream(socket.getInputStream())
             require(input.readInt() == 0x68323634) { "固定H.264以外のcodecです" }
             while (!stopping.get()) {
-                val packet = readVideo(input)
-                monitor.received()
+                val packet = readVideo(input, monitor::started)
+                monitor.received(packet is VideoPacket.Frame && !packet.config)
+                if (packet is VideoPacket.Session) monitor.awaitFirstFrame()
                 when (packet) {
                     is VideoPacket.Session -> store.session(packet, generation)
                     is VideoPacket.Frame -> store.frame(packet, generation)
@@ -128,7 +123,6 @@ internal class DeviceCapture(
             }
         } finally {
             monitor?.close()
-            if (videoHealth === monitor) videoHealth = null
             socket?.close()
             socket?.let { sockets.remove(it) }
             adb.stop(server)
@@ -258,18 +252,24 @@ internal fun connectVideo(port: Int, server: Process, stopping: AtomicBoolean, s
     error("動画接続の準備が期限内に完了しませんでした")
 }
 
-/** Watches one socket, including the first blocking codec read. Never waits for adb/disk/store locks. */
+/** Initial acquisition and partial packets have deadlines; healthy VFR packet intervals do not. */
 internal class VideoReadMonitor(private val socket: Socket, private val server: Process,
                                 timer: java.util.concurrent.ScheduledExecutorService) : AutoCloseable {
-    private val lastComplete = java.util.concurrent.atomic.AtomicLong(System.nanoTime())
+    private val initial = java.util.concurrent.atomic.AtomicLong(System.nanoTime())
+    private val firstFrame = AtomicBoolean()
+    private val partial = java.util.concurrent.atomic.AtomicLong()
     private val active = AtomicBoolean(true)
-    val arrivalUnconfirmed: Boolean get() = active.get() && System.nanoTime() - lastComplete.get() >= 3_000_000_000
     private val watch = timer.scheduleWithFixedDelay({
-        if (active.get() && (!server.isAlive || System.nanoTime() - lastComplete.get() >= 10_000_000_000))
+        val now = System.nanoTime()
+        val began = partial.get()
+        if (active.get() && (!server.isAlive || !firstFrame.get() && now - initial.get() >= 10_000_000_000 ||
+                began != 0L && now - began >= 10_000_000_000))
             runCatching { socket.close() }
     }, 250, 250, TimeUnit.MILLISECONDS)
 
-    fun received() { lastComplete.set(System.nanoTime()) }
+    fun started() { partial.compareAndSet(0, System.nanoTime()) }
+    fun received(frame: Boolean) { if (frame) firstFrame.set(true); partial.set(0) }
+    fun awaitFirstFrame() { if (firstFrame.getAndSet(false)) initial.set(System.nanoTime()) }
     override fun close() { active.set(false); watch.cancel(false) }
 }
 

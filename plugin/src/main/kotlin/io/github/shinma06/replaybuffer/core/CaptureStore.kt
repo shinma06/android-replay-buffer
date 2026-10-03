@@ -95,15 +95,6 @@ internal class CaptureStore(
     }
 
     @Synchronized
-    fun videoArrivalUnconfirmed(owner: Long) {
-        if (closed || owner != generation || states.getValue("video").state != StreamState.CAPTURING) return
-        val last = video.peekLast()
-        addGap("video", last?.time?.sequence, null, "動画packetの到着を確認できません", last?.time)
-        states["video"] = states.getValue("video").copy(state = StreamState.RECOVERING,
-            reason = "動画packetの到着を確認できません（復旧閾値は端末QAで確認します）")
-    }
-
-    @Synchronized
     fun clockStatus(healthy: Boolean, owner: Long) {
         if (closed || owner != generation) return
         if (!healthy && gaps.none { it.stream == "clock" && it.toNs == null }) {
@@ -118,6 +109,7 @@ internal class CaptureStore(
     @Synchronized
     fun session(packet: VideoPacket.Session, owner: Long) {
         if (closed || owner != generation) return
+        status("video", StreamState.RECOVERING, "動画sessionを準備しています", owner)
         channel?.close()
         channel = null
         currentFile = null
@@ -133,7 +125,10 @@ internal class CaptureStore(
         if (closed || owner != generation) return
         if (packet.config) {
             require(packet.bytes.size <= ReplaySettings.MAX_CONFIG_PACKET_BYTES) { "動画configが64KiBを超えました" }
-            if (!config.contentEquals(packet.bytes)) { channel?.close(); channel = null; currentFile = null }
+            if (!config.contentEquals(packet.bytes)) {
+                status("video", StreamState.RECOVERING, "動画configが切り替わりました", owner)
+                channel?.close(); channel = null; currentFile = null
+            }
             config = packet.bytes.copyOf(); return
         }
         require(width > 0 && height > 0 && config.isNotEmpty()) { "動画の寸法/configがありません" }
@@ -246,7 +241,12 @@ internal class CaptureStore(
             val first = if (continuousAcrossCut(all[firstInside - 1], all[firstInside], cutoff)) firstInside - 1 else firstInside
             val key = (first downTo 0).firstOrNull { all[it].key } ?: 0
             repeat(key) { removeVideo() }
-        } else if (firstInside < 0) while (video.isNotEmpty()) removeVideo()
+        } else if (firstInside < 0) {
+            val all = video.toList()
+            val last = all.lastOrNull()?.takeIf { currentVideo(it) }
+            val key = if (last == null) all.size else (all.lastIndex downTo 0).firstOrNull { all[it].key } ?: 0
+            repeat(key) { removeVideo() }
+        }
         while (logs.isNotEmpty() && logs.peekFirst().time.sequence != null && logs.peekFirst().time.uncertainty != Long.MAX_VALUE &&
             logs.peekFirst().retainedAt < cutoff - logs.peekFirst().time.uncertainty) {
             logBytes -= logs.removeFirst().source.raw.size + 256
@@ -273,6 +273,7 @@ internal class CaptureStore(
             val index = all.indexOf(entry)
             if (index > 0 && continuousAcrossCut(all[index - 1], entry, start)) files.add(all[index - 1].file)
         }
+        all.lastOrNull()?.takeIf { known && it.retainedAt < start && currentVideo(it) }?.let { files.add(it.file) }
         val frames = video.filter { (!known || it.retainedAt <= end) && it.file in files }.map { frame ->
             frame.copy(time = clock.video(frame.pts, frame.host, frame.time.epoch))
         }
@@ -322,8 +323,10 @@ internal class CaptureStore(
 
     private fun continuousAcrossCut(a: VideoEntry, b: VideoEntry, cut: Long): Boolean =
         a.time.sequence != null && b.time.sequence != null && a.time.sequence < cut && b.time.sequence >= cut &&
-            a.generation == b.generation && a.session == b.session && a.time.epoch == b.time.epoch &&
-            a.config.contentEquals(b.config) && a.width == b.width && a.height == b.height && b.pts - a.pts in 1..3_000_000
+            a.continuousTo(b, gaps)
+
+    private fun currentVideo(frame: VideoEntry): Boolean = frame.generation == generation && frame.session == videoSession &&
+        frame.time.epoch == clock.currentEpoch() && frame.width == width && frame.height == height && frame.config.contentEquals(config)
 
     private fun removeVideo(): VideoEntry {
         val entry = video.removeFirst()
@@ -376,6 +379,32 @@ internal class CaptureStore(
         deleteUnused()
         Files.deleteIfExists(directory)
     }
+}
+
+/** Source PTS, not an assumed frame rate, defines continuity within an uninterrupted stream. */
+internal fun VideoEntry.continuousTo(next: VideoEntry, gaps: Iterable<CaptureGap>): Boolean =
+    generation == next.generation && session == next.session && time.epoch == next.time.epoch &&
+        width == next.width && height == next.height && config.contentEquals(next.config) && next.pts > pts &&
+        time.sequence != null && next.time.sequence != null && next.time.sequence > time.sequence &&
+        time.uncertainty != Long.MAX_VALUE && next.time.uncertainty != Long.MAX_VALUE &&
+        gaps.none { gap -> (gap.stream == "video" || gap.stream == "clock") &&
+            gap.intersects(time.sequence, next.time.sequence, maxOf(time.uncertainty, next.time.uncertainty)) }
+
+/** Frozen inputs only: a later frame, clock sample or retry cannot confirm this request's tail. */
+internal fun FrozenCapture.videoTail(): VideoTailSnapshot? {
+    val last = video.lastOrNull() ?: return null
+    val source = last.time.sequence.takeIf { windowKnown && last.time.uncertainty != Long.MAX_VALUE }
+    if (source != null && source >= end) return null
+    val boundaries = gaps.filter { (it.stream == "video" || it.stream == "clock") &&
+        it.intersects(source, end, maxOf(endUncertainty, last.time.uncertainty)) }
+    val boundary = boundaries.mapNotNull { it.fromNs }.minOrNull()?.coerceAtMost(end) ?: end
+    val from = source?.let { maxOf(start, it) }
+    val to = boundary.takeIf { windowKnown && source != null && it > maxOf(start, source) }
+    if (from != null && to == null) return null
+    val held = from != null && to != null && last.time.epoch == windowClockEpoch &&
+        boundaries.all { it.fromNs != null && it.fromNs >= to && it.boundaryUncertaintyNs != null && it.boundaryUncertaintyNs != Long.MAX_VALUE } &&
+        (states["video"]?.state == StreamState.CAPTURING || boundaries.isNotEmpty())
+    return VideoTailSnapshot(from, to, last.pts, source, last.time.epoch, last.generation, held)
 }
 
 /** Unknown boundaries remain visible; uncertainty can place a nominally outside boundary in the window. */
