@@ -61,34 +61,33 @@ class ReplayCore(initialSettings: ReplaySettings, private val workspace: Path) :
     fun setEnabled(value: Boolean): CompletableFuture<ReplayOperation> {
         if (!value) synchronized(publishing) { cancelSave.set(true) }
         return operation {
-        if (value == enabled) return@operation ReplayOperation(true)
-        if (value) {
-            val root = Files.createDirectories(workspace).resolve("replay-${UUID.randomUUID()}")
-            Files.createDirectory(root)
-            runCatching { Files.setPosixFilePermissions(root, java.nio.file.attribute.PosixFilePermissions.fromString("rwx------")) }
-            ownedRoot = root
-            try {
-                resources = CaptureResources(root)
-                store = CaptureStore(root.resolve("ring"))
-            } catch (e: Exception) {
-                resources?.close(); resources = null
-                // Extraction writes only these exact new names; never clean unrelated entries.
-                Files.deleteIfExists(root.resolve("scrcpy-server-v4.0"))
-                Files.deleteIfExists(root.resolve("replay-clock.jar"))
-                Files.delete(root); ownedRoot = null
-                throw e
-            }
-            enabled = true
-            captureState = CaptureState.WAITING
-            error = null
-            saveState = SaveSnapshot()
-            probe = settings.adbPath?.let { OwnedAdb(it) }
-            poll()
-        } else disable()
-        publish()
-        ReplayOperation(true)
-    }
-
+            if (value == enabled) return@operation ReplayOperation(true)
+            if (value) {
+                val root = Files.createDirectories(workspace).resolve("replay-${UUID.randomUUID()}")
+                Files.createDirectory(root)
+                runCatching { Files.setPosixFilePermissions(root, java.nio.file.attribute.PosixFilePermissions.fromString("rwx------")) }
+                ownedRoot = root
+                try {
+                    resources = CaptureResources(root)
+                    store = CaptureStore(root.resolve("ring"))
+                } catch (e: Exception) {
+                    resources?.close(); resources = null
+                    // Extraction writes only these exact new names; never clean unrelated entries.
+                    Files.deleteIfExists(root.resolve("scrcpy-server-v4.0"))
+                    Files.deleteIfExists(root.resolve("replay-clock.jar"))
+                    Files.delete(root); ownedRoot = null
+                    throw e
+                }
+                enabled = true
+                captureState = CaptureState.WAITING
+                error = null
+                saveState = SaveSnapshot()
+                probe = settings.adbPath?.let { OwnedAdb(it) }
+                poll()
+            } else disable()
+            publish()
+            ReplayOperation(true)
+        }
     }
 
     fun applySettings(value: ReplaySettings): CompletableFuture<ReplayOperation> = operation {
@@ -155,7 +154,10 @@ class ReplayCore(initialSettings: ReplaySettings, private val workspace: Path) :
     private fun startSave(capture: FrozenCapture, directory: Path) {
         cancelSave = AtomicBoolean()
         val cancellation = cancelSave
-        val missing = capture.states.filterValues { it.state != StreamState.CAPTURING || it.reason != null }.keys.toList().let { java.util.List.copyOf(it) }
+        val missing = (capture.states.filterValues { it.state != StreamState.CAPTURING || it.reason != null }.keys +
+            capture.gaps.filter { gap -> (gap.fromNs == null || gap.fromNs <= capture.end) &&
+                (gap.toNs == null || gap.toNs >= capture.start) }.flatMap { if (it.stream == "clock") listOf("video", "device_log", "app_log") else listOf(it.stream) } +
+            if (capture.logs.any { it.app == null }) listOf("app_log") else emptyList()).distinct().let { java.util.List.copyOf(it) }
         saveState = SaveSnapshot(SavePhase.WRITING, capture.id, capture.sequence, capture.start, capture.end,
             capture.seconds, directory, missingKinds = missing)
         publish()
@@ -173,7 +175,9 @@ class ReplayCore(initialSettings: ReplaySettings, private val workspace: Path) :
                     if (result.isSuccess) {
                         store?.release(capture.id)
                         pending = null
-                        saveState = saveState.copy(phase = SavePhase.COMPLETED, directory = result.getOrThrow(), error = null)
+                        val output = result.getOrThrow()
+                        saveState = saveState.copy(phase = SavePhase.COMPLETED, directory = output.directory, error = null,
+                            missingKinds = java.util.List.copyOf((saveState.missingKinds + output.missingKinds).distinct()))
                     } else {
                         saveState = saveState.copy(phase = SavePhase.FAILED,
                             error = (result.exceptionOrNull() as? SaveFailure)?.message ?: "保存に失敗しました")
@@ -185,7 +189,7 @@ class ReplayCore(initialSettings: ReplaySettings, private val workspace: Path) :
     }
 
     private fun poll() {
-        if (!enabled) return
+        if (!enabled || closed.get()) return
         val adb = probe
         if (adb == null) {
             captureState = CaptureState.WAITING
@@ -197,7 +201,9 @@ class ReplayCore(initialSettings: ReplaySettings, private val workspace: Path) :
             error = "SDK adbから端末状態を取得できません"
             publish(); return
         }
-        if (devices.size != 1 || device != null && devices.singleOrNull()?.serial != device?.serial) {
+        if (closed.get()) return
+        val selected = device?.let { current -> devices.firstOrNull { it.serial == current.serial } }
+        if (device == null && devices.size != 1 || device != null && selected == null) {
             stopBackend()
             device = device?.copy(connected = false)
             captureState = if (devices.size > 1) CaptureState.MULTIPLE_DEVICES else if (device != null) CaptureState.RECOVERING else CaptureState.WAITING
@@ -219,15 +225,16 @@ class ReplayCore(initialSettings: ReplaySettings, private val workspace: Path) :
             backend = DeviceCapture(settings.adbPath!!, device!!.serial, resources!!, data, generation, settings.application).also { it.start() }
         }
         val data = store!!
-        if (data.clock.snapshot().lastOrNull { it.valid }?.received?.let { it >= backendStarted } == true) data.resume()
+        if (data.clock.snapshot().lastOrNull()?.received?.let { it >= backendStarted } == true) data.resume()
         data.prune(settings.replaySeconds)
         val states = data.streams(settings.replaySeconds)
         captureState = when {
+            devices.size > 1 -> CaptureState.MULTIPLE_DEVICES
             states.values.all { it.state == StreamState.CAPTURING && it.reason == null } -> CaptureState.CAPTURING
             states["video"]?.state == StreamState.CAPTURING || states["device_log"]?.state == StreamState.CAPTURING -> CaptureState.PARTIAL
             else -> CaptureState.RECOVERING
         }
-        error = null
+        error = if (devices.size > 1) "初期版は1台に対応しています。ほかの端末を切断してください（既存の取得は継続）" else null
         publish()
     }
 
@@ -306,7 +313,10 @@ class ReplayCore(initialSettings: ReplaySettings, private val workspace: Path) :
         listeners.clear()
         val done = closeCompletion
         control.execute {
-            runCatching { disable() }.onSuccess { done.complete(null) }.onFailure { done.completeExceptionally(it) }
+            runCatching { disable() }.onSuccess {
+                current = current.copy(enabled = false, captureState = CaptureState.DISABLED, canSave = false, saveDisabledReason = "projectは終了しています")
+                done.complete(null)
+            }.onFailure { done.completeExceptionally(it) }
             writer.shutdown()
             control.shutdown()
         }

@@ -7,7 +7,7 @@ import java.security.MessageDigest
 
 internal fun sha256(path: Path): String {
     val digest = MessageDigest.getInstance("SHA-256")
-    Files.newInputStream(path).use { input ->
+    Files.newInputStream(path, java.nio.file.StandardOpenOption.READ, java.nio.file.LinkOption.NOFOLLOW_LINKS).use { input ->
         val bytes = ByteArray(8192)
         while (true) { val count = input.read(bytes); if (count < 0) break; digest.update(bytes, 0, count) }
     }

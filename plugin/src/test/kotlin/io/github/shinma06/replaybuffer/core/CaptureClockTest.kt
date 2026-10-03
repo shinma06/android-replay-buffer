@@ -12,6 +12,30 @@ class CaptureClockTest {
     }
 
     @Test
+    fun recoveredAnchorNeverPaintsTheUnobservedIntervalAsNormallySynchronized() {
+        val clock = CaptureClock()
+        add(clock, 1_000_000_000)
+        val uncertain = clock.video(7_000_000, 7_000_000_000)
+        assertNull(uncertain.elapsed)
+        add(clock, 11_000_000_000)
+        assertEquals(2, clock.snapshot().map { it.epoch }.distinct().size)
+        assertNull(clock.video(7_000_000, 7_000_000_000, uncertain.epoch).elapsed)
+        assertNull(clock.log(1_700_000_007_000_000_000, 7_000_000_000).elapsed)
+        assertTrue(clock.video(11_000_000, 11_000_200_000).elapsed != null)
+    }
+
+    @Test
+    fun slowRoundTripAdvancesEstimatedWindowButDoesNotClaimNormalSourceSynchronization() {
+        val clock = CaptureClock()
+        assertEquals(false, clock.add("1", listOf(1_000_000_000L, 1_000_000_000L, 1_700_000_001_000_000_000L, 1_000_000_000L),
+            1_000_000_000, 1_100_000_000, 1_100_000_000))
+        assertEquals(false, clock.add("1", listOf(2_000_000_000L, 2_000_000_000L, 1_700_000_002_000_000_000L, 2_000_000_000L),
+            2_000_000_000, 2_100_000_000, 2_100_000_000))
+        assertTrue(clock.now(2_200_000_000)!! >= 1_000_000_000)
+        assertNull(clock.video(2_000_000, 2_200_000_000).elapsed)
+    }
+
+    @Test
     fun videoAndLogUseTheSameElapsedWithInterpolationAndIgnoreTinyOffsetChanges() {
         val clock = CaptureClock()
         add(clock, 1_000_000_000)

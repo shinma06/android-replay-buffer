@@ -49,17 +49,19 @@ internal class DeviceCapture(
                     store.app(null, null, emptySet(), generation)
                 } else {
                     runCatching {
-                        val packages = adb.command("-s", serial, "shell", "cmd", "package", "list", "packages", "-U", selected.packageName)
-                        val uid = packages.lineSequence().mapNotNull {
+                        val packages = adb.command("-s", serial, "shell", "cmd", "package", "list", "packages", "-U")
+                        val identities = packages.lineSequence().mapNotNull {
                             val m = Regex("package:([A-Za-z0-9_.]+)\\s+uid:(\\d+)").matchEntire(it.trim())
-                            if (m?.groupValues?.get(1) == selected.packageName) m.groupValues[2].toLong() else null
-                        }.singleOrNull()
+                            m?.let { it.groupValues[1] to it.groupValues[2].toLong() }
+                        }.toList()
+                        val uid = identities.singleOrNull { it.first == selected.packageName }?.second
+                        val exclusive = uid != null && identities.count { it.second == uid } == 1
                         val ps = adb.command("-s", serial, "shell", "ps", "-A", "-o", "PID,UID,NAME")
                         val pids = ps.lineSequence().drop(1).mapNotNull {
                             val f = it.trim().split(Regex("\\s+"))
                             if (f.size >= 3 && (f[2] == selected.packageName || f[2].startsWith(selected.packageName + ":"))) f[0].toIntOrNull() else null
                         }.toSet()
-                        if (selected == application) store.app(selected.packageName, uid, pids, generation)
+                        if (selected == application) store.app(selected.packageName, uid, pids, generation, exclusive)
                     }.onFailure { if (selected == application) store.app(selected.packageName, null, emptySet(), generation) }
                 }
                 if (!pause(1000)) break
@@ -82,6 +84,7 @@ internal class DeviceCapture(
                 if (kind != "clock") store.status(kind, StreamState.RECOVERING, "取得を復旧しています", generation)
                 val attempt = System.nanoTime()
                 runCatching(operation).onFailure {
+                    if (!stopping.get() && kind == "clock") { store.clock.boundary(); store.clockStatus(false, generation) }
                     if (!stopping.get() && kind != "clock") store.status(kind, StreamState.RECOVERING,
                         if (kind == "video") "動画取得が中断しました（PTS/config/容量/接続を確認してください）" else "全体ログ取得が中断しました", generation)
                 }
@@ -161,7 +164,7 @@ internal class DeviceCapture(
                     process.outputStream.flush()
                     val fields = readClockLine(process.inputStream).split('\t')
                     require(fields.size == 5 && fields[0] == nonce)
-                    store.clock.add(boot, fields.drop(1).map { it.toLong() }, sent, System.nanoTime())
+                    store.clockStatus(store.clock.add(boot, fields.drop(1).map { it.toLong() }, sent, System.nanoTime()), generation)
                 } finally { expiry.cancel(false) }
                 count++
                 if (count >= 5 && !pause(1000)) break
@@ -179,6 +182,7 @@ internal class DeviceCapture(
         workers.forEach { it.interrupt() }
         workers.forEach { it.join(2500) }
         check(workers.none { it.isAlive }) { "取得readerの終了を確認できません" }
+        check(timer.awaitTermination(2500, TimeUnit.MILLISECONDS)) { "取得watchdogの終了を確認できません" }
         cleanupPending = !cleanupRemote()
     }
 

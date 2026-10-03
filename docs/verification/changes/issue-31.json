@@ -2,12 +2,12 @@
   "schema": 1,
   "issue": 31,
   "gui_required": true,
-  "reason": "取得・同期・保存の製品受入に固定ZIPのIDE/Emulator/実機/受取人側観察が必要。実型とbuild依存を先に固定し、engine実装を継続する。実機は利用者の端末準備まで保留、GUI/ADB操作は本writer範囲外。",
+  "reason": "取得・同期・保存の製品受入に固定ZIPのIDE/Emulator/実機/受取人側観察が必要。コアはpure test/buildで検証し、固定HEAD独立レビューと製品QAを別に行う。実機は利用者の端末準備まで保留、GUI/ADB操作は本writer範囲外。",
   "cli_checks": [
     "plugin/gradlew -p plugin check: 実型/設定、時計・wire parser、byte/disk/固定保存・MP4/log整合、fake adbによる実Coreの復旧・再試行・取消しを確認。実行結果はIssue/PRへ記録",
     "python3 scripts/check.py: 管理・ハーネス確認",
     "python3 scripts/workflow/product_check.py: 凍結CLI保全",
-    "python3 scripts/workflow/change_impact.py --base 16123f6fa2e2c74ce4300d1acf4f54d317b3fdff --run-tests: clean committed HEADで実行"
+    "python3 scripts/workflow/change_impact.py --base c0f78076e0e2975434ae3d1328d8095eff548489 --run-tests: clean committed HEADで実行"
   ],
   "cases": [
     {
@@ -29,7 +29,7 @@
       ],
       "gpt": {
         "status": "pending",
-        "reason": "core実装を継続中。純粋テスト/buildは実観察へ代用しない。GUI/ADB操作は未実施、実機受入は利用者の端末準備まで保留。"
+        "reason": "コア実装の固定HEADで純粋テスト/build/ZIPを確認。独立レビューとIDE/端末/player観察は別に行う。GUI/ADB操作は未実施、実機受入は利用者の端末準備まで保留。"
       },
       "human": {
         "status": "pending",
@@ -59,7 +59,7 @@
       ],
       "gpt": {
         "status": "pending",
-        "reason": "core実装を継続中。純粋テスト/buildは実観察へ代用しない。GUI/ADB操作は未実施、実機受入は利用者の端末準備まで保留。"
+        "reason": "コア実装の固定HEADで純粋テスト/build/ZIPを確認。独立レビューとIDE/端末/player観察は別に行う。GUI/ADB操作は未実施、実機受入は利用者の端末準備まで保留。"
       },
       "human": {
         "status": "pending",
@@ -89,7 +89,7 @@
       ],
       "gpt": {
         "status": "pending",
-        "reason": "core実装を継続中。純粋テスト/buildは実観察へ代用しない。GUI/ADB操作は未実施、実機受入は利用者の端末準備まで保留。"
+        "reason": "コア実装の固定HEADで純粋テスト/build/ZIPを確認。独立レビューとIDE/端末/player観察は別に行う。GUI/ADB操作は未実施、実機受入は利用者の端末準備まで保留。"
       },
       "human": {
         "status": "pending",
@@ -119,7 +119,7 @@
       ],
       "gpt": {
         "status": "pending",
-        "reason": "core実装を継続中。純粋テスト/buildは実観察へ代用しない。GUI/ADB操作は未実施、実機受入は利用者の端末準備まで保留。"
+        "reason": "コア実装の固定HEADで純粋テスト/build/ZIPを確認。独立レビューとIDE/端末/player観察は別に行う。GUI/ADB操作は未実施、実機受入は利用者の端末準備まで保留。"
       },
       "human": {
         "status": "pending",
@@ -149,7 +149,7 @@
       ],
       "gpt": {
         "status": "pending",
-        "reason": "core実装を継続中。純粋テスト/buildは実観察へ代用しない。GUI/ADB操作は未実施、実機受入は利用者の端末準備まで保留。"
+        "reason": "コア実装の固定HEADで純粋テスト/build/ZIPを確認。独立レビューとIDE/端末/player観察は別に行う。GUI/ADB操作は未実施、実機受入は利用者の端末準備まで保留。"
       },
       "human": {
         "status": "pending",
@@ -179,7 +179,7 @@
       ],
       "gpt": {
         "status": "pending",
-        "reason": "core実装を継続中。純粋テスト/buildは実観察へ代用しない。GUI/ADB操作は未実施、実機受入は利用者の端末準備まで保留。"
+        "reason": "コア実装の固定HEADで純粋テスト/build/ZIPを確認。独立レビューとIDE/端末/player観察は別に行う。GUI/ADB操作は未実施、実機受入は利用者の端末準備まで保留。"
       },
       "human": {
         "status": "pending",
@@ -209,7 +209,7 @@
       ],
       "gpt": {
         "status": "pending",
-        "reason": "core実装を継続中。純粋テスト/buildは実観察へ代用しない。GUI/ADB操作は未実施、実機受入は利用者の端末準備まで保留。"
+        "reason": "コア実装の固定HEADで純粋テスト/build/ZIPを確認。独立レビューとIDE/端末/player観察は別に行う。GUI/ADB操作は未実施、実機受入は利用者の端末準備まで保留。"
       },
       "human": {
         "status": "pending",
@@ -239,7 +239,7 @@
       ],
       "gpt": {
         "status": "pending",
-        "reason": "core実装を継続中。純粋テスト/buildは実観察へ代用しない。GUI/ADB操作は未実施、実機受入は利用者の端末準備まで保留。"
+        "reason": "コア実装の固定HEADで純粋テスト/build/ZIPを確認。独立レビューとIDE/端末/player観察は別に行う。GUI/ADB操作は未実施、実機受入は利用者の端末準備まで保留。"
       },
       "human": {
         "status": "pending",
