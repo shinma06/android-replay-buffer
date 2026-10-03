@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "issue": 1,
+  "gui_required": false,
+  "reason": "共通ハーネスとGitHub管理の導入のみ。既存CLI source・設定・実行経路は変更せず、録画/IDE操作は不要。",
+  "cli_checks": [
+    "python3 scripts/check.py (結果は固定HEADのPRへ記録)",
+    "python3 scripts/workflow/product_check.py (既存CLI 2 tests)",
+    "python3 scripts/workflow/change_impact.py --base origin/main --run-tests",
+    "GitHub checks / Project / effective rules readback (導入Issue #1)"
+  ],
+  "cases": []
+}
