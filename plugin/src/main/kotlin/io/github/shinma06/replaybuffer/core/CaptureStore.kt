@@ -27,8 +27,10 @@ internal data class FrozenCapture(
     val seconds: Int, val video: List<VideoEntry>, val logs: List<LogEntry>, val gaps: List<CaptureGap>,
     val clocks: List<ClockSample>, val apps: List<AppPeriod>, val settings: ReplaySettings,
     val states: Map<String, StreamSnapshot>, val device: ReplayDevice? = null,
+    val endUncertainty: Long = 0, val windowClockEpoch: Int? = null,
 ) {
     val empty: Boolean get() = video.isEmpty() && logs.isEmpty()
+    val windowKnown: Boolean get() = endUncertainty != Long.MAX_VALUE
 }
 
 /** Packet bytes are append-only; a frozen request reads exactly each indexed packet's original length. */
@@ -58,6 +60,8 @@ internal class CaptureStore(
     private val configRefs = java.util.IdentityHashMap<ByteArray, Int>()
     private var started: Long? = null
     private var fixedEnd: Long? = null
+    private var fixedUncertainty: Long? = null
+    private var fixedEpoch: Int? = null
     private var generation = 0L
     private var closed = false
     private var pinned: FrozenCapture? = null
@@ -198,9 +202,15 @@ internal class CaptureStore(
     }
 
     @Synchronized
-    fun freeze() { if (fixedEnd == null) fixedEnd = clock.now() ?: latest() }
+    fun freeze() {
+        if (fixedEnd == null) synchronized(clock) {
+            fixedEnd = clock.now() ?: latest()
+            fixedUncertainty = clock.endUncertainty()
+            fixedEpoch = clock.currentEpoch()
+        }
+    }
     @Synchronized
-    fun resume() { fixedEnd = null }
+    fun resume() { fixedEnd = null; fixedUncertainty = null; fixedEpoch = null }
     @Synchronized
     fun end(): Long? = fixedEnd ?: clock.now() ?: latest()
     @Synchronized
@@ -212,7 +222,10 @@ internal class CaptureStore(
     fun prune(seconds: Int) {
         if (closed || fixedEnd != null) return
         val end = end() ?: return
-        val cutoff = end - seconds * 1_000_000_000L
+        val uncertainty = clock.endUncertainty()
+        // An unknown boot bridge/current T cannot prove that old known-epoch records are outside the window.
+        if (uncertainty == Long.MAX_VALUE) return
+        val cutoff = end - seconds * 1_000_000_000L - uncertainty
         // Keep the complete preceding GOP for decoding the first frame inside the logical window.
         val firstInside = video.indexOfFirst { it.time.sequence == null || it.time.uncertainty == Long.MAX_VALUE || it.retainedAt >= cutoff - it.time.uncertainty }
         if (firstInside > 0) {
@@ -234,22 +247,25 @@ internal class CaptureStore(
     fun capture(settings: ReplaySettings): FrozenCapture? = synchronized(clock) {
         check(pinned == null) { "保存対象は既に固定されています" }
         val end = end() ?: return null
+        val uncertainty = fixedUncertainty ?: clock.endUncertainty()
+        val known = uncertainty != Long.MAX_VALUE
         val start = maxOf(0L, started ?: end, end - settings.replaySeconds * 1_000_000_000L)
-        val rows = logs.filter { it.time.sequence == null || it.retainedAt in start..end }.map { row ->
+        val rows = logs.filter { !known || it.time.sequence == null || it.retainedAt in start..end }.map { row ->
             row.copy(time = clock.log(row.source.wall, row.host))
         }
-        val inside = video.filter { it.time.sequence == null || it.retainedAt <= end && it.retainedAt >= start }
+        val inside = video.filter { !known || it.time.sequence == null || it.retainedAt <= end && it.retainedAt >= start }
         val files = inside.map { it.file }.toMutableSet()
         val all = video.toList()
         inside.forEach { entry ->
             val index = all.indexOf(entry)
             if (index > 0 && continuousAcrossCut(all[index - 1], entry, start)) files.add(all[index - 1].file)
         }
-        val frames = video.filter { it.retainedAt <= end && it.file in files }.map { frame ->
+        val frames = video.filter { (!known || it.retainedAt <= end) && it.file in files }.map { frame ->
             frame.copy(time = clock.video(frame.pts, frame.host, frame.time.epoch))
         }
         val value = FrozenCapture(UUID.randomUUID().toString(), sequence, generation, start, end,
-            settings.replaySeconds, frames.toList(), rows.toList(), gaps.toList(), clock.snapshot(), apps.toList(), settings, streams(settings.replaySeconds, end))
+            settings.replaySeconds, frames.toList(), rows.toList(), gaps.toList(), clock.snapshot(), apps.toList(), settings,
+            streams(settings.replaySeconds, end), endUncertainty = uncertainty, windowClockEpoch = fixedEpoch ?: clock.currentEpoch())
         if (value.empty) return null
         pinned = value
         return value

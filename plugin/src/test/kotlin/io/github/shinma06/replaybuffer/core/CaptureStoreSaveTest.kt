@@ -19,6 +19,39 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class CaptureStoreSaveTest {
+    @Test
+    fun unknownBootBridgeRetainsOldRecordsAndExportsUnknownWindowCoordinates() {
+        val root = Files.createTempDirectory("replay-unknown-boot-fixture-")
+        val store = CaptureStore(root.resolve("ring"), minFree = 0)
+        val host = System.nanoTime()
+        val bytes = sample()
+        try {
+            store.generation(1); store.session(VideoPacket.Session(32, 32), 1)
+            anchor(store.clock, 1_000_000_000, host)
+            store.frame(VideoPacket.Frame(0, true, false, config(bytes)), 1)
+            store.frame(VideoPacket.Frame(1_000_000, false, true, bytes), 1, host)
+            store.log(DeviceLog(1_700_000_001_000_000_000, 12, 12, 10001, 0, 4, "Fixture", "old boot", byteArrayOf(1)), 1, host)
+            store.clock.add("2", listOf(100_000_000, 100_000_000, 1_700_000_020_000_000_000, 100_000_000),
+                host + 20_000_000_000, host + 20_000_000_000, 100_000_000_000)
+            store.prune(1)
+            val capture = store.capture(ReplaySettings(replaySeconds = 1))!!
+            assertFalse(capture.windowKnown)
+            assertEquals(1, capture.video.size)
+            assertEquals(1, capture.logs.size)
+            val output = SaveWriter().write(capture, root, { false }) { a, b -> Files.move(a, b) }
+            val manifest = JsonParser.parseString(Files.readString(output.directory.resolve("session.json"))).asJsonObject
+            assertFalse(manifest["window_clock_known"].asBoolean)
+            assertEquals(store.clock.currentEpoch(), manifest["window_clock_epoch"].asInt)
+            assertTrue(manifest["parts"].asJsonArray.single().asJsonObject["window_start_ns"].isJsonNull)
+            for (name in listOf("frames.jsonl", "logcat-device.jsonl")) {
+                assertTrue(JsonParser.parseString(Files.readAllLines(output.directory.resolve(name)).single()).asJsonObject["window_ns"].isJsonNull)
+            }
+        } finally {
+            store.close()
+            Files.walk(root).use { paths -> paths.sorted(java.util.Comparator.reverseOrder()).forEach { Files.deleteIfExists(it) } }
+        }
+    }
+
     private fun sample(): ByteArray {
         val picture = Picture.create(32, 32, ColorSpace.YUV420J).apply { fill(15) }
         val data = H264Encoder.createH264Encoder().encodeIDRFrame(picture, ByteBuffer.allocate(65536))
@@ -229,6 +262,11 @@ class CaptureStoreSaveTest {
             store.prune(1)
             assertEquals(frozen, store.end())
             assertTrue(store.hasData())
+            val fixed = store.capture(ReplaySettings(replaySeconds = 1))!!
+            assertEquals(frozen, fixed.end)
+            assertTrue(fixed.windowKnown)
+            assertEquals(0, fixed.windowClockEpoch)
+            store.release(fixed.id)
             store.resume(); store.prune(1)
             assertFalse(store.hasData())
             assertEquals(10_000_000_000, store.end())

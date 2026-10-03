@@ -126,5 +126,12 @@ internal class CaptureClock {
     fun currentEpoch(): Int = epoch
 
     @Synchronized
+    fun endUncertainty(host: Long = System.nanoTime()): Long = samples.peekLast()?.let {
+        if (it.epoch != epoch || it.sequenceOffset == null || it.bridgeError == Long.MAX_VALUE ||
+            host - it.received > 5_000_000_000) Long.MAX_VALUE else
+            it.readError + (it.received - it.sent) / 2 + it.bridgeError
+    } ?: Long.MAX_VALUE
+
+    @Synchronized
     fun snapshot(): List<ClockSample> = samples.toList()
 }

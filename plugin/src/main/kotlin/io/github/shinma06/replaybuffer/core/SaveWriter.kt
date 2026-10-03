@@ -65,7 +65,7 @@ internal class SaveWriter {
                     val visible = group.filterIndexed { i, frame ->
                         val time = frame.time.sequence
                         val next = group.getOrNull(i + 1)?.time?.sequence
-                        time == null || time <= capture.end && (time >= capture.start || next != null && next > capture.start)
+                        !capture.windowKnown || time == null || time <= capture.end && (time >= capture.start || next != null && next > capture.start)
                     }
                     if (visible.isEmpty()) return@forEach
                     val first = visible.first()
@@ -76,18 +76,18 @@ internal class SaveWriter {
                     }
                     if (keyIndex == null) { losses += "IDRを失った動画区間を復号できません"; return@forEach }
                     val prefix = all.subList(keyIndex, firstIndex).filter { it.pts < first.pts }
-                    val samples = prefix + group.filter { it.pts >= first.pts && (it.time.sequence == null || it.time.sequence <= capture.end) }
+                    val samples = prefix + group.filter { it.pts >= first.pts && (!capture.windowKnown || it.time.sequence == null || it.time.sequence <= capture.end) }
                     val origin = samples.first().pts
 
                     val last = samples.last()
                     val typical = if (samples.size > 1) (last.pts - samples[samples.lastIndex - 1].pts).coerceIn(1, 100_000) else 33_333L
-                    val remaining = last.time.sequence?.let { ((capture.end - it).coerceAtLeast(0) / 1000).coerceAtMost(typical) } ?: typical
+                    val remaining = last.time.sequence?.takeIf { capture.windowKnown }?.let { ((capture.end - it).coerceAtLeast(0) / 1000).coerceAtMost(typical) } ?: typical
                     val lastDuration = remaining.coerceAtLeast(1)
                     val endUs = last.pts - origin + lastDuration
-                    val projectedStart = first.time.sequence?.let { first.pts - origin + (capture.start - it) / 1000 } ?: (first.pts - origin)
+                    val projectedStart = first.time.sequence?.takeIf { capture.windowKnown }?.let { first.pts - origin + (capture.start - it) / 1000 } ?: (first.pts - origin)
                     // A part cannot present samples before its acquisition/clock/config boundary.
                     val startUs = maxOf(0L, group.first().pts - origin, projectedStart)
-                    val visibleStart = first.time.sequence?.let { it - (first.pts - origin - startUs) * 1000 }
+                    val visibleStart = first.time.sequence?.takeIf { capture.windowKnown }?.let { it - (first.pts - origin - startUs) * 1000 }
                     val videoName = "video-${(parts.size + 1).toString().padStart(3, '0')}.mp4"
                     val target = file(videoName)
                     // CREATE_NEW reserves the output; the JCodec channel writes only this request's new file.
@@ -109,7 +109,7 @@ internal class SaveWriter {
                             index.write(gson.toJson(mapOf("part" to videoName, "sample_index" to n,
                                 "source_pts_us" to frame.pts.toString(), "media_pts_us" to (frame.pts - origin).toString(),
                                 "elapsed_ns" to frame.time.elapsed?.toString(), "clock_epoch" to frame.time.epoch,
-                                "window_ns" to sequence?.let { (it - capture.start).toString() },
+                                "window_ns" to sequence?.takeIf { capture.windowKnown }?.let { (it - capture.start).toString() },
                                 "presentation_pts_us" to (media - startUs).coerceAtLeast(0).toString(),
                                 "presented" to presented, "preroll" to (!presented && media < startUs),
                                 "uncertainty_ns" to frame.time.uncertainty.toString())))
@@ -123,7 +123,7 @@ internal class SaveWriter {
                         "generation" to first.generation, "source_pts_origin_us" to origin.toString(),
                         "edit_start_us" to startUs.toString(), "duration_us" to (endUs - startUs).toString(),
                         "window_start_ns" to visibleStart?.let { (it - capture.start).toString() },
-                        "window_end_ns" to last.time.sequence?.let { (it - capture.start + lastDuration * 1000).toString() },
+                        "window_end_ns" to last.time.sequence?.takeIf { capture.windowKnown }?.let { (it - capture.start + lastDuration * 1000).toString() },
                         "preroll_samples" to prefix.size)
                 }
             }
@@ -136,7 +136,7 @@ internal class SaveWriter {
                         val source = row.source
                         val record = gson.toJson(mapOf("record_id" to row.id, "clock_epoch" to row.time.epoch,
                             "generation" to row.generation, "epoch_ns" to source.wall.toString(),
-                            "elapsed_ns" to row.time.elapsed?.toString(), "window_ns" to row.time.sequence?.let { (it - capture.start).toString() },
+                            "elapsed_ns" to row.time.elapsed?.toString(), "window_ns" to row.time.sequence?.takeIf { capture.windowKnown }?.let { (it - capture.start).toString() },
                             "uncertainty_ns" to row.time.uncertainty.toString(), "uid" to source.uid, "pid" to source.pid,
                             "tid" to source.tid, "lid" to source.lid, "priority" to source.priority, "tag" to source.tag,
                             "message" to source.message, "app_membership" to row.app,
@@ -178,7 +178,8 @@ internal class SaveWriter {
             val videoIncomplete = parts.isEmpty() || losses.isNotEmpty() || videoHoles.isNotEmpty() || knownParts.size != parts.size
             val manifest = mapOf("schema" to 1, "complete" to true, "save_id" to capture.id,
                 "sequence_id" to capture.sequence, "generation" to capture.generation, "device" to capture.device,
-                "window_clock_epoch" to capture.clocks.lastOrNull { it.valid }?.epoch,
+                "window_clock_epoch" to capture.windowClockEpoch,
+                "window_clock_known" to capture.windowKnown,
                 "application_at_save" to capture.settings.application,
                 "window_start_ns" to capture.start.toString(), "window_end_ns" to capture.end.toString(),
                 "replay_seconds" to capture.seconds, "created_at" to Instant.now().toString(),
@@ -189,8 +190,7 @@ internal class SaveWriter {
                     "min_free_bytes" to ReplaySettings.MIN_FREE_BYTES,
                     "max_video_packets" to ReplaySettings.MAX_VIDEO_PACKETS, "max_config_packet_bytes" to ReplaySettings.MAX_CONFIG_PACKET_BYTES,
                     "config_memory_bytes" to ReplaySettings.CONFIG_MEMORY_BYTES, "video" to "H.264 / 1920 / 30fps / 8Mbps / no B-frame"),
-                "window_end_uncertainty_ns" to capture.clocks.lastOrNull()?.let { if (!it.valid) Long.MAX_VALUE.toString() else
-                    (it.readError + (it.received - it.sent) / 2).toString() },
+                "window_end_uncertainty_ns" to capture.endUncertainty.toString(),
                 "clock_samples" to capture.clocks.map { clockJson(it) },
                 "clock_epochs" to (capture.clocks.map { it.epoch } + capture.video.map { it.time.epoch } + capture.logs.map { it.time.epoch } +
                     capture.gaps.mapNotNull { it.clockEpoch }).distinct().map { id -> mapOf("id" to id,
