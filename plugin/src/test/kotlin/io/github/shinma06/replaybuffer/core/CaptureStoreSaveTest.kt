@@ -20,6 +20,180 @@ import kotlin.test.assertTrue
 
 class CaptureStoreSaveTest {
     @Test
+    fun evictedIdrCannotClaimThatAnUndecodableTailWasDisplayed() {
+        val root = Files.createTempDirectory("replay-tail-without-idr-")
+        val encoder = H264Encoder.createH264Encoder()
+        val picture = Picture.create(32, 32, ColorSpace.YUV420J).apply { fill(15) }
+        val encodedIdr = encoder.encodeIDRFrame(picture, ByteBuffer.allocate(65536))
+        val bytes = ByteArray(encodedIdr.remaining()).also { encodedIdr.get(it) }
+        picture.fill(25)
+        val encodedP = encoder.encodePFrame(picture, ByteBuffer.allocate(65536))
+        val pBytes = ByteArray(encodedP.remaining()).also { encodedP.get(it) }
+        assertTrue(H264Utils.splitFrame(ByteBuffer.wrap(pBytes)).any { it.get(0).toInt() and 31 == 1 })
+        val store = CaptureStore(root.resolve("ring"), videoLimit = maxOf(bytes.size, pBytes.size).toLong(), minFree = 0)
+        val host = System.nanoTime()
+        try {
+            store.generation(1); store.session(VideoPacket.Session(32, 32), 1)
+            anchor(store.clock, 1_000_000_000, host)
+            store.frame(VideoPacket.Frame(0, true, false, config(bytes)), 1)
+            store.frame(VideoPacket.Frame(1_000_000, false, true, bytes), 1, host)
+            anchor(store.clock, 1_100_000_000, host + 100_000_000)
+            store.frame(VideoPacket.Frame(1_100_000, false, false, pBytes), 1, host + 100_000_000)
+            anchor(store.clock, 1_500_000_000, host + 500_000_000)
+            val capture = store.capture(ReplaySettings())!!
+            assertFalse(capture.video.single().key)
+            val tail = capture.videoTail()!!
+            assertEquals(100_000_000, tail.fromNs)
+            assertEquals(500_000_000, tail.toNs)
+            assertEquals(1_100_000, tail.sourcePtsUs)
+            assertFalse(tail.displayHeld)
+            val output = SaveWriter().write(capture, root, { false }) { a, b -> Files.move(a, b) }
+            val manifest = JsonParser.parseString(Files.readString(output.directory.resolve("session.json"))).asJsonObject
+            assertTrue(manifest["parts"].asJsonArray.isEmpty)
+            assertFalse(manifest["video_tail"].asJsonObject["display_held"].asBoolean)
+            assertEquals(listOf("video"), output.missingKinds)
+            anchor(store.clock, 2_000_000_000, host + 1_000_000_000)
+            store.frame(VideoPacket.Frame(2_000_000, false, true, bytes), 1, host + 1_000_000_000)
+            assertEquals(tail, capture.videoTail())
+            store.release(capture.id)
+        } finally {
+            store.close()
+            Files.walk(root).use { paths -> paths.sorted(java.util.Comparator.reverseOrder()).forEach { Files.deleteIfExists(it) } }
+        }
+    }
+
+    @Test
+    fun longVfrIntervalsKeepOnePartAndWindowCutRetainsItsDisplayedFrame() {
+        val root = Files.createTempDirectory("replay-long-vfr-")
+        val store = CaptureStore(root.resolve("ring"), minFree = 0)
+        val host = System.nanoTime()
+        val bytes = sample()
+        try {
+            store.generation(1); store.session(VideoPacket.Session(32, 32), 1)
+            anchor(store.clock, 1_000_000_000, host)
+            store.frame(VideoPacket.Frame(0, true, false, config(bytes)), 1)
+            store.frame(VideoPacket.Frame(1_000_000, false, true, bytes), 1, host)
+            // No new image for five seconds; clocks remain valid without claiming video arrivals.
+            for (second in 2L..6L) anchor(store.clock, second * 1_000_000_000, host + (second - 1) * 1_000_000_000)
+            store.frame(VideoPacket.Frame(6_000_000, false, true, bytes), 1, host + 5_000_000_000)
+            store.prune(2)
+            val capture = store.capture(ReplaySettings(replaySeconds = 2))!!
+            assertEquals(3_000_000_000, capture.start)
+            assertEquals(listOf(1_000_000L, 6_000_000L), capture.video.map { it.pts })
+            val output = SaveWriter().write(capture, root, { false }) { a, b -> Files.move(a, b) }
+            val manifest = JsonParser.parseString(Files.readString(output.directory.resolve("session.json"))).asJsonObject
+            assertEquals(1, manifest["parts"].asJsonArray.size())
+            assertTrue(manifest["video_missing_ranges"].asJsonArray.isEmpty)
+            val part = manifest["parts"].asJsonArray.single().asJsonObject
+            assertEquals("0", part["window_start_ns"].asString)
+            assertEquals("3000000", part["edit_start_us"].asString)
+            NIOUtils.readableChannel(output.directory.resolve("video-001.mp4").toFile()).use { channel ->
+                val frame = MP4Demuxer.createRawMP4Demuxer(channel).videoTrack.nextFrame()
+                assertEquals(5_000_000, frame.duration)
+            }
+            for (gap in listOf(
+                CaptureGap("video", 2_000_000_000, 2_100_000_000, "lost", 0),
+                CaptureGap("clock", null, null, "unknown clock"),
+            )) {
+                val broken = SaveWriter().write(capture.copy(gaps = listOf(gap)), root, { false }) { a, b -> Files.move(a, b) }
+                val brokenManifest = JsonParser.parseString(Files.readString(broken.directory.resolve("session.json"))).asJsonObject
+                assertFalse(brokenManifest["video_missing_ranges"].asJsonArray.isEmpty)
+            }
+            store.release(capture.id)
+        } finally {
+            store.close()
+            Files.walk(root).use { paths -> paths.sorted(java.util.Comparator.reverseOrder()).forEach { Files.deleteIfExists(it) } }
+        }
+    }
+
+    @Test
+    fun noNewFrameWithinTheWindowRetainsTheLastFrameAndItsDecodeGopWithinByteLimits() {
+        val root = Files.createTempDirectory("replay-static-cut-")
+        val bytes = sample()
+        val store = CaptureStore(root.resolve("ring"), minFree = 0)
+        val host = System.nanoTime()
+        try {
+            store.generation(1); store.session(VideoPacket.Session(32, 32), 1)
+            anchor(store.clock, 1_000_000_000, host)
+            store.frame(VideoPacket.Frame(0, true, false, config(bytes)), 1)
+            store.frame(VideoPacket.Frame(1_000_000, false, true, bytes), 1, host)
+            store.frame(VideoPacket.Frame(1_100_000, false, false, bytes), 1, host + 100_000_000)
+            for (second in 2L..15L) anchor(store.clock, second * 1_000_000_000, host + (second - 1) * 1_000_000_000)
+            store.prune(2)
+            val capture = store.capture(ReplaySettings(replaySeconds = 2))!!
+            assertEquals(12_000_000_000, capture.start)
+            assertEquals(listOf(1_000_000L, 1_100_000L), capture.video.map { it.pts })
+            assertTrue(capture.video.all { Files.exists(it.file) })
+            assertTrue(capture.gaps.isEmpty())
+            val fixedTail = capture.videoTail()!!
+            assertEquals(12_000_000_000, fixedTail.fromNs)
+            assertEquals(14_000_000_000, fixedTail.toNs)
+            assertTrue(fixedTail.displayHeld)
+            val output = SaveWriter().write(capture, root, { false }) { a, b -> Files.move(a, b) }
+            assertTrue(output.missingKinds.isEmpty())
+            val manifest = JsonParser.parseString(Files.readString(output.directory.resolve("session.json"))).asJsonObject
+            assertTrue(manifest["complete"].asBoolean)
+            assertFalse(manifest["video_tail"].asJsonObject["new_frame_confirmed"].asBoolean)
+            assertTrue(manifest["video_tail"].asJsonObject["display_held"].asBoolean)
+            assertEquals("2000000", manifest["parts"].asJsonArray.single().asJsonObject["duration_us"].asString)
+            assertTrue(manifest["parts"].asJsonArray.single().asJsonObject["confirmed_window_end_ns"].isJsonNull)
+            assertEquals(2, Files.readAllLines(output.directory.resolve("frames.jsonl")).size)
+            val unknown = capture.copy(endUncertainty = Long.MAX_VALUE)
+            assertFalse(unknown.videoTail()!!.displayHeld)
+            assertEquals(null, unknown.videoTail()!!.fromNs)
+            val broken = capture.copy(start = 0, gaps = listOf(CaptureGap("video", 5_000_000_000, 6_000_000_000, "known loss", 0)))
+            assertEquals(5_000_000_000, broken.videoTail()!!.toNs)
+            val brokenOutput = SaveWriter().write(broken, root, { false }) { a, b -> Files.move(a, b) }
+            assertEquals(listOf("video"), brokenOutput.missingKinds)
+            val longEnd = Int.MAX_VALUE.toLong() * 1000 + 20_000_000_000
+            val longWindow = capture.copy(start = longEnd - 2_000_000_000, end = longEnd)
+            val longOutput = SaveWriter().write(longWindow, root, { false }) { a, b -> Files.move(a, b) }
+            assertTrue(longOutput.missingKinds.isEmpty())
+            val longManifest = JsonParser.parseString(Files.readString(longOutput.directory.resolve("session.json"))).asJsonObject
+            val longPart = longManifest["parts"].asJsonArray.single().asJsonObject
+            assertTrue(longPart["media_timeline_clipped"].asBoolean)
+            assertEquals("2000000", longPart["duration_us"].asString)
+            assertEquals(capture.video.map { it.pts.toString() }, Files.readAllLines(longOutput.directory.resolve("frames.jsonl")).map {
+                JsonParser.parseString(it).asJsonObject["source_pts_us"].asString
+            })
+            val following = capture.video.last().let { it.copy(pts = 1_000_000 + longEnd / 1000,
+                time = it.time.copy(elapsed = 1_000_000_000 + longEnd, sequence = longEnd)) }
+            val confirmedLong = longWindow.copy(video = listOf(capture.video.first(), following))
+            val confirmedOutput = SaveWriter().write(confirmedLong, root, { false }) { a, b -> Files.move(a, b) }
+            assertTrue(confirmedOutput.missingKinds.isEmpty())
+            val confirmed = JsonParser.parseString(Files.readString(confirmedOutput.directory.resolve("session.json"))).asJsonObject
+            assertTrue(confirmed["video_tail"].isJsonNull)
+            assertEquals(1, confirmed["parts"].asJsonArray.size())
+            assertEquals("2000000000", confirmed["parts"].asJsonArray.single().asJsonObject["confirmed_window_end_ns"].asString)
+            NIOUtils.readableChannel(confirmedOutput.directory.resolve("video-001.mp4").toFile()).use { channel ->
+                assertEquals(2_000_000, MP4Demuxer.createRawMP4Demuxer(channel).videoTrack.nextFrame().duration)
+            }
+            anchor(store.clock, 16_000_000_000, host + 15_000_000_000)
+            store.frame(VideoPacket.Frame(16_000_000, false, true, bytes), 1, host + 15_000_000_000)
+            assertEquals(fixedTail, capture.videoTail())
+            store.release(capture.id)
+            store.session(VideoPacket.Session(32, 32), 1)
+            anchor(store.clock, 20_000_000_000, host + 19_000_000_000)
+            store.prune(2)
+            assertFalse(store.hasData()) // A new session cannot use the old static image as its own.
+            store.frame(VideoPacket.Frame(0, true, false, config(bytes)), 1)
+            store.frame(VideoPacket.Frame(20_000_000, false, true, bytes), 1, host + 19_000_000_000)
+            for (second in 21L..5020L) anchor(store.clock, second * 1_000_000_000, host + (second - 1) * 1_000_000_000)
+            store.prune(2)
+            val aged = store.capture(ReplaySettings(replaySeconds = 2))!!
+            assertEquals(4096, aged.clocks.size)
+            assertTrue(aged.video.single().time.sequence != null)
+            assertTrue(aged.videoTail()!!.displayHeld)
+            val agedOutput = SaveWriter().write(aged, root, { false }) { a, b -> Files.move(a, b) }
+            assertTrue(agedOutput.missingKinds.isEmpty())
+            store.release(aged.id)
+        } finally {
+            store.close()
+            Files.walk(root).use { paths -> paths.sorted(java.util.Comparator.reverseOrder()).forEach { Files.deleteIfExists(it) } }
+        }
+    }
+
+    @Test
     fun unknownWindowStillReclaimsByteEvictedGopsWhilePreservingPinnedBytes() {
         val root = Files.createTempDirectory("replay-unknown-cap-fixture-")
         val bytes = sample()
@@ -170,7 +344,7 @@ class CaptureStoreSaveTest {
             store.prune(1)
             assertTrue(capture.video.all { Files.exists(it.file) })
             val output = SaveWriter().write(capture, root, { false }) { a, b -> Files.move(a, b) }
-            assertTrue(output.missingKinds.isEmpty())
+            assertEquals(listOf("video"), output.missingKinds) // The explicit gap remains a known interruption.
             val completed = output.directory
             val manifest = JsonParser.parseString(Files.readString(completed.resolve("session.json"))).asJsonObject
             assertFalse(manifest["files_sha256"].asJsonObject.has("session.json"))

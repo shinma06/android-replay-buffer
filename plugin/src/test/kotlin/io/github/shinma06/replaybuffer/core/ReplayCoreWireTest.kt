@@ -31,6 +31,7 @@ class ReplayCoreWireTest {
         val server = ServerSocket(0, 8, InetAddress.getLoopbackAddress())
         val clockServer = ServerSocket(0, 8, InetAddress.getLoopbackAddress())
         val stop = AtomicBoolean()
+        val pauseVideo = AtomicBoolean()
         val peers = CopyOnWriteArrayList<Thread>()
         val sockets = CopyOnWriteArrayList<java.net.Socket>()
         val videoSockets = CopyOnWriteArrayList<java.net.Socket>()
@@ -77,6 +78,7 @@ class ReplayCoreWireTest {
                         if (connection == 2) assertTrue(resumeVideo.await(15, TimeUnit.SECONDS))
                         Thread.sleep(750) // Exercise a valid clock before the first video frame.
                         while (!stop.get()) {
+                            if (pauseVideo.get()) { Thread.sleep(25); continue }
                             out.writeLong((1L shl 61) or (System.nanoTime() / 1000)); out.writeInt(bytes.size); out.write(bytes); out.flush()
                             Thread.sleep(100)
                         }
@@ -112,7 +114,7 @@ elif len(a)>3 and 'ClockProbe' in a[3]:
             print(reader.readline().strip(),flush=True)
 elif len(a)>3 and 'scrcpy.Server' in a[3]:
     with (root/'video-launches.txt').open('a') as f: f.write('start\n')
-    time.sleep(30)
+    time.sleep(90)
 elif len(a)>3 and a[3]=='settings':
     print(1)
 elif len(a)>3 and a[3]=='cmd':
@@ -141,6 +143,31 @@ elif len(a)>3 and a[3]=='ps':
             awaitState("unresolved-app") { it.video.state == StreamState.CAPTURING && it.appLog.state == StreamState.UNAVAILABLE }
             assertTrue(core.updateApplication(ApplicationTarget("com.fixture.app")).get().accepted)
             val capturing = awaitState("initial-capture") { it.canSave && it.video.state == StreamState.CAPTURING && it.appLog.state == StreamState.CAPTURING }
+            if (System.getProperty("os.name") == "Mac OS X") {
+                Thread.sleep(1300) // Remove the initial unresolved-app interval from the one-second window.
+                pauseVideo.set(true)
+                Thread.sleep(11_000)
+                assertEquals(1, readyConnections.get())
+                assertEquals(StreamState.CAPTURING, core.snapshot().video.state)
+                assertTrue(core.snapshot().video.gaps.isEmpty())
+                assertTrue(core.applySettings(core.snapshot().settings.copy(saveDirectory = root)).get().accepted)
+                repeat(2) {
+                    assertTrue(core.save().get().accepted)
+                    val normal = awaitState("normal-save") { it.save.phase == SavePhase.COMPLETED }
+                    assertTrue(normal.save.missingKinds.isEmpty())
+                    assertTrue(normal.canSave)
+                    assertEquals(StreamState.CAPTURING, normal.video.state)
+                    val tail = normal.save.videoTail!!
+                    assertTrue(tail.displayHeld)
+                    assertTrue(tail.toNs!! > tail.fromNs!!)
+                    val manifest = JsonParser.parseString(Files.readString(normal.save.directory!!.resolve("session.json"))).asJsonObject
+                    assertTrue(manifest["complete"].asBoolean)
+                    assertFalse(manifest["video_tail"].asJsonObject["new_frame_confirmed"].asBoolean)
+                    pauseVideo.set(false)
+                    awaitState("static-resumed") { it.video.availableSeconds > 0 && it.video.gaps.isEmpty() }
+                }
+                assertTrue(core.applySettings(core.snapshot().settings.copy(saveDirectory = root.resolve("missing"))).get().accepted)
+            }
             assertEquals(1, Files.readAllLines(root.resolve("video-launches.txt")).size)
             assertTrue(videoSockets.size > 1) // Early forwarded EOFs did not restart the owned server.
             val sequence = capturing.sequenceId
@@ -171,6 +198,7 @@ elif len(a)>3 and a[3]=='ps':
             assertTrue(core.updateApplication(ApplicationTarget("com.other.app")).get().accepted)
             assertEquals(fixed.application, core.snapshot().save.application)
             assertEquals(fixed.applicationHistory, core.snapshot().save.applicationHistory)
+            assertEquals(fixed.videoTail, core.snapshot().save.videoTail)
             Files.writeString(devices, "List of devices attached\n")
             val disconnected = awaitState("disconnected") { it.frozen }
             Thread.sleep(1100)
@@ -188,6 +216,7 @@ elif len(a)>3 and a[3]=='ps':
                 assertEquals(fixed.device, done.save.device)
                 assertEquals(fixed.application, done.save.application)
                 assertEquals(fixed.applicationHistory, done.save.applicationHistory)
+                assertEquals(fixed.videoTail, done.save.videoTail)
                 val folder = done.save.directory!!
                 val json = JsonParser.parseString(Files.readString(folder.resolve("session.json"))).asJsonObject
                 assertEquals(operation.requestId, json["save_id"].asString)
@@ -218,7 +247,7 @@ elif len(a)>3 and a[3]=='ps':
             Files.readAllLines(pids).forEach { pid -> assertFalse(ProcessHandle.of(pid.toLong()).map { it.isAlive }.orElse(false)) }
         } finally {
             core.closeAsync().get(15, TimeUnit.SECONDS)
-            stop.set(true); resumeVideo.countDown(); server.close(); clockServer.close(); sockets.forEach { runCatching { it.close() } }
+            stop.set(true); pauseVideo.set(false); resumeVideo.countDown(); server.close(); clockServer.close(); sockets.forEach { runCatching { it.close() } }
             accept.join(2000); clockAccept.join(2000); peers.forEach { it.join(2000) }
             Files.walk(root).use { paths -> paths.sorted(java.util.Comparator.reverseOrder()).forEach { Files.deleteIfExists(it) } }
         }

@@ -11,8 +11,11 @@ internal sealed interface VideoPacket {
     data class Frame(val pts: Long, val config: Boolean, val key: Boolean, val bytes: ByteArray) : VideoPacket
 }
 
-internal fun readVideo(input: DataInputStream): VideoPacket {
-    val high = input.readInt()
+internal fun readVideo(input: DataInputStream, started: () -> Unit = {}): VideoPacket {
+    val first = input.readUnsignedByte()
+    started()
+    val high = (first shl 24) or (input.readUnsignedByte() shl 16) or
+        (input.readUnsignedByte() shl 8) or input.readUnsignedByte()
     if (high < 0) {
         require(high == Int.MIN_VALUE || high == Int.MIN_VALUE + 1) { "未知のsession flags" }
         val width = input.readInt()
