@@ -3,16 +3,34 @@
     <name>Android Replay Buffer</name>
     <vendor url="https://github.com/shinma06/android-replay-buffer">shinma06</vendor>
     <description><![CDATA[
-        Development foundation for an Android screen and log replay buffer.
-        Android操作直前の画面・logcatを保存するプラグインの開発基盤です。
-        現段階では情報表示のみで、録画・保存は既存のPython CLIを使用します。
+        Android Replay Buffer captures recent screen and logcat history from an Android device.
+        Android Replay Bufferは、Android操作直前の画面・logcatを保存します。
+        専用ToolWindowから取得を有効にし、直前の記録を保存・再試行できます。
+        Settings → Tools → Android Replay Bufferで保存先と取得条件を設定します。
+        初回は取得が無効です。初期版は1台のAndroid端末に対応します。
     ]]></description>
     <depends>com.intellij.modules.platform</depends>
+    <depends>org.jetbrains.android</depends>
+    <depends>com.intellij.modules.androidstudio</depends>
+    <extensions defaultExtensionNs="com.intellij">
+        <notificationGroup id="Android Replay Buffer" displayType="BALLOON" isLogByDefault="true"/>
+        <toolWindow id="Android Replay Buffer"
+                    anchor="right"
+                    doNotActivateOnStart="true"
+                    icon="AllIcons.Actions.Restart"
+                    factoryClass="io.github.shinma06.replaybuffer.ui.ReplayToolWindowFactory"/>
+        <projectConfigurable parentId="tools"
+                             nonDefaultProject="true"
+                             id="io.github.shinma06.replaybuffer.settings"
+                             displayName="Android Replay Buffer"
+                             instance="io.github.shinma06.replaybuffer.settings.ReplaySettingsConfigurable"/>
+        <postStartupActivity implementation="io.github.shinma06.replaybuffer.ide.ReplayProjectActivity"/>
+    </extensions>
     <actions>
         <action id="io.github.shinma06.replaybuffer.About"
                 class="io.github.shinma06.replaybuffer.AboutReplayBufferAction"
                 text="Android Replay Bufferについて"
-                description="開発状況とプラグインのバージョンを表示します">
+                description="使い方とプラグインのバージョンを表示します">
             <add-to-group group-id="ToolsMenu" anchor="last"/>
         </action>
     </actions>

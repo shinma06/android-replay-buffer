@@ -1,0 +1,22 @@
+Android Replay Buffer bundled capture dependencies
+
+scrcpy server 4.0, Genymobile / Apache License 2.0.
+Source revision: 2322868e9e256eb5fce0b3d659ab2a409f29bae1
+https://github.com/Genymobile/scrcpy/tree/2322868e9e256eb5fce0b3d659ab2a409f29bae1
+Official release: https://github.com/Genymobile/scrcpy/releases/tag/v4.0
+Server SHA-256: 84924bd564a1eb6089c872c7521f968058977f91f5ff02514a8c74aff3210f3a
+License: scrcpy-LICENSE.txt (same fixed source revision).
+
+JCodec 0.2.5, JCodec Project / BSD 2-Clause License.
+https://repo.maven.apache.org/maven2/org/jcodec/jcodec/0.2.5/
+JAR SHA-256: 890329dad124e8b739c1d6602a59a53c8a474daddff265c2561e21c498496c81
+License: jcodec-LICENSE.txt, source license revision 4ba922aca445c4df59f99e183c79d0538e5cb53f.
+https://github.com/jcodec/jcodec/blob/4ba922aca445c4df59f99e183c79d0538e5cb53f/LICENSE
+
+Replay clock helper is this project's Java source compiled to a deterministic DEX JAR.
+Build-only: Google R8/D8 8.10.24 (BSD 3-Clause), com.google.android:android:4.1.1.4 (Apache 2.0 API stubs).
+These build tools are not shipped in the plugin. Their input JAR hashes are verified by captureIdentity.
+Generated replay/deps/identity.properties records source SHA, dirty flag, clock JAR and dependency hashes.
+Users need only their Android SDK adb. There is no runtime download, PATH tool resolution, Python or ffmpeg invocation.
+
+License text trailing spaces/blank EOF are normalized; attribution and terms are preserved.
