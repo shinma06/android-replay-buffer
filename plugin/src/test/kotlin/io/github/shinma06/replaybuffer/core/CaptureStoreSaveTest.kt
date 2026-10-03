@@ -158,6 +158,8 @@ class CaptureStoreSaveTest {
             }
             store.log(DeviceLog(1_700_000_001_350_000_000, 12, 12, 10001, 0, 4, "Fixture", "hello\nworld", byteArrayOf(1, 2)), 1, host + 350_000_000)
             anchor(store.clock, 1_400_000_000, host + 400_000_000)
+            store.status("video", StreamState.RECOVERING, "schema gap fixture", 1)
+            store.status("video", StreamState.CAPTURING, null, 1)
             val capture = store.capture(ReplaySettings())!!
             assertEquals(0, capture.start)
             assertEquals(400_000_000, capture.end)
@@ -172,6 +174,9 @@ class CaptureStoreSaveTest {
             val completed = output.directory
             val manifest = JsonParser.parseString(Files.readString(completed.resolve("session.json"))).asJsonObject
             assertFalse(manifest["files_sha256"].asJsonObject.has("session.json"))
+            assertEquals(setOf("state", "availableSeconds", "reason"), manifest["coverage"].asJsonObject["video"].asJsonObject.keySet())
+            val gap = manifest["gaps"].asJsonArray.single().asJsonObject
+            assertTrue(gap["from_ns"].asJsonPrimitive.isString && gap["to_ns"].asJsonPrimitive.isString)
             assertTrue(manifest["build"].asJsonObject["source"].asString.matches(Regex("[a-f0-9]{40}")))
             manifest["files_sha256"].asJsonObject.entrySet().forEach { (name, value) -> assertEquals(value.asString, sha256(completed.resolve(name))) }
             val device = Files.readAllLines(completed.resolve("logcat-device.jsonl"))

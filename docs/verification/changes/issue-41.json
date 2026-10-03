@@ -4,7 +4,7 @@
   "gui_required": true,
   "reason": "動画起動競合・継続stall・persistent cleanup・固定snapshot・非上書き公開を変更するため、同一修正ZIPのIDE/Emulator/実機/受取人観察が必要。既存91 Caseと5a5aの実failをQA27/39で保持する。",
   "cli_checks": [
-    "JBR25/Rabbit local plugin 45 tests: pass (fake SDK/loopback, native local publish; GUIは未実施)",
+    "JBR25/Rabbit local plugin 46 tests: pass (fake SDK/loopback, native local publish; GUIは未実施)",
     "python3 scripts/check.py: pass (165 harness tests)",
     "python3 scripts/workflow/product_check.py: pass (CLI origin 21 files + 2 tests)",
     "最終clean committed change_impact/CI/独立reviewの固定結果はIssue41/PR43で読み戻す。GUI passではない"
@@ -317,9 +317,10 @@
       "preconditions": "同一固定HEAD/ZIP、共有leaseを持つQA owner、private使い捨てfixture。EMU/REALを別記録。",
       "steps": [
         "offlineのままOFF/IDE正常終了。",
-        "同project再起動・再接続で旧所有のみcleanup。別端末/生存owner/不正記録/port再利用を保護。"
+        "同project再起動・再接続で旧所有のみcleanup。別端末/生存owner/不正記録/port再利用を保護。",
+        "OFFのまま別Core/IDE再起動で保留表示→SDK反映/再接続だけで所有cleanupする。pendingなしと破損/未来/lockedのみのOFFはADB照会0、backend/clock/logcat/recording開始0を確認。"
       ],
-      "expected": "persistent pendingが引継がれ、成功した記録だけ消える。共有ADB/未知rootは保全。",
+      "expected": "persistent pendingが引継がれ、成功した記録だけ消える。共有ADB/未知rootは保全。 OFFは取得を開始せず検証済み所有cleanupだけを再試行し、初回OFFのADBなしを維持する。",
       "provenance": [
         "Issue41正式PM割当5972709129/独立照合/QA27固定5a5a実fail"
       ],

@@ -67,6 +67,7 @@ internal class RemoteCleanupJournal(private var directory: Path) : AutoCloseable
     private val owned = linkedMapOf<Path, Entry>()
     private var other = 0
     val pendingCount get() = owned.size + other
+    val hasRecoverable get() = owned.isNotEmpty()
 
     init { require(directory.isAbsolute) }
 

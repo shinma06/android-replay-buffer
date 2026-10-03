@@ -195,7 +195,9 @@ internal class SaveWriter {
                 "clock_epochs" to (capture.clocks.map { it.epoch } + capture.video.map { it.time.epoch } + capture.logs.map { it.time.epoch } +
                     capture.gaps.mapNotNull { it.clockEpoch }).distinct().map { id -> mapOf("id" to id,
                     "has_valid_sample" to capture.clocks.any { it.epoch == id && it.valid }) }, "application_history" to capture.apps.map { appJson(it) },
-                "coverage" to capture.states, "gaps" to capture.gaps.map { gap -> mapOf("kind" to gap.stream,
+                "coverage" to capture.states.mapValues { (_, state) -> mapOf("state" to state.state,
+                    "availableSeconds" to state.availableSeconds, "reason" to state.reason) },
+                "gaps" to capture.gaps.map { gap -> mapOf("kind" to gap.stream,
                     "from_ns" to gap.fromNs?.toString(), "to_ns" to gap.toNs?.toString(), "reason" to gap.reason,
                     "time_axis" to "sequence_ns", "generation" to gap.generation, "clock_epoch" to gap.clockEpoch,
                     "boundary_uncertainty_ns" to gap.boundaryUncertaintyNs?.toString(),
