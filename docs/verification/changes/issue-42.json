@@ -30,7 +30,7 @@
       ],
       "gpt": {
         "status": "pending",
-        "reason": "core93bc236のVFR/IDR喪失修正を通常mergeし、保存phase・末尾未確認・確定欠落を別表示。旧a919の59tests/レビュー/Verifierを新候補の合格へ流用しない。新統合HEAD/baseの独立レビュー・同一ZIPのAPI検証/実IDE/Emulator観察は未完了、実機保留。"
+        "reason": "core49固定6e48319を通常mergeし、公開API不変・heldfalseの不足と保存phase/末尾未確認の併存表示を確認。既存Case条件/pendingを保全。旧2409のレビュー/Verifierを新候補へ流用せず、新統合HEAD/baseの主独立レビュー・同一ZIPのAPI/実IDE/Emulator観察は未完了、実機保留。"
       },
       "human": {
         "status": "pending",
@@ -39,7 +39,7 @@
       "fix_issue": null,
       "fix_pr": null,
       "recheck": "UI/core/API/build変更後は同じ新固定source/ZIPで再観察する。",
-      "next_action": "PMがcore93bc236統合候補の最終HEAD/base独立レビューを調整し、QA #27/#40へ新同一ZIPと全必要Case/main残条件を双方向引継ぐ。実機は利用者準備後。"
+      "next_action": "PMがcore49統合候補の固定HEAD/base主独立レビューを受領し、QA #27/#40へ新同一ZIPと全必要Case/main残条件を双方向引継ぐ。実機は利用者準備後。"
     },
     {
       "id": "UI-12-02",
@@ -60,7 +60,7 @@
       ],
       "gpt": {
         "status": "pending",
-        "reason": "core93bc236のVFR/IDR喪失修正を通常mergeし、保存phase・末尾未確認・確定欠落を別表示。旧a919の59tests/レビュー/Verifierを新候補の合格へ流用しない。新統合HEAD/baseの独立レビュー・同一ZIPのAPI検証/実IDE/Emulator観察は未完了、実機保留。"
+        "reason": "core49固定6e48319を通常mergeし、公開API不変・heldfalseの不足と保存phase/末尾未確認の併存表示を確認。既存Case条件/pendingを保全。旧2409のレビュー/Verifierを新候補へ流用せず、新統合HEAD/baseの主独立レビュー・同一ZIPのAPI/実IDE/Emulator観察は未完了、実機保留。"
       },
       "human": {
         "status": "pending",
@@ -69,7 +69,7 @@
       "fix_issue": null,
       "fix_pr": null,
       "recheck": "UI/core/API/build変更後は同じ新固定source/ZIPで再観察する。",
-      "next_action": "PMがcore93bc236統合候補の最終HEAD/base独立レビューを調整し、QA #27/#40へ新同一ZIPと全必要Case/main残条件を双方向引継ぐ。実機は利用者準備後。"
+      "next_action": "PMがcore49統合候補の固定HEAD/base主独立レビューを受領し、QA #27/#40へ新同一ZIPと全必要Case/main残条件を双方向引継ぐ。実機は利用者準備後。"
     },
     {
       "id": "UI-12-03",
@@ -89,7 +89,7 @@
       ],
       "gpt": {
         "status": "pending",
-        "reason": "core93bc236のVFR/IDR喪失修正を通常mergeし、保存phase・末尾未確認・確定欠落を別表示。旧a919の59tests/レビュー/Verifierを新候補の合格へ流用しない。新統合HEAD/baseの独立レビュー・同一ZIPのAPI検証/実IDE/Emulator観察は未完了、実機保留。"
+        "reason": "core49固定6e48319を通常mergeし、公開API不変・heldfalseの不足と保存phase/末尾未確認の併存表示を確認。既存Case条件/pendingを保全。旧2409のレビュー/Verifierを新候補へ流用せず、新統合HEAD/baseの主独立レビュー・同一ZIPのAPI/実IDE/Emulator観察は未完了、実機保留。"
       },
       "human": {
         "status": "pending",
@@ -98,7 +98,7 @@
       "fix_issue": null,
       "fix_pr": null,
       "recheck": "UI/core/API/build変更後は同じ新固定source/ZIPで再観察する。",
-      "next_action": "PMがcore93bc236統合候補の最終HEAD/base独立レビューを調整し、QA #27/#40へ新同一ZIPと全必要Case/main残条件を双方向引継ぐ。実機は利用者準備後。"
+      "next_action": "PMがcore49統合候補の固定HEAD/base主独立レビューを受領し、QA #27/#40へ新同一ZIPと全必要Case/main残条件を双方向引継ぐ。実機は利用者準備後。"
     },
     {
       "id": "UI-12-04",
@@ -117,11 +117,12 @@
         "docs/plugin-design.md / docs/design/timeline.md",
         "Issue #42 / PR37 late findings / core API #41 (5f148a2通常merge、最終統合revisionはIssue/PRで固定)",
         "QA #27 / #40への環境別実受入",
-        "Issue #45 / videoTail実API 01b84f1、VFR/IDR修正固定93bc236を通常merge (統合HEAD/baseはIssue/PRで固定)"
+        "Issue #45 / videoTail実API 01b84f1、VFR/IDR修正固定93bc236を通常merge (統合HEAD/baseはIssue/PRで固定)",
+        "Issue #49 / fixed core6e48319: heldfalseの不足保全・保持済みdecoder開始判定 (API不変、UI production変更なし)"
       ],
       "gpt": {
         "status": "pending",
-        "reason": "core93bc236のVFR/IDR喪失修正を通常mergeし、保存phase・末尾未確認・確定欠落を別表示。旧a919の59tests/レビュー/Verifierを新候補の合格へ流用しない。新統合HEAD/baseの独立レビュー・同一ZIPのAPI検証/実IDE/Emulator観察は未完了、実機保留。"
+        "reason": "core49固定6e48319を通常mergeし、公開API不変・heldfalseの不足と保存phase/末尾未確認の併存表示を確認。既存Case条件/pendingを保全。旧2409のレビュー/Verifierを新候補へ流用せず、新統合HEAD/baseの主独立レビュー・同一ZIPのAPI/実IDE/Emulator観察は未完了、実機保留。"
       },
       "human": {
         "status": "pending",
@@ -130,7 +131,7 @@
       "fix_issue": null,
       "fix_pr": null,
       "recheck": "UI/core/API/build変更後は同じ新固定source/ZIPで再観察する。",
-      "next_action": "PMがcore93bc236統合候補の最終HEAD/base独立レビューを調整し、QA #27/#40へ新同一ZIPと全必要Case/main残条件を双方向引継ぐ。実機は利用者準備後。"
+      "next_action": "PMがcore49統合候補の固定HEAD/base主独立レビューを受領し、QA #27/#40へ新同一ZIPと全必要Case/main残条件を双方向引継ぐ。実機は利用者準備後。"
     },
     {
       "id": "UI-12-05",
@@ -149,11 +150,12 @@
         "docs/plugin-design.md / docs/design/timeline.md",
         "Issue #42 / PR37 late findings / core API #41 (5f148a2通常merge、最終統合revisionはIssue/PRで固定)",
         "QA #27 / #40への環境別実受入",
-        "Issue #45 / videoTail実API 01b84f1、VFR/IDR修正固定93bc236を通常merge (統合HEAD/baseはIssue/PRで固定)"
+        "Issue #45 / videoTail実API 01b84f1、VFR/IDR修正固定93bc236を通常merge (統合HEAD/baseはIssue/PRで固定)",
+        "Issue #49 / fixed core6e48319: heldfalseの不足保全・保持済みdecoder開始判定 (API不変、UI production変更なし)"
       ],
       "gpt": {
         "status": "pending",
-        "reason": "core93bc236のVFR/IDR喪失修正を通常mergeし、保存phase・末尾未確認・確定欠落を別表示。旧a919の59tests/レビュー/Verifierを新候補の合格へ流用しない。新統合HEAD/baseの独立レビュー・同一ZIPのAPI検証/実IDE/Emulator観察は未完了、実機保留。"
+        "reason": "core49固定6e48319を通常mergeし、公開API不変・heldfalseの不足と保存phase/末尾未確認の併存表示を確認。既存Case条件/pendingを保全。旧2409のレビュー/Verifierを新候補へ流用せず、新統合HEAD/baseの主独立レビュー・同一ZIPのAPI/実IDE/Emulator観察は未完了、実機保留。"
       },
       "human": {
         "status": "pending",
@@ -162,7 +164,7 @@
       "fix_issue": null,
       "fix_pr": null,
       "recheck": "UI/core/API/build変更後は同じ新固定source/ZIPで再観察する。",
-      "next_action": "PMがcore93bc236統合候補の最終HEAD/base独立レビューを調整し、QA #27/#40へ新同一ZIPと全必要Case/main残条件を双方向引継ぐ。実機は利用者準備後。"
+      "next_action": "PMがcore49統合候補の固定HEAD/base主独立レビューを受領し、QA #27/#40へ新同一ZIPと全必要Case/main残条件を双方向引継ぐ。実機は利用者準備後。"
     },
     {
       "id": "UI-12-06",
@@ -181,11 +183,12 @@
         "docs/plugin-design.md / docs/design/timeline.md",
         "Issue #42 / PR37 late findings / core API #41 (5f148a2通常merge、最終統合revisionはIssue/PRで固定)",
         "QA #27 / #40への環境別実受入",
-        "Issue #45 / videoTail実API 01b84f1、VFR/IDR修正固定93bc236を通常merge (統合HEAD/baseはIssue/PRで固定)"
+        "Issue #45 / videoTail実API 01b84f1、VFR/IDR修正固定93bc236を通常merge (統合HEAD/baseはIssue/PRで固定)",
+        "Issue #49 / fixed core6e48319: heldfalseの不足保全・保持済みdecoder開始判定 (API不変、UI production変更なし)"
       ],
       "gpt": {
         "status": "pending",
-        "reason": "core93bc236のVFR/IDR喪失修正を通常mergeし、保存phase・末尾未確認・確定欠落を別表示。旧a919の59tests/レビュー/Verifierを新候補の合格へ流用しない。新統合HEAD/baseの独立レビュー・同一ZIPのAPI検証/実IDE/Emulator観察は未完了、実機保留。"
+        "reason": "core49固定6e48319を通常mergeし、公開API不変・heldfalseの不足と保存phase/末尾未確認の併存表示を確認。既存Case条件/pendingを保全。旧2409のレビュー/Verifierを新候補へ流用せず、新統合HEAD/baseの主独立レビュー・同一ZIPのAPI/実IDE/Emulator観察は未完了、実機保留。"
       },
       "human": {
         "status": "pending",
@@ -194,7 +197,7 @@
       "fix_issue": null,
       "fix_pr": null,
       "recheck": "UI/core/API/build変更後は同じ新固定source/ZIPで再観察する。",
-      "next_action": "PMがcore93bc236統合候補の最終HEAD/base独立レビューを調整し、QA #27/#40へ新同一ZIPと全必要Case/main残条件を双方向引継ぐ。実機は利用者準備後。"
+      "next_action": "PMがcore49統合候補の固定HEAD/base主独立レビューを受領し、QA #27/#40へ新同一ZIPと全必要Case/main残条件を双方向引継ぐ。実機は利用者準備後。"
     },
     {
       "id": "UI-12-07",
@@ -216,7 +219,7 @@
       ],
       "gpt": {
         "status": "pending",
-        "reason": "core93bc236のVFR/IDR喪失修正を通常mergeし、保存phase・末尾未確認・確定欠落を別表示。旧a919の59tests/レビュー/Verifierを新候補の合格へ流用しない。新統合HEAD/baseの独立レビュー・同一ZIPのAPI検証/実IDE/Emulator観察は未完了、実機保留。"
+        "reason": "core49固定6e48319を通常mergeし、公開API不変・heldfalseの不足と保存phase/末尾未確認の併存表示を確認。既存Case条件/pendingを保全。旧2409のレビュー/Verifierを新候補へ流用せず、新統合HEAD/baseの主独立レビュー・同一ZIPのAPI/実IDE/Emulator観察は未完了、実機保留。"
       },
       "human": {
         "status": "pending",
@@ -225,7 +228,7 @@
       "fix_issue": null,
       "fix_pr": null,
       "recheck": "UI/core/API/build変更後は同じ新固定source/ZIPで再観察する。",
-      "next_action": "PMがcore93bc236統合候補の最終HEAD/base独立レビューを調整し、QA #27/#40へ新同一ZIPと全必要Case/main残条件を双方向引継ぐ。実機は利用者準備後。"
+      "next_action": "PMがcore49統合候補の固定HEAD/base主独立レビューを受領し、QA #27/#40へ新同一ZIPと全必要Case/main残条件を双方向引継ぐ。実機は利用者準備後。"
     },
     {
       "id": "UI-12-08",
@@ -247,7 +250,7 @@
       ],
       "gpt": {
         "status": "pending",
-        "reason": "core93bc236のVFR/IDR喪失修正を通常mergeし、保存phase・末尾未確認・確定欠落を別表示。旧a919の59tests/レビュー/Verifierを新候補の合格へ流用しない。新統合HEAD/baseの独立レビュー・同一ZIPのAPI検証/実IDE/Emulator観察は未完了、実機保留。"
+        "reason": "core49固定6e48319を通常mergeし、公開API不変・heldfalseの不足と保存phase/末尾未確認の併存表示を確認。既存Case条件/pendingを保全。旧2409のレビュー/Verifierを新候補へ流用せず、新統合HEAD/baseの主独立レビュー・同一ZIPのAPI/実IDE/Emulator観察は未完了、実機保留。"
       },
       "human": {
         "status": "pending",
@@ -256,7 +259,7 @@
       "fix_issue": null,
       "fix_pr": null,
       "recheck": "UI/core/API/build変更後は同じ新固定source/ZIPで再観察する。",
-      "next_action": "PMがcore93bc236統合候補の最終HEAD/base独立レビューを調整し、QA #27/#40へ新同一ZIPと全必要Case/main残条件を双方向引継ぐ。実機は利用者準備後。"
+      "next_action": "PMがcore49統合候補の固定HEAD/base主独立レビューを受領し、QA #27/#40へ新同一ZIPと全必要Case/main残条件を双方向引継ぐ。実機は利用者準備後。"
     }
   ]
 }
