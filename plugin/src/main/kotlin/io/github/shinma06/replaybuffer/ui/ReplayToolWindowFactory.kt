@@ -14,6 +14,7 @@ import com.intellij.openapi.wm.ToolWindowManager
 import com.intellij.ui.components.JBCheckBox
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBScrollPane
+import com.intellij.ui.components.JBTextArea
 import com.intellij.ui.content.ContentFactory
 import com.intellij.util.ui.FormBuilder
 import io.github.shinma06.replaybuffer.core.ApplicationMode
@@ -72,6 +73,9 @@ private class ReplayToolWindowPanel(private val project: Project) : JPanel(Borde
     private val saveReason = JBLabel()
     private val failure = JBLabel()
     private val frozenRequest = JBLabel()
+    private val frozenTarget = readOnlyDetails("固定した保存対象の端末とアプリ履歴", 4)
+    private val gapDetails = readOnlyDetails("現在の保存窓の欠落", 4)
+    private val gapScroll = JBScrollPane(gapDetails)
     private val saveButton = JButton().apply { addActionListener { if (alive) service.save() } }
     private val openButton = JButton("フォルダを開く").apply {
         addActionListener { if (alive) shownSave?.takeIf { it.phase == SavePhase.COMPLETED }?.directory?.let(service::openDirectory) }
@@ -92,6 +96,7 @@ private class ReplayToolWindowPanel(private val project: Project) : JPanel(Borde
         failureCard = FormBuilder.createFormBuilder()
             .addComponent(failure)
             .addComponent(frozenRequest)
+            .addComponent(JBScrollPane(frozenTarget))
             .addComponent(JBLabel("無効化またはproject終了で、この未保存の対象を破棄します。"))
             .addComponent(row(retryButton, retryElsewhere, discardButton))
             .panel
@@ -103,6 +108,7 @@ private class ReplayToolWindowPanel(private val project: Project) : JPanel(Borde
             .addComponent(window).addComponent(sequence).addComponent(destination).addComponent(message)
             .addComponent(saveButton).addComponent(saveReason).addComponent(saveState)
             .addComponent(openButton).addComponent(failureCard)
+            .addComponent(gapScroll)
             .addComponentFillVertically(JPanel(), 0).panel
         add(JBScrollPane(form).apply { border = null }, BorderLayout.CENTER)
         val refresh = Runnable {
@@ -143,7 +149,7 @@ private class ReplayToolWindowPanel(private val project: Project) : JPanel(Borde
         deviceLog.text = streamDescription("端末ログ", snapshot?.deviceLog)
         appLog.text = streamDescription("アプリログ", snapshot?.appLog)
         val seconds = snapshot?.settings?.replaySeconds ?: store.settings().retentionSeconds
-        window.text = "保持時間: ${seconds}秒 / 記録時刻: ${recordTime(snapshot?.windowEndNs)}" +
+        window.text = "保持時間: ${seconds}秒 / 記録区間: ${recordTime(snapshot?.windowStartNs)}〜${recordTime(snapshot?.windowEndNs)}" +
             if (snapshot?.frozen == true) "（切断前で固定・無効化まで保持）" else "（現在の窓）"
         sequence.text = "記録セッション: ${snapshot?.sequenceId ?: "未開始"}"
         destination.text = "保存先: ${snapshot?.settings?.saveDirectory ?: "未指定（設定で指定してください）"}"
@@ -166,6 +172,9 @@ private class ReplayToolWindowPanel(private val project: Project) : JPanel(Borde
         frozenRequest.text = "固定対象: ${recordTime(saved?.windowStartNs)}〜${recordTime(saved?.windowEndNs)} / ${saved?.replaySeconds ?: seconds}秒" +
             " / セッション: ${saved?.sequenceId ?: "未確定"}" +
             " / 不足・欠落: ${saved?.missingKinds?.map(::streamName)?.joinToString("、")?.ifEmpty { "なし" } ?: "なし"}"
+        frozenTarget.text = frozenTargetDescription(saved)
+        gapDetails.text = currentGapDescription(snapshot)
+        gapScroll.isVisible = gapDetails.text.isNotEmpty()
         retryButton.isEnabled = !busy && saved?.phase == SavePhase.FAILED
         retryElsewhere.isEnabled = retryButton.isEnabled
         discardButton.isEnabled = retryButton.isEnabled
@@ -178,6 +187,14 @@ private class ReplayToolWindowPanel(private val project: Project) : JPanel(Borde
 
 private fun row(vararg components: java.awt.Component): JPanel = JPanel(FlowLayout(FlowLayout.LEFT)).apply {
     components.forEach(::add)
+}
+
+private fun readOnlyDetails(name: String, visibleRows: Int): JBTextArea = JBTextArea(visibleRows, 30).apply {
+    isEditable = false
+    lineWrap = true
+    wrapStyleWord = true
+    font = javax.swing.UIManager.getFont("Label.font")
+    accessibleContext.accessibleName = name
 }
 
 internal fun ReplaySnapshot.captureDescription(): String = when (captureState) {
@@ -193,11 +210,46 @@ internal fun streamDescription(label: String, stream: StreamSnapshot?): String {
     if (stream == null) return "$label: 確認中…"
     val state = when (stream.state) {
         StreamState.WAITING -> "待機"
-        StreamState.CAPTURING -> if (stream.reason == null) "取得中" else "欠落あり"
+        StreamState.CAPTURING -> "取得中"
         StreamState.RECOVERING -> "復旧中"
         StreamState.UNAVAILABLE -> "未取得"
     }
-    return "$label: $state / ${String.format(Locale.ROOT, "%.1f", stream.availableSeconds)}秒分" + (stream.reason?.let { " / $it" } ?: "")
+    return "$label: $state / ${String.format(Locale.ROOT, "%.1f", stream.availableSeconds)}秒分" +
+        (stream.reason?.let { " / $it" } ?: "") +
+        if (stream.gaps.isEmpty()) "" else " / 現在窓に欠落${stream.gaps.size}件（下の欠落詳細）"
+}
+
+internal fun currentGapDescription(snapshot: ReplaySnapshot?): String {
+    if (snapshot == null) return ""
+    val gaps = (snapshot.video.gaps + snapshot.deviceLog.gaps + snapshot.appLog.gaps).distinct()
+    if (gaps.isEmpty()) return ""
+    return "現在窓内の欠落（記録時刻）:\n" + gaps.joinToString("\n") { gap ->
+        val kind = if (gap.stream == "clock") "時計" else streamName(gap.stream)
+        val boundary = when (gap.boundaryUncertaintyNs) {
+            null, Long.MAX_VALUE -> " / 境界の誤差は未確定"
+            0L -> ""
+            else -> " / 境界の誤差±${recordTime(gap.boundaryUncertaintyNs)}"
+        }
+        "$kind: ${recordTime(gap.fromNs)}〜${recordTime(gap.toNs)} / ${gap.reason}$boundary"
+    }
+}
+
+internal fun frozenTargetDescription(save: SaveSnapshot?): String {
+    if (save == null) return ""
+    val device = save.device?.let {
+        "${it.name}（${if (it.kind == DeviceKind.EMULATOR) "Emulator" else "実機"}・${it.serial}）"
+    } ?: "未確定"
+    val app = save.application
+    val mode = when (app?.mode) {
+        ApplicationMode.AUTO -> "自動"
+        ApplicationMode.MANUAL -> "手動"
+        null -> "選択未確定"
+    }
+    val history = save.applicationHistory.joinToString("\n") {
+        "${it.packageName ?: "対象未確定"}: ${recordTime(it.fromNs)}〜${recordTime(it.toNs)}" +
+            if (it.resolved) "" else "（帰属未確定）"
+    }.ifEmpty { "記録なし" }
+    return "固定端末: $device\n固定アプリ: ${app?.packageName ?: app?.unresolvedReason ?: "未確定"}（$mode）\n対象アプリ履歴:\n$history"
 }
 
 internal fun recordTime(nanos: Long?): String = nanos?.let {

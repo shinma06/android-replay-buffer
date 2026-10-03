@@ -29,7 +29,7 @@
       ],
       "gpt": {
         "status": "pending",
-        "reason": "本Issueの最終固定候補の実IDE/Emulator観察未実施。3件のJVM回帰結果と#41実API統合結果は固定HEADのIssue/PRへ記録する。pure testsを観察passへ代用しない。"
+        "reason": "core実API 8351e00を通常mergeしてgap/固定端末・app履歴のUIを実装。JVM回帰と先行3件daafb8cの部分独立レビューをIDE観察passにしない。#41のunknown boot gap修正とpersistent cleanup APIは後続固定HEAD待ち。最終同一ZIPの実IDE/Emulator観察未実施、実機保留。"
       },
       "human": {
         "status": "pending",
@@ -59,7 +59,7 @@
       ],
       "gpt": {
         "status": "pending",
-        "reason": "本Issueの最終固定候補の実IDE/Emulator観察未実施。3件のJVM回帰結果と#41実API統合結果は固定HEADのIssue/PRへ記録する。pure testsを観察passへ代用しない。"
+        "reason": "core実API 8351e00を通常mergeしてgap/固定端末・app履歴のUIを実装。JVM回帰と先行3件daafb8cの部分独立レビューをIDE観察passにしない。#41のunknown boot gap修正とpersistent cleanup APIは後続固定HEAD待ち。最終同一ZIPの実IDE/Emulator観察未実施、実機保留。"
       },
       "human": {
         "status": "pending",
@@ -88,7 +88,7 @@
       ],
       "gpt": {
         "status": "pending",
-        "reason": "本Issueの最終固定候補の実IDE/Emulator観察未実施。3件のJVM回帰結果と#41実API統合結果は固定HEADのIssue/PRへ記録する。pure testsを観察passへ代用しない。"
+        "reason": "core実API 8351e00を通常mergeしてgap/固定端末・app履歴のUIを実装。JVM回帰と先行3件daafb8cの部分独立レビューをIDE観察passにしない。#41のunknown boot gap修正とpersistent cleanup APIは後続固定HEAD待ち。最終同一ZIPの実IDE/Emulator観察未実施、実機保留。"
       },
       "human": {
         "status": "pending",
@@ -118,7 +118,7 @@
       ],
       "gpt": {
         "status": "pending",
-        "reason": "本Issueの最終固定候補の実IDE/Emulator観察未実施。3件のJVM回帰結果と#41実API統合結果は固定HEADのIssue/PRへ記録する。pure testsを観察passへ代用しない。"
+        "reason": "core実API 8351e00を通常mergeしてgap/固定端末・app履歴のUIを実装。JVM回帰と先行3件daafb8cの部分独立レビューをIDE観察passにしない。#41のunknown boot gap修正とpersistent cleanup APIは後続固定HEAD待ち。最終同一ZIPの実IDE/Emulator観察未実施、実機保留。"
       },
       "human": {
         "status": "pending",
@@ -148,7 +148,7 @@
       ],
       "gpt": {
         "status": "pending",
-        "reason": "本Issueの最終固定候補の実IDE/Emulator観察未実施。3件のJVM回帰結果と#41実API統合結果は固定HEADのIssue/PRへ記録する。pure testsを観察passへ代用しない。"
+        "reason": "core実API 8351e00を通常mergeしてgap/固定端末・app履歴のUIを実装。JVM回帰と先行3件daafb8cの部分独立レビューをIDE観察passにしない。#41のunknown boot gap修正とpersistent cleanup APIは後続固定HEAD待ち。最終同一ZIPの実IDE/Emulator観察未実施、実機保留。"
       },
       "human": {
         "status": "pending",
@@ -178,7 +178,7 @@
       ],
       "gpt": {
         "status": "pending",
-        "reason": "本Issueの最終固定候補の実IDE/Emulator観察未実施。3件のJVM回帰結果と#41実API統合結果は固定HEADのIssue/PRへ記録する。pure testsを観察passへ代用しない。"
+        "reason": "core実API 8351e00を通常mergeしてgap/固定端末・app履歴のUIを実装。JVM回帰と先行3件daafb8cの部分独立レビューをIDE観察passにしない。#41のunknown boot gap修正とpersistent cleanup APIは後続固定HEAD待ち。最終同一ZIPの実IDE/Emulator観察未実施、実機保留。"
       },
       "human": {
         "status": "pending",
@@ -208,7 +208,7 @@
       ],
       "gpt": {
         "status": "pending",
-        "reason": "本Issueの最終固定候補の実IDE/Emulator観察未実施。3件のJVM回帰結果と#41実API統合結果は固定HEADのIssue/PRへ記録する。pure testsを観察passへ代用しない。"
+        "reason": "core実API 8351e00を通常mergeしてgap/固定端末・app履歴のUIを実装。JVM回帰と先行3件daafb8cの部分独立レビューをIDE観察passにしない。#41のunknown boot gap修正とpersistent cleanup APIは後続固定HEAD待ち。最終同一ZIPの実IDE/Emulator観察未実施、実機保留。"
       },
       "human": {
         "status": "pending",
@@ -238,7 +238,7 @@
       ],
       "gpt": {
         "status": "pending",
-        "reason": "本Issueの最終固定候補の実IDE/Emulator観察未実施。3件のJVM回帰結果と#41実API統合結果は固定HEADのIssue/PRへ記録する。pure testsを観察passへ代用しない。"
+        "reason": "core実API 8351e00を通常mergeしてgap/固定端末・app履歴のUIを実装。JVM回帰と先行3件daafb8cの部分独立レビューをIDE観察passにしない。#41のunknown boot gap修正とpersistent cleanup APIは後続固定HEAD待ち。最終同一ZIPの実IDE/Emulator観察未実施、実機保留。"
       },
       "human": {
         "status": "pending",
