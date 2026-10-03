@@ -92,32 +92,34 @@ class ReplayProjectService(private val project: Project, private val scope: Coro
         publishChanged()
         val settings = project.getService(ReplaySettingsStore::class.java).settings()
         resolution = scope.launch(Dispatchers.IO) {
-            val next = try {
-                ReplayAndroidEnvironment.resolve(project, settings)
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (cancelled: ProcessCanceledException) {
-                throw cancelled
-            } catch (_: RuntimeException) {
-                AndroidReplayEnvironment(
-                    null,
-                    "projectのAndroid SDKとGradle同期を確認してください。",
-                    ApplicationSelection(null, null, "対象アプリの情報を取得できません。設定でpackage名を指定できます。"),
-                )
-            }
-            synchronized(this@ReplayProjectService) {
-                if (disposed || project.isDisposed || revision != requestRevision) return@launch
-                environment = next
-            }
-            publishChanged()
             try {
-                capture.applySettings(settings, next).await()
-            } finally {
+                val next = try {
+                    ReplayAndroidEnvironment.resolve(project, settings)
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (cancelled: ProcessCanceledException) {
+                    throw cancelled
+                } catch (_: RuntimeException) {
+                    AndroidReplayEnvironment(
+                        null,
+                        "projectのAndroid SDKとGradle同期を確認してください。",
+                        ApplicationSelection(null, null, "対象アプリの情報を取得できません。設定でpackage名を指定できます。"),
+                    )
+                }
                 synchronized(this@ReplayProjectService) {
                     if (disposed || project.isDisposed || revision != requestRevision) return@launch
-                    resolving = false
+                    environment = next
                 }
                 publishChanged()
+                capture.applySettings(settings, next).await()
+            } finally {
+                val current = synchronized(this@ReplayProjectService) {
+                    if (disposed || project.isDisposed || revision != requestRevision) false else {
+                        resolving = false
+                        true
+                    }
+                }
+                if (current) publishChanged()
             }
         }
     }
