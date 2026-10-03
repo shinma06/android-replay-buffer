@@ -20,6 +20,7 @@ internal data class LogEntry(
 )
 internal data class AppPeriod(
     val packageName: String?, val uid: Long?, val pids: Set<Int>, val from: Long?, val to: Long?, val epoch: Int,
+    val uidExclusive: Boolean = false,
 )
 internal data class FrozenCapture(
     val id: String, val sequence: String, val generation: Long, val start: Long, val end: Long,
@@ -90,6 +91,18 @@ internal class CaptureStore(
     }
 
     @Synchronized
+    fun clockStatus(healthy: Boolean, owner: Long) {
+        if (closed || owner != generation) return
+        if (!healthy && gaps.none { it.stream == "clock" && it.toNs == null }) {
+            val anchor = clock.snapshot().lastOrNull { it.valid }
+            addGap("clock", anchor?.sequenceOffset?.let { anchor.elapsed + it }, null, "時計測定が不達または正常条件を満たしません")
+        } else if (healthy) {
+            val gap = gaps.lastOrNull { it.stream == "clock" && it.toNs == null }
+            if (gap != null) { gaps.remove(gap); gaps.add(gap.copy(toNs = clock.now())) }
+        }
+    }
+
+    @Synchronized
     fun session(packet: VideoPacket.Session, owner: Long) {
         if (closed || owner != generation) return
         channel?.close()
@@ -135,16 +148,16 @@ internal class CaptureStore(
         if (references == 0) configBytes += config.size
         configRefs[config] = references + 1
         enforceVideoLimit()
-        status("video", StreamState.CAPTURING, if (time.elapsed == null) "動画の時刻対応を確認できません" else null, owner)
+        status("video", StreamState.CAPTURING, if (time.elapsed == null || time.sequence == null || time.uncertainty > 20_000_000) "動画の時刻対応を確認できません" else null, owner)
     }
 
     @Synchronized
-    fun app(packageName: String?, uid: Long?, pids: Set<Int>, owner: Long) {
+    fun app(packageName: String?, uid: Long?, pids: Set<Int>, owner: Long, uidExclusive: Boolean = false) {
         if (closed || owner != generation) return
         require(pids.size <= 1024)
         val last = apps.peekLast()
         val anchor = clock.snapshot().lastOrNull { it.valid }
-        if (last?.packageName == packageName && last.uid == uid && last.pids == pids && last.from != null && last.epoch == anchor?.epoch) {
+        if (last?.packageName == packageName && last.uid == uid && last.pids == pids && last.uidExclusive == uidExclusive && last.from != null && last.epoch == anchor?.epoch) {
             states["app_log"] = StreamSnapshot(if (uid != null) StreamState.CAPTURING else StreamState.UNAVAILABLE,
                 reason = if (uid == null) "対象アプリを解決できません" else null)
             return
@@ -153,7 +166,7 @@ internal class CaptureStore(
             reason = if (uid == null) "対象アプリを解決できません" else null)
         val now = anchor?.let { it.elapsed + (System.nanoTime() - it.received).coerceAtLeast(0) }
         if (last != null) { apps.removeLast(); apps.add(last.copy(to = if (last.epoch == anchor?.epoch) now else clock.snapshot().lastOrNull { it.epoch == last.epoch }?.elapsed)) }
-        apps += AppPeriod(packageName, uid, java.util.Set.copyOf(pids), now, null, anchor?.epoch ?: 0)
+        apps += AppPeriod(packageName, uid, java.util.Set.copyOf(pids), now, null, anchor?.epoch ?: 0, uidExclusive)
         while (apps.size > 2048) apps.removeFirst()
         states["app_log"] = StreamSnapshot(if (uid != null) StreamState.CAPTURING else StreamState.UNAVAILABLE,
             reason = if (uid == null) "対象アプリを解決できません" else null)
@@ -167,8 +180,13 @@ internal class CaptureStore(
         if (started == null && time.sequence != null) started = retained
         val period = apps.lastOrNull { it.epoch == time.epoch && time.elapsed != null && it.from != null &&
             time.elapsed >= it.from && (it.to == null || time.elapsed <= it.to) }
-        val app = if (period?.uid == null || time.elapsed == null) null else
-            source.pid in period.pids && (source.uid == null || source.uid == period.uid)
+        val app = when {
+            period?.uid == null || time.elapsed == null -> null
+            source.uid == period.uid && period.uidExclusive -> true
+            source.pid in period.pids -> source.uid == null || source.uid == period.uid
+            source.uid == null || source.uid == period.uid -> null // shared/unknown UID: a new PID is not evidence of non-membership.
+            else -> false
+        }
         logs += LogEntry(UUID.randomUUID().toString(), source, generation, time, retained, app, host)
         logBytes += source.raw.size + 256
         while (logBytes > logLimit && logs.isNotEmpty()) {
@@ -176,7 +194,7 @@ internal class CaptureStore(
             logBytes -= lost.source.raw.size + 256
             addGap("device_log", lost.time.sequence, lost.time.sequence, "ログのbyte上限でrecordを失いました")
         }
-        status("device_log", StreamState.CAPTURING, if (time.elapsed == null) "ログの時刻対応を確認できません" else null, owner)
+        status("device_log", StreamState.CAPTURING, if (time.elapsed == null || time.sequence == null || time.uncertainty > 20_000_000) "ログの時刻対応を確認できません" else null, owner)
     }
 
     @Synchronized
@@ -199,7 +217,8 @@ internal class CaptureStore(
         val firstInside = video.indexOfFirst { it.time.sequence == null || it.time.uncertainty == Long.MAX_VALUE || it.retainedAt >= cutoff - it.time.uncertainty }
         if (firstInside > 0) {
             val all = video.toList()
-            val key = (firstInside downTo 0).firstOrNull { all[it].key } ?: 0
+            val first = if (continuousAcrossCut(all[firstInside - 1], all[firstInside], cutoff)) firstInside - 1 else firstInside
+            val key = (first downTo 0).firstOrNull { all[it].key } ?: 0
             repeat(key) { removeVideo() }
         } else if (firstInside < 0) while (video.isNotEmpty()) removeVideo()
         while (logs.isNotEmpty() && logs.peekFirst().time.sequence != null && logs.peekFirst().time.uncertainty != Long.MAX_VALUE &&
@@ -220,7 +239,12 @@ internal class CaptureStore(
             row.copy(time = clock.log(row.source.wall, row.host))
         }
         val inside = video.filter { it.time.sequence == null || it.retainedAt <= end && it.retainedAt >= start }
-        val files = inside.map { it.file }.toSet()
+        val files = inside.map { it.file }.toMutableSet()
+        val all = video.toList()
+        inside.forEach { entry ->
+            val index = all.indexOf(entry)
+            if (index > 0 && continuousAcrossCut(all[index - 1], entry, start)) files.add(all[index - 1].file)
+        }
         val frames = video.filter { it.retainedAt <= end && it.file in files }.map { frame ->
             frame.copy(time = clock.video(frame.pts, frame.host, frame.time.epoch))
         }
@@ -250,13 +274,18 @@ internal class CaptureStore(
         }
         val effective = if (kind == "app_log" && value.state == StreamState.CAPTURING && states.getValue("device_log").state != StreamState.CAPTURING)
             value.copy(state = states.getValue("device_log").state, reason = states.getValue("device_log").reason) else value
-        val uncertain = clock.snapshot().lastOrNull { it.valid }?.let { System.nanoTime() - it.received > 5_000_000_000 } != false
+        val uncertain = !clock.certain()
         effective.copy(availableSeconds = (span - missing).coerceAtLeast(0) / 1e9,
             reason = effective.reason ?: if (uncertain && effective.state == StreamState.CAPTURING) "時計対応を確認できません" else null)
     }
 
     @Synchronized
     fun hasData(): Boolean = video.isNotEmpty() || logs.isNotEmpty()
+
+    private fun continuousAcrossCut(a: VideoEntry, b: VideoEntry, cut: Long): Boolean =
+        a.time.sequence != null && b.time.sequence != null && a.time.sequence < cut && b.time.sequence >= cut &&
+            a.generation == b.generation && a.session == b.session && a.time.epoch == b.time.epoch &&
+            a.config.contentEquals(b.config) && a.width == b.width && a.height == b.height && b.pts - a.pts in 1..3_000_000
 
     private fun removeVideo(): VideoEntry {
         val entry = video.removeFirst()
@@ -279,7 +308,7 @@ internal class CaptureStore(
         val anchor = clock.snapshot().lastOrNull { it.valid }
         val uncertainty = anchor?.let { if (System.nanoTime() - it.received > 5_000_000_000 || it.bridgeError == Long.MAX_VALUE) Long.MAX_VALUE else
             it.readError + (it.received - it.sent) / 2 + it.bridgeError }
-        gaps += CaptureGap(stream, from, to, reason, uncertainty, generation, anchor?.epoch)
+        gaps += CaptureGap(stream, from, to, reason, if (clock.certain()) uncertainty else Long.MAX_VALUE, generation, clock.currentEpoch())
         while (gaps.size > 4096) gaps.removeFirst()
     }
 

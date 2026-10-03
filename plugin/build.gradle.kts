@@ -42,7 +42,13 @@ dependencies {
     testRuntimeOnly("org.junit.platform:junit-platform-launcher:1.13.4")
 }
 
-tasks.test { useJUnitPlatform() }
+tasks.test {
+    useJUnitPlatform()
+    testLogging {
+        exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
+        showStackTraces = false
+    }
+}
 
 kotlin {
     jvmToolchain(25)

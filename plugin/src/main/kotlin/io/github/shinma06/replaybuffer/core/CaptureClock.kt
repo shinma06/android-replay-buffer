@@ -23,6 +23,7 @@ internal class CaptureClock {
     private val samples = ArrayDeque<ClockSample>()
     private var epoch = 0
     private var firstHost: Long? = null
+    private val closures = linkedMapOf<Int, Long>()
 
     @Synchronized
     fun add(boot: String, values: List<Long>, sent: Long, received: Long,
@@ -30,12 +31,18 @@ internal class CaptureClock {
         require(values.size == 4 && boot.length in 1..64)
         val (before, mono, wall, after) = values
         require(before >= 0 && after >= before && mono >= 0 && wall >= 0 && received >= sent)
-        val last = samples.lastOrNull { it.valid }
+        val last = samples.peekLast()
+        val measured = samples.lastOrNull { it.after - it.before <= 2_000_000 }
+        val normal = samples.lastOrNull { it.valid }
         val elapsed = before + (after - before) / 2
         val good = after - before <= 2_000_000 && received - sent <= 40_000_000
         val bootChanged = last != null && (last.boot != boot || elapsed < last.elapsed)
-        if (good && last != null && (bootChanged || abs(elapsed - mono - last.monoOffset) > last.readError + (after - before) / 2 + 1_000_000 ||
-                abs(elapsed - wall - last.wallOffset) > last.readError + (after - before) / 2 + 1_000_000)) epoch++
+        val sourceBreak = after - before <= 2_000_000 && measured != null &&
+            (boot != measured.boot || elapsed < measured.elapsed ||
+                abs(elapsed - mono - measured.monoOffset) > measured.readError + (after - before) / 2 + 1_000_000 ||
+                abs(elapsed - wall - measured.wallOffset) > measured.readError + (after - before) / 2 + 1_000_000)
+        val missingAnchor = good && normal != null && normal.epoch == epoch && sent - normal.received > 5_000_000_000
+        if (sourceBreak || missingAnchor) boundary(normal?.received ?: sent)
         val hostDelta = last?.let { sent - it.received }
         val bridgeKnown = last != null && last.sequenceOffset != null && hostDelta != null && hostDelta >= 0 &&
             abs(hostWall - last.hostWall - (received - last.received)) <= 100_000_000
@@ -48,16 +55,16 @@ internal class CaptureClock {
         val bridgeError = if (!bootChanged) last?.bridgeError ?: 0 else if (bridgeKnown)
             last.bridgeError + last.readError + (received - sent + last.received - last.sent) / 2 else Long.MAX_VALUE
         samples += ClockSample(epoch, boot, before, mono, wall, after, sent, received, hostWall, offset, bridgeError)
-        if (firstHost == null && good) firstHost = sent + (received - sent) / 2
+        if (firstHost == null) firstHost = sent + (received - sent) / 2
         while (samples.size > 4096) samples.removeFirst()
         return good
     }
 
     @Synchronized
     fun now(host: Long = System.nanoTime()): Long? {
-        val latest = samples.lastOrNull { it.valid } ?: return null
-        val anchor = samples.filter { it.valid && it.epoch == latest.epoch && latest.received - it.received < 100_000_000 }
-            .minBy { it.received - it.sent }
+        val latest = samples.peekLast() ?: return null
+        val anchor = if (latest.valid) samples.filter { it.valid && it.epoch == latest.epoch && latest.received - it.received < 100_000_000 }
+            .minBy { it.received - it.sent } else latest
         return if (anchor.sequenceOffset == null) firstHost?.let { (host - it).coerceAtLeast(0) } else
             maxOf(latest.elapsed + latest.sequenceOffset!!,
                 Math.addExact(anchor.elapsed + anchor.sequenceOffset, (host - anchor.received).coerceAtLeast(0)))
@@ -89,7 +96,8 @@ internal class CaptureClock {
                 ((offsetOf(high) - offsetOf(low)).toDouble() * (source - sourceOf(low)).toDouble() / delta).toLong() else offsetOf(low)
             val error = maxOf(low.readError, high.readError) + abs(offsetOf(high) - offsetOf(low))
             val stale = next == null && host - last.received > 5_000_000_000
-            val boundary = next != null && source > sourceOf(last) || first.epoch > 0 && source < sourceOf(first)
+            val boundary = first.epoch < epoch && (source > sourceOf(last) ||
+                log && closures[first.epoch]?.let { host > it } == true) || first.epoch > 0 && source < sourceOf(first)
             val elapsed = if (stale || boundary || error > 20_000_000) null else Math.addExact(source, interpolated)
             val sequence = if (elapsed != null && last.sequenceOffset != null) Math.addExact(elapsed, last.sequenceOffset) else null
             candidates += MappedTime(elapsed, first.epoch, if (elapsed == null) Long.MAX_VALUE else
@@ -99,10 +107,23 @@ internal class CaptureClock {
     }
 
     @Synchronized
-    fun clear() { samples.clear(); firstHost = null; epoch = 0 }
+    fun clear() { samples.clear(); closures.clear(); firstHost = null; epoch = 0 }
 
     @Synchronized
-    fun boundary() { epoch++ }
+    fun boundary(host: Long? = null) {
+        closures[epoch] = host ?: samples.lastOrNull { it.valid }?.received ?: System.nanoTime()
+        epoch++
+        while (closures.size > 4096) closures.remove(closures.keys.first())
+    }
+
+    @Synchronized
+    fun certain(host: Long = System.nanoTime()): Boolean = samples.peekLast()?.let {
+        it.valid && it.epoch == epoch && host - it.received <= 5_000_000_000 &&
+            it.sequenceOffset != null && it.bridgeError <= 20_000_000
+    } == true
+
+    @Synchronized
+    fun currentEpoch(): Int = epoch
 
     @Synchronized
     fun snapshot(): List<ClockSample> = samples.toList()

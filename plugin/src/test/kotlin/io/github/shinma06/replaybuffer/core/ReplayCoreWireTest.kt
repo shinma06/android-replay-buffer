@@ -25,7 +25,7 @@ class ReplayCoreWireTest {
     fun failedRequestRetriesItsOriginalWindowWhileAcquisitionReconfigurationAndReconnectContinue() {
         val root = Files.createTempDirectory("replay-wire-fixture-")
         val devices = root.resolve("devices.txt")
-        Files.writeString(devices, "List of devices attached\nfixture-1 device model:Fixture\n")
+        Files.writeString(devices, "List of devices attached\nfixture-1 device model:Fixture\nfixture-2 device model:Other\n")
         val pids = root.resolve("owned-pids.txt")
         val server = ServerSocket(0, 8, InetAddress.getLoopbackAddress())
         val stop = AtomicBoolean()
@@ -87,37 +87,50 @@ elif len(a)>3 and a[3]=='ps':
         assertTrue(fake.toFile().setExecutable(true))
         val core = ReplayCore(ReplaySettings(fake, root.resolve("missing"), 1,
             ApplicationTarget("com.fixture.app", ApplicationMode.MANUAL)), root.resolve("workspace"))
-        fun awaitState(predicate: (ReplaySnapshot) -> Boolean): ReplaySnapshot {
+        fun awaitState(phase: String, predicate: (ReplaySnapshot) -> Boolean): ReplaySnapshot {
             val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(15)
             while (System.nanoTime() < deadline) {
                 val state = core.snapshot()
                 if (predicate(state)) return state
                 Thread.sleep(25)
             }
-            error("fixture deadline: ${core.snapshot().captureState}/${core.snapshot().save.phase}/${core.snapshot().error}")
+            val state = core.snapshot()
+            error("fixture deadline ($phase): ${state.captureState}/${state.save.phase}/frozen=${state.frozen}/video=${state.video}/deviceLog=${state.deviceLog}/appLog=${state.appLog}/error=${state.error}")
         }
         try {
             assertTrue(core.setEnabled(true).get(10, TimeUnit.SECONDS).accepted)
-            val capturing = awaitState { it.canSave && it.video.state == StreamState.CAPTURING && it.appLog.state == StreamState.CAPTURING }
+            awaitState("unselected-multiple") { it.captureState == CaptureState.MULTIPLE_DEVICES && it.device == null }
+            Files.writeString(devices, "List of devices attached\nfixture-1 device model:Fixture\n")
+            val capturing = awaitState("initial-capture") { it.canSave && it.video.state == StreamState.CAPTURING && it.appLog.state == StreamState.CAPTURING }
             val sequence = capturing.sequenceId
+            Files.writeString(devices, "List of devices attached\nfixture-1 device model:Fixture\nfixture-2 device model:Other\n")
+            val multiple = awaitState("selected-multiple") { it.captureState == CaptureState.MULTIPLE_DEVICES && it.device != null }
+            assertFalse(multiple.frozen)
+            assertEquals(capturing.generation, multiple.generation)
+            assertEquals(StreamState.CAPTURING, multiple.video.state)
+            Files.writeString(devices, "List of devices attached\nfixture-1 device model:Fixture\n")
+            sockets.first().close()
+            awaitState("video-recovered") { peers.size >= 2 && it.video.state == StreamState.CAPTURING }
             val operation = core.save().get(10, TimeUnit.SECONDS)
             assertTrue(operation.accepted)
-            val failed = awaitState { it.save.phase == SavePhase.FAILED }
+            val failed = awaitState("save-failed") { it.save.phase == SavePhase.FAILED }
             val fixed = failed.save
+            assertTrue("video" in fixed.missingKinds)
+            assertEquals(StreamState.CAPTURING, failed.video.state)
             assertFalse(core.save().get().accepted)
             assertFalse(core.retry("stale-id").get().accepted)
             assertTrue(core.applySettings(core.snapshot().settings.copy(replaySeconds = 2)).get().accepted)
             assertEquals(sequence, core.snapshot().sequenceId)
             Files.writeString(devices, "List of devices attached\n")
-            val disconnected = awaitState { it.frozen }
+            val disconnected = awaitState("disconnected") { it.frozen }
             Thread.sleep(1100)
             assertEquals(disconnected.windowEndNs, core.snapshot().windowEndNs)
             assertEquals(fixed.windowEndNs, core.snapshot().save.windowEndNs)
             Files.writeString(devices, "List of devices attached\nfixture-1 device model:Fixture\n")
-            val resumed = awaitState { !it.frozen && it.generation > capturing.generation && it.video.state == StreamState.CAPTURING }
+            val resumed = awaitState("reconnected") { !it.frozen && it.generation > capturing.generation && it.video.state == StreamState.CAPTURING }
             assertEquals(sequence, resumed.sequenceId)
             assertTrue(core.retryAtDirectory(operation.requestId!!, root).get().accepted)
-            val done = awaitState { it.save.phase == SavePhase.COMPLETED }
+            val done = awaitState("save-completed") { it.save.phase == SavePhase.COMPLETED }
             assertEquals(fixed.windowEndNs, done.save.windowEndNs)
             val folder = done.save.directory!!
             val json = JsonParser.parseString(Files.readString(folder.resolve("session.json"))).asJsonObject
