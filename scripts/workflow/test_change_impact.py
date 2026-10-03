@@ -47,7 +47,7 @@ class ClassificationTest(unittest.TestCase):
         for result in (ci.classify([]), ci.classify([], reason='API/history failure'),
                        ci.classify([('README.md', ('100644',))], force_full=True)):
             self.assertTrue(all(result[x] for x in ('product_check', 'tooling_test')))
-            self.assertEqual(len(ci.test_commands(result)), 2)
+            self.assertEqual(len(ci.test_commands(result)), 3)
 
 
 class GitImpactTest(unittest.TestCase):
