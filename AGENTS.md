@@ -1,6 +1,6 @@
 # Android Replay Buffer agent contract
 
-Read [project facts](docs/project.md) before implementation. The product direction is an Android Studio plugin. `plugin/` contains the Kotlin/Gradle foundation; recording is available only through the preserved Python CLI for macOS and USB-connected Android devices. Keep the frozen CLI origin, paths and configuration/command compatibility; see docs/cli-origin.md. Build success does not establish IDE acceptance. Follow the conditional [Cursor knowledge reuse workflow](docs/android-studio.md) for shared IDE/build/process/storage/UI/verification/harness changes. Record fixed source revisions, adopted or inapplicable lessons and this project’s checks in the Issue/PR; distinguish main, develop-only, design and unverified evidence.
+Read [project facts](docs/project.md) before implementation; use it for the current plugin implementation and acceptance status. The product direction is an Android Studio plugin in `plugin/`. Keep the frozen Python CLI origin for macOS and USB-connected Android devices, its paths and configuration/command compatibility; see docs/cli-origin.md. Build success does not establish IDE acceptance. Follow the conditional [Cursor knowledge reuse workflow](docs/android-studio.md) for shared IDE/build/process/storage/UI/verification/harness changes. Record fixed source revisions, adopted or inapplicable lessons and this project’s checks in the Issue/PR; distinguish main, develop-only, design and unverified evidence.
 
 ## Work and ownership
 
