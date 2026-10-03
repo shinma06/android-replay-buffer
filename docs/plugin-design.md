@@ -1,6 +1,6 @@
 # 初期版プラグインの設計
 
-[製品要件](requirements.md)を実装するための設計です。設計の採用と実装・実機受入の完了は区別します。UI配置は [採用済みのIDE UI設計](design/ide-ui.md)（[#12](https://github.com/shinma06/android-replay-buffer/issues/12)）を参照してください。時刻・出力形式は [#13](https://github.com/shinma06/android-replay-buffer/issues/13) で追記します。CLI原型の仕様とコードは変更しません。
+[製品要件](requirements.md)を実装するための設計です。設計の採用と実装・実機受入の完了は区別します。UI配置は [採用済みのIDE UI設計](design/ide-ui.md)（[#12](https://github.com/shinma06/android-replay-buffer/issues/12)）を参照してください。時刻・録画方式・出力形式は [採用済みの同期設計](design/timeline.md)（[#13](https://github.com/shinma06/android-replay-buffer/issues/13)）を参照してください。CLI原型の仕様とコードは変更しません。
 
 ## 保存失敗とデータ保全
 
