@@ -259,7 +259,7 @@ internal fun frozenTargetDescription(save: SaveSnapshot?): String {
 }
 
 internal fun cleanupDescription(count: Int): String = if (count <= 0) "" else
-    "前回の端末処理の片付け待ち: ${count}件。取得を有効にし、対象端末を接続すると再確認します。"
+    "前回の端末処理の片付け待ち: ${count}件。対象端末を接続すると再確認します。"
 
 internal fun recordTime(nanos: Long?): String = nanos?.let {
     String.format(Locale.ROOT, "%.3f秒", it / 1_000_000_000.0)

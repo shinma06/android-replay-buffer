@@ -25,7 +25,7 @@
         "docs/requirements.md",
         "docs/design/ide-ui.md: UI-12-01",
         "docs/plugin-design.md / docs/design/timeline.md",
-        "Issue #42 / PR37 late findings / core API #41 (7e2a210以降、最終統合revisionはIssue/PRで固定)",
+        "Issue #42 / PR37 late findings / core API #41 (5f148a2通常merge、最終統合revisionはIssue/PRで固定)",
         "QA #27 / #40への環境別実受入"
       ],
       "gpt": {
@@ -55,7 +55,7 @@
         "docs/requirements.md",
         "docs/design/ide-ui.md: UI-12-02",
         "docs/plugin-design.md / docs/design/timeline.md",
-        "Issue #42 / PR37 late findings / core API #41 (7e2a210以降、最終統合revisionはIssue/PRで固定)",
+        "Issue #42 / PR37 late findings / core API #41 (5f148a2通常merge、最終統合revisionはIssue/PRで固定)",
         "QA #27 / #40への環境別実受入"
       ],
       "gpt": {
@@ -84,7 +84,7 @@
         "docs/requirements.md",
         "docs/design/ide-ui.md: UI-12-03",
         "docs/plugin-design.md / docs/design/timeline.md",
-        "Issue #42 / PR37 late findings / core API #41 (7e2a210以降、最終統合revisionはIssue/PRで固定)",
+        "Issue #42 / PR37 late findings / core API #41 (5f148a2通常merge、最終統合revisionはIssue/PRで固定)",
         "QA #27 / #40への環境別実受入"
       ],
       "gpt": {
@@ -114,7 +114,7 @@
         "docs/requirements.md",
         "docs/design/ide-ui.md: UI-12-04",
         "docs/plugin-design.md / docs/design/timeline.md",
-        "Issue #42 / PR37 late findings / core API #41 (7e2a210以降、最終統合revisionはIssue/PRで固定)",
+        "Issue #42 / PR37 late findings / core API #41 (5f148a2通常merge、最終統合revisionはIssue/PRで固定)",
         "QA #27 / #40への環境別実受入"
       ],
       "gpt": {
@@ -144,7 +144,7 @@
         "docs/requirements.md",
         "docs/design/ide-ui.md: UI-12-05",
         "docs/plugin-design.md / docs/design/timeline.md",
-        "Issue #42 / PR37 late findings / core API #41 (7e2a210以降、最終統合revisionはIssue/PRで固定)",
+        "Issue #42 / PR37 late findings / core API #41 (5f148a2通常merge、最終統合revisionはIssue/PRで固定)",
         "QA #27 / #40への環境別実受入"
       ],
       "gpt": {
@@ -174,7 +174,7 @@
         "docs/requirements.md",
         "docs/design/ide-ui.md: UI-12-06",
         "docs/plugin-design.md / docs/design/timeline.md",
-        "Issue #42 / PR37 late findings / core API #41 (7e2a210以降、最終統合revisionはIssue/PRで固定)",
+        "Issue #42 / PR37 late findings / core API #41 (5f148a2通常merge、最終統合revisionはIssue/PRで固定)",
         "QA #27 / #40への環境別実受入"
       ],
       "gpt": {
@@ -205,7 +205,7 @@
         "docs/requirements.md",
         "docs/design/ide-ui.md: UI-12-07",
         "docs/plugin-design.md / docs/design/timeline.md",
-        "Issue #42 / PR37 late findings / core API #41 (7e2a210以降、最終統合revisionはIssue/PRで固定)",
+        "Issue #42 / PR37 late findings / core API #41 (5f148a2通常merge、最終統合revisionはIssue/PRで固定)",
         "QA #27 / #40への環境別実受入"
       ],
       "gpt": {
@@ -229,14 +229,14 @@
       "steps": [
         "project SDKのplatform-toolsあり/なしを切替え、PATHに別adbを用意する。",
         "0台/1Emulator/複数接続と取得中の端末切断を確認する。",
-        "前回端末の終了処理待ちを残して同projectを再起動し、取得を有効にする。別端末と対象端末の接続を分け、現在SDKから解決したadbで再確認する。未知の終了情報は削除しない。"
+        "前回端末の終了処理待ちを残して取得OFFの同projectを再起動する。別端末と対象端末の接続を分け、現在SDKから解決したadbで終了処理のみ再確認する。初回OFF/pendingなし、および未知の終了情報だけの場合にadb照会しないことも確認する。"
       ],
-      "expected": "project SDKの絶対adbを使用し、PATH/個別ツール導入なし。端末名前/種別/状態表示、無断切替なし。実機の同Caseは保留。 片付け待ち件数は取得状態・現在窓の欠落と分けて表示する。0件表示は隠し、有効化前の未読込を完了証拠にしない。対象外の端末処理に干渉しない。",
+      "expected": "project SDKの絶対adbを使用し、PATH/個別ツール導入なし。端末名前/種別/状態表示、無断切替なし。実機の同Caseは保留。 片付け待ち件数は取得状態・現在窓の欠落と分けて表示する。0件表示は隠し、初期化中の未表示を完了証拠にしない。OFF時も待機件数を表示し、終了処理で取得を開始しない。未知の終了情報を削除せず、対象外の端末処理に干渉しない。",
       "provenance": [
         "docs/requirements.md",
         "docs/design/ide-ui.md: UI-12-08",
         "docs/plugin-design.md / docs/design/timeline.md",
-        "Issue #42 / PR37 late findings / core API #41 (7e2a210以降、最終統合revisionはIssue/PRで固定)",
+        "Issue #42 / PR37 late findings / core API #41 (5f148a2通常merge、最終統合revisionはIssue/PRで固定)",
         "QA #27 / #40への環境別実受入"
       ],
       "gpt": {
