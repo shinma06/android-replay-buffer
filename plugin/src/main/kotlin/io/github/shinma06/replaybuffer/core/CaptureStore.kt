@@ -224,7 +224,11 @@ internal class CaptureStore(
         val end = end() ?: return
         val uncertainty = clock.endUncertainty()
         // An unknown boot bridge/current T cannot prove that old known-epoch records are outside the window.
-        if (uncertainty == Long.MAX_VALUE) return
+        if (uncertainty == Long.MAX_VALUE) {
+            enforceVideoLimit()
+            deleteUnused()
+            return
+        }
         val cutoff = end - seconds * 1_000_000_000L - uncertainty
         // Keep the complete preceding GOP for decoding the first frame inside the logical window.
         val firstInside = video.indexOfFirst { it.time.sequence == null || it.time.uncertainty == Long.MAX_VALUE || it.retainedAt >= cutoff - it.time.uncertainty }
