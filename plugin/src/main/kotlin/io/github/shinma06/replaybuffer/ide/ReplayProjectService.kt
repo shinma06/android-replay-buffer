@@ -13,6 +13,7 @@ import com.intellij.notification.NotificationType
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.ModalityState
+import com.intellij.openapi.application.PathManager
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.ide.CopyPasteManager
@@ -52,7 +53,10 @@ class ReplayProjectService(private val project: Project, private val scope: Coro
     @Volatile var resolving = true
         private set
     private val notifications = mutableListOf<Notification>()
-    private val capture = ReplayProjectCapture(scope, project.getService(ReplaySettingsStore::class.java), ::publishChanged, ::notifySave)
+    private val projectBasePath = project.basePath
+    private val capture = ReplayProjectCapture(scope, project.getService(ReplaySettingsStore::class.java), ::publishChanged, ::notifySave) {
+        prepareCleanupDirectory(PathManager.getConfigDir(), projectBasePath)
+    }
     internal val captureView: ReplayCaptureView get() = capture.view
     private val alive: Boolean get() = !disposed && !project.isDisposed
 

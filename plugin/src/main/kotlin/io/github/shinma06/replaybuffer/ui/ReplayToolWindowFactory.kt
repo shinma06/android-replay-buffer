@@ -69,6 +69,7 @@ private class ReplayToolWindowPanel(private val project: Project) : JPanel(Borde
     private val sequence = JBLabel()
     private val destination = JBLabel()
     private val message = JBLabel()
+    private val cleanup = JBLabel()
     private val saveState = JBLabel()
     private val saveReason = JBLabel()
     private val failure = JBLabel()
@@ -106,6 +107,7 @@ private class ReplayToolWindowPanel(private val project: Project) : JPanel(Borde
             .addComponent(device).addComponent(application).addComponent(sdk).addComponent(state)
             .addComponent(video).addComponent(deviceLog).addComponent(appLog)
             .addComponent(window).addComponent(sequence).addComponent(destination).addComponent(message)
+            .addComponent(cleanup)
             .addComponent(saveButton).addComponent(saveReason).addComponent(saveState)
             .addComponent(openButton).addComponent(failureCard)
             .addComponent(gapScroll)
@@ -144,7 +146,7 @@ private class ReplayToolWindowPanel(private val project: Project) : JPanel(Borde
         val app = snapshot?.settings?.application
         application.text = "アプリ: ${app?.packageName ?: app?.unresolvedReason ?: "確認中…"}（${if (app?.mode == ApplicationMode.MANUAL) "手動" else "自動"}）"
         sdk.text = "Android SDK: ${service.environment?.adb ?: service.environment?.adbReason ?: "確認中…"}"
-        state.text = snapshot?.captureDescription() ?: "取得を初期化中…"
+        state.text = snapshot?.captureDescription() ?: if (view.initializationError != null) "取得を初期化できません" else "取得を初期化中…"
         video.text = streamDescription("動画", snapshot?.video)
         deviceLog.text = streamDescription("端末ログ", snapshot?.deviceLog)
         appLog.text = streamDescription("アプリログ", snapshot?.appLog)
@@ -154,6 +156,8 @@ private class ReplayToolWindowPanel(private val project: Project) : JPanel(Borde
         sequence.text = "記録セッション: ${snapshot?.sequenceId ?: "未開始"}"
         destination.text = "保存先: ${snapshot?.settings?.saveDirectory ?: "未指定（設定で指定してください）"}"
         message.text = if (busy) "設定・操作を反映中…（新規保存は完了まで待ってください）" else view.message ?: snapshot?.error ?: " "
+        cleanup.text = cleanupDescription(snapshot?.cleanupPendingCount ?: 0)
+        cleanup.isVisible = cleanup.text.isNotEmpty()
         saveButton.text = "直前${seconds}秒を保存"
         saveButton.isEnabled = !busy && snapshot?.canSave == true
         saveReason.text = if (busy) "設定・操作を反映中です。" else snapshot?.saveDisabledReason ?: " "
@@ -253,6 +257,9 @@ internal fun frozenTargetDescription(save: SaveSnapshot?): String {
     }.ifEmpty { "記録なし" }
     return "固定端末: $device\n固定アプリ: ${app?.packageName ?: app?.unresolvedReason ?: "未確定"}（$mode）\n対象アプリ履歴:\n$history"
 }
+
+internal fun cleanupDescription(count: Int): String = if (count <= 0) "" else
+    "前回の端末処理の片付け待ち: ${count}件。取得を有効にし、対象端末を接続すると再確認します。"
 
 internal fun recordTime(nanos: Long?): String = nanos?.let {
     String.format(Locale.ROOT, "%.3f秒", it / 1_000_000_000.0)

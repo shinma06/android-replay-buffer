@@ -136,6 +136,96 @@ class ReplayProjectCaptureTest {
     }
 
     @Test
+    fun `new sessions retain their stable journal and delete only their known session temp`() {
+        val config = Files.createDirectory(directory.resolve("config"))
+        val project = Files.createDirectory(directory.resolve("project"))
+        val stable = prepareCleanupDirectory(config, project.toString())
+        val marker = stable.resolve("remote-cleanup-${"a".repeat(32)}.json")
+        Files.writeString(marker, "{\"schema\":999}")
+        val caller = Thread.currentThread()
+        repeat(2) {
+            val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+            val store = ReplaySettingsStore()
+            store.loadState(ReplaySettingsState(enabled = true))
+            val capture = ReplayProjectCapture(scope, store, {}, {}) {
+                assertFalse(Thread.currentThread() == caller)
+                prepareCleanupDirectory(config, project.toString())
+            }
+            try {
+                assertTrue(capture.applySettings(store.settings(), unresolved, 0).get(15, TimeUnit.SECONDS).accepted)
+                assertEquals(1, capture.view.snapshot!!.cleanupPendingCount)
+                // This exact private root belongs to this Capture; no host/temp-root scan is performed.
+                val session = ReplayProjectCapture::class.java.getDeclaredField("workspace").apply { isAccessible = true }.get(capture) as Path
+                capture.close()
+                capture.termination.get(15, TimeUnit.SECONDS)
+                assertFalse(Files.exists(session))
+                assertTrue(Files.isDirectory(stable))
+                assertEquals("{\"schema\":999}", Files.readString(marker))
+            } finally {
+                capture.close()
+                capture.termination.get(15, TimeUnit.SECONDS)
+                scope.cancel()
+            }
+        }
+    }
+
+    @Test
+    fun `failed journal preparation rejects the latest ON and reports actual initialization failure`() {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val store = ReplaySettingsStore()
+        store.loadState(ReplaySettingsState(enabled = true))
+        val started = java.util.concurrent.CountDownLatch(1)
+        val release = java.util.concurrent.CountDownLatch(1)
+        val capture = ReplayProjectCapture(scope, store, {}, {}) {
+            started.countDown()
+            assertTrue(release.await(15, TimeUnit.SECONDS))
+            error("synthetic unsafe storage")
+        }
+        try {
+            assertTrue(started.await(15, TimeUnit.SECONDS))
+            val on = capture.setEnabled(true)
+            release.countDown()
+            assertFalse(on.get(15, TimeUnit.SECONDS).accepted)
+            assertFalse(store.enabled)
+            assertNotNull(capture.view.initializationError)
+            assertTrue(capture.view.message!!.contains("アクセス権"))
+        } finally {
+            release.countDown()
+            capture.close()
+            capture.termination.get(15, TimeUnit.SECONDS)
+            scope.cancel()
+        }
+    }
+
+    @Test
+    fun `close during journal preparation leaves the stable folder and rejects late ownership`() {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val store = ReplaySettingsStore()
+        val stable = Files.createDirectory(directory.resolve("stable"))
+        val started = java.util.concurrent.CountDownLatch(1)
+        val release = java.util.concurrent.CountDownLatch(1)
+        val capture = ReplayProjectCapture(scope, store, {}, {}) {
+            started.countDown()
+            assertTrue(release.await(15, TimeUnit.SECONDS))
+            stable
+        }
+        try {
+            assertTrue(started.await(15, TimeUnit.SECONDS))
+            capture.close()
+            release.countDown()
+            capture.termination.get(15, TimeUnit.SECONDS)
+            assertTrue(Files.isDirectory(stable))
+            assertFalse(capture.setEnabled(true).get(15, TimeUnit.SECONDS).accepted)
+            assertFalse(store.enabled)
+        } finally {
+            release.countDown()
+            capture.close()
+            capture.termination.get(15, TimeUnit.SECONDS)
+            scope.cancel()
+        }
+    }
+
+    @Test
     fun `old resolved settings resumed after newer settings cannot revert the actual core`() {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val store = ReplaySettingsStore()

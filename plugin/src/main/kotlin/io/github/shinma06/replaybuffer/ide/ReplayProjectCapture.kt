@@ -29,6 +29,7 @@ internal data class ReplayCaptureView(
     val snapshot: ReplaySnapshot? = null,
     val pending: Int = 0,
     val message: String? = null,
+    val initializationError: String? = null,
 )
 
 /** One project's concrete core owner. No Swing, SDK lookup, or device selection is performed here. */
@@ -37,6 +38,7 @@ internal class ReplayProjectCapture(
     private val store: ReplaySettingsStore,
     private val changed: () -> Unit,
     private val saved: (SaveSnapshot) -> Unit,
+    cleanupDirectory: (() -> Path)? = null,
 ) : AutoCloseable {
     @Volatile var view = ReplayCaptureView()
         private set
@@ -60,7 +62,7 @@ internal class ReplayProjectCapture(
             try {
                 // The default temp directory is private to this new project session (0700 on Unix).
                 directory = Files.createTempDirectory("android-replay-buffer-")
-                val engine = ReplayCore(CoreSettings(), directory)
+                val engine = ReplayCore(CoreSettings(), directory, cleanupDirectory?.invoke() ?: directory)
                 created = engine
                 val retained = synchronized(this@ReplayProjectCapture) {
                     if (closed) false else {
@@ -74,8 +76,15 @@ internal class ReplayProjectCapture(
                 if (!retained) finishClose(engine, directory)
             } catch (failure: Throwable) {
                 if (created != null) finishClose(created, directory) else directory?.let { Files.deleteIfExists(it) }
+                val message = "取得の初期化に失敗しました。projectの保存場所とIDE設定領域へのアクセス権を確認し、projectを開き直してください。"
+                synchronized(this@ReplayProjectCapture) {
+                    if (!closed) {
+                        view = view.copy(initializationError = message)
+                        if (enabledIntent == 0L) store.setEnabled(false)
+                    }
+                }
+                showMessage(message)
                 ready.completeExceptionally(failure)
-                showMessage("取得の初期化に失敗しました。projectを開き直してください。")
             }
         }
         initialization.invokeOnCompletion { failure ->
@@ -93,12 +102,14 @@ internal class ReplayProjectCapture(
             store.setEnabled(value)
             ++enabledIntent
         }
-        return submit { engine ->
-            val result = engine.setEnabled(value).await()
-            synchronized(this) {
-                if (!closed && !result.accepted && intent == enabledIntent) store.setEnabled(engine.snapshot().enabled)
+        return submit { engine -> engine.setEnabled(value).await() }.whenComplete { result, _ ->
+            val notify = synchronized(this) {
+                if (!closed && intent == enabledIntent && result?.accepted == false) {
+                    store.setEnabled(core?.snapshot()?.enabled == true)
+                    true
+                } else false
             }
-            result
+            if (notify) changed()
         }
     }
 
@@ -172,8 +183,9 @@ internal class ReplayProjectCapture(
                 result.completeExceptionally(cancelled)
                 throw cancelled
             } catch (_: Exception) {
-                showMessage("取得・保存の操作を実行できません。", intent, revision)
-                outcome = ReplayOperation(false, "取得・保存の操作を実行できません。")
+                val message = view.initializationError ?: "取得・保存の操作を実行できません。"
+                showMessage(message, intent, revision)
+                outcome = ReplayOperation(false, message)
             } finally {
                 val notify = synchronized(this@ReplayProjectCapture) {
                     view = view.copy(pending = (view.pending - 1).coerceAtLeast(0))

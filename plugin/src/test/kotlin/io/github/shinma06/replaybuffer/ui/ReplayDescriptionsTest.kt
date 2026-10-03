@@ -84,6 +84,15 @@ class ReplayDescriptionsTest {
     }
 
     @Test
+    fun `pending remote cleanup is separate from capture and gap status`() {
+        assertEquals("", cleanupDescription(0))
+        assertTrue(cleanupDescription(2).contains("片付け待ち: 2件"))
+        assertTrue(cleanupDescription(2).contains("取得を有効にし"))
+        assertFalse(cleanupDescription(2).contains("欠落"))
+        assertFalse(cleanupDescription(2).contains("取得中"))
+    }
+
+    @Test
     fun `failed target description uses only fixed device and application history through retry`() {
         val fixed = SaveSnapshot(
             phase = SavePhase.FAILED, requestId = "request-old", directory = directory.resolve("old"),

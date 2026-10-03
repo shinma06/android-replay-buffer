@@ -2,7 +2,7 @@
   "schema": 1,
   "issue": 42,
   "gui_required": true,
-  "reason": "設定validation・enabled起動復元・アプリ解決例外、および#41実APIを用いた現在窓gap/固定保存対象表示の修正。JVM回帰をIDE/端末受入へ代用せず、QA #27/#40で新同一ZIPを確認する。実機は利用者保留。",
+  "reason": "設定validation・enabled起動復元・アプリ解決例外、現在窓gap/固定保存対象表示、および#41実APIを用いた永続cleanup領域と待機件数表示の修正。JVM回帰をIDE/端末受入へ代用せず、QA #27/#40で新同一ZIPを確認する。実機は利用者保留。",
   "cli_checks": [
     "python3 scripts/workflow/plugin_check.py: 結果は固定HEADのIssue/PRで記録",
     "python3 scripts/check.py: Case JSONを含む管理チェック",
@@ -17,19 +17,20 @@
       "preconditions": "本Issueと#41統合済みの新固定source/ZIP SHA-256・ロード版とRabbit buildを照合。QA #27/#40の使い捨てfixtureと共有GUI lease。Emulatorと実機の結果は分離し、実機は利用者準備まで保留。",
       "steps": [
         "保存先未指定・有効状態ONでIDEを再起動し、パネルを開かず取得復元を確認する。",
-        "保存済み保存先をfileまたは未作成pathに変えて起動し、復元失敗理由、core状態、toggle、再起動後の永続値を確認する。"
+        "保存済み保存先をfileまたは未作成pathに変えて起動し、復元失敗理由、core状態、toggle、再起動後の永続値を確認する。",
+        "project保存場所またはIDE設定領域へのアクセスが不正な使い捨てfixtureで起動し、初期化失敗を表示する。初期化中のON/OFFを競合させ、失敗後の永続enabledを確認する。"
       ],
-      "expected": "初回OFF・保持180秒・無効中設定編集可。Applyだけで取得開始せず、enabled復元はパネル生成に依存しない。 不正設定による復元失敗は明示し、persisted enabled/表示/core状態が一致する。後続ユーザーtoggleを巻き戻さない。",
+      "expected": "初回OFF・保持180秒・無効中設定編集可。Applyだけで取得開始せず、enabled復元はパネル生成に依存しない。 不正設定による復元失敗は明示し、persisted enabled/表示/core状態が一致する。後続ユーザーtoggleを巻き戻さない。 初期化失敗を初期化中のまま表示せず、最新toggleの拒否を実状態へ戻す。取消しや古い結果で新しい意図を巻き戻さない。",
       "provenance": [
         "docs/requirements.md",
         "docs/design/ide-ui.md: UI-12-01",
         "docs/plugin-design.md / docs/design/timeline.md",
-        "Issue #42 / PR37 late findings / core API #41",
+        "Issue #42 / PR37 late findings / core API #41 (7e2a210以降、最終統合revisionはIssue/PRで固定)",
         "QA #27 / #40への環境別実受入"
       ],
       "gpt": {
         "status": "pending",
-        "reason": "core実API 8351e00を通常mergeしてgap/固定端末・app履歴のUIを実装。JVM回帰と先行3件daafb8cの部分独立レビューをIDE観察passにしない。#41のunknown boot gap修正とpersistent cleanup APIは後続固定HEAD待ち。最終同一ZIPの実IDE/Emulator観察未実施、実機保留。"
+        "reason": "core実APIを通常mergeしてgap/固定対象/永続cleanup callerと待機件数を実装。JVM回帰と先行3件daafb8cの部分独立レビューをIDE観察passにしない。最終HEAD/baseの全体独立レビュー・Plugin Verifier・同一ZIPの実IDE/Emulator観察は未完了、実機保留。"
       },
       "human": {
         "status": "pending",
@@ -54,12 +55,12 @@
         "docs/requirements.md",
         "docs/design/ide-ui.md: UI-12-02",
         "docs/plugin-design.md / docs/design/timeline.md",
-        "Issue #42 / PR37 late findings / core API #41",
+        "Issue #42 / PR37 late findings / core API #41 (7e2a210以降、最終統合revisionはIssue/PRで固定)",
         "QA #27 / #40への環境別実受入"
       ],
       "gpt": {
         "status": "pending",
-        "reason": "core実API 8351e00を通常mergeしてgap/固定端末・app履歴のUIを実装。JVM回帰と先行3件daafb8cの部分独立レビューをIDE観察passにしない。#41のunknown boot gap修正とpersistent cleanup APIは後続固定HEAD待ち。最終同一ZIPの実IDE/Emulator観察未実施、実機保留。"
+        "reason": "core実APIを通常mergeしてgap/固定対象/永続cleanup callerと待機件数を実装。JVM回帰と先行3件daafb8cの部分独立レビューをIDE観察passにしない。最終HEAD/baseの全体独立レビュー・Plugin Verifier・同一ZIPの実IDE/Emulator観察は未完了、実機保留。"
       },
       "human": {
         "status": "pending",
@@ -83,12 +84,12 @@
         "docs/requirements.md",
         "docs/design/ide-ui.md: UI-12-03",
         "docs/plugin-design.md / docs/design/timeline.md",
-        "Issue #42 / PR37 late findings / core API #41",
+        "Issue #42 / PR37 late findings / core API #41 (7e2a210以降、最終統合revisionはIssue/PRで固定)",
         "QA #27 / #40への環境別実受入"
       ],
       "gpt": {
         "status": "pending",
-        "reason": "core実API 8351e00を通常mergeしてgap/固定端末・app履歴のUIを実装。JVM回帰と先行3件daafb8cの部分独立レビューをIDE観察passにしない。#41のunknown boot gap修正とpersistent cleanup APIは後続固定HEAD待ち。最終同一ZIPの実IDE/Emulator観察未実施、実機保留。"
+        "reason": "core実APIを通常mergeしてgap/固定対象/永続cleanup callerと待機件数を実装。JVM回帰と先行3件daafb8cの部分独立レビューをIDE観察passにしない。最終HEAD/baseの全体独立レビュー・Plugin Verifier・同一ZIPの実IDE/Emulator観察は未完了、実機保留。"
       },
       "human": {
         "status": "pending",
@@ -113,12 +114,12 @@
         "docs/requirements.md",
         "docs/design/ide-ui.md: UI-12-04",
         "docs/plugin-design.md / docs/design/timeline.md",
-        "Issue #42 / PR37 late findings / core API #41",
+        "Issue #42 / PR37 late findings / core API #41 (7e2a210以降、最終統合revisionはIssue/PRで固定)",
         "QA #27 / #40への環境別実受入"
       ],
       "gpt": {
         "status": "pending",
-        "reason": "core実API 8351e00を通常mergeしてgap/固定端末・app履歴のUIを実装。JVM回帰と先行3件daafb8cの部分独立レビューをIDE観察passにしない。#41のunknown boot gap修正とpersistent cleanup APIは後続固定HEAD待ち。最終同一ZIPの実IDE/Emulator観察未実施、実機保留。"
+        "reason": "core実APIを通常mergeしてgap/固定対象/永続cleanup callerと待機件数を実装。JVM回帰と先行3件daafb8cの部分独立レビューをIDE観察passにしない。最終HEAD/baseの全体独立レビュー・Plugin Verifier・同一ZIPの実IDE/Emulator観察は未完了、実機保留。"
       },
       "human": {
         "status": "pending",
@@ -143,12 +144,12 @@
         "docs/requirements.md",
         "docs/design/ide-ui.md: UI-12-05",
         "docs/plugin-design.md / docs/design/timeline.md",
-        "Issue #42 / PR37 late findings / core API #41",
+        "Issue #42 / PR37 late findings / core API #41 (7e2a210以降、最終統合revisionはIssue/PRで固定)",
         "QA #27 / #40への環境別実受入"
       ],
       "gpt": {
         "status": "pending",
-        "reason": "core実API 8351e00を通常mergeしてgap/固定端末・app履歴のUIを実装。JVM回帰と先行3件daafb8cの部分独立レビューをIDE観察passにしない。#41のunknown boot gap修正とpersistent cleanup APIは後続固定HEAD待ち。最終同一ZIPの実IDE/Emulator観察未実施、実機保留。"
+        "reason": "core実APIを通常mergeしてgap/固定対象/永続cleanup callerと待機件数を実装。JVM回帰と先行3件daafb8cの部分独立レビューをIDE観察passにしない。最終HEAD/baseの全体独立レビュー・Plugin Verifier・同一ZIPの実IDE/Emulator観察は未完了、実機保留。"
       },
       "human": {
         "status": "pending",
@@ -173,12 +174,12 @@
         "docs/requirements.md",
         "docs/design/ide-ui.md: UI-12-06",
         "docs/plugin-design.md / docs/design/timeline.md",
-        "Issue #42 / PR37 late findings / core API #41",
+        "Issue #42 / PR37 late findings / core API #41 (7e2a210以降、最終統合revisionはIssue/PRで固定)",
         "QA #27 / #40への環境別実受入"
       ],
       "gpt": {
         "status": "pending",
-        "reason": "core実API 8351e00を通常mergeしてgap/固定端末・app履歴のUIを実装。JVM回帰と先行3件daafb8cの部分独立レビューをIDE観察passにしない。#41のunknown boot gap修正とpersistent cleanup APIは後続固定HEAD待ち。最終同一ZIPの実IDE/Emulator観察未実施、実機保留。"
+        "reason": "core実APIを通常mergeしてgap/固定対象/永続cleanup callerと待機件数を実装。JVM回帰と先行3件daafb8cの部分独立レビューをIDE観察passにしない。最終HEAD/baseの全体独立レビュー・Plugin Verifier・同一ZIPの実IDE/Emulator観察は未完了、実機保留。"
       },
       "human": {
         "status": "pending",
@@ -196,19 +197,20 @@
       "preconditions": "本Issueと#41統合済みの新固定source/ZIP SHA-256・ロード版とRabbit buildを照合。QA #27/#40の使い捨てfixtureと共有GUI lease。Emulatorと実機の結果は分離し、実機は利用者準備まで保留。",
       "steps": [
         "indexing中に設定・パネル再表示・toggleを操作する。",
-        "theme/DPI/Tab移動を確認し、model解決/保存中にproject closeする。"
+        "theme/DPI/Tab移動を確認し、model解決/保存中にproject closeする。",
+        "cleanup領域初期化中にproject closeし、終了後の更新がないこと、永続終了情報を残しセッション一時領域だけを片付けることを確認する。別project・同project再起動を区別する。"
       ],
-      "expected": "EDTを待ち処理で止めず、隠しても取得継続。再表示は最新状態、label/Tab正常、close/dispose後にUI更新やサービス再生成なし。",
+      "expected": "EDTを待ち処理で止めず、隠しても取得継続。再表示は最新状態、label/Tab正常、close/dispose後にUI更新やサービス再生成なし。 永続終了情報は同project再起動で再利用し、別projectと混ぜない。設定領域の確認や作成はIO上で行い、未知・不正な領域を置換しない。",
       "provenance": [
         "docs/requirements.md",
         "docs/design/ide-ui.md: UI-12-07",
         "docs/plugin-design.md / docs/design/timeline.md",
-        "Issue #42 / PR37 late findings / core API #41",
+        "Issue #42 / PR37 late findings / core API #41 (7e2a210以降、最終統合revisionはIssue/PRで固定)",
         "QA #27 / #40への環境別実受入"
       ],
       "gpt": {
         "status": "pending",
-        "reason": "core実API 8351e00を通常mergeしてgap/固定端末・app履歴のUIを実装。JVM回帰と先行3件daafb8cの部分独立レビューをIDE観察passにしない。#41のunknown boot gap修正とpersistent cleanup APIは後続固定HEAD待ち。最終同一ZIPの実IDE/Emulator観察未実施、実機保留。"
+        "reason": "core実APIを通常mergeしてgap/固定対象/永続cleanup callerと待機件数を実装。JVM回帰と先行3件daafb8cの部分独立レビューをIDE観察passにしない。最終HEAD/baseの全体独立レビュー・Plugin Verifier・同一ZIPの実IDE/Emulator観察は未完了、実機保留。"
       },
       "human": {
         "status": "pending",
@@ -226,19 +228,20 @@
       "preconditions": "本Issueと#41統合済みの新固定source/ZIP SHA-256・ロード版とRabbit buildを照合。QA #27/#40の使い捨てfixtureと共有GUI lease。Emulatorと実機の結果は分離し、実機は利用者準備まで保留。",
       "steps": [
         "project SDKのplatform-toolsあり/なしを切替え、PATHに別adbを用意する。",
-        "0台/1Emulator/複数接続と取得中の端末切断を確認する。"
+        "0台/1Emulator/複数接続と取得中の端末切断を確認する。",
+        "前回端末の終了処理待ちを残して同projectを再起動し、取得を有効にする。別端末と対象端末の接続を分け、現在SDKから解決したadbで再確認する。未知の終了情報は削除しない。"
       ],
-      "expected": "project SDKの絶対adbを使用し、PATH/個別ツール導入なし。端末名前/種別/状態表示、無断切替なし。実機の同Caseは保留。",
+      "expected": "project SDKの絶対adbを使用し、PATH/個別ツール導入なし。端末名前/種別/状態表示、無断切替なし。実機の同Caseは保留。 片付け待ち件数は取得状態・現在窓の欠落と分けて表示する。0件表示は隠し、有効化前の未読込を完了証拠にしない。対象外の端末処理に干渉しない。",
       "provenance": [
         "docs/requirements.md",
         "docs/design/ide-ui.md: UI-12-08",
         "docs/plugin-design.md / docs/design/timeline.md",
-        "Issue #42 / PR37 late findings / core API #41",
+        "Issue #42 / PR37 late findings / core API #41 (7e2a210以降、最終統合revisionはIssue/PRで固定)",
         "QA #27 / #40への環境別実受入"
       ],
       "gpt": {
         "status": "pending",
-        "reason": "core実API 8351e00を通常mergeしてgap/固定端末・app履歴のUIを実装。JVM回帰と先行3件daafb8cの部分独立レビューをIDE観察passにしない。#41のunknown boot gap修正とpersistent cleanup APIは後続固定HEAD待ち。最終同一ZIPの実IDE/Emulator観察未実施、実機保留。"
+        "reason": "core実APIを通常mergeしてgap/固定対象/永続cleanup callerと待機件数を実装。JVM回帰と先行3件daafb8cの部分独立レビューをIDE観察passにしない。最終HEAD/baseの全体独立レビュー・Plugin Verifier・同一ZIPの実IDE/Emulator観察は未完了、実機保留。"
       },
       "human": {
         "status": "pending",
