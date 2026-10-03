@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "issue": 12,
+  "gui_required": false,
+  "reason": "IDE UI配置・公開API境界・操作契約と将来受入Case案の設計文書のみ。製品コード、CLI原型、build設定を変更せず、SDKの読取調査でIDE/ADB/端末を操作していない。UI-12-01〜08は未実装Case案で、#14と固定buildのQAへ引継ぐ。",
+  "cli_checks": [
+    "python3 scripts/check.py: 管理・リンク・ハーネス回帰。結果は固定HEADのIssue/PRへ記録する",
+    "python3 scripts/workflow/product_check.py: 凍結CLI原型21filesのbytes/mode照合と既存2tests。実機受入ではない",
+    "python3 scripts/workflow/change_impact.py --base origin/develop --run-tests: cleanなcommit済みHEADで必要checksを実行する",
+    "Rabbit 1 AI-262.9437.185.2621.16467767のMETA-INF/logcat.xmlとjavapでLogcat.PopupActions/ToolWindow/RunManager/ApplicationIdProvider/ProjectActivity/RevealFileAction署名を読取確認。compile・Plugin Verifier・実ロードは未実施",
+    "Cursor固定main/developのUI・設定・通知実装/tests/関連IssuePR、docs/requirements.md、Issue10〜14と設計を照合する"
+  ],
+  "cases": []
+}
