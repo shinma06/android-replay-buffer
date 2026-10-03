@@ -18,3 +18,5 @@ Build-only: Google R8/D8 8.10.24 (BSD 3-Clause), com.google.android:android:4.1.
 These build tools are not shipped in the plugin. Their input JAR hashes are verified by captureIdentity.
 Generated replay/deps/identity.properties records source SHA, dirty flag, clock JAR and dependency hashes.
 Users need only their Android SDK adb. There is no runtime download, PATH tool resolution, Python or ffmpeg invocation.
+
+License text trailing spaces/blank EOF are normalized; attribution and terms are preserved.
