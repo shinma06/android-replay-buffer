@@ -396,6 +396,7 @@ internal fun FrozenCapture.videoTail(): VideoTailSnapshot? {
     val source = last.time.sequence.takeIf { windowKnown && last.time.uncertainty != Long.MAX_VALUE }
     if (source != null && source >= end) return null
     val boundaries = gaps.filter { (it.stream == "video" || it.stream == "clock") &&
+        !(source != null && it.toNs != null && it.toNs <= source) &&
         it.intersects(source, end, maxOf(endUncertainty, last.time.uncertainty)) }
     val boundary = boundaries.mapNotNull { it.fromNs }.minOrNull()?.coerceAtMost(end) ?: end
     val from = source?.let { maxOf(start, it) }

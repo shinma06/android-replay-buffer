@@ -113,6 +113,18 @@ class CaptureStoreSaveTest {
             assertEquals(capture.video.map { it.pts.toString() }, Files.readAllLines(longOutput.directory.resolve("frames.jsonl")).map {
                 JsonParser.parseString(it).asJsonObject["source_pts_us"].asString
             })
+            val following = capture.video.last().let { it.copy(pts = 1_000_000 + longEnd / 1000,
+                time = it.time.copy(elapsed = 1_000_000_000 + longEnd, sequence = longEnd)) }
+            val confirmedLong = longWindow.copy(video = listOf(capture.video.first(), following))
+            val confirmedOutput = SaveWriter().write(confirmedLong, root, { false }) { a, b -> Files.move(a, b) }
+            assertTrue(confirmedOutput.missingKinds.isEmpty())
+            val confirmed = JsonParser.parseString(Files.readString(confirmedOutput.directory.resolve("session.json"))).asJsonObject
+            assertTrue(confirmed["video_tail"].isJsonNull)
+            assertEquals(1, confirmed["parts"].asJsonArray.size())
+            assertEquals("2000000000", confirmed["parts"].asJsonArray.single().asJsonObject["confirmed_window_end_ns"].asString)
+            NIOUtils.readableChannel(confirmedOutput.directory.resolve("video-001.mp4").toFile()).use { channel ->
+                assertEquals(2_000_000, MP4Demuxer.createRawMP4Demuxer(channel).videoTrack.nextFrame().duration)
+            }
             anchor(store.clock, 16_000_000_000, host + 15_000_000_000)
             store.frame(VideoPacket.Frame(16_000_000, false, true, bytes), 1, host + 15_000_000_000)
             assertEquals(fixedTail, capture.videoTail())
@@ -121,6 +133,17 @@ class CaptureStoreSaveTest {
             anchor(store.clock, 20_000_000_000, host + 19_000_000_000)
             store.prune(2)
             assertFalse(store.hasData()) // A new session cannot use the old static image as its own.
+            store.frame(VideoPacket.Frame(0, true, false, config(bytes)), 1)
+            store.frame(VideoPacket.Frame(20_000_000, false, true, bytes), 1, host + 19_000_000_000)
+            for (second in 21L..5020L) anchor(store.clock, second * 1_000_000_000, host + (second - 1) * 1_000_000_000)
+            store.prune(2)
+            val aged = store.capture(ReplaySettings(replaySeconds = 2))!!
+            assertEquals(4096, aged.clocks.size)
+            assertTrue(aged.video.single().time.sequence != null)
+            assertTrue(aged.videoTail()!!.displayHeld)
+            val agedOutput = SaveWriter().write(aged, root, { false }) { a, b -> Files.move(a, b) }
+            assertTrue(agedOutput.missingKinds.isEmpty())
+            store.release(aged.id)
         } finally {
             store.close()
             Files.walk(root).use { paths -> paths.sorted(java.util.Comparator.reverseOrder()).forEach { Files.deleteIfExists(it) } }

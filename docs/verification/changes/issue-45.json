@@ -1,0 +1,189 @@
+{
+  "schema": 1,
+  "issue": 45,
+  "gui_required": true,
+  "reason": "VFR監視・表示duration・prune/capture・未確認末尾を変更するため、同一修正ZIPの静止/更新/標準player/両ログの実観察が必要。従来Case/fail/REAL holdを保全。",
+  "cli_checks": [
+    "python3 scripts/check.py: pass (165管理tests。sandbox内ps制限の初回errorは権限付き再実行で解消)",
+    "python3 scripts/workflow/product_check.py: pass (CLI origin21 files一致 + 既存2 tests。CLI source変更なし)",
+    "plugin純粋回帰/check/buildPlugin/verifyPluginStructureとclean committed change_impactを実行し、最終HEAD・結果・artifact hashは私有停止packetでreadbackする。GUI passではない",
+    "固定HEAD/baseの独立全面review・公開承認・CI・同じ統合ZIPのQA受入は別条件。既存passを転用しない"
+  ],
+  "cases": [
+    {
+      "id": "VFR-IDLE",
+      "artifact": "plugin",
+      "change": "packet間idleと実停止の区別",
+      "preconditions": "専用Emulator/実機を別々に固定ZIPで使用。正常clockと両ログを取得し、静止と1秒連番のfixtureをQAが所有。",
+      "steps": [
+        "11秒以上静止して保存する。",
+        "1秒ごとに画面を変え20秒取得し保存する。",
+        "session/frames/取得状態とowned接続の継続を照合する。"
+      ],
+      "expected": "正常idleだけではgap/再接続/RECOVERINGにならない。更新後は同一連続streamの実PTS差を保ち、別端末や旧結果を混ぜない。",
+      "provenance": [
+        "Issue45: 公開develop3e884547のVFR条件を修正。実環境の個別停止根因の断定とは区別。",
+        "docs/design/timeline.md: 固定scrcpy/Android仕様、時計/窓/表示保持/出力契約",
+        "既存Issue13/31/41・QA27/39/44のpending/fail/REAL holdは別に保全。"
+      ],
+      "gpt": {
+        "status": "pending",
+        "reason": "同じ修正固定ZIPのIDE/端末/標準player観察は未実施。純粋回帰から転用しない。"
+      },
+      "human": {
+        "status": "pending",
+        "reason": "人間による同じ修正固定ZIPの観察は未実施。REAL holdを保持。"
+      },
+      "fix_issue": null,
+      "fix_pr": null,
+      "recheck": "VFR/parser/store/mux/時計/依存の変更後に同じsource/ZIPで再実施。",
+      "next_action": "固定HEADの独立レビューと具体公開承認後、PMがUI42との単一候補ZIPを固定しQA27/44へ双方向移管する。"
+    },
+    {
+      "id": "VFR-WINDOW",
+      "artifact": "plugin",
+      "change": "長い静止のwindow cutとGOP保持",
+      "preconditions": "保持Nを短く設定し、Nを超える静止と前後の更新を作る。固定ZIPと標準player。",
+      "steps": [
+        "N超の静止中に保存し、10秒後にも保存する。",
+        "開始cutとTが隣接frame間にある対象を保存する。",
+        "preroll/元PTS/frame数/MP4 edit/表示時間を照合する。",
+        "clock sampleリング一巡とMP4整数範囲を超える長期静止は合成回帰で検証し、実端末側の実行範囲・未実施を別記する。"
+      ],
+      "expected": "窓内新frame0でも最後の表示frameと必要GOPを上限内で保全。同一連続streamのVFRをPTS差だけで分割せず、窓を過去へ広げない。",
+      "provenance": [
+        "Issue45: 公開develop3e884547のVFR条件を修正。実環境の個別停止根因の断定とは区別。",
+        "docs/design/timeline.md: 固定scrcpy/Android仕様、時計/窓/表示保持/出力契約",
+        "既存Issue13/31/41・QA27/39/44のpending/fail/REAL holdは別に保全。"
+      ],
+      "gpt": {
+        "status": "pending",
+        "reason": "同じ修正固定ZIPのIDE/端末/標準player観察は未実施。純粋回帰から転用しない。"
+      },
+      "human": {
+        "status": "pending",
+        "reason": "人間による同じ修正固定ZIPの観察は未実施。REAL holdを保持。"
+      },
+      "fix_issue": null,
+      "fix_pr": null,
+      "recheck": "VFR/parser/store/mux/時計/依存の変更後に同じsource/ZIPで再実施。",
+      "next_action": "固定HEADの独立レビューと具体公開承認後、PMがUI42との単一候補ZIPを固定しQA27/44へ双方向移管する。"
+    },
+    {
+      "id": "VFR-TAIL",
+      "artifact": "plugin",
+      "change": "画像保持・新frame未確認・成果物完成の分離",
+      "preconditions": "正常な連続更新と静止中の保存、失敗対象retryを同一ZIPで確認。",
+      "steps": [
+        "更新直後とframe間、長い静止中に保存する。",
+        "COMPLETED/次保存可と未確認末尾表示を確認する。",
+        "失敗後に取得/設定を進め、同じ対象を別保存先でretryする。"
+      ],
+      "expected": "保存Tは即時固定。画像保持と確認済coverageを区別し、末尾だけでFAILED/欠落通知/missingKindsへ流さない。pin解除・次保存可。retryでも末尾範囲・元frame・判断は不変。",
+      "provenance": [
+        "Issue45: 公開develop3e884547のVFR条件を修正。実環境の個別停止根因の断定とは区別。",
+        "docs/design/timeline.md: 固定scrcpy/Android仕様、時計/窓/表示保持/出力契約",
+        "既存Issue13/31/41・QA27/39/44のpending/fail/REAL holdは別に保全。"
+      ],
+      "gpt": {
+        "status": "pending",
+        "reason": "同じ修正固定ZIPのIDE/端末/標準player観察は未実施。純粋回帰から転用しない。"
+      },
+      "human": {
+        "status": "pending",
+        "reason": "人間による同じ修正固定ZIPの観察は未実施。REAL holdを保持。"
+      },
+      "fix_issue": null,
+      "fix_pr": null,
+      "recheck": "VFR/parser/store/mux/時計/依存の変更後に同じsource/ZIPで再実施。",
+      "next_action": "固定HEADの独立レビューと具体公開承認後、PMがUI42との単一候補ZIPを固定しQA27/44へ双方向移管する。"
+    },
+    {
+      "id": "VFR-BREAK",
+      "artifact": "plugin",
+      "change": "確定lossと不明な時計の保全",
+      "preconditions": "QA所有のEOF/transport断/clock不達/epoch変更/容量制限fixture。",
+      "steps": [
+        "各境界の前後と境界中に保存する。",
+        "既知lossと新frame未確認末尾が併存する対象を保存する。",
+        "gap/loss/missingとvideo_tail、元clock/PTSを照合する。"
+      ],
+      "expected": "確定break/drop/clock不明/epoch変更/未取得を跨いで補完しない。既知欠落と末尾未確認は別情報。無frameから画像を作らず、既存fail/REAL holdを保持。",
+      "provenance": [
+        "Issue45: 公開develop3e884547のVFR条件を修正。実環境の個別停止根因の断定とは区別。",
+        "docs/design/timeline.md: 固定scrcpy/Android仕様、時計/窓/表示保持/出力契約",
+        "既存Issue13/31/41・QA27/39/44のpending/fail/REAL holdは別に保全。"
+      ],
+      "gpt": {
+        "status": "pending",
+        "reason": "同じ修正固定ZIPのIDE/端末/標準player観察は未実施。純粋回帰から転用しない。"
+      },
+      "human": {
+        "status": "pending",
+        "reason": "人間による同じ修正固定ZIPの観察は未実施。REAL holdを保持。"
+      },
+      "fix_issue": null,
+      "fix_pr": null,
+      "recheck": "VFR/parser/store/mux/時計/依存の変更後に同じsource/ZIPで再実施。",
+      "next_action": "固定HEADの独立レビューと具体公開承認後、PMがUI42との単一候補ZIPを固定しQA27/44へ双方向移管する。"
+    },
+    {
+      "id": "VFR-LIFECYCLE",
+      "artifact": "plugin",
+      "change": "有界packet監視と取消し・上限",
+      "preconditions": "私有fake SDK/loopbackの回帰と、許可済みQAの所有端末のみ。",
+      "steps": [
+        "初期metadata/初回frame未到達、header/body途中停止とtrickleを試す。",
+        "EOF/process exit/取消し/旧timerとblocked clock停止を試す。",
+        "byte/disk上限、保存失敗とretryのpin保全を確認する。"
+      ],
+      "expected": "全packet期限をtrickleで延長しない。idleは切断せず実停止を復旧。旧timerは新socketを閉じず、保存の固定bytesと所有cleanupを保つ。",
+      "provenance": [
+        "Issue45: 公開develop3e884547のVFR条件を修正。実環境の個別停止根因の断定とは区別。",
+        "docs/design/timeline.md: 固定scrcpy/Android仕様、時計/窓/表示保持/出力契約",
+        "既存Issue13/31/41・QA27/39/44のpending/fail/REAL holdは別に保全。"
+      ],
+      "gpt": {
+        "status": "pending",
+        "reason": "同じ修正固定ZIPのIDE/端末/標準player観察は未実施。純粋回帰から転用しない。"
+      },
+      "human": {
+        "status": "pending",
+        "reason": "人間による同じ修正固定ZIPの観察は未実施。REAL holdを保持。"
+      },
+      "fix_issue": null,
+      "fix_pr": null,
+      "recheck": "VFR/parser/store/mux/時計/依存の変更後に同じsource/ZIPで再実施。",
+      "next_action": "固定HEADの独立レビューと具体公開承認後、PMがUI42との単一候補ZIPを固定しQA27/44へ双方向移管する。"
+    },
+    {
+      "id": "VFR-RECIPIENT",
+      "artifact": "plugin",
+      "change": "同一ZIPの標準playerと両ログ照合",
+      "preconditions": "静止/連続1秒連番/切断/unknown成果物。受取人の標準macOS player、追加ツールなし。",
+      "steps": [
+        "各partのduration/seek/連番を標準playerで観察する。",
+        "READMEとframes/sessionの表示時刻から両ログの同じ連番を照合する。",
+        "未確認末尾・確定欠落・decoder prerollを区別する。"
+      ],
+      "expected": "画像holdを確認済み取得時間と呼ばず、gapを詰めない。source/ZIP/ロード版を固定しEmulator/REAL/人間観察を区別。純粋テストをGUI passにしない。",
+      "provenance": [
+        "Issue45: 公開develop3e884547のVFR条件を修正。実環境の個別停止根因の断定とは区別。",
+        "docs/design/timeline.md: 固定scrcpy/Android仕様、時計/窓/表示保持/出力契約",
+        "既存Issue13/31/41・QA27/39/44のpending/fail/REAL holdは別に保全。"
+      ],
+      "gpt": {
+        "status": "pending",
+        "reason": "同じ修正固定ZIPのIDE/端末/標準player観察は未実施。純粋回帰から転用しない。"
+      },
+      "human": {
+        "status": "pending",
+        "reason": "人間による同じ修正固定ZIPの観察は未実施。REAL holdを保持。"
+      },
+      "fix_issue": null,
+      "fix_pr": null,
+      "recheck": "VFR/parser/store/mux/時計/依存の変更後に同じsource/ZIPで再実施。",
+      "next_action": "固定HEADの独立レビューと具体公開承認後、PMがUI42との単一候補ZIPを固定しQA27/44へ双方向移管する。"
+    }
+  ]
+}
