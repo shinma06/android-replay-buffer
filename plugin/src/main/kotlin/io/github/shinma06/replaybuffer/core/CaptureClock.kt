@@ -56,7 +56,13 @@ internal class CaptureClock {
             last.bridgeError + last.readError + (received - sent + last.received - last.sent) / 2 else Long.MAX_VALUE
         samples += ClockSample(epoch, boot, before, mono, wall, after, sent, received, hostWall, offset, bridgeError)
         if (firstHost == null) firstHost = sent + (received - sent) / 2
-        while (samples.size > 4096) samples.removeFirst()
+        while (samples.size > 4096) {
+            // A still-displayed frame may be older than the recent clock ring. Keep its epoch's original anchor.
+            val first = samples.peekFirst()
+            if (first.epoch == epoch && first.valid) {
+                samples.removeFirst(); samples.removeFirst(); samples.addFirst(first)
+            } else samples.removeFirst()
+        }
         return good
     }
 

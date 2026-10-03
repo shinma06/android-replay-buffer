@@ -41,13 +41,14 @@ class VideoReadMonitorTest {
     }
 
     @Test
-    fun initialBodyTrickleDoesNotExtendTheInitialAcquisitionDeadline() {
+    fun bodyTrickleDoesNotExtendTheWholePacketDeadline() {
         val listener = ServerSocket(0, 8, InetAddress.getLoopbackAddress())
         val client = Socket(InetAddress.getLoopbackAddress(), listener.localPort)
         val peer = listener.accept()
         val process = ProcessBuilder("/bin/sleep", "20").start()
         val timer = Executors.newSingleThreadScheduledExecutor()
         val monitor = VideoReadMonitor(client, process, timer)
+        monitor.received(true)
         val output = java.io.DataOutputStream(peer.getOutputStream())
         output.writeLong(1); output.writeInt(32); output.flush()
         val reader = thread { runCatching { readVideo(DataInputStream(client.getInputStream()), monitor::started) } }
@@ -60,6 +61,26 @@ class VideoReadMonitorTest {
             assertTrue(client.isClosed && !reader.isAlive)
         } finally {
             monitor.close(); client.close(); peer.close(); listener.close(); reader.join(2000)
+            process.destroyForcibly(); process.waitFor(2, TimeUnit.SECONDS); timer.shutdownNow(); timer.awaitTermination(2, TimeUnit.SECONDS)
+        }
+    }
+
+    @Test
+    fun completeMetadataPacketsCannotResetTheFirstFrameAcquisitionDeadline() {
+        val listener = ServerSocket(0, 8, InetAddress.getLoopbackAddress())
+        val client = Socket(InetAddress.getLoopbackAddress(), listener.localPort)
+        val peer = listener.accept()
+        val process = ProcessBuilder("/bin/sleep", "20").start()
+        val timer = Executors.newSingleThreadScheduledExecutor()
+        val monitor = VideoReadMonitor(client, process, timer)
+        try {
+            repeat(6) {
+                monitor.started(); monitor.received(false); monitor.awaitFirstFrame()
+                Thread.sleep(2000)
+            }
+            assertTrue(client.isClosed)
+        } finally {
+            monitor.close(); client.close(); peer.close(); listener.close()
             process.destroyForcibly(); process.waitFor(2, TimeUnit.SECONDS); timer.shutdownNow(); timer.awaitTermination(2, TimeUnit.SECONDS)
         }
     }

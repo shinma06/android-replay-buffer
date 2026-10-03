@@ -390,12 +390,20 @@ internal fun VideoEntry.continuousTo(next: VideoEntry, gaps: Iterable<CaptureGap
         gaps.none { gap -> (gap.stream == "video" || gap.stream == "clock") &&
             gap.intersects(time.sequence, next.time.sequence, maxOf(time.uncertainty, next.time.uncertainty)) }
 
+/** The same retained IDR/config requirement is used for both MP4 selection and its display metadata. */
+internal fun List<VideoEntry>.decodeStart(frame: VideoEntry): Int? = (indexOf(frame) downTo 0).firstOrNull { i ->
+    val key = this[i]
+    key.key && key.generation == frame.generation && key.session == frame.session && key.width == frame.width &&
+        key.height == frame.height && key.config.contentEquals(frame.config) && key.pts <= frame.pts
+}
+
 /** Frozen inputs only: a later frame, clock sample or retry cannot confirm this request's tail. */
 internal fun FrozenCapture.videoTail(): VideoTailSnapshot? {
     val last = video.lastOrNull() ?: return null
     val source = last.time.sequence.takeIf { windowKnown && last.time.uncertainty != Long.MAX_VALUE }
     if (source != null && source >= end) return null
     val boundaries = gaps.filter { (it.stream == "video" || it.stream == "clock") &&
+        !(source != null && it.toNs != null && it.toNs <= source) &&
         it.intersects(source, end, maxOf(endUncertainty, last.time.uncertainty)) }
     val boundary = boundaries.mapNotNull { it.fromNs }.minOrNull()?.coerceAtMost(end) ?: end
     val from = source?.let { maxOf(start, it) }
@@ -403,7 +411,7 @@ internal fun FrozenCapture.videoTail(): VideoTailSnapshot? {
     if (from != null && to == null) return null
     val held = from != null && to != null && last.time.epoch == windowClockEpoch &&
         boundaries.all { it.fromNs != null && it.fromNs >= to && it.boundaryUncertaintyNs != null && it.boundaryUncertaintyNs != Long.MAX_VALUE } &&
-        (states["video"]?.state == StreamState.CAPTURING || boundaries.isNotEmpty())
+        (states["video"]?.state == StreamState.CAPTURING || boundaries.isNotEmpty()) && video.decodeStart(last) != null
     return VideoTailSnapshot(from, to, last.pts, source, last.time.epoch, last.generation, held)
 }
 
