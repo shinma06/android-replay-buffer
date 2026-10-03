@@ -6,8 +6,8 @@
   "cli_checks": [
     "python3 scripts/check.py: 管理/リンク/回帰。結果はIssue/PRへ記録。",
     "python3 scripts/workflow/product_check.py: CLI原型21 filesと既存2 tests。結果はIssue/PRへ記録。",
-    "python3 tests/fixtures/replay-marker/build.py: 2 APK assembleDebug/lintDebug。source/dirty/hashを記録。GUI passとは区別。",
-    "python3 scripts/workflow/change_impact.py --base 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9 --run-tests: clean committed HEADで実施。"
+    "python3 tests/fixtures/replay-marker/build.py: 2 APK assembleDebug/lintDebugとnative回帰APK生成。source/dirty/hashを記録。実Android回帰・製品GUI passとは区別。",
+    "python3 scripts/workflow/change_impact.py --base 16123f6fa2e2c74ce4300d1acf4f54d317b3fdff --run-tests: clean committed HEADで実施。"
   ],
   "cases": [
     {
@@ -19,17 +19,21 @@
         "ENV-03"
       ],
       "change": "追加録画ツールの手動導入・PATHなし",
-      "preconditions": "専用実機1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。",
+      "preconditions": "専用実機1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。 SYNC-ENV追加前提: 当該Caseの専用fixtureで、PATHからscrcpy/ffmpeg/Pythonを外したAndroid開発環境。固定SDK/adb、同じsource/ZIP hash、共有GUI lease。",
       "steps": [
         "追加scrcpy/ffmpeg/Python等を用意しない専用環境と固定ZIPを確認する。",
-        "1プロジェクト・1台でON、イベント発生、保存を行う。"
+        "1プロジェクト・1台でON、イベント発生、保存を行う。",
+        "SYNC-ENV: Plugin ZIP内のserver/JCodec/時計DEX/license/hashを照合する。",
+        "SYNC-ENV: 機能を有効化し、実機とEmulatorで各20秒取得して保存する。",
+        "SYNC-ENV: SDK adbを使用し、追加ツール導入/PATH変更/実行時downloadなしで動くことを確認する。"
       ],
-      "expected": "標準Android開発環境だけで取得・保存できる。ホストの既存PATH/cacheへ偶然依存しない。依存取得が必要なら製品が準備し状態/失敗を示す。",
+      "expected": "標準Android開発環境だけで取得・保存できる。ホストの既存PATH/cacheへ偶然依存しない。scrcpy 4.0固定server/JCodec 0.2.5/時計DEX/license/hashをZIPへ同梱。実行時downloadなし。 SYNC-ENV: 各環境で動画と両ログ/clock metadataを保存。helper/server起動不適合は明示し、ENV-03合格にしない。",
       "provenance": [
         "Issue #27 / native parent #14",
         "docs/requirements.md: ENV-01, ENV-02, ENV-03",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用同期（PR #30 merge 16123f6fa2e2c74ce4300d1acf4f54d317b3fdff）/docs/verification/initial-version.md",
+        "docs/verification/changes/issue-13.json: SYNC-ENV（QA #34、設計結果passの転記なし）"
       ],
       "gpt": {
         "status": "blocked",
@@ -64,7 +68,7 @@
         "Issue #27 / native parent #14",
         "docs/requirements.md: LOG-01, LOG-02, SYNC-01",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用同期（PR #30 merge 16123f6fa2e2c74ce4300d1acf4f54d317b3fdff）/docs/verification/initial-version.md"
       ],
       "gpt": {
         "status": "blocked",
@@ -99,7 +103,8 @@
         "Issue #27 / native parent #14",
         "docs/requirements.md: CTL-02, CTL-04, UI-01, UI-02",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用同期（PR #30 merge 16123f6fa2e2c74ce4300d1acf4f54d317b3fdff）/docs/verification/initial-version.md",
+        "docs/design/ide-ui.md: UI-12-01（QA #29、既存REAL/EMU Caseへ接続）"
       ],
       "gpt": {
         "status": "blocked",
@@ -125,14 +130,17 @@
       "preconditions": "専用実機1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。",
       "steps": [
         "接続済みの専用端末1台を確認してONにする。",
-        "fixtureでイベントを発生して保存する。"
+        "fixtureでイベントを発生して保存する。",
+        "0台/当該種別1台の名前・種別・状態を確認。複数接続の安全な専用対象が用意できる場合だけ、2台接続と選択中対象切断を確認する。"
       ],
-      "expected": "録画開始操作なしに自動取得し、端末名/種別/アプリ/取得状態を識別できる。",
+      "expected": "録画開始操作なしに自動取得し、端末名/種別/アプリ/取得状態を識別できる。 複数接続では理由を示し無断端末切替/同時取得なし。対象が用意できない部分はblockedとして明記する。",
       "provenance": [
         "Issue #27 / native parent #14",
         "docs/requirements.md: CTL-01, UI-01",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用同期（PR #30 merge 16123f6fa2e2c74ce4300d1acf4f54d317b3fdff）/docs/verification/initial-version.md",
+        "docs/design/ide-ui.md: UI-12-01（QA #29、既存REAL/EMU Caseへ接続）",
+        "docs/design/ide-ui.md: UI-12-08（QA #29、既存REAL/EMU Caseへ接続）"
       ],
       "gpt": {
         "status": "blocked",
@@ -158,14 +166,16 @@
       "preconditions": "専用実機1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。",
       "steps": [
         "専用対象を未接続にしてONにする。",
-        "その対象だけを接続し、イベントを発生する。"
+        "その対象だけを接続し、イベントを発生する。",
+        "0台/当該種別1台の名前・種別・状態を確認。複数接続の安全な専用対象が用意できる場合だけ、2台接続と選択中対象切断を確認する。"
       ],
-      "expected": "接続待ちから自動取得へ移り、0件期間を成功としない。",
+      "expected": "接続待ちから自動取得へ移り、0件期間を成功としない。 複数接続では理由を示し無断端末切替/同時取得なし。対象が用意できない部分はblockedとして明記する。",
       "provenance": [
         "Issue #27 / native parent #14",
         "docs/requirements.md: CTL-01, UI-01",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用同期（PR #30 merge 16123f6fa2e2c74ce4300d1acf4f54d317b3fdff）/docs/verification/initial-version.md",
+        "docs/design/ide-ui.md: UI-12-08（QA #29、既存REAL/EMU Caseへ接続）"
       ],
       "gpt": {
         "status": "blocked",
@@ -198,7 +208,8 @@
         "Issue #27 / native parent #14",
         "docs/requirements.md: CTL-02, UI-01",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用同期（PR #30 merge 16123f6fa2e2c74ce4300d1acf4f54d317b3fdff）/docs/verification/initial-version.md",
+        "docs/design/ide-ui.md: UI-12-01（QA #29、既存REAL/EMU Caseへ接続）"
       ],
       "gpt": {
         "status": "blocked",
@@ -223,17 +234,22 @@
         "BUF-06"
       ],
       "change": "編集と明示適用",
-      "preconditions": "専用実機1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。",
+      "preconditions": "専用実機1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。 SYNC-LIFECYCLE追加前提: 時計/server/muxを所有generationで追跡する固定build。保存失敗fixture、同じ保存先の既存エビデンスhash。",
       "steps": [
         "取得中に保持時間/保存先/手動packageを編集しCancelする。",
-        "再編集しApply/OKで反映。Apply途中の保存/無効化を確認する。"
+        "再編集しApply/OKで反映。Apply途中の保存/無効化を確認する。",
+        "SYNC-LIFECYCLE: 保存と取得を並行し、rotation、設定明示適用、保存失敗retryを行う。",
+        "SYNC-LIFECYCLE: 接続準備/read/mux中に無効化/project closeを行う。",
+        "SYNC-LIFECYCLE: 旧callback/遅延process、新generation、保存済みhash、partialとpinの解放を照合する。"
       ],
-      "expected": "draft/Cancelでは条件不変。Applyだけ一式を反映。保存先のみで取得再起動なし。必要再起動でも窓内データ/sequenceを保持し空白を記録。OFFは即時で停止後再開しない。",
+      "expected": "draft/Cancelでは条件不変。Applyだけ一式を反映。保存先のみで取得再起動なし。必要再起動でも窓内データ/sequenceを保持し空白を記録。OFFは即時で停止後再開しない。 SYNC-LIFECYCLE: 回転でクラッシュ/既存成果物破損/復旧不能なし。pinした同じT/Nをretryし取得継続。所有process終了を確認し未保存破棄、dispose後UI更新なし。",
       "provenance": [
         "Issue #27 / native parent #14",
         "docs/requirements.md: CTL-04, CTL-05, BUF-01, BUF-06",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用同期（PR #30 merge 16123f6fa2e2c74ce4300d1acf4f54d317b3fdff）/docs/verification/initial-version.md",
+        "docs/design/ide-ui.md: UI-12-02（QA #29、既存REAL/EMU Caseへ接続）",
+        "docs/verification/changes/issue-13.json: SYNC-LIFECYCLE（QA #34、設計結果passの転記なし）"
       ],
       "gpt": {
         "status": "blocked",
@@ -266,7 +282,8 @@
         "Issue #27 / native parent #14",
         "docs/requirements.md: CTL-04, CTL-05",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用同期（PR #30 merge 16123f6fa2e2c74ce4300d1acf4f54d317b3fdff）/docs/verification/initial-version.md",
+        "docs/design/ide-ui.md: UI-12-02（QA #29、既存REAL/EMU Caseへ接続）"
       ],
       "gpt": {
         "status": "blocked",
@@ -290,17 +307,21 @@
         "SAVE-01"
       ],
       "change": "180秒実時間窓",
-      "preconditions": "専用実機1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。",
+      "preconditions": "専用実機1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。 SYNC-WINDOW追加前提: N=60秒と180秒、1秒程度の実測GOP。連番fixture、clock/frames index、固定ZIP。",
       "steps": [
         "初期180秒で180秒を超えて取得し、開始/中盤/末尾にイベントを発生する。",
-        "1ボタン保存し対象窓を照合する。"
+        "1ボタン保存し対象窓を照合する。",
+        "SYNC-WINDOW: 開始20秒で180秒設定を保存する。",
+        "SYNC-WINDOW: 60秒設定でIDRの間にcutを置き、10秒後にも保存する。",
+        "SYNC-WINDOW: 論理窓/MP4 edit/preroll/元PTS/duration/frames indexと両ログを照合する。"
       ],
-      "expected": "直近実時間180秒で取得できた区間を保存。期限外の古いイベントを集めて長さを補わない。切出し許容誤差は採用#13値で判定する。",
+      "expected": "直近実時間180秒で取得できた区間を保存。期限外の古いイベントを集めて長さを補わない。切出し許容誤差は採用#13値で判定する。 SYNC-WINDOW: 取得済み分を最大限保存。窓を過去へ広げず、同じ区間の重複可、取得停止なし。cut誤差<=1観測frame間隔+時計誤差、mux/index丸め<=1ms。prerollは別表示。",
       "provenance": [
         "Issue #27 / native parent #14",
         "docs/requirements.md: BUF-01, BUF-03, SAVE-01",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用同期（PR #30 merge 16123f6fa2e2c74ce4300d1acf4f54d317b3fdff）/docs/verification/initial-version.md",
+        "docs/verification/changes/issue-13.json: SYNC-WINDOW（QA #34、設計結果passの転記なし）"
       ],
       "gpt": {
         "status": "blocked",
@@ -323,17 +344,22 @@
         "SAVE-01"
       ],
       "change": "開始20秒の保存",
-      "preconditions": "専用実機1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。",
+      "preconditions": "専用実機1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。 SYNC-WINDOW追加前提: N=60秒と180秒、1秒程度の実測GOP。連番fixture、clock/frames index、固定ZIP。",
       "steps": [
         "180秒設定で取得開始から約20秒後に保存する。",
-        "保存区間/動画/両ログを照合する。"
+        "保存区間/動画/両ログを照合する。",
+        "SYNC-WINDOW: 開始20秒で180秒設定を保存する。",
+        "SYNC-WINDOW: 60秒設定でIDRの間にcutを置き、10秒後にも保存する。",
+        "SYNC-WINDOW: 論理窓/MP4 edit/preroll/元PTS/duration/frames indexと両ログを照合する。"
       ],
-      "expected": "180秒満了を待たず取得済み約20秒を最大限保存。切出し誤差は#13値で測定し、未取得期間を成功としない。",
+      "expected": "180秒満了を待たず取得済み約20秒を最大限保存。切出し誤差は#13値で測定し、未取得期間を成功としない。 SYNC-WINDOW: 取得済み分を最大限保存。窓を過去へ広げず、同じ区間の重複可、取得停止なし。cut誤差<=1観測frame間隔+時計誤差、mux/index丸め<=1ms。prerollは別表示。",
       "provenance": [
         "Issue #27 / native parent #14",
         "docs/requirements.md: BUF-02, SAVE-01",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用同期（PR #30 merge 16123f6fa2e2c74ce4300d1acf4f54d317b3fdff）/docs/verification/initial-version.md",
+        "docs/design/ide-ui.md: UI-12-04（QA #29、既存REAL/EMU Caseへ接続）",
+        "docs/verification/changes/issue-13.json: SYNC-WINDOW（QA #34、設計結果passの転記なし）"
       ],
       "gpt": {
         "status": "blocked",
@@ -356,17 +382,22 @@
         "SAVE-02"
       ],
       "change": "保存中継続・連続保存",
-      "preconditions": "専用実機1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。",
+      "preconditions": "専用実機1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。 SYNC-WINDOW追加前提: N=60秒と180秒、1秒程度の実測GOP。連番fixture、clock/frames index、固定ZIP。",
       "steps": [
         "60秒設定で窓を満たし、10秒間隔で2回保存する。",
-        "保存中にもイベントを発生し、次の保存結果と比較する。"
+        "保存中にもイベントを発生し、次の保存結果と比較する。",
+        "SYNC-WINDOW: 開始20秒で180秒設定を保存する。",
+        "SYNC-WINDOW: 60秒設定でIDRの間にcutを置き、10秒後にも保存する。",
+        "SYNC-WINDOW: 論理窓/MP4 edit/preroll/元PTS/duration/frames indexと両ログを照合する。"
       ],
-      "expected": "保存で取得/バッファを消さず、区間重複を許容。保存中は1要求、成功後は次を受け付ける。各完成フォルダは一意で既存出力不変。",
+      "expected": "保存で取得/バッファを消さず、区間重複を許容。保存中は1要求、成功後は次を受け付ける。各完成フォルダは一意で既存出力不変。 SYNC-WINDOW: 取得済み分を最大限保存。窓を過去へ広げず、同じ区間の重複可、取得停止なし。cut誤差<=1観測frame間隔+時計誤差、mux/index丸め<=1ms。prerollは別表示。",
       "provenance": [
         "Issue #27 / native parent #14",
         "docs/requirements.md: BUF-04, SAVE-02",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用同期（PR #30 merge 16123f6fa2e2c74ce4300d1acf4f54d317b3fdff）/docs/verification/initial-version.md",
+        "docs/design/ide-ui.md: UI-12-05（QA #29、既存REAL/EMU Caseへ接続）",
+        "docs/verification/changes/issue-13.json: SYNC-WINDOW（QA #34、設計結果passの転記なし）"
       ],
       "gpt": {
         "status": "blocked",
@@ -390,17 +421,21 @@
         "SYNC-01"
       ],
       "change": "60秒内20秒の空白",
-      "preconditions": "専用実機1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。",
+      "preconditions": "専用実機1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。 SYNC-GAP追加前提: N=60秒、実機USBとEmulatorのtransport断を別々に試す。切断確定時刻/誤差と取得generationが記録可能。",
       "steps": [
         "所有確認済みの取得経路だけを約20秒中断し復旧させる。",
-        "直近60秒内にこの空白を含め保存する。"
+        "直近60秒内にこの空白を含め保存する。",
+        "SYNC-GAP: 60秒窓内で20秒完全切断し再開して保存する。",
+        "SYNC-GAP: 次にNを超えて切断し切断中保存、その後同じbootへ再接続して保存する。",
+        "SYNC-GAP: 取得EOFを起こし即時復旧/再試行間隔と保存を照合する。"
       ],
-      "expected": "窓は60秒の実時間で取得分は約40秒。取得秒数60を集めるため過去へ拡張せず、同sequenceで空白/理由を保存する。",
+      "expected": "窓は60秒の実時間で取得分は約40秒。取得秒数60を集めるため過去へ拡張せず、同sequenceで空白/理由を保存する。 SYNC-GAP: 60秒窓の取得済み約40秒と20秒gap、same sequence。長い切断中T凍結、再接続後現在窓で旧範囲prune。gapを詰めない。端末切断瞬間と検出確定を混同しない。",
       "provenance": [
         "Issue #27 / native parent #14",
         "docs/requirements.md: BUF-03, BUF-06, SYNC-01",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用同期（PR #30 merge 16123f6fa2e2c74ce4300d1acf4f54d317b3fdff）/docs/verification/initial-version.md",
+        "docs/verification/changes/issue-13.json: SYNC-GAP（QA #34、設計結果passの転記なし）"
       ],
       "gpt": {
         "status": "blocked",
@@ -424,17 +459,23 @@
         "UI-01"
       ],
       "change": "切断前保存と再接続",
-      "preconditions": "専用実機1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。",
+      "preconditions": "専用実機1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。 SYNC-GAP追加前提: N=60秒、実機USBとEmulatorのtransport断を別々に試す。切断確定時刻/誤差と取得generationが記録可能。",
       "steps": [
         "専用対象だけを切断し直後に保存する。",
-        "同じ対象を再接続してイベント発生/保存する。"
+        "同じ対象を再接続してイベント発生/保存する。",
+        "SYNC-GAP: 60秒窓内で20秒完全切断し再開して保存する。",
+        "SYNC-GAP: 次にNを超えて切断し切断中保存、その後同じbootへ再接続して保存する。",
+        "SYNC-GAP: 取得EOFを起こし即時復旧/再試行間隔と保存を照合する。"
       ],
-      "expected": "切断前窓は保存可能。再接続で即時復旧試行、自動取得再開。同sequence、空白を保持、既保存の上書きなし。",
+      "expected": "切断前窓は保存可能。再接続で即時復旧試行、自動取得再開。同sequence、空白を保持、既保存の上書きなし。 SYNC-GAP: 60秒窓の取得済み約40秒と20秒gap、same sequence。長い切断中T凍結、再接続後現在窓で旧範囲prune。gapを詰めない。端末切断瞬間と検出確定を混同しない。",
       "provenance": [
         "Issue #27 / native parent #14",
         "docs/requirements.md: BUF-05, BUF-06, UI-01",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用同期（PR #30 merge 16123f6fa2e2c74ce4300d1acf4f54d317b3fdff）/docs/verification/initial-version.md",
+        "docs/design/ide-ui.md: UI-12-04（QA #29、既存REAL/EMU Caseへ接続）",
+        "docs/design/ide-ui.md: UI-12-08（QA #29、既存REAL/EMU Caseへ接続）",
+        "docs/verification/changes/issue-13.json: SYNC-GAP（QA #34、設計結果passの転記なし）"
       ],
       "gpt": {
         "status": "blocked",
@@ -458,17 +499,22 @@
         "UI-01"
       ],
       "change": "動画・全体ログ・アプリログ片系障害",
-      "preconditions": "専用実機1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。",
+      "preconditions": "専用実機1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。 SYNC-PARTIAL追加前提: 動画のみ/logcatのみ/clock helperのみ停止できる所有fixture。対象appのUID/PID/multiprocess履歴を提供できる実装。",
       "steps": [
         "実装側が用意した安全な方法で各取得種類を個別に失敗させる。",
-        "その間と復旧後に保存する。"
+        "その間と復旧後に保存する。",
+        "SYNC-PARTIAL: 各streamを別々に停止しN内で保存する。",
+        "SYNC-PARTIAL: appを再起動しPIDを変更して取得/保存を続ける。",
+        "SYNC-PARTIAL: 全体とapp JSONL、正常な0行、overflow/破断loss、復旧後のclock/sampleを照合する。"
       ],
-      "expected": "正常な側を継続して保存。不足種類/期間/理由を画面と同期情報に示す。log0行の正常期間は障害と区別し、復旧後も同sequence。",
+      "expected": "正常な側を継続して保存。不足種類/期間/理由を画面と同期情報に示す。log0行の正常期間は障害と区別し、復旧後も同sequence。 SYNC-PARTIAL: 健康な側のT/取得は進む。欠落種類/範囲と時計不確かさを明示。同じapp recordの時計/record_idは両ファイルで同一。app未確定を全体欠落にしない。",
       "provenance": [
         "Issue #27 / native parent #14",
         "docs/requirements.md: BUF-07, LOG-01, UI-01",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用同期（PR #30 merge 16123f6fa2e2c74ce4300d1acf4f54d317b3fdff）/docs/verification/initial-version.md",
+        "docs/design/ide-ui.md: UI-12-04（QA #29、既存REAL/EMU Caseへ接続）",
+        "docs/verification/changes/issue-13.json: SYNC-PARTIAL（QA #34、設計結果passの転記なし）"
       ],
       "gpt": {
         "status": "blocked",
@@ -491,17 +537,21 @@
         "LOG-02"
       ],
       "change": "両ログの別保存",
-      "preconditions": "専用実機1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。",
+      "preconditions": "専用実機1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。 SYNC-PARTIAL追加前提: 動画のみ/logcatのみ/clock helperのみ停止できる所有fixture。対象appのUID/PID/multiprocess履歴を提供できる実装。",
       "steps": [
         "Run対象appAを選択し、appAとappBで識別イベントを発生する。",
-        "保存された端末全体ログ/アプリログの別ファイルを調べる。"
+        "保存された端末全体ログ/アプリログの別ファイルを調べる。",
+        "SYNC-PARTIAL: 各streamを別々に停止しN内で保存する。",
+        "SYNC-PARTIAL: appを再起動しPIDを変更して取得/保存を続ける。",
+        "SYNC-PARTIAL: 全体とapp JSONL、正常な0行、overflow/破断loss、復旧後のclock/sampleを照合する。"
       ],
-      "expected": "全体ログに両アプリ、appAログに選択対象のイベントを保存。別データ/別ファイルで、対象外混入や必要イベント欠落を識別できる。",
+      "expected": "全体ログに両アプリ、appAログに選択対象のイベントを保存。別データ/別ファイルで、対象外混入や必要イベント欠落を識別できる。 SYNC-PARTIAL: 健康な側のT/取得は進む。欠落種類/範囲と時計不確かさを明示。同じapp recordの時計/record_idは両ファイルで同一。app未確定を全体欠落にしない。",
       "provenance": [
         "Issue #27 / native parent #14",
         "docs/requirements.md: LOG-01, LOG-02",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用同期（PR #30 merge 16123f6fa2e2c74ce4300d1acf4f54d317b3fdff）/docs/verification/initial-version.md",
+        "docs/verification/changes/issue-13.json: SYNC-PARTIAL（QA #34、設計結果passの転記なし）"
       ],
       "gpt": {
         "status": "blocked",
@@ -524,18 +574,23 @@
         "UI-01"
       ],
       "change": "自動・手動・再起動追従",
-      "preconditions": "専用実機1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。",
+      "preconditions": "専用実機1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。 SYNC-PARTIAL追加前提: 動画のみ/logcatのみ/clock helperのみ停止できる所有fixture。対象appのUID/PID/multiprocess履歴を提供できる実装。",
       "steps": [
         "Run対象appA→appBを変更し、variantと実applicationId/debug suffixを照合する。",
         "手動package Apply→Run対象変更→自動へ戻してApplyする。",
-        "アプリ再起動でPIDを変え、自動未解決も安全に作る。"
+        "アプリ再起動でPIDを変え、自動未解決も安全に作る。",
+        "SYNC-PARTIAL: 各streamを別々に停止しN内で保存する。",
+        "SYNC-PARTIAL: appを再起動しPIDを変更して取得/保存を続ける。",
+        "SYNC-PARTIAL: 全体とapp JSONL、正常な0行、overflow/破断loss、復旧後のclock/sampleを照合する。"
       ],
-      "expected": "namespaceを対象と誤認しない。採用#12の手動優先/解除規則に従いPID変更へ追従。切替履歴を保存し旧新ログを混ぜない。自動未解決でも動画/全体ログは継続し手動指定を案内。",
+      "expected": "namespaceを対象と誤認しない。採用#12の手動優先/解除規則に従いPID変更へ追従。切替履歴を保存し旧新ログを混ぜない。自動未解決でも動画/全体ログは継続し手動指定を案内。 SYNC-PARTIAL: 健康な側のT/取得は進む。欠落種類/範囲と時計不確かさを明示。同じapp recordの時計/record_idは両ファイルで同一。app未確定を全体欠落にしない。",
       "provenance": [
         "Issue #27 / native parent #14",
         "docs/requirements.md: LOG-02, UI-01",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用同期（PR #30 merge 16123f6fa2e2c74ce4300d1acf4f54d317b3fdff）/docs/verification/initial-version.md",
+        "docs/design/ide-ui.md: UI-12-03（QA #29、既存REAL/EMU Caseへ接続）",
+        "docs/verification/changes/issue-13.json: SYNC-PARTIAL（QA #34、設計結果passの転記なし）"
       ],
       "gpt": {
         "status": "blocked",
@@ -559,18 +614,22 @@
         "BUF-06"
       ],
       "change": "映像・両ログの同期精度",
-      "preconditions": "専用実機1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。",
+      "preconditions": "専用実機1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。 SYNC-CLOCK追加前提: 正常取得できる当該Caseの専用対象、描画とLog双方に同じ連番を出す使い捨てapp。固定画質/codec、時計sampleと描画eventの記録。",
       "steps": [
         "fixtureイベントを開始/中盤/末尾、切出し境界、中断前後に発生する。",
         "最初に番号が見える動画フレームPTSと直前PTSを読み、両ログのpackage/run/eventと時計対応を照合する。",
-        "REQUEST→DRAW→commit callbackの遅延、frame間隔、clockサンプル幅を含め誤差/不確かさを記録する。"
+        "REQUEST→DRAW→commit callbackの遅延、frame間隔、clockサンプル幅を含め誤差/不確かさを記録する。",
+        "SYNC-CLOCK: 同じUI更新callbackで連番/端末elapsedをLogへ出し、画面にも連番を描画する。描画完了のframe callback時刻も別に記録する。",
+        "SYNC-CLOCK: 30分取得し開始/中間/終了の各100イベントを保存対象にする。両ログに同じrecord_idがあることを照合する。",
+        "SYNC-CLOCK: 元PTS/clock変換誤差と描画遅延を分け、全300件の差・p95・最大・前後半中央値差を集計する。"
       ],
-      "expected": "#13採用精度内で対応でき、欠落を確認可能。REQUESTやcommitを実表示時刻としない。測定の不確かさが閾値を上回るときはpassにしない。",
+      "expected": "#13採用精度内で対応でき、欠落を確認可能。REQUESTやcommitを実表示時刻としない。測定の不確かさが閾値を上回るときはpassにしない。 SYNC-CLOCK: 通常p95<=100ms、最大<=250ms、中央値drift<=50ms、clock見積誤差<=20ms。全欠落/uncertainも集計し隠さない。100ms等は未実測の設計基準。",
       "provenance": [
         "Issue #27 / native parent #14",
         "docs/requirements.md: SYNC-01, BUF-03, BUF-06",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用同期（PR #30 merge 16123f6fa2e2c74ce4300d1acf4f54d317b3fdff）/docs/verification/initial-version.md",
+        "docs/verification/changes/issue-13.json: SYNC-CLOCK（QA #34、設計結果passの転記なし）"
       ],
       "gpt": {
         "status": "blocked",
@@ -592,17 +651,25 @@
         "SYNC-01"
       ],
       "change": "長時間・時計変化",
-      "preconditions": "専用実機1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。",
+      "preconditions": "専用実機1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。 SYNC-CLOCK追加前提: 正常取得できる当該Caseの専用対象、描画とLog双方に同じ連番を出す使い捨てapp。固定画質/codec、時計sampleと描画eventの記録。 SYNC-JUMP追加前提: 日時変更/端末sleep/再起動を許可したdisposable Emulator。hostは他作業と共有し、host sleep操作は別途PMが調整。",
       "steps": [
         "採用#13で決めた試験時間を連続取得し等間隔にイベントを発生する。",
-        "専用対象で許可された場合だけwall clock変更/アプリ再起動を行い再保存する。"
+        "専用対象で許可された場合だけwall clock変更/アプリ再起動を行い再保存する。",
+        "SYNC-CLOCK: 同じUI更新callbackで連番/端末elapsedをLogへ出し、画面にも連番を描画する。描画完了のframe callback時刻も別に記録する。",
+        "SYNC-CLOCK: 30分取得し開始/中間/終了の各100イベントを保存対象にする。両ログに同じrecord_idがあることを照合する。",
+        "SYNC-CLOCK: 元PTS/clock変換誤差と描画遅延を分け、全300件の差・p95・最大・前後半中央値差を集計する。",
+        "SYNC-JUMP: 端末日時を前後へ変更し、変更を挟むeventを記録する。",
+        "SYNC-JUMP: 端末sleep/復帰でmonoとelapsedの差を測り、境界前後を保存する。",
+        "SYNC-JUMP: 端末を再起動し新boot epochで再取得・保存、固定した失敗対象も照合する。"
       ],
-      "expected": "開始/末尾のずれを実測し採用精度内。時計変化/epoch/空白を誤対応しない。共有端末時計は変更しない。",
+      "expected": "開始/末尾のずれを実測し採用精度内。時計変化/epoch/空白を誤対応しない。共有端末時計は変更しない。 SYNC-CLOCK: 通常p95<=100ms、最大<=250ms、中央値drift<=50ms、clock見積誤差<=20ms。全欠落/uncertainも集計し隠さない。100ms等は未実測の設計基準。 SYNC-JUMP: 境界跨ぎ補間なし、曖昧logはelapsed/window nullと推定幅。正常precisionを偽装しない。sequence/旧履歴/pinは保持、新bootを旧elapsedとして計算しない。失った容量上限区間はloss。",
       "provenance": [
         "Issue #27 / native parent #14",
         "docs/requirements.md: SYNC-01",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用同期（PR #30 merge 16123f6fa2e2c74ce4300d1acf4f54d317b3fdff）/docs/verification/initial-version.md",
+        "docs/verification/changes/issue-13.json: SYNC-CLOCK（QA #34、設計結果passの転記なし）",
+        "docs/verification/changes/issue-13.json: SYNC-JUMP（QA #34、設計結果passの転記なし）"
       ],
       "gpt": {
         "status": "blocked",
@@ -627,17 +694,23 @@
         "SAVE-04"
       ],
       "change": "日時フォルダ・通知・保全",
-      "preconditions": "専用実機1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。",
+      "preconditions": "専用実機1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。 SYNC-RECIPIENT追加前提: 同じbuildのcut/2part/gap/片系/uncertain成果物。受取人側の標準macOS動画プレイヤーとテキストエディタ、追加ツールなし。",
       "steps": [
         "通常保存を2回行い、各通知から別々の完成フォルダを開く。",
-        "保持時間超過/再保存/OFF後に元の出力hashを比較する。"
+        "保持時間超過/再保存/OFF後に元の出力hashを比較する。",
+        "SYNC-RECIPIENT: READMEに沿ってpartの指定秒を再生/seekする。",
+        "SYNC-RECIPIENT: 表示秒からwindow秒を算出し、両ログ/frames/sessionを照合する。",
+        "SYNC-RECIPIENT: edit/preroll開始と終了、part間gap、動画なし保存、window nullを確認する。",
+        "通知のOSフォルダopen失敗も専用対象で確認し、理由表示とパスcopy操作を確認する。"
       ],
-      "expected": "毎回の名前/長さ/保存先入力なし。動画/両ログ/同期情報を同じ日時付き保存単位へまとめる。通知は自身の完成フォルダを開き、完成済み出力を自動削除/変更しない。",
+      "expected": "毎回の名前/長さ/保存先入力なし。動画/両ログ/同期情報を同じ日時付き保存単位へまとめる。通知は自身の完成フォルダを開き、完成済み出力を自動削除/変更しない。 SYNC-RECIPIENT: 標準playerのedit/seek/表示秒が契約と一致し、追加ビューアなしで場面/両ログ/欠落を特定できる。不適合は実装修正後再受入。 OS open失敗を成功扱いせず理由とcopy操作を案内する。",
       "provenance": [
         "Issue #27 / native parent #14",
         "docs/requirements.md: SAVE-01, SAVE-02, SAVE-03, SAVE-04",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用同期（PR #30 merge 16123f6fa2e2c74ce4300d1acf4f54d317b3fdff）/docs/verification/initial-version.md",
+        "docs/design/ide-ui.md: UI-12-06（QA #29、既存REAL/EMU Caseへ接続）",
+        "docs/verification/changes/issue-13.json: SYNC-RECIPIENT（QA #34、設計結果passの転記なし）"
       ],
       "gpt": {
         "status": "blocked",
@@ -660,17 +733,21 @@
         "CTL-04"
       ],
       "change": "OFFで停止・未保存破棄",
-      "preconditions": "専用実機1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。",
+      "preconditions": "専用実機1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。 SYNC-LIFECYCLE追加前提: 時計/server/muxを所有generationで追跡する固定build。保存失敗fixture、同じ保存先の既存エビデンスhash。",
       "steps": [
         "取得中にOFFして停止を確認する。",
-        "設定を開き、ONに戻して保存する。"
+        "設定を開き、ONに戻して保存する。",
+        "SYNC-LIFECYCLE: 保存と取得を並行し、rotation、設定明示適用、保存失敗retryを行う。",
+        "SYNC-LIFECYCLE: 接続準備/read/mux中に無効化/project closeを行う。",
+        "SYNC-LIFECYCLE: 旧callback/遅延process、新generation、保存済みhash、partialとpinの解放を照合する。"
       ],
-      "expected": "所有取得処理を終了確認し未保存バッファを破棄。完成済み出力は残る。設定編集可で、再ON時に破棄済みデータが復活しない。",
+      "expected": "所有取得処理を終了確認し未保存バッファを破棄。完成済み出力は残る。設定編集可で、再ON時に破棄済みデータが復活しない。 SYNC-LIFECYCLE: 回転でクラッシュ/既存成果物破損/復旧不能なし。pinした同じT/Nをretryし取得継続。所有process終了を確認し未保存破棄、dispose後UI更新なし。",
       "provenance": [
         "Issue #27 / native parent #14",
         "docs/requirements.md: CTL-03, CTL-04",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用同期（PR #30 merge 16123f6fa2e2c74ce4300d1acf4f54d317b3fdff）/docs/verification/initial-version.md",
+        "docs/verification/changes/issue-13.json: SYNC-LIFECYCLE（QA #34、設計結果passの転記なし）"
       ],
       "gpt": {
         "status": "blocked",
@@ -694,17 +771,22 @@
         "UI-01"
       ],
       "change": "close/終了と遅延完了",
-      "preconditions": "専用実機1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。",
+      "preconditions": "専用実機1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。 SYNC-LIFECYCLE追加前提: 時計/server/muxを所有generationで追跡する固定build。保存失敗fixture、同じ保存先の既存エビデンスhash。",
       "steps": [
         "復旧/保存中にproject closeまたはIDE終了を行う。",
-        "所有process/購読と遅延UI/通知を確認し、同じsandboxを再開する。"
+        "所有process/購読と遅延UI/通知を確認し、同じsandboxを再開する。",
+        "SYNC-LIFECYCLE: 保存と取得を並行し、rotation、設定明示適用、保存失敗retryを行う。",
+        "SYNC-LIFECYCLE: 接続準備/read/mux中に無効化/project closeを行う。",
+        "SYNC-LIFECYCLE: 旧callback/遅延process、新generation、保存済みhash、partialとpinの解放を照合する。"
       ],
-      "expected": "自分の取得/保存/購読だけ終了、dispose後にUI更新/通知/再開なし。完成済み保全、再開で二重取得なし。",
+      "expected": "自分の取得/保存/購読だけ終了、dispose後にUI更新/通知/再開なし。完成済み保全、再開で二重取得なし。 SYNC-LIFECYCLE: 回転でクラッシュ/既存成果物破損/復旧不能なし。pinした同じT/Nをretryし取得継続。所有process終了を確認し未保存破棄、dispose後UI更新なし。",
       "provenance": [
         "Issue #27 / native parent #14",
         "docs/requirements.md: CTL-03, BUF-06, UI-01",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用同期（PR #30 merge 16123f6fa2e2c74ce4300d1acf4f54d317b3fdff）/docs/verification/initial-version.md",
+        "docs/design/ide-ui.md: UI-12-07（QA #29、既存REAL/EMU Caseへ接続）",
+        "docs/verification/changes/issue-13.json: SYNC-LIFECYCLE（QA #34、設計結果passの転記なし）"
       ],
       "gpt": {
         "status": "blocked",
@@ -738,7 +820,8 @@
         "Issue #27 / native parent #14",
         "docs/requirements.md: UI-01, UI-02, CTL-04",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用同期（PR #30 merge 16123f6fa2e2c74ce4300d1acf4f54d317b3fdff）/docs/verification/initial-version.md",
+        "docs/design/ide-ui.md: UI-12-07（QA #29、既存REAL/EMU Caseへ接続）"
       ],
       "gpt": {
         "status": "blocked",
@@ -762,17 +845,21 @@
         "SYNC-01"
       ],
       "change": "回転の非致命性",
-      "preconditions": "専用実機1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。",
+      "preconditions": "専用実機1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。 SYNC-LIFECYCLE追加前提: 時計/server/muxを所有generationで追跡する固定build。保存失敗fixture、同じ保存先の既存エビデンスhash。",
       "steps": [
         "取得中に縦横回転しイベントを発生する。",
-        "保存して回転前後/既保存出力を照合する。"
+        "保存して回転前後/既保存出力を照合する。",
+        "SYNC-LIFECYCLE: 保存と取得を並行し、rotation、設定明示適用、保存失敗retryを行う。",
+        "SYNC-LIFECYCLE: 接続準備/read/mux中に無効化/project closeを行う。",
+        "SYNC-LIFECYCLE: 旧callback/遅延process、新generation、保存済みhash、partialとpinの解放を照合する。"
       ],
-      "expected": "クラッシュ・既保存破損・復旧不能なし。中断は自動復旧して同sequence/欠落を残す。完全な回転追従を合格要件へ追加しない。",
+      "expected": "クラッシュ・既保存破損・復旧不能なし。中断は自動復旧して同sequence/欠落を残す。完全な回転追従を合格要件へ追加しない。 SYNC-LIFECYCLE: 回転でクラッシュ/既存成果物破損/復旧不能なし。pinした同じT/Nをretryし取得継続。所有process終了を確認し未保存破棄、dispose後UI更新なし。",
       "provenance": [
         "Issue #27 / native parent #14",
         "docs/requirements.md: VIDEO-04, BUF-06, SYNC-01",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用同期（PR #30 merge 16123f6fa2e2c74ce4300d1acf4f54d317b3fdff）/docs/verification/initial-version.md",
+        "docs/verification/changes/issue-13.json: SYNC-LIFECYCLE（QA #34、設計結果passの転記なし）"
       ],
       "gpt": {
         "status": "blocked",
@@ -806,7 +893,7 @@
         "Issue #27 / native parent #14",
         "docs/requirements.md: VIDEO-01, VIDEO-02, VIDEO-03",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用同期（PR #30 merge 16123f6fa2e2c74ce4300d1acf4f54d317b3fdff）/docs/verification/initial-version.md"
       ],
       "gpt": {
         "status": "blocked",
@@ -829,17 +916,22 @@
         "BUF-04"
       ],
       "change": "同じ失敗対象の再試行",
-      "preconditions": "専用実機1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。",
+      "preconditions": "専用実機1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。 SYNC-LIFECYCLE追加前提: 時計/server/muxを所有generationで追跡する固定build。保存失敗fixture、同じ保存先の既存エビデンスhash。",
       "steps": [
         "専用保存先を書込み不可にして保存を失敗させる。",
-        "N秒を超えて取得を続け、別保存先を明示適用して同じ対象を再試行する。"
+        "N秒を超えて取得を続け、別保存先を明示適用して同じ対象を再試行する。",
+        "SYNC-LIFECYCLE: 保存と取得を並行し、rotation、設定明示適用、保存失敗retryを行う。",
+        "SYNC-LIFECYCLE: 接続準備/read/mux中に無効化/project closeを行う。",
+        "SYNC-LIFECYCLE: 旧callback/遅延process、新generation、保存済みhash、partialとpinの解放を照合する。"
       ],
-      "expected": "失敗1件の要求ID/区間/sequence/内容を維持。正常取得は継続、新規保存は理由付きで不可。再試行対象が現在窓へすり替わらない。",
+      "expected": "失敗1件の要求ID/区間/sequence/内容を維持。正常取得は継続、新規保存は理由付きで不可。再試行対象が現在窓へすり替わらない。 SYNC-LIFECYCLE: 回転でクラッシュ/既存成果物破損/復旧不能なし。pinした同じT/Nをretryし取得継続。所有process終了を確認し未保存破棄、dispose後UI更新なし。",
       "provenance": [
         "Issue #27 / native parent #14",
         "docs/requirements.md: SAVE-05, BUF-04",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用同期（PR #30 merge 16123f6fa2e2c74ce4300d1acf4f54d317b3fdff）/docs/verification/initial-version.md",
+        "docs/design/ide-ui.md: UI-12-05（QA #29、既存REAL/EMU Caseへ接続）",
+        "docs/verification/changes/issue-13.json: SYNC-LIFECYCLE（QA #34、設計結果passの転記なし）"
       ],
       "gpt": {
         "status": "blocked",
@@ -874,7 +966,8 @@
         "Issue #27 / native parent #14",
         "docs/requirements.md: SAVE-02, SAVE-03, SAVE-04, SAVE-05",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用同期（PR #30 merge 16123f6fa2e2c74ce4300d1acf4f54d317b3fdff）/docs/verification/initial-version.md",
+        "docs/design/ide-ui.md: UI-12-05（QA #29、既存REAL/EMU Caseへ接続）"
       ],
       "gpt": {
         "status": "blocked",
@@ -908,7 +1001,8 @@
         "Issue #27 / native parent #14",
         "docs/requirements.md: BUF-07, SAVE-05, SYNC-01",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用同期（PR #30 merge 16123f6fa2e2c74ce4300d1acf4f54d317b3fdff）/docs/verification/initial-version.md",
+        "docs/design/ide-ui.md: UI-12-06（QA #29、既存REAL/EMU Caseへ接続）"
       ],
       "gpt": {
         "status": "blocked",
@@ -943,7 +1037,7 @@
         "Issue #27 / native parent #14",
         "docs/requirements.md: BUF-02, BUF-04, SAVE-02, SAVE-05",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用同期（PR #30 merge 16123f6fa2e2c74ce4300d1acf4f54d317b3fdff）/docs/verification/initial-version.md"
       ],
       "gpt": {
         "status": "blocked",
@@ -977,7 +1071,8 @@
         "Issue #27 / native parent #14",
         "docs/requirements.md: SAVE-05, CTL-05, BUF-04",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用同期（PR #30 merge 16123f6fa2e2c74ce4300d1acf4f54d317b3fdff）/docs/verification/initial-version.md",
+        "docs/design/ide-ui.md: UI-12-05（QA #29、既存REAL/EMU Caseへ接続）"
       ],
       "gpt": {
         "status": "blocked",
@@ -1000,17 +1095,22 @@
         "CTL-03"
       ],
       "change": "保存取消し・寿命",
-      "preconditions": "専用実機1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。",
+      "preconditions": "専用実機1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。 SYNC-LIFECYCLE追加前提: 時計/server/muxを所有generationで追跡する固定build。保存失敗fixture、同じ保存先の既存エビデンスhash。",
       "steps": [
         "保存中/失敗保持中/確定直後でそれぞれOFFとproject closeを行う。",
-        "再起動後の設定/未保存状態を確認する。"
+        "再起動後の設定/未保存状態を確認する。",
+        "SYNC-LIFECYCLE: 保存と取得を並行し、rotation、設定明示適用、保存失敗retryを行う。",
+        "SYNC-LIFECYCLE: 接続準備/read/mux中に無効化/project closeを行う。",
+        "SYNC-LIFECYCLE: 旧callback/遅延process、新generation、保存済みhash、partialとpinの解放を照合する。"
       ],
-      "expected": "未確定処理を取消して終了確認後に未保存参照を解放。確定済み完成フォルダを残す。保持はIDEセッション内と案内しdispose後のUIなし。",
+      "expected": "未確定処理を取消して終了確認後に未保存参照を解放。確定済み完成フォルダを残す。保持はIDEセッション内と案内しdispose後のUIなし。 SYNC-LIFECYCLE: 回転でクラッシュ/既存成果物破損/復旧不能なし。pinした同じT/Nをretryし取得継続。所有process終了を確認し未保存破棄、dispose後UI更新なし。",
       "provenance": [
         "Issue #27 / native parent #14",
         "docs/requirements.md: SAVE-05, CTL-03",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用同期（PR #30 merge 16123f6fa2e2c74ce4300d1acf4f54d317b3fdff）/docs/verification/initial-version.md",
+        "docs/design/ide-ui.md: UI-12-05（QA #29、既存REAL/EMU Caseへ接続）",
+        "docs/verification/changes/issue-13.json: SYNC-LIFECYCLE（QA #34、設計結果passの転記なし）"
       ],
       "gpt": {
         "status": "blocked",
@@ -1043,7 +1143,8 @@
         "Issue #27 / native parent #14",
         "docs/requirements.md: SAVE-05, BUF-07",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用同期（PR #30 merge 16123f6fa2e2c74ce4300d1acf4f54d317b3fdff）/docs/verification/initial-version.md",
+        "docs/design/ide-ui.md: UI-12-05（QA #29、既存REAL/EMU Caseへ接続）"
       ],
       "gpt": {
         "status": "blocked",
@@ -1068,17 +1169,22 @@
         "SAVE-05"
       ],
       "change": "長い切断の凍結窓",
-      "preconditions": "専用実機1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。",
+      "preconditions": "専用実機1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。 SYNC-GAP追加前提: N=60秒、実機USBとEmulatorのtransport断を別々に試す。切断確定時刻/誤差と取得generationが記録可能。",
       "steps": [
         "N秒超の完全切断中に保存し、再接続して再保存する。",
-        "片系障害でも比較する。"
+        "片系障害でも比較する。",
+        "SYNC-GAP: 60秒窓内で20秒完全切断し再開して保存する。",
+        "SYNC-GAP: 次にNを超えて切断し切断中保存、その後同じbootへ再接続して保存する。",
+        "SYNC-GAP: 取得EOFを起こし即時復旧/再試行間隔と保存を照合する。"
       ],
-      "expected": "完全切断は確定時刻Tの[T-N,T]を凍結。再接続は現在Tへ戻して古い窓外を期限処理、固定要求参照は維持。同sequence。片系障害ではTを凍結しない。",
+      "expected": "完全切断は確定時刻Tの[T-N,T]を凍結。再接続は現在Tへ戻して古い窓外を期限処理、固定要求参照は維持。同sequence。片系障害ではTを凍結しない。 SYNC-GAP: 60秒窓の取得済み約40秒と20秒gap、same sequence。長い切断中T凍結、再接続後現在窓で旧範囲prune。gapを詰めない。端末切断瞬間と検出確定を混同しない。",
       "provenance": [
         "Issue #27 / native parent #14",
         "docs/requirements.md: BUF-03, BUF-05, BUF-06, SAVE-05",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用同期（PR #30 merge 16123f6fa2e2c74ce4300d1acf4f54d317b3fdff）/docs/verification/initial-version.md",
+        "docs/design/ide-ui.md: UI-12-04（QA #29、既存REAL/EMU Caseへ接続）",
+        "docs/verification/changes/issue-13.json: SYNC-GAP（QA #34、設計結果passの転記なし）"
       ],
       "gpt": {
         "status": "blocked",
@@ -1111,7 +1217,7 @@
         "Issue #27 / native parent #14",
         "docs/requirements.md: SAVE-04, SAVE-05",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用同期（PR #30 merge 16123f6fa2e2c74ce4300d1acf4f54d317b3fdff）/docs/verification/initial-version.md"
       ],
       "gpt": {
         "status": "blocked",
@@ -1135,17 +1241,21 @@
         "ENV-03"
       ],
       "change": "追加録画ツールの手動導入・PATHなし",
-      "preconditions": "専用Emulator1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。",
+      "preconditions": "専用Emulator1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。 SYNC-ENV追加前提: 当該Caseの専用fixtureで、PATHからscrcpy/ffmpeg/Pythonを外したAndroid開発環境。固定SDK/adb、同じsource/ZIP hash、共有GUI lease。",
       "steps": [
         "追加scrcpy/ffmpeg/Python等を用意しない専用環境と固定ZIPを確認する。",
-        "1プロジェクト・1台でON、イベント発生、保存を行う。"
+        "1プロジェクト・1台でON、イベント発生、保存を行う。",
+        "SYNC-ENV: Plugin ZIP内のserver/JCodec/時計DEX/license/hashを照合する。",
+        "SYNC-ENV: 機能を有効化し、実機とEmulatorで各20秒取得して保存する。",
+        "SYNC-ENV: SDK adbを使用し、追加ツール導入/PATH変更/実行時downloadなしで動くことを確認する。"
       ],
-      "expected": "標準Android開発環境だけで取得・保存できる。ホストの既存PATH/cacheへ偶然依存しない。依存取得が必要なら製品が準備し状態/失敗を示す。",
+      "expected": "標準Android開発環境だけで取得・保存できる。ホストの既存PATH/cacheへ偶然依存しない。scrcpy 4.0固定server/JCodec 0.2.5/時計DEX/license/hashをZIPへ同梱。実行時downloadなし。 SYNC-ENV: 各環境で動画と両ログ/clock metadataを保存。helper/server起動不適合は明示し、ENV-03合格にしない。",
       "provenance": [
         "Issue #27 / native parent #14",
         "docs/requirements.md: ENV-01, ENV-02, ENV-03",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用同期（PR #30 merge 16123f6fa2e2c74ce4300d1acf4f54d317b3fdff）/docs/verification/initial-version.md",
+        "docs/verification/changes/issue-13.json: SYNC-ENV（QA #34、設計結果passの転記なし）"
       ],
       "gpt": {
         "status": "pending",
@@ -1180,7 +1290,7 @@
         "Issue #27 / native parent #14",
         "docs/requirements.md: LOG-01, LOG-02, SYNC-01",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用同期（PR #30 merge 16123f6fa2e2c74ce4300d1acf4f54d317b3fdff）/docs/verification/initial-version.md"
       ],
       "gpt": {
         "status": "pending",
@@ -1215,7 +1325,8 @@
         "Issue #27 / native parent #14",
         "docs/requirements.md: CTL-02, CTL-04, UI-01, UI-02",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用同期（PR #30 merge 16123f6fa2e2c74ce4300d1acf4f54d317b3fdff）/docs/verification/initial-version.md",
+        "docs/design/ide-ui.md: UI-12-01（QA #29、既存REAL/EMU Caseへ接続）"
       ],
       "gpt": {
         "status": "pending",
@@ -1241,14 +1352,17 @@
       "preconditions": "専用Emulator1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。",
       "steps": [
         "接続済みの専用端末1台を確認してONにする。",
-        "fixtureでイベントを発生して保存する。"
+        "fixtureでイベントを発生して保存する。",
+        "0台/当該種別1台の名前・種別・状態を確認。複数接続の安全な専用対象が用意できる場合だけ、2台接続と選択中対象切断を確認する。"
       ],
-      "expected": "録画開始操作なしに自動取得し、端末名/種別/アプリ/取得状態を識別できる。",
+      "expected": "録画開始操作なしに自動取得し、端末名/種別/アプリ/取得状態を識別できる。 複数接続では理由を示し無断端末切替/同時取得なし。対象が用意できない部分はblockedとして明記する。",
       "provenance": [
         "Issue #27 / native parent #14",
         "docs/requirements.md: CTL-01, UI-01",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用同期（PR #30 merge 16123f6fa2e2c74ce4300d1acf4f54d317b3fdff）/docs/verification/initial-version.md",
+        "docs/design/ide-ui.md: UI-12-01（QA #29、既存REAL/EMU Caseへ接続）",
+        "docs/design/ide-ui.md: UI-12-08（QA #29、既存REAL/EMU Caseへ接続）"
       ],
       "gpt": {
         "status": "pending",
@@ -1274,14 +1388,16 @@
       "preconditions": "専用Emulator1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。",
       "steps": [
         "専用対象を未接続にしてONにする。",
-        "その対象だけを接続し、イベントを発生する。"
+        "その対象だけを接続し、イベントを発生する。",
+        "0台/当該種別1台の名前・種別・状態を確認。複数接続の安全な専用対象が用意できる場合だけ、2台接続と選択中対象切断を確認する。"
       ],
-      "expected": "接続待ちから自動取得へ移り、0件期間を成功としない。",
+      "expected": "接続待ちから自動取得へ移り、0件期間を成功としない。 複数接続では理由を示し無断端末切替/同時取得なし。対象が用意できない部分はblockedとして明記する。",
       "provenance": [
         "Issue #27 / native parent #14",
         "docs/requirements.md: CTL-01, UI-01",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用同期（PR #30 merge 16123f6fa2e2c74ce4300d1acf4f54d317b3fdff）/docs/verification/initial-version.md",
+        "docs/design/ide-ui.md: UI-12-08（QA #29、既存REAL/EMU Caseへ接続）"
       ],
       "gpt": {
         "status": "pending",
@@ -1314,7 +1430,8 @@
         "Issue #27 / native parent #14",
         "docs/requirements.md: CTL-02, UI-01",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用同期（PR #30 merge 16123f6fa2e2c74ce4300d1acf4f54d317b3fdff）/docs/verification/initial-version.md",
+        "docs/design/ide-ui.md: UI-12-01（QA #29、既存REAL/EMU Caseへ接続）"
       ],
       "gpt": {
         "status": "pending",
@@ -1339,17 +1456,22 @@
         "BUF-06"
       ],
       "change": "編集と明示適用",
-      "preconditions": "専用Emulator1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。",
+      "preconditions": "専用Emulator1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。 SYNC-LIFECYCLE追加前提: 時計/server/muxを所有generationで追跡する固定build。保存失敗fixture、同じ保存先の既存エビデンスhash。",
       "steps": [
         "取得中に保持時間/保存先/手動packageを編集しCancelする。",
-        "再編集しApply/OKで反映。Apply途中の保存/無効化を確認する。"
+        "再編集しApply/OKで反映。Apply途中の保存/無効化を確認する。",
+        "SYNC-LIFECYCLE: 保存と取得を並行し、rotation、設定明示適用、保存失敗retryを行う。",
+        "SYNC-LIFECYCLE: 接続準備/read/mux中に無効化/project closeを行う。",
+        "SYNC-LIFECYCLE: 旧callback/遅延process、新generation、保存済みhash、partialとpinの解放を照合する。"
       ],
-      "expected": "draft/Cancelでは条件不変。Applyだけ一式を反映。保存先のみで取得再起動なし。必要再起動でも窓内データ/sequenceを保持し空白を記録。OFFは即時で停止後再開しない。",
+      "expected": "draft/Cancelでは条件不変。Applyだけ一式を反映。保存先のみで取得再起動なし。必要再起動でも窓内データ/sequenceを保持し空白を記録。OFFは即時で停止後再開しない。 SYNC-LIFECYCLE: 回転でクラッシュ/既存成果物破損/復旧不能なし。pinした同じT/Nをretryし取得継続。所有process終了を確認し未保存破棄、dispose後UI更新なし。",
       "provenance": [
         "Issue #27 / native parent #14",
         "docs/requirements.md: CTL-04, CTL-05, BUF-01, BUF-06",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用同期（PR #30 merge 16123f6fa2e2c74ce4300d1acf4f54d317b3fdff）/docs/verification/initial-version.md",
+        "docs/design/ide-ui.md: UI-12-02（QA #29、既存REAL/EMU Caseへ接続）",
+        "docs/verification/changes/issue-13.json: SYNC-LIFECYCLE（QA #34、設計結果passの転記なし）"
       ],
       "gpt": {
         "status": "pending",
@@ -1382,7 +1504,8 @@
         "Issue #27 / native parent #14",
         "docs/requirements.md: CTL-04, CTL-05",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用同期（PR #30 merge 16123f6fa2e2c74ce4300d1acf4f54d317b3fdff）/docs/verification/initial-version.md",
+        "docs/design/ide-ui.md: UI-12-02（QA #29、既存REAL/EMU Caseへ接続）"
       ],
       "gpt": {
         "status": "pending",
@@ -1406,17 +1529,21 @@
         "SAVE-01"
       ],
       "change": "180秒実時間窓",
-      "preconditions": "専用Emulator1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。",
+      "preconditions": "専用Emulator1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。 SYNC-WINDOW追加前提: N=60秒と180秒、1秒程度の実測GOP。連番fixture、clock/frames index、固定ZIP。",
       "steps": [
         "初期180秒で180秒を超えて取得し、開始/中盤/末尾にイベントを発生する。",
-        "1ボタン保存し対象窓を照合する。"
+        "1ボタン保存し対象窓を照合する。",
+        "SYNC-WINDOW: 開始20秒で180秒設定を保存する。",
+        "SYNC-WINDOW: 60秒設定でIDRの間にcutを置き、10秒後にも保存する。",
+        "SYNC-WINDOW: 論理窓/MP4 edit/preroll/元PTS/duration/frames indexと両ログを照合する。"
       ],
-      "expected": "直近実時間180秒で取得できた区間を保存。期限外の古いイベントを集めて長さを補わない。切出し許容誤差は採用#13値で判定する。",
+      "expected": "直近実時間180秒で取得できた区間を保存。期限外の古いイベントを集めて長さを補わない。切出し許容誤差は採用#13値で判定する。 SYNC-WINDOW: 取得済み分を最大限保存。窓を過去へ広げず、同じ区間の重複可、取得停止なし。cut誤差<=1観測frame間隔+時計誤差、mux/index丸め<=1ms。prerollは別表示。",
       "provenance": [
         "Issue #27 / native parent #14",
         "docs/requirements.md: BUF-01, BUF-03, SAVE-01",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用同期（PR #30 merge 16123f6fa2e2c74ce4300d1acf4f54d317b3fdff）/docs/verification/initial-version.md",
+        "docs/verification/changes/issue-13.json: SYNC-WINDOW（QA #34、設計結果passの転記なし）"
       ],
       "gpt": {
         "status": "pending",
@@ -1439,17 +1566,22 @@
         "SAVE-01"
       ],
       "change": "開始20秒の保存",
-      "preconditions": "専用Emulator1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。",
+      "preconditions": "専用Emulator1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。 SYNC-WINDOW追加前提: N=60秒と180秒、1秒程度の実測GOP。連番fixture、clock/frames index、固定ZIP。",
       "steps": [
         "180秒設定で取得開始から約20秒後に保存する。",
-        "保存区間/動画/両ログを照合する。"
+        "保存区間/動画/両ログを照合する。",
+        "SYNC-WINDOW: 開始20秒で180秒設定を保存する。",
+        "SYNC-WINDOW: 60秒設定でIDRの間にcutを置き、10秒後にも保存する。",
+        "SYNC-WINDOW: 論理窓/MP4 edit/preroll/元PTS/duration/frames indexと両ログを照合する。"
       ],
-      "expected": "180秒満了を待たず取得済み約20秒を最大限保存。切出し誤差は#13値で測定し、未取得期間を成功としない。",
+      "expected": "180秒満了を待たず取得済み約20秒を最大限保存。切出し誤差は#13値で測定し、未取得期間を成功としない。 SYNC-WINDOW: 取得済み分を最大限保存。窓を過去へ広げず、同じ区間の重複可、取得停止なし。cut誤差<=1観測frame間隔+時計誤差、mux/index丸め<=1ms。prerollは別表示。",
       "provenance": [
         "Issue #27 / native parent #14",
         "docs/requirements.md: BUF-02, SAVE-01",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用同期（PR #30 merge 16123f6fa2e2c74ce4300d1acf4f54d317b3fdff）/docs/verification/initial-version.md",
+        "docs/design/ide-ui.md: UI-12-04（QA #29、既存REAL/EMU Caseへ接続）",
+        "docs/verification/changes/issue-13.json: SYNC-WINDOW（QA #34、設計結果passの転記なし）"
       ],
       "gpt": {
         "status": "pending",
@@ -1472,17 +1604,22 @@
         "SAVE-02"
       ],
       "change": "保存中継続・連続保存",
-      "preconditions": "専用Emulator1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。",
+      "preconditions": "専用Emulator1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。 SYNC-WINDOW追加前提: N=60秒と180秒、1秒程度の実測GOP。連番fixture、clock/frames index、固定ZIP。",
       "steps": [
         "60秒設定で窓を満たし、10秒間隔で2回保存する。",
-        "保存中にもイベントを発生し、次の保存結果と比較する。"
+        "保存中にもイベントを発生し、次の保存結果と比較する。",
+        "SYNC-WINDOW: 開始20秒で180秒設定を保存する。",
+        "SYNC-WINDOW: 60秒設定でIDRの間にcutを置き、10秒後にも保存する。",
+        "SYNC-WINDOW: 論理窓/MP4 edit/preroll/元PTS/duration/frames indexと両ログを照合する。"
       ],
-      "expected": "保存で取得/バッファを消さず、区間重複を許容。保存中は1要求、成功後は次を受け付ける。各完成フォルダは一意で既存出力不変。",
+      "expected": "保存で取得/バッファを消さず、区間重複を許容。保存中は1要求、成功後は次を受け付ける。各完成フォルダは一意で既存出力不変。 SYNC-WINDOW: 取得済み分を最大限保存。窓を過去へ広げず、同じ区間の重複可、取得停止なし。cut誤差<=1観測frame間隔+時計誤差、mux/index丸め<=1ms。prerollは別表示。",
       "provenance": [
         "Issue #27 / native parent #14",
         "docs/requirements.md: BUF-04, SAVE-02",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用同期（PR #30 merge 16123f6fa2e2c74ce4300d1acf4f54d317b3fdff）/docs/verification/initial-version.md",
+        "docs/design/ide-ui.md: UI-12-05（QA #29、既存REAL/EMU Caseへ接続）",
+        "docs/verification/changes/issue-13.json: SYNC-WINDOW（QA #34、設計結果passの転記なし）"
       ],
       "gpt": {
         "status": "pending",
@@ -1506,17 +1643,21 @@
         "SYNC-01"
       ],
       "change": "60秒内20秒の空白",
-      "preconditions": "専用Emulator1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。",
+      "preconditions": "専用Emulator1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。 SYNC-GAP追加前提: N=60秒、実機USBとEmulatorのtransport断を別々に試す。切断確定時刻/誤差と取得generationが記録可能。",
       "steps": [
         "所有確認済みの取得経路だけを約20秒中断し復旧させる。",
-        "直近60秒内にこの空白を含め保存する。"
+        "直近60秒内にこの空白を含め保存する。",
+        "SYNC-GAP: 60秒窓内で20秒完全切断し再開して保存する。",
+        "SYNC-GAP: 次にNを超えて切断し切断中保存、その後同じbootへ再接続して保存する。",
+        "SYNC-GAP: 取得EOFを起こし即時復旧/再試行間隔と保存を照合する。"
       ],
-      "expected": "窓は60秒の実時間で取得分は約40秒。取得秒数60を集めるため過去へ拡張せず、同sequenceで空白/理由を保存する。",
+      "expected": "窓は60秒の実時間で取得分は約40秒。取得秒数60を集めるため過去へ拡張せず、同sequenceで空白/理由を保存する。 SYNC-GAP: 60秒窓の取得済み約40秒と20秒gap、same sequence。長い切断中T凍結、再接続後現在窓で旧範囲prune。gapを詰めない。端末切断瞬間と検出確定を混同しない。",
       "provenance": [
         "Issue #27 / native parent #14",
         "docs/requirements.md: BUF-03, BUF-06, SYNC-01",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用同期（PR #30 merge 16123f6fa2e2c74ce4300d1acf4f54d317b3fdff）/docs/verification/initial-version.md",
+        "docs/verification/changes/issue-13.json: SYNC-GAP（QA #34、設計結果passの転記なし）"
       ],
       "gpt": {
         "status": "pending",
@@ -1540,17 +1681,23 @@
         "UI-01"
       ],
       "change": "切断前保存と再接続",
-      "preconditions": "専用Emulator1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。",
+      "preconditions": "専用Emulator1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。 SYNC-GAP追加前提: N=60秒、実機USBとEmulatorのtransport断を別々に試す。切断確定時刻/誤差と取得generationが記録可能。",
       "steps": [
         "専用対象だけを切断し直後に保存する。",
-        "同じ対象を再接続してイベント発生/保存する。"
+        "同じ対象を再接続してイベント発生/保存する。",
+        "SYNC-GAP: 60秒窓内で20秒完全切断し再開して保存する。",
+        "SYNC-GAP: 次にNを超えて切断し切断中保存、その後同じbootへ再接続して保存する。",
+        "SYNC-GAP: 取得EOFを起こし即時復旧/再試行間隔と保存を照合する。"
       ],
-      "expected": "切断前窓は保存可能。再接続で即時復旧試行、自動取得再開。同sequence、空白を保持、既保存の上書きなし。",
+      "expected": "切断前窓は保存可能。再接続で即時復旧試行、自動取得再開。同sequence、空白を保持、既保存の上書きなし。 SYNC-GAP: 60秒窓の取得済み約40秒と20秒gap、same sequence。長い切断中T凍結、再接続後現在窓で旧範囲prune。gapを詰めない。端末切断瞬間と検出確定を混同しない。",
       "provenance": [
         "Issue #27 / native parent #14",
         "docs/requirements.md: BUF-05, BUF-06, UI-01",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用同期（PR #30 merge 16123f6fa2e2c74ce4300d1acf4f54d317b3fdff）/docs/verification/initial-version.md",
+        "docs/design/ide-ui.md: UI-12-04（QA #29、既存REAL/EMU Caseへ接続）",
+        "docs/design/ide-ui.md: UI-12-08（QA #29、既存REAL/EMU Caseへ接続）",
+        "docs/verification/changes/issue-13.json: SYNC-GAP（QA #34、設計結果passの転記なし）"
       ],
       "gpt": {
         "status": "pending",
@@ -1574,17 +1721,22 @@
         "UI-01"
       ],
       "change": "動画・全体ログ・アプリログ片系障害",
-      "preconditions": "専用Emulator1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。",
+      "preconditions": "専用Emulator1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。 SYNC-PARTIAL追加前提: 動画のみ/logcatのみ/clock helperのみ停止できる所有fixture。対象appのUID/PID/multiprocess履歴を提供できる実装。",
       "steps": [
         "実装側が用意した安全な方法で各取得種類を個別に失敗させる。",
-        "その間と復旧後に保存する。"
+        "その間と復旧後に保存する。",
+        "SYNC-PARTIAL: 各streamを別々に停止しN内で保存する。",
+        "SYNC-PARTIAL: appを再起動しPIDを変更して取得/保存を続ける。",
+        "SYNC-PARTIAL: 全体とapp JSONL、正常な0行、overflow/破断loss、復旧後のclock/sampleを照合する。"
       ],
-      "expected": "正常な側を継続して保存。不足種類/期間/理由を画面と同期情報に示す。log0行の正常期間は障害と区別し、復旧後も同sequence。",
+      "expected": "正常な側を継続して保存。不足種類/期間/理由を画面と同期情報に示す。log0行の正常期間は障害と区別し、復旧後も同sequence。 SYNC-PARTIAL: 健康な側のT/取得は進む。欠落種類/範囲と時計不確かさを明示。同じapp recordの時計/record_idは両ファイルで同一。app未確定を全体欠落にしない。",
       "provenance": [
         "Issue #27 / native parent #14",
         "docs/requirements.md: BUF-07, LOG-01, UI-01",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用同期（PR #30 merge 16123f6fa2e2c74ce4300d1acf4f54d317b3fdff）/docs/verification/initial-version.md",
+        "docs/design/ide-ui.md: UI-12-04（QA #29、既存REAL/EMU Caseへ接続）",
+        "docs/verification/changes/issue-13.json: SYNC-PARTIAL（QA #34、設計結果passの転記なし）"
       ],
       "gpt": {
         "status": "pending",
@@ -1607,17 +1759,21 @@
         "LOG-02"
       ],
       "change": "両ログの別保存",
-      "preconditions": "専用Emulator1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。",
+      "preconditions": "専用Emulator1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。 SYNC-PARTIAL追加前提: 動画のみ/logcatのみ/clock helperのみ停止できる所有fixture。対象appのUID/PID/multiprocess履歴を提供できる実装。",
       "steps": [
         "Run対象appAを選択し、appAとappBで識別イベントを発生する。",
-        "保存された端末全体ログ/アプリログの別ファイルを調べる。"
+        "保存された端末全体ログ/アプリログの別ファイルを調べる。",
+        "SYNC-PARTIAL: 各streamを別々に停止しN内で保存する。",
+        "SYNC-PARTIAL: appを再起動しPIDを変更して取得/保存を続ける。",
+        "SYNC-PARTIAL: 全体とapp JSONL、正常な0行、overflow/破断loss、復旧後のclock/sampleを照合する。"
       ],
-      "expected": "全体ログに両アプリ、appAログに選択対象のイベントを保存。別データ/別ファイルで、対象外混入や必要イベント欠落を識別できる。",
+      "expected": "全体ログに両アプリ、appAログに選択対象のイベントを保存。別データ/別ファイルで、対象外混入や必要イベント欠落を識別できる。 SYNC-PARTIAL: 健康な側のT/取得は進む。欠落種類/範囲と時計不確かさを明示。同じapp recordの時計/record_idは両ファイルで同一。app未確定を全体欠落にしない。",
       "provenance": [
         "Issue #27 / native parent #14",
         "docs/requirements.md: LOG-01, LOG-02",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用同期（PR #30 merge 16123f6fa2e2c74ce4300d1acf4f54d317b3fdff）/docs/verification/initial-version.md",
+        "docs/verification/changes/issue-13.json: SYNC-PARTIAL（QA #34、設計結果passの転記なし）"
       ],
       "gpt": {
         "status": "pending",
@@ -1640,18 +1796,23 @@
         "UI-01"
       ],
       "change": "自動・手動・再起動追従",
-      "preconditions": "専用Emulator1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。",
+      "preconditions": "専用Emulator1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。 SYNC-PARTIAL追加前提: 動画のみ/logcatのみ/clock helperのみ停止できる所有fixture。対象appのUID/PID/multiprocess履歴を提供できる実装。",
       "steps": [
         "Run対象appA→appBを変更し、variantと実applicationId/debug suffixを照合する。",
         "手動package Apply→Run対象変更→自動へ戻してApplyする。",
-        "アプリ再起動でPIDを変え、自動未解決も安全に作る。"
+        "アプリ再起動でPIDを変え、自動未解決も安全に作る。",
+        "SYNC-PARTIAL: 各streamを別々に停止しN内で保存する。",
+        "SYNC-PARTIAL: appを再起動しPIDを変更して取得/保存を続ける。",
+        "SYNC-PARTIAL: 全体とapp JSONL、正常な0行、overflow/破断loss、復旧後のclock/sampleを照合する。"
       ],
-      "expected": "namespaceを対象と誤認しない。採用#12の手動優先/解除規則に従いPID変更へ追従。切替履歴を保存し旧新ログを混ぜない。自動未解決でも動画/全体ログは継続し手動指定を案内。",
+      "expected": "namespaceを対象と誤認しない。採用#12の手動優先/解除規則に従いPID変更へ追従。切替履歴を保存し旧新ログを混ぜない。自動未解決でも動画/全体ログは継続し手動指定を案内。 SYNC-PARTIAL: 健康な側のT/取得は進む。欠落種類/範囲と時計不確かさを明示。同じapp recordの時計/record_idは両ファイルで同一。app未確定を全体欠落にしない。",
       "provenance": [
         "Issue #27 / native parent #14",
         "docs/requirements.md: LOG-02, UI-01",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用同期（PR #30 merge 16123f6fa2e2c74ce4300d1acf4f54d317b3fdff）/docs/verification/initial-version.md",
+        "docs/design/ide-ui.md: UI-12-03（QA #29、既存REAL/EMU Caseへ接続）",
+        "docs/verification/changes/issue-13.json: SYNC-PARTIAL（QA #34、設計結果passの転記なし）"
       ],
       "gpt": {
         "status": "pending",
@@ -1675,18 +1836,22 @@
         "BUF-06"
       ],
       "change": "映像・両ログの同期精度",
-      "preconditions": "専用Emulator1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。",
+      "preconditions": "専用Emulator1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。 SYNC-CLOCK追加前提: 正常取得できる当該Caseの専用対象、描画とLog双方に同じ連番を出す使い捨てapp。固定画質/codec、時計sampleと描画eventの記録。",
       "steps": [
         "fixtureイベントを開始/中盤/末尾、切出し境界、中断前後に発生する。",
         "最初に番号が見える動画フレームPTSと直前PTSを読み、両ログのpackage/run/eventと時計対応を照合する。",
-        "REQUEST→DRAW→commit callbackの遅延、frame間隔、clockサンプル幅を含め誤差/不確かさを記録する。"
+        "REQUEST→DRAW→commit callbackの遅延、frame間隔、clockサンプル幅を含め誤差/不確かさを記録する。",
+        "SYNC-CLOCK: 同じUI更新callbackで連番/端末elapsedをLogへ出し、画面にも連番を描画する。描画完了のframe callback時刻も別に記録する。",
+        "SYNC-CLOCK: 30分取得し開始/中間/終了の各100イベントを保存対象にする。両ログに同じrecord_idがあることを照合する。",
+        "SYNC-CLOCK: 元PTS/clock変換誤差と描画遅延を分け、全300件の差・p95・最大・前後半中央値差を集計する。"
       ],
-      "expected": "#13採用精度内で対応でき、欠落を確認可能。REQUESTやcommitを実表示時刻としない。測定の不確かさが閾値を上回るときはpassにしない。",
+      "expected": "#13採用精度内で対応でき、欠落を確認可能。REQUESTやcommitを実表示時刻としない。測定の不確かさが閾値を上回るときはpassにしない。 SYNC-CLOCK: 通常p95<=100ms、最大<=250ms、中央値drift<=50ms、clock見積誤差<=20ms。全欠落/uncertainも集計し隠さない。100ms等は未実測の設計基準。",
       "provenance": [
         "Issue #27 / native parent #14",
         "docs/requirements.md: SYNC-01, BUF-03, BUF-06",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用同期（PR #30 merge 16123f6fa2e2c74ce4300d1acf4f54d317b3fdff）/docs/verification/initial-version.md",
+        "docs/verification/changes/issue-13.json: SYNC-CLOCK（QA #34、設計結果passの転記なし）"
       ],
       "gpt": {
         "status": "pending",
@@ -1708,17 +1873,25 @@
         "SYNC-01"
       ],
       "change": "長時間・時計変化",
-      "preconditions": "専用Emulator1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。",
+      "preconditions": "専用Emulator1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。 SYNC-CLOCK追加前提: 正常取得できる当該Caseの専用対象、描画とLog双方に同じ連番を出す使い捨てapp。固定画質/codec、時計sampleと描画eventの記録。 SYNC-JUMP追加前提: 日時変更/端末sleep/再起動を許可したdisposable Emulator。hostは他作業と共有し、host sleep操作は別途PMが調整。",
       "steps": [
         "採用#13で決めた試験時間を連続取得し等間隔にイベントを発生する。",
-        "専用対象で許可された場合だけwall clock変更/アプリ再起動を行い再保存する。"
+        "専用対象で許可された場合だけwall clock変更/アプリ再起動を行い再保存する。",
+        "SYNC-CLOCK: 同じUI更新callbackで連番/端末elapsedをLogへ出し、画面にも連番を描画する。描画完了のframe callback時刻も別に記録する。",
+        "SYNC-CLOCK: 30分取得し開始/中間/終了の各100イベントを保存対象にする。両ログに同じrecord_idがあることを照合する。",
+        "SYNC-CLOCK: 元PTS/clock変換誤差と描画遅延を分け、全300件の差・p95・最大・前後半中央値差を集計する。",
+        "SYNC-JUMP: 端末日時を前後へ変更し、変更を挟むeventを記録する。",
+        "SYNC-JUMP: 端末sleep/復帰でmonoとelapsedの差を測り、境界前後を保存する。",
+        "SYNC-JUMP: 端末を再起動し新boot epochで再取得・保存、固定した失敗対象も照合する。"
       ],
-      "expected": "開始/末尾のずれを実測し採用精度内。時計変化/epoch/空白を誤対応しない。共有端末時計は変更しない。",
+      "expected": "開始/末尾のずれを実測し採用精度内。時計変化/epoch/空白を誤対応しない。共有端末時計は変更しない。 SYNC-CLOCK: 通常p95<=100ms、最大<=250ms、中央値drift<=50ms、clock見積誤差<=20ms。全欠落/uncertainも集計し隠さない。100ms等は未実測の設計基準。 SYNC-JUMP: 境界跨ぎ補間なし、曖昧logはelapsed/window nullと推定幅。正常precisionを偽装しない。sequence/旧履歴/pinは保持、新bootを旧elapsedとして計算しない。失った容量上限区間はloss。",
       "provenance": [
         "Issue #27 / native parent #14",
         "docs/requirements.md: SYNC-01",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用同期（PR #30 merge 16123f6fa2e2c74ce4300d1acf4f54d317b3fdff）/docs/verification/initial-version.md",
+        "docs/verification/changes/issue-13.json: SYNC-CLOCK（QA #34、設計結果passの転記なし）",
+        "docs/verification/changes/issue-13.json: SYNC-JUMP（QA #34、設計結果passの転記なし）"
       ],
       "gpt": {
         "status": "pending",
@@ -1743,17 +1916,23 @@
         "SAVE-04"
       ],
       "change": "日時フォルダ・通知・保全",
-      "preconditions": "専用Emulator1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。",
+      "preconditions": "専用Emulator1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。 SYNC-RECIPIENT追加前提: 同じbuildのcut/2part/gap/片系/uncertain成果物。受取人側の標準macOS動画プレイヤーとテキストエディタ、追加ツールなし。",
       "steps": [
         "通常保存を2回行い、各通知から別々の完成フォルダを開く。",
-        "保持時間超過/再保存/OFF後に元の出力hashを比較する。"
+        "保持時間超過/再保存/OFF後に元の出力hashを比較する。",
+        "SYNC-RECIPIENT: READMEに沿ってpartの指定秒を再生/seekする。",
+        "SYNC-RECIPIENT: 表示秒からwindow秒を算出し、両ログ/frames/sessionを照合する。",
+        "SYNC-RECIPIENT: edit/preroll開始と終了、part間gap、動画なし保存、window nullを確認する。",
+        "通知のOSフォルダopen失敗も専用対象で確認し、理由表示とパスcopy操作を確認する。"
       ],
-      "expected": "毎回の名前/長さ/保存先入力なし。動画/両ログ/同期情報を同じ日時付き保存単位へまとめる。通知は自身の完成フォルダを開き、完成済み出力を自動削除/変更しない。",
+      "expected": "毎回の名前/長さ/保存先入力なし。動画/両ログ/同期情報を同じ日時付き保存単位へまとめる。通知は自身の完成フォルダを開き、完成済み出力を自動削除/変更しない。 SYNC-RECIPIENT: 標準playerのedit/seek/表示秒が契約と一致し、追加ビューアなしで場面/両ログ/欠落を特定できる。不適合は実装修正後再受入。 OS open失敗を成功扱いせず理由とcopy操作を案内する。",
       "provenance": [
         "Issue #27 / native parent #14",
         "docs/requirements.md: SAVE-01, SAVE-02, SAVE-03, SAVE-04",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用同期（PR #30 merge 16123f6fa2e2c74ce4300d1acf4f54d317b3fdff）/docs/verification/initial-version.md",
+        "docs/design/ide-ui.md: UI-12-06（QA #29、既存REAL/EMU Caseへ接続）",
+        "docs/verification/changes/issue-13.json: SYNC-RECIPIENT（QA #34、設計結果passの転記なし）"
       ],
       "gpt": {
         "status": "pending",
@@ -1776,17 +1955,21 @@
         "CTL-04"
       ],
       "change": "OFFで停止・未保存破棄",
-      "preconditions": "専用Emulator1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。",
+      "preconditions": "専用Emulator1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。 SYNC-LIFECYCLE追加前提: 時計/server/muxを所有generationで追跡する固定build。保存失敗fixture、同じ保存先の既存エビデンスhash。",
       "steps": [
         "取得中にOFFして停止を確認する。",
-        "設定を開き、ONに戻して保存する。"
+        "設定を開き、ONに戻して保存する。",
+        "SYNC-LIFECYCLE: 保存と取得を並行し、rotation、設定明示適用、保存失敗retryを行う。",
+        "SYNC-LIFECYCLE: 接続準備/read/mux中に無効化/project closeを行う。",
+        "SYNC-LIFECYCLE: 旧callback/遅延process、新generation、保存済みhash、partialとpinの解放を照合する。"
       ],
-      "expected": "所有取得処理を終了確認し未保存バッファを破棄。完成済み出力は残る。設定編集可で、再ON時に破棄済みデータが復活しない。",
+      "expected": "所有取得処理を終了確認し未保存バッファを破棄。完成済み出力は残る。設定編集可で、再ON時に破棄済みデータが復活しない。 SYNC-LIFECYCLE: 回転でクラッシュ/既存成果物破損/復旧不能なし。pinした同じT/Nをretryし取得継続。所有process終了を確認し未保存破棄、dispose後UI更新なし。",
       "provenance": [
         "Issue #27 / native parent #14",
         "docs/requirements.md: CTL-03, CTL-04",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用同期（PR #30 merge 16123f6fa2e2c74ce4300d1acf4f54d317b3fdff）/docs/verification/initial-version.md",
+        "docs/verification/changes/issue-13.json: SYNC-LIFECYCLE（QA #34、設計結果passの転記なし）"
       ],
       "gpt": {
         "status": "pending",
@@ -1810,17 +1993,22 @@
         "UI-01"
       ],
       "change": "close/終了と遅延完了",
-      "preconditions": "専用Emulator1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。",
+      "preconditions": "専用Emulator1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。 SYNC-LIFECYCLE追加前提: 時計/server/muxを所有generationで追跡する固定build。保存失敗fixture、同じ保存先の既存エビデンスhash。",
       "steps": [
         "復旧/保存中にproject closeまたはIDE終了を行う。",
-        "所有process/購読と遅延UI/通知を確認し、同じsandboxを再開する。"
+        "所有process/購読と遅延UI/通知を確認し、同じsandboxを再開する。",
+        "SYNC-LIFECYCLE: 保存と取得を並行し、rotation、設定明示適用、保存失敗retryを行う。",
+        "SYNC-LIFECYCLE: 接続準備/read/mux中に無効化/project closeを行う。",
+        "SYNC-LIFECYCLE: 旧callback/遅延process、新generation、保存済みhash、partialとpinの解放を照合する。"
       ],
-      "expected": "自分の取得/保存/購読だけ終了、dispose後にUI更新/通知/再開なし。完成済み保全、再開で二重取得なし。",
+      "expected": "自分の取得/保存/購読だけ終了、dispose後にUI更新/通知/再開なし。完成済み保全、再開で二重取得なし。 SYNC-LIFECYCLE: 回転でクラッシュ/既存成果物破損/復旧不能なし。pinした同じT/Nをretryし取得継続。所有process終了を確認し未保存破棄、dispose後UI更新なし。",
       "provenance": [
         "Issue #27 / native parent #14",
         "docs/requirements.md: CTL-03, BUF-06, UI-01",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用同期（PR #30 merge 16123f6fa2e2c74ce4300d1acf4f54d317b3fdff）/docs/verification/initial-version.md",
+        "docs/design/ide-ui.md: UI-12-07（QA #29、既存REAL/EMU Caseへ接続）",
+        "docs/verification/changes/issue-13.json: SYNC-LIFECYCLE（QA #34、設計結果passの転記なし）"
       ],
       "gpt": {
         "status": "pending",
@@ -1854,7 +2042,8 @@
         "Issue #27 / native parent #14",
         "docs/requirements.md: UI-01, UI-02, CTL-04",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用同期（PR #30 merge 16123f6fa2e2c74ce4300d1acf4f54d317b3fdff）/docs/verification/initial-version.md",
+        "docs/design/ide-ui.md: UI-12-07（QA #29、既存REAL/EMU Caseへ接続）"
       ],
       "gpt": {
         "status": "pending",
@@ -1878,17 +2067,21 @@
         "SYNC-01"
       ],
       "change": "回転の非致命性",
-      "preconditions": "専用Emulator1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。",
+      "preconditions": "専用Emulator1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。 SYNC-LIFECYCLE追加前提: 時計/server/muxを所有generationで追跡する固定build。保存失敗fixture、同じ保存先の既存エビデンスhash。",
       "steps": [
         "取得中に縦横回転しイベントを発生する。",
-        "保存して回転前後/既保存出力を照合する。"
+        "保存して回転前後/既保存出力を照合する。",
+        "SYNC-LIFECYCLE: 保存と取得を並行し、rotation、設定明示適用、保存失敗retryを行う。",
+        "SYNC-LIFECYCLE: 接続準備/read/mux中に無効化/project closeを行う。",
+        "SYNC-LIFECYCLE: 旧callback/遅延process、新generation、保存済みhash、partialとpinの解放を照合する。"
       ],
-      "expected": "クラッシュ・既保存破損・復旧不能なし。中断は自動復旧して同sequence/欠落を残す。完全な回転追従を合格要件へ追加しない。",
+      "expected": "クラッシュ・既保存破損・復旧不能なし。中断は自動復旧して同sequence/欠落を残す。完全な回転追従を合格要件へ追加しない。 SYNC-LIFECYCLE: 回転でクラッシュ/既存成果物破損/復旧不能なし。pinした同じT/Nをretryし取得継続。所有process終了を確認し未保存破棄、dispose後UI更新なし。",
       "provenance": [
         "Issue #27 / native parent #14",
         "docs/requirements.md: VIDEO-04, BUF-06, SYNC-01",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用同期（PR #30 merge 16123f6fa2e2c74ce4300d1acf4f54d317b3fdff）/docs/verification/initial-version.md",
+        "docs/verification/changes/issue-13.json: SYNC-LIFECYCLE（QA #34、設計結果passの転記なし）"
       ],
       "gpt": {
         "status": "pending",
@@ -1922,7 +2115,7 @@
         "Issue #27 / native parent #14",
         "docs/requirements.md: VIDEO-01, VIDEO-02, VIDEO-03",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用同期（PR #30 merge 16123f6fa2e2c74ce4300d1acf4f54d317b3fdff）/docs/verification/initial-version.md"
       ],
       "gpt": {
         "status": "pending",
@@ -1945,17 +2138,22 @@
         "BUF-04"
       ],
       "change": "同じ失敗対象の再試行",
-      "preconditions": "専用Emulator1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。",
+      "preconditions": "専用Emulator1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。 SYNC-LIFECYCLE追加前提: 時計/server/muxを所有generationで追跡する固定build。保存失敗fixture、同じ保存先の既存エビデンスhash。",
       "steps": [
         "専用保存先を書込み不可にして保存を失敗させる。",
-        "N秒を超えて取得を続け、別保存先を明示適用して同じ対象を再試行する。"
+        "N秒を超えて取得を続け、別保存先を明示適用して同じ対象を再試行する。",
+        "SYNC-LIFECYCLE: 保存と取得を並行し、rotation、設定明示適用、保存失敗retryを行う。",
+        "SYNC-LIFECYCLE: 接続準備/read/mux中に無効化/project closeを行う。",
+        "SYNC-LIFECYCLE: 旧callback/遅延process、新generation、保存済みhash、partialとpinの解放を照合する。"
       ],
-      "expected": "失敗1件の要求ID/区間/sequence/内容を維持。正常取得は継続、新規保存は理由付きで不可。再試行対象が現在窓へすり替わらない。",
+      "expected": "失敗1件の要求ID/区間/sequence/内容を維持。正常取得は継続、新規保存は理由付きで不可。再試行対象が現在窓へすり替わらない。 SYNC-LIFECYCLE: 回転でクラッシュ/既存成果物破損/復旧不能なし。pinした同じT/Nをretryし取得継続。所有process終了を確認し未保存破棄、dispose後UI更新なし。",
       "provenance": [
         "Issue #27 / native parent #14",
         "docs/requirements.md: SAVE-05, BUF-04",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用同期（PR #30 merge 16123f6fa2e2c74ce4300d1acf4f54d317b3fdff）/docs/verification/initial-version.md",
+        "docs/design/ide-ui.md: UI-12-05（QA #29、既存REAL/EMU Caseへ接続）",
+        "docs/verification/changes/issue-13.json: SYNC-LIFECYCLE（QA #34、設計結果passの転記なし）"
       ],
       "gpt": {
         "status": "pending",
@@ -1990,7 +2188,8 @@
         "Issue #27 / native parent #14",
         "docs/requirements.md: SAVE-02, SAVE-03, SAVE-04, SAVE-05",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用同期（PR #30 merge 16123f6fa2e2c74ce4300d1acf4f54d317b3fdff）/docs/verification/initial-version.md",
+        "docs/design/ide-ui.md: UI-12-05（QA #29、既存REAL/EMU Caseへ接続）"
       ],
       "gpt": {
         "status": "pending",
@@ -2024,7 +2223,8 @@
         "Issue #27 / native parent #14",
         "docs/requirements.md: BUF-07, SAVE-05, SYNC-01",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用同期（PR #30 merge 16123f6fa2e2c74ce4300d1acf4f54d317b3fdff）/docs/verification/initial-version.md",
+        "docs/design/ide-ui.md: UI-12-06（QA #29、既存REAL/EMU Caseへ接続）"
       ],
       "gpt": {
         "status": "pending",
@@ -2059,7 +2259,7 @@
         "Issue #27 / native parent #14",
         "docs/requirements.md: BUF-02, BUF-04, SAVE-02, SAVE-05",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用同期（PR #30 merge 16123f6fa2e2c74ce4300d1acf4f54d317b3fdff）/docs/verification/initial-version.md"
       ],
       "gpt": {
         "status": "pending",
@@ -2093,7 +2293,8 @@
         "Issue #27 / native parent #14",
         "docs/requirements.md: SAVE-05, CTL-05, BUF-04",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用同期（PR #30 merge 16123f6fa2e2c74ce4300d1acf4f54d317b3fdff）/docs/verification/initial-version.md",
+        "docs/design/ide-ui.md: UI-12-05（QA #29、既存REAL/EMU Caseへ接続）"
       ],
       "gpt": {
         "status": "pending",
@@ -2116,17 +2317,22 @@
         "CTL-03"
       ],
       "change": "保存取消し・寿命",
-      "preconditions": "専用Emulator1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。",
+      "preconditions": "専用Emulator1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。 SYNC-LIFECYCLE追加前提: 時計/server/muxを所有generationで追跡する固定build。保存失敗fixture、同じ保存先の既存エビデンスhash。",
       "steps": [
         "保存中/失敗保持中/確定直後でそれぞれOFFとproject closeを行う。",
-        "再起動後の設定/未保存状態を確認する。"
+        "再起動後の設定/未保存状態を確認する。",
+        "SYNC-LIFECYCLE: 保存と取得を並行し、rotation、設定明示適用、保存失敗retryを行う。",
+        "SYNC-LIFECYCLE: 接続準備/read/mux中に無効化/project closeを行う。",
+        "SYNC-LIFECYCLE: 旧callback/遅延process、新generation、保存済みhash、partialとpinの解放を照合する。"
       ],
-      "expected": "未確定処理を取消して終了確認後に未保存参照を解放。確定済み完成フォルダを残す。保持はIDEセッション内と案内しdispose後のUIなし。",
+      "expected": "未確定処理を取消して終了確認後に未保存参照を解放。確定済み完成フォルダを残す。保持はIDEセッション内と案内しdispose後のUIなし。 SYNC-LIFECYCLE: 回転でクラッシュ/既存成果物破損/復旧不能なし。pinした同じT/Nをretryし取得継続。所有process終了を確認し未保存破棄、dispose後UI更新なし。",
       "provenance": [
         "Issue #27 / native parent #14",
         "docs/requirements.md: SAVE-05, CTL-03",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用同期（PR #30 merge 16123f6fa2e2c74ce4300d1acf4f54d317b3fdff）/docs/verification/initial-version.md",
+        "docs/design/ide-ui.md: UI-12-05（QA #29、既存REAL/EMU Caseへ接続）",
+        "docs/verification/changes/issue-13.json: SYNC-LIFECYCLE（QA #34、設計結果passの転記なし）"
       ],
       "gpt": {
         "status": "pending",
@@ -2159,7 +2365,8 @@
         "Issue #27 / native parent #14",
         "docs/requirements.md: SAVE-05, BUF-07",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用同期（PR #30 merge 16123f6fa2e2c74ce4300d1acf4f54d317b3fdff）/docs/verification/initial-version.md",
+        "docs/design/ide-ui.md: UI-12-05（QA #29、既存REAL/EMU Caseへ接続）"
       ],
       "gpt": {
         "status": "pending",
@@ -2184,17 +2391,22 @@
         "SAVE-05"
       ],
       "change": "長い切断の凍結窓",
-      "preconditions": "専用Emulator1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。",
+      "preconditions": "専用Emulator1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。 SYNC-GAP追加前提: N=60秒、実機USBとEmulatorのtransport断を別々に試す。切断確定時刻/誤差と取得generationが記録可能。",
       "steps": [
         "N秒超の完全切断中に保存し、再接続して再保存する。",
-        "片系障害でも比較する。"
+        "片系障害でも比較する。",
+        "SYNC-GAP: 60秒窓内で20秒完全切断し再開して保存する。",
+        "SYNC-GAP: 次にNを超えて切断し切断中保存、その後同じbootへ再接続して保存する。",
+        "SYNC-GAP: 取得EOFを起こし即時復旧/再試行間隔と保存を照合する。"
       ],
-      "expected": "完全切断は確定時刻Tの[T-N,T]を凍結。再接続は現在Tへ戻して古い窓外を期限処理、固定要求参照は維持。同sequence。片系障害ではTを凍結しない。",
+      "expected": "完全切断は確定時刻Tの[T-N,T]を凍結。再接続は現在Tへ戻して古い窓外を期限処理、固定要求参照は維持。同sequence。片系障害ではTを凍結しない。 SYNC-GAP: 60秒窓の取得済み約40秒と20秒gap、same sequence。長い切断中T凍結、再接続後現在窓で旧範囲prune。gapを詰めない。端末切断瞬間と検出確定を混同しない。",
       "provenance": [
         "Issue #27 / native parent #14",
         "docs/requirements.md: BUF-03, BUF-05, BUF-06, SAVE-05",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用同期（PR #30 merge 16123f6fa2e2c74ce4300d1acf4f54d317b3fdff）/docs/verification/initial-version.md",
+        "docs/design/ide-ui.md: UI-12-04（QA #29、既存REAL/EMU Caseへ接続）",
+        "docs/verification/changes/issue-13.json: SYNC-GAP（QA #34、設計結果passの転記なし）"
       ],
       "gpt": {
         "status": "pending",
@@ -2227,7 +2439,7 @@
         "Issue #27 / native parent #14",
         "docs/requirements.md: SAVE-04, SAVE-05",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用同期（PR #30 merge 16123f6fa2e2c74ce4300d1acf4f54d317b3fdff）/docs/verification/initial-version.md"
       ],
       "gpt": {
         "status": "pending",

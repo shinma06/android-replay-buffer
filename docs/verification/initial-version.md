@@ -6,7 +6,7 @@
 
 ## 設計と試験範囲
 
-準備の同期baseはdevelop `e84d5fbf9f1ca3b23dc29be805480680d862d237`、[要件](../requirements.md)と[保存設計](../plugin-design.md)です。UIは[#12](https://github.com/shinma06/android-replay-buffer/issues/12)、同期・録画方式は[#13](https://github.com/shinma06/android-replay-buffer/issues/13)の採用結果に追随します。UIのPR #28は同期baseへ統合済みです。[採用UI設計](../design/ide-ui.md)のUI-12-01〜08を以下のCaseへ接続し、実装/GUIの完了とは区別します。同期精度などをこの計画が独自に決めません。
+準備の同期baseはdevelop `16123f6fa2e2c74ce4300d1acf4f54d317b3fdff`、[要件](../requirements.md)と[保存設計](../plugin-design.md)です。UIは[#12](https://github.com/shinma06/android-replay-buffer/issues/12)、同期・録画方式は[#13](https://github.com/shinma06/android-replay-buffer/issues/13)の採用結果に追随します。UIのPR #28は同期baseへ統合済みです。[採用UI設計](../design/ide-ui.md)のUI-12-01〜08を以下のCaseへ接続し、実装/GUIの完了とは区別します。同期PR #30も統合済みです。[採用同期設計](../design/timeline.md)のscrcpy 4.0 / JCodec 0.2.5、端末elapsed共通軸、MP4 parts/JSONL/clock metadata、精度・切出し基準を採用します。設計基準は実測結果ではありません。
 
 受入前にPM/実装担当が以下を固定し、Issue/Case前提へ追記します。値や観察が不足するCaseは開始せずblockedにします。
 
@@ -25,7 +25,7 @@
 2. QAは[operations](../operations.md)の共有leaseを取得し、最初の操作・install・起動・再起動直前にtoken/期限をprivateで確認する。タスク別lease directoryで並行操作しない。
 3. 同じRabbit SDKの専用IDE sandbox/config/systemと新規の非VCS共有設定を用意し、通常IDE/他プロジェクトを開かない。fixtureは[replay-marker](../../tests/fixtures/replay-marker/README.md)を専用プロジェクトとして使用する。
 4. Android StudioのSDK Managerで**Android SDK Command-line Tools**の版を選んで導入し、正確な版/packageとSDK rootを記録する。ネットワーク・容量・license操作はPMの環境割当後に行う。SDK全体の更新や既存packageの置換はしない。
-5. 同梱sdkmanagerの一覧で実在するAPI 29以上の`arm64-v8a` imageを選び、package ID/版を固定する。候補は`system-images;android-37;google_apis;arm64-v8a`だが存在/対応は未照合。なければ利用可能な版をPMが決め、未存在のpackageを準備済みとしない。
+5. 同梱sdkmanagerの一覧で実在するAPI 29以上の`arm64-v8a` imageを選び、package ID/版を固定する。公式sdkmanager 23.0の一覧で`system-images;android-37.0;google_apis;arm64-v8a` revision 6.0.0の存在を照合しました。実インストール/互換性は別確認です。なければ利用可能な版をPMが決め、未存在のpackageを準備済みとしない。
 6. Android Studio Device Managerで製品専用の新規AVDを作り、image/API/ABI/端末profileを記録する。初回はfresh data、ユーザーアカウントなし。既存AVDのwipe/snapshot変更はしない。専用AVD以外を停止しない。
 7. fixture 2 APKのclean source/hash/署名を固定して専用対象へだけ導入。`appA`/`appB`のAndroid App Run configurationを選べることを確認する。複数接続している場合は他端末を勝手に切断せずPMへ戻す。
 8. 実機の準備は保留。再開時には専用端末/API 29以上、接続許可、個人情報のない状態、対象1台と所有を確認し、同じ製品ZIPで試験する。
@@ -52,6 +52,8 @@ Caseごとに実機/Emulator別のIDで記録します。共通記録はcandidat
 環境/build識別→初回OFF/接続/設定→短時間/180秒/連続保存→両ログ/アプリ選択/同期→切断/片系/長い空白→保存失敗/容量/取消し→close/回転/再確認の順で行います。Emulatorだけを先行でき、実機blockedを消しません。
 
 同期ではfixtureのpackage/run/eventを両ログと照合し、動画で初めて番号が見えるフレームPTSと直前PTSを記録します。REQUESTは操作callback、DRAWはCanvas命令、FRAME_COMMITはcallback観察で、いずれも真の表示時刻とはみなしません。[公式frame commit仕様](https://developer.android.com/reference/android/view/ViewTreeObserver#registerFrameCommitCallback(java.lang.Runnable))を根拠に、request→draw→commit、callback dispatch、render→表示→録画、frame間隔、wall/elapsedサンプリング幅を測定の不確かさへ含めます。#13の対応方式/閾値を採用し、fixtureだけで物理表示時刻が測れたとは主張しません。
+
+同期の具体測定は[fixture測定補助手順](../../tests/fixtures/replay-marker/README.md#同期測定補助macos標準api)に従い、native復号の色遷移PTS＋全300件の番号確認、欠落/重複/unknown、各phaseと時計誤差を別記します。30分の開始/中間/終了各100件、p95≤100ms/最大≤250ms/drift≤50ms/clock≤20msは採用#13の未実測基準です。
 
 保存先障害と取得用一時領域障害を分けます。段階別write/final renameやENOSPCの試験は、実装の承認済みfault injectionまたは容量を制限した使い捨て領域でのみ行います。ホスト全体を埋めず、共有ADB serverを止めず、所有不明processをkillしません。再現方法が不足するCaseはblocked。fault injection/単体試験だけの成功を、実機/Emulatorの受入passへ置き換えません。
 
@@ -95,9 +97,33 @@ Caseごとに実機/Emulator別のIDで記録します。共通記録はcandidat
 | `SAVE-FAIL-08` | BUF-03, BUF-05, BUF-06, SAVE-05 | 長い切断の凍結窓 |
 | `SAVE-FAIL-09` | SAVE-04, SAVE-05 | 異常終了後の所有確認 |
 
+
+設計Caseは下表の既存シナリオへ接続し、それぞれREAL/EMUへ展開済みです。新規Caseを複製せず、66 Caseと実機blocked/Emulator pendingを維持します。UI #29／同期 #34のQAとの最終ZIP readbackは別に必要です。
+
+| 設計Case | 既存Case（REAL/EMU） |
+| --- | --- |
+| `UI-12-01` | `INITIAL-OFF`, `ENABLE-CONNECTED`, `STATE-RESTORE` |
+| `UI-12-02` | `SETTINGS-APPLY`, `SETTINGS-INVALID` |
+| `UI-12-03` | `APP-SELECTION` |
+| `UI-12-04` | `BUFFER-SHORT`, `PARTIAL-CAPTURE`, `RECONNECT`, `SAVE-FAIL-08` |
+| `UI-12-05` | `SAVE-CONTINUE`, `SAVE-FAIL-01`, `SAVE-FAIL-02`, `SAVE-FAIL-05`, `SAVE-FAIL-06`, `SAVE-FAIL-07` |
+| `UI-12-06` | `SAVE-OUTPUT`, `SAVE-FAIL-03` |
+| `UI-12-07` | `UI-LIFECYCLE`, `DISPOSE` |
+| `UI-12-08` | `ENABLE-WAIT`, `ENABLE-CONNECTED`, `RECONNECT` |
+| `SYNC-ENV` | `ENV-READY` |
+| `SYNC-CLOCK` | `SYNC-PRECISION`, `SYNC-DRIFT` |
+| `SYNC-WINDOW` | `BUFFER-SHORT`, `BUFFER-180`, `SAVE-CONTINUE` |
+| `SYNC-GAP` | `REALTIME-GAP`, `RECONNECT`, `SAVE-FAIL-08` |
+| `SYNC-PARTIAL` | `PARTIAL-CAPTURE`, `LOG-SEPARATION`, `APP-SELECTION` |
+| `SYNC-JUMP` | `SYNC-DRIFT` |
+| `SYNC-RECIPIENT` | `SAVE-OUTPUT` |
+| `SYNC-LIFECYCLE` | `ROTATION`, `SETTINGS-APPLY`, `DISABLE`, `DISPOSE`, `SAVE-FAIL-01`, `SAVE-FAIL-06` |
+
 ## 既存QA・main・資源の引継ぎ
 
 基盤[#7](https://github.com/shinma06/android-replay-buffer/issues/7)のPLUGIN-LOAD/API互換と再起動を同じ最終ZIPで確認します。既存Caseの開発段階説明が製品実装で変更された場合は、PMが適用する期待値を明示してから観察し、古い文面のpassを捏造しません。
+
+UI設計QA [#29](https://github.com/shinma06/android-replay-buffer/issues/29)／同期設計QA [#34](https://github.com/shinma06/android-replay-buffer/issues/34)の未実施Caseを上表へ接続しています。設計PRのmergeを製品受入へ転記せず、同じ最終ZIPで観察し双方向で結果を引き継ぎます。
 
 文書[#8](https://github.com/shinma06/android-replay-buffer/issues/8)／[#24](https://github.com/shinma06/android-replay-buffer/issues/24)／[#26](https://github.com/shinma06/android-replay-buffer/issues/26)はGUIなしの文書/CLI原型保全/設計Case接続とmain反映をPMが別に照合します。#27準備PRのmergeだけでそれらや#14/#10/Milestoneをcloseしません。
 
