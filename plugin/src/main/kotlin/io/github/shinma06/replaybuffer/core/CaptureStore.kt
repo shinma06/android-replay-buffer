@@ -121,15 +121,15 @@ internal class CaptureStore(
     }
 
     @Synchronized
-    fun frame(packet: VideoPacket.Frame, owner: Long, host: Long = System.nanoTime()) {
-        if (closed || owner != generation) return
+    fun frame(packet: VideoPacket.Frame, owner: Long, host: Long = System.nanoTime()): Boolean {
+        if (closed || owner != generation) return false
         if (packet.config) {
             require(packet.bytes.size <= ReplaySettings.MAX_CONFIG_PACKET_BYTES) { "動画configが64KiBを超えました" }
             if (!config.contentEquals(packet.bytes)) {
                 status("video", StreamState.RECOVERING, "動画configが切り替わりました", owner)
                 channel?.close(); channel = null; currentFile = null
             }
-            config = packet.bytes.copyOf(); return
+            config = packet.bytes.copyOf(); return videoReady()
         }
         require(width > 0 && height > 0 && config.isNotEmpty()) { "動画の寸法/configがありません" }
         if (packet.pts <= previousPts) { clock.boundary(); error("動画PTSが単調ではありません") }
@@ -140,7 +140,7 @@ internal class CaptureStore(
             channel = FileChannel.open(currentFile, CREATE_NEW, WRITE)
             ownedFiles.add(currentFile!!)
         }
-        val out = channel ?: run { addGap("video", clock.now(host), clock.now(host), "IDR待ちでframeを保持できません"); return }
+        val out = channel ?: run { addGap("video", clock.now(host), clock.now(host), "IDR待ちでframeを保持できません"); return false }
         require(out.position() + packet.bytes.size <= 32L * 1024 * 1024) { "GOPが32MiBを超えました" }
         check(Files.getFileStore(directory).usableSpace >= minFree) { "取得用一時領域の空き容量が不足しています" }
         val time = clock.video(packet.pts, host)
@@ -157,7 +157,11 @@ internal class CaptureStore(
         configRefs[config] = references + 1
         enforceVideoLimit()
         status("video", StreamState.CAPTURING, if (time.elapsed == null || time.sequence == null || time.uncertainty > 20_000_000) "動画の時刻対応を確認できません" else null, owner)
+        return videoReady()
     }
+
+    /** Ready only while the current GOP's decode-start frame remains indexed after byte/packet limits. */
+    private fun videoReady(): Boolean = channel != null && video.lastOrNull { it.key }?.file == currentFile
 
     @Synchronized
     fun app(packageName: String?, uid: Long?, pids: Set<Int>, owner: Long, uidExclusive: Boolean = false) {
