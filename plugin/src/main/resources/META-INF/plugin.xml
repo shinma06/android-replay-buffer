@@ -8,6 +8,21 @@
         現段階では情報表示のみで、録画・保存は既存のPython CLIを使用します。
     ]]></description>
     <depends>com.intellij.modules.platform</depends>
+    <depends>org.jetbrains.android</depends>
+    <depends>com.intellij.modules.androidstudio</depends>
+    <extensions defaultExtensionNs="com.intellij">
+        <toolWindow id="Android Replay Buffer"
+                    anchor="right"
+                    doNotActivateOnStart="true"
+                    icon="AllIcons.Actions.Restart"
+                    factoryClass="io.github.shinma06.replaybuffer.ui.ReplayToolWindowFactory"/>
+        <projectConfigurable parentId="tools"
+                             nonDefaultProject="true"
+                             id="io.github.shinma06.replaybuffer.settings"
+                             displayName="Android Replay Buffer"
+                             instance="io.github.shinma06.replaybuffer.settings.ReplaySettingsConfigurable"/>
+        <postStartupActivity implementation="io.github.shinma06.replaybuffer.ide.ReplayProjectActivity"/>
+    </extensions>
     <actions>
         <action id="io.github.shinma06.replaybuffer.About"
                 class="io.github.shinma06.replaybuffer.AboutReplayBufferAction"
