@@ -61,6 +61,16 @@ Caseごとに実機/Emulator別のIDで記録します。共通記録はcandidat
 
 同じシナリオを`-REAL`と`-EMU`へ分け、全Caseの前提/操作/期待/根拠/状態/修正/再確認/次操作をJSONに持たせています。
 
+Caseの「対象/端末」はID末尾の環境だけを指します。`-EMU`の実行に実機を要求せず、片方の結果を他方へ転記しません。設計Caseの共通契約は維持し、環境固有の前提/操作を次のように分けます。
+
+| 対応する設計Case | REAL | EMU |
+| --- | --- | --- |
+| `SYNC-ENV` | 専用実機だけで20秒取得/保存 | 専用Emulatorだけで20秒取得/保存 |
+| `SYNC-GAP` | 専用実機だけのUSB抜去/再接続。同じbootで20秒/N超の切断 | AVDを稼働したまま、承認済みの対象transport遮断/復旧。同じbootを保ち、共有ADB server停止・AVD再起動で代用しない |
+| `SYNC-JUMP` | 将来の専用実機で、許可済みの日時変更/sleep/通常再起動の安全な方法を確認してから実行 | 専用AVDだけの許可済み日時変更/sleep/通常再起動。host日時/sleepへ操作を広げない |
+
+安全な遮断/時計操作/復帰方法やsleepの実測が不足するCaseはblockedとしてowner・再開条件を記録し、手順を省略してpassにしません。画面OFFだけでdeep sleepを実証したとせず、mono/elapsedの差を観察します。現在のREAL全Caseは利用者保留blocked、EMU全Caseは未実施pendingのままです。
+
 | Case（REAL/EMU別） | 要件 | 確認 |
 | --- | --- | --- |
 | `ENV-READY` | ENV-01, ENV-02, ENV-03 | 追加録画ツールの手動導入・PATHなし |
