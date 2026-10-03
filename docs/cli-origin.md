@@ -4,9 +4,9 @@
 
 - 固定source: [`e6fb021b144d4f0f6a1f7916e92449610b3ff80c`](https://github.com/shinma06/android-replay-buffer/tree/e6fb021b144d4f0f6a1f7916e92449610b3ff80c)
 - 内容: 初期CLI実装とlogcat/scrcpy再試行・log-only保存
-- [原README](cli-origin/README.md)、[原設計書](../設計書.md)、[全ファイルmanifest](cli-origin/manifest.json)
+- [原README](cli-origin/README.md)、[CLI原型の設計（凍結）](cli-origin/design.md)、[全ファイルmanifest](cli-origin/manifest.json)
 
-原型の実装、起動スクリプト、設定例、launchd、pyproject、テスト、設計書は元の場所に維持します。プロジェクト共通のREADMEとgitignoreだけは開発基盤用に更新するため、原文を `docs/cli-origin/` に別保存しています。manifestは元の名前・現在の保存先・SHA-256・実行権限を記録します。元commitの全21ファイルが対象です。
+原型の実装、起動スクリプト、設定例、launchd、pyproject、テストは既存の実行方法を保つため元の場所に維持します。CLI設計書は現在のプラグイン設計と区別するため `docs/cli-origin/design.md` に移動し、原文を保持しています。プロジェクト共通のREADMEとgitignoreは開発基盤用に更新するため、原文を同じ `docs/cli-origin/` に別保存しています。manifestは元の名前・現在の保存先・SHA-256・実行権限を記録します。元commitの全21ファイルが対象です。
 
 ```bash
 python3 scripts/workflow/product_check.py

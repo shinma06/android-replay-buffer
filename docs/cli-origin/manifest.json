@@ -103,7 +103,7 @@
       "mode": "100644"
     },
     "設計書.md": {
-      "path": "設計書.md",
+      "path": "docs/cli-origin/design.md",
       "sha256": "acdaa03993d8e1b5c9dcfc6059361e4c9d136df43cf9005521ae302026515db0",
       "mode": "100644"
     }

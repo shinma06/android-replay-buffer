@@ -2,11 +2,12 @@
   "schema": 1,
   "issue": 5,
   "gui_required": false,
-  "reason": "製品目的の文書化と受入記録のみ。CLI・プラグイン・端末・録画の実行経路を変更しないためGUI確認は不要。記載した将来機能の実機受入は主張しない。",
+  "reason": "製品目的の文書化、CLI原型設計書の配置/命名/参照と保全manifestの保存先更新のみ。原文bytes/hash/modeと製品実行経路を維持するためGUI確認は不要。将来機能の実機受入は主張しない。",
   "cli_checks": [
-    "python3 scripts/check.py: pass (163 tests)",
-    "python3 scripts/workflow/product_check.py: pass (2 tests)",
-    "git diff --check: pass"
+    "python3 scripts/check.py: 必須。管理/リンク検証の結果はIssue/PRに記録",
+    "python3 scripts/workflow/product_check.py: 必須。CLI原型21 files/2 testsの結果はIssue/PRに記録",
+    "python3 scripts/workflow/change_impact.py --base origin/develop --run-tests: clean固定HEADで実施",
+    "原commitの設計書と移動後design.mdのbytes/hash/mode一致を確認"
   ],
   "cases": []
 }

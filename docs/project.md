@@ -52,7 +52,7 @@ GeForceアプリやOBSのリプレイバッファから着想を得て、直近�
 | 利用可能な原型 | macOS向けPython CLI、Python 3.9以上。`replayd` / `replay save,status,stop`。[保全方針](cli-origin.md) |
 | 依存 | adb、scrcpy、ffmpeg。Python追加依存なし。任意YAMLは既存実装の条件に従う |
 | 実装 | `plugin/` が開発対象。CLI原型は `replay_buffer/`、入口 `bin/`、設定 `config.json.example`、起動例 `launchd/` を維持 |
-| 仕様 | [README](../README.md)、[原CLI README](cli-origin/README.md)、[既存設計書](../設計書.md)。実装との差は確認して扱い、設計の記述だけで実装済みとしない |
+| 仕様 | [README](../README.md)、[原CLI README](cli-origin/README.md)、[CLI原型の設計（凍結）](cli-origin/design.md)。実装との差は確認して扱い、設計の記述だけで実装済みとしない |
 | テスト | `tests/test_log_buffer.py` の既存2ケース。実機録画・再接続・動画保存を網羅するものではない |
 | 開発ハーネス | Python 3.11以上、標準ライブラリ、Bash、macOS/Linux。CLIの要求版を変更しない |
 | 統合先 | 製品変更は `develop`。固定候補を `main` へpromotion。GUI不要toolingは `main`。main/developは作成済み |
