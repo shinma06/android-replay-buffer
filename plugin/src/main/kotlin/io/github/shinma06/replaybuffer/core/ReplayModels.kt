@@ -66,7 +66,14 @@ data class StreamSnapshot(
     val state: StreamState = StreamState.WAITING,
     val availableSeconds: Double = 0.0,
     val reason: String? = null,
+    val gaps: List<CaptureGap> = emptyList(),
 )
+
+data class ApplicationPeriodSnapshot(
+    val packageName: String?, val fromNs: Long?, val toNs: Long?, val clockEpoch: Int,
+    val resolved: Boolean,
+)
+
 data class SaveSnapshot(
     val phase: SavePhase = SavePhase.IDLE,
     val requestId: String? = null,
@@ -77,6 +84,9 @@ data class SaveSnapshot(
     val directory: Path? = null,
     val error: String? = null,
     val missingKinds: List<String> = emptyList(),
+    val device: ReplayDevice? = null,
+    val application: ApplicationTarget? = null,
+    val applicationHistory: List<ApplicationPeriodSnapshot> = emptyList(),
 )
 
 /** Callbacks run on replay-control, never EDT. Consumers must dispatch to EDT and reject stale revisions. */
@@ -98,6 +108,8 @@ data class ReplaySnapshot(
     val canSave: Boolean = false,
     val saveDisabledReason: String? = null,
     val error: String? = null,
+    val windowStartNs: Long? = null,
+    val cleanupPendingCount: Int = 0,
 )
 
 data class ReplayOperation(val accepted: Boolean, val reason: String? = null, val requestId: String? = null)

@@ -25,10 +25,10 @@ internal class DeviceCapture(
     private val serial = serialArgument(serial)
     private val adb = OwnedAdb(adbPath)
     private val stopping = AtomicBoolean()
-    private val timer = Executors.newSingleThreadScheduledExecutor { r -> Thread(r, "replay-watchdog").apply { isDaemon = true } }
+    private val timer = captureWatchdog()
     private val workers = mutableListOf<Thread>()
     private val sockets = ConcurrentHashMap.newKeySet<Socket>()
-    private val ports = ConcurrentHashMap.newKeySet<String>()
+    private val ports = ConcurrentHashMap<String, String>()
     private val token = UUID.randomUUID().toString().replace("-", "")
     private val serverFile = "/data/local/tmp/replay-$token-server.jar"
     private val clockFile = "/data/local/tmp/replay-$token-clock.jar"
@@ -37,6 +37,11 @@ internal class DeviceCapture(
     var cleanupPending: Boolean = false
         private set
     @Volatile private var application = application
+    @Volatile private var videoHealth: VideoReadMonitor? = null
+
+    fun reportVideoHealth() {
+        if (videoHealth?.arrivalUnconfirmed == true) store.videoArrivalUnconfirmed(generation)
+    }
 
     fun start() {
         launch("clock", ::clock)
@@ -98,31 +103,36 @@ internal class DeviceCapture(
         val scid = Random.nextInt(1, Int.MAX_VALUE).toString(16).padStart(8, '0')
         val port = adb.command("-s", serial, "forward", "tcp:0", "localabstract:scrcpy_$scid").trim()
         require(Regex("[0-9]{1,5}").matches(port) && port.toInt() in 1..65535)
-        ports.add(port)
+        ports[port] = "localabstract:scrcpy_$scid"
         // All shell tokens are fixed or generated hex; no user-supplied shell text is interpolated.
         val server = adb.start("-s", serial, "shell", "CLASSPATH=$serverFile app_process / --nice-name=$serverName com.genymobile.scrcpy.Server 4.0 " +
             "scid=$scid tunnel_forward=true audio=false control=false video_codec=h264 send_device_meta=false " +
             "send_frame_meta=true send_stream_meta=true max_size=1920 max_fps=30 video_bit_rate=8000000 " +
             "video_codec_options=max-bframes:int=0,i-frame-interval:int=1")
-        val socket = Socket()
-        sockets.add(socket)
+        var socket: Socket? = null
+        var monitor: VideoReadMonitor? = null
         try {
-            socket.soTimeout = 3000
-            socket.connect(InetSocketAddress(InetAddress.getLoopbackAddress(), port.toInt()), 3000)
+            socket = connectVideo(port.toInt(), server, stopping, sockets)
+            socket.soTimeout = 0
+            monitor = VideoReadMonitor(socket, server, timer)
+            videoHealth = monitor
             val input = DataInputStream(socket.getInputStream())
-            require(input.readUnsignedByte() == 0)
             require(input.readInt() == 0x68323634) { "固定H.264以外のcodecです" }
             while (!stopping.get()) {
-                when (val packet = readVideo(input)) {
+                val packet = readVideo(input)
+                monitor.received()
+                when (packet) {
                     is VideoPacket.Session -> store.session(packet, generation)
                     is VideoPacket.Frame -> store.frame(packet, generation)
                 }
             }
         } finally {
-            socket.close()
-            sockets.remove(socket)
+            monitor?.close()
+            if (videoHealth === monitor) videoHealth = null
+            socket?.close()
+            socket?.let { sockets.remove(it) }
             adb.stop(server)
-            runCatching { adb.command("-s", serial, "forward", "--remove", "tcp:$port") }.onSuccess { ports.remove(port) }
+            runCatching { removeOwnedForwards(adb, serial, mapOf(port to "localabstract:scrcpy_$scid")) }.onSuccess { ports.remove(port) }
         }
     }
 
@@ -186,28 +196,9 @@ internal class DeviceCapture(
         cleanupPending = !cleanupRemote()
     }
 
-    // Names include this generation's UUID; a PID is used only after matching that exact owned name.
-    fun cleanupRemote(): Boolean = runCatching {
-        OwnedAdb(adbPath).use { cleanup ->
-            fun ownedPids(): Set<Int> = cleanup.command("-s", serial, "shell", "ps", "-A", "-o", "PID,ARGS")
-                .lineSequence().drop(1).mapNotNull { line ->
-                    val fields = line.trim().split(Regex("\\s+"))
-                    if (fields.size >= 2 && fields[1] in setOf(serverName, clockName)) fields[0].toIntOrNull()?.takeIf { it > 1 } else null
-                }.toSet()
-            ownedPids().forEach { pid ->
-                // Re-check identity immediately before signalling, never guess a shared scrcpy/app_process PID.
-                if (pid in ownedPids()) cleanup.command("-s", serial, "shell", "kill", "-TERM", pid.toString())
-            }
-            check(ownedPids().isEmpty()) { "所有端末processの終了が未確認です" }
-            ports.toList().forEach { cleanup.command("-s", serial, "forward", "--remove", "tcp:$it"); ports.remove(it) }
-            cleanup.command("-s", serial, "shell", "rm", "-f", serverFile, clockFile)
-        }
-        cleanupPending = false
-        true
-    }.getOrDefault(false)
+    fun cleanupRemote(): Boolean = cleanupRecord().clean(adbPath).also { cleanupPending = !it }
 
-    fun cleanupMarker(): Map<String, Any> = mapOf("serial" to serial, "generation" to generation,
-        "server_name" to serverName, "clock_name" to clockName, "remote_files" to listOf(serverFile, clockFile), "forwards" to ports.toList())
+    fun cleanupRecord(): RemoteCleanup = RemoteCleanup(serial, token, java.util.Map.copyOf(ports))
 
 }
 
@@ -229,3 +220,59 @@ internal class RecoveryDelay {
         return when (failures++) { 0 -> 0L; 1 -> 1000L; 2 -> 2000L; 3 -> 4000L; else -> 5000L }
     }
 }
+
+/** A forwarded TCP accept may precede the remote abstract socket's bind. Keep the same server alive. */
+internal fun connectVideo(port: Int, server: Process, stopping: AtomicBoolean, sockets: MutableSet<Socket>,
+                          timeoutMillis: Long = 10_000): Socket {
+    val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMillis)
+    while (!stopping.get() && !Thread.currentThread().isInterrupted && server.isAlive) {
+        val left = TimeUnit.NANOSECONDS.toMillis(deadline - System.nanoTime())
+        if (left <= 0) break
+        val socket = Socket()
+        sockets.add(socket)
+        var ready = false
+        try {
+            check(!stopping.get()) { "動画接続が取消されました" }
+            socket.soTimeout = minOf(1000L, left).toInt().coerceAtLeast(1)
+            socket.connect(InetSocketAddress(InetAddress.getLoopbackAddress(), port), socket.soTimeout)
+            val readLeft = TimeUnit.NANOSECONDS.toMillis(deadline - System.nanoTime())
+            check(readLeft > 0) { "動画接続の準備が期限内に完了しませんでした" }
+            socket.soTimeout = minOf(1000L, readLeft).toInt().coerceAtLeast(1)
+            if (socket.getInputStream().read() == 0) {
+                ready = true
+                return socket
+            }
+        } catch (_: java.io.IOException) {
+            // EOF/refusal/timeout while preparing is retried with a fresh socket, never a fresh server.
+        } finally {
+            if (!ready) {
+                socket.close()
+                sockets.remove(socket)
+            }
+        }
+        val delay = minOf(100L, TimeUnit.NANOSECONDS.toMillis(deadline - System.nanoTime()))
+        if (delay > 0) Thread.sleep(delay)
+    }
+    check(!stopping.get() && !Thread.currentThread().isInterrupted) { "動画接続が取消されました" }
+    check(server.isAlive) { "動画serverが接続準備中に終了しました" }
+    error("動画接続の準備が期限内に完了しませんでした")
+}
+
+/** Watches one socket, including the first blocking codec read. Never waits for adb/disk/store locks. */
+internal class VideoReadMonitor(private val socket: Socket, private val server: Process,
+                                timer: java.util.concurrent.ScheduledExecutorService) : AutoCloseable {
+    private val lastComplete = java.util.concurrent.atomic.AtomicLong(System.nanoTime())
+    private val active = AtomicBoolean(true)
+    val arrivalUnconfirmed: Boolean get() = active.get() && System.nanoTime() - lastComplete.get() >= 3_000_000_000
+    private val watch = timer.scheduleWithFixedDelay({
+        if (active.get() && (!server.isAlive || System.nanoTime() - lastComplete.get() >= 10_000_000_000))
+            runCatching { socket.close() }
+    }, 250, 250, TimeUnit.MILLISECONDS)
+
+    fun received() { lastComplete.set(System.nanoTime()) }
+    override fun close() { active.set(false); watch.cancel(false) }
+}
+
+/** One clock timeout can wait for process exit while the other worker closes the video socket. */
+internal fun captureWatchdog(): java.util.concurrent.ScheduledExecutorService =
+    Executors.newScheduledThreadPool(2) { r -> Thread(r, "replay-watchdog").apply { isDaemon = true } }

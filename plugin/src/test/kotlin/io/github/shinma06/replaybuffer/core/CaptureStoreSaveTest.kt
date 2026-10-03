@@ -63,11 +63,16 @@ class CaptureStoreSaveTest {
             store.frame(VideoPacket.Frame(0, true, false, config(bytes)), 1)
             store.frame(VideoPacket.Frame(1_000_000, false, true, bytes), 1, host)
             store.log(DeviceLog(1_700_000_001_000_000_000, 12, 12, 10001, 0, 4, "Fixture", "old boot", byteArrayOf(1)), 1, host)
+            store.status("video", StreamState.RECOVERING, "prior known gap", 1)
+            store.status("video", StreamState.CAPTURING, null, 1)
             store.clock.add("2", listOf(100_000_000, 100_000_000, 1_700_000_020_000_000_000, 100_000_000),
                 host + 20_000_000_000, host + 20_000_000_000, 100_000_000_000)
             store.prune(1)
             val capture = store.capture(ReplaySettings(replaySeconds = 1))!!
             assertFalse(capture.windowKnown)
+            assertTrue(capture.gaps.any { it.reason == "prior known gap" })
+            assertTrue(capture.states.getValue("video").gaps.any { it.reason == "prior known gap" })
+            assertTrue(store.streams(1).getValue("video").gaps.any { it.reason == "prior known gap" })
             assertEquals(1, capture.video.size)
             assertEquals(1, capture.logs.size)
             val output = SaveWriter().write(capture, root, { false }) { a, b -> Files.move(a, b) }
@@ -82,6 +87,43 @@ class CaptureStoreSaveTest {
             store.close()
             Files.walk(root).use { paths -> paths.sorted(java.util.Comparator.reverseOrder()).forEach { Files.deleteIfExists(it) } }
         }
+    }
+
+    @Test
+    fun nullTargetAndRecoveredClockAndLogGapsRemainImmutableOnlyWhileInWindow() {
+        val root = Files.createTempDirectory("replay-gap-fixture-")
+        val store = CaptureStore(root.resolve("ring"), minFree = 0)
+        val host = System.nanoTime()
+        try {
+            store.generation(1)
+            store.app(null, null, emptySet(), 1)
+            assertEquals(StreamState.UNAVAILABLE, store.streams()["app_log"]?.state)
+            anchor(store.clock, 1_000_000_000, host)
+            store.app("com.example.app", 10001, setOf(12), 1, true)
+            store.log(DeviceLog(1_700_000_001_000_000_000, 12, 12, 10001, 0, 4, "a", "a", byteArrayOf(1)), 1, host)
+            store.status("device_log", StreamState.RECOVERING, "isolated log interruption", 1)
+            store.clockStatus(false, 1)
+            anchor(store.clock, 1_100_000_000, host + 100_000_000)
+            store.status("device_log", StreamState.CAPTURING, null, 1)
+            store.clockStatus(true, 1)
+            val recovered = store.streams(1, 100_000_000)
+            val appGaps = recovered.getValue("app_log").gaps
+            assertEquals(setOf("device_log", "clock"), appGaps.map { it.stream }.toSet())
+            assertEquals(listOf("clock"), recovered.getValue("video").gaps.map { it.stream })
+            assertFailsWith<UnsupportedOperationException> { (appGaps as MutableList).clear() }
+            anchor(store.clock, 6_000_000_000, host + 5_000_000_000)
+            assertTrue(store.streams(1, 5_000_000_000).values.all { it.gaps.isEmpty() })
+            store.freeze()
+            val fixedEnd = store.end()
+            store.clock.add("2", listOf(100_000_000, 100_000_000, 1_700_000_020_000_000_000, 100_000_000),
+                host + 20_000_000_000, host + 20_000_000_000, 100_000_000_000)
+            assertEquals(Long.MAX_VALUE, store.clock.endUncertainty())
+            assertEquals(fixedEnd, store.end())
+            assertTrue(store.streams(1).values.all { it.gaps.isEmpty() }) // Frozen known window is not replaced by the new unknown clock.
+            store.resume()
+            assertEquals(2, store.streams(1).getValue("app_log").gaps.size)
+            assertEquals(2, appGaps.size)
+        } finally { store.close(); Files.delete(root) }
     }
 
     private fun sample(): ByteArray {
@@ -116,6 +158,8 @@ class CaptureStoreSaveTest {
             }
             store.log(DeviceLog(1_700_000_001_350_000_000, 12, 12, 10001, 0, 4, "Fixture", "hello\nworld", byteArrayOf(1, 2)), 1, host + 350_000_000)
             anchor(store.clock, 1_400_000_000, host + 400_000_000)
+            store.status("video", StreamState.RECOVERING, "schema gap fixture", 1)
+            store.status("video", StreamState.CAPTURING, null, 1)
             val capture = store.capture(ReplaySettings())!!
             assertEquals(0, capture.start)
             assertEquals(400_000_000, capture.end)
@@ -130,6 +174,9 @@ class CaptureStoreSaveTest {
             val completed = output.directory
             val manifest = JsonParser.parseString(Files.readString(completed.resolve("session.json"))).asJsonObject
             assertFalse(manifest["files_sha256"].asJsonObject.has("session.json"))
+            assertEquals(setOf("state", "availableSeconds", "reason"), manifest["coverage"].asJsonObject["video"].asJsonObject.keySet())
+            val gap = manifest["gaps"].asJsonArray.single().asJsonObject
+            assertTrue(gap["from_ns"].asJsonPrimitive.isString && gap["to_ns"].asJsonPrimitive.isString)
             assertTrue(manifest["build"].asJsonObject["source"].asString.matches(Regex("[a-f0-9]{40}")))
             manifest["files_sha256"].asJsonObject.entrySet().forEach { (name, value) -> assertEquals(value.asString, sha256(completed.resolve(name))) }
             val device = Files.readAllLines(completed.resolve("logcat-device.jsonl"))

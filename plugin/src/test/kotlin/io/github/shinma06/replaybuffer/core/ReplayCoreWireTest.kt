@@ -35,6 +35,8 @@ class ReplayCoreWireTest {
         val sockets = CopyOnWriteArrayList<java.net.Socket>()
         val videoSockets = CopyOnWriteArrayList<java.net.Socket>()
         val resumeVideo = CountDownLatch(1)
+        val readyConnections = java.util.concurrent.atomic.AtomicInteger()
+        var bindReadyAt = 0L
         // Use the same JVM clock as the synthetic video PTS; Python's monotonic origin is platform/version dependent.
         val clockAccept = thread(isDaemon = true, name = "replay-clock-fixture") {
             while (!stop.get()) runCatching {
@@ -63,7 +65,9 @@ class ReplayCoreWireTest {
         val accept = thread(isDaemon = true, name = "replay-wire-fixture") {
             while (!stop.get()) runCatching {
                 val socket = server.accept(); sockets += socket; videoSockets += socket
-                val connection = videoSockets.size
+                if (bindReadyAt == 0L) bindReadyAt = System.nanoTime() + 500_000_000
+                if (System.nanoTime() < bindReadyAt) { socket.close(); continue }
+                val connection = readyConnections.incrementAndGet()
                 peers += thread(isDaemon = true, name = "replay-wire-peer") {
                     runCatching { socket.use {
                         val out = DataOutputStream(it.getOutputStream())
@@ -86,7 +90,9 @@ import sys,time,os,struct,pathlib,socket
 root=pathlib.Path(__file__).parent
 with (root/'owned-pids.txt').open('a') as f: f.write(str(os.getpid())+'\n')
 a=sys.argv[1:]
-if a==['devices','-l']:
+if a==['forward','--list']:
+    pass
+elif a==['devices','-l']:
     print((root/'devices.txt').read_text(),end='')
 elif len(a)>2 and a[2]=='push':
     pass
@@ -105,6 +111,7 @@ elif len(a)>3 and 'ClockProbe' in a[3]:
             writer.write(nonce); writer.flush()
             print(reader.readline().strip(),flush=True)
 elif len(a)>3 and 'scrcpy.Server' in a[3]:
+    with (root/'video-launches.txt').open('a') as f: f.write('start\n')
     time.sleep(30)
 elif len(a)>3 and a[3]=='settings':
     print(1)
@@ -115,7 +122,7 @@ elif len(a)>3 and a[3]=='ps':
 """)
         assertTrue(fake.toFile().setExecutable(true))
         val core = ReplayCore(ReplaySettings(fake, root.resolve("missing"), 1,
-            ApplicationTarget("com.fixture.app", ApplicationMode.MANUAL)), root.resolve("workspace"))
+            ApplicationTarget()), root.resolve("workspace"))
         fun awaitState(phase: String, predicate: (ReplaySnapshot) -> Boolean): ReplaySnapshot {
             val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(15)
             while (System.nanoTime() < deadline) {
@@ -127,10 +134,15 @@ elif len(a)>3 and a[3]=='ps':
             error("fixture deadline ($phase): ${state.captureState}/${state.save.phase}/frozen=${state.frozen}/video=${state.video}/deviceLog=${state.deviceLog}/appLog=${state.appLog}/error=${state.error}")
         }
         try {
-            assertTrue(core.setEnabled(true).get(10, TimeUnit.SECONDS).accepted)
+            val enabled = core.setEnabled(true).get(10, TimeUnit.SECONDS)
+            assertTrue(enabled.accepted, enabled.reason)
             awaitState("unselected-multiple") { it.captureState == CaptureState.MULTIPLE_DEVICES && it.device == null }
             Files.writeString(devices, "List of devices attached\nfixture-1 device model:Fixture\n")
+            awaitState("unresolved-app") { it.video.state == StreamState.CAPTURING && it.appLog.state == StreamState.UNAVAILABLE }
+            assertTrue(core.updateApplication(ApplicationTarget("com.fixture.app")).get().accepted)
             val capturing = awaitState("initial-capture") { it.canSave && it.video.state == StreamState.CAPTURING && it.appLog.state == StreamState.CAPTURING }
+            assertEquals(1, Files.readAllLines(root.resolve("video-launches.txt")).size)
+            assertTrue(videoSockets.size > 1) // Early forwarded EOFs did not restart the owned server.
             val sequence = capturing.sequenceId
             Files.writeString(devices, "List of devices attached\nfixture-1 device model:Fixture\nfixture-2 device model:Other\n")
             val multiple = awaitState("selected-multiple") { it.captureState == CaptureState.MULTIPLE_DEVICES && it.device != null }
@@ -138,20 +150,27 @@ elif len(a)>3 and a[3]=='ps':
             assertEquals(capturing.generation, multiple.generation)
             assertEquals(StreamState.CAPTURING, multiple.video.state)
             Files.writeString(devices, "List of devices attached\nfixture-1 device model:Fixture\n")
-            sockets.first { it.localPort == server.localPort }.close()
+            videoSockets.last().close()
             awaitState("video-interrupted") { it.video.state != StreamState.CAPTURING }
             resumeVideo.countDown()
-            awaitState("video-recovered") { videoSockets.size >= 2 && it.video.state == StreamState.CAPTURING }
+            awaitState("video-recovered") { readyConnections.get() >= 2 && it.video.state == StreamState.CAPTURING }
             val operation = core.save().get(10, TimeUnit.SECONDS)
             assertTrue(operation.accepted)
             val failed = awaitState("save-failed") { it.save.phase == SavePhase.FAILED }
             val fixed = failed.save
+            assertEquals("fixture-1", fixed.device?.serial)
+            assertEquals("com.fixture.app", fixed.application?.packageName)
+            assertTrue(fixed.applicationHistory.any { it.packageName == "com.fixture.app" && it.resolved })
+            assertTrue(failed.video.gaps.isNotEmpty())
             assertTrue("video" in fixed.missingKinds)
             assertEquals(StreamState.CAPTURING, failed.video.state)
             assertFalse(core.save().get().accepted)
             assertFalse(core.retry("stale-id").get().accepted)
             assertTrue(core.applySettings(core.snapshot().settings.copy(replaySeconds = 2)).get().accepted)
             assertEquals(sequence, core.snapshot().sequenceId)
+            assertTrue(core.updateApplication(ApplicationTarget("com.other.app")).get().accepted)
+            assertEquals(fixed.application, core.snapshot().save.application)
+            assertEquals(fixed.applicationHistory, core.snapshot().save.applicationHistory)
             Files.writeString(devices, "List of devices attached\n")
             val disconnected = awaitState("disconnected") { it.frozen }
             Thread.sleep(1100)
@@ -161,28 +180,40 @@ elif len(a)>3 and a[3]=='ps':
             val resumed = awaitState("reconnected") { !it.frozen && it.generation > capturing.generation && it.video.state == StreamState.CAPTURING }
             assertEquals(sequence, resumed.sequenceId)
             assertTrue(core.retryAtDirectory(operation.requestId!!, root).get().accepted)
-            val done = awaitState("save-completed") { it.save.phase == SavePhase.COMPLETED }
-            assertEquals(fixed.windowEndNs, done.save.windowEndNs)
-            val folder = done.save.directory!!
-            val json = JsonParser.parseString(Files.readString(folder.resolve("session.json"))).asJsonObject
-            assertEquals(operation.requestId, json["save_id"].asString)
-            assertEquals(1, json["replay_seconds"].asInt)
-            assertTrue(json["clock_samples"].asJsonArray.any { it.asJsonObject["valid"].asBoolean })
-            val frames = Files.readAllLines(folder.resolve("frames.jsonl")).map { JsonParser.parseString(it).asJsonObject }
-            assertTrue(frames.isNotEmpty())
-            assertTrue(frames.all { !it["elapsed_ns"].isJsonNull && !it["window_ns"].isJsonNull })
-            val parts = json["parts"].asJsonArray
-            assertTrue(parts.size() > 0)
-            parts.forEach { part ->
-                val item = part.asJsonObject
-                assertTrue(item["edit_start_us"].asString.toLong() >= 0)
-                assertTrue(!item["window_start_ns"].isJsonNull)
-                assertTrue(Files.size(folder.resolve(item["file"].asString)) > 0)
+            var completed: java.nio.file.Path? = null
+            var savedHash: String? = null
+            if (System.getProperty("os.name") == "Mac OS X") {
+                val done = awaitState("save-completed") { it.save.phase == SavePhase.COMPLETED }
+                assertEquals(fixed.windowEndNs, done.save.windowEndNs)
+                assertEquals(fixed.device, done.save.device)
+                assertEquals(fixed.application, done.save.application)
+                assertEquals(fixed.applicationHistory, done.save.applicationHistory)
+                val folder = done.save.directory!!
+                val json = JsonParser.parseString(Files.readString(folder.resolve("session.json"))).asJsonObject
+                assertEquals(operation.requestId, json["save_id"].asString)
+                assertEquals(1, json["replay_seconds"].asInt)
+                assertTrue(json["clock_samples"].asJsonArray.any { it.asJsonObject["valid"].asBoolean })
+                val frames = Files.readAllLines(folder.resolve("frames.jsonl")).map { JsonParser.parseString(it).asJsonObject }
+                assertTrue(frames.isNotEmpty())
+                assertTrue(frames.all { !it["elapsed_ns"].isJsonNull && !it["window_ns"].isJsonNull })
+                val parts = json["parts"].asJsonArray
+                assertTrue(parts.size() > 0)
+                parts.forEach { part ->
+                    val item = part.asJsonObject
+                    assertTrue(item["edit_start_us"].asString.toLong() >= 0)
+                    assertTrue(!item["window_start_ns"].isJsonNull)
+                    assertTrue(Files.size(folder.resolve(item["file"].asString)) > 0)
+                }
+                completed = folder
+                savedHash = sha256(folder.resolve("session.json"))
+            } else {
+                val unsupported = awaitState("unsupported-native-save") { it.save.phase == SavePhase.FAILED }
+                assertEquals(fixed.applicationHistory, unsupported.save.applicationHistory)
+                assertTrue(core.discard(operation.requestId).get().accepted)
             }
-            val hash = sha256(folder.resolve("session.json"))
             assertTrue(core.setEnabled(false).get(15, TimeUnit.SECONDS).accepted)
             core.closeAsync().get(15, TimeUnit.SECONDS)
-            assertEquals(hash, sha256(folder.resolve("session.json")))
+            completed?.let { assertEquals(savedHash, sha256(it.resolve("session.json"))) }
             assertEquals(0, Files.list(root.resolve("workspace")).use { it.count() })
             Files.readAllLines(pids).forEach { pid -> assertFalse(ProcessHandle.of(pid.toLong()).map { it.isAlive }.orElse(false)) }
         } finally {

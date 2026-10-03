@@ -11,7 +11,7 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 /** Project-owned concrete core. All device/disk work and notifications run outside EDT. */
-class ReplayCore(initialSettings: ReplaySettings, private val workspace: Path) : AutoCloseable {
+class ReplayCore(initialSettings: ReplaySettings, private val workspace: Path, cleanupDirectory: Path = workspace) : AutoCloseable {
     private val control = Executors.newSingleThreadScheduledExecutor { r -> Thread(r, "replay-control").apply { isDaemon = true } }
     private val writer = Executors.newSingleThreadExecutor { r -> Thread(r, "replay-save").apply { isDaemon = true } }
     private val listeners = CopyOnWriteArrayList<(ReplaySnapshot) -> Unit>()
@@ -30,8 +30,7 @@ class ReplayCore(initialSettings: ReplaySettings, private val workspace: Path) :
     private var backend: DeviceCapture? = null
     private var backendStarted = 0L
     private var probe: OwnedAdb? = null
-    private val retired = mutableListOf<DeviceCapture>()
-    private val retainedRoots = mutableSetOf<Path>()
+    private val cleanup = RemoteCleanupJournal(cleanupDirectory)
     private var captureState = CaptureState.DISABLED
     private var error: String? = null
     private var saveState = SaveSnapshot()
@@ -43,6 +42,9 @@ class ReplayCore(initialSettings: ReplaySettings, private val workspace: Path) :
 
     init {
         require(workspace.isAbsolute) { "一時領域は絶対パスで指定してください" }
+        control.execute { if (!closed.get()) runCatching { cleanup.recover(); publish() }.onFailure {
+            error = "端末側の終了情報を読み戻せません（記録を保全しました）"; publish()
+        } }
         control.scheduleWithFixedDelay({ if (!closed.get()) runCatching { poll() }.onFailure {
             error = "取得状態の確認に失敗しました"; publish()
         } }, 1, 1, TimeUnit.SECONDS)
@@ -63,6 +65,7 @@ class ReplayCore(initialSettings: ReplaySettings, private val workspace: Path) :
         return operation {
             if (value == enabled) return@operation ReplayOperation(true)
             if (value) {
+                cleanup.recover()
                 val root = Files.createDirectories(workspace).resolve("replay-${UUID.randomUUID()}")
                 Files.createDirectory(root)
                 runCatching { Files.setPosixFilePermissions(root, java.nio.file.attribute.PosixFilePermissions.fromString("rwx------")) }
@@ -102,7 +105,7 @@ class ReplayCore(initialSettings: ReplaySettings, private val workspace: Path) :
         }
         if (changedApp) backend?.application(applied.application)
         store?.prune(settings.replaySeconds)
-        if (enabled) poll() else publish()
+        poll()
         ReplayOperation(true)
     }
 
@@ -155,19 +158,18 @@ class ReplayCore(initialSettings: ReplaySettings, private val workspace: Path) :
         cancelSave = AtomicBoolean()
         val cancellation = cancelSave
         val missing = (capture.states.filterValues { it.state != StreamState.CAPTURING || it.reason != null }.keys +
-            capture.gaps.filter { gap -> (gap.fromNs == null || gap.fromNs <= capture.end) &&
-                (gap.toNs == null || gap.toNs >= capture.start) }.flatMap { if (it.stream == "clock") listOf("video", "device_log", "app_log") else listOf(it.stream) } +
+            capture.gaps.filter { gap -> !capture.windowKnown || gap.intersects(capture.start, capture.end, capture.endUncertainty) }.flatMap { if (it.stream == "clock") listOf("video", "device_log", "app_log") else listOf(it.stream) } +
             if (capture.logs.any { it.app == null }) listOf("app_log") else emptyList()).distinct().let { java.util.List.copyOf(it) }
         saveState = SaveSnapshot(SavePhase.WRITING, capture.id, capture.sequence, capture.start, capture.end,
-            capture.seconds, directory, missingKinds = missing)
+            capture.seconds, directory, missingKinds = missing, device = capture.device,
+            application = capture.settings.application, applicationHistory = capture.applicationHistory())
         publish()
         saveTask = writer.submit {
             val result = runCatching { SaveWriter().write(capture, directory, { cancellation.get() || closed.get() }) { partial, complete ->
                 synchronized(publishing) {
                     check(!cancellation.get() && !closed.get()) { "保存が取消されました" }
                     check(!Files.exists(complete)) { "完成先が既に存在します" }
-                    // Same filesystem rename, with no replacement of any pre-existing completed evidence.
-                    Files.move(partial, complete)
+                    publishCapture(partial, complete)
                 }
             } }
             if (!closed.get()) runCatching { control.execute {
@@ -189,7 +191,21 @@ class ReplayCore(initialSettings: ReplaySettings, private val workspace: Path) :
     }
 
     private fun poll() {
-        if (!enabled || closed.get()) return
+        if (closed.get()) return
+        if (!enabled) {
+            cleanup.recover()
+            val executable = settings.adbPath
+            // OFF never starts acquisition. No verified owned pending record means no adb invocation at all.
+            if (cleanup.hasRecoverable && executable != null) {
+                val devices = runCatching { OwnedAdb(executable).use { parseDevices(it.command("devices", "-l")) } }
+                if (closed.get()) return
+                devices.onSuccess { cleanup.clean(executable, it.map { device -> device.serial }.toSet(), closed::get) }
+            }
+            if (cleanup.pendingCount > 0) error = "端末側の終了・cleanupを再接続時に確認します（所有情報を保全しています）"
+            else if (current.cleanupPendingCount > 0) error = null
+            publish()
+            return
+        }
         val adb = probe
         if (adb == null) {
             captureState = CaptureState.WAITING
@@ -202,19 +218,15 @@ class ReplayCore(initialSettings: ReplaySettings, private val workspace: Path) :
             publish(); return
         }
         if (closed.get()) return
+        cleanup.recover()
         val selected = device?.let { current -> devices.firstOrNull { it.serial == current.serial } }
         if (device == null && devices.size != 1 || device != null && selected == null) {
             stopBackend()
             device = device?.copy(connected = false)
             captureState = if (devices.size > 1) CaptureState.MULTIPLE_DEVICES else if (device != null) CaptureState.RECOVERING else CaptureState.WAITING
             error = if (devices.size > 1) "端末を1台だけ接続してください" else if (devices.size == 1) "最初に選択した端末の再接続を待っています" else null
+            cleanup.clean(settings.adbPath!!, devices.map { it.serial }.toSet(), closed::get)
             publish(); return
-        }
-        retired.toList().forEach { old -> if (old.cleanupRemote()) retired.remove(old) }
-        if (retired.isEmpty()) {
-            retainedRoots.toList().forEach { root ->
-                Files.deleteIfExists(root.resolve("remote-cleanup-pending.json")); Files.delete(root); retainedRoots.remove(root)
-            }
         }
         if (device == null) device = devices.single() else device = device?.copy(connected = true)
         if (backend == null) {
@@ -226,6 +238,7 @@ class ReplayCore(initialSettings: ReplaySettings, private val workspace: Path) :
         }
         val data = store!!
         if (data.clock.snapshot().lastOrNull()?.received?.let { it >= backendStarted } == true) data.resume()
+        backend?.reportVideoHealth()
         data.prune(settings.replaySeconds)
         val states = data.streams(settings.replaySeconds)
         captureState = when {
@@ -236,6 +249,9 @@ class ReplayCore(initialSettings: ReplaySettings, private val workspace: Path) :
         }
         error = if (devices.size > 1) "初期版は1台に対応しています。ほかの端末を切断してください（既存の取得は継続）" else null
         publish()
+        val pendingBeforeCleanup = cleanup.pendingCount
+        cleanup.clean(settings.adbPath!!, devices.map { it.serial }.toSet(), closed::get)
+        if (cleanup.pendingCount != pendingBeforeCleanup) publish()
     }
 
     private fun stopBackend() {
@@ -243,7 +259,7 @@ class ReplayCore(initialSettings: ReplaySettings, private val workspace: Path) :
         store?.freeze()
         listOf("video", "device_log", "app_log").forEach { store?.status(it, StreamState.RECOVERING, "端末との取得接続が中断しています", generation) }
         capture.close()
-        if (capture.cleanupPending) retired += capture
+        if (capture.cleanupPending) cleanup.retain(capture.cleanupRecord())
         backend = null
     }
 
@@ -257,19 +273,13 @@ class ReplayCore(initialSettings: ReplaySettings, private val workspace: Path) :
         pending = null
         store?.close(); store = null
         resources?.close(); resources = null
-        ownedRoot?.let { root ->
-            if (retired.isEmpty()) Files.delete(root) else {
-                Files.writeString(root.resolve("remote-cleanup-pending.json"), com.google.gson.Gson().toJson(retired.map { it.cleanupMarker() }),
-                    java.nio.file.StandardOpenOption.CREATE_NEW, java.nio.file.StandardOpenOption.WRITE)
-                retainedRoots.add(root)
-            }
-        }; ownedRoot = null
+        ownedRoot?.let { Files.delete(it) }; ownedRoot = null
         device = null
         enabled = false
         generation++
         captureState = CaptureState.DISABLED
         saveState = SaveSnapshot()
-        error = if (retired.isEmpty()) null else "端末側の終了・cleanupは再接続時に確認します（所有情報を保全しました）"
+        error = if (cleanup.pendingCount == 0) null else "端末側の終了・cleanupは再接続時に確認します（所有情報を保全しました）"
     }
 
     private fun publish() {
@@ -286,7 +296,8 @@ class ReplayCore(initialSettings: ReplaySettings, private val workspace: Path) :
         current = ReplaySnapshot(++revision, generation, enabled, captureState, settings, settingsRevision,
             device, data?.sequence, data?.end(), data?.frozen() ?: false, streams["video"] ?: StreamSnapshot(),
             streams["device_log"] ?: StreamSnapshot(), streams["app_log"] ?: StreamSnapshot(), saveState,
-            disabled == null, disabled, error)
+            disabled == null, disabled, error, windowStartNs = data?.windowStart(settings.replaySeconds),
+            cleanupPendingCount = cleanup.pendingCount)
         listeners.forEach { if (!closed.get()) runCatching { it(current) } }
     }
 
@@ -313,8 +324,9 @@ class ReplayCore(initialSettings: ReplaySettings, private val workspace: Path) :
         listeners.clear()
         val done = closeCompletion
         control.execute {
-            runCatching { disable() }.onSuccess {
-                current = current.copy(enabled = false, captureState = CaptureState.DISABLED, canSave = false, saveDisabledReason = "projectは終了しています")
+            runCatching { try { disable() } finally { cleanup.close() } }.onSuccess {
+                current = current.copy(enabled = false, captureState = CaptureState.DISABLED, canSave = false,
+                    saveDisabledReason = "projectは終了しています", cleanupPendingCount = cleanup.pendingCount, error = error)
                 done.complete(null)
             }.onFailure { done.completeExceptionally(it) }
             writer.shutdown()

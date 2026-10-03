@@ -95,6 +95,15 @@ internal class CaptureStore(
     }
 
     @Synchronized
+    fun videoArrivalUnconfirmed(owner: Long) {
+        if (closed || owner != generation || states.getValue("video").state != StreamState.CAPTURING) return
+        val last = video.peekLast()
+        addGap("video", last?.time?.sequence, null, "動画packetの到着を確認できません", last?.time)
+        states["video"] = states.getValue("video").copy(state = StreamState.RECOVERING,
+            reason = "動画packetの到着を確認できません（復旧閾値は端末QAで確認します）")
+    }
+
+    @Synchronized
     fun clockStatus(healthy: Boolean, owner: Long) {
         if (closed || owner != generation) return
         if (!healthy && gaps.none { it.stream == "clock" && it.toNs == null }) {
@@ -161,7 +170,7 @@ internal class CaptureStore(
         require(pids.size <= 1024)
         val last = apps.peekLast()
         val anchor = clock.snapshot().lastOrNull { it.valid }
-        if (last?.packageName == packageName && last.uid == uid && last.pids == pids && last.uidExclusive == uidExclusive && last.from != null && last.epoch == anchor?.epoch) {
+        if (last != null && last.packageName == packageName && last.uid == uid && last.pids == pids && last.uidExclusive == uidExclusive && last.from != null && last.epoch == anchor?.epoch) {
             states["app_log"] = StreamSnapshot(if (uid != null) StreamState.CAPTURING else StreamState.UNAVAILABLE,
                 reason = if (uid == null) "対象アプリを解決できません" else null)
             return
@@ -296,7 +305,16 @@ internal class CaptureStore(
             value.copy(state = states.getValue("device_log").state, reason = states.getValue("device_log").reason) else value
         val uncertain = !clock.certain()
         effective.copy(availableSeconds = (span - missing).coerceAtLeast(0) / 1e9,
-            reason = effective.reason ?: if (uncertain && effective.state == StreamState.CAPTURING) "時計対応を確認できません" else null)
+            reason = effective.reason ?: if (uncertain && effective.state == StreamState.CAPTURING) "時計対応を確認できません" else null,
+            gaps = java.util.List.copyOf(gaps.filter { gap ->
+                (gap.stream == kind || gap.stream == "clock" || kind == "app_log" && gap.stream == "device_log") &&
+                    gap.intersects(windowStart(seconds, end), end, fixedUncertainty ?: clock.endUncertainty())
+            }))
+    }
+
+    @Synchronized
+    fun windowStart(seconds: Int, atEnd: Long? = null): Long? = (atEnd ?: end())?.let {
+        maxOf(0L, started ?: it, it - seconds * 1_000_000_000L)
     }
 
     @Synchronized
@@ -323,12 +341,13 @@ internal class CaptureStore(
         }
     }
 
-    private fun addGap(stream: String, from: Long?, to: Long?, reason: String) {
+    private fun addGap(stream: String, from: Long?, to: Long?, reason: String, boundary: MappedTime? = null) {
         if (gaps.peekLast()?.let { it.stream == stream && it.reason == reason && it.toNs == to } == true) return
         val anchor = clock.snapshot().lastOrNull { it.valid }
-        val uncertainty = anchor?.let { if (System.nanoTime() - it.received > 5_000_000_000 || it.bridgeError == Long.MAX_VALUE) Long.MAX_VALUE else
+        val uncertainty = boundary?.uncertainty ?: anchor?.let { if (System.nanoTime() - it.received > 5_000_000_000 || it.bridgeError == Long.MAX_VALUE) Long.MAX_VALUE else
             it.readError + (it.received - it.sent) / 2 + it.bridgeError }
-        gaps += CaptureGap(stream, from, to, reason, if (clock.certain()) uncertainty else Long.MAX_VALUE, generation, clock.currentEpoch())
+        gaps += CaptureGap(stream, from, to, reason, if (boundary != null || clock.certain()) uncertainty else Long.MAX_VALUE,
+            generation, boundary?.epoch ?: clock.currentEpoch())
         while (gaps.size > 4096) gaps.removeFirst()
     }
 
@@ -358,3 +377,19 @@ internal class CaptureStore(
         Files.deleteIfExists(directory)
     }
 }
+
+/** Unknown boundaries remain visible; uncertainty can place a nominally outside boundary in the window. */
+internal fun CaptureGap.intersects(start: Long?, end: Long, windowUncertainty: Long = 0): Boolean {
+    if (start == null || boundaryUncertaintyNs == null || boundaryUncertaintyNs == Long.MAX_VALUE || windowUncertainty == Long.MAX_VALUE) return true
+    val margin = (boundaryUncertaintyNs.coerceAtLeast(0) + windowUncertainty.coerceAtLeast(0)).let { if (it < 0) Long.MAX_VALUE else it }
+    return (fromNs == null || fromNs <= end || fromNs - end <= margin) &&
+        (toNs == null || toNs >= start || start - toNs <= margin)
+}
+
+internal fun FrozenCapture.applicationHistory(): List<ApplicationPeriodSnapshot> = java.util.List.copyOf(apps.mapNotNull { app ->
+    val offset = if (windowKnown) clocks.lastOrNull { it.valid && it.epoch == app.epoch }?.sequenceOffset else null
+    val from = app.from?.let { time -> offset?.let { Math.addExact(time, it) } }
+    val to = app.to?.let { time -> offset?.let { Math.addExact(time, it) } }
+    if (windowKnown && offset != null && (from != null && from > end || to != null && to < start)) null else
+        ApplicationPeriodSnapshot(app.packageName, from?.coerceAtLeast(start), to?.coerceAtMost(end), app.epoch, app.uid != null)
+})
