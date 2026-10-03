@@ -172,8 +172,10 @@ private class ReplayToolWindowPanel(private val project: Project) : JPanel(Borde
         frozenRequest.text = "固定対象: ${recordTime(saved?.windowStartNs)}〜${recordTime(saved?.windowEndNs)} / ${saved?.replaySeconds ?: seconds}秒" +
             " / セッション: ${saved?.sequenceId ?: "未確定"}" +
             " / 不足・欠落: ${saved?.missingKinds?.map(::streamName)?.joinToString("、")?.ifEmpty { "なし" } ?: "なし"}"
-        frozenTarget.text = frozenTargetDescription(saved)
-        gapDetails.text = currentGapDescription(snapshot)
+        val targetText = frozenTargetDescription(saved)
+        if (frozenTarget.text != targetText) frozenTarget.text = targetText
+        val gapText = currentGapDescription(snapshot)
+        if (gapDetails.text != gapText) gapDetails.text = gapText
         gapScroll.isVisible = gapDetails.text.isNotEmpty()
         retryButton.isEnabled = !busy && saved?.phase == SavePhase.FAILED
         retryElsewhere.isEnabled = retryButton.isEnabled
