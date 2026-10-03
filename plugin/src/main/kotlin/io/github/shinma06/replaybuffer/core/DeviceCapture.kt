@@ -104,13 +104,11 @@ internal class DeviceCapture(
             "scid=$scid tunnel_forward=true audio=false control=false video_codec=h264 send_device_meta=false " +
             "send_frame_meta=true send_stream_meta=true max_size=1920 max_fps=30 video_bit_rate=8000000 " +
             "video_codec_options=max-bframes:int=0,i-frame-interval:int=1")
-        val socket = Socket()
-        sockets.add(socket)
+        var socket: Socket? = null
         try {
+            socket = connectVideo(port.toInt(), server, stopping, sockets)
             socket.soTimeout = 3000
-            socket.connect(InetSocketAddress(InetAddress.getLoopbackAddress(), port.toInt()), 3000)
             val input = DataInputStream(socket.getInputStream())
-            require(input.readUnsignedByte() == 0)
             require(input.readInt() == 0x68323634) { "固定H.264以外のcodecです" }
             while (!stopping.get()) {
                 when (val packet = readVideo(input)) {
@@ -119,8 +117,8 @@ internal class DeviceCapture(
                 }
             }
         } finally {
-            socket.close()
-            sockets.remove(socket)
+            socket?.close()
+            socket?.let { sockets.remove(it) }
             adb.stop(server)
             runCatching { adb.command("-s", serial, "forward", "--remove", "tcp:$port") }.onSuccess { ports.remove(port) }
         }
@@ -228,4 +226,38 @@ internal class RecoveryDelay {
         if (healthy) failures = 0
         return when (failures++) { 0 -> 0L; 1 -> 1000L; 2 -> 2000L; 3 -> 4000L; else -> 5000L }
     }
+}
+
+/** A forwarded TCP accept may precede the remote abstract socket's bind. Keep the same server alive. */
+internal fun connectVideo(port: Int, server: Process, stopping: AtomicBoolean, sockets: MutableSet<Socket>,
+                          timeoutMillis: Long = 10_000): Socket {
+    val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMillis)
+    while (!stopping.get() && !Thread.currentThread().isInterrupted && server.isAlive) {
+        val left = TimeUnit.NANOSECONDS.toMillis(deadline - System.nanoTime())
+        if (left <= 0) break
+        val socket = Socket()
+        sockets.add(socket)
+        var ready = false
+        try {
+            check(!stopping.get()) { "動画接続が取消されました" }
+            socket.soTimeout = minOf(1000L, left).toInt().coerceAtLeast(1)
+            socket.connect(InetSocketAddress(InetAddress.getLoopbackAddress(), port), socket.soTimeout)
+            if (socket.getInputStream().read() == 0) {
+                ready = true
+                return socket
+            }
+        } catch (_: java.io.IOException) {
+            // EOF/refusal/timeout while preparing is retried with a fresh socket, never a fresh server.
+        } finally {
+            if (!ready) {
+                socket.close()
+                sockets.remove(socket)
+            }
+        }
+        val delay = minOf(100L, TimeUnit.NANOSECONDS.toMillis(deadline - System.nanoTime()))
+        if (delay > 0) Thread.sleep(delay)
+    }
+    check(!stopping.get() && !Thread.currentThread().isInterrupted) { "動画接続が取消されました" }
+    check(server.isAlive) { "動画serverが接続準備中に終了しました" }
+    error("動画接続の準備が期限内に完了しませんでした")
 }

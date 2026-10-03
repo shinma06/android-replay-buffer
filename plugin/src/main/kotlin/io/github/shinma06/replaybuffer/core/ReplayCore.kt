@@ -159,7 +159,8 @@ class ReplayCore(initialSettings: ReplaySettings, private val workspace: Path) :
                 (gap.toNs == null || gap.toNs >= capture.start) }.flatMap { if (it.stream == "clock") listOf("video", "device_log", "app_log") else listOf(it.stream) } +
             if (capture.logs.any { it.app == null }) listOf("app_log") else emptyList()).distinct().let { java.util.List.copyOf(it) }
         saveState = SaveSnapshot(SavePhase.WRITING, capture.id, capture.sequence, capture.start, capture.end,
-            capture.seconds, directory, missingKinds = missing)
+            capture.seconds, directory, missingKinds = missing, device = capture.device,
+            application = capture.settings.application, applicationHistory = capture.applicationHistory())
         publish()
         saveTask = writer.submit {
             val result = runCatching { SaveWriter().write(capture, directory, { cancellation.get() || closed.get() }) { partial, complete ->
@@ -286,7 +287,7 @@ class ReplayCore(initialSettings: ReplaySettings, private val workspace: Path) :
         current = ReplaySnapshot(++revision, generation, enabled, captureState, settings, settingsRevision,
             device, data?.sequence, data?.end(), data?.frozen() ?: false, streams["video"] ?: StreamSnapshot(),
             streams["device_log"] ?: StreamSnapshot(), streams["app_log"] ?: StreamSnapshot(), saveState,
-            disabled == null, disabled, error)
+            disabled == null, disabled, error, windowStartNs = data?.windowStart(settings.replaySeconds))
         listeners.forEach { if (!closed.get()) runCatching { it(current) } }
     }
 

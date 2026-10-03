@@ -84,6 +84,34 @@ class CaptureStoreSaveTest {
         }
     }
 
+    @Test
+    fun nullTargetAndRecoveredClockAndLogGapsRemainImmutableOnlyWhileInWindow() {
+        val root = Files.createTempDirectory("replay-gap-fixture-")
+        val store = CaptureStore(root.resolve("ring"), minFree = 0)
+        val host = System.nanoTime()
+        try {
+            store.generation(1)
+            store.app(null, null, emptySet(), 1)
+            assertEquals(StreamState.UNAVAILABLE, store.streams()["app_log"]?.state)
+            anchor(store.clock, 1_000_000_000, host)
+            store.app("com.example.app", 10001, setOf(12), 1, true)
+            store.log(DeviceLog(1_700_000_001_000_000_000, 12, 12, 10001, 0, 4, "a", "a", byteArrayOf(1)), 1, host)
+            store.status("device_log", StreamState.RECOVERING, "isolated log interruption", 1)
+            store.clockStatus(false, 1)
+            anchor(store.clock, 1_100_000_000, host + 100_000_000)
+            store.status("device_log", StreamState.CAPTURING, null, 1)
+            store.clockStatus(true, 1)
+            val recovered = store.streams(1, 100_000_000)
+            val appGaps = recovered.getValue("app_log").gaps
+            assertEquals(setOf("device_log", "clock"), appGaps.map { it.stream }.toSet())
+            assertEquals(listOf("clock"), recovered.getValue("video").gaps.map { it.stream })
+            assertFailsWith<UnsupportedOperationException> { (appGaps as MutableList).clear() }
+            anchor(store.clock, 6_000_000_000, host + 5_000_000_000)
+            assertTrue(store.streams(1, 5_000_000_000).values.all { it.gaps.isEmpty() })
+            assertEquals(2, appGaps.size)
+        } finally { store.close(); Files.delete(root) }
+    }
+
     private fun sample(): ByteArray {
         val picture = Picture.create(32, 32, ColorSpace.YUV420J).apply { fill(15) }
         val data = H264Encoder.createH264Encoder().encodeIDRFrame(picture, ByteBuffer.allocate(65536))
