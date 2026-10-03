@@ -9,6 +9,7 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
@@ -34,6 +35,30 @@ class VideoReadMonitorTest {
             assertTrue(client.isClosed && interruptedRead.get() && !reader.isAlive)
         } finally {
             monitor.close(); client.close(); peer.close(); listener.close(); trickle.interrupt(); trickle.join(2000); reader.join(2000)
+            process.destroyForcibly(); process.waitFor(2, TimeUnit.SECONDS); timer.shutdownNow(); timer.awaitTermination(2, TimeUnit.SECONDS)
+        }
+    }
+
+    @Test
+    fun aBlockedClockStopCannotQueueVideoSocketCloseBehindIt() {
+        val listener = ServerSocket(0, 8, InetAddress.getLoopbackAddress())
+        val client = Socket(InetAddress.getLoopbackAddress(), listener.localPort)
+        val peer = listener.accept()
+        val process = ProcessBuilder("/bin/sleep", "20").start()
+        val timer = captureWatchdog()
+        val stoppingClock = java.util.concurrent.CountDownLatch(1)
+        val releaseClock = java.util.concurrent.CountDownLatch(1)
+        timer.execute { stoppingClock.countDown(); releaseClock.await() }
+        val monitor = VideoReadMonitor(client, process, timer)
+        try {
+            assertTrue(stoppingClock.await(2, TimeUnit.SECONDS))
+            process.destroy(); assertTrue(process.waitFor(2, TimeUnit.SECONDS))
+            val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2)
+            while (!client.isClosed && System.nanoTime() < deadline) Thread.sleep(25)
+            assertTrue(client.isClosed)
+            assertEquals(1L, releaseClock.count)
+        } finally {
+            monitor.close(); releaseClock.countDown(); client.close(); peer.close(); listener.close()
             process.destroyForcibly(); process.waitFor(2, TimeUnit.SECONDS); timer.shutdownNow(); timer.awaitTermination(2, TimeUnit.SECONDS)
         }
     }
