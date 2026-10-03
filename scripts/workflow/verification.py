@@ -216,7 +216,7 @@ def verify_pr(pr, api, git=git_read):
     data = json.loads(git('show', f'{head}:{path}'))
     gui = field(pr['body'], 'GUI') == 'required'
     validate_change(data, issue, gui)
-    files = git('diff', '--name-only', base, head).splitlines()
+    files = git('diff', '--no-renames', '--name-only', base, head).splitlines()
     if mode == 'develop':
         # Outcome is deliberately unrestricted, but every required Case has steps and tracking.
         for case in data['cases']:
@@ -257,7 +257,7 @@ def verify_pr(pr, api, git=git_read):
         git('merge-base', '--is-ancestor', base, head)
         # Metadata-only changes after the tested candidate. No untested product edits or main conflict resolutions.
         allowed = {PROMOTION, path}
-        if any(p not in allowed for p in git('diff', '--name-only', candidate, head).splitlines()):
+        if any(p not in allowed for p in git('diff', '--no-renames', '--name-only', candidate, head).splitlines()):
             raise ValueError('Promotion tree differs from tested candidate outside acceptance metadata')
         # A net-zero revert must not smuggle later/unobserved commits into main ancestry.
         # Every new promotion commit is metadata-only; the only allowed merge parent is current main.
@@ -265,7 +265,7 @@ def verify_pr(pr, api, git=git_read):
             parents = git('rev-list', '--parents', '-n', '1', commit).split()[1:]
             if not parents or len(parents) > 2 or (len(parents) == 2 and parents[1] != base):
                 raise ValueError('Unexpected promotion ancestry; only the current main merge is allowed')
-            changed = git('diff', '--name-only', parents[0], commit).splitlines()
+            changed = git('diff', '--no-renames', '--name-only', parents[0], commit).splitlines()
             if any(p not in allowed for p in changed):
                 raise ValueError('Untested commit in promotion history, even if later reverted')
         commits = git('rev-list', f'{base}..{candidate}').splitlines()

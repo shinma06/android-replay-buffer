@@ -469,7 +469,7 @@ class Loop:
             return {'pr': number, 'phase': state['phase'], 'error': state['next']}
 
     def commit_fix(self, path, h, pr):
-        changed = set(git('diff', '--name-only', 'HEAD', cwd=path).splitlines())
+        changed = set(git('diff', '--no-renames', '--name-only', 'HEAD', cwd=path).splitlines())
         changed.update(git('ls-files', '--others', '--exclude-standard', cwd=path).splitlines())
         if not changed or not in_scope(changed, h['scope']):
             raise ValueError('No fix or out-of-scope changes; preserve files for coordinator review')

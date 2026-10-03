@@ -4,7 +4,7 @@
 
 | 対象 | 確認方法・状態 |
 |---|---|
-| 管理ハーネス | pass。`python3 scripts/check.py`、162 tests。固定HEADとCIはPRに記録 |
+| 管理ハーネス | pass。`python3 scripts/check.py`、163 tests。固定HEADとCIはPRに記録 |
 | 既存CLI | pass。`python3 scripts/workflow/product_check.py`、既存2 tests。製品source/tests/設定/設計書の差分なし |
 | 変更影響・push | `python3 scripts/workflow/change_impact.py --base origin/main --run-tests`。cleanなcommitに対して実行 |
 | hooks/entrypoints | pass。bootstrap/doctorで設定・存在を確認。各clientの新規session実読込とは区別 |

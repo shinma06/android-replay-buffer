@@ -56,7 +56,7 @@ class AcceptanceTests(unittest.TestCase):
                 return json.dumps(self.manifest)
             return json.dumps(self.documents[args[1]])
         if args[0] == 'diff':
-            if args[2] == NEW:
+            if args[-2] == NEW:
                 return '\n'.join(self.product_diff + ['docs/verification/promotion.json'])
             return 'docs/verification/promotion.json'
         if args[:2] == ('rev-list', '--parents'):
@@ -339,6 +339,33 @@ class DevelopLoopTests(unittest.TestCase):
 
 
 class RealPromotionHistoryTests(unittest.TestCase):
+    def test_product_rename_cannot_enter_tooling_or_fixer_scope(self):
+        import os
+        import subprocess
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env = {k: v for k, v in os.environ.items() if not k.startswith('GIT_')}
+            def git(*args):
+                return subprocess.check_output(['git', *args], cwd=root, env=env,
+                                               text=True, stderr=subprocess.DEVNULL).strip()
+            git('init', '-b', 'main')
+            git('config', 'user.name', 'Test'); git('config', 'user.email', 'test@example.invalid')
+            git('config', 'core.hooksPath', '/dev/null')
+            git('config', 'diff.renames', 'true')
+            (root / 'replay_buffer').mkdir(); (root / 'docs/verification/changes').mkdir(parents=True)
+            (root / 'replay_buffer/daemon.py').write_text('print("product")\n')
+            matrix = 'docs/verification/changes/issue-35.json'
+            (root / matrix).write_text(json.dumps(change(gui=False)))
+            git('add', '.'); git('commit', '-m', 'base'); base = git('rev-parse', 'HEAD')
+            git('mv', 'replay_buffer/daemon.py', 'docs/daemon.py')
+            self.assertEqual(git('diff', '--name-only', 'HEAD'), 'docs/daemon.py')
+            with self.assertRaisesRegex(ValueError, 'out-of-scope'):
+                al.Loop.commit_fix(None, root, {'scope': ['docs/'], 'issue': 35}, {})
+            git('commit', '-m', 'move product into docs')
+            pr = pr_data(); pr['base']['sha'] = base; pr['head']['sha'] = git('rev-parse', 'HEAD')
+            with self.assertRaisesRegex(ValueError, 'restricted'):
+                verify_pr(pr, Mock(side_effect=AssertionError('No API expected')), git)
+
     def test_two_batches_with_later_develop_and_main_tooling_sync(self):
         import os
         import subprocess
