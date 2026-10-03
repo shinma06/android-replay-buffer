@@ -38,7 +38,7 @@ AOSPのSurface自動timestampはMONOTONICを使うが、全端末のcodec出力�
 
 時計DEXはapp_processで動く小さな専用helper。端末appの改造・APKインストール・rootを要求しない。hostからnonce付き測定要求を送り、helperは`elapsed before → mono → currentTimeMillis → elapsed after`を返す。clock sampleにはnonce、boot epoch ID、各値、読取幅、host往復幅を保存する。helperの実起動/互換性は未検証。起動不可なら同期不適合を表示し、受入を通さない。
 
-開始/再接続/取得generation変更時に5回測定し最短往復のsampleを初期anchorにする。以後1秒ごとに測定、5秒以上古いanchorは正常同期に使わない。clock sampleの端末読取幅は2ms以下、host往復幅は40ms以下を正常条件にする。往復の半分は**対称遅延の推定値**であり、端末内部のmono/elapsed/Epoch変換の保証誤差とは混同しない。
+開始/再接続/取得generation変更時に5回測定し最短往復のsampleを初期anchorにする。以後1秒ごとに測定、5秒以上古いanchorは正常同期に使わない。clock sampleの端末読取幅は2ms以下、host往復幅は40ms以下を正常条件にする。offsetのepoch分割は前後sampleの読取幅と1ms量子化による見積誤差を超える不連続で判断し、微小な測定差だけでは分割しない。往復の半分は**対称遅延の推定値**であり、端末内部のmono/elapsed/Epoch変換の保証誤差とは混同しない。
 
 - `E = (elapsed_before + elapsed_after) / 2`。`E - mono`と`E - epoch`を別々に保存する。currentTimeMillisの1ms量子化、読取幅、隣接sampleのoffset差を変換の誤差幅へ加える。
 - 同一clock区間では`video_elapsed = video_pts * 1000 + (E - mono)`、`log_elapsed = log_epoch + (E - epoch)`。各sample間でoffsetを線形補間する。同期精度を装うためにhost受信時刻へ置き換えない。
@@ -77,7 +77,7 @@ gapはstream毎に`kind / from / to / reason / boundary_uncertainty / generation
 | Perfetto | 複数時計snapshotの考えは採用。画面エビデンス配布にはMP4やlogcatへの変換・別UIが必要で、新しいtrace収集を増やすため不採用。[公式clock sync](https://perfetto.dev/docs/concepts/clock-sync) |
 | MKV metadata track | 柔軟な複数track/可変PTSが利点。初期版では一般のmacOS受取人の再生・metadata閲覧とJVM muxの確認範囲を増やすため不採用。[Matroska仕様](https://www.matroska.org/technical/elements.html) |
 
-保存単位は日時＋一意save IDのフォルダ。`session.json`（schema=1、build/dependencies、sequence、T/N、clock samples/epochs、設定/app選択履歴、watermarks、coverage、loss/gap、全file hash）、`logcat-device.jsonl`、`logcat-app.jsonl`、`video-001.mp4`以降、`frames.jsonl`、`README.txt`を含める。動画のない部分保存ではMP4は0件、ログのない種類もファイルは0行としsessionのcoverage/statusで空の理由を示す。完了manifest公開までフォルダを完了扱いしない。再試行・atomic公開・失敗対象の寿命は#11へ接続する。
+保存単位は日時＋一意save IDのフォルダ。`session.json`（schema=1、build/dependencies、sequence、T/N、clock samples/epochs、設定/app選択履歴、watermarks、coverage、loss/gap、全file hash。ただし自己参照を避けsession.json自身をhash一覧から除外）、`logcat-device.jsonl`、`logcat-app.jsonl`、`video-001.mp4`以降、`frames.jsonl`、`README.txt`を含める。動画のない部分保存ではMP4は0件、ログのない種類もファイルは0行としsessionのcoverage/statusで空の理由を示す。完了manifest公開までフォルダを完了扱いしない。再試行・atomic公開・失敗対象の寿命は#11へ接続する。
 
 両ログは全体の**同じbinary logcat取得**から抽出し、共通の`record_id`と元Epoch/変換情報を持つ。`-b all -B -T 1`を開始候補とし、deviceがshell権限で読めるbufferとheader versionを確認する。取得開始以前のtailは正常窓から除外、再接続で過去をbackfillしたとは主張しない。lidによってtext/event payloadを分け、未対応payloadもraw bytesをJSONのbase64として残す。package→UID/PID/multiprocessの選択・再起動追従はLOG-02実装契約から供給し、PIDだけを永続app IDにしない。対象未確定の区間はapp coverageをunknownとし、全体logの空白へ変えない。security等読めないbufferを「端末の全ログ取得済み」と表現しない。
 
