@@ -7,7 +7,7 @@
     "python3 scripts/check.py: 管理/リンク/回帰。結果はIssue/PRへ記録。",
     "python3 scripts/workflow/product_check.py: CLI原型21 filesと既存2 tests。結果はIssue/PRへ記録。",
     "python3 tests/fixtures/replay-marker/build.py: 2 APK assembleDebug/lintDebugとnative回帰APK生成。source/dirty/hashを記録。実Android回帰・製品GUI passとは区別。",
-    "python3 scripts/workflow/change_impact.py --base 16123f6fa2e2c74ce4300d1acf4f54d317b3fdff --run-tests: clean committed HEADで実施。"
+    "python3 scripts/workflow/change_impact.py --base 2a6e89ed4ce6c7f04140028cd8f2c707adbf1dfb --run-tests: clean committed HEADで実施。"
   ],
   "cases": [
     {
@@ -24,10 +24,10 @@
         "追加scrcpy/ffmpeg/Python等を用意しない専用環境と固定ZIPを確認する。",
         "1プロジェクト・1台でON、イベント発生、保存を行う。",
         "SYNC-ENV: Plugin ZIP内のserver/JCodec/時計DEX/license/hashを照合する。",
-        "SYNC-ENV: 機能を有効化し、実機とEmulatorで各20秒取得して保存する。",
+        "SYNC-ENV: 機能を有効化し、専用実機だけで20秒取得して保存する。",
         "SYNC-ENV: SDK adbを使用し、追加ツール導入/PATH変更/実行時downloadなしで動くことを確認する。"
       ],
-      "expected": "標準Android開発環境だけで取得・保存できる。ホストの既存PATH/cacheへ偶然依存しない。scrcpy 4.0固定server/JCodec 0.2.5/時計DEX/license/hashをZIPへ同梱。実行時downloadなし。 SYNC-ENV: 各環境で動画と両ログ/clock metadataを保存。helper/server起動不適合は明示し、ENV-03合格にしない。",
+      "expected": "標準Android開発環境だけで取得・保存できる。ホストの既存PATH/cacheへ偶然依存しない。scrcpy 4.0固定server/JCodec 0.2.5/時計DEX/license/hashをZIPへ同梱。実行時downloadなし。 SYNC-ENV: 専用実機で動画と両ログ/clock metadataを保存。helper/server起動不適合は明示し、ENV-03合格にしない。",
       "provenance": [
         "Issue #27 / native parent #14",
         "docs/requirements.md: ENV-01, ENV-02, ENV-03",
@@ -421,12 +421,12 @@
         "SYNC-01"
       ],
       "change": "60秒内20秒の空白",
-      "preconditions": "専用実機1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。 SYNC-GAP追加前提: N=60秒、実機USBとEmulatorのtransport断を別々に試す。切断確定時刻/誤差と取得generationが記録可能。",
+      "preconditions": "専用実機1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。 SYNC-GAP追加前提: N=60秒、対象実機だけのUSB抜去/再接続で同じbootの完全切断を再現できる。共有ADB serverは停止しない。安全な遮断方法が未確定なら本Caseをblockedにする。切断確定時刻/誤差と取得generationが記録可能。",
       "steps": [
         "所有確認済みの取得経路だけを約20秒中断し復旧させる。",
         "直近60秒内にこの空白を含め保存する。",
-        "SYNC-GAP: 60秒窓内で20秒完全切断し再開して保存する。",
-        "SYNC-GAP: 次にNを超えて切断し切断中保存、その後同じbootへ再接続して保存する。",
+        "SYNC-GAP: 対象実機だけのUSB抜去/再接続で60秒窓内に20秒の完全切断を作り、復旧後に保存する。",
+        "SYNC-GAP: 対象実機だけのUSB抜去/再接続で次にNを超える切断中に保存し、同じbootへ再接続して保存する。",
         "SYNC-GAP: 取得EOFを起こし即時復旧/再試行間隔と保存を照合する。"
       ],
       "expected": "窓は60秒の実時間で取得分は約40秒。取得秒数60を集めるため過去へ拡張せず、同sequenceで空白/理由を保存する。 SYNC-GAP: 60秒窓の取得済み約40秒と20秒gap、same sequence。長い切断中T凍結、再接続後現在窓で旧範囲prune。gapを詰めない。端末切断瞬間と検出確定を混同しない。",
@@ -459,12 +459,12 @@
         "UI-01"
       ],
       "change": "切断前保存と再接続",
-      "preconditions": "専用実機1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。 SYNC-GAP追加前提: N=60秒、実機USBとEmulatorのtransport断を別々に試す。切断確定時刻/誤差と取得generationが記録可能。",
+      "preconditions": "専用実機1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。 SYNC-GAP追加前提: N=60秒、対象実機だけのUSB抜去/再接続で同じbootの完全切断を再現できる。共有ADB serverは停止しない。安全な遮断方法が未確定なら本Caseをblockedにする。切断確定時刻/誤差と取得generationが記録可能。",
       "steps": [
         "専用対象だけを切断し直後に保存する。",
         "同じ対象を再接続してイベント発生/保存する。",
-        "SYNC-GAP: 60秒窓内で20秒完全切断し再開して保存する。",
-        "SYNC-GAP: 次にNを超えて切断し切断中保存、その後同じbootへ再接続して保存する。",
+        "SYNC-GAP: 対象実機だけのUSB抜去/再接続で60秒窓内に20秒の完全切断を作り、復旧後に保存する。",
+        "SYNC-GAP: 対象実機だけのUSB抜去/再接続で次にNを超える切断中に保存し、同じbootへ再接続して保存する。",
         "SYNC-GAP: 取得EOFを起こし即時復旧/再試行間隔と保存を照合する。"
       ],
       "expected": "切断前窓は保存可能。再接続で即時復旧試行、自動取得再開。同sequence、空白を保持、既保存の上書きなし。 SYNC-GAP: 60秒窓の取得済み約40秒と20秒gap、same sequence。長い切断中T凍結、再接続後現在窓で旧範囲prune。gapを詰めない。端末切断瞬間と検出確定を混同しない。",
@@ -651,18 +651,18 @@
         "SYNC-01"
       ],
       "change": "長時間・時計変化",
-      "preconditions": "専用実機1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。 SYNC-CLOCK追加前提: 正常取得できる当該Caseの専用対象、描画とLog双方に同じ連番を出す使い捨てapp。固定画質/codec、時計sampleと描画eventの記録。 SYNC-JUMP追加前提: 日時変更/端末sleep/再起動を許可したdisposable Emulator。hostは他作業と共有し、host sleep操作は別途PMが調整。",
+      "preconditions": "専用実機1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。 SYNC-CLOCK追加前提: 正常取得できる当該Caseの専用対象、描画とLog双方に同じ連番を出す使い捨てapp。固定画質/codec、時計sampleと描画eventの記録。 SYNC-JUMP追加前提: 日時変更/sleep/再起動の操作をPMが許可した専用実機だけを使う。対象機種/OSで安全な操作・復帰方法と新boot epochを確認できること。方法未確定の操作は省略してpassにせず本Caseをblockedにする。host日時/sleepは操作しない。",
       "steps": [
         "採用#13で決めた試験時間を連続取得し等間隔にイベントを発生する。",
         "専用対象で許可された場合だけwall clock変更/アプリ再起動を行い再保存する。",
         "SYNC-CLOCK: 同じUI更新callbackで連番/端末elapsedをLogへ出し、画面にも連番を描画する。描画完了のframe callback時刻も別に記録する。",
         "SYNC-CLOCK: 30分取得し開始/中間/終了の各100イベントを保存対象にする。両ログに同じrecord_idがあることを照合する。",
         "SYNC-CLOCK: 元PTS/clock変換誤差と描画遅延を分け、全300件の差・p95・最大・前後半中央値差を集計する。",
-        "SYNC-JUMP: 端末日時を前後へ変更し、変更を挟むeventを記録する。",
-        "SYNC-JUMP: 端末sleep/復帰でmonoとelapsedの差を測り、境界前後を保存する。",
-        "SYNC-JUMP: 端末を再起動し新boot epochで再取得・保存、固定した失敗対象も照合する。"
+        "SYNC-JUMP: 専用実機の日時設定を前後へ変更し、変更を挟むeventを記録する。",
+        "SYNC-JUMP: 専用実機だけを許可済みの方法でsleep/復帰させ、monoとelapsedの差を実測し境界前後を保存する。画面OFFだけでdeep sleepしたと判断しない。",
+        "SYNC-JUMP: 専用実機だけを通常再起動し、新boot epochで再取得・保存、固定した失敗対象も照合する。"
       ],
-      "expected": "開始/末尾のずれを実測し採用精度内。時計変化/epoch/空白を誤対応しない。共有端末時計は変更しない。 SYNC-CLOCK: 通常p95<=100ms、最大<=250ms、中央値drift<=50ms、clock見積誤差<=20ms。全欠落/uncertainも集計し隠さない。100ms等は未実測の設計基準。 SYNC-JUMP: 境界跨ぎ補間なし、曖昧logはelapsed/window nullと推定幅。正常precisionを偽装しない。sequence/旧履歴/pinは保持、新bootを旧elapsedとして計算しない。失った容量上限区間はloss。",
+      "expected": "開始/末尾のずれを実測し採用精度内。時計変化/epoch/空白を誤対応しない。共有端末時計は変更しない。 SYNC-CLOCK: 通常p95<=100ms、最大<=250ms、中央値drift<=50ms、clock見積誤差<=20ms。全欠落/uncertainも集計し隠さない。100ms等は未実測の設計基準。 SYNC-JUMP: 境界跨ぎ補間なし、曖昧logはelapsed/window nullと推定幅。正常precisionを偽装しない。sequence/旧履歴/pinは保持、新bootを旧elapsedとして計算しない。失った容量上限区間はloss。 SYNC-JUMPの結果はこの専用実機だけに帰属する。正常30分精度と時計境界試験を別に集計し、安全に再現・測定できない操作を完了扱いしない。",
       "provenance": [
         "Issue #27 / native parent #14",
         "docs/requirements.md: SYNC-01",
@@ -1169,12 +1169,12 @@
         "SAVE-05"
       ],
       "change": "長い切断の凍結窓",
-      "preconditions": "専用実機1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。 SYNC-GAP追加前提: N=60秒、実機USBとEmulatorのtransport断を別々に試す。切断確定時刻/誤差と取得generationが記録可能。",
+      "preconditions": "専用実機1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。 SYNC-GAP追加前提: N=60秒、対象実機だけのUSB抜去/再接続で同じbootの完全切断を再現できる。共有ADB serverは停止しない。安全な遮断方法が未確定なら本Caseをblockedにする。切断確定時刻/誤差と取得generationが記録可能。",
       "steps": [
         "N秒超の完全切断中に保存し、再接続して再保存する。",
         "片系障害でも比較する。",
-        "SYNC-GAP: 60秒窓内で20秒完全切断し再開して保存する。",
-        "SYNC-GAP: 次にNを超えて切断し切断中保存、その後同じbootへ再接続して保存する。",
+        "SYNC-GAP: 対象実機だけのUSB抜去/再接続で60秒窓内に20秒の完全切断を作り、復旧後に保存する。",
+        "SYNC-GAP: 対象実機だけのUSB抜去/再接続で次にNを超える切断中に保存し、同じbootへ再接続して保存する。",
         "SYNC-GAP: 取得EOFを起こし即時復旧/再試行間隔と保存を照合する。"
       ],
       "expected": "完全切断は確定時刻Tの[T-N,T]を凍結。再接続は現在Tへ戻して古い窓外を期限処理、固定要求参照は維持。同sequence。片系障害ではTを凍結しない。 SYNC-GAP: 60秒窓の取得済み約40秒と20秒gap、same sequence。長い切断中T凍結、再接続後現在窓で旧範囲prune。gapを詰めない。端末切断瞬間と検出確定を混同しない。",
@@ -1246,10 +1246,10 @@
         "追加scrcpy/ffmpeg/Python等を用意しない専用環境と固定ZIPを確認する。",
         "1プロジェクト・1台でON、イベント発生、保存を行う。",
         "SYNC-ENV: Plugin ZIP内のserver/JCodec/時計DEX/license/hashを照合する。",
-        "SYNC-ENV: 機能を有効化し、実機とEmulatorで各20秒取得して保存する。",
+        "SYNC-ENV: 機能を有効化し、専用Emulatorだけで20秒取得して保存する。",
         "SYNC-ENV: SDK adbを使用し、追加ツール導入/PATH変更/実行時downloadなしで動くことを確認する。"
       ],
-      "expected": "標準Android開発環境だけで取得・保存できる。ホストの既存PATH/cacheへ偶然依存しない。scrcpy 4.0固定server/JCodec 0.2.5/時計DEX/license/hashをZIPへ同梱。実行時downloadなし。 SYNC-ENV: 各環境で動画と両ログ/clock metadataを保存。helper/server起動不適合は明示し、ENV-03合格にしない。",
+      "expected": "標準Android開発環境だけで取得・保存できる。ホストの既存PATH/cacheへ偶然依存しない。scrcpy 4.0固定server/JCodec 0.2.5/時計DEX/license/hashをZIPへ同梱。実行時downloadなし。 SYNC-ENV: 専用Emulatorで動画と両ログ/clock metadataを保存。helper/server起動不適合は明示し、ENV-03合格にしない。",
       "provenance": [
         "Issue #27 / native parent #14",
         "docs/requirements.md: ENV-01, ENV-02, ENV-03",
@@ -1643,15 +1643,15 @@
         "SYNC-01"
       ],
       "change": "60秒内20秒の空白",
-      "preconditions": "専用Emulator1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。 SYNC-GAP追加前提: N=60秒、実機USBとEmulatorのtransport断を別々に試す。切断確定時刻/誤差と取得generationが記録可能。",
+      "preconditions": "専用Emulator1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。 SYNC-GAP追加前提: N=60秒、専用AVDを稼働させたまま、PM承認済みの対象transportだけの遮断/復旧で同じbootの完全切断を再現できる。共有ADB serverは停止しない。安全な遮断方法が未確定なら本Caseをblockedにする。切断確定時刻/誤差と取得generationが記録可能。",
       "steps": [
         "所有確認済みの取得経路だけを約20秒中断し復旧させる。",
         "直近60秒内にこの空白を含め保存する。",
-        "SYNC-GAP: 60秒窓内で20秒完全切断し再開して保存する。",
-        "SYNC-GAP: 次にNを超えて切断し切断中保存、その後同じbootへ再接続して保存する。",
+        "SYNC-GAP: 専用AVDを稼働させたまま、PM承認済みの対象transportだけの遮断/復旧で60秒窓内に20秒の完全切断を作り、復旧後に保存する。",
+        "SYNC-GAP: 専用AVDを稼働させたまま、PM承認済みの対象transportだけの遮断/復旧で次にNを超える切断中に保存し、同じbootへ再接続して保存する。",
         "SYNC-GAP: 取得EOFを起こし即時復旧/再試行間隔と保存を照合する。"
       ],
-      "expected": "窓は60秒の実時間で取得分は約40秒。取得秒数60を集めるため過去へ拡張せず、同sequenceで空白/理由を保存する。 SYNC-GAP: 60秒窓の取得済み約40秒と20秒gap、same sequence。長い切断中T凍結、再接続後現在窓で旧範囲prune。gapを詰めない。端末切断瞬間と検出確定を混同しない。",
+      "expected": "窓は60秒の実時間で取得分は約40秒。取得秒数60を集めるため過去へ拡張せず、同sequenceで空白/理由を保存する。 SYNC-GAP: 60秒窓の取得済み約40秒と20秒gap、same sequence。長い切断中T凍結、再接続後現在窓で旧範囲prune。gapを詰めない。端末切断瞬間と検出確定を混同しない。 同じbootのtransport断を観察する。AVD停止/起動によるboot変更をこの切断試験の代用にしない。",
       "provenance": [
         "Issue #27 / native parent #14",
         "docs/requirements.md: BUF-03, BUF-06, SYNC-01",
@@ -1681,15 +1681,15 @@
         "UI-01"
       ],
       "change": "切断前保存と再接続",
-      "preconditions": "専用Emulator1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。 SYNC-GAP追加前提: N=60秒、実機USBとEmulatorのtransport断を別々に試す。切断確定時刻/誤差と取得generationが記録可能。",
+      "preconditions": "専用Emulator1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。 SYNC-GAP追加前提: N=60秒、専用AVDを稼働させたまま、PM承認済みの対象transportだけの遮断/復旧で同じbootの完全切断を再現できる。共有ADB serverは停止しない。安全な遮断方法が未確定なら本Caseをblockedにする。切断確定時刻/誤差と取得generationが記録可能。",
       "steps": [
         "専用対象だけを切断し直後に保存する。",
         "同じ対象を再接続してイベント発生/保存する。",
-        "SYNC-GAP: 60秒窓内で20秒完全切断し再開して保存する。",
-        "SYNC-GAP: 次にNを超えて切断し切断中保存、その後同じbootへ再接続して保存する。",
+        "SYNC-GAP: 専用AVDを稼働させたまま、PM承認済みの対象transportだけの遮断/復旧で60秒窓内に20秒の完全切断を作り、復旧後に保存する。",
+        "SYNC-GAP: 専用AVDを稼働させたまま、PM承認済みの対象transportだけの遮断/復旧で次にNを超える切断中に保存し、同じbootへ再接続して保存する。",
         "SYNC-GAP: 取得EOFを起こし即時復旧/再試行間隔と保存を照合する。"
       ],
-      "expected": "切断前窓は保存可能。再接続で即時復旧試行、自動取得再開。同sequence、空白を保持、既保存の上書きなし。 SYNC-GAP: 60秒窓の取得済み約40秒と20秒gap、same sequence。長い切断中T凍結、再接続後現在窓で旧範囲prune。gapを詰めない。端末切断瞬間と検出確定を混同しない。",
+      "expected": "切断前窓は保存可能。再接続で即時復旧試行、自動取得再開。同sequence、空白を保持、既保存の上書きなし。 SYNC-GAP: 60秒窓の取得済み約40秒と20秒gap、same sequence。長い切断中T凍結、再接続後現在窓で旧範囲prune。gapを詰めない。端末切断瞬間と検出確定を混同しない。 同じbootのtransport断を観察する。AVD停止/起動によるboot変更をこの切断試験の代用にしない。",
       "provenance": [
         "Issue #27 / native parent #14",
         "docs/requirements.md: BUF-05, BUF-06, UI-01",
@@ -1873,18 +1873,18 @@
         "SYNC-01"
       ],
       "change": "長時間・時計変化",
-      "preconditions": "専用Emulator1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。 SYNC-CLOCK追加前提: 正常取得できる当該Caseの専用対象、描画とLog双方に同じ連番を出す使い捨てapp。固定画質/codec、時計sampleと描画eventの記録。 SYNC-JUMP追加前提: 日時変更/端末sleep/再起動を許可したdisposable Emulator。hostは他作業と共有し、host sleep操作は別途PMが調整。",
+      "preconditions": "専用Emulator1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。 SYNC-CLOCK追加前提: 正常取得できる当該Caseの専用対象、描画とLog双方に同じ連番を出す使い捨てapp。固定画質/codec、時計sampleと描画eventの記録。 SYNC-JUMP追加前提: 日時変更/sleep/再起動の操作をPMが許可した専用Emulatorだけを使う。対象機種/OSで安全な操作・復帰方法と新boot epochを確認できること。方法未確定の操作は省略してpassにせず本Caseをblockedにする。host日時/sleepは操作しない。",
       "steps": [
         "採用#13で決めた試験時間を連続取得し等間隔にイベントを発生する。",
         "専用対象で許可された場合だけwall clock変更/アプリ再起動を行い再保存する。",
         "SYNC-CLOCK: 同じUI更新callbackで連番/端末elapsedをLogへ出し、画面にも連番を描画する。描画完了のframe callback時刻も別に記録する。",
         "SYNC-CLOCK: 30分取得し開始/中間/終了の各100イベントを保存対象にする。両ログに同じrecord_idがあることを照合する。",
         "SYNC-CLOCK: 元PTS/clock変換誤差と描画遅延を分け、全300件の差・p95・最大・前後半中央値差を集計する。",
-        "SYNC-JUMP: 端末日時を前後へ変更し、変更を挟むeventを記録する。",
-        "SYNC-JUMP: 端末sleep/復帰でmonoとelapsedの差を測り、境界前後を保存する。",
-        "SYNC-JUMP: 端末を再起動し新boot epochで再取得・保存、固定した失敗対象も照合する。"
+        "SYNC-JUMP: 専用Emulatorの日時設定を前後へ変更し、変更を挟むeventを記録する。",
+        "SYNC-JUMP: 専用Emulatorだけを許可済みの方法でsleep/復帰させ、monoとelapsedの差を実測し境界前後を保存する。画面OFFだけでdeep sleepしたと判断しない。",
+        "SYNC-JUMP: 専用Emulatorだけを通常再起動し、新boot epochで再取得・保存、固定した失敗対象も照合する。"
       ],
-      "expected": "開始/末尾のずれを実測し採用精度内。時計変化/epoch/空白を誤対応しない。共有端末時計は変更しない。 SYNC-CLOCK: 通常p95<=100ms、最大<=250ms、中央値drift<=50ms、clock見積誤差<=20ms。全欠落/uncertainも集計し隠さない。100ms等は未実測の設計基準。 SYNC-JUMP: 境界跨ぎ補間なし、曖昧logはelapsed/window nullと推定幅。正常precisionを偽装しない。sequence/旧履歴/pinは保持、新bootを旧elapsedとして計算しない。失った容量上限区間はloss。",
+      "expected": "開始/末尾のずれを実測し採用精度内。時計変化/epoch/空白を誤対応しない。共有端末時計は変更しない。 SYNC-CLOCK: 通常p95<=100ms、最大<=250ms、中央値drift<=50ms、clock見積誤差<=20ms。全欠落/uncertainも集計し隠さない。100ms等は未実測の設計基準。 SYNC-JUMP: 境界跨ぎ補間なし、曖昧logはelapsed/window nullと推定幅。正常precisionを偽装しない。sequence/旧履歴/pinは保持、新bootを旧elapsedとして計算しない。失った容量上限区間はloss。 SYNC-JUMPの結果はこの専用Emulatorだけに帰属する。正常30分精度と時計境界試験を別に集計し、安全に再現・測定できない操作を完了扱いしない。",
       "provenance": [
         "Issue #27 / native parent #14",
         "docs/requirements.md: SYNC-01",
@@ -2391,15 +2391,15 @@
         "SAVE-05"
       ],
       "change": "長い切断の凍結窓",
-      "preconditions": "専用Emulator1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。 SYNC-GAP追加前提: N=60秒、実機USBとEmulatorのtransport断を別々に試す。切断確定時刻/誤差と取得generationが記録可能。",
+      "preconditions": "専用Emulator1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。 SYNC-GAP追加前提: N=60秒、専用AVDを稼働させたまま、PM承認済みの対象transportだけの遮断/復旧で同じbootの完全切断を再現できる。共有ADB serverは停止しない。安全な遮断方法が未確定なら本Caseをblockedにする。切断確定時刻/誤差と取得generationが記録可能。",
       "steps": [
         "N秒超の完全切断中に保存し、再接続して再保存する。",
         "片系障害でも比較する。",
-        "SYNC-GAP: 60秒窓内で20秒完全切断し再開して保存する。",
-        "SYNC-GAP: 次にNを超えて切断し切断中保存、その後同じbootへ再接続して保存する。",
+        "SYNC-GAP: 専用AVDを稼働させたまま、PM承認済みの対象transportだけの遮断/復旧で60秒窓内に20秒の完全切断を作り、復旧後に保存する。",
+        "SYNC-GAP: 専用AVDを稼働させたまま、PM承認済みの対象transportだけの遮断/復旧で次にNを超える切断中に保存し、同じbootへ再接続して保存する。",
         "SYNC-GAP: 取得EOFを起こし即時復旧/再試行間隔と保存を照合する。"
       ],
-      "expected": "完全切断は確定時刻Tの[T-N,T]を凍結。再接続は現在Tへ戻して古い窓外を期限処理、固定要求参照は維持。同sequence。片系障害ではTを凍結しない。 SYNC-GAP: 60秒窓の取得済み約40秒と20秒gap、same sequence。長い切断中T凍結、再接続後現在窓で旧範囲prune。gapを詰めない。端末切断瞬間と検出確定を混同しない。",
+      "expected": "完全切断は確定時刻Tの[T-N,T]を凍結。再接続は現在Tへ戻して古い窓外を期限処理、固定要求参照は維持。同sequence。片系障害ではTを凍結しない。 SYNC-GAP: 60秒窓の取得済み約40秒と20秒gap、same sequence。長い切断中T凍結、再接続後現在窓で旧範囲prune。gapを詰めない。端末切断瞬間と検出確定を混同しない。 同じbootのtransport断を観察する。AVD停止/起動によるboot変更をこの切断試験の代用にしない。",
       "provenance": [
         "Issue #27 / native parent #14",
         "docs/requirements.md: BUF-03, BUF-05, BUF-06, SAVE-05",
