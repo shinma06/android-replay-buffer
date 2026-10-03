@@ -13,6 +13,7 @@ import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBTextField
 import com.intellij.util.Alarm
 import com.intellij.util.ui.FormBuilder
+import io.github.shinma06.replaybuffer.ide.ReplayProjectService
 import javax.swing.JComboBox
 import javax.swing.JComponent
 import javax.swing.JPanel
@@ -28,11 +29,21 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable {
     private var validationAlarm: Alarm? = null
     private var destinationValidation: DestinationValidation? = null
     private var destinationRevision = 0L
+    private var replayService: ReplayProjectService? = null
+    private var applicationStatus: JBLabel? = null
 
     override fun getDisplayName(): String = "Android Replay Buffer"
 
     override fun createComponent(): JComponent {
         validationAlarm = Alarm(Alarm.ThreadToUse.POOLED_THREAD, project)
+        replayService = project.getService(ReplayProjectService::class.java)
+        applicationStatus = JBLabel().apply { accessibleContext.accessibleName = "対象アプリの解決結果" }
+        val lifetime = validationAlarm!!
+        project.messageBus.connect(lifetime).subscribe(ReplayProjectService.ENVIRONMENT_CHANGED, Runnable {
+            ApplicationManager.getApplication().invokeLater({
+                if (validationAlarm === lifetime && !project.isDisposed) renderApplication()
+            }, ModalityState.any())
+        })
         destinationStatus = JBLabel().apply { accessibleContext.accessibleName = "保存先の確認結果" }
         retention = JBTextField().apply { accessibleContext.accessibleName = "保持時間（1〜900秒）" }
         destination = TextFieldWithBrowseButton().apply {
@@ -53,13 +64,21 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable {
             .addComponent(destinationStatus!!)
             .addLabeledComponent("対象アプリ:", mode!!)
             .addLabeledComponent("package名:", manualPackage!!)
+            .addComponent(applicationStatus!!)
             .addComponent(JBLabel("編集だけでは取得条件を変更しません。「適用」または「OK」で反映します。"))
             .addComponent(JBLabel("取得の有効・無効はToolWindowから即時に切り替えます。"))
             .addComponent(JBLabel("保存先が未指定でも取得できます。保存する前にフォルダを指定してください。"))
             .addComponentFillVertically(JPanel(), 0)
             .panel
         checkDestination()
+        renderApplication()
         return panel!!
+    }
+
+    private fun renderApplication() {
+        val application = replayService?.environment?.application
+        applicationStatus?.text = "対象の解決結果: ${application?.packageName ?: application?.reason ?: "確認中…"}" +
+            (application?.configurationName?.let { "（Run: $it）" } ?: "")
     }
 
     private fun checkDestination() {
@@ -112,6 +131,7 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable {
         manualPackage?.text = settings.manualPackage
         manualPackage?.isEnabled = settings.appSelection == AppSelectionMode.MANUAL
         checkDestination()
+        renderApplication()
     }
 
     override fun disposeUIResources() {
@@ -119,6 +139,8 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable {
         validationAlarm = null
         destinationValidation = null
         destinationStatus = null
+        applicationStatus = null
+        replayService = null
         destination?.dispose()
         panel = null
         retention = null

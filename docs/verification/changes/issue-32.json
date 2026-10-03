@@ -2,11 +2,11 @@
   "schema": 1,
   "issue": 32,
   "gui_required": true,
-  "reason": "IDE UI/設定・SDK/Run構成境界の実装。コア接続と実ロード/Emulatorは#31/#27待ち、実機は利用者指定で保留。pure testsや暫定compileをGUI passへ代用しない。",
+  "reason": "固定ReplayCoreのIDE UI/設定・SDK/Run構成・取得/保存操作を接続。実ロード/Emulator/GUI観察は#27未完了、実機は利用者指定で保留。pure testsやcompileをGUI passへ代用しない。",
   "cli_checks": [
     "python3 scripts/check.py",
     "python3 scripts/workflow/product_check.py: CLI原型21files一致・2tests pass",
-    "python3 scripts/workflow/plugin_check.py: 固定依存b4d94da82fac92160fc74a6a671e1c5e999c9ecf受領後、暫定init scriptなしの標準build/tests/ZIP構造検査。結果は合成固定HEADのIssue/PRへ記録",
+    "python3 scripts/workflow/plugin_check.py: 固定実コア69878f49c77717154023283eea5ac795e1fd1535受領後の標準build/tests/ZIP構造検査。結果と同一clean source/ZIP識別をIssue/PRへ記録",
     "python3 scripts/workflow/change_impact.py --base origin/develop --run-tests: clean committed HEAD"
   ],
   "cases": [
@@ -28,7 +28,7 @@
       ],
       "gpt": {
         "status": "pending",
-        "reason": "IDE独立部分と標準buildを確認。engine操作接続/実ロード/Emulator観察は未完了、実機は保留。pure testsを観察passへ代用しない。"
+        "reason": "固定ReplayCoreに取得・設定・保存・再試行・通知・終了を接続し、実core回帰testsと標準buildを確認。実ロード/Emulator/GUI観察は未実施、実機は保留。pure testsを観察passへ代用しない。"
       },
       "human": {
         "status": "pending",
@@ -37,7 +37,7 @@
       "fix_issue": null,
       "fix_pr": null,
       "recheck": "UI/core/API/build変更後は同じ新固定source/ZIPで再観察する。",
-      "next_action": "PMが#31実型/共有build確定後に接続と独立レビューを調整し、#27へ本Caseを環境別状態・期待と双方向引継ぐ。実機は利用者準備後。"
+      "next_action": "PMが最終固定HEAD/baseの完全独立レビュー・Verifierを調整し、#27へ同じ固定source/ZIPの本Caseを環境別状態・期待と双方向引継ぐ。実機は利用者準備後。"
     },
     {
       "id": "UI-12-02",
@@ -57,7 +57,7 @@
       ],
       "gpt": {
         "status": "pending",
-        "reason": "IDE独立部分と標準buildを確認。engine操作接続/実ロード/Emulator観察は未完了、実機は保留。pure testsを観察passへ代用しない。"
+        "reason": "固定ReplayCoreに取得・設定・保存・再試行・通知・終了を接続し、実core回帰testsと標準buildを確認。実ロード/Emulator/GUI観察は未実施、実機は保留。pure testsを観察passへ代用しない。"
       },
       "human": {
         "status": "pending",
@@ -66,7 +66,7 @@
       "fix_issue": null,
       "fix_pr": null,
       "recheck": "UI/core/API/build変更後は同じ新固定source/ZIPで再観察する。",
-      "next_action": "PMが#31実型/共有build確定後に接続と独立レビューを調整し、#27へ本Caseを環境別状態・期待と双方向引継ぐ。実機は利用者準備後。"
+      "next_action": "PMが最終固定HEAD/baseの完全独立レビュー・Verifierを調整し、#27へ同じ固定source/ZIPの本Caseを環境別状態・期待と双方向引継ぐ。実機は利用者準備後。"
     },
     {
       "id": "UI-12-03",
@@ -87,7 +87,7 @@
       ],
       "gpt": {
         "status": "pending",
-        "reason": "IDE独立部分と標準buildを確認。engine操作接続/実ロード/Emulator観察は未完了、実機は保留。pure testsを観察passへ代用しない。"
+        "reason": "固定ReplayCoreに取得・設定・保存・再試行・通知・終了を接続し、実core回帰testsと標準buildを確認。実ロード/Emulator/GUI観察は未実施、実機は保留。pure testsを観察passへ代用しない。"
       },
       "human": {
         "status": "pending",
@@ -96,7 +96,7 @@
       "fix_issue": null,
       "fix_pr": null,
       "recheck": "UI/core/API/build変更後は同じ新固定source/ZIPで再観察する。",
-      "next_action": "PMが#31実型/共有build確定後に接続と独立レビューを調整し、#27へ本Caseを環境別状態・期待と双方向引継ぐ。実機は利用者準備後。"
+      "next_action": "PMが最終固定HEAD/baseの完全独立レビュー・Verifierを調整し、#27へ同じ固定source/ZIPの本Caseを環境別状態・期待と双方向引継ぐ。実機は利用者準備後。"
     },
     {
       "id": "UI-12-04",
@@ -116,7 +116,7 @@
       ],
       "gpt": {
         "status": "pending",
-        "reason": "IDE独立部分と標準buildを確認。engine操作接続/実ロード/Emulator観察は未完了、実機は保留。pure testsを観察passへ代用しない。"
+        "reason": "固定ReplayCoreに取得・設定・保存・再試行・通知・終了を接続し、実core回帰testsと標準buildを確認。実ロード/Emulator/GUI観察は未実施、実機は保留。pure testsを観察passへ代用しない。"
       },
       "human": {
         "status": "pending",
@@ -125,7 +125,7 @@
       "fix_issue": null,
       "fix_pr": null,
       "recheck": "UI/core/API/build変更後は同じ新固定source/ZIPで再観察する。",
-      "next_action": "PMが#31実型/共有build確定後に接続と独立レビューを調整し、#27へ本Caseを環境別状態・期待と双方向引継ぐ。実機は利用者準備後。"
+      "next_action": "PMが最終固定HEAD/baseの完全独立レビュー・Verifierを調整し、#27へ同じ固定source/ZIPの本Caseを環境別状態・期待と双方向引継ぐ。実機は利用者準備後。"
     },
     {
       "id": "UI-12-05",
@@ -145,7 +145,7 @@
       ],
       "gpt": {
         "status": "pending",
-        "reason": "IDE独立部分と標準buildを確認。engine操作接続/実ロード/Emulator観察は未完了、実機は保留。pure testsを観察passへ代用しない。"
+        "reason": "固定ReplayCoreに取得・設定・保存・再試行・通知・終了を接続し、実core回帰testsと標準buildを確認。実ロード/Emulator/GUI観察は未実施、実機は保留。pure testsを観察passへ代用しない。"
       },
       "human": {
         "status": "pending",
@@ -154,7 +154,7 @@
       "fix_issue": null,
       "fix_pr": null,
       "recheck": "UI/core/API/build変更後は同じ新固定source/ZIPで再観察する。",
-      "next_action": "PMが#31実型/共有build確定後に接続と独立レビューを調整し、#27へ本Caseを環境別状態・期待と双方向引継ぐ。実機は利用者準備後。"
+      "next_action": "PMが最終固定HEAD/baseの完全独立レビュー・Verifierを調整し、#27へ同じ固定source/ZIPの本Caseを環境別状態・期待と双方向引継ぐ。実機は利用者準備後。"
     },
     {
       "id": "UI-12-06",
@@ -174,7 +174,7 @@
       ],
       "gpt": {
         "status": "pending",
-        "reason": "IDE独立部分と標準buildを確認。engine操作接続/実ロード/Emulator観察は未完了、実機は保留。pure testsを観察passへ代用しない。"
+        "reason": "固定ReplayCoreに取得・設定・保存・再試行・通知・終了を接続し、実core回帰testsと標準buildを確認。実ロード/Emulator/GUI観察は未実施、実機は保留。pure testsを観察passへ代用しない。"
       },
       "human": {
         "status": "pending",
@@ -183,7 +183,7 @@
       "fix_issue": null,
       "fix_pr": null,
       "recheck": "UI/core/API/build変更後は同じ新固定source/ZIPで再観察する。",
-      "next_action": "PMが#31実型/共有build確定後に接続と独立レビューを調整し、#27へ本Caseを環境別状態・期待と双方向引継ぐ。実機は利用者準備後。"
+      "next_action": "PMが最終固定HEAD/baseの完全独立レビュー・Verifierを調整し、#27へ同じ固定source/ZIPの本Caseを環境別状態・期待と双方向引継ぐ。実機は利用者準備後。"
     },
     {
       "id": "UI-12-07",
@@ -203,7 +203,7 @@
       ],
       "gpt": {
         "status": "pending",
-        "reason": "IDE独立部分と標準buildを確認。engine操作接続/実ロード/Emulator観察は未完了、実機は保留。pure testsを観察passへ代用しない。"
+        "reason": "固定ReplayCoreに取得・設定・保存・再試行・通知・終了を接続し、実core回帰testsと標準buildを確認。実ロード/Emulator/GUI観察は未実施、実機は保留。pure testsを観察passへ代用しない。"
       },
       "human": {
         "status": "pending",
@@ -212,7 +212,7 @@
       "fix_issue": null,
       "fix_pr": null,
       "recheck": "UI/core/API/build変更後は同じ新固定source/ZIPで再観察する。",
-      "next_action": "PMが#31実型/共有build確定後に接続と独立レビューを調整し、#27へ本Caseを環境別状態・期待と双方向引継ぐ。実機は利用者準備後。"
+      "next_action": "PMが最終固定HEAD/baseの完全独立レビュー・Verifierを調整し、#27へ同じ固定source/ZIPの本Caseを環境別状態・期待と双方向引継ぐ。実機は利用者準備後。"
     },
     {
       "id": "UI-12-08",
@@ -232,7 +232,7 @@
       ],
       "gpt": {
         "status": "pending",
-        "reason": "IDE独立部分と標準buildを確認。engine操作接続/実ロード/Emulator観察は未完了、実機は保留。pure testsを観察passへ代用しない。"
+        "reason": "固定ReplayCoreに取得・設定・保存・再試行・通知・終了を接続し、実core回帰testsと標準buildを確認。実ロード/Emulator/GUI観察は未実施、実機は保留。pure testsを観察passへ代用しない。"
       },
       "human": {
         "status": "pending",
@@ -241,7 +241,7 @@
       "fix_issue": null,
       "fix_pr": null,
       "recheck": "UI/core/API/build変更後は同じ新固定source/ZIPで再観察する。",
-      "next_action": "PMが#31実型/共有build確定後に接続と独立レビューを調整し、#27へ本Caseを環境別状態・期待と双方向引継ぐ。実機は利用者準備後。"
+      "next_action": "PMが最終固定HEAD/baseの完全独立レビュー・Verifierを調整し、#27へ同じ固定source/ZIPの本Caseを環境別状態・期待と双方向引継ぐ。実機は利用者準備後。"
     }
   ]
 }

@@ -10,8 +10,9 @@ class AboutReplayBufferAction : DumbAwareAction() {
         val version = (javaClass.classLoader as? PluginAwareClassLoader)?.pluginDescriptor?.version ?: "不明"
         Messages.showInfoMessage(
             event.project,
-            "プラグインの開発基盤です。録画・保存機能はまだ接続していません。\n" +
-                "録画・保存には既存のreplayd / replay CLIを使用してください。\n\n" +
+            "Android Replay BufferのToolWindowから、直前の画面・logcatを保存できます。\n" +
+                "Settings → Tools → Android Replay Bufferで保存先と取得条件を設定してください。\n" +
+                "初期版は1台のAndroid端末に対応し、初回は取得が無効です。\n\n" +
                 "バージョン: $version",
             "Android Replay Buffer",
         )
