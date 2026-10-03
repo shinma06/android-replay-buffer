@@ -114,12 +114,12 @@ internal class DeviceCapture(
             require(input.readInt() == 0x68323634) { "固定H.264以外のcodecです" }
             while (!stopping.get()) {
                 val packet = readVideo(input, monitor::started)
-                monitor.received(packet is VideoPacket.Frame && !packet.config)
-                if (packet is VideoPacket.Session) monitor.awaitFirstFrame()
-                when (packet) {
-                    is VideoPacket.Session -> store.session(packet, generation)
+                monitor.received(false) // Packet read completed; storage readiness is a separate condition.
+                val ready = when (packet) {
+                    is VideoPacket.Session -> { store.session(packet, generation); false }
                     is VideoPacket.Frame -> store.frame(packet, generation)
                 }
+                if (ready) monitor.received(true) else monitor.awaitFirstFrame()
             }
         } finally {
             monitor?.close()

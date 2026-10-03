@@ -189,8 +189,8 @@ internal class SaveWriter {
                 coveredUntil = maxOf(coveredUntil, to)
             }
             if (coveredUntil + 1_000_000 < windowLength) videoHoles += mapOf("from_window_ns" to coveredUntil.toString(), "to_window_ns" to windowLength.toString())
-            // An unconfirmed tail is neither proven loss nor proof of a newly received image.
-            if (tail?.fromNs != null && tail.toNs != null) {
+            // Only a displayed tail can cover a hole without confirming a newly received image.
+            if (tail?.displayHeld == true && tail.fromNs != null && tail.toNs != null) {
                 val from = tail.fromNs - capture.start
                 val to = tail.toNs - capture.start
                 val remainingHoles = videoHoles.flatMap { hole ->

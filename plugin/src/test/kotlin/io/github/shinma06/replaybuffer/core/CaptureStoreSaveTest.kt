@@ -20,6 +20,48 @@ import kotlin.test.assertTrue
 
 class CaptureStoreSaveTest {
     @Test
+    fun clockEpochChangeKeepsAnUnheldTailMissingEvenWithAnEarlierPlayablePart() {
+        val root = Files.createTempDirectory("replay-unheld-epoch-tail-")
+        val store = CaptureStore(root.resolve("ring"), minFree = 0)
+        val host = System.nanoTime()
+        val bytes = sample()
+        try {
+            store.generation(1); store.session(VideoPacket.Session(32, 32), 1)
+            anchor(store.clock, 1_000_000_000, host)
+            store.frame(VideoPacket.Frame(0, true, false, config(bytes)), 1)
+            store.frame(VideoPacket.Frame(1_000_000, false, true, bytes), 1, host)
+            anchor(store.clock, 1_100_000_000, host + 100_000_000)
+            store.frame(VideoPacket.Frame(1_100_000, false, true, bytes), 1, host + 100_000_000)
+            assertTrue(store.clock.add("1", listOf(1_500_000_000, 1_500_000_000,
+                1_700_000_010_500_000_000, 1_500_000_000), host + 500_000_000, host + 500_000_000))
+            val capture = store.capture(ReplaySettings())!!
+            val tail = capture.videoTail()!!
+            assertFalse(tail.displayHeld)
+            assertTrue(tail.fromNs != null && tail.toNs != null)
+            assertTrue(tail.clockEpoch != capture.windowClockEpoch)
+            assertTrue(capture.gaps.isEmpty()) // The clock change itself, without an explicit stream gap.
+            val output = SaveWriter().write(capture, root, { false }) { a, b -> Files.move(a, b) }
+            val manifest = JsonParser.parseString(Files.readString(output.directory.resolve("session.json"))).asJsonObject
+            assertEquals(1, manifest["parts"].asJsonArray.size())
+            assertTrue(manifest["complete"].asBoolean)
+            assertFalse(manifest["video_tail"].asJsonObject["display_held"].asBoolean)
+            assertFalse(manifest["video_missing_ranges"].asJsonArray.isEmpty)
+            assertEquals(listOf("video"), output.missingKinds)
+            val missing = manifest["video_missing_ranges"].asJsonArray.last().asJsonObject
+            assertEquals((capture.end - capture.start).toString(), missing["to_window_ns"].asString)
+            anchor(store.clock, 2_000_000_000, host + 1_000_000_000)
+            store.frame(VideoPacket.Frame(2_000_000, false, true, bytes), 1, host + 1_000_000_000)
+            assertEquals(tail, capture.videoTail())
+            val retry = SaveWriter().write(capture, root, { false }) { a, b -> Files.move(a, b) }
+            assertEquals(output.missingKinds, retry.missingKinds)
+            store.release(capture.id)
+        } finally {
+            store.close()
+            Files.walk(root).use { paths -> paths.sorted(java.util.Comparator.reverseOrder()).forEach { Files.deleteIfExists(it) } }
+        }
+    }
+
+    @Test
     fun evictedIdrCannotClaimThatAnUndecodableTailWasDisplayed() {
         val root = Files.createTempDirectory("replay-tail-without-idr-")
         val encoder = H264Encoder.createH264Encoder()
@@ -36,9 +78,9 @@ class CaptureStoreSaveTest {
             store.generation(1); store.session(VideoPacket.Session(32, 32), 1)
             anchor(store.clock, 1_000_000_000, host)
             store.frame(VideoPacket.Frame(0, true, false, config(bytes)), 1)
-            store.frame(VideoPacket.Frame(1_000_000, false, true, bytes), 1, host)
+            assertTrue(store.frame(VideoPacket.Frame(1_000_000, false, true, bytes), 1, host))
             anchor(store.clock, 1_100_000_000, host + 100_000_000)
-            store.frame(VideoPacket.Frame(1_100_000, false, false, pBytes), 1, host + 100_000_000)
+            assertFalse(store.frame(VideoPacket.Frame(1_100_000, false, false, pBytes), 1, host + 100_000_000))
             anchor(store.clock, 1_500_000_000, host + 500_000_000)
             val capture = store.capture(ReplaySettings())!!
             assertFalse(capture.video.single().key)
