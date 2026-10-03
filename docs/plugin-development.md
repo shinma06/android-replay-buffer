@@ -63,9 +63,12 @@ plugin/gradlew -p plugin runIde
 
 ## 次の実装順と責務
 
-1. **接続契約を定義**: 原型の `replay_buffer/cli.py`・`ipc.py`・`daemon.py` を調査し、既存daemonの所有、接続先、応答timeout、取消し、設定・出力先を決める。CLI出力の文字列解析より既存JSON IPCを候補にするが、サイズ境界・エラー・並行要求を先に検証する。
-2. **状態表示を接続**: 専用fixtureでread-onlyのstatus表示を実装。接続・process待ちはEDTで行わず、project dispose後のUI反映を抑止する。他の利用者が起動したdaemonを停止しない。
-3. **保存を接続**: 保存先を明示し、動画未準備のlog-only、タイムアウト、USB切断、保存失敗とデータ保全をCase化する。実機録画で動画/logcat/timelineの時刻対応を確認する。
-4. **配布候補を受入**: 同一ZIPで必要なCaseとAPI互換性を確認し、developからmainへpromotionする。Marketplace公開は別の依頼範囲。
+製品の動作と優先順は[製品要件](requirements.md)を正本とします。CLIの既存設定値や過去の設計から、将来プラグインの方式を自動決定しません。
+
+1. **未決の設計を解決**: 保存失敗時のUX、Logcat内か独立ツールウィンドウかの配置、動画と両ログの同期方式・精度を各調査Issueで決める。共通IDE知見の該当範囲を調査し、実際の設計を `docs/plugin-design.md` に記録する。
+2. **取得エンジンと接続契約を定義**: 追加ツールの手動導入不要・複数OSへの展開を満たす方式を選ぶ。原型の `replay_buffer/cli.py`・`ipc.py`・`daemon.py` と既存JSON IPCは調査・再利用候補であり、未変更のPython CLIへの接続を唯一の方式に固定しない。processの所有、接続先、timeout、取消し、入力サイズ・エラー・並行要求、依存ツールの提供を検証する。他の利用者が起動したdaemonを停止しない。
+3. **初期版の取得・状態表示・保存を実装**: 有効化トグルと状態復元、接続自動取得、明示的な設定適用、180秒の実時間バッファ、両ログ、1ボタン保存、同期、自動復旧と同一シーケンスを要件に照合する。接続・process待ちはEDTで行わず、dispose後のUI反映を抑止する。macOSを先に実機/Emulatorで検証する。
+4. **初期版候補を受入**: 同一ZIPで要件に対応するCaseとAPI互換性を確認し、developからmainへpromotionする。基盤の既存QAを含め、未実施のまま製品完成と扱わない。Marketplace公開は別の依頼範囲。
+5. **macOSメニューバー連携へ最初に着手**: IDE内初期版の完成直後に実施する。その後のOS対応はWindows、Linuxの順を基本にし、後続TODOは指定優先度と利用者の計画に従う。
 
 この順番は開発の入口です。未定の接続方式のためにservice/interface/DBや追加ライブラリを先に作りません。現段階の情報表示actionは状態・外部入力・非同期処理・DBを持たないため、入力検証、coroutineの並行性、DB安全性は適用対象外です。projectやViewを保持しないため長寿命参照はありません。Lifecycle・取消し・process停止は接続実装時に検証します。

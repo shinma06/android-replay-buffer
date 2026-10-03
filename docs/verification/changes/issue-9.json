@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "issue": 9,
+  "gui_required": false,
+  "reason": "合意した要件・未決事項・開発順序の文書化とIssue/Project登録のみ。CLI原型、プラグイン本体、実行コードを変更せず、将来機能の実装・実機受入を主張しないためGUI確認は不要。",
+  "cli_checks": [
+    "python3 scripts/check.py: 管理・リンク検証と回帰試験。実行結果はIssue/PRに記録する",
+    "python3 scripts/workflow/product_check.py: CLI原型の保全照合と既存tests。実行結果はIssue/PRに記録する",
+    "python3 scripts/workflow/change_impact.py --base origin/develop --run-tests: cleanな固定HEADで実行する",
+    "要件整理の全合意・TODO・未決事項とdocs/requirements.mdおよび登録Issueを照合する"
+  ],
+  "cases": []
+}

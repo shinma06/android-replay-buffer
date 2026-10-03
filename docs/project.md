@@ -2,6 +2,8 @@
 
 ## プロジェクトの目的
 
+初期版の具体的な動作・開発順序・未決事項は[製品要件](requirements.md)を正本とします。以下の目的と現行実装の事実を区別し、要件への記載を実装・受入済みとは扱いません。
+
 **Android開発の試験や日常の動作確認で、録画開始を意識せず操作し、必要な時に1ボタンで直前の画面操作とlogcatを保存して、試験エビデンスの採取と不意に発生したバグの調査に役立てる。**
 
 対象は、Androidアプリの実際の動作を確認する開発者・テスト担当者。主な利用場面は次の2つ。
@@ -30,7 +32,7 @@ GeForceアプリやOBSのリプレイバッファから着想を得て、直近�
 3. 利用者は個別の録画開始・終了を操作せずに試験や日常の動作確認を行う。手順を間違えた場合も、取得を継続したまま試験をやり直す。
 4. 試験の証跡が必要な時や予期しない不具合に気づいた時に、1ボタンで直前N秒分の動画と対応するログをまとめて指定先へ保存し、取得を続けながら次の操作へ進む。
 
-保存の対象は、試験結果や不具合発生までの経緯を確認できる画面操作と、その操作に対応するログ。継続取得用の一時バッファと保存済みエビデンスを区別し、直近区間の更新によって保存済みエビデンスを失わないことを目指す。取得開始直後や端末切断時など、指定時間分を確保できない場合の表示・保存条件は、実装時に定義・検証する。
+保存の対象は、試験結果や不具合発生までの経緯を確認できる画面操作と、その操作に対応する端末全体・対象アプリのログ。初期版の保持時間は180秒を標準として変更可能にする。設定時間に満たなければ取得済み時間分を保存し、中断・復旧を含む実時間の窓で扱う。無効化で未保存バッファを破棄する一方、切断時は保存可能な状態で保持する。保存済みエビデンスは自動削除しない。詳細と残る境界条件は[製品要件](requirements.md)に従う。
 
 ### Android Studioプラグイン化の方針
 
@@ -38,7 +40,7 @@ GeForceアプリやOBSのリプレイバッファから着想を得て、直近�
 
 今後はAndroid Studioから取得の開始・停止、保持時間や保存先の設定、取得状態の確認、1ボタンでの保存を行えるプラグインを目指す。利用者がOSごとの手動セットアップやコマンド操作を意識せず、普段の開発環境で試験や動作確認に集中できることを重視する。
 
-プラグイン化だけでOS・ソフトウェアへの依存がなくなるとは保証しない。対応OS・Android Studio・端末の範囲、ADB接続の前提、録画に必要なツールの同梱・導入方法は、実装と検証を通じて決める。上記は製品の目標であり、プラグイン機能の実装済み・受入済みを示すものではない。
+対応の優先順はmacOS、Windows、Linux。Android StudioでAndroid開発ができる環境を前提に、録画に必要な追加ツールの個別インストールやPATH設定を利用者に求めないことを要件とする。同梱・取得方法などの技術方式や対応範囲は、実装と検証を通じて決める。IDE内の初期版完成直後はmacOSメニューバー連携を最初に進める。上記は製品の目標であり、プラグイン機能の実装済み・受入済みを示すものではない。
 
 今後の機能判断では、試験や動作確認に伴う記録操作を減らせるか、予期しない不具合を含め必要な区間の動画とログを取り逃さず保存できるか、他の開発者も導入して使えるかを基準にする。
 
@@ -52,12 +54,12 @@ GeForceアプリやOBSのリプレイバッファから着想を得て、直近�
 | 利用可能な原型 | macOS向けPython CLI、Python 3.9以上。`replayd` / `replay save,status,stop`。[保全方針](cli-origin.md) |
 | 依存 | adb、scrcpy、ffmpeg。Python追加依存なし。任意YAMLは既存実装の条件に従う |
 | 実装 | `plugin/` が開発対象。CLI原型は `replay_buffer/`、入口 `bin/`、設定 `config.json.example`、起動例 `launchd/` を維持 |
-| 仕様 | [README](../README.md)、[原CLI README](cli-origin/README.md)、[CLI原型の設計（凍結）](cli-origin/design.md)。実装との差は確認して扱い、設計の記述だけで実装済みとしない |
+| 仕様 | [製品要件](requirements.md)、[README](../README.md)。原型は[原CLI README](cli-origin/README.md)、[CLI原型の設計（凍結）](cli-origin/design.md)。要件・設計の記述だけで実装済みとしない |
 | テスト | `tests/test_log_buffer.py` の既存2ケース。実機録画・再接続・動画保存を網羅するものではない |
 | 開発ハーネス | Python 3.11以上、標準ライブラリ、Bash、macOS/Linux。CLIの要求版を変更しない |
 | 統合先 | 製品変更は `develop`。固定候補を `main` へpromotion。GUI不要toolingは `main`。main/developは作成済み |
 | 必須checks | `test` / `PR policy` / `Acceptance gate` / `Agent review`。実適用は [導入Issue #1](https://github.com/shinma06/android-replay-buffer/issues/1) でreadbackする |
-| 管理 | [Project #5](https://github.com/users/shinma06/projects/5)、[Milestone #2](https://github.com/shinma06/android-replay-buffer/milestone/2)、[作業管理](work-management.md) |
+| 管理 | [Project #5](https://github.com/users/shinma06/projects/5)、[基盤・残QAのMilestone #2](https://github.com/shinma06/android-replay-buffer/milestone/2)、[初期版のMilestone #3](https://github.com/shinma06/android-replay-buffer/milestone/3)、[作業管理](work-management.md) |
 | Android Studio | Rabbit 1 / JDK 25 / Gradle 9.7.1 / Kotlin 2.4.20。ID `io.github.shinma06.android-replay-buffer`。[開発手順](plugin-development.md)、[共通知見](android-studio.md) |
 
 ## 実行する確認

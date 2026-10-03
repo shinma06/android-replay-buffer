@@ -1,11 +1,12 @@
 # Android Replay Buffer
 
-Android操作直前の画面・logcat・timelineを保存し、不具合の再現情報を取り逃さないための **Android Studioプラグイン** を開発しています。
+Android操作直前の画面とlogcatを保存し、IT（テスト）のエビデンス採取と、不意に発生したバグの調査を支援する **Android Studioプラグイン** を開発しています。
 
 現在はプラグインのビルド・ロード確認用メニューまで用意した段階です。録画・保存を利用するには、保全しているmacOS向けPython CLIを使用してください。プラグインからCLIへの接続はまだありません。
 
 ## 使う・開発する
 
+- **製品要件を確認する**: [初期版の確定要件・開発順序・検討タスクとTODO](docs/requirements.md)。初期値180秒、1台での自動取得・1ボタン保存を目指します。macOSを最優先とし、IDE内の初期版完成直後にメニューバー連携へ着手します。
 - **CLIを使う**: [オリジナルのセットアップ・コマンド説明](docs/cli-origin/README.md)。`bin/replayd` / `bin/replay`、設定ファイル、launchdの配置は従来どおりです。
 - **プラグインを開発する**: [SDK/JDK・ビルド・IDE起動・次の実装順](docs/plugin-development.md)。Android Studioで `plugin/` をGradleプロジェクトとして開きます。
 - **原型を復元する**: [CLI原型の保全方針と固定コミット](docs/cli-origin.md)。原型の全21ファイルをhashと実行権限で照合します。
