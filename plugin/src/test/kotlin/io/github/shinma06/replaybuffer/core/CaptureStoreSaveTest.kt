@@ -63,11 +63,16 @@ class CaptureStoreSaveTest {
             store.frame(VideoPacket.Frame(0, true, false, config(bytes)), 1)
             store.frame(VideoPacket.Frame(1_000_000, false, true, bytes), 1, host)
             store.log(DeviceLog(1_700_000_001_000_000_000, 12, 12, 10001, 0, 4, "Fixture", "old boot", byteArrayOf(1)), 1, host)
+            store.status("video", StreamState.RECOVERING, "prior known gap", 1)
+            store.status("video", StreamState.CAPTURING, null, 1)
             store.clock.add("2", listOf(100_000_000, 100_000_000, 1_700_000_020_000_000_000, 100_000_000),
                 host + 20_000_000_000, host + 20_000_000_000, 100_000_000_000)
             store.prune(1)
             val capture = store.capture(ReplaySettings(replaySeconds = 1))!!
             assertFalse(capture.windowKnown)
+            assertTrue(capture.gaps.any { it.reason == "prior known gap" })
+            assertTrue(capture.states.getValue("video").gaps.any { it.reason == "prior known gap" })
+            assertTrue(store.streams(1).getValue("video").gaps.any { it.reason == "prior known gap" })
             assertEquals(1, capture.video.size)
             assertEquals(1, capture.logs.size)
             val output = SaveWriter().write(capture, root, { false }) { a, b -> Files.move(a, b) }
@@ -108,6 +113,15 @@ class CaptureStoreSaveTest {
             assertFailsWith<UnsupportedOperationException> { (appGaps as MutableList).clear() }
             anchor(store.clock, 6_000_000_000, host + 5_000_000_000)
             assertTrue(store.streams(1, 5_000_000_000).values.all { it.gaps.isEmpty() })
+            store.freeze()
+            val fixedEnd = store.end()
+            store.clock.add("2", listOf(100_000_000, 100_000_000, 1_700_000_020_000_000_000, 100_000_000),
+                host + 20_000_000_000, host + 20_000_000_000, 100_000_000_000)
+            assertEquals(Long.MAX_VALUE, store.clock.endUncertainty())
+            assertEquals(fixedEnd, store.end())
+            assertTrue(store.streams(1).values.all { it.gaps.isEmpty() }) // Frozen known window is not replaced by the new unknown clock.
+            store.resume()
+            assertEquals(2, store.streams(1).getValue("app_log").gaps.size)
             assertEquals(2, appGaps.size)
         } finally { store.close(); Files.delete(root) }
     }
