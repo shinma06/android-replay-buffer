@@ -63,6 +63,7 @@ class CaptureStoreSaveTest {
             val completed = SaveWriter().write(capture, root, { false }) { a, b -> Files.move(a, b) }
             val manifest = JsonParser.parseString(Files.readString(completed.resolve("session.json"))).asJsonObject
             assertFalse(manifest["files_sha256"].asJsonObject.has("session.json"))
+            assertTrue(manifest["build"].asJsonObject["source"].asString.matches(Regex("[a-f0-9]{40}")))
             manifest["files_sha256"].asJsonObject.entrySet().forEach { (name, value) -> assertEquals(value.asString, sha256(completed.resolve(name))) }
             val device = Files.readAllLines(completed.resolve("logcat-device.jsonl"))
             assertEquals(device, Files.readAllLines(completed.resolve("logcat-app.jsonl")))
@@ -86,6 +87,40 @@ class CaptureStoreSaveTest {
             store.close()
             Files.walk(root).use { paths -> paths.sorted(java.util.Comparator.reverseOrder()).forEach { Files.deleteIfExists(it) } }
         }
+    }
+
+    @Test
+    fun byteCeilingsRecordSequenceLossAndPreserveThePinnedOriginalBytes() {
+        val root = Files.createTempDirectory("replay-cap-fixture-")
+        val bytes = sample()
+        val store = CaptureStore(root.resolve("ring"), videoLimit = bytes.size.toLong(), logLimit = 258, minFree = 0)
+        val host = System.nanoTime()
+        try {
+            store.generation(1); store.session(VideoPacket.Session(32, 32), 1)
+            anchor(store.clock, 1_000_000_000, host)
+            store.frame(VideoPacket.Frame(0, true, false, config(bytes)), 1)
+            store.frame(VideoPacket.Frame(1_000_000, false, true, bytes), 1, host)
+            val pin = store.capture(ReplaySettings())!!
+            val pinnedFile = pin.video.single().file
+            val hash = sha256(pinnedFile)
+            store.log(DeviceLog(1_700_000_001_000_000_000, 12, 12, 10001, 0, 4, "a", "a", byteArrayOf(1, 2)), 1, host)
+            anchor(store.clock, 2_000_000_000, host + 1_000_000_000)
+            store.frame(VideoPacket.Frame(2_000_000, false, true, bytes), 1, host + 1_000_000_000)
+            store.log(DeviceLog(1_700_000_002_000_000_000, 12, 12, 10001, 0, 4, "b", "b", byteArrayOf(3, 4)), 1, host + 1_000_000_000)
+            store.prune(180)
+            assertEquals(hash, sha256(pinnedFile))
+            store.release(pin.id)
+            val live = store.capture(ReplaySettings())!!
+            assertEquals(1, live.video.size)
+            assertEquals(1, live.logs.size)
+            assertTrue(live.gaps.any { it.stream == "video" && it.fromNs == 0L && it.generation == 1L })
+            assertTrue(live.gaps.any { it.stream == "device_log" && it.fromNs == 0L })
+            store.release(live.id)
+            assertFalse(Files.exists(pinnedFile))
+            assertFailsWith<IllegalArgumentException> {
+                store.frame(VideoPacket.Frame(0, true, false, ByteArray(ReplaySettings.MAX_CONFIG_PACKET_BYTES + 1)), 1)
+            }
+        } finally { store.close(); Files.delete(root) }
     }
 
     @Test

@@ -61,34 +61,33 @@ class ReplayCore(initialSettings: ReplaySettings, private val workspace: Path) :
     fun setEnabled(value: Boolean): CompletableFuture<ReplayOperation> {
         if (!value) synchronized(publishing) { cancelSave.set(true) }
         return operation {
-        if (value == enabled) return@operation ReplayOperation(true)
-        if (value) {
-            val root = Files.createDirectories(workspace).resolve("replay-${UUID.randomUUID()}")
-            Files.createDirectory(root)
-            runCatching { Files.setPosixFilePermissions(root, java.nio.file.attribute.PosixFilePermissions.fromString("rwx------")) }
-            ownedRoot = root
-            try {
-                resources = CaptureResources(root)
-                store = CaptureStore(root.resolve("ring"))
-            } catch (e: Exception) {
-                resources?.close(); resources = null
-                // Extraction writes only these exact new names; never clean unrelated entries.
-                Files.deleteIfExists(root.resolve("scrcpy-server-v4.0"))
-                Files.deleteIfExists(root.resolve("replay-clock.jar"))
-                Files.delete(root); ownedRoot = null
-                throw e
-            }
-            enabled = true
-            captureState = CaptureState.WAITING
-            error = null
-            saveState = SaveSnapshot()
-            probe = settings.adbPath?.let { OwnedAdb(it) }
-            poll()
-        } else disable()
-        publish()
-        ReplayOperation(true)
-    }
-
+            if (value == enabled) return@operation ReplayOperation(true)
+            if (value) {
+                val root = Files.createDirectories(workspace).resolve("replay-${UUID.randomUUID()}")
+                Files.createDirectory(root)
+                runCatching { Files.setPosixFilePermissions(root, java.nio.file.attribute.PosixFilePermissions.fromString("rwx------")) }
+                ownedRoot = root
+                try {
+                    resources = CaptureResources(root)
+                    store = CaptureStore(root.resolve("ring"))
+                } catch (e: Exception) {
+                    resources?.close(); resources = null
+                    // Extraction writes only these exact new names; never clean unrelated entries.
+                    Files.deleteIfExists(root.resolve("scrcpy-server-v4.0"))
+                    Files.deleteIfExists(root.resolve("replay-clock.jar"))
+                    Files.delete(root); ownedRoot = null
+                    throw e
+                }
+                enabled = true
+                captureState = CaptureState.WAITING
+                error = null
+                saveState = SaveSnapshot()
+                probe = settings.adbPath?.let { OwnedAdb(it) }
+                poll()
+            } else disable()
+            publish()
+            ReplayOperation(true)
+        }
     }
 
     fun applySettings(value: ReplaySettings): CompletableFuture<ReplayOperation> = operation {
@@ -306,7 +305,10 @@ class ReplayCore(initialSettings: ReplaySettings, private val workspace: Path) :
         listeners.clear()
         val done = closeCompletion
         control.execute {
-            runCatching { disable() }.onSuccess { done.complete(null) }.onFailure { done.completeExceptionally(it) }
+            runCatching { disable() }.onSuccess {
+                current = current.copy(enabled = false, captureState = CaptureState.DISABLED, canSave = false, saveDisabledReason = "projectは終了しています")
+                done.complete(null)
+            }.onFailure { done.completeExceptionally(it) }
             writer.shutdown()
             control.shutdown()
         }

@@ -5,6 +5,15 @@ plugins {
     id("org.jetbrains.intellij.platform") version "2.19.0"
 }
 
+fun hash(file: java.io.File): String {
+    val digest = MessageDigest.getInstance("SHA-256")
+    file.inputStream().use { input ->
+        val bytes = ByteArray(8192)
+        while (true) { val n = input.read(bytes); if (n < 0) break; digest.update(bytes, 0, n) }
+    }
+    return digest.digest().joinToString("") { "%02x".format(it) }
+}
+
 group = "io.github.shinma06.replaybuffer"
 val sourceCommit = providers.exec { commandLine("git", "rev-parse", "HEAD") }.standardOutput.asText.get().trim()
 val sourceDirty = providers.exec {
@@ -73,6 +82,19 @@ dependencies {
     add(clockCompiler.name, "com.android.tools:r8:8.10.24")
     add(clockLibrary.name, "com.google.android:android:4.1.1.4")
 }
+val verifyCaptureInputs = tasks.register("verifyCaptureInputs") {
+    val runtime = configurations.named("runtimeClasspath")
+    inputs.files(clockCompiler, clockLibrary, runtime)
+    inputs.file("src/main/resources/replay/deps/scrcpy-server-v4.0")
+    doLast {
+        val jcodec = runtime.get().files.single { it.name == "jcodec-0.2.5.jar" }
+        check(hash(jcodec) == "890329dad124e8b739c1d6602a59a53c8a474daddff265c2561e21c498496c81")
+        check(hash(clockCompiler.singleFile) == "ba8ec8958c4cf8d80168364f50c06742c7ef9313aae26eac0b9d28c309e04345")
+        check(hash(clockLibrary.singleFile) == "84072541cbb711eff89f7277100ff854929a446dba7ceb1b195c340e0b4fd3cb")
+        val server = file("src/main/resources/replay/deps/scrcpy-server-v4.0")
+        check(hash(server) == "84924bd564a1eb6089c872c7521f968058977f91f5ff02514a8c74aff3210f3a")
+    }
+}
 val compileClock = tasks.register<JavaCompile>("compileClock") {
     source = fileTree("src/clock/java") { include("**/*.java") }
     classpath = files()
@@ -88,8 +110,10 @@ val clockClasses = tasks.register<Jar>("clockClasses") {
     isReproducibleFileOrder = true
 }
 val dexClock = tasks.register<JavaExec>("dexClock") {
-    dependsOn(clockClasses)
+    dependsOn(clockClasses, verifyCaptureInputs)
     classpath = clockCompiler
+    inputs.files(clockLibrary)
+    inputs.property("minimumApi", 24)
     mainClass.set("com.android.tools.r8.D8")
     inputs.file(clockClasses.flatMap { it.archiveFile })
     outputs.dir(layout.buildDirectory.dir("clock/dex"))
@@ -122,21 +146,15 @@ val captureIdentity = tasks.register("captureIdentity") {
     val output = layout.buildDirectory.file("clock/resource/replay/deps/identity.properties")
     outputs.file(output)
     doLast {
-        fun hash(file: java.io.File): String {
-            val digest = MessageDigest.getInstance("SHA-256")
-            file.inputStream().use { input ->
-                val bytes = ByteArray(8192)
-                while (true) { val n = input.read(bytes); if (n < 0) break; digest.update(bytes, 0, n) }
-            }
-            return digest.digest().joinToString("") { "%02x".format(it) }
-        }
         val jcodec = runtime.get().files.single { it.name == "jcodec-0.2.5.jar" }
-        check(hash(jcodec) == "890329dad124e8b739c1d6602a59a53c8a474daddff265c2561e21c498496c81")
-        check(hash(clockCompiler.singleFile) == "ba8ec8958c4cf8d80168364f50c06742c7ef9313aae26eac0b9d28c309e04345")
-        check(hash(clockLibrary.singleFile) == "84072541cbb711eff89f7277100ff854929a446dba7ceb1b195c340e0b4fd3cb")
         val server = file("src/main/resources/replay/deps/scrcpy-server-v4.0")
-        check(hash(server) == "84924bd564a1eb6089c872c7521f968058977f91f5ff02514a8c74aff3210f3a")
-        output.get().asFile.writeText("source=$sourceCommit\ndirty=$sourceDirty\nserver=${hash(server)}\nclock=${hash(clockJar.get().archiveFile.get().asFile)}\njcodec=${hash(jcodec)}\nr8=${hash(clockCompiler.singleFile)}\nandroid_api=${hash(clockLibrary.singleFile)}\n")
+        output.get().asFile.writeText("source=$sourceCommit\ndirty=$sourceDirty\nversion=${project.version}\nserver=${hash(server)}\nclock=${hash(clockJar.get().archiveFile.get().asFile)}\njcodec=${hash(jcodec)}\nr8=${hash(clockCompiler.singleFile)}\nandroid_api=${hash(clockLibrary.singleFile)}\n")
     }
 }
 tasks.processResources { dependsOn(captureIdentity) }
+
+// Deterministic helper/library/plugin archives: same clean source + SDK/toolchain yields the same bytes.
+tasks.withType<AbstractArchiveTask>().configureEach {
+    isPreserveFileTimestamps = false
+    isReproducibleFileOrder = true
+}

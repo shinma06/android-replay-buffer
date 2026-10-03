@@ -99,6 +99,9 @@ internal class CaptureClock {
     }
 
     @Synchronized
+    fun clear() { samples.clear(); firstHost = null; epoch = 0 }
+
+    @Synchronized
     fun boundary() { epoch++ }
 
     @Synchronized

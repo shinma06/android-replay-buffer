@@ -12,7 +12,7 @@ public final class ClockProbe {
         System.out.println("REPLAY_CLOCK_1");
         System.out.flush();
         String nonce;
-        while ((nonce = input.readLine()) != null) {
+        while ((nonce = readNonce(input)) != null) {
             if (!nonce.matches("[a-f0-9]{32}")) throw new IllegalArgumentException("nonce");
             long before = (Long) elapsed.invoke(null);
             long mono = System.nanoTime();
@@ -21,5 +21,16 @@ public final class ClockProbe {
             System.out.println(nonce + "\t" + before + "\t" + mono + "\t" + wall + "\t" + after);
             System.out.flush();
         }
+    }
+    private static String readNonce(BufferedReader input) throws Exception {
+        StringBuilder line = new StringBuilder(32);
+        int value;
+        while ((value = input.read()) >= 0) {
+            if (value == '\n') return line.toString();
+            if (line.length() >= 32) throw new IllegalArgumentException("nonce length");
+            line.append((char) value);
+        }
+        if (line.length() != 0) throw new IllegalArgumentException("partial nonce");
+        return null;
     }
 }

@@ -26,6 +26,9 @@ data class ReplaySettings(
         const val VIDEO_BYTES = 1024L * 1024 * 1024
         const val LOG_BYTES = 32L * 1024 * 1024
         const val MIN_FREE_BYTES = 128L * 1024 * 1024
+        const val MAX_VIDEO_PACKETS = 60_000
+        const val MAX_CONFIG_PACKET_BYTES = 64 * 1024
+        const val CONFIG_MEMORY_BYTES = 8L * 1024 * 1024
     }
 }
 
@@ -55,7 +58,10 @@ enum class DeviceKind { PHYSICAL, EMULATOR }
 enum class SavePhase { IDLE, WRITING, FAILED, COMPLETED }
 
 data class ReplayDevice(val serial: String, val name: String, val kind: DeviceKind, val connected: Boolean)
-data class CaptureGap(val stream: String, val fromNs: Long?, val toNs: Long?, val reason: String)
+data class CaptureGap(
+    val stream: String, val fromNs: Long?, val toNs: Long?, val reason: String,
+    val boundaryUncertaintyNs: Long? = null, val generation: Long = 0, val clockEpoch: Int? = null,
+)
 data class StreamSnapshot(
     val state: StreamState = StreamState.WAITING,
     val availableSeconds: Double = 0.0,

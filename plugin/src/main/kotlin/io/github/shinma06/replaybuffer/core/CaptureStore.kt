@@ -52,6 +52,9 @@ internal class CaptureStore(
     private var previousPts = -1L
     private var videoSession = 0L
     private var logBytes = 0L
+    private var videoBytes = 0L
+    private var configBytes = 0L
+    private val configRefs = java.util.IdentityHashMap<ByteArray, Int>()
     private var started: Long? = null
     private var fixedEnd: Long? = null
     private var generation = 0L
@@ -103,6 +106,7 @@ internal class CaptureStore(
     fun frame(packet: VideoPacket.Frame, owner: Long, host: Long = System.nanoTime()) {
         if (closed || owner != generation) return
         if (packet.config) {
+            require(packet.bytes.size <= ReplaySettings.MAX_CONFIG_PACKET_BYTES) { "動画configが64KiBを超えました" }
             if (!config.contentEquals(packet.bytes)) { channel?.close(); channel = null; currentFile = null }
             config = packet.bytes.copyOf(); return
         }
@@ -126,12 +130,18 @@ internal class CaptureStore(
         while (data.hasRemaining()) out.write(data)
         video += VideoEntry(currentFile!!, offset, packet.bytes.size, packet.pts, packet.key, width, height,
             generation, time, retained, config, host, videoSession)
+        videoBytes += packet.bytes.size
+        val references = configRefs[config] ?: 0
+        if (references == 0) configBytes += config.size
+        configRefs[config] = references + 1
+        enforceVideoLimit()
         status("video", StreamState.CAPTURING, if (time.elapsed == null) "動画の時刻対応を確認できません" else null, owner)
     }
 
     @Synchronized
     fun app(packageName: String?, uid: Long?, pids: Set<Int>, owner: Long) {
         if (closed || owner != generation) return
+        require(pids.size <= 1024)
         val last = apps.peekLast()
         val anchor = clock.snapshot().lastOrNull { it.valid }
         if (last?.packageName == packageName && last.uid == uid && last.pids == pids && last.from != null && last.epoch == anchor?.epoch) {
@@ -164,7 +174,7 @@ internal class CaptureStore(
         while (logBytes > logLimit && logs.isNotEmpty()) {
             val lost = logs.removeFirst()
             logBytes -= lost.source.raw.size + 256
-            addGap("device_log", lost.time.elapsed, lost.time.elapsed, "ログのbyte上限でrecordを失いました")
+            addGap("device_log", lost.time.sequence, lost.time.sequence, "ログのbyte上限でrecordを失いました")
         }
         status("device_log", StreamState.CAPTURING, if (time.elapsed == null) "ログの時刻対応を確認できません" else null, owner)
     }
@@ -190,18 +200,13 @@ internal class CaptureStore(
         if (firstInside > 0) {
             val all = video.toList()
             val key = (firstInside downTo 0).firstOrNull { all[it].key } ?: 0
-            repeat(key) { video.removeFirst() }
-        } else if (firstInside < 0) video.clear()
+            repeat(key) { removeVideo() }
+        } else if (firstInside < 0) while (video.isNotEmpty()) removeVideo()
         while (logs.isNotEmpty() && logs.peekFirst().time.sequence != null && logs.peekFirst().time.uncertainty != Long.MAX_VALUE &&
             logs.peekFirst().retainedAt < cutoff - logs.peekFirst().time.uncertainty) {
             logBytes -= logs.removeFirst().source.raw.size + 256
         }
-        var bytes = video.sumOf { it.size.toLong() }
-        while (bytes > videoLimit && video.isNotEmpty()) {
-            val entry = video.removeFirst()
-            bytes -= entry.size
-            addGap("video", entry.time.elapsed, entry.time.elapsed, "動画のbyte上限でframeを失いました")
-        }
+        enforceVideoLimit()
         deleteUnused()
         while (gaps.size > 4096) gaps.removeFirst()
     }
@@ -253,9 +258,28 @@ internal class CaptureStore(
     @Synchronized
     fun hasData(): Boolean = video.isNotEmpty() || logs.isNotEmpty()
 
+    private fun removeVideo(): VideoEntry {
+        val entry = video.removeFirst()
+        videoBytes -= entry.size
+        val refs = configRefs.getValue(entry.config) - 1
+        if (refs == 0) { configRefs.remove(entry.config); configBytes -= entry.config.size } else configRefs[entry.config] = refs
+        return entry
+    }
+
+    private fun enforceVideoLimit() {
+        while (video.isNotEmpty() && (videoBytes > videoLimit || video.size > ReplaySettings.MAX_VIDEO_PACKETS ||
+                configBytes > ReplaySettings.CONFIG_MEMORY_BYTES)) {
+            val entry = removeVideo()
+            addGap("video", entry.time.sequence, entry.time.sequence, "動画のbyte/packet/config上限でframeを失いました")
+        }
+    }
+
     private fun addGap(stream: String, from: Long?, to: Long?, reason: String) {
         if (gaps.peekLast()?.let { it.stream == stream && it.reason == reason && it.toNs == to } == true) return
-        gaps += CaptureGap(stream, from, to, reason)
+        val anchor = clock.snapshot().lastOrNull { it.valid }
+        val uncertainty = anchor?.let { if (System.nanoTime() - it.received > 5_000_000_000 || it.bridgeError == Long.MAX_VALUE) Long.MAX_VALUE else
+            it.readError + (it.received - it.sent) / 2 + it.bridgeError }
+        gaps += CaptureGap(stream, from, to, reason, uncertainty, generation, anchor?.epoch)
         while (gaps.size > 4096) gaps.removeFirst()
     }
 
@@ -273,6 +297,14 @@ internal class CaptureStore(
         pinned = null
         video.clear()
         logs.clear()
+        apps.clear()
+        gaps.clear()
+        configRefs.clear()
+        config = byteArrayOf()
+        videoBytes = 0
+        configBytes = 0
+        logBytes = 0
+        clock.clear()
         deleteUnused()
         Files.deleteIfExists(directory)
     }
