@@ -87,6 +87,7 @@ class ReplayProjectService(private val project: Project, private val scope: Coro
     fun refresh() {
         if (disposed || project.isDisposed) return
         val revision = ++requestRevision
+        capture.expectSettings(revision)
         resolution?.cancel()
         resolving = true
         publishChanged()
@@ -111,7 +112,7 @@ class ReplayProjectService(private val project: Project, private val scope: Coro
                     environment = next
                 }
                 publishChanged()
-                capture.applySettings(settings, next).await()
+                capture.applySettings(settings, next, revision).await()
             } finally {
                 val current = synchronized(this@ReplayProjectService) {
                     if (disposed || project.isDisposed || revision != requestRevision) false else {

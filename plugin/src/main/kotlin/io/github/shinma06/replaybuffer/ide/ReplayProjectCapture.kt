@@ -50,6 +50,7 @@ internal class ReplayProjectCapture(
     private var initializationFinished = false
     private var enabledIntent = 0L
     private var operationIntent = 0L
+    private var settingsRevision = 0L
     val termination = CompletableFuture<Void>()
 
     init {
@@ -101,20 +102,34 @@ internal class ReplayProjectCapture(
         }
     }
 
-    fun applySettings(settings: ReplaySettings, environment: AndroidReplayEnvironment): CompletableFuture<ReplayOperation> = submit { engine ->
+    @Synchronized
+    fun expectSettings(revision: Long) {
+        settingsRevision = revision
+    }
+
+    fun applySettings(settings: ReplaySettings, environment: AndroidReplayEnvironment, revision: Long): CompletableFuture<ReplayOperation> = submit(revision) { engine ->
         settings.validationError()?.let { return@submit ReplayOperation(false, "保存済み設定を反映できません: $it") }
         val target = settings.toCoreSettings(environment)
-        val current = engine.snapshot().settings
-        val result = when {
-            target == current -> ReplayOperation(true)
-            current.application.mode == ApplicationMode.AUTO && target.application.mode == ApplicationMode.AUTO &&
-                current.copy(application = target.application) == target -> engine.updateApplication(target.application).await()
-            else -> engine.applySettings(target).await()
+        // Only the nonblocking core enqueue is inside this boundary. No callback, IO, or await
+        // can reenter refresh between checking the generation and submitting its settings.
+        val operation = synchronized(this) {
+            if (closed || revision != settingsRevision) return@submit obsoleteSettings()
+            val current = engine.snapshot().settings
+            when {
+                target == current -> CompletableFuture.completedFuture(ReplayOperation(true))
+                current.application.mode == ApplicationMode.AUTO && target.application.mode == ApplicationMode.AUTO &&
+                    current.copy(application = target.application) == target -> engine.updateApplication(target.application)
+                else -> engine.applySettings(target)
+            }
         }
+        val result = operation.await()
+        if (synchronized(this) { closed || revision != settingsRevision }) return@submit obsoleteSettings()
         if (!result.accepted) return@submit result.copy(reason = "保存済み設定を反映できません: ${result.reason ?: "旧設定で稼働しています。"}")
         // Startup restoration is independent of ToolWindow creation. Later refreshes honor the latest toggle.
         if (engine.snapshot().enabled != store.enabled) engine.setEnabled(store.enabled).await() else result
     }
+
+    private fun obsoleteSettings() = ReplayOperation(false, "新しい設定の解決が開始されたため、旧設定の反映を取り消しました。")
 
     fun save(): CompletableFuture<ReplayOperation> = submit { it.save().await() }
     fun retry(id: String): CompletableFuture<ReplayOperation> = submit { it.retry(id).await() }
@@ -124,10 +139,11 @@ internal class ReplayProjectCapture(
     }
     fun discard(id: String): CompletableFuture<ReplayOperation> = submit { it.discard(id).await() }
 
-    private fun submit(action: suspend (ReplayCore) -> ReplayOperation): CompletableFuture<ReplayOperation> {
+    private fun submit(revision: Long? = null, action: suspend (ReplayCore) -> ReplayOperation): CompletableFuture<ReplayOperation> {
         val result = CompletableFuture<ReplayOperation>()
         val intent = synchronized(this) {
             if (closed) return CompletableFuture.completedFuture(ReplayOperation(false, "projectは終了しています。"))
+            if (revision != null && revision != settingsRevision) return CompletableFuture.completedFuture(obsoleteSettings())
             view = view.copy(pending = view.pending + 1, message = null)
             ++operationIntent
         }
@@ -143,12 +159,12 @@ internal class ReplayProjectCapture(
                         else action(engine)
                     }
                 }
-                if (!outcome.accepted) showMessage(outcome.reason ?: "操作を実行できません。", intent)
+                if (!outcome.accepted) showMessage(outcome.reason ?: "操作を実行できません。", intent, revision)
             } catch (cancelled: CancellationException) {
                 result.completeExceptionally(cancelled)
                 throw cancelled
             } catch (_: Exception) {
-                showMessage("取得・保存の操作を実行できません。", intent)
+                showMessage("取得・保存の操作を実行できません。", intent, revision)
                 outcome = ReplayOperation(false, "取得・保存の操作を実行できません。")
             } finally {
                 val notify = synchronized(this@ReplayProjectCapture) {
@@ -178,9 +194,9 @@ internal class ReplayProjectCapture(
 
     fun showMessage(message: String) = showMessage(message, null)
 
-    private fun showMessage(message: String, intent: Long?) {
+    private fun showMessage(message: String, intent: Long?, revision: Long? = null) {
         synchronized(this) {
-            if (closed || intent != null && intent != operationIntent) return
+            if (closed || intent != null && intent != operationIntent || revision != null && revision != settingsRevision) return
             if (intent == null) operationIntent++
             view = view.copy(message = message)
         }

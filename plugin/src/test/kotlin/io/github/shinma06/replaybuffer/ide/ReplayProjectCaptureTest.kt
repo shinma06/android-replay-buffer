@@ -23,6 +23,7 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 
 /** Exercises the actual core with no SDK/adb, IDE, ToolWindow, or device. */
 class ReplayProjectCaptureTest {
@@ -36,7 +37,7 @@ class ReplayProjectCaptureTest {
         store.loadState(ReplaySettingsState(enabled = true, retentionSeconds = 60, appSelection = AppSelectionMode.MANUAL, manualPackage = "com.manual.app"))
         val capture = ReplayProjectCapture(scope, store, {}, {})
         try {
-            assertTrue(capture.applySettings(store.settings(), unresolved).get(15, TimeUnit.SECONDS).accepted)
+            assertTrue(capture.applySettings(store.settings(), unresolved, 0).get(15, TimeUnit.SECONDS).accepted)
             val restored = capture.view.snapshot!!
             assertTrue(restored.enabled)
             assertEquals(CaptureState.WAITING, restored.captureState)
@@ -48,7 +49,7 @@ class ReplayProjectCaptureTest {
             val disable = capture.setEnabled(false)
             val next = store.settings().copy(retentionSeconds = 900, destination = directory.toString())
             store.apply(next)
-            val apply = capture.applySettings(next, unresolved)
+            val apply = capture.applySettings(next, unresolved, 0)
             assertTrue(disable.get(15, TimeUnit.SECONDS).accepted)
             assertTrue(apply.get(15, TimeUnit.SECONDS).accepted)
             assertFalse(store.enabled)
@@ -57,6 +58,67 @@ class ReplayProjectCaptureTest {
             assertEquals(0, capture.view.pending)
             assertFalse(capture.save().get(15, TimeUnit.SECONDS).accepted)
             assertNotNull(capture.view.message)
+        } finally {
+            capture.close()
+            capture.termination.get(15, TimeUnit.SECONDS)
+            scope.cancel()
+        }
+    }
+
+    @Test
+    fun `old resolved settings resumed after newer settings cannot revert the actual core`() {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val store = ReplaySettingsStore()
+        val capture = ReplayProjectCapture(scope, store, {}, {})
+        try {
+            val old = ReplaySettings(retentionSeconds = 60, destination = directory.resolve("old").toString())
+            val oldEnvironment = unresolved.copy(application = ApplicationSelection("com.old.app", "old", null))
+            store.apply(old)
+            capture.expectSettings(1)
+            // The old resolver has produced its result, but pauses before calling Capture.
+            val next = old.copy(retentionSeconds = 900, destination = directory.resolve("new").toString())
+            val nextEnvironment = unresolved.copy(application = ApplicationSelection("com.new.app", "new", null))
+            store.apply(next)
+            capture.expectSettings(2)
+            assertTrue(capture.applySettings(next, nextEnvironment, 2).get(15, TimeUnit.SECONDS).accepted)
+            val applied = capture.view
+            assertEquals(next.toCoreSettings(nextEnvironment), applied.snapshot!!.settings)
+            // Cancellation alone cannot stop this late non-suspending call from the old resolver.
+            assertFalse(capture.applySettings(old, oldEnvironment, 1).get(15, TimeUnit.SECONDS).accepted)
+            assertEquals(next, store.settings())
+            assertEquals(applied, capture.view)
+        } finally {
+            capture.close()
+            capture.termination.get(15, TimeUnit.SECONDS)
+            scope.cancel()
+        }
+    }
+
+    @Test
+    fun `revision changed in the submission callback rejects queued old automatic application`() {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val store = ReplaySettingsStore()
+        val settings = ReplaySettings(retentionSeconds = 900)
+        val oldEnvironment = unresolved.copy(application = ApplicationSelection("com.old.app", "old", null))
+        val nextEnvironment = unresolved.copy(application = ApplicationSelection("com.new.app", "new", null))
+        val replace = AtomicBoolean(false)
+        lateinit var capture: ReplayProjectCapture
+        capture = ReplayProjectCapture(scope, store, {
+            if (replace.compareAndSet(true, false)) {
+                capture.expectSettings(2)
+                // This callback is outside the owner's lock: the new real core operation can finish.
+                assertTrue(capture.applySettings(settings, nextEnvironment, 2).get(15, TimeUnit.SECONDS).accepted)
+            }
+        }, {})
+        try {
+            store.apply(settings)
+            assertTrue(capture.applySettings(settings, unresolved, 0).get(15, TimeUnit.SECONDS).accepted)
+            capture.expectSettings(1)
+            replace.set(true)
+            assertFalse(capture.applySettings(settings, oldEnvironment, 1).get(15, TimeUnit.SECONDS).accepted)
+            assertEquals(settings.toCoreSettings(nextEnvironment), capture.view.snapshot!!.settings)
+            assertEquals(0, capture.view.pending)
+            assertNull(capture.view.message)
         } finally {
             capture.close()
             capture.termination.get(15, TimeUnit.SECONDS)
@@ -94,13 +156,13 @@ class ReplayProjectCaptureTest {
         try {
             val original = ReplaySettings(retentionSeconds = 60, destination = directory.toString())
             store.apply(original)
-            assertTrue(capture.applySettings(original, unresolved).get(15, TimeUnit.SECONDS).accepted)
+            assertTrue(capture.applySettings(original, unresolved, 0).get(15, TimeUnit.SECONDS).accepted)
             val changedDirectory = Files.createDirectory(directory.resolve("new-directory"))
             val changed = original.copy(retentionSeconds = 900, destination = changedDirectory.toString())
             store.apply(changed)
             Files.delete(changedDirectory)
             Files.createFile(changedDirectory)
-            val result = capture.applySettings(changed, unresolved).get(15, TimeUnit.SECONDS)
+            val result = capture.applySettings(changed, unresolved, 0).get(15, TimeUnit.SECONDS)
             assertFalse(result.accepted)
             assertTrue(result.reason!!.startsWith("保存済み設定を反映できません"))
             assertEquals(changed, store.settings())
@@ -121,7 +183,7 @@ class ReplayProjectCaptureTest {
         val notifications = CopyOnWriteArrayList<SaveSnapshot>()
         val capture = ReplayProjectCapture(scope, store, {}, notifications::add)
         try {
-            assertTrue(capture.applySettings(ReplaySettings(retentionSeconds = 60), unresolved).get(15, TimeUnit.SECONDS).accepted)
+            assertTrue(capture.applySettings(ReplaySettings(retentionSeconds = 60), unresolved, 0).get(15, TimeUnit.SECONDS).accepted)
             val base = capture.view.snapshot!!
             val first = base.copy(revision = base.revision + 100, save = SaveSnapshot(SavePhase.COMPLETED, "request-a", directory = directory.resolve("first"), missingKinds = listOf("video")))
             val second = first.copy(revision = first.revision + 1, save = SaveSnapshot(SavePhase.COMPLETED, "request-b", directory = directory.resolve("second")))
