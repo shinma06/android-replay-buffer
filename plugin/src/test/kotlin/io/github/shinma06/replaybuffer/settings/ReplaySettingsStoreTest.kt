@@ -1,6 +1,9 @@
 package io.github.shinma06.replaybuffer.settings
 
 import com.intellij.util.xmlb.XmlSerializer
+import io.github.shinma06.replaybuffer.core.ApplicationMode
+import io.github.shinma06.replaybuffer.core.ApplicationTarget
+import io.github.shinma06.replaybuffer.core.ReplaySettings as CoreReplaySettings
 import org.jdom.Element
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
@@ -57,6 +60,26 @@ class ReplaySettingsStoreTest {
         oldXml.retentionSeconds = 10
         assertFalse(restored.enabled)
         assertEquals(180, restored.settings().retentionSeconds)
+    }
+
+    @Test
+    fun `IDE validation uses core retention and package boundaries with unset destination allowed`() {
+        for (seconds in listOf(Int.MIN_VALUE, 0, 1, 180, 900, 901, Int.MAX_VALUE)) {
+            val settings = ReplaySettings(retentionSeconds = seconds)
+            val coreAccepted = runCatching { CoreReplaySettings(replaySeconds = seconds).validate() }.isSuccess
+            assertEquals(coreAccepted, settings.validationError() == null, "seconds=$seconds")
+        }
+        for (value in listOf("com.a", "com." + "a".repeat(251), "com." + "a".repeat(252), "com.1app", "com._app")) {
+            val coreAccepted = runCatching { ApplicationTarget(value, ApplicationMode.MANUAL).validate() }.isSuccess
+            assertEquals(coreAccepted, isApplicationId(value), "length=${value.length}")
+        }
+        val store = ReplaySettingsStore()
+        store.apply(ReplaySettings(retentionSeconds = 900))
+        store.setEnabled(true)
+        assertTrue(store.enabled)
+        assertEquals("", store.settings().destination)
+        store.loadState(ReplaySettingsState(retentionSeconds = 901))
+        assertEquals(180, store.settings().retentionSeconds)
     }
 
     @Test

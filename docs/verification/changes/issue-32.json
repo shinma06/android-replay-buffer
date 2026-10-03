@@ -6,7 +6,7 @@
   "cli_checks": [
     "python3 scripts/check.py",
     "python3 scripts/workflow/product_check.py: CLI原型21files一致・2tests pass",
-    "python3 scripts/workflow/plugin_check.py: 共有build依存固定後に標準経路で実行。暫定init script compileを標準passへ代用しない",
+    "python3 scripts/workflow/plugin_check.py: 固定依存b4d94da82fac92160fc74a6a671e1c5e999c9ecf受領後、暫定init scriptなしの標準build/tests/ZIP構造検査。結果は合成固定HEADのIssue/PRへ記録",
     "python3 scripts/workflow/change_impact.py --base origin/develop --run-tests: clean committed HEAD"
   ],
   "cases": [
@@ -28,7 +28,7 @@
       ],
       "gpt": {
         "status": "pending",
-        "reason": "IDE独立部分実装中。コア接続/標準build/実ロード/Emulator観察未完了。実機は保留。"
+        "reason": "IDE独立部分と標準buildを確認。engine操作接続/実ロード/Emulator観察は未完了、実機は保留。pure testsを観察passへ代用しない。"
       },
       "human": {
         "status": "pending",
@@ -57,7 +57,7 @@
       ],
       "gpt": {
         "status": "pending",
-        "reason": "IDE独立部分実装中。コア接続/標準build/実ロード/Emulator観察未完了。実機は保留。"
+        "reason": "IDE独立部分と標準buildを確認。engine操作接続/実ロード/Emulator観察は未完了、実機は保留。pure testsを観察passへ代用しない。"
       },
       "human": {
         "status": "pending",
@@ -87,7 +87,7 @@
       ],
       "gpt": {
         "status": "pending",
-        "reason": "IDE独立部分実装中。コア接続/標準build/実ロード/Emulator観察未完了。実機は保留。"
+        "reason": "IDE独立部分と標準buildを確認。engine操作接続/実ロード/Emulator観察は未完了、実機は保留。pure testsを観察passへ代用しない。"
       },
       "human": {
         "status": "pending",
@@ -116,7 +116,7 @@
       ],
       "gpt": {
         "status": "pending",
-        "reason": "IDE独立部分実装中。コア接続/標準build/実ロード/Emulator観察未完了。実機は保留。"
+        "reason": "IDE独立部分と標準buildを確認。engine操作接続/実ロード/Emulator観察は未完了、実機は保留。pure testsを観察passへ代用しない。"
       },
       "human": {
         "status": "pending",
@@ -145,7 +145,7 @@
       ],
       "gpt": {
         "status": "pending",
-        "reason": "IDE独立部分実装中。コア接続/標準build/実ロード/Emulator観察未完了。実機は保留。"
+        "reason": "IDE独立部分と標準buildを確認。engine操作接続/実ロード/Emulator観察は未完了、実機は保留。pure testsを観察passへ代用しない。"
       },
       "human": {
         "status": "pending",
@@ -174,7 +174,7 @@
       ],
       "gpt": {
         "status": "pending",
-        "reason": "IDE独立部分実装中。コア接続/標準build/実ロード/Emulator観察未完了。実機は保留。"
+        "reason": "IDE独立部分と標準buildを確認。engine操作接続/実ロード/Emulator観察は未完了、実機は保留。pure testsを観察passへ代用しない。"
       },
       "human": {
         "status": "pending",
@@ -203,7 +203,7 @@
       ],
       "gpt": {
         "status": "pending",
-        "reason": "IDE独立部分実装中。コア接続/標準build/実ロード/Emulator観察未完了。実機は保留。"
+        "reason": "IDE独立部分と標準buildを確認。engine操作接続/実ロード/Emulator観察は未完了、実機は保留。pure testsを観察passへ代用しない。"
       },
       "human": {
         "status": "pending",
@@ -232,7 +232,7 @@
       ],
       "gpt": {
         "status": "pending",
-        "reason": "IDE独立部分実装中。コア接続/標準build/実ロード/Emulator観察未完了。実機は保留。"
+        "reason": "IDE独立部分と標準buildを確認。engine操作接続/実ロード/Emulator観察は未完了、実機は保留。pure testsを観察passへ代用しない。"
       },
       "human": {
         "status": "pending",

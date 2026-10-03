@@ -6,6 +6,9 @@ import com.intellij.openapi.components.State
 import com.intellij.openapi.components.Storage
 import com.intellij.openapi.components.StoragePathMacros
 import com.intellij.util.messages.Topic
+import io.github.shinma06.replaybuffer.core.ApplicationMode
+import io.github.shinma06.replaybuffer.core.ApplicationTarget
+import io.github.shinma06.replaybuffer.core.ReplaySettings as CoreReplaySettings
 import java.nio.file.InvalidPathException
 import java.nio.file.Path
 
@@ -24,7 +27,7 @@ data class ReplaySettings(
     val manualPackage: String = "",
 ) {
     fun validationError(): String? {
-        if (retentionSeconds <= 0) return "保持時間は正の整数を入力してください。"
+        if (retentionSeconds !in 1..CoreReplaySettings.MAX_REPLAY_SECONDS) return "保持時間は1〜900秒で指定してください。"
         if (destination.isNotEmpty()) {
             try {
                 if (!Path.of(destination).isAbsolute) return "保存先は絶対パスで指定してください。"
@@ -33,14 +36,18 @@ data class ReplaySettings(
             }
         }
         if (appSelection == AppSelectionMode.MANUAL && !isApplicationId(manualPackage)) {
-            return "package名は英字で始まる各部分をピリオドで区切って指定してください。"
+            return "package名は255文字以内で、英字で始まる各部分をピリオドで区切って指定してください。"
         }
         return null
     }
 }
 
-internal fun isApplicationId(value: String): Boolean =
-    value.matches(Regex("[A-Za-z][A-Za-z0-9_]*(\\.[A-Za-z][A-Za-z0-9_]*)+"))
+internal fun isApplicationId(value: String): Boolean = try {
+    ApplicationTarget(packageName = value, mode = ApplicationMode.MANUAL).validate()
+    true
+} catch (_: IllegalArgumentException) {
+    false
+}
 
 /** Keep mutable XML state detached from the immutable settings consumed by capture. */
 data class ReplaySettingsState(
@@ -87,7 +94,7 @@ class ReplaySettingsStore : PersistentStateComponent<ReplaySettingsState> {
 
     @Synchronized
     override fun loadState(state: ReplaySettingsState) {
-        stored = state.copy(retentionSeconds = state.retentionSeconds.takeIf { it > 0 } ?: 180)
+        stored = state.copy(retentionSeconds = state.retentionSeconds.takeIf { it in 1..CoreReplaySettings.MAX_REPLAY_SECONDS } ?: 180)
     }
 
     companion object {

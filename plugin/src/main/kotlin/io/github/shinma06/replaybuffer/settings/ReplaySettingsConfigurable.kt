@@ -22,7 +22,7 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable {
     override fun getDisplayName(): String = "Android Replay Buffer"
 
     override fun createComponent(): JComponent {
-        retention = JBTextField().apply { accessibleContext.accessibleName = "保持時間（秒）" }
+        retention = JBTextField().apply { accessibleContext.accessibleName = "保持時間（1〜900秒）" }
         destination = TextFieldWithBrowseButton().apply {
             addBrowseFolderListener(project, FileChooserDescriptorFactory.createSingleFolderDescriptor())
             accessibleContext.accessibleName = "保存先フォルダ"
@@ -33,7 +33,7 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable {
             addActionListener { manualPackage?.isEnabled = selectedItem == AppSelectionMode.MANUAL }
         }
         panel = FormBuilder.createFormBuilder()
-            .addLabeledComponent("保持時間（秒）:", retention!!)
+            .addLabeledComponent("保持時間（1〜900秒）:", retention!!)
             .addLabeledComponent("保存先フォルダ:", destination!!)
             .addLabeledComponent("対象アプリ:", mode!!)
             .addLabeledComponent("package名:", manualPackage!!)
