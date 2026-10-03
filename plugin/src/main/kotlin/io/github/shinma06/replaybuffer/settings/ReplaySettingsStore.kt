@@ -9,8 +9,12 @@ import com.intellij.util.messages.Topic
 import io.github.shinma06.replaybuffer.core.ApplicationMode
 import io.github.shinma06.replaybuffer.core.ApplicationTarget
 import io.github.shinma06.replaybuffer.core.ReplaySettings as CoreReplaySettings
+import java.io.IOException
+import java.nio.file.Files
 import java.nio.file.InvalidPathException
+import java.nio.file.NoSuchFileException
 import java.nio.file.Path
+import java.nio.file.attribute.BasicFileAttributes
 
 enum class AppSelectionMode(private val label: String) {
     AUTOMATIC("自動（Android Studioの実行対象）"),
@@ -26,20 +30,44 @@ data class ReplaySettings(
     val appSelection: AppSelectionMode = AppSelectionMode.AUTOMATIC,
     val manualPackage: String = "",
 ) {
-    fun validationError(): String? {
+    fun validationError(): String? = validationError(validateDestination(destination))
+
+    internal fun validationError(destinationValidation: DestinationValidation): String? {
+        require(destinationValidation.destination == destination)
         if (retentionSeconds !in 1..CoreReplaySettings.MAX_REPLAY_SECONDS) return "保持時間は1〜900秒で指定してください。"
-        if (destination.isNotEmpty()) {
-            try {
-                if (!Path.of(destination).isAbsolute) return "保存先は絶対パスで指定してください。"
-            } catch (_: InvalidPathException) {
-                return "保存先のパスを確認してください。"
-            }
-        }
+        destinationValidation.error?.let { return it }
         if (appSelection == AppSelectionMode.MANUAL && !isApplicationId(manualPackage)) {
             return "package名は255文字以内で、英字で始まる各部分をピリオドで区切って指定してください。"
         }
         return null
     }
+}
+
+internal data class DestinationValidation(val destination: String, val error: String?)
+
+/** Reads filesystem attributes; call off EDT for nonempty destinations. */
+internal fun validateDestination(destination: String): DestinationValidation {
+    val error = if (destination.isEmpty()) {
+        null
+    } else {
+        try {
+            val path = Path.of(destination)
+            when {
+                !path.isAbsolute -> "保存先は絶対パスで指定してください。"
+                !Files.readAttributes(path, BasicFileAttributes::class.java).isDirectory -> "保存先はファイルではなくフォルダを指定してください。"
+                else -> null
+            }
+        } catch (_: InvalidPathException) {
+            "保存先のパスを確認してください。"
+        } catch (_: NoSuchFileException) {
+            null // A new destination may be created when saving.
+        } catch (_: IOException) {
+            "保存先を確認できません。パスとアクセス権を確認してください。"
+        } catch (_: SecurityException) {
+            "保存先を確認できません。パスとアクセス権を確認してください。"
+        }
+    }
+    return DestinationValidation(destination, error)
 }
 
 internal fun isApplicationId(value: String): Boolean = try {
@@ -79,9 +107,15 @@ class ReplaySettingsStore : PersistentStateComponent<ReplaySettingsState> {
         stored = stored.copy(enabled = value)
     }
 
-    @Synchronized
     fun apply(settings: ReplaySettings) {
-        require(settings.validationError() == null) { settings.validationError().orEmpty() }
+        apply(settings, validateDestination(settings.destination))
+    }
+
+    /** Configurable supplies the result already checked in the background for this exact path. */
+    @Synchronized
+    internal fun apply(settings: ReplaySettings, destinationValidation: DestinationValidation) {
+        val error = settings.validationError(destinationValidation)
+        require(error == null) { error.orEmpty() }
         stored = stored.copy(
             retentionSeconds = settings.retentionSeconds,
             destination = settings.destination,

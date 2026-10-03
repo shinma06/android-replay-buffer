@@ -12,10 +12,50 @@ import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.io.TempDir
+import java.nio.file.Files
 import java.nio.file.Path
 
 class ReplaySettingsStoreTest {
+    @TempDir
+    lateinit var destinationRoot: Path
+
     private val directory = Path.of(System.getProperty("java.io.tmpdir")).toAbsolutePath().toString()
+
+    @Test
+    fun `existing regular file is rejected before Apply while directory and unset destination are accepted`() {
+        val file = Files.createFile(destinationRoot.resolve("recording.txt"))
+        val store = ReplaySettingsStore()
+        val valid = ReplaySettings(destination = destinationRoot.toString())
+        assertNull(valid.validationError())
+        store.apply(valid)
+        store.setEnabled(true)
+        val invalid = valid.copy(destination = file.toString())
+        assertEquals("保存先はファイルではなくフォルダを指定してください。", invalid.validationError())
+        assertThrows(IllegalArgumentException::class.java) { store.apply(invalid) }
+        assertEquals(valid, store.settings())
+        assertTrue(store.enabled)
+        assertNull(valid.copy(destination = destinationRoot.resolve("new-folder").toString()).validationError())
+        store.apply(valid.copy(destination = ""))
+        assertEquals("", store.settings().destination)
+    }
+
+    @Test
+    fun `background destination result cannot authorize a different path`() {
+        val file = Files.createFile(destinationRoot.resolve("recording.txt"))
+        val store = ReplaySettingsStore()
+        val valid = ReplaySettings(destination = destinationRoot.toString())
+        val checked = validateDestination(valid.destination)
+        store.apply(valid, checked)
+        assertThrows(IllegalArgumentException::class.java) {
+            store.apply(valid.copy(destination = file.toString()), checked)
+        }
+        assertEquals(valid, store.settings())
+        assertThrows(IllegalArgumentException::class.java) {
+            store.apply(valid.copy(destination = file.toString()), validateDestination(file.toString()))
+        }
+        assertEquals(valid, store.settings())
+    }
 
     @Test
     fun `draft edits do not change applied settings and Apply preserves immediate toggle`() {
