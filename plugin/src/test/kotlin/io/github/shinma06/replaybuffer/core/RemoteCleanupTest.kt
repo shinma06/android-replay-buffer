@@ -52,10 +52,10 @@ elif a[:2]==['-s','fixture-1']:
             assertTrue(ready(), core.snapshot().toString())
         }
         try {
-            assertTrue(core.setEnabled(true).get(10, TimeUnit.SECONDS).accepted)
             await { core.snapshot().cleanupPendingCount == 1 }
+            assertFalse(core.snapshot().enabled)
             Files.writeString(root.resolve("connected"), "yes")
-            await { core.snapshot().device?.connected == true }
+            assertTrue(core.applySettings(ReplaySettings(fake)).get(10, TimeUnit.SECONDS).accepted)
             assertTrue(Files.exists(root.resolve("alive"))) // Live journal owner still excludes recovery.
             firstOwner.close()
             await { core.snapshot().cleanupPendingCount == 0 && !Files.exists(root.resolve("alive")) }
@@ -67,9 +67,37 @@ elif a[:2]==['-s','fixture-1']:
             assertTrue(calls.any { it.contains("replay-${record.token}-server.jar") && it.contains("rm") })
             assertFalse(calls.any { it.contains("kill-server") || it.contains("pkill") || it.contains("-s\", \"fixture-2") })
             core.closeAsync().get(15, TimeUnit.SECONDS)
-            assertEquals(0, Files.list(root.resolve("new-workspace")).use { it.count() })
+            assertFalse(core.snapshot().enabled)
+            assertFalse(calls.any { it.contains("ClockProbe") || it.contains("scrcpy.Server") || it.contains("logcat") || it.contains("push") })
+            assertFalse(Files.exists(root.resolve("new-workspace")))
         } finally {
             firstOwner.close(); core.closeAsync().get(15, TimeUnit.SECONDS); store.close(); resources.close()
+            Files.walk(root).use { it.sorted(java.util.Comparator.reverseOrder()).forEach(Files::deleteIfExists) }
+        }
+    }
+
+    @Test
+    fun offWithNoVerifiedPendingRecordNeverInvokesSdkAdb() {
+        val root = Files.createTempDirectory("replay-off-cleanup-").toRealPath()
+        val fake = root.resolve("adb")
+        Files.writeString(fake, "#!/bin/sh\nprintf called >> \"${root.resolve("calls")}\"\nexit 1\n")
+        assertTrue(fake.toFile().setExecutable(true))
+        val stable = Files.createDirectory(root.resolve("journal"))
+        val core = ReplayCore(ReplaySettings(fake), root.resolve("unused-workspace"), stable)
+        try {
+            assertTrue(core.applySettings(ReplaySettings(fake)).get(10, TimeUnit.SECONDS).accepted)
+            assertEquals(0, core.snapshot().cleanupPendingCount)
+            assertFalse(Files.exists(root.resolve("calls")))
+            val path = stable.resolve("remote-cleanup-${"b".repeat(32)}.json")
+            Files.writeString(path, "{\"schema\":999}")
+            assertTrue(core.applySettings(ReplaySettings(fake)).get(10, TimeUnit.SECONDS).accepted)
+            assertEquals(1, core.snapshot().cleanupPendingCount)
+            assertFalse(Files.exists(root.resolve("calls")))
+            assertFalse(core.snapshot().enabled)
+            assertFalse(Files.exists(root.resolve("unused-workspace")))
+            assertEquals("{\"schema\":999}", Files.readString(path))
+        } finally {
+            core.closeAsync().get(10, TimeUnit.SECONDS)
             Files.walk(root).use { it.sorted(java.util.Comparator.reverseOrder()).forEach(Files::deleteIfExists) }
         }
     }

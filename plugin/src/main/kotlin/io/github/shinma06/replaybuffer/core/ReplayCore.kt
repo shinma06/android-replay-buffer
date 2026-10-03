@@ -42,6 +42,9 @@ class ReplayCore(initialSettings: ReplaySettings, private val workspace: Path, c
 
     init {
         require(workspace.isAbsolute) { "一時領域は絶対パスで指定してください" }
+        control.execute { if (!closed.get()) runCatching { cleanup.recover(); publish() }.onFailure {
+            error = "端末側の終了情報を読み戻せません（記録を保全しました）"; publish()
+        } }
         control.scheduleWithFixedDelay({ if (!closed.get()) runCatching { poll() }.onFailure {
             error = "取得状態の確認に失敗しました"; publish()
         } }, 1, 1, TimeUnit.SECONDS)
@@ -102,7 +105,7 @@ class ReplayCore(initialSettings: ReplaySettings, private val workspace: Path, c
         }
         if (changedApp) backend?.application(applied.application)
         store?.prune(settings.replaySeconds)
-        if (enabled) poll() else publish()
+        poll()
         ReplayOperation(true)
     }
 
@@ -188,7 +191,21 @@ class ReplayCore(initialSettings: ReplaySettings, private val workspace: Path, c
     }
 
     private fun poll() {
-        if (!enabled || closed.get()) return
+        if (closed.get()) return
+        if (!enabled) {
+            cleanup.recover()
+            val executable = settings.adbPath
+            // OFF never starts acquisition. No verified owned pending record means no adb invocation at all.
+            if (cleanup.hasRecoverable && executable != null) {
+                val devices = runCatching { OwnedAdb(executable).use { parseDevices(it.command("devices", "-l")) } }
+                if (closed.get()) return
+                devices.onSuccess { cleanup.clean(executable, it.map { device -> device.serial }.toSet(), closed::get) }
+            }
+            if (cleanup.pendingCount > 0) error = "端末側の終了・cleanupを再接続時に確認します（所有情報を保全しています）"
+            else if (current.cleanupPendingCount > 0) error = null
+            publish()
+            return
+        }
         val adb = probe
         if (adb == null) {
             captureState = CaptureState.WAITING
