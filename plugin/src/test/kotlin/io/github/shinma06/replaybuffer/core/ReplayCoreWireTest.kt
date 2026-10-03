@@ -24,6 +24,15 @@ import kotlin.test.assertTrue
 class ReplayCoreWireTest {
     @Test
     fun failedRequestRetriesItsOriginalWindowWhileAcquisitionReconfigurationAndReconnectContinue() {
+        runWireFixture(false)
+    }
+
+    @Test
+    fun anInitialDiscardedPFrameStillTimesOutAndTheRecoveredIdrSurvivesNormalIdle() {
+        runWireFixture(true)
+    }
+
+    private fun runWireFixture(discardInitialPFrame: Boolean) {
         val root = Files.createTempDirectory("replay-wire-fixture-")
         val devices = root.resolve("devices.txt")
         Files.writeString(devices, "List of devices attached\nfixture-1 device model:Fixture\nfixture-2 device model:Other\n")
@@ -32,10 +41,14 @@ class ReplayCoreWireTest {
         val clockServer = ServerSocket(0, 8, InetAddress.getLoopbackAddress())
         val stop = AtomicBoolean()
         val pauseVideo = AtomicBoolean()
+        val resetConfig = AtomicBoolean()
+        val repeatRejectedPackets = AtomicBoolean()
+        val resetConfigSent = CountDownLatch(1)
         val peers = CopyOnWriteArrayList<Thread>()
         val sockets = CopyOnWriteArrayList<java.net.Socket>()
         val videoSockets = CopyOnWriteArrayList<java.net.Socket>()
         val resumeVideo = CountDownLatch(1)
+        val discardedFrameSent = CountDownLatch(1)
         val readyConnections = java.util.concurrent.atomic.AtomicInteger()
         var bindReadyAt = 0L
         // Use the same JVM clock as the synthetic video PTS; Python's monotonic origin is platform/version dependent.
@@ -59,10 +72,16 @@ class ReplayCoreWireTest {
             }
         }
         val picture = Picture.create(32, 32, ColorSpace.YUV420J).apply { fill(15) }
-        val encoded = H264Encoder.createH264Encoder().encodeIDRFrame(picture, ByteBuffer.allocate(65536))
+        val encoder = H264Encoder.createH264Encoder()
+        val encoded = encoder.encodeFrame(picture, ByteBuffer.allocate(65536)).data
         val bytes = ByteArray(encoded.remaining()).also { encoded.get(it) }
+        picture.fill(25)
+        val encodedP = encoder.encodeFrame(picture, ByteBuffer.allocate(65536)).data
+        val pBytes = ByteArray(encodedP.remaining()).also { encodedP.get(it) }
+        assertTrue(H264Utils.splitFrame(ByteBuffer.wrap(pBytes)).any { it.get(0).toInt() and 31 == 1 })
         val config = H264Utils.splitFrame(ByteBuffer.wrap(bytes)).filter { it.get(0).toInt() and 31 in setOf(7, 8) }
             .fold(byteArrayOf()) { acc, nal -> acc + byteArrayOf(0, 0, 0, 1) + ByteArray(nal.remaining()).also { nal.get(it) } }
+        val changedConfig = config + byteArrayOf(0) // Valid Annex B trailing padding changes the store config identity.
         val accept = thread(isDaemon = true, name = "replay-wire-fixture") {
             while (!stop.get()) runCatching {
                 val socket = server.accept(); sockets += socket; videoSockets += socket
@@ -75,9 +94,25 @@ class ReplayCoreWireTest {
                         out.writeByte(0); out.writeInt(0x68323634)
                         out.writeInt(Int.MIN_VALUE); out.writeInt(32); out.writeInt(32)
                         out.writeLong(1L shl 62); out.writeInt(config.size); out.write(config)
+                        if (discardInitialPFrame && connection == 1) {
+                            out.writeLong(System.nanoTime() / 1000); out.writeInt(pBytes.size); out.write(pBytes); out.flush()
+                            discardedFrameSent.countDown()
+                            assertEquals(-1, it.getInputStream().read()) // Only the client watchdog ends this healthy idle.
+                            return@use
+                        }
                         if (connection == 2) assertTrue(resumeVideo.await(15, TimeUnit.SECONDS))
+                        if (discardInitialPFrame && connection >= 3) { repeatRejectedPackets.set(false); pauseVideo.set(false) }
                         Thread.sleep(750) // Exercise a valid clock before the first video frame.
                         while (!stop.get()) {
+                            if (resetConfig.compareAndSet(true, false)) {
+                                out.writeLong(1L shl 62); out.writeInt(changedConfig.size); out.write(changedConfig); out.flush()
+                                repeatRejectedPackets.set(true); resetConfigSent.countDown()
+                            }
+                            if (repeatRejectedPackets.get()) {
+                                out.writeLong(1L shl 62); out.writeInt(changedConfig.size); out.write(changedConfig)
+                                out.writeLong(System.nanoTime() / 1000); out.writeInt(pBytes.size); out.write(pBytes); out.flush()
+                                Thread.sleep(200); continue
+                            }
                             if (pauseVideo.get()) { Thread.sleep(25); continue }
                             out.writeLong((1L shl 61) or (System.nanoTime() / 1000)); out.writeInt(bytes.size); out.write(bytes); out.flush()
                             Thread.sleep(100)
@@ -140,9 +175,31 @@ elif len(a)>3 and a[3]=='ps':
             assertTrue(enabled.accepted, enabled.reason)
             awaitState("unselected-multiple") { it.captureState == CaptureState.MULTIPLE_DEVICES && it.device == null }
             Files.writeString(devices, "List of devices attached\nfixture-1 device model:Fixture\n")
+            if (discardInitialPFrame) {
+                assertTrue(discardedFrameSent.await(5, TimeUnit.SECONDS))
+                awaitState("discarded-initial-P-frame") { it.video.state == StreamState.RECOVERING && it.video.gaps.any { gap ->
+                    gap.reason == "IDR待ちでframeを保持できません"
+                } }
+                resumeVideo.countDown()
+            }
             awaitState("unresolved-app") { it.video.state == StreamState.CAPTURING && it.appLog.state == StreamState.UNAVAILABLE }
             assertTrue(core.updateApplication(ApplicationTarget("com.fixture.app")).get().accepted)
             val capturing = awaitState("initial-capture") { it.canSave && it.video.state == StreamState.CAPTURING && it.appLog.state == StreamState.CAPTURING }
+            if (discardInitialPFrame) {
+                assertEquals(2, readyConnections.get())
+                pauseVideo.set(true)
+                Thread.sleep(11_000)
+                assertEquals(2, readyConnections.get())
+                assertEquals(StreamState.CAPTURING, core.snapshot().video.state)
+                resetConfig.set(true)
+                assertTrue(resetConfigSent.await(5, TimeUnit.SECONDS))
+                awaitState("changed-config-awaiting-IDR") { it.video.state == StreamState.RECOVERING }
+                awaitState("changed-config-recovered") { readyConnections.get() == 3 && it.video.state == StreamState.CAPTURING }
+                assertTrue(core.setEnabled(false).get(15, TimeUnit.SECONDS).accepted)
+                core.closeAsync().get(15, TimeUnit.SECONDS)
+                Files.readAllLines(pids).forEach { pid -> assertFalse(ProcessHandle.of(pid.toLong()).map { it.isAlive }.orElse(false)) }
+                return
+            }
             if (System.getProperty("os.name") == "Mac OS X") {
                 Thread.sleep(1300) // Remove the initial unresolved-app interval from the one-second window.
                 pauseVideo.set(true)
