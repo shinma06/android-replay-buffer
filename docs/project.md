@@ -50,12 +50,12 @@ GeForceアプリやOBSのリプレイバッファから着想を得て、直近�
 |---|---|
 | 目的 | Android操作直前の画面・logcat・timelineを保存し、不具合の再現情報を取り逃さない。Android Studioプラグインとして利用できるようにする |
 | Repository | `shinma06/android-replay-buffer` |
-| 開発対象 | Android Studioプラグイン。`plugin/` にKotlin/Gradle・情報表示action。録画機能の接続は未実装 |
+| 開発対象 | Android Studioプラグイン。`plugin/` に取得・保存コア、ToolWindow、設定、SDK/対象アプリの解決、情報表示actionを実装した初期版候補。製品受入は[QA #27](https://github.com/shinma06/android-replay-buffer/issues/27)で管理し、実機は利用者保留 |
 | 利用可能な原型 | macOS向けPython CLI、Python 3.9以上。`replayd` / `replay save,status,stop`。[保全方針](cli-origin.md) |
 | CLI原型の依存 | adb、scrcpy、ffmpeg。Python追加依存なし。任意YAMLは既存実装の条件に従う。プラグインの採用方式とは区別する |
 | 実装 | `plugin/` が開発対象。CLI原型は `replay_buffer/`、入口 `bin/`、設定 `config.json.example`、起動例 `launchd/` を維持 |
 | 仕様 | [製品要件](requirements.md)、[README](../README.md)。原型は[原CLI README](cli-origin/README.md)、[CLI原型の設計（凍結）](cli-origin/design.md)。要件・設計の記述だけで実装済みとしない |
-| テスト | `tests/test_log_buffer.py` の既存2ケース。実機録画・再接続・動画保存を網羅するものではない |
+| テスト | CLIは `tests/test_log_buffer.py` の既存2ケース。プラグインは `plugin/src/test/` のJVMテストで時計・保存・process所有・合成wire・設定/寿命を検証する。実機/IDE受入は別のCaseで確認する |
 | 開発ハーネス | Python 3.11以上、標準ライブラリ、Bash、macOS/Linux。CLIの要求版を変更しない |
 | 統合先 | 製品変更は `develop`。固定候補を `main` へpromotion。GUI不要toolingは `main`。main/developは作成済み |
 | 必須checks | `test` / `PR policy` / `Acceptance gate` / `Agent review`。実適用は [導入Issue #1](https://github.com/shinma06/android-replay-buffer/issues/1) でreadbackする |
@@ -76,4 +76,4 @@ python3 scripts/workflow/change_impact.py --base origin/main --run-tests
 
 check.pyは管理ファイル・リンク・symlink・秘密候補の限定検査とハーネス回帰試験、product_check.pyはCLI原型21ファイルの保全照合と既存unittest、plugin_check.pyはGradleのcheck/buildPlugin/verifyPluginStructureです。daemonやADB、録画、launchd、IDEを起動しません。IDE/実機受入はCase JSONで別に管理します。
 
-CLI変更ではprocessの所有と停止、再接続、バッファ容量、時刻対応、保存失敗時のデータ保全、ログの秘密情報を確認します。Android Studio側のLifecycle/EDT/dispose/coroutineはプラグイン実装時に適用します。
+CLI変更ではprocessの所有と停止、再接続、バッファ容量、時刻対応、保存失敗時のデータ保全、ログの秘密情報を確認します。Android Studio側はLifecycle/EDT/dispose、非同期設定反映、購読解除と取得process終了を確認します。DBを使用しないためDBクエリ検証は対象外です。

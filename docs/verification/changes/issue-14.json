@@ -6,7 +6,7 @@
   "cli_checks": [
     "python3 scripts/check.py: pass (165 tests)",
     "python3 scripts/workflow/product_check.py: pass (2 tests; CLI origin 21 files unchanged)",
-    "python3 scripts/workflow/change_impact.py --base 16123f6fa2e2c74ce4300d1acf4f54d317b3fdff --run-tests: clean committed HEADで実行しIssue/PRへ記録"
+    "python3 scripts/workflow/change_impact.py --base origin/develop --run-tests: clean committed HEADで実行しIssue/PRへ記録"
   ],
   "cases": []
 }
