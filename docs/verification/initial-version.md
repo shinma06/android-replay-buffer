@@ -6,7 +6,7 @@
 
 ## 設計と試験範囲
 
-基準sourceはdevelop `5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9`、[要件](../requirements.md)と[保存設計](../plugin-design.md)です。UIは[#12](https://github.com/shinma06/android-replay-buffer/issues/12)、同期・録画方式は[#13](https://github.com/shinma06/android-replay-buffer/issues/13)の採用結果に追随します。UIのPR #28 HEAD `0c08897ad94069806f9693f90a8cdc08f8634abc`は読取参考で、基準developに未統合です。同期精度などをこの計画が独自に決めません。
+準備の同期baseはdevelop `e84d5fbf9f1ca3b23dc29be805480680d862d237`、[要件](../requirements.md)と[保存設計](../plugin-design.md)です。UIは[#12](https://github.com/shinma06/android-replay-buffer/issues/12)、同期・録画方式は[#13](https://github.com/shinma06/android-replay-buffer/issues/13)の採用結果に追随します。UIのPR #28は同期baseへ統合済みです。[採用UI設計](../design/ide-ui.md)のUI-12-01〜08を以下のCaseへ接続し、実装/GUIの完了とは区別します。同期精度などをこの計画が独自に決めません。
 
 受入前にPM/実装担当が以下を固定し、Issue/Case前提へ追記します。値や観察が不足するCaseは開始せずblockedにします。
 

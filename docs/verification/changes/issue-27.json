@@ -29,7 +29,7 @@
         "Issue #27 / native parent #14",
         "docs/requirements.md: ENV-01, ENV-02, ENV-03",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12/#13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
       ],
       "gpt": {
         "status": "blocked",
@@ -56,14 +56,15 @@
       "preconditions": "専用実機1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。",
       "steps": [
         "2つのdebug APK/署名/hash/sourceを固定し、Run対象をappAにする。",
-        "appA/appBで1秒以上の間隔で各5イベントを発生し、画面と保存された両ログを照合する。"
+        "appA/appBで1秒以上の間隔で各5イベントを発生し、画面と保存された両ログを照合する。",
+        "製品Case前提としてnative fixture回帰を確認: 1更新後のidle commit、同一UI処理の2更新coalescing、終了/再生成view UUID、system bars/cutoutの非累積Insets。3-button/gestureと縦横で識別表示/ボタンを確認する。"
       ],
-      "expected": "package/run/event/sourceが画面と両ログで対応する。REQUEST/DRAW/FRAME_COMMITを区別し、非表示REQUESTを表示済み扱いしない。hardwareなしは精度試験を止める。",
+      "expected": "package/run/event/sourceが画面と両ログで対応する。REQUEST/DRAW/FRAME_COMMITを区別し、非表示REQUESTを表示済み扱いしない。hardwareなしは精度試験を止める。 Activity再生成はview UUIDで区別。FRAME_COMMITはOnPreDrawで最新描画予定番号へ登録し、onDraw中に次フレームへ登録しない。",
       "provenance": [
         "Issue #27 / native parent #14",
         "docs/requirements.md: LOG-01, LOG-02, SYNC-01",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12/#13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
       ],
       "gpt": {
         "status": "blocked",
@@ -98,7 +99,7 @@
         "Issue #27 / native parent #14",
         "docs/requirements.md: CTL-02, CTL-04, UI-01, UI-02",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12/#13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
       ],
       "gpt": {
         "status": "blocked",
@@ -131,7 +132,7 @@
         "Issue #27 / native parent #14",
         "docs/requirements.md: CTL-01, UI-01",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12/#13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
       ],
       "gpt": {
         "status": "blocked",
@@ -164,7 +165,7 @@
         "Issue #27 / native parent #14",
         "docs/requirements.md: CTL-01, UI-01",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12/#13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
       ],
       "gpt": {
         "status": "blocked",
@@ -197,7 +198,7 @@
         "Issue #27 / native parent #14",
         "docs/requirements.md: CTL-02, UI-01",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12/#13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
       ],
       "gpt": {
         "status": "blocked",
@@ -232,7 +233,7 @@
         "Issue #27 / native parent #14",
         "docs/requirements.md: CTL-04, CTL-05, BUF-01, BUF-06",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12/#13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
       ],
       "gpt": {
         "status": "blocked",
@@ -265,7 +266,7 @@
         "Issue #27 / native parent #14",
         "docs/requirements.md: CTL-04, CTL-05",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12/#13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
       ],
       "gpt": {
         "status": "blocked",
@@ -299,7 +300,7 @@
         "Issue #27 / native parent #14",
         "docs/requirements.md: BUF-01, BUF-03, SAVE-01",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12/#13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
       ],
       "gpt": {
         "status": "blocked",
@@ -332,7 +333,7 @@
         "Issue #27 / native parent #14",
         "docs/requirements.md: BUF-02, SAVE-01",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12/#13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
       ],
       "gpt": {
         "status": "blocked",
@@ -365,7 +366,7 @@
         "Issue #27 / native parent #14",
         "docs/requirements.md: BUF-04, SAVE-02",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12/#13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
       ],
       "gpt": {
         "status": "blocked",
@@ -399,7 +400,7 @@
         "Issue #27 / native parent #14",
         "docs/requirements.md: BUF-03, BUF-06, SYNC-01",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12/#13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
       ],
       "gpt": {
         "status": "blocked",
@@ -433,7 +434,7 @@
         "Issue #27 / native parent #14",
         "docs/requirements.md: BUF-05, BUF-06, UI-01",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12/#13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
       ],
       "gpt": {
         "status": "blocked",
@@ -467,7 +468,7 @@
         "Issue #27 / native parent #14",
         "docs/requirements.md: BUF-07, LOG-01, UI-01",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12/#13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
       ],
       "gpt": {
         "status": "blocked",
@@ -500,7 +501,7 @@
         "Issue #27 / native parent #14",
         "docs/requirements.md: LOG-01, LOG-02",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12/#13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
       ],
       "gpt": {
         "status": "blocked",
@@ -534,7 +535,7 @@
         "Issue #27 / native parent #14",
         "docs/requirements.md: LOG-02, UI-01",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12/#13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
       ],
       "gpt": {
         "status": "blocked",
@@ -569,7 +570,7 @@
         "Issue #27 / native parent #14",
         "docs/requirements.md: SYNC-01, BUF-03, BUF-06",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12/#13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
       ],
       "gpt": {
         "status": "blocked",
@@ -601,7 +602,7 @@
         "Issue #27 / native parent #14",
         "docs/requirements.md: SYNC-01",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12/#13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
       ],
       "gpt": {
         "status": "blocked",
@@ -636,7 +637,7 @@
         "Issue #27 / native parent #14",
         "docs/requirements.md: SAVE-01, SAVE-02, SAVE-03, SAVE-04",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12/#13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
       ],
       "gpt": {
         "status": "blocked",
@@ -669,7 +670,7 @@
         "Issue #27 / native parent #14",
         "docs/requirements.md: CTL-03, CTL-04",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12/#13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
       ],
       "gpt": {
         "status": "blocked",
@@ -703,7 +704,7 @@
         "Issue #27 / native parent #14",
         "docs/requirements.md: CTL-03, BUF-06, UI-01",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12/#13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
       ],
       "gpt": {
         "status": "blocked",
@@ -737,7 +738,7 @@
         "Issue #27 / native parent #14",
         "docs/requirements.md: UI-01, UI-02, CTL-04",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12/#13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
       ],
       "gpt": {
         "status": "blocked",
@@ -771,7 +772,7 @@
         "Issue #27 / native parent #14",
         "docs/requirements.md: VIDEO-04, BUF-06, SYNC-01",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12/#13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
       ],
       "gpt": {
         "status": "blocked",
@@ -805,7 +806,7 @@
         "Issue #27 / native parent #14",
         "docs/requirements.md: VIDEO-01, VIDEO-02, VIDEO-03",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12/#13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
       ],
       "gpt": {
         "status": "blocked",
@@ -838,7 +839,7 @@
         "Issue #27 / native parent #14",
         "docs/requirements.md: SAVE-05, BUF-04",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12/#13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
       ],
       "gpt": {
         "status": "blocked",
@@ -873,7 +874,7 @@
         "Issue #27 / native parent #14",
         "docs/requirements.md: SAVE-02, SAVE-03, SAVE-04, SAVE-05",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12/#13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
       ],
       "gpt": {
         "status": "blocked",
@@ -907,7 +908,7 @@
         "Issue #27 / native parent #14",
         "docs/requirements.md: BUF-07, SAVE-05, SYNC-01",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12/#13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
       ],
       "gpt": {
         "status": "blocked",
@@ -942,7 +943,7 @@
         "Issue #27 / native parent #14",
         "docs/requirements.md: BUF-02, BUF-04, SAVE-02, SAVE-05",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12/#13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
       ],
       "gpt": {
         "status": "blocked",
@@ -976,7 +977,7 @@
         "Issue #27 / native parent #14",
         "docs/requirements.md: SAVE-05, CTL-05, BUF-04",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12/#13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
       ],
       "gpt": {
         "status": "blocked",
@@ -1009,7 +1010,7 @@
         "Issue #27 / native parent #14",
         "docs/requirements.md: SAVE-05, CTL-03",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12/#13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
       ],
       "gpt": {
         "status": "blocked",
@@ -1042,7 +1043,7 @@
         "Issue #27 / native parent #14",
         "docs/requirements.md: SAVE-05, BUF-07",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12/#13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
       ],
       "gpt": {
         "status": "blocked",
@@ -1077,7 +1078,7 @@
         "Issue #27 / native parent #14",
         "docs/requirements.md: BUF-03, BUF-05, BUF-06, SAVE-05",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12/#13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
       ],
       "gpt": {
         "status": "blocked",
@@ -1110,7 +1111,7 @@
         "Issue #27 / native parent #14",
         "docs/requirements.md: SAVE-04, SAVE-05",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12/#13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
       ],
       "gpt": {
         "status": "blocked",
@@ -1144,7 +1145,7 @@
         "Issue #27 / native parent #14",
         "docs/requirements.md: ENV-01, ENV-02, ENV-03",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12/#13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
       ],
       "gpt": {
         "status": "pending",
@@ -1171,14 +1172,15 @@
       "preconditions": "専用Emulator1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。",
       "steps": [
         "2つのdebug APK/署名/hash/sourceを固定し、Run対象をappAにする。",
-        "appA/appBで1秒以上の間隔で各5イベントを発生し、画面と保存された両ログを照合する。"
+        "appA/appBで1秒以上の間隔で各5イベントを発生し、画面と保存された両ログを照合する。",
+        "製品Case前提としてnative fixture回帰を確認: 1更新後のidle commit、同一UI処理の2更新coalescing、終了/再生成view UUID、system bars/cutoutの非累積Insets。3-button/gestureと縦横で識別表示/ボタンを確認する。"
       ],
-      "expected": "package/run/event/sourceが画面と両ログで対応する。REQUEST/DRAW/FRAME_COMMITを区別し、非表示REQUESTを表示済み扱いしない。hardwareなしは精度試験を止める。",
+      "expected": "package/run/event/sourceが画面と両ログで対応する。REQUEST/DRAW/FRAME_COMMITを区別し、非表示REQUESTを表示済み扱いしない。hardwareなしは精度試験を止める。 Activity再生成はview UUIDで区別。FRAME_COMMITはOnPreDrawで最新描画予定番号へ登録し、onDraw中に次フレームへ登録しない。",
       "provenance": [
         "Issue #27 / native parent #14",
         "docs/requirements.md: LOG-01, LOG-02, SYNC-01",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12/#13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
       ],
       "gpt": {
         "status": "pending",
@@ -1213,7 +1215,7 @@
         "Issue #27 / native parent #14",
         "docs/requirements.md: CTL-02, CTL-04, UI-01, UI-02",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12/#13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
       ],
       "gpt": {
         "status": "pending",
@@ -1246,7 +1248,7 @@
         "Issue #27 / native parent #14",
         "docs/requirements.md: CTL-01, UI-01",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12/#13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
       ],
       "gpt": {
         "status": "pending",
@@ -1279,7 +1281,7 @@
         "Issue #27 / native parent #14",
         "docs/requirements.md: CTL-01, UI-01",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12/#13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
       ],
       "gpt": {
         "status": "pending",
@@ -1312,7 +1314,7 @@
         "Issue #27 / native parent #14",
         "docs/requirements.md: CTL-02, UI-01",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12/#13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
       ],
       "gpt": {
         "status": "pending",
@@ -1347,7 +1349,7 @@
         "Issue #27 / native parent #14",
         "docs/requirements.md: CTL-04, CTL-05, BUF-01, BUF-06",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12/#13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
       ],
       "gpt": {
         "status": "pending",
@@ -1380,7 +1382,7 @@
         "Issue #27 / native parent #14",
         "docs/requirements.md: CTL-04, CTL-05",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12/#13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
       ],
       "gpt": {
         "status": "pending",
@@ -1414,7 +1416,7 @@
         "Issue #27 / native parent #14",
         "docs/requirements.md: BUF-01, BUF-03, SAVE-01",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12/#13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
       ],
       "gpt": {
         "status": "pending",
@@ -1447,7 +1449,7 @@
         "Issue #27 / native parent #14",
         "docs/requirements.md: BUF-02, SAVE-01",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12/#13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
       ],
       "gpt": {
         "status": "pending",
@@ -1480,7 +1482,7 @@
         "Issue #27 / native parent #14",
         "docs/requirements.md: BUF-04, SAVE-02",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12/#13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
       ],
       "gpt": {
         "status": "pending",
@@ -1514,7 +1516,7 @@
         "Issue #27 / native parent #14",
         "docs/requirements.md: BUF-03, BUF-06, SYNC-01",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12/#13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
       ],
       "gpt": {
         "status": "pending",
@@ -1548,7 +1550,7 @@
         "Issue #27 / native parent #14",
         "docs/requirements.md: BUF-05, BUF-06, UI-01",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12/#13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
       ],
       "gpt": {
         "status": "pending",
@@ -1582,7 +1584,7 @@
         "Issue #27 / native parent #14",
         "docs/requirements.md: BUF-07, LOG-01, UI-01",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12/#13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
       ],
       "gpt": {
         "status": "pending",
@@ -1615,7 +1617,7 @@
         "Issue #27 / native parent #14",
         "docs/requirements.md: LOG-01, LOG-02",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12/#13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
       ],
       "gpt": {
         "status": "pending",
@@ -1649,7 +1651,7 @@
         "Issue #27 / native parent #14",
         "docs/requirements.md: LOG-02, UI-01",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12/#13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
       ],
       "gpt": {
         "status": "pending",
@@ -1684,7 +1686,7 @@
         "Issue #27 / native parent #14",
         "docs/requirements.md: SYNC-01, BUF-03, BUF-06",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12/#13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
       ],
       "gpt": {
         "status": "pending",
@@ -1716,7 +1718,7 @@
         "Issue #27 / native parent #14",
         "docs/requirements.md: SYNC-01",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12/#13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
       ],
       "gpt": {
         "status": "pending",
@@ -1751,7 +1753,7 @@
         "Issue #27 / native parent #14",
         "docs/requirements.md: SAVE-01, SAVE-02, SAVE-03, SAVE-04",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12/#13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
       ],
       "gpt": {
         "status": "pending",
@@ -1784,7 +1786,7 @@
         "Issue #27 / native parent #14",
         "docs/requirements.md: CTL-03, CTL-04",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12/#13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
       ],
       "gpt": {
         "status": "pending",
@@ -1818,7 +1820,7 @@
         "Issue #27 / native parent #14",
         "docs/requirements.md: CTL-03, BUF-06, UI-01",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12/#13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
       ],
       "gpt": {
         "status": "pending",
@@ -1852,7 +1854,7 @@
         "Issue #27 / native parent #14",
         "docs/requirements.md: UI-01, UI-02, CTL-04",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12/#13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
       ],
       "gpt": {
         "status": "pending",
@@ -1886,7 +1888,7 @@
         "Issue #27 / native parent #14",
         "docs/requirements.md: VIDEO-04, BUF-06, SYNC-01",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12/#13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
       ],
       "gpt": {
         "status": "pending",
@@ -1920,7 +1922,7 @@
         "Issue #27 / native parent #14",
         "docs/requirements.md: VIDEO-01, VIDEO-02, VIDEO-03",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12/#13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
       ],
       "gpt": {
         "status": "pending",
@@ -1953,7 +1955,7 @@
         "Issue #27 / native parent #14",
         "docs/requirements.md: SAVE-05, BUF-04",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12/#13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
       ],
       "gpt": {
         "status": "pending",
@@ -1988,7 +1990,7 @@
         "Issue #27 / native parent #14",
         "docs/requirements.md: SAVE-02, SAVE-03, SAVE-04, SAVE-05",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12/#13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
       ],
       "gpt": {
         "status": "pending",
@@ -2022,7 +2024,7 @@
         "Issue #27 / native parent #14",
         "docs/requirements.md: BUF-07, SAVE-05, SYNC-01",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12/#13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
       ],
       "gpt": {
         "status": "pending",
@@ -2057,7 +2059,7 @@
         "Issue #27 / native parent #14",
         "docs/requirements.md: BUF-02, BUF-04, SAVE-02, SAVE-05",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12/#13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
       ],
       "gpt": {
         "status": "pending",
@@ -2091,7 +2093,7 @@
         "Issue #27 / native parent #14",
         "docs/requirements.md: SAVE-05, CTL-05, BUF-04",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12/#13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
       ],
       "gpt": {
         "status": "pending",
@@ -2124,7 +2126,7 @@
         "Issue #27 / native parent #14",
         "docs/requirements.md: SAVE-05, CTL-03",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12/#13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
       ],
       "gpt": {
         "status": "pending",
@@ -2157,7 +2159,7 @@
         "Issue #27 / native parent #14",
         "docs/requirements.md: SAVE-05, BUF-07",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12/#13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
       ],
       "gpt": {
         "status": "pending",
@@ -2192,7 +2194,7 @@
         "Issue #27 / native parent #14",
         "docs/requirements.md: BUF-03, BUF-05, BUF-06, SAVE-05",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12/#13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
       ],
       "gpt": {
         "status": "pending",
@@ -2225,7 +2227,7 @@
         "Issue #27 / native parent #14",
         "docs/requirements.md: SAVE-04, SAVE-05",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
-        "Issue #12/#13採用設計と docs/verification/initial-version.md"
+        "Issue #12採用UI設計（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用設計と docs/verification/initial-version.md"
       ],
       "gpt": {
         "status": "pending",

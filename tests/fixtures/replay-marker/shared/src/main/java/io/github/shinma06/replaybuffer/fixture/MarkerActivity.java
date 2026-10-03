@@ -3,13 +3,17 @@ package io.github.shinma06.replaybuffer.fixture;
 import android.app.Activity;
 import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.Insets;
 import android.graphics.Paint;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Process;
 import android.os.SystemClock;
 import android.util.Log;
+import android.view.DisplayCutout;
 import android.view.View;
 import android.view.ViewTreeObserver;
+import android.view.WindowInsets;
 import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.TextView;
@@ -21,37 +25,74 @@ import org.json.JSONObject;
 public final class MarkerActivity extends Activity {
     private static final String RUN = UUID.randomUUID().toString();
     private static long sequence;
+    private final String viewId = UUID.randomUUID().toString();
     private MarkerView marker;
     private Runnable commitCallback;
+    private ViewTreeObserver.OnPreDrawListener preDrawListener;
 
     @Override
     public void onCreate(Bundle state) {
         super.onCreate(state);
         LinearLayout layout = new LinearLayout(this);
         layout.setOrientation(LinearLayout.VERTICAL);
-        layout.setPadding(16, 48, 16, 16);
+        int padding = Math.round(16 * getResources().getDisplayMetrics().density);
+        layout.setPadding(padding, padding, padding, padding);
+        layout.setOnApplyWindowInsetsListener((view, insets) -> {
+            Insets safe;
+            if (Build.VERSION.SDK_INT >= 30) {
+                safe = insets.getInsets(WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout());
+            } else {
+                safe = insets.getSystemWindowInsets();
+                DisplayCutout cutout = insets.getDisplayCutout();
+                if (cutout != null) {
+                    safe = Insets.of(Math.max(safe.left, cutout.getSafeInsetLeft()),
+                            Math.max(safe.top, cutout.getSafeInsetTop()),
+                            Math.max(safe.right, cutout.getSafeInsetRight()),
+                            Math.max(safe.bottom, cutout.getSafeInsetBottom()));
+                }
+            }
+            view.setPadding(padding + safe.left, padding + safe.top,
+                    padding + safe.right, padding + safe.bottom);
+            return insets;
+        });
         TextView identity = new TextView(this);
         identity.setText("Replay QA\n" + BuildConfig.APPLICATION_ID + "\n"
-                + BuildConfig.FIXTURE_SOURCE + "\nrun=" + RUN);
+                + BuildConfig.FIXTURE_SOURCE + "\nrun=" + RUN + "\nview=" + viewId);
         layout.addView(identity);
         marker = new MarkerView();
+        preDrawListener = () -> {
+            if (marker.drawn != marker.event) {
+                unregisterCommit();
+                long event = marker.event;
+                if (marker.isHardwareAccelerated()) {
+                    String committedView = viewId;
+                    commitCallback = () -> stamp("FRAME_COMMIT", event, committedView);
+                    marker.getViewTreeObserver().registerFrameCommitCallback(commitCallback);
+                } else {
+                    stamp("NO_HARDWARE_COMMIT", event, viewId);
+                }
+            }
+            return true;
+        };
+        marker.getViewTreeObserver().addOnPreDrawListener(preDrawListener);
         layout.addView(marker, new LinearLayout.LayoutParams(-1, 0, 1));
         Button emit = new Button(this);
         emit.setText("イベント番号を更新");
         emit.setOnClickListener(view -> {
             unregisterCommit();
             long event = ++sequence;
-            stamp("REQUEST", event);
+            stamp("REQUEST", event, viewId);
             marker.event = event;
             marker.setContentDescription("イベント " + event);
             marker.invalidate();
         });
         layout.addView(emit);
         setContentView(layout);
-        stamp("CREATE", sequence);
+        layout.requestApplyInsets();
+        stamp("CREATE", sequence, viewId);
     }
 
-    private static void stamp(String phase, long event) {
+    private static void stamp(String phase, long event, String view) {
         long before = SystemClock.elapsedRealtimeNanos();
         long wall = System.currentTimeMillis();
         long after = SystemClock.elapsedRealtimeNanos();
@@ -61,6 +102,7 @@ public final class MarkerActivity extends Activity {
             message.put("package", BuildConfig.APPLICATION_ID);
             message.put("source", BuildConfig.FIXTURE_SOURCE);
             message.put("run", RUN);
+            message.put("view", view);
             message.put("pid", Process.myPid());
             message.put("event", event);
             message.put("phase", phase);
@@ -83,6 +125,9 @@ public final class MarkerActivity extends Activity {
     @Override
     protected void onDestroy() {
         unregisterCommit();
+        if (marker.getViewTreeObserver().isAlive()) {
+            marker.getViewTreeObserver().removeOnPreDrawListener(preDrawListener);
+        }
         super.onDestroy();
     }
 
@@ -107,15 +152,7 @@ public final class MarkerActivity extends Activity {
             canvas.drawText(Long.toString(event), getWidth() / 2f, getHeight() / 2f, paint);
             if (drawn != event) {
                 drawn = event;
-                stamp("DRAW", event);
-                if (isHardwareAccelerated()) {
-                    long committedEvent = event;
-                    commitCallback = () -> stamp("FRAME_COMMIT", committedEvent);
-                    ViewTreeObserver observer = getViewTreeObserver();
-                    observer.registerFrameCommitCallback(commitCallback);
-                } else {
-                    stamp("NO_HARDWARE_COMMIT", event);
-                }
+                stamp("DRAW", event, viewId);
             }
         }
     }

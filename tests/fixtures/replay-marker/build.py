@@ -25,7 +25,8 @@ if not key.exists():
     key.chmod(0o600)
 wrapper = root / ('gradlew.bat' if os.name == 'nt' else 'gradlew')
 command = [str(wrapper), '--no-daemon', ':appA:assembleDebug', ':appB:assembleDebug',
-           ':appA:lintDebug', ':appB:lintDebug']
+           ':appA:lintDebug', ':appB:lintDebug',
+           ':appA:assembleDebugAndroidTest', ':appB:assembleDebugAndroidTest']
 if args.offline:
     command.append('--offline')
 subprocess.run(command, cwd=root, check=True)
@@ -34,10 +35,13 @@ if (source != subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=root, te
     raise SystemExit('Source changed during build; discard these APKs and rebuild.')
 dirty = bool(dirty_state)
 apks = {}
+regression_apks = {}
 for module in ('appA', 'appB'):
     apk = root / module / 'build' / 'outputs' / 'apk' / 'debug' / f'{module}-debug.apk'
     apks[module] = {'file': str(apk.relative_to(root)), 'sha256': hashlib.sha256(apk.read_bytes()).hexdigest()}
-identity = {'schema': 1, 'source': source, 'dirty': dirty, 'apks': apks}
+    test_apk = root / module / 'build' / 'outputs' / 'apk' / 'androidTest' / 'debug' / f'{module}-debug-androidTest.apk'
+    regression_apks[module] = {'file': str(test_apk.relative_to(root)), 'sha256': hashlib.sha256(test_apk.read_bytes()).hexdigest()}
+identity = {'schema': 1, 'source': source, 'dirty': dirty, 'apks': apks, 'regression_apks': regression_apks}
 out = root / 'build' / 'fixture-identity.json'
 out.parent.mkdir(exist_ok=True)
 out.write_text(json.dumps(identity, indent=2) + '\n')
