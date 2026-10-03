@@ -78,7 +78,7 @@ internal class SaveWriter {
                     val prefix = all.subList(keyIndex, firstIndex).filter { it.pts < first.pts }
                     val samples = prefix + group.filter { it.pts >= first.pts && (it.time.sequence == null || it.time.sequence <= capture.end) }
                     val origin = samples.first().pts
-                    
+
                     val last = samples.last()
                     val typical = if (samples.size > 1) (last.pts - samples[samples.lastIndex - 1].pts).coerceIn(1, 100_000) else 33_333L
                     val remaining = last.time.sequence?.let { ((capture.end - it).coerceAtLeast(0) / 1000).coerceAtMost(typical) } ?: typical
