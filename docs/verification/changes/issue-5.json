@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "issue": 5,
+  "gui_required": false,
+  "reason": "製品目的の文書化と受入記録のみ。CLI・プラグイン・端末・録画の実行経路を変更しないためGUI確認は不要。記載した将来機能の実機受入は主張しない。",
+  "cli_checks": [
+    "python3 scripts/check.py: pass (163 tests)",
+    "python3 scripts/workflow/product_check.py: pass (2 tests)",
+    "git diff --check: pass"
+  ],
+  "cases": []
+}
