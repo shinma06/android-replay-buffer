@@ -6,7 +6,7 @@
 
 1. 導入Issue #1とclaim、専用branch/worktree、Project #5、Milestone #1を確認する。
 2. `codex/1-adopt-harness`からmain向けPRを作成し、管理テスト・CLI tests・別セッション固定HEAD/baseレビューを行う。
-3. validator導入前のmain `e6fb021b144d4f0f6a1f7916e92449610b3ff80c`・target main・このbranchだけAcceptance gateの初回bootstrapとする。独立レビューやtestsを免除せず、GUI passを表さない。通常のtooling scopeを満たす差分だけで導入する。
+3. validator導入前のmain `e6fb021b144d4f0f6a1f7916e92449610b3ff80c`・target main・このbranchだけAcceptance gateの初回bootstrapとする。独立レビューやtestsを免除せず、GUI passを表さない。初回だけ通常tooling allowlist外の`.gitignore`（private状態のignore追記）と`prompts/`（共通依頼文）を含む。既存CLI source・tests・設定・設計書の差分が空であること、追加対象、全testsを独立レビューで確認する。通常gateのallowlistは拡大しない。
 4. PMが実レビューの証拠に基づいてAgent reviewを記録し、4 checksの実成功を確認する。main保護を適用・readbackして通常PRで統合する。
 5. 既存developがないことを再確認し、統合後mainの同じSHAからdevelopを新設する。新設は導入の初期化であり、既存保護branchへの直接変更を許可するものではない。develop保護を適用し実効rulesをreadbackする。
 6. ローカルmainをclean確認後fast-forwardし、bootstrap/doctor、trusted-main coordinatorのread-only scan、Project表示を確認する。

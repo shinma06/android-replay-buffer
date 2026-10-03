@@ -7,4 +7,5 @@
 /.claude/skills/ @shinma06
 /.cursor/rules/ @shinma06
 /scripts/workflow/ @shinma06
-/docs/development/ @shinma06
+/docs/ @shinma06
+/prompts/ @shinma06
