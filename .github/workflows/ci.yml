@@ -14,7 +14,7 @@ jobs:
   test:
     name: test
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
         with:
@@ -23,5 +23,22 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Harness checks and affected CLI tests
+      - name: Classify changes
+        id: impact
+        run: python3 scripts/workflow/change_impact.py --event
+      - uses: actions/setup-java@v4
+        if: steps.impact.outputs.plugin_check == 'true'
+        with:
+          distribution: temurin
+          java-version: '25'
+      - uses: gradle/actions/setup-gradle@v4
+        if: steps.impact.outputs.plugin_check == 'true'
+      - name: Harness, CLI preservation and affected product checks
         run: python3 scripts/workflow/change_impact.py --event --run-tests
+      - uses: actions/upload-artifact@v4
+        if: steps.impact.outputs.plugin_check == 'true'
+        with:
+          name: plugin-${{ github.sha }}
+          path: plugin/build/distributions/*.zip
+          if-no-files-found: error
+          retention-days: 14

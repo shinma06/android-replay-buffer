@@ -29,7 +29,7 @@ CLIではUSB切断/再接続、直前区間の動画/logcat時刻整合、log-on
 4. resultsのキーは`Issue番号:Case ID`。passは`status / actor / observer / at / head / artifact_sha256 / evidence / loaded_identity / reason`を持つ。日時はtimezone付きISO8601、head/hashは候補と一致。loaded_identityに実際のCLI/Pluginのロード識別を書く。
 5. 候補後に変更できるのはpromotion.jsonとpromotion IssueのCase JSONのみ。全範囲のgate・CI・独立レビューを通し、merge commitでmainへ統合する。
 
-Plugin ZIP生成はプラグイン基盤の導入時に実buildへ接続します。現在は存在しないGradle/ZIP成果物を仮定せず、製品promotion前に再現できる固定成果物の作成・照合手順をそのIssueで定義します。main起点の限定変更も、trusted mainの`docs/verification/scopes/issue-N.json`による事前承認範囲と全Caseの観察が必要です。
+Plugin ZIPは [開発手順](../plugin-development.md) の標準buildPluginで生成します。cleanな固定source SHAをversionに含め、ZIPのSHA-256と実ロードversionを照合します。構造検査の成功だけでIDE受入やAPI互換性をpassにしません。main起点の限定変更も、trusted mainの`docs/verification/scopes/issue-N.json`による事前承認範囲と全Caseの観察が必要です。
 
 ## 引継ぎ
 

@@ -388,7 +388,8 @@ class LoopTests(unittest.TestCase):
             self.assertEqual(self.loop.tick(36)['phase'], 'base-synced')
         self.assertEqual([c.args[0] for c in commands.call_args_list], [
             ['python3', 'scripts/check.py'],
-            ['python3', 'scripts/workflow/product_check.py']])
+            ['python3', 'scripts/workflow/product_check.py'],
+            ['python3', 'scripts/workflow/plugin_check.py']])
         self.assertTrue(any(c.args == ('push', 'origin', 'HEAD:refs/heads/codex/35-test')
                             for c in al.git.call_args_list))
         _, state, _, _ = self.loop.load(36)

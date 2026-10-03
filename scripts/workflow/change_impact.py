@@ -9,11 +9,12 @@ import subprocess
 RUNTIME = 'IMPACT_RUNTIME'
 BUILD = 'IMPACT_BUILD'
 TEST = 'IMPACT_TEST'
+PLUGIN = 'IMPACT_PLUGIN'
 TOOLING = 'IMPACT_TOOLING'
 KNOWLEDGE = 'IMPACT_KNOWLEDGE_ONLY'
 METADATA = 'IMPACT_METADATA_ONLY'
 UNKNOWN = 'IMPACT_UNKNOWN'
-ORDER = (RUNTIME, BUILD, TEST, TOOLING, KNOWLEDGE, METADATA, UNKNOWN)
+ORDER = (RUNTIME, BUILD, TEST, PLUGIN, TOOLING, KNOWLEDGE, METADATA, UNKNOWN)
 
 
 def path_impacts(path, modes=('100644',)):
@@ -21,6 +22,10 @@ def path_impacts(path, modes=('100644',)):
     p = PurePosixPath(path)
     if not path or p.is_absolute() or '..' in p.parts or str(p) != path:
         return {UNKNOWN}
+    if path.startswith('plugin/'):
+        return {PLUGIN}
+    if path.startswith('docs/cli-origin/') or path in ('scripts/workflow/cli_origin.py', 'scripts/workflow/plugin_check.py'):
+        return {BUILD, TOOLING}
     if path.startswith('tests/'):
         return {TEST}
     if path.startswith(('replay_buffer/', 'bin/')):
@@ -63,6 +68,7 @@ def classify(changes, *, reason=None, force_full=False):
     full = force_full or UNKNOWN in impacts
     return {'impacts': [x for x in ORDER if x in impacts], 'files': files,
             'product_check': full or bool(impacts & {RUNTIME, BUILD, TEST}),
+            'plugin_check': full or bool(impacts & {PLUGIN, BUILD}),
             'tooling_test': True,  # Small shared checks also validate documentation and metadata.
             'force_full': force_full, 'reason': reason}
 
@@ -113,13 +119,15 @@ def test_commands(result):
     commands = [['python3', 'scripts/check.py']]
     if result['product_check']:
         commands.append(['python3', 'scripts/workflow/product_check.py'])
+    if result['plugin_check']:
+        commands.append(['python3', 'scripts/workflow/plugin_check.py'])
     return commands
 
 
 def report(result):
     summary = 'Change Impact: ' + ', '.join(result['impacts']) + '\n'
     summary += '\n'.join(f'{name}: {"required" if result[name] else "skipped (no relevant impact)"}'
-                         for name in ('product_check', 'tooling_test'))
+                         for name in ('product_check', 'plugin_check', 'tooling_test'))
     if result['reason']:
         summary += '\n' + result['reason']
     return summary
@@ -151,7 +159,7 @@ def main():
     print(report(result), flush=True)
     if os.environ.get('GITHUB_OUTPUT'):
         with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
-            for key in ('product_check', 'tooling_test'):
+            for key in ('product_check', 'plugin_check', 'tooling_test'):
                 output.write(f'{key}={str(result[key]).lower()}\n')
     if os.environ.get('GITHUB_STEP_SUMMARY'):
         with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
