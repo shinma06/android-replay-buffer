@@ -17,8 +17,8 @@ import android.widget.Button;
 import android.widget.TextView;
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
+import java.util.Collections;
 import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
 import org.json.JSONObject;
 
@@ -58,7 +58,7 @@ public final class RegressionInstrumentation extends Instrumentation {
                 } else {
                     builder.setSystemWindowInsets(bars);
                 }
-                builder.setDisplayCutout(new DisplayCutout(new Rect(41, 47, 23, 97), List.of()));
+                builder.setDisplayCutout(new DisplayCutout(new Rect(41, 47, 23, 97), Collections.emptyList()));
                 WindowInsets insets = builder.build();
                 for (int i = 0; i < 2; i++) {
                     layout.dispatchApplyWindowInsets(insets);
