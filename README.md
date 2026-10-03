@@ -127,3 +127,18 @@ Android ──USB──▶ ADB ──┬── scrcpy ──▶ ffmpeg segments 
 - [x] `replay.mp4` / `logcat.txt` / `timeline.json` を生成する
 - [x] 切断しても daemon が継続する
 - [x] 再接続で録画を再開する
+
+## 開発ハーネス・Android Studioプラグイン開発
+
+現行製品は上記のPython CLIです。今後のAndroid Studioプラグイン開発に向け、[開発手順](docs/workflow.md)、[プロジェクト情報](docs/project.md)、[共通IDE知見](docs/android-studio.md)を入口にします。製品変更はdevelop、検証済み候補はmainへ統合します。
+
+- [開発マップ](https://github.com/users/shinma06/projects/5) / [Issue](https://github.com/shinma06/android-replay-buffer/issues)
+- [初回導入の検証・未実施項目](docs/validation.md) / [ハーネスの出典・対応表](docs/inventory.md)
+
+管理ツールはPython 3.11以上を使用します。CLIのPython 3.9以上という条件は維持します。
+
+```bash
+python3 scripts/bootstrap.py
+python3 scripts/check.py
+python3 scripts/workflow/product_check.py
+```
