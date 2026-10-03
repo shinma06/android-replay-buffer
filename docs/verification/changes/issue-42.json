@@ -1,0 +1,253 @@
+{
+  "schema": 1,
+  "issue": 42,
+  "gui_required": true,
+  "reason": "設定validation・enabled起動復元・アプリ解決例外、および#41実APIを用いた現在窓gap/固定保存対象表示の修正。JVM回帰をIDE/端末受入へ代用せず、QA #27/#40で新同一ZIPを確認する。実機は利用者保留。",
+  "cli_checks": [
+    "python3 scripts/workflow/plugin_check.py: 結果は固定HEADのIssue/PRで記録",
+    "python3 scripts/check.py: Case JSONを含む管理チェック",
+    "python3 scripts/workflow/product_check.py: CLI保全照合と既存tests",
+    "python3 scripts/workflow/change_impact.py --base origin/develop --run-tests: clean committed HEAD"
+  ],
+  "cases": [
+    {
+      "id": "UI-12-01",
+      "artifact": "plugin",
+      "change": "CTL-01/02/04: 初回・復元・常時設定",
+      "preconditions": "本Issueと#41統合済みの新固定source/ZIP SHA-256・ロード版とRabbit buildを照合。QA #27/#40の使い捨てfixtureと共有GUI lease。Emulatorと実機の結果は分離し、実機は利用者準備まで保留。",
+      "steps": [
+        "保存先未指定・有効状態ONでIDEを再起動し、パネルを開かず取得復元を確認する。",
+        "保存済み保存先をfileまたは未作成pathに変えて起動し、復元失敗理由、core状態、toggle、再起動後の永続値を確認する。"
+      ],
+      "expected": "初回OFF・保持180秒・無効中設定編集可。Applyだけで取得開始せず、enabled復元はパネル生成に依存しない。 不正設定による復元失敗は明示し、persisted enabled/表示/core状態が一致する。後続ユーザーtoggleを巻き戻さない。",
+      "provenance": [
+        "docs/requirements.md",
+        "docs/design/ide-ui.md: UI-12-01",
+        "docs/plugin-design.md / docs/design/timeline.md",
+        "Issue #42 / PR37 late findings / core API #41",
+        "QA #27 / #40への環境別実受入"
+      ],
+      "gpt": {
+        "status": "pending",
+        "reason": "本Issueの最終固定候補の実IDE/Emulator観察未実施。3件のJVM回帰結果と#41実API統合結果は固定HEADのIssue/PRへ記録する。pure testsを観察passへ代用しない。"
+      },
+      "human": {
+        "status": "pending",
+        "reason": "新固定同一ZIPの観察未実施。実機は利用者指定で保留、Emulatorのpassを流用しない。"
+      },
+      "fix_issue": null,
+      "fix_pr": null,
+      "recheck": "UI/core/API/build変更後は同じ新固定source/ZIPで再観察する。",
+      "next_action": "PMが#41実API統合済み最終HEAD/baseの独立レビューを調整し、QA #27/#40へ新同一ZIPと全必要Case/main残条件を双方向引継ぐ。実機は利用者準備後。"
+    },
+    {
+      "id": "UI-12-02",
+      "artifact": "plugin",
+      "change": "CTL-03/05: draft/Cancel/Applyと即時toggle",
+      "preconditions": "本Issueと#41統合済みの新固定source/ZIP SHA-256・ロード版とRabbit buildを照合。QA #27/#40の使い捨てfixtureと共有GUI lease。Emulatorと実機の結果は分離し、実機は利用者準備まで保留。",
+      "steps": [
+        "未作成path・通常fileを入力してApplyを拒否し、旧設定/取得/固定対象を保持する。既存folderと空保存先は受理する。",
+        "OFF中の編集/Cancel/Applyと、遅延復元中のON/OFF・新しい設定revisionを競合させる。"
+      ],
+      "expected": "未適用編集で稼働条件不変。Applyは一式検証、invalidは部分反映なし。無効化で未保存を破棄、固定失敗対象の条件は設定変更で改変しない。 未作成保存先は具体理由で拒否し、自動作成しない。空保存先でも取得可能。",
+      "provenance": [
+        "docs/requirements.md",
+        "docs/design/ide-ui.md: UI-12-02",
+        "docs/plugin-design.md / docs/design/timeline.md",
+        "Issue #42 / PR37 late findings / core API #41",
+        "QA #27 / #40への環境別実受入"
+      ],
+      "gpt": {
+        "status": "pending",
+        "reason": "本Issueの最終固定候補の実IDE/Emulator観察未実施。3件のJVM回帰結果と#41実API統合結果は固定HEADのIssue/PRへ記録する。pure testsを観察passへ代用しない。"
+      },
+      "human": {
+        "status": "pending",
+        "reason": "新固定同一ZIPの観察未実施。実機は利用者指定で保留、Emulatorのpassを流用しない。"
+      },
+      "fix_issue": null,
+      "fix_pr": null,
+      "recheck": "UI/core/API/build変更後は同じ新固定source/ZIPで再観察する。",
+      "next_action": "PMが#41実API統合済み最終HEAD/baseの独立レビューを調整し、QA #27/#40へ新同一ZIPと全必要Case/main残条件を双方向引継ぐ。実機は利用者準備後。"
+    },
+    {
+      "id": "UI-12-03",
+      "artifact": "plugin",
+      "change": "LOG-02: 自動applicationId・手動優先・再起動",
+      "preconditions": "本Issueと#41統合済みの新固定source/ZIP SHA-256・ロード版とRabbit buildを照合。QA #27/#40の使い捨てfixtureと共有GUI lease。Emulatorと実機の結果は分離し、実機は利用者準備まで保留。",
+      "steps": [
+        "SDK有効で自動app解決を失敗させ、アプリ未解決の理由と動画・端末ログ継続を確認する。手動指定・自動復帰・PID変更も確認する。"
+      ],
+      "expected": "namespaceではなく実applicationId。未解決理由を表示し他取得継続。手動はApply後優先し自動解除もApply。PID変更でpackageを消さずコアが追従する。",
+      "provenance": [
+        "docs/requirements.md",
+        "docs/design/ide-ui.md: UI-12-03",
+        "docs/plugin-design.md / docs/design/timeline.md",
+        "Issue #42 / PR37 late findings / core API #41",
+        "QA #27 / #40への環境別実受入"
+      ],
+      "gpt": {
+        "status": "pending",
+        "reason": "本Issueの最終固定候補の実IDE/Emulator観察未実施。3件のJVM回帰結果と#41実API統合結果は固定HEADのIssue/PRへ記録する。pure testsを観察passへ代用しない。"
+      },
+      "human": {
+        "status": "pending",
+        "reason": "新固定同一ZIPの観察未実施。実機は利用者指定で保留、Emulatorのpassを流用しない。"
+      },
+      "fix_issue": null,
+      "fix_pr": null,
+      "recheck": "UI/core/API/build変更後は同じ新固定source/ZIPで再観察する。",
+      "next_action": "PMが#41実API統合済み最終HEAD/baseの独立レビューを調整し、QA #27/#40へ新同一ZIPと全必要Case/main残条件を双方向引継ぐ。実機は利用者準備後。"
+    },
+    {
+      "id": "UI-12-04",
+      "artifact": "plugin",
+      "change": "BUF-02/05/07: 取得不足・完全切断窓",
+      "preconditions": "本Issueと#41統合済みの新固定source/ZIP SHA-256・ロード版とRabbit buildを照合。QA #27/#40の使い捨てfixtureと共有GUI lease。Emulatorと実機の結果は分離し、実機は利用者準備まで保留。",
+      "steps": [
+        "各stream障害から復旧し、取得中でも現在窓内の欠落理由/範囲が残ること、窓外で消えることを確認する。",
+        "時計不確実性/境界不明と正常ログ0件を区別し、完全切断・再接続の窓を確認する。"
+      ],
+      "expected": "取得済み最大保存、種類別不足表示、完全切断時のみ凍結、再接続は現在窓で同sequence。空期間/0行を障害と誤認しない。 復旧後のgapは現在窓内にある間、理由・範囲を表示する。正常ログ0件を欠落扱いしない。",
+      "provenance": [
+        "docs/requirements.md",
+        "docs/design/ide-ui.md: UI-12-04",
+        "docs/plugin-design.md / docs/design/timeline.md",
+        "Issue #42 / PR37 late findings / core API #41",
+        "QA #27 / #40への環境別実受入"
+      ],
+      "gpt": {
+        "status": "pending",
+        "reason": "本Issueの最終固定候補の実IDE/Emulator観察未実施。3件のJVM回帰結果と#41実API統合結果は固定HEADのIssue/PRへ記録する。pure testsを観察passへ代用しない。"
+      },
+      "human": {
+        "status": "pending",
+        "reason": "新固定同一ZIPの観察未実施。実機は利用者指定で保留、Emulatorのpassを流用しない。"
+      },
+      "fix_issue": null,
+      "fix_pr": null,
+      "recheck": "UI/core/API/build変更後は同じ新固定source/ZIPで再観察する。",
+      "next_action": "PMが#41実API統合済み最終HEAD/baseの独立レビューを調整し、QA #27/#40へ新同一ZIPと全必要Case/main残条件を双方向引継ぐ。実機は利用者準備後。"
+    },
+    {
+      "id": "UI-12-05",
+      "artifact": "plugin",
+      "change": "SAVE-05: 保存固定・再試行・破棄",
+      "preconditions": "本Issueと#41統合済みの新固定source/ZIP SHA-256・ロード版とRabbit buildを照合。QA #27/#40の使い捨てfixtureと共有GUI lease。Emulatorと実機の結果は分離し、実機は利用者準備まで保留。",
+      "steps": [
+        "保存を失敗させ、固定端末・アプリ選択/履歴・窓/sequence/不足/寿命を確認する。",
+        "Run/手動package/端末状態/通常保存先を変更し、再試行と別保存先再試行でも固定対象表示と内容が不変なことを確認する。連打/破棄/無効化も確認する。"
+      ],
+      "expected": "1件immutable、二重要求なし。取得継続、新規保存だけ停止。寿命表示、取消し実終了後未保存破棄、完成済み出力不変。 固定端末と対象アプリ/履歴は現在状態から独立し、再試行で変更しない。",
+      "provenance": [
+        "docs/requirements.md",
+        "docs/design/ide-ui.md: UI-12-05",
+        "docs/plugin-design.md / docs/design/timeline.md",
+        "Issue #42 / PR37 late findings / core API #41",
+        "QA #27 / #40への環境別実受入"
+      ],
+      "gpt": {
+        "status": "pending",
+        "reason": "本Issueの最終固定候補の実IDE/Emulator観察未実施。3件のJVM回帰結果と#41実API統合結果は固定HEADのIssue/PRへ記録する。pure testsを観察passへ代用しない。"
+      },
+      "human": {
+        "status": "pending",
+        "reason": "新固定同一ZIPの観察未実施。実機は利用者指定で保留、Emulatorのpassを流用しない。"
+      },
+      "fix_issue": null,
+      "fix_pr": null,
+      "recheck": "UI/core/API/build変更後は同じ新固定source/ZIPで再観察する。",
+      "next_action": "PMが#41実API統合済み最終HEAD/baseの独立レビューを調整し、QA #27/#40へ新同一ZIPと全必要Case/main残条件を双方向引継ぐ。実機は利用者準備後。"
+    },
+    {
+      "id": "UI-12-06",
+      "artifact": "plugin",
+      "change": "SAVE-03: 完成通知と要求別フォルダ",
+      "preconditions": "本Issueと#41統合済みの新固定source/ZIP SHA-256・ロード版とRabbit buildを照合。QA #27/#40の使い捨てfixtureと共有GUI lease。Emulatorと実機の結果は分離し、実機は利用者準備まで保留。",
+      "steps": [
+        "2回連続保存後に各通知のフォルダ操作を行う。",
+        "一部保存と保存失敗、フォルダを開けない条件を確認する。"
+      ],
+      "expected": "通知ごとの完成フォルダに固定。不足種類を明記、未完成成功通知なし。開けない理由とpathコピー。",
+      "provenance": [
+        "docs/requirements.md",
+        "docs/design/ide-ui.md: UI-12-06",
+        "docs/plugin-design.md / docs/design/timeline.md",
+        "Issue #42 / PR37 late findings / core API #41",
+        "QA #27 / #40への環境別実受入"
+      ],
+      "gpt": {
+        "status": "pending",
+        "reason": "本Issueの最終固定候補の実IDE/Emulator観察未実施。3件のJVM回帰結果と#41実API統合結果は固定HEADのIssue/PRへ記録する。pure testsを観察passへ代用しない。"
+      },
+      "human": {
+        "status": "pending",
+        "reason": "新固定同一ZIPの観察未実施。実機は利用者指定で保留、Emulatorのpassを流用しない。"
+      },
+      "fix_issue": null,
+      "fix_pr": null,
+      "recheck": "UI/core/API/build変更後は同じ新固定source/ZIPで再観察する。",
+      "next_action": "PMが#41実API統合済み最終HEAD/baseの独立レビューを調整し、QA #27/#40へ新同一ZIPと全必要Case/main残条件を双方向引継ぐ。実機は利用者準備後。"
+    },
+    {
+      "id": "UI-12-07",
+      "artifact": "plugin",
+      "change": "Lifecycle/EDT/keyboard/theme/DPI",
+      "preconditions": "本Issueと#41統合済みの新固定source/ZIP SHA-256・ロード版とRabbit buildを照合。QA #27/#40の使い捨てfixtureと共有GUI lease。Emulatorと実機の結果は分離し、実機は利用者準備まで保留。",
+      "steps": [
+        "indexing中に設定・パネル再表示・toggleを操作する。",
+        "theme/DPI/Tab移動を確認し、model解決/保存中にproject closeする。"
+      ],
+      "expected": "EDTを待ち処理で止めず、隠しても取得継続。再表示は最新状態、label/Tab正常、close/dispose後にUI更新やサービス再生成なし。",
+      "provenance": [
+        "docs/requirements.md",
+        "docs/design/ide-ui.md: UI-12-07",
+        "docs/plugin-design.md / docs/design/timeline.md",
+        "Issue #42 / PR37 late findings / core API #41",
+        "QA #27 / #40への環境別実受入"
+      ],
+      "gpt": {
+        "status": "pending",
+        "reason": "本Issueの最終固定候補の実IDE/Emulator観察未実施。3件のJVM回帰結果と#41実API統合結果は固定HEADのIssue/PRへ記録する。pure testsを観察passへ代用しない。"
+      },
+      "human": {
+        "status": "pending",
+        "reason": "新固定同一ZIPの観察未実施。実機は利用者指定で保留、Emulatorのpassを流用しない。"
+      },
+      "fix_issue": null,
+      "fix_pr": null,
+      "recheck": "UI/core/API/build変更後は同じ新固定source/ZIPで再観察する。",
+      "next_action": "PMが#41実API統合済み最終HEAD/baseの独立レビューを調整し、QA #27/#40へ新同一ZIPと全必要Case/main残条件を双方向引継ぐ。実機は利用者準備後。"
+    },
+    {
+      "id": "UI-12-08",
+      "artifact": "plugin",
+      "change": "ENV-02/03/UI-01: SDK adb・端末",
+      "preconditions": "本Issueと#41統合済みの新固定source/ZIP SHA-256・ロード版とRabbit buildを照合。QA #27/#40の使い捨てfixtureと共有GUI lease。Emulatorと実機の結果は分離し、実機は利用者準備まで保留。",
+      "steps": [
+        "project SDKのplatform-toolsあり/なしを切替え、PATHに別adbを用意する。",
+        "0台/1Emulator/複数接続と取得中の端末切断を確認する。"
+      ],
+      "expected": "project SDKの絶対adbを使用し、PATH/個別ツール導入なし。端末名前/種別/状態表示、無断切替なし。実機の同Caseは保留。",
+      "provenance": [
+        "docs/requirements.md",
+        "docs/design/ide-ui.md: UI-12-08",
+        "docs/plugin-design.md / docs/design/timeline.md",
+        "Issue #42 / PR37 late findings / core API #41",
+        "QA #27 / #40への環境別実受入"
+      ],
+      "gpt": {
+        "status": "pending",
+        "reason": "本Issueの最終固定候補の実IDE/Emulator観察未実施。3件のJVM回帰結果と#41実API統合結果は固定HEADのIssue/PRへ記録する。pure testsを観察passへ代用しない。"
+      },
+      "human": {
+        "status": "pending",
+        "reason": "新固定同一ZIPの観察未実施。実機は利用者指定で保留、Emulatorのpassを流用しない。"
+      },
+      "fix_issue": null,
+      "fix_pr": null,
+      "recheck": "UI/core/API/build変更後は同じ新固定source/ZIPで再観察する。",
+      "next_action": "PMが#41実API統合済み最終HEAD/baseの独立レビューを調整し、QA #27/#40へ新同一ZIPと全必要Case/main残条件を双方向引継ぐ。実機は利用者準備後。"
+    }
+  ]
+}

@@ -1,14 +1,41 @@
 package io.github.shinma06.replaybuffer.ide
 
+import com.intellij.openapi.progress.ProcessCanceledException
 import io.github.shinma06.replaybuffer.settings.AppSelectionMode
 import io.github.shinma06.replaybuffer.settings.ReplaySettings
+import java.nio.file.Files
+import java.nio.file.Path
+import kotlinx.coroutines.CancellationException
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertNull
+import org.junit.jupiter.api.Assertions.assertSame
+import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Test
-import java.nio.file.Path
+import org.junit.jupiter.api.io.TempDir
 
 class ReplayAndroidEnvironmentTest {
+    @TempDir lateinit var directory: Path
+
+    @Test
+    fun `application model failures retain the fresh SDK executable and cancellation is propagated`() {
+        val tools = Files.createDirectories(directory.resolve("platform-tools"))
+        val adb = Files.createFile(tools.resolve(if (System.getProperty("os.name").startsWith("Windows")) "adb.exe" else "adb"))
+        adb.toFile().setExecutable(true)
+        val missing = resolveApplication("Debug") { throw IllegalStateException("synthetic model unavailable") }
+        val environment = sdkEnvironment(directory, missing)
+        assertEquals(adb, environment.adb)
+        assertNull(environment.adbReason)
+        assertNull(environment.application.packageName)
+        assertEquals("Debug", environment.application.configurationName)
+        assertNotNull(environment.application.reason)
+        assertNull(sdkEnvironment(directory.resolve("invalid-sdk"), missing).adb)
+        for (cancelled in listOf(CancellationException("synthetic"), ProcessCanceledException())) {
+            val thrown = assertThrows(cancelled.javaClass) { resolveApplication("Debug") { throw cancelled } }
+            assertSame(cancelled, thrown)
+        }
+    }
+
     @Test
     fun `manual selection wins over run changes until automatic mode is applied`() {
         val manual = ReplaySettings(appSelection = AppSelectionMode.MANUAL, manualPackage = "com.example.manual")

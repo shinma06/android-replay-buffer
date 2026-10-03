@@ -108,7 +108,7 @@ internal class ReplayProjectCapture(
     }
 
     fun applySettings(settings: ReplaySettings, environment: AndroidReplayEnvironment, revision: Long): CompletableFuture<ReplayOperation> = submit(revision) { engine ->
-        settings.validationError()?.let { return@submit ReplayOperation(false, "保存済み設定を反映できません: $it") }
+        settings.validationError()?.let { return@submit settingsFailure(engine, revision, it) }
         val target = settings.toCoreSettings(environment)
         // Only the nonblocking core enqueue is inside this boundary. No callback, IO, or await
         // can reenter refresh between checking the generation and submitting its settings.
@@ -124,9 +124,17 @@ internal class ReplayProjectCapture(
         }
         val result = operation.await()
         if (synchronized(this) { closed || revision != settingsRevision }) return@submit obsoleteSettings()
-        if (!result.accepted) return@submit result.copy(reason = "保存済み設定を反映できません: ${result.reason ?: "旧設定で稼働しています。"}")
+        if (!result.accepted) return@submit settingsFailure(engine, revision, result.reason ?: "旧設定で稼働しています。")
         // Startup restoration is independent of ToolWindow creation. Later refreshes honor the latest toggle.
-        if (engine.snapshot().enabled != store.enabled) engine.setEnabled(store.enabled).await() else result
+        val restored = if (engine.snapshot().enabled != store.enabled) engine.setEnabled(store.enabled).await() else result
+        if (restored.accepted) restored else settingsFailure(engine, revision, restored.reason ?: "取得を復元できません。")
+    }
+
+    private fun settingsFailure(engine: ReplayCore, revision: Long, reason: String): ReplayOperation = synchronized(this) {
+        if (closed || revision != settingsRevision) return@synchronized obsoleteSettings()
+        // Only reconcile the persisted startup intent. A later user toggle owns its own result.
+        if (enabledIntent == 0L) store.setEnabled(engine.snapshot().enabled)
+        ReplayOperation(false, "保存済み設定を反映できません: $reason")
     }
 
     private fun obsoleteSettings() = ReplayOperation(false, "新しい設定の解決が開始されたため、旧設定の反映を取り消しました。")

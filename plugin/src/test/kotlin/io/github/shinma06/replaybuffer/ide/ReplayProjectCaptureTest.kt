@@ -66,17 +66,87 @@ class ReplayProjectCaptureTest {
     }
 
     @Test
+    fun `invalid startup settings reconcile persisted enabled and preserve settings for correction`() {
+        for (destination in listOf(Files.createFile(directory.resolve("file")), directory.resolve("missing"))) {
+            val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+            val store = ReplaySettingsStore()
+            store.loadState(ReplaySettingsState(enabled = true, destination = destination.toString()))
+            val capture = ReplayProjectCapture(scope, store, {}, {})
+            try {
+                val settings = store.settings()
+                val rejected = capture.applySettings(settings, unresolved, 0).get(15, TimeUnit.SECONDS)
+                assertFalse(rejected.accepted)
+                assertFalse(store.enabled)
+                assertFalse(capture.view.snapshot!!.enabled)
+                assertEquals(CaptureState.DISABLED, capture.view.snapshot!!.captureState)
+                assertEquals(settings, store.settings())
+                assertTrue(capture.view.message!!.startsWith("保存済み設定を反映できません"))
+                // Correction does not silently restart capture; explicit ON still works without a save path.
+                store.apply(settings.copy(destination = ""))
+                assertTrue(capture.applySettings(store.settings(), unresolved, 0).get(15, TimeUnit.SECONDS).accepted)
+                assertFalse(capture.view.snapshot!!.enabled)
+                assertTrue(capture.setEnabled(true).get(15, TimeUnit.SECONDS).accepted)
+                assertTrue(store.enabled)
+                assertTrue(capture.view.snapshot!!.enabled)
+                assertNull(capture.view.snapshot!!.settings.saveDirectory)
+            } finally {
+                capture.close()
+                capture.termination.get(15, TimeUnit.SECONDS)
+                scope.cancel()
+            }
+        }
+    }
+
+    @Test
+    fun `startup failure queued before a later ON cannot roll back the users persisted intent`() {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val store = ReplaySettingsStore()
+        store.loadState(ReplaySettingsState(enabled = true, destination = directory.resolve("missing").toString()))
+        val blocked = java.util.concurrent.CountDownLatch(1)
+        val release = java.util.concurrent.CountDownLatch(1)
+        val hold = AtomicBoolean(false)
+        lateinit var capture: ReplayProjectCapture
+        capture = ReplayProjectCapture(scope, store, {
+            if (hold.get() && capture.view.snapshot?.enabled == false && hold.compareAndSet(true, false)) {
+                blocked.countDown()
+                assertTrue(release.await(15, TimeUnit.SECONDS))
+            }
+        }, {})
+        try {
+            // Hold an earlier real core operation so failed restoration queues before ON.
+            assertTrue(capture.setEnabled(true).get(15, TimeUnit.SECONDS).accepted)
+            hold.set(true)
+            val off = capture.setEnabled(false)
+            assertTrue(blocked.await(15, TimeUnit.SECONDS))
+            val rejected = capture.applySettings(store.settings(), unresolved, 0)
+            val on = capture.setEnabled(true)
+            assertTrue(store.enabled)
+            release.countDown()
+            assertTrue(off.get(15, TimeUnit.SECONDS).accepted)
+            assertFalse(rejected.get(15, TimeUnit.SECONDS).accepted)
+            assertTrue(on.get(15, TimeUnit.SECONDS).accepted)
+            assertTrue(store.enabled)
+            assertTrue(capture.view.snapshot!!.enabled)
+        } finally {
+            release.countDown()
+            capture.close()
+            capture.termination.get(15, TimeUnit.SECONDS)
+            scope.cancel()
+        }
+    }
+
+    @Test
     fun `old resolved settings resumed after newer settings cannot revert the actual core`() {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val store = ReplaySettingsStore()
         val capture = ReplayProjectCapture(scope, store, {}, {})
         try {
-            val old = ReplaySettings(retentionSeconds = 60, destination = directory.resolve("old").toString())
+            val old = ReplaySettings(retentionSeconds = 60, destination = Files.createDirectory(directory.resolve("old")).toString())
             val oldEnvironment = unresolved.copy(application = ApplicationSelection("com.old.app", "old", null))
             store.apply(old)
             capture.expectSettings(1)
             // The old resolver has produced its result, but pauses before calling Capture.
-            val next = old.copy(retentionSeconds = 900, destination = directory.resolve("new").toString())
+            val next = old.copy(retentionSeconds = 900, destination = Files.createDirectory(directory.resolve("new")).toString())
             val nextEnvironment = unresolved.copy(application = ApplicationSelection("com.new.app", "new", null))
             store.apply(next)
             capture.expectSettings(2)
