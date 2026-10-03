@@ -1,6 +1,6 @@
 # Android Studioプラグイン開発で共有する知見
 
-現時点ではPython CLIが製品です。今回のハーネス導入はプラグインの完成やSDK採用を意味しません。CLIの動作を維持し、IDE側とCLI側の責務を設計する作業から開始します。
+開発対象はAndroid Studioプラグインです。[Kotlin/Gradle基盤](plugin-development.md)とロード確認用の情報表示actionを用意しています。録画・保存は保全したPython CLIで利用し、IDEとの接続は未実装です。以下の共通知見を接続設計から適用します。
 
 参照元は [Cursor in Android Studio](https://github.com/shinma06/cursor-in-android-studio)。管理実装は [inventory](inventory.md) の固定版で比較しています。以下は継続的な調査入口で、参照先の最新branch/Issueを確認してから採用します。
 

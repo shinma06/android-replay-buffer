@@ -1,0 +1,111 @@
+{
+  "schema": 1,
+  "source_commit": "e6fb021b144d4f0f6a1f7916e92449610b3ff80c",
+  "files": {
+    ".gitignore": {
+      "path": "docs/cli-origin/gitignore.txt",
+      "sha256": "84755a66bbc34451cc7a17bd1ee5fa0f3bbf7128a1e315c51152cd41b2a16dd8",
+      "mode": "100644"
+    },
+    "README.md": {
+      "path": "docs/cli-origin/README.md",
+      "sha256": "318ccbc5e4975d30fa63aaf630ca09808ff554e0787a3023ea0385f59bf23239",
+      "mode": "100644"
+    },
+    "bin/replay": {
+      "path": "bin/replay",
+      "sha256": "8d0cbc7f147fb56cabd579367eb881c4c6f1e9ad2679771677e4009662a4f5df",
+      "mode": "100755"
+    },
+    "bin/replayd": {
+      "path": "bin/replayd",
+      "sha256": "d85357f063fccfc88fc5bba6059a58dfb27d1aaf6517f357f376c7e006709571",
+      "mode": "100755"
+    },
+    "config.json.example": {
+      "path": "config.json.example",
+      "sha256": "cde4248aab95d35c2fadef0932f3add89b234f61761fd82ad11b0e3f56cfc1ab",
+      "mode": "100644"
+    },
+    "launchd/com.selfregi.replayd.plist": {
+      "path": "launchd/com.selfregi.replayd.plist",
+      "sha256": "5355a643de799ba3a8c53fbe5ab69d825eb37124d23f03fcf584ced2ca043b8a",
+      "mode": "100644"
+    },
+    "pyproject.toml": {
+      "path": "pyproject.toml",
+      "sha256": "a7ab7871c0fa066ca1411ea9d76d242e8b5670d2218bd95fb813c27b37f5a6b4",
+      "mode": "100644"
+    },
+    "replay_buffer/__init__.py": {
+      "path": "replay_buffer/__init__.py",
+      "sha256": "d88c3c7d90ae554b9496d0158bfc223c6a0d4be7b7a11e55b657d6432d963bd0",
+      "mode": "100644"
+    },
+    "replay_buffer/__main__.py": {
+      "path": "replay_buffer/__main__.py",
+      "sha256": "8b8f0e4853157d85a29440fb89d68f70a17c7b133f8f9cbca0252e4cadf5bbb6",
+      "mode": "100644"
+    },
+    "replay_buffer/adb.py": {
+      "path": "replay_buffer/adb.py",
+      "sha256": "02ecaf0a955e3050add1c8197d3ab231fb9f3d13503b7869ae35cabafc345e0f",
+      "mode": "100644"
+    },
+    "replay_buffer/cli.py": {
+      "path": "replay_buffer/cli.py",
+      "sha256": "9dd5241b4423525503dd7cef3e2972036810ae1a1c4130045dbe2340c2f7e13f",
+      "mode": "100644"
+    },
+    "replay_buffer/config.py": {
+      "path": "replay_buffer/config.py",
+      "sha256": "a9252666e2bc0fc33523d9bf50e1f20689ad30bb977036254622749d3ef9883a",
+      "mode": "100644"
+    },
+    "replay_buffer/daemon.py": {
+      "path": "replay_buffer/daemon.py",
+      "sha256": "1cf38c43941737f3f3627cb8f57ac43103accc7081a0367fea7ecb47e596891f",
+      "mode": "100644"
+    },
+    "replay_buffer/ipc.py": {
+      "path": "replay_buffer/ipc.py",
+      "sha256": "7f562876704b8684fc114ed505c24c96f2d1d1811eb3ecb98c87347629cae0a4",
+      "mode": "100644"
+    },
+    "replay_buffer/log_buffer.py": {
+      "path": "replay_buffer/log_buffer.py",
+      "sha256": "cdf081c852b66f6efb6adf7a43b1a6245c306080a30fc8c528b0b25c5e9a5180",
+      "mode": "100644"
+    },
+    "replay_buffer/save.py": {
+      "path": "replay_buffer/save.py",
+      "sha256": "9855e36e7869f9e5173de4ff8c773c8bfe44e1a192c28e9364928ca1907b80ba",
+      "mode": "100644"
+    },
+    "replay_buffer/session.py": {
+      "path": "replay_buffer/session.py",
+      "sha256": "09e5d122fc0bbd857ebad86bd9207c052254eaba50aeeab2ecce8b9d61d2b911",
+      "mode": "100644"
+    },
+    "replay_buffer/timeline.py": {
+      "path": "replay_buffer/timeline.py",
+      "sha256": "394a7a9c1f701ebc24c79748bdc6265f962901f7f6c280484d947471ab6da495",
+      "mode": "100644"
+    },
+    "replay_buffer/video_buffer.py": {
+      "path": "replay_buffer/video_buffer.py",
+      "sha256": "3c03ac0eff3a296dbd3d6e2be848c13dafed668bacc715a9105cdb8100d9f084",
+      "mode": "100644"
+    },
+    "tests/test_log_buffer.py": {
+      "path": "tests/test_log_buffer.py",
+      "sha256": "85d6720debc5279213b70d511d9a3ce37d2cb1822e7d1bdeee00a265bccee399",
+      "mode": "100644"
+    },
+    "設計書.md": {
+      "path": "設計書.md",
+      "sha256": "acdaa03993d8e1b5c9dcfc6059361e4c9d136df43cf9005521ae302026515db0",
+      "mode": "100644"
+    }
+  }
+}

@@ -11,3 +11,10 @@ venv/
 .env
 .env.*
 !.env.example
+
+# IDE and plugin build state
+.idea/
+*.iml
+.gradle/
+.kotlin/
+.intellijPlatform/
