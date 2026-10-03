@@ -1,0 +1,246 @@
+{
+  "schema": 1,
+  "issue": 13,
+  "gui_required": true,
+  "reason": "設計文書自体はGUI不要だが、採用録画/時計/MP4切出し方式の製品受入には同じ固定ZIPで実機・Emulatorと受取人側再生の観察が必要。現段階は全件未実装pendingであり、design mergeを製品合格としない。",
+  "cli_checks": [
+    "python3 scripts/check.py: 管理・リンク・ハーネス回帰。結果はIssue/PRへ記録",
+    "python3 scripts/workflow/product_check.py: CLI原型の保全照合と既存tests。結果はIssue/PRへ記録",
+    "python3 scripts/workflow/change_impact.py --base f990997e2ad67d6ae87939ed7aac73bc012ce791 --run-tests: clean committed HEADで実行",
+    "JBR25/JCodec0.2.5合成AVC VFR mux/demux試作: PTS/duration一致、edit metadata読戻しpass。端末/IDE/標準playerは未確認"
+  ],
+  "cases": [
+    {
+      "id": "SYNC-ENV",
+      "artifact": "plugin",
+      "change": "ENV-02/03: 同梱依存と起動",
+      "preconditions": "実機とEmulatorの各fixtureで、PATHからscrcpy/ffmpeg/Pythonを外したAndroid開発環境。固定SDK/adb、同じsource/ZIP hash、共有GUI lease。",
+      "steps": [
+        "Plugin ZIP内のserver/JCodec/時計DEX/license/hashを照合する。",
+        "機能を有効化し、実機とEmulatorで各20秒取得して保存する。",
+        "SDK adbを使用し、追加ツール導入/PATH変更/実行時downloadなしで動くことを確認する。"
+      ],
+      "expected": "各環境で動画と両ログ/clock metadataを保存。helper/server起動不適合は明示し、ENV-03合格にしない。",
+      "provenance": [
+        "docs/requirements.md: ENV/BUF/LOG/SYNC/SAVE/VIDEO",
+        "docs/design/timeline.md: 一次情報、固定依存、時計/窓/出力/精度契約",
+        "Issue #13で策定し#14実装へ引継ぐ。設計試作を実観察へ流用しない"
+      ],
+      "gpt": {
+        "status": "pending",
+        "reason": "製品機能未実装。GUI/IDE/端末操作なし。共有leaseと固定source/ZIPの実装後に観察する。"
+      },
+      "human": {
+        "status": "pending",
+        "reason": "固定ZIPの実機/Emulator/受取人側確認を未実施。"
+      },
+      "fix_issue": null,
+      "fix_pr": null,
+      "recheck": "実装/時計/codec/mux/依存変更後は同じsource/ZIP hashを記録して本Caseを再実施。",
+      "next_action": "PMが#14の実装担当/QAへ本Caseを双方向で引継ぎ、固定build・fixture・共有GUI leaseを確保する。"
+    },
+    {
+      "id": "SYNC-CLOCK",
+      "artifact": "plugin",
+      "change": "SYNC-01: 正常時と長時間精度",
+      "preconditions": "正常取得できる実機/Emulator、描画とLog双方に同じ連番を出す使い捨てapp。固定画質/codec、時計sampleと描画eventの記録。",
+      "steps": [
+        "同じUI更新callbackで連番/端末elapsedをLogへ出し、画面にも連番を描画する。描画完了のframe callback時刻も別に記録する。",
+        "30分取得し開始/中間/終了の各100イベントを保存対象にする。両ログに同じrecord_idがあることを照合する。",
+        "元PTS/clock変換誤差と描画遅延を分け、全300件の差・p95・最大・前後半中央値差を集計する。"
+      ],
+      "expected": "通常p95<=100ms、最大<=250ms、中央値drift<=50ms、clock見積誤差<=20ms。全欠落/uncertainも集計し隠さない。100ms等は未実測の設計基準。",
+      "provenance": [
+        "docs/requirements.md: ENV/BUF/LOG/SYNC/SAVE/VIDEO",
+        "docs/design/timeline.md: 一次情報、固定依存、時計/窓/出力/精度契約",
+        "Issue #13で策定し#14実装へ引継ぐ。設計試作を実観察へ流用しない"
+      ],
+      "gpt": {
+        "status": "pending",
+        "reason": "製品機能未実装。GUI/IDE/端末操作なし。共有leaseと固定source/ZIPの実装後に観察する。"
+      },
+      "human": {
+        "status": "pending",
+        "reason": "固定ZIPの実機/Emulator/受取人側確認を未実施。"
+      },
+      "fix_issue": null,
+      "fix_pr": null,
+      "recheck": "実装/時計/codec/mux/依存変更後は同じsource/ZIP hashを記録して本Caseを再実施。",
+      "next_action": "PMが#14の実装担当/QAへ本Caseを双方向で引継ぎ、固定build・fixture・共有GUI leaseを確保する。"
+    },
+    {
+      "id": "SYNC-WINDOW",
+      "artifact": "plugin",
+      "change": "BUF-02/03/04: 短時間・切出し・重複",
+      "preconditions": "N=60秒と180秒、1秒程度の実測GOP。連番fixture、clock/frames index、固定ZIP。",
+      "steps": [
+        "開始20秒で180秒設定を保存する。",
+        "60秒設定でIDRの間にcutを置き、10秒後にも保存する。",
+        "論理窓/MP4 edit/preroll/元PTS/duration/frames indexと両ログを照合する。"
+      ],
+      "expected": "取得済み分を最大限保存。窓を過去へ広げず、同じ区間の重複可、取得停止なし。cut誤差<=1観測frame間隔+時計誤差、mux/index丸め<=1ms。prerollは別表示。",
+      "provenance": [
+        "docs/requirements.md: ENV/BUF/LOG/SYNC/SAVE/VIDEO",
+        "docs/design/timeline.md: 一次情報、固定依存、時計/窓/出力/精度契約",
+        "Issue #13で策定し#14実装へ引継ぐ。設計試作を実観察へ流用しない"
+      ],
+      "gpt": {
+        "status": "pending",
+        "reason": "製品機能未実装。GUI/IDE/端末操作なし。共有leaseと固定source/ZIPの実装後に観察する。"
+      },
+      "human": {
+        "status": "pending",
+        "reason": "固定ZIPの実機/Emulator/受取人側確認を未実施。"
+      },
+      "fix_issue": null,
+      "fix_pr": null,
+      "recheck": "実装/時計/codec/mux/依存変更後は同じsource/ZIP hashを記録して本Caseを再実施。",
+      "next_action": "PMが#14の実装担当/QAへ本Caseを双方向で引継ぎ、固定build・fixture・共有GUI leaseを確保する。"
+    },
+    {
+      "id": "SYNC-GAP",
+      "artifact": "plugin",
+      "change": "BUF-03/05/06: 完全切断と復旧",
+      "preconditions": "N=60秒、実機USBとEmulatorのtransport断を別々に試す。切断確定時刻/誤差と取得generationが記録可能。",
+      "steps": [
+        "60秒窓内で20秒完全切断し再開して保存する。",
+        "次にNを超えて切断し切断中保存、その後同じbootへ再接続して保存する。",
+        "取得EOFを起こし即時復旧/再試行間隔と保存を照合する。"
+      ],
+      "expected": "60秒窓の取得済み約40秒と20秒gap、same sequence。長い切断中T凍結、再接続後現在窓で旧範囲prune。gapを詰めない。端末切断瞬間と検出確定を混同しない。",
+      "provenance": [
+        "docs/requirements.md: ENV/BUF/LOG/SYNC/SAVE/VIDEO",
+        "docs/design/timeline.md: 一次情報、固定依存、時計/窓/出力/精度契約",
+        "Issue #13で策定し#14実装へ引継ぐ。設計試作を実観察へ流用しない"
+      ],
+      "gpt": {
+        "status": "pending",
+        "reason": "製品機能未実装。GUI/IDE/端末操作なし。共有leaseと固定source/ZIPの実装後に観察する。"
+      },
+      "human": {
+        "status": "pending",
+        "reason": "固定ZIPの実機/Emulator/受取人側確認を未実施。"
+      },
+      "fix_issue": null,
+      "fix_pr": null,
+      "recheck": "実装/時計/codec/mux/依存変更後は同じsource/ZIP hashを記録して本Caseを再実施。",
+      "next_action": "PMが#14の実装担当/QAへ本Caseを双方向で引継ぎ、固定build・fixture・共有GUI leaseを確保する。"
+    },
+    {
+      "id": "SYNC-PARTIAL",
+      "artifact": "plugin",
+      "change": "BUF-07/LOG-01: 片系障害と両ログ",
+      "preconditions": "動画のみ/logcatのみ/clock helperのみ停止できる所有fixture。対象appのUID/PID/multiprocess履歴を提供できる実装。",
+      "steps": [
+        "各streamを別々に停止しN内で保存する。",
+        "appを再起動しPIDを変更して取得/保存を続ける。",
+        "全体とapp JSONL、正常な0行、overflow/破断loss、復旧後のclock/sampleを照合する。"
+      ],
+      "expected": "健康な側のT/取得は進む。欠落種類/範囲と時計不確かさを明示。同じapp recordの時計/record_idは両ファイルで同一。app未確定を全体欠落にしない。",
+      "provenance": [
+        "docs/requirements.md: ENV/BUF/LOG/SYNC/SAVE/VIDEO",
+        "docs/design/timeline.md: 一次情報、固定依存、時計/窓/出力/精度契約",
+        "Issue #13で策定し#14実装へ引継ぐ。設計試作を実観察へ流用しない"
+      ],
+      "gpt": {
+        "status": "pending",
+        "reason": "製品機能未実装。GUI/IDE/端末操作なし。共有leaseと固定source/ZIPの実装後に観察する。"
+      },
+      "human": {
+        "status": "pending",
+        "reason": "固定ZIPの実機/Emulator/受取人側確認を未実施。"
+      },
+      "fix_issue": null,
+      "fix_pr": null,
+      "recheck": "実装/時計/codec/mux/依存変更後は同じsource/ZIP hashを記録して本Caseを再実施。",
+      "next_action": "PMが#14の実装担当/QAへ本Caseを双方向で引継ぎ、固定build・fixture・共有GUI leaseを確保する。"
+    },
+    {
+      "id": "SYNC-JUMP",
+      "artifact": "plugin",
+      "change": "SYNC-01/BUF-06: 時計変更・sleep・boot",
+      "preconditions": "日時変更/端末sleep/再起動を許可したdisposable Emulator。hostは他作業と共有し、host sleep操作は別途PMが調整。",
+      "steps": [
+        "端末日時を前後へ変更し、変更を挟むeventを記録する。",
+        "端末sleep/復帰でmonoとelapsedの差を測り、境界前後を保存する。",
+        "端末を再起動し新boot epochで再取得・保存、固定した失敗対象も照合する。"
+      ],
+      "expected": "境界跨ぎ補間なし、曖昧logはelapsed/window nullと推定幅。正常precisionを偽装しない。sequence/旧履歴/pinは保持、新bootを旧elapsedとして計算しない。失った容量上限区間はloss。",
+      "provenance": [
+        "docs/requirements.md: ENV/BUF/LOG/SYNC/SAVE/VIDEO",
+        "docs/design/timeline.md: 一次情報、固定依存、時計/窓/出力/精度契約",
+        "Issue #13で策定し#14実装へ引継ぐ。設計試作を実観察へ流用しない"
+      ],
+      "gpt": {
+        "status": "pending",
+        "reason": "製品機能未実装。GUI/IDE/端末操作なし。共有leaseと固定source/ZIPの実装後に観察する。"
+      },
+      "human": {
+        "status": "pending",
+        "reason": "固定ZIPの実機/Emulator/受取人側確認を未実施。"
+      },
+      "fix_issue": null,
+      "fix_pr": null,
+      "recheck": "実装/時計/codec/mux/依存変更後は同じsource/ZIP hashを記録して本Caseを再実施。",
+      "next_action": "PMが#14の実装担当/QAへ本Caseを双方向で引継ぎ、固定build・fixture・共有GUI leaseを確保する。"
+    },
+    {
+      "id": "SYNC-RECIPIENT",
+      "artifact": "plugin",
+      "change": "SAVE-02/SYNC-01: 受取人の照合",
+      "preconditions": "同じbuildのcut/2part/gap/片系/uncertain成果物。受取人側の標準macOS動画プレイヤーとテキストエディタ、追加ツールなし。",
+      "steps": [
+        "READMEに沿ってpartの指定秒を再生/seekする。",
+        "表示秒からwindow秒を算出し、両ログ/frames/sessionを照合する。",
+        "edit/preroll開始と終了、part間gap、動画なし保存、window nullを確認する。"
+      ],
+      "expected": "標準playerのedit/seek/表示秒が契約と一致し、追加ビューアなしで場面/両ログ/欠落を特定できる。不適合は実装修正後再受入。",
+      "provenance": [
+        "docs/requirements.md: ENV/BUF/LOG/SYNC/SAVE/VIDEO",
+        "docs/design/timeline.md: 一次情報、固定依存、時計/窓/出力/精度契約",
+        "Issue #13で策定し#14実装へ引継ぐ。設計試作を実観察へ流用しない"
+      ],
+      "gpt": {
+        "status": "pending",
+        "reason": "製品機能未実装。GUI/IDE/端末操作なし。共有leaseと固定source/ZIPの実装後に観察する。"
+      },
+      "human": {
+        "status": "pending",
+        "reason": "固定ZIPの実機/Emulator/受取人側確認を未実施。"
+      },
+      "fix_issue": null,
+      "fix_pr": null,
+      "recheck": "実装/時計/codec/mux/依存変更後は同じsource/ZIP hashを記録して本Caseを再実施。",
+      "next_action": "PMが#14の実装担当/QAへ本Caseを双方向で引継ぎ、固定build・fixture・共有GUI leaseを確保する。"
+    },
+    {
+      "id": "SYNC-LIFECYCLE",
+      "artifact": "plugin",
+      "change": "CTL-03/05/BUF-04/VIDEO-04: 寿命と非致命性",
+      "preconditions": "時計/server/muxを所有generationで追跡する固定build。保存失敗fixture、同じ保存先の既存エビデンスhash。",
+      "steps": [
+        "保存と取得を並行し、rotation、設定明示適用、保存失敗retryを行う。",
+        "接続準備/read/mux中に無効化/project closeを行う。",
+        "旧callback/遅延process、新generation、保存済みhash、partialとpinの解放を照合する。"
+      ],
+      "expected": "回転でクラッシュ/既存成果物破損/復旧不能なし。pinした同じT/Nをretryし取得継続。所有process終了を確認し未保存破棄、dispose後UI更新なし。",
+      "provenance": [
+        "docs/requirements.md: ENV/BUF/LOG/SYNC/SAVE/VIDEO",
+        "docs/design/timeline.md: 一次情報、固定依存、時計/窓/出力/精度契約",
+        "Issue #13で策定し#14実装へ引継ぐ。設計試作を実観察へ流用しない"
+      ],
+      "gpt": {
+        "status": "pending",
+        "reason": "製品機能未実装。GUI/IDE/端末操作なし。共有leaseと固定source/ZIPの実装後に観察する。"
+      },
+      "human": {
+        "status": "pending",
+        "reason": "固定ZIPの実機/Emulator/受取人側確認を未実施。"
+      },
+      "fix_issue": null,
+      "fix_pr": null,
+      "recheck": "実装/時計/codec/mux/依存変更後は同じsource/ZIP hashを記録して本Caseを再実施。",
+      "next_action": "PMが#14の実装担当/QAへ本Caseを双方向で引継ぎ、固定build・fixture・共有GUI leaseを確保する。"
+    }
+  ]
+}
