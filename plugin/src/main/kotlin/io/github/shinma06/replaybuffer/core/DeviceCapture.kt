@@ -25,7 +25,7 @@ internal class DeviceCapture(
     private val serial = serialArgument(serial)
     private val adb = OwnedAdb(adbPath)
     private val stopping = AtomicBoolean()
-    private val timer = Executors.newSingleThreadScheduledExecutor { r -> Thread(r, "replay-watchdog").apply { isDaemon = true } }
+    private val timer = captureWatchdog()
     private val workers = mutableListOf<Thread>()
     private val sockets = ConcurrentHashMap.newKeySet<Socket>()
     private val ports = ConcurrentHashMap<String, String>()
@@ -272,3 +272,7 @@ internal class VideoReadMonitor(private val socket: Socket, private val server: 
     fun received() { lastComplete.set(System.nanoTime()) }
     override fun close() { active.set(false); watch.cancel(false) }
 }
+
+/** One clock timeout can wait for process exit while the other worker closes the video socket. */
+internal fun captureWatchdog(): java.util.concurrent.ScheduledExecutorService =
+    Executors.newScheduledThreadPool(2) { r -> Thread(r, "replay-watchdog").apply { isDaemon = true } }

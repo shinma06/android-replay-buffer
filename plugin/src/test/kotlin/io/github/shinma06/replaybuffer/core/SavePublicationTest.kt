@@ -32,6 +32,9 @@ class SavePublicationTest {
                 assertFailsWith<IllegalStateException> { publishCapture(partial, target) }
                 assertEquals(key, Files.readAttributes(target, BasicFileAttributes::class.java, java.nio.file.LinkOption.NOFOLLOW_LINKS).fileKey())
                 assertEquals("complete evidence", Files.readString(partial.resolve("proof")))
+                if (kind == "nonempty") assertEquals("keep", Files.readString(target.resolve("keep")))
+                if (kind == "file") assertEquals("keep", Files.readString(target))
+                if (kind == "symlink") assertEquals(Path.of("does-not-exist"), Files.readSymbolicLink(target))
             }
             val other = Files.createDirectory(root.resolve(".other"))
             Files.writeString(other.resolve("proof"), "other evidence")
@@ -43,6 +46,7 @@ class SavePublicationTest {
                 runCatching { publishCapture(source, target) }.onSuccess { successes.incrementAndGet() }
             } }
             start.countDown(); publishers.forEach { it.join(2000) }
+            assertFalse(publishers.any { it.isAlive })
             assertEquals(1, successes.get())
             assertEquals(1, listOf(partial, other).count { Files.exists(it) })
             assertFalse(Files.readString(target.resolve("proof")).isEmpty())

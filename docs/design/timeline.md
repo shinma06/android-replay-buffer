@@ -62,7 +62,7 @@ boot跨ぎでは新旧epoch間のoffsetを、最後/最初のhost時計sampleか
 | 無効化/project close | 取得停止、未保存リング・pinを破棄。保存済みフォルダは残す。sequence終了を示し次の有効化は別sequence |
 | 全種類0件 | 成功通知/空動画は作らず「保存できるデータなし」。clockだけで記録成功にしない。解決済み保存なしなら次の取得/保存を妨げない |
 
-完全切断はdevice offline/absentと全stream transport喪失の状態判断で確定する。動画だけEOF、logcatだけEOF、clock helperだけ停止は完全切断にしない。復旧は最初の1回を直ちに試し、その後1/2/4/5秒上限で再試行し、接続の正常化通知でも待機を解除する。遅延待ちは取消可能、他streamを停止せず、成功後は待機値を初期化する。動画の初期forward接続はbackend bind前にEOFとなり得るため、同じserver/forwardのままfresh socketでdummy受領を反復する。準備は全体10秒・各接続/読取最長1秒・100ms間隔で取消可能とし、codec/session検証は維持する。継続readは部分packetを再読せず、一接続ごとの単調host時計で完全packet到着を監視する。3秒は最後の正常watermark/不確実性を保った「到着未確認」の暫定表示、10秒はowned socketをcloseして復旧を開始する閾値であり厳密な最大時間ではない。監視はstore/disk/adb停止待ちをせず、旧監視は新socketを参照しない。静止画・負荷時のserver repeat動作を実測してから閾値を固定する。
+完全切断はdevice offline/absentと全stream transport喪失の状態判断で確定する。動画だけEOF、logcatだけEOF、clock helperだけ停止は完全切断にしない。復旧は最初の1回を直ちに試し、その後1/2/4/5秒上限で再試行し、接続の正常化通知でも待機を解除する。遅延待ちは取消可能、他streamを停止せず、成功後は待機値を初期化する。動画の初期forward接続はbackend bind前にEOFとなり得るため、同じserver/forwardのままfresh socketでdummy受領を反復する。準備は全体10秒・各接続/読取最長1秒・100ms間隔で取消可能とし、codec/session検証は維持する。継続readは部分packetを再読せず、一接続ごとの単調host時計で完全packet到着を監視する。3秒は最後の正常watermark/不確実性を保った「到着未確認」の暫定表示、10秒はowned socketをcloseして復旧を開始する閾値であり厳密な最大時間ではない。監視はstore/disk/adb停止待ちをせず、clock timeoutの物理終了待ちと動画socket closeを同じtimerの2 workerに分ける。旧監視は新socketを参照しない。静止画・負荷時のserver repeat動作を実測してから閾値を固定する。
 
 gapはstream毎に`kind / from / to / reason / boundary_uncertainty / generation`を保存する。ログの無出力だけではgapと判定しない。正常なreaderでもAndroid log bufferのoverflow、binary framing失敗、捨てた件数/不明件数を別のlossとして記録する。正常streamの終了/復旧境界は最後の正常watermarkと再開anchorで表し、その間を収録成功として埋めない。
 
