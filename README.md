@@ -21,7 +21,7 @@ docs/cli-origin/ 原README・CLI設計書・原gitignore・固定ファイルman
 scripts/         共通の管理・検証（Python 3.11+）
 ```
 
-CLIを `legacy/` へ移動しないのは、既存のPATH、Python import、launchd設定を維持するためです。プラグイン開発は `plugin/` で進め、録画エンジンとの接続方式を決めるまではCLI原型を変更しません。
+CLIを `legacy/` へ移動しないのは、既存のPATH、Python import、launchd設定を維持するためです。プラグインは `plugin/` で開発し、projectのAndroid SDKと同梱する録画用依存を使う[方式を採用](docs/design/timeline.md)しています。CLI原型のコード・設定・コマンドの互換性は保全します。
 
 ## 開発と検証
 

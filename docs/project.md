@@ -40,7 +40,7 @@ GeForceアプリやOBSのリプレイバッファから着想を得て、直近�
 
 今後はAndroid Studioから取得の開始・停止、保持時間や保存先の設定、取得状態の確認、1ボタンでの保存を行えるプラグインを目指す。利用者がOSごとの手動セットアップやコマンド操作を意識せず、普段の開発環境で試験や動作確認に集中できることを重視する。
 
-対応の優先順はmacOS、Windows、Linux。Android StudioでAndroid開発ができる環境を前提に、録画に必要な追加ツールの個別インストールやPATH設定を利用者に求めないことを要件とする。同梱・取得方法などの技術方式や対応範囲は、実装と検証を通じて決める。IDE内の初期版完成直後はmacOSメニューバー連携を最初に進める。上記は製品の目標であり、プラグイン機能の実装済み・受入済みを示すものではない。
+対応の優先順はmacOS、Windows、Linux。Android StudioでAndroid開発ができる環境を前提に、録画に必要な追加ツールの個別インストールやPATH設定を利用者に求めないことを要件とする。projectのAndroid SDKからadbを解決し、固定scrcpy server・時計測定DEX・JCodecを同梱する[方式を採用](design/timeline.md)した。対応環境と動作は固定した製品ZIPで検証する。IDE内の初期版完成直後はmacOSメニューバー連携を最初に進める。方式の採用をプラグイン機能の実装済み・受入済みと扱わない。
 
 今後の機能判断では、試験や動作確認に伴う記録操作を減らせるか、予期しない不具合を含め必要な区間の動画とログを取り逃さず保存できるか、他の開発者も導入して使えるかを基準にする。
 
@@ -52,7 +52,7 @@ GeForceアプリやOBSのリプレイバッファから着想を得て、直近�
 | Repository | `shinma06/android-replay-buffer` |
 | 開発対象 | Android Studioプラグイン。`plugin/` にKotlin/Gradle・情報表示action。録画機能の接続は未実装 |
 | 利用可能な原型 | macOS向けPython CLI、Python 3.9以上。`replayd` / `replay save,status,stop`。[保全方針](cli-origin.md) |
-| 依存 | adb、scrcpy、ffmpeg。Python追加依存なし。任意YAMLは既存実装の条件に従う |
+| CLI原型の依存 | adb、scrcpy、ffmpeg。Python追加依存なし。任意YAMLは既存実装の条件に従う。プラグインの採用方式とは区別する |
 | 実装 | `plugin/` が開発対象。CLI原型は `replay_buffer/`、入口 `bin/`、設定 `config.json.example`、起動例 `launchd/` を維持 |
 | 仕様 | [製品要件](requirements.md)、[README](../README.md)。原型は[原CLI README](cli-origin/README.md)、[CLI原型の設計（凍結）](cli-origin/design.md)。要件・設計の記述だけで実装済みとしない |
 | テスト | `tests/test_log_buffer.py` の既存2ケース。実機録画・再接続・動画保存を網羅するものではない |
