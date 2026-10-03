@@ -2,7 +2,7 @@
   "schema": 1,
   "issue": 42,
   "gui_required": true,
-  "reason": "設定validation・enabled起動復元・アプリ解決例外、現在窓gap/固定保存対象表示、および#41実APIを用いた永続cleanup領域と待機件数表示の修正。JVM回帰をIDE/端末受入へ代用せず、QA #27/#40で新同一ZIPを確認する。実機は利用者保留。",
+  "reason": "設定validation・enabled起動復元・アプリ解決例外、現在窓gap/固定保存対象、永続cleanup caller/件数、および#45実APIによる保存phaseと動画末尾未確認の別表示。JVM回帰をIDE/端末受入へ代用せず、QA #27/#40で新同一ZIPを確認する。実機は利用者保留。",
   "cli_checks": [
     "python3 scripts/workflow/plugin_check.py: 結果は固定HEADのIssue/PRで記録",
     "python3 scripts/check.py: Case JSONを含む管理チェック",
@@ -30,7 +30,7 @@
       ],
       "gpt": {
         "status": "pending",
-        "reason": "core実APIを通常mergeしてgap/固定対象/永続cleanup callerと待機件数を実装。JVM回帰と先行3件daafb8cの部分独立レビューをIDE観察passにしない。最終HEAD/baseの全体独立レビュー・Plugin Verifier・同一ZIPの実IDE/Emulator観察は未完了、実機保留。"
+        "reason": "core実APIを通常mergeしてgap/固定対象/永続cleanupと#45 videoTailをUIへ接続。旧a919の59tests/レビュー/Verifierを新候補の合格へ流用しない。VFR追加指摘後の#45最終revision・統合候補の独立レビュー/同一ZIP検証・実IDE/Emulator観察は未完了、実機保留。"
       },
       "human": {
         "status": "pending",
@@ -39,7 +39,7 @@
       "fix_issue": null,
       "fix_pr": null,
       "recheck": "UI/core/API/build変更後は同じ新固定source/ZIPで再観察する。",
-      "next_action": "PMが#41実API統合済み最終HEAD/baseの独立レビューを調整し、QA #27/#40へ新同一ZIPと全必要Case/main残条件を双方向引継ぐ。実機は利用者準備後。"
+      "next_action": "PMが#45最終revision統合済みの最終HEAD/base独立レビューを調整し、QA #27/#40へ新同一ZIPと全必要Case/main残条件を双方向引継ぐ。実機は利用者準備後。"
     },
     {
       "id": "UI-12-02",
@@ -60,7 +60,7 @@
       ],
       "gpt": {
         "status": "pending",
-        "reason": "core実APIを通常mergeしてgap/固定対象/永続cleanup callerと待機件数を実装。JVM回帰と先行3件daafb8cの部分独立レビューをIDE観察passにしない。最終HEAD/baseの全体独立レビュー・Plugin Verifier・同一ZIPの実IDE/Emulator観察は未完了、実機保留。"
+        "reason": "core実APIを通常mergeしてgap/固定対象/永続cleanupと#45 videoTailをUIへ接続。旧a919の59tests/レビュー/Verifierを新候補の合格へ流用しない。VFR追加指摘後の#45最終revision・統合候補の独立レビュー/同一ZIP検証・実IDE/Emulator観察は未完了、実機保留。"
       },
       "human": {
         "status": "pending",
@@ -69,7 +69,7 @@
       "fix_issue": null,
       "fix_pr": null,
       "recheck": "UI/core/API/build変更後は同じ新固定source/ZIPで再観察する。",
-      "next_action": "PMが#41実API統合済み最終HEAD/baseの独立レビューを調整し、QA #27/#40へ新同一ZIPと全必要Case/main残条件を双方向引継ぐ。実機は利用者準備後。"
+      "next_action": "PMが#45最終revision統合済みの最終HEAD/base独立レビューを調整し、QA #27/#40へ新同一ZIPと全必要Case/main残条件を双方向引継ぐ。実機は利用者準備後。"
     },
     {
       "id": "UI-12-03",
@@ -89,7 +89,7 @@
       ],
       "gpt": {
         "status": "pending",
-        "reason": "core実APIを通常mergeしてgap/固定対象/永続cleanup callerと待機件数を実装。JVM回帰と先行3件daafb8cの部分独立レビューをIDE観察passにしない。最終HEAD/baseの全体独立レビュー・Plugin Verifier・同一ZIPの実IDE/Emulator観察は未完了、実機保留。"
+        "reason": "core実APIを通常mergeしてgap/固定対象/永続cleanupと#45 videoTailをUIへ接続。旧a919の59tests/レビュー/Verifierを新候補の合格へ流用しない。VFR追加指摘後の#45最終revision・統合候補の独立レビュー/同一ZIP検証・実IDE/Emulator観察は未完了、実機保留。"
       },
       "human": {
         "status": "pending",
@@ -98,7 +98,7 @@
       "fix_issue": null,
       "fix_pr": null,
       "recheck": "UI/core/API/build変更後は同じ新固定source/ZIPで再観察する。",
-      "next_action": "PMが#41実API統合済み最終HEAD/baseの独立レビューを調整し、QA #27/#40へ新同一ZIPと全必要Case/main残条件を双方向引継ぐ。実機は利用者準備後。"
+      "next_action": "PMが#45最終revision統合済みの最終HEAD/base独立レビューを調整し、QA #27/#40へ新同一ZIPと全必要Case/main残条件を双方向引継ぐ。実機は利用者準備後。"
     },
     {
       "id": "UI-12-04",
@@ -107,19 +107,21 @@
       "preconditions": "本Issueと#41統合済みの新固定source/ZIP SHA-256・ロード版とRabbit buildを照合。QA #27/#40の使い捨てfixtureと共有GUI lease。Emulatorと実機の結果は分離し、実機は利用者準備まで保留。",
       "steps": [
         "各stream障害から復旧し、取得中でも現在窓内の欠落理由/範囲が残ること、窓外で消えることを確認する。",
-        "時計不確実性/境界不明と正常ログ0件を区別し、完全切断・再接続の窓を確認する。"
+        "時計不確実性/境界不明と正常ログ0件を区別し、完全切断・再接続の窓を確認する。",
+        "静止画・低fps・同sessionでPTSが大きく離れる取得を続けて保存する。末尾未確認のみの場合と、接続中断など確定欠落が併存する場合の表示を分けて確認する。"
       ],
-      "expected": "取得済み最大保存、種類別不足表示、完全切断時のみ凍結、再接続は現在窓で同sequence。空期間/0行を障害と誤認しない。 復旧後のgapは現在窓内にある間、理由・範囲を表示する。正常ログ0件を欠落扱いしない。",
+      "expected": "取得済み最大保存、種類別不足表示、完全切断時のみ凍結、再接続は現在窓で同sequence。空期間/0行を障害と誤認しない。 復旧後のgapは現在窓内にある間、理由・範囲を表示する。正常ログ0件を欠落扱いしない。 最終frameが保存Tより前という理由だけで取得をPARTIAL/RECOVERINGにせず、gapを推測追加しない。末尾未確認と確定欠落を別表示する。",
       "provenance": [
         "docs/requirements.md",
         "docs/design/ide-ui.md: UI-12-04",
         "docs/plugin-design.md / docs/design/timeline.md",
         "Issue #42 / PR37 late findings / core API #41 (5f148a2通常merge、最終統合revisionはIssue/PRで固定)",
-        "QA #27 / #40への環境別実受入"
+        "QA #27 / #40への環境別実受入",
+        "Issue #45 / videoTail実API 01b84f1 (最終core revisionは後続Issue/PRで固定)"
       ],
       "gpt": {
         "status": "pending",
-        "reason": "core実APIを通常mergeしてgap/固定対象/永続cleanup callerと待機件数を実装。JVM回帰と先行3件daafb8cの部分独立レビューをIDE観察passにしない。最終HEAD/baseの全体独立レビュー・Plugin Verifier・同一ZIPの実IDE/Emulator観察は未完了、実機保留。"
+        "reason": "core実APIを通常mergeしてgap/固定対象/永続cleanupと#45 videoTailをUIへ接続。旧a919の59tests/レビュー/Verifierを新候補の合格へ流用しない。VFR追加指摘後の#45最終revision・統合候補の独立レビュー/同一ZIP検証・実IDE/Emulator観察は未完了、実機保留。"
       },
       "human": {
         "status": "pending",
@@ -128,7 +130,7 @@
       "fix_issue": null,
       "fix_pr": null,
       "recheck": "UI/core/API/build変更後は同じ新固定source/ZIPで再観察する。",
-      "next_action": "PMが#41実API統合済み最終HEAD/baseの独立レビューを調整し、QA #27/#40へ新同一ZIPと全必要Case/main残条件を双方向引継ぐ。実機は利用者準備後。"
+      "next_action": "PMが#45最終revision統合済みの最終HEAD/base独立レビューを調整し、QA #27/#40へ新同一ZIPと全必要Case/main残条件を双方向引継ぐ。実機は利用者準備後。"
     },
     {
       "id": "UI-12-05",
@@ -137,19 +139,21 @@
       "preconditions": "本Issueと#41統合済みの新固定source/ZIP SHA-256・ロード版とRabbit buildを照合。QA #27/#40の使い捨てfixtureと共有GUI lease。Emulatorと実機の結果は分離し、実機は利用者準備まで保留。",
       "steps": [
         "保存を失敗させ、固定端末・アプリ選択/履歴・窓/sequence/不足/寿命を確認する。",
-        "Run/手動package/端末状態/通常保存先を変更し、再試行と別保存先再試行でも固定対象表示と内容が不変なことを確認する。連打/破棄/無効化も確認する。"
+        "Run/手動package/端末状態/通常保存先を変更し、再試行と別保存先再試行でも固定対象表示と内容が不変なことを確認する。連打/破棄/無効化も確認する。",
+        "末尾未確認を含む固定対象の保存を失敗させ、保存失敗表示と固定対象の末尾範囲を確認する。新frame到着・設定/保存先変更後のretryでも同じ末尾情報を使う。"
       ],
-      "expected": "1件immutable、二重要求なし。取得継続、新規保存だけ停止。寿命表示、取消し実終了後未保存破棄、完成済み出力不変。 固定端末と対象アプリ/履歴は現在状態から独立し、再試行で変更しない。",
+      "expected": "1件immutable、二重要求なし。取得継続、新規保存だけ停止。寿命表示、取消し実終了後未保存破棄、完成済み出力不変。 固定端末と対象アプリ/履歴は現在状態から独立し、再試行で変更しない。 保存中/失敗時の末尾説明は固定対象の未確認範囲を示し、保存済み・前画像表示済みと見せない。retryで範囲を更新しない。",
       "provenance": [
         "docs/requirements.md",
         "docs/design/ide-ui.md: UI-12-05",
         "docs/plugin-design.md / docs/design/timeline.md",
         "Issue #42 / PR37 late findings / core API #41 (5f148a2通常merge、最終統合revisionはIssue/PRで固定)",
-        "QA #27 / #40への環境別実受入"
+        "QA #27 / #40への環境別実受入",
+        "Issue #45 / videoTail実API 01b84f1 (最終core revisionは後続Issue/PRで固定)"
       ],
       "gpt": {
         "status": "pending",
-        "reason": "core実APIを通常mergeしてgap/固定対象/永続cleanup callerと待機件数を実装。JVM回帰と先行3件daafb8cの部分独立レビューをIDE観察passにしない。最終HEAD/baseの全体独立レビュー・Plugin Verifier・同一ZIPの実IDE/Emulator観察は未完了、実機保留。"
+        "reason": "core実APIを通常mergeしてgap/固定対象/永続cleanupと#45 videoTailをUIへ接続。旧a919の59tests/レビュー/Verifierを新候補の合格へ流用しない。VFR追加指摘後の#45最終revision・統合候補の独立レビュー/同一ZIP検証・実IDE/Emulator観察は未完了、実機保留。"
       },
       "human": {
         "status": "pending",
@@ -158,7 +162,7 @@
       "fix_issue": null,
       "fix_pr": null,
       "recheck": "UI/core/API/build変更後は同じ新固定source/ZIPで再観察する。",
-      "next_action": "PMが#41実API統合済み最終HEAD/baseの独立レビューを調整し、QA #27/#40へ新同一ZIPと全必要Case/main残条件を双方向引継ぐ。実機は利用者準備後。"
+      "next_action": "PMが#45最終revision統合済みの最終HEAD/base独立レビューを調整し、QA #27/#40へ新同一ZIPと全必要Case/main残条件を双方向引継ぐ。実機は利用者準備後。"
     },
     {
       "id": "UI-12-06",
@@ -167,19 +171,21 @@
       "preconditions": "本Issueと#41統合済みの新固定source/ZIP SHA-256・ロード版とRabbit buildを照合。QA #27/#40の使い捨てfixtureと共有GUI lease。Emulatorと実機の結果は分離し、実機は利用者準備まで保留。",
       "steps": [
         "2回連続保存後に各通知のフォルダ操作を行う。",
-        "一部保存と保存失敗、フォルダを開けない条件を確認する。"
+        "一部保存と保存失敗、フォルダを開けない条件を確認する。",
+        "末尾未確認だけのCOMPLETED、確定missingKinds併存、displayHeld=false、片側/両側範囲nullを確認する。WRITING/FAILED/IDLEへの表示切替も確認する。"
       ],
-      "expected": "通知ごとの完成フォルダに固定。不足種類を明記、未完成成功通知なし。開けない理由とpathコピー。",
+      "expected": "通知ごとの完成フォルダに固定。不足種類を明記、未完成成功通知なし。開けない理由とpathコピー。 保存完了と末尾未確認を別表示する。displayHeld=trueの完成出力だけ前の画像表示を示し、falseでは断定しない。null範囲は未確定と表示し、保存窓やPTSから補完しない。末尾未確認だけで欠落通知へ変えず、確定missingKindsがあれば従来の欠落表示・通知も残す。元PTS/epoch/generationを製品UIに露出しない。",
       "provenance": [
         "docs/requirements.md",
         "docs/design/ide-ui.md: UI-12-06",
         "docs/plugin-design.md / docs/design/timeline.md",
         "Issue #42 / PR37 late findings / core API #41 (5f148a2通常merge、最終統合revisionはIssue/PRで固定)",
-        "QA #27 / #40への環境別実受入"
+        "QA #27 / #40への環境別実受入",
+        "Issue #45 / videoTail実API 01b84f1 (最終core revisionは後続Issue/PRで固定)"
       ],
       "gpt": {
         "status": "pending",
-        "reason": "core実APIを通常mergeしてgap/固定対象/永続cleanup callerと待機件数を実装。JVM回帰と先行3件daafb8cの部分独立レビューをIDE観察passにしない。最終HEAD/baseの全体独立レビュー・Plugin Verifier・同一ZIPの実IDE/Emulator観察は未完了、実機保留。"
+        "reason": "core実APIを通常mergeしてgap/固定対象/永続cleanupと#45 videoTailをUIへ接続。旧a919の59tests/レビュー/Verifierを新候補の合格へ流用しない。VFR追加指摘後の#45最終revision・統合候補の独立レビュー/同一ZIP検証・実IDE/Emulator観察は未完了、実機保留。"
       },
       "human": {
         "status": "pending",
@@ -188,7 +194,7 @@
       "fix_issue": null,
       "fix_pr": null,
       "recheck": "UI/core/API/build変更後は同じ新固定source/ZIPで再観察する。",
-      "next_action": "PMが#41実API統合済み最終HEAD/baseの独立レビューを調整し、QA #27/#40へ新同一ZIPと全必要Case/main残条件を双方向引継ぐ。実機は利用者準備後。"
+      "next_action": "PMが#45最終revision統合済みの最終HEAD/base独立レビューを調整し、QA #27/#40へ新同一ZIPと全必要Case/main残条件を双方向引継ぐ。実機は利用者準備後。"
     },
     {
       "id": "UI-12-07",
@@ -210,7 +216,7 @@
       ],
       "gpt": {
         "status": "pending",
-        "reason": "core実APIを通常mergeしてgap/固定対象/永続cleanup callerと待機件数を実装。JVM回帰と先行3件daafb8cの部分独立レビューをIDE観察passにしない。最終HEAD/baseの全体独立レビュー・Plugin Verifier・同一ZIPの実IDE/Emulator観察は未完了、実機保留。"
+        "reason": "core実APIを通常mergeしてgap/固定対象/永続cleanupと#45 videoTailをUIへ接続。旧a919の59tests/レビュー/Verifierを新候補の合格へ流用しない。VFR追加指摘後の#45最終revision・統合候補の独立レビュー/同一ZIP検証・実IDE/Emulator観察は未完了、実機保留。"
       },
       "human": {
         "status": "pending",
@@ -219,7 +225,7 @@
       "fix_issue": null,
       "fix_pr": null,
       "recheck": "UI/core/API/build変更後は同じ新固定source/ZIPで再観察する。",
-      "next_action": "PMが#41実API統合済み最終HEAD/baseの独立レビューを調整し、QA #27/#40へ新同一ZIPと全必要Case/main残条件を双方向引継ぐ。実機は利用者準備後。"
+      "next_action": "PMが#45最終revision統合済みの最終HEAD/base独立レビューを調整し、QA #27/#40へ新同一ZIPと全必要Case/main残条件を双方向引継ぐ。実機は利用者準備後。"
     },
     {
       "id": "UI-12-08",
@@ -241,7 +247,7 @@
       ],
       "gpt": {
         "status": "pending",
-        "reason": "core実APIを通常mergeしてgap/固定対象/永続cleanup callerと待機件数を実装。JVM回帰と先行3件daafb8cの部分独立レビューをIDE観察passにしない。最終HEAD/baseの全体独立レビュー・Plugin Verifier・同一ZIPの実IDE/Emulator観察は未完了、実機保留。"
+        "reason": "core実APIを通常mergeしてgap/固定対象/永続cleanupと#45 videoTailをUIへ接続。旧a919の59tests/レビュー/Verifierを新候補の合格へ流用しない。VFR追加指摘後の#45最終revision・統合候補の独立レビュー/同一ZIP検証・実IDE/Emulator観察は未完了、実機保留。"
       },
       "human": {
         "status": "pending",
@@ -250,7 +256,7 @@
       "fix_issue": null,
       "fix_pr": null,
       "recheck": "UI/core/API/build変更後は同じ新固定source/ZIPで再観察する。",
-      "next_action": "PMが#41実API統合済み最終HEAD/baseの独立レビューを調整し、QA #27/#40へ新同一ZIPと全必要Case/main残条件を双方向引継ぐ。実機は利用者準備後。"
+      "next_action": "PMが#45最終revision統合済みの最終HEAD/base独立レビューを調整し、QA #27/#40へ新同一ZIPと全必要Case/main残条件を双方向引継ぐ。実機は利用者準備後。"
     }
   ]
 }

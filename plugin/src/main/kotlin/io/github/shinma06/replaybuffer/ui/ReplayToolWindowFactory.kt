@@ -71,6 +71,7 @@ private class ReplayToolWindowPanel(private val project: Project) : JPanel(Borde
     private val message = JBLabel()
     private val cleanup = JBLabel()
     private val saveState = JBLabel()
+    private val videoTail = JBLabel()
     private val saveReason = JBLabel()
     private val failure = JBLabel()
     private val frozenRequest = JBLabel()
@@ -108,7 +109,7 @@ private class ReplayToolWindowPanel(private val project: Project) : JPanel(Borde
             .addComponent(video).addComponent(deviceLog).addComponent(appLog)
             .addComponent(window).addComponent(sequence).addComponent(destination).addComponent(message)
             .addComponent(cleanup)
-            .addComponent(saveButton).addComponent(saveReason).addComponent(saveState)
+            .addComponent(saveButton).addComponent(saveReason).addComponent(saveState).addComponent(videoTail)
             .addComponent(openButton).addComponent(failureCard)
             .addComponent(gapScroll)
             .addComponentFillVertically(JPanel(), 0).panel
@@ -164,12 +165,9 @@ private class ReplayToolWindowPanel(private val project: Project) : JPanel(Borde
         saveButton.toolTipText = saveReason.text
         shownSave = snapshot?.save
         val saved = snapshot?.save
-        saveState.text = when (saved?.phase) {
-            SavePhase.WRITING -> "保存: 保存中…（取得は継続しています）"
-            SavePhase.FAILED -> "保存: 保存失敗（固定した対象を再試行できます）"
-            SavePhase.COMPLETED -> "保存: 完了" + if (saved.missingKinds.isNotEmpty()) " / 不足・欠落: ${saved.missingKinds.map(::streamName).joinToString("、")}" else ""
-            else -> "保存: 待機"
-        }
+        saveState.text = saveDescription(saved)
+        videoTail.text = videoTailDescription(saved)
+        videoTail.isVisible = videoTail.text.isNotEmpty()
         openButton.isVisible = saved?.phase == SavePhase.COMPLETED && saved.directory != null
         failureCard.isVisible = saved?.phase == SavePhase.FAILED
         failure.text = "保存できません: ${saved?.error ?: "保存先を確認してください。"}"
@@ -256,6 +254,22 @@ internal fun frozenTargetDescription(save: SaveSnapshot?): String {
             if (it.resolved) "" else "（帰属未確定）"
     }.ifEmpty { "記録なし" }
     return "固定端末: $device\n固定アプリ: ${app?.packageName ?: app?.unresolvedReason ?: "未確定"}（$mode）\n対象アプリ履歴:\n$history"
+}
+
+internal fun saveDescription(save: SaveSnapshot?): String = when (save?.phase) {
+    SavePhase.WRITING -> "保存: 保存中…（取得は継続しています）"
+    SavePhase.FAILED -> "保存: 保存失敗（固定した対象を再試行できます）"
+    SavePhase.COMPLETED -> "保存: 完了" + if (save.missingKinds.isNotEmpty()) " / 不足・欠落: ${save.missingKinds.map(::streamName).joinToString("、")}" else ""
+    else -> "保存: 待機"
+}
+
+internal fun videoTailDescription(save: SaveSnapshot?): String {
+    val tail = save?.videoTail ?: return ""
+    if (save.phase == SavePhase.IDLE) return ""
+    val range = "記録時刻: ${recordTime(tail.fromNs)}〜${recordTime(tail.toNs)}"
+    if (save.phase != SavePhase.COMPLETED) return "固定対象の動画末尾: 新frame未確認（$range）"
+    val display = if (tail.displayHeld) "前の画像を表示・新frame未確認" else "新frame未確認"
+    return "動画末尾: $display（$range）"
 }
 
 internal fun cleanupDescription(count: Int): String = if (count <= 0) "" else

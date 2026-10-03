@@ -15,6 +15,7 @@ import io.github.shinma06.replaybuffer.core.SavePhase
 import io.github.shinma06.replaybuffer.core.SaveSnapshot
 import io.github.shinma06.replaybuffer.core.StreamSnapshot
 import io.github.shinma06.replaybuffer.core.StreamState
+import io.github.shinma06.replaybuffer.core.VideoTailSnapshot
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
@@ -81,6 +82,76 @@ class ReplayDescriptionsTest {
         assertTrue(detail.contains("動画: 9.000秒〜10.000秒"))
         assertTrue(detail.contains("境界の誤差±0.020秒"))
         assertEquals("", currentGapDescription(snapshot(mapOf("video" to healthy, "device_log" to healthy, "app_log" to healthy))))
+    }
+
+    @Test
+    fun `tail alone leaves completed save and healthy acquisition separate from new frame confirmation`() {
+        val tail = VideoTailSnapshot(1_000_000_000, 6_000_000_000, 123, 1_000_000_000, 0, 1, true)
+        val save = SaveSnapshot(SavePhase.COMPLETED, "fixed", videoTail = tail)
+        val healthy = StreamSnapshot(StreamState.CAPTURING, 6.0)
+        val current = snapshot(mapOf("video" to healthy, "device_log" to healthy, "app_log" to healthy)).copy(save = save)
+        assertEquals("保存: 完了", saveDescription(current.save))
+        assertTrue(videoTailDescription(current.save).contains("前の画像を表示・新frame未確認"))
+        assertTrue(videoTailDescription(current.save).contains("1.000秒〜6.000秒"))
+        assertEquals("取得中", current.captureDescription())
+        assertEquals("動画: 取得中 / 6.0秒分", streamDescription("動画", current.video))
+        assertEquals("", currentGapDescription(current))
+        assertTrue(save.missingKinds.isEmpty())
+        assertEquals("保存: 完了", saveDescription(save.copy(videoTail = null)))
+        assertEquals("", videoTailDescription(save.copy(videoTail = null)))
+        assertEquals("", videoTailDescription(null))
+    }
+
+    @Test
+    fun `known loss remains visible alongside completed save and held unconfirmed tail`() {
+        val gap = CaptureGap("video", 5_000_000_000, 6_000_000_000, "動画の接続が中断しました", 0)
+        val healthy = StreamSnapshot(StreamState.CAPTURING, 5.0)
+        val save = SaveSnapshot(SavePhase.COMPLETED, "fixed", missingKinds = listOf("video"),
+            videoTail = VideoTailSnapshot(1_000_000_000, 5_000_000_000, 123, 1_000_000_000, 0, 1, true))
+        val current = snapshot(mapOf("video" to healthy.copy(gaps = listOf(gap)), "device_log" to healthy, "app_log" to healthy)).copy(save = save)
+        assertEquals("保存: 完了 / 不足・欠落: 動画", saveDescription(save))
+        assertTrue(videoTailDescription(save).contains("前の画像を表示・新frame未確認"))
+        assertTrue(videoTailDescription(save).contains("1.000秒〜5.000秒"))
+        assertTrue(currentGapDescription(current).contains("5.000秒〜6.000秒 / 動画の接続が中断しました"))
+        assertEquals(listOf("video"), save.missingKinds)
+    }
+
+    @Test
+    fun `tail unknown boundaries are never inferred and false displayHeld never claims previous image`() {
+        val tail = VideoTailSnapshot(null, null, 987654321, null, 23, 456789, false)
+        val save = SaveSnapshot(SavePhase.COMPLETED, "fixed", windowStartNs = 1_000_000_000,
+            windowEndNs = 6_000_000_000, videoTail = tail)
+        for ((from, to) in listOf(null to null, null to 6_000_000_000L, 1_000_000_000L to null, 1_000_000_000L to 6_000_000_000L)) {
+            val text = videoTailDescription(save.copy(videoTail = tail.copy(fromNs = from, toNs = to)))
+            assertTrue(text.contains("${recordTime(from)}〜${recordTime(to)}"))
+            assertTrue(text.contains("新frame未確認"))
+            assertFalse(text.contains("前の画像"))
+            assertFalse(text.contains("987654321"))
+            assertFalse(text.contains("456789"))
+            assertFalse(text.contains("PTS"))
+            assertFalse(text.contains("generation"))
+        }
+    }
+
+    @Test
+    fun `tail display follows actual save phase and fixed retry target`() {
+        val tail = VideoTailSnapshot(1_000_000_000, 6_000_000_000, 123, 1_000_000_000, 0, 1, true)
+        val failed = SaveSnapshot(SavePhase.FAILED, "fixed", directory = directory.resolve("old"), videoTail = tail)
+        assertTrue(saveDescription(failed).contains("保存失敗"))
+        assertFalse(saveDescription(failed).contains("完了"))
+        assertTrue(videoTailDescription(failed).startsWith("固定対象の動画末尾:"))
+        assertFalse(videoTailDescription(failed).contains("前の画像を表示"))
+        val retry = failed.copy(phase = SavePhase.WRITING, directory = directory.resolve("retry"))
+        assertTrue(saveDescription(retry).contains("保存中"))
+        assertFalse(saveDescription(retry).contains("完了"))
+        assertEquals(videoTailDescription(failed), videoTailDescription(retry))
+        assertEquals(tail, retry.videoTail)
+        assertEquals("保存: 待機", saveDescription(failed.copy(phase = SavePhase.IDLE)))
+        assertEquals("", videoTailDescription(failed.copy(phase = SavePhase.IDLE)))
+        val completed = retry.copy(phase = SavePhase.COMPLETED)
+        assertEquals("保存: 完了", saveDescription(completed))
+        assertTrue(videoTailDescription(completed).contains("前の画像を表示・新frame未確認"))
+        assertEquals(tail, completed.videoTail)
     }
 
     @Test
