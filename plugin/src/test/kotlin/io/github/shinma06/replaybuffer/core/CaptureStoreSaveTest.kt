@@ -20,6 +20,38 @@ import kotlin.test.assertTrue
 
 class CaptureStoreSaveTest {
     @Test
+    fun unknownWindowStillReclaimsByteEvictedGopsWhilePreservingPinnedBytes() {
+        val root = Files.createTempDirectory("replay-unknown-cap-fixture-")
+        val bytes = sample()
+        val store = CaptureStore(root.resolve("ring"), videoLimit = bytes.size.toLong(), minFree = 0)
+        val host = System.nanoTime()
+        try {
+            store.generation(1); store.session(VideoPacket.Session(32, 32), 1)
+            anchor(store.clock, 1_000_000_000, host)
+            store.frame(VideoPacket.Frame(0, true, false, config(bytes)), 1)
+            store.frame(VideoPacket.Frame(1_000_000, false, true, bytes), 1, host)
+            val pin = store.capture(ReplaySettings())!!
+            val pinnedFile = pin.video.single().file
+            val hash = sha256(pinnedFile)
+            store.clock.add("2", listOf(100_000_000, 100_000_000, 1_700_000_020_000_000_000, 100_000_000),
+                host + 20_000_000_000, host + 20_000_000_000, 100_000_000_000)
+            store.generation(2); store.session(VideoPacket.Session(32, 32), 2)
+            store.frame(VideoPacket.Frame(0, true, false, config(bytes)), 2)
+            for (n in 1..20) {
+                store.frame(VideoPacket.Frame(n * 100_000L, false, true, bytes), 2, host + 20_000_000_000)
+                store.prune(1)
+                assertEquals(2, Files.list(store.directory).use { it.count() })
+                assertEquals(hash, sha256(pinnedFile))
+            }
+            store.release(pin.id)
+            store.prune(1)
+            assertFalse(Files.exists(pinnedFile))
+            assertEquals(1, Files.list(store.directory).use { it.count() })
+            assertEquals(bytes.size.toLong(), Files.list(store.directory).use { paths -> paths.mapToLong { Files.size(it) }.sum() })
+        } finally { store.close(); Files.delete(root) }
+    }
+
+    @Test
     fun unknownBootBridgeRetainsOldRecordsAndExportsUnknownWindowCoordinates() {
         val root = Files.createTempDirectory("replay-unknown-boot-fixture-")
         val store = CaptureStore(root.resolve("ring"), minFree = 0)
