@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "issue": 14,
+  "gui_required": false,
+  "reason": "本PRは採用済み設計と正本要件・利用手順を接続する文書のみ。製品コード/build/fixtureは子Issue #31/#32/#27の専任writerが変更し、各Caseの未実施・実機保留を別途保持する。本Issueは子実装の照合・QA引継ぎまでcloseしない。",
+  "cli_checks": [
+    "python3 scripts/check.py: pass (165 tests)",
+    "python3 scripts/workflow/product_check.py: pass (2 tests; CLI origin 21 files unchanged)",
+    "python3 scripts/workflow/change_impact.py --base 16123f6fa2e2c74ce4300d1acf4f54d317b3fdff --run-tests: clean committed HEADで実行しIssue/PRへ記録"
+  ],
+  "cases": []
+}
