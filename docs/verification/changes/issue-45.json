@@ -77,7 +77,8 @@
       "steps": [
         "更新直後とframe間、長い静止中に保存する。",
         "COMPLETED/次保存可と未確認末尾表示を確認する。",
-        "失敗後に取得/設定を進め、同じ対象を別保存先でretryする。"
+        "失敗後に取得/設定を進め、同じ対象を別保存先でretryする。",
+        "byte上限で必要IDRを失った対象を保存し、MP4なし・API/manifestのdisplayHeld=false・既知不足・固定末尾不変を確認する。"
       ],
       "expected": "保存Tは即時固定。画像保持と確認済coverageを区別し、末尾だけでFAILED/欠落通知/missingKindsへ流さない。pin解除・次保存可。retryでも末尾範囲・元frame・判断は不変。",
       "provenance": [

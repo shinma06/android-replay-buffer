@@ -70,10 +70,7 @@ internal class SaveWriter {
                     if (visible.isEmpty()) return@forEach
                     val first = visible.first()
                     val firstIndex = all.indexOf(first)
-                    val keyIndex = (firstIndex downTo 0).firstOrNull { i ->
-                        all[i].key && all[i].generation == first.generation && all[i].session == first.session && all[i].width == first.width &&
-                            all[i].height == first.height && all[i].config.contentEquals(first.config) && all[i].pts <= first.pts
-                    }
+                    val keyIndex = all.decodeStart(first)
                     if (keyIndex == null) { losses += "IDRを失った動画区間を復号できません"; return@forEach }
                     val prefix = all.subList(keyIndex, firstIndex).filter { it.pts < first.pts }
                     val samples = prefix + group.filter { it.pts >= first.pts && (!capture.windowKnown || it.time.sequence == null || it.time.sequence <= capture.end) }
