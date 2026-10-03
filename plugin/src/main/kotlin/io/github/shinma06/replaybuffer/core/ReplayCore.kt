@@ -154,7 +154,9 @@ class ReplayCore(initialSettings: ReplaySettings, private val workspace: Path) :
     private fun startSave(capture: FrozenCapture, directory: Path) {
         cancelSave = AtomicBoolean()
         val cancellation = cancelSave
-        val missing = capture.states.filterValues { it.state != StreamState.CAPTURING || it.reason != null }.keys.toList().let { java.util.List.copyOf(it) }
+        val missing = (capture.states.filterValues { it.state != StreamState.CAPTURING || it.reason != null }.keys +
+            capture.gaps.filter { gap -> (gap.fromNs == null || gap.fromNs <= capture.end) &&
+                (gap.toNs == null || gap.toNs >= capture.start) }.map { it.stream }).distinct().let { java.util.List.copyOf(it) }
         saveState = SaveSnapshot(SavePhase.WRITING, capture.id, capture.sequence, capture.start, capture.end,
             capture.seconds, directory, missingKinds = missing)
         publish()
@@ -172,7 +174,9 @@ class ReplayCore(initialSettings: ReplaySettings, private val workspace: Path) :
                     if (result.isSuccess) {
                         store?.release(capture.id)
                         pending = null
-                        saveState = saveState.copy(phase = SavePhase.COMPLETED, directory = result.getOrThrow(), error = null)
+                        val output = result.getOrThrow()
+                        saveState = saveState.copy(phase = SavePhase.COMPLETED, directory = output.directory, error = null,
+                            missingKinds = java.util.List.copyOf((saveState.missingKinds + output.missingKinds).distinct()))
                     } else {
                         saveState = saveState.copy(phase = SavePhase.FAILED,
                             error = (result.exceptionOrNull() as? SaveFailure)?.message ?: "保存に失敗しました")

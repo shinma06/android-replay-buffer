@@ -23,6 +23,8 @@ import java.util.Base64
 import java.util.UUID
 import java.util.concurrent.CancellationException
 
+internal data class SaveOutput(val directory: Path, val missingKinds: List<String>)
+
 internal class SaveFailure(val partial: Path?, message: String, cause: Throwable? = null) : Exception(message, cause)
 
 /** No external encoder/process: immutable packet indices -> AVC MP4 and matching JSONL/manifest. */
@@ -30,7 +32,7 @@ internal class SaveWriter {
     private val gson = GsonBuilder().serializeNulls().disableHtmlEscaping().create()
 
     fun write(capture: FrozenCapture, folder: Path, cancelled: () -> Boolean,
-              publish: (Path, Path) -> Unit): Path {
+              publish: (Path, Path) -> Unit): SaveOutput {
         var partial: Path? = null
         val own = mutableListOf<Path>()
         fun checkActive() { if (cancelled() || Thread.currentThread().isInterrupted) throw CancellationException() }
@@ -182,7 +184,7 @@ internal class SaveWriter {
             own.forEach { FileChannel.open(it, WRITE).use { ch -> ch.force(true) } }
             checkActive()
             publish(partial, complete)
-            return complete
+            return SaveOutput(complete, if (parts.isEmpty() || losses.isNotEmpty()) listOf("video") else emptyList())
         } catch (e: Exception) {
             // Delete exactly our files. An injected/unrelated entry prevents directory removal and is preserved.
             own.asReversed().forEach { runCatching { Files.deleteIfExists(it) } }

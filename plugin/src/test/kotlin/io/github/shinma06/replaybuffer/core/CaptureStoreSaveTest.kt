@@ -60,7 +60,9 @@ class CaptureStoreSaveTest {
             anchor(store.clock, 10_000_000_000, host + 9_000_000_000)
             store.prune(1)
             assertTrue(capture.video.all { Files.exists(it.file) })
-            val completed = SaveWriter().write(capture, root, { false }) { a, b -> Files.move(a, b) }
+            val output = SaveWriter().write(capture, root, { false }) { a, b -> Files.move(a, b) }
+            assertTrue(output.missingKinds.isEmpty())
+            val completed = output.directory
             val manifest = JsonParser.parseString(Files.readString(completed.resolve("session.json"))).asJsonObject
             assertFalse(manifest["files_sha256"].asJsonObject.has("session.json"))
             assertTrue(manifest["build"].asJsonObject["source"].asString.matches(Regex("[a-f0-9]{40}")))
@@ -78,6 +80,8 @@ class CaptureStoreSaveTest {
                     assertEquals(1_000_000, frame.timescale)
                 }
             }
+            val logOnly = SaveWriter().write(capture.copy(video = emptyList()), root, { false }) { a, b -> Files.move(a, b) }
+            assertEquals(listOf("video"), logOnly.missingKinds)
             val hash = sha256(completed.resolve("session.json"))
             assertFailsWith<CancellationException> { SaveWriter().write(capture, root, { true }) { a, b -> Files.move(a, b) } }
             assertEquals(hash, sha256(completed.resolve("session.json")))
