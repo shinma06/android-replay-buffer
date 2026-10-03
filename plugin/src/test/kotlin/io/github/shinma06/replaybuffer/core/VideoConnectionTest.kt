@@ -26,11 +26,18 @@ class VideoConnectionTest {
             assertTrue(System.nanoTime() - started < TimeUnit.SECONDS.toNanos(2))
             assertTrue(sockets.isEmpty())
             val stopping = AtomicBoolean()
-            val worker = thread { assertFailsWith<IllegalStateException> { connectVideo(server.localPort, process, stopping, sockets) } }
-            while (sockets.isEmpty()) Thread.sleep(5)
+            val unexpected = java.util.concurrent.atomic.AtomicReference<Throwable>()
+            val worker = thread {
+                try { connectVideo(server.localPort, process, stopping, sockets); unexpected.set(AssertionError("Cancellation accepted a socket")) }
+                catch (_: IllegalStateException) { } catch (e: Throwable) { unexpected.set(e) }
+            }
+            val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2)
+            while (sockets.isEmpty() && System.nanoTime() < deadline) Thread.sleep(5)
+            assertTrue(sockets.isNotEmpty())
             stopping.set(true); sockets.forEach { it.close() }
             worker.join(2000)
             assertTrue(!worker.isAlive && sockets.isEmpty())
+            kotlin.test.assertNull(unexpected.get())
             process.destroy(); assertTrue(process.waitFor(2, TimeUnit.SECONDS))
             assertFailsWith<IllegalStateException> { connectVideo(server.localPort, process, AtomicBoolean(), sockets) }
             assertTrue(sockets.isEmpty())

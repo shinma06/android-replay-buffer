@@ -62,9 +62,13 @@ boot跨ぎでは新旧epoch間のoffsetを、最後/最初のhost時計sampleか
 | 無効化/project close | 取得停止、未保存リング・pinを破棄。保存済みフォルダは残す。sequence終了を示し次の有効化は別sequence |
 | 全種類0件 | 成功通知/空動画は作らず「保存できるデータなし」。clockだけで記録成功にしない。解決済み保存なしなら次の取得/保存を妨げない |
 
-完全切断はdevice offline/absentと全stream transport喪失の状態判断で確定する。動画だけEOF、logcatだけEOF、clock helperだけ停止は完全切断にしない。復旧は最初の1回を直ちに試し、その後1/2/4/5秒上限で再試行し、接続の正常化通知でも待機を解除する。遅延待ちは取消可能、他streamを停止せず、成功後は待機値を初期化する。3秒の無応答を動画stallの試験開始値とするが、静止画・負荷時のserver repeat動作を実測してから固定する。
+完全切断はdevice offline/absentと全stream transport喪失の状態判断で確定する。動画だけEOF、logcatだけEOF、clock helperだけ停止は完全切断にしない。復旧は最初の1回を直ちに試し、その後1/2/4/5秒上限で再試行し、接続の正常化通知でも待機を解除する。遅延待ちは取消可能、他streamを停止せず、成功後は待機値を初期化する。動画の初期forward接続はbackend bind前にEOFとなり得るため、同じserver/forwardのままfresh socketでdummy受領を反復する。準備は全体10秒・各接続/読取最長1秒・100ms間隔で取消可能とし、codec/session検証は維持する。継続readは部分packetを再読せず、一接続ごとの単調host時計で完全packet到着を監視する。3秒は最後の正常watermark/不確実性を保った「到着未確認」の暫定表示、10秒はowned socketをcloseして復旧を開始する閾値であり厳密な最大時間ではない。監視はstore/disk/adb停止待ちをせず、旧監視は新socketを参照しない。静止画・負荷時のserver repeat動作を実測してから閾値を固定する。
 
 gapはstream毎に`kind / from / to / reason / boundary_uncertainty / generation`を保存する。ログの無出力だけではgapと判定しない。正常なreaderでもAndroid log bufferのoverflow、binary framing失敗、捨てた件数/不明件数を別のlossとして記録する。正常streamの終了/復旧境界は最後の正常watermarkと再開anchorで表し、その間を収録成功として埋めない。
+
+表示用StreamSnapshot.gapsも現在の論理窓に交差するimmutableコピーを返す。clock gapは全stream、device_log gapはapp_logにも関連付ける。境界または現在窓の時計対応が不明なら窓外と断定せず保持し、完全切断時は凍結した窓の不確実性を使う。SaveSnapshotの端末・app選択・窓内app履歴は固定保存対象から生成し、現在設定や再試行先によって変えない。概要にUID/PIDを出さず、範囲不明はnullのまま示す。
+
+端末側cleanupが再接続待ちになる場合、停止済みreader/clientのUUID・serial・exact forward endpointをcaller指定のstable private cleanupDirectoryへ記録する。session workspaceを探索せず、未知/破損/未来schema/生存file-lock ownerを保全する。新Coreは同directoryの検証済みrecordのlock取得後だけ引継ぎ、旧serial自身が接続したときに二重psのowned名確認・forward serial/port/endpoint再照合を行う。port再利用・別device・共有ADBには作用せず、成功recordだけ削除する。IDE callerはsession tempとstable directoryの寿命を分ける。旧tempに残った未参照markerは所有者による既知資源管理へ残し、host-wide探索で移行しない。
 
 #11のPM案（1件のimmutable保存対象、失敗時に同じ対象を再試行/保存先変更/破棄、解決前の新規保存を止め取得は継続、無効化/project closeで未保存破棄）と整合する。pinはraw GOP/log/clock metadataへの所有参照で、pruneがpinを削除しない。snapshotは各raw chunkのbyte長/完全packet数とclock変換版をwatermarkとして固定する。進行中chunkに追記してもsnapshotは固定長より後を読まず、pin中の既存bytesは上書きしない。保存後のclock再校正も固定対象を書き換えない。保存中もwriterは新packet/GOPへ進む。保存対象は失敗しても新しいTへ差し替えない。容量・pin寿命は#11の決定を実装担当が適用し、録画streamを無制限にpinしない。
 
@@ -77,7 +81,7 @@ gapはstream毎に`kind / from / to / reason / boundary_uncertainty / generation
 | Perfetto | 複数時計snapshotの考えは採用。画面エビデンス配布にはMP4やlogcatへの変換・別UIが必要で、新しいtrace収集を増やすため不採用。[公式clock sync](https://perfetto.dev/docs/concepts/clock-sync) |
 | MKV metadata track | 柔軟な複数track/可変PTSが利点。初期版では一般のmacOS受取人の再生・metadata閲覧とJVM muxの確認範囲を増やすため不採用。[Matroska仕様](https://www.matroska.org/technical/elements.html) |
 
-保存単位は日時＋一意save IDのフォルダ。`session.json`（schema=1、build/dependencies、sequence、T/N、clock samples/epochs、設定/app選択履歴、watermarks、coverage、loss/gap、全file hash。ただし自己参照を避けsession.json自身をhash一覧から除外）、`logcat-device.jsonl`、`logcat-app.jsonl`、`video-001.mp4`以降、`frames.jsonl`、`README.txt`を含める。動画のない部分保存ではMP4は0件、ログのない種類もファイルは0行としsessionのcoverage/statusで空の理由を示す。完了manifest公開までフォルダを完了扱いしない。再試行・atomic公開・失敗対象の寿命は#11へ接続する。
+保存単位は日時＋一意save IDのフォルダ。`session.json`（schema=1、build/dependencies、sequence、T/N、clock samples/epochs、設定/app選択履歴、watermarks、coverage、loss/gap、全file hash。ただし自己参照を避けsession.json自身をhash一覧から除外）、`logcat-device.jsonl`、`logcat-app.jsonl`、`video-001.mp4`以降、`frames.jsonl`、`README.txt`を含める。動画のない部分保存ではMP4は0件、ログのない種類もファイルは0行としsessionのcoverage/statusで空の理由を示す。完了manifest公開までフォルダを完了扱いしない。再試行・atomic公開・失敗対象の寿命は#11へ接続する。 macOSではIDE同梱JNAからrenamex_npのRENAME_EXCLを使い、同parentのpartialを完成folderへ原子的かつ非上書きで公開する。[Appleの対応volume契約](https://developer.apple.com/documentation/foundation/urlresourcevalues/volumesupportsexclusiverenaming)。既存のempty/nonempty/file/symlinkも置換しない。非macOS・symbol/FS未対応・公開失敗はFAILEDとしてpinを保ち、通常Files.move/ATOMIC_MOVEへfallbackしない。local合成回帰をnetwork FSやIDE実ロードの合格へ転用しない。
 
 両ログは全体の**同じbinary logcat取得**から抽出し、共通の`record_id`と元Epoch/変換情報を持つ。`-b all -B -T 1`を開始候補とし、deviceがshell権限で読めるbufferとheader versionを確認する。取得開始以前のtailは正常窓から除外、再接続で過去をbackfillしたとは主張しない。lidによってtext/event payloadを分け、未対応payloadもraw bytesをJSONのbase64として残す。package→UID/PID/multiprocessの選択・再起動追従はLOG-02実装契約から供給し、PIDだけを永続app IDにしない。対象未確定の区間はapp coverageをunknownとし、全体logの空白へ変えない。security等読めないbufferを「端末の全ログ取得済み」と表現しない。
 

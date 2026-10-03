@@ -109,6 +109,7 @@ data class ReplaySnapshot(
     val saveDisabledReason: String? = null,
     val error: String? = null,
     val windowStartNs: Long? = null,
+    val cleanupPendingCount: Int = 0,
 )
 
 data class ReplayOperation(val accepted: Boolean, val reason: String? = null, val requestId: String? = null)
