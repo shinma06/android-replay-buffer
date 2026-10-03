@@ -1,6 +1,6 @@
 # Android Replay Buffer agent contract
 
-Read [project facts](docs/project.md) before implementation. The current product is a Python CLI for macOS and USB-connected Android devices. Android Studio plugin development is the next direction; no plugin, Kotlin/Gradle project or IDE acceptance exists yet. Preserve the working CLI and its configuration/command compatibility. Use [shared IDE knowledge](docs/android-studio.md) when developing the plugin; revalidate project-specific assumptions.
+Read [project facts](docs/project.md) before implementation. The current product is a Python CLI for macOS and USB-connected Android devices. Android Studio plugin development is the next direction; no plugin, Kotlin/Gradle project or IDE acceptance exists yet. Preserve the working CLI and its configuration/command compatibility. Follow the conditional [Cursor knowledge reuse workflow](docs/android-studio.md) for shared IDE/build/process/storage/UI/verification/harness changes. Record fixed source revisions, adopted or inapplicable lessons and this project’s checks in the Issue/PR; distinguish main, develop-only, design and unverified evidence.
 
 ## Work and ownership
 

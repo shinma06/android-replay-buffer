@@ -5,7 +5,7 @@ description: Begin or resume an Issue-scoped implementation, documentation or co
 
 # Start work
 
-Read AGENTS.md, docs/project.md, docs/work-management.md and docs/workflow.md from the repository root. Reuse unchanged context. For instructions/Skills also read docs/context.md.
+Read AGENTS.md, docs/project.md, docs/work-management.md and docs/workflow.md from the repository root. Reuse unchanged context. For changes covered by docs/android-studio.md, inspect the relevant current Cursor implementation/tests and linked Issue/PR evidence before design; record a fixed source revision and applicability in this Issue. Unrelated CLI-only or wording work does not require a full upstream survey. For instructions/Skills also read docs/context.md.
 
 Inspect the Issue/comments, related PRs, ownership, dependencies, branch, worktrees and dirty state. Search before creating an Issue. Claim scope, owner, base, target, reviewer, GUI need and next action, then read back. Unreleased claims do not expire. Resume in your existing worktree; take over only after reassignment and old-writer stop, in a separate worktree.
 

@@ -9,7 +9,7 @@ Use docs/workflow.md and the Issue acceptance; for context changes also docs/con
 
 Run `python3 scripts/check.py` for the harness and relevant real project checks. Do not repeat successful unchanged checks without reason. Include mixed/unknown impact and explicit build/GUI requirements; a skip is not a test pass.
 
-Freeze HEAD/base and obtain separate-session review. Self-review or a script declaring success is not independent approval. Resolve concrete defects before integration. New sessions must satisfy actual user authorization and client execution policy.
+Freeze HEAD/base and obtain separate-session review. Self-review or a script declaring success is not independent approval. Resolve concrete defects before integration. For applicable shared-plugin/harness work, verify the Cursor reuse record required by docs/android-studio.md: fixed source evidence, adoption/adaptation or non-applicability, and checks on this project’s own build. Upstream passes never replace local acceptance. New sessions must satisfy actual user authorization and client execution policy.
 
 On handoff stop the writer and record owner, SHA/base, dirty state, checks, remaining acceptance and next action. Keep paths/hosts/tokens private. Do not overwrite registry or resume PAUSED jobs. Use scripts/workflow/agent_loop.py only from trusted main, for enrolled work with an authorized worker execution route. Follow docs/setup/automation.md; child-process restrictions still apply.
 
