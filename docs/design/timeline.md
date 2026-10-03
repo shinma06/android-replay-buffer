@@ -112,4 +112,4 @@ JCodecのPacket timescaleは常に`1_000_000`、PTSは`source_pts - part最初�
 
 実装担当が同じ試作を再現する最小手順は、固定JARをhash照合しJBR25で`MP4Muxer.createMP4MuxerToChannel`→`addVideoTrack(H264, 32×32 YUV420J)`→`H264Encoder.encodeIDRFrame`→上記3つの`Packet.createPacket`（全てtimescale=1e6）→`finish`→`MP4Demuxer.createRawMP4Demuxer`の順。editなしで全PTS/durationをassertし、edit付きではTrakBoxのEdit値をassertする。異なるtimescaleを混ぜた動作、B-frameは未確認・初期版契約外。現実の画面取得でこれを置き換えない。
 
-実装Caseは[issue-13.json](../verification/changes/issue-13.json)に全てpendingで残す。設計変更自体はGUIを要しないが、方式採用の製品受入には実機/Emulatorで必要なためGUI requiredとして追跡する。#14の実装分解時にこれらを実装Caseへ双方向で引継ぎ、PMが独立レビュー/QA/固定候補promotionを調整する。検証待ちを理由にCLI原型を変更しない。
+実装Caseは[issue-13.json](../verification/changes/issue-13.json)に全てpendingで残す。実機は利用者が用意できず受入を保留しており、未実施のまま保持する。実機の再開は利用者による端末準備とPMの割当後とし、この保留を理由にEmulator受入の準備や[#31のコア実装](https://github.com/shinma06/android-replay-buffer/issues/31)を止めない。Emulator/受取人側も現段階では未実施であり、実機のpassを代替しない。設計変更自体はGUIを要しないが、方式採用の製品受入には実機/Emulatorで必要なためGUI requiredとして追跡する。PMは#14/#31の実装と[#27のQA](https://github.com/shinma06/android-replay-buffer/issues/27)へCaseと環境ごとの状態を双方向で引継ぎ、独立レビュー/固定候補promotionを調整する。検証待ちを理由にCLI原型を変更しない。
