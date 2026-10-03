@@ -8,7 +8,7 @@
 |---|---|---|
 | IntelliJ Platform / Android Studio互換性 | 実際の対象IDE、JBR、Kotlin/Gradle targetを整合させる。別プラグインの固定版を無条件で採用しない | [build設定](https://github.com/shinma06/cursor-in-android-studio/blob/main/build.gradle.kts) |
 | UIと非同期処理 | IDE API/EDT境界、長時間処理をbackgroundへ、dispose後の結果破棄、取消しと子processの終了を分ける | [現行source](https://github.com/shinma06/cursor-in-android-studio/tree/main/src) |
-| 既存CLIとの接続 | 既存の構造化IPC・エラー・process所有を調査して再利用。ADB・scrcpy・ffmpegの実態をCLI側へ保つ | [このCLIの実装](../replay_buffer)、[設計書](../設計書.md) |
+| 既存CLIとの接続 | 既存の構造化IPC・エラー・process所有を調査して再利用。ADB・scrcpy・ffmpegの実態をCLI側へ保つ | [このCLIの実装](../replay_buffer)、[CLI原型の設計（凍結）](cli-origin/design.md) |
 | 設定・保存互換 | Plugin ID、保存キー、設定ファイル、出力形式を明示。参照元の名前/IDは転用しない | [アーキテクチャ](https://github.com/shinma06/cursor-in-android-studio/tree/develop/docs/architecture) |
 | 日本語UI | 判断に必要な説明・エラーは自然な日本語。CLI commandやmodel/SDK ID等は翻訳しない | [開発指示](https://github.com/shinma06/cursor-in-android-studio/blob/develop/CLAUDE.md) |
 | ZIPと検証buildの同一性 | source SHA・artifact SHA-256・ロードされたPluginを照合。同一ZIPを受入から配布へ使う | [ZIP手順](https://github.com/shinma06/cursor-in-android-studio/blob/develop/docs/development/plugin-zip-delivery.md) |

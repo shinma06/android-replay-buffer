@@ -16,7 +16,7 @@ replay_buffer/   保全するCLI原型（Python 3.9+）
 bin/             従来のCLI起動スクリプト
 launchd/         従来のmacOS常駐設定例
 tests/           CLI原型のテスト
-docs/cli-origin/ 原README・原gitignore・固定ファイルmanifest
+docs/cli-origin/ 原README・CLI設計書・原gitignore・固定ファイルmanifest
 scripts/         共通の管理・検証（Python 3.11+）
 ```
 
