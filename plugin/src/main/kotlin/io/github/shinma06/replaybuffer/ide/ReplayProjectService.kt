@@ -108,7 +108,7 @@ class ReplayProjectService(private val project: Project, private val scope: Coro
                     AndroidReplayEnvironment(
                         null,
                         "projectのAndroid SDKとGradle同期を確認してください。",
-                        ApplicationSelection(null, null, "対象アプリの情報を取得できません。設定でpackage名を指定できます。"),
+                        ApplicationSelection(null, null, "対象アプリの情報を取得できません。 " + MANUAL_APPLICATION_GUIDANCE),
                     )
                 }
                 synchronized(this@ReplayProjectService) {

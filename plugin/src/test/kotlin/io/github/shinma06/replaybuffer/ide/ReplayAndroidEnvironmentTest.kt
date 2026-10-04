@@ -66,16 +66,35 @@ class ReplayAndroidEnvironmentTest {
         assertTrue(provisionMessage.contains("Tools → Android Replay Buffer"))
         assertTrue(provisionMessage.contains("「手動」"))
         assertEquals(adb, sdkEnvironment(directory, provision).adb)
-        assertTrue(resolveApplication("Debug") { throw IllegalStateException("synthetic") }.reason!!.contains("package名"))
-        assertTrue(selectApplication(ReplaySettings(), "Run", null, null).reason!!.contains("package名"))
+        val failure = resolveApplication("Debug") { throw IllegalStateException("synthetic") }
+        val failureMessage = failure.reason!!
+        assertTrue(failureMessage.startsWith("対象アプリの情報を取得できません。Gradle同期を確認するか、"))
+        assertTrue(failureMessage.contains("Tools → Android Replay Buffer"))
+        assertTrue(failureMessage.contains("「手動」"))
+        assertEquals(adb, sdkEnvironment(directory, failure).adb)
+        for (automaticPackage in listOf(null, "", "not a package", "com.app\nother")) {
+            for (reason in listOf(null, "取得結果が不正です。")) {
+                val missing = selectApplication(ReplaySettings(), "Run", automaticPackage, reason)
+                assertNull(missing.packageName)
+                assertEquals("Run", missing.configurationName)
+                val message = missing.reason!!
+                if (reason != null) assertTrue(message.startsWith(reason))
+                assertTrue(message.contains("Tools → Android Replay Buffer"))
+                assertTrue(message.contains("「手動」"))
+                assertTrue(message.contains("package名"))
+                assertEquals(adb, sdkEnvironment(directory, missing).adb)
+            }
+        }
         assertNull(selectApplication(ReplaySettings(), "Run", "com.example.ready", "not ready").reason)
     }
 
     @Test
     fun `manual selection wins over run changes until automatic mode is applied`() {
         val manual = ReplaySettings(appSelection = AppSelectionMode.MANUAL, manualPackage = "com.example.manual")
-        for (automatic in listOf("com.example.debug", "com.other.release", null)) {
-            assertEquals("com.example.manual", selectApplication(manual, "Run", automatic, "not ready").packageName)
+        for (automatic in listOf("com.example.debug", "com.other.release", null, "not a package")) {
+            val selected = selectApplication(manual, "Run", automatic, "not ready")
+            assertEquals("com.example.manual", selected.packageName)
+            assertNull(selected.reason)
         }
         val automatic = manual.copy(appSelection = AppSelectionMode.AUTOMATIC)
         assertEquals("com.example.debug", selectApplication(automatic, "Debug", "com.example.debug", null).packageName)

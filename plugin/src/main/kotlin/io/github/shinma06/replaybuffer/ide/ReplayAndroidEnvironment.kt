@@ -16,6 +16,9 @@ import java.nio.file.Path
 import kotlinx.coroutines.CancellationException
 import org.jetbrains.android.sdk.AndroidSdkUtils
 
+internal const val MANUAL_APPLICATION_GUIDANCE =
+    "設定（Tools → Android Replay Buffer）で対象アプリを「手動」に切り替え、package名を指定してください。"
+
 /** IDE/model reading only; this boundary never launches adb or starts capture. */
 object ReplayAndroidEnvironment {
     suspend fun resolve(project: Project, settings: ReplaySettings): AndroidReplayEnvironment {
@@ -52,9 +55,10 @@ internal fun resolveApplication(configurationName: String?, resolve: () -> Appli
     throw cancelled
 } catch (_: ApkProvisionException) {
     ApplicationSelection(null, configurationName, "実行対象のapplicationIdを取得できません。Gradle同期を確認してください。 " +
-        "設定（Tools → Android Replay Buffer）で対象アプリを「手動」に切り替え、package名を指定してください。")
+        MANUAL_APPLICATION_GUIDANCE)
 } catch (_: RuntimeException) {
-    ApplicationSelection(null, configurationName, "対象アプリの情報を取得できません。Gradle同期を確認するか、設定でpackage名を指定してください。")
+    ApplicationSelection(null, configurationName, "対象アプリの情報を取得できません。Gradle同期を確認するか、" +
+        MANUAL_APPLICATION_GUIDANCE)
 }
 
 internal fun sdkEnvironment(sdk: Path?, application: ApplicationSelection): AndroidReplayEnvironment {
@@ -80,8 +84,7 @@ internal fun selectApplication(
     return if (packageName != null && isApplicationId(packageName)) {
         ApplicationSelection(packageName, configurationName, null)
     } else {
-        ApplicationSelection(null, configurationName, automaticReason?.let {
-            "$it 設定（Tools → Android Replay Buffer）で対象アプリを「手動」に切り替え、package名を指定してください。"
-        } ?: "設定で対象アプリのpackage名を指定してください。")
+        ApplicationSelection(null, configurationName,
+            automaticReason?.let { "$it " }.orEmpty() + MANUAL_APPLICATION_GUIDANCE)
     }
 }
