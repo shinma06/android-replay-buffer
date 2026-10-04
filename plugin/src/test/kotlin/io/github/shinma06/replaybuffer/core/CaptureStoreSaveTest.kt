@@ -20,6 +20,191 @@ import kotlin.test.assertTrue
 
 class CaptureStoreSaveTest {
     @Test
+    fun oneInvalidClockRoundTripDoesNotFragmentKnownVideoBeforeAndAfterRecovery() {
+        verifyVideoAroundClockFailure(false)
+    }
+
+    @Test
+    fun clockProcessEpochBoundaryDoesNotFragmentItsIndependentKnownVideoRegions() {
+        verifyVideoAroundClockFailure(true)
+    }
+
+    @Test
+    fun recoverySampleKeepsKnownVideoTogetherBeforeNextClockSample() {
+        verifyVideoAroundClockFailure(false, true)
+    }
+
+    @Test
+    fun processRecoverySampleKeepsKnownVideoTogetherBeforeNextClockSample() {
+        verifyVideoAroundClockFailure(true, true)
+    }
+
+    @Test
+    fun recoveryScopeKeepsUnknownAndOverflowBoundariesUnbounded() {
+        val before = ClockSample(0, "1", 2_000_000_000, 2_000_000_000, 0, 2_000_000_000, 0, 0, 0, -1_000_000_000, 0)
+        val recovery = before.copy(before = 4_000_000_000, after = 4_000_000_000, mono = 4_000_000_000)
+        val gap = CaptureGap("clock", 1_000_000_000, 3_000_009_083, "failure", Long.MAX_VALUE)
+        val clocks = listOf(before, recovery)
+        for (unproven in listOf(recovery.copy(sequenceOffset = null), recovery.copy(bridgeError = Long.MAX_VALUE),
+                recovery.copy(bridgeError = 20_000_001), recovery.copy(sequenceOffset = Long.MAX_VALUE),
+                recovery.copy(received = 100_000_000))) {
+            assertEquals(null, listOf(gap).videoScopes(clocks, mapOf(gap to unproven)).single().toNs)
+        }
+        val proven = listOf(gap).videoScopes(clocks, mapOf(gap to recovery)).single()
+        assertEquals(gap.toNs, proven.toNs)
+        assertEquals(1_000_000, proven.boundaryUncertaintyNs)
+        val unknownStart = gap.copy(fromNs = null)
+        assertEquals(null, listOf(unknownStart).videoScopes(clocks, mapOf(unknownStart to recovery)).single().fromNs)
+        val open = gap.copy(toNs = null)
+        assertEquals(null, listOf(open).videoScopes(clocks, mapOf(open to recovery)).single().toNs)
+        assertEquals(Long.MAX_VALUE, gap.boundaryUncertaintyNs)
+    }
+
+    private fun verifyVideoAroundClockFailure(processFailure: Boolean, immediateRecovery: Boolean = false) {
+        val root = Files.createTempDirectory("replay-clock-video-regions-")
+        val store = CaptureStore(root.resolve("ring"), minFree = 0)
+        val encoder = H264Encoder.createH264Encoder()
+        val encoded = if (immediateRecovery) (0..5).map { n ->
+            val data = encoder.encodeFrame(Picture.create(32, 32, ColorSpace.YUV420J).apply { fill(15 + n) }, ByteBuffer.allocate(65536)).data
+            ByteArray(data.remaining()).also { data.get(it) }
+        } else emptyList()
+        val bytes = encoded.firstOrNull() ?: sample()
+        assertTrue(encoded.drop(1).all { frame -> H264Utils.splitFrame(ByteBuffer.wrap(frame)).any { it.get(0).toInt() and 31 == 1 } })
+        val host = System.nanoTime() - if (immediateRecovery) 3_000_000_000 else 0
+        try {
+            store.generation(1); store.session(VideoPacket.Session(32, 32), 1)
+            anchor(store.clock, 1_000_000_000, host)
+            store.frame(VideoPacket.Frame(0, true, false, config(bytes)), 1)
+            for ((i, pts) in listOf(1_100_000L, 1_300_000L, 1_500_000L).withIndex()) {
+                assertTrue(store.frame(VideoPacket.Frame(pts, false, !immediateRecovery || i == 0, encoded.getOrElse(i) { bytes }),
+                    1, host + (pts - 1_000_000) * 1000))
+            }
+            anchor(store.clock, 2_000_000_000, host + 1_000_000_000)
+            if (processFailure) {
+                store.clock.boundary(host + 2_000_000_000)
+                store.clockStatus(false, 1)
+            } else {
+                val healthy = store.clock.add("1", listOf(3_000_000_000, 3_000_000_000,
+                    1_700_000_003_000_000_000, 3_000_000_000), host + 2_000_000_000, host + 2_100_000_000)
+                assertFalse(healthy)
+                store.clockStatus(healthy, 1)
+            }
+            val recoveredAt = if (immediateRecovery) System.nanoTime() - 2_000_000 else host + 3_000_000_000
+            anchor(store.clock, 4_000_000_000, recoveredAt)
+            store.clockStatus(true, 1) // Same add -> status order as DeviceCapture, with the received sample in the past.
+            val firstPts = if (immediateRecovery) {
+                val atRecovery = store.capture(ReplaySettings())!!
+                val endOfGap = atRecovery.gaps.single().toNs!!
+                assertTrue(endOfGap > 3_000_000_000) // clock.now() has moved beyond the recovery sample.
+                store.release(atRecovery.id)
+                (endOfGap + 1_000_000_000) / 1000 + 100_000
+            } else {
+                anchor(store.clock, 5_000_000_000, host + 4_000_000_000)
+                5_100_000L
+            }
+            for ((i, pts) in listOf(firstPts, firstPts + 200_000, firstPts + 400_000).withIndex()) {
+                val frameHost = if (immediateRecovery) recoveredAt + (pts - 4_000_000) * 1000 else host + (pts - 1_000_000) * 1000
+                assertTrue(store.frame(VideoPacket.Frame(pts, false, !immediateRecovery, encoded.getOrElse(i + 3) { bytes }), 1, frameHost))
+            }
+            if (immediateRecovery) {
+                val lastHost = recoveredAt + (firstPts + 400_000 - 4_000_000) * 1000
+                while (System.nanoTime() <= lastHost + 10_000_000) Thread.sleep(1)
+            } else anchor(store.clock, 6_000_000_000, host + 5_000_000_000)
+            val capture = store.capture(ReplaySettings())!!
+            assertEquals(6, capture.video.size)
+            assertTrue(capture.video.all { it.time.sequence != null && it.time.uncertainty != Long.MAX_VALUE })
+            val gap = capture.gaps.single()
+            assertEquals(Long.MAX_VALUE, gap.boundaryUncertaintyNs)
+            assertTrue(gap.fromNs != null && gap.toNs != null)
+            val output = SaveWriter().write(capture, root, { false }) { a, b -> Files.move(a, b) }
+            val manifest = JsonParser.parseString(Files.readString(output.directory.resolve("session.json"))).asJsonObject
+            val parts = manifest["parts"].asJsonArray
+            assertEquals(2, parts.size())
+            assertEquals("400001", parts[0].asJsonObject["duration_us"].asString)
+            if (immediateRecovery) assertTrue(parts[1].asJsonObject["duration_us"].asString.toLong() >= 400001)
+            else assertEquals("900000", parts[1].asJsonObject["duration_us"].asString)
+            assertEquals(listOf("video"), output.missingKinds) // Unknown clock information remains visible.
+            assertEquals(Long.MAX_VALUE.toString(), manifest["gaps"].asJsonArray.single().asJsonObject["boundary_uncertainty_ns"].asString)
+            assertTrue(manifest["gaps"].asJsonArray.single().asJsonObject["duration_uncertain"].asBoolean)
+            val scope = manifest["video_clock_gap_scopes"].asJsonArray.single().asJsonObject
+            assertTrue(scope["derived_from_valid_samples"].asBoolean)
+            assertTrue(scope["from_ns"].asString.toLong() <= gap.fromNs)
+            assertTrue(scope["to_ns"].asString.toLong() >= gap.toNs)
+            assertTrue(scope["boundary_uncertainty_ns"].asString.toLong() > 0)
+            assertFalse(manifest["video_missing_ranges"].asJsonArray.isEmpty)
+            val frames = Files.readAllLines(output.directory.resolve("frames.jsonl")).map { JsonParser.parseString(it).asJsonObject }
+            assertEquals(capture.video.map { it.pts.toString() }, frames.filter { it["presented"].asBoolean }.map { it["source_pts_us"].asString })
+            assertEquals(6, frames.count { it["presented"].asBoolean })
+            assertEquals(if (immediateRecovery) 3 else 0, frames.count { it["preroll"].asBoolean })
+            if (immediateRecovery) {
+                assertEquals(if (processFailure) 3 else 4, capture.clocks.size) // No next periodic sample has been added.
+                assertEquals(capture.clocks.last(), capture.clockRecoveries[gap])
+                assertTrue(scope["recovery_sample"].asJsonObject["valid"].asBoolean)
+                val noRecoveryProof = capture.copy(clockRecoveries = emptyMap())
+                val unproven = SaveWriter().write(noRecoveryProof, root, { false }) { a, b -> Files.move(a, b) }
+                val unprovenManifest = JsonParser.parseString(Files.readString(unproven.directory.resolve("session.json"))).asJsonObject
+                assertEquals(4, unprovenManifest["parts"].asJsonArray.size())
+                anchor(store.clock, 5_000_000_000, recoveredAt + 1_000_000_000)
+                val retry = SaveWriter().write(capture, root, { false }) { a, b -> Files.move(a, b) }
+                val retryManifest = JsonParser.parseString(Files.readString(retry.directory.resolve("session.json"))).asJsonObject
+                assertEquals(parts, retryManifest["parts"])
+                assertEquals(gap, capture.gaps.single())
+                store.release(capture.id)
+                val next = store.capture(ReplaySettings())!!
+                assertEquals(if (processFailure) 4 else 5, next.clocks.size)
+                val nextOutput = SaveWriter().write(next, root, { false }) { a, b -> Files.move(a, b) }
+                val nextManifest = JsonParser.parseString(Files.readString(nextOutput.directory.resolve("session.json"))).asJsonObject
+                assertEquals(2, nextManifest["parts"].asJsonArray.size())
+                assertEquals(scope, nextManifest["video_clock_gap_scopes"].asJsonArray.single())
+                assertEquals(capture.video.map { it.pts }, next.video.map { it.pts })
+                assertEquals(gap, next.gaps.single())
+                store.release(next.id)
+                return
+            }
+            val unknown = capture.copy(gaps = listOf(gap.copy(fromNs = null, toNs = null)))
+            val unknownOutput = SaveWriter().write(unknown, root, { false }) { a, b -> Files.move(a, b) }
+            val unknownManifest = JsonParser.parseString(Files.readString(unknownOutput.directory.resolve("session.json"))).asJsonObject
+            assertEquals(6, unknownManifest["parts"].asJsonArray.size())
+            assertEquals(listOf("video"), unknownOutput.missingKinds)
+            assertFalse(unknownManifest["video_clock_gap_scopes"].asJsonArray.single().asJsonObject["derived_from_valid_samples"].asBoolean)
+            val open = capture.copy(gaps = listOf(gap.copy(toNs = null)))
+            val openOutput = SaveWriter().write(open, root, { false }) { a, b -> Files.move(a, b) }
+            val openManifest = JsonParser.parseString(Files.readString(openOutput.directory.resolve("session.json"))).asJsonObject
+            assertEquals(4, openManifest["parts"].asJsonArray.size()) // Three known frames before failure remain together.
+            assertEquals("400001", openManifest["parts"].asJsonArray[0].asJsonObject["duration_us"].asString)
+            val noStart = capture.copy(gaps = listOf(gap.copy(fromNs = null)))
+            val noStartOutput = SaveWriter().write(noStart, root, { false }) { a, b -> Files.move(a, b) }
+            val noStartManifest = JsonParser.parseString(Files.readString(noStartOutput.directory.resolve("session.json"))).asJsonObject
+            assertEquals(4, noStartManifest["parts"].asJsonArray.size()) // Three known frames after recovery remain together.
+            assertEquals("900000", noStartManifest["parts"].asJsonArray.last().asJsonObject["duration_us"].asString)
+            val unknownClock = capture.copy(clocks = emptyList(), clockRecoveries = emptyMap())
+            val noProofOutput = SaveWriter().write(unknownClock, root, { false }) { a, b -> Files.move(a, b) }
+            val noProof = JsonParser.parseString(Files.readString(noProofOutput.directory.resolve("session.json"))).asJsonObject
+            assertEquals(6, noProof["parts"].asJsonArray.size())
+            anchor(store.clock, 8_000_000_000, host + 7_000_000_000)
+            for (pts in listOf(7_100_000L, 7_300_000L, 7_500_000L)) {
+                store.frame(VideoPacket.Frame(pts, false, true, bytes), 1, host + (pts - 1_000_000) * 1000)
+            }
+            val retry = SaveWriter().write(capture, root, { false }) { a, b -> Files.move(a, b) }
+            val retryManifest = JsonParser.parseString(Files.readString(retry.directory.resolve("session.json"))).asJsonObject
+            assertEquals(parts, retryManifest["parts"])
+            assertEquals(gap, capture.gaps.single())
+            store.release(capture.id)
+            val later = store.capture(ReplaySettings(replaySeconds = 1))!!
+            val laterOutput = SaveWriter().write(later, root, { false }) { a, b -> Files.move(a, b) }
+            val laterManifest = JsonParser.parseString(Files.readString(laterOutput.directory.resolve("session.json"))).asJsonObject
+            assertEquals(1, laterManifest["parts"].asJsonArray.size())
+            assertEquals("900000", laterManifest["parts"].asJsonArray.single().asJsonObject["duration_us"].asString)
+            assertEquals(listOf("video"), laterOutput.missingKinds) // The original unbounded clock warning is not erased.
+            assertEquals(gap, later.gaps.single())
+            store.release(later.id)
+        } finally {
+            store.close()
+            Files.walk(root).use { paths -> paths.sorted(java.util.Comparator.reverseOrder()).forEach { Files.deleteIfExists(it) } }
+        }
+    }
+
+    @Test
     fun clockEpochChangeKeepsAnUnheldTailMissingEvenWithAnEarlierPlayablePart() {
         val root = Files.createTempDirectory("replay-unheld-epoch-tail-")
         val store = CaptureStore(root.resolve("ring"), minFree = 0)
