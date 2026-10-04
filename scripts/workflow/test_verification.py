@@ -187,7 +187,7 @@ class AcceptanceTests(unittest.TestCase):
     def test_current_candidate_results_render_observer_and_evidence(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / 'case.json'; path.write_text(json.dumps(change(36)))
-            output = render_queue([path], self.manifest)
+            output = render_queue([path], self.manifest, self.git)
             self.assertIn('reviewer-1', output)
             self.assertIn('https://example.invalid/evidence', output)
             self.assertIn('Case合格', output)
