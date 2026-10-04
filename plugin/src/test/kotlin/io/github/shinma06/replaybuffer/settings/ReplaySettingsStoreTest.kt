@@ -35,7 +35,12 @@ class ReplaySettingsStoreTest {
         assertThrows(IllegalArgumentException::class.java) { store.apply(invalid) }
         assertEquals(valid, store.settings())
         assertTrue(store.enabled)
-        assertNull(valid.copy(destination = destinationRoot.resolve("new-folder").toString()).validationError())
+        val missing = valid.copy(destination = destinationRoot.resolve("new-folder").toString())
+        assertEquals("保存先フォルダが存在しません。フォルダを作成してから指定してください。", missing.validationError())
+        assertThrows(IllegalArgumentException::class.java) { store.apply(missing) }
+        assertEquals(valid, store.settings())
+        assertTrue(store.enabled)
+        assertFalse(Files.exists(Path.of(missing.destination)))
         store.apply(valid.copy(destination = ""))
         assertEquals("", store.settings().destination)
     }

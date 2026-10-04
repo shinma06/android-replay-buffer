@@ -60,7 +60,7 @@ internal fun validateDestination(destination: String): DestinationValidation {
         } catch (_: InvalidPathException) {
             "保存先のパスを確認してください。"
         } catch (_: NoSuchFileException) {
-            null // A new destination may be created when saving.
+            "保存先フォルダが存在しません。フォルダを作成してから指定してください。"
         } catch (_: IOException) {
             "保存先を確認できません。パスとアクセス権を確認してください。"
         } catch (_: SecurityException) {
