@@ -2,7 +2,7 @@
   "schema": 1,
   "issue": 64,
   "stage": "initial-agent",
-  "required_ancestor": "23f02915b78661e5c24d6229e8fc84876f4095d7",
+  "required_ancestor": "1a1ca8304fb73f8c9b805cd550df984787253efd",
   "followup_issue": 65,
   "owner": "Codex PM（管理）・QA #27担当（手順と証拠保全）。後続の人間実行者は再開時に割当。",
   "resume_condition": "初期版完成後、利用者が後続確認へ着手するときに実機・担当・固定候補を決める。CUA制約の部分は人間の対応または実際の操作経路復旧後。未実施の再質問で初期版を停止しない。",
@@ -2566,6 +2566,38 @@
       ],
       "agent_requirements": [
         "旧REAL名Caseへ混在したEmulator工程は 60:APP-MANUAL-GUIDANCE-EMU の初期版Agent範囲で実施する。PR33/38の全出典と現行の対象transport限定・共有ADB保護・同boot・deep sleep実測条件を保持する。"
+      ]
+    },
+    "71:LOG-REMAP-NORMAL-ZERO": {
+      "sources": [
+        {
+          "source_pr": 73,
+          "source_merge": "1a1ca8304fb73f8c9b805cd550df984787253efd",
+          "source_path": "docs/verification/changes/issue-71.json",
+          "original_case_sha256": "d9a3b0f8e7afdf89787f74d721d03bf914625703522ba1336cc146eef9a5bbcd"
+        }
+      ],
+      "current_case_sha256": "d9a3b0f8e7afdf89787f74d721d03bf914625703522ba1336cc146eef9a5bbcd",
+      "initial_scope": "agent",
+      "deferred_scope": [],
+      "agent_requirements": [
+        "固定修正統合後の現在契約の全前提・操作・期待を維持する。新しい同一candidate/ZIPの実製品classを用いたJVM証拠と、同ZIPをロードしたIDE/Emulatorの実観察を両方必須とし、別証拠IDで対応付ける。JVMだけではCaseを合格にしない。旧候補の観察を転用せず、製品fail・未知・未実施をpassや延期へ変換しない。"
+      ]
+    },
+    "71:LOG-REMAP-UNKNOWN-RETRY": {
+      "sources": [
+        {
+          "source_pr": 73,
+          "source_merge": "1a1ca8304fb73f8c9b805cd550df984787253efd",
+          "source_path": "docs/verification/changes/issue-71.json",
+          "original_case_sha256": "078774faa7a3cc52f6e6bfe43c01ec3d9b677858dc7f9d98f9267659ddced61a"
+        }
+      ],
+      "current_case_sha256": "078774faa7a3cc52f6e6bfe43c01ec3d9b677858dc7f9d98f9267659ddced61a",
+      "initial_scope": "agent",
+      "deferred_scope": [],
+      "agent_requirements": [
+        "固定修正統合後の現在契約の全前提・操作・期待を維持する。新しい同一candidate/ZIPの実製品classを用いたJVM証拠と、同ZIPをロードしたIDE/Emulatorの実観察を両方必須とし、別証拠IDで対応付ける。JVMだけではCaseを合格にしない。旧候補の観察を転用せず、製品fail・未知・未実施をpassや延期へ変換しない。"
       ]
     }
   }

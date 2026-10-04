@@ -67,13 +67,13 @@ Plugin ZIP生成はプラグイン基盤の導入時に実buildへ接続しま�
 
 利用者の方針に従い、初期版はエージェントが実行できる工程を完了し、人間の操作・確認と実機準備が必要な部分を[後続QA #65](https://github.com/shinma06/android-replay-buffer/issues/65)へ延期する。[固定計画](amendments/initial-agent.json)をtrusted mainの通常tooling PRでレビューし、developへ同期した後の新候補だけに適用する。候補後の変更許可、main保護、独立レビュー、全commitの出典検査は変えない。
 
-計画は124 Case・190出典のPR/merge/path/Case全文hashと、固定23fの現在契約hashを保持する。90 CaseのAgent範囲は必須で、34 REAL Caseは対応するEMU Caseの観察を残して延期する。混在Caseでは計画に列挙した部分だけを分ける。各sourceの履歴を消したり、古い緩い条件を選択したりしない。PR38の専用transport限定、共有ADB保護、同boot確認、画面OFFとdeep sleepの区別も維持する。新Caseや契約変更が加わった場合は計画の正式更新が必要である。
+計画は元124 Case・190出典のPR/merge/path/Case全文hashを保全し、保存窓修正 #71 / PR73 の2 Case・2出典を追加した126 Case・192出典を保持する。`required_ancestor`は修正の実統合SHAを指し、元124 Caseの現在契約hashは固定23fから不変である。92 CaseのAgent範囲は必須で、34 REAL Caseは対応するEMU Caseの観察を残して延期する。混在Caseでは計画に列挙した部分だけを分ける。各sourceの履歴を消したり、古い緩い条件を選択したりしない。PR38の専用transport限定、共有ADB保護、同boot確認、画面OFFとdeep sleepの区別も維持する。新Caseや契約変更が加わった場合は計画の正式更新が必要である。
 
 元のCase JSONとpending/blocked/failは書き換えない。`human: pending`だけでは人間工程を追加しない。標準player、GUI/可読性、全300イベント/30分の解析、同期・切出し精度、画質/負荷/容量/pin、失敗・復旧のAgent実行可能部分は維持する。最低601画像の人間による番号確認は初期段階から分離し、その前の解析を原Case全体の正式精度passとは呼ばない。製品failや単に難しい・時間がかかる工程は延期理由にしない。
 
 `3:PLUGIN-LOAD`は現在の操作経路で再起動後のSettings/About別windowを読めなかったため、計画に記載した再読取りとdialog終了確認だけを延期する。新候補のnative導入、初回UI、通常再起動、実ロード識別、ZIPと全JARの一致、actionの存在、取得OFFは実観察する。実体照合を延期した画面確認のpassに置き換えない。別の工程へ自動的に例外を拡張しない。
 
-promotionには`stage: initial-agent`を明記し、`results`に全124 keyを置く。各値は以下の形とし、`stage_revision`には計画全体のcanonical SHA-256を入れる。
+promotionには`stage: initial-agent`を明記し、`results`に全126 keyを置く。各値は以下の形とし、`stage_revision`には計画全体のcanonical SHA-256を入れる。
 
 ```json
 {
