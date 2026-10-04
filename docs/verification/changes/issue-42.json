@@ -2,7 +2,7 @@
   "schema": 1,
   "issue": 42,
   "gui_required": true,
-  "reason": "設定validation・enabled起動復元・アプリ解決例外、現在窓gap/固定保存対象、永続cleanup caller/件数、および#45実APIによる保存phaseと動画末尾未確認の別表示。JVM回帰をIDE/端末受入へ代用せず、QA #27/#40で新同一ZIPを確認する。実機は利用者保留。",
+  "reason": "設定validation・enabled起動復元・アプリ解決例外、現在窓gap/固定保存対象、永続cleanup caller/件数、および#45実APIによる保存phaseと動画末尾未確認の別表示。#52の時計復旧・mux範囲修正を含む固定候補で確認する。JVM回帰をIDE/端末受入へ代用せず、QA #27/#40で新同一ZIPを確認する。実機は利用者保留。",
   "cli_checks": [
     "python3 scripts/workflow/plugin_check.py: 結果は固定HEADのIssue/PRで記録",
     "python3 scripts/check.py: Case JSONを含む管理チェック",
@@ -14,7 +14,7 @@
       "id": "UI-12-01",
       "artifact": "plugin",
       "change": "CTL-01/02/04: 初回・復元・常時設定",
-      "preconditions": "本Issueと#41統合済みの新固定source/ZIP SHA-256・ロード版とRabbit buildを照合。QA #27/#40の使い捨てfixtureと共有GUI lease。Emulatorと実機の結果は分離し、実機は利用者準備まで保留。",
+      "preconditions": "本Issueと#41/#45/#49/#52統合済みの新固定source/ZIP SHA-256・ロード版とRabbit buildを照合。QA #27/#40の使い捨てfixtureと共有GUI lease。Emulatorと実機の結果は分離し、実機は利用者準備まで保留。",
       "steps": [
         "保存先未指定・有効状態ONでIDEを再起動し、パネルを開かず取得復元を確認する。",
         "保存済み保存先をfileまたは未作成pathに変えて起動し、復元失敗理由、core状態、toggle、再起動後の永続値を確認する。",
@@ -30,7 +30,7 @@
       ],
       "gpt": {
         "status": "pending",
-        "reason": "core49固定6e48319を通常mergeし、公開API不変・heldfalseの不足と保存phase/末尾未確認の併存表示を確認。既存Case条件/pendingを保全。旧2409のレビュー/Verifierを新候補へ流用せず、新統合HEAD/baseの主独立レビュー・同一ZIPのAPI/実IDE/Emulator観察は未完了、実機保留。"
+        "reason": "core52固定5255f6fのdevelop統合cdcd546を通常merge。公開UI API不変で、元unknown gapと固定保存対象・末尾表示の契約を保全。旧4b/0dの観察・レビュー/Verifierを新候補の成功へ流用せず、VFR6失敗と旧候補承認撤回を保持する。新統合HEAD/baseの独立binding review・同一ZIPのAPI/実IDE/Emulator観察は未完了、実機保留。"
       },
       "human": {
         "status": "pending",
@@ -39,13 +39,13 @@
       "fix_issue": null,
       "fix_pr": null,
       "recheck": "UI/core/API/build変更後は同じ新固定source/ZIPで再観察する。",
-      "next_action": "PMがcore49統合候補の固定HEAD/base主独立レビューを受領し、QA #27/#40へ新同一ZIPと全必要Case/main残条件を双方向引継ぐ。実機は利用者準備後。"
+      "next_action": "PMがcore52統合済み候補の固定HEAD/base独立binding review・同一ZIPのVerifierを受領し、QA #27/#40へ全122 Case（pending89/blocked33）とmain残条件を双方向引継ぐ。新GUI受入は別途割当、REAL holdを維持。"
     },
     {
       "id": "UI-12-02",
       "artifact": "plugin",
       "change": "CTL-03/05: draft/Cancel/Applyと即時toggle",
-      "preconditions": "本Issueと#41統合済みの新固定source/ZIP SHA-256・ロード版とRabbit buildを照合。QA #27/#40の使い捨てfixtureと共有GUI lease。Emulatorと実機の結果は分離し、実機は利用者準備まで保留。",
+      "preconditions": "本Issueと#41/#45/#49/#52統合済みの新固定source/ZIP SHA-256・ロード版とRabbit buildを照合。QA #27/#40の使い捨てfixtureと共有GUI lease。Emulatorと実機の結果は分離し、実機は利用者準備まで保留。",
       "steps": [
         "未作成path・通常fileを入力してApplyを拒否し、旧設定/取得/固定対象を保持する。既存folderと空保存先は受理する。",
         "OFF中の編集/Cancel/Applyと、遅延復元中のON/OFF・新しい設定revisionを競合させる。"
@@ -60,7 +60,7 @@
       ],
       "gpt": {
         "status": "pending",
-        "reason": "core49固定6e48319を通常mergeし、公開API不変・heldfalseの不足と保存phase/末尾未確認の併存表示を確認。既存Case条件/pendingを保全。旧2409のレビュー/Verifierを新候補へ流用せず、新統合HEAD/baseの主独立レビュー・同一ZIPのAPI/実IDE/Emulator観察は未完了、実機保留。"
+        "reason": "core52固定5255f6fのdevelop統合cdcd546を通常merge。公開UI API不変で、元unknown gapと固定保存対象・末尾表示の契約を保全。旧4b/0dの観察・レビュー/Verifierを新候補の成功へ流用せず、VFR6失敗と旧候補承認撤回を保持する。新統合HEAD/baseの独立binding review・同一ZIPのAPI/実IDE/Emulator観察は未完了、実機保留。"
       },
       "human": {
         "status": "pending",
@@ -69,13 +69,13 @@
       "fix_issue": null,
       "fix_pr": null,
       "recheck": "UI/core/API/build変更後は同じ新固定source/ZIPで再観察する。",
-      "next_action": "PMがcore49統合候補の固定HEAD/base主独立レビューを受領し、QA #27/#40へ新同一ZIPと全必要Case/main残条件を双方向引継ぐ。実機は利用者準備後。"
+      "next_action": "PMがcore52統合済み候補の固定HEAD/base独立binding review・同一ZIPのVerifierを受領し、QA #27/#40へ全122 Case（pending89/blocked33）とmain残条件を双方向引継ぐ。新GUI受入は別途割当、REAL holdを維持。"
     },
     {
       "id": "UI-12-03",
       "artifact": "plugin",
       "change": "LOG-02: 自動applicationId・手動優先・再起動",
-      "preconditions": "本Issueと#41統合済みの新固定source/ZIP SHA-256・ロード版とRabbit buildを照合。QA #27/#40の使い捨てfixtureと共有GUI lease。Emulatorと実機の結果は分離し、実機は利用者準備まで保留。",
+      "preconditions": "本Issueと#41/#45/#49/#52統合済みの新固定source/ZIP SHA-256・ロード版とRabbit buildを照合。QA #27/#40の使い捨てfixtureと共有GUI lease。Emulatorと実機の結果は分離し、実機は利用者準備まで保留。",
       "steps": [
         "SDK有効で自動app解決を失敗させ、アプリ未解決の理由と動画・端末ログ継続を確認する。手動指定・自動復帰・PID変更も確認する。"
       ],
@@ -89,7 +89,7 @@
       ],
       "gpt": {
         "status": "pending",
-        "reason": "core49固定6e48319を通常mergeし、公開API不変・heldfalseの不足と保存phase/末尾未確認の併存表示を確認。既存Case条件/pendingを保全。旧2409のレビュー/Verifierを新候補へ流用せず、新統合HEAD/baseの主独立レビュー・同一ZIPのAPI/実IDE/Emulator観察は未完了、実機保留。"
+        "reason": "core52固定5255f6fのdevelop統合cdcd546を通常merge。公開UI API不変で、元unknown gapと固定保存対象・末尾表示の契約を保全。旧4b/0dの観察・レビュー/Verifierを新候補の成功へ流用せず、VFR6失敗と旧候補承認撤回を保持する。新統合HEAD/baseの独立binding review・同一ZIPのAPI/実IDE/Emulator観察は未完了、実機保留。"
       },
       "human": {
         "status": "pending",
@@ -98,13 +98,13 @@
       "fix_issue": null,
       "fix_pr": null,
       "recheck": "UI/core/API/build変更後は同じ新固定source/ZIPで再観察する。",
-      "next_action": "PMがcore49統合候補の固定HEAD/base主独立レビューを受領し、QA #27/#40へ新同一ZIPと全必要Case/main残条件を双方向引継ぐ。実機は利用者準備後。"
+      "next_action": "PMがcore52統合済み候補の固定HEAD/base独立binding review・同一ZIPのVerifierを受領し、QA #27/#40へ全122 Case（pending89/blocked33）とmain残条件を双方向引継ぐ。新GUI受入は別途割当、REAL holdを維持。"
     },
     {
       "id": "UI-12-04",
       "artifact": "plugin",
       "change": "BUF-02/05/07: 取得不足・完全切断窓",
-      "preconditions": "本Issueと#41統合済みの新固定source/ZIP SHA-256・ロード版とRabbit buildを照合。QA #27/#40の使い捨てfixtureと共有GUI lease。Emulatorと実機の結果は分離し、実機は利用者準備まで保留。",
+      "preconditions": "本Issueと#41/#45/#49/#52統合済みの新固定source/ZIP SHA-256・ロード版とRabbit buildを照合。QA #27/#40の使い捨てfixtureと共有GUI lease。Emulatorと実機の結果は分離し、実機は利用者準備まで保留。",
       "steps": [
         "各stream障害から復旧し、取得中でも現在窓内の欠落理由/範囲が残ること、窓外で消えることを確認する。",
         "時計不確実性/境界不明と正常ログ0件を区別し、完全切断・再接続の窓を確認する。",
@@ -118,11 +118,12 @@
         "Issue #42 / PR37 late findings / core API #41 (5f148a2通常merge、最終統合revisionはIssue/PRで固定)",
         "QA #27 / #40への環境別実受入",
         "Issue #45 / videoTail実API 01b84f1、VFR/IDR修正固定93bc236を通常merge (統合HEAD/baseはIssue/PRで固定)",
-        "Issue #49 / fixed core6e48319: heldfalseの不足保全・保持済みdecoder開始判定 (API不変、UI production変更なし)"
+        "Issue #49 / fixed core6e48319: heldfalseの不足保全・保持済みdecoder開始判定 (API不変、UI production変更なし)",
+        "Issue #52 / fixed core5255f6f → develop cdcd546: 正常sampleによるmux専用clock gap範囲と固定復旧sampleを保全（元gap/UI公開APIは不変、新GUI未実施）"
       ],
       "gpt": {
         "status": "pending",
-        "reason": "core49固定6e48319を通常mergeし、公開API不変・heldfalseの不足と保存phase/末尾未確認の併存表示を確認。既存Case条件/pendingを保全。旧2409のレビュー/Verifierを新候補へ流用せず、新統合HEAD/baseの主独立レビュー・同一ZIPのAPI/実IDE/Emulator観察は未完了、実機保留。"
+        "reason": "core52固定5255f6fのdevelop統合cdcd546を通常merge。公開UI API不変で、元unknown gapと固定保存対象・末尾表示の契約を保全。旧4b/0dの観察・レビュー/Verifierを新候補の成功へ流用せず、VFR6失敗と旧候補承認撤回を保持する。新統合HEAD/baseの独立binding review・同一ZIPのAPI/実IDE/Emulator観察は未完了、実機保留。"
       },
       "human": {
         "status": "pending",
@@ -131,13 +132,13 @@
       "fix_issue": null,
       "fix_pr": null,
       "recheck": "UI/core/API/build変更後は同じ新固定source/ZIPで再観察する。",
-      "next_action": "PMがcore49統合候補の固定HEAD/base主独立レビューを受領し、QA #27/#40へ新同一ZIPと全必要Case/main残条件を双方向引継ぐ。実機は利用者準備後。"
+      "next_action": "PMがcore52統合済み候補の固定HEAD/base独立binding review・同一ZIPのVerifierを受領し、QA #27/#40へ全122 Case（pending89/blocked33）とmain残条件を双方向引継ぐ。新GUI受入は別途割当、REAL holdを維持。"
     },
     {
       "id": "UI-12-05",
       "artifact": "plugin",
       "change": "SAVE-05: 保存固定・再試行・破棄",
-      "preconditions": "本Issueと#41統合済みの新固定source/ZIP SHA-256・ロード版とRabbit buildを照合。QA #27/#40の使い捨てfixtureと共有GUI lease。Emulatorと実機の結果は分離し、実機は利用者準備まで保留。",
+      "preconditions": "本Issueと#41/#45/#49/#52統合済みの新固定source/ZIP SHA-256・ロード版とRabbit buildを照合。QA #27/#40の使い捨てfixtureと共有GUI lease。Emulatorと実機の結果は分離し、実機は利用者準備まで保留。",
       "steps": [
         "保存を失敗させ、固定端末・アプリ選択/履歴・窓/sequence/不足/寿命を確認する。",
         "Run/手動package/端末状態/通常保存先を変更し、再試行と別保存先再試行でも固定対象表示と内容が不変なことを確認する。連打/破棄/無効化も確認する。",
@@ -151,11 +152,12 @@
         "Issue #42 / PR37 late findings / core API #41 (5f148a2通常merge、最終統合revisionはIssue/PRで固定)",
         "QA #27 / #40への環境別実受入",
         "Issue #45 / videoTail実API 01b84f1、VFR/IDR修正固定93bc236を通常merge (統合HEAD/baseはIssue/PRで固定)",
-        "Issue #49 / fixed core6e48319: heldfalseの不足保全・保持済みdecoder開始判定 (API不変、UI production変更なし)"
+        "Issue #49 / fixed core6e48319: heldfalseの不足保全・保持済みdecoder開始判定 (API不変、UI production変更なし)",
+        "Issue #52 / fixed core5255f6f → develop cdcd546: 正常sampleによるmux専用clock gap範囲と固定復旧sampleを保全（元gap/UI公開APIは不変、新GUI未実施）"
       ],
       "gpt": {
         "status": "pending",
-        "reason": "core49固定6e48319を通常mergeし、公開API不変・heldfalseの不足と保存phase/末尾未確認の併存表示を確認。既存Case条件/pendingを保全。旧2409のレビュー/Verifierを新候補へ流用せず、新統合HEAD/baseの主独立レビュー・同一ZIPのAPI/実IDE/Emulator観察は未完了、実機保留。"
+        "reason": "core52固定5255f6fのdevelop統合cdcd546を通常merge。公開UI API不変で、元unknown gapと固定保存対象・末尾表示の契約を保全。旧4b/0dの観察・レビュー/Verifierを新候補の成功へ流用せず、VFR6失敗と旧候補承認撤回を保持する。新統合HEAD/baseの独立binding review・同一ZIPのAPI/実IDE/Emulator観察は未完了、実機保留。"
       },
       "human": {
         "status": "pending",
@@ -164,13 +166,13 @@
       "fix_issue": null,
       "fix_pr": null,
       "recheck": "UI/core/API/build変更後は同じ新固定source/ZIPで再観察する。",
-      "next_action": "PMがcore49統合候補の固定HEAD/base主独立レビューを受領し、QA #27/#40へ新同一ZIPと全必要Case/main残条件を双方向引継ぐ。実機は利用者準備後。"
+      "next_action": "PMがcore52統合済み候補の固定HEAD/base独立binding review・同一ZIPのVerifierを受領し、QA #27/#40へ全122 Case（pending89/blocked33）とmain残条件を双方向引継ぐ。新GUI受入は別途割当、REAL holdを維持。"
     },
     {
       "id": "UI-12-06",
       "artifact": "plugin",
       "change": "SAVE-03: 完成通知と要求別フォルダ",
-      "preconditions": "本Issueと#41統合済みの新固定source/ZIP SHA-256・ロード版とRabbit buildを照合。QA #27/#40の使い捨てfixtureと共有GUI lease。Emulatorと実機の結果は分離し、実機は利用者準備まで保留。",
+      "preconditions": "本Issueと#41/#45/#49/#52統合済みの新固定source/ZIP SHA-256・ロード版とRabbit buildを照合。QA #27/#40の使い捨てfixtureと共有GUI lease。Emulatorと実機の結果は分離し、実機は利用者準備まで保留。",
       "steps": [
         "2回連続保存後に各通知のフォルダ操作を行う。",
         "一部保存と保存失敗、フォルダを開けない条件を確認する。",
@@ -184,11 +186,12 @@
         "Issue #42 / PR37 late findings / core API #41 (5f148a2通常merge、最終統合revisionはIssue/PRで固定)",
         "QA #27 / #40への環境別実受入",
         "Issue #45 / videoTail実API 01b84f1、VFR/IDR修正固定93bc236を通常merge (統合HEAD/baseはIssue/PRで固定)",
-        "Issue #49 / fixed core6e48319: heldfalseの不足保全・保持済みdecoder開始判定 (API不変、UI production変更なし)"
+        "Issue #49 / fixed core6e48319: heldfalseの不足保全・保持済みdecoder開始判定 (API不変、UI production変更なし)",
+        "Issue #52 / fixed core5255f6f → develop cdcd546: 正常sampleによるmux専用clock gap範囲と固定復旧sampleを保全（元gap/UI公開APIは不変、新GUI未実施）"
       ],
       "gpt": {
         "status": "pending",
-        "reason": "core49固定6e48319を通常mergeし、公開API不変・heldfalseの不足と保存phase/末尾未確認の併存表示を確認。既存Case条件/pendingを保全。旧2409のレビュー/Verifierを新候補へ流用せず、新統合HEAD/baseの主独立レビュー・同一ZIPのAPI/実IDE/Emulator観察は未完了、実機保留。"
+        "reason": "core52固定5255f6fのdevelop統合cdcd546を通常merge。公開UI API不変で、元unknown gapと固定保存対象・末尾表示の契約を保全。旧4b/0dの観察・レビュー/Verifierを新候補の成功へ流用せず、VFR6失敗と旧候補承認撤回を保持する。新統合HEAD/baseの独立binding review・同一ZIPのAPI/実IDE/Emulator観察は未完了、実機保留。"
       },
       "human": {
         "status": "pending",
@@ -197,13 +200,13 @@
       "fix_issue": null,
       "fix_pr": null,
       "recheck": "UI/core/API/build変更後は同じ新固定source/ZIPで再観察する。",
-      "next_action": "PMがcore49統合候補の固定HEAD/base主独立レビューを受領し、QA #27/#40へ新同一ZIPと全必要Case/main残条件を双方向引継ぐ。実機は利用者準備後。"
+      "next_action": "PMがcore52統合済み候補の固定HEAD/base独立binding review・同一ZIPのVerifierを受領し、QA #27/#40へ全122 Case（pending89/blocked33）とmain残条件を双方向引継ぐ。新GUI受入は別途割当、REAL holdを維持。"
     },
     {
       "id": "UI-12-07",
       "artifact": "plugin",
       "change": "Lifecycle/EDT/keyboard/theme/DPI",
-      "preconditions": "本Issueと#41統合済みの新固定source/ZIP SHA-256・ロード版とRabbit buildを照合。QA #27/#40の使い捨てfixtureと共有GUI lease。Emulatorと実機の結果は分離し、実機は利用者準備まで保留。",
+      "preconditions": "本Issueと#41/#45/#49/#52統合済みの新固定source/ZIP SHA-256・ロード版とRabbit buildを照合。QA #27/#40の使い捨てfixtureと共有GUI lease。Emulatorと実機の結果は分離し、実機は利用者準備まで保留。",
       "steps": [
         "indexing中に設定・パネル再表示・toggleを操作する。",
         "theme/DPI/Tab移動を確認し、model解決/保存中にproject closeする。",
@@ -219,7 +222,7 @@
       ],
       "gpt": {
         "status": "pending",
-        "reason": "core49固定6e48319を通常mergeし、公開API不変・heldfalseの不足と保存phase/末尾未確認の併存表示を確認。既存Case条件/pendingを保全。旧2409のレビュー/Verifierを新候補へ流用せず、新統合HEAD/baseの主独立レビュー・同一ZIPのAPI/実IDE/Emulator観察は未完了、実機保留。"
+        "reason": "core52固定5255f6fのdevelop統合cdcd546を通常merge。公開UI API不変で、元unknown gapと固定保存対象・末尾表示の契約を保全。旧4b/0dの観察・レビュー/Verifierを新候補の成功へ流用せず、VFR6失敗と旧候補承認撤回を保持する。新統合HEAD/baseの独立binding review・同一ZIPのAPI/実IDE/Emulator観察は未完了、実機保留。"
       },
       "human": {
         "status": "pending",
@@ -228,13 +231,13 @@
       "fix_issue": null,
       "fix_pr": null,
       "recheck": "UI/core/API/build変更後は同じ新固定source/ZIPで再観察する。",
-      "next_action": "PMがcore49統合候補の固定HEAD/base主独立レビューを受領し、QA #27/#40へ新同一ZIPと全必要Case/main残条件を双方向引継ぐ。実機は利用者準備後。"
+      "next_action": "PMがcore52統合済み候補の固定HEAD/base独立binding review・同一ZIPのVerifierを受領し、QA #27/#40へ全122 Case（pending89/blocked33）とmain残条件を双方向引継ぐ。新GUI受入は別途割当、REAL holdを維持。"
     },
     {
       "id": "UI-12-08",
       "artifact": "plugin",
       "change": "ENV-02/03/UI-01: SDK adb・端末",
-      "preconditions": "本Issueと#41統合済みの新固定source/ZIP SHA-256・ロード版とRabbit buildを照合。QA #27/#40の使い捨てfixtureと共有GUI lease。Emulatorと実機の結果は分離し、実機は利用者準備まで保留。",
+      "preconditions": "本Issueと#41/#45/#49/#52統合済みの新固定source/ZIP SHA-256・ロード版とRabbit buildを照合。QA #27/#40の使い捨てfixtureと共有GUI lease。Emulatorと実機の結果は分離し、実機は利用者準備まで保留。",
       "steps": [
         "project SDKのplatform-toolsあり/なしを切替え、PATHに別adbを用意する。",
         "0台/1Emulator/複数接続と取得中の端末切断を確認する。",
@@ -250,7 +253,7 @@
       ],
       "gpt": {
         "status": "pending",
-        "reason": "core49固定6e48319を通常mergeし、公開API不変・heldfalseの不足と保存phase/末尾未確認の併存表示を確認。既存Case条件/pendingを保全。旧2409のレビュー/Verifierを新候補へ流用せず、新統合HEAD/baseの主独立レビュー・同一ZIPのAPI/実IDE/Emulator観察は未完了、実機保留。"
+        "reason": "core52固定5255f6fのdevelop統合cdcd546を通常merge。公開UI API不変で、元unknown gapと固定保存対象・末尾表示の契約を保全。旧4b/0dの観察・レビュー/Verifierを新候補の成功へ流用せず、VFR6失敗と旧候補承認撤回を保持する。新統合HEAD/baseの独立binding review・同一ZIPのAPI/実IDE/Emulator観察は未完了、実機保留。"
       },
       "human": {
         "status": "pending",
@@ -259,7 +262,7 @@
       "fix_issue": null,
       "fix_pr": null,
       "recheck": "UI/core/API/build変更後は同じ新固定source/ZIPで再観察する。",
-      "next_action": "PMがcore49統合候補の固定HEAD/base主独立レビューを受領し、QA #27/#40へ新同一ZIPと全必要Case/main残条件を双方向引継ぐ。実機は利用者準備後。"
+      "next_action": "PMがcore52統合済み候補の固定HEAD/base独立binding review・同一ZIPのVerifierを受領し、QA #27/#40へ全122 Case（pending89/blocked33）とmain残条件を双方向引継ぐ。新GUI受入は別途割当、REAL holdを維持。"
     }
   ]
 }
