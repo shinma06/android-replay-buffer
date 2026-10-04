@@ -51,7 +51,8 @@ internal fun resolveApplication(configurationName: String?, resolve: () -> Appli
 } catch (cancelled: ProcessCanceledException) {
     throw cancelled
 } catch (_: ApkProvisionException) {
-    ApplicationSelection(null, configurationName, "実行対象のapplicationIdを取得できません。Gradle同期を確認してください。")
+    ApplicationSelection(null, configurationName, "実行対象のapplicationIdを取得できません。Gradle同期を確認してください。 " +
+        "設定（Tools → Android Replay Buffer）で対象アプリを「手動」に切り替え、package名を指定してください。")
 } catch (_: RuntimeException) {
     ApplicationSelection(null, configurationName, "対象アプリの情報を取得できません。Gradle同期を確認するか、設定でpackage名を指定してください。")
 }
@@ -79,6 +80,8 @@ internal fun selectApplication(
     return if (packageName != null && isApplicationId(packageName)) {
         ApplicationSelection(packageName, configurationName, null)
     } else {
-        ApplicationSelection(null, configurationName, automaticReason ?: "設定で対象アプリのpackage名を指定してください。")
+        ApplicationSelection(null, configurationName, automaticReason?.let {
+            "$it 設定（Tools → Android Replay Buffer）で対象アプリを「手動」に切り替え、package名を指定してください。"
+        } ?: "設定で対象アプリのpackage名を指定してください。")
     }
 }

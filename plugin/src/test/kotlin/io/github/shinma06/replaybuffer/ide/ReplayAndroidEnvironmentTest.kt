@@ -1,5 +1,6 @@
 package io.github.shinma06.replaybuffer.ide
 
+import com.android.tools.idea.run.ApkProvisionException
 import com.intellij.openapi.progress.ProcessCanceledException
 import io.github.shinma06.replaybuffer.settings.AppSelectionMode
 import io.github.shinma06.replaybuffer.settings.ReplaySettings
@@ -11,6 +12,7 @@ import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertSame
 import org.junit.jupiter.api.Assertions.assertThrows
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 
@@ -34,6 +36,39 @@ class ReplayAndroidEnvironmentTest {
             val thrown = assertThrows(cancelled.javaClass) { resolveApplication("Debug") { throw cancelled } }
             assertSame(cancelled, thrown)
         }
+    }
+
+    @Test
+    fun `unresolved application reasons retain the cause and guide manual settings without losing SDK`() {
+        val tools = Files.createDirectories(directory.resolve("platform-tools"))
+        val adb = Files.createFile(tools.resolve(if (System.getProperty("os.name").startsWith("Windows")) "adb.exe" else "adb"))
+        adb.toFile().setExecutable(true)
+        for (reason in listOf(
+            "Androidの実行対象を選択してください。",
+            "Gradle同期またはindexingの完了を待っています。",
+            "Gradle同期に失敗しています。同期後に再確認します。",
+        )) {
+            val application = selectApplication(ReplaySettings(), "Run", null, reason)
+            assertNull(application.packageName)
+            assertEquals("Run", application.configurationName)
+            val message = application.reason!!
+            assertTrue(message.startsWith(reason))
+            assertTrue(message.contains("Tools → Android Replay Buffer"))
+            assertTrue(message.contains("「手動」"))
+            assertTrue(message.contains("package名"))
+            assertEquals(adb, sdkEnvironment(directory, application).adb)
+        }
+        val provision = resolveApplication("Debug") { throw ApkProvisionException("synthetic unavailable") }
+        assertNull(provision.packageName)
+        assertEquals("Debug", provision.configurationName)
+        val provisionMessage = provision.reason!!
+        assertTrue(provisionMessage.startsWith("実行対象のapplicationIdを取得できません。Gradle同期を確認してください。"))
+        assertTrue(provisionMessage.contains("Tools → Android Replay Buffer"))
+        assertTrue(provisionMessage.contains("「手動」"))
+        assertEquals(adb, sdkEnvironment(directory, provision).adb)
+        assertTrue(resolveApplication("Debug") { throw IllegalStateException("synthetic") }.reason!!.contains("package名"))
+        assertTrue(selectApplication(ReplaySettings(), "Run", null, null).reason!!.contains("package名"))
+        assertNull(selectApplication(ReplaySettings(), "Run", "com.example.ready", "not ready").reason)
     }
 
     @Test
