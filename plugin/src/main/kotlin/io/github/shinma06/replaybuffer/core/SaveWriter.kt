@@ -49,13 +49,14 @@ internal class SaveWriter {
             val parts = mutableListOf<Map<String, Any?>>()
             val losses = mutableListOf<String>()
             val tail = capture.videoTail()
+            val videoScopes = capture.gaps.videoScopes(capture.clocks)
             val framesFile = file("frames.jsonl")
             Files.newBufferedWriter(framesFile, Charsets.UTF_8, CREATE_NEW, WRITE).use { index ->
                 val all = capture.video
                 val groups = mutableListOf<MutableList<VideoEntry>>()
                 all.forEach { frame ->
                     val previous = groups.lastOrNull()?.lastOrNull()
-                    if (previous == null || !previous.continuousTo(frame, capture.gaps)) {
+                    if (previous == null || !previous.continuousTo(frame, videoScopes)) {
                         groups += mutableListOf(frame)
                     } else groups.last() += frame
                 }
@@ -236,6 +237,12 @@ internal class SaveWriter {
                 "logcat_loss_note" to "reader/framing/byte上限の中断はgapsへ記録。Android buffer内の未観測overflow数は不明。tail以前をbackfillしたとは主張しない", "watermarks" to mapOf("video_pts_us" to capture.video.lastOrNull()?.pts?.toString(),
                     "device_log_record_id" to capture.logs.lastOrNull()?.id, "app_log_record_id" to capture.logs.lastOrNull { it.app == true }?.id),
                 "parts" to parts, "video_missing_ranges" to videoHoles,
+                "video_clock_gap_scopes" to capture.gaps.mapIndexedNotNull { i, gap ->
+                    if (gap.stream != "clock") null else videoScopes[i].let { scope -> mapOf(
+                        "gap_index" to i, "from_ns" to scope.fromNs?.toString(), "to_ns" to scope.toNs?.toString(),
+                        "boundary_uncertainty_ns" to scope.boundaryUncertaintyNs?.toString(),
+                        "derived_from_valid_samples" to (scope !== gap)) }
+                },
                 "video_tail" to tail?.let { mapOf("from_ns" to it.fromNs?.toString(), "to_ns" to it.toNs?.toString(),
                     "source_pts_us" to it.sourcePtsUs.toString(), "source_sequence_ns" to it.sourceSequenceNs?.toString(),
                     "clock_epoch" to it.clockEpoch, "generation" to it.generation, "display_held" to it.displayHeld,

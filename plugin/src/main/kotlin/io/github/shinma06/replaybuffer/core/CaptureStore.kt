@@ -394,6 +394,27 @@ internal fun VideoEntry.continuousTo(next: VideoEntry, gaps: Iterable<CaptureGap
         gaps.none { gap -> (gap.stream == "video" || gap.stream == "clock") &&
             gap.intersects(time.sequence, next.time.sequence, maxOf(time.uncertainty, next.time.uncertainty)) }
 
+/** Mux-only envelopes. The original uncertain gaps still govern coverage, UI and retention. */
+internal fun List<CaptureGap>.videoScopes(clocks: List<ClockSample>): List<CaptureGap> {
+    val anchors = clocks.mapNotNull { sample ->
+        val offset = sample.sequenceOffset ?: return@mapNotNull null
+        if (!sample.valid || sample.bridgeError !in 0..20_000_000L) return@mapNotNull null
+        try {
+            Math.addExact(sample.elapsed, offset) to Math.addExact(sample.readError,
+                Math.addExact(Math.subtractExact(sample.received, sample.sent) / 2, sample.bridgeError))
+        } catch (_: ArithmeticException) { null }
+    }.sortedBy { it.first }
+    return map { gap ->
+        if (gap.stream != "clock" || gap.boundaryUncertaintyNs != null && gap.boundaryUncertaintyNs != Long.MAX_VALUE) return@map gap
+        // Widen to observed normal samples, never treat nominal from/to as zero-error boundaries.
+        val before = gap.fromNs?.let { from -> anchors.lastOrNull { it.first <= from } }
+        val after = gap.toNs?.let { to -> anchors.firstOrNull { it.first >= to } }
+        if (before == null && after == null || before != null && after != null && before.first > after.first) gap
+        else gap.copy(fromNs = before?.first, toNs = after?.first,
+            boundaryUncertaintyNs = maxOf(before?.second ?: 0, after?.second ?: 0))
+    }
+}
+
 /** The same retained IDR/config requirement is used for both MP4 selection and its display metadata. */
 internal fun List<VideoEntry>.decodeStart(frame: VideoEntry): Int? = (indexOf(frame) downTo 0).firstOrNull { i ->
     val key = this[i]
