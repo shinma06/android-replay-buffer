@@ -169,6 +169,8 @@ class InitialAcceptanceTests(unittest.TestCase):
             self.verify()
 
     def test_later_full_promotion_cannot_drop_deferred_cases_already_in_main(self):
+        self.policy['cases']['36:QA-1-EMU']['full_acceptance_actor'] = 'human'
+        self.record_policy()
         self.manifest.pop('stage')
         later = 'd' * 40
         self.manifest['candidate'] = later
@@ -184,6 +186,9 @@ class InitialAcceptanceTests(unittest.TestCase):
             self.verify()
         for key in self.policy['cases']:
             self.manifest['results'][key] = dict(observation(), head=later, execution='computer_use')
+        with self.assertRaisesRegex(ValueError, 'human observation'):
+            self.verify()
+        self.manifest['results']['36:QA-1-EMU']['human_evidence'] = 'Human receipt on later candidate'
         self.assertTrue(self.verify()['gui_complete'])
 
     def test_renderer_distinguishes_initial_pass_and_unobserved_deferred_history(self):
@@ -204,6 +209,70 @@ class InitialAcceptanceTests(unittest.TestCase):
         result = self.manifest['results'][key]
         with self.assertRaisesRegex(ValueError, 'GOP'):
             validate_initial_result(result, key, self.policy, NEW, 'e' * 64, 'computer_use', contract)
+
+    def test_full_acceptance_requires_explicit_human_evidence_but_initial_scope_remains_agent(self):
+        key = '36:QA-1-EMU'
+        self.policy['cases'][key]['full_acceptance_actor'] = 'human'
+        self.record_policy()
+        self.record_results()
+        self.assertTrue(self.verify()['stage_complete'])
+        self.manifest.pop('stage')
+        self.manifest['results'] = {
+            key: dict(observation(), actor='gpt', execution='computer_use'),
+            '36:QA-1-REAL': dict(observation(), actor='gpt')}
+        for patch in ({'actor': 'gpt', 'human_evidence': 'human check reference'},
+                      {'actor': 'human'}, {'actor': 'human', 'human_evidence': ''}):
+            self.manifest['results'][key] = dict(observation(), execution='computer_use', **patch)
+            with self.subTest(patch=patch), self.assertRaisesRegex(ValueError, 'human observation'):
+                self.verify()
+        self.manifest['results'][key]['human_evidence'] = 'Same candidate image-number check receipt'
+        self.assertTrue(self.verify()['gui_complete'])
+
+    def test_full_renderer_restores_missing_or_changed_deferred_contracts_and_human_gate(self):
+        key = '36:QA-1-EMU'
+        self.policy['cases'][key]['full_acceptance_actor'] = 'human'
+        older = copy.deepcopy(self.fixture.documents[f'{NEW}:docs/verification/changes/issue-36.json'])
+        older['cases'][0]['expected'] = 'Older original contract remains visible'
+        self.fixture.documents[f'{HEAD}:docs/verification/changes/issue-36.json'] = older
+        self.policy['cases'][key]['sources'].append({
+            'source_pr': 100, 'source_merge': HEAD, 'source_path': 'docs/verification/changes/issue-36.json',
+            'original_case_sha256': canonical_hash(older['cases'][0])})
+        self.record_policy()
+        self.manifest.pop('stage')
+        self.manifest['results'] = {key: dict(observation(), actor='gpt', execution='computer_use')}
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'case.json'
+            current = copy.deepcopy(self.fixture.documents[f'{NEW}:docs/verification/changes/issue-36.json'])
+            current['cases'][0]['expected'] = 'Caller changed the historical expectation'
+            path.write_text(json.dumps(current))
+            for paths in ([], [path]):
+                output = render_queue(paths, self.manifest, self.fixture.git)
+                self.assertIn('QA-1-EMU / #36', output)
+                self.assertIn('QA-1-REAL / #36', output)
+                self.assertIn('後続Issue: #65', output)
+                self.assertIn('再開条件: 後続受入で再開', output)
+                self.assertIn('原期待結果: ' + CASE['expected'], output)
+                self.assertIn('Older original contract remains visible', output)
+                self.assertNotIn('Caller changed', output)
+                self.assertNotIn('Case合格（', output)
+                self.assertNotIn('初期版範囲合格', output)
+                self.assertNotIn('原Case全体: 未完了', output)
+            self.manifest['results'][key].update(actor='human', human_evidence='Same candidate human receipt')
+            self.assertIn('Case合格（', render_queue([], self.manifest, self.fixture.git))
+
+    def test_full_actor_policy_rejects_unrecognized_actor_or_non_deferred_scope(self):
+        entry = self.policy['cases']['36:QA-1-EMU']
+        for actor in (None, 'gpt', 'either', ''):
+            entry['full_acceptance_actor'] = actor
+            self.record_policy()
+            self.record_results()
+            with self.subTest(actor=actor), self.assertRaisesRegex(ValueError, 'scope'):
+                self.verify()
+        entry.update(full_acceptance_actor='human', deferred_scope=[])
+        self.record_policy()
+        self.record_results()
+        with self.assertRaisesRegex(ValueError, 'scope'):
+            self.verify()
 
 
 if __name__ == '__main__':
