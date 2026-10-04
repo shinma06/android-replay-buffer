@@ -2,11 +2,12 @@
   "schema": 1,
   "issue": 71,
   "gui_required": true,
-  "reason": "保存ログ選択と保存不足の根拠を変更するため、新固定統合ZIPのIDE保存完了欄/JSONL/時計/窓をQAで再観察する。旧fail/REAL保留・段階受入の原契約は維持。",
+  "reason": "保存ログ選択/保存不足の根拠を変更。精密条件は同ZIP製品classの限定JVM、正常0行/正event/保存表示/失敗固定retryは実IDEで別証拠として再受入し、同buildへ結び付ける。旧fail/REAL・原契約は保持。",
   "cli_checks": [
     "実CaptureClock/CaptureStore APIで受信時未確定→保存時に確定した古いログの混入と両誤差境界の取りこぼしを修正前2回帰で再現。",
     "修正後のsave/store回帰で正常app0行、未知時刻/帰属/保存窓、実gap、N変更、失敗pin/固定retry、元retainedAt/帰属を確認。",
-    "plugin全回帰/build/structure、check.py/CLI保全とclean committed impact、固定HEAD/base独立review/公開CIは各実結果をIssue/PR/停止packetで記録。GUIのpassへ転記しない。"
+    "plugin全回帰/build/structure、check.py/CLI保全とclean committed impact、固定HEAD/base独立review/公開CIは各実結果をIssue/PR/停止packetで記録。GUIのpassへ転記しない。",
+    "Case71はGUIに存在しない精密fault注入を要求せず、固定ZIP製品classを使う既存限定JVM検証と実IDE観察を別証拠として同candidateへ結び付ける。製品test hook/機能や受入省略は追加しない。"
   ],
   "cases": [
     {
@@ -18,26 +19,27 @@
       ],
       "gpt": {
         "status": "pending",
-        "reason": "同じ新統合source/ZIP/ロード実体でのIDE保存欄・JSONL再観察は未実施。pure回帰を転用しない。"
+        "reason": "同じ新統合source/ZIP製品classの限定JVMと実IDE観察の両方を束ねた再受入は未完了。writer pure回帰だけでpassにしない。"
       },
       "human": {
         "status": "pending",
-        "reason": "同じ修正版の人間/REAL実観察は未実施。段階計画の延期はPM正式管理で追跡する。"
+        "reason": "同じ修正版の人間/REAL観察は未実施。原契約とPM正式段階計画の延期を保持する。"
       },
       "fix_issue": null,
       "fix_pr": null,
-      "recheck": "ログ選択/clock/保存窓/帰属/保存不足/candidate変更後は同じ固定source/ZIPで再受入。",
+      "recheck": "製品class/clock/保存集合/不足/統合candidate変更後、同じ新ZIPへ結び付く限定JVMと実IDE証拠の双方を再確認する。",
       "next_action": "PMが独立レビュー/CI/develop統合後に新Case出典を正式計画へ追加し、QA子Issueへ全契約・artifactを双方向移管。Case省略/gate緩和/既存fail削除をしない。",
       "id": "LOG-REMAP-NORMAL-ZERO",
       "change": "再評価で窓外と確定したログを現在のapp不足へ混ぜない",
-      "preconditions": "QA所有の使い捨てapp/deviceと新固定統合ZIP。受信時clock未確定の古いログが保持され、同boot正常sampleで後に時刻が確定する隔離条件を用意。現在窓は既知、app選択/UID解決済み、正常collectorと動画、gapなし。",
+      "preconditions": "QA所有の使い捨てapp/deviceと新固定統合ZIP。限定JVM検証と実IDE観察は別証拠で同じsource/ZIPへ結び付ける。clock未確定等の精密条件はGUIへ注入しない。実IDEでは現在窓/選択appが既知、正常collector/動画、gapなしの区間を使う。",
       "steps": [
-        "新source/ZIP/hash/ロード版と保存Nを記録する。旧267候補の出力は不具合証拠として保全し修正版へ転用しない。",
-        "古い未確定ログが全誤差を含め現在窓外にあり、現在窓は非対象deviceログのみでapp正常0行となる保存を行う。",
-        "保存完了欄/通知とライブstream欄を区別し、完成sessionの窓/clock/error/gapsとdevice/app JSONLを照合する。",
-        "同じ新候補の窓内対象eventのrecord_idがdevice/app双方に一致し、0行だった保存が収集断であると誤解されないことを確認する。"
+        "限定JVM: 新候補ZIPを展開し製品JAR/依存をclasspath・friend pathとして、同じ固定sourceの既存CaptureStoreSaveTestだけを別の私有runnerへcompileする。製品source/classを再compile・差替えせず、当初と実行後の製品class hashがZIPと一致することを記録する。",
+        "限定JVM: remappedOldUnknownLogDoesNotPolluteAnEmptyApplicationWindowOrFrozenRetryを実行し、受信時未確定→保存時に窓外確定、現在の非対象行のみ/app0行、元retainedAt/帰属、pinした失敗要求とretryを確認する。runner/ログ/JUnit XML・source/ZIP hashを私有証拠へ対応付ける。",
+        "実IDE: 共有GUI lease/所有fixtureの下で同じ新ZIPのロード実体を確認し、appが正常無出力の窓を保存する。保存N/選択app/clock/gap、deviceの正常行とapp0行を完成JSONLで確認し、保存完了欄/通知が0行だけを不足扱いしないことを観察する。精密clock faultをGUIで作る手順は要求しない。",
+        "実IDE: 同じ新候補の窓内対象eventを既存fixture操作で追加して別保存し、同record_idがdevice/app双方にあることを確認する。ライブstream欄と保存完了欄を区別し、旧267の陽性対照を新候補へ転用しない。",
+        "Case記録: 限定JVMの精密条件証拠と実IDEの表示/正常0行/正event証拠を別IDで記録し、同じcandidate/source/ZIP/ロード版へ結び付ける。片方のみで全Case passにしない。"
       ],
-      "expected": "全誤差を含め窓外と確定した行は完成device JSONL/保存app不足根拠へ残らない。正常なapp 0行は件数だけで欠落にならない。現在窓の対象eventと元record_id/clock/JSONL対応を保全する。"
+      "expected": "同ZIP製品classの限定JVMでは全誤差を含め窓外と確定した行を完成device JSONL/保存app不足根拠へ残さない。実IDEでは正常app0行を件数だけで欠落扱いせず、窓内対象eventの同record_id/clock/JSONL対応と保存表示を確認する。両証拠を同じbuildへ結び付ける。"
     },
     {
       "artifact": "plugin",
@@ -48,26 +50,27 @@
       ],
       "gpt": {
         "status": "pending",
-        "reason": "同じ新統合source/ZIP/ロード実体でのIDE保存欄・JSONL再観察は未実施。pure回帰を転用しない。"
+        "reason": "同じ新統合source/ZIP製品classの限定JVMと実IDE観察の両方を束ねた再受入は未完了。writer pure回帰だけでpassにしない。"
       },
       "human": {
         "status": "pending",
-        "reason": "同じ修正版の人間/REAL実観察は未実施。段階計画の延期はPM正式管理で追跡する。"
+        "reason": "同じ修正版の人間/REAL観察は未実施。原契約とPM正式段階計画の延期を保持する。"
       },
       "fix_issue": null,
       "fix_pr": null,
-      "recheck": "ログ選択/clock/保存窓/帰属/保存不足/candidate変更後は同じ固定source/ZIPで再受入。",
+      "recheck": "製品class/clock/保存集合/不足/統合candidate変更後、同じ新ZIPへ結び付く限定JVMと実IDE証拠の双方を再確認する。",
       "next_action": "PMが独立レビュー/CI/develop統合後に新Case出典を正式計画へ追加し、QA子Issueへ全契約・artifactを双方向移管。Case省略/gate緩和/既存fail削除をしない。",
       "id": "LOG-REMAP-UNKNOWN-RETRY",
       "change": "境界誤差・真の不明・lossと固定retryを保全",
-      "preconditions": "QA所有の隔離clock/log fixtureと新固定統合ZIP。行誤差+窓誤差に接する両境界、未知clock/boot bridge、shared UID等の帰属不明、実gap/byte lossと保存失敗を区別できる条件。",
+      "preconditions": "新固定統合ZIPと同source既存test、QA所有の実IDE/使い捨て保存先。精密な両境界/未知/boot bridge/実gap・byte lossは同ZIP製品classの限定JVM、失敗した保存対象とretryの表示/操作は実IDEで別証拠として検証する。新しい製品test hookやGUI注入機能は使わない。",
       "steps": [
-        "行と窓の誤差範囲が開始/終了へ接するログ、真の時刻/帰属不明ログを保存し、JSONL/null・不足理由を照合する。",
-        "実clock/log gapや容量lossは元gapと関連不足に残り、unknown boot bridge/保存窓では外側と断定しないことを確認する。",
-        "保存を失敗させた固定対象をpinしたままclock/取得/app/Nを進め、同じ要求を再試行する。",
-        "再試行のT/N/clock/元record_id/帰属/集合が不変であることを確認後releaseし、別の広いNで以前の行が窓内になれば元帰属不明のまま保存されることを確認する。"
+        "限定JVM: 前Caseと同じZIP製品JAR/固定test source/限定runnerでremappedLogsKeepBothBoundaryErrorsAndRealUnknownInformationを実行する。行+窓の両端誤差、未知clock/帰属/保存窓、元gapの保持をJUnitとJSONL等の検査結果で記録する。",
+        "限定JVM: 同じ製品classで既存save/store19件も実行し、unknownBootBridgeRetainsOldRecordsAndExportsUnknownWindowCoordinates、byte上限/loss/noIDR/pin/固定retry/N変更を含む既存保証を確認する。production class一致と元retainedAt/appが変更されない証拠を残す。",
+        "実IDE: 同じ新ZIPのロード版を固定し、QAが所有する使い捨て保存先への書込みを拒否する等の既存再現経路で保存を失敗させる。共有root/device/他所有物を変更しない。失敗欄の要求ID/T/N/対象を記録する。",
+        "実IDE: 失敗要求を保持したまま取得/選択app/Nを進め、既存の再試行操作で所有する書込み可能な別保存先へ保存する。要求ID/T/N/元record_id/帰属/保存集合と完成欄が元固定対象を使うことを観察する。設定された権限は所有fixture内で復元する。",
+        "Case記録: 精密clock/unknown/lossの限定JVM証拠と、実IDEの失敗/固定retry/保存表示証拠を分けて同じsource/ZIPへ対応付ける。元Caseの境界保証を削らず、pure検証のみをGUIpassにしない。"
       ],
-      "expected": "交差し得る行と真の不明/実lossを捨てず、不明帰属をfalseへ変えない。受信時retainedAtと帰属は不変。固定retry/pin/収集継続/CLI/動画の既存保証を保ち、N変更で過去の不明を捏造しない。"
+      "expected": "限定JVMで境界へ交差し得る行・真の不明/実lossを保持し、不明帰属をfalseへ変えない。実IDEで失敗要求のT/N/元record_id/帰属/集合が後続取得/設定変更で更新されず、同じ固定対象を再試行できることを確認する。Nを広げた別captureでの元帰属の保持と収集/CLI/動画保証もJVM/既存回帰で保全する。"
     }
   ]
 }
