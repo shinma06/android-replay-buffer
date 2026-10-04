@@ -274,8 +274,19 @@ internal class CaptureStore(
         val uncertainty = fixedUncertainty ?: clock.endUncertainty()
         val known = uncertainty != Long.MAX_VALUE
         val start = maxOf(0L, started ?: end, end - settings.replaySeconds * 1_000_000_000L)
-        val rows = logs.filter { !known || it.time.sequence == null || it.retainedAt in start..end }.map { row ->
-            row.copy(time = clock.log(row.source.wall, row.host))
+        val rows = logs.map { row -> row.copy(time = clock.log(row.source.wall, row.host)) }.filter { row ->
+            val point = row.time.sequence
+            val error = row.time.uncertainty
+            if (!known || point == null || error == Long.MAX_VALUE || error < 0 || uncertainty < 0) true
+            else try {
+                val margin = Math.addExact(error, uncertainty)
+                val distance = when {
+                    point < start -> Math.subtractExact(start, point)
+                    point > end -> Math.subtractExact(point, end)
+                    else -> 0L
+                }
+                distance <= margin
+            } catch (_: ArithmeticException) { true } // Overflow cannot prove that the record is outside.
         }
         val inside = video.filter { !known || it.time.sequence == null || it.retainedAt <= end && it.retainedAt >= start }
         val files = inside.map { it.file }.toMutableSet()
