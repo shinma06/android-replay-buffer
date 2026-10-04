@@ -439,12 +439,10 @@ def render_queue(paths, promotion=None, git=git_read):
         policy = gop_amendment(promotion.get('base'), candidate, git)
         if policy:
             # The trusted bindings, not current same-named files, select original contracts.
-            mapped = {(x.get('pr'), x.get('commit')) for x in promotion.get('changes', [])}
             source_cases = []
             for key, sources in policy['cases'].items():
                 for source in sources:
-                    if (source['source_pr'], source['source_merge']) not in mapped:
-                        raise ValueError('QA queue is missing an original GOP source occurrence')
+                    git('merge-base', '--is-ancestor', source['source_merge'], candidate)
                     data = regular_json(source['source_merge'], source['source_path'], git)
                     validate_change(data, int(key.split(':')[0]), True)
                     matches = [c for c in data['cases'] if c['id'] == key.split(':')[1]]
@@ -488,16 +486,22 @@ def render_queue(paths, promotion=None, git=git_read):
         lines += ['', f'## #{data["issue"]} / {case["id"]}: {case["change"]}', '',
                   f'PR: [#{data["pr"]}](https://github.com/shinma06/android-replay-buffer/pull/{data["pr"]})' if data.get('pr') else 'PR: 未登録', '', '前提・対象build: ' + case['preconditions'], '']
         amended = gop_cases.get(f'{data["issue"]}:{case["id"]}')
+        result = results.get(f'{data["issue"]}:{case["id"]}', {})
         if amended:
+            proof = result.get('gop_evidence')
+            if not isinstance(proof, dict):
+                proof = {}
             lines += ['GOP改訂revision: ' + amended['revision'],
                       '元の前提（履歴）: ' + amended['original_preconditions'],
                       '固定出典: ' + ', '.join(f'PR #{s["source_pr"]} / {s["source_merge"]}'
-                                               for s in amended['sources']), '']
+                                               for s in amended['sources']),
+                      '観察GOP改訂revision: ' + str(result.get('gop_revision') or '未登録')]
+            lines += [f'GOP観察証拠 ({name}): {proof.get(name) or "未登録"}' for name in sorted(GOP_EVIDENCE)]
+            lines.append('')
         if data.get('pr_role') == 'related_evidence_only':
             lines += ['このPRは関連証拠です。親Issueの残条件であり、当該PRのmain受入へ追加しません。', '']
         lines += [f'{n}. {step}' for n, step in enumerate(case['steps'], 1)]
         lines += ['', '期待結果: ' + case['expected'], '']
-        result = results.get(f'{data["issue"]}:{case["id"]}')
         if result:
             lines += ['今回の候補結果: ' + result.get('status', 'pending'),
                       f'確認者: {result.get("actor", "未登録")} / {result.get("observer", "未登録")}',

@@ -209,3 +209,37 @@ class GopAcceptanceTests(unittest.TestCase):
             path.write_text(json.dumps(data))
             with self.assertRaisesRegex(ValueError, 'historical GOP'):
                 render_queue([path], self.manifest, self.git)
+
+    def test_queue_reads_historical_sources_without_requiring_them_in_current_changes(self):
+        source = self.policy['cases']['13:SYNC-WINDOW'][0]
+        data = self.documents[f'{source["source_merge"]}:{source["source_path"]}']
+        self.manifest['changes'] = []
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'case.json'
+            path.write_text(json.dumps(data))
+            output = render_queue([path], self.manifest, self.git)
+            self.assertIn('Case合格（', output)
+            self.assertIn(source['source_merge'], output)
+            git = self.git
+            self.git = lambda *args: (_ for _ in ()).throw(ValueError('unrelated source')) if (
+                args == ('merge-base', '--is-ancestor', source['source_merge'], NEW)) else git(*args)
+            with self.assertRaisesRegex(ValueError, 'unrelated source'):
+                render_queue([path], self.manifest, self.git)
+
+    def test_queue_shows_observed_revision_and_all_boundary_references_including_missing(self):
+        source = self.policy['cases']['13:SYNC-WINDOW'][0]
+        data = self.documents[f'{source["source_merge"]}:{source["source_path"]}']
+        result = self.manifest['results']['13:SYNC-WINDOW']
+        result['gop_revision'] = 'f' * 64
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'case.json'
+            path.write_text(json.dumps(data))
+            output = render_queue([path], self.manifest, self.git)
+            self.assertIn('観察GOP改訂revision: ' + 'f' * 64, output)
+            for name, reference in result['gop_evidence'].items():
+                self.assertIn(f'GOP観察証拠 ({name}): {reference}', output)
+            self.assertNotIn('Case合格（', output)
+            result['gop_revision'] = canonical_hash(self.policy)
+            result['gop_evidence'].pop('mid_gop')
+            self.assertIn('GOP観察証拠 (mid_gop): 未登録', render_queue([path], self.manifest, self.git))
+            self.assertNotIn('Case合格（', render_queue([path], self.manifest, self.git))
