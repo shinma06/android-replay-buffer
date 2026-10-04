@@ -31,6 +31,36 @@ CLIではUSB切断/再接続、直前区間の動画/logcat時刻整合、log-on
 
 Plugin ZIP生成はプラグイン基盤の導入時に実buildへ接続します。現在は存在しないGradle/ZIP成果物を仮定せず、製品promotion前に再現できる固定成果物の作成・照合手順をそのIssueで定義します。main起点の限定変更も、trusted mainの`docs/verification/scopes/issue-N.json`による事前承認範囲と全Caseの観察が必要です。
 
+### 実測GOPの境界試験（#56）
+
+[GOP限定改訂](amendments/gop-boundaries.json)は、#13/#31/#41の`SYNC-WINDOW`と#27の`BUFFER-180`・`BUFFER-SHORT`・`SAVE-CONTINUE`（REAL/EMU）の9 Caseへ適用する。元PRの固定merge・全Case内容のSHA-256を照合し、#27はPR #33と#38の両出典を保持する。合計15出典の不足・追加・矛盾は拒否し、最後のPRを任意に採用しない。Case ID・artifact・実施方法・既存操作・期待結果・過去の状態は変更しない。
+
+設計のI-frame間隔1秒はencoderへの試験開始値であり、実時間のGOPを保証しない。[Android仕様](https://developer.android.com/reference/android/media/MediaFormat#KEY_I_FRAME_INTERVAL)では、設定FPSからフレーム数へ換算するencoderの実間隔は実FPSによって変わり得る。指定値を実測値とせず、同じ固定ZIPの元PTS・隣接IDRから測定する。約1秒GOPは同一候補のJVM回帰として維持し、端末では実測した長いGOP・可変FPSを含め、IDR直後・中間・次IDR直前の切出しを追加確認する。JVM成功をIDE/端末の合格へ転記しない。実施方法と測定項目は改訂JSONの追加手順を正本とする。
+
+最大限保存、切出し誤差≤1観測frame間隔＋時計誤差、mux/index丸め≤1ms、同期p95≤100ms・最大≤250ms・30分drift≤50ms・clock≤20ms、画質/負荷・容量/pin制限は維持する。欠落・時計不明・未確認末尾保持を明示し、正式300イベント/30分と必要な人間確認は別の必須Caseで実施する。REAL保留をEMU結果で解消しない。
+
+改訂はpromotionの固定base（trusted main）からだけ読む。通常のtooling PRで独立レビューしてmainへ導入し、専用同期PRでdevelopへ取り込んだ後に新candidateを固定する。candidateは改訂の`required_ancestor`を含み、同じ改訂JSONをregular fileとして持つ必要がある。候補側だけの変更、symlink、重複JSON key、不一致は拒否する。新candidateからZIPをbuild・実ロードし、全必要Caseを確認する。旧5dbの観察は履歴として残し、新候補のpassへ付け替えない。
+
+改訂後の9 Caseの各passには、通常のcandidate/hash/実ロード/確認者/日時/証拠に加え、次を記録する。`gop_revision`は改訂JSON全体を`json.dumps(data, ensure_ascii=False, sort_keys=True, separators=(',', ':'))`で正規化したUTF-8のSHA-256。各`gop_evidence`値は、その候補で実行した確認の公開可能な証拠参照を記入する。私有媒体や生ログを公開しない。
+
+```json
+{
+  "gop_revision": "改訂JSONの正規化SHA-256",
+  "gop_evidence": {
+    "one_second_regression": "同一sourceの約1秒GOP回帰commandと結果への参照",
+    "after_idr": "実測IDR直後のcut位置・復号・誤差への参照",
+    "mid_gop": "実測GOP中間のcut位置・復号・誤差への参照",
+    "before_next_idr": "実測次IDR直前のcut位置・復号・誤差への参照",
+    "vfr": "実測GOP時間/フレーム数・可変FPS条件への参照",
+    "limits_and_quality": "既存保存量・画質/負荷・容量/pin条件の評価への参照"
+  }
+}
+```
+
+既存結果へこのhashを追記するだけでは新観察にならない。機械検査は識別・参照の存在を確認するもので、実行や品質の証明は証拠を読む独立レビューで行う。改訂hash・各証拠が不足した結果はgateと生成一覧の両方で合格にしない。
+
+`verification.py --promotion ...`による一覧も同じresolverを使い、固定出典と元の前提、適用した前提・追加手順・改訂revisionを表示する。渡すCase JSONは元の固定merge契約と一致させ、候補側の書換えで代用しない。改訂だけではCase集合を減らせず、一覧のCase単位表示も全候補のpromotion gateを代替しない。
+
 ## 引継ぎ
 
 全open QAは[人間向け手順](human-qa.md)への本文リンク、全Case、前提・操作・期待・記録方法・担当・再開条件、main反映追跡を持ちます。元Issueの実際のsub-issueとしてMilestoneを継承し、双方向linkとProject QA表示を読み戻してから実装Issueをcloseします。親・QA・Milestoneの完了を子PRから推測しません。
