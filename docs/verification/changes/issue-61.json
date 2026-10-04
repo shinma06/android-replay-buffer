@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "issue": 61,
+  "gui_required": false,
+  "reason": "GOP改訂のQA一覧で履歴出典を解決し、観察revisionと証拠参照を表示する管理変更。製品runtime/build/CLI・元Case・改訂dataとpromotion gateの必要集合は変更しない。",
+  "cli_checks": [
+    "python3 -m unittest discover -s scripts/workflow -p test_gop_acceptance.py: 履歴Caseの一覧、無関係な出典拒否、観察revision/証拠表示と未登録の拒否",
+    "python3 scripts/check.py: 管理構造と回帰試験",
+    "python3 scripts/workflow/product_check.py: CLI原型の既存試験",
+    "python3 scripts/workflow/change_impact.py --base origin/main --run-tests: clean committed HEADで実行"
+  ],
+  "cases": []
+}
