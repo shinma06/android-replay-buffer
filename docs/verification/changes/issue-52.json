@@ -1,0 +1,75 @@
+{
+  "schema": 1,
+  "issue": 52,
+  "gui_required": true,
+  "reason": "clock品質低下後の正常動画part分割を変更。同じUI統合source/ZIP/ロード版でIDE・端末・標準player・両log照合が必要。旧fail/REAL holdを維持。",
+  "cli_checks": [
+    "同epochの合成RTT品質低下とclock process境界の2回帰が修正前に6frame→6partで失敗。修正後は正常前後を2partへ保持し、元MAX gap/不足を残す。GUI観察ではない。",
+    "管理/CLI元21 files+既存2 tests保全、plugin全回帰/check/buildPlugin/verifyPluginStructure、clean committed impactを実行し、最終固定HEAD/base・ZIP/hashと結果は私有停止packetで記録する。",
+    "新固定sourceの独立レビュー・公開CI・統合候補の実受入は別条件。旧候補承認はVFR6で撤回済み。",
+    "PR53の復旧sample追加→clockStatus(true)→次周期sample前save順を同epoch RTT/clock process境界の2回帰で再現。直後・次sample後の新しい保存の正常区間と、固定retry/元MAX不足の保持を照合する。"
+  ],
+  "cases": [
+    {
+      "id": "CLOCK-VIDEO-REGIONS",
+      "artifact": "plugin",
+      "change": "clock品質低下前後の取得済み動画を連続partへ保全",
+      "preconditions": "QA所有の固定候補ZIPと静止/1秒連番fixture。clock品質低下の隔離合成fixtureを別に固定。",
+      "steps": [
+        "正常静止と20秒の連番更新を保存する。",
+        "単発invalid RTT sampleと復旧、clock process終了/epoch変更を隔離fixtureで再現し、前後複数frameを保存する。",
+        "最初の正常sample追加直後に次周期sampleなしで保存し、次sample後の新しい保存と比較する。復旧直後frameが単frame分割/次sampleまでの影響域へ残らないことを確認する。",
+        "MP4 part数/duration/seek、source PTS/実frame数と両logsの同じ連番を照合する。",
+        "過去clock gapが窓外にある保存を確認し、正常な保持区間が全frame1µsへ崩れないことと元warningを区別する。"
+      ],
+      "expected": "正常前後の独立なanchor/同一streamを実PTSで保存し、全frameを1µs partへ分割しない。clock gap/境界誤差/不足は保全し、未知やepoch/breakを詰めた時間へ置換しない。",
+      "provenance": [
+        "Issue52: 固定Core6e/developb0dcのclock未知gapによる全frame分割を修正。実QA rawは私有突合のみでrepoへ含めない。",
+        "docs/design/timeline.md: 元unknown保全と正常anchorによるmux範囲の分離",
+        "既存Issue13/31/41/45/49、QA27/44/47/51のCase/pending/fail/REAL holdを維持。"
+      ],
+      "gpt": {
+        "status": "pending",
+        "reason": "同じ修正UI統合ZIPのIDE/端末/標準player観察は未実施。合成回帰を転用しない。"
+      },
+      "human": {
+        "status": "pending",
+        "reason": "同じ修正候補の人間観察は未実施。REAL hold維持。"
+      },
+      "fix_issue": null,
+      "fix_pr": null,
+      "recheck": "clock/gap/MP4/store/依存/集約候補変更後に同じsource/ZIPで再実施。",
+      "next_action": "固定HEAD/baseの独立レビュー後、PMがUI42と単一ZIPを固定しQA子Issueへ双方向移管する。"
+    },
+    {
+      "id": "CLOCK-VIDEO-UNKNOWN",
+      "artifact": "plugin",
+      "change": "証明できない境界と固定保存対象を保全",
+      "preconditions": "片側/両側unknown、open/closed MAX gap、正常sample欠如/unknown boot、真正video lossと上限のQA所有合成fixture。",
+      "steps": [
+        "元gapsとvideo_clock_gap_scopesを照合し、正常sampleで証明できる側だけ影響を局所化する。 recovery_sampleの固定復旧根拠と元gap.toNs/誤差の保持を照合する。",
+        "true unknownなframe/window、epoch/boot/session/config/寸法/容量dropで同期を捏造しないことを照合する。",
+        "取得/clockを進めた後に固定対象をretryし、元PTS/clock/範囲判断/両logs/pin保全を確認する。",
+        "元49のheld=false不足と破棄P-frame watchdog、正常VFR/長い静止/末尾holdを既存回帰と同じ候補で確認する。"
+      ],
+      "expected": "根拠不足の側はunboundedで、元MAX/nullと未対応情報/不足を消さない。保全用intersects・UI・pruneは保守的なまま。decoder prerollを実frame数と数えず、固定対象と時刻範囲はretryで変わらない。",
+      "provenance": [
+        "Issue52: 固定Core6e/developb0dcのclock未知gapによる全frame分割を修正。実QA rawは私有突合のみでrepoへ含めない。",
+        "docs/design/timeline.md: 元unknown保全と正常anchorによるmux範囲の分離",
+        "既存Issue13/31/41/45/49、QA27/44/47/51のCase/pending/fail/REAL holdを維持。"
+      ],
+      "gpt": {
+        "status": "pending",
+        "reason": "同じ修正UI統合ZIPのIDE/端末/標準player観察は未実施。合成回帰を転用しない。"
+      },
+      "human": {
+        "status": "pending",
+        "reason": "同じ修正候補の人間観察は未実施。REAL hold維持。"
+      },
+      "fix_issue": null,
+      "fix_pr": null,
+      "recheck": "clock/gap/MP4/store/依存/集約候補変更後に同じsource/ZIPで再実施。",
+      "next_action": "固定HEAD/baseの独立レビュー後、PMがUI42と単一ZIPを固定しQA子Issueへ双方向移管する。"
+    }
+  ]
+}
