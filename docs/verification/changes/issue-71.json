@@ -65,12 +65,12 @@
       "preconditions": "新固定統合ZIPと同source既存test、QA所有の実IDE/使い捨て保存先。精密な両境界/未知/boot bridge/実gap・byte lossは同ZIP製品classの限定JVM、失敗した保存対象とretryの表示/操作は実IDEで別証拠として検証する。新しい製品test hookやGUI注入機能は使わない。",
       "steps": [
         "限定JVM: 前Caseと同じZIP製品JAR/固定test source/限定runnerでremappedLogsKeepBothBoundaryErrorsAndRealUnknownInformationを実行する。行+窓の両端誤差、未知clock/帰属/保存窓、元gapの保持をJUnitとJSONL等の検査結果で記録する。",
-        "限定JVM: 同じ製品classで既存save/store19件も実行し、unknownBootBridgeRetainsOldRecordsAndExportsUnknownWindowCoordinates、byte上限/loss/noIDR/pin/固定retry/N変更を含む既存保証を確認する。production class一致と元retainedAt/appが変更されない証拠を残す。",
-        "実IDE: 同じ新ZIPのロード版を固定し、QAが所有する使い捨て保存先への書込みを拒否する等の既存再現経路で保存を失敗させる。共有root/device/他所有物を変更しない。失敗欄の要求ID/T/N/対象を記録する。",
-        "実IDE: 失敗要求を保持したまま取得/選択app/Nを進め、既存の再試行操作で所有する書込み可能な別保存先へ保存する。要求ID/T/N/元record_id/帰属/保存集合と完成欄が元固定対象を使うことを観察する。設定された権限は所有fixture内で復元する。",
+        "限定JVM: 同じ製品classで既存CaptureStoreSaveTest全19件を実行し、unknownBootBridgeRetainsOldRecordsAndExportsUnknownWindowCoordinates、byte上限/loss/noIDR/pin/固定retry/N変更を含む既存保証を確認する。remappedOldUnknownLogDoesNotPolluteAnEmptyApplicationWindowOrFrozenRetryとpinnedRequestSurvivesPruneAndFailedSaveThenExportsMatchingLogsAndOriginalVfrPtsで、失敗前に保持されたFrozenCaptureのrecord_id/帰属/集合と再試行後JSONLを照合する。内部要求IDとsession.jsonのsave_idの一致、固定T/N/対象は同sourceのReplayCoreWireTest.failedRequestRetriesItsOriginalWindowWhileAcquisitionReconfigurationAndReconnectContinueを同ZIP製品classの既存fake SDK/loopback経路で別実行して検査する。追加test sourceだけを限定runnerへcompileし、製品classの一致を保つ。内部ID/全集合の厳密な不変性と元retainedAt/appの保持はこのJVM証拠へ割り当て、実IDEから取得した証拠と同一視しない。",
+        "実IDE: 同じ新ZIPのロード版を固定する。所有fixtureの対象appで識別可能な失敗前eventを発生させ、そのeventを含む保存窓でQA所有の使い捨て保存先への書込み拒否等の既存経路により保存を失敗させる。共有root/device/他所有物を変更しない。失敗欄に表示される固定区間の開始/終了、N、記録セッションsequenceIdと端末/app対象を記録する。sequenceIdを要求ID/save_idと同一視せず、画面にない内部要求IDや初回失敗で未完成のJSONL集合を採取したことにしない。",
+        "実IDE: 失敗要求を保持したまま取得を進め、失敗時の固定区間末尾と誤差範囲を過ぎてから識別可能な後続eventを発生させ、選択app/Nを変更する。既存の再試行操作で所有する書込み可能な別保存先へ保存し、完成欄とsession.jsonの区間/N/sequence/端末/app対象が失敗欄の表示可能な固定対象と一致すること、完成JSONLに失敗前eventがあり固定窓外の後続eventがないことを確認する。再試行後出力のsave_idは記録するが、失敗前画面のsequenceIdとは比較しない。初回失敗前の全record_id集合との厳密比較はJVM証拠で行う。変更した権限は所有fixture内で復元する。",
         "Case記録: 精密clock/unknown/lossの限定JVM証拠と、実IDEの失敗/固定retry/保存表示証拠を分けて同じsource/ZIPへ対応付ける。元Caseの境界保証を削らず、pure検証のみをGUIpassにしない。"
       ],
-      "expected": "限定JVMで境界へ交差し得る行・真の不明/実lossを保持し、不明帰属をfalseへ変えない。実IDEで失敗要求のT/N/元record_id/帰属/集合が後続取得/設定変更で更新されず、同じ固定対象を再試行できることを確認する。Nを広げた別captureでの元帰属の保持と収集/CLI/動画保証もJVM/既存回帰で保全する。"
+      "expected": "限定JVMで境界へ交差し得る行・真の不明/実lossを保持し、不明帰属をfalseへ変えない。内部要求ID、固定T/N/対象、失敗前record_id/帰属/集合と再試行後出力の厳密な不変性は同ZIP製品classのJVM証拠で確認する。実IDEでは表示可能なsequenceId/固定区間/N/端末/app対象と再試行後session/JSONLを照合し、識別可能な失敗前eventの包含と固定窓外の後続eventの除外、完成表示を観察する。画面にない要求IDや初回失敗前の完成集合を証拠にしない。Nを広げた別captureでの元帰属の保持と収集/CLI/動画保証もJVM/既存回帰で保全する。"
     }
   ]
 }
