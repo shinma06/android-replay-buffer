@@ -1,0 +1,125 @@
+{
+  "schema": 1,
+  "issue": 56,
+  "required_ancestor": "5db01d375d5d81247a70e53f6d59569f5671d1e2",
+  "original_premise": "1秒程度の実測GOP",
+  "runtime_premise": "同一候補の実出力で測定したGOP。隣接IDRのsample index・元PTS・実時間間隔を記録し、可変FPSと長いGOPを含めて実測する。約1秒GOPの条件は同一候補のJVM回帰として別に実行し、端末での実測と区別する",
+  "additional_steps": [
+    "同一候補のJVM回帰へ約1秒GOPを入力し、先行IDRの保持・preroll・切出し・pin/容量制限を確認する。実行command/sourceと結果を記録し、端末/IDE受入の代替にしない。",
+    "固定ZIPの実出力でGOP時間・フレーム数・元PTSを測定する。指定した1秒を実測値へ転記せず、長いGOPと可変FPSの観察条件を記録する。",
+    "N=60秒でIDR直後・GOP中間・次IDR直前のcutを実際のframe/元PTSから識別して保存する。直前IDRから復号し、先頭表示sample・MP4 edit・preroll・元PTS/duration・両ログを照合する。意図したclick時刻だけをcut位置の証拠にしない。",
+    "各位置で既存の切出し誤差<=1観測frame間隔+時計誤差、mux/index丸め<=1msを測定する。次IDRへ切上げず、取得済み先頭の欠落・論理窓の水増し・架空frameがないことを確認する。",
+    "長いGOP・可変FPSでも既存の最大保存量・画質/負荷・byte/packet/config/disk上限・pin/retryを維持する。欠落/不確かな境界・末尾表示保持と新frame確認を区別し、容量不足を隠さない。",
+    "同期の正式300イベント/30分、p95<=100ms・最大<=250ms・drift<=50ms・clock<=20msと必要な人間確認は既存の同期Caseで別途実施する。本CaseやJVM回帰で代用しない。"
+  ],
+  "cases": {
+    "13:SYNC-WINDOW": [
+      {
+        "source_pr": 30,
+        "source_merge": "16123f6fa2e2c74ce4300d1acf4f54d317b3fdff",
+        "source_path": "docs/verification/changes/issue-13.json",
+        "original_case_sha256": "26192d88141bea9a3263f49f70866d9af7ebb5ef48bd0d552e5b32a2df59ddcd"
+      }
+    ],
+    "27:BUFFER-180-EMU": [
+      {
+        "source_pr": 33,
+        "source_merge": "2a6e89ed4ce6c7f04140028cd8f2c707adbf1dfb",
+        "source_path": "docs/verification/changes/issue-27.json",
+        "original_case_sha256": "9214ac972f21c507af3c8629af93e6a40f90172c1df6f834c241af9fc05ea282"
+      },
+      {
+        "source_pr": 38,
+        "source_merge": "c0f78076e0e2975434ae3d1328d8095eff548489",
+        "source_path": "docs/verification/changes/issue-27.json",
+        "original_case_sha256": "9214ac972f21c507af3c8629af93e6a40f90172c1df6f834c241af9fc05ea282"
+      }
+    ],
+    "27:BUFFER-180-REAL": [
+      {
+        "source_pr": 33,
+        "source_merge": "2a6e89ed4ce6c7f04140028cd8f2c707adbf1dfb",
+        "source_path": "docs/verification/changes/issue-27.json",
+        "original_case_sha256": "c3333060c51bfeb5fafcdb24eda929bf1c70dc63797cc95da776dd1869395e2f"
+      },
+      {
+        "source_pr": 38,
+        "source_merge": "c0f78076e0e2975434ae3d1328d8095eff548489",
+        "source_path": "docs/verification/changes/issue-27.json",
+        "original_case_sha256": "c3333060c51bfeb5fafcdb24eda929bf1c70dc63797cc95da776dd1869395e2f"
+      }
+    ],
+    "27:BUFFER-SHORT-EMU": [
+      {
+        "source_pr": 33,
+        "source_merge": "2a6e89ed4ce6c7f04140028cd8f2c707adbf1dfb",
+        "source_path": "docs/verification/changes/issue-27.json",
+        "original_case_sha256": "9671f09a4dccacf6d2ee4a32f8df445725db13e51194ca58f8c049bdf0cc38df"
+      },
+      {
+        "source_pr": 38,
+        "source_merge": "c0f78076e0e2975434ae3d1328d8095eff548489",
+        "source_path": "docs/verification/changes/issue-27.json",
+        "original_case_sha256": "9671f09a4dccacf6d2ee4a32f8df445725db13e51194ca58f8c049bdf0cc38df"
+      }
+    ],
+    "27:BUFFER-SHORT-REAL": [
+      {
+        "source_pr": 33,
+        "source_merge": "2a6e89ed4ce6c7f04140028cd8f2c707adbf1dfb",
+        "source_path": "docs/verification/changes/issue-27.json",
+        "original_case_sha256": "9cec49d982bedf39db1c6de951d26cc827146e87c7e360aa4aedca7f30fdf504"
+      },
+      {
+        "source_pr": 38,
+        "source_merge": "c0f78076e0e2975434ae3d1328d8095eff548489",
+        "source_path": "docs/verification/changes/issue-27.json",
+        "original_case_sha256": "9cec49d982bedf39db1c6de951d26cc827146e87c7e360aa4aedca7f30fdf504"
+      }
+    ],
+    "27:SAVE-CONTINUE-EMU": [
+      {
+        "source_pr": 33,
+        "source_merge": "2a6e89ed4ce6c7f04140028cd8f2c707adbf1dfb",
+        "source_path": "docs/verification/changes/issue-27.json",
+        "original_case_sha256": "44ef89a4f37791a0f73999a7cdf14565623ff1fb1b38685b71d92e66cc8ca971"
+      },
+      {
+        "source_pr": 38,
+        "source_merge": "c0f78076e0e2975434ae3d1328d8095eff548489",
+        "source_path": "docs/verification/changes/issue-27.json",
+        "original_case_sha256": "44ef89a4f37791a0f73999a7cdf14565623ff1fb1b38685b71d92e66cc8ca971"
+      }
+    ],
+    "27:SAVE-CONTINUE-REAL": [
+      {
+        "source_pr": 33,
+        "source_merge": "2a6e89ed4ce6c7f04140028cd8f2c707adbf1dfb",
+        "source_path": "docs/verification/changes/issue-27.json",
+        "original_case_sha256": "767542e7a160cf01ac7857a042d2d6d8b538d4448bcd0a24b332318f6c05fc82"
+      },
+      {
+        "source_pr": 38,
+        "source_merge": "c0f78076e0e2975434ae3d1328d8095eff548489",
+        "source_path": "docs/verification/changes/issue-27.json",
+        "original_case_sha256": "767542e7a160cf01ac7857a042d2d6d8b538d4448bcd0a24b332318f6c05fc82"
+      }
+    ],
+    "31:SYNC-WINDOW": [
+      {
+        "source_pr": 36,
+        "source_merge": "6ae77c1df1d582b867fe031b7a0764886c82ba9d",
+        "source_path": "docs/verification/changes/issue-31.json",
+        "original_case_sha256": "c680cce96b786443e0b506ba8152983bb2766a207c359d4b40f65118a573b23c"
+      }
+    ],
+    "41:SYNC-WINDOW": [
+      {
+        "source_pr": 43,
+        "source_merge": "3e884547b96cf1b285ceea5c0a121a1755fa9ffd",
+        "source_path": "docs/verification/changes/issue-41.json",
+        "original_case_sha256": "f5af2b5e60a5f99f6ea4c0e9e8816e83c36382dd719d9810a91d77c4267137cb"
+      }
+    ]
+  }
+}
