@@ -7,7 +7,7 @@
     "python3 scripts/check.py: developの既存管理検査とGOP改訂の回帰試験",
     "python3 scripts/workflow/product_check.py: CLI原型21ファイルの保全と既存試験",
     "python3 scripts/workflow/change_impact.py --base origin/develop --run-tests: clean committed HEADで実行",
-    "main 24c9fd0eb9257952bf59566b8333e078a03bf571の改訂data/判定/回帰と一致し、develop固有のZIP手順を保持"
+    "main 1c38e84d33f3c084d612da15f091ef96981b9104の改訂data/判定/履歴一覧/観察証拠表示/回帰と一致し、develop固有のZIP手順を保持"
   ],
   "cases": []
 }
