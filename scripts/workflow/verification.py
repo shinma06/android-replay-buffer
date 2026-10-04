@@ -98,6 +98,16 @@ def validate_observation(result, candidate, artifact=None):
         raise ValueError('Use an ISO8601 observation timestamp')
 
 
+def validate_full_result(result, candidate, artifact, execution, gop, initial_entry=None):
+    validate_observation(result, candidate, artifact)
+    validate_gop_observation(result, gop)
+    if execution and result.get('execution') != execution:
+        raise ValueError('Case requires its specified execution method: ' + execution)
+    actor = (initial_entry or {}).get('full_acceptance_actor')
+    if actor and (result.get('actor') != actor or not nonempty(result.get('human_evidence'))):
+        raise ValueError('Full acceptance requires the deferred human observation and evidence')
+
+
 def git_read(*args, cwd=None):
     return subprocess.check_output(['git', *args], cwd=cwd, text=True).strip()
 
@@ -279,14 +289,16 @@ def initial_stage_plan(base, candidate, git):
         raise ValueError('Candidate lacks the exact trusted initial plan; synchronize main first')
     for key, entry in policy['cases'].items():
         if (not re.fullmatch(r'[1-9][0-9]*:[A-Z][A-Z0-9-]+', key) or
-                not isinstance(entry, dict) or set(entry) != {
+                not isinstance(entry, dict) or set(entry) - {'full_acceptance_actor'} != {
                     'sources', 'current_case_sha256', 'initial_scope', 'deferred_scope', 'agent_requirements'} or
+                ('full_acceptance_actor' in entry and entry['full_acceptance_actor'] != 'human') or
                 not isinstance(entry['current_case_sha256'], str) or not HASH.fullmatch(entry['current_case_sha256']) or
                 entry['initial_scope'] not in ('agent', 'deferred') or
                 (entry['initial_scope'] == 'deferred') != key.endswith('-REAL') or
                 not isinstance(entry['deferred_scope'], list) or
                 (entry['initial_scope'] == 'deferred' and not entry['deferred_scope']) or
                 not all(nonempty(x) for x in entry['deferred_scope']) or
+                ('full_acceptance_actor' in entry and not entry['deferred_scope']) or
                 not isinstance(entry['agent_requirements'], list) or
                 not all(nonempty(x) for x in entry['agent_requirements']) or
                 not isinstance(entry['sources'], list) or not entry['sources']):
@@ -436,6 +448,7 @@ def verify_pr(pr, api, git=git_read):
     scope = promotion.get('scope', 'develop')
     gop_cases = {}
     initial_policy = None
+    full_policy = None
     source_cases = []
     stage = promotion.get('stage')
     if stage is not None and (stage != INITIAL_STAGE or scope != 'develop'):
@@ -523,7 +536,7 @@ def verify_pr(pr, api, git=git_read):
     if stage is None and git('ls-tree', base, '--', INITIAL_PLAN):
         # A later promotion does not erase deferred work merely because its
         # original commits are now in main. Full acceptance still needs it.
-        carried = initial_stage_plan(base, candidate, git)
+        carried = full_policy = initial_stage_plan(base, candidate, git)
         historical = historical_initial_sources(carried, candidate, git)
         for key, case, _ in historical:
             if carried['cases'][key]['deferred_scope']:
@@ -554,10 +567,8 @@ def verify_pr(pr, api, git=git_read):
             validate_initial_result(result, key, initial_policy, candidate, artifact,
                                     execution, gop_cases.get(key))
             continue
-        validate_observation(result, candidate, artifact)
-        validate_gop_observation(result, gop_cases.get(key))
-        if execution and result.get('execution') != execution:
-            raise ValueError('Case requires its specified execution method: ' + key)
+        validate_full_result(result, candidate, artifact, execution, gop_cases.get(key),
+                             full_policy['cases'].get(key) if full_policy else None)
     if initial_policy:
         deferred = sum(entry['initial_scope'] == 'deferred' for entry in initial_policy['cases'].values())
         return {'mode': mode, 'gui_complete': False, 'stage': INITIAL_STAGE, 'stage_complete': True,
@@ -579,17 +590,28 @@ def render_queue(paths, promotion=None, git=git_read):
         validate_change(data, data['issue'], data['gui_required'])
         rows.extend((data, case) for case in data['cases'])
     initial_policy = None
+    historical = []
     stage = promotion.get('stage')
-    if stage is not None:
-        if stage != INITIAL_STAGE or promotion.get('scope', 'develop') != 'develop':
-            raise ValueError('Unknown or inapplicable acceptance stage')
+    if stage is not None and (stage != INITIAL_STAGE or promotion.get('scope', 'develop') != 'develop'):
+        raise ValueError('Unknown or inapplicable acceptance stage')
+    if stage is not None or (candidate and promotion.get('base') and
+                             git('ls-tree', promotion['base'], '--', INITIAL_PLAN)):
         initial_policy = initial_stage_plan(promotion.get('base'), candidate, git)
-        historical_initial_sources(initial_policy, candidate, git)
-        for data, case in rows:
-            entry = initial_policy['cases'].get(f'{data["issue"]}:{case["id"]}')
-            if entry is None or canonical_hash(case) not in {
-                    s['original_case_sha256'] for s in entry['sources']}:
-                raise ValueError('Current Case differs from its historical initial contract')
+        historical = historical_initial_sources(initial_policy, candidate, git)
+        if stage:
+            for data, case in rows:
+                entry = initial_policy['cases'].get(f'{data["issue"]}:{case["id"]}')
+                if entry is None or canonical_hash(case) not in {
+                        s['original_case_sha256'] for s in entry['sources']}:
+                    raise ValueError('Current Case differs from its historical initial contract')
+        else:
+            carried = {key for key, entry in initial_policy['cases'].items() if entry['deferred_scope']}
+            rows = [(data, case) for data, case in rows if f'{data["issue"]}:{case["id"]}' not in carried]
+            for key in sorted(carried):
+                entry = initial_policy['cases'][key]
+                data = regular_json(initial_policy['required_ancestor'], entry['sources'][0]['source_path'], git)
+                case = next(c for c in data['cases'] if c['id'] == key.split(':')[1])
+                rows.append((data, case))
     gop_cases = {}
     if candidate and any(f'{data["issue"]}:{case["id"]}' in GOP_KEYS for data, case in rows):
         policy = gop_amendment(promotion.get('base'), candidate, git)
@@ -623,7 +645,6 @@ def render_queue(paths, promotion=None, git=git_read):
     for data, case in rows:
         key = f'{data["issue"]}:{case["id"]}'
         result = results.get(key, {})
-        passed = False
         label = '不可・固定候補のpass未登録'
         try:
             artifacts = dict(promotion.get('artifacts', {}))
@@ -632,17 +653,15 @@ def render_queue(paths, promotion=None, git=git_read):
             artifact = artifacts.get(case.get('artifact', 'app'))
             if not HASH.fullmatch(artifact or ''):
                 raise ValueError('Candidate artifact not registered')
-            if initial_policy:
+            if stage:
                 validate_initial_result(result, key, initial_policy, candidate, artifact,
                                         case.get('required_execution'), gop_cases.get(key))
                 label = ('延期・未実施／初期版必須外・後続#65' if result['status'] == 'deferred' else
                          '初期版範囲合格／原Case未完了（全範囲gateは別途必要）')
             else:
-                validate_observation(result, candidate, artifact)
-                validate_gop_observation(result, gop_cases.get(key))
-                passed = not case.get('required_execution') or result.get('execution') == case['required_execution']
-                if passed:
-                    label = 'Case合格（全範囲gateは別途必要）'
+                validate_full_result(result, candidate, artifact, case.get('required_execution'),
+                                     gop_cases.get(key), initial_policy['cases'].get(key) if initial_policy else None)
+                label = 'Case合格（全範囲gateは別途必要）'
         except ValueError:
             pass
         lines.append(f'| {case["id"]} / #{data["issue"]} / #{data.get("pr", "未作成")} | {case["change"]} | '
@@ -653,23 +672,35 @@ def render_queue(paths, promotion=None, git=git_read):
                   f'PR: [#{data["pr"]}](https://github.com/shinma06/android-replay-buffer/pull/{data["pr"]})' if data.get('pr') else 'PR: 未登録', '', '前提・対象build: ' + case['preconditions'], '']
         amended = gop_cases.get(f'{data["issue"]}:{case["id"]}')
         result = results.get(f'{data["issue"]}:{case["id"]}', {})
-        if initial_policy:
-            entry = initial_policy['cases'][f'{data["issue"]}:{case["id"]}']
+        entry = initial_policy['cases'].get(f'{data["issue"]}:{case["id"]}') if initial_policy else None
+        if entry:
             lines += ['初期版範囲: ' + entry['initial_scope'],
                       '初期版計画revision: ' + canonical_hash(initial_policy),
-                      '原Case全体: 未完了。初期版の合格・延期を全体passに転記しない。',
+                      ('原Case全体: 未完了。初期版の合格・延期を全体passに転記しない。' if stage else
+                       '完全受入: 初期版で延期した原契約も含め、同一候補の全工程を確認する。'),
                       '初期版で実施: 以下の全出典の条件から、明記した延期部分だけを除く。',
                       '人間確認の扱い: ' + initial_policy['human_scope'],
                       '延期部分: ' + ' / '.join(entry['deferred_scope']),
                       '維持するAgent条件: ' + ' / '.join(entry['agent_requirements']),
+                      '完全受入の確認者: ' + entry.get('full_acceptance_actor', '原契約の実施者（gpt / human）'),
                       f'後続Issue: #{initial_policy["followup_issue"]} / 担当: ' + initial_policy['owner'],
                       '再開条件: ' + initial_policy['resume_condition'],
                       '全固定出典: ' + ', '.join(f'PR #{s["source_pr"]} / {s["source_merge"]} / '
                                                f'{s["source_path"]} / {s["original_case_sha256"]}'
                                                for s in entry['sources']), '']
-            if entry['initial_scope'] == 'deferred':
+            if stage and entry['initial_scope'] == 'deferred':
                 lines += ['このREAL専用Caseは全工程を延期。以下は再開用の原契約。', '']
-            result = result.get('initial_observation', {})
+            if stage:
+                result = result.get('initial_observation', {})
+            versions = {}
+            for source_key, original, source in historical:
+                if source_key == f'{data["issue"]}:{case["id"]}':
+                    versions.setdefault(canonical_hash(original), (original, []))[1].append(source['source_pr'])
+            for original, prs in versions.values():
+                lines += ['固定原契約 / PR ' + ', '.join('#' + str(pr) for pr in prs),
+                          '原前提: ' + original['preconditions']]
+                lines += [f'原手順 {n}: {step}' for n, step in enumerate(original['steps'], 1)]
+                lines += ['原期待結果: ' + original['expected'], '']
         if amended:
             proof = result.get('gop_evidence')
             if not isinstance(proof, dict):
@@ -691,6 +722,7 @@ def render_queue(paths, promotion=None, git=git_read):
                       '確認日時: ' + result.get('at', '未登録'), '実施経路: ' + result.get('execution', '未登録'),
                       '観察/失敗理由: ' + result.get('reason', '未登録'),
                       '証拠: ' + result.get('evidence', '未登録'),
+                      '人間工程・依存先の証拠: ' + result.get('human_evidence', '未登録'),
                       'ロード実体: ' + result.get('loaded_identity', '未登録'),
                       '対象artifact SHA-256: ' + result.get('artifact_sha256', '未登録'), '']
         for actor, label in (('gpt', 'Agent（互換キーgpt）'), ('human', '人間')):

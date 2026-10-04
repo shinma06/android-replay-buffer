@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "issue": 69,
+  "gui_required": false,
+  "reason": "後続の完全受入の人間証拠と延期契約表示を修正する管理変更。製品source/build/既存Caseは変更せず、実GUI観察を合成テストで代替しない。",
+  "cli_checks": [
+    "python3 scripts/check.py: 管理回帰・構造検査を固定HEADで実行し結果をPRへ記録",
+    "python3 scripts/workflow/product_check.py: 原型CLI保全を確認",
+    "python3 scripts/workflow/change_impact.py --base origin/main --run-tests: clean committed HEADで確認"
+  ],
+  "cases": []
+}

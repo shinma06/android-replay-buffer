@@ -102,6 +102,10 @@ promotionには`stage: initial-agent`を明記し、`results`に全124 keyを置
 
 初回main反映後も計画は残る。通常の完全受入では、`base..candidate`に現れなくなった延期Caseも固定出典から必要集合へ戻し、通常の全体passを要求する。`stage`を外すだけで延期を消せない。履歴の一覧も同じresolverで固定出典を読み、原契約・延期理由・担当・再開条件を保持する。初期段階のJSONへ過去の観察や計画hashを追記するだけでは新候補の実観察にならない。
 
+人間による番号確認、またはその確認へ依存する16 Caseには、計画で`full_acceptance_actor: human`を指定する。完全受入の最終確認者を表し、Agentが実行できる測定やGUI操作を全て人間へ移す指定ではない。通常passの同一candidate/artifact・実確認者・日時・証拠に加え、`actor: human`と`human_evidence`を必須とする。`human_evidence`は同じ候補・成果物について、人間が行った番号確認またはその依存先の確認記録を参照する。同じ測定・確認を複数Caseで共有でき、16回の重複実行は不要。REAL準備保留だけのCaseや`PLUGIN-LOAD`の操作経路制限へhuman必須を追加しない。
+
+通常の完全受入一覧は、指定ファイルに含まれない延期74 Caseも自動的に復元する。同名の現在Caseが変更されていても、固定23fの契約と全固定出典の各原契約を表示する。延期理由・担当・再開条件を保持し、合格表示にはgateと同じ人間証拠・実行経路・GOP検査を用いる。初期段階の「原Case未完了」表示や`initial_observation`を、完全受入の結果へ流用しない。
+
 全open QAは[人間向け手順](human-qa.md)への本文リンク、全Case、前提・操作・期待・記録方法・担当・再開条件、main反映追跡を持ちます。元Issueの実際のsub-issueとしてMilestoneを継承し、双方向linkとProject QA表示を読み戻してから実装Issueをcloseします。親・QA・Milestoneの完了を子PRから推測しません。
 
 表示用一覧はJSONから生成します。

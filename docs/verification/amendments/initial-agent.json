@@ -63,7 +63,8 @@
       "agent_requirements": [
         "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。",
         "30分・開始/中間/終了各100 eventの全300件を同一候補で採取し、全frame復号/境界/元PTS/両log record_idとREQUEST/DRAW/FRAME_COMMITを照合する。p95<=100ms、最大<=250ms、drift<=50ms、clock<=20ms、欠落・重複・unknown/uncertainを評価する。最低601画像の人間番号読取りだけを後続へ残す。人間番号確認前の解析は初期範囲の結果であり、原Case全体の正式精度passとは呼ばない。"
-      ]
+      ],
+      "full_acceptance_actor": "human"
     },
     "13:SYNC-WINDOW": {
       "sources": [
@@ -81,7 +82,8 @@
       ],
       "agent_requirements": [
         "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。"
-      ]
+      ],
+      "full_acceptance_actor": "human"
     },
     "13:SYNC-GAP": {
       "sources": [
@@ -380,7 +382,8 @@
       ],
       "agent_requirements": [
         "旧REAL名Caseへ混在したEmulator工程は 27:BUFFER-180-EMU の初期版Agent範囲で実施する。PR33/38の全出典と現行の対象transport限定・共有ADB保護・同boot・deep sleep実測条件を保持する。"
-      ]
+      ],
+      "full_acceptance_actor": "human"
     },
     "27:BUFFER-SHORT-REAL": {
       "sources": [
@@ -404,7 +407,8 @@
       ],
       "agent_requirements": [
         "旧REAL名Caseへ混在したEmulator工程は 27:BUFFER-SHORT-EMU の初期版Agent範囲で実施する。PR33/38の全出典と現行の対象transport限定・共有ADB保護・同boot・deep sleep実測条件を保持する。"
-      ]
+      ],
+      "full_acceptance_actor": "human"
     },
     "27:SAVE-CONTINUE-REAL": {
       "sources": [
@@ -428,7 +432,8 @@
       ],
       "agent_requirements": [
         "旧REAL名Caseへ混在したEmulator工程は 27:SAVE-CONTINUE-EMU の初期版Agent範囲で実施する。PR33/38の全出典と現行の対象transport限定・共有ADB保護・同boot・deep sleep実測条件を保持する。"
-      ]
+      ],
+      "full_acceptance_actor": "human"
     },
     "27:REALTIME-GAP-REAL": {
       "sources": [
@@ -572,7 +577,8 @@
       ],
       "agent_requirements": [
         "旧REAL名Caseへ混在したEmulator工程は 27:SYNC-PRECISION-EMU の初期版Agent範囲で実施する。PR33/38の全出典と現行の対象transport限定・共有ADB保護・同boot・deep sleep実測条件を保持する。"
-      ]
+      ],
+      "full_acceptance_actor": "human"
     },
     "27:SYNC-DRIFT-REAL": {
       "sources": [
@@ -596,7 +602,8 @@
       ],
       "agent_requirements": [
         "旧REAL名Caseへ混在したEmulator工程は 27:SYNC-DRIFT-EMU の初期版Agent範囲で実施する。PR33/38の全出典と現行の対象transport限定・共有ADB保護・同boot・deep sleep実測条件を保持する。"
-      ]
+      ],
+      "full_acceptance_actor": "human"
     },
     "27:SAVE-OUTPUT-REAL": {
       "sources": [
@@ -1157,7 +1164,8 @@
       ],
       "agent_requirements": [
         "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。"
-      ]
+      ],
+      "full_acceptance_actor": "human"
     },
     "27:BUFFER-SHORT-EMU": {
       "sources": [
@@ -1181,7 +1189,8 @@
       ],
       "agent_requirements": [
         "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。"
-      ]
+      ],
+      "full_acceptance_actor": "human"
     },
     "27:SAVE-CONTINUE-EMU": {
       "sources": [
@@ -1205,7 +1214,8 @@
       ],
       "agent_requirements": [
         "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。"
-      ]
+      ],
+      "full_acceptance_actor": "human"
     },
     "27:REALTIME-GAP-EMU": {
       "sources": [
@@ -1340,7 +1350,8 @@
       "agent_requirements": [
         "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。",
         "30分・開始/中間/終了各100 eventの全300件を同一候補で採取し、全frame復号/境界/元PTS/両log record_idとREQUEST/DRAW/FRAME_COMMITを照合する。p95<=100ms、最大<=250ms、drift<=50ms、clock<=20ms、欠落・重複・unknown/uncertainを評価する。最低601画像の人間番号読取りだけを後続へ残す。人間番号確認前の解析は初期範囲の結果であり、原Case全体の正式精度passとは呼ばない。"
-      ]
+      ],
+      "full_acceptance_actor": "human"
     },
     "27:SYNC-DRIFT-EMU": {
       "sources": [
@@ -1365,7 +1376,8 @@
       "agent_requirements": [
         "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。",
         "30分・開始/中間/終了各100 eventの全300件を同一候補で採取し、全frame復号/境界/元PTS/両log record_idとREQUEST/DRAW/FRAME_COMMITを照合する。p95<=100ms、最大<=250ms、drift<=50ms、clock<=20ms、欠落・重複・unknown/uncertainを評価する。最低601画像の人間番号読取りだけを後続へ残す。人間番号確認前の解析は初期範囲の結果であり、原Case全体の正式精度passとは呼ばない。"
-      ]
+      ],
+      "full_acceptance_actor": "human"
     },
     "27:SAVE-OUTPUT-EMU": {
       "sources": [
@@ -1735,7 +1747,8 @@
       "agent_requirements": [
         "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。",
         "30分・開始/中間/終了各100 eventの全300件を同一候補で採取し、全frame復号/境界/元PTS/両log record_idとREQUEST/DRAW/FRAME_COMMITを照合する。p95<=100ms、最大<=250ms、drift<=50ms、clock<=20ms、欠落・重複・unknown/uncertainを評価する。最低601画像の人間番号読取りだけを後続へ残す。人間番号確認前の解析は初期範囲の結果であり、原Case全体の正式精度passとは呼ばない。"
-      ]
+      ],
+      "full_acceptance_actor": "human"
     },
     "31:SYNC-WINDOW": {
       "sources": [
@@ -1753,7 +1766,8 @@
       ],
       "agent_requirements": [
         "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。"
-      ]
+      ],
+      "full_acceptance_actor": "human"
     },
     "31:SYNC-GAP": {
       "sources": [
@@ -2018,7 +2032,8 @@
       "agent_requirements": [
         "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。",
         "30分・開始/中間/終了各100 eventの全300件を同一候補で採取し、全frame復号/境界/元PTS/両log record_idとREQUEST/DRAW/FRAME_COMMITを照合する。p95<=100ms、最大<=250ms、drift<=50ms、clock<=20ms、欠落・重複・unknown/uncertainを評価する。最低601画像の人間番号読取りだけを後続へ残す。人間番号確認前の解析は初期範囲の結果であり、原Case全体の正式精度passとは呼ばない。"
-      ]
+      ],
+      "full_acceptance_actor": "human"
     },
     "41:SYNC-WINDOW": {
       "sources": [
@@ -2036,7 +2051,8 @@
       ],
       "agent_requirements": [
         "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。"
-      ]
+      ],
+      "full_acceptance_actor": "human"
     },
     "41:SYNC-GAP": {
       "sources": [
