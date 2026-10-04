@@ -59,7 +59,7 @@ Plugin ZIPは [開発手順](../plugin-development.md) の標準buildPluginで�
 
 既存結果へこのhashを追記するだけでは新観察にならない。機械検査は識別・参照の存在を確認するもので、実行や品質の証明は証拠を読む独立レビューで行う。改訂hash・各証拠が不足した結果はgateと生成一覧の両方で合格にしない。
 
-`verification.py --promotion ...`による一覧も同じresolverを使い、固定出典と元の前提、適用した前提・追加手順・改訂revisionを表示する。渡すCase JSONは元の固定merge契約と一致させ、候補側の書換えで代用しない。改訂だけではCase集合を減らせず、一覧のCase単位表示も全候補のpromotion gateを代替しない。
+`verification.py --promotion ...`による一覧も同じresolverを使い、固定出典と元の前提、適用した前提・追加手順・改訂revision、観察側のrevisionと6種類の証拠参照を表示する。未登録の観察項目は未登録と表示する。履歴出典はtrusted改訂の固定merge/hashとcandidateの祖先関係から確認するため、初回promotion後も過去のCaseを選んで一覧化できる。渡すCase JSONは元の固定merge契約と一致させ、候補側の書換えで代用しない。promotion gateの必要集合は引き続き`base..candidate`の受入から決める。改訂だけではCase集合を減らせず、一覧のCase単位表示も全候補のpromotion gateを代替しない。
 
 ## 引継ぎ
 
