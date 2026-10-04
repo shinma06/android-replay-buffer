@@ -32,7 +32,7 @@ IDE/build/process/保存/UI/検証/共通ハーネスに関係する変更は、
 | target / Integration | 統合条件 | merge |
 |---|---|---|
 | develop / `develop` | 必要テスト、独立コードレビュー、全必要 Case と次操作。GUI pending/blocked/fail は保存し、fail は修正 Issue に紐づける | squash |
-| main / `promotion` | 固定候補の全 commit/Case、同じ build の実観察、独立レビュー、必要 checks | merge commit |
+| main / `promotion` | 固定候補の全 commit/Case、同じ build の実観察、独立レビュー、必要 checks。[初期版の段階受入](verification/README.md#初期版の段階受入64)では固定計画の延期部分だけを後続へ移す | merge commit |
 | main / `tooling` | docs/scripts/CI/agent 入口のみ、GUI 不要の具体的理由と CLI 検証 | squash |
 
 製品コード・build設定を tooling として迂回させません。develop は `Refs #N` を使い、自動 close 文言は禁止です。独立レビュー・CI 失敗は GUI 未実施とは別で、解消するまで統合しません。

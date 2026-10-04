@@ -1,0 +1,2572 @@
+{
+  "schema": 1,
+  "issue": 64,
+  "stage": "initial-agent",
+  "required_ancestor": "23f02915b78661e5c24d6229e8fc84876f4095d7",
+  "followup_issue": 65,
+  "owner": "Codex PM（管理）・QA #27担当（手順と証拠保全）。後続の人間実行者は再開時に割当。",
+  "resume_condition": "初期版完成後、利用者が後続確認へ着手するときに実機・担当・固定候補を決める。CUA制約の部分は人間の対応または実際の操作経路復旧後。未実施の再質問で初期版を停止しない。",
+  "human_scope": "human欄がpendingという理由だけで必須の人間工程を追加しない。明記された人間確認、実機準備、証拠付きで列挙したAgent経路の制約部分だけを延期する。Agentが実施できるGUI/標準player・300event/30分の解析、製品failの修正は必須。元のpending/blocked/failと全固定出典を保全し、段階結果を原Case全体のpassへ転記しない。",
+  "cases": {
+    "3:PLUGIN-LOAD": {
+      "sources": [
+        {
+          "source_pr": 4,
+          "source_merge": "eceb97a5cac64ad7545ba960a2426cb04ca0811f",
+          "source_path": "docs/verification/changes/issue-3.json",
+          "original_case_sha256": "1bda48bbdf8de31dae6cd660b3a5309dfce20dd74d194978815dd5c04fffc0df"
+        }
+      ],
+      "current_case_sha256": "1bda48bbdf8de31dae6cd660b3a5309dfce20dd74d194978815dd5c04fffc0df",
+      "initial_scope": "agent",
+      "deferred_scope": [
+        "対象原文: steps[2]=\"表示を閉じて同じsandboxを再起動し、版とactionを再確認する。\" | expected=\"Pluginロードエラーなく、日本語の開発段階説明と固定source SHAを含む版が表示される。daemon/録画/USB操作が発生せず、再起動後も同じ版とactionを利用できる。\"。延期: 同sandbox再起動後のSettings→Pluginsの版UI・Aboutの日本語説明/固定sourceSHAの再読取りと、そのdialogを閉じたことの画面確認だけを延期。新候補の初回UI/実ロード/再起動は引き続き実施する。制約記録: QA27-C23F0291-PLUGIN-LOAD-CUA-LIMIT（2026-10-04、AX/menu/keyboard/windowcycle/reset後も別windowを読めず、製品failとは判定していない）。"
+      ],
+      "agent_requirements": [
+        "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。",
+        "新候補の同じZIPでnative導入/有効化、初回Settings/About、通常再起動、同専用profileと実際のIDE process/起動識別、全3JARのZIP一致、Tools action存在、取得OFF/streamなし/記録未開始/不要なADB起動なしを実観察する。JAR一致を延期した画面確認のpassへ代用しない。旧23fの観察は再利用しない。"
+      ]
+    },
+    "13:SYNC-ENV": {
+      "sources": [
+        {
+          "source_pr": 30,
+          "source_merge": "16123f6fa2e2c74ce4300d1acf4f54d317b3fdff",
+          "source_path": "docs/verification/changes/issue-13.json",
+          "original_case_sha256": "6d8bd3034e00f7e64b978de58de29e3e03248bed86c7ddd35abffc79b6a09caf"
+        }
+      ],
+      "current_case_sha256": "6d8bd3034e00f7e64b978de58de29e3e03248bed86c7ddd35abffc79b6a09caf",
+      "initial_scope": "agent",
+      "deferred_scope": [
+        "対象原文: preconditions=\"実機とEmulatorの各fixtureで、PATHからscrcpy/ffmpeg/Pythonを外したAndroid開発環境。固定SDK/adb、同じsource/ZIP hash、共有GUI lease。\" | steps[1]=\"機能を有効化し、実機とEmulatorで各20秒取得して保存する。\" | expected=\"各環境で動画と両ログ/clock metadataを保存。helper/server起動不適合は明示し、ENV-03合格にしない。\"。延期: 元契約の実機/USB環境で行う同工程と期待結果。Emulator側を維持し、各環境/EMU-REAL別記録を統合passへ転記しない。"
+      ],
+      "agent_requirements": [
+        "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。"
+      ]
+    },
+    "13:SYNC-CLOCK": {
+      "sources": [
+        {
+          "source_pr": 30,
+          "source_merge": "16123f6fa2e2c74ce4300d1acf4f54d317b3fdff",
+          "source_path": "docs/verification/changes/issue-13.json",
+          "original_case_sha256": "3a1d86b55693f78f8e5730993572e989879811fe06caf48377b1e87898e460ac"
+        }
+      ],
+      "current_case_sha256": "3a1d86b55693f78f8e5730993572e989879811fe06caf48377b1e87898e460ac",
+      "initial_scope": "agent",
+      "deferred_scope": [
+        "対象原文: preconditions=\"正常取得できる実機/Emulator、描画とLog双方に同じ連番を出す使い捨てapp。固定画質/codec、時計sampleと描画eventの記録。\" | expected=\"通常p95<=100ms、最大<=250ms、中央値drift<=50ms、clock見積誤差<=20ms。全欠落/uncertainも集計し隠さない。100ms等は未実測の設計基準。\"。延期: 元契約の実機/USB環境で行う同工程と期待結果。Emulator側を維持し、各環境/EMU-REAL別記録を統合passへ転記しない。",
+        "対象原文: steps[0]=\"同じUI更新callbackで連番/端末elapsedをLogへ出し、画面にも連番を描画する。描画完了のframe callback時刻も別に記録する。\" | steps[1]=\"30分取得し開始/中間/終了の各100イベントを保存対象にする。両ログに同じrecord_idがあることを照合する。\" | steps[2]=\"元PTS/clock変換誤差と描画遅延を分け、全300件の差・p95・最大・前後半中央値差を集計する。\" | expected=\"通常p95<=100ms、最大<=250ms、中央値drift<=50ms、clock見積誤差<=20ms。全欠落/uncertainも集計し隠さない。100ms等は未実測の設計基準。\" | 固定23fのtests/fixtures/replay-marker/README.md#同期測定補助macos標準api（人間確認の出典）。延期: 全300遷移の前後画像の表示番号を人間が確認し、欠落/重複/unknown/uncertainを確定する工程。正式精度passの前提は未充足のまま。"
+      ],
+      "agent_requirements": [
+        "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。",
+        "30分・開始/中間/終了各100 eventの全300件を同一候補で採取し、全frame復号/境界/元PTS/両log record_idとREQUEST/DRAW/FRAME_COMMITを照合する。p95<=100ms、最大<=250ms、drift<=50ms、clock<=20ms、欠落・重複・unknown/uncertainを評価する。最低601画像の人間番号読取りだけを後続へ残す。人間番号確認前の解析は初期範囲の結果であり、原Case全体の正式精度passとは呼ばない。"
+      ],
+      "full_acceptance_actor": "human"
+    },
+    "13:SYNC-WINDOW": {
+      "sources": [
+        {
+          "source_pr": 30,
+          "source_merge": "16123f6fa2e2c74ce4300d1acf4f54d317b3fdff",
+          "source_path": "docs/verification/changes/issue-13.json",
+          "original_case_sha256": "26192d88141bea9a3263f49f70866d9af7ebb5ef48bd0d552e5b32a2df59ddcd"
+        }
+      ],
+      "current_case_sha256": "26192d88141bea9a3263f49f70866d9af7ebb5ef48bd0d552e5b32a2df59ddcd",
+      "initial_scope": "agent",
+      "deferred_scope": [
+        "対象原文: effective.steps[8]=\"同期の正式300イベント/30分、p95<=100ms・最大<=250ms・drift<=50ms・clock<=20msと必要な人間確認は既存の同期Caseで別途実施する。本CaseやJVM回帰で代用しない。\"。延期: 既存同期Caseへの依存のうち人間による番号確認だけを延期。正式300event/30分のAgent測定と閾値は初期版にも残し、GOP/JVM結果で代用しない。"
+      ],
+      "agent_requirements": [
+        "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。"
+      ],
+      "full_acceptance_actor": "human"
+    },
+    "13:SYNC-GAP": {
+      "sources": [
+        {
+          "source_pr": 30,
+          "source_merge": "16123f6fa2e2c74ce4300d1acf4f54d317b3fdff",
+          "source_path": "docs/verification/changes/issue-13.json",
+          "original_case_sha256": "faa85a305c6f4b857b1235ceb10d482657871905ae1c2ff8eb8a21253df478e1"
+        }
+      ],
+      "current_case_sha256": "faa85a305c6f4b857b1235ceb10d482657871905ae1c2ff8eb8a21253df478e1",
+      "initial_scope": "agent",
+      "deferred_scope": [
+        "対象原文: preconditions=\"N=60秒、実機USBとEmulatorのtransport断を別々に試す。切断確定時刻/誤差と取得generationが記録可能。\" | expected=\"60秒窓の取得済み約40秒と20秒gap、same sequence。長い切断中T凍結、再接続後現在窓で旧範囲prune。gapを詰めない。端末切断瞬間と検出確定を混同しない。\"。延期: 元契約の実機/USB環境で行う同工程と期待結果。Emulator側を維持し、各環境/EMU-REAL別記録を統合passへ転記しない。"
+      ],
+      "agent_requirements": [
+        "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。"
+      ]
+    },
+    "13:SYNC-PARTIAL": {
+      "sources": [
+        {
+          "source_pr": 30,
+          "source_merge": "16123f6fa2e2c74ce4300d1acf4f54d317b3fdff",
+          "source_path": "docs/verification/changes/issue-13.json",
+          "original_case_sha256": "e8e257d52f951775b27474bd234eeda859494646bc406394baebba81712dbb55"
+        }
+      ],
+      "current_case_sha256": "e8e257d52f951775b27474bd234eeda859494646bc406394baebba81712dbb55",
+      "initial_scope": "agent",
+      "deferred_scope": [],
+      "agent_requirements": [
+        "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。"
+      ]
+    },
+    "13:SYNC-JUMP": {
+      "sources": [
+        {
+          "source_pr": 30,
+          "source_merge": "16123f6fa2e2c74ce4300d1acf4f54d317b3fdff",
+          "source_path": "docs/verification/changes/issue-13.json",
+          "original_case_sha256": "118a8469882d175e8c5c1bc9b1063023f504baf507a7d92f98cba5e9741cd295"
+        }
+      ],
+      "current_case_sha256": "118a8469882d175e8c5c1bc9b1063023f504baf507a7d92f98cba5e9741cd295",
+      "initial_scope": "agent",
+      "deferred_scope": [],
+      "agent_requirements": [
+        "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。"
+      ]
+    },
+    "13:SYNC-RECIPIENT": {
+      "sources": [
+        {
+          "source_pr": 30,
+          "source_merge": "16123f6fa2e2c74ce4300d1acf4f54d317b3fdff",
+          "source_path": "docs/verification/changes/issue-13.json",
+          "original_case_sha256": "e2de544d0b4c52eb1b35ae3fbec84010b41ff26666cb8e431047d3ab164e45f3"
+        }
+      ],
+      "current_case_sha256": "e2de544d0b4c52eb1b35ae3fbec84010b41ff26666cb8e431047d3ab164e45f3",
+      "initial_scope": "agent",
+      "deferred_scope": [],
+      "agent_requirements": [
+        "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。",
+        "GUI/画面可読性/標準playerの実再生・seekと照合はAgent側に残す。human欄だけを根拠に別の必須人間確認を作らない。"
+      ]
+    },
+    "13:SYNC-LIFECYCLE": {
+      "sources": [
+        {
+          "source_pr": 30,
+          "source_merge": "16123f6fa2e2c74ce4300d1acf4f54d317b3fdff",
+          "source_path": "docs/verification/changes/issue-13.json",
+          "original_case_sha256": "cbbaffd04d158703957a210c2034af98b5e0f111e265e94151a5b2faa1bb0965"
+        }
+      ],
+      "current_case_sha256": "cbbaffd04d158703957a210c2034af98b5e0f111e265e94151a5b2faa1bb0965",
+      "initial_scope": "agent",
+      "deferred_scope": [],
+      "agent_requirements": [
+        "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。"
+      ]
+    },
+    "27:ENV-READY-REAL": {
+      "sources": [
+        {
+          "source_pr": 38,
+          "source_merge": "c0f78076e0e2975434ae3d1328d8095eff548489",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "50bd9dfd146690bfc5634dd335a75a5ef9d34850fc8109cea99ed2a777f5a0d7"
+        },
+        {
+          "source_pr": 33,
+          "source_merge": "2a6e89ed4ce6c7f04140028cd8f2c707adbf1dfb",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "d6b7c8eaa7603ac50649555e59b0c8ce9eff4361ae36b0a3fd7fa309ef62d307"
+        }
+      ],
+      "current_case_sha256": "50bd9dfd146690bfc5634dd335a75a5ef9d34850fc8109cea99ed2a777f5a0d7",
+      "initial_scope": "deferred",
+      "deferred_scope": [
+        "元Caseの実機環境での全工程を延期。Emulatorでの実行結果を実機のpassにしない。"
+      ],
+      "agent_requirements": [
+        "旧REAL名Caseへ混在したEmulator工程は 27:ENV-READY-EMU の初期版Agent範囲で実施する。PR33/38の全出典と現行の対象transport限定・共有ADB保護・同boot・deep sleep実測条件を保持する。"
+      ]
+    },
+    "27:FIXTURE-MARKERS-REAL": {
+      "sources": [
+        {
+          "source_pr": 38,
+          "source_merge": "c0f78076e0e2975434ae3d1328d8095eff548489",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "733cfb6ff32d292e22164f0ea7ad4aebcb4b4bced8d7a31dfe7850cf10add8f2"
+        },
+        {
+          "source_pr": 33,
+          "source_merge": "2a6e89ed4ce6c7f04140028cd8f2c707adbf1dfb",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "733cfb6ff32d292e22164f0ea7ad4aebcb4b4bced8d7a31dfe7850cf10add8f2"
+        }
+      ],
+      "current_case_sha256": "733cfb6ff32d292e22164f0ea7ad4aebcb4b4bced8d7a31dfe7850cf10add8f2",
+      "initial_scope": "deferred",
+      "deferred_scope": [
+        "元Caseの実機環境での全工程を延期。Emulatorでの実行結果を実機のpassにしない。"
+      ],
+      "agent_requirements": [
+        "旧REAL名Caseへ混在したEmulator工程は 27:FIXTURE-MARKERS-EMU の初期版Agent範囲で実施する。PR33/38の全出典と現行の対象transport限定・共有ADB保護・同boot・deep sleep実測条件を保持する。"
+      ]
+    },
+    "27:INITIAL-OFF-REAL": {
+      "sources": [
+        {
+          "source_pr": 38,
+          "source_merge": "c0f78076e0e2975434ae3d1328d8095eff548489",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "8513993240f16b7725231fbe8bb542d99e60a4ed09d2a659ac72f1adc25ce26b"
+        },
+        {
+          "source_pr": 33,
+          "source_merge": "2a6e89ed4ce6c7f04140028cd8f2c707adbf1dfb",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "8513993240f16b7725231fbe8bb542d99e60a4ed09d2a659ac72f1adc25ce26b"
+        }
+      ],
+      "current_case_sha256": "8513993240f16b7725231fbe8bb542d99e60a4ed09d2a659ac72f1adc25ce26b",
+      "initial_scope": "deferred",
+      "deferred_scope": [
+        "元Caseの実機環境での全工程を延期。Emulatorでの実行結果を実機のpassにしない。"
+      ],
+      "agent_requirements": [
+        "旧REAL名Caseへ混在したEmulator工程は 27:INITIAL-OFF-EMU の初期版Agent範囲で実施する。PR33/38の全出典と現行の対象transport限定・共有ADB保護・同boot・deep sleep実測条件を保持する。"
+      ]
+    },
+    "27:ENABLE-CONNECTED-REAL": {
+      "sources": [
+        {
+          "source_pr": 38,
+          "source_merge": "c0f78076e0e2975434ae3d1328d8095eff548489",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "dba778fa4de9e0a27210f3dd5d6ee10fde515411b7ed1761f50a154e50c5fd7a"
+        },
+        {
+          "source_pr": 33,
+          "source_merge": "2a6e89ed4ce6c7f04140028cd8f2c707adbf1dfb",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "dba778fa4de9e0a27210f3dd5d6ee10fde515411b7ed1761f50a154e50c5fd7a"
+        }
+      ],
+      "current_case_sha256": "dba778fa4de9e0a27210f3dd5d6ee10fde515411b7ed1761f50a154e50c5fd7a",
+      "initial_scope": "deferred",
+      "deferred_scope": [
+        "元Caseの実機環境での全工程を延期。Emulatorでの実行結果を実機のpassにしない。"
+      ],
+      "agent_requirements": [
+        "旧REAL名Caseへ混在したEmulator工程は 27:ENABLE-CONNECTED-EMU の初期版Agent範囲で実施する。PR33/38の全出典と現行の対象transport限定・共有ADB保護・同boot・deep sleep実測条件を保持する。"
+      ]
+    },
+    "27:ENABLE-WAIT-REAL": {
+      "sources": [
+        {
+          "source_pr": 38,
+          "source_merge": "c0f78076e0e2975434ae3d1328d8095eff548489",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "ac9360d201689b2e46005496e6b0f6d7dafa58734b13db5d3b651dd25fd64787"
+        },
+        {
+          "source_pr": 33,
+          "source_merge": "2a6e89ed4ce6c7f04140028cd8f2c707adbf1dfb",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "ac9360d201689b2e46005496e6b0f6d7dafa58734b13db5d3b651dd25fd64787"
+        }
+      ],
+      "current_case_sha256": "ac9360d201689b2e46005496e6b0f6d7dafa58734b13db5d3b651dd25fd64787",
+      "initial_scope": "deferred",
+      "deferred_scope": [
+        "元Caseの実機環境での全工程を延期。Emulatorでの実行結果を実機のpassにしない。"
+      ],
+      "agent_requirements": [
+        "旧REAL名Caseへ混在したEmulator工程は 27:ENABLE-WAIT-EMU の初期版Agent範囲で実施する。PR33/38の全出典と現行の対象transport限定・共有ADB保護・同boot・deep sleep実測条件を保持する。"
+      ]
+    },
+    "27:STATE-RESTORE-REAL": {
+      "sources": [
+        {
+          "source_pr": 38,
+          "source_merge": "c0f78076e0e2975434ae3d1328d8095eff548489",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "1a06905b367cd9846d662d49535e3e9562fb716199fcff494dbc74501aca8a23"
+        },
+        {
+          "source_pr": 33,
+          "source_merge": "2a6e89ed4ce6c7f04140028cd8f2c707adbf1dfb",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "1a06905b367cd9846d662d49535e3e9562fb716199fcff494dbc74501aca8a23"
+        }
+      ],
+      "current_case_sha256": "1a06905b367cd9846d662d49535e3e9562fb716199fcff494dbc74501aca8a23",
+      "initial_scope": "deferred",
+      "deferred_scope": [
+        "元Caseの実機環境での全工程を延期。Emulatorでの実行結果を実機のpassにしない。"
+      ],
+      "agent_requirements": [
+        "旧REAL名Caseへ混在したEmulator工程は 27:STATE-RESTORE-EMU の初期版Agent範囲で実施する。PR33/38の全出典と現行の対象transport限定・共有ADB保護・同boot・deep sleep実測条件を保持する。"
+      ]
+    },
+    "27:SETTINGS-APPLY-REAL": {
+      "sources": [
+        {
+          "source_pr": 38,
+          "source_merge": "c0f78076e0e2975434ae3d1328d8095eff548489",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "cdea98e268ac455d0fe732f1c4fb23c956ac3b6f3effcaed4210235edd1eb9b4"
+        },
+        {
+          "source_pr": 33,
+          "source_merge": "2a6e89ed4ce6c7f04140028cd8f2c707adbf1dfb",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "cdea98e268ac455d0fe732f1c4fb23c956ac3b6f3effcaed4210235edd1eb9b4"
+        }
+      ],
+      "current_case_sha256": "cdea98e268ac455d0fe732f1c4fb23c956ac3b6f3effcaed4210235edd1eb9b4",
+      "initial_scope": "deferred",
+      "deferred_scope": [
+        "元Caseの実機環境での全工程を延期。Emulatorでの実行結果を実機のpassにしない。"
+      ],
+      "agent_requirements": [
+        "旧REAL名Caseへ混在したEmulator工程は 27:SETTINGS-APPLY-EMU の初期版Agent範囲で実施する。PR33/38の全出典と現行の対象transport限定・共有ADB保護・同boot・deep sleep実測条件を保持する。"
+      ]
+    },
+    "27:SETTINGS-INVALID-REAL": {
+      "sources": [
+        {
+          "source_pr": 38,
+          "source_merge": "c0f78076e0e2975434ae3d1328d8095eff548489",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "67bb83d1e1b3df7ce9d4cd98fc604a4b8db615a34dda9e1efdee52a5cc418405"
+        },
+        {
+          "source_pr": 33,
+          "source_merge": "2a6e89ed4ce6c7f04140028cd8f2c707adbf1dfb",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "67bb83d1e1b3df7ce9d4cd98fc604a4b8db615a34dda9e1efdee52a5cc418405"
+        }
+      ],
+      "current_case_sha256": "67bb83d1e1b3df7ce9d4cd98fc604a4b8db615a34dda9e1efdee52a5cc418405",
+      "initial_scope": "deferred",
+      "deferred_scope": [
+        "元Caseの実機環境での全工程を延期。Emulatorでの実行結果を実機のpassにしない。"
+      ],
+      "agent_requirements": [
+        "旧REAL名Caseへ混在したEmulator工程は 27:SETTINGS-INVALID-EMU の初期版Agent範囲で実施する。PR33/38の全出典と現行の対象transport限定・共有ADB保護・同boot・deep sleep実測条件を保持する。"
+      ]
+    },
+    "27:BUFFER-180-REAL": {
+      "sources": [
+        {
+          "source_pr": 38,
+          "source_merge": "c0f78076e0e2975434ae3d1328d8095eff548489",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "c3333060c51bfeb5fafcdb24eda929bf1c70dc63797cc95da776dd1869395e2f"
+        },
+        {
+          "source_pr": 33,
+          "source_merge": "2a6e89ed4ce6c7f04140028cd8f2c707adbf1dfb",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "c3333060c51bfeb5fafcdb24eda929bf1c70dc63797cc95da776dd1869395e2f"
+        }
+      ],
+      "current_case_sha256": "c3333060c51bfeb5fafcdb24eda929bf1c70dc63797cc95da776dd1869395e2f",
+      "initial_scope": "deferred",
+      "deferred_scope": [
+        "元Caseの実機環境での全工程を延期。Emulatorでの実行結果を実機のpassにしない。"
+      ],
+      "agent_requirements": [
+        "旧REAL名Caseへ混在したEmulator工程は 27:BUFFER-180-EMU の初期版Agent範囲で実施する。PR33/38の全出典と現行の対象transport限定・共有ADB保護・同boot・deep sleep実測条件を保持する。"
+      ],
+      "full_acceptance_actor": "human"
+    },
+    "27:BUFFER-SHORT-REAL": {
+      "sources": [
+        {
+          "source_pr": 38,
+          "source_merge": "c0f78076e0e2975434ae3d1328d8095eff548489",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "9cec49d982bedf39db1c6de951d26cc827146e87c7e360aa4aedca7f30fdf504"
+        },
+        {
+          "source_pr": 33,
+          "source_merge": "2a6e89ed4ce6c7f04140028cd8f2c707adbf1dfb",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "9cec49d982bedf39db1c6de951d26cc827146e87c7e360aa4aedca7f30fdf504"
+        }
+      ],
+      "current_case_sha256": "9cec49d982bedf39db1c6de951d26cc827146e87c7e360aa4aedca7f30fdf504",
+      "initial_scope": "deferred",
+      "deferred_scope": [
+        "元Caseの実機環境での全工程を延期。Emulatorでの実行結果を実機のpassにしない。"
+      ],
+      "agent_requirements": [
+        "旧REAL名Caseへ混在したEmulator工程は 27:BUFFER-SHORT-EMU の初期版Agent範囲で実施する。PR33/38の全出典と現行の対象transport限定・共有ADB保護・同boot・deep sleep実測条件を保持する。"
+      ],
+      "full_acceptance_actor": "human"
+    },
+    "27:SAVE-CONTINUE-REAL": {
+      "sources": [
+        {
+          "source_pr": 38,
+          "source_merge": "c0f78076e0e2975434ae3d1328d8095eff548489",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "767542e7a160cf01ac7857a042d2d6d8b538d4448bcd0a24b332318f6c05fc82"
+        },
+        {
+          "source_pr": 33,
+          "source_merge": "2a6e89ed4ce6c7f04140028cd8f2c707adbf1dfb",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "767542e7a160cf01ac7857a042d2d6d8b538d4448bcd0a24b332318f6c05fc82"
+        }
+      ],
+      "current_case_sha256": "767542e7a160cf01ac7857a042d2d6d8b538d4448bcd0a24b332318f6c05fc82",
+      "initial_scope": "deferred",
+      "deferred_scope": [
+        "元Caseの実機環境での全工程を延期。Emulatorでの実行結果を実機のpassにしない。"
+      ],
+      "agent_requirements": [
+        "旧REAL名Caseへ混在したEmulator工程は 27:SAVE-CONTINUE-EMU の初期版Agent範囲で実施する。PR33/38の全出典と現行の対象transport限定・共有ADB保護・同boot・deep sleep実測条件を保持する。"
+      ],
+      "full_acceptance_actor": "human"
+    },
+    "27:REALTIME-GAP-REAL": {
+      "sources": [
+        {
+          "source_pr": 38,
+          "source_merge": "c0f78076e0e2975434ae3d1328d8095eff548489",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "265ba6d23c280d551ead66bc2dd97f59687c27a79b021f67cb39f5105f6e7077"
+        },
+        {
+          "source_pr": 33,
+          "source_merge": "2a6e89ed4ce6c7f04140028cd8f2c707adbf1dfb",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "0fb29f2f0bc7f0ee3b50b5db74e0897a39c65416cc5be773193e4e70c1b2b9ba"
+        }
+      ],
+      "current_case_sha256": "265ba6d23c280d551ead66bc2dd97f59687c27a79b021f67cb39f5105f6e7077",
+      "initial_scope": "deferred",
+      "deferred_scope": [
+        "元Caseの実機環境での全工程を延期。Emulatorでの実行結果を実機のpassにしない。"
+      ],
+      "agent_requirements": [
+        "旧REAL名Caseへ混在したEmulator工程は 27:REALTIME-GAP-EMU の初期版Agent範囲で実施する。PR33/38の全出典と現行の対象transport限定・共有ADB保護・同boot・deep sleep実測条件を保持する。"
+      ]
+    },
+    "27:RECONNECT-REAL": {
+      "sources": [
+        {
+          "source_pr": 38,
+          "source_merge": "c0f78076e0e2975434ae3d1328d8095eff548489",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "906d91f90d4b7fca1834b6ef9ef3e8280724282bd8402cdfcc786342f2db7f06"
+        },
+        {
+          "source_pr": 33,
+          "source_merge": "2a6e89ed4ce6c7f04140028cd8f2c707adbf1dfb",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "28951e20d110afdad43ffe35f446eaab8a7db07af6c7f92a22e5ec83b29017a8"
+        }
+      ],
+      "current_case_sha256": "906d91f90d4b7fca1834b6ef9ef3e8280724282bd8402cdfcc786342f2db7f06",
+      "initial_scope": "deferred",
+      "deferred_scope": [
+        "元Caseの実機環境での全工程を延期。Emulatorでの実行結果を実機のpassにしない。"
+      ],
+      "agent_requirements": [
+        "旧REAL名Caseへ混在したEmulator工程は 27:RECONNECT-EMU の初期版Agent範囲で実施する。PR33/38の全出典と現行の対象transport限定・共有ADB保護・同boot・deep sleep実測条件を保持する。"
+      ]
+    },
+    "27:PARTIAL-CAPTURE-REAL": {
+      "sources": [
+        {
+          "source_pr": 38,
+          "source_merge": "c0f78076e0e2975434ae3d1328d8095eff548489",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "c11c62bfb9702b68ece8a27348bf8663bf53dd30abb6e63cf1ae17561e656ce5"
+        },
+        {
+          "source_pr": 33,
+          "source_merge": "2a6e89ed4ce6c7f04140028cd8f2c707adbf1dfb",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "c11c62bfb9702b68ece8a27348bf8663bf53dd30abb6e63cf1ae17561e656ce5"
+        }
+      ],
+      "current_case_sha256": "c11c62bfb9702b68ece8a27348bf8663bf53dd30abb6e63cf1ae17561e656ce5",
+      "initial_scope": "deferred",
+      "deferred_scope": [
+        "元Caseの実機環境での全工程を延期。Emulatorでの実行結果を実機のpassにしない。"
+      ],
+      "agent_requirements": [
+        "旧REAL名Caseへ混在したEmulator工程は 27:PARTIAL-CAPTURE-EMU の初期版Agent範囲で実施する。PR33/38の全出典と現行の対象transport限定・共有ADB保護・同boot・deep sleep実測条件を保持する。"
+      ]
+    },
+    "27:LOG-SEPARATION-REAL": {
+      "sources": [
+        {
+          "source_pr": 38,
+          "source_merge": "c0f78076e0e2975434ae3d1328d8095eff548489",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "34aac9e1b5b53f25e48f1122af7e344179dc9c0ec6d15767aebb50048335f0ac"
+        },
+        {
+          "source_pr": 33,
+          "source_merge": "2a6e89ed4ce6c7f04140028cd8f2c707adbf1dfb",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "34aac9e1b5b53f25e48f1122af7e344179dc9c0ec6d15767aebb50048335f0ac"
+        }
+      ],
+      "current_case_sha256": "34aac9e1b5b53f25e48f1122af7e344179dc9c0ec6d15767aebb50048335f0ac",
+      "initial_scope": "deferred",
+      "deferred_scope": [
+        "元Caseの実機環境での全工程を延期。Emulatorでの実行結果を実機のpassにしない。"
+      ],
+      "agent_requirements": [
+        "旧REAL名Caseへ混在したEmulator工程は 27:LOG-SEPARATION-EMU の初期版Agent範囲で実施する。PR33/38の全出典と現行の対象transport限定・共有ADB保護・同boot・deep sleep実測条件を保持する。"
+      ]
+    },
+    "27:APP-SELECTION-REAL": {
+      "sources": [
+        {
+          "source_pr": 38,
+          "source_merge": "c0f78076e0e2975434ae3d1328d8095eff548489",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "55f945e9126f8b6a390652ae00aa5b06a5a78a83bb4ffc03d6805fadd8dc233f"
+        },
+        {
+          "source_pr": 33,
+          "source_merge": "2a6e89ed4ce6c7f04140028cd8f2c707adbf1dfb",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "55f945e9126f8b6a390652ae00aa5b06a5a78a83bb4ffc03d6805fadd8dc233f"
+        }
+      ],
+      "current_case_sha256": "55f945e9126f8b6a390652ae00aa5b06a5a78a83bb4ffc03d6805fadd8dc233f",
+      "initial_scope": "deferred",
+      "deferred_scope": [
+        "元Caseの実機環境での全工程を延期。Emulatorでの実行結果を実機のpassにしない。"
+      ],
+      "agent_requirements": [
+        "旧REAL名Caseへ混在したEmulator工程は 27:APP-SELECTION-EMU の初期版Agent範囲で実施する。PR33/38の全出典と現行の対象transport限定・共有ADB保護・同boot・deep sleep実測条件を保持する。"
+      ]
+    },
+    "27:SYNC-PRECISION-REAL": {
+      "sources": [
+        {
+          "source_pr": 38,
+          "source_merge": "c0f78076e0e2975434ae3d1328d8095eff548489",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "68661a3fd044e036b4ea3ea0939635abf06c192adc1c33d6cff3864a7f6fcd65"
+        },
+        {
+          "source_pr": 33,
+          "source_merge": "2a6e89ed4ce6c7f04140028cd8f2c707adbf1dfb",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "68661a3fd044e036b4ea3ea0939635abf06c192adc1c33d6cff3864a7f6fcd65"
+        }
+      ],
+      "current_case_sha256": "68661a3fd044e036b4ea3ea0939635abf06c192adc1c33d6cff3864a7f6fcd65",
+      "initial_scope": "deferred",
+      "deferred_scope": [
+        "元Caseの実機環境での全工程を延期。Emulatorでの実行結果を実機のpassにしない。"
+      ],
+      "agent_requirements": [
+        "旧REAL名Caseへ混在したEmulator工程は 27:SYNC-PRECISION-EMU の初期版Agent範囲で実施する。PR33/38の全出典と現行の対象transport限定・共有ADB保護・同boot・deep sleep実測条件を保持する。"
+      ],
+      "full_acceptance_actor": "human"
+    },
+    "27:SYNC-DRIFT-REAL": {
+      "sources": [
+        {
+          "source_pr": 38,
+          "source_merge": "c0f78076e0e2975434ae3d1328d8095eff548489",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "c97233dcb610f3e2f0ce1d349d871d71798acc7c3630a7144c51eaee3245b09e"
+        },
+        {
+          "source_pr": 33,
+          "source_merge": "2a6e89ed4ce6c7f04140028cd8f2c707adbf1dfb",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "a27ee4b1a24b66c6ed56129cdffa5f815e94e30a56e27931e78eb554d800b9f2"
+        }
+      ],
+      "current_case_sha256": "c97233dcb610f3e2f0ce1d349d871d71798acc7c3630a7144c51eaee3245b09e",
+      "initial_scope": "deferred",
+      "deferred_scope": [
+        "元Caseの実機環境での全工程を延期。Emulatorでの実行結果を実機のpassにしない。"
+      ],
+      "agent_requirements": [
+        "旧REAL名Caseへ混在したEmulator工程は 27:SYNC-DRIFT-EMU の初期版Agent範囲で実施する。PR33/38の全出典と現行の対象transport限定・共有ADB保護・同boot・deep sleep実測条件を保持する。"
+      ],
+      "full_acceptance_actor": "human"
+    },
+    "27:SAVE-OUTPUT-REAL": {
+      "sources": [
+        {
+          "source_pr": 38,
+          "source_merge": "c0f78076e0e2975434ae3d1328d8095eff548489",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "4ba240b10f5b20af52c2e65669eac8edebdd7ad78d5658168516d6fed8f074b3"
+        },
+        {
+          "source_pr": 33,
+          "source_merge": "2a6e89ed4ce6c7f04140028cd8f2c707adbf1dfb",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "4ba240b10f5b20af52c2e65669eac8edebdd7ad78d5658168516d6fed8f074b3"
+        }
+      ],
+      "current_case_sha256": "4ba240b10f5b20af52c2e65669eac8edebdd7ad78d5658168516d6fed8f074b3",
+      "initial_scope": "deferred",
+      "deferred_scope": [
+        "元Caseの実機環境での全工程を延期。Emulatorでの実行結果を実機のpassにしない。"
+      ],
+      "agent_requirements": [
+        "旧REAL名Caseへ混在したEmulator工程は 27:SAVE-OUTPUT-EMU の初期版Agent範囲で実施する。PR33/38の全出典と現行の対象transport限定・共有ADB保護・同boot・deep sleep実測条件を保持する。"
+      ]
+    },
+    "27:DISABLE-REAL": {
+      "sources": [
+        {
+          "source_pr": 38,
+          "source_merge": "c0f78076e0e2975434ae3d1328d8095eff548489",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "b3f7beaf754d14fddb4fb4bc4ab2b832436e54004b51ac76f358d1d5a131850e"
+        },
+        {
+          "source_pr": 33,
+          "source_merge": "2a6e89ed4ce6c7f04140028cd8f2c707adbf1dfb",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "b3f7beaf754d14fddb4fb4bc4ab2b832436e54004b51ac76f358d1d5a131850e"
+        }
+      ],
+      "current_case_sha256": "b3f7beaf754d14fddb4fb4bc4ab2b832436e54004b51ac76f358d1d5a131850e",
+      "initial_scope": "deferred",
+      "deferred_scope": [
+        "元Caseの実機環境での全工程を延期。Emulatorでの実行結果を実機のpassにしない。"
+      ],
+      "agent_requirements": [
+        "旧REAL名Caseへ混在したEmulator工程は 27:DISABLE-EMU の初期版Agent範囲で実施する。PR33/38の全出典と現行の対象transport限定・共有ADB保護・同boot・deep sleep実測条件を保持する。"
+      ]
+    },
+    "27:DISPOSE-REAL": {
+      "sources": [
+        {
+          "source_pr": 38,
+          "source_merge": "c0f78076e0e2975434ae3d1328d8095eff548489",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "b55a9da3283e83beb416f4ae27d06b65067597e51a82fe2b4fdf1d5373066bb6"
+        },
+        {
+          "source_pr": 33,
+          "source_merge": "2a6e89ed4ce6c7f04140028cd8f2c707adbf1dfb",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "b55a9da3283e83beb416f4ae27d06b65067597e51a82fe2b4fdf1d5373066bb6"
+        }
+      ],
+      "current_case_sha256": "b55a9da3283e83beb416f4ae27d06b65067597e51a82fe2b4fdf1d5373066bb6",
+      "initial_scope": "deferred",
+      "deferred_scope": [
+        "元Caseの実機環境での全工程を延期。Emulatorでの実行結果を実機のpassにしない。"
+      ],
+      "agent_requirements": [
+        "旧REAL名Caseへ混在したEmulator工程は 27:DISPOSE-EMU の初期版Agent範囲で実施する。PR33/38の全出典と現行の対象transport限定・共有ADB保護・同boot・deep sleep実測条件を保持する。"
+      ]
+    },
+    "27:UI-LIFECYCLE-REAL": {
+      "sources": [
+        {
+          "source_pr": 38,
+          "source_merge": "c0f78076e0e2975434ae3d1328d8095eff548489",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "5288f3239de845b7571ce9309bfbeb04b473668408dccb337e192fbdbfe13839"
+        },
+        {
+          "source_pr": 33,
+          "source_merge": "2a6e89ed4ce6c7f04140028cd8f2c707adbf1dfb",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "5288f3239de845b7571ce9309bfbeb04b473668408dccb337e192fbdbfe13839"
+        }
+      ],
+      "current_case_sha256": "5288f3239de845b7571ce9309bfbeb04b473668408dccb337e192fbdbfe13839",
+      "initial_scope": "deferred",
+      "deferred_scope": [
+        "元Caseの実機環境での全工程を延期。Emulatorでの実行結果を実機のpassにしない。"
+      ],
+      "agent_requirements": [
+        "旧REAL名Caseへ混在したEmulator工程は 27:UI-LIFECYCLE-EMU の初期版Agent範囲で実施する。PR33/38の全出典と現行の対象transport限定・共有ADB保護・同boot・deep sleep実測条件を保持する。"
+      ]
+    },
+    "27:ROTATION-REAL": {
+      "sources": [
+        {
+          "source_pr": 38,
+          "source_merge": "c0f78076e0e2975434ae3d1328d8095eff548489",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "cf99d7ce7ab62ab2c706be9b02e71f11a02db76ee2513dff4a88fe6e56359e08"
+        },
+        {
+          "source_pr": 33,
+          "source_merge": "2a6e89ed4ce6c7f04140028cd8f2c707adbf1dfb",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "cf99d7ce7ab62ab2c706be9b02e71f11a02db76ee2513dff4a88fe6e56359e08"
+        }
+      ],
+      "current_case_sha256": "cf99d7ce7ab62ab2c706be9b02e71f11a02db76ee2513dff4a88fe6e56359e08",
+      "initial_scope": "deferred",
+      "deferred_scope": [
+        "元Caseの実機環境での全工程を延期。Emulatorでの実行結果を実機のpassにしない。"
+      ],
+      "agent_requirements": [
+        "旧REAL名Caseへ混在したEmulator工程は 27:ROTATION-EMU の初期版Agent範囲で実施する。PR33/38の全出典と現行の対象transport限定・共有ADB保護・同boot・deep sleep実測条件を保持する。"
+      ]
+    },
+    "27:VIDEO-POLICY-REAL": {
+      "sources": [
+        {
+          "source_pr": 38,
+          "source_merge": "c0f78076e0e2975434ae3d1328d8095eff548489",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "d03569c5b9ac90af61d154bd15a02bfc08f281d6a47a9ba21e0d23238f3ac841"
+        },
+        {
+          "source_pr": 33,
+          "source_merge": "2a6e89ed4ce6c7f04140028cd8f2c707adbf1dfb",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "d03569c5b9ac90af61d154bd15a02bfc08f281d6a47a9ba21e0d23238f3ac841"
+        }
+      ],
+      "current_case_sha256": "d03569c5b9ac90af61d154bd15a02bfc08f281d6a47a9ba21e0d23238f3ac841",
+      "initial_scope": "deferred",
+      "deferred_scope": [
+        "元Caseの実機環境での全工程を延期。Emulatorでの実行結果を実機のpassにしない。"
+      ],
+      "agent_requirements": [
+        "旧REAL名Caseへ混在したEmulator工程は 27:VIDEO-POLICY-EMU の初期版Agent範囲で実施する。PR33/38の全出典と現行の対象transport限定・共有ADB保護・同boot・deep sleep実測条件を保持する。"
+      ]
+    },
+    "27:SAVE-FAIL-01-REAL": {
+      "sources": [
+        {
+          "source_pr": 38,
+          "source_merge": "c0f78076e0e2975434ae3d1328d8095eff548489",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "a1276a05e21adaa719cbea7615a844febeae0f243bc0937052dd50f6b45b99fd"
+        },
+        {
+          "source_pr": 33,
+          "source_merge": "2a6e89ed4ce6c7f04140028cd8f2c707adbf1dfb",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "a1276a05e21adaa719cbea7615a844febeae0f243bc0937052dd50f6b45b99fd"
+        }
+      ],
+      "current_case_sha256": "a1276a05e21adaa719cbea7615a844febeae0f243bc0937052dd50f6b45b99fd",
+      "initial_scope": "deferred",
+      "deferred_scope": [
+        "元Caseの実機環境での全工程を延期。Emulatorでの実行結果を実機のpassにしない。"
+      ],
+      "agent_requirements": [
+        "旧REAL名Caseへ混在したEmulator工程は 27:SAVE-FAIL-01-EMU の初期版Agent範囲で実施する。PR33/38の全出典と現行の対象transport限定・共有ADB保護・同boot・deep sleep実測条件を保持する。"
+      ]
+    },
+    "27:SAVE-FAIL-02-REAL": {
+      "sources": [
+        {
+          "source_pr": 38,
+          "source_merge": "c0f78076e0e2975434ae3d1328d8095eff548489",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "16ffad128db5ba4ef54938e31ce68f359ecaaaf1e1a16900fe52ffc5a7cc31c9"
+        },
+        {
+          "source_pr": 33,
+          "source_merge": "2a6e89ed4ce6c7f04140028cd8f2c707adbf1dfb",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "16ffad128db5ba4ef54938e31ce68f359ecaaaf1e1a16900fe52ffc5a7cc31c9"
+        }
+      ],
+      "current_case_sha256": "16ffad128db5ba4ef54938e31ce68f359ecaaaf1e1a16900fe52ffc5a7cc31c9",
+      "initial_scope": "deferred",
+      "deferred_scope": [
+        "元Caseの実機環境での全工程を延期。Emulatorでの実行結果を実機のpassにしない。"
+      ],
+      "agent_requirements": [
+        "旧REAL名Caseへ混在したEmulator工程は 27:SAVE-FAIL-02-EMU の初期版Agent範囲で実施する。PR33/38の全出典と現行の対象transport限定・共有ADB保護・同boot・deep sleep実測条件を保持する。"
+      ]
+    },
+    "27:SAVE-FAIL-03-REAL": {
+      "sources": [
+        {
+          "source_pr": 38,
+          "source_merge": "c0f78076e0e2975434ae3d1328d8095eff548489",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "23316c22b78487ffe058a0fb56af05f2a65c9cce29a27446da3b0ee601442e9f"
+        },
+        {
+          "source_pr": 33,
+          "source_merge": "2a6e89ed4ce6c7f04140028cd8f2c707adbf1dfb",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "23316c22b78487ffe058a0fb56af05f2a65c9cce29a27446da3b0ee601442e9f"
+        }
+      ],
+      "current_case_sha256": "23316c22b78487ffe058a0fb56af05f2a65c9cce29a27446da3b0ee601442e9f",
+      "initial_scope": "deferred",
+      "deferred_scope": [
+        "元Caseの実機環境での全工程を延期。Emulatorでの実行結果を実機のpassにしない。"
+      ],
+      "agent_requirements": [
+        "旧REAL名Caseへ混在したEmulator工程は 27:SAVE-FAIL-03-EMU の初期版Agent範囲で実施する。PR33/38の全出典と現行の対象transport限定・共有ADB保護・同boot・deep sleep実測条件を保持する。"
+      ]
+    },
+    "27:SAVE-FAIL-04-REAL": {
+      "sources": [
+        {
+          "source_pr": 38,
+          "source_merge": "c0f78076e0e2975434ae3d1328d8095eff548489",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "780ac1d848df2daabafe356c7e38b885ea3dd8dc9c9929c1b71a1906cc25562c"
+        },
+        {
+          "source_pr": 33,
+          "source_merge": "2a6e89ed4ce6c7f04140028cd8f2c707adbf1dfb",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "780ac1d848df2daabafe356c7e38b885ea3dd8dc9c9929c1b71a1906cc25562c"
+        }
+      ],
+      "current_case_sha256": "780ac1d848df2daabafe356c7e38b885ea3dd8dc9c9929c1b71a1906cc25562c",
+      "initial_scope": "deferred",
+      "deferred_scope": [
+        "元Caseの実機環境での全工程を延期。Emulatorでの実行結果を実機のpassにしない。"
+      ],
+      "agent_requirements": [
+        "旧REAL名Caseへ混在したEmulator工程は 27:SAVE-FAIL-04-EMU の初期版Agent範囲で実施する。PR33/38の全出典と現行の対象transport限定・共有ADB保護・同boot・deep sleep実測条件を保持する。"
+      ]
+    },
+    "27:SAVE-FAIL-05-REAL": {
+      "sources": [
+        {
+          "source_pr": 38,
+          "source_merge": "c0f78076e0e2975434ae3d1328d8095eff548489",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "691bce3bba84103e82a91031fc3b005e2e1714f94df70239fefe9e735fec48a6"
+        },
+        {
+          "source_pr": 33,
+          "source_merge": "2a6e89ed4ce6c7f04140028cd8f2c707adbf1dfb",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "691bce3bba84103e82a91031fc3b005e2e1714f94df70239fefe9e735fec48a6"
+        }
+      ],
+      "current_case_sha256": "691bce3bba84103e82a91031fc3b005e2e1714f94df70239fefe9e735fec48a6",
+      "initial_scope": "deferred",
+      "deferred_scope": [
+        "元Caseの実機環境での全工程を延期。Emulatorでの実行結果を実機のpassにしない。"
+      ],
+      "agent_requirements": [
+        "旧REAL名Caseへ混在したEmulator工程は 27:SAVE-FAIL-05-EMU の初期版Agent範囲で実施する。PR33/38の全出典と現行の対象transport限定・共有ADB保護・同boot・deep sleep実測条件を保持する。"
+      ]
+    },
+    "27:SAVE-FAIL-06-REAL": {
+      "sources": [
+        {
+          "source_pr": 38,
+          "source_merge": "c0f78076e0e2975434ae3d1328d8095eff548489",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "4fa75f3dc8e2148d99f7a3c0bc327ebb7e985e570c9b73da731639329e3eeec1"
+        },
+        {
+          "source_pr": 33,
+          "source_merge": "2a6e89ed4ce6c7f04140028cd8f2c707adbf1dfb",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "4fa75f3dc8e2148d99f7a3c0bc327ebb7e985e570c9b73da731639329e3eeec1"
+        }
+      ],
+      "current_case_sha256": "4fa75f3dc8e2148d99f7a3c0bc327ebb7e985e570c9b73da731639329e3eeec1",
+      "initial_scope": "deferred",
+      "deferred_scope": [
+        "元Caseの実機環境での全工程を延期。Emulatorでの実行結果を実機のpassにしない。"
+      ],
+      "agent_requirements": [
+        "旧REAL名Caseへ混在したEmulator工程は 27:SAVE-FAIL-06-EMU の初期版Agent範囲で実施する。PR33/38の全出典と現行の対象transport限定・共有ADB保護・同boot・deep sleep実測条件を保持する。"
+      ]
+    },
+    "27:SAVE-FAIL-07-REAL": {
+      "sources": [
+        {
+          "source_pr": 38,
+          "source_merge": "c0f78076e0e2975434ae3d1328d8095eff548489",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "c193aeb05a6c99ccf4fd691aaaee8a122cd44401fab07f9869482659d43b0fb5"
+        },
+        {
+          "source_pr": 33,
+          "source_merge": "2a6e89ed4ce6c7f04140028cd8f2c707adbf1dfb",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "c193aeb05a6c99ccf4fd691aaaee8a122cd44401fab07f9869482659d43b0fb5"
+        }
+      ],
+      "current_case_sha256": "c193aeb05a6c99ccf4fd691aaaee8a122cd44401fab07f9869482659d43b0fb5",
+      "initial_scope": "deferred",
+      "deferred_scope": [
+        "元Caseの実機環境での全工程を延期。Emulatorでの実行結果を実機のpassにしない。"
+      ],
+      "agent_requirements": [
+        "旧REAL名Caseへ混在したEmulator工程は 27:SAVE-FAIL-07-EMU の初期版Agent範囲で実施する。PR33/38の全出典と現行の対象transport限定・共有ADB保護・同boot・deep sleep実測条件を保持する。"
+      ]
+    },
+    "27:SAVE-FAIL-08-REAL": {
+      "sources": [
+        {
+          "source_pr": 38,
+          "source_merge": "c0f78076e0e2975434ae3d1328d8095eff548489",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "992ab235345a31466154318f2f810b9cf92457d94e324f610fc65cad8ca9d519"
+        },
+        {
+          "source_pr": 33,
+          "source_merge": "2a6e89ed4ce6c7f04140028cd8f2c707adbf1dfb",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "f24b280bdcc7dcc19128dbc3e1f3e2ae25b2915db6f3c570164b7cb99a7feca1"
+        }
+      ],
+      "current_case_sha256": "992ab235345a31466154318f2f810b9cf92457d94e324f610fc65cad8ca9d519",
+      "initial_scope": "deferred",
+      "deferred_scope": [
+        "元Caseの実機環境での全工程を延期。Emulatorでの実行結果を実機のpassにしない。"
+      ],
+      "agent_requirements": [
+        "旧REAL名Caseへ混在したEmulator工程は 27:SAVE-FAIL-08-EMU の初期版Agent範囲で実施する。PR33/38の全出典と現行の対象transport限定・共有ADB保護・同boot・deep sleep実測条件を保持する。"
+      ]
+    },
+    "27:SAVE-FAIL-09-REAL": {
+      "sources": [
+        {
+          "source_pr": 38,
+          "source_merge": "c0f78076e0e2975434ae3d1328d8095eff548489",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "e14d2e97424f4a8aeb87c56d5997d096ee891302c246bbf2fb7d73a20543fdbc"
+        },
+        {
+          "source_pr": 33,
+          "source_merge": "2a6e89ed4ce6c7f04140028cd8f2c707adbf1dfb",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "e14d2e97424f4a8aeb87c56d5997d096ee891302c246bbf2fb7d73a20543fdbc"
+        }
+      ],
+      "current_case_sha256": "e14d2e97424f4a8aeb87c56d5997d096ee891302c246bbf2fb7d73a20543fdbc",
+      "initial_scope": "deferred",
+      "deferred_scope": [
+        "元Caseの実機環境での全工程を延期。Emulatorでの実行結果を実機のpassにしない。"
+      ],
+      "agent_requirements": [
+        "旧REAL名Caseへ混在したEmulator工程は 27:SAVE-FAIL-09-EMU の初期版Agent範囲で実施する。PR33/38の全出典と現行の対象transport限定・共有ADB保護・同boot・deep sleep実測条件を保持する。"
+      ]
+    },
+    "27:ENV-READY-EMU": {
+      "sources": [
+        {
+          "source_pr": 38,
+          "source_merge": "c0f78076e0e2975434ae3d1328d8095eff548489",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "ae2e821a7a08fb7285469598031e9b3f3d1f0a3625008379d2ba6d0dfa46ecf6"
+        },
+        {
+          "source_pr": 33,
+          "source_merge": "2a6e89ed4ce6c7f04140028cd8f2c707adbf1dfb",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "7a47d10b07c305e8dbbb3c9c6feaee1032fbc6bf225a54b4088de8dc49d41288"
+        }
+      ],
+      "current_case_sha256": "ae2e821a7a08fb7285469598031e9b3f3d1f0a3625008379d2ba6d0dfa46ecf6",
+      "initial_scope": "agent",
+      "deferred_scope": [],
+      "agent_requirements": [
+        "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。"
+      ]
+    },
+    "27:FIXTURE-MARKERS-EMU": {
+      "sources": [
+        {
+          "source_pr": 38,
+          "source_merge": "c0f78076e0e2975434ae3d1328d8095eff548489",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "0f1684e24eb796c7e1193f5d34bc78a58ceeb14ef9494bbdcf336f17b867fb87"
+        },
+        {
+          "source_pr": 33,
+          "source_merge": "2a6e89ed4ce6c7f04140028cd8f2c707adbf1dfb",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "0f1684e24eb796c7e1193f5d34bc78a58ceeb14ef9494bbdcf336f17b867fb87"
+        }
+      ],
+      "current_case_sha256": "0f1684e24eb796c7e1193f5d34bc78a58ceeb14ef9494bbdcf336f17b867fb87",
+      "initial_scope": "agent",
+      "deferred_scope": [],
+      "agent_requirements": [
+        "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。",
+        "GUI/画面可読性/標準playerの実再生・seekと照合はAgent側に残す。human欄だけを根拠に別の必須人間確認を作らない。"
+      ]
+    },
+    "27:INITIAL-OFF-EMU": {
+      "sources": [
+        {
+          "source_pr": 38,
+          "source_merge": "c0f78076e0e2975434ae3d1328d8095eff548489",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "6479e76b50e6e1110180cbad68638831da9d920e95a6dc5523d86dca23337a46"
+        },
+        {
+          "source_pr": 33,
+          "source_merge": "2a6e89ed4ce6c7f04140028cd8f2c707adbf1dfb",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "6479e76b50e6e1110180cbad68638831da9d920e95a6dc5523d86dca23337a46"
+        }
+      ],
+      "current_case_sha256": "6479e76b50e6e1110180cbad68638831da9d920e95a6dc5523d86dca23337a46",
+      "initial_scope": "agent",
+      "deferred_scope": [],
+      "agent_requirements": [
+        "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。"
+      ]
+    },
+    "27:ENABLE-CONNECTED-EMU": {
+      "sources": [
+        {
+          "source_pr": 38,
+          "source_merge": "c0f78076e0e2975434ae3d1328d8095eff548489",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "77591b4789b166463a9fb5f45f2af44a7cebbdb3ce01135ccf8aa0e6aa60f580"
+        },
+        {
+          "source_pr": 33,
+          "source_merge": "2a6e89ed4ce6c7f04140028cd8f2c707adbf1dfb",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "77591b4789b166463a9fb5f45f2af44a7cebbdb3ce01135ccf8aa0e6aa60f580"
+        }
+      ],
+      "current_case_sha256": "77591b4789b166463a9fb5f45f2af44a7cebbdb3ce01135ccf8aa0e6aa60f580",
+      "initial_scope": "agent",
+      "deferred_scope": [],
+      "agent_requirements": [
+        "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。"
+      ]
+    },
+    "27:ENABLE-WAIT-EMU": {
+      "sources": [
+        {
+          "source_pr": 38,
+          "source_merge": "c0f78076e0e2975434ae3d1328d8095eff548489",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "f0b96b1f0f388ec24eef01c991b2988768437b0d120da87c69b704b198b8fdf1"
+        },
+        {
+          "source_pr": 33,
+          "source_merge": "2a6e89ed4ce6c7f04140028cd8f2c707adbf1dfb",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "f0b96b1f0f388ec24eef01c991b2988768437b0d120da87c69b704b198b8fdf1"
+        }
+      ],
+      "current_case_sha256": "f0b96b1f0f388ec24eef01c991b2988768437b0d120da87c69b704b198b8fdf1",
+      "initial_scope": "agent",
+      "deferred_scope": [],
+      "agent_requirements": [
+        "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。"
+      ]
+    },
+    "27:STATE-RESTORE-EMU": {
+      "sources": [
+        {
+          "source_pr": 38,
+          "source_merge": "c0f78076e0e2975434ae3d1328d8095eff548489",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "000edd8022edbdf3f4b2eaf38515046e95ec688cb19c5a14823e8b8848948bf8"
+        },
+        {
+          "source_pr": 33,
+          "source_merge": "2a6e89ed4ce6c7f04140028cd8f2c707adbf1dfb",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "000edd8022edbdf3f4b2eaf38515046e95ec688cb19c5a14823e8b8848948bf8"
+        }
+      ],
+      "current_case_sha256": "000edd8022edbdf3f4b2eaf38515046e95ec688cb19c5a14823e8b8848948bf8",
+      "initial_scope": "agent",
+      "deferred_scope": [],
+      "agent_requirements": [
+        "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。"
+      ]
+    },
+    "27:SETTINGS-APPLY-EMU": {
+      "sources": [
+        {
+          "source_pr": 38,
+          "source_merge": "c0f78076e0e2975434ae3d1328d8095eff548489",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "7312bc9175dac6dab38957f43593901e8c37c98cb7d4efdf3c8a4a946b3565e6"
+        },
+        {
+          "source_pr": 33,
+          "source_merge": "2a6e89ed4ce6c7f04140028cd8f2c707adbf1dfb",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "7312bc9175dac6dab38957f43593901e8c37c98cb7d4efdf3c8a4a946b3565e6"
+        }
+      ],
+      "current_case_sha256": "7312bc9175dac6dab38957f43593901e8c37c98cb7d4efdf3c8a4a946b3565e6",
+      "initial_scope": "agent",
+      "deferred_scope": [],
+      "agent_requirements": [
+        "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。"
+      ]
+    },
+    "27:SETTINGS-INVALID-EMU": {
+      "sources": [
+        {
+          "source_pr": 38,
+          "source_merge": "c0f78076e0e2975434ae3d1328d8095eff548489",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "ee783ca47a52ae46a2081d3d72d108346fe79fcdf4649a08be544893ede20314"
+        },
+        {
+          "source_pr": 33,
+          "source_merge": "2a6e89ed4ce6c7f04140028cd8f2c707adbf1dfb",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "ee783ca47a52ae46a2081d3d72d108346fe79fcdf4649a08be544893ede20314"
+        }
+      ],
+      "current_case_sha256": "ee783ca47a52ae46a2081d3d72d108346fe79fcdf4649a08be544893ede20314",
+      "initial_scope": "agent",
+      "deferred_scope": [],
+      "agent_requirements": [
+        "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。"
+      ]
+    },
+    "27:BUFFER-180-EMU": {
+      "sources": [
+        {
+          "source_pr": 38,
+          "source_merge": "c0f78076e0e2975434ae3d1328d8095eff548489",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "9214ac972f21c507af3c8629af93e6a40f90172c1df6f834c241af9fc05ea282"
+        },
+        {
+          "source_pr": 33,
+          "source_merge": "2a6e89ed4ce6c7f04140028cd8f2c707adbf1dfb",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "9214ac972f21c507af3c8629af93e6a40f90172c1df6f834c241af9fc05ea282"
+        }
+      ],
+      "current_case_sha256": "9214ac972f21c507af3c8629af93e6a40f90172c1df6f834c241af9fc05ea282",
+      "initial_scope": "agent",
+      "deferred_scope": [
+        "対象原文: effective.steps[10]=\"同期の正式300イベント/30分、p95<=100ms・最大<=250ms・drift<=50ms・clock<=20msと必要な人間確認は既存の同期Caseで別途実施する。本CaseやJVM回帰で代用しない。\"。延期: 既存同期Caseへの依存のうち人間による番号確認だけを延期。正式300event/30分のAgent測定と閾値は初期版にも残し、GOP/JVM結果で代用しない。"
+      ],
+      "agent_requirements": [
+        "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。"
+      ],
+      "full_acceptance_actor": "human"
+    },
+    "27:BUFFER-SHORT-EMU": {
+      "sources": [
+        {
+          "source_pr": 38,
+          "source_merge": "c0f78076e0e2975434ae3d1328d8095eff548489",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "9671f09a4dccacf6d2ee4a32f8df445725db13e51194ca58f8c049bdf0cc38df"
+        },
+        {
+          "source_pr": 33,
+          "source_merge": "2a6e89ed4ce6c7f04140028cd8f2c707adbf1dfb",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "9671f09a4dccacf6d2ee4a32f8df445725db13e51194ca58f8c049bdf0cc38df"
+        }
+      ],
+      "current_case_sha256": "9671f09a4dccacf6d2ee4a32f8df445725db13e51194ca58f8c049bdf0cc38df",
+      "initial_scope": "agent",
+      "deferred_scope": [
+        "対象原文: effective.steps[10]=\"同期の正式300イベント/30分、p95<=100ms・最大<=250ms・drift<=50ms・clock<=20msと必要な人間確認は既存の同期Caseで別途実施する。本CaseやJVM回帰で代用しない。\"。延期: 既存同期Caseへの依存のうち人間による番号確認だけを延期。正式300event/30分のAgent測定と閾値は初期版にも残し、GOP/JVM結果で代用しない。"
+      ],
+      "agent_requirements": [
+        "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。"
+      ],
+      "full_acceptance_actor": "human"
+    },
+    "27:SAVE-CONTINUE-EMU": {
+      "sources": [
+        {
+          "source_pr": 38,
+          "source_merge": "c0f78076e0e2975434ae3d1328d8095eff548489",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "44ef89a4f37791a0f73999a7cdf14565623ff1fb1b38685b71d92e66cc8ca971"
+        },
+        {
+          "source_pr": 33,
+          "source_merge": "2a6e89ed4ce6c7f04140028cd8f2c707adbf1dfb",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "44ef89a4f37791a0f73999a7cdf14565623ff1fb1b38685b71d92e66cc8ca971"
+        }
+      ],
+      "current_case_sha256": "44ef89a4f37791a0f73999a7cdf14565623ff1fb1b38685b71d92e66cc8ca971",
+      "initial_scope": "agent",
+      "deferred_scope": [
+        "対象原文: effective.steps[10]=\"同期の正式300イベント/30分、p95<=100ms・最大<=250ms・drift<=50ms・clock<=20msと必要な人間確認は既存の同期Caseで別途実施する。本CaseやJVM回帰で代用しない。\"。延期: 既存同期Caseへの依存のうち人間による番号確認だけを延期。正式300event/30分のAgent測定と閾値は初期版にも残し、GOP/JVM結果で代用しない。"
+      ],
+      "agent_requirements": [
+        "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。"
+      ],
+      "full_acceptance_actor": "human"
+    },
+    "27:REALTIME-GAP-EMU": {
+      "sources": [
+        {
+          "source_pr": 38,
+          "source_merge": "c0f78076e0e2975434ae3d1328d8095eff548489",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "01b3201b6ea5ae9c1e753a57240da600907bd6a3406ddcff16951866fa08fbbc"
+        },
+        {
+          "source_pr": 33,
+          "source_merge": "2a6e89ed4ce6c7f04140028cd8f2c707adbf1dfb",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "d689cac24928258b3a32a5f24529a1072a51fe32c0ea5c6035804055c6f1c813"
+        }
+      ],
+      "current_case_sha256": "01b3201b6ea5ae9c1e753a57240da600907bd6a3406ddcff16951866fa08fbbc",
+      "initial_scope": "agent",
+      "deferred_scope": [],
+      "agent_requirements": [
+        "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。"
+      ]
+    },
+    "27:RECONNECT-EMU": {
+      "sources": [
+        {
+          "source_pr": 38,
+          "source_merge": "c0f78076e0e2975434ae3d1328d8095eff548489",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "02542fd7f71a6f9b737ff3b65648ede18455f48c8d67af63efe834b566c9c472"
+        },
+        {
+          "source_pr": 33,
+          "source_merge": "2a6e89ed4ce6c7f04140028cd8f2c707adbf1dfb",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "371f3efa7021a0fbac1a05c1973f5f99b0e81b917ea3f36e4cfdd61414b1570c"
+        }
+      ],
+      "current_case_sha256": "02542fd7f71a6f9b737ff3b65648ede18455f48c8d67af63efe834b566c9c472",
+      "initial_scope": "agent",
+      "deferred_scope": [],
+      "agent_requirements": [
+        "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。"
+      ]
+    },
+    "27:PARTIAL-CAPTURE-EMU": {
+      "sources": [
+        {
+          "source_pr": 38,
+          "source_merge": "c0f78076e0e2975434ae3d1328d8095eff548489",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "3b35770a1dfa647213547fefe61c08e2ee312468859569454c34ed16bbe00514"
+        },
+        {
+          "source_pr": 33,
+          "source_merge": "2a6e89ed4ce6c7f04140028cd8f2c707adbf1dfb",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "3b35770a1dfa647213547fefe61c08e2ee312468859569454c34ed16bbe00514"
+        }
+      ],
+      "current_case_sha256": "3b35770a1dfa647213547fefe61c08e2ee312468859569454c34ed16bbe00514",
+      "initial_scope": "agent",
+      "deferred_scope": [],
+      "agent_requirements": [
+        "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。"
+      ]
+    },
+    "27:LOG-SEPARATION-EMU": {
+      "sources": [
+        {
+          "source_pr": 38,
+          "source_merge": "c0f78076e0e2975434ae3d1328d8095eff548489",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "1fcb337fa4fc878c24af3edaf9fb0f55358c254bff8b689d936a6c4605032ab9"
+        },
+        {
+          "source_pr": 33,
+          "source_merge": "2a6e89ed4ce6c7f04140028cd8f2c707adbf1dfb",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "1fcb337fa4fc878c24af3edaf9fb0f55358c254bff8b689d936a6c4605032ab9"
+        }
+      ],
+      "current_case_sha256": "1fcb337fa4fc878c24af3edaf9fb0f55358c254bff8b689d936a6c4605032ab9",
+      "initial_scope": "agent",
+      "deferred_scope": [],
+      "agent_requirements": [
+        "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。"
+      ]
+    },
+    "27:APP-SELECTION-EMU": {
+      "sources": [
+        {
+          "source_pr": 38,
+          "source_merge": "c0f78076e0e2975434ae3d1328d8095eff548489",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "6fb4be0b8996e29f607df73d8269e17b2b7acb8e4ac30e0bdcf7e938ffce43a1"
+        },
+        {
+          "source_pr": 33,
+          "source_merge": "2a6e89ed4ce6c7f04140028cd8f2c707adbf1dfb",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "6fb4be0b8996e29f607df73d8269e17b2b7acb8e4ac30e0bdcf7e938ffce43a1"
+        }
+      ],
+      "current_case_sha256": "6fb4be0b8996e29f607df73d8269e17b2b7acb8e4ac30e0bdcf7e938ffce43a1",
+      "initial_scope": "agent",
+      "deferred_scope": [],
+      "agent_requirements": [
+        "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。"
+      ]
+    },
+    "27:SYNC-PRECISION-EMU": {
+      "sources": [
+        {
+          "source_pr": 38,
+          "source_merge": "c0f78076e0e2975434ae3d1328d8095eff548489",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "95da93357dc99e2584834a394426c69c3132599600bb3a47ecc45a72f1ec7660"
+        },
+        {
+          "source_pr": 33,
+          "source_merge": "2a6e89ed4ce6c7f04140028cd8f2c707adbf1dfb",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "95da93357dc99e2584834a394426c69c3132599600bb3a47ecc45a72f1ec7660"
+        }
+      ],
+      "current_case_sha256": "95da93357dc99e2584834a394426c69c3132599600bb3a47ecc45a72f1ec7660",
+      "initial_scope": "agent",
+      "deferred_scope": [
+        "対象原文: steps[0]=\"fixtureイベントを開始/中盤/末尾、切出し境界、中断前後に発生する。\" | steps[1]=\"最初に番号が見える動画フレームPTSと直前PTSを読み、両ログのpackage/run/eventと時計対応を照合する。\" | steps[2]=\"REQUEST→DRAW→commit callbackの遅延、frame間隔、clockサンプル幅を含め誤差/不確かさを記録する。\" | steps[3]=\"SYNC-CLOCK: 同じUI更新callbackで連番/端末elapsedをLogへ出し、画面にも連番を描画する。描画完了のframe callback時刻も別に記録する。\" | steps[4]=\"SYNC-CLOCK: 30分取得し開始/中間/終了の各100イベントを保存対象にする。両ログに同じrecord_idがあることを照合する。\" | steps[5]=\"SYNC-CLOCK: 元PTS/clock変換誤差と描画遅延を分け、全300件の差・p95・最大・前後半中央値差を集計する。\" | expected=\"#13採用精度内で対応でき、欠落を確認可能。REQUESTやcommitを実表示時刻としない。測定の不確かさが閾値を上回るときはpassにしない。 SYNC-CLOCK: 通常p95<=100ms、最大<=250ms、中央値drift<=50ms、clock見積誤差<=20ms。全欠落/uncertainも集計し隠さない。100ms等は未実測の設計基準。\" | 固定23fのtests/fixtures/replay-marker/README.md#同期測定補助macos標準api（人間確認の出典）。延期: 全300遷移の前後画像の表示番号を人間が確認し、欠落/重複/unknown/uncertainを確定する工程。正式精度passの前提は未充足のまま。"
+      ],
+      "agent_requirements": [
+        "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。",
+        "30分・開始/中間/終了各100 eventの全300件を同一候補で採取し、全frame復号/境界/元PTS/両log record_idとREQUEST/DRAW/FRAME_COMMITを照合する。p95<=100ms、最大<=250ms、drift<=50ms、clock<=20ms、欠落・重複・unknown/uncertainを評価する。最低601画像の人間番号読取りだけを後続へ残す。人間番号確認前の解析は初期範囲の結果であり、原Case全体の正式精度passとは呼ばない。"
+      ],
+      "full_acceptance_actor": "human"
+    },
+    "27:SYNC-DRIFT-EMU": {
+      "sources": [
+        {
+          "source_pr": 38,
+          "source_merge": "c0f78076e0e2975434ae3d1328d8095eff548489",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "f5112ad070c8e9b33947189745396346c75bd6a7ccd90a4dfa8ca49c9b7846b2"
+        },
+        {
+          "source_pr": 33,
+          "source_merge": "2a6e89ed4ce6c7f04140028cd8f2c707adbf1dfb",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "f01f8a16d1b7827e8f114e979225b54e3ef4b5eacd86f9eef10128328cf72308"
+        }
+      ],
+      "current_case_sha256": "f5112ad070c8e9b33947189745396346c75bd6a7ccd90a4dfa8ca49c9b7846b2",
+      "initial_scope": "agent",
+      "deferred_scope": [
+        "対象原文: steps[0]=\"採用#13で決めた試験時間を連続取得し等間隔にイベントを発生する。\" | steps[1]=\"専用対象で許可された場合だけwall clock変更/アプリ再起動を行い再保存する。\" | steps[2]=\"SYNC-CLOCK: 同じUI更新callbackで連番/端末elapsedをLogへ出し、画面にも連番を描画する。描画完了のframe callback時刻も別に記録する。\" | steps[3]=\"SYNC-CLOCK: 30分取得し開始/中間/終了の各100イベントを保存対象にする。両ログに同じrecord_idがあることを照合する。\" | steps[4]=\"SYNC-CLOCK: 元PTS/clock変換誤差と描画遅延を分け、全300件の差・p95・最大・前後半中央値差を集計する。\" | steps[5]=\"SYNC-JUMP: 専用Emulatorの日時設定を前後へ変更し、変更を挟むeventを記録する。\" | steps[6]=\"SYNC-JUMP: 専用Emulatorだけを許可済みの方法でsleep/復帰させ、monoとelapsedの差を実測し境界前後を保存する。画面OFFだけでdeep sleepしたと判断しない。\" | steps[7]=\"SYNC-JUMP: 専用Emulatorだけを通常再起動し、新boot epochで再取得・保存、固定した失敗対象も照合する。\" | expected=\"開始/末尾のずれを実測し採用精度内。時計変化/epoch/空白を誤対応しない。共有端末時計は変更しない。 SYNC-CLOCK: 通常p95<=100ms、最大<=250ms、中央値drift<=50ms、clock見積誤差<=20ms。全欠落/uncertainも集計し隠さない。100ms等は未実測の設計基準。 SYNC-JUMP: 境界跨ぎ補間なし、曖昧logはelapsed/window nullと推定幅。正常precisionを偽装しない。sequence/旧履歴/pinは保持、新bootを旧elapsedとして計算しない。失った容量上限区間はloss。 SYNC-JUMPの結果はこの専用Emulatorだけに帰属する。正常30分精度と時計境界試験を別に集計し、安全に再現・測定できない操作を完了扱いしない。\" | 固定23fのtests/fixtures/replay-marker/README.md#同期測定補助macos標準api（人間確認の出典）。延期: 全300遷移の前後画像の表示番号を人間が確認し、欠落/重複/unknown/uncertainを確定する工程。正式精度passの前提は未充足のまま。"
+      ],
+      "agent_requirements": [
+        "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。",
+        "30分・開始/中間/終了各100 eventの全300件を同一候補で採取し、全frame復号/境界/元PTS/両log record_idとREQUEST/DRAW/FRAME_COMMITを照合する。p95<=100ms、最大<=250ms、drift<=50ms、clock<=20ms、欠落・重複・unknown/uncertainを評価する。最低601画像の人間番号読取りだけを後続へ残す。人間番号確認前の解析は初期範囲の結果であり、原Case全体の正式精度passとは呼ばない。"
+      ],
+      "full_acceptance_actor": "human"
+    },
+    "27:SAVE-OUTPUT-EMU": {
+      "sources": [
+        {
+          "source_pr": 38,
+          "source_merge": "c0f78076e0e2975434ae3d1328d8095eff548489",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "9a4e4bc0d6c8725ab3528899e89f5b9c1654cff84b171fd6f9e5395bf520e663"
+        },
+        {
+          "source_pr": 33,
+          "source_merge": "2a6e89ed4ce6c7f04140028cd8f2c707adbf1dfb",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "9a4e4bc0d6c8725ab3528899e89f5b9c1654cff84b171fd6f9e5395bf520e663"
+        }
+      ],
+      "current_case_sha256": "9a4e4bc0d6c8725ab3528899e89f5b9c1654cff84b171fd6f9e5395bf520e663",
+      "initial_scope": "agent",
+      "deferred_scope": [],
+      "agent_requirements": [
+        "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。",
+        "GUI/画面可読性/標準playerの実再生・seekと照合はAgent側に残す。human欄だけを根拠に別の必須人間確認を作らない。"
+      ]
+    },
+    "27:DISABLE-EMU": {
+      "sources": [
+        {
+          "source_pr": 38,
+          "source_merge": "c0f78076e0e2975434ae3d1328d8095eff548489",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "ad3d0b38652a71fdf5c7444c5638c92ccc9f4d11607a533a9ad6bb2a3148b2ad"
+        },
+        {
+          "source_pr": 33,
+          "source_merge": "2a6e89ed4ce6c7f04140028cd8f2c707adbf1dfb",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "ad3d0b38652a71fdf5c7444c5638c92ccc9f4d11607a533a9ad6bb2a3148b2ad"
+        }
+      ],
+      "current_case_sha256": "ad3d0b38652a71fdf5c7444c5638c92ccc9f4d11607a533a9ad6bb2a3148b2ad",
+      "initial_scope": "agent",
+      "deferred_scope": [],
+      "agent_requirements": [
+        "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。"
+      ]
+    },
+    "27:DISPOSE-EMU": {
+      "sources": [
+        {
+          "source_pr": 38,
+          "source_merge": "c0f78076e0e2975434ae3d1328d8095eff548489",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "6db5fc37c4e313df4d474e4ebeceb13c328c118d21b4ae5ac0c22399072f2d0d"
+        },
+        {
+          "source_pr": 33,
+          "source_merge": "2a6e89ed4ce6c7f04140028cd8f2c707adbf1dfb",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "6db5fc37c4e313df4d474e4ebeceb13c328c118d21b4ae5ac0c22399072f2d0d"
+        }
+      ],
+      "current_case_sha256": "6db5fc37c4e313df4d474e4ebeceb13c328c118d21b4ae5ac0c22399072f2d0d",
+      "initial_scope": "agent",
+      "deferred_scope": [],
+      "agent_requirements": [
+        "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。"
+      ]
+    },
+    "27:UI-LIFECYCLE-EMU": {
+      "sources": [
+        {
+          "source_pr": 38,
+          "source_merge": "c0f78076e0e2975434ae3d1328d8095eff548489",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "a20b7adbeed291eb4ffe146a9a1c03f11402941efa59d509ba159741ddf499f4"
+        },
+        {
+          "source_pr": 33,
+          "source_merge": "2a6e89ed4ce6c7f04140028cd8f2c707adbf1dfb",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "a20b7adbeed291eb4ffe146a9a1c03f11402941efa59d509ba159741ddf499f4"
+        }
+      ],
+      "current_case_sha256": "a20b7adbeed291eb4ffe146a9a1c03f11402941efa59d509ba159741ddf499f4",
+      "initial_scope": "agent",
+      "deferred_scope": [],
+      "agent_requirements": [
+        "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。"
+      ]
+    },
+    "27:ROTATION-EMU": {
+      "sources": [
+        {
+          "source_pr": 38,
+          "source_merge": "c0f78076e0e2975434ae3d1328d8095eff548489",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "74662545764b596ceb6260f39b846a343fe19bd0afd2d7b952d9c5eea8227089"
+        },
+        {
+          "source_pr": 33,
+          "source_merge": "2a6e89ed4ce6c7f04140028cd8f2c707adbf1dfb",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "74662545764b596ceb6260f39b846a343fe19bd0afd2d7b952d9c5eea8227089"
+        }
+      ],
+      "current_case_sha256": "74662545764b596ceb6260f39b846a343fe19bd0afd2d7b952d9c5eea8227089",
+      "initial_scope": "agent",
+      "deferred_scope": [],
+      "agent_requirements": [
+        "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。"
+      ]
+    },
+    "27:VIDEO-POLICY-EMU": {
+      "sources": [
+        {
+          "source_pr": 38,
+          "source_merge": "c0f78076e0e2975434ae3d1328d8095eff548489",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "45de854fca23f6d6768194a13affed258e7dbf0fc70d065f2a7c94d05206a61e"
+        },
+        {
+          "source_pr": 33,
+          "source_merge": "2a6e89ed4ce6c7f04140028cd8f2c707adbf1dfb",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "45de854fca23f6d6768194a13affed258e7dbf0fc70d065f2a7c94d05206a61e"
+        }
+      ],
+      "current_case_sha256": "45de854fca23f6d6768194a13affed258e7dbf0fc70d065f2a7c94d05206a61e",
+      "initial_scope": "agent",
+      "deferred_scope": [],
+      "agent_requirements": [
+        "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。",
+        "GUI/画面可読性/標準playerの実再生・seekと照合はAgent側に残す。human欄だけを根拠に別の必須人間確認を作らない。"
+      ]
+    },
+    "27:SAVE-FAIL-01-EMU": {
+      "sources": [
+        {
+          "source_pr": 38,
+          "source_merge": "c0f78076e0e2975434ae3d1328d8095eff548489",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "78ee982898cdb7b6ac309fd33b3828451e6bab586c5a3ae7dae886593fe0c90e"
+        },
+        {
+          "source_pr": 33,
+          "source_merge": "2a6e89ed4ce6c7f04140028cd8f2c707adbf1dfb",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "78ee982898cdb7b6ac309fd33b3828451e6bab586c5a3ae7dae886593fe0c90e"
+        }
+      ],
+      "current_case_sha256": "78ee982898cdb7b6ac309fd33b3828451e6bab586c5a3ae7dae886593fe0c90e",
+      "initial_scope": "agent",
+      "deferred_scope": [],
+      "agent_requirements": [
+        "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。"
+      ]
+    },
+    "27:SAVE-FAIL-02-EMU": {
+      "sources": [
+        {
+          "source_pr": 38,
+          "source_merge": "c0f78076e0e2975434ae3d1328d8095eff548489",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "1145db9f761c531e230ad057e3e0a185a556b75d5db1f9fcf715be2c00033f9e"
+        },
+        {
+          "source_pr": 33,
+          "source_merge": "2a6e89ed4ce6c7f04140028cd8f2c707adbf1dfb",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "1145db9f761c531e230ad057e3e0a185a556b75d5db1f9fcf715be2c00033f9e"
+        }
+      ],
+      "current_case_sha256": "1145db9f761c531e230ad057e3e0a185a556b75d5db1f9fcf715be2c00033f9e",
+      "initial_scope": "agent",
+      "deferred_scope": [],
+      "agent_requirements": [
+        "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。"
+      ]
+    },
+    "27:SAVE-FAIL-03-EMU": {
+      "sources": [
+        {
+          "source_pr": 38,
+          "source_merge": "c0f78076e0e2975434ae3d1328d8095eff548489",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "d78fb184f9bf77a5801b0c56ee86d6f17f2f8a5d492f7bad9b6d8b9e28ecfdaa"
+        },
+        {
+          "source_pr": 33,
+          "source_merge": "2a6e89ed4ce6c7f04140028cd8f2c707adbf1dfb",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "d78fb184f9bf77a5801b0c56ee86d6f17f2f8a5d492f7bad9b6d8b9e28ecfdaa"
+        }
+      ],
+      "current_case_sha256": "d78fb184f9bf77a5801b0c56ee86d6f17f2f8a5d492f7bad9b6d8b9e28ecfdaa",
+      "initial_scope": "agent",
+      "deferred_scope": [],
+      "agent_requirements": [
+        "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。"
+      ]
+    },
+    "27:SAVE-FAIL-04-EMU": {
+      "sources": [
+        {
+          "source_pr": 38,
+          "source_merge": "c0f78076e0e2975434ae3d1328d8095eff548489",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "5089a82cb900e8d4303cd3db10c969ac0fb4218d7a80330ebdbf9132207d6d9a"
+        },
+        {
+          "source_pr": 33,
+          "source_merge": "2a6e89ed4ce6c7f04140028cd8f2c707adbf1dfb",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "5089a82cb900e8d4303cd3db10c969ac0fb4218d7a80330ebdbf9132207d6d9a"
+        }
+      ],
+      "current_case_sha256": "5089a82cb900e8d4303cd3db10c969ac0fb4218d7a80330ebdbf9132207d6d9a",
+      "initial_scope": "agent",
+      "deferred_scope": [],
+      "agent_requirements": [
+        "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。"
+      ]
+    },
+    "27:SAVE-FAIL-05-EMU": {
+      "sources": [
+        {
+          "source_pr": 38,
+          "source_merge": "c0f78076e0e2975434ae3d1328d8095eff548489",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "b47952871dd54650a3547c395259ef8c6f919771f1b8365667f3d8ff221629b6"
+        },
+        {
+          "source_pr": 33,
+          "source_merge": "2a6e89ed4ce6c7f04140028cd8f2c707adbf1dfb",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "b47952871dd54650a3547c395259ef8c6f919771f1b8365667f3d8ff221629b6"
+        }
+      ],
+      "current_case_sha256": "b47952871dd54650a3547c395259ef8c6f919771f1b8365667f3d8ff221629b6",
+      "initial_scope": "agent",
+      "deferred_scope": [],
+      "agent_requirements": [
+        "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。"
+      ]
+    },
+    "27:SAVE-FAIL-06-EMU": {
+      "sources": [
+        {
+          "source_pr": 38,
+          "source_merge": "c0f78076e0e2975434ae3d1328d8095eff548489",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "32ae098047ee526c50556a0b083a95beb2ae4ea5f5e3c773660a6ec3eb485b5b"
+        },
+        {
+          "source_pr": 33,
+          "source_merge": "2a6e89ed4ce6c7f04140028cd8f2c707adbf1dfb",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "32ae098047ee526c50556a0b083a95beb2ae4ea5f5e3c773660a6ec3eb485b5b"
+        }
+      ],
+      "current_case_sha256": "32ae098047ee526c50556a0b083a95beb2ae4ea5f5e3c773660a6ec3eb485b5b",
+      "initial_scope": "agent",
+      "deferred_scope": [],
+      "agent_requirements": [
+        "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。"
+      ]
+    },
+    "27:SAVE-FAIL-07-EMU": {
+      "sources": [
+        {
+          "source_pr": 38,
+          "source_merge": "c0f78076e0e2975434ae3d1328d8095eff548489",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "f2bd83ae0b6aedf5f3cf39370edf97a4bb11ed02f5334d76da55619c84bdf954"
+        },
+        {
+          "source_pr": 33,
+          "source_merge": "2a6e89ed4ce6c7f04140028cd8f2c707adbf1dfb",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "f2bd83ae0b6aedf5f3cf39370edf97a4bb11ed02f5334d76da55619c84bdf954"
+        }
+      ],
+      "current_case_sha256": "f2bd83ae0b6aedf5f3cf39370edf97a4bb11ed02f5334d76da55619c84bdf954",
+      "initial_scope": "agent",
+      "deferred_scope": [],
+      "agent_requirements": [
+        "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。"
+      ]
+    },
+    "27:SAVE-FAIL-08-EMU": {
+      "sources": [
+        {
+          "source_pr": 38,
+          "source_merge": "c0f78076e0e2975434ae3d1328d8095eff548489",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "53ef4ff656edb688fc8d4adf8c7f8e20b94a6819848424dfdf82ac6e05d205e0"
+        },
+        {
+          "source_pr": 33,
+          "source_merge": "2a6e89ed4ce6c7f04140028cd8f2c707adbf1dfb",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "075759ccd25e65ba0e6cedb00453e24315baa63044c408412e495addd1b8274e"
+        }
+      ],
+      "current_case_sha256": "53ef4ff656edb688fc8d4adf8c7f8e20b94a6819848424dfdf82ac6e05d205e0",
+      "initial_scope": "agent",
+      "deferred_scope": [],
+      "agent_requirements": [
+        "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。"
+      ]
+    },
+    "27:SAVE-FAIL-09-EMU": {
+      "sources": [
+        {
+          "source_pr": 38,
+          "source_merge": "c0f78076e0e2975434ae3d1328d8095eff548489",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "9a82888f4ececaa7d48dc3ebbc4d040b54dc742e9bfd72df41ff0aa71b7c1f70"
+        },
+        {
+          "source_pr": 33,
+          "source_merge": "2a6e89ed4ce6c7f04140028cd8f2c707adbf1dfb",
+          "source_path": "docs/verification/changes/issue-27.json",
+          "original_case_sha256": "9a82888f4ececaa7d48dc3ebbc4d040b54dc742e9bfd72df41ff0aa71b7c1f70"
+        }
+      ],
+      "current_case_sha256": "9a82888f4ececaa7d48dc3ebbc4d040b54dc742e9bfd72df41ff0aa71b7c1f70",
+      "initial_scope": "agent",
+      "deferred_scope": [],
+      "agent_requirements": [
+        "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。"
+      ]
+    },
+    "31:SYNC-ENV": {
+      "sources": [
+        {
+          "source_pr": 36,
+          "source_merge": "6ae77c1df1d582b867fe031b7a0764886c82ba9d",
+          "source_path": "docs/verification/changes/issue-31.json",
+          "original_case_sha256": "fd98e98ad409e656fbc8b8a135b95d383afe7666819a6f6411ace8a7bf4a302a"
+        }
+      ],
+      "current_case_sha256": "fd98e98ad409e656fbc8b8a135b95d383afe7666819a6f6411ace8a7bf4a302a",
+      "initial_scope": "agent",
+      "deferred_scope": [
+        "対象原文: preconditions=\"実機とEmulatorの各fixtureで、PATHからscrcpy/ffmpeg/Pythonを外したAndroid開発環境。固定SDK/adb、同じsource/ZIP hash、共有GUI lease。\" | steps[1]=\"機能を有効化し、実機とEmulatorで各20秒取得して保存する。\" | expected=\"各環境で動画と両ログ/clock metadataを保存。helper/server起動不適合は明示し、ENV-03合格にしない。\"。延期: 元契約の実機/USB環境で行う同工程と期待結果。Emulator側を維持し、各環境/EMU-REAL別記録を統合passへ転記しない。"
+      ],
+      "agent_requirements": [
+        "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。"
+      ]
+    },
+    "31:SYNC-CLOCK": {
+      "sources": [
+        {
+          "source_pr": 36,
+          "source_merge": "6ae77c1df1d582b867fe031b7a0764886c82ba9d",
+          "source_path": "docs/verification/changes/issue-31.json",
+          "original_case_sha256": "05b8383b55a1764b7729f2e1af355c5ceaa268a815da2735f9d12095446b5030"
+        }
+      ],
+      "current_case_sha256": "05b8383b55a1764b7729f2e1af355c5ceaa268a815da2735f9d12095446b5030",
+      "initial_scope": "agent",
+      "deferred_scope": [
+        "対象原文: preconditions=\"正常取得できる実機/Emulator、描画とLog双方に同じ連番を出す使い捨てapp。固定画質/codec、時計sampleと描画eventの記録。\" | expected=\"通常p95<=100ms、最大<=250ms、中央値drift<=50ms、clock見積誤差<=20ms。全欠落/uncertainも集計し隠さない。100ms等は未実測の設計基準。\"。延期: 元契約の実機/USB環境で行う同工程と期待結果。Emulator側を維持し、各環境/EMU-REAL別記録を統合passへ転記しない。",
+        "対象原文: steps[0]=\"同じUI更新callbackで連番/端末elapsedをLogへ出し、画面にも連番を描画する。描画完了のframe callback時刻も別に記録する。\" | steps[1]=\"30分取得し開始/中間/終了の各100イベントを保存対象にする。両ログに同じrecord_idがあることを照合する。\" | steps[2]=\"元PTS/clock変換誤差と描画遅延を分け、全300件の差・p95・最大・前後半中央値差を集計する。\" | expected=\"通常p95<=100ms、最大<=250ms、中央値drift<=50ms、clock見積誤差<=20ms。全欠落/uncertainも集計し隠さない。100ms等は未実測の設計基準。\" | 固定23fのtests/fixtures/replay-marker/README.md#同期測定補助macos標準api（人間確認の出典）。延期: 全300遷移の前後画像の表示番号を人間が確認し、欠落/重複/unknown/uncertainを確定する工程。正式精度passの前提は未充足のまま。"
+      ],
+      "agent_requirements": [
+        "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。",
+        "30分・開始/中間/終了各100 eventの全300件を同一候補で採取し、全frame復号/境界/元PTS/両log record_idとREQUEST/DRAW/FRAME_COMMITを照合する。p95<=100ms、最大<=250ms、drift<=50ms、clock<=20ms、欠落・重複・unknown/uncertainを評価する。最低601画像の人間番号読取りだけを後続へ残す。人間番号確認前の解析は初期範囲の結果であり、原Case全体の正式精度passとは呼ばない。"
+      ],
+      "full_acceptance_actor": "human"
+    },
+    "31:SYNC-WINDOW": {
+      "sources": [
+        {
+          "source_pr": 36,
+          "source_merge": "6ae77c1df1d582b867fe031b7a0764886c82ba9d",
+          "source_path": "docs/verification/changes/issue-31.json",
+          "original_case_sha256": "c680cce96b786443e0b506ba8152983bb2766a207c359d4b40f65118a573b23c"
+        }
+      ],
+      "current_case_sha256": "c680cce96b786443e0b506ba8152983bb2766a207c359d4b40f65118a573b23c",
+      "initial_scope": "agent",
+      "deferred_scope": [
+        "対象原文: effective.steps[8]=\"同期の正式300イベント/30分、p95<=100ms・最大<=250ms・drift<=50ms・clock<=20msと必要な人間確認は既存の同期Caseで別途実施する。本CaseやJVM回帰で代用しない。\"。延期: 既存同期Caseへの依存のうち人間による番号確認だけを延期。正式300event/30分のAgent測定と閾値は初期版にも残し、GOP/JVM結果で代用しない。"
+      ],
+      "agent_requirements": [
+        "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。"
+      ],
+      "full_acceptance_actor": "human"
+    },
+    "31:SYNC-GAP": {
+      "sources": [
+        {
+          "source_pr": 36,
+          "source_merge": "6ae77c1df1d582b867fe031b7a0764886c82ba9d",
+          "source_path": "docs/verification/changes/issue-31.json",
+          "original_case_sha256": "2b0ae81186ccb17efe2b01500ef4342c02f5e85286b5057389e8e3b25a18190e"
+        }
+      ],
+      "current_case_sha256": "2b0ae81186ccb17efe2b01500ef4342c02f5e85286b5057389e8e3b25a18190e",
+      "initial_scope": "agent",
+      "deferred_scope": [
+        "対象原文: preconditions=\"N=60秒、実機USBとEmulatorのtransport断を別々に試す。切断確定時刻/誤差と取得generationが記録可能。\" | expected=\"60秒窓の取得済み約40秒と20秒gap、same sequence。長い切断中T凍結、再接続後現在窓で旧範囲prune。gapを詰めない。端末切断瞬間と検出確定を混同しない。\"。延期: 元契約の実機/USB環境で行う同工程と期待結果。Emulator側を維持し、各環境/EMU-REAL別記録を統合passへ転記しない。"
+      ],
+      "agent_requirements": [
+        "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。"
+      ]
+    },
+    "31:SYNC-PARTIAL": {
+      "sources": [
+        {
+          "source_pr": 36,
+          "source_merge": "6ae77c1df1d582b867fe031b7a0764886c82ba9d",
+          "source_path": "docs/verification/changes/issue-31.json",
+          "original_case_sha256": "73d32fac7044b27b0933b98fa1c3a4aff248c43c72d5a31bcb85a7167f80a36b"
+        }
+      ],
+      "current_case_sha256": "73d32fac7044b27b0933b98fa1c3a4aff248c43c72d5a31bcb85a7167f80a36b",
+      "initial_scope": "agent",
+      "deferred_scope": [],
+      "agent_requirements": [
+        "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。"
+      ]
+    },
+    "31:SYNC-JUMP": {
+      "sources": [
+        {
+          "source_pr": 36,
+          "source_merge": "6ae77c1df1d582b867fe031b7a0764886c82ba9d",
+          "source_path": "docs/verification/changes/issue-31.json",
+          "original_case_sha256": "f4540cb16c67ed028cdaebfd634a3745096deda531f69e67e17da229ef16fa9b"
+        }
+      ],
+      "current_case_sha256": "f4540cb16c67ed028cdaebfd634a3745096deda531f69e67e17da229ef16fa9b",
+      "initial_scope": "agent",
+      "deferred_scope": [],
+      "agent_requirements": [
+        "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。"
+      ]
+    },
+    "31:SYNC-RECIPIENT": {
+      "sources": [
+        {
+          "source_pr": 36,
+          "source_merge": "6ae77c1df1d582b867fe031b7a0764886c82ba9d",
+          "source_path": "docs/verification/changes/issue-31.json",
+          "original_case_sha256": "98527db5be5799f1d79d40b2661f72fe695c9bc5b37332b16bacfcbcbf3e9d7f"
+        }
+      ],
+      "current_case_sha256": "98527db5be5799f1d79d40b2661f72fe695c9bc5b37332b16bacfcbcbf3e9d7f",
+      "initial_scope": "agent",
+      "deferred_scope": [],
+      "agent_requirements": [
+        "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。",
+        "GUI/画面可読性/標準playerの実再生・seekと照合はAgent側に残す。human欄だけを根拠に別の必須人間確認を作らない。"
+      ]
+    },
+    "31:SYNC-LIFECYCLE": {
+      "sources": [
+        {
+          "source_pr": 36,
+          "source_merge": "6ae77c1df1d582b867fe031b7a0764886c82ba9d",
+          "source_path": "docs/verification/changes/issue-31.json",
+          "original_case_sha256": "c43cac269634d8f1c67fb26e673104ce6fa7dafefc1f929eb2ca525b7b64e78d"
+        }
+      ],
+      "current_case_sha256": "c43cac269634d8f1c67fb26e673104ce6fa7dafefc1f929eb2ca525b7b64e78d",
+      "initial_scope": "agent",
+      "deferred_scope": [],
+      "agent_requirements": [
+        "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。"
+      ]
+    },
+    "32:UI-12-01": {
+      "sources": [
+        {
+          "source_pr": 37,
+          "source_merge": "7281009de7a856af09aca74fca84c1846fc5cc23",
+          "source_path": "docs/verification/changes/issue-32.json",
+          "original_case_sha256": "7779cdd622436a5460d745bc2dfa9695826abc218aed521bd33d8892c0817f4b"
+        }
+      ],
+      "current_case_sha256": "7779cdd622436a5460d745bc2dfa9695826abc218aed521bd33d8892c0817f4b",
+      "initial_scope": "agent",
+      "deferred_scope": [
+        "対象原文: preconditions=\"#31と接続済み固定source/ZIP SHA-256とRabbit AI-262.9437.185.2621.16467767を照合。#27の使い捨てapp/Emulatorと共有GUI lease、実機は利用者準備まで保留。\" | expected=\"初回OFF・保持180秒・無効中設定編集可。Applyだけで取得開始せず、enabled復元はパネル生成に依存しない。\"。延期: 元契約の実機/USB環境で行う同工程と期待結果。Emulator側を維持し、各環境/EMU-REAL別記録を統合passへ転記しない。"
+      ],
+      "agent_requirements": [
+        "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。"
+      ]
+    },
+    "32:UI-12-02": {
+      "sources": [
+        {
+          "source_pr": 37,
+          "source_merge": "7281009de7a856af09aca74fca84c1846fc5cc23",
+          "source_path": "docs/verification/changes/issue-32.json",
+          "original_case_sha256": "1517f8a9dc8a2b2b0881597e286a656ea7577d2eca77ce4c21cd4a5238e882de"
+        }
+      ],
+      "current_case_sha256": "1517f8a9dc8a2b2b0881597e286a656ea7577d2eca77ce4c21cd4a5238e882de",
+      "initial_scope": "agent",
+      "deferred_scope": [
+        "対象原文: preconditions=\"#31と接続済み固定source/ZIP SHA-256とRabbit AI-262.9437.185.2621.16467767を照合。#27の使い捨てapp/Emulatorと共有GUI lease、実機は利用者準備まで保留。\" | expected=\"未適用編集で稼働条件不変。Applyは一式検証、invalidは部分反映なし。無効化で未保存を破棄、固定失敗対象の条件は設定変更で改変しない。\"。延期: 元契約の実機/USB環境で行う同工程と期待結果。Emulator側を維持し、各環境/EMU-REAL別記録を統合passへ転記しない。"
+      ],
+      "agent_requirements": [
+        "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。"
+      ]
+    },
+    "32:UI-12-03": {
+      "sources": [
+        {
+          "source_pr": 37,
+          "source_merge": "7281009de7a856af09aca74fca84c1846fc5cc23",
+          "source_path": "docs/verification/changes/issue-32.json",
+          "original_case_sha256": "dcce24f1afffab7a143f717274263fa59a17d7c5f6512197ca5f16c9444b849e"
+        }
+      ],
+      "current_case_sha256": "dcce24f1afffab7a143f717274263fa59a17d7c5f6512197ca5f16c9444b849e",
+      "initial_scope": "agent",
+      "deferred_scope": [
+        "対象原文: preconditions=\"#31と接続済み固定source/ZIP SHA-256とRabbit AI-262.9437.185.2621.16467767を照合。#27の使い捨てapp/Emulatorと共有GUI lease、実機は利用者準備まで保留。\" | expected=\"namespaceではなく実applicationId。未解決理由を表示し他取得継続。手動はApply後優先し自動解除もApply。PID変更でpackageを消さずコアが追従する。\"。延期: 元契約の実機/USB環境で行う同工程と期待結果。Emulator側を維持し、各環境/EMU-REAL別記録を統合passへ転記しない。"
+      ],
+      "agent_requirements": [
+        "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。"
+      ]
+    },
+    "32:UI-12-04": {
+      "sources": [
+        {
+          "source_pr": 37,
+          "source_merge": "7281009de7a856af09aca74fca84c1846fc5cc23",
+          "source_path": "docs/verification/changes/issue-32.json",
+          "original_case_sha256": "fa1e58d8942866bb2fe46bb59392465c23a26693af87ba73dac2fc02aa163a1d"
+        }
+      ],
+      "current_case_sha256": "fa1e58d8942866bb2fe46bb59392465c23a26693af87ba73dac2fc02aa163a1d",
+      "initial_scope": "agent",
+      "deferred_scope": [
+        "対象原文: preconditions=\"#31と接続済み固定source/ZIP SHA-256とRabbit AI-262.9437.185.2621.16467767を照合。#27の使い捨てapp/Emulatorと共有GUI lease、実機は利用者準備まで保留。\" | expected=\"取得済み最大保存、種類別不足表示、完全切断時のみ凍結、再接続は現在窓で同sequence。空期間/0行を障害と誤認しない。\"。延期: 元契約の実機/USB環境で行う同工程と期待結果。Emulator側を維持し、各環境/EMU-REAL別記録を統合passへ転記しない。"
+      ],
+      "agent_requirements": [
+        "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。"
+      ]
+    },
+    "32:UI-12-05": {
+      "sources": [
+        {
+          "source_pr": 37,
+          "source_merge": "7281009de7a856af09aca74fca84c1846fc5cc23",
+          "source_path": "docs/verification/changes/issue-32.json",
+          "original_case_sha256": "766224d140b7adf20c2eade39c9194dc5b9a78f5fdb17a04f3c405d62ec3332b"
+        }
+      ],
+      "current_case_sha256": "766224d140b7adf20c2eade39c9194dc5b9a78f5fdb17a04f3c405d62ec3332b",
+      "initial_scope": "agent",
+      "deferred_scope": [
+        "対象原文: preconditions=\"#31と接続済み固定source/ZIP SHA-256とRabbit AI-262.9437.185.2621.16467767を照合。#27の使い捨てapp/Emulatorと共有GUI lease、実機は利用者準備まで保留。\" | expected=\"1件immutable、二重要求なし。取得継続、新規保存だけ停止。寿命表示、取消し実終了後未保存破棄、完成済み出力不変。\"。延期: 元契約の実機/USB環境で行う同工程と期待結果。Emulator側を維持し、各環境/EMU-REAL別記録を統合passへ転記しない。"
+      ],
+      "agent_requirements": [
+        "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。"
+      ]
+    },
+    "32:UI-12-06": {
+      "sources": [
+        {
+          "source_pr": 37,
+          "source_merge": "7281009de7a856af09aca74fca84c1846fc5cc23",
+          "source_path": "docs/verification/changes/issue-32.json",
+          "original_case_sha256": "9b7e52c22936078f11ebe4b096b928ab2659fc9eaaee8b40f364ccc7ccf3b417"
+        }
+      ],
+      "current_case_sha256": "9b7e52c22936078f11ebe4b096b928ab2659fc9eaaee8b40f364ccc7ccf3b417",
+      "initial_scope": "agent",
+      "deferred_scope": [
+        "対象原文: preconditions=\"#31と接続済み固定source/ZIP SHA-256とRabbit AI-262.9437.185.2621.16467767を照合。#27の使い捨てapp/Emulatorと共有GUI lease、実機は利用者準備まで保留。\" | expected=\"通知ごとの完成フォルダに固定。不足種類を明記、未完成成功通知なし。開けない理由とpathコピー。\"。延期: 元契約の実機/USB環境で行う同工程と期待結果。Emulator側を維持し、各環境/EMU-REAL別記録を統合passへ転記しない。"
+      ],
+      "agent_requirements": [
+        "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。"
+      ]
+    },
+    "32:UI-12-07": {
+      "sources": [
+        {
+          "source_pr": 37,
+          "source_merge": "7281009de7a856af09aca74fca84c1846fc5cc23",
+          "source_path": "docs/verification/changes/issue-32.json",
+          "original_case_sha256": "403f1fcdeeec5a19f57012bd18eb10015061010baee84461477fe50637e43e16"
+        }
+      ],
+      "current_case_sha256": "403f1fcdeeec5a19f57012bd18eb10015061010baee84461477fe50637e43e16",
+      "initial_scope": "agent",
+      "deferred_scope": [
+        "対象原文: preconditions=\"#31と接続済み固定source/ZIP SHA-256とRabbit AI-262.9437.185.2621.16467767を照合。#27の使い捨てapp/Emulatorと共有GUI lease、実機は利用者準備まで保留。\" | expected=\"EDTを待ち処理で止めず、隠しても取得継続。再表示は最新状態、label/Tab正常、close/dispose後にUI更新やサービス再生成なし。\"。延期: 元契約の実機/USB環境で行う同工程と期待結果。Emulator側を維持し、各環境/EMU-REAL別記録を統合passへ転記しない。"
+      ],
+      "agent_requirements": [
+        "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。"
+      ]
+    },
+    "32:UI-12-08": {
+      "sources": [
+        {
+          "source_pr": 37,
+          "source_merge": "7281009de7a856af09aca74fca84c1846fc5cc23",
+          "source_path": "docs/verification/changes/issue-32.json",
+          "original_case_sha256": "dde1493293e14ed96e8b4e0fd18bb3a8f839a6ec6e437e94194050b5dfb7aab0"
+        }
+      ],
+      "current_case_sha256": "dde1493293e14ed96e8b4e0fd18bb3a8f839a6ec6e437e94194050b5dfb7aab0",
+      "initial_scope": "agent",
+      "deferred_scope": [
+        "対象原文: preconditions=\"#31と接続済み固定source/ZIP SHA-256とRabbit AI-262.9437.185.2621.16467767を照合。#27の使い捨てapp/Emulatorと共有GUI lease、実機は利用者準備まで保留。\" | expected=\"project SDKの絶対adbを使用し、PATH/個別ツール導入なし。端末名前/種別/状態表示、無断切替なし。実機の同Caseは保留。\"。延期: 元契約の実機/USB環境で行う同工程と期待結果。Emulator側を維持し、各環境/EMU-REAL別記録を統合passへ転記しない。"
+      ],
+      "agent_requirements": [
+        "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。"
+      ]
+    },
+    "41:SYNC-ENV": {
+      "sources": [
+        {
+          "source_pr": 43,
+          "source_merge": "3e884547b96cf1b285ceea5c0a121a1755fa9ffd",
+          "source_path": "docs/verification/changes/issue-41.json",
+          "original_case_sha256": "b4c0c4dd3d40f4240c24d8a9704720516a17ff6b6b5454bc64af1ec079b02267"
+        }
+      ],
+      "current_case_sha256": "b4c0c4dd3d40f4240c24d8a9704720516a17ff6b6b5454bc64af1ec079b02267",
+      "initial_scope": "agent",
+      "deferred_scope": [
+        "対象原文: preconditions=\"実機とEmulatorの各fixtureで、PATHからscrcpy/ffmpeg/Pythonを外したAndroid開発環境。固定SDK/adb、同じsource/ZIP hash、共有GUI lease。\" | steps[1]=\"機能を有効化し、実機とEmulatorで各20秒取得して保存する。\" | expected=\"各環境で動画と両ログ/clock metadataを保存。helper/server起動不適合は明示し、ENV-03合格にしない。\"。延期: 元契約の実機/USB環境で行う同工程と期待結果。Emulator側を維持し、各環境/EMU-REAL別記録を統合passへ転記しない。"
+      ],
+      "agent_requirements": [
+        "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。"
+      ]
+    },
+    "41:SYNC-CLOCK": {
+      "sources": [
+        {
+          "source_pr": 43,
+          "source_merge": "3e884547b96cf1b285ceea5c0a121a1755fa9ffd",
+          "source_path": "docs/verification/changes/issue-41.json",
+          "original_case_sha256": "9ab490c78f58a40b59732849767eeb68e339844ee0a270fc4e0b57fee74dfd3b"
+        }
+      ],
+      "current_case_sha256": "9ab490c78f58a40b59732849767eeb68e339844ee0a270fc4e0b57fee74dfd3b",
+      "initial_scope": "agent",
+      "deferred_scope": [
+        "対象原文: preconditions=\"正常取得できる実機/Emulator、描画とLog双方に同じ連番を出す使い捨てapp。固定画質/codec、時計sampleと描画eventの記録。\" | expected=\"通常p95<=100ms、最大<=250ms、中央値drift<=50ms、clock見積誤差<=20ms。全欠落/uncertainも集計し隠さない。100ms等は未実測の設計基準。\"。延期: 元契約の実機/USB環境で行う同工程と期待結果。Emulator側を維持し、各環境/EMU-REAL別記録を統合passへ転記しない。",
+        "対象原文: steps[0]=\"同じUI更新callbackで連番/端末elapsedをLogへ出し、画面にも連番を描画する。描画完了のframe callback時刻も別に記録する。\" | steps[1]=\"30分取得し開始/中間/終了の各100イベントを保存対象にする。両ログに同じrecord_idがあることを照合する。\" | steps[2]=\"元PTS/clock変換誤差と描画遅延を分け、全300件の差・p95・最大・前後半中央値差を集計する。\" | expected=\"通常p95<=100ms、最大<=250ms、中央値drift<=50ms、clock見積誤差<=20ms。全欠落/uncertainも集計し隠さない。100ms等は未実測の設計基準。\" | 固定23fのtests/fixtures/replay-marker/README.md#同期測定補助macos標準api（人間確認の出典）。延期: 全300遷移の前後画像の表示番号を人間が確認し、欠落/重複/unknown/uncertainを確定する工程。正式精度passの前提は未充足のまま。"
+      ],
+      "agent_requirements": [
+        "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。",
+        "30分・開始/中間/終了各100 eventの全300件を同一候補で採取し、全frame復号/境界/元PTS/両log record_idとREQUEST/DRAW/FRAME_COMMITを照合する。p95<=100ms、最大<=250ms、drift<=50ms、clock<=20ms、欠落・重複・unknown/uncertainを評価する。最低601画像の人間番号読取りだけを後続へ残す。人間番号確認前の解析は初期範囲の結果であり、原Case全体の正式精度passとは呼ばない。"
+      ],
+      "full_acceptance_actor": "human"
+    },
+    "41:SYNC-WINDOW": {
+      "sources": [
+        {
+          "source_pr": 43,
+          "source_merge": "3e884547b96cf1b285ceea5c0a121a1755fa9ffd",
+          "source_path": "docs/verification/changes/issue-41.json",
+          "original_case_sha256": "f5af2b5e60a5f99f6ea4c0e9e8816e83c36382dd719d9810a91d77c4267137cb"
+        }
+      ],
+      "current_case_sha256": "f5af2b5e60a5f99f6ea4c0e9e8816e83c36382dd719d9810a91d77c4267137cb",
+      "initial_scope": "agent",
+      "deferred_scope": [
+        "対象原文: effective.steps[8]=\"同期の正式300イベント/30分、p95<=100ms・最大<=250ms・drift<=50ms・clock<=20msと必要な人間確認は既存の同期Caseで別途実施する。本CaseやJVM回帰で代用しない。\"。延期: 既存同期Caseへの依存のうち人間による番号確認だけを延期。正式300event/30分のAgent測定と閾値は初期版にも残し、GOP/JVM結果で代用しない。"
+      ],
+      "agent_requirements": [
+        "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。"
+      ],
+      "full_acceptance_actor": "human"
+    },
+    "41:SYNC-GAP": {
+      "sources": [
+        {
+          "source_pr": 43,
+          "source_merge": "3e884547b96cf1b285ceea5c0a121a1755fa9ffd",
+          "source_path": "docs/verification/changes/issue-41.json",
+          "original_case_sha256": "77953c439eb201018b77c05f10136b6ec3cc3d359b5bc24baf1d3c180e0fc3f3"
+        }
+      ],
+      "current_case_sha256": "77953c439eb201018b77c05f10136b6ec3cc3d359b5bc24baf1d3c180e0fc3f3",
+      "initial_scope": "agent",
+      "deferred_scope": [
+        "対象原文: preconditions=\"N=60秒、実機USBとEmulatorのtransport断を別々に試す。切断確定時刻/誤差と取得generationが記録可能。\" | expected=\"60秒窓の取得済み約40秒と20秒gap、same sequence。長い切断中T凍結、再接続後現在窓で旧範囲prune。gapを詰めない。端末切断瞬間と検出確定を混同しない。\"。延期: 元契約の実機/USB環境で行う同工程と期待結果。Emulator側を維持し、各環境/EMU-REAL別記録を統合passへ転記しない。"
+      ],
+      "agent_requirements": [
+        "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。"
+      ]
+    },
+    "41:SYNC-PARTIAL": {
+      "sources": [
+        {
+          "source_pr": 43,
+          "source_merge": "3e884547b96cf1b285ceea5c0a121a1755fa9ffd",
+          "source_path": "docs/verification/changes/issue-41.json",
+          "original_case_sha256": "378091286f3b39279c0e4f4ac048875f0a0db65a932598a702cf5b53fe70a441"
+        }
+      ],
+      "current_case_sha256": "378091286f3b39279c0e4f4ac048875f0a0db65a932598a702cf5b53fe70a441",
+      "initial_scope": "agent",
+      "deferred_scope": [],
+      "agent_requirements": [
+        "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。"
+      ]
+    },
+    "41:SYNC-JUMP": {
+      "sources": [
+        {
+          "source_pr": 43,
+          "source_merge": "3e884547b96cf1b285ceea5c0a121a1755fa9ffd",
+          "source_path": "docs/verification/changes/issue-41.json",
+          "original_case_sha256": "e6e7b4607dedd508a414db3588f6defb5c02ecda43f30950d80c6b6df91f96b4"
+        }
+      ],
+      "current_case_sha256": "e6e7b4607dedd508a414db3588f6defb5c02ecda43f30950d80c6b6df91f96b4",
+      "initial_scope": "agent",
+      "deferred_scope": [],
+      "agent_requirements": [
+        "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。"
+      ]
+    },
+    "41:SYNC-RECIPIENT": {
+      "sources": [
+        {
+          "source_pr": 43,
+          "source_merge": "3e884547b96cf1b285ceea5c0a121a1755fa9ffd",
+          "source_path": "docs/verification/changes/issue-41.json",
+          "original_case_sha256": "55ba661d1fd82e08e669663746e265ccae14c6fce2b1a511377ffcb963bec385"
+        }
+      ],
+      "current_case_sha256": "55ba661d1fd82e08e669663746e265ccae14c6fce2b1a511377ffcb963bec385",
+      "initial_scope": "agent",
+      "deferred_scope": [],
+      "agent_requirements": [
+        "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。",
+        "GUI/画面可読性/標準playerの実再生・seekと照合はAgent側に残す。human欄だけを根拠に別の必須人間確認を作らない。"
+      ]
+    },
+    "41:SYNC-LIFECYCLE": {
+      "sources": [
+        {
+          "source_pr": 43,
+          "source_merge": "3e884547b96cf1b285ceea5c0a121a1755fa9ffd",
+          "source_path": "docs/verification/changes/issue-41.json",
+          "original_case_sha256": "89ea4b9370ba948bdc8d2e55c15ac2827ec9fe00971c3a9c7f5cdb0ae9c19cad"
+        }
+      ],
+      "current_case_sha256": "89ea4b9370ba948bdc8d2e55c15ac2827ec9fe00971c3a9c7f5cdb0ae9c19cad",
+      "initial_scope": "agent",
+      "deferred_scope": [],
+      "agent_requirements": [
+        "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。"
+      ]
+    },
+    "41:CORE-STARTUP": {
+      "sources": [
+        {
+          "source_pr": 43,
+          "source_merge": "3e884547b96cf1b285ceea5c0a121a1755fa9ffd",
+          "source_path": "docs/verification/changes/issue-41.json",
+          "original_case_sha256": "18865d4a7ac2cda6e5c5b9edf2828d5efdab14983b306c6f13e504cd50ecc129"
+        }
+      ],
+      "current_case_sha256": "18865d4a7ac2cda6e5c5b9edf2828d5efdab14983b306c6f13e504cd50ecc129",
+      "initial_scope": "agent",
+      "deferred_scope": [
+        "対象原文: preconditions=\"同一固定HEAD/ZIP、共有leaseを持つQA owner、private使い捨てfixture。EMU/REALを別記録。\" | expected=\"動画と両ログを保存し、codec/session/packet不適合を隠さず復旧する。\"。延期: 元契約の実機/USB環境で行う同工程と期待結果。Emulator側を維持し、各環境/EMU-REAL別記録を統合passへ転記しない。"
+      ],
+      "agent_requirements": [
+        "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。"
+      ]
+    },
+    "41:CORE-STALL": {
+      "sources": [
+        {
+          "source_pr": 43,
+          "source_merge": "3e884547b96cf1b285ceea5c0a121a1755fa9ffd",
+          "source_path": "docs/verification/changes/issue-41.json",
+          "original_case_sha256": "8e2eb163b85337eea3988d3d16819c513e303fe258f866ce45d1f8cba202a2eb"
+        }
+      ],
+      "current_case_sha256": "8e2eb163b85337eea3988d3d16819c513e303fe258f866ce45d1f8cba202a2eb",
+      "initial_scope": "agent",
+      "deferred_scope": [
+        "対象原文: preconditions=\"同一固定HEAD/ZIP、共有leaseを持つQA owner、private使い捨てfixture。EMU/REALを別記録。\" | expected=\"3秒だけでserver再起動せず、不達を明示し最終stallで復旧する。閾値は暫定・未実測。\"。延期: 元契約の実機/USB環境で行う同工程と期待結果。Emulator側を維持し、各環境/EMU-REAL別記録を統合passへ転記しない。"
+      ],
+      "agent_requirements": [
+        "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。"
+      ]
+    },
+    "41:CORE-CLEANUP": {
+      "sources": [
+        {
+          "source_pr": 43,
+          "source_merge": "3e884547b96cf1b285ceea5c0a121a1755fa9ffd",
+          "source_path": "docs/verification/changes/issue-41.json",
+          "original_case_sha256": "2172e2a31ac086bd100d4b3b8bb22028c79a1c9b8c5b8a2746cc5ea35c684554"
+        }
+      ],
+      "current_case_sha256": "2172e2a31ac086bd100d4b3b8bb22028c79a1c9b8c5b8a2746cc5ea35c684554",
+      "initial_scope": "agent",
+      "deferred_scope": [
+        "対象原文: preconditions=\"同一固定HEAD/ZIP、共有leaseを持つQA owner、private使い捨てfixture。EMU/REALを別記録。\" | expected=\"persistent pendingが引継がれ、成功した記録だけ消える。共有ADB/未知rootは保全。 OFFは取得を開始せず検証済み所有cleanupだけを再試行し、初回OFFのADBなしを維持する。\"。延期: 元契約の実機/USB環境で行う同工程と期待結果。Emulator側を維持し、各環境/EMU-REAL別記録を統合passへ転記しない。"
+      ],
+      "agent_requirements": [
+        "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。"
+      ]
+    },
+    "41:CORE-SNAPSHOT": {
+      "sources": [
+        {
+          "source_pr": 43,
+          "source_merge": "3e884547b96cf1b285ceea5c0a121a1755fa9ffd",
+          "source_path": "docs/verification/changes/issue-41.json",
+          "original_case_sha256": "c11c7a7d7da577fb86702ec79b6d2b592c6b4ca04b24786095172cd7510bfce7"
+        }
+      ],
+      "current_case_sha256": "c11c7a7d7da577fb86702ec79b6d2b592c6b4ca04b24786095172cd7510bfce7",
+      "initial_scope": "agent",
+      "deferred_scope": [
+        "対象原文: preconditions=\"同一固定HEAD/ZIP、共有leaseを持つQA owner、private使い捨てfixture。EMU/REALを別記録。\" | expected=\"保存時に固定した端末/app/履歴/窓が不変、内部UID/PIDを概要へ出さない。\"。延期: 元契約の実機/USB環境で行う同工程と期待結果。Emulator側を維持し、各環境/EMU-REAL別記録を統合passへ転記しない。"
+      ],
+      "agent_requirements": [
+        "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。"
+      ]
+    },
+    "41:CORE-PUBLISH": {
+      "sources": [
+        {
+          "source_pr": 43,
+          "source_merge": "3e884547b96cf1b285ceea5c0a121a1755fa9ffd",
+          "source_path": "docs/verification/changes/issue-41.json",
+          "original_case_sha256": "6d530ab687ddce2722f489aefca1c8075f9d5b2ed919a4c175e50d4aedf47b4f"
+        }
+      ],
+      "current_case_sha256": "6d530ab687ddce2722f489aefca1c8075f9d5b2ed919a4c175e50d4aedf47b4f",
+      "initial_scope": "agent",
+      "deferred_scope": [
+        "対象原文: preconditions=\"同一固定HEAD/ZIP、共有leaseを持つQA owner、private使い捨てfixture。EMU/REALを別記録。\" | expected=\"既存出力不変、未対応/失敗はFAILED+pin保持、nonatomic fallbackなし。\"。延期: 元契約の実機/USB環境で行う同工程と期待結果。Emulator側を維持し、各環境/EMU-REAL別記録を統合passへ転記しない。"
+      ],
+      "agent_requirements": [
+        "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。"
+      ]
+    },
+    "42:UI-12-01": {
+      "sources": [
+        {
+          "source_pr": 48,
+          "source_merge": "5db01d375d5d81247a70e53f6d59569f5671d1e2",
+          "source_path": "docs/verification/changes/issue-42.json",
+          "original_case_sha256": "99a321c6accdf8bd9b4912da0391b4cac7eb0f3f89c7b3da3f96d2eb9d630081"
+        }
+      ],
+      "current_case_sha256": "99a321c6accdf8bd9b4912da0391b4cac7eb0f3f89c7b3da3f96d2eb9d630081",
+      "initial_scope": "agent",
+      "deferred_scope": [
+        "対象原文: preconditions=\"本Issueと#41/#45/#49/#52統合済みの新固定source/ZIP SHA-256・ロード版とRabbit buildを照合。QA #27/#40の使い捨てfixtureと共有GUI lease。Emulatorと実機の結果は分離し、実機は利用者準備まで保留。\" | expected=\"初回OFF・保持180秒・無効中設定編集可。Applyだけで取得開始せず、enabled復元はパネル生成に依存しない。 不正設定による復元失敗は明示し、persisted enabled/表示/core状態が一致する。後続ユーザーtoggleを巻き戻さない。 初期化失敗を初期化中のまま表示せず、最新toggleの拒否を実状態へ戻す。取消しや古い結果で新しい意図を巻き戻さない。\"。延期: 元契約の実機/USB環境で行う同工程と期待結果。Emulator側を維持し、各環境/EMU-REAL別記録を統合passへ転記しない。"
+      ],
+      "agent_requirements": [
+        "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。"
+      ]
+    },
+    "42:UI-12-02": {
+      "sources": [
+        {
+          "source_pr": 48,
+          "source_merge": "5db01d375d5d81247a70e53f6d59569f5671d1e2",
+          "source_path": "docs/verification/changes/issue-42.json",
+          "original_case_sha256": "7440333937d96fc204b806d05360b079248b921f1c7c57db4ac417158e3a2563"
+        }
+      ],
+      "current_case_sha256": "7440333937d96fc204b806d05360b079248b921f1c7c57db4ac417158e3a2563",
+      "initial_scope": "agent",
+      "deferred_scope": [
+        "対象原文: preconditions=\"本Issueと#41/#45/#49/#52統合済みの新固定source/ZIP SHA-256・ロード版とRabbit buildを照合。QA #27/#40の使い捨てfixtureと共有GUI lease。Emulatorと実機の結果は分離し、実機は利用者準備まで保留。\" | expected=\"未適用編集で稼働条件不変。Applyは一式検証、invalidは部分反映なし。無効化で未保存を破棄、固定失敗対象の条件は設定変更で改変しない。 未作成保存先は具体理由で拒否し、自動作成しない。空保存先でも取得可能。\"。延期: 元契約の実機/USB環境で行う同工程と期待結果。Emulator側を維持し、各環境/EMU-REAL別記録を統合passへ転記しない。"
+      ],
+      "agent_requirements": [
+        "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。"
+      ]
+    },
+    "42:UI-12-03": {
+      "sources": [
+        {
+          "source_pr": 48,
+          "source_merge": "5db01d375d5d81247a70e53f6d59569f5671d1e2",
+          "source_path": "docs/verification/changes/issue-42.json",
+          "original_case_sha256": "c489eda2402d78a9e20f7209255e1c1a26d5579b392de21f9ba6fc3f7a8b0b4c"
+        }
+      ],
+      "current_case_sha256": "c489eda2402d78a9e20f7209255e1c1a26d5579b392de21f9ba6fc3f7a8b0b4c",
+      "initial_scope": "agent",
+      "deferred_scope": [
+        "対象原文: preconditions=\"本Issueと#41/#45/#49/#52統合済みの新固定source/ZIP SHA-256・ロード版とRabbit buildを照合。QA #27/#40の使い捨てfixtureと共有GUI lease。Emulatorと実機の結果は分離し、実機は利用者準備まで保留。\" | expected=\"namespaceではなく実applicationId。未解決理由を表示し他取得継続。手動はApply後優先し自動解除もApply。PID変更でpackageを消さずコアが追従する。\"。延期: 元契約の実機/USB環境で行う同工程と期待結果。Emulator側を維持し、各環境/EMU-REAL別記録を統合passへ転記しない。"
+      ],
+      "agent_requirements": [
+        "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。"
+      ]
+    },
+    "42:UI-12-04": {
+      "sources": [
+        {
+          "source_pr": 48,
+          "source_merge": "5db01d375d5d81247a70e53f6d59569f5671d1e2",
+          "source_path": "docs/verification/changes/issue-42.json",
+          "original_case_sha256": "cac2d443bc286365e954e280cc115e2a9e687f50bf43c6311475b5aac826c314"
+        }
+      ],
+      "current_case_sha256": "cac2d443bc286365e954e280cc115e2a9e687f50bf43c6311475b5aac826c314",
+      "initial_scope": "agent",
+      "deferred_scope": [
+        "対象原文: preconditions=\"本Issueと#41/#45/#49/#52統合済みの新固定source/ZIP SHA-256・ロード版とRabbit buildを照合。QA #27/#40の使い捨てfixtureと共有GUI lease。Emulatorと実機の結果は分離し、実機は利用者準備まで保留。\" | expected=\"取得済み最大保存、種類別不足表示、完全切断時のみ凍結、再接続は現在窓で同sequence。空期間/0行を障害と誤認しない。 復旧後のgapは現在窓内にある間、理由・範囲を表示する。正常ログ0件を欠落扱いしない。 最終frameが保存Tより前という理由だけで取得をPARTIAL/RECOVERINGにせず、gapを推測追加しない。末尾未確認と確定欠落を別表示する。\"。延期: 元契約の実機/USB環境で行う同工程と期待結果。Emulator側を維持し、各環境/EMU-REAL別記録を統合passへ転記しない。"
+      ],
+      "agent_requirements": [
+        "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。"
+      ]
+    },
+    "42:UI-12-05": {
+      "sources": [
+        {
+          "source_pr": 48,
+          "source_merge": "5db01d375d5d81247a70e53f6d59569f5671d1e2",
+          "source_path": "docs/verification/changes/issue-42.json",
+          "original_case_sha256": "30a0c48564722ab1157e60d6a5f8c284ef47cecfc83160c093c6750684b3c472"
+        }
+      ],
+      "current_case_sha256": "30a0c48564722ab1157e60d6a5f8c284ef47cecfc83160c093c6750684b3c472",
+      "initial_scope": "agent",
+      "deferred_scope": [
+        "対象原文: preconditions=\"本Issueと#41/#45/#49/#52統合済みの新固定source/ZIP SHA-256・ロード版とRabbit buildを照合。QA #27/#40の使い捨てfixtureと共有GUI lease。Emulatorと実機の結果は分離し、実機は利用者準備まで保留。\" | expected=\"1件immutable、二重要求なし。取得継続、新規保存だけ停止。寿命表示、取消し実終了後未保存破棄、完成済み出力不変。 固定端末と対象アプリ/履歴は現在状態から独立し、再試行で変更しない。 保存中/失敗時の末尾説明は固定対象の未確認範囲を示し、保存済み・前画像表示済みと見せない。retryで範囲を更新しない。\"。延期: 元契約の実機/USB環境で行う同工程と期待結果。Emulator側を維持し、各環境/EMU-REAL別記録を統合passへ転記しない。"
+      ],
+      "agent_requirements": [
+        "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。"
+      ]
+    },
+    "42:UI-12-06": {
+      "sources": [
+        {
+          "source_pr": 48,
+          "source_merge": "5db01d375d5d81247a70e53f6d59569f5671d1e2",
+          "source_path": "docs/verification/changes/issue-42.json",
+          "original_case_sha256": "225d07abf77c61b989133a68d18326aca95c2508ac74af05e5e62a03ed398994"
+        }
+      ],
+      "current_case_sha256": "225d07abf77c61b989133a68d18326aca95c2508ac74af05e5e62a03ed398994",
+      "initial_scope": "agent",
+      "deferred_scope": [
+        "対象原文: preconditions=\"本Issueと#41/#45/#49/#52統合済みの新固定source/ZIP SHA-256・ロード版とRabbit buildを照合。QA #27/#40の使い捨てfixtureと共有GUI lease。Emulatorと実機の結果は分離し、実機は利用者準備まで保留。\" | expected=\"通知ごとの完成フォルダに固定。不足種類を明記、未完成成功通知なし。開けない理由とpathコピー。 保存完了と末尾未確認を別表示する。displayHeld=trueの完成出力だけ前の画像表示を示し、falseでは断定しない。null範囲は未確定と表示し、保存窓やPTSから補完しない。末尾未確認だけで欠落通知へ変えず、確定missingKindsがあれば従来の欠落表示・通知も残す。元PTS/epoch/generationを製品UIに露出しない。\"。延期: 元契約の実機/USB環境で行う同工程と期待結果。Emulator側を維持し、各環境/EMU-REAL別記録を統合passへ転記しない。"
+      ],
+      "agent_requirements": [
+        "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。"
+      ]
+    },
+    "42:UI-12-07": {
+      "sources": [
+        {
+          "source_pr": 48,
+          "source_merge": "5db01d375d5d81247a70e53f6d59569f5671d1e2",
+          "source_path": "docs/verification/changes/issue-42.json",
+          "original_case_sha256": "0a8778252f38f43c8361206382ea4841d49eccf0f247ebeba245fb0306e64066"
+        }
+      ],
+      "current_case_sha256": "0a8778252f38f43c8361206382ea4841d49eccf0f247ebeba245fb0306e64066",
+      "initial_scope": "agent",
+      "deferred_scope": [
+        "対象原文: preconditions=\"本Issueと#41/#45/#49/#52統合済みの新固定source/ZIP SHA-256・ロード版とRabbit buildを照合。QA #27/#40の使い捨てfixtureと共有GUI lease。Emulatorと実機の結果は分離し、実機は利用者準備まで保留。\" | expected=\"EDTを待ち処理で止めず、隠しても取得継続。再表示は最新状態、label/Tab正常、close/dispose後にUI更新やサービス再生成なし。 永続終了情報は同project再起動で再利用し、別projectと混ぜない。設定領域の確認や作成はIO上で行い、未知・不正な領域を置換しない。\"。延期: 元契約の実機/USB環境で行う同工程と期待結果。Emulator側を維持し、各環境/EMU-REAL別記録を統合passへ転記しない。"
+      ],
+      "agent_requirements": [
+        "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。"
+      ]
+    },
+    "42:UI-12-08": {
+      "sources": [
+        {
+          "source_pr": 48,
+          "source_merge": "5db01d375d5d81247a70e53f6d59569f5671d1e2",
+          "source_path": "docs/verification/changes/issue-42.json",
+          "original_case_sha256": "a810b3f1720a9d999ed5c68420c44aa5db66ebe390f2065b0651025d7f37dfaa"
+        }
+      ],
+      "current_case_sha256": "a810b3f1720a9d999ed5c68420c44aa5db66ebe390f2065b0651025d7f37dfaa",
+      "initial_scope": "agent",
+      "deferred_scope": [
+        "対象原文: preconditions=\"本Issueと#41/#45/#49/#52統合済みの新固定source/ZIP SHA-256・ロード版とRabbit buildを照合。QA #27/#40の使い捨てfixtureと共有GUI lease。Emulatorと実機の結果は分離し、実機は利用者準備まで保留。\" | expected=\"project SDKの絶対adbを使用し、PATH/個別ツール導入なし。端末名前/種別/状態表示、無断切替なし。実機の同Caseは保留。 片付け待ち件数は取得状態・現在窓の欠落と分けて表示する。0件表示は隠し、初期化中の未表示を完了証拠にしない。OFF時も待機件数を表示し、終了処理で取得を開始しない。未知の終了情報を削除せず、対象外の端末処理に干渉しない。\"。延期: 元契約の実機/USB環境で行う同工程と期待結果。Emulator側を維持し、各環境/EMU-REAL別記録を統合passへ転記しない。"
+      ],
+      "agent_requirements": [
+        "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。"
+      ]
+    },
+    "45:VFR-IDLE": {
+      "sources": [
+        {
+          "source_pr": 46,
+          "source_merge": "90af586c07f5d41a02882a66ee07e881bee26d11",
+          "source_path": "docs/verification/changes/issue-45.json",
+          "original_case_sha256": "d7405c587a7cb1a26fe9c2cc1347b8320ada72b36abffb67e86d63bf316016ff"
+        }
+      ],
+      "current_case_sha256": "d7405c587a7cb1a26fe9c2cc1347b8320ada72b36abffb67e86d63bf316016ff",
+      "initial_scope": "agent",
+      "deferred_scope": [
+        "対象原文: preconditions=\"専用Emulator/実機を別々に固定ZIPで使用。正常clockと両ログを取得し、静止と1秒連番のfixtureをQAが所有。\" | expected=\"正常idleだけではgap/再接続/RECOVERINGにならない。更新後は同一連続streamの実PTS差を保ち、別端末や旧結果を混ぜない。\"。延期: 元契約の実機/USB環境で行う同工程と期待結果。Emulator側を維持し、各環境/EMU-REAL別記録を統合passへ転記しない。"
+      ],
+      "agent_requirements": [
+        "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。"
+      ]
+    },
+    "45:VFR-WINDOW": {
+      "sources": [
+        {
+          "source_pr": 46,
+          "source_merge": "90af586c07f5d41a02882a66ee07e881bee26d11",
+          "source_path": "docs/verification/changes/issue-45.json",
+          "original_case_sha256": "f27df18b4ddf87ce8916e810c7d1c0c2326f3771986350df785269c8ecec9393"
+        }
+      ],
+      "current_case_sha256": "f27df18b4ddf87ce8916e810c7d1c0c2326f3771986350df785269c8ecec9393",
+      "initial_scope": "agent",
+      "deferred_scope": [],
+      "agent_requirements": [
+        "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。"
+      ]
+    },
+    "45:VFR-TAIL": {
+      "sources": [
+        {
+          "source_pr": 46,
+          "source_merge": "90af586c07f5d41a02882a66ee07e881bee26d11",
+          "source_path": "docs/verification/changes/issue-45.json",
+          "original_case_sha256": "9217fea78263119b9d78059938d3534b8fd8ef442f2c319d7993c769815bca1b"
+        }
+      ],
+      "current_case_sha256": "9217fea78263119b9d78059938d3534b8fd8ef442f2c319d7993c769815bca1b",
+      "initial_scope": "agent",
+      "deferred_scope": [],
+      "agent_requirements": [
+        "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。"
+      ]
+    },
+    "45:VFR-BREAK": {
+      "sources": [
+        {
+          "source_pr": 46,
+          "source_merge": "90af586c07f5d41a02882a66ee07e881bee26d11",
+          "source_path": "docs/verification/changes/issue-45.json",
+          "original_case_sha256": "9a309b1b22624a91e52931948b962640861881a7852131e5615854a396633e9c"
+        }
+      ],
+      "current_case_sha256": "9a309b1b22624a91e52931948b962640861881a7852131e5615854a396633e9c",
+      "initial_scope": "agent",
+      "deferred_scope": [],
+      "agent_requirements": [
+        "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。"
+      ]
+    },
+    "45:VFR-LIFECYCLE": {
+      "sources": [
+        {
+          "source_pr": 46,
+          "source_merge": "90af586c07f5d41a02882a66ee07e881bee26d11",
+          "source_path": "docs/verification/changes/issue-45.json",
+          "original_case_sha256": "e6d998e4701569c69f6eeb1774102273ba6329895f9169322a7c1c9c9fab5259"
+        }
+      ],
+      "current_case_sha256": "e6d998e4701569c69f6eeb1774102273ba6329895f9169322a7c1c9c9fab5259",
+      "initial_scope": "agent",
+      "deferred_scope": [],
+      "agent_requirements": [
+        "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。"
+      ]
+    },
+    "45:VFR-RECIPIENT": {
+      "sources": [
+        {
+          "source_pr": 46,
+          "source_merge": "90af586c07f5d41a02882a66ee07e881bee26d11",
+          "source_path": "docs/verification/changes/issue-45.json",
+          "original_case_sha256": "a7ee0b7fcdfd2523c2c86d51f9736679cc082f1fc35500f75f86f05c5c11a9cd"
+        }
+      ],
+      "current_case_sha256": "a7ee0b7fcdfd2523c2c86d51f9736679cc082f1fc35500f75f86f05c5c11a9cd",
+      "initial_scope": "agent",
+      "deferred_scope": [],
+      "agent_requirements": [
+        "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。",
+        "GUI/画面可読性/標準playerの実再生・seekと照合はAgent側に残す。human欄だけを根拠に別の必須人間確認を作らない。"
+      ]
+    },
+    "49:BOUNDARY-TAIL": {
+      "sources": [
+        {
+          "source_pr": 50,
+          "source_merge": "b0dca9f44f58e8fbde04c2b3ac7e0a6925d39582",
+          "source_path": "docs/verification/changes/issue-49.json",
+          "original_case_sha256": "8d040cfc9a58b0643ee40b794414dcb2c2c29aa78d8fcb37c27c99b84662721f"
+        }
+      ],
+      "current_case_sha256": "8d040cfc9a58b0643ee40b794414dcb2c2c29aa78d8fcb37c27c99b84662721f",
+      "initial_scope": "agent",
+      "deferred_scope": [],
+      "agent_requirements": [
+        "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。"
+      ]
+    },
+    "49:BOUNDARY-ACQUIRE": {
+      "sources": [
+        {
+          "source_pr": 50,
+          "source_merge": "b0dca9f44f58e8fbde04c2b3ac7e0a6925d39582",
+          "source_path": "docs/verification/changes/issue-49.json",
+          "original_case_sha256": "3030257e71fcffb7c165078929e0d4ec9fc9a14c56b9167809233b296bb594ba"
+        }
+      ],
+      "current_case_sha256": "3030257e71fcffb7c165078929e0d4ec9fc9a14c56b9167809233b296bb594ba",
+      "initial_scope": "agent",
+      "deferred_scope": [],
+      "agent_requirements": [
+        "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。"
+      ]
+    },
+    "52:CLOCK-VIDEO-REGIONS": {
+      "sources": [
+        {
+          "source_pr": 53,
+          "source_merge": "cdcd546dd8dca702ec4666086f975204513ed80d",
+          "source_path": "docs/verification/changes/issue-52.json",
+          "original_case_sha256": "3f937afc3964c34af0645e5ad184fb0de7ec9d97c0b5351b939358d8449bec7d"
+        }
+      ],
+      "current_case_sha256": "3f937afc3964c34af0645e5ad184fb0de7ec9d97c0b5351b939358d8449bec7d",
+      "initial_scope": "agent",
+      "deferred_scope": [],
+      "agent_requirements": [
+        "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。"
+      ]
+    },
+    "52:CLOCK-VIDEO-UNKNOWN": {
+      "sources": [
+        {
+          "source_pr": 53,
+          "source_merge": "cdcd546dd8dca702ec4666086f975204513ed80d",
+          "source_path": "docs/verification/changes/issue-52.json",
+          "original_case_sha256": "1e58ae29b87ffd8035358d210341af0aa6c61671ecd60f6a7525c6f51d251a1e"
+        }
+      ],
+      "current_case_sha256": "1e58ae29b87ffd8035358d210341af0aa6c61671ecd60f6a7525c6f51d251a1e",
+      "initial_scope": "agent",
+      "deferred_scope": [],
+      "agent_requirements": [
+        "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。"
+      ]
+    },
+    "60:APP-MANUAL-GUIDANCE-EMU": {
+      "sources": [
+        {
+          "source_pr": 63,
+          "source_merge": "23f02915b78661e5c24d6229e8fc84876f4095d7",
+          "source_path": "docs/verification/changes/issue-60.json",
+          "original_case_sha256": "944ff85cf48714650bfe12bf933fc3bda07c1eb754f744c8ba7bc48ff3958c3b"
+        }
+      ],
+      "current_case_sha256": "944ff85cf48714650bfe12bf933fc3bda07c1eb754f744c8ba7bc48ff3958c3b",
+      "initial_scope": "agent",
+      "deferred_scope": [],
+      "agent_requirements": [
+        "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。"
+      ]
+    },
+    "60:APP-MANUAL-GUIDANCE-REAL": {
+      "sources": [
+        {
+          "source_pr": 63,
+          "source_merge": "23f02915b78661e5c24d6229e8fc84876f4095d7",
+          "source_path": "docs/verification/changes/issue-60.json",
+          "original_case_sha256": "cd316ba3dad948e1089ece6eee978455b7d8489670b4c253434ac77ee6580a63"
+        }
+      ],
+      "current_case_sha256": "cd316ba3dad948e1089ece6eee978455b7d8489670b4c253434ac77ee6580a63",
+      "initial_scope": "deferred",
+      "deferred_scope": [
+        "元Caseの実機環境での全工程を延期。Emulatorでの実行結果を実機のpassにしない。"
+      ],
+      "agent_requirements": [
+        "旧REAL名Caseへ混在したEmulator工程は 60:APP-MANUAL-GUIDANCE-EMU の初期版Agent範囲で実施する。PR33/38の全出典と現行の対象transport限定・共有ADB保護・同boot・deep sleep実測条件を保持する。"
+      ]
+    }
+  }
+}
