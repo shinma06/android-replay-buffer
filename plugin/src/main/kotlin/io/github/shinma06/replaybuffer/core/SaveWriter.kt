@@ -49,7 +49,7 @@ internal class SaveWriter {
             val parts = mutableListOf<Map<String, Any?>>()
             val losses = mutableListOf<String>()
             val tail = capture.videoTail()
-            val videoScopes = capture.gaps.videoScopes(capture.clocks)
+            val videoScopes = capture.gaps.videoScopes(capture.clocks, capture.clockRecoveries)
             val framesFile = file("frames.jsonl")
             Files.newBufferedWriter(framesFile, Charsets.UTF_8, CREATE_NEW, WRITE).use { index ->
                 val all = capture.video
@@ -241,7 +241,8 @@ internal class SaveWriter {
                     if (gap.stream != "clock") null else videoScopes[i].let { scope -> mapOf(
                         "gap_index" to i, "from_ns" to scope.fromNs?.toString(), "to_ns" to scope.toNs?.toString(),
                         "boundary_uncertainty_ns" to scope.boundaryUncertaintyNs?.toString(),
-                        "derived_from_valid_samples" to (scope !== gap)) }
+                        "derived_from_valid_samples" to (scope !== gap),
+                        "recovery_sample" to capture.clockRecoveries[gap]?.let(::clockJson)) }
                 },
                 "video_tail" to tail?.let { mapOf("from_ns" to it.fromNs?.toString(), "to_ns" to it.toNs?.toString(),
                     "source_pts_us" to it.sourcePtsUs.toString(), "source_sequence_ns" to it.sourceSequenceNs?.toString(),

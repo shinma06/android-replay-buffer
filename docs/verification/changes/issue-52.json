@@ -6,7 +6,8 @@
   "cli_checks": [
     "同epochの合成RTT品質低下とclock process境界の2回帰が修正前に6frame→6partで失敗。修正後は正常前後を2partへ保持し、元MAX gap/不足を残す。GUI観察ではない。",
     "管理/CLI元21 files+既存2 tests保全、plugin全回帰/check/buildPlugin/verifyPluginStructure、clean committed impactを実行し、最終固定HEAD/base・ZIP/hashと結果は私有停止packetで記録する。",
-    "新固定sourceの独立レビュー・公開CI・統合候補の実受入は別条件。旧候補承認はVFR6で撤回済み。"
+    "新固定sourceの独立レビュー・公開CI・統合候補の実受入は別条件。旧候補承認はVFR6で撤回済み。",
+    "PR53の復旧sample追加→clockStatus(true)→次周期sample前save順を同epoch RTT/clock process境界の2回帰で再現。直後・次sample後の新しい保存の正常区間と、固定retry/元MAX不足の保持を照合する。"
   ],
   "cases": [
     {
@@ -17,6 +18,7 @@
       "steps": [
         "正常静止と20秒の連番更新を保存する。",
         "単発invalid RTT sampleと復旧、clock process終了/epoch変更を隔離fixtureで再現し、前後複数frameを保存する。",
+        "最初の正常sample追加直後に次周期sampleなしで保存し、次sample後の新しい保存と比較する。復旧直後frameが単frame分割/次sampleまでの影響域へ残らないことを確認する。",
         "MP4 part数/duration/seek、source PTS/実frame数と両logsの同じ連番を照合する。",
         "過去clock gapが窓外にある保存を確認し、正常な保持区間が全frame1µsへ崩れないことと元warningを区別する。"
       ],
@@ -45,7 +47,7 @@
       "change": "証明できない境界と固定保存対象を保全",
       "preconditions": "片側/両側unknown、open/closed MAX gap、正常sample欠如/unknown boot、真正video lossと上限のQA所有合成fixture。",
       "steps": [
-        "元gapsとvideo_clock_gap_scopesを照合し、正常sampleで証明できる側だけ影響を局所化する。",
+        "元gapsとvideo_clock_gap_scopesを照合し、正常sampleで証明できる側だけ影響を局所化する。 recovery_sampleの固定復旧根拠と元gap.toNs/誤差の保持を照合する。",
         "true unknownなframe/window、epoch/boot/session/config/寸法/容量dropで同期を捏造しないことを照合する。",
         "取得/clockを進めた後に固定対象をretryし、元PTS/clock/範囲判断/両logs/pin保全を確認する。",
         "元49のheld=false不足と破棄P-frame watchdog、正常VFR/長い静止/末尾holdを既存回帰と同じ候補で確認する。"

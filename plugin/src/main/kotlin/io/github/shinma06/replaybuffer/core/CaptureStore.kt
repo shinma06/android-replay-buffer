@@ -28,6 +28,7 @@ internal data class FrozenCapture(
     val clocks: List<ClockSample>, val apps: List<AppPeriod>, val settings: ReplaySettings,
     val states: Map<String, StreamSnapshot>, val device: ReplayDevice? = null,
     val endUncertainty: Long = 0, val windowClockEpoch: Int? = null,
+    val clockRecoveries: Map<CaptureGap, ClockSample> = emptyMap(),
 ) {
     val empty: Boolean get() = video.isEmpty() && logs.isEmpty()
     val windowKnown: Boolean get() = endUncertainty != Long.MAX_VALUE
@@ -45,6 +46,7 @@ internal class CaptureStore(
     private val video = ArrayDeque<VideoEntry>()
     private val logs = ArrayDeque<LogEntry>()
     private val gaps = ArrayDeque<CaptureGap>()
+    private val clockRecoveries = mutableMapOf<CaptureGap, ClockSample>()
     private val apps = ArrayDeque<AppPeriod>()
     private val states = mutableMapOf("video" to StreamSnapshot(), "device_log" to StreamSnapshot(), "app_log" to StreamSnapshot())
     private var channel: FileChannel? = null
@@ -102,7 +104,12 @@ internal class CaptureStore(
             addGap("clock", anchor?.sequenceOffset?.let { anchor.elapsed + it }, null, "時計測定が不達または正常条件を満たしません")
         } else if (healthy) {
             val gap = gaps.lastOrNull { it.stream == "clock" && it.toNs == null }
-            if (gap != null) { gaps.remove(gap); gaps.add(gap.copy(toNs = clock.now())) }
+            if (gap != null) synchronized(clock) {
+                val recovery = clock.snapshot().lastOrNull()?.takeIf { it.valid && it.epoch == clock.currentEpoch() }
+                val closedGap = gap.copy(toNs = clock.now())
+                gaps.remove(gap); gaps.add(closedGap)
+                if (recovery != null) clockRecoveries[closedGap] = recovery
+            }
         }
     }
 
@@ -257,7 +264,7 @@ internal class CaptureStore(
         }
         enforceVideoLimit()
         deleteUnused()
-        while (gaps.size > 4096) gaps.removeFirst()
+        while (gaps.size > 4096) clockRecoveries.remove(gaps.removeFirst())
     }
 
     @Synchronized
@@ -283,7 +290,8 @@ internal class CaptureStore(
         }
         val value = FrozenCapture(UUID.randomUUID().toString(), sequence, generation, start, end,
             settings.replaySeconds, frames.toList(), rows.toList(), gaps.toList(), clock.snapshot(), apps.toList(), settings,
-            streams(settings.replaySeconds, end), endUncertainty = uncertainty, windowClockEpoch = fixedEpoch ?: clock.currentEpoch())
+            streams(settings.replaySeconds, end), endUncertainty = uncertainty, windowClockEpoch = fixedEpoch ?: clock.currentEpoch(),
+            clockRecoveries = clockRecoveries.toMap())
         if (value.empty) return null
         pinned = value
         return value
@@ -355,7 +363,7 @@ internal class CaptureStore(
             it.readError + (it.received - it.sent) / 2 + it.bridgeError }
         gaps += CaptureGap(stream, from, to, reason, if (boundary != null || clock.certain()) uncertainty else Long.MAX_VALUE,
             generation, boundary?.epoch ?: clock.currentEpoch())
-        while (gaps.size > 4096) gaps.removeFirst()
+        while (gaps.size > 4096) clockRecoveries.remove(gaps.removeFirst())
     }
 
     private fun deleteUnused() {
@@ -374,6 +382,7 @@ internal class CaptureStore(
         logs.clear()
         apps.clear()
         gaps.clear()
+        clockRecoveries.clear()
         configRefs.clear()
         config = byteArrayOf()
         videoBytes = 0
@@ -395,20 +404,27 @@ internal fun VideoEntry.continuousTo(next: VideoEntry, gaps: Iterable<CaptureGap
             gap.intersects(time.sequence, next.time.sequence, maxOf(time.uncertainty, next.time.uncertainty)) }
 
 /** Mux-only envelopes. The original uncertain gaps still govern coverage, UI and retention. */
-internal fun List<CaptureGap>.videoScopes(clocks: List<ClockSample>): List<CaptureGap> {
-    val anchors = clocks.mapNotNull { sample ->
-        val offset = sample.sequenceOffset ?: return@mapNotNull null
-        if (!sample.valid || sample.bridgeError !in 0..20_000_000L) return@mapNotNull null
-        try {
+internal fun List<CaptureGap>.videoScopes(
+    clocks: List<ClockSample>, recoveries: Map<CaptureGap, ClockSample> = emptyMap(),
+): List<CaptureGap> {
+    fun anchor(sample: ClockSample): Pair<Long, Long>? {
+        val offset = sample.sequenceOffset ?: return null
+        if (!sample.valid || sample.bridgeError !in 0..20_000_000L) return null
+        return try {
             Math.addExact(sample.elapsed, offset) to Math.addExact(sample.readError,
                 Math.addExact(Math.subtractExact(sample.received, sample.sent) / 2, sample.bridgeError))
         } catch (_: ArithmeticException) { null }
-    }.sortedBy { it.first }
+    }
+    val anchors = clocks.mapNotNull(::anchor).sortedBy { it.first }
     return map { gap ->
         if (gap.stream != "clock" || gap.boundaryUncertaintyNs != null && gap.boundaryUncertaintyNs != Long.MAX_VALUE) return@map gap
         // Widen to observed normal samples, never treat nominal from/to as zero-error boundaries.
         val before = gap.fromNs?.let { from -> anchors.lastOrNull { it.first <= from } }
-        val after = gap.toNs?.let { to -> anchors.firstOrNull { it.first >= to } }
+        val after = gap.toNs?.let { to ->
+            // Status closes after receiving its sample; preserve nominal closure and that sample's error.
+            recoveries[gap]?.let(::anchor)?.let { maxOf(to, it.first) to it.second }
+                ?: anchors.firstOrNull { it.first >= to }
+        }
         if (before == null && after == null || before != null && after != null && before.first > after.first) gap
         else gap.copy(fromNs = before?.first, toNs = after?.first,
             boundaryUncertaintyNs = maxOf(before?.second ?: 0, after?.second ?: 0))
