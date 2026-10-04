@@ -1,5 +1,6 @@
 """Acceptance data and fixed-candidate gates. Never execute code from a PR."""
 import argparse
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -11,6 +12,12 @@ PROMOTION = 'docs/verification/promotion.json'
 BASELINE = 'docs/verification/legacy-baseline.json'
 STATUSES = {'pending', 'blocked', 'fail', 'pass'}
 TOOLING = ('docs/', 'scripts/', '.github/', '.githooks/', '.agents/', '.claude/skills/', '.cursor/rules/')
+GOP_AMENDMENT = 'docs/verification/amendments/gop-boundaries.json'
+GOP_KEYS = {f'{issue}:SYNC-WINDOW' for issue in (13, 31, 41)} | {
+    f'27:{case}-{device}' for case in ('BUFFER-180', 'BUFFER-SHORT', 'SAVE-CONTINUE')
+    for device in ('REAL', 'EMU')}
+GOP_EVIDENCE = {'one_second_regression', 'after_idr', 'mid_gop', 'before_next_idr',
+                'vfr', 'limits_and_quality'}
 
 
 def field(body, name):
@@ -166,6 +173,92 @@ def regular_json(ref, path, git):
     return json.loads(git('show', f'{ref}:{path}'), object_pairs_hook=unique_pairs)
 
 
+def canonical_hash(value):
+    return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True,
+                                     separators=(',', ':')).encode()).hexdigest()
+
+
+def gop_amendment(base, candidate, git):
+    """One reviewed premise amendment, read from trusted main, never promotion HEAD."""
+    if not SHA.fullmatch(base or '') or not SHA.fullmatch(candidate or ''):
+        raise ValueError('GOP amendment requires fixed base and candidate')
+    if not git('ls-tree', base, '--', GOP_AMENDMENT):
+        return None
+    policy = regular_json(base, GOP_AMENDMENT, git)
+    if (not isinstance(policy, dict) or set(policy) != {'schema', 'issue', 'required_ancestor', 'original_premise',
+                       'runtime_premise', 'additional_steps', 'cases'} or
+            type(policy['schema']) is not int or policy['schema'] != 1 or policy['issue'] != 56 or
+            not isinstance(policy['required_ancestor'], str) or
+            not SHA.fullmatch(policy['required_ancestor']) or
+            policy['original_premise'] != '1秒程度の実測GOP' or
+            not nonempty(policy['runtime_premise']) or
+            not isinstance(policy['additional_steps'], list) or
+            not policy['additional_steps'] or not all(nonempty(x) for x in policy['additional_steps']) or
+            not isinstance(policy['cases'], dict) or set(policy['cases']) != GOP_KEYS):
+        raise ValueError('Invalid limited GOP amendment')
+    for key, sources in policy['cases'].items():
+        if not isinstance(sources, list) or len(sources) != (2 if key.startswith('27:') else 1):
+            raise ValueError('GOP amendment must retain all fifteen source occurrences')
+        seen = set()
+        for source in sources:
+            if (not isinstance(source, dict) or
+                    set(source) != {'source_pr', 'source_merge', 'source_path', 'original_case_sha256'} or
+                    type(source['source_pr']) is not int or source['source_pr'] <= 0 or
+                    not isinstance(source['source_merge'], str) or
+                    not SHA.fullmatch(source['source_merge']) or
+                    source['source_path'] != f'docs/verification/changes/issue-{key.split(":")[0]}.json' or
+                    not isinstance(source['original_case_sha256'], str) or
+                    not HASH.fullmatch(source['original_case_sha256']) or
+                    source['source_pr'] in seen):
+                raise ValueError('Invalid GOP source binding')
+            seen.add(source['source_pr'])
+    git('merge-base', '--is-ancestor', policy['required_ancestor'], candidate)
+    if regular_json(candidate, GOP_AMENDMENT, git) != policy:
+        raise ValueError('Candidate lacks the exact trusted GOP amendment; synchronize main first')
+    return policy
+
+
+def effective_gop_cases(policy, source_cases):
+    """Preserve historical Cases; replace only the named premise and append measurements."""
+    if policy is None:
+        return {}
+    actual = {}
+    originals = {}
+    for key, case, source in source_cases:
+        if key not in GOP_KEYS:
+            continue
+        binding = dict(source, original_case_sha256=canonical_hash(case))
+        actual.setdefault(key, []).append(binding)
+        if key in originals and originals[key] != case:
+            raise ValueError('Contradictory duplicate GOP Case contracts: ' + key)
+        originals[key] = case
+    if (set(actual) != GOP_KEYS or any(sorted(actual[key], key=lambda x: x['source_pr']) !=
+            sorted(policy['cases'][key], key=lambda x: x['source_pr']) for key in GOP_KEYS)):
+        raise ValueError('GOP amendment does not match every original source occurrence')
+    result = {}
+    for key, case in originals.items():
+        if case['preconditions'].count(policy['original_premise']) != 1:
+            raise ValueError('Original GOP premise missing or ambiguous: ' + key)
+        result[key] = {
+            'case': dict(case, preconditions=case['preconditions'].replace(
+                policy['original_premise'], policy['runtime_premise']),
+                steps=case['steps'] + policy['additional_steps']),
+            'original_preconditions': case['preconditions'],
+            'revision': canonical_hash(policy), 'sources': policy['cases'][key]}
+    return result
+
+
+def validate_gop_observation(result, contract):
+    if contract is None:
+        if 'gop_revision' in result or 'gop_evidence' in result:
+            raise ValueError('GOP revision is not applicable to this fixed Case')
+        return
+    evidence = result.get('gop_evidence')
+    if (result.get('gop_revision') != contract['revision'] or not isinstance(evidence, dict) or
+            set(evidence) != GOP_EVIDENCE or not all(nonempty(x) for x in evidence.values())):
+        raise ValueError('Fresh GOP revision and all boundary/regression evidence are required')
+
+
 def scoped_history(base, head, allowed, git):
     """Inspect every edge, including changes later reverted; never follow symlinks."""
     previous = base
@@ -234,6 +327,7 @@ def verify_pr(pr, api, git=git_read):
     if promotion.get('schema') != 1 or promotion.get('base') != base or not SHA.fullmatch(candidate or ''):
         raise ValueError('Promotion must bind the current main base and fixed candidate')
     scope = promotion.get('scope', 'develop')
+    gop_cases = {}
     if scope not in ('develop', 'main'):
         raise ValueError('Unknown promotion scope')
     if scope == 'main':
@@ -275,6 +369,7 @@ def verify_pr(pr, api, git=git_read):
         if not isinstance(changes, list) or {x.get('commit') for x in changes} != set(commits) or len(changes) != len(commits):
             raise ValueError('Promotion must cover EVERY candidate commit absent from main exactly once')
         required = baseline_cases(base, changes, git)
+        source_cases = []
         by_pr = {}
         for item in changes:
             if item.get('baseline') is True:
@@ -299,10 +394,14 @@ def verify_pr(pr, api, git=git_read):
             change = validate_change(json.loads(git('show', f'{source["merge_commit_sha"]}:{source_path}')), source_issue, source_gui)
             for case in change['cases']:
                 key = f'{source_issue}:{case["id"]}'
+                source_cases.append((key, case, {'source_pr': number,
+                    'source_merge': source['merge_commit_sha'], 'source_path': source_path}))
                 requirement = (case.get('required_execution'), case.get('artifact', 'app'))
                 if key in required and required[key] != requirement:
                     raise ValueError('Case execution requirement changed across candidate commits')
                 required[key] = requirement
+        if set(required) & GOP_KEYS:
+            gop_cases = effective_gop_cases(gop_amendment(base, candidate, git), source_cases)
     results = promotion.get('results', {})
     if not isinstance(results, dict):
         raise ValueError('Candidate results must be an object matching ALL required Cases')
@@ -319,12 +418,13 @@ def verify_pr(pr, api, git=git_read):
         if not HASH.fullmatch(artifact or ''):
             raise ValueError('Fixed candidate artifact hash is required: ' + artifact_name)
         validate_observation(result, candidate, artifact)
+        validate_gop_observation(result, gop_cases.get(key))
         if execution and result.get('execution') != execution:
             raise ValueError('Case requires its specified execution method: ' + key)
     return {'mode': mode, 'gui_complete': True, 'cases': len(required), 'candidate': candidate}
 
 
-def render_queue(paths, promotion=None):
+def render_queue(paths, promotion=None, git=git_read):
     """Human view is generated from JSON; it is never a second editable status source."""
     promotion = promotion or {}
     candidate = promotion.get('candidate')
@@ -334,6 +434,30 @@ def render_queue(paths, promotion=None):
         data = json.loads(Path(path).read_text())
         validate_change(data, data['issue'], data['gui_required'])
         rows.extend((data, case) for case in data['cases'])
+    gop_cases = {}
+    if candidate and any(f'{data["issue"]}:{case["id"]}' in GOP_KEYS for data, case in rows):
+        policy = gop_amendment(promotion.get('base'), candidate, git)
+        if policy:
+            # The trusted bindings, not current same-named files, select original contracts.
+            source_cases = []
+            for key, sources in policy['cases'].items():
+                for source in sources:
+                    git('merge-base', '--is-ancestor', source['source_merge'], candidate)
+                    data = regular_json(source['source_merge'], source['source_path'], git)
+                    validate_change(data, int(key.split(':')[0]), True)
+                    matches = [c for c in data['cases'] if c['id'] == key.split(':')[1]]
+                    if len(matches) != 1:
+                        raise ValueError('Original GOP Case is missing: ' + key)
+                    case = matches[0]
+                    source_cases.append((key, case, {k: source[k] for k in
+                        ('source_pr', 'source_merge', 'source_path')}))
+            gop_cases = effective_gop_cases(policy, source_cases)
+            for data, case in rows:
+                key = f'{data["issue"]}:{case["id"]}'
+                if key in gop_cases and canonical_hash(case) != policy['cases'][key][0]['original_case_sha256']:
+                    raise ValueError('Current Case differs from its historical GOP contract: ' + key)
+            rows = [(data, gop_cases[f'{data["issue"]}:{case["id"]}']['case'])
+                    if f'{data["issue"]}:{case["id"]}' in gop_cases else (data, case) for data, case in rows]
     lines = ['# 今回の動作確認一覧', '',
              '> 自動生成。結果は正本JSONへ入力して再生成してください。過去buildの結果は参考です。', '',
              '固定候補SHA: ' + (candidate or '未固定'),
@@ -351,6 +475,7 @@ def render_queue(paths, promotion=None):
             if not HASH.fullmatch(artifact or ''):
                 raise ValueError('Candidate artifact not registered')
             validate_observation(result, candidate, artifact)
+            validate_gop_observation(result, gop_cases.get(f'{data["issue"]}:{case["id"]}'))
             passed = not case.get('required_execution') or result.get('execution') == case['required_execution']
         except ValueError:
             pass
@@ -360,11 +485,23 @@ def render_queue(paths, promotion=None):
     for data, case in rows:
         lines += ['', f'## #{data["issue"]} / {case["id"]}: {case["change"]}', '',
                   f'PR: [#{data["pr"]}](https://github.com/shinma06/android-replay-buffer/pull/{data["pr"]})' if data.get('pr') else 'PR: 未登録', '', '前提・対象build: ' + case['preconditions'], '']
+        amended = gop_cases.get(f'{data["issue"]}:{case["id"]}')
+        result = results.get(f'{data["issue"]}:{case["id"]}', {})
+        if amended:
+            proof = result.get('gop_evidence')
+            if not isinstance(proof, dict):
+                proof = {}
+            lines += ['GOP改訂revision: ' + amended['revision'],
+                      '元の前提（履歴）: ' + amended['original_preconditions'],
+                      '固定出典: ' + ', '.join(f'PR #{s["source_pr"]} / {s["source_merge"]}'
+                                               for s in amended['sources']),
+                      '観察GOP改訂revision: ' + str(result.get('gop_revision') or '未登録')]
+            lines += [f'GOP観察証拠 ({name}): {proof.get(name) or "未登録"}' for name in sorted(GOP_EVIDENCE)]
+            lines.append('')
         if data.get('pr_role') == 'related_evidence_only':
             lines += ['このPRは関連証拠です。親Issueの残条件であり、当該PRのmain受入へ追加しません。', '']
         lines += [f'{n}. {step}' for n, step in enumerate(case['steps'], 1)]
         lines += ['', '期待結果: ' + case['expected'], '']
-        result = results.get(f'{data["issue"]}:{case["id"]}')
         if result:
             lines += ['今回の候補結果: ' + result.get('status', 'pending'),
                       f'確認者: {result.get("actor", "未登録")} / {result.get("observer", "未登録")}',

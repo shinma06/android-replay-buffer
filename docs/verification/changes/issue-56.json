@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "issue": 56,
+  "gui_required": false,
+  "reason": "GOP前提の限定改訂をtrusted mainの判定・一覧・観察revisionへ結び付ける管理変更。製品runtimeや既存Caseの結果を変更しない。改訂後の製品GUI受入は元9 Caseを含む同一新候補の全Caseで別途必要。",
+  "cli_checks": [
+    "python3 -m unittest discover -s scripts/workflow -p test_gop_acceptance.py: 15出典/9 Case、重複出典、改訂信頼境界、古い結果・不完全証拠の拒否、一覧一致を検証",
+    "python3 scripts/check.py: 管理構造と全回帰試験",
+    "python3 scripts/workflow/product_check.py: CLI原型の既存試験",
+    "python3 scripts/workflow/change_impact.py --base origin/main --run-tests: clean committed HEADで実行"
+  ],
+  "cases": []
+}
