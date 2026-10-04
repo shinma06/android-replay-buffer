@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "issue": 64,
+  "gui_required": false,
+  "reason": "固定出典を保った初期版の段階受入、延期追跡、生成一覧の管理変更。製品コード・build・Case原契約は変更せず、GUIの合格を作らない。新候補の製品GUI受入はQA #27、延期部分はQA #65が別途担当する。",
+  "cli_checks": [
+    "python3 scripts/check.py: pass（管理回帰と構造検査。最終件数は固定HEADのPRに記録）",
+    "python3 scripts/workflow/product_check.py: CLI既存2件pass",
+    "python3 scripts/workflow/change_impact.py --base origin/main --run-tests: clean committed HEADのpush前gateで実行"
+  ],
+  "cases": []
+}

@@ -51,6 +51,8 @@ class AcceptanceTests(unittest.TestCase):
         self.product_diff = []
 
     def git(self, *args):
+        if args[0] == 'ls-tree':
+            return ''
         if args[0] == 'show':
             if args[1].endswith(':docs/verification/promotion.json'):
                 return json.dumps(self.manifest)
