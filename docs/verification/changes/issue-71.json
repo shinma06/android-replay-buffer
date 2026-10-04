@@ -1,0 +1,73 @@
+{
+  "schema": 1,
+  "issue": 71,
+  "gui_required": true,
+  "reason": "保存ログ選択と保存不足の根拠を変更するため、新固定統合ZIPのIDE保存完了欄/JSONL/時計/窓をQAで再観察する。旧fail/REAL保留・段階受入の原契約は維持。",
+  "cli_checks": [
+    "実CaptureClock/CaptureStore APIで受信時未確定→保存時に確定した古いログの混入と両誤差境界の取りこぼしを修正前2回帰で再現。",
+    "修正後のsave/store回帰で正常app0行、未知時刻/帰属/保存窓、実gap、N変更、失敗pin/固定retry、元retainedAt/帰属を確認。",
+    "plugin全回帰/build/structure、check.py/CLI保全とclean committed impact、固定HEAD/base独立review/公開CIは各実結果をIssue/PR/停止packetで記録。GUIのpassへ転記しない。"
+  ],
+  "cases": [
+    {
+      "artifact": "plugin",
+      "provenance": [
+        "Issue71: 固定2675473の独立診断で時計再評価後の窓外ログ混入を確認。旧観察は修正版のpassではない。",
+        "docs/design/timeline.md: 保存窓/誤差/未知保全/正常無出力の区別",
+        "27:PARTIAL-CAPTURE-EMU / 27:LOG-SEPARATION-EMU / 41:SYNC-WINDOW / 41:SYNC-PARTIAL / 42:UI-12-04。旧failと未実施/REAL holdを維持。"
+      ],
+      "gpt": {
+        "status": "pending",
+        "reason": "同じ新統合source/ZIP/ロード実体でのIDE保存欄・JSONL再観察は未実施。pure回帰を転用しない。"
+      },
+      "human": {
+        "status": "pending",
+        "reason": "同じ修正版の人間/REAL実観察は未実施。段階計画の延期はPM正式管理で追跡する。"
+      },
+      "fix_issue": null,
+      "fix_pr": null,
+      "recheck": "ログ選択/clock/保存窓/帰属/保存不足/candidate変更後は同じ固定source/ZIPで再受入。",
+      "next_action": "PMが独立レビュー/CI/develop統合後に新Case出典を正式計画へ追加し、QA子Issueへ全契約・artifactを双方向移管。Case省略/gate緩和/既存fail削除をしない。",
+      "id": "LOG-REMAP-NORMAL-ZERO",
+      "change": "再評価で窓外と確定したログを現在のapp不足へ混ぜない",
+      "preconditions": "QA所有の使い捨てapp/deviceと新固定統合ZIP。受信時clock未確定の古いログが保持され、同boot正常sampleで後に時刻が確定する隔離条件を用意。現在窓は既知、app選択/UID解決済み、正常collectorと動画、gapなし。",
+      "steps": [
+        "新source/ZIP/hash/ロード版と保存Nを記録する。旧267候補の出力は不具合証拠として保全し修正版へ転用しない。",
+        "古い未確定ログが全誤差を含め現在窓外にあり、現在窓は非対象deviceログのみでapp正常0行となる保存を行う。",
+        "保存完了欄/通知とライブstream欄を区別し、完成sessionの窓/clock/error/gapsとdevice/app JSONLを照合する。",
+        "同じ新候補の窓内対象eventのrecord_idがdevice/app双方に一致し、0行だった保存が収集断であると誤解されないことを確認する。"
+      ],
+      "expected": "全誤差を含め窓外と確定した行は完成device JSONL/保存app不足根拠へ残らない。正常なapp 0行は件数だけで欠落にならない。現在窓の対象eventと元record_id/clock/JSONL対応を保全する。"
+    },
+    {
+      "artifact": "plugin",
+      "provenance": [
+        "Issue71: 固定2675473の独立診断で時計再評価後の窓外ログ混入を確認。旧観察は修正版のpassではない。",
+        "docs/design/timeline.md: 保存窓/誤差/未知保全/正常無出力の区別",
+        "27:PARTIAL-CAPTURE-EMU / 27:LOG-SEPARATION-EMU / 41:SYNC-WINDOW / 41:SYNC-PARTIAL / 42:UI-12-04。旧failと未実施/REAL holdを維持。"
+      ],
+      "gpt": {
+        "status": "pending",
+        "reason": "同じ新統合source/ZIP/ロード実体でのIDE保存欄・JSONL再観察は未実施。pure回帰を転用しない。"
+      },
+      "human": {
+        "status": "pending",
+        "reason": "同じ修正版の人間/REAL実観察は未実施。段階計画の延期はPM正式管理で追跡する。"
+      },
+      "fix_issue": null,
+      "fix_pr": null,
+      "recheck": "ログ選択/clock/保存窓/帰属/保存不足/candidate変更後は同じ固定source/ZIPで再受入。",
+      "next_action": "PMが独立レビュー/CI/develop統合後に新Case出典を正式計画へ追加し、QA子Issueへ全契約・artifactを双方向移管。Case省略/gate緩和/既存fail削除をしない。",
+      "id": "LOG-REMAP-UNKNOWN-RETRY",
+      "change": "境界誤差・真の不明・lossと固定retryを保全",
+      "preconditions": "QA所有の隔離clock/log fixtureと新固定統合ZIP。行誤差+窓誤差に接する両境界、未知clock/boot bridge、shared UID等の帰属不明、実gap/byte lossと保存失敗を区別できる条件。",
+      "steps": [
+        "行と窓の誤差範囲が開始/終了へ接するログ、真の時刻/帰属不明ログを保存し、JSONL/null・不足理由を照合する。",
+        "実clock/log gapや容量lossは元gapと関連不足に残り、unknown boot bridge/保存窓では外側と断定しないことを確認する。",
+        "保存を失敗させた固定対象をpinしたままclock/取得/app/Nを進め、同じ要求を再試行する。",
+        "再試行のT/N/clock/元record_id/帰属/集合が不変であることを確認後releaseし、別の広いNで以前の行が窓内になれば元帰属不明のまま保存されることを確認する。"
+      ],
+      "expected": "交差し得る行と真の不明/実lossを捨てず、不明帰属をfalseへ変えない。受信時retainedAtと帰属は不変。固定retry/pin/収集継続/CLI/動画の既存保証を保ち、N変更で過去の不明を捏造しない。"
+    }
+  ]
+}

@@ -20,6 +20,106 @@ import kotlin.test.assertTrue
 
 class CaptureStoreSaveTest {
     @Test
+    fun remappedOldUnknownLogDoesNotPolluteAnEmptyApplicationWindowOrFrozenRetry() {
+        val root = Files.createTempDirectory("replay-log-remap-window-")
+        val store = CaptureStore(root.resolve("ring"), minFree = 0)
+        val host = System.nanoTime() + 1_000_000_000
+        fun record(elapsed: Long, message: String, uid: Long = 10002) =
+            DeviceLog(1_700_000_000_000_000_000 + elapsed, 99, 99, uid, 0, 4, "Fixture", message, byteArrayOf(1))
+        try {
+            store.generation(1)
+            val old = record(1_500_000_000, "old initially unknown")
+            store.log(old, 1, host + 500_000_000) // No clock sample exists yet.
+            anchor(store.clock, 1_000_000_000, host)
+            store.log(record(1_100_000_000, "sequence start"), 1, host + 100_000_000)
+            anchor(store.clock, 5_000_000_000, host + 4_000_000_000)
+            store.app("com.example.target", 10001, setOf(12), 1, uidExclusive = true)
+            val current = record(5_500_000_000, "current non-target")
+            store.log(current, 1, host + 4_500_000_000)
+            anchor(store.clock, 6_000_000_000, host + 5_000_000_000)
+            store.prune(2) // The first unknown record remains in the ring.
+            val capture = store.capture(ReplaySettings(replaySeconds = 2))!!
+            assertEquals(3_000_000_000, capture.start)
+            assertEquals(5_000_000_000, capture.end)
+            assertEquals(listOf(current), capture.logs.map { it.source })
+            assertTrue(capture.logs.all { it.app == false })
+            assertTrue(capture.gaps.isEmpty())
+            assertEquals(StreamState.CAPTURING, capture.states["app_log"]?.state)
+            assertEquals(null, capture.states["app_log"]?.reason)
+            assertEquals(0.0, capture.states["app_log"]?.availableSeconds)
+            assertFailsWith<CancellationException> {
+                SaveWriter().write(capture, root, { true }) { a, b -> Files.move(a, b) }
+            }
+            assertFailsWith<IllegalStateException> { store.capture(ReplaySettings(replaySeconds = 8)) }
+            anchor(store.clock, 8_000_000_000, host + 7_000_000_000)
+            store.app("com.example.other", 10003, setOf(99), 1, uidExclusive = true)
+            store.log(record(8_000_000_000, "later target", 10003), 1, host + 7_000_000_000)
+            val output = SaveWriter().write(capture, root, { false }) { a, b -> Files.move(a, b) }
+            val device = Files.readAllLines(output.directory.resolve("logcat-device.jsonl"))
+            assertEquals(1, device.size)
+            assertTrue(Files.readAllLines(output.directory.resolve("logcat-app.jsonl")).isEmpty())
+            assertEquals(capture.logs.single().id, JsonParser.parseString(device.single()).asJsonObject["record_id"].asString)
+            assertEquals(2, capture.seconds)
+            assertEquals(5_000_000_000, capture.end)
+            assertEquals(listOf(current), capture.logs.map { it.source })
+            store.release(capture.id)
+            val wider = store.capture(ReplaySettings(replaySeconds = 8))!!
+            val retained = wider.logs.single { it.source === old }
+            assertEquals(500_000_000, retained.time.sequence)
+            assertEquals(0, retained.retainedAt)
+            assertEquals(null, retained.app) // Arrival-time membership was never rewritten.
+            assertTrue(wider.logs.any { it.app == true })
+            store.release(wider.id)
+        } finally {
+            store.close()
+            Files.walk(root).use { paths -> paths.sorted(java.util.Comparator.reverseOrder()).forEach { Files.deleteIfExists(it) } }
+        }
+    }
+
+    @Test
+    fun remappedLogsKeepBothBoundaryErrorsAndRealUnknownInformation() {
+        val root = Files.createTempDirectory("replay-log-window-errors-")
+        val store = CaptureStore(root.resolve("ring"), minFree = 0)
+        val host = System.nanoTime() + 1_000_000_000
+        fun record(elapsed: Long, message: String, uid: Long = 10002) =
+            DeviceLog(1_700_000_000_000_000_000 + elapsed, 99, 99, uid, 0, 4, "Fixture", message, byteArrayOf(1))
+        try {
+            store.generation(1)
+            anchor(store.clock, 1_000_000_000, host)
+            store.app("com.example.target", 10001, setOf(12), 1)
+            store.log(record(1_100_000_000, "sequence start"), 1, host + 100_000_000)
+            anchor(store.clock, 6_000_000_000, host + 5_000_000_000)
+            for ((elapsed, message) in listOf(3_997_000_000L to "before outside", 3_998_000_000L to "before edge",
+                    4_000_000_000L to "start", 6_002_000_000L to "after edge", 6_003_000_000L to "after outside",
+                    999_000_000_000L to "unknown clock")) {
+                store.log(record(elapsed, message), 1, host + 5_000_000_000)
+            }
+            store.log(record(5_500_000_000, "unknown shared UID", 10001), 1, host + 5_000_000_000)
+            store.log(record(5_600_000_000, "normal non-target"), 1, host + 5_000_000_000)
+            store.status("device_log", StreamState.RECOVERING, "actual interruption", 1)
+            store.status("device_log", StreamState.CAPTURING, null, 1)
+            val capture = store.capture(ReplaySettings(replaySeconds = 2))!!
+            assertEquals(1_000_000, capture.endUncertainty)
+            assertEquals(setOf("before edge", "start", "after edge", "unknown clock", "unknown shared UID", "normal non-target"),
+                capture.logs.map { it.source.message }.toSet())
+            assertTrue(capture.logs.filter { it.source.message?.endsWith("edge") == true }.all { it.time.uncertainty == 1_000_000L })
+            assertEquals(null, capture.logs.single { it.source.message == "unknown clock" }.time.sequence)
+            assertEquals(null, capture.logs.single { it.source.message == "unknown shared UID" }.app)
+            assertTrue(capture.gaps.single().intersects(capture.start, capture.end, capture.endUncertainty))
+            store.release(capture.id)
+            store.clock.boundary()
+            val unknownWindow = store.capture(ReplaySettings(replaySeconds = 2))!!
+            assertFalse(unknownWindow.windowKnown)
+            assertEquals(9, unknownWindow.logs.size)
+            assertEquals(capture.gaps, unknownWindow.gaps)
+            store.release(unknownWindow.id)
+        } finally {
+            store.close()
+            Files.walk(root).use { paths -> paths.sorted(java.util.Comparator.reverseOrder()).forEach { Files.deleteIfExists(it) } }
+        }
+    }
+
+    @Test
     fun oneInvalidClockRoundTripDoesNotFragmentKnownVideoBeforeAndAfterRecovery() {
         verifyVideoAroundClockFailure(false)
     }

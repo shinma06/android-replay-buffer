@@ -51,6 +51,8 @@ boot跨ぎでは新旧epoch間のoffsetを、最後/最初のhost時計sampleか
 
 ## 保存窓・取得の中断
 
+ログの保存集合は固定clockで時刻を再評価してから選ぶ。再評価済みsequenceの誤差と保存窓の誤差を合算し、範囲全体が窓外と証明できる行だけを除外する。境界へ接する行、時刻/boot bridge/保存窓が不明な行、整数範囲のため外側と証明できない行は保持する。受信時のretainedAtとapp帰属は書き換えず、app不明を一律falseへ変えない。除外した窓外行を現在窓のapp不足の根拠に混ぜず、正常なapp 0行と本当の未確定/実gap/lossを区別する。固定対象の集合・clock・N・帰属は後続取得や再試行で再評価しない。
+
 保存要求を受けた瞬間に`T / N / sequence_id / clock epoch / generation / per-stream watermark / app selection`を凍結する。選択する論理窓は **`[max(sequence開始, T-N), T]`**。cut後の`window_time_ns = elapsed_ns - window_start_ns`は動画と両ログで共通、gapも含めて進む。取得できたN秒を集めるために開始を過去へ広げない。開始20秒ならその20秒を保存する。
 
 | 場面 | T・リング・欠落の規則 |
