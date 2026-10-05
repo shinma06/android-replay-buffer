@@ -1,0 +1,44 @@
+{
+  "schema": 1,
+  "issue": 85,
+  "gui_required": true,
+  "reason": "保存動画のmux区間とclock alignment metadataを変更するため、新同一ZIPの基本録画/両logと標準player再生・seekが必要。限定JVMはGUI受入を代替しない。",
+  "cli_checks": [
+    "sealed bcf製品JARへ新dense回帰だけをcompileしてexpected3/actual23partの修正前失敗を確認した。fixture限定期待数であり一般part数仕様ではない。",
+    "修正sourceの限定/全plugin check/buildPlugin/structure、CLI原型保全、harness、clean committed change impactを実行。結果・固定HEAD/base・ZIP/hashはprivate packetと承認後Issue/PRへ記録する。",
+    "元gaps/null/MAX/閾値・stream/codec/epoch/容量break・IDR・preroll・固定retryとCLI互換を維持。"
+  ],
+  "cases": [
+    {
+      "id": "CLOCK-UNCERTAIN-VIDEO-PLAYBACK",
+      "artifact": "plugin",
+      "change": "有界なclock不確実区間の連続取得frameを元PTSで再生可能に保ち、時計対応と確認済みcoverageは不明のまま分離する",
+      "preconditions": "新固定source/標準buildPlugin ZIPと同source回帰。QA所有の使い捨てfixture/保存先、共有GUI lease、実ロードidentityと全JAR/ZIPの一致。合成RTTを実GUIへ注入したとは主張しない。",
+      "steps": [
+        "限定JVM: sealed修正前製品JARにdense IDR/P回帰のみをcompileして1frameずつの分割を再現した履歴を保全する。修正版ZIPの実製品classを使用してVideoClockRegionTestのdense保存/復号/PTS/duration/固定retryと境界否定回帰を実行し、製品classを差替えず実行前後hash/CodeSourceを照合する。",
+        "限定JVM: CaptureStoreSaveTest/CaptureClockTestの既存回帰を同じZIPで確認し、復旧直後/次sample後/open/片側unknown/overflow/epoch・boot/容量drop/IDR不足/保全用prune・20ms/40ms/5s閾値を維持する。既存固定要求retryの必要Wire回帰も同ZIPで確認する。",
+        "実IDE: 新ZIPを識別し、取得を有効にして3操作と各REQUEST/DRAW/FRAME_COMMITの9行を固定母数として保存する。専用fixtureの短い再接続後も3操作を保存し、実起動/再接続を行っていない合成試験とは分けて記録する。",
+        "実IDE: 保存した全MP4を標準playerで再生/seekし、3操作の映像を通常のdurationで見返せることを確認する。両logの全9行/同record_id/対象帰属と保存窓を照合する。clock gapが実際にある保存では不確実partの元PTS/全frameとnullのwindow/元MAX gap/不足を確認し、gapがなければ有界gapの再現は同ZIP限定JVMの別証拠で示す。",
+        "Case記録: 同ZIPの限定JVMと実IDE・標準playerの結果を別証拠で束ねる。既存300event/30分/精密同期/OCR/GOP/full initial・main受入は別の未達として維持し、この短い基本録画確認で合格に付替えない。"
+      ],
+      "expected": "同一取得stream/config/寸法/clock epoch、単調PTSと既知frame変換で証明した有界clock不確実領域は、各frame1µsの動画へ分割されず元PTSの連続した映像として見返せる。元frame/PTS/duration/prerollを保ち、part/frameのclock_alignment_known=falseとwindow null、元変換値mapped_window_ns、元gap/MAXと不足を残す。真のvideo/session/config/寸法/epoch/容量/PTS breakとunbounded/null/MAX/no-proofは緩和せず、正常前後・固定retry・両logを保全する。part数の一律固定を合格条件にしない。",
+      "provenance": [
+        "Issue85: 既存52の正常前後局所化を維持し、不確実区間内の極短partを最小mux変更で修正。実観察媒体・rawログはprivate保全のみ。",
+        "docs/design/timeline.md: 元PTS再生と共通窓への確認済みalignment/coverageを区別する。",
+        "52:CLOCK-VIDEO-REGIONS/UNKNOWN、78:CLOCK-RECEIPT-NORMALと旧全Case/REAL hold/初期計画は変更しない。"
+      ],
+      "gpt": {
+        "status": "pending",
+        "reason": "新固定ZIPの限定JVMと実IDE/標準playerの両方を束ねた受入は未完了。writer回帰だけを合格にしない。"
+      },
+      "human": {
+        "status": "pending",
+        "reason": "同じ新ZIPの人間/REAL観察は未実施。人間工程の追加や既存延期の変更は行わない。"
+      },
+      "fix_issue": null,
+      "fix_pr": null,
+      "recheck": "source/mux/scope/mapper/依存/固定candidate/ZIPが変更されたとき同buildで再確認する。",
+      "next_action": "PMが固定HEAD/baseの独立review、同ZIPの短い基本動画/両log/標準playerと分割回帰を担当QAへ渡す。公開承認/正式計画更新/main判定と試用を区別する。"
+    }
+  ]
+}
