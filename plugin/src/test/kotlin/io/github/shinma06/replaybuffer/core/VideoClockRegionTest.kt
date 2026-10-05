@@ -22,6 +22,189 @@ import kotlin.test.assertTrue
 
 class VideoClockRegionTest {
     @Test
+    fun reconnectRetainsPlayableOldFramesBeforeTheSameGenerationUncertainVideoLoss() {
+        val root = Files.createTempDirectory("replay-old-stream-video-gap-")
+        val store = CaptureStore(root.resolve("ring"), minFree = 0)
+        val host = System.nanoTime() - 4_000_000_000
+        val wall = 1_700_000_000_000_000_000L
+        fun anchor(boot: String, elapsed: Long, at: Long, wallOffset: Long = 0) {
+            assertTrue(store.clock.add(boot, listOf(elapsed, elapsed, wall + wallOffset + elapsed, elapsed),
+                at, at, wall + at - host))
+        }
+        val expected = mutableMapOf<Pair<Long, Long>, List<ByteArray>>()
+        fun acquire(owner: Long, at: Long, shade: Int) {
+            val encoder = H264Encoder.createH264Encoder().apply { setKeyInterval(10) }
+            val decoder = H264Decoder()
+            for (n in 0..20) {
+                val data = encoder.encodeFrame(Picture.create(32, 32, ColorSpace.YUV420J).apply { fill(shade + n) },
+                    ByteBuffer.allocate(65536)).data
+                val bytes = ByteArray(data.remaining()).also { data.get(it) }
+                if (n == 0) {
+                    val config = H264Utils.splitFrame(ByteBuffer.wrap(bytes))
+                        .filter { it.get(0).toInt() and 31 in setOf(7, 8) }
+                        .fold(byteArrayOf()) { result, nal -> result + byteArrayOf(0, 0, 0, 1) +
+                            ByteArray(nal.remaining()).also { nal.get(it) } }
+                    store.frame(VideoPacket.Frame(0, true, false, config), owner)
+                } else if (n % 10 != 0) {
+                    assertTrue(H264Utils.splitFrame(ByteBuffer.wrap(bytes)).any { it.get(0).toInt() and 31 == 1 })
+                }
+                val pts = 1_000_000 + n * 100_000L
+                expected[owner to pts] = decoder.decodeFrame(ByteBuffer.wrap(bytes),
+                    Picture.create(32, 32, ColorSpace.YUV420J).data).data.map { it.copyOf() }
+                assertTrue(store.frame(VideoPacket.Frame(pts, false, n % 10 == 0, bytes), owner, at + n * 100_000_000L))
+            }
+        }
+        try {
+            store.generation(1)
+            store.session(VideoPacket.Session(32, 32), 1)
+            anchor("old", 1_000_000_000, host)
+            acquire(1, host, 15)
+            anchor("old", 4_000_000_000, host + 3_000_000_000) // Normal evidence after all old frames.
+            store.clock.boundary()
+            store.clockStatus(false, 1)
+            store.status("video", StreamState.RECOVERING, "connection ended", 1)
+            store.generation(2)
+            store.session(VideoPacket.Session(32, 32), 2)
+            val resumedHost = System.nanoTime()
+            anchor("new", 1_000_000_000, resumedHost, 20_000_000_000)
+            store.clockStatus(true, 2)
+            store.app("com.example.target", 10001, setOf(12), 2, uidExclusive = true)
+            acquire(2, resumedHost, 45)
+            for (event in 1..3) for (phase in listOf("REQUEST", "DRAW", "FRAME_COMMIT")) {
+                val elapsed = 1_000_000_000 + event * 200_000_000L
+                store.log(DeviceLog(wall + 20_000_000_000 + elapsed, 12, 12, 10001, 0, 4,
+                    "Fixture", "$event $phase", byteArrayOf(event.toByte())), 2, resumedHost + elapsed - 1_000_000_000)
+            }
+            store.log(DeviceLog(wall + 999_000_000_000, 12, 12, 10001, 0, 4, "Fixture", "unsupported", byteArrayOf(0)),
+                2, resumedHost + 2_000_000_000)
+            anchor("new", 5_000_000_000, resumedHost + 4_000_000_000, 20_000_000_000)
+            val capture = store.capture(ReplaySettings(replaySeconds = 10))!!
+            val videoGap = capture.gaps.single { it.stream == "video" }
+            assertEquals(1L, videoGap.generation)
+            assertTrue(videoGap.fromNs != null && videoGap.toNs != null)
+            assertEquals(Long.MAX_VALUE, videoGap.boundaryUncertaintyNs)
+            val oldFrames = capture.video.filter { it.generation == 1L }
+            assertEquals(21, oldFrames.size)
+            assertTrue(oldFrames.all { it.time.sequence != null && it.time.uncertainty != Long.MAX_VALUE && it.time.epoch == 0 })
+            assertTrue(oldFrames.last().time.sequence!! < capture.clocks.last { it.epoch == 0 }.let { it.elapsed + it.sequenceOffset!! })
+            assertFailsWith<CancellationException> { SaveWriter().write(capture, root, { true }) { a, b -> Files.move(a, b) } }
+            val output = save(capture, root)
+            val record = manifest(output)
+            val parts = record["parts"].asJsonArray.map { it.asJsonObject }
+            val oldParts = parts.filter { it["generation"].asLong == 1L }
+            assertEquals(1, oldParts.size, "The same-owner loss after old frames must not split them into micro-parts")
+            assertEquals("2000001", oldParts.single()["duration_us"].asString)
+            assertTrue(oldParts.single()["clock_alignment_known"].asBoolean)
+            assertEquals(listOf("video"), output.missingKinds)
+            assertEquals(Long.MAX_VALUE.toString(), record["gaps"].asJsonArray.single { it.asJsonObject["kind"].asString == "video" }
+                .asJsonObject["boundary_uncertainty_ns"].asString)
+            val videoScope = record["video_gap_scopes"].asJsonArray.single().asJsonObject
+            assertTrue(videoScope["derived_from_valid_samples"].asBoolean)
+            assertEquals(1L, videoScope["generation"].asLong)
+            assertTrue(videoScope["from_ns"].asLong > oldFrames.last().time.sequence!!)
+            assertTrue(videoScope["to_ns"].asLong >= videoGap.toNs)
+            for (field in listOf("before_sample", "after_sample"))
+                assertTrue(record["clock_samples"].asJsonArray.any { it == videoScope[field] })
+            val rows = Files.readAllLines(output.directory.resolve("frames.jsonl")).map { JsonParser.parseString(it).asJsonObject }
+            for (part in parts) {
+                val owner = part["generation"].asLong
+                NIOUtils.readableChannel(output.directory.resolve(part["file"].asString).toFile()).use { channel ->
+                    val track = MP4Demuxer.createMP4Demuxer(channel).videoTrack
+                    val decoder = H264Decoder()
+                    rows.filter { it["part"].asString == part["file"].asString }.forEach { row ->
+                        val packet = track.nextFrame() ?: error("Missing retained old/new MP4 sample")
+                        val picture = decoder.decodeFrame(packet.data, Picture.create(32, 32, ColorSpace.YUV420J).data)
+                        expected.getValue(owner to row["source_pts_us"].asLong).zip(picture.data).forEach { (a, b) -> assertContentEquals(a, b) }
+                        assertEquals(row["media_pts_us"].asLong, (packet as MP4Packet).mediaPts)
+                        assertEquals(row["display_duration_us"].asLong, packet.duration)
+                    }
+                    assertEquals(null, track.nextFrame())
+                }
+                val sourcePts = capture.video.filter { it.generation == owner }.map { it.pts }
+                val presented = rows.filter { it["presented"].asBoolean && parts.single { part -> part["file"] == it["part"] }["generation"].asLong == owner }
+                    .map { it["source_pts_us"].asLong }
+                assertEquals(sourcePts, presented) // Presented source frames exactly once, excluding decoder preroll.
+            }
+            val cut = save(capture.copy(start = 1_150_000_000), root)
+            val cutOld = manifest(cut)["parts"].asJsonArray.single { it.asJsonObject["generation"].asLong == 1L }.asJsonObject
+            assertEquals("150000", cutOld["edit_start_us"].asString)
+            assertEquals("850001", cutOld["duration_us"].asString)
+            assertEquals("0", cutOld["window_start_ns"].asString)
+            assertEquals(1, cutOld["preroll_samples"].asInt)
+            val cutRows = Files.readAllLines(cut.directory.resolve("frames.jsonl")).map { JsonParser.parseString(it).asJsonObject }
+                .filter { it["part"].asString == cutOld["file"].asString }
+            assertEquals(oldFrames.filter { it.pts >= 2_100_000 }.map { it.pts },
+                cutRows.filter { it["presented"].asBoolean }.map { it["source_pts_us"].asLong })
+            assertTrue(cutRows.first()["preroll"].asBoolean)
+            assertEquals("-50000000", cutRows.first { it["presented"].asBoolean }["window_ns"].asString)
+            NIOUtils.readableChannel(cut.directory.resolve(cutOld["file"].asString).toFile()).use { channel ->
+                val track = MP4Demuxer.createMP4Demuxer(channel).videoTrack
+                val decoder = H264Decoder()
+                cutRows.forEach { row ->
+                    val packet = track.nextFrame() ?: error("Missing old cut sample or decoder preroll")
+                    val picture = decoder.decodeFrame(packet.data, Picture.create(32, 32, ColorSpace.YUV420J).data)
+                    expected.getValue(1L to row["source_pts_us"].asLong).zip(picture.data).forEach { (a, b) -> assertContentEquals(a, b) }
+                }
+                assertEquals(null, track.nextFrame())
+            }
+            val device = Files.readAllLines(output.directory.resolve("logcat-device.jsonl"))
+            val app = Files.readAllLines(output.directory.resolve("logcat-app.jsonl"))
+            assertEquals(10, device.size)
+            assertEquals(9, app.size)
+            assertTrue(app.all { it in device && JsonParser.parseString(it).asJsonObject["app_membership"].asBoolean })
+            assertTrue(JsonParser.parseString(device.last()).asJsonObject["window_ns"].isJsonNull)
+            anchor("new", 6_000_000_000, resumedHost + 5_000_000_000, 20_000_000_000)
+            val retry = save(capture, root)
+            for (field in listOf("parts", "gaps", "video_clock_gap_scopes", "video_gap_scopes", "video_missing_ranges"))
+                assertEquals(record[field], manifest(retry)[field])
+            for (file in listOf("frames.jsonl", "logcat-device.jsonl", "logcat-app.jsonl"))
+                assertEquals(Files.readAllLines(output.directory.resolve(file)), Files.readAllLines(retry.directory.resolve(file)))
+            assertEquals(videoGap, capture.gaps.single { it.stream == "video" })
+            store.release(capture.id)
+        } finally {
+            store.close()
+            Files.walk(root).use { paths -> paths.sorted(java.util.Comparator.reverseOrder()).forEach { Files.deleteIfExists(it) } }
+        }
+    }
+
+    @Test
+    fun videoLossEnvelopeRequiresBothFiniteNormalAnchorsAndStillBlocksRealLoss() {
+        val before = ClockSample(0, "old", 4_000_000_000, 4_000_000_000, 0, 4_000_000_000,
+            0, 0, 0, -1_000_000_000, 0)
+        val after = before.copy(epoch = 2, boot = "new", before = 7_000_000_000, after = 7_000_000_000, mono = 7_000_000_000)
+        val gap = CaptureGap("video", 3_500_000_000, 5_500_000_000, "connection ended", Long.MAX_VALUE, 1, 1)
+        val scope = listOf(gap).videoScopes(listOf(before, after)).single()
+        assertEquals(3_000_000_000L, scope.fromNs)
+        assertEquals(6_000_000_000L, scope.toNs)
+        assertEquals(1_000_000L, scope.boundaryUncertaintyNs)
+        assertEquals(Long.MAX_VALUE, gap.boundaryUncertaintyNs) // Original retention/UI/coverage boundary is unchanged.
+        val first = VideoEntry(Path.of("unused"), 0, 1, 1_000_000, true, 32, 32, 1,
+            MappedTime(1_000_000_000, 0, 1_000_000, 1_000_000_000), 1_000_000_000, byteArrayOf(1), 0, 1)
+        fun frame(at: Long) = first.copy(pts = at / 1000, time = first.time.copy(elapsed = at, sequence = at))
+        assertFalse(first.continuousTo(frame(1_100_000_000), listOf(gap)))
+        assertTrue(first.muxContinuousTo(frame(1_100_000_000), listOf(scope)))
+        assertTrue(frame(7_000_000_000).muxContinuousTo(frame(7_100_000_000), listOf(scope)))
+        assertFalse(frame(4_000_000_000).muxContinuousTo(frame(4_100_000_000), listOf(scope)))
+        assertFalse(frame(2_000_000_000).muxContinuousTo(frame(7_000_000_000), listOf(scope)))
+        assertFalse(frame(2_998_500_000).muxContinuousTo(frame(2_999_000_000), listOf(scope))) // Both error margins count.
+        for (unproven in listOf(gap.copy(fromNs = null), gap.copy(toNs = null), gap.copy(generation = 0),
+                gap.copy(generation = -1), gap.copy(fromNs = 6_000_000_000))) {
+            assertEquals(unproven, listOf(unproven).videoScopes(listOf(before, after)).single())
+        }
+        for (unproven in listOf(after.copy(sequenceOffset = null), after.copy(bridgeError = Long.MAX_VALUE),
+                after.copy(bridgeError = 20_000_001), after.copy(sequenceOffset = Long.MAX_VALUE),
+                after.copy(received = 100_000_000), after.copy(sent = 1),
+                after.copy(after = after.before - 1), after.copy(before = -1, after = -1),
+                after.copy(after = after.before + 2_000_001))) {
+            assertEquals(gap, listOf(gap).videoScopes(listOf(before, unproven)).single())
+        }
+        assertEquals(gap, listOf(gap).videoScopes(listOf(before)).single())
+        assertEquals(gap, listOf(gap).videoScopes(listOf(after)).single())
+        val known = gap.copy(boundaryUncertaintyNs = 1_000_000)
+        assertEquals(known, listOf(known).videoScopes(listOf(before, after)).single())
+    }
+
+    @Test
     fun reconnectKeepsNewStreamPlayableWithTheClosedOldGenerationVideoLoss() {
         val root = Files.createTempDirectory("replay-reconnect-video-gap-")
         val store = CaptureStore(root.resolve("ring"), minFree = 0)

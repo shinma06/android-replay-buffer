@@ -49,7 +49,8 @@ internal class SaveWriter {
             val parts = mutableListOf<Map<String, Any?>>()
             val losses = mutableListOf<String>()
             val tail = capture.videoTail()
-            val videoScopes = capture.gaps.videoScopes(capture.clocks, capture.clockRecoveries)
+            val videoProofs = mutableMapOf<CaptureGap, Pair<ClockSample, ClockSample>>()
+            val videoScopes = capture.gaps.videoScopes(capture.clocks, capture.clockRecoveries, videoProofs)
             fun aligned(frame: VideoEntry): Boolean {
                 val sequence = frame.time.sequence ?: return false
                 return capture.windowKnown && frame.time.uncertainty != Long.MAX_VALUE && videoScopes.none { gap ->
@@ -255,6 +256,15 @@ internal class SaveWriter {
                         "boundary_uncertainty_ns" to scope.boundaryUncertaintyNs?.toString(),
                         "derived_from_valid_samples" to (scope !== gap),
                         "recovery_sample" to capture.clockRecoveries[gap]?.let(::clockJson)) }
+                },
+                "video_gap_scopes" to capture.gaps.mapIndexedNotNull { i, gap ->
+                    if (gap.stream != "video") null else videoScopes[i].let { scope -> mapOf(
+                        "gap_index" to i, "generation" to gap.generation, "clock_epoch" to gap.clockEpoch,
+                        "from_ns" to scope.fromNs?.toString(), "to_ns" to scope.toNs?.toString(),
+                        "boundary_uncertainty_ns" to scope.boundaryUncertaintyNs?.toString(),
+                        "derived_from_valid_samples" to (scope !== gap),
+                        "before_sample" to videoProofs[gap]?.first?.let(::clockJson),
+                        "after_sample" to videoProofs[gap]?.second?.let(::clockJson)) }
                 },
                 "video_tail" to tail?.let { mapOf("from_ns" to it.fromNs?.toString(), "to_ns" to it.toNs?.toString(),
                     "source_pts_us" to it.sourcePtsUs.toString(), "source_sequence_ns" to it.sourceSequenceNs?.toString(),

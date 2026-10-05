@@ -2,10 +2,11 @@
   "schema": 1,
   "issue": 85,
   "gui_required": true,
-  "reason": "保存動画のmux区間とclock alignment metadataを変更するため、新同一ZIPの基本録画/再接続/両logと標準player再生・seekが必要。限定JVMはGUI受入を代替しない。",
+  "reason": "旧/新映像を含む再接続保存のmux scopeとmetadataを変更するため、新同一ZIPで通常3操作と再接続PRE/POST各3操作・両log・全MP4標準player再生/seekが必要。限定JVMはGUI受入を代替しない。",
   "cli_checks": [
     "sealed bcf製品JARへ新dense回帰だけをcompileしてexpected3/actual23partの修正前失敗を確認した。fixture限定期待数であり一般part数仕様ではない。",
     "sealed d0製品JARへStore再接続回帰のみをcompileしてexpected1/actual21partの修正前失敗を確認した。閉じた正の旧generationのvideo gapが新generationの全境界を分割する履歴を保全する。",
+    "sealed a471製品JARへ旧/新Store再接続回帰をcompileし、正常旧21frameがexpected1/actual21partに分割される修正前失敗を保全した。新同ZIPでは両側normal proof・旧映像復号/PTS/duration/cut/preroll/未知ログ/固定retryとno-proof/VIDEO loss否定を確認する。",
     "修正sourceの限定/全plugin check/buildPlugin/structure、CLI原型保全、harness、clean committed change impactを実行。結果・固定HEAD/base・ZIP/hashはprivate packetと承認後Issue/PRへ記録する。",
     "元gaps/null/MAX/閾値・stream/codec/epoch/容量break・IDR・preroll・固定retryとCLI互換を維持。"
   ],
@@ -13,26 +14,28 @@
     {
       "id": "CLOCK-UNCERTAIN-VIDEO-PLAYBACK",
       "artifact": "plugin",
-      "change": "有界clock不確実区間と、閉じた正の旧generationのvideo lossから独立した新streamの連続frameを元PTSで再生可能に保ち、元gap/不足/不明情報を保持する",
+      "change": "有界clock不確実区間、旧lossから独立した新stream、正常sampleで動画gapより前と証明した旧streamを元PTSで再生可能にし、元gap/不足/不明を保持する",
       "preconditions": "新固定source/標準buildPlugin ZIPと同source回帰。QA所有の使い捨てfixture/保存先、共有GUI lease、実ロードidentityと全JAR/ZIPの一致。合成RTTを実GUIへ注入したとは主張しない。",
       "steps": [
         "限定JVM: sealed修正前製品JARにdense IDR/P回帰のみをcompileして1frameずつの分割を再現した履歴を保全する。修正版ZIPの実製品classを使用してVideoClockRegionTestのdense保存/復号/PTS/duration/固定retryと境界否定回帰を実行し、製品classを差替えず実行前後hash/CodeSourceを照合する。",
         "限定JVM: Storeのstatus→旧video gap open→新generation/session/IDRと実H.264 P-frame→旧gap closeを通す回帰を、sealed d0製品でexpected1/actual21partとして保全する。新同ZIPでは全21frame/元PTS/全画素復号/実duration/取消し後retry/後続clockによらない固定retry/両logを確認する。閉じた正の旧所有だけをmuxから分離し、open・generation0/負値・同世代・未来世代、stream/session/config/寸法/epoch/PTS/unknown変換の否定回帰を確認する。",
+        "限定JVM: sealed a471で旧正常H.26421frame→旧normal anchor→clock boundary/video RECOVERING→新generation/session/IDR/P→旧gap closure→両側を含む固定captureのexpected1/actual21旧part失敗を保全する。新同ZIPで旧/新全frameの元PTS/全画素復号/実duration、cutを跨ぐ表示frameとIDR preroll、両log/未知行、原MAX/不足と固定retryを確認する。両側normal proof/checked arithmetic必須と、open/所有不明/片側proof/invalid/bridge/overflow、VIDEO内部/跨ぎ/容量lossのveto、source全guardを確認し、video_gap_scopesの元indexとbefore/after根拠を照合する。",
         "限定JVM: CaptureStoreSaveTest/CaptureClockTestの既存回帰を同じZIPで確認し、復旧直後/次sample後/open/片側unknown/overflow/epoch・boot/容量drop/IDR不足/保全用prune・20ms/40ms/5s閾値を維持する。既存固定要求retryの必要Wire回帰も同ZIPで確認する。",
-        "実IDE: 新ZIPを識別し、取得を有効にして3操作と各REQUEST/DRAW/FRAME_COMMITの9行を固定母数として保存する。専用fixtureの短い再接続後も3操作を保存し、実起動/再接続を行っていない合成試験とは分けて記録する。",
-        "実IDE: 保存した全MP4を標準playerで再生/seekし、3操作の映像を通常のdurationで見返せることを確認する。両logの全9行/同record_id/対象帰属と保存窓を照合する。clock gapが実際にある保存では不確実partの元PTS/全frameとnullのwindow/元MAX gap/不足を確認し、gapがなければ有界gapの再現は同ZIP限定JVMの別証拠で示す。",
+        "実IDE: PM gate後、新HEAD/標準ZIP/全JARと実ロードidentityを照合し、QA所有fixtureでN=300を使う。通常3操作/REQUEST・DRAW・FRAME_COMMIT計9行を両log固定母数として別保存する。同じ取得で新PRE3操作9行を完了し、所有Emulatorを1回だけ通常再接続し、別POST3操作9行を入力して同じ窓へ保存する。PRE/POST各9行（両log各計18行）とrun/view/boot/eventを保持し、POSTだけで再接続合格にしない。",
+        "実IDE: 保存前は実入力host monotonicの最初のPREからSave開始まで240秒の余裕と取得/接続状態を確認してSaveする。既に窓外と分かる/時間不足は事前にINVALID停止する。内部mappingがUIへ公開されないだけではSaveを止めない。保存後は固定snapshot Tと実保存metadataのsupported mappingでPRE/POST全phaseがN=300内か厳密判定し、unknown/欠落/窓外はPASS不可とする。host経過は安全余裕で未知clockを確定せず、母数を落とさず、追加再接続/再録画を自動実行しない。通常と再接続の生成全MP4を標準playerで実再生/seekし、通常3操作・PRE3・POST3の全映像を通常durationで見返す。瞬間終了する旧part/未観察file/欠けた操作を正当と仮定せずFAIL/PENDINGで保全する。両logの固定全行/同record_id/UID/帰属/窓を照合し、元PTS/duration/preroll、元gap/MAX/不足、video_gap_scopes両側proofとclock不確実partのnull/mapped_window_nsを確認する。",
         "Case記録: 同ZIPの限定JVMと実IDE・標準playerの結果を別証拠で束ねる。既存300event/30分/精密同期/OCR/GOP/full initial・main受入は別の未達として維持し、この短い基本録画確認で合格に付替えない。"
       ],
-      "expected": "同一取得stream/config/寸法/clock epoch、単調PTSと既知frame変換で証明した有界clock不確実領域は、各frame1µsの動画へ分割されず元PTSの連続した映像として見返せる。元frame/PTS/duration/prerollを保ち、part/frameのclock_alignment_known=falseとwindow null、元変換値mapped_window_ns、元gap/MAXと不足を残す。真のvideo/session/config/寸法/epoch/容量/PTS breakとunbounded/null/MAX/no-proofは緩和せず、正常前後・固定retry・両logを保全する。part数の一律固定を合格条件にしない。 再接続で明示的に閉じた正の旧generationのvideo gapは、新しい同一generationのsource判定へ適用しない。元gap/MAX/不足と保全用判定は保持し、名目時刻・reason・epoch差だけで除外しない。open/所有不明/同世代/未来世代は従来どおり制約する。同generation内の再接続の解消は主張しない。",
+      "expected": "同一取得stream/config/寸法/clock epoch、単調PTSと既知frame変換で証明した有界clock不確実領域は、各frame1µsの動画へ分割されず元PTSの連続した映像として見返せる。元frame/PTS/duration/prerollを保ち、part/frameのclock_alignment_known=falseとwindow null、元変換値mapped_window_ns、元gap/MAXと不足を残す。真のvideo/session/config/寸法/epoch/容量/PTS breakとunbounded/null/MAX/no-proofは緩和せず、正常前後・固定retry・両logを保全する。part数の一律固定を合格条件にしない。 再接続で明示的に閉じた正の旧generationのvideo gapは、新しい同一generationのsource判定へ適用しない。元gap/MAX/不足と保全用判定は保持し、名目時刻・reason・epoch差だけで除外しない。open/所有不明/同世代/未来世代は従来どおり制約する。同generation内の再接続の解消は主張しない。 閉じた正のVIDEO lossに両側の正常clock根拠がある場合だけ、その保守的外側scopeより前/後の連続取得sourceを元PTSで再生する。VIDEO内部/跨ぎは常にvetoし、両側proofなし/open/所有不明/invalid/overflowは元制約を保持する。原gap/MAX/loss/不足/共有retention/UI/tail/nullは変更しない。旧cutを跨ぐ呈示frameとdecoder prerollを失わず、表示frame数33やpart数を一律固定しない。再接続PRE/POST全6操作を両側映像と両log各18行で見返し、全生成MP4を実再生/seekしなければ今回のCaseをpassにしない。",
       "provenance": [
         "Issue85: 既存52の正常前後局所化を維持し、不確実区間内の極短partを最小mux変更で修正。実観察媒体・rawログはprivate保全のみ。",
         "docs/design/timeline.md: 元PTS再生と共通窓への確認済みalignment/coverageを区別する。",
         "52:CLOCK-VIDEO-REGIONS/UNKNOWN、78:CLOCK-RECEIPT-NORMALと旧全Case/REAL hold/初期計画は変更しない。",
-        "Issue85継続: d0実Emulator再接続保存で187partの失敗を保持し、旧video gapの所有による最小mux修正を同じCaseへ追加する。旧sourceのreview/GUI結果を新sourceへ転用しない。"
+        "Issue85継続: d0実Emulator再接続保存で187partの失敗を保持し、旧video gapの所有による最小mux修正を同じCaseへ追加する。旧sourceのreview/GUI結果を新sourceへ転用しない。",
+        "Issue85継続: a471は通常/POST基本PASSだが旧generation4/epoch0の33極短partは未解消。旧data/native失敗を保全し、同世代MAX動画gapの両側normal proofによる最小mux scopeを同Caseへ追加。a471 review/GUI結果は新sourceへ転用しない。"
       ],
       "gpt": {
         "status": "pending",
-        "reason": "新固定ZIPの限定JVMと実IDE/標準playerの両方を束ねた受入は未完了。writer回帰だけを合格にしない。"
+        "reason": "新固定ZIPの旧/新回帰と実IDE PRE/POST全操作・全MP4playerを束ねた受入は未完了。旧試用版の正常/POSTだけのPASSを転用しない。"
       },
       "human": {
         "status": "pending",
@@ -41,7 +44,7 @@
       "fix_issue": null,
       "fix_pr": null,
       "recheck": "source/mux/scope/mapper/依存/固定candidate/ZIPが変更されたとき同buildで再確認する。",
-      "next_action": "PMが固定HEAD/baseの独立review、同ZIPの短い基本動画/両log/標準playerと分割回帰を担当QAへ渡す。公開承認/正式計画更新/main判定と試用を区別する。"
+      "next_action": "PMが新固定HEAD/base/標準ZIPの独立review・同ZIP回帰を照合し、QAへN300通常+1回再接続PRE/POST・両log・全MP4playerを引継ぐ。公開承認/全初期版/main判定は別途保留。"
     }
   ]
 }
