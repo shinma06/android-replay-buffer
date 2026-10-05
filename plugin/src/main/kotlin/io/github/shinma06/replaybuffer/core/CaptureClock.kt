@@ -91,8 +91,11 @@ internal class CaptureClock {
             if (!log && hint != null && hint != first.epoch) return@forEach
             val sourceOf: (ClockSample) -> Long = { if (log) it.wall else it.mono }
             val next = samples.firstOrNull { it.valid && it.epoch > last.epoch }
-            val upper = if (next == null) sourceOf(last) + (host - last.received).coerceIn(0, 5_000_000_000) else
-                sourceOf(last) + (next.sent - last.received).coerceAtLeast(0)
+            // The source was sampled between sent and received; bound progress from the earliest possible measurement.
+            // The stale check below still measures five seconds from receipt, independently of source-clock error.
+            val upper = if (next == null) sourceOf(last) + (host - last.sent).coerceIn(0,
+                5_000_000_000 + (last.received - last.sent)) else
+                sourceOf(last) + (next.sent - last.sent).coerceAtLeast(0)
             if (source < sourceOf(first) - 20_000_000 || source > upper + 20_000_000) return@forEach
             val low = group.lastOrNull { sourceOf(it) <= source } ?: first
             val high = group.firstOrNull { sourceOf(it) >= source } ?: last

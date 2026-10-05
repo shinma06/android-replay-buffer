@@ -1,0 +1,46 @@
+{
+  "schema": 1,
+  "issue": 78,
+  "gui_required": true,
+  "reason": "時計mapper共有経路を変更するため、新統合ZIPの決定的JVMと実IDE正常取得・保存を別証拠で確認する。精密RTTをGUIへ注入せず、元event78の原因未確定と旧Case状態を保持する。",
+  "cli_checks": [
+    "固定base9fa ZIP実製品classに新Clock/Store回帰をcompileして、非対称有効RTT/source境界/受信app帰属の失敗を再現。fixture補正前のStore失敗は有効な再現として数えず私有履歴に保持。",
+    "修正sourceのplugin全JVM/check/buildPlugin/verifyPluginStructure、check.py/CLI原型保全、clean committed impact、固定HEAD/base reviewは実結果をIssue/PRへ記録。",
+    "閾値20ms/40ms/5s、epoch closure/曖昧性/boot bridge、invalid/stale/真のunknown、受信時retainedAt/app帰属、固定pin/retryとCLI互換を維持。"
+  ],
+  "cases": [
+    {
+      "id": "CLOCK-RECEIPT-NORMAL",
+      "artifact": "plugin",
+      "change": "有効な時計sampleの測定可能区間をsource支持範囲へ反映し、到着可能な動画/ログを応答遅延だけでunknownへしない",
+      "preconditions": "新固定統合source/ZIPとその同sourceの既存test。QA所有の使い捨てapp/device/保存先、共有GUI lease。同ZIP製品classの限定JVMと実IDEを別証拠で結び付ける。実IDEは選択app/collector/clockが既知で、gap/lossのない正常区間。精密なRTTやepoch faultを実GUIで作ったとは主張しない。",
+      "steps": [
+        "限定JVM: 新統合候補ZIPを展開し製品JAR/依存をclasspath・friend pathとして、同sourceのCaptureClockTest/CaptureStoreSaveTestと必要な既存Wire testだけを私有runnerへcompileする。製品source/classを再compile・差替えせず、実行前後の製品class hashがZIPと一致することを記録する。",
+        "限定JVM: validRoundTripSupportsCausallyArrivedVideoAndLogWithEitherDelayDirection、receiptSupportKeepsItsExactSourceBoundaryAndFiveSecondStaleLimit、receiptSupportDoesNotValidateInvalidSamplesOrCrossClosedEpochsを実行する。有効31.842708ms/40msの正のrequest/response遅延、video/log共通elapsed/sequence、source支持範囲の内外、5秒stale境界、invalid/closed epoch/unsupported sourceをJUnit/runner/hashへ対応付ける。",
+        "限定JVM: delayedValidClockKeepsNewTargetLogMembershipWithoutReclassifyingTrueUnknownを実行し、到着可能な新対象logが受信時に所属trueとなってdevice/app両JSONLの同record_idへ残ること、unsupported logの所属NULL/時刻NULL/MAXを一律再分類しないことを確認する。",
+        "限定JVM: 同じZIPでCaptureClockTestとCaptureStoreSaveTestの既存全件を実行し、重複epochの曖昧性・boot bridge不明・旧epoch/無効sample・保存窓と両境界誤差・true unknown・byte上限/pin/元retainedAt/帰属を維持する。同source既存ReplayCoreWireTest.failedRequestRetriesItsOriginalWindowWhileAcquisitionReconfigurationAndReconnectContinueをfake SDK/loopbackで別実行し、固定要求ID/T/N/対象と失敗保存retryを維持する。既存同候補証拠を再利用できるが旧buildのpassは流用しない。",
+        "実IDE: 共有lease/所有fixtureで新ZIPの実ロード版を確認して正常取得を有効にする。既存app fixtureの3個の識別可能event（又は同buildの正式同期系列の3個）を保存窓内で発生させ、既知の選択app/clockとgap/lossなしを確認して保存する。全予定event/phaseの母数を先に固定し、不足行を黙って除外しない。",
+        "実IDE: 保存完了欄とsession.jsonの固定source/ZIP対応、選択app/窓/coverageを確認する。3eventのREQUEST/DRAW/FRAME_COMMIT各行がdevice/app JSONLへ一度ずつあり、record_id/UID/PID/source時刻/window座標/所属trueが対応することを確認する。unknown/gap/lossがあれば成功へ付替えず原因/状態を記録する。",
+        "Case記録: 同じcandidate/ZIPについて限定JVMの精密条件と実IDEの正常取得/保存観察を別証拠IDで束ねる。片方だけでCase全体passにしない。この3event陽性照合は既存正式300event/30分/同期精度/GOP Caseの代替ではなく、旧9faの結果や元event78の因果未確定を消さない。"
+      ],
+      "expected": "同ZIPの限定JVMで有効な送信〜受信区間に整合するvideo/logは同elapsed/sequenceへ対応し、支持範囲外・invalid/stale・epoch/boot/曖昧な真のunknownを保持する。受信済み帰属/retainedAtや固定retryを再評価せず、到着時に既知の新対象行はdevice/app双方へ残る。実IDEでは予定した正常3event全9phase行と保存表示が同buildへ対応する。JVMとGUI双方の証拠が必要で、旧Caseの正式系列・未達・REAL保留を維持する。",
+      "provenance": [
+        "Issue78: 固定9fa324cのsource機構の制御反例を診断reviewが支持。元実event78の原因と修正実装承認は未確定。",
+        "docs/design/timeline.md: 同期/測定幅/受信時帰属/保存窓/固定retryの契約",
+        "71:LOG-REMAP-NORMAL-ZERO / 71:LOG-REMAP-UNKNOWN-RETRY、52のclock未知保全、既存SYNC/LOG-SEPARATION/正式300event30分は削除・緩和しない。"
+      ],
+      "gpt": {
+        "status": "pending",
+        "reason": "新統合候補の同ZIP限定JVMと実IDE正常取得・保存を束ねた再受入は未実施。writerの回帰だけでpassにしない。"
+      },
+      "human": {
+        "status": "pending",
+        "reason": "同じ修正版の人間/REAL観察は未実施。初期版の正式計画と後続QAの個別契約を維持し、人間工程を自動追加しない。"
+      },
+      "fix_issue": null,
+      "fix_pr": null,
+      "recheck": "時計class/source/統合candidate/ZIP変更時は同buildで精密JVMと実IDE観察を再確認する。",
+      "next_action": "PMが独立review/CI/develop統合後に本1Caseの固定出典を初期計画へ正式追加し、新候補全Caseを既存QAへ双方向移管する。Coreは計画/main同期/GUIを実行しない。"
+    }
+  ]
+}
