@@ -42,7 +42,7 @@ AOSPのSurface自動timestampはMONOTONICを使うが、全端末のcodec出力�
 
 - `E = (elapsed_before + elapsed_after) / 2`。`E - mono`と`E - epoch`を別々に保存する。currentTimeMillisの1ms量子化、読取幅、隣接sampleのoffset差を変換の誤差幅へ加える。
 - 同一clock区間では`video_elapsed = video_pts * 1000 + (E - mono)`、`log_elapsed = log_epoch + (E - epoch)`。各sample間でoffsetを線形補間する。同期精度を装うためにhost受信時刻へ置き換えない。
-- sampleの端末測定はhostの送信〜応答受信の間に起こる。新しいsource時刻の支持範囲上限は、最も早い測定時点である送信からの進みを含める。応答受信完了を測定時点と同一視して、許容RTT内の応答遅延だけで到着可能なsourceを不明にしない。鮮度は引き続き受信後5秒、変換誤差20ms、有効RTT40msを維持し、支持範囲外・epoch/boot境界・曖昧なsourceは不明のまま保持する。支持範囲のhost区間と端末clockの変換誤差を混同せず、生sourceをhost時刻へ置き換えない。
+- sampleの端末測定はhostの送信〜応答受信の間に起こる。現在epochの新しいsource時刻の支持範囲上限は、最も早い測定時点である送信からの進みを含める。応答受信完了を測定時点と同一視して、許容RTT内の応答遅延だけで到着可能なsourceを不明にしない。閉じたepochの探索境界は広げず、未知候補を新epochの正常sampleへ重ねない。鮮度は引き続き受信後5秒、変換誤差20ms、有効RTT40msを維持し、支持範囲外・epoch/boot境界・曖昧なsourceは不明のまま保持する。支持範囲のhost区間と端末clockの変換誤差を混同せず、生sourceをhost時刻へ置き換えない。
 - `E-mono`の変化（端末sleep）、`E-epoch`の急変（日時変更）、boot変化、PTS逆行、clock測定不達を境界としてclock区間を分ける。境界を跨いで補間しない。取得済みの生PTS・Epoch・arrivalを残し、ambiguousなログには`elapsed_ns: null`、推定範囲、`clock_uncertain`を付ける。日時が戻った場面では同じEpoch値が複数の時点を指し得るため、ログ到着順・generationを含めても一意にならないものを無理に割り当てない。
 - 相関不明でも取得を捨てない。正常な側は継続し、UI/成果物は「時刻対応を確認できない区間」を示す。未対応をSYNC-01合格に数えない。受信遅延でT以前のデータが保存確定後に届いたら、後の保存だけへ含める。前のimmutable保存対象は書き換えず、保存時点のwatermark/遅延疑いを記録する。
 
