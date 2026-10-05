@@ -8,6 +8,7 @@ import org.jcodec.common.io.NIOUtils
 import org.jcodec.common.model.ColorSpace
 import org.jcodec.common.model.Picture
 import org.jcodec.containers.mp4.MP4Packet
+import org.jcodec.containers.mp4.MP4Util
 import org.jcodec.containers.mp4.demuxer.MP4Demuxer
 import java.nio.ByteBuffer
 import java.nio.file.Files
@@ -39,9 +40,10 @@ class VideoClockRegionTest {
             assertEquals(setOf(file), capture.sourceOnlyGops())
             assertTrue(capture.copy(videoCuts = emptyMap()).sourceOnlyGops().isEmpty())
             assertTrue(capture.copy(gaps = emptyList()).sourceOnlyGops().isEmpty())
+            assertTrue(capture.copy(gaps = listOf(gap.copy(reason = "different key"))).sourceOnlyGops().isEmpty())
             for (unproven in listOf(gap.copy(toNs = null), gap.copy(fromNs = null), gap.copy(generation = 0),
-                    gap.copy(fromNs = 3), gap.copy(boundaryUncertaintyNs = 0), gap.copy(reason = "different key"))) {
-                assertTrue(capture.copy(gaps = listOf(unproven)).sourceOnlyGops().isEmpty())
+                    gap.copy(fromNs = 3), gap.copy(boundaryUncertaintyNs = 0))) {
+                assertTrue(capture.copy(gaps = listOf(unproven), videoCuts = mapOf(unproven to cut)).sourceOnlyGops().isEmpty())
             }
             for (unproven in listOf(VideoCut(null, after), VideoCut(before),
                     cut.copy(before = before.copy(generation = 0)), cut.copy(after = after.copy(session = 0)),
@@ -249,6 +251,13 @@ class VideoClockRegionTest {
                 it.asJsonObject["generation"].asLong == 1L && !it.asJsonObject["clock_alignment_known"].asBoolean
             }.asJsonObject
             assertEquals("1", singlePart["duration_us"].asString) // No cadence/hold is invented for one sample.
+            val singleMovie = MP4Util.parseMovie(single.directory.resolve(singlePart["file"].asString).toFile())
+            assertEquals(1_000_000, singleMovie.timescale)
+            assertEquals(1_000_000, singleMovie.videoTrack.timescale)
+            val singleEdit = singleMovie.videoTrack.edits.single()
+            assertEquals(300_000L, singleEdit.mediaTime)
+            assertEquals(1L, singleEdit.duration)
+            assertEquals(1f, singleEdit.rate)
             assertEquals("1130001", part["duration_us"].asString)
             for (field in listOf("window_start_ns", "window_end_ns", "confirmed_window_end_ns")) assertTrue(part[field].isJsonNull)
             val rows = Files.readAllLines(output.directory.resolve("frames.jsonl")).map { JsonParser.parseString(it).asJsonObject }
@@ -266,6 +275,17 @@ class VideoClockRegionTest {
             for (frame in capture.video) assertContentEquals(bytes.getValue(frame.generation to frame.pts),
                 Files.readAllBytes(frame.file).copyOfRange(frame.offset.toInt(), frame.offset.toInt() + frame.size))
             for (media in parts) {
+                val movie = MP4Util.parseMovie(output.directory.resolve(media["file"].asString).toFile())
+                assertEquals(1_000_000, movie.timescale)
+                assertEquals(1_000_000, movie.videoTrack.timescale)
+                val edit = movie.videoTrack.edits.single()
+                assertEquals(media["edit_start_us"].asLong, edit.mediaTime)
+                assertEquals(media["duration_us"].asLong, edit.duration)
+                assertEquals(1f, edit.rate)
+                if (media["file"] == part["file"]) {
+                    assertEquals(300_000L, edit.mediaTime)
+                    assertEquals(1_130_000L + 1L, edit.duration) // Observed source span + terminal representation tick.
+                }
                 NIOUtils.readableChannel(output.directory.resolve(media["file"].asString).toFile()).use { channel ->
                     val track = MP4Demuxer.createMP4Demuxer(channel).videoTrack
                     val decoder = H264Decoder()
@@ -283,6 +303,15 @@ class VideoClockRegionTest {
                             .forEach { (a, b) -> assertContentEquals(a, b) }
                         assertEquals(row["media_pts_us"].asLong, (packet as MP4Packet).mediaPts)
                         assertEquals(row["display_duration_us"].asLong, packet.duration)
+                        assertEquals(1_000_000, packet.timescale)
+                        val insideEdit = packet.mediaPts < edit.mediaTime + edit.duration &&
+                            packet.mediaPts + packet.duration > edit.mediaTime
+                        assertEquals(row["presented"].asBoolean, insideEdit)
+                        if (row["preroll"].asBoolean) assertTrue(packet.mediaPts + packet.duration <= edit.mediaTime)
+                        if (row["presented"].asBoolean) {
+                            assertTrue(packet.mediaPts >= edit.mediaTime)
+                            assertTrue(packet.mediaPts + packet.duration <= edit.mediaTime + edit.duration)
+                        }
                     }
                     assertEquals(null, track.nextFrame())
                 }
