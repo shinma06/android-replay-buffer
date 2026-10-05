@@ -20,6 +20,50 @@ import kotlin.test.assertTrue
 
 class CaptureStoreSaveTest {
     @Test
+    fun delayedValidClockKeepsNewTargetLogMembershipWithoutReclassifyingTrueUnknown() {
+        val root = Files.createTempDirectory("replay-clock-receipt-")
+        val store = CaptureStore(root.resolve("ring"), minFree = 0)
+        val host = System.nanoTime()
+        fun record(elapsed: Long, message: String) = DeviceLog(1_700_000_000_000_000_000 + elapsed,
+            12, 12, 10001, 0, 4, "Fixture", message, byteArrayOf(1))
+        try {
+            store.generation(1)
+            assertTrue(store.clock.add("1", listOf(1_000_000_000L, 1_000_000_000L,
+                1_700_000_001_000_000_000, 1_000_000_000), host, host + 200_000))
+            store.app("com.example.target", 10001, setOf(12), 1, uidExclusive = true)
+            store.log(record(1_100_000_000, "known window start"), 1, host + 100_100_000)
+            assertTrue(store.clock.add("1", listOf(2_000_000_000L, 2_000_000_000L,
+                1_700_000_002_000_000_000, 2_000_000_000), host + 1_000_000_000, host + 1_031_842_708))
+            val normal = record(2_034_000_000, "causally arrived target")
+            val unknown = record(40_000_000_000, "unsupported source")
+            store.log(normal, 1, host + 1_035_100_000)
+            store.log(unknown, 1, host + 1_060_000_000)
+            anchor(store.clock, 3_000_000_000, host + 2_000_000_000)
+            val capture = store.capture(ReplaySettings(replaySeconds = 180))!!
+            val target = capture.logs.single { it.source === normal }
+            val unsupported = capture.logs.single { it.source === unknown }
+            assertEquals(true, target.app)
+            assertEquals(1_034_000_000, target.retainedAt)
+            assertEquals(1_034_000_000, target.time.sequence)
+            assertEquals(null, unsupported.app)
+            assertEquals(null, unsupported.time.sequence)
+            assertEquals(Long.MAX_VALUE, unsupported.time.uncertainty)
+            val output = SaveWriter().write(capture, root, { false }) { a, b -> Files.move(a, b) }
+            val device = Files.readAllLines(output.directory.resolve("logcat-device.jsonl")).map { JsonParser.parseString(it).asJsonObject }
+            val app = Files.readAllLines(output.directory.resolve("logcat-app.jsonl")).map { JsonParser.parseString(it).asJsonObject }
+            assertEquals(3, device.size)
+            assertEquals(2, app.size)
+            assertEquals(target.id, app.single { it["message"].asString == normal.message }["record_id"].asString)
+            assertTrue(device.single { it["record_id"].asString == unsupported.id }["app_membership"].isJsonNull)
+            assertEquals(null, unsupported.app)
+            store.release(capture.id)
+        } finally {
+            store.close()
+            Files.walk(root).use { paths -> paths.sorted(java.util.Comparator.reverseOrder()).forEach { Files.deleteIfExists(it) } }
+        }
+    }
+
+    @Test
     fun remappedOldUnknownLogDoesNotPolluteAnEmptyApplicationWindowOrFrozenRetry() {
         val root = Files.createTempDirectory("replay-log-remap-window-")
         val store = CaptureStore(root.resolve("ring"), minFree = 0)
