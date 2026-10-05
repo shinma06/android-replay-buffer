@@ -2,7 +2,7 @@
   "schema": 1,
   "issue": 64,
   "stage": "initial-agent",
-  "required_ancestor": "789b36835dabc1f9611592edd74311933b1054b4",
+  "required_ancestor": "f14d2cd004e11be1616952f452f7b5391494e424",
   "followup_issue": 65,
   "owner": "Codex PM（管理）・QA #27担当（手順と証拠保全）。後続の人間実行者は再開時に割当。",
   "resume_condition": "初期版完成後、利用者が後続確認へ着手するときに実機・担当・固定候補を決める。CUA制約の部分は人間の対応または実際の操作経路復旧後。未実施の再質問で初期版を停止しない。",
@@ -2616,6 +2616,25 @@
         "固定修正統合後の現在契約の全前提・全7操作・期待・再確認条件を維持する。新しい同一candidate/ZIPの実製品classを用いた限定JVMと、その同ZIPをロードした実IDEの正常取得・保存観察を別証拠IDで束ね、双方を必須とする。既存全Clock/Storeと固定要求ID/T/N/対象/失敗retryのWire検証を保持し、製品classを再compile・差替えしない。精密RTT/epoch faultをGUIへ注入したと主張しない。",
         "実IDEは予定3eventとREQUEST/DRAW/FRAME_COMMITの全9phase行の母数を先に固定し、device/app両JSONLの一度ずつの出現、record_id/UID/PID/source時刻/window座標/所属trueと保存表示を同buildで照合する。不足行・unknown/gap/lossを除外して成功にしない。限定JVMのみ、GUIのみ、旧buildのpassだけではCaseを合格にしない。",
         "本3event陽性照合を既存正式300event/30分/同期精度/GOP Caseの代替としない。元126契約・192出典・92 Agent/34REAL・混在40/人間16/GOP9/15/6とQA65を維持する。新しい延期やhuman必須を自動追加せず、元実event78の因果未確定、旧9faの結果、未実施/製品fail/真のunknownを保全する。"
+      ]
+    },
+    "85:CLOCK-UNCERTAIN-VIDEO-PLAYBACK": {
+      "sources": [
+        {
+          "source_pr": 86,
+          "source_merge": "f14d2cd004e11be1616952f452f7b5391494e424",
+          "source_path": "docs/verification/changes/issue-85.json",
+          "original_case_sha256": "91877a49f71f394768f973e2eb01a5d65a137f7648c3f2c8e76ab6a1499f8868"
+        }
+      ],
+      "current_case_sha256": "91877a49f71f394768f973e2eb01a5d65a137f7648c3f2c8e76ab6a1499f8868",
+      "initial_scope": "agent",
+      "deferred_scope": [],
+      "agent_requirements": [
+        "固定Caseの全前提・全7手順・期待・再確認条件を維持する。同じ新candidate/ZIPの実製品classを用いる限定JVMと、同ZIPをロードした実IDE/標準player観察を別証拠で束ね、両方を必須にする。旧sourceのレビュー/短いPASSや限定JVMのみを新候補のCase合格に転用しない。",
+        "実IDEのN=300、通常3操作/両log各9phase行、同取得のPRE3/POST3操作と1回のみの通常再接続/両log各18phase行を全母数固定で保持する。最初PREからSaveまで240秒の事前余裕と事後snapshot T/metadata supported mappingによる全phaseの窓判定を分ける。unknown/欠落/窓外/時間不足/未観察MP4を成功へ変換せず、追加再接続・再録画を自動追加しない。",
+        "通常と再接続で生成した全MP4を標準playerで実再生/seekし、通常3/PRE3/POST3の全映像を通常durationで見返す。元frame/PTS/duration/cut/preroll、元gap/MAX/不足、null/mapped_window_ns、旧/新VIDEO scopeと両側normal proof・否定guard、両log/未知行と固定retryを維持する。part数や表示frame数を一律固定しない。",
+        "既存127 entry/193出典・93 Agent/34REAL延期・混在40/人間16・GOP9/15/6・QA65を不変で保持する。全300event/30分/精密同期/OCR/負荷/容量/画質/pin/GOP等のAgent必須を短時間Caseの代替にしない。新しい延期/human必須を追加せず、旧候補のpending/blocked/fail/未知を保全する。"
       ]
     }
   }
