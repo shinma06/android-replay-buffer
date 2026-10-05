@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "issue": 93,
+  "gui_required": false,
+  "reason": "実統合PR92/PR94のsource-only再生追加契約を既存Case85の各出典としてtrusted初期受入計画へ追記する管理3ファイルの変更。旧127 entry/193出典・PR86旧7手順/PR92旧8手順の各全文と元Agent requirements・延期/gateを保持し、製品source/build/原CaseやGUI観察結果を変更しない。",
+  "cli_checks": [
+    "python3 scripts/check.py: 固定管理HEADで構造・管理回帰を実行",
+    "python3 scripts/workflow/product_check.py: 原型CLIを保全検証",
+    "python3 scripts/workflow/change_impact.py --base origin/main --run-tests: clean committed HEADで実行"
+  ],
+  "cases": []
+}
