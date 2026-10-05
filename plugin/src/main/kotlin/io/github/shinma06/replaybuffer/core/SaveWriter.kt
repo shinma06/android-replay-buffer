@@ -363,7 +363,15 @@ internal fun FrozenCapture.sourceOnlyGops(): Set<Path> {
                     (first.file == before.file && first.generation == before.generation && first.session == before.session &&
                         end <= before.offset && before.offset <= bytes && Math.subtractExact(before.host, last.host) >= 0 ||
                         first.file == after.file && first.generation == after.generation && first.session == after.session &&
-                        first.offset >= after.offset && Math.subtractExact(first.host, after.host) >= 0)
+                        first.offset >= after.offset && Math.subtractExact(first.host, after.host) >= 0 ||
+                        // Only nonadjacent, strictly cross-owner/session cuts have this additional order proof.
+                        first.file != before.file && first.file != after.file && before.file != after.file &&
+                        after.generation > before.generation && after.session > before.session &&
+                        Math.subtractExact(after.host, before.host) > 0 &&
+                        (first.generation < before.generation && first.session < before.session &&
+                            Math.subtractExact(before.host, last.host) > 0 ||
+                            first.generation > after.generation && first.session > after.session &&
+                            Math.subtractExact(first.host, after.host) > 0))
             }
         } catch (_: Exception) { false } // Missing bytes, overflow or incomplete proof cannot authorize grouping.
     }.keys
