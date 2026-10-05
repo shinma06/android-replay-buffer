@@ -417,6 +417,7 @@ internal fun VideoEntry.continuousTo(next: VideoEntry, gaps: Iterable<CaptureGap
 /** Mux-only envelopes. The original uncertain gaps still govern coverage, UI and retention. */
 internal fun List<CaptureGap>.videoScopes(
     clocks: List<ClockSample>, recoveries: Map<CaptureGap, ClockSample> = emptyMap(),
+    videoProofs: MutableMap<CaptureGap, Pair<ClockSample, ClockSample>>? = null,
 ): List<CaptureGap> {
     fun anchor(sample: ClockSample): Pair<Long, Long>? {
         val offset = sample.sequenceOffset ?: return null
@@ -426,19 +427,29 @@ internal fun List<CaptureGap>.videoScopes(
                 Math.addExact(Math.subtractExact(sample.received, sample.sent) / 2, sample.bridgeError))
         } catch (_: ArithmeticException) { null }
     }
-    val anchors = clocks.mapNotNull(::anchor).sortedBy { it.first }
+    val anchors = clocks.mapNotNull { sample -> anchor(sample)?.let { Triple(it.first, it.second, sample) } }.sortedBy { it.first }
     return map { gap ->
-        if (gap.stream != "clock" || gap.boundaryUncertaintyNs != null && gap.boundaryUncertaintyNs != Long.MAX_VALUE) return@map gap
+        if (gap.stream != "clock" && gap.stream != "video" || gap.boundaryUncertaintyNs != null && gap.boundaryUncertaintyNs != Long.MAX_VALUE) return@map gap
+        // Acquisition loss needs both observed boundaries; clocks do not make an open/unknown-owner loss finite.
+        if (gap.stream == "video" && (gap.generation <= 0 || gap.fromNs == null || gap.toNs == null || gap.fromNs > gap.toNs)) return@map gap
+        val candidates = if (gap.stream == "video") anchors.filter { (_, error, sample) ->
+            error >= 0 && sample.before >= 0 && sample.after >= sample.before && sample.received >= sample.sent
+        } else anchors
         // Widen to observed normal samples, never treat nominal from/to as zero-error boundaries.
-        val before = gap.fromNs?.let { from -> anchors.lastOrNull { it.first <= from } }
+        val before = gap.fromNs?.let { from -> candidates.lastOrNull { it.first <= from } }
         val after = gap.toNs?.let { to ->
             // Status closes after receiving its sample; preserve nominal closure and that sample's error.
-            recoveries[gap]?.let(::anchor)?.let { maxOf(to, it.first) to it.second }
-                ?: anchors.firstOrNull { it.first >= to }
+            recoveries[gap]?.takeIf { gap.stream == "clock" }?.let { sample -> anchor(sample)?.let {
+                Triple(maxOf(to, it.first), it.second, sample)
+            } } ?: candidates.firstOrNull { it.first >= to }
         }
-        if (before == null && after == null || before != null && after != null && before.first > after.first) gap
-        else gap.copy(fromNs = before?.first, toNs = after?.first,
-            boundaryUncertaintyNs = maxOf(before?.second ?: 0, after?.second ?: 0))
+        if (gap.stream == "video" && (before == null || after == null) ||
+            before == null && after == null || before != null && after != null && before.first > after.first) gap
+        else {
+            if (gap.stream == "video") videoProofs?.put(gap, before!!.third to after!!.third)
+            gap.copy(fromNs = before?.first, toNs = after?.first,
+                boundaryUncertaintyNs = maxOf(before?.second ?: 0, after?.second ?: 0))
+        }
     }
 }
 

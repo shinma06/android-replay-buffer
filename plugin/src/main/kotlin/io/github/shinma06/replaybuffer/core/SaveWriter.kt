@@ -49,14 +49,21 @@ internal class SaveWriter {
             val parts = mutableListOf<Map<String, Any?>>()
             val losses = mutableListOf<String>()
             val tail = capture.videoTail()
-            val videoScopes = capture.gaps.videoScopes(capture.clocks, capture.clockRecoveries)
+            val videoProofs = mutableMapOf<CaptureGap, Pair<ClockSample, ClockSample>>()
+            val videoScopes = capture.gaps.videoScopes(capture.clocks, capture.clockRecoveries, videoProofs)
+            fun aligned(frame: VideoEntry): Boolean {
+                val sequence = frame.time.sequence ?: return false
+                return capture.windowKnown && frame.time.uncertainty != Long.MAX_VALUE && videoScopes.none { gap ->
+                    gap.stream == "clock" && gap.intersects(sequence, sequence, frame.time.uncertainty)
+                }
+            }
             val framesFile = file("frames.jsonl")
             Files.newBufferedWriter(framesFile, Charsets.UTF_8, CREATE_NEW, WRITE).use { index ->
                 val all = capture.video
                 val groups = mutableListOf<MutableList<VideoEntry>>()
                 all.forEach { frame ->
                     val previous = groups.lastOrNull()?.lastOrNull()
-                    if (previous == null || !previous.continuousTo(frame, videoScopes)) {
+                    if (previous == null || !previous.muxContinuousTo(frame, videoScopes)) {
                         groups += mutableListOf(frame)
                     } else groups.last() += frame
                 }
@@ -76,6 +83,7 @@ internal class SaveWriter {
                     val prefix = all.subList(keyIndex, firstIndex).filter { it.pts < first.pts }
                     val samples = prefix + group.filter { it.pts >= first.pts && (!capture.windowKnown || it.time.sequence == null || it.time.sequence <= capture.end) }
                     val origin = samples.first().pts
+                    val alignmentKnown = visible.all(::aligned)
 
                     val last = samples.last()
                     val lastDuration = if (last === all.lastOrNull() && tail?.displayHeld == true)
@@ -115,12 +123,15 @@ internal class SaveWriter {
                             track.addFrame(Packet.createPacket(data, media, 1_000_000, duration, n.toLong(),
                                 if (frame.key) Packet.FrameType.KEY else Packet.FrameType.INTER, null))
                             val sequence = frame.time.sequence
+                            val frameAlignmentKnown = alignmentKnown && aligned(frame)
                             val presented = media < endUs && media + duration > startUs
                             index.write(gson.toJson(mapOf("part" to videoName, "sample_index" to n,
                                 "source_pts_us" to frame.pts.toString(), "source_duration_us" to sourceDurations[n].takeIf { n < samples.lastIndex }?.toString(),
                                 "display_duration_us" to duration.toString(), "media_pts_us" to media.toString(),
                                 "elapsed_ns" to frame.time.elapsed?.toString(), "clock_epoch" to frame.time.epoch,
-                                "window_ns" to sequence?.takeIf { capture.windowKnown }?.let { (it - capture.start).toString() },
+                                "window_ns" to sequence?.takeIf { frameAlignmentKnown }?.let { (it - capture.start).toString() },
+                                "mapped_window_ns" to sequence?.takeIf { capture.windowKnown }?.let { (it - capture.start).toString() },
+                                "clock_alignment_known" to frameAlignmentKnown,
                                 "presentation_pts_us" to (media - startUs).coerceAtLeast(0).toString(),
                                 "presented" to presented, "preroll" to (!presented && media < startUs),
                                 "uncertainty_ns" to frame.time.uncertainty.toString())))
@@ -134,9 +145,10 @@ internal class SaveWriter {
                     parts += mapOf("file" to videoName, "clock_epoch" to first.time.epoch,
                         "generation" to first.generation, "source_pts_origin_us" to origin.toString(),
                         "edit_start_us" to startUs.toString(), "duration_us" to (endUs - startUs).toString(),
-                        "window_start_ns" to visibleStart?.let { (it - capture.start).toString() },
-                        "window_end_ns" to last.time.sequence?.takeIf { capture.windowKnown }?.let { (it - capture.start + lastDuration * 1000).toString() },
-                        "confirmed_window_end_ns" to last.time.sequence?.takeIf { capture.windowKnown && visibleStart != null && it > visibleStart }?.let { (it - capture.start).toString() },
+                        "clock_alignment_known" to alignmentKnown,
+                        "window_start_ns" to visibleStart?.takeIf { alignmentKnown }?.let { (it - capture.start).toString() },
+                        "window_end_ns" to last.time.sequence?.takeIf { alignmentKnown }?.let { (it - capture.start + lastDuration * 1000).toString() },
+                        "confirmed_window_end_ns" to last.time.sequence?.takeIf { alignmentKnown && visibleStart != null && it > visibleStart }?.let { (it - capture.start).toString() },
                         "media_timeline_clipped" to clipped,
                         "preroll_samples" to prefix.size)
                 }
@@ -165,13 +177,14 @@ internal class SaveWriter {
                 appendLine("Android Replay Buffer / 保存対象 ${capture.id}")
                 appendLine("論理窓: ${(capture.end - capture.start) / 1e9}秒（設定${capture.seconds}秒）、sequence ${capture.sequence}")
                 appendLine("動画${parts.size}part / 全体ログ${capture.logs.size}行 / アプリログ${capture.logs.count { it.app == true }}行")
-                appendLine("動画は各partで0秒から始まります。session.jsonのwindow_start_ns + 表示秒×1,000,000,000を共通窓の時刻として両ログと照合してください。")
-                appendLine("part間の空白は欠落です。動画を連結して詰めた時間として扱わないでください。window_ns=nullは時計対応不明です。")
+                appendLine("動画は各partで0秒から始まります。clock_alignment_known=trueのpartだけ、session.jsonのwindow_start_ns + 表示秒×1,000,000,000を共通窓の時刻として両ログと照合してください。")
+                appendLine("clock_alignment_known=falseのpartも元PTSで再生できますが、窓への時計対応は不明です。window_ns=null、mapped_window_nsは不確実性を含む変換値で、同期確定やcoverageには使えません。")
+                appendLine("video_missing_rangesは映像欠落又は時計対応未確認の範囲です。動画を連結して詰めた時間として扱わないでください。")
                 appendLine("MP4内部には論理窓の前のdecoder preroll画像を含むことがあります。edit listで表示範囲を指定しています。標準playerの互換性は製品QAで別途確認します。")
                 if (tail != null) appendLine("動画末尾: ${tail.fromNs}〜${tail.toNs}nsは新frame未確認。前の画像の表示保持=${tail.displayHeld}。再生時間は確認済み取得時間とは異なります。")
                 appendLine("全体ログはshell権限で読めるlogcat bufferです。security等の全端末ログ取得を保証しません。app_membership=nullは対象未確定です。")
                 appendLine("0行は正常な無出力の場合もあります。取得状態・時計・アプリ履歴・lossをsession.jsonで確認してください。")
-                parts.forEach { appendLine("${it["file"]}: 窓開始ns=${it["window_start_ns"]} / 窓終了ns=${it["window_end_ns"]} / preroll=${it["preroll_samples"]}") }
+                parts.forEach { appendLine("${it["file"]}: 時計対応確認=${it["clock_alignment_known"]} / 窓開始ns=${it["window_start_ns"]} / 窓終了ns=${it["window_end_ns"]} / preroll=${it["preroll_samples"]}") }
                 capture.gaps.forEach { appendLine("${it.stream}: ${it.fromNs}〜${it.toNs}ns / ${it.reason}") }
                 losses.forEach { appendLine("loss: $it") }
             }, Charsets.UTF_8, CREATE_NEW, WRITE)
@@ -244,6 +257,15 @@ internal class SaveWriter {
                         "derived_from_valid_samples" to (scope !== gap),
                         "recovery_sample" to capture.clockRecoveries[gap]?.let(::clockJson)) }
                 },
+                "video_gap_scopes" to capture.gaps.mapIndexedNotNull { i, gap ->
+                    if (gap.stream != "video") null else videoScopes[i].let { scope -> mapOf(
+                        "gap_index" to i, "generation" to gap.generation, "clock_epoch" to gap.clockEpoch,
+                        "from_ns" to scope.fromNs?.toString(), "to_ns" to scope.toNs?.toString(),
+                        "boundary_uncertainty_ns" to scope.boundaryUncertaintyNs?.toString(),
+                        "derived_from_valid_samples" to (scope !== gap),
+                        "before_sample" to videoProofs[gap]?.first?.let(::clockJson),
+                        "after_sample" to videoProofs[gap]?.second?.let(::clockJson)) }
+                },
                 "video_tail" to tail?.let { mapOf("from_ns" to it.fromNs?.toString(), "to_ns" to it.toNs?.toString(),
                     "source_pts_us" to it.sourcePtsUs.toString(), "source_sequence_ns" to it.sourceSequenceNs?.toString(),
                     "clock_epoch" to it.clockEpoch, "generation" to it.generation, "display_held" to it.displayHeld,
@@ -283,3 +305,14 @@ internal class SaveWriter {
     private fun appJson(a: AppPeriod): Map<String, Any?> = mapOf("package" to a.packageName, "uid" to a.uid,
         "pids" to a.pids, "uid_exclusive" to a.uidExclusive, "from_elapsed_ns" to a.from?.toString(), "to_elapsed_ns" to a.to?.toString(), "clock_epoch" to a.epoch)
 }
+
+/** Mux only: preserve source playback without assigning an old stream's loss to a newer stream. */
+internal fun VideoEntry.muxContinuousTo(next: VideoEntry, gaps: List<CaptureGap>): Boolean = continuousTo(next,
+    gaps.filterNot { gap ->
+        (gap.stream == "video" && gap.toNs != null && gap.generation > 0 && gap.generation < generation) ||
+        (gap.stream == "clock" && gap.fromNs != null && gap.toNs != null && gap.fromNs <= gap.toNs &&
+            gap.boundaryUncertaintyNs != null && gap.boundaryUncertaintyNs in 0 until Long.MAX_VALUE &&
+            time.sequence != null && next.time.sequence != null &&
+            gap.intersects(time.sequence, time.sequence, time.uncertainty) &&
+            gap.intersects(next.time.sequence, next.time.sequence, next.time.uncertainty))
+    })
