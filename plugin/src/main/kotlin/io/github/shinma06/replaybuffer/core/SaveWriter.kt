@@ -296,12 +296,13 @@ internal class SaveWriter {
         "pids" to a.pids, "uid_exclusive" to a.uidExclusive, "from_elapsed_ns" to a.from?.toString(), "to_elapsed_ns" to a.to?.toString(), "clock_epoch" to a.epoch)
 }
 
-/** Mux only: a finite uncertain region can play by source PTS without confirming its clock alignment. */
+/** Mux only: preserve source playback without assigning an old stream's loss to a newer stream. */
 internal fun VideoEntry.muxContinuousTo(next: VideoEntry, gaps: List<CaptureGap>): Boolean = continuousTo(next,
     gaps.filterNot { gap ->
-        gap.stream == "clock" && gap.fromNs != null && gap.toNs != null && gap.fromNs <= gap.toNs &&
+        (gap.stream == "video" && gap.toNs != null && gap.generation > 0 && gap.generation < generation) ||
+        (gap.stream == "clock" && gap.fromNs != null && gap.toNs != null && gap.fromNs <= gap.toNs &&
             gap.boundaryUncertaintyNs != null && gap.boundaryUncertaintyNs in 0 until Long.MAX_VALUE &&
             time.sequence != null && next.time.sequence != null &&
             gap.intersects(time.sequence, time.sequence, time.uncertainty) &&
-            gap.intersects(next.time.sequence, next.time.sequence, next.time.uncertainty)
+            gap.intersects(next.time.sequence, next.time.sequence, next.time.uncertainty))
     })
