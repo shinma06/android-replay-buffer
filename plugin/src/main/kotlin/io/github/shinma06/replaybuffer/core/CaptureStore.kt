@@ -14,6 +14,10 @@ internal data class VideoEntry(
     val width: Int, val height: Int, val generation: Long, val time: MappedTime,
     val retainedAt: Long, val config: ByteArray, val host: Long, val session: Long,
 )
+internal data class VideoSourcePosition(
+    val file: Path, val offset: Long, val generation: Long, val session: Long, val host: Long,
+)
+internal data class VideoCut(val before: VideoSourcePosition?, val after: VideoSourcePosition? = null)
 internal data class LogEntry(
     val id: String, val source: DeviceLog, val generation: Long, val time: MappedTime,
     val retainedAt: Long, val app: Boolean?, val host: Long,
@@ -29,6 +33,7 @@ internal data class FrozenCapture(
     val states: Map<String, StreamSnapshot>, val device: ReplayDevice? = null,
     val endUncertainty: Long = 0, val windowClockEpoch: Int? = null,
     val clockRecoveries: Map<CaptureGap, ClockSample> = emptyMap(),
+    val videoCuts: Map<CaptureGap, VideoCut> = emptyMap(),
 ) {
     val empty: Boolean get() = video.isEmpty() && logs.isEmpty()
     val windowKnown: Boolean get() = endUncertainty != Long.MAX_VALUE
@@ -47,6 +52,7 @@ internal class CaptureStore(
     private val logs = ArrayDeque<LogEntry>()
     private val gaps = ArrayDeque<CaptureGap>()
     private val clockRecoveries = mutableMapOf<CaptureGap, ClockSample>()
+    private val videoCuts = mutableMapOf<CaptureGap, VideoCut>()
     private val apps = ArrayDeque<AppPeriod>()
     private val states = mutableMapOf("video" to StreamSnapshot(), "device_log" to StreamSnapshot(), "app_log" to StreamSnapshot())
     private var channel: FileChannel? = null
@@ -83,7 +89,9 @@ internal class CaptureStore(
     }
 
     @Synchronized
-    fun status(kind: String, state: StreamState, reason: String?, owner: Long) {
+    fun status(kind: String, state: StreamState, reason: String?, owner: Long) = status(kind, state, reason, owner, null)
+
+    private fun status(kind: String, state: StreamState, reason: String?, owner: Long, received: VideoEntry?) {
         if (closed || owner != generation) return
         val old = states.getValue(kind)
         if (state != StreamState.CAPTURING && old.state == StreamState.CAPTURING) {
@@ -91,7 +99,13 @@ internal class CaptureStore(
         }
         if (state == StreamState.CAPTURING && old.state != state) {
             val index = gaps.lastOrNull { it.stream == kind && it.toNs == null }
-            if (index != null) { gaps.remove(index); gaps.add(index.copy(toNs = clock.now())) }
+            if (index != null) {
+                val closedGap = index.copy(toNs = clock.now())
+                gaps.remove(index); gaps.add(closedGap)
+                val cut = videoCuts.remove(index)
+                if (kind == "video" && cut != null && received != null)
+                    videoCuts[closedGap] = cut.copy(after = sourcePosition(received, false))
+            }
         }
         states[kind] = old.copy(state = state, reason = reason)
     }
@@ -163,7 +177,7 @@ internal class CaptureStore(
         if (references == 0) configBytes += config.size
         configRefs[config] = references + 1
         enforceVideoLimit()
-        status("video", StreamState.CAPTURING, if (time.elapsed == null || time.sequence == null || time.uncertainty > 20_000_000) "動画の時刻対応を確認できません" else null, owner)
+        status("video", StreamState.CAPTURING, if (time.elapsed == null || time.sequence == null || time.uncertainty > 20_000_000) "動画の時刻対応を確認できません" else null, owner, video.peekLast())
         return videoReady()
     }
 
@@ -264,7 +278,7 @@ internal class CaptureStore(
         }
         enforceVideoLimit()
         deleteUnused()
-        while (gaps.size > 4096) clockRecoveries.remove(gaps.removeFirst())
+        while (gaps.size > 4096) removeGapProofs(gaps.removeFirst())
     }
 
     @Synchronized
@@ -302,7 +316,7 @@ internal class CaptureStore(
         val value = FrozenCapture(UUID.randomUUID().toString(), sequence, generation, start, end,
             settings.replaySeconds, frames.toList(), rows.toList(), gaps.toList(), clock.snapshot(), apps.toList(), settings,
             streams(settings.replaySeconds, end), endUncertainty = uncertainty, windowClockEpoch = fixedEpoch ?: clock.currentEpoch(),
-            clockRecoveries = clockRecoveries.toMap())
+            clockRecoveries = clockRecoveries.toMap(), videoCuts = videoCuts.toMap())
         if (value.empty) return null
         pinned = value
         return value
@@ -363,23 +377,46 @@ internal class CaptureStore(
         while (video.isNotEmpty() && (videoBytes > videoLimit || video.size > ReplaySettings.MAX_VIDEO_PACKETS ||
                 configBytes > ReplaySettings.CONFIG_MEMORY_BYTES)) {
             val entry = removeVideo()
-            addGap("video", entry.time.sequence, entry.time.sequence, "動画のbyte/packet/config上限でframeを失いました")
+            addGap("video", entry.time.sequence, entry.time.sequence, "動画のbyte/packet/config上限でframeを失いました", lostVideo = entry)
         }
     }
 
-    private fun addGap(stream: String, from: Long?, to: Long?, reason: String, boundary: MappedTime? = null) {
-        if (gaps.peekLast()?.let { it.stream == stream && it.reason == reason && it.toNs == to } == true) return
+    private fun sourcePosition(entry: VideoEntry, end: Boolean): VideoSourcePosition? {
+        if (entry.file !in ownedFiles || entry.generation <= 0 || entry.session <= 0 || entry.offset < 0 || entry.size <= 0) return null
+        val offset = try { if (end) Math.addExact(entry.offset, entry.size.toLong()) else entry.offset }
+            catch (_: ArithmeticException) { return null }
+        return VideoSourcePosition(entry.file, offset, entry.generation, entry.session, entry.host)
+    }
+
+    private fun removeGapProofs(gap: CaptureGap) { clockRecoveries.remove(gap); videoCuts.remove(gap) }
+
+    private fun addGap(stream: String, from: Long?, to: Long?, reason: String, boundary: MappedTime? = null,
+                       lostVideo: VideoEntry? = null) {
+        val previous = gaps.peekLast()
+        if (previous?.let { it.stream == stream && it.reason == reason && it.toNs == to } == true) {
+            videoCuts.remove(previous) // Coalesced events no longer have one unambiguous source cut.
+            return
+        }
         val anchor = clock.snapshot().lastOrNull { it.valid }
         val uncertainty = boundary?.uncertainty ?: anchor?.let { if (System.nanoTime() - it.received > 5_000_000_000 || it.bridgeError == Long.MAX_VALUE) Long.MAX_VALUE else
             it.readError + (it.received - it.sent) / 2 + it.bridgeError }
-        gaps += CaptureGap(stream, from, to, reason, if (boundary != null || clock.certain()) uncertainty else Long.MAX_VALUE,
+        val gap = CaptureGap(stream, from, to, reason, if (boundary != null || clock.certain()) uncertainty else Long.MAX_VALUE,
             generation, boundary?.epoch ?: clock.currentEpoch())
-        while (gaps.size > 4096) clockRecoveries.remove(gaps.removeFirst())
+        gaps += gap
+        if (stream == "video") {
+            // A retention hole occupies the deleted packet's bytes, not the current source tail.
+            videoCuts[gap] = if (lostVideo != null) VideoCut(sourcePosition(lostVideo, false), sourcePosition(lostVideo, true))
+                else VideoCut(video.peekLast()?.takeIf { it.generation == generation }?.let { sourcePosition(it, true) })
+        }
+        while (gaps.size > 4096) removeGapProofs(gaps.removeFirst())
     }
 
     private fun deleteUnused() {
         val retain = video.map { it.file }.toSet() + pinned?.video.orEmpty().map { it.file } + listOfNotNull(currentFile)
-        ownedFiles.filter { it !in retain }.forEach { Files.deleteIfExists(it); ownedFiles.remove(it) }
+        ownedFiles.filter { it !in retain }.forEach { file ->
+            Files.deleteIfExists(file); ownedFiles.remove(file)
+            videoCuts.entries.removeIf { (_, cut) -> cut.before?.file == file || cut.after?.file == file }
+        }
     }
 
     @Synchronized
@@ -394,6 +431,7 @@ internal class CaptureStore(
         apps.clear()
         gaps.clear()
         clockRecoveries.clear()
+        videoCuts.clear()
         configRefs.clear()
         config = byteArrayOf()
         videoBytes = 0

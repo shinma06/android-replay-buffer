@@ -60,10 +60,13 @@ internal class SaveWriter {
             val framesFile = file("frames.jsonl")
             Files.newBufferedWriter(framesFile, Charsets.UTF_8, CREATE_NEW, WRITE).use { index ->
                 val all = capture.video
+                val sourceOnlyGops = capture.sourceOnlyGops()
                 val groups = mutableListOf<MutableList<VideoEntry>>()
                 all.forEach { frame ->
                     val previous = groups.lastOrNull()?.lastOrNull()
-                    if (previous == null || !previous.muxContinuousTo(frame, videoScopes)) {
+                    val sourceOnly = previous != null && previous.file == frame.file && frame.file in sourceOnlyGops &&
+                        previous.sourceTimeUnknown() && frame.sourceTimeUnknown()
+                    if (previous == null || !previous.muxContinuousTo(frame, videoScopes) && !sourceOnly) {
                         groups += mutableListOf(frame)
                     } else groups.last() += frame
                 }
@@ -180,6 +183,7 @@ internal class SaveWriter {
                 appendLine("動画は各partで0秒から始まります。clock_alignment_known=trueのpartだけ、session.jsonのwindow_start_ns + 表示秒×1,000,000,000を共通窓の時刻として両ログと照合してください。")
                 appendLine("clock_alignment_known=falseのpartも元PTSで再生できますが、窓への時計対応は不明です。window_ns=null、mapped_window_nsは不確実性を含む変換値で、同期確定やcoverageには使えません。")
                 appendLine("video_missing_rangesは映像欠落又は時計対応未確認の範囲です。動画を連結して詰めた時間として扱わないでください。")
+                appendLine("次sampleのない末尾はsource_duration_us=nullです。MP4の最小1tickは表示のための値で、観測した画像の継続時間や取得coverageではありません。")
                 appendLine("MP4内部には論理窓の前のdecoder preroll画像を含むことがあります。edit listで表示範囲を指定しています。標準playerの互換性は製品QAで別途確認します。")
                 if (tail != null) appendLine("動画末尾: ${tail.fromNs}〜${tail.toNs}nsは新frame未確認。前の画像の表示保持=${tail.displayHeld}。再生時間は確認済み取得時間とは異なります。")
                 appendLine("全体ログはshell権限で読めるlogcat bufferです。security等の全端末ログ取得を保証しません。app_membership=nullは対象未確定です。")
@@ -316,3 +320,51 @@ internal fun VideoEntry.muxContinuousTo(next: VideoEntry, gaps: List<CaptureGap>
             gap.intersects(time.sequence, time.sequence, time.uncertainty) &&
             gap.intersects(next.time.sequence, next.time.sequence, next.time.uncertainty))
     })
+
+internal fun VideoEntry.sourceTimeUnknown(): Boolean =
+    time.elapsed == null && time.sequence == null && time.uncertainty == Long.MAX_VALUE
+
+/** Separate presentation proof: the entire retained GOP, including decoder preroll, lies outside every actual cut. */
+internal fun FrozenCapture.sourceOnlyGops(): Set<Path> {
+    val losses = gaps.filter { it.stream == "video" }
+    if (losses.isEmpty() || losses.any { it !in videoCuts }) return emptySet()
+    return video.groupBy { it.file }.filterValues { frames ->
+        if (frames.count { it.sourceTimeUnknown() } < 2) return@filterValues false
+        val first = frames.first()
+        val last = frames.last()
+        if (!first.key || first.offset != 0L || first.generation <= 0 || first.session <= 0 ||
+            first.width <= 0 || first.height <= 0 || first.config.isEmpty() ||
+            video.indexOf(last) - video.indexOf(first) + 1 != frames.size) return@filterValues false
+        try {
+            val end = Math.addExact(last.offset, last.size.toLong())
+            val bytes = Files.size(first.file)
+            if (Math.subtractExact(last.pts, first.pts) !in 1 until Int.MAX_VALUE.toLong() ||
+                !Files.isRegularFile(first.file, NOFOLLOW_LINKS) || bytes < end) return@filterValues false
+            if (frames.any { it.size <= 0 || it.offset < 0 || it.pts < 0 || it.generation != first.generation ||
+                    it.session != first.session || it.time.epoch != first.time.epoch || it.width != first.width ||
+                    it.height != first.height || !it.config.contentEquals(first.config) }) return@filterValues false
+            if (frames.zipWithNext().any { (a, b) ->
+                    Math.addExact(a.offset, a.size.toLong()) != b.offset ||
+                        Math.subtractExact(b.pts, a.pts) !in 1..Int.MAX_VALUE.toLong() ||
+                        Math.subtractExact(b.host, a.host) < 0
+                }) return@filterValues false
+            losses.all { gap ->
+                val cut = videoCuts.getValue(gap)
+                val before = cut.before
+                val after = cut.after
+                // Finite VIDEO loss is an independent veto; this route only disambiguates unknown clock envelopes.
+                gap.generation > 0 && gap.fromNs != null && gap.toNs != null && gap.fromNs <= gap.toNs &&
+                    gap.boundaryUncertaintyNs == Long.MAX_VALUE && before != null && after != null &&
+                    before.generation == gap.generation && before.session > 0 && before.offset >= 0 &&
+                    after.generation >= before.generation && after.session >= before.session && after.offset >= 0 &&
+                    Math.subtractExact(after.host, before.host) >= 0 &&
+                    (before.file != after.file || before.generation == after.generation &&
+                        before.session == after.session && before.offset <= after.offset) &&
+                    (first.file == before.file && first.generation == before.generation && first.session == before.session &&
+                        end <= before.offset && before.offset <= bytes && Math.subtractExact(before.host, last.host) >= 0 ||
+                        first.file == after.file && first.generation == after.generation && first.session == after.session &&
+                        first.offset >= after.offset && Math.subtractExact(first.host, after.host) >= 0)
+            }
+        } catch (_: Exception) { false } // Missing bytes, overflow or incomplete proof cannot authorize grouping.
+    }.keys
+}
