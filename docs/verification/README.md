@@ -67,7 +67,7 @@ Plugin ZIPは [開発手順](../plugin-development.md) の標準buildPluginで�
 
 利用者の方針に従い、初期版はエージェントが実行できる工程を完了し、人間の操作・確認と実機準備が必要な部分を[後続QA #65](https://github.com/shinma06/android-replay-buffer/issues/65)へ延期する。[固定計画](amendments/initial-agent.json)をtrusted mainの通常tooling PRでレビューし、developへ同期した後の新候補だけに適用する。候補後の変更許可、main保護、独立レビュー、全commitの出典検査は変えない。
 
-計画は既存126 Case・192出典のentryとPR/merge/path/Case全文hashを変更せず、時計支持範囲修正 #78 / PR80 の1 Case・1出典を追加した127 Case・193出典を保持する。`required_ancestor`は修正の実統合SHAを指し、元124 Caseの現在契約hashは固定23fから不変である。93 CaseのAgent範囲は必須で、34 REAL Caseは対応するEMU Caseの観察を残して延期する。混在Caseでは計画に列挙した部分だけを分ける。各sourceの履歴を消したり、古い緩い条件を選択したりしない。PR38の専用transport限定、共有ADB保護、同boot確認、画面OFFとdeep sleepの区別も維持する。新Caseや契約変更が加わった場合は計画の正式更新が必要である。
+計画は既存127 Case・193出典のentryとPR/merge/path/Case全文hashを変更せず、時計不確実区間の動画保存修正 #85 / PR86 の1 Case・1出典を追加した128 Case・194出典を保持する。`required_ancestor`は修正の実統合SHAを指し、元124 Caseの現在契約hashは固定23fから不変である。94 CaseのAgent範囲は必須で、34 REAL Caseは対応するEMU Caseの観察を残して延期する。混在Caseでは計画に列挙した部分だけを分ける。各sourceの履歴を消したり、古い緩い条件を選択したりしない。PR38の専用transport限定、共有ADB保護、同boot確認、画面OFFとdeep sleepの区別も維持する。新Caseや契約変更が加わった場合は計画の正式更新が必要である。
 
 元のCase JSONとpending/blocked/failは書き換えない。`human: pending`だけでは人間工程を追加しない。標準player、GUI/可読性、全300イベント/30分の解析、同期・切出し精度、画質/負荷/容量/pin、失敗・復旧のAgent実行可能部分は維持する。最低601画像の人間による番号確認は初期段階から分離し、その前の解析を原Case全体の正式精度passとは呼ばない。製品failや単に難しい・時間がかかる工程は延期理由にしない。
 
@@ -75,7 +75,9 @@ Plugin ZIPは [開発手順](../plugin-development.md) の標準buildPluginで�
 
 `78:CLOCK-RECEIPT-NORMAL`は同ZIP製品classの限定JVMと実IDEの正常3event・全9phase行の確認を両方必須とし、延期やhuman必須を追加しない。3event確認を既存正式300event/30分・同期精度・GOP Caseの代替にせず、旧候補の結果を新buildへ転用しない。
 
-promotionには`stage: initial-agent`を明記し、`results`に全127 keyを置く。各値は以下の形とし、`stage_revision`には計画全体のcanonical SHA-256を入れる。
+`85:CLOCK-UNCERTAIN-VIDEO-PLAYBACK`は元の全7手順を保持し、同ZIP製品classの限定JVMと実IDE・標準player観察を両方必須とする。N=300で通常3操作・両log各9phase行、および同取得で1回だけ通常再接続するPRE3/POST3操作・両log各18phase行を固定母数とし、事前の240秒の余裕と事後snapshot Tによる全phaseの窓判定を分ける。通常・再接続で生成した全MP4を実再生/seekして全操作の映像を通常durationで確認し、未観察・欠落・unknown・窓外を合格にしない。元PTS/duration/preroll、gap/MAX/不足と旧/新VIDEO scopeの両側normal proof・否定guard・固定retryを維持し、part数や表示frame数を一律固定しない。延期やhuman必須を追加せず、短いCase85のPASSを全面解消や既存300event/30分・精密同期・OCR・画質/負荷/容量/pin・GOPの合格へ転用しない。
+
+promotionには`stage: initial-agent`を明記し、`results`に全128 keyを置く。各値は以下の形とし、`stage_revision`には計画全体のcanonical SHA-256を入れる。
 
 ```json
 {
