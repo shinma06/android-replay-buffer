@@ -20,7 +20,13 @@ class CaptureClockTest {
             for (measurementDelay in listOf(100_000L, roundTrip - 100_000)) {
                 // Constant host-minus-device offset: measurement and transport delays are strictly positive.
                 val clock = receiptClock(roundTrip, measurementDelay)
-                val host = 11_035_000_000 + measurementDelay
+                val sample = clock.snapshot().last()
+                val measurementHost = sample.sent + measurementDelay
+                val eventHost = measurementHost + 34_000_000
+                val host = maxOf(eventHost + 1_000_000, sample.received + 1_000_000)
+                assertTrue(measurementHost > sample.sent && measurementHost < sample.received)
+                assertTrue(host >= sample.received)
+                assertTrue(eventHost < host)
                 assertTrue(clock.certain(host))
                 val video = clock.video(2_034_000, host)
                 val log = clock.log(1_700_000_002_034_000_000, host)
