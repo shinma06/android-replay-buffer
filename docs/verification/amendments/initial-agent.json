@@ -2,7 +2,7 @@
   "schema": 1,
   "issue": 64,
   "stage": "initial-agent",
-  "required_ancestor": "2ef51c75a21c77f60e57169547b08e393b6a6767",
+  "required_ancestor": "a37727ff235b246bf8e0aa1ca24ee53ed503421e",
   "followup_issue": 65,
   "owner": "Codex PM（管理）・QA #27担当（手順と証拠保全）。後続の人間実行者は再開時に割当。",
   "resume_condition": "初期版完成後、利用者が後続確認へ着手するときに実機・担当・固定候補を決める。CUA制約の部分は人間の対応または実際の操作経路復旧後。未実施の再質問で初期版を停止しない。",
@@ -2631,9 +2631,15 @@
           "source_merge": "2ef51c75a21c77f60e57169547b08e393b6a6767",
           "source_path": "docs/verification/changes/issue-85.json",
           "original_case_sha256": "b14d3433ad674ab1b652c7fee464183ab6a2c50a893d1e05dc43a55e013fb819"
+        },
+        {
+          "source_pr": 94,
+          "source_merge": "a37727ff235b246bf8e0aa1ca24ee53ed503421e",
+          "source_path": "docs/verification/changes/issue-85.json",
+          "original_case_sha256": "61041fc2841ddddc7a05e7b49dde549f678f95e5dd985506a7f8629e8ef60ee9"
         }
       ],
-      "current_case_sha256": "b14d3433ad674ab1b652c7fee464183ab6a2c50a893d1e05dc43a55e013fb819",
+      "current_case_sha256": "61041fc2841ddddc7a05e7b49dde549f678f95e5dd985506a7f8629e8ef60ee9",
       "initial_scope": "agent",
       "deferred_scope": [],
       "agent_requirements": [
@@ -2641,7 +2647,8 @@
         "実IDEのN=300、通常3操作/両log各9phase行、同取得のPRE3/POST3操作と1回のみの通常再接続/両log各18phase行を全母数固定で保持する。最初PREからSaveまで240秒の事前余裕と事後snapshot T/metadata supported mappingによる全phaseの窓判定を分ける。unknown/欠落/窓外/時間不足/未観察MP4を成功へ変換せず、追加再接続・再録画を自動追加しない。",
         "通常と再接続で生成した全MP4を標準playerで実再生/seekし、通常3/PRE3/POST3の全映像を通常durationで見返す。元frame/PTS/duration/cut/preroll、元gap/MAX/不足、null/mapped_window_ns、旧/新VIDEO scopeと両側normal proof・否定guard、両log/未知行と固定retryを維持する。part数や表示frame数を一律固定しない。",
         "既存127 entry/193出典・93 Agent/34REAL延期・混在40/人間16・GOP9/15/6・QA65を不変で保持する。全300event/30分/精密同期/OCR/負荷/容量/画質/pin/GOP等のAgent必須を短時間Caseの代替にしない。新しい延期/human必須を追加せず、旧候補のpending/blocked/fail/未知を保全する。",
-        "元7手順・元expected全文と既存全要求に加え、実統合Caseへ追記されたsource-only手順・expected補足を同じ新ZIPで全て確認する。取得時にfreezeしたpositive owner/session/file byte順序・実VIDEO break前後位置が揃う同一GOPの全visible null/MAX runとdecoder prefixだけを対象とし、known→unknown/別GOP接続や既存clock/mux/coverage guardの緩和をしない。実cut内部/跨ぎ/prefix、open/片側/所有不明/欠落/矛盾/overflow、source各break/容量loss/削除位置・pruneによるproof欠如を拒否する。可変の観測PTS差、全payload/復号/PTS各1回/preroll非表示とterminal source_duration=null・表現tickを区別し、後続live/clock/別boot/任意holdで補完せず固定retryを保持する。1-frame runや即終了MP4はこの経路だけでnative PASSにせずFAIL/PENDINGを保持し、同ZIPの全MP4実再生/seek・通常3/PRE3/POST3全操作・両log全9/18phaseと元240秒/事後窓判定を必須とする。"
+        "元7手順・元expected全文と既存全要求に加え、実統合Caseへ追記されたsource-only手順・expected補足を同じ新ZIPで全て確認する。取得時にfreezeしたpositive owner/session/file byte順序・実VIDEO break前後位置が揃う同一GOPの全visible null/MAX runとdecoder prefixだけを対象とし、known→unknown/別GOP接続や既存clock/mux/coverage guardの緩和をしない。実cut内部/跨ぎ/prefix、open/片側/所有不明/欠落/矛盾/overflow、source各break/容量loss/削除位置・pruneによるproof欠如を拒否する。可変の観測PTS差、全payload/復号/PTS各1回/preroll非表示とterminal source_duration=null・表現tickを区別し、後続live/clock/別boot/任意holdで補完せず固定retryを保持する。1-frame runや即終了MP4はこの経路だけでnative PASSにせずFAIL/PENDINGを保持し、同ZIPの全MP4実再生/seek・通常3/PRE3/POST3全操作・両log全9/18phaseと元240秒/事後窓判定を必須とする。",
+        "元8手順・expected全文と既存5 Agent requirementsを維持し、PR94の第9手順と期待補足を同じ新ZIPで全て確認する。限定JVM追加：同一Store/bootの複数通常再接続でclosed VIDEO cutが2件以上ある固定captureを作り、非隣接fileのcutより前/後にある同一GOPのunknown列を、strict generation/session/checked hostのANDと完全cut proofがある場合だけ元PTSの1partへ保持する。実payload/全画素/MP4 edit/preroll/terminal null・両logと固定retryを確認し、同file byte矛盾、同owner容量cut、finite/open/missing/coalesce/prune、owner/session矛盾とhost同値/逆行/overflowは拒否する。元8 steps・expected全文と新同build native/全初期版/main受入は維持する。 非隣接fileの完全な跨generation/session VIDEO cutに対しては、候補GOPとcutのgeneration/session/hostが全て厳密同向きの取得順を示す場合だけ、そのcutの外側であると証明する。全cutと全decoder prefixを確認し、同file byte判定の失敗や容量・finite/open/missing/矛盾を救済しない。元8 stepsとexpected全文は削除/弱化せず、JVM成功をnative/全初期版/mainへ転用しない。"
       ]
     }
   }
