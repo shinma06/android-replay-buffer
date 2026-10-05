@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "issue": 88,
+  "gui_required": false,
+  "reason": "時計不確実区間の動画保存修正の実統合Caseをtrusted初期受入計画へ追加する管理変更。既存127 entry・193出典と延期条件・gate・製品source/buildを変えず、実GUI観察や動画細切れの全面解消を合成しない。",
+  "cli_checks": [
+    "python3 scripts/check.py: 管理回帰・構造検査を固定HEADで実行し結果をPRへ記録",
+    "python3 scripts/workflow/product_check.py: 原型CLI保全を確認",
+    "python3 scripts/workflow/change_impact.py --base origin/main --run-tests: clean committed HEADで確認"
+  ],
+  "cases": []
+}
