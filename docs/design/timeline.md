@@ -4,7 +4,7 @@
 
 ## 採用する方式
 
-**固定scrcpy serverのH.264/PTSをJVMで受け、MP4の連続区間と2種類のJSONLログ、時刻対応JSONを保存する。** Android SDKのadbを絶対パスで使い、server・小さな時計測定用DEX・JCodecをPlugin ZIPへ同梱する。利用者のscrcpy/ffmpeg/Python導入、PATH設定、実行時ダウンロードは不要。音声・操作注入・clipboard連携は無効。独自の録画・H.264実装、専用ビューア、常駐HTTPサーバーは作らない。
+**固定scrcpy serverのH.264/PTSをJVMで受け、単一MP4と2種類のJSONLログ、時刻対応JSONを保存する。** Android SDKのadbを絶対パスで使い、server・小さな時計測定用DEX・JCodecをPlugin ZIPへ同梱する。利用者のscrcpy/ffmpeg/Python導入、PATH設定、実行時ダウンロードは不要。音声・操作注入・clipboard連携は無効。独自の録画・H.264実装、専用ビューア、常駐HTTPサーバーは作らない。
 
 | 録画候補 | 比較と判断 |
 | --- | --- |
@@ -12,13 +12,13 @@
 | 公式scrcpy配布＋ffmpeg | macOS両archの公式scrcpy配布はある。録画・muxの成熟度が利点。一方、通常の録画では最初のPTSを引くため、元PTSのsidecar取得が別途必要。ffmpeg提供・各OSのnative実行物管理も増える。未変更CLIへの接続やプロセス開始時刻での補正はSYNC-01を満たす根拠にならない。[公式PTS変更](https://github.com/Genymobile/scrcpy/commit/1c82c3923d63985655686dd5884a7a9e9407619e)、[公式配布](https://github.com/Genymobile/scrcpy/releases/tag/v4.0) |
 | **固定server＋JVM mux** | 元PTS/config/keyframe/session packetを直接保持できる。native host codec不要、OS展開時も同じwire/muxを使える。内部protocolの固定・parser・時計測定・MP4再生受入をこちらで担う。H.264限定の小さな受信処理と既存muxライブラリで成立するため採用。[公式protocol](https://github.com/Genymobile/scrcpy/blob/2322868e9e256eb5fce0b3d659ab2a409f29bae1/doc/develop.md) |
 
-依存の固定値はscrcpy **4.0 / commit `2322868e9e256eb5fce0b3d659ab2a409f29bae1`**、公式`scrcpy-server-v4.0`、SHA-256 `84924bd564a1eb6089c872c7521f968058977f91f5ff02514a8c74aff3210f3a`。host muxは **`org.jcodec:jcodec:0.2.5`**、JAR SHA-256 `890329dad124e8b739c1d6602a59a53c8a474daddff265c2561e21c498496c81`を候補固定する。JCodecは映像の再エンコードには使わず、AVC config処理とMP4 mux/demuxだけを利用する。version更新はwire互換・可変PTS・edit list・再生Caseの再実施を伴う。[JCodec一次source/ライセンス](https://github.com/jcodec/jcodec)、[固定Maven POM](https://repo.maven.apache.org/maven2/org/jcodec/jcodec/0.2.5/jcodec-0.2.5.pom)
+依存の固定値はscrcpy **4.0 / commit `2322868e9e256eb5fce0b3d659ab2a409f29bae1`**、公式`scrcpy-server-v4.0`、SHA-256 `84924bd564a1eb6089c872c7521f968058977f91f5ff02514a8c74aff3210f3a`。host muxは **`org.jcodec:jcodec:0.2.5`**、JAR SHA-256 `890329dad124e8b739c1d6602a59a53c8a474daddff265c2561e21c498496c81`を候補固定する。同geometryではJCodecのAVC config処理とMP4 mux/demuxを利用する。混在geometryだけ既存JCodecで復号・固定canvasへの余白追加・再エンコードを行う。version更新はwire互換・可変PTS・edit list・再生Caseの再実施を伴う。[JCodec一次source/ライセンス](https://github.com/jcodec/jcodec)、[固定Maven POM](https://repo.maven.apache.org/maven2/org/jcodec/jcodec/0.2.5/jcodec-0.2.5.pom)
 
 実装buildで、公式serverのhash照合、JCodec dependency verification、Apache-2.0のscrcpy LICENSE/NOTICEとFreeBSDのJCodec LICENSE同梱、時計DEXのsource/build/hash記録を行う。JCodecは通常の`implementation`依存としてPlugin ZIPへ同梱し、Plugin専用classloaderでロードする。[JetBrains公式](https://plugins.jetbrains.com/docs/intellij/plugin-class-loaders.html)はIDE/他Pluginと異なるlibrary versionを使えると説明している。shadingは初期版へ追加せず、固定IDEでclassloaderを含め実受入する。実衝突を再現した場合だけ依存境界の修正を比較する。これらのbuild変更は今回行っていない。ZIPに同梱できない依存を後から利用者へインストールさせるfallbackは採用しない。
 
 adbは対象projectの設定済みAndroid SDKの`platform-tools/adb`（Windowsでは`adb.exe`）を解決する。SDK/adbが見つからない場合は設定済みSDKの確認を案内し、PATH検索やHomebrew導入へ流さない。adb serverはIDE等と共有するため`kill-server`は禁止。forward port、device上のDEX/JAR名、serverのscidは所有する取得generation固有とし、他のscrcpy/録画/forwardを停止・削除しない。shell文字列にpackage/serial/pathを無検証で連結しない。端末packetは信頼しない外部入力として読み、video packet上限16MiB、log entry上限5KiBを初期上限にする。整数overflow、unknown flags、header長、payload長、EOF途中、nonce不一致を検証し、巨大alloc/無限待ちを防ぐ。上限を超えたstreamだけを失敗へ移し、正常streamを巻き添えにしない。EDTで接続/read/muxを行わず、取消しと所有processの実終了を別に確認する。無効化後に遅れてできたprocess/socketはそのgenerationの責任で閉じ、古いcallbackを新generation/破棄後のUIへ反映しない。
 
-serverは`audio=false control=false video_codec=h264 send_frame_meta=true send_stream_meta=true`。`raw_stream=true`はPTSを失うため禁止。scidとforwardのdummy/device metadataも固定4.0仕様に従う。session packetでサイズ/configが変わったら別MP4区間を開始する。B-frameなしを`video_codec_options=max-bframes:int=0`で要求し、実際のPTSが非単調なら動画側を不適合として復旧し、ログは継続する。最長辺1920、30fps上限、8Mbps、I-frame間隔1秒を**試験開始値**とする。VIDEO-01の可読性/負荷合格後に実装Issueで固定し、端末encoderが指定を無視した場合も観測値を記録する。実機・Emulatorの対応OS/APIを、この設計だけで保証しない。
+serverは`audio=false control=false video_codec=h264 send_frame_meta=true send_stream_meta=true`。`raw_stream=true`はPTSを失うため禁止。scidとforwardのdummy/device metadataも固定4.0仕様に従う。session packetでサイズ/configが変わったら同じMP4内の独立復号区間を開始する。B-frameなしを`video_codec_options=max-bframes:int=0`で要求し、実際のPTSが非単調なら動画側を不適合として復旧し、ログは継続する。最長辺1920、30fps上限、8Mbps、I-frame間隔1秒を**試験開始値**とする。VIDEO-01の可読性/負荷合格後に実装Issueで固定し、端末encoderが指定を無視した場合も観測値を記録する。実機・Emulatorの対応OS/APIを、この設計だけで保証しない。
 
 ## 時計の契約
 
@@ -84,7 +84,7 @@ gapはstream毎に`kind / from / to / reason / boundary_uncertainty / generation
 | Perfetto | 複数時計snapshotの考えは採用。画面エビデンス配布にはMP4やlogcatへの変換・別UIが必要で、新しいtrace収集を増やすため不採用。[公式clock sync](https://perfetto.dev/docs/concepts/clock-sync) |
 | MKV metadata track | 柔軟な複数track/可変PTSが利点。初期版では一般のmacOS受取人の再生・metadata閲覧とJVM muxの確認範囲を増やすため不採用。[Matroska仕様](https://www.matroska.org/technical/elements.html) |
 
-保存単位は日時＋一意save IDのフォルダ。`session.json`（schema=1、build/dependencies、sequence、T/N、clock samples/epochs、設定/app選択履歴、watermarks、coverage、loss/gap、全file hash。ただし自己参照を避けsession.json自身をhash一覧から除外）、`logcat-device.jsonl`、`logcat-app.jsonl`、`video-001.mp4`以降、`frames.jsonl`、`README.txt`を含める。動画のない部分保存ではMP4は0件、ログのない種類もファイルは0行としsessionのcoverage/statusで空の理由を示す。完了manifest公開までフォルダを完了扱いしない。再試行・atomic公開・失敗対象の寿命は#11へ接続する。 macOSではIDE同梱JNAからrenamex_npのRENAME_EXCLを使い、同parentのpartialを完成folderへ原子的かつ非上書きで公開する。[Appleの対応volume契約](https://developer.apple.com/documentation/foundation/urlresourcevalues/volumesupportsexclusiverenaming)。既存のempty/nonempty/file/symlinkも置換しない。非macOS・symbol/FS未対応・公開失敗はFAILEDとしてpinを保ち、通常Files.move/ATOMIC_MOVEへfallbackしない。local合成回帰をnetwork FSやIDE実ロードの合格へ転用しない。
+保存単位は日時＋一意save IDのフォルダ。`session.json`（schema=2、build/dependencies、sequence、T/N、clock samples/epochs、設定/app選択履歴、watermarks、coverage、loss/gap、全file hash。ただし自己参照を避けsession.json自身をhash一覧から除外）、`logcat-device.jsonl`、`logcat-app.jsonl`、単一の`video-001.mp4`、`frames.jsonl`、`README.txt`を含める。動画のない部分保存ではMP4は0件、ログのない種類もファイルは0行としsessionのcoverage/statusで空の理由を示す。完了manifest公開までフォルダを完了扱いしない。再試行・atomic公開・失敗対象の寿命は#11へ接続する。 macOSではIDE同梱JNAからrenamex_npのRENAME_EXCLを使い、同parentのpartialを完成folderへ原子的かつ非上書きで公開する。[Appleの対応volume契約](https://developer.apple.com/documentation/foundation/urlresourcevalues/volumesupportsexclusiverenaming)。既存のempty/nonempty/file/symlinkも置換しない。非macOS・symbol/FS未対応・公開失敗はFAILEDとしてpinを保ち、通常Files.move/ATOMIC_MOVEへfallbackしない。local合成回帰をnetwork FSやIDE実ロードの合格へ転用しない。
 
 両ログは全体の**同じbinary logcat取得**から抽出し、共通の`record_id`と元Epoch/変換情報を持つ。`-b all -B -T 1`を開始候補とし、deviceがshell権限で読めるbufferとheader versionを確認する。取得開始以前のtailは正常窓から除外、再接続で過去をbackfillしたとは主張しない。lidによってtext/event payloadを分け、未対応payloadもraw bytesをJSONのbase64として残す。package→UID/PID/multiprocessの選択・再起動追従はLOG-02実装契約から供給し、PIDだけを永続app IDにしない。対象未確定の区間はapp coverageをunknownとし、全体logの空白へ変えない。security等読めないbufferを「端末の全ログ取得済み」と表現しない。
 
@@ -92,35 +92,23 @@ gapはstream毎に`kind / from / to / reason / boundary_uncertainty / generation
 
 動画はIDRとSPS/PPSから始まるGOP単位でraw packetをリングへ保持。各chunkの元PTS、clock epoch、generation、codec config、寸法、keyframe、byte数をindexに記録する。通常は最後のIDR以前のdecoder用データを1GOPだけ余分に保持する。I-frame指定を端末が無視したら実際のGOP長を使い、容量上限に達したため失った先頭を明示する。
 
-保存時は論理窓に交差するframeを最大限選び、復旧/寸法/config/clock境界の**連続区間ごと**にMP4を作る。gapを詰めて1本へ結合しない。MP4ごとの`file → window開始/終了 → source_pts_origin → media_time/edit_start`をsession/READMEへ書く。受取人がpart 2の0秒をpart 1の直後と誤解しないようgapの秒数を隣に記す。
+保存時は論理窓に交差する取得済みframeと必要なIDR/GOP prefixを選び、**1件のMP4・1video track**へ保存する。再接続・config・PTSリセット等はファイル内の独立media区間で表す。通常の同一geometryは再圧縮せず元VCLとcodec configを保持する。geometry変更時は本書の変換範囲に従って固定canvasへ変換し、必要な全対象を保存できなければFAILEDとしてpinを保つ。後半drop・複数MP4 fallback・非公開の部分成功は禁止する。
 
-JCodecのPacket timescaleは常に`1_000_000`。同一generation/session/config/寸法/clock epochで、介在する確定break/drop/時計不明がない完全取得済み隣接frame間は実PTS差をVFR表示durationにする。PTS差の長さだけでpart分割しない。窓を跨ぐ表示frameと必要なIDR/GOPをprune/captureに残し、窓内新frame0でも直前画像を保全する。同一epochの最初の正常clock anchorを4096 sample上限内で保持し、長期静止の元frameの時計対応をsample evictionだけで失わない。epoch/break/clock不明の扱いは維持する。byte/packet/config/disk上限・pinを維持し、失ったframeや別sessionの画像は復活させない。
+映像sourceの連続性は取得時の正の`decodeRun / packetOrdinal`をFrozenCaptureへ固定して証明する。gen/session/config/寸法が一致し、PTSが単調、ordinalが隣接し、同fileのoffset/size又は新IDR fileの先頭が正しい場合だけ同じ復号区間を使う。取得世代・session・config変更や実取得中断はdecodeRunを変更し、受信後の拒否packetもordinalを消費する。0のlegacy値・ordinal欠落・矛盾・整数overflowをpositive proofにしない。通常IDRによるGOP file切替やclock epoch/確度変更だけでは復号区間を分けない。既存`continuousTo`はprune/retention用の保守的判定として維持し、mux専用clock/source-only例外は廃止する。
 
-clock gapのnull/MAX境界誤差は、保全用intersects・UI・prune・coverage/不足判定と元gapsにそのまま残す。MP4の隣接frame分割では、固定clock_samplesのうち正常な測定幅/往復・既知sequence offset・bridge誤差20ms以下のsampleが独立に示す範囲を使える。障害前の境界は名目from以下の最後の正常sample、復旧後の境界は対応する正常復旧sample（根拠が保存されていなければ名目to以上の最初の正常sample）で証明できる範囲へ広げ、それぞれの読取幅/往復半分/bridge誤差を含める。片側の根拠がなければその側は無制限、両側なければ従来のunknown判定を維持する。名目時刻を誤差0として扱わず、clock測定閾値や元gapを変更しない。既知の同一stream/epoch前後だけを実PTSでmuxし、未知範囲・video loss・epoch/boot/session/config/寸法を跨いで同期を捏造しない。
+各復号区間のsample間は観測した元PTS差をtimescale=1,000,000のVFR durationへ使う。PTSリセットは独立media originへ移し、元source PTSとrun/gen/sessionはframes.jsonlへ残す。区間ごとに対応するAVC sample entryを指定し、再利用されたSPS IDでもconfig bytesを混同しない。次sampleのない終端は`source_duration_us=null`のまま、許可されたheld tail又は最小1µs authoring tickを別記する。名目fps・直前cadence・host/新boot時刻でsource durationを埋めない。
 
-clockStatus(true)でgapを閉じる際、元toNs=clock.now()とMAX/nullの誤差は保持し、復旧を確定した現epochの正常sampleをgapと対応付けて固定保存対象へ保持する。muxの復旧側境界はそのsampleのsequenceと元toNsの大きい方に読取幅/RTT/bridge誤差を付ける。sample受信からstatus評価までの差を未知側と誤認せず、次の周期sampleまで影響域を広げない。次sample後の新しい保存でも同じ復旧証拠を使い、既に固定したretryは後続sampleへ置換しない。正常sample/offset/既知bridgeの根拠不足なら従来の保守的な探索・unboundedを維持する。証拠はgapと同じ上限で管理し、gap破棄/closeで解放する。
+edit listで各区間のdecoder-only prefixを隠す。有限の元VIDEO gapとその境界を確認できる場合だけ空editを入れ、不明gapは`video_run_boundaries.actual_gap_duration_us=null`・`authored_gap_duration_us=0`として実durationとMP4上の配置を区別する。gapsのfrom/to/MAX・clock復旧/VIDEO cutの証拠・不足は保存して消さない。未知の間隔を0秒と測定したことにはしない。movie/track header durationはchecked edit合計へ補正し、元media duration/sample PTSを変更しない。
 
-session.jsonのvideo_clock_gap_scopesはmux専用の保守的範囲をgap_index（元gapsのindex）・from_ns/to_ns・boundary_uncertainty_ns・derived_from_valid_samples・recovery_sample（固定復旧sampleまたはnull）で記録する。ns値は十進文字列/null。根拠sampleが保存されていない場合や整数計算が成立しない場合はoriginal gapを使う。これは元gapsを確定値へ変更した情報でも、同期不明/不足が解消したという記録でもない。元clock/frames/PTS/両ログ・固定窓・retryを維持する。
+clock scopesと復旧/両側anchorは同期確度の説明に使い、source隣接の許可には使わない。framesの`clock_alignment_known`・`window_ns`は個別に判定し、未知はnull/MAXのまま、`mapped_window_ns`を同期確定/coverageへ使わない。確認済みcoverageは同期が確認できる隣接frameの区間だけから計算し、clock/VIDEO gap、未知やepoch境界を跨がない。区間全体が未知でも、その内部の個別に確認できるframeの情報を失わない。held tailの明示的控除以外は未表示/未確認範囲をvideo_missing_rangesへ残す。
 
-正常sampleで両側と有限誤差を証明したclock scopeの内部では、同一generation/session/clock epoch/config/寸法、単調な元PTS・既知のframe変換と完全packetを保った隣接frameを、元PTS差の表示durationで一つの再生可能なpartへ保存する。各frameが同じscopeに入る範囲だけのmux判断とし、scopeの入口/出口、video loss/容量drop、epoch等の真の境界は分離する。open/null/MAX境界・不明なframe変換は緩和せず、保全用continuousTo・prune・UI・mapperの閾値は変更しない。part数を固定する方式ではない。
-
-再接続で明示的に閉じたvideo gapが正の旧generationに属する場合、同じ新generation内の隣接frameを保存するときだけ、その旧streamのlossをmuxの分割理由から外す。閉鎖と正の所有・厳密な世代順で区別し、名目toNsが過去であること、reasonやclock epoch差だけを根拠にしない。元gap/MAX/不足、保全用continuousTo・prune・UIは維持する。open/所有不明（generation 0又は負値）/同世代/未来世代のgapは除外せず、隣接frameのgeneration/session/config/寸法/epoch・単調PTS・既知変換・復号開始条件も従来どおり必要とする。同generation内の再接続を一般に解消したとは扱わない。
-
-閉じた正のgenerationのvideo gapで、両側の正常clock sampleが共通sequence軸上の `before ≤ 元from ≤ 元to ≤ after` を証明する場合だけ、mux用video scopeをその外側sampleまで保守的に広げる。既知sequence offset、有効読取幅/RTT、有限bridge誤差と非負の合計誤差、checked arithmeticを必要とし、最大の両端誤差を付ける。両側の一方でも不明、open、所有不明、逆順、overflowなら元gapを使う。video scope内部又はそれを跨ぐ隣接frameは常に分離し、clock scope内部の再生例外へ混ぜない。正常で連続取得された旧frameがgapより前と証明できる場合、元PTSの映像を見返せるが、元gap/MAX・duration_uncertain・不足・共有retention/prune/UI・tail・mapper/null・固定窓を変更しない。
-
-`session.json.video_gap_scopes`は元gapのindex/generation/clock_epoch、mux用from/to/誤差、derived_from_valid_samples、根拠のbefore_sample/after_sampleを保存する。根拠がない場合はsample=nullで元scopeを残す。既存video_clock_gap_scopesは維持する。根拠は固定captureのclockだけを使い、後続sampleでretryを更新しない。cutを跨いで表示される直前frameとdecoder-only prerollも区別して保持し、表示frame数やpart数を一律固定しない。
-
-このpartは`clock_alignment_known=false`、`window_start_ns / window_end_ns / confirmed_window_end_ns=null`とし、共通窓への確認済みcoverageへ加算しない。frames.jsonlもそのpartと時計不確実なpreroll行の`clock_alignment_known=false / window_ns=null`を記録する。元mapperの窓座標は追加の`mapped_window_ns`へ十進文字列/nullで保全し、元elapsed/epoch/uncertainty/PTSは変更しない。mapped座標は同期確定の根拠ではない。正常partの`clock_alignment_known=true`だけ従来のwindow開始＋再生秒で両logと照合する。元gap/MAX、derived scopeと固定復旧根拠、不足を保持し、video_missing_rangesは映像欠落又は時計対応未確認の範囲として示す。再生可能であることを同期合格と扱わず、retryで判断を更新しない。
-
-追加のsource-only再生は、visible frameが全てelapsed/sequence null・MAXである同一GOPに限定する。取得時に原VIDEO gapへ対応付けた実cutの前後source位置をFrozenCaptureへ固定し、正のowner/session、連続したfile offset/size、単調PTS、同config/寸法/epoch、完全なIDR/prerollとpayloadを確認する。全decoder prefixとrunが閉じた実cutの同じ外側にある場合だけ、unknown frame列を元PTS間隔でまとめる。open・片側・対応欠落・重複抑制・key置換・proof喪失・矛盾・overflow、実VIDEO内部/跨ぎ・容量lossは許可しない。known→unknownやGOP跨ぎを結合せず、既存clock/mux/coverage guard・元gap/null/MAX・不足・log・retention/UI/tailを変えない。内部の位置mapは公開schemaへ追加せず、後続取得やretryで補完しない。
-
-source-onlyの末尾以外は観測した次sampleとのPTS差を使う。次sampleのない末尾は`source_duration_us=null`のまま、MP4表示に必要な最小1tickだけを置く。これは観測した画像の継続時間やheld-tail/coverageではなく、名目FPS・直前cadence・host/gap時刻・新bootのPTSから終端を推定しない。1-frame runに観測済み間隔はなく、即終了する出力を表現tickの説明だけでnative PASSにしない。全sampleのpayload/PTS/復号と、新同一ZIPの全MP4実再生/seek・通常/PRE/POST全操作・両logを別途確認する。
+`parts`は同じ`file=video-001.mp4`内のpresentation区間で、`segment_index / movie_start_us / movie_end_us / media_start_us / edit_start_us / source_pts_origin_us / decode_run / generation / clock_epochs / preroll_samples`を記録する。frame indexはglobal sample index、entry、packet ordinal、元source/media/movie・display window対応を持つ。movie全体の表示秒からpartの窓開始へ一律加算しない。clockの値やgap/cut/clock samples、両JSONL、固定窓・retryは同じFrozenCaptureから保存する。
 
 保存末尾はTで凍結し次frameを待たない。最後の画像をT又は既知の取得境界まで表示保持する場合、新frame未確認の範囲を`video_tail`へ分離する。`from_ns / to_ns / source_pts_us / source_sequence_ns / clock_epoch / generation / display_held / time_axis=sequence_ns / new_frame_confirmed=false`を記録し、時刻不明はnull、ns/usは十進文字列。確定break/clock不明/epoch変更/取得前/容量dropを跨がない。表示保持は、MP4選択と同じIDR/config/世代/session/寸法条件で固定対象から復号を開始できる場合だけtrueにする。IDR喪失でMP4を作れない対象を保持表示済みとは示さない。partの`window_start_ns / window_end_ns`は再生範囲であり、`confirmed_window_end_ns`は隣接frameで確認できる表示区間の終端（区間なしならnull）。画像保持の再生durationを確認済みcoverageに加算しない。復号可能な表示保持（display_held=true）の末尾未確認だけではgap/loss/video_missing_ranges/missingKindsやCaptureState.PARTIAL/RECOVERINGへ流さず、COMPLETED/session.complete=trueは正常な成果物完成とする。pinを解放し次の保存を可能にする。display_held=falseの未表示範囲は、先行MP4 partが存在してもvideo_missing_ranges/missingKindsから控除しない。既知欠落は従来どおり併記する。
 
 `SaveSnapshot.videoTail: VideoTailSnapshot? = null`を末尾へ追加する。immutableな`fromNs / toNs / sourcePtsUs / sourceSequenceNs / clockEpoch / generation / displayHeld`は固定保存対象から生成し、retry/後続frame/現在設定で変更しない。UI callerは保存完了と未確認末尾を別表示する。通常も最終frame時刻<Tとなるため、想定fpsや短い間隔を取得確認の根拠にしない。
 
-通常のmedia PTSは`source_pts - part最初のsource_pts`。長期静止でMP4のduration/edit整数範囲を超える場合は、窓に表示する実durationを保ち、decoder-only時間だけを短縮して`media_timeline_clipped=true`とする。元source PTS/実frame数は不変、`frames.jsonl`の`source_duration_us`（次frameがない末尾はnull）と`display_duration_us / media_pts_us / presentation_pts_us`を別記する。追加画像を作らず、受取人はpartの表示範囲とframe indexで照合する。config packetはframe/PTSに数えない。SPS/PPSを最初のIDRへ渡しAVC configとMP4 headerを確定してから完了とする。破断は完全frameだけを使いlossを保持する。
+通常のmedia PTSは、各復号区間のmedia開始＋`source_pts - 区間最初のsource_pts`。長期静止でMP4のduration/edit整数範囲を超える場合は、窓に表示する実durationを保ち、decoder-only時間だけを短縮して`media_timeline_clipped=true`とする。元source PTS/実frame数は不変、`frames.jsonl`の`source_duration_us`（次frameがない末尾はnull）と`display_duration_us / media_pts_us / presentation_pts_us`を別記する。追加画像を作らず、受取人はpartの表示範囲とframe indexで照合する。config packetはframe/PTSに数えない。各区間のSPS/PPSを対応するsample entryへ渡しAVC configとMP4 headerを確定してから完了とする。破断は完全frameだけを使いlossを保持する。
 
 開始cutがIDR間なら直前IDRから復号するprerollを持ち、MP4 edit listで論理start/endだけを再生対象とする。`frames.jsonl`は`part / sample_index / source_pts_us / media_pts_us / elapsed_ns / window_ns / presented / preroll / uncertainty_ns`を保持する。**ファイル内部には窓外のdecoder prerollが含まれ得る**ことをREADMEに明示し、論理取得時間へ加算しない。窓前の画像を含めてはいけない利用には初期版を適合済みとしない。edit listが受取人の標準playerで不適合なら、開始cutだけJVMで再エンコードする代案を実装Issueで比較・再測定する。cutを次IDRへ黙って丸めてBUF-02の取得済みデータを失うfallbackは禁止。
 
@@ -133,9 +121,9 @@ source-onlyの末尾以外は観測した次sampleとのPTS差を使う。次sam
 受取人は追加ツールなしで次を行う。
 
 1. README.txtで論理窓の日時/N、動画/全体ログ/appログのcoverage、gap一覧、同期状態、part一覧を見る。全体の成功表示だけで不足を隠さない。
-2. OSの動画プレイヤーで指定partを開く。playerの表示秒`p`から、READMEに書かれた`window開始秒 + p`で窓内秒を求める。edit適用後の表示秒を使う。フレーム単位ではframes.jsonlの`presented=true`行でmedia/source/window対応を照合する。
+2. OSの動画プレイヤーで単一MP4を開く。単一MP4の表示秒に対応するframes.jsonlの`movie_pts_us / movie_end_us`を探し、`source_display_start_us / display_window_start_ns`と個別のclock確度で両logを照合する。edit適用後の表示秒を使い、時計対応がnullの範囲を同期済みとしない。
 3. テキストエディタで両JSONLの`window_ns`付近を探す。同じapp recordは同じrecord_id/元時刻で全体側にもある。`uncertainty_ns`内の近傍を示し「最も近い1行が同じ操作」と断定しない。
-4. 窓内秒がgapなら「その種類は映像/ログなし」。`window_ns=null`なら「時計対応不明」。part間の空白、device日時の飛び、prerollを成功区間へ混ぜない。
+4. 窓内秒がgapなら「その種類は映像/ログなし」。`window_ns=null`なら「時計対応不明」。再生区間間の既知空白と実duration不明、device日時の飛び、prerollを成功区間へ混ぜない。
 
 保存後のviewアプリやWebVTTは不要。標準プレイヤーのedit/seek/表示秒が契約通りであることは下記Caseで**受取人の環境も含めて**確認する。
 
@@ -146,3 +134,13 @@ source-onlyの末尾以外は観測した次sampleとのPTS差を使う。次sam
 実装担当が同じ試作を再現する最小手順は、固定JARをhash照合しJBR25で`MP4Muxer.createMP4MuxerToChannel`→`addVideoTrack(H264, 32×32 YUV420J)`→`H264Encoder.encodeIDRFrame`→上記3つの`Packet.createPacket`（全てtimescale=1e6）→`finish`→`MP4Demuxer.createRawMP4Demuxer`の順。editなしで全PTS/durationをassertし、edit付きではTrakBoxのEdit値をassertする。異なるtimescaleを混ぜた動作、B-frameは未確認・初期版契約外。現実の画面取得でこれを置き換えない。
 
 実装Caseは[issue-13.json](../verification/changes/issue-13.json)に全てpendingで残す。実機は利用者が用意できず受入を保留しており、未実施のまま保持する。実機の再開は利用者による端末準備とPMの割当後とし、この保留を理由にEmulator受入の準備や[#31のコア実装](https://github.com/shinma06/android-replay-buffer/issues/31)を止めない。Emulator/受取人側も現段階では未実施であり、実機のpassを代替しない。設計変更自体はGUIを要しないが、方式採用の製品受入には実機/Emulatorで必要なためGUI requiredとして追跡する。PMは#14/#31の実装と[#27のQA](https://github.com/shinma06/android-replay-buffer/issues/27)へCaseと環境ごとの状態を双方向で引継ぎ、独立レビュー/固定候補promotionを調整する。検証待ちを理由にCLI原型を変更しない。
+
+## 混在サイズの変換範囲と負荷
+
+同geometryは元H.264をremuxする。混在geometryだけ各軸最大1920・16pixel境界の共通canvasへ、拡縮や切捨てをせず中央に余白を追加する。4:2:0のchroma境界に合わせ配置座標を偶数にし、左右・上下が2pixelずれる場合も実source rectangle/paddingをframe indexへ記録する。通常保存へraw sidecarや変換負荷を追加しない。
+
+変換入力はprogressive 8bit 4:2:0のBaseline/Main/High、正方pixel、検証したcoded/crop/参照数/featureの範囲とする。非対応SAR、interlace、scaling matrix、FMO、B/SP/SI-frame、色指定変更などは理由付きFAILEDにしpinを残す。色変換は行わず同じ指定を出力へ引継ぎ、色未指定は未指定として残す。未知値同士から色一致を証明せず、`source_colour_known=false`とする。出力はQP12、Baseline Level5.1、1ref、最大30fpsとしてFS/MBPS/DPB/per-frame bitrateとSPS/avcCを検査する。端末packetや出力を破棄して部分成功にしない。
+
+変換時は`video-source.bin`へ元AnnexB configと全選択packet（decoder prefix含む）を保存する。frameごとに元offset/size/SHA-256、config offset/size/SHA-256、source PTS/run/ordinal/clock、output sample/movie/media、source rectangle/padding、`reencoded=true`を記録する。source configの未知色を既知指定へ変換しない。MP4は再圧縮による画素差があるため元bytesの代わりにならない。
+
+1packetずつ処理し、coded planesと参照bufferの保守的見積りを512MiB以内に制限する（IDE全体のRSS保証ではない）。保存先のraw・MP4・JSON・現在の一時出力と128MiB余裕を処理前、packet書込、公開前に確認し、途中不足もFAILED＋固定pinとする。混在変換は保存workerで実行するが待ち時間は残る。代表試作の約139ms/frameは実IDEや900秒保存の保証ではない。1frameのcodec処理後に10秒上限、全処理のwall/保存thread CPUに各4時間上限を確認する。固定JCodec 0.2.5にはdecoderの公開close/直列mode APIがないため、未使用poolを最初に終了し固定fieldで直列modeへ切替える小さなadapterを使用する。multisliceを含め保存threadで処理し、daemon/decoderを保存のたびに残さない。依存更新ではこのadapterも再検証する。JCodecの1codec呼出し内部には取消しを注入できないため前後で確認し、実製品のdisable終了待ち10秒以内は同ZIP受入で検証する。未検証を取消し時間保証と呼ばない。
