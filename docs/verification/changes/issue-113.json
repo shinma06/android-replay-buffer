@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "issue": 113,
+  "gui_required": false,
+  "reason": "trusted main089fの未同期管理記録4件を保護設定どおり通常squashでdevelopへ同期する。READMEは既存developの1節を保ち、製品code/build/fixture/CLI/検証器・131 Case/200出典・延期条件を変更しない。main ancestryは後続promotionの通常mergeで接続し、そのtreeを固定候補とmetadata以外byte一致させる。新候補・同ZIP/native受入は同期後に別途実施する。",
+  "cli_checks": [
+    "python3 scripts/check.py: 管理回帰・構造検証",
+    "python3 scripts/workflow/product_check.py: CLI互換保全",
+    "python3 scripts/workflow/change_impact.py --base origin/develop --run-tests: clean committed HEADで実行",
+    "4記録のmain byte一致・全製品/Case/初期計画不変、squash後の出典1commit対応、後続promotionのmain親と固定候補tree一致を既存規約で照合"
+  ],
+  "cases": []
+}
