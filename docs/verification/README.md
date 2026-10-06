@@ -67,7 +67,9 @@ Plugin ZIPは [開発手順](../plugin-development.md) の標準buildPluginで�
 
 利用者の方針に従い、初期版はエージェントが実行できる工程を完了し、人間の操作・確認と実機準備が必要な部分を[後続QA #65](https://github.com/shinma06/android-replay-buffer/issues/65)へ延期する。[固定計画](amendments/initial-agent.json)をtrusted mainの通常tooling PRでレビューし、developへ同期した後の新候補だけに適用する。候補後の変更許可、main保護、独立レビュー、全commitの出典検査は変えない。
 
-計画は128 Case・197出典を持ち、既存196出典のPR/merge/path/Case全文hashを保持する。時計不確実区間の動画保存修正 #85 のPR86旧7手順・PR92の8手順・PR94の9手順を固定履歴として残し、PR98の実metadataで宣言されたVerificationにあるCase85の1出典だけを追加する。`required_ancestor`はPR98の実統合SHA `34d14c90b3d44105eb18d09b8e2b86131fdc33d4`を指す。Case85と関連8 Caseの現在契約hashをそのtreeへ更新し、関連8 Caseは固定path/ID/hashをAgent requirementsから参照する。他119 entryは変更しない。94 CaseのAgent範囲は必須で、34 REAL Caseは対応するEMU Caseの観察を残して延期する。混在40 Case・人間16 Case・GOP改訂9 key/15出典/6証拠とQA65を維持し、計画に列挙した部分だけを分ける。各sourceの履歴を消したり、古い緩い条件を選択したりしない。PR38の専用transport限定、共有ADB保護、同boot確認、画面OFFとdeep sleepの区別も維持する。新Caseや契約変更が加わった場合は計画の正式更新が必要である。
+現在の計画は131 Case・200出典で、97 CaseのAgent範囲と34 REAL Caseの延期を持つ。PR107の実develop統合SHA `197aa0efca4486b76096e035fb98ba7e6d41d54a` を`required_ancestor`とし、#106の`LOG-READER-PARTITION`・`LOG-READER-COMPATIBILITY`・`LOG-READER-RECOVERY-STOP`の3 Case・3出典を追加する。既存128 entry・197出典と全agent_requirements/deferred_scopeは変更しない。新3 Caseの全前提・操作・expected・再確認条件を保持し、同じ新candidate/標準ZIPのJVMと元契約が要求するnative観察を別証拠で確認する。新たな延期・human必須・自動PASSを追加せず、旧8d診断と旧候補の観察は履歴に保持する。固定100入力・300phaseの有限比較を正式300event/30分等の合格へ転用しない。
+
+PR98反映時の計画は128 Case・197出典を持ち、既存196出典のPR/merge/path/Case全文hashを保持する。時計不確実区間の動画保存修正 #85 のPR86旧7手順・PR92の8手順・PR94の9手順を固定履歴として残し、PR98の実metadataで宣言されたVerificationにあるCase85の1出典だけを追加した。当時の`required_ancestor`はPR98の実統合SHA `34d14c90b3d44105eb18d09b8e2b86131fdc33d4`を指した。Case85と関連8 Caseの現在契約hashをそのtreeへ更新した。関連8 Caseは固定path/ID/hashをAgent requirementsから参照する。他119 entryは変更しなかった。当時の94 CaseのAgent範囲は必須で、34 REAL Caseは対応するEMU Caseの観察を残して延期する。混在40 Case・人間16 Case・GOP改訂9 key/15出典/6証拠とQA65を維持し、計画に列挙した部分だけを分ける。各sourceの履歴を消したり、古い緩い条件を選択したりしない。PR38の専用transport限定、共有ADB保護、同boot確認、画面OFFとdeep sleepの区別も維持する。新Caseや契約変更が加わった場合は計画の正式更新が必要である。
 
 元のCase JSONとpending/blocked/failは書き換えない。`human: pending`だけでは人間工程を追加しない。標準player、GUI/可読性、全300イベント/30分の解析、同期・切出し精度、画質/負荷/容量/pin、失敗・復旧のAgent実行可能部分は維持する。最低601画像の人間による番号確認は初期段階から分離し、その前の解析を原Case全体の正式精度passとは呼ばない。製品failや単に難しい・時間がかかる工程は延期理由にしない。
 
@@ -81,7 +83,7 @@ Plugin ZIPは [開発手順](../plugin-development.md) の標準buildPluginで�
 
 同geometryは元VCL/configをremuxし、mixed geometryは現在契約の固定canvas・原寸/aspect/文字と色・全frame対応を検査する。元AnnexB config/全対象packet（必要decoder prefix含む）のraw sidecar・offset/size/hashと全画素/PTS/duration/headers/edit/indexを同ZIPで照合する。後半read/codec/disk/取消し/必要IDR不足で全対象を完成できない場合は成功フォルダを公開せずFAILEDと固定pinを保持し、後半drop・複数MP4fallback・非公開の部分成功にしない。device/app両logの共通record_id/UID/帰属/全9・18phaseと未知行、固定T/N/対象・設定履歴・原gap/clock・retry不変、atomic非上書き/所有partial cleanup/UI不足表示を維持する。全deferred_scopeと既存人間範囲を維持する。実装scopeは既存のコードgate・独立レビュー・双方向QA移管を確認して終了する。初期版/mainは同ZIPの全必要Agent受入と未観察・製品failの解消まで未完了とし、full GUI受入は既存延期範囲の完了まで未完了とする。
 
-promotionには`stage: initial-agent`を明記し、`results`に全128 keyを置く。各値は以下の形とし、`stage_revision`には計画全体のcanonical SHA-256を入れる。
+promotionには`stage: initial-agent`を明記し、`results`に全131 keyを置く。各値は以下の形とし、`stage_revision`には計画全体のcanonical SHA-256を入れる。
 
 ```json
 {

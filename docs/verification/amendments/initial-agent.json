@@ -2,7 +2,7 @@
   "schema": 1,
   "issue": 64,
   "stage": "initial-agent",
-  "required_ancestor": "34d14c90b3d44105eb18d09b8e2b86131fdc33d4",
+  "required_ancestor": "197aa0efca4486b76096e035fb98ba7e6d41d54a",
   "followup_issue": 65,
   "owner": "Codex PM（管理）・QA #27担当（手順と証拠保全）。後続の人間実行者は再開時に割当。",
   "resume_condition": "初期版完成後、利用者が後続確認へ着手するときに実機・担当・固定候補を決める。CUA制約の部分は人間の対応または実際の操作経路復旧後。未実施の再質問で初期版を停止しない。",
@@ -2663,6 +2663,57 @@
         "128 entry・197出典（旧196出典を保持し、PR98実metadataのVerificationが収集する本Case1出典だけ追加）、94 Agent/34 REAL延期・混在40/人間16・GOP9/15/6・QA65を維持する。既存全300event/30分・精密同期/OCR/画質/負荷/容量/pin/GOP等のAgent必須を短時間の基本Caseで代替しない。全deferred_scopeと既存人間範囲だけを保持し、新Case/延期/human必須を追加しない。旧候補のpending/blocked/fail/unknownと実行履歴を保全し、stage完了をfull GUI/main受入へ転記しない。",
         "取得時にfreezeした正のdecodeRun/packetOrdinal、generation/session/config/寸法、単調な元PTS、完全byte順序とIDR file先頭を検査する。legacy0/欠番/overflow/矛盾・拒否packet・実VIDEO中断/容量lossからsource連続性を捏造せず、時計確度だけでは復号runを分割しない。clock scopes/復旧sample/両側anchorは説明用証拠として保持し、source再生許可や同期確定へ転用しない。元clock/閾値/gap/loss/null/MAX/個別unknown window/不足と共有retention/tailを維持する。観測PTS差によるVFR、PTS resetごとのmedia origin/config sample entry、prefix edit、既知gap空edit/不明actual duration nullとauthoring配置、terminal source_duration=nullとheld/tickを区別し、表示保持や表現tickを確認済coverageへ加算せず、後続live/clock/別boot/任意fpsで未知durationを補完しない。",
         "同geometryは元VCL/configをremuxし、mixed geometryは現在契約の固定canvas・原寸/aspect/文字と色・全frame対応を検査し、元AnnexB config/全対象packet（必要decoder prefix含む）のraw sidecar・offset/size/hashと全画素/PTS/duration/headers/edit/indexを同ZIPで照合する。後半read/codec/disk/取消し/必要IDR不足で全対象を完成できない場合は成功フォルダを公開せずFAILEDと固定pinを保持し、後半drop・複数MP4fallback・非公開の部分成功にしない。device/app両logの共通record_id/UID/帰属/全9・18phaseと未知行、固定T/N/対象・設定履歴・原gap/clock・retry不変、atomic非上書き/所有partial cleanup/UI不足表示を維持する。実装scopeは既存のコードgate・独立レビュー・双方向QA移管を確認して終了する。初期版/mainは同ZIPの全必要Agent受入と未観察・製品failの解消まで未完了とし、full GUI受入は既存延期範囲の完了まで未完了とする。"
+      ]
+    },
+    "106:LOG-READER-PARTITION": {
+      "sources": [
+        {
+          "source_pr": 107,
+          "source_merge": "197aa0efca4486b76096e035fb98ba7e6d41d54a",
+          "source_path": "docs/verification/changes/issue-106.json",
+          "original_case_sha256": "1d7ec4e1dc643c39148e4d746b0dc696c9891dddcbc077a3ce7861cdee858e75"
+        }
+      ],
+      "current_case_sha256": "1d7ec4e1dc643c39148e4d746b0dc696c9891dddcbc077a3ce7861cdee858e75",
+      "initial_scope": "agent",
+      "deferred_scope": [],
+      "agent_requirements": [
+        "PR107実統合版の本Caseの全前提・全操作・expected・再確認条件を保持する。同じ新candidate/標準ZIPの製品classによるJVM証拠と、実ロードidentityを確認したIDE/端末観察を分け、元契約で要求された両方を必須とする。旧8d診断と旧候補の観察を新候補へ転用せず、未実施・unknown・製品failをpassや延期へ変更しない。",
+        "既存128 entry・197出典・全agent_requirements/deferred_scopeを変更せず、本3 CaseとPR107の3出典を追加する。新しい延期やhuman必須を追加しない。固定100入力・300phaseの有限比較を正式300event/30分・同期/GOP/画質/REAL/人間工程の合格へ転用しない。"
+      ]
+    },
+    "106:LOG-READER-COMPATIBILITY": {
+      "sources": [
+        {
+          "source_pr": 107,
+          "source_merge": "197aa0efca4486b76096e035fb98ba7e6d41d54a",
+          "source_path": "docs/verification/changes/issue-106.json",
+          "original_case_sha256": "67b31feab9729e5c8aebf734257d15d12fbe822a212d3b4b98404ddfe8cd67ff"
+        }
+      ],
+      "current_case_sha256": "67b31feab9729e5c8aebf734257d15d12fbe822a212d3b4b98404ddfe8cd67ff",
+      "initial_scope": "agent",
+      "deferred_scope": [],
+      "agent_requirements": [
+        "PR107実統合版の本Caseの全前提・全操作・expected・再確認条件を保持する。同じ新candidate/標準ZIPの製品classによるJVM証拠と、実ロードidentityを確認したIDE/端末観察を分け、元契約で要求された両方を必須とする。旧8d診断と旧候補の観察を新候補へ転用せず、未実施・unknown・製品failをpassや延期へ変更しない。",
+        "既存128 entry・197出典・全agent_requirements/deferred_scopeを変更せず、本3 CaseとPR107の3出典を追加する。新しい延期やhuman必須を追加しない。固定100入力・300phaseの有限比較を正式300event/30分・同期/GOP/画質/REAL/人間工程の合格へ転用しない。"
+      ]
+    },
+    "106:LOG-READER-RECOVERY-STOP": {
+      "sources": [
+        {
+          "source_pr": 107,
+          "source_merge": "197aa0efca4486b76096e035fb98ba7e6d41d54a",
+          "source_path": "docs/verification/changes/issue-106.json",
+          "original_case_sha256": "53caa3eaf5e3a32be55eabafd85479a5f14ee29b2205950116dec6cda3d60664"
+        }
+      ],
+      "current_case_sha256": "53caa3eaf5e3a32be55eabafd85479a5f14ee29b2205950116dec6cda3d60664",
+      "initial_scope": "agent",
+      "deferred_scope": [],
+      "agent_requirements": [
+        "PR107実統合版の本Caseの全前提・全操作・expected・再確認条件を保持する。同じ新candidate/標準ZIPの製品classによるJVM証拠と、実ロードidentityを確認したIDE/端末観察を分け、元契約で要求された両方を必須とする。旧8d診断と旧候補の観察を新候補へ転用せず、未実施・unknown・製品failをpassや延期へ変更しない。",
+        "既存128 entry・197出典・全agent_requirements/deferred_scopeを変更せず、本3 CaseとPR107の3出典を追加する。新しい延期やhuman必須を追加しない。固定100入力・300phaseの有限比較を正式300event/30分・同期/GOP/画質/REAL/人間工程の合格へ転用しない。"
       ]
     }
   }
