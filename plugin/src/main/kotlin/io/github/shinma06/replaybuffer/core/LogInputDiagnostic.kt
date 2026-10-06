@@ -152,6 +152,7 @@ internal class LogInputDiagnostic private constructor(
 
     private fun event(size: Int, type: Char, write: DataOutputStream.() -> Unit) {
         if (sealed || reason != null) return
+        if (now() - started > MAX_DURATION_NS) { fail("duration_limit"); return }
         if (size > metadataLimit - metadata.size()) { fail("metadata_limit"); return }
         output.writeByte(type.code); output.write()
     }

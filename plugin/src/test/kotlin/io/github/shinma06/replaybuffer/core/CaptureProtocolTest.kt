@@ -125,7 +125,11 @@ class CaptureProtocolTest {
                 val diagnostic = LogInputDiagnostic.open(root, rawLimit = if (limit == "raw_limit") 3 else 1024,
                     metadataLimit = if (limit == "metadata_limit") 1 else 1024,
                     readLimit = if (limit == "read_limit") 1 else 32, now = time::get)
-                if (limit == "duration_limit") time.set(241_000_000_000)
+                if (limit == "duration_limit") {
+                    time.set(241_000_000_000)
+                    diagnostic.saveStarted() // Metadata without a new read must obey the same deadline.
+                    assertEquals(limit, diagnostic.failure())
+                }
                 assertContentEquals(readLog(ByteArrayInputStream(logBytes())).raw,
                     readLog(diagnostic.input(ByteArrayInputStream(logBytes()))).raw)
                 assertFalse(diagnostic.finish(3, "fixture"))
