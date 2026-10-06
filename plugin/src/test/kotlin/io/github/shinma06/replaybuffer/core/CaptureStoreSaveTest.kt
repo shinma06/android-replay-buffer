@@ -22,32 +22,80 @@ import kotlin.test.assertTrue
 class CaptureStoreSaveTest {
     @Test
     fun partialReaderFailureKeepsItsGapAndOutOfOrderPruneCannotEvictFreshRows() {
-        val root = Files.createTempDirectory("replay-log-partition-store-")
-        val store = CaptureStore(root.resolve("ring"), logLimit = 514, minFree = 0)
-        val host = System.nanoTime() + 1_000_000_000
-        fun row(second: Long, lid: Int) = DeviceLog(1_700_000_000_000_000_000 + second * 1_000_000_000,
-            12, 12, 10001, lid, 4, "Fixture", "same", byteArrayOf(1))
-        try {
-            store.generation(1); store.status("device_log", StreamState.CAPTURING, null, 1)
-            for (second in 1L..5L) anchor(store.clock, second * 1_000_000_000, host + (second - 1) * 1_000_000_000)
-            store.app("com.fixture.app", 10001, setOf(12), 1, uidExclusive = true)
-            val first = store.log(row(5, 0), 1, host + 4_000_000_000)
-            store.status("device_log", StreamState.RECOVERING, "all reader interrupted", 1)
-            store.log(row(2, 1), 1, host + 4_100_000_000)
-            val partial = store.capture(ReplaySettings(replaySeconds = 30))!!
-            assertEquals(StreamState.RECOVERING, partial.states.getValue("device_log").state)
-            assertTrue(partial.gaps.any { it.stream == "device_log" && it.toNs == null })
-            store.release(partial.id)
-            store.prune(2)
-            val second = store.log(row(5, 1), 1, host + 4_200_000_000)
-            store.status("device_log", StreamState.CAPTURING, null, 1)
-            val recovered = store.capture(ReplaySettings(replaySeconds = 30))!!
-            assertEquals(setOf(first, second), recovered.logs.map { it.id }.toSet())
-            assertEquals(2, recovered.logs.size) // Equal contents across buffers are distinct records.
-            assertTrue(recovered.logs.all { it.app == true })
-            assertTrue(recovered.gaps.none { it.reason.contains("byte上限") })
-            assertTrue(recovered.gaps.any { it.stream == "device_log" && it.toNs != null })
-        } finally { store.close(); root.toFile().deleteRecursively() }
+        for (oldAfterPrune in listOf(false, true)) {
+            val root = Files.createTempDirectory("replay-log-partition-store-")
+            val store = CaptureStore(root.resolve("ring"), logLimit = 514, minFree = 0)
+            val host = System.nanoTime() + 1_000_000_000
+            fun row(second: Long, lid: Int) = DeviceLog(1_700_000_000_000_000_000 + second * 1_000_000_000,
+                12, 12, 10001, lid, 4, "Fixture", "same", byteArrayOf(1))
+            try {
+                store.generation(1); store.status("device_log", StreamState.CAPTURING, null, 1)
+                for (second in 1L..5L) anchor(store.clock, second * 1_000_000_000, host + (second - 1) * 1_000_000_000)
+                store.app("com.fixture.app", 10001, setOf(12), 1, uidExclusive = true)
+                val first = store.log(row(5, 0), 1, host + 4_000_000_000)
+                var second: String? = null
+                if (oldAfterPrune) {
+                    second = store.log(row(5, 1), 1, host + 4_010_000_000)
+                    store.prune(2) // The ring is full of fresh rows when the normal poll completes.
+                }
+                store.status("device_log", StreamState.RECOVERING, "all reader interrupted", 1)
+                store.log(row(2, 1), 1, host + 4_100_000_000)
+                val partial = store.capture(ReplaySettings(replaySeconds = 30))!!
+                assertEquals(StreamState.RECOVERING, partial.states.getValue("device_log").state)
+                assertTrue(partial.gaps.any { it.stream == "device_log" && it.toNs == null })
+                if (oldAfterPrune) {
+                    assertEquals(setOf(first, second), partial.logs.map { it.id }.toSet())
+                    assertTrue(partial.gaps.none { it.reason.contains("byte上限") })
+                }
+                store.release(partial.id)
+                store.prune(2)
+                if (!oldAfterPrune) second = store.log(row(5, 1), 1, host + 4_200_000_000)
+                store.status("device_log", StreamState.CAPTURING, null, 1)
+                val recovered = store.capture(ReplaySettings(replaySeconds = 30))!!
+                assertEquals(setOf(first, second), recovered.logs.map { it.id }.toSet())
+                assertEquals(2, recovered.logs.size) // Equal contents across buffers are distinct records.
+                assertTrue(recovered.logs.all { it.app == true })
+                assertTrue(recovered.gaps.none { it.reason.contains("byte上限") })
+                assertTrue(recovered.gaps.any { it.stream == "device_log" && it.toNs != null })
+            } finally { store.close(); root.toFile().deleteRecursively() }
+        }
+        for (protection in listOf("unknown-clock", "unknown-row", "frozen-pin")) {
+            val root = Files.createTempDirectory("replay-log-expiry-proof-")
+            val store = CaptureStore(root.resolve("ring"), logLimit = 514, minFree = 0)
+            val host = System.nanoTime() + 1_000_000_000
+            fun row(second: Long, lid: Int) = DeviceLog(1_700_000_000_000_000_000 + second * 1_000_000_000,
+                12, 12, 10001, lid, 4, "Fixture", "same", byteArrayOf(1))
+            try {
+                store.generation(1); store.status("device_log", StreamState.CAPTURING, null, 1)
+                for (second in 1L..5L) anchor(store.clock, second * 1_000_000_000, host + (second - 1) * 1_000_000_000)
+                val first = store.log(row(5, 0), 1, host + 4_000_000_000)
+                val second = store.log(row(5, 1), 1, host + 4_010_000_000)
+                store.prune(2)
+                val pinned = if (protection == "frozen-pin") store.capture(ReplaySettings(replaySeconds = 2)) else null
+                if (protection == "frozen-pin") store.freeze()
+                if (protection == "unknown-clock") {
+                    store.clock.boundary()
+                    assertEquals(Long.MAX_VALUE, store.clock.endUncertainty())
+                }
+                val delayed = row(if (protection == "unknown-row") 40 else 2, 1)
+                val accepted = store.log(delayed, 1, host + 4_100_000_000)
+                pinned?.let {
+                    assertEquals(setOf(first, second), it.logs.map { row -> row.id }.toSet())
+                    store.release(it.id)
+                }
+                val capture = store.capture(ReplaySettings(replaySeconds = 30))!!
+                if (protection == "frozen-pin") {
+                    assertTrue(pinned!!.logs.any { it.id == first })
+                    assertTrue(capture.logs.none { it.id == first }) // Frozen time pruning is disabled; byte loss stays explicit.
+                } else assertTrue(capture.logs.any { it.id == accepted }, protection)
+                if (protection == "unknown-row") {
+                    val unknown = capture.logs.single { it.id == accepted }
+                    assertNull(unknown.time.sequence)
+                    assertEquals(Long.MAX_VALUE, unknown.time.uncertainty)
+                }
+                assertTrue(capture.gaps.any { it.reason.contains("byte上限") }, protection)
+            } finally { store.close(); root.toFile().deleteRecursively() }
+        }
     }
 
     @Test

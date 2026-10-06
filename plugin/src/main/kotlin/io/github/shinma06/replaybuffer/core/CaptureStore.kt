@@ -65,6 +65,7 @@ internal class CaptureStore(
     private var videoSession = 0L
     private var decodeRun = 0L
     private var packetOrdinal = 0L
+    private var logRetentionSeconds: Int? = null
     private var logBytes = 0L
     private var videoBytes = 0L
     private var configBytes = 0L
@@ -231,6 +232,14 @@ internal class CaptureStore(
         val row = LogEntry(UUID.randomUUID().toString(), source, generation, time, retained, app, host)
         logs += row
         logBytes += source.raw.size + 256
+        if (logBytes > logLimit && fixedEnd == null) logRetentionSeconds?.let { seconds ->
+            synchronized(clock) {
+                val end = end()
+                val uncertainty = clock.endUncertainty()
+                if (end != null && uncertainty != Long.MAX_VALUE)
+                    pruneLogs(end - seconds * 1_000_000_000L - uncertainty)
+            }
+        }
         while (logBytes > logLimit && logs.isNotEmpty()) {
             val lost = logs.removeFirst()
             logBytes -= lost.source.raw.size + 256
@@ -264,7 +273,9 @@ internal class CaptureStore(
 
     @Synchronized
     fun prune(seconds: Int) {
-        if (closed || fixedEnd != null) return
+        if (closed) return
+        logRetentionSeconds = seconds
+        if (fixedEnd != null) return
         val end = end() ?: return
         val uncertainty = clock.endUncertainty()
         // An unknown boot bridge/current T cannot prove that old known-epoch records are outside the window.
@@ -287,6 +298,13 @@ internal class CaptureStore(
             val key = if (last == null) all.size else (all.lastIndex downTo 0).firstOrNull { all[it].key } ?: 0
             repeat(key) { removeVideo() }
         }
+        pruneLogs(cutoff)
+        enforceVideoLimit()
+        deleteUnused()
+        while (gaps.size > 4096) removeGapProofs(gaps.removeFirst())
+    }
+
+    private fun pruneLogs(cutoff: Long) {
         // ponytail: scan the byte-bounded ring; add a time index only if measured pruning cost requires it.
         logs.removeIf { row ->
             val expired = row.time.sequence != null && row.time.uncertainty != Long.MAX_VALUE &&
@@ -294,9 +312,6 @@ internal class CaptureStore(
             if (expired) logBytes -= row.source.raw.size + 256
             expired
         }
-        enforceVideoLimit()
-        deleteUnused()
-        while (gaps.size > 4096) removeGapProofs(gaps.removeFirst())
     }
 
     @Synchronized
