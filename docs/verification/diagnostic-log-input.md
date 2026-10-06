@@ -17,6 +17,7 @@ QA本人が用意した新local private directoryの**symlinkを含まない絶�
 - 取得中: raw最大8MiB、binary metadata最大4MiB、read receipt最大131072件、診断object作成から最大240秒。固定capacityのRAMへ保持する。metadata snapshotを作る終了処理の一時copyも有限。hot pathのdisk write/flushと診断workerはない。
 - raw/metadata/read/time上限で古いbyteを上書きせず、reasonと不完全性を保持し、製品へは元byte/countを返し続ける。上限後を完全証拠として扱わない。
 - 2接続目は診断不完全とし、そのInputStreamはwrapしない。異なる接続を1つの原streamと称さない。製品の既存復旧を改変しない。
+- 同じ製品InputStreamに一度も接続しなかった場合は`no_connection`と`complete=false`を残す。起動前OFFや起動失敗の空データを完全入力として判定しない。
 - OFFは既存readerの終了を先に確認し、その後control workerからdumpする。reader停止確認の失敗は従来の製品例外として保持し、実行中readerのbufferを完成証拠にしない。診断書込/close失敗はpartialを保持して製品OFFを妨げず、自動再試行しない。通常closeのownerはOwnedAdbのまま。
 - 有限byte量はdisk I/Oの時間保証ではない。OFF/dumpが終了しなければ未終了のownerと次条件を引き継ぎ、他processの一括killやlease横取りをしない。
 
@@ -41,9 +42,9 @@ DataOutputStreamのbig endian。型1byteに続いて以下を読む。時刻はh
 
 ## 有限nativeの予定（別途承認後）
 
-build/check/reviewと新profile/root準備を先に完了する。shared leaseは[operations](../operations.md)に従う。専用新profileで標準診断ZIPを配置1、IDE起動1・終了1、既存IDE再起動0・plugin再導入0。既存QA fixture AのAPKは更新0、Emulator再起動0。診断product HEADとfixture05827d4の組合せを明記し、同sourceを要求する正式受入へ流用しない。
+build/check/reviewとQAのfixture準備を先に完了する。shared leaseは[operations](../operations.md)に従う。旧APK・署名鍵・実ロード証拠の現存やAPK更新0を前提にしない。QAが固定fixture source05827d4から再buildしたartifactとfresh identityを準備し、診断product HEADとの組合せを明記する。専用新profile/rootへの診断ZIP配置、IDE起動・終了、APK導入、復元の具体的な回数はQA準備後の手順で固定し、別途承認する。以下の予定は実施済みやGOを表さず、同sourceを要求する正式受入へ流用しない。
 
-全体600秒、取得240秒、lease更新0、追加試行0。初期準備180秒以内に実ロードidentity/標準SDK adb/fixture source・署名/run/view/PID/current E/lease/rootを確認し、対象A・N180・private保存先を設定してON1。準備未達なら入力0で中止し復元する。
+全体600秒、取得240秒、lease更新0、追加試行0。初期準備180秒以内に実ロードidentity/標準SDK adb/fixture source・署名/run/view/PID/current E/lease/rootを確認し、対象A・N300（保存窓300秒）・private保存先を設定してON1。100入力・300phaseの有限診断であり、正式30分試験とは別とする。準備未達なら入力0で中止し復元する。
 
 既存controllerの最小適合版でfixture sourceと診断product/lease HEADを別bindingにする。SDK adbと観察commandsは維持する。controllerの別logcat dumpはfixture存在確認であり同じ製品原入力の代用ではない。100入力（E+1〜E+100）、15×6+10 block、間隔最低1.2秒、全300phaseの母数とguard/deadlineを保持し、入力区間最大150秒。未入力/欠落/unknownも残す。
 

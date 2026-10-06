@@ -1,5 +1,6 @@
 package io.github.shinma06.replaybuffer.core
 
+import com.google.gson.JsonParser
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.DataInputStream
@@ -174,6 +175,22 @@ class CaptureProtocolTest {
             assertFalse(diagnostic.finish(3, "fixture"))
             assertEquals("preserve", Files.readString(existing.resolve("input.bin.partial")))
         } finally { existing.toFile().deleteRecursively() }
+    }
+
+    @Test
+    fun diagnosticWithoutAnInputConnectionIsExplicitlyIncomplete() {
+        val root = Files.createTempDirectory("replay-input-unconnected-").toRealPath()
+        try {
+            val diagnostic = LogInputDiagnostic.open(root)
+            assertFalse(diagnostic.finish(3, "fixture"))
+            assertEquals("no_connection", diagnostic.failure())
+            val receipt = JsonParser.parseString(Files.readString(root.resolve("receipt.json"))).asJsonObject
+            assertFalse(receipt["complete"].asBoolean)
+            assertEquals("no_connection", receipt["reason"].asString)
+            for (field in listOf("connections", "reads", "raw_bytes")) assertEquals(0, receipt[field].asInt)
+            assertEquals(0L, Files.size(root.resolve("input.bin.partial")))
+            assertEquals(0L, Files.size(root.resolve("receipt.bin.partial")))
+        } finally { root.toFile().deleteRecursively() }
     }
 
     @Test

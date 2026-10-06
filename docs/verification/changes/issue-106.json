@@ -4,7 +4,7 @@
   "gui_required": true,
   "reason": "同じ製品入力の有限private診断と停止後保存を追加する。JVM回帰・固定診断ZIPと有限native観察を分け、既存欠落の原因未確定と正式QA未完了を保持する。",
   "cli_checks": [
-    "既存CaptureProtocolTestの透過性、fragmented read、EOF/元例外、raw/metadata/read/time上限、private権限・新規保存、複数接続、reader/control並行性を確認する。",
+    "既存CaptureProtocolTestの透過性、fragmented read、EOF/元例外、raw/metadata/read/time上限、private権限・新規保存、未接続の不完全性、複数接続、reader/control並行性を確認する。",
     "CaptureStoreSaveTestでgeneration不一致の非受理と受理record IDを区別し、既存ReplayCoreWireTestで原wire→parser→受理→固定集合→保存IDを照合する。診断書込失敗でも製品OFF/所有process終了を確認する。",
     "全plugin JVM/check/buildPlugin/verifyPluginStructure、harness/CLI保全、clean committed change_impactを実施し固定HEAD/baseレビューへ渡す。実結果はIssue/PRに記録し、JVMをnative観察PASSへ転用しない。"
   ],
@@ -15,10 +15,10 @@
       "change": "有限private原入力で保存欠落の境界を切り分ける",
       "preconditions": "PMの具体的native実行承認、QA所有の専用fixture/target、新private IDE profile、shared lease。固定診断HEAD/ZIP/JAR/実ロード版と元正式05827d4を区別し、fixture source/署名/run/view/PIDをfresh確認する。通常QA profileと既存IDE/ADB serverは保持する。",
       "steps": [
-        "diagnostic-log-input.mdの手順と上限を確認する。診断ZIP配置1、新IDE起動/終了各1、既存IDE再起動0、APK更新0、Emulator再起動0とする。property未指定の通常pathには出力がないことをJVM証拠で別記する。",
+        "diagnostic-log-input.mdの手順と上限を確認する。旧APK・署名鍵・実ロード証拠の現存やAPK更新0を前提にしない。QAの固定fixture05827d4再buildとfresh identity準備後に診断ZIP配置・IDE起動/終了・APK導入・復元回数を具体的手順へ固定し、別途承認する。property未指定の通常pathには出力がないことをJVM証拠で別記する。",
         "新private rootと明示opt-inで取得ON1。既存controllerをfixture sourceと診断product/lease HEADが別bindingである最小適合版として使う。同じSDK adbを保ち、別dumpはfixture観察だけとする。追加collector/JDI/BCI/fault-helper/SDK置換を行わない。",
         "100入力×3phaseの300母数を先に固定し、15×6+10のblock、最低1.2秒間隔、各phase deadlineとidentity guardを維持する。未知・未入力・欠落を正常母数から除外しない。取得240秒、native全体600秒、追加試行0。",
-        "Save最大1。Save前後receiptと実FrozenCaptureで窓・到着順を判定し、固定中の順序不明/遅着を実欠落と混同しない。拒否/失敗時は追加Saveで救済しない。",
+        "Save N=300（保存窓300秒）、最大1。100入力・300phaseの有限診断を正式30分試験へ代用しない。Save前後receiptと実FrozenCaptureで窓・到着順を判定し、固定中の順序不明/遅着を実欠落と混同しない。拒否/失敗時は追加Saveで救済しない。",
         "OFF1で既存reader終了を確認した後だけprivate dumpを封印。原binary/header/payload、parser-pass/live判定、store受理ID、Frozen集合と保存record_idを照合する。raw/metadata上限・複数接続・書込失敗なら不完全のまま残す。",
         "新profileの診断設定解除、新IDE通常終了、fixture HOME・元QA IDE focus復元、所有reader/pin/未保存状態確認、lease解放を行う。通常candidate/QA未完了・REAL保留を維持し、診断を正式同期・300event30分・GOP・画質PASSへ流用しない。"
       ],

@@ -117,6 +117,7 @@ internal class LogInputDiagnostic private constructor(
         if (sealed) return false
         sealed = true
         val directory = root ?: return false
+        if (connections == 0) fail("no_connection")
         return try {
             fun save(name: String, bytes: ByteArray, count: Int) {
                 validateRoot(directory)
