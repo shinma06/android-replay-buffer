@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "issue": 113,
+  "gui_required": false,
+  "reason": "trusted main089fの履歴と未同期管理記録4件を専用develop同期PRで保持する。自動mergeの重複GOP節を既存developの1節へ戻し、製品code/build/fixture/CLI/検証器・131 Case/200出典・延期条件を変更しない。新候補の生成・同ZIP/native受入は統合後に別途実施する。",
+  "cli_checks": [
+    "python3 scripts/check.py: 管理回帰・構造検証",
+    "python3 scripts/workflow/product_check.py: CLI互換保全",
+    "python3 scripts/workflow/change_impact.py --base origin/develop --run-tests: clean committed HEADで実行",
+    "既存source_commitsの同期DAG照合、固定main祖先・main再merge差分0・全製品/Case/初期計画不変を照合"
+  ],
+  "cases": []
+}

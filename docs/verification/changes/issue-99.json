@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "issue": 99,
+  "gui_required": false,
+  "reason": "PR98実統合版へ初期Agent受入計画の9 current_case_sha256とCase85の履歴1出典をbindingし、128 Case・197出典と単一MP4/時計確度分離の説明を管理3ファイルだけで同期する。他119 entry、既存196出典、延期/人間範囲、GOP改訂、QA65、製品Case/code/build/gateと原型CLIを変更せず、製品GUI受入を主張しない。",
+  "cli_checks": [
+    "python3 scripts/check.py: 固定管理HEADで構造・管理回帰を実行",
+    "python3 scripts/workflow/product_check.py: 原型CLIを保全検証",
+    "python3 scripts/workflow/change_impact.py --base origin/main --run-tests: clean committed HEADで実行"
+  ],
+  "cases": []
+}
