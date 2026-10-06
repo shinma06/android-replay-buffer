@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "issue": 108,
+  "gui_required": false,
+  "reason": "PR107の実develop統合へ初期Agent受入計画をbindingし、既存128 entry・197出典を変えず3 Case・3出典とREADME件数を追加する管理3ファイルの変更。製品code/build、CLI、検証器、既存延期条件を変更せず、IDE/端末操作や製品受入PASSを発行しない。",
+  "cli_checks": [
+    "python3 scripts/check.py: 固定管理HEADで構造・管理回帰を実行",
+    "python3 scripts/workflow/product_check.py: 原型CLIを保全検証",
+    "python3 scripts/workflow/change_impact.py --base origin/main --run-tests: clean committed HEADで実行"
+  ],
+  "cases": []
+}
