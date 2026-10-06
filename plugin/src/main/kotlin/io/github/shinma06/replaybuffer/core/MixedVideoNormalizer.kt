@@ -6,7 +6,9 @@ import org.jcodec.codecs.h264.H264Utils
 import org.jcodec.codecs.h264.decode.SliceHeaderReader
 import org.jcodec.codecs.h264.encode.DumbRateControl
 import org.jcodec.codecs.h264.io.model.AspectRatio
+import org.jcodec.codecs.h264.io.model.PictureParameterSet
 import org.jcodec.codecs.h264.io.model.SeqParameterSet
+import org.jcodec.codecs.h264.io.model.SliceHeader
 import org.jcodec.codecs.h264.io.model.SliceType
 import org.jcodec.codecs.h264.io.model.VUIParameters
 import org.jcodec.common.io.BitReader
@@ -70,6 +72,8 @@ internal class MixedVideoNormalizer(private val configs: List<ByteArray>) {
     private lateinit var encoder: H264Encoder
     private lateinit var source: SeqParameterSet
     private lateinit var config: ByteArray
+    private lateinit var runSps: List<SeqParameterSet>
+    private lateinit var runPps: List<PictureParameterSet>
     private var planes = emptyArray<ByteArray>()
 
     init {
@@ -84,6 +88,8 @@ internal class MixedVideoNormalizer(private val configs: List<ByteArray>) {
     fun startRun(bytes: ByteArray) {
         config = bytes
         source = sources[configs.indexOfFirst { it.contentEquals(bytes) }.also { require(it >= 0) }]
+        runSps = H264Utils.getRawSPS(ByteBuffer.wrap(bytes)).map { boundedSps(it) }
+        runPps = H264Utils.getRawPPS(ByteBuffer.wrap(bytes)).map { boundedPps(it) }
         decoder = serialDecoder().apply {
             // addSps/addPps clone their buffers in fixed 0.2.5; decodeFrame does not.
             addSps(H264Utils.getRawSPS(ByteBuffer.wrap(bytes)))
@@ -128,10 +134,14 @@ internal class MixedVideoNormalizer(private val configs: List<ByteArray>) {
             if (type == 1 || type == 5) {
                 val slice = ByteBuffer.wrap(ByteArray(nal.remaining() - 1).also { nal.duplicate().apply { get() }.get(it) })
                 H264Utils.unescapeNAL(slice)
-                val header = SliceHeaderReader.readPart1(BitReader.createBitReader(slice))
+                val reader = BitReader.createBitReader(slice)
+                val header = SliceHeaderReader.readPart1(reader)
                 require(header.sliceType == SliceType.I || header.sliceType == SliceType.P) { "B/SP/SI-frame変換は非対応です" }
-                require(header.firstMbInSlice in 0 until (planes[0].size / 256) &&
-                    H264Utils.getRawPPS(ByteBuffer.wrap(config)).any { boundedPps(it).picParameterSetId == header.picParameterSetId }) { "変換元sliceの位置・PPSが不正です" }
+                require(header.firstMbInSlice in 0 until (planes[0].size / 256)) { "変換元sliceの位置が不正です" }
+                // FrameReader's ID maps keep the last parameter set, including duplicate IDs.
+                val pps = requireNotNull(runPps.lastOrNull { it.picParameterSetId == header.picParameterSetId }) { "変換元sliceのPPSが不正です" }
+                val sps = requireNotNull(runSps.lastOrNull { it.seqParameterSetId == pps.seqParameterSetId }) { "変換元sliceのSPSが不正です" }
+                boundedSliceReferences(reader, header, sps, pps, type == 5)
                 slices++
             }
         }
@@ -192,6 +202,29 @@ internal class MixedVideoNormalizer(private val configs: List<ByteArray>) {
         if (v?.chromaLocInfoPresentFlag == true) v.chromaSampleLocTypeBottomField else 0,
         v?.videoSignalTypePresentFlag == true && v.colourDescriptionPresentFlag && v.colourPrimaries != 2 &&
             v.transferCharacteristics != 2 && v.matrixCoefficients != 2)
+}
+
+internal fun requireSliceReferenceMinus1(value: Long) {
+    require(value in 0L..15L) { "変換元sliceの参照frame数が上限を超えています" }
+}
+
+/** Preflight only the supported progressive I/P prefix, before readPart2 allocates weight tables. */
+internal fun boundedSliceReferences(r: BitReader, header: SliceHeader, sps: SeqParameterSet, pps: PictureParameterSet, idr: Boolean) {
+    fun bits(n: Int): Int { require(r.remaining() >= n) { "sliceが途中で終了しています" }; return r.readNBit(n) }
+    fun ue(): Long {
+        var zeros = 0
+        while (bits(1) == 0) { zeros++; require(zeros <= 30) { "slice整数が上限を超えています" } }
+        return (1L shl zeros) - 1 + bits(zeros)
+    }
+    bits(sps.log2MaxFrameNumMinus4 + 4)
+    if (idr) ue()
+    // Match fixed JCodec 0.2.5's readPart2 prefix, including its SPS fieldPicFlag check.
+    when (sps.picOrderCntType) {
+        0 -> { bits(sps.log2MaxPicOrderCntLsbMinus4 + 4); if (pps.picOrderPresentFlag && !sps.fieldPicFlag) ue() }
+        1 -> if (!sps.deltaPicOrderAlwaysZeroFlag) { ue(); if (pps.picOrderPresentFlag && !sps.fieldPicFlag) ue() }
+    }
+    pps.numRefIdxActiveMinus1.forEach { requireSliceReferenceMinus1(it.toLong()) }
+    if (header.sliceType == SliceType.P && bits(1) == 1) requireSliceReferenceMinus1(ue())
 }
 
 /** JCodec allocates POC/HRD/FMO arrays from Exp-Golomb values before checking their sizes. */

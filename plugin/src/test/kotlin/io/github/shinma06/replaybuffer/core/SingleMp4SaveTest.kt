@@ -266,6 +266,50 @@ class SingleMp4SaveTest {
     }
 
     @Test
+    fun sliceReferenceCountsAreBoundedWithoutCodecAllocation() {
+        listOf(0L, 1L, 15L).forEach { requireSliceReferenceMinus1(it) }
+        listOf(-1L, 16L, Int.MAX_VALUE.toLong(), Long.MAX_VALUE).forEach {
+            assertFailsWith<IllegalArgumentException> { requireSliceReferenceMinus1(it) }
+        }
+    }
+
+    @Test
+    fun validWeightedPSlicePrefixesMatchJcodecBeforeItsWeightTables() {
+        val encoder = H264Encoder.createH264Encoder()
+        for (poc in 0..2) for (override in listOf(false, true)) for (refs in listOf(0, 15)) {
+            val sps = encoder.initSPS(org.jcodec.common.model.Size(32, 32)).apply { picOrderCntType = poc }
+            val pps = encoder.initPPS().apply { weightedPredFlag = true; picOrderPresentFlag = true; numRefIdxActiveMinus1 = intArrayOf(refs, 0) }
+            val header = org.jcodec.codecs.h264.io.model.SliceHeader().apply {
+                this.sps = sps; this.pps = pps; sliceType = org.jcodec.codecs.h264.io.model.SliceType.P
+                numRefIdxActiveOverrideFlag = override; numRefIdxActiveMinus1 = intArrayOf(refs, 0)
+                deltaPicOrderCnt = intArrayOf(1, -1); deltaPicOrderCntBottom = -1
+                predWeightTable = org.jcodec.codecs.h264.io.model.PredictionWeightTable().apply {
+                    lumaWeight = arrayOf(IntArray(refs + 1) { 1 }, intArrayOf(1))
+                    lumaOffset = arrayOf(IntArray(refs + 1), intArrayOf(0))
+                    chromaWeight = Array(2) { list -> Array(2) { IntArray(if (list == 0) refs + 1 else 1) { 1 } } }
+                    chromaOffset = Array(2) { list -> Array(2) { IntArray(if (list == 0) refs + 1 else 1) } }
+                }
+            }
+            val bytes = ByteBuffer.allocate(128)
+            val writer = org.jcodec.common.io.BitWriter(bytes)
+            org.jcodec.codecs.h264.io.write.SliceHeaderWriter.write(header, false, 0, writer)
+            writer.flush(); bytes.flip()
+            val reader = org.jcodec.common.io.BitReader.createBitReader(bytes.duplicate())
+            val part1 = org.jcodec.codecs.h264.decode.SliceHeaderReader.readPart1(reader)
+            boundedSliceReferences(reader, part1, sps, pps, false)
+            // At this point only the reordering flag separates the prefix from the weights.
+            assertEquals(0, reader.read1Bit())
+            assertEquals(1, reader.read1Bit()) // luma_log2_weight_denom = ue(0)
+            val jcodecReader = org.jcodec.common.io.BitReader.createBitReader(bytes.duplicate())
+            val decoded = org.jcodec.codecs.h264.decode.SliceHeaderReader.readPart2(
+                org.jcodec.codecs.h264.decode.SliceHeaderReader.readPart1(jcodecReader),
+                org.jcodec.codecs.h264.io.model.NALUnit(org.jcodec.codecs.h264.io.model.NALUnitType.NON_IDR_SLICE, 0), sps, pps, jcodecReader,
+            )
+            assertEquals(refs + 1, decoded.predWeightTable.lumaWeight[0].size)
+        }
+    }
+
+    @Test
     fun hostileParameterArraySizesFailBeforeJcodecAllocation() {
         fun spsCycle(): ByteBuffer {
             val bytes = ByteBuffer.allocate(32)
