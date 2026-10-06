@@ -266,6 +266,16 @@ class SingleMp4SaveTest {
     }
 
     @Test
+    fun parameterSetIdsKeepOneContentWithinEachConfig() {
+        fun nal(vararg bytes: Byte) = ByteBuffer.wrap(bytes)
+        requireConsistentParameterSets(listOf(0 to nal(1), 0 to nal(1), 1 to nal(2)))
+        requireConsistentParameterSets(listOf(0 to nal(2))) // A later run may reuse the ID.
+        assertFailsWith<IllegalArgumentException> {
+            requireConsistentParameterSets(listOf(0 to nal(1), 0 to nal(2)))
+        }
+    }
+
+    @Test
     fun sliceReferenceCountsAreBoundedWithoutCodecAllocation() {
         listOf(0L, 1L, 15L).forEach { requireSliceReferenceMinus1(it) }
         listOf(-1L, 16L, Int.MAX_VALUE.toLong(), Long.MAX_VALUE).forEach {

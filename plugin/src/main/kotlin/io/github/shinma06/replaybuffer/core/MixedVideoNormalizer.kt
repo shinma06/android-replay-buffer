@@ -21,9 +21,14 @@ import java.nio.ByteBuffer
 internal class MixedVideoNormalizer(private val configs: List<ByteArray>) {
     private val sources = configs.map { config ->
         require(config.size in 1..ReplaySettings.MAX_CONFIG_PACKET_BYTES) { "変換元configのサイズが不正です" }
-        val sps = H264Utils.getRawSPS(ByteBuffer.wrap(config)).map { boundedSps(it) }
-        val pps = H264Utils.getRawPPS(ByteBuffer.wrap(config)).map { boundedPps(it) }
+        val rawSps = H264Utils.getRawSPS(ByteBuffer.wrap(config))
+        val rawPps = H264Utils.getRawPPS(ByteBuffer.wrap(config))
+        val sps = rawSps.map { boundedSps(it) }
+        val pps = rawPps.map { boundedPps(it) }
         require(sps.isNotEmpty() && pps.isNotEmpty()) { "変換元SPS/PPSがありません" }
+        // In-band sets must match this config. Identical duplicates keep the selected prefix invariant.
+        requireConsistentParameterSets(sps.zip(rawSps).map { (s, raw) -> s.seqParameterSetId to raw })
+        requireConsistentParameterSets(pps.zip(rawPps).map { (p, raw) -> p.picParameterSetId to raw })
         sps.forEach { s ->
             require(s.profileIdc in setOf(66, 77, 100) && s.chromaFormatIdc == ColorSpace.YUV420J &&
                 s.bitDepthLumaMinus8 == 0 && s.bitDepthChromaMinus8 == 0 && s.frameMbsOnlyFlag &&
@@ -202,6 +207,12 @@ internal class MixedVideoNormalizer(private val configs: List<ByteArray>) {
         if (v?.chromaLocInfoPresentFlag == true) v.chromaSampleLocTypeBottomField else 0,
         v?.videoSignalTypePresentFlag == true && v.colourDescriptionPresentFlag && v.colourPrimaries != 2 &&
             v.transferCharacteristics != 2 && v.matrixCoefficients != 2)
+}
+
+internal fun requireConsistentParameterSets(sets: List<Pair<Int, ByteBuffer>>) {
+    require(sets.groupBy { it.first }.values.all { group -> group.map { it.second }.distinct().size == 1 }) {
+        "同じIDのSPS/PPSに異なる内容があります"
+    }
 }
 
 internal fun requireSliceReferenceMinus1(value: Long) {
