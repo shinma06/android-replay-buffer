@@ -43,6 +43,7 @@ internal data class DeviceLog(
     val message: String?,
     val raw: ByteArray,
     val decodeStatus: String = "text",
+    val lidPresent: Boolean = true,
 )
 
 internal fun readLog(input: InputStream): DeviceLog {
@@ -75,7 +76,7 @@ internal fun readLog(input: InputStream): DeviceLog {
         payload, if (!text) "binary" else if (end <= 0) "malformed_text" else try {
             Charsets.UTF_8.newDecoder().decode(ByteBuffer.wrap(payload.copyOfRange(1, payload.size)))
             "text"
-        } catch (_: java.nio.charset.CharacterCodingException) { "invalid_utf8" })
+        } catch (_: java.nio.charset.CharacterCodingException) { "invalid_utf8" }, headerSize >= 24)
 }
 
 private fun ByteArray.indexOf(value: Byte, from: Int): Int {

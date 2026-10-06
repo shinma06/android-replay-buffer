@@ -11,13 +11,14 @@ import kotlin.concurrent.thread
 internal class OwnedAdb(private val executable: Path) : AutoCloseable {
     private val closing = AtomicBoolean()
     private val owned = ConcurrentHashMap.newKeySet<Process>()
+    private val drains = ConcurrentHashMap<Process, Thread>()
 
+    @Synchronized
     fun start(vararg args: String): Process {
         check(!closing.get())
         val process = ProcessBuilder(listOf(executable.toString()) + args).start()
         owned.add(process)
-        if (closing.get()) { stop(process); error("取得が取消されました") }
-        thread(name = "replay-stderr", isDaemon = true) {
+        drains[process] = thread(name = "replay-stderr", isDaemon = true) {
             runCatching { process.errorStream.use { stream ->
                 val bytes = ByteArray(4096)
                 while (stream.read(bytes) >= 0) { /* Drain without publishing raw device output. */ }
@@ -60,18 +61,48 @@ internal class OwnedAdb(private val executable: Path) : AutoCloseable {
                 process.destroyForcibly()
                 check(process.waitFor(2, TimeUnit.SECONDS)) { "所有adb clientの終了を確認できません" }
             }
-            owned.remove(process)
-            runCatching { process.inputStream.close() }
-            runCatching { process.outputStream.close() }
-            runCatching { process.errorStream.close() }
+            release(process, System.nanoTime() + 500_000_000)
         } finally { if (interrupted) Thread.currentThread().interrupt() }
     }
 
+    private fun release(process: Process, deadline: Long) {
+        check(!process.isAlive) { "所有adb clientの終了を確認できません" }
+        runCatching { process.inputStream.close() }
+        runCatching { process.outputStream.close() }
+        runCatching { process.errorStream.close() }
+        drains[process]?.let {
+            TimeUnit.NANOSECONDS.timedJoin(it, (deadline - System.nanoTime()).coerceAtLeast(0))
+            check(!it.isAlive) { "所有adb stderr readerの終了を確認できません" }
+        }
+        drains.remove(process)
+        owned.remove(process)
+    }
+
+    @Synchronized
     override fun close() {
         closing.set(true)
+        val interrupted = Thread.interrupted()
         var failure: Throwable? = null
-        owned.toList().forEach { runCatching { stop(it) }.onFailure { e -> failure = e } }
-        failure?.let { throw it }
+        try {
+            val processes = owned.toList()
+            processes.forEach { runCatching { it.destroy() }.onFailure { e -> failure = e } }
+            val graceful = System.nanoTime() + 300_000_000
+            processes.forEach { runCatching {
+                it.waitFor((graceful - System.nanoTime()).coerceAtLeast(0), TimeUnit.NANOSECONDS)
+            }.onFailure { e -> failure = e } }
+            processes.filter { it.isAlive }.forEach {
+                runCatching { it.destroyForcibly() }.onFailure { e -> failure = e }
+            }
+            val forced = System.nanoTime() + 2_000_000_000
+            processes.forEach { runCatching {
+                check(it.waitFor((forced - System.nanoTime()).coerceAtLeast(0), TimeUnit.NANOSECONDS)) {
+                    "所有adb clientの終了を確認できません"
+                }
+            }.onFailure { e -> failure = e } }
+            val drained = System.nanoTime() + 500_000_000
+            processes.forEach { runCatching { release(it, drained) }.onFailure { e -> failure = e } }
+            failure?.let { throw it }
+        } finally { if (interrupted) Thread.currentThread().interrupt() }
     }
 }
 

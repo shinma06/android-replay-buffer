@@ -19,17 +19,33 @@ class OwnedAdbTest {
     fun cancellationTerminatesOnlyOwnedClientsAndRejectsLateCreation() {
         val directory = Files.createTempDirectory("replay-adb-fixture-")
         val fake = directory.resolve("adb")
-        Files.writeString(fake, "#!/bin/sh\nexec /bin/sleep 30\n")
+        Files.writeString(fake, """#!/usr/bin/python3
+import signal,time,pathlib,os
+signal.signal(signal.SIGTERM,signal.SIG_IGN)
+pathlib.Path(__file__).with_name(str(os.getpid())+'.ready').touch()
+time.sleep(30)
+""")
         assertTrue(fake.toFile().setExecutable(true))
         val unrelated = ProcessBuilder("/bin/sleep", "30").start()
         val adb = OwnedAdb(fake)
         try {
-            val owned = adb.start("devices", "-l")
+            val owned = java.util.concurrent.CopyOnWriteArrayList((1..3).map { adb.start("devices", "-l") })
+            val ready = System.nanoTime() + 2_000_000_000
+            while (owned.any { !Files.exists(directory.resolve("${it.pid()}.ready")) } && System.nanoTime() < ready) Thread.sleep(10)
+            assertTrue(owned.all { Files.exists(directory.resolve("${it.pid()}.ready")) })
+            val racing = kotlin.concurrent.thread {
+                repeat(2) { runCatching { adb.start("devices", "-l") }.onSuccess { owned += it } }
+            }
+            val started = System.nanoTime()
             adb.close()
-            assertFalse(owned.isAlive)
+            racing.join(1000)
+            assertFalse(racing.isAlive)
+            assertTrue(System.nanoTime() - started < 4_000_000_000, "Batch shutdown must not wait a grace period per client")
+            assertTrue(owned.none { it.isAlive })
+            adb.close()
             assertTrue(unrelated.isAlive)
             assertFailsWith<IllegalStateException> { adb.start("devices") }
             assertFailsWith<IllegalArgumentException> { serialArgument("emulator-5554;kill") }
-        } finally { adb.close(); unrelated.destroyForcibly().waitFor(); Files.delete(fake); Files.delete(directory) }
+        } finally { adb.close(); unrelated.destroyForcibly().waitFor(); directory.toFile().deleteRecursively() }
     }
 }

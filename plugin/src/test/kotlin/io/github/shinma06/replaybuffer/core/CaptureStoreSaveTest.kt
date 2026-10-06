@@ -21,6 +21,36 @@ import kotlin.test.assertTrue
 
 class CaptureStoreSaveTest {
     @Test
+    fun partialReaderFailureKeepsItsGapAndOutOfOrderPruneCannotEvictFreshRows() {
+        val root = Files.createTempDirectory("replay-log-partition-store-")
+        val store = CaptureStore(root.resolve("ring"), logLimit = 514, minFree = 0)
+        val host = System.nanoTime() + 1_000_000_000
+        fun row(second: Long, lid: Int) = DeviceLog(1_700_000_000_000_000_000 + second * 1_000_000_000,
+            12, 12, 10001, lid, 4, "Fixture", "same", byteArrayOf(1))
+        try {
+            store.generation(1); store.status("device_log", StreamState.CAPTURING, null, 1)
+            for (second in 1L..5L) anchor(store.clock, second * 1_000_000_000, host + (second - 1) * 1_000_000_000)
+            store.app("com.fixture.app", 10001, setOf(12), 1, uidExclusive = true)
+            val first = store.log(row(5, 0), 1, host + 4_000_000_000)
+            store.status("device_log", StreamState.RECOVERING, "all reader interrupted", 1)
+            store.log(row(2, 1), 1, host + 4_100_000_000)
+            val partial = store.capture(ReplaySettings(replaySeconds = 30))!!
+            assertEquals(StreamState.RECOVERING, partial.states.getValue("device_log").state)
+            assertTrue(partial.gaps.any { it.stream == "device_log" && it.toNs == null })
+            store.release(partial.id)
+            store.prune(2)
+            val second = store.log(row(5, 1), 1, host + 4_200_000_000)
+            store.status("device_log", StreamState.CAPTURING, null, 1)
+            val recovered = store.capture(ReplaySettings(replaySeconds = 30))!!
+            assertEquals(setOf(first, second), recovered.logs.map { it.id }.toSet())
+            assertEquals(2, recovered.logs.size) // Equal contents across buffers are distinct records.
+            assertTrue(recovered.logs.all { it.app == true })
+            assertTrue(recovered.gaps.none { it.reason.contains("byte上限") })
+            assertTrue(recovered.gaps.any { it.stream == "device_log" && it.toNs != null })
+        } finally { store.close(); root.toFile().deleteRecursively() }
+    }
+
+    @Test
     fun delayedValidClockKeepsNewTargetLogMembershipWithoutReclassifyingTrueUnknown() {
         val root = Files.createTempDirectory("replay-clock-receipt-")
         val store = CaptureStore(root.resolve("ring"), minFree = 0)
@@ -28,7 +58,7 @@ class CaptureStoreSaveTest {
         fun record(elapsed: Long, message: String) = DeviceLog(1_700_000_000_000_000_000 + elapsed,
             12, 12, 10001, 0, 4, "Fixture", message, byteArrayOf(1))
         try {
-            store.generation(1)
+            store.generation(1); store.status("device_log", StreamState.CAPTURING, null, 1)
             assertTrue(store.clock.add("1", listOf(1_000_000_000L, 1_000_000_000L,
                 1_700_000_001_000_000_000, 1_000_000_000), host, host + 200_000))
             store.app("com.example.target", 10001, setOf(12), 1, uidExclusive = true)
@@ -74,7 +104,7 @@ class CaptureStoreSaveTest {
         fun record(elapsed: Long, message: String, uid: Long = 10002) =
             DeviceLog(1_700_000_000_000_000_000 + elapsed, 99, 99, uid, 0, 4, "Fixture", message, byteArrayOf(1))
         try {
-            store.generation(1)
+            store.generation(1); store.status("device_log", StreamState.CAPTURING, null, 1)
             val old = record(1_500_000_000, "old initially unknown")
             store.log(old, 1, host + 500_000_000) // No clock sample exists yet.
             anchor(store.clock, 1_000_000_000, host)
@@ -131,7 +161,7 @@ class CaptureStoreSaveTest {
         fun record(elapsed: Long, message: String, uid: Long = 10002) =
             DeviceLog(1_700_000_000_000_000_000 + elapsed, 99, 99, uid, 0, 4, "Fixture", message, byteArrayOf(1))
         try {
-            store.generation(1)
+            store.generation(1); store.status("device_log", StreamState.CAPTURING, null, 1)
             anchor(store.clock, 1_000_000_000, host)
             store.app("com.example.target", 10001, setOf(12), 1)
             store.log(record(1_100_000_000, "sequence start"), 1, host + 100_000_000)
@@ -219,7 +249,7 @@ class CaptureStoreSaveTest {
         assertTrue(encoded.drop(1).all { frame -> H264Utils.splitFrame(ByteBuffer.wrap(frame)).any { it.get(0).toInt() and 31 == 1 } })
         val host = System.nanoTime() - if (immediateRecovery) 3_000_000_000 else 0
         try {
-            store.generation(1); store.session(VideoPacket.Session(32, 32), 1)
+            store.generation(1); store.status("device_log", StreamState.CAPTURING, null, 1); store.session(VideoPacket.Session(32, 32), 1)
             anchor(store.clock, 1_000_000_000, host)
             store.frame(VideoPacket.Frame(0, true, false, config(bytes)), 1)
             for ((i, pts) in listOf(1_100_000L, 1_300_000L, 1_500_000L).withIndex()) {
@@ -357,7 +387,7 @@ class CaptureStoreSaveTest {
         val host = System.nanoTime()
         val bytes = sample()
         try {
-            store.generation(1); store.session(VideoPacket.Session(32, 32), 1)
+            store.generation(1); store.status("device_log", StreamState.CAPTURING, null, 1); store.session(VideoPacket.Session(32, 32), 1)
             anchor(store.clock, 1_000_000_000, host)
             store.frame(VideoPacket.Frame(0, true, false, config(bytes)), 1)
             store.frame(VideoPacket.Frame(1_000_000, false, true, bytes), 1, host)
@@ -406,7 +436,7 @@ class CaptureStoreSaveTest {
         val store = CaptureStore(root.resolve("ring"), videoLimit = maxOf(bytes.size, pBytes.size).toLong(), minFree = 0)
         val host = System.nanoTime()
         try {
-            store.generation(1); store.session(VideoPacket.Session(32, 32), 1)
+            store.generation(1); store.status("device_log", StreamState.CAPTURING, null, 1); store.session(VideoPacket.Session(32, 32), 1)
             anchor(store.clock, 1_000_000_000, host)
             store.frame(VideoPacket.Frame(0, true, false, config(bytes)), 1)
             assertTrue(store.frame(VideoPacket.Frame(1_000_000, false, true, bytes), 1, host))
@@ -440,7 +470,7 @@ class CaptureStoreSaveTest {
         val host = System.nanoTime()
         val bytes = sample()
         try {
-            store.generation(1); store.session(VideoPacket.Session(32, 32), 1)
+            store.generation(1); store.status("device_log", StreamState.CAPTURING, null, 1); store.session(VideoPacket.Session(32, 32), 1)
             anchor(store.clock, 1_000_000_000, host)
             store.frame(VideoPacket.Frame(0, true, false, config(bytes)), 1)
             store.frame(VideoPacket.Frame(1_000_000, false, true, bytes), 1, host)
@@ -484,7 +514,7 @@ class CaptureStoreSaveTest {
         val store = CaptureStore(root.resolve("ring"), minFree = 0)
         val host = System.nanoTime()
         try {
-            store.generation(1); store.session(VideoPacket.Session(32, 32), 1)
+            store.generation(1); store.status("device_log", StreamState.CAPTURING, null, 1); store.session(VideoPacket.Session(32, 32), 1)
             anchor(store.clock, 1_000_000_000, host)
             store.frame(VideoPacket.Frame(0, true, false, config(bytes)), 1)
             store.frame(VideoPacket.Frame(1_000_000, false, true, bytes), 1, host)
@@ -571,7 +601,7 @@ class CaptureStoreSaveTest {
         val store = CaptureStore(root.resolve("ring"), videoLimit = bytes.size.toLong(), minFree = 0)
         val host = System.nanoTime()
         try {
-            store.generation(1); store.session(VideoPacket.Session(32, 32), 1)
+            store.generation(1); store.status("device_log", StreamState.CAPTURING, null, 1); store.session(VideoPacket.Session(32, 32), 1)
             anchor(store.clock, 1_000_000_000, host)
             store.frame(VideoPacket.Frame(0, true, false, config(bytes)), 1)
             store.frame(VideoPacket.Frame(1_000_000, false, true, bytes), 1, host)
@@ -603,7 +633,7 @@ class CaptureStoreSaveTest {
         val host = System.nanoTime()
         val bytes = sample()
         try {
-            store.generation(1); store.session(VideoPacket.Session(32, 32), 1)
+            store.generation(1); store.status("device_log", StreamState.CAPTURING, null, 1); store.session(VideoPacket.Session(32, 32), 1)
             anchor(store.clock, 1_000_000_000, host)
             store.frame(VideoPacket.Frame(0, true, false, config(bytes)), 1)
             store.frame(VideoPacket.Frame(1_000_000, false, true, bytes), 1, host)
@@ -640,7 +670,7 @@ class CaptureStoreSaveTest {
         val store = CaptureStore(root.resolve("ring"), minFree = 0)
         val host = System.nanoTime()
         try {
-            store.generation(1)
+            store.generation(1); store.status("device_log", StreamState.CAPTURING, null, 1)
             store.app(null, null, emptySet(), 1)
             assertEquals(StreamState.UNAVAILABLE, store.streams()["app_log"]?.state)
             anchor(store.clock, 1_000_000_000, host)
@@ -692,7 +722,7 @@ class CaptureStoreSaveTest {
         val host = System.nanoTime()
         val bytes = sample()
         try {
-            store.generation(1)
+            store.generation(1); store.status("device_log", StreamState.CAPTURING, null, 1)
             store.session(VideoPacket.Session(32, 32), 1)
             store.frame(VideoPacket.Frame(0, true, false, config(bytes)), 1)
             anchor(store.clock, 1_000_000_000, host)
@@ -757,7 +787,7 @@ class CaptureStoreSaveTest {
         val host = System.nanoTime()
         val bytes = sample()
         try {
-            store.generation(1); store.session(VideoPacket.Session(32, 32), 1)
+            store.generation(1); store.status("device_log", StreamState.CAPTURING, null, 1); store.session(VideoPacket.Session(32, 32), 1)
             anchor(store.clock, 1_000_000_000, host)
             store.frame(VideoPacket.Frame(0, true, false, config(bytes)), 1)
             for (pts in listOf(0L, 100_000L, 350_000L)) {
@@ -820,7 +850,7 @@ class CaptureStoreSaveTest {
         val store = CaptureStore(root.resolve("ring"), minFree = 0)
         val host = System.nanoTime()
         try {
-            store.generation(1); anchor(store.clock, 1_000_000_000, host)
+            store.generation(1); store.status("device_log", StreamState.CAPTURING, null, 1); anchor(store.clock, 1_000_000_000, host)
             store.app("com.example.app", 10001, setOf(12), 1, uidExclusive = true)
             anchor(store.clock, 2_000_000_000, host + 1_000_000_000)
             store.log(DeviceLog(1_700_000_002_000_000_000, 99, 99, 10001, 0, 4, "app", "new PID", byteArrayOf(1)), 1, host + 1_000_000_000)
@@ -842,7 +872,7 @@ class CaptureStoreSaveTest {
         val store = CaptureStore(root.resolve("ring"), videoLimit = bytes.size.toLong(), logLimit = 258, minFree = 0)
         val host = System.nanoTime()
         try {
-            store.generation(1); store.session(VideoPacket.Session(32, 32), 1)
+            store.generation(1); store.status("device_log", StreamState.CAPTURING, null, 1); store.session(VideoPacket.Session(32, 32), 1)
             anchor(store.clock, 1_000_000_000, host)
             store.frame(VideoPacket.Frame(0, true, false, config(bytes)), 1)
             store.frame(VideoPacket.Frame(1_000_000, false, true, bytes), 1, host)
@@ -876,7 +906,7 @@ class CaptureStoreSaveTest {
         val host = System.nanoTime()
         val bytes = sample()
         try {
-            store.generation(1); store.session(VideoPacket.Session(32, 32), 1)
+            store.generation(1); store.status("device_log", StreamState.CAPTURING, null, 1); store.session(VideoPacket.Session(32, 32), 1)
             anchor(store.clock, 1_000_000_000, host)
             store.frame(VideoPacket.Frame(0, true, false, config(bytes)), 1)
             store.frame(VideoPacket.Frame(1_000_000, false, true, bytes), 1, host)

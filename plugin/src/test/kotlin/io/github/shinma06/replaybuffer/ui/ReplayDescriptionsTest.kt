@@ -40,7 +40,7 @@ class ReplayDescriptionsTest {
             fun anchor(elapsed: Long, time: Long) {
                 store.clock.add("1", listOf(elapsed, elapsed, 1_700_000_000_000_000_000 + elapsed, elapsed), time, time)
             }
-            store.generation(1)
+            store.generation(1); store.status("device_log", StreamState.CAPTURING, null, 1)
             anchor(1_000_000_000, host)
             store.app("com.fixture.app", 10001, setOf(12), 1, true)
             store.log(DeviceLog(1_700_000_001_000_000_000, 12, 12, 10001, 0, 4, "Fixture", "synthetic", byteArrayOf(1)), 1, host)

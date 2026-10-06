@@ -1,6 +1,9 @@
-# 製品logcat原入力の有限診断（#106）
+# 8d診断版の履歴（#106）
 
-これは保存ログ欠落の切分けであり、原因確定・修正済み・正式QAの合格を表さない。固定基準05827d4と診断HEAD/ZIP/実ロード版を区別する。[Case](changes/issue-106.json)とIssue #106の具体的割当を正本とする。今回の実装だけでGUI/ADB/raw採取/導入・再起動を開始しない。
+この文書は固定診断HEAD `8d868d0fe5de625ff9fcd8e6f8aa657ec5b6a52e` 専用の履歴です。最終製品候補は診断class/propertyを撤去しており、以下の手順は適用できません。現在の製品修正は[Case](changes/issue-106.json)を正本とします。旧診断Caseの原文/未達は[固定8d Case](https://github.com/shinma06/android-replay-buffer/blob/8d868d0fe5de625ff9fcd8e6f8aa657ec5b6a52e/docs/verification/changes/issue-106.json)に保持し、そのファイルのSHA-256は `cdf80c3e142b9eec5ef6865e0b1b331c2c14fa78638aedc840dbf0d4eafb88db` です。旧観察を新候補のPASS/deferredへ付け替えません。
+
+
+これは保存ログ欠落の切分けであり、原因確定・修正済み・正式QAの合格を表さない。固定基準05827d4と診断HEAD/ZIP/実ロード版を区別する。上記固定8d Caseと当時のIssue #106の具体的割当を履歴の正本とする。今回の実装だけでGUI/ADB/raw採取/導入・再起動を開始しない。
 
 ## 記録の境界
 

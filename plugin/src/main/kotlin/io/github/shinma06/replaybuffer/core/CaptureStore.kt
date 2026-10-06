@@ -236,7 +236,12 @@ internal class CaptureStore(
             logBytes -= lost.source.raw.size + 256
             addGap("device_log", lost.time.sequence, lost.time.sequence, "ログのbyte上限でrecordを失いました")
         }
-        status("device_log", StreamState.CAPTURING, if (time.elapsed == null || time.sequence == null || time.uncertainty > 20_000_000) "ログの時刻対応を確認できません" else null, owner)
+        // Reader readiness owns transitions/gaps; another reader's row cannot recover a failed source.
+        if (states.getValue("device_log").state == StreamState.CAPTURING) {
+            val reason = if (time.elapsed == null || time.sequence == null || time.uncertainty > 20_000_000)
+                "ログの時刻対応を確認できません" else null
+            states["device_log"] = states.getValue("device_log").copy(reason = reason)
+        }
         return row.id // Accepted into the store; retention and membership are separate decisions.
     }
 
@@ -282,9 +287,12 @@ internal class CaptureStore(
             val key = if (last == null) all.size else (all.lastIndex downTo 0).firstOrNull { all[it].key } ?: 0
             repeat(key) { removeVideo() }
         }
-        while (logs.isNotEmpty() && logs.peekFirst().time.sequence != null && logs.peekFirst().time.uncertainty != Long.MAX_VALUE &&
-            logs.peekFirst().retainedAt < cutoff - logs.peekFirst().time.uncertainty) {
-            logBytes -= logs.removeFirst().source.raw.size + 256
+        // ponytail: scan the byte-bounded ring; add a time index only if measured pruning cost requires it.
+        logs.removeIf { row ->
+            val expired = row.time.sequence != null && row.time.uncertainty != Long.MAX_VALUE &&
+                row.retainedAt < cutoff - row.time.uncertainty
+            if (expired) logBytes -= row.source.raw.size + 256
+            expired
         }
         enforceVideoLimit()
         deleteUnused()
