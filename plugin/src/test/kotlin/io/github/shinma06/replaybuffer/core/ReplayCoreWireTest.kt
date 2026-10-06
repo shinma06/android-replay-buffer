@@ -5,6 +5,8 @@ import org.jcodec.codecs.h264.H264Encoder
 import org.jcodec.codecs.h264.H264Utils
 import org.jcodec.common.model.ColorSpace
 import org.jcodec.common.model.Picture
+import org.junit.jupiter.api.condition.EnabledOnOs
+import org.junit.jupiter.api.condition.OS
 import java.io.DataOutputStream
 import java.net.InetAddress
 import java.net.ServerSocket
@@ -32,8 +34,16 @@ class ReplayCoreWireTest {
         runWireFixture(true)
     }
 
-    private fun runWireFixture(discardInitialPFrame: Boolean) {
+    @Test
+    @EnabledOnOs(OS.MAC) // Existing SaveWriter fixture uses macOS AVFoundation; not IDE/device acceptance.
+    fun partitionedLogsPreserveIdsAndPartialFailureAndLegacyUnknownHeadersKeepAll() {
+        for (mode in listOf("partition", "legacy", "empty", "timeout", "cancel")) runWireFixture(false, mode)
+    }
+
+    private fun runWireFixture(discardInitialPFrame: Boolean, logMode: String? = null) {
         val root = Files.createTempDirectory("replay-wire-fixture-")
+        Files.writeString(root.resolve("probe-mode.txt"), logMode ?: "partition")
+        Files.writeString(root.resolve("log-events.txt"), "")
         val devices = root.resolve("devices.txt")
         Files.writeString(devices, "List of devices attached\nfixture-1 device model:Fixture\nfixture-2 device model:Other\n")
         val pids = root.resolve("owned-pids.txt")
@@ -136,10 +146,42 @@ elif len(a)>2 and a[2]=='push':
 elif len(a)>2 and a[2]=='forward':
     if '--remove' not in a: print(${server.localPort})
 elif len(a)>2 and a[2]=='logcat':
+    mode=(root/'probe-mode.txt').read_text()
+    buffer=a[a.index('-b')+1]
+    def emit(lid,message,epoch=None,pid=12,uid=10001,header=28,tag='Fixture'):
+        epoch=time.time_ns() if epoch is None else epoch
+        payload=(b'\x06'+message.encode()) if lid==2 else b'\x04'+tag.encode()+b'\x00'+message.encode()+b'\x00'
+        raw=struct.pack('<HHiiII',len(payload),header,pid,pid,epoch//1000000000,epoch%1000000000)
+        if header>=24: raw+=struct.pack('<I',lid)
+        if header>=28: raw+=struct.pack('<I',uid)
+        raw+=payload
+        for i in range(0,len(raw),3):
+            sys.stdout.buffer.write(raw[i:i+3]); sys.stdout.buffer.flush()
+    if '-d' in a:
+        (root/'probe-started').touch()
+        if mode=='empty': sys.exit(0)
+        if mode in ('timeout','cancel'): time.sleep(90)
+        emit(0,'probe',header=20 if mode=='legacy' else 28)
+        sys.exit(0)
+    with (root/'log-launches.txt').open('a') as f: f.write(buffer+'\n')
+    seen=len((root/'log-events.txt').read_text().splitlines())
     while True:
-        epoch=time.time_ns(); payload=b'\x04Fixture\x00hello\x00'
-        sys.stdout.buffer.write(struct.pack('<HHiiIIII',len(payload),28,12,12,epoch//1000000000,epoch%1000000000,0,10001)+payload)
-        sys.stdout.buffer.flush(); time.sleep(.1)
+        if (root/('fail-'+buffer)).exists(): sys.exit(7)
+        if buffer=='all' and (root/'wrong-header-all').exists():
+            emit(0,'wrong header',header=20); time.sleep(.1); continue
+        if buffer=='all' and (root/'quiet-all').exists(): time.sleep(.1); continue
+        emit(0,'hello',header=20 if mode=='legacy' else 28)
+        lines=(root/'log-events.txt').read_text().splitlines()
+        for line in lines[seen:]:
+            wall,label=line.split(' ',1); wall=int(wall)
+            emit(0,label,wall,header=20 if mode=='legacy' else 28,tag='Partition')
+            if buffer=='all' and mode!='legacy':
+                emit(1,label,wall,tag='Partition')
+                emit(2,label,wall,pid=99,uid=10002)
+                emit(3,label,wall,pid=99,header=24,tag='Partition')
+            (root/(buffer+'-'+label+'.sent')).touch()
+        seen=len(lines)
+        time.sleep(.1)
 elif len(a)>3 and 'ClockProbe' in a[3]:
     print('REPLAY_CLOCK_1',flush=True)
     with socket.create_connection(('127.0.0.1',${clockServer.localPort})) as clock:
@@ -175,6 +217,18 @@ elif len(a)>3 and a[3]=='ps':
             assertTrue(enabled.accepted, enabled.reason)
             awaitState("unselected-multiple") { it.captureState == CaptureState.MULTIPLE_DEVICES && it.device == null }
             Files.writeString(devices, "List of devices attached\nfixture-1 device model:Fixture\n")
+            if (logMode == "cancel") {
+                val deadline = System.nanoTime() + 3_000_000_000
+                while (!Files.exists(root.resolve("probe-started")) && System.nanoTime() < deadline) Thread.sleep(10)
+                assertTrue(Files.exists(root.resolve("probe-started")))
+                val started = System.nanoTime()
+                assertTrue(core.setEnabled(false).get(10, TimeUnit.SECONDS).accepted)
+                assertTrue(System.nanoTime() - started < 5_500_000_000)
+                core.closeAsync().get(10, TimeUnit.SECONDS)
+                assertFalse(Files.exists(root.resolve("log-launches.txt")))
+                Files.readAllLines(pids).forEach { pid -> assertFalse(ProcessHandle.of(pid.toLong()).map { it.isAlive }.orElse(false)) }
+                return
+            }
             if (discardInitialPFrame) {
                 assertTrue(discardedFrameSent.await(5, TimeUnit.SECONDS))
                 awaitState("discarded-initial-P-frame") { it.video.state == StreamState.RECOVERING && it.video.gaps.any { gap ->
@@ -185,6 +239,90 @@ elif len(a)>3 and a[3]=='ps':
             awaitState("unresolved-app") { it.video.state == StreamState.CAPTURING && it.appLog.state == StreamState.UNAVAILABLE }
             assertTrue(core.updateApplication(ApplicationTarget("com.fixture.app")).get().accepted)
             val capturing = awaitState("initial-capture") { it.canSave && it.video.state == StreamState.CAPTURING && it.appLog.state == StreamState.CAPTURING }
+            if (logMode != null) {
+                assertTrue(core.applySettings(core.snapshot().settings.copy(replaySeconds = 30, saveDirectory = root)).get().accepted)
+                fun sent(buffer: String, label: String) {
+                    val deadline = System.nanoTime() + 3_000_000_000
+                    while (!Files.exists(root.resolve("$buffer-$label.sent")) && System.nanoTime() < deadline) Thread.sleep(10)
+                    assertTrue(Files.exists(root.resolve("$buffer-$label.sent")))
+                }
+                fun emit(label: String, buffer: String = if (logMode == "partition") "main" else "all") {
+                    Files.writeString(root.resolve("log-events.txt"), "${System.currentTimeMillis() * 1_000_000} $label\n",
+                        java.nio.file.StandardOpenOption.APPEND)
+                    sent(buffer, label)
+                }
+                emit("first")
+                sent("all", "first")
+                if (logMode == "partition") {
+                    val quietGaps = core.snapshot().deviceLog.gaps
+                    Files.createFile(root.resolve("quiet-all"))
+                    Thread.sleep(1200)
+                    assertEquals(StreamState.CAPTURING, core.snapshot().deviceLog.state)
+                    assertEquals(quietGaps, core.snapshot().deviceLog.gaps)
+                    Files.delete(root.resolve("quiet-all"))
+                    Files.createFile(root.resolve("fail-all"))
+                    awaitState("all-only-failure") { it.deviceLog.state == StreamState.RECOVERING }
+                    emit("partial")
+                    val partial = core.snapshot()
+                    assertEquals(StreamState.RECOVERING, partial.deviceLog.state)
+                    assertTrue(partial.deviceLog.gaps.any { it.toNs == null })
+                    Files.delete(root.resolve("fail-all"))
+                    awaitState("all-recovered") { it.deviceLog.state == StreamState.CAPTURING }
+                    Files.createFile(root.resolve("wrong-header-all"))
+                    awaitState("all-header-contradiction") { it.deviceLog.state == StreamState.RECOVERING }
+                    emit("header-partial")
+                    assertEquals(StreamState.RECOVERING, core.snapshot().deviceLog.state)
+                    Files.delete(root.resolve("wrong-header-all"))
+                    awaitState("all-header-recovered") { it.deviceLog.state == StreamState.CAPTURING }
+                    assertEquals(1, Files.readAllLines(root.resolve("log-launches.txt")).count { it == "main" })
+                    Files.createFile(root.resolve("fail-main"))
+                    awaitState("main-only-failure") { it.deviceLog.state == StreamState.RECOVERING }
+                    emit("main-partial", "all")
+                    assertEquals(StreamState.RECOVERING, core.snapshot().deviceLog.state)
+                    Files.delete(root.resolve("fail-main"))
+                    awaitState("main-recovered") { it.deviceLog.state == StreamState.CAPTURING }
+                    emit("recovered")
+                    sent("all", "recovered")
+                }
+                // A subsequent supported clock sample maps all returned fixture records.
+                Thread.sleep(1200)
+                assertTrue(core.save().get().accepted)
+                val saved = awaitState("partition-save") { it.save.phase == SavePhase.COMPLETED }
+                val deviceRows = Files.readAllLines(saved.save.directory!!.resolve("logcat-device.jsonl"))
+                    .map { JsonParser.parseString(it).asJsonObject }
+                val rows = deviceRows.filter { !it["tag"].isJsonNull && it["tag"].asString == "Partition" }
+                val appRows = Files.readAllLines(saved.save.directory.resolve("logcat-app.jsonl"))
+                    .map { JsonParser.parseString(it).asJsonObject }
+                    .filter { !it["tag"].isJsonNull && it["tag"].asString == "Partition" }
+                val labels = if (logMode == "partition") listOf("first", "partial", "header-partial", "main-partial", "recovered") else listOf("first")
+                labels.forEach { label ->
+                    val actual = rows.filter { it["message"].asString == label }
+                    val lids = when {
+                        logMode == "legacy" || label in listOf("partial", "header-partial") -> listOf(0)
+                        label == "main-partial" -> listOf(1, 3)
+                        else -> listOf(0, 1, 3)
+                    }
+                    assertEquals(lids, actual.map { it["lid"].asInt }.sorted())
+                    assertEquals(actual.size, actual.map { it["record_id"].asString }.toSet().size)
+                    actual.forEach { row ->
+                        val id = row["record_id"].asString
+                        if (row["lid"].asInt == 3) {
+                            assertTrue(row["app_membership"].isJsonNull)
+                            assertTrue(appRows.none { it["record_id"].asString == id })
+                        } else assertEquals(1, appRows.count { it["record_id"].asString == id })
+                    }
+                }
+                val binary = deviceRows.filter { it["lid"].asInt == 2 }
+                assertEquals(if (logMode == "legacy") 0 else if (logMode == "partition") 3 else 1, binary.size)
+                assertTrue(binary.all { it["decode_status"].asString == "binary" && !it["app_membership"].asBoolean })
+                val launches = Files.readAllLines(root.resolve("log-launches.txt"))
+                if (logMode == "partition") assertTrue(launches.count { it == "main" } >= 2)
+                else assertEquals(0, launches.count { it == "main" })
+                assertTrue(core.setEnabled(false).get(10, TimeUnit.SECONDS).accepted)
+                core.closeAsync().get(10, TimeUnit.SECONDS)
+                Files.readAllLines(pids).forEach { pid -> assertFalse(ProcessHandle.of(pid.toLong()).map { it.isAlive }.orElse(false)) }
+                return
+            }
             if (discardInitialPFrame) {
                 assertEquals(2, readyConnections.get())
                 pauseVideo.set(true)

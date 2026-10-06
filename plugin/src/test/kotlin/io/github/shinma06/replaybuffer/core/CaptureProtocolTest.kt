@@ -47,4 +47,28 @@ class CaptureProtocolTest {
         bytes[2] = 127
         assertFailsWith<IllegalArgumentException> { readLog(ByteArrayInputStream(bytes)) }
     }
+
+    @Test
+    fun fragmentedHeadersDistinguishRealLidFromLegacyDefaultAndRejectTruncatedPayload() {
+        for (size in listOf(20, 24, 28)) {
+            val payload = byteArrayOf(4) + "Fixture\u0000same\u0000".toByteArray()
+            val buffer = ByteBuffer.allocate(size + payload.size).order(ByteOrder.LITTLE_ENDIAN)
+                .putShort(payload.size.toShort()).putShort(size.toShort()).putInt(12).putInt(13)
+                .putInt(1700000000).putInt(123456789)
+            if (size >= 24) buffer.putInt(1)
+            if (size >= 28) buffer.putInt(10001)
+            val bytes = buffer.put(payload).array()
+            val input = object : ByteArrayInputStream(bytes) {
+                override fun read(bytes: ByteArray, offset: Int, length: Int): Int = super.read(bytes, offset, minOf(3, length))
+            }
+            val record = readLog(input)
+            assertEquals(size >= 24, record.lidPresent)
+            assertEquals(if (size == 20) 0 else 1, record.lid)
+            assertEquals(if (size == 28) 10001L else null, record.uid)
+            assertContentEquals(payload, record.raw)
+            assertEquals("same", record.message)
+            assertFailsWith<EOFException> { readLog(input) }
+            assertFailsWith<EOFException> { readLog(ByteArrayInputStream(bytes.copyOf(bytes.size - 1))) }
+        }
+    }
 }

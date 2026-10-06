@@ -1,0 +1,106 @@
+{
+  "schema": 1,
+  "issue": 106,
+  "gui_required": true,
+  "reason": "main/allの排他的受理・legacy互換・片側復旧/停止の製品修正。JVM/固定ZIPと実IDE観察を分け、旧8d診断と正式QA/main未達を維持する。",
+  "cli_checks": [
+    "既存Protocol/Store/OwnedAdb/Wire/UI JVM回帰、全plugin check/buildPlugin/verifyPluginStructure、harness/CLI保全、clean committed HEAD change_impact --run-testsを実行し実結果はIssue/PRに別記する。"
+  ],
+  "cases": [
+    {
+      "artifact": "plugin",
+      "preconditions": "PMの具体的実行指示、専用fixture/対象端末、shared GUI lease。新candidateの固定HEAD/標準ZIP/全JAR hash/embedded source・dirty=false・実ロードidentityを照合する。JVM fakeと実IDE/端末観察を分け、旧8d/05827d4のPASSを転用しない。",
+      "provenance": [
+        "Issue #106のscope更新とCore継続claim",
+        "https://github.com/shinma06/android-replay-buffer/issues/106#issuecomment-6019896110",
+        "docs/design/timeline.md",
+        "docs/verification/changes/issue-27.json",
+        "診断履歴: 8d868d0fe5de625ff9fcd8e6f8aa657ec5b6a52e の docs/verification/changes/issue-106.json / SHA-256 cdf80c3e142b9eec5ef6865e0b1b331c2c14fa78638aedc840dbf0d4eafb88db"
+      ],
+      "gpt": {
+        "status": "pending",
+        "reason": "実装/JVMと新固定buildのnative観察は別証拠。今回はnative未実行。"
+      },
+      "human": {
+        "status": "pending",
+        "reason": "元の人間/REAL工程を維持する。新Caseを自動PASS/延期せず、初期計画への追加はPMが正式追跡する。"
+      },
+      "fix_issue": null,
+      "fix_pr": null,
+      "recheck": "reader/parser/store/停止/ZIP変更時に同じ新候補の回帰と必要nativeを再確認する。",
+      "next_action": "Coreが固定HEAD/base/check/標準ZIP/全JAR packetで停止。PMが独立reviewとinitial-agent正式計画更新、QAへ具体的観察を割り当てる。",
+      "id": "LOG-READER-PARTITION",
+      "change": "main専用と従来allの実lidによる排他的受理でdevice-log対象を保つ",
+      "steps": [
+        "同じ新候補のJVM fakeで両readerに同じmain recordを返し、同本文の非main text/binaryも返す。実lid0はmainだけ、実lid≠0はallだけがStoreへ入ること、UID/PID/元payloadとrecord UUIDを確認する。",
+        "実ロード候補で固定100入力・300phaseの有限観察母数とcapture/Save窓を事前に固定する。fixtureの全phase生成を確認し、両logの全対象行をheader/fixture fields/同一record_idで照合する。欠落/未実施/unknownを母数から除外せず、追加試行で救済しない。",
+        "その環境で読める非main bufferの観測記録をdevice-logで確認し、対象lid/PID/UID/payloadを保持する。同本文でも別record ID、app trueだけ同じIDでapp-logに載ること、false/unknownを確認する。取得できない/刺激できない対象を明示し全buffer無欠落とは主張しない。",
+        "固定T/Nとapp設定履歴、保存窓内/窓外/clock unknown、失敗Saveの固定retryを保持する。有限比較を正式300event/30分・同期/GOP/画質/REAL/人間工程の合格へ転用しない。"
+      ],
+      "expected": "範囲をmainへ縮めず、main由来行の二重Store/本文dedupe/自動backfillがない。device/appの共通record identity、binary/unknown、固定窓/retryを保つ。非main欠落の一般解決や個別rootcause確定は主張しない。"
+    },
+    {
+      "artifact": "plugin",
+      "preconditions": "PMの具体的実行指示、専用fixture/対象端末、shared GUI lease。新candidateの固定HEAD/標準ZIP/全JAR hash/embedded source・dirty=false・実ロードidentityを照合する。JVM fakeと実IDE/端末観察を分け、旧8d/05827d4のPASSを転用しない。",
+      "provenance": [
+        "Issue #106のscope更新とCore継続claim",
+        "https://github.com/shinma06/android-replay-buffer/issues/106#issuecomment-6019896110",
+        "docs/design/timeline.md",
+        "docs/verification/changes/issue-27.json",
+        "診断履歴: 8d868d0fe5de625ff9fcd8e6f8aa657ec5b6a52e の docs/verification/changes/issue-106.json / SHA-256 cdf80c3e142b9eec5ef6865e0b1b331c2c14fa78638aedc840dbf0d4eafb88db"
+      ],
+      "gpt": {
+        "status": "pending",
+        "reason": "実装/JVMと新固定buildのnative観察は別証拠。今回はnative未実行。"
+      },
+      "human": {
+        "status": "pending",
+        "reason": "元の人間/REAL工程を維持する。新Caseを自動PASS/延期せず、初期計画への追加はPMが正式追跡する。"
+      },
+      "fix_issue": null,
+      "fix_pr": null,
+      "recheck": "reader/parser/store/停止/ZIP変更時に同じ新候補の回帰と必要nativeを再確認する。",
+      "next_action": "Coreが固定HEAD/base/check/標準ZIP/全JAR packetで停止。PMが独立reviewとinitial-agent正式計画更新、QAへ具体的観察を割り当てる。",
+      "id": "LOG-READER-COMPATIBILITY",
+      "change": "headerの実lid有無を区別しlegacy/判定不能時に従来allを維持する",
+      "steps": [
+        "同じcandidate source/buildの限定JVMで20/24/28 header、fragment/EOF/不正size/未知lid/元binaryを検証し、20-byteの補完0を実lid0と混同しない。",
+        "既存fake SDKで開始前probeを最大1 record・5120byte以内・短いdeadlineとして、24/28なら2reader、20/空/timeout/取消し/判定不能なら従来allを選ぶ。probe clientの実終了・所有上限を確認し製品record証拠に混ぜない。",
+        "2reader稼働後にlid無し/矛盾したheaderを返し、明示RECOVERING/gapとしsilent dropや稼働中の曖昧なownership切替を行わない。追加public設定/SDK/依存なしを確認する。"
+      ],
+      "expected": "既存parser/legacyの記録互換を保つ。判定不能で対象を狭めない。有限probeの取消し/失敗でclientを残さず、未知入力をmainとして黙って破棄しない。"
+    },
+    {
+      "artifact": "plugin",
+      "preconditions": "PMの具体的実行指示、専用fixture/対象端末、shared GUI lease。新candidateの固定HEAD/標準ZIP/全JAR hash/embedded source・dirty=false・実ロードidentityを照合する。JVM fakeと実IDE/端末観察を分け、旧8d/05827d4のPASSを転用しない。",
+      "provenance": [
+        "Issue #106のscope更新とCore継続claim",
+        "https://github.com/shinma06/android-replay-buffer/issues/106#issuecomment-6019896110",
+        "docs/design/timeline.md",
+        "docs/verification/changes/issue-27.json",
+        "診断履歴: 8d868d0fe5de625ff9fcd8e6f8aa657ec5b6a52e の docs/verification/changes/issue-106.json / SHA-256 cdf80c3e142b9eec5ef6865e0b1b331c2c14fa78638aedc840dbf0d4eafb88db"
+      ],
+      "gpt": {
+        "status": "pending",
+        "reason": "実装/JVMと新固定buildのnative観察は別証拠。今回はnative未実行。"
+      },
+      "human": {
+        "status": "pending",
+        "reason": "元の人間/REAL工程を維持する。新Caseを自動PASS/延期せず、初期計画への追加はPMが正式追跡する。"
+      },
+      "fix_issue": null,
+      "fix_pr": null,
+      "recheck": "reader/parser/store/停止/ZIP変更時に同じ新候補の回帰と必要nativeを再確認する。",
+      "next_action": "Coreが固定HEAD/base/check/標準ZIP/全JAR packetで停止。PMが独立reviewとinitial-agent正式計画更新、QAへ具体的観察を割り当てる。",
+      "id": "LOG-READER-RECOVERY-STOP",
+      "change": "片側障害の集約状態と所有process/workerの有限停止を維持する",
+      "steps": [
+        "同じcandidateのJVM fakeでallだけEOF/例外/header矛盾、mainだけ障害、起動raceを与える。他方の受理を続けてもdevice_logのRECOVERING/未終了gapを閉じず、障害側だけの復旧を確認する。quietなreaderにsilence gapを作らない。",
+        "逆順到着・旧generation拒否・clock jump/初期backlog・byte cap/時間prune/pinを確認する。元host時刻/UUID/app unknown/固定Saveを保持し、古い行がfreshな保存対象を不必要にbyte evictionへ追い込まないことを確認する。",
+        "同じ候補のJVM fakeで2reader read待ち/復旧待ち/起動race/TERMを無視する所有clientをOffにし、共通deadline・全owned client/stderr/worker停止・再closeを確認する。共有ADB server/無関係processを止めず、終了未確認を成功としない。",
+        "QAは同じ実ロード候補で通常Offと承認された通常再接続を観察し、取得復旧/保存gap/固定requestの保持と所有readerの終了を確認する。故障注入や追加再録画は具体的な別指示なしに追加しない。"
+      ],
+      "expected": "必要readerが揃わない状態を正常に上書きしない。既存clock/window/lossを保持し、共通期限と実停止を確認する。未reap/未観測は未完了のまま残す。"
+    }
+  ]
+}

@@ -65,6 +65,7 @@ internal class CaptureStore(
     private var videoSession = 0L
     private var decodeRun = 0L
     private var packetOrdinal = 0L
+    private var logRetentionSeconds: Int? = null
     private var logBytes = 0L
     private var videoBytes = 0L
     private var configBytes = 0L
@@ -214,8 +215,8 @@ internal class CaptureStore(
     }
 
     @Synchronized
-    fun log(source: DeviceLog, owner: Long, host: Long = System.nanoTime()) {
-        if (closed || owner != generation) return
+    fun log(source: DeviceLog, owner: Long, host: Long = System.nanoTime()): String? {
+        if (closed || owner != generation) return null
         val time = clock.log(source.wall, host)
         val retained = time.sequence ?: clock.now(host) ?: 0L
         if (started == null && time.sequence != null) started = retained
@@ -228,14 +229,29 @@ internal class CaptureStore(
             source.uid == null || source.uid == period.uid -> null // shared/unknown UID: a new PID is not evidence of non-membership.
             else -> false
         }
-        logs += LogEntry(UUID.randomUUID().toString(), source, generation, time, retained, app, host)
+        val row = LogEntry(UUID.randomUUID().toString(), source, generation, time, retained, app, host)
+        logs += row
         logBytes += source.raw.size + 256
+        if (logBytes > logLimit && fixedEnd == null) logRetentionSeconds?.let { seconds ->
+            synchronized(clock) {
+                val end = end()
+                val uncertainty = clock.endUncertainty()
+                if (end != null && uncertainty != Long.MAX_VALUE)
+                    pruneLogs(end - seconds * 1_000_000_000L - uncertainty)
+            }
+        }
         while (logBytes > logLimit && logs.isNotEmpty()) {
             val lost = logs.removeFirst()
             logBytes -= lost.source.raw.size + 256
             addGap("device_log", lost.time.sequence, lost.time.sequence, "ログのbyte上限でrecordを失いました")
         }
-        status("device_log", StreamState.CAPTURING, if (time.elapsed == null || time.sequence == null || time.uncertainty > 20_000_000) "ログの時刻対応を確認できません" else null, owner)
+        // Reader readiness owns transitions/gaps; another reader's row cannot recover a failed source.
+        if (states.getValue("device_log").state == StreamState.CAPTURING) {
+            val reason = if (time.elapsed == null || time.sequence == null || time.uncertainty > 20_000_000)
+                "ログの時刻対応を確認できません" else null
+            states["device_log"] = states.getValue("device_log").copy(reason = reason)
+        }
+        return row.id // Accepted into the store; retention and membership are separate decisions.
     }
 
     @Synchronized
@@ -257,7 +273,9 @@ internal class CaptureStore(
 
     @Synchronized
     fun prune(seconds: Int) {
-        if (closed || fixedEnd != null) return
+        if (closed) return
+        logRetentionSeconds = seconds
+        if (fixedEnd != null) return
         val end = end() ?: return
         val uncertainty = clock.endUncertainty()
         // An unknown boot bridge/current T cannot prove that old known-epoch records are outside the window.
@@ -280,13 +298,20 @@ internal class CaptureStore(
             val key = if (last == null) all.size else (all.lastIndex downTo 0).firstOrNull { all[it].key } ?: 0
             repeat(key) { removeVideo() }
         }
-        while (logs.isNotEmpty() && logs.peekFirst().time.sequence != null && logs.peekFirst().time.uncertainty != Long.MAX_VALUE &&
-            logs.peekFirst().retainedAt < cutoff - logs.peekFirst().time.uncertainty) {
-            logBytes -= logs.removeFirst().source.raw.size + 256
-        }
+        pruneLogs(cutoff)
         enforceVideoLimit()
         deleteUnused()
         while (gaps.size > 4096) removeGapProofs(gaps.removeFirst())
+    }
+
+    private fun pruneLogs(cutoff: Long) {
+        // ponytail: scan the byte-bounded ring; add a time index only if measured pruning cost requires it.
+        logs.removeIf { row ->
+            val expired = row.time.sequence != null && row.time.uncertainty != Long.MAX_VALUE &&
+                row.retainedAt < cutoff - row.time.uncertainty
+            if (expired) logBytes -= row.source.raw.size + 256
+            expired
+        }
     }
 
     @Synchronized

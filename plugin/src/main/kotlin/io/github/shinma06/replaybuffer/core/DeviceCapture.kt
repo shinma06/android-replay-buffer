@@ -7,6 +7,7 @@ import java.net.InetSocketAddress
 import java.net.Socket
 import java.nio.file.Path
 import java.util.UUID
+import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -30,6 +31,10 @@ internal class DeviceCapture(
     private val sockets = ConcurrentHashMap.newKeySet<Socket>()
     private val ports = ConcurrentHashMap<String, String>()
     private val token = UUID.randomUUID().toString().replace("-", "")
+    private val partitionLogs = CompletableFuture<Boolean>()
+    private val logProcesses = ConcurrentHashMap<String, Process>()
+    private val logStates = mutableMapOf("main" to StreamSnapshot(StreamState.RECOVERING),
+        "all" to StreamSnapshot(StreamState.RECOVERING))
     private val serverFile = "/data/local/tmp/replay-$token-server.jar"
     private val clockFile = "/data/local/tmp/replay-$token-clock.jar"
     private val serverName = "replay-$token-video"
@@ -41,7 +46,16 @@ internal class DeviceCapture(
     fun start() {
         launch("clock", ::clock)
         launch("video", ::video)
-        launch("device_log", ::logs)
+        launch("device_log-main") {
+            if (!partitionLogs.isDone) {
+                val partition = probeLogLid()
+                check(!stopping.get())
+                partitionLogs.complete(partition)
+            }
+            if (partitionLogs.get()) logs("main", true)
+            else while (pause(1000)) { /* Legacy/unknown headers retain the original all reader. */ }
+        }
+        launch("device_log-all") { logs("all", partitionLogs.get()) }
         workers += thread(name = "replay-app", isDaemon = true) {
             while (!stopping.get()) {
                 val selected = application
@@ -81,12 +95,12 @@ internal class DeviceCapture(
             val recovery = RecoveryDelay()
             while (!stopping.get()) {
                 if (delay > 0 && !pause(delay)) break
-                if (kind != "clock") store.status(kind, StreamState.RECOVERING, "取得を復旧しています", generation)
+                if (kind != "clock") status(kind, StreamState.RECOVERING, "取得を復旧しています")
                 val attempt = System.nanoTime()
                 runCatching(operation).onFailure {
                     if (!stopping.get() && kind == "clock") { store.clock.boundary(); store.clockStatus(false, generation) }
-                    if (!stopping.get() && kind != "clock") store.status(kind, StreamState.RECOVERING,
-                        if (kind == "video") "動画取得が中断しました（PTS/config/容量/接続を確認してください）" else "全体ログ取得が中断しました", generation)
+                    if (!stopping.get() && kind != "clock") status(kind, StreamState.RECOVERING,
+                        if (kind == "video") "動画取得が中断しました（PTS/config/容量/接続を確認してください）" else "全体ログ取得が中断しました（header/接続を確認してください）")
                 }
                 delay = recovery.next(System.nanoTime() - attempt >= 10_000_000_000)
             }
@@ -130,24 +144,66 @@ internal class DeviceCapture(
         }
     }
 
-    private fun logs() {
+    @Synchronized
+    private fun status(kind: String, state: StreamState, reason: String?) {
+        if (kind != "device_log-main" && kind != "device_log-all") {
+            store.status(kind, state, reason, generation)
+            return
+        }
+        val role = kind.removePrefix("device_log-")
+        logStates[role] = StreamSnapshot(state, reason = reason)
+        val required = if (partitionLogs.getNow(true)) logStates else mapOf("all" to logStates.getValue("all"))
+        val failed = required.entries.firstOrNull { it.value.state != StreamState.CAPTURING }
+        store.status("device_log", if (failed == null) StreamState.CAPTURING else StreamState.RECOVERING,
+            failed?.let { "${it.key}: ${it.value.reason ?: "取得を復旧しています"}" }, generation)
+    }
+
+    private fun startLogProcess(role: String, vararg args: String): Process {
+        logProcesses[role]?.let { previous ->
+            adb.stop(previous) // Retain a failed-to-stop process in its slot; never create an overlapping replacement.
+            logProcesses.remove(role, previous)
+        }
+        return adb.start("-s", serial, "logcat", *args).also { logProcesses[role] = it }
+    }
+
+    private fun probeLogLid(): Boolean {
+        val process = startLogProcess("probe", "-b", "all", "-B", "-d", "-t", "1")
+        var expiry: java.util.concurrent.ScheduledFuture<*>? = null
+        try {
+            expiry = timer.schedule({ runCatching { adb.stop(process) } }, 1, TimeUnit.SECONDS)
+            return try { readLog(process.inputStream).lidPresent } catch (_: Exception) { false }
+        } finally {
+            expiry?.cancel(false)
+            adb.stop(process)
+            logProcesses.remove("probe", process)
+        }
+    }
+
+    private fun logs(buffer: String, partition: Boolean) {
         val deadline = System.nanoTime() + 5_000_000_000
         while (store.clock.snapshot().none { it.valid } && System.nanoTime() < deadline) { check(pause(50)) }
         val started = System.nanoTime()
         val initial = store.clock.snapshot().lastOrNull { it.valid }
         val lower = initial?.let { it.wall + (started - it.received).coerceAtLeast(0) }
-        val process = adb.start("-s", serial, "logcat", "-b", "all", "-B", "-T", "1")
+        val process = startLogProcess(buffer, "-b", buffer, "-B", "-T", "1")
         try {
-            store.status("device_log", StreamState.CAPTURING, null, generation)
+            val input = process.inputStream
+            status("device_log-$buffer", StreamState.CAPTURING, null)
             var live = false
             while (!stopping.get()) {
-                val record = readLog(process.inputStream)
+                val record = readLog(input)
+                val received = System.nanoTime()
+                if (partition) {
+                    check(record.lidPresent) { "分割取得中のlogcat headerにlidがありません" }
+                    if (buffer == "main") check(record.lid == 0) { "main取得に別bufferのrecordがあります" }
+                }
                 // Exclude the old -T 1 tail; clock jumps remain explicitly uncertain, never backfilled.
                 val anchor = store.clock.snapshot().lastOrNull { it.valid }
                 if (lower == null || anchor?.epoch != initial.epoch || record.wall >= lower) live = true
-                if (live) store.log(record, generation)
+                if (live && (!partition || (buffer == "main") == (record.lid == 0)))
+                    store.log(record, generation, received)
             }
-        } finally { adb.stop(process) }
+        } finally { adb.stop(process); logProcesses.remove(buffer, process) }
     }
 
     private fun clock() {
@@ -182,11 +238,15 @@ internal class DeviceCapture(
         stopping.set(true)
         sockets.forEach { runCatching { it.close() } }
         timer.shutdownNow()
-        adb.close()
-        workers.forEach { it.interrupt() }
-        workers.forEach { it.join(2500) }
-        check(workers.none { it.isAlive }) { "取得readerの終了を確認できません" }
-        check(timer.awaitTermination(2500, TimeUnit.MILLISECONDS)) { "取得watchdogの終了を確認できません" }
+        try { adb.close() } finally {
+            workers.forEach { it.interrupt() }
+            val deadline = System.nanoTime() + 2_500_000_000
+            workers.forEach { TimeUnit.NANOSECONDS.timedJoin(it, (deadline - System.nanoTime()).coerceAtLeast(0)) }
+            check(workers.none { it.isAlive }) { "取得readerの終了を確認できません" }
+            check(timer.awaitTermination((deadline - System.nanoTime()).coerceAtLeast(0), TimeUnit.NANOSECONDS)) {
+                "取得watchdogの終了を確認できません"
+            }
+        }
         cleanupPending = !cleanupRemote()
     }
 

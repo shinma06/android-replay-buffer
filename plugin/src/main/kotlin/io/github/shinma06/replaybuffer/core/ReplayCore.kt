@@ -124,7 +124,8 @@ class ReplayCore(initialSettings: ReplaySettings, private val workspace: Path, c
     fun save(): CompletableFuture<ReplayOperation> = operation {
         publish()
         if (!current.canSave) return@operation ReplayOperation(false, current.saveDisabledReason)
-        val capture = store?.capture(settings)?.copy(device = device) ?: return@operation ReplayOperation(false, "保存できる取得データがありません")
+        val capture = store?.capture(settings)?.copy(device = device)
+        if (capture == null) return@operation ReplayOperation(false, "保存できる取得データがありません")
         pending = capture
         startSave(capture, settings.saveDirectory!!)
         ReplayOperation(true, requestId = capture.id)
