@@ -5,11 +5,15 @@ import org.jcodec.codecs.h264.H264Encoder
 import org.jcodec.codecs.h264.H264Utils
 import org.jcodec.common.model.ColorSpace
 import org.jcodec.common.model.Picture
+import org.junit.jupiter.api.condition.EnabledOnOs
+import org.junit.jupiter.api.condition.OS
+import java.io.DataInputStream
 import java.io.DataOutputStream
 import java.net.InetAddress
 import java.net.ServerSocket
 import java.nio.ByteBuffer
 import java.nio.file.Files
+import java.nio.file.Path
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -32,7 +36,32 @@ class ReplayCoreWireTest {
         runWireFixture(true)
     }
 
-    private fun runWireFixture(discardInitialPFrame: Boolean) {
+    @Test
+    @EnabledOnOs(OS.MAC) // The existing production save fixture requires macOS AVFoundation.
+    fun optedInInputReceiptMatchesActualWireAndFrozenSavedRecordsAfterOff() {
+        diagnosticWire(false)
+    }
+
+    @Test
+    @EnabledOnOs(OS.MAC)
+    fun diagnosticWriteFailureDoesNotPreventProductOffAndOwnedProcessShutdown() {
+        diagnosticWire(true)
+    }
+
+    private fun diagnosticWire(failDump: Boolean) {
+        val diagnostic = Files.createTempDirectory("replay-wire-input-").toRealPath()
+        val previous = System.getProperty(LogInputDiagnostic.PROPERTY)
+        try {
+            System.setProperty(LogInputDiagnostic.PROPERTY, diagnostic.toString())
+            runWireFixture(false, diagnostic, failDump)
+        } finally {
+            if (previous == null) System.clearProperty(LogInputDiagnostic.PROPERTY)
+            else System.setProperty(LogInputDiagnostic.PROPERTY, previous)
+            diagnostic.toFile().deleteRecursively()
+        }
+    }
+
+    private fun runWireFixture(discardInitialPFrame: Boolean, diagnostic: Path? = null, failDump: Boolean = false) {
         val root = Files.createTempDirectory("replay-wire-fixture-")
         val devices = root.resolve("devices.txt")
         Files.writeString(devices, "List of devices attached\nfixture-1 device model:Fixture\nfixture-2 device model:Other\n")
@@ -220,6 +249,54 @@ elif len(a)>3 and a[3]=='ps':
                     val manifest = JsonParser.parseString(Files.readString(normal.save.directory!!.resolve("session.json"))).asJsonObject
                     assertTrue(manifest["complete"].asBoolean)
                     assertFalse(manifest["video_tail"].asJsonObject["new_frame_confirmed"].asBoolean)
+                    if (diagnostic != null) {
+                        val saved = Files.readAllLines(normal.save.directory.resolve("logcat-device.jsonl"))
+                            .map { JsonParser.parseString(it).asJsonObject }
+                        if (failDump) Files.writeString(diagnostic.resolve("input.bin.partial"), "preserve")
+                        assertTrue(core.setEnabled(false).get(15, TimeUnit.SECONDS).accepted)
+                        core.closeAsync().get(15, TimeUnit.SECONDS)
+                        if (failDump) {
+                            assertEquals("preserve", Files.readString(diagnostic.resolve("input.bin.partial")))
+                            assertFalse(Files.exists(diagnostic.resolve("receipt.json")))
+                            assertEquals(CaptureState.DISABLED, core.snapshot().captureState)
+                            Files.readAllLines(pids).forEach { pid -> assertFalse(ProcessHandle.of(pid.toLong()).map { it.isAlive }.orElse(false)) }
+                            return
+                        }
+                        val receipt = JsonParser.parseString(Files.readString(diagnostic.resolve("receipt.json"))).asJsonObject
+                        assertTrue(receipt["complete"].asBoolean, receipt.toString())
+                        assertEquals(1, receipt["connections"].asInt)
+                        val raw = diagnostic.resolve("input.bin.partial")
+                        assertEquals(receipt["raw_sha256"].asString, sha256(raw))
+                        val sourceWalls = mutableSetOf<Long>()
+                        Files.newInputStream(raw).use { input ->
+                            while (true) {
+                                val record = try { readLog(input) } catch (_: java.io.EOFException) { break }
+                                sourceWalls += record.wall
+                            }
+                        }
+                        assertTrue(saved.all { it["epoch_ns"].asLong in sourceWalls })
+                        val accepted = mutableSetOf<String>()
+                        var frozen = emptySet<String>()
+                        var parsed = 0
+                        DataInputStream(Files.newInputStream(diagnostic.resolve("receipt.bin.partial"))).use { input ->
+                            while (input.available() > 0) when (input.readUnsignedByte().toChar()) {
+                                'R' -> { input.readLong(); input.readInt(); input.readLong(); input.readLong() }
+                                'P' -> { input.readLong(); input.readLong(); input.readLong(); input.readBoolean(); parsed++ }
+                                'S' -> { input.readLong(); input.readLong(); input.readLong()
+                                    if (input.readBoolean()) accepted += input.readUTF() }
+                                'B', 'N' -> input.readLong()
+                                'F' -> { input.readLong(); assertEquals(normal.save.requestId, input.readUTF())
+                                    input.readUTF(); input.readLong(); input.readLong(); input.readLong()
+                                    frozen = (0 until input.readInt()).map { input.readUTF() }.toSet() }
+                                else -> error("Unknown diagnostic receipt")
+                            }
+                        }
+                        assertTrue(parsed > 0)
+                        assertTrue(accepted.containsAll(frozen))
+                        assertEquals(saved.map { it["record_id"].asString }.toSet(), frozen)
+                        Files.readAllLines(pids).forEach { pid -> assertFalse(ProcessHandle.of(pid.toLong()).map { it.isAlive }.orElse(false)) }
+                        return
+                    }
                     pauseVideo.set(false)
                     awaitState("static-resumed") { it.video.availableSeconds > 0 && it.video.gaps.isEmpty() }
                 }

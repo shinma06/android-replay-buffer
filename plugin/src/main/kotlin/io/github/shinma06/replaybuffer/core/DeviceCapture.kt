@@ -30,6 +30,7 @@ internal class DeviceCapture(
     private val sockets = ConcurrentHashMap.newKeySet<Socket>()
     private val ports = ConcurrentHashMap<String, String>()
     private val token = UUID.randomUUID().toString().replace("-", "")
+    private val inputDiagnostic = LogInputDiagnostic.optIn()
     private val serverFile = "/data/local/tmp/replay-$token-server.jar"
     private val clockFile = "/data/local/tmp/replay-$token-clock.jar"
     private val serverName = "replay-$token-video"
@@ -138,14 +139,24 @@ internal class DeviceCapture(
         val lower = initial?.let { it.wall + (started - it.received).coerceAtLeast(0) }
         val process = adb.start("-s", serial, "logcat", "-b", "all", "-B", "-T", "1")
         try {
+            val input = inputDiagnostic?.input(process.inputStream, stopping::get) ?: process.inputStream
             store.status("device_log", StreamState.CAPTURING, null, generation)
             var live = false
             while (!stopping.get()) {
-                val record = readLog(process.inputStream)
+                val begin = inputDiagnostic?.position() ?: 0L
+                val record = try { readLog(input) } catch (error: Exception) {
+                    if (!stopping.get()) inputDiagnostic?.parseFailed()
+                    throw error
+                }
                 // Exclude the old -T 1 tail; clock jumps remain explicitly uncertain, never backfilled.
                 val anchor = store.clock.snapshot().lastOrNull { it.valid }
                 if (lower == null || anchor?.epoch != initial.epoch || record.wall >= lower) live = true
-                if (live) store.log(record, generation)
+                inputDiagnostic?.parsed(begin, live)
+                if (live) {
+                    val entered = if (inputDiagnostic != null) System.nanoTime() else 0L
+                    val id = store.log(record, generation)
+                    inputDiagnostic?.stored(begin, entered, id)
+                }
             }
         } finally { adb.stop(process) }
     }
@@ -188,6 +199,13 @@ internal class DeviceCapture(
         check(workers.none { it.isAlive }) { "取得readerの終了を確認できません" }
         check(timer.awaitTermination(2500, TimeUnit.MILLISECONDS)) { "取得watchdogの終了を確認できません" }
         cleanupPending = !cleanupRemote()
+    }
+
+    fun diagnosticSaveStarted() { inputDiagnostic?.saveStarted() }
+    fun diagnosticFrozen(capture: FrozenCapture?) { inputDiagnostic?.frozen(capture) }
+    fun finishInputDiagnostic() {
+        check(stopping.get() && workers.none { it.isAlive }) { "診断保存前のreader停止を確認できません" }
+        inputDiagnostic?.finish(generation, serial)
     }
 
     fun cleanupRemote(): Boolean = cleanupRecord().clean(adbPath).also { cleanupPending = !it }

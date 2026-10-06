@@ -214,8 +214,8 @@ internal class CaptureStore(
     }
 
     @Synchronized
-    fun log(source: DeviceLog, owner: Long, host: Long = System.nanoTime()) {
-        if (closed || owner != generation) return
+    fun log(source: DeviceLog, owner: Long, host: Long = System.nanoTime()): String? {
+        if (closed || owner != generation) return null
         val time = clock.log(source.wall, host)
         val retained = time.sequence ?: clock.now(host) ?: 0L
         if (started == null && time.sequence != null) started = retained
@@ -228,7 +228,8 @@ internal class CaptureStore(
             source.uid == null || source.uid == period.uid -> null // shared/unknown UID: a new PID is not evidence of non-membership.
             else -> false
         }
-        logs += LogEntry(UUID.randomUUID().toString(), source, generation, time, retained, app, host)
+        val row = LogEntry(UUID.randomUUID().toString(), source, generation, time, retained, app, host)
+        logs += row
         logBytes += source.raw.size + 256
         while (logBytes > logLimit && logs.isNotEmpty()) {
             val lost = logs.removeFirst()
@@ -236,6 +237,7 @@ internal class CaptureStore(
             addGap("device_log", lost.time.sequence, lost.time.sequence, "ログのbyte上限でrecordを失いました")
         }
         status("device_log", StreamState.CAPTURING, if (time.elapsed == null || time.sequence == null || time.uncertainty > 20_000_000) "ログの時刻対応を確認できません" else null, owner)
+        return row.id // Accepted into the store; retention and membership are separate decisions.
     }
 
     @Synchronized

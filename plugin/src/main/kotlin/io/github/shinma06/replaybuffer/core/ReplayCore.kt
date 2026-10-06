@@ -124,7 +124,10 @@ class ReplayCore(initialSettings: ReplaySettings, private val workspace: Path, c
     fun save(): CompletableFuture<ReplayOperation> = operation {
         publish()
         if (!current.canSave) return@operation ReplayOperation(false, current.saveDisabledReason)
-        val capture = store?.capture(settings)?.copy(device = device) ?: return@operation ReplayOperation(false, "保存できる取得データがありません")
+        backend?.diagnosticSaveStarted()
+        val capture = store?.capture(settings)?.copy(device = device)
+        backend?.diagnosticFrozen(capture)
+        if (capture == null) return@operation ReplayOperation(false, "保存できる取得データがありません")
         pending = capture
         startSave(capture, settings.saveDirectory!!)
         ReplayOperation(true, requestId = capture.id)
@@ -258,6 +261,7 @@ class ReplayCore(initialSettings: ReplaySettings, private val workspace: Path, c
         store?.freeze()
         listOf("video", "device_log", "app_log").forEach { store?.status(it, StreamState.RECOVERING, "端末との取得接続が中断しています", generation) }
         capture.close()
+        capture.finishInputDiagnostic()
         if (capture.cleanupPending) cleanup.retain(capture.cleanupRecord())
         backend = null
     }

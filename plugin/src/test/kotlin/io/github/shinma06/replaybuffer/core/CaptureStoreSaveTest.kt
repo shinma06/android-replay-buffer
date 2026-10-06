@@ -16,6 +16,7 @@ import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class CaptureStoreSaveTest {
@@ -31,7 +32,8 @@ class CaptureStoreSaveTest {
             assertTrue(store.clock.add("1", listOf(1_000_000_000L, 1_000_000_000L,
                 1_700_000_001_000_000_000, 1_000_000_000), host, host + 200_000))
             store.app("com.example.target", 10001, setOf(12), 1, uidExclusive = true)
-            store.log(record(1_100_000_000, "known window start"), 1, host + 100_100_000)
+            assertNull(store.log(record(1_100_000_000, "wrong generation"), 99, host + 100_100_000))
+            val firstAccepted = store.log(record(1_100_000_000, "known window start"), 1, host + 100_100_000)
             assertTrue(store.clock.add("1", listOf(2_000_000_000L, 2_000_000_000L,
                 1_700_000_002_000_000_000, 2_000_000_000), host + 1_000_000_000, host + 1_031_842_708))
             val normal = record(2_034_000_000, "causally arrived target")
@@ -40,6 +42,7 @@ class CaptureStoreSaveTest {
             store.log(unknown, 1, host + 1_060_000_000)
             anchor(store.clock, 3_000_000_000, host + 2_000_000_000)
             val capture = store.capture(ReplaySettings(replaySeconds = 180))!!
+            assertEquals(firstAccepted, capture.logs.single { it.source.message == "known window start" }.id)
             val target = capture.logs.single { it.source === normal }
             val unsupported = capture.logs.single { it.source === unknown }
             assertEquals(true, target.app)
