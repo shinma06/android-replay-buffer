@@ -75,11 +75,11 @@ Plugin ZIPは [開発手順](../plugin-development.md) の標準buildPluginで�
 
 `78:CLOCK-RECEIPT-NORMAL`は同ZIP製品classの限定JVMと実IDEの正常3event・全9phase行の確認を両方必須とし、延期やhuman必須を追加しない。3event確認を既存正式300event/30分・同期精度・GOP Caseの代替にせず、旧候補の結果を新buildへ転用しない。
 
-`85:CLOCK-UNCERTAIN-VIDEO-PLAYBACK`は元の7手順・expected全文と8・9番目の追加手順・期待補足の各全文を保持し、同ZIP製品classの限定JVMと実IDE・標準player観察を両方必須とする。N=300で通常3操作・両log各9phase行、および同取得で1回だけ通常再接続するPRE3/POST3操作・両log各18phase行を固定母数とし、事前の240秒の余裕と事後snapshot Tによる全phaseの窓判定を分ける。通常・再接続で生成した全MP4を実再生/seekして全操作の映像を通常durationで確認し、未観察・欠落・unknown・窓外を合格にしない。元PTS/duration/preroll、gap/MAX/不足と旧/新VIDEO scopeの両側normal proof・否定guard・固定retryを維持し、part数や表示frame数を一律固定しない。延期やhuman必須を追加せず、短いCase85のPASSを全面解消や既存300event/30分・精密同期・OCR・画質/負荷/容量/pin・GOPの合格へ転用しない。
+`85:CLOCK-UNCERTAIN-VIDEO-PLAYBACK`の歴史9手順・expectedとPR86/92/94の固定出典は旧revisionで保持する。現在の製品契約は[Issue85 Case](changes/issue-85.json)の単一MP4方式とframeごとの時計対応であり、同ZIP製品classの限定JVMと実IDE・標準player観察を両方必須とする。N=300で通常3操作・両log各9phase行、および同取得で1回だけ通常再接続するPRE3/POST3操作・両log各18phase行を固定母数とし、事前の240秒の余裕と事後snapshot Tによる全phaseの窓判定を分ける。通常・再接続で生成した単一MP4を実再生/seekして全操作の映像を通常durationで確認し、未観察・欠落・unknown・窓外を合格にしない。短いCase85のPASSを既存300event/30分・精密同期・OCR・画質/負荷/容量/pin・GOPの合格へ転用しない。
 
-追加source-only再生は、取得時に記録してfreezeしたsource順序・owner/session/file byte境界と実VIDEO breakの前後位置によるpositive proofが揃う同一GOPのunknown runだけを対象とする。runとdecoder prefix内の実cut、proof無し/open/片側/所有不明/矛盾・source各break/容量lossを拒否し、既存clock/mux/coverage guard・原null/MAX/gap/loss/不足と固定retryを維持する。観測PTS差によるsample間の再生と、終端source duration不明のcontainer表現tickを区別し、1-frame runや即終了出力をnative PASSにしない。旧4 Agent requirementsを残して追加要件を追記し、旧d05のpartial/pending/FAIL/deferredや限定PASSを新候補へ転用しない。
+再生区間は取得時にfreezeしたpositive decode run/packet ordinal、generation/session/config/dimensions/source PTS/file byte境界で判断する。時計の品質だけでpacketを分割・省略せず、必要IDRや中間packetを失った対象はFAILEDとし固定pinを維持する。元clock/cut/VIDEO scope、null/MAX/gap/loss/不足は消さず、同期・coverageをframe単位で別に判定する。観測PTS差のVFR、終端source duration不明とcontainer表現tick、既知gapのempty edit、不明gapのactual duration nullを区別する。同geometryはremux、混在geometryだけ検証範囲内で固定canvasへ変換し、元AnnexB config/全対象packetとdecoder prefixを1raw sidecarへbitexact保存する。標準playerの全frame/seek、画質・色・長時間処理負荷は実buildで別途確認する。
 
-複数再接続の非隣接fileにあるVIDEO cutも、全cutと全decoder prefixについて完全なproofを確認する。候補GOPとcutのgeneration/session/checked hostが全て厳密同向きの取得順を示す場合だけcut外側と判断し、同file byte判定の失敗、容量・finite/open/missing/coalesce/prune、owner/session矛盾とhost同値/逆行/overflowを救済しない。元8手順・expected全文と5 Agent requirementsを保持して第9手順の要件を追記し、JVM成功をnative・全初期版・main受入へ転用しない。
+単一MP4へ変更した8出力Caseと関連IDR不足Caseのactive契約変更は、過去の観察を新候補へ移さない。歴史amendment `initial-agent.json`はこの製品PRでは書き換えず、PMがtrusted mainの正式tooling PRで計画の出典・要件を更新する。更新前の計画と異なる契約を旧stage passで受理しない。元のpending/blocked/fail、REAL延期、人間の番号確認など既存の未完了範囲を保持する。
 
 promotionには`stage: initial-agent`を明記し、`results`に全128 keyを置く。各値は以下の形とし、`stage_revision`には計画全体のcanonical SHA-256を入れる。
 

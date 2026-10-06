@@ -78,13 +78,14 @@
         "更新直後とframe間、長い静止中に保存する。",
         "COMPLETED/次保存可と未確認末尾表示を確認する。",
         "失敗後に取得/設定を進め、同じ対象を別保存先でretryする。",
-        "byte上限で必要IDRを失った対象を保存し、MP4なし・API/manifestのdisplayHeld=false・既知不足・固定末尾不変を確認する。"
+        "byte上限で必要IDRを失った対象ではFAILED・成功フォルダ未公開・displayHeld=false・固定末尾/pin不変を確認する。復号対象のないlog-only保存のMP4=0件とは区別する。"
       ],
-      "expected": "保存Tは即時固定。画像保持と確認済coverageを区別し、末尾だけでFAILED/欠落通知/missingKindsへ流さない。pin解除・次保存可。retryでも末尾範囲・元frame・判断は不変。",
+      "expected": "保存Tは即時固定。画像保持と確認済coverageを区別し、末尾だけでFAILED/欠落通知/missingKindsへ流さない。pin解除・次保存可。retryでも末尾範囲・元frame・判断は不変。 必要IDR又は後半packetの欠落で対象動画を完成できない場合は成功通知を出さずFAILEDとして固定pinを保持する。",
       "provenance": [
         "Issue45: 公開develop3e884547のVFR条件を修正。実環境の個別停止根因の断定とは区別。",
         "docs/design/timeline.md: 固定scrcpy/Android仕様、時計/窓/表示保持/出力契約",
-        "既存Issue13/31/41・QA27/39/44のpending/fail/REAL holdは別に保全。"
+        "既存Issue13/31/41・QA27/39/44のpending/fail/REAL holdは別に保全。",
+        "Issue85単一MP4契約: 変更前はbase ab2c1773391144ed83f8566f0dfc0ccd734793c0の本Caseを履歴出典として保持。新候補は旧複数part契約/旧PASSを流用せず、同じ固定source/ZIPで再受入する。"
       ],
       "gpt": {
         "status": "pending",
@@ -163,15 +164,16 @@
       "change": "同一ZIPの標準playerと両ログ照合",
       "preconditions": "静止/連続1秒連番/切断/unknown成果物。受取人の標準macOS player、追加ツールなし。",
       "steps": [
-        "各partのduration/seek/連番を標準playerで観察する。",
+        "単一MP4の全区間のduration/seek/連番を標準playerで観察する。",
         "READMEとframes/sessionの表示時刻から両ログの同じ連番を照合する。",
         "未確認末尾・確定欠落・decoder prerollを区別する。"
       ],
-      "expected": "画像holdを確認済み取得時間と呼ばず、gapを詰めない。source/ZIP/ロード版を固定しEmulator/REAL/人間観察を区別。純粋テストをGUI passにしない。",
+      "expected": "画像holdを確認済み取得時間と呼ばず、gapを詰めない。source/ZIP/ロード版を固定しEmulator/REAL/人間観察を区別。純粋テストをGUI passにしない。 動画のある各保存はMP4ちょうど1件、動画を取得できていないlog-only保存は0件と理由明示。元frame/PTS/config/prefix・実VFR・個別null/MAXを保持し、movie全体秒を区間窓開始へ一律加算しない。不明gapの実durationを0秒と観測したことにしない。",
       "provenance": [
         "Issue45: 公開develop3e884547のVFR条件を修正。実環境の個別停止根因の断定とは区別。",
         "docs/design/timeline.md: 固定scrcpy/Android仕様、時計/窓/表示保持/出力契約",
-        "既存Issue13/31/41・QA27/39/44のpending/fail/REAL holdは別に保全。"
+        "既存Issue13/31/41・QA27/39/44のpending/fail/REAL holdは別に保全。",
+        "Issue85単一MP4契約: 変更前はbase ab2c1773391144ed83f8566f0dfc0ccd734793c0の本Caseを履歴出典として保持。新候補は旧複数part契約/旧PASSを流用せず、同じ固定source/ZIPで再受入する。"
       ],
       "gpt": {
         "status": "pending",

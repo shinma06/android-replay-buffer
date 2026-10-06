@@ -19,14 +19,15 @@
         "正常静止と20秒の連番更新を保存する。",
         "単発invalid RTT sampleと復旧、clock process終了/epoch変更を隔離fixtureで再現し、前後複数frameを保存する。",
         "最初の正常sample追加直後に次周期sampleなしで保存し、次sample後の新しい保存と比較する。復旧直後frameが単frame分割/次sampleまでの影響域へ残らないことを確認する。",
-        "MP4 part数/duration/seek、source PTS/実frame数と両logsの同じ連番を照合する。",
+        "MP4が1件であることと全区間のduration/seek、source PTS/実frame数と両logsの同じ連番を照合する。",
         "過去clock gapが窓外にある保存を確認し、正常な保持区間が全frame1µsへ崩れないことと元warningを区別する。"
       ],
-      "expected": "正常前後の独立なanchor/同一streamを実PTSで保存し、全frameを1µs partへ分割しない。clock gap/境界誤差/不足は保全し、未知やepoch/breakを詰めた時間へ置換しない。",
+      "expected": "正常前後の独立なanchor/同一streamを実PTSで保存し、全frameを1µs partへ分割しない。clock gap/境界誤差/不足は保全し、未知やepoch/breakを詰めた時間へ置換しない。 動画のある各保存はMP4ちょうど1件、動画を取得できていないlog-only保存は0件と理由明示。元frame/PTS/config/prefix・実VFR・個別null/MAXを保持し、movie全体秒を区間窓開始へ一律加算しない。不明gapの実durationを0秒と観測したことにしない。",
       "provenance": [
         "Issue52: 固定Core6e/developb0dcのclock未知gapによる全frame分割を修正。実QA rawは私有突合のみでrepoへ含めない。",
         "docs/design/timeline.md: 元unknown保全と正常anchorによるmux範囲の分離",
-        "既存Issue13/31/41/45/49、QA27/44/47/51のCase/pending/fail/REAL holdを維持。"
+        "既存Issue13/31/41/45/49、QA27/44/47/51のCase/pending/fail/REAL holdを維持。",
+        "Issue85単一MP4契約: 変更前はbase ab2c1773391144ed83f8566f0dfc0ccd734793c0の本Caseを履歴出典として保持。新候補は旧複数part契約/旧PASSを流用せず、同じ固定source/ZIPで再受入する。"
       ],
       "gpt": {
         "status": "pending",

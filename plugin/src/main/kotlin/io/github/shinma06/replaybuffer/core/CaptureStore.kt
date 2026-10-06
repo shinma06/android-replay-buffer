@@ -13,6 +13,7 @@ internal data class VideoEntry(
     val file: Path, val offset: Long, val size: Int, val pts: Long, val key: Boolean,
     val width: Int, val height: Int, val generation: Long, val time: MappedTime,
     val retainedAt: Long, val config: ByteArray, val host: Long, val session: Long,
+    val decodeRun: Long = 0, val packetOrdinal: Long = 0,
 )
 internal data class VideoSourcePosition(
     val file: Path, val offset: Long, val generation: Long, val session: Long, val host: Long,
@@ -62,6 +63,8 @@ internal class CaptureStore(
     private var height = 0
     private var previousPts = -1L
     private var videoSession = 0L
+    private var decodeRun = 0L
+    private var packetOrdinal = 0L
     private var logBytes = 0L
     private var videoBytes = 0L
     private var configBytes = 0L
@@ -79,6 +82,7 @@ internal class CaptureStore(
 
     @Synchronized
     fun generation(value: Long) {
+        decodeRun = Math.incrementExact(decodeRun)
         generation = value
         channel?.close()
         channel = null
@@ -130,6 +134,7 @@ internal class CaptureStore(
     @Synchronized
     fun session(packet: VideoPacket.Session, owner: Long) {
         if (closed || owner != generation) return
+        decodeRun = Math.incrementExact(decodeRun)
         status("video", StreamState.RECOVERING, "動画sessionを準備しています", owner)
         channel?.close()
         channel = null
@@ -147,11 +152,14 @@ internal class CaptureStore(
         if (packet.config) {
             require(packet.bytes.size <= ReplaySettings.MAX_CONFIG_PACKET_BYTES) { "動画configが64KiBを超えました" }
             if (!config.contentEquals(packet.bytes)) {
+                decodeRun = Math.incrementExact(decodeRun)
                 status("video", StreamState.RECOVERING, "動画configが切り替わりました", owner)
                 channel?.close(); channel = null; currentFile = null
             }
             config = packet.bytes.copyOf(); return videoReady()
         }
+        // Consume an ordinal before guards/IDR waiting: rejected source packets leave a detectable hole.
+        packetOrdinal = Math.incrementExact(packetOrdinal)
         require(width > 0 && height > 0 && config.isNotEmpty()) { "動画の寸法/configがありません" }
         if (packet.pts <= previousPts) { clock.boundary(); error("動画PTSが単調ではありません") }
         previousPts = packet.pts
@@ -171,7 +179,7 @@ internal class CaptureStore(
         val data = ByteBuffer.wrap(packet.bytes)
         while (data.hasRemaining()) out.write(data)
         video += VideoEntry(currentFile!!, offset, packet.bytes.size, packet.pts, packet.key, width, height,
-            generation, time, retained, config, host, videoSession)
+            generation, time, retained, config, host, videoSession, decodeRun, packetOrdinal)
         videoBytes += packet.bytes.size
         val references = configRefs[config] ?: 0
         if (references == 0) configBytes += config.size
@@ -392,6 +400,8 @@ internal class CaptureStore(
 
     private fun addGap(stream: String, from: Long?, to: Long?, reason: String, boundary: MappedTime? = null,
                        lostVideo: VideoEntry? = null) {
+        // Source interruption survives gap coalescing. Evicting an old packet does not interrupt live capture.
+        if (stream == "video" && lostVideo == null) decodeRun = Math.incrementExact(decodeRun)
         val previous = gaps.peekLast()
         if (previous?.let { it.stream == stream && it.reason == reason && it.toNs == to } == true) {
             videoCuts.remove(previous) // Coalesced events no longer have one unambiguous source cut.

@@ -694,23 +694,24 @@
         "SAVE-04"
       ],
       "change": "日時フォルダ・通知・保全",
-      "preconditions": "専用実機1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。 SYNC-RECIPIENT追加前提: 同じbuildのcut/2part/gap/片系/uncertain成果物。受取人側の標準macOS動画プレイヤーとテキストエディタ、追加ツールなし。",
+      "preconditions": "専用実機1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。 SYNC-RECIPIENT追加前提: 同じbuildのcut/複数復号区間/既知・不明gap/片系/uncertain成果物。受取人側の標準macOS動画プレイヤーとテキストエディタ、追加ツールなし。",
       "steps": [
         "通常保存を2回行い、各通知から別々の完成フォルダを開く。",
         "保持時間超過/再保存/OFF後に元の出力hashを比較する。",
-        "SYNC-RECIPIENT: READMEに沿ってpartの指定秒を再生/seekする。",
-        "SYNC-RECIPIENT: 表示秒からwindow秒を算出し、両ログ/frames/sessionを照合する。",
-        "SYNC-RECIPIENT: edit/preroll開始と終了、part間gap、動画なし保存、window nullを確認する。",
+        "SYNC-RECIPIENT: READMEに沿って単一MP4の指定秒を再生/seekする。",
+        "SYNC-RECIPIENT: frameごとのmovie/window対応と時計確度を使い、両ログ/frames/sessionを照合する。",
+        "SYNC-RECIPIENT: edit/preroll開始と終了、同一MP4内の既知空白と実duration不明gap、動画なし保存、window nullを確認する。",
         "通知のOSフォルダopen失敗も専用対象で確認し、理由表示とパスcopy操作を確認する。"
       ],
-      "expected": "毎回の名前/長さ/保存先入力なし。動画/両ログ/同期情報を同じ日時付き保存単位へまとめる。通知は自身の完成フォルダを開き、完成済み出力を自動削除/変更しない。 SYNC-RECIPIENT: 標準playerのedit/seek/表示秒が契約と一致し、追加ビューアなしで場面/両ログ/欠落を特定できる。不適合は実装修正後再受入。 OS open失敗を成功扱いせず理由とcopy操作を案内する。",
+      "expected": "毎回の名前/長さ/保存先入力なし。動画/両ログ/同期情報を同じ日時付き保存単位へまとめる。通知は自身の完成フォルダを開き、完成済み出力を自動削除/変更しない。 SYNC-RECIPIENT: 標準playerのedit/seek/表示秒が契約と一致し、追加ビューアなしで場面/両ログ/欠落を特定できる。不適合は実装修正後再受入。 OS open失敗を成功扱いせず理由とcopy操作を案内する。 動画のある各保存はMP4ちょうど1件、動画を取得できていないlog-only保存は0件と理由明示。元frame/PTS/config/prefix・実VFR・個別null/MAXを保持し、movie全体秒を区間窓開始へ一律加算しない。不明gapの実durationを0秒と観測したことにしない。",
       "provenance": [
         "Issue #27 / native parent #14",
         "docs/requirements.md: SAVE-01, SAVE-02, SAVE-03, SAVE-04",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
         "Issue #12採用UI（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用同期（PR #30 merge 16123f6fa2e2c74ce4300d1acf4f54d317b3fdff）/docs/verification/initial-version.md",
         "docs/design/ide-ui.md: UI-12-06（QA #29、既存REAL/EMU Caseへ接続）",
-        "docs/verification/changes/issue-13.json: SYNC-RECIPIENT（QA #34、設計結果passの転記なし）"
+        "docs/verification/changes/issue-13.json: SYNC-RECIPIENT（QA #34、設計結果passの転記なし）",
+        "Issue85単一MP4契約: 変更前はbase ab2c1773391144ed83f8566f0dfc0ccd734793c0の本Caseを履歴出典として保持。新候補は旧複数part契約/旧PASSを流用せず、同じ固定source/ZIPで再受入する。"
       ],
       "gpt": {
         "status": "blocked",
@@ -1916,23 +1917,24 @@
         "SAVE-04"
       ],
       "change": "日時フォルダ・通知・保全",
-      "preconditions": "専用Emulator1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。 SYNC-RECIPIENT追加前提: 同じbuildのcut/2part/gap/片系/uncertain成果物。受取人側の標準macOS動画プレイヤーとテキストエディタ、追加ツールなし。",
+      "preconditions": "専用Emulator1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。 SYNC-RECIPIENT追加前提: 同じbuildのcut/複数復号区間/既知・不明gap/片系/uncertain成果物。受取人側の標準macOS動画プレイヤーとテキストエディタ、追加ツールなし。",
       "steps": [
         "通常保存を2回行い、各通知から別々の完成フォルダを開く。",
         "保持時間超過/再保存/OFF後に元の出力hashを比較する。",
-        "SYNC-RECIPIENT: READMEに沿ってpartの指定秒を再生/seekする。",
-        "SYNC-RECIPIENT: 表示秒からwindow秒を算出し、両ログ/frames/sessionを照合する。",
-        "SYNC-RECIPIENT: edit/preroll開始と終了、part間gap、動画なし保存、window nullを確認する。",
+        "SYNC-RECIPIENT: READMEに沿って単一MP4の指定秒を再生/seekする。",
+        "SYNC-RECIPIENT: frameごとのmovie/window対応と時計確度を使い、両ログ/frames/sessionを照合する。",
+        "SYNC-RECIPIENT: edit/preroll開始と終了、同一MP4内の既知空白と実duration不明gap、動画なし保存、window nullを確認する。",
         "通知のOSフォルダopen失敗も専用対象で確認し、理由表示とパスcopy操作を確認する。"
       ],
-      "expected": "毎回の名前/長さ/保存先入力なし。動画/両ログ/同期情報を同じ日時付き保存単位へまとめる。通知は自身の完成フォルダを開き、完成済み出力を自動削除/変更しない。 SYNC-RECIPIENT: 標準playerのedit/seek/表示秒が契約と一致し、追加ビューアなしで場面/両ログ/欠落を特定できる。不適合は実装修正後再受入。 OS open失敗を成功扱いせず理由とcopy操作を案内する。",
+      "expected": "毎回の名前/長さ/保存先入力なし。動画/両ログ/同期情報を同じ日時付き保存単位へまとめる。通知は自身の完成フォルダを開き、完成済み出力を自動削除/変更しない。 SYNC-RECIPIENT: 標準playerのedit/seek/表示秒が契約と一致し、追加ビューアなしで場面/両ログ/欠落を特定できる。不適合は実装修正後再受入。 OS open失敗を成功扱いせず理由とcopy操作を案内する。 動画のある各保存はMP4ちょうど1件、動画を取得できていないlog-only保存は0件と理由明示。元frame/PTS/config/prefix・実VFR・個別null/MAXを保持し、movie全体秒を区間窓開始へ一律加算しない。不明gapの実durationを0秒と観測したことにしない。",
       "provenance": [
         "Issue #27 / native parent #14",
         "docs/requirements.md: SAVE-01, SAVE-02, SAVE-03, SAVE-04",
         "docs/plugin-design.md: PR #25 merge 5bbae8c3d7a80659cbd25d9fbff8a1086e7593d9",
         "Issue #12採用UI（PR #28 merge e84d5fbf9f1ca3b23dc29be805480680d862d237）/Issue #13採用同期（PR #30 merge 16123f6fa2e2c74ce4300d1acf4f54d317b3fdff）/docs/verification/initial-version.md",
         "docs/design/ide-ui.md: UI-12-06（QA #29、既存REAL/EMU Caseへ接続）",
-        "docs/verification/changes/issue-13.json: SYNC-RECIPIENT（QA #34、設計結果passの転記なし）"
+        "docs/verification/changes/issue-13.json: SYNC-RECIPIENT（QA #34、設計結果passの転記なし）",
+        "Issue85単一MP4契約: 変更前はbase ab2c1773391144ed83f8566f0dfc0ccd734793c0の本Caseを履歴出典として保持。新候補は旧複数part契約/旧PASSを流用せず、同じ固定source/ZIPで再受入する。"
       ],
       "gpt": {
         "status": "pending",

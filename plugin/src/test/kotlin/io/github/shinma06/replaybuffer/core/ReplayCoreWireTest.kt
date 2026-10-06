@@ -284,10 +284,14 @@ elif len(a)>3 and a[3]=='ps':
                 assertTrue(frames.all { !it["elapsed_ns"].isJsonNull && !it["window_ns"].isJsonNull })
                 val parts = json["parts"].asJsonArray
                 assertTrue(parts.size() > 0)
+                assertEquals(setOf("video-001.mp4"), parts.map { it.asJsonObject["file"].asString }.toSet())
+                Files.list(folder).use { paths -> assertEquals(1L, paths.filter { it.fileName.toString().endsWith(".mp4") }.count()) }
                 parts.forEach { part ->
                     val item = part.asJsonObject
                     assertTrue(item["edit_start_us"].asString.toLong() >= 0)
-                    assertTrue(!item["window_start_ns"].isJsonNull)
+                    // Individual frame mappings survive a source run spanning clock epochs.
+                    if (item["clock_alignment_known"].asBoolean) assertFalse(item["window_start_ns"].isJsonNull)
+                    else assertTrue(item["window_start_ns"].isJsonNull && item["window_end_ns"].isJsonNull)
                     assertTrue(Files.size(folder.resolve(item["file"].asString)) > 0)
                 }
                 completed = folder
