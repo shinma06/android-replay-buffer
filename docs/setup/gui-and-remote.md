@@ -7,7 +7,7 @@ GUIを操作する作業だけに適用します。コード編集やCLI検証�
 1. 選んだクライアントの正式なComputer Use/browser連携を導入します。Codex Desktopの内部Node REPL、helper、socket、module pathはアプリが管理します。source configを複製しません。
 2. OSの画面収録・アクセシビリティ等、実際に必要な許可を本人が確認します。アプリ更新後は再確認します。
 3. ブラウザーは連携先の対応browser/profileを選び、対象tabだけを指定します。個人profile/cookieをtemplateへ移しません。
-4. [共通lease](../operations.md)を取得した指定担当が、使い捨てfixtureで画面取得・対象表示・最小操作を確認します。対象アプリ、project、build SHA/hashを記録します。
+4. 指定担当は[共通lease](../operations.md)の空きを確認し、承認済み作業なら本人への追加確認なしで取得します。競合は担当GPTセッション間で調整します。取得後、使い捨てfixtureで画面取得・対象表示・最小操作を確認し、対象アプリ、project、build SHA/hashを記録します。
 5. 操作時は[Computer Useナレッジ](../computer-use.md)に従い、別ウィンドウ等への反映と操作対象を確認します。GUI未接続、対象を確認しても画面取得不能、認証切れはblockedです。対象切替の未試行・未対応と実際の失敗を区別し、CLI成功をGUI passにしません。
 
 Computer Use必須の受入条件を人間操作で代替せず、人間に引き継ぐ場合は許された確認経路を明示します。ブラウザーとIDEを別worktreeから操作してもフォーカスは共有されます。
