@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "issue": 119,
+  "gui_required": false,
+  "reason": "Computer Useナレッジに対象アプリの通常再起動による復旧手順を追加する文書変更。製品・操作ツール・権限・GUI受入条件は変更しない。今回の実Android Studio復旧観察は既存QA109で別記録する。",
+  "cli_checks": [
+    "python3 scripts/check.py",
+    "python3 scripts/workflow/product_check.py",
+    "python3 scripts/workflow/change_impact.py --base origin/main --run-tests"
+  ],
+  "cases": []
+}
