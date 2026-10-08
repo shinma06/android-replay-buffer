@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "issue": 127,
+  "gui_required": false,
+  "reason": "trusted mainの初期Agent受入計画へ実PR125の固定Caseを1件追加し、管理説明を整合する。製品/元Case/build/gate/依存を変更・起動せず、GUI観察や成功結果を追加しない。",
+  "cli_checks": [
+    "PR125実metadataの宣言Verification/merge treeとCase全文canonical hashを照合し、旧131entry/200sourceと全既存scopeを構造完全一致で確認する。",
+    "既存initial_stage_plan/historical_initial_sources/bind_initial_sourcesで132Case/201source/98Agent/34REALを構造projectionとして照合し、実candidate未同期の拒否とpromotion/GUI未実施を区別する。",
+    "python3 scripts/workflow/change_impact.py --base origin/main --run-tests: clean committed HEADのharness必須checkを実行する。",
+    "python3 scripts/workflow/product_check.py: CLIと原型21ファイルの保全を確認する。"
+  ],
+  "cases": []
+}

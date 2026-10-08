@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "issue": 115,
+  "gui_required": false,
+  "reason": "Computer Useの別ウィンドウ確認・対象切替の専用ナレッジと既存運用からの参照だけを追加する。製品コード・build・受入条件・実操作を変更せず、今回の障害解決やGUI改善効果を主張しない。",
+  "cli_checks": [
+    "python3 scripts/check.py",
+    "python3 scripts/workflow/product_check.py",
+    "python3 scripts/workflow/change_impact.py --base origin/main --run-tests"
+  ],
+  "cases": []
+}
