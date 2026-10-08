@@ -67,7 +67,6 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable {
             .addComponent(applicationStatus!!)
             .addComponent(JBLabel("編集だけでは取得条件を変更しません。「適用」または「OK」で反映します。"))
             .addComponent(JBLabel("取得の有効・無効はToolWindowから即時に切り替えます。"))
-            .addComponent(JBLabel("保存先が未指定でも取得できます。保存する前にフォルダを指定してください。"))
             .addComponentFillVertically(JPanel(), 0)
             .panel
         checkDestination()
@@ -88,7 +87,11 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable {
         val revision = ++destinationRevision
         alarm.cancelAllRequests()
         destinationValidation = null
-        destinationStatus?.text = if (value.isEmpty()) " " else "保存先を確認中…"
+        destinationStatus?.text = if (value.isEmpty()) {
+            "保存先が未指定でも取得できます。保存する前にフォルダを指定してください。"
+        } else {
+            "保存先を確認中…"
+        }
         if (value.isEmpty()) {
             destinationValidation = validateDestination(value)
             return
