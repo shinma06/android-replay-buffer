@@ -1,0 +1,43 @@
+{
+  "schema": 1,
+  "issue": 131,
+  "gui_required": true,
+  "reason": "共通encoder起動の基準frame rateを30fps上限へ整合する。実GOP/画質・保存・両ログの維持は新固定標準ZIPでの端末/IDE観察が必要。",
+  "cli_checks": [
+    "DeviceCaptureCommandTestのoffline実command境界回帰、plugin check/buildPlugin/verifyPluginStructure、harnessとCLI原型保全、clean committed HEAD change_impact --run-tests。実結果は固定HEADとIssue/PRへ記録する。"
+  ],
+  "cases": [
+    {
+      "id": "ENCODER-FRAME-RATE",
+      "artifact": "plugin",
+      "change": "DeviceCapture.videoの共通起動commandにframe-rate:int=30を明示し、既存max_fps30とencoder基準値を揃える。",
+      "preconditions": "PMの具体的有限QA割当、専用fixture/対象端末、共有GUI lease。新candidateのclean source/標準ZIP/全JAR hash/embedded identity/実ロードを一致させる。同じcandidateの約1秒GOP JVM回帰と実端末の可変FPS/長いGOP観察を既存trusted GOP改訂に従い区別する。旧1fbf8efの観察は履歴のみ。",
+      "steps": [
+        "同じsourceのDeviceCaptureCommandTestで実video起動を模擬executableへ渡し、max_fps30、frame-rate:int30、i-frame-interval:int1、max-bframes:int0、H264と8Mbpsが同じcommandに含まれることを確認する。模擬所有processの停止も確認する。",
+        "新固定buildを実ロードし、専用fixtureの動きがある区間で保存した実NAL-IDRの隣接sample index/packet ordinal/元PTSからGOP frame数と実時間間隔、実FPSを計測する。利用可能な実encoder情報を記録し、約30-frame/約1秒という予測を設定値だけで合格にしない。静止/低FPS/可変FPSと長いGOPは別条件として観測し、一般的な厳密wall周期保証と混同しない。",
+        "同じcandidateで原SYNC-WINDOW/BUFFER-180/BUFFER-SHORT/SAVE-CONTINUEの契約とtrusted GOP改訂を維持し、N60/N180、復旧後の共通起動、IDR直後/中間/次IDR直前の実cut、取得継続、元PTS/clock/両ログ、最大保存量/画質・負荷/容量/pinを確認する。cut<=1観測frame間隔+時計誤差、mux/index丸め<=1ms、既存の正式同期/人間/REAL範囲を変更しない。OFF/元設定復元/owned-stop/FREEまで記録する。"
+      ],
+      "expected": "encoder基準frame rateと既存入力上限がともに30で渡り、codec/bitrate/無Bframe/interval1/元PTS/時計/保存形式/CLI互換を維持する。実GOPは指定値と区別して評価し、原保存・精度・可変FPS/長いGOPの受入を満たす。新scheduler/再encode/補正offset/閾値緩和はない。旧candidateのpartial/PASSを新buildへ転記しない。",
+      "provenance": [
+        "https://github.com/shinma06/android-replay-buffer/issues/131",
+        "https://github.com/Genymobile/scrcpy/blob/v4.0/server/src/main/java/com/genymobile/scrcpy/video/SurfaceEncoder.java#L273",
+        "https://developer.android.com/reference/android/media/MediaFormat#KEY_I_FRAME_INTERVAL",
+        "docs/design/timeline.md",
+        "docs/verification/amendments/gop-boundaries.json",
+        "docs/verification/changes/issue-27.json"
+      ],
+      "gpt": {
+        "status": "pending",
+        "reason": "offline command回帰は実GOP/IDE受入の代替ではない。writerはGUI/ADB/native0、新固定build実測はQAへ移管する。"
+      },
+      "human": {
+        "status": "pending",
+        "reason": "未観察。既存の人間/REAL工程を保持し、新たなhuman必須や延期を追加しない。"
+      },
+      "fix_issue": null,
+      "fix_pr": null,
+      "recheck": "encoder options/scrcpy/保存/clock/固定ZIPの変更時は同じ新candidateで必要回帰と実GOP/元Caseを再確認する。",
+      "next_action": "Coreが固定HEAD/base/check/標準ZIPを揃えてwriter停止。PMがUI別セッションreview/CIを確認しdevelop統合・新candidate固定・initial-agent計画の正式追跡とQA双方向引継ぎを行う。実測未完了のままmain/初期版完了としない。"
+    }
+  ]
+}

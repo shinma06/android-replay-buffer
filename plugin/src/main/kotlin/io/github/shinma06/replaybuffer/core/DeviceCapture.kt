@@ -117,7 +117,7 @@ internal class DeviceCapture(
         val server = adb.start("-s", serial, "shell", "CLASSPATH=$serverFile app_process / --nice-name=$serverName com.genymobile.scrcpy.Server 4.0 " +
             "scid=$scid tunnel_forward=true audio=false control=false video_codec=h264 send_device_meta=false " +
             "send_frame_meta=true send_stream_meta=true max_size=1920 max_fps=30 video_bit_rate=8000000 " +
-            "video_codec_options=max-bframes:int=0,i-frame-interval:int=1")
+            "video_codec_options=max-bframes:int=0,i-frame-interval:int=1,frame-rate:int=30")
         var socket: Socket? = null
         var monitor: VideoReadMonitor? = null
         try {
