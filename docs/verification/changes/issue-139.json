@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "issue": 139,
+  "gui_required": false,
+  "reason": "trusted mainの正式initial-agent計画へPR136実mergeの固定Case135を1件追加し、計画説明を整合する。製品/元Case/build/resolver/gate/延期を変更・起動せず、GUI観察や成功結果を追加しない。",
+  "cli_checks": [
+    "PR136実metadataの宣言Verification/merge treeとCase全文canonical hashを照合し、旧132entry/201sourceと全既存scope・人間指定・GOP・QA65を構造完全一致で確認する。",
+    "既存initial_stage_plan/historical_initial_sources/bind_initial_sourcesで133Case/202source/99Agent/34REALを構造projectionとして実計算し、実develop未同期の拒否とpromotion/GUI未実施を区別する。",
+    "python3 scripts/workflow/change_impact.py --base origin/main --run-tests: clean committed HEADのharness必須checkを実行する。",
+    "python3 scripts/workflow/product_check.py: CLIと原型21ファイルの保全を確認する。"
+  ],
+  "cases": []
+}

@@ -2,7 +2,7 @@
   "schema": 1,
   "issue": 64,
   "stage": "initial-agent",
-  "required_ancestor": "57fec42cc108762b91e7619e029316904ade559d",
+  "required_ancestor": "f5dd726a7282539f26d724f083e6e620b9366c45",
   "followup_issue": 65,
   "owner": "Codex PM（管理）・QA #27担当（手順と証拠保全）。後続の人間実行者は再開時に割当。",
   "resume_condition": "初期版完成後、利用者が後続確認へ着手するときに実機・担当・固定候補を決める。CUA制約の部分は人間の対応または実際の操作経路復旧後。未実施の再質問で初期版を停止しない。",
@@ -2731,6 +2731,23 @@
       "agent_requirements": [
         "PR125実統合版の本Caseの全前提・全3手順・expected・再確認条件を保持する。同じ新candidate/標準ZIP・全JAR hash・embedded identityと実ロード版を照合した専用IDE/project fixtureで実観察し、PMの具体的割当・共有GUI lease・取得OFF・元設定の記録と復元を必須とする。旧1dの観察やJVM成功を新候補のnative受入へ転用せず、未実施・unknown・製品failをpassや延期へ変更しない。",
         "保存先欄直下の未指定と次操作の案内、空保存先の受理、空/既存folder/regular file/未作成path/空の非同期切替と古い結果排除、Apply一式検証・部分適用禁止、Cancel/reopen/reset/disposeの保護、設定復元とOFF維持を確認する。既存131 entry・200出典・全agent_requirements/deferred_scope/人間指定/GOP/QA65を保持し、本1 CaseとPR125の1出典だけを追加する。新しい延期・human必須・自動PASS・全inline要求を追加せず、ON/Saveや他Caseのpassへ拡張しない。"
+      ]
+    },
+    "135:LOG-ONLY-README": {
+      "sources": [
+        {
+          "source_pr": 136,
+          "source_merge": "f5dd726a7282539f26d724f083e6e620b9366c45",
+          "source_path": "docs/verification/changes/issue-135.json",
+          "original_case_sha256": "6e9e334b76e15dcb3fc2fe2d00e603d741fb47f6245cd42a67d46b34f7dc438c"
+        }
+      ],
+      "current_case_sha256": "6e9e334b76e15dcb3fc2fe2d00e603d741fb47f6245cd42a67d46b34f7dc438c",
+      "initial_scope": "agent",
+      "deferred_scope": [],
+      "agent_requirements": [
+        "PR136実統合版の本Caseの全前提・全3手順・expected・再確認条件を保持する。新clean candidate/source SHA・標準ZIP/JAR hashと実production Writerの生成bindingを記録した動画あり/log-only各1の新所有出力を、PMの具体的割当と共有GUI leaseの下で標準テキストeditorから実観察する。同production Writerの合成生成許容を元契約どおり保持し、実IDE/device Saveと区別する。旧候補の観察や限定editor採用を新候補の成功へ転用せず、未実施・unknown・製品failをpassや延期へ変更しない。",
+        "実MP4数1/0とREADMEの実件数・条件付き説明、動画ありのframes/session照合案内、session.jsonのcoverage.videoのstate/availableSeconds/reason、README実hashとfiles_sha256の一致を確認する。文書を編集・保存せず自身が開いた文書だけを閉じ、既存1fb原保存物と原13/31/41・45・27のCase・人間/REAL/main未達を保全する。既存132 entry・201出典・全agent_requirements/deferred_scope/人間指定/GOP/QA65を変更せず、本1 Case/1出典だけを追加する。新しい延期・human必須・自動PASS・再録画や全Playの追加要求を作らない。"
       ]
     }
   }
