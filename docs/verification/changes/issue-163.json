@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "issue": 163,
+  "gui_required": false,
+  "reason": "main PR162の同一成果物の観察再利用gateと文書の同期。製品・既存Case・正式計画は変更せず、製品/GUI停止を維持する。",
+  "cli_checks": [
+    "python3 scripts/check.py",
+    "python3 scripts/workflow/product_check.py",
+    "python3 scripts/workflow/change_impact.py --base origin/develop --run-tests"
+  ],
+  "cases": []
+}
