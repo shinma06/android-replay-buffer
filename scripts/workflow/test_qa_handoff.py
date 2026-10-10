@@ -6,13 +6,17 @@ from issue_schema import validate_issue
 from test_agent_loop import FakeGitHub, report, HEAD, BASE
 import test_agent_loop as tal
 import agent_loop as al
+from test_verification import change
 
-CHANGE = {'schema': 1, 'issue': 35, 'gui_required': False, 'reason': 'CLI tooling', 'cli_checks': ['unit tests'], 'cases': []}
+NO_CASES = {'schema': 1, 'issue': 35, 'gui_required': False, 'reason': 'CLI tooling', 'cli_checks': ['unit tests'], 'cases': []}
+
+CHANGE = change()
 
 
 class GH(FakeGitHub):
     def __init__(self):
         super().__init__()
+        self.issues[10] = {'state': 'open', 'title': '[追跡] release', 'labels': ['type:tracking', 'priority:P1', 'status:deferred'], 'body': 'PM release plan'}
         self.created = 0
         self.fail_create = False
         self.fail_link = False
@@ -50,14 +54,15 @@ class HandoffTests(unittest.TestCase):
         self.pr = self.gh.pull
         self.pr.update(merged=True, merge_commit_sha='d'*40)
         self.pr['base']['ref'] = 'develop'
-        self.pr['body'] = self.pr['body'].replace('tooling', 'develop')
+        self.pr['body'] = self.pr['body'].replace('tooling', 'develop').replace('GUI: not-required', 'GUI: required')
     def transfer(self):
         return q.handoff(self.gh, al.REPO, self.pr, self.gh.issue(35), CHANGE)
     def test_success_and_retry_reuse_full_snapshot(self):
         self.assertEqual(self.transfer(), 100)
         self.assertEqual(self.transfer(), 100)
         self.assertEqual(self.gh.created, 1)
-        self.assertIn('cases', self.gh.issue(100)['body'])
+        self.assertIn('QA-1', self.gh.issue(100)['body'])
+        self.assertNotIn('MAIN-REFLECTION', self.gh.issue(100)['body'])
         self.assertIn('/blob/main/docs/verification/human-qa.md', self.gh.issue(100)['body'])
         self.assertEqual(len(self.gh.comments(35)), 1)
     def test_milestone_and_parent_are_preserved_on_retry(self):
@@ -120,6 +125,78 @@ class HandoffTests(unittest.TestCase):
             q.handoff(self.gh, al.REPO, self.pr, self.gh.issue(35), invalid)
         self.assertEqual(self.gh.created, 0)
 
+    def transfer_without_cases(self):
+        self.pr['body'] = self.pr['body'].replace('GUI: required', 'GUI: not-required')
+        return q.handoff(self.gh, al.REPO, self.pr, self.gh.issue(35), NO_CASES)
+
+    def test_no_cases_reuses_release_without_qa_or_body_replacement(self):
+        for _ in range(2):
+            self.assertIsNone(self.transfer_without_cases())
+        self.assertEqual(self.gh.created, 0)
+        self.assertEqual(self.gh.children, [])
+        self.assertEqual(self.gh.issue(10)['body'], 'PM release plan')
+        self.assertEqual(len(self.gh.comments(10)), 1)
+        self.assertEqual(len(self.gh.comments(35)), 1)
+        self.assertIn('merge SHA: ' + 'd'*40, self.gh.comments(10)[0]['body'])
+
+    def test_no_cases_readback_failure_blocks_and_retry_is_idempotent(self):
+        original = self.gh.comment
+        self.gh.comment = lambda n, body: None
+        with self.assertRaisesRegex(ValueError, 'readback'):
+            self.transfer_without_cases()
+        self.gh.comment = original
+        self.gh.fail_link = True
+        with self.assertRaisesRegex(RuntimeError, 'link failed'):
+            self.transfer_without_cases()
+        self.assertEqual(self.gh.issue(35)['state'], 'open')
+        self.gh.fail_link = False
+        self.transfer_without_cases()
+        self.assertEqual(len(self.gh.comments(10)), 1)
+
+    def test_closed_or_wrong_release_blocks(self):
+        for changes in ({'state': 'closed', 'labels': ['type:tracking','priority:P1','status:done']},
+                        {'title': '[運用] other', 'labels': ['type:maintenance','priority:P1','status:ready']}):
+            with self.subTest(changes=changes):
+                self.gh = GH()
+                self.gh.issues[10].update(changes)
+                with self.assertRaisesRegex(ValueError, 'tracker'):
+                    self.transfer_without_cases()
+                self.assertEqual(self.gh.comments(35), [])
+
+    def test_existing_qa_requires_manual_reconciliation_for_no_cases(self):
+        self.transfer()
+        for state in ('open', 'closed'):
+            self.gh.issues[100]['state'] = state
+            with self.assertRaisesRegex(ValueError, 'reconciliation'):
+                self.transfer_without_cases()
+        self.assertEqual(len(self.gh.comments(10)), 1)
+
+    def test_manual_qa_without_marker_blocks_duplicate_and_no_cases(self):
+        self.transfer()
+        self.gh.issues[100]['body'] = 'Manual QA with remaining obligations'
+        with self.assertRaisesRegex(ValueError, 'identity readback'):
+            self.transfer()
+        with self.assertRaisesRegex(ValueError, 'reconciliation'):
+            self.transfer_without_cases()
+        self.assertEqual(self.gh.created, 1)
+
+    def test_gui_handoff_requires_open_release_and_receipt(self):
+        self.gh.issues[10].update(state='closed', labels=['type:tracking','priority:P1','status:done'])
+        with self.assertRaisesRegex(ValueError, 'tracker'):
+            self.transfer()
+        self.assertEqual(self.gh.created, 0)
+        self.gh = GH()
+        original = self.gh.comment
+        self.gh.comment = lambda n, body: None if n == 10 else original(n, body)
+        with self.assertRaisesRegex(ValueError, 'readback'):
+            self.transfer()
+        self.assertEqual(self.gh.created, 0)
+        self.assertEqual(self.gh.comments(35), [])
+        self.gh.comment = original
+        self.transfer()
+        self.assertEqual(len(self.gh.comments(10)), 1)
+        self.assertIn('試験は元IssueのQA', self.gh.comments(10)[0]['body'])
+
     def test_unconfirmed_merge_blocks(self):
         self.pr['merged'] = False
         with self.assertRaises(ValueError): self.transfer()
@@ -128,7 +205,7 @@ class HandoffTests(unittest.TestCase):
 
 class ClosureTests(unittest.TestCase):
     setUp = tal.LoopTests.setUp
-    def finish(self, complete=True, fail_link=False, change_origin=False):
+    def finish(self, complete=True, fail_link=False, change_origin=False, no_cases=False):
         gh = GH(); gh.fail_link = fail_link; self.loop.gh = gh
         if change_origin:
             original_comment = gh.comment
@@ -139,10 +216,12 @@ class ClosureTests(unittest.TestCase):
             gh.comment = comment
         gh.pull.update(merged=True, merge_commit_sha='d'*40)
         gh.pull['base']['ref'] = 'develop'
-        gh.pull['body'] = gh.pull['body'].replace('tooling','develop')
+        gh.pull['body'] = gh.pull['body'].replace('tooling','develop').replace('GUI: not-required', 'GUI: required')
+        if no_cases:
+            gh.pull['body'] = gh.pull['body'].replace('GUI: required', 'GUI: not-required')
         state = {'binding': al.binding(gh.pull, gh.issue(35)), 'review': dict(report(), issue_complete=complete)}
         h = {'issue':35,'parent':1,'close_issue':False,'gui_required':False}
-        with patch.object(al, 'git', return_value=__import__('json').dumps(CHANGE)) as git:
+        with patch.object(al, 'git', return_value=__import__('json').dumps(NO_CASES if no_cases else CHANGE)) as git:
             result = self.loop.finish(gh.pull, h, state, None)
             if complete:
                 self.assertEqual([c.args[0] for c in git.call_args_list], ['fetch', 'show'])
@@ -154,6 +233,19 @@ class ClosureTests(unittest.TestCase):
         self.assertIn('status:done', gh.issue(35)['labels'])
         self.assertEqual(gh.issue(1)['body'], '- [ ] #35 task')
         self.assertEqual(gh.created, 1)
+    def test_no_cases_closes_only_after_release_handoff(self):
+        gh, result = self.finish(no_cases=True)
+        self.assertTrue(result['issue_closed'])
+        self.assertEqual(gh.created, 0)
+        self.assertEqual(len(gh.comments(10)), 1)
+        self.assertIn('#10', gh.comments(35)[0]['body'])
+
+    def test_no_cases_failed_link_prevents_closure_and_cleanup(self):
+        with self.assertRaisesRegex(RuntimeError, 'link failed'):
+            self.finish(fail_link=True, no_cases=True)
+        self.assertEqual(self.loop.gh.issue(35)['state'], 'open')
+        self.loop.cleanup.assert_not_called()
+
     def test_failed_link_never_closes_or_cleans_up(self):
         with self.assertRaisesRegex(RuntimeError, 'link failed'): self.finish(fail_link=True)
         self.assertEqual(self.loop.gh.issue(35)['state'], 'open')

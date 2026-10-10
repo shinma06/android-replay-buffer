@@ -51,7 +51,7 @@ python3 scripts/workflow/agent_loop.py cleanup-branches
 
 resume は停止原因と元 writer/worker の停止を確認してから使います。target 変更は rebind-target で明示し、旧承認を再利用しません。source が消失した場合は旧所有の確認と private 移転記録が必要です。registry 喪失、別 host、外部 push、dirty を reset/stash で隠しません。
 
-develop の実装完了は QA Issue を作成/再利用し、Case・merge SHA・Milestone・native sub-issue・双方向リンクの readback 後に close します。Project 表示の同期は PM が [終了確認](../work-management.md) で行います。cleanup は自分の停止済み clean な資源だけが対象で、merge 成功と cleanup 完了は分けます。
+develop の実装完了は、Caseがある場合にQAを作成/再利用し、固定契約・merge SHA・Milestone・native sub-issue・双方向リンクのreadback後にcloseします。CaseなしではQAを作らず、既存release追跡 #10 と元Issueへ固定出典を双方向記録してreadbackします。既存QAがある場合やrelease追跡が終了済みの場合は、PMが移管先・残条件を照合するまでcloseしません。Project 表示の同期は PM が [終了確認](../work-management.md) で行います。cleanup は自分の停止済み clean な資源だけが対象で、merge 成功と cleanup 完了は分けます。
 
 ## 定期実行
 

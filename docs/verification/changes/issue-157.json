@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "issue": 157,
+  "gui_required": false,
+  "reason": "QA移管・管理規約と回帰試験のみ。CLI/Pluginの動作や正式Case・段階計画・GUI操作は変更しない。",
+  "cli_checks": [
+    "python3 scripts/check.py",
+    "python3 scripts/workflow/product_check.py",
+    "python3 scripts/workflow/change_impact.py --base origin/main --run-tests"
+  ],
+  "cases": []
+}
