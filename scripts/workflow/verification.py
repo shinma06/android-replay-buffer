@@ -409,8 +409,13 @@ def validate_candidate_result(result, key, policy, stage, candidate, artifact, e
                 parents = git('rev-list', '--parents', '-n', '1', commit).split()[1:]
                 if not parents:
                     raise ValueError('Reuse history lacks a parent')
+                source_changes = (set(git('diff', '--no-renames', '--name-only', source, commit).splitlines())
+                                  if len(parents) > 1 else None)
                 for parent in parents:
                     paths = git('diff', '--no-renames', '--name-only', parent, commit).splitlines()
+                    # A sync merge may carry already-observed product files absent from its other parent.
+                    if source_changes is not None:
+                        paths = [p for p in paths if p in source_changes]
                     if any(not (p.startswith(allowed) or p in
                             ('AGENTS.md', 'CLAUDE.md', 'README.md', 'CONTRIBUTING.md')) for p in paths):
                         raise ValueError('Product, build, configuration, fixture or unknown change requires retesting')

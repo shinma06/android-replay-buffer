@@ -181,3 +181,51 @@ class ReuseHistoryTests(unittest.TestCase):
             self.assertEqual(git('diff', '--name-only', candidate, 'HEAD'), '')
             with self.assertRaisesRegex(ValueError, 'retesting'):
                 validate(git('rev-parse', 'HEAD'))
+
+    def test_merge_sync_allows_observed_product_but_rejects_new_resolution_and_side_history(self):
+        with tempfile.TemporaryDirectory() as folder:
+            def git(*args):
+                return subprocess.check_output(['git', '-C', folder, *args], text=True, stderr=subprocess.DEVNULL).strip()
+            git('init', '-q')
+            git('config', 'user.name', 'Test')
+            git('config', 'user.email', 'test@example.invalid')
+            case = Path(folder) / CASE_PATH
+            case.parent.mkdir(parents=True)
+            case.write_text(json.dumps(change(36)))
+            git('add', '.')
+            git('commit', '-qm', 'base')
+            base = git('rev-parse', 'HEAD')
+            git('checkout', '-qb', 'source')
+            product = Path(folder) / 'product.py'
+            product.write_text('observed product')
+            git('add', '.')
+            git('commit', '-qm', 'observed product')
+            source = git('rev-parse', 'HEAD')
+            git('checkout', '-qb', 'docs', base)
+            (Path(folder) / 'README.md').write_text('docs')
+            git('add', '.')
+            git('commit', '-qm', 'docs')
+            git('checkout', '-q', 'source')
+            git('merge', '--no-ff', '-m', 'sync', 'docs')
+            candidate = git('rev-parse', 'HEAD')
+            original = dict(observation(), head=source)
+            def validate(head):
+                return validate_candidate_result(reused(original, head, source), '36:QA-1', None,
+                            None, head, ARTIFACT, None, None, git)
+            self.assertEqual(git('diff', '--name-only', source, candidate), 'README.md')
+            self.assertEqual(validate(candidate), original)
+            product.write_text('unobserved merge resolution')
+            git('add', '.')
+            git('commit', '--amend', '--no-edit', '-q')
+            with self.assertRaisesRegex(ValueError, 'retesting'):
+                validate(git('rev-parse', 'HEAD'))
+            git('checkout', '-qb', 'side', source)
+            product.write_text('unobserved side change')
+            git('add', '.')
+            git('commit', '-qm', 'side product')
+            git('revert', '--no-edit', 'HEAD')
+            git('checkout', '--detach', '-q', candidate)
+            git('merge', '--no-ff', '-m', 'sync side', 'side')
+            self.assertEqual(git('diff', '--name-only', candidate, 'HEAD'), '')
+            with self.assertRaisesRegex(ValueError, 'retesting'):
+                validate(git('rev-parse', 'HEAD'))
