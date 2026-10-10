@@ -506,6 +506,7 @@ class Loop:
                 change = json.loads(git('show', f'{pr["merge_commit_sha"]}:{case_path}'))
                 qa = handoff(self.gh, REPO, pr, current_issue, change)
                 state['qa_issue'] = qa
+                state['main_tracking_issue'] = 10
                 complete = transferred = True
         state.update(phase='cleanup', next='Update Issue and remove only verified finished resources')
         comment_id = self.save(pr, state, comment_id)

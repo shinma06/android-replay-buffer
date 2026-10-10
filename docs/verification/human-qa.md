@@ -8,6 +8,6 @@
 4. pass/pending/blocked/fail、観察者、timezone付き時刻、実観察、証拠の保存場所をCase JSONへ記録する。生ログや動画は公開せず必要な範囲に限定する。
 5. 製品failは専用修正Issueへ引き継ぎ、新候補で再確認する。自分のprocessを停止して予約を解放する。
 
-GUI passとmain反映は別です。同じbuildの全必要Caseとpromotion結果を確認してからQAを閉じ、Project・Milestone・関係・残資源を読み戻します。
+試験完了・初期版段階完了・main反映は別です。[完了と再試験の規則](README.md#試験コストと完了の判断)に従い、QAが担当する残試験を完了し、main反映だけが残る場合は既存release追跡 #10 への双方向移管を読み戻してQAを閉じます。Project・Milestone・関係・残資源も読み戻します。
 
 [初期版の段階受入](README.md#初期版の段階受入64)では、人間・実機が必要な列挙済み部分を[後続QA #65](https://github.com/shinma06/android-replay-buffer/issues/65)へ未実施のまま残します。初期版のAgent範囲の合格を、元Case全体や人間のpassへ転記しません。human欄がpendingという理由だけで新たな必須確認も追加しません。利用者が後続へ着手するまで人間操作や実機準備を再依頼せず、実施可能なAgent確認を進めます。初期版の完了・main反映と、後続QAの完了・Milestoneは別々に確認します。

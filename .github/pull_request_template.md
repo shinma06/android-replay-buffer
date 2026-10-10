@@ -16,7 +16,7 @@ GUI reason: <Case IDと必要挙動。不要なら具体的理由とCLI検証>
 - Cursor知見の活用: <docs/android-studio.mdの適用範囲なら固定SHA/Issue・PR、採用/適合/非適用の理由、こちらの検証Case/結果。範囲外は理由を一言>
 - Matrix: <必要Case JSONと今回の確認一覧。GUI pending/blocked/fail/passを正確に保持>
 - Issue schema: <typeに対応した題名・type/priority/status各1ラベル>
-- QA handoff: <develop統合後に元実装Issueの全Case/main反映追跡をQAへ双方向link/readbackしてからclose。未実装受入は別Issueへ保全>
+- QA handoff: <develop統合後、残試験はQA、main反映は既存release追跡へ双方向link/readbackしてからclose。CaseなしはQAを新設しない。未実装受入は別Issueへ保全>
 - Dependencies: <先行Issue/PR、未実装部分。GUI環境の障害と分ける>
 - Main promotion: <全候補commit/Caseの固定build結果。develop統合だけではmain可としない>
 
