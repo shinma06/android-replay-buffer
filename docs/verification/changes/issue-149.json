@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "issue": 149,
+  "gui_required": false,
+  "reason": "mainのリスク管理による継続方針をdevelopへ同期し、旧8d診断履歴の曖昧な承認表現を整える。製品・fixture・build・既存Case・正式受入計画はbaseと同一。診断再開や実GUI合格を意味しない。",
+  "cli_checks": [
+    "python3 scripts/check.py",
+    "python3 scripts/workflow/product_check.py",
+    "python3 scripts/workflow/change_impact.py --base origin/develop --run-tests"
+  ],
+  "cases": []
+}
