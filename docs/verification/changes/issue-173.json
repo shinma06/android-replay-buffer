@@ -14,7 +14,7 @@
       "preconditions": "PMが割り当てた専用IDE/project fixtureと共有GUI lease。新candidateのclean source SHA・標準ZIP/全JAR hash・embedded identity・実ロード版を照合する。取得OFFと元の適用設定を記録する。旧c61の結果は履歴として保全し、新buildのpassへ転記しない。",
       "steps": [
         "取得OFFのSettingsを開き対象アプリを手動にする。package欄直下で255文字上限、各部分の英字開始・半角英数字/underscore・2部分以上のピリオド区切りと例が読めることを確認する。窓幅を狭めても案内が折り返され、欄やApplyを操作できることを確認する。入力欄のaccessible name/descriptionと案内部品のaccessible nameを照合する。",
-        "手動で有効なcom.example.app_1と255文字境界を適用する。空、単一部分、数字/underscoreで始まる部分、不正記号と256文字を入力し、保持時間も別の有効値へ編集してApplyを試みる。不正値を拒否し、保持時間・packageを含む旧適用設定が部分変更されないことを確認する。保存先確認がある場合は完了を待つ。",
+        "手動で有効なcom.example.app_1を適用する。代表的な不正package（例: com._app）を入力し、保持時間も別の有効値へ編集してApplyを試みる。不正値を拒否し、保持時間・packageを含む旧適用設定が部分変更されないことを確認する。保存先確認がある場合は完了を待つ。原#27 SETTINGS-INVALID-EMUの全条件は維持し、candidate・標準ZIP・実ロード・前提が一致し元条件を満たす観察のみ共有する。",
         "自動/手動を切り替え、入力欄の有効/無効と案内の可読性を確認する。自動で空packageが受理されることを確認する。未適用編集をCancelして再openし元の適用値を確認する。記録した元設定へ戻してApply後に閉じ、取得OFFと設定復元を確認する。"
       ],
       "expected": "既存255文字/形式の条件をpackage入力欄近くで事前に読め、狭幅で折り返す。同じ条件が入力欄のアクセシビリティ説明にも含まれる。入力規則・自動/手動・一括Apply/Cancelを維持し、不正値で部分適用しない。取得/保存・保存先非同期検証・原#27 Caseや初期計画の条件は変更しない。",
