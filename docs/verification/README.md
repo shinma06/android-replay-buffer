@@ -128,7 +128,7 @@ promotionには`stage: initial-agent`を明記し、`results`に全133 keyを置
 
 - **候補を凍結する**: 既知の製品修正と必要な運用同期を先にまとめ、実行前に候補/source・成果物・実ロード・計画revisionを固定します。試験中に無関係な変更を足して候補を更新しません。停止中は新候補の作成・導入を開始しません。
 - **影響で再試験を選ぶ**: 修正箇所から呼出し元/先・共有状態・保存形式・build依存・Caseを照合し、まず失敗箇所と影響する境界を診断します。未変更の自動検査を理由なく反復せず、影響不明は関連範囲へ広げます。診断の選択と正式promotionの全Case充足を混同しません。
-- **観察を共有する**: 同一候補・成果物・ロードと前提が一致し、各Caseの全必要条件を満たす観察は、証拠を参照して複数Caseへ使えます。一つの操作で満たすCaseを先に対応づけ、同じ操作や全文記録を繰り返しません。再ビルドや候補変更後の旧観察は原因分析の証拠として保持しますが、新候補のpassへ転記しません。正式gateは同じ候補の全必要観察を要求します。過去結果の自動失効削除も行いません。
+- **観察を共有する**: 同一候補・成果物・ロードと前提が一致し、各Caseの全必要条件を満たす観察は、証拠を参照して複数Caseへ使えます。一つの操作で満たすCaseを先に対応づけ、同じ操作や全文記録を繰り返しません。候補変更後の旧観察は履歴として保持し、新候補のpassへ付け替えません。下記の同一成果物・条件不変を実証できる場合だけ、明示的な`reused`として正式gateへ渡せます。不明・不一致なら再試験します。過去結果の自動失効削除も行いません。
 - **追加確認を限定する**: 元契約・既知の不具合・変更影響・未解決の懸念に結びつく確認だけを追加します。単に確認可能だからという理由で全scene、全時計、追加再接続などを必須化しません。新たな品質条件が必要なら理由と契約変更を先にレビューします。
 
 | 完了の対象 | 終了条件と残条件の置き場所 |
@@ -146,3 +146,39 @@ promotionには`stage: initial-agent`を明記し、`results`に全133 keyを置
 ```bash
 python3 scripts/workflow/verification.py docs/verification/changes/issue-12.json --output docs/verification/current.md
 ```
+
+## 同一成果物の観察再利用（#161）
+
+通常の結果は引き続き同一candidate/hashの実観察を要求します。文書・管理ルールのみの更新で候補SHAが進んだ場合、元の成功観察をそのまま保持する`reused`を例外として使えます。実際の再利用は製品・GUI試験の再開後、以下を確認してから行います。本ルールの導入やJSON構造検証だけで既存Caseを合格へ変えません。
+
+- source candidateは現在candidateの祖先で、対象artifact SHA-256が一致すること。差分は`docs/`、`scripts/workflow/`、`.agents/skills/`、`.claude/skills/`、`.cursor/rules/`とrootの`AGENTS.md`・`CLAUDE.md`・`README.md`・`CONTRIBUTING.md`だけに限定します。途中でrevertされた変更も検査します。製品/runtime・build・設定・fixture・未知のpath、異なる成果物は再試験です。製品が生成するREADMEの実装はこの文書例外に含みません。
+- 元Caseが両candidateに存在し、契約が同じで、そのCase JSONの変更履歴がないこと。初期計画の該当entry（全出典・Agent条件・延期・人間指定）とhuman_scope・followupも同じこと。GOPのrevision/6証拠、指定の実施経路、完全受入のhuman/human_evidenceは元観察に必要です。追加・変更Caseを旧結果で満たせません。
+- 現在のロード実体、環境、全前提・試験条件・不具合履歴への適合を改めて確認し、`confirmation`に実確認者・日時・公開可能な証拠を記録すること。`equivalence_evidence`で同一artifactと製品/runtime/build入力不変、`environment_evidence`で環境・全前提・条件の継続を示します。単なる「同じはず」や不明な依存は不成立です。元観察の日時より前の確認は拒否します。
+- 元の`pass`または`initial-pass`だけを採用します。pending/blocked/fail/deferredや再利用の連鎖は拒否します。元candidate・日時・実施者・証拠を改変せず、独立レビューで原記録と同等性の証拠内容を確認します。文字列の存在検査は内容の実証を代替しません。確認は現在candidateでの製品再試験を意味しません。
+
+各Caseのresultを次の形式にします（山括弧は実値へ置換）。`source_result`には元の結果JSON全体を保存します。初期段階の場合も旧`stage_revision`を保持し、現在計画の必要Case・34 REAL延期・後続#65は元通り評価します。既存の延期値をreuseで包みません。
+
+```json
+{
+  "status": "reused",
+  "head": "<現在candidateの40桁SHA>",
+  "artifact_sha256": "<同一成果物の64桁SHA-256>",
+  "source_candidate": "<元candidateの40桁SHA>",
+  "source_result": {"元結果JSON全体": "改変せず保存"},
+  "confirmation": {
+    "status": "pass",
+    "head": "<現在candidateの40桁SHA>",
+    "artifact_sha256": "<同一成果物の64桁SHA-256>",
+    "actor": "gpt",
+    "observer": "<実確認者>",
+    "at": "<実確認日時 ISO8601>",
+    "loaded_identity": "<現在の実ロード確認>",
+    "reason": "<再利用を適用できる理由>",
+    "evidence": "<現在の適合確認への参照>",
+    "equivalence_evidence": "<成果物・製品依存・build入力不変の証拠>",
+    "environment_evidence": "<環境・全前提・試験条件・不具合履歴確認の証拠>"
+  }
+}
+```
+
+Gateと一覧は共通の検証を使います。一覧には再利用可否、元candidate/観察、現在の適合確認を区別して表示します。全候補・全Caseのgate、独立レビュー、必要CIは引き続き必須です。再利用可能でも未解決の不具合・失敗checkを解消済みにしません。
