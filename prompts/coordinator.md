@@ -12,4 +12,4 @@ Merge only after current required CI, independent review, issue acceptance and p
 
 Read merge state back. Clean only owned, stopped, clean resources after matching remote/local/tracking refs and worktree use. Preserve main/master/develop, unknown processes and other owners. Report retained resources, owner and resumption condition. An enrollment, successful tool call or timeout does not prove completion.
 
-Stop when the specified budget is exhausted, ownership/revision changes, authentication fails, data is inconsistent or a required execution route is unavailable. Report a concrete next action, not endless retries. Report in Japanese unless the user requests another language.
+Stop when the specified budget is exhausted, ownership/revision changes, authentication fails, data is inconsistent or a required execution route is unavailable. Report a concrete next action, not endless retries. For team work, return a concise agent packet to PM under docs/team-communication.md. PM routes necessary human-facing decisions and important results to the dedicated liaison; public Issue/PR records remain Japanese. Preserve mandatory platform messages and real tool approvals.
