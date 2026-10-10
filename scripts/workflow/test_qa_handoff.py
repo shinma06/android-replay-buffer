@@ -169,7 +169,33 @@ class HandoffTests(unittest.TestCase):
             self.gh.issues[100]['state'] = state
             with self.assertRaisesRegex(ValueError, 'reconciliation'):
                 self.transfer_without_cases()
-        self.assertEqual(self.gh.comments(10), [])
+        self.assertEqual(len(self.gh.comments(10)), 1)
+
+    def test_manual_qa_without_marker_blocks_duplicate_and_no_cases(self):
+        self.transfer()
+        self.gh.issues[100]['body'] = 'Manual QA with remaining obligations'
+        with self.assertRaisesRegex(ValueError, 'identity readback'):
+            self.transfer()
+        with self.assertRaisesRegex(ValueError, 'reconciliation'):
+            self.transfer_without_cases()
+        self.assertEqual(self.gh.created, 1)
+
+    def test_gui_handoff_requires_open_release_and_receipt(self):
+        self.gh.issues[10].update(state='closed', labels=['type:tracking','priority:P1','status:done'])
+        with self.assertRaisesRegex(ValueError, 'tracker'):
+            self.transfer()
+        self.assertEqual(self.gh.created, 0)
+        self.gh = GH()
+        original = self.gh.comment
+        self.gh.comment = lambda n, body: None if n == 10 else original(n, body)
+        with self.assertRaisesRegex(ValueError, 'readback'):
+            self.transfer()
+        self.assertEqual(self.gh.created, 0)
+        self.assertEqual(self.gh.comments(35), [])
+        self.gh.comment = original
+        self.transfer()
+        self.assertEqual(len(self.gh.comments(10)), 1)
+        self.assertIn('試験は元IssueのQA', self.gh.comments(10)[0]['body'])
 
     def test_unconfirmed_merge_blocks(self):
         self.pr['merged'] = False

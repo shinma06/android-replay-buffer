@@ -13,26 +13,31 @@ def handoff(gh, repo, pr, origin, change):
     marker = f'<!-- issue-qa-handoff:v1 origin={number} -->'
     # List all Issues (not search indexing) so a lost create response is retryable.
     candidates = [x for x in gh.pages(f'repos/{repo}/issues?state=all&per_page=100')
-                  if 'pull_request' not in x and marker in (x.get('body') or '')]
+                  if 'pull_request' not in x and
+                  (marker in (x.get('body') or '') or x.get('title', '').startswith(f'[試験] #{number} '))]
     if len(candidates) > 1:
         raise ValueError('Multiple QA Issues match origin; reconcile before closing')
     record = f'<!-- issue-qa-record:v1 origin={number} pr={pr["number"]} merge={pr["merge_commit_sha"]} -->'
     source = (record + f'\n元Issue: #{number}\nPR: #{pr["number"]}\nmerge SHA: {pr["merge_commit_sha"]}\n'
               f'Verification: https://github.com/{repo}/blob/{pr["merge_commit_sha"]}/{path}\n')
+    if not change['cases'] and candidates:
+        raise ValueError('Existing QA requires explicit reconciliation before a no-Case transfer')
+    # The existing release tracker owns main integration, not an artificial GUI Case.
+    release = gh.issue(10)
+    if validate_issue(release)['type'] != 'tracking' or release['state'] != 'open':
+        raise ValueError('Release tracker #10 must be open before transfer')
+    receipt = source + ('\nCaseなし。' if not change['cases'] else '\n試験は元IssueのQAで追跡。') + \
+        'main反映はこのrelease追跡でPMがpromotion PRと履歴を照合する。製品/GUI合格を意味しない。'
+    if not any(c['body'] == receipt for c in gh.comments(10)):
+        gh.comment(10, receipt)
+    if not any(c['body'] == receipt for c in gh.comments(10)):
+        raise ValueError('Release transfer readback failed')
     if not change['cases']:
-        if candidates:
-            raise ValueError('Existing QA requires explicit reconciliation before a no-Case transfer')
-        # The existing release tracker owns main integration, not an artificial GUI Case.
-        release = gh.issue(10)
-        if validate_issue(release)['type'] != 'tracking' or release['state'] != 'open':
-            raise ValueError('Release tracker #10 must be open before transfer')
-        receipt = source + '\nCaseなし。main反映はこのrelease追跡でPMがpromotion PRと履歴を照合する。製品/GUI合格を意味しない。'
         backlink = source + '\n実装はdevelopへ統合。独立した残試験なし。main反映は #10 へ移管（未確認）。'
-        for destination, text in ((10, receipt), (number, backlink)):
-            if not any(c['body'] == text for c in gh.comments(destination)):
-                gh.comment(destination, text)
-            if not any(c['body'] == text for c in gh.comments(destination)):
-                raise ValueError('Release transfer readback failed')
+        if not any(c['body'] == backlink for c in gh.comments(number)):
+            gh.comment(number, backlink)
+        if not any(c['body'] == backlink for c in gh.comments(number)):
+            raise ValueError('Release transfer readback failed')
         return None
     payload = (f'試験内容ドキュメント: https://github.com/{repo}/blob/main/docs/verification/human-qa.md\n' + source +
                '\n## 受入・次操作・依存\n'
