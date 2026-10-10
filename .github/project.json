@@ -20,15 +20,15 @@
   "views": [
     {
       "name": "Now — 進行中",
-      "filter": "is:open label:status:in-progress,status:review -label:type:tracking -label:type:qa"
+      "filter": "is:open label:status:in-progress,status:review -label:type:tracking"
     },
     {
       "name": "Next — 着手候補",
-      "filter": "is:open label:status:ready -label:type:tracking -label:type:qa"
+      "filter": "is:open label:status:ready -label:type:tracking"
     },
     {
       "name": "Later — 依存待ち・保留",
-      "filter": "is:open label:status:blocked,status:deferred -label:type:qa"
+      "filter": "is:open label:status:blocked,status:deferred"
     },
     {
       "name": "Past — 完了履歴",
@@ -37,10 +37,6 @@
     {
       "name": "全体 — 親子と全Issue",
       "filter": ""
-    },
-    {
-      "name": "QA — 人間向け試験",
-      "filter": "is:open label:type:qa"
     }
   ]
 }
