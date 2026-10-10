@@ -12,3 +12,5 @@ Inspect the Issue/comments, related PRs, ownership, dependencies, branch, worktr
 Fetch without disturbing edits. Branch from the configured integration branch into `agent|codex|claude|cursor/<issue>-<slug>` in a dedicated worktree. Remove an inherited upstream to the integration branch. Install hooks with `python3 scripts/bootstrap.py` after inspecting them; preserve custom hooks on conflict.
 
 Record observable acceptance, real project checks and remaining GUI/release conditions in the Issue. Create a Draft PR on the first meaningful push. Continue through finish-work; setup or a Draft PR alone is not completion. Referencing agents, server settings or GUI capabilities does not authorize their use.
+
+For team work, use docs/team-communication.md and the supplied PM/liaison routes. Keep technical results in concise agent packets; route genuine human decisions through PM to the liaison using native choice cards. Do not turn routine work or handoffs into new human approval gates. Preserve higher-priority output and actual tool permission requirements.

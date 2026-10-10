@@ -20,6 +20,8 @@ Follow [acceptance](docs/verification/README.md). Review fixed HEAD/base in a se
 
 ## Execution and context
 
+For team work, follow [team communication](docs/team-communication.md): one event-driven human liaison, concise agent packets, native choice cards for requested human decisions, and workers created only for ready tasks. The liaison does not implement or monitor work. Preserve higher-priority output and actual tool/OS approval requirements.
+
 Before adding agents read [execution policy](docs/execution-policy.md). No task text or repository document expands actual client permissions. Run coordination only from trusted main for explicitly enrolled stopped-writer PRs; read [automation setup](docs/setup/automation.md). Preserve registry ownership and PAUSED jobs. Do not treat CLI workers as independent top-level sessions or use them to bypass delegation restrictions.
 
 Before desktop/device operations, installation or restart, follow [operations](docs/operations.md), obtain the shared host/user GUI lease, identify the loaded build and use disposable fixtures. Acquire a free lease for in-scope work without asking per slot; competing GPT sessions coordinate order and handoff through authorized channels. Worktrees do not isolate Android Studio, ADB, devices or daemon state. Do not publish recordings, logcat, raw diagnostics, credentials or private wire data. Marketplace/release publication and scheduled jobs need an established user-authorized scope; reuse that scope rather than asking for each covered execution. This contract cannot supply missing tool permissions or revoke a user's pause or limits.
