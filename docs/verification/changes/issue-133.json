@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "issue": 133,
+  "gui_required": false,
+  "reason": "GitHub Projectの表示設定と試験進捗の運用文書のみを変更する。CLI・IDE・録画・保存・端末挙動、QA分類、元Case契約、人間/REAL未達は変更しない。実GitHub Projectの更新と表示readbackはPM担当で別途確認する。",
+  "cli_checks": [
+    "python3 scripts/check.py",
+    "python3 scripts/workflow/product_check.py",
+    "python3 scripts/workflow/change_impact.py --base origin/main --run-tests"
+  ],
+  "cases": []
+}

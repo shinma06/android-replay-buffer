@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "issue": 137,
+  "gui_required": false,
+  "reason": "既存Computer Useナレッジへ補助観測の適用条件・停止・差分復元を追記する文書変更。製品やツール権限は変更しない。ローカルCLI導入とT0–T8のGUI実測・未検証はIssue137に別記録し、文書mergeを実機合格にしない。",
+  "cli_checks": [
+    "python3 scripts/check.py",
+    "python3 scripts/workflow/product_check.py",
+    "python3 scripts/workflow/change_impact.py --base origin/main --run-tests"
+  ],
+  "cases": []
+}

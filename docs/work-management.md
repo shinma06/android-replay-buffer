@@ -28,14 +28,17 @@ Project 名は **Android Replay Buffer — 開発マップ** を使用します�
 
 | View | filter | 役割 |
 |---|---|---|
-| Now — 進行中 | `is:open label:status:in-progress,status:review -label:type:tracking -label:type:qa` | 現在の担当と PR |
-| Next — 着手候補 | `is:open label:status:ready -label:type:tracking -label:type:qa` | 次の候補 |
-| Later — 依存待ち・保留 | `is:open label:status:blocked,status:deferred -label:type:qa` | 再開条件 |
-| QA — 人間向け試験 | `is:open label:type:qa` | [手順書](verification/human-qa.md)と未達Case |
+| Now — 進行中 | `is:open label:status:in-progress,status:review -label:type:tracking` | 現在の担当と PR |
+| Next — 着手候補 | `is:open label:status:ready -label:type:tracking` | 次の候補 |
+| Later — 依存待ち・保留 | `is:open label:status:blocked,status:deferred` | 再開条件 |
 | Past — 完了履歴 | `is:closed` | 経緯・完了日 |
 | 全体 — 親子と全Issue | filter なし | 分解・横断 QA |
 
 Status は `ready/blocked/deferred → Todo`、`in-progress/review → In Progress`、`closed/done → Done`。Priority は Labels で表示し、同じ情報を別の手入力フィールドにしません。Milestone・Parent・Linked pull requests は標準フィールド、`Relationship Status` のみ 2 値の追加フィールドです。概要に過去・現在・次の節目・依存順を短く記載します。
+
+試験も status に応じて Now / Next / Later に表示し、QA 専用 View は設けません。`type:qa`、[試験手順](verification/human-qa.md)、元 Case 契約、人間・REAL の未達は保持します。
+
+担当中の試験は開始・停止・結果確定のたびに、担当者または PM が Issue 冒頭の「現在進捗」を更新し、担当・固定候補・実施済みと未達・停止理由・次操作を要約します。現在の作業状態に合わせて status ラベルを更新し、上の対応で Project Status を反映して読み戻します。停止だけで done にせず、再開可能なら ready、障害待ちは blocked、延期は deferred とし、完了は元の受入・引継ぎ条件で判断します。公開は要約のみとし、媒体・生ログ・秘密情報・ローカル絶対パスを載せません。未反映は Issue に対象・担当・再試行条件を残します。新しい自動化は追加しません。
 
 ## 中断・終了
 
