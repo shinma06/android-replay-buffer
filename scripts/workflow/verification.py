@@ -1,5 +1,6 @@
 """Acceptance data and fixed-candidate gates. Never execute code from a PR."""
 import argparse
+from datetime import datetime
 import hashlib
 import json
 from pathlib import Path
@@ -378,6 +379,84 @@ def validate_initial_result(result, key, policy, candidate, artifact, execution,
             raise ValueError('Case requires its specified execution method: ' + key)
 
 
+def validate_candidate_result(result, key, policy, stage, candidate, artifact, execution, gop, git):
+    """Keep old observations intact; accept reuse only with fresh equivalence evidence."""
+    if not isinstance(result, dict):
+        raise ValueError('Case result must be an object')
+    source = candidate
+    source_policy = policy
+    if result.get('status') == 'reused':
+        if (set(result) != {'status', 'head', 'artifact_sha256', 'source_candidate',
+                           'source_result', 'confirmation'} or
+                result['head'] != candidate or result['artifact_sha256'] != artifact or
+                not isinstance(result['source_candidate'], str) or
+                not SHA.fullmatch(result['source_candidate']) or result['source_candidate'] == candidate):
+            raise ValueError('Reuse requires distinct fixed source and current candidate/build')
+        source = result['source_candidate']
+        original, confirmation = result['source_result'], result['confirmation']
+        if (not isinstance(original, dict) or original.get('status') != ('initial-pass' if stage else 'pass') or
+                not isinstance(confirmation, dict)):
+            raise ValueError('Only original successful observations can be reused; no chains or deferrals')
+        validate_observation(confirmation, candidate, artifact)
+        for name in ('equivalence_evidence', 'environment_evidence'):
+            if not nonempty(confirmation.get(name)):
+                raise ValueError('Reuse needs current loaded/environment/condition evidence: ' + name)
+        # A reverted product or contract edit also invalidates reuse.
+        try:
+            git('merge-base', '--is-ancestor', source, candidate)
+            path = f'docs/verification/changes/issue-{key.split(":")[0]}.json'
+            allowed = ('docs/', 'scripts/workflow/', '.agents/skills/', '.claude/skills/', '.cursor/rules/')
+            for commit in git('rev-list', f'{source}..{candidate}').splitlines():
+                parents = git('rev-list', '--parents', '-n', '1', commit).split()[1:]
+                if not parents:
+                    raise ValueError('Reuse history lacks a parent')
+                source_changes = (set(git('diff', '--no-renames', '--name-only', source, commit).splitlines())
+                                  if len(parents) > 1 else None)
+                for parent in parents:
+                    paths = git('diff', '--no-renames', '--name-only', parent, commit).splitlines()
+                    # A sync merge may carry already-observed product files absent from its other parent.
+                    if source_changes is not None:
+                        paths = [p for p in paths if p in source_changes]
+                    if path in paths:
+                        raise ValueError('Case contract history changed; retest required')
+                    if any(not (p.startswith(allowed) or p in
+                            ('AGENTS.md', 'CLAUDE.md', 'README.md', 'CONTRIBUTING.md')) for p in paths):
+                        raise ValueError('Product, build, configuration, fixture or unknown change requires retesting')
+            old_change = regular_json(source, path, git)
+            new_change = regular_json(candidate, path, git)
+            for change in (old_change, new_change):
+                validate_change(change, int(key.split(':')[0]), True)
+            old_cases = [c for c in old_change['cases'] if c['id'] == key.split(':')[1]]
+            new_cases = [c for c in new_change['cases'] if c['id'] == key.split(':')[1]]
+            if len(old_cases) != 1 or old_cases != new_cases:
+                raise ValueError('Reuse requires the same existing Case contract')
+            entry = policy['cases'].get(key) if policy else None
+            if entry or git('ls-tree', source, '--', INITIAL_PLAN):
+                source_policy = initial_stage_plan(source, source, git)
+                if (source_policy['cases'].get(key) != entry or
+                        (entry and any(source_policy[k] != policy[k] for k in ('human_scope', 'followup_issue')))):
+                    raise ValueError('Initial/deferred/human scope changed; retest required')
+            if key in GOP_KEYS:
+                source_gop = gop_amendment(source, source, git)
+                if (canonical_hash(source_gop) if source_gop else None) != (gop or {}).get('revision'):
+                    raise ValueError('GOP conditions changed; retest required')
+        except subprocess.CalledProcessError as exc:
+            raise ValueError('Reuse source or equivalence could not be verified') from exc
+        observed = original.get('initial_observation', {}) if stage else original
+        if not isinstance(observed, dict):
+            raise ValueError('Original observation missing')
+        validate_observation(observed, source, artifact)
+        if datetime.fromisoformat(confirmation['at'].replace('Z', '+00:00')) < datetime.fromisoformat(observed['at'].replace('Z', '+00:00')):
+            raise ValueError('Reuse confirmation predates the original observation')
+        result = original
+    if stage:
+        validate_initial_result(result, key, source_policy, source, artifact, execution, gop)
+    else:
+        validate_full_result(result, source, artifact, execution, gop,
+                             policy['cases'].get(key) if policy else None)
+    return result
+
+
 def scoped_history(base, head, allowed, git):
     """Inspect every edge, including changes later reverted; never follow symlinks."""
     previous = base
@@ -563,12 +642,8 @@ def verify_pr(pr, api, git=git_read):
         artifact = artifacts.get(artifact_name)
         if not HASH.fullmatch(artifact or ''):
             raise ValueError('Fixed candidate artifact hash is required: ' + artifact_name)
-        if initial_policy:
-            validate_initial_result(result, key, initial_policy, candidate, artifact,
-                                    execution, gop_cases.get(key))
-            continue
-        validate_full_result(result, candidate, artifact, execution, gop_cases.get(key),
-                             full_policy['cases'].get(key) if full_policy else None)
+        validate_candidate_result(result, key, initial_policy or full_policy, stage, candidate,
+                                  artifact, execution, gop_cases.get(key), git)
     if initial_policy:
         deferred = sum(entry['initial_scope'] == 'deferred' for entry in initial_policy['cases'].values())
         return {'mode': mode, 'gui_complete': False, 'stage': INITIAL_STAGE, 'stage_complete': True,
@@ -653,17 +728,18 @@ def render_queue(paths, promotion=None, git=git_read):
             artifact = artifacts.get(case.get('artifact', 'app'))
             if not HASH.fullmatch(artifact or ''):
                 raise ValueError('Candidate artifact not registered')
+            observed = validate_candidate_result(result, key, initial_policy, stage, candidate,
+                        artifact, case.get('required_execution'), gop_cases.get(key), git)
             if stage:
-                validate_initial_result(result, key, initial_policy, candidate, artifact,
-                                        case.get('required_execution'), gop_cases.get(key))
-                label = ('延期・未実施／初期版必須外・後続#65' if result['status'] == 'deferred' else
+                label = ('延期・未実施／初期版必須外・後続#65' if observed['status'] == 'deferred' else
                          '初期版範囲合格／原Case未完了（全範囲gateは別途必要）')
             else:
-                validate_full_result(result, candidate, artifact, case.get('required_execution'),
-                                     gop_cases.get(key), initial_policy['cases'].get(key) if initial_policy else None)
                 label = 'Case合格（全範囲gateは別途必要）'
-        except ValueError:
-            pass
+            if result.get('status') == 'reused':
+                label = '同一成果物の旧観察を再利用／' + label
+        except ValueError as exc:
+            if result.get('status') == 'reused':
+                label = '不可・再利用条件不成立: ' + str(exc)
         lines.append(f'| {case["id"]} / #{data["issue"]} / #{data.get("pr", "未作成")} | {case["change"]} | '
                      f'{result.get("status", "pending")} | {label} | '
                      f'{case["fix_issue"] or "—"} / {case["fix_pr"] or "—"} |')
@@ -672,6 +748,14 @@ def render_queue(paths, promotion=None, git=git_read):
                   f'PR: [#{data["pr"]}](https://github.com/shinma06/android-replay-buffer/pull/{data["pr"]})' if data.get('pr') else 'PR: 未登録', '', '前提・対象build: ' + case['preconditions'], '']
         amended = gop_cases.get(f'{data["issue"]}:{case["id"]}')
         result = results.get(f'{data["issue"]}:{case["id"]}', {})
+        if result.get('status') == 'reused':
+            confirmation = result.get('confirmation', {})
+            lines += ['再利用申請（判定は上表）・元候補: ' + str(result.get('source_candidate', '未登録')),
+                      '現在候補の適合確認: ' + json.dumps(confirmation, ensure_ascii=False),
+                      '以下は元の観察です。新候補での再試験を意味しません。', '']
+            result = result.get('source_result', {})
+            if not isinstance(result, dict):
+                result = {}
         entry = initial_policy['cases'].get(f'{data["issue"]}:{case["id"]}') if initial_policy else None
         if entry:
             lines += ['初期版範囲: ' + entry['initial_scope'],
