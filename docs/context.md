@@ -7,7 +7,7 @@
 | 作業手順 | `.agents/skills/*/SKILL.md`、英語 | 該当作業時。Claude経路はsymlink |
 | Cursor入口 | `.cursor/rules/harness.mdc` | projectで常時適用 |
 | プロジェクト事実 | project.md、共有docs、日本語 | 判断に必要な範囲 |
-| チーム連絡と窓口 | [team-communication.md](team-communication.md)、役割依頼文はprompts/ | チーム編成・引継ぎ・本人判断時 |
+| チーム連絡と窓口 | [team-communication.md](team-communication.md)、[窓口依頼文](human-liaison-prompt.md)・[作業担当依頼文](team-worker-prompt.md) | チーム編成・引継ぎ・本人判断時 |
 | 作業の進行・受入 | Issue/PR | 開始、再開、レビュー、終了 |
 | 証拠 | SHA/版/観察者付きの記録 | 該当Case |
 | 個人設定・認証・一時状態 | Git管理外 | 初期化・復旧 |
