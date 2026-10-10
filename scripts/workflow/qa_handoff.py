@@ -1,5 +1,4 @@
 """Read-back verified QA transfer. Called only by the single coordinator after merge."""
-import json
 import re
 from issue_schema import validate_issue
 from verification import metadata, validate_change
@@ -18,24 +17,32 @@ def handoff(gh, repo, pr, origin, change):
     if len(candidates) > 1:
         raise ValueError('Multiple QA Issues match origin; reconcile before closing')
     record = f'<!-- issue-qa-record:v1 origin={number} pr={pr["number"]} merge={pr["merge_commit_sha"]} -->'
-    main_tracking = {
-        'id': 'MAIN-REFLECTION', 'origin': number, 'pr': pr['number'],
-        'merge_sha': pr['merge_commit_sha'], 'status': 'pending',
-        'steps': ['固定候補とbuildを識別し、元PRの全Caseを確認する',
-                  'promotion PRとmain履歴で元変更の反映を照合する'],
-        'expected': '全必要Caseの証拠とmainへの反映が一致する',
-        'gpt': {'status': 'pending', 'reason': 'main反映未確認'},
-        'human': {'status': 'pending', 'reason': 'main反映未確認'},
-        'fixed_build': None, 'fix_issue': None, 'fix_pr': None,
-        'next_action': 'PMが候補/buildを固定して試験・main反映を照合する',
-        'recheck': '製品failは専用修正Issue/PRから新候補を再確認する'}
-    payload = (f'試験内容ドキュメント: https://github.com/{repo}/blob/main/docs/verification/human-qa.md\n' + record + f'\n元Issue: #{number}\nPR: #{pr["number"]}\nmerge SHA: {pr["merge_commit_sha"]}\n'
-               f'Verification: https://github.com/{repo}/blob/{pr["merge_commit_sha"]}/{path}\n\n'
-               '## 受入・次操作・依存\n固定候補とbuildを指定し、全必要Caseを確認後main反映を照合する。'
-               '元IssueのcloseはGUI pass/main反映を意味しない。固定build: 未登録。'
-               '既存の観察は履歴であり新候補のpassではない。製品failは修正Issue/PRと再確認へ引き継ぐ。\n'
-               'GUI不要でもmain反映確認をこのマトリクスで追跡する。\n\n```json\n' +
-               json.dumps({'change': change, 'main_tracking': main_tracking}, ensure_ascii=False, indent=2) + '\n```')
+    source = (record + f'\n元Issue: #{number}\nPR: #{pr["number"]}\nmerge SHA: {pr["merge_commit_sha"]}\n'
+              f'Verification: https://github.com/{repo}/blob/{pr["merge_commit_sha"]}/{path}\n')
+    if not change['cases']:
+        if candidates:
+            raise ValueError('Existing QA requires explicit reconciliation before a no-Case transfer')
+        # The existing release tracker owns main integration, not an artificial GUI Case.
+        release = gh.issue(10)
+        if validate_issue(release)['type'] != 'tracking' or release['state'] != 'open':
+            raise ValueError('Release tracker #10 must be open before transfer')
+        receipt = source + '\nCaseなし。main反映はこのrelease追跡でPMがpromotion PRと履歴を照合する。製品/GUI合格を意味しない。'
+        backlink = source + '\n実装はdevelopへ統合。独立した残試験なし。main反映は #10 へ移管（未確認）。'
+        for destination, text in ((10, receipt), (number, backlink)):
+            if not any(c['body'] == text for c in gh.comments(destination)):
+                gh.comment(destination, text)
+            if not any(c['body'] == text for c in gh.comments(destination)):
+                raise ValueError('Release transfer readback failed')
+        return None
+    payload = (f'試験内容ドキュメント: https://github.com/{repo}/blob/main/docs/verification/human-qa.md\n' + source +
+               '\n## 受入・次操作・依存\n'
+               '固定出典の全Case・前提・操作・期待・actor・再確認条件を正本とし、固定候補/buildで残試験を確認する。\n'
+               'Case: ' + ', '.join(case['id'] for case in change['cases']) + '\n'
+               '担当: PM（実行担当は着手時に割当）。次操作: 候補と未達を照合して試験計画を確定する。'
+               '全体の現在進捗は #27、人間/REALの延期範囲は #65、main反映は #10 で追跡する。'
+               '元IssueのcloseはGUI pass/main反映を意味しない。既存の観察は履歴であり新候補のpassではない。'
+               '製品failは修正Issue/PRへ紐づける。試験が完了しmain反映だけが残る場合は、'
+               '#10への双方向移管/readback後にQAを終了できる。初期段階だけの完了は正式Case全体のpassではない。')
     milestone = origin.get('milestone')
     if not candidates:
         summary = re.sub(r'^\[[^]]+\]\s*', '', origin['title'])
@@ -65,7 +72,7 @@ def handoff(gh, repo, pr, origin, change):
         if not any(payload == c['body'] for c in gh.comments(qa['number'])):
             raise ValueError('QA content readback failed')
     link = f'<!-- issue-qa-link:v1 origin={number} qa={qa["number"]} -->'
-    text = link + f'\n実装はPR #{pr["number"]} / {pr["merge_commit_sha"]}でdevelopへ統合。残る試験/main反映は #{qa["number"]}。GUI pass/main反映済みではありません。'
+    text = link + f'\n実装はPR #{pr["number"]} / {pr["merge_commit_sha"]}でdevelopへ統合。残る試験は #{qa["number"]}、main反映は #10。GUI pass/main反映済みではありません。'
     if not any(c['body'] == text for c in gh.comments(number)):
         gh.comment(number, text)
     if not any(c['body'] == text for c in gh.comments(number)):
