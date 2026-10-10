@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "issue": 176,
+  "gui_required": false,
+  "reason": "trusted mainの正式initial-agent計画へPR174実mergeの固定Case173を1件追加し、既存README説明を整合する。製品/元Case/build/resolver/gate/延期を変更・起動せず、GUI観察や成功結果を追加しない。",
+  "cli_checks": [
+    "PR174実metadataの宣言Verification/merge treeとCase全文canonical hashを照合し、既存134 entry/203出典と全条件・人間指定・GOP・QA65を構造完全一致で確認する。",
+    "既存initial_stage_plan/historical_initial_sources/bind_initial_sourcesで135 Case/204出典/101 Agent/34 REALを構造projectionとして実計算し、実develop未同期の拒否と製品/GUI未実施を区別する。",
+    "python3 scripts/check.py: harness必須checkを実行する。",
+    "python3 scripts/workflow/product_check.py: Python3.9のCLI回帰と既存CLIの保全を確認する。",
+    "python3 scripts/workflow/change_impact.py --base origin/main --run-tests: clean committed HEADで影響検査する。"
+  ],
+  "cases": []
+}
