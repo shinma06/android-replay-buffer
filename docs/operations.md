@@ -1,5 +1,15 @@
 # GUI lease・private引継ぎ・復旧
 
+## Android CLIによる開発支援
+
+[Android CLI](https://developer.android.com/tools/agents/android-cli) は任意の開発支援です。導入されていれば `android --version` と対象commandの `--help` で実際の機能を確認して活用します。製品のPython CLIとは別であり、製品利用者やCIの必須依存には追加しません。
+
+公式資料の調査は `android docs search '検索語'`、返された `kb://` URLの取得は `android docs fetch kb://...` を使えます。検索はローカル索引の初回downloadを伴い、検索結果だけではAPIの挙動を確定できません。必要な本文・API referenceを確認し、公開記録には通常の公式HTTPSリンクと確認した事実を残します。実際のcommand・版・成功/失敗はIssueに記録し、未実施のIDE/端末受入とは区別します。
+
+SDK・IDE情報、解析、使い捨てAndroid fixtureのbuild/install/runを支援に使う場合は、対象project/deviceを明示し、下記GUI leaseと保全・復元の条件を適用します。`describe` 等もmetadata生成やbuildを伴い得るためhelpで副作用を確認します。Androidアプリ用のinstall/runをIntelliJ plugin ZIPの導入・ロード確認の代わりにしません。`screen` / `layout` 等の補助観測は[Computer Useの規約](computer-use.md)とCase契約に従い、必要な実UI操作を実施したと読み替えません。媒体・生ログ・端末識別子・認証値はprivateに保持します。
+
+[`android init`](https://developer.android.com/tools/agents/android-cli/commands/init) は検出した複数agentの設定へskillを導入するため、通常の利用開始には不要です。skill追加が必要な場合だけ、導入版のhelpで対象agent/projectと変更先を確認して範囲を限定します。未依頼の全体設定変更・一括初期化は行いません。
+
 ## GUI lease
 
 Computer Useの操作前に[操作対象と別ウィンドウのナレッジ](computer-use.md)を読む。操作結果が元画面に見えない場合は、別ウィンドウ等への反映と対応する対象切替を確認してから、操作不能や人手必須と判断する。
