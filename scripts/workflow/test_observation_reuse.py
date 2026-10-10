@@ -5,6 +5,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import test_initial_acceptance as tia
 import test_verification as tv
@@ -46,7 +47,6 @@ class ReuseIntegrationTests(unittest.TestCase):
         self.fixture.manifest['results'][self.key] = reused(original)
         old_git = self.fixture.git
         self.diff = 'docs/usage.md'
-        self.contract_log = ''
 
         def git(*args):
             if args[0] == 'ls-tree' and f'{args[1]}:{args[-1]}' in self.fixture.documents:
@@ -57,8 +57,6 @@ class ReuseIntegrationTests(unittest.TestCase):
                 return NEW + ' ' + OLD
             if args[0] == 'diff' and args[-2:] == (OLD, NEW):
                 return self.diff
-            if args[0] == 'log':
-                return self.contract_log
             return old_git(*args)
         self.fixture.git = git
         return self.fixture.manifest['results'][self.key]
@@ -113,7 +111,7 @@ class ReuseIntegrationTests(unittest.TestCase):
                 self.fixture.verify()
             self.assertIn('不可・再利用条件不成立', self.render())
         self.prepare()
-        self.contract_log = 'b' * 40
+        self.diff = CASE_PATH
         with self.assertRaisesRegex(ValueError, 'contract history'):
             self.fixture.verify()
         self.prepare()
@@ -146,6 +144,34 @@ class ReuseIntegrationTests(unittest.TestCase):
             with self.subTest(execution=execution, gop=gop, policy=entry), self.assertRaises(ValueError):
                 validate_candidate_result(original, self.key, entry, None, OLD, ARTIFACT,
                                           execution, gop, self.fixture.git)
+
+    def test_removing_old_human_entry_or_plan_rejects_reuse_in_gate_and_view(self):
+        self.prepare(True)
+        old_policy = self.fixture.documents[f'{OLD}:{INITIAL_PLAN}']
+        old_policy['cases'][self.key]['full_acceptance_actor'] = 'human'
+        self.fixture.manifest.pop('stage')
+        self.fixture.manifest['results'] = {self.key: reused(dict(observation(), head=OLD, actor='gpt')),
+            '36:QA-1-REAL': observation()}
+        # With no current plan, the source-side human requirement must still be inspected.
+        from test_agent_loop import BASE
+        self.fixture.documents.pop(f'{BASE}:{INITIAL_PLAN}')
+        with self.assertRaisesRegex(ValueError, 'scope changed'):
+            self.fixture.verify()
+        self.assertIn('不可・再利用条件不成立', self.render())
+        # An existing plan without this entry must not bypass that comparison either.
+        current_policy = dict(old_policy, cases={})
+        with self.assertRaisesRegex(ValueError, 'scope changed'):
+            validate_candidate_result(self.fixture.manifest['results'][self.key], self.key,
+                current_policy, None, NEW, ARTIFACT, None, None, self.fixture.git)
+
+
+    def test_gop_policy_removal_is_a_condition_change(self):
+        result = self.prepare()
+        with patch('verification.GOP_KEYS', {self.key}), patch('verification.gop_amendment', return_value={'revision': 'old'}):
+            with self.assertRaisesRegex(ValueError, 'GOP conditions changed'):
+                validate_candidate_result(result, self.key, None, None, NEW, ARTIFACT,
+                                          None, None, self.fixture.git)
+
 
 
 class ReuseHistoryTests(unittest.TestCase):
@@ -189,13 +215,14 @@ class ReuseHistoryTests(unittest.TestCase):
             git('init', '-q')
             git('config', 'user.name', 'Test')
             git('config', 'user.email', 'test@example.invalid')
-            case = Path(folder) / CASE_PATH
-            case.parent.mkdir(parents=True)
-            case.write_text(json.dumps(change(36)))
+            (Path(folder) / 'README.md').write_text('base')
             git('add', '.')
             git('commit', '-qm', 'base')
             base = git('rev-parse', 'HEAD')
             git('checkout', '-qb', 'source')
+            case = Path(folder) / CASE_PATH
+            case.parent.mkdir(parents=True)
+            case.write_text(json.dumps(change(36)))
             product = Path(folder) / 'product.py'
             product.write_text('observed product')
             git('add', '.')
@@ -228,4 +255,15 @@ class ReuseHistoryTests(unittest.TestCase):
             git('merge', '--no-ff', '-m', 'sync side', 'side')
             self.assertEqual(git('diff', '--name-only', candidate, 'HEAD'), '')
             with self.assertRaisesRegex(ValueError, 'retesting'):
+                validate(git('rev-parse', 'HEAD'))
+
+            git('checkout', '-qb', 'contract', candidate)
+            contract = change(36)
+            contract['cases'][0]['expected'] = 'unobserved requirement'
+            case.write_text(json.dumps(contract))
+            git('add', '.')
+            git('commit', '-qm', 'contract change')
+            git('revert', '--no-edit', 'HEAD')
+            self.assertEqual(git('diff', '--name-only', candidate, 'HEAD'), '')
+            with self.assertRaisesRegex(ValueError, 'contract history'):
                 validate(git('rev-parse', 'HEAD'))

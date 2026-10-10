@@ -404,6 +404,7 @@ def validate_candidate_result(result, key, policy, stage, candidate, artifact, e
         # A reverted product or contract edit also invalidates reuse.
         try:
             git('merge-base', '--is-ancestor', source, candidate)
+            path = f'docs/verification/changes/issue-{key.split(":")[0]}.json'
             allowed = ('docs/', 'scripts/workflow/', '.agents/skills/', '.claude/skills/', '.cursor/rules/')
             for commit in git('rev-list', f'{source}..{candidate}').splitlines():
                 parents = git('rev-list', '--parents', '-n', '1', commit).split()[1:]
@@ -416,12 +417,11 @@ def validate_candidate_result(result, key, policy, stage, candidate, artifact, e
                     # A sync merge may carry already-observed product files absent from its other parent.
                     if source_changes is not None:
                         paths = [p for p in paths if p in source_changes]
+                    if path in paths:
+                        raise ValueError('Case contract history changed; retest required')
                     if any(not (p.startswith(allowed) or p in
                             ('AGENTS.md', 'CLAUDE.md', 'README.md', 'CONTRIBUTING.md')) for p in paths):
                         raise ValueError('Product, build, configuration, fixture or unknown change requires retesting')
-            path = f'docs/verification/changes/issue-{key.split(":")[0]}.json'
-            if git('log', '--full-history', '--format=%H', f'{source}..{candidate}', '--', path):
-                raise ValueError('Case contract history changed; retest required')
             old_change = regular_json(source, path, git)
             new_change = regular_json(candidate, path, git)
             for change in (old_change, new_change):
@@ -430,11 +430,16 @@ def validate_candidate_result(result, key, policy, stage, candidate, artifact, e
             new_cases = [c for c in new_change['cases'] if c['id'] == key.split(':')[1]]
             if len(old_cases) != 1 or old_cases != new_cases:
                 raise ValueError('Reuse requires the same existing Case contract')
-            if policy and key in policy['cases']:
+            entry = policy['cases'].get(key) if policy else None
+            if entry or git('ls-tree', source, '--', INITIAL_PLAN):
                 source_policy = initial_stage_plan(source, source, git)
-                if (source_policy['cases'].get(key) != policy['cases'][key] or
-                        any(source_policy[k] != policy[k] for k in ('human_scope', 'followup_issue'))):
+                if (source_policy['cases'].get(key) != entry or
+                        (entry and any(source_policy[k] != policy[k] for k in ('human_scope', 'followup_issue')))):
                     raise ValueError('Initial/deferred/human scope changed; retest required')
+            if key in GOP_KEYS:
+                source_gop = gop_amendment(source, source, git)
+                if (canonical_hash(source_gop) if source_gop else None) != (gop or {}).get('revision'):
+                    raise ValueError('GOP conditions changed; retest required')
         except subprocess.CalledProcessError as exc:
             raise ValueError('Reuse source or equivalence could not be verified') from exc
         observed = original.get('initial_observation', {}) if stage else original
