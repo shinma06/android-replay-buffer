@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "issue": 161,
+  "gui_required": false,
+  "reason": "同一成果物・条件不変の観察再利用gateと一覧を限定改訂。製品・GUI試験は停止を維持し、Case/計画/過去証拠を保持する。",
+  "cli_checks": [
+    "python3 scripts/check.py",
+    "python3 scripts/workflow/product_check.py",
+    "python3 scripts/workflow/change_impact.py --base origin/main --run-tests"
+  ],
+  "cases": []
+}
