@@ -68,6 +68,17 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                     tail?.displayHeld == true && frame === all.lastOrNull())
             }
             val selected = groups.filter { group -> group.indices.any { visible(group, it) } }
+            fun sampleRange(group: List<VideoEntry>): IntRange {
+                checkActive()
+                val first = group.indices.first { visible(group, it) }
+                val last = group.indices.last { visible(group, it) }
+                val key = (first downTo 0).firstOrNull { group[it].key }
+                require(key != null) { "IDRを失った動画区間を復号できません" }
+                return key..last
+            }
+            fun sourceDuration(group: List<VideoEntry>, index: Int): Long? =
+                group.getOrNull(index + 1)?.let { Math.subtractExact(it.pts, group[index].pts) }
+            val ranges = selected.map(::sampleRange)
             val sourceConfigs = selected.map { it.first().config }.distinctBy { ByteBuffer.wrap(it) }
             val sizes = sourceConfigs.map { config ->
                 require(config.size in 1..ReplaySettings.MAX_CONFIG_PACKET_BYTES)
@@ -75,7 +86,18 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                 require(sps.isNotEmpty()) { "動画SPSがありません" }
                 H264Utils.getPicSize(boundedSps(sps.first()))
             }
-            val normalizer = if (sizes.distinct().size > 1) MixedVideoNormalizer(sourceConfigs) else null
+            val normalizer = if (sizes.distinct().size > 1) {
+                var minimumSourceDuration: Long? = null
+                selected.forEachIndexed { run, group ->
+                    for (index in ranges[run]) {
+                        checkActive()
+                        sourceDuration(group, index)?.let { duration ->
+                            minimumSourceDuration = minOf(minimumSourceDuration ?: duration, duration)
+                        }
+                    }
+                }
+                MixedVideoNormalizer(sourceConfigs, minimumSourceDuration)
+            } else null
             if (normalizer != null) {
                 normalizationStarted = System.nanoTime()
                 normalizationCpuStarted = if (cpu.isCurrentThreadCpuTimeSupported) cpu.currentThreadCpuTime else 0
@@ -126,17 +148,15 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                             selected.forEachIndexed { runIndex, group ->
                                 checkActive()
                                 val visibleIndex = group.indices.first { visible(group, it) }
-                                val lastIndex = group.indices.last { visible(group, it) }
-                                val keyIndex = (visibleIndex downTo 0).firstOrNull { group[it].key }
-                                require(keyIndex != null) { "IDRを失った動画区間を復号できません" }
-                                val samples = group.subList(keyIndex, lastIndex + 1)
+                                val keyIndex = ranges[runIndex].first
+                                val samples = group.subList(keyIndex, ranges[runIndex].last + 1)
                                 val first = group[visibleIndex]
                                 val last = samples.last()
                                 val origin = samples.first().pts
                                 val terminal = if (last === all.lastOrNull() && tail?.displayHeld == true)
                                     ((tail.toNs!! - last.time.sequence!!) / 1000).coerceAtLeast(1) else 1L
-                                val sourceDurations = samples.mapIndexed { n, frame ->
-                                    group.getOrNull(keyIndex + n + 1)?.let { Math.subtractExact(it.pts, frame.pts) }
+                                val sourceDurations = samples.indices.map { n ->
+                                    sourceDuration(group, keyIndex + n)
                                 }
                                 var startUs = Math.subtractExact(first.pts, origin)
                                 if (capture.windowKnown && first.time.sequence != null && first.time.uncertainty != Long.MAX_VALUE)
@@ -263,10 +283,7 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                                     }
                                     val entry = if (normalizer != null) normalizedEntry else remuxEntry
                                     if (normalizer != null) sourceDurations[n]?.let { observed ->
-                                        require(normalizer.width.toLong() * normalizer.height / 256 * 1_000_000 <= 983_040L * minOf(observed, 1_000_000_000L) &&
-                                            encoded!!.remaining().toLong() * 8 * 1_000_000 <= 240_000_000L * minOf(observed, 1_000_000_000L)) {
-                                            "観測PTS間隔に対する変換出力のMBPS・bitrateがLevel 5.1上限を超えています"
-                                        }
+                                        normalizer.verifyInterval(observed, encoded!!.remaining())
                                     }
                                     val outputBytes = encoded ?: ByteBuffer.wrap(bytes)
                                     val outputKey = H264Utils.isByteBufferIDRSlice(outputBytes.duplicate())
