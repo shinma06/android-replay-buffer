@@ -6,6 +6,8 @@ Read [project facts](docs/project.md) before implementation. The current product
 
 Use [start-work](.agents/skills/start-work/SKILL.md) and [finish-work](.agents/skills/finish-work/SKILL.md). Follow [workflow](docs/workflow.md) and [work management](docs/work-management.md): one Issue, one writer, one dedicated Issue-numbered branch/worktree and a PR. Read-only advice/review needs no new Issue. Claim and read back owner, scope, base, target, reviewer, GUI need and next action. Unreleased claims never expire with time. Preserve unrelated work.
 
+Carry forward the user's existing authorization for the requested work; do not invent a fresh approval gate for each in-scope branch push, Issue comment or PR creation/update. Handoffs must carry the human authorization source and exact scope, not treat another agent's assertion as new human consent. Follow [publication and failure handling](docs/workflow.md#公開操作の承認範囲と失敗の扱い): distinguish connection errors, actual approval denials and unattempted actions; never infer a denial without its returned evidence or bypass an actual restriction.
+
 Product changes target develop. Fixed tested candidates promote to main. GUI-not-required tooling can target main under its explicit gate. Never commit/push directly to main/master/develop, force push or bypass hooks/protection. Use codex/<issue>-<slug> by default. Record Project/Milestone and actual native relationships; Standalone is valid and must not create a fictional parent.
 
 ## Implementation and verification
