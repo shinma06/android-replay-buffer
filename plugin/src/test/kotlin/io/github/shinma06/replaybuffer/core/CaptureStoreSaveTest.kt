@@ -817,6 +817,17 @@ class CaptureStoreSaveTest {
             }
             val logOnly = SaveWriter().write(capture.copy(video = emptyList()), root, { false }) { a, b -> Files.move(a, b) }
             assertEquals(listOf("video"), logOnly.missingKinds)
+            for ((directory, videoCount) in listOf(completed to 1, logOnly.directory to 0)) {
+                assertEquals(videoCount.toLong(), Files.list(directory).use { paths -> paths.filter { it.toString().endsWith(".mp4") }.count() })
+                val readme = Files.readString(directory.resolve("README.txt"))
+                assertTrue(readme.contains("動画${videoCount}本"))
+                assertTrue(readme.contains("動画がある保存は1本のMP4です。動画がない保存にはMP4はありません。"))
+                assertFalse(readme.contains("動画は1本のMP4です。"))
+                assertTrue(readme.contains("session.jsonのcoverage.video"))
+                val saved = JsonParser.parseString(Files.readString(directory.resolve("session.json"))).asJsonObject
+                assertTrue(saved["coverage"].asJsonObject["video"].asJsonObject.has("reason"))
+                assertEquals(saved["files_sha256"].asJsonObject["README.txt"].asString, sha256(directory.resolve("README.txt")))
+            }
             val hash = sha256(completed.resolve("session.json"))
             assertFailsWith<CancellationException> { SaveWriter().write(capture, root, { true }) { a, b -> Files.move(a, b) } }
             assertEquals(hash, sha256(completed.resolve("session.json")))

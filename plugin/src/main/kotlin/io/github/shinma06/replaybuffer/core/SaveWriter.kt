@@ -390,7 +390,7 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                 appendLine("Android Replay Buffer / 保存対象 ${capture.id}")
                 appendLine("論理窓: ${(capture.end - capture.start) / 1e9}秒（設定${capture.seconds}秒）、sequence ${capture.sequence}")
                 appendLine("動画${if (parts.isEmpty()) 0 else 1}本（再生区間${parts.size}件） / 全体ログ${capture.logs.size}行 / アプリログ${capture.logs.count { it.app == true }}行")
-                appendLine("動画は1本のMP4です。表示秒に対応するframes.jsonlのmovie_pts_us〜movie_end_usとsource/window情報を使い、両ログと照合してください。session.jsonのpartsは同じファイル内の再生区間です。")
+                appendLine("動画がある保存は1本のMP4です。動画がない保存にはMP4はありません。取得状態・理由はsession.jsonのcoverage.videoを確認してください。動画がある場合は、表示秒に対応するframes.jsonlのmovie_pts_us〜movie_end_usとsource/window情報を使い、両ログと照合してください。session.jsonのpartsは同じファイル内の再生区間です。")
                 appendLine("frameのclock_alignment_known=falseでは時計対応が不明です。window_ns=null、mapped_window_nsは不確実性を含む変換値で、同期確定やcoverageには使えません。区間開始に動画全体の表示秒を足す方法では照合できません。")
                 if (rawPath != null) appendLine("サイズ変更を含むため固定canvasへ再エンコードしています。拡縮・切捨てはせず、余白を追加しています。元AnnexB config/全packetはvideo-source.binへ保存しframes.jsonlのoffset/size/hashで照合できます。色未指定は不明のままで、色一致の証明ではありません。")
                 appendLine("video_missing_rangesは映像欠落又は時計対応未確認の範囲です。既知の取得gapは空白として表示し、不明gapの実durationはnullのまま、MP4上の表示間隔と区別しています。")
