@@ -47,3 +47,5 @@ Issue に owner、HEAD/base/target、PR、dirty の有無、検証、残条件�
 develop 統合後、coordinator は元 Issue の実装受入を照合し、残る GUI/main 確認を QA へ全件引き継ぎます。QA を実際の sub-issue とし、Milestone を継承し、双方向リンクを読み戻してから元実装 Issue を close します。QA・親・Milestone は子 PR の merge だけで完了にしません。
 
 PM は元 Issue・QA の Project 登録と Status、Milestone、native 関係、両端の Relationship Status を読み戻します。Project の更新は coordinator が自動実行したとみなさず、未反映は担当・次操作を記録します。主要な管理変更、Milestone 完了、10 件の実 merge を目安に `python3 scripts/workflow/governance_audit.py` で監査契機を確認し、必要な範囲だけ見直します。
+
+チームの解体・再編は[連絡規約](team-communication.md#必要時の編成と解体)に従います。本人の明示解体と停止を確認したら、PMが未完scopeの保管責任、後任未配置、固定成果と再開条件を既存の親/関係Issueへ記録します。過去の担当名は履歴として保持し、archiveを実装完了や所有権の自然失効にしません。後任を割り当てる時に実状態を読み戻し、単一writerとQAの双方向引継ぎを維持します。
