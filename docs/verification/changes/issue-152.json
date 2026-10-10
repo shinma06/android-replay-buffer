@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "issue": 152,
+  "gui_required": false,
+  "reason": "チーム連絡・窓口・必要時編成の指示と依頼文のみ。製品・実権限・hook・GUI受入を変えない。窓口の有限起動/idleと連絡経路、代表例の独立評価を区別し、実承認のクリック往復と実務効果は未測定。",
+  "cli_checks": [
+    "python3 scripts/check.py",
+    "python3 scripts/workflow/product_check.py",
+    "python3 scripts/workflow/change_impact.py --base origin/main --run-tests"
+  ],
+  "cases": []
+}

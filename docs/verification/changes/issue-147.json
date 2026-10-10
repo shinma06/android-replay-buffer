@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "issue": 147,
+  "gui_required": false,
+  "reason": "依頼範囲で対象限定・復旧・有限実行・結果確認を整えて継続する指示へ再構築する。AGENTSと運用/setup文書のみで製品・実行権限・hook・受入閾値は変えない。代表判断例を独立レビューし、実務効果は未測定として保持する。",
+  "cli_checks": [
+    "python3 scripts/check.py",
+    "python3 scripts/workflow/product_check.py",
+    "python3 scripts/workflow/change_impact.py --base origin/main --run-tests"
+  ],
+  "cases": []
+}

@@ -2,7 +2,7 @@
 
 このハーネスの管理機能は Python 標準ライブラリ、Git、GitHub CLI、Codex CLI で動きます。追加の Plugins・通知アプリは必須ではありません。設定ファイルや trust hash を別の環境からコピーしません。
 
-既存の Ponytail 等を使う場合は、利用クライアントの正規 installer と本人の trust 操作を使い、採用版と実イベントでの動作を確認します。manifest の存在は実行成功の証拠ではありません。子エージェント用の hook があっても、子エージェント起動の権限は増えません。
+既存の Ponytail 等は利用クライアントの正規 installer と既存のtrustを使い、採用版と実イベントでの動作を確認します。新しい本人のtrust操作をクライアントが要求する場合だけ、その対象を伝えます。trustの複製・直接書換えで回避しません。manifestの存在は実行成功の証拠ではなく、子エージェント用hookも起動権限を増やしません。
 
 通知や terminal 連携が必要な場合だけ公式の配布経路で導入し、OS の通知権限・PATH・重複通知を確認します。個人の launcher、app 内部 helper の絶対パス、認証情報を repository に追加しません。MCP は [接続手順](mcp.md)、GUI は [共通 lease](../operations.md) に従います。
 

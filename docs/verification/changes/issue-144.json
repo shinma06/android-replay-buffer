@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "issue": 144,
+  "gui_required": false,
+  "reason": "承認範囲の継続・引継ぎと、接続失敗/実拒否/未試行の区別をAGENTSとworkflowに明記する文書変更。製品、実行権限、hook、IDE/端末動作は変更しない。四つの判断例を独立レビューし、将来の誤判断防止効果は未測定として保持する。",
+  "cli_checks": [
+    "python3 scripts/check.py",
+    "python3 scripts/workflow/product_check.py",
+    "python3 scripts/workflow/change_impact.py --base origin/main --run-tests"
+  ],
+  "cases": []
+}

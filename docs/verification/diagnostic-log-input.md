@@ -26,7 +26,7 @@ QA本人が用意した新local private directoryの**symlinkを含まない絶�
 
 停止後に`input.bin.partial`、`receipt.bin.partial`、最後に`receipt.json`をCREATE_NEW/0600で保存する。後者にsource/dirty/version、generation、private serial、connections、byte数、上限/例外のreason、完全性、両binaryのSHA256がある。`complete`は記録自体の完全性であり、全event存在・parser成功・正式同期精度の合格ではない。OFFによる最後の未完recordは原byteとして残り得る。書込失敗や設定不適合でreceipt.jsonがない場合も診断未達。以前のreceiptを代用しない。
 
-生ログ・録画・binary・path・serial/host/token・秘密値はGit/Issue/PR/IDE log/通知/clipboard/remoteへ公開しない。原入力は他tagの秘密も含み得るので、採取の具体的な承認にはこの範囲を含める。公開結果は状態・件数・opaque参照のみ。
+生ログ・録画・binary・path・serial/host/token・秘密値はGit/Issue/PR/IDE log/通知/clipboard/remoteへ公開しない。原入力は他tagの秘密も含み得る。依頼済みの診断でも専用fixtureへ対象を隔離し、取得範囲・量・private保存・復元を実行計画で限定する。限定できない私的情報の露出が残る場合だけ、[workflowの本人確認境界](../workflow.md#公開操作の承認範囲と失敗の扱い)へ戻す。公開結果は状態・件数・opaque参照のみ。
 
 ## binary receipt（schema 1）
 
@@ -43,9 +43,9 @@ DataOutputStreamのbig endian。型1byteに続いて以下を読む。時刻はh
 
 原streamをofflineで読む場合は同じ診断ZIPの既存readLogを利用し、新parserや途中再同期を作らない。原stream不完全時や固定中の順序不明を正常母数から除外しない。
 
-## 有限nativeの予定（別途承認後）
+## 有限nativeの実行計画（旧8d専用）
 
-build/check/reviewとQAのfixture準備を先に完了する。shared leaseは[operations](../operations.md)に従う。旧APK・署名鍵・実ロード証拠の現存やAPK更新0を前提にしない。QAが固定fixture source05827d4から再buildしたartifactとfresh identityを準備し、診断product HEADとの組合せを明記する。専用新profile/rootへの診断ZIP配置、IDE起動・終了、APK導入、復元の具体的な回数はQA準備後の手順で固定し、別途承認する。以下の予定は実施済みやGOを表さず、同sourceを要求する正式受入へ流用しない。
+build/check/reviewとQAのfixture準備を先に完了する。shared leaseは[operations](../operations.md)に従う。旧APK・署名鍵・実ロード証拠の現存やAPK更新0を前提にしない。QAが固定fixture source05827d4から再buildしたartifactとfresh identityを準備し、診断product HEADとの組合せを明記する。専用新profile/rootへの診断ZIP配置、IDE起動・終了、APK導入、復元の具体的な回数はQAが準備後の手順で固定し、PMと共有資源・依存を調整する。依頼範囲と対象・保全・復元・上限が揃った操作は担当判断で進め、操作ごとの本人承認やPMのGOを取り直さない。本人停止・指定上限・実権限の制約は維持する。以下は旧8dの予定であり、今回の文言整理は診断の再開、実施済み、正式受入への流用を意味しない。
 
 全体600秒、取得240秒、lease更新0、追加試行0。初期準備180秒以内に実ロードidentity/標準SDK adb/fixture source・署名/run/view/PID/current E/lease/rootを確認し、対象A・N300（保存窓300秒）・private保存先を設定してON1。100入力・300phaseの有限診断であり、正式30分試験とは別とする。準備未達なら入力0で中止し復元する。
 

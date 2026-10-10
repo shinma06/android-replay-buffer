@@ -38,12 +38,14 @@ Status は `ready/blocked/deferred → Todo`、`in-progress/review → In Progre
 
 試験も status に応じて Now / Next / Later に表示し、QA 専用 View は設けません。`type:qa`、[試験手順](verification/human-qa.md)、元 Case 契約、人間・REAL の未達は保持します。
 
-担当中の試験は開始・停止・結果確定のたびに、担当者または PM が Issue 冒頭の「現在進捗」を更新し、担当・固定候補・実施済みと未達・停止理由・次操作を要約します。現在の作業状態に合わせて status ラベルを更新し、上の対応で Project Status を反映して読み戻します。停止だけで done にせず、再開可能なら ready、障害待ちは blocked、延期は deferred とし、完了は元の受入・引継ぎ条件で判断します。公開は要約のみとし、媒体・生ログ・秘密情報・ローカル絶対パスを載せません。未反映は Issue に対象・担当・再試行条件を残します。新しい自動化は追加しません。
+全体の試験状況は既存の横断QA #27 を正本とし、開始・停止・結果確定で担当・固定候補・実施済みと未達・停止理由・次操作を更新します。各QAは自分のCase、証拠と未達、担当・再開条件を持ち、全体の数値や計画JSONを複写しません。履歴の候補・結果・担当は上書きせず、現在と区別します。現在の作業状態に合わせて status ラベルを更新し、上の対応で Project Status を反映して読み戻します。停止だけで done にせず、再開可能なら ready、障害待ちは blocked、延期は deferred とし、完了は元の受入・引継ぎ条件で判断します。公開は要約のみとし、媒体・生ログ・秘密情報・ローカル絶対パスを載せません。未反映は Issue に対象・担当・再試行条件を残します。新しい自動化は追加しません。
 
 ## 中断・終了
 
 Issue に owner、HEAD/base/target、PR、dirty の有無、検証、残条件、次の操作、claim の継続/解放を残します。時間経過や応答なしで担当を奪いません。worktree の絶対パス、host、認証値は private registry だけに保存します。
 
-develop 統合後、coordinator は元 Issue の実装受入を照合し、残る GUI/main 確認を QA へ全件引き継ぎます。QA を実際の sub-issue とし、Milestone を継承し、双方向リンクを読み戻してから元実装 Issue を close します。QA・親・Milestone は子 PR の merge だけで完了にしません。
+develop統合後、coordinatorは元Issueの実装受入を照合します。独立した残試験がある場合だけQAを作成/再利用し、全Caseの固定出典へリンクします。QAは実際のsub-issueとしてMilestoneを継承し、双方向リンクを読み戻します。CaseなしはQAを新設せず、固定PR/merge/契約と次操作を既存release追跡 #10・元Issueへ双方向記録します。いずれもreadback後に元実装Issueをcloseします。main反映だけの残件はrelease追跡で管理し、試験完了とは分離します。[完了条件](verification/README.md#試験コストと完了の判断)に従い、QA・親・Milestoneを子PRのmergeだけで完了にしません。
 
 PM は元 Issue・QA の Project 登録と Status、Milestone、native 関係、両端の Relationship Status を読み戻します。Project の更新は coordinator が自動実行したとみなさず、未反映は担当・次操作を記録します。主要な管理変更、Milestone 完了、10 件の実 merge を目安に `python3 scripts/workflow/governance_audit.py` で監査契機を確認し、必要な範囲だけ見直します。
+
+チームの解体・再編は[連絡規約](team-communication.md#必要時の編成と解体)に従います。本人の明示解体と停止を確認したら、PMが未完scopeの保管責任、後任未配置、固定成果と再開条件を既存の親/関係Issueへ記録します。過去の担当名は履歴として保持し、archiveを実装完了や所有権の自然失効にしません。後任を割り当てる時に実状態を読み戻し、単一writerとQAの双方向引継ぎを維持します。
