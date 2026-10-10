@@ -2,7 +2,7 @@
   "schema": 1,
   "issue": 64,
   "stage": "initial-agent",
-  "required_ancestor": "2baa4bef02d225137ada6cd1a019435abe74342d",
+  "required_ancestor": "5bf9e84a887171df5f0287b036e9ba288fbfae9f",
   "followup_issue": 65,
   "owner": "Codex PM（管理）・QA #27担当（手順と証拠保全）。後続の人間実行者は再開時に割当。",
   "resume_condition": "初期版完成後、利用者が後続確認へ着手するときに実機・担当・固定候補を決める。CUA制約の部分は人間の対応または実際の操作経路復旧後。未実施の再質問で初期版を停止しない。",
@@ -2766,6 +2766,23 @@
         "PR145実統合版の本Caseの全前提・全3手順・expected・再確認条件を保持する。同じ新固定source/標準ZIP/JAR hashと実ロードidentityへ結び、元契約のJVM回帰と実IDEの通常mixed Save/標準player観察を別証拠で確認する。共有GUI lease・専用Emulator/使い捨て連番・文字fixtureを保持し、既存Case85の同候補の工程・観察を実際に一致する要件へ共有する。旧24aのmixed FAILED・既存13/99等の未達と過去の観察を保全し、新候補PASSへ転記しない。",
         "JVMで12950µs→52/33333µs→51と整数境界・隠れたIDR prefix・窓外の既知次packet・未知末尾を確認する。保存全体のLevelと全sample entryのSPS/avcC、全元PTS/packet/raw/config hash、原寸rectangle/余白/pixel/色、共通240Mbps、preflight取消し、5.2外のFAILEDとpin/partial/atomicを元契約どおり確認する。nativeでは通常の縦横混在Saveの1MP4/1video track・両log/metadata・全選択frame（decoder prefix含む）/元PTS/raw・取得継続と正常終了、標準playerの全Play・通常/境界/中間/逆方向seek、元寸法の文字・縦横・余白・色、窓/prefix非表示・可変durationを照合する。5.1互換性は同候補の既存fixture/必要player確認で担保する。",
         "既存133 entry・202出典・全agent_requirements/deferred_scope/人間指定/GOP/QA65を変更せず、本1 Case/1出典だけを追加する。nativeで5.1/5.2の両方を狙い撃ちして生成する義務、新しいmixed失敗→再試行/取消し工程、延期・human必須・自動PASSを追加しない。既存13/31/41/85等の失敗・復旧/取消しを含む全残契約、REAL・human・正式300event/30分等の未達と延期を保持する。JVM成功をnative受入・既存Case全面合格・full H.264/HRD準拠へ転用しない。"
+      ]
+    },
+    "173:PACKAGE-INPUT-GUIDANCE": {
+      "sources": [
+        {
+          "source_pr": 174,
+          "source_merge": "5bf9e84a887171df5f0287b036e9ba288fbfae9f",
+          "source_path": "docs/verification/changes/issue-173.json",
+          "original_case_sha256": "32787a70c3028e4c1b7e514fceb60fc41e318d02ae64c8668f26106a3c497029"
+        }
+      ],
+      "current_case_sha256": "32787a70c3028e4c1b7e514fceb60fc41e318d02ae64c8668f26106a3c497029",
+      "initial_scope": "agent",
+      "deferred_scope": [],
+      "agent_requirements": [
+        "PR174実統合版の本Caseの全前提・全3手順・expected・再確認条件を保持する。PMの割当・共有GUI lease・専用IDE/project fixtureの下で、同じ新clean candidate/source SHA・標準ZIP/全JAR hash・embedded identity・実ロード版に結び、取得OFFと元適用設定を記録して実IDEで観察する。package欄直下の255文字上限・各部分の英字開始/半角英数字/underscore・2部分以上のピリオド区切りと例、狭幅での折り返しと欄/Applyの操作、入力欄のaccessible name/descriptionと案内部品のaccessible nameを確認する。",
+        "手動の代表正常値com.example.app_1の適用、代表不正値com._appと別の有効な保持時間編集のatomic拒否を確認し、保存先確認がある場合は完了を待つ。自動/手動の有効/無効と案内の可読性、自動の空package受理、未適用編集のCancel/再open、元設定の復元/Apply/終了と取得OFFを確認する。元#27 SETTINGS-INVALID-EMUの全条件を維持し、candidate・標準ZIP・実ロード・前提が一致し元条件を満たす実観察だけを共有する。既存134 entry・203出典と全agent_requirements/deferred_scope・人間指定・GOP・QA65、元#27/#121と旧c61の11件観察を保持し、旧結果やJVM成功を新native受入へ転記しない。新たなnative境界matrix・human必須・延期・自動PASSを追加しない。"
       ]
     }
   }
