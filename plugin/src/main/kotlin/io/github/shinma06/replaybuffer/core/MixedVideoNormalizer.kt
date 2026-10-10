@@ -18,7 +18,7 @@ import org.jcodec.common.model.Size
 import java.nio.ByteBuffer
 
 /** Only mixed geometry uses decode/pad/encode; no scaling or colour conversion. */
-internal class MixedVideoNormalizer(private val configs: List<ByteArray>) {
+internal class MixedVideoNormalizer(private val configs: List<ByteArray>, minimumSourceDurationUs: Long?) {
     private val sources = configs.map { config ->
         require(config.size in 1..ReplaySettings.MAX_CONFIG_PACKET_BYTES) { "変換元configのサイズが不正です" }
         val rawSps = H264Utils.getRawSPS(ByteBuffer.wrap(config))
@@ -70,6 +70,8 @@ internal class MixedVideoNormalizer(private val configs: List<ByteArray>) {
     }
     val width = sources.maxOf { H264Utils.getPicSize(it).width }.let { (it + 15) and -16 }
     val height = sources.maxOf { H264Utils.getPicSize(it).height }.let { (it + 15) and -16 }
+    val levelIdc = mixedVideoLevel(width, height, minimumSourceDurationUs)
+    private val maxMbps = if (levelIdc == 51) 983_040L else 2_073_600L
     val colourKnown = sources.all { colour(it.vuiParams).last() == true }
     private val canvas = Picture.create(width, height, ColorSpace.YUV420J)
     private val encoded = ByteBuffer.allocate(width * height * 3)
@@ -83,7 +85,7 @@ internal class MixedVideoNormalizer(private val configs: List<ByteArray>) {
 
     init {
         require(sources.map { colour(it.vuiParams) }.distinct().size == 1) { "サイズ変更前後の色指定が非互換です（色変換は非対応）" }
-        require(width in 16..1920 && height in 16..1920 && width.toLong() * height / 256 * 30 <= 983_040) { "変換canvasがLevel 5.1上限を超えています" }
+        require(width in 16..1920 && height in 16..1920 && width.toLong() * height / 256 * 30 <= maxMbps) { "変換canvasがLevel上限を超えています" }
         require(sources.all { s ->
             (s.picWidthInMbsMinus1 + 1L) * 16 * (s.picHeightInMapUnitsMinus1 + 1) * 16 * (s.numRefFrames + 2) * 8 +
                 width.toLong() * height * 32 <= 512L * 1024 * 1024
@@ -109,7 +111,7 @@ internal class MixedVideoNormalizer(private val configs: List<ByteArray>) {
             }
         }) {
             override fun initSPS(size: Size): SeqParameterSet = super.initSPS(size).apply {
-                levelIdc = 51
+                levelIdc = this@MixedVideoNormalizer.levelIdc
                 // Preserve only picture semantics; source timing/HRD cannot describe a reencoded stream.
                 vuiParams = source.vuiParams?.let { v -> VUIParameters().apply {
                     aspectRatioInfoPresentFlag = true
@@ -168,13 +170,20 @@ internal class MixedVideoNormalizer(private val configs: List<ByteArray>) {
         }
         encoded.clear()
         val result = encoder.encodeFrame(canvas, encoded).data
-        require(result.remaining().toLong() * 8 * 30 <= 240_000_000) { "変換出力のbitrateがLevel 5.1上限を超えています" }
+        require(result.remaining().toLong() * 8 * 30 <= 240_000_000) { "変換出力のbitrateがLevel 5.1/5.2共通上限を超えています" }
         H264Utils.getRawSPS(result.duplicate()).forEach { raw ->
             val s = boundedSps(raw)
-            require(s.profileIdc == 66 && s.levelIdc == 51 && s.numRefFrames == 1 && s.frameMbsOnlyFlag &&
+            require(s.profileIdc == 66 && s.levelIdc == levelIdc && s.numRefFrames == 1 && s.frameMbsOnlyFlag &&
                 H264Utils.getPicSize(s) == Size(width, height) && colour(s.vuiParams) == colour(source.vuiParams)) { "変換出力SPSの寸法・Level・色指定が一致しません" }
         }
         return result
+    }
+
+    fun verifyInterval(sourceDurationUs: Long, encodedBytes: Int) {
+        require(mixedVideoLevel(width, height, sourceDurationUs) <= levelIdc &&
+            encodedBytes.toLong() * 8 * 1_000_000 <= 240_000_000L * minOf(sourceDurationUs, 1_000_000_000L)) {
+            "観測PTS間隔に対する変換出力がLevel ${levelIdc / 10}.${levelIdc % 10}上限を超えています"
+        }
     }
 
     fun rectangle(): Map<String, Int> {
@@ -207,6 +216,18 @@ internal class MixedVideoNormalizer(private val configs: List<ByteArray>) {
         if (v?.chromaLocInfoPresentFlag == true) v.chromaSampleLocTypeBottomField else 0,
         v?.videoSignalTypePresentFlag == true && v.colourDescriptionPresentFlag && v.colourPrimaries != 2 &&
             v.transferCharacteristics != 2 && v.matrixCoefficients != 2)
+}
+
+internal fun mixedVideoLevel(width: Int, height: Int, minimumSourceDurationUs: Long?): Int {
+    val duration = minimumSourceDurationUs?.let { minOf(it, 1_000_000_000L) } ?: return 51
+    // Annex A.3.1 requires both macroblock throughput and the 1/172s frame interval floor.
+    require(duration >= 5_814) { "元PTS間隔がLevel 5.1/5.2のframe間隔下限を満たしません" }
+    val macroblocks = width.toLong() * height / 256 * 1_000_000
+    return when {
+        macroblocks <= 983_040L * duration -> 51
+        macroblocks <= 2_073_600L * duration -> 52
+        else -> throw IllegalArgumentException("元PTS間隔に対する変換canvasがLevel 5.2上限を超えています")
+    }
 }
 
 internal fun requireConsistentParameterSets(sets: List<Pair<Int, ByteBuffer>>) {

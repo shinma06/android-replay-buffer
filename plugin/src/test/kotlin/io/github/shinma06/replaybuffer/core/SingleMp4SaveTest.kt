@@ -266,6 +266,105 @@ class SingleMp4SaveTest {
     }
 
     @Test
+    fun mixedSourceIntervalsChooseOneLevelAndKeepAllPacketsPixelsAndPts() {
+        for ((duration, level) in listOf(12_950L to 52, 33_333L to 51, null to 51)) {
+            withRuns(List(2) { duration?.let { listOf(0L, it) } ?: listOf(0L) }, listOf(1920 to 1080, 1080 to 1920), knownColour = true) { root, _, capture, original, pixels ->
+                val output = write(capture, root)
+                val saved = Files.readAllBytes(output.directory.resolve("video-source.bin"))
+                val index = rows(output)
+                assertEquals(capture.video.map { it.pts }, index.map { it["source_pts_us"].asLong })
+                assertEquals(if (duration == null) listOf(null, null) else listOf(duration, null, duration, null),
+                    index.map { it["source_duration_us"].takeUnless { value -> value.isJsonNull }?.asLong })
+                if (duration == null) assertTrue(index.all { it["terminal_authoring_tick"].asBoolean && it["display_duration_us"].asLong == 1L })
+                index.forEachIndexed { n, row ->
+                    assertContentEquals(original[n], saved.copyOfRange(row["source_offset"].asInt, row["source_offset"].asInt + row["source_size"].asInt))
+                    assertContentEquals(capture.video[n].config, saved.copyOfRange(row["source_config_offset"].asInt,
+                        row["source_config_offset"].asInt + row["source_config_size"].asInt))
+                    assertEquals(hash(original[n]), row["source_sha256"].asString)
+                }
+                assertMixedPackets(output, pixels, colourKnown = true, expectedLevel = level)
+                val normalizer = MixedVideoNormalizer(capture.video.map { it.config }.distinctBy { ByteBuffer.wrap(it) }, duration)
+                assertEquals(level, normalizer.levelIdc)
+                if (duration != null) {
+                    normalizer.verifyInterval(duration, (duration * 30).toInt())
+                    assertFailsWith<IllegalArgumentException> { normalizer.verifyInterval(duration, (duration * 30 + 1).toInt()) }
+                }
+            }
+        }
+    }
+
+    @Test
+    fun mixedLevelsRespectIntegerMacroblockAndFrameIntervalBoundariesWithoutInventingTailTime() {
+        assertEquals(51, mixedVideoLevel(1920, 1920, null))
+        assertEquals(51, mixedVideoLevel(1920, 1920, Long.MAX_VALUE))
+        assertEquals(51, mixedVideoLevel(1920, 1920, 14_649))
+        assertEquals(52, mixedVideoLevel(1920, 1920, 14_648))
+        assertEquals(52, mixedVideoLevel(1920, 1920, 6_945))
+        assertFailsWith<IllegalArgumentException> { mixedVideoLevel(1920, 1920, 6_944) }
+        assertEquals(51, mixedVideoLevel(64, 64, 5_814))
+        for (duration in listOf(-1L, 0L, 5_813L)) {
+            assertFailsWith<IllegalArgumentException> { mixedVideoLevel(64, 64, duration) }
+        }
+    }
+
+    @Test
+    fun mixedLevelIncludesHiddenIdrPrefixAndKnownNextPacketOutsideTheWindow() {
+        for (prefix in listOf(true, false)) {
+            val times = if (prefix) listOf(listOf(0L, 12_950L, 46_283L), listOf(0L, 100_000L))
+                else listOf(listOf(0L, 100_000L), listOf(0L, 33_333L, 46_283L))
+            withRuns(times, listOf(1920 to 1080, 1080 to 1920), knownColour = true) { root, _, capture, _, pixels ->
+                val video = capture.video.map { frame ->
+                    val sequence = frame.pts * 1000 + if (frame.generation == 1L) 0 else 1_000_000_000
+                    frame.copy(time = MappedTime(sequence, 0, 0, sequence))
+                }
+                val output = write(capture.copy(video = video, start = if (prefix) 30_000_000 else 0,
+                    end = if (prefix) 1_200_000_000 else 1_040_000_000, endUncertainty = 0), root)
+                val index = rows(output)
+                if (prefix) {
+                    assertTrue(index.first()["preroll"].asBoolean)
+                    assertTrue(index.first()["movie_pts_us"].isJsonNull)
+                } else {
+                    assertEquals(4, index.size)
+                    assertEquals(12_950L, index.last()["source_duration_us"].asLong)
+                    assertTrue(index.last()["movie_end_us"].asLong - index.last()["movie_pts_us"].asLong < 12_950)
+                }
+                assertMixedPackets(output, pixels.take(index.size), colourKnown = true, expectedLevel = 52)
+            }
+        }
+    }
+
+    @Test
+    fun mixedOutOfLevel52AndPreflightCancellationKeepPinAndPublishNothing() = withRuns(
+        List(2) { listOf(0L, 6_944L) }, listOf(1920 to 1080, 1080 to 1920),
+    ) { root, store, capture, _, _ ->
+        val failure = assertFailsWith<SaveFailure> { write(capture, root) }
+        assertTrue(failure.message!!.contains("Level 5.2"))
+        assertFailsWith<IllegalStateException> { store.capture(ReplaySettings()) }
+        var checks = 0
+        assertFailsWith<java.util.concurrent.CancellationException> {
+            SaveWriter().write(capture, root, { ++checks > 3 }) { _, _ -> error("cancelled preflight must not publish") }
+        }
+        assertFailsWith<IllegalStateException> { store.capture(ReplaySettings()) }
+        Files.list(root).use { paths ->
+            assertFalse(paths.anyMatch { it.fileName.toString().startsWith("replay-") || it.fileName.toString().endsWith(".partial") })
+        }
+    }
+
+    @Test
+    fun mixedEncodedBitrateLimitStaysTheSameForBothLevelsAndRetainsFailedPin() {
+        for (duration in listOf(12_950L, 33_333L)) {
+            withRuns(List(2) { listOf(0L, duration) }, listOf(1920 to 1080, 1080 to 1920), busy = true) { root, store, capture, _, _ ->
+                val failure = assertFailsWith<SaveFailure> { write(capture, root) }
+                assertTrue(generateSequence<Throwable>(failure) { it.cause }.any { it.message?.contains("bitrate") == true }, failure.toString())
+                assertFailsWith<IllegalStateException> { store.capture(ReplaySettings()) }
+                Files.list(root).use { paths ->
+                    assertFalse(paths.anyMatch { it.fileName.toString().startsWith("replay-") || it.fileName.toString().endsWith(".partial") })
+                }
+            }
+        }
+    }
+
+    @Test
     fun parameterSetIdsKeepOneContentWithinEachConfig() {
         fun nal(vararg bytes: Byte) = ByteBuffer.wrap(bytes)
         requireConsistentParameterSets(listOf(0 to nal(1), 0 to nal(1), 1 to nal(2)))
@@ -343,7 +442,7 @@ class SingleMp4SaveTest {
 
     private fun hash(bytes: ByteArray) = java.security.MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
 
-    private fun assertMixedPackets(output: SaveOutput, pixels: List<List<ByteArray>>, colourKnown: Boolean) {
+    private fun assertMixedPackets(output: SaveOutput, pixels: List<List<ByteArray>>, colourKnown: Boolean, expectedLevel: Int = 51) {
         val rows = rows(output)
         val canvas = manifest(output)["video_canvas"].asJsonObject
         val canvasWidth = canvas["width"].asInt; val canvasHeight = canvas["height"].asInt
@@ -359,7 +458,7 @@ class SingleMp4SaveTest {
                     assertEquals(canvasWidth, entry.width); assertEquals(canvasHeight, entry.height)
                     val config = H264Utils.parseAVCC(entry)
                     val sps = H264Utils.readSPS(config.spsList.first().duplicate())
-                    assertEquals(51, sps.levelIdc); assertEquals(1, sps.numRefFrames)
+                    assertEquals(expectedLevel, sps.levelIdc); assertEquals(1, sps.numRefFrames)
                     if (colourKnown) {
                         assertTrue(sps.vuiParams.videoFullRangeFlag)
                         assertEquals(6, sps.vuiParams.matrixCoefficients)
@@ -427,7 +526,7 @@ class SingleMp4SaveTest {
         Files.list(output.directory).use { paths -> assertEquals(1, paths.filter { it.toString().endsWith(".mp4") }.count().toInt()) }
     }
 
-    private fun withRuns(pts: List<List<Long>>, sizes: List<Pair<Int, Int>> = pts.map { 32 to 32 }, knownColour: Boolean = false, check: (java.nio.file.Path, CaptureStore, FrozenCapture, List<ByteArray>, List<List<ByteArray>>) -> Unit) {
+    private fun withRuns(pts: List<List<Long>>, sizes: List<Pair<Int, Int>> = pts.map { 32 to 32 }, knownColour: Boolean = false, busy: Boolean = false, check: (java.nio.file.Path, CaptureStore, FrozenCapture, List<ByteArray>, List<List<ByteArray>>) -> Unit) {
         val root = Files.createTempDirectory("replay-mp4-runs-")
         val store = CaptureStore(root.resolve("ring"), minFree = 0)
         val original = mutableListOf<ByteArray>()
@@ -452,7 +551,9 @@ class SingleMp4SaveTest {
                 }.apply { setKeyInterval(if (run % 2 == 0) 8 else 16) }
                 val decoder = H264Decoder()
                 times.forEachIndexed { n, time ->
-                    val encoded = encoder.encodeFrame(Picture.create(width, height, ColorSpace.YUV420J).apply { fill(20 + run * 20 + n) }, ByteBuffer.allocate(width * height * 3)).data
+                    val picture = Picture.create(width, height, ColorSpace.YUV420J).apply { fill(20 + run * 20 + n) }
+                    if (busy) java.util.Random(n.toLong()).let { random -> picture.data.forEach(random::nextBytes) }
+                    val encoded = encoder.encodeFrame(picture, ByteBuffer.allocate(width * height * 3)).data
                     val bytes = ByteArray(encoded.remaining()).also { encoded.duplicate().get(it) } + if (knownColour) {
                         // Valid user_data_unregistered SEI with a real emulation-prevention byte.
                         byteArrayOf(0, 0, 0, 1, 6, 5, 20) + "ReplayBufferTest!".toByteArray() + byteArrayOf(0, 0, 3, 1, 122, 0x80.toByte())

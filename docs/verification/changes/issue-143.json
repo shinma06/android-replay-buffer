@@ -1,0 +1,45 @@
+{
+  "schema": 1,
+  "issue": 143,
+  "gui_required": true,
+  "reason": "混在geometryの保存Level選択を変更する。JVMで元PTS/全frame/raw/境界/失敗保全を検証するが、新しい同一固定ZIPの通常実IDE mixed Saveと標準player・原寸/文字/全frame受入が必要。既存Case85の工程へ重ね、nativeで両Levelの強制作成や新しい失敗・再試行工程は追加しない。旧24aのmixed FAILEDと既存13/99等の未達は保持し、新候補PASSへ転記しない。",
+  "cli_checks": [
+    "python3 scripts/check.py: 管理・構造・ハーネス回帰",
+    "python3 scripts/workflow/product_check.py: 保全CLI21ファイルと既存tests",
+    "python3 scripts/workflow/plugin_check.py: JBR25/固定Rabbit1 SDKでcheck/buildPlugin/verifyPluginStructure",
+    "python3 scripts/workflow/change_impact.py --base 24a0e8089fe46ec7436ee23aa2d08f8a5cdfa283 --run-tests: clean committed HEADで必要checksを実行",
+    "SingleMp4SaveTest: 1920正方canvasの12950µs→52/33333µs→51、14648/14649・6944/6945・5813/5814の境界、未知末尾、隠れたIDR prefix、窓外次packet、全frame/raw/config/元PTS/pixel/SPS/avcC、共通240Mbps超過・取消し・pin/partial/atomicを検証。実IDE/device/標準playerの合格とは区別する"
+  ],
+  "cases": [
+    {
+      "id": "MIXED-VIDEO-LEVEL",
+      "artifact": "plugin",
+      "change": "短い既知PTS間隔を含む縦横混在を保存全体のLevel5.1/5.2で保存する",
+      "preconditions": "固定source/標準ZIP/JAR hashと実ロードidentityが一致する新候補。共有GUI lease、専用Emulator/使い捨て連番・文字fixture、縦横の元寸法・config・元PTSと保存全packetが照合可能。既存Case85の通常mixed Save/再生工程へ重ねて確認する。既存13/31/41/85の全残契約、REAL・human・30分等の保留/延期条件は変更しない。",
+      "steps": [
+        "JVMで12950µs→52/33333µs→51と整数境界、隠れたIDR prefix、窓外の既知次packet、未知末尾を確認する。保存全体のLevelと全sample entryのSPS/avcC、全元PTS/packet/raw/config hash、原寸rectangle/余白/pixel/色、共通240Mbps、preflight取消し、5.2外のFAILEDとpin/partial/atomicの実変更に必要な回帰を確認する。",
+        "同じ新ZIPを実ロードしたIDEで、既存Case85の通常の取得から縦横混在をSaveする。1件のMP4/1video trackと両log/metadata、元PTS/全選択frame（decoder prefix含む）/raw、取得継続と正常終了を照合する。nativeで5.1/5.2の両方を狙い撃ちして生成する義務や、新しいmixed失敗→再試行/取消し工程は追加しない。",
+        "その保存動画を既存Case85の標準player工程で全Play・通常/境界/中間/逆方向seekし、元寸法の文字・縦横・余白・色、窓/prefix非表示、可変durationを照合する。5.1互換性は同候補の既存fixture/必要player確認で担保する。既存Case41/85等の失敗・再試行/取消しを含む全残契約は保持し、JVM結果から既存Case全面合格やfull H.264/HRD準拠を推測しない。"
+      ],
+      "expected": "既知の全元間隔が収まる最小Levelを保存全体で固定。必要な時だけ5.2になりSPS/avcC/guardが一致する。元frame数/PTS/raw/原寸/色と1MP4/1trackを維持し、未知source_duration_usはnull。5.2外/共通240Mbps超過や取消しは成功を公開せずpinを保つ。新候補の通常mixed保存と標準player/全frame/文字・原寸が確認でき、既存5.1互換性を維持する。欠落や不明を隠さず、既存Caseの残契約を別途保持する。",
+      "provenance": [
+        "docs/design/timeline.md: 固定canvas/単一MP4・観測PTS・51/必要時52契約",
+        "plugin/src/test/kotlin/io/github/shinma06/replaybuffer/core/SingleMp4SaveTest.kt: 合成production Writer回帰",
+        "ITU-T H.264 (06/2026) Annex A.3.1 / Table A-1: MBPS/fRと両Level共通上限",
+        "Issue #143: parent #10、blocks #87。旧24aのnative mixed失敗packetのoffending frame同定は未達"
+      ],
+      "gpt": {
+        "status": "pending",
+        "reason": "JVM回帰と実IDE Save/標準playerを分けて記録する。新候補のGUI・受取人再生は未実施。"
+      },
+      "human": {
+        "status": "pending",
+        "reason": "新候補の人間確認は未実施。既存Caseのhuman必須とREAL延期を保持し、本Caseから追加の延期や全面PASSを作らない。"
+      },
+      "fix_issue": null,
+      "fix_pr": null,
+      "recheck": "Level/PTS/sample選択/codec/mux/依存変更後、同じ新固定source/標準ZIP・実ロードidentityで全手順を再実施。",
+      "next_action": "既存UI担当が固定HEAD/baseと本Caseを独立レビューし、PMがdevelop統合後にQA #87へ同ZIPの通常mixed Save/標準playerを既存Case85工程に重ねる手順、5.1回帰・既存全残契約とmain反映追跡を双方向link/readbackして引継ぐ。初期計画の新Case bindingは別途正式更新し、main promotionは未達のまま保持する。"
+    }
+  ]
+}
