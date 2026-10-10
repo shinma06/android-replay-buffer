@@ -56,3 +56,5 @@ develop の実装完了は QA Issue を作成/再利用し、Case・merge SHA・
 ## 定期実行
 
 定期実行は明示依頼がある場合に利用環境の正規スケジューラーへ登録します。[coordinator 依頼文](../../prompts/coordinator.md)を使い、trusted directory、対象、worker 許可、時間・回数予算、停止・復旧条件を設定します。変更なしは通知せず、進展・完了・障害・利用者の操作が必要な場合だけ通知します。既存 PAUSED ジョブを再開しません。今回、cron・LaunchAgent・heartbeat は作成していません。
+
+担当間の結果は[チーム連絡](../team-communication.md)の形式でPMへ集約し、人間向けの必要な結果だけを窓口へ渡します。
