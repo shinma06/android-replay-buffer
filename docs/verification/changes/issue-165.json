@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "issue": 165,
+  "gui_required": false,
+  "reason": "GitHub標準のmerge後削除と既存資源整理、任意のAndroid CLI支援の運用を記録する。製品コード・build・Caseは変更せず、端末/IDE操作は行わない。",
+  "cli_checks": [
+    "python3 scripts/check.py",
+    "python3 scripts/workflow/product_check.py",
+    "python3 scripts/workflow/change_impact.py --base origin/main --run-tests"
+  ],
+  "cases": []
+}
