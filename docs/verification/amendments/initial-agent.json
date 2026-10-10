@@ -2,7 +2,7 @@
   "schema": 1,
   "issue": 64,
   "stage": "initial-agent",
-  "required_ancestor": "f5dd726a7282539f26d724f083e6e620b9366c45",
+  "required_ancestor": "2baa4bef02d225137ada6cd1a019435abe74342d",
   "followup_issue": 65,
   "owner": "Codex PM（管理）・QA #27担当（手順と証拠保全）。後続の人間実行者は再開時に割当。",
   "resume_condition": "初期版完成後、利用者が後続確認へ着手するときに実機・担当・固定候補を決める。CUA制約の部分は人間の対応または実際の操作経路復旧後。未実施の再質問で初期版を停止しない。",
@@ -2748,6 +2748,24 @@
       "agent_requirements": [
         "PR136実統合版の本Caseの全前提・全3手順・expected・再確認条件を保持する。新clean candidate/source SHA・標準ZIP/JAR hashと実production Writerの生成bindingを記録した動画あり/log-only各1の新所有出力を、PMの具体的割当と共有GUI leaseの下で標準テキストeditorから実観察する。同production Writerの合成生成許容を元契約どおり保持し、実IDE/device Saveと区別する。旧候補の観察や限定editor採用を新候補の成功へ転用せず、未実施・unknown・製品failをpassや延期へ変更しない。",
         "実MP4数1/0とREADMEの実件数・条件付き説明、動画ありのframes/session照合案内、session.jsonのcoverage.videoのstate/availableSeconds/reason、README実hashとfiles_sha256の一致を確認する。文書を編集・保存せず自身が開いた文書だけを閉じ、既存1fb原保存物と原13/31/41・45・27のCase・人間/REAL/main未達を保全する。既存132 entry・201出典・全agent_requirements/deferred_scope/人間指定/GOP/QA65を変更せず、本1 Case/1出典だけを追加する。新しい延期・human必須・自動PASS・再録画や全Playの追加要求を作らない。"
+      ]
+    },
+    "143:MIXED-VIDEO-LEVEL": {
+      "sources": [
+        {
+          "source_pr": 145,
+          "source_merge": "2baa4bef02d225137ada6cd1a019435abe74342d",
+          "source_path": "docs/verification/changes/issue-143.json",
+          "original_case_sha256": "915f7a77b18943017be2915a994325f497fcf42cf2b9fc73dd63fe3a78bcd89d"
+        }
+      ],
+      "current_case_sha256": "915f7a77b18943017be2915a994325f497fcf42cf2b9fc73dd63fe3a78bcd89d",
+      "initial_scope": "agent",
+      "deferred_scope": [],
+      "agent_requirements": [
+        "PR145実統合版の本Caseの全前提・全3手順・expected・再確認条件を保持する。同じ新固定source/標準ZIP/JAR hashと実ロードidentityへ結び、元契約のJVM回帰と実IDEの通常mixed Save/標準player観察を別証拠で確認する。共有GUI lease・専用Emulator/使い捨て連番・文字fixtureを保持し、既存Case85の同候補の工程・観察を実際に一致する要件へ共有する。旧24aのmixed FAILED・既存13/99等の未達と過去の観察を保全し、新候補PASSへ転記しない。",
+        "JVMで12950µs→52/33333µs→51と整数境界・隠れたIDR prefix・窓外の既知次packet・未知末尾を確認する。保存全体のLevelと全sample entryのSPS/avcC、全元PTS/packet/raw/config hash、原寸rectangle/余白/pixel/色、共通240Mbps、preflight取消し、5.2外のFAILEDとpin/partial/atomicを元契約どおり確認する。nativeでは通常の縦横混在Saveの1MP4/1video track・両log/metadata・全選択frame（decoder prefix含む）/元PTS/raw・取得継続と正常終了、標準playerの全Play・通常/境界/中間/逆方向seek、元寸法の文字・縦横・余白・色、窓/prefix非表示・可変durationを照合する。5.1互換性は同候補の既存fixture/必要player確認で担保する。",
+        "既存133 entry・202出典・全agent_requirements/deferred_scope/人間指定/GOP/QA65を変更せず、本1 Case/1出典だけを追加する。nativeで5.1/5.2の両方を狙い撃ちして生成する義務、新しいmixed失敗→再試行/取消し工程、延期・human必須・自動PASSを追加しない。既存13/31/41/85等の失敗・復旧/取消しを含む全残契約、REAL・human・正式300event/30分等の未達と延期を保持する。JVM成功をnative受入・既存Case全面合格・full H.264/HRD準拠へ転用しない。"
       ]
     }
   }
