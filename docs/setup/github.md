@@ -20,3 +20,11 @@
 PR policyはcheckoutせずmetadataをデータとして検査し、Acceptance gateは最新trusted baseのコードを実行します。PRコードのテストはread-only token/credential非保持です。Agent reviewをPR内コードで自己承認しません。
 
 Projectはprivate、Now/Next/Later/Past/全体/QAのViews、Status、LabelsによるPriority、Milestone、Parent、Relationship Statusを設定します。必要な権限が不足する場合は自動拡張せず対象・担当・再試行条件を記録します。
+
+## マージ後のブランチ整理
+
+Repositoryの `delete_branch_on_merge` を有効にし、通常のPR merge後はGitHub標準機能でhead branchを削除します。[公式手順](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/configuring-pull-request-merges/managing-the-automatic-deletion-of-branches)のとおり保護規則等で削除されない場合もあるため、merge成功とcleanup完了は別に読み戻します。既存の残存枝は設定変更だけで整理済みとしません。
+
+ローカルは `git fetch --prune origin` でremote-tracking refsを同期します。このcloneのoriginが標準の `+refs/heads/*:refs/remotes/origin/*` で、tag pruningを使っていないことを確認した場合は `git config --local remote.origin.prune true` で以後のfetchにも適用できます。global設定やtagの削除範囲は変更しません。
+
+残るlocal branch/worktreeは[終了手順](../workflow.md#自動進行と終了)に従い、所有・停止・clean・PRの最終HEAD・現在のremote/local SHA・worktree利用を照合して整理します。squash後の祖先判定や `[gone]` だけでは削除しません。再利用された枝、未統合成果、未解放claim、GUI使用中、私的証拠は保持します。証拠を保持する停止済みclean worktreeは同じSHAのdetached HEADへ移し、ファイルを残したまま枝だけ整理できます。保持理由・owner・再開条件をIssueに残し、実pathはprivateに置きます。既存coordinatorのcleanup/branch auditを利用できる条件では再利用し、別の常駐削除jobは追加しません。
