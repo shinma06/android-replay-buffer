@@ -10,6 +10,7 @@ import com.intellij.openapi.ui.TextFieldWithBrowseButton
 import com.intellij.openapi.util.Disposer
 import com.intellij.ui.DocumentAdapter
 import com.intellij.ui.components.JBLabel
+import com.intellij.ui.components.JBTextArea
 import com.intellij.ui.components.JBTextField
 import com.intellij.util.Alarm
 import com.intellij.util.ui.FormBuilder
@@ -53,7 +54,12 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable {
                 override fun textChanged(event: DocumentEvent) = checkDestination()
             })
         }
-        manualPackage = JBTextField().apply { accessibleContext.accessibleName = "対象アプリのpackage名" }
+        val packageGuidance = "255文字以内。英字で始まる2つ以上の部分をピリオドで区切ります。" +
+            "各部分には半角英数字と「_」を使えます（例: com.example.app）。"
+        manualPackage = JBTextField().apply {
+            accessibleContext.accessibleName = "対象アプリのpackage名"
+            accessibleContext.accessibleDescription = packageGuidance
+        }
         mode = JComboBox(AppSelectionMode.entries.toTypedArray()).apply {
             accessibleContext.accessibleName = "対象アプリの選択方法"
             addActionListener { manualPackage?.isEnabled = selectedItem == AppSelectionMode.MANUAL }
@@ -64,6 +70,14 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable {
             .addComponent(destinationStatus!!)
             .addLabeledComponent("対象アプリ:", mode!!)
             .addLabeledComponent("package名:", manualPackage!!)
+            .addComponent(JBTextArea(packageGuidance).apply {
+                isEditable = false
+                isFocusable = false
+                isOpaque = false
+                lineWrap = true
+                wrapStyleWord = true
+                accessibleContext.accessibleName = "package名の入力条件"
+            })
             .addComponent(applicationStatus!!)
             .addComponent(JBLabel("編集だけでは取得条件を変更しません。「適用」または「OK」で反映します。"))
             .addComponent(JBLabel("取得の有効・無効はToolWindowから即時に切り替えます。"))
