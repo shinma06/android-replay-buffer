@@ -304,7 +304,7 @@ class ResponsibilityRevisionTests(unittest.TestCase):
         self.assertEqual(new['sources'][0]['source_merge'], p['required_ancestor'])
         self.assertEqual(new['sources'][0]['original_case_sha256'], new['current_case_sha256'])
         self.assertEqual(('agent', []), (new['initial_scope'], new['deferred_scope']))
-        for mutation in ('old-entry', 'old-ancestor', 'missing-addition', 'unknown-addition'):
+        for mutation in ('old-entry', 'old-ancestor', 'missing-addition', 'unknown-addition', 'null'):
             bad = copy.deepcopy(p)
             if mutation == 'old-entry':
                 bad['cases']['3:PLUGIN-LOAD']['agent_requirements'].append('Alter old scope')
@@ -312,8 +312,10 @@ class ResponsibilityRevisionTests(unittest.TestCase):
                 bad['responsibility_revision']['plan_extension']['previous_required_ancestor'] = 'f' * 40
             elif mutation == 'missing-addition':
                 del bad['cases']['186:CLOCK-BATCH-SAVE']
-            else:
+            elif mutation == 'unknown-addition':
                 bad['responsibility_revision']['plan_extension']['added_cases'].append('185:EXTRA')
+            else:
+                bad['responsibility_revision']['plan_extension'] = None
             with self.subTest(mutation=mutation), self.assertRaises(ValueError):
                 validate_responsibility_policy(bad)
 

@@ -339,7 +339,7 @@ def validate_responsibility_policy(policy):
     if not isinstance(revision, dict):
         raise ValueError('Invalid responsibility revision')
     extension = revision.get('plan_extension')
-    if extension is not None:
+    if 'plan_extension' in revision:
         if (not isinstance(extension, dict) or set(extension) != {
                 'issue', 'previous_required_ancestor', 'added_cases'} or
                 extension['issue'] != 190 or extension['added_cases'] != ['186:CLOCK-BATCH-SAVE'] or
