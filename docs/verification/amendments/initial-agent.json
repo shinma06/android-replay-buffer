@@ -3514,6 +3514,22 @@
           ],
           "expected": "成功通知なし。失敗・取消し保存attemptのfile/directoryを自動削除せず、衝突entry・所有不明物・差替え・symlink・既存完成物を保全する。partialを完成と表示せず、作成済みsessionは保持descriptor経由でcomplete:falseへ戻すbest effortを行う（書込み不能時は保証しない）。同identityの実在する未完成directoryの場所をbest effortで既存エラー経路へ伝え、確認できない場所を実在と断定しない。取消しmessageにも場所を保持するがOFF/closeの既存UI抑止を維持する。残留容量増加を許容し、自動回収を提供しない。失敗保持中の固定T/N/対象/pinと別新規フォルダーへの同内容retry、成功時のatomic非上書き、取消し時の既存参照解放/Lifecycle、取得・remote cleanupは維持する。198の回収対象は識別済み旧取得rootで、保存attempt残留ではない。原cleanup義務を満たしたとは扱わず、原Case全文と旧観察/failed checks/未達を保持する。"
         }
+      },
+      "3:PLUGIN-LOAD": {
+        "case": {
+          "steps": [
+            "共有leaseと専用profile/fixture、固定source/標準ZIP/hash/Plugin ID/version/全3JARを確認し、docs/operations.mdの固定Plugin ZIPのターミナル導入に従う。未保存作業と自製品設定/旧Pluginを保全し、対象IDE通常終了後に安全なstagingからpluginName/lib構造を限定配置して同profileを通常起動する。Settings → PluginsのInstall Plugin from Diskは必須としない。",
+            "実IDE process/PID/起動識別とロードPluginのID/version/source/全3JARのZIP一致、Tools → Android Replay Bufferについての日本語説明/固定source SHAの初回表示とactionの実接続を確認する。Settings → Pluginsでの版探索は必須としない。",
+            "表示を閉じて同じsandboxを通常再起動し、同profile/新PID/実ロード版と全3JAR/action/取得OFFを再確認する。既存延期は下記のAbout再読取りとdialog終了画面確認だけに限る。"
+          ]
+        },
+        "agent_requirements": [
+          "固定23fの現在契約の前提・操作・期待結果に既存GOP改訂を適用し、下記の延期部分だけを分ける。全歴史出典を保全し、PR38等による専用対象への安全な操作限定を維持する。追加要件・数値基準を落とさず、製品fail/実行可能な工程の未実施では初期範囲合格にしない。",
+          "新候補の同じ固定ZIPで公式ターミナル配置によるnative導入/有効化、初回自製品About/action、通常再起動、同専用profileと実際のIDE process/起動識別、全3JARのZIP一致、Tools action存在、取得OFF/streamなし/記録未開始/不要なADB起動なしを実観察する。Settings GUIは自製品の表示/入力/Apply/Cancel/検証/アクセシビリティ/寿命の契約を満たすために使い、Plugins導入/版探索を追加しない。JAR一致を延期した画面確認のpassへ代用しない。旧23fの観察は再利用しない。"
+        ],
+        "deferred_scope": [
+          "原Caseと旧延期/制約記録はcases欄に不変で保持する。#208の本人方法改訂により再起動後Settings → Pluginsの版探索義務は除外し、同sandbox再起動後の自製品Aboutの日本語説明/固定source SHAの再読取りと、そのdialogを閉じたことの画面確認だけを既存延期として維持する。初回About/action・実ロード・通常再起動・全3JAR・取得OFFは必須のまま。QA27-C23F0291-PLUGIN-LOAD-CUA-LIMITの元観察/未達をPASSへ変更せず、新しい延期は追加しない。"
+        ]
       }
     },
     "plan_extension": {
@@ -3524,6 +3540,10 @@
         "197:SAVE-FAILURE-OWNERSHIP",
         "198:LOCAL-OWNERSHIP-RECOVERY"
       ]
+    },
+    "installation_revision": {
+      "issue": 208,
+      "previous_plan_sha256": "13bd1e294519915d8c8a66be2770811a4d6b28465432061e7c2eae91a87fd8a3"
     }
   }
 }

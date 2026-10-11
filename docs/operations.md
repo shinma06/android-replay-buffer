@@ -35,6 +35,19 @@ SHAとtokenは実値へ置き換えます。返却にはtoken・host等が含ま
 
 画面で対象アプリ・fixture・buildを識別し、source SHAと実ロードartifactのhashを照合します。古い画面要素・座標を使い回さず最新状態から操作します。終了時は自分の処理だけ停止/引継ぎ、Case別結果と次操作を残してreleaseします。
 
+## 固定Plugin ZIPのターミナル導入
+
+通常の検証版導入は[JetBrains公式のローカルZIP配置](https://youtrack.jetbrains.com/projects/MP/articles/SUPPORT-A-2276/Installing-plugins-from-a-local-file-in-IntelliJ-Products-e.g.-PyCharm)を使う。ZIP内の `pluginName/lib` 構造を対象profileのpluginsディレクトリへ保って配置し、同じIDE/profileを通常起動する。[`installPlugins`](https://www.jetbrains.com/help/idea/install-plugins-from-the-command-line.html)の引数はplugin IDとrepository URLであり、local ZIP引数や更新用flagを創作しない。GitHubのSource code ZIPは導入物ではない。
+
+1. 共有lease、対象IDEのfull build/JBR、専用profileの実config/plugins/system/log経路、使い捨てfixture、現在PID/起動識別を確認する。標準ディレクトリ名だけで推定せず、実起動設定のoverrideも照合する。固定source、標準buildのZIP SHA-256、Plugin ID/version、同梱全3JARの一覧/hashをprivate記録へ結ぶ。
+2. 未保存作業と進行中の取得/保存を保全し、自分の取得をOFFにして、対象IDEだけを通常終了する。process終了を確認するまで配置しない。通常終了できない、対象が不明、実tool/OSの拒否・認証要求がある場合はその工程を止めて引き継ぐ。強制kill、EULA自動同意、セキュリティ解除は使わない。
+3. 旧Pluginディレクトリと今回影響する自製品設定を、所有・hash・mode・復元先付きでprivateに保全する。未知の同名ディレクトリや他Pluginは置換しない。ZIPのCRC、単一のPlugin rootとID/version、絶対パス/`..`/symlink等の展開先逸脱、全JARを先に検査し、plugins検索対象外の新規stagingへ展開する。既存ディレクトリへ直接展開しない。
+4. 検査済みstagingと対象を同じfilesystemに置き、対象Pluginディレクトリだけを限定renameで退避・配置する。旧新JARをmergeせず、旧版をplugins検索対象内に残さない。配置後の全ファイル/JAR hashとmode、固定ZIPとの一致を確認する。途中失敗はIDEを起動せず、今回の対象だけを保全済み旧版へ戻す。
+5. 同じIDE/profile/fixtureを通常起動し、新しいPID/起動識別、実ロードしたPluginのsource/versionと全3JARのZIP一致、Tools → Android Replay Bufferについて/actionの実接続、取得OFF・streamなし・記録未開始・不要なADB起動なしを確認する。Caseが要求する通常再起動後も同じ実体を照合する。配置成功やexit 0を実ロード/受入PASSにしない。
+6. ロード失敗/版違い/所有状態不明なら新しい試験を始めず、原診断をprivateへ保存し、通常終了後に今回のPlugin/設定だけを復元して旧hash/modeと通常起動を確認する。並行作業を古い全体backupで上書きしない。成功/失敗・元観察・最終状態・残工程を既存QAへ記録し、共有leaseを終了/引継ぎする。
+
+Settings → PluginsのInstall Plugin from Diskや版探索は通常QAの必須操作にしない。Settings GUIは自製品設定の表示・入力・Apply/Cancel・検証・アクセシビリティ・Lifecycle/復元の確認に使い、自製品About/actionの代表native接続も維持する。原Caseの旧導入指定と観察/失敗は履歴として保持し、[trusted正式計画](verification/amendments/initial-agent.json)の有効methodだけを適用する。方法の変更だけで固定成果物を再build/再導入せず、[不変成果物と保持事実の対応確認](verification/responsibility.md#trusted-main改訂と旧観察の再評価)に従って不足する事実だけ実施する。
+
 ## 試験の準備・実行上限
 
 準備（計画確認・スクリプト/fixtureの用意・静的検査・証拠の保存先確認）と、測定（取得ON・操作・Save・解析）と、復元/cleanupを分けます。端末/IDEを触る準備にもleaseと対象識別は必要です。計測時刻を遅らせて実際の取得時間・容量・共有環境占有を隠しません。
