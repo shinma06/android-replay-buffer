@@ -299,8 +299,9 @@ def initial_stage_plan(base, candidate, git):
     revision = policy.get('responsibility_revision')
     if revision is not None:
         validate_responsibility_policy(policy)
-    if candidate_plan != policy and not (revision and 'plan_extension' not in revision and
-                                         candidate_plan == original):
+    if candidate_plan != policy and not (revision and (
+            'installation_revision' in revision and candidate_plan == previous_installation_plan(policy) or
+            'plan_extension' not in revision and candidate_plan == original)):
         raise ValueError('Candidate lacks the exact trusted initial plan; synchronize main first')
     for key, entry in policy['cases'].items():
         if (not re.fullmatch(r'[1-9][0-9]*:[A-Z][A-Z0-9-]+', key) or
@@ -341,6 +342,16 @@ def initial_stage_plan(base, candidate, git):
     return policy
 
 
+def previous_installation_plan(policy):
+    """Reconstruct only Issue 208's registered prior plan, keeping all original scopes."""
+    revision = policy.get('responsibility_revision', {})
+    if 'installation_revision' not in revision:
+        return None
+    previous = {k: v for k, v in revision.items() if k != 'installation_revision'}
+    previous['overrides'] = {k: v for k, v in revision['overrides'].items() if k != '3:PLUGIN-LOAD'}
+    return dict(policy, responsibility_revision=previous)
+
+
 def validate_responsibility_policy(policy):
     """Issue 182 amends methods without erasing the fixed original plan or Cases."""
     revision = policy['responsibility_revision']
@@ -363,7 +374,7 @@ def validate_responsibility_policy(policy):
         original = dict(original, required_ancestor=extension['previous_required_ancestor'],
                         cases={k: v for k, v in original['cases'].items()
                                if k not in extension['added_cases']})
-    if (set(revision) - {'plan_extension'} != {
+    if (set(revision) - {'plan_extension', 'installation_revision'} != {
             'issue', 'previous_plan_sha256', 'common_requirements', 'groups', 'overrides'} or
             revision['issue'] != 182 or revision['previous_plan_sha256'] != canonical_hash(original) or
             not isinstance(revision['common_requirements'], list) or not revision['common_requirements'] or
@@ -371,6 +382,12 @@ def validate_responsibility_policy(policy):
             not isinstance(revision['groups'], dict) or not revision['groups'] or
             not isinstance(revision['overrides'], dict)):
         raise ValueError('Invalid responsibility revision or original plan binding')
+    if 'installation_revision' in revision:
+        installation = revision['installation_revision']
+        if (not isinstance(installation, dict) or set(installation) != {'issue', 'previous_plan_sha256'} or
+                installation['issue'] != 208 or '3:PLUGIN-LOAD' not in revision['overrides'] or
+                installation['previous_plan_sha256'] != canonical_hash(previous_installation_plan(policy))):
+            raise ValueError('Installation method revision must retain the exact prior plan')
     keys = []
     for group in revision['groups'].values():
         if (not isinstance(group, dict) or set(group) != {
@@ -560,7 +577,8 @@ def validate_fact_assessment(observed, key, policy, candidate, artifact, git):
     except subprocess.CalledProcessError as exc:
         raise ValueError('Retained-fact source or history could not be verified') from exc
     if canonical_hash(original_policy) not in {
-            policy['responsibility_revision']['previous_plan_sha256'], canonical_hash(policy)}:
+            policy['responsibility_revision']['previous_plan_sha256'], canonical_hash(policy),
+            policy['responsibility_revision'].get('installation_revision', {}).get('previous_plan_sha256')}:
         raise ValueError('Retained facts must bind the exact original or trusted current responsibility plan')
     for fact in assessment['facts'].values():
         if not isinstance(fact, dict):
@@ -624,7 +642,9 @@ def validate_candidate_result(result, key, policy, stage, candidate, artifact, e
             if entry or git('ls-tree', source, '--', INITIAL_PLAN):
                 source_policy = initial_stage_plan(source, source, git)
                 if reassessed:
-                    if canonical_hash(source_policy) != policy['responsibility_revision']['previous_plan_sha256']:
+                    if canonical_hash(source_policy) not in {
+                            policy['responsibility_revision']['previous_plan_sha256'],
+                            policy['responsibility_revision'].get('installation_revision', {}).get('previous_plan_sha256')}:
                         raise ValueError('Reassessment must retain the exact original plan and observation')
                 elif (source_policy.get('responsibility_revision') != (policy or {}).get('responsibility_revision') or
                         source_policy['cases'].get(key) != entry or

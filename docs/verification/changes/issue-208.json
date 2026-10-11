@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "issue": 208,
+  "gui_required": false,
+  "reason": "導入の既存入口とtrusted計画の3:PLUGIN-LOAD有効methodを公式ローカルZIP配置へ整合し、その直前計画だけを不変成果物/保持事実の対応確認に登録する。製品/CLI/build/fixture/原Case/旧観察/失敗は変更せず、GUI/device/配置/再起動を実行しない。変更自体に新しいCaseやQAは不要で、実導入/受入は既存QA27/65へ保持する。",
+  "cli_checks": [
+    "python3 scripts/check.py",
+    "python3 scripts/workflow/product_check.py",
+    "python3 -m unittest discover -s scripts/workflow -p test_responsibility_revision.py",
+    "python3 scripts/workflow/change_impact.py --base origin/main --run-tests"
+  ],
+  "cases": []
+}
