@@ -470,6 +470,80 @@ def validate_initial_result(result, key, policy, candidate, artifact, execution,
             raise ValueError('Case requires its specified execution method: ' + key)
 
 
+def unchanged_artifact_history(source, candidate, key, git):
+    """Share the strict history/Case check across reuse and retained-fact assessment."""
+    git('merge-base', '--is-ancestor', source, candidate)
+    path = f'docs/verification/changes/issue-{key.split(":")[0]}.json'
+    allowed = ('docs/', 'scripts/workflow/', '.agents/skills/', '.claude/skills/', '.cursor/rules/')
+    for commit in git('rev-list', f'{source}..{candidate}').splitlines():
+        parents = git('rev-list', '--parents', '-n', '1', commit).split()[1:]
+        if not parents:
+            raise ValueError('Reuse history lacks a parent')
+        source_changes = (set(git('diff', '--no-renames', '--name-only', source, commit).splitlines())
+                          if len(parents) > 1 else None)
+        for parent in parents:
+            paths = git('diff', '--no-renames', '--name-only', parent, commit).splitlines()
+            # A sync merge may carry already-observed product files absent from its other parent.
+            if source_changes is not None:
+                paths = [p for p in paths if p in source_changes]
+            if path in paths:
+                raise ValueError('Case contract history changed; retest required')
+            if any(not (p.startswith(allowed) or p in
+                    ('AGENTS.md', 'CLAUDE.md', 'README.md', 'CONTRIBUTING.md')) for p in paths):
+                raise ValueError('Product, build, configuration, fixture or unknown change requires retesting')
+    old_change = regular_json(source, path, git)
+    new_change = regular_json(candidate, path, git)
+    for change in (old_change, new_change):
+        validate_change(change, int(key.split(':')[0]), True)
+    old_cases = [c for c in old_change['cases'] if c['id'] == key.split(':')[1]]
+    new_cases = [c for c in new_change['cases'] if c['id'] == key.split(':')[1]]
+    if len(old_cases) != 1 or old_cases != new_cases:
+        raise ValueError('Reuse requires the same existing Case contract')
+
+
+def validate_fact_assessment(observed, key, policy, candidate, artifact, git):
+    assessment = observed.get('responsibility_assessment')
+    if assessment is None:
+        return
+    group = responsibility_group(policy, key)
+    if (not group or not isinstance(assessment, dict) or set(assessment) != {
+            'source_candidate', 'source_result', 'source_result_sha256', 'source_record_evidence',
+            'facts', 'coverage', 'missing_requirements', 'unresolved_owned_failures'} or
+            not isinstance(assessment['source_candidate'], str) or
+            not SHA.fullmatch(assessment['source_candidate']) or
+            not isinstance(assessment['source_result'], dict) or
+            assessment['source_result'].get('status') not in ('pending', 'blocked', 'fail', 'pass', 'initial-pass') or
+            assessment['source_result_sha256'] != canonical_hash(assessment['source_result']) or
+            not nonempty(assessment['source_record_evidence']) or
+            not isinstance(assessment['facts'], dict) or not assessment['facts'] or
+            not all(nonempty(x) for x in assessment['facts']) or
+            not isinstance(assessment['coverage'], dict) or
+            set(assessment['coverage']) != set(observed['responsibility_evidence']) or
+            assessment['missing_requirements'] != [] or assessment['unresolved_owned_failures'] != []):
+        raise ValueError('Retained-fact assessment needs original record, complete coverage and no unresolved owned failure')
+    source = assessment['source_candidate']
+    if (assessment['source_result'].get('head', source) != source or
+            assessment['source_result'].get('artifact_sha256', artifact) != artifact):
+        raise ValueError('Original aggregate record has a different identity')
+    try:
+        unchanged_artifact_history(source, candidate, key, git)
+        original_policy = initial_stage_plan(source, source, git)
+    except subprocess.CalledProcessError as exc:
+        raise ValueError('Retained-fact source or history could not be verified') from exc
+    if canonical_hash(original_policy) != policy['responsibility_revision']['previous_plan_sha256']:
+        raise ValueError('Retained facts must bind the exact original responsibility plan')
+    for fact in assessment['facts'].values():
+        if not isinstance(fact, dict):
+            raise ValueError('Retained fact must be an actual successful observation')
+        validate_observation(fact, source, artifact)
+        if datetime.fromisoformat(fact['at'].replace('Z', '+00:00')) > datetime.fromisoformat(observed['at'].replace('Z', '+00:00')):
+            raise ValueError('Assessment predates its retained facts')
+    for facts in assessment['coverage'].values():
+        if (not isinstance(facts, list) or not facts or not all(isinstance(x, str) for x in facts) or
+                len(facts) != len(set(facts)) or set(facts) - set(assessment['facts'])):
+            raise ValueError('Each effective condition needs identified passing facts')
+
+
 def validate_candidate_result(result, key, policy, stage, candidate, artifact, execution, gop, git):
     """Keep old observations intact; accept reuse only with fresh equivalence evidence."""
     if not isinstance(result, dict):
@@ -500,33 +574,7 @@ def validate_candidate_result(result, key, policy, stage, candidate, artifact, e
             validate_responsibility_observation(confirmation, key, policy)
         # A reverted product or contract edit also invalidates reuse.
         try:
-            git('merge-base', '--is-ancestor', source, candidate)
-            path = f'docs/verification/changes/issue-{key.split(":")[0]}.json'
-            allowed = ('docs/', 'scripts/workflow/', '.agents/skills/', '.claude/skills/', '.cursor/rules/')
-            for commit in git('rev-list', f'{source}..{candidate}').splitlines():
-                parents = git('rev-list', '--parents', '-n', '1', commit).split()[1:]
-                if not parents:
-                    raise ValueError('Reuse history lacks a parent')
-                source_changes = (set(git('diff', '--no-renames', '--name-only', source, commit).splitlines())
-                                  if len(parents) > 1 else None)
-                for parent in parents:
-                    paths = git('diff', '--no-renames', '--name-only', parent, commit).splitlines()
-                    # A sync merge may carry already-observed product files absent from its other parent.
-                    if source_changes is not None:
-                        paths = [p for p in paths if p in source_changes]
-                    if path in paths:
-                        raise ValueError('Case contract history changed; retest required')
-                    if any(not (p.startswith(allowed) or p in
-                            ('AGENTS.md', 'CLAUDE.md', 'README.md', 'CONTRIBUTING.md')) for p in paths):
-                        raise ValueError('Product, build, configuration, fixture or unknown change requires retesting')
-            old_change = regular_json(source, path, git)
-            new_change = regular_json(candidate, path, git)
-            for change in (old_change, new_change):
-                validate_change(change, int(key.split(':')[0]), True)
-            old_cases = [c for c in old_change['cases'] if c['id'] == key.split(':')[1]]
-            new_cases = [c for c in new_change['cases'] if c['id'] == key.split(':')[1]]
-            if len(old_cases) != 1 or old_cases != new_cases:
-                raise ValueError('Reuse requires the same existing Case contract')
+            unchanged_artifact_history(source, candidate, key, git)
             entry = policy['cases'].get(key) if policy else None
             if entry or git('ls-tree', source, '--', INITIAL_PLAN):
                 source_policy = initial_stage_plan(source, source, git)
@@ -557,6 +605,9 @@ def validate_candidate_result(result, key, policy, stage, candidate, artifact, e
         validate_responsibility_observation(result, key, source_policy)
     if not reassessed and source != candidate:
         validate_responsibility_observation(result.get('initial_observation', {}) if stage else result, key, policy)
+    if source == candidate and not reassessed:
+        validate_fact_assessment(result.get('initial_observation', {}) if stage else result,
+                                 key, policy, candidate, artifact, git)
     return result
 
 

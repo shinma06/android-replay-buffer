@@ -2838,7 +2838,7 @@
         ],
         "disposition": "統合",
         "purpose": "時刻変換・真の映像ID・同期精度・drift/外れと欠落母数を保証。",
-        "methods": "30分・開始/中間/終了各100の全300eventとp95<=100ms/最大<=250ms/drift<=50ms/clock<=20msを維持。全frame/全遷移と前後の画像IDを、元fixture IDと独立した校正済み画像識別で照合する。誤認・欠落・重複・coalescing・unknownを含む悪い入力でoracleを検証し、画像由来番号をlog番号から推定しない。曖昧画像は実画像確認、なお識別不能/不確かさ過大なら未完了。一律601画像の人間手読取り/人間actor指定は廃し、識別結果と校正・例外を証拠化する。 同条件の一系列を13/31/41/27の重複Caseへ共有。",
+        "methods": "30分・開始/中間/終了各100の全300eventとp95<=100ms/最大<=250ms/drift<=50ms/clock<=20msを維持。全frame/全遷移と前後の画像IDを、元fixture IDと独立した校正済み画像識別で照合する。誤認・欠落・重複・coalescing・unknownを含む悪い入力でoracleを検証し、画像由来のpackage/run/view/event番号を既知fixtureの画像真値で独立に検証し、全関連frame/遷移・欠落/重複ID/unknown・実PTS/誤差を照合する。画像番号をlog順序やconfidenceだけから推定しない。既存transitions.swiftの色/parity判定は番号を復号せず偶数欠落を見逃すので、これだけを代替oracleとして採用しない。曖昧画像は実画像確認、なお識別不能/不確かさ過大なら未完了。一律601画像の人間手読取り/人間actor指定は廃し、識別結果と校正・例外を証拠化する。 同条件の一系列を13/31/41/27の重複Caseへ共有。",
         "excluded": "単なる短い録画を長時間driftの代用にしない。一律human読取り義務だけを除外。",
         "evidence_keys": [
           "measurement",
@@ -3048,7 +3048,7 @@
             "同じUI更新callbackで連番/端末elapsedをLogへ出し、画面にも連番を描画する。描画完了のframe callback時刻も別に記録する。",
             "30分取得し開始/中間/終了の各100イベントを保存対象にする。両ログに同じrecord_idがあることを照合する。",
             "元PTS/clock変換誤差と描画遅延を分け、全300件の差・p95・最大・前後半中央値差を集計する。",
-            "30分・開始/中間/終了各100の全300eventとp95<=100ms/最大<=250ms/drift<=50ms/clock<=20msを維持。全frame/全遷移と前後の画像IDを、元fixture IDと独立した校正済み画像識別で照合する。誤認・欠落・重複・coalescing・unknownを含む悪い入力でoracleを検証し、画像由来番号をlog番号から推定しない。曖昧画像は実画像確認、なお識別不能/不確かさ過大なら未完了。一律601画像の人間手読取り/人間actor指定は廃し、識別結果と校正・例外を証拠化する。"
+            "30分・開始/中間/終了各100の全300eventとp95<=100ms/最大<=250ms/drift<=50ms/clock<=20msを維持。全frame/全遷移と前後の画像IDを、元fixture IDと独立した校正済み画像識別で照合する。誤認・欠落・重複・coalescing・unknownを含む悪い入力でoracleを検証し、画像由来のpackage/run/view/event番号を既知fixtureの画像真値で独立に検証し、全関連frame/遷移・欠落/重複ID/unknown・実PTS/誤差を照合する。画像番号をlog順序やconfidenceだけから推定しない。既存transitions.swiftの色/parity判定は番号を復号せず偶数欠落を見逃すので、これだけを代替oracleとして採用しない。曖昧画像は実画像確認、なお識別不能/不確かさ過大なら未完了。一律601画像の人間手読取り/人間actor指定は廃し、識別結果と校正・例外を証拠化する。"
           ]
         },
         "full_acceptance_actor": null,
@@ -3056,14 +3056,14 @@
           "対象原文: preconditions=\"正常取得できる実機/Emulator、描画とLog双方に同じ連番を出す使い捨てapp。固定画質/codec、時計sampleと描画eventの記録。\" | expected=\"通常p95<=100ms、最大<=250ms、中央値drift<=50ms、clock見積誤差<=20ms。全欠落/uncertainも集計し隠さない。100ms等は未実測の設計基準。\"。延期: 元契約の実機/USB環境で行う同工程と期待結果。Emulator側を維持し、各環境/EMU-REAL別記録を統合passへ転記しない。"
         ],
         "agent_requirements": [
-          "30分・開始/中間/終了各100の全300eventとp95<=100ms/最大<=250ms/drift<=50ms/clock<=20msを維持。全frame/全遷移と前後の画像IDを、元fixture IDと独立した校正済み画像識別で照合する。誤認・欠落・重複・coalescing・unknownを含む悪い入力でoracleを検証し、画像由来番号をlog番号から推定しない。曖昧画像は実画像確認、なお識別不能/不確かさ過大なら未完了。一律601画像の人間手読取り/人間actor指定は廃し、識別結果と校正・例外を証拠化する。"
+          "30分・開始/中間/終了各100の全300eventとp95<=100ms/最大<=250ms/drift<=50ms/clock<=20msを維持。全frame/全遷移と前後の画像IDを、元fixture IDと独立した校正済み画像識別で照合する。誤認・欠落・重複・coalescing・unknownを含む悪い入力でoracleを検証し、画像由来のpackage/run/view/event番号を既知fixtureの画像真値で独立に検証し、全関連frame/遷移・欠落/重複ID/unknown・実PTS/誤差を照合する。画像番号をlog順序やconfidenceだけから推定しない。既存transitions.swiftの色/parity判定は番号を復号せず偶数欠落を見逃すので、これだけを代替oracleとして採用しない。曖昧画像は実画像確認、なお識別不能/不確かさ過大なら未完了。一律601画像の人間手読取り/人間actor指定は廃し、識別結果と校正・例外を証拠化する。"
         ]
       },
       "13:SYNC-WINDOW": {
         "full_acceptance_actor": null,
         "deferred_scope": [],
         "agent_requirements": [
-          "30分・開始/中間/終了各100の全300eventとp95<=100ms/最大<=250ms/drift<=50ms/clock<=20msを維持。全frame/全遷移と前後の画像IDを、元fixture IDと独立した校正済み画像識別で照合する。誤認・欠落・重複・coalescing・unknownを含む悪い入力でoracleを検証し、画像由来番号をlog番号から推定しない。曖昧画像は実画像確認、なお識別不能/不確かさ過大なら未完了。一律601画像の人間手読取り/人間actor指定は廃し、識別結果と校正・例外を証拠化する。"
+          "30分・開始/中間/終了各100の全300eventとp95<=100ms/最大<=250ms/drift<=50ms/clock<=20msを維持。全frame/全遷移と前後の画像IDを、元fixture IDと独立した校正済み画像識別で照合する。誤認・欠落・重複・coalescing・unknownを含む悪い入力でoracleを検証し、画像由来のpackage/run/view/event番号を既知fixtureの画像真値で独立に検証し、全関連frame/遷移・欠落/重複ID/unknown・実PTS/誤差を照合する。画像番号をlog順序やconfidenceだけから推定しない。既存transitions.swiftの色/parity判定は番号を復号せず偶数欠落を見逃すので、これだけを代替oracleとして採用しない。曖昧画像は実画像確認、なお識別不能/不確かさ過大なら未完了。一律601画像の人間手読取り/人間actor指定は廃し、識別結果と校正・例外を証拠化する。"
         ]
       },
       "13:SYNC-RECIPIENT": {
@@ -3086,7 +3086,7 @@
           "元Caseの実機環境での全工程を延期。Emulatorでの実行結果を実機のpassにしない。"
         ],
         "agent_requirements": [
-          "30分・開始/中間/終了各100の全300eventとp95<=100ms/最大<=250ms/drift<=50ms/clock<=20msを維持。全frame/全遷移と前後の画像IDを、元fixture IDと独立した校正済み画像識別で照合する。誤認・欠落・重複・coalescing・unknownを含む悪い入力でoracleを検証し、画像由来番号をlog番号から推定しない。曖昧画像は実画像確認、なお識別不能/不確かさ過大なら未完了。一律601画像の人間手読取り/人間actor指定は廃し、識別結果と校正・例外を証拠化する。"
+          "30分・開始/中間/終了各100の全300eventとp95<=100ms/最大<=250ms/drift<=50ms/clock<=20msを維持。全frame/全遷移と前後の画像IDを、元fixture IDと独立した校正済み画像識別で照合する。誤認・欠落・重複・coalescing・unknownを含む悪い入力でoracleを検証し、画像由来のpackage/run/view/event番号を既知fixtureの画像真値で独立に検証し、全関連frame/遷移・欠落/重複ID/unknown・実PTS/誤差を照合する。画像番号をlog順序やconfidenceだけから推定しない。既存transitions.swiftの色/parity判定は番号を復号せず偶数欠落を見逃すので、これだけを代替oracleとして採用しない。曖昧画像は実画像確認、なお識別不能/不確かさ過大なら未完了。一律601画像の人間手読取り/人間actor指定は廃し、識別結果と校正・例外を証拠化する。"
         ]
       },
       "27:BUFFER-SHORT-REAL": {
@@ -3095,7 +3095,7 @@
           "元Caseの実機環境での全工程を延期。Emulatorでの実行結果を実機のpassにしない。"
         ],
         "agent_requirements": [
-          "30分・開始/中間/終了各100の全300eventとp95<=100ms/最大<=250ms/drift<=50ms/clock<=20msを維持。全frame/全遷移と前後の画像IDを、元fixture IDと独立した校正済み画像識別で照合する。誤認・欠落・重複・coalescing・unknownを含む悪い入力でoracleを検証し、画像由来番号をlog番号から推定しない。曖昧画像は実画像確認、なお識別不能/不確かさ過大なら未完了。一律601画像の人間手読取り/人間actor指定は廃し、識別結果と校正・例外を証拠化する。"
+          "30分・開始/中間/終了各100の全300eventとp95<=100ms/最大<=250ms/drift<=50ms/clock<=20msを維持。全frame/全遷移と前後の画像IDを、元fixture IDと独立した校正済み画像識別で照合する。誤認・欠落・重複・coalescing・unknownを含む悪い入力でoracleを検証し、画像由来のpackage/run/view/event番号を既知fixtureの画像真値で独立に検証し、全関連frame/遷移・欠落/重複ID/unknown・実PTS/誤差を照合する。画像番号をlog順序やconfidenceだけから推定しない。既存transitions.swiftの色/parity判定は番号を復号せず偶数欠落を見逃すので、これだけを代替oracleとして採用しない。曖昧画像は実画像確認、なお識別不能/不確かさ過大なら未完了。一律601画像の人間手読取り/人間actor指定は廃し、識別結果と校正・例外を証拠化する。"
         ]
       },
       "27:SAVE-CONTINUE-REAL": {
@@ -3104,7 +3104,7 @@
           "元Caseの実機環境での全工程を延期。Emulatorでの実行結果を実機のpassにしない。"
         ],
         "agent_requirements": [
-          "30分・開始/中間/終了各100の全300eventとp95<=100ms/最大<=250ms/drift<=50ms/clock<=20msを維持。全frame/全遷移と前後の画像IDを、元fixture IDと独立した校正済み画像識別で照合する。誤認・欠落・重複・coalescing・unknownを含む悪い入力でoracleを検証し、画像由来番号をlog番号から推定しない。曖昧画像は実画像確認、なお識別不能/不確かさ過大なら未完了。一律601画像の人間手読取り/人間actor指定は廃し、識別結果と校正・例外を証拠化する。"
+          "30分・開始/中間/終了各100の全300eventとp95<=100ms/最大<=250ms/drift<=50ms/clock<=20msを維持。全frame/全遷移と前後の画像IDを、元fixture IDと独立した校正済み画像識別で照合する。誤認・欠落・重複・coalescing・unknownを含む悪い入力でoracleを検証し、画像由来のpackage/run/view/event番号を既知fixtureの画像真値で独立に検証し、全関連frame/遷移・欠落/重複ID/unknown・実PTS/誤差を照合する。画像番号をlog順序やconfidenceだけから推定しない。既存transitions.swiftの色/parity判定は番号を復号せず偶数欠落を見逃すので、これだけを代替oracleとして採用しない。曖昧画像は実画像確認、なお識別不能/不確かさ過大なら未完了。一律601画像の人間手読取り/人間actor指定は廃し、識別結果と校正・例外を証拠化する。"
         ]
       },
       "27:SYNC-PRECISION-REAL": {
@@ -3116,7 +3116,7 @@
             "SYNC-CLOCK: 同じUI更新callbackで連番/端末elapsedをLogへ出し、画面にも連番を描画する。描画完了のframe callback時刻も別に記録する。",
             "SYNC-CLOCK: 30分取得し開始/中間/終了の各100イベントを保存対象にする。両ログに同じrecord_idがあることを照合する。",
             "SYNC-CLOCK: 元PTS/clock変換誤差と描画遅延を分け、全300件の差・p95・最大・前後半中央値差を集計する。",
-            "30分・開始/中間/終了各100の全300eventとp95<=100ms/最大<=250ms/drift<=50ms/clock<=20msを維持。全frame/全遷移と前後の画像IDを、元fixture IDと独立した校正済み画像識別で照合する。誤認・欠落・重複・coalescing・unknownを含む悪い入力でoracleを検証し、画像由来番号をlog番号から推定しない。曖昧画像は実画像確認、なお識別不能/不確かさ過大なら未完了。一律601画像の人間手読取り/人間actor指定は廃し、識別結果と校正・例外を証拠化する。"
+            "30分・開始/中間/終了各100の全300eventとp95<=100ms/最大<=250ms/drift<=50ms/clock<=20msを維持。全frame/全遷移と前後の画像IDを、元fixture IDと独立した校正済み画像識別で照合する。誤認・欠落・重複・coalescing・unknownを含む悪い入力でoracleを検証し、画像由来のpackage/run/view/event番号を既知fixtureの画像真値で独立に検証し、全関連frame/遷移・欠落/重複ID/unknown・実PTS/誤差を照合する。画像番号をlog順序やconfidenceだけから推定しない。既存transitions.swiftの色/parity判定は番号を復号せず偶数欠落を見逃すので、これだけを代替oracleとして採用しない。曖昧画像は実画像確認、なお識別不能/不確かさ過大なら未完了。一律601画像の人間手読取り/人間actor指定は廃し、識別結果と校正・例外を証拠化する。"
           ]
         },
         "full_acceptance_actor": null,
@@ -3124,7 +3124,7 @@
           "元Caseの実機環境での全工程を延期。Emulatorでの実行結果を実機のpassにしない。"
         ],
         "agent_requirements": [
-          "30分・開始/中間/終了各100の全300eventとp95<=100ms/最大<=250ms/drift<=50ms/clock<=20msを維持。全frame/全遷移と前後の画像IDを、元fixture IDと独立した校正済み画像識別で照合する。誤認・欠落・重複・coalescing・unknownを含む悪い入力でoracleを検証し、画像由来番号をlog番号から推定しない。曖昧画像は実画像確認、なお識別不能/不確かさ過大なら未完了。一律601画像の人間手読取り/人間actor指定は廃し、識別結果と校正・例外を証拠化する。"
+          "30分・開始/中間/終了各100の全300eventとp95<=100ms/最大<=250ms/drift<=50ms/clock<=20msを維持。全frame/全遷移と前後の画像IDを、元fixture IDと独立した校正済み画像識別で照合する。誤認・欠落・重複・coalescing・unknownを含む悪い入力でoracleを検証し、画像由来のpackage/run/view/event番号を既知fixtureの画像真値で独立に検証し、全関連frame/遷移・欠落/重複ID/unknown・実PTS/誤差を照合する。画像番号をlog順序やconfidenceだけから推定しない。既存transitions.swiftの色/parity判定は番号を復号せず偶数欠落を見逃すので、これだけを代替oracleとして採用しない。曖昧画像は実画像確認、なお識別不能/不確かさ過大なら未完了。一律601画像の人間手読取り/人間actor指定は廃し、識別結果と校正・例外を証拠化する。"
         ]
       },
       "27:SYNC-DRIFT-REAL": {
@@ -3138,7 +3138,7 @@
             "SYNC-JUMP: 専用実機の日時設定を前後へ変更し、変更を挟むeventを記録する。",
             "SYNC-JUMP: 専用実機だけを許可済みの方法でsleep/復帰させ、monoとelapsedの差を実測し境界前後を保存する。画面OFFだけでdeep sleepしたと判断しない。",
             "SYNC-JUMP: 専用実機だけを通常再起動し、新boot epochで再取得・保存、固定した失敗対象も照合する。",
-            "30分・開始/中間/終了各100の全300eventとp95<=100ms/最大<=250ms/drift<=50ms/clock<=20msを維持。全frame/全遷移と前後の画像IDを、元fixture IDと独立した校正済み画像識別で照合する。誤認・欠落・重複・coalescing・unknownを含む悪い入力でoracleを検証し、画像由来番号をlog番号から推定しない。曖昧画像は実画像確認、なお識別不能/不確かさ過大なら未完了。一律601画像の人間手読取り/人間actor指定は廃し、識別結果と校正・例外を証拠化する。"
+            "30分・開始/中間/終了各100の全300eventとp95<=100ms/最大<=250ms/drift<=50ms/clock<=20msを維持。全frame/全遷移と前後の画像IDを、元fixture IDと独立した校正済み画像識別で照合する。誤認・欠落・重複・coalescing・unknownを含む悪い入力でoracleを検証し、画像由来のpackage/run/view/event番号を既知fixtureの画像真値で独立に検証し、全関連frame/遷移・欠落/重複ID/unknown・実PTS/誤差を照合する。画像番号をlog順序やconfidenceだけから推定しない。既存transitions.swiftの色/parity判定は番号を復号せず偶数欠落を見逃すので、これだけを代替oracleとして採用しない。曖昧画像は実画像確認、なお識別不能/不確かさ過大なら未完了。一律601画像の人間手読取り/人間actor指定は廃し、識別結果と校正・例外を証拠化する。"
           ]
         },
         "full_acceptance_actor": null,
@@ -3146,7 +3146,7 @@
           "元Caseの実機環境での全工程を延期。Emulatorでの実行結果を実機のpassにしない。"
         ],
         "agent_requirements": [
-          "30分・開始/中間/終了各100の全300eventとp95<=100ms/最大<=250ms/drift<=50ms/clock<=20msを維持。全frame/全遷移と前後の画像IDを、元fixture IDと独立した校正済み画像識別で照合する。誤認・欠落・重複・coalescing・unknownを含む悪い入力でoracleを検証し、画像由来番号をlog番号から推定しない。曖昧画像は実画像確認、なお識別不能/不確かさ過大なら未完了。一律601画像の人間手読取り/人間actor指定は廃し、識別結果と校正・例外を証拠化する。"
+          "30分・開始/中間/終了各100の全300eventとp95<=100ms/最大<=250ms/drift<=50ms/clock<=20msを維持。全frame/全遷移と前後の画像IDを、元fixture IDと独立した校正済み画像識別で照合する。誤認・欠落・重複・coalescing・unknownを含む悪い入力でoracleを検証し、画像由来のpackage/run/view/event番号を既知fixtureの画像真値で独立に検証し、全関連frame/遷移・欠落/重複ID/unknown・実PTS/誤差を照合する。画像番号をlog順序やconfidenceだけから推定しない。既存transitions.swiftの色/parity判定は番号を復号せず偶数欠落を見逃すので、これだけを代替oracleとして採用しない。曖昧画像は実画像確認、なお識別不能/不確かさ過大なら未完了。一律601画像の人間手読取り/人間actor指定は廃し、識別結果と校正・例外を証拠化する。"
         ]
       },
       "27:SAVE-OUTPUT-REAL": {
@@ -3170,21 +3170,21 @@
         "full_acceptance_actor": null,
         "deferred_scope": [],
         "agent_requirements": [
-          "30分・開始/中間/終了各100の全300eventとp95<=100ms/最大<=250ms/drift<=50ms/clock<=20msを維持。全frame/全遷移と前後の画像IDを、元fixture IDと独立した校正済み画像識別で照合する。誤認・欠落・重複・coalescing・unknownを含む悪い入力でoracleを検証し、画像由来番号をlog番号から推定しない。曖昧画像は実画像確認、なお識別不能/不確かさ過大なら未完了。一律601画像の人間手読取り/人間actor指定は廃し、識別結果と校正・例外を証拠化する。"
+          "30分・開始/中間/終了各100の全300eventとp95<=100ms/最大<=250ms/drift<=50ms/clock<=20msを維持。全frame/全遷移と前後の画像IDを、元fixture IDと独立した校正済み画像識別で照合する。誤認・欠落・重複・coalescing・unknownを含む悪い入力でoracleを検証し、画像由来のpackage/run/view/event番号を既知fixtureの画像真値で独立に検証し、全関連frame/遷移・欠落/重複ID/unknown・実PTS/誤差を照合する。画像番号をlog順序やconfidenceだけから推定しない。既存transitions.swiftの色/parity判定は番号を復号せず偶数欠落を見逃すので、これだけを代替oracleとして採用しない。曖昧画像は実画像確認、なお識別不能/不確かさ過大なら未完了。一律601画像の人間手読取り/人間actor指定は廃し、識別結果と校正・例外を証拠化する。"
         ]
       },
       "27:BUFFER-SHORT-EMU": {
         "full_acceptance_actor": null,
         "deferred_scope": [],
         "agent_requirements": [
-          "30分・開始/中間/終了各100の全300eventとp95<=100ms/最大<=250ms/drift<=50ms/clock<=20msを維持。全frame/全遷移と前後の画像IDを、元fixture IDと独立した校正済み画像識別で照合する。誤認・欠落・重複・coalescing・unknownを含む悪い入力でoracleを検証し、画像由来番号をlog番号から推定しない。曖昧画像は実画像確認、なお識別不能/不確かさ過大なら未完了。一律601画像の人間手読取り/人間actor指定は廃し、識別結果と校正・例外を証拠化する。"
+          "30分・開始/中間/終了各100の全300eventとp95<=100ms/最大<=250ms/drift<=50ms/clock<=20msを維持。全frame/全遷移と前後の画像IDを、元fixture IDと独立した校正済み画像識別で照合する。誤認・欠落・重複・coalescing・unknownを含む悪い入力でoracleを検証し、画像由来のpackage/run/view/event番号を既知fixtureの画像真値で独立に検証し、全関連frame/遷移・欠落/重複ID/unknown・実PTS/誤差を照合する。画像番号をlog順序やconfidenceだけから推定しない。既存transitions.swiftの色/parity判定は番号を復号せず偶数欠落を見逃すので、これだけを代替oracleとして採用しない。曖昧画像は実画像確認、なお識別不能/不確かさ過大なら未完了。一律601画像の人間手読取り/人間actor指定は廃し、識別結果と校正・例外を証拠化する。"
         ]
       },
       "27:SAVE-CONTINUE-EMU": {
         "full_acceptance_actor": null,
         "deferred_scope": [],
         "agent_requirements": [
-          "30分・開始/中間/終了各100の全300eventとp95<=100ms/最大<=250ms/drift<=50ms/clock<=20msを維持。全frame/全遷移と前後の画像IDを、元fixture IDと独立した校正済み画像識別で照合する。誤認・欠落・重複・coalescing・unknownを含む悪い入力でoracleを検証し、画像由来番号をlog番号から推定しない。曖昧画像は実画像確認、なお識別不能/不確かさ過大なら未完了。一律601画像の人間手読取り/人間actor指定は廃し、識別結果と校正・例外を証拠化する。"
+          "30分・開始/中間/終了各100の全300eventとp95<=100ms/最大<=250ms/drift<=50ms/clock<=20msを維持。全frame/全遷移と前後の画像IDを、元fixture IDと独立した校正済み画像識別で照合する。誤認・欠落・重複・coalescing・unknownを含む悪い入力でoracleを検証し、画像由来のpackage/run/view/event番号を既知fixtureの画像真値で独立に検証し、全関連frame/遷移・欠落/重複ID/unknown・実PTS/誤差を照合する。画像番号をlog順序やconfidenceだけから推定しない。既存transitions.swiftの色/parity判定は番号を復号せず偶数欠落を見逃すので、これだけを代替oracleとして採用しない。曖昧画像は実画像確認、なお識別不能/不確かさ過大なら未完了。一律601画像の人間手読取り/人間actor指定は廃し、識別結果と校正・例外を証拠化する。"
         ]
       },
       "27:SYNC-PRECISION-EMU": {
@@ -3196,13 +3196,13 @@
             "SYNC-CLOCK: 同じUI更新callbackで連番/端末elapsedをLogへ出し、画面にも連番を描画する。描画完了のframe callback時刻も別に記録する。",
             "SYNC-CLOCK: 30分取得し開始/中間/終了の各100イベントを保存対象にする。両ログに同じrecord_idがあることを照合する。",
             "SYNC-CLOCK: 元PTS/clock変換誤差と描画遅延を分け、全300件の差・p95・最大・前後半中央値差を集計する。",
-            "30分・開始/中間/終了各100の全300eventとp95<=100ms/最大<=250ms/drift<=50ms/clock<=20msを維持。全frame/全遷移と前後の画像IDを、元fixture IDと独立した校正済み画像識別で照合する。誤認・欠落・重複・coalescing・unknownを含む悪い入力でoracleを検証し、画像由来番号をlog番号から推定しない。曖昧画像は実画像確認、なお識別不能/不確かさ過大なら未完了。一律601画像の人間手読取り/人間actor指定は廃し、識別結果と校正・例外を証拠化する。"
+            "30分・開始/中間/終了各100の全300eventとp95<=100ms/最大<=250ms/drift<=50ms/clock<=20msを維持。全frame/全遷移と前後の画像IDを、元fixture IDと独立した校正済み画像識別で照合する。誤認・欠落・重複・coalescing・unknownを含む悪い入力でoracleを検証し、画像由来のpackage/run/view/event番号を既知fixtureの画像真値で独立に検証し、全関連frame/遷移・欠落/重複ID/unknown・実PTS/誤差を照合する。画像番号をlog順序やconfidenceだけから推定しない。既存transitions.swiftの色/parity判定は番号を復号せず偶数欠落を見逃すので、これだけを代替oracleとして採用しない。曖昧画像は実画像確認、なお識別不能/不確かさ過大なら未完了。一律601画像の人間手読取り/人間actor指定は廃し、識別結果と校正・例外を証拠化する。"
           ]
         },
         "full_acceptance_actor": null,
         "deferred_scope": [],
         "agent_requirements": [
-          "30分・開始/中間/終了各100の全300eventとp95<=100ms/最大<=250ms/drift<=50ms/clock<=20msを維持。全frame/全遷移と前後の画像IDを、元fixture IDと独立した校正済み画像識別で照合する。誤認・欠落・重複・coalescing・unknownを含む悪い入力でoracleを検証し、画像由来番号をlog番号から推定しない。曖昧画像は実画像確認、なお識別不能/不確かさ過大なら未完了。一律601画像の人間手読取り/人間actor指定は廃し、識別結果と校正・例外を証拠化する。"
+          "30分・開始/中間/終了各100の全300eventとp95<=100ms/最大<=250ms/drift<=50ms/clock<=20msを維持。全frame/全遷移と前後の画像IDを、元fixture IDと独立した校正済み画像識別で照合する。誤認・欠落・重複・coalescing・unknownを含む悪い入力でoracleを検証し、画像由来のpackage/run/view/event番号を既知fixtureの画像真値で独立に検証し、全関連frame/遷移・欠落/重複ID/unknown・実PTS/誤差を照合する。画像番号をlog順序やconfidenceだけから推定しない。既存transitions.swiftの色/parity判定は番号を復号せず偶数欠落を見逃すので、これだけを代替oracleとして採用しない。曖昧画像は実画像確認、なお識別不能/不確かさ過大なら未完了。一律601画像の人間手読取り/人間actor指定は廃し、識別結果と校正・例外を証拠化する。"
         ]
       },
       "27:SYNC-DRIFT-EMU": {
@@ -3216,13 +3216,13 @@
             "SYNC-JUMP: 専用Emulatorの日時設定を前後へ変更し、変更を挟むeventを記録する。",
             "SYNC-JUMP: 専用Emulatorだけを許可済みの方法でsleep/復帰させ、monoとelapsedの差を実測し境界前後を保存する。画面OFFだけでdeep sleepしたと判断しない。",
             "SYNC-JUMP: 専用Emulatorだけを通常再起動し、新boot epochで再取得・保存、固定した失敗対象も照合する。",
-            "30分・開始/中間/終了各100の全300eventとp95<=100ms/最大<=250ms/drift<=50ms/clock<=20msを維持。全frame/全遷移と前後の画像IDを、元fixture IDと独立した校正済み画像識別で照合する。誤認・欠落・重複・coalescing・unknownを含む悪い入力でoracleを検証し、画像由来番号をlog番号から推定しない。曖昧画像は実画像確認、なお識別不能/不確かさ過大なら未完了。一律601画像の人間手読取り/人間actor指定は廃し、識別結果と校正・例外を証拠化する。"
+            "30分・開始/中間/終了各100の全300eventとp95<=100ms/最大<=250ms/drift<=50ms/clock<=20msを維持。全frame/全遷移と前後の画像IDを、元fixture IDと独立した校正済み画像識別で照合する。誤認・欠落・重複・coalescing・unknownを含む悪い入力でoracleを検証し、画像由来のpackage/run/view/event番号を既知fixtureの画像真値で独立に検証し、全関連frame/遷移・欠落/重複ID/unknown・実PTS/誤差を照合する。画像番号をlog順序やconfidenceだけから推定しない。既存transitions.swiftの色/parity判定は番号を復号せず偶数欠落を見逃すので、これだけを代替oracleとして採用しない。曖昧画像は実画像確認、なお識別不能/不確かさ過大なら未完了。一律601画像の人間手読取り/人間actor指定は廃し、識別結果と校正・例外を証拠化する。"
           ]
         },
         "full_acceptance_actor": null,
         "deferred_scope": [],
         "agent_requirements": [
-          "30分・開始/中間/終了各100の全300eventとp95<=100ms/最大<=250ms/drift<=50ms/clock<=20msを維持。全frame/全遷移と前後の画像IDを、元fixture IDと独立した校正済み画像識別で照合する。誤認・欠落・重複・coalescing・unknownを含む悪い入力でoracleを検証し、画像由来番号をlog番号から推定しない。曖昧画像は実画像確認、なお識別不能/不確かさ過大なら未完了。一律601画像の人間手読取り/人間actor指定は廃し、識別結果と校正・例外を証拠化する。"
+          "30分・開始/中間/終了各100の全300eventとp95<=100ms/最大<=250ms/drift<=50ms/clock<=20msを維持。全frame/全遷移と前後の画像IDを、元fixture IDと独立した校正済み画像識別で照合する。誤認・欠落・重複・coalescing・unknownを含む悪い入力でoracleを検証し、画像由来のpackage/run/view/event番号を既知fixtureの画像真値で独立に検証し、全関連frame/遷移・欠落/重複ID/unknown・実PTS/誤差を照合する。画像番号をlog順序やconfidenceだけから推定しない。既存transitions.swiftの色/parity判定は番号を復号せず偶数欠落を見逃すので、これだけを代替oracleとして採用しない。曖昧画像は実画像確認、なお識別不能/不確かさ過大なら未完了。一律601画像の人間手読取り/人間actor指定は廃し、識別結果と校正・例外を証拠化する。"
         ]
       },
       "27:SAVE-OUTPUT-EMU": {
@@ -3248,7 +3248,7 @@
             "同じUI更新callbackで連番/端末elapsedをLogへ出し、画面にも連番を描画する。描画完了のframe callback時刻も別に記録する。",
             "30分取得し開始/中間/終了の各100イベントを保存対象にする。両ログに同じrecord_idがあることを照合する。",
             "元PTS/clock変換誤差と描画遅延を分け、全300件の差・p95・最大・前後半中央値差を集計する。",
-            "30分・開始/中間/終了各100の全300eventとp95<=100ms/最大<=250ms/drift<=50ms/clock<=20msを維持。全frame/全遷移と前後の画像IDを、元fixture IDと独立した校正済み画像識別で照合する。誤認・欠落・重複・coalescing・unknownを含む悪い入力でoracleを検証し、画像由来番号をlog番号から推定しない。曖昧画像は実画像確認、なお識別不能/不確かさ過大なら未完了。一律601画像の人間手読取り/人間actor指定は廃し、識別結果と校正・例外を証拠化する。"
+            "30分・開始/中間/終了各100の全300eventとp95<=100ms/最大<=250ms/drift<=50ms/clock<=20msを維持。全frame/全遷移と前後の画像IDを、元fixture IDと独立した校正済み画像識別で照合する。誤認・欠落・重複・coalescing・unknownを含む悪い入力でoracleを検証し、画像由来のpackage/run/view/event番号を既知fixtureの画像真値で独立に検証し、全関連frame/遷移・欠落/重複ID/unknown・実PTS/誤差を照合する。画像番号をlog順序やconfidenceだけから推定しない。既存transitions.swiftの色/parity判定は番号を復号せず偶数欠落を見逃すので、これだけを代替oracleとして採用しない。曖昧画像は実画像確認、なお識別不能/不確かさ過大なら未完了。一律601画像の人間手読取り/人間actor指定は廃し、識別結果と校正・例外を証拠化する。"
           ]
         },
         "full_acceptance_actor": null,
@@ -3256,14 +3256,14 @@
           "対象原文: preconditions=\"正常取得できる実機/Emulator、描画とLog双方に同じ連番を出す使い捨てapp。固定画質/codec、時計sampleと描画eventの記録。\" | expected=\"通常p95<=100ms、最大<=250ms、中央値drift<=50ms、clock見積誤差<=20ms。全欠落/uncertainも集計し隠さない。100ms等は未実測の設計基準。\"。延期: 元契約の実機/USB環境で行う同工程と期待結果。Emulator側を維持し、各環境/EMU-REAL別記録を統合passへ転記しない。"
         ],
         "agent_requirements": [
-          "30分・開始/中間/終了各100の全300eventとp95<=100ms/最大<=250ms/drift<=50ms/clock<=20msを維持。全frame/全遷移と前後の画像IDを、元fixture IDと独立した校正済み画像識別で照合する。誤認・欠落・重複・coalescing・unknownを含む悪い入力でoracleを検証し、画像由来番号をlog番号から推定しない。曖昧画像は実画像確認、なお識別不能/不確かさ過大なら未完了。一律601画像の人間手読取り/人間actor指定は廃し、識別結果と校正・例外を証拠化する。"
+          "30分・開始/中間/終了各100の全300eventとp95<=100ms/最大<=250ms/drift<=50ms/clock<=20msを維持。全frame/全遷移と前後の画像IDを、元fixture IDと独立した校正済み画像識別で照合する。誤認・欠落・重複・coalescing・unknownを含む悪い入力でoracleを検証し、画像由来のpackage/run/view/event番号を既知fixtureの画像真値で独立に検証し、全関連frame/遷移・欠落/重複ID/unknown・実PTS/誤差を照合する。画像番号をlog順序やconfidenceだけから推定しない。既存transitions.swiftの色/parity判定は番号を復号せず偶数欠落を見逃すので、これだけを代替oracleとして採用しない。曖昧画像は実画像確認、なお識別不能/不確かさ過大なら未完了。一律601画像の人間手読取り/人間actor指定は廃し、識別結果と校正・例外を証拠化する。"
         ]
       },
       "31:SYNC-WINDOW": {
         "full_acceptance_actor": null,
         "deferred_scope": [],
         "agent_requirements": [
-          "30分・開始/中間/終了各100の全300eventとp95<=100ms/最大<=250ms/drift<=50ms/clock<=20msを維持。全frame/全遷移と前後の画像IDを、元fixture IDと独立した校正済み画像識別で照合する。誤認・欠落・重複・coalescing・unknownを含む悪い入力でoracleを検証し、画像由来番号をlog番号から推定しない。曖昧画像は実画像確認、なお識別不能/不確かさ過大なら未完了。一律601画像の人間手読取り/人間actor指定は廃し、識別結果と校正・例外を証拠化する。"
+          "30分・開始/中間/終了各100の全300eventとp95<=100ms/最大<=250ms/drift<=50ms/clock<=20msを維持。全frame/全遷移と前後の画像IDを、元fixture IDと独立した校正済み画像識別で照合する。誤認・欠落・重複・coalescing・unknownを含む悪い入力でoracleを検証し、画像由来のpackage/run/view/event番号を既知fixtureの画像真値で独立に検証し、全関連frame/遷移・欠落/重複ID/unknown・実PTS/誤差を照合する。画像番号をlog順序やconfidenceだけから推定しない。既存transitions.swiftの色/parity判定は番号を復号せず偶数欠落を見逃すので、これだけを代替oracleとして採用しない。曖昧画像は実画像確認、なお識別不能/不確かさ過大なら未完了。一律601画像の人間手読取り/人間actor指定は廃し、識別結果と校正・例外を証拠化する。"
         ]
       },
       "31:SYNC-RECIPIENT": {
@@ -3286,7 +3286,7 @@
             "同じUI更新callbackで連番/端末elapsedをLogへ出し、画面にも連番を描画する。描画完了のframe callback時刻も別に記録する。",
             "30分取得し開始/中間/終了の各100イベントを保存対象にする。両ログに同じrecord_idがあることを照合する。",
             "元PTS/clock変換誤差と描画遅延を分け、全300件の差・p95・最大・前後半中央値差を集計する。",
-            "30分・開始/中間/終了各100の全300eventとp95<=100ms/最大<=250ms/drift<=50ms/clock<=20msを維持。全frame/全遷移と前後の画像IDを、元fixture IDと独立した校正済み画像識別で照合する。誤認・欠落・重複・coalescing・unknownを含む悪い入力でoracleを検証し、画像由来番号をlog番号から推定しない。曖昧画像は実画像確認、なお識別不能/不確かさ過大なら未完了。一律601画像の人間手読取り/人間actor指定は廃し、識別結果と校正・例外を証拠化する。"
+            "30分・開始/中間/終了各100の全300eventとp95<=100ms/最大<=250ms/drift<=50ms/clock<=20msを維持。全frame/全遷移と前後の画像IDを、元fixture IDと独立した校正済み画像識別で照合する。誤認・欠落・重複・coalescing・unknownを含む悪い入力でoracleを検証し、画像由来のpackage/run/view/event番号を既知fixtureの画像真値で独立に検証し、全関連frame/遷移・欠落/重複ID/unknown・実PTS/誤差を照合する。画像番号をlog順序やconfidenceだけから推定しない。既存transitions.swiftの色/parity判定は番号を復号せず偶数欠落を見逃すので、これだけを代替oracleとして採用しない。曖昧画像は実画像確認、なお識別不能/不確かさ過大なら未完了。一律601画像の人間手読取り/人間actor指定は廃し、識別結果と校正・例外を証拠化する。"
           ]
         },
         "full_acceptance_actor": null,
@@ -3294,14 +3294,14 @@
           "対象原文: preconditions=\"正常取得できる実機/Emulator、描画とLog双方に同じ連番を出す使い捨てapp。固定画質/codec、時計sampleと描画eventの記録。\" | expected=\"通常p95<=100ms、最大<=250ms、中央値drift<=50ms、clock見積誤差<=20ms。全欠落/uncertainも集計し隠さない。100ms等は未実測の設計基準。\"。延期: 元契約の実機/USB環境で行う同工程と期待結果。Emulator側を維持し、各環境/EMU-REAL別記録を統合passへ転記しない。"
         ],
         "agent_requirements": [
-          "30分・開始/中間/終了各100の全300eventとp95<=100ms/最大<=250ms/drift<=50ms/clock<=20msを維持。全frame/全遷移と前後の画像IDを、元fixture IDと独立した校正済み画像識別で照合する。誤認・欠落・重複・coalescing・unknownを含む悪い入力でoracleを検証し、画像由来番号をlog番号から推定しない。曖昧画像は実画像確認、なお識別不能/不確かさ過大なら未完了。一律601画像の人間手読取り/人間actor指定は廃し、識別結果と校正・例外を証拠化する。"
+          "30分・開始/中間/終了各100の全300eventとp95<=100ms/最大<=250ms/drift<=50ms/clock<=20msを維持。全frame/全遷移と前後の画像IDを、元fixture IDと独立した校正済み画像識別で照合する。誤認・欠落・重複・coalescing・unknownを含む悪い入力でoracleを検証し、画像由来のpackage/run/view/event番号を既知fixtureの画像真値で独立に検証し、全関連frame/遷移・欠落/重複ID/unknown・実PTS/誤差を照合する。画像番号をlog順序やconfidenceだけから推定しない。既存transitions.swiftの色/parity判定は番号を復号せず偶数欠落を見逃すので、これだけを代替oracleとして採用しない。曖昧画像は実画像確認、なお識別不能/不確かさ過大なら未完了。一律601画像の人間手読取り/人間actor指定は廃し、識別結果と校正・例外を証拠化する。"
         ]
       },
       "41:SYNC-WINDOW": {
         "full_acceptance_actor": null,
         "deferred_scope": [],
         "agent_requirements": [
-          "30分・開始/中間/終了各100の全300eventとp95<=100ms/最大<=250ms/drift<=50ms/clock<=20msを維持。全frame/全遷移と前後の画像IDを、元fixture IDと独立した校正済み画像識別で照合する。誤認・欠落・重複・coalescing・unknownを含む悪い入力でoracleを検証し、画像由来番号をlog番号から推定しない。曖昧画像は実画像確認、なお識別不能/不確かさ過大なら未完了。一律601画像の人間手読取り/人間actor指定は廃し、識別結果と校正・例外を証拠化する。"
+          "30分・開始/中間/終了各100の全300eventとp95<=100ms/最大<=250ms/drift<=50ms/clock<=20msを維持。全frame/全遷移と前後の画像IDを、元fixture IDと独立した校正済み画像識別で照合する。誤認・欠落・重複・coalescing・unknownを含む悪い入力でoracleを検証し、画像由来のpackage/run/view/event番号を既知fixtureの画像真値で独立に検証し、全関連frame/遷移・欠落/重複ID/unknown・実PTS/誤差を照合する。画像番号をlog順序やconfidenceだけから推定しない。既存transitions.swiftの色/parity判定は番号を復号せず偶数欠落を見逃すので、これだけを代替oracleとして採用しない。曖昧画像は実画像確認、なお識別不能/不確かさ過大なら未完了。一律601画像の人間手読取り/人間actor指定は廃し、識別結果と校正・例外を証拠化する。"
         ]
       },
       "41:SYNC-RECIPIENT": {

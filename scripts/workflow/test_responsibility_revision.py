@@ -197,3 +197,40 @@ class ResponsibilityRevisionTests(unittest.TestCase):
         self.assertEqual(204, sum(len(c['sources']) for c in p['cases'].values()))
         self.assertEqual(34, sum(c['initial_scope'] == 'deferred' for c in p['cases'].values()))
         self.assertTrue(all('full_acceptance_actor' not in effective_initial_entry(p, k) for k in p['cases']))
+
+    def test_new_assessment_can_use_passing_facts_from_old_pending_verdict(self):
+        aggregate = {'status': 'pending', 'head': NEW, 'artifact_sha256': 'e' * 64,
+                     'reason': 'Owned sample proof exists; former external whole-Play is pending.'}
+        fact = dict(observation(), actor='gpt', reason='Actual retained file/sample observation.')
+        assessment = {'source_candidate': NEW, 'source_result': copy.deepcopy(aggregate),
+                      'source_result_sha256': canonical_hash(aggregate),
+                      'source_record_evidence': 'Immutable original report and verdict.',
+                      'facts': {'saved-output': fact},
+                      'coverage': {name: ['saved-output'] for name in self.observed['responsibility_evidence']},
+                      'missing_requirements': [], 'unresolved_owned_failures': []}
+        self.observed['responsibility_assessment'] = assessment
+        self.assertTrue(self.verify()['stage_complete'])
+        self.assertEqual(assessment['source_result'], aggregate)
+        saved = copy.deepcopy(assessment)
+        for mutation in ('missing-fact', 'missing-condition', 'owned-failure', 'unknown-identity',
+                         'unknown-fact', 'failed-fact', 'time', 'aggregate-hash'):
+            assessment.clear()
+            assessment.update(copy.deepcopy(saved))
+            if mutation == 'missing-fact':
+                assessment['facts'] = {}
+            elif mutation == 'missing-condition':
+                assessment['missing_requirements'] = ['A retained data condition.']
+            elif mutation == 'owned-failure':
+                assessment['unresolved_owned_failures'] = ['Writer index drops a sample.']
+            elif mutation == 'unknown-identity':
+                assessment['facts']['saved-output']['loaded_identity'] = ''
+            elif mutation == 'unknown-fact':
+                assessment['coverage']['contract_coverage'] = ['not-observed']
+            elif mutation == 'failed-fact':
+                assessment['facts']['saved-output']['status'] = 'fail'
+            elif mutation == 'time':
+                assessment['facts']['saved-output']['at'] = '2099-01-01T00:00:00Z'
+            else:
+                assessment['source_result_sha256'] = 'f' * 64
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                self.verify()
