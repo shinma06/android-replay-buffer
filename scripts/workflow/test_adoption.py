@@ -53,13 +53,13 @@ class AdoptionTests(unittest.TestCase):
 
     def test_missing_protection_or_bypass_blocks_merge(self):
         gh = agent_loop.GitHub()
-        pull = {'number': 1, 'head': {'sha': 'a' * 40}, 'base': {'ref': 'develop'}, 'draft': False,
-                'body': 'Issue: #1\nIntegration: develop\nVerification: docs/verification/changes/issue-1.json'}
+        pull = {'number': 1, 'head': {'ref': 'codex/1-test', 'sha': 'a' * 40}, 'base': {'ref': 'develop'}, 'draft': False,
+                'body': 'Issue: #1\nGUI: not-required\nIntegration: develop\nVerification: docs/verification/changes/issue-1.json'}
         rules = [{'type': name, 'ruleset_id': 12} for name in ('deletion', 'non_fast_forward')]
         rules += [{'type': 'pull_request', 'ruleset_id': 12, 'parameters': {'required_review_thread_resolution': True}},
                   {'type': 'required_status_checks', 'ruleset_id': 12, 'parameters': {
                       'strict_required_status_checks_policy': True,
-                      'required_status_checks': [{'context': x} for x in ('test', 'PR policy', 'Acceptance gate', 'Agent review')]}}]
+                      'required_status_checks': [{'context': x} for x in ('test', 'PR policy', 'Acceptance gate', 'Agent review', 'CLI Python 3.9')]}}]
         for invalid in ([], rules[:-1]):
             gh.api = Mock(return_value=invalid)
             with self.assertRaises(ValueError): gh.merge(pull)

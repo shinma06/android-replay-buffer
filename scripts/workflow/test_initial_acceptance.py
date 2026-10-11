@@ -177,6 +177,7 @@ class InitialAcceptanceTests(unittest.TestCase):
         self.fixture.range = [later]
         self.manifest['changes'] = [{'commit': later, 'pr': 100}]
         self.fixture.source['merge_commit_sha'] = later
+        self.fixture.source['head']['ref'] = 'codex/37-source'
         self.fixture.source['body'] = ('Issue: #37\nGUI: required\nIntegration: develop\n'
                                        'Verification: docs/verification/changes/issue-37.json')
         self.fixture.documents[f'{later}:docs/verification/changes/issue-37.json'] = change(37)

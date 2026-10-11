@@ -21,7 +21,7 @@ NEW = 'c' * 40
 
 
 def pr_data():
-    return {'number': 36, 'user': {'login': al.OWNER}, 'state': 'open', 'merged': False, 'draft': True,
+    return {'number': 36, 'user': {'login': al.OWNER}, 'state': 'open', 'merged': False, 'draft': False,
             'body': 'Integration: tooling\nVerification: docs/verification/changes/issue-35.json\nIssue: #35\nGUI: not-required\nGUI reason: documentation only',
             'head': {'sha': HEAD, 'ref': 'codex/35-test', 'repo': {'full_name': al.REPO}},
             'base': {'sha': BASE, 'ref': 'main', 'repo': {'full_name': al.REPO}},
@@ -208,6 +208,7 @@ else:
 class FakeGitHub:
     def __init__(self):
         self.pull = pr_data()
+        self.ready_calls = 0
         self.issues = {35: {'state': 'open', 'title': '[運用] task', 'labels': ['type:maintenance', 'priority:P2', 'status:review'], 'body': '- [ ] correct value'}, 1: {'state': 'open', 'body': '- [ ] #35 task'}}
         self.messages = {}
         self.statuses = []
@@ -218,7 +219,12 @@ class FakeGitHub:
     def issue(self, n): return copy.deepcopy(self.issues[n])
     def comments(self, n): return copy.deepcopy(self.messages.get(n, []))
     def pages(self, path): return []
+    def review_threads(self, number): return []
     def ci(self, pr): return 'success'
+    def ready(self, pr):
+        self.ready_calls += 1
+        self.pull['draft'] = False
+        return self.pr(pr['number'])
     def status(self, sha, status, description, url): self.statuses.append((sha, status))
     def comment(self, n, body, comment_id=None):
         rows = self.messages.setdefault(n, [])
@@ -258,6 +264,8 @@ class LoopTests(unittest.TestCase):
         self.run = patch.object(al.subprocess, 'run', return_value=Mock(returncode=0)); self.run.start(); self.addCleanup(self.run.stop)
         self.worker = Mock(side_effect=lambda role, path, packet, out, **kw: dict(report(head=packet['head']), base=packet['base']))
         self.loop = al.Loop(self.gh, self.tmp.name, self.worker)
+        completion = patch.object(al, 'remote_review_complete', return_value=True)
+        completion.start(); self.addCleanup(completion.stop)
         self.loop.acceptance = Mock(return_value={'allowed': True, 'mode': 'tooling', 'cases': 0})
         self.loop.source_safe = Mock(); self.loop.checkout = Mock(return_value=self.checkout); self.loop.cleanup = Mock()
         self.loop.commit_fix = Mock(side_effect=lambda *args: setattr(self, 'local_head', NEW))
@@ -495,7 +503,7 @@ class LoopTests(unittest.TestCase):
         self.worker.return_value = report('blocked')
         self.assertEqual(self.loop.tick(36)['phase'], 'reviewed')
         self.assertEqual(self.worker.call_count, 2)
-        self.assertIn(feedback, self.worker.call_args.args[2]['feedback'])
+        self.assertIn(feedback, [row['body'] for row in self.worker.call_args.args[2]['feedback']])
         self.assertEqual(self.loop.tick(36)['phase'], 'blocked')
         self.assertEqual(self.gh.merges, 0)
 
@@ -606,9 +614,10 @@ class LoopTests(unittest.TestCase):
         self.loop.tick(36)
         self.gh.pull.update(merged=True, state='closed')
         self.gh.issues[35]['body'] += '\n- [ ] new acceptance'
-        self.assertEqual(self.loop.tick(36)['phase'], 'done')
+        self.assertEqual(self.loop.tick(36)['phase'], 'cleanup')
         self.assertEqual(self.gh.issues[35]['state'], 'open')
         self.assertEqual(self.gh.issues[1]['body'], '- [ ] #35 task')
+        self.loop.cleanup.assert_not_called()
 
 
 if __name__ == '__main__':

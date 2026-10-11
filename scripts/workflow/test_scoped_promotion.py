@@ -33,7 +33,7 @@ class ScopedPromotionTests(unittest.TestCase):
         self.promotion = {'schema': 1, 'scope': 'main', 'base': self.base, 'candidate': self.candidate,
                           'artifact_sha256': 'e' * 64, 'results': {'35:QA-1': result}}
         self.pr = {'number': 1, 'body': 'Issue: #35\nGUI: required\nIntegration: promotion\nVerification: '+self.case_path,
-                   'base': {'ref': 'main', 'sha': self.base}, 'head': {'sha': self.candidate}}
+                   'base': {'ref': 'main', 'sha': self.base}, 'head': {'ref': 'codex/35-scoped', 'sha': self.candidate}}
         self.results_commit()
 
     def git(self, *args):
