@@ -588,6 +588,8 @@ class Loop:
         if not bound['remote_review_complete'] or evidence.get('binding') != bound:
             raise ValueError('Pending or changed feedback; independent disposition must bind the exact snapshot')
         report = evidence['review']
+        if report.get('feedback_hash') != bound['feedback_hash']:
+            raise ValueError('Independent report must identify the feedback it actually reviewed')
         validate_review(report, bound)
         if report['verdict'] != 'approved':
             raise ValueError('Unresolved feedback cannot resume closure or cleanup')

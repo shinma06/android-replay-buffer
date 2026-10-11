@@ -180,13 +180,16 @@ class FeedbackLoopTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'snapshot'):
             self.loop.reconcile_feedback(self.gh.pr(36), stale)
         bound, _ = self.loop.bound(self.gh.pr(36), self.gh.issue(35), self.gh.comments(36))
-        blocked = {'binding': bound, 'review': tal.report('changes_requested')}
+        with self.assertRaisesRegex(ValueError, 'actually reviewed'):
+            self.loop.reconcile_feedback(self.gh.pr(36), {'binding': bound, 'review': tal.report()})
+        blocked = {'binding': bound, 'review': dict(tal.report('changes_requested'), feedback_hash=bound['feedback_hash'])}
         with self.assertRaisesRegex(ValueError, 'Unresolved'):
             self.loop.reconcile_feedback(self.gh.pr(36), blocked)
         with patch.object(al, 'remote_review_complete', return_value=False):
             with self.assertRaisesRegex(ValueError, 'Pending'):
                 self.loop.reconcile_feedback(self.gh.pr(36), {'binding': bound, 'review': tal.report()})
-        evidence = {'binding': bound, 'review': dict(tal.report(), evidence='All late finding IDs have a fixed-source disposition')}
+        evidence = {'binding': bound, 'review': dict(tal.report(), feedback_hash=bound['feedback_hash'],
+                    evidence='All late finding IDs have a fixed-source disposition')}
         self.loop.reconcile_feedback(self.gh.pr(36), evidence)
         self.assertEqual(self.loop.tick(36)['phase'], 'done')
         self.assertEqual(self.gh.merges, 1)
@@ -202,7 +205,7 @@ class FeedbackLoopTests(unittest.TestCase):
         state.update(acceptance={'allowed': True}, gui={'old': 'proof'})
         self.loop.save(self.gh.pr(36), state, sid)
         bound, _ = self.loop.bound(self.gh.pr(36), self.gh.issue(35), self.gh.comments(36))
-        evidence = {'binding': bound, 'review': dict(tal.report(), issue_complete=False)}
+        evidence = {'binding': bound, 'review': dict(tal.report(), issue_complete=False, feedback_hash=bound['feedback_hash'])}
         fresh = self.loop.reconcile_feedback(self.gh.pr(36), evidence)
         self.assertNotIn('acceptance', fresh)
         self.assertNotIn('gui', fresh)
