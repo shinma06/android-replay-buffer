@@ -23,7 +23,7 @@ bin/             従来のCLI起動スクリプト
 launchd/         従来のmacOS常駐設定例
 tests/           CLI原型のテスト
 docs/cli-origin/ 原README・CLI設計書・原gitignore・固定ファイルmanifest
-scripts/         共通の管理・検証（Python 3.11+）
+scripts/         共通の管理・検証（Python 3.15+）
 ```
 
 CLIを `legacy/` へ移動しないのは、既存のPATH、Python import、launchd設定を維持するためです。プラグインは `plugin/` で開発し、projectのAndroid SDKと同梱する録画用依存を使う[方式を採用](docs/design/timeline.md)しています。CLI原型のコード・設定・コマンドの互換性は保全します。
@@ -31,6 +31,8 @@ CLIを `legacy/` へ移動しないのは、既存のPATH、Python import、laun
 ## 開発と検証
 
 [プロジェクト情報](docs/project.md)と[開発手順](docs/workflow.md)に従い、Issue専用branch/worktreeからdevelopへPRを作成します。mainへは固定候補の受入後に反映します。
+
+repositoryの検査・Git hooks・QA/受入・GUI lease・coordinatorなどの管理/開発ツールはPython 3.15以上を対応対象とし、主検査はstable 3.15.0を使用します。旧3.11〜3.14環境で管理作業を行う場合は[セットアップ手順](docs/setup/README.md#runtimeと配置)に従って3.15を選択してください。配布CLIの利用条件はPython 3.9以上のままです。
 
 ```bash
 python3 scripts/bootstrap.py

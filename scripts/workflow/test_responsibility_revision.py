@@ -1,9 +1,12 @@
 """Amended methods preserve observations; synthetic results are never product passes."""
 import copy
+from functools import cache
 import json
 from pathlib import Path
+import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from test_agent_loop import BASE, NEW
 import test_initial_acceptance as ti
@@ -11,7 +14,7 @@ from test_verification import observation
 from test_observation_reuse import OLD, RECORD, reused, record_original
 from verification import (INITIAL_PLAN, canonical_hash, effective_initial_entry,
                           effective_responsibility_case, initial_stage_plan, render_queue,
-                          validate_candidate_result, validate_responsibility_policy)
+                          previous_installation_plan, validate_candidate_result, validate_responsibility_policy)
 
 
 class ResponsibilityRevisionTests(unittest.TestCase):
@@ -363,6 +366,12 @@ class ResponsibilityRevisionTests(unittest.TestCase):
         self.assertEqual(34, sum(c['initial_scope'] == 'deferred' for c in p['cases'].values()))
         self.assertTrue(all('full_acceptance_actor' not in effective_initial_entry(p, k) for k in p['cases']))
         revision = copy.deepcopy(p['responsibility_revision'])
+        previous = previous_installation_plan(p)
+        self.assertEqual('13bd1e294519915d8c8a66be2770811a4d6b28465432061e7c2eae91a87fd8a3',
+                         canonical_hash(previous))
+        self.assertEqual(previous['cases'], p['cases'])
+        revision.pop('installation_revision')
+        revision['overrides'].pop('3:PLUGIN-LOAD')
         extension = revision.pop('plan_extension')
         original = {k: v for k, v in p.items() if k != 'responsibility_revision'}
         original = dict(original, required_ancestor=extension['previous_required_ancestor'],
@@ -425,6 +434,165 @@ class ResponsibilityRevisionTests(unittest.TestCase):
                 bad['responsibility_revision']['plan_extension'] = None
             with self.subTest(mutation=mutation), self.assertRaises(ValueError):
                 validate_responsibility_policy(bad)
+
+    def installation_policy(self):
+        case = copy.deepcopy(self.fixture.documents[f'{NEW}:docs/verification/changes/issue-36.json']['cases'][0])
+        case['id'] = 'PLUGIN-LOAD'
+        data = {'schema': 1, 'issue': 3, 'gui_required': True, 'reason': 'Plugin load',
+                'cli_checks': ['ZIP identity'], 'cases': [case]}
+        entry = copy.deepcopy(self.original['cases']['36:QA-1-EMU'])
+        entry.update(current_case_sha256=canonical_hash(case), sources=[{
+            'source_pr': 4, 'source_merge': NEW, 'source_path': 'docs/verification/changes/issue-3.json',
+            'original_case_sha256': canonical_hash(case)}])
+        self.original['cases']['3:PLUGIN-LOAD'] = entry
+        self.policy['cases']['3:PLUGIN-LOAD'] = copy.deepcopy(entry)
+        self.fixture.documents[f'{NEW}:docs/verification/changes/issue-3.json'] = data
+        revision = self.policy['responsibility_revision']
+        revision['previous_plan_sha256'] = canonical_hash(self.original)
+        revision['groups']['fixture']['cases'].append('3:PLUGIN-LOAD')
+        previous = copy.deepcopy(self.policy)
+        self.enterContext(patch('verification.INSTALLATION_PREVIOUS_PLAN_SHA256', canonical_hash(previous)))
+        revision['installation_revision'] = {'issue': 208, 'previous_plan_sha256': canonical_hash(previous)}
+        revision['overrides']['3:PLUGIN-LOAD'] = {'case': {'steps': ['Terminal deploy; actual IDE load.']}}
+        self.fixture.documents[f'{BASE}:{INITIAL_PLAN}'] = copy.deepcopy(self.policy)
+        self.fixture.documents[f'{NEW}:{INITIAL_PLAN}'] = previous
+        self.proof(self.observed)
+        return previous
+
+    def test_installation_revision_accepts_exact_registered_plan_and_retained_facts_only(self):
+        previous = self.installation_policy()
+        self.assertEqual(self.policy, initial_stage_plan(BASE, NEW, self.fixture.git))
+        aggregate = {'status': 'pending', 'head': NEW, 'artifact_sha256': 'e' * 64,
+                     'reason': 'Original verdict remains pending.'}
+        assessment = {'source_candidate': NEW, 'source_result': copy.deepcopy(aggregate),
+                      'source_result_sha256': canonical_hash(aggregate), 'source_record_evidence': 'Fixed original report.',
+                      'facts': {'output': dict(observation(), actor='gpt')},
+                      'coverage': {name: ['output'] for name in self.observed['responsibility_evidence']},
+                      'missing_requirements': [], 'unresolved_owned_failures': []}
+        self.observed['responsibility_assessment'] = assessment
+        validate_candidate_result(self.observed, '36:QA-1-EMU', self.policy, None,
+                                  NEW, 'e' * 64, 'computer_use', None, self.fixture.git)
+        self.assertEqual(aggregate, assessment['source_result'])
+        self.assertEqual(previous, self.fixture.documents[f'{NEW}:{INITIAL_PLAN}'])
+        # A real prior PASS still needs its original trusted record and current equivalence proof.
+        original = dict(observation(), actor='gpt', execution='computer_use',
+                        responsibility_revision=canonical_hash(previous['responsibility_revision']),
+                        responsibility_evidence=copy.deepcopy(self.observed['responsibility_evidence']))
+        confirmation = dict(self.observed, equivalence_evidence='Same product/build/fixture.',
+                            environment_evidence='Same exact loaded environment.')
+        confirmation.pop('responsibility_assessment')
+        reassessed = {'status': 'reassessed', 'head': NEW, 'artifact_sha256': 'e' * 64,
+                      'source_candidate': NEW, 'source_record': RECORD, 'source_result': original,
+                      'confirmation': confirmation}
+        record_original(self.fixture, '36:QA-1-EMU', reassessed)
+        validate_candidate_result(reassessed, '36:QA-1-EMU', self.policy, None,
+                                  NEW, 'e' * 64, 'computer_use', None, self.fixture.git, BASE)
+        self.assertEqual(previous, self.fixture.documents[f'{NEW}:{INITIAL_PLAN}'])
+        for mutation in ('hash', 'other-method', 'case', 'null', 'incomplete', 'owned-failure', 'ordinary-reuse'):
+            documents = copy.deepcopy(self.fixture.documents)
+            observed = copy.deepcopy(self.observed)
+            policy = copy.deepcopy(self.policy)
+            if mutation == 'hash':
+                policy['responsibility_revision']['installation_revision']['previous_plan_sha256'] = 'f' * 64
+            elif mutation == 'other-method':
+                self.fixture.documents[f'{NEW}:{INITIAL_PLAN}']['responsibility_revision']['groups']['fixture']['methods'] += ' changed'
+            elif mutation == 'case':
+                self.fixture.documents[f'{NEW}:docs/verification/changes/issue-3.json']['cases'][0]['steps'].append('Changed contract')
+            elif mutation == 'null':
+                self.fixture.documents[f'{NEW}:{INITIAL_PLAN}'] = None
+            elif mutation == 'incomplete':
+                observed['responsibility_assessment']['missing_requirements'] = ['Unobserved native integration']
+            elif mutation == 'owned-failure':
+                observed['responsibility_assessment']['unresolved_owned_failures'] = ['Owned failure']
+            else:
+                original = copy.deepcopy(self.old_result)
+                original['head'] = original['initial_observation']['head'] = OLD
+                self.fixture.documents[f'{OLD}:{INITIAL_PLAN}'] = previous
+                self.fixture.documents[f'{OLD}:docs/verification/changes/issue-3.json'] = documents[f'{NEW}:docs/verification/changes/issue-3.json']
+                self.fixture.documents[f'{OLD}:docs/verification/changes/issue-36.json'] = documents[f'{NEW}:docs/verification/changes/issue-36.json']
+                observed = reused(original)
+                record_original(self.fixture, '36:QA-1-EMU', observed)
+            self.fixture.documents[f'{BASE}:{INITIAL_PLAN}'] = policy
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                current = initial_stage_plan(BASE, NEW, self.fixture.git)
+                validate_candidate_result(observed, '36:QA-1-EMU', current, None,
+                                          NEW, 'e' * 64, 'computer_use', None, self.fixture.git, BASE)
+            self.fixture.documents = documents
+
+    def test_installation_revision_does_not_authorize_other_policy_or_scope_changes(self):
+        path = Path(__file__).resolve().parents[2] / INITIAL_PLAN
+        policy = json.loads(path.read_text())
+        for mutation in ('old-entry', 'other-group', 'other-override', 'issue', 'extra', 'missing-override'):
+            bad = copy.deepcopy(policy)
+            revision = bad['responsibility_revision']
+            if mutation == 'old-entry':
+                bad['cases']['3:PLUGIN-LOAD']['deferred_scope'] = []
+            elif mutation == 'other-group':
+                revision['groups']['environment']['methods'] += ' changed'
+            elif mutation == 'other-override':
+                revision['overrides']['27:SAVE-FAIL-02-EMU']['case']['expected'] += ' changed'
+            elif mutation == 'issue':
+                revision['installation_revision']['issue'] = 201
+            elif mutation == 'extra':
+                revision['installation_revision']['other_plans'] = ['f' * 64]
+            else:
+                revision['overrides'].pop('3:PLUGIN-LOAD')
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                validate_responsibility_policy(bad)
+
+    def test_real_installation_plan_rejects_rehashed_prior_contract_changes(self):
+        root = Path(__file__).resolve().parents[2]
+        base = 'f6352e39e45ee33913c0ee79ca482d61531dffdc'
+        candidate = '707d3b0d26f749ef7537ef83a25a38081af35d62'
+        prior_ref = '280c96cb2d93002152e57de7803b1eb03c8bc26b'
+        policy = json.loads((root / INITIAL_PLAN).read_text())
+
+        @cache
+        def git(*args):
+            return subprocess.check_output(['git', *args], cwd=root, text=True).strip()
+
+        prior = json.loads(git('show', prior_ref + ':' + INITIAL_PLAN))
+        self.assertEqual(prior, previous_installation_plan(policy))
+        self.assertEqual('13bd1e294519915d8c8a66be2770811a4d6b28465432061e7c2eae91a87fd8a3',
+                         canonical_hash(prior))
+        validate_responsibility_policy(policy)
+        validate_responsibility_policy(prior)
+        self.assertEqual(policy, initial_stage_plan(base, candidate, git))
+        self.assertEqual(prior, initial_stage_plan(candidate, candidate, git))
+
+        # Only plan copies are overlaid; ancestor, regular-file and Case checks use real Git.
+        for mutation in ('current', 'group', 'override', 'common', 'hash'):
+            bad = copy.deepcopy(policy)
+            revision = bad['responsibility_revision']
+            if mutation == 'group':
+                revision['groups']['environment']['methods'] += ' changed'
+            elif mutation == 'override':
+                revision['overrides']['27:SAVE-FAIL-02-EMU']['case']['expected'] += ' changed'
+            elif mutation == 'common':
+                revision['common_requirements'][0] += ' changed'
+            elif mutation == 'hash':
+                revision['installation_revision']['previous_plan_sha256'] = 'f' * 64
+            self.assertEqual(policy['cases'], bad['cases'])
+            previous = previous_installation_plan(bad)
+
+            def overlay(*args):
+                if args == ('show', base + ':' + INITIAL_PLAN):
+                    return json.dumps(bad)
+                if args == ('show', candidate + ':' + INITIAL_PLAN):
+                    return json.dumps(bad if mutation == 'current' else previous)
+                return git(*args)
+
+            if mutation == 'current':
+                self.assertEqual(policy, initial_stage_plan(base, candidate, overlay))
+                continue
+            for rehash in ((False,) if mutation == 'hash' else (False, True)):
+                if rehash:
+                    revision['installation_revision']['previous_plan_sha256'] = canonical_hash(previous)
+                with self.subTest(mutation=mutation, rehash=rehash):
+                    with self.assertRaisesRegex(ValueError, 'exact prior plan'):
+                        validate_responsibility_policy(bad)
+                    with self.assertRaisesRegex(ValueError, 'exact prior plan'):
+                        initial_stage_plan(base, candidate, overlay)
 
     def test_extension_gate_and_listing_require_new_case_and_keep_all_five_steps(self):
         key = '186:CLOCK-BATCH-SAVE'

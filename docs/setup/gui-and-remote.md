@@ -2,6 +2,8 @@
 
 GUIを操作する作業だけに適用します。コード編集やCLI検証にデスクトップ権限は不要です。
 
+Plugin検証版の通常導入は[固定ZIPのターミナル配置](../operations.md#固定plugin-zipのターミナル導入)に従います。配置/通常終了・起動も共有leaseと保全・復元を必要とし、Settings → Pluginsの導入/版探索をGUI準備の必須操作にしません。自製品SettingsとAbout/actionの必要な実UI確認は継続します。
+
 ## セットアップ
 
 1. 選んだクライアントの正式なComputer Use/browser連携を導入します。Codex Desktopの内部Node REPL、helper、socket、module pathはアプリが管理します。source configを複製しません。

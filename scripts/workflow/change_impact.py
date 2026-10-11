@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path, PurePosixPath
 import subprocess
+import sys
 
 RUNTIME = 'IMPACT_RUNTIME'
 BUILD = 'IMPACT_BUILD'
@@ -116,11 +117,11 @@ def git_impact(base=None, head='HEAD', *, cwd=None, merge_base=True, force_full=
 
 
 def test_commands(result):
-    commands = [['python3', 'scripts/check.py']]
+    commands = [[sys.executable, 'scripts/check.py']]
     if result['product_check']:
-        commands.append(['python3', 'scripts/workflow/product_check.py'])
+        commands.append([sys.executable, 'scripts/workflow/product_check.py'])
     if result['plugin_check']:
-        commands.append(['python3', 'scripts/workflow/plugin_check.py'])
+        commands.append([sys.executable, 'scripts/workflow/plugin_check.py'])
     return commands
 
 

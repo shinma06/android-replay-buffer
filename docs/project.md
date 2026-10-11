@@ -56,7 +56,7 @@ GeForceアプリやOBSのリプレイバッファから着想を得て、直近�
 | 実装 | `plugin/` が開発対象。CLI原型は `replay_buffer/`、入口 `bin/`、設定 `config.json.example`、起動例 `launchd/` を維持 |
 | 仕様 | [製品要件](requirements.md)、[README](../README.md)。原型は[原CLI README](cli-origin/README.md)、[CLI原型の設計（凍結）](cli-origin/design.md)。要件・設計の記述だけで実装済みとしない |
 | テスト | CLIは `tests/test_log_buffer.py` の既存2ケース。プラグインは `plugin/src/test/` のJVMテストで時計・保存・process所有・合成wire・設定/寿命を検証する。実機/IDE受入は別のCaseで確認する |
-| 開発ハーネス | Python 3.11以上、標準ライブラリ、Bash、macOS/Linux。CLIの要求版を変更しない |
+| 開発ハーネス | 主検査/CIはPython 3.15.0 stable。管理/開発scriptの対応下限はPython 3.15以上、標準ライブラリ、Bash、macOS/Linux。配布CLIのPython 3.9以上とは別。[runtime選択・移行](setup/README.md#runtimeと配置) |
 | 統合先 | 製品変更は `develop`。固定候補を `main` へpromotion。GUI不要toolingは `main`。main/developは作成済み |
 | 必須checks | `test` / `PR policy` / `Acceptance gate` / `Agent review` / `CLI Python 3.9`。追加contextは対象branchのworkflow導入後に有効化し、実適用は [導入Issue #1](https://github.com/shinma06/android-replay-buffer/issues/1) でreadbackする |
 | 管理 | [Project #5](https://github.com/users/shinma06/projects/5)、[基盤・残QAのMilestone #2](https://github.com/shinma06/android-replay-buffer/milestone/2)、[初期版のMilestone #3](https://github.com/shinma06/android-replay-buffer/milestone/3)、[作業管理](work-management.md) |

@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "issue": 210,
+  "gui_required": false,
+  "reason": "共有の同一成果物history判定へPR207の固定管理CI更新だけをtrusted mainのexact source/blob/祖先と707を唯一の親とする最終squash候補に限定して登録する。製品・build・fixture・原Case・正式計画・責任契約・旧観察を変更せず、GUI/device/IDE/build/導入/再起動は行わない。実同期と現equivalence/失敗帰属・全条件の独立確認は後続の既存QA/PMへ残す。",
+  "cli_checks": [
+    "Python 3.15.0でpython3 scripts/check.pyとpython3 scripts/workflow/product_check.pyを実行する。",
+    "test_management_ci_history.pyで固定sourceからの最終squashとreuse/listing/fact assessmentを確認し、未知CI/任意commit/途中revert/製品/build/fixture/Case/非祖先/不完全な証拠/異なるsource/同期branch履歴を拒否する。",
+    "実707/main0951とPR205 writerの履歴を含む使い捨てGit投影で、CIの既存Java/Gradle/Plugin/ZIP経路と全138 Cases/207出典/104 Agent/34 REAL・旧/現計画hashが保持されることを確認する。投影を正式candidateや受入PASSにしない。",
+    "clean committed HEADでpython3 scripts/workflow/change_impact.py --base origin/main --run-testsを実行し、通常hooks/CIを確認する。"
+  ],
+  "cases": []
+}
