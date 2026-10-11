@@ -1,6 +1,5 @@
 package io.github.shinma06.replaybuffer.core
 
-import com.google.gson.JsonParser
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertEquals
@@ -12,6 +11,9 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.channels.FileLock
 import java.nio.channels.FileChannel
+import java.nio.ByteBuffer
+import java.nio.file.StandardOpenOption.WRITE
+import java.util.zip.CRC32
 import java.nio.file.attribute.PosixFilePermissions
 import java.time.Instant
 import java.util.UUID
@@ -23,15 +25,22 @@ object LocalCaptureOwnerFixture {
     fun main(args: Array<String>) {
         val ownership = LocalCaptureOwnership.create(Path.of(args[0]))
         CaptureResources(ownership.root, ownership::created)
-        val store = CaptureStore(ownership.root.resolve("ring"), minFree = 0, created = ownership::created)
+        val store = CaptureStore(ownership.root.resolve("ring"), minFree = 0,
+            videoLimit = if (args[1] == "cycled") 2 else ReplaySettings.VIDEO_BYTES,
+            created = ownership::created, removed = ownership::removed)
         store.generation(1)
         store.session(VideoPacket.Session(32, 32), 1)
         store.frame(VideoPacket.Frame(0, true, false, byteArrayOf(1)), 1)
         check(store.frame(VideoPacket.Frame(100, false, true, byteArrayOf(2)), 1))
+        if (args[1] == "cycled") {
+            store.capture(ReplaySettings())!!
+            store.freeze()
+            repeat(32) { store.frame(VideoPacket.Frame(200L + it, false, true, byteArrayOf(3)), 1) }
+        }
         if (args[1] == "unlocked") ownership.close()
         println(ownership.root.fileName)
         System.out.flush()
-        if (args[1] != "stopped") System.`in`.read()
+        if (args[1] !in listOf("stopped", "cycled")) System.`in`.read()
     }
 }
 
@@ -64,7 +73,7 @@ class LocalCaptureOwnershipTest {
         try {
             val root = namespace.resolve(line.get(10, TimeUnit.SECONDS) ?: error("fixture failed"))
             val fixture = Fixture(process, root, namespace.resolve("local-capture-${root.fileName.toString().removePrefix("replay-")}.json"))
-            if (mode == "stopped") {
+            if (mode in listOf("stopped", "cycled")) {
                 assertTrue(process.waitFor(10, TimeUnit.SECONDS))
                 assertEquals(0, process.exitValue())
                 assertTrue(ProcessHandle.of(process.pid()).isEmpty)
@@ -75,6 +84,31 @@ class LocalCaptureOwnershipTest {
             process.waitFor(10, TimeUnit.SECONDS)
             throw failure
         }
+    }
+
+    private fun header(path: Path) = LocalCaptureOwnership.decodeRecord(
+        Files.newInputStream(path).use { it.readNBytes(LocalCaptureOwnership.HEADER_BYTES) }).asJsonObject
+
+    private fun entries(path: Path): Map<String, List<String>> {
+        val bytes = Files.readAllBytes(path)
+        return (LocalCaptureOwnership.HEADER_BYTES until bytes.size step LocalCaptureOwnership.SLOT_BYTES).associate { offset ->
+            val entry = LocalCaptureOwnership.decodeRecord(bytes.copyOfRange(offset, offset + LocalCaptureOwnership.SLOT_BYTES)).asJsonArray
+            entry[0].asString to entry[1].asJsonArray.map { it.asString }
+        }
+    }
+
+    private fun overwrite(path: Path, offset: Long, bytes: ByteArray) {
+        FileChannel.open(path, WRITE).use { channel ->
+            channel.position(offset)
+            val buffer = ByteBuffer.wrap(bytes)
+            while (buffer.hasRemaining()) channel.write(buffer)
+            channel.force(true)
+        }
+    }
+
+    private fun rawRecord(text: String, size: Int): ByteArray {
+        val bytes = text.toByteArray(Charsets.UTF_8)
+        return ByteBuffer.allocate(size).putInt(bytes.size).putInt(CRC32().apply { update(bytes) }.value.toInt()).put(bytes).array()
     }
 
     private fun packet(root: Path) = Files.list(root.resolve("ring")).use { it.findFirst().orElseThrow() }
@@ -121,15 +155,19 @@ class LocalCaptureOwnershipTest {
                 val before = Files.readAllBytes(packet(old.root))
                 if (kind == "absent") Files.delete(old.descriptor)
                 else if (kind == "truncated") Files.writeString(old.descriptor, "{broken")
-                else if (kind == "duplicate") Files.writeString(old.descriptor, Files.readString(old.descriptor).replaceFirst("{", "{\"schema\":1,"))
+                else if (kind == "duplicate") overwrite(old.descriptor, 0,
+                    rawRecord(com.google.gson.Gson().toJson(header(old.descriptor)).replaceFirst("{", "{\"schema\":2,"), LocalCaptureOwnership.HEADER_BYTES))
                 else {
-                    val json = JsonParser.parseString(Files.readString(old.descriptor)).asJsonObject
+                    val json = header(old.descriptor)
                     when (kind) {
                         "pid", "started" -> json.remove(kind)
                         "namespace" -> json.addProperty(kind, "different project")
-                        else -> json.getAsJsonObject("entries").remove(".")
+                        else -> {
+                            overwrite(old.descriptor, LocalCaptureOwnership.HEADER_BYTES.toLong(),
+                                LocalCaptureOwnership.encodeRecord(listOf("ring/gop-${UUID.randomUUID()}.h264", entries(old.descriptor).getValue(".")), LocalCaptureOwnership.SLOT_BYTES))
+                        }
                     }
-                    Files.writeString(old.descriptor, json.toString())
+                    overwrite(old.descriptor, 0, LocalCaptureOwnership.encodeRecord(json, LocalCaptureOwnership.HEADER_BYTES))
                 }
                 LocalCaptureOwnership.recover(namespace)
                 assertArrayEquals(before, Files.readAllBytes(packet(old.root)))
@@ -187,33 +225,223 @@ class LocalCaptureOwnershipTest {
     }
 
     @Test
-    fun fullLiveAndPinnedPacketCapacityFitsBothManifestBounds() {
+    fun fixedSlotLayoutCoversFullCapacityAndLargestRegisteredIdentityWithinTheByteBound() {
         val ownership = LocalCaptureOwnership.create(namespace("capacity"))
         try {
             val record = Files.newDirectoryStream(ownership.root.parent, "local-capture-*.json").use { it.single() }
-            val json = JsonParser.parseString(Files.readString(record)).asJsonObject
-            val identity = json.getAsJsonObject("entries")["."].asJsonArray.map { it.asString }
-            val entries = linkedMapOf<String, List<String>>()
-            for (name in listOf(".", "ring", "scrcpy-server-v4.0", "replay-clock.jar")) entries[name] = identity
-            repeat(2 * ReplaySettings.MAX_VIDEO_PACKETS + 1) {
-                entries["ring/gop-${UUID.randomUUID()}.h264"] = identity
-            }
-            val encoded = ownership.encode(entries)
-            assertEquals(LocalCaptureOwnership.MAX_ENTRIES, entries.size)
-            assertTrue(encoded.size > 1024 * 1024) // The previous byte cap fails well before the supported packet cap.
-            assertTrue(encoded.size <= LocalCaptureOwnership.MAX_BYTES)
-            // Every identity is bounded at registration; 64 bytes covers the longest allowed name/punctuation.
-            assertTrue(LocalCaptureOwnership.MAX_BYTES >= entries.size * (1024 + 64) + 2 * 1024 + 8192)
-            entries["ring/gop-${UUID.randomUUID()}.h264"] = identity
-            assertThrows(IllegalArgumentException::class.java) { ownership.encode(entries) }
+            val identity = entries(record).getValue(".").toMutableList()
+            identity[0] += "x".repeat(1024 - com.google.gson.Gson().toJson(identity).toByteArray(Charsets.UTF_8).size)
+            assertEquals(1024, com.google.gson.Gson().toJson(identity).toByteArray(Charsets.UTF_8).size)
+            val name = "ring/gop-${UUID.randomUUID()}.h264"
+            val slot = LocalCaptureOwnership.encodeRecord(listOf(name, identity), LocalCaptureOwnership.SLOT_BYTES)
+            assertEquals(identity, LocalCaptureOwnership.decodeRecord(slot).asJsonArray[1].asJsonArray.map { it.asString })
+            assertEquals(120005, LocalCaptureOwnership.MAX_ENTRIES)
+            assertTrue(LocalCaptureOwnership.HEADER_BYTES.toLong() + LocalCaptureOwnership.MAX_ENTRIES.toLong() * slot.size <= LocalCaptureOwnership.MAX_BYTES)
+            assertThrows(IllegalArgumentException::class.java) { LocalCaptureOwnership.encodeRecord(listOf(name, listOf("x".repeat(slot.size))), slot.size) }
         } finally { ownership.removeRoot(); ownership.close() }
+    }
+
+    @Test
+    fun successiveRetainedGopsAppendOneFixedRecordBeforePayloadWithoutRewritingHistory() {
+        for (frozen in listOf(false, true)) {
+            val ownership = LocalCaptureOwnership.create(namespace("append-$frozen"))
+            val descriptor = Files.newDirectoryStream(ownership.root.parent, "local-capture-*.json").use { it.single() }
+            var registrations = 0
+            var writtenBytes = 0L
+            val deleted = mutableListOf<Path>()
+            val store = CaptureStore(ownership.root.resolve("ring"), minFree = 0, created = { path ->
+                val before = Files.readAllBytes(descriptor)
+                ownership.created(path)
+                val after = Files.readAllBytes(descriptor)
+                assertEquals(LocalCaptureOwnership.SLOT_BYTES, after.size - before.size)
+                assertArrayEquals(before, after.copyOf(before.size))
+                writtenBytes += after.size - before.size
+                if (Files.isRegularFile(path)) {
+                    registrations++
+                    assertEquals(0L, Files.size(path))
+                    assertTrue("ring/${path.fileName}" in entries(descriptor))
+                }
+            }, removed = { path -> deleted.add(path); ownership.removed(path) })
+            try {
+                store.generation(1); store.session(VideoPacket.Session(32, 32), 1)
+                store.frame(VideoPacket.Frame(0, true, false, byteArrayOf(1)), 1)
+                store.frame(VideoPacket.Frame(100, false, true, byteArrayOf(2)), 1)
+                val pin = store.capture(ReplaySettings())!!
+                assertEquals(Long.MAX_VALUE, pin.endUncertainty)
+                if (frozen) store.freeze()
+                repeat(64) { assertTrue(store.frame(VideoPacket.Frame(200L + it, false, true, byteArrayOf(3)), 1)) }
+                assertEquals(65, registrations)
+                assertEquals(66L * LocalCaptureOwnership.SLOT_BYTES, writtenBytes) // Ring plus65 new GOPs.
+                assertTrue(deleted.isEmpty())
+                assertArrayEquals(byteArrayOf(2), Files.readAllBytes(pin.video.single().file))
+            } finally { store.close(); ownership.removeRoot(); ownership.close() }
+        }
+    }
+
+    @Test
+    fun exactUnlinksRecycleSlotsAndBoundPersistentGrowthWhilePinAndLiveDataRemain() {
+        for (frozen in listOf(false, true)) {
+            val ownership = LocalCaptureOwnership.create(namespace("reuse-$frozen"))
+            val descriptor = Files.newDirectoryStream(ownership.root.parent, "local-capture-*.json").use { it.single() }
+            val deleted = mutableListOf<Path>()
+            val store = CaptureStore(ownership.root.resolve("ring"), videoLimit = 2, minFree = 0,
+                created = ownership::created, removed = { path ->
+                    assertFalse(Files.exists(path))
+                    assertFalse(path in deleted)
+                    deleted.add(path)
+                    ownership.removed(path)
+                })
+            try {
+                store.generation(1); store.session(VideoPacket.Session(32, 32), 1)
+                store.frame(VideoPacket.Frame(0, true, false, byteArrayOf(1)), 1)
+                store.frame(VideoPacket.Frame(100, false, true, byteArrayOf(2)), 1)
+                val pin = store.capture(ReplaySettings())!!
+                if (frozen) store.freeze()
+                repeat(48) {
+                    assertTrue(store.frame(VideoPacket.Frame(200L + it, false, true, byteArrayOf(3)), 1))
+                    assertTrue(Files.size(descriptor) <= LocalCaptureOwnership.HEADER_BYTES + 6L * LocalCaptureOwnership.SLOT_BYTES)
+                    assertTrue(Files.exists(pin.video.single().file))
+                }
+                assertTrue(deleted.isNotEmpty())
+                assertEquals(deleted.distinct(), deleted)
+                val beforeRelease = Files.readAllBytes(descriptor)
+                store.release(pin.id)
+                assertFalse(Files.exists(pin.video.single().file))
+                assertArrayEquals(beforeRelease, Files.readAllBytes(descriptor)) // Unlink needs no full journal update.
+                assertTrue(store.frame(VideoPacket.Frame(300, false, true, byteArrayOf(4)), 1))
+                val after = Files.readAllBytes(descriptor)
+                assertEquals(beforeRelease.size, after.size)
+                assertArrayEquals(beforeRelease.copyOf(LocalCaptureOwnership.HEADER_BYTES), after.copyOf(LocalCaptureOwnership.HEADER_BYTES))
+                val changedSlots = (LocalCaptureOwnership.HEADER_BYTES until after.size step LocalCaptureOwnership.SLOT_BYTES).count { offset ->
+                    !beforeRelease.copyOfRange(offset, offset + LocalCaptureOwnership.SLOT_BYTES)
+                        .contentEquals(after.copyOfRange(offset, offset + LocalCaptureOwnership.SLOT_BYTES))
+                }
+                assertEquals(1, changedSlots)
+            } finally { store.close(); ownership.removeRoot(); ownership.close() }
+        }
+    }
+
+    @Test
+    fun stoppedOwnerWithReusedSlotsAndMissingOldEntriesIsReclaimed() {
+        fixture(namespace("cycled"), "cycled").use { old ->
+            assertTrue(Files.size(old.descriptor) <= LocalCaptureOwnership.HEADER_BYTES + 8L * LocalCaptureOwnership.SLOT_BYTES)
+            assertArrayEquals(byteArrayOf(2), Files.readAllBytes(old.root.resolve(entries(old.descriptor).keys.first {
+                it.startsWith("ring/") && Files.exists(old.root.resolve(it)) && Files.readAllBytes(old.root.resolve(it)).contentEquals(byteArrayOf(2))
+            })))
+            LocalCaptureOwnership.recover(old.root.parent)
+            assertFalse(Files.exists(old.root))
+            assertFalse(Files.exists(old.descriptor))
+        }
+    }
+
+    @Test
+    fun incompleteGrowthReusedSlotBadPaddingAndDuplicateEntriesPreserveEveryFile() {
+        for (kind in listOf("growth", "reused", "padding", "duplicate")) {
+            fixture(namespace("incomplete-$kind"), "cycled").use { old ->
+                val files = Files.walk(old.root).use { stream -> stream.filter { Files.isRegularFile(it) }.toList() }
+                val before = files.associateWith { Files.readAllBytes(it) }
+                val bytes = Files.readAllBytes(old.descriptor)
+                when (kind) {
+                    "growth" -> FileChannel.open(old.descriptor, WRITE).use { it.truncate(bytes.size.toLong() - 1) }
+                    "reused" -> {
+                        val index = LocalCaptureOwnership.HEADER_BYTES + 5 * LocalCaptureOwnership.SLOT_BYTES + 10
+                        bytes[index] = (bytes[index].toInt() xor 1).toByte()
+                        Files.write(old.descriptor, bytes)
+                    }
+                    "padding" -> { bytes[bytes.lastIndex] = 1; Files.write(old.descriptor, bytes) }
+                    "duplicate" -> overwrite(old.descriptor, bytes.size.toLong(), bytes.copyOfRange(LocalCaptureOwnership.HEADER_BYTES, LocalCaptureOwnership.HEADER_BYTES + LocalCaptureOwnership.SLOT_BYTES))
+                }
+                LocalCaptureOwnership.recover(old.root.parent)
+                before.forEach { (path, payload) -> assertArrayEquals(payload, Files.readAllBytes(path)) }
+                assertTrue(Files.exists(old.descriptor))
+            }
+        }
+    }
+
+    @Test
+    fun validLegacyWholeJsonRecordsAreConservativelyRetained() {
+        fixture(namespace("legacy")).use { old ->
+            val json = header(old.descriptor)
+            json.addProperty("schema", 1)
+            json.add("entries", com.google.gson.Gson().toJsonTree(entries(old.descriptor)))
+            Files.writeString(old.descriptor, com.google.gson.Gson().toJson(json))
+            val before = Files.readAllBytes(packet(old.root))
+            LocalCaptureOwnership.recover(old.root.parent)
+            assertArrayEquals(before, Files.readAllBytes(packet(old.root)))
+            assertTrue(Files.exists(old.descriptor))
+        }
+    }
+
+    @Test
+    fun failedPersistenceRejectsFurtherRegistrationAndWritesNoGopPayload() {
+        val ownership = LocalCaptureOwnership.create(namespace("persistence-failure"))
+        val store = CaptureStore(ownership.root.resolve("ring"), minFree = 0,
+            created = ownership::created, removed = ownership::removed)
+        try {
+            store.generation(1); store.session(VideoPacket.Session(32, 32), 1)
+            store.frame(VideoPacket.Frame(0, true, false, byteArrayOf(1)), 1)
+            val channel = LocalCaptureOwnership::class.java.getDeclaredField("channel").apply { isAccessible = true }.get(ownership) as FileChannel
+            channel.close() // Deterministic ordinary IO failure; no concurrent interleaving.
+            assertThrows(java.nio.channels.ClosedChannelException::class.java) { store.frame(VideoPacket.Frame(100, false, true, byteArrayOf(9)), 1) }
+            assertThrows(IllegalStateException::class.java) { store.frame(VideoPacket.Frame(200, false, true, byteArrayOf(8)), 1) }
+            assertEquals(0L, Files.list(store.directory).use { it.count() })
+        } finally { store.close(); ownership.removeRoot(); ownership.close() }
+    }
+
+    @Test
+    fun failedUnlinkPreservesPayloadAndDoesNotNotifyOwnershipUntilDeletionSucceeds() {
+        val ownership = LocalCaptureOwnership.create(namespace("unlink-failure"))
+        val deleted = mutableListOf<Path>()
+        val store = CaptureStore(ownership.root.resolve("ring"), videoLimit = 1, minFree = 0,
+            created = ownership::created, removed = { path -> deleted.add(path); ownership.removed(path) })
+        try {
+            store.generation(1); store.session(VideoPacket.Session(32, 32), 1)
+            store.frame(VideoPacket.Frame(0, true, false, byteArrayOf(1)), 1)
+            store.frame(VideoPacket.Frame(100, false, true, byteArrayOf(2)), 1)
+            val pin = store.capture(ReplaySettings())!!
+            store.frame(VideoPacket.Frame(200, false, true, byteArrayOf(3)), 1)
+            Files.setPosixFilePermissions(store.directory, PosixFilePermissions.fromString("r-x------"))
+            try {
+                assertThrows(java.io.IOException::class.java) { store.release(pin.id) }
+                assertArrayEquals(byteArrayOf(2), Files.readAllBytes(pin.video.single().file))
+                assertTrue(deleted.isEmpty())
+            } finally { Files.setPosixFilePermissions(store.directory, PosixFilePermissions.fromString("rwx------")) }
+            store.prune(900)
+            assertEquals(listOf(pin.video.single().file), deleted)
+            assertFalse(Files.exists(pin.video.single().file))
+        } finally { store.close(); ownership.removeRoot(); ownership.close() }
+    }
+
+    @Test
+    fun unlinkNotificationFailureIsNotRepeatedForAnAlreadyDeletedFile() {
+        val ring = directory.resolve("notification-failure")
+        val removed = mutableListOf<Path>()
+        var fail = true
+        val store = CaptureStore(ring, videoLimit = 1, minFree = 0, removed = { path ->
+            assertFalse(Files.exists(path))
+            removed.add(path)
+            if (fail) throw java.io.IOException("notification failed")
+        })
+        try {
+            store.generation(1); store.session(VideoPacket.Session(32, 32), 1)
+            store.frame(VideoPacket.Frame(0, true, false, byteArrayOf(1)), 1)
+            store.frame(VideoPacket.Frame(100, false, true, byteArrayOf(2)), 1)
+            val pin = store.capture(ReplaySettings())!!
+            store.frame(VideoPacket.Frame(200, false, true, byteArrayOf(3)), 1)
+            assertThrows(java.io.IOException::class.java) { store.release(pin.id) }
+            assertFalse(Files.exists(pin.video.single().file))
+            assertEquals(listOf(pin.video.single().file), removed)
+            fail = false
+            store.frame(VideoPacket.Frame(300, false, true, byteArrayOf(4)), 1)
+        } finally { store.close() }
+        assertEquals(removed.distinct(), removed)
     }
 
     @Test
     fun unknownAndFrozenWindowsRetireOnlyUnreferencedFilesBeforeRegistration() {
         for (frozen in listOf(false, true)) {
             val ownership = LocalCaptureOwnership.create(namespace("retention-$frozen"))
-            val store = CaptureStore(ownership.root.resolve("ring"), videoLimit = 2, minFree = 0, created = ownership::created)
+            val store = CaptureStore(ownership.root.resolve("ring"), videoLimit = 2, minFree = 0, created = ownership::created, removed = ownership::removed)
             try {
                 store.generation(1)
                 store.session(VideoPacket.Session(32, 32), 1)
@@ -263,10 +491,10 @@ class LocalCaptureOwnershipTest {
         assertTrue(LocalCaptureOwnership.ownerStopped(recorded, true, recorded.plusSeconds(1)))
         assertTrue(LocalCaptureOwnership.ownerStopped(recorded, false, null))
         fixture(namespace("reused-pid")).use { old ->
-            val json = JsonParser.parseString(Files.readString(old.descriptor)).asJsonObject
+            val json = header(old.descriptor)
             json.addProperty("pid", ProcessHandle.current().pid())
             json.addProperty("started", ProcessHandle.current().info().startInstant().orElseThrow().minusSeconds(1).toString())
-            Files.writeString(old.descriptor, com.google.gson.Gson().toJson(json))
+            overwrite(old.descriptor, 0, LocalCaptureOwnership.encodeRecord(json, LocalCaptureOwnership.HEADER_BYTES))
             LocalCaptureOwnership.recover(old.root.parent)
             assertFalse(Files.exists(old.root))
             assertFalse(Files.exists(old.descriptor))
@@ -282,7 +510,7 @@ class LocalCaptureOwnershipTest {
             ownership.created(path)
         }
         val resources = CaptureResources(ownership.root, created)
-        val store = CaptureStore(ownership.root.resolve("ring"), minFree = 0, created = created)
+        val store = CaptureStore(ownership.root.resolve("ring"), minFree = 0, created = created, removed = ownership::removed)
         try {
             store.generation(1); store.session(VideoPacket.Session(32, 32), 1)
             store.frame(VideoPacket.Frame(0, true, false, byteArrayOf(1)), 1)
@@ -312,7 +540,7 @@ class LocalCaptureOwnershipTest {
         try {
             assertTrue(core.setEnabled(true).get(10, TimeUnit.SECONDS).accepted)
             val descriptor = Files.newDirectoryStream(workspace, "local-capture-*.json").use { it.single() }
-            val json = JsonParser.parseString(Files.readString(descriptor)).asJsonObject
+            val json = header(descriptor)
             val root = workspace.resolve("replay-${json["token"].asString}")
             Files.setPosixFilePermissions(descriptor, PosixFilePermissions.fromString("rw-rw----"))
             val before = Files.readAllBytes(descriptor)
@@ -390,8 +618,8 @@ class LocalCaptureOwnershipTest {
         try {
             assertTrue(core.setEnabled(true).get(10, TimeUnit.SECONDS).accepted)
             val descriptor = Files.newDirectoryStream(workspace, "local-capture-*.json").use { it.single() }
-            val json = JsonParser.parseString(Files.readString(descriptor)).asJsonObject
-            assertEquals(setOf(".", "ring", "scrcpy-server-v4.0", "replay-clock.jar"), json.getAsJsonObject("entries").keySet())
+            val json = header(descriptor)
+            assertEquals(setOf(".", "ring", "scrcpy-server-v4.0", "replay-clock.jar"), entries(descriptor).keys)
             LocalCaptureOwnership.recover(workspace)
             assertTrue(Files.exists(descriptor))
             assertTrue(core.setEnabled(false).get(10, TimeUnit.SECONDS).accepted)

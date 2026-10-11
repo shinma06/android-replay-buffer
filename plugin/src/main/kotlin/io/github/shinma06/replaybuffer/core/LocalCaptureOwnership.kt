@@ -15,7 +15,9 @@ import java.nio.file.attribute.PosixFileAttributes
 import java.nio.file.attribute.PosixFilePermission
 import java.nio.file.attribute.PosixFilePermissions
 import java.time.Instant
+import java.util.ArrayDeque
 import java.util.UUID
+import java.util.zip.CRC32
 
 /** A locked record for one local capture, never a saved output or a host-temp search. */
 internal class LocalCaptureOwnership private constructor(
@@ -28,42 +30,60 @@ internal class LocalCaptureOwnership private constructor(
     private val namespaceIdentity = identity(root.parent)
     private val process = ProcessHandle.current()
     private val started = process.info().startInstant().orElseThrow()
-    private val entries = linkedMapOf<String, List<String>>()
+    private data class Entry(val slot: Int, val identity: List<String>)
+    private val entries = mutableMapOf<String, Entry>()
+    private val freeSlots = ArrayDeque<Int>()
+    private var slots = 0
+    private var failed = false
+
+    init {
+        persist(0, encodeRecord(mapOf("schema" to 2, "token" to root.fileName.toString().removePrefix("replay-"),
+            "pid" to process.pid(), "started" to started.toString(), "namespace" to namespaceIdentity,
+            "descriptor" to descriptorIdentity), HEADER_BYTES))
+    }
 
     @Synchronized
     fun created(path: Path) {
+        check(!failed) { "local所有記録の書込みが不確かです（保全しました）" }
         require(identity(root.parent) == namespaceIdentity && identity(descriptor) == descriptorIdentity)
         val name = if (path == root) "." else root.relativize(path).toString()
-        require(allowed(name))
-        // Deleted GOP names are unique; drop their old records to bound long-running sessions.
-        entries.keys.removeIf { !Files.exists(root.resolve(it), NOFOLLOW_LINKS) }
-        val previous = entries[name]
+        require(allowed(name) && name !in entries && entries.size < MAX_ENTRIES)
+        val identity = identity(path)
+        val slot = freeSlots.peekFirst() ?: slots.also { require(it < MAX_ENTRIES) }
+        persist(HEADER_BYTES.toLong() + slot.toLong() * SLOT_BYTES, encodeRecord(listOf(name, identity), SLOT_BYTES))
+        if (freeSlots.isEmpty()) slots++ else freeSlots.removeFirst()
+        entries[name] = Entry(slot, identity)
+    }
+
+    @Synchronized
+    fun removed(path: Path) {
+        require(identity(root.parent) == namespaceIdentity && identity(descriptor) == descriptorIdentity)
+        val name = root.relativize(path).toString()
+        val entry = entries[name] ?: error("local削除対象の所有記録がありません")
+        val absent = try { identity(path); false } catch (_: java.nio.file.NoSuchFileException) { true }
+        require(absent)
+        entries.remove(name)
+        // Missing old UUID names are safe on recovery; durable replacement precedes the next payload.
+        freeSlots.addLast(entry.slot)
+    }
+
+    private fun persist(offset: Long, bytes: ByteArray) {
         try {
-            entries[name] = identity(path)
-            val bytes = encode(entries)
-            channel.position(0)
-            channel.truncate(0)
+            val expectedSize = if (offset == 0L) 0L else HEADER_BYTES.toLong() + slots.toLong() * SLOT_BYTES
+            require(channel.size() == expectedSize)
+            channel.position(offset)
             val buffer = ByteBuffer.wrap(bytes)
-            while (buffer.hasRemaining()) channel.write(buffer)
+            while (buffer.hasRemaining()) check(channel.write(buffer) > 0)
             channel.force(true)
         } catch (failure: Exception) {
-            if (previous == null) entries.remove(name) else entries[name] = previous
+            failed = true // Do not write around an incomplete slot; preserve ambiguity until normal cleanup.
             throw failure
         }
     }
 
-    internal fun encode(entries: Map<String, List<String>>): ByteArray {
-        require(entries.size <= MAX_ENTRIES)
-        val bytes = Gson().toJson(mapOf("schema" to 1, "token" to root.fileName.toString().removePrefix("replay-"),
-            "pid" to process.pid(), "started" to started.toString(), "namespace" to namespaceIdentity, "descriptor" to descriptorIdentity,
-            "entries" to entries)).toByteArray(Charsets.UTF_8)
-        require(bytes.size <= MAX_BYTES)
-        return bytes
-    }
-
     fun removeRoot() {
         val current = try { identity(root) } catch (_: java.nio.file.NoSuchFileException) { return }
-        require(identity(root.parent) == namespaceIdentity && current == entries["."])
+        require(identity(root.parent) == namespaceIdentity && current == entries["."]?.identity)
         Files.delete(root) // Unknown/nonempty roots stay intact; only exact absence is idempotent.
     }
 
@@ -87,6 +107,8 @@ internal class LocalCaptureOwnership private constructor(
         // One live packet ring + one pinned ring + root/ring/resources + a not-yet-indexed GOP.
         internal const val MAX_ENTRIES = 2 * ReplaySettings.MAX_VIDEO_PACKETS + 5
         private const val MAX_IDENTITY_BYTES = 1024
+        internal const val HEADER_BYTES = 8192
+        internal const val SLOT_BYTES = MAX_IDENTITY_BYTES + 64
         internal const val MAX_BYTES = (MAX_ENTRIES + 2) * (MAX_IDENTITY_BYTES + 64) + 8192
         private val tokenPattern = Regex("[0-9a-f-]{36}")
         private val packetPattern = Regex("ring/gop-[0-9a-f-]{36}\\.h264")
@@ -140,27 +162,33 @@ internal class LocalCaptureOwnership private constructor(
                         val recordIdentity = identity(path)
                         FileChannel.open(path, READ, WRITE, NOFOLLOW_LINKS).use { channel ->
                             channel.tryLock()?.use {
-                                require(identity(path) == recordIdentity && channel.size() in 1..MAX_BYTES.toLong())
-                                val buffer = ByteBuffer.allocate(channel.size().toInt())
-                                while (buffer.hasRemaining()) check(channel.read(buffer) > 0)
-                                val text = buffer.array().toString(Charsets.UTF_8)
-                                val json = JsonParser.parseString(text).asJsonObject
-                                require(Gson().toJson(json) == text) // Reject duplicate keys and noncanonical/ambiguous records.
-                                require(json.keySet() == setOf("schema", "token", "pid", "started", "namespace", "descriptor", "entries"))
-                                require(json["schema"].toString() == "1" && json["token"].asString == token)
+                                val size = channel.size()
+                                require(identity(path) == recordIdentity && size in (HEADER_BYTES + SLOT_BYTES)..MAX_BYTES.toLong())
+                                require((size - HEADER_BYTES) % SLOT_BYTES == 0L)
+                                val slotCount = (size - HEADER_BYTES) / SLOT_BYTES
+                                require(slotCount in 1..MAX_ENTRIES.toLong())
+                                // Schema1 whole-JSON records cannot pass this framing; conservatively retain them.
+                                val json = readRecord(channel, HEADER_BYTES).asJsonObject
+                                require(json.keySet() == setOf("schema", "token", "pid", "started", "namespace", "descriptor"))
+                                require(json["schema"].toString() == "2" && json["token"].asString == token)
                                 val pid = json["pid"].asLong
                                 val started = Instant.parse(json["started"].asString)
                                 require(pid > 0 && json["pid"].toString() == pid.toString() && started <= Instant.now())
                                 val current = ProcessHandle.of(pid).orElse(null)
-                                // A reused PID is eligible only with a positively different start identity.
                                 require(ownerStopped(started, current != null, current?.info()?.startInstant()?.orElse(null)))
                                 require(json["namespace"].asJsonArray.map { it.asString } == namespaceIdentity)
                                 require(json["descriptor"].asJsonArray.map { it.asString } == recordIdentity)
-                                val entries = json["entries"].asJsonObject.entrySet().associate { entry ->
-                                    require(allowed(entry.key))
-                                    entry.key to entry.value.asJsonArray.map { it.asString }.also { require(it.size == 4) }
+                                val entries = mutableMapOf<String, List<String>>()
+                                repeat(slotCount.toInt()) {
+                                    val entry = readRecord(channel, SLOT_BYTES).asJsonArray
+                                    require(entry.size() == 2)
+                                    val name = entry[0].asString
+                                    require(allowed(name))
+                                    val identity = entry[1].asJsonArray.map { it.asString }
+                                    require(identity.size == 4 && Gson().toJson(identity).toByteArray(Charsets.UTF_8).size <= MAX_IDENTITY_BYTES)
+                                    require(entries.put(name, identity) == null)
                                 }
-                                require(entries.size in 1..MAX_ENTRIES && "." in entries)
+                                require("." in entries)
                                 require(identity(namespace) == namespaceIdentity)
                                 reclaim(namespace, namespaceIdentity, namespace.resolve("replay-$token"), entries)
                                 require(identity(namespace) == namespaceIdentity && identity(path) == recordIdentity)
@@ -170,6 +198,32 @@ internal class LocalCaptureOwnership private constructor(
                     } // Unknown, live, replaced, or partially written records stay intact.
                 }
             }
+        }
+
+        internal fun encodeRecord(value: Any, size: Int): ByteArray {
+            val bytes = Gson().toJson(value).toByteArray(Charsets.UTF_8)
+            require(bytes.size in 1..(size - 8))
+            return ByteBuffer.allocate(size).putInt(bytes.size).putInt(CRC32().apply { update(bytes) }.value.toInt())
+                .put(bytes).array()
+        }
+
+        internal fun decodeRecord(record: ByteArray): com.google.gson.JsonElement {
+            val buffer = ByteBuffer.wrap(record)
+            val size = buffer.int
+            val checksum = buffer.int
+            require(size in 1..(record.size - 8))
+            val bytes = ByteArray(size).also { buffer.get(it) }
+            require(CRC32().apply { update(bytes) }.value.toInt() == checksum)
+            while (buffer.hasRemaining()) require(buffer.get() == 0.toByte())
+            val json = JsonParser.parseString(bytes.toString(Charsets.UTF_8))
+            require(Gson().toJson(json).toByteArray(Charsets.UTF_8).contentEquals(bytes))
+            return json
+        }
+
+        private fun readRecord(channel: FileChannel, size: Int): com.google.gson.JsonElement {
+            val buffer = ByteBuffer.allocate(size)
+            while (buffer.hasRemaining()) check(channel.read(buffer) > 0)
+            return decodeRecord(buffer.array())
         }
 
         internal fun ownerStopped(recorded: Instant, present: Boolean, current: Instant?): Boolean =

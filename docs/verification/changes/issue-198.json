@@ -4,7 +4,7 @@
   "gui_required": true,
   "reason": "旧ownerのlocal取得rootを永続identityと停止確認で限定回収する製品変更。同ZIPの隔離JVM回帰と実IDE起動/取得/保存/終了glueを別証拠にし、元27:SAVE-FAIL-09-EMUと正式136計画の原契約・観察・延期は変更しない。",
   "cli_checks": [
-    "LocalCaptureOwnershipTest: 実際に通常終了した所有JVM、live lock/lock解放後のlive owner、欠落/壊れた/重複記録、別project、完成出力、未知entry、変更されたroot/packet/descriptorとsymlink、通常Core cleanup。 再レビュー修正: live+pin最大manifestのentry/byte bounds、unknown/frozen窓の未参照GOP解放、登録失敗時payload保全、同一/異なる/不明start判定、umask0002でchild初期権限、descriptor終了失敗と再操作。",
+    "LocalCaptureOwnershipTest: 実際に通常終了した所有JVM、live lock/lock解放後のlive owner、欠落/壊れた/重複記録、別project、完成出力、未知entry、変更されたroot/packet/descriptorとsymlink、通常Core cleanup。 再レビュー修正: live+pin最大manifestのentry/byte bounds、unknown/frozen窓の未参照GOP解放、登録失敗時payload保全、同一/異なる/不明start判定、umask0002でchild初期権限、descriptor終了失敗と再操作。 コスト修正: 連続Store登録の固定slot byte増分/既存prefix不変、exact unlink後通知とslot再利用の有界成長、partial/checksum/padding/重複記録保全、旧schema1保全、永続化失敗時payload抑止。",
     "ReplayCoreTest/ReplayProjectCaptureTest/CaptureStoreSourceTest/ReplayCoreWireTestとplugin check/buildPlugin/verifyPluginStructure。",
     "管理Python3.14でcheck.py、CLI product_check.py、clean committed HEADのchange_impact.py --run-tests。"
   ],
@@ -15,11 +15,11 @@
       "change": "project別namespace内のlocal取得root/resource/ring/GOPの所有記録、旧owner停止確認と限定回収を接続する",
       "preconditions": "独立レビュー・develop実統合後の固定candidate/source/同一ZIPと全JAR hash。既存QA27の所有project/保存先/限定fixture、同じproject namespace、GUI lease。scope外のprocess/端末/出力に触れない。異常終了相当の全faultは所有する短時間helper JVMの終了と隔離filesystemで実証し、実IDE crash/killの全反復を追加しない。",
       "steps": [
-        "同一ZIPの製品classに対してLocalCaptureOwnershipTestの停止済みowner回収、live lock/lock解放後のlive process保全、absent/malformed/duplicate identity、foreign/changed root・GOP・descriptor・symlink保全、別project/完成出力保全、通常Core disable/closeを実行し、helper終了と全対象identity/残留を記録する。pure回帰をnative PASSへ読み替えない。 容量/unknown・frozen保持/pin、作成時権限、登録失敗、PID再利用と不明start、descriptor終了失敗時の状態/再操作の回帰を同ZIP側にも含める。",
+        "同一ZIPの製品classに対してLocalCaptureOwnershipTestの停止済みowner回収、live lock/lock解放後のlive process保全、absent/malformed/duplicate identity、foreign/changed root・GOP・descriptor・symlink保全、別project/完成出力保全、通常Core disable/closeを実行し、helper終了と全対象identity/残留を記録する。pure回帰をnative PASSへ読み替えない。 容量/unknown・frozen保持/pin、作成時権限、登録失敗、PID再利用と不明start、descriptor終了失敗時の状態/再操作の回帰を同ZIP側にも含める。 schema2固定枠journalの連続登録/再利用/不完全書込み/旧schema1保全も含める。",
         "同じZIP/source/実ロードのIDEで、所有project起動時の回復入口と取得有効設定の復元を代表確認する。停止済みknown helperが残した同projectの取得用rootだけが回収され、既知live/unknown markerと完成済み保存先が残ることを確認する。QA27の同条件観察と共有し、host-temp走査、未保存対象の跨IDE再試行保証、他process killを行わない。",
         "同じbuildで既存QA27の通常取得→Save→継続取得→無効化/通常project終了の代表工程を共有し、設定/取得/保存pin/出力/remote cleanupのglueが維持されることを確認する。原27 SAVE-FAIL-09と既存fail/pending/REAL延期を保持し、新Caseだけで全受入を完了にしない。"
       ],
-      "expected": "旧ownerのPID/start記録だけで削除せず、lock取得・旧process不在または現在processの開始identityが確実に異なること・namespace/descriptor/root/ring/作成fileのfileKey/作成時刻/所有者/権限一致を確認した対象だけを回収する。未知/曖昧/生存/変更/symlink/別project/完成出力は保全する。正常取得/Save/pin/disable/dispose/設定復元とremote cleanupを維持する。legacy temp全掃除と跨IDE retry data復元は提供しない。",
+      "expected": "旧ownerのPID/start記録だけで削除せず、lock取得・旧process不在または現在processの開始identityが確実に異なること・namespace/descriptor/root/ring/作成fileのfileKey/作成時刻/所有者/権限一致を確認した対象だけを回収する。未知/曖昧/生存/変更/symlink/別project/完成出力は保全する。正常取得/Save/pin/disable/dispose/設定復元とremote cleanupを維持する。legacy temp全掃除と跨IDE retry data復元は提供しない。 新規登録は固定枠1件の耐久writeをpayloadより先に行い、保持全件のprobe/serialize/rewriteを行わない。削除成功済みUUID枠だけを再利用し、記録成長は既存entry/byte上限以内。旧schema1記録は自動変換せず保全する。",
       "provenance": [
         "Issue198 / QA27 comment-6107426612: 固定548のL1はsource-onlyの不足、実IDE crash/restartは未実施。",
         "docs/plugin-design.md:40/64と27:SAVE-FAIL-09-EMU。既存正式136計画の有効responsibility/recovery分担を保持。"

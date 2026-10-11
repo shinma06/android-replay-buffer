@@ -49,6 +49,7 @@ internal class CaptureStore(
     private val logLimit: Long = ReplaySettings.LOG_BYTES,
     private val minFree: Long = ReplaySettings.MIN_FREE_BYTES,
     private val created: (Path) -> Unit = {},
+    private val removed: (Path) -> Unit = {},
 ) : AutoCloseable {
     val sequence: String = UUID.randomUUID().toString()
     private val video = ArrayDeque<VideoEntry>()
@@ -80,6 +81,9 @@ internal class CaptureStore(
     private var closed = false
     private var pinned: FrozenCapture? = null
     private val ownedFiles = mutableSetOf<Path>()
+    private val videoFileRefs = mutableMapOf<Path, Int>()
+    private var pinnedFiles = emptySet<Path>()
+    private val unusedCandidates = mutableSetOf<Path>()
 
     init {
         Files.createDirectory(directory, PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rwx------")))
@@ -93,9 +97,7 @@ internal class CaptureStore(
     fun generation(value: Long) {
         decodeRun = Math.incrementExact(decodeRun)
         generation = value
-        channel?.close()
-        channel = null
-        currentFile = null
+        closeCurrentFile()
         previousPts = -1
         config = byteArrayOf()
         states.replaceAll { _, _ -> StreamSnapshot(StreamState.RECOVERING) }
@@ -145,9 +147,7 @@ internal class CaptureStore(
         if (closed || owner != generation) return
         decodeRun = Math.incrementExact(decodeRun)
         status("video", StreamState.RECOVERING, "動画sessionを準備しています", owner)
-        channel?.close()
-        channel = null
-        currentFile = null
+        closeCurrentFile()
         videoSession++
         width = packet.width
         height = packet.height
@@ -163,7 +163,7 @@ internal class CaptureStore(
             if (!config.contentEquals(packet.bytes)) {
                 decodeRun = Math.incrementExact(decodeRun)
                 status("video", StreamState.RECOVERING, "動画configが切り替わりました", owner)
-                channel?.close(); channel = null; currentFile = null
+                closeCurrentFile()
             }
             config = packet.bytes.copyOf(); return videoReady()
         }
@@ -173,9 +173,7 @@ internal class CaptureStore(
         if (packet.pts <= previousPts) { clock.boundary(); error("動画PTSが単調ではありません") }
         previousPts = packet.pts
         if (packet.key) {
-            channel?.close()
-            channel = null
-            currentFile = null
+            closeCurrentFile()
             deleteUnused() // Retire unreferenced files even while T is frozen/unknown, before registration.
             val file = directory.resolve("gop-${UUID.randomUUID()}.h264")
             val opened = FileChannel.open(file, setOf(CREATE_NEW, WRITE),
@@ -201,6 +199,7 @@ internal class CaptureStore(
         while (data.hasRemaining()) out.write(data)
         video += VideoEntry(currentFile!!, offset, packet.bytes.size, packet.pts, packet.key, width, height,
             generation, time, retained, config, host, videoSession, decodeRun, packetOrdinal)
+        videoFileRefs[currentFile!!] = (videoFileRefs[currentFile!!] ?: 0) + 1
         videoBytes += packet.bytes.size
         val references = configRefs[config] ?: 0
         if (references == 0) configBytes += config.size
@@ -373,12 +372,18 @@ internal class CaptureStore(
             clockRecoveries = clockRecoveries.toMap(), videoCuts = videoCuts.toMap())
         if (value.empty) return null
         pinned = value
+        pinnedFiles = value.video.map { it.file }.toSet()
         return value
     }
 
     @Synchronized
     fun release(id: String) {
-        if (pinned?.id == id) { pinned = null; deleteUnused() }
+        if (pinned?.id == id) {
+            unusedCandidates.addAll(pinnedFiles)
+            pinned = null
+            pinnedFiles = emptySet()
+            deleteUnused()
+        }
     }
 
     @Synchronized
@@ -421,6 +426,9 @@ internal class CaptureStore(
 
     private fun removeVideo(): VideoEntry {
         val entry = video.removeFirst()
+        val files = videoFileRefs.getValue(entry.file) - 1
+        if (files == 0) { videoFileRefs.remove(entry.file); unusedCandidates.add(entry.file) }
+        else videoFileRefs[entry.file] = files
         videoBytes -= entry.size
         val refs = configRefs.getValue(entry.config) - 1
         if (refs == 0) { configRefs.remove(entry.config); configBytes -= entry.config.size } else configRefs[entry.config] = refs
@@ -467,22 +475,38 @@ internal class CaptureStore(
         while (gaps.size > 4096) removeGapProofs(gaps.removeFirst())
     }
 
+    private fun closeCurrentFile() {
+        channel?.close()
+        channel = null
+        currentFile?.let { unusedCandidates.add(it) }
+        currentFile = null
+    }
+
     private fun deleteUnused() {
-        val retain = video.map { it.file }.toSet() + pinned?.video.orEmpty().map { it.file } + listOfNotNull(currentFile)
-        ownedFiles.filter { it !in retain }.forEach { file ->
-            Files.deleteIfExists(file); ownedFiles.remove(file)
+        val candidates = unusedCandidates.iterator()
+        while (candidates.hasNext()) {
+            val file = candidates.next()
+            if (file !in ownedFiles || file in videoFileRefs || file in pinnedFiles || file == currentFile) {
+                candidates.remove()
+                continue
+            }
+            val deleted = Files.deleteIfExists(file)
+            ownedFiles.remove(file)
+            candidates.remove()
             videoCuts.entries.removeIf { (_, cut) -> cut.before?.file == file || cut.after?.file == file }
+            if (deleted) removed(file)
         }
     }
 
     @Synchronized
     override fun close() {
         closed = true
-        channel?.close()
-        channel = null
-        currentFile = null
+        closeCurrentFile()
         pinned = null
+        pinnedFiles = emptySet()
         video.clear()
+        videoFileRefs.clear()
+        unusedCandidates.addAll(ownedFiles)
         logs.clear()
         apps.clear()
         gaps.clear()

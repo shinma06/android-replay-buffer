@@ -73,7 +73,7 @@ class ReplayCore(initialSettings: ReplaySettings, private val workspace: Path, c
                 val root = ownership.root
                 try {
                     resources = CaptureResources(root, ownership::created)
-                    store = CaptureStore(root.resolve("ring"), created = ownership::created)
+                    store = CaptureStore(root.resolve("ring"), created = ownership::created, removed = ownership::removed)
                 } catch (e: Exception) {
                     try {
                         resources?.close(); resources = null
