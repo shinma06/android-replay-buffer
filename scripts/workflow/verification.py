@@ -309,7 +309,7 @@ def initial_stage_plan(base, candidate, git):
     if revision is not None:
         validate_responsibility_policy(policy)
     if candidate_plan != policy and not (revision and (
-            candidate_plan == previous_method_plan(policy) or
+            'method_revision' in revision and candidate_plan == previous_method_plan(policy) or
             'installation_revision' in revision and
             revision.get('plan_extension', {}).get('issue') != 219 and
             candidate_plan == previous_installation_plan(policy) or

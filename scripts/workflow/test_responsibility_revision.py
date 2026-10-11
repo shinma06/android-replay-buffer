@@ -90,10 +90,11 @@ class ResponsibilityRevisionTests(unittest.TestCase):
                 p['responsibility_revision']['overrides']['36:QA-1-REAL'] = {'deferred_scope': []}
             with self.subTest(edit=edit), self.assertRaises(ValueError):
                 validate_responsibility_policy(p)
-        self.fixture.documents[f'{NEW}:{INITIAL_PLAN}'] = copy.deepcopy(self.policy)
         self.fixture.documents[f'{BASE}:{INITIAL_PLAN}'] = self.original
-        with self.assertRaisesRegex(ValueError, 'exact trusted'):
-            self.verify()
+        for candidate_plan in (None, copy.deepcopy(self.policy)):
+            self.fixture.documents[f'{NEW}:{INITIAL_PLAN}'] = candidate_plan
+            with self.subTest(candidate_plan=candidate_plan), self.assertRaisesRegex(ValueError, 'exact trusted'):
+                self.verify()
 
     def test_reassessment_preserves_old_result_and_rejects_fail_or_missing_coverage(self):
         confirmation = dict(observation(), actor='gpt', execution='computer_use',
