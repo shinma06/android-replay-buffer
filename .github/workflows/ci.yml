@@ -39,3 +39,5 @@ jobs:
           python-version: '3.9'
       - name: Declared CLI runtime compatibility
         run: python3 scripts/workflow/product_check.py
+      - name: Reject unsupported CLI syntax on the declared runtime
+        run: python3 -m unittest discover -s scripts/workflow -p test_product_check.py -v
