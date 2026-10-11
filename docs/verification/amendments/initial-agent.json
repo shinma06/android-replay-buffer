@@ -2,7 +2,7 @@
   "schema": 1,
   "issue": 64,
   "stage": "initial-agent",
-  "required_ancestor": "5bf9e84a887171df5f0287b036e9ba288fbfae9f",
+  "required_ancestor": "542575c0a23a257be6bb37b028171426ea171efd",
   "followup_issue": 65,
   "owner": "Codex PM（管理）・QA #27担当（手順と証拠保全）。後続の人間実行者は再開時に割当。",
   "resume_condition": "初期版完成後、利用者が後続確認へ着手するときに実機・担当・固定候補を決める。CUA制約の部分は人間の対応または実際の操作経路復旧後。未実施の再質問で初期版を停止しない。",
@@ -2784,6 +2784,24 @@
         "PR174実統合版の本Caseの全前提・全3手順・expected・再確認条件を保持する。PMの割当・共有GUI lease・専用IDE/project fixtureの下で、同じ新clean candidate/source SHA・標準ZIP/全JAR hash・embedded identity・実ロード版に結び、取得OFFと元適用設定を記録して実IDEで観察する。package欄直下の255文字上限・各部分の英字開始/半角英数字/underscore・2部分以上のピリオド区切りと例、狭幅での折り返しと欄/Applyの操作、入力欄のaccessible name/descriptionと案内部品のaccessible nameを確認する。",
         "手動の代表正常値com.example.app_1の適用、代表不正値com._appと別の有効な保持時間編集のatomic拒否を確認し、保存先確認がある場合は完了を待つ。自動/手動の有効/無効と案内の可読性、自動の空package受理、未適用編集のCancel/再open、元設定の復元/Apply/終了と取得OFFを確認する。元#27 SETTINGS-INVALID-EMUの全条件を維持し、candidate・標準ZIP・実ロード・前提が一致し元条件を満たす実観察だけを共有する。既存134 entry・203出典と全agent_requirements/deferred_scope・人間指定・GOP・QA65、元#27/#121と旧c61の11件観察を保持し、旧結果やJVM成功を新native受入へ転記しない。新たなnative境界matrix・human必須・延期・自動PASSを追加しない。"
       ]
+    },
+    "186:CLOCK-BATCH-SAVE": {
+      "sources": [
+        {
+          "source_pr": 189,
+          "source_merge": "542575c0a23a257be6bb37b028171426ea171efd",
+          "source_path": "docs/verification/changes/issue-186.json",
+          "original_case_sha256": "dfa598a37e3c082521dc4ae1332d13d225723482b9acbf82a11fa3edff686962"
+        }
+      ],
+      "current_case_sha256": "dfa598a37e3c082521dc4ae1332d13d225723482b9acbf82a11fa3edff686962",
+      "initial_scope": "agent",
+      "deferred_scope": [],
+      "agent_requirements": [
+        "PR189実統合版の全前提・全5手順・expected・再確認条件を保持する。同じ新candidate/source・標準ZIP/全JAR hash・実ロードidentityへ結び、製品classを再compile/差替えしない私有runnerによるCaptureClockTest/CaptureStoreSaveTest/ReplayCoreWireTestの限定JVMと、実IDEの保存・取得継続・失敗固定retryを別証拠で確認する。",
+        "最大4096sample/100000lookupのwork count・重複/逆行・最大epoch・closure/5秒/20ms/bridge/unknown/Long端値/算術例外のlinear等価性、4096clock/10000logのorder/recordID/帰属/retainedAt/窓・未知/loss/誤差境界・失敗pin/固定retry/N/対象は元契約の同ZIP製品class回帰で検査する。実IDEでは保存前後event・完了欄・session/JSONLの固定区間/record_id・保存後取得継続/後続event別保存、表示sequence/区間/N/対象・retry成果物を既存QA74/27と71 LOG-REMAP-UNKNOWN-RETRYの同候補/同条件観察へ対応付けて共有する。",
+        "既存135 entry/204出典・182責任分担・全履歴/未達/GOP/REAL34/QA65を保持する。最大履歴の長時間GUI反復・新fixture/hook・human必須・延期・自動PASSを追加しない。製品class変更前の旧PASSを新候補へ転記せず、JVM成功をnative受入や実停止時間/欠落改善の実測へ読み替えない。"
+      ]
     }
   },
   "responsibility_revision": {
@@ -2940,7 +2958,8 @@
           "41:CORE-PUBLISH",
           "71:LOG-REMAP-NORMAL-ZERO",
           "71:LOG-REMAP-UNKNOWN-RETRY",
-          "78:CLOCK-RECEIPT-NORMAL"
+          "78:CLOCK-RECEIPT-NORMAL",
+          "186:CLOCK-BATCH-SAVE"
         ],
         "disposition": "統合",
         "purpose": "所有process/readerの実停止、generation/epoch・gap/loss、固定失敗対象/atomic/partial保全。",
@@ -3442,6 +3461,13 @@
           "全file/sampleを独立readerで検査し、未適用media PTSとedit後movie対応、timescale/headers/index/sample entry/IDR prefix/empty edit/未知gap/terminal null/held tickを元packet・frames/session・両logsへ照合する。readerのedit無視/PTS再配置を実source時刻と誤認しない。全対象frameとraw/config/画素・geometry/文字/色を検査し、後半欠落を隠さない。 同一成果物の代表的な通常/境界を含む動画で標準playerのopen・短いPlay・前後seekと代表表示を一度確認する。全Play・全境界精密seek・全player実装の一致は保証しない。不一致は元media/edit/indexと忠実なreader結果を切り分け、自製品違反又は未帰属は未完了、根拠付き外部実装差は診断履歴と利用上の制約へ残す。 精密fault/unknown/整数境界/全runはproduction classの回帰。実IDEは普通の静止/連番/混在Save・通常再接続と表示を共有。"
         ]
       }
+    },
+    "plan_extension": {
+      "issue": 190,
+      "previous_required_ancestor": "5bf9e84a887171df5f0287b036e9ba288fbfae9f",
+      "added_cases": [
+        "186:CLOCK-BATCH-SAVE"
+      ]
     }
   }
 }
