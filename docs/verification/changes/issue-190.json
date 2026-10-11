@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "issue": 190,
+  "gui_required": false,
+  "reason": "trusted mainの正式計画へPR189実統合のCase186を追加し、責任group・gate/一覧・説明の整合と旧plan hashの保全を検査する。製品/CLI/fixture/build/元Case/観察結果は変更せず、GUI/deviceを起動しない。",
+  "cli_checks": [
+    "python3 scripts/check.py: 管理/出典/責任改訂/共通gate/一覧/reuse回帰を確認し、固定HEADの実結果をIssue/PRへ記録する。",
+    "python3 scripts/workflow/product_check.py: CLI既存unittestを確認し、製品/実機受入とは区別する。",
+    "python3 scripts/workflow/change_impact.py --base origin/main --run-tests: clean committed HEADで実行し、hooks/CIとの共通分類を確認する。",
+    "initial_stage_plan/historical_initial_sourcesによる136 Case/205出典/102 Agent/REAL34と全9groupの構造projection、旧135 entry/204出典・182責任分担hashの保全、未同期candidate/新Case欠落/旧entry改変/5手順改変の拒否を検査する。projection成功は実candidate/ZIP/GUI観察ではない。"
+  ],
+  "cases": []
+}

@@ -31,6 +31,7 @@ class GopAcceptanceTests(unittest.TestCase):
                 source = self.sources.setdefault(number, copy.deepcopy(self.pr))
                 source.update(merged=True, merge_commit_sha=binding['source_merge'])
                 source['base']['ref'] = 'develop'
+                source['head']['ref'] = f'codex/{issue}-source'
                 source['body'] = (f'Issue: #{issue}\nGUI: required\nIntegration: develop\n'
                                   f'Verification: {binding["source_path"]}')
                 path = f'{binding["source_merge"]}:{binding["source_path"]}'

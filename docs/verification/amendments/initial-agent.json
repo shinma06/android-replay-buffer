@@ -2,7 +2,7 @@
   "schema": 1,
   "issue": 64,
   "stage": "initial-agent",
-  "required_ancestor": "5bf9e84a887171df5f0287b036e9ba288fbfae9f",
+  "required_ancestor": "542575c0a23a257be6bb37b028171426ea171efd",
   "followup_issue": 65,
   "owner": "Codex PM（管理）・QA #27担当（手順と証拠保全）。後続の人間実行者は再開時に割当。",
   "resume_condition": "初期版完成後、利用者が後続確認へ着手するときに実機・担当・固定候補を決める。CUA制約の部分は人間の対応または実際の操作経路復旧後。未実施の再質問で初期版を停止しない。",
@@ -2783,6 +2783,690 @@
       "agent_requirements": [
         "PR174実統合版の本Caseの全前提・全3手順・expected・再確認条件を保持する。PMの割当・共有GUI lease・専用IDE/project fixtureの下で、同じ新clean candidate/source SHA・標準ZIP/全JAR hash・embedded identity・実ロード版に結び、取得OFFと元適用設定を記録して実IDEで観察する。package欄直下の255文字上限・各部分の英字開始/半角英数字/underscore・2部分以上のピリオド区切りと例、狭幅での折り返しと欄/Applyの操作、入力欄のaccessible name/descriptionと案内部品のaccessible nameを確認する。",
         "手動の代表正常値com.example.app_1の適用、代表不正値com._appと別の有効な保持時間編集のatomic拒否を確認し、保存先確認がある場合は完了を待つ。自動/手動の有効/無効と案内の可読性、自動の空package受理、未適用編集のCancel/再open、元設定の復元/Apply/終了と取得OFFを確認する。元#27 SETTINGS-INVALID-EMUの全条件を維持し、candidate・標準ZIP・実ロード・前提が一致し元条件を満たす実観察だけを共有する。既存134 entry・203出典と全agent_requirements/deferred_scope・人間指定・GOP・QA65、元#27/#121と旧c61の11件観察を保持し、旧結果やJVM成功を新native受入へ転記しない。新たなnative境界matrix・human必須・延期・自動PASSを追加しない。"
+      ]
+    },
+    "186:CLOCK-BATCH-SAVE": {
+      "sources": [
+        {
+          "source_pr": 189,
+          "source_merge": "542575c0a23a257be6bb37b028171426ea171efd",
+          "source_path": "docs/verification/changes/issue-186.json",
+          "original_case_sha256": "dfa598a37e3c082521dc4ae1332d13d225723482b9acbf82a11fa3edff686962"
+        }
+      ],
+      "current_case_sha256": "dfa598a37e3c082521dc4ae1332d13d225723482b9acbf82a11fa3edff686962",
+      "initial_scope": "agent",
+      "deferred_scope": [],
+      "agent_requirements": [
+        "PR189実統合版の全前提・全5手順・expected・再確認条件を保持する。同じ新candidate/source・標準ZIP/全JAR hash・実ロードidentityへ結び、製品classを再compile/差替えしない私有runnerによるCaptureClockTest/CaptureStoreSaveTest/ReplayCoreWireTestの限定JVMと、実IDEの保存・取得継続・失敗固定retryを別証拠で確認する。",
+        "最大4096sample/100000lookupのwork count・重複/逆行・最大epoch・closure/5秒/20ms/bridge/unknown/Long端値/算術例外のlinear等価性、4096clock/10000logのorder/recordID/帰属/retainedAt/窓・未知/loss/誤差境界・失敗pin/固定retry/N/対象は元契約の同ZIP製品class回帰で検査する。実IDEでは保存前後event・完了欄・session/JSONLの固定区間/record_id・保存後取得継続/後続event別保存、表示sequence/区間/N/対象・retry成果物を既存QA74/27と71 LOG-REMAP-UNKNOWN-RETRYの同候補/同条件観察へ対応付けて共有する。",
+        "既存135 entry/204出典・182責任分担・全履歴/未達/GOP/REAL34/QA65を保持する。最大履歴の長時間GUI反復・新fixture/hook・human必須・延期・自動PASSを追加しない。製品class変更前の旧PASSを新候補へ転記せず、JVM成功をnative受入や実停止時間/欠落改善の実測へ読み替えない。"
+      ]
+    }
+  },
+  "responsibility_revision": {
+    "issue": 182,
+    "previous_plan_sha256": "a5c470bf6bdbbbe77d2001bcb287667e4a6d399ee935ebd3fc23388be2f37441",
+    "common_requirements": [
+      "自製品の元契約の意味・全対象データ・安全性と未達を維持する。下記の明示改訂は原文の実施方法/外部実装保証/一律human指定だけを置換し、固定出典・観察履歴を削除又はPASSへ変換しない。",
+      "実行済み証拠を各有効条件へ対応付ける。source読解・JSON存在・hash追記は観察ではない。同じsource/成果物/前提の証拠を共有でき、不足する事実だけ確認する。製品違反・未帰属の不一致・不確かさ過大・未実施は未完了。",
+      "実施方法は責任groupの分担に従う。production classの決定的回帰で内部故障/数値境界/全組合せを検証し、nativeでは自製品の接続・操作・表示・外部API呼出しが本当に結び付く代表工程を確認する。OS/IDE/editor/player内部の全種動作を保証する目的の反復は要求しない。REAL固有取得はEMU/合成から推定しない。"
+    ],
+    "groups": {
+      "environment": {
+        "cases": [
+          "3:PLUGIN-LOAD",
+          "13:SYNC-ENV",
+          "27:ENV-READY-REAL",
+          "27:ENV-READY-EMU",
+          "31:SYNC-ENV",
+          "41:SYNC-ENV"
+        ],
+        "disposition": "維持",
+        "purpose": "同梱依存・SDK絶対adb・ロード実体・追加download/PATH非依存を保証。",
+        "methods": "ZIP/license/hashの静的検査と実IDE/各対象環境の代表起動・取得・保存・通常再起動。既存同一build観察を共有。",
+        "excluded": "IDE installer/Settings内部の全画面・全OS組合せは対象外。",
+        "evidence_keys": [
+          "integration"
+        ]
+      },
+      "markers": {
+        "cases": [
+          "27:FIXTURE-MARKERS-REAL",
+          "27:FIXTURE-MARKERS-EMU"
+        ],
+        "disposition": "維持",
+        "purpose": "測定fixtureの表示IDとREQUEST/DRAW/FRAME_COMMIT・view/runを区別。",
+        "methods": "fixture instrumentation回帰＋native代表表示・操作と全件FILE対応。coalescing/再生成/insets/縦横・navigation差は測定oracleの健全性を確かめる必要範囲で保持。",
+        "excluded": "Android描画engine一般の網羅試験を追加しない。",
+        "evidence_keys": [
+          "fixture",
+          "integration"
+        ]
+      },
+      "precision": {
+        "cases": [
+          "13:SYNC-CLOCK",
+          "27:SYNC-PRECISION-REAL",
+          "27:SYNC-DRIFT-REAL",
+          "27:SYNC-PRECISION-EMU",
+          "27:SYNC-DRIFT-EMU",
+          "31:SYNC-CLOCK",
+          "41:SYNC-CLOCK"
+        ],
+        "disposition": "統合",
+        "purpose": "時刻変換・真の映像ID・同期精度・drift/外れと欠落母数を保証。",
+        "methods": "30分・開始/中間/終了各100の全300eventとp95<=100ms/最大<=250ms/drift<=50ms/clock<=20msを維持。全frame/全遷移と前後の画像IDを、元fixture IDと独立した校正済み画像識別で照合する。誤認・欠落・重複・coalescing・unknownを含む悪い入力でoracleを検証し、画像由来のpackage/run/view/event番号を既知fixtureの画像真値で独立に検証し、全関連frame/遷移・欠落/重複ID/unknown・実PTS/誤差を照合する。画像番号をlog順序やconfidenceだけから推定しない。既存transitions.swiftの色/parity判定は番号を復号せず偶数欠落を見逃すので、これだけを代替oracleとして採用しない。曖昧画像は実画像確認、なお識別不能/不確かさ過大なら未完了。一律601画像の人間手読取り/人間actor指定は廃し、識別結果と校正・例外を証拠化する。 同条件の一系列を13/31/41/27の重複Caseへ共有。",
+        "excluded": "単なる短い録画を長時間driftの代用にしない。一律human読取り義務だけを除外。",
+        "evidence_keys": [
+          "measurement",
+          "visual_oracle"
+        ]
+      },
+      "recipient": {
+        "cases": [
+          "13:SYNC-RECIPIENT",
+          "27:SAVE-OUTPUT-REAL",
+          "27:SAVE-OUTPUT-EMU",
+          "31:SYNC-RECIPIENT",
+          "41:SYNC-RECIPIENT",
+          "135:LOG-ONLY-README"
+        ],
+        "disposition": "置換",
+        "purpose": "生成物の構造・内容・時刻と受取人が辿れる説明を保証。",
+        "methods": "全file/sampleを独立readerで検査し、未適用media PTSとedit後movie対応、timescale/headers/index/sample entry/IDR prefix/empty edit/未知gap/terminal null/held tickを元packet・frames/session・両logsへ照合する。readerのedit無視/PTS再配置を実source時刻と誤認しない。全対象frameとraw/config/画素・geometry/文字/色を検査し、後半欠落を隠さない。 同一成果物の代表的な通常/境界を含む動画で標準playerのopen・短いPlay・前後seekと代表表示を一度確認する。全Play・全境界精密seek・全player実装の一致は保証しない。不一致は元media/edit/indexと忠実なreader結果を切り分け、自製品違反又は未帰属は未完了、根拠付き外部実装差は診断履歴と利用上の制約へ残す。 文書の全件join/hashはFILE、標準editorのopen/readと代表同ID照合は一回のnativeで共有。",
+        "excluded": "全GUI検索・全Play/精密seekと外部readerの実装内部保証を除外。",
+        "evidence_keys": [
+          "file_integrity",
+          "content",
+          "interop"
+        ]
+      },
+      "buffer": {
+        "cases": [
+          "13:SYNC-WINDOW",
+          "27:BUFFER-180-REAL",
+          "27:BUFFER-SHORT-REAL",
+          "27:SAVE-CONTINUE-REAL",
+          "27:BUFFER-180-EMU",
+          "27:BUFFER-SHORT-EMU",
+          "27:SAVE-CONTINUE-EMU",
+          "31:SYNC-WINDOW",
+          "41:SYNC-WINDOW"
+        ],
+        "disposition": "統合",
+        "purpose": "実時間窓・最大保存・prune/GOP/retention・pinと取得継続を保証。",
+        "methods": "production Store/Writer回帰で全境界/容量/固定retryを検査し、実取得の180秒超・開始20秒・重複Saveを同条件の代表工程で共有。GOPの6証拠と精度基準は保持。",
+        "excluded": "全frame検査を目視全再生へ変えず、同一工程をCase毎に再録画しない。",
+        "evidence_keys": [
+          "regression",
+          "integration"
+        ]
+      },
+      "recovery": {
+        "cases": [
+          "13:SYNC-GAP",
+          "13:SYNC-PARTIAL",
+          "13:SYNC-JUMP",
+          "13:SYNC-LIFECYCLE",
+          "27:REALTIME-GAP-REAL",
+          "27:RECONNECT-REAL",
+          "27:PARTIAL-CAPTURE-REAL",
+          "27:LOG-SEPARATION-REAL",
+          "27:DISABLE-REAL",
+          "27:DISPOSE-REAL",
+          "27:ROTATION-REAL",
+          "27:VIDEO-POLICY-REAL",
+          "27:SAVE-FAIL-01-REAL",
+          "27:SAVE-FAIL-02-REAL",
+          "27:SAVE-FAIL-03-REAL",
+          "27:SAVE-FAIL-04-REAL",
+          "27:SAVE-FAIL-05-REAL",
+          "27:SAVE-FAIL-06-REAL",
+          "27:SAVE-FAIL-07-REAL",
+          "27:SAVE-FAIL-08-REAL",
+          "27:SAVE-FAIL-09-REAL",
+          "27:REALTIME-GAP-EMU",
+          "27:RECONNECT-EMU",
+          "27:PARTIAL-CAPTURE-EMU",
+          "27:LOG-SEPARATION-EMU",
+          "27:DISABLE-EMU",
+          "27:DISPOSE-EMU",
+          "27:ROTATION-EMU",
+          "27:VIDEO-POLICY-EMU",
+          "27:SAVE-FAIL-01-EMU",
+          "27:SAVE-FAIL-02-EMU",
+          "27:SAVE-FAIL-03-EMU",
+          "27:SAVE-FAIL-04-EMU",
+          "27:SAVE-FAIL-05-EMU",
+          "27:SAVE-FAIL-06-EMU",
+          "27:SAVE-FAIL-07-EMU",
+          "27:SAVE-FAIL-08-EMU",
+          "27:SAVE-FAIL-09-EMU",
+          "31:SYNC-GAP",
+          "31:SYNC-PARTIAL",
+          "31:SYNC-JUMP",
+          "31:SYNC-LIFECYCLE",
+          "41:SYNC-GAP",
+          "41:SYNC-PARTIAL",
+          "41:SYNC-JUMP",
+          "41:SYNC-LIFECYCLE",
+          "41:CORE-STARTUP",
+          "41:CORE-STALL",
+          "41:CORE-CLEANUP",
+          "41:CORE-SNAPSHOT",
+          "41:CORE-PUBLISH",
+          "71:LOG-REMAP-NORMAL-ZERO",
+          "71:LOG-REMAP-UNKNOWN-RETRY",
+          "78:CLOCK-RECEIPT-NORMAL",
+          "186:CLOCK-BATCH-SAVE"
+        ],
+        "disposition": "統合",
+        "purpose": "所有process/readerの実停止、generation/epoch・gap/loss、固定失敗対象/atomic/partial保全。",
+        "methods": "production class/fake SDK/loopback/所有filesystemで全fault種・前/中/後保存・race/取消し・pin/再試行を検証。nativeは実取得/通常同boot再接続・OFF/close・代表保存失敗→固定retry・表示の接続を共有。native-only filesystem/APIは実callで検証する。",
+        "excluded": "合成で検証したfault全種を端末/OSで再注入する義務を除外。自製品glueの失敗表示/cleanup/retryは省略しない。",
+        "evidence_keys": [
+          "regression",
+          "integration"
+        ]
+      },
+      "ui-settings": {
+        "cases": [
+          "27:INITIAL-OFF-REAL",
+          "27:ENABLE-CONNECTED-REAL",
+          "27:ENABLE-WAIT-REAL",
+          "27:STATE-RESTORE-REAL",
+          "27:SETTINGS-APPLY-REAL",
+          "27:SETTINGS-INVALID-REAL",
+          "27:APP-SELECTION-REAL",
+          "27:UI-LIFECYCLE-REAL",
+          "27:INITIAL-OFF-EMU",
+          "27:ENABLE-CONNECTED-EMU",
+          "27:ENABLE-WAIT-EMU",
+          "27:STATE-RESTORE-EMU",
+          "27:SETTINGS-APPLY-EMU",
+          "27:SETTINGS-INVALID-EMU",
+          "27:APP-SELECTION-EMU",
+          "27:UI-LIFECYCLE-EMU",
+          "32:UI-12-01",
+          "32:UI-12-02",
+          "32:UI-12-03",
+          "32:UI-12-04",
+          "32:UI-12-05",
+          "32:UI-12-06",
+          "32:UI-12-07",
+          "32:UI-12-08",
+          "42:UI-12-01",
+          "42:UI-12-02",
+          "42:UI-12-03",
+          "42:UI-12-04",
+          "42:UI-12-05",
+          "42:UI-12-06",
+          "42:UI-12-07",
+          "42:UI-12-08",
+          "60:APP-MANUAL-GUIDANCE-EMU",
+          "60:APP-MANUAL-GUIDANCE-REAL",
+          "121:EMPTY-DESTINATION-GUIDANCE",
+          "173:PACKAGE-INPUT-GUIDANCE"
+        ],
+        "disposition": "統合",
+        "purpose": "一括Apply/Cancel/復元・自動/手動/SDK/端末帰属・最新結果/EDT/dispose/可読性/accessibility。",
+        "methods": "settings/core/UI説明の全境界・stale/race/失敗状態は決定的回帰。実IDEでは代表正常/不正Apply/Cancel、復元、通知folder/copy失敗、ON/OFF/close、label/Tab/theme/DPI/狭幅と解決結果をCaseの該当条件だけ観察し共有。",
+        "excluded": "外部file dialog/IDE model/OS内部の全入力組合せは保証しない。新故障matrix/全UI組合せを追加しない。",
+        "evidence_keys": [
+          "regression",
+          "integration"
+        ]
+      },
+      "video": {
+        "cases": [
+          "45:VFR-IDLE",
+          "45:VFR-WINDOW",
+          "45:VFR-TAIL",
+          "45:VFR-BREAK",
+          "45:VFR-LIFECYCLE",
+          "45:VFR-RECIPIENT",
+          "49:BOUNDARY-TAIL",
+          "49:BOUNDARY-ACQUIRE",
+          "52:CLOCK-VIDEO-REGIONS",
+          "52:CLOCK-VIDEO-UNKNOWN",
+          "85:CLOCK-UNCERTAIN-VIDEO-PLAYBACK",
+          "143:MIXED-VIDEO-LEVEL"
+        ],
+        "disposition": "置換",
+        "purpose": "VFR/clock unknown/復号run・全packet/画素・container/原寸/Levelと安全なWriterを保証。",
+        "methods": "全file/sampleを独立readerで検査し、未適用media PTSとedit後movie対応、timescale/headers/index/sample entry/IDR prefix/empty edit/未知gap/terminal null/held tickを元packet・frames/session・両logsへ照合する。readerのedit無視/PTS再配置を実source時刻と誤認しない。全対象frameとraw/config/画素・geometry/文字/色を検査し、後半欠落を隠さない。 同一成果物の代表的な通常/境界を含む動画で標準playerのopen・短いPlay・前後seekと代表表示を一度確認する。全Play・全境界精密seek・全player実装の一致は保証しない。不一致は元media/edit/indexと忠実なreader結果を切り分け、自製品違反又は未帰属は未完了、根拠付き外部実装差は診断履歴と利用上の制約へ残す。 精密fault/unknown/整数境界/全runはproduction classの回帰。実IDEは普通の静止/連番/混在Save・通常再接続と表示を共有。",
+        "excluded": "外部playerの全Play・極短tick/全gapの正確なseekを保証しない。",
+        "evidence_keys": [
+          "regression",
+          "file_integrity",
+          "content",
+          "interop"
+        ]
+      },
+      "log-reader": {
+        "cases": [
+          "106:LOG-READER-PARTITION",
+          "106:LOG-READER-COMPATIBILITY",
+          "106:LOG-READER-RECOVERY-STOP"
+        ],
+        "disposition": "維持",
+        "purpose": "lid/header/payload/UID/record・全予定行・二重取込なしとreader復旧/終了。",
+        "methods": "production protocol/Wire回帰でheader20/24/28・fragment・EOF・invalid・race・両reader fault。native100入力/300phase全件FILE、読める非main bufferと代表Off/再接続。非main一般無欠落を主張しない。",
+        "excluded": "外部logcat/OS全bufferを刺激/網羅する義務を追加しない。",
+        "evidence_keys": [
+          "regression",
+          "integration"
+        ]
+      }
+    },
+    "overrides": {
+      "13:SYNC-CLOCK": {
+        "case": {
+          "steps": [
+            "同じUI更新callbackで連番/端末elapsedをLogへ出し、画面にも連番を描画する。描画完了のframe callback時刻も別に記録する。",
+            "30分取得し開始/中間/終了の各100イベントを保存対象にする。両ログに同じrecord_idがあることを照合する。",
+            "元PTS/clock変換誤差と描画遅延を分け、全300件の差・p95・最大・前後半中央値差を集計する。",
+            "30分・開始/中間/終了各100の全300eventとp95<=100ms/最大<=250ms/drift<=50ms/clock<=20msを維持。全frame/全遷移と前後の画像IDを、元fixture IDと独立した校正済み画像識別で照合する。誤認・欠落・重複・coalescing・unknownを含む悪い入力でoracleを検証し、画像由来のpackage/run/view/event番号を既知fixtureの画像真値で独立に検証し、全関連frame/遷移・欠落/重複ID/unknown・実PTS/誤差を照合する。画像番号をlog順序やconfidenceだけから推定しない。既存transitions.swiftの色/parity判定は番号を復号せず偶数欠落を見逃すので、これだけを代替oracleとして採用しない。曖昧画像は実画像確認、なお識別不能/不確かさ過大なら未完了。一律601画像の人間手読取り/人間actor指定は廃し、識別結果と校正・例外を証拠化する。"
+          ]
+        },
+        "full_acceptance_actor": null,
+        "deferred_scope": [
+          "対象原文: preconditions=\"正常取得できる実機/Emulator、描画とLog双方に同じ連番を出す使い捨てapp。固定画質/codec、時計sampleと描画eventの記録。\" | expected=\"通常p95<=100ms、最大<=250ms、中央値drift<=50ms、clock見積誤差<=20ms。全欠落/uncertainも集計し隠さない。100ms等は未実測の設計基準。\"。延期: 元契約の実機/USB環境で行う同工程と期待結果。Emulator側を維持し、各環境/EMU-REAL別記録を統合passへ転記しない。"
+        ],
+        "agent_requirements": [
+          "30分・開始/中間/終了各100の全300eventとp95<=100ms/最大<=250ms/drift<=50ms/clock<=20msを維持。全frame/全遷移と前後の画像IDを、元fixture IDと独立した校正済み画像識別で照合する。誤認・欠落・重複・coalescing・unknownを含む悪い入力でoracleを検証し、画像由来のpackage/run/view/event番号を既知fixtureの画像真値で独立に検証し、全関連frame/遷移・欠落/重複ID/unknown・実PTS/誤差を照合する。画像番号をlog順序やconfidenceだけから推定しない。既存transitions.swiftの色/parity判定は番号を復号せず偶数欠落を見逃すので、これだけを代替oracleとして採用しない。曖昧画像は実画像確認、なお識別不能/不確かさ過大なら未完了。一律601画像の人間手読取り/人間actor指定は廃し、識別結果と校正・例外を証拠化する。"
+        ]
+      },
+      "13:SYNC-WINDOW": {
+        "full_acceptance_actor": null,
+        "deferred_scope": [],
+        "agent_requirements": [
+          "30分・開始/中間/終了各100の全300eventとp95<=100ms/最大<=250ms/drift<=50ms/clock<=20msを維持。全frame/全遷移と前後の画像IDを、元fixture IDと独立した校正済み画像識別で照合する。誤認・欠落・重複・coalescing・unknownを含む悪い入力でoracleを検証し、画像由来のpackage/run/view/event番号を既知fixtureの画像真値で独立に検証し、全関連frame/遷移・欠落/重複ID/unknown・実PTS/誤差を照合する。画像番号をlog順序やconfidenceだけから推定しない。既存transitions.swiftの色/parity判定は番号を復号せず偶数欠落を見逃すので、これだけを代替oracleとして採用しない。曖昧画像は実画像確認、なお識別不能/不確かさ過大なら未完了。一律601画像の人間手読取り/人間actor指定は廃し、識別結果と校正・例外を証拠化する。"
+        ]
+      },
+      "13:SYNC-RECIPIENT": {
+        "case": {
+          "steps": [
+            "SYNC-RECIPIENT: 全file/sampleを独立readerで検査し、未適用media PTSとedit後movie対応、timescale/headers/index/sample entry/IDR prefix/empty edit/未知gap/terminal null/held tickを元packet・frames/session・両logsへ照合する。readerのedit無視/PTS再配置を実source時刻と誤認しない。全対象frameとraw/config/画素・geometry/文字/色を検査し、後半欠落を隠さない。 同一成果物の代表的な通常/境界を含む動画で標準playerのopen・短いPlay・前後seekと代表表示を一度確認する。全Play・全境界精密seek・全player実装の一致は保証しない。不一致は元media/edit/indexと忠実なreader結果を切り分け、自製品違反又は未帰属は未完了、根拠付き外部実装差は診断履歴と利用上の制約へ残す。",
+            "frameごとのmovie/window対応と時計確度を使い、両ログ/frames/sessionを照合する。",
+            "edit/preroll開始と終了、同一MP4内の既知空白と実duration不明gap、動画なし保存、window nullを確認する。"
+          ],
+          "expected": "自製品のMP4 edit/index/時刻/全内容が正しく、README/標準editorで代表の場面・両ログ・欠落を辿れる。外部playerの挙動は代表相互運用smokeと原因帰属として記録する。 動画のある各保存はMP4ちょうど1件、動画を取得できていないlog-only保存は0件と理由明示。元frame/PTS/config/prefix・実VFR・個別null/MAXを保持し、movie全体秒を区間窓開始へ一律加算しない。不明gapの実durationを0秒と観測したことにしない。"
+        },
+        "agent_requirements": [
+          "自製品の元契約の意味・全対象データ・安全性と未達を維持する。下記の明示改訂は原文の実施方法/外部実装保証/一律human指定だけを置換し、固定出典・観察履歴を削除又はPASSへ変換しない。",
+          "全file/sampleを独立readerで検査し、未適用media PTSとedit後movie対応、timescale/headers/index/sample entry/IDR prefix/empty edit/未知gap/terminal null/held tickを元packet・frames/session・両logsへ照合する。readerのedit無視/PTS再配置を実source時刻と誤認しない。全対象frameとraw/config/画素・geometry/文字/色を検査し、後半欠落を隠さない。 同一成果物の代表的な通常/境界を含む動画で標準playerのopen・短いPlay・前後seekと代表表示を一度確認する。全Play・全境界精密seek・全player実装の一致は保証しない。不一致は元media/edit/indexと忠実なreader結果を切り分け、自製品違反又は未帰属は未完了、根拠付き外部実装差は診断履歴と利用上の制約へ残す。 文書の全件join/hashはFILE、標準editorのopen/readと代表同ID照合は一回のnativeで共有。"
+        ]
+      },
+      "27:BUFFER-180-REAL": {
+        "full_acceptance_actor": null,
+        "deferred_scope": [
+          "元Caseの実機環境での全工程を延期。Emulatorでの実行結果を実機のpassにしない。"
+        ],
+        "agent_requirements": [
+          "30分・開始/中間/終了各100の全300eventとp95<=100ms/最大<=250ms/drift<=50ms/clock<=20msを維持。全frame/全遷移と前後の画像IDを、元fixture IDと独立した校正済み画像識別で照合する。誤認・欠落・重複・coalescing・unknownを含む悪い入力でoracleを検証し、画像由来のpackage/run/view/event番号を既知fixtureの画像真値で独立に検証し、全関連frame/遷移・欠落/重複ID/unknown・実PTS/誤差を照合する。画像番号をlog順序やconfidenceだけから推定しない。既存transitions.swiftの色/parity判定は番号を復号せず偶数欠落を見逃すので、これだけを代替oracleとして採用しない。曖昧画像は実画像確認、なお識別不能/不確かさ過大なら未完了。一律601画像の人間手読取り/人間actor指定は廃し、識別結果と校正・例外を証拠化する。"
+        ]
+      },
+      "27:BUFFER-SHORT-REAL": {
+        "full_acceptance_actor": null,
+        "deferred_scope": [
+          "元Caseの実機環境での全工程を延期。Emulatorでの実行結果を実機のpassにしない。"
+        ],
+        "agent_requirements": [
+          "30分・開始/中間/終了各100の全300eventとp95<=100ms/最大<=250ms/drift<=50ms/clock<=20msを維持。全frame/全遷移と前後の画像IDを、元fixture IDと独立した校正済み画像識別で照合する。誤認・欠落・重複・coalescing・unknownを含む悪い入力でoracleを検証し、画像由来のpackage/run/view/event番号を既知fixtureの画像真値で独立に検証し、全関連frame/遷移・欠落/重複ID/unknown・実PTS/誤差を照合する。画像番号をlog順序やconfidenceだけから推定しない。既存transitions.swiftの色/parity判定は番号を復号せず偶数欠落を見逃すので、これだけを代替oracleとして採用しない。曖昧画像は実画像確認、なお識別不能/不確かさ過大なら未完了。一律601画像の人間手読取り/人間actor指定は廃し、識別結果と校正・例外を証拠化する。"
+        ]
+      },
+      "27:SAVE-CONTINUE-REAL": {
+        "full_acceptance_actor": null,
+        "deferred_scope": [
+          "元Caseの実機環境での全工程を延期。Emulatorでの実行結果を実機のpassにしない。"
+        ],
+        "agent_requirements": [
+          "30分・開始/中間/終了各100の全300eventとp95<=100ms/最大<=250ms/drift<=50ms/clock<=20msを維持。全frame/全遷移と前後の画像IDを、元fixture IDと独立した校正済み画像識別で照合する。誤認・欠落・重複・coalescing・unknownを含む悪い入力でoracleを検証し、画像由来のpackage/run/view/event番号を既知fixtureの画像真値で独立に検証し、全関連frame/遷移・欠落/重複ID/unknown・実PTS/誤差を照合する。画像番号をlog順序やconfidenceだけから推定しない。既存transitions.swiftの色/parity判定は番号を復号せず偶数欠落を見逃すので、これだけを代替oracleとして採用しない。曖昧画像は実画像確認、なお識別不能/不確かさ過大なら未完了。一律601画像の人間手読取り/人間actor指定は廃し、識別結果と校正・例外を証拠化する。"
+        ]
+      },
+      "27:SYNC-PRECISION-REAL": {
+        "case": {
+          "steps": [
+            "fixtureイベントを開始/中盤/末尾、切出し境界、中断前後に発生する。",
+            "最初に番号が見える動画フレームPTSと直前PTSを読み、両ログのpackage/run/eventと時計対応を照合する。",
+            "REQUEST→DRAW→commit callbackの遅延、frame間隔、clockサンプル幅を含め誤差/不確かさを記録する。",
+            "SYNC-CLOCK: 同じUI更新callbackで連番/端末elapsedをLogへ出し、画面にも連番を描画する。描画完了のframe callback時刻も別に記録する。",
+            "SYNC-CLOCK: 30分取得し開始/中間/終了の各100イベントを保存対象にする。両ログに同じrecord_idがあることを照合する。",
+            "SYNC-CLOCK: 元PTS/clock変換誤差と描画遅延を分け、全300件の差・p95・最大・前後半中央値差を集計する。",
+            "30分・開始/中間/終了各100の全300eventとp95<=100ms/最大<=250ms/drift<=50ms/clock<=20msを維持。全frame/全遷移と前後の画像IDを、元fixture IDと独立した校正済み画像識別で照合する。誤認・欠落・重複・coalescing・unknownを含む悪い入力でoracleを検証し、画像由来のpackage/run/view/event番号を既知fixtureの画像真値で独立に検証し、全関連frame/遷移・欠落/重複ID/unknown・実PTS/誤差を照合する。画像番号をlog順序やconfidenceだけから推定しない。既存transitions.swiftの色/parity判定は番号を復号せず偶数欠落を見逃すので、これだけを代替oracleとして採用しない。曖昧画像は実画像確認、なお識別不能/不確かさ過大なら未完了。一律601画像の人間手読取り/人間actor指定は廃し、識別結果と校正・例外を証拠化する。"
+          ]
+        },
+        "full_acceptance_actor": null,
+        "deferred_scope": [
+          "元Caseの実機環境での全工程を延期。Emulatorでの実行結果を実機のpassにしない。"
+        ],
+        "agent_requirements": [
+          "30分・開始/中間/終了各100の全300eventとp95<=100ms/最大<=250ms/drift<=50ms/clock<=20msを維持。全frame/全遷移と前後の画像IDを、元fixture IDと独立した校正済み画像識別で照合する。誤認・欠落・重複・coalescing・unknownを含む悪い入力でoracleを検証し、画像由来のpackage/run/view/event番号を既知fixtureの画像真値で独立に検証し、全関連frame/遷移・欠落/重複ID/unknown・実PTS/誤差を照合する。画像番号をlog順序やconfidenceだけから推定しない。既存transitions.swiftの色/parity判定は番号を復号せず偶数欠落を見逃すので、これだけを代替oracleとして採用しない。曖昧画像は実画像確認、なお識別不能/不確かさ過大なら未完了。一律601画像の人間手読取り/人間actor指定は廃し、識別結果と校正・例外を証拠化する。"
+        ]
+      },
+      "27:SYNC-DRIFT-REAL": {
+        "case": {
+          "steps": [
+            "採用#13で決めた試験時間を連続取得し等間隔にイベントを発生する。",
+            "専用対象で許可された場合だけwall clock変更/アプリ再起動を行い再保存する。",
+            "SYNC-CLOCK: 同じUI更新callbackで連番/端末elapsedをLogへ出し、画面にも連番を描画する。描画完了のframe callback時刻も別に記録する。",
+            "SYNC-CLOCK: 30分取得し開始/中間/終了の各100イベントを保存対象にする。両ログに同じrecord_idがあることを照合する。",
+            "SYNC-CLOCK: 元PTS/clock変換誤差と描画遅延を分け、全300件の差・p95・最大・前後半中央値差を集計する。",
+            "SYNC-JUMP: 専用実機の日時設定を前後へ変更し、変更を挟むeventを記録する。",
+            "SYNC-JUMP: 専用実機だけを許可済みの方法でsleep/復帰させ、monoとelapsedの差を実測し境界前後を保存する。画面OFFだけでdeep sleepしたと判断しない。",
+            "SYNC-JUMP: 専用実機だけを通常再起動し、新boot epochで再取得・保存、固定した失敗対象も照合する。",
+            "30分・開始/中間/終了各100の全300eventとp95<=100ms/最大<=250ms/drift<=50ms/clock<=20msを維持。全frame/全遷移と前後の画像IDを、元fixture IDと独立した校正済み画像識別で照合する。誤認・欠落・重複・coalescing・unknownを含む悪い入力でoracleを検証し、画像由来のpackage/run/view/event番号を既知fixtureの画像真値で独立に検証し、全関連frame/遷移・欠落/重複ID/unknown・実PTS/誤差を照合する。画像番号をlog順序やconfidenceだけから推定しない。既存transitions.swiftの色/parity判定は番号を復号せず偶数欠落を見逃すので、これだけを代替oracleとして採用しない。曖昧画像は実画像確認、なお識別不能/不確かさ過大なら未完了。一律601画像の人間手読取り/人間actor指定は廃し、識別結果と校正・例外を証拠化する。"
+          ]
+        },
+        "full_acceptance_actor": null,
+        "deferred_scope": [
+          "元Caseの実機環境での全工程を延期。Emulatorでの実行結果を実機のpassにしない。"
+        ],
+        "agent_requirements": [
+          "30分・開始/中間/終了各100の全300eventとp95<=100ms/最大<=250ms/drift<=50ms/clock<=20msを維持。全frame/全遷移と前後の画像IDを、元fixture IDと独立した校正済み画像識別で照合する。誤認・欠落・重複・coalescing・unknownを含む悪い入力でoracleを検証し、画像由来のpackage/run/view/event番号を既知fixtureの画像真値で独立に検証し、全関連frame/遷移・欠落/重複ID/unknown・実PTS/誤差を照合する。画像番号をlog順序やconfidenceだけから推定しない。既存transitions.swiftの色/parity判定は番号を復号せず偶数欠落を見逃すので、これだけを代替oracleとして採用しない。曖昧画像は実画像確認、なお識別不能/不確かさ過大なら未完了。一律601画像の人間手読取り/人間actor指定は廃し、識別結果と校正・例外を証拠化する。"
+        ]
+      },
+      "27:SAVE-OUTPUT-REAL": {
+        "case": {
+          "steps": [
+            "通常保存を2回行い、各通知から別々の完成フォルダを開く。",
+            "保持時間超過/再保存/OFF後に元の出力hashを比較する。",
+            "SYNC-RECIPIENT: 全file/sampleを独立readerで検査し、未適用media PTSとedit後movie対応、timescale/headers/index/sample entry/IDR prefix/empty edit/未知gap/terminal null/held tickを元packet・frames/session・両logsへ照合する。readerのedit無視/PTS再配置を実source時刻と誤認しない。全対象frameとraw/config/画素・geometry/文字/色を検査し、後半欠落を隠さない。 同一成果物の代表的な通常/境界を含む動画で標準playerのopen・短いPlay・前後seekと代表表示を一度確認する。全Play・全境界精密seek・全player実装の一致は保証しない。不一致は元media/edit/indexと忠実なreader結果を切り分け、自製品違反又は未帰属は未完了、根拠付き外部実装差は診断履歴と利用上の制約へ残す。",
+            "SYNC-RECIPIENT: frameごとのmovie/window対応と時計確度を使い、両ログ/frames/sessionを照合する。",
+            "SYNC-RECIPIENT: edit/preroll開始と終了、同一MP4内の既知空白と実duration不明gap、動画なし保存、window nullを確認する。",
+            "通知のOSフォルダopen失敗も専用対象で確認し、理由表示とパスcopy操作を確認する。"
+          ],
+          "expected": "毎回の名前/長さ/保存先入力なし。動画/両ログ/同期情報を同じ日時付き保存単位へまとめる。通知は自身の完成フォルダを開き、完成済み出力を自動削除/変更しない。 SYNC-RECIPIENT: 自製品のMP4 edit/index/時刻/全内容が正しく、README/標準editorで代表の場面・両ログ・欠落を辿れる。外部playerの挙動は代表相互運用smokeと原因帰属として記録する。 OS open失敗を成功扱いせず理由とcopy操作を案内する。 動画のある各保存はMP4ちょうど1件、動画を取得できていないlog-only保存は0件と理由明示。元frame/PTS/config/prefix・実VFR・個別null/MAXを保持し、movie全体秒を区間窓開始へ一律加算しない。不明gapの実durationを0秒と観測したことにしない。"
+        },
+        "agent_requirements": [
+          "自製品の元契約の意味・全対象データ・安全性と未達を維持する。下記の明示改訂は原文の実施方法/外部実装保証/一律human指定だけを置換し、固定出典・観察履歴を削除又はPASSへ変換しない。",
+          "全file/sampleを独立readerで検査し、未適用media PTSとedit後movie対応、timescale/headers/index/sample entry/IDR prefix/empty edit/未知gap/terminal null/held tickを元packet・frames/session・両logsへ照合する。readerのedit無視/PTS再配置を実source時刻と誤認しない。全対象frameとraw/config/画素・geometry/文字/色を検査し、後半欠落を隠さない。 同一成果物の代表的な通常/境界を含む動画で標準playerのopen・短いPlay・前後seekと代表表示を一度確認する。全Play・全境界精密seek・全player実装の一致は保証しない。不一致は元media/edit/indexと忠実なreader結果を切り分け、自製品違反又は未帰属は未完了、根拠付き外部実装差は診断履歴と利用上の制約へ残す。 文書の全件join/hashはFILE、標準editorのopen/readと代表同ID照合は一回のnativeで共有。"
+        ]
+      },
+      "27:BUFFER-180-EMU": {
+        "full_acceptance_actor": null,
+        "deferred_scope": [],
+        "agent_requirements": [
+          "30分・開始/中間/終了各100の全300eventとp95<=100ms/最大<=250ms/drift<=50ms/clock<=20msを維持。全frame/全遷移と前後の画像IDを、元fixture IDと独立した校正済み画像識別で照合する。誤認・欠落・重複・coalescing・unknownを含む悪い入力でoracleを検証し、画像由来のpackage/run/view/event番号を既知fixtureの画像真値で独立に検証し、全関連frame/遷移・欠落/重複ID/unknown・実PTS/誤差を照合する。画像番号をlog順序やconfidenceだけから推定しない。既存transitions.swiftの色/parity判定は番号を復号せず偶数欠落を見逃すので、これだけを代替oracleとして採用しない。曖昧画像は実画像確認、なお識別不能/不確かさ過大なら未完了。一律601画像の人間手読取り/人間actor指定は廃し、識別結果と校正・例外を証拠化する。"
+        ]
+      },
+      "27:BUFFER-SHORT-EMU": {
+        "full_acceptance_actor": null,
+        "deferred_scope": [],
+        "agent_requirements": [
+          "30分・開始/中間/終了各100の全300eventとp95<=100ms/最大<=250ms/drift<=50ms/clock<=20msを維持。全frame/全遷移と前後の画像IDを、元fixture IDと独立した校正済み画像識別で照合する。誤認・欠落・重複・coalescing・unknownを含む悪い入力でoracleを検証し、画像由来のpackage/run/view/event番号を既知fixtureの画像真値で独立に検証し、全関連frame/遷移・欠落/重複ID/unknown・実PTS/誤差を照合する。画像番号をlog順序やconfidenceだけから推定しない。既存transitions.swiftの色/parity判定は番号を復号せず偶数欠落を見逃すので、これだけを代替oracleとして採用しない。曖昧画像は実画像確認、なお識別不能/不確かさ過大なら未完了。一律601画像の人間手読取り/人間actor指定は廃し、識別結果と校正・例外を証拠化する。"
+        ]
+      },
+      "27:SAVE-CONTINUE-EMU": {
+        "full_acceptance_actor": null,
+        "deferred_scope": [],
+        "agent_requirements": [
+          "30分・開始/中間/終了各100の全300eventとp95<=100ms/最大<=250ms/drift<=50ms/clock<=20msを維持。全frame/全遷移と前後の画像IDを、元fixture IDと独立した校正済み画像識別で照合する。誤認・欠落・重複・coalescing・unknownを含む悪い入力でoracleを検証し、画像由来のpackage/run/view/event番号を既知fixtureの画像真値で独立に検証し、全関連frame/遷移・欠落/重複ID/unknown・実PTS/誤差を照合する。画像番号をlog順序やconfidenceだけから推定しない。既存transitions.swiftの色/parity判定は番号を復号せず偶数欠落を見逃すので、これだけを代替oracleとして採用しない。曖昧画像は実画像確認、なお識別不能/不確かさ過大なら未完了。一律601画像の人間手読取り/人間actor指定は廃し、識別結果と校正・例外を証拠化する。"
+        ]
+      },
+      "27:SYNC-PRECISION-EMU": {
+        "case": {
+          "steps": [
+            "fixtureイベントを開始/中盤/末尾、切出し境界、中断前後に発生する。",
+            "最初に番号が見える動画フレームPTSと直前PTSを読み、両ログのpackage/run/eventと時計対応を照合する。",
+            "REQUEST→DRAW→commit callbackの遅延、frame間隔、clockサンプル幅を含め誤差/不確かさを記録する。",
+            "SYNC-CLOCK: 同じUI更新callbackで連番/端末elapsedをLogへ出し、画面にも連番を描画する。描画完了のframe callback時刻も別に記録する。",
+            "SYNC-CLOCK: 30分取得し開始/中間/終了の各100イベントを保存対象にする。両ログに同じrecord_idがあることを照合する。",
+            "SYNC-CLOCK: 元PTS/clock変換誤差と描画遅延を分け、全300件の差・p95・最大・前後半中央値差を集計する。",
+            "30分・開始/中間/終了各100の全300eventとp95<=100ms/最大<=250ms/drift<=50ms/clock<=20msを維持。全frame/全遷移と前後の画像IDを、元fixture IDと独立した校正済み画像識別で照合する。誤認・欠落・重複・coalescing・unknownを含む悪い入力でoracleを検証し、画像由来のpackage/run/view/event番号を既知fixtureの画像真値で独立に検証し、全関連frame/遷移・欠落/重複ID/unknown・実PTS/誤差を照合する。画像番号をlog順序やconfidenceだけから推定しない。既存transitions.swiftの色/parity判定は番号を復号せず偶数欠落を見逃すので、これだけを代替oracleとして採用しない。曖昧画像は実画像確認、なお識別不能/不確かさ過大なら未完了。一律601画像の人間手読取り/人間actor指定は廃し、識別結果と校正・例外を証拠化する。"
+          ]
+        },
+        "full_acceptance_actor": null,
+        "deferred_scope": [],
+        "agent_requirements": [
+          "30分・開始/中間/終了各100の全300eventとp95<=100ms/最大<=250ms/drift<=50ms/clock<=20msを維持。全frame/全遷移と前後の画像IDを、元fixture IDと独立した校正済み画像識別で照合する。誤認・欠落・重複・coalescing・unknownを含む悪い入力でoracleを検証し、画像由来のpackage/run/view/event番号を既知fixtureの画像真値で独立に検証し、全関連frame/遷移・欠落/重複ID/unknown・実PTS/誤差を照合する。画像番号をlog順序やconfidenceだけから推定しない。既存transitions.swiftの色/parity判定は番号を復号せず偶数欠落を見逃すので、これだけを代替oracleとして採用しない。曖昧画像は実画像確認、なお識別不能/不確かさ過大なら未完了。一律601画像の人間手読取り/人間actor指定は廃し、識別結果と校正・例外を証拠化する。"
+        ]
+      },
+      "27:SYNC-DRIFT-EMU": {
+        "case": {
+          "steps": [
+            "採用#13で決めた試験時間を連続取得し等間隔にイベントを発生する。",
+            "専用対象で許可された場合だけwall clock変更/アプリ再起動を行い再保存する。",
+            "SYNC-CLOCK: 同じUI更新callbackで連番/端末elapsedをLogへ出し、画面にも連番を描画する。描画完了のframe callback時刻も別に記録する。",
+            "SYNC-CLOCK: 30分取得し開始/中間/終了の各100イベントを保存対象にする。両ログに同じrecord_idがあることを照合する。",
+            "SYNC-CLOCK: 元PTS/clock変換誤差と描画遅延を分け、全300件の差・p95・最大・前後半中央値差を集計する。",
+            "SYNC-JUMP: 専用Emulatorの日時設定を前後へ変更し、変更を挟むeventを記録する。",
+            "SYNC-JUMP: 専用Emulatorだけを許可済みの方法でsleep/復帰させ、monoとelapsedの差を実測し境界前後を保存する。画面OFFだけでdeep sleepしたと判断しない。",
+            "SYNC-JUMP: 専用Emulatorだけを通常再起動し、新boot epochで再取得・保存、固定した失敗対象も照合する。",
+            "30分・開始/中間/終了各100の全300eventとp95<=100ms/最大<=250ms/drift<=50ms/clock<=20msを維持。全frame/全遷移と前後の画像IDを、元fixture IDと独立した校正済み画像識別で照合する。誤認・欠落・重複・coalescing・unknownを含む悪い入力でoracleを検証し、画像由来のpackage/run/view/event番号を既知fixtureの画像真値で独立に検証し、全関連frame/遷移・欠落/重複ID/unknown・実PTS/誤差を照合する。画像番号をlog順序やconfidenceだけから推定しない。既存transitions.swiftの色/parity判定は番号を復号せず偶数欠落を見逃すので、これだけを代替oracleとして採用しない。曖昧画像は実画像確認、なお識別不能/不確かさ過大なら未完了。一律601画像の人間手読取り/人間actor指定は廃し、識別結果と校正・例外を証拠化する。"
+          ]
+        },
+        "full_acceptance_actor": null,
+        "deferred_scope": [],
+        "agent_requirements": [
+          "30分・開始/中間/終了各100の全300eventとp95<=100ms/最大<=250ms/drift<=50ms/clock<=20msを維持。全frame/全遷移と前後の画像IDを、元fixture IDと独立した校正済み画像識別で照合する。誤認・欠落・重複・coalescing・unknownを含む悪い入力でoracleを検証し、画像由来のpackage/run/view/event番号を既知fixtureの画像真値で独立に検証し、全関連frame/遷移・欠落/重複ID/unknown・実PTS/誤差を照合する。画像番号をlog順序やconfidenceだけから推定しない。既存transitions.swiftの色/parity判定は番号を復号せず偶数欠落を見逃すので、これだけを代替oracleとして採用しない。曖昧画像は実画像確認、なお識別不能/不確かさ過大なら未完了。一律601画像の人間手読取り/人間actor指定は廃し、識別結果と校正・例外を証拠化する。"
+        ]
+      },
+      "27:SAVE-OUTPUT-EMU": {
+        "case": {
+          "steps": [
+            "通常保存を2回行い、各通知から別々の完成フォルダを開く。",
+            "保持時間超過/再保存/OFF後に元の出力hashを比較する。",
+            "SYNC-RECIPIENT: 全file/sampleを独立readerで検査し、未適用media PTSとedit後movie対応、timescale/headers/index/sample entry/IDR prefix/empty edit/未知gap/terminal null/held tickを元packet・frames/session・両logsへ照合する。readerのedit無視/PTS再配置を実source時刻と誤認しない。全対象frameとraw/config/画素・geometry/文字/色を検査し、後半欠落を隠さない。 同一成果物の代表的な通常/境界を含む動画で標準playerのopen・短いPlay・前後seekと代表表示を一度確認する。全Play・全境界精密seek・全player実装の一致は保証しない。不一致は元media/edit/indexと忠実なreader結果を切り分け、自製品違反又は未帰属は未完了、根拠付き外部実装差は診断履歴と利用上の制約へ残す。",
+            "SYNC-RECIPIENT: frameごとのmovie/window対応と時計確度を使い、両ログ/frames/sessionを照合する。",
+            "SYNC-RECIPIENT: edit/preroll開始と終了、同一MP4内の既知空白と実duration不明gap、動画なし保存、window nullを確認する。",
+            "通知のOSフォルダopen失敗も専用対象で確認し、理由表示とパスcopy操作を確認する。"
+          ],
+          "expected": "毎回の名前/長さ/保存先入力なし。動画/両ログ/同期情報を同じ日時付き保存単位へまとめる。通知は自身の完成フォルダを開き、完成済み出力を自動削除/変更しない。 SYNC-RECIPIENT: 自製品のMP4 edit/index/時刻/全内容が正しく、README/標準editorで代表の場面・両ログ・欠落を辿れる。外部playerの挙動は代表相互運用smokeと原因帰属として記録する。 OS open失敗を成功扱いせず理由とcopy操作を案内する。 動画のある各保存はMP4ちょうど1件、動画を取得できていないlog-only保存は0件と理由明示。元frame/PTS/config/prefix・実VFR・個別null/MAXを保持し、movie全体秒を区間窓開始へ一律加算しない。不明gapの実durationを0秒と観測したことにしない。"
+        },
+        "agent_requirements": [
+          "自製品の元契約の意味・全対象データ・安全性と未達を維持する。下記の明示改訂は原文の実施方法/外部実装保証/一律human指定だけを置換し、固定出典・観察履歴を削除又はPASSへ変換しない。",
+          "全file/sampleを独立readerで検査し、未適用media PTSとedit後movie対応、timescale/headers/index/sample entry/IDR prefix/empty edit/未知gap/terminal null/held tickを元packet・frames/session・両logsへ照合する。readerのedit無視/PTS再配置を実source時刻と誤認しない。全対象frameとraw/config/画素・geometry/文字/色を検査し、後半欠落を隠さない。 同一成果物の代表的な通常/境界を含む動画で標準playerのopen・短いPlay・前後seekと代表表示を一度確認する。全Play・全境界精密seek・全player実装の一致は保証しない。不一致は元media/edit/indexと忠実なreader結果を切り分け、自製品違反又は未帰属は未完了、根拠付き外部実装差は診断履歴と利用上の制約へ残す。 文書の全件join/hashはFILE、標準editorのopen/readと代表同ID照合は一回のnativeで共有。"
+        ]
+      },
+      "31:SYNC-CLOCK": {
+        "case": {
+          "steps": [
+            "同じUI更新callbackで連番/端末elapsedをLogへ出し、画面にも連番を描画する。描画完了のframe callback時刻も別に記録する。",
+            "30分取得し開始/中間/終了の各100イベントを保存対象にする。両ログに同じrecord_idがあることを照合する。",
+            "元PTS/clock変換誤差と描画遅延を分け、全300件の差・p95・最大・前後半中央値差を集計する。",
+            "30分・開始/中間/終了各100の全300eventとp95<=100ms/最大<=250ms/drift<=50ms/clock<=20msを維持。全frame/全遷移と前後の画像IDを、元fixture IDと独立した校正済み画像識別で照合する。誤認・欠落・重複・coalescing・unknownを含む悪い入力でoracleを検証し、画像由来のpackage/run/view/event番号を既知fixtureの画像真値で独立に検証し、全関連frame/遷移・欠落/重複ID/unknown・実PTS/誤差を照合する。画像番号をlog順序やconfidenceだけから推定しない。既存transitions.swiftの色/parity判定は番号を復号せず偶数欠落を見逃すので、これだけを代替oracleとして採用しない。曖昧画像は実画像確認、なお識別不能/不確かさ過大なら未完了。一律601画像の人間手読取り/人間actor指定は廃し、識別結果と校正・例外を証拠化する。"
+          ]
+        },
+        "full_acceptance_actor": null,
+        "deferred_scope": [
+          "対象原文: preconditions=\"正常取得できる実機/Emulator、描画とLog双方に同じ連番を出す使い捨てapp。固定画質/codec、時計sampleと描画eventの記録。\" | expected=\"通常p95<=100ms、最大<=250ms、中央値drift<=50ms、clock見積誤差<=20ms。全欠落/uncertainも集計し隠さない。100ms等は未実測の設計基準。\"。延期: 元契約の実機/USB環境で行う同工程と期待結果。Emulator側を維持し、各環境/EMU-REAL別記録を統合passへ転記しない。"
+        ],
+        "agent_requirements": [
+          "30分・開始/中間/終了各100の全300eventとp95<=100ms/最大<=250ms/drift<=50ms/clock<=20msを維持。全frame/全遷移と前後の画像IDを、元fixture IDと独立した校正済み画像識別で照合する。誤認・欠落・重複・coalescing・unknownを含む悪い入力でoracleを検証し、画像由来のpackage/run/view/event番号を既知fixtureの画像真値で独立に検証し、全関連frame/遷移・欠落/重複ID/unknown・実PTS/誤差を照合する。画像番号をlog順序やconfidenceだけから推定しない。既存transitions.swiftの色/parity判定は番号を復号せず偶数欠落を見逃すので、これだけを代替oracleとして採用しない。曖昧画像は実画像確認、なお識別不能/不確かさ過大なら未完了。一律601画像の人間手読取り/人間actor指定は廃し、識別結果と校正・例外を証拠化する。"
+        ]
+      },
+      "31:SYNC-WINDOW": {
+        "full_acceptance_actor": null,
+        "deferred_scope": [],
+        "agent_requirements": [
+          "30分・開始/中間/終了各100の全300eventとp95<=100ms/最大<=250ms/drift<=50ms/clock<=20msを維持。全frame/全遷移と前後の画像IDを、元fixture IDと独立した校正済み画像識別で照合する。誤認・欠落・重複・coalescing・unknownを含む悪い入力でoracleを検証し、画像由来のpackage/run/view/event番号を既知fixtureの画像真値で独立に検証し、全関連frame/遷移・欠落/重複ID/unknown・実PTS/誤差を照合する。画像番号をlog順序やconfidenceだけから推定しない。既存transitions.swiftの色/parity判定は番号を復号せず偶数欠落を見逃すので、これだけを代替oracleとして採用しない。曖昧画像は実画像確認、なお識別不能/不確かさ過大なら未完了。一律601画像の人間手読取り/人間actor指定は廃し、識別結果と校正・例外を証拠化する。"
+        ]
+      },
+      "31:SYNC-RECIPIENT": {
+        "case": {
+          "steps": [
+            "SYNC-RECIPIENT: 全file/sampleを独立readerで検査し、未適用media PTSとedit後movie対応、timescale/headers/index/sample entry/IDR prefix/empty edit/未知gap/terminal null/held tickを元packet・frames/session・両logsへ照合する。readerのedit無視/PTS再配置を実source時刻と誤認しない。全対象frameとraw/config/画素・geometry/文字/色を検査し、後半欠落を隠さない。 同一成果物の代表的な通常/境界を含む動画で標準playerのopen・短いPlay・前後seekと代表表示を一度確認する。全Play・全境界精密seek・全player実装の一致は保証しない。不一致は元media/edit/indexと忠実なreader結果を切り分け、自製品違反又は未帰属は未完了、根拠付き外部実装差は診断履歴と利用上の制約へ残す。",
+            "frameごとのmovie/window対応と時計確度を使い、両ログ/frames/sessionを照合する。",
+            "edit/preroll開始と終了、同一MP4内の既知空白と実duration不明gap、動画なし保存、window nullを確認する。"
+          ],
+          "expected": "自製品のMP4 edit/index/時刻/全内容が正しく、README/標準editorで代表の場面・両ログ・欠落を辿れる。外部playerの挙動は代表相互運用smokeと原因帰属として記録する。 動画のある各保存はMP4ちょうど1件、動画を取得できていないlog-only保存は0件と理由明示。元frame/PTS/config/prefix・実VFR・個別null/MAXを保持し、movie全体秒を区間窓開始へ一律加算しない。不明gapの実durationを0秒と観測したことにしない。"
+        },
+        "agent_requirements": [
+          "自製品の元契約の意味・全対象データ・安全性と未達を維持する。下記の明示改訂は原文の実施方法/外部実装保証/一律human指定だけを置換し、固定出典・観察履歴を削除又はPASSへ変換しない。",
+          "全file/sampleを独立readerで検査し、未適用media PTSとedit後movie対応、timescale/headers/index/sample entry/IDR prefix/empty edit/未知gap/terminal null/held tickを元packet・frames/session・両logsへ照合する。readerのedit無視/PTS再配置を実source時刻と誤認しない。全対象frameとraw/config/画素・geometry/文字/色を検査し、後半欠落を隠さない。 同一成果物の代表的な通常/境界を含む動画で標準playerのopen・短いPlay・前後seekと代表表示を一度確認する。全Play・全境界精密seek・全player実装の一致は保証しない。不一致は元media/edit/indexと忠実なreader結果を切り分け、自製品違反又は未帰属は未完了、根拠付き外部実装差は診断履歴と利用上の制約へ残す。 文書の全件join/hashはFILE、標準editorのopen/readと代表同ID照合は一回のnativeで共有。"
+        ]
+      },
+      "41:SYNC-CLOCK": {
+        "case": {
+          "steps": [
+            "同じUI更新callbackで連番/端末elapsedをLogへ出し、画面にも連番を描画する。描画完了のframe callback時刻も別に記録する。",
+            "30分取得し開始/中間/終了の各100イベントを保存対象にする。両ログに同じrecord_idがあることを照合する。",
+            "元PTS/clock変換誤差と描画遅延を分け、全300件の差・p95・最大・前後半中央値差を集計する。",
+            "30分・開始/中間/終了各100の全300eventとp95<=100ms/最大<=250ms/drift<=50ms/clock<=20msを維持。全frame/全遷移と前後の画像IDを、元fixture IDと独立した校正済み画像識別で照合する。誤認・欠落・重複・coalescing・unknownを含む悪い入力でoracleを検証し、画像由来のpackage/run/view/event番号を既知fixtureの画像真値で独立に検証し、全関連frame/遷移・欠落/重複ID/unknown・実PTS/誤差を照合する。画像番号をlog順序やconfidenceだけから推定しない。既存transitions.swiftの色/parity判定は番号を復号せず偶数欠落を見逃すので、これだけを代替oracleとして採用しない。曖昧画像は実画像確認、なお識別不能/不確かさ過大なら未完了。一律601画像の人間手読取り/人間actor指定は廃し、識別結果と校正・例外を証拠化する。"
+          ]
+        },
+        "full_acceptance_actor": null,
+        "deferred_scope": [
+          "対象原文: preconditions=\"正常取得できる実機/Emulator、描画とLog双方に同じ連番を出す使い捨てapp。固定画質/codec、時計sampleと描画eventの記録。\" | expected=\"通常p95<=100ms、最大<=250ms、中央値drift<=50ms、clock見積誤差<=20ms。全欠落/uncertainも集計し隠さない。100ms等は未実測の設計基準。\"。延期: 元契約の実機/USB環境で行う同工程と期待結果。Emulator側を維持し、各環境/EMU-REAL別記録を統合passへ転記しない。"
+        ],
+        "agent_requirements": [
+          "30分・開始/中間/終了各100の全300eventとp95<=100ms/最大<=250ms/drift<=50ms/clock<=20msを維持。全frame/全遷移と前後の画像IDを、元fixture IDと独立した校正済み画像識別で照合する。誤認・欠落・重複・coalescing・unknownを含む悪い入力でoracleを検証し、画像由来のpackage/run/view/event番号を既知fixtureの画像真値で独立に検証し、全関連frame/遷移・欠落/重複ID/unknown・実PTS/誤差を照合する。画像番号をlog順序やconfidenceだけから推定しない。既存transitions.swiftの色/parity判定は番号を復号せず偶数欠落を見逃すので、これだけを代替oracleとして採用しない。曖昧画像は実画像確認、なお識別不能/不確かさ過大なら未完了。一律601画像の人間手読取り/人間actor指定は廃し、識別結果と校正・例外を証拠化する。"
+        ]
+      },
+      "41:SYNC-WINDOW": {
+        "full_acceptance_actor": null,
+        "deferred_scope": [],
+        "agent_requirements": [
+          "30分・開始/中間/終了各100の全300eventとp95<=100ms/最大<=250ms/drift<=50ms/clock<=20msを維持。全frame/全遷移と前後の画像IDを、元fixture IDと独立した校正済み画像識別で照合する。誤認・欠落・重複・coalescing・unknownを含む悪い入力でoracleを検証し、画像由来のpackage/run/view/event番号を既知fixtureの画像真値で独立に検証し、全関連frame/遷移・欠落/重複ID/unknown・実PTS/誤差を照合する。画像番号をlog順序やconfidenceだけから推定しない。既存transitions.swiftの色/parity判定は番号を復号せず偶数欠落を見逃すので、これだけを代替oracleとして採用しない。曖昧画像は実画像確認、なお識別不能/不確かさ過大なら未完了。一律601画像の人間手読取り/人間actor指定は廃し、識別結果と校正・例外を証拠化する。"
+        ]
+      },
+      "41:SYNC-RECIPIENT": {
+        "case": {
+          "steps": [
+            "SYNC-RECIPIENT: 全file/sampleを独立readerで検査し、未適用media PTSとedit後movie対応、timescale/headers/index/sample entry/IDR prefix/empty edit/未知gap/terminal null/held tickを元packet・frames/session・両logsへ照合する。readerのedit無視/PTS再配置を実source時刻と誤認しない。全対象frameとraw/config/画素・geometry/文字/色を検査し、後半欠落を隠さない。 同一成果物の代表的な通常/境界を含む動画で標準playerのopen・短いPlay・前後seekと代表表示を一度確認する。全Play・全境界精密seek・全player実装の一致は保証しない。不一致は元media/edit/indexと忠実なreader結果を切り分け、自製品違反又は未帰属は未完了、根拠付き外部実装差は診断履歴と利用上の制約へ残す。",
+            "frameごとのmovie/window対応と時計確度を使い、両ログ/frames/sessionを照合する。",
+            "edit/preroll開始と終了、同一MP4内の既知空白と実duration不明gap、動画なし保存、window nullを確認する。"
+          ],
+          "expected": "自製品のMP4 edit/index/時刻/全内容が正しく、README/標準editorで代表の場面・両ログ・欠落を辿れる。外部playerの挙動は代表相互運用smokeと原因帰属として記録する。 動画のある各保存はMP4ちょうど1件、動画を取得できていないlog-only保存は0件と理由明示。元frame/PTS/config/prefix・実VFR・個別null/MAXを保持し、movie全体秒を区間窓開始へ一律加算しない。不明gapの実durationを0秒と観測したことにしない。"
+        },
+        "agent_requirements": [
+          "自製品の元契約の意味・全対象データ・安全性と未達を維持する。下記の明示改訂は原文の実施方法/外部実装保証/一律human指定だけを置換し、固定出典・観察履歴を削除又はPASSへ変換しない。",
+          "全file/sampleを独立readerで検査し、未適用media PTSとedit後movie対応、timescale/headers/index/sample entry/IDR prefix/empty edit/未知gap/terminal null/held tickを元packet・frames/session・両logsへ照合する。readerのedit無視/PTS再配置を実source時刻と誤認しない。全対象frameとraw/config/画素・geometry/文字/色を検査し、後半欠落を隠さない。 同一成果物の代表的な通常/境界を含む動画で標準playerのopen・短いPlay・前後seekと代表表示を一度確認する。全Play・全境界精密seek・全player実装の一致は保証しない。不一致は元media/edit/indexと忠実なreader結果を切り分け、自製品違反又は未帰属は未完了、根拠付き外部実装差は診断履歴と利用上の制約へ残す。 文書の全件join/hashはFILE、標準editorのopen/readと代表同ID照合は一回のnativeで共有。"
+        ]
+      },
+      "45:VFR-IDLE": {
+        "agent_requirements": [
+          "自製品の元契約の意味・全対象データ・安全性と未達を維持する。下記の明示改訂は原文の実施方法/外部実装保証/一律human指定だけを置換し、固定出典・観察履歴を削除又はPASSへ変換しない。",
+          "全file/sampleを独立readerで検査し、未適用media PTSとedit後movie対応、timescale/headers/index/sample entry/IDR prefix/empty edit/未知gap/terminal null/held tickを元packet・frames/session・両logsへ照合する。readerのedit無視/PTS再配置を実source時刻と誤認しない。全対象frameとraw/config/画素・geometry/文字/色を検査し、後半欠落を隠さない。 同一成果物の代表的な通常/境界を含む動画で標準playerのopen・短いPlay・前後seekと代表表示を一度確認する。全Play・全境界精密seek・全player実装の一致は保証しない。不一致は元media/edit/indexと忠実なreader結果を切り分け、自製品違反又は未帰属は未完了、根拠付き外部実装差は診断履歴と利用上の制約へ残す。 精密fault/unknown/整数境界/全runはproduction classの回帰。実IDEは普通の静止/連番/混在Save・通常再接続と表示を共有。"
+        ]
+      },
+      "45:VFR-WINDOW": {
+        "agent_requirements": [
+          "自製品の元契約の意味・全対象データ・安全性と未達を維持する。下記の明示改訂は原文の実施方法/外部実装保証/一律human指定だけを置換し、固定出典・観察履歴を削除又はPASSへ変換しない。",
+          "全file/sampleを独立readerで検査し、未適用media PTSとedit後movie対応、timescale/headers/index/sample entry/IDR prefix/empty edit/未知gap/terminal null/held tickを元packet・frames/session・両logsへ照合する。readerのedit無視/PTS再配置を実source時刻と誤認しない。全対象frameとraw/config/画素・geometry/文字/色を検査し、後半欠落を隠さない。 同一成果物の代表的な通常/境界を含む動画で標準playerのopen・短いPlay・前後seekと代表表示を一度確認する。全Play・全境界精密seek・全player実装の一致は保証しない。不一致は元media/edit/indexと忠実なreader結果を切り分け、自製品違反又は未帰属は未完了、根拠付き外部実装差は診断履歴と利用上の制約へ残す。 精密fault/unknown/整数境界/全runはproduction classの回帰。実IDEは普通の静止/連番/混在Save・通常再接続と表示を共有。"
+        ]
+      },
+      "45:VFR-TAIL": {
+        "agent_requirements": [
+          "自製品の元契約の意味・全対象データ・安全性と未達を維持する。下記の明示改訂は原文の実施方法/外部実装保証/一律human指定だけを置換し、固定出典・観察履歴を削除又はPASSへ変換しない。",
+          "全file/sampleを独立readerで検査し、未適用media PTSとedit後movie対応、timescale/headers/index/sample entry/IDR prefix/empty edit/未知gap/terminal null/held tickを元packet・frames/session・両logsへ照合する。readerのedit無視/PTS再配置を実source時刻と誤認しない。全対象frameとraw/config/画素・geometry/文字/色を検査し、後半欠落を隠さない。 同一成果物の代表的な通常/境界を含む動画で標準playerのopen・短いPlay・前後seekと代表表示を一度確認する。全Play・全境界精密seek・全player実装の一致は保証しない。不一致は元media/edit/indexと忠実なreader結果を切り分け、自製品違反又は未帰属は未完了、根拠付き外部実装差は診断履歴と利用上の制約へ残す。 精密fault/unknown/整数境界/全runはproduction classの回帰。実IDEは普通の静止/連番/混在Save・通常再接続と表示を共有。"
+        ]
+      },
+      "45:VFR-BREAK": {
+        "case": {
+          "steps": [
+            "EOF/transport断/clock不達/epoch変更/容量制限の各境界で前/中/後保存をproduction classの隔離fixtureで実行する。同条件nativeの代表取得/通常再接続・保存/表示を別証拠で束ね、各faultを端末で再注入しない。",
+            "既知lossと新frame未確認末尾が併存する対象を保存する。",
+            "gap/loss/missingとvideo_tail、元clock/PTSを照合する。"
+          ],
+          "preconditions": "QA所有のproduction class/fake SDK/loopback/容量制限fixtureと、同buildの別native取得/復旧/表示証拠。"
+        },
+        "agent_requirements": [
+          "自製品の元契約の意味・全対象データ・安全性と未達を維持する。下記の明示改訂は原文の実施方法/外部実装保証/一律human指定だけを置換し、固定出典・観察履歴を削除又はPASSへ変換しない。",
+          "全file/sampleを独立readerで検査し、未適用media PTSとedit後movie対応、timescale/headers/index/sample entry/IDR prefix/empty edit/未知gap/terminal null/held tickを元packet・frames/session・両logsへ照合する。readerのedit無視/PTS再配置を実source時刻と誤認しない。全対象frameとraw/config/画素・geometry/文字/色を検査し、後半欠落を隠さない。 同一成果物の代表的な通常/境界を含む動画で標準playerのopen・短いPlay・前後seekと代表表示を一度確認する。全Play・全境界精密seek・全player実装の一致は保証しない。不一致は元media/edit/indexと忠実なreader結果を切り分け、自製品違反又は未帰属は未完了、根拠付き外部実装差は診断履歴と利用上の制約へ残す。 精密fault/unknown/整数境界/全runはproduction classの回帰。実IDEは普通の静止/連番/混在Save・通常再接続と表示を共有。"
+        ]
+      },
+      "45:VFR-LIFECYCLE": {
+        "agent_requirements": [
+          "自製品の元契約の意味・全対象データ・安全性と未達を維持する。下記の明示改訂は原文の実施方法/外部実装保証/一律human指定だけを置換し、固定出典・観察履歴を削除又はPASSへ変換しない。",
+          "全file/sampleを独立readerで検査し、未適用media PTSとedit後movie対応、timescale/headers/index/sample entry/IDR prefix/empty edit/未知gap/terminal null/held tickを元packet・frames/session・両logsへ照合する。readerのedit無視/PTS再配置を実source時刻と誤認しない。全対象frameとraw/config/画素・geometry/文字/色を検査し、後半欠落を隠さない。 同一成果物の代表的な通常/境界を含む動画で標準playerのopen・短いPlay・前後seekと代表表示を一度確認する。全Play・全境界精密seek・全player実装の一致は保証しない。不一致は元media/edit/indexと忠実なreader結果を切り分け、自製品違反又は未帰属は未完了、根拠付き外部実装差は診断履歴と利用上の制約へ残す。 精密fault/unknown/整数境界/全runはproduction classの回帰。実IDEは普通の静止/連番/混在Save・通常再接続と表示を共有。"
+        ]
+      },
+      "45:VFR-RECIPIENT": {
+        "case": {
+          "steps": [
+            "全file/sampleを独立readerで検査し、未適用media PTSとedit後movie対応、timescale/headers/index/sample entry/IDR prefix/empty edit/未知gap/terminal null/held tickを元packet・frames/session・両logsへ照合する。readerのedit無視/PTS再配置を実source時刻と誤認しない。全対象frameとraw/config/画素・geometry/文字/色を検査し、後半欠落を隠さない。 同一成果物の代表的な通常/境界を含む動画で標準playerのopen・短いPlay・前後seekと代表表示を一度確認する。全Play・全境界精密seek・全player実装の一致は保証しない。不一致は元media/edit/indexと忠実なreader結果を切り分け、自製品違反又は未帰属は未完了、根拠付き外部実装差は診断履歴と利用上の制約へ残す。",
+            "READMEとframes/sessionの表示時刻から両ログの同じ連番を照合する。",
+            "未確認末尾・確定欠落・decoder prerollを区別する。"
+          ]
+        },
+        "agent_requirements": [
+          "自製品の元契約の意味・全対象データ・安全性と未達を維持する。下記の明示改訂は原文の実施方法/外部実装保証/一律human指定だけを置換し、固定出典・観察履歴を削除又はPASSへ変換しない。",
+          "全file/sampleを独立readerで検査し、未適用media PTSとedit後movie対応、timescale/headers/index/sample entry/IDR prefix/empty edit/未知gap/terminal null/held tickを元packet・frames/session・両logsへ照合する。readerのedit無視/PTS再配置を実source時刻と誤認しない。全対象frameとraw/config/画素・geometry/文字/色を検査し、後半欠落を隠さない。 同一成果物の代表的な通常/境界を含む動画で標準playerのopen・短いPlay・前後seekと代表表示を一度確認する。全Play・全境界精密seek・全player実装の一致は保証しない。不一致は元media/edit/indexと忠実なreader結果を切り分け、自製品違反又は未帰属は未完了、根拠付き外部実装差は診断履歴と利用上の制約へ残す。 精密fault/unknown/整数境界/全runはproduction classの回帰。実IDEは普通の静止/連番/混在Save・通常再接続と表示を共有。"
+        ]
+      },
+      "49:BOUNDARY-TAIL": {
+        "agent_requirements": [
+          "自製品の元契約の意味・全対象データ・安全性と未達を維持する。下記の明示改訂は原文の実施方法/外部実装保証/一律human指定だけを置換し、固定出典・観察履歴を削除又はPASSへ変換しない。",
+          "全file/sampleを独立readerで検査し、未適用media PTSとedit後movie対応、timescale/headers/index/sample entry/IDR prefix/empty edit/未知gap/terminal null/held tickを元packet・frames/session・両logsへ照合する。readerのedit無視/PTS再配置を実source時刻と誤認しない。全対象frameとraw/config/画素・geometry/文字/色を検査し、後半欠落を隠さない。 同一成果物の代表的な通常/境界を含む動画で標準playerのopen・短いPlay・前後seekと代表表示を一度確認する。全Play・全境界精密seek・全player実装の一致は保証しない。不一致は元media/edit/indexと忠実なreader結果を切り分け、自製品違反又は未帰属は未完了、根拠付き外部実装差は診断履歴と利用上の制約へ残す。 精密fault/unknown/整数境界/全runはproduction classの回帰。実IDEは普通の静止/連番/混在Save・通常再接続と表示を共有。"
+        ]
+      },
+      "49:BOUNDARY-ACQUIRE": {
+        "agent_requirements": [
+          "自製品の元契約の意味・全対象データ・安全性と未達を維持する。下記の明示改訂は原文の実施方法/外部実装保証/一律human指定だけを置換し、固定出典・観察履歴を削除又はPASSへ変換しない。",
+          "全file/sampleを独立readerで検査し、未適用media PTSとedit後movie対応、timescale/headers/index/sample entry/IDR prefix/empty edit/未知gap/terminal null/held tickを元packet・frames/session・両logsへ照合する。readerのedit無視/PTS再配置を実source時刻と誤認しない。全対象frameとraw/config/画素・geometry/文字/色を検査し、後半欠落を隠さない。 同一成果物の代表的な通常/境界を含む動画で標準playerのopen・短いPlay・前後seekと代表表示を一度確認する。全Play・全境界精密seek・全player実装の一致は保証しない。不一致は元media/edit/indexと忠実なreader結果を切り分け、自製品違反又は未帰属は未完了、根拠付き外部実装差は診断履歴と利用上の制約へ残す。 精密fault/unknown/整数境界/全runはproduction classの回帰。実IDEは普通の静止/連番/混在Save・通常再接続と表示を共有。"
+        ]
+      },
+      "52:CLOCK-VIDEO-REGIONS": {
+        "case": {
+          "steps": [
+            "正常静止と20秒の連番更新を保存する。",
+            "単発invalid RTT sampleと復旧、clock process終了/epoch変更を隔離fixtureで再現し、前後複数frameを保存する。",
+            "最初の正常sample追加直後に次周期sampleなしで保存し、次sample後の新しい保存と比較する。復旧直後frameが単frame分割/次sampleまでの影響域へ残らないことを確認する。",
+            "MP4ちょうど1件・全対象のduration/edit/index・source PTS/frame数と両logの連番をFILEで照合。同一成果物の代表的な通常/境界を含む動画で標準playerのopen・短いPlay・前後seekと代表表示を一度確認する。全Play・全境界精密seek・全player実装の一致は保証しない。不一致は元media/edit/indexと忠実なreader結果を切り分け、自製品違反又は未帰属は未完了、根拠付き外部実装差は診断履歴と利用上の制約へ残す。",
+            "過去clock gapが窓外にある保存を確認し、正常な保持区間が全frame1µsへ崩れないことと元warningを区別する。"
+          ]
+        },
+        "agent_requirements": [
+          "自製品の元契約の意味・全対象データ・安全性と未達を維持する。下記の明示改訂は原文の実施方法/外部実装保証/一律human指定だけを置換し、固定出典・観察履歴を削除又はPASSへ変換しない。",
+          "全file/sampleを独立readerで検査し、未適用media PTSとedit後movie対応、timescale/headers/index/sample entry/IDR prefix/empty edit/未知gap/terminal null/held tickを元packet・frames/session・両logsへ照合する。readerのedit無視/PTS再配置を実source時刻と誤認しない。全対象frameとraw/config/画素・geometry/文字/色を検査し、後半欠落を隠さない。 同一成果物の代表的な通常/境界を含む動画で標準playerのopen・短いPlay・前後seekと代表表示を一度確認する。全Play・全境界精密seek・全player実装の一致は保証しない。不一致は元media/edit/indexと忠実なreader結果を切り分け、自製品違反又は未帰属は未完了、根拠付き外部実装差は診断履歴と利用上の制約へ残す。 精密fault/unknown/整数境界/全runはproduction classの回帰。実IDEは普通の静止/連番/混在Save・通常再接続と表示を共有。"
+        ]
+      },
+      "52:CLOCK-VIDEO-UNKNOWN": {
+        "agent_requirements": [
+          "自製品の元契約の意味・全対象データ・安全性と未達を維持する。下記の明示改訂は原文の実施方法/外部実装保証/一律human指定だけを置換し、固定出典・観察履歴を削除又はPASSへ変換しない。",
+          "全file/sampleを独立readerで検査し、未適用media PTSとedit後movie対応、timescale/headers/index/sample entry/IDR prefix/empty edit/未知gap/terminal null/held tickを元packet・frames/session・両logsへ照合する。readerのedit無視/PTS再配置を実source時刻と誤認しない。全対象frameとraw/config/画素・geometry/文字/色を検査し、後半欠落を隠さない。 同一成果物の代表的な通常/境界を含む動画で標準playerのopen・短いPlay・前後seekと代表表示を一度確認する。全Play・全境界精密seek・全player実装の一致は保証しない。不一致は元media/edit/indexと忠実なreader結果を切り分け、自製品違反又は未帰属は未完了、根拠付き外部実装差は診断履歴と利用上の制約へ残す。 精密fault/unknown/整数境界/全runはproduction classの回帰。実IDEは普通の静止/連番/混在Save・通常再接続と表示を共有。"
+        ]
+      },
+      "85:CLOCK-UNCERTAIN-VIDEO-PLAYBACK": {
+        "case": {
+          "steps": [
+            "履歴確認: base ab2c1773391144ed83f8566f0dfc0ccd734793c0の本Case旧9手順・PR86/92/94・sealed旧製品のexpected/actual part失敗と旧観察を保持する。旧source-only/mux例外やpart数を今回のactive実装方式/完了条件へ流用しない。",
+            "限定JVM: 取得時decodeRun/packetOrdinalを実Storeで固定する。clock epoch/unknown/MAX/GOP file切替だけではrunを変えず、gen/session/config/実VIDEO中断・packet拒否・byte/packet evictionは正しい取得事実として区別する。ordinal0/欠番/overflow・owner/session/config/寸法/PTS/byte矛盾では連続を捏造しない。共有retention/cut/clock/gap保全は維持する。",
+            "限定JVM: 修正前の実Store→Writer反例と同じ条件を新sourceで実行し、1MP4/1track・全3source PTS・観測VFR・terminal nullとauthoring tick・unknown window/null/MAXを照合。dense IDR/P、正常→unknown→正常、旧/新streamと複数再接続、PTS reset、同geometry config切替で全対象packet/config/復号画素・media/movie mapping・headers/editsを確認する。",
+            "限定JVM: 窓を跨ぐ表示frameと最寄りIDR/prefixを保持し、prerollを隠した複数edit、既知VIDEO gapのempty edit、不明gapのactual duration nullとauthoring配置、held tail/確認済coverage分離を確認。後半読取/codec/IDR不足・容量/取消しは成功を公開せずFAILED+固定pin、retryは同じFrozenCaptureを使う。通常same geometryは再encodeしない。mixed geometryは全frame/可読性/aspect/原packet sidecarを満たす変換の固定候補で別途確認し、未実装を完了にしない。",
+            "実IDE: PM gate後、新HEAD/標準ZIP/全JARと実ロードidentityを照合し、QA所有fixtureでN=300を使う。通常3操作/REQUEST・DRAW・FRAME_COMMIT計9行を両log固定母数として別保存する。同じ取得で新PRE3操作9行を完了し、所有Emulatorを1回だけ通常再接続し、別POST3操作9行を入力して同じ窓へ保存する。PRE/POST各9行（両log各計18行）とrun/view/boot/eventを保持し、POSTだけで再接続合格にしない。",
+            "保存後、固定snapshot T・個別frameのsupported mappingと両境界誤差で通常3event/両log各9phase・PRE3/POST3両log各18phaseの全予定対象がN300内であることを照合する。240秒の事前host余裕は安全な段取り例であり必須閾値から除外する。窓外/欠落/識別不能/精度不明を救済しない。通常/再接続各1MP4の全対象をFILEで検査する。全file/sampleを独立readerで検査し、未適用media PTSとedit後movie対応、timescale/headers/index/sample entry/IDR prefix/empty edit/未知gap/terminal null/held tickを元packet・frames/session・両logsへ照合する。readerのedit無視/PTS再配置を実source時刻と誤認しない。全対象frameとraw/config/画素・geometry/文字/色を検査し、後半欠落を隠さない。 同一成果物の代表的な通常/境界を含む動画で標準playerのopen・短いPlay・前後seekと代表表示を一度確認する。全Play・全境界精密seek・全player実装の一致は保証しない。不一致は元media/edit/indexと忠実なreader結果を切り分け、自製品違反又は未帰属は未完了、根拠付き外部実装差は診断履歴と利用上の制約へ残す。 両logのrecord_id/UID/帰属/元gap/MAX/不足を全件照合し、unknownはnullのまま残す。追加再接続/再録画を自動追加しない。",
+            "Case記録: 同一製品class/JAR/CodeSource/hashへ限定JVM・実IDE・全file/内容検査・代表player診断を別証拠で束ねる。300event/30分・精密同期・GOP・画質/負荷とREALは別条件で確認する。",
+            "限定JVM: 新clock samples/後続取得/設定変更を進めても固定retryの元PTS/frame/config/log/mapping/gap/null/MAX/pinが変わらない。旧cut/両側scopeの証拠は説明用に保持するが、それをsource再生の許可や同期確定へ転用しない。",
+            "引継ぎ: 固定HEAD/base/標準ZIPと全対象映像・両log/通常PREPOST・未観察Caseを既存QAへ双方向readbackし、独立review指摘と必須checksを解消してから実装scopeを閉じる。単一MP4のfile数と実frame母数は別に全件照合する。"
+          ],
+          "expected": "動画がある成功保存はMP4ちょうど1件。sourceのpositive acquisition factsが示す連続区間では時計確度に関わらず全元frame/PTS/codec/VFRを保ち、再接続/PTS reset/config境界は同一file内の独立media/presentation区間で表す。時計unknown/MAX/null、元gap/両log/不足・共有retention/UI/tailとmapper閾値は維持し、個別に確定できるframe情報を区間のunknownへまとめて失わない。既知gapは空edit、不明gapはactual duration nullとauthoring配置を区別し、末尾source duration nullとheld/tickを観測coverageへ加算しない。全対象の後半欠落やdecoder prefix不足を部分成功・複数MP4fallbackで隠さずFAILED+pin。元frame/config/raw・全画素/実duration/対応表・固定retryと1MP4を実質検査する。通常3/PRE3/POST3の全映像と両log各9/18行・全対象FILE/内容検査と代表player smoke・同ZIP・全300event/30分等の受入を維持し、限定JVMや旧source PASSで代用しない。"
+        },
+        "agent_requirements": [
+          "自製品の元契約の意味・全対象データ・安全性と未達を維持する。下記の明示改訂は原文の実施方法/外部実装保証/一律human指定だけを置換し、固定出典・観察履歴を削除又はPASSへ変換しない。",
+          "全file/sampleを独立readerで検査し、未適用media PTSとedit後movie対応、timescale/headers/index/sample entry/IDR prefix/empty edit/未知gap/terminal null/held tickを元packet・frames/session・両logsへ照合する。readerのedit無視/PTS再配置を実source時刻と誤認しない。全対象frameとraw/config/画素・geometry/文字/色を検査し、後半欠落を隠さない。 同一成果物の代表的な通常/境界を含む動画で標準playerのopen・短いPlay・前後seekと代表表示を一度確認する。全Play・全境界精密seek・全player実装の一致は保証しない。不一致は元media/edit/indexと忠実なreader結果を切り分け、自製品違反又は未帰属は未完了、根拠付き外部実装差は診断履歴と利用上の制約へ残す。 精密fault/unknown/整数境界/全runはproduction classの回帰。実IDEは普通の静止/連番/混在Save・通常再接続と表示を共有。"
+        ]
+      },
+      "135:LOG-ONLY-README": {
+        "agent_requirements": [
+          "自製品の元契約の意味・全対象データ・安全性と未達を維持する。下記の明示改訂は原文の実施方法/外部実装保証/一律human指定だけを置換し、固定出典・観察履歴を削除又はPASSへ変換しない。",
+          "全file/sampleを独立readerで検査し、未適用media PTSとedit後movie対応、timescale/headers/index/sample entry/IDR prefix/empty edit/未知gap/terminal null/held tickを元packet・frames/session・両logsへ照合する。readerのedit無視/PTS再配置を実source時刻と誤認しない。全対象frameとraw/config/画素・geometry/文字/色を検査し、後半欠落を隠さない。 同一成果物の代表的な通常/境界を含む動画で標準playerのopen・短いPlay・前後seekと代表表示を一度確認する。全Play・全境界精密seek・全player実装の一致は保証しない。不一致は元media/edit/indexと忠実なreader結果を切り分け、自製品違反又は未帰属は未完了、根拠付き外部実装差は診断履歴と利用上の制約へ残す。 文書の全件join/hashはFILE、標準editorのopen/readと代表同ID照合は一回のnativeで共有。"
+        ]
+      },
+      "143:MIXED-VIDEO-LEVEL": {
+        "case": {
+          "steps": [
+            "JVMで12950µs→52/33333µs→51と整数境界、隠れたIDR prefix、窓外の既知次packet、未知末尾を確認する。保存全体のLevelと全sample entryのSPS/avcC、全元PTS/packet/raw/config hash、原寸rectangle/余白/pixel/色、共通240Mbps、preflight取消し、5.2外のFAILEDとpin/partial/atomicの実変更に必要な回帰を確認する。",
+            "同じ新ZIPを実ロードしたIDEで、既存Case85の通常の取得から縦横混在をSaveする。1件のMP4/1video trackと両log/metadata、元PTS/全選択frame（decoder prefix含む）/raw、取得継続と正常終了を照合する。nativeで5.1/5.2の両方を狙い撃ちして生成する義務や、新しいmixed失敗→再試行/取消し工程は追加しない。",
+            "全file/sampleを独立readerで検査し、未適用media PTSとedit後movie対応、timescale/headers/index/sample entry/IDR prefix/empty edit/未知gap/terminal null/held tickを元packet・frames/session・両logsへ照合する。readerのedit無視/PTS再配置を実source時刻と誤認しない。全対象frameとraw/config/画素・geometry/文字/色を検査し、後半欠落を隠さない。 同一成果物の代表的な通常/境界を含む動画で標準playerのopen・短いPlay・前後seekと代表表示を一度確認する。全Play・全境界精密seek・全player実装の一致は保証しない。不一致は元media/edit/indexと忠実なreader結果を切り分け、自製品違反又は未帰属は未完了、根拠付き外部実装差は診断履歴と利用上の制約へ残す。 同geometry5.1とmixedの最小Level/SPS/avcC・全元間隔/原寸/aspect/文字/余白/色・prefix除外/VFRはFILE/回帰で証明する。full H.264/HRD準拠又は旧Case全面合格を推定しない。"
+          ],
+          "expected": "既知の全元間隔が収まる最小Levelを保存全体で固定。必要な時だけ5.2になりSPS/avcC/guardが一致する。元frame数/PTS/raw/原寸/色と1MP4/1trackを維持し、未知source_duration_usはnull。5.2外/共通240Mbps超過や取消しは成功を公開せずpinを保つ。新候補の通常mixed保存と全frame/文字・原寸の忠実な検査と代表player smokeが確認でき、既存5.1互換性を維持する。欠落や不明を隠さず、既存Caseの残契約を別途保持する。"
+        },
+        "agent_requirements": [
+          "自製品の元契約の意味・全対象データ・安全性と未達を維持する。下記の明示改訂は原文の実施方法/外部実装保証/一律human指定だけを置換し、固定出典・観察履歴を削除又はPASSへ変換しない。",
+          "全file/sampleを独立readerで検査し、未適用media PTSとedit後movie対応、timescale/headers/index/sample entry/IDR prefix/empty edit/未知gap/terminal null/held tickを元packet・frames/session・両logsへ照合する。readerのedit無視/PTS再配置を実source時刻と誤認しない。全対象frameとraw/config/画素・geometry/文字/色を検査し、後半欠落を隠さない。 同一成果物の代表的な通常/境界を含む動画で標準playerのopen・短いPlay・前後seekと代表表示を一度確認する。全Play・全境界精密seek・全player実装の一致は保証しない。不一致は元media/edit/indexと忠実なreader結果を切り分け、自製品違反又は未帰属は未完了、根拠付き外部実装差は診断履歴と利用上の制約へ残す。 精密fault/unknown/整数境界/全runはproduction classの回帰。実IDEは普通の静止/連番/混在Save・通常再接続と表示を共有。"
+        ]
+      }
+    },
+    "plan_extension": {
+      "issue": 190,
+      "previous_required_ancestor": "5bf9e84a887171df5f0287b036e9ba288fbfae9f",
+      "added_cases": [
+        "186:CLOCK-BATCH-SAVE"
       ]
     }
   }

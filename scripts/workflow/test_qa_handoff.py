@@ -23,6 +23,8 @@ class GH(FakeGitHub):
         self.children = []
         self.fail_relationship = False
     def pages(self, path):
+        if '/pulls/' in path:
+            return []
         if '/sub_issues?' in path:
             return copy.deepcopy(self.children)
         return [dict(copy.deepcopy(x), number=n) for n, x in self.issues.items()]
@@ -129,6 +131,12 @@ class HandoffTests(unittest.TestCase):
         self.pr['body'] = self.pr['body'].replace('GUI: required', 'GUI: not-required')
         return q.handoff(self.gh, al.REPO, self.pr, self.gh.issue(35), NO_CASES)
 
+    def test_gui_words_in_explanation_do_not_change_metadata(self):
+        self.pr['body'] = self.pr['body'].replace('GUI: required', 'GUI: not-required')
+        self.pr['body'] += '\nExplanation: GUI: required is not this PR metadata.'
+        self.assertIsNone(q.handoff(self.gh, al.REPO, self.pr, self.gh.issue(35), NO_CASES))
+        self.assertEqual(self.gh.created, 0)
+
     def test_no_cases_reuses_release_without_qa_or_body_replacement(self):
         for _ in range(2):
             self.assertIsNone(self.transfer_without_cases())
@@ -219,7 +227,8 @@ class ClosureTests(unittest.TestCase):
         gh.pull['body'] = gh.pull['body'].replace('tooling','develop').replace('GUI: not-required', 'GUI: required')
         if no_cases:
             gh.pull['body'] = gh.pull['body'].replace('GUI: required', 'GUI: not-required')
-        state = {'binding': al.binding(gh.pull, gh.issue(35)), 'review': dict(report(), issue_complete=complete)}
+        bound, _ = self.loop.bound(gh.pull, gh.issue(35), gh.comments(36))
+        state = {'binding': bound, 'review': dict(report(), issue_complete=complete)}
         h = {'issue':35,'parent':1,'close_issue':False,'gui_required':False}
         with patch.object(al, 'git', return_value=__import__('json').dumps(NO_CASES if no_cases else CHANGE)) as git:
             result = self.loop.finish(gh.pull, h, state, None)
@@ -252,7 +261,7 @@ class ClosureTests(unittest.TestCase):
         self.loop.cleanup.assert_not_called()
 
     def test_changed_acceptance_during_transfer_never_closes(self):
-        with self.assertRaisesRegex(ValueError, 'acceptance changed'): self.finish(change_origin=True)
+        with self.assertRaisesRegex(ValueError, 'changed during handoff'): self.finish(change_origin=True)
         self.assertEqual(self.loop.gh.issue(35)['state'], 'open')
         self.loop.cleanup.assert_not_called()
 
