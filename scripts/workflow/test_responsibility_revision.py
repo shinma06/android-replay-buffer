@@ -358,8 +358,8 @@ class ResponsibilityRevisionTests(unittest.TestCase):
         path = Path(__file__).resolve().parents[2] / INITIAL_PLAN
         p = json.loads(path.read_text())
         validate_responsibility_policy(p)
-        self.assertEqual(136, len(p['cases']))
-        self.assertEqual(205, sum(len(c['sources']) for c in p['cases'].values()))
+        self.assertEqual(138, len(p['cases']))
+        self.assertEqual(207, sum(len(c['sources']) for c in p['cases'].values()))
         self.assertEqual(34, sum(c['initial_scope'] == 'deferred' for c in p['cases'].values()))
         self.assertTrue(all('full_acceptance_actor' not in effective_initial_entry(p, k) for k in p['cases']))
         revision = copy.deepcopy(p['responsibility_revision'])
@@ -369,7 +369,14 @@ class ResponsibilityRevisionTests(unittest.TestCase):
                         cases={k: v for k, v in p['cases'].items() if k not in extension['added_cases']})
         self.assertEqual('a5c470bf6bdbbbe77d2001bcb287667e4a6d399ee935ebd3fc23388be2f37441',
                          canonical_hash(original))
-        revision['groups']['recovery']['cases'].remove('186:CLOCK-BATCH-SAVE')
+        for key in extension['added_cases']:
+            revision['groups']['recovery']['cases'].remove(key)
+        for key in ('27:SAVE-FAIL-02-EMU', '27:SAVE-FAIL-02-REAL'):
+            revision['overrides'].pop(key)
+        revision['common_requirements'][0] = revision['common_requirements'][0].replace(
+            'と失敗・取消し保存attemptの削除義務', '')
+        revision['groups']['recovery']['excluded'] = (
+            '合成で検証したfault全種を端末/OSで再注入する義務を除外。自製品glueの失敗表示/cleanup/retryは省略しない。')
         self.assertEqual('9d36b54dfb7261927a5608a41114446affad711a79c7af21b3514f9c56b7493a',
                          canonical_hash(revision))
         new = p['cases']['186:CLOCK-BATCH-SAVE']
@@ -378,10 +385,29 @@ class ResponsibilityRevisionTests(unittest.TestCase):
                           'source_path': 'docs/verification/changes/issue-186.json',
                           'original_case_sha256': 'dfa598a37e3c082521dc4ae1332d13d225723482b9acbf82a11fa3edff686962'}],
                          new['sources'])
-        self.assertEqual(new['sources'][0]['source_merge'], p['required_ancestor'])
+        previous = dict(original, required_ancestor=new['sources'][0]['source_merge'],
+                        cases={**original['cases'], '186:CLOCK-BATCH-SAVE': new})
+        revision['groups']['recovery']['cases'].append('186:CLOCK-BATCH-SAVE')
+        revision['plan_extension'] = dict(extension, issue=190, added_cases=['186:CLOCK-BATCH-SAVE'])
+        previous['responsibility_revision'] = revision
+        self.assertEqual('1fd0f0104e89c9931e59cb56d94a3f027d52f60cfb173663407ad52473f30dde',
+                         canonical_hash(previous))
+        for key, pr, merge, digest in (
+                ('197:SAVE-FAILURE-OWNERSHIP', 199, 'ef36082ec4145bae481cd4ea883fcc26fced2482',
+                 'dbde8e191ff0a01174b9573314634bdd6ce91c280c2cf6a73ac9f112bb83843c'),
+                ('198:LOCAL-OWNERSHIP-RECOVERY', 200, '4d278e65dec0c55e71d584ff24c7f6fa407586cb',
+                 'a7de6997b9c6850c6cd25de4b203a13731a9175676a46e99a79319b96b7e860b')):
+            entry = p['cases'][key]
+            self.assertEqual([{'source_pr': pr, 'source_merge': merge,
+                              'source_path': 'docs/verification/changes/issue-' + key.split(':')[0] + '.json',
+                              'original_case_sha256': digest}], entry['sources'])
+            self.assertEqual(digest, entry['current_case_sha256'])
+            self.assertEqual(('agent', []), (entry['initial_scope'], entry['deferred_scope']))
+        self.assertEqual('4d278e65dec0c55e71d584ff24c7f6fa407586cb', p['required_ancestor'])
         self.assertEqual(new['sources'][0]['original_case_sha256'], new['current_case_sha256'])
         self.assertEqual(('agent', []), (new['initial_scope'], new['deferred_scope']))
-        for mutation in ('old-entry', 'old-ancestor', 'missing-addition', 'unknown-addition', 'null'):
+        for mutation in ('old-entry', 'old-ancestor', 'missing-addition', 'missing-197', 'missing-198',
+                         'wrong-issue', 'unknown-addition', 'null'):
             bad = copy.deepcopy(p)
             if mutation == 'old-entry':
                 bad['cases']['3:PLUGIN-LOAD']['agent_requirements'].append('Alter old scope')
@@ -389,6 +415,10 @@ class ResponsibilityRevisionTests(unittest.TestCase):
                 bad['responsibility_revision']['plan_extension']['previous_required_ancestor'] = 'f' * 40
             elif mutation == 'missing-addition':
                 del bad['cases']['186:CLOCK-BATCH-SAVE']
+            elif mutation in ('missing-197', 'missing-198'):
+                del bad['cases'][next(k for k in bad['cases'] if k.startswith(mutation[-3:] + ':'))]
+            elif mutation == 'wrong-issue':
+                bad['responsibility_revision']['plan_extension']['issue'] = 190
             elif mutation == 'unknown-addition':
                 bad['responsibility_revision']['plan_extension']['added_cases'].append('185:EXTRA')
             else:
@@ -442,6 +472,103 @@ class ResponsibilityRevisionTests(unittest.TestCase):
         self.fixture.documents[f'{NEW}:docs/verification/changes/issue-186.json']['cases'][0]['steps'].pop()
         with self.assertRaisesRegex(ValueError, 'current Case identity'):
             initial_stage_plan(BASE, NEW, self.fixture.git)
+
+    def test_save_retention_extension_gate_and_listing_share_fixed_sources(self):
+        additions = ['186:CLOCK-BATCH-SAVE', '197:SAVE-FAILURE-OWNERSHIP',
+                     '198:LOCAL-OWNERSHIP-RECOVERY']
+        revision = self.policy['responsibility_revision']
+        revision['plan_extension'] = {'issue': 201, 'previous_required_ancestor': NEW,
+                                     'added_cases': additions}
+        cases = []
+        for key in additions:
+            number, name = key.split(':')
+            case = dict(copy.deepcopy(ti.CASE), id=name, steps=['Same ZIP regression', 'Native shared glue'])
+            path = 'docs/verification/changes/issue-' + number + '.json'
+            self.fixture.documents[f'{NEW}:{path}'] = {
+                'schema': 1, 'issue': int(number), 'gui_required': True,
+                'reason': 'Fixed product change', 'cli_checks': ['Regression'], 'cases': [case]}
+            entry = copy.deepcopy(self.policy['cases']['36:QA-1-EMU'])
+            entry.update(current_case_sha256=canonical_hash(case), deferred_scope=[], sources=[{
+                'source_pr': int(number), 'source_merge': NEW, 'source_path': path,
+                'original_case_sha256': canonical_hash(case)}])
+            self.policy['cases'][key] = entry
+            revision['groups']['fixture']['cases'].append(key)
+            cases.append((key, case, {k: v for k, v in entry['sources'][0].items()
+                                      if k != 'original_case_sha256'}))
+        # SAVE-FAIL-02's retained original body is amended by the same resolver as the gate.
+        key = '36:QA-1-EMU'
+        revised_expected = 'Retain failed/cancelled attempt; best effort location; fixed retry.'
+        revision['overrides'][key]['case']['expected'] = revised_expected
+        original_case = copy.deepcopy(self.fixture.documents[f'{NEW}:docs/verification/changes/issue-36.json']['cases'][0])
+        # Supply all added merged source Cases through the existing gate fixture.
+        original_api = self.fixture.api
+        original_git = self.fixture.git
+        merges = {number: str(number % 10) * 40 for number in (186, 197, 198)}
+        for key, case, source in cases:
+            number = int(key.split(':')[0])
+            merge = merges[number]
+            self.policy['cases'][key]['sources'][0]['source_merge'] = merge
+            self.fixture.documents[f"{merge}:{source['source_path']}"] = copy.deepcopy(
+                self.fixture.documents[f"{NEW}:{source['source_path']}"])
+            self.fixture.range.append(merge)
+            self.initial.manifest['changes'].append({'commit': merge, 'pr': number})
+        def api(path):
+            if path.startswith('pulls/') and int(path.split('/')[1]) in merges:
+                number = int(path.split('/')[1])
+                source = copy.deepcopy(self.fixture.source)
+                source['merge_commit_sha'] = merges[number]
+                source['head']['ref'] = f'codex/{number}-change'
+                source['body'] = (f'Issue: #{number}\nGUI: required\nIntegration: develop\n'
+                                  f'Verification: docs/verification/changes/issue-{number}.json')
+                return source
+            return original_api(path)
+        def git(*args):
+            if args[0] == 'rev-list' and '--first-parent' in args:
+                return args[-1].split('..')[-1]
+            return original_git(*args)
+        self.fixture.api, self.fixture.git = api, git
+        self.initial.record_policy()
+        self.initial.record_results()
+        for result in self.initial.manifest['results'].values():
+            if 'initial_observation' in result:
+                self.proof(result['initial_observation'])
+        self.assertEqual(5, self.verify()['cases'])
+        missing = self.initial.manifest['results'].pop(additions[1])
+        with self.assertRaisesRegex(ValueError, 'ALL required'):
+            self.verify()
+        self.initial.manifest['results'][additions[1]] = missing
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'original.json'
+            data = copy.deepcopy(self.fixture.documents[f'{NEW}:docs/verification/changes/issue-36.json'])
+            path.write_text(json.dumps(data))
+            paths = [path]
+            for new_key in additions:
+                source_path = self.policy['cases'][new_key]['sources'][0]['source_path']
+                new_path = Path(tmp) / Path(source_path).name
+                new_path.write_text(json.dumps(self.fixture.documents[f'{NEW}:{source_path}']))
+                paths.append(new_path)
+            view = render_queue(paths, self.initial.manifest, self.fixture.git)
+            self.assertIn(revised_expected, view)
+            for new_key in additions:
+                self.assertIn(new_key.split(':')[1], view)
+            self.assertEqual(original_case, data['cases'][0])
+            for mutation in ('candidate-only', 'missing-source', 'wrong-source-hash', 'current-case'):
+                documents = copy.deepcopy(self.fixture.documents)
+                if mutation == 'candidate-only':
+                    self.fixture.documents[f'{NEW}:{INITIAL_PLAN}']['responsibility_revision']['overrides']['36:QA-1-EMU']['case']['expected'] = 'Candidate amendment'
+                elif mutation == 'missing-source':
+                    del self.fixture.documents[f'{merges[197]}:docs/verification/changes/issue-197.json']
+                elif mutation == 'wrong-source-hash':
+                    for ref in (BASE, NEW):
+                        self.fixture.documents[f'{ref}:{INITIAL_PLAN}']['cases'][additions[1]]['sources'][0]['original_case_sha256'] = 'f' * 64
+                else:
+                    self.fixture.documents[f'{NEW}:docs/verification/changes/issue-198.json']['cases'][0]['expected'] = 'Changed contract'
+                with self.subTest(mutation=mutation):
+                    with self.assertRaises((ValueError, KeyError)):
+                        self.verify()
+                    with self.assertRaises((ValueError, KeyError)):
+                        render_queue(paths, self.initial.manifest, self.fixture.git)
+                self.fixture.documents = documents
 
     def test_new_assessment_can_use_passing_facts_from_old_pending_verdict(self):
         aggregate = {'status': 'pending', 'head': NEW, 'artifact_sha256': 'e' * 64,
