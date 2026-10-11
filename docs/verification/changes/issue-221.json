@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "issue": 221,
+  "gui_required": false,
+  "reason": "PR220実mainの正式139 Case計画・履歴validator・回帰・説明をdevelopへ同期する管理変更。製品/CLI/build/fixture/原Case/観察・失敗・未達は不変で、GUI/device/導入/再起動は不要。新候補/標準ZIP・同一JAR照合・native検証は既存QA27/175、human/REAL延期はQA65、main製品反映はrelease10へPMが統合後に双方向移管する。Caseなしのため新QAを作成しない。",
+  "cli_checks": [
+    "python3 scripts/check.py",
+    "python3 scripts/workflow/product_check.py",
+    "python3 -m unittest discover -s scripts/workflow -p test_responsibility_revision.py",
+    "python3 scripts/workflow/change_impact.py --base origin/develop --run-tests"
+  ],
+  "cases": []
+}

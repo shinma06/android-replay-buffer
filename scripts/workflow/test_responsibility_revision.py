@@ -14,7 +14,9 @@ from test_verification import observation
 from test_observation_reuse import OLD, RECORD, reused, record_original
 from verification import (INITIAL_PLAN, canonical_hash, effective_initial_entry,
                           effective_responsibility_case, initial_stage_plan, render_queue,
-                          previous_installation_plan, validate_candidate_result, validate_responsibility_policy)
+                          previous_installation_plan, previous_settings_plan, historical_initial_sources,
+                          bind_initial_sources, validate_fact_assessment,
+                          validate_candidate_result, validate_responsibility_policy)
 
 
 class ResponsibilityRevisionTests(unittest.TestCase):
@@ -361,6 +363,12 @@ class ResponsibilityRevisionTests(unittest.TestCase):
         path = Path(__file__).resolve().parents[2] / INITIAL_PLAN
         p = json.loads(path.read_text())
         validate_responsibility_policy(p)
+        self.assertEqual(139, len(p['cases']))
+        self.assertEqual(208, sum(len(c['sources']) for c in p['cases'].values()))
+        p = previous_settings_plan(p)
+        self.assertEqual('6d11e3cdee0b6189c743fb1a4c8ee3a4e582d72af7e9643bb001536dd4e0c79f',
+                         canonical_hash(p))
+        validate_responsibility_policy(p)
         self.assertEqual(138, len(p['cases']))
         self.assertEqual(207, sum(len(c['sources']) for c in p['cases'].values()))
         self.assertEqual(34, sum(c['initial_scope'] == 'deferred' for c in p['cases'].values()))
@@ -545,7 +553,7 @@ class ResponsibilityRevisionTests(unittest.TestCase):
         base = 'f6352e39e45ee33913c0ee79ca482d61531dffdc'
         candidate = '707d3b0d26f749ef7537ef83a25a38081af35d62'
         prior_ref = '280c96cb2d93002152e57de7803b1eb03c8bc26b'
-        policy = json.loads((root / INITIAL_PLAN).read_text())
+        policy = previous_settings_plan(json.loads((root / INITIAL_PLAN).read_text()))
 
         @cache
         def git(*args):
@@ -593,6 +601,172 @@ class ResponsibilityRevisionTests(unittest.TestCase):
                         validate_responsibility_policy(bad)
                     with self.assertRaisesRegex(ValueError, 'exact prior plan'):
                         initial_stage_plan(base, candidate, overlay)
+
+    def test_settings_extension_binds_real_history_sources_and_listing(self):
+        root = Path(__file__).resolve().parents[2]
+        base = '6d976b6e2883e88ca15307e68956eaf649f38a9f'
+        candidate = '06419bd17dddc00a1b57c086be4e86d6184e945f'
+        key = '216:SETTINGS-WIDTH-RECOVERY'
+        policy = json.loads((root / INITIAL_PLAN).read_text())
+
+        @cache
+        def git(*args):
+            return subprocess.check_output(['git', *args], cwd=root, text=True).strip()
+
+        prior = json.loads(git('show', base + ':' + INITIAL_PLAN))
+        self.assertEqual(prior, previous_settings_plan(policy))
+        self.assertEqual(prior['cases'], {k: v for k, v in policy['cases'].items() if k != key})
+        self.assertEqual(previous_installation_plan(prior), previous_installation_plan(policy))
+        self.assertEqual(policy['responsibility_revision']['installation_revision'],
+                         prior['responsibility_revision']['installation_revision'])
+        self.assertEqual((105, 34), tuple(sum(c['initial_scope'] == scope for c in policy['cases'].values())
+                                         for scope in ('agent', 'deferred')))
+        self.assertEqual(policy['responsibility_revision']['groups']['ui-settings']['cases'],
+                         prior['responsibility_revision']['groups']['ui-settings']['cases'] + [key])
+        self.assertEqual(prior, initial_stage_plan(base, candidate, git))
+        data = json.loads(git('show', candidate + ':docs/verification/changes/issue-216.json'))
+        case = data['cases'][0]
+        self.assertEqual('e53106b34733bd505bdd9740892674cbc2acf703ba204b06708d5768d9e9d8f3',
+                         canonical_hash(case))
+        self.assertEqual([{'source_pr': 218, 'source_merge': candidate,
+                          'source_path': 'docs/verification/changes/issue-216.json',
+                          'original_case_sha256': canonical_hash(case)}], policy['cases'][key]['sources'])
+        self.assertEqual(('agent', []), (policy['cases'][key]['initial_scope'],
+                                       policy['cases'][key]['deferred_scope']))
+
+        def synchronized(*args):
+            if args in (('show', base + ':' + INITIAL_PLAN), ('show', candidate + ':' + INITIAL_PLAN)):
+                return json.dumps(policy)
+            return git(*args)
+
+        self.assertEqual(policy, initial_stage_plan(base, candidate, synchronized))
+        rows = historical_initial_sources(policy, candidate, synchronized)
+        self.assertEqual(208, len(rows))
+        self.assertEqual(case, next(c for k, c, _ in rows if k == key))
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'case.json'
+            path.write_text(json.dumps(data))
+            manifest = {'base': base, 'candidate': candidate, 'stage': 'initial-agent', 'results': {}}
+            view = render_queue([path], manifest, synchronized)
+            for text in [case['preconditions'], *case['steps'], case['expected']]:
+                self.assertIn(text, view)
+            self.assertIn('有効条件の証拠: 未登録', view)
+            self.assertNotIn('初期版範囲合格', view)
+
+        # New candidates must synchronize 139 Cases; the prior plans are history only.
+        for candidate_policy in (prior, previous_installation_plan(policy)):
+            def unsynchronized(*args):
+                if args == ('show', base + ':' + INITIAL_PLAN):
+                    return json.dumps(policy)
+                if args == ('show', candidate + ':' + INITIAL_PLAN):
+                    return json.dumps(candidate_policy)
+                return git(*args)
+            with self.assertRaisesRegex(ValueError, 'exact trusted'):
+                initial_stage_plan(base, candidate, unsynchronized)
+
+        # A candidate-only registration does not change the trusted main plan.
+        def candidate_only(*args):
+            return json.dumps(policy) if args == ('show', candidate + ':' + INITIAL_PLAN) else git(*args)
+        with self.assertRaisesRegex(ValueError, 'exact trusted'):
+            initial_stage_plan(base, candidate, candidate_only)
+
+        for mutation in ('group', 'override', 'common', 'old-entry', 'hash', 'missing',
+                         'extra-key', 'duplicate-group', 'source-pr', 'source-merge', 'source-path',
+                         'source-hash', 'current-hash'):
+            bad = copy.deepcopy(policy)
+            revision = bad['responsibility_revision']
+            if mutation == 'group':
+                revision['groups']['ui-settings']['methods'] += ' changed'
+            elif mutation == 'override':
+                revision['overrides']['3:PLUGIN-LOAD']['case']['steps'][0] += ' changed'
+            elif mutation == 'common':
+                revision['common_requirements'][0] += ' changed'
+            elif mutation == 'old-entry':
+                bad['cases']['173:PACKAGE-INPUT-GUIDANCE']['agent_requirements'].append('Changed old scope')
+            elif mutation == 'hash':
+                revision['plan_extension']['previous_plan_sha256'] = 'f' * 64
+            elif mutation == 'missing':
+                del bad['cases'][key]
+            elif mutation == 'extra-key':
+                bad['cases']['216:EXTRA'] = copy.deepcopy(bad['cases'][key])
+            elif mutation == 'duplicate-group':
+                revision['groups']['ui-settings']['cases'].append(key)
+            elif mutation == 'source-pr':
+                bad['cases'][key]['sources'][0]['source_pr'] = 216
+            elif mutation == 'source-merge':
+                bad['cases'][key]['sources'][0]['source_merge'] = base
+            elif mutation == 'source-path':
+                bad['cases'][key]['sources'][0]['source_path'] = 'docs/verification/changes/issue-173.json'
+            elif mutation == 'source-hash':
+                bad['cases'][key]['sources'][0]['original_case_sha256'] = 'f' * 64
+            else:
+                bad['cases'][key]['current_case_sha256'] = 'f' * 64
+
+            def changed(*args):
+                if args in (('show', base + ':' + INITIAL_PLAN), ('show', candidate + ':' + INITIAL_PLAN)):
+                    return json.dumps(bad)
+                return git(*args)
+
+            for rehash in (False, True):
+                if rehash and mutation in ('group', 'override', 'common', 'old-entry'):
+                    revision['plan_extension']['previous_plan_sha256'] = canonical_hash(previous_settings_plan(bad))
+                    revision['installation_revision']['previous_plan_sha256'] = canonical_hash(previous_installation_plan(bad))
+                with self.subTest(mutation=mutation, rehash=rehash), self.assertRaises(ValueError):
+                    admitted = initial_stage_plan(base, candidate, changed)
+                    bind_initial_sources(admitted, rows)
+
+        # Retained successful facts from the registered 138 plan are admissible only
+        # with unchanged product history; this synthetic observation is not a GUI PASS.
+        observed = dict(observation(), actor='gpt', head=candidate,
+                        responsibility_revision=canonical_hash(policy['responsibility_revision']))
+        observed['responsibility_evidence'] = {name: 'Synthetic coverage fixture' for name in
+            ('contract_coverage', 'artifact_binding', 'failure_attribution', 'regression', 'integration')}
+        aggregate = {'status': 'pending', 'head': candidate, 'reason': 'Original pending stays pending'}
+        observed['responsibility_assessment'] = {
+            'source_candidate': candidate, 'source_result': aggregate,
+            'source_result_sha256': canonical_hash(aggregate), 'source_record_evidence': 'Synthetic fixture',
+            'facts': {'old': dict(observation(), head=candidate, actor='gpt')},
+            'coverage': {name: ['old'] for name in observed['responsibility_evidence']},
+            'missing_requirements': [], 'unresolved_owned_failures': []}
+        validate_fact_assessment(observed, '173:PACKAGE-INPUT-GUIDANCE', policy,
+                                 candidate, 'e' * 64, git, base)
+        self.assertEqual('pending', aggregate['status'])
+        bad_prior = copy.deepcopy(prior)
+        bad_prior['responsibility_revision']['overrides']['3:PLUGIN-LOAD']['case']['steps'][0] += ' changed'
+
+        def mutated_source(*args):
+            return json.dumps(bad_prior) if args == ('show', candidate + ':' + INITIAL_PLAN) else git(*args)
+        with self.assertRaisesRegex(ValueError, 'exact original or trusted current'):
+            validate_fact_assessment(observed, '173:PACKAGE-INPUT-GUIDANCE', policy,
+                                     candidate, 'e' * 64, mutated_source, base)
+
+        original = dict(observation(), head=candidate, actor='gpt',
+                        responsibility_revision=canonical_hash(prior['responsibility_revision']),
+                        responsibility_evidence=copy.deepcopy(observed['responsibility_evidence']))
+        confirmation = dict(observed, at='2026-10-12T12:00:00+09:00',
+                            equivalence_evidence='Synthetic same artifact fixture',
+                            environment_evidence='Synthetic same conditions fixture')
+        confirmation.pop('responsibility_assessment')
+        reassessed = {'status': 'reassessed', 'head': candidate, 'artifact_sha256': 'e' * 64,
+                      'source_candidate': candidate, 'source_record': base,
+                      'source_result': original, 'confirmation': confirmation}
+
+        def recorded(*args):
+            if args == ('ls-tree', base, '--', 'docs/verification/promotion.json'):
+                return '100644 blob ' + '0' * 40 + '\tdocs/verification/promotion.json'
+            if args == ('show', base + ':docs/verification/promotion.json'):
+                return json.dumps({'schema': 1, 'candidate': candidate,
+                                   'results': {'173:PACKAGE-INPUT-GUIDANCE': original}})
+            return git(*args)
+        validate_candidate_result(reassessed, '173:PACKAGE-INPUT-GUIDANCE', policy, None,
+                                  candidate, 'e' * 64, None, None, recorded, base)
+        assessment = observed['responsibility_assessment']
+        old_candidate = 'f3fdec1196ae8a4e1b27c0a57f514f23ec072c7c'
+        assessment['source_candidate'] = aggregate['head'] = old_candidate
+        assessment['source_result_sha256'] = canonical_hash(aggregate)
+        with self.assertRaisesRegex(ValueError, 'Product, build'):
+            validate_fact_assessment(observed, '173:PACKAGE-INPUT-GUIDANCE', policy,
+                                     candidate, 'e' * 64, git, base)
 
     def test_extension_gate_and_listing_require_new_case_and_keep_all_five_steps(self):
         key = '186:CLOCK-BATCH-SAVE'

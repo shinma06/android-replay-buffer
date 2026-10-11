@@ -18,6 +18,7 @@ GOP_AMENDMENT = 'docs/verification/amendments/gop-boundaries.json'
 INITIAL_STAGE = 'initial-agent'
 INITIAL_PLAN = 'docs/verification/amendments/initial-agent.json'
 INSTALLATION_PREVIOUS_PLAN_SHA256 = '13bd1e294519915d8c8a66be2770811a4d6b28465432061e7c2eae91a87fd8a3'
+SETTINGS_PREVIOUS_PLAN_SHA256 = '6d11e3cdee0b6189c743fb1a4c8ee3a4e582d72af7e9643bb001536dd4e0c79f'
 CI_PREDECESSOR = '836da534938597bd8674a63adac0925139ba3fc6'
 CI_MERGE = '280c96cb2d93002152e57de7803b1eb03c8bc26b'
 CI_OBSERVED_SOURCE = '707d3b0d26f749ef7537ef83a25a38081af35d62'
@@ -307,7 +308,9 @@ def initial_stage_plan(base, candidate, git):
     if revision is not None:
         validate_responsibility_policy(policy)
     if candidate_plan != policy and not (revision and (
-            'installation_revision' in revision and candidate_plan == previous_installation_plan(policy) or
+            'installation_revision' in revision and
+            revision.get('plan_extension', {}).get('issue') != 219 and
+            candidate_plan == previous_installation_plan(policy) or
             'plan_extension' not in revision and candidate_plan == original)):
         raise ValueError('Candidate lacks the exact trusted initial plan; synchronize main first')
     for key, entry in policy['cases'].items():
@@ -349,8 +352,30 @@ def initial_stage_plan(base, candidate, git):
     return policy
 
 
+def previous_settings_plan(policy):
+    """Undo only Issue 219's addition to reconstruct the registered 138-Case plan."""
+    revision = policy.get('responsibility_revision', {})
+    extension = revision.get('plan_extension', {})
+    if extension.get('issue') != 219:
+        return None
+    key = '216:SETTINGS-WIDTH-RECOVERY'
+    group = revision['groups'].get('ui-settings')
+    if not isinstance(group, dict) or not isinstance(group.get('cases'), list):
+        raise ValueError('Settings extension requires the existing ui-settings group')
+    groups = dict(revision['groups'])
+    groups['ui-settings'] = dict(group, cases=[k for k in group['cases'] if k != key])
+    previous = dict(revision, plan_extension={
+        'issue': 201, 'previous_required_ancestor': extension['previous_required_ancestor'],
+        'added_cases': [k for k in extension['added_cases'] if k != key]},
+        groups=groups)
+    return dict(policy, required_ancestor='4d278e65dec0c55e71d584ff24c7f6fa407586cb',
+                cases={k: v for k, v in policy['cases'].items() if k != key},
+                responsibility_revision=previous)
+
+
 def previous_installation_plan(policy):
     """Reconstruct only Issue 208's registered prior plan, keeping all original scopes."""
+    policy = previous_settings_plan(policy) or policy
     revision = policy.get('responsibility_revision', {})
     if 'installation_revision' not in revision:
         return None
@@ -368,11 +393,14 @@ def validate_responsibility_policy(policy):
     extension = revision.get('plan_extension')
     if 'plan_extension' in revision:
         if (not isinstance(extension, dict) or set(extension) != {
-                'issue', 'previous_required_ancestor', 'added_cases'} or
-                extension['issue'] not in (190, 201) or extension['added_cases'] != {
+                'issue', 'previous_required_ancestor', 'added_cases'} | (
+                    {'previous_plan_sha256'} if extension.get('issue') == 219 else set()) or
+                extension['issue'] not in (190, 201, 219) or extension['added_cases'] != {
                     190: ['186:CLOCK-BATCH-SAVE'],
                     201: ['186:CLOCK-BATCH-SAVE', '197:SAVE-FAILURE-OWNERSHIP',
-                          '198:LOCAL-OWNERSHIP-RECOVERY']}[extension['issue']] or
+                          '198:LOCAL-OWNERSHIP-RECOVERY'],
+                    219: ['186:CLOCK-BATCH-SAVE', '197:SAVE-FAILURE-OWNERSHIP',
+                          '198:LOCAL-OWNERSHIP-RECOVERY', '216:SETTINGS-WIDTH-RECOVERY']}[extension['issue']] or
                 not isinstance(extension['previous_required_ancestor'], str) or
                 not SHA.fullmatch(extension['previous_required_ancestor']) or
                 any(key not in policy['cases'] for key in extension['added_cases'])):
@@ -396,6 +424,10 @@ def validate_responsibility_policy(policy):
                 installation['previous_plan_sha256'] != INSTALLATION_PREVIOUS_PLAN_SHA256 or
                 canonical_hash(previous_installation_plan(policy)) != INSTALLATION_PREVIOUS_PLAN_SHA256):
             raise ValueError('Installation method revision must retain the exact prior plan')
+    if extension and extension['issue'] == 219:
+        if (extension['previous_plan_sha256'] != SETTINGS_PREVIOUS_PLAN_SHA256 or
+                canonical_hash(previous_settings_plan(policy)) != SETTINGS_PREVIOUS_PLAN_SHA256):
+            raise ValueError('Settings extension must retain the exact registered 138-Case plan')
     keys = []
     for group in revision['groups'].values():
         if (not isinstance(group, dict) or set(group) != {
@@ -618,7 +650,8 @@ def validate_fact_assessment(observed, key, policy, candidate, artifact, git, tr
         raise ValueError('Retained-fact source or history could not be verified') from exc
     if canonical_hash(original_policy) not in {
             policy['responsibility_revision']['previous_plan_sha256'], canonical_hash(policy),
-            policy['responsibility_revision'].get('installation_revision', {}).get('previous_plan_sha256')}:
+            policy['responsibility_revision'].get('installation_revision', {}).get('previous_plan_sha256'),
+            SETTINGS_PREVIOUS_PLAN_SHA256 if previous_settings_plan(policy) else None}:
         raise ValueError('Retained facts must bind the exact original or trusted current responsibility plan')
     for fact in assessment['facts'].values():
         if not isinstance(fact, dict):
@@ -684,7 +717,8 @@ def validate_candidate_result(result, key, policy, stage, candidate, artifact, e
                 if reassessed:
                     if canonical_hash(source_policy) not in {
                             policy['responsibility_revision']['previous_plan_sha256'],
-                            policy['responsibility_revision'].get('installation_revision', {}).get('previous_plan_sha256')}:
+                            policy['responsibility_revision'].get('installation_revision', {}).get('previous_plan_sha256'),
+                            SETTINGS_PREVIOUS_PLAN_SHA256 if previous_settings_plan(policy) else None}:
                         raise ValueError('Reassessment must retain the exact original plan and observation')
                 elif (source_policy.get('responsibility_revision') != (policy or {}).get('responsibility_revision') or
                         source_policy['cases'].get(key) != entry or
