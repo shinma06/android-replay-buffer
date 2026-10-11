@@ -982,6 +982,7 @@ class PurposeMethodRevisionTests(unittest.TestCase):
                 'expected': 'Save all acquired data when acquisition is shorter than N.'}}}}
         group = self.method['groups']['fixture']
         group['methods'] = 'Native short capture plus exact production boundary regression.'
+        group['preconditions'] = 'Fixed artifact, owned fixture and actual target; no unrelated device requirement.'
         group['evidence_keys'] += ['window_and_gop']
         self.policy['responsibility_revision']['method_revision'] = self.method
         self.prior.initial.policy = self.policy
@@ -1079,6 +1080,7 @@ class PurposeMethodRevisionTests(unittest.TestCase):
                 self.assertIn('N未満', effective['expected'])
                 self.assertIn('実34秒', ' '.join(effective['steps']))
                 self.assertNotIn('取得時間>N', ' '.join(requirements))
+                self.assertNotIn('2 APK', effective['preconditions'])
                 self.assertIn('本Caseに無関係', ' '.join(requirements))
             if key in ('41:CORE-CLEANUP', '198:LOCAL-OWNERSHIP-RECOVERY'):
                 self.assertIn('全file即時消失は要求しない', effective['expected'])

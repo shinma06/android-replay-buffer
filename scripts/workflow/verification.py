@@ -408,10 +408,16 @@ def validate_responsibility_policy(policy):
                 method['issue'] != 223 or method['previous_plan_sha256'] != PURPOSE_PREVIOUS_PLAN_SHA256 or
                 canonical_hash(previous) != PURPOSE_PREVIOUS_PLAN_SHA256):
             raise ValueError('Purpose method revision must retain the exact prior plan')
+        if (not isinstance(method['groups'], dict) or
+                any(not nonempty(g.get('preconditions')) for g in method['groups'].values()
+                    if isinstance(g, dict))):
+            raise ValueError('Purpose methods need the actual group preconditions')
         validate_responsibility_policy(previous)
         # Reuse the existing complete-group and bounded-override validation.
         effective = dict(previous['responsibility_revision'], **{k: method[k] for k in
                          ('common_requirements', 'groups', 'overrides')})
+        effective['groups'] = {k: {name: value for name, value in group.items() if name != 'preconditions'}
+                               if isinstance(group, dict) else group for k, group in method['groups'].items()}
         effective.pop('installation_revision', None)
         effective.pop('plan_extension', None)
         original = {k: v for k, v in previous.items() if k != 'responsibility_revision'}
@@ -523,6 +529,7 @@ def effective_responsibility_case(policy, key, case):
             revised.update(revision['overrides'].get(key, {}).get('case', {}))
             if 'method_revision' in revision:
                 revision = revision['method_revision']
+                revised['preconditions'] = group['preconditions']
                 revised.update(revision['overrides'].get(key, {}).get('case', {}))
                 revised['steps'] = ['目的群（本Case固有expectedに該当する保証を確認）: ' + group['purpose'],
                     '分担の集合（本Caseの保証に必要な方法だけを適用）: ' + group['methods'],

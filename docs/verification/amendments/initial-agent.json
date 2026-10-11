@@ -3590,7 +3590,8 @@
           "excluded": "外部installer/Settingsの全画面、全OS、20秒取得例、不要な環境改造を必須にしない。",
           "evidence_keys": [
             "integration"
-          ]
+          ],
+          "preconditions": "固定candidate/source・同じZIP/実classへのbindingと既存証拠の条件を確認する。所有fixtureを使い、native操作には共有GUI lease/実tool権限・対象識別/復旧を整える。対象IDE/SDKの実ロード/起動。配布物内のhelper/codec/license/hashを照合できる。PLUGIN-LOAD単独でdevice/APK/取得を前提にしない。 REAL固有取得/USB/表示/負荷と利用者保留は実観察なしに完了としない。"
         },
         "markers": {
           "cases": [
@@ -3604,7 +3605,8 @@
           "evidence_keys": [
             "fixture",
             "integration"
-          ]
+          ],
+          "preconditions": "固定candidate/source・同じZIP/実classへのbindingと既存証拠の条件を確認する。所有fixtureを使い、native操作には共有GUI lease/実tool権限・対象識別/復旧を整える。既知の独立画像ID/元logを持つfixture。hardware描画/commitの可否とview/runを記録する。非表示/識別不能を精度測定へ使わない。 REAL固有取得/USB/表示/負荷と利用者保留は実観察なしに完了としない。"
         },
         "precision": {
           "cases": [
@@ -3618,13 +3620,14 @@
           ],
           "disposition": "置換",
           "purpose": "正常のp95≤100ms・最大≤250ms・中央値drift≤50ms・clock見積誤差≤20msと、実画像/両logの対応・欠落説明を保証する。",
-          "methods": "Clock/Storeの既知時刻fixtureで長時間進行・sample更新/4096履歴・offset変化・sleep/boot/壁時計境界・invalid/stale/unknownを決定的に検査する。nativeは通常Computer Useで識別可能な連番更新を開始/中間/終了に分けて取得し、各区間に複数の識別可能な更新を含める。実行前に有限の予定event集合と区間を決め、実PTS/全関連frame/全phase/誤差とp95/最大/前後中央値を全件解析する。時計driftはその実観測区間と回帰の長時間条件を明記し、30分の実測や母集団の統計的保証とは呼ばない。判定に必要な精度を満たさないoracle誤差/欠落/識別不能を成功へ除外しない。画像番号を独立した既知画素の校正済み識別又は実画像確認で求め、色/parity/期待log順だけで推定しない。端末固有の経時差が未帰属なら当該目的へ追加観察する。",
+          "methods": "Clock/Storeの既知時刻fixtureで長時間進行・sample更新/4096履歴・offset変化・sleep/boot/壁時計境界・invalid/stale/unknownを決定的に検査する。nativeは通常Computer Useで識別可能な連番更新を開始/後半を含む観測区間から選んで取得する。中間や追加更新は目的に必要な範囲で選び、固定回数/間隔にしない。実行前に有限の予定event集合と区間を決め、実PTS/全関連frame/全phase/誤差とp95/最大/前後中央値を全件解析する。時計driftはその実観測区間と回帰の長時間条件を明記し、30分の実測や母集団の統計的保証とは呼ばない。判定に必要な精度を満たさないoracle誤差/欠落/識別不能を成功へ除外しない。画像番号を独立した既知画素の校正済み識別又は実画像確認で求め、色/parity/期待log順だけで推定しない。端末固有の経時差が未帰属なら当該目的へ追加観察する。",
           "excluded": "30分/300event/各100という選んだ標本設計を廃し、短時間保存・回転・受取人Caseへ精度系列を連鎖必須にしない。小系列のp95を母集団の確率保証にしない。",
           "evidence_keys": [
             "measurement",
             "visual_oracle",
             "clock_duration"
-          ]
+          ],
+          "preconditions": "固定candidate/source・同じZIP/実classへのbindingと既存証拠の条件を確認する。所有fixtureを使い、native操作には共有GUI lease/実tool権限・対象識別/復旧を整える。正常取得で画像ID/元PTS・両log/clockの独立真値と測定誤差を記録できるfixture。予定系列/区間/環境を固定する。時計/sleep/boot境界は既知時刻隔離fixtureで別に確認する。 REAL固有取得/USB/表示/負荷と利用者保留は実観察なしに完了としない。"
         },
         "recipient": {
           "cases": [
@@ -3643,7 +3646,8 @@
             "file_integrity",
             "content",
             "interop"
-          ]
+          ],
+          "preconditions": "固定candidate/source・同じZIP/実classへのbindingと既存証拠の条件を確認する。所有fixtureを使い、native操作には共有GUI lease/実tool権限・対象識別/復旧を整える。同artifactの保存物と既知入力回帰の成果。追加ツールを要しない標準player/editor。全保存物/対象集合と不足理由を読み取れる。新録画を必須にしない。 REAL固有取得/USB/表示/負荷と利用者保留は実観察なしに完了としない。"
         },
         "buffer": {
           "cases": [
@@ -3665,7 +3669,8 @@
             "regression",
             "integration",
             "window_and_gop"
-          ]
+          ],
+          "preconditions": "固定candidate/source・同じZIP/実classへのbindingと既存証拠の条件を確認する。所有fixtureを使い、native操作には共有GUI lease/実tool権限・対象識別/復旧を整える。N/実snapshot T・取得済み区間/対象集合・clock/frames indexが判定可能な保存物。短時間はN未満、長時間はN超の実取得を各Caseで確認し、実GOP/IDR境界の精密入力は隔離回帰で用意する。 REAL固有取得/USB/表示/負荷と利用者保留は実観察なしに完了としない。"
         },
         "recovery": {
           "cases": [
@@ -3734,7 +3739,8 @@
           "evidence_keys": [
             "regression",
             "integration"
-          ]
+          ],
+          "preconditions": "固定candidate/source・同じZIP/実classへのbindingと既存証拠の条件を確認する。所有fixtureを使い、native操作には共有GUI lease/実tool権限・対象識別/復旧を整える。所有/世代/時刻と固定要求/出力を照合できるproduction class/fake SDK/loopback/所有filesystem。実接続は代表工程に必要な専用対象のみ。同boot断と新boot復旧を区別し、共有ADB/host時計/sleepを操作しない。実denialや安全経路がない部分は迂回せず不足に残す。 REAL固有取得/USB/表示/負荷と利用者保留は実観察なしに完了としない。"
         },
         "ui-settings": {
           "cases": [
@@ -3783,7 +3789,8 @@
           "evidence_keys": [
             "regression",
             "integration"
-          ]
+          ],
+          "preconditions": "固定candidate/source・同じZIP/実classへのbindingと既存証拠の条件を確認する。所有fixtureを使い、native操作には共有GUI lease/実tool権限・対象識別/復旧を整える。同classのStore/factory/Service/実UIを識別できる条件。OFF編集/初期既定値はdevice/APK/取得中faultを前提にしない。取得中Apply/実Run解決など固有の対象は該当Caseに必要な範囲だけ用意する。元設定/完成出力を保全し通常close/reopenで復元確認できる。 REAL固有取得/USB/表示/負荷と利用者保留は実観察なしに完了としない。"
         },
         "video": {
           "cases": [
@@ -3809,7 +3816,8 @@
             "file_integrity",
             "content",
             "interop"
-          ]
+          ],
+          "preconditions": "固定candidate/source・同じZIP/実classへのbindingと既存証拠の条件を確認する。所有fixtureを使い、native操作には共有GUI lease/実tool権限・対象識別/復旧を整える。同ZIPのproduction Store/Writerへ既知packet/config/PTS/画素真値と全対象集合を入力できる。nativeには通常/静止/実回転混在/再接続など該当目的の代表保存物を使う。通常/再接続前後の陽性eventが必要なCaseはその予定集合を固定する。 REAL固有取得/USB/表示/負荷と利用者保留は実観察なしに完了としない。"
         },
         "log-reader": {
           "cases": [
@@ -3824,44 +3832,19 @@
           "evidence_keys": [
             "regression",
             "integration"
-          ]
+          ],
+          "preconditions": "固定candidate/source・同じZIP/実classへのbindingと既存証拠の条件を確認する。所有fixtureを使い、native操作には共有GUI lease/実tool権限・対象識別/復旧を整える。同ZIP Protocol/Wireの既知header/lid/UID/payload/fragment/faultと、読み取り可能なmain/非mainに有限の識別可能な陽性入力を与えられる専用対象。予定集合と全行を照合し未知/未読bufferは未確認とする。 REAL固有取得/USB/表示/負荷と利用者保留は実観察なしに完了としない。"
         }
       },
       "overrides": {
-        "13:SYNC-ENV": {
-          "case": {
-            "preconditions": "実機とEmulatorの各fixtureで、同梱helperとSDK adbへの実bindingを確認できるAndroid開発環境。固定SDK/adb、同じsource/ZIP hash、共有GUI lease。"
-          }
-        },
-        "13:SYNC-WINDOW": {
-          "case": {
-            "preconditions": "窓Nと実GOP/必要IDR prefixを照合できる条件。連番fixture、clock/frames index、固定ZIP。"
-          }
-        },
         "13:SYNC-GAP": {
           "case": {
             "expected": "設定Nの実時間窓の取得済み区間と観測gap、same sequence。長い切断中T凍結、再接続後現在窓で旧範囲prune。gapを詰めない。端末切断瞬間と検出確定を混同しない。"
           }
         },
-        "27:ENV-READY-REAL": {
-          "case": {
-            "preconditions": "専用実機1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。 SYNC-ENV追加前提: 当該Caseの専用fixtureで、同梱helperとSDK adbへの実bindingを確認できるAndroid開発環境。固定SDK/adb、同じsource/ZIP hash、共有GUI lease。"
-          }
-        },
-        "27:BUFFER-180-REAL": {
-          "case": {
-            "preconditions": "専用実機1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。 SYNC-WINDOW追加前提: 窓Nと実GOP/必要IDR prefixを照合できる条件。連番fixture、clock/frames index、固定ZIP。"
-          }
-        },
         "27:BUFFER-SHORT-REAL": {
           "case": {
-            "preconditions": "専用実機1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。 SYNC-WINDOW追加前提: 窓Nと実GOP/必要IDR prefixを照合できる条件。連番fixture、clock/frames index、固定ZIP。",
             "expected": "180秒満了を待たず取得済みのN未満の期間を最大限保存。切出し誤差は#13値で測定し、未取得期間を成功としない。 SYNC-WINDOW: 取得済み分を最大限保存。窓を過去へ広げず、同じ区間の重複可、取得停止なし。cut誤差<=1観測frame間隔+時計誤差、mux/index丸め<=1ms。prerollは別表示。"
-          }
-        },
-        "27:SAVE-CONTINUE-REAL": {
-          "case": {
-            "preconditions": "専用実機1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。 SYNC-WINDOW追加前提: 窓Nと実GOP/必要IDR prefixを照合できる条件。連番fixture、clock/frames index、固定ZIP。"
           }
         },
         "27:REALTIME-GAP-REAL": {
@@ -3884,25 +3867,9 @@
             "expected": "完全切断は確定時刻Tの[T-N,T]を凍結。再接続は現在Tへ戻して古い窓外を期限処理、固定要求参照は維持。同sequence。片系障害ではTを凍結しない。 SYNC-GAP: 設定Nの実時間窓の取得済み区間と観測gap、same sequence。長い切断中T凍結、再接続後現在窓で旧範囲prune。gapを詰めない。端末切断瞬間と検出確定を混同しない。"
           }
         },
-        "27:ENV-READY-EMU": {
-          "case": {
-            "preconditions": "専用Emulator1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。 SYNC-ENV追加前提: 当該Caseの専用fixtureで、同梱helperとSDK adbへの実bindingを確認できるAndroid開発環境。固定SDK/adb、同じsource/ZIP hash、共有GUI lease。"
-          }
-        },
-        "27:BUFFER-180-EMU": {
-          "case": {
-            "preconditions": "専用Emulator1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。 SYNC-WINDOW追加前提: 窓Nと実GOP/必要IDR prefixを照合できる条件。連番fixture、clock/frames index、固定ZIP。"
-          }
-        },
         "27:BUFFER-SHORT-EMU": {
           "case": {
-            "preconditions": "専用Emulator1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。 SYNC-WINDOW追加前提: 窓Nと実GOP/必要IDR prefixを照合できる条件。連番fixture、clock/frames index、固定ZIP。",
             "expected": "180秒満了を待たず取得済みのN未満の期間を最大限保存。切出し誤差は#13値で測定し、未取得期間を成功としない。 SYNC-WINDOW: 取得済み分を最大限保存。窓を過去へ広げず、同じ区間の重複可、取得停止なし。cut誤差<=1観測frame間隔+時計誤差、mux/index丸め<=1ms。prerollは別表示。"
-          }
-        },
-        "27:SAVE-CONTINUE-EMU": {
-          "case": {
-            "preconditions": "専用Emulator1台。共有GUI lease/PM割当、固定candidate/source/ZIP hash/ロード版/Rabbit/JBR、clean固定fixtureの2 APK/hash/署名を確認。initial-version.mdの共通前提・設計確定値を満たす。安全な障害注入経路がないCaseは実行せずblockedへ更新する。 SYNC-WINDOW追加前提: 窓Nと実GOP/必要IDR prefixを照合できる条件。連番fixture、clock/frames index、固定ZIP。"
           }
         },
         "27:REALTIME-GAP-EMU": {
@@ -3925,29 +3892,9 @@
             "expected": "完全切断は確定時刻Tの[T-N,T]を凍結。再接続は現在Tへ戻して古い窓外を期限処理、固定要求参照は維持。同sequence。片系障害ではTを凍結しない。 SYNC-GAP: 設定Nの実時間窓の取得済み区間と観測gap、same sequence。長い切断中T凍結、再接続後現在窓で旧範囲prune。gapを詰めない。端末切断瞬間と検出確定を混同しない。 同じbootのtransport断を観察する。AVD停止/起動によるboot変更をこの切断試験の代用にしない。"
           }
         },
-        "31:SYNC-ENV": {
-          "case": {
-            "preconditions": "実機とEmulatorの各fixtureで、同梱helperとSDK adbへの実bindingを確認できるAndroid開発環境。固定SDK/adb、同じsource/ZIP hash、共有GUI lease。"
-          }
-        },
-        "31:SYNC-WINDOW": {
-          "case": {
-            "preconditions": "窓Nと実GOP/必要IDR prefixを照合できる条件。連番fixture、clock/frames index、固定ZIP。"
-          }
-        },
         "31:SYNC-GAP": {
           "case": {
             "expected": "設定Nの実時間窓の取得済み区間と観測gap、same sequence。長い切断中T凍結、再接続後現在窓で旧範囲prune。gapを詰めない。端末切断瞬間と検出確定を混同しない。"
-          }
-        },
-        "41:SYNC-ENV": {
-          "case": {
-            "preconditions": "実機とEmulatorの各fixtureで、同梱helperとSDK adbへの実bindingを確認できるAndroid開発環境。固定SDK/adb、同じsource/ZIP hash、共有GUI lease。"
-          }
-        },
-        "41:SYNC-WINDOW": {
-          "case": {
-            "preconditions": "窓Nと実GOP/必要IDR prefixを照合できる条件。連番fixture、clock/frames index、固定ZIP。"
           }
         },
         "41:SYNC-GAP": {

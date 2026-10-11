@@ -4,13 +4,13 @@
 
 ## 全試験の目的と方法
 
-正式計画の次の9 groupが全139 keyを重複なく対応付けます。Case固有の期待結果は保持し、明示的に置換した条件とgroupの方法を適用します。groupは関連保証/方法の集合で、各Caseに無関係な目的を新たな依存にしません。短時間保存の完了へN超取得・精度系列・回転・別失敗retryを要求しません。CLI/JVM/FILE/native/ハーネスも同じ判断を使います。
+正式計画の次の9 groupが全139 keyを重複なく対応付けます。前提も目的群へ置換し、OFF設定/初期既定値へAPK/取得中fault、受取人へ新録画を一律に要求しません。Case固有の実入力/対象はその保証に必要な範囲だけ用意します。Case固有の期待結果は保持し、明示的に置換した条件とgroupの方法を適用します。groupは関連保証/方法の集合で、各Caseに無関係な目的を新たな依存にしません。短時間保存の完了へN超取得・精度系列・回転・別失敗retryを要求しません。CLI/JVM/FILE/native/ハーネスも同じ判断を使います。
 
 | group / Case数 | 担保すること・必要な証拠 | 最小の方法と置換理由 |
 |---|---|---|
 | environment / 6 | 同梱依存・SDK adb・実ロードと追加導入不要 | ZIP/hash/licenseとSDK解決回帰＋実起動command/CodeSource/保存。PATH改造や20秒取得は保証と無関係 |
 | markers / 2 | 画面とlogの独立ID真値、表示/非表示・coalescing/viewの区別 | fixture回帰＋代表実表示/両log。欠陥を区別する最小入力を用い、各5回/1秒等は固定しない |
-| precision / 7 | p95≤100ms・最大≤250ms・中央値drift≤50ms・clock≤20ms、実画像/両logの対応と欠落説明 | 有限の開始/中間/終了の各複数更新を全解析。長時間/sample更新/4096履歴/時計境界は既知時刻回帰へ。30分/300件は標本設計であり製品の精度値ではない |
+| precision / 7 | p95≤100ms・最大≤250ms・中央値drift≤50ms・clock≤20ms、実画像/両logの対応と欠落説明 | 有限の開始/後半を含む識別可能な更新を全解析。中間/追加数は目的で選び固定しない。長時間/sample更新/4096履歴/時計境界は既知時刻回帰へ。30分/300件は標本設計であり製品の精度値ではない |
 | recipient / 6 | 全保存内容・時刻・不足説明と受取人の利用 | 既知入力の全byte/画素回帰＋native成果の全FILE/sample/両logと一回の代表player/editor。全GUI検索/全Play/全native raw exportは不要 |
 | buffer / 9 | 実T/N窓、未満時の最大保存・prune/IDR prefix/pin、保存中取得/次保存 | N未満・N超・重複Saveを別工程で共有。0/N前後・GOP前中後・VFR/品質/容量はproduction回帰＋FILE。20秒/200秒/10秒後/GOP6本は方法例 |
 | recovery / 57 | 所有/世代/終了、gap/loss/unknown、固定失敗retry・atomic非上書き/保全 | 全fault/raceはfake SDK/loopback/所有filesystemの回帰。実IDEは代表取得/復旧/OFF/close/保存・理由表示、固定失敗場所→UI consumer→retryは同ZIP隔離public経路、OS atomicは実callを共有 |
