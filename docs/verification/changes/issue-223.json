@@ -1,0 +1,8 @@
+{
+  "schema": 1,
+  "issue": 223,
+  "gui_required": false,
+  "reason": "全139 Case/208出典の保証目的・実施方法をtrusted計画とresolver/gate/一覧・担当/レビュー手順へ改訂するtooling変更。製品・build・fixture・候補ZIP・原Case/観察・合否は変更しない。GUI実行は行わず構造検査を製品受入にしない。",
+  "cli_checks": ["python3 scripts/check.py", "python3 scripts/workflow/product_check.py", "python3 scripts/workflow/change_impact.py --base origin/main --run-tests"],
+  "cases": []
+}

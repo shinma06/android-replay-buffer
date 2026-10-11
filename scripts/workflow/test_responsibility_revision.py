@@ -14,7 +14,7 @@ from test_verification import observation
 from test_observation_reuse import OLD, RECORD, reused, record_original
 from verification import (INITIAL_PLAN, canonical_hash, effective_initial_entry,
                           effective_responsibility_case, initial_stage_plan, render_queue,
-                          previous_installation_plan, previous_settings_plan, historical_initial_sources,
+                          previous_installation_plan, previous_settings_plan, previous_method_plan, historical_initial_sources,
                           bind_initial_sources, validate_fact_assessment,
                           validate_candidate_result, validate_responsibility_policy)
 
@@ -967,3 +967,167 @@ class ResponsibilityRevisionTests(unittest.TestCase):
         self.fixture.documents[f'{source}:{INITIAL_PLAN}'] = different
         with self.assertRaisesRegex(ValueError, 'exact .* responsibility plan'):
             self.verify()
+
+
+class PurposeMethodRevisionTests(unittest.TestCase):
+    def setUp(self):
+        self.prior = ResponsibilityRevisionTests()
+        self.prior.setUp()
+        self.policy = copy.deepcopy(self.prior.policy)
+        self.method = {
+            'issue': 223, 'previous_plan_sha256': canonical_hash(self.prior.policy),
+            'common_requirements': ['Keep real windows, bytes, losses and owned failures.'],
+            'groups': copy.deepcopy(self.prior.policy['responsibility_revision']['groups']),
+            'overrides': {'36:QA-1-EMU': {'case': {
+                'expected': 'Save all acquired data when acquisition is shorter than N.'}}}}
+        group = self.method['groups']['fixture']
+        group['methods'] = 'Native short capture plus exact production boundary regression.'
+        group['evidence_keys'] += ['window_and_gop']
+        self.policy['responsibility_revision']['method_revision'] = self.method
+        self.prior.initial.policy = self.policy
+        self.prior.fixture.documents[f'{BASE}:{INITIAL_PLAN}'] = self.policy
+        # The product candidate still contains the exact registered previous plan.
+        self.prior.fixture.documents[f'{NEW}:{INITIAL_PLAN}'] = copy.deepcopy(self.prior.policy)
+        self.prior.initial.record_results()
+        self.observed = self.prior.initial.manifest['results']['36:QA-1-EMU']['initial_observation']
+        self.observed['responsibility_revision'] = canonical_hash(self.policy['responsibility_revision'])
+        self.observed['responsibility_evidence'] = {k: 'Identified actual proof: ' + k for k in
+            ('contract_coverage', 'artifact_binding', 'failure_attribution', 'file_integrity', 'window_and_gop')}
+        self.binding = patch('verification.PURPOSE_PREVIOUS_PLAN_SHA256', canonical_hash(self.prior.policy))
+        self.binding.start()
+        self.addCleanup(self.binding.stop)
+
+    def test_method_only_revision_accepts_unchanged_candidate_and_replaces_recipe(self):
+        self.assertTrue(self.prior.verify()['stage_complete'])
+        case = self.prior.fixture.documents[f'{NEW}:docs/verification/changes/issue-36.json']['cases'][0]
+        effective = effective_responsibility_case(self.policy, '36:QA-1-EMU', case)
+        self.assertEqual('Save all acquired data when acquisition is shorter than N.',
+                         effective['expected'].split(' Keep real windows')[0])
+        self.assertNotEqual(case['steps'], effective['steps'])
+        self.assertEqual(case['gpt'], effective['gpt'])
+        self.assertEqual('computer_use', effective['required_execution'])
+        self.assertNotEqual(self.prior.policy['cases']['36:QA-1-EMU']['agent_requirements'],
+                            effective_initial_entry(self.policy, '36:QA-1-EMU')['agent_requirements'])
+        self.assertEqual(self.prior.policy,
+                         self.prior.fixture.documents[f'{NEW}:{INITIAL_PLAN}'])
+
+    def test_new_method_rejects_missing_window_proof_stale_stage_unknown_plan_and_real_waiver(self):
+        for mutation in ('window', 'stage', 'candidate', 'old_hash', 'missing', 'duplicate', 'real'):
+            saved = copy.deepcopy(self.policy)
+            if mutation == 'window':
+                del self.observed['responsibility_evidence']['window_and_gop']
+            elif mutation == 'stage':
+                self.prior.initial.manifest['results']['36:QA-1-EMU']['stage_revision'] = canonical_hash(self.prior.policy)
+            elif mutation == 'candidate':
+                self.prior.fixture.documents[f'{NEW}:{INITIAL_PLAN}']['owner'] += ' changed'
+            elif mutation == 'old_hash':
+                self.policy['cases']['36:QA-1-EMU']['sources'][0]['original_case_sha256'] = 'f' * 64
+            elif mutation == 'missing':
+                self.method['groups']['fixture']['cases'].pop()
+            elif mutation == 'duplicate':
+                self.method['groups']['fixture']['cases'].append('36:QA-1-EMU')
+            else:
+                self.method['overrides']['36:QA-1-REAL'] = {'deferred_scope': []}
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                self.prior.verify()
+            self.policy.clear()
+            self.policy.update(saved)
+            self.method = self.policy['responsibility_revision']['method_revision']
+            self.prior.fixture.documents[f'{NEW}:{INITIAL_PLAN}'] = copy.deepcopy(self.prior.policy)
+            self.prior.initial.manifest['results']['36:QA-1-EMU']['stage_revision'] = canonical_hash(self.policy)
+            self.observed['responsibility_evidence']['window_and_gop'] = 'Identified actual boundary proof.'
+
+    def test_real_all_case_coverage_and_observed_stalls_use_purpose_methods(self):
+        self.binding.stop()
+        root = Path(__file__).resolve().parents[2]
+        policy = json.loads((root / INITIAL_PLAN).read_text())
+        candidate = '830b58294bec3f2fa4751d831a5b95f6b0658de6'
+        previous_ref = 'f95e6267cc5c94dfacc1148f6c3afe345fedd2bb'
+
+        @cache
+        def git(*args):
+            return subprocess.check_output(['git', *args], cwd=root, text=True).strip()
+
+        previous = json.loads(git('show', previous_ref + ':' + INITIAL_PLAN))
+        self.assertEqual(previous, previous_method_plan(policy))
+
+        def trusted(*args):
+            if args == ('show', previous_ref + ':' + INITIAL_PLAN):
+                return json.dumps(policy)
+            return git(*args)
+
+        self.assertEqual(policy, initial_stage_plan(previous_ref, candidate, trusted))
+        sources = historical_initial_sources(policy, candidate, trusted)
+        self.assertEqual((139, 208), (len(policy['cases']), len(sources)))
+        self.assertEqual(previous['cases'], policy['cases'])
+        method = policy['responsibility_revision']['method_revision']
+        self.assertEqual(139, sum(len(g['cases']) for g in method['groups'].values()))
+        data = {}
+        for key, entry in policy['cases'].items():
+            path = entry['sources'][0]['source_path']
+            data.setdefault(path, json.loads(git('show', policy['required_ancestor'] + ':' + path)))
+            case = next(c for c in data[path]['cases'] if c['id'] == key.split(':')[1])
+            effective = effective_responsibility_case(policy, key, case)
+            self.assertEqual(case['gpt'], effective['gpt'])
+            self.assertEqual(case['human'], effective['human'])
+            self.assertEqual(case.get('required_execution'), effective.get('required_execution'))
+            requirements = effective_initial_entry(policy, key)['agent_requirements']
+            self.assertNotIn('全300event', ' '.join(requirements))
+            self.assertNotIn('各100', ' '.join(requirements))
+            if key == '27:BUFFER-SHORT-EMU':
+                self.assertNotIn('約20秒', effective['expected'])
+                self.assertIn('N未満', effective['expected'])
+                self.assertIn('実34秒', ' '.join(effective['steps']))
+            if key in ('41:CORE-CLEANUP', '198:LOCAL-OWNERSHIP-RECOVERY'):
+                self.assertIn('全file即時消失は要求しない', effective['expected'])
+            if key == '27:STATE-RESTORE-EMU':
+                self.assertIn('通常close後のXML', ' '.join(effective['steps']))
+            if key == '85:CLOCK-UNCERTAIN-VIDEO-PLAYBACK':
+                self.assertNotIn('全300event/30分', effective['expected'])
+                self.assertIn('失敗pin', ' '.join(effective['steps']))
+        # Full source history and fixed accuracy/byte safety survive the method replacement.
+        self.assertIn('p95≤100ms', method['groups']['precision']['purpose'])
+        self.assertIn('window_and_gop', method['groups']['buffer']['evidence_keys'])
+        self.assertIn('全対象packet/frame', method['groups']['video']['methods'])
+        for edit in ('original', 'missing', 'duplicate', 'real'):
+            bad = copy.deepcopy(policy)
+            if edit == 'original':
+                bad['responsibility_revision']['groups']['buffer']['methods'] += ' changed'
+            elif edit == 'missing':
+                bad['responsibility_revision']['method_revision']['groups']['buffer']['cases'].pop()
+            elif edit == 'duplicate':
+                bad['responsibility_revision']['method_revision']['groups']['buffer']['cases'].append('13:SYNC-WINDOW')
+            else:
+                bad['responsibility_revision']['method_revision']['overrides']['27:BUFFER-SHORT-REAL'] = {'deferred_scope': []}
+            with self.subTest(edit=edit), self.assertRaises(ValueError):
+                validate_responsibility_policy(bad)
+
+    def test_old_failed_deadline_facts_need_complete_current_proof_and_no_owned_failure(self):
+        aggregate = {'status': 'fail', 'head': NEW, 'artifact_sha256': 'e' * 64,
+                     'reason': 'Acquired 34 seconds; former chosen 20-second deadline missed.'}
+        fact = dict(observation(), actor='gpt', reason='Actual complete N-unfilled save and continuation.')
+        self.observed['responsibility_assessment'] = {
+            'source_candidate': NEW, 'source_result': copy.deepcopy(aggregate),
+            'source_result_sha256': canonical_hash(aggregate),
+            'source_record_evidence': 'Immutable original timed attempt and complete FILE report.',
+            'facts': {'short-save': fact},
+            'coverage': {name: ['short-save'] for name in self.observed['responsibility_evidence']},
+            'missing_requirements': [], 'unresolved_owned_failures': []}
+        self.assertTrue(self.prior.verify()['stage_complete'])
+        self.assertEqual(aggregate, self.observed['responsibility_assessment']['source_result'])
+        assessment = self.observed['responsibility_assessment']
+        for edit in ('loss', 'missing-boundary', 'failed-fact', 'unknown-plan'):
+            saved = copy.deepcopy(assessment)
+            if edit == 'loss':
+                assessment['unresolved_owned_failures'] = ['An acquired source packet was lost.']
+            elif edit == 'missing-boundary':
+                del assessment['coverage']['window_and_gop']
+            elif edit == 'failed-fact':
+                assessment['facts']['short-save']['status'] = 'fail'
+            else:
+                self.prior.fixture.documents[f'{NEW}:{INITIAL_PLAN}']['responsibility_revision']['groups']['fixture']['methods'] += ' changed'
+            with self.subTest(edit=edit), self.assertRaises(ValueError):
+                self.prior.verify()
+            assessment.clear()
+            assessment.update(saved)
+            self.prior.fixture.documents[f'{NEW}:{INITIAL_PLAN}'] = copy.deepcopy(self.prior.policy)

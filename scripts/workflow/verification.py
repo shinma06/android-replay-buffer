@@ -19,6 +19,7 @@ INITIAL_STAGE = 'initial-agent'
 INITIAL_PLAN = 'docs/verification/amendments/initial-agent.json'
 INSTALLATION_PREVIOUS_PLAN_SHA256 = '13bd1e294519915d8c8a66be2770811a4d6b28465432061e7c2eae91a87fd8a3'
 SETTINGS_PREVIOUS_PLAN_SHA256 = '6d11e3cdee0b6189c743fb1a4c8ee3a4e582d72af7e9643bb001536dd4e0c79f'
+PURPOSE_PREVIOUS_PLAN_SHA256 = '993e76bb7a0bd6f9f864c2974b3ef4d4392665de51a4791c9cc0c094c394b50c'
 CI_PREDECESSOR = '836da534938597bd8674a63adac0925139ba3fc6'
 CI_MERGE = '280c96cb2d93002152e57de7803b1eb03c8bc26b'
 CI_OBSERVED_SOURCE = '707d3b0d26f749ef7537ef83a25a38081af35d62'
@@ -308,6 +309,7 @@ def initial_stage_plan(base, candidate, git):
     if revision is not None:
         validate_responsibility_policy(policy)
     if candidate_plan != policy and not (revision and (
+            candidate_plan == previous_method_plan(policy) or
             'installation_revision' in revision and
             revision.get('plan_extension', {}).get('issue') != 219 and
             candidate_plan == previous_installation_plan(policy) or
@@ -352,8 +354,16 @@ def initial_stage_plan(base, candidate, git):
     return policy
 
 
+def previous_method_plan(policy):
+    revision = policy.get('responsibility_revision', {})
+    if 'method_revision' not in revision:
+        return None
+    return dict(policy, responsibility_revision={k: v for k, v in revision.items() if k != 'method_revision'})
+
+
 def previous_settings_plan(policy):
     """Undo only Issue 219's addition to reconstruct the registered 138-Case plan."""
+    policy = previous_method_plan(policy) or policy
     revision = policy.get('responsibility_revision', {})
     extension = revision.get('plan_extension', {})
     if extension.get('issue') != 219:
@@ -390,6 +400,24 @@ def validate_responsibility_policy(policy):
     original = {k: v for k, v in policy.items() if k != 'responsibility_revision'}
     if not isinstance(revision, dict):
         raise ValueError('Invalid responsibility revision')
+    if 'method_revision' in revision:
+        previous = previous_method_plan(policy)
+        method = revision['method_revision']
+        if (not isinstance(method, dict) or set(method) != {
+                'issue', 'previous_plan_sha256', 'common_requirements', 'groups', 'overrides'} or
+                method['issue'] != 223 or method['previous_plan_sha256'] != PURPOSE_PREVIOUS_PLAN_SHA256 or
+                canonical_hash(previous) != PURPOSE_PREVIOUS_PLAN_SHA256):
+            raise ValueError('Purpose method revision must retain the exact prior plan')
+        validate_responsibility_policy(previous)
+        # Reuse the existing complete-group and bounded-override validation.
+        effective = dict(previous['responsibility_revision'], **{k: method[k] for k in
+                         ('common_requirements', 'groups', 'overrides')})
+        effective.pop('installation_revision', None)
+        effective.pop('plan_extension', None)
+        original = {k: v for k, v in previous.items() if k != 'responsibility_revision'}
+        effective['previous_plan_sha256'] = canonical_hash(original)
+        validate_responsibility_policy(dict(previous, responsibility_revision=effective))
+        return
     extension = revision.get('plan_extension')
     if 'plan_extension' in revision:
         if (not isinstance(extension, dict) or set(extension) != {
@@ -466,6 +494,7 @@ def validate_responsibility_policy(policy):
 def responsibility_group(policy, key):
     revision = (policy or {}).get('responsibility_revision')
     if revision and key in policy['cases']:
+        revision = revision.get('method_revision', revision)
         return next(g for g in revision['groups'].values() if key in g['cases'])
     return None
 
@@ -474,6 +503,11 @@ def effective_initial_entry(policy, key):
     entry = dict(policy['cases'][key])
     override = policy.get('responsibility_revision', {}).get('overrides', {}).get(key, {})
     entry.update({k: v for k, v in override.items() if k != 'case'})
+    method = policy.get('responsibility_revision', {}).get('method_revision')
+    if method:
+        group = responsibility_group(policy, key)
+        entry['agent_requirements'] = [group['purpose'], group['methods']]
+        entry.update({k: v for k, v in method['overrides'].get(key, {}).items() if k != 'case'})
     if entry.get('full_acceptance_actor') is None:
         entry.pop('full_acceptance_actor', None)
     return entry
@@ -487,6 +521,14 @@ def effective_responsibility_case(policy, key, case):
         # An old method amendment cannot erase conditions added by a later Case.
         if canonical_hash(case) == policy['cases'][key]['current_case_sha256']:
             revised.update(revision['overrides'].get(key, {}).get('case', {}))
+            if 'method_revision' in revision:
+                revision = revision['method_revision']
+                revised.update(revision['overrides'].get(key, {}).get('case', {}))
+                revised['steps'] = [group['purpose'], group['methods'],
+                    'Case固有の期待結果を全て照合し、同条件の既存証拠と不足を分けて記録する。']
+        elif 'method_revision' in revision:
+            # A new product contract must not inherit this fixed method replacement.
+            return revised
         revised['steps'] = [*revised['steps'], '有効な実施分担: ' + group['methods']]
         revised['expected'] += ' ' + ' '.join(revision['common_requirements'])
     return revised
@@ -551,7 +593,8 @@ def validate_initial_result(result, key, policy, candidate, artifact, execution,
             raise ValueError('Initial scope requires an actual agent observation: ' + key)
         validate_observation(observed, candidate, artifact)
         validate_responsibility_observation(observed, key, policy)
-        validate_gop_observation(observed, gop)
+        if not policy.get('responsibility_revision', {}).get('method_revision'):
+            validate_gop_observation(observed, gop)
         if execution and observed.get('execution') != execution:
             raise ValueError('Case requires its specified execution method: ' + key)
 
@@ -651,6 +694,7 @@ def validate_fact_assessment(observed, key, policy, candidate, artifact, git, tr
     if canonical_hash(original_policy) not in {
             policy['responsibility_revision']['previous_plan_sha256'], canonical_hash(policy),
             policy['responsibility_revision'].get('installation_revision', {}).get('previous_plan_sha256'),
+            policy['responsibility_revision'].get('method_revision', {}).get('previous_plan_sha256'),
             SETTINGS_PREVIOUS_PLAN_SHA256 if previous_settings_plan(policy) else None}:
         raise ValueError('Retained facts must bind the exact original or trusted current responsibility plan')
     for fact in assessment['facts'].values():
@@ -718,6 +762,7 @@ def validate_candidate_result(result, key, policy, stage, candidate, artifact, e
                     if canonical_hash(source_policy) not in {
                             policy['responsibility_revision']['previous_plan_sha256'],
                             policy['responsibility_revision'].get('installation_revision', {}).get('previous_plan_sha256'),
+                            policy['responsibility_revision'].get('method_revision', {}).get('previous_plan_sha256'),
                             SETTINGS_PREVIOUS_PLAN_SHA256 if previous_settings_plan(policy) else None}:
                         raise ValueError('Reassessment must retain the exact original plan and observation')
                 elif (source_policy.get('responsibility_revision') != (policy or {}).get('responsibility_revision') or
@@ -740,7 +785,8 @@ def validate_candidate_result(result, key, policy, stage, candidate, artifact, e
     if stage:
         validate_initial_result(result, key, source_policy, source, artifact, execution, gop)
     else:
-        validate_full_result(result, source, artifact, execution, gop,
+        method = (source_policy or {}).get('responsibility_revision', {}).get('method_revision')
+        validate_full_result(result, source, artifact, execution, None if method else gop,
                              effective_initial_entry(source_policy, key) if source_policy and key in source_policy['cases'] else None)
         validate_responsibility_observation(result, key, source_policy)
     if not reassessed and source != candidate:
@@ -1038,6 +1084,8 @@ def render_queue(paths, promotion=None, git=git_read):
                     raise ValueError('Current Case differs from its historical GOP contract: ' + key)
             rows = [(data, gop_cases[f'{data["issue"]}:{case["id"]}']['case'])
                     if f'{data["issue"]}:{case["id"]}' in gop_cases else (data, case) for data, case in rows]
+    if (initial_policy or {}).get('responsibility_revision', {}).get('method_revision'):
+        rows = [(data, contracts.get(f'{data["issue"]}:{case["id"]}', case)) for data, case in rows]
     rows = [(data, effective_responsibility_case(initial_policy, f'{data["issue"]}:{case["id"]}', case))
             for data, case in rows]
     lines = ['# 今回の動作確認一覧', '',
@@ -1122,7 +1170,8 @@ def render_queue(paths, promotion=None, git=git_read):
             group = responsibility_group(initial_policy, key)
             if group:
                 evidence = responsibility_observed.get('responsibility_evidence')
-                lines += ['責任改訂 #182: ' + group['disposition'] + ' / ' + group['purpose'],
+                method = initial_policy['responsibility_revision'].get('method_revision')
+                lines += [('目的による方法改訂 #223: ' if method else '責任改訂 #182: ') + group['disposition'] + ' / ' + group['purpose'],
                           '改訂revision: ' + canonical_hash(initial_policy['responsibility_revision']),
                           '除外/置換する義務（PASSではない）: ' + group['excluded'],
                           '有効な実施分担: ' + group['methods'],
@@ -1140,7 +1189,7 @@ def render_queue(paths, promotion=None, git=git_read):
                           '原前提: ' + original['preconditions']]
                 lines += [f'原手順 {n}: {step}' for n, step in enumerate(original['steps'], 1)]
                 lines += ['原期待結果: ' + original['expected'], '']
-        if amended:
+        if amended and not (initial_policy or {}).get('responsibility_revision', {}).get('method_revision'):
             proof = result.get('gop_evidence')
             if not isinstance(proof, dict):
                 proof = {}
