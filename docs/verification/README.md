@@ -1,5 +1,7 @@
 # 受入・固定候補・QA
 
+**現在の保証境界**: [製品責任と最小検証（#182）](responsibility.md)と正式計画の`responsibility_revision`を適用します。原Case/旧計画/以下の過去改訂説明は履歴として保持し、外部player全Play/精密seek・一律human番号読取り・native故障全種反復・無変更artifactの再build義務は明示改訂後の有効条件で判断します。未達をPASSにしません。gateと一覧は同じresolverを使います。
+
 `changes/issue-N.json` はIssueの受入、`promotion.json` はmainへ入れる固定候補と全Caseの観察の正本です。過去の観察を別SHA/buildのpassへ流用しません。未実施はpending、環境不足はblocked、製品不具合はfailと区別します。
 
 ## Caseの記録
@@ -128,7 +130,7 @@ promotionには`stage: initial-agent`を明記し、`results`に全135 keyを置
 
 ## 試験コストと完了の判断
 
-必要な品質条件を満たす最小の試験を計画します。安全性・データ保全・エラー復旧・同期/映像精度・画質/負荷/容量・指定された人間/REAL確認は省略しません。Caseを管理する数と操作の回数は同じではありません。
+[現在の製品責任](responsibility.md)を満たす最小の試験を計画します。安全性・データ保全・エラー復旧・同期/映像精度・画質/負荷/容量・指定された人間/REAL確認は省略しません。Caseを管理する数と操作の回数は同じではありません。
 
 - **候補を凍結する**: 既知の製品修正と必要な運用同期を先にまとめ、実行前に候補/source・成果物・実ロード・計画revisionを固定します。試験中に無関係な変更を足して候補を更新しません。停止中は新候補の作成・導入を開始しません。
 - **影響で再試験を選ぶ**: 修正箇所から呼出し元/先・共有状態・保存形式・build依存・Caseを照合し、まず失敗箇所と影響する境界を診断します。未変更の自動検査を理由なく反復せず、影響不明は関連範囲へ広げます。診断の選択と正式promotionの全Case充足を混同しません。
@@ -155,7 +157,7 @@ python3 scripts/workflow/verification.py docs/verification/changes/issue-12.json
 
 ## 同一成果物の観察再利用（#161）
 
-通常の結果は引き続き同一candidate/hashの実観察を要求します。文書・管理ルールのみの更新で候補SHAが進んだ場合、元の成功観察をそのまま保持する`reused`を例外として使えます。実際の再利用は製品・GUI試験の再開後、以下を確認してから行います。本ルールの導入やJSON構造検証だけで既存Caseを合格へ変えません。
+通常の結果は引き続き同一candidate/hashの実観察を要求します。#182による明示的な責任改訂の再評価は[限定手順](responsibility.md#trusted-main改訂と旧観察の再評価)へ分離し、以下の通常reuse条件を緩めません。文書・管理ルールのみの更新で候補SHAが進んだ場合、元の成功観察をそのまま保持する`reused`を例外として使えます。実際の再利用は製品・GUI試験の再開後、以下を確認してから行います。本ルールの導入やJSON構造検証だけで既存Caseを合格へ変えません。
 
 - source candidateは現在candidateの祖先で、対象artifact SHA-256が一致すること。差分は`docs/`、`scripts/workflow/`、`.agents/skills/`、`.claude/skills/`、`.cursor/rules/`とrootの`AGENTS.md`・`CLAUDE.md`・`README.md`・`CONTRIBUTING.md`だけに限定します。途中でrevertされた変更も検査します。製品/runtime・build・設定・fixture・未知のpath、異なる成果物は再試験です。製品が生成するREADMEの実装はこの文書例外に含みません。
 - 元Caseが両candidateに存在し、契約が同じで、そのCase JSONの変更履歴がないこと。初期計画の該当entry（全出典・Agent条件・延期・人間指定）とhuman_scope・followupも同じこと。GOPのrevision/6証拠、指定の実施経路、完全受入のhuman/human_evidenceは元観察に必要です。追加・変更Caseを旧結果で満たせません。
