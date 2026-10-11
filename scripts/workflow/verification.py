@@ -530,8 +530,9 @@ def validate_fact_assessment(observed, key, policy, candidate, artifact, git):
         original_policy = initial_stage_plan(source, source, git)
     except subprocess.CalledProcessError as exc:
         raise ValueError('Retained-fact source or history could not be verified') from exc
-    if canonical_hash(original_policy) != policy['responsibility_revision']['previous_plan_sha256']:
-        raise ValueError('Retained facts must bind the exact original responsibility plan')
+    if canonical_hash(original_policy) not in {
+            policy['responsibility_revision']['previous_plan_sha256'], canonical_hash(policy)}:
+        raise ValueError('Retained facts must bind the exact original or trusted current responsibility plan')
     for fact in assessment['facts'].values():
         if not isinstance(fact, dict):
             raise ValueError('Retained fact must be an actual successful observation')
@@ -913,14 +914,20 @@ def render_queue(paths, promotion=None, git=git_read):
                   f'PR: [#{data["pr"]}](https://github.com/shinma06/android-replay-buffer/pull/{data["pr"]})' if data.get('pr') else 'PR: 未登録', '', '前提・対象build: ' + case['preconditions'], '']
         amended = gop_cases.get(f'{data["issue"]}:{case["id"]}')
         result = results.get(f'{data["issue"]}:{case["id"]}', {})
-        if result.get('status') in ('reused', 'reassessed'):
+        retained = result.get('status') in ('reused', 'reassessed')
+        responsibility_observed = result.get('initial_observation', {}) if stage else result
+        if retained:
             confirmation = result.get('confirmation', {})
+            responsibility_observed = confirmation
             lines += ['再利用申請（判定は上表）・元候補: ' + str(result.get('source_candidate', '未登録')),
-                      '現在候補の適合確認: ' + json.dumps(confirmation, ensure_ascii=False),
-                      '以下は元の観察です。新候補での再試験を意味しません。', '']
+                      '現在候補の適合確認: ' + json.dumps(confirmation, ensure_ascii=False), '']
             result = result.get('source_result', {})
             if not isinstance(result, dict):
                 result = {}
+        if stage:
+            result = result.get('initial_observation', {})
+        if not isinstance(responsibility_observed, dict):
+            responsibility_observed = {}
         key = f'{data["issue"]}:{case["id"]}'
         entry = effective_initial_entry(initial_policy, key) if initial_policy and key in initial_policy['cases'] else None
         if entry:
@@ -940,16 +947,16 @@ def render_queue(paths, promotion=None, git=git_read):
                                                for s in entry['sources']), '']
             group = responsibility_group(initial_policy, key)
             if group:
+                evidence = responsibility_observed.get('responsibility_evidence')
                 lines += ['責任改訂 #182: ' + group['disposition'] + ' / ' + group['purpose'],
                           '改訂revision: ' + canonical_hash(initial_policy['responsibility_revision']),
                           '除外/置換する義務（PASSではない）: ' + group['excluded'],
                           '有効な実施分担: ' + group['methods'],
-                          '有効条件の証拠: ' + json.dumps(result.get('responsibility_evidence', {}), ensure_ascii=False),
+                          ('有効条件の証拠（現在候補の適合確認）: ' if retained else '有効条件の証拠: ') +
+                          (json.dumps(evidence, ensure_ascii=False) if evidence else '未登録（未実施又は延期）'),
                           '以下の固定原契約は履歴。有効条件は明示改訂と上の分担を適用する。', '']
             if stage and entry['initial_scope'] == 'deferred':
                 lines += ['このREAL専用Caseは全工程を延期。以下は再開用の原契約。', '']
-            if stage:
-                result = result.get('initial_observation', {})
             versions = {}
             for source_key, original, source in historical:
                 if source_key == f'{data["issue"]}:{case["id"]}':
@@ -975,7 +982,8 @@ def render_queue(paths, promotion=None, git=git_read):
         lines += [f'{n}. {step}' for n, step in enumerate(case['steps'], 1)]
         lines += ['', '期待結果: ' + case['expected'], '']
         if result:
-            lines += ['今回の候補結果: ' + result.get('status', 'pending'),
+            lines += [('元の観察（履歴、新候補の再試験ではない）: ' if retained else '今回の候補結果: ') +
+                      result.get('status', 'pending'),
                       f'確認者: {result.get("actor", "未登録")} / {result.get("observer", "未登録")}',
                       '確認日時: ' + result.get('at', '未登録'), '実施経路: ' + result.get('execution', '未登録'),
                       '観察/失敗理由: ' + result.get('reason', '未登録'),

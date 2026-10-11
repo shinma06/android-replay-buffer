@@ -39,7 +39,7 @@ class ResponsibilityRevisionTests(unittest.TestCase):
 
     def proof(self, observed):
         observed['responsibility_revision'] = canonical_hash(self.policy['responsibility_revision'])
-        observed['responsibility_evidence'] = {name: 'Executed evidence / fixed artifact / reviewed coverage'
+        observed['responsibility_evidence'] = {name: 'Executed proof: ' + name
             for name in ('contract_coverage', 'artifact_binding', 'failure_attribution', 'file_integrity')}
 
     def verify(self):
@@ -118,8 +118,36 @@ class ResponsibilityRevisionTests(unittest.TestCase):
             self.assertIn('固定原契約', view)
             self.assertIn('All our samples remain correct.', view)
             self.assertIn('初期版範囲合格', view)
+            emu, real = view.split('## #36 / QA-1-REAL:')
+            for reference in self.observed['responsibility_evidence'].values():
+                self.assertIn(reference, emu)
+                self.assertNotIn(reference, real)
+            self.assertIn('このREAL専用Caseは全工程を延期', real)
+            self.assertIn('有効条件の証拠: 未登録（未実施又は延期）', real)
             del self.observed['responsibility_evidence']['file_integrity']
             self.assertNotIn('初期版範囲合格', render_queue([path], self.initial.manifest, self.fixture.git))
+
+    def test_reassessed_listing_separates_current_proof_from_original_observation(self):
+        confirmation = dict(observation(), actor='gpt', execution='computer_use',
+                            equivalence_evidence='Unchanged inputs.', environment_evidence='Same conditions.')
+        self.proof(confirmation)
+        original = copy.deepcopy(self.old_result)
+        original['initial_observation']['reason'] = 'Preserved original observation reason.'
+        self.initial.manifest['results']['36:QA-1-EMU'] = {
+            'status': 'reassessed', 'head': NEW, 'artifact_sha256': 'e' * 64,
+            'source_candidate': NEW, 'source_result': original, 'confirmation': confirmation}
+        self.assertTrue(self.verify()['stage_complete'])
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'cases.json'
+            path.write_text(json.dumps(self.fixture.documents[f'{NEW}:docs/verification/changes/issue-36.json']))
+            view = render_queue([path], self.initial.manifest, self.fixture.git)
+        proof_line = next(line for line in view.splitlines() if line.startswith('有効条件の証拠'))
+        self.assertIn('現在候補の適合確認', proof_line)
+        for reference in confirmation['responsibility_evidence'].values():
+            self.assertIn(reference, proof_line)
+        self.assertIn('元の観察（履歴', view)
+        self.assertIn('Preserved original observation reason.', view)
+        self.assertEqual(original['initial_observation']['reason'], 'Preserved original observation reason.')
 
     def test_full_acceptance_also_requires_effective_proofs_and_keeps_real_observation(self):
         self.initial.manifest.pop('stage')
@@ -209,7 +237,12 @@ class ResponsibilityRevisionTests(unittest.TestCase):
                       'coverage': {name: ['saved-output'] for name in self.observed['responsibility_evidence']},
                       'missing_requirements': [], 'unresolved_owned_failures': []}
         self.observed['responsibility_assessment'] = assessment
-        self.assertTrue(self.verify()['stage_complete'])
+        for source_policy in (self.original, self.policy):
+            self.fixture.documents[f'{NEW}:{INITIAL_PLAN}'] = copy.deepcopy(source_policy)
+            with self.subTest(amended='responsibility_revision' in source_policy):
+                self.assertTrue(self.verify()['stage_complete'])
+                validate_candidate_result(self.observed, '36:QA-1-EMU', self.policy, None,
+                                          NEW, 'e' * 64, 'computer_use', None, self.fixture.git)
         self.assertEqual(assessment['source_result'], aggregate)
         saved = copy.deepcopy(assessment)
         for mutation in ('missing-fact', 'missing-condition', 'owned-failure', 'unknown-identity',
@@ -234,3 +267,17 @@ class ResponsibilityRevisionTests(unittest.TestCase):
                 assessment['source_result_sha256'] = 'f' * 64
             with self.subTest(mutation=mutation), self.assertRaises(ValueError):
                 self.verify()
+        assessment.clear()
+        assessment.update(copy.deepcopy(saved))
+        source = 'a' * 40
+        assessment['source_candidate'] = source
+        assessment['source_result']['head'] = source
+        assessment['source_result_sha256'] = canonical_hash(assessment['source_result'])
+        assessment['facts']['saved-output']['head'] = source
+        self.fixture.documents[f'{source}:docs/verification/changes/issue-36.json'] = copy.deepcopy(
+            self.fixture.documents[f'{NEW}:docs/verification/changes/issue-36.json'])
+        different = copy.deepcopy(self.policy)
+        different['responsibility_revision']['groups']['fixture']['methods'] = 'An unauthorized different method.'
+        self.fixture.documents[f'{source}:{INITIAL_PLAN}'] = different
+        with self.assertRaisesRegex(ValueError, 'exact .* responsibility plan'):
+            self.verify()
