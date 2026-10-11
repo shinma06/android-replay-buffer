@@ -299,7 +299,8 @@ def initial_stage_plan(base, candidate, git):
     revision = policy.get('responsibility_revision')
     if revision is not None:
         validate_responsibility_policy(policy)
-    if candidate_plan != policy and not (revision and candidate_plan == original):
+    if candidate_plan != policy and not (revision and 'plan_extension' not in revision and
+                                         candidate_plan == original):
         raise ValueError('Candidate lacks the exact trusted initial plan; synchronize main first')
     for key, entry in policy['cases'].items():
         if (not re.fullmatch(r'[1-9][0-9]*:[A-Z][A-Z0-9-]+', key) or

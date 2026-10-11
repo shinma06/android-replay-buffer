@@ -418,6 +418,15 @@ class ResponsibilityRevisionTests(unittest.TestCase):
         # A candidate carrying the old 135-style plan is no longer the current plan.
         with self.assertRaisesRegex(ValueError, 'exact trusted'):
             initial_stage_plan(BASE, NEW, self.fixture.git)
+        stripped = {k: v for k, v in self.policy.items() if k != 'responsibility_revision'}
+        self.fixture.documents[f'{NEW}:{INITIAL_PLAN}'] = copy.deepcopy(stripped)
+        with self.assertRaisesRegex(ValueError, 'exact trusted'):
+            initial_stage_plan(BASE, NEW, self.fixture.git)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'new-case.json'
+            path.write_text(json.dumps(data))
+            with self.assertRaisesRegex(ValueError, 'exact trusted'):
+                render_queue([path], self.initial.manifest, self.fixture.git)
         self.fixture.documents[f'{NEW}:{INITIAL_PLAN}'] = copy.deepcopy(self.policy)
         self.assertEqual(self.policy, initial_stage_plan(BASE, NEW, self.fixture.git))
         with tempfile.TemporaryDirectory() as tmp:
