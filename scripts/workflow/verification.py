@@ -351,7 +351,10 @@ def validate_responsibility_policy(policy):
     if 'plan_extension' in revision:
         if (not isinstance(extension, dict) or set(extension) != {
                 'issue', 'previous_required_ancestor', 'added_cases'} or
-                extension['issue'] != 190 or extension['added_cases'] != ['186:CLOCK-BATCH-SAVE'] or
+                extension['issue'] not in (190, 201) or extension['added_cases'] != {
+                    190: ['186:CLOCK-BATCH-SAVE'],
+                    201: ['186:CLOCK-BATCH-SAVE', '197:SAVE-FAILURE-OWNERSHIP',
+                          '198:LOCAL-OWNERSHIP-RECOVERY']}[extension['issue']] or
                 not isinstance(extension['previous_required_ancestor'], str) or
                 not SHA.fullmatch(extension['previous_required_ancestor']) or
                 any(key not in policy['cases'] for key in extension['added_cases'])):

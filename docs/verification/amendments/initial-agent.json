@@ -2,7 +2,7 @@
   "schema": 1,
   "issue": 64,
   "stage": "initial-agent",
-  "required_ancestor": "542575c0a23a257be6bb37b028171426ea171efd",
+  "required_ancestor": "4d278e65dec0c55e71d584ff24c7f6fa407586cb",
   "followup_issue": 65,
   "owner": "Codex PM（管理）・QA #27担当（手順と証拠保全）。後続の人間実行者は再開時に割当。",
   "resume_condition": "初期版完成後、利用者が後続確認へ着手するときに実機・担当・固定候補を決める。CUA制約の部分は人間の対応または実際の操作経路復旧後。未実施の再質問で初期版を停止しない。",
@@ -2802,13 +2802,47 @@
         "最大4096sample/100000lookupのwork count・重複/逆行・最大epoch・closure/5秒/20ms/bridge/unknown/Long端値/算術例外のlinear等価性、4096clock/10000logのorder/recordID/帰属/retainedAt/窓・未知/loss/誤差境界・失敗pin/固定retry/N/対象は元契約の同ZIP製品class回帰で検査する。実IDEでは保存前後event・完了欄・session/JSONLの固定区間/record_id・保存後取得継続/後続event別保存、表示sequence/区間/N/対象・retry成果物を既存QA74/27と71 LOG-REMAP-UNKNOWN-RETRYの同候補/同条件観察へ対応付けて共有する。",
         "既存135 entry/204出典・182責任分担・全履歴/未達/GOP/REAL34/QA65を保持する。最大履歴の長時間GUI反復・新fixture/hook・human必須・延期・自動PASSを追加しない。製品class変更前の旧PASSを新候補へ転記せず、JVM成功をnative受入や実停止時間/欠落改善の実測へ読み替えない。"
       ]
+    },
+    "197:SAVE-FAILURE-OWNERSHIP": {
+      "sources": [
+        {
+          "source_pr": 199,
+          "source_merge": "ef36082ec4145bae481cd4ea883fcc26fced2482",
+          "source_path": "docs/verification/changes/issue-197.json",
+          "original_case_sha256": "dbde8e191ff0a01174b9573314634bdd6ce91c280c2cf6a73ac9f112bb83843c"
+        }
+      ],
+      "current_case_sha256": "dbde8e191ff0a01174b9573314634bdd6ce91c280c2cf6a73ac9f112bb83843c",
+      "initial_scope": "agent",
+      "deferred_scope": [],
+      "agent_requirements": [
+        "PR199実統合版の全前提・全2手順・expected・再確認条件を保持する。同じ新candidate/source・標準ZIP/全JAR hashの製品classを差替えず、SaveWriterFailureTestと既存Store/SingleMp4/Coreの失敗・取消し・固定retry回帰を実行する。実descriptor/dev/ino・staging条件付き取得・openat/排他的rename・全entry照合、衝突/差替え/symlink/未知所有物/完成物保全と失敗・取消し出力残留を元契約どおり確認する。mkdir作成inodeの原子的証明や任意の同UID編集防止は保証しない。",
+        "同候補/同ZIP/実ロードのQA27 SAVE-FAIL-02-EMUと代表保存失敗→実ToolWindowの未完成場所表示→同じ固定対象の新規retryを共有し、全faultは同ZIP回帰へ分担する。場所は同identityの実在するdirectoryのbest effort案内、取消しmessageの場所保持とOFF/closeのUI抑止、残留容量増加を明示する。旧cleanup成功やWriterのmessage assertionをnative PASSにしない。拒否済みruntime実験を再試行せず、元failed baseline・観察・REAL34/人間延期を保持する。"
+      ]
+    },
+    "198:LOCAL-OWNERSHIP-RECOVERY": {
+      "sources": [
+        {
+          "source_pr": 200,
+          "source_merge": "4d278e65dec0c55e71d584ff24c7f6fa407586cb",
+          "source_path": "docs/verification/changes/issue-198.json",
+          "original_case_sha256": "a7de6997b9c6850c6cd25de4b203a13731a9175676a46e99a79319b96b7e860b"
+        }
+      ],
+      "current_case_sha256": "a7de6997b9c6850c6cd25de4b203a13731a9175676a46e99a79319b96b7e860b",
+      "initial_scope": "agent",
+      "deferred_scope": [],
+      "agent_requirements": [
+        "PR200実統合版の全前提・全3手順・expected・再確認条件を保持する。同候補/source・標準ZIP/全JAR hashの製品classを差替えず、LocalCaptureOwnershipTestと既存Core/Store/取得/保存/寿命回帰を実行する。停止済みowner/lock/PID-start/namespace/root/resource identity・容量/unknown/frozen/pin/登録失敗/権限/終了失敗とschema2固定枠journalの有界増分/slot再利用/partial/checksum/padding/旧schema1保全を全対象照合する。",
+        "同候補/同ZIP/実ロードのQA27と、所有project起動時の停止済みknown helperの取得root限定回収・有効設定復元、通常取得→Save→継続取得→OFF/通常closeを共有する。live/unknown/別project/完成済み保存物を保全しremote cleanupを維持する。取得root回収は失敗・取消し保存attemptの残留回収ではない。実IDE crash/kill全反復・host-temp走査・跨IDE retry復元・新QA・human必須・延期を追加せず、pure回帰をnative PASSへ転記しない。"
+      ]
     }
   },
   "responsibility_revision": {
     "issue": 182,
     "previous_plan_sha256": "a5c470bf6bdbbbe77d2001bcb287667e4a6d399ee935ebd3fc23388be2f37441",
     "common_requirements": [
-      "自製品の元契約の意味・全対象データ・安全性と未達を維持する。下記の明示改訂は原文の実施方法/外部実装保証/一律human指定だけを置換し、固定出典・観察履歴を削除又はPASSへ変換しない。",
+      "自製品の元契約の意味・全対象データ・安全性と未達を維持する。下記の明示改訂は原文の実施方法/外部実装保証/一律human指定と失敗・取消し保存attemptの削除義務だけを置換し、固定出典・観察履歴を削除又はPASSへ変換しない。",
       "実行済み証拠を各有効条件へ対応付ける。source読解・JSON存在・hash追記は観察ではない。同じsource/成果物/前提の証拠を共有でき、不足する事実だけ確認する。製品違反・未帰属の不一致・不確かさ過大・未実施は未完了。",
       "実施方法は責任groupの分担に従う。production classの決定的回帰で内部故障/数値境界/全組合せを検証し、nativeでは自製品の接続・操作・表示・外部API呼出しが本当に結び付く代表工程を確認する。OS/IDE/editor/player内部の全種動作を保証する目的の反復は要求しない。REAL固有取得はEMU/合成から推定しない。"
     ],
@@ -2959,12 +2993,14 @@
           "71:LOG-REMAP-NORMAL-ZERO",
           "71:LOG-REMAP-UNKNOWN-RETRY",
           "78:CLOCK-RECEIPT-NORMAL",
-          "186:CLOCK-BATCH-SAVE"
+          "186:CLOCK-BATCH-SAVE",
+          "197:SAVE-FAILURE-OWNERSHIP",
+          "198:LOCAL-OWNERSHIP-RECOVERY"
         ],
         "disposition": "統合",
         "purpose": "所有process/readerの実停止、generation/epoch・gap/loss、固定失敗対象/atomic/partial保全。",
         "methods": "production class/fake SDK/loopback/所有filesystemで全fault種・前/中/後保存・race/取消し・pin/再試行を検証。nativeは実取得/通常同boot再接続・OFF/close・代表保存失敗→固定retry・表示の接続を共有。native-only filesystem/APIは実callで検証する。",
-        "excluded": "合成で検証したfault全種を端末/OSで再注入する義務を除外。自製品glueの失敗表示/cleanup/retryは省略しない。",
+        "excluded": "合成で検証したfault全種を端末/OSで再注入する義務を除外。自製品glueの失敗表示/取得・remote cleanup/固定retryは省略しない。失敗・取消し保存attemptは自動削除せず保全し、取得rootの限定回収と混同しない。",
         "evidence_keys": [
           "regression",
           "integration"
@@ -3460,13 +3496,33 @@
           "自製品の元契約の意味・全対象データ・安全性と未達を維持する。下記の明示改訂は原文の実施方法/外部実装保証/一律human指定だけを置換し、固定出典・観察履歴を削除又はPASSへ変換しない。",
           "全file/sampleを独立readerで検査し、未適用media PTSとedit後movie対応、timescale/headers/index/sample entry/IDR prefix/empty edit/未知gap/terminal null/held tickを元packet・frames/session・両logsへ照合する。readerのedit無視/PTS再配置を実source時刻と誤認しない。全対象frameとraw/config/画素・geometry/文字/色を検査し、後半欠落を隠さない。 同一成果物の代表的な通常/境界を含む動画で標準playerのopen・短いPlay・前後seekと代表表示を一度確認する。全Play・全境界精密seek・全player実装の一致は保証しない。不一致は元media/edit/indexと忠実なreader結果を切り分け、自製品違反又は未帰属は未完了、根拠付き外部実装差は診断履歴と利用上の制約へ残す。 精密fault/unknown/整数境界/全runはproduction classの回帰。実IDEは普通の静止/連番/混在Save・通常再接続と表示を共有。"
         ]
+      },
+      "27:SAVE-FAIL-02-EMU": {
+        "case": {
+          "steps": [
+            "各出力段階と最終移動の失敗・取消しを同ZIP製品classの所有filesystem回帰で検証し、衝突entry・差替え・symlink・所有不明物と完成済み出力のbytes/identityを保全する。元の安全なfault経路・専用transport・共通前提を維持し、nativeに全faultを反復しない。",
+            "QA27の同候補/同ZIP/同条件の代表保存失敗→固定retry観察を197:SAVE-FAILURE-OWNERSHIPと共有する。実在・同identityの未完成場所を実ToolWindow失敗欄で確認し、元完成出力hash・固定T/N/対象/pinを確認して新規フォルダーへ再試行する。取消しは既存OFF/closeのUI抑止を維持し、場所表示のための新通知を要求しない。"
+          ],
+          "expected": "成功通知なし。失敗・取消し保存attemptのfile/directoryを自動削除せず、衝突entry・所有不明物・差替え・symlink・既存完成物を保全する。partialを完成と表示せず、作成済みsessionは保持descriptor経由でcomplete:falseへ戻すbest effortを行う（書込み不能時は保証しない）。同identityの実在する未完成directoryの場所をbest effortで既存エラー経路へ伝え、確認できない場所を実在と断定しない。取消しmessageにも場所を保持するがOFF/closeの既存UI抑止を維持する。残留容量増加を許容し、自動回収を提供しない。失敗保持中の固定T/N/対象/pinと別新規フォルダーへの同内容retry、成功時のatomic非上書き、取消し時の既存参照解放/Lifecycle、取得・remote cleanupは維持する。198の回収対象は識別済み旧取得rootで、保存attempt残留ではない。原cleanup義務を満たしたとは扱わず、原Case全文と旧観察/failed checks/未達を保持する。"
+        }
+      },
+      "27:SAVE-FAIL-02-REAL": {
+        "case": {
+          "steps": [
+            "各出力段階と最終移動の失敗・取消しを同ZIP製品classの所有filesystem回帰で検証し、衝突entry・差替え・symlink・所有不明物と完成済み出力のbytes/identityを保全する。元の安全なfault経路・専用transport・共通前提を維持し、nativeに全faultを反復しない。",
+            "QA27の同候補/同ZIP/同条件の代表保存失敗→固定retry観察を197:SAVE-FAILURE-OWNERSHIPと共有する。実在・同identityの未完成場所を実ToolWindow失敗欄で確認し、元完成出力hash・固定T/N/対象/pinを確認して新規フォルダーへ再試行する。取消しは既存OFF/closeのUI抑止を維持し、場所表示のための新通知を要求しない。"
+          ],
+          "expected": "成功通知なし。失敗・取消し保存attemptのfile/directoryを自動削除せず、衝突entry・所有不明物・差替え・symlink・既存完成物を保全する。partialを完成と表示せず、作成済みsessionは保持descriptor経由でcomplete:falseへ戻すbest effortを行う（書込み不能時は保証しない）。同identityの実在する未完成directoryの場所をbest effortで既存エラー経路へ伝え、確認できない場所を実在と断定しない。取消しmessageにも場所を保持するがOFF/closeの既存UI抑止を維持する。残留容量増加を許容し、自動回収を提供しない。失敗保持中の固定T/N/対象/pinと別新規フォルダーへの同内容retry、成功時のatomic非上書き、取消し時の既存参照解放/Lifecycle、取得・remote cleanupは維持する。198の回収対象は識別済み旧取得rootで、保存attempt残留ではない。原cleanup義務を満たしたとは扱わず、原Case全文と旧観察/failed checks/未達を保持する。"
+        }
       }
     },
     "plan_extension": {
-      "issue": 190,
+      "issue": 201,
       "previous_required_ancestor": "5bf9e84a887171df5f0287b036e9ba288fbfae9f",
       "added_cases": [
-        "186:CLOCK-BATCH-SAVE"
+        "186:CLOCK-BATCH-SAVE",
+        "197:SAVE-FAILURE-OWNERSHIP",
+        "198:LOCAL-OWNERSHIP-RECOVERY"
       ]
     }
   }
