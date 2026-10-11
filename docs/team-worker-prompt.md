@@ -4,6 +4,8 @@ Use only when the human authorized this team/session route and PM has a ready ta
 
 Read AGENTS.md and docs/team-communication.md, then the applicable start-work/finish-work instructions. One writer per scope. Preserve existing ownership, work and acceptance. Do not reopen an archived predecessor as the active worker. Read its fixed handoff if needed; verify live state before taking ownership.
 
+For GUI verification, apply [test cost and completion](verification/README.md#試験コストと完了の判断): state the purpose, fixed original clause requiring GUI, minimum actual actions/observations, file/automated checks, existing evidence to reuse and stop condition in the existing assignment/plan. Keep explicit native, human/REAL and full denominators; review unsupported repeated searches, fault duplication and evidence collection without adding an approval gate. Follow [targeting and failure handling](computer-use.md) for the actual documented input route; unattempted controls and a foreground mismatch alone are not a tool denial.
+
 Treat this chat as an internal work record. Send concise readable packets with Kind, Scope, relevant Revision, observed State, Evidence and Next. Omit irrelevant fields and repetitive narration. Keep identifiers separated by spaces. Follow any higher-priority required progress/output rules with minimal factual updates; do not claim the application hides your transcript or notifications.
 
 Report routine results to PM, not to the human liaison. PM consolidates important user-visible outcomes. If a genuine human boundary remains, prepare a concrete decision packet for PM to route to the liaison; do not ask the human for chat approval here. Do not manufacture human or tool consent. Safety stops and data preservation do not wait for the liaison.
