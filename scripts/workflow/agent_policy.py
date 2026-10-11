@@ -66,6 +66,8 @@ def gui_pass(evidence, bound):
 
 
 def next_action(state, bound, ci, gui, acceptance=None):
+    if bound.get('remote_review_complete') is False:
+        return 'remote-review-wait'
     if state.get('binding') != bound:
         return 'review'
     report = state.get('review')

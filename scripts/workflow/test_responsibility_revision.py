@@ -8,7 +8,7 @@ import unittest
 from test_agent_loop import BASE, NEW
 import test_initial_acceptance as ti
 from test_verification import observation
-from test_observation_reuse import OLD, reused
+from test_observation_reuse import OLD, RECORD, reused, record_original
 from verification import (INITIAL_PLAN, canonical_hash, effective_initial_entry,
                           effective_responsibility_case, initial_stage_plan, render_queue,
                           validate_candidate_result, validate_responsibility_policy)
@@ -96,8 +96,9 @@ class ResponsibilityRevisionTests(unittest.TestCase):
                             environment_evidence='All source conditions and loaded identity match.')
         self.proof(confirmation)
         reassessed = {'status': 'reassessed', 'head': NEW, 'artifact_sha256': 'e' * 64,
-                      'source_candidate': NEW, 'source_result': copy.deepcopy(self.old_result),
+                      'source_candidate': NEW, 'source_record': RECORD, 'source_result': copy.deepcopy(self.old_result),
                       'confirmation': confirmation}
+        record_original(self.fixture, '36:QA-1-EMU', reassessed)
         self.initial.manifest['results']['36:QA-1-EMU'] = reassessed
         self.assertTrue(self.verify()['stage_complete'])
         self.assertEqual(reassessed['source_result'], self.old_result)
@@ -136,7 +137,8 @@ class ResponsibilityRevisionTests(unittest.TestCase):
         original['initial_observation']['reason'] = 'Preserved original observation reason.'
         self.initial.manifest['results']['36:QA-1-EMU'] = {
             'status': 'reassessed', 'head': NEW, 'artifact_sha256': 'e' * 64,
-            'source_candidate': NEW, 'source_result': original, 'confirmation': confirmation}
+            'source_candidate': NEW, 'source_record': RECORD, 'source_result': original, 'confirmation': confirmation}
+        record_original(self.fixture, '36:QA-1-EMU', self.initial.manifest['results']['36:QA-1-EMU'])
         self.assertTrue(self.verify()['stage_complete'])
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / 'cases.json'
@@ -170,6 +172,7 @@ class ResponsibilityRevisionTests(unittest.TestCase):
                 observed['head'] = OLD
                 result = reused(original)
                 self.initial.manifest['results']['36:QA-1-EMU'] = result
+                record_original(self.fixture, '36:QA-1-EMU', result)
                 before = copy.deepcopy(result)
                 self.assertNotIn('responsibility_evidence', result['confirmation'])
                 self.assertTrue(self.verify()['stage_complete' if initial else 'gui_complete'])
@@ -205,11 +208,12 @@ class ResponsibilityRevisionTests(unittest.TestCase):
             confirmation = results['36:QA-1-EMU']
             results['36:QA-1-EMU'] = {
                 'status': 'reassessed', 'head': NEW, 'artifact_sha256': 'e' * 64,
-                'source_candidate': NEW,
+                'source_candidate': NEW, 'source_record': RECORD,
                 'source_result': dict(observation(), actor='gpt', execution='computer_use',
                                       reason='Preserved full observation.'),
                 'confirmation': dict(confirmation, equivalence_evidence='Same inputs.',
                                      environment_evidence='Same environment.')}
+            record_original(self.fixture, '36:QA-1-EMU', results['36:QA-1-EMU'])
             self.assertTrue(self.verify()['gui_complete'])
             assessed = render_queue([path], self.initial.manifest, self.fixture.git)
             proof_line = next(line for line in assessed.splitlines() if line.startswith('有効条件の証拠'))
@@ -259,7 +263,8 @@ class ResponsibilityRevisionTests(unittest.TestCase):
         self.proof(confirmation)
         self.initial.manifest['results'][key] = {
             'status': 'reassessed', 'head': NEW, 'artifact_sha256': 'e' * 64,
-            'source_candidate': old, 'source_result': original, 'confirmation': confirmation}
+            'source_candidate': old, 'source_record': RECORD, 'source_result': original, 'confirmation': confirmation}
+        record_original(self.fixture, key, self.initial.manifest['results'][key])
         previous = self.fixture.git
         changed = 'docs/note.md'
 
@@ -276,6 +281,78 @@ class ResponsibilityRevisionTests(unittest.TestCase):
         for changed in ('plugin/build.gradle.kts', 'tests/fixture.json', 'replay_buffer/app.py', path):
             with self.subTest(changed=changed), self.assertRaises(ValueError):
                 self.verify()
+
+    def test_pre_revision_ordinary_reuse_cannot_attach_current_proofs(self):
+        self.initial.manifest.pop('stage')
+        self.initial.manifest['results'] = {key: dict(observation(), actor='gpt') for key in self.policy['cases']}
+        for result in self.initial.manifest['results'].values():
+            self.proof(result)
+        self.initial.manifest['results']['36:QA-1-EMU']['execution'] = 'computer_use'
+        path = 'docs/verification/changes/issue-36.json'
+        self.fixture.documents[f'{OLD}:{path}'] = copy.deepcopy(self.fixture.documents[f'{NEW}:{path}'])
+        self.fixture.documents[f'{OLD}:{INITIAL_PLAN}'] = copy.deepcopy(self.original)
+        original = copy.deepcopy(self.initial.manifest['results']['36:QA-1-EMU'])
+        original['head'] = OLD
+        result = reused(original)
+        record_original(self.fixture, '36:QA-1-EMU', result)
+        self.initial.manifest['results']['36:QA-1-EMU'] = result
+        with self.assertRaisesRegex(ValueError, 'scope changed'):
+            self.verify()
+
+    def test_latest_case_is_retained_and_old_override_cannot_erase_it(self):
+        path = 'docs/verification/changes/issue-36.json'
+        historical = 'a' * 40
+        self.fixture.documents[f'{historical}:{path}'] = copy.deepcopy(self.fixture.documents[f'{NEW}:{path}'])
+        self.original['required_ancestor'] = historical
+        self.policy['required_ancestor'] = historical
+        self.policy['responsibility_revision']['previous_plan_sha256'] = canonical_hash(self.original)
+        for policy in (self.original, self.policy):
+            for entry in policy['cases'].values():
+                entry['sources'][0]['source_merge'] = historical
+        self.policy['responsibility_revision']['previous_plan_sha256'] = canonical_hash(self.original)
+        self.fixture.documents[f'{NEW}:{INITIAL_PLAN}'] = copy.deepcopy(self.original)
+        self.fixture.documents[f'{BASE}:{INITIAL_PLAN}'] = copy.deepcopy(self.policy)
+        current = self.fixture.documents[f'{NEW}:{path}']['cases'][0]
+        current['steps'].append('New candidate must preserve the additional output.')
+        current['expected'] += ' New mandatory condition.'
+        current['artifact'] = 'plugin'
+        self.initial.manifest.pop('stage')
+        self.initial.manifest['artifacts'] = {'plugin': 'e' * 64}
+        self.initial.manifest['results'] = {k: dict(observation(), actor='gpt') for k in self.policy['cases']}
+        for result in self.initial.manifest['results'].values():
+            self.proof(result)
+        observed = self.initial.manifest['results']['36:QA-1-EMU']
+        observed['execution'] = 'computer_use'
+        with self.assertRaisesRegex(ValueError, 'exact current effective contract'):
+            self.verify()
+        observed['case_sha256'] = canonical_hash(effective_responsibility_case(self.policy, '36:QA-1-EMU', current))
+        self.assertTrue(self.verify()['gui_complete'])
+        with tempfile.TemporaryDirectory() as tmp:
+            file = Path(tmp) / 'case.json'
+            file.write_text(json.dumps(self.fixture.documents[f'{NEW}:{path}']))
+            view = render_queue([file], self.initial.manifest, self.fixture.git)
+        self.assertIn('New candidate must preserve', view)
+        self.assertIn('New mandatory condition.', view)
+        self.assertNotIn('期待結果: All our samples remain correct.', view)
+
+    def test_retained_fact_listing_preserves_verdict_facts_and_coverage(self):
+        aggregate = {'status': 'pending', 'head': NEW, 'artifact_sha256': 'e' * 64, 'reason': 'Old pending verdict.'}
+        self.observed['responsibility_assessment'] = {
+            'source_candidate': NEW, 'source_result': aggregate,
+            'source_result_sha256': canonical_hash(aggregate), 'source_record_evidence': 'Fixed original private record.',
+            'facts': {'samples': dict(observation(), actor='gpt', reason='Actual old sample observation.')},
+            'coverage': {name: ['samples'] for name in self.observed['responsibility_evidence']},
+            'missing_requirements': [], 'unresolved_owned_failures': []}
+        with tempfile.TemporaryDirectory() as tmp:
+            file = Path(tmp) / 'case.json'
+            file.write_text(json.dumps(self.fixture.documents[f'{NEW}:docs/verification/changes/issue-36.json']))
+            view = render_queue([file], self.initial.manifest, self.fixture.git)
+        self.assertIn('保持事実を有効条件へ再評価／新しい試験実行ではない', view)
+        self.assertIn('保持事実の現在評価（再試験ではない）', view)
+        self.assertIn('Old pending verdict.', view)
+        for key, value in self.observed['responsibility_assessment'].items():
+            self.assertIn('"' + key + '"', view)
+        self.assertIn('Actual old sample observation.', view)
 
     def test_real_repository_mapping_covers_135_and_preserves_all_204_sources(self):
         path = Path(__file__).resolve().parents[2] / INITIAL_PLAN

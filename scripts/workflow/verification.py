@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import re
 import subprocess
+from git_guard import BRANCH
 
 SHA = re.compile(r'[0-9a-f]{40}')
 HASH = re.compile(r'[0-9a-f]{64}')
@@ -32,6 +33,11 @@ def field(body, name):
 
 def metadata(pr):
     issue = int(field(pr['body'], 'Issue').removeprefix('#'))
+    branch = BRANCH.fullmatch(pr.get('head', {}).get('ref', ''))
+    if not branch or int(branch.group(2)) != issue:
+        raise ValueError('Source branch and Issue metadata must match')
+    if field(pr['body'], 'GUI') not in ('required', 'not-required'):
+        raise ValueError('GUI must be an exact required or not-required declaration')
     path = field(pr['body'], 'Verification')
     expected = f'docs/verification/changes/issue-{issue}.json'
     if path != expected:
@@ -51,7 +57,8 @@ def nonempty(value):
 def validate_change(data, issue, gui):
     if data.get('schema') != 1 or data.get('issue') != issue or type(data.get('gui_required')) is not bool or data['gui_required'] != gui:
         raise ValueError('Acceptance Issue/GUI declaration mismatch')
-    if not nonempty(data.get('reason')) or not data.get('cli_checks') or not all(nonempty(x) for x in data['cli_checks']):
+    if (not nonempty(data.get('reason')) or not isinstance(data.get('cli_checks'), list)
+            or not data['cli_checks'] or not all(nonempty(x) for x in data['cli_checks'])):
         raise ValueError('Concrete reason and CLI checks are required')
     cases = data.get('cases')
     if not isinstance(cases, list) or (gui and not cases) or (not gui and cases):
@@ -68,9 +75,9 @@ def validate_change(data, issue, gui):
         for key in ('change', 'preconditions', 'expected', 'next_action'):
             if not nonempty(case.get(key)):
                 raise ValueError('Missing Case ' + key)
-        if not case.get('steps') or not all(nonempty(x) for x in case['steps']):
+        if not isinstance(case.get('steps'), list) or not case['steps'] or not all(nonempty(x) for x in case['steps']):
             raise ValueError('Reproducible steps are required')
-        if not case.get('provenance') or not all(nonempty(x) for x in case['provenance']):
+        if not isinstance(case.get('provenance'), list) or not case['provenance'] or not all(nonempty(x) for x in case['provenance']):
             raise ValueError('Case provenance is required')
         for actor in ('gpt', 'human'):
             observation = case.get(actor)
@@ -95,8 +102,9 @@ def validate_observation(result, candidate, artifact=None):
     for key in ('observer', 'at', 'evidence', 'loaded_identity', 'reason'):
         if not nonempty(result.get(key)):
             raise ValueError('Missing observed evidence: ' + key)
-    if not re.fullmatch(r'\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:Z|[+-]\d\d:\d\d)', result['at']):
+    if not re.fullmatch(r'\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:Z|[+-]\d\d:[0-5]\d)', result['at']):
         raise ValueError('Use an ISO8601 observation timestamp')
+    datetime.fromisoformat(result['at'].replace('Z', '+00:00'))
 
 
 def validate_full_result(result, candidate, artifact, execution, gop, initial_entry=None):
@@ -400,7 +408,9 @@ def effective_responsibility_case(policy, key, case):
     group = responsibility_group(policy, key)
     if group:
         revision = policy['responsibility_revision']
-        revised.update(revision['overrides'].get(key, {}).get('case', {}))
+        # An old method amendment cannot erase conditions added by a later Case.
+        if canonical_hash(case) == policy['cases'][key]['current_case_sha256']:
+            revised.update(revision['overrides'].get(key, {}).get('case', {}))
         revised['steps'] = [*revised['steps'], '有効な実施分担: ' + group['methods']]
         revised['expected'] += ' ' + ' '.join(revision['common_requirements'])
     return revised
@@ -545,7 +555,8 @@ def validate_fact_assessment(observed, key, policy, candidate, artifact, git):
             raise ValueError('Each effective condition needs identified passing facts')
 
 
-def validate_candidate_result(result, key, policy, stage, candidate, artifact, execution, gop, git):
+def validate_candidate_result(result, key, policy, stage, candidate, artifact, execution, gop, git,
+                              trusted_base=None, case=None):
     """Keep old observations intact; accept reuse only with fresh equivalence evidence."""
     if not isinstance(result, dict):
         raise ValueError('Case result must be an object')
@@ -553,7 +564,7 @@ def validate_candidate_result(result, key, policy, stage, candidate, artifact, e
     source_policy = policy
     reassessed = result.get('status') == 'reassessed'
     if result.get('status') in ('reused', 'reassessed'):
-        if (set(result) != {'status', 'head', 'artifact_sha256', 'source_candidate',
+        if (set(result) != {'status', 'head', 'artifact_sha256', 'source_candidate', 'source_record',
                            'source_result', 'confirmation'} or
                 result['head'] != candidate or result['artifact_sha256'] != artifact or
                 not isinstance(result['source_candidate'], str) or
@@ -565,7 +576,21 @@ def validate_candidate_result(result, key, policy, stage, candidate, artifact, e
         if (not isinstance(original, dict) or original.get('status') != ('initial-pass' if stage else 'pass') or
                 not isinstance(confirmation, dict)):
             raise ValueError('Only original successful observations can be reused; no chains or deferrals')
+        record = result['source_record']
+        if not isinstance(record, str) or not SHA.fullmatch(record) or not trusted_base:
+            raise ValueError('Reuse requires a fixed original promotion record in trusted main')
+        try:
+            git('merge-base', '--is-ancestor', record, trusted_base)
+            stored = regular_json(record, PROMOTION, git)
+        except subprocess.CalledProcessError as exc:
+            raise ValueError('Original promotion record is not in trusted main') from exc
+        if (not isinstance(stored, dict) or stored.get('schema') != 1 or stored.get('candidate') != source or
+                not isinstance(stored.get('results'), dict) or stored['results'].get(key) != original):
+            raise ValueError('Embedded result differs from the fixed original promotion record')
         validate_observation(confirmation, candidate, artifact)
+        fixed_at = datetime.fromisoformat(git('show', '-s', '--format=%cI', candidate))
+        if fixed_at.tzinfo is None or datetime.fromisoformat(confirmation['at'].replace('Z', '+00:00')) < fixed_at:
+            raise ValueError('Reuse confirmation predates the fixed candidate commit')
         for name in ('equivalence_evidence', 'environment_evidence'):
             if not nonempty(confirmation.get(name)):
                 raise ValueError('Reuse needs current loaded/environment/condition evidence: ' + name)
@@ -582,7 +607,8 @@ def validate_candidate_result(result, key, policy, stage, candidate, artifact, e
                 if reassessed:
                     if canonical_hash(source_policy) != policy['responsibility_revision']['previous_plan_sha256']:
                         raise ValueError('Reassessment must retain the exact original plan and observation')
-                elif (source_policy['cases'].get(key) != entry or
+                elif (source_policy.get('responsibility_revision') != (policy or {}).get('responsibility_revision') or
+                        source_policy['cases'].get(key) != entry or
                         (entry and any(source_policy[k] != policy[k] for k in ('human_scope', 'followup_issue')))):
                     raise ValueError('Initial/deferred/human scope changed; retest required')
             if key in GOP_KEYS:
@@ -609,6 +635,10 @@ def validate_candidate_result(result, key, policy, stage, candidate, artifact, e
     if source == candidate and not reassessed:
         validate_fact_assessment(result.get('initial_observation', {}) if stage else result,
                                  key, policy, candidate, artifact, git)
+    if case and policy and key in policy['cases'] and canonical_hash(case) != policy['cases'][key]['current_case_sha256']:
+        observed = result.get('initial_observation', {}) if stage else result
+        if observed.get('case_sha256') != canonical_hash(effective_responsibility_case(policy, key, case)):
+            raise ValueError('Updated Case requires observation of the exact current effective contract: ' + key)
     return result
 
 
@@ -775,9 +805,8 @@ def verify_pr(pr, api, git=git_read):
         for key, case, _ in historical:
             if carried.get('responsibility_revision') or effective_initial_entry(carried, key)['deferred_scope']:
                 requirement = (case.get('required_execution'), case.get('artifact', 'app'))
-                if key in required and required[key] != requirement:
-                    raise ValueError('Deferred Case execution requirement changed: ' + key)
-                required[key] = requirement
+                if key not in required:
+                    required[key] = requirement
         if set(required) & GOP_KEYS:
             sources = {canonical_hash([key, case, source]): (key, case, source)
                        for key, case, source in source_cases + historical}
@@ -793,12 +822,21 @@ def verify_pr(pr, api, git=git_read):
     if promotion.get('artifact_sha256'):
         artifacts['app'] = promotion['artifact_sha256']
     for key, result in results.items():
+        case = None
+        if full_policy and key in full_policy['cases']:
+            path = f'docs/verification/changes/issue-{key.split(":")[0]}.json'
+            if git('ls-tree', candidate, '--', path):
+                current = regular_json(candidate, path, git)
+                validate_change(current, int(key.split(':')[0]), True)
+                case = next((c for c in current['cases'] if c['id'] == key.split(':')[1]), None)
+            if case:
+                required[key] = (case.get('required_execution'), case.get('artifact', 'app'))
         execution, artifact_name = required[key]
         artifact = artifacts.get(artifact_name)
         if not HASH.fullmatch(artifact or ''):
             raise ValueError('Fixed candidate artifact hash is required: ' + artifact_name)
         validate_candidate_result(result, key, initial_policy or full_policy, stage, candidate,
-                                  artifact, execution, gop_cases.get(key), git)
+                                  artifact, execution, gop_cases.get(key), git, base, case)
     if initial_policy:
         deferred = sum(entry['initial_scope'] == 'deferred' for entry in initial_policy['cases'].values())
         return {'mode': mode, 'gui_complete': False, 'stage': INITIAL_STAGE, 'stage_complete': True,
@@ -841,14 +879,28 @@ def render_queue(paths, promotion=None, git=git_read):
                 current_rows.append((data, next(c for c in current['cases'] if c['id'] == case['id'])))
             rows = current_rows
         else:
+            current_rows = []
+            for data, case in rows:
+                if f'{data["issue"]}:{case["id"]}' in initial_policy['cases']:
+                    path = f'docs/verification/changes/issue-{data["issue"]}.json'
+                    current = regular_json(candidate, path, git) if git('ls-tree', candidate, '--', path) else {'cases': []}
+                    if 'issue' in current:
+                        validate_change(current, data['issue'], True)
+                    case = next((c for c in current['cases'] if c['id'] == case['id']), None)
+                if case:
+                    current_rows.append((data, case))
+            rows = current_rows
             carried = {key for key in initial_policy['cases'] if initial_policy.get('responsibility_revision') or
                        effective_initial_entry(initial_policy, key)['deferred_scope']}
-            rows = [(data, case) for data, case in rows if f'{data["issue"]}:{case["id"]}' not in carried]
+            current_keys = {f'{data["issue"]}:{case["id"]}' for data, case in rows}
             for key in sorted(carried):
+                if key in current_keys:
+                    continue
                 entry = initial_policy['cases'][key]
                 data = regular_json(initial_policy['required_ancestor'], entry['sources'][0]['source_path'], git)
                 case = next(c for c in data['cases'] if c['id'] == key.split(':')[1])
                 rows.append((data, case))
+    contracts = {f'{data["issue"]}:{case["id"]}': case for data, case in rows}
     gop_cases = {}
     if candidate and any(f'{data["issue"]}:{case["id"]}' in GOP_KEYS for data, case in rows):
         policy = gop_amendment(promotion.get('base'), candidate, git)
@@ -893,7 +945,8 @@ def render_queue(paths, promotion=None, git=git_read):
             if not HASH.fullmatch(artifact or ''):
                 raise ValueError('Candidate artifact not registered')
             observed = validate_candidate_result(result, key, initial_policy, stage, candidate,
-                        artifact, case.get('required_execution'), gop_cases.get(key), git)
+                        artifact, case.get('required_execution'), gop_cases.get(key), git,
+                        promotion.get('base'), contracts[key] if not stage else None)
             if stage:
                 label = ('延期・未実施／初期版必須外・後続#65' if observed['status'] == 'deferred' else
                          '初期版範囲合格／原Case未完了（全範囲gateは別途必要）')
@@ -903,6 +956,8 @@ def render_queue(paths, promotion=None, git=git_read):
                 label = '同一成果物の旧観察を再利用／' + label
             elif result.get('status') == 'reassessed':
                 label = '旧観察を有効条件へ再評価／新しい試験実行ではない／' + label
+            elif (observed.get('initial_observation', {}) if stage else observed).get('responsibility_assessment'):
+                label = '保持事実を有効条件へ再評価／新しい試験実行ではない／' + label
         except ValueError as exc:
             if result.get('status') in ('reused', 'reassessed'):
                 label = '不可・再利用条件不成立: ' + str(exc)
@@ -931,6 +986,10 @@ def render_queue(paths, promotion=None, git=git_read):
         if not isinstance(responsibility_observed, dict):
             responsibility_observed = {}
         key = f'{data["issue"]}:{case["id"]}'
+        assessment = responsibility_observed.get('responsibility_assessment')
+        if assessment is not None:
+            retained = True
+            lines += ['保持事実の再評価（新しい試験実行ではない）: ' + json.dumps(assessment, ensure_ascii=False), '']
         entry = effective_initial_entry(initial_policy, key) if initial_policy and key in initial_policy['cases'] else None
         if entry:
             lines += ['初期版範囲: ' + entry['initial_scope'],
@@ -984,7 +1043,8 @@ def render_queue(paths, promotion=None, git=git_read):
         lines += [f'{n}. {step}' for n, step in enumerate(case['steps'], 1)]
         lines += ['', '期待結果: ' + case['expected'], '']
         if result:
-            lines += [('元の観察（履歴、新候補の再試験ではない）: ' if retained else '今回の候補結果: ') +
+            lines += [('保持事実の現在評価（再試験ではない）: ' if assessment is not None else
+                       '元の観察（履歴、新候補の再試験ではない）: ' if retained else '今回の候補結果: ') +
                       result.get('status', 'pending'),
                       f'確認者: {result.get("actor", "未登録")} / {result.get("observer", "未登録")}',
                       '確認日時: ' + result.get('at', '未登録'), '実施経路: ' + result.get('execution', '未登録'),

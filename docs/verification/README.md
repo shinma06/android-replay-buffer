@@ -160,11 +160,11 @@ python3 scripts/workflow/verification.py docs/verification/changes/issue-12.json
 通常の結果は引き続き同一candidate/hashの実観察を要求します。#182による明示的な責任改訂の再評価は[限定手順](responsibility.md#trusted-main改訂と旧観察の再評価)へ分離し、以下の通常reuse条件を緩めません。文書・管理ルールのみの更新で候補SHAが進んだ場合、元の成功観察をそのまま保持する`reused`を例外として使えます。実際の再利用は製品・GUI試験の再開後、以下を確認してから行います。本ルールの導入やJSON構造検証だけで既存Caseを合格へ変えません。
 
 - source candidateは現在candidateの祖先で、対象artifact SHA-256が一致すること。差分は`docs/`、`scripts/workflow/`、`.agents/skills/`、`.claude/skills/`、`.cursor/rules/`とrootの`AGENTS.md`・`CLAUDE.md`・`README.md`・`CONTRIBUTING.md`だけに限定します。途中でrevertされた変更も検査します。製品/runtime・build・設定・fixture・未知のpath、異なる成果物は再試験です。製品が生成するREADMEの実装はこの文書例外に含みません。
-- 元Caseが両candidateに存在し、契約が同じで、そのCase JSONの変更履歴がないこと。初期計画の該当entry（全出典・Agent条件・延期・人間指定）とhuman_scope・followupも同じこと。GOPのrevision/6証拠、指定の実施経路、完全受入のhuman/human_evidenceは元観察に必要です。追加・変更Caseを旧結果で満たせません。
-- 現在のロード実体、環境、全前提・試験条件・不具合履歴への適合を改めて確認し、`confirmation`に実確認者・日時・公開可能な証拠を記録すること。`equivalence_evidence`で同一artifactと製品/runtime/build入力不変、`environment_evidence`で環境・全前提・条件の継続を示します。単なる「同じはず」や不明な依存は不成立です。元観察の日時より前の確認は拒否します。
+- 元Caseが両candidateに存在し、契約が同じで、そのCase JSONの変更履歴がないこと。初期計画の該当entry（全出典・Agent条件・延期・人間指定）とhuman_scope・followup・responsibility_revisionも同じこと。GOPのrevision/6証拠、指定の実施経路、完全受入のhuman/human_evidenceは元観察に必要です。追加・変更Caseを旧結果で満たせません。
+- 現在のロード実体、環境、全前提・試験条件・不具合履歴への適合を改めて確認し、`confirmation`に実確認者・日時・公開可能な証拠を記録すること。`equivalence_evidence`で同一artifactと製品/runtime/build入力不変、`environment_evidence`で環境・全前提・条件の継続を示します。単なる「同じはず」や不明な依存は不成立です。元観察又は現在candidate commitの日時より前の確認は拒否します。
 - 元の`pass`または`initial-pass`だけを採用します。pending/blocked/fail/deferredや再利用の連鎖は拒否します。元candidate・日時・実施者・証拠を改変せず、独立レビューで原記録と同等性の証拠内容を確認します。文字列の存在検査は内容の実証を代替しません。確認は現在candidateでの製品再試験を意味しません。
 
-各Caseのresultを次の形式にします（山括弧は実値へ置換）。`source_result`には元の結果JSON全体を保存します。初期段階の場合も旧`stage_revision`を保持し、現在計画の必要Case・34 REAL延期・後続#65は元通り評価します。既存の延期値をreuseで包みません。
+各Caseのresultを次の形式にします（山括弧は実値へ置換）。`source_record`に、trusted main baseの祖先である元promotion記録の40桁commit SHAを指定します。その固定commitの`docs/verification/promotion.json`から元candidate/Case resultを読み、`source_result`全体との完全一致を検証します。過去に正式記録のない成功を新規作成してreuseすることはできません。raw/private証拠をGitへ載せる指示ではなく、元の正式結果は公開可能な要約/証拠参照だけを保持します。`source_result`には元の結果JSON全体を保存します。初期段階の場合も旧`stage_revision`を保持し、現在計画の必要Case・34 REAL延期・後続#65は元通り評価します。既存の延期値をreuseで包みません。
 
 ```json
 {
@@ -172,6 +172,7 @@ python3 scripts/workflow/verification.py docs/verification/changes/issue-12.json
   "head": "<現在candidateの40桁SHA>",
   "artifact_sha256": "<同一成果物の64桁SHA-256>",
   "source_candidate": "<元candidateの40桁SHA>",
+  "source_record": "<trusted mainの元promotion記録commitの40桁SHA>",
   "source_result": {"元結果JSON全体": "改変せず保存"},
   "confirmation": {
     "status": "pass",

@@ -56,6 +56,7 @@ class SyncPromotionTests(unittest.TestCase):
         source = pr_data()
         source.update(merged=True, merge_commit_sha=merge)
         source['base'].update(ref='develop', sha=self.develop)
+        source['head']['ref'] = f'codex/{issue}-source'
         source['body'] = (f'Issue: #{issue}\nIntegration: develop\n'
                           f'GUI: {"required" if gui else "not-required"}\n'
                           f'Verification: docs/verification/changes/issue-{issue}.json')
