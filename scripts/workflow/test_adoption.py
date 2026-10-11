@@ -53,8 +53,8 @@ class AdoptionTests(unittest.TestCase):
 
     def test_missing_protection_or_bypass_blocks_merge(self):
         gh = agent_loop.GitHub()
-        pull = {'number': 1, 'head': {'sha': 'a' * 40}, 'base': {'ref': 'develop'}, 'draft': False,
-                'body': 'Issue: #1\nIntegration: develop\nVerification: docs/verification/changes/issue-1.json'}
+        pull = {'number': 1, 'head': {'ref': 'codex/1-test', 'sha': 'a' * 40}, 'base': {'ref': 'develop'}, 'draft': False,
+                'body': 'Issue: #1\nGUI: not-required\nIntegration: develop\nVerification: docs/verification/changes/issue-1.json'}
         rules = [{'type': name, 'ruleset_id': 12} for name in ('deletion', 'non_fast_forward')]
         rules += [{'type': 'pull_request', 'ruleset_id': 12, 'parameters': {'required_review_thread_resolution': True}},
                   {'type': 'required_status_checks', 'ruleset_id': 12, 'parameters': {

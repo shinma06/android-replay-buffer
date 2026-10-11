@@ -52,8 +52,12 @@ class AcceptanceTests(unittest.TestCase):
 
     def git(self, *args):
         if args[0] == 'ls-tree':
-            return ''
+            return f'100644 blob {"0" * 40}\t{args[-1]}' if f'{args[1]}:{args[-1]}' in self.documents else ''
+        if args[:3] == ('show', '-s', '--format=%cI'):
+            return '2026-09-07T00:00:00+00:00'
         if args[0] == 'show':
+            if args[1] in self.documents:
+                return json.dumps(self.documents[args[1]])
             if args[1].endswith(':docs/verification/promotion.json'):
                 return json.dumps(self.manifest)
             return json.dumps(self.documents[args[1]])
@@ -146,6 +150,26 @@ class AcceptanceTests(unittest.TestCase):
             with self.assertRaises(ValueError): validate_change(dict(change(), **mutation), 35, True)
         data = change(); data['cases'][0]['steps'] = []
         with self.assertRaises(ValueError): validate_change(data, 35, True)
+
+    def test_scalar_checks_steps_provenance_and_impossible_dates_are_rejected(self):
+        for key in ('cli_checks', 'steps', 'provenance'):
+            data = change()
+            (data if key == 'cli_checks' else data['cases'][0])[key] = 'tap'
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                validate_change(data, 35, True)
+        from verification import validate_observation
+        for at in ('2026-99-99T00:00:00Z', '2026-02-30T10:00:00Z', '2026-10-11T25:00:00Z'):
+            with self.subTest(at=at), self.assertRaises(ValueError):
+                validate_observation(dict(observation(), at=at), NEW)
+
+    def test_merged_source_cannot_rebind_issue_or_use_ambiguous_gui(self):
+        self.source['head']['ref'] = 'codex/99-other'
+        with self.assertRaisesRegex(ValueError, 'branch and Issue'):
+            self.verify()
+        self.source['head']['ref'] = 'codex/36-source'
+        self.source['body'] = self.source['body'].replace('GUI: required', 'GUI: notrequired')
+        with self.assertRaisesRegex(ValueError, 'exact'):
+            self.verify()
 
     def test_direct_main_readme_only_and_mixed_product_paths(self):
         self.pr['body'] = self.pr['body'].replace('promotion', 'tooling')
@@ -279,7 +303,13 @@ class DevelopLoopTests(unittest.TestCase):
     def test_new_enrollment_publishes_only_opaque_registry_reference(self):
         self.gh.messages.clear()
         original_git = al.git.side_effect
-        al.git.side_effect = lambda *args, **kw: 'codex/35-test' if args == ('branch', '--show-current') else original_git(*args, **kw)
+        def git(*args, **kw):
+            if args == ('branch', '--show-current'):
+                return 'codex/35-test'
+            if args == ('worktree', 'list', '--porcelain'):
+                return f'worktree {self.checkout.resolve()}\n'
+            return original_git(*args, **kw)
+        al.git.side_effect = git
         args = SimpleNamespace(pr=36, source=self.checkout, owner='gpt-test-session', scope=['src/'],
                     parent=1, close_issue=False, writer_stopped=True)
         public = al.enroll(self.loop, args)

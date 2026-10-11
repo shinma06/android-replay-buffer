@@ -2,6 +2,7 @@
 """One bounded PR transition per tick. Run from trusted main, never from PR code."""
 import argparse
 from contextlib import contextmanager
+from datetime import datetime
 import fcntl
 import hashlib
 import json
@@ -62,6 +63,17 @@ class GitHub:
     def pages(self, path):
         out = command(['gh', 'api', '--paginate', '--slurp', path])
         return [item for page in json.loads(out) for item in page]
+
+    def review_threads(self, number):
+        # REST already supplies every reply; GraphQL adds resolution/outdated state.
+        query = '''query($endCursor:String){repository(owner:"shinma06",name:"android-replay-buffer"){
+          pullRequest(number:NUMBER){reviewThreads(first:100,after:$endCursor){
+            nodes{id isResolved isOutdated comments(first:1){nodes{databaseId}}}
+            pageInfo{hasNextPage endCursor}}}}}'''.replace('NUMBER', str(number))
+        pages = json.loads(command(['gh', 'api', 'graphql', '--paginate', '--slurp', '-f', 'query=' + query]))
+        if any(page.get('errors') for page in pages):
+            raise ValueError('Review thread acquisition failed; feedback is incomplete')
+        return [node for page in pages for node in page['data']['repository']['pullRequest']['reviewThreads']['nodes']]
 
     def pr(self, number):
         pr = self.api(f'repos/{REPO}/pulls/{number}')
@@ -221,14 +233,18 @@ class Loop:
 
     def bound(self, pr, issue, comments):
         value = binding(pr, issue)
-        # Fresh human feedback triggers a new review; machine dashboard edits do not.
-        human = [c['body'] for c in comments + self.gh.comments(issue_number(pr))
-                 if c['user']['login'] == OWNER and
-                 not c['body'].startswith((HANDOFF, HANDOFF_V2, STATE, '<!-- agent-loop-progress:'))]
+        # Only our own changing dashboards are excluded, never other reviewers/bots.
+        conversation = [c for c in comments + self.gh.comments(issue_number(pr))
+                        if not (c['user']['login'] == OWNER and
+                        c['body'].startswith((HANDOFF, HANDOFF_V2, STATE, '<!-- agent-loop-progress:',
+                                              '<!-- issue-qa-link:v1 ', '<!-- issue-qa-record:v1 ')))]
         inline = self.gh.pages(f'repos/{REPO}/pulls/{pr["number"]}/comments?per_page=100')
         reviews = self.gh.pages(f'repos/{REPO}/pulls/{pr["number"]}/reviews?per_page=100')
-        value['feedback_hash'] = hashlib.sha256(json.dumps([human, inline, reviews], sort_keys=True).encode()).hexdigest()
-        return value, human + [x.get('body', '') for x in inline + reviews]
+        threads = self.gh.review_threads(pr['number'])
+        feedback = [*conversation, *inline, *reviews, *threads]
+        value['feedback_hash'] = hashlib.sha256(json.dumps(feedback, sort_keys=True).encode()).hexdigest()
+        value['remote_review_complete'] = remote_review_complete(pr['head']['sha'], comments)
+        return value, feedback
 
     def source_safe(self, h):
         source = Path(h['source'])
@@ -446,6 +462,7 @@ class Loop:
                 return self.finish(self.gh.pr(number), h, state, comment_id)
             else:
                 state.update(phase=action, next={'gui-queued': '能力・許可を確認した指定GUI担当: leaseを取得し、実画面を観察して証拠を記録',
+                             'remote-review-wait': 'Await observable completion of the expected current-HEAD Codex review; no empty-snapshot or timeout approval',
                              'acceptance-wait': acceptance.get('reason', 'Complete the required acceptance matrix'),
                              'ci-wait': 'Wait for latest required CI checks', 'ci-failed': 'Inspect CI failure; resume after repair',
                              'blocked': 'Inspect review findings or retry budget; resume explicitly'}[action])
@@ -484,6 +501,10 @@ class Loop:
         bound = state.get('binding', {})
         report = state.get('review', {})
         current_issue = self.gh.issue(h['issue'])
+        now, _ = self.bound(pr, current_issue, self.gh.comments(pr['number']))
+        if (now.get('feedback_hash') != bound.get('feedback_hash') or
+                now.get('remote_review_complete') is not True):
+            raise ValueError('Feedback changed or remote review is pending after merge; preserve scope/resources for disposition')
         accepted = state.get('acceptance', {})
         promotion_pass = (accepted.get('allowed') is True and accepted.get('mode') == 'promotion' and
                           accepted.get('gui_complete') is True and accepted.get('head') == bound.get('head') and
@@ -513,6 +534,9 @@ class Loop:
         issue = self.gh.issue(h['issue'])
         if complete and bound.get('issue_hash') != binding(pr, issue)['issue_hash']:
             raise ValueError('Issue acceptance changed during handoff; re-review before closure')
+        fresh, _ = self.bound(pr, issue, self.gh.comments(pr['number']))
+        if fresh.get('feedback_hash') != now.get('feedback_hash') or fresh.get('remote_review_complete') is not True:
+            raise ValueError('Feedback changed during handoff; preserve scope/resources before closure')
         if complete and issue['state'] == 'open':
             self.gh.api(f'repos/{REPO}/issues/{h["issue"]}', 'PATCH', {'state': 'closed', 'state_reason': 'completed', 'labels': done_labels(issue)})
             closed = self.gh.issue(h['issue'])
@@ -579,11 +603,40 @@ class Loop:
             git('update-ref', '-d', ref, old)
 
 
+def remote_review_complete(head, comments):
+    summaries = [c for c in comments if c['user']['login'] == 'chatgpt-codex-connector[bot]' and
+                 c['body'].startswith('<!-- codex-pull-request-review-summary -->')]
+    if len(summaries) != 1:
+        return False
+    # Fail closed if the provider changes its visible summary format/status.
+    rows = [line for line in summaries[0]['body'].splitlines() if '**Code Review**' in line]
+    if len(rows) != 1:
+        return False
+    match = re.fullmatch(r'\|[^|]*\*\*Code Review\*\*[^|]*\| ✅ \*\*Completed\*\* '
+                         r'<relative-time datetime="([^"]+)">[^<]+</relative-time> '
+                         r'\| `([0-9a-f]{7,40})` \|[^|]*\|', rows[0])
+    if not match or not head.startswith(match[2]):
+        return False
+    try:
+        completed = datetime.fromisoformat(match[1].replace('Z', '+00:00'))
+        requests = [datetime.fromisoformat(c.get('updated_at', c['created_at']).replace('Z', '+00:00'))
+                    for c in comments if c['user']['login'] != 'chatgpt-codex-connector[bot]' and
+                    re.search(r'^\s*@codex\s+review\b', c['body'], re.M)]
+        if completed.tzinfo is None or any(at.tzinfo is None for at in requests):
+            return False
+    except (KeyError, ValueError):
+        return False
+    # A newer explicit request may not have reached the provider summary yet.
+    return not any(at > completed for at in requests)
+
+
 def enroll(loop, args):
     pr = loop.gh.pr(args.pr)
     if not eligible(pr, OWNER, REPO) or pr['state'] != 'open':
         raise ValueError('Only maintainer-owned, same-repository open Issue PRs can enroll')
     source = args.source.resolve()
+    if f'worktree {source}\n' not in git('worktree', 'list', '--porcelain'):
+        raise ValueError('Source must be a linked worktree of the trusted repository')
     if source == ROOT.resolve() or git('branch', '--show-current', cwd=source) != pr['head']['ref']:
         raise ValueError('Handoff requires the dedicated Issue worktree')
     if git('rev-parse', 'HEAD', cwd=source) != pr['head']['sha'] or git('status', '--porcelain', cwd=source):
@@ -679,6 +732,8 @@ def main():
     tick = sub.add_parser('tick'); tick.add_argument('--pr', type=int)
     sub.add_parser('scan')
     audit = sub.add_parser('cleanup-branches'); audit.add_argument('--apply', action='store_true')
+    feedback = sub.add_parser('feedback', help='Read-only fixed feedback snapshot; no enrollment or worker')
+    feedback.add_argument('--pr', type=int, required=True)
     en = sub.add_parser('enroll'); en.add_argument('--pr', type=int, required=True)
     en.add_argument('--source', type=Path, required=True); en.add_argument('--owner', required=True)
     en.add_argument('--scope', nargs='+', required=True); en.add_argument('--parent', type=int, help='Actual parent Issue; omit for Standalone')
@@ -694,6 +749,15 @@ def main():
     args = parser.parse_args()
     ROOT = args.repo_root.resolve()
     try:
+        if args.action == 'feedback':
+            gh = GitHub()
+            pr = gh.pr(args.pr)
+            # No registry, status, comment, worker, or coordinator lock mutation.
+            loop = object.__new__(Loop)
+            loop.gh = gh
+            bound, records = loop.bound(pr, gh.issue(issue_number(pr)), gh.comments(args.pr))
+            print(json.dumps({'pr': args.pr, 'binding': bound, 'feedback': records}, ensure_ascii=False))
+            return 0
         with coordinator_lock():
             loop = Loop()
             if args.action == 'cleanup-branches':

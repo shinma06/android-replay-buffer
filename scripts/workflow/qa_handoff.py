@@ -1,7 +1,7 @@
 """Read-back verified QA transfer. Called only by the single coordinator after merge."""
 import re
 from issue_schema import validate_issue
-from verification import metadata, validate_change
+from verification import field, metadata, validate_change
 
 
 def handoff(gh, repo, pr, origin, change):
@@ -9,7 +9,7 @@ def handoff(gh, repo, pr, origin, change):
     if mode != 'develop' or not pr.get('merged') or not re.fullmatch(r'[0-9a-f]{40}', pr.get('merge_commit_sha', '')):
         raise ValueError('QA transfer requires a confirmed develop merge')
     axes = validate_issue(origin)
-    validate_change(change, number, 'GUI: required' in pr['body'])
+    validate_change(change, number, field(pr['body'], 'GUI') == 'required')
     marker = f'<!-- issue-qa-handoff:v1 origin={number} -->'
     # List all Issues (not search indexing) so a lost create response is retryable.
     candidates = [x for x in gh.pages(f'repos/{repo}/issues?state=all&per_page=100')

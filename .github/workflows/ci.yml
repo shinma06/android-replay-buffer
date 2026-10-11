@@ -25,3 +25,17 @@ jobs:
           python-version: '3.11'
       - name: Harness checks and affected CLI tests
         run: python3 scripts/workflow/change_impact.py --event --run-tests
+
+  cli-python39:
+    name: CLI Python 3.9
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+      - name: Declared CLI runtime compatibility
+        run: python3 scripts/workflow/product_check.py

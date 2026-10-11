@@ -218,6 +218,7 @@ class FakeGitHub:
     def issue(self, n): return copy.deepcopy(self.issues[n])
     def comments(self, n): return copy.deepcopy(self.messages.get(n, []))
     def pages(self, path): return []
+    def review_threads(self, number): return []
     def ci(self, pr): return 'success'
     def status(self, sha, status, description, url): self.statuses.append((sha, status))
     def comment(self, n, body, comment_id=None):
@@ -258,6 +259,8 @@ class LoopTests(unittest.TestCase):
         self.run = patch.object(al.subprocess, 'run', return_value=Mock(returncode=0)); self.run.start(); self.addCleanup(self.run.stop)
         self.worker = Mock(side_effect=lambda role, path, packet, out, **kw: dict(report(head=packet['head']), base=packet['base']))
         self.loop = al.Loop(self.gh, self.tmp.name, self.worker)
+        completion = patch.object(al, 'remote_review_complete', return_value=True)
+        completion.start(); self.addCleanup(completion.stop)
         self.loop.acceptance = Mock(return_value={'allowed': True, 'mode': 'tooling', 'cases': 0})
         self.loop.source_safe = Mock(); self.loop.checkout = Mock(return_value=self.checkout); self.loop.cleanup = Mock()
         self.loop.commit_fix = Mock(side_effect=lambda *args: setattr(self, 'local_head', NEW))
@@ -495,7 +498,7 @@ class LoopTests(unittest.TestCase):
         self.worker.return_value = report('blocked')
         self.assertEqual(self.loop.tick(36)['phase'], 'reviewed')
         self.assertEqual(self.worker.call_count, 2)
-        self.assertIn(feedback, self.worker.call_args.args[2]['feedback'])
+        self.assertIn(feedback, [row['body'] for row in self.worker.call_args.args[2]['feedback']])
         self.assertEqual(self.loop.tick(36)['phase'], 'blocked')
         self.assertEqual(self.gh.merges, 0)
 

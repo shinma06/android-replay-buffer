@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "issue": 184,
+  "gui_required": false,
+  "reason": "全PR指摘の監査と共通ハーネスの取得/検証/終了手順だけを変更する。製品コード、fixture、build、旧観察とGUI/端末状態は変更しない。監査全体は個別修正と独立レビューが完了するまで未完了。",
+  "cli_checks": [
+    "python3 scripts/check.py: 管理入力/出典/再利用/最新契約/remote pending/後着指摘の回帰。",
+    "python3 scripts/workflow/product_check.py: 現行CLIの既存回帰。",
+    "python3 scripts/workflow/change_impact.py --base origin/main --run-tests: clean committed HEADの必要検査。",
+    "GitHub CIのCLI Python 3.9: 宣言済み最小版の互換性。ローカル管理Python成功を3.9成功に転記しない。"
+  ],
+  "cases": []
+}
