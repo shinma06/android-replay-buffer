@@ -9,13 +9,12 @@ import org.jcodec.containers.mp4.boxes.SampleEntry
 import org.jcodec.containers.mp4.muxer.MP4MuxerTrack
 import org.jcodec.containers.mp4.muxer.MP4Muxer
 import java.nio.ByteBuffer
+import java.nio.channels.Channels
 import java.nio.channels.FileChannel
 import java.nio.file.Files
 import java.nio.file.LinkOption.NOFOLLOW_LINKS
 import java.nio.file.Path
-import java.nio.file.StandardOpenOption.CREATE_NEW
 import java.nio.file.StandardOpenOption.READ
-import java.nio.file.StandardOpenOption.WRITE
 import java.time.Instant
 import java.util.Base64
 import java.util.UUID
@@ -30,9 +29,40 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
     private val gson = GsonBuilder().serializeNulls().disableHtmlEscaping().create()
 
     fun write(capture: FrozenCapture, folder: Path, cancelled: () -> Boolean,
-              publish: (Path, Path) -> Unit): SaveOutput {
+              publish: (SavePublication) -> Unit): SaveOutput {
         var partial: Path? = null
-        val own = mutableListOf<Path>()
+        var complete: Path? = null
+        var parentHandle: SaveOutputDirectory? = null
+        var staging: SaveOutputDirectory? = null
+        var acquired = false
+        var manifest: Map<String, Any?>? = null
+        val own = linkedMapOf<Path, SaveOutputFile>()
+        fun directoryAt(directory: Path?): Boolean = directory?.let {
+            runCatching {
+                SaveOutputDirectory.open(directory.parent).use { it.key == parentHandle!!.key } &&
+                    parentHandle!!.openChild(directory.fileName.toString()).use { it.key == staging!!.key }
+            }.getOrDefault(false)
+        } ?: false
+        fun ownsDirectory(directory: Path?) = acquired && directoryAt(directory)
+        fun checkOwned(path: Path) {
+            check(ownsDirectory(path.parent)) { "未完成フォルダーの所有を確認できません" }
+            staging!!.verifyFile(path.fileName.toString(), own.getValue(partial!!.resolve(path.fileName)))
+        }
+        fun checkEntries() = staging!!.requireEntries(own.mapKeys { it.key.fileName.toString() })
+        fun createFile(path: Path): FileChannel {
+            check(directoryAt(partial)) { "未完成フォルダーの所有を確認できません" }
+            if (own.isEmpty()) staging!!.requireEntries(emptyMap())
+            val output = staging!!.createFile(path.fileName.toString())
+            own[path] = output
+            staging!!.verifyFile(path.fileName.toString(), output)
+            if (!acquired) {
+                checkEntries()
+                check(directoryAt(partial)) { "未完成フォルダーの所有を確認できません" }
+                acquired = true
+            }
+            return output.channel()
+        }
+        fun writer(path: Path) = Channels.newWriter(createFile(path), Charsets.UTF_8).buffered()
         var normalizationStarted: Long? = null
         var normalizationCpuStarted = 0L
         val cpu = java.lang.management.ManagementFactory.getThreadMXBean()
@@ -111,10 +141,11 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
             }
             checkSpace(estimate)
             val name = "replay-${Instant.now().toString().replace(':', '-')}-${UUID.randomUUID()}"
-            partial = Files.createDirectory(parent.resolve(".$name.partial"))
-            runCatching { Files.setPosixFilePermissions(partial, java.nio.file.attribute.PosixFilePermissions.fromString("rwx------")) }
-            val complete = parent.resolve(name)
-            fun file(name: String): Path = partial.resolve(name).also { own.add(it) }
+            parentHandle = SaveOutputDirectory.open(parent)
+            partial = parent.resolve(".$name.partial")
+            staging = parentHandle.createDirectory(partial.fileName.toString())
+            complete = parent.resolve(name)
+            fun file(name: String): Path = partial.resolve(name)
             val parts = mutableListOf<Map<String, Any?>>()
             val frameCoverage = mutableListOf<Pair<Long, Long>>()
             val runBoundaries = mutableListOf<Map<String, Any?>>()
@@ -129,12 +160,12 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
             }
             val framesFile = file("frames.jsonl")
             val rawPath = if (normalizer != null) file("video-source.bin") else null
-            (rawPath?.let { FileChannel.open(it, CREATE_NEW, WRITE, NOFOLLOW_LINKS) }).use { raw ->
-                Files.newBufferedWriter(framesFile, Charsets.UTF_8, CREATE_NEW, WRITE).use { index ->
+            (rawPath?.let(::createFile)).use { raw ->
+                writer(framesFile).use { index ->
                     if (selected.isNotEmpty()) {
                         val videoName = "video-001.mp4"
                         val target = file(videoName)
-                        org.jcodec.common.io.FileChannelWrapper(FileChannel.open(target, CREATE_NEW, READ, WRITE, NOFOLLOW_LINKS)).use { output ->
+                        org.jcodec.common.io.FileChannelWrapper(createFile(target)).use { output ->
                             val mux = MP4Muxer.createMP4MuxerToChannel(output)
                             val track = MP4MuxerTrack(mux.nextTrackId, MP4TrackType.VIDEO)
                             mux.addTrack(track)
@@ -385,8 +416,8 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
             }
             val deviceFile = file("logcat-device.jsonl")
             val appFile = file("logcat-app.jsonl")
-            Files.newBufferedWriter(deviceFile, Charsets.UTF_8, CREATE_NEW, WRITE).use { device ->
-                Files.newBufferedWriter(appFile, Charsets.UTF_8, CREATE_NEW, WRITE).use { app ->
+            writer(deviceFile).use { device ->
+                writer(appFile).use { app ->
                     capture.logs.forEach { row ->
                         checkActive()
                         val source = row.source
@@ -403,7 +434,7 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                 }
             }
             val readme = file("README.txt")
-            Files.writeString(readme, buildString {
+            writer(readme).use { it.write(buildString {
                 appendLine("Android Replay Buffer / 保存対象 ${capture.id}")
                 appendLine("論理窓: ${(capture.end - capture.start) / 1e9}秒（設定${capture.seconds}秒）、sequence ${capture.sequence}")
                 appendLine("動画${if (parts.isEmpty()) 0 else 1}本（再生区間${parts.size}件） / 全体ログ${capture.logs.size}行 / アプリログ${capture.logs.count { it.app == true }}行")
@@ -419,10 +450,10 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                 parts.forEach { appendLine("${it["file"]} 区間${it["segment_index"]} / 動画µs=${it["movie_start_us"]}〜${it["movie_end_us"]}: 時計対応確認=${it["clock_alignment_known"]} / 窓開始ns=${it["window_start_ns"]} / 窓終了ns=${it["window_end_ns"]} / preroll=${it["preroll_samples"]}") }
                 capture.gaps.forEach { appendLine("${it.stream}: ${it.fromNs}〜${it.toNs}ns / ${it.reason}") }
                 losses.forEach { appendLine("loss: $it") }
-            }, Charsets.UTF_8, CREATE_NEW, WRITE)
+            }) }
             checkActive()
             checkSpace()
-            val hashes = own.associate { checkActive(); it.fileName.toString() to sha256(it) }
+            val hashes = own.entries.associate { (path, output) -> checkActive(); checkOwned(path); path.fileName.toString() to output.hash() }
             checkActive()
             val videoHoles = mutableListOf<Map<String, String>>()
             var coveredUntil = 0L
@@ -450,7 +481,7 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
             val knownLoss = capture.gaps.any { (it.stream == "video" || it.stream == "clock") &&
                 it.intersects(capture.start, capture.end, capture.endUncertainty) }
             val videoIncomplete = parts.isEmpty() || losses.isNotEmpty() || knownLoss || videoHoles.isNotEmpty()
-            val manifest = mapOf("schema" to 2, "complete" to true, "save_id" to capture.id,
+            manifest = mapOf("schema" to 2, "complete" to true, "save_id" to capture.id,
                 "sequence_id" to capture.sequence, "generation" to capture.generation, "device" to capture.device,
                 "window_clock_epoch" to capture.windowClockEpoch,
                 "window_clock_known" to capture.windowKnown,
@@ -504,19 +535,38 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                     "source_pts_us" to it.sourcePtsUs.toString(), "source_sequence_ns" to it.sourceSequenceNs?.toString(),
                     "clock_epoch" to it.clockEpoch, "generation" to it.generation, "display_held" to it.displayHeld,
                     "time_axis" to "sequence_ns", "new_frame_confirmed" to false) }, "files_sha256" to hashes)
-            Files.writeString(file("session.json"), gson.toJson(manifest), Charsets.UTF_8, CREATE_NEW, WRITE)
-            own.forEach { checkActive(); FileChannel.open(it, WRITE).use { ch -> ch.force(true) }; checkActive() }
+            writer(file("session.json")).use { it.write(gson.toJson(manifest)) }
+            own.forEach { (path, output) -> checkActive(); checkOwned(path); output.channel().use { ch -> ch.force(true) }; checkActive() }
             checkSpace()
             checkActive()
-            publish(partial, complete)
+            own.keys.forEach(::checkOwned)
+            checkEntries()
+            publish(SavePublication(partial, complete, parentHandle, staging) { checkEntries() })
+            own.keys.forEach { checkOwned(complete.resolve(it.fileName)) }
+            checkEntries()
             return SaveOutput(complete, if (videoIncomplete) listOf("video") else emptyList())
-        } catch (e: Exception) {
-            // Delete exactly our files. An injected/unrelated entry prevents directory removal and is preserved.
-            own.asReversed().forEach { runCatching { Files.deleteIfExists(it) } }
-            partial?.let { runCatching { Files.delete(it) } }
-            if (e is CancellationException) throw e
-            throw SaveFailure(partial?.takeIf { Files.exists(it, NOFOLLOW_LINKS) },
-                if (e is IllegalArgumentException || e is IllegalStateException) e.message ?: "保存できません" else "保存に失敗しました（保存先・空き容量・アクセス権を確認してください）", e)
+        } catch (e: Throwable) {
+            if (e !is Exception && e !is LinkageError) throw e
+            // No path-based deletion: ownership checks cannot make a subsequent unlink conditional on identity.
+            manifest?.let { value -> own[partial?.resolve("session.json")]?.let { output -> runCatching {
+                output.channel().use { channel ->
+                    channel.position(0)
+                    channel.truncate(0)
+                    val bytes = ByteBuffer.wrap(gson.toJson(value + ("complete" to false)).toByteArray(Charsets.UTF_8))
+                    while (bytes.hasRemaining()) channel.write(bytes)
+                    channel.force(true)
+                }
+            } } }
+            val retained = listOfNotNull(partial, complete).firstOrNull(::ownsDirectory)
+            val location = retained?.let { "。未完成の出力を保全しています: $it" } ?: ""
+            if (e is CancellationException) throw CancellationException("保存を取消しました$location").apply { initCause(e) }
+            val reason = if (e is IllegalArgumentException || e is IllegalStateException) e.message ?: "保存できません"
+                else "保存に失敗しました（保存先・空き容量・アクセス権を確認してください）"
+            throw SaveFailure(retained, reason + location, e)
+        } finally {
+            own.values.forEach { it.close() }
+            staging?.close()
+            parentHandle?.close()
         }
     }
 
