@@ -321,7 +321,8 @@ internal class CaptureStore(
         val uncertainty = fixedUncertainty ?: clock.endUncertainty()
         val known = uncertainty != Long.MAX_VALUE
         val start = maxOf(0L, started ?: end, end - settings.replaySeconds * 1_000_000_000L)
-        val rows = logs.map { row -> row.copy(time = clock.log(row.source.wall, row.host)) }.filter { row ->
+        val logTime = clock.logMapper()
+        val rows = logs.map { row -> row.copy(time = logTime(row.source.wall, row.host)) }.filter { row ->
             val point = row.time.sequence
             val error = row.time.uncertainty
             if (!known || point == null || error == Long.MAX_VALUE || error < 0 || uncertainty < 0) true

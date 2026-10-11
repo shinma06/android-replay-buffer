@@ -21,6 +21,38 @@ import kotlin.test.assertTrue
 
 class CaptureStoreSaveTest {
     @Test
+    fun manyLogsUseMaximumClockHistoryWithoutChangingOrderIdsOrPinnedRows() {
+        val root = Files.createTempDirectory("replay-batch-clock-")
+        val store = CaptureStore(root.resolve("ring"), minFree = 0)
+        val host = System.nanoTime() + 1_000_000_000
+        try {
+            store.generation(1)
+            store.status("device_log", StreamState.CAPTURING, null, 1)
+            for (i in 0..4096) anchor(store.clock, 1_000_000_000 + i * 1_000_000L, host + i * 1_000_000L)
+            assertEquals(4096, store.clock.snapshot().size)
+            store.app("com.example.target", 10001, setOf(12), 1, uidExclusive = true)
+            val ids = List(10_000) { i ->
+                store.log(DeviceLog(1_700_000_005_096_000_000, 12, 12, 10001, i % 2, 4,
+                    "Fixture", "row-$i", byteArrayOf(1)), 1, host + 4_096_000_000)!!
+            }
+            store.freeze()
+            val capture = store.capture(ReplaySettings())!!
+            assertEquals(ids, capture.logs.map { it.id })
+            assertEquals((0 until 10_000).map { "row-$it" }, capture.logs.map { it.source.message })
+            assertTrue(capture.logs.all { it.time.sequence == 4_096_000_000L && it.app == true })
+            val rows = capture.logs.toList()
+            val clocks = capture.clocks.toList()
+            anchor(store.clock, 10_000_000_000, host + 9_000_000_000)
+            store.clock.boundary(host + 9_000_000_000)
+            store.prune(1)
+            assertEquals(rows, capture.logs)
+            assertEquals(clocks, capture.clocks)
+            assertFailsWith<IllegalStateException> { store.capture(ReplaySettings(replaySeconds = 1)) }
+            store.release(capture.id)
+        } finally { store.close(); root.toFile().deleteRecursively() }
+    }
+
+    @Test
     fun partialReaderFailureKeepsItsGapAndOutOfOrderPruneCannotEvictFreshRows() {
         for (oldAfterPrune in listOf(false, true)) {
             val root = Files.createTempDirectory("replay-log-partition-store-")
