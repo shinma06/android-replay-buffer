@@ -46,6 +46,7 @@ internal class ReplayProjectCapture(
     private val commands = Mutex()
     private var core: ReplayCore? = null
     private var workspace: Path? = null
+    private var temporaryWorkspace = false
     private var subscription: AutoCloseable? = null
     private var closed = false
     private var closingStarted = false
@@ -60,9 +61,9 @@ internal class ReplayProjectCapture(
             var created: ReplayCore? = null
             var directory: Path? = null
             try {
-                // The default temp directory is private to this new project session (0700 on Unix).
-                directory = Files.createTempDirectory("android-replay-buffer-")
-                val engine = ReplayCore(CoreSettings(), directory, cleanupDirectory?.invoke() ?: directory)
+                // Production uses the existing project namespace; only standalone tests need a temp workspace.
+                directory = cleanupDirectory?.invoke() ?: Files.createTempDirectory("android-replay-buffer-").also { temporaryWorkspace = true }
+                val engine = ReplayCore(CoreSettings(), directory, directory)
                 created = engine
                 val retained = synchronized(this@ReplayProjectCapture) {
                     if (closed) false else {
@@ -75,7 +76,7 @@ internal class ReplayProjectCapture(
                 }
                 if (!retained) finishClose(engine, directory)
             } catch (failure: Throwable) {
-                if (created != null) finishClose(created, directory) else directory?.let { Files.deleteIfExists(it) }
+                if (created != null) finishClose(created, directory) else if (temporaryWorkspace) directory?.let { Files.deleteIfExists(it) }
                 val message = "取得の初期化に失敗しました。projectの保存場所とIDE設定領域へのアクセス権を確認し、projectを開き直してください。"
                 synchronized(this@ReplayProjectCapture) {
                     if (!closed) {
@@ -241,7 +242,7 @@ internal class ReplayProjectCapture(
         engine.closeAsync().whenComplete { _, failure ->
             if (failure != null) termination.completeExceptionally(failure) else {
                 try {
-                    directory?.let { Files.deleteIfExists(it) }
+                    if (temporaryWorkspace) directory?.let { Files.deleteIfExists(it) }
                     termination.complete(null)
                 } catch (cleanup: Exception) {
                     // Retain pending remote-cleanup ownership and never delete unconfirmed data recursively.
