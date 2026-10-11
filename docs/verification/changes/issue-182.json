@@ -1,0 +1,8 @@
+{
+  "schema": 1,
+  "issue": 182,
+  "gui_required": false,
+  "reason": "全試験の責任境界・trusted受入改訂/resolver/一覧のtooling変更。製品/fixture/buildを変更せずGUI/device/media実行は行わない。構造検査は製品PASSではない。",
+  "cli_checks": ["Python 3.14 scripts/check.py: pass（211 harness tests、最終HEADはpush前の影響判定で再確認）", "Python 3.9 scripts/workflow/product_check.py: pass（CLI parser 2 tests）"],
+  "cases": []
+}

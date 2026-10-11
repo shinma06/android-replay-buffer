@@ -275,7 +275,7 @@ def validate_gop_observation(result, contract):
 def initial_stage_plan(base, candidate, git):
     """The one initial-release plan is authorized in main, not in the candidate."""
     policy = regular_json(base, INITIAL_PLAN, git)
-    if (not isinstance(policy, dict) or set(policy) != {
+    if (not isinstance(policy, dict) or set(policy) - {'responsibility_revision'} != {
             'schema', 'issue', 'stage', 'required_ancestor', 'followup_issue',
             'owner', 'resume_condition', 'human_scope', 'cases'} or
             type(policy['schema']) is not int or policy['schema'] != 1 or
@@ -286,7 +286,12 @@ def initial_stage_plan(base, candidate, git):
             not isinstance(policy['cases'], dict) or not policy['cases']):
         raise ValueError('Invalid initial-agent acceptance plan')
     git('merge-base', '--is-ancestor', policy['required_ancestor'], candidate)
-    if regular_json(candidate, INITIAL_PLAN, git) != policy:
+    candidate_plan = regular_json(candidate, INITIAL_PLAN, git)
+    original = {k: v for k, v in policy.items() if k != 'responsibility_revision'}
+    revision = policy.get('responsibility_revision')
+    if revision is not None:
+        validate_responsibility_policy(policy)
+    if candidate_plan != policy and not (revision and candidate_plan == original):
         raise ValueError('Candidate lacks the exact trusted initial plan; synchronize main first')
     for key, entry in policy['cases'].items():
         if (not re.fullmatch(r'[1-9][0-9]*:[A-Z][A-Z0-9-]+', key) or
@@ -327,6 +332,91 @@ def initial_stage_plan(base, candidate, git):
     return policy
 
 
+def validate_responsibility_policy(policy):
+    """Issue 182 amends methods without erasing the fixed original plan or Cases."""
+    revision = policy['responsibility_revision']
+    original = {k: v for k, v in policy.items() if k != 'responsibility_revision'}
+    if (not isinstance(revision, dict) or set(revision) != {
+            'issue', 'previous_plan_sha256', 'common_requirements', 'groups', 'overrides'} or
+            revision['issue'] != 182 or revision['previous_plan_sha256'] != canonical_hash(original) or
+            not isinstance(revision['common_requirements'], list) or not revision['common_requirements'] or
+            not all(nonempty(x) for x in revision['common_requirements']) or
+            not isinstance(revision['groups'], dict) or not revision['groups'] or
+            not isinstance(revision['overrides'], dict)):
+        raise ValueError('Invalid responsibility revision or original plan binding')
+    keys = []
+    for group in revision['groups'].values():
+        if (not isinstance(group, dict) or set(group) != {
+                'cases', 'disposition', 'purpose', 'methods', 'excluded', 'evidence_keys'} or
+                group['disposition'] not in ('維持', '統合', '置換') or
+                any(not nonempty(group[k]) for k in ('purpose', 'methods', 'excluded')) or
+                any(not isinstance(group[k], list) or not group[k] or
+                    not all(nonempty(x) for x in group[k]) for k in ('cases', 'evidence_keys')) or
+                len(set(group['evidence_keys'])) != len(group['evidence_keys'])):
+            raise ValueError('Invalid responsibility group')
+        keys.extend(group['cases'])
+    if len(keys) != len(set(keys)) or set(keys) != set(policy['cases']):
+        raise ValueError('Responsibility groups must cover every original Case exactly once')
+    for key, override in revision['overrides'].items():
+        if (key not in policy['cases'] or not isinstance(override, dict) or not override or
+                set(override) - {'case', 'agent_requirements', 'deferred_scope', 'full_acceptance_actor'}):
+            raise ValueError('Invalid responsibility override')
+        for name in ('agent_requirements', 'deferred_scope'):
+            if name in override and (not isinstance(override[name], list) or
+                                     not all(nonempty(x) for x in override[name])):
+                raise ValueError('Invalid revised Case scope')
+        if ('full_acceptance_actor' in override and
+                (override['full_acceptance_actor'] is not None or
+                 policy['cases'][key].get('full_acceptance_actor') != 'human')):
+            raise ValueError('Only the original blanket human requirement can be superseded')
+        case = override.get('case', {})
+        if (not isinstance(case, dict) or set(case) - {'preconditions', 'steps', 'expected'} or
+                any(not nonempty(v) for k, v in case.items() if k != 'steps') or
+                ('steps' in case and (not isinstance(case['steps'], list) or not case['steps'] or
+                                      not all(nonempty(x) for x in case['steps'])))):
+            raise ValueError('Invalid effective responsibility Case')
+        if key.endswith('-REAL') and override.get('deferred_scope', policy['cases'][key]['deferred_scope']) != policy['cases'][key]['deferred_scope']:
+            raise ValueError('REAL deferrals must remain intact')
+
+
+def responsibility_group(policy, key):
+    revision = (policy or {}).get('responsibility_revision')
+    if revision and key in policy['cases']:
+        return next(g for g in revision['groups'].values() if key in g['cases'])
+    return None
+
+
+def effective_initial_entry(policy, key):
+    entry = dict(policy['cases'][key])
+    override = policy.get('responsibility_revision', {}).get('overrides', {}).get(key, {})
+    entry.update({k: v for k, v in override.items() if k != 'case'})
+    if entry.get('full_acceptance_actor') is None:
+        entry.pop('full_acceptance_actor', None)
+    return entry
+
+
+def effective_responsibility_case(policy, key, case):
+    revised = dict(case)
+    group = responsibility_group(policy, key)
+    if group:
+        revision = policy['responsibility_revision']
+        revised.update(revision['overrides'].get(key, {}).get('case', {}))
+        revised['steps'] = [*revised['steps'], '有効な実施分担: ' + group['methods']]
+        revised['expected'] += ' ' + ' '.join(revision['common_requirements'])
+    return revised
+
+
+def validate_responsibility_observation(observed, key, policy):
+    group = responsibility_group(policy, key)
+    if group:
+        evidence = observed.get('responsibility_evidence')
+        required = {'contract_coverage', 'artifact_binding', 'failure_attribution', *group['evidence_keys']}
+        if (observed.get('responsibility_revision') != canonical_hash(policy['responsibility_revision']) or
+                not isinstance(evidence, dict) or set(evidence) != required or
+                not all(nonempty(x) for x in evidence.values())):
+            raise ValueError('Revised responsibility coverage and exact evidence are required: ' + key)
+
+
 def bind_initial_sources(policy, source_cases):
     """Bind every source occurrence, including different historical versions of a Case."""
     actual = {}
@@ -357,7 +447,7 @@ def historical_initial_sources(policy, candidate, git):
 
 
 def validate_initial_result(result, key, policy, candidate, artifact, execution, gop):
-    entry = policy['cases'][key]
+    entry = effective_initial_entry(policy, key)
     deferred = entry['initial_scope'] == 'deferred'
     expected_keys = {'status', 'stage_revision', 'head', 'artifact_sha256', 'followup_issue'}
     if not deferred:
@@ -374,6 +464,7 @@ def validate_initial_result(result, key, policy, candidate, artifact, execution,
         if not isinstance(observed, dict) or observed.get('actor') != 'gpt':
             raise ValueError('Initial scope requires an actual agent observation: ' + key)
         validate_observation(observed, candidate, artifact)
+        validate_responsibility_observation(observed, key, policy)
         validate_gop_observation(observed, gop)
         if execution and observed.get('execution') != execution:
             raise ValueError('Case requires its specified execution method: ' + key)
@@ -385,12 +476,14 @@ def validate_candidate_result(result, key, policy, stage, candidate, artifact, e
         raise ValueError('Case result must be an object')
     source = candidate
     source_policy = policy
-    if result.get('status') == 'reused':
+    reassessed = result.get('status') == 'reassessed'
+    if result.get('status') in ('reused', 'reassessed'):
         if (set(result) != {'status', 'head', 'artifact_sha256', 'source_candidate',
                            'source_result', 'confirmation'} or
                 result['head'] != candidate or result['artifact_sha256'] != artifact or
                 not isinstance(result['source_candidate'], str) or
-                not SHA.fullmatch(result['source_candidate']) or result['source_candidate'] == candidate):
+                not SHA.fullmatch(result['source_candidate']) or
+                (result['source_candidate'] == candidate and not reassessed)):
             raise ValueError('Reuse requires distinct fixed source and current candidate/build')
         source = result['source_candidate']
         original, confirmation = result['source_result'], result['confirmation']
@@ -401,6 +494,10 @@ def validate_candidate_result(result, key, policy, stage, candidate, artifact, e
         for name in ('equivalence_evidence', 'environment_evidence'):
             if not nonempty(confirmation.get(name)):
                 raise ValueError('Reuse needs current loaded/environment/condition evidence: ' + name)
+        if reassessed:
+            if not responsibility_group(policy, key):
+                raise ValueError('Reassessment requires a trusted responsibility revision')
+            validate_responsibility_observation(confirmation, key, policy)
         # A reverted product or contract edit also invalidates reuse.
         try:
             git('merge-base', '--is-ancestor', source, candidate)
@@ -433,7 +530,10 @@ def validate_candidate_result(result, key, policy, stage, candidate, artifact, e
             entry = policy['cases'].get(key) if policy else None
             if entry or git('ls-tree', source, '--', INITIAL_PLAN):
                 source_policy = initial_stage_plan(source, source, git)
-                if (source_policy['cases'].get(key) != entry or
+                if reassessed:
+                    if canonical_hash(source_policy) != policy['responsibility_revision']['previous_plan_sha256']:
+                        raise ValueError('Reassessment must retain the exact original plan and observation')
+                elif (source_policy['cases'].get(key) != entry or
                         (entry and any(source_policy[k] != policy[k] for k in ('human_scope', 'followup_issue')))):
                     raise ValueError('Initial/deferred/human scope changed; retest required')
             if key in GOP_KEYS:
@@ -453,7 +553,10 @@ def validate_candidate_result(result, key, policy, stage, candidate, artifact, e
         validate_initial_result(result, key, source_policy, source, artifact, execution, gop)
     else:
         validate_full_result(result, source, artifact, execution, gop,
-                             policy['cases'].get(key) if policy else None)
+                             effective_initial_entry(source_policy, key) if source_policy and key in source_policy['cases'] else None)
+        validate_responsibility_observation(result, key, source_policy)
+    if not reassessed and source != candidate:
+        validate_responsibility_observation(result.get('initial_observation', {}) if stage else result, key, policy)
     return result
 
 
@@ -618,7 +721,7 @@ def verify_pr(pr, api, git=git_read):
         carried = full_policy = initial_stage_plan(base, candidate, git)
         historical = historical_initial_sources(carried, candidate, git)
         for key, case, _ in historical:
-            if carried['cases'][key]['deferred_scope']:
+            if carried.get('responsibility_revision') or effective_initial_entry(carried, key)['deferred_scope']:
                 requirement = (case.get('required_execution'), case.get('artifact', 'app'))
                 if key in required and required[key] != requirement:
                     raise ValueError('Deferred Case execution requirement changed: ' + key)
@@ -677,10 +780,17 @@ def render_queue(paths, promotion=None, git=git_read):
             for data, case in rows:
                 entry = initial_policy['cases'].get(f'{data["issue"]}:{case["id"]}')
                 if entry is None or canonical_hash(case) not in {
-                        s['original_case_sha256'] for s in entry['sources']}:
+                        entry['current_case_sha256'], *(s['original_case_sha256'] for s in entry['sources'])}:
                     raise ValueError('Current Case differs from its historical initial contract')
+            current_rows = []
+            for data, case in rows:
+                current = regular_json(initial_policy['required_ancestor'],
+                                       f'docs/verification/changes/issue-{data["issue"]}.json', git)
+                current_rows.append((data, next(c for c in current['cases'] if c['id'] == case['id'])))
+            rows = current_rows
         else:
-            carried = {key for key, entry in initial_policy['cases'].items() if entry['deferred_scope']}
+            carried = {key for key in initial_policy['cases'] if initial_policy.get('responsibility_revision') or
+                       effective_initial_entry(initial_policy, key)['deferred_scope']}
             rows = [(data, case) for data, case in rows if f'{data["issue"]}:{case["id"]}' not in carried]
             for key in sorted(carried):
                 entry = initial_policy['cases'][key]
@@ -711,6 +821,8 @@ def render_queue(paths, promotion=None, git=git_read):
                     raise ValueError('Current Case differs from its historical GOP contract: ' + key)
             rows = [(data, gop_cases[f'{data["issue"]}:{case["id"]}']['case'])
                     if f'{data["issue"]}:{case["id"]}' in gop_cases else (data, case) for data, case in rows]
+    rows = [(data, effective_responsibility_case(initial_policy, f'{data["issue"]}:{case["id"]}', case))
+            for data, case in rows]
     lines = ['# 今回の動作確認一覧', '',
              '> 自動生成。結果は正本JSONへ入力して再生成してください。過去buildの結果は参考です。', '',
              '固定候補SHA: ' + (candidate or '未固定'),
@@ -737,8 +849,10 @@ def render_queue(paths, promotion=None, git=git_read):
                 label = 'Case合格（全範囲gateは別途必要）'
             if result.get('status') == 'reused':
                 label = '同一成果物の旧観察を再利用／' + label
+            elif result.get('status') == 'reassessed':
+                label = '旧観察を有効条件へ再評価／新しい試験実行ではない／' + label
         except ValueError as exc:
-            if result.get('status') == 'reused':
+            if result.get('status') in ('reused', 'reassessed'):
                 label = '不可・再利用条件不成立: ' + str(exc)
         lines.append(f'| {case["id"]} / #{data["issue"]} / #{data.get("pr", "未作成")} | {case["change"]} | '
                      f'{result.get("status", "pending")} | {label} | '
@@ -748,7 +862,7 @@ def render_queue(paths, promotion=None, git=git_read):
                   f'PR: [#{data["pr"]}](https://github.com/shinma06/android-replay-buffer/pull/{data["pr"]})' if data.get('pr') else 'PR: 未登録', '', '前提・対象build: ' + case['preconditions'], '']
         amended = gop_cases.get(f'{data["issue"]}:{case["id"]}')
         result = results.get(f'{data["issue"]}:{case["id"]}', {})
-        if result.get('status') == 'reused':
+        if result.get('status') in ('reused', 'reassessed'):
             confirmation = result.get('confirmation', {})
             lines += ['再利用申請（判定は上表）・元候補: ' + str(result.get('source_candidate', '未登録')),
                       '現在候補の適合確認: ' + json.dumps(confirmation, ensure_ascii=False),
@@ -756,14 +870,15 @@ def render_queue(paths, promotion=None, git=git_read):
             result = result.get('source_result', {})
             if not isinstance(result, dict):
                 result = {}
-        entry = initial_policy['cases'].get(f'{data["issue"]}:{case["id"]}') if initial_policy else None
+        key = f'{data["issue"]}:{case["id"]}'
+        entry = effective_initial_entry(initial_policy, key) if initial_policy and key in initial_policy['cases'] else None
         if entry:
             lines += ['初期版範囲: ' + entry['initial_scope'],
                       '初期版計画revision: ' + canonical_hash(initial_policy),
                       ('原Case全体: 未完了。初期版の合格・延期を全体passに転記しない。' if stage else
                        '完全受入: 初期版で延期した原契約も含め、同一候補の全工程を確認する。'),
                       '初期版で実施: 以下の全出典の条件から、明記した延期部分だけを除く。',
-                      '人間確認の扱い: ' + initial_policy['human_scope'],
+                      ('旧人間範囲（履歴）: ' if initial_policy.get('responsibility_revision') else '人間確認の扱い: ') + initial_policy['human_scope'],
                       '延期部分: ' + ' / '.join(entry['deferred_scope']),
                       '維持するAgent条件: ' + ' / '.join(entry['agent_requirements']),
                       '完全受入の確認者: ' + entry.get('full_acceptance_actor', '原契約の実施者（gpt / human）'),
@@ -772,6 +887,14 @@ def render_queue(paths, promotion=None, git=git_read):
                       '全固定出典: ' + ', '.join(f'PR #{s["source_pr"]} / {s["source_merge"]} / '
                                                f'{s["source_path"]} / {s["original_case_sha256"]}'
                                                for s in entry['sources']), '']
+            group = responsibility_group(initial_policy, key)
+            if group:
+                lines += ['責任改訂 #182: ' + group['disposition'] + ' / ' + group['purpose'],
+                          '改訂revision: ' + canonical_hash(initial_policy['responsibility_revision']),
+                          '除外/置換する義務（PASSではない）: ' + group['excluded'],
+                          '有効な実施分担: ' + group['methods'],
+                          '有効条件の証拠: ' + json.dumps(result.get('responsibility_evidence', {}), ensure_ascii=False),
+                          '以下の固定原契約は履歴。有効条件は明示改訂と上の分担を適用する。', '']
             if stage and entry['initial_scope'] == 'deferred':
                 lines += ['このREAL専用Caseは全工程を延期。以下は再開用の原契約。', '']
             if stage:
