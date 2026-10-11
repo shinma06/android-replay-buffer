@@ -161,7 +161,7 @@ class CaptureStoreSaveTest {
             assertEquals(null, unsupported.app)
             assertEquals(null, unsupported.time.sequence)
             assertEquals(Long.MAX_VALUE, unsupported.time.uncertainty)
-            val output = SaveWriter().write(capture, root, { false }) { a, b -> Files.move(a, b) }
+            val output = SaveWriter().write(capture, root, { false }) { publication -> Files.move(publication.partial, publication.complete) }
             val device = Files.readAllLines(output.directory.resolve("logcat-device.jsonl")).map { JsonParser.parseString(it).asJsonObject }
             val app = Files.readAllLines(output.directory.resolve("logcat-app.jsonl")).map { JsonParser.parseString(it).asJsonObject }
             assertEquals(3, device.size)
@@ -205,13 +205,13 @@ class CaptureStoreSaveTest {
             assertEquals(null, capture.states["app_log"]?.reason)
             assertEquals(0.0, capture.states["app_log"]?.availableSeconds)
             assertFailsWith<CancellationException> {
-                SaveWriter().write(capture, root, { true }) { a, b -> Files.move(a, b) }
+                SaveWriter().write(capture, root, { true }) { publication -> Files.move(publication.partial, publication.complete) }
             }
             assertFailsWith<IllegalStateException> { store.capture(ReplaySettings(replaySeconds = 8)) }
             anchor(store.clock, 8_000_000_000, host + 7_000_000_000)
             store.app("com.example.other", 10003, setOf(99), 1, uidExclusive = true)
             store.log(record(8_000_000_000, "later target", 10003), 1, host + 7_000_000_000)
-            val output = SaveWriter().write(capture, root, { false }) { a, b -> Files.move(a, b) }
+            val output = SaveWriter().write(capture, root, { false }) { publication -> Files.move(publication.partial, publication.complete) }
             val device = Files.readAllLines(output.directory.resolve("logcat-device.jsonl"))
             assertEquals(1, device.size)
             assertTrue(Files.readAllLines(output.directory.resolve("logcat-app.jsonl")).isEmpty())
@@ -373,7 +373,7 @@ class CaptureStoreSaveTest {
             val gap = capture.gaps.single()
             assertEquals(Long.MAX_VALUE, gap.boundaryUncertaintyNs)
             assertTrue(gap.fromNs != null && gap.toNs != null)
-            val output = SaveWriter().write(capture, root, { false }) { a, b -> Files.move(a, b) }
+            val output = SaveWriter().write(capture, root, { false }) { publication -> Files.move(publication.partial, publication.complete) }
             val manifest = JsonParser.parseString(Files.readString(output.directory.resolve("session.json"))).asJsonObject
             val parts = manifest["parts"].asJsonArray
             assertEquals(1, parts.size())
@@ -399,18 +399,18 @@ class CaptureStoreSaveTest {
                 assertEquals(capture.clocks.last(), capture.clockRecoveries[gap])
                 assertTrue(scope["recovery_sample"].asJsonObject["valid"].asBoolean)
                 val noRecoveryProof = capture.copy(clockRecoveries = emptyMap())
-                val unproven = SaveWriter().write(noRecoveryProof, root, { false }) { a, b -> Files.move(a, b) }
+                val unproven = SaveWriter().write(noRecoveryProof, root, { false }) { publication -> Files.move(publication.partial, publication.complete) }
                 val unprovenManifest = JsonParser.parseString(Files.readString(unproven.directory.resolve("session.json"))).asJsonObject
                 assertEquals(1, unprovenManifest["parts"].asJsonArray.size())
                 anchor(store.clock, 5_000_000_000, recoveredAt + 1_000_000_000)
-                val retry = SaveWriter().write(capture, root, { false }) { a, b -> Files.move(a, b) }
+                val retry = SaveWriter().write(capture, root, { false }) { publication -> Files.move(publication.partial, publication.complete) }
                 val retryManifest = JsonParser.parseString(Files.readString(retry.directory.resolve("session.json"))).asJsonObject
                 assertEquals(parts, retryManifest["parts"])
                 assertEquals(gap, capture.gaps.single())
                 store.release(capture.id)
                 val next = store.capture(ReplaySettings())!!
                 assertEquals(if (processFailure) 4 else 5, next.clocks.size)
-                val nextOutput = SaveWriter().write(next, root, { false }) { a, b -> Files.move(a, b) }
+                val nextOutput = SaveWriter().write(next, root, { false }) { publication -> Files.move(publication.partial, publication.complete) }
                 val nextManifest = JsonParser.parseString(Files.readString(nextOutput.directory.resolve("session.json"))).asJsonObject
                 assertEquals(1, nextManifest["parts"].asJsonArray.size())
                 assertEquals(scope, nextManifest["video_clock_gap_scopes"].asJsonArray.single())
@@ -420,34 +420,34 @@ class CaptureStoreSaveTest {
                 return
             }
             val unknown = capture.copy(gaps = listOf(gap.copy(fromNs = null, toNs = null)))
-            val unknownOutput = SaveWriter().write(unknown, root, { false }) { a, b -> Files.move(a, b) }
+            val unknownOutput = SaveWriter().write(unknown, root, { false }) { publication -> Files.move(publication.partial, publication.complete) }
             val unknownManifest = JsonParser.parseString(Files.readString(unknownOutput.directory.resolve("session.json"))).asJsonObject
             assertEquals(1, unknownManifest["parts"].asJsonArray.size())
             assertEquals(listOf("video"), unknownOutput.missingKinds)
             assertFalse(unknownManifest["video_clock_gap_scopes"].asJsonArray.single().asJsonObject["derived_from_valid_samples"].asBoolean)
             val open = capture.copy(gaps = listOf(gap.copy(toNs = null)))
-            val openOutput = SaveWriter().write(open, root, { false }) { a, b -> Files.move(a, b) }
+            val openOutput = SaveWriter().write(open, root, { false }) { publication -> Files.move(publication.partial, publication.complete) }
             val openManifest = JsonParser.parseString(Files.readString(openOutput.directory.resolve("session.json"))).asJsonObject
             assertEquals(1, openManifest["parts"].asJsonArray.size())
             val noStart = capture.copy(gaps = listOf(gap.copy(fromNs = null)))
-            val noStartOutput = SaveWriter().write(noStart, root, { false }) { a, b -> Files.move(a, b) }
+            val noStartOutput = SaveWriter().write(noStart, root, { false }) { publication -> Files.move(publication.partial, publication.complete) }
             val noStartManifest = JsonParser.parseString(Files.readString(noStartOutput.directory.resolve("session.json"))).asJsonObject
             assertEquals(1, noStartManifest["parts"].asJsonArray.size())
             val unknownClock = capture.copy(clocks = emptyList(), clockRecoveries = emptyMap())
-            val noProofOutput = SaveWriter().write(unknownClock, root, { false }) { a, b -> Files.move(a, b) }
+            val noProofOutput = SaveWriter().write(unknownClock, root, { false }) { publication -> Files.move(publication.partial, publication.complete) }
             val noProof = JsonParser.parseString(Files.readString(noProofOutput.directory.resolve("session.json"))).asJsonObject
             assertEquals(1, noProof["parts"].asJsonArray.size())
             anchor(store.clock, 8_000_000_000, host + 7_000_000_000)
             for (pts in listOf(7_100_000L, 7_300_000L, 7_500_000L)) {
                 store.frame(VideoPacket.Frame(pts, false, true, bytes), 1, host + (pts - 1_000_000) * 1000)
             }
-            val retry = SaveWriter().write(capture, root, { false }) { a, b -> Files.move(a, b) }
+            val retry = SaveWriter().write(capture, root, { false }) { publication -> Files.move(publication.partial, publication.complete) }
             val retryManifest = JsonParser.parseString(Files.readString(retry.directory.resolve("session.json"))).asJsonObject
             assertEquals(parts, retryManifest["parts"])
             assertEquals(gap, capture.gaps.single())
             store.release(capture.id)
             val later = store.capture(ReplaySettings(replaySeconds = 1))!!
-            val laterOutput = SaveWriter().write(later, root, { false }) { a, b -> Files.move(a, b) }
+            val laterOutput = SaveWriter().write(later, root, { false }) { publication -> Files.move(publication.partial, publication.complete) }
             val laterManifest = JsonParser.parseString(Files.readString(laterOutput.directory.resolve("session.json"))).asJsonObject
             assertEquals(1, laterManifest["parts"].asJsonArray.size())
             assertEquals("900000", laterManifest["parts"].asJsonArray.single().asJsonObject["duration_us"].asString)
@@ -481,7 +481,7 @@ class CaptureStoreSaveTest {
             assertTrue(tail.fromNs != null && tail.toNs != null)
             assertTrue(tail.clockEpoch != capture.windowClockEpoch)
             assertTrue(capture.gaps.isEmpty()) // The clock change itself, without an explicit stream gap.
-            val output = SaveWriter().write(capture, root, { false }) { a, b -> Files.move(a, b) }
+            val output = SaveWriter().write(capture, root, { false }) { publication -> Files.move(publication.partial, publication.complete) }
             val manifest = JsonParser.parseString(Files.readString(output.directory.resolve("session.json"))).asJsonObject
             assertEquals(1, manifest["parts"].asJsonArray.size())
             assertTrue(manifest["complete"].asBoolean)
@@ -493,7 +493,7 @@ class CaptureStoreSaveTest {
             anchor(store.clock, 2_000_000_000, host + 1_000_000_000)
             store.frame(VideoPacket.Frame(2_000_000, false, true, bytes), 1, host + 1_000_000_000)
             assertEquals(tail, capture.videoTail())
-            val retry = SaveWriter().write(capture, root, { false }) { a, b -> Files.move(a, b) }
+            val retry = SaveWriter().write(capture, root, { false }) { publication -> Files.move(publication.partial, publication.complete) }
             assertEquals(output.missingKinds, retry.missingKinds)
             store.release(capture.id)
         } finally {
@@ -530,7 +530,7 @@ class CaptureStoreSaveTest {
             assertEquals(500_000_000, tail.toNs)
             assertEquals(1_100_000, tail.sourcePtsUs)
             assertFalse(tail.displayHeld)
-            assertFailsWith<SaveFailure> { SaveWriter().write(capture, root, { false }) { a, b -> Files.move(a, b) } }
+            assertFailsWith<SaveFailure> { SaveWriter().write(capture, root, { false }) { publication -> Files.move(publication.partial, publication.complete) } }
             assertFailsWith<IllegalStateException> { store.capture(ReplaySettings()) }
             assertTrue(capture.video.all { Files.exists(it.file) })
             anchor(store.clock, 2_000_000_000, host + 1_000_000_000)
@@ -561,7 +561,7 @@ class CaptureStoreSaveTest {
             val capture = store.capture(ReplaySettings(replaySeconds = 2))!!
             assertEquals(3_000_000_000, capture.start)
             assertEquals(listOf(1_000_000L, 6_000_000L), capture.video.map { it.pts })
-            val output = SaveWriter().write(capture, root, { false }) { a, b -> Files.move(a, b) }
+            val output = SaveWriter().write(capture, root, { false }) { publication -> Files.move(publication.partial, publication.complete) }
             val manifest = JsonParser.parseString(Files.readString(output.directory.resolve("session.json"))).asJsonObject
             assertEquals(1, manifest["parts"].asJsonArray.size())
             assertTrue(manifest["video_missing_ranges"].asJsonArray.isEmpty)
@@ -576,7 +576,7 @@ class CaptureStoreSaveTest {
                 CaptureGap("video", 2_000_000_000, 2_100_000_000, "lost", 0),
                 CaptureGap("clock", null, null, "unknown clock"),
             )) {
-                val broken = SaveWriter().write(capture.copy(gaps = listOf(gap)), root, { false }) { a, b -> Files.move(a, b) }
+                val broken = SaveWriter().write(capture.copy(gaps = listOf(gap)), root, { false }) { publication -> Files.move(publication.partial, publication.complete) }
                 val brokenManifest = JsonParser.parseString(Files.readString(broken.directory.resolve("session.json"))).asJsonObject
                 assertFalse(brokenManifest["video_missing_ranges"].asJsonArray.isEmpty)
             }
@@ -610,7 +610,7 @@ class CaptureStoreSaveTest {
             assertEquals(12_000_000_000, fixedTail.fromNs)
             assertEquals(14_000_000_000, fixedTail.toNs)
             assertTrue(fixedTail.displayHeld)
-            val output = SaveWriter().write(capture, root, { false }) { a, b -> Files.move(a, b) }
+            val output = SaveWriter().write(capture, root, { false }) { publication -> Files.move(publication.partial, publication.complete) }
             assertTrue(output.missingKinds.isEmpty())
             val manifest = JsonParser.parseString(Files.readString(output.directory.resolve("session.json"))).asJsonObject
             assertTrue(manifest["complete"].asBoolean)
@@ -624,11 +624,11 @@ class CaptureStoreSaveTest {
             assertEquals(null, unknown.videoTail()!!.fromNs)
             val broken = capture.copy(start = 0, gaps = listOf(CaptureGap("video", 5_000_000_000, 6_000_000_000, "known loss", 0)))
             assertEquals(5_000_000_000, broken.videoTail()!!.toNs)
-            val brokenOutput = SaveWriter().write(broken, root, { false }) { a, b -> Files.move(a, b) }
+            val brokenOutput = SaveWriter().write(broken, root, { false }) { publication -> Files.move(publication.partial, publication.complete) }
             assertEquals(listOf("video"), brokenOutput.missingKinds)
             val longEnd = Int.MAX_VALUE.toLong() * 1000 + 20_000_000_000
             val longWindow = capture.copy(start = longEnd - 2_000_000_000, end = longEnd)
-            val longOutput = SaveWriter().write(longWindow, root, { false }) { a, b -> Files.move(a, b) }
+            val longOutput = SaveWriter().write(longWindow, root, { false }) { publication -> Files.move(publication.partial, publication.complete) }
             assertTrue(longOutput.missingKinds.isEmpty())
             val longManifest = JsonParser.parseString(Files.readString(longOutput.directory.resolve("session.json"))).asJsonObject
             val longPart = longManifest["parts"].asJsonArray.single().asJsonObject
@@ -640,7 +640,7 @@ class CaptureStoreSaveTest {
             val following = capture.video.last().let { it.copy(pts = 1_000_000 + longEnd / 1000,
                 time = it.time.copy(elapsed = 1_000_000_000 + longEnd, sequence = longEnd)) }
             val confirmedLong = longWindow.copy(video = listOf(capture.video.first(), following))
-            val confirmedOutput = SaveWriter().write(confirmedLong, root, { false }) { a, b -> Files.move(a, b) }
+            val confirmedOutput = SaveWriter().write(confirmedLong, root, { false }) { publication -> Files.move(publication.partial, publication.complete) }
             assertTrue(confirmedOutput.missingKinds.isEmpty())
             val confirmed = JsonParser.parseString(Files.readString(confirmedOutput.directory.resolve("session.json"))).asJsonObject
             assertTrue(confirmed["video_tail"].isJsonNull)
@@ -665,7 +665,7 @@ class CaptureStoreSaveTest {
             assertEquals(4096, aged.clocks.size)
             assertTrue(aged.video.single().time.sequence != null)
             assertTrue(aged.videoTail()!!.displayHeld)
-            val agedOutput = SaveWriter().write(aged, root, { false }) { a, b -> Files.move(a, b) }
+            val agedOutput = SaveWriter().write(aged, root, { false }) { publication -> Files.move(publication.partial, publication.complete) }
             assertTrue(agedOutput.missingKinds.isEmpty())
             store.release(aged.id)
         } finally {
@@ -730,7 +730,7 @@ class CaptureStoreSaveTest {
             assertTrue(store.streams(1).getValue("video").gaps.any { it.reason == "prior known gap" })
             assertEquals(1, capture.video.size)
             assertEquals(1, capture.logs.size)
-            val output = SaveWriter().write(capture, root, { false }) { a, b -> Files.move(a, b) }
+            val output = SaveWriter().write(capture, root, { false }) { publication -> Files.move(publication.partial, publication.complete) }
             val manifest = JsonParser.parseString(Files.readString(output.directory.resolve("session.json"))).asJsonObject
             assertFalse(manifest["window_clock_known"].asBoolean)
             assertEquals(store.clock.currentEpoch(), manifest["window_clock_epoch"].asInt)
@@ -820,11 +820,11 @@ class CaptureStoreSaveTest {
             assertEquals(400_000_000, capture.end)
             assertEquals(true, capture.logs.single().app)
             assertFailsWith<IllegalStateException> { store.capture(ReplaySettings()) }
-            assertFailsWith<SaveFailure> { SaveWriter().write(capture, root.resolve("missing"), { false }) { a, b -> Files.move(a, b) } }
+            assertFailsWith<SaveFailure> { SaveWriter().write(capture, root.resolve("missing"), { false }) { publication -> Files.move(publication.partial, publication.complete) } }
             anchor(store.clock, 10_000_000_000, host + 9_000_000_000)
             store.prune(1)
             assertTrue(capture.video.all { Files.exists(it.file) })
-            val output = SaveWriter().write(capture, root, { false }) { a, b -> Files.move(a, b) }
+            val output = SaveWriter().write(capture, root, { false }) { publication -> Files.move(publication.partial, publication.complete) }
             assertEquals(listOf("video"), output.missingKinds) // The explicit gap remains a known interruption.
             val completed = output.directory
             val manifest = JsonParser.parseString(Files.readString(completed.resolve("session.json"))).asJsonObject
@@ -847,7 +847,7 @@ class CaptureStoreSaveTest {
                     assertEquals(1_000_000, frame.timescale)
                 }
             }
-            val logOnly = SaveWriter().write(capture.copy(video = emptyList()), root, { false }) { a, b -> Files.move(a, b) }
+            val logOnly = SaveWriter().write(capture.copy(video = emptyList()), root, { false }) { publication -> Files.move(publication.partial, publication.complete) }
             assertEquals(listOf("video"), logOnly.missingKinds)
             for ((directory, videoCount) in listOf(completed to 1, logOnly.directory to 0)) {
                 assertEquals(videoCount.toLong(), Files.list(directory).use { paths -> paths.filter { it.toString().endsWith(".mp4") }.count() })
@@ -861,7 +861,7 @@ class CaptureStoreSaveTest {
                 assertEquals(saved["files_sha256"].asJsonObject["README.txt"].asString, sha256(directory.resolve("README.txt")))
             }
             val hash = sha256(completed.resolve("session.json"))
-            assertFailsWith<CancellationException> { SaveWriter().write(capture, root, { true }) { a, b -> Files.move(a, b) } }
+            assertFailsWith<CancellationException> { SaveWriter().write(capture, root, { true }) { publication -> Files.move(publication.partial, publication.complete) } }
             assertEquals(hash, sha256(completed.resolve("session.json")))
             store.release(capture.id)
             assertTrue(capture.video.all { !Files.exists(it.file) || it.file == capture.video.last().file })
@@ -887,7 +887,7 @@ class CaptureStoreSaveTest {
             }
             anchor(store.clock, 1_400_000_000, host + 400_000_000)
             val original = store.capture(ReplaySettings())!!
-            val cut = SaveWriter().write(original.copy(start = 50_000_000), root, { false }) { a, b -> Files.move(a, b) }
+            val cut = SaveWriter().write(original.copy(start = 50_000_000), root, { false }) { publication -> Files.move(publication.partial, publication.complete) }
             val cutJson = JsonParser.parseString(Files.readString(cut.directory.resolve("session.json"))).asJsonObject
             val part = cutJson["parts"].asJsonArray.single().asJsonObject
             assertEquals("0", part["window_start_ns"].asString)
@@ -899,14 +899,14 @@ class CaptureStoreSaveTest {
             val indices = Files.readAllLines(cut.directory.resolve("frames.jsonl")).map { JsonParser.parseString(it).asJsonObject }
             assertEquals(listOf("0", "50000", "300000"), indices.map { it["presentation_pts_us"].asString })
             val delayed = original.copy(start = 0, video = original.video.drop(1))
-            val delayedOutput = SaveWriter().write(delayed, root, { false }) { a, b -> Files.move(a, b) }
+            val delayedOutput = SaveWriter().write(delayed, root, { false }) { publication -> Files.move(publication.partial, publication.complete) }
             val delayedPart = JsonParser.parseString(Files.readString(delayedOutput.directory.resolve("session.json"))).asJsonObject["parts"].asJsonArray.single().asJsonObject
             assertEquals("0", delayedPart["edit_start_us"].asString)
             assertEquals("100000000", delayedPart["window_start_ns"].asString)
             assertEquals(listOf("video"), delayedOutput.missingKinds)
             val lateFrame = original.video.first().let { it.copy(pts = it.pts + 1_000_000,
                 time = it.time.copy(elapsed = it.time.elapsed!! + 1_000_000_000, sequence = 1_000_000_000)) }
-            val late = SaveWriter().write(original.copy(start = 0, end = 1_200_000_000, video = listOf(lateFrame)), root, { false }) { a, b -> Files.move(a, b) }
+            val late = SaveWriter().write(original.copy(start = 0, end = 1_200_000_000, video = listOf(lateFrame)), root, { false }) { publication -> Files.move(publication.partial, publication.complete) }
             val latePart = JsonParser.parseString(Files.readString(late.directory.resolve("session.json"))).asJsonObject["parts"].asJsonArray.single().asJsonObject
             assertEquals("0", latePart["edit_start_us"].asString)
             assertEquals("1000000000", latePart["window_start_ns"].asString)
@@ -916,7 +916,7 @@ class CaptureStoreSaveTest {
                     "clock" -> frame.copy(time = frame.time.copy(epoch = frame.time.epoch + 1))
                     else -> frame.copy(config = byteArrayOf(0) + frame.config)
                 } }
-                val split = SaveWriter().write(original.copy(video = listOf(original.video.first(), second)), root, { false }) { a, b -> Files.move(a, b) }
+                val split = SaveWriter().write(original.copy(video = listOf(original.video.first(), second)), root, { false }) { publication -> Files.move(publication.partial, publication.complete) }
                 val parts = JsonParser.parseString(Files.readString(split.directory.resolve("session.json"))).asJsonObject["parts"].asJsonArray
                 assertEquals(2, parts.size())
                 assertEquals(parts[1].asJsonObject["media_start_us"], parts[1].asJsonObject["edit_start_us"])

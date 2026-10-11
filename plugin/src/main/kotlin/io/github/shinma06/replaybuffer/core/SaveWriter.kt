@@ -1,10 +1,6 @@
 package io.github.shinma06.replaybuffer.core
 
 import com.google.gson.GsonBuilder
-import com.sun.jna.Library
-import com.sun.jna.Memory
-import com.sun.jna.Native
-import com.sun.jna.NativeLibrary
 import org.jcodec.codecs.h264.H264Utils
 import org.jcodec.common.model.Packet
 import org.jcodec.containers.mp4.MP4TrackType
@@ -12,7 +8,6 @@ import org.jcodec.containers.mp4.boxes.Edit
 import org.jcodec.containers.mp4.boxes.SampleEntry
 import org.jcodec.containers.mp4.muxer.MP4MuxerTrack
 import org.jcodec.containers.mp4.muxer.MP4Muxer
-import java.io.IOException
 import java.nio.ByteBuffer
 import java.nio.channels.Channels
 import java.nio.channels.FileChannel
@@ -20,9 +15,6 @@ import java.nio.file.Files
 import java.nio.file.LinkOption.NOFOLLOW_LINKS
 import java.nio.file.Path
 import java.nio.file.StandardOpenOption.READ
-import java.nio.file.StandardOpenOption.WRITE
-import java.nio.file.attribute.BasicFileAttributes
-import java.nio.file.attribute.PosixFilePermissions
 import java.time.Instant
 import java.util.Base64
 import java.util.UUID
@@ -37,27 +29,37 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
     private val gson = GsonBuilder().serializeNulls().disableHtmlEscaping().create()
 
     fun write(capture: FrozenCapture, folder: Path, cancelled: () -> Boolean,
-              publish: (Path, Path) -> Unit): SaveOutput {
+              publish: (SavePublication) -> Unit): SaveOutput {
         var partial: Path? = null
         var complete: Path? = null
-        var partialKey: Any? = null
+        var parentHandle: SaveOutputDirectory? = null
+        var staging: SaveOutputDirectory? = null
+        var acquired = false
         var manifest: Map<String, Any?>? = null
         val own = linkedMapOf<Path, SaveOutputFile>()
-        fun ownsDirectory(directory: Path?): Boolean = directory?.let {
+        fun directoryAt(directory: Path?): Boolean = directory?.let {
             runCatching {
-                partialKey != null && Files.isDirectory(directory, NOFOLLOW_LINKS) &&
-                    fileKey(directory) == partialKey && directory.toRealPath() == directory
+                SaveOutputDirectory.open(directory.parent).use { it.key == parentHandle!!.key } &&
+                    parentHandle!!.openChild(directory.fileName.toString()).use { it.key == staging!!.key }
             }.getOrDefault(false)
         } ?: false
+        fun ownsDirectory(directory: Path?) = acquired && directoryAt(directory)
         fun checkOwned(path: Path) {
             check(ownsDirectory(path.parent)) { "未完成フォルダーの所有を確認できません" }
-            own.getValue(partial!!.resolve(path.fileName)).verifyAt(path)
+            staging!!.verifyFile(path.fileName.toString(), own.getValue(partial!!.resolve(path.fileName)))
         }
+        fun checkEntries() = staging!!.requireEntries(own.mapKeys { it.key.fileName.toString() })
         fun createFile(path: Path): FileChannel {
-            check(ownsDirectory(partial)) { "未完成フォルダーの所有を確認できません" }
-            val output = SaveOutputFile.create(path)
+            check(directoryAt(partial)) { "未完成フォルダーの所有を確認できません" }
+            if (own.isEmpty()) staging!!.requireEntries(emptyMap())
+            val output = staging!!.createFile(path.fileName.toString())
             own[path] = output
-            output.verifyAt(path)
+            staging!!.verifyFile(path.fileName.toString(), output)
+            if (!acquired) {
+                checkEntries()
+                check(directoryAt(partial)) { "未完成フォルダーの所有を確認できません" }
+                acquired = true
+            }
             return output.channel()
         }
         fun writer(path: Path) = Channels.newWriter(createFile(path), Charsets.UTF_8).buffered()
@@ -139,9 +141,9 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
             }
             checkSpace(estimate)
             val name = "replay-${Instant.now().toString().replace(':', '-')}-${UUID.randomUUID()}"
-            partial = Files.createDirectory(parent.resolve(".$name.partial"),
-                PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rwx------")))
-            partialKey = fileKey(partial)
+            parentHandle = SaveOutputDirectory.open(parent)
+            partial = parent.resolve(".$name.partial")
+            staging = parentHandle.createDirectory(partial.fileName.toString())
             complete = parent.resolve(name)
             fun file(name: String): Path = partial.resolve(name)
             val parts = mutableListOf<Map<String, Any?>>()
@@ -538,10 +540,13 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
             checkSpace()
             checkActive()
             own.keys.forEach(::checkOwned)
-            publish(partial, complete)
+            checkEntries()
+            publish(SavePublication(partial, complete, parentHandle, staging) { checkEntries() })
             own.keys.forEach { checkOwned(complete.resolve(it.fileName)) }
+            checkEntries()
             return SaveOutput(complete, if (videoIncomplete) listOf("video") else emptyList())
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
+            if (e !is Exception && e !is LinkageError) throw e
             // No path-based deletion: ownership checks cannot make a subsequent unlink conditional on identity.
             manifest?.let { value -> own[partial?.resolve("session.json")]?.let { output -> runCatching {
                 output.channel().use { channel ->
@@ -560,11 +565,10 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
             throw SaveFailure(retained, reason + location, e)
         } finally {
             own.values.forEach { it.close() }
+            staging?.close()
+            parentHandle?.close()
         }
     }
-
-    private fun fileKey(path: Path): Any = Files.readAttributes(path, BasicFileAttributes::class.java, NOFOLLOW_LINKS).fileKey()
-        ?: error("出力のfile identityを確認できません")
 
     private fun bytesHash(bytes: ByteArray) = java.security.MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
 
@@ -589,97 +593,6 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
 
     private fun appJson(a: AppPeriod): Map<String, Any?> = mapOf("package" to a.packageName, "uid" to a.uid,
         "pids" to a.pids, "uid_exclusive" to a.uidExclusive, "from_elapsed_ns" to a.from?.toString(), "to_elapsed_ns" to a.to?.toString(), "clock_epoch" to a.epoch)
-}
-
-internal interface SaveFileDescriptors : Library {
-    fun open(path: String, flags: Int, vararg mode: Any): Int
-    fun close(descriptor: Int): Int
-}
-
-/** Keep the creation descriptor alive; /dev/fd (macOS) and /proc/self/fd (Linux) name that object. */
-internal class SaveOutputFile private constructor(private val descriptor: Int, private val descriptorPath: Path) : AutoCloseable {
-    private var closed = false
-    val key: Pair<Long, Long> = descriptorKey(descriptor)
-
-    fun channel(): FileChannel {
-        check(!closed)
-        return FileChannel.open(descriptorPath, READ, WRITE)
-    }
-
-    fun verifyAt(path: Path) {
-        check(!closed)
-        open(path, false).use { current ->
-            check(current.key == key) { "保存出力の実体が変更されています" }
-        }
-    }
-
-    fun hash(): String {
-        val digest = java.security.MessageDigest.getInstance("SHA-256")
-        channel().use { channel ->
-            channel.position(0)
-            val bytes = ByteBuffer.allocate(8192)
-            while (channel.read(bytes) >= 0) { bytes.flip(); digest.update(bytes); bytes.clear() }
-        }
-        return digest.digest().joinToString("") { "%02x".format(it) }
-    }
-
-    override fun close() {
-        if (!closed) {
-            closed = true
-            descriptors.close(descriptor)
-        }
-    }
-
-    companion object {
-        private val mac = System.getProperty("os.name") == "Mac OS X"
-        private val arm = System.getProperty("os.arch") in listOf("aarch64", "arm64")
-        private val descriptors by lazy {
-            Native.load("c", SaveFileDescriptors::class.java, mapOf(Library.OPTION_STRING_ENCODING to "UTF-8"))
-        }
-
-        private fun descriptorKey(descriptor: Int): Pair<Long, Long> {
-            // Darwin stat64 and Linux 64-bit stat expose dev/ino here; /dev/fd stat substitutes a device ID.
-            Memory(256).use { stat ->
-                val symbol = if (mac && !arm) "fstat\$INODE64" else "fstat"
-                if (NativeLibrary.getInstance("c").getFunction(symbol).invokeInt(arrayOf(descriptor, stat)) != 0)
-                    throw IOException("保存出力のfile identityを確認できません")
-                val mode = if (mac) stat.getShort(4).toInt() else stat.getInt(if (arm) 16 else 24)
-                check(mode and 0xf000 == 0x8000) { "保存出力の実体を確認できません" }
-                val device = if (mac) stat.getInt(0).toLong() and 0xffffffffL else stat.getLong(0)
-                return device to stat.getLong(8)
-            }
-        }
-
-        fun create(path: Path): SaveOutputFile = open(path, true)
-
-        private fun open(path: Path, create: Boolean): SaveOutputFile {
-            check(Native.POINTER_SIZE == 8 && System.getProperty("os.arch") in listOf("aarch64", "arm64", "amd64", "x86_64")) {
-                "この環境は保存出力の実体確認に対応していません"
-            }
-            // Native O_CREAT|O_EXCL returns the actual created handle; path metadata cannot supply its identity.
-            val (flags, directory) = when (System.getProperty("os.name")) {
-                "Mac OS X" -> (0x01000100 or if (create) 0x00000a02 else 0x4) to "/dev/fd"
-                "Linux" -> (0x000a0000 or if (create) 0x000000c2 else 0x800) to "/proc/self/fd"
-                else -> error("この環境は保存出力の実体確認に対応していません")
-            }
-            val descriptor = try { descriptors.open(path.toString(), flags, 0x180) } catch (e: LinkageError) {
-                throw IOException("保存出力の実体確認を利用できません", e)
-            }
-            if (descriptor < 0) {
-                if (Native.getLastError() == 17) throw java.nio.file.FileAlreadyExistsException(path.toString())
-                throw IOException("保存出力を開けません")
-            }
-            try {
-                return SaveOutputFile(descriptor, Path.of(directory, descriptor.toString()))
-            } catch (e: LinkageError) {
-                descriptors.close(descriptor)
-                throw IOException("保存出力の実体確認を利用できません", e)
-            } catch (e: Exception) {
-                descriptors.close(descriptor)
-                throw e
-            }
-        }
-    }
 }
 
 /** Playback proof is captured at acquisition; clock quality never authorizes source adjacency. */

@@ -166,11 +166,10 @@ class ReplayCore(initialSettings: ReplaySettings, private val workspace: Path, c
             application = capture.settings.application, applicationHistory = capture.applicationHistory(), videoTail = capture.videoTail())
         publish()
         saveTask = writer.submit {
-            val result = runCatching { SaveWriter().write(capture, directory, { cancellation.get() || closed.get() }) { partial, complete ->
+            val result = runCatching { SaveWriter().write(capture, directory, { cancellation.get() || closed.get() }) { publication ->
                 synchronized(publishing) {
                     check(!cancellation.get() && !closed.get()) { "保存が取消されました" }
-                    check(!Files.exists(complete)) { "完成先が既に存在します" }
-                    publishCapture(partial, complete)
+                    publication.publish()
                 }
             } }
             if (!closed.get()) runCatching { control.execute {

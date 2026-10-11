@@ -115,7 +115,7 @@ class SingleMp4SaveTest {
         assertFailsWith<IllegalStateException> { store.capture(ReplaySettings()) }
         var checks = 0
         assertFailsWith<java.util.concurrent.CancellationException> {
-            SaveWriter().write(capture, root, { ++checks > 5 }) { _, _ -> error("must not publish") }
+            SaveWriter().write(capture, root, { ++checks > 5 }) { _ -> error("must not publish") }
         }
         Files.list(root).use { paths -> assertFalse(paths.anyMatch { it.fileName.toString().startsWith("replay-") }) }
         assertEquals(6, rows(write(capture, root)).size)
@@ -181,7 +181,7 @@ class SingleMp4SaveTest {
         Files.write(last.file, bytes)
         var checks = 0
         assertFailsWith<SaveFailure> {
-            SaveWriter { if (++checks > 8) 0 else Long.MAX_VALUE }.write(capture, root, { false }) { _, _ -> error("partial publish") }
+            SaveWriter { if (++checks > 8) 0 else Long.MAX_VALUE }.write(capture, root, { false }) { _ -> error("partial publish") }
         }
         var cancelledAt = 0L
         val earlier = Files.list(root).use { it.toList().toSet() }
@@ -192,7 +192,7 @@ class SingleMp4SaveTest {
                     .anyMatch { dir -> val source = dir.resolve("video-source.bin"); Files.exists(source) && Files.size(source) > capture.video.first().size } }
                 if (trigger && cancelledAt == 0L) cancelledAt = System.nanoTime()
                 trigger
-            }) { _, _ -> error("partial publish") }
+            }) { _ -> error("partial publish") }
         }
         assertTrue(cancelledAt >= started && System.nanoTime() - cancelledAt < 10_000_000_000)
         assertFailsWith<IllegalStateException> { store.capture(ReplaySettings()) }
@@ -250,7 +250,7 @@ class SingleMp4SaveTest {
                         }.apply { start() }
                     }
                     requested.get() != 0L
-                }) { _, _ -> error("cancelled publish") }
+                }) { _ -> error("cancelled publish") }
             }
             signal!!.join()
             assertTrue(System.nanoTime() - requested.get() < 10_000_000_000)
@@ -347,7 +347,7 @@ class SingleMp4SaveTest {
         assertFailsWith<IllegalStateException> { store.capture(ReplaySettings()) }
         var checks = 0
         assertFailsWith<java.util.concurrent.CancellationException> {
-            SaveWriter().write(capture, root, { ++checks > 3 }) { _, _ -> error("cancelled preflight must not publish") }
+            SaveWriter().write(capture, root, { ++checks > 3 }) { _ -> error("cancelled preflight must not publish") }
         }
         assertFailsWith<IllegalStateException> { store.capture(ReplaySettings()) }
         Files.list(root).use { paths ->
@@ -497,7 +497,7 @@ class SingleMp4SaveTest {
         Files.list(output.directory).use { files -> assertEquals(1L, files.filter { it.fileName.toString().endsWith(".mp4") }.count()) }
     }
 
-    private fun write(capture: FrozenCapture, root: java.nio.file.Path) = SaveWriter().write(capture, root, { false }) { a, b -> Files.move(a, b) }
+    private fun write(capture: FrozenCapture, root: java.nio.file.Path) = SaveWriter().write(capture, root, { false }) { publication -> Files.move(publication.partial, publication.complete) }
     private fun manifest(output: SaveOutput) = JsonParser.parseString(Files.readString(output.directory.resolve("session.json"))).asJsonObject
     private fun rows(output: SaveOutput) = Files.readAllLines(output.directory.resolve("frames.jsonl")).map { JsonParser.parseString(it).asJsonObject }
 
@@ -620,7 +620,7 @@ class SingleMp4SaveTest {
             val capture = store.capture(ReplaySettings())!!
             assertEquals(3, capture.video.size)
             assertTrue(capture.video.all { it.time.sequence == null && it.time.uncertainty == Long.MAX_VALUE })
-            check(SaveWriter().write(capture, root, { false }) { a, b -> Files.move(a, b) })
+            check(SaveWriter().write(capture, root, { false }) { publication -> Files.move(publication.partial, publication.complete) })
         } finally {
             store.close()
             Files.walk(root).use { files -> files.sorted(Comparator.reverseOrder()).forEach(Files::deleteIfExists) }

@@ -31,7 +31,8 @@ class SaveWriterFailureTest {
         var marker: Path? = null
         var identity: Any? = null
         val failure = assertFailsWith<SaveFailure> {
-            SaveWriter().write(capture, root, { false }) { partial, _ ->
+            SaveWriter().write(capture, root, { false }) { publication ->
+                val partial = publication.partial
                 marker = partial.resolve("foreign.txt")
                 Files.write(marker, markerBytes, CREATE_NEW, WRITE)
                 identity = key(marker!!)
@@ -71,7 +72,7 @@ class SaveWriterFailureTest {
                         }
                     }
                     false
-                }) { _, _ -> error("collision must not publish") }
+                }) { _ -> error("collision must not publish") }
             }
             assertNotNull(marker)
             assertTrue(failure.cause is java.nio.file.FileAlreadyExistsException)
@@ -96,7 +97,8 @@ class SaveWriterFailureTest {
                 var identity: Any? = null
                 val original = root.resolve("original-$name-$symlink")
                 val failure = assertFailsWith<SaveFailure> {
-                    SaveWriter().write(capture, root, { false }) { partial, _ ->
+                    SaveWriter().write(capture, root, { false }) { publication ->
+                        val partial = publication.partial
                         replacement = partial.resolve(name)
                         Files.move(replacement, original)
                         if (symlink) Files.createSymbolicLink(replacement, original)
@@ -126,7 +128,8 @@ class SaveWriterFailureTest {
             var identity: Any? = null
             val original = root.resolve("original-partial-$symlink")
             val failure = assertFailsWith<SaveFailure> {
-                SaveWriter().write(capture, root, { false }) { partial, _ ->
+                SaveWriter().write(capture, root, { false }) { publication ->
+                    val partial = publication.partial
                     replacement = partial
                     Files.move(partial, original)
                     if (symlink) Files.createSymbolicLink(partial, original)
@@ -150,7 +153,8 @@ class SaveWriterFailureTest {
     fun failureAndCancellationRetainAttemptOutputsRatherThanDeleteMutablePaths() = fixture { root, store, capture ->
         var attempted: Path? = null
         val failure = assertFailsWith<SaveFailure> {
-            SaveWriter().write(capture, root, { false }) { partial, _ ->
+            SaveWriter().write(capture, root, { false }) { publication ->
+                val partial = publication.partial
                 attempted = partial
                 throw IOException("publication fixture failure")
             }
@@ -164,7 +168,7 @@ class SaveWriterFailureTest {
         val cancelled = assertFailsWith<CancellationException> {
             SaveWriter().write(capture, root, {
                 Files.list(root).use { paths -> paths.anyMatch { it !in earlier && it.fileName.toString().endsWith(".partial") } }
-            }) { _, _ -> error("cancelled save must not publish") }
+            }) { _ -> error("cancelled save must not publish") }
         }
         val partials = Files.list(root).use { paths -> paths.filter { it.fileName.toString().endsWith(".partial") }.toList() }
         assertEquals(2, partials.size)
@@ -180,27 +184,29 @@ class SaveWriterFailureTest {
     fun createdDescriptorSuppliesIdentityAndRejectsAnotherIntactFile() = fixture { root, _, _ ->
         val first = root.resolve("first.txt")
         val second = root.resolve("second.txt")
-        SaveOutputFile.create(first).use { created ->
-            created.channel().use { it.write(ByteBuffer.wrap(markerBytes)) }
-            val createdKey = created.key
-            assertEquals((Files.getAttribute(first, "unix:dev") as Number).toLong() to
-                (Files.getAttribute(first, "unix:ino") as Number).toLong(), createdKey)
-            assertEquals(sha256(first), created.hash())
-            created.verifyAt(first)
-            SaveOutputFile.create(second).use { other ->
-                other.channel().use { it.write(ByteBuffer.wrap(markerBytes)) }
-                assertFalse(created.key == other.key)
-                assertFailsWith<IllegalStateException> { created.verifyAt(second) }
-                assertContentEquals(markerBytes, Files.readAllBytes(first))
-                assertContentEquals(markerBytes, Files.readAllBytes(second))
+        SaveOutputDirectory.open(root).use { directory ->
+            directory.createFile(first.fileName.toString()).use { created ->
+                created.channel().use { it.write(ByteBuffer.wrap(markerBytes)) }
+                val createdKey = created.key
+                assertEquals((Files.getAttribute(first, "unix:dev") as Number).toLong() to
+                    (Files.getAttribute(first, "unix:ino") as Number).toLong(), createdKey)
+                assertEquals(sha256(first), created.hash())
+                directory.verifyFile(first.fileName.toString(), created)
+                directory.createFile(second.fileName.toString()).use { other ->
+                    other.channel().use { it.write(ByteBuffer.wrap(markerBytes)) }
+                    assertFalse(created.key == other.key)
+                    assertFailsWith<IllegalStateException> { directory.verifyFile(second.fileName.toString(), created) }
+                    assertContentEquals(markerBytes, Files.readAllBytes(first))
+                    assertContentEquals(markerBytes, Files.readAllBytes(second))
+                }
+                assertEquals(createdKey, created.key)
+                assertEquals(sha256(first), created.hash())
             }
-            assertEquals(createdKey, created.key)
-            assertEquals(sha256(first), created.hash())
         }
     }
 
     private fun retry(capture: FrozenCapture, root: Path): SaveOutput {
-        val output = SaveWriter().write(capture, root, { false }) { a, b -> Files.move(a, b) }
+        val output = SaveWriter().write(capture, root, { false }) { publication -> Files.move(publication.partial, publication.complete) }
         val manifest = JsonParser.parseString(Files.readString(output.directory.resolve("session.json"))).asJsonObject
         assertTrue(manifest["complete"].asBoolean)
         assertEquals(capture.id, manifest["save_id"].asString)
