@@ -55,13 +55,14 @@ class SaveWriterFailureTest {
     @Test
     fun createNewCollisionsPreserveForeignBytesAndIdentity() = fixture { root, store, capture ->
         for (name in listOf("logcat-device.jsonl", "logcat-app.jsonl", "README.txt", "session.json")) {
+            val earlier = Files.list(root).use { it.toList().toSet() }
             var marker: Path? = null
             var identity: Any? = null
             val failure = assertFailsWith<SaveFailure> {
                 SaveWriter().write(capture, root, {
                     if (marker == null) {
                         val partial = Files.list(root).use { paths -> paths
-                            .filter { it.fileName.toString().endsWith(".partial") && Files.exists(it.resolve("frames.jsonl")) }
+                            .filter { it !in earlier && it.fileName.toString().endsWith(".partial") && Files.exists(it.resolve("frames.jsonl")) }
                             .filter { !Files.exists(it.resolve(name), NOFOLLOW_LINKS) }.findFirst().orElse(null) }
                         if (partial != null) {
                             marker = partial.resolve(name)
@@ -80,8 +81,6 @@ class SaveWriterFailureTest {
             assertContentEquals(markerBytes, Files.readAllBytes(marker))
             assertEquals(identity, key(marker))
             assertEquals(marker.parent, failure.partial)
-            Files.delete(marker)
-            Files.delete(failure.partial)
         }
         retry(capture, root)
     }
@@ -114,8 +113,7 @@ class SaveWriterFailureTest {
                 assertContentEquals(completedBytes, Files.readAllBytes(completed))
                 assertEquals(completedKey, key(completed))
                 assertFailsWith<IllegalStateException> { store.capture(ReplaySettings()) }
-                Files.delete(path)
-                Files.delete(retained)
+                assertTrue(Files.exists(retained.resolve("frames.jsonl"), NOFOLLOW_LINKS))
             }
         }
         retry(capture, root)
@@ -149,7 +147,7 @@ class SaveWriterFailureTest {
     }
 
     @Test
-    fun successfulCleanupReportsNoRetainedLocationAndCancellationKeepsPin() = fixture { root, store, capture ->
+    fun failureAndCancellationRetainAttemptOutputsRatherThanDeleteMutablePaths() = fixture { root, store, capture ->
         var attempted: Path? = null
         val failure = assertFailsWith<SaveFailure> {
             SaveWriter().write(capture, root, { false }) { partial, _ ->
@@ -157,18 +155,48 @@ class SaveWriterFailureTest {
                 throw IOException("publication fixture failure")
             }
         }
-        assertNull(failure.partial)
-        assertFalse(Files.exists(attempted, NOFOLLOW_LINKS))
-        assertFalse(failure.message.orEmpty().contains("未完成"))
-        assertFalse(failure.message.orEmpty().contains(attempted.toString()))
-        assertFailsWith<CancellationException> {
+        val retained = assertNotNull(failure.partial)
+        assertEquals(attempted, retained)
+        assertTrue(failure.message.orEmpty().contains("未完成"))
+        assertTrue(failure.message.orEmpty().contains(retained.toString()))
+        assertFalse(JsonParser.parseString(Files.readString(retained.resolve("session.json"))).asJsonObject["complete"].asBoolean)
+        val earlier = Files.list(root).use { it.toList().toSet() }
+        val cancelled = assertFailsWith<CancellationException> {
             SaveWriter().write(capture, root, {
-                Files.list(root).use { paths -> paths.anyMatch { it.fileName.toString().endsWith(".partial") } }
+                Files.list(root).use { paths -> paths.anyMatch { it !in earlier && it.fileName.toString().endsWith(".partial") } }
             }) { _, _ -> error("cancelled save must not publish") }
         }
-        assertEquals(listOf(root.resolve("ring")), Files.list(root).use { it.toList() })
+        val partials = Files.list(root).use { paths -> paths.filter { it.fileName.toString().endsWith(".partial") }.toList() }
+        assertEquals(2, partials.size)
+        val cancelledOutput = partials.single { it != retained }
+        assertTrue(Files.exists(cancelledOutput.resolve("frames.jsonl")))
+        assertTrue(cancelled.message.orEmpty().contains(cancelledOutput.toString()))
+        assertNoComplete(root)
         assertFailsWith<IllegalStateException> { store.capture(ReplaySettings()) }
         retry(capture, root)
+    }
+
+    @Test
+    fun createdDescriptorSuppliesIdentityAndRejectsAnotherIntactFile() = fixture { root, _, _ ->
+        val first = root.resolve("first.txt")
+        val second = root.resolve("second.txt")
+        SaveOutputFile.create(first).use { created ->
+            created.channel().use { it.write(ByteBuffer.wrap(markerBytes)) }
+            val createdKey = created.key
+            assertEquals((Files.getAttribute(first, "unix:dev") as Number).toLong() to
+                (Files.getAttribute(first, "unix:ino") as Number).toLong(), createdKey)
+            assertEquals(sha256(first), created.hash())
+            created.verifyAt(first)
+            SaveOutputFile.create(second).use { other ->
+                other.channel().use { it.write(ByteBuffer.wrap(markerBytes)) }
+                assertFalse(created.key == other.key)
+                assertFailsWith<IllegalStateException> { created.verifyAt(second) }
+                assertContentEquals(markerBytes, Files.readAllBytes(first))
+                assertContentEquals(markerBytes, Files.readAllBytes(second))
+            }
+            assertEquals(createdKey, created.key)
+            assertEquals(sha256(first), created.hash())
+        }
     }
 
     private fun retry(capture: FrozenCapture, root: Path): SaveOutput {

@@ -183,10 +183,11 @@ class SingleMp4SaveTest {
             SaveWriter { if (++checks > 8) 0 else Long.MAX_VALUE }.write(capture, root, { false }) { _, _ -> error("partial publish") }
         }
         var cancelledAt = 0L
+        val earlier = Files.list(root).use { it.toList().toSet() }
         val started = System.nanoTime()
         assertFailsWith<java.util.concurrent.CancellationException> {
             SaveWriter().write(capture, root, {
-                val trigger = Files.list(root).use { paths -> paths.filter { it.fileName.toString().endsWith(".partial") }
+                val trigger = Files.list(root).use { paths -> paths.filter { it !in earlier && it.fileName.toString().endsWith(".partial") }
                     .anyMatch { dir -> val source = dir.resolve("video-source.bin"); Files.exists(source) && Files.size(source) > capture.video.first().size } }
                 if (trigger && cancelledAt == 0L) cancelledAt = System.nanoTime()
                 trigger
@@ -194,7 +195,10 @@ class SingleMp4SaveTest {
         }
         assertTrue(cancelledAt >= started && System.nanoTime() - cancelledAt < 10_000_000_000)
         assertFailsWith<IllegalStateException> { store.capture(ReplaySettings()) }
-        Files.list(root).use { paths -> assertFalse(paths.anyMatch { it.fileName.toString().startsWith("replay-") || it.fileName.toString().endsWith(".partial") }) }
+        Files.list(root).use { paths -> assertFalse(paths.anyMatch { it.fileName.toString().startsWith("replay-") }) }
+        val retained = Files.list(root).use { paths -> paths.filter { it.fileName.toString().endsWith(".partial") }.toList() }
+        assertEquals(3, retained.size) // Failed/cancelled outputs stay intact; path deletion cannot prove ownership.
+        assertTrue(retained.all { Files.exists(it.resolve("video-source.bin")) })
         assertEquals(6, rows(write(capture, root)).size)
     }
 
@@ -358,8 +362,11 @@ class SingleMp4SaveTest {
                 assertTrue(generateSequence<Throwable>(failure) { it.cause }.any { it.message?.contains("bitrate") == true }, failure.toString())
                 assertFailsWith<IllegalStateException> { store.capture(ReplaySettings()) }
                 Files.list(root).use { paths ->
-                    assertFalse(paths.anyMatch { it.fileName.toString().startsWith("replay-") || it.fileName.toString().endsWith(".partial") })
+                    assertFalse(paths.anyMatch { it.fileName.toString().startsWith("replay-") })
                 }
+                val retained = assertNotNull(failure.partial)
+                assertTrue(Files.exists(retained.resolve("video-source.bin")))
+                assertTrue(failure.message.orEmpty().contains(retained.toString()))
             }
         }
     }

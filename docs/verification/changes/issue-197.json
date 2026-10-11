@@ -2,9 +2,9 @@
   "schema": 1,
   "issue": 197,
   "gui_required": true,
-  "reason": "保存失敗時の所有保全と利用者向けエラー文を変更する。Writer/JVM回帰と、同じ固定ZIPの既存Core/UI失敗カードの未完成場所表示は別証拠とし、native確認は既存QA27へ引き継ぐ。",
+  "reason": "保存失敗時の所有保全と利用者向けエラー文を変更する。独立レビューの作成ハンドルidentity/確認後path削除の2指摘に対し、実ハンドルを保持し、失敗・取消し出力の自動削除を停止する。Writer/JVM回帰と同じ固定ZIPの既存Core/UI失敗カードの未完成場所表示は別証拠とし、native確認は既存QA27へ引き継ぐ。",
   "cli_checks": [
-    "通常repoのSaveWriterFailureTestで旧sourceのB1/B2を2件の契約assertion失敗として保存し、修正後は衝突/差し替え/symlink/partial directory identity/通常cleanup/取消し/固定pinと新規retryを確認する。",
+    "旧sourceのB1/B2の2 assertion失敗と旧cleanup観察を保全。SaveWriterFailureTestで作成ハンドルのdev/ino・同bytesの別実体拒否・衝突/既存差し替え/symlink/directory identity保全・失敗/取消し残留・未完成manifest・固定pinと新規retryを確認。拒否済みdebugger/runtime interleaving実験は再試行せず、新規race再現は未実施。",
     "既存CaptureStoreSaveTest、SingleMp4SaveTest、ReplayCoreWireTestとplugin check/buildPlugin/verifyPluginStructure。CLI原型保全/既存unittest、Python3.14の管理check.py、clean committed HEADのchange_impact --run-testsを実施し固定Issue/PRへ実結果を記録する。",
     "JVM/構造検査の成功をnative UI表示・Case PASS・初期版完成・promotionへ転記しない。旧548の失敗assertion/QA観察を保持する。"
   ],
@@ -18,21 +18,22 @@
         "SAVE-04",
         "SAVE-05"
       ],
-      "change": "既存SAVE-FAIL-02のB1/B2修正: 作成成功後の所有追跡と未完成残留場所のエラー伝達",
+      "change": "既存SAVE-FAIL-02のB1/B2と独立レビュー2P1修正: 実作成descriptorのidentity/書込み/hash/fsyncを結び付け、失敗・取消し出力は自動削除せず未完成場所をエラー伝達",
       "preconditions": "独立レビュー・develop統合後の新candidate/source/標準ZIP/hashを固定。既存QA27のSAVE-FAIL-02-EMUの共通前提・所有fixture・安全なfault経路・GUI leaseを使用する。媒体/生ログ/実pathはprivateに保存し、利用者の既存出力は障害対象にしない。REAL保留と既存正式計画の人間延期は維持する。",
       "steps": [
-        "同一ZIPの製品classを差し替えず、同sourceのSaveWriterFailureTestと既存保存/固定retry/取消し回帰を限定JVMで実行する。実class由来/hashを確認し、作成衝突で外部markerのbytes/file identityが不変、作成後差し替え/symlinkとdirectory identity変更を保全、成功済み出力が不変、失敗公開なし、pin保持と同じFrozenCaptureの新規フォルダーretryを記録する。通常cleanup成功では残留場所を表示しない。mixed-video raw出力は既存SingleMp4SaveTestの失敗/取消し/成功回帰で確認する。",
+        "同一ZIPの製品classを差し替えず、同sourceのSaveWriterFailureTestと既存保存/固定retry/取消し回帰を限定JVMで実行する。実class由来/hashを確認し、実descriptorのdev/inoが作成物と一致し、別のintactな同bytesファイルは拒否されることを記録。作成衝突のmarker bytes/identity・既存差し替え/symlink・directory identity変更・成功済み出力を保全し、曖昧な対象を成功扱いにしない。失敗・取消しでは当該attempt出力が残り、作成済みsessionは実descriptor経由でcomplete:falseへ戻す（書込み不能時は成功保証なし）。pinと新規retryを維持。mixed-video rawも既存SingleMp4SaveTestで残留/非成功/retryを確認。従来の通常cleanup/取消しcleanup成功は本修正で成立しない。拒否済みruntime mutation実験を復元・迂回実行しない。",
         "QA27の同候補/同ZIPの既存SAVE-FAIL-02-EMUの保存失敗・再試行観察を共有する。安全な専用領域内の残留partialがある失敗では、実ToolWindow失敗欄に未完成の説明と実際の場所が届くことを確認し、完成扱い/成功通知がなく固定対象とretryが維持されることを確認する。安全なfault経路がない境界はblockedと理由/次操作を残す。Writerのmessage assertionやsource読解だけをnative表示のPASSにしない。"
       ],
-      "expected": "Writerが実作成した同じidentityの出力だけcleanupし、作成に失敗した衝突entry・所有不明・差し替え・symlink・既存完成物を保全する。実在する所有partialが残る場合だけ、未完成と場所を既存SaveFailure.message→SaveSnapshot.error→ToolWindow失敗欄へ伝える。同じ固定対象のretryは別新規フォルダーに成功する。",
+      "expected": "実作成descriptorを保存完了まで保持し、その実体へ書込み/hash/fsyncを行う。現pathをNOFOLLOWでopenした実descriptorのdev/inoが一致しなければ成功を拒否する。確認とunlinkは同一対象に結び付けられないため、失敗・取消し時にはfile/directoryのpath削除を一切行わない。衝突entry・所有不明・差し替え・symlink・既存完成物を保全し、同identityの実在する未完成フォルダーの場所を既存SaveFailure.message→SaveSnapshot.error→ToolWindow失敗欄へ伝える。取消しのmessageにも場所を保持するが、既存OFF/closeのUI抑止は維持する。残留による容量増加を許容する保全策であり、自動回収や全SAVE-FAIL-02のcleanup達成を主張しない。同じ固定対象のretryは別新規フォルダーに成功する。",
       "provenance": [
         "Issue197 / QA27 issuecomment-6107426612: 固定548標準ZIPのB1/B2が2 assertion失敗。旧観察とfailed baselineを保全する。",
         "548816045f5605f617f64418a2b052418e654ae2:docs/plugin-design.md 保存失敗契約、および同SHA:docs/verification/changes/issue-27.json SAVE-FAIL-02-EMU/REAL。原Case全文と既存正式136計画は変更しない。",
-        "同SHAのSaveWriter / ReplayCore.startSave / SaveSnapshot.error / ReplayToolWindowFactoryの既存エラー経路。L1旧IDE一時領域回収は本Case対象外。"
+        "同SHAのSaveWriter / ReplayCore.startSave / SaveSnapshot.error / ReplayToolWindowFactoryの既存エラー経路。L1旧IDE一時領域回収は本Case対象外。",
+        "独立レビュー固定0d65d9a6cd2bf60f5c00cf234afa71c6190c44b7/base548: 実作成ハンドルとの対応不足とcheck/delete間の2P1。inline4241068002は再独立レビューまで未解決。旧Case/136のcleanup契約・旧結果は変更せず、保全への変更を本Caseで明示してPMへ契約/計画binding判断を移管する。"
       ],
       "gpt": {
         "status": "pending",
-        "reason": "writerの通常repo回帰を実施するが、統合後の同ZIP製品class確認と実IDE表示は未実施。"
+        "reason": "通常repo回帰はwriter証拠として記録。新raceのruntime再現、同ZIP製品class実行、native UI表示、未試験ABIは未確認。独立レビュー・PMの契約/計画bindingとQA27確認までpending。"
       },
       "human": {
         "status": "pending",

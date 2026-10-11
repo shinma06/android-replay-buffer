@@ -1,6 +1,10 @@
 package io.github.shinma06.replaybuffer.core
 
 import com.google.gson.GsonBuilder
+import com.sun.jna.Library
+import com.sun.jna.Memory
+import com.sun.jna.Native
+import com.sun.jna.NativeLibrary
 import org.jcodec.codecs.h264.H264Utils
 import org.jcodec.common.model.Packet
 import org.jcodec.containers.mp4.MP4TrackType
@@ -8,16 +12,17 @@ import org.jcodec.containers.mp4.boxes.Edit
 import org.jcodec.containers.mp4.boxes.SampleEntry
 import org.jcodec.containers.mp4.muxer.MP4MuxerTrack
 import org.jcodec.containers.mp4.muxer.MP4Muxer
+import java.io.IOException
 import java.nio.ByteBuffer
 import java.nio.channels.Channels
 import java.nio.channels.FileChannel
 import java.nio.file.Files
 import java.nio.file.LinkOption.NOFOLLOW_LINKS
 import java.nio.file.Path
-import java.nio.file.StandardOpenOption.CREATE_NEW
 import java.nio.file.StandardOpenOption.READ
 import java.nio.file.StandardOpenOption.WRITE
 import java.nio.file.attribute.BasicFileAttributes
+import java.nio.file.attribute.PosixFilePermissions
 import java.time.Instant
 import java.util.Base64
 import java.util.UUID
@@ -34,29 +39,26 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
     fun write(capture: FrozenCapture, folder: Path, cancelled: () -> Boolean,
               publish: (Path, Path) -> Unit): SaveOutput {
         var partial: Path? = null
+        var complete: Path? = null
         var partialKey: Any? = null
-        val own = linkedMapOf<Path, Any>()
-        fun ownsPartial(): Boolean = partial?.let { directory ->
+        var manifest: Map<String, Any?>? = null
+        val own = linkedMapOf<Path, SaveOutputFile>()
+        fun ownsDirectory(directory: Path?): Boolean = directory?.let {
             runCatching {
                 partialKey != null && Files.isDirectory(directory, NOFOLLOW_LINKS) &&
                     fileKey(directory) == partialKey && directory.toRealPath() == directory
             }.getOrDefault(false)
         } ?: false
         fun checkOwned(path: Path) {
-            check(ownsPartial() && Files.isRegularFile(path, NOFOLLOW_LINKS) && fileKey(path) == own[path]) {
-                "未完成出力の所有を確認できません"
-            }
+            check(ownsDirectory(path.parent)) { "未完成フォルダーの所有を確認できません" }
+            own.getValue(partial!!.resolve(path.fileName)).verifyAt(path)
         }
         fun createFile(path: Path): FileChannel {
-            check(ownsPartial()) { "未完成フォルダーの所有を確認できません" }
-            val channel = FileChannel.open(path, CREATE_NEW, READ, WRITE, NOFOLLOW_LINKS)
-            try {
-                own[path] = fileKey(path)
-            } catch (e: Exception) {
-                channel.close()
-                throw e
-            }
-            return channel
+            check(ownsDirectory(partial)) { "未完成フォルダーの所有を確認できません" }
+            val output = SaveOutputFile.create(path)
+            own[path] = output
+            output.verifyAt(path)
+            return output.channel()
         }
         fun writer(path: Path) = Channels.newWriter(createFile(path), Charsets.UTF_8).buffered()
         var normalizationStarted: Long? = null
@@ -137,10 +139,10 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
             }
             checkSpace(estimate)
             val name = "replay-${Instant.now().toString().replace(':', '-')}-${UUID.randomUUID()}"
-            partial = Files.createDirectory(parent.resolve(".$name.partial"))
+            partial = Files.createDirectory(parent.resolve(".$name.partial"),
+                PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rwx------")))
             partialKey = fileKey(partial)
-            runCatching { Files.setPosixFilePermissions(partial, java.nio.file.attribute.PosixFilePermissions.fromString("rwx------")) }
-            val complete = parent.resolve(name)
+            complete = parent.resolve(name)
             fun file(name: String): Path = partial.resolve(name)
             val parts = mutableListOf<Map<String, Any?>>()
             val frameCoverage = mutableListOf<Pair<Long, Long>>()
@@ -449,7 +451,7 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
             }) }
             checkActive()
             checkSpace()
-            val hashes = own.keys.associate { checkActive(); checkOwned(it); it.fileName.toString() to sha256(it) }
+            val hashes = own.entries.associate { (path, output) -> checkActive(); checkOwned(path); path.fileName.toString() to output.hash() }
             checkActive()
             val videoHoles = mutableListOf<Map<String, String>>()
             var coveredUntil = 0L
@@ -477,7 +479,7 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
             val knownLoss = capture.gaps.any { (it.stream == "video" || it.stream == "clock") &&
                 it.intersects(capture.start, capture.end, capture.endUncertainty) }
             val videoIncomplete = parts.isEmpty() || losses.isNotEmpty() || knownLoss || videoHoles.isNotEmpty()
-            val manifest = mapOf("schema" to 2, "complete" to true, "save_id" to capture.id,
+            manifest = mapOf("schema" to 2, "complete" to true, "save_id" to capture.id,
                 "sequence_id" to capture.sequence, "generation" to capture.generation, "device" to capture.device,
                 "window_clock_epoch" to capture.windowClockEpoch,
                 "window_clock_known" to capture.windowKnown,
@@ -532,21 +534,32 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                     "clock_epoch" to it.clockEpoch, "generation" to it.generation, "display_held" to it.displayHeld,
                     "time_axis" to "sequence_ns", "new_frame_confirmed" to false) }, "files_sha256" to hashes)
             writer(file("session.json")).use { it.write(gson.toJson(manifest)) }
-            own.keys.forEach { checkActive(); checkOwned(it); FileChannel.open(it, WRITE, NOFOLLOW_LINKS).use { ch -> ch.force(true) }; checkActive() }
+            own.forEach { (path, output) -> checkActive(); checkOwned(path); output.channel().use { ch -> ch.force(true) }; checkActive() }
             checkSpace()
             checkActive()
             own.keys.forEach(::checkOwned)
             publish(partial, complete)
+            own.keys.forEach { checkOwned(complete.resolve(it.fileName)) }
             return SaveOutput(complete, if (videoIncomplete) listOf("video") else emptyList())
         } catch (e: Exception) {
-            // A path alone is not ownership: failed creation, replacement and symlinks must survive cleanup.
-            own.keys.toList().asReversed().forEach { path -> runCatching { checkOwned(path); Files.delete(path) } }
-            partial?.let { if (ownsPartial()) runCatching { Files.delete(it) } }
-            if (e is CancellationException) throw e
-            val retained = partial?.takeIf { ownsPartial() }
+            // No path-based deletion: ownership checks cannot make a subsequent unlink conditional on identity.
+            manifest?.let { value -> own[partial?.resolve("session.json")]?.let { output -> runCatching {
+                output.channel().use { channel ->
+                    channel.position(0)
+                    channel.truncate(0)
+                    val bytes = ByteBuffer.wrap(gson.toJson(value + ("complete" to false)).toByteArray(Charsets.UTF_8))
+                    while (bytes.hasRemaining()) channel.write(bytes)
+                    channel.force(true)
+                }
+            } } }
+            val retained = listOfNotNull(partial, complete).firstOrNull(::ownsDirectory)
+            val location = retained?.let { "。未完成の出力を保全しています: $it" } ?: ""
+            if (e is CancellationException) throw CancellationException("保存を取消しました$location").apply { initCause(e) }
             val reason = if (e is IllegalArgumentException || e is IllegalStateException) e.message ?: "保存できません"
                 else "保存に失敗しました（保存先・空き容量・アクセス権を確認してください）"
-            throw SaveFailure(retained, reason + (retained?.let { "。未完成の出力が残っています: $it" } ?: ""), e)
+            throw SaveFailure(retained, reason + location, e)
+        } finally {
+            own.values.forEach { it.close() }
         }
     }
 
@@ -576,6 +589,97 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
 
     private fun appJson(a: AppPeriod): Map<String, Any?> = mapOf("package" to a.packageName, "uid" to a.uid,
         "pids" to a.pids, "uid_exclusive" to a.uidExclusive, "from_elapsed_ns" to a.from?.toString(), "to_elapsed_ns" to a.to?.toString(), "clock_epoch" to a.epoch)
+}
+
+internal interface SaveFileDescriptors : Library {
+    fun open(path: String, flags: Int, vararg mode: Any): Int
+    fun close(descriptor: Int): Int
+}
+
+/** Keep the creation descriptor alive; /dev/fd (macOS) and /proc/self/fd (Linux) name that object. */
+internal class SaveOutputFile private constructor(private val descriptor: Int, private val descriptorPath: Path) : AutoCloseable {
+    private var closed = false
+    val key: Pair<Long, Long> = descriptorKey(descriptor)
+
+    fun channel(): FileChannel {
+        check(!closed)
+        return FileChannel.open(descriptorPath, READ, WRITE)
+    }
+
+    fun verifyAt(path: Path) {
+        check(!closed)
+        open(path, false).use { current ->
+            check(current.key == key) { "保存出力の実体が変更されています" }
+        }
+    }
+
+    fun hash(): String {
+        val digest = java.security.MessageDigest.getInstance("SHA-256")
+        channel().use { channel ->
+            channel.position(0)
+            val bytes = ByteBuffer.allocate(8192)
+            while (channel.read(bytes) >= 0) { bytes.flip(); digest.update(bytes); bytes.clear() }
+        }
+        return digest.digest().joinToString("") { "%02x".format(it) }
+    }
+
+    override fun close() {
+        if (!closed) {
+            closed = true
+            descriptors.close(descriptor)
+        }
+    }
+
+    companion object {
+        private val mac = System.getProperty("os.name") == "Mac OS X"
+        private val arm = System.getProperty("os.arch") in listOf("aarch64", "arm64")
+        private val descriptors by lazy {
+            Native.load("c", SaveFileDescriptors::class.java, mapOf(Library.OPTION_STRING_ENCODING to "UTF-8"))
+        }
+
+        private fun descriptorKey(descriptor: Int): Pair<Long, Long> {
+            // Darwin stat64 and Linux 64-bit stat expose dev/ino here; /dev/fd stat substitutes a device ID.
+            Memory(256).use { stat ->
+                val symbol = if (mac && !arm) "fstat\$INODE64" else "fstat"
+                if (NativeLibrary.getInstance("c").getFunction(symbol).invokeInt(arrayOf(descriptor, stat)) != 0)
+                    throw IOException("保存出力のfile identityを確認できません")
+                val mode = if (mac) stat.getShort(4).toInt() else stat.getInt(if (arm) 16 else 24)
+                check(mode and 0xf000 == 0x8000) { "保存出力の実体を確認できません" }
+                val device = if (mac) stat.getInt(0).toLong() and 0xffffffffL else stat.getLong(0)
+                return device to stat.getLong(8)
+            }
+        }
+
+        fun create(path: Path): SaveOutputFile = open(path, true)
+
+        private fun open(path: Path, create: Boolean): SaveOutputFile {
+            check(Native.POINTER_SIZE == 8 && System.getProperty("os.arch") in listOf("aarch64", "arm64", "amd64", "x86_64")) {
+                "この環境は保存出力の実体確認に対応していません"
+            }
+            // Native O_CREAT|O_EXCL returns the actual created handle; path metadata cannot supply its identity.
+            val (flags, directory) = when (System.getProperty("os.name")) {
+                "Mac OS X" -> (0x01000100 or if (create) 0x00000a02 else 0x4) to "/dev/fd"
+                "Linux" -> (0x000a0000 or if (create) 0x000000c2 else 0x800) to "/proc/self/fd"
+                else -> error("この環境は保存出力の実体確認に対応していません")
+            }
+            val descriptor = try { descriptors.open(path.toString(), flags, 0x180) } catch (e: LinkageError) {
+                throw IOException("保存出力の実体確認を利用できません", e)
+            }
+            if (descriptor < 0) {
+                if (Native.getLastError() == 17) throw java.nio.file.FileAlreadyExistsException(path.toString())
+                throw IOException("保存出力を開けません")
+            }
+            try {
+                return SaveOutputFile(descriptor, Path.of(directory, descriptor.toString()))
+            } catch (e: LinkageError) {
+                descriptors.close(descriptor)
+                throw IOException("保存出力の実体確認を利用できません", e)
+            } catch (e: Exception) {
+                descriptors.close(descriptor)
+                throw e
+            }
+        }
+    }
 }
 
 /** Playback proof is captured at acquisition; clock quality never authorizes source adjacency. */
