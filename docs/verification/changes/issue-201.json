@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "issue": 201,
+  "gui_required": false,
+  "reason": "trusted mainの正式計画へ実develop merge済みPR199/200の固定Caseを追加し、失敗・取消し保存attemptの保全だけをdesign・有効SAVE-FAIL-02 EMU/REAL・recovery責任へ整合する。製品/CLI/fixture/build/原Case/観察/failed checksを変更せず、GUI/device/installation/restartを行わない。mainへの製品promotionではない。",
+  "cli_checks": [
+    "python3 scripts/check.py: 管理/固定出典/責任改訂/共通gate/一覧/reuse回帰を実行し、固定HEADの実結果をIssue/PRへ記録する。",
+    "python3 -m unittest discover -s scripts/workflow -p test_responsibility_revision.py: 原135hash・直前136計画hash/entry・138 Case/207出典/REAL34、固定source、共有有効override、candidate-only/欠落/不一致拒否の限定回帰を確認する。合成観察は製品PASSではない。",
+    "python3 scripts/workflow/change_impact.py --base origin/main --run-tests: clean committed HEADで実行し、通常hooks/CIとの共通分類を確認する。CLI product_checkは分類が要求する場合に実施し、未変更suiteを理由なく反復しない。",
+    "実Git固定出典のinitial_stage_plan/historical_initial_sources構造projectionで全138/207・104 Agent/REAL34・9group/recovery57・新Case全2/3手順・原135/136entryと全延期の保全、未同期develop拒否を確認する。projectionは将来の同期状態の構造照合だけで、実candidate/標準ZIP/同ZIP製品class/native観察や受入PASSではない。"
+  ],
+  "cases": []
+}
