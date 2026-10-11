@@ -138,4 +138,131 @@ class CaptureClockTest {
         assertNull(clock.video(200_000, 6_000_200_000).sequence)
         assertEquals(6, clock.snapshot().size)
     }
+    @Test
+    fun fixedLogMapperMatchesLinearMappingAcrossBoundariesAndSurvivesClockMutation() {
+        val clock = CaptureClock()
+        val wallBase = 1_700_000_000_000_000_000L
+        fun compare() {
+            val mapper = clock.logMapper()
+            val snapshot = clock.snapshot()
+            val walls = snapshot.flatMap { sample ->
+                listOf(-20_000_001L, -20_000_000L, -1L, 0L, 1L, 20_000_000L, 20_000_001L,
+                    5_000_000_000L, 5_000_000_001L).map { sample.wall + it }
+            } + listOf(0L, Long.MIN_VALUE, Long.MAX_VALUE, wallBase + 1_500_000_000)
+            val hosts = snapshot.flatMap { sample ->
+                listOf(sample.sent - 1, sample.sent, sample.received, sample.received + 1,
+                    sample.received + 5_000_000_000, sample.received + 5_000_000_001)
+            } + listOf(0L, Long.MIN_VALUE, Long.MAX_VALUE)
+            for (wall in walls) for (host in hosts) {
+                val linear = runCatching { clock.log(wall, host) }
+                val indexed = runCatching { mapper(wall, host) }
+                assertEquals(linear.getOrNull(), indexed.getOrNull(), "wall=$wall host=$host")
+                assertEquals(linear.exceptionOrNull()?.javaClass, indexed.exceptionOrNull()?.javaClass)
+            }
+        }
+        compare() // Empty and entirely invalid snapshots.
+        clock.add("1", listOf(1_000_000_000L, 1_000_000_000L, wallBase + 1_000_000_000, 1_000_000_000),
+            1_000_000_000, 1_040_000_001, 1_040_000_001)
+        compare()
+        add(clock, 2_000_000_000)
+        add(clock, 2_000_000_000) // Duplicate source keys: low is last, high is first.
+        add(clock, 2_000_000_000, wall = wallBase + 1_999_000_000) // Valid local regression within one epoch.
+        add(clock, 3_000_000_000)
+        compare()
+        clock.boundary(3_000_200_000)
+        compare() // Closed epoch without a successor still counts as an ambiguous candidate.
+        add(clock, 4_000_000_000, wall = wallBase + 2_000_000_000)
+        add(clock, 5_000_000_000, wall = wallBase + 3_000_000_000)
+        compare() // Overlapping wall-clock epochs.
+        add(clock, 500_000_000, host = 6_000_000_000, boot = "2")
+        compare() // Known boot bridge.
+        add(clock, 200_000_000, host = 7_000_000_000, boot = "3", hostWall = 100_000_000_000)
+        compare() // Unknown boot bridge.
+        val frozen = clock.logMapper()
+        val expected = frozen(wallBase + 2_000_000_000, 3_000_200_000)
+        clock.boundary(8_000_000_000)
+        clock.clear()
+        add(clock, 20_000_000_000)
+        assertEquals(expected, frozen(wallBase + 2_000_000_000, 3_000_200_000))
+    }
+
+    @Test
+    fun maximumHistoryIndexReadsTwoSamplesPerRowAndPreservesInsertionOrderExtrema() {
+        val points = List(4096) { i ->
+            val wall = (i * 37L % 1024) * 1_000_000
+            ClockSample(0, "1", i.toLong(), i.toLong(), wall, i.toLong(), 0, 0, 0, 0, 0)
+        }
+        var reads = 0L
+        val counted = object : AbstractList<ClockSample>() {
+            override val size = points.size
+            override fun get(index: Int): ClockSample { reads++; return points[index] }
+        }
+        val index = ClockSourceIndex(counted)
+        assertTrue(reads < 4096L * 100, "bounded one-time construction: $reads")
+        reads = 0
+        for (i in 0 until 100_000) {
+            val wall = (i % 1026L - 1) * 1_000_000
+            val low = index.low(wall)
+            val high = index.high(wall)
+            if (i < 1026) {
+                assertEquals(points.lastOrNull { it.wall <= wall } ?: points.first(), low)
+                assertEquals(points.firstOrNull { it.wall >= wall } ?: points.last(), high)
+            }
+        }
+        assertEquals(200_000, reads) // No per-row traversal of the 4,096 source samples.
+    }
+
+    @Test
+    fun epochRangeIndexKeepsOverlapOrderAndPrunesThousandsOfUnsupportedEpochs() {
+        val ranges = List(4096) { i -> ((i * 37L % 4096) * 1000) to ((i * 37L % 4096) * 1000 + 100) }
+        val index = ClockEpochIndex(ranges)
+        for (i in 0 until 100_000) {
+            val source = (i % 4096L) * 1000 + 50
+            val matches = index.matches(source)
+            assertEquals(1, matches.size)
+            assertEquals(source / 1000, matches.single() * 37L % 4096)
+        }
+        val overlap = listOf(0L to 10L, Long.MIN_VALUE to Long.MAX_VALUE, 4L to 6L,
+            3L to 2L, Long.MAX_VALUE to Long.MAX_VALUE)
+        val tree = ClockEpochIndex(overlap)
+        for (source in listOf(Long.MIN_VALUE, -1, 0, 2, 3, 4, 5, 6, 10, 11, Long.MAX_VALUE)) {
+            assertEquals(overlap.indices.filter { source >= overlap[it].first && source <= overlap[it].second }, tree.matches(source))
+        }
+        assertTrue(ClockEpochIndex(emptyList()).matches(0).isEmpty())
+    }
+
+    @Test
+    fun manyEpochMapperMatchesLinearCandidatesAndPreservesExtremeRoundTripExceptions() {
+        val clock = CaptureClock()
+        for (i in 0 until 4096) {
+            clock.boundary(i * 100_000_000L)
+            add(clock, 1_000_000_000 + i * 100_000_000L, host = 1_000_000_000 + i * 100_000_000L)
+        }
+        val mapper = clock.logMapper()
+        for (sample in clock.snapshot().filterIndexed { i, _ -> i % 512 == 0 || i == 4095 }) {
+            for (delta in listOf(-20_000_001L, -20_000_000L, 0L, 20_000_000L, 20_000_001L)) {
+                for (host in listOf(sample.received, sample.received + 1, sample.received + 5_000_000_001)) {
+                    assertEquals(clock.log(sample.wall + delta, host), mapper(sample.wall + delta, host))
+                }
+            }
+        }
+        val sample = clock.snapshot().last()
+        repeat(10_000) { i ->
+            assertNull(mapper(sample.wall + 10_000_000_000 + i, sample.received).elapsed)
+        }
+        val overflow = CaptureClock()
+        overflow.add("1", listOf(Long.MAX_VALUE - 10, 0L, 0L, Long.MAX_VALUE - 10), 0, 0, 0)
+        val overflowMapper = overflow.logMapper()
+        assertEquals(overflow.log(10, 0), overflowMapper(10, 0))
+        kotlin.test.assertFailsWith<ArithmeticException> { overflow.log(11, 0) }
+        kotlin.test.assertFailsWith<ArithmeticException> { overflowMapper(11, 0) }
+        val extreme = CaptureClock()
+        assertTrue(extreme.add("1", listOf(0L, 0L, 0L, 0L), Long.MIN_VALUE, 0, 0))
+        val frozen = extreme.logMapper()
+        for (source in listOf(Long.MIN_VALUE, 0, Long.MAX_VALUE)) {
+            kotlin.test.assertFailsWith<IllegalArgumentException> { extreme.log(source, 0) }
+            kotlin.test.assertFailsWith<IllegalArgumentException> { frozen(source, 0) }
+        }
+    }
+
 }
