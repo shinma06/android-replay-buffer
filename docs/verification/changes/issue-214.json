@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "issue": 214,
+  "gui_required": false,
+  "reason": "導入方法改訂の旧計画を独立した固定hashへ結び付ける管理検証修正。製品・CLI・build・fixture・原Case・計画・責任契約・旧観察と失敗を変更せず、GUI/device/導入/再起動は不要。Caseなしのため新QAを作成せず、既存QA27/65とrelease10の残受入を保持する。",
+  "cli_checks": [
+    "python3 scripts/check.py",
+    "python3 scripts/workflow/product_check.py",
+    "python3 -m unittest discover -s scripts/workflow -p test_responsibility_revision.py",
+    "python3 scripts/workflow/change_impact.py --base origin/main --run-tests"
+  ],
+  "cases": []
+}

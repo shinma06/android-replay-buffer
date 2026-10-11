@@ -17,6 +17,7 @@ TOOLING = ('docs/', 'scripts/', '.github/', '.githooks/', '.agents/', '.claude/s
 GOP_AMENDMENT = 'docs/verification/amendments/gop-boundaries.json'
 INITIAL_STAGE = 'initial-agent'
 INITIAL_PLAN = 'docs/verification/amendments/initial-agent.json'
+INSTALLATION_PREVIOUS_PLAN_SHA256 = '13bd1e294519915d8c8a66be2770811a4d6b28465432061e7c2eae91a87fd8a3'
 CI_PREDECESSOR = '836da534938597bd8674a63adac0925139ba3fc6'
 CI_MERGE = '280c96cb2d93002152e57de7803b1eb03c8bc26b'
 CI_OBSERVED_SOURCE = '707d3b0d26f749ef7537ef83a25a38081af35d62'
@@ -392,7 +393,8 @@ def validate_responsibility_policy(policy):
         installation = revision['installation_revision']
         if (not isinstance(installation, dict) or set(installation) != {'issue', 'previous_plan_sha256'} or
                 installation['issue'] != 208 or '3:PLUGIN-LOAD' not in revision['overrides'] or
-                installation['previous_plan_sha256'] != canonical_hash(previous_installation_plan(policy))):
+                installation['previous_plan_sha256'] != INSTALLATION_PREVIOUS_PLAN_SHA256 or
+                canonical_hash(previous_installation_plan(policy)) != INSTALLATION_PREVIOUS_PLAN_SHA256):
             raise ValueError('Installation method revision must retain the exact prior plan')
     keys = []
     for group in revision['groups'].values():
