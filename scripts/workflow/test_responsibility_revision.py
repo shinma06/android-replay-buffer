@@ -1,9 +1,12 @@
 """Amended methods preserve observations; synthetic results are never product passes."""
 import copy
+from functools import cache
 import json
 from pathlib import Path
+import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from test_agent_loop import BASE, NEW
 import test_initial_acceptance as ti
@@ -448,6 +451,7 @@ class ResponsibilityRevisionTests(unittest.TestCase):
         revision['previous_plan_sha256'] = canonical_hash(self.original)
         revision['groups']['fixture']['cases'].append('3:PLUGIN-LOAD')
         previous = copy.deepcopy(self.policy)
+        self.enterContext(patch('verification.INSTALLATION_PREVIOUS_PLAN_SHA256', canonical_hash(previous)))
         revision['installation_revision'] = {'issue': 208, 'previous_plan_sha256': canonical_hash(previous)}
         revision['overrides']['3:PLUGIN-LOAD'] = {'case': {'steps': ['Terminal deploy; actual IDE load.']}}
         self.fixture.documents[f'{BASE}:{INITIAL_PLAN}'] = copy.deepcopy(self.policy)
@@ -535,6 +539,60 @@ class ResponsibilityRevisionTests(unittest.TestCase):
                 revision['overrides'].pop('3:PLUGIN-LOAD')
             with self.subTest(mutation=mutation), self.assertRaises(ValueError):
                 validate_responsibility_policy(bad)
+
+    def test_real_installation_plan_rejects_rehashed_prior_contract_changes(self):
+        root = Path(__file__).resolve().parents[2]
+        base = 'f6352e39e45ee33913c0ee79ca482d61531dffdc'
+        candidate = '707d3b0d26f749ef7537ef83a25a38081af35d62'
+        prior_ref = '280c96cb2d93002152e57de7803b1eb03c8bc26b'
+        policy = json.loads((root / INITIAL_PLAN).read_text())
+
+        @cache
+        def git(*args):
+            return subprocess.check_output(['git', *args], cwd=root, text=True).strip()
+
+        prior = json.loads(git('show', prior_ref + ':' + INITIAL_PLAN))
+        self.assertEqual(prior, previous_installation_plan(policy))
+        self.assertEqual('13bd1e294519915d8c8a66be2770811a4d6b28465432061e7c2eae91a87fd8a3',
+                         canonical_hash(prior))
+        validate_responsibility_policy(policy)
+        validate_responsibility_policy(prior)
+        self.assertEqual(policy, initial_stage_plan(base, candidate, git))
+        self.assertEqual(prior, initial_stage_plan(candidate, candidate, git))
+
+        # Only plan copies are overlaid; ancestor, regular-file and Case checks use real Git.
+        for mutation in ('current', 'group', 'override', 'common', 'hash'):
+            bad = copy.deepcopy(policy)
+            revision = bad['responsibility_revision']
+            if mutation == 'group':
+                revision['groups']['environment']['methods'] += ' changed'
+            elif mutation == 'override':
+                revision['overrides']['27:SAVE-FAIL-02-EMU']['case']['expected'] += ' changed'
+            elif mutation == 'common':
+                revision['common_requirements'][0] += ' changed'
+            elif mutation == 'hash':
+                revision['installation_revision']['previous_plan_sha256'] = 'f' * 64
+            self.assertEqual(policy['cases'], bad['cases'])
+            previous = previous_installation_plan(bad)
+
+            def overlay(*args):
+                if args == ('show', base + ':' + INITIAL_PLAN):
+                    return json.dumps(bad)
+                if args == ('show', candidate + ':' + INITIAL_PLAN):
+                    return json.dumps(bad if mutation == 'current' else previous)
+                return git(*args)
+
+            if mutation == 'current':
+                self.assertEqual(policy, initial_stage_plan(base, candidate, overlay))
+                continue
+            for rehash in ((False,) if mutation == 'hash' else (False, True)):
+                if rehash:
+                    revision['installation_revision']['previous_plan_sha256'] = canonical_hash(previous)
+                with self.subTest(mutation=mutation, rehash=rehash):
+                    with self.assertRaisesRegex(ValueError, 'exact prior plan'):
+                        validate_responsibility_policy(bad)
+                    with self.assertRaisesRegex(ValueError, 'exact prior plan'):
+                        initial_stage_plan(base, candidate, overlay)
 
     def test_extension_gate_and_listing_require_new_case_and_keep_all_five_steps(self):
         key = '186:CLOCK-BATCH-SAVE'
