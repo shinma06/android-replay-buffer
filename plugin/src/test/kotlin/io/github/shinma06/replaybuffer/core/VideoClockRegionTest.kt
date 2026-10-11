@@ -163,6 +163,6 @@ class VideoClockRegionTest {
         }
     }
 
-    private fun save(capture: FrozenCapture, root: Path) = SaveWriter().write(capture, root, { false }) { a, b -> Files.move(a, b) }
+    private fun save(capture: FrozenCapture, root: Path) = SaveWriter().write(capture, root, { false }) { publication -> Files.move(publication.partial, publication.complete) }
     private fun manifest(output: SaveOutput) = JsonParser.parseString(Files.readString(output.directory.resolve("session.json"))).asJsonObject
 }

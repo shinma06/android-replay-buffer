@@ -14,6 +14,40 @@ import kotlin.test.assertFalse
 
 class SavePublicationTest {
     @Test
+    fun heldDirectoryAcquisitionAndPublicationUseExactEntries() {
+        val root = Files.createTempDirectory("replay-held-publish-").toRealPath()
+        try { SaveOutputDirectory.open(root).use { parent ->
+            val partial = root.resolve(".partial")
+            parent.createDirectory(partial.fileName.toString()).use { staging ->
+                staging.requireEntries(emptyMap())
+                assertEquals(emptySet(), staging.entries())
+                for (invalid in listOf("", ".", "..", "../outside", "/outside", "bad\u0000name"))
+                    assertFailsWith<IllegalArgumentException> { staging.createFile(invalid) }
+                staging.createFile("proof").use { output ->
+                    output.channel().use { it.write(java.nio.ByteBuffer.wrap("proof".toByteArray())) }
+                    assertEquals(setOf("proof"), staging.entries())
+                    staging.requireEntries(mapOf("proof" to output))
+                    assertFailsWith<IllegalStateException> { staging.requireEntries(emptyMap()) }
+                    assertFailsWith<java.nio.file.FileAlreadyExistsException> { staging.createFile("proof") }
+                    staging.createFile("other").use { other ->
+                        assertFailsWith<IllegalStateException> { staging.requireEntries(mapOf("proof" to output)) }
+                        val outputs = mapOf("proof" to output, "other" to other)
+                        staging.requireEntries(outputs)
+                        assertEquals(setOf("proof", "other"), staging.entries())
+                        if (System.getProperty("os.name") == "Mac OS X") {
+                            val complete = root.resolve("completed")
+                            SavePublication(partial, complete, parent, staging) { staging.requireEntries(outputs) }.publish()
+                            assertEquals("proof", Files.readString(complete.resolve("proof")))
+                            assertFalse(Files.exists(partial))
+                            assertEquals(staging.key, parent.openChild("completed").use { it.key })
+                        }
+                    }
+                }
+            }
+        } } finally { Files.walk(root).use { it.sorted(java.util.Comparator.reverseOrder()).forEach(Files::deleteIfExists) } }
+    }
+
+    @Test
     fun macNativePublicationRejectsEveryExistingTargetAndConcurrentPublisher() {
         assumeTrue(System.getProperty("os.name") == "Mac OS X", "macOS native syscall is not executed on Linux CI")
         val root = Files.createTempDirectory("replay-publish-fixture-").toRealPath()
@@ -52,4 +86,12 @@ class SavePublicationTest {
             assertFalse(Files.readString(target.resolve("proof")).isEmpty())
         } finally { Files.walk(root).use { it.sorted(java.util.Comparator.reverseOrder()).forEach(Files::deleteIfExists) } }
     }
+    private fun publishCapture(partial: Path, complete: Path) {
+        SaveOutputDirectory.open(partial.parent).use { parent ->
+            parent.openChild(partial.fileName.toString()).use { staging ->
+                SavePublication(partial, complete, parent, staging) {}.publish()
+            }
+        }
+    }
+
 }
