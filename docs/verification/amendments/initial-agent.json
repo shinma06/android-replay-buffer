@@ -3564,6 +3564,400 @@
     "installation_revision": {
       "issue": 208,
       "previous_plan_sha256": "13bd1e294519915d8c8a66be2770811a4d6b28465432061e7c2eae91a87fd8a3"
+    },
+    "method_revision": {
+      "issue": 223,
+      "previous_plan_sha256": "993e76bb7a0bd6f9f864c2974b3ef4d4392665de51a4791c9cc0c094c394b50c",
+      "common_requirements": [
+        "目的→自製品の必要な証拠/精度→実行可能な最小方法の順で選ぶ。本改訂のgroup分担とCase固有expectedを有効条件とし、旧手順/回数/秒数/同時実行指定そのものは保証理由にしない。固定全139 Case/208出典と原plan/観察/失敗は保持し、方法変更を実行PASSにしない。 groupは関連する保証/方法の集合であり、本Case固有expectedに該当する目的だけを充足する。短時間保存へN超取得/長時間精度・回転・独立失敗retry等を新しい依存として加えない。",
+        "対象データ・内容/順序/帰属・時刻窓・unknown/loss説明・固定pin/retry・原子性/非上書き・所有/終了・実API接続を保つ。決定的production回帰は既知入力の真値と全対象を照合し、代表nativeは接続/操作/表示を確かめる。native成果へ未公開の全raw/config取得を一律要求しない。",
+        "別run/別工程の証拠を、同じ製品artifactと条件/保証の対応を確認して束ねる。独立保証を短い同一runへ集約しない。予定母数は実行前に明示し全予定対象の欠落/重複/unknownを照合する。失敗・識別不能・過大な不確かさ・未帰属・未実施は未完了。REAL固有の観察と利用者保留は合成/EMUから推定しない。 REALラベルだけで共通host/IDE/code保証を物理端末で反復しない。監査で分けた18共通Caseは同artifact証拠を共有し、16の実機固有残差は実機保留解除後に共有smokeへ束ねる。初期段階の34延期値は履歴/再開先として保持する。",
+        "不変artifact/製品入力/fixture/条件を実証した既存の成功事実だけを現条件へ対応付け、不足する事実だけ追加確認する。旧aggregate failは不変のまま保持事実を再評価できるが、未解決の自製品失敗を除外してはならない。方法revisionだけで新build/導入/全GUIを要求しない。"
+      ],
+      "groups": {
+        "environment": {
+          "cases": [
+            "3:PLUGIN-LOAD",
+            "13:SYNC-ENV",
+            "27:ENV-READY-REAL",
+            "27:ENV-READY-EMU",
+            "31:SYNC-ENV",
+            "41:SYNC-ENV"
+          ],
+          "disposition": "置換",
+          "purpose": "同梱依存とSDK絶対adbで、追加導入/PATH/runtime downloadなしにロード・取得・保存できる。",
+          "methods": "ZIP内helper/license/hashとSDK解決のproduction回帰を照合し、同ZIP実ロード・通常取得/Save・通常再起動を既存観察から共有する。PATHを空にする操作は不要。実起動のcommand/CodeSourceが同梱helperとSDK adbを参照し外部scrcpy/ffmpeg/Pythonを呼ばないことを出力/所有processへ結び付ける。",
+          "excluded": "外部installer/Settingsの全画面、全OS、20秒取得例、不要な環境改造を必須にしない。",
+          "evidence_keys": [
+            "integration"
+          ],
+          "preconditions": "固定candidate/source・同じZIP/実classへのbindingと既存証拠の条件を確認する。所有fixtureを使い、native操作には共有GUI lease/実tool権限・対象識別/復旧を整える。対象IDE/SDKの実ロード/起動。配布物内のhelper/codec/license/hashを照合できる。PLUGIN-LOAD単独でdevice/APK/取得を前提にしない。 REAL固有取得/USB/表示/負荷と利用者保留は実観察なしに完了としない。"
+        },
+        "markers": {
+          "cases": [
+            "27:FIXTURE-MARKERS-REAL",
+            "27:FIXTURE-MARKERS-EMU"
+          ],
+          "disposition": "置換",
+          "purpose": "画面IDとlog IDの真値、REQUEST/DRAW/FRAME_COMMIT・view/runの違いを識別し、非表示更新を表示済みとしない。",
+          "methods": "既知fixtureのinstrumentationで単一更新、同frame内複数更新/coalescing、view再生成、insets/縦横・navigationの座標影響を確認する。nativeで代表の表示更新と両logを照合する。各独立欠陥の最小入力を使い、AppA/B各5回・1秒間隔や全navigation組合せは固定しない。画像真値をlog順から作らず、曖昧・欠落・重複ID/unknownを検出する。",
+          "excluded": "Android描画engineの全網羅、固定クリック回数/間隔、601枚手読取りは不要。",
+          "evidence_keys": [
+            "fixture",
+            "integration"
+          ],
+          "preconditions": "固定candidate/source・同じZIP/実classへのbindingと既存証拠の条件を確認する。所有fixtureを使い、native操作には共有GUI lease/実tool権限・対象識別/復旧を整える。既知の独立画像ID/元logを持つfixture。hardware描画/commitの可否とview/runを記録する。非表示/識別不能を精度測定へ使わない。 REAL固有取得/USB/表示/負荷と利用者保留は実観察なしに完了としない。"
+        },
+        "precision": {
+          "cases": [
+            "13:SYNC-CLOCK",
+            "27:SYNC-PRECISION-REAL",
+            "27:SYNC-DRIFT-REAL",
+            "27:SYNC-PRECISION-EMU",
+            "27:SYNC-DRIFT-EMU",
+            "31:SYNC-CLOCK",
+            "41:SYNC-CLOCK"
+          ],
+          "disposition": "置換",
+          "purpose": "正常のp95≤100ms・最大≤250ms・中央値drift≤50ms・clock見積誤差≤20msと、実画像/両logの対応・欠落説明を保証する。",
+          "methods": "Clock/Storeの既知時刻fixtureで長時間進行・sample更新/4096履歴・offset変化・sleep/boot/壁時計境界・invalid/stale/unknownを決定的に検査する。nativeは通常Computer Useで識別可能な連番更新を開始/後半を含む観測区間から選んで取得する。中間や追加更新は目的に必要な範囲で選び、固定回数/間隔にしない。実行前に有限の予定event集合と区間を決め、実PTS/全関連frame/全phase/誤差とp95/最大/前後中央値を全件解析する。時計driftはその実観測区間と回帰の長時間条件を明記し、30分の実測や母集団の統計的保証とは呼ばない。判定に必要な精度を満たさないoracle誤差/欠落/識別不能を成功へ除外しない。画像番号を独立した既知画素の校正済み識別又は実画像確認で求め、色/parity/期待log順だけで推定しない。端末固有の経時差が未帰属なら当該目的へ追加観察する。",
+          "excluded": "30分/300event/各100という選んだ標本設計を廃し、短時間保存・回転・受取人Caseへ精度系列を連鎖必須にしない。小系列のp95を母集団の確率保証にしない。",
+          "evidence_keys": [
+            "measurement",
+            "visual_oracle",
+            "clock_duration"
+          ],
+          "preconditions": "固定candidate/source・同じZIP/実classへのbindingと既存証拠の条件を確認する。所有fixtureを使い、native操作には共有GUI lease/実tool権限・対象識別/復旧を整える。正常取得で画像ID/元PTS・両log/clockの独立真値と測定誤差を記録できるfixture。予定系列/区間/環境を固定する。時計/sleep/boot境界は既知時刻隔離fixtureで別に確認する。 REAL固有取得/USB/表示/負荷と利用者保留は実観察なしに完了としない。"
+        },
+        "recipient": {
+          "cases": [
+            "13:SYNC-RECIPIENT",
+            "27:SAVE-OUTPUT-REAL",
+            "27:SAVE-OUTPUT-EMU",
+            "31:SYNC-RECIPIENT",
+            "41:SYNC-RECIPIENT",
+            "135:LOG-ONLY-README"
+          ],
+          "disposition": "置換",
+          "purpose": "生成した全内容・時刻/欠落の説明と、受取人が標準player/editorで場面/両logを辿れること。",
+          "methods": "既知packet/config/元PTS/復号画素を持つ同ZIP production Writer回帰で、全対象packet/frame・単一MP4/1track・sample/index/headers/edit/実VFR・原寸/aspect/文字/色・null/MAX/held/terminal・後半故障を照合する。native保存物は全FILE/sample/両log/record ID/clock/window/manifestを独立readerで読み、実保存/glueに結び付ける。native未公開raw/configの全取得を別の必須条件にせず、既知入力の全byte/画素真値とnative成果の実構造/表示を分担する。標準playerのopen・短いPlay・前後seekと標準editorでREADMEから代表同ID/不足説明へ辿る操作は同条件の一回を共有する。製品違反と未帰属は未完了、根拠付き外部reader差は診断/制約として残す。",
+          "excluded": "全Play/精密seek/全GUI検索、外部readerの全実装、全native packet exportは不要。",
+          "evidence_keys": [
+            "file_integrity",
+            "content",
+            "interop"
+          ],
+          "preconditions": "固定candidate/source・同じZIP/実classへのbindingと既存証拠の条件を確認する。所有fixtureを使い、native操作には共有GUI lease/実tool権限・対象識別/復旧を整える。同artifactの保存物と既知入力回帰の成果。追加ツールを要しない標準player/editor。全保存物/対象集合と不足理由を読み取れる。新録画を必須にしない。 REAL固有取得/USB/表示/負荷と利用者保留は実観察なしに完了としない。"
+        },
+        "buffer": {
+          "cases": [
+            "13:SYNC-WINDOW",
+            "27:BUFFER-180-REAL",
+            "27:BUFFER-SHORT-REAL",
+            "27:SAVE-CONTINUE-REAL",
+            "27:BUFFER-180-EMU",
+            "27:BUFFER-SHORT-EMU",
+            "27:SAVE-CONTINUE-EMU",
+            "31:SYNC-WINDOW",
+            "41:SYNC-WINDOW"
+          ],
+          "disposition": "置換",
+          "purpose": "T/Nの実時間窓内で取得済み分を最大限保存し、窓外を足さず、prune/IDR prefix/pinと保存中の取得・次保存を保つ。",
+          "methods": "実N180で0<取得時間<Nの代表Save、取得時間>Nの代表Save、後続の重複Save/取得継続を別工程で確認する。短時間は約20秒例/≤20.000秒ではなく、実34秒等でも未満条件と全取得済み分/不足の正しさで判定する。長時間は180秒超の実取得と実T/窓所属で判定し、200秒上限を設けない。0/N直前/直後・N60/N180・IDR直後/途中/次IDR直前・VFR/容量/品質/固定retryを既知入力のproduction Store/Writer回帰へまとめ、cut≤1観測frame間隔＋時計誤差、mux/index≤1msを全対象FILEで照合する。代表nativeのFILEを同じ窓処理へ結び付ける。回転・同期系列は別目的の証拠を共有する。",
+          "excluded": "20秒目標、10秒後Save、1秒GOP、GOP6本別native証拠、300event依存を必須にしない。境界の欠落/精度/前方preroll非表示は除外しない。",
+          "evidence_keys": [
+            "regression",
+            "integration",
+            "window_and_gop"
+          ],
+          "preconditions": "固定candidate/source・同じZIP/実classへのbindingと既存証拠の条件を確認する。所有fixtureを使い、native操作には共有GUI lease/実tool権限・対象識別/復旧を整える。N/実snapshot T・取得済み区間/対象集合・clock/frames indexが判定可能な保存物。短時間はN未満、長時間はN超の実取得を各Caseで確認し、実GOP/IDR境界の精密入力は隔離回帰で用意する。 REAL固有取得/USB/表示/負荷と利用者保留は実観察なしに完了としない。"
+        },
+        "recovery": {
+          "cases": [
+            "13:SYNC-GAP",
+            "13:SYNC-PARTIAL",
+            "13:SYNC-JUMP",
+            "13:SYNC-LIFECYCLE",
+            "27:REALTIME-GAP-REAL",
+            "27:RECONNECT-REAL",
+            "27:PARTIAL-CAPTURE-REAL",
+            "27:LOG-SEPARATION-REAL",
+            "27:DISABLE-REAL",
+            "27:DISPOSE-REAL",
+            "27:ROTATION-REAL",
+            "27:VIDEO-POLICY-REAL",
+            "27:SAVE-FAIL-01-REAL",
+            "27:SAVE-FAIL-02-REAL",
+            "27:SAVE-FAIL-03-REAL",
+            "27:SAVE-FAIL-04-REAL",
+            "27:SAVE-FAIL-05-REAL",
+            "27:SAVE-FAIL-06-REAL",
+            "27:SAVE-FAIL-07-REAL",
+            "27:SAVE-FAIL-08-REAL",
+            "27:SAVE-FAIL-09-REAL",
+            "27:REALTIME-GAP-EMU",
+            "27:RECONNECT-EMU",
+            "27:PARTIAL-CAPTURE-EMU",
+            "27:LOG-SEPARATION-EMU",
+            "27:DISABLE-EMU",
+            "27:DISPOSE-EMU",
+            "27:ROTATION-EMU",
+            "27:VIDEO-POLICY-EMU",
+            "27:SAVE-FAIL-01-EMU",
+            "27:SAVE-FAIL-02-EMU",
+            "27:SAVE-FAIL-03-EMU",
+            "27:SAVE-FAIL-04-EMU",
+            "27:SAVE-FAIL-05-EMU",
+            "27:SAVE-FAIL-06-EMU",
+            "27:SAVE-FAIL-07-EMU",
+            "27:SAVE-FAIL-08-EMU",
+            "27:SAVE-FAIL-09-EMU",
+            "31:SYNC-GAP",
+            "31:SYNC-PARTIAL",
+            "31:SYNC-JUMP",
+            "31:SYNC-LIFECYCLE",
+            "41:SYNC-GAP",
+            "41:SYNC-PARTIAL",
+            "41:SYNC-JUMP",
+            "41:SYNC-LIFECYCLE",
+            "41:CORE-STARTUP",
+            "41:CORE-STALL",
+            "41:CORE-CLEANUP",
+            "41:CORE-SNAPSHOT",
+            "41:CORE-PUBLISH",
+            "71:LOG-REMAP-NORMAL-ZERO",
+            "71:LOG-REMAP-UNKNOWN-RETRY",
+            "78:CLOCK-RECEIPT-NORMAL",
+            "186:CLOCK-BATCH-SAVE",
+            "197:SAVE-FAILURE-OWNERSHIP",
+            "198:LOCAL-OWNERSHIP-RECOVERY"
+          ],
+          "disposition": "置換",
+          "purpose": "所有process/reader/generationの終了・復旧、gap/loss/unknown、固定失敗対象/pin/atomic非上書き・partial保全を保証する。",
+          "methods": "production class/fake SDK/loopback/所有filesystemで全fault・race・取消し・bytes/境界・固定retryを検査する。実IDEの代表取得/通常再接続、OFF/通常close、通常Save/不足・理由表示を共有する。実在する所有partialのSaveFailure.message→SaveSnapshot.error→実UI consumerと同固定対象retryは、同ZIP production classの隔離SDK/Service/Wire/public経路で実行できる。文字列assert/sourceだけでは伝播の証拠にしない。nativeは安全な代表失敗の理由/成功なしと通常保存/表示の接続を束ね、staging故障の新runtime mutationや実fault全種を要求しない。断の秒数/窓Nは操作可能な条件で選び、断を詰めない実T/sequence/gapとN超時のpruneを既知時刻回帰へ結び付ける。時計/sleep/boot faultの内部境界は回帰、実IDEは代表復旧表示と保存を別工程へ束ねる。remote process/forward/readerの実停止を確認し、識別済みjournal/JARの持越し→通常再接続/reopenの回収を許す。未知所有物・live/別project/root・完成出力を保全し、失敗保存attemptを取得root回収と混同しない。OS atomic APIは実callの競合保全証拠が必要。",
+          "excluded": "全faultの実端末注入・20秒完全断/同run集中・remote全file瞬時消失を必須にしない。known pendingの保全は不正なprocess残留の免除ではない。",
+          "evidence_keys": [
+            "regression",
+            "integration"
+          ],
+          "preconditions": "固定candidate/source・同じZIP/実classへのbindingと既存証拠の条件を確認する。所有fixtureを使い、native操作には共有GUI lease/実tool権限・対象識別/復旧を整える。所有/世代/時刻と固定要求/出力を照合できるproduction class/fake SDK/loopback/所有filesystem。実接続は代表工程に必要な専用対象のみ。同boot断と新boot復旧を区別し、共有ADB/host時計/sleepを操作しない。実denialや安全経路がない部分は迂回せず不足に残す。 REAL固有取得/USB/表示/負荷と利用者保留は実観察なしに完了としない。"
+        },
+        "ui-settings": {
+          "cases": [
+            "27:INITIAL-OFF-REAL",
+            "27:ENABLE-CONNECTED-REAL",
+            "27:ENABLE-WAIT-REAL",
+            "27:STATE-RESTORE-REAL",
+            "27:SETTINGS-APPLY-REAL",
+            "27:SETTINGS-INVALID-REAL",
+            "27:APP-SELECTION-REAL",
+            "27:UI-LIFECYCLE-REAL",
+            "27:INITIAL-OFF-EMU",
+            "27:ENABLE-CONNECTED-EMU",
+            "27:ENABLE-WAIT-EMU",
+            "27:STATE-RESTORE-EMU",
+            "27:SETTINGS-APPLY-EMU",
+            "27:SETTINGS-INVALID-EMU",
+            "27:APP-SELECTION-EMU",
+            "27:UI-LIFECYCLE-EMU",
+            "32:UI-12-01",
+            "32:UI-12-02",
+            "32:UI-12-03",
+            "32:UI-12-04",
+            "32:UI-12-05",
+            "32:UI-12-06",
+            "32:UI-12-07",
+            "32:UI-12-08",
+            "42:UI-12-01",
+            "42:UI-12-02",
+            "42:UI-12-03",
+            "42:UI-12-04",
+            "42:UI-12-05",
+            "42:UI-12-06",
+            "42:UI-12-07",
+            "42:UI-12-08",
+            "60:APP-MANUAL-GUIDANCE-EMU",
+            "60:APP-MANUAL-GUIDANCE-REAL",
+            "121:EMPTY-DESTINATION-GUIDANCE",
+            "173:PACKAGE-INPUT-GUIDANCE",
+            "216:SETTINGS-WIDTH-RECOVERY"
+          ],
+          "disposition": "置換",
+          "purpose": "一括Apply/Cancel/設定復元、対象の正しい解決/帰属、最新状態/EDT/dispose・可読性/accessibilityを保証する。",
+          "methods": "Settings/Service/UIのproduction回帰で数値/書式境界・不正部分適用・stale/race・手動優先/自動解除・SDK/複数端末/UID/PIDを検査する。実IDEで代表Apply/Cancel/不正入力・取得OFF/ON・通常close/reopenの復元、完了/失敗場所通知とcopy/folder接続を共有する。Applyの実Store反映と非同期disk flushを区別し、通常close後のXML/再open設定を確認する。UI-OFF直後disk-ONだけを設定消失と断定しない。Tab/Help/狭幅へ戻す/実表示の可読性は該当Caseで確認し、theme/DPIは製品表示に影響する代表条件だけ共有する。全OS/dialog内部入力を列挙しない。 初期OFF/180等の既定値はproduction Store/factory/serialization回帰の真値と、同classを読む実UI/取得OFFの接続証拠を束ねられる。custom復元値を既定180の実観察とは呼ばず、初期OFFだけのため新profile/再導入を要求しない。",
+          "excluded": "Apply/SaveAll直後のdisk即時一致、全UI組合せ、close前のflush deadline・全native数値入力を不要とする。通常close後の不一致/再取得/所有thread残留は未完了。",
+          "evidence_keys": [
+            "regression",
+            "integration"
+          ],
+          "preconditions": "固定candidate/source・同じZIP/実classへのbindingと既存証拠の条件を確認する。所有fixtureを使い、native操作には共有GUI lease/実tool権限・対象識別/復旧を整える。同classのStore/factory/Service/実UIを識別できる条件。OFF編集/初期既定値はdevice/APK/取得中faultを前提にしない。取得中Apply/実Run解決など固有の対象は該当Caseに必要な範囲だけ用意する。元設定/完成出力を保全し通常close/reopenで復元確認できる。 REAL固有取得/USB/表示/負荷と利用者保留は実観察なしに完了としない。"
+        },
+        "video": {
+          "cases": [
+            "45:VFR-IDLE",
+            "45:VFR-WINDOW",
+            "45:VFR-TAIL",
+            "45:VFR-BREAK",
+            "45:VFR-LIFECYCLE",
+            "45:VFR-RECIPIENT",
+            "49:BOUNDARY-TAIL",
+            "49:BOUNDARY-ACQUIRE",
+            "52:CLOCK-VIDEO-REGIONS",
+            "52:CLOCK-VIDEO-UNKNOWN",
+            "85:CLOCK-UNCERTAIN-VIDEO-PLAYBACK",
+            "143:MIXED-VIDEO-LEVEL"
+          ],
+          "disposition": "置換",
+          "purpose": "VFR/clock unknown/decodeRunと全対象内容/時刻・単一MP4/原寸/Level・失敗pinを保証する。",
+          "methods": "既知packet/config/元PTS/復号画素を持つ同ZIP production Writer回帰で、全対象packet/frame・単一MP4/1track・sample/index/headers/edit/実VFR・原寸/aspect/文字/色・null/MAX/held/terminal・後半故障を照合する。native保存物は全FILE/sample/両log/record ID/clock/window/manifestを独立readerで読み、実保存/glueに結び付ける。native未公開raw/configの全取得を別の必須条件にせず、既知入力の全byte/画素真値とnative成果の実構造/表示を分担する。標準playerのopen・短いPlay・前後seekと標準editorでREADMEから代表同ID/不足説明へ辿る操作は同条件の一回を共有する。製品違反と未帰属は未完了、根拠付き外部reader差は診断/制約として残す。 内部の全break種・前/中/後・unknown/整数・PTS reset/config/geometry/後半欠落は決定的回帰。実IDEでは通常/静止/実回転混在Saveと通常再接続を別工程で観察できる。通常と再接続前後に識別可能な陽性eventを予定し、全予定対象を実窓内で照合する。N300/通常3/PRE3/POST3・9/18phaseは固定せず、全phaseと欠落検出能力は保つ。",
+          "excluded": "全境界native故障・全精密seek・生config同native成果必須・30分系列・同一短時間run/240秒余裕を除外する。",
+          "evidence_keys": [
+            "regression",
+            "file_integrity",
+            "content",
+            "interop"
+          ],
+          "preconditions": "固定candidate/source・同じZIP/実classへのbindingと既存証拠の条件を確認する。所有fixtureを使い、native操作には共有GUI lease/実tool権限・対象識別/復旧を整える。同ZIPのproduction Store/Writerへ既知packet/config/PTS/画素真値と全対象集合を入力できる。nativeには通常/静止/実回転混在/再接続など該当目的の代表保存物を使う。通常/再接続前後の陽性eventが必要なCaseはその予定集合を固定する。 REAL固有取得/USB/表示/負荷と利用者保留は実観察なしに完了としない。"
+        },
+        "log-reader": {
+          "cases": [
+            "106:LOG-READER-PARTITION",
+            "106:LOG-READER-COMPATIBILITY",
+            "106:LOG-READER-RECOVERY-STOP"
+          ],
+          "disposition": "置換",
+          "purpose": "main/非main readerの取り込み範囲・identity/UID/順序/二重取込防止と有限probe/復旧/実停止を保証する。",
+          "methods": "production Protocol/Wireでheader20/24/28/未知・fragment/EOF/invalid/binary/payload/legacy・両reader故障/期限/raceを検証する。nativeではmainと読める非mainへ識別可能な陽性入力を有限集合で予定し、全予定行とdevice/app共通identityを全FILE照合する。同じ取得のOFF/通常再接続と実reader停止を共有する。100入力/300phaseは固定せず、少数でもmain/nonmainの区別と二重/欠落を検出する入力を残す。",
+          "excluded": "外部全buffer刺激、100/300統計回数、全reader faultのnative再注入は不要。読めないbufferを読めたとは主張しない。",
+          "evidence_keys": [
+            "regression",
+            "integration"
+          ],
+          "preconditions": "固定candidate/source・同じZIP/実classへのbindingと既存証拠の条件を確認する。所有fixtureを使い、native操作には共有GUI lease/実tool権限・対象識別/復旧を整える。同ZIP Protocol/Wireの既知header/lid/UID/payload/fragment/faultと、読み取り可能なmain/非mainに有限の識別可能な陽性入力を与えられる専用対象。予定集合と全行を照合し未知/未読bufferは未確認とする。 REAL固有取得/USB/表示/負荷と利用者保留は実観察なしに完了としない。"
+        }
+      },
+      "overrides": {
+        "13:SYNC-GAP": {
+          "case": {
+            "expected": "設定Nの実時間窓の取得済み区間と観測gap、same sequence。長い切断中T凍結、再接続後現在窓で旧範囲prune。gapを詰めない。端末切断瞬間と検出確定を混同しない。"
+          }
+        },
+        "27:BUFFER-SHORT-REAL": {
+          "case": {
+            "expected": "180秒満了を待たず取得済みのN未満の期間を最大限保存。切出し誤差は#13値で測定し、未取得期間を成功としない。 SYNC-WINDOW: 取得済み分を最大限保存。窓を過去へ広げず、同じ区間の重複可、取得停止なし。cut誤差<=1観測frame間隔+時計誤差、mux/index丸め<=1ms。prerollは別表示。"
+          }
+        },
+        "27:REALTIME-GAP-REAL": {
+          "case": {
+            "expected": "窓は設定Nの実時間で取得分とgapを区別する。取得秒数60を集めるため過去へ拡張せず、同sequenceで空白/理由を保存する。 SYNC-GAP: 設定Nの実時間窓の取得済み区間と観測gap、same sequence。長い切断中T凍結、再接続後現在窓で旧範囲prune。gapを詰めない。端末切断瞬間と検出確定を混同しない。"
+          }
+        },
+        "27:RECONNECT-REAL": {
+          "case": {
+            "expected": "切断前窓は保存可能。再接続で即時復旧試行、自動取得再開。同sequence、空白を保持、既保存の上書きなし。 SYNC-GAP: 設定Nの実時間窓の取得済み区間と観測gap、same sequence。長い切断中T凍結、再接続後現在窓で旧範囲prune。gapを詰めない。端末切断瞬間と検出確定を混同しない。"
+          }
+        },
+        "27:SYNC-DRIFT-REAL": {
+          "case": {
+            "expected": "開始/末尾のずれを実測し採用精度内。時計変化/epoch/空白を誤対応しない。共有端末時計は変更しない。 SYNC-CLOCK: 通常p95<=100ms、最大<=250ms、中央値drift<=50ms、clock見積誤差<=20ms。全欠落/uncertainも集計し隠さない。100ms等は未実測の設計基準。 SYNC-JUMP: 境界跨ぎ補間なし、曖昧logはelapsed/window nullと推定幅。正常precisionを偽装しない。sequence/旧履歴/pinは保持、新bootを旧elapsedとして計算しない。失った容量上限区間はloss。 SYNC-JUMPの結果はこの専用実機だけに帰属する。正常精度と時計境界試験を別に集計し、安全に再現・測定できない操作を完了扱いしない。"
+          }
+        },
+        "27:SAVE-FAIL-08-REAL": {
+          "case": {
+            "expected": "完全切断は確定時刻Tの[T-N,T]を凍結。再接続は現在Tへ戻して古い窓外を期限処理、固定要求参照は維持。同sequence。片系障害ではTを凍結しない。 SYNC-GAP: 設定Nの実時間窓の取得済み区間と観測gap、same sequence。長い切断中T凍結、再接続後現在窓で旧範囲prune。gapを詰めない。端末切断瞬間と検出確定を混同しない。"
+          }
+        },
+        "27:BUFFER-SHORT-EMU": {
+          "case": {
+            "expected": "180秒満了を待たず取得済みのN未満の期間を最大限保存。切出し誤差は#13値で測定し、未取得期間を成功としない。 SYNC-WINDOW: 取得済み分を最大限保存。窓を過去へ広げず、同じ区間の重複可、取得停止なし。cut誤差<=1観測frame間隔+時計誤差、mux/index丸め<=1ms。prerollは別表示。"
+          }
+        },
+        "27:REALTIME-GAP-EMU": {
+          "case": {
+            "expected": "窓は設定Nの実時間で取得分とgapを区別する。取得秒数60を集めるため過去へ拡張せず、同sequenceで空白/理由を保存する。 SYNC-GAP: 設定Nの実時間窓の取得済み区間と観測gap、same sequence。長い切断中T凍結、再接続後現在窓で旧範囲prune。gapを詰めない。端末切断瞬間と検出確定を混同しない。 同じbootのtransport断を観察する。AVD停止/起動によるboot変更をこの切断試験の代用にしない。"
+          }
+        },
+        "27:RECONNECT-EMU": {
+          "case": {
+            "expected": "切断前窓は保存可能。再接続で即時復旧試行、自動取得再開。同sequence、空白を保持、既保存の上書きなし。 SYNC-GAP: 設定Nの実時間窓の取得済み区間と観測gap、same sequence。長い切断中T凍結、再接続後現在窓で旧範囲prune。gapを詰めない。端末切断瞬間と検出確定を混同しない。 同じbootのtransport断を観察する。AVD停止/起動によるboot変更をこの切断試験の代用にしない。"
+          }
+        },
+        "27:SYNC-DRIFT-EMU": {
+          "case": {
+            "expected": "開始/末尾のずれを実測し採用精度内。時計変化/epoch/空白を誤対応しない。共有端末時計は変更しない。 SYNC-CLOCK: 通常p95<=100ms、最大<=250ms、中央値drift<=50ms、clock見積誤差<=20ms。全欠落/uncertainも集計し隠さない。100ms等は未実測の設計基準。 SYNC-JUMP: 境界跨ぎ補間なし、曖昧logはelapsed/window nullと推定幅。正常precisionを偽装しない。sequence/旧履歴/pinは保持、新bootを旧elapsedとして計算しない。失った容量上限区間はloss。 SYNC-JUMPの結果はこの専用Emulatorだけに帰属する。正常精度と時計境界試験を別に集計し、安全に再現・測定できない操作を完了扱いしない。"
+          }
+        },
+        "27:SAVE-FAIL-08-EMU": {
+          "case": {
+            "expected": "完全切断は確定時刻Tの[T-N,T]を凍結。再接続は現在Tへ戻して古い窓外を期限処理、固定要求参照は維持。同sequence。片系障害ではTを凍結しない。 SYNC-GAP: 設定Nの実時間窓の取得済み区間と観測gap、same sequence。長い切断中T凍結、再接続後現在窓で旧範囲prune。gapを詰めない。端末切断瞬間と検出確定を混同しない。 同じbootのtransport断を観察する。AVD停止/起動によるboot変更をこの切断試験の代用にしない。"
+          }
+        },
+        "31:SYNC-GAP": {
+          "case": {
+            "expected": "設定Nの実時間窓の取得済み区間と観測gap、same sequence。長い切断中T凍結、再接続後現在窓で旧範囲prune。gapを詰めない。端末切断瞬間と検出確定を混同しない。"
+          }
+        },
+        "41:SYNC-GAP": {
+          "case": {
+            "expected": "設定Nの実時間窓の取得済み区間と観測gap、same sequence。長い切断中T凍結、再接続後現在窓で旧範囲prune。gapを詰めない。端末切断瞬間と検出確定を混同しない。"
+          }
+        },
+        "78:CLOCK-RECEIPT-NORMAL": {
+          "case": {
+            "expected": "同ZIPの限定JVMで有効な送信〜受信区間に整合するvideo/logは同elapsed/sequenceへ対応し、支持範囲外・invalid/stale・epoch/boot/曖昧な真のunknownを保持する。受信済み帰属/retainedAtや固定retryを再評価せず、到着時に既知の新対象行はdevice/app双方へ残る。実IDEでは予定した識別可能な正常eventの全phase行と保存表示が同buildへ対応する。JVMとGUI双方の証拠が必要で、旧Caseの正式系列・未達・REAL保留を維持する。"
+          }
+        },
+        "85:CLOCK-UNCERTAIN-VIDEO-PLAYBACK": {
+          "case": {
+            "expected": "動画がある成功保存はMP4ちょうど1件。sourceのpositive acquisition factsが示す連続区間では時計確度に関わらず全元frame/PTS/codec/VFRを保ち、再接続/PTS reset/config境界は同一file内の独立media/presentation区間で表す。時計unknown/MAX/null、元gap/両log/不足・共有retention/UI/tailとmapper閾値は維持し、個別に確定できるframe情報を区間のunknownへまとめて失わない。既知gapは空edit、不明gapはactual duration nullとauthoring配置を区別し、末尾source duration nullとheld/tickを観測coverageへ加算しない。全対象の後半欠落やdecoder prefix不足を部分成功・複数MP4fallbackで隠さずFAILED+pin。元frame/config/raw・全画素/実duration/対応表・固定retryと1MP4を実質検査する。予定した通常/再接続前後の全event/全phaseと全対象FILE/内容を照合し、代表player smoke・同ZIPへのbindingを確認する。精度系列は独立したprecision目的へ分担し、旧source PASSで代用しない。"
+          }
+        },
+        "41:CORE-CLEANUP": {
+          "case": {
+            "expected": "persistent pendingが引継がれ、成功した記録だけ消える。共有ADB/未知rootは保全。 OFFは取得を開始せず検証済み所有cleanupだけを再試行し、初回OFFのADBなしを維持する。 所有process/forward/reader終了と設定復元を確認し、識別済みpending journal/remote JARは保全と通常reopen/再接続での回収を別に判定する。全file即時消失は要求しない。"
+          }
+        },
+        "27:DISABLE-EMU": {
+          "case": {
+            "expected": "所有取得処理を終了確認し未保存バッファを破棄。完成済み出力は残る。設定編集可で、再ON時に破棄済みデータが復活しない。 SYNC-LIFECYCLE: 回転でクラッシュ/既存成果物破損/復旧不能なし。pinした同じT/Nをretryし取得継続。所有process終了を確認し未保存破棄、dispose後UI更新なし。 所有process/forward/reader終了と設定復元を確認し、識別済みpending journal/remote JARは保全と通常reopen/再接続での回収を別に判定する。全file即時消失は要求しない。"
+          }
+        },
+        "27:DISABLE-REAL": {
+          "case": {
+            "expected": "所有取得処理を終了確認し未保存バッファを破棄。完成済み出力は残る。設定編集可で、再ON時に破棄済みデータが復活しない。 SYNC-LIFECYCLE: 回転でクラッシュ/既存成果物破損/復旧不能なし。pinした同じT/Nをretryし取得継続。所有process終了を確認し未保存破棄、dispose後UI更新なし。 所有process/forward/reader終了と設定復元を確認し、識別済みpending journal/remote JARは保全と通常reopen/再接続での回収を別に判定する。全file即時消失は要求しない。"
+          }
+        },
+        "27:DISPOSE-EMU": {
+          "case": {
+            "expected": "自分の取得/保存/購読だけ終了、dispose後にUI更新/通知/再開なし。完成済み保全、再開で二重取得なし。 SYNC-LIFECYCLE: 回転でクラッシュ/既存成果物破損/復旧不能なし。pinした同じT/Nをretryし取得継続。所有process終了を確認し未保存破棄、dispose後UI更新なし。 所有process/forward/reader終了と設定復元を確認し、識別済みpending journal/remote JARは保全と通常reopen/再接続での回収を別に判定する。全file即時消失は要求しない。"
+          }
+        },
+        "27:DISPOSE-REAL": {
+          "case": {
+            "expected": "自分の取得/保存/購読だけ終了、dispose後にUI更新/通知/再開なし。完成済み保全、再開で二重取得なし。 SYNC-LIFECYCLE: 回転でクラッシュ/既存成果物破損/復旧不能なし。pinした同じT/Nをretryし取得継続。所有process終了を確認し未保存破棄、dispose後UI更新なし。 所有process/forward/reader終了と設定復元を確認し、識別済みpending journal/remote JARは保全と通常reopen/再接続での回収を別に判定する。全file即時消失は要求しない。"
+          }
+        },
+        "198:LOCAL-OWNERSHIP-RECOVERY": {
+          "case": {
+            "expected": "旧ownerのPID/start記録だけで削除せず、lock取得・旧process不在または現在processの開始identityが確実に異なること・namespace/descriptor/root/ring/作成fileのfileKey/作成時刻/所有者/権限一致を確認した対象だけを回収する。未知/曖昧/生存/変更/symlink/別project/完成出力は保全する。正常取得/Save/pin/disable/dispose/設定復元とremote cleanupを維持する。legacy temp全掃除と跨IDE retry data復元は提供しない。 新規登録は固定枠1件の耐久writeをpayloadより先に行い、保持全件のprobe/serialize/rewriteを行わない。削除成功済みUUID枠だけを再利用し、記録成長は既存entry/byte上限以内。旧schema1記録は自動変換せず保全する。 所有process/forward/reader終了と設定復元を確認し、識別済みpending journal/remote JARは保全と通常reopen/再接続での回収を別に判定する。全file即時消失は要求しない。"
+          }
+        },
+        "71:LOG-REMAP-UNKNOWN-RETRY": {
+          "case": {
+            "expected": "限定JVMで境界へ交差し得る行・真の不明/実lossを保持し、不明帰属をfalseへ変えない。内部要求ID、固定T/N/対象、失敗前record_id/帰属/集合と再試行後出力の厳密な不変性は同ZIP製品classのJVM証拠で確認する。代表glueの実public経路では表示可能なsequenceId/固定区間/N/端末/app対象と再試行後session/JSONLを照合し、識別可能な失敗前eventの包含と固定窓外の後続eventの除外、完成表示を観察する。画面にない要求IDや初回失敗前の完成集合を証拠にしない。Nを広げた別captureでの元帰属の保持と収集/CLI/動画保証もJVM/既存回帰で保全する。 失敗場所と固定retryの内部伝播は同ZIP production classの隔離public経路へ分担し、実IDEの代表正常保存/表示と安全な失敗表示へbindingする。実stagingのruntime mutationを必須にしない。"
+          }
+        },
+        "197:SAVE-FAILURE-OWNERSHIP": {
+          "case": {
+            "expected": "実作成descriptorを保存完了まで保持し、その実体へ書込み/hash/fsyncを行う。現pathをNOFOLLOWでopenした実descriptorのdev/inoが一致しなければ成功を拒否する。確認とunlinkは同一対象に結び付けられないため、失敗・取消し時にはfile/directoryのpath削除を一切行わない。衝突entry・所有不明・差し替え・symlink・既存完成物を保全し、同identityの実在する未完成フォルダーの場所を既存SaveFailure.message→SaveSnapshot.error→ToolWindow失敗欄へ伝える。取消しのmessageにも場所を保持するが、既存OFF/closeのUI抑止は維持する。残留による容量増加を許容する保全策であり、自動回収や全SAVE-FAIL-02のcleanup達成を主張しない。同じ固定対象のretryは別新規フォルダーに成功する。 stagingの取得条件は、保持したcanonical parentと同位置のdirectory identity、effective UID、0700、macOSの拡張ACL不在、初期の空entry一覧、最初のO_CREAT|O_EXCL出力と全entry照合。mkdirの作成inodeそのものの原子的証明ではない。子出力は保持stagingへの単一名openatで作成し、公開は既存Core publishing lock内で保持parentへのrenameatx_np(RENAME_EXCL)を使用する。公開前後で全entry名と保持file descriptorのdev/inoを照合し、unknown siblingを成功に含めない。観測後の任意の同UID編集を防ぐ隔離は保証しない。 失敗場所と固定retryの内部伝播は同ZIP production classの隔離public経路へ分担し、実IDEの代表正常保存/表示と安全な失敗表示へbindingする。実stagingのruntime mutationを必須にしない。"
+          }
+        },
+        "186:CLOCK-BATCH-SAVE": {
+          "case": {
+            "expected": "時計履歴のgroup/next/neighbor探索を行ごとに全走査しない。最大履歴と多数行、境界・曖昧性・未知・例外、元の窓/order/ID/帰属/pinを同ZIP製品classで確認する。同じ新候補の代表glueの実public経路では保存完了と継続取得、失敗した固定対象のretryが従来どおり動作する。実停止時間/欠落改善は観測した証拠がある範囲だけ報告する。 失敗場所と固定retryの内部伝播は同ZIP production classの隔離public経路へ分担し、実IDEの代表正常保存/表示と安全な失敗表示へbindingする。実stagingのruntime mutationを必須にしない。"
+          }
+        }
+      }
     }
   }
 }
