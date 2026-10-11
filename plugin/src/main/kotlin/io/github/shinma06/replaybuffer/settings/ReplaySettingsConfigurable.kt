@@ -15,10 +15,13 @@ import com.intellij.ui.components.JBTextField
 import com.intellij.util.Alarm
 import com.intellij.util.ui.FormBuilder
 import io.github.shinma06.replaybuffer.ide.ReplayProjectService
+import java.awt.Dimension
 import javax.swing.JComboBox
 import javax.swing.JComponent
 import javax.swing.JPanel
 import javax.swing.event.DocumentEvent
+import javax.swing.text.View
+import kotlin.math.ceil
 
 class ReplaySettingsConfigurable(private val project: Project) : Configurable {
     private var panel: JPanel? = null
@@ -71,8 +74,20 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable {
             .addLabeledComponent("対象アプリ:", mode!!)
             .addLabeledComponent("package名:", manualPackage!!)
             .addComponent(object : JBTextArea(packageGuidance) {
-                // Do not feed the last allocated width back into the form's preferred width.
-                override fun getPreferredSize() = super.getPreferredSize().apply { width = 0 }
+                override fun getPreferredSize(): Dimension {
+                    val size = super.getPreferredSize().apply { width = 0 }
+                    val container = parent ?: return size
+                    // This full-width row must wrap at the current form width before its height is allocated.
+                    val contentWidth = container.width - container.insets.left - container.insets.right -
+                        insets.left - insets.right
+                    if (contentWidth > 0) {
+                        val view = getUI().getRootView(this)
+                        view.setSize(contentWidth.toFloat(), Float.MAX_VALUE)
+                        size.height = ceil(view.getPreferredSpan(View.Y_AXIS).toDouble()).toInt() +
+                            insets.top + insets.bottom
+                    }
+                    return size
+                }
             }.apply {
                 isEditable = false
                 isFocusable = false

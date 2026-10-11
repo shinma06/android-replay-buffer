@@ -70,7 +70,7 @@ class ReplaySettingsLayoutTest {
                         var heights = new ArrayList<Integer>();
                         for (int width : new int[]{600, 800, 600}) {
                             scroll.setSize(width, 650);
-                            for (int settle = 0; settle < 3; settle++) layout(scroll);
+                            layout(scroll);
                             int viewportWidth = scroll.getViewport().getExtentSize().width;
                             assertEquals(viewportWidth, panel.getWidth(), "form width after resize to " + width);
                             assertFalse(scroll.getHorizontalScrollBar().isVisible(), "unexpected horizontal overflow");
@@ -82,11 +82,13 @@ class ReplaySettingsLayoutTest {
                                     "field/guide must fit after resize to " + width + ": " + bounds);
                             }
                             try {
-                                var lastCharacter = guide.modelToView2D(guide.getText().length() - 1);
-                                assertTrue(lastCharacter.getX() >= 0 && lastCharacter.getMaxX() <= guide.getWidth(),
-                                    "last character must fit horizontally: " + lastCharacter + ", " + guide.getSize());
-                                assertTrue(lastCharacter.getY() >= 0 && lastCharacter.getMaxY() <= guide.getHeight(),
-                                    "wrapped text must have enough height: " + lastCharacter + ", " + guide.getSize());
+                                for (int offset = 0; offset < guide.getText().length(); offset++) {
+                                    var character = guide.modelToView2D(offset);
+                                    assertTrue(character.getX() >= 0 && character.getMaxX() <= guide.getWidth(),
+                                        "character " + offset + " must fit horizontally: " + character + ", " + guide.getSize());
+                                    assertTrue(character.getY() >= 0 && character.getMaxY() <= guide.getHeight(),
+                                        "character " + offset + " needs enough wrapped height: " + character + ", " + guide.getSize());
+                                }
                                 rowEnds.add(Utilities.getRowEnd(guide, 0));
                             } catch (javax.swing.text.BadLocationException e) {
                                 throw new AssertionError(e);
