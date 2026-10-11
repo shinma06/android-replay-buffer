@@ -70,7 +70,10 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable {
             .addComponent(destinationStatus!!)
             .addLabeledComponent("対象アプリ:", mode!!)
             .addLabeledComponent("package名:", manualPackage!!)
-            .addComponent(JBTextArea(packageGuidance).apply {
+            .addComponent(object : JBTextArea(packageGuidance) {
+                // Do not feed the last allocated width back into the form's preferred width.
+                override fun getPreferredSize() = super.getPreferredSize().apply { width = 0 }
+            }.apply {
                 isEditable = false
                 isFocusable = false
                 isOpaque = false
