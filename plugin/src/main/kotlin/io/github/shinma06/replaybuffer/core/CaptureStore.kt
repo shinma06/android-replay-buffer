@@ -6,6 +6,7 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardOpenOption.CREATE_NEW
 import java.nio.file.StandardOpenOption.WRITE
+import java.nio.file.attribute.PosixFilePermissions
 import java.util.ArrayDeque
 import java.util.UUID
 
@@ -80,7 +81,13 @@ internal class CaptureStore(
     private var pinned: FrozenCapture? = null
     private val ownedFiles = mutableSetOf<Path>()
 
-    init { Files.createDirectories(directory); created(directory) }
+    init {
+        Files.createDirectory(directory, PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rwx------")))
+        try { created(directory) } catch (failure: Exception) {
+            try { Files.delete(directory) } catch (cleanup: Exception) { failure.addSuppressed(cleanup) }
+            throw failure
+        }
+    }
 
     @Synchronized
     fun generation(value: Long) {
@@ -167,10 +174,21 @@ internal class CaptureStore(
         previousPts = packet.pts
         if (packet.key) {
             channel?.close()
-            currentFile = directory.resolve("gop-${UUID.randomUUID()}.h264")
-            channel = FileChannel.open(currentFile, CREATE_NEW, WRITE)
-            ownedFiles.add(currentFile!!)
-            created(currentFile!!)
+            channel = null
+            currentFile = null
+            deleteUnused() // Retire unreferenced files even while T is frozen/unknown, before registration.
+            val file = directory.resolve("gop-${UUID.randomUUID()}.h264")
+            val opened = FileChannel.open(file, setOf(CREATE_NEW, WRITE),
+                PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rw-------")))
+            try { created(file) } catch (failure: Exception) {
+                try { opened.close() } finally {
+                    try { Files.delete(file) } catch (cleanup: Exception) { failure.addSuppressed(cleanup) }
+                }
+                throw failure
+            }
+            currentFile = file
+            channel = opened
+            ownedFiles.add(file)
         }
         val out = channel ?: run { addGap("video", clock.now(host), clock.now(host), "IDR待ちでframeを保持できません"); return false }
         require(out.position() + packet.bytes.size <= 32L * 1024 * 1024) { "GOPが32MiBを超えました" }

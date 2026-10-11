@@ -1,8 +1,12 @@
 package io.github.shinma06.replaybuffer.core
 
+import java.nio.channels.Channels
+import java.nio.channels.FileChannel
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardOpenOption.CREATE_NEW
+import java.nio.file.StandardOpenOption.WRITE
+import java.nio.file.attribute.PosixFilePermissions
 import java.security.MessageDigest
 
 internal fun sha256(path: Path): String {
@@ -24,7 +28,15 @@ internal class CaptureResources(private val directory: Path, private val created
         val target = directory.resolve(name)
         CaptureResources::class.java.getResourceAsStream("/replay/deps/$name").use { input ->
             check(input != null) { "同梱取得依存がありません" }
-            Files.newOutputStream(target, CREATE_NEW).use { output -> created(target); input.copyTo(output) }
+            val channel = FileChannel.open(target, setOf(CREATE_NEW, WRITE),
+                PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rw-------")))
+            channel.use {
+                try { created(target) } catch (failure: Exception) {
+                    try { channel.close(); Files.delete(target) } catch (cleanup: Exception) { failure.addSuppressed(cleanup) }
+                    throw failure
+                }
+                input.copyTo(Channels.newOutputStream(channel))
+            }
         }
         if (expected != null) check(sha256(target) == expected) { "同梱依存のhashが一致しません" }
         return target

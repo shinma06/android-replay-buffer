@@ -29,7 +29,6 @@ internal class LocalCaptureOwnership private constructor(
     private val process = ProcessHandle.current()
     private val started = process.info().startInstant().orElseThrow()
     private val entries = linkedMapOf<String, List<String>>()
-    private var closed = false
 
     @Synchronized
     fun created(path: Path) {
@@ -38,37 +37,57 @@ internal class LocalCaptureOwnership private constructor(
         require(allowed(name))
         // Deleted GOP names are unique; drop their old records to bound long-running sessions.
         entries.keys.removeIf { !Files.exists(root.resolve(it), NOFOLLOW_LINKS) }
-        entries[name] = identity(path)
+        val previous = entries[name]
+        try {
+            entries[name] = identity(path)
+            val bytes = encode(entries)
+            channel.position(0)
+            channel.truncate(0)
+            val buffer = ByteBuffer.wrap(bytes)
+            while (buffer.hasRemaining()) channel.write(buffer)
+            channel.force(true)
+        } catch (failure: Exception) {
+            if (previous == null) entries.remove(name) else entries[name] = previous
+            throw failure
+        }
+    }
+
+    internal fun encode(entries: Map<String, List<String>>): ByteArray {
         require(entries.size <= MAX_ENTRIES)
         val bytes = Gson().toJson(mapOf("schema" to 1, "token" to root.fileName.toString().removePrefix("replay-"),
             "pid" to process.pid(), "started" to started.toString(), "namespace" to namespaceIdentity, "descriptor" to descriptorIdentity,
             "entries" to entries)).toByteArray(Charsets.UTF_8)
         require(bytes.size <= MAX_BYTES)
-        channel.position(0)
-        channel.truncate(0)
-        val buffer = ByteBuffer.wrap(bytes)
-        while (buffer.hasRemaining()) channel.write(buffer)
-        channel.force(true)
+        return bytes
+    }
+
+    fun removeRoot() {
+        val current = try { identity(root) } catch (_: java.nio.file.NoSuchFileException) { return }
+        require(identity(root.parent) == namespaceIdentity && current == entries["."])
+        Files.delete(root) // Unknown/nonempty roots stay intact; only exact absence is idempotent.
     }
 
     @Synchronized
     override fun close() {
-        if (closed) return
-        closed = true
         try {
             val rootAbsent = try { identity(root); false } catch (_: java.nio.file.NoSuchFileException) { true }
-            if (identity(root.parent) == namespaceIdentity && identity(descriptor) == descriptorIdentity &&
-                rootAbsent) Files.delete(descriptor)
+            val currentDescriptor = try { identity(descriptor) } catch (_: java.nio.file.NoSuchFileException) { return }
+            if (rootAbsent) {
+                require(identity(root.parent) == namespaceIdentity && currentDescriptor == descriptorIdentity) {
+                    "local終了情報のidentityが不明です（保全しました）"
+                }
+                Files.delete(descriptor)
+            }
         } finally {
-            lock.release()
-            channel.close()
+            try { if (lock.isValid) lock.release() } finally { channel.close() }
         }
     }
 
     companion object {
-        // shortcut: ownership snapshots cover 8192 entries/1MiB; revisit if retention or the one-second IDR cadence grows.
-        private const val MAX_ENTRIES = 8192
-        private const val MAX_BYTES = 1024 * 1024
+        // One live packet ring + one pinned ring + root/ring/resources + a not-yet-indexed GOP.
+        internal const val MAX_ENTRIES = 2 * ReplaySettings.MAX_VIDEO_PACKETS + 5
+        private const val MAX_IDENTITY_BYTES = 1024
+        internal const val MAX_BYTES = (MAX_ENTRIES + 2) * (MAX_IDENTITY_BYTES + 64) + 8192
         private val tokenPattern = Regex("[0-9a-f-]{36}")
         private val packetPattern = Regex("ring/gop-[0-9a-f-]{36}\\.h264")
         private fun allowed(name: String) = name in setOf(".", "ring", "scrcpy-server-v4.0", "replay-clock.jar") || packetPattern.matches(name)
@@ -78,7 +97,9 @@ internal class LocalCaptureOwnership private constructor(
                 it == PosixFilePermission.GROUP_WRITE || it == PosixFilePermission.OTHERS_WRITE
             })
             return listOf(attributes.fileKey()?.toString() ?: error("local file identityが不明です"),
-                attributes.creationTime().toString(), attributes.owner().name, attributes.permissions().sorted().joinToString(","))
+                attributes.creationTime().toString(), attributes.owner().name, attributes.permissions().sorted().joinToString(",")).also {
+                require(Gson().toJson(it).toByteArray(Charsets.UTF_8).size <= MAX_IDENTITY_BYTES)
+            }
         }
         private fun identity(path: Path) = identity(Files.readAttributes(path, PosixFileAttributes::class.java, NOFOLLOW_LINKS))
 
@@ -128,9 +149,11 @@ internal class LocalCaptureOwnership private constructor(
                                 require(json.keySet() == setOf("schema", "token", "pid", "started", "namespace", "descriptor", "entries"))
                                 require(json["schema"].toString() == "1" && json["token"].asString == token)
                                 val pid = json["pid"].asLong
-                                require(pid > 0 && json["pid"].toString() == pid.toString() && Instant.parse(json["started"].asString) <= Instant.now())
-                                // An available lock alone does not prove an old IDE has stopped.
-                                require(ProcessHandle.of(pid).isEmpty)
+                                val started = Instant.parse(json["started"].asString)
+                                require(pid > 0 && json["pid"].toString() == pid.toString() && started <= Instant.now())
+                                val current = ProcessHandle.of(pid).orElse(null)
+                                // A reused PID is eligible only with a positively different start identity.
+                                require(ownerStopped(started, current != null, current?.info()?.startInstant()?.orElse(null)))
                                 require(json["namespace"].asJsonArray.map { it.asString } == namespaceIdentity)
                                 require(json["descriptor"].asJsonArray.map { it.asString } == recordIdentity)
                                 val entries = json["entries"].asJsonObject.entrySet().associate { entry ->
@@ -148,6 +171,9 @@ internal class LocalCaptureOwnership private constructor(
                 }
             }
         }
+
+        internal fun ownerStopped(recorded: Instant, present: Boolean, current: Instant?): Boolean =
+            !present || current != null && current != recorded
 
         private fun reclaim(namespace: Path, namespaceIdentity: List<String>, root: Path, entries: Map<String, List<String>>) {
             val rootIdentity = try { identity(root) } catch (_: java.nio.file.NoSuchFileException) { return }

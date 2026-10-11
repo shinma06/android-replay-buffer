@@ -62,8 +62,9 @@ class ReplayCore(initialSettings: ReplaySettings, private val workspace: Path, c
     fun setEnabled(value: Boolean): CompletableFuture<ReplayOperation> {
         if (!value) synchronized(publishing) { cancelSave.set(true) }
         return operation {
-            if (value == enabled) return@operation ReplayOperation(true)
+            if (value == enabled && (value || localOwnership == null)) return@operation ReplayOperation(true)
             if (value) {
+                if (localOwnership != null) disable()
                 Files.createDirectories(workspace)
                 cleanup.recover()
                 LocalCaptureOwnership.recover(workspace)
@@ -74,11 +75,14 @@ class ReplayCore(initialSettings: ReplaySettings, private val workspace: Path, c
                     resources = CaptureResources(root, ownership::created)
                     store = CaptureStore(root.resolve("ring"), created = ownership::created)
                 } catch (e: Exception) {
-                    resources?.close(); resources = null
-                    // Extraction writes only these exact new names; never clean unrelated entries.
-                    Files.deleteIfExists(root.resolve("scrcpy-server-v4.0"))
-                    Files.deleteIfExists(root.resolve("replay-clock.jar"))
-                    Files.delete(root); ownership.close(); localOwnership = null
+                    try {
+                        resources?.close(); resources = null
+                        // Extraction writes only these exact new names; never clean unrelated entries.
+                        Files.deleteIfExists(root.resolve("scrcpy-server-v4.0"))
+                        Files.deleteIfExists(root.resolve("replay-clock.jar"))
+                        closeLocalOwnership()
+                    } catch (cleanup: Exception) { e.addSuppressed(cleanup) }
+                    finally { try { ownership.close() } catch (cleanup: Exception) { e.addSuppressed(cleanup) } }
                     throw e
                 }
                 enabled = true
@@ -273,13 +277,23 @@ class ReplayCore(initialSettings: ReplaySettings, private val workspace: Path, c
         pending = null
         store?.close(); store = null
         resources?.close(); resources = null
-        localOwnership?.let { Files.delete(it.root); it.close() }; localOwnership = null
+        val localCleanup = runCatching { closeLocalOwnership() }
+        if (localOwnership != null) localCleanup.getOrThrow()
         device = null
         enabled = false
         generation++
         captureState = CaptureState.DISABLED
         saveState = SaveSnapshot()
         error = if (cleanup.pendingCount == 0) null else "端末側の終了・cleanupは再接続時に確認します（所有情報を保全しました）"
+        localCleanup.getOrThrow()
+    }
+
+    private fun closeLocalOwnership() {
+        val ownership = localOwnership ?: return
+        try {
+            ownership.removeRoot()
+            localOwnership = null
+        } finally { ownership.close() }
     }
 
     private fun publish() {
