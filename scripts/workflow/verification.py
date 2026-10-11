@@ -915,10 +915,11 @@ def render_queue(paths, promotion=None, git=git_read):
         amended = gop_cases.get(f'{data["issue"]}:{case["id"]}')
         result = results.get(f'{data["issue"]}:{case["id"]}', {})
         retained = result.get('status') in ('reused', 'reassessed')
-        responsibility_observed = result.get('initial_observation', {}) if stage else result
+        reassessed = result.get('status') == 'reassessed'
+        evidence_label = '有効条件の証拠'
         if retained:
             confirmation = result.get('confirmation', {})
-            responsibility_observed = confirmation
+            evidence_label += '（現在候補の適合確認）' if reassessed else '（保持した元観察）'
             lines += ['再利用申請（判定は上表）・元候補: ' + str(result.get('source_candidate', '未登録')),
                       '現在候補の適合確認: ' + json.dumps(confirmation, ensure_ascii=False), '']
             result = result.get('source_result', {})
@@ -926,6 +927,7 @@ def render_queue(paths, promotion=None, git=git_read):
                 result = {}
         if stage:
             result = result.get('initial_observation', {})
+        responsibility_observed = confirmation if reassessed else result
         if not isinstance(responsibility_observed, dict):
             responsibility_observed = {}
         key = f'{data["issue"]}:{case["id"]}'
@@ -952,7 +954,7 @@ def render_queue(paths, promotion=None, git=git_read):
                           '改訂revision: ' + canonical_hash(initial_policy['responsibility_revision']),
                           '除外/置換する義務（PASSではない）: ' + group['excluded'],
                           '有効な実施分担: ' + group['methods'],
-                          ('有効条件の証拠（現在候補の適合確認）: ' if retained else '有効条件の証拠: ') +
+                          evidence_label + ': ' +
                           (json.dumps(evidence, ensure_ascii=False) if evidence else '未登録（未実施又は延期）'),
                           '以下の固定原契約は履歴。有効条件は明示改訂と上の分担を適用する。', '']
             if stage and entry['initial_scope'] == 'deferred':

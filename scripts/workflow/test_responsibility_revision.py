@@ -8,6 +8,7 @@ import unittest
 from test_agent_loop import BASE, NEW
 import test_initial_acceptance as ti
 from test_verification import observation
+from test_observation_reuse import OLD, reused
 from verification import (INITIAL_PLAN, canonical_hash, effective_initial_entry,
                           effective_responsibility_case, initial_stage_plan, render_queue,
                           validate_candidate_result, validate_responsibility_policy)
@@ -149,6 +150,41 @@ class ResponsibilityRevisionTests(unittest.TestCase):
         self.assertIn('Preserved original observation reason.', view)
         self.assertEqual(original['initial_observation']['reason'], 'Preserved original observation reason.')
 
+    def test_ordinary_reuse_lists_source_only_proofs_in_initial_and_full_scope(self):
+        for initial in (True, False):
+            with self.subTest(initial=initial):
+                self.setUp()
+                if not initial:
+                    self.initial.manifest.pop('stage')
+                    self.initial.manifest['results'] = {
+                        key: dict(observation(), actor='gpt') for key in self.policy['cases']}
+                    for result in self.initial.manifest['results'].values():
+                        self.proof(result)
+                    self.initial.manifest['results']['36:QA-1-EMU']['execution'] = 'computer_use'
+                self.fixture.documents[f'{OLD}:{INITIAL_PLAN}'] = copy.deepcopy(self.policy)
+                self.fixture.documents[f'{OLD}:docs/verification/changes/issue-36.json'] = copy.deepcopy(
+                    self.fixture.documents[f'{NEW}:docs/verification/changes/issue-36.json'])
+                original = copy.deepcopy(self.initial.manifest['results']['36:QA-1-EMU'])
+                original['head'] = OLD
+                observed = original['initial_observation'] if initial else original
+                observed['head'] = OLD
+                result = reused(original)
+                self.initial.manifest['results']['36:QA-1-EMU'] = result
+                before = copy.deepcopy(result)
+                self.assertNotIn('responsibility_evidence', result['confirmation'])
+                self.assertTrue(self.verify()['stage_complete' if initial else 'gui_complete'])
+                with tempfile.TemporaryDirectory() as tmp:
+                    path = Path(tmp) / 'cases.json'
+                    path.write_text(json.dumps(self.fixture.documents[f'{NEW}:docs/verification/changes/issue-36.json']))
+                    view = render_queue([path], self.initial.manifest, self.fixture.git)
+                proof_line = next(line for line in view.splitlines() if line.startswith('有効条件の証拠'))
+                self.assertIn('保持した元観察', proof_line)
+                for reference in observed['responsibility_evidence'].values():
+                    self.assertIn(reference, proof_line)
+                self.assertIn(result['confirmation']['equivalence_evidence'], view)
+                self.assertIn(result['confirmation']['environment_evidence'], view)
+                self.assertEqual(result, before)
+
     def test_full_acceptance_also_requires_effective_proofs_and_keeps_real_observation(self):
         self.initial.manifest.pop('stage')
         results = {}
@@ -158,6 +194,30 @@ class ResponsibilityRevisionTests(unittest.TestCase):
         results['36:QA-1-EMU']['execution'] = 'computer_use'
         self.initial.manifest['results'] = results
         self.assertTrue(self.verify()['gui_complete'])
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'cases.json'
+            path.write_text(json.dumps(self.fixture.documents[f'{NEW}:docs/verification/changes/issue-36.json']))
+            direct = render_queue([path], self.initial.manifest, self.fixture.git)
+            proof_line = next(line for line in direct.splitlines() if line.startswith('有効条件の証拠'))
+            self.assertTrue(proof_line.startswith('有効条件の証拠: '))
+            for reference in results['36:QA-1-EMU']['responsibility_evidence'].values():
+                self.assertIn(reference, proof_line)
+            confirmation = results['36:QA-1-EMU']
+            results['36:QA-1-EMU'] = {
+                'status': 'reassessed', 'head': NEW, 'artifact_sha256': 'e' * 64,
+                'source_candidate': NEW,
+                'source_result': dict(observation(), actor='gpt', execution='computer_use',
+                                      reason='Preserved full observation.'),
+                'confirmation': dict(confirmation, equivalence_evidence='Same inputs.',
+                                     environment_evidence='Same environment.')}
+            self.assertTrue(self.verify()['gui_complete'])
+            assessed = render_queue([path], self.initial.manifest, self.fixture.git)
+            proof_line = next(line for line in assessed.splitlines() if line.startswith('有効条件の証拠'))
+            self.assertIn('現在候補の適合確認', proof_line)
+            for reference in confirmation['responsibility_evidence'].values():
+                self.assertIn(reference, proof_line)
+            self.assertIn('Preserved full observation.', assessed)
+            results['36:QA-1-EMU'] = confirmation
         results['36:QA-1-REAL']['status'] = 'deferred'
         with self.assertRaises(ValueError):
             self.verify()
