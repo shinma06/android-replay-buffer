@@ -47,6 +47,7 @@ internal class CaptureStore(
     private val videoLimit: Long = ReplaySettings.VIDEO_BYTES,
     private val logLimit: Long = ReplaySettings.LOG_BYTES,
     private val minFree: Long = ReplaySettings.MIN_FREE_BYTES,
+    private val created: (Path) -> Unit = {},
 ) : AutoCloseable {
     val sequence: String = UUID.randomUUID().toString()
     private val video = ArrayDeque<VideoEntry>()
@@ -79,7 +80,7 @@ internal class CaptureStore(
     private var pinned: FrozenCapture? = null
     private val ownedFiles = mutableSetOf<Path>()
 
-    init { Files.createDirectories(directory) }
+    init { Files.createDirectories(directory); created(directory) }
 
     @Synchronized
     fun generation(value: Long) {
@@ -169,6 +170,7 @@ internal class CaptureStore(
             currentFile = directory.resolve("gop-${UUID.randomUUID()}.h264")
             channel = FileChannel.open(currentFile, CREATE_NEW, WRITE)
             ownedFiles.add(currentFile!!)
+            created(currentFile!!)
         }
         val out = channel ?: run { addGap("video", clock.now(host), clock.now(host), "IDR待ちでframeを保持できません"); return false }
         require(out.position() + packet.bytes.size <= 32L * 1024 * 1024) { "GOPが32MiBを超えました" }

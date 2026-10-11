@@ -142,7 +142,7 @@ class ReplayProjectCaptureTest {
     }
 
     @Test
-    fun `new sessions retain their stable journal and delete only their known session temp`() {
+    fun `new sessions reuse their project namespace and delete only their own capture root`() {
         val config = Files.createDirectory(directory.resolve("config"))
         val project = Files.createDirectory(directory.resolve("project"))
         val stable = prepareCleanupDirectory(config, project.toString())
@@ -162,11 +162,12 @@ class ReplayProjectCaptureTest {
                 assertEquals(1, capture.view.snapshot!!.cleanupPendingCount)
                 assertEquals(it == 1, capture.view.snapshot!!.enabled)
                 assertEquals(it == 1, store.enabled)
-                // This exact private root belongs to this Capture; no host/temp-root scan is performed.
+                // The stable project namespace survives; each enabled session owns a distinct capture root.
                 val session = ReplayProjectCapture::class.java.getDeclaredField("workspace").apply { isAccessible = true }.get(capture) as Path
+                assertEquals(stable, session)
                 capture.close()
                 capture.termination.get(15, TimeUnit.SECONDS)
-                assertFalse(Files.exists(session))
+                assertEquals(listOf(marker), Files.list(stable).use { paths -> paths.toList() })
                 assertTrue(Files.isDirectory(stable))
                 assertEquals("{\"schema\":999}", Files.readString(marker))
             } finally {

@@ -14,7 +14,7 @@ internal fun sha256(path: Path): String {
     return digest.digest().joinToString("") { "%02x".format(it) }
 }
 
-internal class CaptureResources(private val directory: Path) : AutoCloseable {
+internal class CaptureResources(private val directory: Path, private val created: (Path) -> Unit = {}) : AutoCloseable {
     val server: Path = extract("scrcpy-server-v4.0", SERVER_HASH)
     val clock: Path = extract("replay-clock.jar", identity().getValue("clock"))
 
@@ -24,7 +24,7 @@ internal class CaptureResources(private val directory: Path) : AutoCloseable {
         val target = directory.resolve(name)
         CaptureResources::class.java.getResourceAsStream("/replay/deps/$name").use { input ->
             check(input != null) { "同梱取得依存がありません" }
-            Files.newOutputStream(target, CREATE_NEW).use { output -> input.copyTo(output) }
+            Files.newOutputStream(target, CREATE_NEW).use { output -> created(target); input.copyTo(output) }
         }
         if (expected != null) check(sha256(target) == expected) { "同梱依存のhashが一致しません" }
         return target
