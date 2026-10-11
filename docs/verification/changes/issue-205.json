@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "issue": 205,
+  "gui_required": false,
+  "reason": "主テスト/管理CIをPython 3.15.0 stableへ更新し、repository管理/開発の対応下限を3.15以上へ揃える。支持対象の調査に基づき全現行宣言と旧3.11〜3.14環境の移行案内を整合する。配布CLIのPython 3.9互換、製品source・build・fixture・固定候補・正式受入計画を維持し、GUI/端末/IDE操作は行わない。ホストのローカルPython環境整備は本人指示により別タスクへ分離する。",
+  "cli_checks": [
+    "Python 3.15.0でpython3 scripts/check.pyを実行する。",
+    "Python 3.15.0でpython3 scripts/workflow/product_check.pyを実行し、専用CLI Python 3.9 CIも維持・確認する。",
+    "Python 3.15.0でpython3 scripts/workflow/change_impact.py --base origin/main --run-testsをclean committed HEADで実行し、通常hooks/CIで同じ分類とruntimeを確認する。",
+    "test_change_impact.pyでPATHが異なるPythonを指す場合も検査commandが親のsys.executableを使う回帰を確認する。",
+    "AGENTS/README/project/setup/automationの現行管理対応宣言が3.15以上、主検査/CIがstable 3.15.0で一致し、旧環境の移行対象・CLI >=3.9との区別を確認する。過去の支持宣言/観察は履歴として保持する。"
+  ],
+  "cases": []
+}
