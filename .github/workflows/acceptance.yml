@@ -23,7 +23,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.15.0'
       - name: Check acceptance using the trusted base
         env:
           GITHUB_TOKEN: ${{ github.token }}
