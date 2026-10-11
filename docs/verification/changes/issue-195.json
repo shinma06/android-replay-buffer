@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "issue": 195,
+  "gui_required": false,
+  "reason": "Computer Use失敗時の対象限定Peekaboo入力の操作規約と担当依頼入口のみを変更する。製品・build・fixture・既存Case/正式計画/観察結果は変更せず、GUI実行は既存QA27の独立scopeで継続する。",
+  "cli_checks": [
+    "python3 scripts/check.py",
+    "python3 scripts/workflow/product_check.py",
+    "python3 scripts/workflow/change_impact.py --base origin/main --run-tests"
+  ],
+  "cases": []
+}
