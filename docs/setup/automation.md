@@ -5,7 +5,7 @@
 ## 起動条件
 
 - [GitHub の有効化](github.md)を完了し、trusted main にこのハーネスを統合する。
-- GitHub CLI の正規認証、Codex CLI の正規認証、Python 3.11 以上、製品に必要なadb/scrcpy/ffmpeg を用意する。token・認証ファイルを複製しない。
+- GitHub CLI の正規認証、Codex CLI の正規認証、管理/開発用Python 3.15以上、製品に必要なadb/scrcpy/ffmpeg を用意する。[runtime選択・旧環境の移行](README.md#runtimeと配置)を確認する。token・認証ファイルを複製しない。
 - Issue の受入・ラベル・Project・Milestone・担当を確認し、専用 worktree の clean な HEAD と remote PR HEAD を一致させる。
 - writer が編集・commit・push・GUI を停止し、scope と次の owner を確定する。
 - worker 実行は実環境で許可される場合だけ使う。`codex exec` は coordinator が起動する子プロセスであり、名前を変えても独立 top-level セッションになるわけではない。子エージェント禁止の環境から `tick` を実行して迂回しない。許可された実行者へ packet を引き継ぐ。

@@ -135,7 +135,7 @@ Android ──USB──▶ ADB ──┬── scrcpy ──▶ ffmpeg segments 
 - [開発マップ](https://github.com/users/shinma06/projects/5) / [Issue](https://github.com/shinma06/android-replay-buffer/issues)
 - [初回導入の検証・未実施項目](docs/validation.md) / [ハーネスの出典・対応表](docs/inventory.md)
 
-管理ツールはPython 3.11以上を使用します。CLIのPython 3.9以上という条件は維持します。
+repositoryの検査・Git hooks・QA/受入・GUI lease・coordinatorなどの管理/開発ツールはPython 3.15以上を対応対象とし、主検査はstable 3.15.0を使用します。旧3.11〜3.14環境で管理作業を行う場合は[セットアップ手順](docs/setup/README.md#runtimeと配置)に従って3.15を選択してください。配布CLIの利用条件はPython 3.9以上のままです。
 
 ```bash
 python3 scripts/bootstrap.py

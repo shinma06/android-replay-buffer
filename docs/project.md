@@ -9,7 +9,7 @@
 | 実装 | `replay_buffer/`、入口 `bin/`、設定 `config.json.example`、起動例 `launchd/` |
 | 仕様 | [README](../README.md)、[既存設計書](../設計書.md)。実装との差は確認して扱い、設計の記述だけで実装済みとしない |
 | テスト | `tests/test_log_buffer.py` の既存2ケース。実機録画・再接続・動画保存を網羅するものではない |
-| 開発ハーネス | 主検査/CIはPython 3.15.0 stable。管理scriptの最低対応はPython 3.11以上、標準ライブラリ、Bash、macOS/Linux。CLIの要求版を変更しない。[runtime選択](setup/README.md#runtimeと配置) |
+| 開発ハーネス | 主検査/CIはPython 3.15.0 stable。管理/開発scriptの対応下限はPython 3.15以上、標準ライブラリ、Bash、macOS/Linux。配布CLIのPython 3.9以上とは別。[runtime選択・移行](setup/README.md#runtimeと配置) |
 | 統合先 | 製品変更は `develop`。固定候補を `main` へpromotion。GUI不要toolingは `main`。導入PR統合後、そのmain SHAからdevelopを新設する |
 | 必須checks | `test` / `PR policy` / `Acceptance gate` / `Agent review` / `CLI Python 3.9`。追加contextは対象branchのworkflow導入後に有効化し、実適用は [導入Issue #1](https://github.com/shinma06/android-replay-buffer/issues/1) でreadbackする |
 | 管理 | [Project #5](https://github.com/users/shinma06/projects/5)、[Milestone #1](https://github.com/shinma06/android-replay-buffer/milestone/1)、[作業管理](work-management.md) |
