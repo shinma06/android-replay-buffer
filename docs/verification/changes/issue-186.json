@@ -15,11 +15,11 @@
       "change": "保存単位の固定clock索引で行ごとの全履歴走査を除去し、元の時刻判定と保存集合を保つ",
       "preconditions": "独立レビューとdevelop統合後に固定した新candidate/source/ZIP。既存QA #74/#27 の所有fixture、GUI lease、保存先と有限の実行計画。最大4096sample/100000lookupの条件は同ZIP製品classの限定JVMで確認し、GUIに精密時計faultや新しい注入hookを追加しない。",
       "steps": [
-        "新candidateの同一ZIP/source/hashを固定する。ZIP内の製品JAR/依存を使い、同じsourceのCaptureClockTestとCaptureStoreSaveTestだけを別の私有runnerへcompileする。製品source/classを再compile・差替えせず、実行前後の製品class hashとZIPの一致を記録する。",
+        "新candidateの同一ZIP/source/hashを固定する。ZIP内の製品JAR/依存を使い、同じsourceのCaptureClockTest、CaptureStoreSaveTest、ReplayCoreWireTestを別の私有runnerへcompileする。runnerには既存Kotlin test/JUnit Jupiter（OS条件を含む）と、その固定sourceのGson/JCodec/IDE runtime依存を用意する。製品source/classを再compile・差替えせず、実行前後の製品class hashとZIPの一致を記録する。",
         "限定JVM: fixedLogMapperMatchesLinearMappingAcrossBoundariesAndSurvivesClockMutation、maximumHistoryIndexReadsTwoSamplesPerRowAndPreservesInsertionOrderExtrema、epochRangeIndexKeepsOverlapOrderAndPrunesThousandsOfUnsupportedEpochs、manyEpochMapperMatchesLinearCandidatesAndPreservesExtremeRoundTripExceptionsを実行する。最大4096sample/100000lookupのwork count、重複/逆行、最大epoch数、closure/5秒/20ms/bridge/unknown/Long端値/算術例外と元linear判定の等価性を記録する。",
         "限定JVM: manyLogsUseMaximumClockHistoryWithoutChangingOrderIdsOrPinnedRowsを含むCaptureStoreSaveTest全件と、既存ReplayCoreWireTest.failedRequestRetriesItsOriginalWindowWhileAcquisitionReconfigurationAndReconnectContinueを同製品classで実行する。4096clock/10000logのorder/recordID/帰属/retainedAt/窓、未知/loss/誤差境界、失敗pin/固定retry/N/対象を保全する。pure回帰をIDE受入へ読み替えない。",
-        "実IDE: 同じZIPのロード実体を確認し、既存QAの正常clock/対象app/動画/両logを取得する。識別可能eventを保存前後に発生させて保存し、完了欄、session/JSONLの固定区間とrecord_id、保存後の取得継続と後続eventの別保存を確認する。最大履歴を作るためだけの長時間GUI試験は追加せず、負荷条件は上の限定JVMへ分担する。",
-        "実IDE: 同じbuildで #71 LOG-REMAP-UNKNOWN-RETRY の既存失敗/retry手順を行い、表示可能なsequence/区間/N/対象と再試行後成果物を照合する。内部ID/全record集合の厳密比較は限定JVMへ分担する。旧 #71/#74/#27 のfail/pending/人間/REAL条件を保持し、このCaseだけで全既存受入が完了したとしない。"
+        "実IDE: 同じZIPのロード実体を確認し、既存QA74/27の正常clock/対象app/動画/両logを取得する保存・取得継続手順と同一の観察を共有する。識別可能eventを保存前後に発生させて保存し、完了欄、session/JSONLの固定区間とrecord_id、保存後の取得継続と後続eventの別保存を確認する。同条件のGUI試験をCaseごとに重複実施せず、既存QAの同candidate/hash/条件の証拠へ対応付ける。最大履歴を作るためだけの長時間GUI試験は追加せず、負荷条件は上の限定JVMへ分担する。",
+        "実IDE: 同じbuildで #71 LOG-REMAP-UNKNOWN-RETRY と既存QA74/27の失敗/retry手順の観察を共有し、表示可能なsequence/区間/N/対象と再試行後成果物を照合する。同候補・同条件の保存/継続取得/retryをCaseごとに重複実施しない。内部ID/全record集合の厳密比較は限定JVMへ分担する。旧 #71/#74/#27 のfail/pending/人間/REAL条件を保持し、このCaseだけで全既存受入が完了したとしない。"
       ],
       "expected": "時計履歴のgroup/next/neighbor探索を行ごとに全走査しない。最大履歴と多数行、境界・曖昧性・未知・例外、元の窓/order/ID/帰属/pinを同ZIP製品classで確認する。同じ新候補の実IDEでは保存完了と継続取得、失敗した固定対象のretryが従来どおり動作する。実停止時間/欠落改善は観測した証拠がある範囲だけ報告する。",
       "provenance": [
