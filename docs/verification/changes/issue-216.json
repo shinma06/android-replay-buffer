@@ -1,0 +1,40 @@
+{
+  "schema": 1,
+  "issue": 216,
+  "gui_required": true,
+  "reason": "元173は狭幅条件を既に持つが、trusted validate_changeはgui_required=trueかつcases空の参照専用記録を拒否し、既存Caseリンクのschemaはない。元契約を書換えず、今回判明した拡大後の幅復帰を1 Caseだけ記録する。正式初期計画への新key/sourceの接続はPMの後続依存であり、writerが免除やPASSを作らない。",
+  "cli_checks": [
+    "実ReplaySettingsConfigurable/Storeをnative SDK MockApplication/MockProjectとScrollPaneFactory/GradientViewportで生成する限定JVM回帰。旧版red、新版の600→800→600でform/fields/guide幅・折り返し・最終文字/高さ・Help/nonfocusとStore不変を確認する。短い保存先と長い保存先を区別する。",
+    "python3 scripts/check.py、python3 scripts/workflow/product_check.py、python3 scripts/workflow/plugin_check.py、clean committed HEADのpython3 scripts/workflow/change_impact.py --run-testsと通常hooks。実結果は固定Issue/PRへ記録し、JVM/build成功をnative/Case PASSへ転記しない。"
+  ],
+  "cases": [
+    {
+      "id": "SETTINGS-WIDTH-RECOVERY",
+      "artifact": "plugin",
+      "change": "package案内の割当済み幅をフォームの推奨幅へ戻さず、拡大後の縮小で案内と入力欄の幅を復帰させる。元173 PACKAGE-INPUT-GUIDANCEの契約・観察は保持する。",
+      "preconditions": "共有GUI leaseと専用IDE/project fixture、取得OFF、元設定を記録。固定新candidateのclean source SHA・標準ZIP/全JAR hash・embedded identity・実ロード版を照合する。旧707の物理ZIP/観察は履歴として保持し、新buildのPASSへ転記しない。",
+      "steps": [
+        "短い保存先と既存QAで観察した長い保存先を区別し、Settingsを狭幅→広幅→元の狭幅へ変更する。元の900→1100→900・高さ700は再現条件であり最小窓幅の指定ではない。縮小後にフォーム・保持時間・保存先・選択方法・package欄の右端がviewport内に戻り、案内全文と最終文字を必要な折り返し高さで読めることを確認する。案内のaccessible name、package欄の同じHelp、非focusも保持する。",
+        "縮小後の代表field編集と有効値Apply、未適用編集のCancel/reopen、元設定の復元と取得OFFを確認する。同じ候補・成果物・前提で元173/27/121の全有効条件を満たす観察は共有できるが、本Caseだけで元Case全体の成功としない。"
+      ],
+      "expected": "拡大後も以前の広い幅がフォームの必要幅に残らず、元の狭幅で案内と入力欄が収まる。全文・最終文字・自然な折り返し高さ、accessible Helpと非focusを保ち、入力・Apply/Cancel・設定復元を維持する。固定高さ・文言隠し・scrollbar隠し・最小窓幅強制では解消しない。",
+      "provenance": [
+        "https://github.com/shinma06/android-replay-buffer/issues/216",
+        "https://github.com/shinma06/android-replay-buffer/issues/175#issuecomment-6111034411",
+        "https://github.com/shinma06/android-replay-buffer/blob/5bf9e84a887171df5f0287b036e9ba288fbfae9f/docs/verification/changes/issue-173.json: PACKAGE-INPUT-GUIDANCE（元契約と失敗/未達を改変しない）"
+      ],
+      "gpt": {
+        "status": "pending",
+        "reason": "旧実JARの幅復帰failureと新候補の限定JVM回帰は別証拠。writerはnative操作なし。新固定候補でQA27/175が残nativeを確認する。"
+      },
+      "human": {
+        "status": "pending",
+        "reason": "未観察。既存の人間/REAL延期を保持し、新human必須や延期を追加しない。"
+      },
+      "fix_issue": null,
+      "fix_pr": null,
+      "recheck": "Settings寸法・文言・field構成・SDK/theme/DPIの変更時に新candidate/hashと実条件を照合し、影響する幅復帰・可読性を確認する。旧原観察は保持する。",
+      "next_action": "PMが固定HEADのprovider Completedと別session独立レビュー、develop通常統合、正式initial-agent計画への本key/sourceの接続を行う。QA27/175へ新候補のnative幅復帰と代表編集/復元を移管し、release10へmain反映を双方向readbackする。重複QAは作らない。"
+    }
+  ]
+}

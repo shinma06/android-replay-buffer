@@ -15,10 +15,13 @@ import com.intellij.ui.components.JBTextField
 import com.intellij.util.Alarm
 import com.intellij.util.ui.FormBuilder
 import io.github.shinma06.replaybuffer.ide.ReplayProjectService
+import java.awt.Dimension
 import javax.swing.JComboBox
 import javax.swing.JComponent
 import javax.swing.JPanel
 import javax.swing.event.DocumentEvent
+import javax.swing.text.View
+import kotlin.math.ceil
 
 class ReplaySettingsConfigurable(private val project: Project) : Configurable {
     private var panel: JPanel? = null
@@ -70,7 +73,23 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable {
             .addComponent(destinationStatus!!)
             .addLabeledComponent("対象アプリ:", mode!!)
             .addLabeledComponent("package名:", manualPackage!!)
-            .addComponent(JBTextArea(packageGuidance).apply {
+            .addComponent(object : JBTextArea(packageGuidance) {
+                override fun getPreferredSize(): Dimension {
+                    val size = super.getPreferredSize().apply { width = 0 }
+                    val container = parent ?: return size
+                    val textUi = getUI()
+                    val view = textUi.getRootView(this)
+                    // The UI reserves both component insets and caret space outside the text span.
+                    val reservedWidth = textUi.getPreferredSize(this).width - view.getPreferredSpan(View.X_AXIS).toInt()
+                    val contentWidth = container.width - container.insets.left - container.insets.right - reservedWidth
+                    if (contentWidth > 0) {
+                        view.setSize(contentWidth.toFloat(), Float.MAX_VALUE)
+                        size.height = ceil(view.getPreferredSpan(View.Y_AXIS).toDouble()).toInt() +
+                            insets.top + insets.bottom
+                    }
+                    return size
+                }
+            }.apply {
                 isEditable = false
                 isFocusable = false
                 isOpaque = false
