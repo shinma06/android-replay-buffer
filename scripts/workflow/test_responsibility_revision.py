@@ -1078,6 +1078,8 @@ class PurposeMethodRevisionTests(unittest.TestCase):
                 self.assertNotIn('約20秒', effective['expected'])
                 self.assertIn('N未満', effective['expected'])
                 self.assertIn('実34秒', ' '.join(effective['steps']))
+                self.assertNotIn('取得時間>N', ' '.join(requirements))
+                self.assertIn('本Caseに無関係', ' '.join(requirements))
             if key in ('41:CORE-CLEANUP', '198:LOCAL-OWNERSHIP-RECOVERY'):
                 self.assertIn('全file即時消失は要求しない', effective['expected'])
             if key == '27:STATE-RESTORE-EMU':

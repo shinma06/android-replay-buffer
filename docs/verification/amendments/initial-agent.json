@@ -3569,7 +3569,7 @@
       "issue": 223,
       "previous_plan_sha256": "993e76bb7a0bd6f9f864c2974b3ef4d4392665de51a4791c9cc0c094c394b50c",
       "common_requirements": [
-        "目的→自製品の必要な証拠/精度→実行可能な最小方法の順で選ぶ。本改訂のgroup分担とCase固有expectedを有効条件とし、旧手順/回数/秒数/同時実行指定そのものは保証理由にしない。固定全139 Case/208出典と原plan/観察/失敗は保持し、方法変更を実行PASSにしない。",
+        "目的→自製品の必要な証拠/精度→実行可能な最小方法の順で選ぶ。本改訂のgroup分担とCase固有expectedを有効条件とし、旧手順/回数/秒数/同時実行指定そのものは保証理由にしない。固定全139 Case/208出典と原plan/観察/失敗は保持し、方法変更を実行PASSにしない。 groupは関連する保証/方法の集合であり、本Case固有expectedに該当する目的だけを充足する。短時間保存へN超取得/長時間精度・回転・独立失敗retry等を新しい依存として加えない。",
         "対象データ・内容/順序/帰属・時刻窓・unknown/loss説明・固定pin/retry・原子性/非上書き・所有/終了・実API接続を保つ。決定的production回帰は既知入力の真値と全対象を照合し、代表nativeは接続/操作/表示を確かめる。native成果へ未公開の全raw/config取得を一律要求しない。",
         "別run/別工程の証拠を、同じ製品artifactと条件/保証の対応を確認して束ねる。独立保証を短い同一runへ集約しない。予定母数は実行前に明示し全予定対象の欠落/重複/unknownを照合する。失敗・識別不能・過大な不確かさ・未帰属・未実施は未完了。REAL固有の観察と利用者保留は合成/EMUから推定しない。",
         "不変artifact/製品入力/fixture/条件を実証した既存の成功事実だけを現条件へ対応付け、不足する事実だけ追加確認する。旧aggregate failは不変のまま保持事実を再評価できるが、未解決の自製品失敗を除外してはならない。方法revisionだけで新build/導入/全GUIを要求しない。"
@@ -3778,7 +3778,7 @@
           ],
           "disposition": "置換",
           "purpose": "一括Apply/Cancel/設定復元、対象の正しい解決/帰属、最新状態/EDT/dispose・可読性/accessibilityを保証する。",
-          "methods": "Settings/Service/UIのproduction回帰で数値/書式境界・不正部分適用・stale/race・手動優先/自動解除・SDK/複数端末/UID/PIDを検査する。実IDEで代表Apply/Cancel/不正入力・取得OFF/ON・通常close/reopenの復元、完了/失敗場所通知とcopy/folder接続を共有する。Applyの実Store反映と非同期disk flushを区別し、通常close後のXML/再open設定を確認する。UI-OFF直後disk-ONだけを設定消失と断定しない。Tab/Help/狭幅へ戻す/実表示の可読性は該当Caseで確認し、theme/DPIは製品表示に影響する代表条件だけ共有する。全OS/dialog内部入力を列挙しない。",
+          "methods": "Settings/Service/UIのproduction回帰で数値/書式境界・不正部分適用・stale/race・手動優先/自動解除・SDK/複数端末/UID/PIDを検査する。実IDEで代表Apply/Cancel/不正入力・取得OFF/ON・通常close/reopenの復元、完了/失敗場所通知とcopy/folder接続を共有する。Applyの実Store反映と非同期disk flushを区別し、通常close後のXML/再open設定を確認する。UI-OFF直後disk-ONだけを設定消失と断定しない。Tab/Help/狭幅へ戻す/実表示の可読性は該当Caseで確認し、theme/DPIは製品表示に影響する代表条件だけ共有する。全OS/dialog内部入力を列挙しない。 初期OFF/180等の既定値はproduction Store/factory/serialization回帰の真値と、同classを読む実UI/取得OFFの接続証拠を束ねられる。custom復元値を既定180の実観察とは呼ばず、初期OFFだけのため新profile/再導入を要求しない。",
           "excluded": "Apply/SaveAll直後のdisk即時一致、全UI組合せ、close前のflush deadline・全native数値入力を不要とする。通常close後の不一致/再取得/所有thread残留は未完了。",
           "evidence_keys": [
             "regression",

@@ -505,8 +505,8 @@ def effective_initial_entry(policy, key):
     entry.update({k: v for k, v in override.items() if k != 'case'})
     method = policy.get('responsibility_revision', {}).get('method_revision')
     if method:
-        group = responsibility_group(policy, key)
-        entry['agent_requirements'] = [group['purpose'], group['methods']]
+        entry['agent_requirements'] = [
+            '有効なCase固有expectedの保証を満たす証拠を対応付ける。groupの方法は分担の集合であり、本Caseに無関係な保証/工程を新しい依存にしない。']
         entry.update({k: v for k, v in method['overrides'].get(key, {}).items() if k != 'case'})
     if entry.get('full_acceptance_actor') is None:
         entry.pop('full_acceptance_actor', None)
@@ -524,7 +524,8 @@ def effective_responsibility_case(policy, key, case):
             if 'method_revision' in revision:
                 revision = revision['method_revision']
                 revised.update(revision['overrides'].get(key, {}).get('case', {}))
-                revised['steps'] = [group['purpose'], group['methods'],
+                revised['steps'] = ['目的群（本Case固有expectedに該当する保証を確認）: ' + group['purpose'],
+                    '分担の集合（本Caseの保証に必要な方法だけを適用）: ' + group['methods'],
                     'Case固有の期待結果を全て照合し、同条件の既存証拠と不足を分けて記録する。']
         elif 'method_revision' in revision:
             # A new product contract must not inherit this fixed method replacement.
