@@ -34,7 +34,7 @@ SDK導入は[公式SDK Manager](https://developer.android.com/studio/intro/updat
 
 ## 固定buildと記録
 
-必要変更のdevelop統合後、PMがcleanなcandidate sourceを固定し標準`buildPlugin`で一度ZIPを生成します。ZIP SHA-256、Plugin ID/version/source、Rabbit full build/JBR、API Verifier結果を同じZIPへ対応づけます。固定ZIPをsandboxへInstall Plugin from Diskで導入し、Settings → Plugins / About表示と実配置JARを照合します。source ZIP、別hash、`-dirty`版、旧ロード実体で観察しません。再起動後も再照合します。
+必要変更のdevelop統合後、PMがcleanなcandidate sourceを固定し標準`buildPlugin`で一度ZIPを生成します。ZIP SHA-256、Plugin ID/version/source、Rabbit full build/JBR、API Verifier結果を同じZIPへ対応づけます。固定ZIPを[公式ターミナル配置手順](../operations.md#固定plugin-zipのターミナル導入)で専用profileへ導入し、自製品About/actionと実process/PID/profile/version/source・全3JAR/ZIP一致・取得OFFを照合します。Settings GUIは自製品設定の表示/入力/Apply/Cancel/検証/アクセシビリティ/寿命に使います。source ZIP、別hash、`-dirty`版、旧ロード実体で観察しません。再起動後も再照合します。
 
 fixtureは同じ最終candidateから[build.py](../../tests/fixtures/replay-marker/build.py)で2 APKを生成し、`build/fixture-identity.json`のsource/dirty/APK hashと画面/logのsourceを照合します。専用debug鍵と証明書fingerprintをprivateに保管し、APKのbuild成功と実ロード/描画観察を区別します。通常IDEの設定、上流fixture ID/署名鍵/ランタイム状態をコピーしません。
 

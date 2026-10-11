@@ -4,6 +4,8 @@
 
 Computer Useで画面を操作するときに読む。権限・共有GUI予約・対象build・使い捨てfixture・終了処理は[運用規約](operations.md)、導入は[セットアップ](setup/gui-and-remote.md)を正本とする。この文書は権限、操作回数や時間の予算、受入条件を増減しない。
 
+固定Plugin ZIPの通常導入は[ターミナル配置手順](operations.md#固定plugin-zipのターミナル導入)に従う。Settings → Pluginsの導入/版探索へ戻らず、Settings GUIは自製品設定の表示・入力・Apply/Cancel・検証・アクセシビリティ・寿命を確認する場面に使う。Toolsの自製品About/actionの実接続と実ロード照合は維持し、導入をCLIで行った事実をGUI観察の成功へ置き換えない。
+
 ## 操作と対象の確認
 
 1. 操作前に、対象アプリ・project/fixture・現在のwindow/tabと、期待する結果を確認する。「設定を開く」なら、設定画面の表示が完了条件であり、ボタンを押しただけでは完了ではない。

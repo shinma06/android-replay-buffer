@@ -57,7 +57,7 @@ plugin/gradlew -p plugin runIde
 
 `runIde`はsandboxを準備してIDEを起動します。自動起動は行いません。原型CLIの起動やUSB端末への接続もありません。
 
-配布ZIPを受入する場合は、cleanな固定commitから一度 `buildPlugin` した同じZIPをsandbox IDEにInstall Plugin from Diskで導入します。先にZIPのSHA-256を記録し、ロード後にSettings → PluginsおよびTools → Android Replay Bufferについてで `0.1.0-dev.<固定SHA>` を確認します。再buildした別ZIPや `-dirty` 版を同じ候補の証拠へ流用しません。
+配布ZIPを受入する場合は、cleanな固定commitから一度 `buildPlugin` した同じZIPを、[公式ターミナル配置手順](operations.md#固定plugin-zipのターミナル導入)で専用profileへ導入します。固定ZIP/source/hash、全3JARと実IDE process/PID/profile/version、Tools → Android Replay Bufferについて/action、取得OFFと通常再起動を照合します。Settings GUIは自製品設定の表示/入力/Apply/Cancel/検証/アクセシビリティ/寿命に使います。再buildした別ZIPや `-dirty` 版を同じ候補の証拠へ流用しません。
 
 [Case JSON](verification/changes/issue-3.json)のIDEロード・情報表示・IDE再起動を確認し、観察者・日時・ロード版・ZIP hashを記録します。Plugin VerifierによるAPI互換性検査やこのGUI受入は、ZIP構造検査と別です。基盤のCaseも初期版と同じ固定ZIPへ対応づけ、未実施項目は[QA #7](https://github.com/shinma06/android-replay-buffer/issues/7)と[初期版QA](https://github.com/shinma06/android-replay-buffer/issues/27)で追跡します。
 

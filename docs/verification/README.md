@@ -67,7 +67,7 @@ Plugin ZIPは [開発手順](../plugin-development.md) の標準buildPluginで�
 
 ### 初期版の段階受入（#64）
 
-利用者の方針に従い、初期版はエージェントが実行できる工程を完了し、人間の操作・確認と実機準備が必要な部分を[後続QA #65](https://github.com/shinma06/android-replay-buffer/issues/65)へ延期する。[固定計画](amendments/initial-agent.json)をtrusted mainの通常tooling PRでレビューし、developへ同期した後の新候補だけに適用する。候補後の変更許可、main保護、独立レビュー、全commitの出典検査は変えない。
+利用者の方針に従い、初期版はエージェントが実行できる工程を完了し、人間の操作・確認と実機準備が必要な部分を[後続QA #65](https://github.com/shinma06/android-replay-buffer/issues/65)へ延期する。[固定計画](amendments/initial-agent.json)をtrusted mainの通常tooling PRでレビューし、develop同期後の候補へ適用する。#208の導入method改訂は、下記の登録直前計画を持つ不変候補にも限定適用できる。候補後の変更許可、main保護、独立レビュー、全commitの出典検査は変えない。
 
 現在の計画は138 Case・207出典、104 CaseのAgent範囲と34 REAL Caseの延期を持つ。#201でPR199/200の実develop統合SHAへ接続し、`required_ancestor`を `4d278e65dec0c55e71d584ff24c7f6fa407586cb` とする。`197:SAVE-FAILURE-OWNERSHIP` と `198:LOCAL-OWNERSHIP-RECOVERY` の2 Case・2出典をrecoveryへ追加し、既存136 entry/205出典は変更しない。既存の`plan_extension`は#190の `186:CLOCK-BATCH-SAVE` と2追加keyを累積で列挙し、旧ancestor `5bf9e84a887171df5f0287b036e9ba288fbfae9f` へ戻して原135 entry/204出典のcanonical hashを照合する。`previous_plan_sha256`は原135計画のまま保持する。責任改訂では27:SAVE-FAIL-02-EMU/REALの保存attempt削除義務だけを保全へ置換し、失敗・取消し残留/容量増加・場所のbest effort伝達・既存取消しUI抑止を明示する。#198は旧取得rootを限定回収し、保存attempt残留を回収しない。新Caseの全前提・全2/3手順・expected・再確認条件と同ZIP製品class回帰を維持し、代表nativeの失敗場所表示→固定retry、起動回復/設定復元、通常取得→Save→継続取得→OFF/closeをQA27の同候補/同条件観察へ束ねる。全履歴/failed checks/未達/GOP・PTS・300event/30分・REAL34/人間延期/QA65は保持し、新QA・GUI全fault反復・human必須・延期・PASSを追加しない。#195等のmain運用差分を含めPMの専用develop同期後に新candidate/標準ZIPを固定する。製品class変更前の旧観察を新PASSへ転記せず、QA27/65とrelease10を継続する。計画の構造検証はGUI・初期版・main製品受入の成功ではない。
 
@@ -87,7 +87,9 @@ PR98反映時の計画は128 Case・197出典を持ち、既存196出典のPR/me
 
 元のCase JSONとpending/blocked/failは書き換えない。`human: pending`だけでは人間工程を追加しない。標準player、GUI/可読性、全300イベント/30分の解析、同期・切出し精度、画質/負荷/容量/pin、失敗・復旧のAgent実行可能部分は維持する。最低601画像の人間による番号確認は初期段階から分離し、その前の解析を原Case全体の正式精度passとは呼ばない。製品failや単に難しい・時間がかかる工程は延期理由にしない。
 
-`3:PLUGIN-LOAD`は現在の操作経路で再起動後のSettings/About別windowを読めなかったため、計画に記載した再読取りとdialog終了確認だけを延期する。新候補のnative導入、初回UI、通常再起動、実ロード識別、ZIPと全JARの一致、actionの存在、取得OFFは実観察する。実体照合を延期した画面確認のpassに置き換えない。別の工程へ自動的に例外を拡張しない。
+`3:PLUGIN-LOAD`の通常導入は[固定ZIPのターミナル配置](../operations.md#固定plugin-zipのターミナル導入)とし、Settings → PluginsのInstall Plugin from Disk/版探索を必須にしない。自製品Settingsの表示/入力/Apply/Cancel/検証/アクセシビリティ/寿命は各元契約で維持する。初回自製品About/action、native導入、有効化、通常再起動、実PID/profile/source/versionロード識別、ZIPと全3JAR一致、取得OFFは実観察する。旧経路の原記録を保ち、再起動後のAbout再読取り/dialog終了画面確認だけを既存延期に残す。実体照合を画面確認のpassに置き換えず、別工程へ例外を拡張しない。
+
+#208の`installation_revision`は直前138/207計画全文hash `13bd1e294519915d8c8a66be2770811a4d6b28465432061e7c2eae91a87fd8a3`を登録し、このfieldと追加3 overrideを除いた全文で照合する。原135hash/ancestor/全原entryと履歴は不変。現在計画又は登録旧計画を持つ固定707等の候補だけを認め、[保持事実の現在評価](responsibility.md#trusted-main改訂と旧観察の再評価)では原観察/原判定/元plan、全有効条件への対応、不変source/全JAR/ZIP/build/fixture/条件と失敗帰属の証拠を独立レビューする。通常reuseの契約同一条件は緩めない。方法改訂だけで再build/再導入を要求せず、不足する事実だけ追加する。原Case JSON・旧fail/pending/blocked・707の既存packetは編集せず、方法変更を新GUI実行やCase PASSにしない。main統合/develop同期とQA27/65/release10の引継ぎはPMが別確認する。
 
 `78:CLOCK-RECEIPT-NORMAL`は同ZIP製品classの限定JVMと実IDEの正常3event・全9phase行の確認を両方必須とし、延期やhuman必須を追加しない。3event確認を既存正式300event/30分・同期精度・GOP Caseの代替にせず、旧候補の結果を新buildへ転用しない。
 
@@ -164,6 +166,7 @@ python3 scripts/workflow/verification.py docs/verification/changes/issue-12.json
 通常の結果は引き続き同一candidate/hashの実観察を要求します。#182による明示的な責任改訂の再評価は[限定手順](responsibility.md#trusted-main改訂と旧観察の再評価)へ分離し、以下の通常reuse条件を緩めません。文書・管理ルールのみの更新で候補SHAが進んだ場合、元の成功観察をそのまま保持する`reused`を例外として使えます。実際の再利用は製品・GUI試験の再開後、以下を確認してから行います。本ルールの導入やJSON構造検証だけで既存Caseを合格へ変えません。
 
 - source candidateは現在candidateの祖先で、対象artifact SHA-256が一致すること。差分は`docs/`、`scripts/workflow/`、`.agents/skills/`、`.claude/skills/`、`.cursor/rules/`とrootの`AGENTS.md`・`CLAUDE.md`・`README.md`・`CONTRIBUTING.md`だけに限定します。途中でrevertされた変更も検査します。製品/runtime・build・設定・fixture・未知のpath、異なる成果物は再試験です。製品が生成するREADMEの実装はこの文書例外に含みません。
+- #210はPR207の管理Python更新だけを固定登録します。trusted mainが実統合280c96cを含み、その親836da53と3 regular CI blobの前後を照合します。適用は観察source707を唯一の親とする最終squash候補に限定し、3 CIすべてのexact内容を要求します。ci.ymlは707の既存Java/Gradle/Plugin検査を保持したPython指定だけの固定blobへ照合します。同期branchや任意の別履歴、途中revert、未知CI、検査経路削除、不完全な証拠は拒否し、過去のmain履歴を除外する例外は設けません。実統合PR/全commitの出典は既存promotion gateで照合します。この内容照合だけではprotected merge・同artifact/ロード/環境・Case PASSを証明せず、以下の全条件と独立レビューが必要です。
 - 元Caseが両candidateに存在し、契約が同じで、そのCase JSONの変更履歴がないこと。初期計画の該当entry（全出典・Agent条件・延期・人間指定）とhuman_scope・followup・responsibility_revisionも同じこと。GOPのrevision/6証拠、指定の実施経路、完全受入のhuman/human_evidenceは元観察に必要です。追加・変更Caseを旧結果で満たせません。
 - 現在のロード実体、環境、全前提・試験条件・不具合履歴への適合を改めて確認し、`confirmation`に実確認者・日時・公開可能な証拠を記録すること。`equivalence_evidence`で同一artifactと製品/runtime/build入力不変、`environment_evidence`で環境・全前提・条件の継続を示します。単なる「同じはず」や不明な依存は不成立です。元観察又は現在candidate commitの日時より前の確認は拒否します。
 - 元の`pass`または`initial-pass`だけを採用します。pending/blocked/fail/deferredや再利用の連鎖は拒否します。元candidate・日時・実施者・証拠を改変せず、独立レビューで原記録と同等性の証拠内容を確認します。文字列の存在検査は内容の実証を代替しません。確認は現在candidateでの製品再試験を意味しません。
