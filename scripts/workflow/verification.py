@@ -17,6 +17,12 @@ TOOLING = ('docs/', 'scripts/', '.github/', '.githooks/', '.agents/', '.claude/s
 GOP_AMENDMENT = 'docs/verification/amendments/gop-boundaries.json'
 INITIAL_STAGE = 'initial-agent'
 INITIAL_PLAN = 'docs/verification/amendments/initial-agent.json'
+CI_PREDECESSOR = '836da534938597bd8674a63adac0925139ba3fc6'
+CI_MERGE = '280c96cb2d93002152e57de7803b1eb03c8bc26b'
+CI_OBSERVED_SOURCE = '707d3b0d26f749ef7537ef83a25a38081af35d62'
+CI_OBSERVED_BEFORE = '101ec75e81776f0ef074c42174ce2ae27c33aa71'
+CI_OBSERVED_UPDATE = '5d1d9c810b567a9dc5eb5b48f7a07a6c60ac3f6e'
+CI_PATHS = {'.github/workflows/' + name for name in ('acceptance.yml', 'ci.yml', 'pr-policy.yml')}
 GOP_KEYS = {f'{issue}:SYNC-WINDOW' for issue in (13, 31, 41)} | {
     f'27:{case}-{device}' for case in ('BUFFER-180', 'BUFFER-SHORT', 'SAVE-CONTINUE')
     for device in ('REAL', 'EMU')}
@@ -516,7 +522,36 @@ def validate_initial_result(result, key, policy, candidate, artifact, execution,
             raise ValueError('Case requires its specified execution method: ' + key)
 
 
-def unchanged_artifact_history(source, candidate, key, git):
+def validate_management_ci_transition(source, commit, parents, candidate, trusted_base, git):
+    """Match PR207's exact inputs on the single squash candidate following observed 707."""
+    if not trusted_base or not SHA.fullmatch(trusted_base):
+        raise ValueError('Management CI transition requires a fixed trusted main base')
+    git('merge-base', '--is-ancestor', CI_MERGE, trusted_base)
+    for incoming in git('rev-list', f'{CI_MERGE}..{trusted_base}').splitlines():
+        for parent in git('rev-list', '--parents', '-n', '1', incoming).split()[1:]:
+            if any(path.startswith('.github/workflows/') for path in
+                   git('diff', '--no-renames', '--name-only', parent, incoming).splitlines()):
+                raise ValueError('Trusted main has another CI change, even if reverted; retesting required')
+    if git('rev-list', '--parents', '-n', '1', CI_MERGE).split() != [CI_MERGE, CI_PREDECESSOR]:
+        raise ValueError('Management CI transition has a different fixed source history')
+    if source != CI_OBSERVED_SOURCE or parents != [source] or commit != candidate:
+        raise ValueError('Management CI change is not the registered source-to-squash transition')
+    for path in CI_PATHS:
+        before = git('ls-tree', CI_PREDECESSOR, '--', path).split()
+        after = git('ls-tree', CI_MERGE, '--', path).split()
+        if any(len(entry) != 4 or entry[:2] != ['100644', 'blob'] or entry[3] != path
+               for entry in (before, after)) or before == after:
+            raise ValueError('Management CI transition lacks complete regular-file proof')
+        if path == '.github/workflows/ci.yml':
+            # Keep 707's Java/Gradle/Plugin CI; this blob changes only its Python selection.
+            before = ['100644', 'blob', CI_OBSERVED_BEFORE, path]
+            after = ['100644', 'blob', CI_OBSERVED_UPDATE, path]
+        if (git('ls-tree', source, '--', path).split() != before or
+                git('ls-tree', candidate, '--', path).split() != after):
+            raise ValueError('Management CI content or mode differs; retesting required')
+
+
+def unchanged_artifact_history(source, candidate, key, git, trusted_base=None):
     """Share the strict history/Case check across reuse and retained-fact assessment."""
     git('merge-base', '--is-ancestor', source, candidate)
     path = f'docs/verification/changes/issue-{key.split(":")[0]}.json'
@@ -534,8 +569,11 @@ def unchanged_artifact_history(source, candidate, key, git):
                 paths = [p for p in paths if p in source_changes]
             if path in paths:
                 raise ValueError('Case contract history changed; retest required')
+            ci_paths = set(paths) & CI_PATHS
+            if ci_paths:
+                validate_management_ci_transition(source, commit, parents, candidate, trusted_base, git)
             if any(not (p.startswith(allowed) or p in
-                    ('AGENTS.md', 'CLAUDE.md', 'README.md', 'CONTRIBUTING.md')) for p in paths):
+                    ('AGENTS.md', 'CLAUDE.md', 'README.md', 'CONTRIBUTING.md') or p in ci_paths) for p in paths):
                 raise ValueError('Product, build, configuration, fixture or unknown change requires retesting')
     old_change = regular_json(source, path, git)
     new_change = regular_json(candidate, path, git)
@@ -547,7 +585,7 @@ def unchanged_artifact_history(source, candidate, key, git):
         raise ValueError('Reuse requires the same existing Case contract')
 
 
-def validate_fact_assessment(observed, key, policy, candidate, artifact, git):
+def validate_fact_assessment(observed, key, policy, candidate, artifact, git, trusted_base=None):
     assessment = observed.get('responsibility_assessment')
     if assessment is None:
         return
@@ -572,7 +610,7 @@ def validate_fact_assessment(observed, key, policy, candidate, artifact, git):
             assessment['source_result'].get('artifact_sha256', artifact) != artifact):
         raise ValueError('Original aggregate record has a different identity')
     try:
-        unchanged_artifact_history(source, candidate, key, git)
+        unchanged_artifact_history(source, candidate, key, git, trusted_base)
         original_policy = initial_stage_plan(source, source, git)
     except subprocess.CalledProcessError as exc:
         raise ValueError('Retained-fact source or history could not be verified') from exc
@@ -637,7 +675,7 @@ def validate_candidate_result(result, key, policy, stage, candidate, artifact, e
             validate_responsibility_observation(confirmation, key, policy)
         # A reverted product or contract edit also invalidates reuse.
         try:
-            unchanged_artifact_history(source, candidate, key, git)
+            unchanged_artifact_history(source, candidate, key, git, trusted_base)
             entry = policy['cases'].get(key) if policy else None
             if entry or git('ls-tree', source, '--', INITIAL_PLAN):
                 source_policy = initial_stage_plan(source, source, git)
@@ -673,7 +711,7 @@ def validate_candidate_result(result, key, policy, stage, candidate, artifact, e
         validate_responsibility_observation(result.get('initial_observation', {}) if stage else result, key, policy)
     if source == candidate and not reassessed:
         validate_fact_assessment(result.get('initial_observation', {}) if stage else result,
-                                 key, policy, candidate, artifact, git)
+                                 key, policy, candidate, artifact, git, trusted_base)
     if case and policy and key in policy['cases'] and canonical_hash(case) != policy['cases'][key]['current_case_sha256']:
         observed = result.get('initial_observation', {}) if stage else result
         if observed.get('case_sha256') != canonical_hash(effective_responsibility_case(policy, key, case)):
