@@ -22,6 +22,8 @@ python3 scripts/workflow/agent_loop.py scan
 python3 scripts/workflow/agent_loop.py tick --pr 123
 ```
 
+停止writerの登録とHEAD/checkout/base確認を済ませたDraftは、tickがReadyへ遷移させてからリモート完了を待つ。Ready前の同HEAD旧Completedは新しいrequest時点より古ければ採用しない。Ready時に追加review requestを重ねない。
+
 `scan` は対象一覧を確認し、`tick` はレビュー、修正、再レビュー、CI 待ち、merge、終了処理のうち次の工程を実行します。結果を確認し、必要な次の tick を呼びます。PR を省略した tick は明示登録済みの最大 3 件を交代で処理します。`--parent` は実在する親がある場合だけ、`--close-issue` は main の全受入完了時だけ指定します。
 
 公開 handoff は opaque ID・Issue/PR・HEAD/base/target・scope・停止宣言です。source/host は Git common-dir 配下の `agent-loop/registry` に 0600 で保存します。実行状態は移植元からコピーしません。
@@ -38,7 +40,7 @@ queued → reviewing → reviewed
 
 reviewer は read-only、fixer は指定 scope の workspace-write。GitHub token を環境から除き、個人 config の MCP/plugin 設定を読み込ませません。モデルは利用者の選択を維持します。worker は 10 分、fix は 3 回、review は 8 回、通信等の失敗は 3 回で停止します。終了時に worker の子プロセスも停止します。[Codex 非対話実行](https://learn.chatgpt.com/docs/non-interactive-mode)・[CLI 引数](https://learn.chatgpt.com/docs/developer-commands?surface=cli)に基づく起動です。
 
-base 更新は通常 merge → 必要テスト → 非 force push → 独立再レビュー。HEAD/base/target/Issue/本文/feedback が変わると旧承認を失効させます。4 checks、会話解決、strict base、force/削除禁止、bypass なしの実サーバー設定を確認できなければ merge しません。CI を待つ間の Agent review は独立レビューの記録であり、GUI 受入を作り出しません。
+base 更新は通常 merge → 必要テスト → 非 force push → 独立再レビュー。HEAD/base/target/Issue/本文/feedback が変わると旧承認を失効させます。5 checks、会話解決、strict base、force/削除禁止、bypass なしの実サーバー設定を確認できなければ merge しません。CI を待つ間の Agent review は独立レビューの記録であり、GUI 受入を作り出しません。
 
 ## 復旧
 
@@ -58,3 +60,7 @@ develop の実装完了は、Caseがある場合にQAを作成/再利用し、�
 定期実行は明示依頼がある場合に利用環境の正規スケジューラーへ登録します。[coordinator 依頼文](../../prompts/coordinator.md)を使い、trusted directory、対象、worker 許可、時間・回数予算、停止・復旧条件を設定します。変更なしは通知せず、進展・完了・障害・利用者の操作が必要な場合だけ通知します。既存 PAUSED ジョブを再開しません。今回、cron・LaunchAgent・heartbeat は作成していません。
 
 担当間の結果は[チーム連絡](../team-communication.md)の形式でPMへ集約し、人間向けの必要な結果だけを窓口へ渡します。
+
+## 後着指摘後の終了処理再開
+
+merge後にfeedbackが変わるとclosure/cleanupを止めて資源を保持する。指摘を修正先へ移管した根拠や非該当の根拠を既存Issue/PRで固定し、最新terminalと全feedbackを別の許可された独立reviewerへ渡す。通常resumeや対応コメントだけを承認としない。新しい独立報告をprivate JSON `{"binding": <feedback snapshotの全binding>, "review": <validate_review準拠の実独立報告>}` に保存し、trusted mainで `python3 scripts/workflow/agent_loop.py reconcile-feedback --pr N --review <private-json>` を実行する。approved/scope_completeと全binding一致・remote完了・停止/所有を検査した後、次のtickがclosure直前に再取得する。再取得後の変化は再停止する。HEAD/base/target/受入本文が変わった場合は旧GUI/acceptanceを捨て、未達のIssueを閉じない。元writerが再開/消失又はworkerが残っていればこの操作では回復できず、既存の所有/移転確認へ戻る。旧承認は履歴で保持し、この操作で新reviewerを起動したり未修正を自動承認したりしない。

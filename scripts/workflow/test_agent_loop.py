@@ -21,7 +21,7 @@ NEW = 'c' * 40
 
 
 def pr_data():
-    return {'number': 36, 'user': {'login': al.OWNER}, 'state': 'open', 'merged': False, 'draft': True,
+    return {'number': 36, 'user': {'login': al.OWNER}, 'state': 'open', 'merged': False, 'draft': False,
             'body': 'Integration: tooling\nVerification: docs/verification/changes/issue-35.json\nIssue: #35\nGUI: not-required\nGUI reason: documentation only',
             'head': {'sha': HEAD, 'ref': 'codex/35-test', 'repo': {'full_name': al.REPO}},
             'base': {'sha': BASE, 'ref': 'main', 'repo': {'full_name': al.REPO}},
@@ -208,6 +208,7 @@ else:
 class FakeGitHub:
     def __init__(self):
         self.pull = pr_data()
+        self.ready_calls = 0
         self.issues = {35: {'state': 'open', 'title': '[運用] task', 'labels': ['type:maintenance', 'priority:P2', 'status:review'], 'body': '- [ ] correct value'}, 1: {'state': 'open', 'body': '- [ ] #35 task'}}
         self.messages = {}
         self.statuses = []
@@ -220,6 +221,10 @@ class FakeGitHub:
     def pages(self, path): return []
     def review_threads(self, number): return []
     def ci(self, pr): return 'success'
+    def ready(self, pr):
+        self.ready_calls += 1
+        self.pull['draft'] = False
+        return self.pr(pr['number'])
     def status(self, sha, status, description, url): self.statuses.append((sha, status))
     def comment(self, n, body, comment_id=None):
         rows = self.messages.setdefault(n, [])

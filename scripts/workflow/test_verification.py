@@ -381,6 +381,8 @@ class RealPromotionHistoryTests(unittest.TestCase):
                 return subprocess.check_output(['git', *args], cwd=root, env=env,
                                                text=True, stderr=subprocess.DEVNULL).strip()
             git('init', '-b', 'main')
+            # Disposable repos must not leave maintenance writers racing with cleanup.
+            git('config', 'maintenance.auto', 'false')
             git('config', 'user.name', 'Test'); git('config', 'user.email', 'test@example.invalid')
             git('config', 'core.hooksPath', '/dev/null')
             git('config', 'diff.renames', 'true')
@@ -406,7 +408,9 @@ class RealPromotionHistoryTests(unittest.TestCase):
             env = {k: v for k, v in os.environ.items() if not k.startswith('GIT_')}
             def git(*args):
                 return subprocess.check_output(['git', *args], cwd=root, env=env, text=True, stderr=subprocess.DEVNULL).strip()
-            git('init', '-b', 'main'); git('config', 'user.name', 'Test'); git('config', 'user.email', 'test@example.invalid')
+            git('init', '-b', 'main')
+            # Disposable repos must not leave maintenance writers racing with cleanup.
+            git('config', 'maintenance.auto', 'false'); git('config', 'user.name', 'Test'); git('config', 'user.email', 'test@example.invalid')
             git('config', 'core.hooksPath', '/dev/null')
             # Fetch uses this disposable repo only, never the network.
             git('remote', 'add', 'origin', str(root))

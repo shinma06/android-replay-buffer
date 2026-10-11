@@ -78,7 +78,7 @@ merge直前にHEAD/base/feedback hashを再取得し、変更があれば対応�
 
 ## 自動進行と終了
 
-writer が編集・commit・push・GUI を停止してから [自動進行](setup/automation.md) へ登録します。4 checks（test、PR policy、Acceptance gate、Agent review）と会話解決、現在の HEAD/base/受入を再確認し、保護付きの通常 PR merge を使います。
+writer が編集・commit・push・GUI を停止してから [自動進行](setup/automation.md) へ登録します。5 checks（test、PR policy、Acceptance gate、Agent review、CLI Python 3.9）と会話解決、現在の HEAD/base/受入を再確認し、保護付きの通常 PR merge を使います。
 
 merge 後は [作業管理の終了確認](work-management.md) と QA 引継ぎを行います。remote 実 ref、local branch、remote-tracking ref、worktree を照合し、自分の停止済み・clean な資源だけを整理します。squash 後の `--merged` や `[gone]` だけを削除根拠にせず、PR HEAD と統合結果を確認します。main/master/develop、他担当、GUI 使用中、未公開成果物は保全します。
 

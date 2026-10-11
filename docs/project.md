@@ -11,7 +11,7 @@
 | テスト | `tests/test_log_buffer.py` の既存2ケース。実機録画・再接続・動画保存を網羅するものではない |
 | 開発ハーネス | Python 3.11以上、標準ライブラリ、Bash、macOS/Linux。CLIの要求版を変更しない |
 | 統合先 | 製品変更は `develop`。固定候補を `main` へpromotion。GUI不要toolingは `main`。導入PR統合後、そのmain SHAからdevelopを新設する |
-| 必須checks | `test` / `PR policy` / `Acceptance gate` / `Agent review`。実適用は [導入Issue #1](https://github.com/shinma06/android-replay-buffer/issues/1) でreadbackする |
+| 必須checks | `test` / `PR policy` / `Acceptance gate` / `Agent review` / `CLI Python 3.9`。追加contextは対象branchのworkflow導入後に有効化し、実適用は [導入Issue #1](https://github.com/shinma06/android-replay-buffer/issues/1) でreadbackする |
 | 管理 | [Project #5](https://github.com/users/shinma06/projects/5)、[Milestone #1](https://github.com/shinma06/android-replay-buffer/milestone/1)、[作業管理](work-management.md) |
 | Android Studio | プラグイン未実装。SDK/JDK/Gradle/Plugin IDは未選定。[共通知見の入口](android-studio.md)から着手時に適合する |
 

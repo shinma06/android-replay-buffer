@@ -7,7 +7,8 @@
     "python3 scripts/check.py: 管理入力/出典/再利用/最新契約/remote pending/後着指摘の回帰。",
     "python3 scripts/workflow/product_check.py: 現行CLIの既存回帰。",
     "python3 scripts/workflow/change_impact.py --base origin/main --run-tests: clean committed HEADの必要検査。",
-    "GitHub CIのCLI Python 3.9: 宣言済み最小版の互換性。ローカル管理Python成功を3.9成功に転記しない。"
+    "GitHub CIのCLI Python 3.9: 宣言済み最小版の互換性。ローカル管理Python成功を3.9成功に転記しない。",
+    "所有Git fixtureの制御確認: detached GCが親終了後に生存しpackへ書込む。fixture内maintenance.auto=falseで該当writerなし。過去Linux cleanupの原因帰属は未確定。"
   ],
   "cases": []
 }

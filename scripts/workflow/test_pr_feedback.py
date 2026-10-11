@@ -45,6 +45,43 @@ class FeedbackTests(unittest.TestCase):
                    'created_at': '2026-10-11T04:50:00Z', 'updated_at': '2026-10-11T04:51:00Z'}
         self.assertTrue(al.remote_review_complete(HEAD, [summary(), receipt]))
 
+    def test_ready_request_rejects_older_completed_review_on_same_head(self):
+        self.assertFalse(al.remote_review_complete(HEAD, [summary()], '2026-10-11T04:47:00Z'))
+        self.assertTrue(al.remote_review_complete(HEAD, [summary()], '2026-10-11T04:45:00Z'))
+
+    def test_ready_readback_rejects_changed_head_or_target(self):
+        gh = al.GitHub()
+        for field in ('head', 'base'):
+            current = pr_data()
+            if field == 'head':
+                current['head']['sha'] = NEW
+            else:
+                current['base']['ref'] = 'develop'
+            gh.pr = Mock(return_value=current)
+            with patch.object(al, 'command'), self.assertRaisesRegex(ValueError, 'identity'):
+                gh.ready(dict(pr_data(), draft=True))
+
+    def test_python39_failure_missing_check_and_missing_protection_block_merge(self):
+        gh = al.GitHub()
+        checks = [{'name': name, 'state': 'SUCCESS'} for name in al.CI_CHECKS]
+        with patch.object(al, 'command', return_value=json.dumps(checks)):
+            self.assertEqual(gh.ci(pr_data()), 'success')
+        checks[-1]['state'] = 'FAILURE'
+        with patch.object(al, 'command', return_value=json.dumps(checks)):
+            self.assertEqual(gh.ci(pr_data()), 'failure')
+        with patch.object(al, 'command', return_value=json.dumps(checks[:-1])):
+            self.assertEqual(gh.ci(pr_data()), 'pending')
+        rules = json.loads((al.ROOT / '.github/main-ruleset.json').read_text())['rules']
+        for rule in rules:
+            rule['ruleset_id'] = 1
+            if rule['type'] == 'required_status_checks':
+                rule['parameters']['required_status_checks'] = [
+                    x for x in rule['parameters']['required_status_checks'] if x['context'] != 'CLI Python 3.9']
+        gh.api = Mock(return_value=rules)
+        with self.assertRaisesRegex(ValueError, 'protection'):
+            gh.merge(dict(pr_data(), draft=False))
+        self.assertEqual(gh.api.call_count, 1)
+
     def test_pages_and_threads_read_all_pages_and_fail_closed(self):
         gh = al.GitHub()
         with patch.object(al, 'command', return_value=json.dumps([[{'id': 1}], [{'id': 2}]])) as command:
@@ -96,6 +133,26 @@ class FeedbackLoopTests(unittest.TestCase):
         self.assertEqual(self.loop.tick(36)['phase'], 'reviewed')
         self.assertEqual(self.worker.call_count, 1)
 
+    def test_enrolled_draft_becomes_ready_before_wait_without_worker_or_merge(self):
+        self.gh.pull['draft'] = True
+        with patch.object(al, 'remote_review_complete', return_value=False):
+            self.assertEqual(self.loop.tick(36)['phase'], 'remote-review-wait')
+            self.assertFalse(self.gh.pull['draft'])
+            self.assertEqual(self.gh.ready_calls, 1)
+            self.assertEqual(self.loop.tick(36)['phase'], 'remote-review-wait')
+        self.assertEqual(self.gh.ready_calls, 1)
+        self.worker.assert_not_called()
+        self.assertEqual(self.gh.merges, 0)
+        _, state, _, _ = self.loop.load(36)
+        self.assertIn('remote_review_after', state)
+        self.assertEqual(self.loop.tick(36)['phase'], 'reviewed')
+
+    def test_draft_ready_does_not_skip_writer_ownership(self):
+        self.gh.pull['draft'] = True
+        self.loop.source_safe.side_effect = ValueError('writer resumed')
+        self.assertEqual(self.loop.tick(36)['phase'], 'blocked')
+        self.assertEqual(self.gh.ready_calls, 0)
+
     def test_after_merge_late_feedback_blocks_closure_and_cleanup(self):
         self.loop.tick(36)
         original_merge = self.gh.merge
@@ -108,6 +165,51 @@ class FeedbackLoopTests(unittest.TestCase):
         self.assertEqual(self.gh.merges, 1)
         self.assertEqual(self.gh.issues[35]['state'], 'open')
         self.loop.cleanup.assert_not_called()
+
+    def test_merged_feedback_recovery_requires_fresh_independent_bound_disposition(self):
+        self.loop.tick(36)
+        original_merge = self.gh.merge
+        def merge(pr):
+            result = original_merge(pr)
+            self.gh.comment(36, 'Late feedback requiring disposition')
+            return result
+        self.gh.merge = merge
+        self.assertEqual(self.loop.tick(36)['phase'], 'blocked')
+        _, state, _, _ = self.loop.load(36)
+        stale = {'binding': state['binding'], 'review': tal.report()}
+        with self.assertRaisesRegex(ValueError, 'snapshot'):
+            self.loop.reconcile_feedback(self.gh.pr(36), stale)
+        bound, _ = self.loop.bound(self.gh.pr(36), self.gh.issue(35), self.gh.comments(36))
+        blocked = {'binding': bound, 'review': tal.report('changes_requested')}
+        with self.assertRaisesRegex(ValueError, 'Unresolved'):
+            self.loop.reconcile_feedback(self.gh.pr(36), blocked)
+        with patch.object(al, 'remote_review_complete', return_value=False):
+            with self.assertRaisesRegex(ValueError, 'Pending'):
+                self.loop.reconcile_feedback(self.gh.pr(36), {'binding': bound, 'review': tal.report()})
+        evidence = {'binding': bound, 'review': dict(tal.report(), evidence='All late finding IDs have a fixed-source disposition')}
+        self.loop.reconcile_feedback(self.gh.pr(36), evidence)
+        self.assertEqual(self.loop.tick(36)['phase'], 'done')
+        self.assertEqual(self.gh.merges, 1)
+        self.assertEqual(self.worker.call_count, 1)
+        self.loop.cleanup.assert_called_once()
+
+    def test_recovery_new_feedback_still_blocks_and_changed_contract_drops_old_acceptance(self):
+        self.loop.tick(36)
+        self.gh.pull.update(merged=True, state='closed')
+        self.gh.issues[35]['body'] += '\nNew acceptance condition'
+        self.gh.comment(36, 'Late finding disposition is recorded')
+        _, state, sid, _ = self.loop.load(36)
+        state.update(acceptance={'allowed': True}, gui={'old': 'proof'})
+        self.loop.save(self.gh.pr(36), state, sid)
+        bound, _ = self.loop.bound(self.gh.pr(36), self.gh.issue(35), self.gh.comments(36))
+        evidence = {'binding': bound, 'review': dict(tal.report(), issue_complete=False)}
+        fresh = self.loop.reconcile_feedback(self.gh.pr(36), evidence)
+        self.assertNotIn('acceptance', fresh)
+        self.assertNotIn('gui', fresh)
+        self.gh.comment(36, 'Another finding arrives after the independent disposition')
+        self.assertEqual(self.loop.tick(36)['phase'], 'cleanup')
+        self.loop.cleanup.assert_not_called()
+        self.assertEqual(self.gh.issues[35]['state'], 'open')
 
     def test_unlinked_source_rejected_before_any_enrollment_write(self):
         self.gh.messages.clear()

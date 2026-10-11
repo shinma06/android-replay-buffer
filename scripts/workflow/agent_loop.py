@@ -2,7 +2,7 @@
 """One bounded PR transition per tick. Run from trusted main, never from PR code."""
 import argparse
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 import fcntl
 import hashlib
 import json
@@ -32,6 +32,7 @@ HANDOFF = '<!-- agent-loop-handoff:v1 -->'
 HANDOFF_V2 = '<!-- agent-loop-handoff:v2 -->'
 STATE = '<!-- agent-loop-state:v1 -->'
 HOST = socket.gethostname()
+CI_CHECKS = ('test', 'PR policy', 'Acceptance gate', 'CLI Python 3.9')
 
 
 def command(args, cwd=None, timeout=120, check=True):
@@ -110,7 +111,7 @@ class GitHub:
         checks = json.loads(command(['gh', 'pr', 'checks', str(pr['number']), '--repo', REPO,
                                     '--json', 'name,state'], check=False) or '[]')
         states = {x['name']: x['state'] for x in checks}
-        needed = [states.get(x) for x in ('test', 'PR policy', 'Acceptance gate')]
+        needed = [states.get(x) for x in CI_CHECKS]
         if any(x in ('FAILURE', 'ERROR', 'CANCELLED', 'TIMED_OUT', 'ACTION_REQUIRED') for x in needed):
             return 'failure'
         return 'success' if all(x == 'SUCCESS' for x in needed) else 'pending'
@@ -118,7 +119,7 @@ class GitHub:
     def merge(self, pr):
         rules = self.api(f'repos/{REPO}/rules/branches/{pr["base"]["ref"]}')
         by_type = {rule['type']: rule for rule in rules}
-        required = {'test', 'PR policy', 'Acceptance gate', CONTEXT}
+        required = {*CI_CHECKS, CONTEXT}
         checks = by_type.get('required_status_checks', {}).get('parameters', {})
         policy = by_type.get('pull_request', {}).get('parameters', {})
         if (not {'deletion', 'non_fast_forward', 'pull_request', 'required_status_checks'} <= by_type.keys()
@@ -131,12 +132,21 @@ class GitHub:
                 raise ValueError('Automatic integration requires rulesets without bypass actors')
         # Both the head guard and active strict branch rules are enforced by GitHub.
         if pr['draft']:
-            command(['gh', 'pr', 'ready', str(pr['number']), '--repo', REPO])
+            raise ValueError('Draft must be ready and its remote review completed before merge')
         result = self.api(f'repos/{REPO}/pulls/{pr["number"]}/merge', 'PUT',
                           {'sha': pr['head']['sha'], 'merge_method': 'merge' if metadata(pr)[2] == 'promotion' else 'squash'})
         if not result.get('merged'):
             raise RuntimeError('Merge was not confirmed: ' + str(result))
         return result
+
+    def ready(self, pr):
+        command(['gh', 'pr', 'ready', str(pr['number']), '--repo', REPO])
+        current = self.pr(pr['number'])
+        if (current['draft'] or not eligible(current, OWNER, REPO) or
+                current['head']['sha'] != pr['head']['sha'] or current['state'] != 'open' or
+                current['head']['ref'] != pr['head']['ref'] or current['base']['ref'] != pr['base']['ref']):
+            raise ValueError('Ready transition changed PR identity; preserve ownership and re-enroll')
+        return current
 
 
 def unpack(comments, marker):
@@ -231,7 +241,7 @@ class Loop:
         except (ValueError, KeyError, OSError, RuntimeError) as error:
             return {'allowed': False, 'reason': self.private_error(error)}
 
-    def bound(self, pr, issue, comments):
+    def bound(self, pr, issue, comments, remote_after=None):
         value = binding(pr, issue)
         # Only our own changing dashboards are excluded, never other reviewers/bots.
         conversation = [c for c in comments + self.gh.comments(issue_number(pr))
@@ -243,7 +253,7 @@ class Loop:
         threads = self.gh.review_threads(pr['number'])
         feedback = [*conversation, *inline, *reviews, *threads]
         value['feedback_hash'] = hashlib.sha256(json.dumps(feedback, sort_keys=True).encode()).hexdigest()
-        value['remote_review_complete'] = remote_review_complete(pr['head']['sha'], comments)
+        value['remote_review_complete'] = remote_review_complete(pr['head']['sha'], comments, remote_after)
         return value, feedback
 
     def source_safe(self, h):
@@ -349,7 +359,7 @@ class Loop:
                     self.invalidate_acceptance(state)
                 else:
                     raise ValueError('External push after handoff; explicit re-enrollment required')
-            bound, feedback = self.bound(pr, issue, comments)
+            bound, feedback = self.bound(pr, issue, comments, state.get('remote_review_after'))
             if any(record and any(record.get(k) != bound[k] for k in ('head', 'base'))
                    for record in (state.get('binding'), state.get('gui'))):
                 self.invalidate_acceptance(state)
@@ -401,6 +411,14 @@ class Loop:
                 self.test_and_push(pr, path, state)
                 self.save(pr, state, comment_id)
                 return {'pr': number, 'phase': 'base-synced'}
+            if pr['draft']:
+                self.invalidate_acceptance(state)
+                state['remote_review_after'] = datetime.now(timezone.utc).isoformat()
+                state.update(phase='remote-review-wait', next='Mark enrolled stopped-writer Draft ready, then read its new terminal review')
+                comment_id = self.save(pr, state, comment_id)
+                pr = self.gh.ready(pr)
+                self.save(pr, state, comment_id)
+                return {'pr': number, 'phase': 'remote-review-wait'}
             if state.get('binding') == bound and state.get('review'):
                 validate_review(state['review'], bound)
             gui_needed = h['gui_required'] or bool(state.get('review', {}).get('gui_required'))
@@ -448,7 +466,7 @@ class Loop:
                 if latest_issue.get('state') != 'open' or 'pull_request' in latest_issue:
                     raise ValueError('Issue must remain open until scoped acceptance is evaluated')
                 validate_issue(latest_issue)
-                now, _ = self.bound(latest, latest_issue, self.gh.comments(number))
+                now, _ = self.bound(latest, latest_issue, self.gh.comments(number), state.get('remote_review_after'))
                 if now != bound or self.gh.ci(latest) != 'success' or not self.acceptance(latest, path)['allowed']:
                     self.invalidate_acceptance(state)
                     state.update(phase='queued', next='PR/base/acceptance changed before merge; reconcile again')
@@ -501,7 +519,7 @@ class Loop:
         bound = state.get('binding', {})
         report = state.get('review', {})
         current_issue = self.gh.issue(h['issue'])
-        now, _ = self.bound(pr, current_issue, self.gh.comments(pr['number']))
+        now, _ = self.bound(pr, current_issue, self.gh.comments(pr['number']), state.get('remote_review_after'))
         if (now.get('feedback_hash') != bound.get('feedback_hash') or
                 now.get('remote_review_complete') is not True):
             raise ValueError('Feedback changed or remote review is pending after merge; preserve scope/resources for disposition')
@@ -534,7 +552,7 @@ class Loop:
         issue = self.gh.issue(h['issue'])
         if complete and bound.get('issue_hash') != binding(pr, issue)['issue_hash']:
             raise ValueError('Issue acceptance changed during handoff; re-review before closure')
-        fresh, _ = self.bound(pr, issue, self.gh.comments(pr['number']))
+        fresh, _ = self.bound(pr, issue, self.gh.comments(pr['number']), state.get('remote_review_after'))
         if fresh.get('feedback_hash') != now.get('feedback_hash') or fresh.get('remote_review_complete') is not True:
             raise ValueError('Feedback changed during handoff; preserve scope/resources before closure')
         if complete and issue['state'] == 'open':
@@ -554,6 +572,33 @@ class Loop:
                      merge_sha=pr['merge_commit_sha'])
         self.save(pr, state, comment_id)
         return {'pr': pr['number'], 'phase': 'done', 'issue_closed': bool(complete)}
+
+    def reconcile_feedback(self, pr, evidence):
+        h, state, sid, comments = self.load(pr['number'])
+        if (not pr.get('merged') or not eligible(pr, OWNER, REPO) or not h or
+                h.get('host') != HOST or h.get('writer_stopped') is not True or
+                h.get('pr') != pr['number'] or h.get('issue') != issue_number(pr) or
+                h.get('branch') != pr['head']['ref'] or h.get('target', 'main') != pr['base']['ref'] or
+                state.get('expected_head', h['head']) != pr['head']['sha']):
+            raise ValueError('Feedback recovery requires the unchanged local merged handoff')
+        if (self.storage / f'pr-{pr["number"]}' / 'worker.json').exists():
+            raise ValueError('Worker must be stopped before feedback recovery')
+        self.source_safe(h)
+        bound, _ = self.bound(pr, self.gh.issue(h['issue']), comments, state.get('remote_review_after'))
+        if not bound['remote_review_complete'] or evidence.get('binding') != bound:
+            raise ValueError('Pending or changed feedback; independent disposition must bind the exact snapshot')
+        report = evidence['review']
+        validate_review(report, bound)
+        if report['verdict'] != 'approved':
+            raise ValueError('Unresolved feedback cannot resume closure or cleanup')
+        previous = state.get('binding', {})
+        if any(previous.get(k) != bound[k] for k in ('head', 'base', 'target', 'body_hash', 'issue_hash')):
+            for key in ('gui', 'acceptance'):
+                state.pop(key, None)
+        state.update(binding=bound, review=report, phase='cleanup', paused=False, errors=0, retry_at=0,
+                     next='Independent feedback disposition fixed; re-read before closure/cleanup')
+        self.save(pr, state, sid)
+        return state
 
     def cleanup(self, pr, h):
         from gui_lease import locked, transition
@@ -603,7 +648,7 @@ class Loop:
             git('update-ref', '-d', ref, old)
 
 
-def remote_review_complete(head, comments):
+def remote_review_complete(head, comments, not_before=None):
     summaries = [c for c in comments if c['user']['login'] == 'chatgpt-codex-connector[bot]' and
                  c['body'].startswith('<!-- codex-pull-request-review-summary -->')]
     if len(summaries) != 1:
@@ -622,6 +667,8 @@ def remote_review_complete(head, comments):
         requests = [datetime.fromisoformat(c.get('updated_at', c['created_at']).replace('Z', '+00:00'))
                     for c in comments if c['user']['login'] != 'chatgpt-codex-connector[bot]' and
                     re.search(r'^\s*@codex\s+review\b', c['body'], re.M)]
+        if not_before:
+            requests.append(datetime.fromisoformat(not_before.replace('Z', '+00:00')))
         if completed.tzinfo is None or any(at.tzinfo is None for at in requests):
             return False
     except (KeyError, ValueError):
@@ -745,6 +792,9 @@ def main():
     rebound.add_argument('--migration-record', type=Path, help='Private verified directory migration JSON')
     resume = sub.add_parser('resume'); resume.add_argument('--pr', type=int, required=True)
     resume.add_argument('--reason', required=True)
+    recovery = sub.add_parser('reconcile-feedback', help='Bind a fresh independent disposition for an unchanged merged PR')
+    recovery.add_argument('--pr', type=int, required=True)
+    recovery.add_argument('--review', type=Path, required=True)
     gui = sub.add_parser('gui'); gui.add_argument('--pr', type=int, required=True); gui.add_argument('--evidence', type=Path, required=True); gui.add_argument('--lease-token', required=True)
     args = parser.parse_args()
     ROOT = args.repo_root.resolve()
@@ -766,6 +816,8 @@ def main():
                 result = rebind_target(loop, args)
             elif args.action == 'enroll':
                 result = enroll(loop, args)
+            elif args.action == 'reconcile-feedback':
+                result = loop.reconcile_feedback(loop.gh.pr(args.pr), json.loads(args.review.read_text()))
             elif args.action in ('resume', 'gui'):
                 pr = loop.gh.pr(args.pr); h, state, sid, comments = loop.load(args.pr)
                 if not h or h['host'] != HOST:
@@ -779,7 +831,7 @@ def main():
                                 current.get('issue') != h['issue'] or current.get('head') != pr['head']['sha'] or
                                 current.get('owner') != evidence.get('observer')):
                             raise ValueError('GUI evidence requires the current designated operator lease')
-                    bound, _ = loop.bound(pr, loop.gh.issue(h['issue']), comments)
+                    bound, _ = loop.bound(pr, loop.gh.issue(h['issue']), comments, state.get('remote_review_after'))
                     if not gui_pass(evidence, bound):
                         raise ValueError('GUI evidence is incomplete or belongs to another HEAD/base')
                     state['gui'] = evidence

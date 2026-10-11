@@ -218,6 +218,8 @@ class ReuseHistoryTests(unittest.TestCase):
             def git(*args):
                 return subprocess.check_output(['git', '-C', folder, *args], text=True, stderr=subprocess.DEVNULL).strip()
             git('init', '-q')
+            # Disposable repos must not leave maintenance writers racing with cleanup.
+            git('config', 'maintenance.auto', 'false')
             git('config', 'user.name', 'Test')
             git('config', 'user.email', 'test@example.invalid')
             path = Path(folder) / CASE_PATH
@@ -260,6 +262,8 @@ class ReuseHistoryTests(unittest.TestCase):
             def git(*args):
                 return subprocess.check_output(['git', '-C', folder, *args], text=True, stderr=subprocess.DEVNULL).strip()
             git('init', '-q')
+            # Disposable repos must not leave maintenance writers racing with cleanup.
+            git('config', 'maintenance.auto', 'false')
             git('config', 'user.name', 'Test')
             git('config', 'user.email', 'test@example.invalid')
             (Path(folder) / 'README.md').write_text('base')
