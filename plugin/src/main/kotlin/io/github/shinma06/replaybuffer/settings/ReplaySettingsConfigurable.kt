@@ -77,11 +77,12 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable {
                 override fun getPreferredSize(): Dimension {
                     val size = super.getPreferredSize().apply { width = 0 }
                     val container = parent ?: return size
-                    // This full-width row must wrap at the current form width before its height is allocated.
-                    val contentWidth = container.width - container.insets.left - container.insets.right -
-                        insets.left - insets.right
+                    val textUi = getUI()
+                    val view = textUi.getRootView(this)
+                    // The UI reserves both component insets and caret space outside the text span.
+                    val reservedWidth = textUi.getPreferredSize(this).width - view.getPreferredSpan(View.X_AXIS).toInt()
+                    val contentWidth = container.width - container.insets.left - container.insets.right - reservedWidth
                     if (contentWidth > 0) {
-                        val view = getUI().getRootView(this)
                         view.setSize(contentWidth.toFloat(), Float.MAX_VALUE)
                         size.height = ceil(view.getPreferredSpan(View.Y_AXIS).toDouble()).toInt() +
                             insets.top + insets.bottom

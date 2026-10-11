@@ -66,9 +66,26 @@ class ReplaySettingsLayoutTest {
                         panel.setBorder(JBUI.Borders.empty(11, 16, 16, 16));
                         var scroll = ScrollPaneFactory.createScrollPane(null, true);
                         scroll.setViewport(new GradientViewport(panel, JBUI.insetsTop(5), true));
+                        var reference = new JBTextArea(guide.getText());
+                        reference.setFont(guide.getFont());
+                        reference.setBorder(guide.getBorder());
+                        reference.setMargin(guide.getMargin());
+                        reference.setLineWrap(true);
+                        reference.setWrapStyleWord(true);
+                        int boundary = -1;
+                        int previousHeight = naturalHeight(reference, 400);
+                        for (int width = 401; width <= 1800; width++) {
+                            int height = naturalHeight(reference, width);
+                            if (height < previousHeight) boundary = width;
+                            previousHeight = height;
+                        }
+                        assertTrue(boundary > 0, "the actual font must have a measured wrap transition");
+                        int padding = panel.getInsets().left + panel.getInsets().right;
+                        int wide = boundary + padding;
+                        int narrow = wide - 1;
                         var rowEnds = new ArrayList<Integer>();
                         var heights = new ArrayList<Integer>();
-                        for (int width : new int[]{600, 800, 600}) {
+                        for (int width : new int[]{wide, narrow, wide, narrow, 600, 800, 600}) {
                             scroll.setSize(width, 650);
                             layout(scroll);
                             int viewportWidth = scroll.getViewport().getExtentSize().width;
@@ -95,11 +112,16 @@ class ReplaySettingsLayoutTest {
                             }
                             heights.add(guide.getHeight());
                         }
-                        assertEquals(rowEnds.getFirst(), rowEnds.getLast(), "narrow wrapping must recover");
-                        // Both widths can already fit the full guidance with the current font.
-                        assertTrue(rowEnds.get(1) >= rowEnds.getFirst(), "wide guidance must not wrap earlier: " + rowEnds);
-                        assertEquals(heights.getFirst(), heights.getLast(), "narrow height must recover");
-                        assertTrue(heights.getFirst() >= heights.get(1), "narrow guidance must retain sufficient wrapped height");
+                        assertEquals(rowEnds.get(0), rowEnds.get(2), "wide wrapping must recover");
+                        assertEquals(rowEnds.get(1), rowEnds.get(3), "boundary wrapping must recover");
+                        assertTrue(rowEnds.get(0) > rowEnds.get(1), "the measured boundary must change wrapping: " + rowEnds);
+                        assertEquals(heights.get(0), heights.get(2), "wide height must recover");
+                        assertEquals(heights.get(1), heights.get(3), "boundary height must recover");
+                        assertTrue(heights.get(0) < heights.get(1), "the measured boundary must add a line: " + heights);
+                        assertEquals(rowEnds.get(4), rowEnds.get(6), "600px wrapping must recover");
+                        assertEquals(heights.get(4), heights.get(6), "600px height must recover");
+                        // Both fixed widths can already fit the full guidance with the current font.
+                        assertTrue(rowEnds.get(5) >= rowEnds.get(4), "800px guidance must not wrap earlier: " + rowEnds);
                         assertEquals(destination, ((TextFieldWithBrowseButton) fields.get(1)).getText());
                         assertFalse(configurable.isModified());
                         assertEquals(saved, store.getState(), "layout must not apply settings");
@@ -125,8 +147,20 @@ class ReplaySettingsLayoutTest {
         return null;
     }
 
+    private static int naturalHeight(JBTextArea reference, int width) {
+        reference.setSize(width, Integer.MAX_VALUE);
+        return reference.getUI().getPreferredSize(reference).height;
+    }
+
     private static void layout(Container parent) {
-        parent.doLayout();
-        for (Component child : parent.getComponents()) if (child instanceof Container container) layout(container);
+        try {
+            var validateTree = Container.class.getDeclaredMethod("validateTree");
+            validateTree.setAccessible(true);
+            synchronized (parent.getTreeLock()) {
+                validateTree.invoke(parent);
+            }
+        } catch (ReflectiveOperationException e) {
+            throw new AssertionError(e);
+        }
     }
 }
