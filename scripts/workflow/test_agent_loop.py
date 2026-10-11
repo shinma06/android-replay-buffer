@@ -285,7 +285,7 @@ class LoopTests(unittest.TestCase):
         state = {'review': report(), 'binding': {'head': HEAD}}
         with patch.object(al, 'command', return_value='') as commands:
             al.Loop.test_and_push(self.loop, pr_data(), self.checkout, state)
-        commands.assert_called_once_with(['python3', 'scripts/check.py'], self.checkout, 600)
+        commands.assert_called_once_with([sys.executable, 'scripts/check.py'], self.checkout, 600)
         self.impact.assert_called_once_with(BASE, HEAD, cwd=self.checkout)
         self.assertEqual(state['phase'], 'queued')
         self.assertNotIn('review', state)
@@ -395,8 +395,8 @@ class LoopTests(unittest.TestCase):
         with patch.object(al, 'command', return_value='') as commands:
             self.assertEqual(self.loop.tick(36)['phase'], 'base-synced')
         self.assertEqual([c.args[0] for c in commands.call_args_list], [
-            ['python3', 'scripts/check.py'],
-            ['python3', 'scripts/workflow/product_check.py']])
+            [sys.executable, 'scripts/check.py'],
+            [sys.executable, 'scripts/workflow/product_check.py']])
         self.assertTrue(any(c.args == ('push', 'origin', 'HEAD:refs/heads/codex/35-test')
                             for c in al.git.call_args_list))
         _, state, _, _ = self.loop.load(36)

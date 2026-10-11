@@ -16,6 +16,20 @@
 
 Python標準ライブラリだけで共通ツールが動きます。Node/npmはContext7のstdio版やPonytail等、選んだ外部ツールが必要とする場合に導入します。製品のAndroid Studio SDK/JDK・実機の条件はdocs/project.mdへ記載し、ハーネスの依存と分けます。
 
+技術スタックは依存関係に問題がなければ最新stableを使います。更新時に一次情報と実版を確認し、互換性の問題があれば最新stableに適合する公式・既存の方法を先に調べ、妥当な方法を採用します。実現できない場合だけ更新可能な最大のstableを選び、具体的な制約と再開条件をIssue/PRへ残します。pre-releaseは採用しません。製品の固定候補・SDK/build・対応版の契約は各変更の検証と統合手順を通して更新し、版の方針だけで既存受入を読み替えません。
+
+主検査版は[プロジェクト情報](../project.md)、最新stableの確認は[Python公式](https://www.python.org/downloads/)を参照します。管理scriptの最低対応3.11（`tomllib`を使用）と主検査版は別です。CLIのPython 3.9以上と専用互換CIは維持します。CIは既存の[setup-python](https://github.com/actions/setup-python/blob/v5/docs/advanced-usage.md#specifying-a-python-version)で確認したstableを指定します。
+
+プロジェクト検査では既存managerが提供する明示版を選び、OS Python・global defaultsを変更せずに実行します。Homebrewの3.15を検査で選ぶ例は次のとおりです。導入や既定版の選択を含むホスト環境整備はプロジェクトとは別の作業として管理します。
+
+```bash
+export PATH="$(brew --prefix python@3.15)/bin:$PATH"
+python3 --version
+python3 scripts/check.py
+```
+
+このPATHを選んだshellでbootstrap・commit/pushも実行し、hooksの`python3`を揃えます。Python内の検査起動は`sys.executable`で親と同じ版を使います。実runtimeと子processを照合してから検査結果を記録し、PATH変更はそのshellの終了で戻せます。
+
 macOS/Linuxが共通CLIの対象です。GUI leaseは `fcntl` と同一OSユーザーのPOSIX権限を利用します。Windows nativeの動作は未確認です。WSLでコード検証する場合も、Windowsデスクトップ操作とは別ホスト扱いにせず、実際に共有する画面の操作者・予約を一本化してください。WSLのlockファイルがWindows側の操作を強制禁止するわけではありません。
 
 新しい環境で自分のPATHを確認します。GUIアプリから起動するCLIは対話shellとPATHが異なる場合があります。既存機のNode絶対パス、app bundle内部の実行ファイル、socket、trusted code pathsは移植せず、正式なinstallerが再生成する値を使います。

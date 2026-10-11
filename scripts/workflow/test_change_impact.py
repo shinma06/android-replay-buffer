@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -11,6 +12,14 @@ import change_impact as ci
 
 
 class ClassificationTest(unittest.TestCase):
+    def test_checks_keep_selected_interpreter_when_path_points_elsewhere(self):
+        with patch.object(ci.sys, 'executable', '/selected/python3'), patch.dict(os.environ, PATH='/other'):
+            result = ci.classify([], reason='missing history')
+            self.assertEqual(ci.test_commands(result), [
+                ['/selected/python3', 'scripts/check.py'],
+                ['/selected/python3', 'scripts/workflow/product_check.py'],
+            ])
+
     def test_required_eight_cases_and_semantic_exceptions(self):
         cases = [
             (['AGENTS.md'], {ci.KNOWLEDGE}, False),
@@ -128,7 +137,7 @@ class GitImpactTest(unittest.TestCase):
 
     def test_test_runner_rejects_dirty_or_different_checkout(self):
         self.write('docs/design.md', 'dirty\n')
-        command = ['python3', str(Path(ci.__file__).resolve()), '--base', self.base, '--run-tests']
+        command = [sys.executable, str(Path(ci.__file__).resolve()), '--base', self.base, '--run-tests']
         dirty = subprocess.run(command, cwd=self.root, env=self.env, capture_output=True)
         self.assertNotEqual(dirty.returncode, 0)
         self.commit()
@@ -145,7 +154,7 @@ class GitImpactTest(unittest.TestCase):
             summary = self.root / '.git/summary'; summary.write_text('')
             env = dict(self.env, GITHUB_EVENT_NAME=event_name, GITHUB_EVENT_PATH=str(event),
                        GITHUB_OUTPUT=str(output), GITHUB_STEP_SUMMARY=str(summary))
-            subprocess.run(['python3', script, '--event', '--head', head], cwd=self.root,
+            subprocess.run([sys.executable, script, '--event', '--head', head], cwd=self.root,
                            env=env, check=True, capture_output=True)
             self.assertIn('product_check=' + str(expected).lower(), output.read_text())
             self.assertIn('Change Impact', summary.read_text())
