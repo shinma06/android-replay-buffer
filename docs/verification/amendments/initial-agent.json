@@ -2,7 +2,7 @@
   "schema": 1,
   "issue": 64,
   "stage": "initial-agent",
-  "required_ancestor": "4d278e65dec0c55e71d584ff24c7f6fa407586cb",
+  "required_ancestor": "06419bd17dddc00a1b57c086be4e86d6184e945f",
   "followup_issue": 65,
   "owner": "Codex PM（管理）・QA #27担当（手順と証拠保全）。後続の人間実行者は再開時に割当。",
   "resume_condition": "初期版完成後、利用者が後続確認へ着手するときに実機・担当・固定候補を決める。CUA制約の部分は人間の対応または実際の操作経路復旧後。未実施の再質問で初期版を停止しない。",
@@ -2836,6 +2836,23 @@
         "PR200実統合版の全前提・全3手順・expected・再確認条件を保持する。同候補/source・標準ZIP/全JAR hashの製品classを差替えず、LocalCaptureOwnershipTestと既存Core/Store/取得/保存/寿命回帰を実行する。停止済みowner/lock/PID-start/namespace/root/resource identity・容量/unknown/frozen/pin/登録失敗/権限/終了失敗とschema2固定枠journalの有界増分/slot再利用/partial/checksum/padding/旧schema1保全を全対象照合する。",
         "同候補/同ZIP/実ロードのQA27と、所有project起動時の停止済みknown helperの取得root限定回収・有効設定復元、通常取得→Save→継続取得→OFF/通常closeを共有する。live/unknown/別project/完成済み保存物を保全しremote cleanupを維持する。取得root回収は失敗・取消し保存attemptの残留回収ではない。実IDE crash/kill全反復・host-temp走査・跨IDE retry復元・新QA・human必須・延期を追加せず、pure回帰をnative PASSへ転記しない。"
       ]
+    },
+    "216:SETTINGS-WIDTH-RECOVERY": {
+      "sources": [
+        {
+          "source_pr": 218,
+          "source_merge": "06419bd17dddc00a1b57c086be4e86d6184e945f",
+          "source_path": "docs/verification/changes/issue-216.json",
+          "original_case_sha256": "e53106b34733bd505bdd9740892674cbc2acf703ba204b06708d5768d9e9d8f3"
+        }
+      ],
+      "current_case_sha256": "e53106b34733bd505bdd9740892674cbc2acf703ba204b06708d5768d9e9d8f3",
+      "initial_scope": "agent",
+      "deferred_scope": [],
+      "agent_requirements": [
+        "PR218実統合版の全前提・全2手順・expected・再確認条件を保持する。同候補/source・標準ZIP/全JAR hashの実ReplaySettingsConfigurable/Store製品classを差替えず、短い/長い保存先を区別した600→800→600の限定SDK JVM回帰でフォーム・全field・案内の幅復帰、折り返し高さ/最終文字、accessible Help/非focusとStore不変を確認する。JVM/build成功をnative PASSへ転記しない。",
+        "QA27/175の同候補/同ZIP/実ロード・専用fixture・取得OFFで、Settings狭幅→広幅→元の狭幅、案内全文/最終文字/自然な高さと入力欄の収まり、代表field編集・有効値Apply・未適用Cancel/reopen・元設定復元を実観察する。900→1100→900・高さ700は元再現条件で最小窓幅の指定ではない。同条件で元173/27/121の全有効条件を満たす観察を共有できるが、本Case単独で元Case全体をPASSにしない。旧707の観察/失敗/未達とhuman/REAL延期を保持し、新human義務・延期・全GUI matrix・QAを追加しない。"
+      ]
     }
   },
   "responsibility_revision": {
@@ -3043,7 +3060,8 @@
           "60:APP-MANUAL-GUIDANCE-EMU",
           "60:APP-MANUAL-GUIDANCE-REAL",
           "121:EMPTY-DESTINATION-GUIDANCE",
-          "173:PACKAGE-INPUT-GUIDANCE"
+          "173:PACKAGE-INPUT-GUIDANCE",
+          "216:SETTINGS-WIDTH-RECOVERY"
         ],
         "disposition": "統合",
         "purpose": "一括Apply/Cancel/復元・自動/手動/SDK/端末帰属・最新結果/EDT/dispose/可読性/accessibility。",
@@ -3533,13 +3551,15 @@
       }
     },
     "plan_extension": {
-      "issue": 201,
+      "issue": 219,
       "previous_required_ancestor": "5bf9e84a887171df5f0287b036e9ba288fbfae9f",
       "added_cases": [
         "186:CLOCK-BATCH-SAVE",
         "197:SAVE-FAILURE-OWNERSHIP",
-        "198:LOCAL-OWNERSHIP-RECOVERY"
-      ]
+        "198:LOCAL-OWNERSHIP-RECOVERY",
+        "216:SETTINGS-WIDTH-RECOVERY"
+      ],
+      "previous_plan_sha256": "6d11e3cdee0b6189c743fb1a4c8ee3a4e582d72af7e9643bb001536dd4e0c79f"
     },
     "installation_revision": {
       "issue": 208,

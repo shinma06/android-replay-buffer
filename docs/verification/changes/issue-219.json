@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "issue": 219,
+  "gui_required": false,
+  "reason": "実develop merge PR218のSettings幅復帰Caseを正式計画へ接続し、登録旧138計画の固定hash照合と履歴callerを維持する管理変更。製品・CLI・build・fixture・原Case・元観察/失敗は変更せず、GUI/device/導入/再起動は不要。新候補のnative検証は既存QA27/175、human/REAL延期はQA65、main製品反映はrelease10へPMが後続移管する。Caseなしのため新QAを作成しない。",
+  "cli_checks": [
+    "python3 scripts/check.py",
+    "python3 scripts/workflow/product_check.py",
+    "python3 -m unittest discover -s scripts/workflow -p test_responsibility_revision.py",
+    "python3 scripts/workflow/change_impact.py --base origin/main --run-tests"
+  ],
+  "cases": []
+}
