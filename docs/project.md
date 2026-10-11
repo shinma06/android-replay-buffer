@@ -58,7 +58,7 @@ GeForceアプリやOBSのリプレイバッファから着想を得て、直近�
 | テスト | CLIは `tests/test_log_buffer.py` の既存2ケース。プラグインは `plugin/src/test/` のJVMテストで時計・保存・process所有・合成wire・設定/寿命を検証する。実機/IDE受入は別のCaseで確認する |
 | 開発ハーネス | Python 3.11以上、標準ライブラリ、Bash、macOS/Linux。CLIの要求版を変更しない |
 | 統合先 | 製品変更は `develop`。固定候補を `main` へpromotion。GUI不要toolingは `main`。main/developは作成済み |
-| 必須checks | `test` / `PR policy` / `Acceptance gate` / `Agent review`。実適用は [導入Issue #1](https://github.com/shinma06/android-replay-buffer/issues/1) でreadbackする |
+| 必須checks | `test` / `PR policy` / `Acceptance gate` / `Agent review` / `CLI Python 3.9`。追加contextは対象branchのworkflow導入後に有効化し、実適用は [導入Issue #1](https://github.com/shinma06/android-replay-buffer/issues/1) でreadbackする |
 | 管理 | [Project #5](https://github.com/users/shinma06/projects/5)、[基盤・残QAのMilestone #2](https://github.com/shinma06/android-replay-buffer/milestone/2)、[初期版のMilestone #3](https://github.com/shinma06/android-replay-buffer/milestone/3)、[作業管理](work-management.md) |
 | Android Studio | Rabbit 1 / JDK 25 / Gradle 9.7.1 / Kotlin 2.4.20。ID `io.github.shinma06.android-replay-buffer`。[開発手順](plugin-development.md)、[共通知見](android-studio.md) |
 
@@ -74,6 +74,6 @@ python3 scripts/workflow/plugin_check.py
 python3 scripts/workflow/change_impact.py --base origin/main --run-tests
 ```
 
-check.pyは管理ファイル・リンク・symlink・秘密候補の限定検査とハーネス回帰試験、product_check.pyはCLI原型21ファイルの保全照合と既存unittest、plugin_check.pyはGradleのcheck/buildPlugin/verifyPluginStructureです。daemonやADB、録画、launchd、IDEを起動しません。IDE/実機受入はCase JSONで別に管理します。
+check.pyは管理ファイル・リンク・symlink・秘密候補の限定検査とハーネス回帰試験、product_check.pyはCLI原型21ファイルの保全照合・全12 Pythonモジュールのcompile/import・既存2ケース、plugin_check.pyはGradleのcheck/buildPlugin/verifyPluginStructureです。Python3.9 jobは同じCLI検査と、未読込みモジュールに3.10構文を入れた所有fixtureの拒否回帰を実行します。構文・import確認はAPI/録画/実機互換性全体の保証ではありません。daemonやADB、録画、launchd、IDEを起動しません。IDE/実機受入はCase JSONで別に管理します。
 
 CLI変更ではprocessの所有と停止、再接続、バッファ容量、時刻対応、保存失敗時のデータ保全、ログの秘密情報を確認します。Android Studio側はLifecycle/EDT/dispose、非同期設定反映、購読解除と取得process終了を確認します。DBを使用しないためDBクエリ検証は対象外です。

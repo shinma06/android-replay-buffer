@@ -1,5 +1,7 @@
 # 人間向けQAの進め方
 
+現在の試験範囲は[製品責任と最小検証](responsibility.md)とtrusted正式計画の有効条件を使います。元条文・旧人間指定・外部全Play/精密seek・全件GUI検索の反復をそのまま依頼しません。全データ/内容・同期/失敗保全・実integrationとREAL準備は保持し、原文/結果履歴と改訂後の不足を分けます。
+
 [QA一覧](https://github.com/users/shinma06/projects/5)から対象Issueを開き、元Issue/PR、Case JSON、候補SHA・成果物hash・担当・未実施項目を確認します。Caseの前提や期待が不足する場合は観察を始めず、担当が補います。
 
 1. GUI leaseと他のIDE/端末/daemon利用者を確認し、専用fixtureと対象端末を用意する。既存ログ/録画を上書きしない。

@@ -70,9 +70,15 @@ IDE/build/process/保存/UI/検証/共通ハーネスに関係する変更は、
 
 製品コード・build設定を tooling として迂回させません。develop は `Refs #N` を使い、自動 close 文言は禁止です。独立レビュー・CI 失敗は GUI 未実施とは別で、解消するまで統合しません。
 
+リモート指摘は[finish-work](../.agents/skills/finish-work/SKILL.md)の取得・対応手順で照合します。`python3 scripts/workflow/agent_loop.py feedback --pr N`は読取専用です。raw結果はprivateに保存し、review本文、inline/返信、PR/Issue conversation、botの最新summary、解決/旧版状態を省略せず確認します。既存Issue/PRへ指摘ID/URL・元commit・現固定版の修正/検査又は根拠付き非該当/置換を残し、不明・未解決を承認しません。
+
+DraftをreadyにするとCodexレビューが非同期に始まります。取得時に空でも完了ではなく、現在HEADのCode Reviewがprovider summaryでCompletedになるまでpendingです。旧版の完了・reaction・CI成功・一定時間の経過を代用せず、観測不能/失敗/format変更は未達と次のreadbackを引き継ぎます。可視summaryはサービスの完了信号であり、独立コード承認や将来の追加指摘がない保証ではありません。投稿済みの全指摘を処理し、修正後の固定版を独立レビューします。
+
+merge直前にHEAD/base/feedback hashを再取得し、変更があれば対応判断とレビューをやり直します。merge後・close前も読み戻します。後着・編集で具体的な未解決指摘が出たら、原Issue又は専用修正Issueに元レビューと実再現・担当・次操作を残して該当範囲を再開します。過去の承認は当時のsnapshotとして保存し、指摘なしの永久保証にしません。常駐監視、余分な本人承認、終了済みwriterの暗黙再開は追加しません。
+
 ## 自動進行と終了
 
-writer が編集・commit・push・GUI を停止してから [自動進行](setup/automation.md) へ登録します。4 checks（test、PR policy、Acceptance gate、Agent review）と会話解決、現在の HEAD/base/受入を再確認し、保護付きの通常 PR merge を使います。
+writer が編集・commit・push・GUI を停止してから [自動進行](setup/automation.md) へ登録します。5 checks（test、PR policy、Acceptance gate、Agent review、CLI Python 3.9）と会話解決、現在の HEAD/base/受入を再確認し、保護付きの通常 PR merge を使います。
 
 merge 後は [作業管理の終了確認](work-management.md) と QA 引継ぎを行います。remote 実 ref、local branch、remote-tracking ref、worktree を照合し、自分の停止済み・clean な資源だけを整理します。squash 後の `--merged` や `[gone]` だけを削除根拠にせず、PR HEAD と統合結果を確認します。main/master/develop、他担当、GUI 使用中、未公開成果物は保全します。
 

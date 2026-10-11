@@ -8,7 +8,7 @@
 | hooks・doctor/check・secret/path/link検査 | template＋既存移植の未追跡ファイル検査。製品sourceを保全 |
 | Issue・Project・Milestone・実Relationship | 同じtype/priority/status、6 Views、QA分離、終了readback。導入先の新規ID |
 | 変更影響 | CI/hooks/coordinator共通。Python/CLI/config/launchdへ適合、未知・mixed・rename/delete/mode・不完全履歴は安全側 |
-| 二段階統合・Case・4 checks | trusted baseのAcceptance gate、metadata policy、固定HEAD/baseレビュー、main/develop保護 |
+| 二段階統合・Case・5 checks | trusted baseのAcceptance gate、metadata policy、固定HEAD/baseレビュー、main/develop保護 |
 | PR coordinator・worker・QA・cleanup・監査 | 共通engineを再利用。別repoへのAPI操作を防ぐrepo定数とlockを変更。停止/所有/privacy・保護readbackの追加修正も保持 |
 | GUI lease | Cursor側で実際に使うhost/user namespaceへ接続。独立した予約を作って同じIDE/端末を並行操作しない |
 | private registry | opaque公開IDとprivateなpath/host。元の登録は移植しない |

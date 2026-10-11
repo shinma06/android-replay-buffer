@@ -1,5 +1,7 @@
 # 受入・固定候補・QA
 
+**現在の保証境界**: [製品責任と最小検証（#182）](responsibility.md)と正式計画の`responsibility_revision`を適用します。原Case/旧計画/以下の過去改訂説明は履歴として保持し、外部player全Play/精密seek・一律human番号読取り・native故障全種反復・無変更artifactの再build義務は明示改訂後の有効条件で判断します。未達をPASSにしません。gateと一覧は同じresolverを使います。
+
 `changes/issue-N.json` はIssueの受入、`promotion.json` はmainへ入れる固定候補と全Caseの観察の正本です。過去の観察を別SHA/buildのpassへ流用しません。未実施はpending、環境不足はblocked、製品不具合はfailと区別します。
 
 ## Caseの記録
@@ -61,13 +63,45 @@ Plugin ZIPは [開発手順](../plugin-development.md) の標準buildPluginで�
 
 `verification.py --promotion ...`による一覧も同じresolverを使い、固定出典と元の前提、適用した前提・追加手順・改訂revision、観察側のrevisionと6種類の証拠参照を表示する。未登録の観察項目は未登録と表示する。履歴出典はtrusted改訂の固定merge/hashとcandidateの祖先関係から確認するため、初回promotion後も過去のCaseを選んで一覧化できる。渡すCase JSONは元の固定merge契約と一致させ、候補側の書換えで代用しない。promotion gateの必要集合は引き続き`base..candidate`の受入から決める。改訂だけではCase集合を減らせず、一覧のCase単位表示も全候補のpromotion gateを代替しない。
 
+### 実測GOPの境界試験（#56）
+
+[GOP限定改訂](amendments/gop-boundaries.json)は、#13/#31/#41の`SYNC-WINDOW`と#27の`BUFFER-180`・`BUFFER-SHORT`・`SAVE-CONTINUE`（REAL/EMU）の9 Caseへ適用する。元PRの固定merge・全Case内容のSHA-256を照合し、#27はPR #33と#38の両出典を保持する。合計15出典の不足・追加・矛盾は拒否し、最後のPRを任意に採用しない。Case ID・artifact・実施方法・既存操作・期待結果・過去の状態は変更しない。
+
+設計のI-frame間隔1秒はencoderへの試験開始値であり、実時間のGOPを保証しない。[Android仕様](https://developer.android.com/reference/android/media/MediaFormat#KEY_I_FRAME_INTERVAL)では、設定FPSからフレーム数へ換算するencoderの実間隔は実FPSによって変わり得る。指定値を実測値とせず、同じ固定ZIPの元PTS・隣接IDRから測定する。約1秒GOPは同一候補のJVM回帰として維持し、端末では実測した長いGOP・可変FPSを含め、IDR直後・中間・次IDR直前の切出しを追加確認する。JVM成功をIDE/端末の合格へ転記しない。実施方法と測定項目は改訂JSONの追加手順を正本とする。
+
+最大限保存、切出し誤差≤1観測frame間隔＋時計誤差、mux/index丸め≤1ms、同期p95≤100ms・最大≤250ms・30分drift≤50ms・clock≤20ms、画質/負荷・容量/pin制限は維持する。欠落・時計不明・未確認末尾保持を明示し、正式300イベント/30分と必要な人間確認は別の必須Caseで実施する。REAL保留をEMU結果で解消しない。
+
+改訂はpromotionの固定base（trusted main）からだけ読む。通常のtooling PRで独立レビューしてmainへ導入し、専用同期PRでdevelopへ取り込んだ後に新candidateを固定する。candidateは改訂の`required_ancestor`を含み、同じ改訂JSONをregular fileとして持つ必要がある。候補側だけの変更、symlink、重複JSON key、不一致は拒否する。新candidateからZIPをbuild・実ロードし、全必要Caseを確認する。旧5dbの観察は履歴として残し、新候補のpassへ付け替えない。
+
+改訂後の9 Caseの各passには、通常のcandidate/hash/実ロード/確認者/日時/証拠に加え、次を記録する。`gop_revision`は改訂JSON全体を`json.dumps(data, ensure_ascii=False, sort_keys=True, separators=(',', ':'))`で正規化したUTF-8のSHA-256。各`gop_evidence`値は、その候補で実行した確認の公開可能な証拠参照を記入する。私有媒体や生ログを公開しない。
+
+```json
+{
+  "gop_revision": "改訂JSONの正規化SHA-256",
+  "gop_evidence": {
+    "one_second_regression": "同一sourceの約1秒GOP回帰commandと結果への参照",
+    "after_idr": "実測IDR直後のcut位置・復号・誤差への参照",
+    "mid_gop": "実測GOP中間のcut位置・復号・誤差への参照",
+    "before_next_idr": "実測次IDR直前のcut位置・復号・誤差への参照",
+    "vfr": "実測GOP時間/フレーム数・可変FPS条件への参照",
+    "limits_and_quality": "既存保存量・画質/負荷・容量/pin条件の評価への参照"
+  }
+}
+```
+
+既存結果へこのhashを追記するだけでは新観察にならない。機械検査は識別・参照の存在を確認するもので、実行や品質の証明は証拠を読む独立レビューで行う。改訂hash・各証拠が不足した結果はgateと生成一覧の両方で合格にしない。
+
+`verification.py --promotion ...`による一覧も同じresolverを使い、固定出典と元の前提、適用した前提・追加手順・改訂revision、観察側のrevisionと6種類の証拠参照を表示する。未登録の観察項目は未登録と表示する。履歴出典はtrusted改訂の固定merge/hashとcandidateの祖先関係から確認するため、初回promotion後も過去のCaseを選んで一覧化できる。渡すCase JSONは元の固定merge契約と一致させ、候補側の書換えで代用しない。promotion gateの必要集合は引き続き`base..candidate`の受入から決める。改訂だけではCase集合を減らせず、一覧のCase単位表示も全候補のpromotion gateを代替しない。
+
 ## 引継ぎ
 
 ### 初期版の段階受入（#64）
 
 利用者の方針に従い、初期版はエージェントが実行できる工程を完了し、人間の操作・確認と実機準備が必要な部分を[後続QA #65](https://github.com/shinma06/android-replay-buffer/issues/65)へ延期する。[固定計画](amendments/initial-agent.json)をtrusted mainの通常tooling PRでレビューし、developへ同期した後の新候補だけに適用する。候補後の変更許可、main保護、独立レビュー、全commitの出典検査は変えない。
 
-現在の計画は135 Case・204出典で、101 CaseのAgent範囲と34 REAL Caseの延期を持つ。PR174の実develop統合SHA `5bf9e84a887171df5f0287b036e9ba288fbfae9f` を`required_ancestor`とし、#173の`PACKAGE-INPUT-GUIDANCE`の1 Case・1出典を追加した。既存134 entry・203出典と全agent_requirements/deferred_scope・人間指定・GOP・QA65、元#27/#121と旧c61の11件観察を保持する。新Caseの全前提・全3手順・expected・再確認条件を同じ新candidate/標準ZIP・全JAR hash・実ロードidentityで確認する。欄直下の入力条件・狭幅の折り返し・アクセシビリティ、代表正常値と代表不正package＋保持時間のatomic拒否、自動/手動・空package・Cancel/再open・設定復元と取得OFFを元契約どおり確認する。元#27 SETTINGS-INVALID-EMUの全条件を満たす同候補の観察だけを共有し、新native境界matrix・human必須・延期・自動PASSを追加しない。旧観察やJVM成功を新native受入へ転記しない。main計画統合後の別Issue/PRによるdevelop同期と新candidate/標準ZIP固定がQA27/175の先行条件であり、計画の構造検証はGUI・初期版・main製品受入の成功ではない。
+現在の計画は136 Case・205出典、102 CaseのAgent範囲と34 REAL Caseの延期を持つ。#190でPR189実develop統合SHA `542575c0a23a257be6bb37b028171426ea171efd` を`required_ancestor`とし、`186:CLOCK-BATCH-SAVE`の1 Case・1出典をrecovery groupへ追加する。原135 entry/204出典と#182責任分担・全履歴/未達/GOP/REAL34/QA65を保全し、`plan_extension`から旧ancestor/追加Caseを除いた原計画のcanonical hashを検証する。`previous_plan_sha256`を新計画hashへ付け替えない。新Caseの全前提・全5手順・expected・再確認条件を維持し、同ZIPの製品classによるClock/Store/Wire回帰と実IDEの保存・取得継続・失敗固定retryを別証拠で束ねる。最大4096履歴の負荷は限定JVMへ分担し、同候補/hash/条件のQA74/27と71の実観察を共有する。長時間GUI反復・新fixture・human必須・延期・PASSを追加しない。製品class変更前の旧観察は再利用不可で、新固定候補の必要証拠を取得する。PR187と本計画のmain統合後に別専用Issue/PRで一度developへ同期する。Caseなし#185は追加せず、QA74/27・延期QA65・release10を継続する。計画の構造検証はGUI・初期版・main製品受入の成功ではない。
+
+PR174反映時の計画は135 Case・204出典で、101 CaseのAgent範囲と34 REAL Caseの延期を持った。PR174の実develop統合SHA `5bf9e84a887171df5f0287b036e9ba288fbfae9f` を`required_ancestor`とし、#173の`PACKAGE-INPUT-GUIDANCE`の1 Case・1出典を追加した。既存134 entry・203出典と全agent_requirements/deferred_scope・人間指定・GOP・QA65、元#27/#121と旧c61の11件観察を保持する。新Caseの全前提・全3手順・expected・再確認条件を同じ新candidate/標準ZIP・全JAR hash・実ロードidentityで確認する。欄直下の入力条件・狭幅の折り返し・アクセシビリティ、代表正常値と代表不正package＋保持時間のatomic拒否、自動/手動・空package・Cancel/再open・設定復元と取得OFFを元契約どおり確認する。元#27 SETTINGS-INVALID-EMUの全条件を満たす同候補の観察だけを共有し、新native境界matrix・human必須・延期・自動PASSを追加しない。旧観察やJVM成功を新native受入へ転記しない。main計画統合後の別Issue/PRによるdevelop同期と新candidate/標準ZIP固定がQA27/175の先行条件であり、計画の構造検証はGUI・初期版・main製品受入の成功ではない。
 
 PR145反映時の計画は134 Case・203出典で、100 CaseのAgent範囲と34 REAL Caseの延期を持った。PR145の実develop統合SHA `2baa4bef02d225137ada6cd1a019435abe74342d` を当時の`required_ancestor`とし、#143の`MIXED-VIDEO-LEVEL`の1 Case・1出典を追加した。既存133 entry・202出典と全agent_requirements/deferred_scope・人間指定・GOP・QA65を変更しない。元Caseの全前提・全3手順・expected・再確認条件を保持し、同じ新candidate/標準ZIP・全JAR hash・実ロードidentityでJVM回帰と実IDEの通常mixed Save/標準player観察を別証拠で確認する。全選択frame（decoder prefix含む）・元PTS/raw・1MP4/1track、全Playと通常/境界/中間/逆方向seek、文字・原寸/aspect・余白・色・窓/prefix非表示・可変duration、同候補Level5.1互換性を元契約どおり確認する。既存Case85の同候補工程・観察を対応する要件へ共有し、nativeで両Levelを狙い撃ちして生成する義務や新しいmixed失敗→再試行/取消し工程を追加しない。既存Caseの全残契約と失敗・未達を保持し、新延期・human必須・自動PASS・旧候補PASSの転記を行わない。JVM成功をnative受入やfull H.264/HRD準拠へ転用しない。mainの計画更新後に別Issue/PRでdevelopへ同期し、新candidate/標準ZIPを固定する。今回の構造検証はGUI・初期版・main製品受入の成功ではない。
 
@@ -91,7 +125,7 @@ PR98反映時の計画は128 Case・197出典を持ち、既存196出典のPR/me
 
 同geometryは元VCL/configをremuxし、mixed geometryは現在契約の固定canvas・原寸/aspect/文字と色・全frame対応を検査する。元AnnexB config/全対象packet（必要decoder prefix含む）のraw sidecar・offset/size/hashと全画素/PTS/duration/headers/edit/indexを同ZIPで照合する。後半read/codec/disk/取消し/必要IDR不足で全対象を完成できない場合は成功フォルダを公開せずFAILEDと固定pinを保持し、後半drop・複数MP4fallback・非公開の部分成功にしない。device/app両logの共通record_id/UID/帰属/全9・18phaseと未知行、固定T/N/対象・設定履歴・原gap/clock・retry不変、atomic非上書き/所有partial cleanup/UI不足表示を維持する。全deferred_scopeと既存人間範囲を維持する。実装scopeは既存のコードgate・独立レビュー・双方向QA移管を確認して終了する。初期版/mainは同ZIPの全必要Agent受入と未観察・製品failの解消まで未完了とし、full GUI受入は既存延期範囲の完了まで未完了とする。
 
-promotionには`stage: initial-agent`を明記し、`results`に全135 keyを置く。各値は以下の形とし、`stage_revision`には計画全体のcanonical SHA-256を入れる。
+promotionには`stage: initial-agent`を明記し、`results`に全136 keyを置く。各値は以下の形とし、`stage_revision`には計画全体のcanonical SHA-256を入れる。
 
 ```json
 {
@@ -128,12 +162,14 @@ promotionには`stage: initial-agent`を明記し、`results`に全135 keyを置
 
 ## 試験コストと完了の判断
 
-必要な品質条件を満たす最小の試験を計画します。安全性・データ保全・エラー復旧・同期/映像精度・画質/負荷/容量・指定された人間/REAL確認は省略しません。Caseを管理する数と操作の回数は同じではありません。
+[現在の製品責任](responsibility.md)を満たす最小の試験を計画します。安全性・データ保全・エラー復旧・同期/映像精度・画質/負荷/容量・指定された人間/REAL確認は省略しません。Caseを管理する数と操作の回数は同じではありません。
 
 - **候補を凍結する**: 既知の製品修正と必要な運用同期を先にまとめ、実行前に候補/source・成果物・実ロード・計画revisionを固定します。試験中に無関係な変更を足して候補を更新しません。停止中は新候補の作成・導入を開始しません。
 - **影響で再試験を選ぶ**: 修正箇所から呼出し元/先・共有状態・保存形式・build依存・Caseを照合し、まず失敗箇所と影響する境界を診断します。未変更の自動検査を理由なく反復せず、影響不明は関連範囲へ広げます。診断の選択と正式promotionの全Case充足を混同しません。
 - **観察を共有する**: 同一候補・成果物・ロードと前提が一致し、各Caseの全必要条件を満たす観察は、証拠を参照して複数Caseへ使えます。一つの操作で満たすCaseを先に対応づけ、同じ操作や全文記録を繰り返しません。候補変更後の旧観察は履歴として保持し、新候補のpassへ付け替えません。下記の同一成果物・条件不変を実証できる場合だけ、明示的な`reused`として正式gateへ渡せます。不明・不一致なら再試験します。過去結果の自動失効削除も行いません。
 - **追加確認を限定する**: 元契約・既知の不具合・変更影響・未解決の懸念に結びつく確認だけを追加します。単に確認可能だからという理由で全scene、全時計、追加再接続などを必須化しません。新たな品質条件が必要なら理由と契約変更を先にレビューします。
+- **GUIの目的を明記する**: GUI担当への依頼には、試験の目的、固定原契約のGUI必須箇所、必要条件を満たす最小の実操作・観察、ファイル/自動解析で担う確認、利用する既存証拠、終了/中止条件を既存計画から短く示します。担当と独立レビュアーは、各操作が原契約や未解決の懸念へ対応するか確認します。毎操作の承認や別台帳は追加しません。
+- **内容照合と実操作を分ける**: 全行・UUID・時刻対応・hash・packet/画素等の正しさは妥当な既存解析へ集約し、標準editorで実際に開いて読めること、場面と両ログを辿れること、playerの全Play/seek・表示や実IDEの保存/復旧は原契約に必要なGUI観察で確認します。原契約がGUIでの照合自体を指定する範囲は維持します。全件照合の母数を減らさず、母数だけを理由に全件GUI検索を追加しません。ソース読解やdecode結果を未実施のnative操作へ転記せず、合成fixtureに指定された故障を根拠なく実端末でも重複必須にしません。人間の操作確認という目的だけでactorをhuman必須へ変更せず、明示された人間/REAL・時間/回数・精度条件と既存延期を保持します。
 
 | 完了の対象 | 終了条件と残条件の置き場所 |
 |---|---|
@@ -153,14 +189,14 @@ python3 scripts/workflow/verification.py docs/verification/changes/issue-12.json
 
 ## 同一成果物の観察再利用（#161）
 
-通常の結果は引き続き同一candidate/hashの実観察を要求します。文書・管理ルールのみの更新で候補SHAが進んだ場合、元の成功観察をそのまま保持する`reused`を例外として使えます。実際の再利用は製品・GUI試験の再開後、以下を確認してから行います。本ルールの導入やJSON構造検証だけで既存Caseを合格へ変えません。
+通常の結果は引き続き同一candidate/hashの実観察を要求します。#182による明示的な責任改訂の再評価は[限定手順](responsibility.md#trusted-main改訂と旧観察の再評価)へ分離し、以下の通常reuse条件を緩めません。文書・管理ルールのみの更新で候補SHAが進んだ場合、元の成功観察をそのまま保持する`reused`を例外として使えます。実際の再利用は製品・GUI試験の再開後、以下を確認してから行います。本ルールの導入やJSON構造検証だけで既存Caseを合格へ変えません。
 
 - source candidateは現在candidateの祖先で、対象artifact SHA-256が一致すること。差分は`docs/`、`scripts/workflow/`、`.agents/skills/`、`.claude/skills/`、`.cursor/rules/`とrootの`AGENTS.md`・`CLAUDE.md`・`README.md`・`CONTRIBUTING.md`だけに限定します。途中でrevertされた変更も検査します。製品/runtime・build・設定・fixture・未知のpath、異なる成果物は再試験です。製品が生成するREADMEの実装はこの文書例外に含みません。
-- 元Caseが両candidateに存在し、契約が同じで、そのCase JSONの変更履歴がないこと。初期計画の該当entry（全出典・Agent条件・延期・人間指定）とhuman_scope・followupも同じこと。GOPのrevision/6証拠、指定の実施経路、完全受入のhuman/human_evidenceは元観察に必要です。追加・変更Caseを旧結果で満たせません。
-- 現在のロード実体、環境、全前提・試験条件・不具合履歴への適合を改めて確認し、`confirmation`に実確認者・日時・公開可能な証拠を記録すること。`equivalence_evidence`で同一artifactと製品/runtime/build入力不変、`environment_evidence`で環境・全前提・条件の継続を示します。単なる「同じはず」や不明な依存は不成立です。元観察の日時より前の確認は拒否します。
+- 元Caseが両candidateに存在し、契約が同じで、そのCase JSONの変更履歴がないこと。初期計画の該当entry（全出典・Agent条件・延期・人間指定）とhuman_scope・followup・responsibility_revisionも同じこと。GOPのrevision/6証拠、指定の実施経路、完全受入のhuman/human_evidenceは元観察に必要です。追加・変更Caseを旧結果で満たせません。
+- 現在のロード実体、環境、全前提・試験条件・不具合履歴への適合を改めて確認し、`confirmation`に実確認者・日時・公開可能な証拠を記録すること。`equivalence_evidence`で同一artifactと製品/runtime/build入力不変、`environment_evidence`で環境・全前提・条件の継続を示します。単なる「同じはず」や不明な依存は不成立です。元観察又は現在candidate commitの日時より前の確認は拒否します。
 - 元の`pass`または`initial-pass`だけを採用します。pending/blocked/fail/deferredや再利用の連鎖は拒否します。元candidate・日時・実施者・証拠を改変せず、独立レビューで原記録と同等性の証拠内容を確認します。文字列の存在検査は内容の実証を代替しません。確認は現在candidateでの製品再試験を意味しません。
 
-各Caseのresultを次の形式にします（山括弧は実値へ置換）。`source_result`には元の結果JSON全体を保存します。初期段階の場合も旧`stage_revision`を保持し、現在計画の必要Case・34 REAL延期・後続#65は元通り評価します。既存の延期値をreuseで包みません。
+各Caseのresultを次の形式にします（山括弧は実値へ置換）。`source_record`に、trusted main baseの祖先である元promotion記録の40桁commit SHAを指定します。その固定commitの`docs/verification/promotion.json`から元candidate/Case resultを読み、`source_result`全体との完全一致を検証します。過去に正式記録のない成功を新規作成してreuseすることはできません。raw/private証拠をGitへ載せる指示ではなく、元の正式結果は公開可能な要約/証拠参照だけを保持します。`source_result`には元の結果JSON全体を保存します。初期段階の場合も旧`stage_revision`を保持し、現在計画の必要Case・34 REAL延期・後続#65は元通り評価します。既存の延期値をreuseで包みません。
 
 ```json
 {
@@ -168,6 +204,7 @@ python3 scripts/workflow/verification.py docs/verification/changes/issue-12.json
   "head": "<現在candidateの40桁SHA>",
   "artifact_sha256": "<同一成果物の64桁SHA-256>",
   "source_candidate": "<元candidateの40桁SHA>",
+  "source_record": "<trusted mainの元promotion記録commitの40桁SHA>",
   "source_result": {"元結果JSON全体": "改変せず保存"},
   "confirmation": {
     "status": "pass",

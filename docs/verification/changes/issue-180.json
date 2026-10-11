@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "issue": 180,
+  "gui_required": false,
+  "reason": "GUI試験の目的・解析分担と担当依頼、操作対象確認の文書だけを更新する。製品・build・fixture・既存Case契約/正式計画/成果物/観察結果は変更しない。",
+  "cli_checks": [
+    "python3 scripts/check.py",
+    "python3 scripts/workflow/product_check.py",
+    "python3 scripts/workflow/change_impact.py --base origin/main --run-tests"
+  ],
+  "cases": []
+}
