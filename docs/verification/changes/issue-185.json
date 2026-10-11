@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "issue": 185,
+  "gui_required": false,
+  "reason": "CLI原型保護の管理検査のみ変更。所有source fixtureで親symlink拒否とroot alias互換を検証でき、製品コード・IDE表示・端末の実行経路は変更しない。既存QA #7/#27の製品受入は保持する。",
+  "cli_checks": [
+    "python3 -m unittest discover -s scripts/workflow -p test_cli_origin.py -v: Python 3.9で2 tests pass。修正前は親4種の拒否回帰が失敗、修正後は正常系/root alias/親4種/missing/bytes/mode/leafを確認",
+    "python3 scripts/workflow/product_check.py: Python 3.9でCLI原型21ファイル一致、既存2 tests pass",
+    "python3 scripts/check.py: 管理用Python 3.12で207 tests pass。clean committed HEADのchange_impactでも必要検査を実施する"
+  ],
+  "cases": []
+}
