@@ -97,7 +97,7 @@ internal class SaveOutputDirectory private constructor(internal val descriptor: 
 
     fun requirePrivate() {
         stat(descriptor) { value, mode ->
-            val uid = value.getInt(if (mac) 16 else if (arm) 20 else 28)
+            val uid = value.getInt(if (mac) 16 else if (arm) 24 else 28)
             check(mode and 0xfff == 0x1c0 && uid == descriptors.geteuid()) { "未完成フォルダーのアクセス権を確認できません" }
         }
         if (mac) {
