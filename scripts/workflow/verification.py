@@ -117,16 +117,6 @@ def validate_full_result(result, candidate, artifact, execution, gop, initial_en
         raise ValueError('Full acceptance requires the deferred human observation and evidence')
 
 
-def validate_full_result(result, candidate, artifact, execution, gop, initial_entry=None):
-    validate_observation(result, candidate, artifact)
-    validate_gop_observation(result, gop)
-    if execution and result.get('execution') != execution:
-        raise ValueError('Case requires its specified execution method: ' + execution)
-    actor = (initial_entry or {}).get('full_acceptance_actor')
-    if actor and (result.get('actor') != actor or not nonempty(result.get('human_evidence'))):
-        raise ValueError('Full acceptance requires the deferred human observation and evidence')
-
-
 def git_read(*args, cwd=None):
     return subprocess.check_output(['git', *args], cwd=cwd, text=True).strip()
 
