@@ -196,6 +196,77 @@ class FeedbackLoopTests(unittest.TestCase):
         self.assertEqual(self.worker.call_count, 1)
         self.loop.cleanup.assert_called_once()
 
+    def test_merged_finish_refetches_entire_binding_before_entry(self):
+        self.loop.tick(36)
+        self.gh.pull.update(merged=True, state='closed')
+        stale = self.gh.pr(36)
+        issue = self.gh.issue(35)
+        h, state, sid, _ = self.loop.load(36)
+        for change in ('pr-body', 'issue-body', 'head', 'base', 'target', 'merged'):
+            with self.subTest(change=change):
+                self.gh.pull = copy.deepcopy(stale)
+                self.gh.issues[35] = copy.deepcopy(issue)
+                if change == 'pr-body':
+                    self.gh.pull['body'] = stale['body'].replace('GUI: not-required', 'GUI: required')
+                elif change == 'issue-body':
+                    self.gh.issues[35]['body'] += '\nNew acceptance condition'
+                elif change in ('head', 'base'):
+                    self.gh.pull[change]['sha'] = NEW
+                elif change == 'target':
+                    self.gh.pull['base']['ref'] = 'develop'
+                else:
+                    self.gh.pull['merged'] = False
+                with self.assertRaises(ValueError):
+                    self.loop.finish(stale, h, state, sid)
+                self.assertEqual(self.gh.issues[35]['state'], 'open')
+                self.loop.cleanup.assert_not_called()
+        self.assertEqual(self.worker.call_count, 1)
+
+    def test_merged_finish_refetches_contract_during_handoff_even_without_closure(self):
+        self.loop.tick(36)
+        self.gh.pull.update(merged=True, state='closed')
+        original = self.gh.pr(36)
+        issue = self.gh.issue(35)
+        h, state, sid, _ = self.loop.load(36)
+        save = self.loop.save
+        for complete in (True, False):
+            for change in ('pr-body', 'issue-body'):
+                with self.subTest(complete=complete, change=change):
+                    self.gh.pull = copy.deepcopy(original)
+                    self.gh.issues[35] = copy.deepcopy(issue)
+                    state['review']['issue_complete'] = complete
+                    def during_handoff(pr, value, comment_id):
+                        result = save(pr, value, comment_id)
+                        if change == 'pr-body':
+                            self.gh.pull['body'] = original['body'].replace('GUI: not-required', 'GUI: required')
+                        else:
+                            self.gh.issues[35]['body'] += '\nNew acceptance condition'
+                        return result
+                    with patch.object(self.loop, 'save', side_effect=during_handoff), self.assertRaises(ValueError):
+                        self.loop.finish(original, h, state, sid)
+                    self.assertEqual(self.gh.issues[35]['state'], 'open')
+                    self.loop.cleanup.assert_not_called()
+        self.assertEqual(self.worker.call_count, 1)
+
+    def test_unchanged_develop_handoff_bookkeeping_keeps_binding_and_finishes(self):
+        h, _, _, _ = self.loop.load(36)
+        h['target'] = 'develop'
+        self.gh.messages[36][0]['body'] = al.pack(al.HANDOFF, h)
+        self.gh.pull['base']['ref'] = 'develop'
+        self.gh.pull['body'] = self.gh.pull['body'].replace('Integration: tooling', 'Integration: develop')
+        self.assertEqual(self.loop.tick(36)['phase'], 'reviewed')
+        self.gh.pull.update(merged=True, state='closed')
+        def handoff(gh, repo, pr, issue, change):
+            gh.comment(35, '<!-- issue-qa-link:v1 origin=35 qa=74 -->\nQA receipt')
+            gh.comment(35, '<!-- issue-qa-record:v1 origin=35 pr=36 -->\nRelease receipt')
+            return 74
+        with patch.object(al, 'handoff', side_effect=handoff), patch.object(al, 'git', return_value='{}'):
+            result = self.loop.tick(36)
+        self.assertEqual(result['phase'], 'done')
+        self.assertTrue(result['issue_closed'])
+        self.loop.cleanup.assert_called_once()
+        self.assertEqual(self.worker.call_count, 1)
+
     def test_recovery_new_feedback_still_blocks_and_changed_contract_drops_old_acceptance(self):
         self.loop.tick(36)
         self.gh.pull.update(merged=True, state='closed')

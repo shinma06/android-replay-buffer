@@ -261,7 +261,7 @@ class ClosureTests(unittest.TestCase):
         self.loop.cleanup.assert_not_called()
 
     def test_changed_acceptance_during_transfer_never_closes(self):
-        with self.assertRaisesRegex(ValueError, 'acceptance changed'): self.finish(change_origin=True)
+        with self.assertRaisesRegex(ValueError, 'changed during handoff'): self.finish(change_origin=True)
         self.assertEqual(self.loop.gh.issue(35)['state'], 'open')
         self.loop.cleanup.assert_not_called()
 

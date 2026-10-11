@@ -614,9 +614,10 @@ class LoopTests(unittest.TestCase):
         self.loop.tick(36)
         self.gh.pull.update(merged=True, state='closed')
         self.gh.issues[35]['body'] += '\n- [ ] new acceptance'
-        self.assertEqual(self.loop.tick(36)['phase'], 'done')
+        self.assertEqual(self.loop.tick(36)['phase'], 'cleanup')
         self.assertEqual(self.gh.issues[35]['state'], 'open')
         self.assertEqual(self.gh.issues[1]['body'], '- [ ] #35 task')
+        self.loop.cleanup.assert_not_called()
 
 
 if __name__ == '__main__':

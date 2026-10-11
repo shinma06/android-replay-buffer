@@ -102,7 +102,7 @@ def validate_observation(result, candidate, artifact=None):
     for key in ('observer', 'at', 'evidence', 'loaded_identity', 'reason'):
         if not nonempty(result.get(key)):
             raise ValueError('Missing observed evidence: ' + key)
-    if not re.fullmatch(r'\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:Z|[+-]\d\d:\d\d)', result['at']):
+    if not re.fullmatch(r'\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:Z|[+-]\d\d:[0-5]\d)', result['at']):
         raise ValueError('Use an ISO8601 observation timestamp')
     datetime.fromisoformat(result['at'].replace('Z', '+00:00'))
 

@@ -162,6 +162,15 @@ class AcceptanceTests(unittest.TestCase):
             with self.subTest(at=at), self.assertRaises(ValueError):
                 validate_observation(dict(observation(), at=at), NEW)
 
+    def test_observation_offset_minutes_reject_normalization_and_accept_valid_offsets(self):
+        from verification import validate_observation
+        for offset in ('+01:99', '+00:60', '-01:99', '-00:60', '+99:00'):
+            with self.subTest(offset=offset), self.assertRaises(ValueError):
+                validate_observation(dict(observation(), at='2026-10-11T10:00:00' + offset), NEW)
+        for offset in ('Z', '+00:00', '+09:00', '-03:30', '+01:59', '-00:59'):
+            with self.subTest(offset=offset):
+                validate_observation(dict(observation(), at='2026-10-11T10:00:00' + offset), NEW)
+
     def test_merged_source_cannot_rebind_issue_or_use_ambiguous_gui(self):
         self.source['head']['ref'] = 'codex/99-other'
         with self.assertRaisesRegex(ValueError, 'branch and Issue'):

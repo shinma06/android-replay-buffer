@@ -514,15 +514,15 @@ class Loop:
         git('commit', '-m', f'Address automated review for #{h["issue"]}', cwd=path)
 
     def finish(self, pr, h, state, comment_id):
+        pr = self.gh.pr(pr['number'])
         if not pr.get('merged'):
             raise ValueError('Cleanup requires confirmed GitHub merge')
         bound = state.get('binding', {})
         report = state.get('review', {})
         current_issue = self.gh.issue(h['issue'])
         now, _ = self.bound(pr, current_issue, self.gh.comments(pr['number']), state.get('remote_review_after'))
-        if (now.get('feedback_hash') != bound.get('feedback_hash') or
-                now.get('remote_review_complete') is not True):
-            raise ValueError('Feedback changed or remote review is pending after merge; preserve scope/resources for disposition')
+        if now != bound or now.get('remote_review_complete') is not True:
+            raise ValueError('PR/Issue/feedback changed or remote review is pending after merge; preserve scope/resources for disposition')
         accepted = state.get('acceptance', {})
         promotion_pass = (accepted.get('allowed') is True and accepted.get('mode') == 'promotion' and
                           accepted.get('gui_complete') is True and accepted.get('head') == bound.get('head') and
@@ -549,12 +549,13 @@ class Loop:
                 complete = transferred = True
         state.update(phase='cleanup', next='Update Issue and remove only verified finished resources')
         comment_id = self.save(pr, state, comment_id)
+        pr = self.gh.pr(pr['number'])
+        if not pr.get('merged'):
+            raise ValueError('Cleanup requires confirmed GitHub merge')
         issue = self.gh.issue(h['issue'])
-        if complete and bound.get('issue_hash') != binding(pr, issue)['issue_hash']:
-            raise ValueError('Issue acceptance changed during handoff; re-review before closure')
         fresh, _ = self.bound(pr, issue, self.gh.comments(pr['number']), state.get('remote_review_after'))
-        if fresh.get('feedback_hash') != now.get('feedback_hash') or fresh.get('remote_review_complete') is not True:
-            raise ValueError('Feedback changed during handoff; preserve scope/resources before closure')
+        if fresh != bound or fresh.get('remote_review_complete') is not True:
+            raise ValueError('PR/Issue/feedback changed during handoff; preserve scope/resources before closure')
         if complete and issue['state'] == 'open':
             self.gh.api(f'repos/{REPO}/issues/{h["issue"]}', 'PATCH', {'state': 'closed', 'state_reason': 'completed', 'labels': done_labels(issue)})
             closed = self.gh.issue(h['issue'])
