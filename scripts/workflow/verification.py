@@ -299,7 +299,8 @@ def initial_stage_plan(base, candidate, git):
     revision = policy.get('responsibility_revision')
     if revision is not None:
         validate_responsibility_policy(policy)
-    if candidate_plan != policy and not (revision and candidate_plan == original):
+    if candidate_plan != policy and not (revision and 'plan_extension' not in revision and
+                                         candidate_plan == original):
         raise ValueError('Candidate lacks the exact trusted initial plan; synchronize main first')
     for key, entry in policy['cases'].items():
         if (not re.fullmatch(r'[1-9][0-9]*:[A-Z][A-Z0-9-]+', key) or
@@ -344,7 +345,22 @@ def validate_responsibility_policy(policy):
     """Issue 182 amends methods without erasing the fixed original plan or Cases."""
     revision = policy['responsibility_revision']
     original = {k: v for k, v in policy.items() if k != 'responsibility_revision'}
-    if (not isinstance(revision, dict) or set(revision) != {
+    if not isinstance(revision, dict):
+        raise ValueError('Invalid responsibility revision')
+    extension = revision.get('plan_extension')
+    if 'plan_extension' in revision:
+        if (not isinstance(extension, dict) or set(extension) != {
+                'issue', 'previous_required_ancestor', 'added_cases'} or
+                extension['issue'] != 190 or extension['added_cases'] != ['186:CLOCK-BATCH-SAVE'] or
+                not isinstance(extension['previous_required_ancestor'], str) or
+                not SHA.fullmatch(extension['previous_required_ancestor']) or
+                any(key not in policy['cases'] for key in extension['added_cases'])):
+            raise ValueError('Invalid responsibility plan extension')
+        # Bind the unchanged original plan; do not relabel its historical hash.
+        original = dict(original, required_ancestor=extension['previous_required_ancestor'],
+                        cases={k: v for k, v in original['cases'].items()
+                               if k not in extension['added_cases']})
+    if (set(revision) - {'plan_extension'} != {
             'issue', 'previous_plan_sha256', 'common_requirements', 'groups', 'overrides'} or
             revision['issue'] != 182 or revision['previous_plan_sha256'] != canonical_hash(original) or
             not isinstance(revision['common_requirements'], list) or not revision['common_requirements'] or

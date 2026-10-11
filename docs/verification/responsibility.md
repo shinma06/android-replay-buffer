@@ -18,9 +18,9 @@
 
 相互運用は代表open・短いPlay・前後seekを一度確認します。既存の観察を有効条件へ対応付けて再利用でき、一Caseごとの新GUI枠は作りません。同条件の複数Caseへ共有でき、全再生・全境界精密seekを繰り返しません。異常は自動的に製品bug又は外部bugにせず、生成container/index/edit/timing/content違反、reader実装差、未帰属に分けます。製品違反と未帰属は未完了。根拠付き外部差は診断履歴と利用上の制約に残し、全player一致のためだけに出力を改変しません。実interopを省略したFILE検査だけでsmoke成功を主張しません。
 
-## 全135 Caseの監査と有効条件
+## 全136 Caseの監査と有効条件
 
-正式計画の9 groupが全135 keyを重複なく対応付けます。204出典と原Case全文hash、原plan canonical `a5c470bf6bdbbbe77d2001bcb287667e4a6d399ee935ebd3fc23388be2f37441`は保持します。34 keyには必要な個別overrideがあります。原Case JSONとそのpending/blocked/failは書き換えません。
+正式計画の9 groupが全136 keyを重複なく対応付けます。原204出典と追加1出典（計205）のCase全文hash、原plan canonical `a5c470bf6bdbbbe77d2001bcb287667e4a6d399ee935ebd3fc23388be2f37441`は保持します。34 keyには必要な個別overrideがあります。原Case JSONとそのpending/blocked/failは書き換えません。
 
 | group | Case数 | 判断と理由 |
 |---|---:|---|
@@ -29,7 +29,7 @@
 | precision | 7 | 統合。同じ30分/300eventを13/31/41/27で共有。裾の外れ/経時driftは維持 |
 | recipient | 6 | 置換。全FILE/内容と代表interop/editorへ分担し外部全Play/全Find保証を除外 |
 | buffer | 9 | 統合。180秒超/開始20秒/重複保存の実工程とproduction境界回帰/GOP6証拠を共有 |
-| recovery | 54 | 統合。所有・失敗・clock/log/window/保存不変性を保持し、全faultは隔離回帰、glueは代表native |
+| recovery | 55 | 統合。所有・失敗・clock/log/window/保存不変性を保持し、全faultは隔離回帰、glueは代表native |
 | ui-settings | 36 | 統合。自製品入力/復元/帰属/表示の契約を保持し、全race/数値境界は回帰、代表操作はnative |
 | video | 12 | 置換。全packet/frame/画素・VFR/unknown/Levelを保持し外部精密seekはFILE＋代表smokeへ |
 | log-reader | 3 | 維持。header/lid/payload/readerの全境界とnative有限母数の用途が異なる |
@@ -50,7 +50,9 @@ CLIの2 testはthreadtime正常/不正行のparser互換だけを示します。
 
 ## trusted-main改訂と旧観察の再評価
 
-改訂を独立レビュー付きtooling PRでmainへ入れ、gateと候補付き一覧は固定main baseの同blockを読みます。candidate側のみの改訂、欠落/不一致plan、135集合や原plan/hashの改変、symlink/重複JSON keyは拒否します。Caseのresolverと一覧は、原計画そのものを持つ旧candidateにもこの限定改訂を適用でき、製品コード/fixture/buildを変えたことにはしません。promotionの候補後metadata制限・全commit出典/strict baseは維持します。main文書を取り込むため既存の専用develop同期と新source候補が必要な場合も、不変製品/build/fixture・同artifactを実証して旧観察を再評価でき、source SHAが進んだだけで再build/再ロード/全GUI再試験を命じません。意味が変わる試験に不足する事実は追加実施します。製品修正/不明な依存変更は新候補と影響再試験へ戻します。
+#190は`plan_extension`に旧required ancestorと追加Caseを明記し、原135 entryを再構成して上記の原plan hashへ照合します。#182のgroup/override/分担は保持し、recoveryへ`186:CLOCK-BATCH-SAVE`を1件追加します。全5手順の同ZIP Clock/Store/Wire回帰と実IDEの保存・継続取得・失敗固定retryをQA74/27の同候補/同条件の観察で共有し、最大4096履歴の長時間GUI反復を追加しません。新required ancestorはPR189実統合です。旧135計画は歴史上の有効計画として保持しますが、新136計画と一致するものへ扱い直しません。今回のclock製品class変更をまたぐ旧観察の再利用は既存history gateが拒否し、旧pending/fail/延期を新PASSへ変更しません。
+
+改訂を独立レビュー付きtooling PRでmainへ入れ、gateと候補付き一覧は固定main baseの同blockを読みます。candidate側のみの改訂、欠落/不一致plan、全Case集合や原plan/hashの改変、symlink/重複JSON keyは拒否します。候補は現在のrequired_ancestorとtrusted計画の一致条件を満たす必要があります。#182当時の旧candidateへの適用は当時の計画に対する履歴であり、今回の追加Caseを免除しません。promotionの候補後metadata制限・全commit出典/strict baseは維持します。main文書を取り込むため既存の専用develop同期と新source候補が必要な場合も、不変製品/build/fixture・同artifactを実証して旧観察を再評価でき、source SHAが進んだだけで再build/再ロード/全GUI再試験を命じません。意味が変わる試験に不足する事実は追加実施します。製品修正/不明な依存変更は新候補と影響再試験へ戻します。
 
 新結果は現planの`stage_revision`に加え、観察の`responsibility_revision`（blockのcanonical SHA-256）、`responsibility_evidence`に`contract_coverage / artifact_binding / failure_attribution`とgroupの`evidence_keys`の全参照を持ちます。全有効条件への対応、実生成/全JAR/元source/成果物binding、既知fail/未帰属の処理、group別の実行証拠を独立レビューします。参照文字列の存在だけでは内容を証明しません。
 
@@ -58,6 +60,6 @@ CLIの2 testはthreadtime正常/不正行のparser互換だけを示します。
 
 旧fail/pending/blocked/deferredの**判定そのもの**の再利用、再利用の連鎖、未確認の原結果、旧日時より前の確認は拒否します。部分報告を旧wholeCase PASSへ昇格させません。一方、旧wholeCaseが外部側の旧義務でpendingでも、その報告で独立に実証された成功事実は捨てません。新しい`initial_observation`又は通常`pass`の現在評価として、`contract_coverage`に各旧事実の元候補/成果物/観察者/日時/固定証拠と全有効条件への対応を記録します。`reason`で再評価日時と元の実行日時を区別し、新GUI実行と主張しません。`artifact_binding`には不変artifact/製品/build/fixture/条件の実証、`failure_attribution`には旧fail/pendingの理由と未解決の自製品違反を保全します。欠ける事実だけ追加実施し、未解決の自製品失敗があれば新判定もfailです。これは旧判定のcopyではなく、別のレビュー対象です。この経路は観察に`responsibility_assessment`を追加し、`source_candidate / source_result / source_result_sha256 / source_record_evidence`に固定の原判定を保持します。`facts`はID付きの実成功観察（通常の観察形式、原candidate/hash/実施者/日時/ロード/証拠）、`coverage`は全責任証拠keyからそのfact IDへの対応です。`missing_requirements / unresolved_owned_failures`は空でなければ成功不可。fact元候補のplanは、正式改訂に登録した原plan又は現在trusted有効planの全文と完全一致するものに限ります。docs-only同期後の同じ正式改訂は許可し、任意の別改訂は拒否します。gateはこのplan照合/不変履歴・元結果hash・factの候補/成果物/成功/日時・対応の欠落を検査し、独立レビューが原記録の一致と全条件の実質を確認します。改訂hashを旧結果に足すだけでは成功にしません。通常の`reused`はresponsibility_revisionも同じ契約の例外です。元promotionの記録がない成功を埋め込みreuseで作りません。旧pending内の成功事実は上記の原記録/固定hashと独立レビューを要する別経路として保持し、過去の正式Case PASSがあったと主張しません。
 
-gateと一覧は有効条件/原文履歴/再評価を分けて示します。初期段階の合格は完全受入ではなく、後続の全体gateには全135の有効条件を復元します。責任改訂そのものはCase PASS・GUI実行・初期版完成・main製品受入を意味しません。旧候補/ZIP/15件観察/正式PASS0は履歴として保持し、再評価後の件数は別記録とします。QA27/65/87とrelease10の担当・残条件を双方向readbackした後に次の試験を割り当てます。
+gateと一覧は有効条件/原文履歴/再評価を分けて示します。初期段階の合格は完全受入ではなく、後続の全体gateには全136の有効条件を復元します。責任改訂そのものはCase PASS・GUI実行・初期版完成・main製品受入を意味しません。旧候補/ZIP/15件観察/正式PASS0は履歴として保持し、再評価後の件数は別記録とします。QA27/65/87とrelease10の担当・残条件を双方向readbackした後に次の試験を割り当てます。
 
 後続PRが同じCase IDを更新した完全受入では、候補内の最新Caseを用い、履歴行で置き換えません。旧Case用の置換overrideはその固定原契約のhashが一致する時だけ適用します。追加された最新契約はgroup分担/共通条件を維持した上で、観察に`case_sha256`として有効Caseのcanonical hashを要求します。履歴は現契約がない時の補完と原文表示に保持します。

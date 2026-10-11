@@ -354,14 +354,94 @@ class ResponsibilityRevisionTests(unittest.TestCase):
             self.assertIn('"' + key + '"', view)
         self.assertIn('Actual old sample observation.', view)
 
-    def test_real_repository_mapping_covers_135_and_preserves_all_204_sources(self):
+    def test_real_repository_extension_preserves_original_plan_and_responsibility(self):
         path = Path(__file__).resolve().parents[2] / INITIAL_PLAN
         p = json.loads(path.read_text())
         validate_responsibility_policy(p)
-        self.assertEqual(135, len(p['cases']))
-        self.assertEqual(204, sum(len(c['sources']) for c in p['cases'].values()))
+        self.assertEqual(136, len(p['cases']))
+        self.assertEqual(205, sum(len(c['sources']) for c in p['cases'].values()))
         self.assertEqual(34, sum(c['initial_scope'] == 'deferred' for c in p['cases'].values()))
         self.assertTrue(all('full_acceptance_actor' not in effective_initial_entry(p, k) for k in p['cases']))
+        revision = copy.deepcopy(p['responsibility_revision'])
+        extension = revision.pop('plan_extension')
+        original = {k: v for k, v in p.items() if k != 'responsibility_revision'}
+        original = dict(original, required_ancestor=extension['previous_required_ancestor'],
+                        cases={k: v for k, v in p['cases'].items() if k not in extension['added_cases']})
+        self.assertEqual('a5c470bf6bdbbbe77d2001bcb287667e4a6d399ee935ebd3fc23388be2f37441',
+                         canonical_hash(original))
+        revision['groups']['recovery']['cases'].remove('186:CLOCK-BATCH-SAVE')
+        self.assertEqual('9d36b54dfb7261927a5608a41114446affad711a79c7af21b3514f9c56b7493a',
+                         canonical_hash(revision))
+        new = p['cases']['186:CLOCK-BATCH-SAVE']
+        self.assertEqual([{'source_pr': 189,
+                          'source_merge': '542575c0a23a257be6bb37b028171426ea171efd',
+                          'source_path': 'docs/verification/changes/issue-186.json',
+                          'original_case_sha256': 'dfa598a37e3c082521dc4ae1332d13d225723482b9acbf82a11fa3edff686962'}],
+                         new['sources'])
+        self.assertEqual(new['sources'][0]['source_merge'], p['required_ancestor'])
+        self.assertEqual(new['sources'][0]['original_case_sha256'], new['current_case_sha256'])
+        self.assertEqual(('agent', []), (new['initial_scope'], new['deferred_scope']))
+        for mutation in ('old-entry', 'old-ancestor', 'missing-addition', 'unknown-addition', 'null'):
+            bad = copy.deepcopy(p)
+            if mutation == 'old-entry':
+                bad['cases']['3:PLUGIN-LOAD']['agent_requirements'].append('Alter old scope')
+            elif mutation == 'old-ancestor':
+                bad['responsibility_revision']['plan_extension']['previous_required_ancestor'] = 'f' * 40
+            elif mutation == 'missing-addition':
+                del bad['cases']['186:CLOCK-BATCH-SAVE']
+            elif mutation == 'unknown-addition':
+                bad['responsibility_revision']['plan_extension']['added_cases'].append('185:EXTRA')
+            else:
+                bad['responsibility_revision']['plan_extension'] = None
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                validate_responsibility_policy(bad)
+
+    def test_extension_gate_and_listing_require_new_case_and_keep_all_five_steps(self):
+        key = '186:CLOCK-BATCH-SAVE'
+        case = dict(copy.deepcopy(ti.CASE), id='CLOCK-BATCH-SAVE',
+                    steps=['ZIP identity', 'Clock regression', 'Store/Wire regression',
+                           'Native save/continue', 'Native fixed retry'])
+        data = {'schema': 1, 'issue': 186, 'gui_required': True,
+                'reason': 'Changed clock classes', 'cli_checks': ['Clock regression'], 'cases': [case]}
+        entry = copy.deepcopy(self.policy['cases']['36:QA-1-EMU'])
+        entry.update(current_case_sha256=canonical_hash(case), deferred_scope=[])
+        entry['sources'] = [{'source_pr': 100, 'source_merge': NEW,
+                             'source_path': 'docs/verification/changes/issue-186.json',
+                             'original_case_sha256': canonical_hash(case)}]
+        self.policy['cases'][key] = entry
+        revision = self.policy['responsibility_revision']
+        revision['plan_extension'] = {'issue': 190, 'previous_required_ancestor': NEW,
+                                     'added_cases': [key]}
+        revision['groups']['fixture']['cases'].append(key)
+        self.fixture.documents[f'{BASE}:{INITIAL_PLAN}'] = copy.deepcopy(self.policy)
+        self.fixture.documents[f'{NEW}:docs/verification/changes/issue-186.json'] = data
+        # A candidate carrying the old 135-style plan is no longer the current plan.
+        with self.assertRaisesRegex(ValueError, 'exact trusted'):
+            initial_stage_plan(BASE, NEW, self.fixture.git)
+        stripped = {k: v for k, v in self.policy.items() if k != 'responsibility_revision'}
+        self.fixture.documents[f'{NEW}:{INITIAL_PLAN}'] = copy.deepcopy(stripped)
+        with self.assertRaisesRegex(ValueError, 'exact trusted'):
+            initial_stage_plan(BASE, NEW, self.fixture.git)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'new-case.json'
+            path.write_text(json.dumps(data))
+            with self.assertRaisesRegex(ValueError, 'exact trusted'):
+                render_queue([path], self.initial.manifest, self.fixture.git)
+        self.fixture.documents[f'{NEW}:{INITIAL_PLAN}'] = copy.deepcopy(self.policy)
+        self.assertEqual(self.policy, initial_stage_plan(BASE, NEW, self.fixture.git))
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'new-case.json'
+            path.write_text(json.dumps(data))
+            view = render_queue([path], self.initial.manifest, self.fixture.git)
+        for step in case['steps']:
+            self.assertIn(step, view)
+        self.assertIn('CLOCK-BATCH-SAVE', view)
+        self.assertNotIn('初期版範囲合格', view)
+        self.assertIn('有効条件の証拠: 未登録', view)
+        self.assertEqual(case, data['cases'][0])
+        self.fixture.documents[f'{NEW}:docs/verification/changes/issue-186.json']['cases'][0]['steps'].pop()
+        with self.assertRaisesRegex(ValueError, 'current Case identity'):
+            initial_stage_plan(BASE, NEW, self.fixture.git)
 
     def test_new_assessment_can_use_passing_facts_from_old_pending_verdict(self):
         aggregate = {'status': 'pending', 'head': NEW, 'artifact_sha256': 'e' * 64,
