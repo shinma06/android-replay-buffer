@@ -11,7 +11,11 @@ def verify(root=ROOT):
     errors = []
     for original, entry in manifest['files'].items():
         path = root / entry['path']
-        if path.is_symlink() or not path.is_file():
+        # Exclude the declared root so checkout aliases remain valid.
+        if (path.is_symlink()
+                or any((root / parent).is_symlink() for parent in Path(entry['path']).parents
+                       if parent != Path('.'))
+                or not path.is_file()):
             errors.append(original + ': missing or replaced by symlink')
         elif hashlib.sha256(path.read_bytes()).hexdigest() != entry['sha256']:
             errors.append(original + ': original bytes changed')

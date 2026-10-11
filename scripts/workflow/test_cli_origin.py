@@ -15,7 +15,8 @@ class OriginTests(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()):
             cli_origin.verify()
         with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp)
+            root = Path(temp) / 'checkout'
+            root.mkdir()
             shutil.copytree(cli_origin.ROOT / 'docs/cli-origin', root / 'docs/cli-origin')
             # The remaining original files are deliberately absent.
             with self.assertRaisesRegex(ValueError, 'missing'):
@@ -26,6 +27,24 @@ class OriginTests(unittest.TestCase):
                 path = root / entry['path']
                 path.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(cli_origin.ROOT / entry['path'], path)
+            alias = Path(temp) / 'root-alias'
+            alias.symlink_to(root, target_is_directory=True)
+            with contextlib.redirect_stdout(io.StringIO()):
+                cli_origin.verify(root)
+                cli_origin.verify(alias)
+            for parent in ('bin', 'replay_buffer', 'docs/cli-origin', 'docs'):
+                path = root / parent
+                target = Path(temp) / 'relocated'
+                path.rename(target)
+                path.symlink_to(target, target_is_directory=True)
+                try:
+                    with self.subTest(parent=parent), self.assertRaisesRegex(ValueError, 'symlink'):
+                        cli_origin.verify(root)
+                finally:
+                    path.unlink()
+                    target.rename(path)
+            with contextlib.redirect_stdout(io.StringIO()):
+                cli_origin.verify(root)
             for mutation in ('bytes', 'mode', 'symlink'):
                 path = root / 'bin/replay'
                 if path.exists() or path.is_symlink():
