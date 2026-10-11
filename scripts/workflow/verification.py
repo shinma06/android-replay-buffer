@@ -527,6 +527,11 @@ def validate_management_ci_transition(source, commit, parents, candidate, truste
     if not trusted_base or not SHA.fullmatch(trusted_base):
         raise ValueError('Management CI transition requires a fixed trusted main base')
     git('merge-base', '--is-ancestor', CI_MERGE, trusted_base)
+    for incoming in git('rev-list', f'{CI_MERGE}..{trusted_base}').splitlines():
+        for parent in git('rev-list', '--parents', '-n', '1', incoming).split()[1:]:
+            if any(path.startswith('.github/workflows/') for path in
+                   git('diff', '--no-renames', '--name-only', parent, incoming).splitlines()):
+                raise ValueError('Trusted main has another CI change, even if reverted; retesting required')
     if git('rev-list', '--parents', '-n', '1', CI_MERGE).split() != [CI_MERGE, CI_PREDECESSOR]:
         raise ValueError('Management CI transition has a different fixed source history')
     if source != CI_OBSERVED_SOURCE or parents != [source] or commit != candidate:

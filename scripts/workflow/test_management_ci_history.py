@@ -167,6 +167,18 @@ class ManagementCIHistoryTests(unittest.TestCase):
             v.unchanged_artifact_history(self.predecessor, self.candidate, '36:QA-1',
                                         self.git, self.base)
 
+    def test_later_trusted_ci_change_and_revert_do_not_extend_registration(self):
+        self.git('checkout', '--detach', '-q', self.base)
+        self.write('.github/workflows/unknown.yml', 'later unknown workflow')
+        changed = self.commit('unregistered trusted CI')
+        with self.assertRaisesRegex(ValueError, 'another CI change'):
+            self.history(base=changed)
+        self.git('revert', '--no-edit', 'HEAD')
+        reverted = self.git('rev-parse', 'HEAD')
+        self.assertEqual(self.git('diff', '--name-only', self.base, reverted), '')
+        with self.assertRaisesRegex(ValueError, 'another CI change'):
+            self.history(base=reverted)
+
     def test_missing_trust_changed_source_proof_and_dropped_product_ci_are_rejected(self):
         for base in ('', self.predecessor):
             with self.subTest(base=base), self.assertRaises((ValueError, subprocess.CalledProcessError)):
