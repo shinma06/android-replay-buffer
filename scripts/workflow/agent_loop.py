@@ -341,23 +341,29 @@ class Loop:
             stream.write(str(error))
         return f'Operation failed ({type(error).__name__}); coordinator private diagnostic {identifier}'
 
-    def public_state(self, value, private_paths=()):
+    def public_state(self, value, private_paths=(), private_sessions=()):
         if isinstance(value, dict):
             private_paths = set(private_paths) | set(value.get('private_paths', []))
-            return {k: self.public_state(v, private_paths) for k, v in value.items()
+            private_sessions = set(private_sessions) | {str(value.get('session', '')).lower(),
+                                                        str((value.get('review') or {}).get('session', '')).lower()}
+            return {k: self.public_state(v, private_paths, private_sessions) for k, v in value.items()
                     if k not in ('host', 'source', 'repair_evidence', 'private_repair_evidence', 'private_paths')}
         if isinstance(value, list):
-            return [self.public_state(v, private_paths) for v in value]
+            return [self.public_state(v, private_paths, private_sessions) for v in value]
         if isinstance(value, str):
             for path in sorted(private_paths, key=len, reverse=True):
                 value = value.replace(path, '[private path]')
-            value = re.sub(r'(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}',
-                           lambda match: session_fingerprint(match[0].lower()), value)
+                encoded = re.sub(r'%[0-9A-F]{2}', lambda match: '(?i:' + match[0] + ')', re.escape(quote(path)))
+                value = re.sub(encoded, '[private path]', value)
             for private in (str(self.storage), str(ROOT), str(Path.home()), HOST):
                 value = value.replace(private, '[local]')
-            parts = re.split(r'(https?://[^\s<>\"`]+)', value)
-            return ''.join(part if i % 2 else re.sub(r'/(?:Users|home|private|tmp|var)/[^\n`]+',
-                                                   '[local path]', part) for i, part in enumerate(parts))
+            parts = re.split(r'(https?://[^\s<>"`]+)', value)
+            for i, part in enumerate(parts):
+                part = re.sub(r'(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}',
+                              lambda match: session_fingerprint(match[0].lower())
+                              if not i % 2 or match[0].lower() in private_sessions else match[0], part)
+                parts[i] = part if i % 2 else re.sub(r'/(?:Users|home|private|tmp|var)/[^\n`]+', '[local path]', part)
+            return ''.join(parts)
         return value
 
     def acceptance(self, pr, path):
@@ -952,14 +958,14 @@ def rebind_target(loop, args):
     public = loop.public_state(public, paths)
     public['owner'] = 'agent-loop'
     public['target'] = pr['base']['ref']
-    public = register(loop.storage, public, source, HOST, repair_path, sorted(paths))
-    loop.gh.comment(args.pr, pack(HANDOFF_V2, public))
     loop.invalidate_acceptance(state)
     state['private_paths'] = sorted(paths)
     state['next'] = 'Target/evidence explicitly rebound; independent review and acceptance required'
     if not state.get('paused'):
         state['phase'] = 'queued'
     loop.save(pr, state, sid)
+    public = register(loop.storage, public, source, HOST, repair_path, sorted(paths))
+    loop.gh.comment(args.pr, pack(HANDOFF_V2, public))
     loop.gh.status(pr['head']['sha'], 'pending', 'Target rebound; prior acceptance invalidated', pr['html_url'])
     return public
 

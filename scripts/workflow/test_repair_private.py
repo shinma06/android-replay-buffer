@@ -410,6 +410,9 @@ class PrivatePathTests(unittest.TestCase):
         session = '00000000-0000-4000-8000-000000000099'
         self.check_paths(f'/mnt/receipts/{session}/event.json', f'/opt/receipts/{session}/mapping.json')
 
+    def test_encoded_file_uris_with_space_unicode_and_escape_case_stay_private(self):
+        self.check_paths('/mnt/private receipt/記録.json', '/opt/private receipt/対応.json')
+
     def check_paths(self, virtual, support):
         self.prepare()
         first = self.fixture.receipt.read_bytes(); second = b'{"support":true}'
@@ -423,11 +426,17 @@ class PrivatePathTests(unittest.TestCase):
             return info if str(path) in originals else original_stat(path, *args, **kw)
         def read(path):
             return originals[str(path)] if str(path) in originals else original_read(path)
-        urls = 'https://public.example/tmp/guide https://public.example/opt/docs'
+        urls = ('https://public.example/tmp/guide https://public.example/opt/docs '
+                'https://public.example/runs/00000000-0000-4000-8000-000000000097/result')
+        encoded = Path(support).as_uri()
+        import re
+        lower = re.sub(r'%[0-9A-F]{2}', lambda m: m[0].lower(), encoded)
+        local = encoded.replace('file:///', 'file://localhost/')
+        private_url = 'https://public.example/session/' + tal.report()['session']
         session = '00000000-0000-4000-8000-000000000098'
         self.worker.side_effect = lambda *args, **kw: dict(tal.report('changes_requested'),
-                evidence=f'prefix:{virtual}:suffix file://{support} {urls} standalone:{session}',
-                findings=[f'Check [{virtual}]({support})'], repair_revision='e' * 64,
+                evidence=f'prefix:{virtual}:suffix file://{support} {urls} standalone:{session} {encoded} {lower} {local} {private_url} [encoded]({encoded[7:]}) [lower]({lower[7:]})',
+                findings=[f'Check [{virtual}]({support}) [{encoded}]({local}) [target]({encoded[7:]}) [lower]({lower[7:]})'], repair_revision='e' * 64,
                 repair_evidence_sha256=args[2]['private_repair_evidence']['bundle_sha256'])
         def is_file(path):
             return True if str(path) in originals else original_file(path)
@@ -440,6 +449,8 @@ class PrivatePathTests(unittest.TestCase):
         public = json.dumps(self.gh.messages)
         self.assertNotIn(virtual, public); self.assertNotIn(support, public)
         self.assertNotIn('private_paths', public)
+        for uri in (encoded, lower, local, encoded[7:], lower[7:], private_url): self.assertNotIn(uri, public)
+        self.assertIn('https://public.example/session/' + session_fingerprint(tal.report()['session']), public)
         self.assertNotIn('/mnt/receipts/', public); self.assertNotIn('/opt/receipts/', public)
         self.assertNotIn(session, public)
         self.assertIn('standalone:' + session_fingerprint(session), public)
@@ -487,6 +498,22 @@ class LegacyBundleTests(unittest.TestCase):
         for origin, pointer in zip(self.bundle['origins'], ('/event', '/event~1child', '/sibling')):
             origin['receipt_locator'] = pointer
         self.seal(); self.load()
+
+
+    def test_legacy_writer_precedes_first_observation_but_later_composition_is_valid(self):
+        self.legacy()
+        later = '2026-01-02T00:00:00Z'
+        self.accepted['repair']['results']['LATER'] = {'observation': dict(self.observed, at=later)}
+        self.receipt.write_text(json.dumps({'events': [{} for _ in range(5)]}))
+        sealed = hashlib.sha256(self.receipt.read_bytes()).hexdigest()
+        self.bundle['receipts'][0]['sha256'] = self.bundle['mapping_receipt_sha256'] = sealed
+        for origin in self.bundle['origins']: origin['receipt_sha256'] = sealed
+        for i, activity in ((3, 'execution'), (4, 'composition')):
+            self.bundle['origins'].append(dict(self.bundle['origins'][0], receipt_locator=f'/events/{i}',
+                                              activity=activity, at=later))
+        self.seal(); self.load()
+        self.bundle['origins'][0]['at'] = later; self.seal()
+        with self.assertRaisesRegex(ValueError, 'Legacy'): self.load()
 
 
 class RepairRecoveryTests(unittest.TestCase):
@@ -541,3 +568,41 @@ class RepairRecoveryTests(unittest.TestCase):
         self.assertEqual(self.gh.messages, messages)
         self.assertEqual({p.name: p.read_bytes() for p in registry.iterdir()}, original)
         self.assertTrue(self.loop.load(36)[1]['paused'])
+
+    def test_rebind_write_failures_never_combine_new_handoff_with_old_approval(self):
+        from types import SimpleNamespace
+        for failure in ('state', 'handoff', 'progress'):
+            for paused in (False, True):
+                self.doCleanups(); self.setUp()
+                with self.subTest(failure=failure, paused=paused):
+                    ConsumerTests.prepare(self)
+                    self.assertEqual(self.loop.tick(36)['phase'], 'reviewed')
+                    before, state, sid, _ = self.loop.load(36)
+                    state['paused'] = paused
+                    self.loop.save(self.gh.pull, state, sid)
+                    self.loop.validate_review(state['review'], state['binding'], self.accepted)
+                    replacement = self.fixture.root / 'replacement.json'
+                    replacement.write_bytes(self.fixture.path.read_bytes()); replacement.chmod(0o600)
+                    args = SimpleNamespace(pr=36, source=None, migration_record=None, repair_evidence=replacement)
+                    original_comment = self.gh.comment
+                    calls = []
+                    def write(number, body, comment_id=None):
+                        calls.append((number, body))
+                        if ((failure == 'state' and body.startswith(tal.al.STATE)) or
+                            (failure == 'handoff' and body.startswith(tal.al.HANDOFF_V2)) or
+                            (failure == 'progress' and number == 35)):
+                            raise OSError('synthetic publication failure')
+                        return original_comment(number, body, comment_id)
+                    with patch.object(self.gh, 'comment', side_effect=write), self.assertRaises(OSError):
+                        tal.al.rebind_target(self.loop, args)
+                    current, saved, _, _ = self.loop.load(36)
+                    self.assertEqual(current['registry_id'], before['registry_id'])
+                    self.assertEqual(saved['paused'], paused)
+                    if failure == 'state':
+                        self.assertIn('review', saved)
+                        self.assertFalse(any(body.startswith(tal.al.HANDOFF_V2) for _, body in calls))
+                    else:
+                        for key in ('review', 'binding', 'gui', 'acceptance'): self.assertNotIn(key, saved)
+                        self.assertEqual(self.loop.tick(36)['phase'], 'reviewed')
+                    self.assertEqual(self.gh.merges, 0)
+                    self.assertEqual(self.gh.issues[35]['state'], 'open')

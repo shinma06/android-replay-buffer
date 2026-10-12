@@ -116,7 +116,9 @@ def private_repair_evidence(path, acceptance, bound):
                 any(actual.get(key) != claim for key, claim in expected.items()) or
                 any(identity != session or activity not in ('writer', 'execution', 'assessment', 'composition')
                     for identity, activity, _ in extras) or
-                not {'writer', 'execution'} <= {activity for _, activity, _ in relevant} or
+                not any(activity == 'writer' and when <= min(at for _, at in legacy)
+                        for _, activity, when in actual.values()) or
+                not any(activity == 'execution' for _, activity, _ in relevant) or
                 any(not any(identity == session and activity in ('execution', 'assessment', 'composition') and when == at
                             for identity, activity, when in actual.values()) for _, at in legacy) or
                 any(when > max(at for _, at in legacy) for _, _, when in extras)):
