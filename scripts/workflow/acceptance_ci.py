@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Execute only from the trusted base checkout. PR content is git-show JSON data."""
+from http.client import IncompleteRead
 import json
 import os
 import re
 import subprocess
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 from pr_policy import validate
 from verification import verify_pr
@@ -61,10 +63,31 @@ def recheck_main_repairs(api, repo, source_issue=None):
     """Invalidate all affected PRs before optional reruns can fail or be denied."""
     pending, requested, unavailable, errors, page = [], [], [], [], 1
     while True:
-        prs = api(f'pulls?state=open&base=develop&per_page=100&page={page}')
+        enumeration_failed = False
+        for attempt in range(3):
+            try:
+                prs = api(f'pulls?state=open&base=develop&per_page=100&page={page}')
+            except (OSError, IncompleteRead, json.JSONDecodeError, UnicodeDecodeError) as failure:
+                transient = (500 <= failure.code < 600 if isinstance(failure, HTTPError) else
+                             isinstance(failure, (URLError, TimeoutError, ConnectionError, IncompleteRead)))
+                if transient and attempt < 2:
+                    continue
+                error = failure
+            else:
+                if isinstance(prs, list):
+                    break
+                error = ValueError('PR enumeration response must be a list')
+            error.add_note(f'PR enumeration incomplete at page {page} after {attempt + 1} attempts; '
+                           'recover known pending targets, then retry enumeration and live gates before integration')
+            errors.append(error)
+            enumeration_failed = True
+            break
+        if enumeration_failed:
+            break
         for pr in prs:
             try:
-                issue_id = validate(pr)
+                # A title-policy failure must not hide stale original-NG approval.
+                issue_id = validate(pr, check_title=False)
                 if (pr['state'] != 'open' or pr.get('merged') is True or pr['base']['ref'] != 'develop' or
                         pr['base']['repo']['full_name'] != repo or pr['head']['repo'] is None or
                         pr['head']['repo']['full_name'] != repo):
@@ -83,7 +106,7 @@ def recheck_main_repairs(api, repo, source_issue=None):
                 api('statuses/' + pr['head']['sha'], 'POST', {'context': CONTEXT, 'state': 'pending',
                     'description': 'Repair source or trusted main changed; recheck acceptance and independent assessment'})
                 pending.append(pr)
-            except OSError as error:
+            except (OSError, IncompleteRead, json.JSONDecodeError, UnicodeDecodeError) as error:
                 error.add_note(f'PR {pr["number"]}: source lookup or review invalidation failed')
                 errors.append(error)
         if len(prs) < 100:
@@ -100,7 +123,7 @@ def recheck_main_repairs(api, repo, source_issue=None):
                 continue
             api(f'actions/runs/{runs[0]["id"]}/rerun', 'POST')
             requested.append(pr['number'])
-        except OSError as error:
+        except (OSError, IncompleteRead, json.JSONDecodeError, UnicodeDecodeError) as error:
             error.add_note(f'PR {pr["number"]}: Acceptance lookup or rerun failed; review remains pending')
             errors.append(error)
     if errors:
@@ -144,7 +167,9 @@ def check_pr(pr, api):
     if skipped:
         return skipped
     latest_base = api('git/ref/heads/' + current['base']['ref'])['object']['sha']
-    if (latest['head']['sha'] != current['head']['sha'] or latest['base']['ref'] != current['base']['ref'] or latest_base != trusted_head or latest.get('body') != current.get('body')):
+    if (latest['head']['sha'] != current['head']['sha'] or latest['base']['ref'] != current['base']['ref']
+            or latest_base != trusted_head or latest.get('body') != current.get('body')
+            or latest.get('title') != current.get('title')):
         raise ValueError('PR/base changed during acceptance validation; rerun')
     if result.get('repair_contract_base') and api('git/ref/heads/main')['object']['sha'] != result['repair_contract_base']:
         raise ValueError('Trusted main contract changed during acceptance validation; rerun')
