@@ -246,7 +246,8 @@ def run_worker(role, checkout, packet, output_dir, timeout=600, on_start=lambda 
     if packet.get('private_repair_evidence'):
         report['repair_evidence_sha256'] = packet['private_repair_evidence']['bundle_sha256']
         report = issue_review_origin(origin_storage, report, origin_binding, report['session'], 'cli',
-                                     packet['private_repair_evidence']['private_paths'])
+                                     packet['private_repair_evidence']['private_paths'],
+                                     [origin['session'] for origin in packet['private_repair_evidence']['origins']])
     return report
 
 
@@ -269,7 +270,8 @@ def main():
         bound = json.loads(args.binding.read_text())
         if any(bound[k] != report[k] for k in ('head', 'base')):
             raise ValueError('Manual binding differs from fixed report')
-        report = issue_review_origin(args.storage, report, bound, report['session'], 'manual', evidence['private_paths'])
+        report = issue_review_origin(args.storage, report, bound, report['session'], 'manual', evidence['private_paths'],
+                                     [origin['session'] for origin in evidence['origins']])
     # Preserve original reports and refuse to replace an existing bound receipt.
     fd = os.open(args.output, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     with os.fdopen(fd, 'w') as stream:

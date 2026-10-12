@@ -8,6 +8,7 @@
     "private bundle原本/hash/locator/集合・stale拒否と、raw UUID非公開/cache binding再開の回帰を実行",
     "adapter発行origin receiptの全報告/binding照合、相対bundle登録前検査、単一実session旧形式、wrapper cache失効/PAUSED保持をfixtureで確認",
     "任意private receipt pathの公開/cache再開伏せ字、旧形式混在の全session/locator競合、所有・停止確認付きbundle追加/交換とPAUSED保持をfixtureで確認",
+    "既知pathのencoded file/Markdown表記、公開URL UUIDとprivate contributorの区別、legacy最初のwriter日時、rebind失効保存と通信失敗/retryをfixtureで確認。任意local env改変への認証は既存境界外",
     "python3 scripts/workflow/product_check.py: frozen CLI互換性保全を実行",
     "clean committed HEADでchange_impact --base origin/main --run-testsと通常hooksを実行",
     "保持済み実repairデータのprivateな有限validator試行。診断であり実独立承認/製品受入ではない",

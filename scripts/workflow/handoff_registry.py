@@ -101,13 +101,15 @@ def restore_review(storage, identifier, public, with_paths=False):
     return (local['review'], paths) if with_paths else local['review']
 
 
-def issue_review_origin(storage, report, bound, session, kind, private_paths=()):
+def issue_review_origin(storage, report, bound, session, kind, private_paths=(), private_sessions=()):
     """Trusted adapter boundary, not authentication against a writer of local files/environment."""
-    from agent_policy import canonical_session
+    from agent_policy import canonical_session, session_fingerprint
     session = canonical_session(session)
     if (report.get('session') != session or 'origin_receipt' in report or kind not in ('cli', 'manual') or
             not isinstance(bound, dict) or any(bound.get(k) != report.get(k) for k in ('head', 'base'))):
         raise ValueError('Adapter origin differs from report or is already bound')
+    if private_sessions:
+        report = dict(report, private_sessions=sorted(set(map(session_fingerprint, private_sessions))))
     public = {'binding': bound, 'review': report}
     identifier = store_review(storage, public, {'kind': 'adapter-review-origin-v1', 'adapter': kind,
                                               'session': session, 'report': report}, private_paths)

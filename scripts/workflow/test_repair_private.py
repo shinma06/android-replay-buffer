@@ -194,7 +194,8 @@ class ConsumerTests(unittest.TestCase):
         def fixture_adapter(*args, **kw):
             raw = self.worker(*args, **kw)
             return issue_review_origin(self.loop.storage, raw, kw['origin_binding'], raw['session'], 'cli',
-                                       args[2]['private_repair_evidence']['private_paths'])
+                                       args[2]['private_repair_evidence']['private_paths'],
+                                       [origin['session'] for origin in args[2]['private_repair_evidence']['origins']])
         self.loop.worker = fixture_adapter
 
     def test_exact_private_packet_then_tampered_receipt_blocks_cached_merge(self):
@@ -411,7 +412,8 @@ class PrivatePathTests(unittest.TestCase):
         self.check_paths(f'/mnt/receipts/{session}/event.json', f'/opt/receipts/{session}/mapping.json')
 
     def test_encoded_file_uris_with_space_unicode_and_escape_case_stay_private(self):
-        self.check_paths('/mnt/private receipt/記録.json', '/opt/private receipt/対応.json')
+        session = '00000000-0000-4000-8000-000000000099'
+        self.check_paths(f'/mnt/private receipt/{session}/記録.json', f'/opt/private receipt/{session}/対応.json')
 
     def check_paths(self, virtual, support):
         self.prepare()
@@ -433,9 +435,10 @@ class PrivatePathTests(unittest.TestCase):
         lower = re.sub(r'%[0-9A-F]{2}', lambda m: m[0].lower(), encoded)
         local = encoded.replace('file:///', 'file://localhost/')
         private_url = 'https://public.example/session/' + tal.report()['session']
+        contributor_url = 'https://public.example/origin/' + self.fixture.sessions[0]
         session = '00000000-0000-4000-8000-000000000098'
         self.worker.side_effect = lambda *args, **kw: dict(tal.report('changes_requested'),
-                evidence=f'prefix:{virtual}:suffix file://{support} {urls} standalone:{session} {encoded} {lower} {local} {private_url} [encoded]({encoded[7:]}) [lower]({lower[7:]})',
+                evidence=f'prefix:{virtual}:suffix file://{support} {urls} standalone:{session} {encoded} {lower} {local} {private_url} {contributor_url} [encoded]({encoded[7:]}) [lower]({lower[7:]})',
                 findings=[f'Check [{virtual}]({support}) [{encoded}]({local}) [target]({encoded[7:]}) [lower]({lower[7:]})'], repair_revision='e' * 64,
                 repair_evidence_sha256=args[2]['private_repair_evidence']['bundle_sha256'])
         def is_file(path):
@@ -449,7 +452,9 @@ class PrivatePathTests(unittest.TestCase):
         public = json.dumps(self.gh.messages)
         self.assertNotIn(virtual, public); self.assertNotIn(support, public)
         self.assertNotIn('private_paths', public)
-        for uri in (encoded, lower, local, encoded[7:], lower[7:], private_url): self.assertNotIn(uri, public)
+        self.assertNotIn('private_sessions', public)
+        for uri in (encoded, lower, local, encoded[7:], lower[7:], private_url, contributor_url): self.assertNotIn(uri, public)
+        self.assertIn('https://public.example/origin/' + session_fingerprint(self.fixture.sessions[0]), public)
         self.assertIn('https://public.example/session/' + session_fingerprint(tal.report()['session']), public)
         self.assertNotIn('/mnt/receipts/', public); self.assertNotIn('/opt/receipts/', public)
         self.assertNotIn(session, public)
@@ -606,3 +611,8 @@ class RepairRecoveryTests(unittest.TestCase):
                         self.assertEqual(self.loop.tick(36)['phase'], 'reviewed')
                     self.assertEqual(self.gh.merges, 0)
                     self.assertEqual(self.gh.issues[35]['state'], 'open')
+                    tal.al.rebind_target(self.loop, args)
+                    recovered, saved, _, _ = self.loop.load(36)
+                    self.assertEqual(recovered['repair_evidence'], str(replacement.resolve()))
+                    self.assertEqual(saved['paused'], paused)
+                    for key in ('review', 'binding', 'gui', 'acceptance'): self.assertNotIn(key, saved)

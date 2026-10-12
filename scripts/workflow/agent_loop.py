@@ -344,10 +344,12 @@ class Loop:
     def public_state(self, value, private_paths=(), private_sessions=()):
         if isinstance(value, dict):
             private_paths = set(private_paths) | set(value.get('private_paths', []))
-            private_sessions = set(private_sessions) | {str(value.get('session', '')).lower(),
-                                                        str((value.get('review') or {}).get('session', '')).lower()}
+            review = value.get('review') if isinstance(value.get('review'), dict) else {}
+            private_sessions = (set(private_sessions) | set(value.get('private_sessions', [])) |
+                                set(review.get('private_sessions', [])) |
+                                {str(value.get('session', '')).lower(), str(review.get('session', '')).lower()})
             return {k: self.public_state(v, private_paths, private_sessions) for k, v in value.items()
-                    if k not in ('host', 'source', 'repair_evidence', 'private_repair_evidence', 'private_paths')}
+                    if k not in ('host', 'source', 'repair_evidence', 'private_repair_evidence', 'private_paths', 'private_sessions')}
         if isinstance(value, list):
             return [self.public_state(v, private_paths, private_sessions) for v in value]
         if isinstance(value, str):
@@ -361,7 +363,8 @@ class Loop:
             for i, part in enumerate(parts):
                 part = re.sub(r'(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}',
                               lambda match: session_fingerprint(match[0].lower())
-                              if not i % 2 or match[0].lower() in private_sessions else match[0], part)
+                              if not i % 2 or match[0].lower() in private_sessions or
+                              session_fingerprint(match[0].lower()) in private_sessions else match[0], part)
                 parts[i] = part if i % 2 else re.sub(r'/(?:Users|home|private|tmp|var)/[^\n`]+', '[local path]', part)
             return ''.join(parts)
         return value
