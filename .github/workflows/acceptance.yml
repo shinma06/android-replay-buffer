@@ -1,14 +1,23 @@
 name: Acceptance
 on:
+  push:
+    branches: [main]
+  issues:
+    types: [edited, deleted, labeled, unlabeled]
+  issue_comment:
+    types: [edited, deleted]
   pull_request:
     branches: [main, develop]
     types: [opened, edited, synchronize, reopened, ready_for_review]
 permissions:
   contents: read
   pull-requests: read
+  issues: read
+  statuses: write
+  actions: write
 concurrency:
-  group: acceptance-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
+  group: acceptance-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   acceptance:
     name: Acceptance gate
@@ -18,7 +27,7 @@ jobs:
       # Only reviewed base code runs. PR JSON is read with git show as data.
       - uses: actions/checkout@v4
         with:
-          ref: refs/heads/${{ github.event.pull_request.base.ref }}
+          ref: refs/heads/${{ github.event.pull_request.base.ref || 'main' }}
           fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-python@v5
