@@ -58,7 +58,7 @@ CLIではUSB切断/再接続、直前区間の動画/logcat時刻整合、log-on
 }
 ```
 
-既存のcanonical hash関数（UTF-8、sort_keys、ensure_ascii=False、区切り`,`/`:`）を共用します。gateは現在のmain refをAPIで固定し、そのcommitの正式resolverで有効方法を読みます。candidate側の独自改訂は認めず、正式resolverに登録済みの旧計画との対応を用い、方法だけの改訂で無条件の製品再build/再試験を要求しません。責任改訂のない製品では`contract_revision`はJSON `null`のcanonical hashで、独立レビューが元Case契約を直接確認します。`results`は元NGの全IDと完全一致し、`coverage`も各NGの全保証IDと一致させます。観察は修正candidate/hashと一致し、元NG・candidate commitより古い日時を拒否します。元の失敗artifactは修正版として受理しません。
+`artifacts`の名前は元Caseの`artifact`に一致させます。既定は`app`で、#227の`27:RECONNECT-EMU`では`plugin`です。既存のcanonical hash関数（UTF-8、sort_keys、ensure_ascii=False、区切り`,`/`:`）を共用します。gateは現在のmain refをAPIで固定し、そのcommitの正式resolverで有効方法を読みます。candidate側の独自改訂は認めず、正式resolverに登録済みの旧計画との対応を用い、方法だけの改訂で無条件の製品再build/再試験を要求しません。責任改訂のない製品では`contract_revision`はJSON `null`のcanonical hashで、独立レビューが元Case契約を直接確認します。`results`は元NGの全IDと完全一致し、`coverage`も各NGの全保証IDと一致させます。観察は修正candidate/hashと一致し、元NG・candidate commitより古い日時を拒否します。元の失敗artifactは修正版として受理しません。
 
 自己参照するtested HEADを作らないため、修正コードを先にcommitし、その固定candidateからbuild/実行してから結果metadataをcommitします。candidateは現baseとPR headの間にあり、candidate後は当該Issueの受入JSONだけを変更できます。全commit edgeを調べ、symlink/削除/別ファイル/製品変更とその後のrevert・mergeを拒否します。base/製品が動いたら候補と証拠を再固定します。方法だけの改訂による既存事実の再評価と、製品NG修正後の新しい再試験を混同しません。
 

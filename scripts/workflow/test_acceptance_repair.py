@@ -25,6 +25,7 @@ class RepairTests(unittest.TestCase):
         self.git('config', 'user.name', 'fixture')
         self.git('config', 'user.email', 'fixture@example.invalid')
         self.case = copy.deepcopy(CASE)
+        self.case['artifact'] = 'plugin'
         self.case['gpt'] = {'status': 'fail', 'reason': 'native saved metadata left gap open'}
         self.case['fix_issue'] = 35
         source = change(36)
@@ -50,7 +51,7 @@ class RepairTests(unittest.TestCase):
                         observer='repair-executor', evidence='fixed production-path recheck and artifact',
                         loaded_identity='corrected ZIP/JAR', reason='all original failed guarantees reproduced and corrected')
         self.data = change(gui=False)
-        self.data['repair'] = {'candidate': self.candidate, 'artifacts': {'app': '2' * 64},
+        self.data['repair'] = {'candidate': self.candidate, 'artifacts': {'plugin': '2' * 64},
             'failure_record_sha256': canonical_hash(self.record), 'writer_session': 'writer-35',
             'results': {'GAP-1': {'observation': observed, 'coverage': {
                 'gap': 'target restoration production path execution',
@@ -198,6 +199,13 @@ class RepairTests(unittest.TestCase):
         self.commit('revert net diff')
         self.freeze()
         with self.assertRaisesRegex(ValueError, 'trusted scope'):
+            self.verify()
+
+    def test_artifact_key_comes_from_original_case(self):
+        self.assertTrue(self.verify()['repair_revision'])
+        self.data['repair']['artifacts'] = {'app': '2' * 64}
+        self.freeze()
+        with self.assertRaisesRegex(ValueError, 'corrected fixed artifact'):
             self.verify()
 
     def test_current_main_method_used_instead_of_stale_develop(self):
