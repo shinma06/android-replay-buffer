@@ -423,6 +423,45 @@ class PrivatePathTests(unittest.TestCase):
     def test_encoded_open_filename_normalized_markdown_through_save_and_cache(self):
         self.check_paths('/mnt/private receipt/event(1.json', '/opt/private receipt/mapping(1.json')
 
+    def test_markdown_destination_escapes_references_and_decode_order(self):
+        known = '/mnt/receipts/event(1).json'
+        targets = (r'file:///mnt/receipts/event\(1\).json',
+                   r'file:///mnt/receipts/event(1)\.json',
+                   'file:///mnt/receipts/event&#40;1&#41;.json',
+                   'file:///mnt/receipts/event&#x28;1&#x29;.json',
+                   'file:///mnt/receipts/event&lpar;1&rpar;.json',
+                   'file:///mnt/receipts/event&#37;281&#37;29.json')
+        for target in targets:
+            with self.subTest(target=target):
+                self.assertEqual(self.loop.public_state(f'[receipt]({target})', [known]), '[receipt]([private URI])')
+        bracket = r'[receipt](file:///mnt/receipts/event\].json)'
+        self.assertEqual(self.loop.public_state(bracket, ['/mnt/receipts/event].json']), '[receipt]([private URI])')
+        bracket_dot = r'[receipt](file:///mnt/receipts/event]\.json)'
+        self.assertEqual(self.loop.public_state(bracket_dot, ['/mnt/receipts/event].json']), '[receipt]([private URI])')
+        for target in (r'file:///mnt/receipts/event\&lpar;1\&rpar;.json',
+                       'file:///mnt/receipts/event&amp;#40;1&amp;#41;.json',
+                       'file:///mnt/receipts/event%5C(1).json',
+                       'file:///mnt/receipts/event&#92;(1).json',
+                       'file:///mnt/receipts/event%25281%2529.json'):
+            source = f'[receipt]({target})'
+            self.assertEqual(self.loop.public_state(source, [known]), source)
+        for source, other in ((r'[receipt](file:///mnt/receipts/event\z.json)', '/mnt/receipts/eventz.json'),
+                              ('[receipt](file:///mnt/receipts/event&notit;.json)', '/mnt/receipts/event¬it;.json')):
+            self.assertEqual(self.loop.public_state(source, [other]), source)
+        public = r'[public](HTTPS://public.example/event\(1\).json?x=%41&amp;y=2)'
+        self.assertEqual(self.loop.public_state(public, [known]), public)
+        label = f'[{targets[0]}](HTTPS://public.example/target?x=%41&amp;y=2)'
+        self.assertEqual(self.loop.public_state(label, [known]), '[[private URI]](HTTPS://public.example/target?x=%41&amp;y=2)')
+        session = tal.report()['session']
+        target = 'https://public.example/session/' + session.replace('-', r'\-')
+        projected = self.loop.public_state({'review': {'session': session, 'evidence': f'[origin]({target})'}})
+        self.assertNotIn(target, projected['review']['evidence'])
+
+    def test_markdown_destination_forms_through_save_cache_and_resave(self):
+        self.check_paths('/mnt/receipts/event(1).json', '/opt/receipts/mapping(1).json')
+        self.doCleanups(); self.setUp()
+        self.check_paths('/mnt/receipts/event].json', '/opt/receipts/mapping].json')
+
     def test_known_uri_filename_closings_are_distinct_from_markdown_enclosure(self):
         from urllib.parse import quote
         known = '/mnt/private receipt/event(1.json'
@@ -467,12 +506,18 @@ class PrivatePathTests(unittest.TestCase):
         escaped_dot = encoded.replace('/private', '/%2e/private')
         encoded_identity = private_url.replace('-', '%2D')
         encoded_contributor = contributor_url.replace('00000000-', '%300000000%2d', 1)
+        semantic = encoded.replace('%28', '(').replace('%29', ')').replace('%5D', ']')
+        markdown_targets = (semantic.replace('(', r'\(').replace(')', r'\)'), semantic.replace('.', r'\.'),
+                            semantic.replace('(', '&#40;').replace(')', '&#41;'),
+                            semantic.replace('(', '&#x28;').replace(')', '&#x29;'),
+                            semantic.replace('(', '&lpar;').replace(')', '&rpar;'), semantic.replace(']', r'\]'))
+        markdown_forms = ' '.join(f'[form]({target})' for target in markdown_targets)
         unrelated = 'https://public.example/runs/00000000%2d0000%2D4000%2d8000%2D000000000097/result'
         urls += ' ' + unrelated + ' https://public.example/event(1).json [public](https://public.example/event(1).json)'
         session = '00000000-0000-4000-8000-000000000098'
         self.worker.side_effect = lambda *args, **kw: dict(tal.report('changes_requested'),
-                evidence=f'prefix:{virtual}:suffix file://{support} {urls} standalone:{session} {encoded} {lower} {local} {private_url} {contributor_url} {alternate} {dot} {escaped_dot} [dot]({dot}) [alternate]({alternate[7:]}) {encoded_identity} {encoded_contributor} <{alternate}> [angle](<{alternate}>) [normal]({alternate}) [encoded]({encoded[7:]}) [lower]({lower[7:]})',
-                findings=[f'Check [{virtual}]({support}) [{encoded}]({local}) [target]({encoded[7:]}) [lower]({lower[7:]}) [alternate]({alternate[7:]}) {encoded_identity} {encoded_contributor}'], repair_revision='e' * 64,
+                evidence=f'prefix:{virtual}:suffix file://{support} {urls} standalone:{session} {encoded} {lower} {local} {private_url} {contributor_url} {alternate} {dot} {escaped_dot} [dot]({dot}) [alternate]({alternate[7:]}) {encoded_identity} {encoded_contributor} <{alternate}> [angle](<{alternate}>) [normal]({alternate}) [encoded]({encoded[7:]}) [lower]({lower[7:]}) {markdown_forms}',
+                findings=[f'Check [{virtual}]({support}) [{encoded}]({local}) [target]({encoded[7:]}) [lower]({lower[7:]}) [alternate]({alternate[7:]}) {encoded_identity} {encoded_contributor} {markdown_forms}'], repair_revision='e' * 64,
                 repair_evidence_sha256=args[2]['private_repair_evidence']['bundle_sha256'])
         def is_file(path):
             return True if str(path) in originals else original_file(path)
@@ -493,6 +538,7 @@ class PrivatePathTests(unittest.TestCase):
         self.assertNotIn('private_paths', public)
         self.assertNotIn('private_sessions', public)
         for uri in (encoded, lower, local, encoded[7:], lower[7:], private_url, contributor_url, alternate, alternate[7:], dot, escaped_dot, encoded_identity, encoded_contributor): self.assertNotIn(uri, public)
+        for target in markdown_targets: self.assertNotIn(target, json.dumps(self.gh.messages))
         self.assertIn('https://public.example/origin/' + session_fingerprint(self.fixture.sessions[0]), public)
         self.assertIn('https://public.example/session/' + session_fingerprint(tal.report()['session']), public)
         self.assertNotIn('/mnt/receipts/', public); self.assertNotIn('/opt/receipts/', public)

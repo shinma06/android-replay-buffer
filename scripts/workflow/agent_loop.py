@@ -5,6 +5,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 import fcntl
 import hashlib
+import html
 import json
 import os
 import posixpath
@@ -12,6 +13,7 @@ from pathlib import Path
 import re
 import shutil
 import socket
+import string
 import subprocess
 import sys
 import time
@@ -357,9 +359,20 @@ class Loop:
         if isinstance(value, str):
             def private_uri(match):
                 token = match[0]
-                decoded = unquote(token)
+                def markdown_char(escape):
+                    if escape[1] is not None:
+                        return escape[1]
+                    reference = escape[2]
+                    if reference.startswith('&#') or reference[1:] in html.entities.html5:
+                        return html.unescape(reference)
+                    return reference
+                # One pass: escaped ampersands and decoded references are not reinterpreted.
+                destination = re.sub(r'\\([' + re.escape(string.punctuation) +
+                                     r'])|(&(?:#[0-9]{1,7}|#[xX][0-9a-fA-F]{1,6}|[A-Za-z][A-Za-z0-9]*);)',
+                                     markdown_char, token)
+                decoded = unquote(destination)
                 try:
-                    path = posixpath.normpath(unquote(urlsplit(token).path))
+                    path = posixpath.normpath(unquote(urlsplit(destination).path))
                 except ValueError:
                     path = ''
                 # Keep enclosing Markdown punctuation beyond the complete known filename.
@@ -374,14 +387,15 @@ class Loop:
                 protected = max((known.count(')') - known.count('(') for known in matched), default=0)
                 suffix = ')' * min(closing, max(0, decoded.count(')') - decoded.count('(') - protected))
                 if (matched and
-                        ('%' in token or not any(known in token for known in private_paths))):
+                        (destination != token or '%' in token or not any(known in token for known in private_paths))):
                     return '[private URI]' + suffix
                 identities = re.findall(r'(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}', decoded)
-                if '%' in token and any(identity.lower() in private_sessions or
+                if (destination != token or '%' in token) and any(identity.lower() in private_sessions or
                                         session_fingerprint(identity.lower()) in private_sessions for identity in identities):
                     return '[private URI]' + suffix
                 return token
-            value = re.sub(r'(?i)(?:https?://|file://|/)[^\s<>"`\]]*', private_uri, value)
+            value = re.sub(r'(?i)(?:https?://|file://|/)(?:\\[' + re.escape(string.punctuation) +
+                           r']|\](?=[^()\s<>"`])|[^\s<>"`\]])*', private_uri, value)
             for path in sorted(private_paths, key=len, reverse=True):
                 value = value.replace(path, '[private path]')
             for private in (str(self.storage), str(ROOT), str(Path.home()), HOST):
