@@ -437,10 +437,17 @@ class PrivatePathTests(unittest.TestCase):
         local = encoded.replace('file:///', 'file://localhost/')
         private_url = 'https://public.example/session/' + tal.report()['session']
         contributor_url = 'https://public.example/origin/' + self.fixture.sessions[0]
+        alternate = encoded.replace('private', '%70rivate').replace('.json', '%2Ej%73on')
+        dot = encoded.replace('/private', '/./private')
+        escaped_dot = encoded.replace('/private', '/%2e/private')
+        encoded_identity = private_url.replace('-', '%2D')
+        encoded_contributor = contributor_url.replace('00000000-', '%300000000%2d', 1)
+        unrelated = 'https://public.example/runs/00000000%2d0000%2D4000%2d8000%2D000000000097/result'
+        urls += ' ' + unrelated
         session = '00000000-0000-4000-8000-000000000098'
         self.worker.side_effect = lambda *args, **kw: dict(tal.report('changes_requested'),
-                evidence=f'prefix:{virtual}:suffix file://{support} {urls} standalone:{session} {encoded} {lower} {local} {private_url} {contributor_url} [encoded]({encoded[7:]}) [lower]({lower[7:]})',
-                findings=[f'Check [{virtual}]({support}) [{encoded}]({local}) [target]({encoded[7:]}) [lower]({lower[7:]})'], repair_revision='e' * 64,
+                evidence=f'prefix:{virtual}:suffix file://{support} {urls} standalone:{session} {encoded} {lower} {local} {private_url} {contributor_url} {alternate} {dot} {escaped_dot} [alternate]({alternate[7:]}) {encoded_identity} {encoded_contributor} [encoded]({encoded[7:]}) [lower]({lower[7:]})',
+                findings=[f'Check [{virtual}]({support}) [{encoded}]({local}) [target]({encoded[7:]}) [lower]({lower[7:]}) [alternate]({alternate[7:]}) {encoded_identity} {encoded_contributor}'], repair_revision='e' * 64,
                 repair_evidence_sha256=args[2]['private_repair_evidence']['bundle_sha256'])
         def is_file(path):
             return True if str(path) in originals else original_file(path)
@@ -454,7 +461,7 @@ class PrivatePathTests(unittest.TestCase):
         self.assertNotIn(virtual, public); self.assertNotIn(support, public)
         self.assertNotIn('private_paths', public)
         self.assertNotIn('private_sessions', public)
-        for uri in (encoded, lower, local, encoded[7:], lower[7:], private_url, contributor_url): self.assertNotIn(uri, public)
+        for uri in (encoded, lower, local, encoded[7:], lower[7:], private_url, contributor_url, alternate, alternate[7:], dot, escaped_dot, encoded_identity, encoded_contributor): self.assertNotIn(uri, public)
         self.assertIn('https://public.example/origin/' + session_fingerprint(self.fixture.sessions[0]), public)
         self.assertIn('https://public.example/session/' + session_fingerprint(tal.report()['session']), public)
         self.assertNotIn('/mnt/receipts/', public); self.assertNotIn('/opt/receipts/', public)
@@ -617,3 +624,131 @@ class RepairRecoveryTests(unittest.TestCase):
                     self.assertEqual(recovered['repair_evidence'], str(replacement.resolve()))
                     self.assertEqual(saved['paused'], paused)
                     for key in ('review', 'binding', 'gui', 'acceptance'): self.assertNotIn(key, saved)
+
+
+class WorkerDirectoryTests(unittest.TestCase):
+    setUp = EvidenceTests.setUp
+    seal = EvidenceTests.seal
+
+    def test_existing_public_directory_is_private_before_mock_launch(self):
+        output = self.root / 'workers'; output.mkdir(mode=0o755); output.chmod(0o755)
+        process = Mock(pid=123, returncode=0)
+        def start(command, **kw):
+            self.assertEqual(output.stat().st_mode & 0o777, 0o700)
+            raw = tal.report(); raw.pop('session')
+            target = Path(command[command.index('-o') + 1]); target.write_text(json.dumps(raw)); target.chmod(0o644)
+            kw['stdout'].write(json.dumps({'type': 'thread.started', 'thread_id': tal.report()['session']}) + '\n')
+            kw['stdout'].write(json.dumps({'type': 'turn.completed'}) + '\n'); kw['stdout'].flush()
+            return process
+        with patch('agent_worker.subprocess.Popen', side_effect=start), patch('agent_worker.os.killpg'):
+            result = run_worker('review', self.root, {}, output)
+        self.assertEqual(result['session'], tal.report()['session'])
+
+    def test_out_of_contract_public_storage_is_rejected_after_mock_launch(self):
+        tal.LoopTests.setUp(self)
+        self.loop.storage.chmod(0o755)
+        output = self.checkout.parent / 'workers'; output.mkdir(); output.chmod(0o755)
+        self.loop.worker = run_worker
+        process = Mock(pid=123, returncode=0)
+        def start(command, **kw):
+            self.assertEqual(self.loop.storage.stat().st_mode & 0o777, 0o755)
+            self.assertEqual(output.stat().st_mode & 0o777, 0o700)
+            raw = tal.report(); raw.pop('session')
+            target = Path(command[command.index('-o') + 1]); target.write_text(json.dumps(raw)); target.chmod(0o644)
+            kw['stdout'].write(json.dumps({'type': 'thread.started', 'thread_id': tal.report()['session']}) + '\n')
+            kw['stdout'].write(json.dumps({'type': 'turn.completed'}) + '\n'); kw['stdout'].flush()
+            return process
+        with patch('agent_worker.subprocess.Popen', side_effect=start) as launch, patch('agent_worker.os.killpg'):
+            with self.assertRaisesRegex(ValueError, 'Storage must be private'):
+                self.loop.tick(36)
+        launch.assert_called_once()
+        self.assertEqual(output.stat().st_mode & 0o777, 0o700)
+        self.assertEqual(self.gh.merges, 0)
+
+    def test_symlink_or_foreign_output_directory_never_launches(self):
+        from types import SimpleNamespace
+        target = self.root / 'target'; target.mkdir()
+        link = self.root / 'link'; link.symlink_to(target, target_is_directory=True)
+        with patch('agent_worker.subprocess.Popen') as launch, self.assertRaises((OSError, ValueError)):
+            run_worker('review', self.root, {}, link)
+        launch.assert_not_called()
+        with patch('agent_worker.os.fstat', return_value=SimpleNamespace(st_uid=os.getuid() + 1)), \
+                patch('agent_worker.subprocess.Popen') as launch, self.assertRaises((OSError, ValueError)):
+            run_worker('review', self.root, {}, target)
+        launch.assert_not_called()
+
+
+class EvidenceRetentionTests(unittest.TestCase):
+    setUp = tal.LoopTests.setUp
+
+    def move_evidence(self, mode):
+        ignored = self.checkout / '.harness-local'; ignored.mkdir(exist_ok=True)
+        if mode == 'bundle':
+            target = ignored / 'bundle.json'; target.write_bytes(self.fixture.path.read_bytes()); target.chmod(0o600)
+            return target
+        target = ignored / 'receipt.json'; target.write_bytes(self.fixture.receipt.read_bytes())
+        if mode == 'extra':
+            target.write_text('{"context":true}')
+            self.fixture.bundle['receipts'].append({'sha256': hashlib.sha256(target.read_bytes()).hexdigest(), 'path': str(target)})
+        else:
+            if mode == 'alias':
+                alias = self.fixture.root / 'alias'; alias.symlink_to(ignored, target_is_directory=True)
+                target = alias / target.name
+            self.fixture.bundle['receipts'][0]['path'] = str(target)
+        self.fixture.seal()
+        return self.fixture.path
+
+    def test_enroll_and_rebind_reject_all_cleanup_evidence_without_mutation(self):
+        for operation in ('enroll', 'rebind'):
+            for mode in ('bundle', 'mapping', 'extra', 'alias'):
+                self.doCleanups(); self.setUp()
+                with self.subTest(operation=operation, mode=mode):
+                    args = (EnrollmentTests.prepare(self) if operation == 'enroll' else
+                            RepairRecoveryTests.prepare(self, 2, True))
+                    args.repair_evidence = self.move_evidence(mode)
+                    messages = copy.deepcopy(self.gh.messages)
+                    registry = self.loop.storage / 'registry'
+                    records = {p.name: p.read_bytes() for p in registry.glob('*')}
+                    action = tal.al.enroll if operation == 'enroll' else tal.al.rebind_target
+                    with self.assertRaisesRegex(ValueError, 'outside cleanup'): action(self.loop, args)
+                    self.assertEqual(self.gh.messages, messages)
+                    self.assertEqual({p.name: p.read_bytes() for p in registry.glob('*')}, records)
+                    self.assertFalse(self.gh.statuses)
+
+    def test_existing_unsafe_bundle_blocks_review_postmerge_and_cleanup_before_effects(self):
+        for phase in ('review', 'postmerge', 'cleanup', 'retained-old-path'):
+            self.doCleanups(); self.setUp()
+            with self.subTest(phase=phase):
+                ConsumerTests.prepare(self)
+                h, state, _, _ = self.loop.load(36)
+                if phase == 'retained-old-path':
+                    h['private_paths'] = [str(self.checkout / '.harness-local/old-original.json')]
+                else:
+                    self.move_evidence('mapping')
+                before = self.fixture.receipt.read_bytes()
+                if phase == 'review':
+                    self.assertEqual(self.loop.tick(36)['phase'], 'blocked')
+                    self.worker.assert_not_called()
+                elif phase == 'postmerge':
+                    self.gh.pull.update(merged=True, state='closed')
+                    with self.assertRaisesRegex(ValueError, 'outside cleanup'):
+                        self.loop.merged_acceptance(self.gh.pull, h, state)
+                else:
+                    with patch.object(tal.al, 'command') as command, patch.object(tal.al, 'git') as git, \
+                            patch.object(tal.al.shutil, 'rmtree') as remove:
+                        with self.assertRaisesRegex(ValueError, 'outside cleanup'):
+                            tal.al.Loop._cleanup_resources(self.loop, self.gh.pull, h)
+                        command.assert_not_called(); git.assert_not_called(); remove.assert_not_called()
+                self.assertEqual(self.fixture.receipt.read_bytes(), before)
+                self.assertEqual(self.gh.issues[35]['state'], 'open'); self.assertEqual(self.gh.merges, 0)
+                self.assertNotIn((tal.HEAD, 'success'), self.gh.statuses)
+
+    def test_external_sibling_evidence_is_allowed_without_copying(self):
+        args = EnrollmentTests.prepare(self)
+        sibling = self.checkout.with_name('checkout-retained'); sibling.mkdir()
+        receipt = sibling / 'receipt.json'; receipt.write_bytes(self.fixture.receipt.read_bytes())
+        self.fixture.bundle['receipts'][0]['path'] = str(receipt); self.fixture.seal()
+        args.repair_evidence = self.fixture.path
+        expected = receipt.read_bytes()
+        tal.al.enroll(self.loop, args)
+        self.assertEqual(receipt.read_bytes(), expected)

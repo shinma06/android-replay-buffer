@@ -40,8 +40,7 @@ def bind_report_session(report, session):
     return dict(report, session=session)
 
 
-def private_repair_evidence(path, acceptance, bound):
-    """Rehash private originals and bind their exact observation locations to the public claims."""
+def read_repair_bundle(path):
     path = Path(path) if path else None
     if path is None or not path.is_absolute() or path.is_symlink():
         raise ValueError('Repair requires a private sealed evidence bundle')
@@ -50,8 +49,30 @@ def private_repair_evidence(path, acceptance, bound):
         raise ValueError('Evidence bundle must be private and locally owned')
     body = path.read_bytes()
     bundle = json.loads(body)
-    if (set(bundle) != {'head', 'base', 'repair_revision', 'mapping_receipt_sha256', 'receipts', 'origins'} or
-            any(bundle[k] != bound[k] for k in ('head', 'base')) or
+    if set(bundle) != {'head', 'base', 'repair_revision', 'mapping_receipt_sha256', 'receipts', 'origins'}:
+        raise ValueError('Malformed private repair evidence bundle')
+    if (not isinstance(bundle['receipts'], list) or
+            any(not isinstance(item, dict) or set(item) != {'sha256', 'path'} or
+                not isinstance(item['path'], str) or not isinstance(item['sha256'], str) for item in bundle['receipts']) or
+            bundle['mapping_receipt_sha256'] not in {item['sha256'] for item in bundle['receipts']}):
+        raise ValueError('Malformed or missing sealed mapping receipt')
+    return body, bundle
+
+
+def require_retained_evidence(paths, cleanup_roots):
+    roots = [Path(root).resolve() for root in cleanup_roots]
+    for path in paths:
+        source = Path(path)
+        if not source.is_absolute() or any(source.resolve().is_relative_to(root) for root in roots):
+            raise ValueError('Sealed evidence must remain outside cleanup roots')
+
+
+def private_repair_evidence(path, acceptance, bound, cleanup_roots=()):
+    """Rehash originals and reject evidence that owned resource cleanup would delete."""
+    path = Path(path) if path else None
+    body, bundle = read_repair_bundle(path)
+    require_retained_evidence([path, *[item['path'] for item in bundle['receipts']]], cleanup_roots)
+    if (any(bundle[k] != bound[k] for k in ('head', 'base')) or
             bundle['repair_revision'] != acceptance.get('repair_revision')):
         raise ValueError('Private repair evidence candidate/revision mismatch')
     receipts = {}
@@ -160,6 +181,13 @@ def run_worker(role, checkout, packet, output_dir, timeout=600, on_start=lambda 
         raise ValueError('Repair review requires trusted origin registry/binding before worker launch')
     output_dir = Path(output_dir)
     output_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    directory = os.open(output_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        if os.fstat(directory).st_uid != os.getuid():
+            raise ValueError('Worker output directory must be locally owned')
+        os.fchmod(directory, 0o700)
+    finally:
+        os.close(directory)
     session = f'{role}-{uuid.uuid4()}'
     schema = output_dir / (session + '.schema.json')
     result = output_dir / (session + '.json')

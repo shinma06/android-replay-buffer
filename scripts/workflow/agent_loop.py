@@ -7,6 +7,7 @@ import fcntl
 import hashlib
 import json
 import os
+import posixpath
 from pathlib import Path
 import re
 import shutil
@@ -15,10 +16,10 @@ import subprocess
 import sys
 import time
 import uuid
-from urllib.parse import quote
+from urllib.parse import quote, unquote, urlsplit
 
 from agent_policy import CONTEXT, binding, eligible, gui_pass, in_scope, issue_number, next_action, session_fingerprint, update_parent, validate_review
-from agent_worker import private_repair_evidence, run_worker, worker_environment
+from agent_worker import private_repair_evidence, read_repair_bundle, require_retained_evidence, run_worker, worker_environment
 from handoff_registry import register, resolve, restore_review, store_review, verify_review_origin
 from verification import verify_pr, metadata
 from issue_schema import validate_issue, done_labels, labels
@@ -353,10 +354,24 @@ class Loop:
         if isinstance(value, list):
             return [self.public_state(v, private_paths, private_sessions) for v in value]
         if isinstance(value, str):
+            def private_uri(match):
+                token = match[0]
+                decoded = unquote(token)
+                try:
+                    path = posixpath.normpath(unquote(urlsplit(token).path))
+                except ValueError:
+                    path = ''
+                if (any(known in decoded or posixpath.normpath(known) == path for known in private_paths) and
+                        ('%' in token or not any(known in token for known in private_paths))):
+                    return '[private URI]'
+                identities = re.findall(r'(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}', decoded)
+                if '%' in token and any(identity.lower() in private_sessions or
+                                        session_fingerprint(identity.lower()) in private_sessions for identity in identities):
+                    return '[private URI]'
+                return token
+            value = re.sub(r'(?i)(?:https?://|file://|/)[^\s<>"`\])]*', private_uri, value)
             for path in sorted(private_paths, key=len, reverse=True):
                 value = value.replace(path, '[private path]')
-                encoded = re.sub(r'%[0-9A-F]{2}', lambda match: '(?i:' + match[0] + ')', re.escape(quote(path)))
-                value = re.sub(encoded, '[private path]', value)
             for private in (str(self.storage), str(ROOT), str(Path.home()), HOST):
                 value = value.replace(private, '[local]')
             parts = re.split(r'(?i)(https?://[^\s<>"`]+)', value)
@@ -383,7 +398,9 @@ class Loop:
     def repair_evidence(self, accepted, h, bound):
         if not accepted.get('repair_revision'):
             return None
-        packet = private_repair_evidence(h.get('repair_evidence'), accepted, bound)
+        roots = (h['source'], self.storage / f'pr-{h["pr"]}' / 'checkout')
+        packet = private_repair_evidence(h.get('repair_evidence'), accepted, bound, roots)
+        require_retained_evidence(h.get('private_paths', []), roots)
         accepted['repair_evidence_sha256'] = packet['bundle_sha256']
         return packet
 
@@ -812,6 +829,12 @@ class Loop:
         branch = h['branch']
         if branch in ('main', 'master', 'develop'):
             raise ValueError('Persistent branches must never be cleaned up')
+        roots = (h['source'], self.storage / f'pr-{pr["number"]}' / 'checkout')
+        paths = list(h.get('private_paths', []))
+        if h.get('repair_evidence'):
+            _, bundle = read_repair_bundle(h['repair_evidence'])
+            paths.extend([h['repair_evidence'], *[item['path'] for item in bundle['receipts']]])
+        require_retained_evidence(paths, roots)
         path = self.storage / f'pr-{pr["number"]}' / 'checkout'
         if (path.parent / 'worker.json').exists():
             raise ValueError('Worker state remains; do not remove resources')
@@ -877,7 +900,7 @@ def remote_review_complete(head, comments, not_before=None):
     return not any(at > completed for at in requests)
 
 
-def preflight_repair_bundle(loop, pr, source, path):
+def preflight_repair_bundle(loop, pr, source, path, cleanup_roots=None):
     accepted = loop.acceptance(pr, source)
     if path is None and not accepted.get('repair_revision'):
         return None, []
@@ -889,7 +912,8 @@ def preflight_repair_bundle(loop, pr, source, path):
     if path.is_symlink():
         raise ValueError('Repair enrollment requires a private regular bundle')
     path = path.resolve(strict=True)
-    packet = private_repair_evidence(path, accepted, {'head': pr['head']['sha'], 'base': pr['base']['sha']})
+    roots = cleanup_roots or (source, loop.storage / f'pr-{pr["number"]}' / 'checkout')
+    packet = private_repair_evidence(path, accepted, {'head': pr['head']['sha'], 'base': pr['base']['sha']}, roots)
     return path, packet['private_paths']
 
 
@@ -952,10 +976,11 @@ def rebind_target(loop, args):
     repair_path = getattr(args, 'repair_evidence', None)
     paths = set(h.get('private_paths', [])) | set(state.get('private_paths', []))
     if repair_path is not None:
-        repair_path, checked_paths = preflight_repair_bundle(loop, pr, path if path.exists() else source, repair_path)
+        repair_path, checked_paths = preflight_repair_bundle(loop, pr, path if path.exists() else source, repair_path, (source, path))
         paths.update(checked_paths)
     else:
         repair_path = h.get('repair_evidence')
+    require_retained_evidence(paths, (source, path))
     public = {k: v for k, v in h.items()
               if k not in ('source', 'host', 'registry_id', 'version', 'repair_evidence', 'private_paths')}
     public = loop.public_state(public, paths)
