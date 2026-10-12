@@ -4,6 +4,7 @@ import hashlib
 import json
 import re
 from git_guard import BRANCH
+from issue_schema import labels
 
 CONTEXT = 'Agent review'
 SHA = re.compile(r'[0-9a-f]{40}')
@@ -31,7 +32,8 @@ def binding(pr, issue):
     return {'head': pr['head']['sha'], 'base': pr['base']['sha'], 'target': pr['base']['ref'],
             'title_hash': hashlib.sha256((pr.get('title') or '').encode()).hexdigest(),
             'body_hash': hashlib.sha256((pr.get('body') or '').encode()).hexdigest(),
-            'issue_hash': hashlib.sha256((issue.get('body') or '').encode()).hexdigest()}
+            'issue_hash': hashlib.sha256((issue.get('body') or '').encode()).hexdigest(),
+            'issue_bug': 'type:bug' in labels(issue)}
 
 
 def validate_review(report, expected, acceptance=None):
