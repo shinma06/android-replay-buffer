@@ -22,7 +22,7 @@ MOVED = 'c' * 40
 
 def pr_data():
     return {
-        'number': 90, 'state': 'open', 'merged': False,
+        'number': 90, 'title': 'chore: 受入チェックを整える (#90)', 'state': 'open', 'merged': False,
         'body': 'Issue: #90\nIntegration: tooling\n'
                 'Verification: docs/verification/changes/issue-90.json\n'
                 'GUI: not-required\nGUI reason: CI state handling only',
@@ -124,13 +124,14 @@ class DelayedAcceptanceTests(unittest.TestCase):
         self.assertEqual(api.call_count, 3)  # No new-base lookup for a closed PR.
 
     def test_open_final_head_target_body_or_base_race_still_fails(self):
-        for change in ('head', 'target', 'body', 'base'):
+        for change in ('head', 'target', 'body', 'title', 'base'):
             with self.subTest(change=change):
                 latest = pr_data()
                 latest_base = BASE
                 if change == 'head': latest['head']['sha'] = MOVED
                 if change == 'target': latest['base']['ref'] = 'develop'
                 if change == 'body': latest['body'] += '\nchanged scope'
+                if change == 'title': latest['title'] = 'fix: 受入チェックを直す (#90)'
                 if change == 'base': latest_base = MOVED
                 api = Mock(side_effect=[pr_data(), {'object': {'sha': BASE}}, latest, {'object': {'sha': latest_base}}])
                 with self.assertRaisesRegex(ValueError, 'changed during acceptance validation'):
@@ -204,6 +205,19 @@ class MainContractEventTests(unittest.TestCase):
         self.assertEqual(writes[0][2]['context'], 'Agent review')
         self.assertEqual(writes[0][2]['state'], 'pending')
         self.assertEqual(writes[1][:2], ('actions/runs/42/rerun', 'POST'))
+
+    def test_invalid_title_cannot_hide_original_ng_approval_invalidation(self):
+        for title in ('[運用] #90 旧形式', 'fix: 別Issueの題名 (#91)', None):
+            for source in (None, 90):
+                with self.subTest(title=title, source=source):
+                    self.pr['title'] = title
+                    with self.assertRaises(ValueError): ci.validate(self.pr)
+                    self.calls.clear()
+                    self.assertEqual(ci.recheck_main_repairs(
+                        self.api, 'shinma06/android-replay-buffer', source_issue=source), [90])
+                    writes = [c for c in self.calls if c[1] == 'POST']
+                    self.assertEqual(writes[0][2]['state'], 'pending')
+                    self.assertEqual(writes[0][2]['context'], 'Agent review')
 
     def test_collaborator_repairs_are_invalidated_for_main_and_source_events(self):
         from agent_policy import eligible

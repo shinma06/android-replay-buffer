@@ -86,7 +86,8 @@ def recheck_main_repairs(api, repo, source_issue=None):
             break
         for pr in prs:
             try:
-                issue_id = validate(pr)
+                # A title-policy failure must not hide stale original-NG approval.
+                issue_id = validate(pr, check_title=False)
                 if (pr['state'] != 'open' or pr.get('merged') is True or pr['base']['ref'] != 'develop' or
                         pr['base']['repo']['full_name'] != repo or pr['head']['repo'] is None or
                         pr['head']['repo']['full_name'] != repo):
@@ -166,7 +167,9 @@ def check_pr(pr, api):
     if skipped:
         return skipped
     latest_base = api('git/ref/heads/' + current['base']['ref'])['object']['sha']
-    if (latest['head']['sha'] != current['head']['sha'] or latest['base']['ref'] != current['base']['ref'] or latest_base != trusted_head or latest.get('body') != current.get('body')):
+    if (latest['head']['sha'] != current['head']['sha'] or latest['base']['ref'] != current['base']['ref']
+            or latest_base != trusted_head or latest.get('body') != current.get('body')
+            or latest.get('title') != current.get('title')):
         raise ValueError('PR/base changed during acceptance validation; rerun')
     if result.get('repair_contract_base') and api('git/ref/heads/main')['object']['sha'] != result['repair_contract_base']:
         raise ValueError('Trusted main contract changed during acceptance validation; rerun')
