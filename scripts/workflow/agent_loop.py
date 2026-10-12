@@ -241,6 +241,14 @@ class Loop:
         except (ValueError, KeyError, OSError, RuntimeError) as error:
             return {'allowed': False, 'reason': self.private_error(error)}
 
+    def merged_acceptance(self, pr, h, state):
+        # Closed PR refs retain the reviewed base; current failure records/main stay live.
+        state.pop('acceptance', None)
+        accepted = self.acceptance(pr, self.checkout(pr, h))
+        if not accepted.get('allowed'):
+            raise ValueError(accepted.get('reason', 'Current merged acceptance is incomplete'))
+        return dict(accepted, head=pr['head']['sha'], base=pr['base']['sha'])
+
     def bound(self, pr, issue, comments, remote_after=None):
         value = binding(pr, issue)
         # Only our own changing dashboards are excluded, never other reviewers/bots.
@@ -527,7 +535,10 @@ class Loop:
         if now != bound or now.get('remote_review_complete') is not True:
             raise ValueError('PR/Issue/feedback changed or remote review is pending after merge; preserve scope/resources for disposition')
         accepted = state.get('acceptance', {})
+        if pr['base']['ref'] == 'develop':
+            accepted = self.merged_acceptance(pr, h, state)
         validate_review(report, bound, accepted)
+        state['acceptance'] = accepted
         promotion_pass = (accepted.get('allowed') is True and accepted.get('mode') == 'promotion' and
                           accepted.get('gui_complete') is True and accepted.get('head') == bound.get('head') and
                           accepted.get('base') == bound.get('base'))
@@ -560,6 +571,10 @@ class Loop:
         fresh, _ = self.bound(pr, issue, self.gh.comments(pr['number']), state.get('remote_review_after'))
         if fresh != bound or fresh.get('remote_review_complete') is not True:
             raise ValueError('PR/Issue/feedback changed during handoff; preserve scope/resources before closure')
+        if pr['base']['ref'] == 'develop':
+            accepted = self.merged_acceptance(pr, h, state)
+            validate_review(report, bound, accepted)
+            state['acceptance'] = accepted
         if complete and issue['state'] == 'open':
             self.gh.api(f'repos/{REPO}/issues/{h["issue"]}', 'PATCH', {'state': 'closed', 'state_reason': 'completed', 'labels': done_labels(issue)})
             closed = self.gh.issue(h['issue'])
@@ -595,13 +610,22 @@ class Loop:
         report = evidence['review']
         if report.get('feedback_hash') != bound['feedback_hash']:
             raise ValueError('Independent report must identify the feedback it actually reviewed')
-        validate_review(report, bound, state.get('acceptance'))
-        if report['verdict'] != 'approved':
-            raise ValueError('Unresolved feedback cannot resume closure or cleanup')
         previous = state.get('binding', {})
-        if any(previous.get(k) != bound[k] for k in ('head', 'base', 'target', 'body_hash', 'issue_hash')):
+        if previous != bound:
             for key in ('gui', 'acceptance'):
                 state.pop(key, None)
+        if pr['base']['ref'] == 'develop':
+            self.invalidate_acceptance(state)
+            self.gh.status(pr['head']['sha'], 'pending', 'Current original-NG acceptance requires reconciliation', pr['html_url'])
+            sid = self.save(pr, state, sid)
+            accepted = self.merged_acceptance(pr, h, state)
+        else:
+            accepted = state.get('acceptance')
+        validate_review(report, bound, accepted)
+        if report['verdict'] != 'approved':
+            raise ValueError('Unresolved feedback cannot resume closure or cleanup')
+        if accepted is not None:
+            state['acceptance'] = accepted
         state.update(binding=bound, review=report, phase='cleanup', paused=False, errors=0, retry_at=0,
                      next='Independent feedback disposition fixed; re-read before closure/cleanup')
         self.save(pr, state, sid)

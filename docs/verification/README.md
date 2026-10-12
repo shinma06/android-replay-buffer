@@ -60,11 +60,17 @@ CLIではUSB切断/再接続、直前区間の動画/logcat時刻整合、log-on
 
 `artifacts`の名前は元Caseの`artifact`に一致させます。既定は`app`で、#227の`27:RECONNECT-EMU`では`plugin`です。既存のcanonical hash関数（UTF-8、sort_keys、ensure_ascii=False、区切り`,`/`:`）を共用します。gateは現在のmain refをAPIで固定し、そのcommitの正式resolverで有効方法を読みます。candidate側の独自改訂は認めず、正式resolverに登録済みの旧計画との対応を用い、方法だけの改訂で無条件の製品再build/再試験を要求しません。責任改訂のない製品では`contract_revision`はJSON `null`のcanonical hashで、独立レビューが元Case契約を直接確認します。`results`は元NGの全IDと完全一致し、`coverage`も各NGの全保証IDと一致させます。観察は修正candidate/hashと一致し、元NG・candidate commitより古い日時を拒否します。元の失敗artifactは修正版として受理しません。
 
-自己参照するtested HEADを作らないため、修正コードを先にcommitし、その固定candidateからbuild/実行してから結果metadataをcommitします。candidateは現baseとPR headの間にあり、candidate後は当該Issueの受入JSONだけを変更できます。全commit edgeを調べ、symlink/削除/別ファイル/製品変更とその後のrevert・mergeを拒否します。base/製品が動いたら候補と証拠を再固定します。方法だけの改訂による既存事実の再評価と、製品NG修正後の新しい再試験を混同しません。
+自己参照するtested HEADを作らないため、修正コードを先にcommitし、その固定candidateからbuild/実行してから結果metadataをcommitします。candidateは現baseより後、PR headより前にあり、`base..candidate`には受入JSON・promotion記録以外の実差分が必要です。base自体、受入metadataだけ、修正を打ち消した結果は拒否します。製品変更を一律要求せず、非製品原因の修正も独立レビューで実質を確認します。candidate後は当該Issueの受入JSONだけを変更できます。全commit edgeを調べ、symlink/削除/別ファイル/製品変更とその後のrevert・mergeを拒否します。base/製品が動いたら候補と証拠を再固定します。方法だけの改訂による既存事実の再評価と、製品NG修正後の新しい再試験を混同しません。
 
 CIのAcceptance gateとcoordinatorは同じ`verify_pr`で上記の構造・出典・集合・候補履歴を検査します。参照文字列の存在は実行や合格内容を証明しません。独立sessionが元失敗・全保証の証拠内容、trusted有効契約、方法の忠実性と限界、実生成/ロードartifactを確認します。関連unit成功だけで元nativeNG全体を解消済みにせず、必要なnative接続/表示/保存を残します。忠実な同等production経路がその保証を十分に検出する場合は、理由と限界を記録して採用できます。
 
 独立報告は通常のfixed HEAD/base・scope_complete・verdict等に加え、`repair_revision`（`[元NGコメントJSON, repair]`のcanonical hash）と、全失敗保証の実質評価を記した`repair_assessment`を持ちます。`session`はwriter/executorと異なる実際の独立sessionです。自己申告の別名を独立性の根拠にしません。coordinatorはこの一致と実担当経路を使い、欠落/古い評価/自己評価ではAgent review成功やmergeへ進みません。手動統合も同じ報告を照合してからAgent reviewを記録します。CI構造合格だけ、remote Code ReviewのCompletedだけ、writerのPASS宣言だけでは統合できません。merge直前には現HEAD/base・Issue/コメントfeedback・受入を読み戻し、変化したら旧評価を失効させます。tool権限・REAL保留・GUI lease・branch protectionは変更しません。
+
+merge後・closure前も、develop修正PRの受入を当時の固定HEAD/baseと現在の元NGコメント・trusted mainから再計算し、同じ独立報告を照合します。後着編集に古い`state.acceptance`を使わず、変更で不一致になった結果・評価は失効させます。移管中の変更もclose/cleanup前に再照合します。
+
+main push時は既存Acceptance workflowが全ページの同repository・ownerのopen develop修正PRを確認し、Agent reviewをpendingへ戻して現在HEADの既存Acceptance runを再実行します。current runがない・実行中・再実行不能ならpendingを保持し、担当が完了後に再試行します。CIと共通validatorの最終readbackもmain SHAを照合します。有効契約が変わったら現在契約で再試験記録と独立評価を更新します。mainの前進だけで有効契約・成果物・条件が不変なら、現在resolverによる再計算と同一性の確認を経て既存評価を再利用でき、全GUIの再実行は要求しません。
+
+mainはdevelop baseとは別のrefなので、GitHubのHEAD/strict-base保護だけでは最終readbackとmergeを原子的に結べません。main pushによるpending/re-runも非同期です。自動coordinatorと手動統合は直前のlive受入照合を必須とし、取得失敗・不一致を拒否しますが、サービスが提供しない跨refの原子性を保証したとは扱いません。CIのmainイベント経路はmain統合後、PR検証コードは通常のdevelop同期後に有効化されるため、同期前はPMの同じ運用gateを維持します。
 
 ## main promotion
 

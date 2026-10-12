@@ -201,6 +201,46 @@ class RepairTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'trusted scope'):
             self.verify()
 
+    def test_base_itself_is_not_a_repaired_candidate(self):
+        self.pr['base']['sha'] = self.candidate
+        with self.assertRaisesRegex(ValueError, 'substantive correction'):
+            self.verify()
+
+    def test_metadata_only_and_reverted_correction_are_not_repairs(self):
+        self.git('checkout', '-q', self.source)
+        self.write(self.path, {'note': 'metadata only'})
+        metadata = self.commit('metadata')
+        self.write('replay_buffer/fixture.py', 'temporary fix')
+        self.commit('fix then undo')
+        self.write('replay_buffer/fixture.py', 'original failure')
+        reverted = self.commit('undo fix')
+        self.write('docs/repair-guide.md', 'legitimate non-product correction')
+        substantive = self.commit('repair the actual procedure')
+        for candidate in (metadata, reverted, substantive):
+            self.git('checkout', '-q', candidate)
+            self.data['repair']['candidate'] = candidate
+            self.data['repair']['results']['GAP-1']['observation'].update(
+                head=candidate, at=self.git('show', '-s', '--format=%cI', candidate))
+            self.freeze()
+            with self.subTest(candidate=candidate):
+                if candidate == substantive:
+                    self.assertTrue(self.verify()['repair_revision'])
+                else:
+                    with self.assertRaisesRegex(ValueError, 'substantive correction'):
+                        self.verify()
+
+    def test_main_changes_during_repair_validation_rejects_stale_result(self):
+        original = self.api
+        reads = 0
+        def api(path):
+            nonlocal reads
+            if path == 'git/ref/heads/main':
+                reads += 1
+                return {'object': {'sha': self.source if reads == 1 else self.candidate}}
+            return original(path)
+        with self.assertRaisesRegex(ValueError, 'main contract changed'):
+            verify_pr(self.pr, api, self.git)
+
     def test_artifact_key_comes_from_original_case(self):
         self.assertTrue(self.verify()['repair_revision'])
         self.data['repair']['artifacts'] = {'app': '2' * 64}
@@ -321,6 +361,60 @@ class RepairLoopTests(unittest.TestCase):
         self.assertEqual(self.loop.tick(36)['phase'], 'changed-before-merge')
         self.assertEqual(self.gh.merges, 0)
         self.assertNotIn((tal.HEAD, 'success'), self.gh.statuses)
+
+    def merged_repair(self):
+        self.prepare()
+        self.worker.side_effect = lambda *args, **kw: dict(report(), repair_revision='e' * 64,
+                                                          repair_assessment='all failed guarantees checked')
+        self.loop.tick(36)
+        self.gh.pull.update(merged=True, state='closed')
+        _, state, sid, _ = self.loop.load(36)
+        state['acceptance'] = dict(self.accepted, head=tal.HEAD, base=tal.BASE)
+        self.loop.save(self.gh.pr(36), state, sid)
+
+    def recovery_evidence(self):
+        bound, _ = self.loop.bound(self.gh.pr(36), self.gh.issue(35), self.gh.comments(36))
+        return {'binding': bound, 'review': dict(report(), repair_revision='e' * 64,
+                repair_assessment='all failed guarantees checked', feedback_hash=bound['feedback_hash'])}
+
+    def test_merged_repair_edit_recomputes_acceptance_before_recovery(self):
+        self.merged_repair()
+        self.gh.comment(35, 'edited original failure record adds a failed guarantee')
+        self.loop.acceptance.return_value = {'allowed': False, 'reason': 'record hash mismatch'}
+        with self.assertRaisesRegex(ValueError, 'record hash mismatch'):
+            self.loop.reconcile_feedback(self.gh.pr(36), self.recovery_evidence())
+        _, state, _, _ = self.loop.load(36)
+        self.assertNotIn('acceptance', state)
+        self.assertEqual(self.gh.issues[35]['state'], 'open')
+        self.loop.cleanup.assert_not_called()
+
+    def test_merged_repair_new_revision_needs_new_assessment(self):
+        self.merged_repair()
+        self.gh.comment(35, 'edited failure record')
+        self.loop.acceptance.return_value = dict(self.accepted, repair_revision='f' * 64)
+        with self.assertRaisesRegex(ValueError, 'stale'):
+            self.loop.reconcile_feedback(self.gh.pr(36), self.recovery_evidence())
+        evidence = self.recovery_evidence()
+        evidence['review']['repair_revision'] = 'f' * 64
+        fresh = self.loop.reconcile_feedback(self.gh.pr(36), evidence)
+        self.assertEqual(fresh['acceptance']['repair_revision'], 'f' * 64)
+
+    def test_merged_main_change_blocks_handoff_and_closure(self):
+        self.merged_repair()
+        self.loop.acceptance.return_value = {'allowed': False, 'reason': 'current main contract mismatch'}
+        with patch.object(al, 'handoff') as transfer:
+            self.assertEqual(self.loop.tick(36)['phase'], 'cleanup')
+            transfer.assert_not_called()
+        self.assertEqual(self.gh.issues[35]['state'], 'open')
+        self.loop.cleanup.assert_not_called()
+
+    def test_contract_change_during_merged_handoff_blocks_closure(self):
+        self.merged_repair()
+        self.loop.acceptance.side_effect = [self.accepted, {'allowed': False, 'reason': 'main changed'}]
+        with patch.object(al, 'handoff', return_value=74), patch.object(al, 'git', return_value='{}'):
+            self.assertEqual(self.loop.tick(36)['phase'], 'cleanup')
+        self.assertEqual(self.gh.issues[35]['state'], 'open')
+        self.loop.cleanup.assert_not_called()
 
 
 if __name__ == '__main__':

@@ -915,6 +915,10 @@ def verify_repair(pr, issue, data, path, api, git):
         raise ValueError('Freeze the tested repair candidate before committing evidence metadata')
     git('merge-base', '--is-ancestor', base, candidate)
     git('merge-base', '--is-ancestor', candidate, head)
+    correction = git('diff', '--no-renames', '--name-only', base, candidate).splitlines()
+    if candidate == base or not any(not p.startswith('docs/verification/changes/') and
+                                    p != PROMOTION for p in correction):
+        raise ValueError('Repair candidate requires a substantive correction beyond acceptance metadata')
     scoped_history(candidate, head, {path: '100644'}, git)
     trusted = api('git/ref/heads/main').get('object', {}).get('sha')
     if not SHA.fullmatch(trusted or ''):
@@ -961,6 +965,8 @@ def verify_repair(pr, issue, data, path, api, git):
         observers.add(observed['observer'])
     if not tracked <= cases:
         raise ValueError('Repair omits a trusted tracked original failure Case')
+    if api('git/ref/heads/main').get('object', {}).get('sha') != trusted:
+        raise ValueError('Trusted main contract changed during repair validation; rerun')
     return {'repair_revision': canonical_hash([record, repair]), 'repair_contract_base': trusted, 'repair_record': record,
             'repair': repair, 'repair_observers': sorted(observers)}
 

@@ -1,7 +1,9 @@
 """Delayed events must not turn live closed PRs into fresh acceptance decisions."""
 import copy
 import json
+import os
 import subprocess
+import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
@@ -129,6 +131,23 @@ class DelayedAcceptanceTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, 'changed during acceptance validation'):
                     ci.check_pr(self.event, api)
 
+    def test_repair_main_dependency_is_read_back_after_validation(self):
+        self.verify.return_value = {'mode': 'develop', 'repair_contract_base': BASE}
+        current = pr_data()
+        current['base']['ref'] = 'develop'
+        current['body'] = current['body'].replace('tooling', 'develop')
+        event = copy.deepcopy(current)
+        for main in (BASE, MOVED):
+            with self.subTest(main=main):
+                def api(path):
+                    if path == 'pulls/90': return copy.deepcopy(current)
+                    return {'object': {'sha': main if path.endswith('/main') else BASE}}
+                if main == BASE:
+                    self.assertEqual(ci.check_pr(event, api), self.verify.return_value)
+                else:
+                    with self.assertRaisesRegex(ValueError, 'main contract changed'):
+                        ci.check_pr(event, api)
+
     def test_open_empty_tooling_diff_remains_invalid_with_real_validator(self):
         data = {'schema': 1, 'issue': 90, 'gui_required': False, 'reason': 'CI only',
                 'cli_checks': ['python3 -m unittest'], 'cases': []}
@@ -151,6 +170,115 @@ class DelayedAcceptanceTests(unittest.TestCase):
         api = Mock(side_effect=[current, {'object': {'sha': BASE}}, copy.deepcopy(current)])
         with self.assertRaisesRegex(ValueError, 'Required GUI Cases missing'):
             ci.check_pr(event, api)
+
+
+class MainContractEventTests(unittest.TestCase):
+    def setUp(self):
+        self.pr = pr_data()
+        self.pr.update(user={'login': 'shinma06'})
+        self.pr['base'].update(ref='develop', repo={'full_name': 'shinma06/android-replay-buffer'})
+        self.pr['head']['repo'] = {'full_name': 'shinma06/android-replay-buffer'}
+        self.pr['body'] = self.pr['body'].replace('tooling', 'develop')
+        self.issue = {'body': 'Acceptance repair: 123', 'labels': [{'name': 'type:bug'}]}
+        self.run = {'id': 42, 'head_sha': HEAD, 'event': 'pull_request', 'status': 'completed',
+                    'pull_requests': [{'number': 90}]}
+        self.calls = []
+
+    def api(self, path, method='GET', data=None):
+        self.calls.append((path, method, data))
+        if method == 'POST': return None
+        if path.startswith('pulls?'): return [copy.deepcopy(self.pr)]
+        if path == 'issues/90': return copy.deepcopy(self.issue)
+        if path.startswith('actions/workflows/'): return {'workflow_runs': [copy.deepcopy(self.run)]}
+        raise AssertionError(path)
+
+    def test_main_event_invalidates_independent_status_before_rerunning_acceptance(self):
+        self.assertEqual(ci.recheck_main_repairs(self.api, 'shinma06/android-replay-buffer'), [90])
+        writes = [c for c in self.calls if c[1] == 'POST']
+        self.assertEqual(writes[0][0], 'statuses/' + HEAD)
+        self.assertEqual(writes[0][2]['context'], 'Agent review')
+        self.assertEqual(writes[0][2]['state'], 'pending')
+        self.assertEqual(writes[1][:2], ('actions/runs/42/rerun', 'POST'))
+
+    def test_unrelated_pr_and_fork_do_not_get_invalidated(self):
+        for issue, repo in (({'body': 'Acceptance repair: none', 'labels': [{'name': 'type:bug'}]},
+                             'shinma06/android-replay-buffer'),
+                            ({'body': '', 'labels': []}, 'shinma06/android-replay-buffer'),
+                            (self.issue, 'someone/fork')):
+            with self.subTest(issue=issue, repo=repo):
+                self.issue = issue
+                self.pr['head']['repo']['full_name'] = repo
+                self.calls.clear()
+                self.assertEqual(ci.recheck_main_repairs(self.api, 'shinma06/android-replay-buffer'), [])
+                self.assertFalse(any(c[1] == 'POST' for c in self.calls))
+
+    def test_all_open_pr_pages_are_checked(self):
+        original = self.api
+        def api(path, method='GET', data=None):
+            if path.endswith('page=1') and path.startswith('pulls?'):
+                return [dict(self.pr, user={'login': 'other'}) for _ in range(100)]
+            return original(path, method, data)
+        self.assertEqual(ci.recheck_main_repairs(api, 'shinma06/android-replay-buffer'), [90])
+        self.assertTrue(any(c[0].endswith('page=2') for c in self.calls))
+
+    def test_missing_stale_or_running_acceptance_never_restores_success(self):
+        for run in (None, dict(self.run, head_sha=MOVED), dict(self.run, status='in_progress'),
+                    dict(self.run, pull_requests=[{'number': 91}])):
+            self.calls.clear()
+            original = self.api
+            def api(path, method='GET', data=None):
+                if path.startswith('actions/workflows/'):
+                    return {'workflow_runs': [run] if run else []}
+                return original(path, method, data)
+            with self.subTest(run=run), self.assertRaises(ValueError):
+                ci.recheck_main_repairs(api, 'shinma06/android-replay-buffer')
+            writes = [c for c in self.calls if c[1] == 'POST']
+            self.assertEqual(len(writes), 1)
+            self.assertEqual(writes[0][2]['state'], 'pending')
+
+    def test_rerun_failure_leaves_independent_status_pending(self):
+        original = self.api
+        def api(path, method='GET', data=None):
+            if path.endswith('/rerun'): raise OSError('service denied rerun')
+            return original(path, method, data)
+        with self.assertRaisesRegex(OSError, 'service denied'):
+            ci.recheck_main_repairs(api, 'shinma06/android-replay-buffer')
+        self.assertEqual([c[2]['state'] for c in self.calls if c[1] == 'POST'], ['pending'])
+
+    def test_unavailable_run_does_not_leave_later_pr_review_successful(self):
+        second = copy.deepcopy(self.pr)
+        second['number'] = 91
+        second['head'].update(sha=MOVED, ref='codex/91-repair')
+        second['body'] = second['body'].replace('#90', '#91').replace('issue-90', 'issue-91')
+        original = self.api
+        def api(path, method='GET', data=None):
+            if path.startswith('pulls?'): return [self.pr, second]
+            if path == 'issues/91': return self.issue
+            if path.startswith('actions/workflows/'):
+                return {'workflow_runs': [] if HEAD in path else [dict(
+                    self.run, id=43, head_sha=MOVED, pull_requests=[{'number': 91}])]}
+            return original(path, method, data)
+        with self.assertRaisesRegex(ValueError, '90'):
+            ci.recheck_main_repairs(api, 'shinma06/android-replay-buffer')
+        writes = [c for c in self.calls if c[1] == 'POST']
+        self.assertEqual([c[0] for c in writes], ['statuses/' + HEAD, 'statuses/' + MOVED, 'actions/runs/43/rerun'])
+
+    def test_main_event_dispatch_rejects_other_refs_without_api_writes(self):
+        with tempfile.NamedTemporaryFile(mode='w+') as event, patch.dict(os.environ, {
+                'GITHUB_EVENT_PATH': event.name, 'GITHUB_EVENT_NAME': 'push',
+                'GITHUB_REPOSITORY': 'shinma06/android-replay-buffer'}), patch.object(ci, 'recheck_main_repairs') as recheck:
+            for ref in ('refs/heads/develop', 'refs/heads/main'):
+                event.seek(0); event.truncate()
+                json.dump({'ref': ref}, event); event.flush()
+                if ref.endswith('/develop'):
+                    with self.assertRaisesRegex(ValueError, 'main push'):
+                        ci.main()
+                    recheck.assert_not_called()
+                else:
+                    recheck.return_value = [90]
+                    ci.main()
+                    recheck.assert_called_once()
+
 
 if __name__ == '__main__':
     unittest.main()
