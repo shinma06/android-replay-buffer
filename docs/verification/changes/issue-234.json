@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "issue": 234,
+  "gui_required": false,
+  "reason": "採用済みmain903の正式method #223/#230と元NG修正gate #226をdevelop830へ通常mergeする管理同期。製品code/build/fixtureと原Case/観察/合否を不変に保持し、全139 Case/208出典・Agent105/REAL34の計画を保全する。新Caseなし、製品build/導入/native/FILE/GUI/IDE/ADB受入は実施せず、本人の受入直前停止を維持する。",
+  "cli_checks": [
+    "python3 scripts/check.py",
+    "python3 scripts/workflow/product_check.py",
+    "python3 scripts/workflow/change_impact.py --base origin/develop --run-tests"
+  ],
+  "cases": []
+}

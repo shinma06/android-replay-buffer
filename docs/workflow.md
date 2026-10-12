@@ -64,7 +64,7 @@ IDE/build/process/保存/UI/検証/共通ハーネスに関係する変更は、
 
 | target / Integration | 統合条件 | merge |
 |---|---|---|
-| develop / `develop` | 必要テスト、独立コードレビュー、全必要 Case と次操作。GUI pending/blocked/fail は保存し、fail は修正 Issue に紐づける | squash |
+| develop / `develop` | 必要テスト、独立コードレビュー、全必要 Case と次操作。GUI pending/blocked/fail は保存し、fail は修正 Issue に紐づける。受入NG修正は[元失敗保証の再試験と独立評価](verification/README.md#受入ng修正のdevelop統合226)を追加 | squash |
 | main / `promotion` | 固定候補の全 commit/Case、同じ build の実観察、独立レビュー、必要 checks。[初期版の段階受入](verification/README.md#初期版の段階受入64)では固定計画の延期部分だけを後続へ移す | merge commit |
 | main / `tooling` | docs/scripts/CI/agent 入口のみ、GUI 不要の具体的理由と CLI 検証 | squash |
 
@@ -75,6 +75,12 @@ IDE/build/process/保存/UI/検証/共通ハーネスに関係する変更は、
 DraftをreadyにするとCodexレビューが非同期に始まります。取得時に空でも完了ではなく、現在HEADのCode Reviewがprovider summaryでCompletedになるまでpendingです。旧版の完了・reaction・CI成功・一定時間の経過を代用せず、観測不能/失敗/format変更は未達と次のreadbackを引き継ぎます。可視summaryはサービスの完了信号であり、独立コード承認や将来の追加指摘がない保証ではありません。投稿済みの全指摘を処理し、修正後の固定版を独立レビューします。
 
 merge直前にHEAD/base/feedback hashを再取得し、変更があれば対応判断とレビューをやり直します。merge後・close前も読み戻します。後着・編集で具体的な未解決指摘が出たら、原Issue又は専用修正Issueに元レビューと実再現・担当・次操作を残して該当範囲を再開します。過去の承認は当時のsnapshotとして保存し、指摘なしの永久保証にしません。常駐監視、余分な本人承認、終了済みwriterの暗黙再開は追加しません。
+
+### 方法の改善とフィードバック
+
+PM・担当・レビュアーは現状の手段を当然とせず、検査失敗がなくても改善できる負担・重複操作・停止の具体的な根拠を捉え、過去の手順を反復する前に問題と代替案を提案します。守るべき製品保証・実権限・本人の制限と、変更できる実施方法/管理上の宣言を分けます。固さ自体を欠陥とせず、その方法が目的を満たすために必要かを[最小検証](verification/responsibility.md)で確認します。
+
+改善は「観測した負担/不足→保証を保つ代替案→範囲・保全/復元・成功/中止条件を定めた有限で戻せる試行→実結果を使った採用/修正/撤回→[古い管理前提の整合](context.md#更新時の古い管理前提)」で進めます。依頼範囲内で担当が進め、既存Issue/計画へ重要な事実だけ記録します。実OS/tool権限・本人境界と正式契約の改訂/独立レビュー条件は維持し、方法hashを固定するためだけに必要な改訂を避けません。実行する改善案には実試行と結果/feedback、担当を確保し、提案/机上比較だけで改善完了にしません。未実施/blockedの試行は担当・残条件を持つ未完了として引き継ぎ、次の自然な該当作業で確認する場合も実結果を回収します。改善案と無関係な追加GUI試験、無限loop/job、長い様式や新承認gateは作りません。
 
 ## 自動進行と終了
 

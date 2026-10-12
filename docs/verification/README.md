@@ -1,6 +1,9 @@
 # 受入・固定候補・QA
 
-**現在の保証境界**: [製品責任と最小検証（#182）](responsibility.md)と正式計画の`responsibility_revision`を適用します。原Case/旧計画/以下の過去改訂説明は履歴として保持し、外部player全Play/精密seek・一律human番号読取り・native故障全種反復・無変更artifactの再build義務は明示改訂後の有効条件で判断します。未達をPASSにしません。gateと一覧は同じresolverを使います。
+現行の全139 Caseの方法は[保証目的とconsumer別方法の改訂 #223/#230](responsibility.md)と正式計画の`method_revision`を使います。以下の段階受入/履歴にある固定30分/300event・操作回数・GOP6証拠などは原記録であり、現行groupの必要証拠へ置換します。精度・データ/窓/保全・実接続・REAL未達を保持し、方法だけの更新を実行PASSにしません。
+
+
+**現在の保証境界**: [保証目的と最小検証（#223/#230）](responsibility.md)と正式計画の`responsibility_revision.method_revision`を適用します。原Case/旧計画/以下の過去改訂説明は履歴として保持し、外部player全Play/精密seek・一律human番号読取り・native故障全種反復・無変更artifactの再build義務は明示改訂後の有効条件で判断します。未達をPASSにしません。gateと一覧は同じresolverを使います。
 
 `changes/issue-N.json` はIssueの受入、`promotion.json` はmainへ入れる固定候補と全Caseの観察の正本です。過去の観察を別SHA/buildのpassへ流用しません。未実施はpending、環境不足はblocked、製品不具合はfailと区別します。
 
@@ -23,6 +26,58 @@ GUI不要なら具体的理由と実行したCLI検証を記録します。
 
 CLIではUSB切断/再接続、直前区間の動画/logcat時刻整合、log-only保存、保存失敗、daemon停止等を変更範囲に応じて選びます。プラグインではさらにEDT/dispose/取消し/設定保存/IDE再起動を確認します。既存2 unit testsは全製品の受入を代替しません。
 
+## 受入NG修正のdevelop統合（#226）
+
+元の受入NGを直すPRは、失敗した保証を修正版固定候補で再試験して合格し、その証拠を独立評価してからdevelopへ統合します。一般の新機能・無関係なpending/blocked Caseの全受入を前倒ししません。既存の正常なmerged PRは遡ってこのgateで再判定せず、元Case/失敗記録は保持します。変更した製品のmain promotionは引き続き全候補/全Caseを別に確認します。
+
+開始時にdevelopの`type:bug` Issue本文へ `Acceptance repair: none`（受入NG修正ではない理由を併記）又は元NG記録のIssueコメント数値IDを記載します。新機能でも元NG修正を含む場合は後者が必要です。trusted baseの全親履歴で当該Issueへ紐づいたCaseのgpt/human failは、後のpending/pass・Case削除・fix_issue変更・revertでも元NG記録を必須とします。変更したCase JSONのblobを一度ずつ読み、履歴上の失敗Case ID・actor・canonical Case hashの組ごとに、修正Issueとの対応を持つ元記録を要求します。同じCase/actorでも内容や保証が異なる失敗版は別々に必要で、同じhashの再登場にはcommitごとの重複記録を要求しません。通常のstatus更新や全保証を満たした修正結果は許可し、無関係Issueに過去NGの再試験を要求しません。ラベルやnone宣言で回避できません。独立レビューは分類の正しさとIssue/QAに記録された元NGの漏れを確認します。機械検査が自然言語の全不具合を自動発見するものではありません。
+
+元NGは修正Issueに一つのコメントとして保全します。本文を `<!-- acceptance-repair:v1 -->` と改行から開始し、その後へJSONオブジェクトを直接置きます（code fenceなし）。`schema: 1 / fix_issue / failures`を持ち、`failures`は `GAP-1` などの一意なIDから以下の値への対応です。記録の変更は旧記録を消さず新しいコメントへ移し、Issue宣言・修正結果hash・独立レビューを更新します。媒体・生ログ・私的pathは公開せず、固定公開要約と担当が保持する封印証拠への参照を使います。
+
+- `case`: 元の `Issue番号:Case ID`。
+- `source_candidate / source_case_sha256`: 失敗した固定40桁sourceと、その時点のCase全文のcanonical SHA-256。元sourceはdevelop baseの祖先で、そのCase JSONはregular fileでなければなりません。
+- `original_result`: 元の `status: fail / head / artifact_sha256 / actor / observer / at / evidence / loaded_identity / reason`。元source/成果物・実条件・確認者・日時・固定証拠を保持します。未実施や関連unitの結果をnative失敗記録へ換えません。
+- `guarantees`: 失敗した保証IDから目的・失敗条件への対応。複数NG・全失敗保証を列挙し、Case全体を未実施のまま再試験の合格にしません。
+
+修正PRの `changes/issue-N.json` に `repair` オブジェクトを追加します。
+
+```json
+{
+  "candidate": "<再試験する修正コードの固定40桁SHA>",
+  "artifacts": {"app": "<修正版ZIPの64桁SHA-256>"},
+  "failure_record_sha256": "<元NGコメントJSON全体のcanonical SHA-256>",
+  "writer_session": "<実装担当session>",
+  "results": {
+    "GAP-1": {
+      "observation": {"status": "pass", "head": "<candidate>", "artifact_sha256": "<修正版hash>", "actor": "gpt", "observer": "<実行担当session>", "at": "<実観察日時ISO8601>", "loaded_identity": "<実行成果物の識別>", "evidence": "<固定実行証拠>", "reason": "<元失敗保証の再現と解消>"},
+      "coverage": {"<元の保証ID>": "<その保証の実行・結果への証拠参照>"},
+      "method": "<有効目的契約に忠実な実施方法・nativeとの同等性・限界>",
+      "contract_revision": "<現在のtrusted mainのresponsibility_revision block canonical SHA-256>"
+    }
+  }
+}
+```
+
+`artifacts`の名前は元Caseの`artifact`に一致させます。既定は`app`で、#227の`27:RECONNECT-EMU`では`plugin`です。既存のcanonical hash関数（UTF-8、sort_keys、ensure_ascii=False、区切り`,`/`:`）を共用します。gateは現在のmain refをAPIで固定し、そのcommitの正式resolverで有効方法を読みます。candidate側の独自改訂は認めず、正式resolverに登録済みの旧計画との対応を用い、方法だけの改訂で無条件の製品再build/再試験を要求しません。責任改訂のない製品では`contract_revision`はJSON `null`のcanonical hashで、独立レビューが元Case契約を直接確認します。`results`は元NGの全IDと完全一致し、`coverage`も各NGの全保証IDと一致させます。観察は修正candidate/hashと一致し、元NG・candidate commitより古い日時を拒否します。元の失敗artifactは修正版として受理しません。
+
+自己参照するtested HEADを作らないため、修正コードを先にcommitし、その固定candidateからbuild/実行してから結果metadataをcommitします。candidateは現baseより後、PR headより前にあり、`base..candidate`には受入JSON・promotion記録以外の実差分が必要です。base自体、受入metadataだけ、修正を打ち消した結果は拒否します。製品変更を一律要求せず、非製品原因の修正も独立レビューで実質を確認します。candidate後は当該Issueの受入JSONだけを変更できます。全commit edgeを調べ、symlink/削除/別ファイル/製品変更とその後のrevert・mergeを拒否します。base/製品が動いたら候補と証拠を再固定します。方法だけの改訂による既存事実の再評価と、製品NG修正後の新しい再試験を混同しません。
+
+CIのAcceptance gateとcoordinatorは同じ`verify_pr`で上記の構造・出典・集合・候補履歴を検査します。参照文字列の存在は実行や合格内容を証明しません。独立sessionが元失敗・全保証の証拠内容、trusted有効契約、方法の忠実性と限界、実生成/ロードartifactを確認します。関連unit成功だけで元nativeNG全体を解消済みにせず、必要なnative接続/表示/保存を残します。忠実な同等production経路がその保証を十分に検出する場合は、理由と限界を記録して採用できます。
+
+独立報告は通常のfixed HEAD/base・scope_complete・verdict等に加え、`repair_revision`（`[元NGコメントJSON, repair]`のcanonical hash）と、全失敗保証の実質評価を記した`repair_assessment`を持ちます。`session`はwriter/executorと異なる実際の独立sessionです。自己申告の別名を独立性の根拠にしません。coordinatorはこの一致と実担当経路を使い、欠落/古い評価/自己評価ではAgent review成功やmergeへ進みません。手動統合も同じ報告を照合してからAgent reviewを記録します。CI構造合格だけ、remote Code ReviewのCompletedだけ、writerのPASS宣言だけでは統合できません。merge直前には現HEAD/base・Issue/コメントfeedback・受入を読み戻し、変化したら旧評価を失効させます。tool権限・REAL保留・GUI lease・branch protectionは変更しません。
+
+merge後・closure前も、develop修正PRの受入を当時の固定HEAD/baseと現在の元NGコメント・trusted mainから再計算し、同じ独立報告を照合します。後着編集に古い`state.acceptance`を使わず、変更で不一致になった結果・評価は失効させます。移管中の変更もclose/cleanup前に再照合します。
+
+元NGコメントは編集・削除せず保持します。APIの`created_at`/`updated_at`が欠落・不正・不一致なら参照記録を拒否します。追記や訂正は新しい未編集コメントIDを作り、原記録へのリンクと全失敗/保証の対応、訂正理由をIssueに残して`Acceptance repair`を更新します。JSON schemaは変えず、独立レビューが旧記録・封印証拠との連続性と保証の欠落がないことを確認します。新IDへ移すだけで元の失敗を消せません。API時刻一致は構造検査であり、観察の真実性や同じ秒内の編集がなかったことを証明しないため、固定原記録と実証の独立照合を維持します。
+
+失効対象の作成者はownerに限定しません。coordinatorのworker登録・実行に使うowner制限は別の権限境界として維持します。
+
+main push時は既存Acceptance workflowが全ページの同repositoryのPR policyに準拠したopen develop修正PRを確認し、Agent reviewをpendingへ戻して現在HEADの既存Acceptance runを再実行します。current runがない・実行中・再実行不能ならpendingを保持し、担当が完了後に再試行します。CIと共通validatorの最終readbackもmain SHAを照合します。有効契約が変わったら現在契約で再試験記録と独立評価を更新します。mainの前進だけで有効契約・成果物・条件が不変なら、現在resolverによる再計算と同一性の確認を経て既存評価を再利用でき、全GUIの再実行は要求しません。
+
+修正Issueの宣言変更/削除・参照コメントの編集/削除・type:bugのlabeled/unlabeledも、default branchのtrusted workflowから、そのIssueに紐づく同repositoryのPR policyに準拠したopen develop PRだけを失効させます。コメントイベントはIssue本文が実際に参照するIDだけを対象とし、未参照のマーカー付き本文も無視します。旧参照の変更・除去はIssue編集イベントの変更前/後の宣言比較で失効させ、コメントイベントの`changes.body.from`を旧Issue宣言とみなしません。全PRページを確認し、全対象のAgent reviewをpendingへ戻してから既存Acceptance runを再実行します。一つの再実行拒否/取得失敗で後続PRの失効を止めず、エラーは失敗として残します。status書込み自体の失敗はpending成功と扱わず、統合を止めて担当がreadback/復旧します。type:bug以外のラベル変更・宣言に関係しない本文編集・通常コメント・PRコメント・新記録作成だけでは再実行せず、新IDへの宣言更新で再検証します。イベントは互いに取消さず、自己生成の報告ループ・pollingは追加しません。[イベント仕様](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#issue_comment)と[コメントmetadata](https://docs.github.com/en/rest/issues/comments#get-an-issue-comment)に従い、この非同期経路も直前live照合の代替にはしません。
+
+mainはdevelop baseとは別のrefなので、GitHubのHEAD/strict-base保護だけでは最終readbackとmergeを原子的に結べません。main pushによるpending/re-runも非同期です。自動coordinatorと手動統合は直前のlive受入照合を必須とし、取得失敗・不一致を拒否しますが、サービスが提供しない跨refの原子性を保証したとは扱いません。CIのmainイベント経路はmain統合後、PR検証コードは通常のdevelop同期後に有効化されるため、同期前はPMの同じ運用gateを維持します。
+
 ## main promotion
 
 1. main先行toolingをdevelopへ専用同期PRで取り込み、候補SHAを固定する。
@@ -39,7 +94,7 @@ Plugin ZIPは [開発手順](../plugin-development.md) の標準buildPluginで�
 
 設計のI-frame間隔1秒はencoderへの試験開始値であり、実時間のGOPを保証しない。[Android仕様](https://developer.android.com/reference/android/media/MediaFormat#KEY_I_FRAME_INTERVAL)では、設定FPSからフレーム数へ換算するencoderの実間隔は実FPSによって変わり得る。指定値を実測値とせず、同じ固定ZIPの元PTS・隣接IDRから測定する。約1秒GOPは同一候補のJVM回帰として維持し、端末では実測した長いGOP・可変FPSを含め、IDR直後・中間・次IDR直前の切出しを追加確認する。JVM成功をIDE/端末の合格へ転記しない。実施方法と測定項目は改訂JSONの追加手順を正本とする。
 
-最大限保存、切出し誤差≤1観測frame間隔＋時計誤差、mux/index丸め≤1ms、同期p95≤100ms・最大≤250ms・30分drift≤50ms・clock≤20ms、画質/負荷・容量/pin制限は維持する。欠落・時計不明・未確認末尾保持を明示し、正式300イベント/30分と必要な人間確認は別の必須Caseで実施する。REAL保留をEMU結果で解消しない。
+最大限保存、切出し誤差≤1観測frame間隔＋時計誤差、mux/index丸め≤1ms、同期p95≤100ms・最大≤250ms・観測区間の中央値drift≤50ms・clock≤20ms、画質/負荷・容量/pin制限は維持する。欠落・時計不明・未確認末尾保持を明示し、独立した同期目的は現行precision方法で確認する。30分の実環境driftを主張する場合は対応する長時間実測が必要で、有限系列をその保証へ換えない。REAL保留をEMU結果で解消しない。
 
 改訂はpromotionの固定base（trusted main）からだけ読む。通常のtooling PRで独立レビューしてmainへ導入し、専用同期PRでdevelopへ取り込んだ後に新candidateを固定する。candidateは改訂の`required_ancestor`を含み、同じ改訂JSONをregular fileとして持つ必要がある。候補側だけの変更、symlink、重複JSON key、不一致は拒否する。新candidateからZIPをbuild・実ロードし、全必要Caseを確認する。旧5dbの観察は履歴として残し、新候補のpassへ付け替えない。
 
@@ -66,6 +121,9 @@ Plugin ZIPは [開発手順](../plugin-development.md) の標準buildPluginで�
 ## 引継ぎ
 
 ### 初期版の段階受入（#64）
+
+この節の固定30分/300event・9/18phase・GOP6証拠・一律human等は旧計画の履歴です。現行のCase範囲・出典/原結果を保持し、前提/実施方法/Agent依存は#223/#230のtrusted method_revisionを適用します。
+
 
 利用者の方針に従い、初期版はエージェントが実行できる工程を完了し、人間の操作・確認と実機準備が必要な部分を[後続QA #65](https://github.com/shinma06/android-replay-buffer/issues/65)へ延期する。[固定計画](amendments/initial-agent.json)をtrusted mainの通常tooling PRでレビューし、develop同期後の候補へ適用する。#208の導入method改訂は、下記の登録直前計画を持つ不変候補にも限定適用できる。候補後の変更許可、main保護、独立レビュー、全commitの出典検査は変えない。
 
@@ -146,8 +204,10 @@ promotionには`stage: initial-agent`を明記し、`results`に全139 keyを置
 - **影響で再試験を選ぶ**: 修正箇所から呼出し元/先・共有状態・保存形式・build依存・Caseを照合し、まず失敗箇所と影響する境界を診断します。未変更の自動検査を理由なく反復せず、影響不明は関連範囲へ広げます。診断の選択と正式promotionの全Case充足を混同しません。
 - **観察を共有する**: 同一候補・成果物・ロードと前提が一致し、各Caseの全必要条件を満たす観察は、証拠を参照して複数Caseへ使えます。一つの操作で満たすCaseを先に対応づけ、同じ操作や全文記録を繰り返しません。候補変更後の旧観察は履歴として保持し、新候補のpassへ付け替えません。下記の同一成果物・条件不変を実証できる場合だけ、明示的な`reused`として正式gateへ渡せます。不明・不一致なら再試験します。過去結果の自動失効削除も行いません。
 - **追加確認を限定する**: 元契約・既知の不具合・変更影響・未解決の懸念に結びつく確認だけを追加します。単に確認可能だからという理由で全scene、全時計、追加再接続などを必須化しません。新たな品質条件が必要なら理由と契約変更を先にレビューします。
-- **GUIの目的を明記する**: GUI担当への依頼には、試験の目的、固定原契約のGUI必須箇所、必要条件を満たす最小の実操作・観察、ファイル/自動解析で担う確認、利用する既存証拠、終了/中止条件を既存計画から短く示します。担当と独立レビュアーは、各操作が原契約や未解決の懸念へ対応するか確認します。毎操作の承認や別台帳は追加しません。
-- **内容照合と実操作を分ける**: 全行・UUID・時刻対応・hash・packet/画素等の正しさは妥当な既存解析へ集約し、標準editorで実際に開いて読めること、場面と両ログを辿れること、playerの全Play/seek・表示や実IDEの保存/復旧は原契約に必要なGUI観察で確認します。原契約がGUIでの照合自体を指定する範囲は維持します。全件照合の母数を減らさず、母数だけを理由に全件GUI検索を追加しません。ソース読解やdecode結果を未実施のnative操作へ転記せず、合成fixtureに指定された故障を根拠なく実端末でも重複必須にしません。人間の操作確認という目的だけでactorをhuman必須へ変更せず、明示された人間/REAL・時間/回数・精度条件と既存延期を保持します。
+- **GUIの目的を明記する**: GUI担当への依頼には、試験の目的、trustedな有効条件の実接続/表示に必要な箇所、必要条件を満たす最小の実操作・観察、ファイル/自動解析で担う確認、利用する既存証拠、終了/中止条件を既存計画から短く示します。担当と独立レビュアーは、各操作が保証目的・必要な証拠/精度や未解決の懸念へ対応するか確認します。毎操作の承認や別台帳は追加しません。
+- **GUI手段の必要性を分ける**: [手段の選択基準](responsibility.md#gui手段の必要性を先に評価する)に従い、検証目的が必要という理由だけで手動GUIを指定しません。既存証拠・API/IPC/CLI・実画像で同じ観測事実を得られる経路を先に評価し、具体的な未確認UI/OS/consumer保証へ最小のGUIを選びます。担当とレビュアーが選定理由を確認し、command成功だけを表示成功にしません。
+- **consumerごとに共有する**: [動画とテキストの証拠評価](responsibility.md#動画とテキストのconsumer証拠を別々に評価する)に従い、playerとeditorの変更条件・残る自製品欠陥を割当と独立レビューで個別に確認します。新しい動画/本文値だけで両方のnative操作を追加せず、適格な既存実観察を保証ごとに共有します。全出力のFILE検査と実通知/open/copy等の製品glueは維持します。
+- **内容照合と実操作を分ける**: 全行・UUID・時刻対応・hash・packet/画素等の正しさは妥当な既存解析へ集約し、標準editorで実際に開いて読めること、場面と両ログを辿れること、playerの代表open/短いPlay/前後seek・表示や実IDEの保存/復旧は目的に必要な実観察で確認します。現行groupで必要な代表実操作/表示を維持します。旧原文のGUI指定だけで全件照合をGUIへ戻しません。全件照合の母数を減らさず、母数だけを理由に全件GUI検索を追加しません。ソース読解やdecode結果を未実施のnative操作へ転記せず、合成fixtureに指定された故障を根拠なく実端末でも重複必須にしません。人間の操作確認という目的だけでactorをhuman必須へ変更せず、REAL固有/利用者保留と製品の精度条件を保持し、時間/回数/同runは保証に必要な理由で選びます。
 
 | 完了の対象 | 終了条件と残条件の置き場所 |
 |---|---|
