@@ -870,6 +870,10 @@ def repair_record(issue, api):
     comment = api('issues/comments/' + declaration[0])
     if comment.get('issue_url') != issue.get('url') or not comment.get('body', '').startswith(REPAIR_MARKER + '\n'):
         raise ValueError('Repair failure record must belong to the correction Issue')
+    created = comment.get('created_at')
+    if (not nonempty(created) or created != comment.get('updated_at') or
+            datetime.fromisoformat(created.replace('Z', '+00:00')).tzinfo is None):
+        raise ValueError('Original failure record must be an identified unedited comment; preserve history and use a new ID')
     def unique(pairs):
         result = {}
         for key, value in pairs:

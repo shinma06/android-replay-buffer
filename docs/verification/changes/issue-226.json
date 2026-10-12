@@ -2,7 +2,7 @@
   "schema": 1,
   "issue": 226,
   "gui_required": false,
-  "reason": "受入NG修正のdevelop統合だけに元失敗保証の固定候補再試験/独立評価を要求する共通gate・coordinator・手順と回帰のtooling変更。無修正candidate拒否、後着編集の再計算、live main最終照合と既存CI再実行を含む。製品・build・原Case/失敗観察・GUI/REAL保留を変更せず、GUI実行や製品受入を主張しない。",
+  "reason": "受入NG修正のdevelop統合だけに元失敗保証の固定候補再試験/独立評価を要求する共通gate・coordinator・手順と回帰のtooling変更。無修正candidate拒否、元NGの未編集metadata確認、宣言/記録イベント失効、後着編集の再計算、live main最終照合と全対象失効後の既存CI再実行を含む。製品・build・原Case/失敗観察・GUI/REAL保留を変更せず、GUI実行や製品受入を主張しない。",
   "cli_checks": [
     "python3 scripts/check.py",
     "python3 scripts/workflow/product_check.py",

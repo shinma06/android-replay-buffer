@@ -68,7 +68,11 @@ CIのAcceptance gateとcoordinatorは同じ`verify_pr`で上記の構造・出�
 
 merge後・closure前も、develop修正PRの受入を当時の固定HEAD/baseと現在の元NGコメント・trusted mainから再計算し、同じ独立報告を照合します。後着編集に古い`state.acceptance`を使わず、変更で不一致になった結果・評価は失効させます。移管中の変更もclose/cleanup前に再照合します。
 
+元NGコメントは編集・削除せず保持します。APIの`created_at`/`updated_at`が欠落・不正・不一致なら参照記録を拒否します。追記や訂正は新しい未編集コメントIDを作り、原記録へのリンクと全失敗/保証の対応、訂正理由をIssueに残して`Acceptance repair`を更新します。JSON schemaは変えず、独立レビューが旧記録・封印証拠との連続性と保証の欠落がないことを確認します。新IDへ移すだけで元の失敗を消せません。API時刻一致は構造検査であり、観察の真実性や同じ秒内の編集がなかったことを証明しないため、固定原記録と実証の独立照合を維持します。
+
 main push時は既存Acceptance workflowが全ページの同repository・ownerのopen develop修正PRを確認し、Agent reviewをpendingへ戻して現在HEADの既存Acceptance runを再実行します。current runがない・実行中・再実行不能ならpendingを保持し、担当が完了後に再試行します。CIと共通validatorの最終readbackもmain SHAを照合します。有効契約が変わったら現在契約で再試験記録と独立評価を更新します。mainの前進だけで有効契約・成果物・条件が不変なら、現在resolverによる再計算と同一性の確認を経て既存評価を再利用でき、全GUIの再実行は要求しません。
+
+修正Issueの宣言変更/削除・参照コメントの編集/削除も、default branchのtrusted workflowから、そのIssueに紐づく同repository・ownerのopen develop PRだけを失効させます。全PRページを確認し、全対象のAgent reviewをpendingへ戻してから既存Acceptance runを再実行します。一つの再実行拒否/取得失敗で後続PRの失効を止めず、エラーは失敗として残します。status書込み自体の失敗はpending成功と扱わず、統合を止めて担当がreadback/復旧します。宣言に関係しない本文編集・通常コメント・PRコメント・新記録作成だけでは再実行せず、新IDへの宣言更新で再検証します。イベントは互いに取消さず、自己生成の報告ループ・pollingは追加しません。[イベント仕様](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#issue_comment)と[コメントmetadata](https://docs.github.com/en/rest/issues/comments#get-an-issue-comment)に従い、この非同期経路も直前live照合の代替にはしません。
 
 mainはdevelop baseとは別のrefなので、GitHubのHEAD/strict-base保護だけでは最終readbackとmergeを原子的に結べません。main pushによるpending/re-runも非同期です。自動coordinatorと手動統合は直前のlive受入照合を必須とし、取得失敗・不一致を拒否しますが、サービスが提供しない跨refの原子性を保証したとは扱いません。CIのmainイベント経路はmain統合後、PR検証コードは通常のdevelop同期後に有効化されるため、同期前はPMの同じ運用gateを維持します。
 

@@ -38,6 +38,8 @@ class RepairTests(unittest.TestCase):
         self.path = 'docs/verification/changes/issue-35.json'
         self.issue = {'number': 35, 'url': 'https://api.github.com/repos/example/repo/issues/35',
                       'body': 'Acceptance repair: 123', 'labels': [{'name': 'type:bug'}]}
+        self.record_created = '2026-01-01T00:00:00Z'
+        self.record_updated = self.record_created
         at = self.git('show', '-s', '--format=%cI', self.candidate)
         self.old = {'status': 'fail', 'head': self.source, 'artifact_sha256': '1' * 64,
                     'actor': 'gpt', 'observer': 'native-observer', 'at': at,
@@ -90,7 +92,8 @@ class RepairTests(unittest.TestCase):
         if path == 'issues/35':
             return self.issue
         if path == 'issues/comments/123':
-            return {'issue_url': self.issue['url'], 'body': REPAIR_MARKER + '\n' + json.dumps(self.record)}
+            return {'issue_url': self.issue['url'], 'body': REPAIR_MARKER + '\n' + json.dumps(self.record),
+                    'created_at': self.record_created, 'updated_at': self.record_updated}
         raise AssertionError(path)
 
     def verify(self):
@@ -168,6 +171,47 @@ class RepairTests(unittest.TestCase):
         self.record['failures']['GAP-1']['guarantees']['new'] = 'edited record'
         with self.assertRaisesRegex(ValueError, 'every original failure'):
             self.verify()
+
+    def test_edited_original_cannot_shrink_guarantees_even_with_matching_results(self):
+        self.record_updated = '2026-01-01T00:00:01Z'
+        del self.record['failures']['GAP-1']['guarantees']['metadata']
+        del self.data['repair']['results']['GAP-1']['coverage']['metadata']
+        self.data['repair']['failure_record_sha256'] = canonical_hash(self.record)
+        self.freeze()
+        with self.assertRaisesRegex(ValueError, 'unedited'):
+            self.verify()
+
+    def test_missing_or_invalid_original_comment_metadata_is_rejected(self):
+        for timestamp in (None, '', 'unknown', '2026-01-01T00:00:00'):
+            self.record_created = self.record_updated = timestamp
+            with self.subTest(timestamp=timestamp), self.assertRaises(ValueError):
+                self.verify()
+
+    def test_new_unedited_record_id_keeps_schema_and_requires_fresh_assessment(self):
+        from verification import repair_record
+        original_api = self.api
+        original = self.verify()
+        preserved = copy.deepcopy(self.record)
+        old_comment = original_api('issues/comments/123')
+        self.issue['body'] = 'Acceptance repair: 124'
+        self.record['failures']['GAP-1']['guarantees']['third'] = 'additional observed failure'
+        def api(path):
+            if path == 'issues/comments/124': return original_api('issues/comments/123')
+            if path == 'issues/comments/123': return old_comment
+            return original_api(path)
+        self.assertEqual(repair_record(self.issue, api), self.record)
+        self.data['repair']['failure_record_sha256'] = canonical_hash(self.record)
+        self.data['repair']['results']['GAP-1']['coverage']['third'] = 'fresh fixed evidence'
+        self.freeze()
+        updated = verify_pr(self.pr, api, self.git)
+        self.assertNotEqual(updated['repair_revision'], original['repair_revision'])
+        self.assertEqual(set(updated['repair_record']), set(preserved))
+        self.assertEqual(json.loads(api('issues/comments/123')['body'][len(REPAIR_MARKER):]), preserved)
+        bound = {'head': self.pr['head']['sha'], 'base': self.source}
+        review = dict(report(), **bound, repair_revision=original['repair_revision'],
+                      repair_assessment='historical assessment')
+        with self.assertRaisesRegex(ValueError, 'stale'):
+            validate_review(review, bound, updated)
 
     def test_bug_classification_and_trusted_tracking_cannot_omit_repair(self):
         for body in ('', 'Acceptance repair: unknown', 'Acceptance repair: none'):

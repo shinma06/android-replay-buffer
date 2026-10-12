@@ -279,6 +279,120 @@ class MainContractEventTests(unittest.TestCase):
                     ci.main()
                     recheck.assert_called_once()
 
+    def test_rerun_denial_does_not_leave_later_pr_review_successful(self):
+        second = copy.deepcopy(self.pr)
+        second['number'] = 91
+        second['head'].update(sha=MOVED, ref='codex/91-repair')
+        second['body'] = second['body'].replace('#90', '#91').replace('issue-90', 'issue-91')
+        original = self.api
+        def api(path, method='GET', data=None):
+            if path.startswith('pulls?'): return [self.pr, second]
+            if path == 'issues/91': return self.issue
+            if path == 'actions/runs/42/rerun': raise OSError('service denied rerun')
+            if path.startswith('actions/workflows/') and MOVED in path:
+                return {'workflow_runs': [dict(self.run, id=43, head_sha=MOVED, pull_requests=[{'number': 91}])]}
+            return original(path, method, data)
+        with self.assertRaisesRegex(OSError, 'service denied'):
+            ci.recheck_main_repairs(api, 'shinma06/android-replay-buffer')
+        writes = [c[0] for c in self.calls if c[1] == 'POST']
+        self.assertEqual(writes[:2], ['statuses/' + HEAD, 'statuses/' + MOVED])
+        self.assertIn('actions/runs/43/rerun', writes)
+
+    def test_failed_status_write_is_not_pending_success_and_later_pr_is_invalidated(self):
+        second = copy.deepcopy(self.pr)
+        second['number'] = 91
+        second['head'].update(sha=MOVED, ref='codex/91-repair')
+        second['body'] = second['body'].replace('#90', '#91').replace('issue-90', 'issue-91')
+        original = self.api
+        def api(path, method='GET', data=None):
+            if path.startswith('pulls?'): return [self.pr, second]
+            if path == 'issues/91': return self.issue
+            if path == 'statuses/' + HEAD: raise OSError('status denied')
+            if path.startswith('actions/workflows/'):
+                return {'workflow_runs': [dict(self.run, id=43, head_sha=MOVED, pull_requests=[{'number': 91}])]}
+            return original(path, method, data)
+        with self.assertRaisesRegex(OSError, 'status denied') as caught:
+            ci.recheck_main_repairs(api, 'shinma06/android-replay-buffer')
+        self.assertIn('invalidation failed', caught.exception.__notes__[0])
+        self.assertEqual([c[0] for c in self.calls if c[1] == 'POST'],
+                         ['statuses/' + MOVED, 'actions/runs/43/rerun'])
+
+
+class RepairSourceEventTests(unittest.TestCase):
+    setUp = MainContractEventTests.setUp
+    api = MainContractEventTests.api
+    def event(self, body='Acceptance repair: 123', action='edited'):
+        return {'action': action, 'issue': {'number': 90, 'body': body},
+                'changes': {'body': {'from': 'Acceptance repair: 122'}}}
+
+    def test_source_declaration_change_removal_and_issue_deletion(self):
+        for event in (self.event(), self.event(''), self.event('Acceptance repair: none'),
+                      self.event(action='deleted')):
+            with self.subTest(event=event):
+                self.assertEqual(ci.repair_source_issue(event, 'issues'), 90)
+
+    def test_source_comment_edit_delete_and_marker_removal(self):
+        for action in ('edited', 'deleted'):
+            event = self.event(action=action)
+            event['comment'] = {'id': 123, 'body': 'removed marker'}
+            self.assertEqual(ci.repair_source_issue(event, 'issue_comment'), 90)
+            event['issue']['body'] = 'Acceptance repair: none'
+            event['changes']['body']['from'] = '<!-- acceptance-repair:v1 -->\noriginal'
+            self.assertEqual(ci.repair_source_issue(event, 'issue_comment'), 90)
+
+    def test_receipts_unrelated_body_edits_and_pr_comments_are_ignored(self):
+        event = self.event()
+        event['changes']['body']['from'] = event['issue']['body'] + '\nold receipt'
+        self.assertIsNone(ci.repair_source_issue(event, 'issues'))
+        event['comment'] = {'id': 456, 'body': 'review receipt'}
+        self.assertIsNone(ci.repair_source_issue(event, 'issue_comment'))
+        event['issue']['pull_request'] = {}
+        event['comment']['body'] = '<!-- acceptance-repair:v1 -->\nrecord'
+        self.assertIsNone(ci.repair_source_issue(event, 'issue_comment'))
+
+    def test_source_event_pages_only_invalidate_matching_issue_without_fetching_deleted_issue(self):
+        unrelated = copy.deepcopy(self.pr)
+        unrelated['number'] = 91
+        unrelated['head'].update(sha=MOVED, ref='codex/91-repair')
+        unrelated['body'] = unrelated['body'].replace('#90', '#91').replace('issue-90', 'issue-91')
+        original = self.api
+        def api(path, method='GET', data=None):
+            if path.startswith('pulls?') and path.endswith('page=1'): return [unrelated] * 100
+            if path == 'issues/90': raise OSError('deleted source issue')
+            return original(path, method, data)
+        self.assertEqual(ci.recheck_main_repairs(api, 'shinma06/android-replay-buffer', source_issue=90), [90])
+        self.assertEqual([c[0] for c in self.calls if c[1] == 'POST'],
+                         ['statuses/' + HEAD, 'actions/runs/42/rerun'])
+
+    def test_source_event_main_dispatch_uses_scoped_route(self):
+        with tempfile.NamedTemporaryFile(mode='w+') as event_file, patch.dict(os.environ, {
+                'GITHUB_EVENT_PATH': event_file.name, 'GITHUB_EVENT_NAME': 'issues',
+                'GITHUB_REPOSITORY': 'shinma06/android-replay-buffer'}), patch.object(ci, 'recheck_main_repairs') as recheck:
+            json.dump(self.event(), event_file); event_file.flush()
+            recheck.return_value = [90]
+            ci.main()
+            recheck.assert_called_once_with(unittest.mock.ANY, 'shinma06/android-replay-buffer', source_issue=90)
+
+    def test_ignored_comment_dispatch_does_not_scan_or_write(self):
+        event = self.event()
+        event['comment'] = {'id': 456, 'body': 'review receipt'}
+        with tempfile.NamedTemporaryFile(mode='w+') as event_file, patch.dict(os.environ, {
+                'GITHUB_EVENT_PATH': event_file.name, 'GITHUB_EVENT_NAME': 'issue_comment',
+                'GITHUB_REPOSITORY': 'shinma06/android-replay-buffer'}), patch.object(ci, 'recheck_main_repairs') as recheck:
+            json.dump(event, event_file); event_file.flush()
+            ci.main()
+            recheck.assert_not_called()
+
+    def test_workflow_source_events_use_trusted_main_and_do_not_cancel_invalidation(self):
+        from pathlib import Path
+        workflow = (Path(__file__).resolve().parents[2] / '.github/workflows/acceptance.yml').read_text()
+        self.assertIn('  issues:\n    types: [edited, deleted]', workflow)
+        self.assertIn('  issue_comment:\n    types: [edited, deleted]', workflow)
+        self.assertIn("ref: refs/heads/${{ github.event.pull_request.base.ref || 'main' }}", workflow)
+        self.assertIn("cancel-in-progress: ${{ github.event_name == 'pull_request' }}", workflow)
+        self.assertIn('github.event.pull_request.number || github.run_id', workflow)
+        self.assertNotIn('github.event.pull_request.head.sha', workflow)
+
 
 if __name__ == '__main__':
     unittest.main()

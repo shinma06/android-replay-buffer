@@ -2,10 +2,11 @@
 """Execute only from the trusted base checkout. PR content is git-show JSON data."""
 import json
 import os
+import re
 import subprocess
 from urllib.request import Request, urlopen
 from pr_policy import validate
-from verification import verify_pr
+from verification import REPAIR_MARKER, verify_pr
 from agent_policy import CONTEXT, eligible, issue_number
 
 
@@ -25,27 +26,61 @@ def main():
         if event.get('ref') != 'refs/heads/main' or event.get('deleted'):
             raise ValueError('Contract reconciliation requires a main push')
         result = {'recheck_requested': recheck_main_repairs(api, repo)}
+    elif os.environ.get('GITHUB_EVENT_NAME') in ('issues', 'issue_comment'):
+        source = repair_source_issue(event, os.environ['GITHUB_EVENT_NAME'])
+        result = {'recheck_requested': recheck_main_repairs(api, repo, source_issue=source) if source else []}
     else:
         result = check_pr(event['pull_request'], api)
     print(json.dumps(result, ensure_ascii=False))
 
 
-def recheck_main_repairs(api, repo):
-    """A bounded main-push event invalidates review and retries existing PR checks."""
-    requested, unavailable, page = [], [], 1
+def repair_source_issue(event, name):
+    """Ignore receipts; declaration/record edits invalidate only their correction Issue."""
+    issue = event['issue']
+    if 'pull_request' in issue or event['action'] not in ('edited', 'deleted'):
+        return None
+    body = issue.get('body') or ''
+    old = event.get('changes', {}).get('body', {}).get('from') or ''
+    if name == 'issues':
+        if (event['action'] == 'deleted' or re.findall(r'^Acceptance repair: (.*)$', body, re.M) !=
+                re.findall(r'^Acceptance repair: (.*)$', old, re.M)):
+            return issue['number']
+    else:
+        comment = event['comment']
+        if (str(comment['id']) in re.findall(r'^Acceptance repair: (.*)$', body, re.M) or
+                any(text.startswith(REPAIR_MARKER + '\n') for text in (comment.get('body') or '', old))):
+            return issue['number']
+    return None
+
+
+def recheck_main_repairs(api, repo, source_issue=None):
+    """Invalidate all affected PRs before optional reruns can fail or be denied."""
+    pending, requested, unavailable, errors, page = [], [], [], [], 1
     while True:
         prs = api(f'pulls?state=open&base=develop&per_page=100&page={page}')
         for pr in prs:
             if not eligible(pr, repo.split('/')[0], repo):
                 continue
-            issue = api(f'issues/{issue_number(pr)}')
-            declaration = [line.removeprefix('Acceptance repair: ') for line in
-                           (issue.get('body') or '').splitlines() if line.startswith('Acceptance repair: ')]
-            if declaration == ['none'] or (not declaration and not any(
-                    label.get('name') == 'type:bug' for label in issue.get('labels', []))):
+            if source_issue is not None and issue_number(pr) != source_issue:
                 continue
-            api('statuses/' + pr['head']['sha'], 'POST', {'context': CONTEXT, 'state': 'pending',
-                'description': 'Trusted main advanced; recheck original-NG acceptance and independent assessment'})
+            try:
+                if source_issue is None:
+                    issue = api(f'issues/{issue_number(pr)}')
+                    declaration = re.findall(r'^Acceptance repair: (.*)$', issue.get('body') or '', re.M)
+                    if declaration == ['none'] or (not declaration and not any(
+                            label.get('name') == 'type:bug' for label in issue.get('labels', []))):
+                        continue
+                api('statuses/' + pr['head']['sha'], 'POST', {'context': CONTEXT, 'state': 'pending',
+                    'description': 'Repair source or trusted main changed; recheck acceptance and independent assessment'})
+                pending.append(pr)
+            except OSError as error:
+                error.add_note(f'PR {pr["number"]}: source lookup or review invalidation failed')
+                errors.append(error)
+        if len(prs) < 100:
+            break
+        page += 1
+    for pr in pending:
+        try:
             runs = api('actions/workflows/acceptance.yml/runs?event=pull_request&head_sha=' +
                        pr['head']['sha'] + '&per_page=1')['workflow_runs']
             if (not runs or runs[0]['head_sha'] != pr['head']['sha'] or runs[0]['event'] != 'pull_request' or
@@ -55,11 +90,18 @@ def recheck_main_repairs(api, repo):
                 continue
             api(f'actions/runs/{runs[0]["id"]}/rerun', 'POST')
             requested.append(pr['number'])
-        if len(prs) < 100:
-            if unavailable:
-                raise ValueError(f'Current Acceptance run unavailable or still running for PRs {unavailable}; preserve pending review and retry after completion')
-            return requested
-        page += 1
+        except OSError as error:
+            error.add_note(f'PR {pr["number"]}: Acceptance lookup or rerun failed; review remains pending')
+            errors.append(error)
+    if errors:
+        for error in errors[1:]:
+            errors[0].add_note(str(error) + ': ' + '; '.join(error.__notes__))
+        if unavailable:
+            errors[0].add_note(f'Acceptance run unavailable or still running for PRs {unavailable}')
+        raise errors[0]
+    if unavailable:
+        raise ValueError(f'Current Acceptance run unavailable or still running for PRs {unavailable}; preserve pending review and retry after completion')
+    return requested
 
 
 def closed_result(pr):
