@@ -700,6 +700,159 @@ def unchanged_artifact_history(source, candidate, key, git, trusted_base=None):
         raise ValueError('Reuse requires the same existing Case contract')
 
 
+IMPACT_DIMENSIONS = {'source', 'callers', 'callees', 'dataflow', 'build', 'configuration',
+                     'dependencies', 'fixtures', 'runtime', 'display', 'failure_attribution'}
+
+
+def impact_history(source, candidate, key, git):
+    """Bind all relevant history edges, including edits later reverted."""
+    git('merge-base', '--is-ancestor', source, candidate)
+    case_path = f'docs/verification/changes/issue-{key.split(":")[0]}.json'
+    edges = []
+    for commit in git('rev-list', f'{source}..{candidate}').splitlines():
+        parents = git('rev-list', '--parents', '-n', '1', commit).split()[1:]
+        if not parents:
+            raise ValueError('Impact reuse history lacks a parent')
+        source_changes = (set(git('diff', '--no-renames', '--name-only', source, commit).splitlines())
+                          if len(parents) > 1 else None)
+        for parent in parents:
+            paths = git('diff', '--no-renames', '--name-only', parent, commit).splitlines()
+            if source_changes is not None:
+                paths = [p for p in paths if p in source_changes]
+            if case_path in paths:
+                raise ValueError('Impact reuse cannot replace a changed or reverted Case contract')
+            if paths:
+                edges.append({'commit': commit, 'parent': parent, 'paths': sorted(paths)})
+    old = regular_json(source, case_path, git)
+    current = regular_json(candidate, case_path, git)
+    for change in (old, current):
+        validate_change(change, int(key.split(':')[0]), True)
+    cases = [[c for c in change['cases'] if c['id'] == key.split(':')[1]] for change in (old, current)]
+    if len(cases[0]) != 1 or cases[0] != cases[1]:
+        raise ValueError('Impact reuse requires the same existing Case contract')
+    return sorted(edges, key=lambda e: (e['commit'], e['parent'])), canonical_hash(cases[0][0])
+
+
+def validate_impact_reuse(observed, assessment, key, policy, candidate, artifact, git, trusted_base):
+    """Trust an independently reviewed, public-safe certificate, never a writer's assertion."""
+    ref = assessment['impact_reuse']
+    if (not isinstance(ref, dict) or set(ref) != {'commit', 'path', 'id', 'sha256'} or
+            not isinstance(ref.get('commit'), str) or not SHA.fullmatch(ref['commit']) or
+            not isinstance(ref.get('sha256'), str) or not HASH.fullmatch(ref['sha256']) or
+            not nonempty(ref.get('id')) or
+            not isinstance(ref.get('path'), str) or
+            not re.fullmatch(r'docs/verification/changes/issue-[1-9][0-9]*\.json', ref['path']) or
+            not trusted_base):
+        raise ValueError('Impact reuse requires a fixed trusted-main Issue certificate')
+    try:
+        git('merge-base', '--is-ancestor', ref['commit'], trusted_base)
+        record = regular_json(ref['commit'], ref['path'], git)
+        validate_change(record, int(Path(ref['path']).stem.removeprefix('issue-')), record.get('gui_required'))
+        certificates = record.get('evidence_certificates')
+        if not isinstance(certificates, dict):
+            raise ValueError('Trusted Issue has no evidence certificates')
+        certificate = certificates.get(ref['id'])
+        history, case_hash = impact_history(assessment['source_candidate'], candidate, key, git)
+        source_plan = initial_stage_plan(assessment['source_candidate'], assessment['source_candidate'], git)
+    except subprocess.CalledProcessError as exc:
+        raise ValueError('Impact certificate provenance or source history could not be verified') from exc
+    payload = {k: v for k, v in assessment.items() if k != 'impact_reuse'}
+    source_artifact = assessment['source_result'].get('artifact_sha256')
+    if (not isinstance(certificate, dict) or canonical_hash(certificate) != ref['sha256'] or
+            certificate.get('schema') != 1 or certificate.get('key') != key or
+            certificate.get('candidate') != candidate or certificate.get('artifact_sha256') != artifact or
+            certificate.get('source_candidate') != assessment['source_candidate'] or
+            certificate.get('source_artifact_sha256') != source_artifact or not HASH.fullmatch(source_artifact or '') or
+            certificate.get('assessment_sha256') != canonical_hash(payload) or
+            certificate.get('observation_sha256') != canonical_hash({k: v for k, v in observed.items()
+                                                                    if k != 'responsibility_assessment'}) or
+            assessment['source_candidate'] == candidate or
+            certificate.get('case_sha256') != case_hash or
+            certificate.get('plan_sha256') != canonical_hash(policy) or source_plan != policy or
+            certificate.get('history') != history or
+            not isinstance(certificate.get('original_file_sha256'), str) or
+            not HASH.fullmatch(certificate['original_file_sha256']) or
+            not isinstance(certificate.get('original_result_sha256'), str) or
+            not HASH.fullmatch(certificate['original_result_sha256']) or
+            not nonempty(certificate.get('original_record_evidence'))):
+        raise ValueError('Impact certificate must bind exact original proof, history, contract, plan and both builds')
+    old_facts = {name for name, fact in assessment['facts'].items()
+                 if isinstance(fact, dict) and fact.get('head') == assessment['source_candidate']}
+    originals = certificate.get('original_fact_sha256')
+    if (not old_facts or not isinstance(originals, dict) or set(originals) != old_facts or
+            not all(isinstance(h, str) and HASH.fullmatch(h) for h in originals.values())):
+        raise ValueError('Every retained fact needs independently verified immutable original provenance')
+    review = certificate.get('review', {})
+    if (not isinstance(review, dict) or review.get('status') != 'approved' or
+            not all(nonempty(review.get(k)) for k in ('reviewer_session', 'writer_session', 'at', 'evidence')) or
+            not isinstance(review.get('executor_sessions'), list) or not review['executor_sessions'] or
+            not all(nonempty(s) for s in review['executor_sessions']) or
+            review['reviewer_session'] in [review['writer_session'], *review['executor_sessions']]):
+        raise ValueError('Impact reuse requires substantive independent original/impact/coverage review')
+    validate_observation(dict(observed, at=review['at']), candidate, artifact)
+    fixed_at = datetime.fromisoformat(git('show', '-s', '--format=%cI', candidate))
+    assessed_at = datetime.fromisoformat(observed['at'].replace('Z', '+00:00'))
+    reviewed_at = datetime.fromisoformat(review['at'].replace('Z', '+00:00'))
+    if fixed_at.tzinfo is None or assessed_at < fixed_at or reviewed_at < assessed_at:
+        raise ValueError('Impact assessment/review predates the fixed candidate or assessment')
+    guarantees = certificate.get('guarantees')
+    if not isinstance(guarantees, dict) or set(guarantees) != set(assessment['coverage']):
+        raise ValueError('Impact certificate needs every effective guarantee')
+    for name, proof in guarantees.items():
+        if (not isinstance(proof, dict) or proof.get('facts') != assessment['coverage'][name] or
+                proof.get('disposition') not in ('unaffected', 'equivalent', 'fresh') or
+                not isinstance(proof.get('impact'), dict) or set(proof['impact']) != IMPACT_DIMENSIONS or
+                not all(nonempty(v) for v in proof['impact'].values())):
+            raise ValueError('Unknown or unexplained guarantee impact: ' + name)
+        facts = [assessment['facts'].get(i, {}) for i in proof['facts']]
+        if not all(isinstance(f, dict) for f in facts):
+            raise ValueError('Impact coverage must reference actual successful facts')
+        if name == 'artifact_binding' or proof['disposition'] == 'fresh':
+            if any(f.get('head') != candidate or f.get('artifact_sha256') != artifact for f in facts):
+                raise ValueError('Current identity or affected guarantee requires fresh current-build facts')
+        else:
+            components = proof.get('components')
+            if not isinstance(components, dict) or not components:
+                raise ValueError('Retained guarantees require concrete relevant components')
+            for path, binding in components.items():
+                if (not isinstance(path, str) or path.startswith('/') or '..' in path.split('/') or
+                        not isinstance(binding, dict)):
+                    raise ValueError('Invalid relevant component binding')
+                old = git('ls-tree', assessment['source_candidate'], '--', path).split()
+                current = git('ls-tree', candidate, '--', path).split()
+                if (any(len(tree) != 4 or tree[0] not in ('100644', '100755') or tree[1] != 'blob' or tree[3] != path
+                        for tree in (old, current)) or binding.get('source_blob') != old[2] or
+                        binding.get('candidate_blob') != current[2]):
+                    raise ValueError('Relevant component proof differs from fixed source/build inputs')
+                touched = any(path in e['paths'] for e in history)
+                if old != current or touched:
+                    if proof['disposition'] != 'equivalent' or not nonempty(binding.get('equivalence_evidence')):
+                        raise ValueError('Changed or reverted relevant component needs reviewed semantic equivalence')
+    source_result = assessment['source_result']
+    original_observation = (source_result.get('initial_observation', {})
+                            if source_result['status'] == 'initial-pass' else source_result)
+    if not isinstance(original_observation, dict):
+        raise ValueError('Original successful observation missing')
+    original_assessment = original_observation.get('responsibility_assessment') or {}
+    if not isinstance(original_assessment, dict) or original_assessment.get('impact_reuse'):
+        raise ValueError('Impact reuse chains cannot create an original successful execution')
+    if source_result['status'] in ('pass', 'initial-pass'):
+        execution = regular_json(assessment['source_candidate'],
+            f'docs/verification/changes/issue-{key.split(":")[0]}.json', git)
+        execution = next(c.get('required_execution') for c in execution['cases'] if c['id'] == key.split(':')[1])
+        source_gop = None
+        if key in GOP_KEYS and not policy['responsibility_revision'].get('method_revision'):
+            amendment = gop_amendment(assessment['source_candidate'], assessment['source_candidate'], git)
+            source_gop = {'revision': canonical_hash(amendment)} if amendment else None
+        if source_result['status'] == 'initial-pass':
+            validate_initial_result(source_result, key, source_plan, assessment['source_candidate'], source_artifact, execution, source_gop)
+        else:
+            validate_full_result(source_result, assessment['source_candidate'], source_artifact, execution, source_gop,
+                                 effective_initial_entry(source_plan, key))
+            validate_responsibility_observation(source_result, key, source_plan)
+    return source_artifact
+
+
 def validate_fact_assessment(observed, key, policy, candidate, artifact, git, trusted_base=None):
     assessment = observed.get('responsibility_assessment')
     if assessment is None:
@@ -707,7 +860,8 @@ def validate_fact_assessment(observed, key, policy, candidate, artifact, git, tr
     group = responsibility_group(policy, key)
     if (not group or not isinstance(assessment, dict) or set(assessment) != {
             'source_candidate', 'source_result', 'source_result_sha256', 'source_record_evidence',
-            'facts', 'coverage', 'missing_requirements', 'unresolved_owned_failures'} or
+            'facts', 'coverage', 'missing_requirements', 'unresolved_owned_failures'} |
+            ({'impact_reuse'} if 'impact_reuse' in assessment else set()) or
             not isinstance(assessment['source_candidate'], str) or
             not SHA.fullmatch(assessment['source_candidate']) or
             not isinstance(assessment['source_result'], dict) or
@@ -720,12 +874,20 @@ def validate_fact_assessment(observed, key, policy, candidate, artifact, git, tr
             set(assessment['coverage']) != set(observed['responsibility_evidence']) or
             assessment['missing_requirements'] != [] or assessment['unresolved_owned_failures'] != []):
         raise ValueError('Retained-fact assessment needs original record, complete coverage and no unresolved owned failure')
+    for facts in assessment['coverage'].values():
+        if (not isinstance(facts, list) or not facts or not all(isinstance(x, str) for x in facts) or
+                len(facts) != len(set(facts)) or set(facts) - set(assessment['facts'])):
+            raise ValueError('Each effective condition needs identified passing facts')
     source = assessment['source_candidate']
+    impact = 'impact_reuse' in assessment
+    source_artifact = (validate_impact_reuse(observed, assessment, key, policy, candidate, artifact, git, trusted_base)
+                       if impact else artifact)
     if (assessment['source_result'].get('head', source) != source or
-            assessment['source_result'].get('artifact_sha256', artifact) != artifact):
+            assessment['source_result'].get('artifact_sha256', source_artifact) != source_artifact):
         raise ValueError('Original aggregate record has a different identity')
     try:
-        unchanged_artifact_history(source, candidate, key, git, trusted_base)
+        if not impact:
+            unchanged_artifact_history(source, candidate, key, git, trusted_base)
         original_policy = initial_stage_plan(source, source, git)
     except subprocess.CalledProcessError as exc:
         raise ValueError('Retained-fact source or history could not be verified') from exc
@@ -739,13 +901,16 @@ def validate_fact_assessment(observed, key, policy, candidate, artifact, git, tr
     for fact in assessment['facts'].values():
         if not isinstance(fact, dict):
             raise ValueError('Retained fact must be an actual successful observation')
-        validate_observation(fact, source, artifact)
+        fact_head = fact.get('head') if impact else source
+        if impact and fact_head not in (source, candidate):
+            raise ValueError('Impact facts must bind the original or current fixed candidate')
+        validate_observation(fact, fact_head, artifact if fact_head == candidate else source_artifact)
+        if impact and fact_head == candidate:
+            fixed_at = datetime.fromisoformat(git('show', '-s', '--format=%cI', candidate))
+            if datetime.fromisoformat(fact['at'].replace('Z', '+00:00')) < fixed_at:
+                raise ValueError('Current-build fact predates the fixed candidate')
         if datetime.fromisoformat(fact['at'].replace('Z', '+00:00')) > datetime.fromisoformat(observed['at'].replace('Z', '+00:00')):
             raise ValueError('Assessment predates its retained facts')
-    for facts in assessment['coverage'].values():
-        if (not isinstance(facts, list) or not facts or not all(isinstance(x, str) for x in facts) or
-                len(facts) != len(set(facts)) or set(facts) - set(assessment['facts'])):
-            raise ValueError('Each effective condition needs identified passing facts')
 
 
 def validate_candidate_result(result, key, policy, stage, candidate, artifact, execution, gop, git,
@@ -1360,7 +1525,9 @@ def render_queue(paths, promotion=None, git=git_read):
             elif result.get('status') == 'reassessed':
                 label = '旧観察を有効条件へ再評価／新しい試験実行ではない／' + label
             elif (observed.get('initial_observation', {}) if stage else observed).get('responsibility_assessment'):
-                label = '保持事実を有効条件へ再評価／新しい試験実行ではない／' + label
+                assessment = (observed.get('initial_observation', {}) if stage else observed)['responsibility_assessment']
+                label = ('修正影響を保証ごとに評価／旧観察と現在事実を区別／' if 'impact_reuse' in assessment else
+                         '保持事実を有効条件へ再評価／新しい試験実行ではない／') + label
         except ValueError as exc:
             if result.get('status') in ('reused', 'reassessed'):
                 label = '不可・再利用条件不成立: ' + str(exc)

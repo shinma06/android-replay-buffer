@@ -5,7 +5,7 @@
 
 **現在の保証境界**: [保証目的と最小検証（#223/#230）](responsibility.md)と正式計画の`responsibility_revision.method_revision`を適用します。原Case/旧計画/以下の過去改訂説明は履歴として保持し、外部player全Play/精密seek・一律human番号読取り・native故障全種反復・無変更artifactの再build義務は明示改訂後の有効条件で判断します。未達をPASSにしません。gateと一覧は同じresolverを使います。
 
-`changes/issue-N.json` はIssueの受入、`promotion.json` はmainへ入れる固定候補と全Caseの観察の正本です。過去の観察を別SHA/buildのpassへ流用しません。未実施はpending、環境不足はblocked、製品不具合はfailと区別します。
+`changes/issue-N.json` はIssueの受入、`promotion.json` はmainへ入れる固定候補と全Caseの観察の正本です。過去の観察を別SHA/buildで新たに実行したpassへ付け替えません。[影響単位の評価](#修正影響による保証単位の証拠再利用246)では、元の成功事実を保持し、現在buildへの適用評価と区別します。未実施はpending、環境不足はblocked、製品不具合はfailと区別します。
 
 ## Caseの記録
 
@@ -237,7 +237,7 @@ promotionには`stage: initial-agent`を明記し、`results`に全139 keyを置
 
 - **候補を凍結する**: 既知の製品修正と必要な運用同期を先にまとめ、実行前に候補/source・成果物・実ロード・計画revisionを固定します。試験中に無関係な変更を足して候補を更新しません。停止中は新候補の作成・導入を開始しません。
 - **影響で再試験を選ぶ**: 修正箇所から呼出し元/先・共有状態・保存形式・build依存・Caseを照合し、まず失敗箇所と影響する境界を診断します。未変更の自動検査を理由なく反復せず、影響不明は関連範囲へ広げます。診断の選択と正式promotionの全Case充足を混同しません。
-- **観察を共有する**: 同一候補・成果物・ロードと前提が一致し、各Caseの全必要条件を満たす観察は、証拠を参照して複数Caseへ使えます。一つの操作で満たすCaseを先に対応づけ、同じ操作や全文記録を繰り返しません。候補変更後の旧観察は履歴として保持し、新候補のpassへ付け替えません。下記の同一成果物・条件不変を実証できる場合だけ、明示的な`reused`として正式gateへ渡せます。不明・不一致なら再試験します。過去結果の自動失効削除も行いません。
+- **観察を共有する**: 同一候補・成果物・ロードと前提が一致し、各Caseの全必要条件を満たす観察は、証拠を参照して複数Caseへ使えます。一つの操作で満たすCaseを先に対応づけ、同じ操作や全文記録を繰り返しません。候補変更後の旧観察は履歴として保持し、新候補のpassへ付け替えません。下記の同一成果物・条件不変を実証する`reused`、又は[保証単位の影響証明](#修正影響による保証単位の証拠再利用246)付き保持事実の現在評価として正式gateへ渡せます。不明・不一致なら再試験します。過去結果の自動失効削除も行いません。
 - **追加確認を限定する**: 元契約・既知の不具合・変更影響・未解決の懸念に結びつく確認だけを追加します。単に確認可能だからという理由で全scene、全時計、追加再接続などを必須化しません。新たな品質条件が必要なら理由と契約変更を先にレビューします。
 - **GUIの目的を明記する**: GUI担当への依頼には、試験の目的、trustedな有効条件の実接続/表示に必要な箇所、必要条件を満たす最小の実操作・観察、ファイル/自動解析で担う確認、利用する既存証拠、終了/中止条件を既存計画から短く示します。担当と独立レビュアーは、各操作が保証目的・必要な証拠/精度や未解決の懸念へ対応するか確認します。毎操作の承認や別台帳は追加しません。
 - **GUI手段の必要性を分ける**: [手段の選択基準](responsibility.md#gui手段の必要性を先に評価する)に従い、検証目的が必要という理由だけで手動GUIを指定しません。既存証拠・API/IPC/CLI・実画像で同じ観測事実を得られる経路を先に評価し、具体的な未確認UI/OS/consumer保証へ最小のGUIを選びます。担当とレビュアーが選定理由を確認し、command成功だけを表示成功にしません。
@@ -297,3 +297,36 @@ python3 scripts/workflow/verification.py docs/verification/changes/issue-12.json
 ```
 
 Gateと一覧は共通の検証を使います。一覧には再利用可否、元candidate/観察、現在の適合確認を区別して表示します。全候補・全Caseのgate、独立レビュー、必要CIは引き続き必須です。再利用可能でも未解決の不具合・失敗checkを解消済みにしません。
+
+
+## 修正影響による保証単位の証拠再利用（#246）
+
+**製品修正やZIP変更だけを理由に、影響を受けない成功観察を全失効させません。** #161の同一artifact reuseと旧責任改訂の不変履歴経路は引き続きその条件で利用できます。この節は別の明示評価経路で、旧節の「製品変更・異なるartifactは全再試験」「元の正式promotionが必須」という条件をこの経路には適用しません。原Case・全有効plan・human/REAL延期・元失敗は不変です。新Case/変更契約/未知planの免除、失敗の削除、元NG修正gateの代替は認めません。
+
+現在の通常`pass`又は`initial_observation`に、既存`responsibility_assessment`を置き、その中へ次の参照だけを追加します。結果の時刻・理由は**適用評価**であり、旧GUIを再実行した時刻ではありません。元source/ZIP・観察者・実行時刻・成功事実を保持し、現在source/ZIPと実ロード・integrationの新事実を別factにします。`artifact_binding`のcoverageは必ず現在candidate/ZIPの実事実で覆います。影響する保証は現在事実、影響しない保証は旧事実、意味が同等な変更は独立評価した証拠で覆い、全有効conditionを満たしたCaseだけ合格にできます。
+
+```json
+"impact_reuse": {
+  "commit": "<証明を統合したtrusted mainの40桁SHA>",
+  "path": "docs/verification/changes/issue-<証明を所有するIssue番号>.json",
+  "id": "<そのIssue内の証明ID>",
+  "sha256": "<証明全体のcanonical SHA-256>"
+}
+```
+
+参照先は既存Issue受入JSONの`evidence_certificates[id]`です。新たな並列台帳や自動依存解析は作りません。証明は候補側の自己申告ではなく、公開安全なtooling PRを別sessionでレビューしtrusted mainへ統合してから使います。未promotionの成功記録も、元の全候補promotionが済んだとは主張せず、この証明で扱えます。
+
+証明の必須フィールドは以下です。canonical hashは既存`verification.canonical_hash`を使い、JSONのbyte hashとは区別します。
+
+- `schema: 1 / key / source_candidate / source_artifact_sha256 / candidate / artifact_sha256`: Case keyと両方の固定identity。
+- `assessment_sha256`: `impact_reuse`を除いたassessment全体。`observation_sha256`: `responsibility_assessment`を除いた現在の観察/評価全体。原記録や現在のobserver/time/理由を後から変更すると失効します。
+- `case_sha256 / plan_sha256`: 原Caseと現在trusted plan全文のcanonical hash。source planも現在planと全文一致を要求します。旧methodへの再評価は既存経路で先に扱い、本経路でplan/延期を勝手に変えません。resolver/planの139/208/105・REAL34やhashはこの方針追加で変更しません。
+- `original_file_sha256 / original_result_sha256 / original_fact_sha256 / original_record_evidence`: 保全した原ファイルのbyte hash・元resultのcanonical hash・旧fact IDごとの原fact canonical hash・独立reviewが照合した公開安全な参照。assessmentの`source_result_sha256`はそこへ載せた原判定/公開安全な要約のcanonical hashです。非公開path等がある場合、原ファイルはbyte不変で保管し、別の公開要約では参照だけを公開証明へ置換します。元のstatus/source/ZIP/actor/observer/time/ロード・失敗・実施経路/契約を変えず、原hashと要約hashの対応を独立reviewで確認します。媒体・raw log・private pathをcommitしません。
+- `history`: `verification.impact_history(source, candidate, key, git)[0]`の全edge。各値は`commit / parent / paths`、pathはsorted。祖先関係と全親履歴を確認し、途中revertも隠せません。同期mergeで既に観察済みの内容を他parentとの相違だけで新変更にしない扱いは既存gateと同じです。
+- `review`: `status: approved / reviewer_session / writer_session / executor_sessions / at / evidence`。実在するsessionと固定独立報告を記録します。reviewerはwriter/全executorと別、時刻は現在candidateと評価以降です。原記録の実在・byte/hash・公開要約・全失敗帰属・実行契約・影響範囲・各保証の全coverageを**実質評価**します。hashや非空文字列の検査だけで実証したことにしません。
+- `guarantees`: coverageの全keyへ`facts`（coverageと同じfact ID配列）、`disposition: unaffected | equivalent | fresh`と`impact`を置きます。impactは`source / callers / callees / dataflow / build / configuration / dependencies / fixtures / runtime / display / failure_attribution`ごとの具体的証拠・理由です。非該当も理由を記載し、影響不明をunaffectedにしません。
+- 旧事実を使う保証の`components`は、関連するregular file pathから`source_blob / candidate_blob`への対応です。gitの実blob・modeを照合します。変更/途中revertした関連componentは`equivalent`と`equivalence_evidence`が必要で、reviewerが意味とbuild/runtime/display条件を確認します。影響を受けた保証は`fresh`へ戻し、実際の現在factがなければ未達です。
+
+採用手順は、(1)元ファイル/hashを不変保全、(2)保証と影響を分類し必要な新事実だけ実施、(3)公開安全な要約・assessment・証明を作成、(4)別sessionが実証と原NG/全coverageを評価、(5)既存Issueのtooling PRで証明をmain統合、(6)証明commit/hashを指定してpromotion gateと一覧をdry validation、(7)PMがQAの正式採用を行います。証明登録だけは製品PASSではありません。policyのみの変更では製品再build/再導入を要求せず、固定製品ZIPを保持します。product/source/build条件が実際に変わった部分はその影響の事実を取得します。
+
+#246の合成回帰では、AppHistoryの変更とZIP変更を含む履歴に対し、未promotionの旧Video成功事実＋現在load事実を受理し、未知影響・証明/hash/独立review/原fact欠落・旧ZIP混同・契約/plan変更・未解決失敗を拒否します。これは方法の有限試行であり、実QAの再試験削減件数・実務時間・Case PASSを測定した結果ではありません。PMと独立assessorが実候補への採用と残条件を回収します。
