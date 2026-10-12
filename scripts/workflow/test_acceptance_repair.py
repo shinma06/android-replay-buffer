@@ -344,6 +344,51 @@ class RepairTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'tracked original failure'):
             self.verify()
 
+    def test_each_distinct_failed_case_version_requires_its_original_record(self):
+        self.git('checkout', '-q', self.source)
+        second = copy.deepcopy(self.case)
+        second['expected'] += '; later failure also requires the saved duration boundary'
+        second['gpt']['reason'] = 'different failed saved-duration guarantee'
+        source = change(36); source['cases'] = [second]
+        self.write('docs/verification/changes/issue-36.json', source)
+        second_source = self.commit('second failed definition for same Case and actor')
+        # Repeat both exact blobs at different commits; do not require a record per commit.
+        source['cases'] = [self.case]
+        self.write('docs/verification/changes/issue-36.json', source)
+        self.commit('restore first failed definition')
+        source['cases'] = [second]
+        self.write('docs/verification/changes/issue-36.json', source)
+        self.commit('restore identical second failed definition')
+        pending = copy.deepcopy(second); pending['gpt']['status'] = 'pending'
+        source['cases'] = [pending]
+        self.write('docs/verification/changes/issue-36.json', source)
+        self.pr['base']['sha'] = self.commit('normal later status evolution')
+        self.write('replay_buffer/fixture.py', 'both failed definitions corrected')
+        self.candidate = self.commit('complete correction')
+        result = self.data['repair']['results']['GAP-1']
+        result['observation'].update(head=self.candidate, at=self.git('show', '-s', '--format=%cI', self.candidate))
+        self.data['repair']['candidate'] = self.candidate
+        first = copy.deepcopy(self.record['failures']['GAP-1'])
+        later = copy.deepcopy(first)
+        later.update(source_candidate=second_source, source_case_sha256=canonical_hash(second),
+                     original_result=dict(self.old, head=second_source, reason=second['gpt']['reason']),
+                     guarantees={'duration': 'later failed duration boundary'})
+        later_result = copy.deepcopy(result)
+        later_result['coverage'] = {'duration': 'fixed saved duration boundary recheck'}
+        for failures, results in (({'GAP-1': first}, {'GAP-1': result}),
+                                  ({'GAP-2': later}, {'GAP-2': later_result})):
+            self.record['failures'] = failures
+            self.data['repair']['results'] = results
+            self.data['repair']['failure_record_sha256'] = canonical_hash(self.record)
+            self.freeze()
+            with self.subTest(included=list(failures)), self.assertRaisesRegex(ValueError, 'tracked original failure'):
+                self.verify()
+        self.record['failures'] = {'GAP-1': first, 'GAP-2': later}
+        self.data['repair']['results'] = {'GAP-1': result, 'GAP-2': later_result}
+        self.data['repair']['failure_record_sha256'] = canonical_hash(self.record)
+        self.freeze()
+        self.assertTrue(self.verify()['repair_revision'])
+
     def test_metadata_only_history_rejects_later_product_edit_even_if_reverted(self):
         self.write('replay_buffer/fixture.py', 'untested change')
         self.commit('product edit after test')

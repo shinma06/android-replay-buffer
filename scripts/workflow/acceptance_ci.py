@@ -6,7 +6,7 @@ import re
 import subprocess
 from urllib.request import Request, urlopen
 from pr_policy import validate
-from verification import REPAIR_MARKER, verify_pr
+from verification import verify_pr
 from agent_policy import CONTEXT, eligible, issue_number
 
 
@@ -51,8 +51,8 @@ def repair_source_issue(event, name):
             return issue['number']
     else:
         comment = event['comment']
-        if (str(comment['id']) in re.findall(r'^Acceptance repair: (.*)$', body, re.M) or
-                any(text.startswith(REPAIR_MARKER + '\n') for text in (comment.get('body') or '', old))):
+        # Prior declarations are invalidated by Issue edits; changes.body here is the comment.
+        if str(comment['id']) in re.findall(r'^Acceptance repair: (.*)$', body, re.M):
             return issue['number']
     return None
 

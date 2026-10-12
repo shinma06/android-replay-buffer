@@ -353,7 +353,28 @@ class RepairSourceEventTests(unittest.TestCase):
             self.assertEqual(ci.repair_source_issue(event, 'issue_comment'), 90)
             event['issue']['body'] = 'Acceptance repair: none'
             event['changes']['body']['from'] = '<!-- acceptance-repair:v1 -->\noriginal'
-            self.assertEqual(ci.repair_source_issue(event, 'issue_comment'), 90)
+            self.assertIsNone(ci.repair_source_issue(event, 'issue_comment'))
+            declaration_event = self.event('Acceptance repair: none', action='edited')
+            declaration_event['changes']['body']['from'] = 'Acceptance repair: 123'
+            self.assertEqual(ci.repair_source_issue(declaration_event, 'issues'), 90)
+
+    def test_unreferenced_marker_comment_edits_and_deletions_are_irrelevant(self):
+        for action in ('edited', 'deleted'):
+            event = self.event(action=action)
+            event['comment'] = {'id': 456, 'body': '<!-- acceptance-repair:v1 -->\nnot referenced'}
+            event['changes']['body']['from'] = '<!-- acceptance-repair:v1 -->\nold comment body'
+            with self.subTest(action=action):
+                self.assertIsNone(ci.repair_source_issue(event, 'issue_comment'))
+        event['comment']['body'] = 'marker removed'
+        self.assertIsNone(ci.repair_source_issue(event, 'issue_comment'))
+
+    def test_comment_history_is_not_previous_issue_declaration(self):
+        event = self.event('Acceptance repair: none')
+        event['comment'] = {'id': 456, 'body': 'ordinary unrelated edited comment'}
+        event['changes']['body']['from'] = 'Acceptance repair: 456'
+        self.assertIsNone(ci.repair_source_issue(event, 'issue_comment'))
+        # The actual Issue edit invalidates removal of the prior reference separately.
+        self.assertEqual(ci.repair_source_issue(event, 'issues'), 90)
 
     def test_receipts_unrelated_body_edits_and_pr_comments_are_ignored(self):
         event = self.event()
@@ -394,11 +415,12 @@ class RepairSourceEventTests(unittest.TestCase):
 
     def test_ignored_comment_dispatch_does_not_scan_or_write(self):
         event = self.event()
-        event['comment'] = {'id': 456, 'body': 'review receipt'}
+        event['comment'] = {'id': 456, 'body': '<!-- acceptance-repair:v1 -->\nunreferenced'}
         with tempfile.NamedTemporaryFile(mode='w+') as event_file, patch.dict(os.environ, {
                 'GITHUB_EVENT_PATH': event_file.name, 'GITHUB_EVENT_NAME': 'issue_comment',
                 'GITHUB_REPOSITORY': 'shinma06/android-replay-buffer'}), patch.object(ci, 'recheck_main_repairs') as recheck:
             json.dump(event, event_file); event_file.flush()
+            recheck.return_value = []
             ci.main()
             recheck.assert_not_called()
 

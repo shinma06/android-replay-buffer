@@ -948,7 +948,8 @@ def verify_repair(pr, issue, data, path, api, git):
         original = regular_json(source, line, git)
         for case in original['cases']:
             if case.get('fix_issue') == data['issue']:
-                tracked.update((f'{match[1]}:{case["id"]}', actor) for actor in ('gpt', 'human')
+                tracked.update((f'{match[1]}:{case["id"]}', actor, canonical_hash(case))
+                               for actor in ('gpt', 'human')
                                if case[actor]['status'] == 'fail')
     repair = data.get('repair')
     if record is None:
@@ -998,7 +999,7 @@ def verify_repair(pr, issue, data, path, api, git):
         if len(matches) != 1 or canonical_hash(matches[0]) != failure['source_case_sha256']:
             raise ValueError('Original repair Case hash mismatch')
         if matches[0].get('fix_issue') == data['issue'] and matches[0][old['actor']]['status'] == 'fail':
-            cases.add((failure['case'], old['actor']))
+            cases.add((failure['case'], old['actor'], failure['source_case_sha256']))
         result = repair['results'][identifier]
         if (not isinstance(result, dict) or set(result) != {'observation', 'coverage', 'method', 'contract_revision'} or
                 result['contract_revision'] != contract or not nonempty(result['method']) or
