@@ -13,7 +13,7 @@ from unittest.mock import Mock, call, patch
 import agent_loop as al
 from change_impact import classify
 from agent_policy import binding, eligible, gui_pass, in_scope, next_action, update_parent, validate_review
-from agent_worker import worker_environment, run_worker
+from agent_worker import bind_report_session, event_session, main as bind_manual_report, worker_environment, run_worker
 
 HEAD = 'a' * 40
 BASE = 'b' * 40
@@ -31,7 +31,8 @@ def pr_data():
 def report(verdict='approved', head=HEAD):
     return {'verdict': verdict, 'head': head, 'base': BASE, 'scope_complete': True,
             'issue_complete': True, 'gui_required': False, 'findings': [] if verdict == 'approved' else ['Fix wrong value'],
-            'evidence': 'Checked the acceptance criteria and diff', 'session': 'independent-test-session'}
+            'repair_evidence_sha256': 'd' * 64,
+            'evidence': 'Checked the acceptance criteria and diff', 'session': '00000000-0000-4000-8000-000000000099'}
 
 
 class PolicyTests(unittest.TestCase):
@@ -359,6 +360,47 @@ class DevelopmentLinkTests(unittest.TestCase):
 
 
 class WorkerTests(unittest.TestCase):
+    def test_actual_event_identity_ignores_model_alias_and_rejects_ambiguous_receipts(self):
+        session = report()['session']
+        start = {'type': 'thread.started', 'thread_id': session}
+        done = {'type': 'turn.completed'}
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'events.jsonl'
+            events = [start, {'type': 'item.completed', 'item': {'type': 'agent_message',
+                      'text': json.dumps({'type': 'thread.started', 'thread_id': 'invented alias'})}}, done]
+            path.write_text(''.join(json.dumps(x) + '\n' for x in events))
+            self.assertEqual(event_session(path), session)
+            for invalid in ([], [done], [start], [start, start, done], [start, done, done],
+                            [dict(start, thread_id='review-' + session), done],
+                            [dict(start, thread_id=None), done], [start, {'type': 'turn.failed'}, done],
+                            [start, {'type': 'error'}, done], [start, []], [start, {'type': 1}]):
+                path.write_text(''.join(json.dumps(x) + '\n' for x in invalid))
+                with self.subTest(events=invalid), self.assertRaises(ValueError): event_session(path)
+            path.write_text(json.dumps(start) + '\nnot json\n')
+            with self.assertRaises(ValueError): event_session(path)
+        with patch.dict(os.environ, {'CODEX_THREAD_ID': session}):
+            self.assertNotIn('CODEX_THREAD_ID', worker_environment())
+
+    def test_manual_entry_binds_current_origin_and_preserves_originals(self):
+        session = report()['session']
+        with tempfile.TemporaryDirectory() as directory:
+            source, target = Path(directory) / 'input.json', Path(directory) / 'bound.json'
+            value = report(); value.pop('session')
+            source.write_text(json.dumps(value))
+            original = source.read_bytes()
+            args = ['agent_worker.py', '--report', str(source), '--output', str(target)]
+            with patch.object(sys, 'argv', args), patch.dict(os.environ, {'CODEX_THREAD_ID': session}):
+                bind_manual_report()
+                self.assertEqual(json.loads(target.read_text())['session'], session)
+                self.assertEqual(target.stat().st_mode & 0o777, 0o600)
+                with self.assertRaises(FileExistsError): bind_manual_report()
+            self.assertEqual(source.read_bytes(), original)
+            for claimed in ('review-' + session, 'public reviewer', '00000000-0000-4000-8000-000000000001'):
+                with self.subTest(claimed=claimed), self.assertRaisesRegex(ValueError, 'differs'):
+                    bind_report_session(dict(value, session=claimed), session)
+            for missing in (None, '', 'role', session.replace('-', '')):
+                with self.subTest(missing=missing), self.assertRaises(ValueError): bind_report_session(value, missing)
+
     def test_context_policy_reaches_both_roles_without_changing_packet_or_report(self):
         packet = {'head': HEAD, 'base': BASE, 'issue': {'body': '人間向け受入'},
                   'findings': ['対象だけ修正'], 'scope': ['docs/context.md']}
@@ -367,7 +409,12 @@ class WorkerTests(unittest.TestCase):
                 root = Path(directory)
                 process = Mock(pid=123, returncode=0)
                 def start(command, **kwargs):
-                    Path(command[command.index('-o') + 1]).write_text(json.dumps(report()))
+                    reply = report(); reply.pop('session')
+                    Path(command[command.index('-o') + 1]).write_text(json.dumps(reply))
+                    kwargs['stdout'].write(json.dumps({'type': 'thread.started', 'thread_id': report()['session']}) + '\n')
+                    kwargs['stdout'].write(json.dumps({'type': 'turn.completed'}) + '\n')
+                    kwargs['stdout'].flush()
+                    self.assertIn('--json', command)
                     self.assertEqual(command[command.index('--sandbox') + 1],
                                      'read-only' if role == 'review' else 'workspace-write')
                     return process
@@ -759,7 +806,7 @@ class LoopTests(unittest.TestCase):
         self.loop.cleanup.assert_not_called()
         self.assertEqual(self.gh.development_links, [])
         self.gh.issues[35]['labels'] = ['type:maintenance', 'priority:P2', 'status:done']
-        self.assertEqual(self.loop.tick(36)['phase'], 'cleanup')
+        self.assertEqual(self.loop.tick(36)['phase'], 'blocked')
         self.loop.cleanup.assert_not_called()
         self.assertEqual(self.gh.development_links, [])
 
@@ -919,11 +966,17 @@ class LoopTests(unittest.TestCase):
         self.assertEqual(self.gh.issues[35]['state'], 'open')
         self.assertEqual(self.gh.issues[1]['body'], '- [ ] #35 task')
 
-    def test_cleanup_failure_is_retried_without_merge_or_review(self):
+    def test_cleanup_failure_requires_resume_without_second_merge_or_review(self):
         self.loop.tick(36)
         self.loop.cleanup.side_effect = [ValueError('source has new work'), None]
         self.loop.tick(36)
         self.assertEqual(self.gh.merges, 1)
+        self.assertEqual(self.loop.tick(36)['phase'], 'blocked')
+        self.assertEqual(self.loop.cleanup.call_count, 1)
+        # Simulate explicit owner resume after checking the retained source work.
+        _, state, sid, _ = self.loop.load(36)
+        state.update(paused=False, phase='cleanup')
+        self.loop.save(self.gh.pull, state, sid)
         self.assertEqual(self.loop.tick(36)['phase'], 'done')
         self.assertEqual(self.gh.merges, 1)
         self.assertEqual(self.worker.call_count, 1)
