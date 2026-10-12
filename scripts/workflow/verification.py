@@ -19,6 +19,8 @@ INITIAL_STAGE = 'initial-agent'
 INITIAL_PLAN = 'docs/verification/amendments/initial-agent.json'
 INSTALLATION_PREVIOUS_PLAN_SHA256 = '13bd1e294519915d8c8a66be2770811a4d6b28465432061e7c2eae91a87fd8a3'
 SETTINGS_PREVIOUS_PLAN_SHA256 = '6d11e3cdee0b6189c743fb1a4c8ee3a4e582d72af7e9643bb001536dd4e0c79f'
+PURPOSE_PREVIOUS_PLAN_SHA256 = '993e76bb7a0bd6f9f864c2974b3ef4d4392665de51a4791c9cc0c094c394b50c'
+CONSUMER_PREVIOUS_PLAN_SHA256 = '3ee1d401997722423b4db5f52c07d8edb4b6e377bc1f6f5456c66fab8460af57'
 CI_PREDECESSOR = '836da534938597bd8674a63adac0925139ba3fc6'
 CI_MERGE = '280c96cb2d93002152e57de7803b1eb03c8bc26b'
 CI_OBSERVED_SOURCE = '707d3b0d26f749ef7537ef83a25a38081af35d62'
@@ -308,6 +310,8 @@ def initial_stage_plan(base, candidate, git):
     if revision is not None:
         validate_responsibility_policy(policy)
     if candidate_plan != policy and not (revision and (
+            'method_revision' in revision and candidate_plan in [p for p in
+                (previous_consumer_plan(policy), previous_method_plan(policy)) if p is not None] or
             'installation_revision' in revision and
             revision.get('plan_extension', {}).get('issue') != 219 and
             candidate_plan == previous_installation_plan(policy) or
@@ -352,8 +356,39 @@ def initial_stage_plan(base, candidate, git):
     return policy
 
 
+def previous_consumer_plan(policy):
+    """Undo only Issue 230's two consumer groups to recover the registered 223 plan."""
+    revision = policy.get('responsibility_revision', {})
+    method = revision.get('method_revision', {})
+    if not isinstance(method, dict) or method.get('issue') != 230:
+        return None
+    fields = {'recipient': {'purpose', 'methods', 'excluded', 'preconditions'},
+              'video': {'methods', 'excluded'}}
+    previous = method.get('previous_methods')
+    if (not isinstance(previous, dict) or set(previous) != set(fields) or
+            any(not isinstance(previous[k], dict) or set(previous[k]) != fields[k] or
+                not all(nonempty(v) for v in previous[k].values()) for k in fields) or
+            not isinstance(method.get('groups'), dict) or
+            any(not isinstance(method['groups'].get(k), dict) for k in fields)):
+        raise ValueError('Consumer revision requires the exact previous recipient/video methods')
+    restored = {k: v for k, v in method.items() if k != 'previous_methods'}
+    restored.update(issue=223, previous_plan_sha256=PURPOSE_PREVIOUS_PLAN_SHA256,
+                    groups={k: dict(g, **previous[k]) if k in previous else g
+                            for k, g in method['groups'].items()})
+    return dict(policy, responsibility_revision=dict(revision, method_revision=restored))
+
+
+def previous_method_plan(policy):
+    policy = previous_consumer_plan(policy) or policy
+    revision = policy.get('responsibility_revision', {})
+    if 'method_revision' not in revision:
+        return None
+    return dict(policy, responsibility_revision={k: v for k, v in revision.items() if k != 'method_revision'})
+
+
 def previous_settings_plan(policy):
     """Undo only Issue 219's addition to reconstruct the registered 138-Case plan."""
+    policy = previous_method_plan(policy) or policy
     revision = policy.get('responsibility_revision', {})
     extension = revision.get('plan_extension', {})
     if extension.get('issue') != 219:
@@ -390,6 +425,34 @@ def validate_responsibility_policy(policy):
     original = {k: v for k, v in policy.items() if k != 'responsibility_revision'}
     if not isinstance(revision, dict):
         raise ValueError('Invalid responsibility revision')
+    if 'method_revision' in revision:
+        consumer_previous = previous_consumer_plan(policy)
+        previous = consumer_previous or previous_method_plan(policy)
+        method = revision['method_revision']
+        expected_hash = CONSUMER_PREVIOUS_PLAN_SHA256 if consumer_previous else PURPOSE_PREVIOUS_PLAN_SHA256
+        if (not isinstance(method, dict) or set(method) != {
+                'issue', 'previous_plan_sha256', 'common_requirements', 'groups', 'overrides'} | (
+                    {'previous_methods'} if consumer_previous else set()) or
+                method['issue'] != (230 if consumer_previous else 223) or
+                method['previous_plan_sha256'] != expected_hash or canonical_hash(previous) != expected_hash):
+            raise ValueError('Purpose method revision must retain the exact prior plan')
+        if (not isinstance(method['groups'], dict) or
+                any(not nonempty(g.get('preconditions')) for g in method['groups'].values()
+                    if isinstance(g, dict))):
+            raise ValueError('Purpose methods need the actual group preconditions')
+        validate_responsibility_policy(previous)
+        # Reuse the existing complete-group and bounded-override validation.
+        effective = dict(previous['responsibility_revision'], **{k: method[k] for k in
+                         ('common_requirements', 'groups', 'overrides')})
+        effective['groups'] = {k: {name: value for name, value in group.items() if name != 'preconditions'}
+                               if isinstance(group, dict) else group for k, group in method['groups'].items()}
+        effective.pop('method_revision', None)
+        effective.pop('installation_revision', None)
+        effective.pop('plan_extension', None)
+        original = {k: v for k, v in previous.items() if k != 'responsibility_revision'}
+        effective['previous_plan_sha256'] = canonical_hash(original)
+        validate_responsibility_policy(dict(previous, responsibility_revision=effective))
+        return
     extension = revision.get('plan_extension')
     if 'plan_extension' in revision:
         if (not isinstance(extension, dict) or set(extension) != {
@@ -466,6 +529,7 @@ def validate_responsibility_policy(policy):
 def responsibility_group(policy, key):
     revision = (policy or {}).get('responsibility_revision')
     if revision and key in policy['cases']:
+        revision = revision.get('method_revision', revision)
         return next(g for g in revision['groups'].values() if key in g['cases'])
     return None
 
@@ -474,6 +538,11 @@ def effective_initial_entry(policy, key):
     entry = dict(policy['cases'][key])
     override = policy.get('responsibility_revision', {}).get('overrides', {}).get(key, {})
     entry.update({k: v for k, v in override.items() if k != 'case'})
+    method = policy.get('responsibility_revision', {}).get('method_revision')
+    if method:
+        entry['agent_requirements'] = [
+            '有効なCase固有expectedの保証を満たす証拠を対応付ける。groupの方法は分担の集合であり、本Caseに無関係な保証/工程を新しい依存にしない。']
+        entry.update({k: v for k, v in method['overrides'].get(key, {}).items() if k != 'case'})
     if entry.get('full_acceptance_actor') is None:
         entry.pop('full_acceptance_actor', None)
     return entry
@@ -487,6 +556,16 @@ def effective_responsibility_case(policy, key, case):
         # An old method amendment cannot erase conditions added by a later Case.
         if canonical_hash(case) == policy['cases'][key]['current_case_sha256']:
             revised.update(revision['overrides'].get(key, {}).get('case', {}))
+            if 'method_revision' in revision:
+                revision = revision['method_revision']
+                revised['preconditions'] = group['preconditions']
+                revised.update(revision['overrides'].get(key, {}).get('case', {}))
+                revised['steps'] = ['目的群（本Case固有expectedに該当する保証を確認）: ' + group['purpose'],
+                    '分担の集合（本Caseの保証に必要な方法だけを適用）: ' + group['methods'],
+                    'Case固有の期待結果を全て照合し、同条件の既存証拠と不足を分けて記録する。']
+        elif 'method_revision' in revision:
+            # A new product contract must not inherit this fixed method replacement.
+            return revised
         revised['steps'] = [*revised['steps'], '有効な実施分担: ' + group['methods']]
         revised['expected'] += ' ' + ' '.join(revision['common_requirements'])
     return revised
@@ -551,7 +630,8 @@ def validate_initial_result(result, key, policy, candidate, artifact, execution,
             raise ValueError('Initial scope requires an actual agent observation: ' + key)
         validate_observation(observed, candidate, artifact)
         validate_responsibility_observation(observed, key, policy)
-        validate_gop_observation(observed, gop)
+        if not policy.get('responsibility_revision', {}).get('method_revision'):
+            validate_gop_observation(observed, gop)
         if execution and observed.get('execution') != execution:
             raise ValueError('Case requires its specified execution method: ' + key)
 
@@ -651,6 +731,8 @@ def validate_fact_assessment(observed, key, policy, candidate, artifact, git, tr
     if canonical_hash(original_policy) not in {
             policy['responsibility_revision']['previous_plan_sha256'], canonical_hash(policy),
             policy['responsibility_revision'].get('installation_revision', {}).get('previous_plan_sha256'),
+            policy['responsibility_revision'].get('method_revision', {}).get('previous_plan_sha256'),
+            PURPOSE_PREVIOUS_PLAN_SHA256 if previous_consumer_plan(policy) else None,
             SETTINGS_PREVIOUS_PLAN_SHA256 if previous_settings_plan(policy) else None}:
         raise ValueError('Retained facts must bind the exact original or trusted current responsibility plan')
     for fact in assessment['facts'].values():
@@ -718,6 +800,8 @@ def validate_candidate_result(result, key, policy, stage, candidate, artifact, e
                     if canonical_hash(source_policy) not in {
                             policy['responsibility_revision']['previous_plan_sha256'],
                             policy['responsibility_revision'].get('installation_revision', {}).get('previous_plan_sha256'),
+                            policy['responsibility_revision'].get('method_revision', {}).get('previous_plan_sha256'),
+                            PURPOSE_PREVIOUS_PLAN_SHA256 if previous_consumer_plan(policy) else None,
                             SETTINGS_PREVIOUS_PLAN_SHA256 if previous_settings_plan(policy) else None}:
                         raise ValueError('Reassessment must retain the exact original plan and observation')
                 elif (source_policy.get('responsibility_revision') != (policy or {}).get('responsibility_revision') or
@@ -740,7 +824,8 @@ def validate_candidate_result(result, key, policy, stage, candidate, artifact, e
     if stage:
         validate_initial_result(result, key, source_policy, source, artifact, execution, gop)
     else:
-        validate_full_result(result, source, artifact, execution, gop,
+        method = (source_policy or {}).get('responsibility_revision', {}).get('method_revision')
+        validate_full_result(result, source, artifact, execution, None if method else gop,
                              effective_initial_entry(source_policy, key) if source_policy and key in source_policy['cases'] else None)
         validate_responsibility_observation(result, key, source_policy)
     if not reassessed and source != candidate:
@@ -798,22 +883,164 @@ def scoped_candidate(base, candidate, issue, git=git_read):
     return change
 
 
+REPAIR_MARKER = '<!-- acceptance-repair:v1 -->'
+
+
+def repair_record(issue, api):
+    """Remote scope is reviewed with the Issue; the PR cannot shrink its failure set."""
+    declaration = re.findall(r'^Acceptance repair: (.+)$', issue.get('body') or '', re.M)
+    bug = any(label.get('name') == 'type:bug' for label in issue.get('labels', []))
+    if not declaration and not bug:
+        return None
+    if len(declaration) != 1:
+        raise ValueError('Bug Issue requires an explicit Acceptance repair declaration')
+    if declaration == ['none']:
+        return None
+    if not re.fullmatch(r'[1-9][0-9]*', declaration[0]):
+        raise ValueError('Acceptance repair must be none or its preserved Issue comment ID')
+    comment = api('issues/comments/' + declaration[0])
+    if comment.get('issue_url') != issue.get('url') or not comment.get('body', '').startswith(REPAIR_MARKER + '\n'):
+        raise ValueError('Repair failure record must belong to the correction Issue')
+    created = comment.get('created_at')
+    if (not nonempty(created) or created != comment.get('updated_at') or
+            datetime.fromisoformat(created.replace('Z', '+00:00')).tzinfo is None):
+        raise ValueError('Original failure record must be an identified unedited comment; preserve history and use a new ID')
+    def unique(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError('Duplicate repair record key')
+            result[key] = value
+        return result
+    record = json.loads(comment['body'][len(REPAIR_MARKER):], object_pairs_hook=unique)
+    if (not isinstance(record, dict) or set(record) != {'schema', 'fix_issue', 'failures'} or
+            type(record['schema']) is not int or record['schema'] != 1 or
+            type(record['fix_issue']) is not int or record['fix_issue'] != issue.get('number') or
+            not isinstance(record['failures'], dict) or not record['failures']):
+        raise ValueError('Invalid original acceptance failure record')
+    return record
+
+
+def verify_repair(pr, issue, data, path, api, git):
+    """Structure/provenance only. An independent reviewer must assess the actual evidence."""
+    record = repair_record(issue, api)
+    tracked, seen = set(), set()
+    base, head = pr['base']['sha'], pr['head']['sha']
+    # Follow every parent and changed blob, including failures later deleted or reverted.
+    history = git('log', '--full-history', '-m', '--format=%H', '--name-only',
+                  '--diff-filter=AMT', '--no-renames', base, '--', 'docs/verification/changes/')
+    for line in history.splitlines():
+        if SHA.fullmatch(line):
+            source = line
+            continue
+        if not line:
+            continue
+        match = re.fullmatch(r'docs/verification/changes/issue-([1-9][0-9]*)\.json', line)
+        if not match:
+            raise ValueError('Unknown acceptance source in trusted history')
+        entry = git('ls-tree', source, '--', line).split()
+        if len(entry) != 4 or entry[0] != '100644' or entry[1] != 'blob' or entry[3] != line:
+            raise ValueError('Acceptance history requires regular JSON source files')
+        identity = (line, entry[2])
+        if identity in seen:
+            continue
+        seen.add(identity)
+        original = regular_json(source, line, git)
+        for case in original['cases']:
+            if case.get('fix_issue') == data['issue']:
+                tracked.update((f'{match[1]}:{case["id"]}', actor, canonical_hash(case))
+                               for actor in ('gpt', 'human')
+                               if case[actor]['status'] == 'fail')
+    repair = data.get('repair')
+    if record is None:
+        if tracked or repair is not None:
+            raise ValueError('Acceptance NG correction requires its preserved failure record')
+        return {}
+    if (not isinstance(repair, dict) or set(repair) != {'candidate', 'artifacts', 'failure_record_sha256',
+                                                      'writer_session', 'results'} or
+            repair['failure_record_sha256'] != canonical_hash(record) or
+            not nonempty(repair['writer_session']) or not isinstance(repair['artifacts'], dict) or
+            not isinstance(repair['results'], dict) or set(repair['results']) != set(record['failures'])):
+        raise ValueError('Repair must cover exactly every original failure on a fixed candidate')
+    candidate = repair['candidate']
+    if not SHA.fullmatch(candidate or '') or candidate == head:
+        raise ValueError('Freeze the tested repair candidate before committing evidence metadata')
+    git('merge-base', '--is-ancestor', base, candidate)
+    git('merge-base', '--is-ancestor', candidate, head)
+    correction = git('diff', '--no-renames', '--name-only', base, candidate).splitlines()
+    if candidate == base or not any(not p.startswith('docs/verification/changes/') and
+                                    p != PROMOTION for p in correction):
+        raise ValueError('Repair candidate requires a substantive correction beyond acceptance metadata')
+    scoped_history(candidate, head, {path: '100644'}, git)
+    trusted = api('git/ref/heads/main').get('object', {}).get('sha')
+    if not SHA.fullmatch(trusted or ''):
+        raise ValueError('Repair requires an identified current trusted main contract')
+    git('fetch', '--no-tags', 'origin', trusted)
+    policy = initial_stage_plan(trusted, candidate, git) if git('ls-tree', trusted, '--', INITIAL_PLAN) else None
+    contract = canonical_hash(policy['responsibility_revision']) if policy else canonical_hash(None)
+    cases, observers = set(), {repair['writer_session']}
+    for identifier, failure in record['failures'].items():
+        if (not re.fullmatch(r'[A-Z][A-Z0-9-]+', identifier) or not isinstance(failure, dict) or
+                set(failure) != {'case', 'source_candidate', 'source_case_sha256', 'original_result', 'guarantees'} or
+                not re.fullmatch(r'[1-9][0-9]*:[A-Z][A-Z0-9-]+', failure['case']) or
+                not isinstance(failure['guarantees'], dict) or not failure['guarantees'] or
+                not all(nonempty(k) and nonempty(v) for k, v in failure['guarantees'].items())):
+            raise ValueError('Original failed guarantees and fixed Case provenance are required')
+        source = failure['source_candidate']
+        old = failure['original_result']
+        if not isinstance(old, dict) or old.get('status') != 'fail':
+            raise ValueError('Preserve the original failed observation')
+        validate_observation(dict(old, status='pass'), source)
+        git('merge-base', '--is-ancestor', source, base)
+        number, case_id = failure['case'].split(':')
+        original = regular_json(source, f'docs/verification/changes/issue-{number}.json', git)
+        validate_change(original, int(number), True)
+        matches = [case for case in original['cases'] if case['id'] == case_id]
+        if len(matches) != 1 or canonical_hash(matches[0]) != failure['source_case_sha256']:
+            raise ValueError('Original repair Case hash mismatch')
+        if matches[0].get('fix_issue') == data['issue'] and matches[0][old['actor']]['status'] == 'fail':
+            cases.add((failure['case'], old['actor'], failure['source_case_sha256']))
+        result = repair['results'][identifier]
+        if (not isinstance(result, dict) or set(result) != {'observation', 'coverage', 'method', 'contract_revision'} or
+                result['contract_revision'] != contract or not nonempty(result['method']) or
+                not isinstance(result['coverage'], dict) or set(result['coverage']) != set(failure['guarantees']) or
+                not all(nonempty(v) for v in result['coverage'].values())):
+            raise ValueError('Repair requires complete failed-guarantee coverage and trusted contract/method')
+        artifact = repair['artifacts'].get(matches[0].get('artifact', 'app'))
+        if not HASH.fullmatch(artifact or '') or artifact == old['artifact_sha256']:
+            raise ValueError('Repair requires the corrected fixed artifact, not the failed build')
+        observed = result['observation']
+        validate_observation(observed, candidate, artifact)
+        when = datetime.fromisoformat(observed['at'].replace('Z', '+00:00'))
+        if any(when < datetime.fromisoformat(t.replace('Z', '+00:00')) for t in
+               (old['at'], git('show', '-s', '--format=%cI', candidate))):
+            raise ValueError('Repair observation predates the failure or fixed candidate')
+        observers.add(observed['observer'])
+    if not tracked <= cases:
+        raise ValueError('Repair omits a trusted tracked original failure Case')
+    if api('git/ref/heads/main').get('object', {}).get('sha') != trusted:
+        raise ValueError('Trusted main contract changed during repair validation; rerun')
+    return {'repair_revision': canonical_hash([record, repair]), 'repair_contract_base': trusted, 'repair_record': record,
+            'repair': repair, 'repair_observers': sorted(observers)}
+
+
 def verify_pr(pr, api, git=git_read):
     """api(path) uses the same repo; git sees fetched PR/candidate objects only as data."""
     issue, path, mode = metadata(pr)
     head, base = pr['head']['sha'], pr['base']['sha']
-    data = json.loads(git('show', f'{head}:{path}'))
+    data = regular_json(head, path, git)
     gui = field(pr['body'], 'GUI') == 'required'
     validate_change(data, issue, gui)
     files = git('diff', '--no-renames', '--name-only', base, head).splitlines()
     if mode == 'develop':
-        # Outcome is deliberately unrestricted, but every required Case has steps and tracking.
+        # Ordinary pending/blocked/fail Cases remain tracked; original-NG corrections must pass.
         for case in data['cases']:
             if any(case[actor]['status'] == 'fail' for actor in ('gpt', 'human')):
                 fix = api(f'issues/{case["fix_issue"]}')
                 if fix.get('state') != 'open' or 'pull_request' in fix:
                     raise ValueError('Product failure needs an open dedicated fix Issue')
-        return {'mode': mode, 'gui_complete': not gui, 'cases': len(data['cases'])}
+        repair = verify_repair(pr, api(f'issues/{issue}'), data, path, api, git)
+        return {'mode': mode, 'gui_complete': not gui, 'cases': len(data['cases']), **repair}
     if mode == 'tooling':
         if gui or not files or any(not tooling_path(f) for f in files):
             raise ValueError('Direct main tooling route is restricted to documented non-product paths')
@@ -1038,6 +1265,8 @@ def render_queue(paths, promotion=None, git=git_read):
                     raise ValueError('Current Case differs from its historical GOP contract: ' + key)
             rows = [(data, gop_cases[f'{data["issue"]}:{case["id"]}']['case'])
                     if f'{data["issue"]}:{case["id"]}' in gop_cases else (data, case) for data, case in rows]
+    if (initial_policy or {}).get('responsibility_revision', {}).get('method_revision'):
+        rows = [(data, contracts.get(f'{data["issue"]}:{case["id"]}', case)) for data, case in rows]
     rows = [(data, effective_responsibility_case(initial_policy, f'{data["issue"]}:{case["id"]}', case))
             for data, case in rows]
     lines = ['# 今回の動作確認一覧', '',
@@ -1122,7 +1351,8 @@ def render_queue(paths, promotion=None, git=git_read):
             group = responsibility_group(initial_policy, key)
             if group:
                 evidence = responsibility_observed.get('responsibility_evidence')
-                lines += ['責任改訂 #182: ' + group['disposition'] + ' / ' + group['purpose'],
+                method = initial_policy['responsibility_revision'].get('method_revision')
+                lines += [(f'目的による方法改訂 #{method["issue"]}: ' if method else '責任改訂 #182: ') + group['disposition'] + ' / ' + group['purpose'],
                           '改訂revision: ' + canonical_hash(initial_policy['responsibility_revision']),
                           '除外/置換する義務（PASSではない）: ' + group['excluded'],
                           '有効な実施分担: ' + group['methods'],
@@ -1140,7 +1370,7 @@ def render_queue(paths, promotion=None, git=git_read):
                           '原前提: ' + original['preconditions']]
                 lines += [f'原手順 {n}: {step}' for n, step in enumerate(original['steps'], 1)]
                 lines += ['原期待結果: ' + original['expected'], '']
-        if amended:
+        if amended and not (initial_policy or {}).get('responsibility_revision', {}).get('method_revision'):
             proof = result.get('gop_evidence')
             if not isinstance(proof, dict):
                 proof = {}

@@ -4,6 +4,8 @@
 
 ## 初回導入
 
+以下の Issue/Milestone #1 は完了済みの初回導入に限る履歴手順です。継続作業では [project facts](../project.md) と対応 Issue の実計画を読み、現行の Project #5 / Milestone #3 を照合します。初回の #1 を新規作業へ再指定したり、導入済み環境を再初期化したりしません。
+
 1. 導入Issue #1とclaim、専用branch/worktree、Project #5、Milestone #1を確認する。
 2. `codex/1-adopt-harness`からmain向けPRを作成し、管理テスト・CLI tests・別セッション固定HEAD/baseレビューを行う。
 3. validator導入前のmain `e6fb021b144d4f0f6a1f7916e92449610b3ff80c`・target main・このbranchだけAcceptance gateの初回bootstrapとする。独立レビューやtestsを免除せず、GUI passを表さない。初回だけ通常tooling allowlist外の`.gitignore`（private状態のignore追記）と`prompts/`（共通依頼文）を含む。既存CLI source・tests・設定・設計書の差分が空であること、追加対象、全testsを独立レビューで確認する。通常gateのallowlistは拡大しない。

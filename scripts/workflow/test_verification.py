@@ -51,6 +51,8 @@ class AcceptanceTests(unittest.TestCase):
         self.product_diff = []
 
     def git(self, *args):
+        if args[0] == 'log':
+            return ''  # This fixture has no historical linked repair failures.
         if args[0] == 'ls-tree':
             return f'100644 blob {"0" * 40}\t{args[-1]}' if f'{args[1]}:{args[-1]}' in self.documents else ''
         if args[:3] == ('show', '-s', '--format=%cI'):
@@ -495,7 +497,8 @@ class AcceptanceCITests(unittest.TestCase):
             event = Path(tmp) / 'event.json'
             pr = pr_data(); event.write_text(json.dumps({'pull_request': pr}))
             responses = [pr, {'object': {'sha': NEW}}, pr]
-            with patch.dict(os.environ, GITHUB_EVENT_PATH=str(event), GITHUB_REPOSITORY=al.REPO, GITHUB_TOKEN='test'), \
+            with patch.dict(os.environ, GITHUB_EVENT_PATH=str(event), GITHUB_EVENT_NAME='pull_request',
+                            GITHUB_REPOSITORY=al.REPO, GITHUB_TOKEN='test'), \
                     patch.object(ci, 'urlopen', side_effect=lambda *a, **kw: io.BytesIO(json.dumps(responses.pop(0)).encode())), \
                     patch.object(ci.subprocess, 'check_output', return_value=BASE), \
                     patch.object(ci.subprocess, 'run') as execute, patch.object(ci, 'verify_pr') as verify:
@@ -510,7 +513,8 @@ class AcceptanceCITests(unittest.TestCase):
             event = Path(tmp) / 'event.json'
             pr = pr_data(); event.write_text(json.dumps({'pull_request': pr}))
             responses = [pr, {'object': {'sha': NEW}}, pr, {'object': {'sha': NEW}}]
-            with patch.dict(os.environ, GITHUB_EVENT_PATH=str(event), GITHUB_REPOSITORY=al.REPO, GITHUB_TOKEN='test'), \
+            with patch.dict(os.environ, GITHUB_EVENT_PATH=str(event), GITHUB_EVENT_NAME='pull_request',
+                            GITHUB_REPOSITORY=al.REPO, GITHUB_TOKEN='test'), \
                     patch.object(ci, 'urlopen', side_effect=lambda *a, **kw: io.BytesIO(json.dumps(responses.pop(0)).encode())), \
                     patch.object(ci.subprocess, 'check_output', return_value=NEW), \
                     patch.object(ci.subprocess, 'run'), patch.object(ci, 'verify_pr', return_value={'mode': 'tooling'}) as verify, \
