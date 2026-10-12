@@ -4,6 +4,7 @@ import hashlib
 import json
 import re
 from git_guard import BRANCH
+from issue_schema import labels
 
 CONTEXT = 'Agent review'
 SHA = re.compile(r'[0-9a-f]{40}')
@@ -29,11 +30,13 @@ def eligible(pr, owner, repo):
 
 def binding(pr, issue):
     return {'head': pr['head']['sha'], 'base': pr['base']['sha'], 'target': pr['base']['ref'],
+            'title_hash': hashlib.sha256((pr.get('title') or '').encode()).hexdigest(),
             'body_hash': hashlib.sha256((pr.get('body') or '').encode()).hexdigest(),
-            'issue_hash': hashlib.sha256((issue.get('body') or '').encode()).hexdigest()}
+            'issue_hash': hashlib.sha256((issue.get('body') or '').encode()).hexdigest(),
+            'issue_bug': 'type:bug' in labels(issue)}
 
 
-def validate_review(report, expected):
+def validate_review(report, expected, acceptance=None):
     for key in ('head', 'base'):
         if report.get(key) != expected[key]:
             raise ValueError('Stale reviewer ' + key)
@@ -48,6 +51,11 @@ def validate_review(report, expected):
         raise ValueError('Review session/evidence missing')
     if report['verdict'] == 'approved' and (report['findings'] or not report['scope_complete']):
         raise ValueError('Approval conflicts with incomplete scope or unresolved findings')
+    if report['verdict'] == 'approved' and (acceptance or {}).get('repair_revision'):
+        if (report.get('repair_revision') != acceptance['repair_revision'] or
+                not isinstance(report.get('repair_assessment'), str) or not report['repair_assessment'].strip() or
+                report['session'] in acceptance['repair_observers']):
+            raise ValueError('Independent original-NG evidence assessment is missing, stale or self-reviewed')
     if report['verdict'] == 'changes_requested' and not report['findings']:
         raise ValueError('Changes requested without concrete findings')
 
@@ -81,6 +89,8 @@ def next_action(state, bound, ci, gui, acceptance=None):
         return 'acceptance-wait'
     if acceptance is None and gui and not gui_pass(state.get('gui'), bound):
         return 'gui-queued'
+    if acceptance and acceptance.get('repair_revision'):
+        validate_review(report, bound, acceptance)
     if ci == 'failure':
         return 'ci-failed'
     if ci != 'success':

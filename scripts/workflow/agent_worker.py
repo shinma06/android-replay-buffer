@@ -16,6 +16,7 @@ REPORT_SCHEMA = {
         'gui_required': {'type': 'boolean'},
         'findings': {'type': 'array', 'items': {'type': 'string'}},
         'evidence': {'type': 'string'},
+        'repair_revision': {'type': 'string'}, 'repair_assessment': {'type': 'string'},
     },
     'required': ['verdict', 'head', 'base', 'scope_complete', 'issue_complete', 'gui_required', 'findings', 'evidence'],
 }
@@ -48,7 +49,15 @@ def run_worker(role, checkout, packet, output_dir, timeout=600, on_start=lambda 
         'Return changes_requested for concrete defects, approved only if scoped acceptance is met; '
         'do not invent findings. GUI observation cannot be replaced by unit tests. '
         'For develop, scope_complete concerns implementation/tests and complete acceptance tracking. '
-        'Pending, blocked or failed GUI outcomes alone do not block code approval; preserve them in Cases. '
+        'Ordinary pending, blocked or failed GUI outcomes alone do not block code approval; preserve them in Cases. '
+        'Verify original-NG classification against the Issue and every feedback record even when the '
+        'declaration is none or source Cases are pending; missing corrective tracking blocks approval. '
+        'For acceptance-NG corrective PRs, inspect acceptance.repair_record and repair. Approve only after '
+        'checking the preserved original failure, fixed artifact, every failed guarantee, actual execution, '
+        'trusted effective contract, faithful method and its limits. Related unit PASS alone cannot erase '
+        'an observed native failure. Return repair_revision equal to acceptance.repair_revision and '
+        'repair_assessment explaining the substantive evidence, coverage and equivalence limits. Missing, '
+        'unknown, failed or partial repair evidence blocks integration. These fields are not required for ordinary work. '
         'Concrete code defects and failing tests still require changes. For develop feature/bug/maintenance, issue_complete means all implementation acceptance is met or unfinished implementation has been preserved in explicitly linked separate Issues; GUI/main verification may remain in Cases for QA transfer. Never mark research/tracking complete merely because a child PR merged. For main, issue_complete requires all Issue acceptance. '
         'Inspect every supplied feedback record (including bots, replies and resolved/outdated findings). '
         'In evidence, map each actionable ID/URL and original commit to a fixed-head fix with checks, '

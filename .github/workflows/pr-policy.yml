@@ -69,7 +69,16 @@ jobs:
           BRANCH = re.compile(r'(agent|codex|claude|cursor)/([1-9][0-9]*)-[a-z0-9][a-z0-9-]*')
 
 
-          def validate(pr):
+          def validate_title(pr, issue):
+              title = pr.get('title')
+              match = re.fullmatch(r'(feat|fix|docs|refactor|perf|test|build|ci|chore|revert)!?: (\S(?:[^\r\n]*\S)?) \(#([1-9][0-9]*)\)',
+                                   title) if isinstance(title, str) else None
+              if (not match or match[3] != str(issue) or re.search(r'#[0-9]+|[<>]', match[2])
+                      or not re.search(r'[ぁ-んァ-ヶ一-龯]', match[2])):
+                  raise ValueError('PR title must be type: Japanese summary (#N), with only the owning Issue number; meaning needs review')
+
+
+          def validate(pr, *, check_title=True):
               branch = BRANCH.fullmatch(pr['head']['ref'])
               if not branch or pr['base']['ref'] not in ('main', 'develop'):
                   raise ValueError('Use an Issue branch targeting main or develop')
@@ -77,6 +86,8 @@ jobs:
               issues = re.findall(r'^Issue: #([1-9][0-9]*)\s*$', body, re.MULTILINE)
               if issues != [branch.group(2)]:
                   raise ValueError('Exactly one Issue: #N must match the branch Issue number')
+              if check_title:
+                  validate_title(pr, issues[0])
               gui = re.findall(r'^GUI: (required|not-required)\s*$', body, re.MULTILINE)
               if len(gui) != 1:
                   raise ValueError('Exactly one GUI: required or GUI: not-required is needed')
@@ -143,7 +154,7 @@ jobs:
                       return 0
                   if error is not None:
                       raise error
-                  if any(latest.get(key) != pr.get(key) for key in ('head', 'base', 'body')):
+                  if any(latest.get(key) != pr.get(key) for key in ('head', 'base', 'body', 'title')):
                       raise ValueError('Live PR metadata changed during validation; rerun the check')
                   print(f'PR policy passed for Issue #{issue}. Human/agent review still verifies claims and evidence.')
                   return 0
