@@ -404,9 +404,14 @@ class PrivatePathTests(unittest.TestCase):
     prepare = ConsumerTests.prepare
 
     def test_bundle_paths_are_private_through_review_save_and_cached_resume(self):
+        self.check_paths('/mnt/c3/private-receipt.json', '/opt/c3/private-mapping.json')
+
+    def test_uuid_paths_redact_before_identity_through_save_and_cache(self):
+        session = '00000000-0000-4000-8000-000000000099'
+        self.check_paths(f'/mnt/receipts/{session}/event.json', f'/opt/receipts/{session}/mapping.json')
+
+    def check_paths(self, virtual, support):
         self.prepare()
-        virtual = '/mnt/c3/private-receipt.json'
-        support = '/opt/c3/private-mapping.json'
         first = self.fixture.receipt.read_bytes(); second = b'{"support":true}'
         self.fixture.bundle['receipts'][0]['path'] = virtual
         self.fixture.bundle['receipts'].append({'path': support, 'sha256': hashlib.sha256(second).hexdigest()})
@@ -419,8 +424,9 @@ class PrivatePathTests(unittest.TestCase):
         def read(path):
             return originals[str(path)] if str(path) in originals else original_read(path)
         urls = 'https://public.example/tmp/guide https://public.example/opt/docs'
+        session = '00000000-0000-4000-8000-000000000098'
         self.worker.side_effect = lambda *args, **kw: dict(tal.report('changes_requested'),
-                evidence=f'prefix:{virtual}:suffix file://{support} {urls}',
+                evidence=f'prefix:{virtual}:suffix file://{support} {urls} standalone:{session}',
                 findings=[f'Check [{virtual}]({support})'], repair_revision='e' * 64,
                 repair_evidence_sha256=args[2]['private_repair_evidence']['bundle_sha256'])
         def is_file(path):
@@ -434,6 +440,9 @@ class PrivatePathTests(unittest.TestCase):
         public = json.dumps(self.gh.messages)
         self.assertNotIn(virtual, public); self.assertNotIn(support, public)
         self.assertNotIn('private_paths', public)
+        self.assertNotIn('/mnt/receipts/', public); self.assertNotIn('/opt/receipts/', public)
+        self.assertNotIn(session, public)
+        self.assertIn('standalone:' + session_fingerprint(session), public)
         self.assertIn(urls, public)
         self.assertIn('[private path]', public)
 

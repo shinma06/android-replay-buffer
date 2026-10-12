@@ -349,10 +349,10 @@ class Loop:
         if isinstance(value, list):
             return [self.public_state(v, private_paths) for v in value]
         if isinstance(value, str):
-            value = re.sub(r'(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}',
-                           lambda match: session_fingerprint(match[0].lower()), value)
             for path in sorted(private_paths, key=len, reverse=True):
                 value = value.replace(path, '[private path]')
+            value = re.sub(r'(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}',
+                           lambda match: session_fingerprint(match[0].lower()), value)
             for private in (str(self.storage), str(ROOT), str(Path.home()), HOST):
                 value = value.replace(private, '[local]')
             parts = re.split(r'(https?://[^\s<>\"`]+)', value)
