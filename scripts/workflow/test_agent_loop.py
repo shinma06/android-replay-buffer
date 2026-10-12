@@ -21,7 +21,7 @@ NEW = 'c' * 40
 
 
 def pr_data():
-    return {'number': 36, 'title': 'Test change', 'commits': 1, 'user': {'login': al.OWNER}, 'state': 'open', 'merged': False, 'draft': False,
+    return {'number': 36, 'title': 'chore: 運用規約を整える (#35)', 'commits': 1, 'user': {'login': al.OWNER}, 'state': 'open', 'merged': False, 'draft': False,
             'body': 'Integration: tooling\nVerification: docs/verification/changes/issue-35.json\nIssue: #35\nGUI: not-required\nGUI reason: documentation only',
             'head': {'sha': HEAD, 'ref': 'codex/35-test', 'repo': {'full_name': al.REPO}},
             'base': {'sha': BASE, 'ref': 'main', 'repo': {'full_name': al.REPO}},
@@ -51,10 +51,11 @@ class PolicyTests(unittest.TestCase):
         bound = binding(p, issue)
         state = {'binding': bound, 'review': report()}
         self.assertEqual(next_action(state, bound, 'success', False), 'merge')
-        for change in ('head', 'base', 'body', 'issue'):
+        for change in ('head', 'base', 'body', 'title', 'issue'):
             q = copy.deepcopy(p); other = copy.deepcopy(issue)
             if change in ('head', 'base'): q[change]['sha'] = NEW
             elif change == 'body': q['body'] += '\nchanged scope'
+            elif change == 'title': q['title'] = 'fix: ログ欠落を直す (#35)'
             else: other['body'] += '\nnew acceptance'
             self.assertEqual(next_action(state, binding(q, other), 'success', False), 'review')
 
@@ -208,14 +209,14 @@ class DevelopmentMergeTests(unittest.TestCase):
         gh = self.adapter(development_snapshot(), [{'commit': {'message': 'Fixes #35'}}])
         gh.merge(pr)
         payload = gh.api.call_args.args[2]
-        self.assertEqual(payload['commit_title'], 'Test change (#36)')
+        self.assertEqual(payload['commit_title'], 'chore: 運用規約を整える (#35) (#36)')
         self.assertEqual(payload['commit_message'], pr['body'])
         gh.pages.assert_not_called()
-        for field, message in (('title', 'CLOSES: #35'), ('body', 'Resolves other/repo#35')):
+        for field, message in (('title', 'chore: CLOSES: #35 を修正する (#35)'), ('body', 'Resolves other/repo#35')):
             with self.subTest(field=field):
                 gh = self.adapter(development_snapshot())
                 pr = pr_data(); pr[field] = message if field == 'title' else pr[field] + '\n' + message
-                with self.assertRaisesRegex(ValueError, 'commit'):
+                with self.assertRaises(ValueError):
                     gh.merge(pr)
                 self.assertFalse(any(c.args[1:2] == ('PUT',) for c in gh.api.call_args_list))
 
@@ -237,10 +238,10 @@ class DevelopmentMergeTests(unittest.TestCase):
         self.assertTrue(gh.merge(pr)['merged'])
 
     def test_nondefault_keyword_and_closed_issue_keyword_keep_legitimate_merge(self):
-        pr = pr_data(); pr['title'] = 'Fixes #35'
+        pr = pr_data()
         for snapshot, state in ((development_snapshot(default='develop'), 'open'),
                                 (development_snapshot(), 'closed')):
-            pr['title'] = 'Fixes #35' if state == 'open' else 'Fixes #99'
+            pr['body'] = pr_data()['body'] + '\n' + ('Fixes #35' if state == 'open' else 'Fixes #99')
             gh = self.adapter(snapshot, keyword_state=state)
             self.assertTrue(gh.merge(pr)['merged'])
         gh = self.adapter(development_snapshot(), keyword_state='unknown')
@@ -626,6 +627,15 @@ class LoopTests(unittest.TestCase):
         self.assertNotIn('review', state)
         self.assertEqual(self.gh.merges, 0)
 
+    def test_title_moves_before_merge_clears_old_approval(self):
+        self.loop.tick(36)
+        original = self.gh.pr
+        moved = copy.deepcopy(self.gh.pull); moved['title'] = 'fix: ログ欠落を直す (#35)'
+        self.gh.pr = Mock(side_effect=[original(36), original(36), moved])
+        self.assertEqual(self.loop.tick(36)['phase'], 'changed-before-merge')
+        self.assertNotIn('review', self.loop.load(36)[1])
+        self.assertEqual(self.gh.merges, 0)
+
     def test_merge_conflict_preserves_work_and_clears_acceptance(self):
         self.loop.tick(36)
         al.subprocess.run.return_value.returncode = 1
@@ -714,6 +724,31 @@ class LoopTests(unittest.TestCase):
         self.loop.cleanup.assert_not_called()
         self.assertEqual(self.gh.development_links, [])
 
+    def test_owned_completed_main_closure_recovers_only_with_done_label(self):
+        self.loop.tick(36)
+        self.gh.pull.update(merged=True, state='closed')
+        h, state, sid, _ = self.loop.load(36)
+        state['issue_closure'] = {k: state['binding'][k] for k in ('head', 'base', 'issue_hash')}
+        self.gh.issues[35]['state'] = 'closed'
+        self.gh.issues[35]['labels'] = ['type:maintenance', 'priority:P2', 'status:done']
+        original = self.gh.issue
+        reads = 0
+        def issue(number):
+            nonlocal reads
+            if number == 35:
+                reads += 1
+                if reads == 2:
+                    self.gh.issues[35]['labels'] = ['type:maintenance', 'priority:P2', 'status:review']
+            return copy.deepcopy(original(number))
+        with patch.object(self.gh, 'issue', side_effect=issue):
+            with self.assertRaisesRegex(ValueError, 'closed during handoff'):
+                self.loop.finish(self.gh.pull, h, state, sid)
+        self.loop.cleanup.assert_not_called()
+        self.gh.issues[35]['labels'] = ['type:maintenance', 'priority:P2', 'status:done']
+        self.assertEqual(self.loop.finish(self.gh.pull, h, state, sid)['phase'], 'done')
+        self.assertEqual(self.gh.development_links, [(35, 36)])
+        self.loop.cleanup.assert_called_once()
+
     def test_main_links_only_after_owned_completion_and_closure(self):
         for close, complete in ((False, True), (True, False), (True, True)):
             with self.subTest(close=close, complete=complete):
@@ -728,6 +763,47 @@ class LoopTests(unittest.TestCase):
                 self.assertEqual(self.loop.tick(36)['phase'], 'reviewed')
                 self.assertEqual(self.loop.tick(36)['phase'], 'done')
                 self.assertEqual(self.gh.development_links, [(35, 36)] if close and complete else [])
+
+    def test_late_external_main_closure_preserves_incomplete_scope_resources(self):
+        for close, complete in ((False, True), (True, False), (True, True)):
+            with self.subTest(close=close, complete=complete):
+                self.gh.issues[35] = copy.deepcopy(FakeGitHub().issues[35])
+                h, _, _, _ = self.loop.load(36)
+                h['close_issue'] = close
+                self.gh.pull = pr_data()
+                self.gh.messages.clear()
+                self.gh.comment(36, al.pack(al.HANDOFF, h))
+                self.worker.side_effect = lambda *args, **kw: dict(report(), issue_complete=complete)
+                self.assertEqual(self.loop.tick(36)['phase'], 'reviewed')
+                h, state, sid, _ = self.loop.load(36)
+                self.gh.pull.update(merged=True, state='closed')
+                original = self.gh.issue
+                reads = 0
+                def issue(number):
+                    nonlocal reads
+                    if number == 35:
+                        reads += 1
+                        if reads == 2:
+                            self.gh.issues[35].update(state='closed', labels=[
+                                'type:maintenance', 'priority:P2', 'status:done'])
+                    return copy.deepcopy(original(number))
+                self.loop.cleanup.reset_mock()
+                with patch.object(self.gh, 'issue', side_effect=issue):
+                    with self.assertRaisesRegex(ValueError, 'closed during handoff'):
+                        self.loop.finish(self.gh.pull, h, state, sid)
+                self.assertEqual(reads, 2)
+                self.loop.cleanup.assert_not_called()
+                self.assertNotEqual(self.loop.load(36)[1]['phase'], 'done')
+                self.assertNotIn('issue_closure', state)
+                self.assertEqual(self.gh.development_links, [])
+
+    def test_title_change_requests_new_review_with_current_title(self):
+        self.assertEqual(self.loop.tick(36)['phase'], 'reviewed')
+        self.gh.pull['title'] = 'fix: ログ欠落を直す (#35)'
+        self.assertEqual(self.loop.tick(36)['phase'], 'reviewed')
+        self.assertEqual(self.worker.call_count, 2)
+        self.assertEqual(self.worker.call_args.args[2]['title'], self.gh.pull['title'])
+        self.assertEqual(self.gh.merges, 0)
 
     def test_crash_after_merge_resumes_cleanup_only(self):
         self.loop.tick(36); self.gh.fail_after_merge = True

@@ -22,6 +22,23 @@
 
 priority は `priority:P0` / `priority:P1` / `priority:P2`、status は `status:ready` / `status:in-progress` / `status:review` / `status:blocked` / `status:deferred` / `status:done`。closed は done、open は done 以外。優先度を題名に重複させません。PR policy が型・番号・ラベルを検査します。
 
+## PR タイトル
+
+PR の題名は **`type: 日本語の要約 (#N)`** に統一します。例: `fix: 再接続後のログ欠落区間を正す (#227)`。接頭辞は [Conventional Commits 1.0.0](https://www.conventionalcommits.org/en/v1.0.0/) の型を採用します。これは commit の慣行であり、世界共通の唯一の PR 題名・Issue 配置規格ではありません。日本語、型の小文字、scope を付けない形式、所有 Issue の末尾配置は本プロジェクトの選択です。
+
+| type | 選ぶ変更の例 |
+| --- | --- |
+| `feat` / `fix` | 機能追加 / 不具合修正 |
+| `docs` / `refactor` / `perf` | 文書のみ / 挙動を変えない整理 / 性能改善 |
+| `test` / `build` / `ci` | テスト / build・依存 / CI |
+| `chore` / `revert` | その他の運用保守 / 変更の取消し |
+
+対応 Issue の題名分類をコピーせず、PR の実際の変更を表す型を選びます。要約は何が変わるか分かる日本語とし、Kotlin・SDK・Issue などの技術名は保持します。`(#N)` は branch と本文の単一 `Issue: #N` に一致させ、他の関連 Issue は本文や native 関係に記録します。優先度・Issue 番号を接頭辞へ重ねず、scope は付けません。実際の破壊的変更だけ `feat!: 保存形式を更新する (#N)` のように `!` を保持し、互換性への影響と理由を本文に記録します。release 自動化は追加しません。
+
+題名の `fix:` は [Issue 関連/自動 close の keyword](https://docs.github.com/en/issues/tracking-your-work-with-issues/using-issues/linking-a-pull-request-to-an-issue) と別です。`Fixes #N` などを題名へ入れず、Development と close の時期は次節に従います。Issue 自体の題名、commit 履歴、過去の closed/merged PR はこの規約で一括変更しません。
+
+作成・ready・修正再開・固定レビュー・merge 直前に実題名を読み戻します。共有 PR policy は型・空でない要約・日本語文字の有無・単一番号と branch/本文の一致を検査します。文字の有無は自然な日本語や意味の正しさの証明ではなく、要約・型・破壊的変更の妥当性はレビューで確認します。題名変更は同じ HEAD でも固定 review binding を失効させ、最新 metadata の policy と独立評価を照合します。coordinator はタイトルを reviewer へ渡し、merge 直前の既存 readback/binding と実 squash/merge 文へ反映します。GitHub metadata と merge を外部編集に対して原子的には固定できません。
+
 ## PR sidebar の実情報
 
 最初の Draft PR 作成時、ready・修正再開・統合/close 時に、本文と別に PR の native sidebar を確認します。対応 Issue の実分類と計画を使い、[公式 CLI の PR 編集](https://cli.github.com/manual/gh_pr_edit)や[公式 Projects API](https://docs.github.com/en/issues/planning-and-tracking-with-projects/automating-your-project/using-the-api-to-manage-projects)で所有範囲だけ補い、実 PR node と関連 Issue を読み戻します。
@@ -46,7 +63,7 @@ Issue の Development は対応する PR/branch を示します。本文の `Iss
 | default の `main` / OPEN・残条件あり | closing reference と closing keyword は付けず、本文参照と未反映理由・担当・次の安全な時期を残す。merge 後の受入・必要な引継ぎ・feedback readback を完了し、Issue を手動 close してから、統合済み PR の手動関連を作る |
 | 統合済み PR / 完了済み CLOSED | 指定された所有範囲だけ手動関連を補い、元の CLOSED と close 時刻を保持したか読む。広い過去履歴へ遡及しない |
 
-手動関連も closing reference です。default branch への linked PR merge は Issue を自動 close し得るため、「閉じない PR リンク」として使いません。自動 close は scope 完了の証明ではありません。本プロジェクトの finish-work は merge 後・close 前の feedback readback を必須とし、coordinator もその時点の受入本文/feedback binding と実 Issue 状態を照合します。この後確認が残る main Issue の関連を保留する理由は、この既存完了条件を守るためです。merge 前のレビュー/CI 成功だけでは解除しません。base を default branch へ変更する前に残受入/引継ぎを照合し、未完なら手動リンクを解除し、本文・commit の closing keyword も確認して早期 close を防ぎます。誤って閉じた場合は元の未完条件を保持して再開し、Project/status を読み戻します。default branch・保護・repository の自動 close 設定はこの運用のために変更しません。
+手動関連も closing reference です。default branch への linked PR merge は Issue を自動 close し得るため、「閉じない PR リンク」として使いません。自動 close は scope 完了の証明ではありません。本プロジェクトの finish-work は merge 後・close 前の feedback readback を必須とし、coordinator もその時点の受入本文/feedback binding と実 Issue 状態を照合します。main の終了時は完了可否にかかわらず、entry と終了直前の実 Issue 状態を照合し、未完の外部 close では cleanup/done に進みません。完了済みの所有 close 要求と status:done が一致する復旧は保持します。この後確認が残る main Issue の関連を保留する理由は、この既存完了条件を守るためです。merge 前のレビュー/CI 成功だけでは解除しません。base を default branch へ変更する前に残受入/引継ぎを照合し、未完なら手動リンクを解除し、本文・commit の closing keyword も確認して早期 close を防ぎます。誤って閉じた場合は元の未完条件を保持して再開し、Project/status を読み戻します。default branch・保護・repository の自動 close 設定はこの運用のために変更しません。
 
 書込み権限と現行機能を確認した公式 API または Development sidebar を使います。公開 GraphQL の [addCloseIssueReferences](https://docs.github.com/en/graphql/reference/issues#addcloseissuereferences) は Issue の `issueId` と対象 `pullRequestIds`（最大10件）による手動関連です。API では PR の `closingIssuesReferences` と Issue の `closedByPullRequestsReferences` を両方向で読み、終了済み PR は `includeClosedPrs: true` で照合します。Development 表示を確認する場合は [GUI lease](operations.md#gui-lease) に従います。関連付け後は Issue の OPEN/CLOSED・status ラベルと対応する Project Status も読み戻し、不整合は所有担当が対応表に従って修正・再取得します。関連追加だけで完了状態を変更しません。API/画面の実結果、Issue/Project 状態、target/default branch、未確認を既存 Issue/PR へ短く記録し、別台帳・常駐監視は追加しません。未対応・認証/権限要求・取得失敗は担当と次操作を残し、本文 URL だけで実関連済みにしません。
 

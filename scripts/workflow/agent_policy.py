@@ -29,6 +29,7 @@ def eligible(pr, owner, repo):
 
 def binding(pr, issue):
     return {'head': pr['head']['sha'], 'base': pr['base']['sha'], 'target': pr['base']['ref'],
+            'title_hash': hashlib.sha256((pr.get('title') or '').encode()).hexdigest(),
             'body_hash': hashlib.sha256((pr.get('body') or '').encode()).hexdigest(),
             'issue_hash': hashlib.sha256((issue.get('body') or '').encode()).hexdigest()}
 

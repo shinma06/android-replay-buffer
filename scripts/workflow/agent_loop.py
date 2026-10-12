@@ -22,6 +22,7 @@ from agent_worker import run_worker, worker_environment
 from handoff_registry import register, resolve
 from verification import verify_pr, metadata
 from issue_schema import validate_issue, done_labels, labels
+from pr_policy import validate_title
 from qa_handoff import handoff
 from change_impact import git_impact, test_commands, report as impact_report
 
@@ -191,6 +192,7 @@ class GitHub:
                 and any(x['state'] == 'OPEN' for x in repo['pullRequest']['closingIssuesReferences']['nodes'])):
             raise ValueError('Default-branch closing links would close Issues before feedback readback; '
                              'owner must unlink manual/branch links or remove closing keywords, then re-read')
+        validate_title(pr, issue_number(pr))
         payload = {'sha': pr['head']['sha'], 'merge_method': 'merge' if metadata(pr)[2] == 'promotion' else 'squash'}
         if pr['base']['ref'] == repo['defaultBranchRef']['name']:
             # Pin the new commit text; repository squash defaults can include discarded commit messages.
@@ -525,7 +527,7 @@ class Loop:
                              reviews=state.get('reviews', 0) + 1)
                 comment_id = self.save(pr, state, comment_id)
                 running.write_text(json.dumps({'pid': None}))
-                report = self.worker('review', path, {'pr': pr['number'], **bound, 'issue': issue['body'],
+                report = self.worker('review', path, {'pr': pr['number'], **bound, 'title': pr['title'], 'issue': issue['body'],
                                       'scope': h['scope'], 'close_issue_requested': h['close_issue'],
                                       'feedback': feedback, 'gui': state.get('gui'), 'target': pr['base']['ref'], 'acceptance': acceptance}, path.parent / 'workers',
                                       on_start=lambda pid: running.write_text(json.dumps({'pid': pid})))
@@ -661,8 +663,8 @@ class Loop:
             accepted = self.merged_acceptance(pr, h, state)
             validate_review(report, bound, accepted)
             state['acceptance'] = accepted
-        if (complete and not transferred and issue['state'] != 'open'
-                and state.get('issue_closure') != closure):
+        if (pr['base']['ref'] == 'main' and issue['state'] != 'open'
+                and not (complete and state.get('issue_closure') == closure and 'status:done' in labels(issue))):
             raise ValueError('Issue closed during handoff before owned completion; owner must reconcile')
         if complete and issue['state'] == 'open':
             if not transferred:
