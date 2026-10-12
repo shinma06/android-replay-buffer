@@ -922,6 +922,17 @@ def repair_record(issue, api):
     return record
 
 
+def bind_receipt_claim(receipts, receipt, claim):
+    locator = receipt[1]
+    if not isinstance(locator, str) or not re.fullmatch(r'(?:/(?:[^~/\r\n]|~[01])*)*', locator):
+        raise ValueError('Receipt locator must be an exact JSON Pointer, or empty for the whole receipt')
+    if any(sealed == receipt[0] and previous != claim and
+           (location == locator or location.startswith(locator + '/') or locator.startswith(location + '/'))
+           for (sealed, location), previous in receipts.items()):
+        raise ValueError('Conflicting origin/session/activity/time for the same sealed receipt observation')
+    receipts[receipt] = claim
+
+
 def repair_contributors(observed, writer, earliest, receipts=None):
     """Public roles are display text; only originating-session fingerprints exclude reviewers."""
     attribution = observed.get('attribution')
@@ -952,15 +963,9 @@ def repair_contributors(observed, writer, earliest, receipts=None):
             raise ValueError('Malformed repair contributor identity, activity, time or sealed receipt')
         when = datetime.fromisoformat(item['at'].replace('Z', '+00:00'))
         locator = item.get('receipt_locator', '')
-        if not isinstance(locator, str) or not re.fullmatch(r'(?:/(?:[^~/\r\n]|~[01])*)*', locator):
-            raise ValueError('Receipt locator must be an exact JSON Pointer, or empty for the whole receipt')
         receipt = (item['receipt_sha256'], locator)
         claim = (item['session'], item['activity'], when)
-        if any(sealed == receipt[0] and previous != claim and
-               (location == locator or location.startswith(locator + '/') or locator.startswith(location + '/'))
-               for (sealed, location), previous in receipts.items()):
-            raise ValueError('Conflicting origin/session/activity/time for the same sealed receipt observation')
-        receipts[receipt] = claim
+        bind_receipt_claim(receipts, receipt, claim)
         entry = (receipt, claim)
         if entry in entries or when > observed_at or (item['activity'] != 'writer' and when < earliest):
             raise ValueError('Duplicate or out-of-order repair contributor observation')

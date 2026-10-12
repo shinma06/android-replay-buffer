@@ -19,7 +19,7 @@ from urllib.parse import quote
 
 from agent_policy import CONTEXT, binding, eligible, gui_pass, in_scope, issue_number, next_action, session_fingerprint, update_parent, validate_review
 from agent_worker import private_repair_evidence, run_worker, worker_environment
-from handoff_registry import register, resolve, restore_review, store_review
+from handoff_registry import register, resolve, restore_review, store_review, verify_review_origin
 from verification import verify_pr, metadata
 from issue_schema import validate_issue, done_labels, labels
 from pr_policy import validate_title
@@ -292,20 +292,26 @@ class Loop:
                 state.update(phase='queued', next='Legacy wrapper approval invalidated; fresh independent review required')
         if state and state.get('review_ref'):
             public = {'binding': state.get('binding'), 'review': state.get('review')}
-            state['review'] = restore_review(self.storage, state['review_ref'], public)
-            if self.public_state(state['review']) != public['review']:
+            state['review'], paths = restore_review(self.storage, state['review_ref'], public, True)
+            state['private_paths'] = paths
+            if self.public_state(state['review'], paths) != public['review']:
                 raise ValueError('Private review public projection mismatch')
+        if state is not None and handoff:
+            state['private_paths'] = sorted(set(state.get('private_paths', [])) | set(handoff.get('private_paths', [])))
         return handoff, state or {'phase': 'queued', 'fixes': 0, 'reviews': 0, 'errors': 0}, comment_id, comments
 
     def save(self, pr, state, comment_id):
         state['updated_at'] = int(time.time())
         # Raw private logs stay local. Public state may contain reviewer text, so remove local paths.
+        if state.get('review', {}).get('origin_receipt'):
+            paths = verify_review_origin(self.storage, state['review'], state.get('binding'))
+            state['private_paths'] = sorted(set(state.get('private_paths', [])) | set(paths))
         public = self.public_state(state)
         if state.get('review'):
             bound_review = {'binding': public.get('binding'), 'review': public['review']}
             # Never accept a public fingerprint as an originating session on resume.
             session_fingerprint(state['review']['session'])
-            public['review_ref'] = store_review(self.storage, bound_review, state['review'])
+            public['review_ref'] = store_review(self.storage, bound_review, state['review'], state.get('private_paths', []))
             state['review_ref'] = public['review_ref']
         else:
             public.pop('review_ref', None)
@@ -335,17 +341,23 @@ class Loop:
             stream.write(str(error))
         return f'Operation failed ({type(error).__name__}); coordinator private diagnostic {identifier}'
 
-    def public_state(self, value):
+    def public_state(self, value, private_paths=()):
         if isinstance(value, dict):
-            return {k: self.public_state(v) for k, v in value.items() if k not in ('host', 'source', 'repair_evidence', 'private_repair_evidence')}
+            private_paths = set(private_paths) | set(value.get('private_paths', []))
+            return {k: self.public_state(v, private_paths) for k, v in value.items()
+                    if k not in ('host', 'source', 'repair_evidence', 'private_repair_evidence', 'private_paths')}
         if isinstance(value, list):
-            return [self.public_state(v) for v in value]
+            return [self.public_state(v, private_paths) for v in value]
         if isinstance(value, str):
             value = re.sub(r'(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}',
                            lambda match: session_fingerprint(match[0].lower()), value)
+            for path in sorted(private_paths, key=len, reverse=True):
+                value = value.replace(path, '[private path]')
             for private in (str(self.storage), str(ROOT), str(Path.home()), HOST):
                 value = value.replace(private, '[local]')
-            return re.sub(r'/(?:Users|home|private|tmp|var)/[^\n`]+', '[local path]', value)
+            parts = re.split(r'(https?://[^\s<>\"`]+)', value)
+            return ''.join(part if i % 2 else re.sub(r'/(?:Users|home|private|tmp|var)/[^\n`]+',
+                                                   '[local path]', part) for i, part in enumerate(parts))
         return value
 
     def acceptance(self, pr, path):
@@ -372,7 +384,9 @@ class Loop:
         accepted = self.acceptance(pr, self.checkout(pr, h))
         if not accepted.get('allowed'):
             raise ValueError(accepted.get('reason', 'Current merged acceptance is incomplete'))
-        self.repair_evidence(accepted, h, {'head': pr['head']['sha'], 'base': pr['base']['sha']})
+        packet = self.repair_evidence(accepted, h, {'head': pr['head']['sha'], 'base': pr['base']['sha']})
+        if packet:
+            state['private_paths'] = sorted(set(state.get('private_paths', [])) | set(packet['private_paths']))
         return dict(accepted, head=pr['head']['sha'], base=pr['base']['sha'])
 
     def bound(self, pr, issue, comments, remote_after=None):
@@ -558,6 +572,8 @@ class Loop:
             gui_needed = h['gui_required'] or bool(state.get('review', {}).get('gui_required'))
             acceptance = self.acceptance(pr, path)
             private_evidence = self.repair_evidence(acceptance, h, bound)
+            if private_evidence:
+                state['private_paths'] = sorted(set(state.get('private_paths', [])) | set(private_evidence['private_paths']))
             if gui_needed and acceptance.get('mode') in ('develop', 'tooling') and not acceptance.get('cases'):
                 acceptance = {'allowed': False, 'reason': 'Reviewer requires GUI Cases; declare them in the matrix'}
             if state.get('binding') == bound and state.get('review'):
@@ -852,6 +868,22 @@ def remote_review_complete(head, comments, not_before=None):
     return not any(at > completed for at in requests)
 
 
+def preflight_repair_bundle(loop, pr, source, path):
+    accepted = loop.acceptance(pr, source)
+    if path is None and not accepted.get('repair_revision'):
+        return None, []
+    if not accepted.get('allowed'):
+        raise ValueError('Repair enrollment requires verified current acceptance')
+    if path is None:
+        raise ValueError('Repair enrollment requires a private regular bundle')
+    path = Path(path).absolute()
+    if path.is_symlink():
+        raise ValueError('Repair enrollment requires a private regular bundle')
+    path = path.resolve(strict=True)
+    packet = private_repair_evidence(path, accepted, {'head': pr['head']['sha'], 'base': pr['base']['sha']})
+    return path, packet['private_paths']
+
+
 def enroll(loop, args):
     pr = loop.gh.pr(args.pr)
     if not eligible(pr, OWNER, REPO) or pr['state'] != 'open':
@@ -877,18 +909,8 @@ def enroll(loop, args):
     metadata(pr)
     if any(Path(x).is_absolute() or '..' in Path(x).parts for x in args.scope):
         raise ValueError('Use repository-relative enrollment scope')
-    repair_path = getattr(args, 'repair_evidence', None)
-    if repair_path is not None:
-        repair_path = repair_path.absolute()
-    accepted = loop.acceptance(pr, source)
-    if repair_path or accepted.get('repair_revision'):
-        if not accepted.get('allowed'):
-            raise ValueError('Repair enrollment requires verified current acceptance')
-        if repair_path is None or repair_path.is_symlink():
-            raise ValueError('Repair enrollment requires a private regular bundle')
-        repair_path = repair_path.resolve(strict=True)
-        private_repair_evidence(repair_path, accepted, {'head': pr['head']['sha'], 'base': pr['base']['sha']})
-    h = register(loop.storage, h, source, HOST, repair_path)
+    repair_path, paths = preflight_repair_bundle(loop, pr, source, getattr(args, 'repair_evidence', None))
+    h = register(loop.storage, loop.public_state(h, paths), source, HOST, repair_path, paths)
     loop.gh.comment(args.pr, pack(HANDOFF_V2, h))
     loop.gh.status(h['head'], 'pending', 'Enrolled for independent review', pr['html_url'])
     loop.save(pr, {'phase': 'queued', 'expected_head': h['head'], 'fixes': 0, 'reviews': 0, 'errors': 0}, None)
@@ -898,7 +920,8 @@ def enroll(loop, args):
 def rebind_target(loop, args):
     pr = loop.gh.pr(args.pr)
     h, state, sid, _ = loop.load(args.pr)
-    if not h or h.get('host') != HOST or not eligible(pr, OWNER, REPO) or pr['state'] != 'open':
+    if (not h or h.get('host') != HOST or h.get('writer_stopped') is not True or
+            not eligible(pr, OWNER, REPO) or pr['state'] != 'open'):
         raise ValueError('No local open managed PR to rebind')
     if h['branch'] != pr['head']['ref'] or h['issue'] != issue_number(pr):
         raise ValueError('Rebinding cannot change branch/Issue ownership')
@@ -917,14 +940,25 @@ def rebind_target(loop, args):
     if state.get('expected_head', h['head']) != pr['head']['sha']:
         raise ValueError('External HEAD changed; rebind cannot adopt a new writer')
     metadata(pr)
-    public = {k: v for k, v in h.items() if k not in ('source', 'host', 'registry_id', 'version', 'repair_evidence')}
-    public = loop.public_state(public)
+    repair_path = getattr(args, 'repair_evidence', None)
+    paths = set(h.get('private_paths', [])) | set(state.get('private_paths', []))
+    if repair_path is not None:
+        repair_path, checked_paths = preflight_repair_bundle(loop, pr, path if path.exists() else source, repair_path)
+        paths.update(checked_paths)
+    else:
+        repair_path = h.get('repair_evidence')
+    public = {k: v for k, v in h.items()
+              if k not in ('source', 'host', 'registry_id', 'version', 'repair_evidence', 'private_paths')}
+    public = loop.public_state(public, paths)
     public['owner'] = 'agent-loop'
     public['target'] = pr['base']['ref']
-    public = register(loop.storage, public, source, HOST, h.get('repair_evidence'))
+    public = register(loop.storage, public, source, HOST, repair_path, sorted(paths))
     loop.gh.comment(args.pr, pack(HANDOFF_V2, public))
     loop.invalidate_acceptance(state)
-    state.update(phase='queued', next='Target explicitly rebound; independent review and acceptance required')
+    state['private_paths'] = sorted(paths)
+    state['next'] = 'Target/evidence explicitly rebound; independent review and acceptance required'
+    if not state.get('paused'):
+        state['phase'] = 'queued'
     loop.save(pr, state, sid)
     loop.gh.status(pr['head']['sha'], 'pending', 'Target rebound; prior acceptance invalidated', pr['html_url'])
     return public
@@ -975,6 +1009,7 @@ def main():
     en.add_argument('--writer-stopped', action='store_true', required=True)
     rebound = sub.add_parser('rebind-target'); rebound.add_argument('--pr', type=int, required=True)
     rebound.add_argument('--writer-stopped', action='store_true', required=True)
+    rebound.add_argument('--repair-evidence', type=Path, help='Preflight and replace/add private bundle; preserves pause')
     rebound.add_argument('--source', type=Path, help='Explicit relocated original linked worktree')
     rebound.add_argument('--migration-record', type=Path, help='Private verified directory migration JSON')
     resume = sub.add_parser('resume'); resume.add_argument('--pr', type=int, required=True)

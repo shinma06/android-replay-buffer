@@ -41,14 +41,15 @@ def digest(public):
     return hashlib.sha256(json.dumps(public, sort_keys=True).encode()).hexdigest()
 
 
-def register(storage, public, source, host, repair_evidence=None):
+def register(storage, public, source, host, repair_evidence=None, private_paths=()):
     public = dict(public, registry_id=uuid.uuid4().hex, version=2)
     with registry_directory(storage, create=True) as directory:
         fd = os.open(public['registry_id'] + '.json', os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
                      0o600, dir_fd=directory)
         with os.fdopen(fd, 'w') as stream:
             json.dump({'digest': digest(public), 'source': str(source), 'host': host,
-                       'repair_evidence': str(repair_evidence) if repair_evidence else None}, stream)
+                       'repair_evidence': str(repair_evidence) if repair_evidence else None,
+                       'private_paths': list(private_paths)}, stream)
     return public
 
 
@@ -68,20 +69,21 @@ def resolve(storage, public, host):
     if (not isinstance(local, dict) or local.get('digest') != digest(public) or local.get('host') != host or
             not isinstance(local.get('source'), str) or not Path(local['source']).is_absolute()):
         raise ValueError('Enrollment binding/local ownership mismatch; preserve existing owner')
-    return dict(public, source=local['source'], host=local['host'], repair_evidence=local.get('repair_evidence'))
+    return dict(public, source=local['source'], host=local['host'], repair_evidence=local.get('repair_evidence'),
+                private_paths=local.get('private_paths', []))
 
 
-def store_review(storage, public, report):
+def store_review(storage, public, report, private_paths=()):
     identifier = uuid.uuid4().hex
     with registry_directory(storage, create=True) as directory:
         fd = os.open(identifier + '.json', os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
                      0o600, dir_fd=directory)
         with os.fdopen(fd, 'w') as stream:
-            json.dump({'digest': digest(public), 'review': report}, stream)
+            json.dump({'digest': digest(public), 'review': report, 'private_paths': list(private_paths)}, stream)
     return identifier
 
 
-def restore_review(storage, identifier, public):
+def restore_review(storage, identifier, public, with_paths=False):
     if not isinstance(identifier, str) or not re.fullmatch(r'[0-9a-f]{32}', identifier):
         raise ValueError('Invalid private review reference')
     with registry_directory(storage) as directory:
@@ -93,10 +95,13 @@ def restore_review(storage, identifier, public):
             local = json.load(stream)
     if local.get('digest') != digest(public) or not isinstance(local.get('review'), dict):
         raise ValueError('Private review binding mismatch')
-    return local['review']
+    paths = local.get('private_paths', [])
+    if not isinstance(paths, list) or not all(isinstance(p, str) and Path(p).is_absolute() for p in paths):
+        raise ValueError('Invalid private path projection metadata')
+    return (local['review'], paths) if with_paths else local['review']
 
 
-def issue_review_origin(storage, report, bound, session, kind):
+def issue_review_origin(storage, report, bound, session, kind, private_paths=()):
     """Trusted adapter boundary, not authentication against a writer of local files/environment."""
     from agent_policy import canonical_session
     session = canonical_session(session)
@@ -105,7 +110,7 @@ def issue_review_origin(storage, report, bound, session, kind):
         raise ValueError('Adapter origin differs from report or is already bound')
     public = {'binding': bound, 'review': report}
     identifier = store_review(storage, public, {'kind': 'adapter-review-origin-v1', 'adapter': kind,
-                                              'session': session, 'report': report})
+                                              'session': session, 'report': report}, private_paths)
     return dict(report, origin_receipt=identifier)
 
 
@@ -113,7 +118,8 @@ def verify_review_origin(storage, report, bound):
     if storage is None:
         raise ValueError('Repair approval requires its trusted adapter private registry')
     original = {k: v for k, v in report.items() if k != 'origin_receipt'}
-    receipt = restore_review(storage, report.get('origin_receipt'), {'binding': bound, 'review': original})
+    receipt, paths = restore_review(storage, report.get('origin_receipt'), {'binding': bound, 'review': original}, True)
     if (receipt.get('kind') != 'adapter-review-origin-v1' or receipt.get('adapter') not in ('cli', 'manual') or
             receipt.get('session') != report.get('session') or receipt.get('report') != original):
         raise ValueError('Report was not issued by the actual-session adapter')
+    return paths
