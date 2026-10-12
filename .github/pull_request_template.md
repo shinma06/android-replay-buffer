@@ -15,6 +15,7 @@ GUI reason: <Case IDと必要挙動。不要なら具体的理由とCLI検証>
 - Context review: <開発コンテキストを作成/更新/監査した場合、docs/context.mdの共通規則で用途/言語/形式/正本/読込経路/証拠・例外、旧要件の配置、検証済みと未確認を照合。対象外ならその旨>
 - Cursor知見の活用: <docs/android-studio.mdの適用範囲なら固定SHA/Issue・PR、採用/適合/非適用の理由、こちらの検証Case/結果。範囲外は理由を一言>
 - Matrix: <必要Case JSONと今回の確認一覧。GUI pending/blocked/fail/passを正確に保持>
+- Development: <docs/work-management.md の時期に従う実 PR/Issue 関連・両端 readback・Issue/ラベル/Project状態・target/default branch。本文参照は別。main の残条件ありは closing reference を保留し、理由/担当/終了時の次操作を記録>
 - Issue schema: <typeに対応した題名・type/priority/status各1ラベル>
 - QA handoff: <develop統合後、残試験はQA、main反映は既存release追跡へ双方向link/readbackしてからclose。CaseなしはQAを新設しない。未実装受入は別Issueへ保全>
 - Dependencies: <先行Issue/PR、未実装部分。GUI環境の障害と分ける>

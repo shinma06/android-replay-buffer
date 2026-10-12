@@ -37,7 +37,7 @@ PMは担当・共有資源・依存・実行計画を調整します。既存の
 
 ## 開始と所有
 
-Issue の全コメント、関連 PR、依存、既存 claim、dirty、worktree を確認します。owner・対象/対象外・受入・base SHA・target・reviewer・GUI 要否・次操作を記録し読み戻します。一つの作業範囲の writer は一人です。
+Issue の全コメント、関連 PR、依存、既存 claim、dirty、worktree を確認します。owner・対象/対象外・受入・base SHA・target・reviewer・GUI 要否・次操作を記録し読み戻します。[Development の実関連](work-management.md#development-の実関連)も確認し、本文参照と実関連、default branch の早期 close 境界を区別します。一つの作業範囲の writer は一人です。
 
 ```bash
 git status --short --branch
@@ -60,7 +60,7 @@ IDE/build/process/保存/UI/検証/共通ハーネスに関係する変更は、
 
 要件・呼出し元/先・既存テストを読み、既存実装・標準機能から最小の変更を選びます。`python3 scripts/check.py` は管理ファイルと回帰テスト、製品変更は [CLIテスト](project.md) を実行します。変更影響判定は hook/CI/coordinator で `scripts/workflow/change_impact.py` を共用し、rename/delete/mode 変更・未知・不完全履歴を安全側に扱います。
 
-最初の意味ある push で Draft PR を作成し、PR テンプレートの `Issue / Integration / Verification / GUI / GUI reason` を埋めます。受入は `docs/verification/changes/issue-N.json` に記録します。独立したセッションへ固定 HEAD/base と受入を渡し、具体的な指摘を修正して必要な再レビューを行います。自己レビューや CI 成功を独立レビューの代わりにしません。
+最初の意味ある push で Draft PR を作成し、PR テンプレートの `Issue / Integration / Verification / GUI / GUI reason` を埋めます。[Development の実関連](work-management.md#development-の実関連)に従って対応 PR を結び、両端と Issue 状態を読み戻します。main の未完 Issue は関連を終了時まで保留し、理由・担当・次操作を記録します。受入は `docs/verification/changes/issue-N.json` に記録します。独立したセッションへ固定 HEAD/base と受入を渡し、具体的な指摘を修正して必要な再レビューを行います。自己レビューや CI 成功を独立レビューの代わりにしません。
 
 | target / Integration | 統合条件 | merge |
 |---|---|---|
