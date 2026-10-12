@@ -59,6 +59,54 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual(packet['origins'], self.bundle['origins'])
         self.assertEqual(packet['bundle_sha256'], hashlib.sha256(self.path.read_bytes()).hexdigest())
 
+    def test_bundle_hash_and_parse_use_checked_descriptor_after_replacement(self):
+        original_read, original_fstat = Path.read_bytes, os.fstat
+        with tempfile.TemporaryDirectory(dir='/tmp') as folder:
+            parent = Path(folder); parent.chmod(0o777)
+            self.path = parent / 'bundle.json'
+            for symlink in (False, True):
+                if self.path.is_symlink(): self.path.unlink()
+                self.seal()
+                body = self.path.read_bytes()
+                replacement = parent / 'replacement.json'
+                replacement.write_text(json.dumps(self.bundle, indent=2)); replacement.chmod(0o644)
+                changed = False
+                def replace():
+                    nonlocal changed
+                    if changed: return
+                    changed = True
+                    if symlink:
+                        self.path.unlink(); self.path.symlink_to(replacement)
+                    else:
+                        replacement.replace(self.path)
+                def read(path):
+                    if path == self.path: replace()
+                    return original_read(path)
+                def fstat(fd):
+                    info = original_fstat(fd)
+                    replace()
+                    return info
+                with self.subTest(symlink=symlink), patch.object(Path, 'read_bytes', read), patch.object(os, 'fstat', fstat):
+                    packet = self.load()
+                    self.assertEqual(packet['bundle_sha256'], hashlib.sha256(body).hexdigest())
+                    self.assertEqual(packet['origins'], self.bundle['origins'])
+                self.assertTrue(changed)
+                with self.assertRaises(ValueError): self.load()
+            parent.chmod(0o700)
+
+    def test_bundle_keeps_strict_leaf_privacy_under_private_ancestor(self):
+        from agent_worker import read_repair_bundle
+        self.root.chmod(0o700)
+        for mode in (0o600, 0o601, 0o610, 0o602, 0o620, 0o644):
+            self.path.chmod(mode)
+            with self.subTest(mode=oct(mode)):
+                if mode == 0o600:
+                    self.assertEqual(read_repair_bundle(self.path)[1], self.bundle)
+                else:
+                    with self.assertRaisesRegex(ValueError, 'private and locally owned'):
+                        read_repair_bundle(self.path)
+        self.path.chmod(0o600)
+
     def test_conflicting_same_observation_is_rejected_across_results(self):
         earliest = datetime(2026, 1, 1, tzinfo=timezone.utc)
         for field, value in (('session', session_fingerprint(tal.report()['session'])),

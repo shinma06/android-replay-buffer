@@ -45,10 +45,11 @@ def read_repair_bundle(path):
     path = Path(path) if path else None
     if path is None or not path.is_absolute() or path.is_symlink():
         raise ValueError('Repair requires a private sealed evidence bundle')
-    info = path.stat()
-    if info.st_uid != os.getuid() or info.st_mode & 0o077 or not path.is_file():
-        raise ValueError('Evidence bundle must be private and locally owned')
-    body = path.read_bytes()
+    with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), 'rb') as stream:
+        info = os.fstat(stream.fileno())
+        if info.st_uid != os.getuid() or info.st_mode & 0o077 or not stat.S_ISREG(info.st_mode):
+            raise ValueError('Evidence bundle must be private and locally owned')
+        body = stream.read()
     bundle = json.loads(body)
     if set(bundle) != {'head', 'base', 'repair_revision', 'mapping_receipt_sha256', 'receipts', 'origins'}:
         raise ValueError('Malformed private repair evidence bundle')
