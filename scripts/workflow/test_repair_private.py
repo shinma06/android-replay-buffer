@@ -681,8 +681,8 @@ class WorkerDirectoryTests(unittest.TestCase):
 class EvidenceRetentionTests(unittest.TestCase):
     setUp = tal.LoopTests.setUp
 
-    def move_evidence(self, mode):
-        ignored = self.checkout / '.harness-local'; ignored.mkdir(exist_ok=True)
+    def move_evidence(self, mode, root=None):
+        ignored = (root or self.checkout) / '.harness-local'; ignored.mkdir(exist_ok=True)
         if mode == 'bundle':
             target = ignored / 'bundle.json'; target.write_bytes(self.fixture.path.read_bytes()); target.chmod(0o600)
             return target
@@ -716,32 +716,49 @@ class EvidenceRetentionTests(unittest.TestCase):
                     self.assertFalse(self.gh.statuses)
 
     def test_existing_unsafe_bundle_blocks_review_postmerge_and_cleanup_before_effects(self):
-        for phase in ('review', 'postmerge', 'cleanup', 'retained-old-path'):
-            self.doCleanups(); self.setUp()
-            with self.subTest(phase=phase):
-                ConsumerTests.prepare(self)
-                h, state, _, _ = self.loop.load(36)
-                if phase == 'retained-old-path':
-                    h['private_paths'] = [str(self.checkout / '.harness-local/old-original.json')]
-                else:
-                    self.move_evidence('mapping')
-                before = self.fixture.receipt.read_bytes()
-                if phase == 'review':
-                    self.assertEqual(self.loop.tick(36)['phase'], 'blocked')
-                    self.worker.assert_not_called()
-                elif phase == 'postmerge':
-                    self.gh.pull.update(merged=True, state='closed')
-                    with self.assertRaisesRegex(ValueError, 'outside cleanup'):
-                        self.loop.merged_acceptance(self.gh.pull, h, state)
-                else:
-                    with patch.object(tal.al, 'command') as command, patch.object(tal.al, 'git') as git, \
-                            patch.object(tal.al.shutil, 'rmtree') as remove:
+        for location in ('source', 'managed'):
+            for phase in ('review', 'postmerge', 'cleanup', 'retained-old-path'):
+                self.doCleanups(); self.setUp()
+                with self.subTest(phase=phase):
+                    ConsumerTests.prepare(self)
+                    original = self.loop.load(36)[0]
+                    source = self.fixture.root / 'owned-source'; source.mkdir()
+                    public = {k: v for k, v in original.items() if k not in ('source', 'host', 'repair_evidence', 'private_paths')}
+                    public = register(self.loop.storage, public, source, tal.al.HOST, self.fixture.path)
+                    self.gh.messages[36][0]['body'] = tal.al.pack(tal.al.HANDOFF_V2, public)
+                    h, state, sid, _ = self.loop.load(36)
+                    cleanup_root = source if location == 'source' else self.checkout
+                    if phase == 'retained-old-path':
+                        h['private_paths'] = [str(cleanup_root / '.harness-local/old-original.json')]
+                    else:
+                        self.move_evidence('mapping', cleanup_root)
+                        packet = self.fixture.load()
+                        self.accepted['repair_evidence_sha256'] = packet['bundle_sha256']
+                        bound = self.loop.bound(self.gh.pull, self.gh.issues[35], self.gh.comments(36))[0]
+                        raw = dict(tal.report(), repair_revision='e' * 64, repair_assessment='synthetic cached evidence',
+                                   repair_evidence_sha256=packet['bundle_sha256'])
+                        state.update(phase='reviewed', binding=bound, review=issue_review_origin(
+                            self.loop.storage, raw, bound, raw['session'], 'manual', packet['private_paths'],
+                            [origin['session'] for origin in packet['origins']]))
+                        self.loop.save(self.gh.pull, state, sid)
+                    before = self.fixture.receipt.read_bytes()
+                    if phase == 'review':
+                        self.assertEqual(self.loop.tick(36)['phase'], 'blocked')
+                        self.worker.assert_not_called()
+                    elif phase == 'postmerge':
+                        self.gh.pull.update(merged=True, state='closed')
                         with self.assertRaisesRegex(ValueError, 'outside cleanup'):
-                            tal.al.Loop._cleanup_resources(self.loop, self.gh.pull, h)
-                        command.assert_not_called(); git.assert_not_called(); remove.assert_not_called()
-                self.assertEqual(self.fixture.receipt.read_bytes(), before)
-                self.assertEqual(self.gh.issues[35]['state'], 'open'); self.assertEqual(self.gh.merges, 0)
-                self.assertNotIn((tal.HEAD, 'success'), self.gh.statuses)
+                            self.loop.merged_acceptance(self.gh.pull, h, state)
+                    else:
+                        with patch.object(tal.al, 'command') as command, patch.object(tal.al, 'git') as git, \
+                                patch.object(tal.al.shutil, 'rmtree') as remove:
+                            with self.assertRaisesRegex(ValueError, 'outside cleanup'):
+                                tal.al.Loop._cleanup_resources(self.loop, self.gh.pull, h)
+                            command.assert_not_called(); git.assert_not_called(); remove.assert_not_called()
+                    self.assertEqual(self.fixture.receipt.read_bytes(), before)
+                    self.assertEqual(self.gh.issues[35]['state'], 'open'); self.assertEqual(self.gh.merges, 0)
+                    self.assertNotIn((tal.HEAD, 'success'), self.gh.statuses)
+
 
     def test_external_sibling_evidence_is_allowed_without_copying(self):
         args = EnrollmentTests.prepare(self)
