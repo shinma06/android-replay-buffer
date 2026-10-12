@@ -11,7 +11,7 @@
 | environment / 6 | 同梱依存・SDK adb・実ロードと追加導入不要 | ZIP/hash/licenseとSDK解決回帰＋実起動command/CodeSource/保存。PATH改造や20秒取得は保証と無関係 |
 | markers / 2 | 画面とlogの独立ID真値、表示/非表示・coalescing/viewの区別 | fixture回帰＋代表実表示/両log。欠陥を区別する最小入力を用い、各5回/1秒等は固定しない |
 | precision / 7 | p95≤100ms・最大≤250ms・中央値drift≤50ms・clock≤20ms、実画像/両logの対応と欠落説明 | 有限の開始/後半を含む識別可能な更新を全解析。中間/追加数は目的で選び固定しない。長時間/sample更新/4096履歴/時計境界は既知時刻回帰へ。30分/300件は標本設計であり製品の精度値ではない |
-| recipient / 6 | 全保存内容・時刻・不足説明と受取人の利用 | 既知入力の全byte/画素回帰＋native成果の全FILE/sample/両logと一回の代表player/editor。全GUI検索/全Play/全native raw exportは不要 |
+| recipient / 6 | 全保存内容・時刻・不足説明と受取人の利用 | 既知入力の全byte/画素回帰＋native成果の全FILE/sample/両logと、保証ごとに共有する代表player・editor観察。全GUI検索/全Play/全native raw exportは不要 |
 | buffer / 9 | 実T/N窓、未満時の最大保存・prune/IDR prefix/pin、保存中取得/次保存 | N未満・N超・重複Saveを別工程で共有。0/N前後・GOP前中後・VFR/品質/容量はproduction回帰＋FILE。20秒/200秒/10秒後/GOP6本は方法例 |
 | recovery / 57 | 所有/世代/終了、gap/loss/unknown、固定失敗retry・atomic非上書き/保全 | 全fault/raceはfake SDK/loopback/所有filesystemの回帰。実IDEは代表取得/復旧/OFF/close/保存・理由表示、固定失敗場所→UI consumer→retryは同ZIP隔離public経路、OS atomicは実callを共有 |
 | ui-settings / 37 | 一括Apply/Cancel/復元、対象解決/帰属、EDT/最新状態/可読性/Tab/Help | 全入力/raceはproduction回帰、代表の実操作・表示・通常close後の永続設定。Apply/SaveAll直後のXML即時一致は非同期保存の保証ではない |
@@ -37,6 +37,24 @@ REAL34の初期段階延期と利用者の実機保留を保持し、共通host/
 CLIの2 testはthreadtime正常/不正行のparser互換を担保し、ADB/daemon/録画全体ではありません。JVM群はClock/Protocol/Wire、Store/Writer、所有/寿命、Settings/IDE/UIの既知入力/全内部境界を担います。instrumentationは測定oracleの表示真値を担い、製品動画合格とは別です。FILEは対象の全行/frame/sample/hashと対応を担い、nativeは実ロード/API/glue/表示・代表相互運用を担います。ハーネス群は出典/plan/trusted gate/listing/reuse、Git保護/影響、registry/lease/handoff/秘密/参照を担い、製品合格を出しません。新たな役割・依存・全GUI matrixを作りません。
 
 担当とレビュアーは既存Issue/計画から「どの自製品欠陥を検出するか、必要精度/真値、最小の実行可能方法、全予定対象、既存事実と不足」を確認します。手順・回数・所要時間・同runを残すときは固有の欠陥を見逃す具体的理由を示します。必要な境界は維持し、既に十分な証拠は共有します。不要な操作期限や再確認、追加承認を作らず、実tool権限・privacy・lease・所有fixture・復旧を全方法で維持します。
+
+### GUI手段の必要性を先に評価する
+
+検証が必要なことと、手動GUI操作が必要なことを分けます。担当とレビュアーは目的と必要な観測事実を決め、適格な既存証拠、production回帰/FILE、導入済みのAPI/IPC/CLIと実画像・render結果を読む経路で、その事実を確認できるか先に評価します。そこで未確認の具体的な自製品UI/OS接続・表示・consumer相互運用だけに、最小のGUI操作を選びます。選んだ手段の理由と残る保証を既存の割当/レビューへ短く記録し、長い比較表・新台帳・追加承認を要求しません。明示された実施経路、実tool権限、privacy・lease・所有/停止/復旧は維持します。
+
+既存ツールの能力が不足する場合も、消去法でGUIへ進まず、目的に合う検証ハーネス/CLI/API/rendererの追加を積極的に検討します。具体的な不足を埋める最小のツールを選び、公式の能力・版・互換性と導入/保守費用を、繰り返すGUIの負担と照合します。管理は極力Homebrewを優先し、許可された検証環境/範囲内の導入は毎回本人承認を取り直しません。実OS/toolの同意・権限と所有/保全条件には従います。十分な既存経路を先に使い、試すだけの導入や無関係なツール探索はしません。hostの検証ツールと製品の依存を区別し、製品の追加導入不要という保証や製品依存の選定条件を変えません。
+
+動画では「標準player」をOS同梱アプリの銘柄や手動操作の指定と解釈しません。該当する再生・前後移動・表示の保証を満たすなら、既存mpvのJSON IPCと実画像/renderの読取りを優先できます。[mpvの公式command仕様](https://github.com/mpv-player/mpv/blob/v0.41.0/DOCS/man/input.rst)が提供する要求/応答や画像取得を使っても、command成功・`vo=null`・エラーなしだけでは表示の正しさや要求sceneへの到達を証明しません。取得画像の種類が目的の内容/実表示を覆うか確認し、実画像・実際の再生/移動結果を読む必要があります。全内容・時刻/窓の真値はproduction回帰と全FILEへ分担し、playerのtime-posを同期精度へ転用しません。
+
+OS標準という名前やdecoderの多様性だけで別player/GUIを追加しません。必要な自製品相互運用・OS callback・実画面の未確認部分を示せる場合だけ対応する経路を使います。mpv等の失敗/不明は保持し、その条件に残る欠陥を解明する有限の代替方法を選びます。一部のedit/時刻解釈差から全動画へ手動GUI fallbackを課したり、逆に外部差として自製品違反/未帰属を除外したりしません。
+
+### 動画とテキストのconsumer証拠を別々に評価する
+
+代表playerとeditorを毎回一組で割り当てません。動画のcontainer/codec/sample-description/geometryと、テキストのencoding/本文形式/利用導線/表示条件を別々に評価します。新しい混在動画でplayer観察が必要でも、それだけでeditorを再実行しません。本文のID・数値・理由が増えたことや出力が新しいことだけでは、新editor観察の理由になりません。各出力の全行・hash・参照・内容の正しさはproduction回帰とFILEで確認します。
+
+割当と独立レビューでは、追加consumer操作で検出する具体的な自製品欠陥と、production回帰・FILE・既存consumer証拠で確認できない部分を示します。同じ製品artifactへのbindingと、その保証に関係する生成形式・導線・reader/runtime・表示条件の不変を実証した適格な実観察を共有します。不明・変更なら影響する部分だけを再確認し、新しいencodingや表示切断、open導線の破損が残る場合は最小の実open/readを行います。log-onlyでも実production出力のMP4数0・説明・参照/hashをFILEで確認し、形式・導線・条件が不変と確認できたeditor証拠だけを共有します。実通知のopen/copy callback・失敗表示など自製品glueの実接続は別に確認します。アプリの銘柄や全player matrixを保証にせず、FILE成功だけで未観察の相互運用を成功にしません。
+
+これは現行methodの同条件共有の明確化です。計画/Case/原観察・失敗を変更せず、通常reuseと保持事実の再評価はそれぞれ既存の証拠・独立レビュー条件に従います。説明追加を新実行やPASSにしません。
 
 ## trusted-main改訂と現在候補
 
