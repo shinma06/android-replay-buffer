@@ -290,6 +290,14 @@ class Loop:
         except (ValueError, KeyError, OSError, RuntimeError) as error:
             return {'allowed': False, 'reason': self.private_error(error)}
 
+    def merged_acceptance(self, pr, h, state):
+        # Closed PR refs retain the reviewed base; current failure records/main stay live.
+        state.pop('acceptance', None)
+        accepted = self.acceptance(pr, self.checkout(pr, h))
+        if not accepted.get('allowed'):
+            raise ValueError(accepted.get('reason', 'Current merged acceptance is incomplete'))
+        return dict(accepted, head=pr['head']['sha'], base=pr['base']['sha'])
+
     def bound(self, pr, issue, comments, remote_after=None):
         value = binding(pr, issue)
         # Only our own changing dashboards are excluded, never other reviewers/bots.
@@ -468,12 +476,12 @@ class Loop:
                 pr = self.gh.ready(pr)
                 self.save(pr, state, comment_id)
                 return {'pr': number, 'phase': 'remote-review-wait'}
-            if state.get('binding') == bound and state.get('review'):
-                validate_review(state['review'], bound)
             gui_needed = h['gui_required'] or bool(state.get('review', {}).get('gui_required'))
             acceptance = self.acceptance(pr, path)
             if gui_needed and acceptance.get('mode') in ('develop', 'tooling') and not acceptance.get('cases'):
                 acceptance = {'allowed': False, 'reason': 'Reviewer requires GUI Cases; declare them in the matrix'}
+            if state.get('binding') == bound and state.get('review'):
+                validate_review(state['review'], bound, acceptance)
             action = next_action(state, bound, self.gh.ci(pr), gui_needed, acceptance)
             if action == 'review':
                 if state.get('reviews', 0) >= 8:
@@ -489,7 +497,7 @@ class Loop:
                                       'feedback': feedback, 'gui': state.get('gui'), 'target': pr['base']['ref'], 'acceptance': acceptance}, path.parent / 'workers',
                                       on_start=lambda pid: running.write_text(json.dumps({'pid': pid})))
                 running.unlink(missing_ok=True)
-                validate_review(report, bound)
+                validate_review(report, bound, acceptance)
                 if git('rev-parse', 'HEAD', cwd=path) != pr['head']['sha'] or git('status', '--porcelain', cwd=path):
                     raise ValueError('Reviewer changed checkout; approval rejected')
                 state.update(binding=bound, review=report, phase='reviewed', errors=0, next='Reconcile verdict on the next tick')
@@ -516,11 +524,14 @@ class Loop:
                     raise ValueError('Issue must remain open until scoped acceptance is evaluated')
                 validate_issue(latest_issue)
                 now, _ = self.bound(latest, latest_issue, self.gh.comments(number), state.get('remote_review_after'))
-                if now != bound or self.gh.ci(latest) != 'success' or not self.acceptance(latest, path)['allowed']:
+                latest_acceptance = self.acceptance(latest, path)
+                if (now != bound or self.gh.ci(latest) != 'success' or not latest_acceptance['allowed'] or
+                        latest_acceptance != acceptance):
                     self.invalidate_acceptance(state)
                     state.update(phase='queued', next='PR/base/acceptance changed before merge; reconcile again')
                     self.save(latest, state, comment_id)
                     return {'pr': number, 'phase': 'changed-before-merge'}
+                validate_review(state['review'], bound, latest_acceptance)
                 state['acceptance'] = dict(acceptance, head=bound['head'], base=bound['base'])
                 self.gh.status(bound['head'], 'success', 'Independent review and target branch acceptance gate passed', pr['html_url'])
                 state.update(phase='merging', next='Read back GitHub merge result')
@@ -573,6 +584,10 @@ class Loop:
         if now != bound or now.get('remote_review_complete') is not True:
             raise ValueError('PR/Issue/feedback changed or remote review is pending after merge; preserve scope/resources for disposition')
         accepted = state.get('acceptance', {})
+        if pr['base']['ref'] == 'develop':
+            accepted = self.merged_acceptance(pr, h, state)
+        validate_review(report, bound, accepted)
+        state['acceptance'] = accepted
         promotion_pass = (accepted.get('allowed') is True and accepted.get('mode') == 'promotion' and
                           accepted.get('gui_complete') is True and accepted.get('head') == bound.get('head') and
                           accepted.get('base') == bound.get('base'))
@@ -609,6 +624,10 @@ class Loop:
         fresh, _ = self.bound(pr, issue, self.gh.comments(pr['number']), state.get('remote_review_after'))
         if fresh != bound or fresh.get('remote_review_complete') is not True:
             raise ValueError('PR/Issue/feedback changed during handoff; preserve scope/resources before closure')
+        if pr['base']['ref'] == 'develop':
+            accepted = self.merged_acceptance(pr, h, state)
+            validate_review(report, bound, accepted)
+            state['acceptance'] = accepted
         if (complete and not transferred and issue['state'] != 'open'
                 and state.get('issue_closure') != closure):
             raise ValueError('Issue closed during handoff before owned completion; owner must reconcile')
@@ -652,13 +671,22 @@ class Loop:
         report = evidence['review']
         if report.get('feedback_hash') != bound['feedback_hash']:
             raise ValueError('Independent report must identify the feedback it actually reviewed')
-        validate_review(report, bound)
-        if report['verdict'] != 'approved':
-            raise ValueError('Unresolved feedback cannot resume closure or cleanup')
         previous = state.get('binding', {})
-        if any(previous.get(k) != bound[k] for k in ('head', 'base', 'target', 'body_hash', 'issue_hash')):
+        if previous != bound:
             for key in ('gui', 'acceptance'):
                 state.pop(key, None)
+        if pr['base']['ref'] == 'develop':
+            self.invalidate_acceptance(state)
+            self.gh.status(pr['head']['sha'], 'pending', 'Current original-NG acceptance requires reconciliation', pr['html_url'])
+            sid = self.save(pr, state, sid)
+            accepted = self.merged_acceptance(pr, h, state)
+        else:
+            accepted = state.get('acceptance')
+        validate_review(report, bound, accepted)
+        if report['verdict'] != 'approved':
+            raise ValueError('Unresolved feedback cannot resume closure or cleanup')
+        if accepted is not None:
+            state['acceptance'] = accepted
         state.update(binding=bound, review=report, phase='cleanup', paused=False, errors=0, retry_at=0,
                      next='Independent feedback disposition fixed; re-read before closure/cleanup')
         self.save(pr, state, sid)

@@ -883,22 +883,164 @@ def scoped_candidate(base, candidate, issue, git=git_read):
     return change
 
 
+REPAIR_MARKER = '<!-- acceptance-repair:v1 -->'
+
+
+def repair_record(issue, api):
+    """Remote scope is reviewed with the Issue; the PR cannot shrink its failure set."""
+    declaration = re.findall(r'^Acceptance repair: (.+)$', issue.get('body') or '', re.M)
+    bug = any(label.get('name') == 'type:bug' for label in issue.get('labels', []))
+    if not declaration and not bug:
+        return None
+    if len(declaration) != 1:
+        raise ValueError('Bug Issue requires an explicit Acceptance repair declaration')
+    if declaration == ['none']:
+        return None
+    if not re.fullmatch(r'[1-9][0-9]*', declaration[0]):
+        raise ValueError('Acceptance repair must be none or its preserved Issue comment ID')
+    comment = api('issues/comments/' + declaration[0])
+    if comment.get('issue_url') != issue.get('url') or not comment.get('body', '').startswith(REPAIR_MARKER + '\n'):
+        raise ValueError('Repair failure record must belong to the correction Issue')
+    created = comment.get('created_at')
+    if (not nonempty(created) or created != comment.get('updated_at') or
+            datetime.fromisoformat(created.replace('Z', '+00:00')).tzinfo is None):
+        raise ValueError('Original failure record must be an identified unedited comment; preserve history and use a new ID')
+    def unique(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError('Duplicate repair record key')
+            result[key] = value
+        return result
+    record = json.loads(comment['body'][len(REPAIR_MARKER):], object_pairs_hook=unique)
+    if (not isinstance(record, dict) or set(record) != {'schema', 'fix_issue', 'failures'} or
+            type(record['schema']) is not int or record['schema'] != 1 or
+            type(record['fix_issue']) is not int or record['fix_issue'] != issue.get('number') or
+            not isinstance(record['failures'], dict) or not record['failures']):
+        raise ValueError('Invalid original acceptance failure record')
+    return record
+
+
+def verify_repair(pr, issue, data, path, api, git):
+    """Structure/provenance only. An independent reviewer must assess the actual evidence."""
+    record = repair_record(issue, api)
+    tracked, seen = set(), set()
+    base, head = pr['base']['sha'], pr['head']['sha']
+    # Follow every parent and changed blob, including failures later deleted or reverted.
+    history = git('log', '--full-history', '-m', '--format=%H', '--name-only',
+                  '--diff-filter=AMT', '--no-renames', base, '--', 'docs/verification/changes/')
+    for line in history.splitlines():
+        if SHA.fullmatch(line):
+            source = line
+            continue
+        if not line:
+            continue
+        match = re.fullmatch(r'docs/verification/changes/issue-([1-9][0-9]*)\.json', line)
+        if not match:
+            raise ValueError('Unknown acceptance source in trusted history')
+        entry = git('ls-tree', source, '--', line).split()
+        if len(entry) != 4 or entry[0] != '100644' or entry[1] != 'blob' or entry[3] != line:
+            raise ValueError('Acceptance history requires regular JSON source files')
+        identity = (line, entry[2])
+        if identity in seen:
+            continue
+        seen.add(identity)
+        original = regular_json(source, line, git)
+        for case in original['cases']:
+            if case.get('fix_issue') == data['issue']:
+                tracked.update((f'{match[1]}:{case["id"]}', actor, canonical_hash(case))
+                               for actor in ('gpt', 'human')
+                               if case[actor]['status'] == 'fail')
+    repair = data.get('repair')
+    if record is None:
+        if tracked or repair is not None:
+            raise ValueError('Acceptance NG correction requires its preserved failure record')
+        return {}
+    if (not isinstance(repair, dict) or set(repair) != {'candidate', 'artifacts', 'failure_record_sha256',
+                                                      'writer_session', 'results'} or
+            repair['failure_record_sha256'] != canonical_hash(record) or
+            not nonempty(repair['writer_session']) or not isinstance(repair['artifacts'], dict) or
+            not isinstance(repair['results'], dict) or set(repair['results']) != set(record['failures'])):
+        raise ValueError('Repair must cover exactly every original failure on a fixed candidate')
+    candidate = repair['candidate']
+    if not SHA.fullmatch(candidate or '') or candidate == head:
+        raise ValueError('Freeze the tested repair candidate before committing evidence metadata')
+    git('merge-base', '--is-ancestor', base, candidate)
+    git('merge-base', '--is-ancestor', candidate, head)
+    correction = git('diff', '--no-renames', '--name-only', base, candidate).splitlines()
+    if candidate == base or not any(not p.startswith('docs/verification/changes/') and
+                                    p != PROMOTION for p in correction):
+        raise ValueError('Repair candidate requires a substantive correction beyond acceptance metadata')
+    scoped_history(candidate, head, {path: '100644'}, git)
+    trusted = api('git/ref/heads/main').get('object', {}).get('sha')
+    if not SHA.fullmatch(trusted or ''):
+        raise ValueError('Repair requires an identified current trusted main contract')
+    git('fetch', '--no-tags', 'origin', trusted)
+    policy = initial_stage_plan(trusted, candidate, git) if git('ls-tree', trusted, '--', INITIAL_PLAN) else None
+    contract = canonical_hash(policy['responsibility_revision']) if policy else canonical_hash(None)
+    cases, observers = set(), {repair['writer_session']}
+    for identifier, failure in record['failures'].items():
+        if (not re.fullmatch(r'[A-Z][A-Z0-9-]+', identifier) or not isinstance(failure, dict) or
+                set(failure) != {'case', 'source_candidate', 'source_case_sha256', 'original_result', 'guarantees'} or
+                not re.fullmatch(r'[1-9][0-9]*:[A-Z][A-Z0-9-]+', failure['case']) or
+                not isinstance(failure['guarantees'], dict) or not failure['guarantees'] or
+                not all(nonempty(k) and nonempty(v) for k, v in failure['guarantees'].items())):
+            raise ValueError('Original failed guarantees and fixed Case provenance are required')
+        source = failure['source_candidate']
+        old = failure['original_result']
+        if not isinstance(old, dict) or old.get('status') != 'fail':
+            raise ValueError('Preserve the original failed observation')
+        validate_observation(dict(old, status='pass'), source)
+        git('merge-base', '--is-ancestor', source, base)
+        number, case_id = failure['case'].split(':')
+        original = regular_json(source, f'docs/verification/changes/issue-{number}.json', git)
+        validate_change(original, int(number), True)
+        matches = [case for case in original['cases'] if case['id'] == case_id]
+        if len(matches) != 1 or canonical_hash(matches[0]) != failure['source_case_sha256']:
+            raise ValueError('Original repair Case hash mismatch')
+        if matches[0].get('fix_issue') == data['issue'] and matches[0][old['actor']]['status'] == 'fail':
+            cases.add((failure['case'], old['actor'], failure['source_case_sha256']))
+        result = repair['results'][identifier]
+        if (not isinstance(result, dict) or set(result) != {'observation', 'coverage', 'method', 'contract_revision'} or
+                result['contract_revision'] != contract or not nonempty(result['method']) or
+                not isinstance(result['coverage'], dict) or set(result['coverage']) != set(failure['guarantees']) or
+                not all(nonempty(v) for v in result['coverage'].values())):
+            raise ValueError('Repair requires complete failed-guarantee coverage and trusted contract/method')
+        artifact = repair['artifacts'].get(matches[0].get('artifact', 'app'))
+        if not HASH.fullmatch(artifact or '') or artifact == old['artifact_sha256']:
+            raise ValueError('Repair requires the corrected fixed artifact, not the failed build')
+        observed = result['observation']
+        validate_observation(observed, candidate, artifact)
+        when = datetime.fromisoformat(observed['at'].replace('Z', '+00:00'))
+        if any(when < datetime.fromisoformat(t.replace('Z', '+00:00')) for t in
+               (old['at'], git('show', '-s', '--format=%cI', candidate))):
+            raise ValueError('Repair observation predates the failure or fixed candidate')
+        observers.add(observed['observer'])
+    if not tracked <= cases:
+        raise ValueError('Repair omits a trusted tracked original failure Case')
+    if api('git/ref/heads/main').get('object', {}).get('sha') != trusted:
+        raise ValueError('Trusted main contract changed during repair validation; rerun')
+    return {'repair_revision': canonical_hash([record, repair]), 'repair_contract_base': trusted, 'repair_record': record,
+            'repair': repair, 'repair_observers': sorted(observers)}
+
+
 def verify_pr(pr, api, git=git_read):
     """api(path) uses the same repo; git sees fetched PR/candidate objects only as data."""
     issue, path, mode = metadata(pr)
     head, base = pr['head']['sha'], pr['base']['sha']
-    data = json.loads(git('show', f'{head}:{path}'))
+    data = regular_json(head, path, git)
     gui = field(pr['body'], 'GUI') == 'required'
     validate_change(data, issue, gui)
     files = git('diff', '--no-renames', '--name-only', base, head).splitlines()
     if mode == 'develop':
-        # Outcome is deliberately unrestricted, but every required Case has steps and tracking.
+        # Ordinary pending/blocked/fail Cases remain tracked; original-NG corrections must pass.
         for case in data['cases']:
             if any(case[actor]['status'] == 'fail' for actor in ('gpt', 'human')):
                 fix = api(f'issues/{case["fix_issue"]}')
                 if fix.get('state') != 'open' or 'pull_request' in fix:
                     raise ValueError('Product failure needs an open dedicated fix Issue')
-        return {'mode': mode, 'gui_complete': not gui, 'cases': len(data['cases'])}
+        repair = verify_repair(pr, api(f'issues/{issue}'), data, path, api, git)
+        return {'mode': mode, 'gui_complete': not gui, 'cases': len(data['cases']), **repair}
     if mode == 'tooling':
         if gui or not files or any(not tooling_path(f) for f in files):
             raise ValueError('Direct main tooling route is restricted to documented non-product paths')
