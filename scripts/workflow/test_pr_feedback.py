@@ -202,12 +202,14 @@ class FeedbackLoopTests(unittest.TestCase):
         stale = self.gh.pr(36)
         issue = self.gh.issue(35)
         h, state, sid, _ = self.loop.load(36)
-        for change in ('pr-body', 'issue-body', 'head', 'base', 'target', 'merged'):
+        for change in ('pr-body', 'pr-title', 'issue-body', 'head', 'base', 'target', 'merged'):
             with self.subTest(change=change):
                 self.gh.pull = copy.deepcopy(stale)
                 self.gh.issues[35] = copy.deepcopy(issue)
                 if change == 'pr-body':
                     self.gh.pull['body'] = stale['body'].replace('GUI: not-required', 'GUI: required')
+                elif change == 'pr-title':
+                    self.gh.pull['title'] = 'fix: ログ欠落を直す (#35)'
                 elif change == 'issue-body':
                     self.gh.issues[35]['body'] += '\nNew acceptance condition'
                 elif change in ('head', 'base'):

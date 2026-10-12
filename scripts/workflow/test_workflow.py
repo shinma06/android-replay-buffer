@@ -144,11 +144,32 @@ class LeaseTest(unittest.TestCase):
 
 class PolicyTest(unittest.TestCase):
     def setUp(self):
-        self.pr = {'head': {'ref': 'codex/31-test'}, 'base': {'ref': 'main'},
+        self.pr = {'title': 'chore: 運用規約を整える (#31)', 'head': {'ref': 'codex/31-test'}, 'base': {'ref': 'main'},
                    'body': 'Integration: tooling\nVerification: docs/verification/changes/issue-31.json\nIssue: #31\nGUI: not-required\nGUI reason: 運用規約とhookのみの変更。アプリ操作は不要。'}
 
     def test_matching_metadata(self):
         self.assertEqual(validate(self.pr), 31)
+
+    def test_title_convention_matches_owning_issue_in_local_and_deployed_policy(self):
+        workflow = (ROOT / '.github/workflows/pr-policy.yml').read_text()
+        source = workflow.split("          python3 - <<'PY'\n", 1)[1].rsplit('          PY', 1)[0]
+        namespace = {'__name__': 'inline_test'}
+        exec(compile('\n'.join(line[10:] for line in source.splitlines()), '<workflow>', 'exec'), namespace)
+        for check in (validate, namespace['validate']):
+            for title in ('fix: SDK再接続のログ欠落を正す (#31)',
+                          'feat!: 保存形式を更新する (#31)',
+                          'docs: PRの手順を明記する (#31)'):
+                with self.subTest(title=title, check=check.__module__):
+                    self.assertEqual(check(dict(self.pr, title=title)), 31)
+            for title in ('[運用] #31 表記を揃える', 'Chore: 表記を揃える (#31)',
+                          'chore(workflow): 表記を揃える (#31)', 'chore: 表記を揃える (#32)',
+                          'chore: 表記を揃える (#031)', 'chore: #31 表記を揃える (#31)',
+                          'chore: 表記を揃える (#31) (#32)', 'chore:  (#31)',
+                          'chore: Update SDK (#31)', 'chore: 表記を揃える\n (#31)',
+                          'chore:  表記を揃える (#31)', 'chore: 表記を揃える  (#31)',
+                          'chore: <日本語の要約> (#31)', None):
+                with self.subTest(title=title, check=check.__module__):
+                    with self.assertRaises(ValueError): check(dict(self.pr, title=title))
 
     def test_missing_mismatch_and_duplicate_are_rejected(self):
         for body in ['', self.pr['body'].replace('#31', '#32'), self.pr['body'] + '\nIssue: #31',
@@ -179,6 +200,7 @@ class PolicyTest(unittest.TestCase):
             ('closed during issue fetch', opened, [opened, done, closed], 0, 'skipped'),
             ('closed after valid issue', opened, [opened, issue, closed], 0, 'skipped'),
             ('metadata changes mid-check', opened, [opened, issue, invalid], 1, ''),
+            ('title changes mid-check', opened, [opened, issue, dict(opened, title='docs: 説明を直す (#31)')], 1, ''),
             ('malformed initial object', opened, [None], 1, ''),
             ('malformed issue object', opened, [opened, []], 1, ''),
             ('malformed final object', opened, [opened, issue, None], 1, ''),

@@ -12,7 +12,7 @@
 | 開発ハーネス | 主検査/CIはPython 3.15.0 stable。管理/開発scriptの対応下限はPython 3.15以上、標準ライブラリ、Bash、macOS/Linux。配布CLIのPython 3.9以上とは別。[runtime選択・移行](setup/README.md#runtimeと配置) |
 | 統合先 | 製品変更は `develop`。固定候補を `main` へpromotion。GUI不要toolingは `main`。導入PR統合後、そのmain SHAからdevelopを新設する |
 | 必須checks | `test` / `PR policy` / `Acceptance gate` / `Agent review` / `CLI Python 3.9`。追加contextは対象branchのworkflow導入後に有効化し、実適用は [導入Issue #1](https://github.com/shinma06/android-replay-buffer/issues/1) でreadbackする |
-| 管理 | [Project #5](https://github.com/users/shinma06/projects/5)、[Milestone #1](https://github.com/shinma06/android-replay-buffer/milestone/1)、[作業管理](work-management.md) |
+| 管理 | [Project #5](https://github.com/users/shinma06/projects/5)、現行は [Milestone #3 — Android Studio内の初期版](https://github.com/shinma06/android-replay-buffer/milestone/3)。完了済み [Milestone #1](https://github.com/shinma06/android-replay-buffer/milestone/1) は初回ハーネス導入の履歴。各作業は対応 Issue の実 Milestone を確認する。[作業管理](work-management.md) |
 | Android Studio | プラグイン未実装。SDK/JDK/Gradle/Plugin IDは未選定。[共通知見の入口](android-studio.md)から着手時に適合する |
 
 ## 実行する確認
