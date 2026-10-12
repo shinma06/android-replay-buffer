@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Execute only from the trusted base checkout. PR content is git-show JSON data."""
+from http.client import IncompleteRead
 import json
 import os
 import re
@@ -66,17 +67,21 @@ def recheck_main_repairs(api, repo, source_issue=None):
         for attempt in range(3):
             try:
                 prs = api(f'pulls?state=open&base=develop&per_page=100&page={page}')
-                break
-            except OSError as error:
-                transient = (500 <= error.code < 600 if isinstance(error, HTTPError) else
-                             isinstance(error, (URLError, TimeoutError, ConnectionError)))
+            except (OSError, IncompleteRead, json.JSONDecodeError, UnicodeDecodeError) as failure:
+                transient = (500 <= failure.code < 600 if isinstance(failure, HTTPError) else
+                             isinstance(failure, (URLError, TimeoutError, ConnectionError, IncompleteRead)))
                 if transient and attempt < 2:
                     continue
-                error.add_note(f'PR enumeration incomplete at page {page} after {attempt + 1} attempts; '
-                               'recover known pending targets, then retry enumeration and live gates before integration')
-                errors.append(error)
-                enumeration_failed = True
-                break
+                error = failure
+            else:
+                if isinstance(prs, list):
+                    break
+                error = ValueError('PR enumeration response must be a list')
+            error.add_note(f'PR enumeration incomplete at page {page} after {attempt + 1} attempts; '
+                           'recover known pending targets, then retry enumeration and live gates before integration')
+            errors.append(error)
+            enumeration_failed = True
+            break
         if enumeration_failed:
             break
         for pr in prs:

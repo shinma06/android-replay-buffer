@@ -1,10 +1,14 @@
 """Delayed events must not turn live closed PRs into fresh acceptance decisions."""
 import copy
+from http.client import IncompleteRead
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.error import HTTPError, URLError
+from urllib.request import urlopen
 import json
 import os
 import subprocess
 import tempfile
+import threading
 import unittest
 from unittest.mock import Mock, patch
 
@@ -344,9 +348,95 @@ class MainContractEventTests(unittest.TestCase):
                 self.assertEqual(len(attempts), 1)
                 self.assertIn('incomplete', caught.exception.__notes__[0])
 
-    def test_missing_pr_list_is_not_silent_enumeration_success(self):
-        with self.assertRaises(TypeError):
-            ci.recheck_main_repairs(lambda path: None, 'shinma06/android-replay-buffer')
+    def test_truncated_http_page_retries_or_recovers_known_targets(self):
+        original = self.api
+        filler = dict(self.pr, head=dict(self.pr['head'], ref='unscoped'))
+        for page in (1, 2):
+            for failures in (1, 3):
+                with self.subTest(page=page, failures=failures):
+                    self.calls.clear()
+                    requests = []
+                    pages = {1: [self.pr]} if page == 1 else {1: [self.pr, *[filler] * 99], 2: []}
+                    class Handler(BaseHTTPRequestHandler):
+                        def do_GET(handler):
+                            current = int(handler.path.rsplit('page=', 1)[1])
+                            requests.append(current)
+                            body = json.dumps(pages[current]).encode()
+                            cut = current == page and requests.count(current) <= failures
+                            handler.send_response(200)
+                            handler.send_header('Content-Length', str(len(body)))
+                            handler.end_headers()
+                            handler.wfile.write(body[:len(body) // 2] if cut else body)
+                            handler.close_connection = True
+
+                        def log_message(handler, *args): pass
+
+                    server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+                    thread = threading.Thread(target=server.serve_forever)
+                    thread.start()
+                    def api(path, method='GET', data=None):
+                        if path.startswith('pulls?'):
+                            with urlopen(f'http://127.0.0.1:{server.server_port}/{path}', timeout=2) as response:
+                                return json.loads(response.read())
+                        return original(path, method, data)
+                    try:
+                        if failures == 1:
+                            self.assertEqual(ci.recheck_main_repairs(api, 'shinma06/android-replay-buffer'), [90])
+                        else:
+                            with self.assertRaises(IncompleteRead) as caught:
+                                ci.recheck_main_repairs(api, 'shinma06/android-replay-buffer')
+                            self.assertIn(f'page {page} after 3 attempts', caught.exception.__notes__[0])
+                        self.assertEqual(requests, [1] * (2 if failures == 1 else 3) if page == 1 else
+                                         [1, *[2] * (2 if failures == 1 else 3)])
+                        writes = [c for c in self.calls if c[1] == 'POST']
+                        self.assertEqual([c[0] for c in writes], [] if page == 1 and failures == 3 else
+                                         ['statuses/' + HEAD, 'actions/runs/42/rerun'])
+                        if writes: self.assertEqual(writes[0][2]['state'], 'pending')
+                    finally:
+                        server.shutdown()
+                        server.server_close()
+                        thread.join(timeout=2)
+                    self.assertFalse(thread.is_alive())
+
+    def test_malformed_pr_pages_fail_without_retry_after_known_recovery(self):
+        original = self.api
+        filler = dict(self.pr, head=dict(self.pr['head'], ref='unscoped'))
+        # Decode the actual external bytes; malformed JSON and encoding keep their exception types.
+        for page in (1, 2):
+            for body in (b'{}', b'{"message":"malformed response"}', b'""', b'"text"', b'null',
+                         b'1', b'1.5', b'true', b'{', b'\xff'):
+                with self.subTest(page=page, body=body):
+                    self.calls.clear()
+                    requests = []
+                    def api(path, method='GET', data=None):
+                        if path.startswith('pulls?'):
+                            current = int(path.rsplit('page=', 1)[1])
+                            requests.append(current)
+                            return json.loads(body) if current == page else [self.pr, *[filler] * 99]
+                        return original(path, method, data)
+                    expected = UnicodeDecodeError if body == b'\xff' else json.JSONDecodeError if body == b'{' else ValueError
+                    with self.assertRaises(expected) as caught:
+                        ci.recheck_main_repairs(api, 'shinma06/android-replay-buffer')
+                    self.assertEqual(requests, [1] if page == 1 else [1, 2])
+                    self.assertIn(f'page {page} after 1 attempts', caught.exception.__notes__[0])
+                    self.assertIn('incomplete', caught.exception.__notes__[0])
+                    self.assertEqual([c[0] for c in self.calls if c[1] == 'POST'], [] if page == 1 else
+                                     ['statuses/' + HEAD, 'actions/runs/42/rerun'])
+
+    def test_empty_list_is_complete_enumeration(self):
+        api = Mock(return_value=[])
+        self.assertEqual(ci.recheck_main_repairs(api, 'shinma06/android-replay-buffer'), [])
+        api.assert_called_once_with('pulls?state=open&base=develop&per_page=100&page=1')
+
+    def test_enumeration_does_not_catch_unrelated_programming_errors(self):
+        for failure in (TypeError('reader programming error'), ValueError('unrelated programming error')):
+            with self.subTest(failure=type(failure).__name__):
+                api = Mock(side_effect=failure)
+                with self.assertRaises(type(failure)) as caught:
+                    ci.recheck_main_repairs(api, 'shinma06/android-replay-buffer')
+                self.assertIs(caught.exception, failure)
+                self.assertEqual(api.call_count, 1)
+                self.assertFalse(hasattr(failure, '__notes__'))
 
     def test_missing_stale_or_running_acceptance_never_restores_success(self):
         for run in (None, dict(self.run, head_sha=MOVED), dict(self.run, status='in_progress'),
