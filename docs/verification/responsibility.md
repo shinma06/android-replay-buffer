@@ -1,6 +1,6 @@
 # 製品の保証範囲と最小の十分な検証
 
-[Issue #223](https://github.com/shinma06/android-replay-buffer/issues/223)による全試験の現行改訂です。**保証目的→必要な証拠と精度→実行可能な最小方法**の順で決めます。旧手順に書かれた操作・秒数・回数は、それだけで維持理由になりません。全139 Case/208出典、105 Agent/34 REALと原記録を保持し、[正式計画](amendments/initial-agent.json)の`responsibility_revision.method_revision`を有効条件とします。下の過去改訂にある30分/300event・GOP6証拠・固定操作数等は履歴で、現行の必須方法へ戻しません。
+[Issue #223](https://github.com/shinma06/android-replay-buffer/issues/223)の全試験改訂に、[Issue #230](https://github.com/shinma06/android-replay-buffer/issues/230)のconsumer別方法改訂を適用した現行条件です。**保証目的→必要な証拠と精度→実行可能な最小方法**の順で決めます。旧手順に書かれた操作・秒数・回数は、それだけで維持理由になりません。全139 Case/208出典、105 Agent/34 REALと原記録を保持し、[正式計画](amendments/initial-agent.json)の`responsibility_revision.method_revision`を有効条件とします。下の過去改訂にある30分/300event・GOP6証拠・固定操作数等は履歴で、現行の必須方法へ戻しません。
 
 ## 全試験の目的と方法
 
@@ -54,17 +54,17 @@ OS標準という名前やdecoderの多様性だけで別player/GUIを追加し�
 
 割当と独立レビューでは、追加consumer操作で検出する具体的な自製品欠陥と、production回帰・FILE・既存consumer証拠で確認できない部分を示します。同じ製品artifactへのbindingと、その保証に関係する生成形式・導線・reader/runtime・表示条件の不変を実証した適格な実観察を共有します。不明・変更なら影響する部分だけを再確認し、新しいencodingや表示切断、open導線の破損が残る場合は最小の実open/readを行います。log-onlyでも実production出力のMP4数0・説明・参照/hashをFILEで確認し、形式・導線・条件が不変と確認できたeditor証拠だけを共有します。実通知のopen/copy callback・失敗表示など自製品glueの実接続は別に確認します。アプリの銘柄や全player matrixを保証にせず、FILE成功だけで未観察の相互運用を成功にしません。
 
-これは現行methodの同条件共有の明確化です。計画/Case/原観察・失敗を変更せず、通常reuseと保持事実の再評価はそれぞれ既存の証拠・独立レビュー条件に従います。説明追加を新実行やPASSにしません。
+これは#230の正式method改訂です。原Case/観察・失敗を保持し、通常reuseと保持事実の再評価はそれぞれ既存の証拠・独立レビュー条件に従います。`interop`のcoverageにはCaseの動画/テキスト各保証に該当する実観察と関連条件を個別に対応付け、FILEだけで未確認consumerを成功にしません。改訂を新実行やPASSにしません。
 
 ## trusted-main改訂と現在候補
 
-`method_revision`はIssue223と直前139計画のcanonical hash `993e76bb7a0bd6f9f864c2974b3ef4d4392665de51a4791c9cc0c094c394b50c`を固定します。このblockを除いた計画全文が登録済み旧計画へ一致すること、全139key/208出典・原hash/延期が保全されることを共通resolverで検証します。groupは全Caseを一度ずつ覆い、置換は固定現契約にだけ適用します。後続製品Caseの変更を旧overrideで消しません。
+`method_revision`はIssue230と直前223版のcanonical hash `3ee1d401997722423b4db5f52c07d8edb4b6e377bc1f6f5456c66fab8460af57`を固定します。変更したrecipient/videoの旧文言だけを`previous_methods`に保持し、223版の計画全文を再構成して照合します。そのmethod blockを除いた登録139計画のhash `993e76bb7a0bd6f9f864c2974b3ef4d4392665de51a4791c9cc0c094c394b50c`も照合し、全139key/208出典・原hash/延期が保全されることを共通resolverで検証します。groupは全Caseを一度ずつ覆い、置換は固定現契約にだけ適用します。後続製品Caseの変更を旧overrideで消しません。
 
-改訂は独立レビュー後の固定main baseだけから読みます。候補830の正確な旧計画全文も許可し、method-only更新のため新build/導入/全GUIを要求しません。candidate単独改訂・任意の旧計画・欠落/不一致・symlink/重複JSON keyは拒否します。通常のdevelop管理同期/promotion条件は別にPMが引き継ぎます。製品/build/fixture変更や途中revert・不明な条件は既存history gateで拒否します。
+改訂は独立レビュー後の固定main baseだけから読みます。候補830の正確な旧計画全文、登録223版と現行230版を許可し、method-only更新のため新build/導入/全GUIを要求しません。candidate単独改訂・任意の旧計画・欠落/不一致・symlink/重複JSON keyは拒否します。通常のdevelop管理同期/promotion条件は別にPMが引き継ぎます。製品/build/fixture変更や途中revert・不明な条件は既存history gateで拒否します。
 
 現結果には現plan/revisionとgroup別全証拠を要求します。GOPの6個の旧証拠欄は現行bufferの`window_and_gop`へ統合し、1秒prune反例・IDR前中後・VFR/品質/容量/切出しを全て覆う回帰/FILEの参照を必須にします。旧観察のGOP6証拠は歴史上の旧条件で照合し保全します。旧aggregate pending/blocked/failからの成功事実は既存`responsibility_assessment`で原JSON/hash、正確な元plan、実成功facts、全有効条件へのcoverage、不変artifact/条件、未解決自製品失敗なしを確認します。文字列の存在だけで証拠の内容は保証できず、独立レビューが対応内容を確認します。方法変更や構造checkは遡及PASSではありません。
 
-本改訂から採用件数は増えません。現在3/105、全体0/139は保全し、目的別監査では短時間保存・初期OFF・不正設定・package案内の4件が既存証拠を再評価できる候補です（採用ではありません）。PM/QAが新条件へ証拠を実際に対応付けた後に再集計します。未達/REAL・QA27/65/87/release10を引き継ぎ、計画改訂完了と製品受入完了を分けます。
+本改訂から採用件数は増えません。#223当時の3/105と4件の再評価候補は履歴です。その後のsource830評価も自動で新revisionへ移行せず、PM/QAが各保持事実を現条件へ実際に対応付け、独立レビュー後に再集計します。未達/REAL・QA27/65/87/release10を引き継ぎ、計画改訂完了と製品受入完了を分けます。
 
 ## 過去改訂の記録
 
@@ -141,7 +141,7 @@ plan_extensionのprevious_plan_sha256は登録旧138計画 `6d11e3cdee0b6189c743
 
 旧成功の再評価は既存の`reused`形式と同じキー（`source_record`による固定promotion記録との一致を含む）で`status: reassessed`を使います。`source_result`に元の`initial-pass`又は全体`pass`をそのまま保存し、`source_candidate`は現在と同じでも構いません。`confirmation`は新しい試験実行ではなく、新条件への対応確認です。現candidate/hash・実確認者/日時・loaded identity・equivalence/environment evidenceと上記の責任改訂証拠を要求します。元planは#182の`previous_plan_sha256`又は#208の登録直前計画hashに一致し、元の実行経路・GOP/人間証拠を検証します。祖先関係・不変製品/build/fixture/設定と途中revertを含む既存history gateを維持します。
 
-旧fail/pending/blocked/deferredの**判定そのもの**の再利用、再利用の連鎖、未確認の原結果、旧日時より前の確認は拒否します。部分報告を旧wholeCase PASSへ昇格させません。一方、旧wholeCaseが外部側の旧義務でpendingでも、その報告で独立に実証された成功事実は捨てません。新しい`initial_observation`又は通常`pass`の現在評価として、`contract_coverage`に各旧事実の元候補/成果物/観察者/日時/固定証拠と全有効条件への対応を記録します。`reason`で再評価日時と元の実行日時を区別し、新GUI実行と主張しません。`artifact_binding`には不変artifact/製品/build/fixture/条件の実証、`failure_attribution`には旧fail/pendingの理由と未解決の自製品違反を保全します。欠ける事実だけ追加実施し、未解決の自製品失敗があれば新判定もfailです。これは旧判定のcopyではなく、別のレビュー対象です。この経路は観察に`responsibility_assessment`を追加し、`source_candidate / source_result / source_result_sha256 / source_record_evidence`に固定の原判定を保持します。`facts`はID付きの実成功観察（通常の観察形式、原candidate/hash/実施者/日時/ロード/証拠）、`coverage`は全責任証拠keyからそのfact IDへの対応です。`missing_requirements / unresolved_owned_failures`は空でなければ成功不可。fact元候補のplanは、正式改訂に登録した原plan、#208の登録直前計画、#219の登録旧138計画又は現在trusted有効planの全文と完全一致するものに限ります。docs-only同期後の同じ正式改訂は許可し、任意の別改訂は拒否します。gateはこのplan照合/不変履歴・元結果hash・factの候補/成果物/成功/日時・対応の欠落を検査し、独立レビューが原記録の一致と全条件の実質を確認します。改訂hashを旧結果に足すだけでは成功にしません。通常の`reused`はresponsibility_revisionも同じ契約の例外です。元promotionの記録がない成功を埋め込みreuseで作りません。旧pending内の成功事実は上記の原記録/固定hashと独立レビューを要する別経路として保持し、過去の正式Case PASSがあったと主張しません。
+旧fail/pending/blocked/deferredの**判定そのもの**の再利用、再利用の連鎖、未確認の原結果、旧日時より前の確認は拒否します。部分報告を旧wholeCase PASSへ昇格させません。一方、旧wholeCaseが外部側の旧義務でpendingでも、その報告で独立に実証された成功事実は捨てません。新しい`initial_observation`又は通常`pass`の現在評価として、`contract_coverage`に各旧事実の元候補/成果物/観察者/日時/固定証拠と全有効条件への対応を記録します。`reason`で再評価日時と元の実行日時を区別し、新GUI実行と主張しません。`artifact_binding`には不変artifact/製品/build/fixture/条件の実証、`failure_attribution`には旧fail/pendingの理由と未解決の自製品違反を保全します。欠ける事実だけ追加実施し、未解決の自製品失敗があれば新判定もfailです。これは旧判定のcopyではなく、別のレビュー対象です。この経路は観察に`responsibility_assessment`を追加し、`source_candidate / source_result / source_result_sha256 / source_record_evidence`に固定の原判定を保持します。`facts`はID付きの実成功観察（通常の観察形式、原candidate/hash/実施者/日時/ロード/証拠）、`coverage`は全責任証拠keyからそのfact IDへの対応です。`missing_requirements / unresolved_owned_failures`は空でなければ成功不可。fact元候補のplanは、正式改訂に登録した原plan、#208の登録直前計画、#219の登録旧138計画、#223の登録直前139計画（source830）、#230の登録直前223版又は現在trusted有効planの全文と完全一致するものに限ります。docs-only同期後の同じ正式改訂は許可し、任意の別改訂は拒否します。gateはこのplan照合/不変履歴・元結果hash・factの候補/成果物/成功/日時・対応の欠落を検査し、独立レビューが原記録の一致と全条件の実質を確認します。改訂hashを旧結果に足すだけでは成功にしません。通常の`reused`はresponsibility_revisionも同じ契約の例外です。元promotionの記録がない成功を埋め込みreuseで作りません。旧pending内の成功事実は上記の原記録/固定hashと独立レビューを要する別経路として保持し、過去の正式Case PASSがあったと主張しません。
 
 gateと一覧は有効条件/原文履歴/再評価を分けて示します。初期段階の合格は完全受入ではなく、後続の全体gateには全139の有効条件を復元します。責任改訂そのものはCase PASS・GUI実行・初期版完成・main製品受入を意味しません。旧候補/ZIP/15件観察/正式PASS0は履歴として保持し、再評価後の件数は別記録とします。QA27/65/87とrelease10の担当・残条件を双方向readbackした後に次の試験を割り当てます。
 

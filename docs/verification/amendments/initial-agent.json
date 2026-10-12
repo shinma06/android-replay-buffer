@@ -3566,8 +3566,8 @@
       "previous_plan_sha256": "13bd1e294519915d8c8a66be2770811a4d6b28465432061e7c2eae91a87fd8a3"
     },
     "method_revision": {
-      "issue": 223,
-      "previous_plan_sha256": "993e76bb7a0bd6f9f864c2974b3ef4d4392665de51a4791c9cc0c094c394b50c",
+      "issue": 230,
+      "previous_plan_sha256": "3ee1d401997722423b4db5f52c07d8edb4b6e377bc1f6f5456c66fab8460af57",
       "common_requirements": [
         "目的→自製品の必要な証拠/精度→実行可能な最小方法の順で選ぶ。本改訂のgroup分担とCase固有expectedを有効条件とし、旧手順/回数/秒数/同時実行指定そのものは保証理由にしない。固定全139 Case/208出典と原plan/観察/失敗は保持し、方法変更を実行PASSにしない。 groupは関連する保証/方法の集合であり、本Case固有expectedに該当する目的だけを充足する。短時間保存へN超取得/長時間精度・回転・独立失敗retry等を新しい依存として加えない。",
         "対象データ・内容/順序/帰属・時刻窓・unknown/loss説明・固定pin/retry・原子性/非上書き・所有/終了・実API接続を保つ。決定的production回帰は既知入力の真値と全対象を照合し、代表nativeは接続/操作/表示を確かめる。native成果へ未公開の全raw/config取得を一律要求しない。",
@@ -3639,15 +3639,15 @@
             "135:LOG-ONLY-README"
           ],
           "disposition": "置換",
-          "purpose": "生成した全内容・時刻/欠落の説明と、受取人が標準player/editorで場面/両logを辿れること。",
-          "methods": "既知packet/config/元PTS/復号画素を持つ同ZIP production Writer回帰で、全対象packet/frame・単一MP4/1track・sample/index/headers/edit/実VFR・原寸/aspect/文字/色・null/MAX/held/terminal・後半故障を照合する。native保存物は全FILE/sample/両log/record ID/clock/window/manifestを独立readerで読み、実保存/glueに結び付ける。native未公開raw/configの全取得を別の必須条件にせず、既知入力の全byte/画素真値とnative成果の実構造/表示を分担する。標準playerのopen・短いPlay・前後seekと標準editorでREADMEから代表同ID/不足説明へ辿る操作は同条件の一回を共有する。製品違反と未帰属は未完了、根拠付き外部reader差は診断/制約として残す。",
-          "excluded": "全Play/精密seek/全GUI検索、外部readerの全実装、全native packet exportは不要。",
+          "purpose": "生成した全内容・時刻/欠落の説明と、受取人が動画の場面とテキストの両log/READMEを辿れること。動画とテキストのconsumer保証を個別の関連条件で確認する。",
+          "methods": "既知packet/config/元PTS/復号画素を持つ同ZIP production Writer回帰で、全対象packet/frame・単一MP4/1track・sample/index/headers/edit/実VFR・原寸/aspect/文字/色・null/MAX/held/terminal・後半故障を照合する。native保存物は全FILE/sample/両log/record ID/clock/window/manifestを独立readerで読み、実保存/glueに結び付ける。native未公開raw/configの全取得を別の必須条件にせず、既知入力の全byte/画素真値とnative成果の実構造/表示を分担する。動画のopen・短い実再生・前後移動・実画像/原寸/aspect/文字可読性と、テキストのREADMEから両log/不足説明へ辿る実open/readは別々の保証として確認する。動画はcontainer/codec/sample-description/geometry、テキストはencoding/本文形式/導線/reader・runtime/表示条件を個別に比較し、同じ製品artifactとその保証の関連条件の不変を実証した既存実観察だけを共有する。新動画や新ID/数値/理由だけでeditorを再実行せず、変更/不明な条件に必要な部分だけ追加確認する。各新出力の全FILE検査は省略しない。目的を覆うinstalled API/IPC/CLIと実画像/render経路を先に評価し、能力不足なら最小のhost検証harnessを検討する。銘柄・OS同梱・手動入力を保証にせず、command成功/vo=null/time-posだけで実画像・要求scene到達や同期精度を成功にしない。通知open/copy callback・失敗表示の実glueは別に確認する。製品違反と未帰属は未完了、根拠付き外部reader差は診断/制約として残す。",
+          "excluded": "全Play/精密seek/全GUI検索、外部readerの全実装、全native packet exportは不要。 player/editor一組の反復、銘柄/OS同梱/decoder多様性だけによる追加GUIは不要。具体的な失敗/不明と自製品違反・未帰属は保持し、その残差へ有限の代替を選ぶ。",
           "evidence_keys": [
             "file_integrity",
             "content",
             "interop"
           ],
-          "preconditions": "固定candidate/source・同じZIP/実classへのbindingと既存証拠の条件を確認する。所有fixtureを使い、native操作には共有GUI lease/実tool権限・対象識別/復旧を整える。同artifactの保存物と既知入力回帰の成果。追加ツールを要しない標準player/editor。全保存物/対象集合と不足理由を読み取れる。新録画を必須にしない。 REAL固有取得/USB/表示/負荷と利用者保留は実観察なしに完了としない。"
+          "preconditions": "固定candidate/source・同じZIP/実classへのbindingと既存証拠の条件を確認する。所有fixtureを使い、native操作には共有GUI lease/実tool権限・対象識別/復旧を整える。同artifactの保存物と既知入力回帰の成果。保証を覆うconsumer又はAPI/IPC/実画像経路。host検証toolと製品の追加導入不要保証を区別し、実権限/所有/復旧を守る。全保存物/対象集合と不足理由を読み取れる。新録画を必須にしない。 REAL固有取得/USB/表示/負荷と利用者保留は実観察なしに完了としない。"
         },
         "buffer": {
           "cases": [
@@ -3809,8 +3809,8 @@
           ],
           "disposition": "置換",
           "purpose": "VFR/clock unknown/decodeRunと全対象内容/時刻・単一MP4/原寸/Level・失敗pinを保証する。",
-          "methods": "既知packet/config/元PTS/復号画素を持つ同ZIP production Writer回帰で、全対象packet/frame・単一MP4/1track・sample/index/headers/edit/実VFR・原寸/aspect/文字/色・null/MAX/held/terminal・後半故障を照合する。native保存物は全FILE/sample/両log/record ID/clock/window/manifestを独立readerで読み、実保存/glueに結び付ける。native未公開raw/configの全取得を別の必須条件にせず、既知入力の全byte/画素真値とnative成果の実構造/表示を分担する。標準playerのopen・短いPlay・前後seekと標準editorでREADMEから代表同ID/不足説明へ辿る操作は同条件の一回を共有する。製品違反と未帰属は未完了、根拠付き外部reader差は診断/制約として残す。 内部の全break種・前/中/後・unknown/整数・PTS reset/config/geometry/後半欠落は決定的回帰。実IDEでは通常/静止/実回転混在Saveと通常再接続を別工程で観察できる。通常と再接続前後に識別可能な陽性eventを予定し、全予定対象を実窓内で照合する。N300/通常3/PRE3/POST3・9/18phaseは固定せず、全phaseと欠落検出能力は保つ。",
-          "excluded": "全境界native故障・全精密seek・生config同native成果必須・30分系列・同一短時間run/240秒余裕を除外する。",
+          "methods": "既知packet/config/元PTS/復号画素を持つ同ZIP production Writer回帰で、全対象packet/frame・単一MP4/1track・sample/index/headers/edit/実VFR・原寸/aspect/文字/色・null/MAX/held/terminal・後半故障を照合する。native保存物は全FILE/sample/両log/record ID/clock/window/manifestを独立readerで読み、実保存/glueに結び付ける。native未公開raw/configの全取得を別の必須条件にせず、既知入力の全byte/画素真値とnative成果の実構造/表示を分担する。動画のopen・短い実再生・前後移動・実画像/原寸/aspect/文字可読性と、テキストのREADMEから両log/不足説明へ辿る実open/readは別々の保証として確認する。動画はcontainer/codec/sample-description/geometry、テキストはencoding/本文形式/導線/reader・runtime/表示条件を個別に比較し、同じ製品artifactとその保証の関連条件の不変を実証した既存実観察だけを共有する。新動画や新ID/数値/理由だけでeditorを再実行せず、変更/不明な条件に必要な部分だけ追加確認する。各新出力の全FILE検査は省略しない。目的を覆うinstalled API/IPC/CLIと実画像/render経路を先に評価し、能力不足なら最小のhost検証harnessを検討する。銘柄・OS同梱・手動入力を保証にせず、command成功/vo=null/time-posだけで実画像・要求scene到達や同期精度を成功にしない。通知open/copy callback・失敗表示の実glueは別に確認する。製品違反と未帰属は未完了、根拠付き外部reader差は診断/制約として残す。 内部の全break種・前/中/後・unknown/整数・PTS reset/config/geometry/後半欠落は決定的回帰。実IDEでは通常/静止/実回転混在Saveと通常再接続を別工程で観察できる。通常と再接続前後に識別可能な陽性eventを予定し、全予定対象を実窓内で照合する。N300/通常3/PRE3/POST3・9/18phaseは固定せず、全phaseと欠落検出能力は保つ。",
+          "excluded": "全境界native故障・全精密seek・生config同native成果必須・30分系列・同一短時間run/240秒余裕を除外する。 player/editor一組の反復、銘柄/OS同梱/decoder多様性だけによる追加GUIは不要。具体的な失敗/不明と自製品違反・未帰属は保持し、その残差へ有限の代替を選ぶ。",
           "evidence_keys": [
             "regression",
             "file_integrity",
@@ -3956,6 +3956,18 @@
           "case": {
             "expected": "時計履歴のgroup/next/neighbor探索を行ごとに全走査しない。最大履歴と多数行、境界・曖昧性・未知・例外、元の窓/order/ID/帰属/pinを同ZIP製品classで確認する。同じ新候補の代表glueの実public経路では保存完了と継続取得、失敗した固定対象のretryが従来どおり動作する。実停止時間/欠落改善は観測した証拠がある範囲だけ報告する。 失敗場所と固定retryの内部伝播は同ZIP production classの隔離public経路へ分担し、実IDEの代表正常保存/表示と安全な失敗表示へbindingする。実stagingのruntime mutationを必須にしない。"
           }
+        }
+      },
+      "previous_methods": {
+        "recipient": {
+          "purpose": "生成した全内容・時刻/欠落の説明と、受取人が標準player/editorで場面/両logを辿れること。",
+          "methods": "既知packet/config/元PTS/復号画素を持つ同ZIP production Writer回帰で、全対象packet/frame・単一MP4/1track・sample/index/headers/edit/実VFR・原寸/aspect/文字/色・null/MAX/held/terminal・後半故障を照合する。native保存物は全FILE/sample/両log/record ID/clock/window/manifestを独立readerで読み、実保存/glueに結び付ける。native未公開raw/configの全取得を別の必須条件にせず、既知入力の全byte/画素真値とnative成果の実構造/表示を分担する。標準playerのopen・短いPlay・前後seekと標準editorでREADMEから代表同ID/不足説明へ辿る操作は同条件の一回を共有する。製品違反と未帰属は未完了、根拠付き外部reader差は診断/制約として残す。",
+          "excluded": "全Play/精密seek/全GUI検索、外部readerの全実装、全native packet exportは不要。",
+          "preconditions": "固定candidate/source・同じZIP/実classへのbindingと既存証拠の条件を確認する。所有fixtureを使い、native操作には共有GUI lease/実tool権限・対象識別/復旧を整える。同artifactの保存物と既知入力回帰の成果。追加ツールを要しない標準player/editor。全保存物/対象集合と不足理由を読み取れる。新録画を必須にしない。 REAL固有取得/USB/表示/負荷と利用者保留は実観察なしに完了としない。"
+        },
+        "video": {
+          "methods": "既知packet/config/元PTS/復号画素を持つ同ZIP production Writer回帰で、全対象packet/frame・単一MP4/1track・sample/index/headers/edit/実VFR・原寸/aspect/文字/色・null/MAX/held/terminal・後半故障を照合する。native保存物は全FILE/sample/両log/record ID/clock/window/manifestを独立readerで読み、実保存/glueに結び付ける。native未公開raw/configの全取得を別の必須条件にせず、既知入力の全byte/画素真値とnative成果の実構造/表示を分担する。標準playerのopen・短いPlay・前後seekと標準editorでREADMEから代表同ID/不足説明へ辿る操作は同条件の一回を共有する。製品違反と未帰属は未完了、根拠付き外部reader差は診断/制約として残す。 内部の全break種・前/中/後・unknown/整数・PTS reset/config/geometry/後半欠落は決定的回帰。実IDEでは通常/静止/実回転混在Saveと通常再接続を別工程で観察できる。通常と再接続前後に識別可能な陽性eventを予定し、全予定対象を実窓内で照合する。N300/通常3/PRE3/POST3・9/18phaseは固定せず、全phaseと欠落検出能力は保つ。",
+          "excluded": "全境界native故障・全精密seek・生config同native成果必須・30分系列・同一短時間run/240秒余裕を除外する。"
         }
       }
     }

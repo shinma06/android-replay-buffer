@@ -1,9 +1,9 @@
 # 受入・固定候補・QA
 
-現行の全139 Caseの方法は[保証目的による改訂 #223](responsibility.md)と正式計画の`method_revision`を使います。以下の段階受入/履歴にある固定30分/300event・操作回数・GOP6証拠などは原記録であり、現行groupの必要証拠へ置換します。精度・データ/窓/保全・実接続・REAL未達を保持し、方法だけの更新を実行PASSにしません。
+現行の全139 Caseの方法は[保証目的とconsumer別方法の改訂 #223/#230](responsibility.md)と正式計画の`method_revision`を使います。以下の段階受入/履歴にある固定30分/300event・操作回数・GOP6証拠などは原記録であり、現行groupの必要証拠へ置換します。精度・データ/窓/保全・実接続・REAL未達を保持し、方法だけの更新を実行PASSにしません。
 
 
-**現在の保証境界**: [保証目的と最小検証（#223）](responsibility.md)と正式計画の`responsibility_revision.method_revision`を適用します。原Case/旧計画/以下の過去改訂説明は履歴として保持し、外部player全Play/精密seek・一律human番号読取り・native故障全種反復・無変更artifactの再build義務は明示改訂後の有効条件で判断します。未達をPASSにしません。gateと一覧は同じresolverを使います。
+**現在の保証境界**: [保証目的と最小検証（#223/#230）](responsibility.md)と正式計画の`responsibility_revision.method_revision`を適用します。原Case/旧計画/以下の過去改訂説明は履歴として保持し、外部player全Play/精密seek・一律human番号読取り・native故障全種反復・無変更artifactの再build義務は明示改訂後の有効条件で判断します。未達をPASSにしません。gateと一覧は同じresolverを使います。
 
 `changes/issue-N.json` はIssueの受入、`promotion.json` はmainへ入れる固定候補と全Caseの観察の正本です。過去の観察を別SHA/buildのpassへ流用しません。未実施はpending、環境不足はblocked、製品不具合はfailと区別します。
 
@@ -70,7 +70,7 @@ Plugin ZIP生成はプラグイン基盤の導入時に実buildへ接続しま�
 
 ### 初期版の段階受入（#64）
 
-この節の固定30分/300event・9/18phase・GOP6証拠・一律human等は旧計画の履歴です。現行のCase範囲・出典/原結果を保持し、前提/実施方法/Agent依存は#223のtrusted method_revisionを適用します。
+この節の固定30分/300event・9/18phase・GOP6証拠・一律human等は旧計画の履歴です。現行のCase範囲・出典/原結果を保持し、前提/実施方法/Agent依存は#223/#230のtrusted method_revisionを適用します。
 
 
 利用者の方針に従い、初期版はエージェントが実行できる工程を完了し、人間の操作・確認と実機準備が必要な部分を[後続QA #65](https://github.com/shinma06/android-replay-buffer/issues/65)へ延期する。[固定計画](amendments/initial-agent.json)をtrusted mainの通常tooling PRでレビューし、develop同期後の候補へ適用する。#208の導入method改訂は、下記の登録直前計画を持つ不変候補にも限定適用できる。候補後の変更許可、main保護、独立レビュー、全commitの出典検査は変えない。

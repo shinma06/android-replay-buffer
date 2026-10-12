@@ -2,7 +2,7 @@
   "schema": 1,
   "issue": 230,
   "gui_required": false,
-  "reason": "既存の目的別最小方法と同条件共有を、GUI手段の選択・動画とテキストconsumerごとに明確化し、割当・独立レビュー入口へ反映する文書/tooling変更。製品/build/fixture・正式計画/原Case/観察/合否は変更しない。新GUI・媒体再decode・製品buildは行わず、机上比較を実務効果や製品受入にしない。",
+  "reason": "GUI手段の選択・動画とテキストconsumer別の正式method改訂とresolver/保持事実の適格性・一覧/文書/回帰試験を整合するtooling変更。全139 Case/208出典、原Case/観察/合否・製品/build/fixtureを保持。新GUI・媒体再decode・製品buildは行わず、改訂や合成回帰を製品受入/実務効果にしない。",
   "cli_checks": [
     "python3 scripts/check.py",
     "python3 scripts/workflow/product_check.py",

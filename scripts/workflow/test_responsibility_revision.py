@@ -15,7 +15,7 @@ from test_observation_reuse import OLD, RECORD, reused, record_original
 from verification import (INITIAL_PLAN, canonical_hash, effective_initial_entry,
                           effective_responsibility_case, initial_stage_plan, render_queue,
                           previous_installation_plan, previous_settings_plan, previous_method_plan, historical_initial_sources,
-                          bind_initial_sources, validate_fact_assessment,
+                          bind_initial_sources, validate_fact_assessment, responsibility_group,
                           validate_candidate_result, validate_responsibility_policy)
 
 
@@ -1014,7 +1014,7 @@ class PurposeMethodRevisionTests(unittest.TestCase):
                          self.prior.fixture.documents[f'{NEW}:{INITIAL_PLAN}'])
 
     def test_new_method_rejects_missing_window_proof_stale_stage_unknown_plan_and_real_waiver(self):
-        for mutation in ('window', 'stage', 'candidate', 'old_hash', 'missing', 'duplicate', 'real'):
+        for mutation in ('window', 'stage', 'candidate', 'null-plan', 'old_hash', 'missing', 'duplicate', 'real'):
             saved = copy.deepcopy(self.policy)
             if mutation == 'window':
                 del self.observed['responsibility_evidence']['window_and_gop']
@@ -1022,6 +1022,8 @@ class PurposeMethodRevisionTests(unittest.TestCase):
                 self.prior.initial.manifest['results']['36:QA-1-EMU']['stage_revision'] = canonical_hash(self.prior.policy)
             elif mutation == 'candidate':
                 self.prior.fixture.documents[f'{NEW}:{INITIAL_PLAN}']['owner'] += ' changed'
+            elif mutation == 'null-plan':
+                self.prior.fixture.documents[f'{NEW}:{INITIAL_PLAN}'] = None
             elif mutation == 'old_hash':
                 self.policy['cases']['36:QA-1-EMU']['sources'][0]['original_case_sha256'] = 'f' * 64
             elif mutation == 'missing':
@@ -1136,3 +1138,155 @@ class PurposeMethodRevisionTests(unittest.TestCase):
             assessment.clear()
             assessment.update(saved)
             self.prior.fixture.documents[f'{NEW}:{INITIAL_PLAN}'] = copy.deepcopy(self.prior.policy)
+
+
+class ConsumerMethodRevisionTests(unittest.TestCase):
+    """Real registered plan/history, synthetic observations; never product acceptance."""
+    def setUp(self):
+        self.root = Path(__file__).resolve().parents[2]
+        self.policy = json.loads((self.root / INITIAL_PLAN).read_text())
+        self.base = 'c70e6292bd85364458eb98e535690bfa6001c59f'
+        self.source = '830b58294bec3f2fa4751d831a5b95f6b0658de6'
+        self.key = '13:SYNC-RECIPIENT'
+        self.git = cache(lambda *args: subprocess.check_output(
+            ['git', *args], cwd=self.root, text=True).strip())
+        self.prior = json.loads(self.git('show', self.base + ':' + INITIAL_PLAN))
+
+    def test_trusted_current_and_both_registered_methods_share_all_original_cases_and_listing(self):
+        from verification import previous_consumer_plan
+        self.assertEqual(self.prior, previous_consumer_plan(self.policy))
+        self.assertEqual(json.loads(self.git('show', self.source + ':' + INITIAL_PLAN)),
+                         previous_method_plan(self.policy))
+        for candidate_plan in (previous_method_plan(self.policy), self.prior, self.policy):
+            def trusted(*args):
+                if args == ('show', self.base + ':' + INITIAL_PLAN):
+                    return json.dumps(self.policy)
+                if args == ('show', self.source + ':' + INITIAL_PLAN):
+                    return json.dumps(candidate_plan)
+                return self.git(*args)
+            self.assertEqual(self.policy, initial_stage_plan(self.base, self.source, trusted))
+        self.assertEqual(self.prior['cases'], self.policy['cases'])
+        rows = historical_initial_sources(self.policy, self.source, self.git)
+        self.assertEqual((139, 208, 105, 34), (len(self.policy['cases']), len(rows),
+            sum(c['initial_scope'] == 'agent' for c in self.policy['cases'].values()),
+            sum(c['initial_scope'] == 'deferred' for c in self.policy['cases'].values())))
+        for name, group in self.prior['responsibility_revision']['method_revision']['groups'].items():
+            current = self.policy['responsibility_revision']['method_revision']['groups'][name]
+            if name not in ('recipient', 'video'):
+                self.assertEqual(group, current)
+            self.assertEqual(group['cases'], current['cases'])
+            self.assertEqual(group['evidence_keys'], current['evidence_keys'])
+        def trusted(*args):
+            return json.dumps(self.policy) if args == ('show', self.base + ':' + INITIAL_PLAN) else self.git(*args)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'issue-13.json'
+            path.write_text(self.git('show', self.source + ':docs/verification/changes/issue-13.json'))
+            view = render_queue([path], {'stage': 'initial-agent', 'base': self.base,
+                                        'candidate': self.source, 'results': {}}, trusted)
+        self.assertIn('目的による方法改訂 #230:', view)
+        self.assertIn('固定原契約', view)
+        self.assertIn('未登録（未実施又は延期）', view)
+
+    def assessment(self, source):
+        evidence = {'contract_coverage', 'artifact_binding', 'failure_attribution',
+                    *responsibility_group(self.policy, self.key)['evidence_keys']}
+        aggregate = {'status': 'pending', 'head': source, 'reason': 'Original aggregate stays pending.'}
+        observed = dict(observation(), actor='gpt', head=source, at='2026-10-12T12:00:00+09:00',
+                        responsibility_revision=canonical_hash(self.policy['responsibility_revision']),
+                        responsibility_evidence={k: 'Synthetic complete current coverage' for k in evidence})
+        observed['responsibility_assessment'] = {
+            'source_candidate': source, 'source_result': aggregate,
+            'source_result_sha256': canonical_hash(aggregate), 'source_record_evidence': 'Synthetic sealed record',
+            'facts': {k: dict(observation(), head=source, actor='gpt', reason='Synthetic ' + k)
+                      for k in ('full-file', 'video', 'text')},
+            'coverage': {k: (['video', 'text'] if k == 'interop' else ['full-file']) for k in evidence},
+            'missing_requirements': [], 'unresolved_owned_failures': []}
+        return observed
+
+    def test_source830_and_223_facts_survive_changed_method_without_copying_old_verdict(self):
+        # A docs-only synchronization may carry either exact registered source plan.
+        old = json.loads(self.git('show', self.source + ':' + INITIAL_PLAN))
+        for source_plan in (old, self.prior):
+            def source_git(*args):
+                return json.dumps(source_plan) if args == ('show', self.source + ':' + INITIAL_PLAN) else self.git(*args)
+            observed = self.assessment(self.source)
+            validate_candidate_result(observed, self.key, self.policy, None, self.source,
+                                      'e' * 64, None, None, source_git, self.base)
+            self.assertEqual('pending', observed['responsibility_assessment']['source_result']['status'])
+            stale = dict(observed, responsibility_revision=canonical_hash(source_plan['responsibility_revision']))
+            with self.assertRaisesRegex(ValueError, 'coverage'):
+                validate_candidate_result(stale, self.key, self.policy, None, self.source,
+                                          'e' * 64, None, None, source_git, self.base)
+        observed = self.assessment(self.source)
+        for edit in ('missing-interop', 'failed-video', 'owned-failure', 'wrong-artifact', 'original-hash', 'old-plan'):
+            bad = copy.deepcopy(observed)
+            assessment = bad['responsibility_assessment']
+            if edit == 'missing-interop':
+                del assessment['coverage']['interop']
+            elif edit == 'failed-video':
+                assessment['facts']['video']['status'] = 'fail'
+            elif edit == 'owned-failure':
+                assessment['unresolved_owned_failures'] = ['Missing owned frame']
+            elif edit == 'wrong-artifact':
+                assessment['facts']['text']['artifact_sha256'] = 'f' * 64
+            elif edit == 'original-hash':
+                assessment['source_result_sha256'] = 'f' * 64
+            old = json.loads(self.git('show', self.source + ':' + INITIAL_PLAN))
+            if edit == 'old-plan':
+                old['responsibility_revision']['groups']['recipient']['methods'] += ' mutated'
+            def source_git(*args):
+                return json.dumps(old) if args == ('show', self.source + ':' + INITIAL_PLAN) else self.git(*args)
+            with self.subTest(edit=edit), self.assertRaises(ValueError):
+                validate_candidate_result(bad, self.key, self.policy, None, self.source,
+                                          'e' * 64, None, None, source_git, self.base)
+
+    def test_amendment_and_candidate_only_changes_cannot_relabel_unregistered_history(self):
+        for edit in ('previous-hash', 'previous-text', 'missing-video', 'unknown-version', 'unrelated-group'):
+            bad = copy.deepcopy(self.policy)
+            method = bad['responsibility_revision']['method_revision']
+            if edit == 'previous-hash':
+                method['previous_plan_sha256'] = 'f' * 64
+            elif edit == 'previous-text':
+                method['previous_methods']['recipient']['methods'] += ' mutated'
+            elif edit == 'missing-video':
+                del method['previous_methods']['video']
+            elif edit == 'unknown-version':
+                method['issue'] = 999
+            else:
+                method['groups']['buffer']['methods'] += ' mutated'
+            with self.subTest(edit=edit), self.assertRaises(ValueError):
+                validate_responsibility_policy(bad)
+        # Even a structurally valid amendment in the candidate cannot grant trust.
+        def candidate_only(*args):
+            return json.dumps(self.policy) if args == ('show', self.source + ':' + INITIAL_PLAN) else self.git(*args)
+        with self.assertRaisesRegex(ValueError, 'exact trusted'):
+            initial_stage_plan(self.base, self.source, candidate_only)
+
+    def test_recorded_success_reassessment_admits_registered830_without_weaker_reuse(self):
+        source_plan = json.loads(self.git('show', self.source + ':' + INITIAL_PLAN))
+        evidence = {'contract_coverage', 'artifact_binding', 'failure_attribution',
+                    *responsibility_group(source_plan, self.key)['evidence_keys']}
+        original = dict(observation(), actor='gpt', head=self.source,
+                        responsibility_revision=canonical_hash(source_plan['responsibility_revision']),
+                        responsibility_evidence={k: 'Synthetic original proof' for k in evidence})
+        confirmation = self.assessment(self.source)
+        confirmation.pop('responsibility_assessment')
+        confirmation.update(equivalence_evidence='Synthetic unchanged full artifact',
+                            environment_evidence='Synthetic current conditions')
+        result = {'status': 'reassessed', 'head': self.source, 'artifact_sha256': 'e' * 64,
+                  'source_candidate': self.source, 'source_record': self.base,
+                  'source_result': original, 'confirmation': confirmation}
+        def recorded(*args):
+            if args == ('ls-tree', self.base, '--', 'docs/verification/promotion.json'):
+                return '100644 blob ' + '0' * 40 + '\tdocs/verification/promotion.json'
+            if args == ('show', self.base + ':docs/verification/promotion.json'):
+                return json.dumps({'schema': 1, 'candidate': self.source, 'results': {self.key: original}})
+            return self.git(*args)
+        before = copy.deepcopy(original)
+        validate_candidate_result(result, self.key, self.policy, None, self.source,
+                                  'e' * 64, None, None, recorded, self.base)
+        self.assertEqual(before, original)
+        result['status'] = 'reused'
+        with self.assertRaises(ValueError):
+            validate_candidate_result(result, self.key, self.policy, None, self.source,
+                                      'e' * 64, None, None, recorded, self.base)
