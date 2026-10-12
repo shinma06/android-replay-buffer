@@ -430,6 +430,9 @@ elif len(a)>3 and a[3]=='ps':
             assertEquals(fixed.application, core.snapshot().save.application)
             assertEquals(fixed.applicationHistory, core.snapshot().save.applicationHistory)
             assertEquals(fixed.videoTail, core.snapshot().save.videoTail)
+            assertTrue(core.applySettings(core.snapshot().settings.copy(replaySeconds = 30)).get().accepted)
+            assertTrue(core.updateApplication(ApplicationTarget("com.fixture.app")).get().accepted)
+            awaitState("target-restored-before-disconnect") { it.appLog.state == StreamState.CAPTURING }
             Files.writeString(devices, "List of devices attached\n")
             val disconnected = awaitState("disconnected") { it.frozen }
             Thread.sleep(1100)
@@ -438,6 +441,10 @@ elif len(a)>3 and a[3]=='ps':
             Files.writeString(devices, "List of devices attached\nfixture-1 device model:Fixture\n")
             val resumed = awaitState("reconnected") { !it.frozen && it.generation > capturing.generation && it.video.state == StreamState.CAPTURING }
             assertEquals(sequence, resumed.sequenceId)
+            val recovered = awaitState("app-and-readers-recovered") {
+                it.appLog.state == StreamState.CAPTURING && it.appLog.gaps.none { gap -> gap.stream == "app_log" && gap.toNs == null }
+            }
+            assertTrue(recovered.appLog.gaps.any { it.stream == "app_log" && it.reason == "端末との取得接続が中断しています" && it.toNs != null })
             assertTrue(core.retryAtDirectory(operation.requestId!!, root).get().accepted)
             var completed: java.nio.file.Path? = null
             var savedHash: String? = null
@@ -470,6 +477,16 @@ elif len(a)>3 and a[3]=='ps':
                 }
                 completed = folder
                 savedHash = sha256(folder.resolve("session.json"))
+                assertTrue(core.applySettings(core.snapshot().settings.copy(saveDirectory = root)).get().accepted)
+                assertTrue(core.save().get().accepted)
+                val fresh = awaitState("recovered-window-save") { it.save.phase == SavePhase.COMPLETED && it.save.requestId != operation.requestId }
+                val freshJson = JsonParser.parseString(Files.readString(fresh.save.directory!!.resolve("session.json"))).asJsonObject
+                val appGap = freshJson["gaps"].asJsonArray.single {
+                    it.asJsonObject["kind"].asString == "app_log" && it.asJsonObject["reason"].asString == "端末との取得接続が中断しています"
+                }.asJsonObject
+                assertFalse(appGap["to_ns"].isJsonNull)
+                assertEquals("CAPTURING", freshJson["coverage"].asJsonObject["app_log"].asJsonObject["state"].asString)
+                assertEquals(savedHash, sha256(folder.resolve("session.json")))
             } else {
                 val unsupported = awaitState("unsupported-native-save") { it.save.phase == SavePhase.FAILED }
                 assertEquals(fixed.applicationHistory, unsupported.save.applicationHistory)

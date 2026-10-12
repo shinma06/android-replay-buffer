@@ -745,6 +745,125 @@ class CaptureStoreSaveTest {
     }
 
     @Test
+    fun recoveredAppGapClosesOnlyAfterTargetAndRequiredReadersAndKeepsFrozenSave() {
+        for (appFirst in listOf(false, true)) {
+            val root = Files.createTempDirectory("replay-app-recovery-")
+            val store = CaptureStore(root.resolve("ring"), minFree = 0)
+            val host = System.nanoTime() + 1_000_000_000
+            fun target(owner: Long) = store.app("com.example.app", 10001, setOf(12), owner, true)
+            fun row(second: Long, owner: Long) = store.log(DeviceLog(
+                1_700_000_000_000_000_000 + second * 1_000_000_000, 12, 12, 10001, 0, 4,
+                "Fixture", "row-$second", byteArrayOf(1)), owner, host + (second - 1) * 1_000_000_000)
+            fun appGap() = store.streams().getValue("app_log").gaps.single { it.stream == "app_log" }
+            try {
+                store.generation(1)
+                anchor(store.clock, 1_000_000_000, host)
+                store.status("device_log", StreamState.CAPTURING, null, 1)
+                target(1)
+                val first = row(1, 1)
+                anchor(store.clock, 2_000_000_000, host + 1_000_000_000)
+                store.freeze()
+                listOf("video", "device_log", "app_log").forEach {
+                    store.status(it, StreamState.RECOVERING, "connection interrupted", 1)
+                }
+                val interrupted = store.capture(ReplaySettings())!!
+                val originalGap = interrupted.gaps.single { it.stream == "app_log" }
+                assertNull(originalGap.toNs)
+                store.generation(2)
+                anchor(store.clock, 3_000_000_000, host + 2_000_000_000)
+                store.resume()
+                target(1)
+                store.status("device_log", StreamState.CAPTURING, null, 1)
+                assertNull(row(3, 1))
+                assertEquals(originalGap, appGap()) // Stale callbacks cannot recover the new generation.
+                if (appFirst) {
+                    target(2)
+                    assertNull(appGap().toNs)
+                    row(3, 2) // One reader's accepted row cannot recover the aggregate required readers.
+                    assertNull(appGap().toNs)
+                    store.status("device_log", StreamState.RECOVERING, "required reader failed", 2)
+                    assertNull(appGap().toNs)
+                    store.status("device_log", StreamState.CAPTURING, null, 2)
+                } else {
+                    store.app("com.example.app", null, emptySet(), 2)
+                    store.status("device_log", StreamState.CAPTURING, null, 2)
+                    assertEquals(StreamState.UNAVAILABLE, store.streams().getValue("app_log").state)
+                    assertNull(appGap().toNs)
+                    target(2)
+                }
+                val recoveredGap = appGap()
+                assertEquals(originalGap.copy(toNs = 2_000_000_000), recoveredGap)
+                target(2) // Identical target refresh must not move the recovery boundary.
+                assertEquals(recoveredGap, appGap())
+                anchor(store.clock, 5_000_000_000, host + 4_000_000_000)
+                val last = row(5, 2)
+                store.release(interrupted.id)
+                val capture = store.capture(ReplaySettings())!!
+                assertTrue(capture.logs.all { it.app == true })
+                assertEquals(first, capture.logs.first().id)
+                assertEquals(last, capture.logs.last().id)
+                assertEquals(3.0, capture.states.getValue("app_log").availableSeconds)
+                assertEquals(StreamState.CAPTURING, capture.states.getValue("app_log").state)
+                val output = SaveWriter().write(capture, root, { false }) { publication ->
+                    Files.move(publication.partial, publication.complete)
+                }
+                val manifest = JsonParser.parseString(Files.readString(output.directory.resolve("session.json"))).asJsonObject
+                val gap = manifest["gaps"].asJsonArray.single { it.asJsonObject["kind"].asString == "app_log" }.asJsonObject
+                assertEquals("2000000000", gap["to_ns"].asString)
+                assertFalse(gap["duration_uncertain"].asBoolean)
+                assertEquals(3.0, manifest["coverage"].asJsonObject["app_log"].asJsonObject["availableSeconds"].asDouble)
+                assertEquals(capture.logs.map { it.id }, Files.readAllLines(output.directory.resolve("logcat-app.jsonl"))
+                    .map { JsonParser.parseString(it).asJsonObject["record_id"].asString })
+                assertEquals(originalGap, interrupted.gaps.single { it.stream == "app_log" })
+                assertEquals(listOf(first), interrupted.logs.map { it.id })
+                store.clock.boundary(host + 4_000_000_000)
+                target(2)
+                assertTrue(store.streams().getValue("app_log").reason!!.contains("時計"))
+                assertEquals(recoveredGap, appGap())
+                assertEquals(3.0, capture.states.getValue("app_log").availableSeconds)
+            } finally { store.close(); root.toFile().deleteRecursively() }
+        }
+    }
+
+    @Test
+    fun appRecoveryNeedsCurrentCertainClockAndUnknownBootBridgeStaysOpen() {
+        for (unknownBoot in listOf(false, true)) {
+            val root = Files.createTempDirectory("replay-app-clock-recovery-")
+            val store = CaptureStore(root.resolve("ring"), minFree = 0)
+            val host = System.nanoTime() + 1_000_000_000
+            try {
+                store.generation(1)
+                anchor(store.clock, 1_000_000_000, host)
+                store.status("device_log", StreamState.CAPTURING, null, 1)
+                store.app("com.example.app", 10001, setOf(12), 1, true)
+                store.status("app_log", StreamState.RECOVERING, "connection interrupted", 1)
+                store.generation(2)
+                store.clock.boundary(host)
+                store.clockStatus(false, 2)
+                store.app("com.example.app", 10001, setOf(12), 2, true)
+                store.status("device_log", StreamState.CAPTURING, null, 2)
+                fun gap() = store.streams().getValue("app_log").gaps.single { it.stream == "app_log" }
+                assertNull(gap().toNs)
+                store.clockStatus(true, 1)
+                store.clockStatus(true, 2) // No new sample: healthy callback alone cannot prove current clock.
+                assertNull(gap().toNs)
+                if (unknownBoot) {
+                    store.clock.add("2", listOf(100_000_000, 100_000_000, 1_700_000_020_000_000_000, 100_000_000),
+                        host + 2_000_000_000, host + 2_000_000_000, 100_000_000_000)
+                } else anchor(store.clock, 3_000_000_000, host + 2_000_000_000)
+                store.clockStatus(true, 2)
+                assertNull(gap().toNs) // The resolved target still belongs to the previous clock epoch.
+                store.app("com.example.app", 10001, setOf(12), 2, true)
+                if (unknownBoot) {
+                    assertNull(gap().toNs)
+                    assertEquals(Long.MAX_VALUE, store.clock.endUncertainty())
+                    assertTrue(store.streams().getValue("app_log").reason!!.contains("時計"))
+                } else assertEquals(2_000_000_000, gap().toNs)
+            } finally { store.close(); root.toFile().deleteRecursively() }
+        }
+    }
+
+    @Test
     fun nullTargetAndRecoveredClockAndLogGapsRemainImmutableOnlyWhileInWindow() {
         val root = Files.createTempDirectory("replay-gap-fixture-")
         val store = CaptureStore(root.resolve("ring"), minFree = 0)
