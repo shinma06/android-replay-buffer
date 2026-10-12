@@ -541,6 +541,44 @@ class PrivatePathTests(unittest.TestCase):
         literal = f'[literal](&amp;#104;ttps&amp;colon;&amp;sol;&amp;sol;public.example&amp;sol;runs&amp;sol;{session})'
         self.assertEqual(self.loop.public_state(literal), literal.replace(session, session_fingerprint(session)))
 
+    def test_bare_references_use_shared_private_comparison_and_keep_tail(self):
+        known = '/mnt/receipts/event.json'
+        for target in ('&sol;mnt&sol;receipts&sol;event.json', '&#47;mnt&#47;receipts&#47;event.json',
+                       'file&colon;&sol;&sol;&sol;mnt&sol;receipts&sol;event.json'):
+            self.assertEqual(self.loop.public_state(f'Evidence: {target} tail', [known]),
+                             'Evidence: [private URI] tail')
+        for target in ('&amp;sol;mnt&amp;sol;receipts&amp;sol;event.json',
+                       r'\&sol;mnt\&sol;receipts\&sol;event.json',
+                       '&#104;ttps&colon;&sol;&sol;public.example/runs/00000000-0000-4000-8000-000000000097'):
+            source = f'Evidence: {target} tail'
+            self.assertEqual(self.loop.public_state(source, [known]), source)
+
+    def test_http_classification_is_per_occurrence_not_token_value(self):
+        session = '00000000-0000-4000-8000-000000000097'
+        token = 'https&colon;&sol;&sol;x/r/' + session
+        url = f'[public]({token})'
+        prose = f'prefix{token}suffix'
+        expected = prose.replace(session, session_fingerprint(session))
+        self.assertEqual(self.loop.public_state(url + ' ' + prose), url + ' ' + expected)
+        self.assertEqual(self.loop.public_state(prose + ' ' + url), expected + ' ' + url)
+        self.assertEqual(self.loop.public_state(prose), expected)
+
+    def test_known_prose_identity_single_pass_keeps_surrounding_bytes(self):
+        session = tal.report()['session']
+        for target in (session.replace('-', '&#45;'), session.replace('-', r'\-')):
+            state = {'private_sessions': [session_fingerprint(session)], 'evidence': 'Observer: prefix' + target + 'suffix tail'}
+            self.assertEqual(self.loop.public_state(state)['evidence'], 'Observer: prefix' + session_fingerprint(session) + 'suffix tail')
+        for target in (session.replace('-', '&amp;#45;'), session.replace('-', r'\&num;45;')):
+            state = {'private_sessions': [session_fingerprint(session)], 'evidence': 'Observer: ' + target + ' tail'}
+            self.assertEqual(self.loop.public_state(state)['evidence'], state['evidence'])
+
+    def test_isolated_known_session_escaped_close_does_not_add_suffix(self):
+        session = tal.report()['session']
+        for target in ('https://example/session/' + session + r'\)',
+                       'https://example/session/' + session.replace('-', '%2D') + r'\)',
+                       'https://example/session/' + session + '&rpar;'):
+            source = {'private_sessions': [session_fingerprint(session)], 'evidence': f'[origin]({target})tail'}
+            self.assertEqual(self.loop.public_state(source)['evidence'], '[origin]([private URI])tail')
     def test_known_uri_filename_closings_are_distinct_from_markdown_enclosure(self):
         from urllib.parse import quote
         known = '/mnt/private receipt/event(1.json'
@@ -594,10 +632,18 @@ class PrivatePathTests(unittest.TestCase):
                             encoded.replace('file:', '&#102;ile&#58;').replace('/', '&sol;'),
                             encoded.replace(':', r'\:').replace('/', r'\/'))
         markdown_forms = ' '.join(f'[form]({target})' for target in markdown_targets)
+        bare_forms = ' '.join(encoded.replace('/', ref) for ref in ('&sol;', '&#47;'))
+        markdown_forms += ' ' + bare_forms + ' [origin](' + private_url + r'\))tail'
         unrelated = 'https://public.example/runs/00000000%2d0000%2D4000%2d8000%2D000000000097/result'
         urls += ' ' + unrelated + ' https://public.example/event(1).json [public](https://public.example/event(1).json)'
         referenced_public = '[public](&#104;ttps&colon;&sol;&sol;public.example&sol;runs&sol;00000000-0000-4000-8000-000000000097)'
         urls += ' ' + referenced_public
+        twin = 'https&colon;&sol;&sol;x/r/00000000-0000-4000-8000-000000000097'
+        mixed = f'[public]({twin}) prefix{twin}suffix'
+        mixed_expected = mixed.replace('prefix' + twin, 'prefix' + twin.replace('00000000-0000-4000-8000-000000000097',
+                                    session_fingerprint('00000000-0000-4000-8000-000000000097')))
+        encoded_prose = tal.report()['session'].replace('-', '&#45;')
+        markdown_forms += f' {mixed} Observer:{encoded_prose}:tail'
         session = '00000000-0000-4000-8000-000000000098'
         self.worker.side_effect = lambda *args, **kw: dict(tal.report('changes_requested'),
                 evidence=f'prefix:{virtual}:suffix file://{support} {urls} standalone:{session} {encoded} {lower} {local} {private_url} {contributor_url} {alternate} {dot} {escaped_dot} [dot]({dot}) [alternate]({alternate[7:]}) {encoded_identity} {encoded_contributor} <{alternate}> [angle](<{alternate}>) [normal]({alternate}) [encoded]({encoded[7:]}) [lower]({lower[7:]}) {markdown_forms}',
@@ -629,6 +675,8 @@ class PrivatePathTests(unittest.TestCase):
         self.assertNotIn(session, public)
         self.assertIn('standalone:' + session_fingerprint(session), public)
         self.assertIn(urls, public)
+        self.assertIn(mixed_expected, public)
+        self.assertNotIn(encoded_prose, public)
         self.assertIn('[private path]', public)
 
 
@@ -1063,6 +1111,54 @@ class OriginalPrivacyTests(unittest.TestCase):
     setUp = EvidenceTests.setUp
     load = EvidenceTests.load
     seal = EvidenceTests.seal
+    def test_public_ancestors_reject_other_user_write_but_private_ancestor_protects(self):
+        from agent_worker import private_original, retained_originals
+        with tempfile.TemporaryDirectory(dir='/tmp') as folder:
+            parent = Path(folder)
+            receipt = parent / 'receipt.json'
+            body = b'{"synthetic":true}'
+            receipt.write_bytes(body)
+            record = [{'path': str(receipt), 'sha256': hashlib.sha256(body).hexdigest()}]
+            for parent_mode, mode, accepted in ((0o755, 0o602, False), (0o755, 0o620, False),
+                                                (0o700, 0o602, True), (0o755, 0o600, True),
+                                                (0o755, 0o644, False)):
+                parent.chmod(parent_mode); receipt.chmod(mode)
+                with self.subTest(parent=parent_mode, mode=mode):
+                    if parent_mode == 0o755:
+                        self.assertTrue(all(p.stat().st_mode & 1 for p in receipt.resolve().parents))
+                    if accepted:
+                        self.assertEqual(private_original(receipt), body)
+                        retained_originals(record)
+                    else:
+                        with self.assertRaisesRegex(ValueError, 'private file or ancestor'): private_original(receipt)
+                        with self.assertRaisesRegex(ValueError, 'private file or ancestor'): retained_originals(record)
+            parent.chmod(0o700); receipt.chmod(0o600)
+
+    def test_manual_input_uses_private_original_before_parse_or_output(self):
+        with tempfile.TemporaryDirectory(dir='/tmp') as folder:
+            parent = Path(folder)
+            source = parent / 'report.json'
+            raw = tal.report()
+            source.write_text(json.dumps(raw))
+            for i, (parent_mode, mode, accepted) in enumerate(((0o755, 0o644, False), (0o755, 0o602, False),
+                                                              (0o700, 0o644, True), (0o755, 0o600, True))):
+                parent.chmod(parent_mode); source.chmod(mode)
+                output = parent / f'output-{i}.json'
+                with patch.dict(os.environ, {'CODEX_THREAD_ID': raw['session']}), patch.object(sys, 'argv',
+                        ['manual', '--report', str(source), '--output', str(output)]):
+                    if accepted:
+                        bind_manual_report()
+                        self.assertEqual(output.stat().st_mode & 0o777, 0o600)
+                    else:
+                        with self.assertRaisesRegex(ValueError, 'private file or ancestor'): bind_manual_report()
+                        self.assertFalse(output.exists())
+            alias = parent / 'alias.json'; alias.symlink_to(source)
+            output = parent / 'symlink-output.json'
+            with patch.dict(os.environ, {'CODEX_THREAD_ID': raw['session']}), patch.object(sys, 'argv',
+                    ['manual', '--report', str(alias), '--output', str(output)]):
+                with self.assertRaisesRegex(ValueError, 'regular file'): bind_manual_report()
+            self.assertFalse(output.exists())
+            parent.chmod(0o700); source.chmod(0o600)
     def test_accessible_readable_original_rejected_private_file_and_real_parent_accepted(self):
         from types import SimpleNamespace
         from agent_worker import private_original

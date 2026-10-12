@@ -357,28 +357,49 @@ class Loop:
         if isinstance(value, list):
             return [self.public_state(v, private_paths, private_sessions) for v in value]
         if isinstance(value, str):
-            public_destinations = set()
+            # Full raw paths can contain spaces across the later lexical spans.
+            for path in sorted(private_paths, key=len, reverse=True):
+                value = value.replace(path, '[private path]')
+            for private in (str(self.storage), str(ROOT), str(Path.home()), HOST):
+                value = value.replace(private, '[local]')
             markdown_atom = re.compile(r'\\([' + re.escape(string.punctuation) +
                                        r'])|(&(?:#[0-9]{1,7}|#[xX][0-9a-fA-F]{1,6}|[A-Za-z][A-Za-z0-9]*);)')
-            def private_uri(token):
+            def private_uri(token, with_enclosure=True):
+                positions, offset = [], 0
                 def markdown_char(escape):
+                    nonlocal offset
+                    positions.extend((i, i + 1) for i in range(offset, escape.start()))
                     if escape[1] is not None:
-                        return escape[1]
-                    reference = escape[2]
-                    if reference.startswith('&#') or reference[1:] in html.entities.html5:
-                        return html.unescape(reference)
-                    return reference
+                        replacement = escape[1]
+                    else:
+                        reference = escape[2]
+                        replacement = (html.unescape(reference) if reference.startswith('&#') or
+                                       reference[1:] in html.entities.html5 else reference)
+                    positions.extend((escape.start(), escape.end()) for _ in replacement)
+                    offset = escape.end()
+                    return replacement
                 # One pass: escaped ampersands and decoded references are not reinterpreted.
                 destination = markdown_atom.sub(markdown_char, token)
+                positions.extend((i, i + 1) for i in range(offset, len(token)))
                 if not re.match(r'(?i)(?:https?://|file://|/)', destination):
-                    return token
+                    redacted, cursor = [], 0
+                    for match in re.finditer(r'(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}', destination):
+                        identity = match[0].lower()
+                        if identity in private_sessions or session_fingerprint(identity) in private_sessions:
+                            replacement = session_fingerprint(identity)
+                        else:
+                            continue
+                        start, end = positions[match.start()][0], positions[match.end() - 1][1]
+                        redacted.extend((token[cursor:start], replacement))
+                        cursor = end
+                    return ''.join(redacted) + token[cursor:], False
                 decoded = unquote(destination)
                 try:
                     path = posixpath.normpath(unquote(urlsplit(destination).path))
                 except ValueError:
                     path = ''
                 # Keep enclosing Markdown punctuation beyond the complete known filename.
-                closing = len(token) - len(token.rstrip(')'))
+                closing = len(token) - len(token.rstrip(')')) if with_enclosure else 0
                 matched = []
                 for known in private_paths:
                     own_closing = known.count(')') - known.count('(')
@@ -390,14 +411,19 @@ class Loop:
                 suffix = ')' * min(closing, max(0, decoded.count(')') - decoded.count('(') - protected))
                 if (matched and
                         (destination != token or '%' in token or not any(known in token for known in private_paths))):
-                    return '[private URI]' + suffix
+                    return '[private URI]' + suffix, False
                 identities = re.findall(r'(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}', decoded)
                 if (destination != token or '%' in token) and any(identity.lower() in private_sessions or
                                         session_fingerprint(identity.lower()) in private_sessions for identity in identities):
-                    return '[private URI]' + suffix
-                if re.match(r'(?i)https?://', destination):
-                    public_destinations.add(token)
-                return token
+                    return '[private URI]' + suffix, False
+                return token, bool(re.match(r'(?i)https?://', destination))
+            span = r'(?:\\[' + re.escape(string.punctuation) + r']|\](?=[^()\s<>"`])|[^\s<>"`\]])*'
+            def private_text(text):
+                cursor, parts = 0, []
+                for match in re.finditer(r'(?:\\[' + re.escape(string.punctuation) + r']|[^\s<>"`\[\]()])' + span, text):
+                    parts.extend(((text[cursor:match.start()], False), private_uri(match[0])))
+                    cursor = match.end()
+                return parts + [(text[cursor:], False)]
             # Raw syntax bounds the destination; interpreted references cannot add delimiters.
             pieces, cursor = [], 0
             for opening in re.finditer(r'\](?:\(|:)\s*', value):
@@ -427,31 +453,34 @@ class Loop:
                             depth -= 1
                     end += 1
                 if (end == start or depth or
+                        (not angle and end == len(value) and value[opening.start() + 1] == '(') or
                         (angle and (end == len(value) or value[end] != '>'))):
                     continue
-                pieces.extend((value[cursor:start], private_uri(value[start:end])))
+                pieces.extend(private_text(value[cursor:start]))
+                pieces.append(private_uri(value[start:end], False))
                 cursor = end
-            value = ''.join(pieces) + value[cursor:]
+            pieces.extend(private_text(value[cursor:]))
             # Preserve bare URIs embedded in surrounding prose or punctuation.
-            value = re.sub(r'(?i)(?:https?://|file://|/)(?:\\[' + re.escape(string.punctuation) +
-                           r']|\](?=[^()\s<>"`])|[^\s<>"`\]])*', lambda match: private_uri(match[0]), value)
-            for path in sorted(private_paths, key=len, reverse=True):
-                value = value.replace(path, '[private path]')
-                public_destinations = {token.replace(path, '[private path]') for token in public_destinations}
-            for private in (str(self.storage), str(ROOT), str(Path.home()), HOST):
-                value = value.replace(private, '[local]')
-                public_destinations = {token.replace(private, '[local]') for token in public_destinations}
-            # Keep the once-interpreted HTTP classification through the final identity pass.
-            urls = [re.escape(token) for token in sorted(public_destinations, key=len, reverse=True)]
-            urls.append(r'(?i:https?://[^\s<>"`]+)')
-            parts = re.split('(' + '|'.join(urls) + ')', value)
-            for i, part in enumerate(parts):
+            def bare_parts(text):
+                spans = re.split(r'(?i)((?:https?://|file://|/)' + span + ')', text)
+                return [private_uri(part) if i % 2 else (part, False) for i, part in enumerate(spans)]
+            parts, prose = [], []
+            for text, is_url in pieces:
+                if not is_url:
+                    prose.append(text)
+                    continue
+                parts.extend(bare_parts(''.join(prose)))
+                prose.clear()
+                parts.append((text, True))
+            parts.extend(bare_parts(''.join(prose)))
+            public = []
+            for part, is_url in parts:
                 part = re.sub(r'(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}',
                               lambda match: session_fingerprint(match[0].lower())
-                              if not i % 2 or match[0].lower() in private_sessions or
+                              if not is_url or match[0].lower() in private_sessions or
                               session_fingerprint(match[0].lower()) in private_sessions else match[0], part)
-                parts[i] = part if i % 2 else re.sub(r'/(?:Users|home|private|tmp|var)/[^\n`]+', '[local path]', part)
-            return ''.join(parts)
+                public.append(part if is_url else re.sub(r'/(?:Users|home|private|tmp|var)/[^\n`]+', '[local path]', part))
+            return ''.join(public)
         return value
 
     def acceptance(self, pr, path):

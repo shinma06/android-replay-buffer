@@ -74,7 +74,7 @@ def private_original(path):
     info = source.stat()
     if info.st_uid != os.getuid():
         raise ValueError('Sealed receipt must be locally owned')
-    if info.st_mode & 0o044:
+    if info.st_mode & 0o066:
         # Resolve ancestors: a private symlink alias cannot protect a public target.
         for parent in source.resolve().parents:
             info = parent.stat()
@@ -359,7 +359,7 @@ def main():
     parser.add_argument('--storage', type=Path, help='Trusted coordinator private registry storage')
     parser.add_argument('--binding', type=Path, help='Complete verified HEAD/base/Issue/feedback binding')
     args = parser.parse_args()
-    report = bind_report_session(json.loads(args.report.read_text()), os.environ.get('CODEX_THREAD_ID'))
+    report = bind_report_session(json.loads(private_original(args.report)), os.environ.get('CODEX_THREAD_ID'))
     if report.get('repair_revision'):
         if not args.acceptance or not args.binding or not args.storage:
             raise ValueError('Repair report requires the verified acceptance snapshot and private originals')
