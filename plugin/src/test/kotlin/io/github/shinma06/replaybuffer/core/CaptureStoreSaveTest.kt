@@ -826,6 +826,42 @@ class CaptureStoreSaveTest {
     }
 
     @Test
+    fun appRecoveryNeedsCurrentCertainClockAndUnknownBootBridgeStaysOpen() {
+        for (unknownBoot in listOf(false, true)) {
+            val root = Files.createTempDirectory("replay-app-clock-recovery-")
+            val store = CaptureStore(root.resolve("ring"), minFree = 0)
+            val host = System.nanoTime() + 1_000_000_000
+            try {
+                store.generation(1)
+                anchor(store.clock, 1_000_000_000, host)
+                store.status("device_log", StreamState.CAPTURING, null, 1)
+                store.app("com.example.app", 10001, setOf(12), 1, true)
+                store.status("app_log", StreamState.RECOVERING, "connection interrupted", 1)
+                store.generation(2)
+                store.clock.boundary(host)
+                store.clockStatus(false, 2)
+                store.app("com.example.app", 10001, setOf(12), 2, true)
+                store.status("device_log", StreamState.CAPTURING, null, 2)
+                fun gap() = store.streams().getValue("app_log").gaps.single { it.stream == "app_log" }
+                assertNull(gap().toNs)
+                store.clockStatus(true, 1)
+                store.clockStatus(true, 2) // No new sample: healthy callback alone cannot prove current clock.
+                assertNull(gap().toNs)
+                if (unknownBoot) {
+                    store.clock.add("2", listOf(100_000_000, 100_000_000, 1_700_000_020_000_000_000, 100_000_000),
+                        host + 2_000_000_000, host + 2_000_000_000, 100_000_000_000)
+                } else anchor(store.clock, 3_000_000_000, host + 2_000_000_000)
+                store.clockStatus(true, 2)
+                if (unknownBoot) {
+                    assertNull(gap().toNs)
+                    assertEquals(Long.MAX_VALUE, store.clock.endUncertainty())
+                    assertTrue(store.streams().getValue("app_log").reason!!.contains("時計"))
+                } else assertEquals(2_000_000_000, gap().toNs)
+            } finally { store.close(); root.toFile().deleteRecursively() }
+        }
+    }
+
+    @Test
     fun nullTargetAndRecoveredClockAndLogGapsRemainImmutableOnlyWhileInWindow() {
         val root = Files.createTempDirectory("replay-gap-fixture-")
         val store = CaptureStore(root.resolve("ring"), minFree = 0)

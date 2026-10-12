@@ -1,43 +1,11 @@
 {
   "schema": 1,
   "issue": 227,
-  "gui_required": true,
-  "reason": "R134-1の実native復帰後app_log gap/coverage不具合を修正する。元失敗保証の修正版同artifact再確認をdevelop統合前に要求し、未変更139Caseの全面再試験はしない。",
+  "gui_required": false,
+  "reason": "新しいGUI Caseを追加しない既存失敗保証の修正。既存27:RECONNECT-EMU/REALTIME-GAP-EMU/SAVE-FAIL-08-EMU、13/31/41:SYNC-GAP及びstartup/log reader recoveryのgap説明の修正版同artifact native再確認と独立評価はdevelop統合前に必須。gui_required:falseは新Caseなしの宣言で、元nativeNG解消やGUI受入完了ではない。#226のrepair記録で元Case/全失敗保証へ結び付け、旧139計画と人間/REAL保留は変更しない。",
   "cli_checks": [
     "CaptureStoreSaveTestの修正前NGと修正後PASS、ReplayCoreWireTestの公開再接続/保存metadata回帰。",
     "plugin check/buildPlugin/verifyPluginStructure、CLI保全product_check、harness check、clean committed HEAD change_impact --run-testsを実行し、実結果はIssue/PRへ記録する。"
   ],
-  "cases": [
-    {
-      "id": "APP-LOG-RECOVERY",
-      "artifact": "plugin",
-      "change": "同boot再接続後に対象解決と必要reader準備が揃ったapp_log gapを閉じ、復帰行を欠落時間へ算入しない",
-      "preconditions": "固定clean HEADと標準buildPlugin ZIP/member/実ロードidentityを一致させる。nativeはPM指定のEMU、専用fixtureとshared GUI leaseを使用し、REAL保留を維持する。trusted mainの有効responsibility method_revisionを使う。",
-      "provenance": [
-        "https://github.com/shinma06/android-replay-buffer/issues/227",
-        "docs/verification/changes/issue-27.json: RECONNECT-EMU/REAL・REALTIME-GAP-EMU/REAL",
-        "docs/verification/changes/issue-41.json: SYNC-GAP",
-        "docs/verification/changes/issue-106.json: LOG-READER-RECOVERY-STOP",
-        "固定830b58294bec3f2fa4751d831a5b95f6b0658de6の独立R134-1: 復帰55行と開いたapp_log gapの共存、過少coverageを確認。原失敗は変更しない。"
-      ],
-      "steps": [
-        "production Store/Writer回帰でgen1既知clock/対象行→stopBackend同等のfreeze/RECOVERING→gen2同boot→対象解決/集約reader readyの両順序→復帰行→固定保存を実行する。修正前NG/修正後PASSを区別し、gapの有限終端・真の中断保持・全record ID/帰属・coverage・未解決/reader失敗/旧世代/時計不明・固定snapshot不変性を確認する。",
-        "既存fake SDK WireのReplayCore公開経路で同boot切断/再接続し、app gap終了、元失敗保存の固定retry、別の復旧後保存のsession metadataと元保存物不変を確認する。合成実行はnative実観察と区別する。",
-        "修正版の同ZIPを実ロードしたEMUで、解決済み対象の陽性入力を切断前/復旧後に生成し、同bootで一回の代表再接続と保存を実行する。全app/device行のID/帰属/時刻とclock/generation/gap/coverageをFILE照合し、必要readerが稼働した復旧点でgapが閉じることを独立評価する。実画像精度/全player/回転再試験はこのmetadata修正の保証へ追加しない。"
-      ],
-      "expected": "復帰した対象行を開いたapp_log gapで現在Tまで差し引かない。終端は既存authoritative sequence clockで記録し、真の中断・unknown/不確実性・世代/epoch/所有・fixed save/pin/retryを保つ。target解決だけで未準備readerを回復扱いせず、旧候補の失敗や未達をPASSへ書換えない。",
-      "gpt": {
-        "status": "pending",
-        "reason": "新固定artifactの元NG native再確認と独立評価をPMが割り当てる。JVM結果だけで元NGを解消済みにしない。"
-      },
-      "human": {
-        "status": "pending",
-        "reason": "既存の人間/REAL延期とQA27/65の原条件を維持する。この修正で完了へ変更しない。"
-      },
-      "fix_issue": null,
-      "fix_pr": null,
-      "recheck": "CaptureStoreの対象/reader状態、clock/generation/epoch、保存metadata又はartifact/runtime条件変更時に影響境界を再検証する。",
-      "next_action": "writerが固定HEAD/base/チェック/ZIPを停止引渡し。PMが元NGの同artifact native recheckと独立固定reviewを割当し、PASS前develop統合を禁止する。既存QA27とrelease10の残件を保全する。"
-    }
-  ]
+  "cases": []
 }

@@ -477,6 +477,7 @@ elif len(a)>3 and a[3]=='ps':
                 }
                 completed = folder
                 savedHash = sha256(folder.resolve("session.json"))
+                assertTrue(core.applySettings(core.snapshot().settings.copy(saveDirectory = root)).get().accepted)
                 assertTrue(core.save().get().accepted)
                 val fresh = awaitState("recovered-window-save") { it.save.phase == SavePhase.COMPLETED && it.save.requestId != operation.requestId }
                 val freshJson = JsonParser.parseString(Files.readString(fresh.save.directory!!.resolve("session.json"))).asJsonObject

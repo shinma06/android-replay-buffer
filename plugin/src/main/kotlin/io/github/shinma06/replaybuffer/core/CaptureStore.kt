@@ -112,8 +112,9 @@ internal class CaptureStore(
         if (state != StreamState.CAPTURING && old.state == StreamState.CAPTURING) {
             addGap(kind, clock.now(), null, reason ?: "取得が中断しました")
         }
-        if (state == StreamState.CAPTURING && (old.state != state || kind == "app_log") &&
-            (kind != "app_log" || states.getValue("device_log").state == StreamState.CAPTURING)) {
+        if (state == StreamState.CAPTURING && (old.state != state || kind == "app_log")) synchronized(clock) {
+            if (kind == "app_log" && (states.getValue("device_log").state != StreamState.CAPTURING || !clock.certain()))
+                return@synchronized
             val index = gaps.lastOrNull { it.stream == kind && it.toNs == null }
             if (index != null) {
                 val closedGap = index.copy(toNs = clock.now())
@@ -143,6 +144,8 @@ internal class CaptureStore(
                 gaps.remove(gap); gaps.add(closedGap)
                 if (recovery != null) clockRecoveries[closedGap] = recovery
             }
+            if (states.getValue("app_log").state == StreamState.CAPTURING)
+                status("app_log", StreamState.CAPTURING, states.getValue("app_log").reason, owner)
         }
     }
 
