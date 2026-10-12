@@ -344,6 +344,10 @@ class MainContractEventTests(unittest.TestCase):
                 self.assertEqual(len(attempts), 1)
                 self.assertIn('incomplete', caught.exception.__notes__[0])
 
+    def test_missing_pr_list_is_not_silent_enumeration_success(self):
+        with self.assertRaises(TypeError):
+            ci.recheck_main_repairs(lambda path: None, 'shinma06/android-replay-buffer')
+
     def test_missing_stale_or_running_acceptance_never_restores_success(self):
         for run in (None, dict(self.run, head_sha=MOVED), dict(self.run, status='in_progress'),
                     dict(self.run, pull_requests=[{'number': 91}])):

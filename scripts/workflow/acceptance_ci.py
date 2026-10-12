@@ -62,7 +62,7 @@ def recheck_main_repairs(api, repo, source_issue=None):
     """Invalidate all affected PRs before optional reruns can fail or be denied."""
     pending, requested, unavailable, errors, page = [], [], [], [], 1
     while True:
-        prs = None
+        enumeration_failed = False
         for attempt in range(3):
             try:
                 prs = api(f'pulls?state=open&base=develop&per_page=100&page={page}')
@@ -75,8 +75,9 @@ def recheck_main_repairs(api, repo, source_issue=None):
                 error.add_note(f'PR enumeration incomplete at page {page} after {attempt + 1} attempts; '
                                'recover known pending targets, then retry enumeration and live gates before integration')
                 errors.append(error)
+                enumeration_failed = True
                 break
-        if prs is None:
+        if enumeration_failed:
             break
         for pr in prs:
             try:
