@@ -20,6 +20,7 @@ INITIAL_PLAN = 'docs/verification/amendments/initial-agent.json'
 INSTALLATION_PREVIOUS_PLAN_SHA256 = '13bd1e294519915d8c8a66be2770811a4d6b28465432061e7c2eae91a87fd8a3'
 SETTINGS_PREVIOUS_PLAN_SHA256 = '6d11e3cdee0b6189c743fb1a4c8ee3a4e582d72af7e9643bb001536dd4e0c79f'
 PURPOSE_PREVIOUS_PLAN_SHA256 = '993e76bb7a0bd6f9f864c2974b3ef4d4392665de51a4791c9cc0c094c394b50c'
+CONSUMER_PREVIOUS_PLAN_SHA256 = '3ee1d401997722423b4db5f52c07d8edb4b6e377bc1f6f5456c66fab8460af57'
 CI_PREDECESSOR = '836da534938597bd8674a63adac0925139ba3fc6'
 CI_MERGE = '280c96cb2d93002152e57de7803b1eb03c8bc26b'
 CI_OBSERVED_SOURCE = '707d3b0d26f749ef7537ef83a25a38081af35d62'
@@ -309,7 +310,8 @@ def initial_stage_plan(base, candidate, git):
     if revision is not None:
         validate_responsibility_policy(policy)
     if candidate_plan != policy and not (revision and (
-            'method_revision' in revision and candidate_plan == previous_method_plan(policy) or
+            'method_revision' in revision and candidate_plan in [p for p in
+                (previous_consumer_plan(policy), previous_method_plan(policy)) if p is not None] or
             'installation_revision' in revision and
             revision.get('plan_extension', {}).get('issue') != 219 and
             candidate_plan == previous_installation_plan(policy) or
@@ -354,7 +356,30 @@ def initial_stage_plan(base, candidate, git):
     return policy
 
 
+def previous_consumer_plan(policy):
+    """Undo only Issue 230's two consumer groups to recover the registered 223 plan."""
+    revision = policy.get('responsibility_revision', {})
+    method = revision.get('method_revision', {})
+    if not isinstance(method, dict) or method.get('issue') != 230:
+        return None
+    fields = {'recipient': {'purpose', 'methods', 'excluded', 'preconditions'},
+              'video': {'methods', 'excluded'}}
+    previous = method.get('previous_methods')
+    if (not isinstance(previous, dict) or set(previous) != set(fields) or
+            any(not isinstance(previous[k], dict) or set(previous[k]) != fields[k] or
+                not all(nonempty(v) for v in previous[k].values()) for k in fields) or
+            not isinstance(method.get('groups'), dict) or
+            any(not isinstance(method['groups'].get(k), dict) for k in fields)):
+        raise ValueError('Consumer revision requires the exact previous recipient/video methods')
+    restored = {k: v for k, v in method.items() if k != 'previous_methods'}
+    restored.update(issue=223, previous_plan_sha256=PURPOSE_PREVIOUS_PLAN_SHA256,
+                    groups={k: dict(g, **previous[k]) if k in previous else g
+                            for k, g in method['groups'].items()})
+    return dict(policy, responsibility_revision=dict(revision, method_revision=restored))
+
+
 def previous_method_plan(policy):
+    policy = previous_consumer_plan(policy) or policy
     revision = policy.get('responsibility_revision', {})
     if 'method_revision' not in revision:
         return None
@@ -401,12 +426,15 @@ def validate_responsibility_policy(policy):
     if not isinstance(revision, dict):
         raise ValueError('Invalid responsibility revision')
     if 'method_revision' in revision:
-        previous = previous_method_plan(policy)
+        consumer_previous = previous_consumer_plan(policy)
+        previous = consumer_previous or previous_method_plan(policy)
         method = revision['method_revision']
+        expected_hash = CONSUMER_PREVIOUS_PLAN_SHA256 if consumer_previous else PURPOSE_PREVIOUS_PLAN_SHA256
         if (not isinstance(method, dict) or set(method) != {
-                'issue', 'previous_plan_sha256', 'common_requirements', 'groups', 'overrides'} or
-                method['issue'] != 223 or method['previous_plan_sha256'] != PURPOSE_PREVIOUS_PLAN_SHA256 or
-                canonical_hash(previous) != PURPOSE_PREVIOUS_PLAN_SHA256):
+                'issue', 'previous_plan_sha256', 'common_requirements', 'groups', 'overrides'} | (
+                    {'previous_methods'} if consumer_previous else set()) or
+                method['issue'] != (230 if consumer_previous else 223) or
+                method['previous_plan_sha256'] != expected_hash or canonical_hash(previous) != expected_hash):
             raise ValueError('Purpose method revision must retain the exact prior plan')
         if (not isinstance(method['groups'], dict) or
                 any(not nonempty(g.get('preconditions')) for g in method['groups'].values()
@@ -418,6 +446,7 @@ def validate_responsibility_policy(policy):
                          ('common_requirements', 'groups', 'overrides')})
         effective['groups'] = {k: {name: value for name, value in group.items() if name != 'preconditions'}
                                if isinstance(group, dict) else group for k, group in method['groups'].items()}
+        effective.pop('method_revision', None)
         effective.pop('installation_revision', None)
         effective.pop('plan_extension', None)
         original = {k: v for k, v in previous.items() if k != 'responsibility_revision'}
@@ -703,6 +732,7 @@ def validate_fact_assessment(observed, key, policy, candidate, artifact, git, tr
             policy['responsibility_revision']['previous_plan_sha256'], canonical_hash(policy),
             policy['responsibility_revision'].get('installation_revision', {}).get('previous_plan_sha256'),
             policy['responsibility_revision'].get('method_revision', {}).get('previous_plan_sha256'),
+            PURPOSE_PREVIOUS_PLAN_SHA256 if previous_consumer_plan(policy) else None,
             SETTINGS_PREVIOUS_PLAN_SHA256 if previous_settings_plan(policy) else None}:
         raise ValueError('Retained facts must bind the exact original or trusted current responsibility plan')
     for fact in assessment['facts'].values():
@@ -771,6 +801,7 @@ def validate_candidate_result(result, key, policy, stage, candidate, artifact, e
                             policy['responsibility_revision']['previous_plan_sha256'],
                             policy['responsibility_revision'].get('installation_revision', {}).get('previous_plan_sha256'),
                             policy['responsibility_revision'].get('method_revision', {}).get('previous_plan_sha256'),
+                            PURPOSE_PREVIOUS_PLAN_SHA256 if previous_consumer_plan(policy) else None,
                             SETTINGS_PREVIOUS_PLAN_SHA256 if previous_settings_plan(policy) else None}:
                         raise ValueError('Reassessment must retain the exact original plan and observation')
                 elif (source_policy.get('responsibility_revision') != (policy or {}).get('responsibility_revision') or
@@ -1179,7 +1210,7 @@ def render_queue(paths, promotion=None, git=git_read):
             if group:
                 evidence = responsibility_observed.get('responsibility_evidence')
                 method = initial_policy['responsibility_revision'].get('method_revision')
-                lines += [('目的による方法改訂 #223: ' if method else '責任改訂 #182: ') + group['disposition'] + ' / ' + group['purpose'],
+                lines += [(f'目的による方法改訂 #{method["issue"]}: ' if method else '責任改訂 #182: ') + group['disposition'] + ' / ' + group['purpose'],
                           '改訂revision: ' + canonical_hash(initial_policy['responsibility_revision']),
                           '除外/置換する義務（PASSではない）: ' + group['excluded'],
                           '有効な実施分担: ' + group['methods'],
