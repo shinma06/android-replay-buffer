@@ -370,6 +370,8 @@ class Loop:
                 destination = re.sub(r'\\([' + re.escape(string.punctuation) +
                                      r'])|(&(?:#[0-9]{1,7}|#[xX][0-9a-fA-F]{1,6}|[A-Za-z][A-Za-z0-9]*);)',
                                      markdown_char, token)
+                if not re.match(r'(?i)(?:https?://|file://|/)', destination):
+                    return token
                 decoded = unquote(destination)
                 try:
                     path = posixpath.normpath(unquote(urlsplit(destination).path))
@@ -394,8 +396,12 @@ class Loop:
                                         session_fingerprint(identity.lower()) in private_sessions for identity in identities):
                     return '[private URI]' + suffix
                 return token
-            value = re.sub(r'(?i)(?:https?://|file://|/)(?:\\[' + re.escape(string.punctuation) +
-                           r']|\](?=[^()\s<>"`])|[^\s<>"`\]])*', private_uri, value)
+            span = r'(?:\\[' + re.escape(string.punctuation) + r']|\](?=[^()\s<>"`])|[^\s<>"`\]])*'
+            # Recognize complete destinations before interpreting their URI prefix.
+            value = re.sub(r'(?:\\[' + re.escape(string.punctuation) + r']|[^\s<>"`\[\]()])' + span,
+                           private_uri, value)
+            # Preserve bare URIs embedded in surrounding prose or punctuation.
+            value = re.sub(r'(?i)(?:https?://|file://|/)' + span, private_uri, value)
             for path in sorted(private_paths, key=len, reverse=True):
                 value = value.replace(path, '[private path]')
             for private in (str(self.storage), str(ROOT), str(Path.home()), HOST):

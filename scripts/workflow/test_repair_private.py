@@ -457,6 +457,42 @@ class PrivatePathTests(unittest.TestCase):
         projected = self.loop.public_state({'review': {'session': session, 'evidence': f'[origin]({target})'}})
         self.assertNotIn(target, projected['review']['evidence'])
 
+    def test_complete_markdown_destination_before_uri_prefix_recognition(self):
+        known = '/mnt/receipts/event.json'
+        targets = ('&#47;mnt&#47;receipts&#47;event.json',
+                   'file:&#47;&#47;&#47;mnt&#47;receipts&#47;event.json',
+                   r'file:\/\/\/mnt\/receipts\/event.json',
+                   '&#102;ile&#58;&#47;&#47;&#47;mnt&#47;receipts&#47;event.json',
+                   '&#102;ile&colon;&sol;&sol;&sol;mnt&sol;receipts&sol;event.json',
+                   '&sol;mnt&sol;receipts&sol;event.json',
+                   '&#x2f;mnt&#x2f;receipts&#x2f;event.json')
+        for target in targets:
+            for source, expected in ((f'[receipt]({target})', '[receipt]([private URI])'),
+                                     (f'[receipt](<{target}> "title")', '[receipt](<[private URI]> "title")'),
+                                     (f'[receipt]: {target} "title"', '[receipt]: [private URI] "title"')):
+                with self.subTest(source=source):
+                    self.assertEqual(self.loop.public_state(source, [known]), expected)
+        for target in ('&amp;#47;mnt&amp;#47;receipts&amp;#47;event.json',
+                       r'\&sol;mnt\&sol;receipts\&sol;event.json',
+                       '&notit;mnt&sol;receipts&sol;event.json',
+                       'file&#92;:&#47;&#47;&#47;mnt&#47;receipts&#47;event.json',
+                       r'file\z:&#47;&#47;&#47;mnt&#47;receipts&#47;event.json',
+                       '%66ile:%2F%2F%2Fmnt%2Freceipts%2Fevent.json'):
+            source = f'[literal]({target})'
+            self.assertEqual(self.loop.public_state(source, [known]), source)
+        public = r'[public](&#72;TTPS\:\/\/public.example/event.json?x=%41&amp;y=2)'
+        self.assertEqual(self.loop.public_state(public, [known]), public)
+        session = tal.report()['session']
+        target = '&#104;ttps&#58;&#47;&#47;public.example/session/' + session.replace('-', r'\-')
+        projected = self.loop.public_state({'review': {'session': session, 'evidence': f'[origin]({target})'}})
+        self.assertEqual(projected['review']['evidence'], '[origin]([private URI])')
+        target = '&#104;ttps&colon;&sol;&sol;public.example&sol;session&sol;' + session.replace('-', '&#45;')
+        projected = self.loop.public_state({'private_sessions': [session_fingerprint(session)],
+                                           'review': {'session': session, 'evidence': f'[origin]({target})'}})
+        self.assertEqual(projected['review']['evidence'], '[origin]([private URI])')
+        self.assertEqual(self.loop.public_state('prefix:file:///mnt/receipts/event.json:suffix', [known]),
+                         'prefix:file://[private path]:suffix')
+
     def test_markdown_destination_forms_through_save_cache_and_resave(self):
         self.check_paths('/mnt/receipts/event(1).json', '/opt/receipts/mapping(1).json')
         self.doCleanups(); self.setUp()
@@ -510,7 +546,10 @@ class PrivatePathTests(unittest.TestCase):
         markdown_targets = (semantic.replace('(', r'\(').replace(')', r'\)'), semantic.replace('.', r'\.'),
                             semantic.replace('(', '&#40;').replace(')', '&#41;'),
                             semantic.replace('(', '&#x28;').replace(')', '&#x29;'),
-                            semantic.replace('(', '&lpar;').replace(')', '&rpar;'), semantic.replace(']', r'\]'))
+                            semantic.replace('(', '&lpar;').replace(')', '&rpar;'), semantic.replace(']', r'\]'),
+                            encoded.replace('/', '&#47;'), encoded[7:].replace('/', '&#47;'),
+                            encoded.replace('file:', '&#102;ile&#58;').replace('/', '&sol;'),
+                            encoded.replace(':', r'\:').replace('/', r'\/'))
         markdown_forms = ' '.join(f'[form]({target})' for target in markdown_targets)
         unrelated = 'https://public.example/runs/00000000%2d0000%2D4000%2d8000%2D000000000097/result'
         urls += ' ' + unrelated + ' https://public.example/event(1).json [public](https://public.example/event(1).json)'
