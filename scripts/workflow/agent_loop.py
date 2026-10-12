@@ -285,6 +285,11 @@ class Loop:
         if (state and str(state.get('review', {}).get('session', '')).startswith('codex-session-sha256:')
                 and not state.get('review_ref')):
             raise ValueError('Public session fingerprint requires its bound private review')
+        if (state and not state.get('review_ref') and
+                re.fullmatch(r'review-[0-9a-f-]{36}', str(state.get('review', {}).get('session', '')))):
+            self.invalidate_acceptance(state)
+            if not state.get('paused'):
+                state.update(phase='queued', next='Legacy wrapper approval invalidated; fresh independent review required')
         if state and state.get('review_ref'):
             public = {'binding': state.get('binding'), 'review': state.get('review')}
             state['review'] = restore_review(self.storage, state['review_ref'], public)
@@ -350,6 +355,9 @@ class Loop:
             return dict(result, allowed=True)
         except (ValueError, KeyError, OSError, RuntimeError) as error:
             return {'allowed': False, 'reason': self.private_error(error)}
+
+    def validate_review(self, report, bound, accepted):
+        validate_review(report, bound, accepted, self.storage)
 
     def repair_evidence(self, accepted, h, bound):
         if not accepted.get('repair_revision'):
@@ -551,8 +559,8 @@ class Loop:
             if gui_needed and acceptance.get('mode') in ('develop', 'tooling') and not acceptance.get('cases'):
                 acceptance = {'allowed': False, 'reason': 'Reviewer requires GUI Cases; declare them in the matrix'}
             if state.get('binding') == bound and state.get('review'):
-                validate_review(state['review'], bound, acceptance)
-            action = next_action(state, bound, self.gh.ci(pr), gui_needed, acceptance)
+                self.validate_review(state['review'], bound, acceptance)
+            action = next_action(state, bound, self.gh.ci(pr), gui_needed, acceptance, self.storage)
             if action == 'review':
                 if state.get('reviews', 0) >= 8:
                     raise ValueError('Review limit reached; explicit resume required')
@@ -566,9 +574,10 @@ class Loop:
                                       'scope': h['scope'], 'close_issue_requested': h['close_issue'],
                                       'feedback': feedback, 'gui': state.get('gui'), 'target': pr['base']['ref'], 'acceptance': acceptance,
                                       'private_repair_evidence': private_evidence}, path.parent / 'workers',
-                                      on_start=lambda pid: running.write_text(json.dumps({'pid': pid})))
+                                      on_start=lambda pid: running.write_text(json.dumps({'pid': pid})),
+                                      origin_storage=self.storage, origin_binding=bound)
                 running.unlink(missing_ok=True)
-                validate_review(report, bound, acceptance)
+                self.validate_review(report, bound, acceptance)
                 if git('rev-parse', 'HEAD', cwd=path) != pr['head']['sha'] or git('status', '--porcelain', cwd=path):
                     raise ValueError('Reviewer changed checkout; approval rejected')
                 state.update(binding=bound, review=report, phase='reviewed', errors=0, next='Reconcile verdict on the next tick')
@@ -603,7 +612,7 @@ class Loop:
                     state.update(phase='queued', next='PR/base/acceptance changed before merge; reconcile again')
                     self.save(latest, state, comment_id)
                     return {'pr': number, 'phase': 'changed-before-merge'}
-                validate_review(state['review'], bound, latest_acceptance)
+                self.validate_review(state['review'], bound, latest_acceptance)
                 state['acceptance'] = dict(acceptance, head=bound['head'], base=bound['base'])
                 self.gh.status(bound['head'], 'success', 'Independent review and target branch acceptance gate passed', pr['html_url'])
                 state.update(phase='merging', next='Read back GitHub merge result')
@@ -658,7 +667,7 @@ class Loop:
         accepted = state.get('acceptance', {})
         if pr['base']['ref'] == 'develop':
             accepted = self.merged_acceptance(pr, h, state)
-        validate_review(report, bound, accepted)
+        self.validate_review(report, bound, accepted)
         state['acceptance'] = accepted
         promotion_pass = (accepted.get('allowed') is True and accepted.get('mode') == 'promotion' and
                           accepted.get('gui_complete') is True and accepted.get('head') == bound.get('head') and
@@ -698,7 +707,7 @@ class Loop:
             raise ValueError('PR/Issue/feedback changed during handoff; preserve scope/resources before closure')
         if pr['base']['ref'] == 'develop':
             accepted = self.merged_acceptance(pr, h, state)
-            validate_review(report, bound, accepted)
+            self.validate_review(report, bound, accepted)
             state['acceptance'] = accepted
         if (pr['base']['ref'] == 'main' and issue['state'] != 'open'
                 and not (complete and state.get('issue_closure') == closure and 'status:done' in labels(issue))):
@@ -754,7 +763,7 @@ class Loop:
             accepted = self.merged_acceptance(pr, h, state)
         else:
             accepted = state.get('acceptance')
-        validate_review(report, bound, accepted)
+        self.validate_review(report, bound, accepted)
         if report['verdict'] != 'approved':
             raise ValueError('Unresolved feedback cannot resume closure or cleanup')
         if accepted is not None:
@@ -866,7 +875,18 @@ def enroll(loop, args):
     metadata(pr)
     if any(Path(x).is_absolute() or '..' in Path(x).parts for x in args.scope):
         raise ValueError('Use repository-relative enrollment scope')
-    h = register(loop.storage, h, source, HOST, getattr(args, 'repair_evidence', None))
+    repair_path = getattr(args, 'repair_evidence', None)
+    if repair_path is not None:
+        repair_path = repair_path.absolute()
+    accepted = loop.acceptance(pr, source)
+    if repair_path or accepted.get('repair_revision'):
+        if not accepted.get('allowed'):
+            raise ValueError('Repair enrollment requires verified current acceptance')
+        if repair_path is None or repair_path.is_symlink():
+            raise ValueError('Repair enrollment requires a private regular bundle')
+        repair_path = repair_path.resolve(strict=True)
+        private_repair_evidence(repair_path, accepted, {'head': pr['head']['sha'], 'base': pr['base']['sha']})
+    h = register(loop.storage, h, source, HOST, repair_path)
     loop.gh.comment(args.pr, pack(HANDOFF_V2, h))
     loop.gh.status(h['head'], 'pending', 'Enrolled for independent review', pr['html_url'])
     loop.save(pr, {'phase': 'queued', 'expected_head': h['head'], 'fixes': 0, 'reviews': 0, 'errors': 0}, None)

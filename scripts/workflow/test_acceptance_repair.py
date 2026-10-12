@@ -13,6 +13,7 @@ import agent_loop as al
 import test_agent_loop as tal
 from agent_policy import next_action, session_fingerprint, validate_review
 from test_agent_loop import pr_data, report
+from handoff_registry import issue_review_origin
 from test_verification import CASE, change
 from verification import REPAIR_MARKER, canonical_hash, verify_pr
 
@@ -22,6 +23,8 @@ class RepairTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
+        origin_temp = tempfile.TemporaryDirectory(); self.addCleanup(origin_temp.cleanup)
+        self.origin_storage = Path(origin_temp.name)
         self.git('init', '-q')
         self.git('config', 'user.name', 'fixture')
         self.git('config', 'user.email', 'fixture@example.invalid')
@@ -107,14 +110,15 @@ class RepairTests(unittest.TestCase):
         bound = {'head': self.pr['head']['sha'], 'base': self.source}
         review = dict(report(), **bound, repair_revision=accepted['repair_revision'],
                       repair_assessment='Read original NG, full production recheck and method limits')
-        validate_review(review, bound, accepted)
-        self.assertEqual(next_action({'binding': bound, 'review': review}, bound, 'success', False, accepted), 'merge')
+        review = issue_review_origin(self.origin_storage, review, bound, review['session'], 'manual')
+        validate_review(review, bound, accepted, self.origin_storage)
+        self.assertEqual(next_action({'binding': bound, 'review': review}, bound, 'success', False, accepted, self.origin_storage), 'merge')
         for mutation in ({'repair_revision': ''}, {'repair_revision': '0' * 64}, {'repair_assessment': ''},
                          {'session': self.data['repair']['writer_session']}, {'session': 'writer-35'}):
             with self.subTest(mutation=mutation), self.assertRaises(ValueError):
-                validate_review(dict(review, **mutation), bound, accepted)
+                validate_review(dict(review, **mutation), bound, accepted, self.origin_storage)
         with self.assertRaises(ValueError):
-            validate_review(dict(report(), **bound), bound, accepted)
+            validate_review(dict(report(), **bound), bound, accepted, self.origin_storage)
 
     def composed_attribution(self):
         observed = self.data['repair']['results']['GAP-1']['observation']
@@ -141,16 +145,17 @@ class RepairTests(unittest.TestCase):
         self.assertEqual(accepted['repair_observers'], sorted(map(session_fingerprint, sessions)))
         bound = {'head': self.pr['head']['sha'], 'base': self.source}
         review = dict(report(), **bound, repair_revision=accepted['repair_revision'], repair_assessment='sealed receipts checked')
-        validate_review(review, bound, accepted)
+        review = issue_review_origin(self.origin_storage, review, bound, review['session'], 'manual')
+        validate_review(review, bound, accepted, self.origin_storage)
         for session in sessions:
             with self.subTest(session=session), self.assertRaisesRegex(ValueError, 'self-reviewed'):
-                validate_review(dict(review, session=session), bound, accepted)
+                validate_review(dict(review, session=session), bound, accepted, self.origin_storage)
         for alias in ('review-' + sessions[0], session_fingerprint(sessions[0]), 'public-role-1', None, sessions[0].replace('-', '')):
             with self.subTest(alias=alias), self.assertRaises(ValueError):
-                validate_review(dict(review, session=alias), bound, accepted)
+                validate_review(dict(review, session=alias), bound, accepted, self.origin_storage)
         for key in ('head', 'base', 'repair_revision'):
             with self.subTest(key=key), self.assertRaises(ValueError):
-                validate_review(dict(review, **{key: '0' * (64 if key == 'repair_revision' else 40)}), bound, accepted)
+                validate_review(dict(review, **{key: '0' * (64 if key == 'repair_revision' else 40)}), bound, accepted, self.origin_storage)
         attribution = self.data['repair']['results']['GAP-1']['observation']['attribution']
         for item in attribution['contributors']: item['role'] = 'renamed display role'
         self.freeze()
@@ -748,6 +753,10 @@ class RepairLoopTests(unittest.TestCase):
         self.accepted = {'allowed': True, 'mode': 'develop', 'cases': 0, 'repair_revision': 'e' * 64,
                          'repair_observers': [session_fingerprint('00000000-0000-4000-8000-000000000035')]}
         self.loop.acceptance.return_value = self.accepted
+        def fixture_adapter(*args, **kw):
+            raw = self.worker(*args, **kw)
+            return issue_review_origin(self.loop.storage, raw, kw['origin_binding'], raw['session'], 'cli')
+        self.loop.worker = fixture_adapter
 
     def test_coordinator_cannot_status_or_merge_without_actual_repair_assessment(self):
         self.prepare()
@@ -788,8 +797,9 @@ class RepairLoopTests(unittest.TestCase):
 
     def recovery_evidence(self):
         bound, _ = self.loop.bound(self.gh.pr(36), self.gh.issue(35), self.gh.comments(36))
-        return {'binding': bound, 'review': dict(report(), repair_revision='e' * 64,
-                repair_assessment='all failed guarantees checked', feedback_hash=bound['feedback_hash'])}
+        raw = dict(report(), repair_revision='e' * 64, repair_assessment='all failed guarantees checked',
+                   feedback_hash=bound['feedback_hash'])
+        return {'binding': bound, 'review': issue_review_origin(self.loop.storage, raw, bound, raw['session'], 'manual')}
 
     def test_merged_repair_edit_recomputes_acceptance_before_recovery(self):
         self.merged_repair()
@@ -810,6 +820,9 @@ class RepairLoopTests(unittest.TestCase):
             self.loop.reconcile_feedback(self.gh.pr(36), self.recovery_evidence())
         evidence = self.recovery_evidence()
         evidence['review']['repair_revision'] = 'f' * 64
+        evidence['review'].pop('origin_receipt')
+        evidence['review'] = issue_review_origin(self.loop.storage, evidence['review'], evidence['binding'],
+                                                       evidence['review']['session'], 'manual')
         fresh = self.loop.reconcile_feedback(self.gh.pr(36), evidence)
         self.assertEqual(fresh['acceptance']['repair_revision'], 'f' * 64)
 

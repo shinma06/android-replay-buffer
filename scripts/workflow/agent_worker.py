@@ -10,6 +10,7 @@ import subprocess
 import tomllib
 import uuid
 from agent_policy import canonical_session, session_fingerprint
+from handoff_registry import issue_review_origin
 
 REPORT_SCHEMA = {
     'type': 'object', 'additionalProperties': False,
@@ -66,11 +67,15 @@ def private_repair_evidence(path, acceptance, bound):
         receipts[receipt['sha256']] = original
     if bundle['mapping_receipt_sha256'] not in receipts:
         raise ValueError('Origin attribution requires its sealed mapping receipt')
-    expected = {}
+    expected, legacy = {}, []
     for result in acceptance['repair']['results'].values():
         attribution = result['observation'].get('attribution')
         if not attribution:
-            raise ValueError('Private review requires explicit contributor receipt attribution')
+            session = canonical_session(acceptance['repair']['writer_session'])
+            if result['observation']['observer'] != session:
+                raise ValueError('Legacy repair requires unambiguous single originating session')
+            legacy.append((session_fingerprint(session), datetime.fromisoformat(result['observation']['at'].replace('Z', '+00:00'))))
+            continue
         for item in attribution['contributors']:
             key = (item['receipt_sha256'], item.get('receipt_locator', ''))
             expected[key] = (item['session'], item['activity'], datetime.fromisoformat(item['at'].replace('Z', '+00:00')))
@@ -98,7 +103,21 @@ def private_repair_evidence(path, acceptance, bound):
                 raise ValueError('Receipt locator must identify an observation object')
         actual[key] = (session_fingerprint(origin['session']), origin['activity'],
                        datetime.fromisoformat(origin['at'].replace('Z', '+00:00')))
-    if actual != expected:
+    if legacy:
+        if len({session for session, _ in legacy}) != 1 or not actual:
+            raise ValueError('Legacy repair mapping must describe exactly one originating session')
+        session = legacy[0][0]
+        extras = [claim for key, claim in actual.items() if key not in expected]
+        relevant = [claim for claim in actual.values() if claim[0] == session and claim[2] <= max(at for _, at in legacy)]
+        if (any(actual.get(key) != claim for key, claim in expected.items()) or
+                any(identity != session or activity not in ('writer', 'execution', 'assessment', 'composition')
+                    for identity, activity, _ in extras) or
+                not {'writer', 'execution'} <= {activity for _, activity, _ in relevant} or
+                any(not any(identity == session and activity in ('execution', 'assessment', 'composition') and when == at
+                            for identity, activity, when in actual.values()) for _, at in legacy) or
+                any(when > max(at for _, at in legacy) for _, _, when in extras)):
+            raise ValueError('Legacy sealed mapping omits or contradicts its writer/execution/original observation')
+    elif actual != expected:
         raise ValueError('Private originating receipts differ from the complete public attribution')
     return dict(bundle, bundle_sha256=hashlib.sha256(body).hexdigest())
 
@@ -126,7 +145,10 @@ def event_session(path):
     return session
 
 
-def run_worker(role, checkout, packet, output_dir, timeout=600, on_start=lambda pid: None):
+def run_worker(role, checkout, packet, output_dir, timeout=600, on_start=lambda pid: None,
+               origin_storage=None, origin_binding=None):
+    if packet.get('private_repair_evidence') and (origin_storage is None or origin_binding is None):
+        raise ValueError('Repair review requires trusted origin registry/binding before worker launch')
     output_dir = Path(output_dir)
     output_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     session = f'{role}-{uuid.uuid4()}'
@@ -214,6 +236,7 @@ def run_worker(role, checkout, packet, output_dir, timeout=600, on_start=lambda 
     report = bind_report_session(report, event_session(events))
     if packet.get('private_repair_evidence'):
         report['repair_evidence_sha256'] = packet['private_repair_evidence']['bundle_sha256']
+        report = issue_review_origin(origin_storage, report, origin_binding, report['session'], 'cli')
     return report
 
 
@@ -223,14 +246,20 @@ def main():
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--repair-evidence', type=Path)
     parser.add_argument('--acceptance', type=Path, help='Private verified acceptance including head/base')
+    parser.add_argument('--storage', type=Path, help='Trusted coordinator private registry storage')
+    parser.add_argument('--binding', type=Path, help='Complete verified HEAD/base/Issue/feedback binding')
     args = parser.parse_args()
     report = bind_report_session(json.loads(args.report.read_text()), os.environ.get('CODEX_THREAD_ID'))
     if report.get('repair_revision'):
-        if not args.acceptance:
+        if not args.acceptance or not args.binding or not args.storage:
             raise ValueError('Repair report requires the verified acceptance snapshot and private originals')
         accepted = json.loads(args.acceptance.read_text())
         evidence = private_repair_evidence(args.repair_evidence, accepted, report)
         report['repair_evidence_sha256'] = evidence['bundle_sha256']
+        bound = json.loads(args.binding.read_text())
+        if any(bound[k] != report[k] for k in ('head', 'base')):
+            raise ValueError('Manual binding differs from fixed report')
+        report = issue_review_origin(args.storage, report, bound, report['session'], 'manual')
     # Preserve original reports and refuse to replace an existing bound receipt.
     fd = os.open(args.output, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     with os.fdopen(fd, 'w') as stream:

@@ -94,3 +94,26 @@ def restore_review(storage, identifier, public):
     if local.get('digest') != digest(public) or not isinstance(local.get('review'), dict):
         raise ValueError('Private review binding mismatch')
     return local['review']
+
+
+def issue_review_origin(storage, report, bound, session, kind):
+    """Trusted adapter boundary, not authentication against a writer of local files/environment."""
+    from agent_policy import canonical_session
+    session = canonical_session(session)
+    if (report.get('session') != session or 'origin_receipt' in report or kind not in ('cli', 'manual') or
+            not isinstance(bound, dict) or any(bound.get(k) != report.get(k) for k in ('head', 'base'))):
+        raise ValueError('Adapter origin differs from report or is already bound')
+    public = {'binding': bound, 'review': report}
+    identifier = store_review(storage, public, {'kind': 'adapter-review-origin-v1', 'adapter': kind,
+                                              'session': session, 'report': report})
+    return dict(report, origin_receipt=identifier)
+
+
+def verify_review_origin(storage, report, bound):
+    if storage is None:
+        raise ValueError('Repair approval requires its trusted adapter private registry')
+    original = {k: v for k, v in report.items() if k != 'origin_receipt'}
+    receipt = restore_review(storage, report.get('origin_receipt'), {'binding': bound, 'review': original})
+    if (receipt.get('kind') != 'adapter-review-origin-v1' or receipt.get('adapter') not in ('cli', 'manual') or
+            receipt.get('session') != report.get('session') or receipt.get('report') != original):
+        raise ValueError('Report was not issued by the actual-session adapter')

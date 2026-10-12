@@ -53,7 +53,7 @@ def binding(pr, issue):
             'issue_bug': 'type:bug' in labels(issue)}
 
 
-def validate_review(report, expected, acceptance=None):
+def validate_review(report, expected, acceptance=None, storage=None):
     for key in ('head', 'base'):
         if report.get(key) != expected[key]:
             raise ValueError('Stale reviewer ' + key)
@@ -80,6 +80,8 @@ def validate_review(report, expected, acceptance=None):
                 not all(isinstance(x, str) and SESSION_HASH.fullmatch(x) for x in observers) or
                 reviewer in observers):
             raise ValueError('Independent original-NG evidence assessment is missing, stale or self-reviewed')
+        from handoff_registry import verify_review_origin
+        verify_review_origin(storage, report, expected)
     if report['verdict'] == 'changes_requested' and not report['findings']:
         raise ValueError('Changes requested without concrete findings')
 
@@ -97,7 +99,7 @@ def gui_pass(evidence, bound):
                                               for x in evidence['cases']))
 
 
-def next_action(state, bound, ci, gui, acceptance=None):
+def next_action(state, bound, ci, gui, acceptance=None, storage=None):
     if bound.get('remote_review_complete') is False:
         return 'remote-review-wait'
     if state.get('binding') != bound:
@@ -114,7 +116,7 @@ def next_action(state, bound, ci, gui, acceptance=None):
     if acceptance is None and gui and not gui_pass(state.get('gui'), bound):
         return 'gui-queued'
     if acceptance and acceptance.get('repair_revision'):
-        validate_review(report, bound, acceptance)
+        validate_review(report, bound, acceptance, storage)
     if ci == 'failure':
         return 'ci-failed'
     if ci != 'success':
