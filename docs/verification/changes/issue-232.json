@@ -2,7 +2,7 @@
   "schema": 1,
   "issue": 232,
   "gui_required": false,
-  "reason": "Issue Development の実関連・default main の早期 close 防止・start/PR/finish 引継ぎを整合する運用文書とtemplateのみ。製品code/build/Caseは変更せず、製品GUI受入は不要。限定GitHub管理のAPI/UI観察は製品CaseのPASSにしない。",
+  "reason": "Issue Development の実関連・default main の早期 close 防止・start/PR/finish 引継ぎと、coordinatorのmerge直前closing link検査/完了後の実関連readbackを整合するtooling変更。製品code/build/Caseは不変、製品GUI受入は不要。限定GitHub管理のAPI/UI観察と合成coordinator回帰は製品CaseのPASSにしない。",
   "cli_checks": [
     "python3 scripts/check.py",
     "python3 scripts/workflow/product_check.py",

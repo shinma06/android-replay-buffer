@@ -116,6 +116,48 @@ class GitHub:
             return 'failure'
         return 'success' if all(x == 'SUCCESS' for x in needed) else 'pending'
 
+    def development(self, pr):
+        query = '''query($pr:Int!,$issue:Int!){repository(owner:"shinma06",name:"android-replay-buffer"){
+          defaultBranchRef{name} pullRequest(number:$pr){id closingIssuesReferences(first:100){
+            nodes{number state} pageInfo{hasNextPage}}}
+          issue(number:$issue){id state closedByPullRequestsReferences(first:100,includeClosedPrs:true){
+            nodes{number}}}}}'''
+        result = self.api('graphql', 'POST', {'query': query,
+                          'variables': {'pr': pr['number'], 'issue': issue_number(pr)}})
+        try:
+            repo = result['data']['repository']
+            links = repo['pullRequest']['closingIssuesReferences']
+            if (result.get('errors') or not isinstance(repo['defaultBranchRef']['name'], str)
+                    or not repo['defaultBranchRef']['name'] or not isinstance(links['nodes'], list)
+                    or links['pageInfo']['hasNextPage'] is not False
+                    or any(x['state'] not in ('OPEN', 'CLOSED') for x in links['nodes'])):
+                raise ValueError('Development closing references are incomplete; owner must reconcile before merge')
+            return repo
+        except (KeyError, TypeError) as error:
+            raise ValueError('Development closing references unavailable; owner must read back before merge') from error
+
+    def link_completed_issue(self, pr, issue):
+        repo = self.development(pr)
+        if (not pr.get('merged') or issue['state'] != 'closed' or repo['issue']['state'] != 'CLOSED'
+                or 'status:done' not in labels(issue)):
+            raise ValueError('Development linking requires actual scoped completion and Issue closure')
+        query = '''mutation($issue:ID!,$prs:[ID!]!){addCloseIssueReferences(
+          input:{issueId:$issue,pullRequestIds:$prs}){issue{number state}}}'''
+        linked = repo
+        if (not any(x['number'] == issue_number(pr) for x in repo['pullRequest']['closingIssuesReferences']['nodes'])
+                or not any(x['number'] == pr['number'] for x in repo['issue']['closedByPullRequestsReferences']['nodes'])):
+            result = self.api('graphql', 'POST', {'query': query,
+                              'variables': {'issue': repo['issue']['id'], 'prs': [repo['pullRequest']['id']]}})
+            if not isinstance(result, dict) or result.get('errors'):
+                raise ValueError('Development linking failed; preserve resources for owner readback')
+            linked = self.development(pr)
+        current = self.issue(issue_number(pr))
+        if (not any(x['number'] == issue_number(pr) for x in linked['pullRequest']['closingIssuesReferences']['nodes'])
+                or not any(x['number'] == pr['number'] for x in linked['issue']['closedByPullRequestsReferences']['nodes'])
+                or current['state'] != 'closed' or 'status:done' not in labels(current)
+                or current.get('closed_at') != issue.get('closed_at')):
+            raise ValueError('Development/Issue closure readback failed; owner must reconcile')
+
     def merge(self, pr):
         rules = self.api(f'repos/{REPO}/rules/branches/{pr["base"]["ref"]}')
         by_type = {rule['type']: rule for rule in rules}
@@ -133,6 +175,13 @@ class GitHub:
         # Both the head guard and active strict branch rules are enforced by GitHub.
         if pr['draft']:
             raise ValueError('Draft must be ready and its remote review completed before merge')
+        repo = self.development(pr)
+        if repo['issue']['state'] != 'OPEN':
+            raise ValueError('Issue closed before merge; owner must reconcile actual scope')
+        if (pr['base']['ref'] == repo['defaultBranchRef']['name']
+                and any(x['state'] == 'OPEN' for x in repo['pullRequest']['closingIssuesReferences']['nodes'])):
+            raise ValueError('Default-branch closing links would close Issues before feedback readback; '
+                             'owner must unlink manual/branch links or remove closing keywords, then re-read')
         result = self.api(f'repos/{REPO}/pulls/{pr["number"]}/merge', 'PUT',
                           {'sha': pr['head']['sha'], 'merge_method': 'merge' if metadata(pr)[2] == 'promotion' else 'squash'})
         if not result.get('merged'):
@@ -531,6 +580,10 @@ class Loop:
                     report.get('issue_complete') and bound.get('head') == pr['head']['sha'] and
                     bound.get('issue_hash') == binding(pr, current_issue)['issue_hash'] and
                     (not (h['gui_required'] or report.get('gui_required')) or promotion_pass or gui_pass(state.get('gui'), bound)))
+        closure = {key: bound[key] for key in ('head', 'base', 'issue_hash')}
+        if (pr['base']['ref'] == 'main' and current_issue['state'] != 'open'
+                and not (complete and state.get('issue_closure') == closure and 'status:done' in labels(current_issue))):
+            raise ValueError('Issue closed before coordinator completion; owner must reconcile closure and remaining scope')
         transferred = False
         if pr['base']['ref'] == 'develop':
             axes = validate_issue(current_issue)
@@ -556,11 +609,19 @@ class Loop:
         fresh, _ = self.bound(pr, issue, self.gh.comments(pr['number']), state.get('remote_review_after'))
         if fresh != bound or fresh.get('remote_review_complete') is not True:
             raise ValueError('PR/Issue/feedback changed during handoff; preserve scope/resources before closure')
+        if (complete and not transferred and issue['state'] != 'open'
+                and state.get('issue_closure') != closure):
+            raise ValueError('Issue closed during handoff before owned completion; owner must reconcile')
         if complete and issue['state'] == 'open':
+            if not transferred:
+                state['issue_closure'] = closure
+                comment_id = self.save(pr, state, comment_id)
             self.gh.api(f'repos/{REPO}/issues/{h["issue"]}', 'PATCH', {'state': 'closed', 'state_reason': 'completed', 'labels': done_labels(issue)})
             closed = self.gh.issue(h['issue'])
             if closed['state'] != 'closed' or 'status:done' not in labels(closed):
                 raise ValueError('Issue closure readback failed')
+        if complete and not transferred:
+            self.gh.link_completed_issue(pr, self.gh.issue(h['issue']))
         if complete and not transferred and h.get('parent') is not None:
             parent = self.gh.issue(h['parent'])
             body = update_parent(parent['body'], h['issue'])
@@ -569,7 +630,7 @@ class Loop:
         self.cleanup(pr, h)
         state.update(phase='done',
                      next=('Claim released; Issue closed' if complete else 'Claim released; Issue remains open for remaining acceptance') +
-                          '; PM: reconcile parent roadmap and Project registration/status for origin and QA, Milestone and Relationship Status; record readback or retry owner',
+                          '; PM: reconcile parent roadmap and Project registration/status for origin and QA, Milestone, Relationship Status and Development/Issue closure; record readback or retry owner',
                      merge_sha=pr['merge_commit_sha'])
         self.save(pr, state, comment_id)
         return {'pr': pr['number'], 'phase': 'done', 'issue_closed': bool(complete)}

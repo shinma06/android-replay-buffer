@@ -142,6 +142,98 @@ class BaseReferenceTests(unittest.TestCase):
             with self.assertRaises(ValueError): gh.pr(36)
 
 
+def development_snapshot(states=(), default='main', *, more=False, issue_state='OPEN'):
+    return {'data': {'repository': {'defaultBranchRef': {'name': default},
+        'pullRequest': {'id': 'PR_test', 'closingIssuesReferences': {
+            'nodes': [{'number': 35 + i, 'state': state} for i, state in enumerate(states)],
+            'pageInfo': {'hasNextPage': more}}},
+        'issue': {'id': 'I_test', 'state': issue_state, 'closedByPullRequestsReferences': {
+            'nodes': [{'number': 36}]}}}}}
+
+
+class DevelopmentMergeTests(unittest.TestCase):
+    def adapter(self, snapshot):
+        gh = al.GitHub()
+        rules = json.loads((al.ROOT / '.github/main-ruleset.json').read_text())['rules']
+        for rule in rules:
+            rule['ruleset_id'] = 1
+        def api(path, method='GET', data=None):
+            if path == 'graphql': return snapshot
+            if '/rules/branches/' in path: return rules
+            if '/rulesets/' in path: return {'bypass_actors': []}
+            if path.endswith('/merge') and method == 'PUT': return {'merged': True}
+            raise AssertionError(path)
+        gh.api = Mock(side_effect=api)
+        return gh
+
+    def test_default_merge_rejects_open_manual_branch_or_keyword_links(self):
+        for states in (['OPEN'], ['CLOSED', 'OPEN']):
+            with self.subTest(states=states):
+                gh = self.adapter(development_snapshot(states))
+                with self.assertRaisesRegex(ValueError, 'closing'):
+                    gh.merge(pr_data())
+                self.assertFalse(any(c.args[1:2] == ('PUT',) for c in gh.api.call_args_list))
+
+    def test_unknown_or_partial_links_fail_before_merge(self):
+        for snapshot in ({'errors': [{'message': 'not authorized'}]}, {},
+                         development_snapshot(more=True), development_snapshot(['UNKNOWN']),
+                         development_snapshot(issue_state='CLOSED')):
+            with self.subTest(snapshot=snapshot):
+                gh = self.adapter(snapshot)
+                with self.assertRaises(ValueError):
+                    gh.merge(pr_data())
+                self.assertFalse(any(c.args[1:2] == ('PUT',) for c in gh.api.call_args_list))
+
+    def test_nondefault_and_closed_links_do_not_block_merge(self):
+        for snapshot in (development_snapshot(), development_snapshot(['CLOSED']),
+                         development_snapshot(['OPEN'], default='develop')):
+            with self.subTest(snapshot=snapshot):
+                gh = self.adapter(snapshot)
+                self.assertTrue(gh.merge(pr_data())['merged'])
+                self.assertEqual(gh.api.call_args.args[1], 'PUT')
+
+
+class DevelopmentLinkTests(unittest.TestCase):
+    def adapter(self):
+        gh = al.GitHub()
+        before = development_snapshot(issue_state='CLOSED')['data']['repository']
+        after = development_snapshot(['CLOSED'], issue_state='CLOSED')['data']['repository']
+        gh.development = Mock(side_effect=[before, after])
+        gh.api = Mock(return_value={'data': {'addCloseIssueReferences': {'issue': {'number': 35, 'state': 'CLOSED'}}}})
+        gh.issue = Mock(return_value={'state': 'closed', 'labels': ['status:done'], 'closed_at': 'fixed-time'})
+        return gh, dict(pr_data(), merged=True), gh.issue.return_value
+
+    def test_actual_pair_and_closed_time_are_read_back_after_link(self):
+        gh, pr, issue = self.adapter()
+        gh.link_completed_issue(pr, issue)
+        self.assertEqual(gh.api.call_args.args[2]['variables'], {'issue': 'I_test', 'prs': ['PR_test']})
+        self.assertEqual(gh.development.call_count, 2)
+        gh.issue.assert_called_once_with(35)
+
+    def test_existing_pair_recovery_does_not_repeat_mutation(self):
+        gh, pr, issue = self.adapter()
+        gh.development.side_effect = None
+        gh.development.return_value = development_snapshot(['CLOSED'], issue_state='CLOSED')['data']['repository']
+        gh.link_completed_issue(pr, issue)
+        gh.api.assert_not_called()
+
+    def test_failed_or_mismatched_link_cannot_complete(self):
+        for failure in ('unmerged', 'open', 'api-error', 'missing-forward', 'missing-backward', 'changed-close-time'):
+            with self.subTest(failure=failure):
+                gh, pr, issue = self.adapter()
+                issue = copy.deepcopy(issue)
+                after = development_snapshot(['CLOSED'], issue_state='CLOSED')['data']['repository']
+                if failure == 'unmerged': pr['merged'] = False
+                if failure == 'open': issue['state'] = 'open'
+                if failure == 'api-error': gh.api.return_value = {'errors': [{'message': 'not authorized'}]}
+                if failure == 'missing-forward': after['pullRequest']['closingIssuesReferences']['nodes'] = []
+                if failure == 'missing-backward': after['issue']['closedByPullRequestsReferences']['nodes'] = []
+                if failure == 'changed-close-time': gh.issue.return_value['closed_at'] = 'changed'
+                gh.development.side_effect = [development_snapshot(issue_state='CLOSED')['data']['repository'], after]
+                with self.assertRaises(ValueError): gh.link_completed_issue(pr, issue)
+                if failure in ('unmerged', 'open'): gh.api.assert_not_called()
+
+
 class WorkerTests(unittest.TestCase):
     def test_context_policy_reaches_both_roles_without_changing_packet_or_report(self):
         packet = {'head': HEAD, 'base': BASE, 'issue': {'body': '人間向け受入'},
@@ -214,6 +306,7 @@ class FakeGitHub:
         self.statuses = []
         self.merges = 0
         self.fail_after_merge = False
+        self.development_links = []
 
     def pr(self, n): return copy.deepcopy(self.pull)
     def issue(self, n): return copy.deepcopy(self.issues[n])
@@ -238,6 +331,10 @@ class FakeGitHub:
         if '/issues/' in path:
             n = int(path.split('/')[-1]); self.issues[n].update(data); return self.issue(n)
         raise AssertionError(path)
+    def link_completed_issue(self, pr, issue):
+        assert issue['state'] == 'closed' and 'status:done' in issue['labels']
+        self.development_links.append((35, pr['number']))
+
     def merge(self, pr):
         assert pr['head']['sha'] == self.pull['head']['sha']
         self.merges += 1; self.pull.update(merged=True, state='closed')
@@ -515,6 +612,38 @@ class LoopTests(unittest.TestCase):
         self.assertEqual(self.loop.tick(36)['phase'], 'done')
         self.assertEqual(self.gh.issues[35]['state'], 'closed')
         self.assertEqual(self.gh.issues[1]['body'], '- [ ] #35 task')
+
+    def test_automatic_close_at_merge_blocks_completion_and_cleanup(self):
+        self.loop.tick(36)
+        original = self.gh.merge
+        def merge(pr):
+            result = original(pr)
+            self.gh.issues[35]['state'] = 'closed'
+            return result
+        self.gh.merge = merge
+        self.assertEqual(self.loop.tick(36)['phase'], 'blocked')
+        self.assertEqual(self.gh.merges, 1)
+        self.loop.cleanup.assert_not_called()
+        self.assertEqual(self.gh.development_links, [])
+        self.gh.issues[35]['labels'] = ['type:maintenance', 'priority:P2', 'status:done']
+        self.assertEqual(self.loop.tick(36)['phase'], 'cleanup')
+        self.loop.cleanup.assert_not_called()
+        self.assertEqual(self.gh.development_links, [])
+
+    def test_main_links_only_after_owned_completion_and_closure(self):
+        for close, complete in ((False, True), (True, False), (True, True)):
+            with self.subTest(close=close, complete=complete):
+                self.gh.development_links.clear()
+                self.gh.issues[35] = copy.deepcopy(FakeGitHub().issues[35])
+                h, _, _, _ = self.loop.load(36)
+                h['close_issue'] = close
+                self.gh.pull = pr_data()
+                self.gh.messages.clear()
+                self.gh.comment(36, al.pack(al.HANDOFF, h))
+                self.worker.side_effect = lambda *args, **kw: dict(report(), issue_complete=complete)
+                self.assertEqual(self.loop.tick(36)['phase'], 'reviewed')
+                self.assertEqual(self.loop.tick(36)['phase'], 'done')
+                self.assertEqual(self.gh.development_links, [(35, 36)] if close and complete else [])
 
     def test_crash_after_merge_resumes_cleanup_only(self):
         self.loop.tick(36); self.gh.fail_after_merge = True
