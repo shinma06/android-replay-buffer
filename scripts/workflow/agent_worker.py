@@ -67,6 +67,78 @@ def require_retained_evidence(paths, cleanup_roots):
             raise ValueError('Sealed evidence must remain outside cleanup roots')
 
 
+def private_original(path):
+    source = Path(path)
+    if not source.is_absolute() or source.is_symlink() or not source.is_file():
+        raise ValueError('Sealed receipt must be a locally owned regular file')
+    info = source.stat()
+    if info.st_uid != os.getuid():
+        raise ValueError('Sealed receipt must be locally owned')
+    if info.st_mode & 0o044:
+        # Resolve ancestors: a private symlink alias cannot protect a public target.
+        for parent in source.resolve().parents:
+            info = parent.stat()
+            if info.st_uid == os.getuid() and not info.st_mode & 0o011:
+                break
+        else:
+            raise ValueError('Sealed receipt must have private file or ancestor access')
+    return source.read_bytes()
+
+
+def evidence_records(path, body, bundle):
+    records = {str(Path(path).resolve()): hashlib.sha256(body).hexdigest()}
+    for item in bundle['receipts']:
+        key = str(Path(item['path']).resolve())
+        if key in records and records[key] != item['sha256']:
+            raise ValueError('Conflicting sealed evidence identity')
+        records[key] = item['sha256']
+    return [{'path': path, 'sha256': sha} for path, sha in sorted(records.items())]
+
+
+def retained_originals(records, paths=(), cleanup_roots=()):
+    if not isinstance(records, (list, tuple)):
+        raise ValueError('Invalid retained evidence identities')
+    require_retained_evidence(paths, cleanup_roots)
+    known = {}
+    for item in records:
+        if (not isinstance(item, dict) or set(item) != {'path', 'sha256'} or
+                not isinstance(item['path'], str) or not isinstance(item['sha256'], str) or
+                len(item['sha256']) != 64 or any(c not in '0123456789abcdef' for c in item['sha256'])):
+            raise ValueError('Invalid retained evidence identity')
+        source = Path(item['path'])
+        require_retained_evidence([source], cleanup_roots)
+        key = str(source.resolve())
+        if key in known and known[key] != item['sha256']:
+            raise ValueError('Conflicting retained evidence identity')
+        if hashlib.sha256(private_original(source)).hexdigest() != item['sha256']:
+            raise ValueError('Retained sealed evidence content changed')
+        known[key] = item['sha256']
+    if any(str(Path(path).resolve()) not in known for path in paths):
+        raise ValueError('Unbound retained history requires explicit trusted evidence recovery')
+    return [{'path': path, 'sha256': sha} for path, sha in sorted(known.items())]
+
+
+def recover_originals(storage, proof):
+    """Recover old identities from an explicitly supplied adapter-issued report, never new hashes."""
+    from handoff_registry import verify_review_origin
+    if (not isinstance(proof, dict) or set(proof) != {'review', 'binding'} or
+            not isinstance(proof['review'], dict) or not isinstance(proof['binding'], dict)):
+        raise ValueError('Trusted history recovery requires its complete issued report and binding')
+    report, bound = proof['review'], proof['binding']
+    paths = verify_review_origin(storage, report, bound)
+    if report.get('evidence_records'):
+        return retained_originals(report['evidence_records'], paths)
+    for path in sorted(set(paths)):
+        body = private_original(path)
+        if hashlib.sha256(body).hexdigest() != report.get('repair_evidence_sha256'):
+            continue
+        body, bundle = read_repair_bundle(path)
+        if any(bundle[k] != report[k] for k in ('head', 'base', 'repair_revision')):
+            raise ValueError('Historical bundle differs from its issued report')
+        return retained_originals(evidence_records(path, body, bundle), paths)
+    raise ValueError('Historical bundle is missing or changed; trusted recovery unavailable')
+
+
 def private_repair_evidence(path, acceptance, bound, cleanup_roots=()):
     """Rehash originals and reject evidence that owned resource cleanup would delete."""
     path = Path(path) if path else None
@@ -80,10 +152,7 @@ def private_repair_evidence(path, acceptance, bound, cleanup_roots=()):
         if set(receipt) != {'sha256', 'path'} or receipt['sha256'] in receipts:
             raise ValueError('Duplicate or malformed sealed receipt')
         source = Path(receipt['path'])
-        if (not source.is_absolute() or source.is_symlink() or not source.is_file() or
-                source.stat().st_uid != os.getuid()):
-            raise ValueError('Sealed receipt must be a locally owned regular file')
-        original = source.read_bytes()
+        original = private_original(source)
         if hashlib.sha256(original).hexdigest() != receipt['sha256']:
             raise ValueError('Sealed receipt content changed')
         receipts[receipt['sha256']] = original
@@ -149,7 +218,8 @@ def private_repair_evidence(path, acceptance, bound, cleanup_roots=()):
     paths = {str(path), str(path.resolve())}
     for item in bundle['receipts']:
         paths.update((item['path'], str(Path(item['path']).resolve())))
-    return dict(bundle, bundle_sha256=hashlib.sha256(body).hexdigest(), private_paths=sorted(paths))
+    return dict(bundle, bundle_sha256=hashlib.sha256(body).hexdigest(), private_paths=sorted(paths),
+                evidence_records=evidence_records(path, body, bundle))
 
 
 def event_session(path):
@@ -273,6 +343,7 @@ def run_worker(role, checkout, packet, output_dir, timeout=600, on_start=lambda 
     report = bind_report_session(report, event_session(events))
     if packet.get('private_repair_evidence'):
         report['repair_evidence_sha256'] = packet['private_repair_evidence']['bundle_sha256']
+        report['evidence_records'] = packet['private_repair_evidence']['evidence_records']
         report = issue_review_origin(origin_storage, report, origin_binding, report['session'], 'cli',
                                      packet['private_repair_evidence']['private_paths'],
                                      [origin['session'] for origin in packet['private_repair_evidence']['origins']])
@@ -295,6 +366,7 @@ def main():
         accepted = json.loads(args.acceptance.read_text())
         evidence = private_repair_evidence(args.repair_evidence, accepted, report)
         report['repair_evidence_sha256'] = evidence['bundle_sha256']
+        report['evidence_records'] = evidence['evidence_records']
         bound = json.loads(args.binding.read_text())
         if any(bound[k] != report[k] for k in ('head', 'base')):
             raise ValueError('Manual binding differs from fixed report')

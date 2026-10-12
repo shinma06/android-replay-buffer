@@ -181,7 +181,9 @@ class ConsumerTests(unittest.TestCase):
         h = self.loop.load(36)[0]
         public = {k: v for k, v in h.items() if k not in ('source', 'host')}
         public['target'] = 'develop'
-        public = register(self.loop.storage, public, h['source'], tal.al.HOST, fixture.path)
+        packet = fixture.load()
+        public = register(self.loop.storage, public, h['source'], tal.al.HOST, fixture.path,
+                          packet['private_paths'], packet['evidence_records'])
         self.gh.messages[36][0]['body'] = tal.al.pack(tal.al.HANDOFF_V2, public)
         self.assertNotIn(str(fixture.path), self.gh.messages[36][0]['body'])
         self.assertEqual(self.loop.load(36)[0]['repair_evidence'], str(fixture.path))
@@ -192,7 +194,7 @@ class ConsumerTests(unittest.TestCase):
             tal.report(), repair_revision='e' * 64, repair_assessment='synthetic original bodies checked',
             repair_evidence_sha256=packet['private_repair_evidence']['bundle_sha256'])
         def fixture_adapter(*args, **kw):
-            raw = self.worker(*args, **kw)
+            raw = dict(self.worker(*args, **kw), evidence_records=args[2]['private_repair_evidence']['evidence_records'])
             return issue_review_origin(self.loop.storage, raw, kw['origin_binding'], raw['session'], 'cli',
                                        args[2]['private_repair_evidence']['private_paths'],
                                        [origin['session'] for origin in args[2]['private_repair_evidence']['origins']])
@@ -415,6 +417,18 @@ class PrivatePathTests(unittest.TestCase):
         session = '00000000-0000-4000-8000-000000000099'
         self.check_paths(f'/mnt/private receipt/{session}/記録.json', f'/opt/private receipt/{session}/対応.json')
 
+    def test_parenthesized_known_uri_through_save_cache_and_public_control(self):
+        self.check_paths('/mnt/private receipt/event(1).json', '/opt/private receipt/mapping(1).json')
+
+    def test_known_uri_filename_closings_are_distinct_from_markdown_enclosure(self):
+        from urllib.parse import quote
+        for known in ('/mnt/private receipt/event(1).json', '/mnt/private receipt/event)'):
+            encoded = 'file://' + quote(known, safe='/()').replace('private', '%70rivate')
+            for target in (encoded, encoded.replace('/mnt/', '/mnt/./')):
+                self.assertEqual(self.loop.public_state(f'[receipt]({target})', [known]), '[receipt]([private URI])')
+                self.assertEqual(self.loop.public_state(f'<{target}>', [known]), '<[private URI]>')
+                self.assertEqual(self.loop.public_state(f'[receipt](<{target}>)', [known]), '[receipt](<[private URI]>)')
+
     def check_paths(self, virtual, support):
         self.prepare()
         first = self.fixture.receipt.read_bytes(); second = b'{"support":true}'
@@ -423,7 +437,7 @@ class PrivatePathTests(unittest.TestCase):
         self.fixture.seal()
         originals = {virtual: first, support: second}
         original_stat, original_read, original_file = Path.stat, Path.read_bytes, Path.is_file
-        info = self.fixture.receipt.stat()
+        info = __import__('types').SimpleNamespace(st_uid=os.getuid(), st_mode=0o100600)
         def stat(path, *args, **kw):
             return info if str(path) in originals else original_stat(path, *args, **kw)
         def read(path):
@@ -443,15 +457,21 @@ class PrivatePathTests(unittest.TestCase):
         encoded_identity = private_url.replace('-', '%2D')
         encoded_contributor = contributor_url.replace('00000000-', '%300000000%2d', 1)
         unrelated = 'https://public.example/runs/00000000%2d0000%2D4000%2d8000%2D000000000097/result'
-        urls += ' ' + unrelated
+        urls += ' ' + unrelated + ' https://public.example/event(1).json [public](https://public.example/event(1).json)'
         session = '00000000-0000-4000-8000-000000000098'
         self.worker.side_effect = lambda *args, **kw: dict(tal.report('changes_requested'),
-                evidence=f'prefix:{virtual}:suffix file://{support} {urls} standalone:{session} {encoded} {lower} {local} {private_url} {contributor_url} {alternate} {dot} {escaped_dot} [alternate]({alternate[7:]}) {encoded_identity} {encoded_contributor} [encoded]({encoded[7:]}) [lower]({lower[7:]})',
+                evidence=f'prefix:{virtual}:suffix file://{support} {urls} standalone:{session} {encoded} {lower} {local} {private_url} {contributor_url} {alternate} {dot} {escaped_dot} [alternate]({alternate[7:]}) {encoded_identity} {encoded_contributor} <{alternate}> [angle](<{alternate}>) [normal]({alternate}) [encoded]({encoded[7:]}) [lower]({lower[7:]})',
                 findings=[f'Check [{virtual}]({support}) [{encoded}]({local}) [target]({encoded[7:]}) [lower]({lower[7:]}) [alternate]({alternate[7:]}) {encoded_identity} {encoded_contributor}'], repair_revision='e' * 64,
                 repair_evidence_sha256=args[2]['private_repair_evidence']['bundle_sha256'])
         def is_file(path):
             return True if str(path) in originals else original_file(path)
         with patch.object(Path, 'stat', stat), patch.object(Path, 'read_bytes', read), patch.object(Path, 'is_file', is_file):
+            h = self.loop.load(36)[0]
+            public = {k: v for k, v in h.items() if k not in ('source', 'host', 'repair_evidence', 'private_paths', 'evidence_records')}
+            packet = self.fixture.load()
+            public = register(self.loop.storage, public, h['source'], tal.al.HOST, self.fixture.path,
+                              packet['private_paths'], packet['evidence_records'])
+            self.gh.messages[36][0]['body'] = tal.al.pack(tal.al.HANDOFF_V2, public)
             self.assertEqual(self.loop.tick(36)['phase'], 'reviewed')
         _, state, sid, _ = self.loop.load(36)
         self.assertIn(virtual, state['review']['evidence'])
@@ -769,3 +789,157 @@ class EvidenceRetentionTests(unittest.TestCase):
         expected = receipt.read_bytes()
         tal.al.enroll(self.loop, args)
         self.assertEqual(receipt.read_bytes(), expected)
+
+
+class HistoricalEvidenceTests(unittest.TestCase):
+    setUp = tal.LoopTests.setUp
+    prepare = ConsumerTests.prepare
+
+    def replace(self):
+        from types import SimpleNamespace
+        self.prepare()
+        replacement = EvidenceTests(); replacement.setUp(); self.addCleanup(replacement.doCleanups)
+        args = SimpleNamespace(pr=36, source=None, migration_record=None, repair_evidence=replacement.path)
+        tal.al.rebind_target(self.loop, args)
+        return args, replacement
+
+    def test_missing_changed_history_blocks_rebind_and_all_consumers_with_current_good_bundle(self):
+        for original in ('bundle', 'receipt'):
+            for fault in ('missing', 'changed'):
+                self.doCleanups(); self.setUp()
+                with self.subTest(original=original, fault=fault):
+                    args, current = self.replace()
+                    self.assertEqual(self.loop.tick(36)['phase'], 'reviewed')
+                    h, state, _, _ = self.loop.load(36)
+                    target = self.fixture.path if original == 'bundle' else self.fixture.receipt
+                    if fault == 'missing': target.unlink()
+                    else: target.write_bytes(b'changed historical bytes')
+                    current.load()  # The replacement originals remain intact.
+                    before = copy.deepcopy(self.gh.messages)
+                    registry = {p.name: p.read_bytes() for p in (self.loop.storage / 'registry').iterdir()}
+                    with self.assertRaises((ValueError, OSError)): tal.al.rebind_target(self.loop, args)
+                    self.assertEqual(self.gh.messages, before)
+                    self.assertEqual({p.name: p.read_bytes() for p in (self.loop.storage / 'registry').iterdir()}, registry)
+                    self.assertEqual(self.loop.tick(36)['phase'], 'blocked')
+                    with self.assertRaises((ValueError, OSError)): self.loop.merged_acceptance(self.gh.pull, h, state)
+                    with self.assertRaises((ValueError, OSError)): self.loop._cleanup_resources(self.gh.pull, h)
+                    with self.assertRaises((ValueError, OSError)):
+                        self.loop.repair_evidence({'allowed': True, 'mode': 'tooling'}, h, state['binding'])
+                    self.gh.pull.update(merged=True, state='closed')
+                    self.loop.bound = Mock(return_value=(state['binding'], []))
+                    before = copy.deepcopy(self.gh.messages)
+                    proof = {'binding': state['binding'], 'review': dict(state['review'],
+                             feedback_hash=state['binding']['feedback_hash'])}
+                    with self.assertRaises((ValueError, OSError)): self.loop.reconcile_feedback(self.gh.pull, proof)
+                    self.assertEqual(self.gh.messages, before)
+                    self.gh.pull['base']['ref'] = 'main'
+                    with self.assertRaises((ValueError, OSError)): self.loop.finish(self.gh.pull, h, state, None)
+                    self.assertEqual(self.gh.messages, before)
+                    self.assertEqual(self.gh.merges, 0)
+                    self.assertEqual(self.gh.issues[35]['state'], 'open')
+
+    def test_unchanged_history_and_canonical_aliases_have_one_identity(self):
+        args, current = self.replace()
+        first = self.loop.load(36)[0]['evidence_records']
+        args.repair_evidence = current.path.parent / '..' / current.path.parent.name / current.path.name
+        tal.al.rebind_target(self.loop, args)
+        records = self.loop.load(36)[0]['evidence_records']
+        self.assertEqual(records, first)
+        self.assertEqual(len({item['path'] for item in records}), len(records))
+        self.assertEqual(self.loop.tick(36)['phase'], 'reviewed')
+        self.assertNotIn('evidence_records', json.dumps(self.gh.messages))
+
+    def test_omitted_bundle_is_preflighted_before_any_mutation(self):
+        from types import SimpleNamespace
+        for location in ('source', 'managed'):
+            self.doCleanups(); self.setUp()
+            with self.subTest(location=location):
+                self.prepare()
+                h = self.loop.load(36)[0]
+                source = Path(self.tmp.name) / 'separate-source'; source.mkdir()
+                root = source if location == 'source' else self.checkout
+                receipt = root / '.harness-local' / 'mapping.json'; receipt.parent.mkdir(exist_ok=True)
+                receipt.write_bytes(self.fixture.receipt.read_bytes())
+                self.fixture.bundle['receipts'][0]['path'] = str(receipt); self.fixture.seal()
+                public = {k: v for k, v in h.items() if k not in ('source', 'host', 'repair_evidence', 'private_paths', 'evidence_records')}
+                public = register(self.loop.storage, public, source, tal.al.HOST, self.fixture.path)
+                self.gh.messages[36][0]['body'] = tal.al.pack(tal.al.HANDOFF_V2, public)
+                before = copy.deepcopy(self.gh.messages)
+                registry = {p.name: p.read_bytes() for p in (self.loop.storage / 'registry').iterdir()}
+                args = SimpleNamespace(pr=36, source=None, migration_record=None, repair_evidence=None)
+                with self.assertRaisesRegex(ValueError, 'outside cleanup'): tal.al.rebind_target(self.loop, args)
+                self.assertEqual(self.gh.messages, before)
+                self.assertEqual({p.name: p.read_bytes() for p in (self.loop.storage / 'registry').iterdir()}, registry)
+
+    def test_legacy_history_needs_explicit_issued_hash_proof_not_current_bytes(self):
+        for version in (1, 2):
+            for paused in (False, True):
+                self.doCleanups(); self.setUp()
+                with self.subTest(version=version, paused=paused):
+                    self.recover_legacy(version, paused)
+
+    def recover_legacy(self, version, paused):
+        from types import SimpleNamespace
+        from agent_worker import recover_originals
+        self.prepare()
+        self.assertEqual(self.loop.tick(36)['phase'], 'reviewed')
+        h, state, sid, _ = self.loop.load(36)
+        state['paused'] = paused
+        self.loop.save(self.gh.pull, state, sid)
+        # Simulate an older issued report and registry with no recorded identities.
+        raw = {k: v for k, v in state['review'].items() if k not in ('origin_receipt', 'evidence_records')}
+        issued = issue_review_origin(self.loop.storage, raw, state['binding'], raw['session'], 'manual', h['private_paths'])
+        proof = {'review': issued, 'binding': state['binding']}
+        path = self.fixture.root / 'issued-proof.json'; path.write_text(json.dumps(proof)); path.chmod(0o600)
+        public = {k: v for k, v in h.items() if k not in ('source', 'host', 'registry_id', 'version',
+                  'repair_evidence', 'private_paths', 'evidence_records')}
+        if version == 1:
+            public.update(source=h['source'], host=h['host'], repair_evidence=str(self.fixture.path),
+                          private_paths=h['private_paths'])
+            self.gh.messages[36][0]['body'] = tal.al.pack(tal.al.HANDOFF, public)
+        else:
+            public = register(self.loop.storage, public, h['source'], tal.al.HOST, self.fixture.path, h['private_paths'])
+            self.gh.messages[36][0]['body'] = tal.al.pack(tal.al.HANDOFF_V2, public)
+        args = SimpleNamespace(pr=36, source=None, migration_record=None, repair_evidence=None)
+        with self.assertRaisesRegex(ValueError, 'explicit trusted'): tal.al.rebind_target(self.loop, args)
+        altered = copy.deepcopy(proof); altered['review']['repair_evidence_sha256'] = '0' * 64
+        with self.assertRaises(ValueError): recover_originals(self.loop.storage, altered)
+        args.retained_review = [path]
+        tal.al.rebind_target(self.loop, args)
+        recovered, saved, _, _ = self.loop.load(36)
+        self.assertEqual(recovered['evidence_records'], self.fixture.load()['evidence_records'])
+        self.assertEqual(saved['paused'], paused)
+        for key in ('branch', 'issue', 'head', 'scope', 'source', 'previous_owner'):
+            self.assertEqual(recovered.get(key), h.get(key))
+        self.assertNotIn('review', saved)
+        self.fixture.receipt.write_bytes(b'changed after trusted proof')
+        with self.assertRaisesRegex(ValueError, 'content changed'): recover_originals(self.loop.storage, proof)
+        self.fixture.path.write_bytes(b'changed bundle after trusted proof')
+        with self.assertRaises(ValueError): recover_originals(self.loop.storage, proof)
+
+
+class OriginalPrivacyTests(unittest.TestCase):
+    setUp = EvidenceTests.setUp
+    load = EvidenceTests.load
+    seal = EvidenceTests.seal
+    def test_accessible_readable_original_rejected_private_file_and_real_parent_accepted(self):
+        from types import SimpleNamespace
+        from agent_worker import private_original
+        original_stat = Path.stat
+        parents = set(self.receipt.resolve().parents)
+        def public_ancestors(path, *args, **kwargs):
+            if path in parents:
+                return SimpleNamespace(st_uid=os.getuid(), st_mode=0o40755)
+            return original_stat(path, *args, **kwargs)
+        expected = self.receipt.read_bytes()
+        self.receipt.chmod(0o644)
+        self.assertEqual(private_original(self.receipt), expected)
+        with patch.object(Path, 'stat', public_ancestors):
+            with self.assertRaisesRegex(ValueError, 'private file or ancestor'): self.load()
+            self.receipt.chmod(0o600)
+            self.assertEqual(private_original(self.receipt), expected)
+        self.receipt.chmod(0o644)
+        alias = self.root / 'alias'; alias.symlink_to(self.root, target_is_directory=True)
+        aliased_receipt = alias / self.receipt.name
+        with patch.object(Path, 'stat', public_ancestors):
+            with self.assertRaisesRegex(ValueError, 'private file or ancestor'): private_original(aliased_receipt)
