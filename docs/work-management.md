@@ -22,6 +22,20 @@
 
 priority は `priority:P0` / `priority:P1` / `priority:P2`、status は `status:ready` / `status:in-progress` / `status:review` / `status:blocked` / `status:deferred` / `status:done`。closed は done、open は done 以外。優先度を題名に重複させません。PR policy が型・番号・ラベルを検査します。
 
+## PR sidebar の実情報
+
+最初の Draft PR 作成時、ready・修正再開・統合/close 時に、本文と別に PR の native sidebar を確認します。対応 Issue の実分類と計画を使い、[公式 CLI の PR 編集](https://cli.github.com/manual/gh_pr_edit)や[公式 Projects API](https://docs.github.com/en/issues/planning-and-tracking-with-projects/automating-your-project/using-the-api-to-manage-projects)で所有範囲だけ補い、実 PR node と関連 Issue を読み戻します。
+
+| 項目 | 設定と確認 |
+| --- | --- |
+| Assignees | 実在し、依頼範囲の責任を持つ GitHub account を設定する。単独 owner の本 repository では `shinma06` の assign-to-self を使える。内部の sole writer/PM と別に記録し、架空の agent account を作らない |
+| Labels | 対応 Issue の `type` / `priority` を各1つ、PR 自身の現在の `status` を1つ設定する。実装中は in-progress、レビュー中は review、必要条件の障害待ちは blocked、延期は deferred。Issue が未完でも merge/closed の PR は done とし、未統合 close はその理由と Issue の残条件を保持する。Issue の status を機械的にコピーしない |
+| Projects / Milestone | 対応 Issue の実 Project/Milestone を使う（現行は Project #5 / Milestone #3）。PR 自体を Project に追加し、PR の Status は下の Project Status 対応へ同期する。Issue 項目を代用しない。別計画なら実在する対象と理由を記録する |
+| Reviewers | 実際の review/request と reviewer を読む。既存 Codex service の review を保持し、必要な current-HEAD review は既存の依頼/ready 手順を使う。空欄を埋めるため無関係な人への依頼や自己承認をしない。bot の COMMENTED/Completed、GitHub の request、別 session の独立評価は区別する |
+| Development | 次節の関連時期・両端 readback・default branch の close 境界に従う |
+
+空欄・未反映は放置せず、真に対象なし/機能非対応/権限不足なら根拠と担当・次操作を既存 Issue/PR に残します。既存の他担当/分類/Project を不用意に置き換えず、変更前後の PR ID・各項目・Project Status と Issue の状態/分類/Project を確認し、副作用があれば担当が修正して読み戻します。sidebar を埋めても独立承認・受入・統合・Issue 完了を示しません。追加 validator・台帳・監視は不要です。
+
 ## Development の実関連
 
 Issue の Development は対応する PR/branch を示します。本文の `Issue: #N` / `Refs #N`、timeline の mention、Project・Milestone・parent/dependency は別の情報で、Development の関連付け成功を意味しません。[GitHub公式の関連付け仕様](https://docs.github.com/en/issues/tracking-your-work-with-issues/using-issues/linking-a-pull-request-to-an-issue)を前提に、claim 時に実関連と未反映を確認し、最初の PR 作成時・base 変更時・終了時に次を適用します。
