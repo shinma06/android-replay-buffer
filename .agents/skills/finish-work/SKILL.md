@@ -9,7 +9,7 @@ Use docs/workflow.md and the Issue acceptance; for context changes also docs/con
 
 For a method/tool/policy update, follow docs/context.md's superseded-management guidance: trace affected active rules, effective plan/resolver/gates, templates/handoffs and actual consumers; reconcile them while preserving history and explicit contracts. Record retained debt with reason, impact, owner and a concrete retirement condition in the existing Issue/PR, without a new ledger.
 
-Review docs/workflow.md's method-improvement cycle when applicable: concrete friction, a guarantee-preserving alternative, bounded reversible trial and feedback for adoption/refinement/reversion. Distinguish proposed/static comparisons, actual trials and measured effectiveness; do not require a new GUI experiment merely to claim a loop or freeze a method instead of a necessary formal revision.
+Review docs/workflow.md's method-improvement cycle when applicable, including concrete nonfatal friction: a guarantee-preserving alternative, bounded reversible trial and feedback for adoption/refinement/reversion. An improvement chosen for execution needs an actual trial/result/feedback and named owner; proposed/static comparisons alone are not completion. Keep blocked/unperformed trials unfinished with their owner/next action, without invented efficacy, endless experiments or unrelated GUI tests. Do not freeze a method instead of a necessary formal revision.
 
 Run `python3 scripts/check.py` for the harness and relevant real project checks. Do not repeat successful unchanged checks without reason. Include mixed/unknown impact and explicit build/GUI requirements; a skip is not a test pass.
 
