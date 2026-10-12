@@ -7,7 +7,7 @@ import subprocess
 from urllib.request import Request, urlopen
 from pr_policy import validate
 from verification import verify_pr
-from agent_policy import CONTEXT, eligible, issue_number
+from agent_policy import CONTEXT
 
 
 def main():
@@ -63,13 +63,19 @@ def recheck_main_repairs(api, repo, source_issue=None):
     while True:
         prs = api(f'pulls?state=open&base=develop&per_page=100&page={page}')
         for pr in prs:
-            if not eligible(pr, repo.split('/')[0], repo):
+            try:
+                issue_id = validate(pr)
+                if (pr['state'] != 'open' or pr.get('merged') is True or pr['base']['ref'] != 'develop' or
+                        pr['base']['repo']['full_name'] != repo or pr['head']['repo'] is None or
+                        pr['head']['repo']['full_name'] != repo):
+                    continue
+            except (ValueError, KeyError, TypeError):
                 continue
-            if source_issue is not None and issue_number(pr) != source_issue:
+            if source_issue is not None and issue_id != source_issue:
                 continue
             try:
                 if source_issue is None:
-                    issue = api(f'issues/{issue_number(pr)}')
+                    issue = api(f'issues/{issue_id}')
                     declaration = re.findall(r'^Acceptance repair: (.*)$', issue.get('body') or '', re.M)
                     if declaration == ['none'] or (not declaration and not any(
                             label.get('name') == 'type:bug' for label in issue.get('labels', []))):

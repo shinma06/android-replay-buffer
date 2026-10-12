@@ -200,6 +200,56 @@ class MainContractEventTests(unittest.TestCase):
         self.assertEqual(writes[0][2]['state'], 'pending')
         self.assertEqual(writes[1][:2], ('actions/runs/42/rerun', 'POST'))
 
+    def test_collaborator_repairs_are_invalidated_for_main_and_source_events(self):
+        from agent_policy import eligible
+        for author in ('shinma06', 'collaborator'):
+            self.pr['user']['login'] = author
+            self.assertEqual(ci.validate(self.pr), 90)
+            # Worker authorization still belongs to the coordinator's owner policy.
+            self.assertEqual(eligible(self.pr, 'shinma06', 'shinma06/android-replay-buffer'),
+                             author == 'shinma06')
+            for source in (None, 90):
+                with self.subTest(author=author, source=source):
+                    self.calls.clear()
+                    self.assertEqual(ci.recheck_main_repairs(
+                        self.api, 'shinma06/android-replay-buffer', source_issue=source), [90])
+                    writes = [c for c in self.calls if c[1] == 'POST']
+                    self.assertEqual([c[0] for c in writes], ['statuses/' + HEAD, 'actions/runs/42/rerun'])
+                    self.assertEqual(writes[0][2]['state'], 'pending')
+                    self.assertEqual(writes[0][2]['context'], 'Agent review')
+                    self.assertEqual(any(c[0] == 'issues/90' for c in self.calls), source is None)
+
+    def test_invalidation_rejects_untrusted_or_invalid_pr_scope(self):
+        invalid = []
+        for ref in ('main', 'other'):
+            pr = copy.deepcopy(self.pr)
+            pr['base']['ref'] = ref
+            invalid.append(pr)
+        for side, repository in (('head', None), ('head', {'full_name': 'someone/fork'}),
+                                 ('base', {'full_name': 'someone/other'})):
+            pr = copy.deepcopy(self.pr)
+            pr[side]['repo'] = repository
+            invalid.append(pr)
+        for state in ('closed', 'unknown'):
+            invalid.append(dict(self.pr, state=state))
+        invalid.append(dict(self.pr, merged=True))
+        for ref in ('feature/unscoped', 'codex/91-other-issue'):
+            pr = copy.deepcopy(self.pr)
+            pr['head']['ref'] = ref
+            invalid.append(pr)
+        for old, new in (('Issue: #90', 'Issue: #91'), ('Integration: develop', 'Integration: tooling'),
+                         ('issue-90.json', 'issue-91.json'), ('GUI: not-required', 'GUI: unknown')):
+            invalid.append(dict(self.pr, body=self.pr['body'].replace(old, new)))
+        for pr in invalid:
+            for source in (None, 90):
+                with self.subTest(pr=pr, source=source):
+                    self.pr = pr
+                    self.calls.clear()
+                    self.assertEqual(ci.recheck_main_repairs(
+                        self.api, 'shinma06/android-replay-buffer', source_issue=source), [])
+                    self.assertEqual(self.calls, [
+                        ('pulls?state=open&base=develop&per_page=100&page=1', 'GET', None)])
+
     def test_unrelated_pr_and_fork_do_not_get_invalidated(self):
         for issue, repo in (({'body': 'Acceptance repair: none', 'labels': [{'name': 'type:bug'}]},
                              'shinma06/android-replay-buffer'),
@@ -216,7 +266,7 @@ class MainContractEventTests(unittest.TestCase):
         original = self.api
         def api(path, method='GET', data=None):
             if path.endswith('page=1') and path.startswith('pulls?'):
-                return [dict(self.pr, user={'login': 'other'}) for _ in range(100)]
+                return [dict(self.pr, head=dict(self.pr['head'], ref='codex/91-unrelated')) for _ in range(100)]
             return original(path, method, data)
         self.assertEqual(ci.recheck_main_repairs(api, 'shinma06/android-replay-buffer'), [90])
         self.assertTrue(any(c[0].endswith('page=2') for c in self.calls))
