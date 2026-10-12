@@ -2,7 +2,7 @@
   "schema": 1,
   "issue": 227,
   "gui_required": false,
-  "reason": "元27:RECONNECT-EMUのR134-1 RECOVERY-GAP/SAVED-COVERAGEへ、修正固定候補6f81/標準ZIP4b7eの保持済み実行証拠を構成して通常repair経路へ記録する。新Case/139計画/PASS件数を増やさず、原記録6115963456と全未実施を保持。GUI不要は追加runtime不要という方法判断であり修復免除ではない。全保証実証と別session実質repair_assessment・current required checks/feedback受理まで統合HOLD。今回は実metadata writer183の後日証拠照合で、新native/test実行・独立承認ではない。",
+  "reason": "元27:RECONNECT-EMUのR134-1 RECOVERY-GAP/SAVED-COVERAGEへ、修正固定候補6f81/標準ZIP4b7eの保持済み実行証拠を構成して通常repair経路へ記録する。新Case/139計画/PASS件数を増やさず、原記録6115963456と全未実施を保持。GUI不要は追加runtime不要という方法判断であり修復免除ではない。全保証実証と別session実質repair_assessment・current required checks/feedback受理まで統合HOLD。今回は実metadata writer189の後日証拠照合で、新native/test実行・独立承認ではない。",
   "cli_checks": [
     "固定175/178/180/改訂181の封印実行receipt・source/classes/標準ZIP・原guarantees/現有効契約を照合し、boundary/独立3.0秒/全row/fresh公開Save/固定Retryと各限界を構成する。",
     "現metadataのharness check・CLI保全product_check・trusted verify_prとclean committed HEAD change_impact --run-tests/通常hooksを実行する。6f81の157製品回帰/build結果は原実行のまま保持し、新HEADの検査結果を旧CIで代用しない。"
@@ -14,7 +14,7 @@
       "plugin": "4b7eb39f0e9a6f38bbd21aae22d11ef2c91844a37a8ad1d4513ee25ca1fe03d5"
     },
     "failure_record_sha256": "ecaa93ca6097efd1005a8c133c654c4d98aba255bca318985eaee2c0cfb134cc",
-    "writer_session": "metadata writer183 (actual successor compositor; product writers139/144/147 and source/test writer175 separately attributed in results)",
+    "writer_session": "metadata writer189 (actual retained-evidence compositor; structured attribution binds every contributor)",
     "results": {
       "R134-1": {
         "observation": {
@@ -22,17 +22,191 @@
           "head": "6f81e875c514fd1fd64e0495339f9c571b4499e3",
           "artifact_sha256": "4b7eb39f0e9a6f38bbd21aae22d11ef2c91844a37a8ad1d4513ee25ca1fe03d5",
           "actor": "gpt",
-          "observer": "metadata writer183 (actual retained-evidence compositor, not a new native/test executor)",
-          "at": "2026-10-12T09:50:11+00:00",
-          "loaded_identity": "固定source6f81e875c514fd1fd64e0495339f9c571b4499e3 / unmodified standard ZIP4b7eb39f0e9a6f38bbd21aae22d11ef2c91844a37a8ad1d4513ee25ca1fe03d5 / 3,083,598B / main JAR584a84720f47beefd00a0354bfdb5d241ddce58c7b09268cc698a05f5e0b8ac0 / searchableOptions c6deada2fac53b8ea6523dbda77597b128006674616f140f04df23264c6d1aa3 / JCodec890329dad124e8b739c1d6602a59a53c8a474daddff265c2561e21c498496c81。175 macOS JBR25.0.3/SDK AI-262.9437.185.2621.16467767の実standard-tested131class=ZIP bytes。178実JVM class origins同配布JAR/installed SDK、controlled SDK/loopbackとOS writer。180実IDE Rabbit1 2026.2.1/JBR25.0.3同全3JAR・class/resource hash/actual nullable CodeSource、代表実transport/readers/currentepoch。183はruntimeをロード/操作せず原bindingを保持照合。",
-          "evidence": "保持済み実行証拠の構成照合。今回のobserverは実metadata writer183（実session対応は封印packetで保持）で、新しいnative/test executorではない。製品writer139/144/147、source固定・standard実行writer175、配布JAR補助実行verifier178、native executor180、後日の証拠評価assessor181を別々に帰属する。175: 2026-10-12 UTCのAppRecoveryBoundary suite開始06:46:54.429Z、StoreSave開始06:46:56.633Z、Wire開始06:47:17.682Z、Wire method25.435秒。各methodの絶対開始/終了はUNKNOWN。178: 同日Settings07:51:28.504315Z→07:51:29.362352Z、FailureGlue07:51:53.434661Z→07:52:03.309355Z。180: 同日reconnect08:42:14.468662Z→08:42:14.478861Z、STOP08:49:44.514195Z。181: 同日later assessment09:26:06.567967Z、product/test実行0。原実行日時を今回の照合日時に置き換えない。原実担当/receipt対応の封印attribution SHA-256 1cccc2dc938023244df57a4c037409ae37cb59b076fa993b7d5925f08b322674。175公開source/artifact receipt https://github.com/shinma06/android-replay-buffer/issues/227#issuecomment-6119264505、seal d08e382e645cd6a0aaf8dfd41d53e23cfd5ba11d395a69ec61136e860a56e4ee。178 report3858126d25b58985aff0061fdcf225edd4db1034268a77c3dd08444b801114c7、seal97a8c5bd1f09a1cc72161f96041ff52783f3ef67143d0080b72cb26666d240ce、FailureGlue実行receipt be002df5a72a4008bfeb721cadebf5c1e83f93f3fcd24bfb63871b89d3bb5013。180公開receipt https://github.com/shinma06/android-replay-buffer/issues/227#issuecomment-6120953018、report7754c17ad0b5f7e9e4de61725ff1ab9fe0e031fc8281d67887d90fb7b4689776、seal1537d7141d824c2046069da9e5e37689a9da33cb8b1560261d7c0a66ba1d5cc0。181改訂報告b8afc724d845ee08c61529936a27f34ae01f98ab89ab788924c8f33ce94e6397、seal e04a4d5d6b4caa9eb203cbad89bbc8f0f615cac78a16ed08cd6b16afa0e59cc3、回収推奨 https://github.com/shinma06/android-replay-buffer/issues/227#issuecomment-6121533659。181推奨は固定提出版のrepair_assessmentではない。183は478封印file・ZIP CRC/全3JAR/131classと原実compiled main・主要XML/source・178全30device/20app/20frame行を保持照合した。",
-          "reason": "元RECOVERY-GAP/SAVED-COVERAGEの限定保証を、修正後の実行済みproduction境界/Store/Writer/Wire/配布OS/public pathと代表native glueの構成で確認。独立3.0秒期待値とfresh新規公開Saveは、復旧後をTまで不足扱いする元欠陥を検出する。後日保持証拠照合のpassとして提出し、新native実行、Case27全体PASS、fullQA完了、自己repair_assessment・統合承認とはしない。原失敗・180 POST/Save0と全未達を保持。"
+          "observer": "metadata writer189 (actual retained-evidence compositor, not a new native/test executor)",
+          "at": "2026-10-12T18:16:30+00:00",
+          "loaded_identity": "固定source6f81e875c514fd1fd64e0495339f9c571b4499e3 / unmodified standard ZIP4b7eb39f0e9a6f38bbd21aae22d11ef2c91844a37a8ad1d4513ee25ca1fe03d5 / 3,083,598B / main JAR584a84720f47beefd00a0354bfdb5d241ddce58c7b09268cc698a05f5e0b8ac0 / searchableOptions c6deada2fac53b8ea6523dbda77597b128006674616f140f04df23264c6d1aa3 / JCodec890329dad124e8b739c1d6602a59a53c8a474daddff265c2561e21c498496c81。175 macOS JBR25.0.3/SDK AI-262.9437.185.2621.16467767の実standard-tested131class=ZIP bytes。178実JVM class origins同配布JAR/installed SDK、controlled SDK/loopbackとOS writer。180実IDE Rabbit1 2026.2.1/JBR25.0.3同全3JAR・class/resource hash/actual nullable CodeSource、代表実transport/readers/currentepoch。189はruntimeをロード/操作せず原bindingを保持照合。",
+          "evidence": "現在の構成担当189と原実行/評価/構成担当はobservation.attributionで区別する。原175 suite開始・178実行開始/終了・180dispatch/再接続開始・原writer/評価STOPの各receipt時刻を保持し、method開始/終了や観測wall-clock不明は推測しない。補助source106/123は178が実際にbyte同一で使用、source179は180の実観測に使用したためwriterとして含める（旧実行の受入creditなし）。旧構成183と採用する保持評価185も含める。186のguard診断は形式参照のみで製品proofへ採用しない。185 report SHA-256 06050c8061370f57a3f1d7a331db4f8c7d96121110815948e0f7a44479cd9e81 は追加runtime不足なし/P1・P2修正要を示す保持評価で、現在版の独立承認ではない。原181/183/185の誤引用は保持し、active SAVED-COVERAGEだけ固定6f81の480–489（Save481）へ置換。175: 2026-10-12 UTCのAppRecoveryBoundary suite開始06:46:54.429Z、StoreSave開始06:46:56.633Z、Wire開始06:47:17.682Z、Wire method25.435秒。各methodの絶対開始/終了はUNKNOWN。178: 同日Settings07:51:28.504315Z→07:51:29.362352Z、FailureGlue07:51:53.434661Z→07:52:03.309355Z。180: 同日reconnect08:42:14.468662Z→08:42:14.478861Z、STOP08:49:44.514195Z。181: 同日later assessment09:26:06.567967Z、product/test実行0。原実行日時を今回の照合日時に置き換えない。原実担当/receipt対応の封印attribution SHA-256 1cccc2dc938023244df57a4c037409ae37cb59b076fa993b7d5925f08b322674。175公開source/artifact receipt https://github.com/shinma06/android-replay-buffer/issues/227#issuecomment-6119264505、seal d08e382e645cd6a0aaf8dfd41d53e23cfd5ba11d395a69ec61136e860a56e4ee。178 report3858126d25b58985aff0061fdcf225edd4db1034268a77c3dd08444b801114c7、seal97a8c5bd1f09a1cc72161f96041ff52783f3ef67143d0080b72cb26666d240ce、FailureGlue実行receipt be002df5a72a4008bfeb721cadebf5c1e83f93f3fcd24bfb63871b89d3bb5013。180公開receipt https://github.com/shinma06/android-replay-buffer/issues/227#issuecomment-6120953018、report7754c17ad0b5f7e9e4de61725ff1ab9fe0e031fc8281d67887d90fb7b4689776、seal1537d7141d824c2046069da9e5e37689a9da33cb8b1560261d7c0a66ba1d5cc0。181改訂報告b8afc724d845ee08c61529936a27f34ae01f98ab89ab788924c8f33ce94e6397、seal e04a4d5d6b4caa9eb203cbad89bbc8f0f615cac78a16ed08cd6b16afa0e59cc3、回収推奨 https://github.com/shinma06/android-replay-buffer/issues/227#issuecomment-6121533659。181推奨は固定提出版のrepair_assessmentではない。183は478封印file・ZIP CRC/全3JAR/131classと原実compiled main・主要XML/source・178全30device/20app/20frame行を保持照合した。",
+          "reason": "元RECOVERY-GAP/SAVED-COVERAGEの限定保証を、修正後の実行済みproduction境界/Store/Writer/Wire/配布OS/public pathと代表native glueの構成で確認。独立3.0秒期待値とfresh新規公開Saveは、復旧後をTまで不足扱いする元欠陥を検出する。後日保持証拠照合のpassとして提出し、新native実行、Case27全体PASS、fullQA完了、自己repair_assessment・統合承認とはしない。原失敗・180 POST/Save0と全未達を保持。",
+          "attribution": {
+            "writer": "codex-session-sha256:1366e7794c111eca4b6433765c3f120d7c776b5c341bbfe267c254c5bd151697",
+            "observer": "codex-session-sha256:1366e7794c111eca4b6433765c3f120d7c776b5c341bbfe267c254c5bd151697",
+            "contributors": [
+              {
+                "role": "製品修復writer139（原STOP時刻）",
+                "session": "codex-session-sha256:a0fb257142f2e89d8d486522b008e6fd482f1de60a0d86cd1c36b318345d02b2",
+                "activity": "writer",
+                "at": "2026-10-12T01:17:30+00:00",
+                "receipt_sha256": "71b626ba447dbb668c8d9e6c50ef00daeefe08b473c6fd73c0e50a2818fbc978",
+                "receipt_locator": ""
+              },
+              {
+                "role": "製品修復writer144（原STOP時刻）",
+                "session": "codex-session-sha256:5460cc804ae0fde03e186d9eaf5df37f4fef0ac387e06248e4b3c9344266e2ad",
+                "activity": "writer",
+                "at": "2026-10-12T01:44:39.819341+00:00",
+                "receipt_sha256": "5e32482583eeb9f7f2a569fb26b2093e3d41909519cf6ed55d1d5c6861c19408",
+                "receipt_locator": ""
+              },
+              {
+                "role": "製品修復writer147（原STOP時刻）",
+                "session": "codex-session-sha256:f16c777ebc1410cff60456aa407b41f220ab85b0be92a85ad60ec7cd90ea47e5",
+                "activity": "writer",
+                "at": "2026-10-12T02:09:19.149278+00:00",
+                "receipt_sha256": "001e1f130518a90db7a7253ebdde726b81a4a6bd64eaadc7981a241834248a37",
+                "receipt_locator": ""
+              },
+              {
+                "role": "source固定・標準build writer175（原STOP時刻）",
+                "session": "codex-session-sha256:7f69f91ce4a2c7a220fe48fac1c1f0a3c33f9844c3a836c4c01b58133290baa7",
+                "activity": "writer",
+                "at": "2026-10-12T07:01:03.895721+00:00",
+                "receipt_sha256": "8122e20c5e8eb3caa941ea436df0b118a432cf02e98afd0e1ddf3e9c3501726f",
+                "receipt_locator": ""
+              },
+              {
+                "role": "標準実行175 AppRecoveryBoundaryTest（suite時刻、method時刻UNKNOWN）",
+                "session": "codex-session-sha256:7f69f91ce4a2c7a220fe48fac1c1f0a3c33f9844c3a836c4c01b58133290baa7",
+                "activity": "execution",
+                "at": "2026-10-12T06:46:54.429Z",
+                "receipt_sha256": "e9131e64ba3d53beafff42eb3695cfe60626bdc9c2f09f42c954912d883d4cc7",
+                "receipt_locator": ""
+              },
+              {
+                "role": "標準実行175 CaptureStoreSaveTest（suite時刻、method時刻UNKNOWN）",
+                "session": "codex-session-sha256:7f69f91ce4a2c7a220fe48fac1c1f0a3c33f9844c3a836c4c01b58133290baa7",
+                "activity": "execution",
+                "at": "2026-10-12T06:46:56.633Z",
+                "receipt_sha256": "b4eb619d065141c6082998e443f423c83f4184c5e6e3d38d8ea2aea527429a05",
+                "receipt_locator": ""
+              },
+              {
+                "role": "標準実行175 ReplayCoreWireTest（suite時刻、method時刻UNKNOWN）",
+                "session": "codex-session-sha256:7f69f91ce4a2c7a220fe48fac1c1f0a3c33f9844c3a836c4c01b58133290baa7",
+                "activity": "execution",
+                "at": "2026-10-12T06:47:17.682Z",
+                "receipt_sha256": "0310fa59667d961617a98e08dccefdaf295878b33cff1a7f5e59ef220b08ecc7",
+                "receipt_locator": ""
+              },
+              {
+                "role": "配布JAR実行178 settings",
+                "session": "codex-session-sha256:ea59a6cabfb2c2d285ec4edd1f82fc97b02a59072c9b9f723fd991ca14d8b3a8",
+                "activity": "execution",
+                "at": "2026-10-12T07:51:28.504315+00:00",
+                "receipt_sha256": "d21229015523fd81b39b6bc4b3a101e0f22d8bf4b30a8ea4fc44b2829113c0aa",
+                "receipt_locator": ""
+              },
+              {
+                "role": "配布JAR実行178 failure",
+                "session": "codex-session-sha256:ea59a6cabfb2c2d285ec4edd1f82fc97b02a59072c9b9f723fd991ca14d8b3a8",
+                "activity": "execution",
+                "at": "2026-10-12T07:51:53.434661+00:00",
+                "receipt_sha256": "be002df5a72a4008bfeb721cadebf5c1e83f93f3fcd24bfb63871b89d3bb5013",
+                "receipt_locator": ""
+              },
+              {
+                "role": "native transport実行180",
+                "session": "codex-session-sha256:e6d03bd1d08cefafde450729f311e7df68f4a14b56ffb0fd9f361bfb49709496",
+                "activity": "execution",
+                "at": "2026-10-12T08:42:14.468662+00:00",
+                "receipt_sha256": "a227223f1003ffa5e6ba9eaa6dc36f3e24c072196a55d91e335c397531318383",
+                "receipt_locator": ""
+              },
+              {
+                "role": "native180 identity-001（dispatch開始、観測のwall-clockはUNKNOWN）",
+                "session": "codex-session-sha256:e6d03bd1d08cefafde450729f311e7df68f4a14b56ffb0fd9f361bfb49709496",
+                "activity": "execution",
+                "at": "2026-10-12T08:37:06.902623+00:00",
+                "receipt_sha256": "f8d9078835700fcf8c5e71f7766a7f6204f0aa53643ef521e0b9c6bd6e2644f8",
+                "receipt_locator": ""
+              },
+              {
+                "role": "native180 pre-001（dispatch開始、観測のwall-clockはUNKNOWN）",
+                "session": "codex-session-sha256:e6d03bd1d08cefafde450729f311e7df68f4a14b56ffb0fd9f361bfb49709496",
+                "activity": "execution",
+                "at": "2026-10-12T08:40:25.916531+00:00",
+                "receipt_sha256": "d9f68e5ed64f898f32ac6666b5c84a871b34350bb049291c0f856fe993a18ec1",
+                "receipt_locator": ""
+              },
+              {
+                "role": "native180 post-001（dispatch開始、観測のwall-clockはUNKNOWN）",
+                "session": "codex-session-sha256:e6d03bd1d08cefafde450729f311e7df68f4a14b56ffb0fd9f361bfb49709496",
+                "activity": "execution",
+                "at": "2026-10-12T08:42:14.645048+00:00",
+                "receipt_sha256": "7bcbd56b556cff55888afecdc03c21c3d4ae34d966dde5c7c0629bd4968cd951",
+                "receipt_locator": ""
+              },
+              {
+                "role": "native180 post-002（dispatch開始、観測のwall-clockはUNKNOWN）",
+                "session": "codex-session-sha256:e6d03bd1d08cefafde450729f311e7df68f4a14b56ffb0fd9f361bfb49709496",
+                "activity": "execution",
+                "at": "2026-10-12T08:42:39.965225+00:00",
+                "receipt_sha256": "71f11edb2e1830502a1c757e23c695f1d38c1d5848347d620f393e47b6b8d583",
+                "receipt_locator": ""
+              },
+              {
+                "role": "実証に使用した補助source writer106（原STOP時刻、旧実行に受入creditなし）",
+                "session": "codex-session-sha256:e2463869ced017b36a24896efbc53d321b73012b0d11c2ecd1fde7b00c5e6969",
+                "activity": "writer",
+                "at": "2026-10-11T20:45:47.128460+00:00",
+                "receipt_sha256": "da75a5c4bce9d14b8a64839080554d97d310c1bbf1bfe54d1a4dda95e9f41a73",
+                "receipt_locator": ""
+              },
+              {
+                "role": "実証に使用した補助source writer123（原STOP時刻、旧実行に受入creditなし）",
+                "session": "codex-session-sha256:271b4623b02d53a2a18216382d5c2172d539284ea00a8a67810053770af113be",
+                "activity": "writer",
+                "at": "2026-10-11T23:36:59.611033+00:00",
+                "receipt_sha256": "082a53454800d9d099b963e45fc908b72eff1a452402c80e56ec96e277ec4b2c",
+                "receipt_locator": ""
+              },
+              {
+                "role": "実証に使用した補助source writer179（原STOP時刻、旧実行に受入creditなし）",
+                "session": "codex-session-sha256:f42ad871e22da882d6b17aa992900f0515d7501014848f46f8208e33f09add24",
+                "activity": "writer",
+                "at": "2026-10-12T08:24:55.444855+00:00",
+                "receipt_sha256": "1b5916643659204a82c0425033507164ada8a1410c0c43bc3e426b06913878e3",
+                "receipt_locator": ""
+              },
+              {
+                "role": "保持証拠評価181",
+                "session": "codex-session-sha256:4fb249c9831ee018bf55560e0909386d8b4b56499aa70a6d925f92ebb0c4c147",
+                "activity": "assessment",
+                "at": "2026-10-12T09:26:06.567967+00:00",
+                "receipt_sha256": "1cccc2dc938023244df57a4c037409ae37cb59b076fa993b7d5925f08b322674",
+                "receipt_locator": "/content_assessment181"
+              },
+              {
+                "role": "旧metadata構成183",
+                "session": "codex-session-sha256:3a2147a34438f4f8d6805ad821fa908da7fb20fae1395b5e506e8184c792e9c7",
+                "activity": "composition",
+                "at": "2026-10-12T09:50:11+00:00",
+                "receipt_sha256": "f84831cd135b49916d108ae4593437b3eccce1931331a188365a75060394513d",
+                "receipt_locator": ""
+              },
+              {
+                "role": "保持証拠評価185（評価完了STOP時刻、method時刻でない）",
+                "session": "codex-session-sha256:d35812af5c323ff2480fb3be10e4b8fe768e762a19e7baf5638c6c5d5bfdcb2b",
+                "activity": "assessment",
+                "at": "2026-10-12T10:34:24.656618+00:00",
+                "receipt_sha256": "3cc3f535d8a0251755c23601f790f15bf01cc0f4ee6df8d0badb5993c3437f86",
+                "receipt_locator": ""
+              },
+              {
+                "role": "metadata構成189（現在の構成完了、原実行ではない）",
+                "session": "codex-session-sha256:1366e7794c111eca4b6433765c3f120d7c776b5c341bbfe267c254c5bd151697",
+                "activity": "composition",
+                "at": "2026-10-12T18:16:30+00:00",
+                "receipt_sha256": "76816529128957e440ec0e0c05389aafff7faa887af251669b808b8f5f52754a",
+                "receipt_locator": ""
+              }
+            ]
+          }
         },
         "coverage": {
           "RECOVERY-GAP": "実際のsame-boot切断/再接続で開いたapp_log gapを、同対象/現世代の必要readerとclockが復旧した権威ある境界で有限に閉じる。対象解決だけ・reader未準備・stale世代・unknown clockで偽の復旧を作らず、本当の中断は残す。 実証: writer175実行AppRecoveryBoundaryTest全7method https://github.com/shinma06/android-replay-buffer/blob/6f81e875c514fd1fd64e0495339f9c571b4499e3/plugin/src/test/kotlin/io/github/shinma06/replaybuffer/core/AppRecoveryBoundaryTest.kt（XML e9131e64ba3d53beafff42eb3695cfe60626bdc9c2f09f42c954912d883d4cc7、source1abab91d289137189faa61e18c36dd3b9798f7e460e55c67324307f27879972f）: targetResolutionFlapsBeforeReaderRecoveryKeepOneOpenGap、recentPreviousBackendClockCannotCloseNewGenerationGap、recoveryErrorIsRetainedInSavedGapAndCoverage、asynchronousRecoveryWaitsForResumeAndCannotChangeFrozenSave、longSameBootRecoveryWaitsForCurrentEpochTargetAndPreservesSave、currentEpochPeriodIsRequiredForEveryRecoveryOrder、bootChangeRequiresNewTargetAndUnknownBridgeCannotRecover。targetだけ/aggregate reader未準備/旧owner/旧clock/old-epoch/frozenT/unknown bridgeでは開いたまま。現epoch対象・必要reader・新確実clock・resumeが揃った境界だけ有限1/7秒、真の中断理由と17ms誤差を保持。CaptureStoreSaveTest.recoveredAppGapClosesOnlyAfterTargetAndRequiredReadersAndKeepsFrozenSave / appRecoveryNeedsCurrentCertainClockAndUnknownBootBridgeStaysOpen（XML b4eb619d065141c6082998e443f423c83f4184c5e6e3d38d8ea2aea527429a05）は両到着順・旧世代/unknown拒否と2秒境界を確認。https://github.com/shinma06/android-replay-buffer/blob/6f81e875c514fd1fd64e0495339f9c571b4499e3/plugin/src/test/kotlin/io/github/shinma06/replaybuffer/core/ReplayCoreWireTest.kt#L410-L505 の実行method failedRequestRetriesItsOriginalWindowWhileAcquisitionReconfigurationAndReconnectContinue（XML0310fa59667d961617a98e08dccefdaf295878b33cff1a7f5e59ef220b08ecc7、source06ab9f118fb9dd704136a691656eb4a45de5145cbe2790d45d19966781ff8b03）はSDK端末不在を実Core pollが観測→freeze/stop→同boot/同sequenceの新generation→実reader/clock/target復旧→実app_log gapが元接続中断理由付きで有限。production状態注入なしのcontrolled external SDK/loopback production経路。180実nativeロード/transport/current-epoch/必要readerは代表実接続を補強するがgeneration1・app gapなしで置換backend分岐の証拠ではない。原実行担当/日時はobservation.evidenceへ対応。",
-          "SAVED-COVERAGE": "復旧後の有効app行を含む固定Saveで、session app_log状態・gap終端・理由・不足/availableSecondsを実行済みの全app/device/clock観察と一致させ、復旧後を現在Tまで未復旧として差し引かない。既存保存物/固定requestの不変を保つ。 実証: writer175実行 https://github.com/shinma06/android-replay-buffer/blob/6f81e875c514fd1fd64e0495339f9c571b4499e3/plugin/src/test/kotlin/io/github/shinma06/replaybuffer/core/CaptureStoreSaveTest.kt#L748-L826 のrecoveredAppGapClosesOnlyAfterTargetAndRequiredReadersAndKeepsFrozenSave（XML b4eb619d065141c6082998e443f423c83f4184c5e6e3d38d8ea2aea527429a05、source66bb01d398a8a8ca823fde82ee9d7d87bbb060dca413e491bb768c0250ea527b）はtrue pre/post rows、有限2秒gap、独立期待availableSeconds=3.0をStoreおよび実SaveWriter sessionの両方で検査、全app record_id順序と元frozen gap/rows/T不変。https://github.com/shinma06/android-replay-buffer/blob/6f81e875c514fd1fd64e0495339f9c571b4499e3/plugin/src/test/kotlin/io/github/shinma06/replaybuffer/core/AppRecoveryBoundaryTest.kt#L109-L155 のlongSameBootRecoveryWaitsForCurrentEpochTargetAndPreservesSaveは実clock.addのepoch1と現targetで7秒終端、全device IDsとexact true-app subset、post含む/unknown除外、元frozen capture不変。recoveryErrorIsRetainedInSavedGapAndCoverageは17msを実sessionへ保存。https://github.com/shinma06/android-replay-buffer/blob/6f81e875c514fd1fd64e0495339f9c571b4499e3/plugin/src/test/kotlin/io/github/shinma06/replaybuffer/core/ReplayCoreWireTest.kt#L493-L505 の同macOS実行は復旧後の新core.save()/異なるrequest ID/COMPLETED、fresh sessionの有限app gap・CAPTURING、以前の保存session hash不変をassert。Wire一時outputは実テスト後に削除済み、保持native出力ではない。178実配布Service→Core→Writer→OSのFAILED固定request Retryは全30device/20app/20frame行・exact app subset・later除外・text bytes不変、session差はcreated_at/complete/files_sha256のみ、MP4差は実timestamp boxesのみ。同じpre-fault pinのRetryでありfresh-save証拠はWireが供給する。内部clock/unknown/coverage対応は上記実Store/Clock/Writerとsession回帰へ分担し、実native180保存全FILEは未実施。原実行担当/日時と封印receiptはobservation.evidenceへ対応。"
+          "SAVED-COVERAGE": "復旧後の有効app行を含む固定Saveで、session app_log状態・gap終端・理由・不足/availableSecondsを実行済みの全app/device/clock観察と一致させ、復旧後を現在Tまで未復旧として差し引かない。既存保存物/固定requestの不変を保つ。 実証: writer175実行 https://github.com/shinma06/android-replay-buffer/blob/6f81e875c514fd1fd64e0495339f9c571b4499e3/plugin/src/test/kotlin/io/github/shinma06/replaybuffer/core/CaptureStoreSaveTest.kt#L748-L826 のrecoveredAppGapClosesOnlyAfterTargetAndRequiredReadersAndKeepsFrozenSave（XML b4eb619d065141c6082998e443f423c83f4184c5e6e3d38d8ea2aea527429a05、source66bb01d398a8a8ca823fde82ee9d7d87bbb060dca413e491bb768c0250ea527b）はtrue pre/post rows、有限2秒gap、独立期待availableSeconds=3.0をStoreおよび実SaveWriter sessionの両方で検査、全app record_id順序と元frozen gap/rows/T不変。https://github.com/shinma06/android-replay-buffer/blob/6f81e875c514fd1fd64e0495339f9c571b4499e3/plugin/src/test/kotlin/io/github/shinma06/replaybuffer/core/AppRecoveryBoundaryTest.kt#L109-L155 のlongSameBootRecoveryWaitsForCurrentEpochTargetAndPreservesSaveは実clock.addのepoch1と現targetで7秒終端、全device IDsとexact true-app subset、post含む/unknown除外、元frozen capture不変。recoveryErrorIsRetainedInSavedGapAndCoverageは17msを実sessionへ保存。https://github.com/shinma06/android-replay-buffer/blob/6f81e875c514fd1fd64e0495339f9c571b4499e3/plugin/src/test/kotlin/io/github/shinma06/replaybuffer/core/ReplayCoreWireTest.kt#L480-L489 の同macOS実行は復旧後の新core.save()/異なるrequest ID/COMPLETED、fresh sessionの有限app gap・CAPTURING、以前の保存session hash不変をassert。Wire一時outputは実テスト後に削除済み、保持native出力ではない。178実配布Service→Core→Writer→OSのFAILED固定request Retryは全30device/20app/20frame行・exact app subset・later除外・text bytes不変、session差はcreated_at/complete/files_sha256のみ、MP4差は実timestamp boxesのみ。同じpre-fault pinのRetryでありfresh-save証拠はWireが供給する。内部clock/unknown/coverage対応は上記実Store/Clock/Writerとsession回帰へ分担し、実native180保存全FILEは未実施。原実行担当/日時と封印receiptはobservation.evidenceへ対応。"
         },
-        "method": "trusted main daf8676ab72fd7d2d49792203a24ce45b0db5903の現有効plan d544da51fd949b415001c2b4c939e1701fa6d7608eccfed2991b7db544ffd896 / responsibility9e6baa93236e2ec935e082610ca6432de622e4ef1dbf533f9609b27ce7fbbba4で、保証→必要証拠→最小方法を選択。UTは境界/owner/epoch/unknown/誤差/固定Tと独立3.0秒oracle/全行Writer、Wire CLI/JVMは実Core停止再開・新規公開Save、178配布JAR/JVM/OSは実公開/固定Retry/不変、180は実IDE/ADB/load/readers/currentepochの代表外部接続。131製品classと標準ZIPが一致する同candidateの実行済み層が元内部欠陥を検出する。内部分岐用generation進行を全native再接続の成功条件や同run義務にしない。このrepairへ追加するnative再接続/公開Save受入試行は0。後日保持証拠照合の観察と、後続の通常required automated checks（metadata HEADでのbuild/回帰を含む）は別であり、その新しいbuild/回帰を提出artifact6f81/ZIP4b7eの新受入証拠にしない。Case PASSや元nativeNG全体の自動免除ではない。180 POST0/Save0/正の復旧app行・fullFILE未成立、178はfixed Retry、Wire一時出力削除を保持。今回照合で追加runtime不足は特定されず、残る正式条件は別sessionのfixed HEAD/base/repair_revision・全保証実質評価とcurrent checks/feedback。独立担当は製品writer139/144/147、source/test175、executor178/180、assessor181、実metadata/compositor183の全実sessionから別であることを封印packetで検証する。machine observer setだけでは全executorを発見できないため、その集合だけに依存しない。full QAの実保存/UI/通知/open/copy、REAL34、QA27/main release10、139/208/105/34と原失敗は変更しない。未知/変更artifact/runtime/契約は同一性または影響再試験へ戻す。",
+        "method": "trusted main d7d655919807b951be31e3cb8ef71629df888475の現有効plan d544da51fd949b415001c2b4c939e1701fa6d7608eccfed2991b7db544ffd896 / responsibility9e6baa93236e2ec935e082610ca6432de622e4ef1dbf533f9609b27ce7fbbba4で、保証→必要証拠→最小方法を選択。UTは境界/owner/epoch/unknown/誤差/固定Tと独立3.0秒oracle/全行Writer、Wire CLI/JVMは実Core停止再開・新規公開Save、178配布JAR/JVM/OSは実公開/固定Retry/不変、180は実IDE/ADB/load/readers/currentepochの代表外部接続。131製品classと標準ZIPが一致する同candidateの実行済み層が元内部欠陥を検出する。内部分岐用generation進行を全native再接続の成功条件や同run義務にしない。このrepairへ追加するnative再接続/公開Save受入試行は0。後日保持証拠照合の観察と、後続の通常required automated checks（metadata HEADでのbuild/回帰を含む）は別であり、その新しいbuild/回帰を提出artifact6f81/ZIP4b7eの新受入証拠にしない。Case PASSや元nativeNG全体の自動免除ではない。180 POST0/Save0/正の復旧app行・fullFILE未成立、178はfixed Retry、Wire一時出力削除を保持。今回照合で追加runtime不足は特定されず、残る正式条件は別sessionのfixed HEAD/base/repair_revision・全保証実質評価とcurrent checks/feedback。独立担当はattributionの全実寄与sessionと異なる新担当であることを配備済みshared guardとprivate原本/対応mappingで検証する。集合は固定8名でなく、製品/source writer139/144/147/175、実使用補助source106/123/179、executor175/178/180、評価181/185、構成183/189を含む。構造検査と全来歴・保証の実質独立評価を区別する。full QAの実保存/UI/通知/open/copy、REAL34、QA27/main release10、139/208/105/34と原失敗は変更しない。未知/変更artifact/runtime/契約は同一性または影響再試験へ戻す。",
         "contract_revision": "9e6baa93236e2ec935e082610ca6432de622e4ef1dbf533f9609b27ce7fbbba4"
       }
     }
