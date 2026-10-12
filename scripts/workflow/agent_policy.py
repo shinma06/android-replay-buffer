@@ -3,11 +3,28 @@ import fnmatch
 import hashlib
 import json
 import re
+import uuid
 from git_guard import BRANCH
 from issue_schema import labels
 
 CONTEXT = 'Agent review'
 SHA = re.compile(r'[0-9a-f]{40}')
+SESSION_HASH = re.compile(r'codex-session-sha256:[0-9a-f]{64}')
+
+
+def canonical_session(session):
+    try:
+        value = uuid.UUID(session) if isinstance(session, str) else None
+    except ValueError:
+        value = None
+    if value is None or str(value) != session or value.variant != uuid.RFC_4122:
+        raise ValueError('Canonical originating Codex session is missing or malformed')
+    return session
+
+
+def session_fingerprint(session):
+    return 'codex-session-sha256:' + hashlib.sha256(
+        ('codex-session-v1:' + canonical_session(session)).encode()).hexdigest()
 
 
 def issue_number(pr):
@@ -52,9 +69,13 @@ def validate_review(report, expected, acceptance=None):
     if report['verdict'] == 'approved' and (report['findings'] or not report['scope_complete']):
         raise ValueError('Approval conflicts with incomplete scope or unresolved findings')
     if report['verdict'] == 'approved' and (acceptance or {}).get('repair_revision'):
+        reviewer = session_fingerprint(report['session'])
+        observers = acceptance.get('repair_observers')
         if (report.get('repair_revision') != acceptance['repair_revision'] or
                 not isinstance(report.get('repair_assessment'), str) or not report['repair_assessment'].strip() or
-                report['session'] in acceptance['repair_observers']):
+                not isinstance(observers, list) or not observers or
+                not all(isinstance(x, str) and SESSION_HASH.fullmatch(x) for x in observers) or
+                reviewer in observers):
             raise ValueError('Independent original-NG evidence assessment is missing, stale or self-reviewed')
     if report['verdict'] == 'changes_requested' and not report['findings']:
         raise ValueError('Changes requested without concrete findings')

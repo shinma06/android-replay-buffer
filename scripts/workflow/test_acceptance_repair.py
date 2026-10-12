@@ -11,7 +11,7 @@ from unittest.mock import patch
 import acceptance_ci as ci
 import agent_loop as al
 import test_agent_loop as tal
-from agent_policy import next_action, validate_review
+from agent_policy import next_action, session_fingerprint, validate_review
 from test_agent_loop import pr_data, report
 from test_verification import CASE, change
 from verification import REPAIR_MARKER, canonical_hash, verify_pr
@@ -51,11 +51,11 @@ class RepairTests(unittest.TestCase):
             'source_case_sha256': canonical_hash(self.case), 'original_result': self.old,
             'guarantees': {'gap': 'target restored closes gap', 'metadata': 'saved rows and available duration agree'}}}}
         observed = dict(self.old, status='pass', head=self.candidate, artifact_sha256='2' * 64,
-                        observer='repair-executor', evidence='fixed production-path recheck and artifact',
+                        observer='00000000-0000-4000-8000-000000000035', evidence='fixed production-path recheck and artifact',
                         loaded_identity='corrected ZIP/JAR', reason='all original failed guarantees reproduced and corrected')
         self.data = change(gui=False)
         self.data['repair'] = {'candidate': self.candidate, 'artifacts': {'plugin': '2' * 64},
-            'failure_record_sha256': canonical_hash(self.record), 'writer_session': 'writer-35',
+            'failure_record_sha256': canonical_hash(self.record), 'writer_session': observed['observer'],
             'results': {'GAP-1': {'observation': observed, 'coverage': {
                 'gap': 'target restoration production path execution',
                 'metadata': 'save metadata and duration execution'},
@@ -110,11 +110,93 @@ class RepairTests(unittest.TestCase):
         validate_review(review, bound, accepted)
         self.assertEqual(next_action({'binding': bound, 'review': review}, bound, 'success', False, accepted), 'merge')
         for mutation in ({'repair_revision': ''}, {'repair_revision': '0' * 64}, {'repair_assessment': ''},
-                         {'session': 'repair-executor'}, {'session': 'writer-35'}):
+                         {'session': self.data['repair']['writer_session']}, {'session': 'writer-35'}):
             with self.subTest(mutation=mutation), self.assertRaises(ValueError):
                 validate_review(dict(review, **mutation), bound, accepted)
         with self.assertRaises(ValueError):
             validate_review(dict(report(), **bound), bound, accepted)
+
+    def composed_attribution(self):
+        observed = self.data['repair']['results']['GAP-1']['observation']
+        when = datetime.fromisoformat(observed['at'])
+        composed = (when + timedelta(minutes=1)).isoformat(timespec='seconds')
+        sessions = [f'00000000-0000-4000-8000-{i:012d}' for i in range(1, 9)]
+        activities = ['writer', 'writer', 'writer', 'execution', 'execution', 'execution', 'assessment', 'composition']
+        contributors = [{'role': f'public-role-{i}', 'session': session_fingerprint(session),
+                         'activity': activity, 'at': composed if activity == 'composition' else observed['at'],
+                         'receipt_sha256': str(i) * 64}
+                        for i, (session, activity) in enumerate(zip(sessions, activities), 1)]
+        observed.update(observer='retained evidence compositor', at=composed,
+                        attribution={'writer': session_fingerprint(sessions[-1]),
+                                     'observer': session_fingerprint(sessions[-1]), 'contributors': contributors})
+        self.data['repair']['writer_session'] = 'public metadata writer role'
+        return sessions
+
+    def test_all_eight_contributors_excluded_and_roles_cannot_grant_independence(self):
+        sessions = self.composed_attribution()
+        original = copy.deepcopy(self.record)
+        self.freeze()
+        accepted = dict(self.verify(), allowed=True)
+        self.assertEqual(self.record, original)
+        self.assertEqual(accepted['repair_observers'], sorted(map(session_fingerprint, sessions)))
+        bound = {'head': self.pr['head']['sha'], 'base': self.source}
+        review = dict(report(), **bound, repair_revision=accepted['repair_revision'], repair_assessment='sealed receipts checked')
+        validate_review(review, bound, accepted)
+        for session in sessions:
+            with self.subTest(session=session), self.assertRaisesRegex(ValueError, 'self-reviewed'):
+                validate_review(dict(review, session=session), bound, accepted)
+        for alias in ('review-' + sessions[0], session_fingerprint(sessions[0]), 'public-role-1', None, sessions[0].replace('-', '')):
+            with self.subTest(alias=alias), self.assertRaises(ValueError):
+                validate_review(dict(review, session=alias), bound, accepted)
+        for key in ('head', 'base', 'repair_revision'):
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                validate_review(dict(review, **{key: '0' * (64 if key == 'repair_revision' else 40)}), bound, accepted)
+        attribution = self.data['repair']['results']['GAP-1']['observation']['attribution']
+        for item in attribution['contributors']: item['role'] = 'renamed display role'
+        self.freeze()
+        renamed = self.verify()
+        self.assertEqual(renamed['repair_observers'], accepted['repair_observers'])
+        self.assertNotEqual(renamed['repair_revision'], accepted['repair_revision'])
+
+    def test_contributor_identity_receipt_time_and_mapping_fail_closed(self):
+        self.composed_attribution()
+        original = copy.deepcopy(self.data)
+        mutations = [None, {}, {'writer': 'role'}, {'observer': 'review-wrapper'}, {'contributors': []}]
+        for mutation in mutations:
+            self.data = copy.deepcopy(original)
+            observed = self.data['repair']['results']['GAP-1']['observation']
+            if mutation is None: observed['attribution'] = None
+            elif mutation == {}: observed['attribution'].pop('contributors')
+            else: observed['attribution'].update(mutation)
+            self.freeze()
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError): self.verify()
+        for key, value in (('session', 'role-alias'), ('session', '0' * 64), ('session', None),
+                           ('at', ''), ('at', '2026-01-01T00:00:00'), ('at', '2026-02-30T00:00:00Z'),
+                           ('at', '2000-01-01T00:00:00Z'), ('at', '2099-01-01T00:00:00Z'),
+                           ('receipt_sha256', ''), ('receipt_sha256', None), ('activity', 'unknown')):
+            self.data = copy.deepcopy(original)
+            self.data['repair']['results']['GAP-1']['observation']['attribution']['contributors'][3][key] = value
+            self.freeze()
+            with self.subTest(key=key, value=value), self.assertRaises(ValueError): self.verify()
+        self.data = copy.deepcopy(original)
+        items = self.data['repair']['results']['GAP-1']['observation']['attribution']['contributors']
+        items.append(copy.deepcopy(items[0]))
+        self.freeze()
+        with self.assertRaisesRegex(ValueError, 'Duplicate'): self.verify()
+        self.data = copy.deepcopy(original)
+        self.data['repair']['results']['GAP-1']['observation']['attribution']['contributors'].pop()
+        self.freeze()
+        with self.assertRaisesRegex(ValueError, 'omits'): self.verify()
+
+    def test_single_session_legacy_is_explicit_and_composed_scalars_are_rejected(self):
+        original = self.verify()
+        self.assertEqual(original['repair_observers'], [session_fingerprint(self.data['repair']['writer_session'])])
+        for writer, observer in (('writer role', 'executor role'), ('same role', 'same role'),
+                                 (report()['session'], self.data['repair']['writer_session'])):
+            self.data['repair']['writer_session'] = writer
+            self.data['repair']['results']['GAP-1']['observation']['observer'] = observer
+            self.freeze()
+            with self.subTest(writer=writer, observer=observer), self.assertRaises(ValueError): self.verify()
 
     def test_missing_unknown_failed_stale_and_partially_covered_recheck(self):
         original = copy.deepcopy(self.data)
@@ -619,6 +701,42 @@ class ClassificationLoopTests(unittest.TestCase):
 class RepairLoopTests(unittest.TestCase):
     setUp = tal.LoopTests.setUp
 
+    def test_all_contributors_block_review_merge_postmerge_and_feedback_recovery(self):
+        sessions = [f'00000000-0000-4000-8000-{i:012d}' for i in range(1, 9)]
+        for phase in ('review', 'merge', 'postmerge', 'feedback'):
+            for session in sessions:
+                self.doCleanups()
+                self.setUp()
+                with self.subTest(phase=phase, session=session):
+                    if phase in ('postmerge', 'feedback'): self.merged_repair()
+                    else: self.prepare()
+                    self.accepted['repair_observers'] = list(map(session_fingerprint, sessions))
+                    self.worker.side_effect = None
+                    invalid = dict(report(), session=session, repair_revision='e' * 64,
+                                   repair_assessment='synthetic exclusion fixture, not approval')
+                    if phase == 'review':
+                        self.worker.return_value = invalid
+                        self.loop.tick(36)
+                        _, state, _, _ = self.loop.load(36)
+                        self.assertNotIn('review', state)
+                    elif phase == 'feedback':
+                        evidence = self.recovery_evidence()
+                        evidence['review'].update(session=session)
+                        with self.assertRaisesRegex(ValueError, 'self-reviewed'):
+                            self.loop.reconcile_feedback(self.gh.pr(36), evidence)
+                    else:
+                        if phase == 'merge':
+                            self.worker.return_value = dict(invalid, session=report()['session'])
+                            self.assertEqual(self.loop.tick(36)['phase'], 'reviewed')
+                        _, state, sid, _ = self.loop.load(36)
+                        state['review'].update(session=session)
+                        self.loop.save(self.gh.pr(36), state, sid)
+                        self.loop.tick(36)
+                    self.assertNotIn((tal.HEAD, 'success'), self.gh.statuses)
+                    self.assertEqual(self.gh.merges, 0)
+                    self.assertEqual(self.gh.issues[35]['state'], 'open')
+                    self.loop.cleanup.assert_not_called()
+
     def prepare(self):
         self.gh.issues[35].update(title='[追跡] fixture', labels=['type:tracking', 'priority:P2', 'status:review'])
         self.gh.pull['base']['ref'] = 'develop'
@@ -627,7 +745,7 @@ class RepairLoopTests(unittest.TestCase):
         handoff['target'] = 'develop'
         self.gh.messages[36][0]['body'] = al.pack(al.HANDOFF, handoff)
         self.accepted = {'allowed': True, 'mode': 'develop', 'cases': 0, 'repair_revision': 'e' * 64,
-                         'repair_observers': ['writer-35', 'repair-executor']}
+                         'repair_observers': [session_fingerprint('00000000-0000-4000-8000-000000000035')]}
         self.loop.acceptance.return_value = self.accepted
 
     def test_coordinator_cannot_status_or_merge_without_actual_repair_assessment(self):

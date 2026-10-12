@@ -1,4 +1,5 @@
 """Bounded Codex CLI workers. No GitHub mutations or GUI tools are delegated."""
+import argparse
 import json
 import os
 from pathlib import Path
@@ -6,6 +7,7 @@ import signal
 import subprocess
 import tomllib
 import uuid
+from agent_policy import canonical_session
 
 REPORT_SCHEMA = {
     'type': 'object', 'additionalProperties': False,
@@ -24,7 +26,37 @@ REPORT_SCHEMA = {
 
 def worker_environment():
     return {k: v for k, v in os.environ.items() if not k.startswith('GIT_') and
-            k not in {'GH_TOKEN', 'GITHUB_TOKEN', 'OPENAI_API_KEY', 'CODEX_API_KEY'}}
+            k not in {'GH_TOKEN', 'GITHUB_TOKEN', 'OPENAI_API_KEY', 'CODEX_API_KEY', 'CODEX_THREAD_ID'}}
+
+
+def bind_report_session(report, session):
+    session = canonical_session(session)
+    if 'session' in report and report['session'] != session:
+        raise ValueError('Report session differs from the actual originating session')
+    return dict(report, session=session)
+
+
+def event_session(path):
+    """Use the CLI envelope, never model text or a generated output filename."""
+    session, completed = None, False
+    with Path(path).open() as stream:
+        for line in stream:
+            event = json.loads(line)
+            if not isinstance(event, dict) or not isinstance(event.get('type'), str):
+                raise ValueError('Malformed Codex event envelope')
+            kind = event['type']
+            if session is None and kind != 'thread.started':
+                raise ValueError('Missing originating thread.started event')
+            if kind == 'thread.started':
+                if session is not None:
+                    raise ValueError('Ambiguous originating thread.started events')
+                session = canonical_session(event.get('thread_id'))
+            if kind in ('turn.failed', 'error') or completed:
+                raise ValueError('Failed or ambiguous Codex event stream')
+            completed = kind == 'turn.completed'
+    if session is None or not completed:
+        raise ValueError('Missing originating session or completed turn receipt')
+    return session
 
 
 def run_worker(role, checkout, packet, output_dir, timeout=600, on_start=lambda pid: None):
@@ -34,7 +66,7 @@ def run_worker(role, checkout, packet, output_dir, timeout=600, on_start=lambda 
     schema = output_dir / (session + '.schema.json')
     result = output_dir / (session + '.json')
     schema.write_text(json.dumps(REPORT_SCHEMA))
-    command = ['codex', 'exec', '--ignore-user-config', '--ephemeral', '--color', 'never',
+    command = ['codex', 'exec', '--json', '--ignore-user-config', '--ephemeral', '--color', 'never',
                '--sandbox', 'read-only' if role == 'review' else 'workspace-write',
                '-C', str(checkout), '--output-schema', str(schema), '-o', str(result), '-']
     # Preserve the user's chosen model while disabling user MCP/plugin configuration.
@@ -54,6 +86,9 @@ def run_worker(role, checkout, packet, output_dir, timeout=600, on_start=lambda 
         'declaration is none or source Cases are pending; missing corrective tracking blocks approval. '
         'For acceptance-NG corrective PRs, inspect acceptance.repair_record and repair. Approve only after '
         'checking the preserved original failure, fixed artifact, every failed guarantee, actual execution, '
+        'complete contributor attribution against sealed originating-session receipts, and original '
+        'execution times separately from later evidence composition. Fingerprints alone do not prove '
+        'contributor completeness. Public role names or wrapper aliases are not session identity. Check the '
         'trusted effective contract, faithful method and its limits. Related unit PASS alone cannot erase '
         'an observed native failure. Return repair_revision equal to acceptance.repair_revision and '
         'repair_assessment explaining the substantive evidence, coverage and equivalence limits. Missing, '
@@ -77,8 +112,9 @@ def run_worker(role, checkout, packet, output_dir, timeout=600, on_start=lambda 
         'Report the exact input head/base. Explain acceptance evidence and uncertainty in Japanese.\n'
     ) + json.dumps(packet, ensure_ascii=False)
     log = output_dir / (session + '.log')
-    with log.open('w') as stream:
-        process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=stream, stderr=stream,
+    events = output_dir / (session + '.events.jsonl')
+    with log.open('w') as stream, events.open('w') as event_stream:
+        process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=event_stream, stderr=stream,
                                    text=True, env=worker_environment(), start_new_session=True)
         try:
             on_start(process.pid)
@@ -102,5 +138,19 @@ def run_worker(role, checkout, packet, output_dir, timeout=600, on_start=lambda 
     if process.returncode or not result.exists():
         raise RuntimeError(f'{role} worker failed ({process.returncode}); inspect {log}')
     report = json.loads(result.read_text())
-    report['session'] = session
-    return report
+    return bind_report_session(report, event_session(events))
+
+
+def main():
+    parser = argparse.ArgumentParser(description='Bind a private manual report in its actual reviewer session; no worker execution')
+    parser.add_argument('--report', type=Path, required=True)
+    parser.add_argument('--output', type=Path, required=True)
+    args = parser.parse_args()
+    report = bind_report_session(json.loads(args.report.read_text()), os.environ.get('CODEX_THREAD_ID'))
+    # Preserve original reports and refuse to replace an existing bound receipt.
+    with args.output.open('x') as stream:
+        json.dump(report, stream, ensure_ascii=False, indent=2)
+
+
+if __name__ == '__main__':
+    main()

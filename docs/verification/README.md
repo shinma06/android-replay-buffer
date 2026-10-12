@@ -60,11 +60,34 @@ CLIではUSB切断/再接続、直前区間の動画/logcat時刻整合、log-on
 
 `artifacts`の名前は元Caseの`artifact`に一致させます。既定は`app`で、#227の`27:RECONNECT-EMU`では`plugin`です。既存のcanonical hash関数（UTF-8、sort_keys、ensure_ascii=False、区切り`,`/`:`）を共用します。gateは現在のmain refをAPIで固定し、そのcommitの正式resolverで有効方法を読みます。candidate側の独自改訂は認めず、正式resolverに登録済みの旧計画との対応を用い、方法だけの改訂で無条件の製品再build/再試験を要求しません。責任改訂のない製品では`contract_revision`はJSON `null`のcanonical hashで、独立レビューが元Case契約を直接確認します。`results`は元NGの全IDと完全一致し、`coverage`も各NGの全保証IDと一致させます。観察は修正candidate/hashと一致し、元NG・candidate commitより古い日時を拒否します。元の失敗artifactは修正版として受理しません。
 
+複数担当の修復証拠は、各 `observation` に次の `attribution` を追加します。外側の `repair` / `results` のキーは変更しません。`writer_session` / `observer` は公開用の役割表示として保持し、識別には使いません。
+
+```json
+{
+  "attribution": {
+    "writer": "codex-session-sha256:<metadata writerの64桁hash>",
+    "observer": "codex-session-sha256:<このobservation担当の64桁hash>",
+    "contributors": [
+      {"role": "元製品writer", "session": "codex-session-sha256:<64桁hash>", "activity": "writer", "at": "<原writer receipt日時>", "receipt_sha256": "<封印receiptの64桁hash>"},
+      {"role": "修復実行担当", "session": "codex-session-sha256:<64桁hash>", "activity": "execution", "at": "<原実行receipt日時>", "receipt_sha256": "<封印receiptの64桁hash>"},
+      {"role": "保持証拠の評価担当", "session": "codex-session-sha256:<64桁hash>", "activity": "assessment", "at": "<原評価日時>", "receipt_sha256": "<封印receiptの64桁hash>"},
+      {"role": "metadata構成担当", "session": "codex-session-sha256:<64桁hash>", "activity": "composition", "at": "<observation.atと同じ構成日時>", "receipt_sha256": "<封印receiptの64桁hash>"}
+    ]
+  }
+}
+```
+
+`session` は実際の canonical Codex thread UUID（小文字・標準ハイフン形式）から `SHA256(UTF-8("codex-session-v1:" + UUID))` を生成し、`codex-session-sha256:` を付けます。共通 `agent_policy.session_fingerprint` を使い、UUID・host・private pathは公開しません。役割名の変更や生成したwrapper名はhashの入力にできません。contributorsには元製品writer、修復source/実行担当、保持証拠の評価/構成担当を漏れなく含め、複数の実行receiptはそれぞれ原日時とhashを保持します。`writer` は writer/composition の担当、`observer` は `observation.at` の実 execution/assessment/composition 担当を参照します。writerとexecutionの記録は必須で、その他は実際に寄与した場合に含めます。
+
+各 `at` はtimezone付きISO8601（小数秒可）で、観察/構成日時を越えません。execution/assessment/compositionは元失敗と修正candidateより古い日時を拒否し、元製品writerのreceiptはcandidate以前も許容します。suite開始しか分からない場合はそのreceipt日時をそのまま使い、methodの開始/終了を推測しません。後日の構成日時で原実行日時を置き換えません。欠落・不正・重複・対応不明は拒否します。hashは担当の網羅性や証拠内容を証明しないため、独立reviewerがsealed receiptと実セッション対応、原日時・役割・全保証を実質照合します。
+
+旧scalar形式は、`writer_session == observation.observer` が同一のcanonical実UUIDである明確な単一セッション記録だけを維持します。独立reviewerが実際に単一担当であることを確認します。役割文・連結したID・複数担当又はwrapper別名は拒否し、元証拠を変更せずobservation内の構造化帰属へ移します。新しい公開記録は上記のhash形式を使います。original failureの観察形式・保証集合は変更しません。
+
 自己参照するtested HEADを作らないため、修正コードを先にcommitし、その固定candidateからbuild/実行してから結果metadataをcommitします。candidateは現baseより後、PR headより前にあり、`base..candidate`には受入JSON・promotion記録以外の実差分が必要です。base自体、受入metadataだけ、修正を打ち消した結果は拒否します。製品変更を一律要求せず、非製品原因の修正も独立レビューで実質を確認します。candidate後は当該Issueの受入JSONだけを変更できます。全commit edgeを調べ、symlink/削除/別ファイル/製品変更とその後のrevert・mergeを拒否します。base/製品が動いたら候補と証拠を再固定します。方法だけの改訂による既存事実の再評価と、製品NG修正後の新しい再試験を混同しません。
 
 CIのAcceptance gateとcoordinatorは同じ`verify_pr`で上記の構造・出典・集合・候補履歴を検査します。参照文字列の存在は実行や合格内容を証明しません。独立sessionが元失敗・全保証の証拠内容、trusted有効契約、方法の忠実性と限界、実生成/ロードartifactを確認します。関連unit成功だけで元nativeNG全体を解消済みにせず、必要なnative接続/表示/保存を残します。忠実な同等production経路がその保証を十分に検出する場合は、理由と限界を記録して採用できます。
 
-独立報告は通常のfixed HEAD/base・scope_complete・verdict等に加え、`repair_revision`（`[元NGコメントJSON, repair]`のcanonical hash）と、全失敗保証の実質評価を記した`repair_assessment`を持ちます。`session`はwriter/executorと異なる実際の独立sessionです。自己申告の別名を独立性の根拠にしません。coordinatorはこの一致と実担当経路を使い、欠落/古い評価/自己評価ではAgent review成功やmergeへ進みません。手動統合も同じ報告を照合してからAgent reviewを記録します。CI構造合格だけ、remote Code ReviewのCompletedだけ、writerのPASS宣言だけでは統合できません。merge直前には現HEAD/base・Issue/コメントfeedback・受入を読み戻し、変化したら旧評価を失効させます。tool権限・REAL保留・GUI lease・branch protectionは変更しません。
+独立報告は通常のfixed HEAD/base・scope_complete・verdict等に加え、`repair_revision`（`[元NGコメントJSON, repair]`のcanonical hash）と、全失敗保証の実質評価を記した`repair_assessment`を持ちます。`session`はprivate報告に保持する実際のcanonical UUIDで、全contributorsと異なる独立sessionです。CLI adapterは `--json` の先頭 `thread.started.thread_id` と終端 `turn.completed` を確認し、model出力や生成filenameからidentityを作りません。手動報告はreviewer本人のsession内で `python3 scripts/workflow/agent_worker.py --report <private-original-json> --output <new-private-bound-json>` を実行し、実 `CODEX_THREAD_ID` に結びます。異なる既存session、missing/不正なorigin、既存outputへの上書きを拒否します。元報告/receiptを保持して渡し、PMが自分のsessionで他人の報告をbindし直しません。自己申告の別名を独立性の根拠にしません。coordinatorはこの一致と実担当経路を使い、欠落/古い評価/自己評価ではAgent review成功やmergeへ進みません。手動統合も同じ報告を照合してからAgent reviewを記録します。旧develop-baseのAcceptance CIはobservationの追加キーを受理しても新guardを実行しません。新trusted-mainの `verify_pr → validate_review` をreview/status直前・merge直前・postmerge/handoff・feedback recoveryで使い、配備/readbackはPMが別途確認します。CI構造合格だけ、remote Code ReviewのCompletedだけ、writerのPASS宣言だけでは統合できません。merge直前には現HEAD/base・Issue/コメントfeedback・受入を読み戻し、変化したら旧評価を失効させます。tool権限・REAL保留・GUI lease・branch protectionは変更しません。
 
 merge後・closure前も、develop修正PRの受入を当時の固定HEAD/baseと現在の元NGコメント・trusted mainから再計算し、同じ独立報告を照合します。後着編集に古い`state.acceptance`を使わず、変更で不一致になった結果・評価は失効させます。移管中の変更もclose/cleanup前に再照合します。
 

@@ -7,6 +7,7 @@ from pathlib import Path
 import re
 import subprocess
 from git_guard import BRANCH
+from agent_policy import SESSION_HASH, session_fingerprint
 
 SHA = re.compile(r'[0-9a-f]{40}')
 HASH = re.compile(r'[0-9a-f]{64}')
@@ -921,6 +922,47 @@ def repair_record(issue, api):
     return record
 
 
+def repair_contributors(observed, writer, earliest):
+    """Public roles are display text; only originating-session fingerprints exclude reviewers."""
+    attribution = observed.get('attribution')
+    if 'attribution' not in observed:
+        # Only the unambiguous one-session legacy form can retain scalar attribution.
+        if writer != observed['observer']:
+            raise ValueError('Legacy repair requires single-session attribution; composed records need contributors')
+        return {session_fingerprint(writer)}
+    if (not isinstance(attribution, dict) or set(attribution) != {'writer', 'observer', 'contributors'} or
+            not all(isinstance(attribution[k], str) and SESSION_HASH.fullmatch(attribution[k])
+                    for k in ('writer', 'observer')) or
+            not isinstance(attribution['contributors'], list) or not attribution['contributors']):
+        raise ValueError('Repair attribution requires canonical writer, observer and all contributors')
+    identities, activities, entries = set(), set(), set()
+    observed_at = datetime.fromisoformat(observed['at'].replace('Z', '+00:00'))
+    observer_found, writer_found = False, False
+    for item in attribution['contributors']:
+        if (not isinstance(item, dict) or set(item) != {'role', 'session', 'activity', 'at', 'receipt_sha256'} or
+                not nonempty(item['role']) or not isinstance(item['session'], str) or
+                not SESSION_HASH.fullmatch(item['session']) or
+                item['activity'] not in ('writer', 'execution', 'assessment', 'composition') or
+                not isinstance(item['receipt_sha256'], str) or not HASH.fullmatch(item['receipt_sha256']) or
+                not isinstance(item['at'], str) or not re.fullmatch(
+                    r'\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?(?:Z|[+-]\d\d:[0-5]\d)', item['at'])):
+            raise ValueError('Malformed repair contributor identity, activity, time or sealed receipt')
+        when = datetime.fromisoformat(item['at'].replace('Z', '+00:00'))
+        entry = (item['session'], item['activity'], when, item['receipt_sha256'])
+        if entry in entries or when > observed_at or (item['activity'] != 'writer' and when < earliest):
+            raise ValueError('Duplicate or out-of-order repair contributor observation')
+        entries.add(entry)
+        identities.add(item['session'])
+        activities.add(item['activity'])
+        writer_found |= (item['session'] == attribution['writer'] and item['activity'] in ('writer', 'composition'))
+        observer_found |= (item['session'] == attribution['observer'] and when == observed_at and
+                           item['activity'] in ('execution', 'assessment', 'composition'))
+    if (not writer_found or not observer_found or
+            not {'writer', 'execution'} <= activities):
+        raise ValueError('Repair attribution omits its writer, actual observation or execution')
+    return identities
+
+
 def verify_repair(pr, issue, data, path, api, git):
     """Structure/provenance only. An independent reviewer must assess the actual evidence."""
     record = repair_record(issue, api)
@@ -978,7 +1020,7 @@ def verify_repair(pr, issue, data, path, api, git):
     git('fetch', '--no-tags', 'origin', trusted)
     policy = initial_stage_plan(trusted, candidate, git) if git('ls-tree', trusted, '--', INITIAL_PLAN) else None
     contract = canonical_hash(policy['responsibility_revision']) if policy else canonical_hash(None)
-    cases, observers = set(), {repair['writer_session']}
+    cases, observers = set(), set()
     for identifier, failure in record['failures'].items():
         if (not re.fullmatch(r'[A-Z][A-Z0-9-]+', identifier) or not isinstance(failure, dict) or
                 set(failure) != {'case', 'source_candidate', 'source_case_sha256', 'original_result', 'guarantees'} or
@@ -1012,10 +1054,11 @@ def verify_repair(pr, issue, data, path, api, git):
         observed = result['observation']
         validate_observation(observed, candidate, artifact)
         when = datetime.fromisoformat(observed['at'].replace('Z', '+00:00'))
-        if any(when < datetime.fromisoformat(t.replace('Z', '+00:00')) for t in
-               (old['at'], git('show', '-s', '--format=%cI', candidate))):
+        earliest = max(datetime.fromisoformat(t.replace('Z', '+00:00')) for t in
+                       (old['at'], git('show', '-s', '--format=%cI', candidate)))
+        if when < earliest:
             raise ValueError('Repair observation predates the failure or fixed candidate')
-        observers.add(observed['observer'])
+        observers.update(repair_contributors(observed, repair['writer_session'], earliest))
     if not tracked <= cases:
         raise ValueError('Repair omits a trusted tracked original failure Case')
     if api('git/ref/heads/main').get('object', {}).get('sha') != trusted:

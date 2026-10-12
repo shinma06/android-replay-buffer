@@ -38,7 +38,7 @@ queued → reviewing → reviewed
                      └ approved → merging → cleanup → done
 ```
 
-reviewer は read-only、fixer は指定 scope の workspace-write。GitHub token を環境から除き、個人 config の MCP/plugin 設定を読み込ませません。モデルは利用者の選択を維持します。worker は 10 分、fix は 3 回、review は 8 回、通信等の失敗は 3 回で停止します。終了時に worker の子プロセスも停止します。[Codex 非対話実行](https://learn.chatgpt.com/docs/non-interactive-mode)・[CLI 引数](https://learn.chatgpt.com/docs/developer-commands?surface=cli)に基づく起動です。
+reviewer は read-only、fixer は指定 scope の workspace-write。生成した出力名はsession identityではなく、CLI JSONLの実 `thread.started.thread_id` をprivate報告へ結びます。手動報告も[同じ実origin入口](../verification/README.md#受入ng修正のdevelop統合226)でbindし、全修復contributorsを共通validatorから除外します。GitHub token を環境から除き、個人 config の MCP/plugin 設定を読み込ませません。モデルは利用者の選択を維持します。worker は 10 分、fix は 3 回、review は 8 回、通信等の失敗は 3 回で停止します。終了時に worker の子プロセスも停止します。[Codex 非対話実行](https://learn.chatgpt.com/docs/non-interactive-mode)・[CLI 引数](https://learn.chatgpt.com/docs/developer-commands?surface=cli)に基づく起動です。
 
 base 更新は通常 merge → 必要テスト → 非 force push → 独立再レビュー。HEAD/base/target/Issue/本文/feedback が変わると旧承認を失効させます。5 checks、会話解決、strict base、force/削除禁止、bypass なしの実サーバー設定を確認できなければ merge しません。CI を待つ間の Agent review は独立レビューの記録であり、GUI 受入を作り出しません。受入NG修正では共通validatorの`repair_revision`と独立報告の`repair_assessment`を照合し、全元失敗保証の再試験と実質評価が揃うまで成功status/mergeへ進みません。[修正gate](../verification/README.md#受入ng修正のdevelop統合226)を手動統合にも適用します。
 
