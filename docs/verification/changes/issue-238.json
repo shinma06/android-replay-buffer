@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "issue": 238,
+  "gui_required": false,
+  "reason": "既存の検証割当とreview入口を保証・適格な既存証拠・具体的な不足事実・必要な層の順へ置換するtooling変更。製品code/build/Case、正式plan/resolver/gate、原観察・失敗・artifact bindingは変更しない。製品GUI・録画・端末操作は対象外。静的反例と通常検査を実務効果へ読み替えず、#227の次の自然な割当試行・独立評価・QA27/release10受領はPMの未完条件として引き継ぐ。新Caseなし、新QAなし。",
+  "cli_checks": [
+    "python3 scripts/check.py",
+    "python3 scripts/workflow/product_check.py",
+    "python3 scripts/workflow/change_impact.py --base origin/main --run-tests"
+  ],
+  "cases": []
+}
