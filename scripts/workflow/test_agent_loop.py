@@ -246,6 +246,23 @@ class DevelopmentMergeTests(unittest.TestCase):
         gh = self.adapter(development_snapshot(), keyword_state='unknown')
         with self.assertRaises(ValueError): gh.merge(pr)
 
+    def test_full_url_keywords_share_target_state_guard_for_squash_and_promotion(self):
+        for integration in ('tooling', 'promotion'):
+            for reference in ('https://github.com/other/repo/issues/35',
+                              'https://github.com/other/repo/pull/36'):
+                with self.subTest(integration=integration, reference=reference):
+                    pr = pr_data(); pr['body'] = pr['body'].replace('Integration: tooling', 'Integration: ' + integration)
+                    text = 'RESOLVES: ' + reference
+                    commits = [{'commit': {'message': text}}]
+                    if integration == 'tooling': pr['body'] += '\n' + text
+                    gh = self.adapter(development_snapshot(), commits)
+                    with self.assertRaisesRegex(ValueError, 'commit'): gh.merge(pr)
+                    self.assertFalse(any(c.args[1:2] == ('PUT',) for c in gh.api.call_args_list))
+                    self.assertIn(call(f'repos/other/repo/issues/{35 if "/issues/" in reference else 36}'),
+                                  gh.api.call_args_list)
+                    gh = self.adapter(development_snapshot(), commits, keyword_state='closed')
+                    self.assertTrue(gh.merge(pr)['merged'])
+
 
 class DevelopmentLinkTests(unittest.TestCase):
     def adapter(self):

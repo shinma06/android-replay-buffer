@@ -206,8 +206,12 @@ class GitHub:
                     if not isinstance(message, str):
                         raise ValueError('Integrated commit message unavailable; owner must reconcile before merge')
                     messages.append(message)
-            keywords = r'\b(?:close[sd]?|fix(?:es|ed)?|resolve[sd]?):?\s+(?:([\w.-]+/[\w.-]+))?#([0-9]+)\b'
-            for repository, number in set(re.findall(keywords, '\n'.join(messages), re.IGNORECASE)):
+            keywords = r'\b(?:close[sd]?|fix(?:es|ed)?|resolve[sd]?):?\s+'
+            text = '\n'.join(messages)
+            references = re.findall(keywords + r'(?:([\w.-]+/[\w.-]+))?#([0-9]+)\b', text, re.IGNORECASE)
+            references += re.findall(keywords + r'<?https?://github\.com/([\w.-]+/[\w.-]+)/(?:issues|pull)/([0-9]+)\b',
+                                     text, re.IGNORECASE)
+            for repository, number in set(references):
                 issue = self.api(f'repos/{repository or REPO}/issues/{number}')
                 if issue.get('state') != 'closed':
                     raise ValueError('Integrated commit closing keyword could close unfinished scope; '
