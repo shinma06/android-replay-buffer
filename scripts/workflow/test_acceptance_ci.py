@@ -3,7 +3,7 @@ import copy
 from http.client import IncompleteRead
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.error import HTTPError, URLError
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 import json
 import os
 import subprocess
@@ -437,6 +437,114 @@ class MainContractEventTests(unittest.TestCase):
                 self.assertIs(caught.exception, failure)
                 self.assertEqual(api.call_count, 1)
                 self.assertFalse(hasattr(failure, '__notes__'))
+
+    def test_per_pr_response_failures_preserve_errors_and_continue_known_targets(self):
+        second = copy.deepcopy(self.pr)
+        second['number'] = 91
+        second['head'].update(sha=MOVED, ref='codex/91-repair')
+        second['body'] = second['body'].replace('#90', '#91').replace('issue-90', 'issue-91')
+        filler = dict(self.pr, head=dict(self.pr['head'], ref='unscoped'))
+        phases = {'issue': 'issues/90', 'status': 'statuses/' + HEAD,
+                  'run': 'actions/workflows/acceptance.yml/runs?event=pull_request&head_sha=' + HEAD + '&per_page=1',
+                  'rerun': 'actions/runs/42/rerun'}
+        cases = [(phase, failure, False) for phase in phases
+                 for failure in ('truncated', 'json', 'encoding', 'denied')]
+        cases += [('run', failure, True) for failure in ('truncated', 'json', 'encoding')]
+        for phase, failure, incomplete in cases:
+            with self.subTest(phase=phase, failure=failure, incomplete=incomplete):
+                requests, failures = [], []
+                target = phases[phase]
+                class Handler(BaseHTTPRequestHandler):
+                    def do_GET(handler): handler.respond()
+                    def do_POST(handler):
+                        handler.rfile.read(int(handler.headers.get('Content-Length', 0)))
+                        handler.respond()
+                    def respond(handler):
+                        path = handler.path[1:]
+                        requests.append((handler.command, path))
+                        page_failure = incomplete and path.endswith('page=2')
+                        if path.startswith('pulls?'):
+                            value = [self.pr, second, *[filler] * 98] if incomplete else [self.pr, second]
+                        elif path.startswith('issues/'): value = self.issue
+                        elif path.startswith('actions/workflows/'):
+                            value = {'workflow_runs': [self.run if HEAD in path else dict(
+                                self.run, id=43, head_sha=MOVED, pull_requests=[{'number': 91}])]}
+                        else: value = {}
+                        body = json.dumps(value).encode()
+                        status, cut = 200, page_failure
+                        if path == target:
+                            if failure == 'denied': status, body = 403, b'{"message":"Denied"}'
+                            elif failure == 'json': body = b'{'
+                            elif failure == 'encoding': body = b'\xff'
+                            else: cut = True
+                        handler.send_response(status)
+                        handler.send_header('Content-Length', str(len(body)))
+                        handler.end_headers()
+                        handler.wfile.write(body[:len(body) // 2] if cut else body)
+                        handler.close_connection = True
+                    def log_message(handler, *args): pass
+
+                server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+                thread = threading.Thread(target=server.serve_forever)
+                thread.start()
+                def local_urlopen(request, timeout):
+                    local = Request(f'http://127.0.0.1:{server.server_port}/' + request.full_url.split('/repos/shinma06/android-replay-buffer/', 1)[1],
+                                    method=request.get_method(), data=request.data)
+                    return urlopen(local, timeout=2)
+                original = ci.recheck_main_repairs
+                def recheck(api, repo):
+                    def observed_api(*args):
+                        try: return api(*args)
+                        except (OSError, IncompleteRead, json.JSONDecodeError, UnicodeDecodeError) as error:
+                            failures.append(error)
+                            raise
+                    return original(observed_api, repo)
+                expected = IncompleteRead if incomplete or failure == 'truncated' else {
+                    'json': json.JSONDecodeError, 'encoding': UnicodeDecodeError, 'denied': HTTPError}[failure]
+                try:
+                    with tempfile.NamedTemporaryFile(mode='w+') as event:
+                        json.dump({'ref': 'refs/heads/main'}, event); event.flush()
+                        with patch.dict(os.environ, {'GITHUB_EVENT_PATH': event.name, 'GITHUB_EVENT_NAME': 'push',
+                                'GITHUB_REPOSITORY': 'shinma06/android-replay-buffer', 'GITHUB_TOKEN': 'disposable'}), \
+                                patch.object(ci, 'urlopen', side_effect=local_urlopen), \
+                                patch.object(ci, 'recheck_main_repairs', side_effect=recheck), \
+                                self.assertRaises(expected) as caught:
+                            ci.main()
+                    self.assertIs(caught.exception, failures[2] if incomplete else failures[0])
+                    notes = '; '.join(caught.exception.__notes__)
+                    self.assertIn('PR 90', notes)
+                    self.assertIn('source lookup or review invalidation' if phase in ('issue', 'status') else
+                                  'Acceptance lookup or rerun', notes)
+                    self.assertEqual(requests.count(('POST' if phase in ('status', 'rerun') else 'GET', target)), 1)
+                    self.assertIn(('POST', 'statuses/' + MOVED), requests)
+                    self.assertIn(('POST', 'actions/runs/43/rerun'), requests)
+                    self.assertEqual(('POST', 'actions/runs/42/rerun') in requests, phase == 'rerun')
+                    writes = [path for method, path in requests if method == 'POST']
+                    self.assertEqual(writes[:1 if phase == 'issue' else 2],
+                                     ['statuses/' + MOVED] if phase == 'issue' else ['statuses/' + HEAD, 'statuses/' + MOVED])
+                    if incomplete:
+                        self.assertIn('page 2 after 3 attempts', notes)
+                        self.assertEqual(sum(path.endswith('page=2') for _, path in requests), 3)
+                finally:
+                    for error in failures:
+                        if isinstance(error, HTTPError): error.close()
+                    server.shutdown()
+                    server.server_close()
+                    thread.join(timeout=2)
+                self.assertFalse(thread.is_alive())
+
+    def test_per_pr_boundary_does_not_catch_programming_errors(self):
+        original = self.api
+        for phase in ('issues/90', 'statuses/' + HEAD, 'actions/workflows/', 'actions/runs/42/rerun'):
+            for failure in (TypeError('programming error'), ValueError('programming error')):
+                with self.subTest(phase=phase, failure=type(failure).__name__):
+                    def api(path, method='GET', data=None):
+                        if path.startswith(phase): raise failure
+                        return original(path, method, data)
+                    with self.assertRaises(type(failure)) as caught:
+                        ci.recheck_main_repairs(api, 'shinma06/android-replay-buffer')
+                    self.assertIs(caught.exception, failure)
+                    self.assertFalse(hasattr(failure, '__notes__'))
 
     def test_missing_stale_or_running_acceptance_never_restores_success(self):
         for run in (None, dict(self.run, head_sha=MOVED), dict(self.run, status='in_progress'),

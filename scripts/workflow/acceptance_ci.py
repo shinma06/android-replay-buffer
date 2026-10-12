@@ -105,7 +105,7 @@ def recheck_main_repairs(api, repo, source_issue=None):
                 api('statuses/' + pr['head']['sha'], 'POST', {'context': CONTEXT, 'state': 'pending',
                     'description': 'Repair source or trusted main changed; recheck acceptance and independent assessment'})
                 pending.append(pr)
-            except OSError as error:
+            except (OSError, IncompleteRead, json.JSONDecodeError, UnicodeDecodeError) as error:
                 error.add_note(f'PR {pr["number"]}: source lookup or review invalidation failed')
                 errors.append(error)
         if len(prs) < 100:
@@ -122,7 +122,7 @@ def recheck_main_repairs(api, repo, source_issue=None):
                 continue
             api(f'actions/runs/{runs[0]["id"]}/rerun', 'POST')
             requested.append(pr['number'])
-        except OSError as error:
+        except (OSError, IncompleteRead, json.JSONDecodeError, UnicodeDecodeError) as error:
             error.add_note(f'PR {pr["number"]}: Acceptance lookup or rerun failed; review remains pending')
             errors.append(error)
     if errors:
