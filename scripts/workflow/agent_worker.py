@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import stat
 import subprocess
 import tomllib
 import uuid
@@ -71,18 +72,21 @@ def private_original(path):
     source = Path(path)
     if not source.is_absolute() or source.is_symlink() or not source.is_file():
         raise ValueError('Sealed receipt must be a locally owned regular file')
-    info = source.stat()
-    if info.st_uid != os.getuid():
-        raise ValueError('Sealed receipt must be locally owned')
-    if info.st_mode & 0o066:
-        # Resolve ancestors: a private symlink alias cannot protect a public target.
-        for parent in source.resolve().parents:
-            info = parent.stat()
-            if info.st_uid == os.getuid() and not info.st_mode & 0o011:
-                break
-        else:
-            raise ValueError('Sealed receipt must have private file or ancestor access')
-    return source.read_bytes()
+    with os.fdopen(os.open(source, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), 'rb') as stream:
+        info = os.fstat(stream.fileno())
+        if not stat.S_ISREG(info.st_mode):
+            raise ValueError('Sealed receipt must be a locally owned regular file')
+        if info.st_uid != os.getuid():
+            raise ValueError('Sealed receipt must be locally owned')
+        if info.st_mode & 0o066:
+            # Resolve ancestors: a private symlink alias cannot protect a public target.
+            for parent in source.resolve().parents:
+                info = parent.stat()
+                if info.st_uid == os.getuid() and not info.st_mode & 0o011:
+                    break
+            else:
+                raise ValueError('Sealed receipt must have private file or ancestor access')
+        return stream.read()
 
 
 def evidence_records(path, body, bundle):

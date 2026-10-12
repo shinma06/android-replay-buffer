@@ -364,7 +364,7 @@ class Loop:
                 value = value.replace(private, '[local]')
             markdown_atom = re.compile(r'\\([' + re.escape(string.punctuation) +
                                        r'])|(&(?:#[0-9]{1,7}|#[xX][0-9a-fA-F]{1,6}|[A-Za-z][A-Za-z0-9]*);)')
-            def private_uri(token, with_enclosure=True):
+            def private_uri(token, bounded=False):
                 positions, offset = [], 0
                 def markdown_char(escape):
                     nonlocal offset
@@ -383,9 +383,13 @@ class Loop:
                 positions.extend((i, i + 1) for i in range(offset, len(token)))
                 if not re.match(r'(?i)(?:https?://|file://|/)', destination):
                     redacted, cursor = [], 0
-                    for match in re.finditer(r'(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}', destination):
+                    patterns = [] if bounded else [re.escape(path) for path in sorted(private_paths, key=len, reverse=True) if path]
+                    patterns.append(r'(?i:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12})')
+                    for match in re.finditer('|'.join(patterns), destination):
                         identity = match[0].lower()
-                        if identity in private_sessions or session_fingerprint(identity) in private_sessions:
+                        if not bounded and match[0] in private_paths:
+                            replacement = '[private URI]'
+                        elif identity in private_sessions or session_fingerprint(identity) in private_sessions:
                             replacement = session_fingerprint(identity)
                         else:
                             continue
@@ -399,7 +403,7 @@ class Loop:
                 except ValueError:
                     path = ''
                 # Keep enclosing Markdown punctuation beyond the complete known filename.
-                closing = len(token) - len(token.rstrip(')')) if with_enclosure else 0
+                closing = 0 if bounded else len(token) - len(token.rstrip(')'))
                 matched = []
                 for known in private_paths:
                     own_closing = known.count(')') - known.count('(')
@@ -427,6 +431,9 @@ class Loop:
             # Raw syntax bounds the destination; interpreted references cannot add delimiters.
             pieces, cursor = [], 0
             for opening in re.finditer(r'\](?:\(|:)\s*', value):
+                prefix = value[:opening.start()]
+                if (len(prefix) - len(prefix.rstrip('\\'))) % 2:
+                    continue
                 start = opening.end()
                 if start < cursor or start >= len(value):
                     continue
@@ -457,7 +464,7 @@ class Loop:
                         (angle and (end == len(value) or value[end] != '>'))):
                     continue
                 pieces.extend(private_text(value[cursor:start]))
-                pieces.append(private_uri(value[start:end], False))
+                pieces.append(private_uri(value[start:end], True))
                 cursor = end
             pieces.extend(private_text(value[cursor:]))
             # Preserve bare URIs embedded in surrounding prose or punctuation.
