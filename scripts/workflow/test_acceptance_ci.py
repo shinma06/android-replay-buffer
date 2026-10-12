@@ -1,5 +1,6 @@
 """Delayed events must not turn live closed PRs into fresh acceptance decisions."""
 import copy
+from urllib.error import HTTPError, URLError
 import json
 import os
 import subprocess
@@ -270,6 +271,78 @@ class MainContractEventTests(unittest.TestCase):
             return original(path, method, data)
         self.assertEqual(ci.recheck_main_repairs(api, 'shinma06/android-replay-buffer'), [90])
         self.assertTrue(any(c[0].endswith('page=2') for c in self.calls))
+
+    def test_transient_page_failure_retries_same_page_before_all_reruns(self):
+        second = copy.deepcopy(self.pr)
+        second['number'] = 91
+        second['head'].update(sha=MOVED, ref='codex/91-repair')
+        second['body'] = second['body'].replace('#90', '#91').replace('issue-90', 'issue-91')
+        filler = dict(self.pr, head=dict(self.pr['head'], ref='unscoped'))
+        original = self.api
+        for page in (1, 2):
+            for failure in (HTTPError('fixture', 502, 'Bad Gateway', {}, None),
+                            URLError('connection reset'), TimeoutError('timed out')):
+                with self.subTest(page=page, failure=type(failure).__name__):
+                    self.calls.clear()
+                    attempts = []
+                    def api(path, method='GET', data=None):
+                        if path.startswith('pulls?'):
+                            attempts.append(path)
+                            if path.endswith(f'page={page}') and attempts.count(path) == 1:
+                                raise failure
+                            return [self.pr, *[filler] * 99] if path.endswith('page=1') else [second]
+                        if path == 'issues/91': return self.issue
+                        if path.startswith('actions/workflows/') and MOVED in path:
+                            return {'workflow_runs': [dict(self.run, id=43, head_sha=MOVED,
+                                                          pull_requests=[{'number': 91}])]}
+                        return original(path, method, data)
+                    self.assertEqual(ci.recheck_main_repairs(api, 'shinma06/android-replay-buffer'), [90, 91])
+                    self.assertEqual(sum(p.endswith(f'page={page}') for p in attempts), 2)
+                    writes = [c for c in self.calls if c[1] == 'POST']
+                    self.assertEqual([c[0] for c in writes], ['statuses/' + HEAD, 'statuses/' + MOVED,
+                                                           'actions/runs/42/rerun', 'actions/runs/43/rerun'])
+                    self.assertEqual([c[2]['state'] for c in writes[:2]], ['pending', 'pending'])
+
+    def test_incomplete_enumeration_recovers_known_targets_and_preserves_errors(self):
+        original = self.api
+        filler = dict(self.pr, head=dict(self.pr['head'], ref='unscoped'))
+        for rerun_denied in (False, True):
+            with self.subTest(rerun_denied=rerun_denied):
+                self.calls.clear()
+                attempts = []
+                def api(path, method='GET', data=None):
+                    if path.startswith('pulls?'):
+                        attempts.append(path)
+                        if path.endswith('page=2'):
+                            raise HTTPError('fixture', 502, 'Bad Gateway', {}, None)
+                        return [self.pr, *[filler] * 99]
+                    if path.endswith('/rerun') and rerun_denied:
+                        self.calls.append((path, method, data))
+                        raise HTTPError('fixture', 403, 'Forbidden', {}, None)
+                    return original(path, method, data)
+                with self.assertRaises(HTTPError) as caught:
+                    ci.recheck_main_repairs(api, 'shinma06/android-replay-buffer')
+                self.assertEqual(caught.exception.code, 502)
+                self.assertEqual(sum(p.endswith('page=2') for p in attempts), 3)
+                notes = '; '.join(caught.exception.__notes__)
+                self.assertIn('page 2', notes)
+                self.assertIn('incomplete', notes)
+                if rerun_denied: self.assertIn('rerun failed', notes)
+                self.assertEqual([c[0] for c in self.calls if c[1] == 'POST'],
+                                 ['statuses/' + HEAD, 'actions/runs/42/rerun'])
+
+    def test_page_permission_denial_is_not_retried_or_reported_successful(self):
+        for code in (401, 403, 422):
+            with self.subTest(code=code):
+                attempts = []
+                def api(path, method='GET', data=None):
+                    attempts.append(path)
+                    raise HTTPError('fixture', code, 'Denied', {}, None)
+                with self.assertRaises(HTTPError) as caught:
+                    ci.recheck_main_repairs(api, 'shinma06/android-replay-buffer')
+                self.assertEqual(caught.exception.code, code)
+                self.assertEqual(len(attempts), 1)
+                self.assertIn('incomplete', caught.exception.__notes__[0])
 
     def test_missing_stale_or_running_acceptance_never_restores_success(self):
         for run in (None, dict(self.run, head_sha=MOVED), dict(self.run, status='in_progress'),

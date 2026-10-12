@@ -4,6 +4,7 @@ import json
 import os
 import re
 import subprocess
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 from pr_policy import validate
 from verification import verify_pr
@@ -61,7 +62,22 @@ def recheck_main_repairs(api, repo, source_issue=None):
     """Invalidate all affected PRs before optional reruns can fail or be denied."""
     pending, requested, unavailable, errors, page = [], [], [], [], 1
     while True:
-        prs = api(f'pulls?state=open&base=develop&per_page=100&page={page}')
+        prs = None
+        for attempt in range(3):
+            try:
+                prs = api(f'pulls?state=open&base=develop&per_page=100&page={page}')
+                break
+            except OSError as error:
+                transient = (500 <= error.code < 600 if isinstance(error, HTTPError) else
+                             isinstance(error, (URLError, TimeoutError, ConnectionError)))
+                if transient and attempt < 2:
+                    continue
+                error.add_note(f'PR enumeration incomplete at page {page} after {attempt + 1} attempts; '
+                               'recover known pending targets, then retry enumeration and live gates before integration')
+                errors.append(error)
+                break
+        if prs is None:
+            break
         for pr in prs:
             try:
                 issue_id = validate(pr)

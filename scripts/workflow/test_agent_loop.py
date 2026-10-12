@@ -58,6 +58,22 @@ class PolicyTests(unittest.TestCase):
             else: other['body'] += '\nnew acceptance'
             self.assertEqual(next_action(state, binding(q, other), 'success', False), 'review')
 
+    def test_binding_tracks_bug_membership_without_label_noise(self):
+        pr = pr_data()
+        issue = {'body': 'Acceptance repair: none',
+                 'labels': ['type:maintenance', 'priority:P2', 'status:review']}
+        ordinary = binding(pr, issue)
+        self.assertFalse(ordinary['issue_bug'])
+        for names in (['status:ready', 'type:maintenance', 'priority:P1'],
+                      ['priority:P2', 'status:review', 'type:maintenance']):
+            self.assertEqual(binding(pr, dict(issue, labels=[{'name': n} for n in names])), ordinary)
+        bug = binding(pr, dict(issue, labels=['type:bug', 'priority:P2', 'status:review']))
+        self.assertTrue(bug['issue_bug'])
+        for old, current in ((ordinary, bug), (bug, ordinary)):
+            self.assertEqual(next_action({'binding': old, 'review': report()}, current, 'success', False), 'review')
+        legacy = dict(ordinary); legacy.pop('issue_bug')
+        self.assertEqual(next_action({'binding': legacy, 'review': report()}, ordinary, 'success', False), 'review')
+
     def test_inconsistent_approval_rejected(self):
         for change in ({'head': NEW}, {'findings': ['unfixed']}, {'scope_complete': False}, {'evidence': ''}):
             r = dict(report(), **change)

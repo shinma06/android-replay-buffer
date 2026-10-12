@@ -8,6 +8,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+import acceptance_ci as ci
 import agent_loop as al
 import test_agent_loop as tal
 from agent_policy import next_action, validate_review
@@ -516,6 +517,103 @@ class RepairTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'Freeze'):
             verify_pr(self.pr, self.api, git)
 
+
+
+class ClassificationLoopTests(unittest.TestCase):
+    setUp = tal.LoopTests.setUp
+
+    def prepare(self, bug=False):
+        root = Path(self.tmp.name) / 'ordinary-history'
+        root.mkdir()
+        def git(*args):
+            with subprocess.Popen(['git', '-c', 'core.hooksPath=/dev/null', *args],
+                                  cwd=root, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE) as process:
+                output, error = process.communicate(timeout=10)
+                self.assertEqual(process.returncode, 0, error)
+                return output.strip()
+        git('init', '-q')
+        git('config', 'user.name', 'fixture')
+        git('config', 'user.email', 'fixture@example.invalid')
+        (root / 'fixture.txt').write_text('ordinary base')
+        git('add', '.')
+        git('commit', '-qm', 'base')
+        base = git('rev-parse', 'HEAD')
+        path = root / 'docs/verification/changes/issue-35.json'
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps(change(gui=False)))
+        git('add', '.')
+        git('commit', '-qm', 'ordinary change')
+        head = git('rev-parse', 'HEAD')
+        self.local_head = self.fetched_head = head
+        self.fetched_base = base
+        self.gh.pull['head']['sha'] = head
+        self.gh.pull['base'].update(ref='develop', sha=base)
+        self.gh.pull['body'] = self.gh.pull['body'].replace('tooling', 'develop')
+        self.gh.issues[35].update(number=35, body='Acceptance repair: none')
+        self.classify(bug)
+        handoff, _, _, _ = self.loop.load(36)
+        handoff.update(target='develop', head=head, base=base, close_issue=False)
+        self.gh.messages.clear()
+        self.gh.comment(36, al.pack(al.HANDOFF, handoff))
+        self.loop.acceptance = lambda pr, _: dict(verify_pr(pr, lambda p: self.gh.issue(35), git), allowed=True)
+        self.loop.finish = lambda *args: {'pr': 36, 'phase': 'fixture-merged-stop'}
+        self.assertEqual(self.loop.acceptance(self.gh.pull, root),
+                         {'mode': 'develop', 'gui_complete': True, 'cases': 0, 'allowed': True})
+        self.assertEqual(self.loop.tick(36)['phase'], 'reviewed')
+
+    def classify(self, bug):
+        self.gh.issues[35].update(title='[修正] task' if bug else '[運用] task',
+            labels=[{'name': n} for n in ('type:bug' if bug else 'type:maintenance',
+                                         'priority:P2', 'status:review')])
+
+    def test_bug_add_remove_event_requires_fresh_classification_review(self):
+        for bug in (True, False):
+            if not bug:
+                self.doCleanups()
+                self.setUp()
+            with self.subTest(bug=bug):
+                self.prepare(not bug)
+                self.classify(bug)
+                event = {'action': 'labeled' if bug else 'unlabeled', 'label': {'name': 'type:bug'},
+                         'issue': self.gh.issue(35)}
+                def api(path, method='GET', data=None):
+                    if path.startswith('pulls?'): return [self.gh.pr(36)]
+                    if path.startswith('statuses/'):
+                        self.gh.status(path.split('/')[-1], data['state'], data['description'], '')
+                        return None
+                    if path.startswith('actions/workflows/'): return {'workflow_runs': []}
+                    raise AssertionError(path)
+                with self.assertRaisesRegex(ValueError, 'unavailable'):
+                    ci.recheck_main_repairs(api, al.REPO, source_issue=ci.repair_source_issue(event, 'issues'))
+                self.assertEqual(self.gh.statuses[-1][1], 'pending')
+                self.assertEqual(self.loop.tick(36)['phase'], 'reviewed')
+                self.assertEqual(self.worker.call_count, 2)
+                self.assertEqual(self.worker.call_args.args[2]['issue_bug'], bug)
+                self.assertEqual(self.gh.merges, 0)
+                self.assertNotIn((self.local_head, 'success'), self.gh.statuses)
+                self.assertEqual(self.loop.tick(36)['phase'], 'fixture-merged-stop')
+                self.assertEqual(self.gh.merges, 1)
+                self.assertEqual(self.worker.call_count, 2)
+
+    def test_classification_change_at_final_readback_blocks_stale_merge(self):
+        for bug in (False, True):
+            if bug:
+                self.doCleanups()
+                self.setUp()
+            with self.subTest(bug=bug):
+                self.prepare(bug)
+                original = self.gh.issue
+                reads = []
+                def issue(number):
+                    if number == 35:
+                        reads.append(number)
+                        if len(reads) == 2: self.classify(not bug)
+                    return original(number)
+                with patch.object(self.gh, 'issue', side_effect=issue):
+                    self.assertEqual(self.loop.tick(36)['phase'], 'changed-before-merge')
+                self.assertEqual(self.gh.merges, 0)
+                self.assertNotIn((self.local_head, 'success'), self.gh.statuses)
+                self.assertEqual(self.loop.tick(36)['phase'], 'reviewed')
 
 
 class RepairLoopTests(unittest.TestCase):
