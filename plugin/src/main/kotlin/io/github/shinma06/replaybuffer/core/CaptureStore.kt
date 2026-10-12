@@ -26,7 +26,7 @@ internal data class LogEntry(
 )
 internal data class AppPeriod(
     val packageName: String?, val uid: Long?, val pids: Set<Int>, val from: Long?, val to: Long?, val epoch: Int,
-    val uidExclusive: Boolean = false,
+    val uidExclusive: Boolean = false, val endUnknown: Boolean = false,
 )
 internal data class FrozenCapture(
     val id: String, val sequence: String, val generation: Long, val start: Long, val end: Long,
@@ -241,11 +241,18 @@ internal class CaptureStore(
         require(pids.size <= 1024)
         appResolved = uid != null
         val last = apps.peekLast()
-        val anchor = clock.snapshot().lastOrNull { it.valid }
+        val samples = clock.snapshot()
+        val anchor = samples.lastOrNull { it.valid }
         if (last == null || last.packageName != packageName || last.uid != uid || last.pids != pids ||
             last.uidExclusive != uidExclusive || last.from == null || last.epoch != anchor?.epoch) {
             val now = anchor?.let { it.elapsed + (System.nanoTime() - it.received).coerceAtLeast(0) }
-            if (last != null) { apps.removeLast(); apps.add(last.copy(to = if (last.epoch == anchor?.epoch) now else clock.snapshot().lastOrNull { it.epoch == last.epoch }?.elapsed)) }
+            if (last != null) {
+                val end = if (last.epoch == anchor?.epoch) now else samples.lastOrNull { it.epoch == last.epoch }?.elapsed
+                // A previous sample cannot close a period that began later by host extrapolation.
+                val knownEnd = end?.takeIf { last.from == null || it >= last.from }
+                apps.removeLast()
+                apps.add(last.copy(to = knownEnd, endUnknown = knownEnd == null))
+            }
             apps += AppPeriod(packageName, uid, java.util.Set.copyOf(pids), now, null, anchor?.epoch ?: 0, uidExclusive)
             while (apps.size > 2048) apps.removeFirst()
         }
@@ -262,7 +269,7 @@ internal class CaptureStore(
         val period = apps.lastOrNull { it.epoch == time.epoch && time.elapsed != null && it.from != null &&
             time.elapsed >= it.from && (it.to == null || time.elapsed <= it.to) }
         val app = when {
-            period?.uid == null || time.elapsed == null -> null
+            period?.uid == null || period.endUnknown || time.elapsed == null -> null
             source.uid == period.uid && period.uidExclusive -> true
             source.pid in period.pids -> source.uid == null || source.uid == period.uid
             source.uid == null || source.uid == period.uid -> null // shared/unknown UID: a new PID is not evidence of non-membership.
