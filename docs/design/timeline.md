@@ -77,6 +77,8 @@ gapはstream毎に`kind / from / to / reason / boundary_uncertainty / generation
 
 ## 切出しと保存形式
 
+対象アプリ履歴の終了sampleが外挿した開始より前にある場合、終了を確定できない。元clock sample・epoch・開始を保持し、`to_elapsed_ns: null` と `to_elapsed_unknown: true` を保存する。開いた現行履歴のnull終了は `to_elapsed_unknown: false` と区別する。終了未確定の履歴を根拠に新しいログを帰属確定せず、取得済みログの順序・既存帰属と固定保存/retryは変更しない。
+
 | 形式候補 | 判断 |
 | --- | --- |
 | **MP4＋JSONL＋session JSON** | 一般の動画プレイヤーとテキストエディタで確認可能。元時計、変換誤差、gap、両ログを保持しやすい。複数ファイルの整合をmanifest/hashで検査するため採用 |

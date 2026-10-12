@@ -592,7 +592,8 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
         "bridge_uncertainty_ns" to c.bridgeError.toString(), "valid" to c.valid)
 
     private fun appJson(a: AppPeriod): Map<String, Any?> = mapOf("package" to a.packageName, "uid" to a.uid,
-        "pids" to a.pids, "uid_exclusive" to a.uidExclusive, "from_elapsed_ns" to a.from?.toString(), "to_elapsed_ns" to a.to?.toString(), "clock_epoch" to a.epoch)
+        "pids" to a.pids, "uid_exclusive" to a.uidExclusive, "from_elapsed_ns" to a.from?.toString(), "to_elapsed_ns" to a.to?.toString(),
+        "to_elapsed_unknown" to a.endUnknown, "clock_epoch" to a.epoch)
 }
 
 /** Playback proof is captured at acquisition; clock quality never authorizes source adjacency. */
