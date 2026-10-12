@@ -26,6 +26,46 @@ GUI不要なら具体的理由と実行したCLI検証を記録します。
 
 CLIではUSB切断/再接続、直前区間の動画/logcat時刻整合、log-only保存、保存失敗、daemon停止等を変更範囲に応じて選びます。プラグインではさらにEDT/dispose/取消し/設定保存/IDE再起動を確認します。既存2 unit testsは全製品の受入を代替しません。
 
+## 受入NG修正のdevelop統合（#226）
+
+元の受入NGを直すPRは、失敗した保証を修正版固定候補で再試験して合格し、その証拠を独立評価してからdevelopへ統合します。一般の新機能・無関係なpending/blocked Caseの全受入を前倒ししません。既存の正常なmerged PRは遡ってこのgateで再判定せず、元Case/失敗記録は保持します。変更した製品のmain promotionは引き続き全候補/全Caseを別に確認します。
+
+開始時にdevelopの`type:bug` Issue本文へ `Acceptance repair: none`（受入NG修正ではない理由を併記）又は元NG記録のIssueコメント数値IDを記載します。新機能でも元NG修正を含む場合は後者が必要です。trusted baseのCaseに当該Issueへ紐づくfailがある場合は、ラベルやnone宣言で回避できません。独立レビューは分類の正しさとIssue/QAに記録された元NGの漏れを確認します。機械検査が自然言語の全不具合を自動発見するものではありません。
+
+元NGは修正Issueに一つのコメントとして保全します。本文を `<!-- acceptance-repair:v1 -->` と改行から開始し、その後へJSONオブジェクトを直接置きます（code fenceなし）。`schema: 1 / fix_issue / failures`を持ち、`failures`は `GAP-1` などの一意なIDから以下の値への対応です。記録の変更は旧記録を消さず新しいコメントへ移し、Issue宣言・修正結果hash・独立レビューを更新します。媒体・生ログ・私的pathは公開せず、固定公開要約と担当が保持する封印証拠への参照を使います。
+
+- `case`: 元の `Issue番号:Case ID`。
+- `source_candidate / source_case_sha256`: 失敗した固定40桁sourceと、その時点のCase全文のcanonical SHA-256。元sourceはdevelop baseの祖先で、そのCase JSONはregular fileでなければなりません。
+- `original_result`: 元の `status: fail / head / artifact_sha256 / actor / observer / at / evidence / loaded_identity / reason`。元source/成果物・実条件・確認者・日時・固定証拠を保持します。未実施や関連unitの結果をnative失敗記録へ換えません。
+- `guarantees`: 失敗した保証IDから目的・失敗条件への対応。複数NG・全失敗保証を列挙し、Case全体を未実施のまま再試験の合格にしません。
+
+修正PRの `changes/issue-N.json` に `repair` オブジェクトを追加します。
+
+```json
+{
+  "candidate": "<再試験する修正コードの固定40桁SHA>",
+  "artifacts": {"app": "<修正版ZIPの64桁SHA-256>"},
+  "failure_record_sha256": "<元NGコメントJSON全体のcanonical SHA-256>",
+  "writer_session": "<実装担当session>",
+  "results": {
+    "GAP-1": {
+      "observation": {"status": "pass", "head": "<candidate>", "artifact_sha256": "<修正版hash>", "actor": "gpt", "observer": "<実行担当session>", "at": "<実観察日時ISO8601>", "loaded_identity": "<実行成果物の識別>", "evidence": "<固定実行証拠>", "reason": "<元失敗保証の再現と解消>"},
+      "coverage": {"<元の保証ID>": "<その保証の実行・結果への証拠参照>"},
+      "method": "<有効目的契約に忠実な実施方法・nativeとの同等性・限界>",
+      "contract_revision": "<現在のtrusted mainのresponsibility_revision block canonical SHA-256>"
+    }
+  }
+}
+```
+
+既存のcanonical hash関数（UTF-8、sort_keys、ensure_ascii=False、区切り`,`/`:`）を共用します。gateは現在のmain refをAPIで固定し、そのcommitの正式resolverで有効方法を読みます。candidate側の独自改訂は認めず、正式resolverに登録済みの旧計画との対応を用い、方法だけの改訂で無条件の製品再build/再試験を要求しません。責任改訂のない製品では`contract_revision`はJSON `null`のcanonical hashで、独立レビューが元Case契約を直接確認します。`results`は元NGの全IDと完全一致し、`coverage`も各NGの全保証IDと一致させます。観察は修正candidate/hashと一致し、元NG・candidate commitより古い日時を拒否します。元の失敗artifactは修正版として受理しません。
+
+自己参照するtested HEADを作らないため、修正コードを先にcommitし、その固定candidateからbuild/実行してから結果metadataをcommitします。candidateは現baseとPR headの間にあり、candidate後は当該Issueの受入JSONだけを変更できます。全commit edgeを調べ、symlink/削除/別ファイル/製品変更とその後のrevert・mergeを拒否します。base/製品が動いたら候補と証拠を再固定します。方法だけの改訂による既存事実の再評価と、製品NG修正後の新しい再試験を混同しません。
+
+CIのAcceptance gateとcoordinatorは同じ`verify_pr`で上記の構造・出典・集合・候補履歴を検査します。参照文字列の存在は実行や合格内容を証明しません。独立sessionが元失敗・全保証の証拠内容、trusted有効契約、方法の忠実性と限界、実生成/ロードartifactを確認します。関連unit成功だけで元nativeNG全体を解消済みにせず、必要なnative接続/表示/保存を残します。忠実な同等production経路がその保証を十分に検出する場合は、理由と限界を記録して採用できます。
+
+独立報告は通常のfixed HEAD/base・scope_complete・verdict等に加え、`repair_revision`（`[元NGコメントJSON, repair]`のcanonical hash）と、全失敗保証の実質評価を記した`repair_assessment`を持ちます。`session`はwriter/executorと異なる実際の独立sessionです。自己申告の別名を独立性の根拠にしません。coordinatorはこの一致と実担当経路を使い、欠落/古い評価/自己評価ではAgent review成功やmergeへ進みません。手動統合も同じ報告を照合してからAgent reviewを記録します。CI構造合格だけ、remote Code ReviewのCompletedだけ、writerのPASS宣言だけでは統合できません。merge直前には現HEAD/base・Issue/コメントfeedback・受入を読み戻し、変化したら旧評価を失効させます。tool権限・REAL保留・GUI lease・branch protectionは変更しません。
+
 ## main promotion
 
 1. main先行toolingをdevelopへ専用同期PRで取り込み、候補SHAを固定する。

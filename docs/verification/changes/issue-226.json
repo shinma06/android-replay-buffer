@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "issue": 226,
+  "gui_required": false,
+  "reason": "受入NG修正のdevelop統合だけに元失敗保証の固定候補再試験/独立評価を要求する共通gate・coordinator・手順と回帰のtooling変更。製品・build・原Case/失敗観察・GUI/REAL保留を変更せず、GUI実行や製品受入を主張しない。",
+  "cli_checks": [
+    "python3 scripts/check.py",
+    "python3 scripts/workflow/product_check.py",
+    "python3 scripts/workflow/change_impact.py --base origin/main --run-tests"
+  ],
+  "cases": []
+}
