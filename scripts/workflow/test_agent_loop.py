@@ -806,7 +806,7 @@ class LoopTests(unittest.TestCase):
         self.loop.cleanup.assert_not_called()
         self.assertEqual(self.gh.development_links, [])
         self.gh.issues[35]['labels'] = ['type:maintenance', 'priority:P2', 'status:done']
-        self.assertEqual(self.loop.tick(36)['phase'], 'cleanup')
+        self.assertEqual(self.loop.tick(36)['phase'], 'blocked')
         self.loop.cleanup.assert_not_called()
         self.assertEqual(self.gh.development_links, [])
 
@@ -966,11 +966,17 @@ class LoopTests(unittest.TestCase):
         self.assertEqual(self.gh.issues[35]['state'], 'open')
         self.assertEqual(self.gh.issues[1]['body'], '- [ ] #35 task')
 
-    def test_cleanup_failure_is_retried_without_merge_or_review(self):
+    def test_cleanup_failure_requires_resume_without_second_merge_or_review(self):
         self.loop.tick(36)
         self.loop.cleanup.side_effect = [ValueError('source has new work'), None]
         self.loop.tick(36)
         self.assertEqual(self.gh.merges, 1)
+        self.assertEqual(self.loop.tick(36)['phase'], 'blocked')
+        self.assertEqual(self.loop.cleanup.call_count, 1)
+        # Simulate explicit owner resume after checking the retained source work.
+        _, state, sid, _ = self.loop.load(36)
+        state.update(paused=False, phase='cleanup')
+        self.loop.save(self.gh.pull, state, sid)
         self.assertEqual(self.loop.tick(36)['phase'], 'done')
         self.assertEqual(self.gh.merges, 1)
         self.assertEqual(self.worker.call_count, 1)
