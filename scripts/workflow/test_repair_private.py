@@ -429,7 +429,8 @@ class PrivatePathTests(unittest.TestCase):
         def read(path):
             return originals[str(path)] if str(path) in originals else original_read(path)
         urls = ('https://public.example/tmp/guide https://public.example/opt/docs '
-                'https://public.example/runs/00000000-0000-4000-8000-000000000097/result')
+                'https://public.example/runs/00000000-0000-4000-8000-000000000097/result '
+                'HTTPS://public.example/runs/00000000-0000-4000-8000-000000000097/result')
         encoded = Path(support).as_uri()
         import re
         lower = re.sub(r'%[0-9A-F]{2}', lambda m: m[0].lower(), encoded)

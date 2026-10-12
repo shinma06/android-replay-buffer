@@ -359,7 +359,7 @@ class Loop:
                 value = re.sub(encoded, '[private path]', value)
             for private in (str(self.storage), str(ROOT), str(Path.home()), HOST):
                 value = value.replace(private, '[local]')
-            parts = re.split(r'(https?://[^\s<>"`]+)', value)
+            parts = re.split(r'(?i)(https?://[^\s<>"`]+)', value)
             for i, part in enumerate(parts):
                 part = re.sub(r'(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}',
                               lambda match: session_fingerprint(match[0].lower())
