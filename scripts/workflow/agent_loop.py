@@ -357,8 +357,9 @@ class Loop:
         if isinstance(value, list):
             return [self.public_state(v, private_paths, private_sessions) for v in value]
         if isinstance(value, str):
-            def private_uri(match):
-                token = match[0]
+            markdown_atom = re.compile(r'\\([' + re.escape(string.punctuation) +
+                                       r'])|(&(?:#[0-9]{1,7}|#[xX][0-9a-fA-F]{1,6}|[A-Za-z][A-Za-z0-9]*);)')
+            def private_uri(token):
                 def markdown_char(escape):
                     if escape[1] is not None:
                         return escape[1]
@@ -367,9 +368,7 @@ class Loop:
                         return html.unescape(reference)
                     return reference
                 # One pass: escaped ampersands and decoded references are not reinterpreted.
-                destination = re.sub(r'\\([' + re.escape(string.punctuation) +
-                                     r'])|(&(?:#[0-9]{1,7}|#[xX][0-9a-fA-F]{1,6}|[A-Za-z][A-Za-z0-9]*);)',
-                                     markdown_char, token)
+                destination = markdown_atom.sub(markdown_char, token)
                 if not re.match(r'(?i)(?:https?://|file://|/)', destination):
                     return token
                 decoded = unquote(destination)
@@ -396,12 +395,43 @@ class Loop:
                                         session_fingerprint(identity.lower()) in private_sessions for identity in identities):
                     return '[private URI]' + suffix
                 return token
-            span = r'(?:\\[' + re.escape(string.punctuation) + r']|\](?=[^()\s<>"`])|[^\s<>"`\]])*'
-            # Recognize complete destinations before interpreting their URI prefix.
-            value = re.sub(r'(?:\\[' + re.escape(string.punctuation) + r']|[^\s<>"`\[\]()])' + span,
-                           private_uri, value)
+            # Raw syntax bounds the destination; interpreted references cannot add delimiters.
+            pieces, cursor = [], 0
+            for opening in re.finditer(r'\](?:\(|:)\s*', value):
+                start = opening.end()
+                if start < cursor or start >= len(value):
+                    continue
+                angle = value[start] == '<'
+                start += angle
+                end, depth = start, 0
+                while end < len(value):
+                    atom = markdown_atom.match(value, end)
+                    if atom:
+                        end = atom.end()
+                        continue
+                    char = value[end]
+                    if angle:
+                        if char in '<>\r\n':
+                            break
+                    else:
+                        if char == ' ' or ord(char) < 32 or ord(char) == 127:
+                            break
+                        if char == '(':
+                            depth += 1
+                        elif char == ')':
+                            if not depth:
+                                break
+                            depth -= 1
+                    end += 1
+                if (end == start or depth or
+                        (angle and (end == len(value) or value[end] != '>'))):
+                    continue
+                pieces.extend((value[cursor:start], private_uri(value[start:end])))
+                cursor = end
+            value = ''.join(pieces) + value[cursor:]
             # Preserve bare URIs embedded in surrounding prose or punctuation.
-            value = re.sub(r'(?i)(?:https?://|file://|/)' + span, private_uri, value)
+            value = re.sub(r'(?i)(?:https?://|file://|/)(?:\\[' + re.escape(string.punctuation) +
+                           r']|\](?=[^()\s<>"`])|[^\s<>"`\]])*', lambda match: private_uri(match[0]), value)
             for path in sorted(private_paths, key=len, reverse=True):
                 value = value.replace(path, '[private path]')
             for private in (str(self.storage), str(ROOT), str(Path.home()), HOST):

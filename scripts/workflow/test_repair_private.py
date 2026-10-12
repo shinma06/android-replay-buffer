@@ -492,6 +492,30 @@ class PrivatePathTests(unittest.TestCase):
         self.assertEqual(projected['review']['evidence'], '[origin]([private URI])')
         self.assertEqual(self.loop.public_state('prefix:file:///mnt/receipts/event.json:suffix', [known]),
                          'prefix:file://[private path]:suffix')
+        self.assertEqual(self.loop.public_state('[receipt](&sol;mnt&sol;receipts&sol;event.json)tail', [known]),
+                         '[receipt]([private URI])tail')
+        self.assertEqual(self.loop.public_state('[receipt](&sol;mnt&sol;receipts&sol;event.json "title")[public](https://public.example/next)', [known]),
+                         '[receipt]([private URI] "title")[public](https://public.example/next)')
+        self.assertEqual(self.loop.public_state('[receipt](<file:&sol;&sol;&sol;mnt&sol;private receipt&sol;event.json>)tail',
+                                               ['/mnt/private receipt/event.json']),
+                         '[receipt](<[private URI]>)tail')
+        self.assertEqual(self.loop.public_state('[receipt](&sol;mnt&sol;receipts&sol;event(1).json)tail',
+                                               ['/mnt/receipts/event(1).json']),
+                         '[receipt]([private URI])tail')
+        for target, path in (('&sol;mnt&sol;receipts&sol;event&rpar;.json', '/mnt/receipts/event).json'),
+                             (r'&sol;mnt&sol;receipts&sol;event\).json', '/mnt/receipts/event).json'),
+                             ('&sol;mnt&sol;receipts&sol;event>.json', '/mnt/receipts/event>.json'),
+                             ('&sol;mnt&sol;receipts&sol;event\u00a0name.json', '/mnt/receipts/event\u00a0name.json'),
+                             ('&sol;mnt&sol;receipts&sol;event(outer(inner)).json', '/mnt/receipts/event(outer(inner)).json')):
+            self.assertEqual(self.loop.public_state(f'[receipt]({target})tail', [path]),
+                             '[receipt]([private URI])tail')
+        self.assertEqual(self.loop.public_state('[receipt](<&sol;mnt&sol;receipts&sol;event&gt;.json>)tail',
+                                               ['/mnt/receipts/event>.json']),
+                         '[receipt](<[private URI]>)tail')
+        self.assertEqual(self.loop.public_state('[receipt]: &sol;mnt&sol;receipts&sol;event.json "title"\nnext', [known]),
+                         '[receipt]: [private URI] "title"\nnext')
+        self.assertEqual(self.loop.public_state('> [receipt]: &sol;mnt&sol;receipts&sol;event.json "title"', [known]),
+                         '> [receipt]: [private URI] "title"')
 
     def test_markdown_destination_forms_through_save_cache_and_resave(self):
         self.check_paths('/mnt/receipts/event(1).json', '/opt/receipts/mapping(1).json')
