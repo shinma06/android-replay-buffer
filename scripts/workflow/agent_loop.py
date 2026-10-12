@@ -366,12 +366,12 @@ class Loop:
                 closing = len(token) - len(token.rstrip(')'))
                 matched = []
                 for known in private_paths:
-                    own_closing = max(0, known.count(')') - known.count('('))
+                    own_closing = known.count(')') - known.count('(')
                     enclosing = min(closing, max(0, decoded.count(')') - decoded.count('(') - own_closing))
                     target = path[:-enclosing] if enclosing else path
                     if known in decoded or posixpath.normpath(known) == posixpath.normpath(target):
                         matched.append(known)
-                protected = max((max(0, known.count(')') - known.count('(')) for known in matched), default=0)
+                protected = max((known.count(')') - known.count('(') for known in matched), default=0)
                 suffix = ')' * min(closing, max(0, decoded.count(')') - decoded.count('(') - protected))
                 if (matched and
                         ('%' in token or not any(known in token for known in private_paths))):

@@ -420,14 +420,25 @@ class PrivatePathTests(unittest.TestCase):
     def test_parenthesized_known_uri_through_save_cache_and_public_control(self):
         self.check_paths('/mnt/private receipt/event(1).json', '/opt/private receipt/mapping(1).json')
 
+    def test_encoded_open_filename_normalized_markdown_through_save_and_cache(self):
+        self.check_paths('/mnt/private receipt/event(1.json', '/opt/private receipt/mapping(1.json')
+
     def test_known_uri_filename_closings_are_distinct_from_markdown_enclosure(self):
         from urllib.parse import quote
-        for known in ('/mnt/private receipt/event(1).json', '/mnt/private receipt/event)'):
-            encoded = 'file://' + quote(known, safe='/()').replace('private', '%70rivate')
-            for target in (encoded, encoded.replace('/mnt/', '/mnt/./')):
-                self.assertEqual(self.loop.public_state(f'[receipt]({target})', [known]), '[receipt]([private URI])')
-                self.assertEqual(self.loop.public_state(f'<{target}>', [known]), '<[private URI]>')
-                self.assertEqual(self.loop.public_state(f'[receipt](<{target}>)', [known]), '[receipt](<[private URI]>)')
+        known = '/mnt/private receipt/event(1.json'
+        source = '[receipt](file:///mnt/./%70rivate%20receipt/event%281.json)'
+        self.assertEqual(self.loop.public_state(source, [known]), '[receipt]([private URI])')
+        for known in ('/mnt/private receipt/event(1).json', '/mnt/private receipt/event)',
+                      '/mnt/private receipt/event(1.json'):
+            for safe in ('/()', '/'):
+                encoded = 'file://' + quote(known, safe=safe).replace('private', '%70rivate')
+                for target in (encoded, encoded.replace('/mnt/', '/mnt/./')):
+                    self.assertEqual(self.loop.public_state(target, [known]), '[private URI]')
+                    self.assertEqual(self.loop.public_state(f'[receipt]({target})', [known]), '[receipt]([private URI])')
+                    self.assertEqual(self.loop.public_state(f'<{target}>', [known]), '<[private URI]>')
+                    self.assertEqual(self.loop.public_state(f'[receipt](<{target}>)', [known]), '[receipt](<[private URI]>)')
+        public = '[public](HTTPS://public.example/event%281.json?x=%41%2f)'
+        self.assertEqual(self.loop.public_state(public, [known]), public)
 
     def check_paths(self, virtual, support):
         self.prepare()
@@ -460,7 +471,7 @@ class PrivatePathTests(unittest.TestCase):
         urls += ' ' + unrelated + ' https://public.example/event(1).json [public](https://public.example/event(1).json)'
         session = '00000000-0000-4000-8000-000000000098'
         self.worker.side_effect = lambda *args, **kw: dict(tal.report('changes_requested'),
-                evidence=f'prefix:{virtual}:suffix file://{support} {urls} standalone:{session} {encoded} {lower} {local} {private_url} {contributor_url} {alternate} {dot} {escaped_dot} [alternate]({alternate[7:]}) {encoded_identity} {encoded_contributor} <{alternate}> [angle](<{alternate}>) [normal]({alternate}) [encoded]({encoded[7:]}) [lower]({lower[7:]})',
+                evidence=f'prefix:{virtual}:suffix file://{support} {urls} standalone:{session} {encoded} {lower} {local} {private_url} {contributor_url} {alternate} {dot} {escaped_dot} [dot]({dot}) [alternate]({alternate[7:]}) {encoded_identity} {encoded_contributor} <{alternate}> [angle](<{alternate}>) [normal]({alternate}) [encoded]({encoded[7:]}) [lower]({lower[7:]})',
                 findings=[f'Check [{virtual}]({support}) [{encoded}]({local}) [target]({encoded[7:]}) [lower]({lower[7:]}) [alternate]({alternate[7:]}) {encoded_identity} {encoded_contributor}'], repair_revision='e' * 64,
                 repair_evidence_sha256=args[2]['private_repair_evidence']['bundle_sha256'])
         def is_file(path):
