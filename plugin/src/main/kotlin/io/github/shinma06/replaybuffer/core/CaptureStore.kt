@@ -122,6 +122,8 @@ internal class CaptureStore(
                 states.getValue("device_log").state != StreamState.CAPTURING ->
                     states.getValue("device_log").reason ?: "全体ログ取得の復旧を待っています"
                 clock.snapshot().lastOrNull() === generationClockSample || !clock.certain() -> "時計対応を確認できません"
+                !appResolved || apps.peekLast()?.let { it.uid != null && it.from != null && it.to == null &&
+                    it.epoch == clock.currentEpoch() } != true -> "現在の時計区間で対象アプリの確認を待っています"
                 else -> null
             } else null
             if (waiting != null) {
@@ -238,17 +240,17 @@ internal class CaptureStore(
         if (closed || owner != generation) return
         require(pids.size <= 1024)
         appResolved = uid != null
-        status("app_log", if (uid != null) StreamState.CAPTURING else StreamState.UNAVAILABLE,
-            if (uid == null) "対象アプリを解決できません" else null, owner)
         val last = apps.peekLast()
         val anchor = clock.snapshot().lastOrNull { it.valid }
-        if (last != null && last.packageName == packageName && last.uid == uid && last.pids == pids && last.uidExclusive == uidExclusive && last.from != null && last.epoch == anchor?.epoch) {
-            return
+        if (last == null || last.packageName != packageName || last.uid != uid || last.pids != pids ||
+            last.uidExclusive != uidExclusive || last.from == null || last.epoch != anchor?.epoch) {
+            val now = anchor?.let { it.elapsed + (System.nanoTime() - it.received).coerceAtLeast(0) }
+            if (last != null) { apps.removeLast(); apps.add(last.copy(to = if (last.epoch == anchor?.epoch) now else clock.snapshot().lastOrNull { it.epoch == last.epoch }?.elapsed)) }
+            apps += AppPeriod(packageName, uid, java.util.Set.copyOf(pids), now, null, anchor?.epoch ?: 0, uidExclusive)
+            while (apps.size > 2048) apps.removeFirst()
         }
-        val now = anchor?.let { it.elapsed + (System.nanoTime() - it.received).coerceAtLeast(0) }
-        if (last != null) { apps.removeLast(); apps.add(last.copy(to = if (last.epoch == anchor?.epoch) now else clock.snapshot().lastOrNull { it.epoch == last.epoch }?.elapsed)) }
-        apps += AppPeriod(packageName, uid, java.util.Set.copyOf(pids), now, null, anchor?.epoch ?: 0, uidExclusive)
-        while (apps.size > 2048) apps.removeFirst()
+        status("app_log", if (uid != null) StreamState.CAPTURING else StreamState.UNAVAILABLE,
+            if (uid == null) "対象アプリを解決できません" else null, owner)
     }
 
     @Synchronized

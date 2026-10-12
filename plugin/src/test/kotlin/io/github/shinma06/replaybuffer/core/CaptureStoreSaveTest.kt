@@ -852,6 +852,8 @@ class CaptureStoreSaveTest {
                         host + 2_000_000_000, host + 2_000_000_000, 100_000_000_000)
                 } else anchor(store.clock, 3_000_000_000, host + 2_000_000_000)
                 store.clockStatus(true, 2)
+                assertNull(gap().toNs) // The resolved target still belongs to the previous clock epoch.
+                store.app("com.example.app", 10001, setOf(12), 2, true)
                 if (unknownBoot) {
                     assertNull(gap().toNs)
                     assertEquals(Long.MAX_VALUE, store.clock.endUncertainty())

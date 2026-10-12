@@ -2,9 +2,9 @@
   "schema": 1,
   "issue": 227,
   "gui_required": false,
-  "reason": "新しいGUI Caseを追加しない既存失敗保証の修正。既存27:RECONNECT-EMU/REALTIME-GAP-EMU/SAVE-FAIL-08-EMU、13/31/41:SYNC-GAP及びstartup/log reader recoveryのgap説明の修正版同artifact native再確認と独立評価はdevelop統合前に必須。gui_required:falseは新Caseなしの宣言で、元nativeNG解消やGUI受入完了ではない。#226のrepair記録で元Case/全失敗保証へ結び付け、旧139計画と人間/REAL保留は変更しない。",
+  "reason": "既存27:RECONNECT-EMUの元nativeNG（R134-1 RECOVERY-GAP/SAVED-COVERAGE）を修正版同artifactで再確認し独立評価するrepair経路へ束縛し、新Case/139計画を複製しない。現行develop/main gateはgui_required:false/cases空から必須nativeを機械的に拘束しないため、#226/PR228の独立レビュー・main統合とPMによるdevelop/coordinator validator同期が統合前の依存条件。同期後も元記録6115963456の全失敗保証を実再確認しrepair記録・独立評価が受理されるまでHOLD。GUI不要宣言/説明文/旧gateのCI成功を元NG解消や機械的な統合許可としない。旧139計画・原失敗・人間/REAL保留を保全する。",
   "cli_checks": [
-    "CaptureStoreSaveTestの修正前NGと修正後PASS、ReplayCoreWireTestの公開再接続/保存metadata回帰。",
+    "AppRecoveryBoundaryTestのproduction clock.add→clockStatus/target/reader/resume順序と現epoch帰属・固定Saveの修正前NG/修正後PASS、CaptureStoreSaveTestとReplayCoreWireTestの既存復旧/保存metadata回帰。",
     "plugin check/buildPlugin/verifyPluginStructure、CLI保全product_check、harness check、clean committed HEAD change_impact --run-testsを実行し、実結果はIssue/PRへ記録する。"
   ],
   "cases": []
