@@ -454,6 +454,8 @@ class Loop:
             return {'pr': number, 'phase': 'unmanaged'}
         if not state.get('expected_head'):
             state['expected_head'] = h['head']
+        if state.get('paused'):
+            return {'pr': number, 'phase': state['phase']}
         if pr.get('merged'):
             if state.get('phase') == 'done':
                 return {'pr': number, 'phase': 'done'}
@@ -463,7 +465,7 @@ class Loop:
                 state.update(phase='cleanup', next=self.private_error(error))
                 self.save(pr, state, comment_id)
                 return {'pr': number, 'phase': 'cleanup', 'error': state['next']}
-        if pr['state'] != 'open' or state.get('paused'):
+        if pr['state'] != 'open':
             return {'pr': number, 'phase': state['phase']}
         if state.get('retry_at', 0) > time.time():
             return {'pr': number, 'phase': 'backoff'}

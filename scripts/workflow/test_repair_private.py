@@ -312,6 +312,18 @@ class OriginTests(unittest.TestCase):
 class LegacyRecoveryTests(unittest.TestCase):
     setUp = tal.LoopTests.setUp
 
+    def test_merged_wrapper_cache_keeps_pause_before_any_finish_transition(self):
+        self.gh.pull.update(merged=True, state='closed')
+        state = {'phase': 'blocked', 'paused': True, 'review': dict(tal.report(), session='review-' + tal.report()['session']),
+                 'binding': {}, 'acceptance': {'allowed': True}}
+        self.gh.comment(36, tal.al.pack(tal.al.STATE, state))
+        before = copy.deepcopy(self.gh.messages)
+        with patch.object(self.loop, 'finish') as finish:
+            self.assertEqual(self.loop.tick(36)['phase'], 'blocked')
+        finish.assert_not_called(); self.worker.assert_not_called(); self.loop.cleanup.assert_not_called()
+        self.assertEqual(self.gh.messages, before)
+        self.assertTrue(self.loop.load(36)[1]['paused'])
+
     def test_wrapper_invalidates_approval_then_reviews_or_preserves_pause(self):
         for paused in (False, True):
             with self.subTest(paused=paused):
