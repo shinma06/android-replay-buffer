@@ -78,6 +78,8 @@ internal class CaptureStore(
     private var fixedUncertainty: Long? = null
     private var fixedEpoch: Int? = null
     private var generation = 0L
+    private var generationClockSample: ClockSample? = null
+    private var appResolved = false
     private var closed = false
     private var pinned: FrozenCapture? = null
     private val ownedFiles = mutableSetOf<Path>()
@@ -97,6 +99,8 @@ internal class CaptureStore(
     fun generation(value: Long) {
         decodeRun = Math.incrementExact(decodeRun)
         generation = value
+        generationClockSample = clock.snapshot().lastOrNull()
+        appResolved = false
         closeCurrentFile()
         previousPts = -1
         config = byteArrayOf()
@@ -113,11 +117,22 @@ internal class CaptureStore(
             addGap(kind, clock.now(), null, reason ?: "取得が中断しました")
         }
         if (state == StreamState.CAPTURING && (old.state != state || kind == "app_log")) synchronized(clock) {
-            if (kind == "app_log" && (states.getValue("device_log").state != StreamState.CAPTURING || !clock.certain()))
-                return@synchronized
+            val waiting = if (kind == "app_log") when {
+                fixedEnd != null -> "取得窓の復旧を待っています"
+                states.getValue("device_log").state != StreamState.CAPTURING ->
+                    states.getValue("device_log").reason ?: "全体ログ取得の復旧を待っています"
+                clock.snapshot().lastOrNull() === generationClockSample || !clock.certain() -> "時計対応を確認できません"
+                else -> null
+            } else null
+            if (waiting != null) {
+                states[kind] = old.copy(state = if (old.state == StreamState.CAPTURING) old.state else StreamState.RECOVERING,
+                    reason = waiting)
+                return
+            }
             val index = gaps.lastOrNull { it.stream == kind && it.toNs == null }
             if (index != null) {
-                val closedGap = index.copy(toNs = clock.now())
+                val closedGap = index.copy(toNs = clock.now(), boundaryUncertaintyNs = if (kind == "app_log")
+                    maxOf(index.boundaryUncertaintyNs ?: Long.MAX_VALUE, clock.endUncertainty()) else index.boundaryUncertaintyNs)
                 gaps.remove(index); gaps.add(closedGap)
                 val cut = videoCuts.remove(index)
                 if (kind == "video" && cut != null && received != null)
@@ -126,8 +141,8 @@ internal class CaptureStore(
         }
         states[kind] = old.copy(state = state, reason = reason)
         // Target resolution and aggregate reader readiness may arrive in either order.
-        if (kind == "device_log" && state == StreamState.CAPTURING && states.getValue("app_log").state == StreamState.CAPTURING)
-            status("app_log", StreamState.CAPTURING, states.getValue("app_log").reason, owner)
+        if (kind == "device_log" && state == StreamState.CAPTURING && appResolved)
+            status("app_log", StreamState.CAPTURING, null, owner)
     }
 
     @Synchronized
@@ -144,9 +159,8 @@ internal class CaptureStore(
                 gaps.remove(gap); gaps.add(closedGap)
                 if (recovery != null) clockRecoveries[closedGap] = recovery
             }
-            if (states.getValue("app_log").state == StreamState.CAPTURING)
-                status("app_log", StreamState.CAPTURING, states.getValue("app_log").reason, owner)
         }
+        if (healthy && appResolved) status("app_log", StreamState.CAPTURING, null, owner)
     }
 
     @Synchronized
@@ -223,6 +237,7 @@ internal class CaptureStore(
     fun app(packageName: String?, uid: Long?, pids: Set<Int>, owner: Long, uidExclusive: Boolean = false) {
         if (closed || owner != generation) return
         require(pids.size <= 1024)
+        appResolved = uid != null
         status("app_log", if (uid != null) StreamState.CAPTURING else StreamState.UNAVAILABLE,
             if (uid == null) "対象アプリを解決できません" else null, owner)
         val last = apps.peekLast()
@@ -285,7 +300,11 @@ internal class CaptureStore(
         }
     }
     @Synchronized
-    fun resume() { fixedEnd = null; fixedUncertainty = null; fixedEpoch = null }
+    fun resume() {
+        fixedEnd = null; fixedUncertainty = null; fixedEpoch = null
+        if (appResolved && states.getValue("app_log").state != StreamState.CAPTURING)
+            status("app_log", StreamState.CAPTURING, null, generation)
+    }
     @Synchronized
     fun end(): Long? = fixedEnd ?: clock.now() ?: latest()
     @Synchronized
