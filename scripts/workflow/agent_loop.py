@@ -357,6 +357,7 @@ class Loop:
         if isinstance(value, list):
             return [self.public_state(v, private_paths, private_sessions) for v in value]
         if isinstance(value, str):
+            public_destinations = set()
             markdown_atom = re.compile(r'\\([' + re.escape(string.punctuation) +
                                        r'])|(&(?:#[0-9]{1,7}|#[xX][0-9a-fA-F]{1,6}|[A-Za-z][A-Za-z0-9]*);)')
             def private_uri(token):
@@ -394,6 +395,8 @@ class Loop:
                 if (destination != token or '%' in token) and any(identity.lower() in private_sessions or
                                         session_fingerprint(identity.lower()) in private_sessions for identity in identities):
                     return '[private URI]' + suffix
+                if re.match(r'(?i)https?://', destination):
+                    public_destinations.add(token)
                 return token
             # Raw syntax bounds the destination; interpreted references cannot add delimiters.
             pieces, cursor = [], 0
@@ -434,9 +437,14 @@ class Loop:
                            r']|\](?=[^()\s<>"`])|[^\s<>"`\]])*', lambda match: private_uri(match[0]), value)
             for path in sorted(private_paths, key=len, reverse=True):
                 value = value.replace(path, '[private path]')
+                public_destinations = {token.replace(path, '[private path]') for token in public_destinations}
             for private in (str(self.storage), str(ROOT), str(Path.home()), HOST):
                 value = value.replace(private, '[local]')
-            parts = re.split(r'(?i)(https?://[^\s<>"`]+)', value)
+                public_destinations = {token.replace(private, '[local]') for token in public_destinations}
+            # Keep the once-interpreted HTTP classification through the final identity pass.
+            urls = [re.escape(token) for token in sorted(public_destinations, key=len, reverse=True)]
+            urls.append(r'(?i:https?://[^\s<>"`]+)')
+            parts = re.split('(' + '|'.join(urls) + ')', value)
             for i, part in enumerate(parts):
                 part = re.sub(r'(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}',
                               lambda match: session_fingerprint(match[0].lower())

@@ -522,6 +522,25 @@ class PrivatePathTests(unittest.TestCase):
         self.doCleanups(); self.setUp()
         self.check_paths('/mnt/receipts/event].json', '/opt/receipts/mapping].json')
 
+    def test_referenced_public_http_uuid_keeps_original_bytes(self):
+        session = '00000000-0000-4000-8000-000000000097'
+        targets = ('&#104;ttps&colon;&sol;&sol;public.example&sol;runs&sol;' + session,
+                   r'HTTPS\:\/\/public.example\/runs\/' + session,
+                   'https&colon;&sol;&sol;public.example/runs/' + session)
+        for target in targets:
+            for source in (f'[public]({target})', f'[public](<{target}> "title")tail',
+                           f'[public]: {target} "title"\nnext'):
+                with self.subTest(source=source):
+                    self.assertEqual(self.loop.public_state(source), source)
+            public = self.loop.public_state({'private_sessions': [session_fingerprint(session)],
+                                            'evidence': f'[private]({target})'})
+            self.assertEqual(public['evidence'], '[private]([private URI])')
+        self.assertEqual(self.loop.public_state('standalone:' + session), 'standalone:' + session_fingerprint(session))
+        literal = f'[literal](&#104;ttps&COLON;&sol;&sol;public.example&sol;runs&sol;{session})'
+        self.assertEqual(self.loop.public_state(literal), literal.replace(session, session_fingerprint(session)))
+        literal = f'[literal](&amp;#104;ttps&amp;colon;&amp;sol;&amp;sol;public.example&amp;sol;runs&amp;sol;{session})'
+        self.assertEqual(self.loop.public_state(literal), literal.replace(session, session_fingerprint(session)))
+
     def test_known_uri_filename_closings_are_distinct_from_markdown_enclosure(self):
         from urllib.parse import quote
         known = '/mnt/private receipt/event(1.json'
@@ -577,10 +596,12 @@ class PrivatePathTests(unittest.TestCase):
         markdown_forms = ' '.join(f'[form]({target})' for target in markdown_targets)
         unrelated = 'https://public.example/runs/00000000%2d0000%2D4000%2d8000%2D000000000097/result'
         urls += ' ' + unrelated + ' https://public.example/event(1).json [public](https://public.example/event(1).json)'
+        referenced_public = '[public](&#104;ttps&colon;&sol;&sol;public.example&sol;runs&sol;00000000-0000-4000-8000-000000000097)'
+        urls += ' ' + referenced_public
         session = '00000000-0000-4000-8000-000000000098'
         self.worker.side_effect = lambda *args, **kw: dict(tal.report('changes_requested'),
                 evidence=f'prefix:{virtual}:suffix file://{support} {urls} standalone:{session} {encoded} {lower} {local} {private_url} {contributor_url} {alternate} {dot} {escaped_dot} [dot]({dot}) [alternate]({alternate[7:]}) {encoded_identity} {encoded_contributor} <{alternate}> [angle](<{alternate}>) [normal]({alternate}) [encoded]({encoded[7:]}) [lower]({lower[7:]}) {markdown_forms}',
-                findings=[f'Check [{virtual}]({support}) [{encoded}]({local}) [target]({encoded[7:]}) [lower]({lower[7:]}) [alternate]({alternate[7:]}) {encoded_identity} {encoded_contributor} {markdown_forms}'], repair_revision='e' * 64,
+                findings=[f'Check [{virtual}]({support}) [{encoded}]({local}) [target]({encoded[7:]}) [lower]({lower[7:]}) [alternate]({alternate[7:]}) {encoded_identity} {encoded_contributor} {markdown_forms} {referenced_public}'], repair_revision='e' * 64,
                 repair_evidence_sha256=args[2]['private_repair_evidence']['bundle_sha256'])
         def is_file(path):
             return True if str(path) in originals else original_file(path)
