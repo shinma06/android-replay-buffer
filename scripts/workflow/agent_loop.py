@@ -192,6 +192,12 @@ class GitHub:
                 and any(x['state'] == 'OPEN' for x in repo['pullRequest']['closingIssuesReferences']['nodes'])):
             raise ValueError('Default-branch closing links would close Issues before feedback readback; '
                              'owner must unlink manual/branch links or remove closing keywords, then re-read')
+        if (pr['base']['ref'] == 'develop'
+                and (not any(x['number'] == issue_number(pr) and x['repository']['nameWithOwner'] == REPO
+                             for x in repo['pullRequest']['closingIssuesReferences']['nodes'])
+                     or not any(x['number'] == pr['number'] and x['repository']['nameWithOwner'] == REPO
+                                for x in repo['issue']['closedByPullRequestsReferences']['nodes']))):
+            raise ValueError('Develop Development pair is missing; owner must link and read back before merge')
         validate_title(pr, issue_number(pr))
         payload = {'sha': pr['head']['sha'], 'merge_method': 'merge' if metadata(pr)[2] == 'promotion' else 'squash'}
         if pr['base']['ref'] == repo['defaultBranchRef']['name']:

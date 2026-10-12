@@ -178,6 +178,29 @@ class DevelopmentMergeTests(unittest.TestCase):
                     gh.merge(pr_data())
                 self.assertFalse(any(c.args[1:2] == ('PUT',) for c in gh.api.call_args_list))
 
+    def test_develop_merge_requires_owned_development_pair_in_both_directions(self):
+        pr = pr_data(); pr['base']['ref'] = 'develop'
+        pr['body'] = pr['body'].replace('Integration: tooling', 'Integration: develop')
+        linked = development_snapshot(['OPEN'])
+        missing = []
+        for direction in ('forward', 'reverse', 'both', 'foreign-forward', 'foreign-reverse'):
+            snapshot = copy.deepcopy(linked)
+            forward = snapshot['data']['repository']['pullRequest']['closingIssuesReferences']['nodes']
+            reverse = snapshot['data']['repository']['issue']['closedByPullRequestsReferences']['nodes']
+            if direction in ('forward', 'both'): forward.clear()
+            if direction in ('reverse', 'both'): reverse.clear()
+            if direction == 'foreign-forward': forward[0]['repository']['nameWithOwner'] = 'other/repo'
+            if direction == 'foreign-reverse': reverse[0]['repository']['nameWithOwner'] = 'other/repo'
+            missing.append((direction, snapshot))
+        for direction, snapshot in missing:
+            with self.subTest(direction=direction):
+                gh = self.adapter(snapshot)
+                with self.assertRaisesRegex(ValueError, 'Development pair'):
+                    gh.merge(pr)
+                self.assertFalse(any(c.args[1:2] == ('PUT',) for c in gh.api.call_args_list))
+        gh = self.adapter(linked)
+        self.assertTrue(gh.merge(pr)['merged'])
+
     def test_unknown_or_partial_links_fail_before_merge(self):
         for snapshot in ({'errors': [{'message': 'not authorized'}]}, {},
                          development_snapshot(more=True), development_snapshot(['UNKNOWN']),
