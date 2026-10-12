@@ -893,16 +893,32 @@ def repair_record(issue, api):
 def verify_repair(pr, issue, data, path, api, git):
     """Structure/provenance only. An independent reviewer must assess the actual evidence."""
     record = repair_record(issue, api)
-    tracked = set()
+    tracked, seen = set(), set()
     base, head = pr['base']['sha'], pr['head']['sha']
-    for source_path in git('ls-tree', '-r', '--name-only', base, '--', 'docs/verification/changes/').splitlines():
-        match = re.fullmatch(r'docs/verification/changes/issue-([1-9][0-9]*)\.json', source_path)
+    # Follow every parent and changed blob, including failures later deleted or reverted.
+    history = git('log', '--full-history', '-m', '--format=%H', '--name-only',
+                  '--diff-filter=AMT', '--no-renames', base, '--', 'docs/verification/changes/')
+    for line in history.splitlines():
+        if SHA.fullmatch(line):
+            source = line
+            continue
+        if not line:
+            continue
+        match = re.fullmatch(r'docs/verification/changes/issue-([1-9][0-9]*)\.json', line)
         if not match:
-            raise ValueError('Unknown acceptance source in trusted base')
-        original = regular_json(base, source_path, git)
+            raise ValueError('Unknown acceptance source in trusted history')
+        entry = git('ls-tree', source, '--', line).split()
+        if len(entry) != 4 or entry[0] != '100644' or entry[1] != 'blob' or entry[3] != line:
+            raise ValueError('Acceptance history requires regular JSON source files')
+        identity = (line, entry[2])
+        if identity in seen:
+            continue
+        seen.add(identity)
+        original = regular_json(source, line, git)
         for case in original['cases']:
-            if case.get('fix_issue') == data['issue'] and any(case[a]['status'] == 'fail' for a in ('gpt', 'human')):
-                tracked.add(f'{match[1]}:{case["id"]}')
+            if case.get('fix_issue') == data['issue']:
+                tracked.update((f'{match[1]}:{case["id"]}', actor) for actor in ('gpt', 'human')
+                               if case[actor]['status'] == 'fail')
     repair = data.get('repair')
     if record is None:
         if tracked or repair is not None:
@@ -950,7 +966,8 @@ def verify_repair(pr, issue, data, path, api, git):
         matches = [case for case in original['cases'] if case['id'] == case_id]
         if len(matches) != 1 or canonical_hash(matches[0]) != failure['source_case_sha256']:
             raise ValueError('Original repair Case hash mismatch')
-        cases.add(failure['case'])
+        if matches[0].get('fix_issue') == data['issue'] and matches[0][old['actor']]['status'] == 'fail':
+            cases.add((failure['case'], old['actor']))
         result = repair['results'][identifier]
         if (not isinstance(result, dict) or set(result) != {'observation', 'coverage', 'method', 'contract_revision'} or
                 result['contract_revision'] != contract or not nonempty(result['method']) or

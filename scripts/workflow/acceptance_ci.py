@@ -35,9 +35,13 @@ def main():
 
 
 def repair_source_issue(event, name):
-    """Ignore receipts; declaration/record edits invalidate only their correction Issue."""
+    """Only repair declaration/record or bug classification changes invalidate the Issue."""
     issue = event['issue']
-    if 'pull_request' in issue or event['action'] not in ('edited', 'deleted'):
+    if 'pull_request' in issue:
+        return None
+    if name == 'issues' and event['action'] in ('labeled', 'unlabeled'):
+        return issue['number'] if event['label']['name'] == 'type:bug' else None
+    if event['action'] not in ('edited', 'deleted'):
         return None
     body = issue.get('body') or ''
     old = event.get('changes', {}).get('body', {}).get('from') or ''

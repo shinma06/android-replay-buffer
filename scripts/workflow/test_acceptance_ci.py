@@ -331,6 +331,21 @@ class RepairSourceEventTests(unittest.TestCase):
             with self.subTest(event=event):
                 self.assertEqual(ci.repair_source_issue(event, 'issues'), 90)
 
+    def test_bug_label_addition_and_removal_invalidate_only_source_issue(self):
+        for action in ('labeled', 'unlabeled'):
+            event = self.event(body='', action=action)
+            event['label'] = {'name': 'type:bug'}
+            # Removal payload contains the new labels, which no longer include type:bug.
+            event['issue']['labels'] = [] if action == 'unlabeled' else [{'name': 'type:bug'}]
+            with self.subTest(action=action):
+                self.assertEqual(ci.repair_source_issue(event, 'issues'), 90)
+        for label in ('status:review', 'priority:P1', 'type:feature'):
+            event['label']['name'] = label
+            self.assertIsNone(ci.repair_source_issue(event, 'issues'))
+        event['label']['name'] = 'type:bug'
+        event['issue']['pull_request'] = {}
+        self.assertIsNone(ci.repair_source_issue(event, 'issues'))
+
     def test_source_comment_edit_delete_and_marker_removal(self):
         for action in ('edited', 'deleted'):
             event = self.event(action=action)
@@ -365,13 +380,17 @@ class RepairSourceEventTests(unittest.TestCase):
                          ['statuses/' + HEAD, 'actions/runs/42/rerun'])
 
     def test_source_event_main_dispatch_uses_scoped_route(self):
-        with tempfile.NamedTemporaryFile(mode='w+') as event_file, patch.dict(os.environ, {
-                'GITHUB_EVENT_PATH': event_file.name, 'GITHUB_EVENT_NAME': 'issues',
-                'GITHUB_REPOSITORY': 'shinma06/android-replay-buffer'}), patch.object(ci, 'recheck_main_repairs') as recheck:
-            json.dump(self.event(), event_file); event_file.flush()
-            recheck.return_value = [90]
-            ci.main()
-            recheck.assert_called_once_with(unittest.mock.ANY, 'shinma06/android-replay-buffer', source_issue=90)
+        for action in ('edited', 'labeled', 'unlabeled'):
+            event = self.event(action=action)
+            event['label'] = {'name': 'type:bug'}
+            if action != 'edited': event['issue']['body'] = ''
+            with self.subTest(action=action), tempfile.NamedTemporaryFile(mode='w+') as event_file, patch.dict(os.environ, {
+                    'GITHUB_EVENT_PATH': event_file.name, 'GITHUB_EVENT_NAME': 'issues',
+                    'GITHUB_REPOSITORY': 'shinma06/android-replay-buffer'}), patch.object(ci, 'recheck_main_repairs') as recheck:
+                json.dump(event, event_file); event_file.flush()
+                recheck.return_value = [90]
+                ci.main()
+                recheck.assert_called_once_with(unittest.mock.ANY, 'shinma06/android-replay-buffer', source_issue=90)
 
     def test_ignored_comment_dispatch_does_not_scan_or_write(self):
         event = self.event()
@@ -386,7 +405,7 @@ class RepairSourceEventTests(unittest.TestCase):
     def test_workflow_source_events_use_trusted_main_and_do_not_cancel_invalidation(self):
         from pathlib import Path
         workflow = (Path(__file__).resolve().parents[2] / '.github/workflows/acceptance.yml').read_text()
-        self.assertIn('  issues:\n    types: [edited, deleted]', workflow)
+        self.assertIn('  issues:\n    types: [edited, deleted, labeled, unlabeled]', workflow)
         self.assertIn('  issue_comment:\n    types: [edited, deleted]', workflow)
         self.assertIn("ref: refs/heads/${{ github.event.pull_request.base.ref || 'main' }}", workflow)
         self.assertIn("cancel-in-progress: ${{ github.event_name == 'pull_request' }}", workflow)

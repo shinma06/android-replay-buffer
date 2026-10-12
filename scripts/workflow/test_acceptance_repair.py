@@ -224,17 +224,125 @@ class RepairTests(unittest.TestCase):
         self.freeze()
         with self.assertRaisesRegex(ValueError, 'preserved failure record'):
             self.verify()
-        # An ordinary new feature with no linked original failure retains pending/blocked handling.
-        self.case['gpt']['status'] = 'pending'
-        self.case['fix_issue'] = None
-        old = change(36); old['cases'] = [self.case]
-        self.write('docs/verification/changes/issue-36.json', old)
-        self.pr['base']['sha'] = self.commit('ordinary feature baseline')
+        # An unrelated Issue with no linked historical failure remains an ordinary change.
+        self.issue.update(number=100, body='')
+        self.path = 'docs/verification/changes/issue-100.json'
+        self.pr['head']['ref'] = 'codex/100-ordinary-feature'
+        self.pr['body'] = self.pr['body'].replace('#35', '#100').replace('issue-35', 'issue-100')
+        self.data = change(100, gui=False)
         self.freeze()
-        self.assertNotIn('repair_revision', self.verify())
+        original_api = self.api
+        api = lambda path: self.issue if path == 'issues/100' else original_api(path)
+        self.assertNotIn('repair_revision', verify_pr(self.pr, api, self.git))
         self.issue['labels'] = [{'name': 'type:bug'}]
         self.issue['body'] = 'Acceptance repair: none'
-        self.assertEqual(self.verify()['mode'], 'develop')
+        self.assertEqual(verify_pr(self.pr, api, self.git)['mode'], 'develop')
+
+    def test_historical_failure_cannot_disappear_at_base_tip(self):
+        for mutation in ('pending', 'pass', 'delete', 'unlink'):
+            with self.subTest(mutation=mutation):
+                self.git('checkout', '-q', self.source)
+                source = change(36)
+                source['cases'] = [copy.deepcopy(self.case)]
+                if mutation == 'delete':
+                    (self.root / 'docs/verification/changes/issue-36.json').unlink()
+                else:
+                    if mutation == 'unlink': source['cases'][0]['fix_issue'] = 100
+                    else: source['cases'][0]['gpt']['status'] = mutation
+                    self.write('docs/verification/changes/issue-36.json', source)
+                self.pr['base']['sha'] = self.commit('later develop Case edit')
+                self.issue['body'] = 'Acceptance repair: none'
+                self.data.pop('repair', None)
+                self.freeze()
+                with self.assertRaisesRegex(ValueError, 'preserved failure record'):
+                    self.verify()
+
+    def test_merged_and_squashed_failure_then_revert_is_not_lost(self):
+        for merged in (False, True):
+            with self.subTest(merged=merged):
+                self.git('checkout', '--orphan', 'baseline-' + str(merged))
+                pending = change(36)
+                pending['cases'][0]['artifact'] = 'plugin'
+                self.write('docs/verification/changes/issue-36.json', pending)
+                # This root has no earlier linked fail; the side-branch is the only source.
+                baseline = self.commit('ordinary baseline')
+                self.git('checkout', '-b', 'failure-' + str(merged))
+                failed = change(36); failed['cases'] = [copy.deepcopy(self.case)]
+                self.write('docs/verification/changes/issue-36.json', failed)
+                failure_commit = self.commit('observed failure on topic branch')
+                if not merged:
+                    self.git('checkout', '-q', baseline)
+                    self.git('merge', '--squash', failure_commit)
+                    self.commit('actual squash into develop')
+                self.write('docs/verification/changes/issue-36.json', pending)
+                failure_tip = self.commit('revert failure status')
+                if merged:
+                    self.git('checkout', '-q', baseline)
+                    self.write('docs/unrelated.md', 'independent mainline edit')
+                    self.commit('mainline change')
+                    self.git('merge', '--no-ff', '-m', 'real merge', failure_tip)
+                self.pr['base']['sha'] = self.git('rev-parse', 'HEAD')
+                self.issue['body'] = 'Acceptance repair: none'
+                self.data.pop('repair', None)
+                self.freeze()
+                with self.assertRaisesRegex(ValueError, 'preserved failure record'):
+                    self.verify()
+
+    def test_native_record_for_original_pending_case_remains_valid(self):
+        self.git('checkout', '--orphan', 'native-source')
+        self.case['gpt']['status'] = 'pending'
+        self.case['fix_issue'] = None
+        source = change(36); source['cases'] = [self.case]
+        self.write('docs/verification/changes/issue-36.json', source)
+        self.source = self.commit('original pending Case before native NG')
+        self.write('replay_buffer/fixture.py', 'native failure corrected')
+        self.candidate = self.commit('native fix')
+        self.pr['base']['sha'] = self.source
+        failure = self.record['failures']['GAP-1']
+        failure.update(source_candidate=self.source, source_case_sha256=canonical_hash(self.case))
+        failure['original_result']['head'] = self.source
+        self.data['repair']['candidate'] = self.candidate
+        self.data['repair']['failure_record_sha256'] = canonical_hash(self.record)
+        self.data['repair']['results']['GAP-1']['observation'].update(
+            head=self.candidate, at=self.git('show', '-s', '--format=%cI', self.candidate))
+        self.freeze()
+        self.assertTrue(self.verify()['repair_revision'])
+
+    def test_historical_failed_actor_requires_its_actual_case_and_association(self):
+        self.git('checkout', '-q', self.source)
+        source = change(36)
+        source['cases'] = [copy.deepcopy(self.case)]
+        source['cases'][0]['gpt']['status'] = 'pending'
+        source['cases'][0]['human'] = {'status': 'fail', 'reason': 'human observed failure'}
+        self.write('docs/verification/changes/issue-36.json', source)
+        human_source = self.commit('human failure linked to same fix')
+        source['cases'][0]['human']['status'] = 'pending'
+        self.write('docs/verification/changes/issue-36.json', source)
+        self.pr['base']['sha'] = self.commit('later pending status')
+        self.write('replay_buffer/fixture.py', 'corrected production path')
+        self.candidate = self.commit('new correction')
+        self.data['repair']['candidate'] = self.candidate
+        self.data['repair']['results']['GAP-1']['observation'].update(
+            head=self.candidate, at=self.git('show', '-s', '--format=%cI', self.candidate))
+        self.freeze()
+        with self.assertRaisesRegex(ValueError, 'tracked original failure'):
+            self.verify()
+        # A separate preserved human original covers that actor without rewriting the old record.
+        self.record['failures']['HUMAN-1'] = dict(copy.deepcopy(self.record['failures']['GAP-1']),
+            source_candidate=human_source,
+            source_case_sha256=canonical_hash(dict(source['cases'][0], human={'status': 'fail', 'reason': 'human observed failure'})),
+            original_result=dict(self.old, head=human_source, actor='human'))
+        self.data['repair']['results']['HUMAN-1'] = copy.deepcopy(self.data['repair']['results']['GAP-1'])
+        self.data['repair']['failure_record_sha256'] = canonical_hash(self.record)
+        self.freeze()
+        self.assertTrue(self.verify()['repair_revision'])
+        failure = self.record['failures']['HUMAN-1']
+        failure.update(source_candidate=self.source, source_case_sha256=canonical_hash(self.case))
+        failure['original_result']['head'] = self.source
+        self.data['repair']['failure_record_sha256'] = canonical_hash(self.record)
+        self.freeze()
+        with self.assertRaisesRegex(ValueError, 'tracked original failure'):
+            self.verify()
 
     def test_metadata_only_history_rejects_later_product_edit_even_if_reverted(self):
         self.write('replay_buffer/fixture.py', 'untested change')

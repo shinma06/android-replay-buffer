@@ -3,7 +3,7 @@ on:
   push:
     branches: [main]
   issues:
-    types: [edited, deleted]
+    types: [edited, deleted, labeled, unlabeled]
   issue_comment:
     types: [edited, deleted]
   pull_request:

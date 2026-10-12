@@ -51,6 +51,8 @@ class AcceptanceTests(unittest.TestCase):
         self.product_diff = []
 
     def git(self, *args):
+        if args[0] == 'log':
+            return ''  # This fixture has no historical linked repair failures.
         if args[0] == 'ls-tree':
             return f'100644 blob {"0" * 40}\t{args[-1]}' if f'{args[1]}:{args[-1]}' in self.documents else ''
         if args[:3] == ('show', '-s', '--format=%cI'):

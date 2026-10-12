@@ -30,7 +30,7 @@ CLIではUSB切断/再接続、直前区間の動画/logcat時刻整合、log-on
 
 元の受入NGを直すPRは、失敗した保証を修正版固定候補で再試験して合格し、その証拠を独立評価してからdevelopへ統合します。一般の新機能・無関係なpending/blocked Caseの全受入を前倒ししません。既存の正常なmerged PRは遡ってこのgateで再判定せず、元Case/失敗記録は保持します。変更した製品のmain promotionは引き続き全候補/全Caseを別に確認します。
 
-開始時にdevelopの`type:bug` Issue本文へ `Acceptance repair: none`（受入NG修正ではない理由を併記）又は元NG記録のIssueコメント数値IDを記載します。新機能でも元NG修正を含む場合は後者が必要です。trusted baseのCaseに当該Issueへ紐づくfailがある場合は、ラベルやnone宣言で回避できません。独立レビューは分類の正しさとIssue/QAに記録された元NGの漏れを確認します。機械検査が自然言語の全不具合を自動発見するものではありません。
+開始時にdevelopの`type:bug` Issue本文へ `Acceptance repair: none`（受入NG修正ではない理由を併記）又は元NG記録のIssueコメント数値IDを記載します。新機能でも元NG修正を含む場合は後者が必要です。trusted baseの全親履歴で当該Issueへ紐づいたCaseのgpt/human failは、後のpending/pass・Case削除・fix_issue変更・revertでも元NG記録を必須とします。変更したCase JSONのblobを一度ずつ読み、履歴上の失敗Case/確認者ごとに、その固定Case hash・修正Issueとの対応を持つ元記録を要求します。通常のstatus更新や全保証を満たした修正結果は許可し、無関係Issueに過去NGの再試験を要求しません。ラベルやnone宣言で回避できません。独立レビューは分類の正しさとIssue/QAに記録された元NGの漏れを確認します。機械検査が自然言語の全不具合を自動発見するものではありません。
 
 元NGは修正Issueに一つのコメントとして保全します。本文を `<!-- acceptance-repair:v1 -->` と改行から開始し、その後へJSONオブジェクトを直接置きます（code fenceなし）。`schema: 1 / fix_issue / failures`を持ち、`failures`は `GAP-1` などの一意なIDから以下の値への対応です。記録の変更は旧記録を消さず新しいコメントへ移し、Issue宣言・修正結果hash・独立レビューを更新します。媒体・生ログ・私的pathは公開せず、固定公開要約と担当が保持する封印証拠への参照を使います。
 
@@ -72,7 +72,7 @@ merge後・closure前も、develop修正PRの受入を当時の固定HEAD/base�
 
 main push時は既存Acceptance workflowが全ページの同repository・ownerのopen develop修正PRを確認し、Agent reviewをpendingへ戻して現在HEADの既存Acceptance runを再実行します。current runがない・実行中・再実行不能ならpendingを保持し、担当が完了後に再試行します。CIと共通validatorの最終readbackもmain SHAを照合します。有効契約が変わったら現在契約で再試験記録と独立評価を更新します。mainの前進だけで有効契約・成果物・条件が不変なら、現在resolverによる再計算と同一性の確認を経て既存評価を再利用でき、全GUIの再実行は要求しません。
 
-修正Issueの宣言変更/削除・参照コメントの編集/削除も、default branchのtrusted workflowから、そのIssueに紐づく同repository・ownerのopen develop PRだけを失効させます。全PRページを確認し、全対象のAgent reviewをpendingへ戻してから既存Acceptance runを再実行します。一つの再実行拒否/取得失敗で後続PRの失効を止めず、エラーは失敗として残します。status書込み自体の失敗はpending成功と扱わず、統合を止めて担当がreadback/復旧します。宣言に関係しない本文編集・通常コメント・PRコメント・新記録作成だけでは再実行せず、新IDへの宣言更新で再検証します。イベントは互いに取消さず、自己生成の報告ループ・pollingは追加しません。[イベント仕様](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#issue_comment)と[コメントmetadata](https://docs.github.com/en/rest/issues/comments#get-an-issue-comment)に従い、この非同期経路も直前live照合の代替にはしません。
+修正Issueの宣言変更/削除・参照コメントの編集/削除・type:bugのlabeled/unlabeledも、default branchのtrusted workflowから、そのIssueに紐づく同repository・ownerのopen develop PRだけを失効させます。全PRページを確認し、全対象のAgent reviewをpendingへ戻してから既存Acceptance runを再実行します。一つの再実行拒否/取得失敗で後続PRの失効を止めず、エラーは失敗として残します。status書込み自体の失敗はpending成功と扱わず、統合を止めて担当がreadback/復旧します。type:bug以外のラベル変更・宣言に関係しない本文編集・通常コメント・PRコメント・新記録作成だけでは再実行せず、新IDへの宣言更新で再検証します。イベントは互いに取消さず、自己生成の報告ループ・pollingは追加しません。[イベント仕様](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#issue_comment)と[コメントmetadata](https://docs.github.com/en/rest/issues/comments#get-an-issue-comment)に従い、この非同期経路も直前live照合の代替にはしません。
 
 mainはdevelop baseとは別のrefなので、GitHubのHEAD/strict-base保護だけでは最終readbackとmergeを原子的に結べません。main pushによるpending/re-runも非同期です。自動coordinatorと手動統合は直前のlive受入照合を必須とし、取得失敗・不一致を拒否しますが、サービスが提供しない跨refの原子性を保証したとは扱いません。CIのmainイベント経路はmain統合後、PR検証コードは通常のdevelop同期後に有効化されるため、同期前はPMの同じ運用gateを維持します。
 
