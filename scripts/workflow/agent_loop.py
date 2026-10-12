@@ -408,11 +408,14 @@ class Loop:
         validate_review(report, bound, accepted, self.storage)
 
     def retained_history(self, h):
-        roots = (h['source'], self.storage / f'pr-{h["pr"]}' / 'checkout')
         paths = list(h.get('private_paths', []))
         if h.get('repair_evidence'):
             paths.append(h['repair_evidence'])
-        return retained_originals(h.get('evidence_records', []), paths, roots)
+        records = h.get('evidence_records', [])
+        if not paths and not records:
+            return retained_originals(records)
+        roots = (h['source'], self.storage / f'pr-{h["pr"]}' / 'checkout')
+        return retained_originals(records, paths, roots)
 
     def repair_evidence(self, accepted, h, bound):
         if not accepted.get('repair_revision'):
@@ -1004,7 +1007,7 @@ def rebind_target(loop, args):
     repair_path, checked_paths, checked_records = preflight_repair_bundle(
         loop, pr, path if path.exists() else source, repair_path, (source, path))
     historical_paths = paths | ({h['repair_evidence']} if h.get('repair_evidence') else set())
-    records = list(h.get('evidence_records', []))
+    records = retained_originals(h.get('evidence_records', []), cleanup_roots=(source, path))
     for proof_path in getattr(args, 'retained_review', ()):
         records.extend(recover_originals(loop.storage, json.loads(Path(proof_path).read_text())))
     records = retained_originals(records, historical_paths, (source, path))

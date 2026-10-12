@@ -133,7 +133,7 @@ def recover_originals(storage, proof):
         if hashlib.sha256(body).hexdigest() != report.get('repair_evidence_sha256'):
             continue
         body, bundle = read_repair_bundle(path)
-        if any(bundle[k] != report[k] for k in ('head', 'base', 'repair_revision')):
+        if any(bundle[k] != report.get(k) for k in ('head', 'base', 'repair_revision')):
             raise ValueError('Historical bundle differs from its issued report')
         return retained_originals(evidence_records(path, body, bundle), paths)
     raise ValueError('Historical bundle is missing or changed; trusted recovery unavailable')
