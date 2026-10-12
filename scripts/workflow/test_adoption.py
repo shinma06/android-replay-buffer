@@ -66,7 +66,8 @@ class AdoptionTests(unittest.TestCase):
             self.assertEqual(gh.api.call_count, 1)
         gh.api = Mock(side_effect=[rules, {'bypass_actors': [{}]}])
         with self.assertRaises(ValueError): gh.merge(pull)
-        gh.api = Mock(side_effect=[copy.deepcopy(rules), {'bypass_actors': []}, {'data': {'repository': {'defaultBranchRef': {'name': 'main'}, 'issue': {'state': 'OPEN'},
+        gh.api = Mock(side_effect=[copy.deepcopy(rules), {'bypass_actors': []}, {'data': {'repository': {'defaultBranchRef': {'name': 'main'}, 'issue': {'state': 'OPEN',
+            'closedByPullRequestsReferences': {'nodes': [], 'pageInfo': {'hasNextPage': False}}},
             'pullRequest': {'closingIssuesReferences': {'nodes': [], 'pageInfo': {'hasNextPage': False}}}}}}, {'merged': True}])
         gh.merge(pull)
         self.assertEqual(gh.api.call_args.args[1], 'PUT')

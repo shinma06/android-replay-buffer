@@ -21,7 +21,7 @@ NEW = 'c' * 40
 
 
 def pr_data():
-    return {'number': 36, 'user': {'login': al.OWNER}, 'state': 'open', 'merged': False, 'draft': False,
+    return {'number': 36, 'title': 'Test change', 'commits': 1, 'user': {'login': al.OWNER}, 'state': 'open', 'merged': False, 'draft': False,
             'body': 'Integration: tooling\nVerification: docs/verification/changes/issue-35.json\nIssue: #35\nGUI: not-required\nGUI reason: documentation only',
             'head': {'sha': HEAD, 'ref': 'codex/35-test', 'repo': {'full_name': al.REPO}},
             'base': {'sha': BASE, 'ref': 'main', 'repo': {'full_name': al.REPO}},
@@ -142,17 +142,18 @@ class BaseReferenceTests(unittest.TestCase):
             with self.assertRaises(ValueError): gh.pr(36)
 
 
-def development_snapshot(states=(), default='main', *, more=False, issue_state='OPEN'):
+def development_snapshot(states=(), default='main', *, more=False, reverse_more=False, issue_state='OPEN'):
     return {'data': {'repository': {'defaultBranchRef': {'name': default},
         'pullRequest': {'id': 'PR_test', 'closingIssuesReferences': {
-            'nodes': [{'number': 35 + i, 'state': state} for i, state in enumerate(states)],
+            'nodes': [{'number': 35 + i, 'state': state, 'repository': {'nameWithOwner': al.REPO}} for i, state in enumerate(states)],
             'pageInfo': {'hasNextPage': more}}},
         'issue': {'id': 'I_test', 'state': issue_state, 'closedByPullRequestsReferences': {
-            'nodes': [{'number': 36}]}}}}}
+            'nodes': [{'number': 36, 'repository': {'nameWithOwner': al.REPO}}],
+            'pageInfo': {'hasNextPage': reverse_more}}}}}}
 
 
 class DevelopmentMergeTests(unittest.TestCase):
-    def adapter(self, snapshot):
+    def adapter(self, snapshot, commits=None, keyword_state='open'):
         gh = al.GitHub()
         rules = json.loads((al.ROOT / '.github/main-ruleset.json').read_text())['rules']
         for rule in rules:
@@ -161,9 +162,11 @@ class DevelopmentMergeTests(unittest.TestCase):
             if path == 'graphql': return snapshot
             if '/rules/branches/' in path: return rules
             if '/rulesets/' in path: return {'bypass_actors': []}
+            if '/issues/' in path: return {'state': keyword_state}
             if path.endswith('/merge') and method == 'PUT': return {'merged': True}
             raise AssertionError(path)
         gh.api = Mock(side_effect=api)
+        gh.pages = Mock(return_value=commits or [{'commit': {'message': 'Ordinary commit'}}])
         return gh
 
     def test_default_merge_rejects_open_manual_branch_or_keyword_links(self):
@@ -192,6 +195,57 @@ class DevelopmentMergeTests(unittest.TestCase):
                 self.assertTrue(gh.merge(pr_data())['merged'])
                 self.assertEqual(gh.api.call_args.args[1], 'PUT')
 
+    def test_reverse_partial_link_snapshot_blocks_before_mutation(self):
+        gh = self.adapter(development_snapshot(reverse_more=True, issue_state='CLOSED'))
+        with self.assertRaises(ValueError):
+            gh.link_completed_issue(dict(pr_data(), merged=True),
+                                    {'state': 'closed', 'labels': ['status:done']})
+        self.assertFalse(any(c.args[1:2] == ('POST',) and 'mutation' in c.args[2]['query']
+                             for c in gh.api.call_args_list))
+
+    def test_default_squash_checks_explicit_message_instead_of_discarded_commits(self):
+        pr = pr_data()
+        gh = self.adapter(development_snapshot(), [{'commit': {'message': 'Fixes #35'}}])
+        gh.merge(pr)
+        payload = gh.api.call_args.args[2]
+        self.assertEqual(payload['commit_title'], 'Test change (#36)')
+        self.assertEqual(payload['commit_message'], pr['body'])
+        gh.pages.assert_not_called()
+        for field, message in (('title', 'CLOSES: #35'), ('body', 'Resolves other/repo#35')):
+            with self.subTest(field=field):
+                gh = self.adapter(development_snapshot())
+                pr = pr_data(); pr[field] = message if field == 'title' else pr[field] + '\n' + message
+                with self.assertRaisesRegex(ValueError, 'commit'):
+                    gh.merge(pr)
+                self.assertFalse(any(c.args[1:2] == ('PUT',) for c in gh.api.call_args_list))
+
+    def test_promotion_checks_all_integrated_commits_and_rejects_partial_list(self):
+        pr = pr_data(); pr['body'] = pr['body'].replace('Integration: tooling', 'Integration: promotion')
+        for commits in ([{'commit': {'message': 'Fixed #35'}}], [],
+                        [{'commit': {}}]):
+            with self.subTest(commits=commits):
+                gh = self.adapter(development_snapshot())
+                gh.pages.return_value = commits
+                with self.assertRaises(ValueError): gh.merge(pr)
+                self.assertFalse(any(c.args[1:2] == ('PUT',) for c in gh.api.call_args_list))
+        pr['commits'] = 2
+        gh = self.adapter(development_snapshot(), [{'commit': {'message': 'Ordinary commit'}},
+                                                  {'commit': {'message': 'Fixed #35'}}])
+        with self.assertRaises(ValueError): gh.merge(pr)
+        pr['commits'] = 1
+        gh = self.adapter(development_snapshot(), [{'commit': {'message': 'Fixes #99'}}], keyword_state='closed')
+        self.assertTrue(gh.merge(pr)['merged'])
+
+    def test_nondefault_keyword_and_closed_issue_keyword_keep_legitimate_merge(self):
+        pr = pr_data(); pr['title'] = 'Fixes #35'
+        for snapshot, state in ((development_snapshot(default='develop'), 'open'),
+                                (development_snapshot(), 'closed')):
+            pr['title'] = 'Fixes #35' if state == 'open' else 'Fixes #99'
+            gh = self.adapter(snapshot, keyword_state=state)
+            self.assertTrue(gh.merge(pr)['merged'])
+        gh = self.adapter(development_snapshot(), keyword_state='unknown')
+        with self.assertRaises(ValueError): gh.merge(pr)
+
 
 class DevelopmentLinkTests(unittest.TestCase):
     def adapter(self):
@@ -216,6 +270,19 @@ class DevelopmentLinkTests(unittest.TestCase):
         gh.development.return_value = development_snapshot(['CLOSED'], issue_state='CLOSED')['data']['repository']
         gh.link_completed_issue(pr, issue)
         gh.api.assert_not_called()
+
+    def test_other_repository_same_numbers_are_not_the_owned_pair(self):
+        gh, pr, issue = self.adapter()
+        foreign = development_snapshot(['CLOSED'], issue_state='CLOSED')['data']['repository']
+        for connection in (foreign['pullRequest']['closingIssuesReferences'],
+                           foreign['issue']['closedByPullRequestsReferences']):
+            connection['nodes'][0]['repository']['nameWithOwner'] = 'other/repo'
+        actual = development_snapshot(['CLOSED'], issue_state='CLOSED')['data']['repository']
+        gh.development.side_effect = [foreign, actual]
+        gh.link_completed_issue(pr, issue)
+        gh.api.assert_called_once()
+        gh, pr, issue = self.adapter(); gh.development.side_effect = [foreign, foreign]
+        with self.assertRaises(ValueError): gh.link_completed_issue(pr, issue)
 
     def test_failed_or_mismatched_link_cannot_complete(self):
         for failure in ('unmerged', 'open', 'api-error', 'missing-forward', 'missing-backward', 'changed-close-time'):

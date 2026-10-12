@@ -119,17 +119,22 @@ class GitHub:
     def development(self, pr):
         query = '''query($pr:Int!,$issue:Int!){repository(owner:"shinma06",name:"android-replay-buffer"){
           defaultBranchRef{name} pullRequest(number:$pr){id closingIssuesReferences(first:100){
-            nodes{number state} pageInfo{hasNextPage}}}
+            nodes{number state repository{nameWithOwner}} pageInfo{hasNextPage}}}
           issue(number:$issue){id state closedByPullRequestsReferences(first:100,includeClosedPrs:true){
-            nodes{number}}}}}'''
+            nodes{number repository{nameWithOwner}} pageInfo{hasNextPage}}}}}'''
         result = self.api('graphql', 'POST', {'query': query,
                           'variables': {'pr': pr['number'], 'issue': issue_number(pr)}})
         try:
             repo = result['data']['repository']
             links = repo['pullRequest']['closingIssuesReferences']
+            reverse = repo['issue']['closedByPullRequestsReferences']
             if (result.get('errors') or not isinstance(repo['defaultBranchRef']['name'], str)
                     or not repo['defaultBranchRef']['name'] or not isinstance(links['nodes'], list)
                     or links['pageInfo']['hasNextPage'] is not False
+                    or not isinstance(reverse['nodes'], list) or reverse['pageInfo']['hasNextPage'] is not False
+                    or any(not isinstance(x['number'], int) or not isinstance(x['repository']['nameWithOwner'], str)
+                           or not x['repository']['nameWithOwner']
+                           for connection in (links, reverse) for x in connection['nodes'])
                     or any(x['state'] not in ('OPEN', 'CLOSED') for x in links['nodes'])):
                 raise ValueError('Development closing references are incomplete; owner must reconcile before merge')
             return repo
@@ -144,16 +149,20 @@ class GitHub:
         query = '''mutation($issue:ID!,$prs:[ID!]!){addCloseIssueReferences(
           input:{issueId:$issue,pullRequestIds:$prs}){issue{number state}}}'''
         linked = repo
-        if (not any(x['number'] == issue_number(pr) for x in repo['pullRequest']['closingIssuesReferences']['nodes'])
-                or not any(x['number'] == pr['number'] for x in repo['issue']['closedByPullRequestsReferences']['nodes'])):
+        if (not any(x['number'] == issue_number(pr) and x['repository']['nameWithOwner'] == REPO
+                    for x in repo['pullRequest']['closingIssuesReferences']['nodes'])
+                or not any(x['number'] == pr['number'] and x['repository']['nameWithOwner'] == REPO
+                           for x in repo['issue']['closedByPullRequestsReferences']['nodes'])):
             result = self.api('graphql', 'POST', {'query': query,
                               'variables': {'issue': repo['issue']['id'], 'prs': [repo['pullRequest']['id']]}})
             if not isinstance(result, dict) or result.get('errors'):
                 raise ValueError('Development linking failed; preserve resources for owner readback')
             linked = self.development(pr)
         current = self.issue(issue_number(pr))
-        if (not any(x['number'] == issue_number(pr) for x in linked['pullRequest']['closingIssuesReferences']['nodes'])
-                or not any(x['number'] == pr['number'] for x in linked['issue']['closedByPullRequestsReferences']['nodes'])
+        if (not any(x['number'] == issue_number(pr) and x['repository']['nameWithOwner'] == REPO
+                    for x in linked['pullRequest']['closingIssuesReferences']['nodes'])
+                or not any(x['number'] == pr['number'] and x['repository']['nameWithOwner'] == REPO
+                           for x in linked['issue']['closedByPullRequestsReferences']['nodes'])
                 or current['state'] != 'closed' or 'status:done' not in labels(current)
                 or current.get('closed_at') != issue.get('closed_at')):
             raise ValueError('Development/Issue closure readback failed; owner must reconcile')
@@ -182,8 +191,28 @@ class GitHub:
                 and any(x['state'] == 'OPEN' for x in repo['pullRequest']['closingIssuesReferences']['nodes'])):
             raise ValueError('Default-branch closing links would close Issues before feedback readback; '
                              'owner must unlink manual/branch links or remove closing keywords, then re-read')
-        result = self.api(f'repos/{REPO}/pulls/{pr["number"]}/merge', 'PUT',
-                          {'sha': pr['head']['sha'], 'merge_method': 'merge' if metadata(pr)[2] == 'promotion' else 'squash'})
+        payload = {'sha': pr['head']['sha'], 'merge_method': 'merge' if metadata(pr)[2] == 'promotion' else 'squash'}
+        if pr['base']['ref'] == repo['defaultBranchRef']['name']:
+            # Pin the new commit text; repository squash defaults can include discarded commit messages.
+            payload.update(commit_title=f'{pr["title"]} (#{pr["number"]})', commit_message=pr['body'])
+            messages = [payload['commit_title'], payload['commit_message']]
+            if payload['merge_method'] == 'merge':
+                # shortcut: PR REST caps at 250 commits; add a complete history query when larger promotions need automation.
+                commits = self.pages(f'repos/{REPO}/pulls/{pr["number"]}/commits?per_page=100')
+                if len(commits) != pr['commits'] or not commits:
+                    raise ValueError('Integrated commit list is incomplete; owner must reconcile before merge')
+                for commit in commits:
+                    message = commit.get('commit', {}).get('message')
+                    if not isinstance(message, str):
+                        raise ValueError('Integrated commit message unavailable; owner must reconcile before merge')
+                    messages.append(message)
+            keywords = r'\b(?:close[sd]?|fix(?:es|ed)?|resolve[sd]?):?\s+(?:([\w.-]+/[\w.-]+))?#([0-9]+)\b'
+            for repository, number in set(re.findall(keywords, '\n'.join(messages), re.IGNORECASE)):
+                issue = self.api(f'repos/{repository or REPO}/issues/{number}')
+                if issue.get('state') != 'closed':
+                    raise ValueError('Integrated commit closing keyword could close unfinished scope; '
+                                     'owner must correct the message and re-read before merge')
+        result = self.api(f'repos/{REPO}/pulls/{pr["number"]}/merge', 'PUT', payload)
         if not result.get('merged'):
             raise RuntimeError('Merge was not confirmed: ' + str(result))
         return result
