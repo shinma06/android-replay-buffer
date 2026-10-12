@@ -922,7 +922,7 @@ def repair_record(issue, api):
     return record
 
 
-def repair_contributors(observed, writer, earliest):
+def repair_contributors(observed, writer, earliest, receipts=None):
     """Public roles are display text; only originating-session fingerprints exclude reviewers."""
     attribution = observed.get('attribution')
     if 'attribution' not in observed:
@@ -936,10 +936,13 @@ def repair_contributors(observed, writer, earliest):
             not isinstance(attribution['contributors'], list) or not attribution['contributors']):
         raise ValueError('Repair attribution requires canonical writer, observer and all contributors')
     identities, activities, entries = set(), set(), set()
+    receipts = {} if receipts is None else receipts
     observed_at = datetime.fromisoformat(observed['at'].replace('Z', '+00:00'))
     observer_found, writer_found = False, False
     for item in attribution['contributors']:
-        if (not isinstance(item, dict) or set(item) != {'role', 'session', 'activity', 'at', 'receipt_sha256'} or
+        if (not isinstance(item, dict) or set(item) not in (
+                {'role', 'session', 'activity', 'at', 'receipt_sha256'},
+                {'role', 'session', 'activity', 'at', 'receipt_sha256', 'receipt_locator'}) or
                 not nonempty(item['role']) or not isinstance(item['session'], str) or
                 not SESSION_HASH.fullmatch(item['session']) or
                 item['activity'] not in ('writer', 'execution', 'assessment', 'composition') or
@@ -948,7 +951,17 @@ def repair_contributors(observed, writer, earliest):
                     r'\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?(?:Z|[+-]\d\d:[0-5]\d)', item['at'])):
             raise ValueError('Malformed repair contributor identity, activity, time or sealed receipt')
         when = datetime.fromisoformat(item['at'].replace('Z', '+00:00'))
-        entry = (item['session'], item['activity'], when, item['receipt_sha256'])
+        locator = item.get('receipt_locator', '')
+        if not isinstance(locator, str) or not re.fullmatch(r'(?:/(?:[^~/\r\n]|~[01])*)*', locator):
+            raise ValueError('Receipt locator must be an exact JSON Pointer, or empty for the whole receipt')
+        receipt = (item['receipt_sha256'], locator)
+        claim = (item['session'], item['activity'], when)
+        if any(sealed == receipt[0] and previous != claim and
+               (location == locator or location.startswith(locator + '/') or locator.startswith(location + '/'))
+               for (sealed, location), previous in receipts.items()):
+            raise ValueError('Conflicting origin/session/activity/time for the same sealed receipt observation')
+        receipts[receipt] = claim
+        entry = (receipt, claim)
         if entry in entries or when > observed_at or (item['activity'] != 'writer' and when < earliest):
             raise ValueError('Duplicate or out-of-order repair contributor observation')
         entries.add(entry)
@@ -1020,7 +1033,7 @@ def verify_repair(pr, issue, data, path, api, git):
     git('fetch', '--no-tags', 'origin', trusted)
     policy = initial_stage_plan(trusted, candidate, git) if git('ls-tree', trusted, '--', INITIAL_PLAN) else None
     contract = canonical_hash(policy['responsibility_revision']) if policy else canonical_hash(None)
-    cases, observers = set(), set()
+    cases, observers, receipts = set(), set(), {}
     for identifier, failure in record['failures'].items():
         if (not re.fullmatch(r'[A-Z][A-Z0-9-]+', identifier) or not isinstance(failure, dict) or
                 set(failure) != {'case', 'source_candidate', 'source_case_sha256', 'original_result', 'guarantees'} or
@@ -1058,7 +1071,7 @@ def verify_repair(pr, issue, data, path, api, git):
                        (old['at'], git('show', '-s', '--format=%cI', candidate)))
         if when < earliest:
             raise ValueError('Repair observation predates the failure or fixed candidate')
-        observers.update(repair_contributors(observed, repair['writer_session'], earliest))
+        observers.update(repair_contributors(observed, repair['writer_session'], earliest, receipts))
     if not tracked <= cases:
         raise ValueError('Repair omits a trusted tracked original failure Case')
     if api('git/ref/heads/main').get('object', {}).get('sha') != trusted:

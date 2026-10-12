@@ -31,6 +31,7 @@ def pr_data():
 def report(verdict='approved', head=HEAD):
     return {'verdict': verdict, 'head': head, 'base': BASE, 'scope_complete': True,
             'issue_complete': True, 'gui_required': False, 'findings': [] if verdict == 'approved' else ['Fix wrong value'],
+            'repair_evidence_sha256': 'd' * 64,
             'evidence': 'Checked the acceptance criteria and diff', 'session': '00000000-0000-4000-8000-000000000099'}
 
 
@@ -391,6 +392,7 @@ class WorkerTests(unittest.TestCase):
             with patch.object(sys, 'argv', args), patch.dict(os.environ, {'CODEX_THREAD_ID': session}):
                 bind_manual_report()
                 self.assertEqual(json.loads(target.read_text())['session'], session)
+                self.assertEqual(target.stat().st_mode & 0o777, 0o600)
                 with self.assertRaises(FileExistsError): bind_manual_report()
             self.assertEqual(source.read_bytes(), original)
             for claimed in ('review-' + session, 'public reviewer', '00000000-0000-4000-8000-000000000001'):

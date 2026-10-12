@@ -41,13 +41,14 @@ def digest(public):
     return hashlib.sha256(json.dumps(public, sort_keys=True).encode()).hexdigest()
 
 
-def register(storage, public, source, host):
+def register(storage, public, source, host, repair_evidence=None):
     public = dict(public, registry_id=uuid.uuid4().hex, version=2)
     with registry_directory(storage, create=True) as directory:
         fd = os.open(public['registry_id'] + '.json', os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
                      0o600, dir_fd=directory)
         with os.fdopen(fd, 'w') as stream:
-            json.dump({'digest': digest(public), 'source': str(source), 'host': host}, stream)
+            json.dump({'digest': digest(public), 'source': str(source), 'host': host,
+                       'repair_evidence': str(repair_evidence) if repair_evidence else None}, stream)
     return public
 
 
@@ -67,4 +68,29 @@ def resolve(storage, public, host):
     if (not isinstance(local, dict) or local.get('digest') != digest(public) or local.get('host') != host or
             not isinstance(local.get('source'), str) or not Path(local['source']).is_absolute()):
         raise ValueError('Enrollment binding/local ownership mismatch; preserve existing owner')
-    return dict(public, source=local['source'], host=local['host'])
+    return dict(public, source=local['source'], host=local['host'], repair_evidence=local.get('repair_evidence'))
+
+
+def store_review(storage, public, report):
+    identifier = uuid.uuid4().hex
+    with registry_directory(storage, create=True) as directory:
+        fd = os.open(identifier + '.json', os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                     0o600, dir_fd=directory)
+        with os.fdopen(fd, 'w') as stream:
+            json.dump({'digest': digest(public), 'review': report}, stream)
+    return identifier
+
+
+def restore_review(storage, identifier, public):
+    if not isinstance(identifier, str) or not re.fullmatch(r'[0-9a-f]{32}', identifier):
+        raise ValueError('Invalid private review reference')
+    with registry_directory(storage) as directory:
+        fd = os.open(identifier + '.json', os.O_RDONLY | os.O_NOFOLLOW, dir_fd=directory)
+        with os.fdopen(fd) as stream:
+            info = os.fstat(stream.fileno())
+            if info.st_uid != os.getuid() or info.st_mode & 0o077:
+                raise ValueError('Review must remain private and locally owned')
+            local = json.load(stream)
+    if local.get('digest') != digest(public) or not isinstance(local.get('review'), dict):
+        raise ValueError('Private review binding mismatch')
+    return local['review']

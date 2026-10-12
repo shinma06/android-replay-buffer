@@ -72,6 +72,9 @@ def validate_review(report, expected, acceptance=None):
         reviewer = session_fingerprint(report['session'])
         observers = acceptance.get('repair_observers')
         if (report.get('repair_revision') != acceptance['repair_revision'] or
+                not isinstance(acceptance.get('repair_evidence_sha256'), str) or
+                not re.fullmatch(r'[0-9a-f]{64}', acceptance.get('repair_evidence_sha256', '')) or
+                report.get('repair_evidence_sha256') != acceptance['repair_evidence_sha256'] or
                 not isinstance(report.get('repair_assessment'), str) or not report['repair_assessment'].strip() or
                 not isinstance(observers, list) or not observers or
                 not all(isinstance(x, str) and SESSION_HASH.fullmatch(x) for x in observers) or

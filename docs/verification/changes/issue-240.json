@@ -5,6 +5,7 @@
   "reason": "trusted repair identity/adapterと共通validatorだけを変更し、既存修復証拠を保持した有限fixtureで独立性拒否を確認する。製品runtime/build/GUIは変更しない。",
   "cli_checks": [
     "python3 scripts/check.py: harnessとcanonical contributor/adapter/shared-consumer回帰を実行",
+    "private bundle原本/hash/locator/集合・stale拒否と、raw UUID非公開/cache binding再開の回帰を実行",
     "python3 scripts/workflow/product_check.py: frozen CLI互換性保全を実行",
     "clean committed HEADでchange_impact --base origin/main --run-testsと通常hooksを実行",
     "保持済み実repairデータのprivateな有限validator試行。診断であり実独立承認/製品受入ではない",

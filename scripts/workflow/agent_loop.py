@@ -17,9 +17,9 @@ import time
 import uuid
 from urllib.parse import quote
 
-from agent_policy import CONTEXT, binding, eligible, gui_pass, in_scope, issue_number, next_action, update_parent, validate_review
-from agent_worker import run_worker, worker_environment
-from handoff_registry import register, resolve
+from agent_policy import CONTEXT, binding, eligible, gui_pass, in_scope, issue_number, next_action, session_fingerprint, update_parent, validate_review
+from agent_worker import private_repair_evidence, run_worker, worker_environment
+from handoff_registry import register, resolve, restore_review, store_review
 from verification import verify_pr, metadata
 from issue_schema import validate_issue, done_labels, labels
 from pr_policy import validate_title
@@ -282,12 +282,27 @@ class Loop:
         public, public_id = unpack(comments, HANDOFF_V2)
         handoff = resolve(self.storage, public, HOST) if public and (not legacy_id or public_id > legacy_id) else legacy
         state, comment_id = unpack(comments, STATE)
+        if state and state.get('review_ref'):
+            public = {'binding': state.get('binding'), 'review': state.get('review')}
+            state['review'] = restore_review(self.storage, state['review_ref'], public)
+            if self.public_state(state['review']) != public['review']:
+                raise ValueError('Private review public projection mismatch')
         return handoff, state or {'phase': 'queued', 'fixes': 0, 'reviews': 0, 'errors': 0}, comment_id, comments
 
     def save(self, pr, state, comment_id):
         state['updated_at'] = int(time.time())
         # Raw private logs stay local. Public state may contain reviewer text, so remove local paths.
-        state = self.public_state(state)
+        public = self.public_state(state)
+        if state.get('review'):
+            bound_review = {'binding': public.get('binding'), 'review': public['review']}
+            # Never accept a public fingerprint as an originating session on resume.
+            session_fingerprint(state['review']['session'])
+            public['review_ref'] = store_review(self.storage, bound_review, state['review'])
+            state['review_ref'] = public['review_ref']
+        else:
+            public.pop('review_ref', None)
+            state.pop('review_ref', None)
+        state = public
         body = pack(STATE, state)
         result = self.gh.comment(pr['number'], body, comment_id)
         # A dedicated Issue comment is the recoverable dashboard; don't overwrite Issue criteria.
@@ -314,10 +329,12 @@ class Loop:
 
     def public_state(self, value):
         if isinstance(value, dict):
-            return {k: self.public_state(v) for k, v in value.items() if k not in ('host', 'source')}
+            return {k: self.public_state(v) for k, v in value.items() if k not in ('host', 'source', 'repair_evidence', 'private_repair_evidence')}
         if isinstance(value, list):
             return [self.public_state(v) for v in value]
         if isinstance(value, str):
+            value = re.sub(r'(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}',
+                           lambda match: session_fingerprint(match[0].lower()), value)
             for private in (str(self.storage), str(ROOT), str(Path.home()), HOST):
                 value = value.replace(private, '[local]')
             return re.sub(r'/(?:Users|home|private|tmp|var)/[^\n`]+', '[local path]', value)
@@ -331,12 +348,20 @@ class Loop:
         except (ValueError, KeyError, OSError, RuntimeError) as error:
             return {'allowed': False, 'reason': self.private_error(error)}
 
+    def repair_evidence(self, accepted, h, bound):
+        if not accepted.get('repair_revision'):
+            return None
+        packet = private_repair_evidence(h.get('repair_evidence'), accepted, bound)
+        accepted['repair_evidence_sha256'] = packet['bundle_sha256']
+        return packet
+
     def merged_acceptance(self, pr, h, state):
         # Closed PR refs retain the reviewed base; current failure records/main stay live.
         state.pop('acceptance', None)
         accepted = self.acceptance(pr, self.checkout(pr, h))
         if not accepted.get('allowed'):
             raise ValueError(accepted.get('reason', 'Current merged acceptance is incomplete'))
+        self.repair_evidence(accepted, h, {'head': pr['head']['sha'], 'base': pr['base']['sha']})
         return dict(accepted, head=pr['head']['sha'], base=pr['base']['sha'])
 
     def bound(self, pr, issue, comments, remote_after=None):
@@ -378,7 +403,7 @@ class Loop:
 
     @staticmethod
     def invalidate_acceptance(state):
-        for key in ('review', 'binding', 'gui', 'acceptance'):
+        for key in ('review', 'review_ref', 'binding', 'gui', 'acceptance'):
             state.pop(key, None)
 
     def test_and_push(self, pr, path, state):
@@ -519,6 +544,7 @@ class Loop:
                 return {'pr': number, 'phase': 'remote-review-wait'}
             gui_needed = h['gui_required'] or bool(state.get('review', {}).get('gui_required'))
             acceptance = self.acceptance(pr, path)
+            private_evidence = self.repair_evidence(acceptance, h, bound)
             if gui_needed and acceptance.get('mode') in ('develop', 'tooling') and not acceptance.get('cases'):
                 acceptance = {'allowed': False, 'reason': 'Reviewer requires GUI Cases; declare them in the matrix'}
             if state.get('binding') == bound and state.get('review'):
@@ -535,7 +561,8 @@ class Loop:
                 running.write_text(json.dumps({'pid': None}))
                 report = self.worker('review', path, {'pr': pr['number'], **bound, 'title': pr['title'], 'issue': issue['body'],
                                       'scope': h['scope'], 'close_issue_requested': h['close_issue'],
-                                      'feedback': feedback, 'gui': state.get('gui'), 'target': pr['base']['ref'], 'acceptance': acceptance}, path.parent / 'workers',
+                                      'feedback': feedback, 'gui': state.get('gui'), 'target': pr['base']['ref'], 'acceptance': acceptance,
+                                      'private_repair_evidence': private_evidence}, path.parent / 'workers',
                                       on_start=lambda pid: running.write_text(json.dumps({'pid': pid})))
                 running.unlink(missing_ok=True)
                 validate_review(report, bound, acceptance)
@@ -566,6 +593,7 @@ class Loop:
                 validate_issue(latest_issue)
                 now, _ = self.bound(latest, latest_issue, self.gh.comments(number), state.get('remote_review_after'))
                 latest_acceptance = self.acceptance(latest, path)
+                self.repair_evidence(latest_acceptance, h, now)
                 if (now != bound or self.gh.ci(latest) != 'success' or not latest_acceptance['allowed'] or
                         latest_acceptance != acceptance):
                     self.invalidate_acceptance(state)
@@ -835,7 +863,7 @@ def enroll(loop, args):
     metadata(pr)
     if any(Path(x).is_absolute() or '..' in Path(x).parts for x in args.scope):
         raise ValueError('Use repository-relative enrollment scope')
-    h = register(loop.storage, h, source, HOST)
+    h = register(loop.storage, h, source, HOST, getattr(args, 'repair_evidence', None))
     loop.gh.comment(args.pr, pack(HANDOFF_V2, h))
     loop.gh.status(h['head'], 'pending', 'Enrolled for independent review', pr['html_url'])
     loop.save(pr, {'phase': 'queued', 'expected_head': h['head'], 'fixes': 0, 'reviews': 0, 'errors': 0}, None)
@@ -864,11 +892,11 @@ def rebind_target(loop, args):
     if state.get('expected_head', h['head']) != pr['head']['sha']:
         raise ValueError('External HEAD changed; rebind cannot adopt a new writer')
     metadata(pr)
-    public = {k: v for k, v in h.items() if k not in ('source', 'host', 'registry_id', 'version')}
+    public = {k: v for k, v in h.items() if k not in ('source', 'host', 'registry_id', 'version', 'repair_evidence')}
     public = loop.public_state(public)
     public['owner'] = 'agent-loop'
     public['target'] = pr['base']['ref']
-    public = register(loop.storage, public, source, HOST)
+    public = register(loop.storage, public, source, HOST, h.get('repair_evidence'))
     loop.gh.comment(args.pr, pack(HANDOFF_V2, public))
     loop.invalidate_acceptance(state)
     state.update(phase='queued', next='Target explicitly rebound; independent review and acceptance required')
@@ -917,6 +945,7 @@ def main():
     en = sub.add_parser('enroll'); en.add_argument('--pr', type=int, required=True)
     en.add_argument('--source', type=Path, required=True); en.add_argument('--owner', required=True)
     en.add_argument('--scope', nargs='+', required=True); en.add_argument('--parent', type=int, help='Actual parent Issue; omit for Standalone')
+    en.add_argument('--repair-evidence', type=Path, help='Private sealed repair origin bundle; never published')
     en.add_argument('--close-issue', action='store_true')
     en.add_argument('--writer-stopped', action='store_true', required=True)
     rebound = sub.add_parser('rebind-target'); rebound.add_argument('--pr', type=int, required=True)

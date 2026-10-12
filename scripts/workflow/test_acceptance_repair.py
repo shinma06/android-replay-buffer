@@ -101,7 +101,7 @@ class RepairTests(unittest.TestCase):
         return verify_pr(self.pr, self.api, self.git)
 
     def test_equivalent_method_all_failures_and_independent_assessment(self):
-        accepted = dict(self.verify(), allowed=True)
+        accepted = dict(self.verify(), allowed=True, repair_evidence_sha256='d' * 64)
         self.assertEqual(accepted['mode'], 'develop')
         self.assertEqual(accepted['cases'], 0)  # Unrelated pending Cases are not promoted into this recheck.
         bound = {'head': self.pr['head']['sha'], 'base': self.source}
@@ -136,7 +136,7 @@ class RepairTests(unittest.TestCase):
         sessions = self.composed_attribution()
         original = copy.deepcopy(self.record)
         self.freeze()
-        accepted = dict(self.verify(), allowed=True)
+        accepted = dict(self.verify(), allowed=True, repair_evidence_sha256='d' * 64)
         self.assertEqual(self.record, original)
         self.assertEqual(accepted['repair_observers'], sorted(map(session_fingerprint, sessions)))
         bound = {'head': self.pr['head']['sha'], 'base': self.source}
@@ -189,7 +189,7 @@ class RepairTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'omits'): self.verify()
 
     def test_single_session_legacy_is_explicit_and_composed_scalars_are_rejected(self):
-        original = self.verify()
+        original = dict(self.verify(), repair_evidence_sha256='d' * 64)
         self.assertEqual(original['repair_observers'], [session_fingerprint(self.data['repair']['writer_session'])])
         for writer, observer in (('writer role', 'executor role'), ('same role', 'same role'),
                                  (report()['session'], self.data['repair']['writer_session'])):
@@ -273,7 +273,7 @@ class RepairTests(unittest.TestCase):
     def test_new_unedited_record_id_keeps_schema_and_requires_fresh_assessment(self):
         from verification import repair_record
         original_api = self.api
-        original = self.verify()
+        original = dict(self.verify(), repair_evidence_sha256='d' * 64)
         preserved = copy.deepcopy(self.record)
         old_comment = original_api('issues/comments/123')
         self.issue['body'] = 'Acceptance repair: 124'
@@ -744,6 +744,7 @@ class RepairLoopTests(unittest.TestCase):
         handoff, _, _, _ = self.loop.load(36)
         handoff['target'] = 'develop'
         self.gh.messages[36][0]['body'] = al.pack(al.HANDOFF, handoff)
+        self.loop.repair_evidence = lambda accepted, h, bound: accepted.update(repair_evidence_sha256='d' * 64)
         self.accepted = {'allowed': True, 'mode': 'develop', 'cases': 0, 'repair_revision': 'e' * 64,
                          'repair_observers': [session_fingerprint('00000000-0000-4000-8000-000000000035')]}
         self.loop.acceptance.return_value = self.accepted
