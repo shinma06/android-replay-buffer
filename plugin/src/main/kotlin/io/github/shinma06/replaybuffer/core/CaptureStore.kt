@@ -112,7 +112,8 @@ internal class CaptureStore(
         if (state != StreamState.CAPTURING && old.state == StreamState.CAPTURING) {
             addGap(kind, clock.now(), null, reason ?: "取得が中断しました")
         }
-        if (state == StreamState.CAPTURING && old.state != state) {
+        if (state == StreamState.CAPTURING && (old.state != state || kind == "app_log") &&
+            (kind != "app_log" || states.getValue("device_log").state == StreamState.CAPTURING)) {
             val index = gaps.lastOrNull { it.stream == kind && it.toNs == null }
             if (index != null) {
                 val closedGap = index.copy(toNs = clock.now())
@@ -123,6 +124,9 @@ internal class CaptureStore(
             }
         }
         states[kind] = old.copy(state = state, reason = reason)
+        // Target resolution and aggregate reader readiness may arrive in either order.
+        if (kind == "device_log" && state == StreamState.CAPTURING && states.getValue("app_log").state == StreamState.CAPTURING)
+            status("app_log", StreamState.CAPTURING, states.getValue("app_log").reason, owner)
     }
 
     @Synchronized
@@ -216,21 +220,17 @@ internal class CaptureStore(
     fun app(packageName: String?, uid: Long?, pids: Set<Int>, owner: Long, uidExclusive: Boolean = false) {
         if (closed || owner != generation) return
         require(pids.size <= 1024)
+        status("app_log", if (uid != null) StreamState.CAPTURING else StreamState.UNAVAILABLE,
+            if (uid == null) "対象アプリを解決できません" else null, owner)
         val last = apps.peekLast()
         val anchor = clock.snapshot().lastOrNull { it.valid }
         if (last != null && last.packageName == packageName && last.uid == uid && last.pids == pids && last.uidExclusive == uidExclusive && last.from != null && last.epoch == anchor?.epoch) {
-            states["app_log"] = StreamSnapshot(if (uid != null) StreamState.CAPTURING else StreamState.UNAVAILABLE,
-                reason = if (uid == null) "対象アプリを解決できません" else null)
             return
         }
-        states["app_log"] = StreamSnapshot(if (uid != null) StreamState.CAPTURING else StreamState.UNAVAILABLE,
-            reason = if (uid == null) "対象アプリを解決できません" else null)
         val now = anchor?.let { it.elapsed + (System.nanoTime() - it.received).coerceAtLeast(0) }
         if (last != null) { apps.removeLast(); apps.add(last.copy(to = if (last.epoch == anchor?.epoch) now else clock.snapshot().lastOrNull { it.epoch == last.epoch }?.elapsed)) }
         apps += AppPeriod(packageName, uid, java.util.Set.copyOf(pids), now, null, anchor?.epoch ?: 0, uidExclusive)
         while (apps.size > 2048) apps.removeFirst()
-        states["app_log"] = StreamSnapshot(if (uid != null) StreamState.CAPTURING else StreamState.UNAVAILABLE,
-            reason = if (uid == null) "対象アプリを解決できません" else null)
     }
 
     @Synchronized
