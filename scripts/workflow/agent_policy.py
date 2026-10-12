@@ -3,11 +3,28 @@ import fnmatch
 import hashlib
 import json
 import re
+import uuid
 from git_guard import BRANCH
 from issue_schema import labels
 
 CONTEXT = 'Agent review'
 SHA = re.compile(r'[0-9a-f]{40}')
+SESSION_HASH = re.compile(r'codex-session-sha256:[0-9a-f]{64}')
+
+
+def canonical_session(session):
+    try:
+        value = uuid.UUID(session) if isinstance(session, str) else None
+    except ValueError:
+        value = None
+    if value is None or str(value) != session or value.variant != uuid.RFC_4122:
+        raise ValueError('Canonical originating Codex session is missing or malformed')
+    return session
+
+
+def session_fingerprint(session):
+    return 'codex-session-sha256:' + hashlib.sha256(
+        ('codex-session-v1:' + canonical_session(session)).encode()).hexdigest()
 
 
 def issue_number(pr):
@@ -36,7 +53,7 @@ def binding(pr, issue):
             'issue_bug': 'type:bug' in labels(issue)}
 
 
-def validate_review(report, expected, acceptance=None):
+def validate_review(report, expected, acceptance=None, storage=None):
     for key in ('head', 'base'):
         if report.get(key) != expected[key]:
             raise ValueError('Stale reviewer ' + key)
@@ -52,10 +69,19 @@ def validate_review(report, expected, acceptance=None):
     if report['verdict'] == 'approved' and (report['findings'] or not report['scope_complete']):
         raise ValueError('Approval conflicts with incomplete scope or unresolved findings')
     if report['verdict'] == 'approved' and (acceptance or {}).get('repair_revision'):
+        reviewer = session_fingerprint(report['session'])
+        observers = acceptance.get('repair_observers')
         if (report.get('repair_revision') != acceptance['repair_revision'] or
+                not isinstance(acceptance.get('repair_evidence_sha256'), str) or
+                not re.fullmatch(r'[0-9a-f]{64}', acceptance.get('repair_evidence_sha256', '')) or
+                report.get('repair_evidence_sha256') != acceptance['repair_evidence_sha256'] or
                 not isinstance(report.get('repair_assessment'), str) or not report['repair_assessment'].strip() or
-                report['session'] in acceptance['repair_observers']):
+                not isinstance(observers, list) or not observers or
+                not all(isinstance(x, str) and SESSION_HASH.fullmatch(x) for x in observers) or
+                reviewer in observers):
             raise ValueError('Independent original-NG evidence assessment is missing, stale or self-reviewed')
+        from handoff_registry import verify_review_origin
+        verify_review_origin(storage, report, expected)
     if report['verdict'] == 'changes_requested' and not report['findings']:
         raise ValueError('Changes requested without concrete findings')
 
@@ -73,7 +99,7 @@ def gui_pass(evidence, bound):
                                               for x in evidence['cases']))
 
 
-def next_action(state, bound, ci, gui, acceptance=None):
+def next_action(state, bound, ci, gui, acceptance=None, storage=None):
     if bound.get('remote_review_complete') is False:
         return 'remote-review-wait'
     if state.get('binding') != bound:
@@ -90,7 +116,7 @@ def next_action(state, bound, ci, gui, acceptance=None):
     if acceptance is None and gui and not gui_pass(state.get('gui'), bound):
         return 'gui-queued'
     if acceptance and acceptance.get('repair_revision'):
-        validate_review(report, bound, acceptance)
+        validate_review(report, bound, acceptance, storage)
     if ci == 'failure':
         return 'ci-failed'
     if ci != 'success':
