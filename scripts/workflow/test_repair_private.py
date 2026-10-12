@@ -149,6 +149,15 @@ class PrivacyTests(unittest.TestCase):
         with self.assertRaises(ValueError): self.loop.save(self.gh.pull, state, None)
         self.assertFalse(any(comment['body'].startswith(tal.al.STATE) for comment in self.gh.comments(36)))
 
+    def test_public_fingerprint_without_private_reference_cannot_resume_ordinary_approval(self):
+        state = {'phase': 'reviewed', 'binding': {}, 'review': self.loop.public_state(tal.report())}
+        self.gh.comment(36, tal.al.pack(tal.al.STATE, state))
+        with self.assertRaisesRegex(ValueError, 'bound private review'): self.loop.load(36)
+        with self.assertRaises(ValueError): self.loop.tick(36)
+        self.assertNotIn((tal.HEAD, 'success'), self.gh.statuses)
+        self.assertEqual(self.gh.merges, 0)
+        self.loop.cleanup.assert_not_called()
+
 
 class ConsumerTests(unittest.TestCase):
     setUp = tal.LoopTests.setUp

@@ -282,6 +282,9 @@ class Loop:
         public, public_id = unpack(comments, HANDOFF_V2)
         handoff = resolve(self.storage, public, HOST) if public and (not legacy_id or public_id > legacy_id) else legacy
         state, comment_id = unpack(comments, STATE)
+        if (state and str(state.get('review', {}).get('session', '')).startswith('codex-session-sha256:')
+                and not state.get('review_ref')):
+            raise ValueError('Public session fingerprint requires its bound private review')
         if state and state.get('review_ref'):
             public = {'binding': state.get('binding'), 'review': state.get('review')}
             state['review'] = restore_review(self.storage, state['review_ref'], public)
