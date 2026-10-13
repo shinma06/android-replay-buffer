@@ -778,5 +778,113 @@ class PromotionTreeTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             promotion_policy_blobs(self.git('rev-parse', 'HEAD'), self.candidate, self.git)
 
+class CertificateArchivePromotionTests(unittest.TestCase):
+    git = PromotionTreeTests.git
+    write = PromotionTreeTests.write
+    commit = PromotionTreeTests.commit
+
+    def setUp(self):
+        from test_verification import change, observation
+        self.folder = tempfile.TemporaryDirectory()
+        self.addCleanup(self.folder.cleanup)
+        self.root = Path(self.folder.name)
+        self.git('init', '-q')
+        self.git('config', 'user.email', 'fixture@example.invalid')
+        self.git('config', 'user.name', 'Synthetic fixture')
+        self.git('remote', 'add', 'origin', str(self.root))
+        self.write(CASE_PATH, json.dumps(change(36)))
+        self.write(COMPONENT, 'old product')
+        self.commit('common')
+        self.old = self.git('rev-parse', 'HEAD')
+        self.git('checkout', '-q', '-b', 'candidate')
+        self.write(COMPONENT, 'tested new product')
+        self.commit('new candidate')
+        self.candidate = self.git('rev-parse', 'HEAD')
+        self.git('checkout', '-q', '-b', 'trusted-main', self.old)
+        self.active_path = 'docs/verification/changes/issue-255.json'
+        self.certificates = {}
+        for issue, candidate, artifact in ((246, self.old, 'd' * 64), (255, self.candidate, 'e' * 64)):
+            certificate = {'candidate': candidate, 'key': '36:QA-1', 'artifact_sha256': artifact}
+            self.certificates[issue] = certificate
+            self.write(f'docs/verification/changes/issue-{issue}.json', json.dumps(
+                dict(change(issue, False), evidence_certificates={'sample': certificate})))
+        self.commit('two adopted certificate generations')
+        self.base = self.git('rev-parse', 'HEAD')
+        result = dict(observation(), head=self.candidate, responsibility_assessment={'impact_reuse': {
+            'commit': self.base, 'path': self.active_path, 'id': 'sample',
+            'sha256': canonical_hash(self.certificates[255])}})
+        self.promotion = {'schema': 1, 'base': self.base, 'candidate': self.candidate,
+                          'artifact_sha256': 'e' * 64, 'changes': [{'commit': self.candidate, 'pr': 99}],
+                          'results': {'36:QA-1': result}}
+        self.git('checkout', '-q', 'candidate')
+        self.git('merge', '--no-commit', '--no-ff', '-s', 'ours', self.base)
+        for path in (CERT_PATH, self.active_path):
+            self.write(path, self.git('show', f'{self.base}:{path}'))
+        self.write('docs/verification/changes/issue-87.json', json.dumps(change(87, False)))
+        self.write('docs/verification/promotion.json', json.dumps(self.promotion))
+        self.commit('exact archives and new active reference')
+
+    def verify(self):
+        from test_agent_loop import pr_data
+        from verification import verify_pr
+        pr = pr_data()
+        pr['head'].update(sha=self.git('rev-parse', 'HEAD'), ref='codex/87-promotion')
+        pr['base'].update(sha=self.base, ref='main')
+        pr['body'] = ('Issue: #87\nGUI: not-required\nIntegration: promotion\n'
+                      'Verification: docs/verification/changes/issue-87.json')
+        source = copy.deepcopy(pr)
+        source.update(merged=True, merge_commit_sha=self.candidate)
+        source['base'].update(ref='develop', sha=self.old)
+        source['head'].update(ref='codex/36-source', sha=self.candidate)
+        source['body'] = ('Issue: #36\nGUI: required\nIntegration: develop\n'
+                          'Verification: docs/verification/changes/issue-36.json')
+        def api(path):
+            if path == 'git/ref/heads/develop':
+                return {'object': {'sha': self.candidate}}
+            if path == 'pulls/99':
+                return source
+            raise AssertionError(path)
+        # Isolate real carry/history from plan and substantive fact proofs tested above.
+        with patch('verification.initial_stage_plan', return_value=None), patch('verification.validate_fact_assessment'):
+            return verify_pr(pr, api, self.git)
+
+    def test_full_gate_preserves_two_generations_and_refuses_archive_mutations_and_old_consumption(self):
+        self.assertEqual(self.verify()['cases'], 1)
+        clean = self.git('rev-parse', 'HEAD')
+        for mutation in ('delete', 'certificate', 'record', 'unadopted', 'old-reference'):
+            with self.subTest(mutation=mutation):
+                self.git('reset', '--hard', clean)
+                if mutation == 'delete':
+                    (self.root / CERT_PATH).unlink()
+                elif mutation in ('certificate', 'record'):
+                    record = json.loads((self.root / CERT_PATH).read_text())
+                    if mutation == 'certificate':
+                        record['evidence_certificates']['sample']['candidate'] = self.candidate
+                    else:
+                        record['reason'] = 'Archive bytes changed outside certificate dictionary.'
+                    self.write(CERT_PATH, json.dumps(record))
+                elif mutation == 'unadopted':
+                    self.write('docs/verification/changes/issue-256.json', '{}')
+                else:
+                    manifest = copy.deepcopy(self.promotion)
+                    manifest['results']['36:QA-1']['responsibility_assessment']['impact_reuse'].update(
+                        path=CERT_PATH, sha256=canonical_hash(self.certificates[246]))
+                    self.write('docs/verification/promotion.json', json.dumps(manifest))
+                self.commit('invalid promotion')
+                invalid = self.git('rev-parse', 'HEAD')
+                with self.assertRaises(ValueError):
+                    self.verify()
+                if mutation != 'old-reference':
+                    self.git('revert', '--no-edit', invalid)
+                    with self.assertRaises(ValueError):
+                        self.verify()
+
+    def test_archive_only_promotion_retains_records_without_claiming_reused_evidence(self):
+        del self.promotion['results']['36:QA-1']['responsibility_assessment']
+        self.write('docs/verification/promotion.json', json.dumps(self.promotion))
+        self.commit('ordinary observation without certificate consumption')
+        self.assertEqual(self.verify()['cases'], 1)
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -119,7 +119,7 @@ mainはdevelop baseとは別のrefなので、GitHubのHEAD/strict-base保護だ
 2. mainにない候補の全commitをmerge済みdevelop PRへ一意に対応させ、各固定merge SHAのCase JSONを読む。
 3. 同一候補・同一成果物の全Caseを確認し、promotion.jsonへ`schema: 1`、`base`（現在main SHA）、`candidate`、`changes`（commitとpr）、`artifact_sha256`、`results`を保存する。
 4. resultsのキーは`Issue番号:Case ID`。passは`status / actor / observer / at / head / artifact_sha256 / evidence / loaded_identity / reason`を持つ。日時はtimezone付きISO8601、head/hashは候補と一致。loaded_identityに実際のCLI/Pluginのロード識別を書く。
-5. 候補後に変更できるのはpromotion.jsonとpromotion IssueのCase JSONのみ。全範囲のgate・CI・独立レビューを通し、merge commitでmainへ統合する。
+5. 候補後に新しく記述できるのはpromotion.jsonとpromotion IssueのCase JSONのみ。採用済み証明のIssue JSON（未参照の過去候補分を含む）と、条件を満たすmain方針は、trusted mainの正確なblob/modeで保持する。過去候補の証明を今回の候補の証拠へ読み替えず、全範囲のgate・CI・独立レビューを通し、merge commitでmainへ統合する。
 
 Plugin ZIP生成はプラグイン基盤の導入時に実buildへ接続します。現在は存在しないGradle/ZIP成果物を仮定せず、製品promotion前に再現できる固定成果物の作成・照合手順をそのIssueで定義します。main起点の限定変更も、trusted mainの`docs/verification/scopes/issue-N.json`による事前承認範囲と全Caseの観察が必要です。
 
@@ -338,7 +338,7 @@ private origin bundleは既存のsealed receipt機構を使い、`head / base / 
 
 元の`pass/initial-pass`に通常の`responsibility_assessment`がある場合も、元candidate/ZIP/planで内側を再検証します。内側のmissing/unresolved failureを外側の空配列で隠せません。影響reuseの連鎖は引き続き拒否します。一方、対象Case自体が旧pending/failでも、他Case等で実証済みの**成功目的のfact**を保持し、現在の不足事実と全coverageを満たせます。旧wholeCase PASSを作らず、元pending/failとその帰属・解消に必要な現在証拠を明示します。一般factの有効性は元の実identity/時刻/証拠/原hashで評価し、Caseの名前だけで共有可否を決めません。
 
-証明参照を使うdevelop候補の昇格では、候補とtrusted mainの分岐点以降にmainで採用された方針を保持できます。既存classifierでtooling/knowledge/metadataだけに属するpathの**mainの正確なblob/mode**に限定し、候補の有効なinitial planとCase契約が変わらないことを検証します。受入JSONは一括許可せず、参照したcandidate/build/hashに結びつく採用済み証明のIssue JSONだけを別gateで許可します。build/product/test/unknownやmixed分類は対象外です。新しいpromotion各commitも確認し、方針や証明を改変して後から戻した履歴を拒否します。製品candidate/source/ZIPと観察のidentityは変えず、新metadata HEADでGUIを実行したと読み替えません。
+採用済み証明を保持するdevelop候補の昇格では、候補とtrusted mainの分岐点以降にmainで採用された方針を保持できます。既存classifierでtooling/knowledge/metadataだけに属するpathの**mainの正確なblob/mode**に限定し、候補の有効なinitial planとCase契約が変わらないことを検証します。受入JSONは一括許可せず、採用済み証明を持つGUI不要・cases空のIssue JSONだけを別gateで保持します。未参照の過去候補の登録は不変の履歴であり、今回の成功事実にはしません。証明を参照する結果には引き続き今回のcandidate/build/hashとの一致を要求します。build/product/test/unknownやmixed分類は対象外です。新しいpromotion各commitも確認し、方針や証明の削除・改変・改変後の復元を拒否します。製品candidate/source/ZIPと観察のidentityは変えず、新metadata HEADでGUIを実行したと読み替えません。
 
 #246 correction3の登録gateは、証明の全identity/build/原hash/Case/plan/history/保証/関連componentを利用可能な実Gitへ照合し、変更された全Issue JSONと各commit edgeで専用の現在Issue/main tooling登録への拘束を確認します。既にmain採用済みの正確なblob保持は新登録にしません。private bundleの種別を登録・再binding・retention・cleanupへ引継ぎ、missing/stale証拠を拒否します。通常の保持事実評価は内側も再検証しますが、fact内のimpact reuseは許可せず、元の成功目的を直接対応付けます。
 

@@ -1378,8 +1378,19 @@ def verify_repair(pr, issue, data, path, api, git):
 
 
 def promotion_certificates(promotion, base, candidate, git):
-    """Carry only referenced candidate-bound certificate JSON already adopted on main."""
+    """Keep exact main certificate archives; consumed evidence must bind the candidate."""
     paths = {}
+    for path in git('diff', '--no-renames', '--name-only', candidate, base).splitlines():
+        if (not re.fullmatch(r'docs/verification/changes/issue-[1-9][0-9]*\.json', path) or
+                not git('ls-tree', base, '--', path)):
+            continue
+        adopted = regular_json(base, path, git)
+        if 'evidence_certificates' not in adopted:
+            continue
+        validate_change(adopted, int(Path(path).stem.removeprefix('issue-')), False)
+        if not isinstance(adopted['evidence_certificates'], dict) or not adopted['evidence_certificates']:
+            raise ValueError('Historical certificate archive must be a nonempty main tooling registration')
+        paths[path] = git('ls-tree', base, '--', path)
     results = promotion.get('results', {})
     if not isinstance(results, dict):
         raise ValueError('Candidate results must be an object matching ALL required Cases')
@@ -1423,7 +1434,7 @@ def promotion_policy_blobs(base, candidate, git):
     paths = {}
     for path in git('diff', '--no-renames', '--name-only', ancestor, base).splitlines():
         if path.startswith('docs/verification/') and not path.endswith('.md'):
-            continue  # Certificates have their own candidate-bound adoption gate.
+            continue  # Certificate archives and consumed evidence have their own adoption gate.
         blob = git('ls-tree', base, '--', path)
         old_blob = git('ls-tree', candidate, '--', path)
         modes = tuple(x.split()[0] if x else '000000' for x in (old_blob, blob))
