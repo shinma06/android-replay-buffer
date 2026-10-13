@@ -39,6 +39,22 @@ PR の題名は **`type: 日本語の要約 (#N)`** に統一します。例: `f
 
 作成・ready・修正再開・固定レビュー・merge 直前に実題名を読み戻します。共有 PR policy は型・空でない要約・日本語文字の有無・単一番号と branch/本文の一致を検査します。文字の有無は自然な日本語や意味の正しさの証明ではなく、要約・型・破壊的変更の妥当性はレビューで確認します。題名変更は同じ HEAD でも固定 review binding を失効させ、最新 metadata の policy と独立評価を照合します。coordinator はタイトルを reviewer へ渡し、merge 直前の既存 readback/binding と実 squash/merge 文へ反映します。GitHub metadata と merge を外部編集に対して原子的には固定できません。
 
+## branch 命名
+
+この改訂を採用した後に新しく作る専用branchは **`codex/<Issue番号>-<type>-<短い英語の目的>`** を既定とします。例: `codex/265-chore-branch-lifecycle`、`codex/12-feat-replay-integration`、`codex/227-fix-log-reconnect`。これは本repositoryの規約で、世界共通のGit標準ではありません。
+
+`type`は上のPRタイトルと同じ語彙・実際の変更目的から選び、所有する実Issue番号は1つにします。suffixは小文字ASCII英数字、単語間は単一ハイフンとし、英語の目的を短く具体的に書きます。日本語・空白・scope・`!`・末尾/連続ハイフンは入れません。破壊的変更はPRの`!`と本文で説明します。必要な別agent prefix（`claude` / `cursor` / `agent`）でも同じsuffixを使います。
+
+作成前に既存ref/所有者との衝突と`git check-ref-format --branch`を確認し、開始・PR作成・固定レビュー時にbranch、PR type/目的、本文の`Issue: #N`の一致を読み戻します。変更の主目的が途中で変わった場合はownerが理由をIssue/PRに残してレビューし、公開済みrefを命名のためだけに改名しません。既存/open/歴史上のrefsは一括rename・履歴改変・force pushせず、そのまま再開/読取します。共有parser/hookは旧`<Issue番号>-<slug>`も引き続き扱い、新形式の意味と適用時期はこの開始/レビュー手順で確認します。将来用の日付registryや追加daemonは作りません。
+
+## commit 命名
+
+この改訂の採用後に作成する作業commitの題名も **`type: 日本語の要約 (#N)`** とします。例: `chore: 未マージ終了PRの保全と命名を統一する (#265)`。PRと同じ小文字typeの語彙・scopeなし・単一の所有Issue末尾・実breakingのみ`!`を使い、必要なら空行の後に理由/検査をbodyへ書きます。関連Issueや優先度を題名へ重ねません。
+
+各commitのtypeはその実変更を表します。文書だけのcommitが`docs`でPR全体が`chore`など、異なる粒度の理由がある場合は妥当性をレビューします。branch/PRと所有Issue・目的の対応を保ち、公開済みbranchをtypeのために改名しません。commit前と固定レビューで今回新しく作成した題名/bodyを読み戻します。既存PR title parserの語彙と形式を基準にし、履歴を一括lintして過去の成果を拒否する新gateは設けません。
+
+統合用squash/mergeの題名・本文は既存のPRタイトル/readbackとcoordinatorの固定payloadに従います。GitHubが付ける実PR番号suffix、base同期のためGitが生成するmerge題名は例外として保持します。生成mergeのbodyへ不要なclosing keywordを入れず、[Developmentのclose境界](#development-の実関連)を守ります。通常の作業commitを生成mergeと称して規約を外さず、旧commit・公開済み履歴・固定受入成果はamend/rebase/rewrite/force pushで変更しません。
+
 ## PR sidebar の実情報
 
 最初の Draft PR 作成時、ready・修正再開・統合/close 時に、本文と別に PR の native sidebar を確認します。対応 Issue の実分類と計画を使い、[公式 CLI の PR 編集](https://cli.github.com/manual/gh_pr_edit)や[公式 Projects API](https://docs.github.com/en/issues/planning-and-tracking-with-projects/automating-your-project/using-the-api-to-manage-projects)で所有範囲だけ補い、実 PR node と関連 Issue を読み戻します。

@@ -47,6 +47,43 @@ class PolicyTests(unittest.TestCase):
         for p in variants:
             self.assertFalse(eligible(p, al.OWNER, al.REPO))
 
+    def test_typed_and_existing_branches_keep_the_same_issue(self):
+        for branch in ('codex/35-test', 'codex/35-chore-branch-lifecycle'):
+            pr = pr_data(); pr['head']['ref'] = branch
+            self.assertEqual(al.issue_number(pr), 35)
+            self.assertTrue(eligible(pr, al.OWNER, al.REPO))
+
+    def test_closed_unmerged_audit_retains_reused_refs_even_with_apply(self):
+        closed = dict(pr_data(), state='closed', merged_at=None)
+        merged = dict(pr_data(), number=34, state='closed', merged_at='2026-10-10T00:00:00Z')
+        gh = Mock(); gh.pages.return_value = [closed, merged]
+        for tip in (HEAD, NEW):
+            def git(*args):
+                if args[0] == 'for-each-ref': return f'codex/35-test {tip}\nmain {BASE}'
+                return ''
+            with self.subTest(tip=tip), patch.object(al, 'git', side_effect=git) as calls:
+                self.assertEqual(al.audit_branches(gh, apply=True), [
+                    {'branch': 'codex/35-test', 'state': 'retained-closed-unmerged', 'pr': 36}])
+                self.assertFalse(any(c.args[0] == 'update-ref' for c in calls.call_args_list))
+
+    def test_merged_audit_keeps_existing_sha_worktree_and_remote_guards(self):
+        pr = dict(pr_data(), state='closed', merged_at='2026-10-10T00:00:00Z')
+        gh = Mock(); gh.pages.return_value = [pr]
+        for tip, worktree, remote, expected in (
+                (NEW, '', '', None),
+                (HEAD, 'branch refs/heads/codex/35-test', '', 'retained-active-worktree'),
+                (HEAD, '', HEAD, 'retained-remote-ref'),
+                (HEAD, '', '', 'deleted')):
+            def git(*args):
+                if args[0] == 'for-each-ref': return f'codex/35-test {tip}'
+                if args[:2] == ('worktree', 'list'): return worktree
+                if args[0] == 'ls-remote': return remote
+                return ''
+            with self.subTest(expected=expected), patch.object(al, 'git', side_effect=git) as calls:
+                result = al.audit_branches(gh, apply=True)
+                self.assertEqual([r['state'] for r in result], [] if expected is None else [expected])
+                self.assertEqual(any(c.args[0] == 'update-ref' for c in calls.call_args_list), expected == 'deleted')
+
     def test_binding_invalidates_approval(self):
         p = pr_data(); issue = {'body': '- [ ] value is correct'}
         bound = binding(p, issue)
@@ -786,6 +823,16 @@ class LoopTests(unittest.TestCase):
         self.assertFalse(any(c.args[0] == 'push' for c in al.git.call_args_list))
         self.assertEqual(self.local_head, NEW)
         for key in ('binding', 'review', 'gui'): self.assertNotIn(key, state)
+
+    def test_closed_unmerged_tick_reports_retention_without_claim_or_resource_changes(self):
+        self.gh.pull.update(state='closed', merged=False)
+        before = copy.deepcopy(self.gh.messages)
+        result = self.loop.tick(36)
+        self.assertEqual(result['phase'], 'retained-closed-unmerged')
+        self.assertEqual(self.gh.messages, before)
+        self.assertEqual(self.gh.issues[35]['state'], 'open')
+        self.loop.cleanup.assert_not_called(); self.worker.assert_not_called()
+        self.assertEqual(self.gh.merges, 0)
 
     def test_review_fix_rereview_merge_issue_cleanup(self):
         reports = [report('changes_requested'), report(), report(head=NEW)]

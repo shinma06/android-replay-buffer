@@ -28,7 +28,8 @@ class GuardTest(unittest.TestCase):
         for branch in ['main', 'master', 'develop', '', 'codex/topic']:
             with self.assertRaises(ValueError):
                 check_branch(branch)
-        check_branch('codex/31-workflow')
+        for branch in ('codex/31-workflow', 'codex/31-chore-workflow'):
+            check_branch(branch)
 
     def test_push_checks_destination_not_current_branch(self):
         for dest in ['main', 'master', 'develop']:

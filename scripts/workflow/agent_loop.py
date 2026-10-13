@@ -629,7 +629,8 @@ class Loop:
                 self.save(pr, state, comment_id)
                 return {'pr': number, 'phase': 'cleanup', 'error': state['next']}
         if pr['state'] != 'open':
-            return {'pr': number, 'phase': state['phase']}
+            return {'pr': number, 'phase': 'retained-closed-unmerged',
+                    'next': 'Owner/PM: preserve and restore-check under branch lifecycle; claim remains retained'}
         if state.get('retry_at', 0) > time.time():
             return {'pr': number, 'phase': 'backoff'}
         try:
@@ -1134,11 +1135,15 @@ def audit_branches(gh, apply=False):
     git('fetch', '--prune', 'origin')
     prs = gh.pages(f'repos/{REPO}/pulls?state=closed&per_page=100')
     merged = {pr['head']['ref']: pr for pr in prs if pr.get('merged_at') and eligible(pr, OWNER, REPO)}
+    unmerged = {pr['head']['ref']: pr for pr in prs if not pr.get('merged_at') and eligible(pr, OWNER, REPO)}
     checked = set(re.findall(r'^branch refs/heads/(.+)$', git('worktree', 'list', '--porcelain'), re.M))
     results = []
     for line in git('for-each-ref', '--format=%(refname:short) %(objectname)', 'refs/heads/').splitlines():
         branch, sha = line.split()
         if branch in ('main', 'master', 'develop'):
+            continue
+        if branch in unmerged:
+            results.append({'branch': branch, 'state': 'retained-closed-unmerged', 'pr': unmerged[branch]['number']})
             continue
         pr = merged.get(branch)
         if not pr or sha != pr['head']['sha']:
