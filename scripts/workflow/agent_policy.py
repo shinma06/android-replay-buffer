@@ -82,6 +82,20 @@ def validate_review(report, expected, acceptance=None, storage=None):
             raise ValueError('Independent original-NG evidence assessment is missing, stale or self-reviewed')
         from handoff_registry import verify_review_origin
         verify_review_origin(storage, report, expected)
+    if report['verdict'] == 'approved' and (acceptance or {}).get('certificate_revision'):
+        reviewer = session_fingerprint(report['session'])
+        observers = acceptance.get('certificate_observers')
+        if (report.get('certificate_revision') != acceptance['certificate_revision'] or
+                acceptance.get('certificate_reviewers') != [reviewer] or
+                not isinstance(observers, list) or not observers or reviewer in observers or
+                not all(isinstance(s, str) and SESSION_HASH.fullmatch(s) for s in observers) or
+                not isinstance(acceptance.get('certificate_evidence_sha256'), str) or
+                not re.fullmatch(r'[0-9a-f]{64}', acceptance['certificate_evidence_sha256']) or
+                report.get('certificate_evidence_sha256') != acceptance['certificate_evidence_sha256'] or
+                not isinstance(report.get('certificate_assessment'), str) or not report['certificate_assessment'].strip()):
+            raise ValueError('Certificate registration lacks its actual independent session/original evidence assessment')
+        from handoff_registry import verify_review_origin
+        verify_review_origin(storage, report, expected)
     if report['verdict'] == 'changes_requested' and not report['findings']:
         raise ValueError('Changes requested without concrete findings')
 
@@ -115,7 +129,7 @@ def next_action(state, bound, ci, gui, acceptance=None, storage=None):
         return 'acceptance-wait'
     if acceptance is None and gui and not gui_pass(state.get('gui'), bound):
         return 'gui-queued'
-    if acceptance and acceptance.get('repair_revision'):
+    if acceptance and (acceptance.get('repair_revision') or acceptance.get('certificate_revision')):
         validate_review(report, bound, acceptance, storage)
     if ci == 'failure':
         return 'ci-failed'

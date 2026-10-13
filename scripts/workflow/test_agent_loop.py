@@ -136,6 +136,40 @@ class RootTests(unittest.TestCase):
             al.git('status', cwd=explicit)
             self.assertEqual(run.call_args.kwargs['cwd'], explicit)
 
+    def test_acceptance_git_failures_keep_real_exit_and_private_diagnostics(self):
+        with tempfile.TemporaryDirectory() as folder:
+            subprocess.check_output(['git', 'init', '-q'], cwd=folder)
+            loop = al.Loop(storage=folder)
+            def validate(pr, api, git):
+                return {'value': git('show', 'sensitive-ref')}
+            with patch.object(al, 'verify_pr', side_effect=validate), \
+                    patch.object(al.subprocess, 'run', wraps=subprocess.run) as run, \
+                    patch.dict(os.environ, {'GIT_DIR': 'foreign', 'GH_TOKEN': 'secret'}):
+                accepted = loop.acceptance({}, Path(folder))
+            self.assertFalse(accepted['allowed'])
+            self.assertIn('CalledProcessError', accepted['reason'])
+            self.assertNotIn('sensitive-ref', accepted['reason'])
+            self.assertNotIn('fatal:', accepted['reason'])
+            self.assertEqual(run.call_args.kwargs['timeout'], 120)
+            self.assertEqual(run.call_args.kwargs['cwd'], Path(folder))
+            self.assertNotIn('GIT_DIR', run.call_args.kwargs['env'])
+            self.assertNotIn('GH_TOKEN', run.call_args.kwargs['env'])
+            diagnostics = list((Path(folder) / 'diagnostics').iterdir())
+            self.assertEqual(len(diagnostics), 1)
+            self.assertEqual(diagnostics[0].stat().st_mode & 0o777, 0o600)
+            self.assertIn('exit status 128', diagnostics[0].read_text())
+
+    def test_acceptance_timeout_does_not_become_a_missing_source_or_success(self):
+        with tempfile.TemporaryDirectory() as folder:
+            loop = al.Loop(storage=folder)
+            def validate(pr, api, git):
+                return {'value': git('cat-file', '-t', HEAD)}
+            with patch.object(al, 'verify_pr', side_effect=validate), \
+                    patch.object(al.subprocess, 'run', side_effect=subprocess.TimeoutExpired('git', 120)) as run:
+                with self.assertRaises(subprocess.TimeoutExpired):
+                    loop.acceptance({}, Path(folder))
+                self.assertEqual(run.call_count, 1)
+
 
 class BaseReferenceTests(unittest.TestCase):
     def test_open_pr_uses_live_ref_despite_stale_payload(self):
@@ -662,10 +696,11 @@ class LoopTests(unittest.TestCase):
         self.loop.test_and_push = lambda *args: al.Loop.test_and_push(self.loop, *args)
         with patch.object(al, 'command', return_value='') as commands:
             self.assertEqual(self.loop.tick(36)['phase'], 'base-synced')
-        self.assertEqual([c.args[0] for c in commands.call_args_list], [
-            [sys.executable, 'scripts/check.py'],
-            [sys.executable, 'scripts/workflow/product_check.py'],
-            [sys.executable, 'scripts/workflow/plugin_check.py']])
+        expected = [[sys.executable, 'scripts/check.py'],
+                    [sys.executable, 'scripts/workflow/product_check.py']]
+        if (Path(__file__).resolve().parents[2] / 'plugin').is_dir():
+            expected.append([sys.executable, 'scripts/workflow/plugin_check.py'])
+        self.assertEqual([c.args[0] for c in commands.call_args_list], expected)
         self.assertTrue(any(c.args == ('push', 'origin', 'HEAD:refs/heads/codex/35-test')
                             for c in al.git.call_args_list))
         _, state, _, _ = self.loop.load(36)
