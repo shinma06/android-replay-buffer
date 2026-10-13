@@ -30,6 +30,7 @@ internal class DeviceCapture(
     private val workers = mutableListOf<Thread>()
     private val sockets = ConcurrentHashMap.newKeySet<Socket>()
     private val ports = ConcurrentHashMap<String, String>()
+    private val pendingEndpoints = ConcurrentHashMap.newKeySet<String>()
     private val token = UUID.randomUUID().toString().replace("-", "")
     private val partitionLogs = CompletableFuture<Boolean>()
     private val logProcesses = ConcurrentHashMap<String, Process>()
@@ -110,11 +111,16 @@ internal class DeviceCapture(
     private fun video() {
         adb.command("-s", serial, "push", resources.server.toString(), serverFile)
         val scid = Random.nextInt(1, Int.MAX_VALUE).toString(16).padStart(8, '0')
-        // A shutdown snapshot must wait for an in-flight allocation to register its owned endpoint.
+        // Keep the endpoint even when allocation succeeds remotely but its response is lost.
+        val endpoint = "localabstract:scrcpy_$scid"
         val port = synchronized(ports) {
-            val allocated = adb.command("-s", serial, "forward", "tcp:0", "localabstract:scrcpy_$scid").trim()
+            check(listForwards(adb).none { it[0] == serial && it[2] == endpoint }) { "forwardのendpointは使用中です" }
+            check(!stopping.get())
+            pendingEndpoints.add(endpoint)
+            val allocated = adb.command("-s", serial, "forward", "tcp:0", endpoint).trim()
             require(Regex("[0-9]{1,5}").matches(allocated) && allocated.toInt() in 1..65535)
-            ports[allocated] = "localabstract:scrcpy_$scid"
+            ports[allocated] = endpoint
+            pendingEndpoints.remove(endpoint)
             allocated
         }
         // All shell tokens are fixed or generated hex; no user-supplied shell text is interpolated.
@@ -264,7 +270,7 @@ internal class DeviceCapture(
     fun cleanupRemote(): Boolean = cleanupRecord().clean(adbPath).also { cleanupPending = !it }
 
     fun cleanupRecord(): RemoteCleanup = synchronized(ports) {
-        RemoteCleanup(serial, token, java.util.Map.copyOf(ports))
+        RemoteCleanup(serial, token, java.util.Map.copyOf(ports), java.util.Set.copyOf(pendingEndpoints))
     }
 
 }

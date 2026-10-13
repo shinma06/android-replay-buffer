@@ -15,13 +15,19 @@ import java.nio.file.attribute.BasicFileAttributes
 import java.nio.file.attribute.PosixFilePermissions
 
 /** Immutable identities retained while stopping a capture, including unconfirmed host termination. */
-internal data class RemoteCleanup(val serial: String, val token: String, val forwards: Map<String, String>) {
+internal data class RemoteCleanup(
+    val serial: String,
+    val token: String,
+    val forwards: Map<String, String>,
+    val pendingEndpoints: Set<String> = emptySet(),
+) {
     private val serverName get() = "replay-$token-video"
     private val clockName get() = "replay-$token-clock"
 
     fun validate(): RemoteCleanup {
         serialArgument(serial)
-        require(Regex("[0-9a-f]{32}").matches(token) && forwards.size <= 64)
+        require(Regex("[0-9a-f]{32}").matches(token) && forwards.size + pendingEndpoints.size <= 64)
+        pendingEndpoints.forEach { require(Regex("localabstract:scrcpy_[0-9a-f]{8}").matches(it)) }
         forwards.forEach { (port, endpoint) ->
             require(Regex("[1-9][0-9]{0,4}").matches(port) && port.toInt() <= 65535)
             require(Regex("localabstract:scrcpy_[0-9a-f]{8}").matches(endpoint))
@@ -40,24 +46,45 @@ internal data class RemoteCleanup(val serial: String, val token: String, val for
                 }.toSet()
             pids().forEach { pid -> if (pid in pids()) command("-s", serial, "shell", "kill", "-TERM", pid.toString()) }
             check(pids().isEmpty()) { "所有端末processの終了が未確認です" }
-            removeOwnedForwards(adb, serial, forwards, cancelled)
+            removeOwnedForwards(adb, serial, forwards, cancelled, pendingEndpoints)
             command("-s", serial, "shell", "rm", "-f", "/data/local/tmp/replay-$token-server.jar", "/data/local/tmp/replay-$token-clock.jar")
         }
         true
     }.getOrDefault(false)
 }
 
+internal fun listForwards(adb: OwnedAdb, cancelled: () -> Boolean = { false }): List<List<String>> {
+    check(!cancelled())
+    val result = adb.command("forward", "--list").lineSequence().filter { it.isNotBlank() }
+        .map { it.trim().split(Regex("\\s+")) }.toList()
+    check(result.all { it.size == 3 }) { "forwardの所有を確認できません" }
+    return result
+}
+
 /** A recycled TCP port is no longer ours. Never remove a mapping by its port alone. */
-internal fun removeOwnedForwards(adb: OwnedAdb, serial: String, forwards: Map<String, String>, cancelled: () -> Boolean = { false }) {
+internal fun removeOwnedForwards(
+    adb: OwnedAdb,
+    serial: String,
+    forwards: Map<String, String>,
+    cancelled: () -> Boolean = { false },
+    pendingEndpoints: Set<String> = emptySet(),
+) {
     forwards.forEach { (port, endpoint) ->
-        check(!cancelled())
-        val listed = adb.command("forward", "--list").lineSequence().filter { it.isNotBlank() }.map { it.trim().split(Regex("\\s+")) }.toList()
-        check(listed.all { it.size == 3 }) { "forwardの所有を確認できません" }
-        val matches = listed.filter { it[1] == "tcp:$port" }
+        val matches = listForwards(adb, cancelled).filter { it[1] == "tcp:$port" }
         check(!cancelled())
         if (matches.singleOrNull() == listOf(serial, "tcp:$port", endpoint))
             adb.command("-s", serial, "forward", "--remove", "tcp:$port")
         else check(matches.size <= 1) { "forwardの所有を確認できません" }
+    }
+    pendingEndpoints.forEach { endpoint ->
+        val matches = listForwards(adb, cancelled).filter { it[0] == serial && it[2] == endpoint }
+        check(matches.size <= 1) { "未確定forwardの所有を確認できません" }
+        matches.singleOrNull()?.let { identity ->
+            val port = identity[1].removePrefix("tcp:")
+            require(identity[1] == "tcp:$port" && Regex("[1-9][0-9]{0,4}").matches(port) && port.toInt() <= 65535)
+            removeOwnedForwards(adb, serial, mapOf(port to endpoint), cancelled)
+        }
+        check(listForwards(adb, cancelled).none { it[0] == serial && it[2] == endpoint }) { "未確定forwardの削除を確認できません" }
     }
 }
 
@@ -76,7 +103,12 @@ internal class RemoteCleanupJournal(private var directory: Path) : AutoCloseable
         prepare()
         val path = directory.resolve("remote-cleanup-${record.token}.json")
         if (path in owned) return
-        val bytes = Gson().toJson(mapOf("schema" to 1, "serial" to record.serial, "token" to record.token, "forwards" to record.forwards)).toByteArray(Charsets.UTF_8)
+        val fields = mutableMapOf<String, Any>("schema" to 1, "serial" to record.serial, "token" to record.token, "forwards" to record.forwards)
+        if (record.pendingEndpoints.isNotEmpty()) {
+            fields["schema"] = 2
+            fields["pending_endpoints"] = record.pendingEndpoints
+        }
+        val bytes = Gson().toJson(fields).toByteArray(Charsets.UTF_8)
         val channel = FileChannel.open(path, setOf<java.nio.file.OpenOption>(CREATE_NEW, READ, WRITE, NOFOLLOW_LINKS),
             PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rw-------")))
         try {
@@ -113,9 +145,19 @@ internal class RemoteCleanupJournal(private var directory: Path) : AutoCloseable
                     val buffer = ByteBuffer.allocate(channel.size().toInt())
                     while (buffer.hasRemaining()) check(channel.read(buffer) > 0)
                     val json = JsonParser.parseString(buffer.array().toString(Charsets.UTF_8)).asJsonObject
-                    require(json.keySet() == setOf("schema", "serial", "token", "forwards") && json["schema"].toString() == "1")
+                    val keys = setOf("schema", "serial", "token", "forwards")
+                    val endpoints = when (json["schema"].toString()) {
+                        "1" -> { require(json.keySet() == keys); emptyList() }
+                        "2" -> {
+                            require(json.keySet() == keys + "pending_endpoints")
+                            json["pending_endpoints"].asJsonArray.map { it.asString }
+                        }
+                        else -> error("終了情報のschemaを確認できません")
+                    }
+                    require(endpoints.size == endpoints.toSet().size)
                     val forwards = json["forwards"].asJsonObject.entrySet().associate { it.key to it.value.asString }
-                    val record = RemoteCleanup(json["serial"].asString, json["token"].asString, java.util.Map.copyOf(forwards)).validate()
+                    val record = RemoteCleanup(json["serial"].asString, json["token"].asString,
+                        java.util.Map.copyOf(forwards), java.util.Set.copyOf(endpoints)).validate()
                     require(path.fileName.toString() == "remote-cleanup-${record.token}.json")
                     owned[path] = Entry(record, channel, lock, key)
                     channel = null // ownership transfers only after validation.

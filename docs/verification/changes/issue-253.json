@@ -5,6 +5,7 @@
   "reason": "既存41:CORE-CLEANUPと42:UI-12-07の所有終了情報保証へ、未確認終了時にも永続化する内部例外経路を修正する。failure/reader/forward race/journal writeは所有する実Thread/client/processと隔離filesystemの製品JVM回帰で実証し、UI/API/取得方式を変更しないため独立した新GUI Caseを追加しない。原139 Case/208出典/105 Agent/34 REALと全失敗・未達は変更しない。新ZIPの代表IDE終了glueと変更影響の受入対応・formal reuseはPM/reviewer220へ引継ぎ、今回の回帰を新native Case PASSへ転記しない。",
   "cli_checks": [
     "DeviceCaptureCloseTest: 修正前に元例外置換・永続記録欠落・副次journal失敗欠落を実再現し、修正後にprimary/suppressed、serial/token/forward再回収、write failure保全/retry、実forward割当中snapshotを確認する。",
+    "ForwardAllocationCleanupTest: 実closeでforward割当応答を失わせ、オンライン安全回収とoffline永続schema2/次OFF Core回復、旧schema1互換、曖昧identity・再利用port・別serial同endpoint・不正記録の保全を確認。割当前に同serial/endpointの既存mappingを確認し、未確定endpointを先に登録する。",
     "OwnedAdbTest/RemoteCleanupTest/ReplayCoreTest/ReplayCoreWireTestおよびplugin_check.pyのcheck/buildPlugin/verifyPluginStructureで通常停止・共有ADB非操作・旧owner/port再利用保護・取得再接続/保存を確認する。",
     "python3 scripts/workflow/product_check.py、python3 scripts/check.pyとclean committed HEADのchange_impact.py --run-tests、通常pre-push hook。固定sourceと新ZIPを記録し、旧ZIP ca74694bの原観察は保持する。"
   ],

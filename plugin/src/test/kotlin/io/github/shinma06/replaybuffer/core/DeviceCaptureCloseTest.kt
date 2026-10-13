@@ -173,6 +173,7 @@ class DeviceCaptureCloseTest {
         private val store = CaptureStore(root.resolve("ring"))
         private val adbPath = if (forwardFixture) {
             Files.writeString(root.resolve("adb"), """#!/bin/sh
+if [ "${'$'}1" = forward ] && [ "${'$'}2" = --list ]; then exit 0; fi
 if [ "${'$'}3" = push ]; then exit 0; fi
 if [ "${'$'}3" = forward ]; then
     touch "${root.resolve("allocating")}"
