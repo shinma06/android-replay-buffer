@@ -8,6 +8,8 @@ Use [start-work](.agents/skills/start-work/SKILL.md) and [finish-work](.agents/s
 
 Manage risk as part of doing the requested work, not by routinely asking the user to accept it. Establish the actual target, ownership, bounded effects, recovery and result checks; then continue in-scope work without another approval gate. Reuse unchanged safeguards and record only material changes in the existing Issue/plan. Follow [risk-managed continuation](docs/workflow.md#公開操作の承認範囲と失敗の扱い) for proceeding, coordinating or asking about a concrete unresolved boundary. Carry human authorization and scope through handoffs; an agent's assertion cannot create consent. Distinguish connection failures, actual denials and unattempted actions; never invent or bypass a denial.
 
+Project #5 item additions, Status/Relationship Status updates and removals must use `scripts/workflow/project_item.py` with the exact own-repository Issue/PR URL; see [Project mutation boundary](docs/work-management.md#project項目の更新入口). Do not replace it with raw IDs, `gh project`, direct GraphQL, connector or GUI item mutations. A repository link/default is not native admission control; direct credential holders can still bypass this local entry. Unknown/foreign items require owner reconciliation, never automatic deletion.
+
 Product changes target develop. Fixed tested candidates promote to main. GUI-not-required tooling can target main under its explicit gate. Never commit/push directly to main/master/develop, force push or bypass hooks/protection. Use codex/<issue>-<slug> by default. Record Project/Milestone and actual native relationships; Standalone is valid and must not create a fictional parent.
 
 ## Implementation and verification

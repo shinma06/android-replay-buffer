@@ -75,6 +75,21 @@ branch 関連は既存の専用 branch を適切に結べる場合だけ使い�
 
 Project 名は **Android Replay Buffer — 開発マップ** を使用します。同名・関連付け済み Project を先に確認して再利用し、参照元の Project #2 をこのアプリへ流用しません。設定案は [.github/project.json](../.github/project.json)。実 ID は GitHub で取得して記録します。
 
+### Project項目の更新入口
+
+Project #5のIssue/PR追加・Status/Relationship Status更新・所有範囲の削除は、PM・writerともに [project_item.py](../scripts/workflow/project_item.py) を使います。番号とrepositoryを含む実URLから毎回取得し、Projectのowner/番号/関連repository、contentのrepository/種別/番号/ID、既存itemのProject/contentを変更前に照合します。opaque IDを引数に取りません。取得エラー・未知・不一致・部分応答は書込み前に拒否し、返却itemと変更後の実状態を照合します。既存登録を再利用し、指定したfieldだけを更新します。
+
+```bash
+python3 scripts/workflow/project_item.py add https://github.com/shinma06/android-replay-buffer/issues/262
+python3 scripts/workflow/project_item.py set https://github.com/shinma06/android-replay-buffer/issues/262 --field Status --value 'In Progress'
+python3 scripts/workflow/project_item.py set https://github.com/shinma06/android-replay-buffer/issues/262 --field 'Relationship Status' --value Standalone
+# PRは /pull/N。removeは必要性と所有範囲を確認した対象だけ。
+```
+
+Standaloneの判定・Issue状態とのStatus対応・操作の所有範囲は従来どおり担当が確認します。アーカイブ状態も照合し、アーカイブ済み項目へのaddは復帰成功とせず拒否します。ownerが復帰の必要性・対象・方法を整合するまで自動unarchiveしません。未知/外部itemは報告してownerと整合し、自動削除しません。拒否や結果不明を別の `gh project`、直接GraphQL、connector、GUIのitem操作で回避せず、実状態を取得して原因を解消します。接続に100件を超える関連Project/field/repositoryがある場合も部分取得として拒否し、必要になった時にページ取得を対応させます。Project概要・View・repository link/defaultの管理はこのitem入口の対象外です。
+
+[GitHubのrepository link/default](https://docs.github.com/en/issues/planning-and-tracking-with-projects/managing-your-project/adding-your-project-to-a-repository)は一覧表示と新Issueの作成先を設定します。[任意organizationの項目追加](https://docs.github.com/en/issues/planning-and-tracking-with-projects/managing-items-in-your-project/adding-items-to-your-project)を禁止するallowlistではありません。上の入口内では不一致を構造的に拒否しますが、直接CLI/API/connector/UIの書込み権限を持つ利用者までは遮断できません。[Projectアクセス権](https://docs.github.com/en/issues/planning-and-tracking-with-projects/managing-your-project/managing-access-to-your-projects)もread/write/admin単位です。任意経路を完全に禁止するにはplatformのadmission機能または書込み権限を独立した検証サービスだけに渡す構成が必要で、現在の管理入口だけを全経路の強制制限と説明しません。認証変更・常駐サービス・自動削除jobは追加しません。
+
 | View | filter | 役割 |
 |---|---|---|
 | Now — 進行中 | `is:open label:status:in-progress,status:review -label:type:tracking` | 現在の担当と PR |
