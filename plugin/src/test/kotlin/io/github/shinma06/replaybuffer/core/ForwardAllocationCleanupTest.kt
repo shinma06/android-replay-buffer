@@ -14,12 +14,12 @@ class ForwardAllocationCleanupTest {
     @Test
     fun lostAllocationResponseIsDurableAndNextOffCoreRecoversOnlyItsOwnEndpoint() {
         Fixture().use { f ->
-            Files.writeString(f.root.resolve("offline"), "offline")
             val core = ReplayCore(ReplaySettings(), f.root.resolve("workspace"), f.root.resolve("journal"))
             assertTrue(core.applySettings(ReplaySettings()).get(5, TimeUnit.SECONDS).accepted)
             ReplayCore::class.java.getDeclaredField("backend").apply { isAccessible = true }.set(core, f.capture)
             f.allocate()
             val endpoint = f.endpoint()
+            Files.writeString(f.root.resolve("offline"), "offline")
             core.closeAsync().get(10, TimeUnit.SECONDS)
             assertTrue(f.capture.cleanupPending)
             val record = f.capture.cleanupRecord()
