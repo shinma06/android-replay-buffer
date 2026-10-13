@@ -256,6 +256,8 @@ class PolicyTest(unittest.TestCase):
         namespace['validate_issue'](issue)
         namespace['validate_issue'](dict(issue, title='chore: 運用を整える'), allow_legacy=False)
         with self.assertRaises(ValueError):
+            namespace['validate_issue'](dict(issue, title='test: #35 #99 再試験', labels=['type:qa','priority:P1','status:ready']))
+        with self.assertRaises(ValueError):
             namespace['validate_issue'](dict(issue, title='fix: 運用を整える'))
         with self.assertRaises(ValueError):
             namespace['validate_issue'](issue, allow_legacy=False)

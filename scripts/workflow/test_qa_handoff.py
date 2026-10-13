@@ -101,12 +101,13 @@ class HandoffTests(unittest.TestCase):
         self.assertEqual(self.gh.created, 1)
 
     def test_invalid_new_qa_summary_is_rejected_before_transfer_writes(self):
-        self.gh.issues[35]['title'] = '[運用] legacy English'
-        with self.assertRaisesRegex(ValueError, 'Japanese summary'):
-            self.transfer()
-        self.assertEqual(self.gh.created, 0)
-        self.assertEqual(self.gh.comments(10), [])
-        self.assertEqual(self.gh.comments(35), [])
+        for title in ('[運用] legacy English', 'chore: #99 試験対象'):
+            self.gh.issues[35]['title'] = title
+            with self.assertRaisesRegex(ValueError, 'Japanese summary'):
+                self.transfer()
+            self.assertEqual(self.gh.created, 0)
+            self.assertEqual(self.gh.comments(10), [])
+            self.assertEqual(self.gh.comments(35), [])
 
     def test_milestone_and_parent_are_preserved_on_retry(self):
         self.gh.issues[35]['milestone'] = {'number': 7}
@@ -335,7 +336,7 @@ class SchemaTests(unittest.TestCase):
             with self.subTest(title=title), self.assertRaises(ValueError):
                 validate_issue(dict(issue, title=title))
         qa = dict(issue, number=100, labels=['type:qa', 'priority:P1', 'status:ready'])
-        for title in ('test: 試験', 'test: #0 試験', 'test: #100 試験', 'test: #35 試験 (#100)'):
+        for title in ('test: 試験', 'test: #0 試験', 'test: #100 試験', 'test: #35 試験 (#100)', 'test: #35 #99 再試験', 'test: #35 #35 再試験'):
             with self.subTest(title=title), self.assertRaises(ValueError):
                 validate_issue(dict(qa, title=title))
         validate_issue(dict(qa, title='test: #35 試験'), allow_legacy=False)

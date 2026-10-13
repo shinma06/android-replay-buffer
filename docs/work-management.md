@@ -20,7 +20,7 @@
 | `type:maintenance` | `chore: 日本語の要約` |
 | `type:tracking` | `track: 日本語の要約` |
 
-この改訂の採用後に新しく作るIssueと、明示して改名する対象の題名は **`type: 日本語の要約`** とします。typeは上の6ラベルとの一意対応、小文字・scopeなしです。Issue自身の番号や優先度、PR用の`(#N)`末尾は重ねません。QAだけは単一の元Issueを `test: #35 保存失敗を確認する` のように接頭辞直後へ置きます。要約は自然な日本語とし、Kotlin・SDK等の技術名は保持します。
+この改訂の採用後に新しく作るIssueと、明示して改名する対象の題名は **`type: 日本語の要約`** とします。typeは上の6ラベルとの一意対応、小文字・scopeなしです。Issue自身の番号や優先度、PR用の`(#N)`末尾は重ねません。QA要約内に追加の`#N`は置かず、QAだけは単一の元Issueを `test: #35 保存失敗を確認する` のように接頭辞直後へ置きます。要約は自然な日本語とし、Kotlin・SDK等の技術名は保持します。
 
 `feat` / `fix` / `test` / `chore`は既存PRの語彙を使い、`research` / `track`は既存の調査/追跡分類を表す本project専用の語です。世界共通のIssue標準やConventional Commitsの必須分類とは呼びません。6つのtypeラベルと実native関係を維持し、新しい分類やnative Issue typeは作りません。PR/commitのtypeは引き続き実変更で選び、Issue分類をそのままコピーしません。
 
@@ -61,7 +61,7 @@ PR の題名は **`type: 日本語の要約 (#N)`** に統一します。例: `f
 
 各commitのtypeはその実変更を表します。文書だけのcommitが`docs`でPR全体が`chore`など、異なる粒度の理由がある場合は妥当性をレビューします。branch/PRと所有Issue・目的の対応を保ち、公開済みbranchをtypeのために改名しません。commit前と固定レビューで今回新しく作成した題名/bodyを読み戻します。既存PR title parserの語彙と形式を基準にし、履歴を一括lintして過去の成果を拒否する新gateは設けません。
 
-既存coordinatorの自動fix commitは、所有Issueとの一致を検査した意味のある現PR題名を使い、staging前に既存title parserで確認します。
+既存coordinatorの自動fix commitは、所有Issueとの一致を検査した意味のある現PR題名を使い、staging前にlive PRの題名・HEAD/base/bodyを再取得して元bindingとの一致と既存title parserを確認し、push前も題名の不変を読み戻します。変更された場合は未公開の作業を保持して停止します。
 
 統合用squash/mergeの題名・本文は既存のPRタイトル/readbackとcoordinatorの固定payloadに従います。GitHubが付ける実PR番号suffix、base同期のためGitが生成するmerge題名は例外として保持します。生成mergeのbodyへ不要なclosing keywordを入れず、[Developmentのclose境界](#development-の実関連)を守ります。通常の作業commitを生成mergeと称して規約を外さず、旧commit・公開済み履歴・固定受入成果はamend/rebase/rewrite/force pushで変更しません。
 

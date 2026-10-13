@@ -100,6 +100,6 @@ branch自体にClosed状態はありません。実PRを **merged** と **closed
 
 保全/復元確認後、所有引継ぎと停止を満たす範囲だけ実状態を削除直前に再照合して整理し、remote/local/tracking/worktreeの結果を個別に読み戻します。退役に必要な保全を完了してcleanと確認できないworktreeや、QA・復旧・再開に必要な資源は残し、owner・理由・再開/退役条件を元Issue/PRへ記録します。ローカルpath・bundle原本・私的証拠はprivateに置きます。claimの扱いは明示した引継ぎ/解放に従い、archiveや時間経過から推測しません。新しい保管framework、daemon、定期job、一括purgeは追加しません。
 
-`cleanup-branches`はfetch/pruneを行わず、localとtracking-onlyのclosed-unmerged ref/SHAを保持として報告するmerged-onlyの補助監査です。通常fetchのprune設定も含め、tracking-onlyに固有commitが残る場合は保全・実復元確認までpruneを遅延します。closed-unmerged候補は保持として報告し、この手順で担当が扱います。自動監査の出力だけを未マージ資源の退役許可にしません。
+`cleanup-branches`はfetch/pruneを行わず、localとtracking-onlyのclosed-unmerged ref/SHAを保持として報告するmerged-onlyの補助監査です。通常fetchのprune設定も含め、tracking-onlyに固有commitが残る場合は保全・実復元確認までpruneを遅延します。closed-unmerged候補は同名branchの全PR番号/各固定HEADと現在のlocal/tracking SHAの一致・差分・参照不在を個別に報告し、この手順で担当が扱います。保持表示は過去HEADの復元成功を意味しません。自動監査の出力だけを未マージ資源の退役許可にしません。
 
 今回の初回導入・developの新設は [GitHub 有効化手順](setup/github.md) に従います。新しい規約の追加を、未依頼の公開・他セッションへの連絡・定期実行を始める権限として扱いません。

@@ -29,6 +29,7 @@ def validate_issue(issue, *, allow_legacy=True):
     if canonical:
         if (not re.search(r'[ぁ-んァ-ヶ一-龯]', canonical[1]) or
                 re.search(r'\(#[1-9][0-9]*\)', canonical[1]) or
+                (kind == 'qa' and re.search(r'#[0-9]+', canonical[1])) or
                 str(issue.get('number')) in re.findall(r'#([1-9][0-9]*)', title)):
             raise ValueError('Issue needs a Japanese summary without its own number or PR suffix')
     elif not allow_legacy or not re.fullmatch(r'\[' + LEGACY_TYPES[kind] + r'\] ' + origin + r'\S.*', title):

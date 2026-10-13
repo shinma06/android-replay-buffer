@@ -63,7 +63,8 @@ class PolicyTests(unittest.TestCase):
                 return ''
             with self.subTest(tip=tip), patch.object(al, 'git', side_effect=git) as calls:
                 self.assertEqual(al.audit_branches(gh, apply=True), [
-                    {'branch': 'codex/35-test', 'state': 'retained-closed-unmerged', 'pr': 36}])
+                    {'branch': 'codex/35-test', 'ref': 'refs/heads/codex/35-test', 'head': tip,
+                     'state': 'retained-closed-unmerged', 'pr': 36, 'pr_head': HEAD, 'head_matches': tip == HEAD}])
                 self.assertFalse(any(c.args[0] == 'update-ref' for c in calls.call_args_list))
 
     def test_merged_audit_keeps_existing_sha_worktree_and_remote_guards(self):
@@ -103,25 +104,52 @@ class PolicyTests(unittest.TestCase):
             for apply in (False, True):
                 with patch.object(al, 'git', side_effect=git) as calls:
                     self.assertEqual(al.audit_branches(gh, apply), [{'branch': 'codex/35-test',
-                        'ref': ref, 'head': head, 'state': 'retained-closed-unmerged', 'pr': 36}])
+                        'ref': ref, 'head': head, 'state': 'retained-closed-unmerged', 'pr': 36,
+                        'pr_head': head, 'head_matches': True}])
                     self.assertFalse(any(c.args[0] in ('fetch', 'update-ref') for c in calls.call_args_list))
                 self.assertEqual(git('rev-parse', ref), head)
 
     def test_automatic_fix_uses_validated_meaningful_pr_title_before_staging(self):
         pr = pr_data()
+        loop = object.__new__(al.Loop); loop.gh = Mock()
         for title, valid in ((pr['title'], True), ('Address automated review for #35', False),
                              ('fix: 別Issueの修正 (#99)', False)):
             pr['title'] = title
+            loop.gh.pr.return_value = copy.deepcopy(pr)
             def git(*args, **kwargs):
                 return 'docs/a.md' if args[0] == 'diff' else ''
             with self.subTest(title=title), patch.object(al, 'git', side_effect=git) as calls:
                 if valid:
-                    al.Loop.commit_fix(None, Path('/fixture'), {'scope': ['docs/'], 'issue': 35}, pr)
+                    al.Loop.commit_fix(loop, Path('/fixture'), {'scope': ['docs/'], 'issue': 35}, pr)
                     self.assertIn(call('commit', '-m', title, cwd=Path('/fixture')), calls.call_args_list)
                 else:
                     with self.assertRaises(ValueError):
-                        al.Loop.commit_fix(None, Path('/fixture'), {'scope': ['docs/'], 'issue': 35}, pr)
+                        al.Loop.commit_fix(loop, Path('/fixture'), {'scope': ['docs/'], 'issue': 35}, pr)
                     self.assertFalse(any(c.args[0] in ('add', 'commit') for c in calls.call_args_list))
+
+    def test_unmerged_audit_reports_every_reused_pr_head_and_missing_refs(self):
+        a = dict(pr_data(), state='closed', merged_at=None)
+        b = copy.deepcopy(a); b['number'] = 37; b['head']['sha'] = NEW
+        c = copy.deepcopy(a); c['number'] = 38; c['head']['ref'] = 'codex/35-missing'
+        gh = Mock(); gh.pages.return_value = [a, b, c]
+        def git(*args):
+            if args[-1] == 'refs/heads/': return f'codex/35-test {NEW}'
+            if args[-1] == 'refs/remotes/origin/': return f'refs/remotes/origin/codex/35-test {HEAD}'
+            return ''
+        with patch.object(al, 'git', side_effect=git) as calls:
+            rows = al.audit_branches(gh, apply=True)
+        self.assertEqual([(r['pr'], r['head'], r['pr_head'], r['head_matches']) for r in rows],
+                         [(36, HEAD, HEAD, True), (37, HEAD, NEW, False),
+                          (36, NEW, HEAD, False), (37, NEW, NEW, True), (38, None, HEAD, False)])
+        self.assertFalse(any(c.args[0] in ('fetch', 'update-ref') for c in calls.call_args_list))
+
+    def test_changed_live_title_blocks_fix_before_staging(self):
+        pr = pr_data(); latest = copy.deepcopy(pr); latest['title'] = 'fix: 題名を変更する (#35)'
+        loop = object.__new__(al.Loop); loop.gh = Mock(); loop.gh.pr.return_value = latest
+        with patch.object(al, 'git', side_effect=lambda *a, **kw: 'docs/a.md' if a[0] == 'diff' else '') as calls:
+            with self.assertRaisesRegex(ValueError, 'Live PR changed'):
+                loop.commit_fix(Path('/fixture'), {'scope': ['docs/'], 'issue': 35}, pr)
+            self.assertFalse(any(c.args[0] in ('add', 'commit') for c in calls.call_args_list))
 
     def test_binding_invalidates_approval(self):
         p = pr_data(); issue = {'body': '- [ ] value is correct'}
@@ -668,6 +696,15 @@ class LoopTests(unittest.TestCase):
         self.assertEqual(state['phase'], 'queued')
         self.assertNotIn('review', state)
         self.assertTrue(any(c.args[:2] == ('push', 'origin') for c in al.git.call_args_list))
+
+    def test_title_change_before_or_during_tests_never_pushes(self):
+        for during_tests in (False, True):
+            pr = pr_data(); changed = copy.deepcopy(pr); changed['title'] = 'fix: 題名を変更する (#35)'
+            self.gh.pr = Mock(side_effect=[pr, changed] if during_tests else [changed])
+            with patch.object(al, 'command', return_value=''):
+                with self.assertRaisesRegex(ValueError, 'changed'):
+                    al.Loop.test_and_push(self.loop, pr, self.checkout, {})
+            self.assertFalse(any(c.args[0] == 'push' for c in al.git.call_args_list))
 
     def prepare_issue_guard_review(self, target):
         # Keep each race scenario independent, including its saved controller state.
