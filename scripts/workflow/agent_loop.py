@@ -900,7 +900,7 @@ class Loop:
         self.cleanup(pr, h)
         state.update(phase='done',
                      next=('Claim released; Issue closed' if complete else 'Claim released; Issue remains open for remaining acceptance') +
-                          '; PM: reconcile parent roadmap and Project registration/status for origin and QA, Milestone, Relationship Status and Development/Issue closure; record readback or retry owner',
+                          '; PM: reconcile parent roadmap and Project registration/status for origin and QA, Milestone, Relationship Status and Development/Issue closure; record readback or retry owner; use scripts/workflow/project_item.py with own-repository Issue/PR URLs for Project item mutations',
                      merge_sha=pr['merge_commit_sha'])
         self.save(pr, state, comment_id)
         return {'pr': pr['number'], 'phase': 'done', 'issue_closed': bool(complete)}
