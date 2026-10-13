@@ -49,7 +49,7 @@ int remaining;
 CutChannel(FileChannel r,int n){real=r;
 remaining=n;
 }
-  
+
   public int write(ByteBuffer b)throws IOException{if(remaining==0)throw new IOException("CONTROLLED partial-write failure");
 int limit=b.limit();
 b.limit(Math.min(limit,b.position()+remaining));
@@ -58,15 +58,15 @@ b.limit(limit);
 remaining-=n;
 return n;
 }
-  
+
   public long write(ByteBuffer[] b,int o,int n)throws IOException{throw new UnsupportedOperationException();
 }
-  
+
   public int read(ByteBuffer b)throws IOException{return real.read(b);
 }
   public long read(ByteBuffer[]b,int o,int n)throws IOException{return real.read(b,o,n);
 }
-  
+
   public long position()throws IOException{return real.position();
 }
   public FileChannel position(long p)throws IOException{real.position(p);
@@ -107,7 +107,7 @@ real=r;
  static class CloseFailure extends CutChannel {
   CloseFailure(FileChannel r){super(r,Integer.MAX_VALUE);
 }
-  
+
   protected void implCloseChannel()throws IOException{real.close();
 throw new IOException("CONTROLLED channel-close failure");
 }
