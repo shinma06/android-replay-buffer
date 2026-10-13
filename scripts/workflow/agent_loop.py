@@ -617,6 +617,9 @@ class Loop:
             return {'pr': number, 'phase': 'unmanaged'}
         if not state.get('expected_head'):
             state['expected_head'] = h['head']
+        if pr['state'] == 'closed' and not pr.get('merged'):
+            return {'pr': number, 'phase': 'retained-closed-unmerged',
+                    'next': 'Owner/PM: preserve and restore-check under branch lifecycle; claim remains retained'}
         if state.get('paused'):
             return {'pr': number, 'phase': state['phase']}
         if pr.get('merged'):
@@ -629,8 +632,7 @@ class Loop:
                 self.save(pr, state, comment_id)
                 return {'pr': number, 'phase': 'cleanup', 'error': state['next']}
         if pr['state'] != 'open':
-            return {'pr': number, 'phase': 'retained-closed-unmerged',
-                    'next': 'Owner/PM: preserve and restore-check under branch lifecycle; claim remains retained'}
+            return {'pr': number, 'phase': state['phase']}
         if state.get('retry_at', 0) > time.time():
             return {'pr': number, 'phase': 'backoff'}
         try:
@@ -819,8 +821,9 @@ class Loop:
             raise ValueError('No fix or out-of-scope changes; preserve files for coordinator review')
         if git('ls-files', '-u', cwd=path):
             raise ValueError('Merge conflict requires explicit coordinator repair')
+        validate_title(pr, h['issue'])
         git('add', '--', *sorted(changed), cwd=path)
-        git('commit', '-m', f'Address automated review for #{h["issue"]}', cwd=path)
+        git('commit', '-m', pr['title'], cwd=path)
 
     def finish(self, pr, h, state, comment_id):
         pr = self.gh.pr(pr['number'])
@@ -1131,13 +1134,18 @@ def rebind_target(loop, args):
 
 
 def audit_branches(gh, apply=False):
-    """Clean completed local refs only; preserve checked-out or reused branches."""
-    git('fetch', '--prune', 'origin')
+    """Audit without fetch/prune; clean only verified merged local refs."""
     prs = gh.pages(f'repos/{REPO}/pulls?state=closed&per_page=100')
     merged = {pr['head']['ref']: pr for pr in prs if pr.get('merged_at') and eligible(pr, OWNER, REPO)}
     unmerged = {pr['head']['ref']: pr for pr in prs if not pr.get('merged_at') and eligible(pr, OWNER, REPO)}
     checked = set(re.findall(r'^branch refs/heads/(.+)$', git('worktree', 'list', '--porcelain'), re.M))
     results = []
+    for line in git('for-each-ref', '--format=%(refname) %(objectname)', 'refs/remotes/origin/').splitlines():
+        ref, sha = line.split()
+        branch = ref.removeprefix('refs/remotes/origin/')
+        if branch in unmerged:
+            results.append({'branch': branch, 'ref': ref, 'head': sha,
+                            'state': 'retained-closed-unmerged', 'pr': unmerged[branch]['number']})
     for line in git('for-each-ref', '--format=%(refname:short) %(objectname)', 'refs/heads/').splitlines():
         branch, sha = line.split()
         if branch in ('main', 'master', 'develop'):

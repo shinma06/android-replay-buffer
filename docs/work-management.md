@@ -53,6 +53,8 @@ PR の題名は **`type: 日本語の要約 (#N)`** に統一します。例: `f
 
 各commitのtypeはその実変更を表します。文書だけのcommitが`docs`でPR全体が`chore`など、異なる粒度の理由がある場合は妥当性をレビューします。branch/PRと所有Issue・目的の対応を保ち、公開済みbranchをtypeのために改名しません。commit前と固定レビューで今回新しく作成した題名/bodyを読み戻します。既存PR title parserの語彙と形式を基準にし、履歴を一括lintして過去の成果を拒否する新gateは設けません。
 
+既存coordinatorの自動fix commitは、所有Issueとの一致を検査した意味のある現PR題名を使い、staging前に既存title parserで確認します。
+
 統合用squash/mergeの題名・本文は既存のPRタイトル/readbackとcoordinatorの固定payloadに従います。GitHubが付ける実PR番号suffix、base同期のためGitが生成するmerge題名は例外として保持します。生成mergeのbodyへ不要なclosing keywordを入れず、[Developmentのclose境界](#development-の実関連)を守ります。通常の作業commitを生成mergeと称して規約を外さず、旧commit・公開済み履歴・固定受入成果はamend/rebase/rewrite/force pushで変更しません。
 
 ## PR sidebar の実情報

@@ -59,7 +59,7 @@ class PolicyTests(unittest.TestCase):
         gh = Mock(); gh.pages.return_value = [closed, merged]
         for tip in (HEAD, NEW):
             def git(*args):
-                if args[0] == 'for-each-ref': return f'codex/35-test {tip}\nmain {BASE}'
+                if args[-1] == 'refs/heads/': return f'codex/35-test {tip}\nmain {BASE}'
                 return ''
             with self.subTest(tip=tip), patch.object(al, 'git', side_effect=git) as calls:
                 self.assertEqual(al.audit_branches(gh, apply=True), [
@@ -75,7 +75,7 @@ class PolicyTests(unittest.TestCase):
                 (HEAD, '', HEAD, 'retained-remote-ref'),
                 (HEAD, '', '', 'deleted')):
             def git(*args):
-                if args[0] == 'for-each-ref': return f'codex/35-test {tip}'
+                if args[-1] == 'refs/heads/': return f'codex/35-test {tip}'
                 if args[:2] == ('worktree', 'list'): return worktree
                 if args[0] == 'ls-remote': return remote
                 return ''
@@ -83,6 +83,45 @@ class PolicyTests(unittest.TestCase):
                 result = al.audit_branches(gh, apply=True)
                 self.assertEqual([r['state'] for r in result], [] if expected is None else [expected])
                 self.assertEqual(any(c.args[0] == 'update-ref' for c in calls.call_args_list), expected == 'deleted')
+
+    def test_tracking_only_unmerged_ref_survives_audit_and_apply(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / 'local'; remote = Path(tmp) / 'deleted-head-remote'
+            env = worker_environment()
+            for repo in (root, remote):
+                subprocess.run(['git', 'init', '--bare', '--quiet', str(repo)], env=env, check=True)
+                subprocess.run(['git', 'config', 'maintenance.auto', 'false'], cwd=repo, env=env, check=True)
+            def git(*args, **kwargs):
+                return subprocess.check_output(['git', *args], cwd=root, env=env, text=True).strip()
+            git('config', 'user.name', 'Test'); git('config', 'user.email', 'test@example.invalid')
+            git('remote', 'add', 'origin', str(remote)); git('config', 'remote.origin.prune', 'true')
+            tree = subprocess.check_output(['git', 'mktree'], input='', cwd=root, env=env, text=True).strip()
+            head = git('commit-tree', tree, '-m', 'unmerged fixture')
+            ref = 'refs/remotes/origin/codex/35-test'; git('update-ref', ref, head)
+            pr = dict(pr_data(), state='closed', merged_at=None); pr['head']['sha'] = head
+            gh = Mock(); gh.pages.return_value = [pr]
+            for apply in (False, True):
+                with patch.object(al, 'git', side_effect=git) as calls:
+                    self.assertEqual(al.audit_branches(gh, apply), [{'branch': 'codex/35-test',
+                        'ref': ref, 'head': head, 'state': 'retained-closed-unmerged', 'pr': 36}])
+                    self.assertFalse(any(c.args[0] in ('fetch', 'update-ref') for c in calls.call_args_list))
+                self.assertEqual(git('rev-parse', ref), head)
+
+    def test_automatic_fix_uses_validated_meaningful_pr_title_before_staging(self):
+        pr = pr_data()
+        for title, valid in ((pr['title'], True), ('Address automated review for #35', False),
+                             ('fix: 別Issueの修正 (#99)', False)):
+            pr['title'] = title
+            def git(*args, **kwargs):
+                return 'docs/a.md' if args[0] == 'diff' else ''
+            with self.subTest(title=title), patch.object(al, 'git', side_effect=git) as calls:
+                if valid:
+                    al.Loop.commit_fix(None, Path('/fixture'), {'scope': ['docs/'], 'issue': 35}, pr)
+                    self.assertIn(call('commit', '-m', title, cwd=Path('/fixture')), calls.call_args_list)
+                else:
+                    with self.assertRaises(ValueError):
+                        al.Loop.commit_fix(None, Path('/fixture'), {'scope': ['docs/'], 'issue': 35}, pr)
+                    self.assertFalse(any(c.args[0] in ('add', 'commit') for c in calls.call_args_list))
 
     def test_binding_invalidates_approval(self):
         p = pr_data(); issue = {'body': '- [ ] value is correct'}
@@ -826,13 +865,15 @@ class LoopTests(unittest.TestCase):
 
     def test_closed_unmerged_tick_reports_retention_without_claim_or_resource_changes(self):
         self.gh.pull.update(state='closed', merged=False)
-        before = copy.deepcopy(self.gh.messages)
-        result = self.loop.tick(36)
-        self.assertEqual(result['phase'], 'retained-closed-unmerged')
-        self.assertEqual(self.gh.messages, before)
-        self.assertEqual(self.gh.issues[35]['state'], 'open')
-        self.loop.cleanup.assert_not_called(); self.worker.assert_not_called()
-        self.assertEqual(self.gh.merges, 0)
+        for paused in (False, True):
+            self.gh.comment(36, al.pack(al.STATE, {'phase': 'blocked', 'paused': paused}))
+            before = copy.deepcopy(self.gh.messages)
+            result = self.loop.tick(36)
+            self.assertEqual(result['phase'], 'retained-closed-unmerged')
+            self.assertEqual(self.gh.messages, before)
+            self.assertEqual(self.gh.issues[35]['state'], 'open')
+            self.loop.cleanup.assert_not_called(); self.worker.assert_not_called()
+            self.assertEqual(self.gh.merges, 0)
 
     def test_review_fix_rereview_merge_issue_cleanup(self):
         reports = [report('changes_requested'), report(), report(head=NEW)]
