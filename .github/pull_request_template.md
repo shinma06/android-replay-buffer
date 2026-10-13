@@ -15,10 +15,12 @@ GUI reason: <Case IDと必要挙動。不要なら具体的理由とCLI検証>
 - Context review: <開発コンテキストを作成/更新/監査した場合、docs/context.mdの共通規則で用途/言語/形式/正本/読込経路/証拠・例外、旧要件の配置、検証済みと未確認を照合。対象外ならその旨>
 - Cursor知見の活用: <docs/android-studio.mdの適用範囲なら固定SHA/Issue・PR、採用/適合/非適用の理由、こちらの検証Case/結果。範囲外は理由を一言>
 - Matrix: <必要Case JSONと今回の確認一覧。GUI pending/blocked/fail/passを正確に保持>
+- Commits: <新規作業commitは docs/work-management.md の type: 日本語の要約 (#N)。今回新規の題名/body・実type/Issue/目的と生成merge例外をreadback。旧履歴は改変しない>
+- Branch: <新規作成は docs/work-management.md の命名規約。実Issue・PR type/目的をreadback。既存refは改名しない>
 - PR title: <docs/work-management.md の `type: 日本語の要約 (#N)`。実変更の小文字type・scopeなし・branch/本文と一致する所有Issue末尾・自然な要約・実breakingのみ!と理由。固定review/merge前の実題名をreadbackし、変更後は旧policy/reviewを照合し直す>
 - PR sidebar: <docs/work-management.md の native Assignees・type/priority/PR自身status・実Project/Milestone・review/requestのreadback。GitHub accountと内部writer/reviewer、bot serviceと独立評価を区別。真のN/Aは理由/担当/次操作>
 - Development: <docs/work-management.md の時期に従う実 PR/Issue 関連・両端 readback・Issue/ラベル/Project状態・target/default branch。本文参照は別。main の残条件ありは closing reference を保留し、理由/担当/終了時の次操作を記録>
-- Issue schema: <typeに対応した題名・type/priority/status各1ラベル>
+- Issue schema: <新規/指定改名Issueは type: 日本語の要約（QAは test: #元Issue 要約）と既存6type labelの対応。旧題名は読取互換・closed固定履歴を保持。type/priority/status各1ラベル>
 - QA handoff: <develop統合後、残試験はQA、main反映は既存release追跡へ双方向link/readbackしてからclose。CaseなしはQAを新設しない。未実装受入は別Issueへ保全>
 - Dependencies: <先行Issue/PR、未実装部分。GUI環境の障害と分ける>
 - Main promotion: <全候補commit/Caseの固定build結果。develop統合だけではmain可としない>

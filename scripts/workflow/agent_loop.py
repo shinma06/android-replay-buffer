@@ -585,8 +585,8 @@ class Loop:
         expected = pr['head']['sha']
         actual = git('rev-parse', 'HEAD', cwd=path)
         remote = self.gh.pr(pr['number'])
-        if remote['head']['sha'] != expected:
-            raise ValueError('Remote HEAD changed; do not publish recovered work')
+        if (remote['head']['sha'] != expected or remote.get('title') != pr.get('title')):
+            raise ValueError('Remote HEAD or title changed; do not publish recovered work')
         # These repositories are maintainer-owned, enrolled work only. No forks are executed.
         impact = git_impact(pr['base']['sha'], actual, cwd=path)
         print(impact_report(impact))
@@ -598,7 +598,7 @@ class Loop:
             raise ValueError('Tests left dirty files; cannot publish')
         remote = self.gh.pr(pr['number'])
         if (not eligible(remote, OWNER, REPO) or remote['state'] != 'open' or
-                remote['head']['sha'] != expected):
+                remote['head']['sha'] != expected or remote.get('title') != pr.get('title')):
             raise ValueError('Remote PR changed during tests; preserve unpublished work')
         git('push', 'origin', f'HEAD:refs/heads/{pr["head"]["ref"]}', cwd=path)
         state['expected_head'] = actual
@@ -617,6 +617,9 @@ class Loop:
             return {'pr': number, 'phase': 'unmanaged'}
         if not state.get('expected_head'):
             state['expected_head'] = h['head']
+        if pr['state'] == 'closed' and not pr.get('merged'):
+            return {'pr': number, 'phase': 'retained-closed-unmerged',
+                    'next': 'Owner/PM: preserve and restore-check under branch lifecycle; claim remains retained'}
         if state.get('paused'):
             return {'pr': number, 'phase': state['phase']}
         if pr.get('merged'):
@@ -818,8 +821,13 @@ class Loop:
             raise ValueError('No fix or out-of-scope changes; preserve files for coordinator review')
         if git('ls-files', '-u', cwd=path):
             raise ValueError('Merge conflict requires explicit coordinator repair')
+        latest = self.gh.pr(pr['number'])
+        if (not eligible(latest, OWNER, REPO) or latest['state'] != 'open' or
+                any(latest.get(key) != pr.get(key) for key in ('head', 'base', 'body', 'title'))):
+            raise ValueError('Live PR changed before commit; preserve unstaged work')
+        validate_title(latest, h['issue'])
         git('add', '--', *sorted(changed), cwd=path)
-        git('commit', '-m', f'Address automated review for #{h["issue"]}', cwd=path)
+        git('commit', '-m', latest['title'], cwd=path)
 
     def finish(self, pr, h, state, comment_id):
         pr = self.gh.pr(pr['number'])
@@ -1130,15 +1138,32 @@ def rebind_target(loop, args):
 
 
 def audit_branches(gh, apply=False):
-    """Clean completed local refs only; preserve checked-out or reused branches."""
-    git('fetch', '--prune', 'origin')
+    """Audit without fetch/prune; clean only verified merged local refs."""
     prs = gh.pages(f'repos/{REPO}/pulls?state=closed&per_page=100')
     merged = {pr['head']['ref']: pr for pr in prs if pr.get('merged_at') and eligible(pr, OWNER, REPO)}
+    unmerged = {}
+    for pr in prs:
+        if not pr.get('merged_at') and eligible(pr, OWNER, REPO):
+            unmerged.setdefault(pr['head']['ref'], []).append(pr)
     checked = set(re.findall(r'^branch refs/heads/(.+)$', git('worktree', 'list', '--porcelain'), re.M))
     results = []
+    for line in git('for-each-ref', '--format=%(refname) %(objectname)', 'refs/remotes/origin/').splitlines():
+        ref, sha = line.split()
+        branch = ref.removeprefix('refs/remotes/origin/')
+        if branch in unmerged:
+            for pr in unmerged[branch]:
+                results.append({'branch': branch, 'ref': ref, 'head': sha,
+                                'state': 'retained-closed-unmerged', 'pr': pr['number'],
+                                'pr_head': pr['head']['sha'], 'head_matches': sha == pr['head']['sha']})
     for line in git('for-each-ref', '--format=%(refname:short) %(objectname)', 'refs/heads/').splitlines():
         branch, sha = line.split()
         if branch in ('main', 'master', 'develop'):
+            continue
+        if branch in unmerged:
+            for pr in unmerged[branch]:
+                results.append({'branch': branch, 'ref': 'refs/heads/' + branch, 'head': sha,
+                                'state': 'retained-closed-unmerged', 'pr': pr['number'],
+                                'pr_head': pr['head']['sha'], 'head_matches': sha == pr['head']['sha']})
             continue
         pr = merged.get(branch)
         if not pr or sha != pr['head']['sha']:
@@ -1153,6 +1178,13 @@ def audit_branches(gh, apply=False):
         if apply:
             git('update-ref', '-d', 'refs/heads/' + branch, sha)
         results.append({'branch': branch, 'state': 'deleted' if apply else 'candidate', 'pr': pr['number']})
+    reported = {row.get('pr') for row in results}
+    for branch, candidates in unmerged.items():
+        for pr in candidates:
+            if pr['number'] not in reported:
+                results.append({'branch': branch, 'ref': None, 'head': None,
+                                'state': 'retained-closed-unmerged', 'pr': pr['number'],
+                                'pr_head': pr['head']['sha'], 'head_matches': False})
     return results
 
 

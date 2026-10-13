@@ -42,15 +42,15 @@ Issue の全コメント、関連 PR、依存、既存 claim、dirty、worktree 
 ```bash
 git status --short --branch
 git worktree list
-git fetch --prune origin
+git fetch --no-prune origin
 # 例: 実在する Issue 12 の製品変更。番号・slug は実際の作業へ変更する
-git worktree add -b codex/12-replay-integration ../android-replay-buffer-issue-12 origin/develop
+git worktree add -b codex/12-feat-replay-integration ../android-replay-buffer-issue-12 origin/develop
 cd ../android-replay-buffer-issue-12
 git branch --unset-upstream
 python3 scripts/bootstrap.py
 ```
 
-branch は `codex|claude|cursor|agent/<Issue番号>-<slug>`。運用変更だけなら origin/main を起点にします。main/master/develop へ直接 commit/push、force push、hook/保護の迂回、他担当の変更破棄は禁止です。
+新規branchは [branch命名](work-management.md#branch-命名) の `codex/<Issue番号>-<type>-<短い英語の目的>` を既定とします。既存refは改名せず、旧形式の読取互換性を保ちます。運用変更だけなら origin/main を起点にします。main/master/develop へ直接 commit/push、force push、hook/保護の迂回、他担当の変更破棄は禁止です。
 
 ## 先行プラグインの知見を使う
 
@@ -88,6 +88,18 @@ PM・担当・レビュアーは現状の手段を当然とせず、検査失敗
 
 writer が編集・commit・push・GUI を停止してから [自動進行](setup/automation.md) へ登録します。5 checks（test、PR policy、Acceptance gate、Agent review、CLI Python 3.9）と会話解決、現在の HEAD/base/受入を再確認し、保護付きの通常 PR merge を使います。
 
-merge 後は [作業管理の終了確認](work-management.md) と QA 引継ぎを行います。remote 実 ref、local branch、remote-tracking ref、worktree を照合し、自分の停止済み・clean な資源だけを整理します。squash 後の `--merged` や `[gone]` だけを削除根拠にせず、PR HEAD と統合結果を確認します。main/master/develop、他担当、GUI 使用中、未公開成果物は保全します。
+merge 後は [作業管理の終了確認](work-management.md) と QA 引継ぎを行い、次のbranch lifecycleで資源を整理します。統合・Issue完了・claim移管/解放・資源削除は別に読み戻します。
+
+### branch lifecycle
+
+branch自体にClosed状態はありません。実PRを **merged** と **closed-unmerged（withdrawn/supersededを含む）** に分けます。Closed、名前、古さ、`[gone]`、`--merged` や祖先判定だけを削除・claim解放の根拠にしません。
+
+- 共通: 実PRとreplacement/取り込み先、資源のownerとwriter停止・明示されたPM保管責任、remote実ref/local branch/tracking refの各SHA、全worktreeでの使用、dirty/untracked・必要ignored成果物、固有の未公開/未統合commitを確認します。PR HEADと現在のtipが違えば差分の帰属・保全を確認するまで保持します。main/master/develop、稼働中・他担当・GUI使用中の資源は削除しません。
+- merged: PR HEAD・merge SHA・取り込み結果と終了/QA条件を照合し、既存の所有確認付きcleanupとGitHubのmerge後head自動削除を使います。squashでも固有の作業や証拠を取り落としません。
+- closed-unmerged: 元の失敗・指摘とreplacementを保持し、再開/QA/復旧で何を残すかownerが決めます。終了理由だけで自動cleanupへ登録し直しません。退役させる固有commit/内容と必要なignored成果物を、既存の復元可能なarchive/snapshot/Git bundle等へ削除範囲外で保管します。固定ref/SHAとarchiveのhashを読み戻し、所有する使い捨て復元先で実際に固定commitをcheckoutして内容を照合します。Git bundleなら`git bundle verify`だけで終わらず、復元先へのfetch/checkoutとtree/必要ファイルの照合まで行います。bundleに入らない必要ファイルは別保管しhash/復元内容を確認します。app管理archiveを使う場合も復元結果を照合し、必要ignoredファイルを別保全します。原証拠を移動・上書きして保管済みとしません。
+
+保全/復元確認後、所有引継ぎと停止を満たす範囲だけ実状態を削除直前に再照合して整理し、remote/local/tracking/worktreeの結果を個別に読み戻します。退役に必要な保全を完了してcleanと確認できないworktreeや、QA・復旧・再開に必要な資源は残し、owner・理由・再開/退役条件を元Issue/PRへ記録します。ローカルpath・bundle原本・私的証拠はprivateに置きます。claimの扱いは明示した引継ぎ/解放に従い、archiveや時間経過から推測しません。新しい保管framework、daemon、定期job、一括purgeは追加しません。
+
+`cleanup-branches`はfetch/pruneを行わず、localとtracking-onlyのclosed-unmerged ref/SHAを保持として報告するmerged-onlyの補助監査です。通常fetchのprune設定も含め、tracking-onlyに固有commitが残る場合は保全・実復元確認までpruneを遅延します。closed-unmerged候補は同名branchの全PR番号/各固定HEADと現在のlocal/tracking SHAの一致・差分・参照不在を個別に報告し、この手順で担当が扱います。保持表示は過去HEADの復元成功を意味しません。自動監査の出力だけを未マージ資源の退役許可にしません。
 
 今回の初回導入・developの新設は [GitHub 有効化手順](setup/github.md) に従います。新しい規約の追加を、未依頼の公開・他セッションへの連絡・定期実行を始める権限として扱いません。

@@ -13,12 +13,20 @@
 
 | type ラベル | 題名 |
 |---|---|
-| `type:feature` | `[機能] 要約` |
-| `type:bug` | `[修正] 要約` |
-| `type:research` | `[調査] 要約` |
-| `type:qa` | `[試験] #元Issue番号 要約` |
-| `type:maintenance` | `[運用] 要約` |
-| `type:tracking` | `[追跡] 要約` |
+| `type:feature` | `feat: 日本語の要約` |
+| `type:bug` | `fix: 日本語の要約` |
+| `type:research` | `research: 日本語の要約` |
+| `type:qa` | `test: #元Issue番号 日本語の要約` |
+| `type:maintenance` | `chore: 日本語の要約` |
+| `type:tracking` | `track: 日本語の要約` |
+
+この改訂の採用後に新しく作るIssueと、明示して改名する対象の題名は **`type: 日本語の要約`** とします。typeは上の6ラベルとの一意対応、小文字・scopeなしです。Issue自身の番号や優先度、PR用の`(#N)`末尾は重ねません。QA要約内に追加の`#N`は置かず、QAだけは単一の元Issueを `test: #35 保存失敗を確認する` のように接頭辞直後へ置きます。要約は自然な日本語とし、Kotlin・SDK等の技術名は保持します。
+
+`feat` / `fix` / `test` / `chore`は既存PRの語彙を使い、`research` / `track`は既存の調査/追跡分類を表す本project専用の語です。世界共通のIssue標準やConventional Commitsの必須分類とは呼びません。6つのtypeラベルと実native関係を維持し、新しい分類やnative Issue typeは作りません。PR/commitのtypeは引き続き実変更で選び、Issue分類をそのままコピーしません。
+
+新規作成/指定された改名はこの形式を確認します。共有validatorとCIの実inline copyはラベルとの対応・QA元番号・日本語文字・自身の番号/優先度の重複を確認し、旧角括弧形式は既存/未移行/固定履歴の読取りだけに残します。文字検査は意味の正しさを保証しません。新規自動QAはcanonical形式を公開前に検査し、検索/再利用/読み戻しは新旧どちらの元番号も区切り込みで照合します。#3と#35を混同せず、新旧2件なら勝手に片方を採らずownerへ戻します。重いparser、日付/ID cutoff、registry、新hookは作りません。
+
+実Issueの改名は、規約の独立レビュー・main採用後に、PMが固定した当repoのOPEN一覧と単独metadata ownerへ引き継ぎます。prefixだけを変え、要約・本文・state/labels/assignee/Milestone・native関係・Project値を変更前後に照合します。closed/固定履歴は改名せず、稼働中のwriter/review bindingへの影響を先に調整します。タイトル変更だけで内容・受入・所有権を変更しません。
 
 priority は `priority:P0` / `priority:P1` / `priority:P2`、status は `status:ready` / `status:in-progress` / `status:review` / `status:blocked` / `status:deferred` / `status:done`。closed は done、open は done 以外。優先度を題名に重複させません。PR policy が型・番号・ラベルを検査します。
 
@@ -38,6 +46,24 @@ PR の題名は **`type: 日本語の要約 (#N)`** に統一します。例: `f
 題名の `fix:` は [Issue 関連/自動 close の keyword](https://docs.github.com/en/issues/tracking-your-work-with-issues/using-issues/linking-a-pull-request-to-an-issue) と別です。`Fixes #N` などを題名へ入れず、Development と close の時期は次節に従います。Issue 自体の題名、commit 履歴、過去の closed/merged PR はこの規約で一括変更しません。
 
 作成・ready・修正再開・固定レビュー・merge 直前に実題名を読み戻します。共有 PR policy は型・空でない要約・日本語文字の有無・単一番号と branch/本文の一致を検査します。文字の有無は自然な日本語や意味の正しさの証明ではなく、要約・型・破壊的変更の妥当性はレビューで確認します。題名変更は同じ HEAD でも固定 review binding を失効させ、最新 metadata の policy と独立評価を照合します。coordinator はタイトルを reviewer へ渡し、merge 直前の既存 readback/binding と実 squash/merge 文へ反映します。GitHub metadata と merge を外部編集に対して原子的には固定できません。
+
+## branch 命名
+
+この改訂を採用した後に新しく作る専用branchは **`codex/<Issue番号>-<type>-<短い英語の目的>`** を既定とします。例: `codex/265-chore-branch-lifecycle`、`codex/12-feat-replay-integration`、`codex/227-fix-log-reconnect`。これは本repositoryの規約で、世界共通のGit標準ではありません。
+
+`type`は上のPRタイトルと同じ語彙・実際の変更目的から選び、所有する実Issue番号は1つにします。suffixは小文字ASCII英数字、単語間は単一ハイフンとし、英語の目的を短く具体的に書きます。日本語・空白・scope・`!`・末尾/連続ハイフンは入れません。破壊的変更はPRの`!`と本文で説明します。必要な別agent prefix（`claude` / `cursor` / `agent`）でも同じsuffixを使います。
+
+作成前に既存ref/所有者との衝突と`git check-ref-format --branch`を確認し、開始・PR作成・固定レビュー時にbranch、PR type/目的、本文の`Issue: #N`の一致を読み戻します。変更の主目的が途中で変わった場合はownerが理由をIssue/PRに残してレビューし、公開済みrefを命名のためだけに改名しません。既存/open/歴史上のrefsは一括rename・履歴改変・force pushせず、そのまま再開/読取します。共有parser/hookは旧`<Issue番号>-<slug>`も引き続き扱い、新形式の意味と適用時期はこの開始/レビュー手順で確認します。将来用の日付registryや追加daemonは作りません。
+
+## commit 命名
+
+この改訂の採用後に作成する作業commitの題名も **`type: 日本語の要約 (#N)`** とします。例: `chore: 未マージ終了PRの保全と命名を統一する (#265)`。PRと同じ小文字typeの語彙・scopeなし・単一の所有Issue末尾・実breakingのみ`!`を使い、必要なら空行の後に理由/検査をbodyへ書きます。関連Issueや優先度を題名へ重ねません。
+
+各commitのtypeはその実変更を表します。文書だけのcommitが`docs`でPR全体が`chore`など、異なる粒度の理由がある場合は妥当性をレビューします。branch/PRと所有Issue・目的の対応を保ち、公開済みbranchをtypeのために改名しません。commit前と固定レビューで今回新しく作成した題名/bodyを読み戻します。既存PR title parserの語彙と形式を基準にし、履歴を一括lintして過去の成果を拒否する新gateは設けません。
+
+既存coordinatorの自動fix commitは、所有Issueとの一致を検査した意味のある現PR題名を使い、staging前にlive PRの題名・HEAD/base/bodyを再取得して元bindingとの一致と既存title parserを確認し、push前も題名の不変を読み戻します。変更された場合は未公開の作業を保持して停止します。
+
+統合用squash/mergeの題名・本文は既存のPRタイトル/readbackとcoordinatorの固定payloadに従います。GitHubが付ける実PR番号suffix、base同期のためGitが生成するmerge題名は例外として保持します。生成mergeのbodyへ不要なclosing keywordを入れず、[Developmentのclose境界](#development-の実関連)を守ります。通常の作業commitを生成mergeと称して規約を外さず、旧commit・公開済み履歴・固定受入成果はamend/rebase/rewrite/force pushで変更しません。
 
 ## PR sidebar の実情報
 
