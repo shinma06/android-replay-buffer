@@ -861,6 +861,11 @@ def certificate_acceptance(certificates, git=git_read, trusted_base=None):
     for certificate in certificates.values():
         validate_certificate(certificate, git, trusted_base)
         contributors.update(certificate_review(certificate, receipts))
+        fixed_at = datetime.fromisoformat(git('show', '-s', '--format=%cI', certificate['candidate']))
+        assessed_at = datetime.fromisoformat(certificate['provenance']['at'].replace('Z', '+00:00'))
+        reviewed_at = datetime.fromisoformat(certificate['review']['at'].replace('Z', '+00:00'))
+        if fixed_at.tzinfo is None or assessed_at < fixed_at or reviewed_at < assessed_at:
+            raise ValueError('Certificate assessment/review predates the fixed candidate or assessment')
         reviewers.add(certificate['review']['reviewer_session'])
     if len(reviewers) != 1 or reviewers & contributors:
         raise ValueError('Certificate registration needs one actual independent reviewer for its complete scope')

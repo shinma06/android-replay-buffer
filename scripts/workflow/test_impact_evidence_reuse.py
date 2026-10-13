@@ -113,6 +113,25 @@ class ImpactEvidenceTests(unittest.TestCase):
             path.write_text(json.dumps(self.fixture.documents[f'{NEW}:{CASE_PATH}']))
             return render_queue([path], self.prior.initial.manifest, self.git)
 
+    def test_registration_rejects_pre_candidate_assessment_or_review_but_retains_old_execution_times(self):
+        from verification import certificate_acceptance
+        original = copy.deepcopy(self.certificate)
+        for assessment_at, review_at in (('2026-01-01T00:00:00Z', '2026-01-02T00:00:00Z'),
+                                         ('2026-01-01T00:00:00Z', '2026-10-13T11:00:00+09:00')):
+            bad = copy.deepcopy(original)
+            bad['provenance']['at'] = assessment_at
+            bad['review']['at'] = review_at
+            for contributor in bad['provenance']['attribution']['contributors']:
+                contributor['at'] = assessment_at
+            with self.subTest(assessment_at=assessment_at, review_at=review_at):
+                with self.assertRaisesRegex(ValueError, 'predates the fixed candidate'):
+                    certificate_acceptance({'sample': bad}, self.git)
+        valid = copy.deepcopy(original)
+        for contributor in valid['provenance']['attribution']['contributors']:
+            if contributor['activity'] == 'execution':
+                contributor['at'] = '2026-01-01T00:00:00Z'
+        self.assertIn('certificate_revision', certificate_acceptance({'sample': valid}, self.git))
+
     def test_changed_product_and_zip_combine_old_facts_with_current_identity_without_prior_promotion(self):
         saved = copy.deepcopy(self.assessment)
         with self.assertRaisesRegex(ValueError, 'retesting'):
@@ -374,6 +393,12 @@ class CertificateOriginTests(unittest.TestCase):
         from verification import certificate_acceptance
         self.fixture = tp.EvidenceTests()
         self.fixture.setUp()
+        self.fixture.at = '2026-10-13T00:00:00Z'
+        self.fixture.observed['at'] = self.fixture.at
+        for contributor in self.fixture.items:
+            if contributor['activity'] != 'execution': contributor['at'] = self.fixture.at
+        for origin in self.fixture.bundle['origins']:
+            if origin['activity'] != 'execution': origin['at'] = self.fixture.at
         self.addCleanup(self.fixture.doCleanups)
         self.bound = self.fixture.bound
         self.report = tal.report()
