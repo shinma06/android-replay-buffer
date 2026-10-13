@@ -9,6 +9,8 @@ Read AGENTS.md, docs/project.md, docs/work-management.md and docs/workflow.md fr
 
 Inspect the Issue/comments, related PRs, ownership, dependencies, branch, worktrees and dirty state. Search before creating an Issue. Claim scope, owner, base, target, reviewer, GUI need and next action, then read back. Inspect native Development links separately from body references under docs/work-management.md; record missing links and the default-branch closure boundary. Unreleased claims do not expire. Resume in your existing worktree; take over only after reassignment and old-writer stop, in a separate worktree.
 
+Use `scripts/workflow/project_item.py` for Project #5 item additions and field changes, with the freshly confirmed own-repository Issue/PR URL. Follow docs/work-management.md's Project mutation boundary; do not submit copied opaque IDs through another route.
+
 Fetch without disturbing edits. Branch from the configured integration branch into `agent|codex|claude|cursor/<issue>-<slug>` in a dedicated worktree. Remove an inherited upstream to the integration branch. Install hooks with `python3 scripts/bootstrap.py` after inspecting them; preserve custom hooks on conflict.
 
 For develop bug Issues, classify Acceptance repair as none or the preserved original-NG Issue comment ID; follow docs/verification/README.md for corrective scope, fixed failure provenance and all failed guarantees. Do not use a label or omitted declaration to hide acceptance NG.
