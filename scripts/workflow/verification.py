@@ -103,6 +103,13 @@ def validate_change(data, issue, gui):
     return data
 
 
+def validate_timestamp(at):
+    if not isinstance(at, str) or not re.fullmatch(
+            r'\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,6})?(?:Z|[+-]\d\d:[0-5]\d)', at):
+        raise ValueError('Use an ISO8601 observation timestamp')
+    return datetime.fromisoformat(at.replace('Z', '+00:00'))
+
+
 def validate_observation(result, candidate, artifact=None):
     if (result.get('status') != 'pass' or not SHA.fullmatch(candidate or '') or result.get('head') != candidate or
             not HASH.fullmatch(result.get('artifact_sha256', '')) or
@@ -113,9 +120,7 @@ def validate_observation(result, candidate, artifact=None):
     for key in ('observer', 'at', 'evidence', 'loaded_identity', 'reason'):
         if not nonempty(result.get(key)):
             raise ValueError('Missing observed evidence: ' + key)
-    if not re.fullmatch(r'\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:Z|[+-]\d\d:[0-5]\d)', result['at']):
-        raise ValueError('Use an ISO8601 observation timestamp')
-    datetime.fromisoformat(result['at'].replace('Z', '+00:00'))
+    validate_timestamp(result['at'])
 
 
 def validate_full_result(result, candidate, artifact, execution, gop, initial_entry=None):
@@ -779,14 +784,14 @@ def certificate_review(certificate, receipts=None):
             not isinstance(provenance, dict) or not nonempty(provenance.get('at')) or
             not isinstance(provenance.get('attribution'), dict)):
         raise ValueError('Impact certificate requires canonical session fingerprints and sealed originating receipts')
-    if datetime.fromisoformat(review['at'].replace('Z', '+00:00')).tzinfo is None:
-        raise ValueError('Certificate review requires timezone-qualified origin time')
+    reviewed_at = validate_timestamp(review['at'])
+    assessed_at = validate_timestamp(provenance['at'])
     # Use the same complete contributor/receipt claim checks as original-NG evidence.
-    contributors = repair_contributors(provenance, '', datetime.min.replace(tzinfo=datetime.fromisoformat(review['at'].replace('Z', '+00:00')).tzinfo), receipts)
+    contributors = repair_contributors(provenance, '', datetime.min.replace(tzinfo=reviewed_at.tzinfo), receipts)
     execution = {c['session'] for c in provenance['attribution']['contributors'] if c['activity'] == 'execution'}
     if (review['writer_session'] != provenance['attribution']['writer'] or
             set(review['executor_sessions']) != execution or review['reviewer_session'] in contributors or
-            datetime.fromisoformat(provenance['at'].replace('Z', '+00:00')) > datetime.fromisoformat(review['at'].replace('Z', '+00:00'))):
+            assessed_at > reviewed_at):
         raise ValueError('Impact certificate reviewer/writer/executors conflict with complete originating attribution')
     return contributors
 
