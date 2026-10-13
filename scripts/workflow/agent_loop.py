@@ -491,11 +491,14 @@ class Loop:
         return value
 
     def acceptance(self, pr, path):
+        def read_git(*args):
+            return subprocess.check_output(['git', *args], cwd=path, env=worker_environment(),
+                                           text=True, stderr=subprocess.PIPE, timeout=120).strip()
         try:
             result = verify_pr(pr, lambda p: self.gh.api(f'repos/{REPO}/' + p),
-                               lambda *args: git(*args, cwd=path))
+                               read_git)
             return dict(result, allowed=True)
-        except (ValueError, KeyError, OSError, RuntimeError) as error:
+        except (ValueError, KeyError, OSError, RuntimeError, subprocess.CalledProcessError) as error:
             return {'allowed': False, 'reason': self.private_error(error)}
 
     def validate_review(self, report, bound, accepted):

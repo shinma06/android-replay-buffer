@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "issue": 251,
+  "gui_required": false,
+  "reason": "公開済みの固定元コミットを不足時だけ取得するGit object transportの修正。製品・ZIP・Case・原観察は不変で、IDE・ADB・録画の操作は不要。",
+  "cli_checks": [
+    "python3 scripts/check.py",
+    "python3 scripts/workflow/product_check.py",
+    "python3 scripts/workflow/change_impact.py --base origin/main --run-tests",
+    "isolated fresh objectstore: missing public pre-squash source fails before fix; exact immutable SHA retrieval and unchanged Case/history/certificate/candidate validation pass after fix",
+    "impact source regressions: cached no-fetch, invalid SHA/origin/noncommit rejection, failed fetch and unavailable retrieved object stay fatal"
+  ],
+  "cases": []
+}
