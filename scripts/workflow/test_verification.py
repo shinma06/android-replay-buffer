@@ -173,6 +173,20 @@ class AcceptanceTests(unittest.TestCase):
             with self.subTest(offset=offset):
                 validate_observation(dict(observation(), at='2026-10-11T10:00:00' + offset), NEW)
 
+    def test_fractional_observation_times_keep_bounded_grammar_and_calendar_checks(self):
+        from verification import validate_observation
+        for fraction in ('', '.1', '.123', '.123456'):
+            for zone in ('Z', '+09:00', '-03:30'):
+                with self.subTest(fraction=fraction, zone=zone):
+                    validate_observation(dict(observation(), at='2026-10-13T08:45:34' + fraction + zone), NEW)
+        for at in ('2026-02-30T08:45:34.123Z', '2026-10-13T25:45:34.1Z',
+                   '2026-10-13T08:45:34.Z', '2026-10-13T08:45:34.1234567Z',
+                   '2026-10-13T08:45:34.123+01:99', '2026-10-13T08:45:34.123+99:00',
+                   '2026-10-13T08:45:34.123', '2026-10-13 08:45:34.123Z',
+                   '2026-10-13T08:45:34,123Z', '2026-10-13T08:45:34.123+00:00:30'):
+            with self.subTest(at=at), self.assertRaises(ValueError):
+                validate_observation(dict(observation(), at=at), NEW)
+
     def test_merged_source_cannot_rebind_issue_or_use_ambiguous_gui(self):
         self.source['head']['ref'] = 'codex/99-other'
         with self.assertRaisesRegex(ValueError, 'branch and Issue'):

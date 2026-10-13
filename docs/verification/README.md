@@ -79,7 +79,7 @@ CLIではUSB切断/再接続、直前区間の動画/logcat時刻整合、log-on
 
 `session` は実際の canonical Codex thread UUID（小文字・標準ハイフン形式）から `SHA256(UTF-8("codex-session-v1:" + UUID))` を生成し、`codex-session-sha256:` を付けます。共通 `agent_policy.session_fingerprint` を使い、UUID・host・private pathは公開しません。役割名の変更や生成したwrapper名はhashの入力にできません。contributorsには元製品writer、修復source/実行担当、保持証拠の評価/構成担当を漏れなく含め、複数の実行receiptはそれぞれ原日時とhashを保持します。`writer` は writer/composition の担当、`observer` は `observation.at` の実 execution/assessment/composition 担当を参照します。writerとexecutionの記録は必須で、その他は実際に寄与した場合に含めます。
 
-各 `at` はtimezone付きISO8601（小数秒可）で、観察/構成日時を越えません。execution/assessment/compositionは元失敗と修正candidateより古い日時を拒否し、元製品writerのreceiptはcandidate以前も許容します。suite開始しか分からない場合はそのreceipt日時をそのまま使い、methodの開始/終了を推測しません。後日の構成日時で原実行日時を置き換えません。欠落・不正・重複・対応不明は拒否します。hashは担当の網羅性や証拠内容を証明しないため、独立reviewerがsealed receiptと実セッション対応、原日時・役割・全保証を実質照合します。
+観察と証明reviewの `at` はextended ISO8601（`YYYY-MM-DDTHH:MM:SS`、小数秒は省略又は1–6桁、必須の`Z`又は`±HH:MM`）を使います。原文字列とhashを保持し、比較はmicrosecond精度で行います。receiptの各 `at` はtimezone付きISO8601で、観察/構成日時を越えません。execution/assessment/compositionは元失敗と修正candidateより古い日時を拒否し、元製品writerのreceiptはcandidate以前も許容します。suite開始しか分からない場合はそのreceipt日時をそのまま使い、methodの開始/終了を推測しません。後日の構成日時で原実行日時を置き換えません。欠落・不正・重複・対応不明は拒否します。hashは担当の網羅性や証拠内容を証明しないため、独立reviewerがsealed receiptと実セッション対応、原日時・役割・全保証を実質照合します。
 
 `receipt_locator` は任意の追加フィールドで、空文字又は省略はreceipt全体、非空値はRFC 6901 JSON Pointerの厳密な位置を意味します。同じ `(receipt_sha256, receipt_locator)` は全resultsで同じsession/activity/原日時だけに対応できます。同じeventを複数の失敗保証から参照することは許容し、同じ位置や親子で重なる位置への矛盾する割当を拒否します。1つのJSONに複数の観測がある場合は実在する別位置で区別し、表示用aliasや推測したmethod時刻を使いません。private入口も原本をparseして観測objectの位置が実在することを確認します。
 
