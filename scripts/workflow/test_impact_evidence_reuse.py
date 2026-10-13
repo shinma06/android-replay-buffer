@@ -5,7 +5,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
-from unittest.mock import Mock, call
+from unittest.mock import Mock, call, patch
 
 from test_agent_loop import BASE, NEW
 from test_verification import HEAD
@@ -732,6 +732,42 @@ class PromotionTreeTests(unittest.TestCase):
                     impact_history(source, self.git('rev-parse', 'HEAD'), '36:QA-1-EMU', self.git)
         with self.assertRaises(ValueError):
             impact_history(source, self.base, '36:QA-1-EMU', self.git)
+
+    def test_loop_acceptance_reader_fetches_missing_real_sibling_then_reuses_cached_history(self):
+        import agent_loop as al
+        source = self.candidate
+        self.git('checkout', '-q', '-b', 'reader-sibling', self.common)
+        self.write(COMPONENT, 'repaired product')
+        self.write('docs/verification/changes/issue-244.json', json.dumps({
+            'schema': 1, 'issue': 244, 'gui_required': False, 'reason': 'Metadata only.',
+            'cli_checks': ['Synthetic'], 'cases': []}))
+        self.commit('same product sibling')
+        candidate = self.git('rev-parse', 'HEAD')
+        reader = self.root / 'reader'; reader.mkdir()
+        run = subprocess.check_output
+        run(['git', 'init', '-q'], cwd=reader)
+        run(['git', 'fetch', '-q', '--no-tags', str(self.root), candidate], cwd=reader, stderr=subprocess.PIPE)
+        run(['git', 'remote', 'add', 'origin', 'https://github.com/shinma06/android-replay-buffer'], cwd=reader)
+        with self.assertRaises(subprocess.CalledProcessError):
+            run(['git', 'cat-file', '-t', source], cwd=reader, stderr=subprocess.PIPE)
+        loop = al.Loop(storage=self.root / 'storage')
+        fetches = []
+        def transport(args, **kwargs):
+            if args[:4] == ['git', 'fetch', '--no-tags', 'origin']:
+                fetches.append(args)
+                # Synthetic transport only: preserve real Git exits and the requested immutable SHA.
+                args = ['git', 'fetch', '--no-tags', str(self.root), *args[4:]]
+            return run(args, **kwargs)
+        def validate(pr, api, git):
+            history, case_hash = impact_history(source, pr['candidate'], '36:QA-1-EMU', git)
+            return {'history': history, 'case_hash': case_hash}
+        with patch.object(al, 'verify_pr', side_effect=validate), patch.object(al.subprocess, 'check_output', side_effect=transport):
+            accepted = loop.acceptance({'candidate': candidate}, reader)
+            self.assertTrue(accepted['allowed'])
+            self.assertEqual({e['commit'] for e in accepted['history']}, {source, candidate})
+            self.assertEqual(loop.acceptance({'candidate': candidate}, reader), accepted)
+            self.assertEqual(fetches, [['git', 'fetch', '--no-tags', 'origin', source]])
+            self.assertFalse(loop.acceptance({'candidate': self.base}, reader)['allowed'])
 
     def test_changed_effective_contract_cannot_carry_main_policy(self):
         from verification import promotion_policy_blobs

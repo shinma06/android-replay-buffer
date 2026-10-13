@@ -136,6 +136,40 @@ class RootTests(unittest.TestCase):
             al.git('status', cwd=explicit)
             self.assertEqual(run.call_args.kwargs['cwd'], explicit)
 
+    def test_acceptance_git_failures_keep_real_exit_and_private_diagnostics(self):
+        with tempfile.TemporaryDirectory() as folder:
+            subprocess.check_output(['git', 'init', '-q'], cwd=folder)
+            loop = al.Loop(storage=folder)
+            def validate(pr, api, git):
+                return {'value': git('show', 'sensitive-ref')}
+            with patch.object(al, 'verify_pr', side_effect=validate), \
+                    patch.object(al.subprocess, 'run', wraps=subprocess.run) as run, \
+                    patch.dict(os.environ, {'GIT_DIR': 'foreign', 'GH_TOKEN': 'secret'}):
+                accepted = loop.acceptance({}, Path(folder))
+            self.assertFalse(accepted['allowed'])
+            self.assertIn('CalledProcessError', accepted['reason'])
+            self.assertNotIn('sensitive-ref', accepted['reason'])
+            self.assertNotIn('fatal:', accepted['reason'])
+            self.assertEqual(run.call_args.kwargs['timeout'], 120)
+            self.assertEqual(run.call_args.kwargs['cwd'], Path(folder))
+            self.assertNotIn('GIT_DIR', run.call_args.kwargs['env'])
+            self.assertNotIn('GH_TOKEN', run.call_args.kwargs['env'])
+            diagnostics = list((Path(folder) / 'diagnostics').iterdir())
+            self.assertEqual(len(diagnostics), 1)
+            self.assertEqual(diagnostics[0].stat().st_mode & 0o777, 0o600)
+            self.assertIn('exit status 128', diagnostics[0].read_text())
+
+    def test_acceptance_timeout_does_not_become_a_missing_source_or_success(self):
+        with tempfile.TemporaryDirectory() as folder:
+            loop = al.Loop(storage=folder)
+            def validate(pr, api, git):
+                return {'value': git('cat-file', '-t', HEAD)}
+            with patch.object(al, 'verify_pr', side_effect=validate), \
+                    patch.object(al.subprocess, 'run', side_effect=subprocess.TimeoutExpired('git', 120)) as run:
+                with self.assertRaises(subprocess.TimeoutExpired):
+                    loop.acceptance({}, Path(folder))
+                self.assertEqual(run.call_count, 1)
+
 
 class BaseReferenceTests(unittest.TestCase):
     def test_open_pr_uses_live_ref_despite_stale_payload(self):
