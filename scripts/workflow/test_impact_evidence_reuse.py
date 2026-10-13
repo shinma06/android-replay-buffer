@@ -7,8 +7,10 @@ import tempfile
 import unittest
 
 from test_agent_loop import BASE, NEW
+from test_verification import HEAD
+from agent_policy import session_fingerprint
 from test_observation_reuse import OLD, RECORD, CASE_PATH
-from test_responsibility_revision import ResponsibilityRevisionTests
+import test_responsibility_revision as tr
 from verification import (IMPACT_DIMENSIONS, INITIAL_PLAN, canonical_hash, impact_history,
                           render_queue, unchanged_artifact_history)
 
@@ -19,7 +21,7 @@ REPAIR = 'plugin/src/main/kotlin/AppHistory.kt'
 
 class ImpactEvidenceTests(unittest.TestCase):
     def setUp(self):
-        self.prior = ResponsibilityRevisionTests()
+        self.prior = tr.ResponsibilityRevisionTests()
         self.prior.setUp()
         self.fixture = self.prior.fixture
         self.key = '36:QA-1-EMU'
@@ -57,16 +59,31 @@ class ImpactEvidenceTests(unittest.TestCase):
             'original_file_sha256': 'a' * 64, 'original_result_sha256': 'b' * 64,
             'original_fact_sha256': {'prior': 'c' * 64},
             'original_record_evidence': 'Reviewer examined immutable private bytes and public summaries.',
-            'review': {'status': 'approved', 'reviewer_session': 'independent-synthetic',
-                       'writer_session': 'writer-synthetic', 'executor_sessions': ['executor-synthetic'],
+            'review': {'status': 'approved',
+                       'reviewer_session': session_fingerprint('00000000-0000-4000-8000-000000000004'),
+                       'writer_session': session_fingerprint('00000000-0000-4000-8000-000000000001'),
+                       'executor_sessions': [session_fingerprint('00000000-0000-4000-8000-000000000002'),
+                                             session_fingerprint('00000000-0000-4000-8000-000000000003')],
                        'at': '2026-10-13T11:00:00+09:00', 'evidence': 'Fixed independent synthetic report.'},
             'guarantees': {k: {'facts': ids, 'disposition': 'fresh' if k == 'artifact_binding' else 'unaffected',
                               'impact': {d: 'Concrete synthetic comparison: ' + d for d in IMPACT_DIMENSIONS},
                               'components': {COMPONENT: {'source_blob': '0' * 40, 'candidate_blob': '0' * 40}}}
                            for k, ids in self.assessment['coverage'].items()}}
+        review = self.certificate['review']
+        activities = [('writer', review['writer_session'], old['at']),
+                      ('execution', review['executor_sessions'][0], old['at']),
+                      ('execution', review['executor_sessions'][1], fresh['at']),
+                      ('composition', review['writer_session'], self.observed['at'])]
+        self.certificate['provenance'] = {'at': self.observed['at'], 'attribution': {
+            'writer': review['writer_session'], 'observer': review['writer_session'],
+            'contributors': [{'role': activity, 'session': session, 'activity': activity,
+                              'at': at, 'receipt_sha256': 'a' * 64, 'receipt_locator': f'/events/{i}'}
+                             for i, (activity, session, at) in enumerate(activities)]}}
         self.seal()
 
     def git(self, *args):
+        if args == ('rev-list', f'{OLD}..{OLD}'):
+            return ''
         if args == ('rev-list', f'{OLD}..{NEW}'):
             return NEW
         if args[:2] == ('rev-list', '--parents') and args[-1] == NEW:
@@ -84,6 +101,9 @@ class ImpactEvidenceTests(unittest.TestCase):
             'schema': 1, 'issue': 246, 'gui_required': False, 'reason': 'Certificate only.',
             'cli_checks': ['Synthetic fixture.'], 'cases': [],
             'evidence_certificates': {'sample': copy.deepcopy(self.certificate)}}
+        for ref in (BASE, HEAD):
+            self.fixture.documents[f'{ref}:{CERT_PATH}'] = copy.deepcopy(self.fixture.documents[f'{RECORD}:{CERT_PATH}'])
+        self.fixture.product_diff = [CERT_PATH]
         self.assessment['impact_reuse'] = {
             'commit': RECORD, 'path': CERT_PATH, 'id': 'sample', 'sha256': canonical_hash(self.certificate)}
 
@@ -109,7 +129,7 @@ class ImpactEvidenceTests(unittest.TestCase):
         edits = ['missing-original', 'forged-hash', 'writer-review', 'executor-review', 'missing-review',
                  'wrong-artifact', 'old-as-current', 'future-fact', 'unknown-runtime', 'missing-impact',
                  'missing-coverage', 'failure', 'failed-fact', 'unknown-plan', 'changed-case',
-                 'changed-human-scope', 'source-execution', 'missing-component', 'wrong-history', 'old-load']
+                 'changed-human-scope', 'source-execution', 'missing-component', 'wrong-history', 'old-load', 'alias-reviewer']
         for edit in edits:
             with self.subTest(edit=edit):
                 self.setUp()
@@ -118,7 +138,10 @@ class ImpactEvidenceTests(unittest.TestCase):
                 elif edit == 'forged-hash':
                     self.assessment['source_result_sha256'] = 'f' * 64
                 elif edit in ('writer-review', 'executor-review'):
-                    self.certificate['review']['reviewer_session'] = edit.split('-')[0] + '-synthetic'
+                    self.certificate['review']['reviewer_session'] = (self.certificate['review']['writer_session']
+                        if edit == 'writer-review' else self.certificate['review']['executor_sessions'][0])
+                elif edit == 'alias-reviewer':
+                    self.certificate['review']['reviewer_session'] = 'reviewer-b'
                 elif edit == 'missing-review':
                     self.certificate.pop('review')
                 elif edit == 'wrong-artifact':
@@ -205,6 +228,46 @@ class ImpactEvidenceTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'Case contract'):
                 impact_history(source, git('rev-parse', 'HEAD'), '36:QA-1', git)
 
+    def nested(self):
+        fact = copy.deepcopy(self.assessment['facts']['prior'])
+        aggregate = {'status': 'pending', 'head': OLD, 'artifact_sha256': 'd' * 64,
+                     'reason': 'Original missing purpose remains a historical pending verdict.'}
+        return {'source_candidate': OLD, 'source_result': aggregate,
+                'source_result_sha256': canonical_hash(aggregate), 'source_record_evidence': 'Sealed original.',
+                'facts': {'executed': fact}, 'coverage': {k: ['executed'] for k in fact['responsibility_evidence']},
+                'missing_requirements': [], 'unresolved_owned_failures': []}
+
+    def test_valid_original_composition_survives_but_nested_missing_or_failure_is_rejected(self):
+        self.assessment['source_result']['initial_observation']['responsibility_assessment'] = self.nested()
+        self.assessment['source_result_sha256'] = canonical_hash(self.assessment['source_result'])
+        self.seal()
+        self.assertTrue(self.prior.verify()['stage_complete'])
+        for field in ('missing_requirements', 'unresolved_owned_failures'):
+            self.assessment['source_result']['initial_observation']['responsibility_assessment'][field] = ['Unmet owned purpose.']
+            self.assessment['source_result_sha256'] = canonical_hash(self.assessment['source_result'])
+            self.seal()
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                self.prior.verify()
+            self.assessment['source_result']['initial_observation']['responsibility_assessment'][field] = []
+
+    def test_previously_pending_case_uses_successful_shared_purpose_and_fresh_missing_fact(self):
+        # A fact is qualified by its real provenance/purpose, not a whole-Case PASS label.
+        self.assessment['source_result'] = {'status': 'pending', 'head': OLD, 'artifact_sha256': 'd' * 64,
+            'reason': 'Target Case never passed; shared consumer purpose succeeded in a separate original Case.'}
+        self.assessment['facts']['prior']['evidence'] = 'Successful original consumer purpose shared from another Case.'
+        self.assessment['source_result_sha256'] = canonical_hash(self.assessment['source_result'])
+        self.assessment['coverage']['file_integrity'] = ['current']
+        proof = self.certificate['guarantees']['file_integrity']
+        proof.update(facts=['current'], disposition='fresh')
+        original = copy.deepcopy(self.assessment['source_result'])
+        self.seal()
+        self.assertTrue(self.prior.verify()['stage_complete'])
+        self.assertEqual(self.assessment['source_result'], original)
+        self.assessment['missing_requirements'] = ['Fresh missing fact not obtained.']
+        self.seal()
+        with self.assertRaises(ValueError):
+            self.prior.verify()
+
     def test_certificate_hash_record_and_trusted_main_cannot_be_self_asserted(self):
         for edit in ('tamper', 'missing', 'untrusted'):
             self.setUp()
@@ -235,6 +298,193 @@ class ImpactEvidenceTests(unittest.TestCase):
         self.seal()
         self.assertTrue(self.prior.verify()['stage_complete'])
 
+
+class CertificateOriginTests(unittest.TestCase):
+    def setUp(self):
+        import test_repair_private as tp
+        import test_agent_loop as tal
+        from verification import certificate_acceptance
+        self.fixture = tp.EvidenceTests()
+        self.fixture.setUp()
+        self.addCleanup(self.fixture.doCleanups)
+        self.bound = self.fixture.bound
+        self.report = tal.report()
+        self.report.update(certificate_revision='e' * 64, certificate_assessment='Original receipts, actors, purposes and coverage examined.')
+        sessions = list(map(session_fingerprint, self.fixture.sessions))
+        certificate = {'provenance': self.fixture.observed, 'review': {
+            'status': 'approved', 'writer_session': sessions[0], 'executor_sessions': [sessions[1]],
+            'reviewer_session': session_fingerprint(self.report['session']), 'at': self.fixture.at,
+            'evidence': 'Synthetic fixed review.'}}
+        self.accepted = dict(certificate_acceptance({'sample': certificate}), allowed=True)
+        self.report['certificate_revision'] = self.accepted['certificate_revision']
+        self.fixture.bundle.pop('repair_revision')
+        self.fixture.bundle['certificate_revision'] = self.accepted['certificate_revision']
+        self.fixture.seal()
+
+    def evidence(self):
+        from agent_worker import private_repair_evidence
+        packet = private_repair_evidence(self.fixture.path, self.accepted, self.bound,
+                                         revision_field='certificate_revision')
+        self.accepted['certificate_evidence_sha256'] = packet['bundle_sha256']
+        self.report['certificate_evidence_sha256'] = packet['bundle_sha256']
+        return packet
+
+    def test_private_origin_adapter_binds_actual_reviewer_and_sealed_contributors(self):
+        from handoff_registry import issue_review_origin
+        from agent_policy import validate_review, next_action
+        packet = self.evidence()
+        issued = issue_review_origin(self.fixture.root, self.report, self.bound, self.report['session'], 'manual',
+                                     packet['private_paths'], [o['session'] for o in packet['origins']])
+        validate_review(issued, self.bound, self.accepted, self.fixture.root)
+        self.assertEqual(next_action({'binding': self.bound, 'review': issued}, self.bound, 'success', False,
+                                    self.accepted, self.fixture.root), 'merge')
+        for edit in ('missing-origin', 'unknown-reviewer', 'self-review', 'stale-proof'):
+            bad = dict(issued)
+            if edit == 'missing-origin':
+                bad.pop('origin_receipt')
+            elif edit == 'unknown-reviewer':
+                bad['session'] = '00000000-0000-4000-8000-000000000088'
+            elif edit == 'self-review':
+                bad['session'] = self.fixture.sessions[0]
+            else:
+                bad['certificate_evidence_sha256'] = 'f' * 64
+            with self.subTest(edit=edit), self.assertRaises(ValueError):
+                validate_review(bad, self.bound, self.accepted, self.fixture.root)
+
+    def test_forged_or_missing_contributor_origins_are_rejected(self):
+        original = copy.deepcopy(self.fixture.bundle)
+        for edit in ('alias', 'missing', 'wrong-session', 'changed-receipt'):
+            self.fixture.bundle = copy.deepcopy(original)
+            if edit == 'alias':
+                self.fixture.bundle['origins'][0]['session'] = 'writer-a'
+            elif edit == 'missing':
+                self.fixture.bundle['origins'].pop()
+            elif edit == 'wrong-session':
+                self.fixture.bundle['origins'][0]['session'] = self.fixture.sessions[1]
+            else:
+                self.fixture.bundle['receipts'][0]['sha256'] = 'b' * 64
+            self.fixture.seal()
+            with self.subTest(edit=edit), self.assertRaises(ValueError):
+                self.evidence()
+
+    def test_manual_binder_uses_actual_environment_session_and_never_model_alias(self):
+        import os
+        from unittest.mock import patch
+        from agent_worker import main
+        from agent_policy import validate_review
+        root = self.fixture.root
+        report = root / 'manual.json'; report.write_text(json.dumps(self.report)); report.chmod(0o600)
+        accepted = root / 'accepted.json'; accepted.write_text(json.dumps(self.accepted))
+        bound = root / 'binding.json'; bound.write_text(json.dumps(self.bound))
+        output = root / 'issued.json'
+        args = ['agent_worker.py', '--report', str(report), '--output', str(output),
+                '--repair-evidence', str(self.fixture.path), '--acceptance', str(accepted),
+                '--storage', str(root), '--binding', str(bound)]
+        with patch.dict(os.environ, CODEX_THREAD_ID=self.report['session']), patch('sys.argv', args):
+            main()
+        issued = json.loads(output.read_text())
+        self.evidence()
+        validate_review(issued, self.bound, self.accepted, root)
+        args[args.index(str(output))] = str(root / 'forged.json')
+        with patch.dict(os.environ, CODEX_THREAD_ID=self.fixture.sessions[0]), patch('sys.argv', args), self.assertRaises(ValueError):
+            main()
+
+
+
+class PromotionTreeTests(unittest.TestCase):
+    def setUp(self):
+        self.folder = tempfile.TemporaryDirectory()
+        self.addCleanup(self.folder.cleanup)
+        self.root = Path(self.folder.name)
+        self.git('init', '-q')
+        self.git('config', 'user.email', 'fixture@example.invalid')
+        self.git('config', 'user.name', 'Synthetic fixture')
+        prior = tr.ResponsibilityRevisionTests(); prior.setUp()
+        self.write(CASE_PATH, json.dumps(prior.fixture.documents[f'{NEW}:{CASE_PATH}']))
+        self.commit('root')
+        root = self.git('rev-parse', 'HEAD')
+        plan = copy.deepcopy(prior.policy); plan['required_ancestor'] = root
+        plan['responsibility_revision']['previous_plan_sha256'] = canonical_hash(
+            {k: v for k, v in plan.items() if k != 'responsibility_revision'})
+        self.write(INITIAL_PLAN, json.dumps(plan))
+        self.write('scripts/workflow/verification.py', 'old policy')
+        self.write(COMPONENT, 'old product')
+        self.commit('common')
+        self.common = self.git('rev-parse', 'HEAD')
+        self.git('checkout', '-q', '-b', 'candidate')
+        self.write(COMPONENT, 'repaired product')
+        self.commit('tested repair')
+        self.candidate = self.git('rev-parse', 'HEAD')
+        self.git('checkout', '-q', '-b', 'trusted-main', self.common)
+        self.write('scripts/workflow/verification.py', 'reviewed policy')
+        self.write('AGENTS.md', 'reviewed instructions')
+        self.write('.github/workflows/ci.yml', 'mixed build policy')
+        self.write(CERT_PATH, json.dumps({'schema': 1, 'issue': 246, 'gui_required': False,
+                   'reason': 'Certificate only.', 'cli_checks': ['Synthetic'], 'cases': [],
+                   'evidence_certificates': {'sample': {'candidate': self.candidate,
+                       'key': '36:QA-1-EMU', 'artifact_sha256': 'e' * 64}}}))
+        self.commit('adopted main policy and certificate')
+        self.base = self.git('rev-parse', 'HEAD')
+        certificate = json.loads(self.git('show', f'{self.base}:{CERT_PATH}'))['evidence_certificates']['sample']
+        self.promotion = {'results': {'36:QA-1-EMU': {'head': self.candidate, 'artifact_sha256': 'e' * 64,
+            'initial_observation': {'responsibility_assessment': {'impact_reuse': {
+                'commit': self.base, 'path': CERT_PATH, 'id': 'sample', 'sha256': canonical_hash(certificate)}}}}}}
+        from verification import promotion_certificates, promotion_policy_blobs
+        self.carried = promotion_certificates(self.promotion, self.base, self.candidate, self.git)
+        self.carried.update(promotion_policy_blobs(self.base, self.candidate, self.git))
+        self.allowed = set(self.carried) | {'docs/verification/promotion.json'}
+        self.git('checkout', '-q', 'candidate')
+        # A real merge retains tested product bytes and copies only the exact permitted main blobs.
+        self.git('merge', '--no-commit', '--no-ff', '-s', 'ours', self.base)
+        for path in self.carried:
+            self.write(path, self.git('show', f'{self.base}:{path}'))
+        self.write('docs/verification/promotion.json', json.dumps(self.promotion))
+        self.commit('promotion metadata')
+
+    def git(self, *args):
+        return subprocess.check_output(['git', *args], cwd=self.root, text=True, stderr=subprocess.PIPE).strip()
+
+    def write(self, path, text):
+        target = self.root / path; target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text)
+
+    def commit(self, message):
+        self.git('add', '.')
+        self.git('commit', '-q', '-m', message)
+
+    def verify(self):
+        from verification import promotion_metadata_history
+        promotion_metadata_history(self.base, self.candidate, self.git('rev-parse', 'HEAD'),
+                                   self.allowed, self.carried, self.git)
+
+    def test_real_divergent_tree_retains_reviewed_policy_and_certificate_without_product_rebuild(self):
+        self.verify()
+        self.assertEqual(set(self.carried), {CERT_PATH, 'scripts/workflow/verification.py', 'AGENTS.md'})
+        self.assertEqual(self.git('diff', '--name-only', self.candidate, 'HEAD', '--', COMPONENT), '')
+        self.assertNotIn('.github/workflows/ci.yml', self.carried)
+
+    def test_unreviewed_policy_product_unknown_and_reverts_remain_blocked(self):
+        clean = self.git('rev-parse', 'HEAD')
+        for path in ('scripts/workflow/verification.py', COMPONENT, 'unknown.bin', '.github/workflows/ci.yml', CERT_PATH):
+            with self.subTest(path=path):
+                self.git('reset', '--hard', clean)
+                self.write(path, 'unreviewed alteration')
+                self.commit('unreviewed')
+                altered = self.git('rev-parse', 'HEAD')
+                with self.assertRaises(ValueError):
+                    self.verify()
+                self.git('revert', '--no-edit', altered)
+                with self.assertRaises(ValueError):
+                    self.verify()
+
+    def test_changed_effective_contract_cannot_carry_main_policy(self):
+        from verification import promotion_policy_blobs
+        self.git('checkout', '-q', 'trusted-main')
+        plan = json.loads(self.git('show', f'{self.base}:{INITIAL_PLAN}'))
+        plan['human_scope'] += ' changed'
+        self.write(INITIAL_PLAN, json.dumps(plan)); self.commit('changed contract')
+        with self.assertRaises(ValueError):
+            promotion_policy_blobs(self.git('rev-parse', 'HEAD'), self.candidate, self.git)
 
 if __name__ == '__main__':
     unittest.main()

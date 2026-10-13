@@ -512,15 +512,16 @@ class Loop:
         return retained_originals(records, paths, roots)
 
     def repair_evidence(self, accepted, h, bound):
-        if not accepted.get('repair_revision'):
+        revision_field = 'certificate_revision' if accepted.get('certificate_revision') else 'repair_revision'
+        if not accepted.get(revision_field):
             self.retained_history(h)
             return None
         roots = (h['source'], self.storage / f'pr-{h["pr"]}' / 'checkout')
-        packet = private_repair_evidence(h.get('repair_evidence'), accepted, bound, roots)
+        packet = private_repair_evidence(h.get('repair_evidence'), accepted, bound, roots, revision_field=revision_field)
         records = self.retained_history(h)
         packet['evidence_records'] = retained_originals(
             [*records, *packet['evidence_records']], packet['private_paths'], roots)
-        accepted['repair_evidence_sha256'] = packet['bundle_sha256']
+        accepted[revision_field.replace('_revision', '_evidence_sha256')] = packet['bundle_sha256']
         return packet
 
     def merged_acceptance(self, pr, h, state):

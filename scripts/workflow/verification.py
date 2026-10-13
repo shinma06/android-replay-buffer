@@ -733,6 +733,48 @@ def impact_history(source, candidate, key, git):
     return sorted(edges, key=lambda e: (e['commit'], e['parent'])), canonical_hash(cases[0][0])
 
 
+def certificate_review(certificate):
+    """Public fingerprint/receipt structure; actual origins are checked by the approval adapter."""
+    review = certificate.get('review', {})
+    provenance = certificate.get('provenance')
+    if (not isinstance(review, dict) or review.get('status') != 'approved' or
+            not all(isinstance(review.get(k), str) and SESSION_HASH.fullmatch(review[k])
+                    for k in ('reviewer_session', 'writer_session')) or
+            not all(nonempty(review.get(k)) for k in ('at', 'evidence')) or
+            not isinstance(review.get('executor_sessions'), list) or not review['executor_sessions'] or
+            not all(isinstance(s, str) and SESSION_HASH.fullmatch(s) for s in review['executor_sessions']) or
+            len(review['executor_sessions']) != len(set(review['executor_sessions'])) or
+            not isinstance(provenance, dict) or not nonempty(provenance.get('at')) or
+            not isinstance(provenance.get('attribution'), dict)):
+        raise ValueError('Impact certificate requires canonical session fingerprints and sealed originating receipts')
+    if datetime.fromisoformat(review['at'].replace('Z', '+00:00')).tzinfo is None:
+        raise ValueError('Certificate review requires timezone-qualified origin time')
+    # Use the same complete contributor/receipt claim checks as original-NG evidence.
+    contributors = repair_contributors(provenance, '', datetime.min.replace(tzinfo=datetime.fromisoformat(review['at'].replace('Z', '+00:00')).tzinfo))
+    execution = {c['session'] for c in provenance['attribution']['contributors'] if c['activity'] == 'execution'}
+    if (review['writer_session'] != provenance['attribution']['writer'] or
+            set(review['executor_sessions']) != execution or review['reviewer_session'] in contributors or
+            datetime.fromisoformat(provenance['at'].replace('Z', '+00:00')) > datetime.fromisoformat(review['at'].replace('Z', '+00:00'))):
+        raise ValueError('Impact certificate reviewer/writer/executors conflict with complete originating attribution')
+    return contributors
+
+
+def certificate_acceptance(certificates):
+    if not isinstance(certificates, dict) or not certificates or not all(nonempty(k) for k in certificates):
+        raise ValueError('Malformed Issue evidence certificates')
+    contributors, reviewers = set(), set()
+    for certificate in certificates.values():
+        if not isinstance(certificate, dict):
+            raise ValueError('Malformed Issue evidence certificate')
+        contributors.update(certificate_review(certificate))
+        reviewers.add(certificate['review']['reviewer_session'])
+    if len(reviewers) != 1 or reviewers & contributors:
+        raise ValueError('Certificate registration needs one actual independent reviewer for its complete scope')
+    return {'certificate_revision': canonical_hash(certificates), 'certificate_observers': sorted(contributors),
+            'certificate_reviewers': sorted(reviewers),
+            'certificate_provenance': {k: c['provenance'] for k, c in certificates.items()}}
+
+
 def validate_impact_reuse(observed, assessment, key, policy, candidate, artifact, git, trusted_base):
     """Trust an independently reviewed, public-safe certificate, never a writer's assertion."""
     ref = assessment['impact_reuse']
@@ -782,13 +824,8 @@ def validate_impact_reuse(observed, assessment, key, policy, candidate, artifact
     if (not old_facts or not isinstance(originals, dict) or set(originals) != old_facts or
             not all(isinstance(h, str) and HASH.fullmatch(h) for h in originals.values())):
         raise ValueError('Every retained fact needs independently verified immutable original provenance')
-    review = certificate.get('review', {})
-    if (not isinstance(review, dict) or review.get('status') != 'approved' or
-            not all(nonempty(review.get(k)) for k in ('reviewer_session', 'writer_session', 'at', 'evidence')) or
-            not isinstance(review.get('executor_sessions'), list) or not review['executor_sessions'] or
-            not all(nonempty(s) for s in review['executor_sessions']) or
-            review['reviewer_session'] in [review['writer_session'], *review['executor_sessions']]):
-        raise ValueError('Impact reuse requires substantive independent original/impact/coverage review')
+    certificate_review(certificate)
+    review = certificate['review']
     validate_observation(dict(observed, at=review['at']), candidate, artifact)
     fixed_at = datetime.fromisoformat(git('show', '-s', '--format=%cI', candidate))
     assessed_at = datetime.fromisoformat(observed['at'].replace('Z', '+00:00'))
@@ -850,6 +887,8 @@ def validate_impact_reuse(observed, assessment, key, policy, candidate, artifact
             validate_full_result(source_result, assessment['source_candidate'], source_artifact, execution, source_gop,
                                  effective_initial_entry(source_plan, key))
             validate_responsibility_observation(source_result, key, source_plan)
+        validate_fact_assessment(original_observation, key, source_plan, assessment['source_candidate'],
+                                 source_artifact, git, trusted_base)
     return source_artifact
 
 
@@ -911,6 +950,8 @@ def validate_fact_assessment(observed, key, policy, candidate, artifact, git, tr
                 raise ValueError('Current-build fact predates the fixed candidate')
         if datetime.fromisoformat(fact['at'].replace('Z', '+00:00')) > datetime.fromisoformat(observed['at'].replace('Z', '+00:00')):
             raise ValueError('Assessment predates its retained facts')
+        validate_fact_assessment(fact, key, policy if fact_head == candidate else original_policy, fact_head,
+                                 artifact if fact_head == candidate else source_artifact, git, trusted_base)
 
 
 def validate_candidate_result(result, key, policy, stage, candidate, artifact, execution, gop, git,
@@ -1250,6 +1291,76 @@ def verify_repair(pr, issue, data, path, api, git):
             'repair': repair, 'repair_observers': sorted(observers)}
 
 
+def promotion_certificates(promotion, base, candidate, git):
+    """Carry only referenced candidate-bound certificate JSON already adopted on main."""
+    paths = {}
+    results = promotion.get('results', {})
+    if not isinstance(results, dict):
+        raise ValueError('Candidate results must be an object matching ALL required Cases')
+    for key, result in results.items():
+        if not isinstance(result, dict):
+            continue
+        observed = result.get('initial_observation', result)
+        assessment = observed.get('responsibility_assessment', {}) if isinstance(observed, dict) else {}
+        ref = assessment.get('impact_reuse') if isinstance(assessment, dict) else None
+        if ref is None:
+            continue
+        if (not isinstance(ref, dict) or not isinstance(ref.get('path'), str) or
+                not re.fullmatch(r'docs/verification/changes/issue-[1-9][0-9]*\.json', ref['path']) or
+                not isinstance(ref.get('commit'), str) or not SHA.fullmatch(ref['commit'])):
+            raise ValueError('Promotion certificate requires its fixed main Issue record')
+        try:
+            git('merge-base', '--is-ancestor', ref['commit'], base)
+        except subprocess.CalledProcessError as error:
+            raise ValueError('Certificate was not adopted in trusted main') from error
+        path = ref['path']
+        adopted = regular_json(base, path, git)
+        validate_change(adopted, int(Path(path).stem.removeprefix('issue-')), False)
+        original = regular_json(ref['commit'], path, git)
+        certificate = original.get('evidence_certificates', {}).get(ref.get('id'))
+        if (not isinstance(certificate, dict) or certificate != adopted.get('evidence_certificates', {}).get(ref.get('id')) or
+                canonical_hash(certificate) != ref.get('sha256') or certificate.get('key') != key or
+                certificate.get('candidate') != candidate or result.get('head') != candidate or
+                certificate.get('artifact_sha256') != result.get('artifact_sha256')):
+            raise ValueError('Promotion metadata must carry the exact main-adopted candidate/build certificate')
+        paths[path] = git('ls-tree', base, '--', path)
+    return paths
+
+
+
+def promotion_policy_blobs(base, candidate, git):
+    """Keep reviewed main policy without changing the candidate's effective contract."""
+    from change_impact import path_impacts, TOOLING, KNOWLEDGE, METADATA
+    if initial_stage_plan(base, candidate, git) != initial_stage_plan(candidate, candidate, git):
+        raise ValueError('Policy carry requires the unchanged effective candidate contract')
+    ancestor = git('merge-base', candidate, base)
+    paths = {}
+    for path in git('diff', '--no-renames', '--name-only', ancestor, base).splitlines():
+        if path.startswith('docs/verification/') and not path.endswith('.md'):
+            continue  # Certificates have their own candidate-bound adoption gate.
+        blob = git('ls-tree', base, '--', path)
+        old_blob = git('ls-tree', candidate, '--', path)
+        modes = tuple(x.split()[0] if x else '000000' for x in (old_blob, blob))
+        if path_impacts(path, modes) <= {TOOLING, KNOWLEDGE, METADATA} and blob != old_blob:
+            paths[path] = blob
+    return paths
+
+
+def promotion_metadata_history(base, candidate, head, allowed, carried, git):
+    if any(git('ls-tree', head, '--', p) != blob for p, blob in carried.items()):
+        raise ValueError('Promotion policy/certificate metadata must equal the trusted main blob')
+    if any(p not in allowed for p in git('diff', '--no-renames', '--name-only', candidate, head).splitlines()):
+        raise ValueError('Promotion tree differs from tested candidate outside acceptance metadata')
+    for commit in git('rev-list', head, '--not', candidate, base).splitlines():
+        parents = git('rev-list', '--parents', '-n', '1', commit).split()[1:]
+        if not parents or len(parents) > 2 or (len(parents) == 2 and parents[1] != base):
+            raise ValueError('Unexpected promotion ancestry; only the current main merge is allowed')
+        changed = git('diff', '--no-renames', '--name-only', parents[0], commit).splitlines()
+        if any(p not in allowed for p in changed):
+            raise ValueError('Untested commit in promotion history, even if later reverted')
+        if any(p in carried and git('ls-tree', commit, '--', p) != carried[p] for p in changed):
+            raise ValueError('Changed or reverted policy/certificate metadata differs from trusted main')
+
 def verify_pr(pr, api, git=git_read):
     """api(path) uses the same repo; git sees fetched PR/candidate objects only as data."""
     issue, path, mode = metadata(pr)
@@ -1258,6 +1369,8 @@ def verify_pr(pr, api, git=git_read):
     gui = field(pr['body'], 'GUI') == 'required'
     validate_change(data, issue, gui)
     files = git('diff', '--no-renames', '--name-only', base, head).splitlines()
+    if 'evidence_certificates' in data and mode != 'tooling':
+        raise ValueError('Evidence certificate registration requires its independent main tooling route')
     if mode == 'develop':
         # Ordinary pending/blocked/fail Cases remain tracked; original-NG corrections must pass.
         for case in data['cases']:
@@ -1270,7 +1383,8 @@ def verify_pr(pr, api, git=git_read):
     if mode == 'tooling':
         if gui or not files or any(not tooling_path(f) for f in files):
             raise ValueError('Direct main tooling route is restricted to documented non-product paths')
-        return {'mode': mode, 'gui_complete': True, 'cases': 0}
+        certificates = certificate_acceptance(data['evidence_certificates']) if 'evidence_certificates' in data else {}
+        return {'mode': mode, 'gui_complete': True, 'cases': 0, **certificates}
     promotion = json.loads(git('show', f'{head}:{PROMOTION}'))
     candidate = promotion.get('candidate')
     if promotion.get('schema') != 1 or promotion.get('base') != base or not SHA.fullmatch(candidate or ''):
@@ -1307,18 +1421,12 @@ def verify_pr(pr, api, git=git_read):
         git('merge-base', '--is-ancestor', candidate, head)
         git('merge-base', '--is-ancestor', base, head)
         # Metadata-only changes after the tested candidate. No untested product edits or main conflict resolutions.
-        allowed = {PROMOTION, path}
-        if any(p not in allowed for p in git('diff', '--no-renames', '--name-only', candidate, head).splitlines()):
-            raise ValueError('Promotion tree differs from tested candidate outside acceptance metadata')
-        # A net-zero revert must not smuggle later/unobserved commits into main ancestry.
-        # Every new promotion commit is metadata-only; the only allowed merge parent is current main.
-        for commit in git('rev-list', head, '--not', candidate, base).splitlines():
-            parents = git('rev-list', '--parents', '-n', '1', commit).split()[1:]
-            if not parents or len(parents) > 2 or (len(parents) == 2 and parents[1] != base):
-                raise ValueError('Unexpected promotion ancestry; only the current main merge is allowed')
-            changed = git('diff', '--no-renames', '--name-only', parents[0], commit).splitlines()
-            if any(p not in allowed for p in changed):
-                raise ValueError('Untested commit in promotion history, even if later reverted')
+        certificates = promotion_certificates(promotion, base, candidate, git)
+        carried = dict(certificates)
+        if certificates:
+            carried.update(promotion_policy_blobs(base, candidate, git))
+        allowed = {PROMOTION, path} | set(carried)
+        promotion_metadata_history(base, candidate, head, allowed, carried, git)
         commits = git('rev-list', f'{base}..{candidate}').splitlines()
         if not commits or len(commits) != len(set(commits)):
             raise ValueError('No candidate changes or duplicate commits')
