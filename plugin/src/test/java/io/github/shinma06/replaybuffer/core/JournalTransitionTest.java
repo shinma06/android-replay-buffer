@@ -199,6 +199,47 @@ j.close();
 
  }
 
+ @Test void detectedStageReplacementSurvivesInitialAndUpdateFailureAndRetry() throws Exception {
+  for (boolean update : new boolean[]{false, true}) {
+   Path r=Files.createDirectory(root.resolve(update ? "stage-update" : "stage-initial")).toRealPath();
+   RemoteCleanup record=new RemoteCleanup("fixture-1",update ? "55555555555555555555555555555555" : "66666666666666666666666666666666",Map.of(),Set.of());
+   RemoteCleanupJournal j=new RemoteCleanupJournal(r);
+   Path descriptor=r.resolve("remote-cleanup-"+record.getToken()+".json");
+   if(update) j.retain(record,true);
+   byte[] oldBytes=update ? Files.readAllBytes(descriptor) : null;
+   Object oldKey=update ? Files.readAttributes(descriptor,java.nio.file.attribute.BasicFileAttributes.class).fileKey() : null;
+   Object oldEntry=update ? ((Map<?,?>)get(j,"owned")).get(descriptor) : null;
+   FileLock oldLock=update ? (FileLock)get(oldEntry,"lock") : null;
+   Path[] stage={null}; FileChannel[] channel={null}; FileLock[] lock={null};
+   Path moved=r.resolve("moved-owned-stage");
+   set(j,"createChannel",(Function1<Path,FileChannel>)p->{try {
+    stage[0]=p; channel[0]=create(p);
+    return new CutChannel(channel[0],Integer.MAX_VALUE) {
+     public FileLock tryLock(long position,long size,boolean shared)throws IOException {
+      lock[0]=super.tryLock(position,size,shared);return lock[0];
+     }
+     public void force(boolean metadata)throws IOException {
+      super.force(metadata);assertTrue(lock[0].isValid());Files.move(p,moved);
+      Files.writeString(p,"foreign",StandardOpenOption.CREATE_NEW);
+     }
+    };
+   }catch(IOException e){throw new java.io.UncheckedIOException(e);}});
+   assertThrows(IllegalStateException.class,()->j.retain(record,false));
+   assertEquals("foreign",Files.readString(stage[0]));
+   assertTrue(Files.readString(moved).contains(record.getToken()));
+   assertFalse(channel[0].isOpen());assertFalse(lock[0].isValid());
+   if(update) {
+    assertArrayEquals(oldBytes,Files.readAllBytes(descriptor));
+    assertEquals(oldKey,Files.readAttributes(descriptor,java.nio.file.attribute.BasicFileAttributes.class).fileKey());
+    assertTrue(oldLock.isValid());assertFalse(j.getHasRecoverable());
+   }else assertFalse(Files.exists(descriptor));
+   Path foreign=stage[0];
+   set(j,"createChannel",(Function1<Path,FileChannel>)p->{try {stage[0]=p;return create(p);}catch(IOException e){throw new java.io.UncheckedIOException(e);}});
+   j.retain(record,false);assertFalse(Files.exists(stage[0]));assertEquals("foreign",Files.readString(foreign));
+   j.close();RemoteCleanupJournal next=new RemoteCleanupJournal(r);next.recover();assertTrue(next.getHasRecoverable());next.close();
+  }
+ }
+
  @Test void atomicPublicationFailureKeepsOldBytesAndRetryCanRecover() throws Exception {
   Path r=Files.createDirectory(root.resolve("move-failure")).toRealPath();
 RemoteCleanup record=new RemoteCleanup("fixture-1","44444444444444444444444444444444",Map.of(),Set.of());

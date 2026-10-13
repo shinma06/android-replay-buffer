@@ -8,6 +8,7 @@
     "ForwardAllocationCleanupTest: 実closeでforward割当応答を失わせ、オンライン安全回収とoffline永続schema2/次OFF Core回復、旧schema1互換、曖昧identity・再利用port・別serial同endpoint・不正記録の保全を確認。割当前に同serial/endpointの既存mappingを確認し、未確定endpointを先に登録する。",
     "JournalLifetimeTest: 実Core/reader/client drain/filesystemで両poll・settings・dispose/次Coreの未確認終了schema3保全、確認済み再試行でexact token/inode/lock退役、offline移行schema2とnext owner回収、置換inode/無効lock保護を確認。dispose失敗後のschema3は完了証拠がないため自動回収しない。",
     "JournalTransitionTest/JournalLifetimeTest: 実video65attemptで64identity上限の副作用前保護と全所有情報の永続化、staged partial-write/foreign replacement保全・atomic inode/lock移行と競合/次owner、削除後lock/channel失敗のprimary/suppressed・退役確定・Core再試行を確認。原記録を直接上書きせず非原子的fallbackなし。",
+    "JournalTransitionTest: initial/updateの実force seamでstaged inodeを移動・別inodeへ置換し、検出後にforeign pathを保持、候補handle解放・旧record/key/lock保全、正常owned-stage unlink/retry/次owner回収を確認。error/hard-link公開後は同じcaptured inode照合でunlinkし、未知/不存在を保全する。",
     "OwnedAdbTest/RemoteCleanupTest/ReplayCoreTest/ReplayCoreWireTestおよびplugin_check.pyのcheck/buildPlugin/verifyPluginStructureで通常停止・共有ADB非操作・旧owner/port再利用保護・取得再接続/保存を確認する。",
     "python3 scripts/workflow/product_check.py、python3 scripts/check.pyとclean committed HEADのchange_impact.py --run-tests、通常pre-push hook。固定sourceと新ZIPを記録し、旧ZIP ca74694bの原観察は保持する。"
   ],

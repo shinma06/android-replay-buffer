@@ -7,6 +7,7 @@ import java.nio.channels.FileChannel
 import java.nio.channels.FileLock
 import java.nio.file.Files
 import java.nio.file.LinkOption.NOFOLLOW_LINKS
+import java.nio.file.NoSuchFileException
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption.ATOMIC_MOVE
 import java.nio.file.StandardCopyOption.REPLACE_EXISTING
@@ -128,9 +129,10 @@ internal class RemoteCleanupJournal(
         val staged = directory.resolve(".remote-cleanup-${record.token}-${java.util.UUID.randomUUID()}.tmp")
         val channel = createChannel(staged)
         var candidate: Entry? = null
+        var stagedKey: Any? = null
         var published = false
         try {
-            val stagedKey = key(staged)
+            stagedKey = key(staged)
             val lock = channel.tryLock() ?: error("終了情報の所有を確認できません")
             candidate = Entry(record, channel, lock, stagedKey, hostPending)
             val buffer = ByteBuffer.wrap(bytes)
@@ -147,12 +149,12 @@ internal class RemoteCleanupJournal(
             }
             owned[path] = candidate
             published = true
-            if (previous == null) Files.delete(staged)
+            if (previous == null) unlinkOwnedStage(staged, stagedKey)
             previous?.let(::release)
         } catch (failure: Throwable) {
             if (!published) {
                 runCatching { candidate?.let(::release) ?: channel.close() }.exceptionOrNull()?.let(failure::addSuppressed)
-                runCatching { Files.deleteIfExists(staged) }.exceptionOrNull()?.let(failure::addSuppressed)
+                runCatching { unlinkOwnedStage(staged, stagedKey) }.exceptionOrNull()?.let(failure::addSuppressed)
             }
             throw failure
         }
@@ -222,6 +224,14 @@ internal class RemoteCleanupJournal(
         Files.delete(path)
         owned.remove(path) // Descriptor deletion commits retirement, even if handle cleanup fails.
         release(entry)
+    }
+
+    private fun unlinkOwnedStage(path: Path, fileKey: Any?) {
+        if (fileKey == null) return
+        val currentKey = try { key(path) } catch (_: NoSuchFileException) { return }
+        check(currentKey == fileKey) { "終了情報の所有が変更されています" }
+        // shortcut: Path checks do not exclude later same-user replacement; use descriptor-relative unlink when supported.
+        Files.delete(path)
     }
 
     private fun release(entry: Entry) {
