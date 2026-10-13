@@ -706,10 +706,25 @@ IMPACT_DIMENSIONS = {'source', 'callers', 'callees', 'dataflow', 'build', 'confi
 
 def impact_history(source, candidate, key, git):
     """Bind all relevant history edges, including edits later reverted."""
-    git('merge-base', '--is-ancestor', source, candidate)
+    try:
+        git('merge-base', '--is-ancestor', source, candidate)
+        commits = git('rev-list', f'{source}..{candidate}').splitlines()
+    except subprocess.CalledProcessError:
+        # A pre-squash observation can be a direct sibling with identical product inputs.
+        parents = [git('rev-list', '--parents', '-n', '1', ref).split()[1:] for ref in (source, candidate)]
+        if len(parents[0]) != 1 or parents[0] != parents[1]:
+            raise ValueError('Nonancestor reuse requires direct single-parent sibling lineage')
+        for path in git('diff', '--no-renames', '--name-only', source, candidate).splitlines():
+            if not re.fullmatch(r'docs/verification/changes/issue-[1-9][0-9]*\.json', path):
+                raise ValueError('Sibling reuse requires identical product/build/fixture inputs')
+            for ref in (source, candidate):
+                if git('ls-tree', ref, '--', path):
+                    record = regular_json(ref, path, git)
+                    validate_change(record, int(Path(path).stem.removeprefix('issue-')), False)
+        commits = [source, candidate]
     case_path = f'docs/verification/changes/issue-{key.split(":")[0]}.json'
     edges = []
-    for commit in git('rev-list', f'{source}..{candidate}').splitlines():
+    for commit in commits:
         parents = git('rev-list', '--parents', '-n', '1', commit).split()[1:]
         if not parents:
             raise ValueError('Impact reuse history lacks a parent')
@@ -759,13 +774,92 @@ def certificate_review(certificate, receipts=None):
     return contributors
 
 
-def certificate_acceptance(certificates):
+def validate_certificate_guarantees(certificate, coverage, git, facts=None):
+    candidate, artifact, history = certificate['candidate'], certificate['artifact_sha256'], certificate['history']
+    guarantees = certificate.get('guarantees')
+    if not isinstance(guarantees, dict) or set(guarantees) != set(coverage):
+        raise ValueError('Impact certificate needs every effective guarantee')
+    for name, proof in guarantees.items():
+        if (not isinstance(proof, dict) or proof.get('facts') != coverage[name] or
+                proof.get('disposition') not in ('unaffected', 'equivalent', 'fresh') or
+                not isinstance(proof.get('impact'), dict) or set(proof['impact']) != IMPACT_DIMENSIONS or
+                not all(nonempty(v) for v in proof['impact'].values())):
+            raise ValueError('Unknown or unexplained guarantee impact: ' + name)
+        selected = [facts.get(i, {}) for i in proof['facts']] if facts is not None else []
+        if facts is not None and not all(isinstance(f, dict) for f in selected):
+            raise ValueError('Impact coverage must reference actual successful facts')
+        if name == 'artifact_binding' or proof['disposition'] == 'fresh':
+            if any(f.get('head') != candidate or f.get('artifact_sha256') != artifact for f in selected):
+                raise ValueError('Current identity or affected guarantee requires fresh current-build facts')
+        else:
+            components = proof.get('components')
+            if not isinstance(components, dict) or not components:
+                raise ValueError('Retained guarantees require concrete relevant components')
+            for path, binding in components.items():
+                if (not isinstance(path, str) or path.startswith('/') or '..' in path.split('/') or
+                        not isinstance(binding, dict)):
+                    raise ValueError('Invalid relevant component binding')
+                old = git('ls-tree', certificate['source_candidate'], '--', path).split()
+                current = git('ls-tree', candidate, '--', path).split()
+                if (any(len(tree) != 4 or tree[0] not in ('100644', '100755') or tree[1] != 'blob' or tree[3] != path
+                        for tree in (old, current)) or binding.get('source_blob') != old[2] or
+                        binding.get('candidate_blob') != current[2]):
+                    raise ValueError('Relevant component proof differs from fixed source/build inputs')
+                touched = any(path in e['paths'] for e in history)
+                if old != current or touched:
+                    if proof['disposition'] != 'equivalent' or not nonempty(binding.get('equivalence_evidence')):
+                        raise ValueError('Changed or reverted relevant component needs reviewed semantic equivalence')
+
+
+
+def validate_certificate(certificate, git, trusted_base=None):
+    if (not isinstance(certificate, dict) or certificate.get('schema') != 1 or
+            not isinstance(certificate.get('key'), str) or
+            not re.fullmatch(r'[1-9][0-9]*:[A-Z][A-Z0-9-]+', certificate['key']) or
+            any(not isinstance(certificate.get(k), str) or not SHA.fullmatch(certificate[k])
+                for k in ('candidate', 'source_candidate')) or
+            certificate['candidate'] == certificate['source_candidate'] or
+            any(not isinstance(certificate.get(k), str) or not HASH.fullmatch(certificate[k])
+                for k in ('artifact_sha256', 'source_artifact_sha256', 'case_sha256', 'plan_sha256',
+                          'original_file_sha256', 'original_result_sha256', 'assessment_sha256', 'observation_sha256')) or
+            not nonempty(certificate.get('original_record_evidence')) or
+            not isinstance(certificate.get('original_fact_sha256'), dict) or not certificate['original_fact_sha256'] or
+            any(not nonempty(k) or not isinstance(h, str) or not HASH.fullmatch(h)
+                for k, h in certificate['original_fact_sha256'].items()) or
+            not isinstance(certificate.get('guarantees'), dict)):
+        raise ValueError('Certificate registration requires the complete original/build/contract/hash structure')
+    key, source, candidate = certificate['key'], certificate['source_candidate'], certificate['candidate']
+    try:
+        history, case_hash = impact_history(source, candidate, key, git)
+        policy = initial_stage_plan(trusted_base or candidate, candidate, git)
+        if (history != certificate.get('history') or case_hash != certificate['case_sha256'] or
+                initial_stage_plan(source, source, git) != policy or canonical_hash(policy) != certificate['plan_sha256']):
+            raise ValueError('Certificate registration differs from fixed Git history/Case/plan')
+    except subprocess.CalledProcessError as error:
+        raise ValueError('Certificate registration Git identity/history is unavailable') from error
+    group = responsibility_group(policy, key)
+    required = {'contract_coverage', 'artifact_binding', 'failure_attribution', *group['evidence_keys']} if group else set()
+    if set(certificate['guarantees']) != required or not required:
+        raise ValueError('Certificate registration needs all effective guarantees')
+    coverage = {}
+    for name, proof in certificate['guarantees'].items():
+        ids = proof.get('facts') if isinstance(proof, dict) else None
+        if (not isinstance(ids, list) or not ids or not all(nonempty(i) for i in ids) or
+                len(ids) != len(set(ids)) or name == 'artifact_binding' and proof.get('disposition') != 'fresh'):
+            raise ValueError('Certificate registration needs explicit unique fact coverage and fresh identity')
+        if (name == 'artifact_binding' or proof.get('disposition') == 'fresh') and set(ids) & set(certificate['original_fact_sha256']):
+            raise ValueError('Fresh certificate guarantees cannot use retained old fact identities')
+        coverage[name] = ids
+    if not set(certificate['original_fact_sha256']) <= set().union(*map(set, coverage.values())):
+        raise ValueError('Certificate registration contains unbound original facts')
+    validate_certificate_guarantees(certificate, coverage, git)
+
+def certificate_acceptance(certificates, git=git_read, trusted_base=None):
     if not isinstance(certificates, dict) or not certificates or not all(nonempty(k) for k in certificates):
         raise ValueError('Malformed Issue evidence certificates')
     contributors, reviewers, receipts = set(), set(), {}
     for certificate in certificates.values():
-        if not isinstance(certificate, dict):
-            raise ValueError('Malformed Issue evidence certificate')
+        validate_certificate(certificate, git, trusted_base)
         contributors.update(certificate_review(certificate, receipts))
         reviewers.add(certificate['review']['reviewer_session'])
     if len(reviewers) != 1 or reviewers & contributors:
@@ -832,39 +926,7 @@ def validate_impact_reuse(observed, assessment, key, policy, candidate, artifact
     reviewed_at = datetime.fromisoformat(review['at'].replace('Z', '+00:00'))
     if fixed_at.tzinfo is None or assessed_at < fixed_at or reviewed_at < assessed_at:
         raise ValueError('Impact assessment/review predates the fixed candidate or assessment')
-    guarantees = certificate.get('guarantees')
-    if not isinstance(guarantees, dict) or set(guarantees) != set(assessment['coverage']):
-        raise ValueError('Impact certificate needs every effective guarantee')
-    for name, proof in guarantees.items():
-        if (not isinstance(proof, dict) or proof.get('facts') != assessment['coverage'][name] or
-                proof.get('disposition') not in ('unaffected', 'equivalent', 'fresh') or
-                not isinstance(proof.get('impact'), dict) or set(proof['impact']) != IMPACT_DIMENSIONS or
-                not all(nonempty(v) for v in proof['impact'].values())):
-            raise ValueError('Unknown or unexplained guarantee impact: ' + name)
-        facts = [assessment['facts'].get(i, {}) for i in proof['facts']]
-        if not all(isinstance(f, dict) for f in facts):
-            raise ValueError('Impact coverage must reference actual successful facts')
-        if name == 'artifact_binding' or proof['disposition'] == 'fresh':
-            if any(f.get('head') != candidate or f.get('artifact_sha256') != artifact for f in facts):
-                raise ValueError('Current identity or affected guarantee requires fresh current-build facts')
-        else:
-            components = proof.get('components')
-            if not isinstance(components, dict) or not components:
-                raise ValueError('Retained guarantees require concrete relevant components')
-            for path, binding in components.items():
-                if (not isinstance(path, str) or path.startswith('/') or '..' in path.split('/') or
-                        not isinstance(binding, dict)):
-                    raise ValueError('Invalid relevant component binding')
-                old = git('ls-tree', assessment['source_candidate'], '--', path).split()
-                current = git('ls-tree', candidate, '--', path).split()
-                if (any(len(tree) != 4 or tree[0] not in ('100644', '100755') or tree[1] != 'blob' or tree[3] != path
-                        for tree in (old, current)) or binding.get('source_blob') != old[2] or
-                        binding.get('candidate_blob') != current[2]):
-                    raise ValueError('Relevant component proof differs from fixed source/build inputs')
-                touched = any(path in e['paths'] for e in history)
-                if old != current or touched:
-                    if proof['disposition'] != 'equivalent' or not nonempty(binding.get('equivalence_evidence')):
-                        raise ValueError('Changed or reverted relevant component needs reviewed semantic equivalence')
+    validate_certificate_guarantees(certificate, assessment['coverage'], git, assessment['facts'])
     source_result = assessment['source_result']
     original_observation = (source_result.get('initial_observation', {})
                             if source_result['status'] == 'initial-pass' else source_result)
@@ -888,14 +950,16 @@ def validate_impact_reuse(observed, assessment, key, policy, candidate, artifact
                                  effective_initial_entry(source_plan, key))
             validate_responsibility_observation(source_result, key, source_plan)
         validate_fact_assessment(original_observation, key, source_plan, assessment['source_candidate'],
-                                 source_artifact, git, trusted_base)
+                                 source_artifact, git, trusted_base, allow_impact=False)
     return source_artifact
 
 
-def validate_fact_assessment(observed, key, policy, candidate, artifact, git, trusted_base=None):
+def validate_fact_assessment(observed, key, policy, candidate, artifact, git, trusted_base=None, allow_impact=True):
     assessment = observed.get('responsibility_assessment')
     if assessment is None:
         return
+    if isinstance(assessment, dict) and 'impact_reuse' in assessment and not allow_impact:
+        raise ValueError('Nested impact reuse is not supported; retain original successful facts directly')
     group = responsibility_group(policy, key)
     if (not group or not isinstance(assessment, dict) or set(assessment) != {
             'source_candidate', 'source_result', 'source_result_sha256', 'source_record_evidence',
@@ -951,7 +1015,7 @@ def validate_fact_assessment(observed, key, policy, candidate, artifact, git, tr
         if datetime.fromisoformat(fact['at'].replace('Z', '+00:00')) > datetime.fromisoformat(observed['at'].replace('Z', '+00:00')):
             raise ValueError('Assessment predates its retained facts')
         validate_fact_assessment(fact, key, policy if fact_head == candidate else original_policy, fact_head,
-                                 artifact if fact_head == candidate else source_artifact, git, trusted_base)
+                                 artifact if fact_head == candidate else source_artifact, git, trusted_base, allow_impact=False)
 
 
 def validate_candidate_result(result, key, policy, stage, candidate, artifact, execution, gop, git,
@@ -1369,6 +1433,21 @@ def verify_pr(pr, api, git=git_read):
     gui = field(pr['body'], 'GUI') == 'required'
     validate_change(data, issue, gui)
     files = git('diff', '--no-renames', '--name-only', base, head).splitlines()
+    pairs = [(base, head)]
+    for commit in git('rev-list', head, '--not', base).splitlines():
+        for parent in git('rev-list', '--parents', '-n', '1', commit).split()[1:]:
+            pairs.append((parent, commit))
+    for before_ref, after_ref in pairs:
+        changed_paths = files if (before_ref, after_ref) == (base, head) else git(
+            'diff', '--no-renames', '--name-only', before_ref, after_ref).splitlines()
+        for changed in changed_paths:
+            if not re.fullmatch(r'docs/verification/changes/issue-[1-9][0-9]*\.json', changed):
+                continue
+            before = regular_json(before_ref, changed, git).get('evidence_certificates') if git('ls-tree', before_ref, '--', changed) else None
+            after = regular_json(after_ref, changed, git).get('evidence_certificates') if git('ls-tree', after_ref, '--', changed) else None
+            adopted = after and git('ls-tree', after_ref, '--', changed) == git('ls-tree', base, '--', changed)
+            if before != after and not adopted and (mode != 'tooling' or changed != path or not after):
+                raise ValueError('Changed certificates require their dedicated current-Issue main tooling registration')
     if 'evidence_certificates' in data and mode != 'tooling':
         raise ValueError('Evidence certificate registration requires its independent main tooling route')
     if mode == 'develop':
@@ -1383,7 +1462,7 @@ def verify_pr(pr, api, git=git_read):
     if mode == 'tooling':
         if gui or not files or any(not tooling_path(f) for f in files):
             raise ValueError('Direct main tooling route is restricted to documented non-product paths')
-        certificates = certificate_acceptance(data['evidence_certificates']) if 'evidence_certificates' in data else {}
+        certificates = certificate_acceptance(data['evidence_certificates'], git, base) if 'evidence_certificates' in data else {}
         return {'mode': mode, 'gui_complete': True, 'cases': 0, **certificates}
     promotion = json.loads(git('show', f'{head}:{PROMOTION}'))
     candidate = promotion.get('candidate')

@@ -220,7 +220,7 @@ class ImpactEvidenceTests(unittest.TestCase):
             history, _ = impact_history(source, candidate, '36:QA-1', git)
             self.assertEqual(len(history), 2)
             self.assertEqual({tuple(e['paths']) for e in history}, {('product.txt',)})
-            with self.assertRaises(subprocess.CalledProcessError):
+            with self.assertRaises((ValueError, subprocess.CalledProcessError)):
                 impact_history(candidate, source, '36:QA-1', git)
             case.write_text(json.dumps(dict(change(36), reason='changed metadata')))
             git('add', '.')
@@ -268,6 +268,70 @@ class ImpactEvidenceTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.prior.verify()
 
+    def test_nested_impact_fact_is_rejected_while_original_plain_and_ordinary_facts_remain_supported(self):
+        nested = copy.deepcopy(self.assessment)
+        self.assessment['facts']['current']['responsibility_assessment'] = nested
+        self.seal()
+        with self.assertRaisesRegex(ValueError, 'Nested impact reuse'):
+            self.prior.verify()
+
+    def test_registration_rejects_incomplete_certificate_or_unavailable_git_identity(self):
+        from verification import certificate_acceptance
+        self.assertIn('certificate_revision', certificate_acceptance({'sample': self.certificate}, self.git))
+        for field in ('key', 'candidate', 'artifact_sha256', 'source_candidate', 'source_artifact_sha256',
+                      'history', 'guarantees', 'original_file_sha256', 'original_result_sha256',
+                      'original_fact_sha256', 'assessment_sha256', 'observation_sha256'):
+            with self.subTest(field=field):
+                bad = copy.deepcopy(self.certificate); bad.pop(field)
+                with self.assertRaises(ValueError):
+                    certificate_acceptance({'sample': bad}, self.git)
+        bad = copy.deepcopy(self.certificate); bad['guarantees']['file_integrity']['components'][COMPONENT]['source_blob'] = 'f' * 40
+        with self.assertRaises(ValueError):
+            certificate_acceptance({'sample': bad}, self.git)
+        def unavailable(*args):
+            raise subprocess.CalledProcessError(1, ['git'])
+        with self.assertRaises(ValueError):
+            certificate_acceptance({'sample': self.certificate}, unavailable)
+
+    def test_foreign_issue_certificates_cannot_bypass_tooling_or_develop_registration(self):
+        import test_verification as tv
+        from verification import verify_pr
+        for mode in ('tooling', 'develop'):
+            fixture = tv.AcceptanceTests(); fixture.setUp()
+            fixture.pr['body'] = fixture.pr['body'].replace('Integration: promotion', 'Integration: ' + mode)
+            fixture.pr['base']['ref'] = 'develop' if mode == 'develop' else 'main'
+            fixture.documents[f'{HEAD}:{CERT_PATH}'] = {'evidence_certificates': {'forged': self.certificate}}
+            original = fixture.git
+            def git(*args):
+                if args[0] == 'diff':
+                    return CERT_PATH
+                return original(*args)
+            with self.subTest(mode=mode), self.assertRaisesRegex(ValueError, 'dedicated current-Issue'):
+                verify_pr(fixture.pr, fixture.api, git)
+        # An exact already-adopted certificate may be retained without becoming a new registration.
+        fixture.pr['body'] = fixture.pr['body'].replace('Integration: develop', 'Integration: tooling')
+        fixture.pr['base']['ref'] = 'main'
+        fixture.documents[f'{BASE}:{CERT_PATH}'] = copy.deepcopy(fixture.documents[f'{HEAD}:{CERT_PATH}'])
+        self.assertEqual(verify_pr(fixture.pr, fixture.api, git)['mode'], 'tooling')
+
+    def test_foreign_certificate_in_reverted_history_cannot_hide_in_net_zero_diff(self):
+        import test_verification as tv
+        from verification import verify_pr
+        fixture = tv.AcceptanceTests(); fixture.setUp()
+        fixture.pr['body'] = fixture.pr['body'].replace('Integration: promotion', 'Integration: tooling')
+        fixture.documents[f'{NEW}:{CERT_PATH}'] = {'evidence_certificates': {'forged': self.certificate}}
+        original = fixture.git
+        def git(*args):
+            if args == ('rev-list', HEAD, '--not', BASE):
+                return NEW + '\n' + HEAD
+            if args[:2] == ('rev-list', '--parents'):
+                return args[-1] + ' ' + (BASE if args[-1] == NEW else NEW)
+            if args[0] == 'diff':
+                return 'docs/verification/changes/issue-35.json' if args[-2:] == (BASE, HEAD) else CERT_PATH
+            return original(*args)
+        with self.assertRaisesRegex(ValueError, 'dedicated current-Issue'):
+            verify_pr(fixture.pr, fixture.api, git)
+
     def test_certificate_hash_record_and_trusted_main_cannot_be_self_asserted(self):
         for edit in ('tamper', 'missing', 'untrusted'):
             self.setUp()
@@ -300,6 +364,10 @@ class ImpactEvidenceTests(unittest.TestCase):
 
 
 class CertificateOriginTests(unittest.TestCase):
+    def accept_certificates(self, certificates):
+        from verification import certificate_acceptance
+        return certificate_acceptance(certificates, self.validation_git)
+
     def setUp(self):
         import test_repair_private as tp
         import test_agent_loop as tal
@@ -311,11 +379,14 @@ class CertificateOriginTests(unittest.TestCase):
         self.report = tal.report()
         self.report.update(certificate_revision='e' * 64, certificate_assessment='Original receipts, actors, purposes and coverage examined.')
         sessions = list(map(session_fingerprint, self.fixture.sessions))
-        certificate = {'provenance': self.fixture.observed, 'review': {
+        impact = ImpactEvidenceTests(); impact.setUp()
+        self.validation_git = impact.git
+        self.certificate_template = copy.deepcopy(impact.certificate)
+        certificate = dict(copy.deepcopy(self.certificate_template), provenance=self.fixture.observed, review={
             'status': 'approved', 'writer_session': sessions[0], 'executor_sessions': [sessions[1]],
             'reviewer_session': session_fingerprint(self.report['session']), 'at': self.fixture.at,
-            'evidence': 'Synthetic fixed review.'}}
-        self.accepted = dict(certificate_acceptance({'sample': certificate}), allowed=True)
+            'evidence': 'Synthetic fixed review.'})
+        self.accepted = dict(self.accept_certificates({'sample': certificate}), allowed=True)
         self.report['certificate_revision'] = self.accepted['certificate_revision']
         self.fixture.bundle.pop('repair_revision')
         self.fixture.bundle['certificate_revision'] = self.accepted['certificate_revision']
@@ -374,9 +445,9 @@ class CertificateOriginTests(unittest.TestCase):
                   'executor_sessions': [session_fingerprint(self.fixture.sessions[1])],
                   'reviewer_session': session_fingerprint(self.report['session']), 'at': self.fixture.at,
                   'evidence': 'Synthetic independent review.'}
-        certificates = {key: {'provenance': copy.deepcopy(original), 'review': copy.deepcopy(review)}
+        certificates = {key: dict(copy.deepcopy(self.certificate_template), provenance=copy.deepcopy(original), review=copy.deepcopy(review))
                         for key in ('first', 'last')}
-        self.accepted.update(certificate_acceptance(certificates))
+        self.accepted.update(self.accept_certificates(certificates))
         self.fixture.bundle['certificate_revision'] = self.accepted['certificate_revision']
         self.fixture.seal()
         self.evidence()
@@ -401,20 +472,45 @@ class CertificateOriginTests(unittest.TestCase):
                 elif edit == 'parent-child':
                     item['receipt_locator'] += '/child'
                 def certificate(provenance):
-                    return {'provenance': provenance, 'review': {
+                    return dict(copy.deepcopy(self.certificate_template), provenance=provenance, review={
                         'status': 'approved', 'writer_session': provenance['attribution']['writer'],
                         'executor_sessions': sorted({c['session'] for c in provenance['attribution']['contributors']
                                                      if c['activity'] == 'execution'}),
                         'reviewer_session': session_fingerprint(self.report['session']),
-                        'at': self.fixture.at, 'evidence': 'Synthetic independent review.'}}
+                        'at': self.fixture.at, 'evidence': 'Synthetic independent review.'})
                 # Each certificate alone is well formed; the complete packet contradicts one observation.
-                certificate_acceptance({'first': certificate(bad)})
+                self.accept_certificates({'first': certificate(bad)})
                 with self.assertRaisesRegex(ValueError, 'Conflicting origin'):
-                    certificate_acceptance({'first': certificate(bad), 'last': certificate(original)})
+                    self.accept_certificates({'first': certificate(bad), 'last': certificate(original)})
                 self.accepted['certificate_provenance'] = {'first': bad, 'last': original}
                 with self.assertRaisesRegex(ValueError, 'Conflicting origin'):
                     private_repair_evidence(self.fixture.path, self.accepted, self.bound,
                                            revision_field='certificate_revision')
+
+    def test_certificate_bundle_preflight_rebind_registry_and_cleanup_preserve_kind_without_launch(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        import agent_loop as loop_module
+        from handoff_registry import register, resolve
+        source = self.fixture.root / 'source'
+        loop = SimpleNamespace(acceptance=lambda pr, root: self.accepted, storage=self.fixture.root / 'storage')
+        pr = {'number': 246, 'head': {'sha': self.bound['head']}, 'base': {'sha': self.bound['base']}}
+        with self.assertRaisesRegex(ValueError, 'private regular bundle'):
+            loop_module.preflight_repair_bundle(loop, pr, source, None)
+        path, paths, records, kind = loop_module.preflight_repair_bundle(loop, pr, source, self.fixture.path)
+        self.assertEqual(kind, 'certificate_revision')
+        public = register(loop.storage, {'pr': 246}, source, 'synthetic-host', path, paths, records, evidence_kind=kind)
+        handoff = resolve(loop.storage, public, 'synthetic-host')
+        self.assertEqual(handoff['evidence_kind'], kind)
+        # Same actual helper used for rebind; no worker or coordinator dispatch.
+        rebound = loop_module.preflight_repair_bundle(loop, pr, source, handoff['repair_evidence'])
+        self.assertEqual(rebound[3], kind)
+        handoff.update(branch='codex/246-fixture')
+        with patch.object(loop_module, 'read_repair_bundle', wraps=loop_module.read_repair_bundle) as reader, \
+                patch.object(loop_module, 'require_retained_evidence', side_effect=RuntimeError('stop before resource mutation')):
+            with self.assertRaisesRegex(RuntimeError, 'stop before resource mutation'):
+                loop_module.Loop._cleanup_resources(loop, pr, handoff)
+            reader.assert_called_once_with(str(path), kind)
 
     def test_manual_binder_uses_actual_environment_session_and_never_model_alias(self):
         import os
@@ -525,6 +621,35 @@ class PromotionTreeTests(unittest.TestCase):
                 self.git('revert', '--no-edit', altered)
                 with self.assertRaises(ValueError):
                     self.verify()
+
+    def test_pre_squash_direct_sibling_keeps_both_real_histories_and_rejects_changed_product_or_case_metadata(self):
+        from verification import impact_history
+        source = self.candidate
+        self.git('checkout', '-q', '-b', 'squashed', self.common)
+        self.write(COMPONENT, 'repaired product')
+        record = {'schema': 1, 'issue': 244, 'gui_required': False, 'reason': 'Repair metadata only.',
+                  'cli_checks': ['Synthetic'], 'cases': []}
+        self.write('docs/verification/changes/issue-244.json', json.dumps(record))
+        self.commit('squashed same product with cases-empty metadata')
+        candidate = self.git('rev-parse', 'HEAD')
+        history, case_hash = impact_history(source, candidate, '36:QA-1-EMU', self.git)
+        self.assertEqual({e['commit'] for e in history}, {source, candidate})
+        self.assertTrue(all(e['parent'] == self.common for e in history))
+        self.assertTrue(all(COMPONENT in e['paths'] for e in history))
+        for changed in ('product', 'unknown', 'case-metadata'):
+            with self.subTest(changed=changed):
+                self.git('checkout', '-q', '-B', 'invalid-squash', self.common)
+                self.write(COMPONENT, 'different product' if changed == 'product' else 'repaired product')
+                if changed == 'unknown':
+                    self.write('unknown.bin', 'unreviewed')
+                elif changed == 'case-metadata':
+                    bad = dict(record, gui_required=True, cases=[{'id': 'NEW-CASE'}])
+                    self.write('docs/verification/changes/issue-244.json', json.dumps(bad))
+                self.commit('invalid sibling endpoint')
+                with self.assertRaises(ValueError):
+                    impact_history(source, self.git('rev-parse', 'HEAD'), '36:QA-1-EMU', self.git)
+        with self.assertRaises(ValueError):
+            impact_history(source, self.base, '36:QA-1-EMU', self.git)
 
     def test_changed_effective_contract_cannot_carry_main_policy(self):
         from verification import promotion_policy_blobs

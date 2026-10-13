@@ -134,12 +134,13 @@ def recover_originals(storage, proof):
     paths = verify_review_origin(storage, report, bound)
     if report.get('evidence_records'):
         return retained_originals(report['evidence_records'], paths)
+    kind = 'certificate_revision' if report.get('certificate_revision') else 'repair_revision'
     for path in sorted(set(paths)):
         body = private_original(path)
-        if hashlib.sha256(body).hexdigest() != report.get('repair_evidence_sha256'):
+        if hashlib.sha256(body).hexdigest() != report.get(kind.replace('_revision', '_evidence_sha256')):
             continue
-        body, bundle = read_repair_bundle(path)
-        if any(bundle[k] != report.get(k) for k in ('head', 'base', 'repair_revision')):
+        body, bundle = read_repair_bundle(path, kind)
+        if any(bundle[k] != report.get(k) for k in ('head', 'base', kind)):
             raise ValueError('Historical bundle differs from its issued report')
         return retained_originals(evidence_records(path, body, bundle), paths)
     raise ValueError('Historical bundle is missing or changed; trusted recovery unavailable')
