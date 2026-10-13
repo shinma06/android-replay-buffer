@@ -353,7 +353,7 @@ class Loop:
                                 set(review.get('private_sessions', [])) |
                                 {str(value.get('session', '')).lower(), str(review.get('session', '')).lower()})
             return {k: self.public_state(v, private_paths, private_sessions) for k, v in value.items()
-                    if k not in ('host', 'source', 'repair_evidence', 'private_repair_evidence', 'private_paths', 'private_sessions', 'evidence_records')}
+                    if k not in ('host', 'source', 'repair_evidence', 'evidence_kind', 'private_repair_evidence', 'private_paths', 'private_sessions', 'evidence_records')}
         if isinstance(value, list):
             return [self.public_state(v, private_paths, private_sessions) for v in value]
         if isinstance(value, str):
@@ -512,15 +512,16 @@ class Loop:
         return retained_originals(records, paths, roots)
 
     def repair_evidence(self, accepted, h, bound):
-        if not accepted.get('repair_revision'):
+        revision_field = 'certificate_revision' if accepted.get('certificate_revision') else 'repair_revision'
+        if not accepted.get(revision_field):
             self.retained_history(h)
             return None
         roots = (h['source'], self.storage / f'pr-{h["pr"]}' / 'checkout')
-        packet = private_repair_evidence(h.get('repair_evidence'), accepted, bound, roots)
+        packet = private_repair_evidence(h.get('repair_evidence'), accepted, bound, roots, revision_field=revision_field)
         records = self.retained_history(h)
         packet['evidence_records'] = retained_originals(
             [*records, *packet['evidence_records']], packet['private_paths'], roots)
-        accepted['repair_evidence_sha256'] = packet['bundle_sha256']
+        accepted[revision_field.replace('_revision', '_evidence_sha256')] = packet['bundle_sha256']
         return packet
 
     def merged_acceptance(self, pr, h, state):
@@ -954,7 +955,7 @@ class Loop:
         roots = (h['source'], self.storage / f'pr-{pr["number"]}' / 'checkout')
         paths = list(h.get('private_paths', []))
         if h.get('repair_evidence'):
-            _, bundle = read_repair_bundle(h['repair_evidence'])
+            _, bundle = read_repair_bundle(h['repair_evidence'], h.get('evidence_kind', 'repair_revision'))
             paths.extend([h['repair_evidence'], *[item['path'] for item in bundle['receipts']]])
         require_retained_evidence(paths, roots)
         retained_originals(h.get('evidence_records', []), paths, roots)
@@ -1025,8 +1026,9 @@ def remote_review_complete(head, comments, not_before=None):
 
 def preflight_repair_bundle(loop, pr, source, path, cleanup_roots=None):
     accepted = loop.acceptance(pr, source)
-    if path is None and not accepted.get('repair_revision'):
-        return None, [], []
+    kind = 'certificate_revision' if accepted.get('certificate_revision') else 'repair_revision'
+    if path is None and not accepted.get(kind):
+        return None, [], [], None
     if not accepted.get('allowed'):
         raise ValueError('Repair enrollment requires verified current acceptance')
     if path is None:
@@ -1036,8 +1038,8 @@ def preflight_repair_bundle(loop, pr, source, path, cleanup_roots=None):
         raise ValueError('Repair enrollment requires a private regular bundle')
     path = path.resolve(strict=True)
     roots = cleanup_roots or (source, loop.storage / f'pr-{pr["number"]}' / 'checkout')
-    packet = private_repair_evidence(path, accepted, {'head': pr['head']['sha'], 'base': pr['base']['sha']}, roots)
-    return path, packet['private_paths'], packet['evidence_records']
+    packet = private_repair_evidence(path, accepted, {'head': pr['head']['sha'], 'base': pr['base']['sha']}, roots, revision_field=kind)
+    return path, packet['private_paths'], packet['evidence_records'], kind
 
 
 def enroll(loop, args):
@@ -1065,8 +1067,8 @@ def enroll(loop, args):
     metadata(pr)
     if any(Path(x).is_absolute() or '..' in Path(x).parts for x in args.scope):
         raise ValueError('Use repository-relative enrollment scope')
-    repair_path, paths, records = preflight_repair_bundle(loop, pr, source, getattr(args, 'repair_evidence', None))
-    h = register(loop.storage, loop.public_state(h, paths), source, HOST, repair_path, paths, records)
+    repair_path, paths, records, kind = preflight_repair_bundle(loop, pr, source, getattr(args, 'repair_evidence', None))
+    h = register(loop.storage, loop.public_state(h, paths), source, HOST, repair_path, paths, records, evidence_kind=kind)
     loop.gh.comment(args.pr, pack(HANDOFF_V2, h))
     loop.gh.status(h['head'], 'pending', 'Enrolled for independent review', pr['html_url'])
     loop.save(pr, {'phase': 'queued', 'expected_head': h['head'], 'fixes': 0, 'reviews': 0, 'errors': 0}, None)
@@ -1098,7 +1100,7 @@ def rebind_target(loop, args):
     metadata(pr)
     repair_path = getattr(args, 'repair_evidence', None) or h.get('repair_evidence')
     paths = set(h.get('private_paths', [])) | set(state.get('private_paths', []))
-    repair_path, checked_paths, checked_records = preflight_repair_bundle(
+    repair_path, checked_paths, checked_records, kind = preflight_repair_bundle(
         loop, pr, path if path.exists() else source, repair_path, (source, path))
     historical_paths = paths | ({h['repair_evidence']} if h.get('repair_evidence') else set())
     records = retained_originals(h.get('evidence_records', []), cleanup_roots=(source, path))
@@ -1108,7 +1110,7 @@ def rebind_target(loop, args):
     paths.update(checked_paths)
     records = retained_originals([*records, *checked_records], paths, (source, path))
     public = {k: v for k, v in h.items()
-              if k not in ('source', 'host', 'registry_id', 'version', 'repair_evidence', 'private_paths', 'evidence_records')}
+              if k not in ('source', 'host', 'registry_id', 'version', 'repair_evidence', 'evidence_kind', 'private_paths', 'evidence_records')}
     public = loop.public_state(public, paths)
     public['owner'] = 'agent-loop'
     public['target'] = pr['base']['ref']
@@ -1118,7 +1120,7 @@ def rebind_target(loop, args):
     if not state.get('paused'):
         state['phase'] = 'queued'
     loop.save(pr, state, sid)
-    public = register(loop.storage, public, source, HOST, repair_path, sorted(paths), records)
+    public = register(loop.storage, public, source, HOST, repair_path, sorted(paths), records, evidence_kind=kind)
     loop.gh.comment(args.pr, pack(HANDOFF_V2, public))
     loop.gh.status(pr['head']['sha'], 'pending', 'Target rebound; prior acceptance invalidated', pr['html_url'])
     return public
