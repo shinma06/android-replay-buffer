@@ -222,6 +222,27 @@ class ImpactEvidenceTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     self.prior.verify()
 
+    def test_provenance_registration_and_consumption_reject_unbounded_or_normalized_times(self):
+        from verification import certificate_acceptance
+        self.certificate['review']['at'] = '2026-10-13T01:00:00.123456Z'
+        composition = self.certificate['provenance']['attribution']['contributors'][-1]
+        composition['at'] = '2026-10-13T01:00:00.123456Z'
+        self.certificate['provenance']['at'] = composition['at']
+        certificate_acceptance({'sample': self.certificate}, self.git)
+        self.seal()
+        self.assertTrue(self.prior.verify()['stage_complete'])
+        for at in ('2026-10-13 01:00:00,1234567+00:00', '2026-10-13T01:00:00.1234567Z',
+                   '2026-10-13 01:00:00.123456Z', '2026-10-13T01:00:00,123456Z',
+                   '2026-10-13T01:00:00.123456', '2026-02-30T01:00:00.123456Z',
+                   '2026-10-13T01:00:00.123456+00:60'):
+            with self.subTest(provenance=at):
+                self.certificate['provenance']['at'] = at
+                self.seal()
+                with self.assertRaises(ValueError):
+                    certificate_acceptance({'sample': self.certificate}, self.git)
+                with self.assertRaises(ValueError):
+                    self.prior.verify()
+
     def test_microsecond_ordering_keeps_review_facts_and_contributors_in_sequence(self):
         from verification import certificate_acceptance
         self.certificate['provenance']['at'] = '2026-10-13T01:00:00.123456Z'

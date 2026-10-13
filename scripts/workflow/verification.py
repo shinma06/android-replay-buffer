@@ -785,12 +785,13 @@ def certificate_review(certificate, receipts=None):
             not isinstance(provenance.get('attribution'), dict)):
         raise ValueError('Impact certificate requires canonical session fingerprints and sealed originating receipts')
     reviewed_at = validate_timestamp(review['at'])
+    assessed_at = validate_timestamp(provenance['at'])
     # Use the same complete contributor/receipt claim checks as original-NG evidence.
     contributors = repair_contributors(provenance, '', datetime.min.replace(tzinfo=reviewed_at.tzinfo), receipts)
     execution = {c['session'] for c in provenance['attribution']['contributors'] if c['activity'] == 'execution'}
     if (review['writer_session'] != provenance['attribution']['writer'] or
             set(review['executor_sessions']) != execution or review['reviewer_session'] in contributors or
-            datetime.fromisoformat(provenance['at'].replace('Z', '+00:00')) > reviewed_at):
+            assessed_at > reviewed_at):
         raise ValueError('Impact certificate reviewer/writer/executors conflict with complete originating attribution')
     return contributors
 
