@@ -1,0 +1,42 @@
+{
+  "schema": 1,
+  "issue": 3,
+  "gui_required": true,
+  "reason": "新しいPluginのロード、Tools action、再起動後の版を固定ZIPで確認する必要がある。CLIと端末は操作しない。",
+  "cli_checks": [
+    "python3 scripts/check.py: 管理165 tests pass（process終了fixtureのps確認を含む）",
+    "python3 scripts/workflow/product_check.py: 原型21ファイル一致、既存2 tests pass",
+    "python3 scripts/workflow/plugin_check.py: 既定SDKと明示local Rabbitでcompile/buildPlugin/verifyPluginStructure pass; testはNO-SOURCE",
+    "python3 scripts/workflow/change_impact.py --base origin/develop --run-tests: clean固定HEADで実施する"
+  ],
+  "cases": [
+    {
+      "id": "PLUGIN-LOAD",
+      "artifact": "plugin",
+      "change": "Android Studioプラグイン基盤と情報表示action",
+      "preconditions": "GUI lease取得済み。Rabbit 1/JBR25、使い捨てfixture、clean固定HEADのZIPとSHA-256。別作業のIDE/daemon/端末は使わない。",
+      "steps": [
+        "固定ZIPを開発用sandbox IDEへInstall Plugin from Diskで導入し、有効化する。",
+        "Settings → PluginsでID/版を照合し、Tools → Android Replay Bufferについてを開く。",
+        "表示を閉じて同じsandboxを再起動し、版とactionを再確認する。"
+      ],
+      "expected": "Pluginロードエラーなく、日本語の開発段階説明と固定source SHAを含む版が表示される。daemon/録画/USB操作が発生せず、再起動後も同じ版とactionを利用できる。",
+      "provenance": [
+        "Issue #3: プラグイン開発基盤",
+        "docs/plugin-development.md: 固定SDKと同一ZIP受入"
+      ],
+      "gpt": {
+        "status": "pending",
+        "reason": "build/構造検査のみ実施。GUI lease取得とIDE操作は未実施。"
+      },
+      "human": {
+        "status": "pending",
+        "reason": "人間による固定ZIPの観察は未実施。"
+      },
+      "fix_issue": null,
+      "fix_pr": null,
+      "recheck": "固定候補ZIPを変更した場合は新しいhash/版で全手順を再確認する。",
+      "next_action": "独立レビュー後、QA担当がGUI leaseと固定ZIPを確保して観察。develop統合後もmain反映まで追跡する。"
+    }
+  ]
+}

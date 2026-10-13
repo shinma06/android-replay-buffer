@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "issue": 171,
+  "gui_required": false,
+  "reason": "PR170の実main mergeから正式initial-agent計画とIssue169契約をdevelopへ同期し、READMEは該当差分だけを取り込む。製品/runtime/build/fixture/resolver/gate/元Caseを変更せず、GUI・候補導入・成功観察を追加しない。",
+  "cli_checks": [
+    "実main merge 1759837b1931b9ebd43dcda0c15b0084d3d6eed7 と計画JSON・issue-169.jsonをbyte一致で照合し、READMEのPR170差分だけを適用してdevelop固有の標準buildPlugin説明を保持する。",
+    "実同期HEADを既存initial_stage_plan/historical_initial_sources/bind_initial_sourcesに渡し、trusted mainの計画canonical 405ecc8011c685bbd2e5aedbb0adaab96f19728b5463e44e01498a766113dd85・required_ancestor 2baa4bef02d225137ada6cd1a019435abe74342d・134Case/203source/100Agent/34REALの受理を確認する。全既存scope・人間指定・GOP・未達を保持し、構造受理をGUI成功としない。",
+    "python3 scripts/check.py: 管理Python3.11以上でharness必須検査を実行する。",
+    "python3 scripts/workflow/product_check.py: Python3.9でCLI原型21pathのbyte/実行権限保全と既存2unit testsを確認する。",
+    "python3 scripts/workflow/change_impact.py --base 2baa4bef02d225137ada6cd1a019435abe74342d --run-tests: clean committed HEADの必要検査を実行し、通常hooksを迂回しない。"
+  ],
+  "cases": []
+}

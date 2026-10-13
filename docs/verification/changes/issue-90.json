@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "issue": 90,
+  "gui_required": false,
+  "reason": "独立レビュー済み実mainの時計不確実区間動画保存受入計画をdevelopへ同期する管理3ファイルの変更。計画を実main版と完全同一に保ち、READMEの既存develop文脈を維持する。製品source/build・全原Case・gate・延期条件を変更せず、GUI観察や動画細切れの全面解消を合成しない。",
+  "cli_checks": [
+    "python3 scripts/check.py: 同期固定HEADで管理回帰と構造検査を実行",
+    "python3 scripts/workflow/product_check.py: 原型CLI保全を検証",
+    "python3 scripts/workflow/change_impact.py --base origin/develop --run-tests: clean committed HEADで実行"
+  ],
+  "cases": []
+}

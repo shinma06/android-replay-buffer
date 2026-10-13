@@ -1,0 +1,41 @@
+{
+  "schema": 1,
+  "issue": 121,
+  "gui_required": true,
+  "reason": "空保存先の案内位置をSettingsの保存先欄近傍へ変更する。表示位置・編集切替・Apply/Cancel/reset/disposeは新固定標準ZIPで実IDE確認が必要。",
+  "cli_checks": [
+    "既存ReplaySettingsStoreTestとclassifierのharness/plugin checks、CLI保全チェックを実行し、結果はIssue/PRで固定HEADに紐付ける。JVM/構造検査をGUI passへ代用しない。"
+  ],
+  "cases": [
+    {
+      "id": "EMPTY-DESTINATION-GUIDANCE",
+      "artifact": "plugin",
+      "change": "空保存先の既存案内文をdestinationStatusで保存先欄直下へ表示する",
+      "preconditions": "PMが具体的実行を割り当てた専用IDE/project fixtureと共有GUI lease。新candidateのclean source SHA・標準ZIP/全JAR hash・embedded identity・実ロード版を照合。取得OFFと元の適用設定を記録し、owned disposable folder/file/未作成pathを使用する。旧1d893acの観察は履歴のみ。",
+      "steps": [
+        "取得OFFのSettingsで保存先を空にする。欄直下に未指定でも取得可能で保存前にフォルダ指定が必要な案内が表示されることを確認する。Apply後に再openし空欄と近傍案内を確認する。",
+        "空→既存folder→regular file→未作成path→空の順で編集し、非空の確認中表示と確定理由へ切り替わること、遅延した旧結果が空欄案内を上書きしないことを確認する。Apply前に確認完了を待ち、既存folderは受理、file/未作成pathは拒否され旧適用設定が部分変更されないことを確認する。",
+        "未適用編集をCancelして再openし元の適用値を確認する。空/非空のresetと確認待ちのCancel/終了・再openで古いUI結果が残らないことを確認する。記録した元設定へ戻しApply後にSettingsを閉じ、取得OFFと設定復元を確認する。"
+      ],
+      "expected": "空欄の案内が保存先欄直下にあり次操作が分かる。空は有効な保存先設定として維持し、非空の非同期確認/理由表示が切り替わり古い結果を反映しない。Applyは一式検証しCancelで未適用編集を破棄、reset/dispose後の更新を保護、OFFと元設定を復元する。保持時間/packageの新しい全inline要求、ON/Saveや他Caseのpassを追加しない。",
+      "provenance": [
+        "https://github.com/shinma06/android-replay-buffer/issues/121",
+        "docs/design/ide-ui.md: 保存先フォルダの空・ファイル・不正pathの近傍案内",
+        "docs/verification/changes/issue-27.json: SETTINGS-INVALID-EMU（原契約を縮小・書換えしない）",
+        "固定1d893acのSETTINGS-INVALID-OFF独立レビューで空保存先の案内位置のみ未充足"
+      ],
+      "gpt": {
+        "status": "pending",
+        "reason": "writerはnative操作なし。新固定標準ZIPでQAが実観察する。"
+      },
+      "human": {
+        "status": "pending",
+        "reason": "未観察。既存Caseの延期/人間工程は変更せず、新しいhuman必須も追加しない。"
+      },
+      "fix_issue": null,
+      "fix_pr": null,
+      "recheck": "Settings UI/非同期確認/ZIP変更時は同じ新候補で再確認する。",
+      "next_action": "writerが固定HEAD/base/check/標準ZIPを揃え停止。PMがCore別セッションreview、initial-agent計画の正式更新、QAへ新build実観察を割り当て、残GUI/mainを双方向移管する。"
+    }
+  ]
+}

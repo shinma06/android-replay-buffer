@@ -1,0 +1,103 @@
+{
+  "schema": 1,
+  "issue": 244,
+  "gui_required": false,
+  "reason": "修復対象はCaptureStoreの同epoch保存履歴境界。標準ZIPの変更されていない配布JARからproduction Store/Clock/FrozenCapture/Writerを実ロードして両callback順序・null/known開始終了・保存失敗後の固定retryと全出力を実証した。外部の端末接続/IDE表示はこの内部不整合の再現に不要で、今回実施していない。元207 native NG/全未達/REAL延期を保全し、元Case全体PASSや新候補の通常受入へ転記しない。別sessionの全失敗保証の実質評価と現HEAD/base review・必須checksまで統合HOLD。",
+  "cli_checks": [
+    "python3 scripts/workflow/product_check.py: CLI原型21file保全、12module compile/import、既存2test pass",
+    "python3 scripts/workflow/plugin_check.py: 固定candidateのcheck/buildPlugin/verifyPluginStructure（実receiptはIssue/PR参照）",
+    "標準ZIPの配布JARを直接ロードする2production回帰と全2完成出力FILE/hash/log順序・帰属・clock/履歴照合: pass。最初のJNA boot path不足の実行失敗は原本として保持。",
+    "clean committed HEADのchange_impact --run-tests/通常hooksを実行し、結果はIssue/PRへ記録する。"
+  ],
+  "cases": [],
+  "repair": {
+    "candidate": "1d5c0a6f4bba18a93c7b4506e4a92a6c6a1f0eb1",
+    "artifacts": {
+      "plugin": "d45dc3ed4d778b2c1ee050234e4b8ea1c9777ed9f362a9532e4e5d3949a8fece"
+    },
+    "failure_record_sha256": "c4c0eb3abe941121944a4cb699c47bb81c4e27cf08aa0fcbacc94e1ce612e0d6",
+    "writer_session": "専任writer208（実source/実行/自己FILE照合/構成、帰属hashは下記）",
+    "results": {
+      "APP-HISTORY-1": {
+        "observation": {
+          "status": "pass",
+          "head": "1d5c0a6f4bba18a93c7b4506e4a92a6c6a1f0eb1",
+          "artifact_sha256": "d45dc3ed4d778b2c1ee050234e4b8ea1c9777ed9f362a9532e4e5d3949a8fece",
+          "actor": "gpt",
+          "observer": "writer208（同ZIP production実行と全FILEの自己確認、独立承認ではない）",
+          "at": "2026-10-12T22:06:58+00:00",
+          "loaded_identity": "固定source 1d5c0a6f4bba18a93c7b4506e4a92a6c6a1f0eb1 / dirty=false / 標準ZIP d45dc3ed4d778b2c1ee050234e4b8ea1c9777ed9f362a9532e4e5d3949a8fece / mainJAR e99a8742dcea19a476ed1942d95910ac1b631dfc3fd06be940c3612eb04313d8 / searchableOptions c6deada2fac53b8ea6523dbda77597b128006674616f140f04df23264c6d1aa3 / JCodec 890329dad124e8b739c1d6602a59a53c8a474daddff265c2561e21c498496c81。実JVMのCaptureStore/CaptureClock/FrozenCapture/SaveWriter CodeSourceを同mainJARへ照合。固定SDK同梱JNAを使用。実IDE/ADB/録画を実施したとは主張しない。",
+          "evidence": "標準JAR実行receipt SHA256 42e810017a338c38d357b1f434afff18a3ce727a7dd9dcad5a4761254adc5e91、全FILE照合receipt b6e8a00e10a1033702ca44a0e1e3272e1c7ed601d545b49f4f3af736146d255c。実source/compiled test/runner/標準ZIP/全3JAR/完成2保存と失敗partialを非公開封印してPMへ引継ぐ。元NGの不変コメント6133138261は未編集。 同ZIP補足実行/全FILEのreceipt SHA256 2e21bf9dfca2567bf9c2e02c8828413fec2681c581b90c4198c3136bb57cf7fd / fe1e645ae1ce6a525ef44751e8df08cc6b56c942d292c2dccf4f507039b99f92。実clock gapの所属不明行はdeviceだけに保持しcurrent-open flag falseを実出力で照合。 Acceptance CI38314582442の小数秒形式失敗を保持し、原実行日時は不変のまま新しい構成時刻を秒精度で記録。再構成receipt SHA256 eb15efda1d89633280413de90e15d65bb31a55274ad1769b282735af628031e2。",
+          "reason": "元不可能閉区間を旧コードで再現し、修正JARでは開始/元clockを保持、終了nullとto_elapsed_unknown=trueで不確かさを明示。known/unknown/未clockと両callback順序、既存ログの順序・true/false/unknown、凍結後のclock/対象更新と固定retry/exportを検証。LOG-02の内部保存保証のpass提出であり独立repair_assessment/元wholeCase/GUI受入/統合承認ではない。",
+          "attribution": {
+            "writer": "codex-session-sha256:d0123a3c9e938c33bf7a1915be8457693340864a4a7db45a5688fb56f8ae2ed7",
+            "observer": "codex-session-sha256:d0123a3c9e938c33bf7a1915be8457693340864a4a7db45a5688fb56f8ae2ed7",
+            "contributors": [
+              {
+                "role": "修正source writer208",
+                "session": "codex-session-sha256:d0123a3c9e938c33bf7a1915be8457693340864a4a7db45a5688fb56f8ae2ed7",
+                "activity": "writer",
+                "at": "2026-10-12T21:49:52.867347+00:00",
+                "receipt_sha256": "cac25614f2c2b35610382df0de7c7b709ec88b79df155e463cbfd91749090f92"
+              },
+              {
+                "role": "配布JAR実行 writer208",
+                "session": "codex-session-sha256:d0123a3c9e938c33bf7a1915be8457693340864a4a7db45a5688fb56f8ae2ed7",
+                "activity": "execution",
+                "at": "2026-10-12T21:52:15.901987+00:00",
+                "receipt_sha256": "42e810017a338c38d357b1f434afff18a3ce727a7dd9dcad5a4761254adc5e91"
+              },
+              {
+                "role": "全保存FILE照合 writer208（自己確認）",
+                "session": "codex-session-sha256:d0123a3c9e938c33bf7a1915be8457693340864a4a7db45a5688fb56f8ae2ed7",
+                "activity": "assessment",
+                "at": "2026-10-12T21:53:05.001159+00:00",
+                "receipt_sha256": "b6e8a00e10a1033702ca44a0e1e3272e1c7ed601d545b49f4f3af736146d255c"
+              },
+              {
+                "role": "metadata構成 writer208",
+                "session": "codex-session-sha256:d0123a3c9e938c33bf7a1915be8457693340864a4a7db45a5688fb56f8ae2ed7",
+                "activity": "composition",
+                "at": "2026-10-12T21:53:49.580331+00:00",
+                "receipt_sha256": "7bf767450f4dedad949540b665d759096d2f9cbac0e6bbfe19ea8e442ff8d952"
+              },
+              {
+                "role": "同配布JAR補足実行 writer208",
+                "session": "codex-session-sha256:d0123a3c9e938c33bf7a1915be8457693340864a4a7db45a5688fb56f8ae2ed7",
+                "activity": "execution",
+                "at": "2026-10-12T21:56:31.054090+00:00",
+                "receipt_sha256": "2e21bf9dfca2567bf9c2e02c8828413fec2681c581b90c4198c3136bb57cf7fd"
+              },
+              {
+                "role": "補足FILE自己照合 writer208",
+                "session": "codex-session-sha256:d0123a3c9e938c33bf7a1915be8457693340864a4a7db45a5688fb56f8ae2ed7",
+                "activity": "assessment",
+                "at": "2026-10-12T21:58:02.254082+00:00",
+                "receipt_sha256": "fe1e645ae1ce6a525ef44751e8df08cc6b56c942d292c2dccf4f507039b99f92"
+              },
+              {
+                "role": "補足metadata構成 writer208",
+                "session": "codex-session-sha256:d0123a3c9e938c33bf7a1915be8457693340864a4a7db45a5688fb56f8ae2ed7",
+                "activity": "composition",
+                "at": "2026-10-12T21:58:02.254082+00:00",
+                "receipt_sha256": "c6caede995ad66f6d246364654b103e11c1a8ecf9861b8468b381807bbb5e661"
+              },
+              {
+                "role": "対応形式で再構成 writer208（原日時を保持）",
+                "session": "codex-session-sha256:d0123a3c9e938c33bf7a1915be8457693340864a4a7db45a5688fb56f8ae2ed7",
+                "activity": "composition",
+                "at": "2026-10-12T22:06:58+00:00",
+                "receipt_sha256": "eb15efda1d89633280413de90e15d65bb31a55274ad1769b282735af628031e2"
+              }
+            ]
+          }
+        },
+        "coverage": {
+          "LOG-02": "上記同JAR実行2methodとFILE原本。app前clock/clock前appの両順序で旧sample<開始を確認し、全履歴に逆転無し、元4sample/epoch/開始/所属順を保持、unknown閉境界を明示。各3device/2app行と全file hash一致、固定失敗後2完成保存を確認。別Caseや予定入力の未観察はcreditしない。 補足は4device/2app全行とunknown device-only IDを照合し現行履歴のto_elapsed_unknown=falseを実出力で確認。endUnknown guardの人工的・到達不能な既知elapsed入力は作っていない。"
+        },
+        "method": "保証は端末の再接続成功そのものではなく、入力clock/app callbackから保存する履歴の真実性。DeviceCaptureが実際に使うCaptureStore.app/clock/logからfreeze→SaveWriterの同配布JARを実行し、元旧anchor外挿→早い旧sampleの閉境界を決定的に再現するため忠実なproduction方法と判断。既存standard suiteでclock/generation/unknown/current targetとpublic Wire pinを併せて確認する。保存公開callbackは隔離Files.moveであり新OS atomic/publicUI/native再接続・映像・wholeCaseの実証ではない。独立評価が残る具体的native事実を指摘した場合は修復未完のままPMが追加割当する。",
+        "contract_revision": "9e6baa93236e2ec935e082610ca6432de622e4ef1dbf533f9609b27ce7fbbba4"
+      }
+    }
+  }
+}

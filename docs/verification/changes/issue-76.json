@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "issue": 76,
+  "gui_required": false,
+  "reason": "レビュー済みmainの保存窓修正受入計画をdevelopへ同期する。競合した計画は実main版を採用し、READMEは既存develop説明へレビュー済み件数更新だけを適用する。製品source/build・全原Caseを変更せず、GUIの実観察は新固定候補でQA27/74が別途行う。",
+  "cli_checks": [
+    "python3 scripts/check.py: 同期固定HEADで管理回帰と構造検査を実行",
+    "python3 scripts/workflow/product_check.py: 原型CLI保全を検証",
+    "python3 scripts/workflow/change_impact.py --base origin/develop --run-tests: clean committed HEADで実行"
+  ],
+  "cases": []
+}

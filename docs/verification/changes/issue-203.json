@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "issue": 203,
+  "gui_required": false,
+  "reason": "固定mainの管理規約・正式受入計画・検証器をdevelopへ同期する。製品/依存/fixture/build/CLI原型のbyte・modeと既存Caseを保持し、実行経路を変更しないためGUI不要。",
+  "cli_checks": [
+    "/usr/bin/python3 scripts/workflow/product_check.py: Python 3.9.6、原型21ファイル・全12module compile/import・既存2test成功",
+    "/usr/bin/python3 -m unittest discover -s scripts/workflow -p test_product_check.py -v: Python3.10構文拒否の所有fixture回帰1test成功",
+    "clean committed HEADのchange_impact --base origin/develop --run-testsで管理check.pyと必要な影響検査を行い、固定結果はIssue/PRへ記録"
+  ],
+  "cases": []
+}

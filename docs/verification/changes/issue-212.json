@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "issue": 212,
+  "gui_required": false,
+  "reason": "mainの管理Python・公式Plugin ZIP導入方法・固定管理CI履歴照合と#214の登録旧計画hash固定をdevelopへ同期する。707の製品/build/fixture/CLI原型と全元Caseをbyte/mode不変で保持し、実IDE/deviceや物理受入ZIPを変更しないためGUI不要。",
+  "cli_checks": [
+    "Python 3.15.0でscripts/check.pyと同期/CI履歴/責任改訂planのfocused regressions、実現計画の再hashした不正旧契約をshared validatorとcallerが拒否する確認を実行する。固定結果はIssue/PRとprivate packetへ記録",
+    "scripts/workflow/product_check.pyでCLI原型21ファイル・全12module compile/import・既存2testとPython3.9構文拒否の所有fixtureを確認する",
+    "最終writer treeの唯一の親707のdisposable squash投影をtrusted main 6d976b6e2883e88ca15307e68956eaf649f38a9fの実resolverで全138 Case・207出典と登録計画hash/CI regular blobへ照合する。実protected merge/現在実ロード/equivalence/全有効条件/失敗帰属はPMとQA27/65/release10に残す",
+    "clean committed HEADのchange_impactと通常hooks/CIは実結果と未実施を区別して記録し、今回対象外のbuild/GUIを無条件に反復しない"
+  ],
+  "cases": []
+}

@@ -5,9 +5,12 @@ from pathlib import Path
 import subprocess
 import sys
 
+from cli_origin import verify
+
 ROOT = Path(__file__).resolve().parents[2]
 
 if __name__ == '__main__':
+    verify()
     modules = sorted((ROOT / 'replay_buffer').rglob('*.py'))
     for path in modules:
         compile(path.read_bytes(), str(path), 'exec')

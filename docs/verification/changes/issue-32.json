@@ -1,0 +1,247 @@
+{
+  "schema": 1,
+  "issue": 32,
+  "gui_required": true,
+  "reason": "固定ReplayCore 0e25a18dc6c6049148acd3e19b94b672854b8c2bの修正を受領し、IDE UI/設定・SDK/Run構成・取得/保存操作へ統合。実ロード/Emulator/GUI観察は#27未完了、実機は利用者指定で保留。pure testsやcompileをGUI passへ代用しない。",
+  "cli_checks": [
+    "python3 scripts/check.py",
+    "python3 scripts/workflow/product_check.py: CLI原型21files一致・2tests pass",
+    "python3 scripts/workflow/plugin_check.py: 固定実コア0e25a18dc6c6049148acd3e19b94b672854b8c2b受領後の標準check/tests/buildPlugin/ZIP構造検査。mapped WireTestの時刻対応・MP4/再試行、boot不確定保持・unknown窓の除外GOP回収/pin保全とUI revision競合回帰を合成sourceで実行。結果と同一clean source/ZIP識別をIssue/PRへ記録",
+    "python3 scripts/workflow/change_impact.py --base origin/develop --run-tests: clean committed HEAD"
+  ],
+  "cases": [
+    {
+      "id": "UI-12-01",
+      "artifact": "plugin",
+      "change": "CTL-01/02/04: 初回・復元・常時設定",
+      "preconditions": "#31と接続済み固定source/ZIP SHA-256とRabbit AI-262.9437.185.2621.16467767を照合。#27の使い捨てapp/Emulatorと共有GUI lease、実機は利用者準備まで保留。",
+      "steps": [
+        "初回projectでToolWindowとSettingsを開き、無効中にApplyする。",
+        "接続済みEmulatorで有効化し、パネルを閉じてIDE再起動する。"
+      ],
+      "expected": "初回OFF・保持180秒・無効中設定編集可。Applyだけで取得開始せず、enabled復元はパネル生成に依存しない。",
+      "provenance": [
+        "docs/requirements.md",
+        "docs/design/ide-ui.md: UI-12-01",
+        "docs/plugin-design.md / docs/design/timeline.md",
+        "Issue #32 → #27の環境別実受入"
+      ],
+      "gpt": {
+        "status": "pending",
+        "reason": "固定実core 0e25a18dc6c6049148acd3e19b94b672854b8c2bへUIを接続。F1〜F6・boot不確定保持・unknown窓の除外GOP回収/pin保全・WireTest時計/復旧待ち修正の受領と、合成sourceの実core/UI回帰tests・標準buildの検証記録はIssue/PRで固定する。実ロード/Emulator/GUI観察は未実施、実機は保留。pure testsを観察passへ代用しない。"
+      },
+      "human": {
+        "status": "pending",
+        "reason": "固定ZIPの観察未実施、Emulatorを実機のpassへ流用しない。"
+      },
+      "fix_issue": null,
+      "fix_pr": null,
+      "recheck": "UI/core/API/build変更後は同じ新固定source/ZIPで再観察する。",
+      "next_action": "PMが最終固定HEAD/baseの完全独立レビュー・Verifierを調整し、#27へ同じ固定source/ZIPの本Caseを環境別状態・期待と双方向引継ぐ。実機は利用者準備後。"
+    },
+    {
+      "id": "UI-12-02",
+      "artifact": "plugin",
+      "change": "CTL-03/05: draft/Cancel/Applyと即時toggle",
+      "preconditions": "#31と接続済み固定source/ZIP SHA-256とRabbit AI-262.9437.185.2621.16467767を照合。#27の使い捨てapp/Emulatorと共有GUI lease、実機は利用者準備まで保留。",
+      "steps": [
+        "取得中に保持時間/保存先/packageを編集してCancelする。",
+        "再編集Applyの途中に保存・無効化を行う。"
+      ],
+      "expected": "未適用編集で稼働条件不変。Applyは一式検証、invalidは部分反映なし。無効化で未保存を破棄、固定失敗対象の条件は設定変更で改変しない。",
+      "provenance": [
+        "docs/requirements.md",
+        "docs/design/ide-ui.md: UI-12-02",
+        "docs/plugin-design.md / docs/design/timeline.md",
+        "Issue #32 → #27の環境別実受入"
+      ],
+      "gpt": {
+        "status": "pending",
+        "reason": "固定実core 0e25a18dc6c6049148acd3e19b94b672854b8c2bへUIを接続。F1〜F6・boot不確定保持・unknown窓の除外GOP回収/pin保全・WireTest時計/復旧待ち修正の受領と、合成sourceの実core/UI回帰tests・標準buildの検証記録はIssue/PRで固定する。実ロード/Emulator/GUI観察は未実施、実機は保留。pure testsを観察passへ代用しない。"
+      },
+      "human": {
+        "status": "pending",
+        "reason": "固定ZIPの観察未実施、Emulatorを実機のpassへ流用しない。"
+      },
+      "fix_issue": null,
+      "fix_pr": null,
+      "recheck": "UI/core/API/build変更後は同じ新固定source/ZIPで再観察する。",
+      "next_action": "PMが最終固定HEAD/baseの完全独立レビュー・Verifierを調整し、#27へ同じ固定source/ZIPの本Caseを環境別状態・期待と双方向引継ぐ。実機は利用者準備後。"
+    },
+    {
+      "id": "UI-12-03",
+      "artifact": "plugin",
+      "change": "LOG-02: 自動applicationId・手動優先・再起動",
+      "preconditions": "#31と接続済み固定source/ZIP SHA-256とRabbit AI-262.9437.185.2621.16467767を照合。#27の使い捨てapp/Emulatorと共有GUI lease、実機は利用者準備まで保留。",
+      "steps": [
+        "Run構成とvariantを変更し同期中/同期失敗を含む自動解決結果を見る。",
+        "手動packageをApply後Runを変更し、自動へ戻してApplyする。",
+        "対象appのPIDを変えて再起動する。"
+      ],
+      "expected": "namespaceではなく実applicationId。未解決理由を表示し他取得継続。手動はApply後優先し自動解除もApply。PID変更でpackageを消さずコアが追従する。",
+      "provenance": [
+        "docs/requirements.md",
+        "docs/design/ide-ui.md: UI-12-03",
+        "docs/plugin-design.md / docs/design/timeline.md",
+        "Issue #32 → #27の環境別実受入"
+      ],
+      "gpt": {
+        "status": "pending",
+        "reason": "固定実core 0e25a18dc6c6049148acd3e19b94b672854b8c2bへUIを接続。F1〜F6・boot不確定保持・unknown窓の除外GOP回収/pin保全・WireTest時計/復旧待ち修正の受領と、合成sourceの実core/UI回帰tests・標準buildの検証記録はIssue/PRで固定する。実ロード/Emulator/GUI観察は未実施、実機は保留。pure testsを観察passへ代用しない。"
+      },
+      "human": {
+        "status": "pending",
+        "reason": "固定ZIPの観察未実施、Emulatorを実機のpassへ流用しない。"
+      },
+      "fix_issue": null,
+      "fix_pr": null,
+      "recheck": "UI/core/API/build変更後は同じ新固定source/ZIPで再観察する。",
+      "next_action": "PMが最終固定HEAD/baseの完全独立レビュー・Verifierを調整し、#27へ同じ固定source/ZIPの本Caseを環境別状態・期待と双方向引継ぐ。実機は利用者準備後。"
+    },
+    {
+      "id": "UI-12-04",
+      "artifact": "plugin",
+      "change": "BUF-02/05/07: 取得不足・完全切断窓",
+      "preconditions": "#31と接続済み固定source/ZIP SHA-256とRabbit AI-262.9437.185.2621.16467767を照合。#27の使い捨てapp/Emulatorと共有GUI lease、実機は利用者準備まで保留。",
+      "steps": [
+        "取得開始20秒で保存する。",
+        "種類別取得障害、切断、N秒以上後保存、再接続を行う。"
+      ],
+      "expected": "取得済み最大保存、種類別不足表示、完全切断時のみ凍結、再接続は現在窓で同sequence。空期間/0行を障害と誤認しない。",
+      "provenance": [
+        "docs/requirements.md",
+        "docs/design/ide-ui.md: UI-12-04",
+        "docs/plugin-design.md / docs/design/timeline.md",
+        "Issue #32 → #27の環境別実受入"
+      ],
+      "gpt": {
+        "status": "pending",
+        "reason": "固定実core 0e25a18dc6c6049148acd3e19b94b672854b8c2bへUIを接続。F1〜F6・boot不確定保持・unknown窓の除外GOP回収/pin保全・WireTest時計/復旧待ち修正の受領と、合成sourceの実core/UI回帰tests・標準buildの検証記録はIssue/PRで固定する。実ロード/Emulator/GUI観察は未実施、実機は保留。pure testsを観察passへ代用しない。"
+      },
+      "human": {
+        "status": "pending",
+        "reason": "固定ZIPの観察未実施、Emulatorを実機のpassへ流用しない。"
+      },
+      "fix_issue": null,
+      "fix_pr": null,
+      "recheck": "UI/core/API/build変更後は同じ新固定source/ZIPで再観察する。",
+      "next_action": "PMが最終固定HEAD/baseの完全独立レビュー・Verifierを調整し、#27へ同じ固定source/ZIPの本Caseを環境別状態・期待と双方向引継ぐ。実機は利用者準備後。"
+    },
+    {
+      "id": "UI-12-05",
+      "artifact": "plugin",
+      "change": "SAVE-05: 保存固定・再試行・破棄",
+      "preconditions": "#31と接続済み固定source/ZIP SHA-256とRabbit AI-262.9437.185.2621.16467767を照合。#27の使い捨てapp/Emulatorと共有GUI lease、実機は利用者準備まで保留。",
+      "steps": [
+        "保存連打と書込不可/容量不足を発生させる。",
+        "設定変更と保持窓経過後に同対象再試行/保存先変更/破棄/無効化を行う。"
+      ],
+      "expected": "1件immutable、二重要求なし。取得継続、新規保存だけ停止。寿命表示、取消し実終了後未保存破棄、完成済み出力不変。",
+      "provenance": [
+        "docs/requirements.md",
+        "docs/design/ide-ui.md: UI-12-05",
+        "docs/plugin-design.md / docs/design/timeline.md",
+        "Issue #32 → #27の環境別実受入"
+      ],
+      "gpt": {
+        "status": "pending",
+        "reason": "固定実core 0e25a18dc6c6049148acd3e19b94b672854b8c2bへUIを接続。F1〜F6・boot不確定保持・unknown窓の除外GOP回収/pin保全・WireTest時計/復旧待ち修正の受領と、合成sourceの実core/UI回帰tests・標準buildの検証記録はIssue/PRで固定する。実ロード/Emulator/GUI観察は未実施、実機は保留。pure testsを観察passへ代用しない。"
+      },
+      "human": {
+        "status": "pending",
+        "reason": "固定ZIPの観察未実施、Emulatorを実機のpassへ流用しない。"
+      },
+      "fix_issue": null,
+      "fix_pr": null,
+      "recheck": "UI/core/API/build変更後は同じ新固定source/ZIPで再観察する。",
+      "next_action": "PMが最終固定HEAD/baseの完全独立レビュー・Verifierを調整し、#27へ同じ固定source/ZIPの本Caseを環境別状態・期待と双方向引継ぐ。実機は利用者準備後。"
+    },
+    {
+      "id": "UI-12-06",
+      "artifact": "plugin",
+      "change": "SAVE-03: 完成通知と要求別フォルダ",
+      "preconditions": "#31と接続済み固定source/ZIP SHA-256とRabbit AI-262.9437.185.2621.16467767を照合。#27の使い捨てapp/Emulatorと共有GUI lease、実機は利用者準備まで保留。",
+      "steps": [
+        "2回連続保存後に各通知のフォルダ操作を行う。",
+        "一部保存と保存失敗、フォルダを開けない条件を確認する。"
+      ],
+      "expected": "通知ごとの完成フォルダに固定。不足種類を明記、未完成成功通知なし。開けない理由とpathコピー。",
+      "provenance": [
+        "docs/requirements.md",
+        "docs/design/ide-ui.md: UI-12-06",
+        "docs/plugin-design.md / docs/design/timeline.md",
+        "Issue #32 → #27の環境別実受入"
+      ],
+      "gpt": {
+        "status": "pending",
+        "reason": "固定実core 0e25a18dc6c6049148acd3e19b94b672854b8c2bへUIを接続。F1〜F6・boot不確定保持・unknown窓の除外GOP回収/pin保全・WireTest時計/復旧待ち修正の受領と、合成sourceの実core/UI回帰tests・標準buildの検証記録はIssue/PRで固定する。実ロード/Emulator/GUI観察は未実施、実機は保留。pure testsを観察passへ代用しない。"
+      },
+      "human": {
+        "status": "pending",
+        "reason": "固定ZIPの観察未実施、Emulatorを実機のpassへ流用しない。"
+      },
+      "fix_issue": null,
+      "fix_pr": null,
+      "recheck": "UI/core/API/build変更後は同じ新固定source/ZIPで再観察する。",
+      "next_action": "PMが最終固定HEAD/baseの完全独立レビュー・Verifierを調整し、#27へ同じ固定source/ZIPの本Caseを環境別状態・期待と双方向引継ぐ。実機は利用者準備後。"
+    },
+    {
+      "id": "UI-12-07",
+      "artifact": "plugin",
+      "change": "Lifecycle/EDT/keyboard/theme/DPI",
+      "preconditions": "#31と接続済み固定source/ZIP SHA-256とRabbit AI-262.9437.185.2621.16467767を照合。#27の使い捨てapp/Emulatorと共有GUI lease、実機は利用者準備まで保留。",
+      "steps": [
+        "indexing中に設定・パネル再表示・toggleを操作する。",
+        "theme/DPI/Tab移動を確認し、model解決/保存中にproject closeする。"
+      ],
+      "expected": "EDTを待ち処理で止めず、隠しても取得継続。再表示は最新状態、label/Tab正常、close/dispose後にUI更新やサービス再生成なし。",
+      "provenance": [
+        "docs/requirements.md",
+        "docs/design/ide-ui.md: UI-12-07",
+        "docs/plugin-design.md / docs/design/timeline.md",
+        "Issue #32 → #27の環境別実受入"
+      ],
+      "gpt": {
+        "status": "pending",
+        "reason": "固定実core 0e25a18dc6c6049148acd3e19b94b672854b8c2bへUIを接続。F1〜F6・boot不確定保持・unknown窓の除外GOP回収/pin保全・WireTest時計/復旧待ち修正の受領と、合成sourceの実core/UI回帰tests・標準buildの検証記録はIssue/PRで固定する。実ロード/Emulator/GUI観察は未実施、実機は保留。pure testsを観察passへ代用しない。"
+      },
+      "human": {
+        "status": "pending",
+        "reason": "固定ZIPの観察未実施、Emulatorを実機のpassへ流用しない。"
+      },
+      "fix_issue": null,
+      "fix_pr": null,
+      "recheck": "UI/core/API/build変更後は同じ新固定source/ZIPで再観察する。",
+      "next_action": "PMが最終固定HEAD/baseの完全独立レビュー・Verifierを調整し、#27へ同じ固定source/ZIPの本Caseを環境別状態・期待と双方向引継ぐ。実機は利用者準備後。"
+    },
+    {
+      "id": "UI-12-08",
+      "artifact": "plugin",
+      "change": "ENV-02/03/UI-01: SDK adb・端末",
+      "preconditions": "#31と接続済み固定source/ZIP SHA-256とRabbit AI-262.9437.185.2621.16467767を照合。#27の使い捨てapp/Emulatorと共有GUI lease、実機は利用者準備まで保留。",
+      "steps": [
+        "project SDKのplatform-toolsあり/なしを切替え、PATHに別adbを用意する。",
+        "0台/1Emulator/複数接続と取得中の端末切断を確認する。"
+      ],
+      "expected": "project SDKの絶対adbを使用し、PATH/個別ツール導入なし。端末名前/種別/状態表示、無断切替なし。実機の同Caseは保留。",
+      "provenance": [
+        "docs/requirements.md",
+        "docs/design/ide-ui.md: UI-12-08",
+        "docs/plugin-design.md / docs/design/timeline.md",
+        "Issue #32 → #27の環境別実受入"
+      ],
+      "gpt": {
+        "status": "pending",
+        "reason": "固定実core 0e25a18dc6c6049148acd3e19b94b672854b8c2bへUIを接続。F1〜F6・boot不確定保持・unknown窓の除外GOP回収/pin保全・WireTest時計/復旧待ち修正の受領と、合成sourceの実core/UI回帰tests・標準buildの検証記録はIssue/PRで固定する。実ロード/Emulator/GUI観察は未実施、実機は保留。pure testsを観察passへ代用しない。"
+      },
+      "human": {
+        "status": "pending",
+        "reason": "固定ZIPの観察未実施、Emulatorを実機のpassへ流用しない。"
+      },
+      "fix_issue": null,
+      "fix_pr": null,
+      "recheck": "UI/core/API/build変更後は同じ新固定source/ZIPで再観察する。",
+      "next_action": "PMが最終固定HEAD/baseの完全独立レビュー・Verifierを調整し、#27へ同じ固定source/ZIPの本Caseを環境別状態・期待と双方向引継ぐ。実機は利用者準備後。"
+    }
+  ]
+}

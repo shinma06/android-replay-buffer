@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "issue": 122,
+  "gui_required": false,
+  "reason": "ReplayCoreWireTestのsynthetic reader準備待ちだけを修正する。製品Core・UI・CLI・依存関係・初期段階受入計画は変更せず、実機・IDEの受入結果を追加しない。",
+  "cli_checks": [
+    "ReplayCoreWireTest: 初回と各復旧で既読位置の初期化後に記録された生存reader PIDを待ち、復旧時は旧PIDを拒否する",
+    "recoveredLogReaderWaitsForInitializationBeforeReceivingEvents: main再起動を既読位置初期化前に2秒遅延させ、遅延の実施とrecovered入力の保持を確認する",
+    "partitionedLogsPreserveIdsAndPartialFailureAndLegacyUnknownHeadersKeepAll: partition・legacy・empty・timeout・cancel、正常側へのpartial入力、ID・重複・欠落・owned PID cleanupの既存assertionを維持する",
+    "python3 scripts/check.py / python3 scripts/workflow/product_check.py: harness・CLIの必須checkを実行する",
+    "python3 scripts/workflow/change_impact.py --base origin/develop --run-tests: clean committed HEADでplugin test・build・構造検証を含む分類結果と成果物identityをPRへ記録する"
+  ],
+  "cases": []
+}

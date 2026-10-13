@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "issue": 129,
+  "gui_required": false,
+  "reason": "trusted mainの管理文書10ファイルの限定差分をdevelopへ同期し、develop固有の製品・標準ZIP生成の説明を保持する。製品、既存Case、build、gate、依存を変更・起動せず、GUI観察や成功結果を追加しない。",
+  "cli_checks": [
+    "main 089f3a97bd85d9febbe5c98b39c1003089a86db3から6c023c41a50a4fa121df499d6d25761b19ee91a2までの10ファイル差分だけを適用し、許可範囲外の全tracked fileのblobとmodeをdevelop base 57fec42cc108762b91e7619e029316904ade559dと照合する。",
+    "既存initial_stage_plan/historical_initial_sources/bind_initial_sourcesでtrusted planの同一性、required_ancestor、132Case/201source/98Agent/34REALと全source bindingを照合する。新candidateのbuild・実受入・promotion成功とは区別する。",
+    "python3 scripts/workflow/change_impact.py --base 57fec42cc108762b91e7619e029316904ade559d --run-tests: clean committed HEADのharness必須checkを実行する。",
+    "python3 scripts/workflow/product_check.py: CLIと原型21ファイルの保全を確認する。"
+  ],
+  "cases": []
+}
