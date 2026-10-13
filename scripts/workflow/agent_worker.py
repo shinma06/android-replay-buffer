@@ -24,6 +24,7 @@ REPORT_SCHEMA = {
         'findings': {'type': 'array', 'items': {'type': 'string'}},
         'evidence': {'type': 'string'},
         'repair_revision': {'type': 'string'}, 'repair_assessment': {'type': 'string'},
+        'certificate_revision': {'type': 'string'}, 'certificate_assessment': {'type': 'string'},
     },
     'required': ['verdict', 'head', 'base', 'scope_complete', 'issue_complete', 'gui_required', 'findings', 'evidence'],
 }
@@ -41,7 +42,7 @@ def bind_report_session(report, session):
     return dict(report, session=session)
 
 
-def read_repair_bundle(path):
+def read_repair_bundle(path, revision_field='repair_revision'):
     path = Path(path) if path else None
     if path is None or not path.is_absolute() or path.is_symlink():
         raise ValueError('Repair requires a private sealed evidence bundle')
@@ -51,7 +52,7 @@ def read_repair_bundle(path):
             raise ValueError('Evidence bundle must be private and locally owned')
         body = stream.read()
     bundle = json.loads(body)
-    if set(bundle) != {'head', 'base', 'repair_revision', 'mapping_receipt_sha256', 'receipts', 'origins'}:
+    if set(bundle) != {'head', 'base', revision_field, 'mapping_receipt_sha256', 'receipts', 'origins'}:
         raise ValueError('Malformed private repair evidence bundle')
     if (not isinstance(bundle['receipts'], list) or
             any(not isinstance(item, dict) or set(item) != {'sha256', 'path'} or
@@ -133,24 +134,25 @@ def recover_originals(storage, proof):
     paths = verify_review_origin(storage, report, bound)
     if report.get('evidence_records'):
         return retained_originals(report['evidence_records'], paths)
+    kind = 'certificate_revision' if report.get('certificate_revision') else 'repair_revision'
     for path in sorted(set(paths)):
         body = private_original(path)
-        if hashlib.sha256(body).hexdigest() != report.get('repair_evidence_sha256'):
+        if hashlib.sha256(body).hexdigest() != report.get(kind.replace('_revision', '_evidence_sha256')):
             continue
-        body, bundle = read_repair_bundle(path)
-        if any(bundle[k] != report.get(k) for k in ('head', 'base', 'repair_revision')):
+        body, bundle = read_repair_bundle(path, kind)
+        if any(bundle[k] != report.get(k) for k in ('head', 'base', kind)):
             raise ValueError('Historical bundle differs from its issued report')
         return retained_originals(evidence_records(path, body, bundle), paths)
     raise ValueError('Historical bundle is missing or changed; trusted recovery unavailable')
 
 
-def private_repair_evidence(path, acceptance, bound, cleanup_roots=()):
+def private_repair_evidence(path, acceptance, bound, cleanup_roots=(), revision_field='repair_revision'):
     """Rehash originals and reject evidence that owned resource cleanup would delete."""
     path = Path(path) if path else None
-    body, bundle = read_repair_bundle(path)
+    body, bundle = read_repair_bundle(path, revision_field)
     require_retained_evidence([path, *[item['path'] for item in bundle['receipts']]], cleanup_roots)
     if (any(bundle[k] != bound[k] for k in ('head', 'base')) or
-            bundle['repair_revision'] != acceptance.get('repair_revision')):
+            bundle[revision_field] != acceptance.get(revision_field)):
         raise ValueError('Private repair evidence candidate/revision mismatch')
     receipts = {}
     for receipt in bundle['receipts']:
@@ -164,9 +166,13 @@ def private_repair_evidence(path, acceptance, bound, cleanup_roots=()):
     if bundle['mapping_receipt_sha256'] not in receipts:
         raise ValueError('Origin attribution requires its sealed mapping receipt')
     expected, legacy = {}, []
-    for result in acceptance['repair']['results'].values():
+    results = (acceptance['repair']['results'] if revision_field == 'repair_revision' else
+               {k: {'observation': v} for k, v in acceptance['certificate_provenance'].items()})
+    for result in results.values():
         attribution = result['observation'].get('attribution')
         if not attribution:
+            if revision_field != 'repair_revision':
+                raise ValueError('Certificate requires complete sealed contributor attribution')
             session = canonical_session(acceptance['repair']['writer_session'])
             if result['observation']['observer'] != session:
                 raise ValueError('Legacy repair requires unambiguous single originating session')
@@ -174,7 +180,8 @@ def private_repair_evidence(path, acceptance, bound, cleanup_roots=()):
             continue
         for item in attribution['contributors']:
             key = (item['receipt_sha256'], item.get('receipt_locator', ''))
-            expected[key] = (item['session'], item['activity'], datetime.fromisoformat(item['at'].replace('Z', '+00:00')))
+            bind_receipt_claim(expected, key,
+                (item['session'], item['activity'], datetime.fromisoformat(item['at'].replace('Z', '+00:00'))))
     actual = {}
     for origin in bundle['origins']:
         if set(origin) != {'receipt_sha256', 'receipt_locator', 'session', 'activity', 'at'}:
@@ -223,7 +230,7 @@ def private_repair_evidence(path, acceptance, bound, cleanup_roots=()):
     paths = {str(path), str(path.resolve())}
     for item in bundle['receipts']:
         paths.update((item['path'], str(Path(item['path']).resolve())))
-    return dict(bundle, bundle_sha256=hashlib.sha256(body).hexdigest(), private_paths=sorted(paths),
+    return dict(bundle, revision_field=revision_field, bundle_sha256=hashlib.sha256(body).hexdigest(), private_paths=sorted(paths),
                 evidence_records=evidence_records(path, body, bundle))
 
 
@@ -294,6 +301,10 @@ def run_worker(role, checkout, packet, output_dir, timeout=600, on_start=lambda 
         'an observed native failure. Return repair_revision equal to acceptance.repair_revision and '
         'repair_assessment explaining the substantive evidence, coverage and equivalence limits. Missing, '
         'unknown, failed or partial repair evidence blocks integration. These fields are not required for ordinary work. '
+        'For evidence certificate registration, inspect certificate_provenance and all sealed originals; '
+        'check completeness of actual writers/executors/assessors and the declared reviewer against actual session origins. '
+        'Return certificate_revision matching acceptance.certificate_revision and certificate_assessment '
+        'with substantive original/impact/coverage/failure findings; public fingerprints alone are not proof. '
         'Concrete code defects and failing tests still require changes. For develop feature/bug/maintenance, issue_complete means all implementation acceptance is met or unfinished implementation has been preserved in explicitly linked separate Issues; GUI/main verification may remain in Cases for QA transfer. Never mark research/tracking complete merely because a child PR merged. For main, issue_complete requires all Issue acceptance. '
         'Inspect every supplied feedback record (including bots, replies and resolved/outdated findings). '
         'In evidence, map each actionable ID/URL and original commit to a fixed-head fix with checks, '
@@ -347,7 +358,8 @@ def run_worker(role, checkout, packet, output_dir, timeout=600, on_start=lambda 
     report = json.loads(result.read_text())
     report = bind_report_session(report, event_session(events))
     if packet.get('private_repair_evidence'):
-        report['repair_evidence_sha256'] = packet['private_repair_evidence']['bundle_sha256']
+        revision_field = packet['private_repair_evidence'].get('revision_field', 'repair_revision')
+        report[revision_field.replace('_revision', '_evidence_sha256')] = packet['private_repair_evidence']['bundle_sha256']
         report['evidence_records'] = packet['private_repair_evidence']['evidence_records']
         report = issue_review_origin(origin_storage, report, origin_binding, report['session'], 'cli',
                                      packet['private_repair_evidence']['private_paths'],
@@ -365,12 +377,13 @@ def main():
     parser.add_argument('--binding', type=Path, help='Complete verified HEAD/base/Issue/feedback binding')
     args = parser.parse_args()
     report = bind_report_session(json.loads(private_original(args.report)), os.environ.get('CODEX_THREAD_ID'))
-    if report.get('repair_revision'):
+    revision_field = 'certificate_revision' if report.get('certificate_revision') else 'repair_revision'
+    if report.get(revision_field):
         if not args.acceptance or not args.binding or not args.storage:
             raise ValueError('Repair report requires the verified acceptance snapshot and private originals')
         accepted = json.loads(args.acceptance.read_text())
-        evidence = private_repair_evidence(args.repair_evidence, accepted, report)
-        report['repair_evidence_sha256'] = evidence['bundle_sha256']
+        evidence = private_repair_evidence(args.repair_evidence, accepted, report, revision_field=revision_field)
+        report[revision_field.replace('_revision', '_evidence_sha256')] = evidence['bundle_sha256']
         report['evidence_records'] = evidence['evidence_records']
         bound = json.loads(args.binding.read_text())
         if any(bound[k] != report[k] for k in ('head', 'base')):

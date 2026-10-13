@@ -41,7 +41,9 @@ def digest(public):
     return hashlib.sha256(json.dumps(public, sort_keys=True).encode()).hexdigest()
 
 
-def register(storage, public, source, host, repair_evidence=None, private_paths=(), evidence_records=()):
+def register(storage, public, source, host, repair_evidence=None, private_paths=(), evidence_records=(), evidence_kind=None):
+    if evidence_kind not in (None, 'repair_revision', 'certificate_revision'):
+        raise ValueError('Unknown private evidence bundle kind')
     public = dict(public, registry_id=uuid.uuid4().hex, version=2)
     with registry_directory(storage, create=True) as directory:
         fd = os.open(public['registry_id'] + '.json', os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
@@ -49,6 +51,7 @@ def register(storage, public, source, host, repair_evidence=None, private_paths=
         with os.fdopen(fd, 'w') as stream:
             json.dump({'digest': digest(public), 'source': str(source), 'host': host,
                        'repair_evidence': str(repair_evidence) if repair_evidence else None,
+                       'evidence_kind': evidence_kind or 'repair_revision',
                        'private_paths': list(private_paths), 'evidence_records': list(evidence_records)}, stream)
     return public
 
@@ -70,7 +73,7 @@ def resolve(storage, public, host):
             not isinstance(local.get('source'), str) or not Path(local['source']).is_absolute()):
         raise ValueError('Enrollment binding/local ownership mismatch; preserve existing owner')
     return dict(public, source=local['source'], host=local['host'], repair_evidence=local.get('repair_evidence'),
-                private_paths=local.get('private_paths', []), evidence_records=local.get('evidence_records', []))
+                evidence_kind=local.get('evidence_kind', 'repair_revision'), private_paths=local.get('private_paths', []), evidence_records=local.get('evidence_records', []))
 
 
 def store_review(storage, public, report, private_paths=()):

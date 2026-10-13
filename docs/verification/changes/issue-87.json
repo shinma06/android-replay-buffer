@@ -1,0 +1,51 @@
+{
+  "schema": 1,
+  "issue": 87,
+  "gui_required": true,
+  "reason": "固定候補3a9と試験済み標準ZIPの初期Agent昇格。下記は既存85:CLOCK-UNCERTAIN-VIDEO-PLAYBACK原Caseの不変参照用コピーで、新Case/実行/結果を作らない。全139の実観察・延期・出典はpromotion.jsonとtrusted initial planで評価する。",
+  "cli_checks": [
+    "python3 scripts/workflow/change_impact.py --base origin/main --run-tests",
+    "trusted main verification.verify_pr: 全60commit/merged develop PR・139 Case/208出典・Agent105/REAL34",
+    "標準ZIP ca74694b93c0b101e19348c9826a22d03285662fe5ada9e7006a94d2c59c173b のbyte hash/sizeとcandidate製品/build/fixture/test tree不変照合"
+  ],
+  "cases": [
+    {
+      "id": "CLOCK-UNCERTAIN-VIDEO-PLAYBACK",
+      "artifact": "plugin",
+      "change": "動画のある保存を1MP4とし、時計不明でsource再生を細分化しない。元packet/config/PTS/VFR・復号境界・個別同期不明・不足を保存する",
+      "preconditions": "新固定source/標準buildPlugin ZIPと同source回帰。QA所有の使い捨てfixture/保存先、共有GUI lease、実ロードidentityと全JAR/ZIPの一致。合成RTTを実GUIへ注入したとは主張しない。",
+      "steps": [
+        "履歴確認: base ab2c1773391144ed83f8566f0dfc0ccd734793c0の本Case旧9手順・PR86/92/94・sealed旧製品のexpected/actual part失敗と旧観察を保持する。旧source-only/mux例外やpart数を今回のactive実装方式/完了条件へ流用しない。",
+        "限定JVM: 取得時decodeRun/packetOrdinalを実Storeで固定する。clock epoch/unknown/MAX/GOP file切替だけではrunを変えず、gen/session/config/実VIDEO中断・packet拒否・byte/packet evictionは正しい取得事実として区別する。ordinal0/欠番/overflow・owner/session/config/寸法/PTS/byte矛盾では連続を捏造しない。共有retention/cut/clock/gap保全は維持する。",
+        "限定JVM: 修正前の実Store→Writer反例と同じ条件を新sourceで実行し、1MP4/1track・全3source PTS・観測VFR・terminal nullとauthoring tick・unknown window/null/MAXを照合。dense IDR/P、正常→unknown→正常、旧/新streamと複数再接続、PTS reset、同geometry config切替で全対象packet/config/復号画素・media/movie mapping・headers/editsを確認する。",
+        "限定JVM: 窓を跨ぐ表示frameと最寄りIDR/prefixを保持し、prerollを隠した複数edit、既知VIDEO gapのempty edit、不明gapのactual duration nullとauthoring配置、held tail/確認済coverage分離を確認。後半読取/codec/IDR不足・容量/取消しは成功を公開せずFAILED+固定pin、retryは同じFrozenCaptureを使う。通常same geometryは再encodeしない。mixed geometryは全frame/可読性/aspect/原packet sidecarを満たす変換の固定候補で別途確認し、未実装を完了にしない。",
+        "実IDE: PM gate後、新HEAD/標準ZIP/全JARと実ロードidentityを照合し、QA所有fixtureでN=300を使う。通常3操作/REQUEST・DRAW・FRAME_COMMIT計9行を両log固定母数として別保存する。同じ取得で新PRE3操作9行を完了し、所有Emulatorを1回だけ通常再接続し、別POST3操作9行を入力して同じ窓へ保存する。PRE/POST各9行（両log各計18行）とrun/view/boot/eventを保持し、POSTだけで再接続合格にしない。",
+        "実IDE: 最初のPREからSave開始までhost monotonicで240秒の余裕を事前確認。既に窓外/時間不足はINVALID停止する。保存後は固定snapshot Tとframeごとのsupported mappingでPRE/POST全phaseがN300内か厳密判定する。unknown/欠落/窓外はPASS不可、内部mappingがUI非公開なだけで保存を止めない。通常と再接続の各保存は1MP4、標準playerで通常3操作/PRE3/POST3を全て通常durationで見返し、gap前後・任意中間・逆方向seek・preroll/極短terminal境界を確認する。瞬間終了/後半drop/未観察範囲を正当化しない。両log各9/18行の固定母数・同record_id/UID/帰属/元gap/MAX/不足を照合し、未確定はnull/mapped情報のまま残す。追加再接続/再録画を自動実行しない。",
+        "Case記録: 新同ZIPの実製品class/JAR/CodeSource/hash、限定JVMとIDE・標準playerを別証拠で束ねる。全300event/30分・精密同期・OCR・GOP・画質/負荷・full initial/mainと既存human/REAL延期を別未達として維持し、短い試作や基本録画でpassへ付け替えない。",
+        "限定JVM: 新clock samples/後続取得/設定変更を進めても固定retryの元PTS/frame/config/log/mapping/gap/null/MAX/pinが変わらない。旧cut/両側scopeの証拠は説明用に保持するが、それをsource再生の許可や同期確定へ転用しない。",
+        "引継ぎ: 固定HEAD/base/標準ZIPと全対象映像・両log/通常PREPOST・未観察Caseを既存QAへ双方向readbackし、独立review指摘と必須checksを解消してから実装scopeを閉じる。単一MP4のfile数と実frame母数は別に全件照合する。"
+      ],
+      "expected": "動画がある成功保存はMP4ちょうど1件。sourceのpositive acquisition factsが示す連続区間では時計確度に関わらず全元frame/PTS/codec/VFRを保ち、再接続/PTS reset/config境界は同一file内の独立media/presentation区間で表す。時計unknown/MAX/null、元gap/両log/不足・共有retention/UI/tailとmapper閾値は維持し、個別に確定できるframe情報を区間のunknownへまとめて失わない。既知gapは空edit、不明gapはactual duration nullとauthoring配置を区別し、末尾source duration nullとheld/tickを観測coverageへ加算しない。全対象の後半欠落やdecoder prefix不足を部分成功・複数MP4fallbackで隠さずFAILED+pin。元frame/config/raw・全画素/実duration/対応表・固定retryと1MP4を実質検査する。通常3/PRE3/POST3の全映像と両log各9/18行・全対象Play/seek・同ZIP・全300event/30分等の受入を維持し、限定JVMや旧source PASSで代用しない。",
+      "provenance": [
+        "Issue85: 既存52の正常前後局所化を維持し、不確実区間内の極短partを最小mux変更で修正。実観察媒体・rawログはprivate保全のみ。",
+        "docs/design/timeline.md: 元PTS再生と共通窓への確認済みalignment/coverageを区別する。",
+        "52:CLOCK-VIDEO-REGIONS/UNKNOWN、78:CLOCK-RECEIPT-NORMALと旧全Case/REAL hold/初期計画は変更しない。",
+        "Issue85継続: d0実Emulator再接続保存で187partの失敗を保持し、旧video gapの所有による最小mux修正を同じCaseへ追加する。旧sourceのreview/GUI結果を新sourceへ転用しない。",
+        "Issue85継続: a471は通常/POST基本PASSだが旧generation4/epoch0の33極短partは未解消。旧data/native失敗を保全し、同世代MAX動画gapの両側normal proofによる最小mux scopeを同Caseへ追加。a471 review/GUI結果は新sourceへ転用しない。",
+        "Issue85単一MP4: 旧9手順/expectedとsource-only guardはbase ab2c1773391144ed83f8566f0dfc0ccd734793c0及びPR86/92/94の履歴で保持。今回active契約はsource/clock分離と1MP4へ明確に置換し、矛盾する旧実装方式の維持は要求しない。"
+      ],
+      "gpt": {
+        "status": "pending",
+        "reason": "新単一MP4/固定canvasの製品差分を検証中。固定ZIP独立reviewと同ZIPの全IDE/player・文字/色・長時間受入は未完了。旧候補/私有prototypeの観察を転用しない。"
+      },
+      "human": {
+        "status": "pending",
+        "reason": "同じ新ZIPの人間/REAL観察は未実施。人間工程の追加や既存延期の変更は行わない。"
+      },
+      "fix_issue": null,
+      "fix_pr": null,
+      "recheck": "source/mux/scope/mapper/依存/固定candidate/ZIPが変更されたとき同buildで再確認する。",
+      "next_action": "PMがmixed geometryの最終契約と共通writerの固定差分/検証を確認し、新固定HEAD/base/標準ZIP独立review・同ZIP回帰の後にQAへ通常/N300PREPOST・両log・1MP4全Play/seekを渡す。正式初期計画はtrusted main別toolingで更新し、本製品差分では過去出典を書き換えない。"
+    }
+  ]
+}
