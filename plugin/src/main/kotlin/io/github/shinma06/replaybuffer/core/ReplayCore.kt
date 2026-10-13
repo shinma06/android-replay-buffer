@@ -261,8 +261,13 @@ class ReplayCore(initialSettings: ReplaySettings, private val workspace: Path, c
         val capture = backend ?: return
         store?.freeze()
         listOf("video", "device_log", "app_log").forEach { store?.status(it, StreamState.RECOVERING, "端末との取得接続が中断しています", generation) }
-        capture.close()
-        if (capture.cleanupPending) cleanup.retain(capture.cleanupRecord())
+        val stopped = runCatching { capture.close() }
+        val retained = runCatching { if (capture.cleanupPending) cleanup.retain(capture.cleanupRecord()) }
+        stopped.exceptionOrNull()?.let { failure ->
+            retained.exceptionOrNull()?.let(failure::addSuppressed)
+            throw failure
+        }
+        retained.getOrThrow()
         backend = null
     }
 
@@ -337,11 +342,20 @@ class ReplayCore(initialSettings: ReplaySettings, private val workspace: Path, c
         listeners.clear()
         val done = closeCompletion
         control.execute {
-            runCatching { try { disable() } finally { try { localOwnership?.close() } finally { cleanup.close() } } }.onSuccess {
+            val failures = listOf(
+                runCatching { disable() }.exceptionOrNull(),
+                runCatching { localOwnership?.close() }.exceptionOrNull(),
+                runCatching { cleanup.close() }.exceptionOrNull(),
+            ).filterNotNull()
+            val failure = failures.firstOrNull()
+            if (failure == null) {
                 current = current.copy(enabled = false, captureState = CaptureState.DISABLED, canSave = false,
                     saveDisabledReason = "projectは終了しています", cleanupPendingCount = cleanup.pendingCount, error = error)
                 done.complete(null)
-            }.onFailure { done.completeExceptionally(it) }
+            } else {
+                failures.drop(1).forEach(failure::addSuppressed)
+                done.completeExceptionally(failure)
+            }
             writer.shutdown()
             control.shutdown()
         }

@@ -14,7 +14,7 @@ import java.nio.file.StandardOpenOption.WRITE
 import java.nio.file.attribute.BasicFileAttributes
 import java.nio.file.attribute.PosixFilePermissions
 
-/** Immutable identities of a capture whose host readers/clients have already stopped. */
+/** Immutable identities retained while stopping a capture, including unconfirmed host termination. */
 internal data class RemoteCleanup(val serial: String, val token: String, val forwards: Map<String, String>) {
     private val serverName get() = "replay-$token-video"
     private val clockName get() = "replay-$token-clock"

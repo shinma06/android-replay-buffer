@@ -1,6 +1,6 @@
 # Android Studioプラグイン開発で共有する知見
 
-開発対象はAndroid Studioプラグインです。[Kotlin/Gradle基盤](plugin-development.md)とロード確認用の情報表示actionを用意しています。録画・保存は保全したPython CLIで利用し、IDEとの接続は未実装です。以下の共通知見を接続設計から適用します。
+開発対象はAndroid Studioプラグインです。[Kotlin/Gradle基盤](plugin-development.md)、取得・保存コア、ToolWindow、設定と情報表示actionを実装しています。固定ZIPの製品受入と残る人間・実機確認は[現在の事実](project.md)と[QA #27](https://github.com/shinma06/android-replay-buffer/issues/27)で管理し、実装済みと受入済みを区別します。Python CLIは[凍結した原型](cli-origin.md)として保全し、以下の共通知見を現行IDE実装へ適用します。
 
 参照元は [Cursor in Android Studio](https://github.com/shinma06/cursor-in-android-studio)。管理実装は [inventory](inventory.md) の固定版で比較しています。以下は継続的な調査入口で、参照先の最新branch/Issueを確認してから採用します。
 
