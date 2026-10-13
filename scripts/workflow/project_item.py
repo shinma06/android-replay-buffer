@@ -9,7 +9,7 @@ from agent_loop import GitHub, OWNER, REPO
 PROJECT_NUMBER = 5
 CONTENT = '''__typename ... on Issue { id number repository { nameWithOwner } }
     ... on PullRequest { id number repository { nameWithOwner } }'''
-ITEM = '''id project { id number owner { ... on User { login } ... on Organization { login } } }
+ITEM = '''id isArchived project { id number owner { ... on User { login } ... on Organization { login } } }
     content { ''' + CONTENT + ''' }
     fieldValueByName(name:$field) { __typename
       ... on ProjectV2ItemFieldSingleSelectValue { name optionId
@@ -54,6 +54,8 @@ def project_identity(project, project_id=None):
 def item_identity(item, project, content):
     if not isinstance(item, dict) or not isinstance(item.get('id'), str) or not item['id']:
         raise ValueError('Unknown Project item ID')
+    if type(item.get('isArchived')) is not bool:
+        raise ValueError('Unknown Project item archive state')
     project_identity(item.get('project'), project['id'])
     identity(item.get('content'), content['__typename'], content['number'], content['id'])
 
@@ -123,6 +125,8 @@ def mutate(gh, action, url, field='Status', value=None):
     kind = 'Issue' if match[1] == 'issues' else 'PullRequest'
     number = int(match[2])
     project, content, item, fields = snapshot(gh, kind, number, field)
+    if action == 'add' and item and item['isArchived']:
+        raise ValueError('Item is archived; owner must reconcile restoration before adding')
     if (action == 'add' and item) or (action == 'remove' and item is None):
         return {'action': 'unchanged', 'url': url, 'item': item['id'] if item else None}
     if action == 'set' and item is None:
@@ -165,6 +169,8 @@ def mutate(gh, action, url, field='Status', value=None):
             raise ValueError('Item removal was not confirmed; no automatic retry')
     elif after is None or after['id'] != returned['id']:
         raise ValueError('Item readback mismatch; no automatic retry')
+    elif action == 'add' and after['isArchived']:
+        raise ValueError('Added item is archived; owner must reconcile, no automatic retry')
     elif action == 'set':
         current = after.get('fieldValueByName') or {}
         if (current.get('optionId') != option_id or current.get('name') != value or

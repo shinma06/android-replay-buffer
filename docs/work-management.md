@@ -86,7 +86,7 @@ python3 scripts/workflow/project_item.py set https://github.com/shinma06/android
 # PRは /pull/N。removeは必要性と所有範囲を確認した対象だけ。
 ```
 
-Standaloneの判定・Issue状態とのStatus対応・操作の所有範囲は従来どおり担当が確認します。未知/外部itemは報告してownerと整合し、自動削除しません。拒否や結果不明を別の `gh project`、直接GraphQL、connector、GUIのitem操作で回避せず、実状態を取得して原因を解消します。接続に100件を超える関連Project/field/repositoryがある場合も部分取得として拒否し、必要になった時にページ取得を対応させます。Project概要・View・repository link/defaultの管理はこのitem入口の対象外です。
+Standaloneの判定・Issue状態とのStatus対応・操作の所有範囲は従来どおり担当が確認します。アーカイブ状態も照合し、アーカイブ済み項目へのaddは復帰成功とせず拒否します。ownerが復帰の必要性・対象・方法を整合するまで自動unarchiveしません。未知/外部itemは報告してownerと整合し、自動削除しません。拒否や結果不明を別の `gh project`、直接GraphQL、connector、GUIのitem操作で回避せず、実状態を取得して原因を解消します。接続に100件を超える関連Project/field/repositoryがある場合も部分取得として拒否し、必要になった時にページ取得を対応させます。Project概要・View・repository link/defaultの管理はこのitem入口の対象外です。
 
 [GitHubのrepository link/default](https://docs.github.com/en/issues/planning-and-tracking-with-projects/managing-your-project/adding-your-project-to-a-repository)は一覧表示と新Issueの作成先を設定します。[任意organizationの項目追加](https://docs.github.com/en/issues/planning-and-tracking-with-projects/managing-items-in-your-project/adding-items-to-your-project)を禁止するallowlistではありません。上の入口内では不一致を構造的に拒否しますが、直接CLI/API/connector/UIの書込み権限を持つ利用者までは遮断できません。[Projectアクセス権](https://docs.github.com/en/issues/planning-and-tracking-with-projects/managing-your-project/managing-access-to-your-projects)もread/write/admin単位です。任意経路を完全に禁止するにはplatformのadmission機能または書込み権限を独立した検証サービスだけに渡す構成が必要で、現在の管理入口だけを全経路の強制制限と説明しません。認証変更・常駐サービス・自動削除jobは追加しません。
 

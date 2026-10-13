@@ -16,7 +16,7 @@ class FakeGitHub:
                                    'pageInfo': {'hasNextPage': False}}}
         self.content = {'__typename': kind, 'id': 'C262', 'number': 262,
                         'repository': {'nameWithOwner': guard.REPO}}
-        self.item = {'id': 'ITEM262', 'project': {k: self.project[k] for k in ('id', 'number', 'owner')},
+        self.item = {'id': 'ITEM262', 'isArchived': False, 'project': {k: self.project[k] for k in ('id', 'number', 'owner')},
                      'content': copy.deepcopy(self.content), 'fieldValueByName': None} if present else None
         self.partial = False
         self.extra = []
@@ -24,6 +24,7 @@ class FakeGitHub:
         self.errors = None
         self.bad_return = False
         self.bad_readback = False
+        self.archive_after_add = False
 
     def api(self, path, method, payload):
         assert path == 'graphql' and method == 'POST'
@@ -39,8 +40,9 @@ class FakeGitHub:
         self.mutations.append(copy.deepcopy(payload))
         if 'addProjectV2ItemById' in query:
             assert variables['content'] == self.content['id']
-            self.item = {'id': 'ITEM262', 'project': {k: self.project[k] for k in ('id', 'number', 'owner')},
+            self.item = {'id': 'ITEM262', 'isArchived': False, 'project': {k: self.project[k] for k in ('id', 'number', 'owner')},
                          'content': copy.deepcopy(self.content), 'fieldValueByName': None}
+            self.item['isArchived'] = self.archive_after_add
         elif 'updateProjectV2ItemFieldValue' in query:
             assert variables['item'] == self.item['id'] and variables['fieldId'] == 'FS'
             self.item['fieldValueByName'] = {'__typename': 'ProjectV2ItemFieldSingleSelectValue',
@@ -174,6 +176,26 @@ class ProjectItemTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 self.call(gh, 'set')
             self.assertEqual(gh.mutations, [])
+
+    def test_archived_add_requires_owner_reconciliation_and_unknown_state_is_rejected(self):
+        gh = FakeGitHub()
+        gh.item['isArchived'] = True
+        before = copy.deepcopy(gh.item)
+        with self.assertRaisesRegex(ValueError, 'archived'):
+            self.call(gh, 'add')
+        self.assertEqual(gh.item, before)
+        self.assertEqual(gh.mutations, [])
+        for action in ('add', 'set', 'remove'):
+            gh = FakeGitHub()
+            del gh.item['isArchived']
+            with self.assertRaisesRegex(ValueError, 'archive state'):
+                self.call(gh, action)
+            self.assertEqual(gh.mutations, [])
+        gh = FakeGitHub(False)
+        gh.archive_after_add = True
+        with self.assertRaisesRegex(ValueError, 'archived'):
+            self.call(gh, 'add')
+        self.assertEqual(len(gh.mutations), 1)
 
     def test_response_or_readback_mismatch_stops_without_compensating_mutation(self):
         for defect in ('bad_return', 'bad_readback'):
