@@ -704,8 +704,25 @@ IMPACT_DIMENSIONS = {'source', 'callers', 'callees', 'dataflow', 'build', 'confi
                      'dependencies', 'fixtures', 'runtime', 'display', 'failure_attribution'}
 
 
+def load_impact_source(source, git):
+    """A public pre-squash commit may be absent from a fresh acceptance checkout."""
+    if not isinstance(source, str) or not SHA.fullmatch(source):
+        raise ValueError('Impact source must be a full immutable commit SHA')
+    try:
+        kind = git('cat-file', '-t', source)
+    except subprocess.CalledProcessError:
+        origin = git('remote', 'get-url', 'origin')
+        if not re.fullmatch(r'(https://github\.com/|git@github\.com:)shinma06/android-replay-buffer(?:\.git)?', origin):
+            raise ValueError('Missing impact source requires this repository trusted origin')
+        git('fetch', '--no-tags', 'origin', source)
+        kind = git('cat-file', '-t', source)
+    if kind != 'commit':
+        raise ValueError('Impact source object must be the exact requested commit')
+
+
 def impact_history(source, candidate, key, git):
     """Bind all relevant history edges, including edits later reverted."""
+    load_impact_source(source, git)
     try:
         git('merge-base', '--is-ancestor', source, candidate)
         commits = git('rev-list', f'{source}..{candidate}').splitlines()

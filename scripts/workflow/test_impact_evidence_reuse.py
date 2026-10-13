@@ -5,6 +5,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import Mock, call
 
 from test_agent_loop import BASE, NEW
 from test_verification import HEAD
@@ -12,11 +13,65 @@ from agent_policy import session_fingerprint
 from test_observation_reuse import OLD, RECORD, CASE_PATH
 import test_responsibility_revision as tr
 from verification import (IMPACT_DIMENSIONS, INITIAL_PLAN, canonical_hash, impact_history,
-                          render_queue, unchanged_artifact_history)
+                          load_impact_source, render_queue, unchanged_artifact_history)
 
 CERT_PATH = 'docs/verification/changes/issue-246.json'
 COMPONENT = 'plugin/src/main/kotlin/Video.kt'
 REPAIR = 'plugin/src/main/kotlin/AppHistory.kt'
+
+
+class ImpactSourceTests(unittest.TestCase):
+    def test_cached_commit_needs_no_remote_or_fetch(self):
+        git = Mock(return_value='commit')
+        load_impact_source(OLD, git)
+        git.assert_called_once_with('cat-file', '-t', OLD)
+
+    def test_missing_commit_fetches_exact_sha_and_checks_retrieved_object(self):
+        for origin in ('https://github.com/shinma06/android-replay-buffer',
+                       'https://github.com/shinma06/android-replay-buffer.git',
+                       'git@github.com:shinma06/android-replay-buffer.git'):
+            with self.subTest(origin=origin):
+                git = Mock(side_effect=[subprocess.CalledProcessError(128, 'cat-file'), origin, '', 'commit'])
+                load_impact_source(OLD, git)
+                self.assertEqual(git.call_args_list, [call('cat-file', '-t', OLD),
+                    call('remote', 'get-url', 'origin'), call('fetch', '--no-tags', 'origin', OLD),
+                    call('cat-file', '-t', OLD)])
+
+    def test_invalid_ref_is_rejected_before_git(self):
+        for source in (None, 1, 'main', OLD[:12], OLD.upper(), '--all', OLD + ':file'):
+            with self.subTest(source=source):
+                git = Mock()
+                with self.assertRaises(ValueError):
+                    load_impact_source(source, git)
+                git.assert_not_called()
+
+    def test_untrusted_origin_cannot_fetch_missing_commit(self):
+        for origin in ('/tmp/foreign', 'https://github.com/foreign/android-replay-buffer.git',
+                       'https://github.com/shinma06/android-replay-buffer.evil',
+                       'https://github.com.evil/shinma06/android-replay-buffer'):
+            with self.subTest(origin=origin):
+                git = Mock(side_effect=[subprocess.CalledProcessError(128, 'cat-file'), origin])
+                with self.assertRaisesRegex(ValueError, 'trusted origin'):
+                    load_impact_source(OLD, git)
+                self.assertEqual(git.call_count, 2)
+
+    def test_failed_fetch_or_missing_retrieved_object_remains_fatal(self):
+        origin = 'https://github.com/shinma06/android-replay-buffer'
+        for tail in ([subprocess.CalledProcessError(128, 'fetch')],
+                     ['', subprocess.CalledProcessError(128, 'cat-file')]):
+            git = Mock(side_effect=[subprocess.CalledProcessError(128, 'cat-file'), origin, *tail])
+            with self.assertRaises(subprocess.CalledProcessError):
+                load_impact_source(OLD, git)
+            self.assertEqual(git.call_count, 2 + len(tail))
+
+    def test_blob_tree_or_tag_cannot_stand_in_for_commit(self):
+        for kind in ('blob', 'tree', 'tag'):
+            for missing in (False, True):
+                with self.subTest(kind=kind, missing=missing):
+                    git = Mock(side_effect=[subprocess.CalledProcessError(128, 'cat-file'),
+                        'https://github.com/shinma06/android-replay-buffer', '', kind] if missing else [kind])
+                    with self.assertRaisesRegex(ValueError, 'exact requested commit'):
+                        load_impact_source(OLD, git)
 
 
 class ImpactEvidenceTests(unittest.TestCase):
@@ -82,6 +137,8 @@ class ImpactEvidenceTests(unittest.TestCase):
         self.seal()
 
     def git(self, *args):
+        if args[:2] == ('cat-file', '-t'):
+            return 'commit'
         if args == ('rev-list', f'{OLD}..{OLD}'):
             return ''
         if args == ('rev-list', f'{OLD}..{NEW}'):
