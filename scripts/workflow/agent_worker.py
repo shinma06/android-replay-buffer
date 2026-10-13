@@ -179,7 +179,8 @@ def private_repair_evidence(path, acceptance, bound, cleanup_roots=(), revision_
             continue
         for item in attribution['contributors']:
             key = (item['receipt_sha256'], item.get('receipt_locator', ''))
-            expected[key] = (item['session'], item['activity'], datetime.fromisoformat(item['at'].replace('Z', '+00:00')))
+            bind_receipt_claim(expected, key,
+                (item['session'], item['activity'], datetime.fromisoformat(item['at'].replace('Z', '+00:00'))))
     actual = {}
     for origin in bundle['origins']:
         if set(origin) != {'receipt_sha256', 'receipt_locator', 'session', 'activity', 'at'}:

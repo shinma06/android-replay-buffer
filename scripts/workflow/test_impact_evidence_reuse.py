@@ -367,6 +367,55 @@ class CertificateOriginTests(unittest.TestCase):
             with self.subTest(edit=edit), self.assertRaises(ValueError):
                 self.evidence()
 
+    def test_consistent_cross_certificate_claims_share_one_private_origin(self):
+        from verification import certificate_acceptance
+        original = copy.deepcopy(self.accepted['certificate_provenance']['sample'])
+        review = {'status': 'approved', 'writer_session': original['attribution']['writer'],
+                  'executor_sessions': [session_fingerprint(self.fixture.sessions[1])],
+                  'reviewer_session': session_fingerprint(self.report['session']), 'at': self.fixture.at,
+                  'evidence': 'Synthetic independent review.'}
+        certificates = {key: {'provenance': copy.deepcopy(original), 'review': copy.deepcopy(review)}
+                        for key in ('first', 'last')}
+        self.accepted.update(certificate_acceptance(certificates))
+        self.fixture.bundle['certificate_revision'] = self.accepted['certificate_revision']
+        self.fixture.seal()
+        self.evidence()
+
+    def test_cross_certificate_session_activity_time_and_parent_child_claims_fail_in_both_gates(self):
+        from verification import certificate_acceptance
+        from agent_worker import private_repair_evidence
+        for edit in ('session', 'activity', 'time', 'parent-child'):
+            with self.subTest(edit=edit):
+                self.setUp()
+                original = copy.deepcopy(self.accepted['certificate_provenance']['sample'])
+                bad = copy.deepcopy(original)
+                item = bad['attribution']['contributors'][1]
+                if edit in ('session', 'parent-child'):
+                    item['session'] = session_fingerprint('00000000-0000-4000-8000-000000000077')
+                if edit == 'activity':
+                    extra = copy.deepcopy(item); extra['receipt_locator'] = '/other-execution'
+                    bad['attribution']['contributors'].append(extra)
+                    item['activity'] = 'assessment'
+                elif edit == 'time':
+                    item['at'] = '2025-12-31T23:59:59Z'
+                elif edit == 'parent-child':
+                    item['receipt_locator'] += '/child'
+                def certificate(provenance):
+                    return {'provenance': provenance, 'review': {
+                        'status': 'approved', 'writer_session': provenance['attribution']['writer'],
+                        'executor_sessions': sorted({c['session'] for c in provenance['attribution']['contributors']
+                                                     if c['activity'] == 'execution'}),
+                        'reviewer_session': session_fingerprint(self.report['session']),
+                        'at': self.fixture.at, 'evidence': 'Synthetic independent review.'}}
+                # Each certificate alone is well formed; the complete packet contradicts one observation.
+                certificate_acceptance({'first': certificate(bad)})
+                with self.assertRaisesRegex(ValueError, 'Conflicting origin'):
+                    certificate_acceptance({'first': certificate(bad), 'last': certificate(original)})
+                self.accepted['certificate_provenance'] = {'first': bad, 'last': original}
+                with self.assertRaisesRegex(ValueError, 'Conflicting origin'):
+                    private_repair_evidence(self.fixture.path, self.accepted, self.bound,
+                                           revision_field='certificate_revision')
+
     def test_manual_binder_uses_actual_environment_session_and_never_model_alias(self):
         import os
         from unittest.mock import patch

@@ -733,7 +733,7 @@ def impact_history(source, candidate, key, git):
     return sorted(edges, key=lambda e: (e['commit'], e['parent'])), canonical_hash(cases[0][0])
 
 
-def certificate_review(certificate):
+def certificate_review(certificate, receipts=None):
     """Public fingerprint/receipt structure; actual origins are checked by the approval adapter."""
     review = certificate.get('review', {})
     provenance = certificate.get('provenance')
@@ -750,7 +750,7 @@ def certificate_review(certificate):
     if datetime.fromisoformat(review['at'].replace('Z', '+00:00')).tzinfo is None:
         raise ValueError('Certificate review requires timezone-qualified origin time')
     # Use the same complete contributor/receipt claim checks as original-NG evidence.
-    contributors = repair_contributors(provenance, '', datetime.min.replace(tzinfo=datetime.fromisoformat(review['at'].replace('Z', '+00:00')).tzinfo))
+    contributors = repair_contributors(provenance, '', datetime.min.replace(tzinfo=datetime.fromisoformat(review['at'].replace('Z', '+00:00')).tzinfo), receipts)
     execution = {c['session'] for c in provenance['attribution']['contributors'] if c['activity'] == 'execution'}
     if (review['writer_session'] != provenance['attribution']['writer'] or
             set(review['executor_sessions']) != execution or review['reviewer_session'] in contributors or
@@ -762,11 +762,11 @@ def certificate_review(certificate):
 def certificate_acceptance(certificates):
     if not isinstance(certificates, dict) or not certificates or not all(nonempty(k) for k in certificates):
         raise ValueError('Malformed Issue evidence certificates')
-    contributors, reviewers = set(), set()
+    contributors, reviewers, receipts = set(), set(), {}
     for certificate in certificates.values():
         if not isinstance(certificate, dict):
             raise ValueError('Malformed Issue evidence certificate')
-        contributors.update(certificate_review(certificate))
+        contributors.update(certificate_review(certificate, receipts))
         reviewers.add(certificate['review']['reviewer_session'])
     if len(reviewers) != 1 or reviewers & contributors:
         raise ValueError('Certificate registration needs one actual independent reviewer for its complete scope')
