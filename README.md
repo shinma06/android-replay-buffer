@@ -1,4 +1,10 @@
-# Android Replay Buffer for macOS
+# Android Replay Buffer
+
+昇格状況の以下の記載は2026-10-13のmain `f8ec628` 時点です。昇格後の実状態は[#87](https://github.com/shinma06/android-replay-buffer/issues/87)・[#10](https://github.com/shinma06/android-replay-buffer/issues/10)で読み戻してください。
+
+開発対象はAndroid Studioプラグインです。[固定develop候補 `3a9af24`](https://github.com/shinma06/android-replay-buffer/tree/3a9af24231c3db339c0b3a82ba8aa8eb4cecb189/plugin/)に取得・保存コア、ToolWindow、設定を実装しています。初期Agent範囲105/105件は[QA #27で正式採用](https://github.com/shinma06/android-replay-buffer/issues/27#issuecomment-6136845141)済みですが、完全GUI受入と製品のmain昇格は未完了です。REAL34・人間確認は[QA #65](https://github.com/shinma06/android-replay-buffer/issues/65)、昇格は[#87](https://github.com/shinma06/android-replay-buffer/issues/87)で追跡します。現在の事実とチェックは[プロジェクト情報](docs/project.md)を参照してください。
+
+以下は互換性を維持するmacOS向けPython CLI原型の利用手順です。プラグインの導入条件・機能・受入とは区別します。[凍結CLI文書](https://github.com/shinma06/android-replay-buffer/blob/3a9af24231c3db339c0b3a82ba8aa8eb4cecb189/docs/cli-origin/README.md)と[保全方針](https://github.com/shinma06/android-replay-buffer/blob/3a9af24231c3db339c0b3a82ba8aa8eb4cecb189/docs/cli-origin.md)を参照してください。移設後のローカル文書は `docs/cli-origin/` にあります。
 
 Android 実機を USB 接続すると、操作なしで画面キャプチャと logcat 取得を開始し、直近 N 秒をリングバッファとして保持する開発ツール。
 
@@ -130,7 +136,7 @@ Android ──USB──▶ ADB ──┬── scrcpy ──▶ ffmpeg segments 
 
 ## 開発ハーネス・Android Studioプラグイン開発
 
-現行製品は上記のPython CLIです。今後のAndroid Studioプラグイン開発に向け、[開発手順](docs/workflow.md)、[プロジェクト情報](docs/project.md)、[共通IDE知見](docs/android-studio.md)を入口にします。製品変更はdevelop、検証済み候補はmainへ統合します。
+Python CLI原型を維持し、Android Studioプラグインを開発します。[開発手順](docs/workflow.md)、[プロジェクト情報](docs/project.md)、[共通IDE知見](docs/android-studio.md)を入口にします。製品変更はdevelop、固定した検証済み候補はmainへ統合します。初期版完成後は [#206 stable基盤更新](https://github.com/shinma06/android-replay-buffer/issues/206) → [#103 CLI内包](https://github.com/shinma06/android-replay-buffer/issues/103) の順です。[過去管理欄の整備 #237](https://github.com/shinma06/android-replay-buffer/issues/237)は初期版後に行います。
 
 - [開発マップ](https://github.com/users/shinma06/projects/5) / [Issue](https://github.com/shinma06/android-replay-buffer/issues)
 - [初回導入の検証・未実施項目](docs/validation.md) / [ハーネスの出典・対応表](docs/inventory.md)
@@ -142,3 +148,5 @@ python3 scripts/bootstrap.py
 python3 scripts/check.py
 python3 scripts/workflow/product_check.py
 ```
+
+プラグイン変更では、昇格後の `plugin/` と checker が存在するツリーで `python3 scripts/workflow/plugin_check.py` を実行します（JDK 25 / JAVA_HOMEが必要）。プラグインがまだないmainでbuild成功や安全なskipを主張しません。
