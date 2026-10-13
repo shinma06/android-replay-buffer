@@ -262,7 +262,11 @@ class ReplayCore(initialSettings: ReplaySettings, private val workspace: Path, c
         store?.freeze()
         listOf("video", "device_log", "app_log").forEach { store?.status(it, StreamState.RECOVERING, "端末との取得接続が中断しています", generation) }
         val stopped = runCatching { capture.close() }
-        val retained = runCatching { if (capture.cleanupPending) cleanup.retain(capture.cleanupRecord()) }
+        val retained = runCatching {
+            val record = capture.cleanupRecord()
+            if (capture.cleanupPending) cleanup.retain(record, hostPending = stopped.isFailure)
+            else cleanup.retire(record)
+        }
         stopped.exceptionOrNull()?.let { failure ->
             retained.exceptionOrNull()?.let(failure::addSuppressed)
             throw failure

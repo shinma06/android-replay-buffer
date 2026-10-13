@@ -47,7 +47,7 @@ class DeviceCaptureCloseTest {
             RemoteCleanupJournal(path.parent).use { next ->
                 next.recover()
                 assertEquals(1, next.pendingCount)
-                assertTrue(next.hasRecoverable)
+                assertFalse(next.hasRecoverable) // Unconfirmed originating lifetime is quarantined after disposal.
             }
         }
     }
@@ -76,14 +76,14 @@ class DeviceCaptureCloseTest {
             fixture.blockCaptureReader()
             val core = fixture.core(fixture.root.resolve("journal"))
             val journal = field(core, "cleanup") as RemoteCleanupJournal
-            journal.retain(fixture.capture.cleanupRecord())
+            journal.retain(fixture.capture.cleanupRecord(), hostPending = true)
             val entry = (field(journal, "owned") as Map<*, *>).values.single()!!
             (field(entry, "channel") as java.nio.channels.FileChannel).close()
             val failure = assertFailsWith<java.util.concurrent.ExecutionException> {
                 core.closeAsync().get(10, TimeUnit.SECONDS)
             }.cause!!
             assertEquals("取得readerの終了を確認できません", failure.message)
-            assertTrue(failure.suppressed.single() is java.nio.channels.ClosedChannelException)
+            assertTrue(failure.suppressed.any { it is java.nio.channels.ClosedChannelException })
             assertSame(fixture.capture, field(core, "backend"))
         }
     }

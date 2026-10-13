@@ -90,25 +90,41 @@ internal fun removeOwnedForwards(
 
 /** Only this caller-supplied private directory is inspected; no workspace/host-wide search or sweep. */
 internal class RemoteCleanupJournal(private var directory: Path) : AutoCloseable {
-    private data class Entry(val record: RemoteCleanup, val channel: FileChannel, val lock: FileLock, val fileKey: Any)
+    private data class Entry(val record: RemoteCleanup, val channel: FileChannel, val lock: FileLock, val fileKey: Any, val hostPending: Boolean = false)
     private val owned = linkedMapOf<Path, Entry>()
     private var other = 0
     val pendingCount get() = owned.size + other
-    val hasRecoverable get() = owned.isNotEmpty()
+    val hasRecoverable get() = owned.values.any { !it.hostPending }
 
     init { require(directory.isAbsolute) }
 
-    fun retain(record: RemoteCleanup) {
+    fun retain(record: RemoteCleanup, hostPending: Boolean = false) {
         record.validate()
         prepare()
         val path = directory.resolve("remote-cleanup-${record.token}.json")
-        if (path in owned) return
         val fields = mutableMapOf<String, Any>("schema" to 1, "serial" to record.serial, "token" to record.token, "forwards" to record.forwards)
         if (record.pendingEndpoints.isNotEmpty()) {
             fields["schema"] = 2
             fields["pending_endpoints"] = record.pendingEndpoints
         }
+        if (hostPending) {
+            fields["schema"] = 3
+            fields["pending_endpoints"] = record.pendingEndpoints
+            fields["host_pending"] = true
+        }
         val bytes = Gson().toJson(fields).toByteArray(Charsets.UTF_8)
+        owned[path]?.let { entry ->
+            check(entry.record.token == record.token && entry.record.serial == record.serial && entry.lock.isValid && key(path) == entry.fileKey) {
+                "終了情報の所有を確認できません"
+            }
+            entry.channel.position(0)
+            val buffer = ByteBuffer.wrap(bytes)
+            while (buffer.hasRemaining()) entry.channel.write(buffer)
+            entry.channel.truncate(bytes.size.toLong())
+            entry.channel.force(true)
+            owned[path] = entry.copy(record = record, hostPending = hostPending)
+            return
+        }
         val channel = FileChannel.open(path, setOf<java.nio.file.OpenOption>(CREATE_NEW, READ, WRITE, NOFOLLOW_LINKS),
             PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rw-------")))
         try {
@@ -117,7 +133,7 @@ internal class RemoteCleanupJournal(private var directory: Path) : AutoCloseable
             val buffer = ByteBuffer.wrap(bytes)
             while (buffer.hasRemaining()) channel.write(buffer)
             channel.force(true)
-            owned[path] = Entry(record, channel, lock, key)
+            owned[path] = Entry(record, channel, lock, key, hostPending)
         } catch (e: Exception) {
             channel.close()
             // An incomplete new record is preserved for diagnosis, never treated as safe remote ownership.
@@ -148,8 +164,10 @@ internal class RemoteCleanupJournal(private var directory: Path) : AutoCloseable
                     val keys = setOf("schema", "serial", "token", "forwards")
                     val endpoints = when (json["schema"].toString()) {
                         "1" -> { require(json.keySet() == keys); emptyList() }
-                        "2" -> {
-                            require(json.keySet() == keys + "pending_endpoints")
+                        "2", "3" -> {
+                            val hostPending = json["schema"].toString() == "3"
+                            require(json.keySet() == keys + "pending_endpoints" + if (hostPending) setOf("host_pending") else emptySet())
+                            if (hostPending) require(json["host_pending"].toString() == "true")
                             json["pending_endpoints"].asJsonArray.map { it.asString }
                         }
                         else -> error("終了情報のschemaを確認できません")
@@ -159,6 +177,8 @@ internal class RemoteCleanupJournal(private var directory: Path) : AutoCloseable
                     val record = RemoteCleanup(json["serial"].asString, json["token"].asString,
                         java.util.Map.copyOf(forwards), java.util.Set.copyOf(endpoints)).validate()
                     require(path.fileName.toString() == "remote-cleanup-${record.token}.json")
+                    // shortcut: Disposed unresolved owners stay quarantined; automatic recovery needs a verified completion receipt.
+                    if (json["schema"].toString() == "3") { other++; return@forEach }
                     owned[path] = Entry(record, channel, lock, key)
                     channel = null // ownership transfers only after validation.
                 } catch (_: Exception) { other++ } finally { channel?.close() }
@@ -168,12 +188,24 @@ internal class RemoteCleanupJournal(private var directory: Path) : AutoCloseable
 
     fun clean(adbPath: Path, connectedSerials: Set<String>, cancelled: () -> Boolean = { false }) {
         owned.toMap().forEach { (path, entry) ->
-            if (!cancelled() && entry.record.serial in connectedSerials && entry.record.clean(adbPath, cancelled)) {
-                check(key(path) == entry.fileKey) { "終了情報の所有が変更されています" }
-                Files.delete(path)
-                entry.lock.release(); entry.channel.close(); owned.remove(path)
+            if (!entry.hostPending && !cancelled() && entry.record.serial in connectedSerials) {
+                check(entry.lock.isValid && key(path) == entry.fileKey) { "終了情報の所有が変更されています" }
+                if (entry.record.clean(adbPath, cancelled)) retire(entry.record)
             }
         }
+    }
+
+    fun retire(record: RemoteCleanup) {
+        record.validate()
+        val path = directory.resolve("remote-cleanup-${record.token}.json")
+        val entry = owned[path] ?: return
+        check(entry.record.token == record.token && entry.record.serial == record.serial && entry.lock.isValid && key(path) == entry.fileKey) {
+            "終了情報の所有が変更されています"
+        }
+        Files.delete(path)
+        entry.lock.release()
+        entry.channel.close()
+        owned.remove(path)
     }
 
     private fun prepare() {
