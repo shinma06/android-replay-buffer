@@ -16,6 +16,7 @@ CHANGE = change()
 class GH(FakeGitHub):
     def __init__(self):
         super().__init__()
+        self.issues[35]['title'] = '[運用] 試験対象'
         self.issues[10] = {'state': 'open', 'title': '[追跡] release', 'labels': ['type:tracking', 'priority:P1', 'status:deferred'], 'body': 'PM release plan'}
         self.created = 0
         self.fail_create = False
@@ -67,6 +68,46 @@ class HandoffTests(unittest.TestCase):
         self.assertNotIn('MAIN-REFLECTION', self.gh.issue(100)['body'])
         self.assertIn('/blob/main/docs/verification/human-qa.md', self.gh.issue(100)['body'])
         self.assertEqual(len(self.gh.comments(35)), 1)
+    def test_new_qa_title_and_legacy_alias_reuse_preserve_summary(self):
+        for origin_title in ('[運用] 試験対象', 'chore: 試験対象'):
+            self.gh = GH(); self.pr = self.gh.pull
+            self.pr.update(merged=True, merge_commit_sha='d' * 40)
+            self.pr['base']['ref'] = 'develop'
+            self.pr['body'] = self.pr['body'].replace('tooling', 'develop').replace('GUI: not-required', 'GUI: required')
+            self.gh.issues[35]['title'] = origin_title
+            self.assertEqual(self.transfer(), 100)
+            self.assertEqual(self.gh.issue(100)['title'], 'test: #35 試験対象')
+            for qa_title in ('[試験] #35 試験対象', 'test: #35 試験対象'):
+                self.gh.issues[100]['title'] = qa_title
+                self.assertEqual(self.transfer(), 100)
+                self.assertEqual(self.gh.created, 1)
+
+    def test_title_aliases_and_origin_boundaries_do_not_duplicate_or_misidentify_qa(self):
+        self.transfer()
+        self.gh.issues[101] = dict(self.gh.issue(100), number=101, id=10001,
+                                 title='[試験] #35 試験対象', body='Manual QA')
+        with self.assertRaisesRegex(ValueError, 'Multiple QA'):
+            self.transfer()
+        del self.gh.issues[101]
+        for title in ('[試験] #3 試験対象', 'test: #3 試験対象'):
+            self.gh.issues[100]['title'] = title
+            with self.assertRaisesRegex(ValueError, 'identity readback'):
+                self.transfer()
+            self.assertEqual(self.gh.created, 1)
+        self.gh.issues[100]['title'] = 'test: #35 試験対象'
+        self.gh.issues[101] = dict(self.gh.issue(100), number=101, id=10001,
+                                 title='test: #3 試験対象', body='Other origin QA')
+        self.assertEqual(self.transfer(), 100)
+        self.assertEqual(self.gh.created, 1)
+
+    def test_invalid_new_qa_summary_is_rejected_before_transfer_writes(self):
+        self.gh.issues[35]['title'] = '[運用] legacy English'
+        with self.assertRaisesRegex(ValueError, 'Japanese summary'):
+            self.transfer()
+        self.assertEqual(self.gh.created, 0)
+        self.assertEqual(self.gh.comments(10), [])
+        self.assertEqual(self.gh.comments(35), [])
+
     def test_milestone_and_parent_are_preserved_on_retry(self):
         self.gh.issues[35]['milestone'] = {'number': 7}
         self.transfer()
@@ -272,6 +313,33 @@ class ClosureTests(unittest.TestCase):
 
 
 class SchemaTests(unittest.TestCase):
+    def test_canonical_type_mapping_and_read_only_legacy_compatibility(self):
+        mapping = {'feature': ('feat', '機能'), 'bug': ('fix', '修正'), 'qa': ('test', '試験'),
+                   'maintenance': ('chore', '運用'), 'research': ('research', '調査'), 'tracking': ('track', '追跡')}
+        for kind, (prefix, legacy) in mapping.items():
+            suffix = '#35 要約' if kind == 'qa' else '要約'
+            issue = {'number': 100, 'title': f'{prefix}: {suffix}', 'state': 'open',
+                     'labels': [f'type:{kind}', 'priority:P1', 'status:ready']}
+            self.assertEqual(validate_issue(issue, allow_legacy=False)['type'], kind)
+            old = dict(issue, title=f'[{legacy}] {suffix}')
+            self.assertEqual(validate_issue(old)['type'], kind)
+            with self.assertRaises(ValueError): validate_issue(old, allow_legacy=False)
+            wrong = dict(issue, title=('fix' if prefix != 'fix' else 'chore') + ': ' + suffix)
+            with self.assertRaises(ValueError): validate_issue(wrong)
+
+    def test_new_title_rejects_own_number_pr_suffix_missing_origin_and_priority(self):
+        issue = {'number': 35, 'title': 'chore: 要約', 'state': 'open',
+                 'labels': ['type:maintenance', 'priority:P1', 'status:ready']}
+        for title in ('chore: #35 要約', 'chore: 要約 (#35)', 'chore: P1 要約',
+                      'chore: English only', 'Chore: 要約', 'chore: 要約\n次行', None):
+            with self.subTest(title=title), self.assertRaises(ValueError):
+                validate_issue(dict(issue, title=title))
+        qa = dict(issue, number=100, labels=['type:qa', 'priority:P1', 'status:ready'])
+        for title in ('test: 試験', 'test: #0 試験', 'test: #100 試験', 'test: #35 試験 (#100)'):
+            with self.subTest(title=title), self.assertRaises(ValueError):
+                validate_issue(dict(qa, title=title))
+        validate_issue(dict(qa, title='test: #35 試験'), allow_legacy=False)
+
     def test_axes_title_and_closed_status(self):
         valid = {'title':'[試験] #35 試験', 'state':'open', 'labels':['type:qa','priority:P1','status:ready']}
         validate_issue(valid)

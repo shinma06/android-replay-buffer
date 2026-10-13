@@ -254,6 +254,11 @@ class PolicyTest(unittest.TestCase):
         issue = {'title': '[運用] policy', 'state': 'open',
                  'labels': ['type:maintenance', 'priority:P2', 'status:review']}
         namespace['validate_issue'](issue)
+        namespace['validate_issue'](dict(issue, title='chore: 運用を整える'), allow_legacy=False)
+        with self.assertRaises(ValueError):
+            namespace['validate_issue'](dict(issue, title='fix: 運用を整える'))
+        with self.assertRaises(ValueError):
+            namespace['validate_issue'](issue, allow_legacy=False)
         with self.assertRaises(ValueError):
             namespace['validate_issue'](dict(issue, labels=[]))
         bad = dict(self.pr, body='Issue: #99')

@@ -13,12 +13,20 @@
 
 | type ラベル | 題名 |
 |---|---|
-| `type:feature` | `[機能] 要約` |
-| `type:bug` | `[修正] 要約` |
-| `type:research` | `[調査] 要約` |
-| `type:qa` | `[試験] #元Issue番号 要約` |
-| `type:maintenance` | `[運用] 要約` |
-| `type:tracking` | `[追跡] 要約` |
+| `type:feature` | `feat: 日本語の要約` |
+| `type:bug` | `fix: 日本語の要約` |
+| `type:research` | `research: 日本語の要約` |
+| `type:qa` | `test: #元Issue番号 日本語の要約` |
+| `type:maintenance` | `chore: 日本語の要約` |
+| `type:tracking` | `track: 日本語の要約` |
+
+この改訂の採用後に新しく作るIssueと、明示して改名する対象の題名は **`type: 日本語の要約`** とします。typeは上の6ラベルとの一意対応、小文字・scopeなしです。Issue自身の番号や優先度、PR用の`(#N)`末尾は重ねません。QAだけは単一の元Issueを `test: #35 保存失敗を確認する` のように接頭辞直後へ置きます。要約は自然な日本語とし、Kotlin・SDK等の技術名は保持します。
+
+`feat` / `fix` / `test` / `chore`は既存PRの語彙を使い、`research` / `track`は既存の調査/追跡分類を表す本project専用の語です。世界共通のIssue標準やConventional Commitsの必須分類とは呼びません。6つのtypeラベルと実native関係を維持し、新しい分類やnative Issue typeは作りません。PR/commitのtypeは引き続き実変更で選び、Issue分類をそのままコピーしません。
+
+新規作成/指定された改名はこの形式を確認します。共有validatorとCIの実inline copyはラベルとの対応・QA元番号・日本語文字・自身の番号/優先度の重複を確認し、旧角括弧形式は既存/未移行/固定履歴の読取りだけに残します。文字検査は意味の正しさを保証しません。新規自動QAはcanonical形式を公開前に検査し、検索/再利用/読み戻しは新旧どちらの元番号も区切り込みで照合します。#3と#35を混同せず、新旧2件なら勝手に片方を採らずownerへ戻します。重いparser、日付/ID cutoff、registry、新hookは作りません。
+
+実Issueの改名は、規約の独立レビュー・main採用後に、PMが固定した当repoのOPEN一覧と単独metadata ownerへ引き継ぎます。prefixだけを変え、要約・本文・state/labels/assignee/Milestone・native関係・Project値を変更前後に照合します。closed/固定履歴は改名せず、稼働中のwriter/review bindingへの影響を先に調整します。タイトル変更だけで内容・受入・所有権を変更しません。
 
 priority は `priority:P0` / `priority:P1` / `priority:P2`、status は `status:ready` / `status:in-progress` / `status:review` / `status:blocked` / `status:deferred` / `status:done`。closed は done、open は done 以外。優先度を題名に重複させません。PR policy が型・番号・ラベルを検査します。
 

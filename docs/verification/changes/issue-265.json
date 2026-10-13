@@ -2,7 +2,7 @@
   "schema": 1,
   "issue": 265,
   "gui_required": false,
-  "reason": "新規branch/commit命名とclosed-unmerged PR資源の保全/復元/整理運用、merged-only監査の保持表示のみ。製品/Case/ZIP/IDE/deviceは不変。実refsと所有する使い捨て復元先で確認し、GUI/製品再試験は不要。",
+  "reason": "新規Issue/branch/commit命名・共有validator/CIと新旧QA題名の安全な生成/再利用とclosed-unmerged PR資源の保全/復元/整理運用、merged-only監査の保持表示のみ。製品/Case/ZIP/IDE/deviceは不変。実refsと所有する使い捨て復元先で確認し、GUI/製品再試験は不要。",
   "cli_checks": [
     "python3 scripts/check.py",
     "python3 scripts/workflow/product_check.py",
