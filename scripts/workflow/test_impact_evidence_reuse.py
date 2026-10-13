@@ -189,6 +189,86 @@ class ImpactEvidenceTests(unittest.TestCase):
                 contributor['at'] = '2026-01-01T00:00:00Z'
         self.assertIn('certificate_revision', certificate_acceptance({'sample': valid}, self.git))
 
+    def test_fractional_review_registers_and_consumes_the_exact_unchanged_certificate(self):
+        from verification import certificate_acceptance
+        self.certificate['review']['at'] = '2026-10-13T08:45:34.861592+00:00'
+        saved = json.dumps(self.certificate)
+        accepted = certificate_acceptance({'sample': self.certificate}, self.git)
+        self.seal()
+        self.assertEqual(self.assessment['impact_reuse']['sha256'], canonical_hash(self.certificate))
+        self.assertEqual(accepted['certificate_revision'], canonical_hash({'sample': self.certificate}))
+        self.assertTrue(self.prior.verify()['stage_complete'])
+        self.assertEqual(json.dumps(self.certificate), saved)
+        self.assertEqual(self.fixture.documents[f'{RECORD}:{CERT_PATH}']['evidence_certificates']['sample'],
+                         self.certificate)
+
+    def test_review_registration_and_consumption_share_the_bounded_timestamp_language(self):
+        from verification import certificate_acceptance
+        for suffix in ('Z', '.1Z', '.123+00:00', '.123456-00:59'):
+            with self.subTest(valid=suffix):
+                self.certificate['review']['at'] = '2026-10-13T08:45:34' + suffix
+                certificate_acceptance({'sample': self.certificate}, self.git)
+                self.seal()
+                self.assertTrue(self.prior.verify()['stage_complete'])
+        for at in ('2026-02-30T08:45:34.123Z', '2026-10-13T08:45:34.Z',
+                   '2026-10-13T08:45:34.1234567Z', '2026-10-13T08:45:34.1+00:60',
+                   '2026-10-13T08:45:34.1+99:00', '2026-10-13T08:45:34.1',
+                   '2026-10-13 08:45:34.1Z', '2026-10-13T08:45:34.1+0000'):
+            with self.subTest(invalid=at):
+                self.certificate['review']['at'] = at
+                self.seal()
+                with self.assertRaises(ValueError):
+                    certificate_acceptance({'sample': self.certificate}, self.git)
+                with self.assertRaises(ValueError):
+                    self.prior.verify()
+
+    def test_provenance_registration_and_consumption_reject_unbounded_or_normalized_times(self):
+        from verification import certificate_acceptance
+        self.certificate['review']['at'] = '2026-10-13T01:00:00.123456Z'
+        composition = self.certificate['provenance']['attribution']['contributors'][-1]
+        composition['at'] = '2026-10-13T01:00:00.123456Z'
+        self.certificate['provenance']['at'] = composition['at']
+        certificate_acceptance({'sample': self.certificate}, self.git)
+        self.seal()
+        self.assertTrue(self.prior.verify()['stage_complete'])
+        for at in ('2026-10-13 01:00:00,1234567+00:00', '2026-10-13T01:00:00.1234567Z',
+                   '2026-10-13 01:00:00.123456Z', '2026-10-13T01:00:00,123456Z',
+                   '2026-10-13T01:00:00.123456', '2026-02-30T01:00:00.123456Z',
+                   '2026-10-13T01:00:00.123456+00:60'):
+            with self.subTest(provenance=at):
+                self.certificate['provenance']['at'] = at
+                self.seal()
+                with self.assertRaises(ValueError):
+                    certificate_acceptance({'sample': self.certificate}, self.git)
+                with self.assertRaises(ValueError):
+                    self.prior.verify()
+
+    def test_microsecond_ordering_keeps_review_facts_and_contributors_in_sequence(self):
+        from verification import certificate_acceptance
+        self.certificate['provenance']['at'] = '2026-10-13T01:00:00.123456Z'
+        composition = self.certificate['provenance']['attribution']['contributors'][-1]
+        composition['at'] = '2026-10-13T10:00:00.123456+09:00'
+        self.certificate['review']['at'] = '2026-10-13T01:00:00.123456+00:00'
+        certificate_acceptance({'sample': self.certificate}, self.git)
+        self.seal()
+        self.assertTrue(self.prior.verify()['stage_complete'])
+        saved = copy.deepcopy(self.certificate)
+        self.certificate['review']['at'] = '2026-10-13T01:00:00.123455Z'
+        with self.assertRaises(ValueError):
+            certificate_acceptance({'sample': self.certificate}, self.git)
+        self.certificate = copy.deepcopy(saved)
+        self.certificate['provenance']['attribution']['contributors'][2]['at'] = '2026-10-13T01:00:00.123457Z'
+        with self.assertRaisesRegex(ValueError, 'out-of-order'):
+            certificate_acceptance({'sample': self.certificate}, self.git)
+        self.certificate = saved
+        self.observed['at'] = '2026-10-13T01:00:00.123456Z'
+        for at in ('2026-10-13T01:00:00.123457Z', '2026-09-06T23:59:59.999999Z'):
+            with self.subTest(current_fact=at):
+                self.assessment['facts']['current']['at'] = at
+                self.seal()
+                with self.assertRaises(ValueError):
+                    self.prior.verify()
+
     def test_changed_product_and_zip_combine_old_facts_with_current_identity_without_prior_promotion(self):
         saved = copy.deepcopy(self.assessment)
         with self.assertRaisesRegex(ValueError, 'retesting'):

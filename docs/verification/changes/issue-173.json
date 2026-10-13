@@ -1,0 +1,41 @@
+{
+  "schema": 1,
+  "issue": 173,
+  "gui_required": true,
+  "reason": "package名の入力条件をSettingsの入力欄直下へ追加する。表示位置・折り返し・アクセシビリティ・自動/手動とApplyの維持を新固定標準ZIPの実IDEで確認する必要がある。",
+  "cli_checks": [
+    "既存ReplaySettingsStoreTest（255文字境界・形式・自動/手動・atomic Apply）とclassifierのharness/plugin checks、CLI保全チェックを実行し、固定HEADの結果をIssue/PRに記録する。JVM成功はGUI passではない。"
+  ],
+  "cases": [
+    {
+      "id": "PACKAGE-INPUT-GUIDANCE",
+      "artifact": "plugin",
+      "change": "package欄直下に折り返す入力条件を常時表示し、同じ説明を入力欄のaccessibleDescriptionへ設定する",
+      "preconditions": "PMが割り当てた専用IDE/project fixtureと共有GUI lease。新candidateのclean source SHA・標準ZIP/全JAR hash・embedded identity・実ロード版を照合する。取得OFFと元の適用設定を記録する。旧c61の結果は履歴として保全し、新buildのpassへ転記しない。",
+      "steps": [
+        "取得OFFのSettingsを開き対象アプリを手動にする。package欄直下で255文字上限、各部分の英字開始・半角英数字/underscore・2部分以上のピリオド区切りと例が読めることを確認する。窓幅を狭めても案内が折り返され、欄やApplyを操作できることを確認する。入力欄のaccessible name/descriptionと案内部品のaccessible nameを照合する。",
+        "手動で有効なcom.example.app_1を適用する。代表的な不正package（例: com._app）を入力し、保持時間も別の有効値へ編集してApplyを試みる。不正値を拒否し、保持時間・packageを含む旧適用設定が部分変更されないことを確認する。保存先確認がある場合は完了を待つ。原#27 SETTINGS-INVALID-EMUの全条件は維持し、candidate・標準ZIP・実ロード・前提が一致し元条件を満たす観察のみ共有する。",
+        "自動/手動を切り替え、入力欄の有効/無効と案内の可読性を確認する。自動で空packageが受理されることを確認する。未適用編集をCancelして再openし元の適用値を確認する。記録した元設定へ戻してApply後に閉じ、取得OFFと設定復元を確認する。"
+      ],
+      "expected": "既存255文字/形式の条件をpackage入力欄近くで事前に読め、狭幅で折り返す。同じ条件が入力欄のアクセシビリティ説明にも含まれる。入力規則・自動/手動・一括Apply/Cancelを維持し、不正値で部分適用しない。取得/保存・保存先非同期検証・原#27 Caseや初期計画の条件は変更しない。",
+      "provenance": [
+        "https://github.com/shinma06/android-replay-buffer/issues/173",
+        "https://github.com/shinma06/android-replay-buffer/blob/c61bbd7840b79a03409458a318cafe591fd04fc3/docs/verification/changes/issue-27.json: SETTINGS-INVALID-EMU（原契約を縮小・書換えしない）",
+        "原SETTINGS-INVALID-EMU全Case canonical SHA-256: ee783ca47a52ae46a2081d3d72d108346fe79fcdf4649a08be544893ede20314",
+        "docs/design/ide-ui.md: UI-12-02"
+      ],
+      "gpt": {
+        "status": "pending",
+        "reason": "writerはnative操作なし。新固定標準ZIPでQAが実観察する。"
+      },
+      "human": {
+        "status": "pending",
+        "reason": "未観察。既存Caseの延期/人間工程は変更せず、新しいhuman必須を追加しない。"
+      },
+      "fix_issue": null,
+      "fix_pr": null,
+      "recheck": "Settings UI・package規則・Apply・アクセシビリティの変更時は新candidate/hashで再確認する。旧Case/初期計画や過去結果は上書きしない。",
+      "next_action": "固定HEADの独立レビュー後、PMが新candidateと標準ZIP/GUI担当を割り当てる。QAは原#27 SETTINGS-INVALID-EMU全契約と本Caseを照合し、main計画の正式更新/develop同期はPMが管理する。"
+    }
+  ]
+}

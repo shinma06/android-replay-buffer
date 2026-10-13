@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "issue": 58,
+  "gui_required": false,
+  "reason": "mainで統合済みのGOP受入改訂をdevelopへ同期する管理変更。製品runtime・既存Case・CLI原型は変更しない。全122 Caseと改訂9 Case/15出典を保持し、新候補の実ロードと製品GUI受入はQA #27で別途実施する。",
+  "cli_checks": [
+    "python3 scripts/check.py: developの既存管理検査とGOP改訂の回帰試験",
+    "python3 scripts/workflow/product_check.py: CLI原型21ファイルの保全と既存試験",
+    "python3 scripts/workflow/change_impact.py --base origin/develop --run-tests: clean committed HEADで実行",
+    "main 1c38e84d33f3c084d612da15f091ef96981b9104の改訂data/判定/履歴一覧/観察証拠表示/回帰と一致し、develop固有のZIP手順を保持"
+  ],
+  "cases": []
+}

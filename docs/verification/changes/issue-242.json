@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "issue": 242,
+  "gui_required": false,
+  "reason": "採用済みmain d7d6559（PR239/241）の管理変更をdevelop bcec32cへ通常mergeする同期。製品code/build/設定/fixture・CLI原型・既存Case/正式plan/責任契約・原失敗/実行証拠/合否を不変に保持する。139 Case/208出典・Agent105/REAL34を保持し、6f81/ZIP4b7eの限定修復承認を全QAや新候補のPASSへ変更しない。新Caseなし。製品build/導入/native/GUI/IDE/ADB受入は本同期の検査ではなく、未知/変更条件の同等性確認・影響再試験と残QA/REALは既存QA27/release10へ保持する。",
+  "cli_checks": [
+    "python3 scripts/check.py",
+    "python3 scripts/workflow/product_check.py",
+    "python3 scripts/workflow/change_impact.py --base origin/develop --run-tests"
+  ],
+  "cases": []
+}

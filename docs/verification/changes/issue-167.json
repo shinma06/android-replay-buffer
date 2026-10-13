@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "issue": 167,
+  "gui_required": false,
+  "reason": "main PR166のブランチ整理・任意Android CLI支援の運用文書を同内容でdevelopへ同期。製品コード・Case・端末/IDE状態を変更しない。",
+  "cli_checks": [
+    "python3 scripts/check.py",
+    "python3 scripts/workflow/product_check.py",
+    "python3 scripts/workflow/change_impact.py --base origin/develop --run-tests"
+  ],
+  "cases": []
+}

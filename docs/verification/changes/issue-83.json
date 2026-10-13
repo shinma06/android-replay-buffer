@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "issue": 83,
+  "gui_required": false,
+  "reason": "レビュー済みmainの時計応答遅延修正受入計画をdevelopへ同期する。競合した計画は実main版を採用し、READMEは既存develop説明へレビュー済み件数・Case説明だけを適用する。製品source/build・全原Caseを変更せず、GUI実観察は新固定候補でQA27/81が別途行う。",
+  "cli_checks": [
+    "python3 scripts/check.py: 同期固定HEADで管理回帰と構造検査を実行",
+    "python3 scripts/workflow/product_check.py: 原型CLI保全を検証",
+    "python3 scripts/workflow/change_impact.py --base origin/develop --run-tests: clean committed HEADで実行"
+  ],
+  "cases": []
+}

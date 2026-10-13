@@ -1,0 +1,73 @@
+{
+  "schema": 1,
+  "issue": 49,
+  "gui_required": true,
+  "reason": "末尾の不足判定と初回映像取得の復旧条件を変更する。同じUI統合ZIPのIDE/端末/playerで再受入が必要。既存Case/fail/REAL holdを保持。",
+  "cli_checks": [
+    "新回帰2件が修正前に失敗し、公開2指摘の隔離経路を確認。GUI観察ではない。",
+    "plugin純粋回帰/check/buildPlugin/verifyPluginStructure、管理回帰、CLI既存21 files/2 tests保全とclean committed change_impactを実行し、最終固定HEADの結果/ZIP hashは私有停止packetで記録する。",
+    "独立固定HEAD/baseレビュー・公開CI・統合ZIPの実受入は別条件。既存passを新sourceへ転用しない。"
+  ],
+  "cases": [
+    {
+      "id": "BOUNDARY-TAIL",
+      "artifact": "plugin",
+      "change": "epoch後の表示できない末尾を不足として保全",
+      "preconditions": "固定UI統合ZIPとQA所有のclock変更fixture。先行MP4が窓内にあり、最後のframe後にepochを変更する。",
+      "steps": [
+        "正常な同epoch静止で保存する。",
+        "実clock変更後、新frameなし・先行MP4ありで保存し、session/MP4表示終端/未確認末尾/不足表示を照合する。",
+        "保存失敗後に時計・取得を進め、同じ固定対象をretryする。",
+        "IDR喪失・既知gap・時計不明も隔離回帰と既存QA Caseで照合する。"
+      ],
+      "expected": "正常display_held=trueの静止はCOMPLETED・次保存可・不足なしを保持。display_held=falseの未表示末尾は先行partがあってもvideo_missing_rangesとvideo不足が残る。保存公開成功と不足を区別し、retryの対象・判断は不変。",
+      "provenance": [
+        "Issue49: PR46固定HEAD93bc236/develop90af586への公開2指摘。独立隔離probeで成立確認。実機/IDE観察の成功とは区別。",
+        "docs/design/timeline.md: 固定窓・epoch・復号可能GOP・未確認末尾・有界監視の契約",
+        "既存Issue13/31/41/45とQA27/44/47のCase/pending/fail/REAL holdを保全。"
+      ],
+      "gpt": {
+        "status": "pending",
+        "reason": "同じUI統合候補ZIPのIDE/端末/player観察は未実施。隔離回帰を転用しない。"
+      },
+      "human": {
+        "status": "pending",
+        "reason": "同じ候補ZIPの人間観察は未実施。REAL holdを維持。"
+      },
+      "fix_issue": null,
+      "fix_pr": null,
+      "recheck": "末尾/clock/store/監視/依存の変更後、固定source/ZIPで再実施。",
+      "next_action": "固定HEAD/baseの独立レビュー後、PMがUI42と単一候補ZIPを識別しQA子Issueへ双方向移管する。"
+    },
+    {
+      "id": "BOUNDARY-ACQUIRE",
+      "artifact": "plugin",
+      "change": "実際に復号可能な初回保持後だけ正常idleへ移る",
+      "preconditions": "隔離fake SDK/loopbackで実NAL1 P-frameとIDRを使用。実IDE/端末は別途QA所有fixtureと固定候補ZIP。",
+      "steps": [
+        "session/config後にnon-IDRだけを送信して静止する。",
+        "期限内IDR保持後に11秒以上静止し、接続の継続を確認する。",
+        "config変更後に同じconfig/破棄P-frameを反復し、復号待ちの全体期限を確認する。",
+        "partial header/body trickle・EOF/process exit・取消し/旧socket・上限/pin保全を既存回帰で照合する。"
+      ],
+      "expected": "破棄P-frameやmetadataでは初回取得が成立せず、初回全体10秒期限でowned接続を復旧する。復号可能frame保持後のpacket間idleには期限を追加しない。session/configで復号待ちへ戻ると期限が有効になり、反復/trickleで延長しない。",
+      "provenance": [
+        "Issue49: PR46固定HEAD93bc236/develop90af586への公開2指摘。独立隔離probeで成立確認。実機/IDE観察の成功とは区別。",
+        "docs/design/timeline.md: 固定窓・epoch・復号可能GOP・未確認末尾・有界監視の契約",
+        "既存Issue13/31/41/45とQA27/44/47のCase/pending/fail/REAL holdを保全。"
+      ],
+      "gpt": {
+        "status": "pending",
+        "reason": "同じUI統合候補ZIPのIDE/端末/player観察は未実施。隔離回帰を転用しない。"
+      },
+      "human": {
+        "status": "pending",
+        "reason": "同じ候補ZIPの人間観察は未実施。REAL holdを維持。"
+      },
+      "fix_issue": null,
+      "fix_pr": null,
+      "recheck": "末尾/clock/store/監視/依存の変更後、固定source/ZIPで再実施。",
+      "next_action": "固定HEAD/baseの独立レビュー後、PMがUI42と単一候補ZIPを識別しQA子Issueへ双方向移管する。"
+    }
+  ]
+}

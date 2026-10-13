@@ -1,0 +1,46 @@
+{
+  "schema": 1,
+  "issue": 135,
+  "gui_required": true,
+  "reason": "生成READMEのlog-only説明の訂正。動画あり/なしの実件数と取得状態・理由の参照を、新固定buildの出力を標準テキストeditorで辿って限定確認する。動画・ログ・clock・保存形式・hash計算は変更しない。JVM生成assertをGUI passにしない。",
+  "cli_checks": [
+    "python3 scripts/check.py",
+    "python3 scripts/workflow/product_check.py",
+    "python3 scripts/workflow/plugin_check.py",
+    "python3 scripts/workflow/change_impact.py --base origin/develop --run-tests"
+  ],
+  "cases": [
+    {
+      "id": "LOG-ONLY-README",
+      "artifact": "plugin",
+      "change": "READMEのMP41本説明を動画ありの場合へ限定し、動画なしはMP4なしと取得状態・理由の参照を示す",
+      "preconditions": "PMが割り当てた標準テキストeditorのGUI確認と共有lease。新clean candidate/source SHA・標準ZIP/JAR hashと実production Writerの生成bindingを記録した、動画あり/log-only各1の新所有出力。log-onlyは同production Writerの合成生成でも可とし実IDE/device Saveと区別する。既存1fb原保存物を変更・再生成せずその候補の証拠として保全。",
+      "steps": [
+        "新固定production Writerの動画あり出力を標準editorでREADMEから辿り、実MP4ちょうど1件と動画ありの場合の説明、従来のframes/sessionによる照合案内を確認する。",
+        "同buildのlog-only出力を標準editorでREADMEから辿り、実MP4=0と動画0本表示、動画なしにはMP4がない説明を確認する。session.jsonのcoverage.videoを辿ってstate/availableSeconds/reasonを読み、説明を無条件の動画ありと誤認しないことを観察する。README実hashとsession.files_sha256の一致を対応づける。",
+        "文書を編集・保存せず自身が開いたものだけを閉じる。既存動画再生・再録画・新device入力や元Case全体の再実行はこの限定確認へ追加しない。"
+      ],
+      "expected": "実件数と説明が矛盾せず、動画がある場合のMP4・frame照合と動画がない場合のMP4不在を区別できる。取得状態・理由の参照先が存在し辿れる。README hashを含むmanifest整合を保持する。原13/31/41・45・27のCaseと人間/REAL/main未達を短縮・置換しない。",
+      "provenance": [
+        "https://github.com/shinma06/android-replay-buffer/issues/135",
+        "https://github.com/shinma06/android-replay-buffer/issues/87",
+        "docs/verification/changes/issue-13.json: SYNC-RECIPIENT / 動画なし0件と理由",
+        "docs/verification/changes/issue-45.json: VFR-RECIPIENT",
+        "docs/verification/changes/issue-27.json: SAVE-OUTPUT-EMU",
+        "固定1fb SaveWriter.ktの無条件README説明と同production JAR生成log-only出力の不整合"
+      ],
+      "gpt": {
+        "status": "pending",
+        "reason": "writerはGUI操作0。生成unit assert/build成功と標準editorの実観察を分ける。PMが新固定buildの限定確認を割り当てる。"
+      },
+      "human": {
+        "status": "pending",
+        "reason": "未観察。既存Caseの延期・人間/REAL工程を保全し、新しい人間必須条件は追加しない。"
+      },
+      "fix_issue": null,
+      "fix_pr": null,
+      "recheck": "README生成文面/参照先/ZIP変更時は新同一buildの動画あり・log-onlyを限定再確認。動画/ログ/clock変更がなければ原録画・再全Playを自動要求しない。",
+      "next_action": "Coreが固定HEAD/base・テスト・標準build/影響範囲を揃えwriter STOP。PMが別session reviewと既存QAへの新build限定editor受入・同一build/promotion管理を調整する。旧PASSは新候補へ転記しない。"
+    }
+  ]
+}

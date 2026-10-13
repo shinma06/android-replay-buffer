@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "issue": 159,
+  "gui_required": false,
+  "reason": "main PR158のQA管理code/docsをdevelopへ同期。製品source/build/fixture/既存Case/正式計画はbaseと同一、GUI操作なし。",
+  "cli_checks": [
+    "python3 scripts/check.py",
+    "python3 scripts/workflow/product_check.py",
+    "python3 scripts/workflow/change_impact.py --base origin/develop --run-tests",
+    "製品source/build/fixture/既存Case/正式計画のbaseとの差分なしを照合"
+  ],
+  "cases": []
+}

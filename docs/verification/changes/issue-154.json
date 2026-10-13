@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "issue": 154,
+  "gui_required": false,
+  "reason": "mainの人間向け窓口・選択カード・必要時編成の運用をdevelopへ同期。製品・build・fixture・既存Case・正式計画はbaseと同一。新GUI Case0、製品/GUIの停止を維持する。",
+  "cli_checks": [
+    "python3 scripts/check.py",
+    "python3 scripts/workflow/product_check.py",
+    "python3 scripts/workflow/change_impact.py --base origin/develop --run-tests"
+  ],
+  "cases": []
+}

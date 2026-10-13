@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "issue": 67,
+  "gui_required": false,
+  "reason": "レビュー済みmainの初期段階受入管理をdevelopへ同期する。競合元のverification.pyは固定main旧baseとdevelopでbytes一致を確認し、新mainのレビュー済み版を採用する。製品source/buildと旧Caseは変更しない。新候補の製品GUIはQA27、延期部分はQA65が別途確認する。",
+  "cli_checks": [
+    "python3 scripts/check.py: 同期した固定HEADで実行しPRへ結果を記録",
+    "python3 scripts/workflow/product_check.py: 保全CLIの検証を実行しPRへ結果を記録",
+    "python3 scripts/workflow/change_impact.py --base origin/develop --run-tests: clean committed HEADで実行"
+  ],
+  "cases": []
+}

@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "issue": 141,
+  "gui_required": false,
+  "reason": "固定trusted main afb188cを通常mergeし、未同期の管理/正式initial-agent計画8ファイルだけをdevelopへ同期する。製品/元Case/build/fixture/依存/resolver/延期を変更せずGUI観察や成功結果を追加しない。",
+  "cli_checks": [
+    "各first-parent edgeのtooling限定、固定mainの実祖先、許可9ファイル以外の全tracked fileのblob/modeとdevelop固有README説明・元Case/延期の保持を確認する。",
+    "既存initial_stage_plan/historical_initial_sources/bind_initial_sourcesを実commitへ投影なしで適用し、trusted mainとのexact plan、133Case/202source/99Agent/34REALと全出典hash/DAGを照合する。同期source_commitsの既存契約を確認し、未統合PRの最終merge検証はPMへ残す。",
+    "python3 scripts/workflow/change_impact.py --base f5dd726a7282539f26d724f083e6e620b9366c45 --run-tests: clean committed HEADでharness/CLIとunknown/mixedが要求する既存plugin checkを実行する。",
+    "既存pre-commit/pre-pushと必須CIを通す。product_check.pyのCLI原型21ファイル/2試験を確認し、buildをGUI/候補実ロード/promotion成功へ転用しない。"
+  ],
+  "cases": []
+}

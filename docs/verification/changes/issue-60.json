@@ -1,0 +1,70 @@
+{
+  "schema": 1,
+  "issue": 60,
+  "gui_required": true,
+  "reason": "自動未解決理由を表示する設定/ToolWindow/固定保存対象の案内変更。新同一ZIPの実IDE受入が必要で、既存5db失敗とREAL保留を保持する。",
+  "cli_checks": [
+    "python3 scripts/workflow/change_impact.py --base origin/develop --force-full --run-tests: clean固定HEADで管理/CLI保全/plugin全回帰/buildPlugin/verifyPluginStructure、結果はIssue/PRに記録。",
+    "ReplayAndroidEnvironmentTest: 非Android/同期中/同期失敗/ApkProvisionExceptionの理由と手動案内、SDK保全、既存RuntimeException/既定案内、解決済み/手動優先/取消しを確認する。"
+  ],
+  "cases": [
+    {
+      "id": "APP-MANUAL-GUIDANCE-EMU",
+      "artifact": "plugin",
+      "change": "自動アプリ未解決時の理由と手動package指定の案内",
+      "preconditions": "Core58/PR59とIssue60を含む新固定source/ZIP/hash・ロード版を照合。QA27所有のAndroid projectと共有GUI lease。QA所有Emulatorと使い捨てfixture。",
+      "steps": [
+        "自動モードで非Android Run対象へ変更し、未解決理由と設定（Tools → Android Replay Buffer）の手動package指定案内をToolWindowと設定の解決結果で確認する。",
+        "同期中・同期失敗・applicationId取得失敗のQA所有条件で、それぞれの元理由と手動指定案内を確認する。理由を上書きせず、動画・端末ログの継続とアプリ未取得を区別する。",
+        "未解決時の保存を失敗させて固定対象表示にも同じ案内を確認する。手動packageをApply後にRun対象を変更し、手動指定の優先と固定失敗対象の不変を確認する。自動へ戻して解決済みpackageと理由非表示を確認する。"
+      ],
+      "expected": "元の未解決理由と手動指定という次操作が既存表示経路に現れる。正しいSDK/動画/端末ログを未解決だけで失わず、解決済み/手動優先/取消し/設定Applyと固定保存対象を保全する。",
+      "provenance": [
+        "Issue #60: QA5db APP-SELECTION-EMUの案内不足。旧観察の失敗/未完了を保持する。",
+        "docs/design/ide-ui.md: 自動アプリ未解決状態表と設定・対象アプリ規則",
+        "docs/verification/changes/issue-27.json: APP-SELECTION-EMU/REALの既存受入"
+      ],
+      "gpt": {
+        "status": "pending",
+        "reason": "新同一ZIPのIDE/Emulator観察はQA27へ割当予定で未実施。JVM回帰はGUI合格ではない。"
+      },
+      "human": {
+        "status": "pending",
+        "reason": "新同一候補での人間観察は未実施。"
+      },
+      "fix_issue": null,
+      "fix_pr": null,
+      "recheck": "IDE/UI/アプリ解決/集約source/ZIP変更後に固定新候補で再確認する。",
+      "next_action": "独立レビュー・同一ZIP Verifierと公開CI後、PMがQA27へ全文・source/hash・ロード版・未達main条件を双方向移管し、QA担当が環境別に確認する。REALは利用者準備まで保留。"
+    },
+    {
+      "id": "APP-MANUAL-GUIDANCE-REAL",
+      "artifact": "plugin",
+      "change": "自動アプリ未解決時の理由と手動package指定の案内",
+      "preconditions": "Core58/PR59とIssue60を含む新固定source/ZIP/hash・ロード版を照合。QA27所有のAndroid projectと共有GUI lease。実機は利用者準備・保留解除まで操作しない。",
+      "steps": [
+        "自動モードで非Android Run対象へ変更し、未解決理由と設定（Tools → Android Replay Buffer）の手動package指定案内をToolWindowと設定の解決結果で確認する。",
+        "同期中・同期失敗・applicationId取得失敗のQA所有条件で、それぞれの元理由と手動指定案内を確認する。理由を上書きせず、動画・端末ログの継続とアプリ未取得を区別する。",
+        "未解決時の保存を失敗させて固定対象表示にも同じ案内を確認する。手動packageをApply後にRun対象を変更し、手動指定の優先と固定失敗対象の不変を確認する。自動へ戻して解決済みpackageと理由非表示を確認する。"
+      ],
+      "expected": "元の未解決理由と手動指定という次操作が既存表示経路に現れる。正しいSDK/動画/端末ログを未解決だけで失わず、解決済み/手動優先/取消し/設定Applyと固定保存対象を保全する。",
+      "provenance": [
+        "Issue #60: QA5db APP-SELECTION-EMUの案内不足。旧観察の失敗/未完了を保持する。",
+        "docs/design/ide-ui.md: 自動アプリ未解決状態表と設定・対象アプリ規則",
+        "docs/verification/changes/issue-27.json: APP-SELECTION-EMU/REALの既存受入"
+      ],
+      "gpt": {
+        "status": "blocked",
+        "reason": "利用者指定のREAL保留。Emulator/JVM結果を実機へ転用しない。"
+      },
+      "human": {
+        "status": "blocked",
+        "reason": "REAL保留継続。"
+      },
+      "fix_issue": null,
+      "fix_pr": null,
+      "recheck": "IDE/UI/アプリ解決/集約source/ZIP変更後に固定新候補で再確認する。",
+      "next_action": "独立レビュー・同一ZIP Verifierと公開CI後、PMがQA27へ全文・source/hash・ロード版・未達main条件を双方向移管し、QA担当が環境別に確認する。REALは利用者準備まで保留。"
+    }
+  ]
+}

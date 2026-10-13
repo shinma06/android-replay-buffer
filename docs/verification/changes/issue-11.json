@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "issue": 11,
+  "gui_required": false,
+  "reason": "保存失敗UXとデータ寿命の設計文書のみ。製品コード・build・実行経路を変更しない。実装時の実機/IDE受入は設計内のCase案をIssue #14へ接続する。",
+  "cli_checks": [
+    "python3 scripts/check.py: pass (165 tests)",
+    "python3 scripts/workflow/product_check.py: pass (2 tests; CLI origin 21 files unchanged)",
+    "python3 scripts/workflow/change_impact.py --base origin/develop --run-tests: clean committed HEADで実行しIssue/PRに結果を記録"
+  ],
+  "cases": []
+}

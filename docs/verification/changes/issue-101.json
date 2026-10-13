@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "issue": 101,
+  "gui_required": false,
+  "reason": "PR100実main839528882b593456800fdb92edcd457c3386c602の正式初期Agent受入計画とREADMEの対応説明をdevelopへ同期する管理3ファイルだけの変更。計画はmainとbyte完全一致、develop固有の標準ZIP説明を保持する。製品code/build/原Case/gate、履歴/延期/観察結果を変更せず、構造bindingを製品GUIやpromotion全体の成功へ転用しない。",
+  "cli_checks": [
+    "python3 scripts/check.py: 管理構造・回帰検査",
+    "python3 scripts/workflow/product_check.py: 原型CLI 21ファイル保全と既存2ケース",
+    "python3 scripts/workflow/change_impact.py --base origin/develop --run-tests: clean committed HEADの影響判定と必要検査"
+  ],
+  "cases": []
+}
