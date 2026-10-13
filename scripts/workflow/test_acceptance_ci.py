@@ -157,7 +157,7 @@ class DelayedAcceptanceTests(unittest.TestCase):
     def test_open_empty_tooling_diff_remains_invalid_with_real_validator(self):
         data = {'schema': 1, 'issue': 90, 'gui_required': False, 'reason': 'CI only',
                 'cli_checks': ['python3 -m unittest'], 'cases': []}
-        git = Mock(side_effect=[f'100644 blob {HEAD}\tdocs/verification/changes/issue-90.json', json.dumps(data), ''])
+        git = Mock(side_effect=[f'100644 blob {HEAD}\tdocs/verification/changes/issue-90.json', json.dumps(data), '', ''])
         self.verify.side_effect = lambda pr, api: verify_pr(pr, api, git)
         api = Mock(side_effect=[pr_data(), {'object': {'sha': BASE}}, pr_data()])
         with self.assertRaisesRegex(ValueError, 'Direct main tooling route'):
