@@ -114,6 +114,7 @@ internal class DeviceCapture(
         // Keep the endpoint even when allocation succeeds remotely but its response is lost.
         val endpoint = "localabstract:scrcpy_$scid"
         val port = synchronized(ports) {
+            check(ports.size + pendingEndpoints.size < 64) { "未回収forwardが上限に達しました。停止してcleanupを確認してください" }
             check(listForwards(adb).none { it[0] == serial && it[2] == endpoint }) { "forwardのendpointは使用中です" }
             check(!stopping.get())
             pendingEndpoints.add(endpoint)

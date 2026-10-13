@@ -104,6 +104,23 @@ class JournalLifetimeTest {
     }
 
     @Test
+    fun coreCanRetryDisableAfterDescriptorDeletionAndLockReleaseFailure() {
+        Fixture().use { f ->
+            f.failStop()
+            f.releaseReader()
+            val journal = get(f.core, "cleanup") as RemoteCleanupJournal
+            val entry = (get(journal, "owned") as Map<*, *>).values.single()!!
+            set(entry, "lock", JournalTransitionTest.ReleaseFailure(get(entry, "lock") as java.nio.channels.FileLock))
+            assertFalse(f.core.setEnabled(false).get(10, TimeUnit.SECONDS).accepted)
+            assertFalse(Files.exists(f.descriptor))
+            assertEquals(0, f.core.snapshot().cleanupPendingCount)
+            assertSame(f.capture, get(f.core, "backend"))
+            assertTrue(f.core.setEnabled(false).get(10, TimeUnit.SECONDS).accepted)
+            assertEquals(null, get(f.core, "backend"))
+        }
+    }
+
+    @Test
     fun successfulCleanupCannotRetireReplacedInodeOrInvalidLock() {
         Fixture().use { f ->
             f.failStop()

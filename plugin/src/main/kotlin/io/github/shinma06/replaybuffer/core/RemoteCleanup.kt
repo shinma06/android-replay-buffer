@@ -8,6 +8,8 @@ import java.nio.channels.FileLock
 import java.nio.file.Files
 import java.nio.file.LinkOption.NOFOLLOW_LINKS
 import java.nio.file.Path
+import java.nio.file.StandardCopyOption.ATOMIC_MOVE
+import java.nio.file.StandardCopyOption.REPLACE_EXISTING
 import java.nio.file.StandardOpenOption.CREATE_NEW
 import java.nio.file.StandardOpenOption.READ
 import java.nio.file.StandardOpenOption.WRITE
@@ -89,7 +91,14 @@ internal fun removeOwnedForwards(
 }
 
 /** Only this caller-supplied private directory is inspected; no workspace/host-wide search or sweep. */
-internal class RemoteCleanupJournal(private var directory: Path) : AutoCloseable {
+internal class RemoteCleanupJournal(
+    private var directory: Path,
+    private val createChannel: (Path) -> FileChannel,
+) : AutoCloseable {
+    constructor(directory: Path) : this(directory, { path ->
+        FileChannel.open(path, setOf<java.nio.file.OpenOption>(CREATE_NEW, READ, WRITE, NOFOLLOW_LINKS),
+            PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rw-------")))
+    })
     private data class Entry(val record: RemoteCleanup, val channel: FileChannel, val lock: FileLock, val fileKey: Any, val hostPending: Boolean = false)
     private val owned = linkedMapOf<Path, Entry>()
     private var other = 0
@@ -113,31 +122,39 @@ internal class RemoteCleanupJournal(private var directory: Path) : AutoCloseable
             fields["host_pending"] = true
         }
         val bytes = Gson().toJson(fields).toByteArray(Charsets.UTF_8)
-        owned[path]?.let { entry ->
-            check(entry.record.token == record.token && entry.record.serial == record.serial && entry.lock.isValid && key(path) == entry.fileKey) {
-                "終了情報の所有を確認できません"
-            }
-            entry.channel.position(0)
-            val buffer = ByteBuffer.wrap(bytes)
-            while (buffer.hasRemaining()) entry.channel.write(buffer)
-            entry.channel.truncate(bytes.size.toLong())
-            entry.channel.force(true)
-            owned[path] = entry.copy(record = record, hostPending = hostPending)
-            return
-        }
-        val channel = FileChannel.open(path, setOf<java.nio.file.OpenOption>(CREATE_NEW, READ, WRITE, NOFOLLOW_LINKS),
-            PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rw-------")))
+        val previous = owned[path]
+        if (previous != null) check(previous.record.token == record.token && previous.record.serial == record.serial &&
+            previous.lock.isValid && key(path) == previous.fileKey) { "終了情報の所有を確認できません" }
+        val staged = directory.resolve(".remote-cleanup-${record.token}-${java.util.UUID.randomUUID()}.tmp")
+        val channel = createChannel(staged)
+        var candidate: Entry? = null
+        var published = false
         try {
-            val key = key(path)
+            val stagedKey = key(staged)
             val lock = channel.tryLock() ?: error("終了情報の所有を確認できません")
+            candidate = Entry(record, channel, lock, stagedKey, hostPending)
             val buffer = ByteBuffer.wrap(bytes)
             while (buffer.hasRemaining()) channel.write(buffer)
             channel.force(true)
-            owned[path] = Entry(record, channel, lock, key, hostPending)
-        } catch (e: Exception) {
-            channel.close()
-            // An incomplete new record is preserved for diagnosis, never treated as safe remote ownership.
-            throw e
+            check(lock.isValid && key(staged) == stagedKey) { "終了情報の所有が変更されています" }
+            if (previous != null) {
+                check(previous.lock.isValid && key(path) == previous.fileKey) { "終了情報の所有が変更されています" }
+                // Both old and replacement inodes remain locked across atomic publication.
+                Files.move(staged, path, ATOMIC_MOVE, REPLACE_EXISTING)
+            } else {
+                // Hard-link publication is exclusive: never replace a foreign same-token descriptor.
+                Files.createLink(path, staged)
+            }
+            owned[path] = candidate
+            published = true
+            if (previous == null) Files.delete(staged)
+            previous?.let(::release)
+        } catch (failure: Throwable) {
+            if (!published) {
+                runCatching { candidate?.let(::release) ?: channel.close() }.exceptionOrNull()?.let(failure::addSuppressed)
+                runCatching { Files.deleteIfExists(staged) }.exceptionOrNull()?.let(failure::addSuppressed)
+            }
+            throw failure
         }
     }
 
@@ -203,9 +220,18 @@ internal class RemoteCleanupJournal(private var directory: Path) : AutoCloseable
             "終了情報の所有が変更されています"
         }
         Files.delete(path)
-        entry.lock.release()
-        entry.channel.close()
-        owned.remove(path)
+        owned.remove(path) // Descriptor deletion commits retirement, even if handle cleanup fails.
+        release(entry)
+    }
+
+    private fun release(entry: Entry) {
+        val lockFailure = runCatching { entry.lock.release() }.exceptionOrNull()
+        val channelFailure = runCatching { entry.channel.close() }.exceptionOrNull()
+        if (lockFailure != null) {
+            channelFailure?.let(lockFailure::addSuppressed)
+            throw lockFailure
+        }
+        channelFailure?.let { throw it }
     }
 
     private fun prepare() {
@@ -219,8 +245,15 @@ internal class RemoteCleanupJournal(private var directory: Path) : AutoCloseable
         ?: error("終了情報のfile identityを確認できません")
 
     override fun close() {
-        owned.values.forEach { it.lock.release(); it.channel.close() }
+        val entries = owned.values.toList()
         other += owned.size
         owned.clear()
+        var failure: Throwable? = null
+        entries.forEach { entry ->
+            runCatching { release(entry) }.exceptionOrNull()?.let { error ->
+                if (failure == null) failure = error else failure.addSuppressed(error)
+            }
+        }
+        failure?.let { throw it }
     }
 }
