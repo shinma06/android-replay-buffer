@@ -30,4 +30,6 @@ symlinkを使えない環境ではCLAUDE.mdを `@AGENTS.md` の参照入口に�
 
 ## 共通smoke test
 
+新しいclientで割当・独立評価・受領・終了までの運用を試す場合は、[運用実証の入口](../omil-validation.md)を使います。人工fixtureと実案件の証明範囲を分け、接続だけで運用再現済みとしません。
+
 編集前に統合先・検証コマンド・一人writer・別session review・GUI要否を説明できるか確認し、小さな使い捨てIssueでbranch→変更→チェック→PRを1回通します。ファイルの構文検査と、実際のmodelが手順を守ることは別です。

@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "issue": 266,
+  "gui_required": false,
+  "reason": "運用のportable brief、既存consumerへの条件付き入口、人工fixture生成とその回帰検査。製品、Case契約、ZIP、IDE/deviceを変更しない。実セッション生成・受領・停止・後参照は別の運用実証として記録し、人工試験やCLI検査を製品/GUI受入へ換算しない。",
+  "cli_checks": [
+    "python3 scripts/check.py",
+    "python3 scripts/workflow/product_check.py",
+    "python3 scripts/workflow/change_impact.py --base origin/main --run-tests"
+  ],
+  "cases": []
+}
