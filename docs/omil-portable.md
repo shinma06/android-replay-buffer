@@ -2,6 +2,8 @@
 
 Use this brief when starting an authorized independent session in a new client. It carries operational judgment, not access rights, project acceptance, or a prescribed sequence of tools. Read the actual assignment, authority, project facts, and capability map with it. The repository's [worker request](team-worker-prompt.md), [workflow](workflow.md), and [ownership rules](work-management.md) remain canonical for work in this repository.
 
+Treat client-provided instructions and required general skills as runtime context. Record permitted sources, identities and actual reads before claiming input-only reproduction; a task packet cannot override higher-priority instructions. Assess unexpected context and limit the resulting claim instead of silently treating the run as isolated.
+
 ## Decide from the required result
 
 For each material obligation, connect the owned guarantee and observable defect to fixed existing evidence, the fact still missing, and the least costly sufficient method. Inspect the evidence before selecting an operator or copying an old procedure. Keep a working method when it is sufficient. No missing fact means no new execution for that obligation.
