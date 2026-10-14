@@ -4,7 +4,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from omil_fixture import fixture_files, prepare
+from omil_fixture import GROUP_NAMES, fixture_files, prepare
 
 
 class OmilFixtureTest(unittest.TestCase):
@@ -12,10 +12,15 @@ class OmilFixtureTest(unittest.TestCase):
         for variant in ('a', 'b'):
             with self.subTest(variant=variant):
                 files = fixture_files(variant)
-                normal = json.loads(files['normal/capture.json'])
-                positive = json.loads(files['positive/capture.json'])
-                changed = json.loads(files['changed/capture.json'])
-                first = json.loads(files['recovery/first.json'])
+                groups = GROUP_NAMES[variant]
+
+                def data(group, name):
+                    return json.loads(files[groups[group] + '/' + name])
+
+                normal = data('normal', 'capture.json')
+                positive = data('positive', 'capture.json')
+                changed = data('changed', 'capture.json')
+                first = data('recovery', 'first.json')
                 self.assertEqual([], normal['app'])
                 self.assertEqual(1, len(positive['app']))
                 self.assertEqual([r for r in positive['device']
@@ -24,17 +29,21 @@ class OmilFixtureTest(unittest.TestCase):
                 self.assertEqual([], changed['app'])
                 self.assertEqual('unknown', first['state']['clock'])
                 self.assertTrue(any(r['clock'] == 'unknown' for r in first['device']))
-                accepted = json.loads(files['reuse/accepted.json'])
-                self.assertEqual(hashlib.sha256(files['reuse/capture.json']).hexdigest(),
+                accepted = data('reuse', 'accepted.json')
+                self.assertEqual(hashlib.sha256(files[groups['reuse'] + '/capture.json']).hexdigest(),
                                  accepted['artifact_sha256'])
-                incoming = json.loads(files['receipt/valid-duplicate.json'])
+                incoming = data('receipt', 'delivery-1.json')
                 self.assertEqual(incoming[0], incoming[1])
-                self.assertEqual(hashlib.sha256(files['receipt/capture.json']).hexdigest(),
-                                 incoming[0]['artifact_sha256'])
-                self.assertNotEqual(hashlib.sha256(files['receipt/capture.json']).hexdigest(),
-                                    json.loads(files['receipt/mismatch.json'])['artifact_sha256'])
+                current = hashlib.sha256(files[groups['receipt'] + '/capture.json']).hexdigest()
+                self.assertEqual(variant == 'a', current == incoming[0]['artifact_sha256'])
+                self.assertEqual(variant == 'b', current == data('receipt', 'delivery-2.json')['artifact_sha256'])
                 self.assertEqual('current trial scope',
-                                 json.loads(files['boundary/allowed.json'])['permission'])
+                                 data('boundary', 'request-1.json')['permission'])
+                forbidden = ('normal', 'positive', 'changed', 'reuse', 'recovery',
+                             'receipt', 'boundary', 'valid', 'mismatch', 'allowed', 'expired', 'denied')
+                self.assertFalse(any(word in name for name in files for word in forbidden))
+                target = data('boundary', 'request-1.json')['input']
+                self.assertIn(target.removeprefix('../'), files)
 
     def test_manifest_binds_bytes_and_existing_evidence_is_never_overwritten(self):
         with tempfile.TemporaryDirectory() as directory:
