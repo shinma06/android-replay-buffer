@@ -440,19 +440,109 @@ class PrivacyTests(unittest.TestCase):
                 restored = self.loop.load(36)[1]; self.assertEqual(restored['review'], issued)
                 self.loop.save(self.gh.pull, restored, sid); self.assertEqual(record.read_bytes(), original)
 
+    def test_complete_encoded_uri_operations_match_before_lexical_classification(self):
+        from urllib.parse import quote, unquote
+        cases = ('native://operation/1?', 'native://operation/%31?', 'native://operation/%2531?',
+                 'native://operation/%FF?', 'native://operation/é', 'native://operation/end)', 'urn:operation:%31?')
+        literal = 'operation%31'
+        self.assertEqual(self.loop.public_state([literal, 'operation1', 'operation%2531'], private_identifiers=[literal]),
+                         ['[private origin]', 'operation1', 'operation%2531'])
+        forms = ('{}', 'Operation {} next', 'Operation ({})?', 'target={}', '[record]({})', '[record](<{}>)')
+        for operation in cases:
+            with self.subTest(operation=operation):
+                alias = unquote(operation, errors='surrogateescape')
+                encoded = quote(operation, safe='')
+                ordinary = [quote(operation + '/child', safe=''), quote(operation + '＿suffix', safe=''),
+                            quote(operation.swapcase(), safe=''), quote(quote(operation, safe=''), safe=''),
+                            encoded + ')?', '[' + encoded + ')?', '%28' + encoded + ')?', encoded + '?public']
+                if '%2531' in operation:
+                    ordinary.append(quote('native://operation/1?', safe=''))
+                evidence = {'private': [form.format(encoded) for form in forms], 'ordinary': ordinary,
+                            'all-bytes': ''.join(f'%{byte:02X}' for byte in operation.encode()),
+                            'all-bytes-assignment': 'target=' + ''.join(f'%{byte:02X}' for byte in operation.encode()),
+                            'keys': {'Operation (' + encoded + ')?': 'checked'}}
+                if not any(0xD800 <= ord(char) <= 0xDFFF for char in alias):
+                    evidence['alias'] = quote(alias, safe='')
+                bound = self.loop.bound(self.gh.pull, self.gh.issues[35], self.gh.comments(36))[0]
+                raw = dict(tal.report(), evidence=evidence); raw.pop('session')
+                observed = {'session_id': 'Actual-Reviewer', 'source': 'native://host/private-record',
+                            'operation_id': operation, 'report_sha256': digest(raw), 'binding_sha256': digest(bound)}
+                issued = bind_native_review(raw, bound, self.loop.storage, issuer='example.invalid', observe_origin=Mock(return_value=observed))
+                record = self.loop.storage / 'registry' / (issued['origin_receipt'] + '.json'); original = record.read_bytes()
+                sid = self.loop.save(self.gh.pull, {'binding': bound, 'review': issued, 'phase': 'reviewed'}, None)
+                public = tal.al.unpack(self.gh.comments(36), tal.al.STATE)[0]['review']['evidence']
+                self.assertEqual(public['ordinary'], ordinary)
+                marker = '[private origin]' if operation.startswith('urn:') else '[private URI]'
+                for form, result in zip(forms, public['private']):
+                    with self.subTest(form=form): self.assertEqual(result, form.format(marker))
+                self.assertEqual(public['all-bytes'], marker)
+                self.assertEqual(public['all-bytes-assignment'], 'target=' + marker)
+                if 'alias' in evidence: self.assertEqual(public['alias'], marker)
+                self.assertEqual(public['keys'], {'Operation (' + marker + ')?': 'checked'})
+                restored = self.loop.load(36)[1]; self.assertEqual(restored['review'], issued)
+                self.loop.save(self.gh.pull, restored, sid); self.assertEqual(record.read_bytes(), original)
+
+    def test_scoped_source_children_use_actual_path_separators(self):
+        from urllib.parse import quote
+        cases = (
+            ('https://host.invalid/private/', 'https://host.invalid/private/receipt',
+             ('https://host.invalid/private%2Freceipt', 'https://host.invalid/private%2F/receipt', 'https://host.invalid/private-other/receipt',
+              'https://host.invalid/Private/receipt', 'https://host.invalid.evil/private/receipt',
+              'https:/host.invalid/private/receipt', 'https://host.invalid/private')),
+            ('file:///', 'file:///receipt', ('file:/receipt', 'file://public.invalid/receipt', 'file:%2F%2F%2Freceipt')),
+            ('native://host/', 'native://host/receipt', ('native:host/receipt', 'native://host.evil/receipt', 'native://host%2Freceipt')),
+            ('https://host.invalid/pr%69vate/', 'https://host.invalid/private/receipt',
+             ('https://host.invalid/pr%252569vate/receipt', 'https://host.invalid/private%2Freceipt')),
+            ('https://host.invalid/private%2F', 'https://host.invalid/private%2F/receipt',
+             ('https://host.invalid/private/receipt', 'https://host.invalid/private%2Freceipt')),
+            ('https://host.invalid/private', 'https://host.invalid/private/receipt',
+             ('https://host.invalid/private%2Freceipt', 'https://host.invalid/private-other/receipt')),
+            ('https://host.invalid/private/?key=scope/', 'https://host.invalid/private/?key=scope//receipt',
+             ('https://host.invalid/private/?key=scope/receipt', 'https://host.invalid/private/receipt?key=scope/',
+              'https://host.invalid/private/?key=scope%2Freceipt', 'https://host.invalid/private/#key=scope/')),
+            ('https://host.invalid/private/#scope/', 'https://host.invalid/private/#scope//receipt',
+             ('https://host.invalid/private/#scope/receipt', 'https://host.invalid/private/receipt#scope/',
+              'https://host.invalid/private/?scope/', 'https://host.invalid/private/#scope%2Freceipt')),
+        )
+        forms = ('{}', 'Before ({}) after', 'target={}', '[record]({})', '[record](<{}>)')
+        for source, child, ordinary in cases:
+            with self.subTest(source=source):
+                evidence = {'private': [form.format(child) for form in forms], 'ordinary': list(ordinary),
+                            'nested': 'https://ref.invalid/?source=' + quote(child, safe=''),
+                            'keys': {'Child ' + child: 'checked'}}
+                bound = self.loop.bound(self.gh.pull, self.gh.issues[35], self.gh.comments(36))[0]
+                raw = dict(tal.report(), evidence=evidence); raw.pop('session')
+                observed = {'session_id': 'Actual-Reviewer', 'source': source, 'operation_id': 'native://operation/private/',
+                            'report_sha256': digest(raw), 'binding_sha256': digest(bound)}
+                issued = bind_native_review(raw, bound, self.loop.storage, issuer='example.invalid', observe_origin=Mock(return_value=observed))
+                record = self.loop.storage / 'registry' / (issued['origin_receipt'] + '.json'); original = record.read_bytes()
+                self.assertEqual(json.loads(original)['private_paths'], [])
+                sid = self.loop.save(self.gh.pull, {'binding': bound, 'review': issued, 'phase': 'reviewed'}, None)
+                public = tal.al.unpack(self.gh.comments(36), tal.al.STATE)[0]['review']['evidence']
+                self.assertEqual(public['ordinary'], list(ordinary))
+                for form, result in zip(forms, public['private']):
+                    with self.subTest(form=form): self.assertEqual(result, form.format('[private URI]'))
+                self.assertEqual(public['nested'], '[private URI]')
+                self.assertEqual(public['keys'], {'Child [private URI]': 'checked'})
+                restored = self.loop.load(36)[1]; self.assertEqual(restored['review'], issued)
+                self.loop.save(self.gh.pull, restored, sid); self.assertEqual(record.read_bytes(), original)
+
     def test_equivalent_uri_operation_keys_still_fail_real_collision_before_public_write(self):
-        operation, alias = 'native://operation/%31?', 'native://operation/1?'
-        bound = self.loop.bound(self.gh.pull, self.gh.issues[35], self.gh.comments(36))[0]
-        raw = dict(tal.report(), evidence={'keys': {operation: 'raw', alias: 'alias'}}); raw.pop('session')
-        observed = {'session_id': 'Actual-Reviewer', 'source': 'native://host/private-record', 'operation_id': operation,
-                    'report_sha256': digest(raw), 'binding_sha256': digest(bound)}
-        issued = bind_native_review(raw, bound, self.loop.storage, issuer='example.invalid', observe_origin=Mock(return_value=observed))
-        record = self.loop.storage / 'registry' / (issued['origin_receipt'] + '.json'); original = record.read_bytes()
-        comments = copy.deepcopy(self.gh.messages)
-        with self.assertRaisesRegex(ValueError, 'diagnostic key collision'):
-            self.loop.save(self.gh.pull, {'binding': bound, 'review': issued, 'phase': 'reviewed'}, None)
-        self.assertEqual(self.gh.messages, comments)
-        self.assertEqual(record.read_bytes(), original)
+        from urllib.parse import quote
+        operation = 'native://operation/%31?'
+        for alias in ('native://operation/1?', quote(operation, safe='')):
+            with self.subTest(alias=alias):
+                bound = self.loop.bound(self.gh.pull, self.gh.issues[35], self.gh.comments(36))[0]
+                raw = dict(tal.report(), evidence={'keys': {operation: 'raw', alias: 'alias'}}); raw.pop('session')
+                observed = {'session_id': 'Actual-Reviewer', 'source': 'native://host/private-record', 'operation_id': operation,
+                            'report_sha256': digest(raw), 'binding_sha256': digest(bound)}
+                issued = bind_native_review(raw, bound, self.loop.storage, issuer='example.invalid', observe_origin=Mock(return_value=observed))
+                record = self.loop.storage / 'registry' / (issued['origin_receipt'] + '.json'); original = record.read_bytes()
+                comments = copy.deepcopy(self.gh.messages)
+                with self.assertRaisesRegex(ValueError, 'diagnostic key collision'):
+                    self.loop.save(self.gh.pull, {'binding': bound, 'review': issued, 'phase': 'reviewed'}, None)
+                self.assertEqual(self.gh.messages, comments)
+                self.assertEqual(record.read_bytes(), original)
 
     def test_short_native_ids_preserve_binding_and_machine_metadata_through_save_load(self):
         self.gh.pull['head']['sha'] = '19' * 20

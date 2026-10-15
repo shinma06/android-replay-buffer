@@ -441,6 +441,7 @@ class Loop:
                 patterns.append(pattern)
             identity_pattern = '|'.join([*patterns, NATIVE_SESSION.pattern,
                                         r'(?i:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12})'])
+            uri_opaque_ids = {identity for identity in opaque_ids if not structural and re.match(r'(?i)[a-z][a-z0-9+.-]*:', identity)}
             def continuation(char):
                 return char and (re.match(r'\w', char) or ('a' + char).isidentifier() or
                                  unicodedata.category(char).startswith('M') or char in '\u200c\u200d')
@@ -464,12 +465,18 @@ class Loop:
                     return (value, decode_uri(value)) if decode and isinstance(value, str) else (value,)
                 def equal(source, target):
                     return any(left == right for left in values(source) for right in values(target, decode))
-                def prefix(source, target, embedded):
+                def prefix(source, target, embedded, path=False):
+                    # A child boundary must exist in the original path, not appear through percent decoding.
+                    if path and any(equal(source, target[:slash.end() if source.endswith('/') else slash.start()])
+                                    for slash in re.finditer('/', target)):
+                        return True
                     for left in values(source):
                         for right in values(target, decode):
                             if not right.startswith(left):
                                 continue
                             rest = right[len(left):]
+                            if path and rest.startswith(('/', '%')):
+                                continue
                             if not embedded and rest and (continuation(rest[0]) or rest[0] == '-' or
                                     rest[0] == '.' and continuation(rest[1:2])):
                                 continue
@@ -510,7 +517,7 @@ class Loop:
                             if ('?' in target_tail.partition('#')[0] and equal(source.path, uri.path) and
                                     prefix(source.query, uri.query, match.start() > 0)):
                                 return True
-                        elif prefix(source.path, uri.path, match.start() > 0):
+                        elif prefix(source.path, uri.path, match.start() > 0, path=True):
                             return True
                 return False
             def locator_payload(uri, before_boundary=False, source_locator=None):
@@ -569,11 +576,8 @@ class Loop:
                         cursor = end
                     return ''.join(redacted) + token[cursor:], False
                 known_reference = locator_reference(destination)
-                if (not re.match(r'(?i)(?:[a-z][a-z0-9+.-]*://|/)', destination) and not source_uri_syntax(destination) and
-                        not (known_reference and re.match(r'(?i)[a-z][a-z0-9+.-]*:', destination))):
-                    if destination == token and (re.search(r'(?i)[a-z][a-z0-9+.-]*://', token) or known_reference):
-                        return token, False
-                    return private_prose()
+                uri_syntax = bool(re.match(r'(?i)(?:[a-z][a-z0-9+.-]*://|/)', destination) or source_uri_syntax(destination) or
+                                  known_reference and re.match(r'(?i)[a-z][a-z0-9+.-]*:', destination))
                 decoded = decode_uri(destination)
                 try:
                     uri = split_locator(destination)
@@ -593,7 +597,7 @@ class Loop:
                 if decoded in opaque_ids:
                     protected = max(protected, decoded.count(')') - decoded.count('('))
                 suffix = ')' * min(closing, max(0, decoded.count(')') - decoded.count('(') - protected))
-                if (matched and
+                if (uri_syntax and matched and
                         (destination != token or '%' in token or not any(known in token for known in private_paths))):
                     return '[private URI]' + suffix, False
                 def closing_enclosure(char):
@@ -642,19 +646,29 @@ class Loop:
                             return False
                     return True
                 rejected = False
-                if destination in opaque_ids or decoded in opaque_ids:
+                candidate_ids = opaque_ids if uri_syntax else uri_opaque_ids
+                marker = '[private URI]' if uri_syntax or re.match(r'(?i)[a-z][a-z0-9+.-]*://', decoded) else None
+                if destination in candidate_ids or decoded in candidate_ids:
                     if external_suffix(''):
-                        return '[private URI]', False
+                        identity = destination if destination in candidate_ids else decoded
+                        return marker or identities[identity], False
                     rejected = True
                 end = len(destination)
-                while not rejected and uri and uri.scheme and end and punctuation(destination[end - 1]):
+                while not rejected and (uri and uri.scheme or not uri_syntax) and end and punctuation(destination[end - 1]):
                     end -= 1
                     reference = destination[:end]
-                    if reference in opaque_ids or decode_uri(reference) in opaque_ids:
+                    if reference in candidate_ids or decode_uri(reference) in candidate_ids:
                         if not external_suffix(destination[end:]):
                             rejected = True
                             break
-                        return '[private URI]' + token[positions[end][0]:], False
+                        identity = reference if reference in candidate_ids else decode_uri(reference)
+                        return (marker or identities[identity]) + token[positions[end][0]:], False
+                if not uri_syntax:
+                    if rejected:
+                        return token, True
+                    if destination == token and (re.search(r'(?i)[a-z][a-z0-9+.-]*://', token) or known_reference):
+                        return token, False
+                    return private_prose()
                 # Parse structure before one decode; decoded payloads may contain a nested locator, never new outer grammar.
                 if known_reference or locator_payload(uri):
                     return '[private URI]' + suffix, False
@@ -800,6 +814,8 @@ class Loop:
                 def uri_parts(text, before, after):
                     prefixes = ['[a-z][a-z0-9+.-]*://', '/',
                                 *['(?:[a-z][a-z0-9+.-]*)?' + re.escape(uri.scheme) + ':' for uri in uri_locators.values()]]
+                    if uri_opaque_ids:
+                        prefixes.append(r'(?:[a-z0-9+.-]|%[0-9a-f]{2})+%3a')
                     cursor, parts, context = 0, [], before
                     for match in re.finditer(r'(?i)(?:' + '|'.join(prefixes) + ')' + span, text):
                         preceding = text[cursor:match.start()]
