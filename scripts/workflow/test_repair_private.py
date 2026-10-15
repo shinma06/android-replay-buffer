@@ -212,7 +212,8 @@ class PrivacyTests(unittest.TestCase):
         self.gh.pull['head']['sha'] = '19' * 20
         self.loop.github_reviewer = 'reviewer-1'
         for identity, operation in [('Session-9', '19'), ('1', 'operation-1'), ('e', 'e'),
-                                    ('session', 'evidence'), ('review', 'binding'), ('head', 'base')]:
+                                    ('session', 'evidence'), ('review', 'binding'), ('head', 'base'),
+                                    (tal.report()['session'], tal.report()['session'])]:
             with self.subTest(identity=identity, operation=operation):
                 bound = self.loop.bound(self.gh.pull, self.gh.issues[35], self.gh.comments(36))[0]
                 raw = tal.report(head=bound['head']); raw.pop('session')
@@ -407,7 +408,7 @@ class PrivacyTests(unittest.TestCase):
     def test_colliding_private_diagnostic_keys_fail_before_public_write(self):
         identity, source, operation = 'NativeReviewSession', 'native://host/review', 'operation-19'
         session = native_session('example.invalid', identity)
-        for extra in ({'evidence': {operation: 'first', source: 'second'}},
+        for extra in ({'evidence': {source: 'first', source + '/child': 'second'}},
                       {operation: 'first', '[private origin]': 'second'},
                       {'evidence': {identity: 'first', session_fingerprint(session): 'second'}}):
             with self.subTest(extra=extra):
@@ -434,6 +435,72 @@ class PrivacyTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'diagnostic keys must be strings'):
             self.loop.save(self.gh.pull, {'phase': 'reviewed', 'binding': bound, 'review': raw}, None)
         self.assertEqual(self.gh.messages, comments)
+
+    def test_opaque_native_ids_preserve_unrelated_numbers_and_keys_on_roundtrip(self):
+        for operation in ('1', 'e', 'review', session_fingerprint(native_session('example.invalid', 'Actual-Reviewer'))):
+            with self.subTest(operation=operation):
+                bound = self.loop.bound(self.gh.pull, self.gh.issues[35], self.gh.comments(36))[0]
+                text = 'Checked line 123, version 1.23, issue-123 and reviewer entries.'
+                raw = dict(tal.report('changes_requested'), evidence=text, findings=[text], origin_reference=operation,
+                           diagnostics={'line 123': 'checked', 'line [private origin]23': 'checked',
+                                        'entry': 'checked', '[private origin]ntry': 'checked'})
+                raw.pop('session')
+                observed = {'session_id': 'Actual-Reviewer', 'source': 'native://host/receipt', 'operation_id': operation,
+                            'report_sha256': digest(raw), 'binding_sha256': digest(bound)}
+                issued = bind_native_review(raw, bound, self.loop.storage, issuer='example.invalid',
+                                            observe_origin=Mock(return_value=observed))
+                record = self.loop.storage / 'registry' / (issued['origin_receipt'] + '.json')
+                original = record.read_bytes()
+                state = {'phase': 'reviewed', 'binding': bound, 'review': issued}
+                sid = self.loop.save(self.gh.pull, state, None)
+                public = tal.al.unpack(self.gh.comments(36), tal.al.STATE)[0]
+                self.assertEqual(public['review']['evidence'], text)
+                self.assertEqual(public['review']['findings'], [text])
+                self.assertEqual(public['review']['origin_reference'], '[private origin]')
+                self.assertEqual(public['review']['diagnostics'], raw['diagnostics'])
+                self.assertEqual(public['review']['session'], session_fingerprint(issued['session']))
+                self.assertEqual(public['binding'], bound)
+                restored = self.loop.load(36)[1]
+                self.assertEqual(restored['review'], issued)
+                validate_review(restored['review'], bound)
+                self.loop.save(self.gh.pull, restored, sid)
+                self.assertEqual(record.read_bytes(), original)
+
+    def test_opaque_id_boundaries_keep_complete_private_locators_secret(self):
+        from urllib.parse import quote
+        for identity, operation in (('Actual-Reviewer', '1'), ('e', 'operation-19')):
+            with self.subTest(identity=identity, operation=operation):
+                source = 'https://host.invalid/private/receipt-1'
+                public_url = 'https://public.invalid/123/checked'
+                bound = self.loop.bound(self.gh.pull, self.gh.issues[35], self.gh.comments(36))[0]
+                raw = dict(tal.report(), evidence={
+                    'numbers': 'line 123; version 1.23; issue-123; ' + public_url,
+                    'identifiers': f'Operation: ({operation}), {operation}. Native: [{identity}].',
+                    'links': f'[operation](https://host.invalid/{quote(operation, safe="")}) '
+                             f'[encoded](https://host.invalid/%{ord(operation[0]):02X}{operation[1:]}) '
+                             f'[session](https://host.invalid/{quote(identity, safe="")}) '
+                             f'[native](native://host/%{ord(operation[0]):02X}{operation[1:]})',
+                    'locators': f'prefix{source}suffix {source}/child [source]({source.replace("private", "%70rivate")})',
+                    'keys': {operation: 'checked', 'ordinary': 'retained'}})
+                raw.pop('session')
+                observed = {'session_id': identity, 'source': source, 'operation_id': operation,
+                            'report_sha256': digest(raw), 'binding_sha256': digest(bound)}
+                issued = bind_native_review(raw, bound, self.loop.storage, issuer='example.invalid',
+                                            observe_origin=Mock(return_value=observed))
+                self.loop.save(self.gh.pull, {'phase': 'reviewed', 'binding': bound, 'review': issued}, None)
+                public = tal.al.unpack(self.gh.comments(36), tal.al.STATE)[0]['review']['evidence']
+                self.assertEqual(public['numbers'], raw['evidence']['numbers'])
+                self.assertNotIn(f'({operation})', public['identifiers'])
+                self.assertNotIn(f'{operation}.', public['identifiers'])
+                self.assertNotIn(f'[{identity}]', public['identifiers'])
+                self.assertNotIn(source, json.dumps(public))
+                self.assertNotIn('%70rivate', json.dumps(public))
+                self.assertNotIn('https://host.invalid/', public['links'])
+                self.assertNotIn('native://host/', public['links'])
+                self.assertEqual(public['keys'], {'[private origin]': 'checked', 'ordinary': 'retained'})
+                restored = self.loop.load(36)[1]
+                self.assertEqual(restored['review'], issued)
+                verify_review_origin(self.loop.storage, restored['review'], bound)
 
     def test_short_native_operation_preserves_certificate_reviewer_on_resume(self):
         fixture = EvidenceTests(); fixture.setUp(); self.addCleanup(fixture.doCleanups)
@@ -470,7 +537,7 @@ class PrivacyTests(unittest.TestCase):
         invalid = copy.deepcopy(state)
         invalid['review']['evidence'] = {'certificate_reviewers': ['1', 'native://host/review']}
         public = self.loop.public_state(invalid)
-        self.assertEqual(public['review']['evidence']['certificate_reviewers'], ['[private origin]', '[private origin]'])
+        self.assertEqual(public['review']['evidence']['certificate_reviewers'], ['[private origin]', '[private URI]'])
 
     def test_malformed_native_text_is_redacted_but_actual_session_stays_strict(self):
         for malformed in ('native-session-v1:00:00', 'native-session-v1:61:1'):

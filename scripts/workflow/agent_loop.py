@@ -385,18 +385,28 @@ class Loop:
         if isinstance(value, str):
             structural = public_machine_value(location, value)
             identities = {} if structural else {s: '[private origin]' for s in private_identifiers if s}
+            opaque_ids = set(private_identifiers)
             for session in private_sessions:
                 match = NATIVE_SESSION.fullmatch(session)
                 if match:
                     identities[session] = session_fingerprint(session)
                     if not structural:
-                        identities[bytes.fromhex(match[2]).decode()] = identities[session]
+                        raw_id = bytes.fromhex(match[2]).decode()
+                        identities[raw_id] = identities[session]
+                        opaque_ids.add(raw_id)
             # Later URI/prose passes must not redact an already projected identity again.
             for fingerprint in [*private_sessions, *identities.values()]:
                 if SESSION_HASH.fullmatch(fingerprint):
                     identities.setdefault(fingerprint, fingerprint)
-            identity_pattern = '|'.join([*(re.escape(s) for s in sorted(identities, key=len, reverse=True)),
-                                        NATIVE_SESSION.pattern,
+            patterns = []
+            for identity in sorted(identities, key=len, reverse=True):
+                pattern = re.escape(identity)
+                if (identity in opaque_ids and '/' not in identity and '\\' not in identity and
+                        not re.match(r'[A-Za-z][A-Za-z0-9+.-]*:', identity)):
+                    # Opaque IDs are whole identifiers; complete URI/path locators remain private substrings.
+                    pattern = r'(?<![\w.-])' + pattern + r'(?![\w-]|\.\w)'
+                patterns.append(pattern)
+            identity_pattern = '|'.join([*patterns, NATIVE_SESSION.pattern,
                                         r'(?i:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12})'])
             def protected_identity(identity):
                 if identity in identities:
@@ -431,7 +441,7 @@ class Loop:
                 # One pass: escaped ampersands and decoded references are not reinterpreted.
                 destination = markdown_atom.sub(markdown_char, token)
                 positions.extend((i, i + 1) for i in range(offset, len(token)))
-                if not re.match(r'(?i)(?:https?://|file://|/)', destination):
+                if not re.match(r'(?i)(?:[a-z][a-z0-9+.-]*://|/)', destination):
                     redacted, cursor = [], 0
                     patterns = [] if bounded else [re.escape(path) for path in sorted(private_paths, key=len, reverse=True) if path]
                     patterns.append(identity_pattern)
@@ -1089,6 +1099,12 @@ def public_machine_value(location, value):
     if not location:
         return False
     scope, key = location[:-1], location[-1]
+    if scope == ('review',) and key == 'session':
+        try:
+            session_fingerprint(value)
+        except ValueError:
+            return False
+        return True
     pattern = None
     if scope in ((), ('binding',), ('review',), ('gui',), ('acceptance',)):
         if key in ('head', 'base') or (not scope and key in ('expected_head', 'publish_head')):
