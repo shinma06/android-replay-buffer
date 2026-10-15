@@ -368,44 +368,71 @@ class FeedbackLoopTests(unittest.TestCase):
                 source.write_text(json.dumps(evidence)); source.chmod(0o600)
                 original = source.read_bytes()
                 comments = copy.deepcopy(self.gh.messages)
-                if field:
-                    with self.assertRaisesRegex(ValueError, 'private review reference|contributor'):
-                        self.loop.reconcile_feedback(self.gh.pr(36), json.loads(original))
-                    self.assertEqual(self.gh.messages, comments)
-                    # The same shared publication boundary covers direct saves and old caches.
-                    for wrapper in ('unbound', 'cache', 'old-adapter'):
-                        report = copy.deepcopy(raw)
-                        if wrapper != 'unbound':
-                            stored = report if wrapper == 'cache' else {
-                                'kind': 'adapter-review-origin-v1', 'adapter': 'manual',
-                                'session': report['session'], 'report': copy.deepcopy(report)}
-                            ref = store_review(self.loop.storage, {'binding': bound, 'review': report}, stored)
-                            report['origin_receipt'] = ref
-                            receipt = self.loop.storage / 'registry' / (ref + '.json')
-                            prior = receipt.read_bytes()
-                        with self.subTest(wrapper=wrapper), self.assertRaises(ValueError):
-                            self.loop.save(self.gh.pr(36), {'phase': 'reviewed', 'binding': bound, 'review': report}, None)
-                        self.assertEqual(self.gh.messages, comments)
-                        if wrapper != 'unbound':
-                            self.assertEqual(receipt.read_bytes(), prior)
-                    public = self.loop.public_state({'binding': bound, 'review': raw})
-                    cache = store_review(self.loop.storage, public, raw)
-                    self.gh.comment(36, al.pack(al.STATE, dict(public, phase='reviewed', review_ref=cache)))
-                    cached_path = self.loop.storage / 'registry' / (cache + '.json')
-                    cached_bytes = cached_path.read_bytes()
-                    with self.assertRaises(ValueError):
-                        self.loop.load(36)
-                    self.assertEqual(cached_path.read_bytes(), cached_bytes)
-                else:
+                with self.assertRaisesRegex(ValueError, 'private review reference|contributor|native adapter'):
                     self.loop.reconcile_feedback(self.gh.pr(36), json.loads(original))
-                    restored = self.loop.load(36)[1]
-                    self.assertEqual(restored['binding'], bound)
-                    self.assertEqual(restored['review'], raw)
-                    public = al.unpack(self.gh.comments(36), al.STATE)[0]
-                    self.assertNotIn(identity, public['review']['evidence'])
-                    self.assertEqual(public['review']['session'], session_fingerprint(raw['session']))
+                self.assertEqual(self.gh.messages, comments)
+                # The same shared publication boundary covers direct saves and old caches.
+                for wrapper in ('unbound', 'cache', 'old-adapter'):
+                    report = copy.deepcopy(raw)
+                    if wrapper != 'unbound':
+                        stored = report if wrapper == 'cache' else {
+                            'kind': 'adapter-review-origin-v1', 'adapter': 'manual',
+                            'session': report['session'], 'report': copy.deepcopy(report)}
+                        ref = store_review(self.loop.storage, {'binding': bound, 'review': report}, stored)
+                        report['origin_receipt'] = ref
+                        receipt = self.loop.storage / 'registry' / (ref + '.json')
+                        prior = receipt.read_bytes()
+                        from handoff_registry import verify_review_origin
+                        with self.assertRaises(ValueError): verify_review_origin(self.loop.storage, report, bound)
+                    with self.subTest(wrapper=wrapper), self.assertRaises(ValueError):
+                        self.loop.save(self.gh.pr(36), {'phase': 'reviewed', 'binding': bound, 'review': report}, None)
+                    self.assertEqual(self.gh.messages, comments)
+                    if wrapper != 'unbound':
+                        self.assertEqual(receipt.read_bytes(), prior)
+                public = self.loop.public_state({'binding': bound, 'review': raw})
+                cache = store_review(self.loop.storage, public, raw)
+                self.gh.comment(36, al.pack(al.STATE, dict(public, phase='reviewed', review_ref=cache)))
+                cached_path = self.loop.storage / 'registry' / (cache + '.json')
+                cached_bytes = cached_path.read_bytes()
+                with self.assertRaises(ValueError):
+                    self.loop.load(36)
+                self.assertEqual(cached_path.read_bytes(), cached_bytes)
                 self.assertEqual(source.read_bytes(), original)
                 self.assertEqual(json.loads(original), evidence)
+
+    def test_actual_native_origin_can_reconcile_and_finish_with_private_roundtrip(self):
+        from agent_worker import bind_native_review
+        from handoff_registry import digest
+        self.assertEqual(self.loop.tick(36)['phase'], 'reviewed')
+        self.gh.pull.update(merged=True, state='closed')
+        bound, _ = self.loop.bound(self.gh.pr(36), self.gh.issue(35), self.gh.comments(36))
+        raw = dict(tal.report(), feedback_hash=bound['feedback_hash']); raw.pop('session')
+        from agent_policy import native_session
+        claimed = dict(raw, session=native_session('example.invalid', 'Invented-Reviewer'))
+        h, state, sid, _ = self.loop.load(36)
+        before = copy.deepcopy(self.gh.messages)
+        with self.assertRaises(ValueError):
+            self.loop.finish(self.gh.pr(36), h, dict(state, binding=bound, review=claimed), sid)
+        self.assertEqual(self.gh.messages, before)
+        self.assertEqual(self.gh.issues[35]['state'], 'open')
+        self.loop.cleanup.assert_not_called()
+        observed = {'session_id': 'Actual-Feedback-Reviewer', 'source': 'native://host/feedback',
+                    'operation_id': 'feedback-operation', 'report_sha256': digest(raw), 'binding_sha256': digest(bound)}
+        issued = bind_native_review(raw, bound, self.loop.storage, issuer='example.invalid', observe_origin=Mock(return_value=observed))
+        record = self.loop.storage / 'registry' / (issued['origin_receipt'] + '.json'); original = record.read_bytes()
+        messages = copy.deepcopy(self.gh.messages)
+        for report, binding in [(dict(issued, evidence='Changed submitted content'), bound),
+                                (issued, dict(bound, feedback_hash='changed'))]:
+            with self.assertRaises(ValueError):
+                self.loop.reconcile_feedback(self.gh.pr(36), {'binding': binding, 'review': report})
+            self.assertEqual(self.gh.messages, messages)
+            self.assertEqual(record.read_bytes(), original)
+        self.assertEqual(self.loop.reconcile_feedback(self.gh.pr(36), {'binding': bound, 'review': issued})['phase'], 'cleanup')
+        self.assertEqual(self.loop.load(36)[1]['review'], issued)
+        self.assertEqual(self.loop.tick(36)['phase'], 'done')
+        self.assertEqual(self.gh.issues[35]['state'], 'closed')
+        self.loop.cleanup.assert_called_once()
+        self.assertEqual(record.read_bytes(), original)
 
     def test_merged_finish_refetches_entire_binding_before_entry(self):
         self.loop.tick(36)

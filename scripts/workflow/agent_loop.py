@@ -308,6 +308,8 @@ class Loop:
             _, sessions, identifiers, locators = review_privacy(self.storage, state['review'], state.get('binding'))
             if self.public_state(state['review'], paths, sessions, identifiers, private_locators=locators) != public['review']:
                 raise ValueError('Private review public projection mismatch')
+        elif state:
+            review_privacy(self.storage, state.get('review'), state.get('binding'))
         if state is not None and handoff:
             state['private_paths'] = sorted(set(state.get('private_paths', [])) | set(handoff.get('private_paths', [])))
         return handoff, state or {'phase': 'queued', 'fixes': 0, 'reviews': 0, 'errors': 0}, comment_id, comments
@@ -396,6 +398,8 @@ class Loop:
                 if SESSION_HASH.fullmatch(fingerprint):
                     identities.setdefault(fingerprint, fingerprint)
             patterns, opaque_patterns, uri_locators, punctuation_ids = [], [], {}, set()
+            def decode_uri(text):
+                return unquote(text, errors='surrogateescape')
             def split_locator(text):
                 if not any(c in text for c in '\t\r\n'):
                     return urlsplit(text)
@@ -407,10 +411,9 @@ class Loop:
                 for char, escape in escapes:
                     text = text.replace(char, escape)
                 parsed = urlsplit(text)
-                parts = list(parsed)
-                for char, escape in escapes:
-                    parts = [part.replace(escape, char) for part in parts]
-                return type(parsed)(*parts)
+                restore = {escape: char for char, escape in escapes}
+                pattern = '|'.join(map(re.escape, restore))
+                return type(parsed)(*(re.sub(pattern, lambda match: restore[match[0]], part) for part in parsed))
             for identity in sorted(identities, key=len, reverse=True):
                 pattern = re.escape(identity)
                 if identity in private_locators:
@@ -451,7 +454,7 @@ class Loop:
             def locator_reference(text, decode=True, before_boundary=False, source_locator=None):
                 boundary = lexical_boundary.search(text) if before_boundary else None
                 def values(value, decode=True):
-                    return (value, unquote(value)) if decode and isinstance(value, str) else (value,)
+                    return (value, decode_uri(value)) if decode and isinstance(value, str) else (value,)
                 def equal(source, target):
                     return any(left == right for left in values(source) for right in values(target, decode))
                 def prefix(source, target, embedded):
@@ -504,7 +507,7 @@ class Loop:
                             return True
                 return False
             def locator_payload(uri, before_boundary=False, source_locator=None):
-                return uri and any(locator_reference(unquote(part), False, before_boundary, source_locator)
+                return uri and any(locator_reference(decode_uri(part), False, before_boundary, source_locator)
                                    for part in (uri.username, uri.password, uri.hostname, uri.path, uri.query, uri.fragment) if part)
             def source_uri_syntax(text):
                 return any(re.match(re.escape(source.scheme) + r':(?=.)', text, re.I) for source in uri_locators.values())
@@ -564,10 +567,10 @@ class Loop:
                     if destination == token and (re.search(r'(?i)[a-z][a-z0-9+.-]*://', token) or known_reference):
                         return token, False
                     return private_prose()
-                decoded = unquote(destination)
+                decoded = decode_uri(destination)
                 try:
                     uri = split_locator(destination)
-                    path = posixpath.normpath(unquote(uri.path))
+                    path = posixpath.normpath(decode_uri(uri.path))
                 except ValueError:
                     uri, path = None, ''
                 # Keep enclosing Markdown punctuation beyond the complete known filename.
@@ -580,10 +583,19 @@ class Loop:
                     if known in decoded or posixpath.normpath(known) == posixpath.normpath(target):
                         matched.append(known)
                 protected = max((known.count(')') - known.count('(') for known in matched), default=0)
+                if decoded in opaque_ids:
+                    protected = max(protected, decoded.count(')') - decoded.count('('))
                 suffix = ')' * min(closing, max(0, decoded.count(')') - decoded.count('(') - protected))
                 if (matched and
                         (destination != token or '%' in token or not any(known in token for known in private_paths))):
                     return '[private URI]' + suffix, False
+                end = len(destination)
+                while uri and uri.scheme and end and (destination[end - 1] in ")]}>\"'`,;.!" or
+                        not destination[end - 1].isascii() and unicodedata.category(destination[end - 1]) in ('Pe', 'Pf', 'Po')):
+                    end -= 1
+                    reference = destination[:end]
+                    if reference in opaque_ids or decode_uri(reference) in opaque_ids:
+                        return '[private URI]' + token[positions[end][0]:], False
                 # Parse structure before one decode; decoded payloads may contain a nested locator, never new outer grammar.
                 if known_reference or locator_payload(uri):
                     return '[private URI]' + suffix, False
@@ -597,10 +609,10 @@ class Loop:
                               if uri else re.split(r'[/?:&=#]', destination)[1:])
                 payload = (uri.path + '?' + uri.query + '#' + uri.fragment if uri else destination.partition(':')[2])
                 if (not structural and (decoded in opaque_ids or
-                        any(unquote(part) in opaque_ids for part in components if part) or
+                        any(decode_uri(part) in opaque_ids for part in components if part) or
                         opaque_patterns and any(identity_boundary(match)
                                                 for part in [*authority, payload] if part
-                                                for match in re.finditer('|'.join(opaque_patterns), unquote(part))))):
+                                                for match in re.finditer('|'.join(opaque_patterns), decode_uri(part))))):
                     return '[private URI]' + suffix, False
                 if ((destination != token or '%' in token or any(s in decoded for s in identities)) and
                         any(protected_identity(match[0]) for match in re.finditer(identity_pattern, decoded)
@@ -626,7 +638,7 @@ class Loop:
                     matches.append((match.start(), end, None))
                 # Cross only boundaries owned by each complete source; shorter known sources cannot cut it first.
                 for known, source in uri_locators.items():
-                    boundary_limit = sum(len(lexical_boundary.findall(unquote(part))) for part in source)
+                    boundary_limit = sum(len(lexical_boundary.findall(decode_uri(part))) for part in source)
                     schemes = '|'.join(re.escape(uri.scheme) for uri in uri_locators.values())
                     for opening in re.finditer(r'(?i)(?:[a-z][a-z0-9+.-]*://|(?:[a-z][a-z0-9+.-]*)?(?:' + schemes + '):)', text):
                         tail, boundaries, scanned = text[opening.start():], 0, 0

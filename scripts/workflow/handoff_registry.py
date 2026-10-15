@@ -110,6 +110,8 @@ def issue_review_origin(storage, report, bound, session, kind, private_paths=(),
     """Trusted adapter boundary, not authentication against a writer of local files/environment."""
     from agent_policy import canonical_session, session_fingerprint
     session = canonical_session(session)
+    if session.startswith('native-session-v1:') and kind != 'native':
+        raise ValueError('Native session requires its actual native adapter origin')
     submitted_report = report
     report = {k: v for k, v in report.items() if k not in REVIEW_PRIVACY_FIELDS}
     if (report.get('session') != session or 'origin_receipt' in report or kind not in ('cli', 'manual', 'native') or
@@ -142,12 +144,26 @@ def issue_review_origin(storage, report, bound, session, kind, private_paths=(),
 
 def verify_review_origin(storage, report, bound, with_sessions=False):
     if storage is None:
-        raise ValueError('Repair approval requires its trusted adapter private registry')
+        raise ValueError('Review requires its trusted adapter private registry')
     original = {k: v for k, v in report.items() if k != 'origin_receipt'}
     receipt, paths = restore_review(storage, report.get('origin_receipt'), {'binding': bound, 'review': original}, True)
     if (receipt.get('kind') != 'adapter-review-origin-v1' or receipt.get('adapter') not in ('cli', 'manual', 'native') or
             receipt.get('session') != report.get('session') or receipt.get('report') != original):
         raise ValueError('Report was not issued by the actual-session adapter')
+    if str(report.get('session', '')).startswith('native-session-v1:') and receipt['adapter'] != 'native':
+        raise ValueError('Native session requires its actual native adapter origin')
+    if receipt['adapter'] == 'native':
+        from agent_policy import native_session
+        origin = receipt.get('native_origin')
+        observed = origin.get('observation') if isinstance(origin, dict) else None
+        submitted = origin.get('submitted_report') if isinstance(origin, dict) else None
+        if (not isinstance(observed, dict) or not isinstance(submitted, dict) or
+                observed.get('binding_sha256') != digest(bound) or observed.get('report_sha256') != digest(submitted) or
+                native_session(origin.get('issuer'), observed.get('session_id')) != report['session'] or
+                any(not isinstance(observed.get(k), str) or not observed[k].strip() for k in ('source', 'operation_id')) or
+                dict({k: v for k, v in submitted.items() if k not in REVIEW_PRIVACY_FIELDS}, session=report['session']) !=
+                {k: v for k, v in original.items() if k not in REVIEW_PRIVACY_FIELDS}):
+            raise ValueError('Native origin lacks its actual observation/report/binding')
     if not with_sessions or 'private_sessions' not in report:
         return (paths, []) if with_sessions else paths
     from agent_policy import session_fingerprint
@@ -177,22 +193,16 @@ def verify_review_origin(storage, report, bound, with_sessions=False):
 
 def review_privacy(storage, report, bound):
     """Return projection inputs from adapter evidence, never inline report controls."""
-    if not report or not (report.get('origin_receipt') or any(k in report for k in REVIEW_PRIVACY_FIELDS)):
+    if not report or not (str(report.get('session', '')).startswith('native-session-v1:') or
+                          report.get('origin_receipt') or any(k in report for k in REVIEW_PRIVACY_FIELDS)):
         return [], [], [], []
     paths, sessions = verify_review_origin(storage, report, bound, with_sessions=True)
     original = {k: v for k, v in report.items() if k != 'origin_receipt'}
     receipt = restore_review(storage, report['origin_receipt'], {'binding': bound, 'review': original})
     identifiers, locators = [], []
     if receipt['adapter'] == 'native':
-        from agent_policy import native_session
         origin = receipt.get('native_origin', {})
-        observed, submitted = origin.get('observation', {}), origin.get('submitted_report')
-        if (not isinstance(submitted, dict) or observed.get('binding_sha256') != digest(bound) or
-                observed.get('report_sha256') != digest(submitted) or
-                native_session(origin.get('issuer'), observed.get('session_id')) != report['session'] or
-                any(not isinstance(observed.get(k), str) or not observed[k].strip()
-                    for k in ('source', 'operation_id'))):
-            raise ValueError('Native privacy inputs lack their actual observation/binding')
+        observed = origin['observation']
         identifiers, locators = [observed['operation_id']], [observed['source']]
         if observed['source'] in paths:
             from agent_worker import recover_originals

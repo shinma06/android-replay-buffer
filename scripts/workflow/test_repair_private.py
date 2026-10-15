@@ -178,6 +178,58 @@ class EvidenceTests(unittest.TestCase):
 class PrivacyTests(unittest.TestCase):
     setUp = tal.LoopTests.setUp
 
+    def test_native_reports_require_actual_origin_at_shared_consumers(self):
+        from agent_policy import next_action
+        from handoff_registry import review_privacy, store_review
+        bound = self.loop.bound(self.gh.pull, self.gh.issues[35], self.gh.comments(36))[0]
+        claimed = dict(tal.report(), session=native_session('example.invalid', 'Invented-Reviewer'))
+        for verdict in ('approved', 'changes_requested', 'blocked'):
+            report = dict(claimed, verdict=verdict, findings=['Concrete finding'] if verdict == 'changes_requested' else [])
+            with self.subTest(verdict=verdict), self.assertRaises(ValueError):
+                validate_review(report, bound, storage=self.loop.storage)
+            with self.assertRaises(ValueError):
+                next_action({'binding': bound, 'review': report}, bound, 'success', False, storage=self.loop.storage)
+        with self.assertRaises(ValueError): review_privacy(self.loop.storage, claimed, bound)
+        comments = copy.deepcopy(self.gh.messages)
+        with self.assertRaises(ValueError):
+            self.loop.save(self.gh.pull, {'binding': bound, 'review': claimed, 'phase': 'reviewed'}, None)
+        self.assertEqual(self.gh.messages, comments)
+        for kind in ('manual', 'cli'):
+            with self.assertRaises(ValueError): issue_review_origin(self.loop.storage, claimed, bound, claimed['session'], kind)
+        public = self.loop.public_state({'binding': bound, 'review': claimed})
+        cache = store_review(self.loop.storage, public, claimed)
+        path = self.loop.storage / 'registry' / (cache + '.json'); original = path.read_bytes()
+        self.gh.comment(36, tal.al.pack(tal.al.STATE, dict(public, review_ref=cache)))
+        with self.assertRaises(ValueError): self.loop.load(36)
+        self.assertEqual(path.read_bytes(), original)
+        self.gh.messages = comments
+        self.gh.comment(36, tal.al.pack(tal.al.STATE, {'binding': bound, 'review': claimed}))
+        with self.assertRaises(ValueError): self.loop.load(36)
+        self.gh.messages = comments
+        raw = tal.report(); raw.pop('session')
+        observed = {'session_id': 'Actual-Reviewer', 'source': 'native://host/review', 'operation_id': 'origin-operation',
+                    'report_sha256': digest(raw), 'binding_sha256': digest(bound)}
+        issued = bind_native_review(raw, bound, self.loop.storage, issuer='example.invalid', observe_origin=Mock(return_value=observed))
+        with self.assertRaises(ValueError): validate_review(issued, bound)
+        validate_review(issued, bound, storage=self.loop.storage)
+        with self.assertRaises(ValueError): validate_review(issued, dict(bound, issue_hash='changed'), storage=self.loop.storage)
+        record = self.loop.storage / 'registry' / (issued['origin_receipt'] + '.json'); original = record.read_bytes()
+        held = record.with_suffix('.held')
+        record.rename(held)
+        try:
+            with self.assertRaises(OSError): validate_review(issued, bound, storage=self.loop.storage)
+        finally:
+            held.rename(record)
+        sid = self.loop.save(self.gh.pull, {'binding': bound, 'review': issued, 'phase': 'reviewed'}, None)
+        restored = self.loop.load(36)[1]
+        self.assertEqual(restored['review'], issued)
+        self.loop.save(self.gh.pull, restored, sid)
+        self.assertEqual(record.read_bytes(), original)
+        validate_review(tal.report(), bound)  # Ordinary legacy UUID reports retain their existing contract.
+        for report in (issued, tal.report()):
+            self.assertEqual(next_action({'binding': bound, 'review': report}, bound, 'success', False,
+                             {'allowed': False, 'repair_revision': 'e' * 64}, self.loop.storage), 'acceptance-wait')
+
     def test_native_origin_is_private_in_saved_state_text_and_encoded_links(self):
         from urllib.parse import quote
         identity = 'Case-Sensitive/Session-99'
@@ -207,6 +259,103 @@ class PrivacyTests(unittest.TestCase):
         verify_review_origin(self.loop.storage, restored, bound)
         self.gh.comment(36, tal.al.pack(tal.al.STATE, {'review': {'session': session_fingerprint(issued['session'])}}))
         with self.assertRaisesRegex(ValueError, 'private review'): self.loop.load(36)
+
+    def test_native_uuid_receipt_still_verifies_observation_and_legacy_manual_remains_valid(self):
+        from handoff_registry import store_review
+        bound = self.loop.bound(self.gh.pull, self.gh.issues[35], self.gh.comments(36))[0]
+        raw = tal.report(); identity = raw.pop('session')
+        observed = {'session_id': identity, 'source': 'native://host/uuid-record', 'operation_id': 'uuid-operation',
+                    'report_sha256': digest(raw), 'binding_sha256': digest(bound)}
+        issued = bind_native_review(raw, bound, self.loop.storage, issuer='example.invalid', observe_origin=Mock(return_value=observed))
+        self.assertEqual(issued['session'], identity)
+        validate_review(issued, bound, storage=self.loop.storage)
+        path = self.loop.storage / 'registry' / (issued['origin_receipt'] + '.json'); original = path.read_bytes()
+        receipt = json.loads(original)['review']
+        receipt['native_origin']['observation']['binding_sha256'] = '0' * 64
+        report = {k: v for k, v in issued.items() if k != 'origin_receipt'}
+        ref = store_review(self.loop.storage, {'binding': bound, 'review': report}, receipt)
+        tampered = dict(issued, origin_receipt=ref)
+        with self.assertRaises(ValueError): verify_review_origin(self.loop.storage, tampered, bound)
+        with self.assertRaises(ValueError): validate_review(tampered, bound, storage=self.loop.storage)
+        self.assertEqual(path.read_bytes(), original)
+        for adapter in ('manual', 'cli'):
+            legacy = issue_review_origin(self.loop.storage, dict(raw, session=identity), bound, identity, adapter)
+            validate_review(legacy, bound, storage=self.loop.storage)
+            verify_review_origin(self.loop.storage, legacy, bound)
+
+    def test_control_placeholders_restore_once_without_cross_token_collisions(self):
+        for source, alias in (('https://h/%0A1%0A', 'https://h/\n1\n'),
+                              ('file:///scope/%090%09', 'FILE:///scope/\t0\t'),
+                              ('urn:scope:%0D1%0A', 'URN:scope:\r1\n'),
+                              ('native:///\ue000%0A1%0A', 'NATIVE:///\ue000\n1\n')):
+            with self.subTest(source=source):
+                bound = self.loop.bound(self.gh.pull, self.gh.issues[35], self.gh.comments(36))[0]
+                raw = dict(tal.report(), evidence={'bare': alias, 'prose': f'Before ({alias}) after',
+                    'ordinary': alias.replace('1', '2').replace('0', '2'), 'keys': {f'diagnostic({alias})': 'checked'}})
+                raw.pop('session')
+                observed = {'session_id': 'Actual-Reviewer', 'source': source, 'operation_id': 'control-operation',
+                            'report_sha256': digest(raw), 'binding_sha256': digest(bound)}
+                issued = bind_native_review(raw, bound, self.loop.storage, issuer='example.invalid', observe_origin=Mock(return_value=observed))
+                record = self.loop.storage / 'registry' / (issued['origin_receipt'] + '.json'); original = record.read_bytes()
+                sid = self.loop.save(self.gh.pull, {'binding': bound, 'review': issued, 'phase': 'reviewed'}, None)
+                public = tal.al.unpack(self.gh.comments(36), tal.al.STATE)[0]['review']['evidence']
+                self.assertEqual(public, {'bare': '[private URI]', 'prose': 'Before ([private URI]) after',
+                    'ordinary': raw['evidence']['ordinary'], 'keys': {'diagnostic([private URI])': 'checked'}})
+                restored = self.loop.load(36)[1]; self.assertEqual(restored['review'], issued)
+                self.loop.save(self.gh.pull, restored, sid); self.assertEqual(record.read_bytes(), original)
+
+    def test_uri_shaped_opaque_operation_keeps_enclosing_punctuation(self):
+        for operation in ('native://operation/1', 'native://operation/end)', 'native://operation/(1)', 'urn:operation:1'):
+            with self.subTest(operation=operation):
+                forms = ('Operation ({})', 'Operation {},', 'Operation {}.', 'Operation [{}]', 'Operation "{}"', 'Operation （{}）、')
+                ordinary = [operation + suffix for suffix in ('23', '/child', '.next', '＿suffix', '\u0301suffix')]
+                if operation.startswith('urn:'):
+                    ordinary.remove(operation + '/child')  # Legacy opaque prose treats slash as an ID boundary.
+                ordinary += [operation.swapcase(), 'https://public.invalid/' + operation + '-suffix']
+                evidence = {'forms': [form.format(operation) for form in forms], 'ordinary': ordinary,
+                            'encoded': 'Operation (' + operation.replace('/1', '/%31') + ')',
+                            'keys': {'Operation (' + operation + ')': 'checked'}}
+                bound = self.loop.bound(self.gh.pull, self.gh.issues[35], self.gh.comments(36))[0]
+                raw = dict(tal.report(), evidence=evidence); raw.pop('session')
+                observed = {'session_id': 'Actual-Reviewer', 'source': 'native://host/private-record', 'operation_id': operation,
+                            'report_sha256': digest(raw), 'binding_sha256': digest(bound)}
+                issued = bind_native_review(raw, bound, self.loop.storage, issuer='example.invalid', observe_origin=Mock(return_value=observed))
+                record = self.loop.storage / 'registry' / (issued['origin_receipt'] + '.json'); original = record.read_bytes()
+                sid = self.loop.save(self.gh.pull, {'binding': bound, 'review': issued, 'phase': 'reviewed'}, None)
+                public = tal.al.unpack(self.gh.comments(36), tal.al.STATE)[0]['review']['evidence']
+                self.assertEqual(public['ordinary'], ordinary)
+                for form, result in zip(forms, public['forms']):
+                    self.assertNotIn(operation, result)
+                    marker = '[private URI]' if operation.startswith('native://') else '[private origin]'
+                    self.assertEqual(result, form.format(marker))
+                self.assertNotIn(operation, next(iter(public['keys'])))
+                self.assertEqual(public['encoded'], 'Operation (' + ('[private origin]' if operation.startswith('urn:') else '[private URI]') + ')')
+                restored = self.loop.load(36)[1]; self.assertEqual(restored['review'], issued)
+                self.loop.save(self.gh.pull, restored, sid); self.assertEqual(record.read_bytes(), original)
+
+    def test_invalid_utf8_octets_remain_distinct_in_locator_values_and_keys(self):
+        cases = [('https://h/%FF', 'https://h/%ff', ['https://h/%FE', 'https://h/�', 'https://h/%EF%BF%BD']),
+                 ('file:///scope/%FF%61', 'FILE:///scope/%FFa', ['file:///scope/%FEa']),
+                 ('urn:scope:%FE', 'URN:scope:%FE', ['urn:scope:%FF']),
+                 ('https://h/%C3%A9', 'HTTPS://h/é', ['https://h/è', 'https://h/%FF']),
+                 ('file:/scope/%25FF', 'FILE:/scope/%FF', ['file:/scope/%FE', 'file:/scope/�']),
+                 ('native://host/private-record', 'https://ref.invalid/%EF%BF%BD', ['https://ref.invalid/%FF', 'https://ref.invalid/%FE'])]
+        for source, alias, controls in cases:
+            with self.subTest(source=source):
+                bound = self.loop.bound(self.gh.pull, self.gh.issues[35], self.gh.comments(36))[0]
+                raw = dict(tal.report(), evidence={'private': alias, 'ordinary': controls,
+                    'keys': {alias: 'private checked', controls[0]: 'public retained'}}); raw.pop('session')
+                observed = {'session_id': 'Actual-Reviewer', 'source': source,
+                            'operation_id': '�' if source.startswith('native:') else 'octet-operation',
+                            'report_sha256': digest(raw), 'binding_sha256': digest(bound)}
+                issued = bind_native_review(raw, bound, self.loop.storage, issuer='example.invalid', observe_origin=Mock(return_value=observed))
+                record = self.loop.storage / 'registry' / (issued['origin_receipt'] + '.json'); original = record.read_bytes()
+                sid = self.loop.save(self.gh.pull, {'binding': bound, 'review': issued, 'phase': 'reviewed'}, None)
+                public = tal.al.unpack(self.gh.comments(36), tal.al.STATE)[0]['review']['evidence']
+                self.assertEqual(public, {'private': '[private URI]', 'ordinary': controls,
+                    'keys': {'[private URI]': 'private checked', controls[0]: 'public retained'}})
+                restored = self.loop.load(36)[1]; self.assertEqual(restored['review'], issued)
+                self.loop.save(self.gh.pull, restored, sid); self.assertEqual(record.read_bytes(), original)
 
     def test_short_native_ids_preserve_binding_and_machine_metadata_through_save_load(self):
         self.gh.pull['head']['sha'] = '19' * 20
@@ -240,7 +389,7 @@ class PrivacyTests(unittest.TestCase):
                 restored = self.loop.load(36)[1]
                 self.assertEqual(restored['binding'], bound)
                 self.assertEqual(restored['review'], issued)
-                validate_review(restored['review'], bound)
+                validate_review(restored['review'], bound, storage=self.loop.storage)
                 self.assertEqual(self.loop.bound(self.gh.pull, self.gh.issues[35], self.gh.comments(36))[0], bound)
                 self.loop.save(self.gh.pull, restored, sid)
                 verify_review_origin(self.loop.storage, self.loop.load(36)[1]['review'], bound)
@@ -289,7 +438,7 @@ class PrivacyTests(unittest.TestCase):
                             'report_sha256': digest(raw), 'binding_sha256': digest(bound)}
                 issued = bind_native_review(raw, bound, self.loop.storage, issuer='example.invalid',
                                             observe_origin=Mock(return_value=observed))
-                validate_review(issued, bound)
+                validate_review(issued, bound, storage=self.loop.storage)
                 receipt = self.loop.storage / 'registry' / (issued['origin_receipt'] + '.json')
                 receipt_bytes = receipt.read_bytes()
                 self.assertEqual(json.loads(receipt_bytes)['review']['native_origin']['submitted_report'], original)
@@ -306,7 +455,7 @@ class PrivacyTests(unittest.TestCase):
                 self.assertEqual(restored['review'], issued)
                 self.assertEqual(raw, original)
                 self.assertEqual(receipt.read_bytes(), receipt_bytes)
-                validate_review(restored['review'], restored['binding'])
+                validate_review(restored['review'], restored['binding'], storage=self.loop.storage)
                 verify_review_origin(self.loop.storage, restored['review'], bound)
 
     def test_submitted_private_sessions_cannot_exempt_private_operation_on_roundtrip(self):
@@ -327,7 +476,7 @@ class PrivacyTests(unittest.TestCase):
                 actual = session_fingerprint(issued['session'])
                 self.assertNotEqual(actual, claimed)
                 self.assertNotIn('private_sessions', issued)
-                validate_review(issued, bound)
+                validate_review(issued, bound, storage=self.loop.storage)
                 receipt = self.loop.storage / 'registry' / (issued['origin_receipt'] + '.json')
                 receipt_bytes = receipt.read_bytes()
                 self.assertEqual(json.loads(receipt_bytes)['review']['native_origin']['submitted_report'], original)
@@ -338,7 +487,7 @@ class PrivacyTests(unittest.TestCase):
                 self.assertEqual(public['review']['session'], actual)
                 restored = self.loop.load(36)[1]
                 self.assertEqual(restored['review'], issued)
-                validate_review(restored['review'], bound)
+                validate_review(restored['review'], bound, storage=self.loop.storage)
                 verify_review_origin(self.loop.storage, restored['review'], bound)
                 self.loop.save(self.gh.pull, restored, sid)
                 self.assertEqual(self.loop.load(36)[1]['review'], issued)
@@ -418,7 +567,7 @@ class PrivacyTests(unittest.TestCase):
                             'report_sha256': digest(raw), 'binding_sha256': digest(bound)}
                 issued = bind_native_review(raw, bound, self.loop.storage, issuer='example.invalid',
                                             observe_origin=Mock(return_value=observed))
-                validate_review(issued, bound)
+                validate_review(issued, bound, storage=self.loop.storage)
                 receipt = self.loop.storage / 'registry' / (issued['origin_receipt'] + '.json')
                 receipt_bytes = receipt.read_bytes()
                 comments = copy.deepcopy(self.gh.messages)
@@ -462,7 +611,7 @@ class PrivacyTests(unittest.TestCase):
                 self.assertEqual(public['binding'], bound)
                 restored = self.loop.load(36)[1]
                 self.assertEqual(restored['review'], issued)
-                validate_review(restored['review'], bound)
+                validate_review(restored['review'], bound, storage=self.loop.storage)
                 self.loop.save(self.gh.pull, restored, sid)
                 self.assertEqual(record.read_bytes(), original)
 
@@ -535,7 +684,7 @@ class PrivacyTests(unittest.TestCase):
                 self.assertNotIn(source, public['locator'])
                 restored = self.loop.load(36)[1]
                 self.assertEqual(restored['review'], issued)
-                validate_review(restored['review'], bound)
+                validate_review(restored['review'], bound, storage=self.loop.storage)
                 self.assertEqual(record.read_bytes(), original)
 
     def test_native_uri_authority_components_hide_exact_private_ids(self):

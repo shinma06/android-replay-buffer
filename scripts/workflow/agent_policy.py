@@ -134,6 +134,8 @@ def validate_review(report, expected, acceptance=None, storage=None):
         verify_review_origin(storage, report, expected)
     if report['verdict'] == 'changes_requested' and not report['findings']:
         raise ValueError('Changes requested without concrete findings')
+    from handoff_registry import review_privacy
+    review_privacy(storage, report, expected)
 
 
 def in_scope(paths, scope):
@@ -157,6 +159,7 @@ def next_action(state, bound, ci, gui, acceptance=None, storage=None):
     report = state.get('review')
     if not report:
         return 'review'
+    validate_review(report, bound, acceptance if acceptance and acceptance.get('allowed') else None, storage)
     if report['verdict'] == 'blocked':
         return 'blocked'
     if report['verdict'] == 'changes_requested':
@@ -165,8 +168,6 @@ def next_action(state, bound, ci, gui, acceptance=None, storage=None):
         return 'acceptance-wait'
     if acceptance is None and gui and not gui_pass(state.get('gui'), bound):
         return 'gui-queued'
-    if acceptance and (acceptance.get('repair_revision') or acceptance.get('certificate_revision')):
-        validate_review(report, bound, acceptance, storage)
     if ci == 'failure':
         return 'ci-failed'
     if ci != 'success':
