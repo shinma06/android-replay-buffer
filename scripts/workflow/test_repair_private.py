@@ -280,7 +280,11 @@ class NativePublicationTests(unittest.TestCase):
                     restored = self.loop.load(36)[1]
                     self.assertEqual(restored['review'], issued)
                     validate_review(restored['review'], bound, restored['acceptance'], self.loop.storage)
+                    from agent_policy import next_action
+                    self.assertEqual(next_action(restored, bound, 'pending', False, accepted, self.loop.storage), 'ci-wait')
+                    restored['phase'] = 'ci-wait'
                     self.loop.save(self.gh.pull, restored, sid)
+                    self.assertEqual(tal.al.unpack(self.gh.comments(36), tal.al.STATE)[0]['next'], 'wait-for-required-ci-checks')
                     self.assertEqual(receipt.read_bytes(), original)
                     for path, before in originals.items(): self.assertEqual(path.read_bytes(), before)
                     invalid = dict(accepted, **{prefix + '_observers': [session_fingerprint(issued['session'])]})
@@ -513,6 +517,118 @@ class NativePublicationTests(unittest.TestCase):
         self.assertNotIn(secret, '\n'.join(str(call.args[0]) for call in printed.call_args_list))
         self.assertNotIn(secret, json.dumps(self.gh.messages))
         self.worker.assert_not_called(); self.assertEqual(self.gh.merges, 0)
+
+
+    def test_native_next_tracks_reachable_phase_pause_and_review_conditions(self):
+        from agent_policy import next_action
+        cases = [
+            ('ci-wait', 'approved', {}, 'wait-for-required-ci-checks'),
+            ('merging', 'approved', {}, 'confirm-github-merge-result'),
+            ('cleanup', 'approved', {}, 'reconcile-issue-disposition-then-verify-owned-resource-cleanup'),
+            ('done', 'approved', {}, 'pm-confirm-issue-qa-project-and-roadmap-status'),
+            ('acceptance-wait', 'approved', {}, 'complete-required-acceptance'),
+            ('gui-queued', 'approved', {}, 'designated-operator-observe-required-gui-evidence'),
+            ('remote-review-wait', 'approved', {}, 'wait-for-current-head-review-completion'),
+            ('syncing', None, {}, 'merge-current-base-then-publish'),
+            ('publishing', None, {}, 'validate-and-publish-issue-branch'),
+            ('reviewing', None, {}, 'complete-independent-read-only-review'),
+            ('remote-review-wait', None, {}, 'wait-for-current-head-review-completion'),
+            ('queued', None, {}, 'review'), ('reviewed', None, {}, 'review'),
+            ('ci-wait', None, {}, 'review'), ('done', None, {}, 'review'),
+            ('fixing', 'changes_requested', {'fixes': 1}, 'apply-bounded-private-review-findings'),
+            ('reviewed', 'changes_requested', {'fixes': 1}, 'fix'),
+            ('reviewed', 'changes_requested', {'fixes': 3}, 'owner-recovery'),
+            ('reviewed', 'blocked', {}, 'owner-recovery'),
+            ('blocked', 'blocked', {}, 'owner-recovery'),
+            ('ci-failed', 'approved', {}, 'inspect-ci-failure-and-recover'),
+            ('ci-failed', 'approved', {'paused': True}, 'owner-resume-required'),
+            ('reviewed', 'blocked', {'paused': True}, 'owner-resume-required'),
+            ('reviewing', None, {'paused': True}, 'owner-resume-required'),
+            ('fixing', 'changes_requested', {'errors': 1, 'retry_at': 1234}, 'check-scheduled-retry-and-private-diagnostic'),
+            ('merging', 'approved', {'errors': 1, 'retry_at': 1234}, 'confirm-github-merge-result'),
+            ('cleanup', 'approved', {'issue_complete': False}, 'reconcile-issue-disposition-then-verify-owned-resource-cleanup'),
+            ('done', 'approved', {'issue_complete': False}, 'pm-confirm-issue-qa-project-and-roadmap-status'),
+            ('reviewed', 'approved', {'pending_provider': True}, 'wait-for-current-head-review-completion'),
+            ('reviewed', 'approved', {}, 'reconcile-acceptance-and-review-obligations'),
+        ]
+        for phase, verdict, fields, expected in cases:
+            with self.subTest(phase=phase, verdict=verdict, fields=fields):
+                bound = self.loop.bound(self.gh.pull, self.gh.issues[35], self.gh.comments(36))[0]
+                if fields.get('pending_provider'): bound = dict(bound, remote_review_complete=False)
+                self.gh.pull.update(merged=phase in ('cleanup', 'done'), state='closed' if phase in ('cleanup', 'done') else 'open')
+                self.gh.issues[35]['state'] = 'closed' if phase == 'done' and fields.get('issue_complete', True) else 'open'
+                raw = tal.report(verdict or 'approved')
+                if 'issue_complete' in fields: raw['issue_complete'] = fields['issue_complete']
+                if phase == 'gui-queued': raw['gui_required'] = True
+                identity = tal.report()['session'] if phase == 'ci-wait' and verdict == 'approved' else 'Actual-Native-Reviewer'
+                issued, _ = self.issued(raw, identity=identity, bound=bound)
+                receipt = self.loop.storage / 'registry' / (issued['origin_receipt'] + '.json'); original = receipt.read_bytes()
+                state = {'phase': 'reviewed', 'binding': bound, 'review': issued, 'next': 'private detailed next action'}
+                sid = self.loop.save(self.gh.pull, state, None)
+                state = self.loop.load(36)[1]
+                state.update(phase=phase, **{k: v for k, v in fields.items() if k not in ('pending_provider', 'issue_complete')})
+                if phase in ('merging', 'cleanup', 'done'):
+                    state['acceptance'] = {'allowed': True, 'mode': 'tooling', 'head': bound['head'], 'base': bound['base']}
+                if phase == 'done': state['merge_sha'] = self.gh.pull['merge_commit_sha']
+                if verdict is None: self.loop.invalidate_acceptance(state)
+                if phase == 'gui-queued':
+                    self.assertEqual(next_action(state, bound, 'success', True, storage=self.loop.storage), 'gui-queued')
+                if phase == 'reviewed' and verdict == 'changes_requested':
+                    self.assertEqual(next_action(state, bound, 'success', False, storage=self.loop.storage),
+                                     'blocked' if fields['fixes'] == 3 else 'fix')
+                self.loop.save(self.gh.pull, state, sid)
+                public = tal.al.unpack(self.gh.comments(36), tal.al.STATE)[0]
+                self.assertEqual(public['next'], expected)
+                self.assertEqual(public['phase'], phase)
+                if verdict is None:
+                    self.assertEqual(public['review']['status'], 'pending')
+                    self.assertIsNone(public['review']['finding_count'])
+                progress = [c['body'] for c in self.gh.comments(35) if c['body'].startswith('<!-- agent-loop-progress:')][-1]
+                self.assertIn('Next: ' + expected, progress)
+                restored = self.loop.load(36)[1]
+                self.assertEqual(restored['next'], 'private detailed next action')
+                self.assertEqual(restored.get('review'), issued if verdict else None)
+                self.assertEqual(self.loop.public_result(restored)['next'], expected)
+                self.assertEqual(self.loop.public_result(public)['next'], expected)
+                self.assertNotIn('private detailed next action', json.dumps(public))
+                self.assertEqual(receipt.read_bytes(), original)
+                if fields.get('retry_at'):
+                    with patch.object(tal.al.time, 'time', return_value=0): early = self.loop.public_state(restored)
+                    with patch.object(tal.al.time, 'time', return_value=9999999999): late = self.loop.public_state(restored)
+                    self.assertEqual(early, late)
+        legacy = {'phase': 'ci-wait', 'binding': bound, 'review': tal.report(), 'next': 'Ordinary UUID public action'}
+        self.assertEqual(self.loop.public_state(legacy)['next'], legacy['next'])
+
+    def test_native_next_outward_ci_merge_issue_cleanup_and_done_are_separate(self):
+        import sys
+        issued, bound = self.issued()
+        receipt = self.loop.storage / 'registry' / (issued['origin_receipt'] + '.json'); original = receipt.read_bytes()
+        self.loop.save(self.gh.pull, {'phase': 'reviewed', 'binding': bound, 'review': issued, 'expected_head': tal.HEAD}, None)
+        self.gh.ci = Mock(return_value='pending')
+        result = self.loop.tick(36)
+        self.assertEqual(result['phase'], 'ci-wait')
+        self.assertEqual(result['next'], 'wait-for-required-ci-checks')
+        args = ['agent_loop.py', 'tick', '--pr', '36']
+        with patch.object(tal.al, 'Loop', return_value=self.loop), patch.object(tal.al, 'coordinator_lock'), \
+                patch.object(tal.al, 'ROOT', self.checkout), patch.object(sys, 'argv', args), patch('builtins.print') as printed:
+            self.assertEqual(tal.al.main(), 0)
+        self.assertEqual(json.loads(printed.call_args_list[-1].args[0])[0]['next'], 'wait-for-required-ci-checks')
+        self.gh.ci.return_value = 'success'
+        save = self.loop.save
+        observed = []
+        def capture(pr, state, sid):
+            result = save(pr, state, sid)
+            public = tal.al.unpack(self.gh.comments(36), tal.al.STATE)[0]
+            observed.append((public['phase'], public['next'], self.gh.pull['merged'], self.gh.issues[35]['state'], self.loop.cleanup.call_count))
+            return result
+        with patch.object(self.loop, 'save', side_effect=capture):
+            self.assertEqual(self.loop.tick(36)['phase'], 'done')
+        self.assertIn(('merging', 'confirm-github-merge-result', False, 'open', 0), observed)
+        self.assertIn(('cleanup', 'reconcile-issue-disposition-then-verify-owned-resource-cleanup', True, 'open', 0), observed)
+        self.assertIn(('done', 'pm-confirm-issue-qa-project-and-roadmap-status', True, 'closed', 1), observed)
+        self.assertEqual(self.loop.load(36)[1]['review'], issued)
+        self.assertEqual(receipt.read_bytes(), original)
+        self.worker.assert_not_called(); self.loop.cleanup.assert_called_once()
 
 
 class PrivacyTests(unittest.TestCase):

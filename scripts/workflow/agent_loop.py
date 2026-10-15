@@ -439,11 +439,41 @@ class Loop:
         phase = state.get('phase', 'queued')
         if not public_machine_value(('phase',), phase):
             raise ValueError('Invalid coordinator phase')
+        phase_next = {
+            'syncing': 'merge-current-base-then-publish',
+            'publishing': 'validate-and-publish-issue-branch',
+            'remote-review-wait': 'wait-for-current-head-review-completion',
+            'reviewing': 'complete-independent-read-only-review',
+            'fixing': 'apply-bounded-private-review-findings',
+            'gui-queued': 'designated-operator-observe-required-gui-evidence',
+            'acceptance-wait': 'complete-required-acceptance',
+            'ci-wait': 'wait-for-required-ci-checks',
+            'ci-failed': 'inspect-ci-failure-and-recover',
+            'blocked': 'owner-recovery',
+            'merging': 'confirm-github-merge-result',
+            'cleanup': 'reconcile-issue-disposition-then-verify-owned-resource-cleanup',
+            'done': 'pm-confirm-issue-qa-project-and-roadmap-status',
+        }
+        if state.get('paused'):
+            selected_next = 'owner-resume-required'
+        elif report is not None and phase in ('merging', 'cleanup', 'done'):
+            selected_next = phase_next[phase]
+        elif state.get('errors') and state.get('retry_at'):
+            selected_next = 'check-scheduled-retry-and-private-diagnostic'
+        elif phase in ('syncing', 'publishing', 'remote-review-wait', 'reviewing'):
+            selected_next = phase_next[phase]
+        elif report is None:
+            selected_next = 'review'
+        elif phase in ('queued', 'reviewed'):
+            selected_next = ('wait-for-current-head-review-completion' if bound.get('remote_review_complete') is False else
+                             {'approved': 'reconcile-acceptance-and-review-obligations',
+                              'changes_requested': 'fix' if state.get('fixes', 0) < 3 else 'owner-recovery',
+                              'blocked': 'owner-recovery'}[report['verdict']])
+        else:
+            selected_next = phase_next[phase]
         public = {'phase': phase, 'review': envelope, 'binding': {},
                   'state_sha256': digest({k: v for k, v in state.items() if k != 'review_ref'}),
-                  'next': ('owner-resume-required' if state.get('paused') else 'done' if phase == 'done' else
-                           'review' if report is None else
-                           {'approved': 'reconcile-acceptance-and-review-obligations', 'changes_requested': 'fix', 'blocked': 'owner-recovery'}[report['verdict']])}
+                  'next': selected_next}
         for section, keys in (
                 ('binding', ('head', 'base', 'target', 'title_hash', 'body_hash', 'issue_hash', 'feedback_hash')),
                 ('gui', ('head', 'base', 'artifact_sha256')),
