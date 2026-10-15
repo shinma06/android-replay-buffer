@@ -104,27 +104,70 @@ def restore_review(storage, identifier, public, with_paths=False):
     return (local['review'], paths) if with_paths else local['review']
 
 
-def issue_review_origin(storage, report, bound, session, kind, private_paths=(), private_sessions=()):
+def issue_review_origin(storage, report, bound, session, kind, private_paths=(), private_sessions=(), native_origin=None):
     """Trusted adapter boundary, not authentication against a writer of local files/environment."""
     from agent_policy import canonical_session, session_fingerprint
     session = canonical_session(session)
-    if (report.get('session') != session or 'origin_receipt' in report or kind not in ('cli', 'manual') or
+    submitted_report = report
+    report = {k: v for k, v in report.items() if k != 'private_sessions'}
+    if (report.get('session') != session or 'origin_receipt' in report or kind not in ('cli', 'manual', 'native') or
             not isinstance(bound, dict) or any(bound.get(k) != report.get(k) for k in ('head', 'base'))):
         raise ValueError('Adapter origin differs from report or is already bound')
+    if kind == 'native':
+        from agent_policy import native_session
+        observed = native_origin.get('observation', {}) if isinstance(native_origin, dict) else {}
+        submitted = native_origin.get('submitted_report') if isinstance(native_origin, dict) else None
+        if (not isinstance(submitted, dict) or
+                native_session(native_origin.get('issuer'), observed.get('session_id')) != session or
+                observed.get('binding_sha256') != digest(bound) or
+                observed.get('report_sha256') != digest(submitted) or
+                dict({k: v for k, v in submitted.items() if k != 'private_sessions'}, session=session) != report):
+            raise ValueError('Native source differs from the observed report/binding')
+        report = dict(report, private_identifiers=[observed['source'], observed['operation_id']])
+    elif native_origin is not None:
+        raise ValueError('Unexpected native origin for legacy adapter')
     if private_sessions:
-        report = dict(report, private_sessions=sorted(set(map(session_fingerprint, private_sessions))))
+        report = dict(report, private_sessions=sorted(set(map(session_fingerprint, private_sessions)) |
+                      {s for s in private_sessions if s.startswith('native-session-v1:')}))
     public = {'binding': bound, 'review': report}
     identifier = store_review(storage, public, {'kind': 'adapter-review-origin-v1', 'adapter': kind,
-                                              'session': session, 'report': report}, private_paths)
+                                              'session': session, 'report': report,
+                                              'contributor_sessions': list(private_sessions),
+                                              **({'submitted_report': submitted_report} if 'private_sessions' in submitted_report else {}),
+                                              **({'native_origin': native_origin} if kind == 'native' else {})}, private_paths)
     return dict(report, origin_receipt=identifier)
 
 
-def verify_review_origin(storage, report, bound):
+def verify_review_origin(storage, report, bound, with_sessions=False):
     if storage is None:
         raise ValueError('Repair approval requires its trusted adapter private registry')
     original = {k: v for k, v in report.items() if k != 'origin_receipt'}
     receipt, paths = restore_review(storage, report.get('origin_receipt'), {'binding': bound, 'review': original}, True)
-    if (receipt.get('kind') != 'adapter-review-origin-v1' or receipt.get('adapter') not in ('cli', 'manual') or
+    if (receipt.get('kind') != 'adapter-review-origin-v1' or receipt.get('adapter') not in ('cli', 'manual', 'native') or
             receipt.get('session') != report.get('session') or receipt.get('report') != original):
         raise ValueError('Report was not issued by the actual-session adapter')
-    return paths
+    if not with_sessions or 'private_sessions' not in report:
+        return (paths, []) if with_sessions else paths
+    from agent_policy import session_fingerprint
+    contributors = receipt.get('contributor_sessions')
+    if contributors is None:
+        # Old receipts need their retained canonical mapping, never the report's claim.
+        from agent_worker import read_repair_bundle, recover_originals
+        kind = 'certificate_revision' if report.get('certificate_revision') else 'repair_revision'
+        expected_hash = report.get(kind.replace('_revision', '_evidence_sha256'))
+        for record in recover_originals(storage, {'review': report, 'binding': bound}):
+            if record['sha256'] != expected_hash:
+                continue
+            body, bundle = read_repair_bundle(record['path'], kind)
+            if (hashlib.sha256(body).hexdigest() != expected_hash or
+                    any(bundle[k] != report.get(k) for k in ('head', 'base', kind))):
+                raise ValueError('Retained contributor bundle differs from the issued report')
+            contributors = [origin['session'] for origin in bundle['origins']]
+            break
+    if not isinstance(contributors, list):
+        raise ValueError('Reserved contributor metadata lacks independent retained provenance')
+    sessions = sorted(set(map(session_fingerprint, contributors)) |
+                      {s for s in contributors if s.startswith('native-session-v1:')})
+    if report['private_sessions'] != sessions:
+        raise ValueError('Reserved contributor metadata differs from adapter-verified identities')
+    return paths, sessions

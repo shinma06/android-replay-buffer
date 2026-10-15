@@ -12,7 +12,7 @@ from unittest.mock import Mock, call, patch
 
 import agent_loop as al
 from change_impact import classify
-from agent_policy import binding, eligible, gui_pass, in_scope, next_action, update_parent, validate_review
+from agent_policy import binding, native_session, eligible, gui_pass, in_scope, next_action, update_parent, validate_review
 from agent_worker import bind_report_session, event_session, main as bind_manual_report, worker_environment, run_worker
 
 HEAD = 'a' * 40
@@ -510,7 +510,8 @@ class WorkerTests(unittest.TestCase):
             self.assertEqual(event_session(path), session)
             for invalid in ([], [done], [start], [start, start, done], [start, done, done],
                             [dict(start, thread_id='review-' + session), done],
-                            [dict(start, thread_id=None), done], [start, {'type': 'turn.failed'}, done],
+                            [dict(start, thread_id=None), done],
+                            [dict(start, thread_id=native_session('example.invalid', 'Native-1')), done], [start, {'type': 'turn.failed'}, done],
                             [start, {'type': 'error'}, done], [start, []], [start, {'type': 1}]):
                 path.write_text(''.join(json.dumps(x) + '\n' for x in invalid))
                 with self.subTest(events=invalid), self.assertRaises(ValueError): event_session(path)
@@ -532,6 +533,10 @@ class WorkerTests(unittest.TestCase):
                 self.assertEqual(json.loads(target.read_text())['session'], session)
                 self.assertEqual(target.stat().st_mode & 0o777, 0o600)
                 with self.assertRaises(FileExistsError): bind_manual_report()
+            with patch.object(sys, 'argv', args), patch.dict(os.environ,
+                    {'CODEX_THREAD_ID': native_session('example.invalid', 'Native-1')}):
+                with self.assertRaisesRegex(ValueError, 'Codex source'):
+                    bind_manual_report()
             self.assertEqual(source.read_bytes(), original)
             for claimed in ('review-' + session, 'public reviewer', '00000000-0000-4000-8000-000000000001'):
                 with self.subTest(claimed=claimed), self.assertRaisesRegex(ValueError, 'differs'):

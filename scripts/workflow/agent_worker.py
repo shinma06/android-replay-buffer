@@ -10,8 +10,8 @@ import stat
 import subprocess
 import tomllib
 import uuid
-from agent_policy import canonical_session, session_fingerprint
-from handoff_registry import issue_review_origin
+from agent_policy import canonical_session, codex_session, native_session, session_fingerprint
+from handoff_registry import digest, issue_review_origin
 from verification import bind_receipt_claim
 
 REPORT_SCHEMA = {
@@ -39,7 +39,46 @@ def bind_report_session(report, session):
     session = canonical_session(session)
     if 'session' in report and report['session'] != session:
         raise ValueError('Report session differs from the actual originating session')
-    return dict(report, session=session)
+    # Submitted metadata is not verified contributor provenance.
+    return dict({k: v for k, v in report.items() if k != 'private_sessions'}, session=session)
+
+
+def bind_native_review(report, bound, storage, *, issuer, observe_origin, acceptance=None, repair_evidence=None):
+    """Trusted host embedding entry; the host acquires its native execution receipt.
+
+    observe_origin reads the host's authenticated execution record for this review,
+    independently of report fields. It returns session_id, source (private locator),
+    operation_id, report_sha256 and binding_sha256 for the supplied report/binding.
+    Its issuer is the runtime identity domain/instance, stable across models/roles.
+    Arbitrary report JSON, a task-selected callback or a self-issued receipt is not
+    an origin source. This API trusts the host as the legacy adapters trust their CLI
+    envelope/environment; it does not authenticate a hostile local host.
+    """
+    report = dict(report)
+    revision_field = 'certificate_revision' if report.get('certificate_revision') else 'repair_revision'
+    paths, sessions = [], []
+    if report.get(revision_field):
+        evidence = private_repair_evidence(repair_evidence, acceptance, bound, revision_field=revision_field)
+        report[revision_field.replace('_revision', '_evidence_sha256')] = evidence['bundle_sha256']
+        report['evidence_records'] = evidence['evidence_records']
+        paths, sessions = evidence['private_paths'], [origin['session'] for origin in evidence['origins']]
+    # Identity is acquired before hashing the bound report; the host validates the
+    # actual operation and submitted content, not merely an echo of these arguments.
+    observed = observe_origin(dict(report), dict(bound))
+    if (not isinstance(observed, dict) or set(observed) !=
+            {'session_id', 'source', 'operation_id', 'report_sha256', 'binding_sha256'} or
+            any(not isinstance(observed.get(k), str) or not observed[k].strip() for k in observed)):
+        raise ValueError('Native host observation is missing or malformed')
+    if observed['report_sha256'] != digest(report) or observed['binding_sha256'] != digest(bound):
+        raise ValueError('Native operation does not match this report/binding')
+    submitted = report
+    report = bind_report_session(report, native_session(issuer, observed['session_id']))
+    origin = {'issuer': issuer, 'observation': observed, 'submitted_report': submitted}
+    # Raw host locators stay inside the private receipt and are redacted from prose.
+    private_paths = list(paths)
+    if Path(observed['source']).is_absolute():
+        private_paths.append(observed['source'])
+    return issue_review_origin(storage, report, bound, report['session'], 'native', private_paths, sessions, origin)
 
 
 def read_repair_bundle(path, revision_field='repair_revision'):
@@ -248,7 +287,7 @@ def event_session(path):
             if kind == 'thread.started':
                 if session is not None:
                     raise ValueError('Ambiguous originating thread.started events')
-                session = canonical_session(event.get('thread_id'))
+                session = codex_session(event.get('thread_id'))
             if kind in ('turn.failed', 'error') or completed:
                 raise ValueError('Failed or ambiguous Codex event stream')
             completed = kind == 'turn.completed'
@@ -376,7 +415,7 @@ def main():
     parser.add_argument('--storage', type=Path, help='Trusted coordinator private registry storage')
     parser.add_argument('--binding', type=Path, help='Complete verified HEAD/base/Issue/feedback binding')
     args = parser.parse_args()
-    report = bind_report_session(json.loads(private_original(args.report)), os.environ.get('CODEX_THREAD_ID'))
+    report = bind_report_session(json.loads(private_original(args.report)), codex_session(os.environ.get('CODEX_THREAD_ID')))
     revision_field = 'certificate_revision' if report.get('certificate_revision') else 'repair_revision'
     if report.get(revision_field):
         if not args.acceptance or not args.binding or not args.storage:

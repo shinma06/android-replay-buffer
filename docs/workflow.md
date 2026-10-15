@@ -74,7 +74,7 @@ IDE/build/process/保存/UI/検証/共通ハーネスに関係する変更は、
 
 リモート指摘は[finish-work](../.agents/skills/finish-work/SKILL.md)の取得・対応手順で照合します。`python3 scripts/workflow/agent_loop.py feedback --pr N`は読取専用です。raw結果はprivateに保存し、review本文、inline/返信、PR/Issue conversation、botの最新summary、解決/旧版状態を省略せず確認します。既存Issue/PRへ指摘ID/URL・元commit・現固定版の修正/検査又は根拠付き非該当/置換を残し、不明・未解決を承認しません。
 
-DraftをreadyにするとCodexレビューが非同期に始まります。取得時に空でも完了ではなく、現在HEADのCode Reviewがprovider summaryでCompletedになるまでpendingです。旧版の完了・reaction・CI成功・一定時間の経過を代用せず、観測不能/失敗/format変更は未達と次のreadbackを引き継ぎます。可視summaryはサービスの完了信号であり、独立コード承認や将来の追加指摘がない保証ではありません。投稿済みの全指摘を処理し、修正後の固定版を独立レビューします。
+Draftをreadyにすると設定済みのレビューが非同期に始まり得ます。[完了元の選択](setup/automation.md#レビュー元と実行元の選択)をfeedback取得から統合・終了まで共通に使います。既定のCodex経路は現HEADのCode Reviewがprovider summaryでCompletedになるまでpendingです。明示選択したGitHub経路は指定reviewerの現HEADのterminal reviewを確認します。空の取得、旧版の完了・reaction・CI成功・時間経過を代用せず、観測不能/失敗/不明な形式は未達として引き継ぎます。方式変更で既存の未完了依頼を取り消しません。完了信号は独立承認や将来の追加指摘がない保証ではなく、全指摘を処理した固定版を別セッションでレビューします。
 
 merge直前にHEAD/base/feedback hashを再取得し、変更があれば対応判断とレビューをやり直します。merge後・close前も読み戻します。後着・編集で具体的な未解決指摘が出たら、原Issue又は専用修正Issueに元レビューと実再現・担当・次操作を残して該当範囲を再開します。過去の承認は当時のsnapshotとして保存し、指摘なしの永久保証にしません。常駐監視、余分な本人承認、終了済みwriterの暗黙再開は追加しません。
 

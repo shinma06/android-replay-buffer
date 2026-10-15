@@ -10,9 +10,9 @@ import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
-from agent_policy import session_fingerprint, validate_review
-from agent_worker import main as bind_manual_report, private_repair_evidence, run_worker
-from handoff_registry import issue_review_origin, register, restore_review
+from agent_policy import canonical_session, native_session, session_fingerprint, validate_review
+from agent_worker import bind_native_review, main as bind_manual_report, private_repair_evidence, run_worker
+from handoff_registry import digest, issue_review_origin, register, restore_review, verify_review_origin
 import test_agent_loop as tal
 from verification import repair_contributors
 
@@ -178,6 +178,314 @@ class EvidenceTests(unittest.TestCase):
 class PrivacyTests(unittest.TestCase):
     setUp = tal.LoopTests.setUp
 
+    def test_native_origin_is_private_in_saved_state_text_and_encoded_links(self):
+        from urllib.parse import quote
+        identity = 'Case-Sensitive/Session-99'
+        source = 'native://example.invalid/operation-19'
+        raw = tal.report(); raw.pop('session')
+        bound = {'head': tal.HEAD, 'base': tal.BASE}
+        observed = {'session_id': identity, 'source': source, 'operation_id': 'operation-19',
+                    'report_sha256': digest(raw), 'binding_sha256': digest(bound)}
+        issued = bind_native_review(raw, bound, self.loop.storage, issuer='example.invalid/host-1',
+                                    observe_origin=Mock(return_value=observed))
+        # Preserve the original sealed report; exercise text projection separately.
+        for text in (identity, issued['session'], source, '[origin](https://example.invalid/' + quote(identity, safe='') + ')',
+                     '[origin](https://example.invalid/Case&#45;Sensitive/Session-99)',
+                     '[origin](https://example.invalid/Case\\-Sensitive/Session-99)'):
+            public = self.loop.public_state(dict(issued, evidence=text))
+            serialized = json.dumps(public)
+            self.assertNotIn(identity, serialized)
+            self.assertNotIn(issued['session'], serialized)
+            self.assertNotIn(source, serialized)
+            self.assertNotIn('Session-99', serialized)
+        external = 'https://example.invalid/ordinary-public-record'
+        self.assertEqual(self.loop.public_state(dict(issued, evidence=external))['evidence'], external)
+        state = {'phase': 'reviewed', 'binding': bound, 'review': issued}
+        self.loop.save(self.gh.pull, state, None)
+        restored = self.loop.load(36)[1]['review']
+        self.assertEqual(restored, issued)
+        verify_review_origin(self.loop.storage, restored, bound)
+        self.gh.comment(36, tal.al.pack(tal.al.STATE, {'review': {'session': session_fingerprint(issued['session'])}}))
+        with self.assertRaisesRegex(ValueError, 'private review'): self.loop.load(36)
+
+    def test_short_native_ids_preserve_binding_and_machine_metadata_through_save_load(self):
+        self.gh.pull['head']['sha'] = '19' * 20
+        self.loop.github_reviewer = 'reviewer-1'
+        for identity, operation in [('Session-9', '19'), ('1', 'operation-1'), ('e', 'e'),
+                                    ('session', 'evidence'), ('review', 'binding'), ('head', 'base')]:
+            with self.subTest(identity=identity, operation=operation):
+                bound = self.loop.bound(self.gh.pull, self.gh.issues[35], self.gh.comments(36))[0]
+                raw = tal.report(head=bound['head']); raw.pop('session')
+                if identity in ('session', 'review', 'head'):
+                    raw['evidence'] = {identity: 'first diagnostic', operation: 'second diagnostic'}
+                observed = {'session_id': identity, 'source': 'native://host/operation', 'operation_id': operation,
+                            'report_sha256': digest(raw), 'binding_sha256': digest(bound)}
+                issued = bind_native_review(raw, bound, self.loop.storage, issuer='example.invalid',
+                                            observe_origin=Mock(return_value=observed))
+                state = {'phase': 'reviewed', 'binding': bound, 'review': issued, 'expected_head': bound['head']}
+                sid = self.loop.save(self.gh.pull, state, None)
+                public = self.loop.public_state(state)
+                self.assertEqual(public['binding'], bound)
+                self.assertEqual(public['review']['head'], bound['head'])
+                self.assertEqual(public['review']['origin_receipt'], issued['origin_receipt'])
+                self.assertEqual(public['review']['repair_evidence_sha256'], raw['repair_evidence_sha256'])
+                self.assertEqual(public['expected_head'], bound['head'])
+                self.assertEqual(set(public['review']), set(issued) - {'private_identifiers'})
+                self.assertEqual(public['review']['session'], session_fingerprint(issued['session']))
+                if isinstance(raw['evidence'], dict):
+                    self.assertEqual(public['review']['evidence'], {
+                        session_fingerprint(issued['session']): 'first diagnostic',
+                        '[private origin]': 'second diagnostic'})
+                restored = self.loop.load(36)[1]
+                self.assertEqual(restored['binding'], bound)
+                self.assertEqual(restored['review'], issued)
+                validate_review(restored['review'], bound)
+                self.assertEqual(self.loop.bound(self.gh.pull, self.gh.issues[35], self.gh.comments(36))[0], bound)
+                self.loop.save(self.gh.pull, restored, sid)
+                verify_review_origin(self.loop.storage, self.loop.load(36)[1]['review'], bound)
+
+    def test_extra_and_nested_report_fields_never_inherit_machine_metadata_exemption(self):
+        identity, source, operation = 'Case-Sensitive/Session-99', 'native://example.invalid/operation-19', 'operation-19'
+        for extra in ({'diagnostic_revision': identity}, {'status': source}, {'evidence': {'status': operation}},
+                      {'binding': {'head': identity, 'review_completion': {'method': source}}},
+                      {'evidence': {'session': 'native-session-v1:00:00', 'origin_receipt': source,
+                                    'review': {'session': 'native-session-v1:00:00'},
+                                    'private_sessions': ['native-session-v1:00:00']}},
+                      {'verdict_sha256': operation}):
+            with self.subTest(extra=extra):
+                bound = self.loop.bound(self.gh.pull, self.gh.issues[35], self.gh.comments(36))[0]
+                raw = dict(tal.report(), **extra); raw.pop('session')
+                observed = {'session_id': identity, 'source': source, 'operation_id': operation,
+                            'report_sha256': digest(raw), 'binding_sha256': digest(bound)}
+                issued = bind_native_review(raw, bound, self.loop.storage, issuer='example.invalid',
+                                            observe_origin=Mock(return_value=observed))
+                state = {'phase': 'reviewed', 'binding': bound, 'review': issued}
+                self.loop.save(self.gh.pull, state, None)
+                public = self.loop.public_state(state)
+                serialized = json.dumps(public)
+                for private in (identity, source, operation, issued['session']):
+                    self.assertNotIn(private, serialized)
+                self.assertEqual(public['binding'], bound)
+                restored = self.loop.load(36)[1]
+                self.assertEqual(restored['review'], issued)
+                verify_review_origin(self.loop.storage, restored['review'], bound)
+        for field in ('head', 'base', 'repair_revision', 'repair_evidence_sha256', 'origin_receipt', 'verdict'):
+            public = self.loop.public_state(dict(issued, **{field: identity}))
+            self.assertNotIn(identity, json.dumps(public))
+
+    def test_native_diagnostic_keys_are_private_through_issuance_save_and_load(self):
+        from urllib.parse import quote
+        identity, source, operation = 'Case-Sensitive/Session-99', 'native://example.invalid/operation-19', 'operation-19'
+        for extra in ({'evidence': {operation: 'checked', 'ordinary': 'also checked'}}, {'evidence': [{source: 'checked'}]},
+                      {identity: 'checked'}, {'evidence': {'[origin](https://example.invalid/' +
+                          quote(identity, safe='') + ')': 'checked'}},
+                      {'evidence': {'[origin](https://example.invalid/Case&#45;Sensitive/Session-99)': 'checked'}}):
+            with self.subTest(extra=extra):
+                bound = self.loop.bound(self.gh.pull, self.gh.issues[35], self.gh.comments(36))[0]
+                raw = dict(tal.report(), **extra); raw.pop('session')
+                original = copy.deepcopy(raw)
+                observed = {'session_id': identity, 'source': source, 'operation_id': operation,
+                            'report_sha256': digest(raw), 'binding_sha256': digest(bound)}
+                issued = bind_native_review(raw, bound, self.loop.storage, issuer='example.invalid',
+                                            observe_origin=Mock(return_value=observed))
+                validate_review(issued, bound)
+                receipt = self.loop.storage / 'registry' / (issued['origin_receipt'] + '.json')
+                receipt_bytes = receipt.read_bytes()
+                self.assertEqual(json.loads(receipt_bytes)['review']['native_origin']['submitted_report'], original)
+                state = {'phase': 'reviewed', 'binding': bound, 'review': issued}
+                self.loop.save(self.gh.pull, state, None)
+                public = tal.al.unpack(self.gh.comments(36), tal.al.STATE)[0]
+                serialized = json.dumps(public)
+                for private in (identity, source, operation, issued['session'], quote(identity, safe=''), 'Session-99'):
+                    self.assertNotIn(private, serialized)
+                if isinstance(extra.get('evidence'), dict):
+                    self.assertEqual(len(public['review']['evidence']), len(extra['evidence']))
+                    self.assertEqual(list(public['review']['evidence'].values()), list(extra['evidence'].values()))
+                restored = self.loop.load(36)[1]
+                self.assertEqual(restored['review'], issued)
+                self.assertEqual(raw, original)
+                self.assertEqual(receipt.read_bytes(), receipt_bytes)
+                validate_review(restored['review'], restored['binding'])
+                verify_review_origin(self.loop.storage, restored['review'], bound)
+
+    def test_submitted_private_sessions_cannot_exempt_private_operation_on_roundtrip(self):
+        from agent_worker import bind_report_session
+        operation = 'a' * 64
+        claimed = 'native-session-sha256:' + operation
+        for metadata in (None, [claimed], [native_session('example.invalid', 'unverified contributor')]):
+            with self.subTest(metadata=metadata):
+                bound = self.loop.bound(self.gh.pull, self.gh.issues[35], self.gh.comments(36))[0]
+                raw = dict(tal.report(), evidence='Operation: ' + claimed); raw.pop('session')
+                if metadata is not None:
+                    raw['private_sessions'] = metadata
+                original = copy.deepcopy(raw)
+                observed = {'session_id': 'Actual-Session-99', 'source': 'native://host/private-record',
+                            'operation_id': operation, 'report_sha256': digest(raw), 'binding_sha256': digest(bound)}
+                issued = bind_native_review(raw, bound, self.loop.storage, issuer='example.invalid',
+                                            observe_origin=Mock(return_value=observed))
+                actual = session_fingerprint(issued['session'])
+                self.assertNotEqual(actual, claimed)
+                self.assertNotIn('private_sessions', issued)
+                validate_review(issued, bound)
+                receipt = self.loop.storage / 'registry' / (issued['origin_receipt'] + '.json')
+                receipt_bytes = receipt.read_bytes()
+                self.assertEqual(json.loads(receipt_bytes)['review']['native_origin']['submitted_report'], original)
+                state = {'phase': 'reviewed', 'binding': bound, 'review': issued}
+                sid = self.loop.save(self.gh.pull, state, None)
+                public = tal.al.unpack(self.gh.comments(36), tal.al.STATE)[0]
+                self.assertNotIn(operation, public['review']['evidence'])
+                self.assertEqual(public['review']['session'], actual)
+                restored = self.loop.load(36)[1]
+                self.assertEqual(restored['review'], issued)
+                validate_review(restored['review'], bound)
+                verify_review_origin(self.loop.storage, restored['review'], bound)
+                self.loop.save(self.gh.pull, restored, sid)
+                self.assertEqual(self.loop.load(36)[1]['review'], issued)
+                self.assertEqual(receipt.read_bytes(), receipt_bytes)
+                self.assertEqual(raw, original)
+                # Legacy file/CLI intake also cannot turn extra fields into provenance.
+                legacy = bind_report_session(raw, tal.report()['session'])
+                self.assertNotIn('private_sessions', legacy)
+                if metadata is not None:
+                    submitted = dict(raw, session=tal.report()['session'])
+                    manual = issue_review_origin(self.loop.storage, submitted, bound, submitted['session'], 'manual')
+                    self.assertNotIn('private_sessions', manual)
+                    record = self.loop.storage / 'registry' / (manual['origin_receipt'] + '.json')
+                    self.assertEqual(json.loads(record.read_bytes())['review']['submitted_report'], submitted)
+                    verify_review_origin(self.loop.storage, manual, bound)
+
+    def test_verified_contributors_and_legacy_bundle_survive_public_resume(self):
+        from handoff_registry import store_review
+        fixture = EvidenceTests(); fixture.setUp(); self.addCleanup(fixture.doCleanups)
+        contributor = native_session('example.invalid', 'session')
+        fixture.sessions[1] = contributor
+        fixture.bundle['origins'][1]['session'] = contributor
+        fixture.items[1]['session'] = session_fingerprint(contributor)
+        fixture.seal()
+        bound = self.loop.bound(self.gh.pull, self.gh.issues[35], self.gh.comments(36))[0]
+        raw = dict(tal.report(), repair_revision='e' * 64, repair_assessment='Synthetic original evidence assessment',
+                   evidence=' '.join(fixture.sessions)); raw.pop('session')
+        def observe(submitted, binding):
+            return {'session_id': 'Actual-Reviewer', 'source': 'native://host/review', 'operation_id': '1',
+                    'report_sha256': digest(submitted), 'binding_sha256': digest(binding)}
+        issued = bind_native_review(raw, bound, self.loop.storage, issuer='example.invalid', observe_origin=observe,
+                                    acceptance=fixture.accepted, repair_evidence=fixture.path)
+        accepted = dict(fixture.accepted, repair_observers=list(map(session_fingerprint, fixture.sessions)),
+                        repair_evidence_sha256=issued['repair_evidence_sha256'])
+        original_path = self.loop.storage / 'registry' / (issued['origin_receipt'] + '.json')
+        original_bytes = original_path.read_bytes()
+        # Construct a separate old-format fixture; never rewrite the sealed current receipt.
+        legacy = json.loads(original_bytes)['review']; legacy.pop('contributor_sessions', None)
+        unbound = {k: v for k, v in issued.items() if k != 'origin_receipt'}
+        legacy_ref = store_review(self.loop.storage, {'binding': bound, 'review': unbound}, legacy,
+                                  verify_review_origin(self.loop.storage, issued, bound))
+        for report in (issued, dict(unbound, origin_receipt=legacy_ref)):
+            with self.subTest(receipt=report['origin_receipt']):
+                path = self.loop.storage / 'registry' / (report['origin_receipt'] + '.json')
+                before = path.read_bytes()
+                state = {'phase': 'reviewed', 'binding': bound, 'review': report, 'acceptance': accepted}
+                self.loop.save(self.gh.pull, state, None)
+                public = tal.al.unpack(self.gh.comments(36), tal.al.STATE)[0]
+                for session in fixture.sessions:
+                    self.assertIn(session_fingerprint(session), public['review']['evidence'])
+                self.assertEqual(public['review']['session'], session_fingerprint(issued['session']))
+                restored = self.loop.load(36)[1]
+                self.assertEqual(restored['review'], report)
+                validate_review(restored['review'], bound, restored['acceptance'], self.loop.storage)
+                self.assertEqual(path.read_bytes(), before)
+        self.assertEqual(original_path.read_bytes(), original_bytes)
+        claimed = dict(unbound, private_sessions=['native-session-sha256:' + 'a' * 64])
+        unsupported = dict(legacy, report=claimed)
+        ref = store_review(self.loop.storage, {'binding': bound, 'review': claimed}, unsupported,
+                           verify_review_origin(self.loop.storage, issued, bound))
+        before = copy.deepcopy(self.gh.messages)
+        with self.assertRaisesRegex(ValueError, 'adapter-verified identities'):
+            self.loop.save(self.gh.pull, {'phase': 'reviewed', 'binding': bound,
+                           'review': dict(claimed, origin_receipt=ref)}, None)
+        self.assertEqual(self.gh.messages, before)
+
+    def test_colliding_private_diagnostic_keys_fail_before_public_write(self):
+        identity, source, operation = 'NativeReviewSession', 'native://host/review', 'operation-19'
+        session = native_session('example.invalid', identity)
+        for extra in ({'evidence': {operation: 'first', source: 'second'}},
+                      {operation: 'first', '[private origin]': 'second'},
+                      {'evidence': {identity: 'first', session_fingerprint(session): 'second'}}):
+            with self.subTest(extra=extra):
+                bound = self.loop.bound(self.gh.pull, self.gh.issues[35], self.gh.comments(36))[0]
+                raw = dict(tal.report(), **extra); raw.pop('session')
+                observed = {'session_id': identity, 'source': source, 'operation_id': operation,
+                            'report_sha256': digest(raw), 'binding_sha256': digest(bound)}
+                issued = bind_native_review(raw, bound, self.loop.storage, issuer='example.invalid',
+                                            observe_origin=Mock(return_value=observed))
+                validate_review(issued, bound)
+                receipt = self.loop.storage / 'registry' / (issued['origin_receipt'] + '.json')
+                receipt_bytes = receipt.read_bytes()
+                comments = copy.deepcopy(self.gh.messages)
+                with self.assertRaisesRegex(ValueError, 'diagnostic key collision'):
+                    self.loop.save(self.gh.pull, {'phase': 'reviewed', 'binding': bound, 'review': issued}, None)
+                self.assertEqual(self.gh.messages, comments)
+                self.assertEqual(receipt.read_bytes(), receipt_bytes)
+                verify_review_origin(self.loop.storage, issued, bound)
+
+    def test_non_string_diagnostic_keys_fail_before_public_write(self):
+        bound = self.loop.bound(self.gh.pull, self.gh.issues[35], self.gh.comments(36))[0]
+        raw = dict(tal.report(), evidence={19: 'unsupported Python mapping key'})
+        comments = copy.deepcopy(self.gh.messages)
+        with self.assertRaisesRegex(ValueError, 'diagnostic keys must be strings'):
+            self.loop.save(self.gh.pull, {'phase': 'reviewed', 'binding': bound, 'review': raw}, None)
+        self.assertEqual(self.gh.messages, comments)
+
+    def test_short_native_operation_preserves_certificate_reviewer_on_resume(self):
+        fixture = EvidenceTests(); fixture.setUp(); self.addCleanup(fixture.doCleanups)
+        fixture.bundle['certificate_revision'] = fixture.bundle.pop('repair_revision')
+        fixture.seal()
+        accepted = {'allowed': True, 'mode': 'tooling', 'head': tal.HEAD, 'base': tal.BASE,
+                    'certificate_revision': 'e' * 64,
+                    'certificate_provenance': {'sample': fixture.observed},
+                    'certificate_observers': list(map(session_fingerprint, fixture.sessions))}
+        raw = dict(tal.report(), certificate_revision='e' * 64,
+                   certificate_assessment='Synthetic independent original evidence assessment')
+        raw.pop('session')
+        def observe(submitted, bound):
+            return {'session_id': 'NativeReviewSession', 'source': 'native://host/review', 'operation_id': '1',
+                    'report_sha256': digest(submitted), 'binding_sha256': digest(bound)}
+        bound = self.loop.bound(self.gh.pull, self.gh.issues[35], self.gh.comments(36))[0]
+        issued = bind_native_review(raw, bound, self.loop.storage, issuer='example.invalid',
+                                    observe_origin=observe, acceptance=accepted, repair_evidence=fixture.path)
+        accepted.update(certificate_reviewers=[session_fingerprint(issued['session'])],
+                        certificate_evidence_sha256=issued['certificate_evidence_sha256'])
+        self.assertIn('1', accepted['certificate_reviewers'][0])
+        validate_review(issued, bound, accepted, self.loop.storage)
+        state = {'phase': 'reviewed', 'binding': bound, 'review': issued, 'acceptance': accepted}
+        sid = self.loop.save(self.gh.pull, state, None)
+        restored = self.loop.load(36)[1]
+        self.assertEqual(restored['review'], issued)
+        for key in ('mode', 'head', 'base', 'certificate_revision', 'certificate_evidence_sha256',
+                    'certificate_observers', 'certificate_reviewers'):
+            self.assertEqual(restored['acceptance'][key], accepted[key], key)
+        validate_review(restored['review'], restored['binding'], restored['acceptance'], self.loop.storage)
+        self.loop.save(self.gh.pull, restored, sid)
+        restored = self.loop.load(36)[1]
+        validate_review(restored['review'], restored['binding'], restored['acceptance'], self.loop.storage)
+        invalid = copy.deepcopy(state)
+        invalid['review']['evidence'] = {'certificate_reviewers': ['1', 'native://host/review']}
+        public = self.loop.public_state(invalid)
+        self.assertEqual(public['review']['evidence']['certificate_reviewers'], ['[private origin]', '[private origin]'])
+
+    def test_malformed_native_text_is_redacted_but_actual_session_stays_strict(self):
+        for malformed in ('native-session-v1:00:00', 'native-session-v1:61:1'):
+            with self.subTest(malformed=malformed):
+                raw = dict(tal.report(), evidence='Rejected ' + malformed, findings=[malformed])
+                bound = self.loop.bound(self.gh.pull, self.gh.issues[35], self.gh.comments(36))[0]
+                state = {'phase': 'reviewed', 'binding': bound, 'review': raw}
+                self.loop.save(self.gh.pull, state, None)
+                self.assertEqual(self.loop.load(36)[1]['review'], raw)
+                public = self.loop.public_state(raw)
+                self.assertEqual(public['evidence'], 'Rejected [private origin]')
+                self.assertEqual(public['findings'], ['[private origin]'])
+                with self.assertRaises(ValueError):
+                    self.loop.save(self.gh.pull, dict(state, review=dict(raw, session=malformed)), None)
+
     def test_private_session_restores_only_from_bound_private_record(self):
         raw = tal.report()['session']
         state = {'phase': 'reviewed', 'review': dict(tal.report(), evidence='origin prefix' + raw + 'suffix'),
@@ -295,6 +603,62 @@ class OriginTests(unittest.TestCase):
     setUp = EvidenceTests.setUp
     seal = EvidenceTests.seal
     load = EvidenceTests.load
+
+    def test_native_host_acquisition_binds_report_and_mixed_legacy_contributors(self):
+        self.sessions[1] = native_session('example.invalid/host-1', 'Actual-Executor/Session-2')
+        self.bundle['origins'][1]['session'] = self.sessions[1]
+        self.items[1]['session'] = session_fingerprint(self.sessions[1])
+        self.seal()
+        raw = dict(tal.report(), repair_revision='e' * 64, repair_assessment='synthetic native source')
+        raw.pop('session')
+        packet = self.load()
+        submitted = dict(raw, repair_evidence_sha256=packet['bundle_sha256'], evidence_records=packet['evidence_records'])
+        source = {'session_id': 'Actual-Host/Session-99', 'source': 'native://host/execution/operation-19',
+                  'operation_id': 'operation-19', 'report_sha256': digest(submitted), 'binding_sha256': digest(self.bound)}
+        host = Mock(return_value=copy.deepcopy(source))
+        issued = bind_native_review(raw, self.bound, self.root, issuer='example.invalid/host-1',
+                                    observe_origin=host, acceptance=self.accepted, repair_evidence=self.path)
+        host.assert_called_once_with(submitted, self.bound)
+        accepted = dict(self.accepted, repair_observers=list(map(session_fingerprint, self.sessions)),
+                        repair_evidence_sha256=packet['bundle_sha256'])
+        validate_review(issued, self.bound, accepted, self.root)
+        self.assertEqual(issued['session'], native_session('example.invalid/host-1', source['session_id']))
+        receipt = json.loads((self.root / 'registry' / (issued['origin_receipt'] + '.json')).read_text())
+        self.assertEqual(receipt['review']['native_origin']['observation'], source)
+        with self.assertRaisesRegex(ValueError, 'self-reviewed'):
+            validate_review(issued, self.bound, dict(accepted, repair_observers=[session_fingerprint(issued['session'])]), self.root)
+        for mutated in (dict(issued, evidence='rewritten'), dict(issued, origin_receipt='0' * 32)):
+            with self.assertRaises((ValueError, OSError)): validate_review(mutated, self.bound, accepted, self.root)
+        with self.assertRaises(ValueError): validate_review(issued, dict(self.bound, feedback_hash='changed'), accepted, self.root)
+        for invalid in (None, {}, dict(source, report_sha256='0' * 64), dict(source, binding_sha256='0' * 64)):
+            with self.assertRaises(ValueError):
+                bind_native_review(raw, self.bound, self.root, issuer='example.invalid/host-1',
+                                   observe_origin=Mock(return_value=invalid), acceptance=self.accepted, repair_evidence=self.path)
+        claimed = dict(submitted, session=native_session('example.invalid/host-1', 'Different-Session'))
+        with self.assertRaisesRegex(ValueError, 'differs'):
+            bind_native_review(claimed, self.bound, self.root, issuer='example.invalid/host-1',
+                               observe_origin=Mock(return_value=dict(source, report_sha256=digest(claimed))),
+                               acceptance=self.accepted, repair_evidence=self.path)
+        self.receipt.write_text('changed original')
+        with self.assertRaises(ValueError):
+            bind_native_review(raw, self.bound, self.root, issuer='example.invalid/host-1',
+                               observe_origin=host, acceptance=self.accepted, repair_evidence=self.path)
+
+    def test_native_identity_preserves_case_and_legacy_uuid_without_aliases(self):
+        legacy = self.sessions[0]
+        expected = 'codex-session-sha256:' + hashlib.sha256(('codex-session-v1:' + legacy).encode()).hexdigest()
+        self.assertEqual(session_fingerprint(legacy), expected)
+        self.assertEqual(native_session('example.invalid', legacy), legacy)
+        self.assertEqual(session_fingerprint(native_session('example.invalid', legacy)), expected)
+        identity = native_session('example.invalid', 'Case-Sensitive-ID')
+        self.assertEqual(canonical_session(identity), identity)
+        self.assertNotEqual(session_fingerprint(identity), session_fingerprint(native_session('example.invalid', 'case-sensitive-id')))
+        alias = f'native-session-v1:{"example.invalid".encode().hex()}:{legacy.encode().hex()}'
+        for invalid in (alias, identity.upper(), 'native-session-v1:zz:00', session_fingerprint(identity)):
+            with self.assertRaises(ValueError): canonical_session(invalid)
+        for issuer, raw in [('codex', legacy), ('role label', 'some-id'), ('example.invalid', ''),
+                            ('example.invalid', legacy.replace('-', '')), ('example.invalid', 'bad\nID')]:
+            with self.assertRaises(ValueError): native_session(issuer, raw)
     def test_complete_report_binding_and_adapter_kind_are_required(self):
         from handoff_registry import store_review
         accepted = dict(self.accepted, repair_observers=list(map(session_fingerprint, self.sessions)),
@@ -536,7 +900,8 @@ class PrivatePathTests(unittest.TestCase):
         self.assertEqual(projected['review']['evidence'], '[origin]([private URI])')
         target = '&#104;ttps&colon;&sol;&sol;public.example&sol;session&sol;' + session.replace('-', '&#45;')
         projected = self.loop.public_state({'private_sessions': [session_fingerprint(session)],
-                                           'review': {'session': session, 'evidence': f'[origin]({target})'}})
+                                           'review': {'session': session, 'evidence': f'[origin]({target})'}},
+                                           private_sessions=[session_fingerprint(session)])
         self.assertEqual(projected['review']['evidence'], '[origin]([private URI])')
         self.assertEqual(self.loop.public_state('prefix:file:///mnt/receipts/event.json:suffix', [known]),
                          'prefix:file://[private path]:suffix')
@@ -581,7 +946,7 @@ class PrivatePathTests(unittest.TestCase):
                 with self.subTest(source=source):
                     self.assertEqual(self.loop.public_state(source), source)
             public = self.loop.public_state({'private_sessions': [session_fingerprint(session)],
-                                            'evidence': f'[private]({target})'})
+                                            'evidence': f'[private]({target})'}, private_sessions=[session_fingerprint(session)])
             self.assertEqual(public['evidence'], '[private]([private URI])')
         self.assertEqual(self.loop.public_state('standalone:' + session), 'standalone:' + session_fingerprint(session))
         literal = f'[literal](&#104;ttps&COLON;&sol;&sol;public.example&sol;runs&sol;{session})'
@@ -634,10 +999,10 @@ class PrivatePathTests(unittest.TestCase):
         session = tal.report()['session']
         for target in (session.replace('-', '&#45;'), session.replace('-', r'\-')):
             state = {'private_sessions': [session_fingerprint(session)], 'evidence': 'Observer: prefix' + target + 'suffix tail'}
-            self.assertEqual(self.loop.public_state(state)['evidence'], 'Observer: prefix' + session_fingerprint(session) + 'suffix tail')
+            self.assertEqual(self.loop.public_state(state, private_sessions=[session_fingerprint(session)])['evidence'], 'Observer: prefix' + session_fingerprint(session) + 'suffix tail')
         for target in (session.replace('-', '&amp;#45;'), session.replace('-', r'\&num;45;')):
             state = {'private_sessions': [session_fingerprint(session)], 'evidence': 'Observer: ' + target + ' tail'}
-            self.assertEqual(self.loop.public_state(state)['evidence'], state['evidence'])
+            self.assertEqual(self.loop.public_state(state, private_sessions=[session_fingerprint(session)])['evidence'], state['evidence'])
 
     def test_isolated_known_session_escaped_close_does_not_add_suffix(self):
         session = tal.report()['session']
@@ -645,7 +1010,7 @@ class PrivatePathTests(unittest.TestCase):
                        'https://example/session/' + session.replace('-', '%2D') + r'\)',
                        'https://example/session/' + session + '&rpar;'):
             source = {'private_sessions': [session_fingerprint(session)], 'evidence': f'[origin]({target})tail'}
-            self.assertEqual(self.loop.public_state(source)['evidence'], '[origin]([private URI])tail')
+            self.assertEqual(self.loop.public_state(source, private_sessions=[session_fingerprint(session)])['evidence'], '[origin]([private URI])tail')
     def test_known_uri_filename_closings_are_distinct_from_markdown_enclosure(self):
         from urllib.parse import quote
         known = '/mnt/private receipt/event(1.json'

@@ -28,6 +28,26 @@ python3 scripts/workflow/agent_loop.py tick --pr 123
 
 公開 handoff は opaque ID・Issue/PR・HEAD/base/target・scope・停止宣言です。source/host は Git common-dir 配下の `agent-loop/registry` に 0600 で保存します。実行状態は移植元からコピーしません。
 
+## レビュー元と実行元の選択
+
+共通の義務は、期待する現候補のレビューが終わり、全feedbackを固定した別セッションの評価があることです。既定のCodex summary経路を維持し、明示的に採用したGitHub native reviewは `agent_loop.py --github-reviewer <実login> feedback --pr N` で読めます。同じglobal optionをtick・再取得・reconcile-feedbackにも指定します。既定のCLI workerを変更するoptionではなく、worker実行の許可も作りません。
+
+選択元は信頼されたローカル起動設定で、PR本文・報告・未着summaryから自動選択しません。native経路はGitHub APIから取得した指定reviewerの最後のreviewが、対象repo/PR・完全なHEADと一致し、要求境界以降の `APPROVED` または `CHANGES_REQUESTED` で、未処理のreview requestがない場合だけ完了とします。`COMMENTED`・`PENDING`・`DISMISSED`・不明/欠落値は完了にしません。完了したchanges requestも指摘解消と独立評価が必要です。[GitHub review API](https://docs.github.com/en/rest/pulls/reviews)、[review requests](https://docs.github.com/en/rest/pulls/review-requests)の実レコードを使い、追加の外部serviceは呼びません。
+
+方式・版・reviewer・要求境界・要求中のreviewers/teamsの内容hashと、全review本文を含むfeedback hashをbindingへ含めます。既存Codex依頼/summaryや保存済みの別方式の依頼は、選択を変えてもその方式の完了を確認します。旧bindingを新方式へ補完して承認を再利用せず、元receiptを保持して必要な再評価へ戻します。service側の設定変更や既存義務の廃止をこのoptionで代行しません。
+
+実行元はCodex CLI envelope/`CODEX_THREAD_ID`に加え、信頼されたhostから `agent_worker.bind_native_review(report, bound, storage, issuer=..., observe_origin=..., acceptance=..., repair_evidence=...)` を呼ぶembedding入口を提供します。呼出し元は認証済みruntimeのexecution recordを取得できるhostです。`observe_origin(report, bound)` は、そのレビュー操作の実session、実operationと提出内容をhost記録から照合して、次の値を返します。reportからsessionやcallbackを選ぶこと、渡されたhashを単にechoすること、架空のreceipt JSONで置き換えることは禁止です。
+
+| 値 | hostが取得・確認する事実 |
+| --- | --- |
+| `session_id` | 実操作を行ったsessionのopaque ID。model/role変更でも同じactorは同じID |
+| `source`, `operation_id` | その実操作を再参照できる原記録のlocatorとoperation ID。非公開receiptに保存 |
+| `report_sha256`, `binding_sha256` | 原操作に対応する提出内容と完全なbindingを `handoff_registry.digest` と同じJSON規則で照合したhash |
+
+`issuer`はhostコードに固定するruntimeのidentity domainで、局所IDなら実instance scopeを含めます。実originを取得してから共通正規化し、報告内の異なるsession主張を拒否します。native IDの大小文字を保持し、UUIDは旧identityへ統一して別名の独立役を作りません。旧Codex fingerprint/receiptは変えません。原observationと提出内容、全報告/bindingを既存private registryへ封印し、raw ID/locatorを公開projectionから伏せます。 `private_sessions`はadapter所有の予約metadataです。提出reportの同名fieldはsession bind時に除き、private bundleで検証したcontributorsだけをadapterの別引数から設定します。nativeの提出内容は除去前の原形を非公開receiptへ保持し、旧CLI/manual入力ファイルも変更しません。下位のorigin発行APIもreport内の同名metadataを除き、除去前の提出内容を別の非公開receipt項目へ保持します。 公開stateの共通保存・復元では、adapter receiptに別途記録した実contributorsを照合してから公開変換へ明示的に渡します。report/state自身の同名fieldは公開上の安全なidentityを宣言できません。direct `reconcile-feedback`を含め、未検証の予約metadataは公開前に拒否し、提出した非公開JSONとsealed reportは変更しません。旧receiptは元reportに結び付いた保持bundleと原本を再hashしてcanonicalなcontributorsを照合できる場合だけ利用し、根拠がなければowner回復待ちです。保存済みclaimや再wrapperを新たな出典にせず、旧receiptを再封印・改変しません。 reportの固定schemaキーとadapter付与metadataは維持し、追加診断フィールドと構造化evidence内の辞書キーには値と同じ秘匿変換を適用します。診断キーは文字列に限り、変換後のキーが衝突する報告は公開stateの書込み前に拒否します。キーを上書きして情報を落とさず、非公開の提出内容と既存receiptは原形で保持します。修復・certificateの原本再hash、全contributorsとの独立性、秘匿/保存条件は同じvalidatorが検査します。
+
+この入口はhostを信頼する境界であり、ローカルhost自体の改竄への認証基盤ではありません。`issue_review_origin`は取得済み情報を封印する下位APIです。対応するhostの実source取得・認証・operationとの対応づけはhost側でレビューしてください。embeddingの回帰試験は別providerの実接続/実行成功を証明せず、Codexのworkerや現serviceを無効化するものでもありません。
+
 ## 状態と制限
 
 ```text
