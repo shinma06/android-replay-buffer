@@ -589,12 +589,19 @@ class Loop:
                 if (matched and
                         (destination != token or '%' in token or not any(known in token for known in private_paths))):
                     return '[private URI]' + suffix, False
+                if destination in opaque_ids or decoded in opaque_ids:
+                    return '[private URI]', False
+                def closing_enclosure(char):
+                    return char in ")]}>\"'`" or unicodedata.category(char) in ('Pe', 'Pf')
                 end = len(destination)
-                while uri and uri.scheme and end and (destination[end - 1] in ")]}>\"'`,;.!" or
-                        not destination[end - 1].isascii() and unicodedata.category(destination[end - 1]) in ('Pe', 'Pf', 'Po')):
+                while uri and uri.scheme and end and (closing_enclosure(destination[end - 1]) or destination[end - 1] in ',;.!?:' or
+                        not destination[end - 1].isascii() and unicodedata.category(destination[end - 1]) == 'Po'):
                     end -= 1
                     reference = destination[:end]
                     if reference in opaque_ids or decode_uri(reference) in opaque_ids:
+                        terminator = re.search('[?:]', destination[end:])
+                        if terminator and not any(closing_enclosure(c) for c in destination[end:end + terminator.start()]):
+                            break  # A bare query/colon is ambiguous; ID-owned punctuation cannot establish an outer enclosure.
                         return '[private URI]' + token[positions[end][0]:], False
                 # Parse structure before one decode; decoded payloads may contain a nested locator, never new outer grammar.
                 if known_reference or locator_payload(uri):

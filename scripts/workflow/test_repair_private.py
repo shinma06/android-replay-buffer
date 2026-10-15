@@ -305,14 +305,20 @@ class PrivacyTests(unittest.TestCase):
                 self.loop.save(self.gh.pull, restored, sid); self.assertEqual(record.read_bytes(), original)
 
     def test_uri_shaped_opaque_operation_keeps_enclosing_punctuation(self):
-        for operation in ('native://operation/1', 'native://operation/end)', 'native://operation/(1)', 'urn:operation:1'):
+        for operation in ('native://operation/1', 'native://operation/end)', 'native://operation/(1)',
+                          'native://operation/1?', 'native://operation/1:', 'native://operation/%31?', 'urn:operation:1'):
             with self.subTest(operation=operation):
-                forms = ('Operation ({})', 'Operation {},', 'Operation {}.', 'Operation [{}]', 'Operation "{}"', 'Operation （{}）、')
+                forms = ('Operation ({})', 'Operation {},', 'Operation {}.', 'Operation [{}]', 'Operation "{}"',
+                         'Operation （{}）、', 'Operation ({})?', 'Operation ({}):', 'Operation ([{}])?!:', 'Operation "{}":?')
                 ordinary = [operation + suffix for suffix in ('23', '/child', '.next', '＿suffix', '\u0301suffix')]
                 if operation.startswith('urn:'):
                     ordinary.remove(operation + '/child')  # Legacy opaque prose treats slash as an ID boundary.
+                else:
+                    ordinary += [operation + suffix for suffix in ('?', ':', '?:', '?public', '?q=public',
+                                                                   ':public', ')??public', '#fragment')]
                 ordinary += [operation.swapcase(), 'https://public.invalid/' + operation + '-suffix']
                 evidence = {'forms': [form.format(operation) for form in forms], 'ordinary': ordinary,
+                            'exact': operation,
                             'encoded': 'Operation (' + operation.replace('/1', '/%31') + ')',
                             'keys': {'Operation (' + operation + ')': 'checked'}}
                 bound = self.loop.bound(self.gh.pull, self.gh.issues[35], self.gh.comments(36))[0]
@@ -324,10 +330,12 @@ class PrivacyTests(unittest.TestCase):
                 sid = self.loop.save(self.gh.pull, {'binding': bound, 'review': issued, 'phase': 'reviewed'}, None)
                 public = tal.al.unpack(self.gh.comments(36), tal.al.STATE)[0]['review']['evidence']
                 self.assertEqual(public['ordinary'], ordinary)
+                self.assertNotIn(operation, public['exact'])
                 for form, result in zip(forms, public['forms']):
-                    self.assertNotIn(operation, result)
-                    marker = '[private URI]' if operation.startswith('native://') else '[private origin]'
-                    self.assertEqual(result, form.format(marker))
+                    with self.subTest(form=form):
+                        self.assertNotIn(operation, result)
+                        marker = '[private URI]' if operation.startswith('native://') else '[private origin]'
+                        self.assertEqual(result, form.format(marker))
                 self.assertNotIn(operation, next(iter(public['keys'])))
                 self.assertEqual(public['encoded'], 'Operation (' + ('[private origin]' if operation.startswith('urn:') else '[private URI]') + ')')
                 restored = self.loop.load(36)[1]; self.assertEqual(restored['review'], issued)
