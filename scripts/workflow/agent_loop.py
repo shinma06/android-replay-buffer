@@ -403,7 +403,7 @@ class Loop:
                         locator = urlsplit(identity)
                     except ValueError:
                         locator = None
-                    if locator and locator.hostname and re.match(r'(?i)[a-z][a-z0-9+.-]*://', identity):
+                    if locator and locator.scheme:
                         uri_locators[identity] = locator
                     else:
                         opaque_ids.add(identity)
@@ -437,37 +437,53 @@ class Loop:
                     return (value, unquote(value)) if decode and isinstance(value, str) else (value,)
                 def equal(source, target):
                     return any(left == right for left in values(source) for right in values(target, decode))
-                def prefix(source, target):
-                    return any(right.startswith(left) for left in values(source) for right in values(target, decode))
+                def prefix(source, target, embedded):
+                    for left in values(source):
+                        for right in values(target, decode):
+                            if not right.startswith(left):
+                                continue
+                            rest = right[len(left):]
+                            if not embedded and rest and (continuation(rest[0]) or rest[0] == '-' or
+                                    rest[0] == '.' and continuation(rest[1:2])):
+                                continue
+                            return True
+                    return False
                 def port(authority):
                     hostport = authority.rpartition('@')[2]
                     return hostport.partition(']')[2] if hostport.startswith('[') else ''.join(hostport.partition(':')[1:])
                 for known, source in uri_locators.items():
-                    for match in re.finditer(re.escape(source.scheme) + r'://', text, re.I):
+                    for match in re.finditer(re.escape(source.scheme) + ':', text, re.I):
                         target = text[match.start():]
                         try:
                             uri = urlsplit(target)
                         except ValueError:
                             continue
                         bracketed = uri.netloc.rpartition('@')[2].startswith('[')
-                        if (not uri.hostname or bracketed != source.netloc.rpartition('@')[2].startswith('[') or
+                        source_start, target_start = known.index(':') + 1, target.index(':') + 1
+                        source_authority, target_authority = known[source_start:].startswith('//'), target[target_start:].startswith('//')
+                        if (source_authority != target_authority or bracketed != source.netloc.rpartition('@')[2].startswith('[') or
                                 port(uri.netloc) != port(source.netloc) or
                                 not equal(source.username, uri.username) or not equal(source.password, uri.password) or
-                                not any((left if bracketed else left.lower()) == (right if bracketed else right.lower())
+                                not any((left if bracketed or left is None else left.lower()) ==
+                                        (right if bracketed or right is None else right.lower())
                                         for left in values(source.hostname) for right in values(uri.hostname, decode))):
                             continue
-                        known_tail = known[known.index('://') + 3 + len(source.netloc):]
-                        target_tail = target[target.index('://') + 3 + len(uri.netloc):]
+                        known_tail = known[source_start + (2 if source_authority else 0) + len(source.netloc):]
+                        target_tail = target[target_start + (2 if target_authority else 0) + len(uri.netloc):]
                         if '#' in known_tail:
                             if ('#' in target_tail and ('?' in known_tail.partition('#')[0]) == ('?' in target_tail.partition('#')[0]) and
-                                    equal(source.path, uri.path) and equal(source.query, uri.query) and prefix(source.fragment, uri.fragment)):
+                                    equal(source.path, uri.path) and equal(source.query, uri.query) and
+                                    prefix(source.fragment, uri.fragment, match.start() > 0)):
                                 return True
                         elif '?' in known_tail:
-                            if '?' in target_tail.partition('#')[0] and equal(source.path, uri.path) and prefix(source.query, uri.query):
+                            if ('?' in target_tail.partition('#')[0] and equal(source.path, uri.path) and
+                                    prefix(source.query, uri.query, match.start() > 0)):
                                 return True
-                        elif prefix(source.path, uri.path):
+                        elif prefix(source.path, uri.path, match.start() > 0):
                             return True
                 return False
+            def source_uri_syntax(text):
+                return any(re.match(re.escape(source.scheme) + r':(?=.)', text, re.I) for source in uri_locators.values())
             def protected_identity(identity):
                 if identity in identities:
                     return identities[identity]
@@ -518,8 +534,10 @@ class Loop:
                         redacted.extend((token[cursor:start], replacement))
                         cursor = end
                     return ''.join(redacted) + token[cursor:], False
-                if not re.match(r'(?i)(?:[a-z][a-z0-9+.-]*://|/)', destination):
-                    if destination == token and re.search(r'(?i)[a-z][a-z0-9+.-]*://', token):
+                known_reference = locator_reference(destination)
+                if (not re.match(r'(?i)(?:[a-z][a-z0-9+.-]*://|/)', destination) and not source_uri_syntax(destination) and
+                        not (known_reference and re.match(r'(?i)[a-z][a-z0-9+.-]*:', destination))):
+                    if destination == token and (re.search(r'(?i)[a-z][a-z0-9+.-]*://', token) or known_reference):
                         return token, False
                     return private_prose()
                 decoded = unquote(destination)
@@ -543,7 +561,7 @@ class Loop:
                         (destination != token or '%' in token or not any(known in token for known in private_paths))):
                     return '[private URI]' + suffix, False
                 # Parse structure before one decode; decoded payloads may contain a nested locator, never new outer grammar.
-                if (locator_reference(destination) or uri and any(locator_reference(unquote(part), False)
+                if (known_reference or uri and any(locator_reference(unquote(part), False)
                         for part in (uri.username, uri.password, uri.hostname, uri.path, uri.query, uri.fragment) if part)):
                     return '[private URI]' + suffix, False
                 authority = []
@@ -570,15 +588,30 @@ class Loop:
                     return private_prose()
                 # File tokens must rejoin enclosing punctuation for complete known-filename matching.
                 return token, bool(re.match(r'(?i)https?://', destination) or
+                                   uri and uri.scheme.lower() != 'file' and source_uri_syntax(destination) or
                                    bounded and uri and uri.scheme.lower() != 'file' and
                                    re.match(r'(?i)[a-z][a-z0-9+.-]*://', destination))
             span = r'(?:\\[' + re.escape(string.punctuation) + r']|\](?=[^()\s<>"`])|[^\s<>"`\]])*'
+            def locator_parts(text, split):
+                cursor, result = 0, []
+                for match in re.finditer(identity_pattern, text):
+                    if (match.start() < cursor or match[0] not in private_locators or match[0] in uri_locators or
+                            not any(c.isspace() for c in match[0]) or not identity_boundary(match)):
+                        continue
+                    child = re.match('/' + span, text[match.end():])
+                    end = match.end() + (child.end() if child else 0)
+                    result.extend(split(text[cursor:match.start()]))
+                    result.append(private_uri(text[match.start():end]))
+                    cursor = end
+                return result + split(text[cursor:])
             def private_text(text):
-                cursor, parts = 0, []
-                for match in re.finditer(r'(?:\\[' + re.escape(string.punctuation) + r']|[^\s<>"`\[\]()])' + span, text):
-                    parts.extend(((text[cursor:match.start()], False), private_uri(match[0])))
-                    cursor = match.end()
-                return parts + [(text[cursor:], False)]
+                def tokens(text):
+                    cursor, parts = 0, []
+                    for match in re.finditer(r'(?:\\[' + re.escape(string.punctuation) + r']|[^\s<>"`\[\]()])' + span, text):
+                        parts.extend(((text[cursor:match.start()], False), private_uri(match[0])))
+                        cursor = match.end()
+                    return parts + [(text[cursor:], False)]
+                return locator_parts(text, tokens)
             # Raw syntax bounds the destination; interpreted references cannot add delimiters.
             pieces, cursor = [], 0
             for opening in re.finditer(r'\](?:\(|:)\s*', value):
@@ -624,8 +657,12 @@ class Loop:
             pieces.extend(private_text(value[cursor:]))
             # Preserve bare URIs embedded in surrounding prose or punctuation.
             def bare_parts(text):
-                spans = re.split(r'(?i)((?:[a-z][a-z0-9+.-]*://|/)' + span + ')', text)
-                return [private_uri(part) if i % 2 else (part, False) for i, part in enumerate(spans)]
+                def uri_parts(text):
+                    prefixes = ['[a-z][a-z0-9+.-]*://', '/',
+                                *['(?:[a-z][a-z0-9+.-]*)?' + re.escape(uri.scheme) + ':' for uri in uri_locators.values()]]
+                    spans = re.split(r'(?i)((?:' + '|'.join(prefixes) + ')' + span + ')', text)
+                    return [private_uri(part) if i % 2 else (part, False) for i, part in enumerate(spans)]
+                return locator_parts(text, uri_parts)
             parts, prose = [], []
             for text, is_url in pieces:
                 if not is_url:
@@ -637,12 +674,12 @@ class Loop:
             parts.extend(bare_parts(''.join(prose)))
             public = []
             for part, is_url in parts:
-                uri_syntax = is_url or bool(re.match(r'(?i)[a-z][a-z0-9+.-]*://', part))
+                uri_syntax = is_url or bool(re.match(r'(?i)[a-z][a-z0-9+.-]*://', part)) or source_uri_syntax(part)
                 def redact_identity(match):
                     if not identity_boundary(match):
                         return match[0]
                     # URI payloads were checked above; do not reinterpret their syntax as opaque IDs.
-                    if uri_syntax and match[0] in opaque_ids and match[0] not in uri_locators:
+                    if uri_syntax and (match[0] in opaque_ids or match[0] in uri_locators):
                         return match[0]
                     protected = protected_identity(match[0])
                     if protected:

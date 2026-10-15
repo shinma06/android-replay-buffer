@@ -73,6 +73,40 @@ class FeedbackTests(unittest.TestCase):
             with patch.object(al, 'remote_review_complete', return_value=invalid), self.assertRaises(ValueError):
                 loop.bound(pr, gh.issue(35), [])
 
+    def test_native_fractional_request_boundary_keeps_ambiguous_second_pending(self):
+        pr, review = self.native_source()
+        gh = tal.FakeGitHub()
+        loop = object.__new__(al.Loop); loop.gh = gh; loop.github_reviewer = 'native-reviewer'
+        gh.pages = Mock(side_effect=lambda path: [review] if '/reviews?' in path else [])
+        boundary = '2026-10-11T04:46:46.500000Z'
+        requests = [{'method': 'github-review-v1', 'reviewer': 'native-reviewer', 'not_before': boundary}]
+        previous = {'remote_review_after': boundary, 'review_requests': requests}
+        comments = [{'id': 12, 'user': {'login': al.OWNER}, 'body': al.pack(al.STATE, previous)}]
+        hashes = set()
+        for submitted, complete in [('2026-10-11T04:46:45Z', False),
+                                    ('2026-10-11T04:46:46Z', False),
+                                    ('2026-10-11T04:46:46.200000Z', False),
+                                    ('2026-10-11T04:46:46.800000Z', True),
+                                    ('2026-10-11T04:46:47Z', True)]:
+            with self.subTest(submitted=submitted):
+                review['submitted_at'] = submitted
+                bound, _ = loop.bound(pr, gh.issue(35), comments)
+                self.assertEqual(bound['remote_review_complete'], complete)
+                self.assertEqual(bound['review_completion']['not_before'], boundary)
+                self.assertEqual(bound['review_requests'], requests)
+                hashes.add(bound['feedback_hash'])
+                if not complete:
+                    self.assertEqual(next_action({}, bound, 'success', False), 'remote-review-wait')
+                    self.assertEqual(loop.bound(pr, gh.issue(35), comments)[0], bound)
+        self.assertEqual(len(hashes), 5)
+        # A later timestamp cannot override a latest pending/dismissed record or an outstanding request.
+        for state in ('PENDING', 'DISMISSED'):
+            review['state'] = state
+            self.assertFalse(loop.bound(pr, gh.issue(35), comments)[0]['remote_review_complete'])
+        review['state'] = 'APPROVED'
+        for key in ('requested_reviewers', 'requested_teams'):
+            self.assertFalse(loop.bound(dict(pr, **{key: [{}]}), gh.issue(35), comments)[0]['remote_review_complete'])
+
     def test_feedback_cli_uses_explicit_source_without_registry_or_worker(self):
         pr, review = self.native_source()
         gh = tal.FakeGitHub(); gh.pull = pr

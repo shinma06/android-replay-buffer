@@ -655,6 +655,15 @@ class PrivacyTests(unittest.TestCase):
     def test_private_uri_locator_normalizes_only_scheme_and_host(self):
         from urllib.parse import quote
         cases = (
+            ('file:///se%63ret/receipt', ('FILE:///secret/receipt',),
+             ('file:///Secret/receipt', 'file:///secret/receipt-other', 'file://public.invalid/secret/receipt', 'native:///secret/receipt')),
+            ('native:///se%63ret/receipt', ('NATIVE:///secret/receipt',),
+             ('native:///Secret/receipt', 'native://public.invalid/secret/receipt')),
+            ('file:/se%63ret/receipt', ('FILE:/secret/receipt',), ('file:///secret/receipt',)),
+            ('file:///secret/receipt?', ('FILE:///secret/receipt?',), ('file:///secret/receipt', 'file:///secret/receipt#')),
+            ('urn:private:receipt#', ('URN:private:receipt#',), ('urn:private:receipt', 'urn:private:receipt?#')),
+            ('urn:private:%72eceipt', ('URN:private:receipt',), ('urn:other:receipt', 'urn:private:receipt-other')),
+            ('urn:private:%2572eceipt', ('URN:private:%72eceipt',), ('urn:private:receipt',)),
             ('https://%68ost.invalid/%76ault/receipt',
              ('https://host.invalid/vault/receipt', 'HTTPS://HOST.INVALID/%76ault/receipt'),
              ('https://host.invalid/%252576ault/receipt', 'https://host.invalid/Vault/receipt')),
@@ -692,6 +701,7 @@ class PrivacyTests(unittest.TestCase):
             for i, alias in enumerate((source, *aliases)):
                 encoded_key = f'public-encoded-{i}' if '%' in alias and '%' not in source else f'encoded-{i}'
                 evidence.update({f'raw-{i}': alias, f'link-{i}': f'[record]({alias})',
+                                 f'assignment-{i}': 'target=' + alias,
                                  f'child-{i}': alias + '/child', f'embedded-{i}': f'prefix{alias}suffix',
                                  encoded_key: 'https://public.invalid/lookup?source=' + quote(alias, safe=''),
                                  f'public-double-{i}': 'https://public.invalid/lookup?source=' + quote(quote(alias, safe=''), safe='')})
@@ -708,7 +718,8 @@ class PrivacyTests(unittest.TestCase):
             for key, target in evidence.items():
                 with self.subTest(source=source, field=key):
                     expected = target if key.startswith(('public-', 'opaque-')) else (
-                        '[record]([private URI])' if key.startswith('link-') else '[private URI]')
+                        '[record]([private URI])' if key.startswith('link-') else
+                        'target=[private URI]' if key.startswith('assignment-') else '[private URI]')
                     self.assertEqual(public[key], expected)
             restored = self.loop.load(36)[1]
             self.assertEqual(restored['review'], issued)
@@ -831,6 +842,49 @@ class PrivacyTests(unittest.TestCase):
                     verify_review_origin(self.loop.storage, restored['review'], bound)
                     self.loop.save(self.gh.pull, restored, sid)
                     self.assertEqual(record.read_bytes(), original)
+
+    def test_complete_non_uri_locator_survives_whitespace_tokenization(self):
+        from urllib.parse import quote
+        for source in ('/scope/private receipt', '/scope/private\u00a0receipt', '/scope/operation-spanning receipt', 'opaque locator name'):
+            with self.subTest(source=source):
+                ordinary = {'suffix': source + '-suffix', 'connector': source + '＿suffix',
+                            'prefix': 'x' + source, 'case': source.upper(),
+                            'uri': 'https://public.invalid/scope/private', 'root': '/a /about https://public.invalid/'}
+                if 'operation-spanning' in source:
+                    # These contain a real operation ID, so they are not public negative controls.
+                    ordinary = {k: v for k, v in ordinary.items() if 'operation-spanning' not in v}
+                raw = dict(tal.report(), evidence={'ordinary': ordinary,
+                    'exact': f'Before ({source}) after', 'child': f'Before {source}/child after',
+                    'angle': f'[record](<{source}>)', 'inline': f'[record]({source})',
+                    'query': 'https://public.invalid/?locator=' + quote(source, safe=''),
+                    'keys': {f'diagnostic({source})': 'checked', 'ordinary': 'retained'}})
+                raw.pop('session')
+                bound = self.loop.bound(self.gh.pull, self.gh.issues[35], self.gh.comments(36))[0]
+                observed = {'session_id': 'Actual-Reviewer', 'source': source, 'operation_id': 'operation-spanning',
+                            'report_sha256': digest(raw), 'binding_sha256': digest(bound)}
+                issued = bind_native_review(raw, bound, self.loop.storage, issuer='example.invalid',
+                                            observe_origin=Mock(return_value=observed))
+                record = self.loop.storage / 'registry' / (issued['origin_receipt'] + '.json')
+                original = record.read_bytes()
+                self.assertEqual(json.loads(original)['private_paths'], [])
+                sid = self.loop.save(self.gh.pull, {'phase': 'reviewed', 'binding': bound, 'review': issued}, None)
+                public = tal.al.unpack(self.gh.comments(36), tal.al.STATE)[0]['review']['evidence']
+                self.assertEqual(public['ordinary'], ordinary)
+                for key in ('exact', 'child', 'angle', 'inline', 'query', 'keys'):
+                    self.assertNotIn(source, json.dumps(public[key], ensure_ascii=False))
+                self.assertTrue(public['exact'].startswith('Before ('))
+                self.assertTrue(public['exact'].endswith(') after'))
+                self.assertTrue(public['child'].startswith('Before '))
+                self.assertTrue(public['child'].endswith(' after'))
+                if source.startswith('/'):
+                    self.assertEqual(public['exact'], 'Before ([private URI]) after')
+                    self.assertEqual(public['child'], 'Before [private URI] after')
+                self.assertEqual(set(public['keys'].values()), {'checked', 'retained'})
+                restored = self.loop.load(36)[1]
+                self.assertEqual(restored['review'], issued)
+                verify_review_origin(self.loop.storage, restored['review'], bound)
+                self.loop.save(self.gh.pull, restored, sid)
+                self.assertEqual(record.read_bytes(), original)
 
     def test_unverified_privacy_controls_cannot_hide_diagnostics(self):
         from agent_worker import bind_report_session
