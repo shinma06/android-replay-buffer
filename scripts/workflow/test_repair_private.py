@@ -192,14 +192,14 @@ class PrivacyTests(unittest.TestCase):
         for text in (identity, issued['session'], source, '[origin](https://example.invalid/' + quote(identity, safe='') + ')',
                      '[origin](https://example.invalid/Case&#45;Sensitive/Session-99)',
                      '[origin](https://example.invalid/Case\\-Sensitive/Session-99)'):
-            public = self.loop.public_state(dict(issued, evidence=text))
+            public = self.loop.public_state(dict(issued, evidence=text), private_identifiers=['operation-19'], private_locators=[source])
             serialized = json.dumps(public)
             self.assertNotIn(identity, serialized)
             self.assertNotIn(issued['session'], serialized)
             self.assertNotIn(source, serialized)
             self.assertNotIn('Session-99', serialized)
         external = 'https://example.invalid/ordinary-public-record'
-        self.assertEqual(self.loop.public_state(dict(issued, evidence=external))['evidence'], external)
+        self.assertEqual(self.loop.public_state(dict(issued, evidence=external), private_identifiers=['operation-19'], private_locators=[source])['evidence'], external)
         state = {'phase': 'reviewed', 'binding': bound, 'review': issued}
         self.loop.save(self.gh.pull, state, None)
         restored = self.loop.load(36)[1]['review']
@@ -225,7 +225,7 @@ class PrivacyTests(unittest.TestCase):
                                             observe_origin=Mock(return_value=observed))
                 state = {'phase': 'reviewed', 'binding': bound, 'review': issued, 'expected_head': bound['head']}
                 sid = self.loop.save(self.gh.pull, state, None)
-                public = self.loop.public_state(state)
+                public = tal.al.unpack(self.gh.comments(36), tal.al.STATE)[0]
                 self.assertEqual(public['binding'], bound)
                 self.assertEqual(public['review']['head'], bound['head'])
                 self.assertEqual(public['review']['origin_receipt'], issued['origin_receipt'])
@@ -262,7 +262,7 @@ class PrivacyTests(unittest.TestCase):
                                             observe_origin=Mock(return_value=observed))
                 state = {'phase': 'reviewed', 'binding': bound, 'review': issued}
                 self.loop.save(self.gh.pull, state, None)
-                public = self.loop.public_state(state)
+                public = tal.al.unpack(self.gh.comments(36), tal.al.STATE)[0]
                 serialized = json.dumps(public)
                 for private in (identity, source, operation, issued['session']):
                     self.assertNotIn(private, serialized)
@@ -502,6 +502,101 @@ class PrivacyTests(unittest.TestCase):
                 self.assertEqual(restored['review'], issued)
                 verify_review_origin(self.loop.storage, restored['review'], bound)
 
+    def test_native_operation_roles_preserve_public_uris_and_secret_locators(self):
+        from urllib.parse import quote
+        for operation in ('/', 'operations/review-1', 'native://operation/1', 'native', 'https', '443', '1', 'e'):
+            with self.subTest(operation=operation):
+                bound = self.loop.bound(self.gh.pull, self.gh.issues[35], self.gh.comments(36))[0]
+                source = 'https://host.invalid/private/receipt'
+                text = 'critical finding remains: https://public.invalid/a/b '
+                text += 'https://public.invalid:443/ xoperations/review-1suffix native://operation/123 and line 123 '
+                text += 'reference=https://public.invalid/guide ref=native://public/guide'
+                raw = dict(tal.report(), evidence={
+                    'ordinary': text, 'private': f'Operation [{operation}]',
+                    'nested': {'private_paths': ['critical'], 'private_identifiers': ['finding'], 'text': text},
+                    'link': 'https://ref.invalid/id/' + quote(operation, safe=''),
+                    'locator': f'prefix{source}suffix {source}/child'},
+                    private_identifiers=['finding'], private_paths=['critical'])
+                raw.pop('session')
+                observed = {'session_id': 'Actual-Reviewer', 'source': source, 'operation_id': operation,
+                            'report_sha256': digest(raw), 'binding_sha256': digest(bound)}
+                issued = bind_native_review(raw, bound, self.loop.storage, issuer='example.invalid',
+                                            observe_origin=Mock(return_value=observed))
+                record = self.loop.storage / 'registry' / (issued['origin_receipt'] + '.json')
+                original = record.read_bytes()
+                self.assertEqual(json.loads(original)['review']['native_origin']['submitted_report'], raw)
+                self.loop.save(self.gh.pull, {'phase': 'reviewed', 'binding': bound, 'review': issued}, None)
+                public = tal.al.unpack(self.gh.comments(36), tal.al.STATE)[0]['review']['evidence']
+                self.assertEqual(public['ordinary'], text)
+                self.assertEqual(public['nested']['text'], text)
+                self.assertNotIn(f'[{operation}]', public['private'])
+                self.assertNotIn('https://ref.invalid/', public['link'])
+                self.assertNotIn(source, public['locator'])
+                restored = self.loop.load(36)[1]
+                self.assertEqual(restored['review'], issued)
+                validate_review(restored['review'], bound)
+                self.assertEqual(record.read_bytes(), original)
+
+    def test_unverified_privacy_controls_cannot_hide_diagnostics(self):
+        from agent_worker import bind_report_session
+        bound = self.loop.bound(self.gh.pull, self.gh.issues[35], self.gh.comments(36))[0]
+        for field in ('private_identifiers', 'private_paths'):
+            with self.subTest(field=field):
+                raw = dict(tal.report('changes_requested'), findings=['critical finding remains'],
+                           **{field: ['finding']})
+                before = copy.deepcopy(raw)
+                comments = copy.deepcopy(self.gh.messages)
+                with self.assertRaises(ValueError):
+                    self.loop.save(self.gh.pull, {'phase': 'reviewed', 'binding': bound, 'review': raw}, None)
+                self.assertEqual(self.gh.messages, comments)
+                self.assertEqual(raw, before)
+                normalized = bind_report_session(raw, raw['session'])
+                self.assertNotIn(field, normalized)
+                self.assertEqual(normalized['findings'], raw['findings'])
+                issued = issue_review_origin(self.loop.storage, raw, bound, raw['session'], 'manual')
+                self.loop.save(self.gh.pull, {'phase': 'reviewed', 'binding': bound, 'review': issued}, None)
+                public = tal.al.unpack(self.gh.comments(36), tal.al.STATE)[0]
+                self.assertEqual(public['review']['findings'], ['critical finding remains'])
+                self.assertEqual(self.loop.load(36)[1]['review'], issued)
+        public = self.loop.public_state({'private_identifiers': ['critical'], 'private_paths': ['finding'],
+                                         'next': 'critical finding remains'})
+        self.assertEqual(public['next'], 'critical finding remains')
+
+    def test_native_machine_bindings_survive_close_interruption_and_resume(self):
+        for field in ('head', 'base', 'issue_hash', 'feedback_hash', 'merge_sha'):
+            self.doCleanups(); self.setUp()
+            with self.subTest(field=field):
+                self.gh.pull.update(merged=True, state='closed')
+                h, _, _, _ = self.loop.load(36)
+                bound = self.loop.bound(self.gh.pull, self.gh.issues[35], self.gh.comments(36))[0]
+                operation = self.gh.pull['merge_commit_sha'] if field == 'merge_sha' else bound[field]
+                raw = dict(tal.report(), feedback_hash=bound['feedback_hash']); raw.pop('session')
+                observed = {'session_id': 'Actual-Reviewer', 'source': 'native://host/receipt', 'operation_id': operation,
+                            'report_sha256': digest(raw), 'binding_sha256': digest(bound)}
+                issued = bind_native_review(raw, bound, self.loop.storage, issuer='example.invalid',
+                                            observe_origin=Mock(return_value=observed))
+                state = {'phase': 'cleanup', 'binding': bound, 'review': issued, 'expected_head': tal.HEAD,
+                         'acceptance': {'allowed': True, 'mode': 'tooling'}}
+                sid = self.loop.save(self.gh.pull, state, None)
+                api = self.gh.api
+                def interrupted(path, method='GET', data=None):
+                    result = api(path, method, data)
+                    if method == 'PATCH' and path.endswith('/issues/35') and (data or {}).get('state') == 'closed':
+                        raise RuntimeError('fixture interruption after actual fake Issue close')
+                    return result
+                with patch.object(self.gh, 'api', side_effect=interrupted), self.assertRaisesRegex(RuntimeError, 'fixture interruption'):
+                    self.loop.finish(self.gh.pull, h, state, sid)
+                self.loop.cleanup.assert_not_called()
+                _, restored, sid, _ = self.loop.load(36)
+                self.assertEqual(restored['issue_closure'], {k: bound[k] for k in ('head', 'base', 'issue_hash')})
+                public = tal.al.unpack(self.gh.comments(36), tal.al.STATE)[0]
+                self.assertEqual(public['review']['feedback_hash'], bound['feedback_hash'])
+                self.assertEqual(self.loop.finish(self.gh.pull, h, restored, sid)['phase'], 'done')
+                final = self.loop.load(36)[1]
+                self.assertEqual(final['merge_sha'], self.gh.pull['merge_commit_sha'])
+                self.assertEqual(final['review'], issued)
+                self.loop.cleanup.assert_called_once()
+
     def test_short_native_operation_preserves_certificate_reviewer_on_resume(self):
         fixture = EvidenceTests(); fixture.setUp(); self.addCleanup(fixture.doCleanups)
         fixture.bundle['certificate_revision'] = fixture.bundle.pop('repair_revision')
@@ -536,7 +631,7 @@ class PrivacyTests(unittest.TestCase):
         validate_review(restored['review'], restored['binding'], restored['acceptance'], self.loop.storage)
         invalid = copy.deepcopy(state)
         invalid['review']['evidence'] = {'certificate_reviewers': ['1', 'native://host/review']}
-        public = self.loop.public_state(invalid)
+        public = self.loop.public_state(invalid, private_identifiers=['1'], private_locators=['native://host/review'])
         self.assertEqual(public['review']['evidence']['certificate_reviewers'], ['[private origin]', '[private URI]'])
 
     def test_malformed_native_text_is_redacted_but_actual_session_stays_strict(self):

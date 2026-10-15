@@ -7,6 +7,8 @@ from pathlib import Path
 import re
 import uuid
 
+REVIEW_PRIVACY_FIELDS = ('private_sessions', 'private_identifiers', 'private_paths')
+
 
 @contextmanager
 def registry_directory(storage, create=False):
@@ -109,7 +111,7 @@ def issue_review_origin(storage, report, bound, session, kind, private_paths=(),
     from agent_policy import canonical_session, session_fingerprint
     session = canonical_session(session)
     submitted_report = report
-    report = {k: v for k, v in report.items() if k != 'private_sessions'}
+    report = {k: v for k, v in report.items() if k not in REVIEW_PRIVACY_FIELDS}
     if (report.get('session') != session or 'origin_receipt' in report or kind not in ('cli', 'manual', 'native') or
             not isinstance(bound, dict) or any(bound.get(k) != report.get(k) for k in ('head', 'base'))):
         raise ValueError('Adapter origin differs from report or is already bound')
@@ -121,7 +123,7 @@ def issue_review_origin(storage, report, bound, session, kind, private_paths=(),
                 native_session(native_origin.get('issuer'), observed.get('session_id')) != session or
                 observed.get('binding_sha256') != digest(bound) or
                 observed.get('report_sha256') != digest(submitted) or
-                dict({k: v for k, v in submitted.items() if k != 'private_sessions'}, session=session) != report):
+                dict({k: v for k, v in submitted.items() if k not in REVIEW_PRIVACY_FIELDS}, session=session) != report):
             raise ValueError('Native source differs from the observed report/binding')
         report = dict(report, private_identifiers=[observed['source'], observed['operation_id']])
     elif native_origin is not None:
@@ -133,7 +135,7 @@ def issue_review_origin(storage, report, bound, session, kind, private_paths=(),
     identifier = store_review(storage, public, {'kind': 'adapter-review-origin-v1', 'adapter': kind,
                                               'session': session, 'report': report,
                                               'contributor_sessions': list(private_sessions),
-                                              **({'submitted_report': submitted_report} if 'private_sessions' in submitted_report else {}),
+                                              **({'submitted_report': submitted_report} if any(k in submitted_report for k in REVIEW_PRIVACY_FIELDS) else {}),
                                               **({'native_origin': native_origin} if kind == 'native' else {})}, private_paths)
     return dict(report, origin_receipt=identifier)
 
@@ -171,3 +173,28 @@ def verify_review_origin(storage, report, bound, with_sessions=False):
     if report['private_sessions'] != sessions:
         raise ValueError('Reserved contributor metadata differs from adapter-verified identities')
     return paths, sessions
+
+
+def review_privacy(storage, report, bound):
+    """Return projection inputs from adapter evidence, never inline report controls."""
+    if not report or not (report.get('origin_receipt') or any(k in report for k in REVIEW_PRIVACY_FIELDS)):
+        return [], [], [], []
+    paths, sessions = verify_review_origin(storage, report, bound, with_sessions=True)
+    original = {k: v for k, v in report.items() if k != 'origin_receipt'}
+    receipt = restore_review(storage, report['origin_receipt'], {'binding': bound, 'review': original})
+    identifiers, locators = [], []
+    if receipt['adapter'] == 'native':
+        from agent_policy import native_session
+        origin = receipt.get('native_origin', {})
+        observed, submitted = origin.get('observation', {}), origin.get('submitted_report')
+        if (not isinstance(submitted, dict) or observed.get('binding_sha256') != digest(bound) or
+                observed.get('report_sha256') != digest(submitted) or
+                native_session(origin.get('issuer'), observed.get('session_id')) != report['session'] or
+                any(not isinstance(observed.get(k), str) or not observed[k].strip()
+                    for k in ('source', 'operation_id'))):
+            raise ValueError('Native privacy inputs lack their actual observation/binding')
+        identifiers, locators = [observed['operation_id']], [observed['source']]
+    if ('private_paths' in report or
+            ('private_identifiers' in report and report['private_identifiers'] != locators + identifiers)):
+        raise ValueError('Reserved privacy metadata differs from adapter-verified inputs')
+    return paths, sessions, identifiers, locators

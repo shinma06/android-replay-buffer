@@ -11,7 +11,7 @@ import subprocess
 import tomllib
 import uuid
 from agent_policy import canonical_session, codex_session, native_session, session_fingerprint
-from handoff_registry import digest, issue_review_origin
+from handoff_registry import REVIEW_PRIVACY_FIELDS, digest, issue_review_origin
 from verification import bind_receipt_claim
 
 REPORT_SCHEMA = {
@@ -40,7 +40,7 @@ def bind_report_session(report, session):
     if 'session' in report and report['session'] != session:
         raise ValueError('Report session differs from the actual originating session')
     # Submitted metadata is not verified contributor provenance.
-    return dict({k: v for k, v in report.items() if k != 'private_sessions'}, session=session)
+    return dict({k: v for k, v in report.items() if k not in REVIEW_PRIVACY_FIELDS}, session=session)
 
 
 def bind_native_review(report, bound, storage, *, issuer, observe_origin, acceptance=None, repair_evidence=None):

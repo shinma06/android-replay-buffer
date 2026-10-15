@@ -318,23 +318,23 @@ class FeedbackLoopTests(unittest.TestCase):
     def test_feedback_recovery_cannot_publish_unverified_session_metadata(self):
         from agent_policy import native_session, session_fingerprint
         from handoff_registry import store_review
-        for claimed in (False, True):
+        for field in (None, 'private_sessions', 'private_identifiers', 'private_paths'):
             self.doCleanups(); self.setUp()
-            with self.subTest(claimed=claimed):
+            with self.subTest(field=field):
                 self.assertEqual(self.loop.tick(36)['phase'], 'reviewed')
                 self.gh.pull.update(merged=True, state='closed')
                 bound, _ = self.loop.bound(self.gh.pr(36), self.gh.issue(35), self.gh.comments(36))
                 identity = 'a' * 64
                 raw = dict(tal.report(), session=native_session('example.invalid', identity),
                            evidence='Origin: native-session-sha256:' + identity, feedback_hash=bound['feedback_hash'])
-                if claimed:
-                    raw['private_sessions'] = ['native-session-sha256:' + identity]
+                if field:
+                    raw[field] = ['native-session-sha256:' + identity] if field == 'private_sessions' else ['Origin']
                 evidence = {'binding': bound, 'review': raw}
                 source = self.checkout.parent / 'feedback.json'
                 source.write_text(json.dumps(evidence)); source.chmod(0o600)
                 original = source.read_bytes()
                 comments = copy.deepcopy(self.gh.messages)
-                if claimed:
+                if field:
                     with self.assertRaisesRegex(ValueError, 'private review reference|contributor'):
                         self.loop.reconcile_feedback(self.gh.pr(36), json.loads(original))
                     self.assertEqual(self.gh.messages, comments)

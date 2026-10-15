@@ -23,7 +23,7 @@ from urllib.parse import quote, unquote, urlsplit
 from agent_policy import CONTEXT, NATIVE_SESSION, SESSION_HASH, binding, eligible, gui_pass, in_scope, issue_number, next_action, session_fingerprint, update_parent, validate_review
 from agent_worker import (REPORT_SCHEMA, private_repair_evidence, read_repair_bundle, recover_originals,
                           require_retained_evidence, retained_originals, run_worker, worker_environment)
-from handoff_registry import register, resolve, restore_review, store_review, verify_review_origin
+from handoff_registry import register, resolve, restore_review, review_privacy, store_review, verify_review_origin
 from verification import verify_pr, metadata
 from issue_schema import validate_issue, done_labels, labels
 from pr_policy import validate_title
@@ -304,10 +304,8 @@ class Loop:
             public = {'binding': state.get('binding'), 'review': state.get('review')}
             state['review'], paths = restore_review(self.storage, state['review_ref'], public, True)
             state['private_paths'] = paths
-            sessions = ()
-            if 'private_sessions' in state['review']:
-                _, sessions = verify_review_origin(self.storage, state['review'], state.get('binding'), with_sessions=True)
-            if self.public_state(state['review'], paths, private_sessions=sessions) != public['review']:
+            _, sessions, identifiers, locators = review_privacy(self.storage, state['review'], state.get('binding'))
+            if self.public_state(state['review'], paths, sessions, identifiers, private_locators=locators) != public['review']:
                 raise ValueError('Private review public projection mismatch')
         if state is not None and handoff:
             state['private_paths'] = sorted(set(state.get('private_paths', [])) | set(handoff.get('private_paths', [])))
@@ -317,11 +315,12 @@ class Loop:
         state['updated_at'] = int(time.time())
         state['review_requests'] = review_requests(state, self.github_reviewer, state.get('remote_review_after'))
         # Raw private logs stay local. Public state may contain reviewer text, so remove local paths.
-        sessions = ()
-        if state.get('review', {}).get('origin_receipt') or 'private_sessions' in state.get('review', {}):
-            paths, sessions = verify_review_origin(self.storage, state['review'], state.get('binding'), with_sessions=True)
-            state['private_paths'] = sorted(set(state.get('private_paths', [])) | set(paths))
-        public = self.public_state(state, private_sessions=sessions)
+        paths, sessions, identifiers, locators = review_privacy(self.storage, state.get('review'), state.get('binding'))
+        state['private_paths'] = sorted(set(state.get('private_paths', [])) | set(paths))
+        paths = state.get('private_paths', ())
+        if any(not isinstance(p, str) or not Path(p).is_absolute() for p in paths):
+            raise ValueError('Coordinator private paths must be absolute verified paths')
+        public = self.public_state(state, paths, sessions, identifiers, private_locators=locators)
         if state.get('review'):
             bound_review = {'binding': public.get('binding'), 'review': public['review']}
             # Never accept a public fingerprint as an originating session on resume.
@@ -356,17 +355,14 @@ class Loop:
             stream.write(str(error))
         return f'Operation failed ({type(error).__name__}); coordinator private diagnostic {identifier}'
 
-    def public_state(self, value, private_paths=(), private_sessions=(), private_identifiers=(), location=()):
+    def public_state(self, value, private_paths=(), private_sessions=(), private_identifiers=(), location=(), private_locators=()):
         if isinstance(value, dict):
             if not location and 'session' in value:
                 location = ('review',)
-            private_paths = set(private_paths) | set(value.get('private_paths', []))
             review = value.get('review') if not location and isinstance(value.get('review'), dict) else {}
             private_sessions = (set(private_sessions) |
                                 ({str(value.get('session', ''))} if location == ('review',) else set()) |
                                 {str(review.get('session', ''))})
-            private_identifiers = (set(private_identifiers) | set(value.get('private_identifiers', [])) |
-                                   set(review.get('private_identifiers', [])))
             public = {}
             for k, v in value.items():
                 if k in ('host', 'source', 'repair_evidence', 'evidence_kind', 'private_repair_evidence', 'private_paths', 'private_sessions', 'private_identifiers', 'evidence_records'):
@@ -375,16 +371,16 @@ class Loop:
                 if location[:1] == ('review',) and not (location == ('review',) and k in PUBLIC_REVIEW_KEYS):
                     if not isinstance(k, str):
                         raise ValueError('Review diagnostic keys must be strings')
-                    key = self.public_state(k, private_paths, private_sessions, private_identifiers, ('diagnostic_key',))
+                    key = self.public_state(k, private_paths, private_sessions, private_identifiers, ('diagnostic_key',), private_locators)
                 if key in public:
                     raise ValueError('Public review diagnostic key collision; retain the private report')
-                public[key] = self.public_state(v, private_paths, private_sessions, private_identifiers, location + (k,))
+                public[key] = self.public_state(v, private_paths, private_sessions, private_identifiers, location + (k,), private_locators)
             return public
         if isinstance(value, list):
-            return [self.public_state(v, private_paths, private_sessions, private_identifiers, location + ('*',)) for v in value]
+            return [self.public_state(v, private_paths, private_sessions, private_identifiers, location + ('*',), private_locators) for v in value]
         if isinstance(value, str):
             structural = public_machine_value(location, value)
-            identities = {} if structural else {s: '[private origin]' for s in private_identifiers if s}
+            identities = {} if structural else {s: '[private origin]' for s in (*private_identifiers, *private_locators) if s}
             opaque_ids = set(private_identifiers)
             for session in private_sessions:
                 match = NATIVE_SESSION.fullmatch(session)
@@ -398,13 +394,17 @@ class Loop:
             for fingerprint in [*private_sessions, *identities.values()]:
                 if SESSION_HASH.fullmatch(fingerprint):
                     identities.setdefault(fingerprint, fingerprint)
-            patterns = []
+            patterns, opaque_patterns = [], []
             for identity in sorted(identities, key=len, reverse=True):
                 pattern = re.escape(identity)
-                if (identity in opaque_ids and '/' not in identity and '\\' not in identity and
-                        not re.match(r'[A-Za-z][A-Za-z0-9+.-]*:', identity)):
-                    # Opaque IDs are whole identifiers; complete URI/path locators remain private substrings.
-                    pattern = r'(?<![\w.-])' + pattern + r'(?![\w-]|\.\w)'
+                if identity in opaque_ids and identity not in private_locators:
+                    if re.search(r'\w', identity):
+                        pattern = r'(?<![\w.-])' + pattern + r'(?![\w-]|\.\w)'
+                        opaque_patterns.append(pattern)
+                    else:
+                        # Punctuation IDs are tokens, not URI separators or prose punctuation.
+                        delimiters = r"\s()\[\]{}<>\"'`,;!?=:"
+                        pattern = '(?<![^' + delimiters + '])' + pattern + '(?![^' + delimiters + '])'
                 patterns.append(pattern)
             identity_pattern = '|'.join([*patterns, NATIVE_SESSION.pattern,
                                         r'(?i:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12})'])
@@ -442,6 +442,8 @@ class Loop:
                 destination = markdown_atom.sub(markdown_char, token)
                 positions.extend((i, i + 1) for i in range(offset, len(token)))
                 if not re.match(r'(?i)(?:[a-z][a-z0-9+.-]*://|/)', destination):
+                    if destination == token and re.search(r'(?i)[a-z][a-z0-9+.-]*://', token):
+                        return token, False
                     redacted, cursor = [], 0
                     patterns = [] if bounded else [re.escape(path) for path in sorted(private_paths, key=len, reverse=True) if path]
                     patterns.append(identity_pattern)
@@ -458,9 +460,10 @@ class Loop:
                     return ''.join(redacted) + token[cursor:], False
                 decoded = unquote(destination)
                 try:
-                    path = posixpath.normpath(unquote(urlsplit(destination).path))
+                    uri = urlsplit(destination)
+                    path = posixpath.normpath(unquote(uri.path))
                 except ValueError:
-                    path = ''
+                    uri, path = None, ''
                 # Keep enclosing Markdown punctuation beyond the complete known filename.
                 closing = 0 if bounded else len(token) - len(token.rstrip(')'))
                 matched = []
@@ -475,10 +478,21 @@ class Loop:
                 if (matched and
                         (destination != token or '%' in token or not any(known in token for known in private_paths))):
                     return '[private URI]' + suffix, False
-                if ((destination != token or '%' in token or any(s in decoded for s in identities)) and
-                        any(protected_identity(match[0]) for match in re.finditer(identity_pattern, decoded))):
+                components = ([uri.netloc, *uri.path.split('/'), *re.split(r'[&=]', uri.query), uri.fragment]
+                              if uri else re.split(r'[/?:&=#]', destination)[1:])
+                payload = (uri.path + '?' + uri.query + '#' + uri.fragment if uri else destination.partition(':')[2])
+                if (not structural and (decoded in opaque_ids or
+                        any(unquote(part) in opaque_ids for part in components if part) or
+                        opaque_patterns and re.search('|'.join(opaque_patterns), unquote(payload)))):
                     return '[private URI]' + suffix, False
-                return token, bool(re.match(r'(?i)https?://', destination))
+                if ((destination != token or '%' in token or any(s in decoded for s in identities)) and
+                        any(protected_identity(match[0]) for match in re.finditer(identity_pattern, decoded)
+                            if match[0] not in opaque_ids or match[0] in private_locators)):
+                    return '[private URI]' + suffix, False
+                # File tokens must rejoin enclosing punctuation for complete known-filename matching.
+                return token, bool(re.match(r'(?i)https?://', destination) or
+                                   bounded and uri and uri.scheme.lower() != 'file' and
+                                   re.match(r'(?i)[a-z][a-z0-9+.-]*://', destination))
             span = r'(?:\\[' + re.escape(string.punctuation) + r']|\](?=[^()\s<>"`])|[^\s<>"`\]])*'
             def private_text(text):
                 cursor, parts = 0, []
@@ -527,7 +541,7 @@ class Loop:
             pieces.extend(private_text(value[cursor:]))
             # Preserve bare URIs embedded in surrounding prose or punctuation.
             def bare_parts(text):
-                spans = re.split(r'(?i)((?:https?://|file://|/)' + span + ')', text)
+                spans = re.split(r'(?i)((?:[a-z][a-z0-9+.-]*://|/)' + span + ')', text)
                 return [private_uri(part) if i % 2 else (part, False) for i, part in enumerate(spans)]
             parts, prose = [], []
             for text, is_url in pieces:
@@ -540,7 +554,11 @@ class Loop:
             parts.extend(bare_parts(''.join(prose)))
             public = []
             for part, is_url in parts:
+                uri_syntax = is_url or bool(re.match(r'(?i)[a-z][a-z0-9+.-]*://', part))
                 def redact_identity(match):
+                    # URI payloads were checked above; do not reinterpret their syntax as opaque IDs.
+                    if uri_syntax and match[0] in opaque_ids and match[0] not in private_locators:
+                        return match[0]
                     protected = protected_identity(match[0])
                     if protected:
                         return protected
@@ -1016,6 +1034,7 @@ class Loop:
         report = evidence['review']
         if report.get('feedback_hash') != bound['feedback_hash']:
             raise ValueError('Independent report must identify the feedback it actually reviewed')
+        review_privacy(self.storage, report, bound)
         self.retained_history(h)
         previous = state.get('binding', {})
         if previous != bound:
@@ -1106,12 +1125,13 @@ def public_machine_value(location, value):
             return False
         return True
     pattern = None
-    if scope in ((), ('binding',), ('review',), ('gui',), ('acceptance',)):
-        if key in ('head', 'base') or (not scope and key in ('expected_head', 'publish_head')):
+    if scope in ((), ('binding',), ('review',), ('gui',), ('acceptance',), ('issue_closure',)):
+        if key in ('head', 'base') or (not scope and key in ('expected_head', 'publish_head', 'merge_sha')):
             pattern = r'[0-9a-f]{40}'
         hashes = {
             ('binding',): ('title_hash', 'body_hash', 'issue_hash', 'feedback_hash'),
-            ('review',): ('repair_revision', 'repair_evidence_sha256', 'certificate_revision', 'certificate_evidence_sha256'),
+            ('issue_closure',): ('issue_hash',),
+            ('review',): ('repair_revision', 'repair_evidence_sha256', 'certificate_revision', 'certificate_evidence_sha256', 'feedback_hash'),
             ('gui',): ('artifact_sha256',),
             ('acceptance',): ('repair_revision', 'repair_evidence_sha256', 'certificate_revision', 'certificate_evidence_sha256'),
         }
