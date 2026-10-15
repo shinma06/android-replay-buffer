@@ -396,11 +396,26 @@ class Loop:
                 if SESSION_HASH.fullmatch(fingerprint):
                     identities.setdefault(fingerprint, fingerprint)
             patterns, opaque_patterns, uri_locators, punctuation_ids = [], [], {}, set()
+            def split_locator(text):
+                if not any(c in text for c in '\t\r\n'):
+                    return urlsplit(text)
+                # urlsplit strips literal TAB/CR/LF; protect payload characters without decoding URI grammar.
+                marker = '\ue000'
+                while marker in text:
+                    marker += '\ue000'
+                escapes = [(c, marker + str(i) + marker) for i, c in enumerate('\t\r\n')]
+                for char, escape in escapes:
+                    text = text.replace(char, escape)
+                parsed = urlsplit(text)
+                parts = list(parsed)
+                for char, escape in escapes:
+                    parts = [part.replace(escape, char) for part in parts]
+                return type(parsed)(*parts)
             for identity in sorted(identities, key=len, reverse=True):
                 pattern = re.escape(identity)
                 if identity in private_locators:
                     try:
-                        locator = urlsplit(identity)
+                        locator = split_locator(identity)
                     except ValueError:
                         locator = None
                     if locator and locator.scheme:
@@ -432,7 +447,8 @@ class Loop:
                 return all(c.isspace() or c in "()[]{}<>\"'`,;.!?=:" or
                            not c.isascii() and unicodedata.category(c).startswith('P') and unicodedata.category(c) != 'Pc'
                            for c in adjacent)
-            def locator_reference(text, decode=True):
+            def locator_reference(text, decode=True, before_whitespace=False):
+                boundary = re.search(r'\s', text) if before_whitespace else None
                 def values(value, decode=True):
                     return (value, unquote(value)) if decode and isinstance(value, str) else (value,)
                 def equal(source, target):
@@ -453,9 +469,11 @@ class Loop:
                     return hostport.partition(']')[2] if hostport.startswith('[') else ''.join(hostport.partition(':')[1:])
                 for known, source in uri_locators.items():
                     for match in re.finditer(re.escape(source.scheme) + ':', text, re.I):
+                        if boundary and match.start() > boundary.start():
+                            continue
                         target = text[match.start():]
                         try:
-                            uri = urlsplit(target)
+                            uri = split_locator(target)
                         except ValueError:
                             continue
                         bracketed = uri.netloc.rpartition('@')[2].startswith('[')
@@ -482,6 +500,9 @@ class Loop:
                         elif prefix(source.path, uri.path, match.start() > 0):
                             return True
                 return False
+            def locator_payload(uri, before_whitespace=False):
+                return uri and any(locator_reference(unquote(part), False, before_whitespace)
+                                   for part in (uri.username, uri.password, uri.hostname, uri.path, uri.query, uri.fragment) if part)
             def source_uri_syntax(text):
                 return any(re.match(re.escape(source.scheme) + r':(?=.)', text, re.I) for source in uri_locators.values())
             def protected_identity(identity):
@@ -542,7 +563,7 @@ class Loop:
                     return private_prose()
                 decoded = unquote(destination)
                 try:
-                    uri = urlsplit(destination)
+                    uri = split_locator(destination)
                     path = posixpath.normpath(unquote(uri.path))
                 except ValueError:
                     uri, path = None, ''
@@ -561,8 +582,7 @@ class Loop:
                         (destination != token or '%' in token or not any(known in token for known in private_paths))):
                     return '[private URI]' + suffix, False
                 # Parse structure before one decode; decoded payloads may contain a nested locator, never new outer grammar.
-                if (known_reference or uri and any(locator_reference(unquote(part), False)
-                        for part in (uri.username, uri.password, uri.hostname, uri.path, uri.query, uri.fragment) if part)):
+                if known_reference or locator_payload(uri):
                     return '[private URI]' + suffix, False
                 authority = []
                 if uri:
@@ -593,15 +613,46 @@ class Loop:
                                    re.match(r'(?i)[a-z][a-z0-9+.-]*://', destination))
             span = r'(?:\\[' + re.escape(string.punctuation) + r']|\](?=[^()\s<>"`])|[^\s<>"`\]])*'
             def locator_parts(text, split):
-                cursor, result = 0, []
+                matches = []
                 for match in re.finditer(identity_pattern, text):
-                    if (match.start() < cursor or match[0] not in private_locators or match[0] in uri_locators or
+                    if (match[0] not in private_locators or match[0] in uri_locators or
                             not any(c.isspace() for c in match[0]) or not identity_boundary(match)):
                         continue
                     child = re.match('/' + span, text[match.end():])
                     end = match.end() + (child.end() if child else 0)
-                    result.extend(split(text[cursor:match.start()]))
-                    result.append(private_uri(text[match.start():end]))
+                    matches.append((match.start(), end))
+                whitespace_limit = max((sum(c.isspace() for part in uri for c in unquote(part))
+                                        for uri in uri_locators.values()), default=0)
+                # Only cross whitespace belonging to a known locator, never a later URI in unrelated prose.
+                if whitespace_limit:
+                    schemes = '|'.join(re.escape(uri.scheme) for uri in uri_locators.values())
+                    for opening in re.finditer(r'(?i)(?:[a-z][a-z0-9+.-]*://|(?:[a-z][a-z0-9+.-]*)?(?:' + schemes + '):)', text):
+                        tail, whitespace, scanned = text[opening.start():], 0, 0
+                        for closing in re.finditer(r'(?=\s)|(?<=\s)|(?=[<>"`\]])|$', tail):
+                            end = closing.start()
+                            whitespace += sum(c.isspace() for c in tail[scanned:end])
+                            scanned = end
+                            if whitespace > whitespace_limit:
+                                break
+                            following = tail[end:end + 1]
+                            if continuation(following) or following == '-' or following == '.' and continuation(tail[end + 1:end + 2]):
+                                continue
+                            candidate = tail[:end]
+                            try:
+                                uri = split_locator(candidate)
+                            except ValueError:
+                                uri = None
+                            if locator_reference(candidate, before_whitespace=True) or locator_payload(uri, True):
+                                if whitespace:
+                                    child = re.match('/' + span, tail[end:])
+                                    matches.append((opening.start(), opening.start() + end + (child.end() if child else 0)))
+                                break
+                cursor, result = 0, []
+                for start, end in sorted(matches):
+                    if start < cursor:
+                        continue
+                    result.extend(split(text[cursor:start]))
+                    result.append(private_uri(text[start:end]))
                     cursor = end
                 return result + split(text[cursor:])
             def private_text(text):

@@ -843,6 +843,78 @@ class PrivacyTests(unittest.TestCase):
                     self.loop.save(self.gh.pull, restored, sid)
                     self.assertEqual(record.read_bytes(), original)
 
+    def test_uri_locator_whitespace_representations_survive_tokenization(self):
+        from urllib.parse import quote
+        for whitespace in (' ', '\u00a0', '\u2003', '\t', '\r\n'):
+            encoded = quote(whitespace, safe='')
+            pairs = [(prefix + 'private' + encoded + 'receipt', prefix + 'private' + whitespace + 'receipt')
+                     for prefix in ('file:///scope/', 'native:///scope/', 'file:/scope/', 'urn:scope:')]
+            # The path's case is significant; uppercase only the scheme in these aliases.
+            pairs = [(source, source.partition(':')[0].upper() + ':' + alias.partition(':')[2])
+                     for source, alias in pairs]
+            parts = ('UserName', 'PassWord', 'host.invalid', '/VaultReceipt', 'Key=Value', 'FragName')
+            for index, part in enumerate(parts):
+                values = list(parts); values[index] = part + encoded + 'tail'
+                source = 'https://{}:{}@{}:443{}?{}#{}'.format(*values)
+                values[index] = part + whitespace + 'tail'
+                pairs.append((source, 'HTTPS://{}:{}@{}:443{}?{}#{}'.format(*values)))
+            pairs.append(('file:///scope/private%3Fname' + encoded + 'receipt',
+                          'FILE:///scope/private%3Fname' + whitespace + 'receipt'))
+            pairs.extend((('file:///scope/private' + encoded, 'FILE:///scope/private' + whitespace),
+                          ('urn:' + encoded + 'receipt', 'URN:' + whitespace + 'receipt'),
+                          ('file:///scope/private' + quote(encoded, safe='') + 'receipt',
+                           'FILE:///scope/private' + encoded + 'receipt')))
+            pairs.append(('file:///scope/\ue000private' + encoded + 'receipt',
+                          'FILE:///scope/\ue000private' + whitespace + 'receipt'))
+            if not any(c in whitespace for c in '\t\r\n'):
+                pairs.append(('file:///scope/private' + whitespace + 'receipt',
+                              'FILE:///scope/private' + encoded + 'receipt'))
+            for source, alias in pairs:
+                with self.subTest(whitespace=repr(whitespace), source=source):
+                    ordinary = {'longer': alias + '-suffix', 'connector': alias + '＿suffix',
+                                'case': alias.swapcase(), 'root': 'https://public.invalid/ /a /about',
+                                'prose': 'https://public.invalid/ read this public note after',
+                                'double-nested': 'https://public.invalid/?locator=' + quote(quote(alias, safe=''), safe='')}
+                    if '%3F' in alias:
+                        ordinary['outer-grammar'] = alias.replace('%3F', '?')
+                    if quote(encoded, safe='') in source:
+                        ordinary['over-budget'] = alias.replace(encoded, whitespace)
+                    raw = dict(tal.report(), evidence={'ordinary': ordinary, 'bare': alias,
+                        'prose': f'Before ({alias}) after', 'assignment': 'target=' + alias,
+                        'separate': f'https://public.invalid/ public note Before ({alias}) after',
+                        'child': alias + '/child', 'angle': f'[record](<{alias}>)',
+                        'raw-nested': 'https://public.invalid/?locator=' + alias,
+                        'nested': 'https://public.invalid/?locator=' + quote(alias, safe=''),
+                        'keys': {f'diagnostic({alias})': 'checked', 'ordinary': 'retained'}})
+                    raw.pop('session')
+                    bound = self.loop.bound(self.gh.pull, self.gh.issues[35], self.gh.comments(36))[0]
+                    observed = {'session_id': 'Whitespace-Reviewer', 'source': source, 'operation_id': 'whitespace-operation',
+                                'report_sha256': digest(raw), 'binding_sha256': digest(bound)}
+                    issued = bind_native_review(raw, bound, self.loop.storage, issuer='example.invalid',
+                                                observe_origin=Mock(return_value=observed))
+                    record = self.loop.storage / 'registry' / (issued['origin_receipt'] + '.json')
+                    original = record.read_bytes()
+                    self.assertEqual(json.loads(original)['private_paths'], [])
+                    sid = self.loop.save(self.gh.pull, {'phase': 'reviewed', 'binding': bound, 'review': issued}, None)
+                    public = tal.al.unpack(self.gh.comments(36), tal.al.STATE)[0]['review']['evidence']
+                    self.assertEqual(public['ordinary'], ordinary)
+                    self.assertEqual(public['bare'], '[private URI]')
+                    self.assertEqual(public['prose'], 'Before ([private URI]) after')
+                    self.assertEqual(public['assignment'], 'target=[private URI]')
+                    self.assertEqual(public['separate'], 'https://public.invalid/ public note Before ([private URI]) after')
+                    self.assertEqual(public['child'], '[private URI]')
+                    self.assertEqual(public['angle'], '[record](<[private URI]>)')
+                    beyond_nested_budget = '%3F' in alias or '%' in alias and '%' not in source
+                    expected_nested = raw['evidence']['nested'] if beyond_nested_budget else '[private URI]'
+                    self.assertEqual(public['nested'], expected_nested)
+                    self.assertEqual(public['raw-nested'], '[private URI]')
+                    self.assertEqual(public['keys'], {'diagnostic([private URI])': 'checked', 'ordinary': 'retained'})
+                    restored = self.loop.load(36)[1]
+                    self.assertEqual(restored['review'], issued)
+                    verify_review_origin(self.loop.storage, restored['review'], bound)
+                    self.loop.save(self.gh.pull, restored, sid)
+                    self.assertEqual(record.read_bytes(), original)
+
     def test_complete_non_uri_locator_survives_whitespace_tokenization(self):
         from urllib.parse import quote
         for source in ('/scope/private receipt', '/scope/private\u00a0receipt', '/scope/operation-spanning receipt', 'opaque locator name'):
