@@ -400,6 +400,13 @@ class Loop:
             patterns, opaque_patterns, uri_locators, punctuation_ids = [], [], {}, set()
             def decode_uri(text):
                 return unquote(text, errors='surrogateescape')
+            if not structural:
+                # Presentation aliases do not change actor identity or give opaque IDs locator semantics.
+                for identity in sorted(opaque_ids):
+                    if re.match(r'(?i)[a-z][a-z0-9+.-]*:', identity):
+                        alias = decode_uri(identity)
+                        identities.setdefault(alias, identities.get(identity, '[private origin]'))
+                        opaque_ids.add(alias)
             def split_locator(text):
                 if not any(c in text for c in '\t\r\n'):
                     return urlsplit(text)
@@ -527,7 +534,7 @@ class Loop:
                 value = value.replace(private, '[local]')
             markdown_atom = re.compile(r'\\([' + re.escape(string.punctuation) +
                                        r'])|(&(?:#[0-9]{1,7}|#[xX][0-9a-fA-F]{1,6}|[A-Za-z][A-Za-z0-9]*);)')
-            def private_uri(token, bounded=False):
+            def private_uri(token, bounded=False, before='', after=''):
                 positions, offset = [], 0
                 def markdown_char(escape):
                     nonlocal offset
@@ -589,19 +596,64 @@ class Loop:
                 if (matched and
                         (destination != token or '%' in token or not any(known in token for known in private_paths))):
                     return '[private URI]' + suffix, False
-                if destination in opaque_ids or decoded in opaque_ids:
-                    return '[private URI]', False
                 def closing_enclosure(char):
                     return char in ")]}>\"'`" or unicodedata.category(char) in ('Pe', 'Pf')
+                def enclosure_closer(char):
+                    pairs = {'(': ')', '[': ']', '{': '}', '<': '>', '"': '"', "'": "'", '`': '`'}
+                    if char in pairs:
+                        return pairs[char]
+                    if unicodedata.category(char) in ('Ps', 'Pi'):
+                        name = unicodedata.name(char, '')
+                        counterpart = name.replace('LEFT', 'RIGHT').replace('OPENING', 'CLOSING')
+                        if counterpart != name:
+                            try:
+                                return unicodedata.lookup(counterpart)
+                            except KeyError:
+                                return None
+                    return None
+                def punctuation(char):
+                    return closing_enclosure(char) or char in ',;.!?:' or not char.isascii() and unicodedata.category(char) == 'Po'
+                following = 0
+                while following < len(after) and punctuation(after[following]):
+                    following += 1
+                def external_suffix(tail, prefix=before, following_text=after[:following]):
+                    stack, cursor = [], 0
+                    while cursor < len(prefix):
+                        atom = markdown_atom.match(prefix, cursor)
+                        if atom:
+                            cursor = atom.end()
+                            continue
+                        char = prefix[cursor]; cursor += 1
+                        if char in ("'", '’') and cursor > 1 and cursor < len(prefix) and continuation(prefix[cursor - 2]) and continuation(prefix[cursor]):
+                            continue
+                        if stack and char == stack[-1]:
+                            stack.pop()
+                        elif enclosure_closer(char):
+                            stack.append(enclosure_closer(char))
+                        elif closing_enclosure(char):
+                            stack.clear()
+                    enclosed = False
+                    for char in tail + following_text:
+                        if closing_enclosure(char):
+                            if not stack or stack.pop() != char:
+                                return False
+                            enclosed = True
+                        elif char in '?:' and not enclosed:
+                            return False
+                    return True
+                rejected = False
+                if destination in opaque_ids or decoded in opaque_ids:
+                    if external_suffix(''):
+                        return '[private URI]', False
+                    rejected = True
                 end = len(destination)
-                while uri and uri.scheme and end and (closing_enclosure(destination[end - 1]) or destination[end - 1] in ',;.!?:' or
-                        not destination[end - 1].isascii() and unicodedata.category(destination[end - 1]) == 'Po'):
+                while not rejected and uri and uri.scheme and end and punctuation(destination[end - 1]):
                     end -= 1
                     reference = destination[:end]
                     if reference in opaque_ids or decode_uri(reference) in opaque_ids:
-                        terminator = re.search('[?:]', destination[end:])
-                        if terminator and not any(closing_enclosure(c) for c in destination[end:end + terminator.start()]):
-                            break  # A bare query/colon is ambiguous; ID-owned punctuation cannot establish an outer enclosure.
+                        if not external_suffix(destination[end:]):
+                            rejected = True
+                            break
                         return '[private URI]' + token[positions[end][0]:], False
                 # Parse structure before one decode; decoded payloads may contain a nested locator, never new outer grammar.
                 if known_reference or locator_payload(uri):
@@ -614,10 +666,17 @@ class Loop:
                     authority = [uri.username, uri.password, host]
                 components = ([uri.netloc, *authority, *uri.path.split('/'), *re.split(r'[&=]', uri.query), uri.fragment]
                               if uri else re.split(r'[/?:&=#]', destination)[1:])
-                payload = (uri.path + '?' + uri.query + '#' + uri.fragment if uri else destination.partition(':')[2])
-                if (not structural and (decoded in opaque_ids or
-                        any(decode_uri(part) in opaque_ids for part in components if part) or
-                        opaque_patterns and any(identity_boundary(match)
+                payload = (uri.path + ('?' + uri.query if '?' in destination.partition('#')[0] else '') +
+                           ('#' + uri.fragment if '#' in destination else '') if uri else destination.partition(':')[2])
+                def opaque_in_payload(match):
+                    if not identity_boundary(match):
+                        return False
+                    if not re.match(r'(?i)[a-z][a-z0-9+.-]*:', match[0]):
+                        return True
+                    tail = re.split(r'\s', match.string[match.end():], maxsplit=1)[0]
+                    return all(punctuation(char) for char in tail) and external_suffix(tail, match.string[:match.start()], '')
+                if (not structural and (any(decode_uri(part) in opaque_ids for part in components if part) or
+                        opaque_patterns and any(opaque_in_payload(match)
                                                 for part in [*authority, payload] if part
                                                 for match in re.finditer('|'.join(opaque_patterns), decode_uri(part))))):
                     return '[private URI]' + suffix, False
@@ -629,12 +688,12 @@ class Loop:
                 if uri and not uri.scheme:
                     return private_prose()
                 # File tokens must rejoin enclosing punctuation for complete known-filename matching.
-                return token, bool(re.match(r'(?i)https?://', destination) or
+                return token, bool(rejected or re.match(r'(?i)https?://', destination) or
                                    uri and uri.scheme.lower() != 'file' and source_uri_syntax(destination) or
                                    bounded and uri and uri.scheme.lower() != 'file' and
                                    re.match(r'(?i)[a-z][a-z0-9+.-]*://', destination))
             span = r'(?:\\[' + re.escape(string.punctuation) + r']|\](?=[^()\s<>"`])|[^\s<>"`\]])*'
-            def locator_parts(text, split):
+            def locator_parts(text, split, before='', after=''):
                 matches = []
                 for match in re.finditer(identity_pattern, text):
                     if (match[0] not in private_locators or match[0] in uri_locators or
@@ -667,24 +726,32 @@ class Loop:
                                 child = re.match('/' + span, tail[end:])
                                 matches.append((opening.start(), opening.start() + end + (child.end() if child else 0), '[private URI]'))
                                 break
-                cursor, result = 0, []
+                cursor, result, context = 0, [], before
                 for start, end, replacement in sorted(matches, key=lambda match: (match[0], -match[1])):
                     if start < cursor:
                         continue
-                    result.extend(split(text[cursor:start]))
-                    result.append((replacement, False) if replacement else private_uri(text[start:end]))
+                    preceding = split(text[cursor:start], context, text[start:] + after)
+                    result.extend(preceding)
+                    context += ''.join(part for part, _ in preceding)
+                    piece = (replacement, False) if replacement else private_uri(text[start:end], before=context, after=text[end:] + after)
+                    result.append(piece)
+                    context += piece[0]
                     cursor = end
-                return result + split(text[cursor:])
-            def private_text(text):
-                def tokens(text):
-                    cursor, parts = 0, []
+                return result + split(text[cursor:], context, after)
+            def private_text(text, before='', after=''):
+                def tokens(text, before, after):
+                    cursor, parts, context = 0, [], before
                     for match in re.finditer(r'(?:\\[' + re.escape(string.punctuation) + r']|[^\s<>"`\[\]()])' + span, text):
-                        parts.extend(((text[cursor:match.start()], False), private_uri(match[0])))
+                        preceding = text[cursor:match.start()]
+                        context += preceding
+                        piece = private_uri(match[0], before=context, after=text[match.end():] + after)
+                        parts.extend(((preceding, False), piece))
+                        context += piece[0]
                         cursor = match.end()
                     return parts + [(text[cursor:], False)]
-                return locator_parts(text, tokens)
+                return locator_parts(text, tokens, before, after)
             # Protect full raw sources before Markdown parsing can separate them into unrelated pieces.
-            value = ''.join(text for text, _ in locator_parts(value, lambda text: [(text, False)]))
+            value = ''.join(text for text, _ in locator_parts(value, lambda text, before, after: [(text, False)]))
             # Raw syntax bounds the destination; interpreted references cannot add delimiters.
             pieces, cursor = [], 0
             for opening in re.finditer(r'\](?:\(|:)\s*', value):
@@ -724,27 +791,35 @@ class Loop:
                         (not angle and end == len(value) and value[opening.start() + 1] == '(') or
                         (angle and (end == len(value) or value[end] != '>'))):
                     continue
-                pieces.extend(private_text(value[cursor:start]))
-                pieces.append(private_uri(value[start:end], True))
+                pieces.extend(private_text(value[cursor:start], ''.join(text for text, _ in pieces), value[start:]))
+                pieces.append(private_uri(value[start:end], True, ''.join(text for text, _ in pieces), value[end:]))
                 cursor = end
-            pieces.extend(private_text(value[cursor:]))
+            pieces.extend(private_text(value[cursor:], ''.join(text for text, _ in pieces)))
             # Preserve bare URIs embedded in surrounding prose or punctuation.
-            def bare_parts(text):
-                def uri_parts(text):
+            def bare_parts(text, before=''):
+                def uri_parts(text, before, after):
                     prefixes = ['[a-z][a-z0-9+.-]*://', '/',
                                 *['(?:[a-z][a-z0-9+.-]*)?' + re.escape(uri.scheme) + ':' for uri in uri_locators.values()]]
-                    spans = re.split(r'(?i)((?:' + '|'.join(prefixes) + ')' + span + ')', text)
-                    return [private_uri(part) if i % 2 else (part, False) for i, part in enumerate(spans)]
-                return locator_parts(text, uri_parts)
-            parts, prose = [], []
+                    cursor, parts, context = 0, [], before
+                    for match in re.finditer(r'(?i)(?:' + '|'.join(prefixes) + ')' + span, text):
+                        preceding = text[cursor:match.start()]
+                        context += preceding
+                        piece = private_uri(match[0], before=context, after=text[match.end():] + after)
+                        parts.extend(((preceding, False), piece))
+                        context += piece[0]
+                        cursor = match.end()
+                    return parts + [(text[cursor:], False)]
+                return locator_parts(text, uri_parts, before)
+            parts, prose, context = [], [], ''
             for text, is_url in pieces:
                 if not is_url:
                     prose.append(text)
                     continue
-                parts.extend(bare_parts(''.join(prose)))
+                parts.extend(bare_parts(''.join(prose), context))
+                context += ''.join(prose) + text
                 prose.clear()
                 parts.append((text, True))
-            parts.extend(bare_parts(''.join(prose)))
+            parts.extend(bare_parts(''.join(prose), context))
             public = []
             for part, is_url in parts:
                 uri_syntax = is_url or bool(re.match(r'(?i)[a-z][a-z0-9+.-]*://', part)) or source_uri_syntax(part)

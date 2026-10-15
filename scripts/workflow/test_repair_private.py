@@ -319,6 +319,8 @@ class PrivacyTests(unittest.TestCase):
                 ordinary += [operation.swapcase(), 'https://public.invalid/' + operation + '-suffix']
                 evidence = {'forms': [form.format(operation) for form in forms], 'ordinary': ordinary,
                             'exact': operation,
+                            'repeated': 'Operation (' + operation + ' and ' + operation + ')?',
+                            'markdown-repeated': 'Operation ([first](<' + operation + '>) and ' + operation + ')?',
                             'encoded': 'Operation (' + operation.replace('/1', '/%31') + ')',
                             'keys': {'Operation (' + operation + ')': 'checked'}}
                 bound = self.loop.bound(self.gh.pull, self.gh.issues[35], self.gh.comments(36))[0]
@@ -337,6 +339,8 @@ class PrivacyTests(unittest.TestCase):
                         marker = '[private URI]' if operation.startswith('native://') else '[private origin]'
                         self.assertEqual(result, form.format(marker))
                 self.assertNotIn(operation, next(iter(public['keys'])))
+                self.assertEqual(public['repeated'], 'Operation (' + marker + ' and ' + marker + ')?')
+                self.assertEqual(public['markdown-repeated'], 'Operation ([first](<' + marker + '>) and ' + marker + ')?')
                 self.assertEqual(public['encoded'], 'Operation (' + ('[private origin]' if operation.startswith('urn:') else '[private URI]') + ')')
                 restored = self.loop.load(36)[1]; self.assertEqual(restored['review'], issued)
                 self.loop.save(self.gh.pull, restored, sid); self.assertEqual(record.read_bytes(), original)
@@ -364,6 +368,91 @@ class PrivacyTests(unittest.TestCase):
                     'keys': {'[private URI]': 'private checked', controls[0]: 'public retained'}})
                 restored = self.loop.load(36)[1]; self.assertEqual(restored['review'], issued)
                 self.loop.save(self.gh.pull, restored, sid); self.assertEqual(record.read_bytes(), original)
+
+    def test_uri_operation_enclosures_require_actual_matching_openers(self):
+        from urllib.parse import quote
+        operation = 'native://operation/1'
+        private = ('Operation (' + operation + ')?', 'Operation (' + operation + '):',
+                   'Operation (see ' + operation + ')?', 'Operation [' + operation + ']?:',
+                   'Operation "' + operation + '":?', 'Operation （' + operation + '）?',
+                   'Operation (reference=' + operation + ')?',
+                   'Operation ([label](https://public.invalid/) see ' + operation + ')?',
+                   '[record](' + operation + ')?', '[record](<' + operation + '>):')
+        ordinary = ('Operation ' + operation + ')?', 'Operation ' + operation + '):',
+                    'Operation [' + operation + ')?', 'Operation (' + operation + ']?:',
+                    operation + ']?', operation + '":', operation + '?public',
+                    'reference=' + operation + ')?', 'Operation %28' + operation + ')?',
+                    'Operation [[label](https://public.invalid/) see ' + operation + ')?',
+                    'https://ref.invalid/id/' + operation + ')?',
+                    'https://ref.invalid/?operation=' + quote(operation + ')?', safe=''),
+                    operation + '/child', operation + '#fragment', operation + '＿suffix')
+        bound = self.loop.bound(self.gh.pull, self.gh.issues[35], self.gh.comments(36))[0]
+        raw = dict(tal.report(), evidence={'private': list(private), 'ordinary': list(ordinary),
+                    'embedded': ['https://ref.invalid/id/' + operation,
+                                 'https://ref.invalid/?operation=' + quote(operation, safe='')],
+                    'keys': {ordinary[0]: 'first public', ordinary[1]: 'second public'}}); raw.pop('session')
+        observed = {'session_id': 'Actual-Reviewer', 'source': 'native://host/private-record', 'operation_id': operation,
+                    'report_sha256': digest(raw), 'binding_sha256': digest(bound)}
+        issued = bind_native_review(raw, bound, self.loop.storage, issuer='example.invalid', observe_origin=Mock(return_value=observed))
+        record = self.loop.storage / 'registry' / (issued['origin_receipt'] + '.json'); original = record.read_bytes()
+        sid = self.loop.save(self.gh.pull, {'binding': bound, 'review': issued, 'phase': 'reviewed'}, None)
+        public = tal.al.unpack(self.gh.comments(36), tal.al.STATE)[0]['review']['evidence']
+        self.assertEqual(public['ordinary'], list(ordinary))
+        for before, after in zip(private, public['private']):
+            with self.subTest(reference=before): self.assertEqual(after, before.replace(operation, '[private URI]'))
+        self.assertEqual(public['keys'], raw['evidence']['keys'])
+        self.assertEqual(public['embedded'], ['[private URI]', '[private URI]'])
+        restored = self.loop.load(36)[1]; self.assertEqual(restored['review'], issued)
+        self.loop.save(self.gh.pull, restored, sid); self.assertEqual(record.read_bytes(), original)
+
+    def test_uri_operation_raw_once_spellings_match_symmetrically(self):
+        from urllib.parse import quote
+        cases = [('native://operation/%31?', 'native://operation/1?', 'native://operation/2?'),
+                 ('native://operation/1?', 'native://operation/%31?', 'native://operation/2?'),
+                 ('native://operation/%2531?', 'native://operation/%31?', 'native://operation/1?'),
+                 ('native://operation/%FF?', 'native://operation/%ff?', 'native://operation/%FE?'),
+                 ('native://operation/%C3%A9', 'native://operation/é', 'native://operation/è'),
+                 ('urn:operation:%31', 'urn:operation:1', 'urn:operation:2')]
+        for operation, alias, unrelated in cases:
+            with self.subTest(operation=operation):
+                evidence = {'exact': operation, 'alias': alias, 'enclosed': '(' + alias + ')?',
+                            'link': 'https://ref.invalid/?operation=' + quote(alias, safe=''),
+                            'ordinary': [unrelated, alias.swapcase(), alias + '/child', alias + '＿suffix'],
+                            'keys': {'Origin (' + alias + ')?': 'checked'}}
+                if operation.startswith('urn:'):
+                    evidence['ordinary'].remove(alias + '/child')
+                bound = self.loop.bound(self.gh.pull, self.gh.issues[35], self.gh.comments(36))[0]
+                raw = dict(tal.report(), evidence=evidence); raw.pop('session')
+                observed = {'session_id': 'Actual-Reviewer', 'source': 'native://host/private-record', 'operation_id': operation,
+                            'report_sha256': digest(raw), 'binding_sha256': digest(bound)}
+                issued = bind_native_review(raw, bound, self.loop.storage, issuer='example.invalid', observe_origin=Mock(return_value=observed))
+                record = self.loop.storage / 'registry' / (issued['origin_receipt'] + '.json'); original = record.read_bytes()
+                sid = self.loop.save(self.gh.pull, {'binding': bound, 'review': issued, 'phase': 'reviewed'}, None)
+                public = tal.al.unpack(self.gh.comments(36), tal.al.STATE)[0]['review']['evidence']
+                self.assertEqual(public['ordinary'], evidence['ordinary'])
+                marker = '[private origin]' if operation.startswith('urn:') else '[private URI]'
+                self.assertEqual(public['alias'], marker)
+                self.assertEqual(public['enclosed'], '(' + marker + ')?')
+                beyond_budget = '%' in alias and '%' not in operation or operation == 'native://operation/%FF?'
+                expected_link = evidence['link'] if beyond_budget else '[private URI]'
+                self.assertEqual(public['link'], expected_link)
+                self.assertEqual(public['keys'], {'Origin (' + marker + ')?': 'checked'})
+                restored = self.loop.load(36)[1]; self.assertEqual(restored['review'], issued)
+                self.loop.save(self.gh.pull, restored, sid); self.assertEqual(record.read_bytes(), original)
+
+    def test_equivalent_uri_operation_keys_still_fail_real_collision_before_public_write(self):
+        operation, alias = 'native://operation/%31?', 'native://operation/1?'
+        bound = self.loop.bound(self.gh.pull, self.gh.issues[35], self.gh.comments(36))[0]
+        raw = dict(tal.report(), evidence={'keys': {operation: 'raw', alias: 'alias'}}); raw.pop('session')
+        observed = {'session_id': 'Actual-Reviewer', 'source': 'native://host/private-record', 'operation_id': operation,
+                    'report_sha256': digest(raw), 'binding_sha256': digest(bound)}
+        issued = bind_native_review(raw, bound, self.loop.storage, issuer='example.invalid', observe_origin=Mock(return_value=observed))
+        record = self.loop.storage / 'registry' / (issued['origin_receipt'] + '.json'); original = record.read_bytes()
+        comments = copy.deepcopy(self.gh.messages)
+        with self.assertRaisesRegex(ValueError, 'diagnostic key collision'):
+            self.loop.save(self.gh.pull, {'binding': bound, 'review': issued, 'phase': 'reviewed'}, None)
+        self.assertEqual(self.gh.messages, comments)
+        self.assertEqual(record.read_bytes(), original)
 
     def test_short_native_ids_preserve_binding_and_machine_metadata_through_save_load(self):
         self.gh.pull['head']['sha'] = '19' * 20
