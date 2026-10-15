@@ -447,8 +447,9 @@ class Loop:
                 return all(c.isspace() or c in "()[]{}<>\"'`,;.!?=:" or
                            not c.isascii() and unicodedata.category(c).startswith('P') and unicodedata.category(c) != 'Pc'
                            for c in adjacent)
-            def locator_reference(text, decode=True, before_whitespace=False):
-                boundary = re.search(r'\s', text) if before_whitespace else None
+            lexical_boundary = re.compile(r'[\s<>"`\[\]()\x00-\x1f\x7f]')
+            def locator_reference(text, decode=True, before_boundary=False, source_locator=None):
+                boundary = lexical_boundary.search(text) if before_boundary else None
                 def values(value, decode=True):
                     return (value, unquote(value)) if decode and isinstance(value, str) else (value,)
                 def equal(source, target):
@@ -468,6 +469,8 @@ class Loop:
                     hostport = authority.rpartition('@')[2]
                     return hostport.partition(']')[2] if hostport.startswith('[') else ''.join(hostport.partition(':')[1:])
                 for known, source in uri_locators.items():
+                    if source_locator is not None and known != source_locator:
+                        continue
                     for match in re.finditer(re.escape(source.scheme) + ':', text, re.I):
                         if boundary and match.start() > boundary.start():
                             continue
@@ -500,8 +503,8 @@ class Loop:
                         elif prefix(source.path, uri.path, match.start() > 0):
                             return True
                 return False
-            def locator_payload(uri, before_whitespace=False):
-                return uri and any(locator_reference(unquote(part), False, before_whitespace)
+            def locator_payload(uri, before_boundary=False, source_locator=None):
+                return uri and any(locator_reference(unquote(part), False, before_boundary, source_locator)
                                    for part in (uri.username, uri.password, uri.hostname, uri.path, uri.query, uri.fragment) if part)
             def source_uri_syntax(text):
                 return any(re.match(re.escape(source.scheme) + r':(?=.)', text, re.I) for source in uri_locators.values())
@@ -616,23 +619,22 @@ class Loop:
                 matches = []
                 for match in re.finditer(identity_pattern, text):
                     if (match[0] not in private_locators or match[0] in uri_locators or
-                            not any(c.isspace() for c in match[0]) or not identity_boundary(match)):
+                            not lexical_boundary.search(match[0]) or not identity_boundary(match)):
                         continue
                     child = re.match('/' + span, text[match.end():])
                     end = match.end() + (child.end() if child else 0)
-                    matches.append((match.start(), end))
-                whitespace_limit = max((sum(c.isspace() for part in uri for c in unquote(part))
-                                        for uri in uri_locators.values()), default=0)
-                # Only cross whitespace belonging to a known locator, never a later URI in unrelated prose.
-                if whitespace_limit:
+                    matches.append((match.start(), end, None))
+                # Cross only boundaries owned by each complete source; shorter known sources cannot cut it first.
+                for known, source in uri_locators.items():
+                    boundary_limit = sum(len(lexical_boundary.findall(unquote(part))) for part in source)
                     schemes = '|'.join(re.escape(uri.scheme) for uri in uri_locators.values())
                     for opening in re.finditer(r'(?i)(?:[a-z][a-z0-9+.-]*://|(?:[a-z][a-z0-9+.-]*)?(?:' + schemes + '):)', text):
-                        tail, whitespace, scanned = text[opening.start():], 0, 0
-                        for closing in re.finditer(r'(?=\s)|(?<=\s)|(?=[<>"`\]])|$', tail):
+                        tail, boundaries, scanned = text[opening.start():], 0, 0
+                        for closing in re.finditer(r'(?=' + lexical_boundary.pattern + ')|(?<=' + lexical_boundary.pattern + ')|$', tail):
                             end = closing.start()
-                            whitespace += sum(c.isspace() for c in tail[scanned:end])
+                            boundaries += len(lexical_boundary.findall(tail[scanned:end]))
                             scanned = end
-                            if whitespace > whitespace_limit:
+                            if boundaries > boundary_limit:
                                 break
                             following = tail[end:end + 1]
                             if continuation(following) or following == '-' or following == '.' and continuation(tail[end + 1:end + 2]):
@@ -642,17 +644,16 @@ class Loop:
                                 uri = split_locator(candidate)
                             except ValueError:
                                 uri = None
-                            if locator_reference(candidate, before_whitespace=True) or locator_payload(uri, True):
-                                if whitespace:
-                                    child = re.match('/' + span, tail[end:])
-                                    matches.append((opening.start(), opening.start() + end + (child.end() if child else 0)))
+                            if locator_reference(candidate, before_boundary=True, source_locator=known) or locator_payload(uri, True, known):
+                                child = re.match('/' + span, tail[end:])
+                                matches.append((opening.start(), opening.start() + end + (child.end() if child else 0), '[private URI]'))
                                 break
                 cursor, result = 0, []
-                for start, end in sorted(matches):
+                for start, end, replacement in sorted(matches, key=lambda match: (match[0], -match[1])):
                     if start < cursor:
                         continue
                     result.extend(split(text[cursor:start]))
-                    result.append(private_uri(text[start:end]))
+                    result.append((replacement, False) if replacement else private_uri(text[start:end]))
                     cursor = end
                 return result + split(text[cursor:])
             def private_text(text):
@@ -663,6 +664,8 @@ class Loop:
                         cursor = match.end()
                     return parts + [(text[cursor:], False)]
                 return locator_parts(text, tokens)
+            # Protect full raw sources before Markdown parsing can separate them into unrelated pieces.
+            value = ''.join(text for text, _ in locator_parts(value, lambda text: [(text, False)]))
             # Raw syntax bounds the destination; interpreted references cannot add delimiters.
             pieces, cursor = [], 0
             for opening in re.finditer(r'\](?:\(|:)\s*', value):

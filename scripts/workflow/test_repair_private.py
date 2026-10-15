@@ -915,6 +915,78 @@ class PrivacyTests(unittest.TestCase):
                     self.loop.save(self.gh.pull, restored, sid)
                     self.assertEqual(record.read_bytes(), original)
 
+    def test_complete_locators_cross_all_projection_boundary_families(self):
+        from urllib.parse import quote
+        cases = (
+            ('native://host/<private-receipt>', 'native://host/<private-receipt>'),
+            ('native://host/private"receipt', 'NATIVE://HOST/private"receipt'),
+            ('urn:scope:`private`receipt', 'URN:scope:`private`receipt'),
+            ('file:///scope/[private](receipt)', 'FILE:///scope/[private](receipt)'),
+            ('file:/scope/private)receipt(', 'FILE:/scope/private)receipt('),
+            ('native://host/private](https://public.invalid/)tail', 'native://host/private](https://public.invalid/)tail'),
+            ('native://host/private\\[receipt', 'native://host/private\\[receipt'),
+            ('native://host/&lt;private&gt;receipt', 'native://host/&lt;private&gt;receipt'),
+            ('https://User:Pass@host:443/<private>"[receipt]`(x)?Key=Value#Frag',
+             'HTTPS://User:Pass@HOST:443/<private>"[receipt]`(x)?Key=Value#Frag'),
+            ('file:///scope/private%00receipt', 'FILE:///scope/private\x00receipt'),
+            ('urn:scope:private%7Freceipt', 'URN:scope:private\x7freceipt'),
+            ('opaque<private>[receipt](x)', 'opaque<private>[receipt](x)'),
+            ('opaque\\[private](receipt)', 'opaque\\[private](receipt)'),
+            ('native://host/%3Cprivate-receipt%3E', 'NATIVE://HOST/<private-receipt>'),
+            ('file:/scope/private%22receipt', 'FILE:/scope/private"receipt'),
+            ('urn:scope:%60private%60receipt', 'URN:scope:`private`receipt'),
+            ('native://host/%253Cprivate%253E', 'NATIVE://HOST/%3Cprivate%3E'),
+            ('native://private<host>.invalid/receipt', 'NATIVE://PRIVATE<HOST>.INVALID/receipt'),
+            ('file:///scope/%3Cprivate%3Fname%3E', 'FILE:///scope/<private%3Fname>'),
+            ('native://host/<private-receipt>', 'NATIVE://HOST/%3Cprivate-receipt%3E'),
+            ('file:/scope/private"receipt', 'FILE:/scope/private%22receipt'),
+            ('native:///scope/%3Cprivate%3E', 'NATIVE:///scope/<private>'),
+        )
+        for source, alias in cases:
+            with self.subTest(source=source):
+                ordinary = {'longer': alias + '-suffix', 'connector': alias + '＿suffix',
+                            'root': 'https://public.invalid/ /a /about',
+                            'case': alias.swapcase(), 'unrelated': 'Public <tag> "quoted" `[label](target)` note'}
+                if '%25' in source:
+                    ordinary['over-budget'] = alias.replace('%3C', '<').replace('%3E', '>')
+                if '%3F' in source:
+                    ordinary['outer-grammar'] = alias.replace('%3F', '?')
+                raw = dict(tal.report(), evidence={'ordinary': ordinary, 'bare': alias,
+                    'prose': f'Before ({alias}) after', 'assignment': 'target=' + alias,
+                    'angle': f'[record](<{alias}>)',
+                    'child': alias + '/child', 'nested': 'https://public.invalid/?source=' + quote(alias, safe=''),
+                    'keys': {f'diagnostic({alias})': 'checked', 'ordinary': 'retained'}})
+                raw.pop('session')
+                bound = self.loop.bound(self.gh.pull, self.gh.issues[35], self.gh.comments(36))[0]
+                observed = {'session_id': 'Boundary-Reviewer', 'source': source, 'operation_id': 'boundary-operation',
+                            'report_sha256': digest(raw), 'binding_sha256': digest(bound)}
+                issued = bind_native_review(raw, bound, self.loop.storage, issuer='example.invalid',
+                                            observe_origin=Mock(return_value=observed))
+                record = self.loop.storage / 'registry' / (issued['origin_receipt'] + '.json')
+                original = record.read_bytes()
+                self.assertEqual(json.loads(original)['private_paths'], [])
+                sid = self.loop.save(self.gh.pull, {'phase': 'reviewed', 'binding': bound, 'review': issued}, None)
+                public = tal.al.unpack(self.gh.comments(36), tal.al.STATE)[0]['review']['evidence']
+                self.assertEqual(public['ordinary'], ordinary)
+                marker = '[private origin]' if source.startswith('opaque') else '[private URI]'
+                self.assertEqual(public['bare'], marker)
+                self.assertEqual(public['prose'], 'Before (' + marker + ') after')
+                self.assertEqual(public['assignment'], 'target=' + marker)
+                self.assertEqual(public['angle'], '[record](<' + marker + '>)')
+                self.assertNotIn(alias, public['child'])
+                beyond_nested_budget = '%3F' in alias or '%' in alias and '%' not in source
+                expected_nested = raw['evidence']['nested'] if beyond_nested_budget else '[private URI]'
+                self.assertEqual(public['nested'], expected_nested)
+                self.assertEqual(public['keys'], {'diagnostic(' + marker + ')': 'checked', 'ordinary': 'retained'})
+                restored = self.loop.load(36)[1]
+                self.assertEqual(restored['review'], issued)
+                verify_review_origin(self.loop.storage, restored['review'], bound)
+                self.loop.save(self.gh.pull, restored, sid)
+                self.assertEqual(record.read_bytes(), original)
+        sources = ['native://host/private', 'native://host/private<receipt>"tail']
+        self.assertEqual(self.loop.public_state('Before ' + sources[1] + ' after', private_locators=sources),
+                         'Before [private URI] after')
+
     def test_complete_non_uri_locator_survives_whitespace_tokenization(self):
         from urllib.parse import quote
         for source in ('/scope/private receipt', '/scope/private\u00a0receipt', '/scope/operation-spanning receipt', 'opaque locator name'):
