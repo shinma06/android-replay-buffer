@@ -194,6 +194,13 @@ def review_privacy(storage, report, bound):
                     for k in ('source', 'operation_id'))):
             raise ValueError('Native privacy inputs lack their actual observation/binding')
         identifiers, locators = [observed['operation_id']], [observed['source']]
+        if observed['source'] in paths:
+            from agent_worker import recover_originals
+            records = (recover_originals(storage, {'review': report, 'binding': bound})
+                       if report.get('repair_revision') or report.get('certificate_revision') else [])
+            verified = {str(path) for item in records for path in (Path(item['path']), Path(item['path']).resolve())}
+            if str(Path(observed['source']).resolve()) not in verified:
+                raise ValueError('Native locator lacks filesystem evidence provenance; retain receipt for owner reconciliation')
     if ('private_paths' in report or
             ('private_identifiers' in report and report['private_identifiers'] != locators + identifiers)):
         raise ValueError('Reserved privacy metadata differs from adapter-verified inputs')

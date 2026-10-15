@@ -405,7 +405,9 @@ class Loop:
                         locator = None
                     if locator and locator.hostname and re.match(r'(?i)[a-z][a-z0-9+.-]*://', identity):
                         uri_locators[identity] = locator
-                elif identity in opaque_ids:
+                    else:
+                        opaque_ids.add(identity)
+                if identity in opaque_ids and identity not in uri_locators:
                     if re.search(r'\w', identity):
                         pattern = r'(?<![\w.-])' + pattern + r'(?![\w-]|\.\w)'
                         opaque_patterns.append(pattern)
@@ -414,17 +416,29 @@ class Loop:
                 patterns.append(pattern)
             identity_pattern = '|'.join([*patterns, NATIVE_SESSION.pattern,
                                         r'(?i:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12})'])
+            def continuation(char):
+                return char and (re.match(r'\w', char) or ('a' + char).isidentifier() or
+                                 unicodedata.category(char).startswith('M') or char in '\u200c\u200d')
             def identity_boundary(match):
+                before = match.string[max(0, match.start() - 1):match.start()]
+                after = match.string[match.end():match.end() + 1]
+                if match[0] in opaque_ids and (continuation(before) or continuation(after) or
+                        re.search(r'\w', match[0]) and after == '.' and continuation(match.string[match.end() + 1:match.end() + 2])):
+                    return False
                 if match[0] not in punctuation_ids:
                     return True
-                adjacent = match.string[max(0, match.start() - 1):match.start()] + match.string[match.end():match.end() + 1]
+                adjacent = before + after
                 # Keep ASCII token syntax and Unicode connectors as continuations.
                 return all(c.isspace() or c in "()[]{}<>\"'`,;.!?=:" or
                            not c.isascii() and unicodedata.category(c).startswith('P') and unicodedata.category(c) != 'Pc'
                            for c in adjacent)
             def locator_reference(text, decode=True):
-                def values(value):
+                def values(value, decode=True):
                     return (value, unquote(value)) if decode and isinstance(value, str) else (value,)
+                def equal(source, target):
+                    return any(left == right for left in values(source) for right in values(target, decode))
+                def prefix(source, target):
+                    return any(right.startswith(left) for left in values(source) for right in values(target, decode))
                 def port(authority):
                     hostport = authority.rpartition('@')[2]
                     return hostport.partition(']')[2] if hostport.startswith('[') else ''.join(hostport.partition(':')[1:])
@@ -438,21 +452,20 @@ class Loop:
                         bracketed = uri.netloc.rpartition('@')[2].startswith('[')
                         if (not uri.hostname or bracketed != source.netloc.rpartition('@')[2].startswith('[') or
                                 port(uri.netloc) != port(source.netloc) or
-                                source.username not in values(uri.username) or source.password not in values(uri.password) or
-                                not any((host if bracketed else host.lower()) == source.hostname for host in values(uri.hostname))):
+                                not equal(source.username, uri.username) or not equal(source.password, uri.password) or
+                                not any((left if bracketed else left.lower()) == (right if bracketed else right.lower())
+                                        for left in values(source.hostname) for right in values(uri.hostname, decode))):
                             continue
                         known_tail = known[known.index('://') + 3 + len(source.netloc):]
                         target_tail = target[target.index('://') + 3 + len(uri.netloc):]
                         if '#' in known_tail:
                             if ('#' in target_tail and ('?' in known_tail.partition('#')[0]) == ('?' in target_tail.partition('#')[0]) and
-                                    source.path in values(uri.path) and source.query in values(uri.query) and
-                                    any(fragment.startswith(source.fragment) for fragment in values(uri.fragment))):
+                                    equal(source.path, uri.path) and equal(source.query, uri.query) and prefix(source.fragment, uri.fragment)):
                                 return True
                         elif '?' in known_tail:
-                            if ('?' in target_tail.partition('#')[0] and source.path in values(uri.path) and
-                                    any(query.startswith(source.query) for query in values(uri.query))):
+                            if '?' in target_tail.partition('#')[0] and equal(source.path, uri.path) and prefix(source.query, uri.query):
                                 return True
-                        elif any(path.startswith(source.path) for path in values(uri.path)):
+                        elif prefix(source.path, uri.path):
                             return True
                 return False
             def protected_identity(identity):
@@ -544,13 +557,14 @@ class Loop:
                 payload = (uri.path + '?' + uri.query + '#' + uri.fragment if uri else destination.partition(':')[2])
                 if (not structural and (decoded in opaque_ids or
                         any(unquote(part) in opaque_ids for part in components if part) or
-                        opaque_patterns and any(re.search('|'.join(opaque_patterns), unquote(part))
-                                                for part in [*authority, payload] if part))):
+                        opaque_patterns and any(identity_boundary(match)
+                                                for part in [*authority, payload] if part
+                                                for match in re.finditer('|'.join(opaque_patterns), unquote(part))))):
                     return '[private URI]' + suffix, False
                 if ((destination != token or '%' in token or any(s in decoded for s in identities)) and
                         any(protected_identity(match[0]) for match in re.finditer(identity_pattern, decoded)
                             if identity_boundary(match) and match[0] not in uri_locators and
-                            (match[0] not in opaque_ids or match[0] in private_locators))):
+                            match[0] not in opaque_ids)):
                     return '[private URI]' + suffix, False
                 if uri and not uri.scheme:
                     return private_prose()
@@ -628,7 +642,7 @@ class Loop:
                     if not identity_boundary(match):
                         return match[0]
                     # URI payloads were checked above; do not reinterpret their syntax as opaque IDs.
-                    if uri_syntax and match[0] in opaque_ids and match[0] not in private_locators:
+                    if uri_syntax and match[0] in opaque_ids and match[0] not in uri_locators:
                         return match[0]
                     protected = protected_identity(match[0])
                     if protected:

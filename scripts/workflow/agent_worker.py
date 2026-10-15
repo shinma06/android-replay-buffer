@@ -75,10 +75,7 @@ def bind_native_review(report, bound, storage, *, issuer, observe_origin, accept
     report = bind_report_session(report, native_session(issuer, observed['session_id']))
     origin = {'issuer': issuer, 'observation': observed, 'submitted_report': submitted}
     # Raw host locators stay inside the private receipt and are redacted from prose.
-    private_paths = list(paths)
-    if Path(observed['source']).is_absolute():
-        private_paths.append(observed['source'])
-    return issue_review_origin(storage, report, bound, report['session'], 'native', private_paths, sessions, origin)
+    return issue_review_origin(storage, report, bound, report['session'], 'native', paths, sessions, origin)
 
 
 def read_repair_bundle(path, revision_field='repair_revision'):
