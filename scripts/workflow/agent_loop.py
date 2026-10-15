@@ -478,12 +478,19 @@ class Loop:
                 if (matched and
                         (destination != token or '%' in token or not any(known in token for known in private_paths))):
                     return '[private URI]' + suffix, False
-                components = ([uri.netloc, *uri.path.split('/'), *re.split(r'[&=]', uri.query), uri.fragment]
+                authority = []
+                if uri:
+                    # Keep opaque host case; hostname would lowercase it.
+                    host = uri.netloc.rpartition('@')[2]
+                    host = host[1:].partition(']')[0] if host.startswith('[') else host.partition(':')[0]
+                    authority = [uri.username, uri.password, host]
+                components = ([uri.netloc, *authority, *uri.path.split('/'), *re.split(r'[&=]', uri.query), uri.fragment]
                               if uri else re.split(r'[/?:&=#]', destination)[1:])
                 payload = (uri.path + '?' + uri.query + '#' + uri.fragment if uri else destination.partition(':')[2])
                 if (not structural and (decoded in opaque_ids or
                         any(unquote(part) in opaque_ids for part in components if part) or
-                        opaque_patterns and re.search('|'.join(opaque_patterns), unquote(payload)))):
+                        opaque_patterns and any(re.search('|'.join(opaque_patterns), unquote(part))
+                                                for part in [*authority, payload] if part))):
                     return '[private URI]' + suffix, False
                 if ((destination != token or '%' in token or any(s in decoded for s in identities)) and
                         any(protected_identity(match[0]) for match in re.finditer(identity_pattern, decoded)

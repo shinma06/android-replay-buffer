@@ -511,6 +511,7 @@ class PrivacyTests(unittest.TestCase):
                 text = 'critical finding remains: https://public.invalid/a/b '
                 text += 'https://public.invalid:443/ xoperations/review-1suffix native://operation/123 and line 123 '
                 text += 'reference=https://public.invalid/guide ref=native://public/guide'
+                text += ' https://user:password@public.invalid:443/guide native://user:password@public.invalid:443/guide'
                 raw = dict(tal.report(), evidence={
                     'ordinary': text, 'private': f'Operation [{operation}]',
                     'nested': {'private_paths': ['critical'], 'private_identifiers': ['finding'], 'text': text},
@@ -536,6 +537,50 @@ class PrivacyTests(unittest.TestCase):
                 self.assertEqual(restored['review'], issued)
                 validate_review(restored['review'], bound)
                 self.assertEqual(record.read_bytes(), original)
+
+    def test_native_uri_authority_components_hide_exact_private_ids(self):
+        encode = lambda value: ''.join(f'%{byte:02X}' for byte in value.encode())
+        for operation in ('operation-19', encode('operation-19'), 'Case-Sensitive-ID', '2001:DB8::1'):
+            identity = 'Case-Sensitive/Session-99'
+            secret = {}
+            for form, value in (('raw', operation), ('encoded', encode(operation))):
+                if form == 'raw' and '%' in operation:
+                    continue
+                host = '[' + value + ']' if operation == '2001:DB8::1' and form == 'raw' else value
+                secret.update({form + '-username': f'https://{value}@public.example/guide',
+                               form + '-password': f'https://user:{value}@public.example/guide',
+                               form + '-host': f'https://{host}/guide',
+                               form + '-host-port': f'https://{host}:443/guide'})
+            if operation == '2001:DB8::1':
+                del secret['raw-username']
+            secret['session-userinfo'] = f'https://{encode(identity)}@public.example/guide'
+            controls = {'public': 'https://user:password@public.example:443/guide',
+                        'native': 'native://user:password@public.example:443/guide',
+                        'longer-user': f'https://{encode(operation + "suffix")}@public.example/guide'}
+            if operation == 'Case-Sensitive-ID':
+                controls['different-case'] = 'https://case-sensitive-id:443/guide'
+            evidence = {key: f'[record]({target})' for key, target in dict(secret, **controls).items()}
+            bound = self.loop.bound(self.gh.pull, self.gh.issues[35], self.gh.comments(36))[0]
+            raw = dict(tal.report(), evidence=evidence); raw.pop('session')
+            observed = {'session_id': identity, 'source': 'native://private.invalid/unique-record',
+                        'operation_id': operation, 'report_sha256': digest(raw), 'binding_sha256': digest(bound)}
+            issued = bind_native_review(raw, bound, self.loop.storage, issuer='example.invalid',
+                                        observe_origin=Mock(return_value=observed))
+            record = self.loop.storage / 'registry' / (issued['origin_receipt'] + '.json')
+            original = record.read_bytes()
+            sid = self.loop.save(self.gh.pull, {'phase': 'reviewed', 'binding': bound, 'review': issued}, None)
+            public = tal.al.unpack(self.gh.comments(36), tal.al.STATE)[0]['review']['evidence']
+            for key in secret:
+                with self.subTest(operation=operation, component=key):
+                    self.assertEqual(public[key], '[record]([private URI])')
+            for key in controls:
+                with self.subTest(operation=operation, control=key):
+                    self.assertEqual(public[key], evidence[key])
+            restored = self.loop.load(36)[1]
+            self.assertEqual(restored['review'], issued)
+            verify_review_origin(self.loop.storage, restored['review'], bound)
+            self.loop.save(self.gh.pull, restored, sid)
+            self.assertEqual(record.read_bytes(), original)
 
     def test_unverified_privacy_controls_cannot_hide_diagnostics(self):
         from agent_worker import bind_report_session
