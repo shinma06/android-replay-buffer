@@ -1366,6 +1366,60 @@ class PrivacyTests(unittest.TestCase):
                 self.loop.save(self.gh.pull, restored, sid)
                 self.assertEqual(record.read_bytes(), original)
 
+    def test_non_uri_source_children_consume_literal_scope_through_save_load(self):
+        from urllib.parse import quote
+        forms = ('{}', 'Before ({}) after', 'target={}', '[record]({})', '[record](<{}>)',
+                 '[record]: {} "title"\nnext', 'Before [label](https://public.invalid/) then ({}) after')
+        for source in ('opaque/source/', 'opaque/source', 'opaque source/', 'opaque (source)/', 'opaque%31/source/'):
+            with self.subTest(source=source):
+                child = source + ('' if source.endswith('/') else '/') + 'receipt'
+                operation = 'literal/operation/'
+                ordinary = [source.rstrip('/') + '-other/receipt', 'x' + child, '-' + child,
+                            '.' + child, 'é' + child, child.upper(), quote(child, safe=''),
+                            operation + 'receipt', operation + '＿suffix']
+                if '%31' in source: ordinary.append(child.replace('%31', '1'))
+                evidence = {'private': [form.format(child) for form in forms], 'ordinary': ordinary,
+                            'operation': operation, 'exact': source,
+                            'unicode-child': source + ('' if source.endswith('/') else '/') + '＿receipt',
+                            'nested': 'https://ref.invalid/?source=' + quote(child, safe=''),
+                            'keys': {'Child (' + child + ')': 'checked'},
+                            'repeat': '(' + child + ' and ' + child + ')?'}
+                bound = self.loop.bound(self.gh.pull, self.gh.issues[35], self.gh.comments(36))[0]
+                raw = dict(tal.report(), evidence=evidence); raw.pop('session')
+                observed = {'session_id': 'Actual-Reviewer', 'source': source, 'operation_id': operation,
+                            'report_sha256': digest(raw), 'binding_sha256': digest(bound)}
+                issued = bind_native_review(raw, bound, self.loop.storage, issuer='example.invalid', observe_origin=Mock(return_value=observed))
+                record = self.loop.storage / 'registry' / (issued['origin_receipt'] + '.json'); original = record.read_bytes()
+                self.assertEqual(json.loads(original)['private_paths'], [])
+                sid = self.loop.save(self.gh.pull, {'binding': bound, 'review': issued, 'phase': 'reviewed'}, None)
+                public = tal.al.unpack(self.gh.comments(36), tal.al.STATE)[0]['review']['evidence']
+                self.assertEqual(public['ordinary'], ordinary)
+                for form, result in zip(forms, public['private']):
+                    with self.subTest(form=form): self.assertEqual(result, form.format('[private origin]'))
+                self.assertEqual(public['exact'], '[private origin]')
+                self.assertEqual(public['operation'], '[private origin]')
+                self.assertEqual(public['unicode-child'], '[private origin]')
+                self.assertEqual(public['nested'], '[private URI]')
+                self.assertEqual(public['keys'], {'Child ([private origin])': 'checked'})
+                self.assertEqual(public['repeat'], '([private origin] and [private origin])?')
+                restored = self.loop.load(36)[1]; self.assertEqual(restored['review'], issued)
+                verify_review_origin(self.loop.storage, restored['review'], bound)
+                self.loop.save(self.gh.pull, restored, sid); self.assertEqual(record.read_bytes(), original)
+
+    def test_non_uri_scoped_child_key_collision_refuses_public_write(self):
+        source = 'opaque/source/'
+        bound = self.loop.bound(self.gh.pull, self.gh.issues[35], self.gh.comments(36))[0]
+        raw = dict(tal.report(), evidence={'keys': {source + 'first': 'first', source + 'second': 'second'}}); raw.pop('session')
+        observed = {'session_id': 'Actual-Reviewer', 'source': source, 'operation_id': 'literal-operation',
+                    'report_sha256': digest(raw), 'binding_sha256': digest(bound)}
+        issued = bind_native_review(raw, bound, self.loop.storage, issuer='example.invalid', observe_origin=Mock(return_value=observed))
+        record = self.loop.storage / 'registry' / (issued['origin_receipt'] + '.json'); original = record.read_bytes()
+        comments = copy.deepcopy(self.gh.messages)
+        with self.assertRaisesRegex(ValueError, 'diagnostic key collision'):
+            self.loop.save(self.gh.pull, {'binding': bound, 'review': issued, 'phase': 'reviewed'}, None)
+        self.assertEqual(self.gh.messages, comments)
+        self.assertEqual(record.read_bytes(), original)
+
     def test_unverified_privacy_controls_cannot_hide_diagnostics(self):
         from agent_worker import bind_report_session
         bound = self.loop.bound(self.gh.pull, self.gh.issues[35], self.gh.comments(36))[0]

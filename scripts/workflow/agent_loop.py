@@ -434,13 +434,15 @@ class Loop:
                         opaque_ids.add(identity)
                 if identity in opaque_ids and identity not in uri_locators:
                     if re.search(r'\w', identity):
-                        pattern = r'(?<![\w.-])' + pattern + r'(?![\w-]|\.\w)'
+                        pattern = r'(?<![\w.-])' + pattern + ('' if identity in private_locators and identity.endswith('/') else r'(?![\w-]|\.\w)')
                         opaque_patterns.append(pattern)
                     else:
                         punctuation_ids.add(identity)
                 patterns.append(pattern)
             identity_pattern = '|'.join([*patterns, NATIVE_SESSION.pattern,
                                         r'(?i:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12})'])
+            # Punctuation-only sources remain literal tokens, not global filesystem scopes.
+            literal_locators = {identity for identity in private_locators if identity not in uri_locators and re.search(r'\w', identity)}
             uri_opaque_ids = {identity for identity in opaque_ids if not structural and re.match(r'(?i)[a-z][a-z0-9+.-]*:', identity)}
             def continuation(char):
                 return char and (re.match(r'\w', char) or ('a' + char).isidentifier() or
@@ -448,12 +450,13 @@ class Loop:
             def identity_boundary(match):
                 before = match.string[max(0, match.start() - 1):match.start()]
                 after = match.string[match.end():match.end() + 1]
-                if match[0] in opaque_ids and (continuation(before) or continuation(after) or
-                        re.search(r'\w', match[0]) and after == '.' and continuation(match.string[match.end() + 1:match.end() + 2])):
+                scoped = match[0] in literal_locators and match[0].endswith('/')
+                if match[0] in opaque_ids and (continuation(before) or not scoped and (continuation(after) or
+                        re.search(r'\w', match[0]) and after == '.' and continuation(match.string[match.end() + 1:match.end() + 2]))):
                     return False
                 if match[0] not in punctuation_ids:
                     return True
-                adjacent = before + after
+                adjacent = before if scoped else before + after
                 # Keep ASCII token syntax and Unicode connectors as continuations.
                 return all(c.isspace() or c in "()[]{}<>\"'`,;.!?=:" or
                            not c.isascii() and unicodedata.category(c).startswith('P') and unicodedata.category(c) != 'Pc'
@@ -563,6 +566,9 @@ class Loop:
                     patterns = [] if bounded else [re.escape(path) for path in sorted(private_paths, key=len, reverse=True) if path]
                     patterns.append(identity_pattern)
                     for match in re.finditer('|'.join(patterns), destination):
+                        start = positions[match.start()][0]
+                        if start < cursor:
+                            continue
                         if not bounded and match[0] in private_paths:
                             replacement = '[private URI]'
                         else:
@@ -571,7 +577,17 @@ class Loop:
                             replacement = protected_identity(match[0])
                             if replacement is None:
                                 continue
-                        start, end = positions[match.start()][0], positions[match.end() - 1][1]
+                        end = match.end()
+                        if match[0] in literal_locators:
+                            child = re.match(('' if match[0].endswith('/') else '/') + span, destination[end:])
+                            if child:
+                                end += child.end()
+                                limit, probe = end, end
+                                while probe > match.end() and punctuation(destination[probe - 1]):
+                                    probe -= 1
+                                    if external_suffix(destination[probe:limit], before + ''.join(redacted) + token[cursor:start]):
+                                        end = probe
+                        end = positions[end - 1][1]
                         redacted.extend((token[cursor:start], replacement))
                         cursor = end
                     return ''.join(redacted) + token[cursor:], False
@@ -713,7 +729,7 @@ class Loop:
                     if (match[0] not in private_locators or match[0] in uri_locators or
                             not lexical_boundary.search(match[0]) or not identity_boundary(match)):
                         continue
-                    child = re.match('/' + span, text[match.end():])
+                    child = re.match(('' if match[0].endswith('/') else '/') + span, text[match.end():])
                     end = match.end() + (child.end() if child else 0)
                     matches.append((match.start(), end, None))
                 # Cross only boundaries owned by each complete source; shorter known sources cannot cut it first.
