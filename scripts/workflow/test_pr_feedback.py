@@ -389,7 +389,8 @@ class FeedbackLoopTests(unittest.TestCase):
                     self.assertEqual(self.gh.messages, comments)
                     if wrapper != 'unbound':
                         self.assertEqual(receipt.read_bytes(), prior)
-                public = self.loop.public_state({'binding': bound, 'review': raw})
+                with self.assertRaises(ValueError): self.loop.public_state({'binding': bound, 'review': raw})
+                public = self.loop._legacy_public_state({'binding': bound, 'review': raw})
                 cache = store_review(self.loop.storage, public, raw)
                 self.gh.comment(36, al.pack(al.STATE, dict(public, phase='reviewed', review_ref=cache)))
                 cached_path = self.loop.storage / 'registry' / (cache + '.json')

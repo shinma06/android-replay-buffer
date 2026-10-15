@@ -191,11 +191,11 @@ def verify_review_origin(storage, report, bound, with_sessions=False):
     return paths, sessions
 
 
-def review_privacy(storage, report, bound):
+def review_privacy(storage, report, bound, with_publication=False):
     """Return projection inputs from adapter evidence, never inline report controls."""
     if not report or not (str(report.get('session', '')).startswith('native-session-v1:') or
                           report.get('origin_receipt') or any(k in report for k in REVIEW_PRIVACY_FIELDS)):
-        return [], [], [], []
+        return ([], [], [], [], False) if with_publication else ([], [], [], [])
     paths, sessions = verify_review_origin(storage, report, bound, with_sessions=True)
     original = {k: v for k, v in report.items() if k != 'origin_receipt'}
     receipt = restore_review(storage, report['origin_receipt'], {'binding': bound, 'review': original})
@@ -214,4 +214,9 @@ def review_privacy(storage, report, bound):
     if ('private_paths' in report or
             ('private_identifiers' in report and report['private_identifiers'] != locators + identifiers)):
         raise ValueError('Reserved privacy metadata differs from adapter-verified inputs')
-    return paths, sessions, identifiers, locators
+    contributors = receipt.get('contributor_sessions')
+    if with_publication and ((contributors is not None and not isinstance(contributors, list)) or contributors and not sessions):
+        raise ValueError('Contributors lack adapter-verified publication provenance')
+    result = (paths, sessions, identifiers, locators)
+    limited = receipt['adapter'] == 'native' or any(s.startswith('native-session-v1:') for s in sessions)
+    return (*result, limited) if with_publication else result

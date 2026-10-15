@@ -17,14 +17,13 @@ import string
 import subprocess
 import sys
 import time
-import unicodedata
 import uuid
 from urllib.parse import quote, unquote, urlsplit
 
-from agent_policy import CONTEXT, NATIVE_SESSION, SESSION_HASH, binding, eligible, gui_pass, in_scope, issue_number, next_action, session_fingerprint, update_parent, validate_review
+from agent_policy import CONTEXT, SESSION_HASH, binding, eligible, gui_pass, in_scope, issue_number, next_action, session_fingerprint, update_parent, validate_review
 from agent_worker import (REPORT_SCHEMA, private_repair_evidence, read_repair_bundle, recover_originals,
                           require_retained_evidence, retained_originals, run_worker, worker_environment)
-from handoff_registry import register, resolve, restore_review, review_privacy, store_review, verify_review_origin
+from handoff_registry import digest, register, resolve, restore_review, review_privacy, store_review, verify_review_origin
 from verification import verify_pr, metadata
 from issue_schema import validate_issue, done_labels, labels
 from pr_policy import validate_title
@@ -39,6 +38,7 @@ HANDOFF_V2 = '<!-- agent-loop-handoff:v2 -->'
 STATE = '<!-- agent-loop-state:v1 -->'
 HOST = socket.gethostname()
 CI_CHECKS = ('test', 'PR policy', 'Acceptance gate', 'CLI Python 3.9')
+PRIVATE_REVIEW_FORMAT = 'private-review-v1'
 PUBLIC_REVIEW_KEYS = set(REPORT_SCHEMA['properties']) | {
     'session', 'origin_receipt', 'repair_evidence_sha256', 'certificate_evidence_sha256', 'feedback_hash',
 }
@@ -302,14 +302,21 @@ class Loop:
             if not state.get('paused'):
                 state.update(phase='queued', next='Legacy wrapper approval invalidated; fresh independent review required')
         if state and state.get('review_ref'):
-            public = {'binding': state.get('binding'), 'review': state.get('review')}
-            state['review'], paths = restore_review(self.storage, state['review_ref'], public, True)
-            state['private_paths'] = paths
-            _, sessions, identifiers, locators = review_privacy(self.storage, state['review'], state.get('binding'))
-            if self.public_state(state['review'], paths, sessions, identifiers, private_locators=locators) != public['review']:
-                raise ValueError('Private review public projection mismatch')
+            if state.get('review', {}).get('publication_format') == PRIVATE_REVIEW_FORMAT and 'findings' not in state['review']:
+                state = self.restore_private_state(state)
+            else:
+                public = {'binding': state.get('binding'), 'review': state.get('review')}
+                state['review'], paths = restore_review(self.storage, state['review_ref'], public, True)
+                state['private_paths'] = paths
+                _, sessions, _, _, limited = review_privacy(self.storage, state['review'], state.get('binding'), True)
+                if limited:
+                    raise ValueError('Unsupported old native publication; retain original/PAUSED/owner and use explicit owner recovery')
+                if self._legacy_public_state(state['review'], paths, sessions) != public['review']:
+                    raise ValueError('Private review public projection mismatch')
         elif state:
-            review_privacy(self.storage, state.get('review'), state.get('binding'))
+            _, _, limited = self.publication_privacy(state)
+            if limited or state.get('review', {}).get('publication_format') == PRIVATE_REVIEW_FORMAT:
+                raise ValueError('Native public state requires its bound private review; explicit owner recovery required')
         if state is not None and handoff:
             state['private_paths'] = sorted(set(state.get('private_paths', [])) | set(handoff.get('private_paths', [])))
         return handoff, state or {'phase': 'queued', 'fixes': 0, 'reviews': 0, 'errors': 0}, comment_id, comments
@@ -318,17 +325,23 @@ class Loop:
         state['updated_at'] = int(time.time())
         state['review_requests'] = review_requests(state, self.github_reviewer, state.get('remote_review_after'))
         # Raw private logs stay local. Public state may contain reviewer text, so remove local paths.
-        paths, sessions, identifiers, locators = review_privacy(self.storage, state.get('review'), state.get('binding'))
+        paths, _, limited = self.publication_privacy(state)
+        *_, current_limited = review_privacy(self.storage, state.get('review'), state.get('binding'), True)
+        if current_limited:
+            state['private_publication'] = {'binding': state['binding'], 'review': state['review']}
         state['private_paths'] = sorted(set(state.get('private_paths', [])) | set(paths))
         paths = state.get('private_paths', ())
         if any(not isinstance(p, str) or not Path(p).is_absolute() for p in paths):
             raise ValueError('Coordinator private paths must be absolute verified paths')
-        public = self.public_state(state, paths, sessions, identifiers, private_locators=locators)
-        if state.get('review'):
+        retained = {k: v for k, v in state.items() if k != 'review_ref'}
+        public = self.public_state(retained, paths)
+        if state.get('review') or limited:
             bound_review = {'binding': public.get('binding'), 'review': public['review']}
             # Never accept a public fingerprint as an originating session on resume.
-            session_fingerprint(state['review']['session'])
-            public['review_ref'] = store_review(self.storage, bound_review, state['review'], state.get('private_paths', []))
+            if state.get('review'):
+                session_fingerprint(state['review']['session'])
+            public['review_ref'] = (store_review(self.storage, public, {'kind': PRIVATE_REVIEW_FORMAT, 'state': retained}, paths)
+                                    if limited else store_review(self.storage, bound_review, state['review'], paths))
             state['review_ref'] = public['review_ref']
         else:
             public.pop('review_ref', None)
@@ -358,185 +371,164 @@ class Loop:
             stream.write(str(error))
         return f'Operation failed ({type(error).__name__}); coordinator private diagnostic {identifier}'
 
-    def public_state(self, value, private_paths=(), private_sessions=(), private_identifiers=(), location=(), private_locators=()):
+    def restore_private_state(self, public):
+        projection = {k: v for k, v in public.items() if k != 'review_ref'}
+        retained = restore_review(self.storage, public.get('review_ref'), projection)
+        if retained.get('kind') != PRIVATE_REVIEW_FORMAT or not isinstance(retained.get('state'), dict):
+            raise ValueError('Unsupported private review state; explicit owner recovery required')
+        state = retained['state']
+        _, _, limited = self.publication_privacy(state)
+        if not limited:
+            raise ValueError('Private publication format requires verified native provenance')
+        if self.public_state(state) != projection:
+            raise ValueError('Private review public projection mismatch; retain originals for owner recovery')
+        return dict(state, review_ref=public['review_ref'])
+
+    def publication_privacy(self, state):
+        paths, sessions, _, _, limited = review_privacy(self.storage, state.get('review'), state.get('binding'), True)
+        retained = state.get('private_publication')
+        if retained is not None:
+            if not isinstance(retained, dict):
+                raise ValueError('Invalid retained private publication provenance')
+            old_paths, old_sessions, _, _, old_limited = review_privacy(self.storage, retained.get('review'), retained.get('binding'), True)
+            if not old_limited:
+                raise ValueError('Retained private publication requires verified native provenance')
+            paths, sessions, limited = sorted(set(paths) | set(old_paths)), sorted(set(sessions) | set(old_sessions)), True
+        return paths, sessions, limited
+
+    def public_result(self, value):
+        if isinstance(value, list):
+            return [self.public_result(item) for item in value]
+        if isinstance(value, dict) and (isinstance(value.get('review'), dict) or 'private_publication' in value):
+            report = value.get('review', {})
+            if report.get('publication_format') == PRIVATE_REVIEW_FORMAT and 'findings' not in report:
+                self.restore_private_state(value)
+                return value
+            _, _, limited = self.publication_privacy(value)
+            if limited:
+                return self.public_state(value)
+        return value
+
+    def public_state(self, value, private_paths=(), private_sessions=()):
+        if isinstance(value, dict) and (isinstance(value.get('review'), dict) or 'private_publication' in value and 'session' not in value):
+            report, bound = value.get('review'), value.get('binding')
+            paths, sessions, limited = self.publication_privacy(value)
+            private_paths = set(private_paths) | set(paths)
+            private_sessions = set(private_sessions) | set(sessions)
+            if limited:
+                if report is not None:
+                    validate_review(report, bound, storage=self.storage)
+                return self._private_public_state(value)
+        elif isinstance(value, dict) and (value.get('origin_receipt') or str(value.get('session', '')).startswith('native-session-v1:')):
+            raise ValueError('Publication requires the complete review binding and verified origin')
+        return self._legacy_public_state(value, private_paths, private_sessions)
+
+    def _private_public_state(self, state):
+        report, bound = state.get('review'), state.get('binding', {})
+        if report is None:
+            envelope = {'publication_format': PRIVATE_REVIEW_FORMAT, 'status': 'pending',
+                        'finding_count': None, 'summary': 'Fresh independent review required; prior private details retained'}
+        else:
+            envelope = {key: report[key] for key in ('head', 'base', 'verdict', 'scope_complete', 'issue_complete', 'gui_required')}
+            envelope.update(publication_format=PRIVATE_REVIEW_FORMAT, session=session_fingerprint(report['session']),
+                            finding_count=len(report['findings']), report_sha256=digest({'binding': bound, 'review': report}))
+            for key in ('repair_revision', 'repair_evidence_sha256', 'certificate_revision', 'certificate_evidence_sha256', 'feedback_hash', 'origin_receipt'):
+                if key in report and isinstance(report[key], str) and public_machine_value(('review', key), report[key]):
+                    envelope[key] = report[key]
+            envelope['summary'] = f"{report['verdict']}; {len(report['findings'])} findings; details in private review reference"
+        phase = state.get('phase', 'queued')
+        if not public_machine_value(('phase',), phase):
+            raise ValueError('Invalid coordinator phase')
+        public = {'phase': phase, 'review': envelope, 'binding': {},
+                  'state_sha256': digest({k: v for k, v in state.items() if k != 'review_ref'}),
+                  'next': ('owner-resume-required' if state.get('paused') else 'done' if phase == 'done' else
+                           'review' if report is None else
+                           {'approved': 'reconcile-acceptance-and-review-obligations', 'changes_requested': 'fix', 'blocked': 'owner-recovery'}[report['verdict']])}
+        for section, keys in (
+                ('binding', ('head', 'base', 'target', 'title_hash', 'body_hash', 'issue_hash', 'feedback_hash')),
+                ('gui', ('head', 'base', 'artifact_sha256')),
+                ('acceptance', ('head', 'base', 'mode', 'repair_revision', 'repair_evidence_sha256', 'certificate_revision', 'certificate_evidence_sha256')),
+                ('issue_closure', ('head', 'base', 'issue_hash'))):
+            source = state.get(section, {})
+            if not isinstance(source, dict):
+                raise ValueError('Invalid coordinator machine record')
+            if section in state:
+                public[section] = {}
+            for key in keys:
+                if key in source:
+                    if not isinstance(source[key], str) or not public_machine_value((section, key), source[key]):
+                        raise ValueError('Invalid coordinator machine fact')
+                    public[section][key] = source[key]
+        for section, keys in (('', ('paused',)), ('binding', ('issue_bug', 'remote_review_complete')),
+                              ('gui', ('processes_stopped',)), ('acceptance', ('allowed', 'gui_complete'))):
+            source, target = (state, public) if not section else (state.get(section, {}), public.get(section, {}))
+            for key in keys:
+                if key in source:
+                    if type(source[key]) is not bool:
+                        raise ValueError('Invalid coordinator boolean')
+                    target[key] = source[key]
+        for key in ('updated_at', 'errors', 'fixes', 'reviews', 'qa_issue', 'main_tracking_issue'):
+            if key in state:
+                if type(state[key]) is not int or state[key] < 0:
+                    raise ValueError('Invalid coordinator counter')
+                public[key] = state[key]
+        for key in ('expected_head', 'publish_head', 'merge_sha', 'interrupted_phase', 'remote_review_after', 'review_ref'):
+            if key in state:
+                if not isinstance(state[key], str) or not public_machine_value((key,), state[key]):
+                    raise ValueError('Invalid coordinator identity')
+                public[key] = state[key]
+        for section in ('binding', ''):
+            source, target = (bound, public['binding']) if section else (state, public)
+            for key in ('review_completion', 'review_requests'):
+                if key not in source:
+                    continue
+                records = source[key] if key == 'review_requests' else [source[key]]
+                if not isinstance(records, list):
+                    raise ValueError('Invalid retained review policy')
+                projected = []
+                for record in records:
+                    if not isinstance(record, dict):
+                        raise ValueError('Invalid retained review policy')
+                    normalized = review_requests({'review_requests': [record]}, record.get('reviewer'), record.get('not_before'))
+                    if len(normalized) != 1:
+                        raise ValueError('Invalid retained review policy')
+                    item = normalized[0]
+                    for field, content in item.items():
+                        if content is not None and not public_machine_value(('binding', 'review_completion', field), content):
+                            raise ValueError('Invalid retained review policy fact')
+                    if 'requests_hash' in record:
+                        if not public_machine_value(('binding', 'review_completion', 'requests_hash'), record['requests_hash']):
+                            raise ValueError('Invalid retained review policy hash')
+                        item['requests_hash'] = record['requests_hash']
+                    projected.append(item)
+                target[key] = projected if key == 'review_requests' else projected[0]
+        return public
+
+    def _legacy_public_state(self, value, private_paths=(), private_sessions=(), location=()):
         if isinstance(value, dict):
             if not location and 'session' in value:
                 location = ('review',)
-            review = value.get('review') if not location and isinstance(value.get('review'), dict) else {}
-            private_sessions = (set(private_sessions) |
-                                ({str(value.get('session', ''))} if location == ('review',) else set()) |
-                                {str(review.get('session', ''))})
+            review = value.get('review') if isinstance(value.get('review'), dict) else {}
+            private_sessions = set(private_sessions) | {str(value.get('session', '')).lower(), str(review.get('session', '')).lower()}
             public = {}
-            for k, v in value.items():
-                if k in ('host', 'source', 'repair_evidence', 'evidence_kind', 'private_repair_evidence', 'private_paths', 'private_sessions', 'private_identifiers', 'evidence_records'):
+            for key, item in value.items():
+                if key == 'private_publication' and not location:
                     continue
-                key = k
-                if location[:1] == ('review',) and not (location == ('review',) and k in PUBLIC_REVIEW_KEYS):
-                    if not isinstance(k, str):
+                if key in ('host', 'source', 'repair_evidence', 'evidence_kind', 'private_repair_evidence',
+                           'private_paths', 'private_sessions', 'private_identifiers', 'evidence_records'):
+                    continue
+                projected = key
+                if location[:1] == ('review',) and not (location == ('review',) and key in PUBLIC_REVIEW_KEYS):
+                    if not isinstance(key, str):
                         raise ValueError('Review diagnostic keys must be strings')
-                    key = self.public_state(k, private_paths, private_sessions, private_identifiers, ('diagnostic_key',), private_locators)
-                if key in public:
+                    projected = self._legacy_public_state(key, private_paths, private_sessions, ('diagnostic_key',))
+                if projected in public:
                     raise ValueError('Public review diagnostic key collision; retain the private report')
-                public[key] = self.public_state(v, private_paths, private_sessions, private_identifiers, location + (k,), private_locators)
+                public[projected] = self._legacy_public_state(item, private_paths, private_sessions, location + (key,))
             return public
         if isinstance(value, list):
-            return [self.public_state(v, private_paths, private_sessions, private_identifiers, location + ('*',), private_locators) for v in value]
+            return [self._legacy_public_state(v, private_paths, private_sessions, location + ('*',)) for v in value]
         if isinstance(value, str):
-            structural = public_machine_value(location, value)
-            identities = {} if structural else {s: '[private origin]' for s in (*private_identifiers, *private_locators) if s}
-            opaque_ids = set(private_identifiers)
-            for session in private_sessions:
-                match = NATIVE_SESSION.fullmatch(session)
-                if match:
-                    identities[session] = session_fingerprint(session)
-                    if not structural:
-                        raw_id = bytes.fromhex(match[2]).decode()
-                        identities[raw_id] = identities[session]
-                        opaque_ids.add(raw_id)
-            # Later URI/prose passes must not redact an already projected identity again.
-            for fingerprint in [*private_sessions, *identities.values()]:
-                if SESSION_HASH.fullmatch(fingerprint):
-                    identities.setdefault(fingerprint, fingerprint)
-            patterns, opaque_patterns, uri_locators, punctuation_ids = [], [], {}, set()
-            def decode_uri(text):
-                return unquote(text, errors='surrogateescape')
-            if not structural:
-                # Presentation aliases do not change actor identity or give opaque IDs locator semantics.
-                for identity in sorted(opaque_ids):
-                    if re.match(r'(?i)[a-z][a-z0-9+.-]*:', identity):
-                        alias = decode_uri(identity)
-                        identities.setdefault(alias, identities.get(identity, '[private origin]'))
-                        opaque_ids.add(alias)
-            def split_locator(text):
-                if not any(c in text for c in '\t\r\n'):
-                    return urlsplit(text)
-                # urlsplit strips literal TAB/CR/LF; protect payload characters without decoding URI grammar.
-                marker = '\ue000'
-                while marker in text:
-                    marker += '\ue000'
-                escapes = [(c, marker + str(i) + marker) for i, c in enumerate('\t\r\n')]
-                for char, escape in escapes:
-                    text = text.replace(char, escape)
-                parsed = urlsplit(text)
-                restore = {escape: char for char, escape in escapes}
-                pattern = '|'.join(map(re.escape, restore))
-                return type(parsed)(*(re.sub(pattern, lambda match: restore[match[0]], part) for part in parsed))
-            for identity in sorted(identities, key=len, reverse=True):
-                pattern = re.escape(identity)
-                if identity in private_locators:
-                    try:
-                        locator = split_locator(identity)
-                    except ValueError:
-                        locator = None
-                    if locator and locator.scheme:
-                        uri_locators[identity] = locator
-                    else:
-                        opaque_ids.add(identity)
-                if identity in opaque_ids and identity not in uri_locators:
-                    if re.search(r'\w', identity):
-                        pattern = r'(?<![\w.-])' + pattern + ('' if identity in private_locators and identity.endswith('/') else r'(?![\w-]|\.\w)')
-                        opaque_patterns.append(pattern)
-                    else:
-                        punctuation_ids.add(identity)
-                patterns.append(pattern)
-            identity_pattern = '|'.join([*patterns, NATIVE_SESSION.pattern,
-                                        r'(?i:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12})'])
-            # Punctuation-only sources remain literal tokens, not global filesystem scopes.
-            literal_locators = {identity for identity in private_locators if identity not in uri_locators and re.search(r'\w', identity)}
-            uri_opaque_ids = {identity for identity in opaque_ids if not structural and re.match(r'(?i)[a-z][a-z0-9+.-]*:', identity)}
-            def continuation(char):
-                return char and (re.match(r'\w', char) or ('a' + char).isidentifier() or
-                                 unicodedata.category(char).startswith('M') or char in '\u200c\u200d')
-            def identity_boundary(match):
-                before = match.string[max(0, match.start() - 1):match.start()]
-                after = match.string[match.end():match.end() + 1]
-                scoped = match[0] in literal_locators and match[0].endswith('/')
-                if match[0] in opaque_ids and (continuation(before) or not scoped and (continuation(after) or
-                        re.search(r'\w', match[0]) and after == '.' and continuation(match.string[match.end() + 1:match.end() + 2]))):
-                    return False
-                if match[0] not in punctuation_ids:
-                    return True
-                adjacent = before if scoped else before + after
-                # Keep ASCII token syntax and Unicode connectors as continuations.
-                return all(c.isspace() or c in "()[]{}<>\"'`,;.!?=:" or
-                           not c.isascii() and unicodedata.category(c).startswith('P') and unicodedata.category(c) != 'Pc'
-                           for c in adjacent)
-            lexical_boundary = re.compile(r'[\s<>"`\[\]()\x00-\x1f\x7f]')
-            def locator_reference(text, decode=True, before_boundary=False, source_locator=None):
-                boundary = lexical_boundary.search(text) if before_boundary else None
-                def values(value, decode=True):
-                    return (value, decode_uri(value)) if decode and isinstance(value, str) else (value,)
-                def equal(source, target):
-                    return any(left == right for left in values(source) for right in values(target, decode))
-                def prefix(source, target, embedded, path=False):
-                    # A child boundary must exist in the original path, not appear through percent decoding.
-                    if path and any(equal(source, target[:slash.end() if source.endswith('/') else slash.start()])
-                                    for slash in re.finditer('/', target)):
-                        return True
-                    for left in values(source):
-                        for right in values(target, decode):
-                            if not right.startswith(left):
-                                continue
-                            rest = right[len(left):]
-                            if path and rest.startswith(('/', '%')):
-                                continue
-                            if not embedded and rest and (continuation(rest[0]) or rest[0] == '-' or
-                                    rest[0] == '.' and continuation(rest[1:2])):
-                                continue
-                            return True
-                    return False
-                def port(authority):
-                    hostport = authority.rpartition('@')[2]
-                    return hostport.partition(']')[2] if hostport.startswith('[') else ''.join(hostport.partition(':')[1:])
-                for known, source in uri_locators.items():
-                    if source_locator is not None and known != source_locator:
-                        continue
-                    for match in re.finditer(re.escape(source.scheme) + ':', text, re.I):
-                        if boundary and match.start() > boundary.start():
-                            continue
-                        target = text[match.start():]
-                        try:
-                            uri = split_locator(target)
-                        except ValueError:
-                            continue
-                        bracketed = uri.netloc.rpartition('@')[2].startswith('[')
-                        source_start, target_start = known.index(':') + 1, target.index(':') + 1
-                        source_authority, target_authority = known[source_start:].startswith('//'), target[target_start:].startswith('//')
-                        if (source_authority != target_authority or bracketed != source.netloc.rpartition('@')[2].startswith('[') or
-                                port(uri.netloc) != port(source.netloc) or
-                                not equal(source.username, uri.username) or not equal(source.password, uri.password) or
-                                not any((left if bracketed or left is None else left.lower()) ==
-                                        (right if bracketed or right is None else right.lower())
-                                        for left in values(source.hostname) for right in values(uri.hostname, decode))):
-                            continue
-                        known_tail = known[source_start + (2 if source_authority else 0) + len(source.netloc):]
-                        target_tail = target[target_start + (2 if target_authority else 0) + len(uri.netloc):]
-                        if '#' in known_tail:
-                            if ('#' in target_tail and ('?' in known_tail.partition('#')[0]) == ('?' in target_tail.partition('#')[0]) and
-                                    equal(source.path, uri.path) and equal(source.query, uri.query) and
-                                    prefix(source.fragment, uri.fragment, match.start() > 0)):
-                                return True
-                        elif '?' in known_tail:
-                            if ('?' in target_tail.partition('#')[0] and equal(source.path, uri.path) and
-                                    prefix(source.query, uri.query, match.start() > 0)):
-                                return True
-                        elif prefix(source.path, uri.path, match.start() > 0, path=True):
-                            return True
-                return False
-            def locator_payload(uri, before_boundary=False, source_locator=None):
-                return uri and any(locator_reference(decode_uri(part), False, before_boundary, source_locator)
-                                   for part in (uri.username, uri.password, uri.hostname, uri.path, uri.query, uri.fragment) if part)
-            def source_uri_syntax(text):
-                return any(re.match(re.escape(source.scheme) + r':(?=.)', text, re.I) for source in uri_locators.values())
-            def protected_identity(identity):
-                if identity in identities:
-                    return identities[identity]
-                canonical = identity if identity.startswith('native-session-v1:') else identity.lower()
-                try:
-                    fingerprint = session_fingerprint(canonical)
-                except ValueError:
-                    return '[private origin]'
-                return fingerprint if canonical in private_sessions or fingerprint in private_sessions else None
             # Full raw paths can contain spaces across the later lexical spans.
             for path in sorted(private_paths, key=len, reverse=True):
                 value = value.replace(path, '[private path]')
@@ -544,7 +536,7 @@ class Loop:
                 value = value.replace(private, '[local]')
             markdown_atom = re.compile(r'\\([' + re.escape(string.punctuation) +
                                        r'])|(&(?:#[0-9]{1,7}|#[xX][0-9a-fA-F]{1,6}|[A-Za-z][A-Za-z0-9]*);)')
-            def private_uri(token, bounded=False, before='', after=''):
+            def private_uri(token, bounded=False):
                 positions, offset = [], 0
                 def markdown_char(escape):
                     nonlocal offset
@@ -561,45 +553,27 @@ class Loop:
                 # One pass: escaped ampersands and decoded references are not reinterpreted.
                 destination = markdown_atom.sub(markdown_char, token)
                 positions.extend((i, i + 1) for i in range(offset, len(token)))
-                def private_prose():
+                if not re.match(r'(?i)(?:https?://|file://|/)', destination):
                     redacted, cursor = [], 0
                     patterns = [] if bounded else [re.escape(path) for path in sorted(private_paths, key=len, reverse=True) if path]
-                    patterns.append(identity_pattern)
+                    patterns.append(r'(?i:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12})')
                     for match in re.finditer('|'.join(patterns), destination):
-                        start = positions[match.start()][0]
-                        if start < cursor:
-                            continue
+                        identity = match[0].lower()
                         if not bounded and match[0] in private_paths:
                             replacement = '[private URI]'
+                        elif identity in private_sessions or session_fingerprint(identity) in private_sessions:
+                            replacement = session_fingerprint(identity)
                         else:
-                            if not identity_boundary(match):
-                                continue
-                            replacement = protected_identity(match[0])
-                            if replacement is None:
-                                continue
-                        end = match.end()
-                        if match[0] in literal_locators:
-                            child = re.match(('' if match[0].endswith('/') else '/') + span, destination[end:])
-                            if child:
-                                end += child.end()
-                                limit, probe = end, end
-                                while probe > match.end() and punctuation(destination[probe - 1]):
-                                    probe -= 1
-                                    if external_suffix(destination[probe:limit], before + ''.join(redacted) + token[cursor:start]):
-                                        end = probe
-                        end = positions[end - 1][1]
+                            continue
+                        start, end = positions[match.start()][0], positions[match.end() - 1][1]
                         redacted.extend((token[cursor:start], replacement))
                         cursor = end
                     return ''.join(redacted) + token[cursor:], False
-                known_reference = locator_reference(destination)
-                uri_syntax = bool(re.match(r'(?i)(?:[a-z][a-z0-9+.-]*://|/)', destination) or source_uri_syntax(destination) or
-                                  known_reference and re.match(r'(?i)[a-z][a-z0-9+.-]*:', destination))
-                decoded = decode_uri(destination)
+                decoded = unquote(destination)
                 try:
-                    uri = split_locator(destination)
-                    path = posixpath.normpath(decode_uri(uri.path))
+                    path = posixpath.normpath(unquote(urlsplit(destination).path))
                 except ValueError:
-                    uri, path = None, ''
+                    path = ''
                 # Keep enclosing Markdown punctuation beyond the complete known filename.
                 closing = 0 if bounded else len(token) - len(token.rstrip(')'))
                 matched = []
@@ -610,187 +584,27 @@ class Loop:
                     if known in decoded or posixpath.normpath(known) == posixpath.normpath(target):
                         matched.append(known)
                 protected = max((known.count(')') - known.count('(') for known in matched), default=0)
-                if decoded in opaque_ids:
-                    protected = max(protected, decoded.count(')') - decoded.count('('))
                 suffix = ')' * min(closing, max(0, decoded.count(')') - decoded.count('(') - protected))
-                if (uri_syntax and matched and
+                if (matched and
                         (destination != token or '%' in token or not any(known in token for known in private_paths))):
                     return '[private URI]' + suffix, False
-                def closing_enclosure(char):
-                    return char in ")]}>\"'`" or unicodedata.category(char) in ('Pe', 'Pf')
-                def enclosure_closer(char):
-                    pairs = {'(': ')', '[': ']', '{': '}', '<': '>', '"': '"', "'": "'", '`': '`'}
-                    if char in pairs:
-                        return pairs[char]
-                    if unicodedata.category(char) in ('Ps', 'Pi'):
-                        name = unicodedata.name(char, '')
-                        counterpart = name.replace('LEFT', 'RIGHT').replace('OPENING', 'CLOSING')
-                        if counterpart != name:
-                            try:
-                                return unicodedata.lookup(counterpart)
-                            except KeyError:
-                                return None
-                    return None
-                def punctuation(char):
-                    return closing_enclosure(char) or char in ',;.!?:' or not char.isascii() and unicodedata.category(char) == 'Po'
-                following = 0
-                while following < len(after) and punctuation(after[following]):
-                    following += 1
-                def external_suffix(tail, prefix=before, following_text=after[:following]):
-                    stack, cursor = [], 0
-                    while cursor < len(prefix):
-                        atom = markdown_atom.match(prefix, cursor)
-                        if atom:
-                            cursor = atom.end()
-                            continue
-                        char = prefix[cursor]; cursor += 1
-                        if char in ("'", '’') and cursor > 1 and cursor < len(prefix) and continuation(prefix[cursor - 2]) and continuation(prefix[cursor]):
-                            continue
-                        if stack and char == stack[-1]:
-                            stack.pop()
-                        elif enclosure_closer(char):
-                            stack.append(enclosure_closer(char))
-                        elif closing_enclosure(char):
-                            stack.clear()
-                    enclosed = False
-                    for char in tail + following_text:
-                        if closing_enclosure(char):
-                            if not stack or stack.pop() != char:
-                                return False
-                            enclosed = True
-                        elif char in '?:' and not enclosed:
-                            return False
-                    return True
-                rejected = False
-                candidate_ids = opaque_ids if uri_syntax else uri_opaque_ids
-                marker = '[private URI]' if uri_syntax or re.match(r'(?i)[a-z][a-z0-9+.-]*://', decoded) else None
-                if destination in candidate_ids or decoded in candidate_ids:
-                    if external_suffix(''):
-                        identity = destination if destination in candidate_ids else decoded
-                        return marker or identities[identity], False
-                    rejected = True
-                end = len(destination)
-                while not rejected and (uri and uri.scheme or not uri_syntax) and end and punctuation(destination[end - 1]):
-                    end -= 1
-                    reference = destination[:end]
-                    if reference in candidate_ids or decode_uri(reference) in candidate_ids:
-                        if not external_suffix(destination[end:]):
-                            rejected = True
-                            break
-                        identity = reference if reference in candidate_ids else decode_uri(reference)
-                        return (marker or identities[identity]) + token[positions[end][0]:], False
-                if not uri_syntax:
-                    if rejected:
-                        return token, True
-                    if destination == token and (re.search(r'(?i)[a-z][a-z0-9+.-]*://', token) or known_reference):
-                        return token, False
-                    return private_prose()
-                # Parse structure before one decode; decoded payloads may contain a nested locator, never new outer grammar.
-                if known_reference or locator_payload(uri):
+                identities = re.findall(r'(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}', decoded)
+                if (destination != token or '%' in token) and any(identity.lower() in private_sessions or
+                                        session_fingerprint(identity.lower()) in private_sessions for identity in identities):
                     return '[private URI]' + suffix, False
-                authority = []
-                if uri:
-                    # Keep opaque host case; hostname would lowercase it.
-                    host = uri.netloc.rpartition('@')[2]
-                    host = host[1:].partition(']')[0] if host.startswith('[') else host.partition(':')[0]
-                    authority = [uri.username, uri.password, host]
-                components = ([uri.netloc, *authority, *uri.path.split('/'), *re.split(r'[&=]', uri.query), uri.fragment]
-                              if uri else re.split(r'[/?:&=#]', destination)[1:])
-                payload = (uri.path + ('?' + uri.query if '?' in destination.partition('#')[0] else '') +
-                           ('#' + uri.fragment if '#' in destination else '') if uri else destination.partition(':')[2])
-                def opaque_in_payload(match):
-                    if not identity_boundary(match):
-                        return False
-                    if not re.match(r'(?i)[a-z][a-z0-9+.-]*:', match[0]):
-                        return True
-                    tail = re.split(r'\s', match.string[match.end():], maxsplit=1)[0]
-                    return all(punctuation(char) for char in tail) and external_suffix(tail, match.string[:match.start()], '')
-                if (not structural and (any(decode_uri(part) in opaque_ids for part in components if part) or
-                        opaque_patterns and any(opaque_in_payload(match)
-                                                for part in [*authority, payload] if part
-                                                for match in re.finditer('|'.join(opaque_patterns), decode_uri(part))))):
-                    return '[private URI]' + suffix, False
-                if ((destination != token or '%' in token or any(s in decoded for s in identities)) and
-                        any(protected_identity(match[0]) for match in re.finditer(identity_pattern, decoded)
-                            if identity_boundary(match) and match[0] not in uri_locators and
-                            match[0] not in opaque_ids)):
-                    return '[private URI]' + suffix, False
-                if uri and not uri.scheme:
-                    return private_prose()
-                # File tokens must rejoin enclosing punctuation for complete known-filename matching.
-                return token, bool(rejected or re.match(r'(?i)https?://', destination) or
-                                   uri and uri.scheme.lower() != 'file' and source_uri_syntax(destination) or
-                                   bounded and uri and uri.scheme.lower() != 'file' and
-                                   re.match(r'(?i)[a-z][a-z0-9+.-]*://', destination))
+                return token, bool(re.match(r'(?i)https?://', destination))
             span = r'(?:\\[' + re.escape(string.punctuation) + r']|\](?=[^()\s<>"`])|[^\s<>"`\]])*'
-            def locator_parts(text, split, before='', after=''):
-                matches = []
-                for match in re.finditer(identity_pattern, text):
-                    if (match[0] not in private_locators or match[0] in uri_locators or
-                            not lexical_boundary.search(match[0]) or not identity_boundary(match)):
-                        continue
-                    child = re.match(('' if match[0].endswith('/') else '/') + span, text[match.end():])
-                    end = match.end() + (child.end() if child else 0)
-                    matches.append((match.start(), end, None))
-                # Cross only boundaries owned by each complete source; shorter known sources cannot cut it first.
-                for known, source in uri_locators.items():
-                    boundary_limit = sum(len(lexical_boundary.findall(decode_uri(part))) for part in source)
-                    schemes = '|'.join(re.escape(uri.scheme) for uri in uri_locators.values())
-                    for opening in re.finditer(r'(?i)(?:[a-z][a-z0-9+.-]*://|(?:[a-z][a-z0-9+.-]*)?(?:' + schemes + '):)', text):
-                        tail, boundaries, scanned = text[opening.start():], 0, 0
-                        for closing in re.finditer(r'(?=' + lexical_boundary.pattern + ')|(?<=' + lexical_boundary.pattern + ')|$', tail):
-                            end = closing.start()
-                            boundaries += len(lexical_boundary.findall(tail[scanned:end]))
-                            scanned = end
-                            if boundaries > boundary_limit:
-                                break
-                            following = tail[end:end + 1]
-                            if continuation(following) or following == '-' or following == '.' and continuation(tail[end + 1:end + 2]):
-                                continue
-                            candidate = tail[:end]
-                            try:
-                                uri = split_locator(candidate)
-                            except ValueError:
-                                uri = None
-                            if locator_reference(candidate, before_boundary=True, source_locator=known) or locator_payload(uri, True, known):
-                                child = re.match('/' + span, tail[end:])
-                                matches.append((opening.start(), opening.start() + end + (child.end() if child else 0), '[private URI]'))
-                                break
-                cursor, result, context = 0, [], before
-                for start, end, replacement in sorted(matches, key=lambda match: (match[0], -match[1])):
-                    if start < cursor:
-                        continue
-                    preceding = split(text[cursor:start], context, text[start:] + after)
-                    result.extend(preceding)
-                    context += ''.join(part for part, _ in preceding)
-                    piece = (replacement, False) if replacement else private_uri(text[start:end], before=context, after=text[end:] + after)
-                    result.append(piece)
-                    context += piece[0]
-                    cursor = end
-                return result + split(text[cursor:], context, after)
-            def private_text(text, before='', after=''):
-                def tokens(text, before, after):
-                    cursor, parts, context = 0, [], before
-                    for match in re.finditer(r'(?:\\[' + re.escape(string.punctuation) + r']|[^\s<>"`\[\]()])' + span, text):
-                        preceding = text[cursor:match.start()]
-                        context += preceding
-                        piece = private_uri(match[0], before=context, after=text[match.end():] + after)
-                        parts.extend(((preceding, False), piece))
-                        context += piece[0]
-                        cursor = match.end()
-                    return parts + [(text[cursor:], False)]
-                return locator_parts(text, tokens, before, after)
-            # Protect full raw sources before Markdown parsing can separate them into unrelated pieces.
-            value = ''.join(text for text, _ in locator_parts(value, lambda text, before, after: [(text, False)]))
+            def private_text(text):
+                cursor, parts = 0, []
+                for match in re.finditer(r'(?:\\[' + re.escape(string.punctuation) + r']|[^\s<>"`\[\]()])' + span, text):
+                    parts.extend(((text[cursor:match.start()], False), private_uri(match[0])))
+                    cursor = match.end()
+                return parts + [(text[cursor:], False)]
             # Raw syntax bounds the destination; interpreted references cannot add delimiters.
             pieces, cursor = [], 0
             for opening in re.finditer(r'\](?:\(|:)\s*', value):
                 prefix = value[:opening.start()]
                 if (len(prefix) - len(prefix.rstrip('\\'))) % 2:
-                    continue
-                # A reference definition starts with a label, not a bare IPv6 URI's closing bracket.
-                if value[opening.start() + 1] == ':' and not re.fullmatch(
-                        r'[ \t]*(?:>[ \t]*)*\[(?:\\.|[^\\\[\]\r\n])+', prefix.rsplit('\n', 1)[-1]):
                     continue
                 start = opening.end()
                 if start < cursor or start >= len(value):
@@ -821,52 +635,29 @@ class Loop:
                         (not angle and end == len(value) and value[opening.start() + 1] == '(') or
                         (angle and (end == len(value) or value[end] != '>'))):
                     continue
-                pieces.extend(private_text(value[cursor:start], ''.join(text for text, _ in pieces), value[start:]))
-                pieces.append(private_uri(value[start:end], True, ''.join(text for text, _ in pieces), value[end:]))
+                pieces.extend(private_text(value[cursor:start]))
+                pieces.append(private_uri(value[start:end], True))
                 cursor = end
-            pieces.extend(private_text(value[cursor:], ''.join(text for text, _ in pieces)))
+            pieces.extend(private_text(value[cursor:]))
             # Preserve bare URIs embedded in surrounding prose or punctuation.
-            def bare_parts(text, before=''):
-                def uri_parts(text, before, after):
-                    prefixes = ['[a-z][a-z0-9+.-]*://', '/',
-                                *['(?:[a-z][a-z0-9+.-]*)?' + re.escape(uri.scheme) + ':' for uri in uri_locators.values()]]
-                    if uri_opaque_ids:
-                        prefixes.append(r'(?:[a-z0-9+.-]|%[0-9a-f]{2})+%3a')
-                    cursor, parts, context = 0, [], before
-                    for match in re.finditer(r'(?i)(?:' + '|'.join(prefixes) + ')' + span, text):
-                        preceding = text[cursor:match.start()]
-                        context += preceding
-                        piece = private_uri(match[0], before=context, after=text[match.end():] + after)
-                        parts.extend(((preceding, False), piece))
-                        context += piece[0]
-                        cursor = match.end()
-                    return parts + [(text[cursor:], False)]
-                return locator_parts(text, uri_parts, before)
-            parts, prose, context = [], [], ''
+            def bare_parts(text):
+                spans = re.split(r'(?i)((?:https?://|file://|/)' + span + ')', text)
+                return [private_uri(part) if i % 2 else (part, False) for i, part in enumerate(spans)]
+            parts, prose = [], []
             for text, is_url in pieces:
                 if not is_url:
                     prose.append(text)
                     continue
-                parts.extend(bare_parts(''.join(prose), context))
-                context += ''.join(prose) + text
+                parts.extend(bare_parts(''.join(prose)))
                 prose.clear()
                 parts.append((text, True))
-            parts.extend(bare_parts(''.join(prose), context))
+            parts.extend(bare_parts(''.join(prose)))
             public = []
             for part, is_url in parts:
-                uri_syntax = is_url or bool(re.match(r'(?i)[a-z][a-z0-9+.-]*://', part)) or source_uri_syntax(part)
-                def redact_identity(match):
-                    if not identity_boundary(match):
-                        return match[0]
-                    # URI payloads were checked above; do not reinterpret their syntax as opaque IDs.
-                    if uri_syntax and (match[0] in opaque_ids or match[0] in uri_locators):
-                        return match[0]
-                    protected = protected_identity(match[0])
-                    if protected:
-                        return protected
-                    return match[0] if is_url else session_fingerprint(
-                        match[0] if match[0].startswith('native-session-v1:') else match[0].lower())
-                part = re.sub(identity_pattern, redact_identity, part)
+                part = re.sub(r'(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}',
+                              lambda match: session_fingerprint(match[0].lower())
+                              if not is_url or match[0].lower() in private_sessions or
+                              session_fingerprint(match[0].lower()) in private_sessions else match[0], part)
                 public.append(part if is_url else re.sub(r'/(?:Users|home|private|tmp|var)/[^\n`]+', '[local path]', part))
             return ''.join(public)
         return value
@@ -1207,7 +998,7 @@ class Loop:
                 if action == 'ci-wait' and acceptance['allowed']:
                     self.gh.status(bound['head'], 'success', 'Independent review and target branch acceptance gate passed', pr['html_url'])
             self.save(pr, state, comment_id)
-            return {'pr': number, 'phase': state['phase'], 'next': state.get('next')}
+            return {'pr': number, 'phase': state['phase'], 'next': self.public_state(state).get('next')}
         except Exception as error:
             state['errors'] = state.get('errors', 0) + 1
             state['next'] = self.private_error(error)
@@ -1357,7 +1148,7 @@ class Loop:
         state.update(binding=bound, review=report, phase='cleanup', paused=False, errors=0, retry_at=0,
                      next='Independent feedback disposition fixed; re-read before closure/cleanup')
         self.save(pr, state, sid)
-        return state
+        return self.public_result(state)
 
     def cleanup(self, pr, h):
         from gui_lease import locked, transition
@@ -1416,16 +1207,10 @@ class Loop:
 
 
 def public_machine_value(location, value):
-    """Only validated leaves at coordinator/report schema positions bypass opaque-ID redaction."""
+    """Validate the fixed machine facts allowed in the private publication envelope."""
     if not location:
         return False
     scope, key = location[:-1], location[-1]
-    if scope == ('review',) and key == 'session':
-        try:
-            session_fingerprint(value)
-        except ValueError:
-            return False
-        return True
     pattern = None
     if scope in ((), ('binding',), ('review',), ('gui',), ('acceptance',), ('issue_closure',)):
         if key in ('head', 'base') or (not scope and key in ('expected_head', 'publish_head', 'merge_sha')):
@@ -1461,14 +1246,6 @@ def public_machine_value(location, value):
             pattern = r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})'
     if not scope and key == 'remote_review_after':
         pattern = r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})'
-    if scope == ('gui', 'cases', '*'):
-        if key == 'id':
-            pattern = r'[A-Z][A-Z0-9]*-[0-9]{3}'
-        elif key == 'status':
-            pattern = r'pass|fail|pending|blocked'
-    if location in (('acceptance', 'repair_observers', '*'), ('acceptance', 'certificate_observers', '*'),
-                    ('acceptance', 'certificate_reviewers', '*')):
-        pattern = SESSION_HASH.pattern
     return pattern is not None and re.fullmatch(pattern, value) is not None
 
 
@@ -1802,7 +1579,7 @@ def main():
                     if state.get('review', {}).get('verdict') == 'blocked':
                         state.pop('review', None)
                         state.pop('binding', None)
-                loop.save(pr, state, sid); result = state
+                loop.save(pr, state, sid); result = loop.public_result(state)
             else:
                 prs = loop.gh.pages(f'repos/{REPO}/pulls?state=all&per_page=100')
                 targets = []
@@ -1832,7 +1609,7 @@ def main():
                         except Exception as error:
                             result.append({'pr': n, 'phase': 'error', 'error': str(error)})
                     result.extend(skipped)
-            print(json.dumps(result, ensure_ascii=False, indent=2))
+            print(json.dumps(loop.public_result(result), ensure_ascii=False, indent=2))
             return 0
     except BlockingIOError:
         print('{"phase":"coordinator-busy"}'); return 0

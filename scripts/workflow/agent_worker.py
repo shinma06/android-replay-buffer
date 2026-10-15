@@ -74,7 +74,7 @@ def bind_native_review(report, bound, storage, *, issuer, observe_origin, accept
     submitted = report
     report = bind_report_session(report, native_session(issuer, observed['session_id']))
     origin = {'issuer': issuer, 'observation': observed, 'submitted_report': submitted}
-    # Raw host locators stay inside the private receipt and are redacted from prose.
+    # Full native details stay private; publication selects its envelope from this verified origin.
     return issue_review_origin(storage, report, bound, report['session'], 'native', paths, sessions, origin)
 
 
