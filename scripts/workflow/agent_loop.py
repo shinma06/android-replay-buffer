@@ -403,7 +403,7 @@ class Loop:
                         opaque_patterns.append(pattern)
                     else:
                         # Punctuation IDs are tokens, not URI separators or prose punctuation.
-                        delimiters = r"\s()\[\]{}<>\"'`,;!?=:"
+                        delimiters = r"\s()\[\]{}<>\"'`,;.。!?=:"
                         pattern = '(?<![^' + delimiters + '])' + pattern + '(?![^' + delimiters + '])'
                 patterns.append(pattern)
             identity_pattern = '|'.join([*patterns, NATIVE_SESSION.pattern,
@@ -512,6 +512,10 @@ class Loop:
             for opening in re.finditer(r'\](?:\(|:)\s*', value):
                 prefix = value[:opening.start()]
                 if (len(prefix) - len(prefix.rstrip('\\'))) % 2:
+                    continue
+                # A reference definition starts with a label, not a bare IPv6 URI's closing bracket.
+                if value[opening.start() + 1] == ':' and not re.fullmatch(
+                        r'[ \t]*(?:>[ \t]*)*\[(?:\\.|[^\\\[\]\r\n])+', prefix.rsplit('\n', 1)[-1]):
                     continue
                 start = opening.end()
                 if start < cursor or start >= len(value):
