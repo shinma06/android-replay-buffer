@@ -456,7 +456,7 @@ class Loop:
         }
         if state.get('paused'):
             selected_next = 'owner-resume-required'
-        elif report is not None and phase in ('merging', 'cleanup', 'done'):
+        elif phase == 'cleanup' or (report is not None and phase in ('merging', 'done')):
             selected_next = phase_next[phase]
         elif state.get('errors') and state.get('retry_at'):
             selected_next = 'check-scheduled-retry-and-private-diagnostic'

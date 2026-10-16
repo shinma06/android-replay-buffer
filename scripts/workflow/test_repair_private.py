@@ -535,6 +535,8 @@ class NativePublicationTests(unittest.TestCase):
             ('remote-review-wait', None, {}, 'wait-for-current-head-review-completion'),
             ('queued', None, {}, 'review'), ('reviewed', None, {}, 'review'),
             ('ci-wait', None, {}, 'review'), ('done', None, {}, 'review'),
+            ('cleanup', None, {}, 'verify-post-merge-review-and-recovery-before-issue-or-resource-changes'),
+            ('cleanup', None, {'paused': True}, 'owner-resume-required'),
             ('fixing', 'changes_requested', {'fixes': 1}, 'apply-bounded-private-review-findings'),
             ('reviewed', 'changes_requested', {'fixes': 1}, 'fix'),
             ('reviewed', 'changes_requested', {'fixes': 3}, 'owner-recovery'),
@@ -598,6 +600,80 @@ class NativePublicationTests(unittest.TestCase):
                     self.assertEqual(early, late)
         legacy = {'phase': 'ci-wait', 'binding': bound, 'review': tal.report(), 'next': 'Ordinary UUID public action'}
         self.assertEqual(self.loop.public_state(legacy)['next'], legacy['next'])
+
+    def test_merged_develop_reconcile_acceptance_refusal_keeps_pending_cleanup_checkpoint(self):
+        self.gh.pull['base']['ref'] = 'develop'
+        h, hid = tal.al.unpack(self.gh.comments(36), tal.al.HANDOFF)
+        h['target'] = 'develop'
+        self.gh.comment(36, tal.al.pack(tal.al.HANDOFF, h), hid)
+        issued, bound = self.issued()
+        self.loop.save(self.gh.pull, {'phase': 'reviewed', 'binding': bound, 'review': issued,
+                                   'expected_head': tal.HEAD}, None)
+        self.gh.merge(self.gh.pr(36))
+        secret = 'Private current merged acceptance refusal'
+        self.loop.acceptance.return_value = {'allowed': False, 'mode': 'develop', 'reason': secret}
+        self.assertEqual(self.loop.tick(36)['phase'], 'cleanup')
+        previous = self.loop.load(36)[1]
+        retained = copy.deepcopy(previous['private_publication'])
+        self.gh.comment(36, 'New post-merge feedback requiring independent disposition')
+        fresh_bound = self.loop.bound(self.gh.pr(36), self.gh.issue(35), self.gh.comments(36))[0]
+        fresh, _ = self.issued(dict(tal.report(), feedback_hash=fresh_bound['feedback_hash']),
+                               identity='Actual-Feedback-Reviewer', bound=fresh_bound)
+        originals = {p: p.read_bytes() for folder in ('registry', 'diagnostics')
+                     for p in (self.loop.storage / folder).iterdir() if p.is_file()}
+        with patch.object(self.gh, 'api', wraps=self.gh.api) as mutation, \
+                patch.object(self.loop, 'merged_acceptance', wraps=self.loop.merged_acceptance) as merged:
+            with self.assertRaisesRegex(ValueError, secret):
+                self.loop.reconcile_feedback(self.gh.pr(36), {'binding': fresh_bound, 'review': fresh})
+        merged.assert_called_once()
+        self.loop.acceptance.assert_called_with(self.gh.pr(36), self.checkout)
+        self.assertEqual(self.gh.statuses[-1][1], 'pending')
+        mutation.assert_not_called(); self.loop.cleanup.assert_not_called(); self.worker.assert_not_called()
+        self.assertEqual(self.gh.issues[35]['state'], 'open'); self.assertEqual(self.gh.development_links, [])
+        public = tal.al.unpack(self.gh.comments(36), tal.al.STATE)[0]
+        progress = [c['body'] for c in self.gh.comments(35) if c['body'].startswith('<!-- agent-loop-progress:')][-1]
+        restored = self.loop.load(36)[1]
+        self.assertEqual(restored['phase'], 'cleanup')
+        for key in ('review', 'binding', 'acceptance'): self.assertNotIn(key, restored)
+        self.assertEqual(restored['private_publication'], retained)
+        self.assertEqual(restored['next'], previous['next'])
+        self.assertTrue(self.loop.publication_privacy(restored)[2])
+        self.assertEqual(public['binding'], {})
+        self.assertEqual(public['review']['status'], 'pending'); self.assertIsNone(public['review']['finding_count'])
+        self.assertNotIn('verdict', public['review']); self.assertNotIn('private_publication', public)
+        private = restore_review(self.loop.storage, public['review_ref'], {k: v for k, v in public.items() if k != 'review_ref'})
+        self.assertEqual(private['state'], {k: v for k, v in restored.items() if k != 'review_ref'})
+        originals.update({p: p.read_bytes() for p in (self.loop.storage / 'registry').glob('*.json')})
+        self.loop.save(self.gh.pull, restored, self.loop.load(36)[2])
+        again = self.loop.load(36)[1]
+        self.assertEqual({k: v for k, v in again.items() if k not in ('updated_at', 'review_ref')},
+                         {k: v for k, v in restored.items() if k not in ('updated_at', 'review_ref')})
+        with patch.object(tal.al.time, 'time', side_effect=AssertionError('projection read clock')), \
+                patch.object(self.loop, 'bound', side_effect=AssertionError('projection rechecked live policy')):
+            raw_result = self.loop.public_result(again)
+            public_result = self.loop.public_result(public)
+            paused = self.loop.public_state(dict(again, paused=True))
+        self.assertEqual(paused['next'], 'owner-resume-required')
+        args = ['agent_loop.py', 'tick', '--pr', '36']
+        with patch.object(tal.al, 'Loop', return_value=self.loop), patch.object(tal.al, 'coordinator_lock'), \
+                patch.object(tal.al, 'ROOT', self.checkout), patch.object(sys, 'argv', args), \
+                patch.object(self.gh, 'api', wraps=self.gh.api) as mutation, patch('builtins.print') as printed:
+            self.assertEqual(tal.al.main(), 0)
+        output = json.loads(printed.call_args_list[-1].args[0])[0]
+        self.assertEqual(output['phase'], 'cleanup'); self.assertIn('private diagnostic', output['error'])
+        self.assertNotIn(secret, json.dumps(output)); self.assertNotIn(secret, json.dumps(self.gh.messages))
+        mutation.assert_not_called(); self.loop.cleanup.assert_not_called(); self.worker.assert_not_called()
+        after_tick = self.loop.load(36)[1]
+        self.assertNotIn('review', after_tick); self.assertNotIn('binding', after_tick)
+        self.assertEqual(after_tick['private_publication'], retained)
+        current_public = tal.al.unpack(self.gh.comments(36), tal.al.STATE)[0]
+        self.assertEqual(current_public['review']['status'], 'pending'); self.assertIsNone(current_public['review']['finding_count'])
+        for path, original in originals.items(): self.assertEqual(path.read_bytes(), original)
+        expected = 'verify-post-merge-review-and-recovery-before-issue-or-resource-changes'
+        self.assertEqual(public['next'], expected)
+        self.assertIn('Next: ' + expected, progress)
+        self.assertEqual(raw_result['next'], expected); self.assertEqual(public_result['next'], expected)
+        self.assertEqual(current_public['next'], expected)
 
     def assert_post_merge_recovery_checkpoint(self, failure):
         self.loop.github_reviewer = 'native-reviewer'
