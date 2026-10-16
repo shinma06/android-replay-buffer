@@ -20,10 +20,10 @@ import time
 import uuid
 from urllib.parse import quote, unquote, urlsplit
 
-from agent_policy import CONTEXT, binding, eligible, gui_pass, in_scope, issue_number, next_action, session_fingerprint, update_parent, validate_review
-from agent_worker import (private_repair_evidence, read_repair_bundle, recover_originals,
+from agent_policy import CONTEXT, SESSION_HASH, binding, eligible, gui_pass, in_scope, issue_number, next_action, session_fingerprint, update_parent, validate_review
+from agent_worker import (REPORT_SCHEMA, private_repair_evidence, read_repair_bundle, recover_originals,
                           require_retained_evidence, retained_originals, run_worker, worker_environment)
-from handoff_registry import register, resolve, restore_review, store_review, verify_review_origin
+from handoff_registry import digest, register, resolve, restore_review, review_privacy, store_review, verify_review_origin
 from verification import verify_pr, metadata
 from issue_schema import validate_issue, done_labels, labels
 from pr_policy import validate_title
@@ -38,6 +38,10 @@ HANDOFF_V2 = '<!-- agent-loop-handoff:v2 -->'
 STATE = '<!-- agent-loop-state:v1 -->'
 HOST = socket.gethostname()
 CI_CHECKS = ('test', 'PR policy', 'Acceptance gate', 'CLI Python 3.9')
+PRIVATE_REVIEW_FORMAT = 'private-review-v1'
+PUBLIC_REVIEW_KEYS = set(REPORT_SCHEMA['properties']) | {
+    'session', 'origin_receipt', 'repair_evidence_sha256', 'certificate_evidence_sha256', 'feedback_hash',
+}
 
 
 def command(args, cwd=None, timeout=120, check=True):
@@ -270,8 +274,11 @@ def coordinator_lock():
 
 
 class Loop:
-    def __init__(self, gh=None, storage=None, worker=run_worker):
+    github_reviewer = None
+
+    def __init__(self, gh=None, storage=None, worker=run_worker, github_reviewer=None):
         self.gh = gh or GitHub()
+        self.github_reviewer = review_selection(github_reviewer)
         # Stable across linked worktrees, persists through app restarts. Not checked in.
         common = Path(git('rev-parse', '--git-common-dir'))
         if not common.is_absolute():
@@ -286,7 +293,7 @@ class Loop:
         public, public_id = unpack(comments, HANDOFF_V2)
         handoff = resolve(self.storage, public, HOST) if public and (not legacy_id or public_id > legacy_id) else legacy
         state, comment_id = unpack(comments, STATE)
-        if (state and str(state.get('review', {}).get('session', '')).startswith('codex-session-sha256:')
+        if (state and SESSION_HASH.fullmatch(str(state.get('review', {}).get('session', '')))
                 and not state.get('review_ref')):
             raise ValueError('Public session fingerprint requires its bound private review')
         if (state and not state.get('review_ref') and
@@ -295,27 +302,46 @@ class Loop:
             if not state.get('paused'):
                 state.update(phase='queued', next='Legacy wrapper approval invalidated; fresh independent review required')
         if state and state.get('review_ref'):
-            public = {'binding': state.get('binding'), 'review': state.get('review')}
-            state['review'], paths = restore_review(self.storage, state['review_ref'], public, True)
-            state['private_paths'] = paths
-            if self.public_state(state['review'], paths) != public['review']:
-                raise ValueError('Private review public projection mismatch')
+            if state.get('review', {}).get('publication_format') == PRIVATE_REVIEW_FORMAT and 'findings' not in state['review']:
+                state = self.restore_private_state(state)
+            else:
+                public = {'binding': state.get('binding'), 'review': state.get('review')}
+                state['review'], paths = restore_review(self.storage, state['review_ref'], public, True)
+                state['private_paths'] = paths
+                _, sessions, _, _, limited = review_privacy(self.storage, state['review'], state.get('binding'), True)
+                if limited:
+                    raise ValueError('Unsupported old native publication; retain original/PAUSED/owner and use explicit owner recovery')
+                if self._legacy_public_state(state['review'], paths, sessions) != public['review']:
+                    raise ValueError('Private review public projection mismatch')
+        elif state:
+            _, _, limited = self.publication_privacy(state)
+            if limited or state.get('review', {}).get('publication_format') == PRIVATE_REVIEW_FORMAT:
+                raise ValueError('Native public state requires its bound private review; explicit owner recovery required')
         if state is not None and handoff:
             state['private_paths'] = sorted(set(state.get('private_paths', [])) | set(handoff.get('private_paths', [])))
         return handoff, state or {'phase': 'queued', 'fixes': 0, 'reviews': 0, 'errors': 0}, comment_id, comments
 
     def save(self, pr, state, comment_id):
         state['updated_at'] = int(time.time())
+        state['review_requests'] = review_requests(state, self.github_reviewer, state.get('remote_review_after'))
         # Raw private logs stay local. Public state may contain reviewer text, so remove local paths.
-        if state.get('review', {}).get('origin_receipt'):
-            paths = verify_review_origin(self.storage, state['review'], state.get('binding'))
-            state['private_paths'] = sorted(set(state.get('private_paths', [])) | set(paths))
-        public = self.public_state(state)
-        if state.get('review'):
+        paths, _, limited = self.publication_privacy(state)
+        *_, current_limited = review_privacy(self.storage, state.get('review'), state.get('binding'), True)
+        if current_limited:
+            state['private_publication'] = {'binding': state['binding'], 'review': state['review']}
+        state['private_paths'] = sorted(set(state.get('private_paths', [])) | set(paths))
+        paths = state.get('private_paths', ())
+        if any(not isinstance(p, str) or not Path(p).is_absolute() for p in paths):
+            raise ValueError('Coordinator private paths must be absolute verified paths')
+        retained = {k: v for k, v in state.items() if k != 'review_ref'}
+        public = self.public_state(retained, paths)
+        if state.get('review') or limited:
             bound_review = {'binding': public.get('binding'), 'review': public['review']}
             # Never accept a public fingerprint as an originating session on resume.
-            session_fingerprint(state['review']['session'])
-            public['review_ref'] = store_review(self.storage, bound_review, state['review'], state.get('private_paths', []))
+            if state.get('review'):
+                session_fingerprint(state['review']['session'])
+            public['review_ref'] = (store_review(self.storage, public, {'kind': PRIVATE_REVIEW_FORMAT, 'state': retained}, paths)
+                                    if limited else store_review(self.storage, bound_review, state['review'], paths))
             state['review_ref'] = public['review_ref']
         else:
             public.pop('review_ref', None)
@@ -345,17 +371,193 @@ class Loop:
             stream.write(str(error))
         return f'Operation failed ({type(error).__name__}); coordinator private diagnostic {identifier}'
 
-    def public_state(self, value, private_paths=(), private_sessions=()):
-        if isinstance(value, dict):
-            private_paths = set(private_paths) | set(value.get('private_paths', []))
-            review = value.get('review') if isinstance(value.get('review'), dict) else {}
-            private_sessions = (set(private_sessions) | set(value.get('private_sessions', [])) |
-                                set(review.get('private_sessions', [])) |
-                                {str(value.get('session', '')).lower(), str(review.get('session', '')).lower()})
-            return {k: self.public_state(v, private_paths, private_sessions) for k, v in value.items()
-                    if k not in ('host', 'source', 'repair_evidence', 'evidence_kind', 'private_repair_evidence', 'private_paths', 'private_sessions', 'evidence_records')}
+    def restore_private_state(self, public):
+        projection = {k: v for k, v in public.items() if k != 'review_ref'}
+        retained = restore_review(self.storage, public.get('review_ref'), projection)
+        if retained.get('kind') != PRIVATE_REVIEW_FORMAT or not isinstance(retained.get('state'), dict):
+            raise ValueError('Unsupported private review state; explicit owner recovery required')
+        state = retained['state']
+        _, _, limited = self.publication_privacy(state)
+        if not limited:
+            raise ValueError('Private publication format requires verified native provenance')
+        if self.public_state(state) != projection:
+            raise ValueError('Private review public projection mismatch; retain originals for owner recovery')
+        return dict(state, review_ref=public['review_ref'])
+
+    def publication_privacy(self, state):
+        paths, sessions, _, _, limited = review_privacy(self.storage, state.get('review'), state.get('binding'), True)
+        retained = state.get('private_publication')
+        if retained is not None:
+            if not isinstance(retained, dict):
+                raise ValueError('Invalid retained private publication provenance')
+            old_paths, old_sessions, _, _, old_limited = review_privacy(self.storage, retained.get('review'), retained.get('binding'), True)
+            if not old_limited:
+                raise ValueError('Retained private publication requires verified native provenance')
+            paths, sessions, limited = sorted(set(paths) | set(old_paths)), sorted(set(sessions) | set(old_sessions)), True
+        return paths, sessions, limited
+
+    def public_result(self, value):
         if isinstance(value, list):
-            return [self.public_state(v, private_paths, private_sessions) for v in value]
+            return [self.public_result(item) for item in value]
+        if isinstance(value, dict) and (isinstance(value.get('review'), dict) or 'private_publication' in value):
+            report = value.get('review', {})
+            if report.get('publication_format') == PRIVATE_REVIEW_FORMAT and 'findings' not in report:
+                self.restore_private_state(value)
+                return value
+            _, _, limited = self.publication_privacy(value)
+            if limited:
+                return self.public_state(value)
+        return value
+
+    def public_state(self, value, private_paths=(), private_sessions=()):
+        if isinstance(value, dict) and (isinstance(value.get('review'), dict) or 'private_publication' in value and 'session' not in value):
+            report, bound = value.get('review'), value.get('binding')
+            paths, sessions, limited = self.publication_privacy(value)
+            private_paths = set(private_paths) | set(paths)
+            private_sessions = set(private_sessions) | set(sessions)
+            if limited:
+                if report is not None:
+                    validate_review(report, bound, storage=self.storage)
+                return self._private_public_state(value)
+        elif isinstance(value, dict) and (value.get('origin_receipt') or str(value.get('session', '')).startswith('native-session-v1:')):
+            raise ValueError('Publication requires the complete review binding and verified origin')
+        return self._legacy_public_state(value, private_paths, private_sessions)
+
+    def _private_public_state(self, state):
+        report, bound = state.get('review'), state.get('binding', {})
+        if report is None:
+            envelope = {'publication_format': PRIVATE_REVIEW_FORMAT, 'status': 'pending',
+                        'finding_count': None, 'summary': 'Fresh independent review required; prior private details retained'}
+        else:
+            envelope = {key: report[key] for key in ('head', 'base', 'verdict', 'scope_complete', 'issue_complete', 'gui_required')}
+            envelope.update(publication_format=PRIVATE_REVIEW_FORMAT, session=session_fingerprint(report['session']),
+                            finding_count=len(report['findings']), report_sha256=digest({'binding': bound, 'review': report}))
+            for key in ('repair_revision', 'repair_evidence_sha256', 'certificate_revision', 'certificate_evidence_sha256', 'feedback_hash', 'origin_receipt'):
+                if key in report and isinstance(report[key], str) and public_machine_value(('review', key), report[key]):
+                    envelope[key] = report[key]
+            envelope['summary'] = f"{report['verdict']}; {len(report['findings'])} findings; details in private review reference"
+        phase = state.get('phase', 'queued')
+        if not public_machine_value(('phase',), phase):
+            raise ValueError('Invalid coordinator phase')
+        phase_next = {
+            'syncing': 'merge-current-base-then-publish',
+            'publishing': 'validate-and-publish-issue-branch',
+            'remote-review-wait': 'wait-for-current-head-review-completion',
+            'reviewing': 'complete-independent-read-only-review',
+            'fixing': 'apply-bounded-private-review-findings',
+            'gui-queued': 'designated-operator-observe-required-gui-evidence',
+            'acceptance-wait': 'complete-required-acceptance',
+            'ci-wait': 'wait-for-required-ci-checks',
+            'ci-failed': 'inspect-ci-failure-and-recover',
+            'blocked': 'owner-recovery',
+            'merging': 'confirm-github-merge-result',
+            'cleanup': 'verify-post-merge-review-and-recovery-before-issue-or-resource-changes',
+            'done': 'pm-confirm-issue-qa-project-and-roadmap-status',
+        }
+        if state.get('paused'):
+            selected_next = 'owner-resume-required'
+        elif phase == 'cleanup' or (report is not None and phase in ('merging', 'done')):
+            selected_next = phase_next[phase]
+        elif state.get('errors') and state.get('retry_at'):
+            selected_next = 'check-scheduled-retry-and-private-diagnostic'
+        elif phase in ('syncing', 'publishing', 'remote-review-wait', 'reviewing'):
+            selected_next = phase_next[phase]
+        elif report is None:
+            selected_next = 'review'
+        elif phase in ('queued', 'reviewed'):
+            selected_next = ('wait-for-current-head-review-completion' if bound.get('remote_review_complete') is False else
+                             {'approved': 'reconcile-acceptance-and-review-obligations',
+                              'changes_requested': 'fix' if state.get('fixes', 0) < 3 else 'owner-recovery',
+                              'blocked': 'owner-recovery'}[report['verdict']])
+        else:
+            selected_next = phase_next[phase]
+        public = {'phase': phase, 'review': envelope, 'binding': {},
+                  'state_sha256': digest({k: v for k, v in state.items() if k != 'review_ref'}),
+                  'next': selected_next}
+        for section, keys in (
+                ('binding', ('head', 'base', 'target', 'title_hash', 'body_hash', 'issue_hash', 'feedback_hash')),
+                ('gui', ('head', 'base', 'artifact_sha256')),
+                ('acceptance', ('head', 'base', 'mode', 'repair_revision', 'repair_evidence_sha256', 'certificate_revision', 'certificate_evidence_sha256')),
+                ('issue_closure', ('head', 'base', 'issue_hash'))):
+            source = state.get(section, {})
+            if not isinstance(source, dict):
+                raise ValueError('Invalid coordinator machine record')
+            if section in state:
+                public[section] = {}
+            for key in keys:
+                if key in source:
+                    if not isinstance(source[key], str) or not public_machine_value((section, key), source[key]):
+                        raise ValueError('Invalid coordinator machine fact')
+                    public[section][key] = source[key]
+        for section, keys in (('', ('paused',)), ('binding', ('issue_bug', 'remote_review_complete')),
+                              ('gui', ('processes_stopped',)), ('acceptance', ('allowed', 'gui_complete'))):
+            source, target = (state, public) if not section else (state.get(section, {}), public.get(section, {}))
+            for key in keys:
+                if key in source:
+                    if type(source[key]) is not bool:
+                        raise ValueError('Invalid coordinator boolean')
+                    target[key] = source[key]
+        for key in ('updated_at', 'errors', 'fixes', 'reviews', 'qa_issue', 'main_tracking_issue'):
+            if key in state:
+                if type(state[key]) is not int or state[key] < 0:
+                    raise ValueError('Invalid coordinator counter')
+                public[key] = state[key]
+        for key in ('expected_head', 'publish_head', 'merge_sha', 'interrupted_phase', 'remote_review_after', 'review_ref'):
+            if key in state:
+                if not isinstance(state[key], str) or not public_machine_value((key,), state[key]):
+                    raise ValueError('Invalid coordinator identity')
+                public[key] = state[key]
+        for section in ('binding', ''):
+            source, target = (bound, public['binding']) if section else (state, public)
+            for key in ('review_completion', 'review_requests'):
+                if key not in source:
+                    continue
+                records = source[key] if key == 'review_requests' else [source[key]]
+                if not isinstance(records, list):
+                    raise ValueError('Invalid retained review policy')
+                projected = []
+                for record in records:
+                    if not isinstance(record, dict):
+                        raise ValueError('Invalid retained review policy')
+                    normalized = review_requests({'review_requests': [record]}, record.get('reviewer'), record.get('not_before'))
+                    if len(normalized) != 1:
+                        raise ValueError('Invalid retained review policy')
+                    item = normalized[0]
+                    for field, content in item.items():
+                        if content is not None and not public_machine_value(('binding', 'review_completion', field), content):
+                            raise ValueError('Invalid retained review policy fact')
+                    if 'requests_hash' in record:
+                        if not public_machine_value(('binding', 'review_completion', 'requests_hash'), record['requests_hash']):
+                            raise ValueError('Invalid retained review policy hash')
+                        item['requests_hash'] = record['requests_hash']
+                    projected.append(item)
+                target[key] = projected if key == 'review_requests' else projected[0]
+        return public
+
+    def _legacy_public_state(self, value, private_paths=(), private_sessions=(), location=()):
+        if isinstance(value, dict):
+            if not location and 'session' in value:
+                location = ('review',)
+            review = value.get('review') if isinstance(value.get('review'), dict) else {}
+            private_sessions = set(private_sessions) | {str(value.get('session', '')).lower(), str(review.get('session', '')).lower()}
+            public = {}
+            for key, item in value.items():
+                if key == 'private_publication' and not location:
+                    continue
+                if key in ('host', 'source', 'repair_evidence', 'evidence_kind', 'private_repair_evidence',
+                           'private_paths', 'private_sessions', 'private_identifiers', 'evidence_records'):
+                    continue
+                projected = key
+                if location[:1] == ('review',) and not (location == ('review',) and key in PUBLIC_REVIEW_KEYS):
+                    if not isinstance(key, str):
+                        raise ValueError('Review diagnostic keys must be strings')
+                    projected = self._legacy_public_state(key, private_paths, private_sessions, ('diagnostic_key',))
+                if projected in public:
+                    raise ValueError('Public review diagnostic key collision; retain the private report')
+                public[projected] = self._legacy_public_state(item, private_paths, private_sessions, location + (key,))
+            return public
+        if isinstance(value, list):
+            return [self._legacy_public_state(v, private_paths, private_sessions, location + ('*',)) for v in value]
         if isinstance(value, str):
             # Full raw paths can contain spaces across the later lexical spans.
             for path in sorted(private_paths, key=len, reverse=True):
@@ -539,6 +741,9 @@ class Loop:
         return dict(accepted, head=pr['head']['sha'], base=pr['base']['sha'])
 
     def bound(self, pr, issue, comments, remote_after=None):
+        prior, _ = unpack(comments, STATE)
+        if remote_after is None and prior:
+            remote_after = prior.get('remote_review_after')
         value = binding(pr, issue)
         # Only our own changing dashboards are excluded, never other reviewers/bots.
         conversation = [c for c in comments + self.gh.comments(issue_number(pr))
@@ -550,7 +755,27 @@ class Loop:
         threads = self.gh.review_threads(pr['number'])
         feedback = [*conversation, *inline, *reviews, *threads]
         value['feedback_hash'] = hashlib.sha256(json.dumps(feedback, sort_keys=True).encode()).hexdigest()
-        value['remote_review_complete'] = remote_review_complete(pr['head']['sha'], comments, remote_after)
+        reviewer = review_selection(self.github_reviewer)
+        value['review_completion'] = {'method': 'github-review-v1' if reviewer else 'codex-summary-v1',
+                                      'reviewer': reviewer, 'not_before': remote_after}
+        if reviewer:
+            value['review_completion']['requests_hash'] = hashlib.sha256(json.dumps(
+                {k: pr.get(k) for k in ('requested_reviewers', 'requested_teams')}, sort_keys=True).encode()).hexdigest()
+        requests = review_requests(prior or {}, reviewer, remote_after)
+        # A service record/request is also an obligation even before a coordinator save.
+        if reviewer and any(c['user']['login'] == 'chatgpt-codex-connector[bot]' or
+                re.search(r'^\s*@codex\s+review\b', c['body'], re.M) for c in comments):
+            requests = review_requests({'review_requests': requests}, None, remote_after)
+        value['review_requests'] = requests
+        complete = True
+        for request in requests:
+            observed = (remote_review_complete(pr['head']['sha'], comments, request['not_before'])
+                        if request['method'] == 'codex-summary-v1' else
+                        github_review_complete(pr, reviews, request['reviewer'], request['not_before']))
+            if type(observed) is not bool:
+                raise ValueError('Review completion must be an observed boolean')
+            complete = complete and observed
+        value['remote_review_complete'] = complete
         return value, feedback
 
     def source_safe(self, h):
@@ -662,6 +887,7 @@ class Loop:
                 else:
                     raise ValueError('External push after handoff; explicit re-enrollment required')
             bound, feedback = self.bound(pr, issue, comments, state.get('remote_review_after'))
+            state['review_requests'] = bound['review_requests']
             if any(record and any(record.get(k) != bound[k] for k in ('head', 'base'))
                    for record in (state.get('binding'), state.get('gui'))):
                 self.invalidate_acceptance(state)
@@ -715,6 +941,7 @@ class Loop:
                 return {'pr': number, 'phase': 'base-synced'}
             if pr['draft']:
                 self.invalidate_acceptance(state)
+                state['review_requests'] = bound['review_requests']
                 state['remote_review_after'] = datetime.now(timezone.utc).isoformat()
                 state.update(phase='remote-review-wait', next='Mark enrolled stopped-writer Draft ready, then read its new terminal review')
                 comment_id = self.save(pr, state, comment_id)
@@ -791,7 +1018,8 @@ class Loop:
                 return self.finish(self.gh.pr(number), h, state, comment_id)
             else:
                 state.update(phase=action, next={'gui-queued': '能力・許可を確認した指定GUI担当: leaseを取得し、実画面を観察して証拠を記録',
-                             'remote-review-wait': 'Await observable completion of the expected current-HEAD Codex review; no empty-snapshot or timeout approval',
+                             'remote-review-wait': 'Await current-HEAD completion for: ' + ', '.join(
+                                 r['reviewer'] or 'Codex' for r in bound['review_requests']) + '; retain every outstanding request',
                              'acceptance-wait': acceptance.get('reason', 'Complete the required acceptance matrix'),
                              'ci-wait': 'Wait for latest required CI checks', 'ci-failed': 'Inspect CI failure; resume after repair',
                              'blocked': 'Inspect review findings or retry budget; resume explicitly'}[action])
@@ -800,7 +1028,7 @@ class Loop:
                 if action == 'ci-wait' and acceptance['allowed']:
                     self.gh.status(bound['head'], 'success', 'Independent review and target branch acceptance gate passed', pr['html_url'])
             self.save(pr, state, comment_id)
-            return {'pr': number, 'phase': state['phase'], 'next': state.get('next')}
+            return {'pr': number, 'phase': state['phase'], 'next': self.public_state(state).get('next')}
         except Exception as error:
             state['errors'] = state.get('errors', 0) + 1
             state['next'] = self.private_error(error)
@@ -929,6 +1157,7 @@ class Loop:
         report = evidence['review']
         if report.get('feedback_hash') != bound['feedback_hash']:
             raise ValueError('Independent report must identify the feedback it actually reviewed')
+        review_privacy(self.storage, report, bound)
         self.retained_history(h)
         previous = state.get('binding', {})
         if previous != bound:
@@ -949,7 +1178,7 @@ class Loop:
         state.update(binding=bound, review=report, phase='cleanup', paused=False, errors=0, retry_at=0,
                      next='Independent feedback disposition fixed; re-read before closure/cleanup')
         self.save(pr, state, sid)
-        return state
+        return self.public_result(state)
 
     def cleanup(self, pr, h):
         from gui_lease import locked, transition
@@ -1004,6 +1233,116 @@ class Loop:
             git('worktree', 'remove', str(source))
         if old:
             git('update-ref', '-d', ref, old)
+
+
+
+def public_machine_value(location, value):
+    """Validate the fixed machine facts allowed in the private publication envelope."""
+    if not location:
+        return False
+    scope, key = location[:-1], location[-1]
+    pattern = None
+    if scope in ((), ('binding',), ('review',), ('gui',), ('acceptance',), ('issue_closure',)):
+        if key in ('head', 'base') or (not scope and key in ('expected_head', 'publish_head', 'merge_sha')):
+            pattern = r'[0-9a-f]{40}'
+        hashes = {
+            ('binding',): ('title_hash', 'body_hash', 'issue_hash', 'feedback_hash'),
+            ('issue_closure',): ('issue_hash',),
+            ('review',): ('repair_revision', 'repair_evidence_sha256', 'certificate_revision', 'certificate_evidence_sha256', 'feedback_hash'),
+            ('gui',): ('artifact_sha256',),
+            ('acceptance',): ('repair_revision', 'repair_evidence_sha256', 'certificate_revision', 'certificate_evidence_sha256'),
+        }
+        if key in hashes.get(scope, ()):
+            pattern = r'[0-9a-f]{64}'
+    if (scope, key) in (((), 'review_ref'), (('review',), 'origin_receipt')):
+        pattern = r'[0-9a-f]{32}'
+    if scope == ('review',) and key == 'verdict':
+        pattern = r'approved|changes_requested|blocked'
+    if scope == ('binding',) and key == 'target':
+        pattern = r'main|develop'
+    if scope == ('acceptance',) and key == 'mode':
+        pattern = r'develop|promotion|tooling'
+    if not scope and key in ('phase', 'interrupted_phase'):
+        pattern = (r'queued|syncing|publishing|remote-review-wait|reviewing|reviewed|fixing|merging|cleanup|done|'
+                   r'blocked|gui-queued|acceptance-wait|ci-wait|ci-failed')
+    if scope in (('binding', 'review_completion'), ('binding', 'review_requests', '*'), ('review_requests', '*')):
+        if key == 'method':
+            pattern = r'codex-summary-v1|github-review-v1'
+        elif key == 'reviewer':
+            pattern = r'[a-z0-9][a-z0-9-]*(?:\[bot\])?'
+        elif key == 'requests_hash' and scope == ('binding', 'review_completion'):
+            pattern = r'[0-9a-f]{64}'
+        elif key == 'not_before':
+            pattern = r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})'
+    if not scope and key == 'remote_review_after':
+        pattern = r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})'
+    return pattern is not None and re.fullmatch(pattern, value) is not None
+
+
+def review_selection(github_reviewer):
+    if github_reviewer is not None and (not isinstance(github_reviewer, str) or
+            not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9-]*(?:\[bot\])?', github_reviewer)):
+        raise ValueError('Expected GitHub reviewer login is missing or malformed')
+    return github_reviewer.lower() if github_reviewer else None
+
+
+
+def review_requests(state, reviewer, not_before):
+    """Retain source obligations independently of disposable approval bindings."""
+    reviewer = review_selection(reviewer)
+    requests = state.get('review_requests', [])
+    if not isinstance(requests, list):
+        raise ValueError('Invalid retained review requests')
+    requests = list(requests)
+    previous = state.get('binding')
+    if previous:
+        requests.extend(previous.get('review_requests', []))
+        requests.append(previous.get('review_completion',
+                        {'method': 'codex-summary-v1', 'reviewer': None,
+                         'not_before': state.get('remote_review_after')}))
+    elif 'review_requests' not in state and state.get('remote_review_after'):
+        requests.append({'method': 'codex-summary-v1', 'reviewer': None,
+                         'not_before': state['remote_review_after']})
+    requests.append({'method': 'github-review-v1' if reviewer else 'codex-summary-v1',
+                     'reviewer': reviewer, 'not_before': not_before})
+    retained = []
+    for request in requests:
+        if not isinstance(request, dict):
+            raise ValueError('Invalid retained review request')
+        method, selected, after = request.get('method'), review_selection(request.get('reviewer')), request.get('not_before')
+        if method != ('github-review-v1' if selected else 'codex-summary-v1'):
+            raise ValueError('Unknown prior completion policy; preserve its review obligation')
+        if after is not None:
+            try:
+                if datetime.fromisoformat(after.replace('Z', '+00:00')).tzinfo is None:
+                    raise ValueError('Missing timezone')
+            except (AttributeError, ValueError) as error:
+                raise ValueError('Invalid retained review request boundary') from error
+        normalized = {'method': method, 'reviewer': selected, 'not_before': after}
+        if normalized not in retained:
+            retained.append(normalized)
+    return retained
+
+
+def github_review_complete(pr, reviews, reviewer, not_before=None):
+    """Read an explicitly selected native review; completion is not independent approval."""
+    if pr.get('requested_reviewers') != [] or pr.get('requested_teams') != []:
+        return False
+    selected = [r for r in reviews if r.get('user', {}).get('login', '').lower() == reviewer]
+    if not selected:
+        return False
+    # GitHub's endpoint returns chronological order, including dismissed/pending reviews.
+    record = selected[-1]
+    if (record.get('state') not in ('APPROVED', 'CHANGES_REQUESTED') or
+            record.get('commit_id') != pr['head']['sha'] or
+            record.get('pull_request_url') != f'https://api.github.com/repos/{REPO}/pulls/{pr["number"]}'):
+        return False
+    try:
+        completed = datetime.fromisoformat(record['submitted_at'].replace('Z', '+00:00'))
+        requested = datetime.fromisoformat((not_before or pr['created_at']).replace('Z', '+00:00'))
+        return completed.tzinfo is not None and requested.tzinfo is not None and completed >= requested
+    except (KeyError, TypeError, ValueError, AttributeError):
+        return False
 
 
 def remote_review_complete(head, comments, not_before=None):
@@ -1192,6 +1531,7 @@ def main():
     global ROOT
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--repo-root', type=Path, default=ROOT, help='Trusted main checkout (bootstrap/test override)')
+    parser.add_argument('--github-reviewer', help='Explicit authorized native review source; default remains Codex')
     sub = parser.add_subparsers(dest='action', required=True)
     tick = sub.add_parser('tick'); tick.add_argument('--pr', type=int)
     sub.add_parser('scan')
@@ -1220,17 +1560,19 @@ def main():
     args = parser.parse_args()
     ROOT = args.repo_root.resolve()
     try:
+        reviewer = review_selection(args.github_reviewer)
         if args.action == 'feedback':
             gh = GitHub()
             pr = gh.pr(args.pr)
             # No registry, status, comment, worker, or coordinator lock mutation.
             loop = object.__new__(Loop)
             loop.gh = gh
+            loop.github_reviewer = reviewer
             bound, records = loop.bound(pr, gh.issue(issue_number(pr)), gh.comments(args.pr))
             print(json.dumps({'pr': args.pr, 'binding': bound, 'feedback': records}, ensure_ascii=False))
             return 0
         with coordinator_lock():
-            loop = Loop()
+            loop = Loop(github_reviewer=reviewer)
             if args.action == 'cleanup-branches':
                 result = audit_branches(loop.gh, args.apply)
             elif args.action == 'rebind-target':
@@ -1267,7 +1609,7 @@ def main():
                     if state.get('review', {}).get('verdict') == 'blocked':
                         state.pop('review', None)
                         state.pop('binding', None)
-                loop.save(pr, state, sid); result = state
+                loop.save(pr, state, sid); result = loop.public_result(state)
             else:
                 prs = loop.gh.pages(f'repos/{REPO}/pulls?state=all&per_page=100')
                 targets = []
@@ -1297,7 +1639,7 @@ def main():
                         except Exception as error:
                             result.append({'pr': n, 'phase': 'error', 'error': str(error)})
                     result.extend(skipped)
-            print(json.dumps(result, ensure_ascii=False, indent=2))
+            print(json.dumps(loop.public_result(result), ensure_ascii=False, indent=2))
             return 0
     except BlockingIOError:
         print('{"phase":"coordinator-busy"}'); return 0

@@ -9,22 +9,58 @@ from issue_schema import labels
 
 CONTEXT = 'Agent review'
 SHA = re.compile(r'[0-9a-f]{40}')
-SESSION_HASH = re.compile(r'codex-session-sha256:[0-9a-f]{64}')
+SESSION_HASH = re.compile(r'(?:codex|native)-session-sha256:[0-9a-f]{64}')
+NATIVE_SESSION = re.compile(r'native-session-v1:([0-9a-f]+):([0-9a-f]+)')
+
+
+def native_session(issuer, identity):
+    """Issuer/instance and opaque ID come from the trusted host, never a role/model label."""
+    if (not isinstance(issuer, str) or not re.fullmatch(r'[a-z0-9][a-z0-9./_-]*', issuer) or
+            'codex' in issuer or not isinstance(identity, str) or not identity or
+            any(ord(c) < 32 or ord(c) == 127 for c in identity) or SESSION_HASH.fullmatch(identity) or
+            identity.startswith('native-session-')):
+        raise ValueError('Invalid native issuer/session identity')
+    # UUID identities retain their single historical identity, never a namespace alias.
+    try:
+        uuid.UUID(identity)
+    except ValueError:
+        pass
+    else:
+        return canonical_session(identity)
+    return f'native-session-v1:{issuer.encode().hex()}:{identity.encode().hex()}'
 
 
 def canonical_session(session):
+    match = NATIVE_SESSION.fullmatch(session) if isinstance(session, str) else None
+    if match:
+        try:
+            issuer, identity = (bytes.fromhex(part).decode() for part in match.groups())
+            if native_session(issuer, identity) == session:
+                return session
+        except (ValueError, UnicodeError):
+            pass
+        raise ValueError('Noncanonical native session identity')
     try:
         value = uuid.UUID(session) if isinstance(session, str) else None
     except ValueError:
         value = None
     if value is None or str(value) != session or value.variant != uuid.RFC_4122:
-        raise ValueError('Canonical originating Codex session is missing or malformed')
+        raise ValueError('Canonical originating session is missing or malformed')
+    return session
+
+
+def codex_session(session):
+    session = canonical_session(session)
+    if session.startswith('native-session-v1:'):
+        raise ValueError('Codex source requires its canonical UUID session')
     return session
 
 
 def session_fingerprint(session):
-    return 'codex-session-sha256:' + hashlib.sha256(
-        ('codex-session-v1:' + canonical_session(session)).encode()).hexdigest()
+    session = canonical_session(session)
+    if session.startswith('native-session-v1:'):
+        return 'native-session-sha256:' + hashlib.sha256(session.encode()).hexdigest()
+    return 'codex-session-sha256:' + hashlib.sha256(('codex-session-v1:' + session).encode()).hexdigest()
 
 
 def issue_number(pr):
@@ -98,6 +134,8 @@ def validate_review(report, expected, acceptance=None, storage=None):
         verify_review_origin(storage, report, expected)
     if report['verdict'] == 'changes_requested' and not report['findings']:
         raise ValueError('Changes requested without concrete findings')
+    from handoff_registry import review_privacy
+    review_privacy(storage, report, expected)
 
 
 def in_scope(paths, scope):
@@ -121,6 +159,7 @@ def next_action(state, bound, ci, gui, acceptance=None, storage=None):
     report = state.get('review')
     if not report:
         return 'review'
+    validate_review(report, bound, acceptance if acceptance and acceptance.get('allowed') else None, storage)
     if report['verdict'] == 'blocked':
         return 'blocked'
     if report['verdict'] == 'changes_requested':
@@ -129,8 +168,6 @@ def next_action(state, bound, ci, gui, acceptance=None, storage=None):
         return 'acceptance-wait'
     if acceptance is None and gui and not gui_pass(state.get('gui'), bound):
         return 'gui-queued'
-    if acceptance and (acceptance.get('repair_revision') or acceptance.get('certificate_revision')):
-        validate_review(report, bound, acceptance, storage)
     if ci == 'failure':
         return 'ci-failed'
     if ci != 'success':
