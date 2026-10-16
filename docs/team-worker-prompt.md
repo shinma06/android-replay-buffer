@@ -1,5 +1,7 @@
 # Scoped team work request
 
+Before stopping or handing off unfinished work or declaring it blocked, apply the [stop reconsideration flow](omil-portable.md#reconsider-before-stopping-unfinished-work). Obey immediate human/safety/permission/resource stops first. Reconsider the smallest affected scope and ready permitted routes; if stopping remains warranted, return cause/evidence, saved/unmet state, concrete resume conditions/resolver and known resolution steps. Do not infer whole-task exhaustion from a local study limit or repeated blocked reports.
+
 Use only when the human authorized this team/session route and PM has a ready task. Supply the Issue, human authorization source, exact scope/exclusions, owner, base/target, expected artifact, reviewer, GUI need, bounds, stop condition and private PM/contact routes. Missing information that can be established safely is for PM/worker to resolve, not an automatic human approval gate.
 
 Use the [portable brief](omil-portable.md) for purpose-based decisions and when transferring the method to a fresh session/client. Define roles, input/output, quality and evidence independently of provider-specific tools, then map the capabilities the actual assignment needs. Keep efficient native routes; do not require another model or new trial merely to show portability. Use the [validation entry](omil-validation.md) when a concrete missing fact justifies a trial. Resolve actual authority; a generated pack or this link does not prove operational reproduction or efficiency.

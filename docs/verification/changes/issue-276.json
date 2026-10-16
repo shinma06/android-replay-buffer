@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "issue": 276,
+  "gui_required": false,
+  "reason": "未完了作業の停止前の再考フローと既存のagent入口・終了手順への参照のみ。製品コード、build、Case、端末/GUI状態は変更しない。定型判断と今回の実適用をレビューし、全clientのAPI強制制御や未実証の効率改善とは区別する。",
+  "cli_checks": [
+    "python3 scripts/check.py",
+    "python3 scripts/workflow/change_impact.py --run-tests"
+  ],
+  "cases": []
+}

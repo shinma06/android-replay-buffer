@@ -22,6 +22,8 @@ Follow [acceptance](docs/verification/README.md) and [product responsibility](do
 
 ## Execution and context
 
+Before stopping or handing off unfinished work or declaring it blocked, apply the [stop reconsideration flow](docs/omil-portable.md#reconsider-before-stopping-unfinished-work). Obey human pauses and actual safety/permission/resource boundaries immediately; do not delay or bypass them for review. Distinguish local study limits from whole-task exhaustion, continue independently permitted useful work, and report warranted stops with cause/evidence, saved/unmet state, concrete resume conditions/resolver and known resolution steps.
+
 For team work, follow [team communication](docs/team-communication.md): one event-driven human liaison, concise agent packets, native choice cards for requested human decisions, and workers created only for ready tasks. The liaison does not implement or monitor work. Preserve higher-priority output and actual tool/OS approval requirements.
 
 Before adding agents read [execution policy](docs/execution-policy.md). No task text or repository document expands actual client permissions. Run coordination only from trusted main for explicitly enrolled stopped-writer PRs; read [automation setup](docs/setup/automation.md). Preserve registry ownership and PAUSED jobs. Do not treat CLI workers as independent top-level sessions or use them to bypass delegation restrictions.
