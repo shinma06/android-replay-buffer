@@ -5,6 +5,8 @@ description: Validate an Issue change, arrange independent fixed-revision review
 
 # Finish work
 
+Before an unfinished-work stop, handoff or blocked conclusion, apply docs/omil-portable.md's stop reconsideration flow in order. Immediate human/safety/permission/resource stops take precedence. Preserve a warranted local stop without inferring whole-task exhaustion; continue useful permitted work, or report evidence, saved/unmet state, concrete resume conditions/resolver and known resolution steps. Keep actual execution and client control state distinct.
+
 Use docs/workflow.md and the Issue acceptance; for context changes also docs/context.md. Review-only requests return findings/evidence without new Issues or writer mutations.
 
 For a method/tool/policy update, follow docs/context.md's superseded-management guidance: trace affected active rules, effective plan/resolver/gates, templates/handoffs and actual consumers; reconcile them while preserving history and explicit contracts. Record retained debt with reason, impact, owner and a concrete retirement condition in the existing Issue/PR, without a new ledger.
