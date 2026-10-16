@@ -451,7 +451,7 @@ class Loop:
             'ci-failed': 'inspect-ci-failure-and-recover',
             'blocked': 'owner-recovery',
             'merging': 'confirm-github-merge-result',
-            'cleanup': 'reconcile-issue-disposition-then-verify-owned-resource-cleanup',
+            'cleanup': 'verify-post-merge-review-and-recovery-before-issue-or-resource-changes',
             'done': 'pm-confirm-issue-qa-project-and-roadmap-status',
         }
         if state.get('paused'):

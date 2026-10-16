@@ -524,7 +524,7 @@ class NativePublicationTests(unittest.TestCase):
         cases = [
             ('ci-wait', 'approved', {}, 'wait-for-required-ci-checks'),
             ('merging', 'approved', {}, 'confirm-github-merge-result'),
-            ('cleanup', 'approved', {}, 'reconcile-issue-disposition-then-verify-owned-resource-cleanup'),
+            ('cleanup', 'approved', {}, 'verify-post-merge-review-and-recovery-before-issue-or-resource-changes'),
             ('done', 'approved', {}, 'pm-confirm-issue-qa-project-and-roadmap-status'),
             ('acceptance-wait', 'approved', {}, 'complete-required-acceptance'),
             ('gui-queued', 'approved', {}, 'designated-operator-observe-required-gui-evidence'),
@@ -546,7 +546,7 @@ class NativePublicationTests(unittest.TestCase):
             ('reviewing', None, {'paused': True}, 'owner-resume-required'),
             ('fixing', 'changes_requested', {'errors': 1, 'retry_at': 1234}, 'check-scheduled-retry-and-private-diagnostic'),
             ('merging', 'approved', {'errors': 1, 'retry_at': 1234}, 'confirm-github-merge-result'),
-            ('cleanup', 'approved', {'issue_complete': False}, 'reconcile-issue-disposition-then-verify-owned-resource-cleanup'),
+            ('cleanup', 'approved', {'issue_complete': False}, 'verify-post-merge-review-and-recovery-before-issue-or-resource-changes'),
             ('done', 'approved', {'issue_complete': False}, 'pm-confirm-issue-qa-project-and-roadmap-status'),
             ('reviewed', 'approved', {'pending_provider': True}, 'wait-for-current-head-review-completion'),
             ('reviewed', 'approved', {}, 'reconcile-acceptance-and-review-obligations'),
@@ -599,6 +599,88 @@ class NativePublicationTests(unittest.TestCase):
         legacy = {'phase': 'ci-wait', 'binding': bound, 'review': tal.report(), 'next': 'Ordinary UUID public action'}
         self.assertEqual(self.loop.public_state(legacy)['next'], legacy['next'])
 
+    def assert_post_merge_recovery_checkpoint(self, failure):
+        self.loop.github_reviewer = 'native-reviewer'
+        self.gh.pull.update(requested_reviewers=[], requested_teams=[], created_at='2026-10-11T04:00:00Z')
+        provider = {'id': 51, 'user': {'login': 'native-reviewer'}, 'state': 'APPROVED',
+                    'commit_id': tal.HEAD, 'submitted_at': '2026-10-11T04:46:46Z',
+                    'pull_request_url': f'https://api.github.com/repos/{tal.al.REPO}/pulls/36', 'body': 'Prior review'}
+        self.gh.pages = Mock(side_effect=lambda path: [copy.deepcopy(provider)] if '/reviews?' in path else [])
+        issued, bound = self.issued()
+        self.assertTrue(bound['remote_review_complete'])
+        self.loop.save(self.gh.pull, {'phase': 'merging', 'binding': bound, 'review': issued,
+                                   'expected_head': tal.HEAD}, None)
+        self.gh.merge(self.gh.pr(36))
+        save = self.loop.save
+        if failure == 'pending-request':
+            self.gh.pull['requested_reviewers'] = [{'login': 'native-reviewer'}]
+        elif failure == 'changed-feedback':
+            self.gh.pull['requested_reviewers'] = [{'login': 'native-reviewer'}]
+            self.assertFalse(self.loop.bound(self.gh.pr(36), self.gh.issue(35), self.gh.comments(36))[0]['remote_review_complete'])
+            self.gh.pull['requested_reviewers'] = []
+            provider.update(id=52, body='New feedback after provider completion', submitted_at='2026-10-11T04:50:00Z')
+        elif failure == 'late-guard':
+            def change_after_save(pr, state, sid):
+                result = save(pr, state, sid)
+                self.gh.comment(36, 'Feedback changed during handoff')
+                return result
+            self.loop.save = Mock(side_effect=change_after_save)
+        else:
+            self.loop.retained_history = Mock(side_effect=ValueError('Unrelated retained-history failure'))
+        fresh = self.loop.bound(self.gh.pr(36), self.gh.issue(35), self.gh.comments(36))[0]
+        self.assertEqual(fresh['remote_review_complete'], failure != 'pending-request')
+        if failure in ('pending-request', 'changed-feedback'): self.assertNotEqual(fresh, bound)
+        with patch.object(self.gh, 'api', wraps=self.gh.api) as mutation:
+            result = self.loop.tick(36)
+        self.assertEqual(result['phase'], 'cleanup')
+        mutation.assert_not_called(); self.loop.cleanup.assert_not_called(); self.worker.assert_not_called()
+        self.assertEqual(self.gh.issues[35]['state'], 'open')
+        self.assertEqual(self.gh.development_links, [])
+        self.loop.save = save
+        public = tal.al.unpack(self.gh.comments(36), tal.al.STATE)[0]
+        progress = [c['body'] for c in self.gh.comments(35) if c['body'].startswith('<!-- agent-loop-progress:')][-1]
+        restored = self.loop.load(36)[1]
+        self.assertEqual(restored['review'], issued)
+        self.assertEqual(restored['binding'], bound)
+        self.assertTrue(restored['binding']['remote_review_complete'])
+        self.assertEqual(restored['next'], result['error'])
+        diagnostic = self.loop.storage / 'diagnostics' / (restored['next'].split()[-1] + '.txt')
+        detail = diagnostic.read_text()
+        expected_detail = {'pending-request': 'after merge', 'changed-feedback': 'after merge',
+                           'late-guard': 'during handoff', 'unrelated': 'Unrelated retained-history failure'}[failure]
+        self.assertIn(expected_detail, detail)
+        originals = {p: p.read_bytes() for p in (self.loop.storage / 'registry').glob('*.json')}
+        originals[diagnostic] = diagnostic.read_bytes()
+        private = restore_review(self.loop.storage, public['review_ref'], {k: v for k, v in public.items() if k != 'review_ref'})
+        self.assertEqual(private['kind'], 'private-review-v1')
+        self.assertEqual(private['state'], {k: v for k, v in restored.items() if k != 'review_ref'})
+        self.loop.save(self.gh.pull, restored, self.loop.load(36)[2])
+        again = self.loop.load(36)[1]
+        self.assertEqual(again['review'], issued); self.assertEqual(again['binding'], bound)
+        self.assertEqual(again['next'], result['error'])
+        for path, original in originals.items(): self.assertEqual(path.read_bytes(), original)
+        with patch.object(tal.al.time, 'time', side_effect=AssertionError('projection read clock')), \
+                patch.object(self.loop, 'bound', side_effect=AssertionError('projection rechecked live policy')):
+            projected = self.loop.public_result(again)
+        self.assertNotIn(detail, json.dumps(public))
+        expected = 'verify-post-merge-review-and-recovery-before-issue-or-resource-changes'
+        self.assertEqual(public['next'], expected)
+        self.assertIn('Next: ' + expected, progress)
+        self.assertEqual(projected['next'], expected)
+        self.assertEqual(self.loop.public_result(public)['next'], expected)
+
+    def test_native_post_merge_pending_request_checks_review_before_cleanup(self):
+        self.assert_post_merge_recovery_checkpoint('pending-request')
+
+    def test_native_post_merge_completed_provider_changed_feedback_checks_recovery(self):
+        self.assert_post_merge_recovery_checkpoint('changed-feedback')
+
+    def test_native_post_merge_late_guard_checks_recovery_before_closure(self):
+        self.assert_post_merge_recovery_checkpoint('late-guard')
+
+    def test_native_post_merge_unrelated_failure_checks_diagnostic_without_inventing_pending(self):
+        self.assert_post_merge_recovery_checkpoint('unrelated')
+
     def test_native_next_outward_ci_merge_issue_cleanup_and_done_are_separate(self):
         import sys
         issued, bound = self.issued()
@@ -624,7 +706,7 @@ class NativePublicationTests(unittest.TestCase):
         with patch.object(self.loop, 'save', side_effect=capture):
             self.assertEqual(self.loop.tick(36)['phase'], 'done')
         self.assertIn(('merging', 'confirm-github-merge-result', False, 'open', 0), observed)
-        self.assertIn(('cleanup', 'reconcile-issue-disposition-then-verify-owned-resource-cleanup', True, 'open', 0), observed)
+        self.assertIn(('cleanup', 'verify-post-merge-review-and-recovery-before-issue-or-resource-changes', True, 'open', 0), observed)
         self.assertIn(('done', 'pm-confirm-issue-qa-project-and-roadmap-status', True, 'closed', 1), observed)
         self.assertEqual(self.loop.load(36)[1]['review'], issued)
         self.assertEqual(receipt.read_bytes(), original)
