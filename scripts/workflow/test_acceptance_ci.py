@@ -190,6 +190,9 @@ class MainContractEventTests(unittest.TestCase):
         self.run = {'id': 42, 'head_sha': HEAD, 'event': 'pull_request', 'status': 'completed',
                     'pull_requests': [{'number': 90}]}
         self.calls = []
+        self.fetch = self.enterContext(patch.object(ci.subprocess, 'run'))
+        self.git = self.enterContext(patch.object(ci, 'git_read', return_value=''))
+        self.certificates = self.enterContext(patch.object(ci, 'certificate_changes', return_value=[]))
 
     def api(self, path, method='GET', data=None):
         self.calls.append((path, method, data))
@@ -281,6 +284,23 @@ class MainContractEventTests(unittest.TestCase):
                 self.calls.clear()
                 self.assertEqual(ci.recheck_main_repairs(self.api, 'shinma06/android-replay-buffer'), [])
                 self.assertFalse(any(c[1] == 'POST' for c in self.calls))
+
+    def test_certificate_dependency_lookup_failure_preserves_pending_and_reports_error(self):
+        self.issue['body'] = 'Acceptance repair: none'
+        for lookup, failure in ((self.fetch, subprocess.CalledProcessError(128, ['git', 'fetch'])),
+                                (self.git, OSError('git unavailable')),
+                                (self.certificates, ValueError('malformed archive'))):
+            with self.subTest(lookup=lookup):
+                self.calls.clear()
+                lookup.side_effect = failure
+                with self.assertRaises(type(failure)) as raised:
+                    ci.recheck_main_repairs(self.api, 'shinma06/android-replay-buffer')
+                self.assertIs(raised.exception, failure)
+                writes = [c for c in self.calls if c[1] == 'POST']
+                self.assertEqual(writes[0][0], 'statuses/' + HEAD)
+                self.assertEqual(writes[0][2]['state'], 'pending')
+                self.assertEqual(writes[1][:2], ('actions/runs/42/rerun', 'POST'))
+                lookup.side_effect = None
 
     def test_all_open_pr_pages_are_checked(self):
         original = self.api

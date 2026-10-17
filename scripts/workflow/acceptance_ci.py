@@ -8,7 +8,7 @@ import subprocess
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 from pr_policy import validate
-from verification import verify_pr
+from verification import certificate_changes, git_read, verify_pr
 from agent_policy import CONTEXT
 
 
@@ -102,9 +102,17 @@ def recheck_main_repairs(api, repo, source_issue=None):
                     declaration = re.findall(r'^Acceptance repair: (.*)$', issue.get('body') or '', re.M)
                     if declaration == ['none'] or (not declaration and not any(
                             label.get('name') == 'type:bug' for label in issue.get('labels', []))):
-                        continue
+                        try:
+                            base, head = pr['base']['sha'], pr['head']['sha']
+                            subprocess.run(['git', 'fetch', '--no-tags', 'origin', base, head], check=True)
+                            files = git_read('diff', '--no-renames', '--name-only', base, head).splitlines()
+                            if not any(certificate_changes(base, head, files, git_read)):
+                                continue
+                        except (OSError, ValueError, subprocess.CalledProcessError) as error:
+                            error.add_note(f'PR {pr["number"]}: certificate dependency unknown; preserve pending review')
+                            errors.append(error)
                 api('statuses/' + pr['head']['sha'], 'POST', {'context': CONTEXT, 'state': 'pending',
-                    'description': 'Repair source or trusted main changed; recheck acceptance and independent assessment'})
+                    'description': 'Acceptance source or trusted main changed; recheck acceptance and independent assessment'})
                 pending.append(pr)
             except (OSError, IncompleteRead, json.JSONDecodeError, UnicodeDecodeError) as error:
                 error.add_note(f'PR {pr["number"]}: source lookup or review invalidation failed')

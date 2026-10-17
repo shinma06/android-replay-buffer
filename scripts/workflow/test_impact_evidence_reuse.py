@@ -1019,6 +1019,73 @@ class CertificateSyncTests(unittest.TestCase):
         self.assertEqual(self.git('show', 'HEAD:' + CERT_PATH), before)
         self.assertEqual(self.git('diff', '--name-only', self.base, 'HEAD', '--', COMPONENT), '')
 
+    def test_metadata_only_archive_sync_binds_main_and_rejects_later_certificate_change(self):
+        own_record = self.git('show', self.clean + ':' + self.path)
+        self.base = self.main
+        self.git('reset', '--hard', self.base)
+        self.git('checkout', '-q', 'trusted-main')
+        self.record['reason'] = 'Adopted metadata update with identical certificates'
+        self.write(CERT_PATH, json.dumps(self.record))
+        self.commit('main updates archive metadata only')
+        self.main = self.git('rev-parse', 'HEAD')
+        self.git('checkout', '-q', 'sync')
+        self.git('merge', '--no-ff', '--no-edit', self.main)
+        self.write(self.path, own_record)
+        self.commit('sync acceptance')
+        self.assertEqual(self.verify().get('certificate_sync_main'), self.main)
+        self.git('checkout', '-q', 'trusted-main')
+        self.record['evidence_certificates']['sample']['fixed'] = 'new adoption'
+        self.write(CERT_PATH, json.dumps(self.record))
+        self.commit('main changes certificate after successful sync check')
+        self.main = self.git('rev-parse', 'HEAD')
+        self.git('checkout', '-q', 'sync')
+        with self.assertRaisesRegex(ValueError, 'archive differs'):
+            self.verify()
+
+    def test_main_push_invalidates_previously_successful_sync_without_repair_declaration(self):
+        import acceptance_ci as ci
+        from unittest.mock import patch
+        adopted = self.main
+        self.assertEqual(self.verify()['certificate_sync_main'], adopted)
+        self.git('checkout', '-q', 'trusted-main')
+        self.record['evidence_certificates']['sample']['fixed'] = 'new adoption'
+        self.write(CERT_PATH, json.dumps(self.record))
+        self.commit('main changes certificate after successful sync check')
+        self.main = self.git('rev-parse', 'HEAD')
+        self.git('checkout', '-q', 'sync')
+        repo = {'full_name': 'shinma06/android-replay-buffer'}
+        pr = {'number': 288, 'title': 'chore: 証明を同期する (#287)', 'state': 'open',
+              'head': {'sha': self.clean, 'ref': 'codex/287-chore-sync-main', 'repo': repo},
+              'base': {'sha': self.base, 'ref': 'develop', 'repo': repo},
+              'body': 'Issue: #287\nIntegration: develop\nGUI: not-required\n'
+                      'GUI reason: Synthetic certificate sync\nVerification: ' + self.path}
+        calls = []
+        def api(path, method='GET', data=None):
+            calls.append((path, method, data))
+            if method == 'POST': return None
+            if path.startswith('pulls?'): return [pr]
+            if path.startswith('actions/workflows/'):
+                return {'workflow_runs': [{'id': 42, 'head_sha': self.clean, 'event': 'pull_request',
+                                          'status': 'completed', 'pull_requests': [{'number': 288}]}]}
+            return self.api(path)
+        run = subprocess.run
+        def fetched(args, **kwargs):
+            return subprocess.CompletedProcess(args, 0) if args[:2] == ['git', 'fetch'] else run(args, **kwargs)
+        with patch.object(ci.subprocess, 'run', side_effect=fetched), patch.object(ci, 'git_read', self.git):
+            self.assertEqual(ci.recheck_main_repairs(api, repo['full_name']), [288])
+        writes = [call for call in calls if call[1] == 'POST']
+        self.assertEqual(writes[0][0], 'statuses/' + self.clean)
+        self.assertEqual(writes[0][2]['state'], 'pending')
+        self.assertEqual(writes[1][:2], ('actions/runs/42/rerun', 'POST'))
+        # Already adopted base archives create no cross-branch dependency.
+        pr['base']['sha'] = adopted
+        calls.clear()
+        with patch.object(ci.subprocess, 'run', side_effect=fetched), patch.object(ci, 'git_read', self.git):
+            self.assertEqual(ci.recheck_main_repairs(api, repo['full_name']), [])
+        self.assertFalse(any(call[1] == 'POST' for call in calls))
+        with self.assertRaisesRegex(ValueError, 'archive differs'):
+            self.verify()
+
     def test_copy_without_main_merge_and_untrusted_merge_source_are_rejected(self):
         self.git('reset', '--hard', self.base)
         self.write(CERT_PATH, json.dumps(self.record))

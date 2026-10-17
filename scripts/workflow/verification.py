@@ -1517,16 +1517,9 @@ def certificate_sync_main(pr, path, files, api, git):
     return trusted
 
 
-def verify_pr(pr, api, git=git_read):
-    """api(path) uses the same repo; git sees fetched PR/candidate objects only as data."""
-    issue, path, mode = metadata(pr)
-    head, base = pr['head']['sha'], pr['base']['sha']
-    data = regular_json(head, path, git)
-    gui = field(pr['body'], 'GUI') == 'required'
-    validate_change(data, issue, gui)
-    files = git('diff', '--no-renames', '--name-only', base, head).splitlines()
+def certificate_changes(base, head, files, git):
+    """Include archive metadata/mode and reverted history, excluding exact base adoption."""
     pairs = [(base, head)]
-    sync_main = None
     for commit in git('rev-list', head, '--not', base).splitlines():
         for parent in git('rev-list', '--parents', '-n', '1', commit).split()[1:]:
             pairs.append((parent, commit))
@@ -1536,14 +1529,30 @@ def verify_pr(pr, api, git=git_read):
         for changed in changed_paths:
             if not re.fullmatch(r'docs/verification/changes/issue-[1-9][0-9]*\.json', changed):
                 continue
-            before = regular_json(before_ref, changed, git).get('evidence_certificates') if git('ls-tree', before_ref, '--', changed) else None
-            after = regular_json(after_ref, changed, git).get('evidence_certificates') if git('ls-tree', after_ref, '--', changed) else None
-            adopted = after and git('ls-tree', after_ref, '--', changed) == git('ls-tree', base, '--', changed)
-            if before != after and not adopted and (mode != 'tooling' or changed != path or not after):
-                if mode == 'develop' and not gui and sync_main is None:
-                    sync_main = certificate_sync_main(pr, path, files, api, git)
-                if not sync_main:
-                    raise ValueError('Changed certificates require their dedicated current-Issue main tooling registration')
+            before_blob, after_blob = (git('ls-tree', ref, '--', changed) for ref in (before_ref, after_ref))
+            before = regular_json(before_ref, changed, git) if before_blob else {}
+            after = regular_json(after_ref, changed, git) if after_blob else {}
+            if (before_blob != after_blob and
+                    ('evidence_certificates' in before or 'evidence_certificates' in after) and
+                    after_blob != git('ls-tree', base, '--', changed)):
+                yield changed, after.get('evidence_certificates')
+
+
+def verify_pr(pr, api, git=git_read):
+    """api(path) uses the same repo; git sees fetched PR/candidate objects only as data."""
+    issue, path, mode = metadata(pr)
+    head, base = pr['head']['sha'], pr['base']['sha']
+    data = regular_json(head, path, git)
+    gui = field(pr['body'], 'GUI') == 'required'
+    validate_change(data, issue, gui)
+    files = git('diff', '--no-renames', '--name-only', base, head).splitlines()
+    sync_main = None
+    for changed, after in certificate_changes(base, head, files, git):
+        if mode != 'tooling' or changed != path or not after:
+            if mode == 'develop' and not gui and sync_main is None:
+                sync_main = certificate_sync_main(pr, path, files, api, git)
+            if not sync_main:
+                raise ValueError('Changed certificates require their dedicated current-Issue main tooling registration')
     if 'evidence_certificates' in data and mode != 'tooling':
         raise ValueError('Evidence certificate registration requires its independent main tooling route')
     if mode == 'develop':
