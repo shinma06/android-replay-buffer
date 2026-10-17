@@ -1,0 +1,17 @@
+{
+  "schema": 1,
+  "issue": 305,
+  "gui_required": false,
+  "reason": "CLI内包へ向けたCI必須contextの段階移行。Python原型の実3.9製品検査・非対応構文拒否・復旧を共通test内へ追加し、旧実検査jobを保持してcoordinator/CDの共有集合とrulesetテンプレート・文書を整合する。製品source・build設定・保存内容・元Case/FAIL/人間とREAL延期を変更しない。実server保護はbranchごとの置換成功後にPM指定統合担当が扱い、本source変更では操作しないためGUI・ADB・録画・IDE受入は不要。",
+  "cli_checks": [
+    "Python 3.9: python3 scripts/workflow/product_check.py",
+    "Python 3.9: python3 -m unittest discover -s scripts/workflow -p test_product_check.py -v",
+    "python3 -m unittest discover -s scripts/workflow -p test_pr_feedback.py -v",
+    "python3 -m unittest discover -s scripts/workflow -p test_adoption.py -v",
+    "python3 -m unittest discover -s scripts/workflow -p test_release_delivery.py -v",
+    "python3 scripts/check.py",
+    "python3 scripts/workflow/change_impact.py --base origin/main --run-tests",
+    "実CI: 共通testと旧CLI Python 3.9の両方で実runtime検査・拒否・復旧成功、固定base/候補のsetupと検査時間を比較"
+  ],
+  "cases": []
+}

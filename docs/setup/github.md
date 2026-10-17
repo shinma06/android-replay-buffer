@@ -15,7 +15,7 @@
 
 ## 保護
 
-[main](../../.github/main-ruleset.json)・[develop](../../.github/develop-ruleset.json)はPR必須、strict base、5 checks、会話解決、削除/force禁止、bypassなしです。mainはsquash/merge、developはsquash。GitHub approval数0は同一アカウント運用のためであり、別セッションレビューはAgent reviewで要求します。
+[main](../../.github/main-ruleset.json)・[develop](../../.github/develop-ruleset.json)の移行先テンプレートはPR必須、strict base、共通4 checks（test、PR policy、Acceptance gate、Agent review）、会話解決、削除/force禁止、bypassなしです。実serverの旧CLI contextは下の段階移行まで維持します。mainはsquash/merge、developはsquash。GitHub approval数0は同一アカウント運用のためであり、別セッションレビューはAgent reviewで要求します。
 
 同名rulesetを調べてから作成/更新し、重複作成しません。APIの成功だけでなく`rulesets`と`rules/branches/main`・`develop`をGETします。権限・プラン・未実行checkを「保護済み」と扱いません。
 
@@ -31,6 +31,14 @@ Repositoryの `delete_branch_on_merge` を有効にし、通常のPR merge後は
 
 残るlocal branch/worktreeは[終了手順](../workflow.md#自動進行と終了)に従い、所有・停止・clean・PRの最終HEAD・現在のremote/local SHA・worktree利用を照合して整理します。squash後の祖先判定や `[gone]` だけでは削除しません。再利用された枝、未統合成果、未解放claim、GUI使用中、私的証拠は保持します。証拠を保持する停止済みclean worktreeは同じSHAのdetached HEADへ移し、ファイルを残したまま枝だけ整理できます。保持理由・owner・再開条件をIssueに残し、実pathはprivateに置きます。既存coordinatorのcleanup/branch auditを利用できる条件では再利用し、別の常駐削除jobは追加しません。
 
-## Python 3.9必須checkの段階導入
+## Runtime検査の共通testへの段階移行
 
-ruleset JSONとcoordinatorはCLI Python 3.9を含む5 checksを要求する。定義変更だけでserver適用済みとはしない。PMは現serverの全既存要件を保全し、対象branchへ追加jobを提供できる固定PRを確認してから当該contextを追加・GET readbackする。mainのハーネス修正候補ではjobが存在するためmain側を先に導入できる。現develop/既存製品branchにjobがない間はdevelopへ先行適用しない。現trusted policyによる既存製品PRの検査・レビューは継続し、その後の通常main→develop同期PRへjobを含めてからdevelopを強化する。直接push/force/bypassや既存checkの削除で移行を解決しない。新coordinatorは追加check/protectionがない対象ではpending又は拒否し、旧policyでの統合を新5 checks成功と報告しない。
+Python原型を配布する間、必須`test`で実Python 3.9の製品検査と非対応構文拒否・復旧回帰を実行します。旧`CLI Python 3.9` jobも実検査を維持します。coordinatorとCDは共通4 checksを要求し、移行中の追加server要件も通常の保護付きmergeで満たします。テンプレート変更をserver適用済みとみなしません。
+
+1. #305の固定PRを独立レビューし、新旧両方の実検査成功を確認して現保護のままmainへ統合する。
+2. PM指定の統合担当が**main自身の**置換後workflowと固定main commitの実`test`成功を確認する。main rulesetと実効rulesをGETしてprivateに保全し、現設定の旧`CLI Python 3.9` contextだけを除いた候補を独立確認する。差分は当該contextの除去だけとし、テンプレート全体を現設定へ上書きしない。
+3. mainだけに候補を適用し、rulesetと実効rulesをGET readbackする。strict、PR、会話解決、他checks、許可merge方式、push/delete、bypass actor・対象branch等の他設定が保存されていることを照合する。
+4. 既存#301の通常main→develop同期に置換workflowを含める。**develop自身に置換後workflowが入り、その固定develop commitの実`test`が成功してから**、developの現設定を別途保全し、同じ限定変更・独立確認・readbackを行う。mainの成功をdevelopの証拠にしない。待機中はdevelopの旧contextとjobを保持する。
+5. branchごとの結果と固定commit/run・before/afterを#305へ記録する。#103の実内包・互換/明示移行・回復と原型退役を確認したbranchでのみ旧job/重複stepを削除する。Python原型を配布するmainの必要検査は残す。
+
+失敗・欠落・未確定なら対象branchの移行を止め、旧実検査を保持します。切り戻しは置換stepを外す**前に**旧jobが対象branchで実行できることを確認し、保全した旧context（app指定を含む）だけを現rulesetへ戻してGET照合します。無関係な後続設定を古い全量backupで上書きしません。その後、所有branchの通常revert PRでworkflow/consumerを戻し、正常・拒否・復旧を再確認します。source writerは実rulesetを変更せず、適用/復旧はPM指定統合担当が扱います。直接push、force、bypass、偽successは使いません。

@@ -10,10 +10,14 @@ gh workflow run ci.yml --repo shinma06/android-replay-buffer --ref codex/281-ci-
 
 ## 保持する境界
 
-- 必須checkは `test` / `CLI Python 3.9` / `PR policy` / `Acceptance gate` / `Agent review`。CI成功は独立レビューやGUI受入の代わりになりません。
+- 共通の必須checkは `test` / `PR policy` / `Acceptance gate` / `Agent review`。移行中の実server保護には旧`CLI Python 3.9`も残り、[branchごとの置換確認](github.md#runtime検査の共通testへの段階移行)が済むまで外しません。CI成功は独立レビューやGUI受入の代わりになりません。
 - 取消しは同じPR番号又は同じrefのCIだけに適用。新規commit後は最新HEADの結果を読み、旧成功・取消し・未完了を採用しません。
 - PRの実行はread-only token、checkoutのcredential保存なし。trusted acceptance/policyと製品検査の信頼境界を保持します。
 - 製品buildが必要なら既存commandで生成し、`plugin/build/distributions/*.zip` を `plugin-${{ github.sha }}` として保存。保存元run/event/head、実checkout SHAと内容を照合し、別headのZIPへ名前を付け替えません。CDは同一の検証済みartifactを使い、PRで生成したZIPを公開へ自動昇格しません。
+
+Python原型を配布するbranchでは、`test`の先頭でPython 3.9を選び、`product_check.py`と`test_product_check.py`の正常・非対応構文拒否・復旧を実行してから管理Pythonへ戻します。旧jobも同じ実検査を続けるため、移行中はsetupとCLI検査が重複します。#305 ownerが固定base/候補のjob・step時刻と追加コストを記録し、速度改善とは扱いません。イベント、runner、cache、既存classifier・Plugin build・artifact条件は保持します。
+
+旧job/重複stepは、#103 ownerがそのbranchで実CLI内包・互換/明示移行・回復と原型退役を確認した時に除去します。mainがPython原型を配布し続ける間の必要な3.9検査は残します。保護の移行だけを原型退役とみなさず、未実行の検査を旧名のsuccessで代用しません。
 
 ## 測定と再評価
 

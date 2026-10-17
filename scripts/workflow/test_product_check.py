@@ -13,8 +13,8 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class ProductCheckTests(unittest.TestCase):
-    @unittest.skipUnless(sys.version_info[:2] == (3, 9), 'Run in the CLI Python 3.9 job')
-    def test_unimported_module_with_python310_syntax_fails_python39_check(self):
+    @unittest.skipUnless(sys.version_info[:2] == (3, 9), 'Run on the declared Python 3.9 runtime')
+    def test_unsupported_syntax_is_rejected_and_valid_cli_recovers_on_python39(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             for name in ('replay_buffer', 'tests'):
@@ -35,11 +35,13 @@ class ProductCheckTests(unittest.TestCase):
             self.assertEqual(valid.returncode, 0, valid.stderr)
             self.assertIn('Ran 2 tests', valid.stderr)
             target = root / 'replay_buffer/save.py'
+            original = target.read_bytes()
             target.write_text(target.read_text() + '\nmatch None:\n    case _:\n        pass\n')
             if origin.is_file():
                 # Keep fixture identity valid so unsupported syntax reaches compile.
                 manifest_path = root / 'docs/cli-origin/manifest.json'
-                manifest = json.loads(manifest_path.read_text())
+                manifest_bytes = manifest_path.read_bytes()
+                manifest = json.loads(manifest_bytes)
                 manifest['files']['replay_buffer/save.py']['sha256'] = hashlib.sha256(target.read_bytes()).hexdigest()
                 manifest_path.write_text(json.dumps(manifest))
             invalid = subprocess.run([sys.executable, str(checker)], cwd=root, env=env,
@@ -47,6 +49,13 @@ class ProductCheckTests(unittest.TestCase):
             self.assertNotEqual(invalid.returncode, 0)
             self.assertIn('SyntaxError', invalid.stderr)
             self.assertIn('save.py', invalid.stderr)
+            target.write_bytes(original)
+            if origin.is_file():
+                manifest_path.write_bytes(manifest_bytes)
+            recovered = subprocess.run([sys.executable, str(checker)], cwd=root, env=env,
+                                       text=True, capture_output=True, timeout=30)
+            self.assertEqual(recovered.returncode, 0, recovered.stderr)
+            self.assertIn('Ran 2 tests', recovered.stderr)
 
 
 if __name__ == '__main__':

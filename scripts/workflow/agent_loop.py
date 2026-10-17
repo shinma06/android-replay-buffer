@@ -37,7 +37,7 @@ HANDOFF = '<!-- agent-loop-handoff:v1 -->'
 HANDOFF_V2 = '<!-- agent-loop-handoff:v2 -->'
 STATE = '<!-- agent-loop-state:v1 -->'
 HOST = socket.gethostname()
-CI_CHECKS = ('test', 'PR policy', 'Acceptance gate', 'CLI Python 3.9')
+CI_CHECKS = ('test', 'PR policy', 'Acceptance gate')
 PRIVATE_REVIEW_FORMAT = 'private-review-v1'
 PUBLIC_REVIEW_KEYS = set(REPORT_SCHEMA['properties']) | {
     'session', 'origin_receipt', 'repair_evidence_sha256', 'certificate_evidence_sha256', 'feedback_hash',
