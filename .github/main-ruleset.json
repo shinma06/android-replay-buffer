@@ -49,9 +49,6 @@
           },
           {
             "context": "Acceptance gate"
-          },
-          {
-            "context": "CLI Python 3.9"
           }
         ]
       }

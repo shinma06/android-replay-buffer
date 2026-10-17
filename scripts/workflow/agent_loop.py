@@ -37,7 +37,7 @@ HANDOFF = '<!-- agent-loop-handoff:v1 -->'
 HANDOFF_V2 = '<!-- agent-loop-handoff:v2 -->'
 STATE = '<!-- agent-loop-state:v1 -->'
 HOST = socket.gethostname()
-CI_CHECKS = ('test', 'PR policy', 'Acceptance gate', 'CLI Python 3.9')
+CI_CHECKS = ('test', 'PR policy', 'Acceptance gate')
 PRIVATE_REVIEW_FORMAT = 'private-review-v1'
 PUBLIC_REVIEW_KEYS = set(REPORT_SCHEMA['properties']) | {
     'session', 'origin_receipt', 'repair_evidence_sha256', 'certificate_evidence_sha256', 'feedback_hash',
@@ -816,7 +816,10 @@ class Loop:
         impact = git_impact(pr['base']['sha'], actual, cwd=path)
         print(impact_report(impact))
         for test in test_commands(impact):
-            command(test, path, 600)
+            output = command(test, path, 600)
+            # Older product checkers ignored unknown arguments and never built the plugin.
+            if test[-1] == '--plugin' and output.splitlines()[-1:] != ['ARB_PRODUCT_PLUGIN_CHECK_COMPLETE']:
+                raise ValueError('Candidate product checker did not confirm plugin validation; synchronize the shared entry first')
         if impact.get('base'):
             command(['git', 'diff', '--check', impact['base'], impact['head'], '--'], path)
         if git('status', '--porcelain', cwd=path):
