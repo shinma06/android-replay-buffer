@@ -1466,7 +1466,7 @@ def promotion_metadata_history(base, candidate, head, allowed, carried, git):
 
 def certificate_sync_main(pr, path, files, api, git):
     """Retain adopted archives through actual main merges, never candidate registration."""
-    from change_impact import path_impacts, TOOLING, KNOWLEDGE, METADATA
+    from change_impact import path_impacts, BUILD, TOOLING, KNOWLEDGE, METADATA
     base, head = pr['base']['sha'], pr['head']['sha']
     chain = git('rev-list', '--first-parent', f'{base}..{head}').splitlines()
     edges, previous = [], base
@@ -1493,7 +1493,10 @@ def certificate_sync_main(pr, path, files, api, git):
                 continue
             before, after = (git('ls-tree', ref, '--', changed) for ref in (parents[0], commit))
             modes = tuple(entry.split()[0] if entry else '000000' for entry in (before, after))
-            if (not source or path_impacts(changed, modes) - {TOOLING, KNOWLEDGE, METADATA} or
+            allowed = {TOOLING, KNOWLEDGE, METADATA}
+            if changed == '.github/workflows/ci.yml' and all(mode in ('000000', '100644') for mode in modes):
+                allowed.add(BUILD)  # Trusted CI policy still requires the classifier's product checks.
+            if (not source or path_impacts(changed, modes) - allowed or
                     after != git('ls-tree', source, '--', changed)):
                 raise ValueError('Certificate sync requires exact main blobs and only its own acceptance edits')
     # All non-first-parent history must already belong to the fixed trusted main.

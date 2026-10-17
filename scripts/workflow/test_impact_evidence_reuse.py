@@ -1085,6 +1085,21 @@ class CertificateSyncTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.verify()
 
+    def test_adopted_ci_policy_sync_does_not_allow_product_build_changes(self):
+        for path in ('.github/workflows/ci.yml', 'pyproject.toml'):
+            with self.subTest(path=path):
+                self.git('checkout', '-q', 'trusted-main')
+                self.write(path, 'trusted main change')
+                self.commit('main adopts policy or build change')
+                self.main = self.git('rev-parse', 'HEAD')
+                self.git('checkout', '-q', 'sync')
+                self.git('merge', '--no-ff', '--no-edit', self.main)
+                if path.endswith('.yml'):
+                    self.assertEqual(self.verify()['certificate_sync_main'], self.main)
+                else:
+                    with self.assertRaises(ValueError):
+                        self.verify()
+
     def test_main_advance_preserves_only_unchanged_archives_and_accepts_another_real_sync(self):
         self.git('checkout', '-q', 'trusted-main')
         self.write('docs/new-policy.md', 'adopted unrelated policy')
