@@ -125,7 +125,7 @@ internal class DeviceCapture(
             allocated
         }
         // All shell tokens are fixed or generated hex; no user-supplied shell text is interpolated.
-        val server = adb.start("-s", serial, "shell", "CLASSPATH=$serverFile app_process / --nice-name=$serverName com.genymobile.scrcpy.Server 4.0 " +
+        val server = adb.start("-s", serial, "shell", "CLASSPATH=$serverFile app_process / --nice-name=$serverName com.genymobile.scrcpy.Server 5.0.1 " +
             "scid=$scid tunnel_forward=true audio=false control=false video_codec=h264 send_device_meta=false " +
             "send_frame_meta=true send_stream_meta=true max_size=1920 max_fps=30 video_bit_rate=8000000 " +
             "video_codec_options=max-bframes:int=0,i-frame-interval:int=1")

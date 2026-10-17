@@ -16,7 +16,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       # No checkout and no PR code execution. Event text is parsed as data.
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7.0.0
         with:
           python-version: '3.15.0'
       - name: Validate Issue and GUI metadata

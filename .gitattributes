@@ -1,2 +1,4 @@
 plugin/gradlew text eol=lf
 plugin/gradlew.bat text eol=crlf
+tests/fixtures/replay-marker/gradlew text eol=lf
+tests/fixtures/replay-marker/gradlew.bat text eol=crlf

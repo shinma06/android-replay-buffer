@@ -80,7 +80,7 @@ class ReplaySettingsStoreTest {
     }
 
     @Test
-    fun `invalid Apply is atomic and persisted state is detached`() {
+    fun `invalid Apply is atomic and persisted state is an immutable snapshot`() {
         val store = ReplaySettingsStore()
         val valid = ReplaySettings(destination = directory)
         store.apply(valid)
@@ -90,8 +90,11 @@ class ReplaySettingsStoreTest {
         }
         assertEquals(valid, store.settings())
         val saved = store.getState()
-        saved.enabled = false
-        saved.retentionSeconds = 5
+        store.setEnabled(false)
+        store.apply(valid.copy(retentionSeconds = 5))
+        assertTrue(saved.enabled)
+        assertEquals(180, saved.retentionSeconds)
+        store.loadState(saved)
         assertTrue(store.enabled)
         assertEquals(180, store.settings().retentionSeconds)
         val restored = ReplaySettingsStore()
@@ -100,11 +103,49 @@ class ReplaySettingsStoreTest {
         assertEquals(valid, restored.settings())
         val oldXml = XmlSerializer.deserialize(Element("state"), ReplaySettingsState::class.java)
         assertEquals(180, oldXml.retentionSeconds)
-        oldXml.retentionSeconds = -10
-        restored.loadState(oldXml)
-        oldXml.retentionSeconds = 10
+        restored.loadState(oldXml.copy(retentionSeconds = -10))
         assertFalse(restored.enabled)
         assertEquals(180, restored.settings().retentionSeconds)
+    }
+
+    @Test
+    fun `legacy XML fields load without migration and changes advance the IDE modification tracker`() {
+        val xml = Element("state").apply {
+            for ((name, value) in mapOf("enabled" to "true", "retentionSeconds" to "60",
+                "destination" to directory, "appSelection" to "手動", "manualPackage" to "com.example.app")) {
+                addContent(Element("option").setAttribute("name", name).setAttribute("value", value))
+            }
+        }
+        val store = ReplaySettingsStore()
+        store.loadState(XmlSerializer.deserialize(xml, ReplaySettingsState::class.java))
+        val expected = ReplaySettings(60, directory, AppSelectionMode.MANUAL, "com.example.app")
+        assertEquals(expected, store.settings())
+        assertTrue(store.enabled)
+        val before = store.stateModificationCount
+        store.setEnabled(false)
+        assertTrue(store.stateModificationCount > before)
+        assertEquals(expected, store.settings())
+        val restored = ReplaySettingsStore()
+        restored.loadState(XmlSerializer.deserialize(XmlSerializer.serialize(store.state), ReplaySettingsState::class.java))
+        assertEquals(store.state, restored.state)
+    }
+
+    @Test
+    fun `concurrent toggle and settings Apply preserve both updates`() {
+        val store = ReplaySettingsStore()
+        java.util.concurrent.Executors.newFixedThreadPool(2).use { executor ->
+            repeat(100) { index ->
+                store.setEnabled(false)
+                val start = java.util.concurrent.CyclicBarrier(2)
+                val settings = ReplaySettings(retentionSeconds = index + 1)
+                val toggle = executor.submit { start.await(); store.setEnabled(true) }
+                val apply = executor.submit { start.await(); store.apply(settings) }
+                toggle.get(5, java.util.concurrent.TimeUnit.SECONDS)
+                apply.get(5, java.util.concurrent.TimeUnit.SECONDS)
+                assertTrue(store.enabled)
+                assertEquals(settings, store.settings())
+            }
+        }
     }
 
     @Test

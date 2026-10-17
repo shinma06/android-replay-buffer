@@ -1,7 +1,10 @@
 package io.github.shinma06.replaybuffer.settings
 
+import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.ModalityState
+import com.intellij.openapi.application.UI
+import com.intellij.openapi.application.asContextElement
 import com.intellij.openapi.fileChooser.FileChooserDescriptorFactory
 import com.intellij.openapi.options.Configurable
 import com.intellij.openapi.options.ConfigurationException
@@ -12,9 +15,14 @@ import com.intellij.ui.DocumentAdapter
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBTextArea
 import com.intellij.ui.components.JBTextField
-import com.intellij.util.Alarm
 import com.intellij.util.ui.FormBuilder
 import io.github.shinma06.replaybuffer.ide.ReplayProjectService
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.awt.Dimension
 import javax.swing.JComboBox
 import javax.swing.JComponent
@@ -30,7 +38,8 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable {
     private var mode: JComboBox<AppSelectionMode>? = null
     private var manualPackage: JBTextField? = null
     private var destinationStatus: JBLabel? = null
-    private var validationAlarm: Alarm? = null
+    private var uiLifetime: Disposable? = null
+    private var validationJob: Job? = null
     private var destinationValidation: DestinationValidation? = null
     private var destinationRevision = 0L
     private var replayService: ReplayProjectService? = null
@@ -39,13 +48,15 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable {
     override fun getDisplayName(): String = "Android Replay Buffer"
 
     override fun createComponent(): JComponent {
-        validationAlarm = Alarm(Alarm.ThreadToUse.POOLED_THREAD, project)
         replayService = project.getService(ReplayProjectService::class.java)
         applicationStatus = JBLabel().apply { accessibleContext.accessibleName = "対象アプリの解決結果" }
-        val lifetime = validationAlarm!!
+        val lifetime = Disposer.newDisposable("Replay Buffer settings UI")
+        uiLifetime = lifetime
+        Disposer.register(replayService ?: project, lifetime)
+        Disposer.register(lifetime) { validationJob?.cancel() }
         project.messageBus.connect(lifetime).subscribe(ReplayProjectService.ENVIRONMENT_CHANGED, Runnable {
             ApplicationManager.getApplication().invokeLater({
-                if (validationAlarm === lifetime && !project.isDisposed) renderApplication()
+                if (uiLifetime === lifetime && !project.isDisposed) renderApplication()
             }, ModalityState.any())
         })
         destinationStatus = JBLabel().apply { accessibleContext.accessibleName = "保存先の確認結果" }
@@ -115,10 +126,11 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable {
 
     private fun checkDestination() {
         val field = destination ?: return
-        val alarm = validationAlarm ?: return
+        val lifetime = uiLifetime ?: return
         val value = field.text
         val revision = ++destinationRevision
-        alarm.cancelAllRequests()
+        validationJob?.cancel()
+        validationJob = null
         destinationValidation = null
         destinationStatus?.text = if (value.isEmpty()) {
             "保存先が未指定でも取得できます。保存する前にフォルダを指定してください。"
@@ -129,14 +141,12 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable {
             destinationValidation = validateDestination(value)
             return
         }
-        alarm.addRequest({
-            val result = validateDestination(value)
-            ApplicationManager.getApplication().invokeLater({
-                if (validationAlarm !== alarm || project.isDisposed || revision != destinationRevision) return@invokeLater
+        validationJob = replayService?.scope?.checkDestination(value) { result ->
+            if (uiLifetime === lifetime && !project.isDisposed && revision == destinationRevision) {
                 destinationValidation = result
                 destinationStatus?.text = result.error ?: " "
-            }, ModalityState.any())
-        }, 150)
+            }
+        }
     }
 
     private fun draft(): ReplaySettings = ReplaySettings(
@@ -171,8 +181,9 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable {
     }
 
     override fun disposeUIResources() {
-        validationAlarm?.let { Disposer.dispose(it) }
-        validationAlarm = null
+        uiLifetime?.let { Disposer.dispose(it) }
+        uiLifetime = null
+        validationJob = null
         destinationValidation = null
         destinationStatus = null
         applicationStatus = null
@@ -187,3 +198,11 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable {
 
     private fun store(): ReplaySettingsStore = project.getService(ReplaySettingsStore::class.java)
 }
+
+/** The injected service scope owns the job; each form cancels its own pending check. */
+internal fun CoroutineScope.checkDestination(value: String, publish: (DestinationValidation) -> Unit): Job =
+    launch(Dispatchers.UI + ModalityState.current().asContextElement()) {
+        delay(150)
+        val result = withContext(Dispatchers.IO) { validateDestination(value) }
+        publish(result)
+    }

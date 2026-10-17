@@ -26,8 +26,7 @@ internal fun prepareCleanupDirectory(configDirectory: Path, projectBasePath: Str
     require(configAttributes.owner() == owner && configAttributes.permissions().none {
         it == PosixFilePermission.GROUP_WRITE || it == PosixFilePermission.OTHERS_WRITE
     }) { "IDE設定領域の所有者とアクセス権を確認してください。" }
-    val projectId = MessageDigest.getInstance("SHA-256").digest(project.toString().toByteArray(Charsets.UTF_8))
-        .joinToString("") { "%02x".format(it) }
+    val projectId = java.util.HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(project.toString().toByteArray(Charsets.UTF_8)))
     val permissions = PosixFilePermissions.fromString("rwx------")
     var directory = config
     for (name in listOf("android-replay-buffer", "cleanup", projectId)) {

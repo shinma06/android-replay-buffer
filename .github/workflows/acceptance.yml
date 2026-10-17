@@ -25,12 +25,12 @@ jobs:
     timeout-minutes: 10
     steps:
       # Only reviewed base code runs. PR JSON is read with git show as data.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.1
         with:
           ref: refs/heads/${{ github.event.pull_request.base.ref || 'main' }}
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7.0.0
         with:
           python-version: '3.15.0'
       - name: Check acceptance using the trusted base
