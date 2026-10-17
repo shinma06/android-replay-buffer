@@ -2,7 +2,7 @@
   "schema": 1,
   "issue": 301,
   "gui_required": false,
-  "reason": "採用済みmain b5db6ebの同期保証・受入規約と既存配布toolingをdevelopへ通常mergeする。製品source、JDK27/更新済みCI、CLI原型、既存Case原本と観察/FAIL/延期は保持し、新Caseやnative観察を追加しない。GUI・固定83f候補の再buildは不要で、規約共有を実機PASSにしない。",
+  "reason": "main採用済みの同期保証・配布tooling修正とruntime検査移行を通常mergeする。製品source/build/CLI原型・既存Case/観察を保持し、新GUI/ADB/録画や固定83f候補の再受入を要しない。必須classifierが求める製品検査は通常hookで行う。",
   "cli_checks": [
     "python3 scripts/check.py",
     "python3 scripts/workflow/product_check.py",
