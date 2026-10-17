@@ -118,10 +118,9 @@ def git_impact(base=None, head='HEAD', *, cwd=None, merge_base=True, force_full=
 
 def test_commands(result):
     commands = [[sys.executable, 'scripts/check.py']]
-    if result['product_check']:
-        commands.append([sys.executable, 'scripts/workflow/product_check.py'])
-    if result['plugin_check']:
-        commands.append([sys.executable, 'scripts/workflow/plugin_check.py'])
+    if result['product_check'] or result['plugin_check']:
+        commands.append([sys.executable, 'scripts/workflow/product_check.py'] +
+                        (['--plugin'] if result['plugin_check'] else []))
     return commands
 
 
