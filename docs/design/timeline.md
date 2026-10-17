@@ -27,12 +27,14 @@ serverは`audio=false control=false video_codec=h264 send_frame_meta=true send_s
 | 記録する値 | 元の時計・意味 |
 | --- | --- |
 | `video_pts_us` | serverが`MediaCodec.BufferInfo.presentationTimeUs`を加工せず送る値。config packetには時刻を割り当てない。[固定Streamer](https://github.com/Genymobile/scrcpy/blob/2322868e9e256eb5fce0b3d659ab2a409f29bae1/server/src/main/java/com/genymobile/scrcpy/device/Streamer.java)、[Android API](https://developer.android.com/reference/android/media/MediaCodec.BufferInfo) |
-| `device_mono_ns` | 時計DEXの`System.nanoTime()`。Androidではdeep sleep中に止まる時計。映像PTSはこの系との対応を対象端末で校正する。[Android時計の区別](https://developer.android.com/reference/android/os/SystemClock) |
+| `device_mono_ns` | 時計DEXの`System.nanoTime()`。Androidではdeep sleep中に止まる時計。映像PTSをこの系として扱う変換モデルの根拠・対象runtimeへの適用限界を記録する。画像取得/物理表示との独立校正済み保証ではない。[Android時計の区別](https://developer.android.com/reference/android/os/SystemClock) |
 | `device_elapsed_ns` | `SystemClock.elapsedRealtimeNanos()`。端末起動からの経過時間、deep sleepを含む。**同一boot内の共通実時間軸**とする。同じUSB切断/再接続でリセットしない。[Android API](https://developer.android.com/reference/android/os/SystemClock#elapsedRealtimeNanos()) |
 | `device_epoch_ns` | binary logcat headerの`sec/nsec`。Epoch日時であり、手動/NTP補正で飛び得る。[AOSP Android 16固定header](https://android.googlesource.com/platform/system/logging/+/refs/tags/android-16.0.0_r1/liblog/include/log/log_read.h) |
 | `host_receive_ns` / clock requestのsend/receive | hostの`System.nanoTime()`。端末への輸送・queue遅延を含むため動画/ログの発生時刻に代用しない。host日時`Instant`も診断・保存名用に別記録する |
 
-AOSPのSurface自動timestampはMONOTONICを使うが、全端末のcodec出力が同じ精度・遅延であることの保証ではない。[固定Surface source](https://android.googlesource.com/platform/frameworks/native/+/refs/tags/android-16.0.0_r1/libs/gui/Surface.cpp)。**[要検証] PTSと端末monoの対応は各受入端末で確認する。** `logcat -v monotonic`にも依存しない。AOSPは元のEpochログから変換し、dmesgの同期markerが不足する古いログを疑わしいとしている。[固定logprint source](https://android.googlesource.com/platform/system/logging/+/refs/tags/android-16.0.0_r1/liblog/logprint.cpp)
+AOSPのSurface自動timestampはMONOTONICを使うが、全端末のcodec出力が同じ原点・精度・遅延であることの保証ではない。[固定Surface source](https://android.googlesource.com/platform/frameworks/native/+/refs/tags/android-16.0.0_r1/libs/gui/Surface.cpp)。MediaCodecの出力PTSは入力時刻に由来するが、Surface producer共通の時刻原点や画像取得/物理表示との数値誤差はAPIで規定されない。[固定MediaCodec契約](https://android.googlesource.com/platform/frameworks/base/+/94b4c163b7dfe5ce3607f7bb8456f9573f7de57d/media/java/android/media/MediaCodec.java)、[producer依存の時刻](https://android.googlesource.com/platform/frameworks/base/+/94b4c163b7dfe5ce3607f7bb8456f9573f7de57d/graphics/java/android/graphics/SurfaceTexture.java)。採用する時計モデルと根拠・実runtimeの未確認を記録し、正しい変換計算と独立した画像時刻校正を区別する。`logcat -v monotonic`にも依存しない。AOSPは元のEpochログから変換し、dmesgの同期markerが不足する古いログを疑わしいとしている。[固定logprint source](https://android.googlesource.com/platform/system/logging/+/refs/tags/android-16.0.0_r1/liblog/logprint.cpp)
+
+REQUEST、DRAW、commit callback、mirror取得、encoder出力、物理表示は別の時点である。本製品の取得streamのmetadataには元bufferの新規取得/反復を区別する情報がなく、固定AOSP実装にはrate上限で見送った画像を進めた反復timestampで初めて出力する経路もある。[固定GraphicBufferSource](https://android.googlesource.com/platform/frameworks/av/+/475269ec44acec82792be6b01fb8e16357d4d2c8/media/module/bqhelper/flagged_files/GraphicBufferSource.inc)。これは個別の旧計測の原因を確定するものではない。保存情報の時計対応はモデルと有効sampleに基づくもので、Android内部の画像遅延を含む総合精度ではない。未確認の時刻原点を確認済みと主張せず、具体的に不正な変換や虚偽の対応表示が確認された場合は影響する受入を止める。
 
 ### 時計測定と変換
 
@@ -116,9 +118,11 @@ clock scopesと復旧/両側anchorは同期確度の説明に使い、source隣�
 
 ## 許容精度と受取人の確認
 
-初期版の**受入目標**は、ログに記した描画eventと映像に現れる同じIDの対応誤差が通常時 **p95 ≤ 100ms、最大 ≤ 250ms**。30分継続で前半/後半の誤差中央値差 **≤ 50ms**。端末内clock変換の見積誤差 **≤ 20ms**、mux/indexの丸め誤差 **≤ 1ms**、cut境界は1観測frame間隔＋時計誤差以内。これらはITの場面とログを照合するための設計上の基準で、ベンチマーク結果や全端末保証ではない。アプリのLog出力と描画にはスケジューリング差があるため、時計誤差と描画遅延を別々に測る。
+現在の保証は[本人要件の明確化 #299](https://github.com/shinma06/android-replay-buffer/issues/299)と[有効受入](../verification/responsibility.md)に従う。元PTS・両ログの内容/順序/帰属と支持されたclock変換、実時間窓・索引・欠落説明を検証する。端末内clock変換の見積誤差 **≤ 20ms**、読取幅 **≤ 2ms**、RTT **≤ 40ms**、sample鮮度 **≤ 5秒**を維持する。支持された対応でのcut境界は1観測frame間隔＋時計誤差以内、mux/indexの丸め誤差は **≤ 1ms**。これらを画像取得/物理表示を含む総合精度に読み替えず、unknownの境界に適用しない。
 
-失敗/時計急変区間はnormalから除外して隠さず全件別集計。閾値を超える/推定できない区間は`degraded/uncertain`、gapは`missing`。正常区間の件数・測定条件が足りない場合はpending。精度を満たさない端末でSYNC-01合格や初期版完成を主張しない。
+旧受入目標の画像/log対応 **p95 ≤ 100ms、最大 ≤ 250ms、中央値drift ≤ 50ms**と当時の30分等の方法は履歴として保持する。streamが独立に提供しない画像時刻の数値精度を、現在のAgent段階・後続実装・性能baselineの一律gateにしない。代替許容値を発明せず、元REQUEST/DRAWのFAIL・未校正・原因未帰属を保持する。FRAME_COMMIT等の良い位相や補正値へ判定を付け替えない。
+
+既知入力回帰による変換/長時間履歴/時計境界と、固定native成果の全frame・両log・実画像ID/順序/窓の対応を確認する。失敗/時計急変・欠落/unknownは全件残し、対応を推定できない区間を同期済みとしない。gapは`missing`、held tailは新frame取得ではない。現行保証に必要な事実が足りなければpending、具体的な誤変換・誤帰属・黙示的欠落・破損・虚偽の時刻/保存成功があれば影響する受入を止める。要件改訂を新しい実測PASSにしない。
 
 受取人は追加ツールなしで次を行う。
 

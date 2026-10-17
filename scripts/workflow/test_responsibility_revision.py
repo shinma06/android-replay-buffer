@@ -15,6 +15,7 @@ from test_observation_reuse import OLD, RECORD, reused, record_original
 from verification import (INITIAL_PLAN, canonical_hash, effective_initial_entry,
                           effective_responsibility_case, initial_stage_plan, render_queue,
                           previous_installation_plan, previous_settings_plan, previous_method_plan, historical_initial_sources,
+                          previous_precision_plan, previous_consumer_plan, PRECISION_PREVIOUS_PLAN_SHA256,
                           bind_initial_sources, validate_fact_assessment, responsibility_group,
                           validate_candidate_result, validate_responsibility_policy)
 
@@ -1092,8 +1093,10 @@ class PurposeMethodRevisionTests(unittest.TestCase):
             if key == '85:CLOCK-UNCERTAIN-VIDEO-PLAYBACK':
                 self.assertNotIn('全300event/30分', effective['expected'])
                 self.assertIn('失敗pin', ' '.join(effective['steps']))
-        # Full source history and fixed accuracy/byte safety survive the method replacement.
-        self.assertIn('p95≤100ms', method['groups']['precision']['purpose'])
+        # The prior accuracy contract is retained; owned clock/byte safety remains current.
+        self.assertIn('p95≤100ms', previous_precision_plan(policy)['responsibility_revision'][
+            'method_revision']['groups']['precision']['purpose'])
+        self.assertIn('clock見積誤差≤20ms', method['groups']['precision']['purpose'])
         self.assertIn('window_and_gop', method['groups']['buffer']['evidence_keys'])
         self.assertIn('全対象packet/frame', method['groups']['video']['methods'])
         for edit in ('original', 'missing', 'duplicate', 'real'):
@@ -1145,6 +1148,7 @@ class ConsumerMethodRevisionTests(unittest.TestCase):
     def setUp(self):
         self.root = Path(__file__).resolve().parents[2]
         self.policy = json.loads((self.root / INITIAL_PLAN).read_text())
+        self.policy = previous_precision_plan(self.policy) or self.policy
         self.base = 'c70e6292bd85364458eb98e535690bfa6001c59f'
         self.source = '830b58294bec3f2fa4751d831a5b95f6b0658de6'
         self.key = '13:SYNC-RECIPIENT'
@@ -1290,3 +1294,192 @@ class ConsumerMethodRevisionTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate_candidate_result(result, self.key, self.policy, None, self.source,
                                       'e' * 64, None, None, recorded, self.base)
+
+
+class PrecisionRequirementRevisionTests(unittest.TestCase):
+    """Real contract history and synthetic records, not new native observations."""
+    def setUp(self):
+        self.fixture = ConsumerMethodRevisionTests()
+        self.fixture.setUp()
+        self.policy = json.loads((self.fixture.root / INITIAL_PLAN).read_text())
+        self.old = copy.deepcopy(self.fixture.policy)
+        self.base = 'dac465eacf3ad7aef85fb08136d9bed5149b0913'
+        self.source = self.fixture.source
+        self.git = self.fixture.git
+        self.key = '13:SYNC-CLOCK'
+        self.fixture.policy = self.policy
+        self.fixture.key = self.key
+
+    def trusted(self, *args):
+        return json.dumps(self.policy) if args == ('show', self.base + ':' + INITIAL_PLAN) else self.git(*args)
+
+    def case(self, key):
+        issue, name = key.split(':')
+        data = json.loads(self.git('show', self.source + f':docs/verification/changes/issue-{issue}.json'))
+        return next(c for c in data['cases'] if c['id'] == name)
+
+    def test_exact_230_223_and_earlier_history_remain_valid_without_changing_cases_or_deferrals(self):
+        validate_responsibility_policy(self.policy)
+        self.assertEqual(self.old, previous_precision_plan(self.policy))
+        self.assertEqual(PRECISION_PREVIOUS_PLAN_SHA256, canonical_hash(self.old))
+        self.assertEqual(self.old['cases'], self.policy['cases'])
+        self.assertEqual(139, len(self.policy['cases']))
+        self.assertEqual(208, len(historical_initial_sources(self.policy, self.source, self.git)))
+        old_method = self.old['responsibility_revision']['method_revision']
+        method = self.policy['responsibility_revision']['method_revision']
+        for name, group in old_method['groups'].items():
+            if name != 'precision':
+                self.assertEqual(group, method['groups'][name])
+            self.assertEqual(group['cases'], method['groups'][name]['cases'])
+            self.assertEqual(group['evidence_keys'], method['groups'][name]['evidence_keys'])
+        for key in self.policy['cases']:
+            self.assertEqual(effective_initial_entry(self.old, key), effective_initial_entry(self.policy, key))
+        for candidate_plan in (self.policy, self.old, previous_consumer_plan(self.policy),
+                               previous_method_plan(self.policy)):
+            def git(*args):
+                return json.dumps(candidate_plan) if args == ('show', self.source + ':' + INITIAL_PLAN) else self.trusted(*args)
+            with self.subTest(revision=canonical_hash(candidate_plan)):
+                self.assertEqual(self.policy, initial_stage_plan(self.base, self.source, git))
+
+    def test_seven_effective_expectations_and_listing_share_the_owned_contract(self):
+        keys = self.policy['responsibility_revision']['method_revision']['groups']['precision']['cases']
+        self.assertEqual(7, len(keys))
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = []
+            for issue in ('13', '27', '31', '41'):
+                path = Path(tmp) / f'issue-{issue}.json'
+                path.write_text(self.git('show', self.source + f':docs/verification/changes/issue-{issue}.json'))
+                paths.append(path)
+            view = render_queue(paths, {'stage': 'initial-agent', 'base': self.base,
+                                        'candidate': self.source, 'results': {}}, self.trusted)
+        self.assertIn('目的による方法改訂 #299:', view)
+        self.assertIn('以下の固定原契約は履歴', view)
+        self.assertIn('p95<=100ms', view)
+        for key in keys:
+            original = self.case(key)
+            before = copy.deepcopy(original)
+            effective = effective_responsibility_case(self.policy, key, original)
+            self.assertEqual(before, original)
+            for field in ('gpt', 'human', 'required_execution'):
+                self.assertEqual(original.get(field), effective.get(field))
+            self.assertIn(effective['expected'], view)
+            for value in ('20ms', '2ms', '40ms', '5秒', '1ms', 'unknown', '元の位相別計測/FAIL'):
+                self.assertIn(value, effective['expected'])
+            for value in ('100ms', '250ms', '50ms', '実表示時刻としない'):
+                self.assertNotIn(value, effective['expected'])
+            if 'DRIFT' in key:
+                self.assertIn('SYNC-JUMP: 境界跨ぎ補間なし', effective['expected'])
+                self.assertIn('sequence/旧履歴/pin', effective['expected'])
+
+    def test_history_mutation_unknown_version_unrelated_change_and_scope_waiver_are_rejected(self):
+        for edit in ('hash', 'self-rehashed-history', 'old-common', 'missing-history', 'bad-history',
+                     'unknown-version', 'case-hash', 'unrelated', 'missing-key', 'duplicate-key',
+                     'missing-expected', 'real-waiver'):
+            bad = copy.deepcopy(self.policy)
+            method = bad['responsibility_revision']['method_revision']
+            if edit == 'hash':
+                method['previous_plan_sha256'] = 'f' * 64
+            elif edit == 'self-rehashed-history':
+                method['previous_precision']['purpose'] += ' changed'
+                method['previous_plan_sha256'] = canonical_hash(previous_precision_plan(bad))
+            elif edit == 'old-common':
+                method['previous_precision']['common_requirement'] += ' changed'
+            elif edit == 'missing-history':
+                del method['previous_precision']
+            elif edit == 'bad-history':
+                method['previous_precision']['overrides'] = []
+            elif edit == 'unknown-version':
+                method['issue'] = 999
+            elif edit == 'case-hash':
+                bad['cases'][self.key]['current_case_sha256'] = 'f' * 64
+            elif edit == 'unrelated':
+                method['groups']['buffer']['methods'] += ' changed'
+            elif edit == 'missing-key':
+                method['groups']['precision']['cases'].pop()
+            elif edit == 'duplicate-key':
+                method['groups']['precision']['cases'].append(self.key)
+            elif edit == 'missing-expected':
+                del method['overrides'][self.key]
+            else:
+                method['overrides']['27:SYNC-DRIFT-REAL']['deferred_scope'] = []
+            with self.subTest(edit=edit), self.assertRaises(ValueError):
+                validate_responsibility_policy(bad)
+
+    def test_candidate_only_plan_and_changed_case_cannot_inherit_the_amendment(self):
+        def candidate_only(*args):
+            return json.dumps(self.policy) if args == ('show', self.source + ':' + INITIAL_PLAN) else self.git(*args)
+        with self.assertRaisesRegex(ValueError, 'exact trusted'):
+            initial_stage_plan(self.base, self.source, candidate_only)
+        original = self.case(self.key)
+        changed = dict(original, expected=original['expected'] + ' Additional new product obligation.')
+        self.assertEqual(changed, effective_responsibility_case(self.policy, self.key, changed))
+        observed = self.fixture.assessment(self.source)
+        with self.assertRaisesRegex(ValueError, 'exact current effective contract'):
+            validate_candidate_result(observed, self.key, self.policy, None, self.source,
+                                      'e' * 64, None, None, self.git, self.base, changed)
+
+    def test_retained_facts_need_current_coverage_and_keep_the_failed_aggregate(self):
+        plans = (previous_method_plan(self.policy), previous_consumer_plan(self.policy), self.old, self.policy)
+        for plan in plans:
+            def source_git(*args):
+                return json.dumps(plan) if args == ('show', self.source + ':' + INITIAL_PLAN) else self.git(*args)
+            observed = self.fixture.assessment(self.source)
+            assessment = observed['responsibility_assessment']
+            assessment['source_result']['status'] = 'fail'
+            assessment['source_result']['reason'] = 'Synthetic old image-time criterion failure; unchanged.'
+            assessment['source_result_sha256'] = canonical_hash(assessment['source_result'])
+            original = copy.deepcopy(assessment['source_result'])
+            validate_candidate_result(observed, self.key, self.policy, None, self.source,
+                                      'e' * 64, None, None, source_git, self.base)
+            self.assertEqual(original, assessment['source_result'])
+            for edit in ('owned-loss', 'missing-condition', 'clock-coverage', 'failed-fact', 'wrong-hash'):
+                bad = copy.deepcopy(observed)
+                a = bad['responsibility_assessment']
+                if edit == 'owned-loss':
+                    a['unresolved_owned_failures'] = ['An accepted frame was silently lost.']
+                elif edit == 'missing-condition':
+                    a['missing_requirements'] = ['Actual image identity.']
+                elif edit == 'clock-coverage':
+                    del a['coverage']['clock_duration']
+                elif edit == 'failed-fact':
+                    a['facts']['full-file']['status'] = 'fail'
+                else:
+                    a['source_result_sha256'] = 'f' * 64
+                with self.subTest(plan=canonical_hash(plan), edit=edit), self.assertRaises(ValueError):
+                    validate_candidate_result(bad, self.key, self.policy, None, self.source,
+                                              'e' * 64, None, None, source_git, self.base)
+        observed = self.fixture.assessment(self.source)
+        with self.assertRaisesRegex(ValueError, 'Retained-fact assessment'):
+            validate_fact_assessment(observed, '206:CAPTURE-DEPENDENCIES', self.policy,
+                                     self.source, 'e' * 64, self.git, self.base)
+
+    def test_reassessment_retains_registered_success_and_rejects_original_failure(self):
+        for plan in (previous_consumer_plan(self.policy), self.old):
+            evidence = {'contract_coverage', 'artifact_binding', 'failure_attribution',
+                        *responsibility_group(plan, self.key)['evidence_keys']}
+            original = dict(observation(), actor='gpt', head=self.source,
+                            responsibility_revision=canonical_hash(plan['responsibility_revision']),
+                            responsibility_evidence={k: 'Synthetic original proof' for k in evidence})
+            confirmation = self.fixture.assessment(self.source)
+            confirmation.pop('responsibility_assessment')
+            confirmation.update(equivalence_evidence='Synthetic unchanged artifact',
+                                environment_evidence='Synthetic unchanged relevant conditions')
+            result = {'status': 'reassessed', 'head': self.source, 'artifact_sha256': 'e' * 64,
+                      'source_candidate': self.source, 'source_record': self.base,
+                      'source_result': original, 'confirmation': confirmation}
+            def recorded(*args):
+                if args == ('show', self.source + ':' + INITIAL_PLAN):
+                    return json.dumps(plan)
+                if args == ('ls-tree', self.base, '--', 'docs/verification/promotion.json'):
+                    return '100644 blob ' + '0' * 40 + '\tdocs/verification/promotion.json'
+                if args == ('show', self.base + ':docs/verification/promotion.json'):
+                    return json.dumps({'schema': 1, 'candidate': self.source, 'results': {self.key: original}})
+                return self.git(*args)
+            before = copy.deepcopy(result)
+            validate_candidate_result(result, self.key, self.policy, None, self.source,
+                                      'e' * 64, None, None, recorded, self.base)
+            self.assertEqual(before, result)
+            original['status'] = 'fail'
+            with self.assertRaisesRegex(ValueError, 'Only original successful'):
+                validate_candidate_result(result, self.key, self.policy, None, self.source,
+                                          'e' * 64, None, None, recorded, self.base)
