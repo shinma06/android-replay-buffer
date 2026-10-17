@@ -42,15 +42,15 @@ Issue の全コメント、関連 PR、依存、既存 claim、dirty、worktree 
 ```bash
 git status --short --branch
 git worktree list
-git fetch --prune origin
+git fetch --no-prune origin
 # 例: 実在する Issue 12 の製品変更。番号・slug は実際の作業へ変更する
-git worktree add -b codex/12-replay-integration ../android-replay-buffer-issue-12 origin/develop
+git worktree add -b codex/12-feat-replay-integration ../android-replay-buffer-issue-12 origin/develop
 cd ../android-replay-buffer-issue-12
 git branch --unset-upstream
 python3 scripts/bootstrap.py
 ```
 
-branch は `codex|claude|cursor|agent/<Issue番号>-<slug>`。運用変更だけなら origin/main を起点にします。main/master/develop へ直接 commit/push、force push、hook/保護の迂回、他担当の変更破棄は禁止です。
+新規branchは [branch命名](work-management.md#branch-命名) の `codex/<Issue番号>-<type>-<短い英語の目的>` を既定とします。既存refは改名せず、旧形式の読取互換性を保ちます。運用変更だけなら origin/main を起点にします。main/master/develop へ直接 commit/push、force push、hook/保護の迂回、他担当の変更破棄は禁止です。
 
 ## 先行プラグインの知見を使う
 
@@ -74,7 +74,7 @@ IDE/build/process/保存/UI/検証/共通ハーネスに関係する変更は、
 
 リモート指摘は[finish-work](../.agents/skills/finish-work/SKILL.md)の取得・対応手順で照合します。`python3 scripts/workflow/agent_loop.py feedback --pr N`は読取専用です。raw結果はprivateに保存し、review本文、inline/返信、PR/Issue conversation、botの最新summary、解決/旧版状態を省略せず確認します。既存Issue/PRへ指摘ID/URL・元commit・現固定版の修正/検査又は根拠付き非該当/置換を残し、不明・未解決を承認しません。
 
-DraftをreadyにするとCodexレビューが非同期に始まります。取得時に空でも完了ではなく、現在HEADのCode Reviewがprovider summaryでCompletedになるまでpendingです。旧版の完了・reaction・CI成功・一定時間の経過を代用せず、観測不能/失敗/format変更は未達と次のreadbackを引き継ぎます。可視summaryはサービスの完了信号であり、独立コード承認や将来の追加指摘がない保証ではありません。投稿済みの全指摘を処理し、修正後の固定版を独立レビューします。
+Draftをreadyにすると設定済みのレビューが非同期に始まり得ます。[完了元の選択](setup/automation.md#レビュー元と実行元の選択)をfeedback取得から統合・終了まで共通に使います。既定のCodex経路は現HEADのCode Reviewがprovider summaryでCompletedになるまでpendingです。明示選択したGitHub経路は指定reviewerの現HEADのterminal reviewを確認します。空の取得、旧版の完了・reaction・CI成功・時間経過を代用せず、観測不能/失敗/不明な形式は未達として引き継ぎます。方式変更で既存の未完了依頼を取り消しません。完了信号は独立承認や将来の追加指摘がない保証ではなく、全指摘を処理した固定版を別セッションでレビューします。
 
 merge直前にHEAD/base/feedback hashを再取得し、変更があれば対応判断とレビューをやり直します。merge後・close前も読み戻します。後着・編集で具体的な未解決指摘が出たら、原Issue又は専用修正Issueに元レビューと実再現・担当・次操作を残して該当範囲を再開します。過去の承認は当時のsnapshotとして保存し、指摘なしの永久保証にしません。常駐監視、余分な本人承認、終了済みwriterの暗黙再開は追加しません。
 
@@ -86,8 +86,22 @@ PM・担当・レビュアーは現状の手段を当然とせず、検査失敗
 
 ## 自動進行と終了
 
+未完了の作業を停止・引継ぎ・blockedとする直前に、[停止の最終再考フロー](omil-portable.md#reconsider-before-stopping-unfinished-work)を順に適用します。本人停止・実拒否・安全/実資源の限界は先に影響範囲を即時停止します。それ以外は停止範囲、原因の根拠、制約の出所、目的を保つ代案と独立した作業、有限な計画変更の可否を確認します。試行回数や同じ報告の繰返しだけで全体停止を正当化しません。全体停止が不要なら撤回して許可済みの次操作を実行し、妥当なら原因、保全/未達、再開条件と解決担当、既知の解決手順/未知/次操作を報告します。既存Issue/計画を使い、新しい承認gateや監視は追加しません。
+
 writer が編集・commit・push・GUI を停止してから [自動進行](setup/automation.md) へ登録します。5 checks（test、PR policy、Acceptance gate、Agent review、CLI Python 3.9）と会話解決、現在の HEAD/base/受入を再確認し、保護付きの通常 PR merge を使います。
 
-merge 後は [作業管理の終了確認](work-management.md) と QA 引継ぎを行います。remote 実 ref、local branch、remote-tracking ref、worktree を照合し、自分の停止済み・clean な資源だけを整理します。squash 後の `--merged` や `[gone]` だけを削除根拠にせず、PR HEAD と統合結果を確認します。main/master/develop、他担当、GUI 使用中、未公開成果物は保全します。
+merge 後は [作業管理の終了確認](work-management.md) と QA 引継ぎを行い、次のbranch lifecycleで資源を整理します。統合・Issue完了・claim移管/解放・資源削除は別に読み戻します。
+
+### branch lifecycle
+
+branch自体にClosed状態はありません。実PRを **merged** と **closed-unmerged（withdrawn/supersededを含む）** に分けます。Closed、名前、古さ、`[gone]`、`--merged` や祖先判定だけを削除・claim解放の根拠にしません。
+
+- 共通: 実PRとreplacement/取り込み先、資源のownerとwriter停止・明示されたPM保管責任、remote実ref/local branch/tracking refの各SHA、全worktreeでの使用、dirty/untracked・必要ignored成果物、固有の未公開/未統合commitを確認します。PR HEADと現在のtipが違えば差分の帰属・保全を確認するまで保持します。main/master/develop、稼働中・他担当・GUI使用中の資源は削除しません。
+- merged: PR HEAD・merge SHA・取り込み結果と終了/QA条件を照合し、既存の所有確認付きcleanupとGitHubのmerge後head自動削除を使います。squashでも固有の作業や証拠を取り落としません。
+- closed-unmerged: 元の失敗・指摘とreplacementを保持し、再開/QA/復旧で何を残すかownerが決めます。終了理由だけで自動cleanupへ登録し直しません。退役させる固有commit/内容と必要なignored成果物を、既存の復元可能なarchive/snapshot/Git bundle等へ削除範囲外で保管します。固定ref/SHAとarchiveのhashを読み戻し、所有する使い捨て復元先で実際に固定commitをcheckoutして内容を照合します。Git bundleなら`git bundle verify`だけで終わらず、復元先へのfetch/checkoutとtree/必要ファイルの照合まで行います。bundleに入らない必要ファイルは別保管しhash/復元内容を確認します。app管理archiveを使う場合も復元結果を照合し、必要ignoredファイルを別保全します。原証拠を移動・上書きして保管済みとしません。
+
+保全/復元確認後、所有引継ぎと停止を満たす範囲だけ実状態を削除直前に再照合して整理し、remote/local/tracking/worktreeの結果を個別に読み戻します。退役に必要な保全を完了してcleanと確認できないworktreeや、QA・復旧・再開に必要な資源は残し、owner・理由・再開/退役条件を元Issue/PRへ記録します。ローカルpath・bundle原本・私的証拠はprivateに置きます。claimの扱いは明示した引継ぎ/解放に従い、archiveや時間経過から推測しません。新しい保管framework、daemon、定期job、一括purgeは追加しません。
+
+`cleanup-branches`はfetch/pruneを行わず、localとtracking-onlyのclosed-unmerged ref/SHAを保持として報告するmerged-onlyの補助監査です。通常fetchのprune設定も含め、tracking-onlyに固有commitが残る場合は保全・実復元確認までpruneを遅延します。closed-unmerged候補は同名branchの全PR番号/各固定HEADと現在のlocal/tracking SHAの一致・差分・参照不在を個別に報告し、この手順で担当が扱います。保持表示は過去HEADの復元成功を意味しません。自動監査の出力だけを未マージ資源の退役許可にしません。
 
 今回の初回導入・developの新設は [GitHub 有効化手順](setup/github.md) に従います。新しい規約の追加を、未依頼の公開・他セッションへの連絡・定期実行を始める権限として扱いません。

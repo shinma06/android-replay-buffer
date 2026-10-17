@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "issue": 287,
+  "gui_required": false,
+  "reason": "固定main 215700b4ba1daa3d685336667fcfc1f7a26c8843 の採用済み管理規約と受入履歴をdevelopへ通常mergeする。製品・CLI・build・fixture・正式計画と原証拠を変更しないためGUI不要。新しいCaseや成果物は作らない。",
+  "cli_checks": [
+    "固定develop a49bef8ec4e934c24c1d7e16cf7bb9a953dd645f と固定mainのplugin/replay_buffer/bin/launchd/config.json.example/正式initial-agent計画の差分なし: pass",
+    "python3 scripts/check.py: pending（共有ホストの検査枠を調整中）",
+    "python3 scripts/workflow/product_check.py: pending",
+    "clean committed HEADのchange_impact.py --base origin/develop --run-tests: pending",
+    "既存verify_prのcertificate同期route: 事前確認で拒否。固定HEADで実確認し、未達を保持する"
+  ],
+  "cases": []
+}

@@ -28,7 +28,8 @@ class GuardTest(unittest.TestCase):
         for branch in ['main', 'master', 'develop', '', 'codex/topic']:
             with self.assertRaises(ValueError):
                 check_branch(branch)
-        check_branch('codex/31-workflow')
+        for branch in ('codex/31-workflow', 'codex/31-chore-workflow'):
+            check_branch(branch)
 
     def test_push_checks_destination_not_current_branch(self):
         for dest in ['main', 'master', 'develop']:
@@ -253,6 +254,13 @@ class PolicyTest(unittest.TestCase):
         issue = {'title': '[運用] policy', 'state': 'open',
                  'labels': ['type:maintenance', 'priority:P2', 'status:review']}
         namespace['validate_issue'](issue)
+        namespace['validate_issue'](dict(issue, title='chore: 運用を整える'), allow_legacy=False)
+        with self.assertRaises(ValueError):
+            namespace['validate_issue'](dict(issue, title='test: #35 #99 再試験', labels=['type:qa','priority:P1','status:ready']))
+        with self.assertRaises(ValueError):
+            namespace['validate_issue'](dict(issue, title='fix: 運用を整える'))
+        with self.assertRaises(ValueError):
+            namespace['validate_issue'](issue, allow_legacy=False)
         with self.assertRaises(ValueError):
             namespace['validate_issue'](dict(issue, labels=[]))
         bad = dict(self.pr, body='Issue: #99')

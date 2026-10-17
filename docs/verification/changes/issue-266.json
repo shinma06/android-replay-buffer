@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "issue": 266,
+  "gui_required": false,
+  "reason": "providerに依存しない運用契約と実環境の手段を分離するportable brief、既存consumerの明示的な完了元選択・trusted native origin入口、人工fixtureと回帰検査。製品、Case契約、ZIP、IDE/deviceは変更せず、既存Codex経路・旧receipt・独立性と秘匿条件を保持する。別model実行を必須とせず、実観測とoffline fixtureの証明範囲を区別する。人工試験を製品/GUI受入や比較未実測の効率改善へ換算しない。",
+  "cli_checks": [
+    "python3 scripts/check.py",
+    "python3 scripts/workflow/product_check.py",
+    "python3 scripts/workflow/change_impact.py --base origin/main --run-tests"
+  ],
+  "cases": []
+}

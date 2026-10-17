@@ -1,36 +1,145 @@
 # Android Replay Buffer
 
-Android操作直前の画面とlogcatを保存し、IT（テスト）のエビデンス採取と、不意に発生したバグの調査を支援する **Android Studioプラグイン** を開発しています。
+昇格状況の以下の記載は2026-10-13のmain `f8ec628` 時点です。昇格後の実状態は[#87](https://github.com/shinma06/android-replay-buffer/issues/87)・[#10](https://github.com/shinma06/android-replay-buffer/issues/10)で読み戻してください。
 
-初期版候補として、ToolWindowからの取得・状態表示・直前区間の保存、常設設定、動画と両ログの取得コアを実装しています。現在は受入前の開発版です。固定ZIPでのIDE・Emulator・実機受入の結果は[初期版QA](https://github.com/shinma06/android-replay-buffer/issues/27)で管理し、実機受入は利用者の端末準備まで保留しています。既存のmacOS向けPython CLIも保全しています。
+開発対象はAndroid Studioプラグインです。[固定develop候補 `3a9af24`](https://github.com/shinma06/android-replay-buffer/tree/3a9af24231c3db339c0b3a82ba8aa8eb4cecb189/plugin/)に取得・保存コア、ToolWindow、設定を実装しています。初期Agent範囲105/105件は[QA #27で正式採用](https://github.com/shinma06/android-replay-buffer/issues/27#issuecomment-6136845141)済みですが、完全GUI受入と製品のmain昇格は未完了です。REAL34・人間確認は[QA #65](https://github.com/shinma06/android-replay-buffer/issues/65)、昇格は[#87](https://github.com/shinma06/android-replay-buffer/issues/87)で追跡します。現在の事実とチェックは[プロジェクト情報](docs/project.md)を参照してください。
 
-動画がある保存ではMP4を1件にまとめ、両JSONLと時刻対応情報を同じフォルダへ保存します。途中の復旧やcodec区間はファイル内の再生区間として扱い、時計不明・欠落を消しません。同じサイズは再圧縮せず、サイズ変更を含む場合は既存JCodecで固定canvasへ変換し、元AnnexBをraw sidecarへ保存します。標準playerの再生・seek、文字・色品質、長時間保存の受入は新固定buildで実施します。
+以下は互換性を維持するmacOS向けPython CLI原型の利用手順です。プラグインの導入条件・機能・受入とは区別します。[凍結CLI文書](https://github.com/shinma06/android-replay-buffer/blob/3a9af24231c3db339c0b3a82ba8aa8eb4cecb189/docs/cli-origin/README.md)と[保全方針](https://github.com/shinma06/android-replay-buffer/blob/3a9af24231c3db339c0b3a82ba8aa8eb4cecb189/docs/cli-origin.md)を参照してください。移設後のローカル文書は `docs/cli-origin/` にあります。
 
-混在サイズの変換には待ち時間と再圧縮の画素差があります。1packetずつ処理しますが、代表試作の約139ms/frameは実IDEや長時間保存の保証ではありません。取消しはcodec呼出しの前後で確認します。非対応のサイズ・SAR・色変更や途中の容量不足では保存を失敗にして、固定した対象を再試行用に保ちます。範囲と上限は[保存設計](docs/design/timeline.md#混在サイズの変換範囲と負荷)を参照してください。
+Android 実機を USB 接続すると、操作なしで画面キャプチャと logcat 取得を開始し、直近 N 秒をリングバッファとして保持する開発ツール。
 
-## 使う・開発する
+不具合発見時に `replay save` を実行すると、直前 N 秒の動画・logcat・タイムライン JSON を保存する。
 
-- **製品要件を確認する**: [初期版の確定要件・開発順序・検討タスクとTODO](docs/requirements.md)。初期値180秒、1台での自動取得・1ボタン保存を目指します。macOSを最優先とし、IDE内の初期版完成直後にメニューバー連携へ着手します。
-- **初期版候補を確認する**: [導入・設定・取得・保存・再試行の手順](docs/plugin-development.md#初期版候補の利用手順)。受入対象の固定ZIPを使い、開発版の制約と未検証項目を確認してください。
-- **CLIを使う**: [オリジナルのセットアップ・コマンド説明](docs/cli-origin/README.md)。`bin/replayd` / `bin/replay`、設定ファイル、launchdの配置は従来どおりです。
-- **プラグインを開発する**: [SDK/JDK・ビルド・IDE起動・次の実装順](docs/plugin-development.md)。Android Studioで `plugin/` をGradleプロジェクトとして開きます。
-- **原型を復元する**: [CLI原型の保全方針と固定コミット](docs/cli-origin.md)。原型の全21ファイルをhashと実行権限で照合します。
+## 前提
 
-```text
-plugin/          Kotlin / IntelliJ Platformの独立Gradleプロジェクト
-replay_buffer/   保全するCLI原型（Python 3.9+）
-bin/             従来のCLI起動スクリプト
-launchd/         従来のmacOS常駐設定例
-tests/           CLI原型のテスト
-docs/cli-origin/ 原README・CLI設計書・原gitignore・固定ファイルmanifest
-scripts/         共通の管理・検証（Python 3.15+）
+- macOS
+- Python 3.9+
+- [Android platform-tools](https://developer.android.com/tools/releases/platform-tools) (`adb`)
+- [scrcpy](https://github.com/Genymobile/scrcpy) 2.4+
+- [ffmpeg](https://ffmpeg.org/)
+
+```bash
+brew install scrcpy ffmpeg
 ```
 
-CLIを `legacy/` へ移動しないのは、既存のPATH、Python import、launchd設定を維持するためです。プラグインは `plugin/` で開発し、projectのAndroid SDKと同梱する録画用依存を使う[方式を採用](docs/design/timeline.md)しています。CLI原型のコード・設定・コマンドの互換性は保全します。
+## セットアップ
 
-## 開発と検証
+```bash
+cd ~/Develop/android-replay-buffer
 
-[プロジェクト情報](docs/project.md)と[開発手順](docs/workflow.md)に従い、Issue専用branch/worktreeからdevelopへPRを作成します。mainへは固定候補の受入後に反映します。
+# bin を PATH に追加
+export PATH="$HOME/Develop/android-replay-buffer/bin:$PATH"
+```
+
+設定（任意）:
+
+```bash
+mkdir -p ~/.config/replay-buffer
+cp config.json.example ~/.config/replay-buffer/config.json
+```
+
+## 使い方
+
+### 1. daemon 起動
+
+```bash
+replayd
+```
+
+出力例:
+
+```text
+Waiting for Android device...
+
+Pixel connected
+● Recording
+Replay: 60 sec
+Logs: logcat
+```
+
+Android を USB 接続すると自動で録画と logcat 取得が始まる。切断すると session を終了し、再接続で再開する。
+
+### 2. Replay 保存
+
+別ターミナルで:
+
+```bash
+replay save
+```
+
+`replayd` が未起動なら自動起動する。
+
+保存先例:
+
+```text
+~/Replays/2026-09-17_11-42-18/
+├── replay.mp4
+├── logcat.txt
+└── timeline.json
+```
+
+### その他コマンド
+
+```bash
+replay status   # 状態確認
+replay stop     # daemon 停止
+```
+
+## 設定
+
+`~/.config/replay-buffer/config.json`:
+
+```json
+{
+  "replay_seconds": 60,
+  "output_directory": "~/Replays",
+  "segment_seconds": 5
+}
+```
+
+YAML も利用可能（`config.yaml`）。
+
+## Mac ログイン時の自動起動
+
+```bash
+sed "s|__REPLAY_BUFFER_ROOT__|$HOME/Develop/android-replay-buffer|g; s|__HOME__|$HOME|g" \
+  launchd/com.selfregi.replayd.plist > ~/Library/LaunchAgents/com.selfregi.replayd.plist
+launchctl load ~/Library/LaunchAgents/com.selfregi.replayd.plist
+```
+
+ログ: `~/.replay-buffer/replayd.log`
+
+## アーキテクチャ
+
+```text
+Android ──USB──▶ ADB ──┬── scrcpy ──▶ ffmpeg segments ──▶ Video Buffer
+                       └── logcat ───────────────────────▶ Log Buffer
+                                      │
+                                      ▼
+                                 replay save
+                                      │
+                    replay.mp4 / logcat.txt / timeline.json
+```
+
+## MVP Definition of Done
+
+- [x] `replayd` が Mac 上で常駐できる
+- [x] USB 接続 ADB 端末を自動検出する
+- [x] 接続時に画面キャプチャを自動開始する
+- [x] 同時に logcat 取得を自動開始する
+- [x] 直近 N 秒だけを保持する
+- [x] N 秒を設定できる
+- [x] `replay save` で直前 N 秒を保存できる
+- [x] `replay.mp4` / `logcat.txt` / `timeline.json` を生成する
+- [x] 切断しても daemon が継続する
+- [x] 再接続で録画を再開する
+
+## 開発ハーネス・Android Studioプラグイン開発
+
+Python CLI原型を維持し、Android Studioプラグインを開発します。[開発手順](docs/workflow.md)、[プロジェクト情報](docs/project.md)、[共通IDE知見](docs/android-studio.md)を入口にします。製品変更はdevelop、固定した検証済み候補はmainへ統合します。初期版完成後は [#206 stable基盤更新](https://github.com/shinma06/android-replay-buffer/issues/206) → [#103 CLI内包](https://github.com/shinma06/android-replay-buffer/issues/103) の順です。[過去管理欄の整備 #237](https://github.com/shinma06/android-replay-buffer/issues/237)は初期版後に行います。
+
+- [開発マップ](https://github.com/users/shinma06/projects/5) / [Issue](https://github.com/shinma06/android-replay-buffer/issues)
+- [初回導入の検証・未実施項目](docs/validation.md) / [ハーネスの出典・対応表](docs/inventory.md)
 
 repositoryの検査・Git hooks・QA/受入・GUI lease・coordinatorなどの管理/開発ツールはPython 3.15以上を対応対象とし、主検査はstable 3.15.0を使用します。旧3.11〜3.14環境で管理作業を行う場合は[セットアップ手順](docs/setup/README.md#runtimeと配置)に従って3.15を選択してください。配布CLIの利用条件はPython 3.9以上のままです。
 
@@ -38,12 +147,6 @@ repositoryの検査・Git hooks・QA/受入・GUI lease・coordinatorなどの�
 python3 scripts/bootstrap.py
 python3 scripts/check.py
 python3 scripts/workflow/product_check.py
-# JAVA_HOMEにJDK 25を指定してから実行
-python3 scripts/workflow/plugin_check.py
-# cleanなcommit済みHEADで、差分に必要な確認をまとめて実行
-python3 scripts/workflow/change_impact.py --base origin/develop --run-tests
 ```
 
-CLI検証は原型の保全と既存2 tests、プラグイン検証はJVMテスト・コンパイル・標準ZIP生成・構造検査です。IDEロード・録画・実機動作の合格を意味しません。[初期版の受入Case](docs/verification/changes/issue-27.json)で実機とEmulatorの状態を分けて確認できます。
-
-[開発マップ](https://github.com/users/shinma06/projects/5) / [Issue](https://github.com/shinma06/android-replay-buffer/issues) / [共通IDE知見](docs/android-studio.md)
+プラグイン変更では、昇格後の `plugin/` と checker が存在するツリーで `python3 scripts/workflow/plugin_check.py` を実行します（JDK 25 / JAVA_HOMEが必要）。プラグインがまだないmainでbuild成功や安全なskipを主張しません。

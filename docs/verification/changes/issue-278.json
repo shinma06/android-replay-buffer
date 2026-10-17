@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "issue": 278,
+  "gui_required": false,
+  "reason": "既存OMIL判断・限定結果・点検運用・確認観点を公開文書へ整理し、既存入口を接続する。製品コード/build/GUI/Case/受入基準を変更しない。新checkoutの公開参照と文書内容を確認し、実環境での起動や原試験の再実証は主張しない。",
+  "cli_checks": [
+    "python3 scripts/check.py",
+    "python3 scripts/workflow/product_check.py",
+    "python3 scripts/workflow/change_impact.py --run-tests"
+  ],
+  "cases": []
+}
