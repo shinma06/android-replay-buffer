@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "issue": 268,
+  "gui_required": false,
+  "reason": "Cursor参照義務をAGENTS・skills・依頼/レビュー・要件文書の実consumerから終了し、ARBの仕様/保証を正本にする運用変更。製品・build・Case契約・原観察/失敗・共有GUI leaseは不変。画面/端末操作は不要。",
+  "cli_checks": [
+    "python3 scripts/check.py",
+    "python3 scripts/workflow/product_check.py",
+    "python3 scripts/workflow/change_impact.py --run-tests (clean committed HEAD、通常pre-push hookの実結果を使用)",
+    "現役consumer/入口の参照追跡、旧固定source/採否・Case/原証拠・共有leaseの差分保全確認。実結果はIssue/PRの固定HEADに記録"
+  ],
+  "cases": []
+}

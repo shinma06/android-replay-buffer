@@ -1,5 +1,7 @@
 # 取り込み元と適合範囲
 
+以下は導入時の固定source・採否を保持した記録です。当時の「今後の製品Issueで適用」や「将来の更新」の記述は継続的な外部参照義務ではなく、現在は[ARBの仕様と任意の外部知見](android-studio.md)に従います。導入済みの保証・共有leaseの互換性は維持します。
+
 確認日: 2026-10-03。導入元は[agent-harness-template e822318](https://github.com/shinma06/agent-harness-template/tree/e822318a6c0fa7175a89687b929197dfae879184)。共通管理engineは[既存移植の固定版 fbabc42](https://github.com/shinma06/graffix-ar/tree/fbabc42f6516332e04ce5dad31e7092973eed0a7)を再利用し、[Cursor main 33c51dc](https://github.com/shinma06/cursor-in-android-studio/tree/33c51dc01c1cc68ff1c035c8c3ce02654e613ce7)と比較しています。元環境のファイル/個人設定/実行状態は変更しません。
 
 | 共通能力 | 導入先・適合 |
