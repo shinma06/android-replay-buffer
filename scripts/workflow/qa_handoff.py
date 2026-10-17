@@ -11,10 +11,11 @@ def handoff(gh, repo, pr, origin, change):
     axes = validate_issue(origin)
     validate_change(change, number, field(pr['body'], 'GUI') == 'required')
     marker = f'<!-- issue-qa-handoff:v1 origin={number} -->'
+    qa_prefixes = (f'test: #{number} ', f'[試験] #{number} ')
     # List all Issues (not search indexing) so a lost create response is retryable.
     candidates = [x for x in gh.pages(f'repos/{repo}/issues?state=all&per_page=100')
                   if 'pull_request' not in x and
-                  (marker in (x.get('body') or '') or x.get('title', '').startswith(f'[試験] #{number} '))]
+                  (marker in (x.get('body') or '') or x.get('title', '').startswith(qa_prefixes))]
     if len(candidates) > 1:
         raise ValueError('Multiple QA Issues match origin; reconcile before closing')
     record = f'<!-- issue-qa-record:v1 origin={number} pr={pr["number"]} merge={pr["merge_commit_sha"]} -->'
@@ -22,6 +23,13 @@ def handoff(gh, repo, pr, origin, change):
               f'Verification: https://github.com/{repo}/blob/{pr["merge_commit_sha"]}/{path}\n')
     if not change['cases'] and candidates:
         raise ValueError('Existing QA requires explicit reconciliation before a no-Case transfer')
+    if change['cases'] and not candidates:
+        summary = re.sub(r'^\[[^]]+\]\s*|^[a-z]+: ', '', origin['title'])
+        if axes['type'] == 'qa':
+            summary = re.sub(r'^#[1-9][0-9]* ', '', summary)
+        data = {'title': f'test: #{number} {summary}', 'state': 'open',
+                'labels': ['type:qa', 'priority:' + axes['priority'], 'status:ready']}
+        validate_issue(data, allow_legacy=False)
     # The existing release tracker owns main integration, not an artificial GUI Case.
     release = gh.issue(10)
     if validate_issue(release)['type'] != 'tracking' or release['state'] != 'open':
@@ -50,16 +58,15 @@ def handoff(gh, repo, pr, origin, change):
                '#10への双方向移管/readback後にQAを終了できる。初期段階だけの完了は正式Case全体のpassではない。')
     milestone = origin.get('milestone')
     if not candidates:
-        summary = re.sub(r'^\[[^]]+\]\s*', '', origin['title'])
-        data = {'title': f'[試験] #{number} {summary}', 'body': marker + '\n' + payload,
-                'labels': ['type:qa', 'priority:' + axes['priority'], 'status:ready']}
+        data.pop('state')
+        data['body'] = marker + '\n' + payload
         if milestone:
             data['milestone'] = milestone['number']
         qa = gh.api(f'repos/{repo}/issues', 'POST', data)
     else:
         qa = candidates[0]
     qa = gh.issue(qa['number'])
-    if validate_issue(qa)['type'] != 'qa' or marker not in (qa.get('body') or '') or not qa['title'].startswith(f'[試験] #{number} '):
+    if validate_issue(qa)['type'] != 'qa' or marker not in (qa.get('body') or '') or not qa['title'].startswith(qa_prefixes):
         raise ValueError('QA identity readback failed')
     if qa['state'] != 'open':
         raise ValueError('Existing QA is closed; reconcile remaining verification before closure')

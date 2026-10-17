@@ -137,14 +137,15 @@ class DelayedAcceptanceTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, 'changed during acceptance validation'):
                     ci.check_pr(self.event, api)
 
-    def test_repair_main_dependency_is_read_back_after_validation(self):
-        self.verify.return_value = {'mode': 'develop', 'repair_contract_base': BASE}
+    def test_main_dependencies_are_read_back_after_validation(self):
         current = pr_data()
         current['base']['ref'] = 'develop'
         current['body'] = current['body'].replace('tooling', 'develop')
         event = copy.deepcopy(current)
-        for main in (BASE, MOVED):
-            with self.subTest(main=main):
+        for field, main in ((field, main) for field in ('repair_contract_base', 'certificate_sync_main')
+                            for main in (BASE, MOVED)):
+            with self.subTest(field=field, main=main):
+                self.verify.return_value = {'mode': 'develop', field: BASE}
                 def api(path):
                     if path == 'pulls/90': return copy.deepcopy(current)
                     return {'object': {'sha': main if path.endswith('/main') else BASE}}
@@ -157,7 +158,7 @@ class DelayedAcceptanceTests(unittest.TestCase):
     def test_open_empty_tooling_diff_remains_invalid_with_real_validator(self):
         data = {'schema': 1, 'issue': 90, 'gui_required': False, 'reason': 'CI only',
                 'cli_checks': ['python3 -m unittest'], 'cases': []}
-        git = Mock(side_effect=[f'100644 blob {HEAD}\tdocs/verification/changes/issue-90.json', json.dumps(data), ''])
+        git = Mock(side_effect=[f'100644 blob {HEAD}\tdocs/verification/changes/issue-90.json', json.dumps(data), '', ''])
         self.verify.side_effect = lambda pr, api: verify_pr(pr, api, git)
         api = Mock(side_effect=[pr_data(), {'object': {'sha': BASE}}, pr_data()])
         with self.assertRaisesRegex(ValueError, 'Direct main tooling route'):
@@ -189,12 +190,16 @@ class MainContractEventTests(unittest.TestCase):
         self.run = {'id': 42, 'head_sha': HEAD, 'event': 'pull_request', 'status': 'completed',
                     'pull_requests': [{'number': 90}]}
         self.calls = []
+        self.fetch = self.enterContext(patch.object(ci.subprocess, 'run'))
+        self.git = self.enterContext(patch.object(ci, 'git_read', return_value=''))
+        self.certificates = self.enterContext(patch.object(ci, 'certificate_changes', return_value=[]))
 
     def api(self, path, method='GET', data=None):
         self.calls.append((path, method, data))
         if method == 'POST': return None
         if path.startswith('pulls?'): return [copy.deepcopy(self.pr)]
         if path == 'issues/90': return copy.deepcopy(self.issue)
+        if path == 'git/ref/heads/develop': return {'object': {'sha': BASE}}
         if path.startswith('actions/workflows/'): return {'workflow_runs': [copy.deepcopy(self.run)]}
         raise AssertionError(path)
 
@@ -281,6 +286,23 @@ class MainContractEventTests(unittest.TestCase):
                 self.assertEqual(ci.recheck_main_repairs(self.api, 'shinma06/android-replay-buffer'), [])
                 self.assertFalse(any(c[1] == 'POST' for c in self.calls))
 
+    def test_certificate_dependency_lookup_failure_preserves_pending_and_reports_error(self):
+        self.issue['body'] = 'Acceptance repair: none'
+        for lookup, failure in ((self.fetch, subprocess.CalledProcessError(128, ['git', 'fetch'])),
+                                (self.git, OSError('git unavailable')),
+                                (self.certificates, ValueError('malformed archive'))):
+            with self.subTest(lookup=lookup):
+                self.calls.clear()
+                lookup.side_effect = failure
+                with self.assertRaises(type(failure)) as raised:
+                    ci.recheck_main_repairs(self.api, 'shinma06/android-replay-buffer')
+                self.assertIs(raised.exception, failure)
+                writes = [c for c in self.calls if c[1] == 'POST']
+                self.assertEqual(writes[0][0], 'statuses/' + HEAD)
+                self.assertEqual(writes[0][2]['state'], 'pending')
+                self.assertEqual(writes[1][:2], ('actions/runs/42/rerun', 'POST'))
+                lookup.side_effect = None
+
     def test_all_open_pr_pages_are_checked(self):
         original = self.api
         def api(path, method='GET', data=None):
@@ -289,6 +311,49 @@ class MainContractEventTests(unittest.TestCase):
             return original(path, method, data)
         self.assertEqual(ci.recheck_main_repairs(api, 'shinma06/android-replay-buffer'), [90])
         self.assertTrue(any(c[0].endswith('page=2') for c in self.calls))
+
+    def test_dependency_response_shape_failure_invalidates_known_prs_before_reporting(self):
+        self.issue['body'] = 'Acceptance repair: none'
+        second = copy.deepcopy(self.pr)
+        second['number'] = 91
+        second['head'].update(sha=MOVED, ref='codex/91-repair')
+        second['body'] = second['body'].replace('#90', '#91').replace('issue-90', 'issue-91')
+        invalid = [None, [], {}, {'object': None}, {'object': []}, {'object': {}}]
+        invalid += [{'object': {'sha': sha}} for sha in (None, 1, True, [], {}, '', BASE[:7], '--all', 'g' * 40)]
+        cases = [('git/ref/heads/develop', response, response in invalid)
+                 for response in [*invalid, {'object': {'sha': BASE}}]]
+        cases += [('issues/90', response, True) for response in (
+            None, [], {}, {'body': False, 'labels': []}, {'body': [], 'labels': []},
+            {'body': None}, {'body': '', 'labels': None}, {'body': '', 'labels': {}},
+            {'body': '', 'labels': [None]}, {'body': '', 'labels': [{}]},
+            {'body': '', 'labels': [{'name': 1}]})]
+        cases.append(('issues/90', {'body': None, 'labels': []}, False))
+        for endpoint, response, invalid in cases:
+            with self.subTest(endpoint=endpoint, response=response):
+                self.calls.clear()
+                self.fetch.reset_mock()
+                self.certificates.return_value = ['changed-certificate']
+                def api(path, method='GET', data=None):
+                    if path.startswith('pulls?'): return [self.pr, second]
+                    if path == endpoint: return response
+                    if path == 'issues/91': return {'body': 'Acceptance repair: 123'}
+                    if path.startswith('actions/workflows/') and MOVED in path:
+                        return {'workflow_runs': [dict(self.run, id=43, head_sha=MOVED,
+                                                      pull_requests=[{'number': 91}])]}
+                    return self.api(path, method, data)
+                if invalid:
+                    with self.assertRaisesRegex(ValueError, 'response') as raised:
+                        ci.recheck_main_repairs(api, 'shinma06/android-replay-buffer')
+                    self.assertIn('PR 90: acceptance dependency unknown', raised.exception.__notes__[0])
+                    self.fetch.assert_not_called()
+                else:
+                    self.assertEqual(ci.recheck_main_repairs(api, 'shinma06/android-replay-buffer'), [90, 91])
+                    self.fetch.assert_called_once_with(
+                        ['git', 'fetch', '--no-tags', 'origin', BASE, HEAD], check=True)
+                writes = [c for c in self.calls if c[1] == 'POST']
+                self.assertEqual([c[0] for c in writes], ['statuses/' + HEAD, 'statuses/' + MOVED,
+                                                        'actions/runs/42/rerun', 'actions/runs/43/rerun'])
+                self.assertTrue(all(c[2]['state'] == 'pending' for c in writes[:2]))
 
     def test_transient_page_failure_retries_same_page_before_all_reruns(self):
         second = copy.deepcopy(self.pr)
@@ -386,7 +451,7 @@ class MainContractEventTests(unittest.TestCase):
                         def log_message(handler, *args): pass
 
                     server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
-                    thread = threading.Thread(target=server.serve_forever)
+                    thread = threading.Thread(target=server.serve_forever, kwargs={'poll_interval': 0.01})
                     thread.start()
                     def api(path, method='GET', data=None):
                         if path.startswith('pulls?'):
@@ -458,7 +523,8 @@ class MainContractEventTests(unittest.TestCase):
         second['head'].update(sha=MOVED, ref='codex/91-repair')
         second['body'] = second['body'].replace('#90', '#91').replace('issue-90', 'issue-91')
         filler = dict(self.pr, head=dict(self.pr['head'], ref='unscoped'))
-        phases = {'issue': 'issues/90', 'status': 'statuses/' + HEAD,
+        phases = {'issue': 'issues/90', 'issue_sync': 'issues/90', 'status': 'statuses/' + HEAD,
+                  'develop': 'git/ref/heads/develop',
                   'run': 'actions/workflows/acceptance.yml/runs?event=pull_request&head_sha=' + HEAD + '&per_page=1',
                   'rerun': 'actions/runs/42/rerun'}
         cases = [(phase, failure, False) for phase in phases
@@ -466,6 +532,9 @@ class MainContractEventTests(unittest.TestCase):
         cases += [('run', failure, True) for failure in ('truncated', 'json', 'encoding')]
         for phase, failure, incomplete in cases:
             with self.subTest(phase=phase, failure=failure, incomplete=incomplete):
+                self.issue['body'] = ('Acceptance repair: none' if phase in ('develop', 'issue_sync')
+                                      else 'Acceptance repair: 123')
+                self.certificates.return_value = ['changed-certificate']
                 requests, failures = [], []
                 target = phases[phase]
                 class Handler(BaseHTTPRequestHandler):
@@ -480,6 +549,7 @@ class MainContractEventTests(unittest.TestCase):
                         if path.startswith('pulls?'):
                             value = [self.pr, second, *[filler] * 98] if incomplete else [self.pr, second]
                         elif path.startswith('issues/'): value = self.issue
+                        elif path == 'git/ref/heads/develop': value = {'object': {'sha': BASE}}
                         elif path.startswith('actions/workflows/'):
                             value = {'workflow_runs': [self.run if HEAD in path else dict(
                                 self.run, id=43, head_sha=MOVED, pull_requests=[{'number': 91}])]}
@@ -499,7 +569,7 @@ class MainContractEventTests(unittest.TestCase):
                     def log_message(handler, *args): pass
 
                 server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
-                thread = threading.Thread(target=server.serve_forever)
+                thread = threading.Thread(target=server.serve_forever, kwargs={'poll_interval': 0.01})
                 thread.start()
                 def local_urlopen(request, timeout):
                     local = Request(f'http://127.0.0.1:{server.server_port}/' + request.full_url.split('/repos/shinma06/android-replay-buffer/', 1)[1],
@@ -525,17 +595,19 @@ class MainContractEventTests(unittest.TestCase):
                                 self.assertRaises(expected) as caught:
                             ci.main()
                     self.assertIs(caught.exception, failures[2] if incomplete else failures[0])
+                    writes = [path for method, path in requests if method == 'POST']
+                    self.assertEqual(writes[:2], ['statuses/' + HEAD, 'statuses/' + MOVED])
                     notes = '; '.join(caught.exception.__notes__)
                     self.assertIn('PR 90', notes)
-                    self.assertIn('source lookup or review invalidation' if phase in ('issue', 'status') else
+                    self.assertIn('dependency unknown' if phase in ('issue', 'issue_sync', 'develop') else
+                                  'source lookup or review invalidation' if phase == 'status' else
                                   'Acceptance lookup or rerun', notes)
-                    self.assertEqual(requests.count(('POST' if phase in ('status', 'rerun') else 'GET', target)), 1)
+                    self.assertEqual(requests.count(('POST' if phase in ('status', 'rerun') else 'GET', target)),
+                                     2 if phase == 'develop' else 1)
                     self.assertIn(('POST', 'statuses/' + MOVED), requests)
                     self.assertIn(('POST', 'actions/runs/43/rerun'), requests)
-                    self.assertEqual(('POST', 'actions/runs/42/rerun') in requests, phase == 'rerun')
-                    writes = [path for method, path in requests if method == 'POST']
-                    self.assertEqual(writes[:1 if phase == 'issue' else 2],
-                                     ['statuses/' + MOVED] if phase == 'issue' else ['statuses/' + HEAD, 'statuses/' + MOVED])
+                    self.assertEqual(('POST', 'actions/runs/42/rerun') in requests,
+                                     phase in ('rerun', 'develop', 'issue', 'issue_sync'))
                     if incomplete:
                         self.assertIn('page 2 after 3 attempts', notes)
                         self.assertEqual(sum(path.endswith('page=2') for _, path in requests), 3)
@@ -547,18 +619,24 @@ class MainContractEventTests(unittest.TestCase):
                     thread.join(timeout=2)
                 self.assertFalse(thread.is_alive())
 
-    def test_per_pr_boundary_does_not_catch_programming_errors(self):
+    def test_per_pr_boundary_preserves_unexpected_errors(self):
         original = self.api
         for phase in ('issues/90', 'statuses/' + HEAD, 'actions/workflows/', 'actions/runs/42/rerun'):
             for failure in (TypeError('programming error'), ValueError('programming error')):
                 with self.subTest(phase=phase, failure=type(failure).__name__):
+                    self.calls.clear()
                     def api(path, method='GET', data=None):
                         if path.startswith(phase): raise failure
                         return original(path, method, data)
                     with self.assertRaises(type(failure)) as caught:
                         ci.recheck_main_repairs(api, 'shinma06/android-replay-buffer')
                     self.assertIs(caught.exception, failure)
-                    self.assertFalse(hasattr(failure, '__notes__'))
+                    if phase == 'issues/90' and isinstance(failure, ValueError):
+                        self.assertIn('dependency unknown', failure.__notes__[0])
+                        self.assertEqual([c[0] for c in self.calls if c[1] == 'POST'],
+                                         ['statuses/' + HEAD, 'actions/runs/42/rerun'])
+                    else:
+                        self.assertFalse(hasattr(failure, '__notes__'))
 
     def test_missing_stale_or_running_acceptance_never_restores_success(self):
         for run in (None, dict(self.run, head_sha=MOVED), dict(self.run, status='in_progress'),

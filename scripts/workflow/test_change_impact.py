@@ -15,11 +15,13 @@ class ClassificationTest(unittest.TestCase):
     def test_checks_keep_selected_interpreter_when_path_points_elsewhere(self):
         with patch.object(ci.sys, 'executable', '/selected/python3'), patch.dict(os.environ, PATH='/other'):
             result = ci.classify([], reason='missing history')
-            self.assertEqual(ci.test_commands(result), [
+            expected = [
                 ['/selected/python3', 'scripts/check.py'],
                 ['/selected/python3', 'scripts/workflow/product_check.py'],
-                ['/selected/python3', 'scripts/workflow/plugin_check.py'],
-            ])
+            ]
+            if (Path(__file__).resolve().parents[2] / 'plugin').is_dir():
+                expected.append(['/selected/python3', 'scripts/workflow/plugin_check.py'])
+            self.assertEqual(ci.test_commands(result), expected)
 
     def test_required_eight_cases_and_semantic_exceptions(self):
         cases = [
@@ -57,7 +59,11 @@ class ClassificationTest(unittest.TestCase):
         for result in (ci.classify([]), ci.classify([], reason='API/history failure'),
                        ci.classify([('README.md', ('100644',))], force_full=True)):
             self.assertTrue(all(result[x] for x in ('product_check', 'tooling_test')))
-            self.assertEqual(len(ci.test_commands(result)), 3)
+            expected = [[sys.executable, 'scripts/check.py'],
+                        [sys.executable, 'scripts/workflow/product_check.py']]
+            if (Path(__file__).resolve().parents[2] / 'plugin').is_dir():
+                expected.append([sys.executable, 'scripts/workflow/plugin_check.py'])
+            self.assertEqual(ci.test_commands(result), expected)
 
 
 class GitImpactTest(unittest.TestCase):

@@ -12,7 +12,7 @@ from unittest.mock import Mock, call, patch
 
 import agent_loop as al
 from change_impact import classify
-from agent_policy import binding, eligible, gui_pass, in_scope, next_action, update_parent, validate_review
+from agent_policy import binding, native_session, eligible, gui_pass, in_scope, next_action, update_parent, validate_review
 from agent_worker import bind_report_session, event_session, main as bind_manual_report, worker_environment, run_worker
 
 HEAD = 'a' * 40
@@ -46,6 +46,110 @@ class PolicyTests(unittest.TestCase):
         p = copy.deepcopy(good); p['body'] = 'Issue: #99'; variants.append(p)
         for p in variants:
             self.assertFalse(eligible(p, al.OWNER, al.REPO))
+
+    def test_typed_and_existing_branches_keep_the_same_issue(self):
+        for branch in ('codex/35-test', 'codex/35-chore-branch-lifecycle'):
+            pr = pr_data(); pr['head']['ref'] = branch
+            self.assertEqual(al.issue_number(pr), 35)
+            self.assertTrue(eligible(pr, al.OWNER, al.REPO))
+
+    def test_closed_unmerged_audit_retains_reused_refs_even_with_apply(self):
+        closed = dict(pr_data(), state='closed', merged_at=None)
+        merged = dict(pr_data(), number=34, state='closed', merged_at='2026-10-10T00:00:00Z')
+        gh = Mock(); gh.pages.return_value = [closed, merged]
+        for tip in (HEAD, NEW):
+            def git(*args):
+                if args[-1] == 'refs/heads/': return f'codex/35-test {tip}\nmain {BASE}'
+                return ''
+            with self.subTest(tip=tip), patch.object(al, 'git', side_effect=git) as calls:
+                self.assertEqual(al.audit_branches(gh, apply=True), [
+                    {'branch': 'codex/35-test', 'ref': 'refs/heads/codex/35-test', 'head': tip,
+                     'state': 'retained-closed-unmerged', 'pr': 36, 'pr_head': HEAD, 'head_matches': tip == HEAD}])
+                self.assertFalse(any(c.args[0] == 'update-ref' for c in calls.call_args_list))
+
+    def test_merged_audit_keeps_existing_sha_worktree_and_remote_guards(self):
+        pr = dict(pr_data(), state='closed', merged_at='2026-10-10T00:00:00Z')
+        gh = Mock(); gh.pages.return_value = [pr]
+        for tip, worktree, remote, expected in (
+                (NEW, '', '', None),
+                (HEAD, 'branch refs/heads/codex/35-test', '', 'retained-active-worktree'),
+                (HEAD, '', HEAD, 'retained-remote-ref'),
+                (HEAD, '', '', 'deleted')):
+            def git(*args):
+                if args[-1] == 'refs/heads/': return f'codex/35-test {tip}'
+                if args[:2] == ('worktree', 'list'): return worktree
+                if args[0] == 'ls-remote': return remote
+                return ''
+            with self.subTest(expected=expected), patch.object(al, 'git', side_effect=git) as calls:
+                result = al.audit_branches(gh, apply=True)
+                self.assertEqual([r['state'] for r in result], [] if expected is None else [expected])
+                self.assertEqual(any(c.args[0] == 'update-ref' for c in calls.call_args_list), expected == 'deleted')
+
+    def test_tracking_only_unmerged_ref_survives_audit_and_apply(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / 'local'; remote = Path(tmp) / 'deleted-head-remote'
+            env = worker_environment()
+            for repo in (root, remote):
+                subprocess.run(['git', 'init', '--bare', '--quiet', str(repo)], env=env, check=True)
+                subprocess.run(['git', 'config', 'maintenance.auto', 'false'], cwd=repo, env=env, check=True)
+            def git(*args, **kwargs):
+                return subprocess.check_output(['git', *args], cwd=root, env=env, text=True).strip()
+            git('config', 'user.name', 'Test'); git('config', 'user.email', 'test@example.invalid')
+            git('remote', 'add', 'origin', str(remote)); git('config', 'remote.origin.prune', 'true')
+            tree = subprocess.check_output(['git', 'mktree'], input='', cwd=root, env=env, text=True).strip()
+            head = git('commit-tree', tree, '-m', 'unmerged fixture')
+            ref = 'refs/remotes/origin/codex/35-test'; git('update-ref', ref, head)
+            pr = dict(pr_data(), state='closed', merged_at=None); pr['head']['sha'] = head
+            gh = Mock(); gh.pages.return_value = [pr]
+            for apply in (False, True):
+                with patch.object(al, 'git', side_effect=git) as calls:
+                    self.assertEqual(al.audit_branches(gh, apply), [{'branch': 'codex/35-test',
+                        'ref': ref, 'head': head, 'state': 'retained-closed-unmerged', 'pr': 36,
+                        'pr_head': head, 'head_matches': True}])
+                    self.assertFalse(any(c.args[0] in ('fetch', 'update-ref') for c in calls.call_args_list))
+                self.assertEqual(git('rev-parse', ref), head)
+
+    def test_automatic_fix_uses_validated_meaningful_pr_title_before_staging(self):
+        pr = pr_data()
+        loop = object.__new__(al.Loop); loop.gh = Mock()
+        for title, valid in ((pr['title'], True), ('Address automated review for #35', False),
+                             ('fix: 別Issueの修正 (#99)', False)):
+            pr['title'] = title
+            loop.gh.pr.return_value = copy.deepcopy(pr)
+            def git(*args, **kwargs):
+                return 'docs/a.md' if args[0] == 'diff' else ''
+            with self.subTest(title=title), patch.object(al, 'git', side_effect=git) as calls:
+                if valid:
+                    al.Loop.commit_fix(loop, Path('/fixture'), {'scope': ['docs/'], 'issue': 35}, pr)
+                    self.assertIn(call('commit', '-m', title, cwd=Path('/fixture')), calls.call_args_list)
+                else:
+                    with self.assertRaises(ValueError):
+                        al.Loop.commit_fix(loop, Path('/fixture'), {'scope': ['docs/'], 'issue': 35}, pr)
+                    self.assertFalse(any(c.args[0] in ('add', 'commit') for c in calls.call_args_list))
+
+    def test_unmerged_audit_reports_every_reused_pr_head_and_missing_refs(self):
+        a = dict(pr_data(), state='closed', merged_at=None)
+        b = copy.deepcopy(a); b['number'] = 37; b['head']['sha'] = NEW
+        c = copy.deepcopy(a); c['number'] = 38; c['head']['ref'] = 'codex/35-missing'
+        gh = Mock(); gh.pages.return_value = [a, b, c]
+        def git(*args):
+            if args[-1] == 'refs/heads/': return f'codex/35-test {NEW}'
+            if args[-1] == 'refs/remotes/origin/': return f'refs/remotes/origin/codex/35-test {HEAD}'
+            return ''
+        with patch.object(al, 'git', side_effect=git) as calls:
+            rows = al.audit_branches(gh, apply=True)
+        self.assertEqual([(r['pr'], r['head'], r['pr_head'], r['head_matches']) for r in rows],
+                         [(36, HEAD, HEAD, True), (37, HEAD, NEW, False),
+                          (36, NEW, HEAD, False), (37, NEW, NEW, True), (38, None, HEAD, False)])
+        self.assertFalse(any(c.args[0] in ('fetch', 'update-ref') for c in calls.call_args_list))
+
+    def test_changed_live_title_blocks_fix_before_staging(self):
+        pr = pr_data(); latest = copy.deepcopy(pr); latest['title'] = 'fix: 題名を変更する (#35)'
+        loop = object.__new__(al.Loop); loop.gh = Mock(); loop.gh.pr.return_value = latest
+        with patch.object(al, 'git', side_effect=lambda *a, **kw: 'docs/a.md' if a[0] == 'diff' else '') as calls:
+            with self.assertRaisesRegex(ValueError, 'Live PR changed'):
+                loop.commit_fix(Path('/fixture'), {'scope': ['docs/'], 'issue': 35}, pr)
+            self.assertFalse(any(c.args[0] in ('add', 'commit') for c in calls.call_args_list))
 
     def test_binding_invalidates_approval(self):
         p = pr_data(); issue = {'body': '- [ ] value is correct'}
@@ -135,6 +239,40 @@ class RootTests(unittest.TestCase):
             explicit = Path('/explicit/worktree')
             al.git('status', cwd=explicit)
             self.assertEqual(run.call_args.kwargs['cwd'], explicit)
+
+    def test_acceptance_git_failures_keep_real_exit_and_private_diagnostics(self):
+        with tempfile.TemporaryDirectory() as folder:
+            subprocess.check_output(['git', 'init', '-q'], cwd=folder)
+            loop = al.Loop(storage=folder)
+            def validate(pr, api, git):
+                return {'value': git('show', 'sensitive-ref')}
+            with patch.object(al, 'verify_pr', side_effect=validate), \
+                    patch.object(al.subprocess, 'run', wraps=subprocess.run) as run, \
+                    patch.dict(os.environ, {'GIT_DIR': 'foreign', 'GH_TOKEN': 'secret'}):
+                accepted = loop.acceptance({}, Path(folder))
+            self.assertFalse(accepted['allowed'])
+            self.assertIn('CalledProcessError', accepted['reason'])
+            self.assertNotIn('sensitive-ref', accepted['reason'])
+            self.assertNotIn('fatal:', accepted['reason'])
+            self.assertEqual(run.call_args.kwargs['timeout'], 120)
+            self.assertEqual(run.call_args.kwargs['cwd'], Path(folder))
+            self.assertNotIn('GIT_DIR', run.call_args.kwargs['env'])
+            self.assertNotIn('GH_TOKEN', run.call_args.kwargs['env'])
+            diagnostics = list((Path(folder) / 'diagnostics').iterdir())
+            self.assertEqual(len(diagnostics), 1)
+            self.assertEqual(diagnostics[0].stat().st_mode & 0o777, 0o600)
+            self.assertIn('exit status 128', diagnostics[0].read_text())
+
+    def test_acceptance_timeout_does_not_become_a_missing_source_or_success(self):
+        with tempfile.TemporaryDirectory() as folder:
+            loop = al.Loop(storage=folder)
+            def validate(pr, api, git):
+                return {'value': git('cat-file', '-t', HEAD)}
+            with patch.object(al, 'verify_pr', side_effect=validate), \
+                    patch.object(al.subprocess, 'run', side_effect=subprocess.TimeoutExpired('git', 120)) as run:
+                with self.assertRaises(subprocess.TimeoutExpired):
+                    loop.acceptance({}, Path(folder))
+                self.assertEqual(run.call_count, 1)
 
 
 class BaseReferenceTests(unittest.TestCase):
@@ -372,7 +510,8 @@ class WorkerTests(unittest.TestCase):
             self.assertEqual(event_session(path), session)
             for invalid in ([], [done], [start], [start, start, done], [start, done, done],
                             [dict(start, thread_id='review-' + session), done],
-                            [dict(start, thread_id=None), done], [start, {'type': 'turn.failed'}, done],
+                            [dict(start, thread_id=None), done],
+                            [dict(start, thread_id=native_session('example.invalid', 'Native-1')), done], [start, {'type': 'turn.failed'}, done],
                             [start, {'type': 'error'}, done], [start, []], [start, {'type': 1}]):
                 path.write_text(''.join(json.dumps(x) + '\n' for x in invalid))
                 with self.subTest(events=invalid), self.assertRaises(ValueError): event_session(path)
@@ -394,6 +533,10 @@ class WorkerTests(unittest.TestCase):
                 self.assertEqual(json.loads(target.read_text())['session'], session)
                 self.assertEqual(target.stat().st_mode & 0o777, 0o600)
                 with self.assertRaises(FileExistsError): bind_manual_report()
+            with patch.object(sys, 'argv', args), patch.dict(os.environ,
+                    {'CODEX_THREAD_ID': native_session('example.invalid', 'Native-1')}):
+                with self.assertRaisesRegex(ValueError, 'Codex source'):
+                    bind_manual_report()
             self.assertEqual(source.read_bytes(), original)
             for claimed in ('review-' + session, 'public reviewer', '00000000-0000-4000-8000-000000000001'):
                 with self.subTest(claimed=claimed), self.assertRaisesRegex(ValueError, 'differs'):
@@ -559,6 +702,15 @@ class LoopTests(unittest.TestCase):
         self.assertNotIn('review', state)
         self.assertTrue(any(c.args[:2] == ('push', 'origin') for c in al.git.call_args_list))
 
+    def test_title_change_before_or_during_tests_never_pushes(self):
+        for during_tests in (False, True):
+            pr = pr_data(); changed = copy.deepcopy(pr); changed['title'] = 'fix: 題名を変更する (#35)'
+            self.gh.pr = Mock(side_effect=[pr, changed] if during_tests else [changed])
+            with patch.object(al, 'command', return_value=''):
+                with self.assertRaisesRegex(ValueError, 'changed'):
+                    al.Loop.test_and_push(self.loop, pr, self.checkout, {})
+            self.assertFalse(any(c.args[0] == 'push' for c in al.git.call_args_list))
+
     def prepare_issue_guard_review(self, target):
         # Keep each race scenario independent, including its saved controller state.
         handoff, _, _, _ = self.loop.load(36)
@@ -662,10 +814,11 @@ class LoopTests(unittest.TestCase):
         self.loop.test_and_push = lambda *args: al.Loop.test_and_push(self.loop, *args)
         with patch.object(al, 'command', return_value='') as commands:
             self.assertEqual(self.loop.tick(36)['phase'], 'base-synced')
-        self.assertEqual([c.args[0] for c in commands.call_args_list], [
-            [sys.executable, 'scripts/check.py'],
-            [sys.executable, 'scripts/workflow/product_check.py'],
-            [sys.executable, 'scripts/workflow/plugin_check.py']])
+        expected = [[sys.executable, 'scripts/check.py'],
+                    [sys.executable, 'scripts/workflow/product_check.py']]
+        if (Path(__file__).resolve().parents[2] / 'plugin').is_dir():
+            expected.append([sys.executable, 'scripts/workflow/plugin_check.py'])
+        self.assertEqual([c.args[0] for c in commands.call_args_list], expected)
         self.assertTrue(any(c.args == ('push', 'origin', 'HEAD:refs/heads/codex/35-test')
                             for c in al.git.call_args_list))
         _, state, _, _ = self.loop.load(36)
@@ -751,6 +904,18 @@ class LoopTests(unittest.TestCase):
         self.assertFalse(any(c.args[0] == 'push' for c in al.git.call_args_list))
         self.assertEqual(self.local_head, NEW)
         for key in ('binding', 'review', 'gui'): self.assertNotIn(key, state)
+
+    def test_closed_unmerged_tick_reports_retention_without_claim_or_resource_changes(self):
+        self.gh.pull.update(state='closed', merged=False)
+        for paused in (False, True):
+            self.gh.comment(36, al.pack(al.STATE, {'phase': 'blocked', 'paused': paused}))
+            before = copy.deepcopy(self.gh.messages)
+            result = self.loop.tick(36)
+            self.assertEqual(result['phase'], 'retained-closed-unmerged')
+            self.assertEqual(self.gh.messages, before)
+            self.assertEqual(self.gh.issues[35]['state'], 'open')
+            self.loop.cleanup.assert_not_called(); self.worker.assert_not_called()
+            self.assertEqual(self.gh.merges, 0)
 
     def test_review_fix_rereview_merge_issue_cleanup(self):
         reports = [report('changes_requested'), report(), report(head=NEW)]

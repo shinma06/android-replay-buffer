@@ -51,6 +51,8 @@ Next: named recipient, action and condition. No action means STOP.
 
 PMは着手可能な仕事、scope、責任者、成果物、停止条件、独立性、共有資源から必要な役割だけを選びます。検証の割当は[作業担当依頼文](team-worker-prompt.md)の「保証→既存証拠→不足事実→手段」を先に作り、不足がない保証へ新たな実行担当を置きません。担当と独立レビュアーにはこの根拠を渡し、準備確認だけのレビューと証拠の十分性・受入の評価を区別します。空き人数を埋めるために常時チームを起動しません。子agent/CLI worker禁止や新chat作成toolの明示依頼条件は[実行規約](execution-policy.md)のままです。本人から都度編成を委任されているか実指示を照合し、規約だけを作成許可にしません。
 
+PM/OMILの開始・引継ぎでは、[OMILの現行判断](omil-current.md)と[フェーズ点検運用](omil-phase-review.md)から、採用条件・未確認・次の契機を確認します。これらの公開文書を運用の入口とし、実連絡先だけをprivate記録へ分離します。
+
 実際のPM・窓口・現担当のchat/host等は既存private引継ぎ記録へ保存します。本プロジェクトで経路記録がなければGit外の`.harness-local/team-contact/routes.private.json`を1つ使えます。記録は連絡先と本人依頼の参照に限り、Issueの状態・承認・テストを複製する新しい正本や自動ルーターにしません。後任は実chatの存在・役割・終了状態を読み戻します。
 
 解体時は実session/jobの停止、未回収成果、claim、dirty、共有GUI lease、未公開資源とPAUSED jobを確認します。本人の明示解体・再割当と旧担当の停止を根拠に、PMが未完scopeの保管責任を引き取り、既存Issue/PRへ後任未配置・再開条件を残します。archiveや時間経過をclaim解放の根拠にしません。残QA・fail・人間/REAL延期は維持し、後任は固定成果から引き継ぎます。
