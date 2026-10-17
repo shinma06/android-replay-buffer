@@ -261,6 +261,7 @@ def publish(path, record, target):
     previous = None
     if release:
         previous = read_record(release['body'])
+        require(release['body'] == release_body(previous), 'Release notes changed outside this publisher')
         require(previous['channel'] == record['channel'] and (not early or not release.get('immutable'))
                 and release['prerelease'] == early, 'Release ownership/channel/immutability mismatch')
         require(early or previous == record, 'Stable release identity cannot be replaced')

@@ -226,6 +226,17 @@ class ReleaseDeliveryTest(unittest.TestCase):
             delivery.publish(self.archive, record, MAIN)
         self.assertEqual(len(self.repo.mutations), before)
 
+    def test_human_edited_release_notes_are_preserved(self):
+        record = self.record()
+        delivery.publish(self.archive, record, MAIN)
+        self.repo.releases[0]['body'] = 'Human note\n' + self.repo.releases[0]['body']
+        original = self.repo.releases[0]['body']
+        before = len(self.repo.mutations)
+        with self.assertRaisesRegex(ValueError, 'notes changed'):
+            delivery.publish(self.archive, record, MAIN)
+        self.assertEqual(self.repo.releases[0]['body'], original)
+        self.assertEqual(len(self.repo.mutations), before)
+
     def test_missing_failed_cancelled_duplicate_required_checks_are_not_success(self):
         for state in ('FAILURE', 'CANCELLED', 'PENDING', 'TIMED_OUT', None):
             data = [{'name': n, 'state': 'SUCCESS'} for n in (*delivery.CI_CHECKS, delivery.CONTEXT)]
