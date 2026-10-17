@@ -62,7 +62,7 @@ ARBの要件・有効な責任/受入契約・実装とテストを基準にし�
 
 [PR タイトル規約](work-management.md#pr-タイトル) の `type: 日本語の要約 (#N)` を作成・ready・固定レビュー・merge 前の実 metadata に適用します。題名の変更は固定 review binding を失効させ、policy/独立評価を照合し直します。Issue 題名と commit 履歴の形式は変更しません。
 
-最初の意味ある push で Draft PR を作成し、PR テンプレートの `Issue / Integration / Verification / GUI / GUI reason` を埋めます。[PR sidebar の実情報](work-management.md#pr-sidebar-の実情報)に従って native Assignees/Labels/Projects/Milestone/Reviewers を設定・読み戻し、ready・修正再開・終了時にも照合します。[Development の実関連](work-management.md#development-の実関連)に従って対応 PR を結び、両端と Issue 状態を読み戻します。main の未完 Issue は関連を終了時まで保留し、理由・担当・次操作を記録します。受入は `docs/verification/changes/issue-N.json` に記録します。独立したセッションへ固定 HEAD/base と受入を渡し、具体的な指摘を修正して必要な再レビューを行います。自己レビューや CI 成功を独立レビューの代わりにしません。
+最初の意味ある push で Draft PR を作成し、PR テンプレートの `Issue / Integration / Verification / GUI / GUI reason` を埋めます。[PR sidebar の実情報](work-management.md#pr-sidebar-の実情報)に従って native Assignees/Labels/Projects/Milestone/Reviewers を設定・読み戻し、ready・修正再開・終了時にも照合します。[Development の実関連](work-management.md#development-の実関連)に従って対応 PR を結び、両端と Issue 状態を読み戻します。main の未完 Issue は関連を終了時まで保留し、理由・担当・次操作を記録します。受入は `docs/verification/changes/issue-N.json` に記録します。[現行のレビュー依頼](review-prompt.md)で独立したセッションへ固定 HEAD/base と受入を渡し、具体的な指摘を修正して必要な再レビューを行います。自己レビューや CI 成功を独立レビューの代わりにしません。
 
 | target / Integration | 統合条件 | merge |
 |---|---|---|
