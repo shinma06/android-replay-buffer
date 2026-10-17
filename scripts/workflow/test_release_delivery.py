@@ -113,7 +113,7 @@ class Repository:
             raise OSError('upload response lost')
         return json.dumps(asset)
 
-    def download(self, path, destination):
+    def download(self, path, destination, accept='application/octet-stream'):
         destination.write_bytes(self.files[int(path.split('/')[2])])
 
 
@@ -142,6 +142,37 @@ else:
                 delivery.checks({'number': 1})
                 self.assertTrue(json.loads(delivery.command(['gh', 'api', '--method', 'POST',
                     'https://uploads.github.com/repos/' + delivery.REPO + '/releases/1/assets']))['authenticated'])
+
+
+class DeliveryDownloadTest(unittest.TestCase):
+    def test_artifact_and_release_asset_use_their_download_media_types(self):
+        product = package()
+        transport = io.BytesIO()
+        with zipfile.ZipFile(transport, 'w') as archive:
+            archive.writestr('plugin.zip', product)
+        responses = {
+            f'repos/{delivery.REPO}/actions/artifacts/12/zip':
+                ('application/vnd.github+json', transport.getvalue()),
+            f'repos/{delivery.REPO}/releases/assets/34':
+                ('application/octet-stream', product),
+        }
+
+        def respond(args, *, stdout, check, timeout):
+            accept, data = responses[args[2]]
+            self.assertIn('Accept: ' + accept, args)
+            self.assertTrue(check)
+            self.assertEqual(timeout, 180)
+            stdout.write(data)
+
+        item = {'id': 12, 'size_in_bytes': len(transport.getvalue()),
+                'digest': 'sha256:' + hashlib.sha256(transport.getvalue()).hexdigest()}
+        with (tempfile.TemporaryDirectory() as folder,
+              patch.object(delivery.subprocess, 'run', side_effect=respond) as run):
+            archive = delivery.download_artifact(item, Path(folder))
+            self.assertEqual(archive.read_bytes(), product)
+            delivery.verify_asset({'id': 34, 'state': 'uploaded', 'size': len(product),
+                                   'digest': 'sha256:' + hashlib.sha256(product).hexdigest()}, archive)
+            self.assertEqual(run.call_count, 2)
 
 
 class ReleaseDeliveryTest(unittest.TestCase):
