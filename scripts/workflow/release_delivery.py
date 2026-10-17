@@ -108,13 +108,24 @@ def identity(path, source, expected_hash):
     return {'source': source, 'version': found[0], 'sha256': expected_hash, 'size': path.stat().st_size}
 
 
+def workflow_matches(run, path):
+    workflow = api('actions/workflows/' + quote(Path(path).name, safe=''))
+    branch = run.get('head_branch')
+    # Resolve current identity independently of the run's optional ref suffix.
+    return (isinstance(workflow, dict) and type(workflow.get('id')) is int and workflow['id'] > 0
+            and workflow.get('path') == path and type(run.get('workflow_id')) is int
+            and run['workflow_id'] == workflow['id']
+            and (run.get('path') == path or isinstance(branch, str) and branch != ''
+                 and run.get('path') == path + '@' + branch))
+
+
 def producer_run(run_id, source, workflow='.github/workflows/ci.yml'):
     require(type(run_id) is int and run_id > 0 and SHA.fullmatch(source or ''), 'Invalid run or source')
     run = api(f'actions/runs/{run_id}')
     require(run.get('repository', {}).get('full_name') == REPO
             and run.get('head_repository', {}).get('full_name') == REPO
             and run.get('head_sha') == source and run.get('status') == 'completed'
-            and run.get('conclusion') == 'success' and run.get('path') == workflow,
+            and run.get('conclusion') == 'success' and workflow_matches(run, workflow),
             'Artifact must come from the identified successful repository workflow')
     require(run.get('event') in ('push', 'workflow_dispatch'), 'PR artifacts cannot directly become release assets')
     return run
@@ -172,7 +183,7 @@ def candidate_archive(expected_hash, directory):
     require(run.get('repository', {}).get('full_name') == REPO
             and run.get('head_repository', {}).get('full_name') == REPO
             and run.get('head_branch') == 'main' and run.get('event') == 'workflow_dispatch'
-            and run.get('path') == '.github/workflows/release-candidate.yml'
+            and workflow_matches(run, '.github/workflows/release-candidate.yml')
             and run.get('status') == 'completed' and run.get('conclusion') == 'success'
             and SHA.fullmatch(run.get('head_sha', '')), 'Candidate did not come from the trusted successful workflow')
     git('merge-base', '--is-ancestor', run['head_sha'], 'origin/main')
