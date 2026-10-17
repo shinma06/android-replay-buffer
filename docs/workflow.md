@@ -52,9 +52,9 @@ python3 scripts/bootstrap.py
 
 新規branchは [branch命名](work-management.md#branch-命名) の `codex/<Issue番号>-<type>-<短い英語の目的>` を既定とします。既存refは改名せず、旧形式の読取互換性を保ちます。運用変更だけなら origin/main を起点にします。main/master/develop へ直接 commit/push、force push、hook/保護の迂回、他担当の変更破棄は禁止です。
 
-## 先行プラグインの知見を使う
+## 本プロジェクトの仕様と任意の外部知見
 
-IDE/build/process/保存/UI/検証/共通ハーネスに関係する変更は、[Cursor知見活用の運用](android-studio.md#作業に組み込む運用)を開始・設計・レビューへ組み込みます。参照元の固定SHA、採用/適合/非適用の理由、こちらの検証を既存Issue/PRへ記録します。CLI固有の小修正や表記だけなら適用外を一言で示します。
+ARBの要件・有効な責任/受入契約・実装とテストを基準にします。[外部知見の再利用](android-studio.md#作業に組み込む運用)は具体的な不足を補う場合に任意で行い、採用したときだけ固定source・適合理由・ARBでの検証を既存Issue/PRへ記録します。Cursor in Android Studioの参照や不参照理由を、開始・レビュー・受入の条件にしません。過去の固定source・採否・観察/失敗は保持します。
 
 ## 検証と PR
 
@@ -62,7 +62,7 @@ IDE/build/process/保存/UI/検証/共通ハーネスに関係する変更は、
 
 [PR タイトル規約](work-management.md#pr-タイトル) の `type: 日本語の要約 (#N)` を作成・ready・固定レビュー・merge 前の実 metadata に適用します。題名の変更は固定 review binding を失効させ、policy/独立評価を照合し直します。Issue 題名と commit 履歴の形式は変更しません。
 
-最初の意味ある push で Draft PR を作成し、PR テンプレートの `Issue / Integration / Verification / GUI / GUI reason` を埋めます。[PR sidebar の実情報](work-management.md#pr-sidebar-の実情報)に従って native Assignees/Labels/Projects/Milestone/Reviewers を設定・読み戻し、ready・修正再開・終了時にも照合します。[Development の実関連](work-management.md#development-の実関連)に従って対応 PR を結び、両端と Issue 状態を読み戻します。main の未完 Issue は関連を終了時まで保留し、理由・担当・次操作を記録します。受入は `docs/verification/changes/issue-N.json` に記録します。独立したセッションへ固定 HEAD/base と受入を渡し、具体的な指摘を修正して必要な再レビューを行います。自己レビューや CI 成功を独立レビューの代わりにしません。
+最初の意味ある push で Draft PR を作成し、PR テンプレートの `Issue / Integration / Verification / GUI / GUI reason` を埋めます。[PR sidebar の実情報](work-management.md#pr-sidebar-の実情報)に従って native Assignees/Labels/Projects/Milestone/Reviewers を設定・読み戻し、ready・修正再開・終了時にも照合します。[Development の実関連](work-management.md#development-の実関連)に従って対応 PR を結び、両端と Issue 状態を読み戻します。main の未完 Issue は関連を終了時まで保留し、理由・担当・次操作を記録します。受入は `docs/verification/changes/issue-N.json` に記録します。[現行のレビュー依頼](review-prompt.md)で独立したセッションへ固定 HEAD/base と受入を渡し、具体的な指摘を修正して必要な再レビューを行います。自己レビューや CI 成功を独立レビューの代わりにしません。
 
 | target / Integration | 統合条件 | merge |
 |---|---|---|
