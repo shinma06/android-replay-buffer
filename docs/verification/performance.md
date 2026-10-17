@@ -8,7 +8,7 @@ sourceは `a49bef8ec4e934c24c1d7e16cf7bb9a953dd645f` に固定して調査しま
 
 | 経路 | Android側 | ホスト側・測定上の注意 |
 | --- | --- | --- |
-| OFF | ARBの画面・ログ・時計取得なし | `ReplayCore` の端末一覧pollは約1秒間隔。復旧journalがあれば所有資源のcleanupがあり得る。OFFを「ADB処理ゼロ」と定義しない |
+| OFF | ARBの画面・ログ・時計取得なし | 定期的な内部 `ReplayCore.poll()` は前回完了の1秒後に再実行。OFF中の `adb devices -l` は `cleanup.hasRecoverable && adbPath != null` の場合だけで、列挙成功後に所有資源cleanupを試す。復旧完了後の通常OFFではARBからADBを呼ばない |
 | 動画＋両ログ | scrcpy 4 server、H.264、max_size=1920、max_fps=30、8,000,000bit/s、audio/control=false、B-frame=0、I-frame間隔指定1秒。実FPS/GOPは実測する | 圧縮packetをdiskへ保持。通常はmain/allのbinary log readerを併用し、allに含まれるmainをホスト側で除外。legacy headerはall readerへfallback。重複転送と出力重複を区別する |
 | 時計・アプリ識別 | 開始時5回の時計sample後は約1秒。package/UIDとPID/UID/nameを照会し、各cycle後に1秒待機 | 起動直後と定常状態を分ける。appログは共有ログから導出し、別のapp専用logcatとは数えない |
 | 寸法一定のSave | 取得継続 | `SaveWriter` が圧縮packetをremux。動画のdecode/encodeはしない。snapshotをpinし、出力をatomicに公開 |
@@ -19,7 +19,7 @@ sourceは `a49bef8ec4e934c24c1d7e16cf7bb9a953dd645f` に固定して調査しま
 
 | 比較arm | 固定する状態 | 現在の実施可否 |
 | --- | --- | --- |
-| OFF | IDE/対象アプリ起動、ARB OFF、Studio logcat停止。復旧処理完了後 | 未測定 |
+| OFF | IDE/対象アプリ起動、ARB OFF、Studio logcat停止。復旧完了（`cleanupPendingCount=0`）後、ARBからADBを呼ばない状態を確認 | 未測定。ADB処理を観測したら発行元を確認し、復旧処理・観測器・別processの混入を未解決のまま通常OFFのbaselineへ含めない |
 | Studio-logcat | ARB OFF、実際のStudioのlogcat記録経路・buffer/filter・表示/保存設定を記録 | 導入済みIDEで経路の同定が必要。独自のadb redirectをStudio記録と呼ばない |
 | ARB-log | ログ中心モード、動画workerなし。ログ範囲・時計・アプリ識別は設定を記録 | 現行未実装。#274の固定成果物後に測定。動画取得後の出力削除で代用しない |
 | ARB-AV | 動画＋両ログ＋時計、Studio logcatは停止 | 未測定。ARB-logの結果を転用しない |
