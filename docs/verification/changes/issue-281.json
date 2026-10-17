@@ -2,12 +2,13 @@
   "schema": 1,
   "issue": 281,
   "gui_required": false,
-  "reason": "CI起動条件、ハーネス診断とHTTP故障テストfixtureの終了待ちを変更。製品コード・build command・成果物契約・IDE/端末操作は変更しない。",
+  "reason": "CI起動条件、ハーネス診断とHTTP故障テストの終了待ち、将来の変更で効率を判断する運用を変更。製品コード・build command・成果物契約・IDE/端末操作は変更しない。",
   "cli_checks": [
     "基準 d366013: 既存pre-pushの全519 tests成功（正当なskip 1）。PR CI run38997075162とCLI Python3.9成功。",
     "候補 607fb53: 既存pre-pushの全519 tests成功（正当なskip 1）。Plugin 183 tests、check/buildPlugin/verifyPluginStructure成功。",
     "CLI原型21ファイル照合・12 modules compile/import・既存2 tests成功。基準と候補の全519 test ID一致。",
     "診断あり/切戻しの実入口で正常成功・故障/空suite拒否。HTTP旧/新とも正常成功・隔離したproduction故障を拒否。起動遅延・終了も確認。",
+    "将来のCI効率判断をstart-work/finish-work/PR templateへ接続。今回の実文書変更、固定F05結果の再利用、異条件への性能主張拒否の判断経路と独立review残りをIssue281に記録。",
     "最終clean HEADのpre-push/CI、原本48観点・AT・6条件・比較と切戻しはIssue281の固定結果で追跡。未実施は成功としない。"
   ],
   "cases": []
