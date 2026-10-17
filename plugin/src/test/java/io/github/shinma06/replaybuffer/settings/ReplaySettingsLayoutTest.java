@@ -15,6 +15,7 @@ import com.intellij.ui.components.GradientViewport;
 import com.intellij.ui.components.JBTextArea;
 import com.intellij.util.ui.JBUI;
 import io.github.shinma06.replaybuffer.ide.ReplayProjectService;
+import io.github.shinma06.replaybuffer.core.CaptureMode;
 import kotlinx.coroutines.CoroutineScope;
 import org.junit.jupiter.api.Test;
 
@@ -50,7 +51,7 @@ class ReplaySettingsLayoutTest {
         try {
             SwingUtilities.invokeAndWait(() -> {
                 for (String destination : List.of("", "/disposable/" + "long-directory/".repeat(12) + "save")) {
-                    var saved = new ReplaySettingsState(false, 180, destination, AppSelectionMode.AUTOMATIC, "");
+                    var saved = new ReplaySettingsState(false, 180, destination, AppSelectionMode.AUTOMATIC, "", CaptureMode.VIDEO_AND_LOGS);
                     store.loadState(saved);
                     var configurable = new ReplaySettingsConfigurable(project);
                     try {
@@ -58,7 +59,7 @@ class ReplaySettingsLayoutTest {
                         configurable.reset();
                         var guide = (JBTextArea) find(panel, "package名の入力条件");
                         var fields = List.of(find(panel, "保持時間（1〜900秒）"), find(panel, "保存先フォルダ"),
-                            find(panel, "対象アプリの選択方法"), find(panel, "対象アプリのpackage名"));
+                            find(panel, "対象アプリの選択方法"), find(panel, "対象アプリのpackage名"), find(panel, "取得モード"));
                         assertEquals(guide.getText(), fields.get(3).getAccessibleContext().getAccessibleDescription());
                         assertFalse(guide.isEditable());
                         assertFalse(guide.isFocusable());

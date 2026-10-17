@@ -46,14 +46,25 @@ class ReplayCoreWireTest {
         runWireFixture(false, "partition", logReaderStartupDelayMillis = 2000)
     }
 
+    @Test
+    @EnabledOnOs(OS.MAC)
+    fun logOnlySkipsEveryVideoPathAndQuietRequestsRetryWithTheirFrozenMode() {
+        runWireFixture(false, "partition", captureMode = CaptureMode.LOG_ONLY)
+    }
+
     private fun runWireFixture(
         discardInitialPFrame: Boolean,
         logMode: String? = null,
         logReaderStartupDelayMillis: Long = 0,
+        captureMode: CaptureMode = CaptureMode.VIDEO_AND_LOGS,
     ) {
         val root = Files.createTempDirectory("replay-wire-fixture-")
         Files.writeString(root.resolve("probe-mode.txt"), logMode ?: "partition")
         Files.writeString(root.resolve("log-events.txt"), "")
+        if (captureMode == CaptureMode.LOG_ONLY) {
+            Files.createFile(root.resolve("unconfirmed-logs"))
+            Files.createFile(root.resolve("quiet-logs"))
+        }
         val devices = root.resolve("devices.txt")
         Files.writeString(devices, "List of devices attached\nfixture-1 device model:Fixture\nfixture-2 device model:Other\n")
         val pids = root.resolve("owned-pids.txt")
@@ -152,9 +163,11 @@ if a==['forward','--list']:
 elif a==['devices','-l']:
     print((root/'devices.txt').read_text(),end='')
 elif len(a)>2 and a[2]=='push':
-    pass
+    with (root/'pushed-files.txt').open('a') as f: f.write(pathlib.Path(a[3]).name+'\n')
 elif len(a)>2 and a[2]=='forward':
-    if '--remove' not in a: print(${server.localPort})
+    if '--remove' not in a:
+        with (root/'allocated-forwards.txt').open('a') as f: f.write('allocated\n')
+        print(${server.localPort})
 elif len(a)>2 and a[2]=='logcat':
     mode=(root/'probe-mode.txt').read_text()
     buffer=a[a.index('-b')+1]
@@ -179,11 +192,16 @@ elif len(a)>2 and a[2]=='logcat':
         time.sleep(${logReaderStartupDelayMillis}/1000)
     seen=len((root/'log-events.txt').read_text().splitlines())
     with launches.open('a') as f: f.write(buffer+' '+str(os.getpid())+'\n')
+    quiet_sent=False
     while True:
+        if (root/'unconfirmed-logs').exists(): time.sleep(.05); continue
         if (root/('fail-'+buffer)).exists(): sys.exit(7)
         if buffer=='all' and (root/'wrong-header-all').exists():
             emit(0,'wrong header',header=20); time.sleep(.1); continue
         if buffer=='all' and (root/'quiet-all').exists(): time.sleep(.1); continue
+        if (root/'quiet-logs').exists():
+            if not quiet_sent: emit(0,'old tail',epoch=1000000000); quiet_sent=True
+            time.sleep(.05); continue
         emit(0,'hello',header=20 if mode=='legacy' else 28)
         lines=(root/'log-events.txt').read_text().splitlines()
         for line in lines[seen:]:
@@ -214,8 +232,8 @@ elif len(a)>3 and a[3]=='ps':
     print('PID UID NAME\n12 10001 com.fixture.app' if a[-1]=='PID,UID,NAME' else 'PID ARGS')
 """)
         assertTrue(fake.toFile().setExecutable(true))
-        val core = ReplayCore(ReplaySettings(fake, root.resolve("missing"), 1,
-            ApplicationTarget()), root.resolve("workspace"))
+        val core = ReplayCore(ReplaySettings(fake, root.resolve("missing"), if (captureMode.videoRequested) 1 else 30,
+            ApplicationTarget(), captureMode), root.resolve("workspace"))
         fun awaitState(phase: String, predicate: (ReplaySnapshot) -> Boolean): ReplaySnapshot {
             val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(15)
             while (System.nanoTime() < deadline) {
@@ -231,6 +249,105 @@ elif len(a)>3 and a[3]=='ps':
             assertTrue(enabled.accepted, enabled.reason)
             awaitState("unselected-multiple") { it.captureState == CaptureState.MULTIPLE_DEVICES && it.device == null }
             Files.writeString(devices, "List of devices attached\nfixture-1 device model:Fixture\n")
+            if (captureMode == CaptureMode.LOG_ONLY) {
+                awaitState("readers-started-without-headers") {
+                    val launches = root.resolve("log-launches.txt")
+                    Files.exists(launches) && Files.readAllLines(launches).size >= 2
+                }
+                assertTrue(core.updateApplication(ApplicationTarget("com.fixture.app")).get().accepted)
+                assertFalse(core.snapshot().canSave)
+                assertFalse(core.save().get().accepted)
+                Files.createFile(root.resolve("wrong-header-all"))
+                Files.delete(root.resolve("unconfirmed-logs"))
+                awaitState("malformed-first-header") {
+                    it.deviceLog.state == StreamState.RECOVERING && it.deviceLog.reason?.contains("header") == true
+                }
+                assertFalse(core.snapshot().canSave)
+                Files.delete(root.resolve("wrong-header-all"))
+                // Readiness is based on a valid old tail, which must never become a stored row.
+                assertTrue(core.applySettings(core.snapshot().settings.copy(saveDirectory = root)).get().accepted)
+                val quiet = awaitState("confirmed-quiet-window") { it.canSave && it.captureState == CaptureState.CAPTURING }
+                assertEquals(StreamState.NOT_REQUESTED, quiet.video.state)
+                assertEquals(0.0, quiet.deviceLog.availableSeconds)
+                assertEquals(0.0, quiet.appLog.availableSeconds)
+                assertTrue(quiet.video.gaps.isEmpty())
+                assertTrue(videoSockets.isEmpty())
+                assertFalse(Files.exists(root.resolve("video-launches.txt")))
+                assertFalse(Files.exists(root.resolve("allocated-forwards.txt")))
+                assertEquals(setOf("replay-clock.jar"), Files.readAllLines(root.resolve("pushed-files.txt")).toSet())
+                Files.walk(root.resolve("workspace")).use { files ->
+                    assertTrue(files.noneMatch { it.fileName.toString().contains("scrcpy") || it.fileName.toString().endsWith(".h264") })
+                }
+                assertTrue(core.applySettings(quiet.settings.copy(saveDirectory = root.resolve("missing"))).get().accepted)
+                val accepted = core.save().get()
+                assertTrue(accepted.accepted)
+                val failed = awaitState("quiet-failed-save") { it.save.phase == SavePhase.FAILED }
+                assertEquals(CaptureMode.LOG_ONLY, failed.save.captureMode)
+                assertFalse(core.save().get().accepted)
+                assertFalse(core.applySettings(failed.settings.copy(captureMode = CaptureMode.VIDEO_AND_LOGS, replaySeconds = 60)).get().accepted)
+                assertEquals(failed.settings, core.snapshot().settings)
+                assertEquals(failed.settingsRevision, core.snapshot().settingsRevision)
+                assertEquals(failed.save, core.snapshot().save)
+                assertEquals(quiet.sequenceId, core.snapshot().sequenceId)
+                assertTrue(core.retryAtDirectory(accepted.requestId!!, root).get().accepted)
+                val completed = awaitState("quiet-retried-save") { it.save.phase == SavePhase.COMPLETED }
+                assertEquals(failed.save.windowStartNs, completed.save.windowStartNs)
+                assertEquals(failed.save.windowEndNs, completed.save.windowEndNs)
+                assertEquals(CaptureMode.LOG_ONLY, completed.save.captureMode)
+                assertTrue(completed.save.missingKinds.isEmpty())
+                val folder = completed.save.directory!!
+                val json = JsonParser.parseString(Files.readString(folder.resolve("session.json"))).asJsonObject
+                assertEquals("LOG_ONLY", json["capture_mode"].asString)
+                assertEquals("NOT_REQUESTED", json["coverage"].asJsonObject["video"].asJsonObject["state"].asString)
+                assertTrue(json["video_missing_ranges"].asJsonArray.isEmpty)
+                assertTrue(json["video_clock_gap_scopes"].asJsonArray.isEmpty)
+                assertTrue(json["window_clock_known"].asBoolean)
+                assertTrue(json["clock_samples"].asJsonArray.any { it.asJsonObject["valid"].asBoolean })
+                for (name in listOf("frames.jsonl", "logcat-device.jsonl", "logcat-app.jsonl")) assertEquals(0L, Files.size(folder.resolve(name)))
+                Files.list(folder).use { files -> assertTrue(files.noneMatch { it.fileName.toString().endsWith(".mp4") }) }
+                val savedHash = sha256(folder.resolve("session.json"))
+                assertTrue(core.applySettings(core.snapshot().settings.copy(saveDirectory = root)).get().accepted)
+                assertTrue(core.save().get().accepted)
+                awaitState("second-quiet-save") { it.save.phase == SavePhase.COMPLETED && it.save.requestId != accepted.requestId }
+                // Reader failure disables another zero-row request until its actual header is revalidated.
+                Files.createFile(root.resolve("fail-all"))
+                awaitState("quiet-reader-failure") { it.deviceLog.state == StreamState.RECOVERING && !it.canSave }
+                assertFalse(core.save().get().accepted)
+                Files.delete(root.resolve("fail-all"))
+                awaitState("quiet-reader-recovered") { it.canSave && it.deviceLog.state == StreamState.CAPTURING }
+                Files.delete(root.resolve("quiet-logs"))
+                Files.writeString(root.resolve("log-events.txt"), "${System.currentTimeMillis() * 1_000_000} live\n")
+                awaitState("both-readers-live") { Files.exists(root.resolve("main-live.sent")) && Files.exists(root.resolve("all-live.sent")) }
+                Thread.sleep(1200) // Retain a subsequent clock sample for mapping both readers' rows.
+                Files.createFile(root.resolve("fail-all"))
+                awaitState("partial-log-only") { it.deviceLog.state == StreamState.RECOVERING && it.canSave }
+                val partialRequest = core.save().get()
+                assertTrue(partialRequest.accepted)
+                val partial = awaitState("partial-log-only-save") { it.save.phase == SavePhase.COMPLETED && it.save.requestId == partialRequest.requestId }
+                assertTrue("device_log" in partial.save.missingKinds)
+                assertFalse("video" in partial.save.missingKinds)
+                val rows = Files.readAllLines(partial.save.directory!!.resolve("logcat-device.jsonl")).map { JsonParser.parseString(it).asJsonObject }
+                val appRows = Files.readAllLines(partial.save.directory.resolve("logcat-app.jsonl")).map { JsonParser.parseString(it).asJsonObject }
+                assertTrue(rows.isNotEmpty() && appRows.isNotEmpty())
+                assertTrue(appRows.all { row -> rows.any { it["record_id"] == row["record_id"] } })
+                assertEquals(setOf(0, 1, 3), rows.filter { !it["tag"].isJsonNull && it["tag"].asString == "Partition" }.map { it["lid"].asInt }.toSet())
+                assertTrue(rows.none { !it["message"].isJsonNull && it["message"].asString == "old tail" })
+                assertTrue(core.setEnabled(false).get(15, TimeUnit.SECONDS).accepted)
+                assertEquals(savedHash, sha256(folder.resolve("session.json")))
+                assertEquals(0L, Files.list(root.resolve("workspace")).use { it.count() })
+                // A later explicit OFF/change/ON starts the ordinary video path with a new sequence.
+                Files.delete(root.resolve("fail-all"))
+                assertTrue(core.applySettings(core.snapshot().settings.copy(captureMode = CaptureMode.VIDEO_AND_LOGS)).get().accepted)
+                assertTrue(core.setEnabled(true).get(15, TimeUnit.SECONDS).accepted)
+                val video = awaitState("normal-video-after-mode-change") { it.video.state == StreamState.CAPTURING }
+                assertTrue(video.sequenceId != quiet.sequenceId)
+                assertEquals(CaptureMode.VIDEO_AND_LOGS, video.settings.captureMode)
+                assertTrue(Files.exists(root.resolve("video-launches.txt")))
+                assertTrue(core.setEnabled(false).get(15, TimeUnit.SECONDS).accepted)
+                core.closeAsync().get(15, TimeUnit.SECONDS)
+                Files.readAllLines(pids).forEach { pid -> assertFalse(ProcessHandle.of(pid.toLong()).map { it.isAlive }.orElse(false)) }
+                return
+            }
             if (logMode == "cancel") {
                 val deadline = System.nanoTime() + 3_000_000_000
                 while (!Files.exists(root.resolve("probe-started")) && System.nanoTime() < deadline) Thread.sleep(10)

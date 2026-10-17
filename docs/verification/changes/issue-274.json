@@ -1,0 +1,163 @@
+{
+  "schema": 1,
+  "issue": 274,
+  "gui_required": true,
+  "reason": "ログ専用モードの設定・取得・保存・UIを変更する。unit/fake/buildと新固定候補のnative/FILE・長時間/負荷比較を区別し、元Dの同期精度FAILと既存QA65延期を保持する。",
+  "cli_checks": [
+    "同一候補の既存全JVM回帰に、LogOnlyStoreTest・resource/settings/project/UI・fake wireのモード/0行/障害/固定retry/終了の回帰を加える。実行結果はIssue/PRへ記録する。",
+    "python3 scripts/workflow/product_check.py、python3 scripts/workflow/plugin_check.py、clean committed HEADでpython3 scripts/workflow/change_impact.py --run-tests。harness対象を含む場合はpython3 scripts/check.py。"
+  ],
+  "cases": [
+    {
+      "artifact": "plugin",
+      "preconditions": "#274のcleanな固定source SHA・標準ZIP/全JAR hash・source/dirty/versionを照合する。nativeはPMが割り当てた共有GUI lease・所有IDE/project/端末fixtureと元設定の復元手順を用い、実ロードを同定する。unit/fake・FILE・native・性能を区別し、元Dの精度FAILとQA65のREAL/人間延期を保持する。",
+      "provenance": [
+        "https://github.com/shinma06/android-replay-buffer/issues/274#issuecomment-6232180946",
+        "https://github.com/shinma06/android-replay-buffer/issues/274#issuecomment-6232240754",
+        "docs/verification/responsibility.md",
+        "docs/plugin-design.md"
+      ],
+      "gpt": {
+        "status": "pending",
+        "reason": "固定した新候補のnative/FILE・性能観察は未実施。unit/fake/buildの結果はIssue/PRへ別記し実受入に換えない。"
+      },
+      "human": {
+        "status": "pending",
+        "reason": "未観察。既存の人間/REAL延期を保持し、新たな一律human必須・免除・延期は作らない。"
+      },
+      "fix_issue": null,
+      "fix_pr": null,
+      "recheck": "変更した取得・設定・保存・UIと共有clock/log/所有境界を新しい固定候補で確認する。旧観察を新buildへ自動転記しない。",
+      "next_action": "writerが固定HEAD/base/check/ZIPと最小native計画を渡して停止。既存の独立reviewerが評価し、PMが必要観察と#224の比較枠を割り当てる。実装Issueはこの段階でcloseせず、残試験とmain反映を対応QA/#280へ双方向readbackしてから移管する。",
+      "id": "LOG-ONLY-MODE",
+      "change": "既定値を動画＋ログに保ち、OFF時だけログ専用へ変更し、設定・有効取得・固定保存のモードを区別する",
+      "steps": [
+        "同じ候補のXML/ProjectCapture/Core回帰で旧設定のdefault、LOG_ONLY保存復元、Applyのatomic拒否、ONとの競合を確認する。保持時間や対象アプリの既存反映と寿命を保つ。",
+        "所有projectの設定で動画＋ログの既定値、編集Cancel、OFFでログ専用Apply、ONを観察する。取得中の変更拒否で旧設定/sequence/失敗pinが残ること、反映中のON拒否、OFFで通常モードへ戻せることを確認する。",
+        "同じロード版の通常project再openで保存設定と有効モードを照合する。ToolWindowの対象外表示、固定保存モード、失敗カード、keyboard/accessible name/狭幅を確認する。206 SETTINGS-PERSISTENCE/STACK-LOADと観察を共有できるが結果を自動転記しない。"
+      ],
+      "expected": "旧設定はVIDEO_AND_LOGS。LOG_ONLYはOFFで一式適用し、暗黙停止・未保存対象破棄なし。保存済みと稼働中が異なる場合は明示し、旧モードで新規ONしない。UI・設定復元・実取得モードが一致する。"
+    },
+    {
+      "artifact": "plugin",
+      "preconditions": "#274のcleanな固定source SHA・標準ZIP/全JAR hash・source/dirty/versionを照合する。nativeはPMが割り当てた共有GUI lease・所有IDE/project/端末fixtureと元設定の復元手順を用い、実ロードを同定する。unit/fake・FILE・native・性能を区別し、元Dの精度FAILとQA65のREAL/人間延期を保持する。",
+      "provenance": [
+        "https://github.com/shinma06/android-replay-buffer/issues/274#issuecomment-6232180946",
+        "https://github.com/shinma06/android-replay-buffer/issues/274#issuecomment-6232240754",
+        "docs/verification/responsibility.md",
+        "docs/plugin-design.md"
+      ],
+      "gpt": {
+        "status": "pending",
+        "reason": "固定した新候補のnative/FILE・性能観察は未実施。unit/fake/buildの結果はIssue/PRへ別記し実受入に換えない。"
+      },
+      "human": {
+        "status": "pending",
+        "reason": "未観察。既存の人間/REAL延期を保持し、新たな一律human必須・免除・延期は作らない。"
+      },
+      "fix_issue": null,
+      "fix_pr": null,
+      "recheck": "変更した取得・設定・保存・UIと共有clock/log/所有境界を新しい固定候補で確認する。旧観察を新buildへ自動転記しない。",
+      "next_action": "writerが固定HEAD/base/check/ZIPと最小native計画を渡して停止。既存の独立reviewerが評価し、PMが必要観察と#224の比較枠を割り当てる。実装Issueはこの段階でcloseせず、残試験とmain反映を対応QA/#280へ双方向readbackしてから移管する。",
+      "id": "LOG-ONLY-CAPTURE",
+      "change": "動画準備・端末server/encoder・forward/socket・動画ringを開始せず、時計と両ログを保つ",
+      "steps": [
+        "同候補のresource/store/fake回帰で動画resourceが使えない場合もclock準備が成立し、LOG_ONLYに動画push/server/forward/socket/GOPがないことを確認する。必要readerのheader未確認/不正入力を正常にしない。",
+        "同じ実ロード候補・所有端末のログ専用ONでclock/helper・main/all又はlegacy all・対象識別を観察する。所有video server/encoder/forwardとhost動画ringがないことを確認する。対象アプリの通常再起動・許可済みの1回の切断再接続で帰属/世代・窓/欠落を確認する。",
+        "同じfixtureの有限marker入力を固定してSaveする。device/appの全対象行のID・元payload・時刻/帰属・clockと窓をFILEで照合する。71 LOG-REMAP、106 LOG-READER、206 CAPTURE-DEPENDENCIESと影響する保証を対応づける。",
+        "OFF後に動画＋ログへ戻し、同じ候補で通常の動画取得と単一MP4・両ログSaveを代表観察する。全frame/PTS/窓/元データは既存FILE検査と共有し、Dの同期精度FAILや未測定性能の解消に換えない。"
+      ],
+      "expected": "ログ専用では動画経路が起動せず、必要な時計・全体ログと対象アプリログを維持する。通常モードで動画経路が復帰する。silent drop、動画由来の架空gap、時計不明の既知化、旧FAILの付け替えがない。"
+    },
+    {
+      "artifact": "plugin",
+      "preconditions": "#274のcleanな固定source SHA・標準ZIP/全JAR hash・source/dirty/versionを照合する。nativeはPMが割り当てた共有GUI lease・所有IDE/project/端末fixtureと元設定の復元手順を用い、実ロードを同定する。unit/fake・FILE・native・性能を区別し、元Dの精度FAILとQA65のREAL/人間延期を保持する。",
+      "provenance": [
+        "https://github.com/shinma06/android-replay-buffer/issues/274#issuecomment-6232180946",
+        "https://github.com/shinma06/android-replay-buffer/issues/274#issuecomment-6232240754",
+        "docs/verification/responsibility.md",
+        "docs/plugin-design.md"
+      ],
+      "gpt": {
+        "status": "pending",
+        "reason": "固定した新候補のnative/FILE・性能観察は未実施。unit/fake/buildの結果はIssue/PRへ別記し実受入に換えない。"
+      },
+      "human": {
+        "status": "pending",
+        "reason": "未観察。既存の人間/REAL延期を保持し、新たな一律human必須・免除・延期は作らない。"
+      },
+      "fix_issue": null,
+      "fix_pr": null,
+      "recheck": "変更した取得・設定・保存・UIと共有clock/log/所有境界を新しい固定候補で確認する。旧観察を新buildへ自動転記しない。",
+      "next_action": "writerが固定HEAD/base/check/ZIPと最小native計画を渡して停止。既存の独立reviewerが評価し、PMが必要観察と#224の比較枠を割り当てる。実装Issueはこの段階でcloseせず、残試験とmain反映を対応QA/#280へ双方向readbackしてから移管する。",
+      "id": "LOG-ONLY-EMPTY",
+      "change": "正常な両ログ0行を、未開始・取得失敗・対象/時計不明から区別してmetadata保存する",
+      "steps": [
+        "同候補のstore/fakeで未開始、必要readerの初回header未確認/矛盾、未確定アプリ、時計不明・旧世代、完全切断を与える。両0行の新規Save不可と理由を確認し、有効行が残る部分保存は保つ。",
+        "必要readerの正常旧tail・同一世代の時計・現在epochの対象が揃い正の窓を持つ静穏fixtureでSaveし、旧tailを出力しない。0行のmetadata保存・失敗pin/retry/反復Saveを同production Writerで確認する。実端末で完全無出力を作るための追加操作は要求せず、合成fixtureの根拠とnativeの範囲を分ける。",
+        "固定production Writerが生成した正常0行/ログ障害/動画＋ログの保存物を標準editorで辿る。schema 3のcapture_mode/coverage.requested/NOT_REQUESTED、README、clock/app履歴・gap・hashを照合し、135 LOG-ONLY-READMEの動画なし理由と通常欠落を区別する。"
+      ],
+      "expected": "正常0行は窓/metadataを保存できてもcoverage秒数は0。video file/tailはnull、parts/video missing ranges/clock scopesは空、frames.jsonlは0行。意図的な動画なしをmissingKindsへ加えず、ログ/時計の実失敗とunknownは残る。"
+    },
+    {
+      "artifact": "plugin",
+      "preconditions": "#274のcleanな固定source SHA・標準ZIP/全JAR hash・source/dirty/versionを照合する。nativeはPMが割り当てた共有GUI lease・所有IDE/project/端末fixtureと元設定の復元手順を用い、実ロードを同定する。unit/fake・FILE・native・性能を区別し、元Dの精度FAILとQA65のREAL/人間延期を保持する。",
+      "provenance": [
+        "https://github.com/shinma06/android-replay-buffer/issues/274#issuecomment-6232180946",
+        "https://github.com/shinma06/android-replay-buffer/issues/274#issuecomment-6232240754",
+        "docs/verification/responsibility.md",
+        "docs/plugin-design.md"
+      ],
+      "gpt": {
+        "status": "pending",
+        "reason": "固定した新候補のnative/FILE・性能観察は未実施。unit/fake/buildの結果はIssue/PRへ別記し実受入に換えない。"
+      },
+      "human": {
+        "status": "pending",
+        "reason": "未観察。既存の人間/REAL延期を保持し、新たな一律human必須・免除・延期は作らない。"
+      },
+      "fix_issue": null,
+      "fix_pr": null,
+      "recheck": "変更した取得・設定・保存・UIと共有clock/log/所有境界を新しい固定候補で確認する。旧観察を新buildへ自動転記しない。",
+      "next_action": "writerが固定HEAD/base/check/ZIPと最小native計画を渡して停止。既存の独立reviewerが評価し、PMが必要観察と#224の比較枠を割り当てる。実装Issueはこの段階でcloseせず、残試験とmain反映を対応QA/#280へ双方向readbackしてから移管する。",
+      "id": "LOG-ONLY-SAVE-LIFETIME",
+      "change": "既存の保持上限・単一writer/pin・retry/discard・失敗試行保全と所有終了をログ専用へ適用する",
+      "steps": [
+        "同候補のunit/fakeでログbyte上限・時間prune、旧世代拒否、同時Save拒否、保存先不在・固定retry・discard・OFF/closeを確認する。pinのモード/窓/行IDは後続設定/取得で変わらず、完了後に次要求を受け付ける。",
+        "PMが固定した有限の長時間/ログ量・反復Save計画で、取得ring/固定pin/完成物/失敗partialを別々に集計する。成功と失敗を含む要求数・メモリ・全disk量・owned process/workerを確認する。既存の32MiBログ会計/最大1pinと、実RSS/全出力の増加を混同しない。",
+        "必要nativeは同じ所有fixtureで通常Save反復、代表する保存先失敗と同じ対象のretry又はdiscard、OFF/project closeをまとめて観察する。41の保存窓/部分取得/寿命/固定保存/公開と197/198の保全/所有cleanupへ証拠を対応づける。失敗注入の全種をnativeで反復しない。"
+      ],
+      "expected": "未処理要求や保護窓が無制限に増えず、保存済み/失敗試行/所有不明物を消さない。完成物はatomic非上書き。停止後に所有client/workerを残さず、未確認cleanupは保留として残す。完成物・保全partialの累積はring上限の達成へ換えない。"
+    },
+    {
+      "artifact": "plugin",
+      "preconditions": "#274のcleanな固定source SHA・標準ZIP/全JAR hash・source/dirty/versionを照合する。nativeはPMが割り当てた共有GUI lease・所有IDE/project/端末fixtureと元設定の復元手順を用い、実ロードを同定する。unit/fake・FILE・native・性能を区別し、元Dの精度FAILとQA65のREAL/人間延期を保持する。",
+      "provenance": [
+        "https://github.com/shinma06/android-replay-buffer/issues/274#issuecomment-6232180946",
+        "https://github.com/shinma06/android-replay-buffer/issues/274#issuecomment-6232240754",
+        "docs/verification/responsibility.md",
+        "docs/plugin-design.md"
+      ],
+      "gpt": {
+        "status": "pending",
+        "reason": "固定した新候補のnative/FILE・性能観察は未実施。unit/fake/buildの結果はIssue/PRへ別記し実受入に換えない。"
+      },
+      "human": {
+        "status": "pending",
+        "reason": "未観察。既存の人間/REAL延期を保持し、新たな一律human必須・免除・延期は作らない。"
+      },
+      "fix_issue": null,
+      "fix_pr": null,
+      "recheck": "変更した取得・設定・保存・UIと共有clock/log/所有境界を新しい固定候補で確認する。旧観察を新buildへ自動転記しない。",
+      "next_action": "writerが固定HEAD/base/check/ZIPと最小native計画を渡して停止。既存の独立reviewerが評価し、PMが必要観察と#224の比較枠を割り当てる。実装Issueはこの段階でcloseせず、残試験とmain反映を対応QA/#280へ双方向readbackしてから移管する。",
+      "id": "LOG-ONLY-LOAD",
+      "change": "同じ端末・アプリ・入力条件の動画＋ログとログ専用を比較し、Android負荷とhost負荷を分ける",
+      "steps": [
+        "docs/verification/performance.mdの#224担当と、同一candidate/ZIP/実ロード・端末/IDE・入力・保持/Save・温度/容量・観測手段、回数/時間/停止/復元条件を比較前に固定する。ARB-log相当は実装されたLOG_ONLYを用い、動画取得後の削除で代用しない。",
+        "探索pilotは効果判定と分ける。Android側のCPU/メモリ/encoder/転送とhost側のCPU/RSS/ディスク/保存待ち、観測器負荷・未測定を別記し、同条件の有限な対比較を行う。実機とEmulator host値を混同しない。",
+        "ログ/時計/窓/欠落/保全の品質を同時に照合する。Studio-logcatとの第2版目標、#282/#283最適化、Dの精度未受入は別の残条件として保持し、根拠のない改善率や全性能達成を主張しない。"
+      ],
+      "expected": "動画停止の事実と実測負荷の差を別に示す。未測定・条件不足・不利な結果を残し、同等性/改善を推測しない。比較中も両ログ・時計・保存/所有保証を満たす。"
+    }
+  ]
+}

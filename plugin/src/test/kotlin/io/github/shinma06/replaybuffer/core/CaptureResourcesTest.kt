@@ -8,6 +8,22 @@ import kotlin.test.assertTrue
 
 class CaptureResourcesTest {
     @Test
+    fun clockOnlyPreparationDoesNotTouchUnavailableVideoResource() {
+        val root = Files.createTempDirectory("replay-clock-only-fixture-")
+        val collision = Files.createDirectory(root.resolve("scrcpy-server-v5.0.1"))
+        val created = mutableListOf<java.nio.file.Path>()
+        try {
+            CaptureResources(root, created::add).use { resources ->
+                assertEquals(listOf(resources.clock), created)
+                assertEquals(CaptureResources.identity().getValue("clock"), sha256(resources.clock))
+                kotlin.test.assertFailsWith<java.nio.file.FileAlreadyExistsException> { resources.server }
+            }
+            assertTrue(Files.isDirectory(collision))
+            assertEquals(listOf(collision), Files.list(root).use { it.toList() })
+        } finally { Files.delete(collision); Files.delete(root) }
+    }
+
+    @Test
     fun generatedIdentityMatchesSourceAndEffectivePluginVersion() {
         val identity = CaptureResources.identity()
         for (key in listOf("source", "dirty", "version")) {

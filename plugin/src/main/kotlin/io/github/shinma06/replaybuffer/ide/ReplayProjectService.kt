@@ -129,7 +129,11 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
         }
     }
 
-    internal fun setEnabled(value: Boolean) { if (alive) capture.setEnabled(value) }
+    internal fun setEnabled(value: Boolean) {
+        if (!alive) return
+        if (value && (resolving || capture.view.pending > 0)) capture.showMessage("設定・操作を反映中です。完了後に取得をONにしてください。")
+        else capture.setEnabled(value)
+    }
     internal fun save() {
         if (!alive) return
         if (resolving || capture.view.pending > 0) capture.showMessage("設定・操作を反映中です。完了後に保存してください。") else capture.save()

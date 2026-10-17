@@ -46,7 +46,7 @@ internal class DeviceCapture(
 
     fun start() {
         launch("clock", ::clock)
-        launch("video", ::video)
+        if (store.captureMode.videoRequested) launch("video", ::video)
         launch("device_log-main") {
             if (!partitionLogs.isDone) {
                 val partition = probeLogLid()
@@ -199,14 +199,18 @@ internal class DeviceCapture(
         val process = startLogProcess(buffer, "-b", buffer, "-B", "-T", "1")
         try {
             val input = process.inputStream
-            status("device_log-$buffer", StreamState.CAPTURING, null)
             var live = false
+            var confirmed = false
             while (!stopping.get()) {
                 val record = readLog(input)
                 val received = System.nanoTime()
                 if (partition) {
                     check(record.lidPresent) { "分割取得中のlogcat headerにlidがありません" }
                     if (buffer == "main") check(record.lid == 0) { "main取得に別bufferのrecordがあります" }
+                }
+                if (!confirmed) {
+                    status("device_log-$buffer", StreamState.CAPTURING, null)
+                    confirmed = true
                 }
                 // Exclude the old -T 1 tail; clock jumps remain explicitly uncertain, never backfilled.
                 val anchor = store.clock.snapshot().lastOrNull { it.valid }

@@ -16,7 +16,9 @@ import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBTextArea
 import com.intellij.ui.components.JBTextField
 import com.intellij.util.ui.FormBuilder
+import io.github.shinma06.replaybuffer.core.CaptureMode
 import io.github.shinma06.replaybuffer.ide.ReplayProjectService
+import io.github.shinma06.replaybuffer.ui.captureModeDescription
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -36,6 +38,7 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable {
     private var retention: JBTextField? = null
     private var destination: TextFieldWithBrowseButton? = null
     private var mode: JComboBox<AppSelectionMode>? = null
+    private var captureMode: JComboBox<CaptureMode>? = null
     private var manualPackage: JBTextField? = null
     private var destinationStatus: JBLabel? = null
     private var uiLifetime: Disposable? = null
@@ -78,7 +81,17 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable {
             accessibleContext.accessibleName = "対象アプリの選択方法"
             addActionListener { manualPackage?.isEnabled = selectedItem == AppSelectionMode.MANUAL }
         }
+        captureMode = JComboBox(CaptureMode.entries.toTypedArray()).apply {
+            accessibleContext.accessibleName = "取得モード"
+            accessibleContext.accessibleDescription = "取得をOFFにしてから変更してください。ログ専用は動画を取得・保存しません。"
+            renderer = object : javax.swing.DefaultListCellRenderer() {
+                override fun getListCellRendererComponent(list: javax.swing.JList<*>?, value: Any?, index: Int, selected: Boolean, focus: Boolean): java.awt.Component =
+                    super.getListCellRendererComponent(list, (value as? CaptureMode)?.let(::captureModeDescription), index, selected, focus)
+            }
+        }
         panel = FormBuilder.createFormBuilder()
+            .addLabeledComponent("取得モード:", captureMode!!)
+            .addComponent(JBLabel("取得をOFFにしてから変更してください。ログ専用は動画を取得・保存しません。"))
             .addLabeledComponent("保持時間（1〜900秒）:", retention!!)
             .addLabeledComponent("保存先フォルダ:", destination!!)
             .addComponent(destinationStatus!!)
@@ -154,6 +167,7 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable {
         destination = destination?.text.orEmpty(),
         appSelection = mode?.selectedItem as? AppSelectionMode ?: AppSelectionMode.AUTOMATIC,
         manualPackage = manualPackage?.text.orEmpty(),
+        captureMode = captureMode?.selectedItem as? CaptureMode ?: CaptureMode.VIDEO_AND_LOGS,
     )
 
     override fun isModified(): Boolean = panel != null && draft() != store().settings()
@@ -164,7 +178,13 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable {
         val checked = destinationValidation?.takeIf { it.destination == settings.destination }
             ?: throw ConfigurationException("保存先を確認中です。確認が終わってから適用してください。")
         settings.validationError(checked)?.let { throw ConfigurationException(it) }
-        store().apply(settings, checked)
+        val service = replayService
+        if (settings.captureMode != store().settings().captureMode &&
+            (store().enabled || service?.captureView?.snapshot?.enabled == true || service?.resolving == true || (service?.captureView?.pending ?: 0) > 0))
+            throw ConfigurationException("取得をOFFにし、設定・操作の反映が終わってから取得モードを変更してください。")
+        try { store().apply(settings, checked) } catch (failure: IllegalArgumentException) {
+            throw ConfigurationException(failure.message.orEmpty())
+        }
         project.messageBus.syncPublisher(ReplaySettingsStore.CHANGED).run()
     }
 
@@ -174,6 +194,7 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable {
         retention?.text = settings.retentionSeconds.toString()
         destination?.text = settings.destination
         mode?.selectedItem = settings.appSelection
+        captureMode?.selectedItem = settings.captureMode
         manualPackage?.text = settings.manualPackage
         manualPackage?.isEnabled = settings.appSelection == AppSelectionMode.MANUAL
         checkDestination()
@@ -193,6 +214,7 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable {
         retention = null
         destination = null
         mode = null
+        captureMode = null
         manualPackage = null
     }
 

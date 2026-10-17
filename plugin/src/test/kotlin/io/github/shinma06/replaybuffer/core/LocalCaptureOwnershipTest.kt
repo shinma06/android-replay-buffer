@@ -28,7 +28,7 @@ object LocalCaptureOwnerFixture {
             for (name in listOf("scrcpy-server-v4.0", "replay-clock.jar")) {
                 ownership.created(Files.writeString(ownership.root.resolve(name), "legacy helper"))
             }
-        } else CaptureResources(ownership.root, ownership::created)
+        } else CaptureResources(ownership.root, ownership::created).server
         val store = CaptureStore(ownership.root.resolve("ring"), minFree = 0,
             videoLimit = if (args[1] == "cycled") 2 else ReplaySettings.VIDEO_BYTES,
             created = ownership::created, removed = ownership::removed)
@@ -524,7 +524,7 @@ class LocalCaptureOwnershipTest {
             assertEquals(PosixFilePermissions.fromString(expected), Files.getPosixFilePermissions(path))
             ownership.created(path)
         }
-        val resources = CaptureResources(ownership.root, created)
+        val resources = CaptureResources(ownership.root, created).also { it.server }
         val store = CaptureStore(ownership.root.resolve("ring"), minFree = 0, created = created, removed = ownership::removed)
         try {
             store.generation(1); store.session(VideoPacket.Session(32, 32), 1)

@@ -9,6 +9,7 @@ data class ReplaySettings(
     val saveDirectory: Path? = null,
     val replaySeconds: Int = 180,
     val application: ApplicationTarget = ApplicationTarget(),
+    val captureMode: CaptureMode = CaptureMode.VIDEO_AND_LOGS,
 ) {
     fun validate(): ReplaySettings {
         require(adbPath == null || adbPath.isAbsolute && Files.isRegularFile(adbPath) && Files.isExecutable(adbPath)) {
@@ -32,6 +33,13 @@ data class ReplaySettings(
     }
 }
 
+enum class CaptureMode {
+    VIDEO_AND_LOGS, LOG_ONLY;
+
+    val videoRequested: Boolean get() = this == VIDEO_AND_LOGS
+    val streams: List<String> get() = if (videoRequested) listOf("video", "device_log", "app_log") else listOf("device_log", "app_log")
+}
+
 enum class ApplicationMode { AUTO, MANUAL }
 
 data class ApplicationTarget(
@@ -53,7 +61,7 @@ data class ApplicationTarget(
 }
 
 enum class CaptureState { DISABLED, WAITING, CAPTURING, RECOVERING, PARTIAL, MULTIPLE_DEVICES }
-enum class StreamState { WAITING, CAPTURING, RECOVERING, UNAVAILABLE }
+enum class StreamState { WAITING, CAPTURING, RECOVERING, UNAVAILABLE, NOT_REQUESTED }
 enum class DeviceKind { PHYSICAL, EMULATOR }
 enum class SavePhase { IDLE, WRITING, FAILED, COMPLETED }
 
@@ -94,6 +102,7 @@ data class SaveSnapshot(
     val application: ApplicationTarget? = null,
     val applicationHistory: List<ApplicationPeriodSnapshot> = emptyList(),
     val videoTail: VideoTailSnapshot? = null,
+    val captureMode: CaptureMode = CaptureMode.VIDEO_AND_LOGS,
 )
 
 /** Callbacks run on replay-control, never EDT. Consumers must dispatch to EDT and reject stale revisions. */

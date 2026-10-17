@@ -45,7 +45,8 @@ class SingleMp4SaveTest {
     ) { root, store, capture, original, pixels ->
         val output = write(capture, root)
         val record = manifest(output)
-        assertEquals(2, record["schema"].asInt)
+        assertEquals(3, record["schema"].asInt)
+        assertEquals("VIDEO_AND_LOGS", record["capture_mode"].asString)
         assertEquals(3, record["parts"].asJsonArray.size())
         assertEquals(setOf("video-001.mp4"), record["parts"].asJsonArray.map { it.asJsonObject["file"].asString }.toSet())
         val rows = rows(output)

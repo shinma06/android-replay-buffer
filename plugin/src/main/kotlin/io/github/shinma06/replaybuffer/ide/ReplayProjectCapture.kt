@@ -103,7 +103,11 @@ internal class ReplayProjectCapture(
             store.setEnabled(value)
             ++enabledIntent
         }
-        return submit { engine -> engine.setEnabled(value).await() }.whenComplete { result, _ ->
+        return submit { engine ->
+            if (value && engine.snapshot().settings.captureMode != store.settings().captureMode)
+                ReplayOperation(false, "取得モードを反映できていません。設定を確認してから取得をONにしてください。")
+            else engine.setEnabled(value).await()
+        }.whenComplete { result, _ ->
             val notify = synchronized(this) {
                 if (!closed && intent == enabledIntent && result?.accepted == false) {
                     store.setEnabled(core?.snapshot()?.enabled == true)
@@ -257,6 +261,7 @@ internal fun ReplaySettings.toCoreSettings(environment: AndroidReplayEnvironment
     adbPath = environment.adb,
     saveDirectory = destination.takeIf(String::isNotEmpty)?.let(Path::of),
     replaySeconds = retentionSeconds,
+    captureMode = captureMode,
     application = if (appSelection == AppSelectionMode.MANUAL) {
         ApplicationTarget(manualPackage, ApplicationMode.MANUAL)
     } else {
