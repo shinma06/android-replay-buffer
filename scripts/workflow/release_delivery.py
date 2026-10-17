@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import io
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -37,7 +38,7 @@ def command(args, input=None):
 
 
 def api(path, method='GET', data=None):
-    args = ['gh', 'api', '--method', method, f'repos/{REPO}/{path}']
+    args = ['gh', 'api', '--method', method, f'repos/{REPO}' + ('/' + path if path else '')]
     out = command(args + (['--input', '-'] if data is not None else []),
                   json.dumps(data) if data is not None else None)
     return json.loads(out) if out else None
@@ -321,6 +322,20 @@ def latest_setting(record):
     return 'true'
 
 
+def automatic_release_target(target):
+    if os.environ.get('GITHUB_ACTIONS') != 'true':
+        return
+    default = api('').get('default_branch')
+    require(isinstance(default, str) and default, 'Default branch identity missing')
+    head = api('git/ref/heads/' + quote(default, safe='')).get('object', {}).get('sha')
+    require(SHA.fullmatch(head or ''), 'Default branch commit missing')
+    git('fetch', '--no-tags', 'origin', head, target)
+    require(not git('diff', '--name-only', head, target, '--', '.github/workflows'),
+            'Automatic delivery needs Workflows write permission for fixed target ' + target +
+            '; GITHUB_TOKEN cannot provide it. Preserve the target/ZIP and use the #271 owner local recovery '
+            'in docs/release-delivery.md; retrying this workflow cannot grant permission.')
+
+
 def publish(path, record, target):
     early = record['channel'] == 'early'
     tag = 'early' if early else 'v' + record['version']
@@ -339,10 +354,19 @@ def publish(path, record, target):
     if refs:
         require(refs[0]['object']['type'] == 'commit' and (early and release is not None or
                 refs[0]['object']['sha'] == target), 'Existing tag is not the owned fixed target')
+    fixed_target = refs[0]['object']['sha'] if refs else target
+    if release and release['draft'] and not refs:
+        fixed_target = release.get('target_commitish')
+        require(SHA.fullmatch(fixed_target or '') and (early or fixed_target == target),
+                'Draft target is not the owned fixed commit')
+        if early:
+            git('fetch', '--no-tags', 'origin', fixed_target, 'main')
+            git('merge-base', '--is-ancestor', fixed_target, 'origin/main')
     require(not release or release['draft'] or refs, 'Published release tag missing')
     if early:
         current_develop(record.get('develop_head', record['source']))
     if not release:
+        automatic_release_target(fixed_target)
         release = api('releases', 'POST', {'tag_name': tag, 'target_commitish': target,
                       'name': 'Android Replay Buffer ' + ('early' if early else record['version']),
                       'body': body, 'draft': True, 'prerelease': early, 'make_latest': 'false'})
@@ -359,18 +383,18 @@ def publish(path, record, target):
             '-H', 'Content-Type: application/zip', '--input', str(path)]))
         verify_asset(uploaded, path)
     current = find_release(tag)
-    require(current and all(current[k] == release[k] for k in ('id', 'body', 'draft', 'prerelease')),
+    require(current and all(current[k] == release[k] for k in ('id', 'body', 'draft', 'prerelease', 'target_commitish')),
             'Release changed during preparation; preserve both assets')
     if early:
         current_develop(record.get('develop_head', record['source']))
     if current['body'] != body or current['draft']:
+        automatic_release_target(fixed_target)
         api(f'releases/{release["id"]}', 'PATCH', {'body': body, 'draft': False,
             'make_latest': latest_setting(record)})
     final = find_release(tag)
     require(final and final['id'] == release['id'] and not final['draft'] and final['body'] == body
             and final['prerelease'] == early, 'Publication readback differs')
     final_ref = api('git/ref/tags/' + tag)
-    fixed_target = refs[0]['object']['sha'] if refs else target
     require(final_ref['object']['type'] == 'commit' and final_ref['object']['sha'] == fixed_target,
             'Published tag moved')
     final_assets = pages(f'releases/{release["id"]}/assets?per_page=100')

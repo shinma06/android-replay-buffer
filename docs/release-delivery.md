@@ -26,11 +26,11 @@ CIが完了しても、対象commitがpromotionでなければ正式Releaseを�
 
 1つのReleaseページを維持し、tagをforce更新しません。`early` tagは最初の保管場所を指す固定識別子です。**製品sourceはRelease本文・ZIP内部のSHA**であり、GitHub自動生成のSource code ZIPはインストール用ではありません。
 
-公開処理は全channelを同じconcurrency groupで直列化し、途中で自動キャンセルしません。遅れて届いたrunも現在のdevelop HEADを固定して解決し、旧sourceへ巻き戻しません。現在HEADの最新CIが未完了/失敗なら公開しません。開始時・履歴照合中・本文切替直前に固定したdevelop HEADを再確認します。
+公開処理は全channelを同じconcurrency groupで直列化し、`queue: max` と `cancel-in-progress: false` を使います。実行中A・待機中の正式配布Bへearly Cが後着しても、BをCで置き換えず両方を待機させます。待機の上限は100 runで、それを超える追加runは取消しになります。待機を開始した順の処理で、event発生順そのものは保証しません。取消し/失敗した正式配布は対象promotion PR番号の手動復旧、earlyは後続の正常CI event又は元runの再実行で現在HEADを再解決します。上限なし/取消しなしを保証せず、残件は#271 ownerがrunと配布先を照合します。[GitHub concurrency](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency)遅れて届いたrunも現在のdevelop HEADを固定して解決し、旧sourceへ巻き戻しません。現在HEADの最新CIが未完了/失敗なら公開しません。開始時・履歴照合中・本文切替直前に固定したdevelop HEADを再確認します。
 
 文書・管理だけの変更では既存classifierがPlugin buildを省くため、CIの成功jobでArtifact upload stepが明示的にskippedだったcommitだけ、developの第一親を遡ります。各commitの最新push CIとmerged PRの5 checksを確認し、最初に見つかった製品ZIPを同じbytesで公開します。製品commit Aの配布より先に文書commit BがHEADになっても、Bまたは遅着したAのrunからAのZIPを回収できます。BのCIがAより先に完了してAが未完了なら失敗を保ち、Aの完了eventで現在HEADを再解決します。本文は製品sourceと追従確認したdevelop HEADを分けます。CI履歴不明、未完了/失敗、生成されるはずのZIPの欠落、期限切れは、それより古い製品へ飛ばさず失敗にします。CI側のstep名/構成変更ではこの接点も更新・検証します。
 
-新しいhash名のZIPを先にupload・再download検証し、本文を切り替えて読み戻した後だけ、旧本文で識別済みの旧assetを削除します。途中失敗時は旧本文と旧ZIPを残し、既存の同じbytesを確認して再開します。公開前の失敗ならdraftのまま残します。不明なassetや所有markerのないReleaseは削除/上書きしません。未知の中断で残った追加assetは担当が現状態と所有を確認し、後片付けを別に記録します。
+新しいhash名のZIPを先にupload・再download検証し、本文を切り替えて読み戻した後だけ、旧本文で識別済みの旧assetを削除します。途中失敗時は旧本文と旧ZIPを残し、既存の同じbytesを確認して再開します。公開前の失敗ならdraftのまま残します。tag未作成の既存draftは保存済みの40桁`target_commitish`を保持し、earlyではmain履歴への包含、正式では元promotion mergeとの一致を確認します。現在mainが進んでも新しいtargetへ付け替えず、保存済みtargetで公開後を照合します。準備中のdraft target変更も公開前に拒否します。不明なassetや所有markerのないReleaseは削除/上書きしません。未知の中断で残った追加assetは担当が現状態と所有を確認し、後片付けを別に記録します。
 
 正式版の既存tag/内容は不変です。同じ入力の再実行は再照合だけを行い、異なるbytesや不完全な公開済み正式版を自動置換しません。Release説明の編集も現在のpublisherの所有recordと一致しなければ止まるため、変更前に担当が方針を決めます。
 
@@ -41,7 +41,7 @@ publisherのGitHub CLI呼出しはworkflowの`GH_TOKEN`を保持します。agen
 ## 復旧と停止
 
 - まず該当run/Release/assetの実状態を読み、失敗した段階を特定する。結果不明のupload/PATCHを盲目的に繰り返さない。
-- 同じ入力なら`Release delivery`の手動実行で再照合する。新しいcandidateは元失敗を残し、別の固定source/入力/受入として扱う。
+- 同じ入力なら`Release delivery`の手動実行で再照合する。ただし次のworkflow権限境界では同じjobの再実行を復旧策にしない。新しいcandidateは元失敗を残し、別の固定source/入力/受入として扱う。
 - Artifact期限切れの場合は、保持してある**同一ZIP**をcleanなtrusted mainから公開できる。秘密情報や生診断を公開しない。
 
 ```bash
@@ -50,6 +50,21 @@ python3 scripts/workflow/release_delivery.py stable \
 ```
 
 ここで変数は実在する原本とmerged PRへ設定します。CLI実行も同じReleaseのworkflowと重ねず、実runを終了確認してから担当1名で行います。CLIにはGitHub Actionsのconcurrency lockは自動適用されません。受入を省く引数、force更新、保護無効化はありません。
+
+### 自動公開のworkflow権限境界
+
+固定targetと現在のdefault branchで`.github/workflows/`が異なるRelease作成/更新には、Contents writeに加えてWorkflows writeが必要です。`GITHUB_TOKEN`には後者を付与できません。[GitHub Release API](https://docs.github.com/en/rest/releases/releases#create-a-release)
+
+自動publisherはRelease作成前と本文/公開状態の切替前に現在default branchを取得し、固定targetとのworkflow差分を確認します。差分・取得不能は失敗として残し、targetとZIPを維持します。これは事前検査であり、検査直後のdefault更新やその他のAPI権限拒否も成功へ読み替えません。既存assetとdraftは保全し、同じGITHUB_TOKENの再実行では不足権限が増えないことをエラーへ明記します。既に公開・一致しているReleaseの読み戻しは新しい公開操作とは分けます。
+
+担当は#271の配布owner（GitHub assignee shinma06）です。復旧時は次の手順を使います。
+
+1. 独立review・固定候補の受入・公開対象と権限範囲を確認し、Release deliveryの実runが終了していることを読み戻す。同時実行を止め、担当1名にする。
+2. cleanな採用済みmainで `gh auth status --active` を読み、既存の許可されたローカル認証が対象repositoryへpush可能で、classic/OAuthなら`repo`と`workflow`、fine-grained/AppならContents writeとWorkflows writeを持つことを確認する。認証確認は公開の成功証明ではない。tokenを取り出したり新しいsecretを作ったりしない。
+3. 正式版は上の`stable --archive ... --promotion-pr ... --version ...`を実行する。Artifactが有効なら`--archive`を省略できる。earlyの権限復旧は、同じtrusted mainから `python3 scripts/workflow/release_delivery.py early --run "$PRODUCER_RUN" --source "$PRODUCER_SOURCE"` で正常CIのrun/sourceを指定し、現在developと有効な同一成果物を通常gateで再照合する。
+4. publisherの実tag・本文・ZIP再download照合が成功した後だけ#271へ完了を記録する。復旧が失敗したらdraft/tag/assetを保全する。許可された既存認証がなければこの経路は未完了とし、ownerが具体的な権限境界を扱う。別SHAへのtag付替え・権限拡大・保護の迂回で通さない。
+
+このローカル経路はGitHub Actionsのlockを共有しません。既存認証のscopeとownerを読み戻してから使い、実公開の前提を満たさない段階では実行しません。
 
 運用を止める場合はGitHubのworkflow無効化で新しい実行を止め、進行中の副作用を確認します。ZIPやtagを削除して失敗を隠しません。元の手動ZIP保管・受入は残り、配布workflowの停止で製品データを変更しません。復帰後は固定候補と正常/拒否経路を再確認してから次の公開を行います。
 

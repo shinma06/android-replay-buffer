@@ -38,11 +38,14 @@ class Repository:
         self.files = {}
         self.next_id = 1
         self.head = SOURCE
+        self.main = MAIN
+        self.workflow_changes = ''
         self.mutations = []
         self.fail_upload = False
         self.fail_after_patch = False
         self.fail_patch = False
         self.advance_after_upload = False
+        self.advance_workflows_after_upload = False
         self.latest = None
 
     def pages(self, path):
@@ -52,6 +55,10 @@ class Repository:
         return [copy.deepcopy(a) for a in self.assets.values() if a['release'] == number]
 
     def api(self, path, method='GET', data=None):
+        if path == '':
+            return {'default_branch': 'main'}
+        if path == 'git/ref/heads/main':
+            return {'object': {'sha': self.main}}
         if path == 'git/ref/heads/develop':
             return {'object': {'sha': self.head}}
         if path.startswith('git/matching-refs/tags/'):
@@ -81,6 +88,9 @@ class Repository:
             return copy.deepcopy(result)
         raise AssertionError((path, method, data))
 
+    def git(self, *args):
+        return self.workflow_changes if args[0] == 'diff' else ''
+
     def command(self, args):
         if args[:3] == ['gh', 'pr', 'checks']:
             return json.dumps([{'name': n, 'state': 'SUCCESS'} for n in (*delivery.CI_CHECKS, delivery.CONTEXT)])
@@ -96,6 +106,9 @@ class Repository:
         self.mutations.append(('upload', 'POST', name))
         if self.advance_after_upload:
             self.head = NEXT
+        if self.advance_workflows_after_upload:
+            self.main = NEXT
+            self.workflow_changes = '.github/workflows/ci.yml'
         if self.fail_upload:
             raise OSError('upload response lost')
         return json.dumps(asset)
@@ -112,6 +125,7 @@ class DeliveryCredentialsTest(unittest.TestCase):
             executable.write_text(f'''#!{sys.executable}
 import json, os, sys
 assert os.environ.get('GH_TOKEN') == 'workflow-token-fixture'
+assert 'repos/{delivery.REPO}/' not in sys.argv
 if sys.argv[1:3] == ['pr', 'checks']:
     print(json.dumps([{{'name': n, 'state': 'SUCCESS'}} for n in {(*delivery.CI_CHECKS, delivery.CONTEXT)!r}]))
 elif '--slurp' in sys.argv:
@@ -123,6 +137,7 @@ else:
             with patch.dict(os.environ, {'GH_TOKEN': 'workflow-token-fixture', 'GH_CONFIG_DIR': folder,
                                          'PATH': folder + os.pathsep + os.environ['PATH']}):
                 self.assertTrue(delivery.api('releases')['authenticated'])
+                self.assertTrue(delivery.api('')['authenticated'])
                 self.assertEqual(delivery.pages('releases?per_page=100'), [])
                 delivery.checks({'number': 1})
                 self.assertTrue(json.loads(delivery.command(['gh', 'api', '--method', 'POST',
@@ -137,7 +152,8 @@ class ReleaseDeliveryTest(unittest.TestCase):
         self.archive = self.directory / 'product.zip'
         self.archive.write_bytes(package())
         self.repo = Repository()
-        for name in ('api', 'pages', 'command', 'download'):
+        self.enterContext(patch.dict(os.environ, {'GITHUB_ACTIONS': 'false'}))
+        for name in ('api', 'pages', 'command', 'download', 'git'):
             self.addCleanup(patch.stopall)
             patch.object(delivery, name, getattr(self.repo, name)).start()
 
@@ -212,6 +228,78 @@ class ReleaseDeliveryTest(unittest.TestCase):
         delivery.publish(self.archive, record, MAIN)
         self.assertEqual(sum(path == 'upload' for path, _, _ in self.repo.mutations), 1)
         self.assertFalse(self.repo.releases[0]['draft'])
+
+    def test_draft_recovery_retains_its_target_after_main_advances(self):
+        record = self.record()
+        self.repo.fail_upload = True
+        with self.assertRaises(OSError):
+            delivery.publish(self.archive, record, MAIN)
+        self.repo.fail_upload = False
+        self.repo.main = NEXT
+        delivery.publish(self.archive, record, NEXT)
+        self.assertFalse(self.repo.releases[0]['draft'])
+        self.assertEqual(self.repo.refs['early']['sha'], MAIN)
+        self.assertEqual(sum(path == 'upload' for path, _, _ in self.repo.mutations), 1)
+
+    def test_automatic_workflow_permission_boundary_precedes_writes_and_local_recovery_keeps_identity(self):
+        record = self.record('stable')
+        self.repo.main = NEXT
+        self.repo.workflow_changes = '.github/workflows/ci.yml'
+        with patch.dict(os.environ, {'GITHUB_ACTIONS': 'true'}), self.assertRaisesRegex(ValueError, 'Workflows'):
+            delivery.publish(self.archive, record, MAIN)
+        self.assertEqual(self.repo.mutations, [])
+        # The owner uses the existing separately authorized local gh credential.
+        delivery.publish(self.archive, record, MAIN)
+        self.assertEqual(self.repo.refs['v0.2.0']['sha'], MAIN)
+        self.assertEqual(delivery.read_record(self.repo.releases[0]['body']), record)
+        self.assertEqual(next(iter(self.repo.files.values())), self.archive.read_bytes())
+
+    def test_workflow_change_after_upload_preserves_draft_for_owner_recovery(self):
+        record = self.record('stable')
+        self.repo.advance_workflows_after_upload = True
+        with patch.dict(os.environ, {'GITHUB_ACTIONS': 'true'}), self.assertRaisesRegex(ValueError, 'Workflows'):
+            delivery.publish(self.archive, record, MAIN)
+        self.assertTrue(self.repo.releases[0]['draft'])
+        self.assertFalse(any(method == 'PATCH' for _, method, _ in self.repo.mutations))
+        self.assertNotIn('v0.2.0', self.repo.refs)
+        delivery.publish(self.archive, record, MAIN)
+        self.assertEqual(self.repo.refs['v0.2.0']['sha'], MAIN)
+        self.assertEqual(sum(path == 'upload' for path, _, _ in self.repo.mutations), 1)
+
+    def test_invalid_or_changed_draft_target_is_not_published(self):
+        record = self.record()
+        self.repo.fail_upload = True
+        with self.assertRaises(OSError):
+            delivery.publish(self.archive, record, MAIN)
+        self.repo.fail_upload = False
+        self.repo.releases[0]['target_commitish'] = 'main'
+        before = len(self.repo.mutations)
+        with self.assertRaisesRegex(ValueError, 'Draft target'):
+            delivery.publish(self.archive, record, NEXT)
+        self.assertEqual(len(self.repo.mutations), before)
+        self.repo.releases[0]['target_commitish'] = MAIN
+        find = delivery.find_release
+        def moved(tag):
+            result = find(tag)
+            if moved.called:
+                result['target_commitish'] = NEXT
+            moved.called = True
+            return result
+        moved.called = False
+        with patch.object(delivery, 'find_release', side_effect=moved), self.assertRaisesRegex(ValueError, 'changed during'):
+            delivery.publish(self.archive, record, NEXT)
+        self.assertEqual(len(self.repo.mutations), before)
+
+    def test_automatic_permission_lookup_failure_does_not_mutate(self):
+        record = self.record('stable')
+        api = self.repo.api
+        def missing(path, method='GET', data=None):
+            if path == '': raise OSError('repository lookup unavailable')
+            return api(path, method, data)
+        with patch.dict(os.environ, {'GITHUB_ACTIONS': 'true'}), patch.object(delivery, 'api', side_effect=missing):
+            with self.assertRaises(OSError):
+                delivery.publish(self.archive, record, MAIN)
+        self.assertEqual(self.repo.mutations, [])
 
     def test_recovering_older_stable_does_not_move_latest_back(self):
         self.archive.write_bytes(package(NEXT, version='0.10.0'))
