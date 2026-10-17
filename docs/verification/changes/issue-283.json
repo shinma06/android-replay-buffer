@@ -2,11 +2,12 @@
   "schema": 1,
   "issue": 283,
   "gui_required": true,
-  "reason": "今回の変更はH1（live後のログreaderで不要なclock履歴コピーを省く）だけ。有限Wire比較・回帰と実ロードした取得経路の内容/負荷確認を区別する。#283全体の保持/保存/HW/IDE共存/Android非悪化/寿命・復旧の元受入は未完としてIssueに保持する。",
+  "reason": "今回の変更はH1（live後のログreaderで不要なclock履歴コピーを省く）とH2（保存対象選択の反復indexOfを一巡へ置換）。有限Wire/保存比較・回帰と実ロードした取得経路の内容/負荷確認を区別する。#283全体の保持/保存/HW/IDE共存/Android非悪化/寿命・復旧の元受入は未完としてIssueに保持する。",
   "cli_checks": [
     "DeviceLogTailTestで起動tail除外、最初のlive行、live後の時計後退とunknown、reader再呼出し時のtail再判定、payload/順序/ID関係を確認する。",
     "既存CaptureProtocolTest・CaptureClockTestとReplayCoreWireTestのpartition/legacy/empty/timeout/partial recovery/LOG_ONLYを再利用する。#284採用後の実baseでautosaveに届く行の回帰も照合する。",
     "固定83fのproduction DeviceCapture.logsを通る同一の有限wire入力・clock履歴で変更前後の内容と割当量/CPU/wall/GCを記録する。合成host原点・JVM・負荷条件・ばらつきを明記し、Android/IDE/native受入やSave性能へ拡張しない。",
+    "CaptureStoreSaveTestとSingleMp4SaveTestで切出し前GOP・unknown・gap・固定窓外・pin/release・保持と保存形式の回帰を確認する。同一の有限driver/入力で5400/27000フレームのcaptureと実sourceの63フレームremux/133フレームmixed保存を1回の上限14分で比較し、内容/時刻/品質の原結果を保持する。",
     "最終採用baseのclean committed HEADでpython3 scripts/workflow/change_impact.py --run-testsを実行し、必要なcheck.py・product_check.py・plugin_check.pyを通す。実結果はIssue/PRへ記録する。"
   ],
   "cases": [
@@ -40,6 +41,36 @@
       "fix_pr": null,
       "recheck": "コピー省略が影響するログ取込みとhost割当を確認する。時計算法・動画codec・SaveWriter・UIは変更しないため、無関係な全player/editorの再試験を追加しない。",
       "next_action": "writerが固定HEAD/base/tree、実比較条件/原結果、回帰結果と残native確認をPMへ渡す。別セッションの独立reviewと最終base上の通常checksを経て、#224等の共有観察で不足を埋める。H1だけで#283全体をcloseしない。"
+    },
+    {
+      "id": "HOST-VIDEO-SELECTION",
+      "artifact": "plugin",
+      "change": "保存窓と直前GOPを選ぶ反復indexOfを一巡へ置換し、選択条件・順序・時刻対応・pinと保存内容を維持する",
+      "preconditions": "固定baseline/candidateのsourceとJARを識別し、同じ有限driver・入力・時計履歴・測定回数を使う。候補測定は通常build後に1回だけ実行し、全工程14分の外部watchdogと容量制限を適用する。旧83f比較と最終採用baseを区別する。",
+      "steps": [
+        "既存Store/Save回帰に加え、切出し直前の連続フレームとgap境界、unknown行、固定窓外、pin/releaseを確認する。",
+        "5400/27000フレームでproduction captureの内容digest、caller割当/CPU/wallと対象thread・区間のprofileを記録する。63フレームremuxと133フレームmixedは同じ実sourceを保存し、全frame/config/順序/時刻と出力のgeometry/色/paddingを照合する。合成unknown境界を元native観察へ読み替えない。",
+        "#284採用後の実baseでmanual/自動保存の呼出しと変更範囲を再確認し、影響する回帰と通常checksを行う。共有native受入では保持済み証拠で証明できない実保存の不足だけを確認する。"
+      ],
+      "expected": "保存するframe/GOP、順序、時刻・unknown/gap、pin/release、出力内容を維持し、同じ一覧に対する反復indexOfを除く。競合条件下の単回比較から速度改善率・IDE応答・Android負荷・HW効果を断定しない。時計mapの割当とcodec処理は別の未変更箇所として扱う。",
+      "provenance": [
+        "https://github.com/shinma06/android-replay-buffer/issues/283#issuecomment-6234387467",
+        "https://github.com/shinma06/android-replay-buffer/issues/283#issuecomment-6243350923",
+        "docs/verification/performance.md",
+        "docs/verification/responsibility.md"
+      ],
+      "gpt": {
+        "status": "pending",
+        "reason": "有限profileと回帰の実結果はIssueへ別記する。最終採用baseと実ロード版の不足確認は未完。"
+      },
+      "human": {
+        "status": "pending",
+        "reason": "未観察。既存のREAL/人間延期を維持し、新たな一律human必須条件を追加しない。"
+      },
+      "fix_issue": null,
+      "fix_pr": null,
+      "recheck": "対象選択と保存内容・時刻/品質を確認する。時計算法・codec・取得コマンド・UIは変更せず、H3/cache/HW試作や全player/editor行列を追加しない。",
+      "next_action": "固定候補と有限比較・原結果をPMへ渡し別セッションの独立reviewを受ける。#284採用後の実base上のchecksと残native受入を経るまで、この段階だけで#283をcloseしない。"
     }
   ]
 }
