@@ -1075,6 +1075,16 @@ class CertificateSyncTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'main changed'):
             self.verify(moving)
 
+    def test_merge_cannot_discard_main_archives_while_leaving_no_net_certificate_diff(self):
+        own_record = self.git('show', self.clean + ':' + self.path)
+        self.git('reset', '--hard', self.base)
+        self.git('merge', '--no-ff', '--no-commit', self.main)
+        (self.root / CERT_PATH).unlink()
+        self.write(self.path, own_record)
+        self.commit('main merge silently discards adopted archive')
+        with self.assertRaises(ValueError):
+            self.verify()
+
     def test_main_advance_preserves_only_unchanged_archives_and_accepts_another_real_sync(self):
         self.git('checkout', '-q', 'trusted-main')
         self.write('docs/new-policy.md', 'adopted unrelated policy')

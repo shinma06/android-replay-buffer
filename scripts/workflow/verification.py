@@ -1499,7 +1499,7 @@ def certificate_sync_main(pr, path, files, api, git):
     # All non-first-parent history must already belong to the fixed trusted main.
     if set(chain) != set(git('rev-list', head, '--not', base, trusted).splitlines()):
         raise ValueError('Certificate sync contains unexplained or already-main first-parent history')
-    for changed in files:
+    for changed in sorted(set(files) | set(git('diff', '--no-renames', '--name-only', base, trusted).splitlines())):
         if not re.fullmatch(r'docs/verification/changes/issue-[1-9][0-9]*\.json', changed):
             continue
         records = [regular_json(ref, changed, git) for ref in (base, head, trusted)
