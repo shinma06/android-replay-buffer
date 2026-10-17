@@ -8,7 +8,7 @@ import subprocess
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 from pr_policy import validate
-from verification import certificate_changes, git_read, verify_pr
+from verification import SHA, certificate_changes, git_read, verify_pr
 from agent_policy import CONTEXT
 
 
@@ -103,13 +103,17 @@ def recheck_main_repairs(api, repo, source_issue=None):
                     if declaration == ['none'] or (not declaration and not any(
                             label.get('name') == 'type:bug' for label in issue.get('labels', []))):
                         try:
-                            base = api('git/ref/heads/develop')['object']['sha']
+                            ref = api('git/ref/heads/develop')
+                            obj = ref.get('object') if isinstance(ref, dict) else None
+                            base = obj.get('sha') if isinstance(obj, dict) else None
+                            if not isinstance(base, str) or not SHA.fullmatch(base):
+                                raise ValueError('Develop ref response requires a full commit SHA')
                             head = pr['head']['sha']
                             subprocess.run(['git', 'fetch', '--no-tags', 'origin', base, head], check=True)
                             files = git_read('diff', '--no-renames', '--name-only', base, head).splitlines()
                             if not any(certificate_changes(base, head, files, git_read)):
                                 continue
-                        except (OSError, ValueError, subprocess.CalledProcessError) as error:
+                        except (OSError, IncompleteRead, ValueError, subprocess.CalledProcessError) as error:
                             error.add_note(f'PR {pr["number"]}: certificate dependency unknown; preserve pending review')
                             errors.append(error)
                 api('statuses/' + pr['head']['sha'], 'POST', {'context': CONTEXT, 'state': 'pending',

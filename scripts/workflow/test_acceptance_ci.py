@@ -312,6 +312,41 @@ class MainContractEventTests(unittest.TestCase):
         self.assertEqual(ci.recheck_main_repairs(api, 'shinma06/android-replay-buffer'), [90])
         self.assertTrue(any(c[0].endswith('page=2') for c in self.calls))
 
+    def test_develop_ref_shape_failure_invalidates_known_prs_before_reporting(self):
+        self.issue['body'] = 'Acceptance repair: none'
+        second = copy.deepcopy(self.pr)
+        second['number'] = 91
+        second['head'].update(sha=MOVED, ref='codex/91-repair')
+        second['body'] = second['body'].replace('#90', '#91').replace('issue-90', 'issue-91')
+        invalid = [None, [], {}, {'object': None}, {'object': []}, {'object': {}}]
+        invalid += [{'object': {'sha': sha}} for sha in (None, 1, True, [], {}, '', BASE[:7], '--all', 'g' * 40)]
+        for response in [*invalid, {'object': {'sha': BASE}}]:
+            with self.subTest(response=response):
+                self.calls.clear()
+                self.fetch.reset_mock()
+                self.certificates.return_value = ['changed-certificate']
+                def api(path, method='GET', data=None):
+                    if path.startswith('pulls?'): return [self.pr, second]
+                    if path == 'git/ref/heads/develop': return response
+                    if path == 'issues/91': return {'body': 'Acceptance repair: 123'}
+                    if path.startswith('actions/workflows/') and MOVED in path:
+                        return {'workflow_runs': [dict(self.run, id=43, head_sha=MOVED,
+                                                      pull_requests=[{'number': 91}])]}
+                    return self.api(path, method, data)
+                if response in invalid:
+                    with self.assertRaisesRegex(ValueError, 'Develop ref response') as raised:
+                        ci.recheck_main_repairs(api, 'shinma06/android-replay-buffer')
+                    self.assertIn('PR 90: certificate dependency unknown', raised.exception.__notes__[0])
+                    self.fetch.assert_not_called()
+                else:
+                    self.assertEqual(ci.recheck_main_repairs(api, 'shinma06/android-replay-buffer'), [90, 91])
+                    self.fetch.assert_called_once_with(
+                        ['git', 'fetch', '--no-tags', 'origin', BASE, HEAD], check=True)
+                writes = [c for c in self.calls if c[1] == 'POST']
+                self.assertEqual([c[0] for c in writes], ['statuses/' + HEAD, 'statuses/' + MOVED,
+                                                        'actions/runs/42/rerun', 'actions/runs/43/rerun'])
+                self.assertTrue(all(c[2]['state'] == 'pending' for c in writes[:2]))
+
     def test_transient_page_failure_retries_same_page_before_all_reruns(self):
         second = copy.deepcopy(self.pr)
         second['number'] = 91
@@ -481,6 +516,7 @@ class MainContractEventTests(unittest.TestCase):
         second['body'] = second['body'].replace('#90', '#91').replace('issue-90', 'issue-91')
         filler = dict(self.pr, head=dict(self.pr['head'], ref='unscoped'))
         phases = {'issue': 'issues/90', 'status': 'statuses/' + HEAD,
+                  'develop': 'git/ref/heads/develop',
                   'run': 'actions/workflows/acceptance.yml/runs?event=pull_request&head_sha=' + HEAD + '&per_page=1',
                   'rerun': 'actions/runs/42/rerun'}
         cases = [(phase, failure, False) for phase in phases
@@ -488,6 +524,8 @@ class MainContractEventTests(unittest.TestCase):
         cases += [('run', failure, True) for failure in ('truncated', 'json', 'encoding')]
         for phase, failure, incomplete in cases:
             with self.subTest(phase=phase, failure=failure, incomplete=incomplete):
+                self.issue['body'] = 'Acceptance repair: none' if phase == 'develop' else 'Acceptance repair: 123'
+                self.certificates.return_value = ['changed-certificate']
                 requests, failures = [], []
                 target = phases[phase]
                 class Handler(BaseHTTPRequestHandler):
@@ -502,6 +540,7 @@ class MainContractEventTests(unittest.TestCase):
                         if path.startswith('pulls?'):
                             value = [self.pr, second, *[filler] * 98] if incomplete else [self.pr, second]
                         elif path.startswith('issues/'): value = self.issue
+                        elif path == 'git/ref/heads/develop': value = {'object': {'sha': BASE}}
                         elif path.startswith('actions/workflows/'):
                             value = {'workflow_runs': [self.run if HEAD in path else dict(
                                 self.run, id=43, head_sha=MOVED, pull_requests=[{'number': 91}])]}
@@ -549,12 +588,14 @@ class MainContractEventTests(unittest.TestCase):
                     self.assertIs(caught.exception, failures[2] if incomplete else failures[0])
                     notes = '; '.join(caught.exception.__notes__)
                     self.assertIn('PR 90', notes)
-                    self.assertIn('source lookup or review invalidation' if phase in ('issue', 'status') else
+                    self.assertIn('certificate dependency unknown' if phase == 'develop' else
+                                  'source lookup or review invalidation' if phase in ('issue', 'status') else
                                   'Acceptance lookup or rerun', notes)
-                    self.assertEqual(requests.count(('POST' if phase in ('status', 'rerun') else 'GET', target)), 1)
+                    self.assertEqual(requests.count(('POST' if phase in ('status', 'rerun') else 'GET', target)),
+                                     2 if phase == 'develop' else 1)
                     self.assertIn(('POST', 'statuses/' + MOVED), requests)
                     self.assertIn(('POST', 'actions/runs/43/rerun'), requests)
-                    self.assertEqual(('POST', 'actions/runs/42/rerun') in requests, phase == 'rerun')
+                    self.assertEqual(('POST', 'actions/runs/42/rerun') in requests, phase in ('rerun', 'develop'))
                     writes = [path for method, path in requests if method == 'POST']
                     self.assertEqual(writes[:1 if phase == 'issue' else 2],
                                      ['statuses/' + MOVED] if phase == 'issue' else ['statuses/' + HEAD, 'statuses/' + MOVED])
