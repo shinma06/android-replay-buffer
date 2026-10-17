@@ -815,9 +815,7 @@ class LoopTests(unittest.TestCase):
         with patch.object(al, 'command', return_value='') as commands:
             self.assertEqual(self.loop.tick(36)['phase'], 'base-synced')
         expected = [[sys.executable, 'scripts/check.py'],
-                    [sys.executable, 'scripts/workflow/product_check.py']]
-        if (Path(__file__).resolve().parents[2] / 'plugin').is_dir():
-            expected.append([sys.executable, 'scripts/workflow/plugin_check.py'])
+                    [sys.executable, 'scripts/workflow/product_check.py', '--plugin']]
         self.assertEqual([c.args[0] for c in commands.call_args_list], expected)
         self.assertTrue(any(c.args == ('push', 'origin', 'HEAD:refs/heads/codex/35-test')
                             for c in al.git.call_args_list))
