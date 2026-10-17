@@ -2,13 +2,13 @@
   "schema": 1,
   "issue": 289,
   "gui_required": false,
-  "reason": "採用済みmain証明の通常develop同期について、現在mainの取得・実merge履歴・説明文を含む完全blob/mode・同期Issueだけの編集とmain更新後の依存PR失効/再検証を検証する管理gate修正。依存参照の取得切断/不正応答でも既知PRをpending化し、他PR処理と元エラーを保持する。製品、build、Case、証明内容、元観察と失敗は変更しない。",
+  "reason": "採用済みmain証明の通常develop同期について、現在mainの第一親にある同期元・実merge履歴・説明文を含む完全blob/mode・同期Issueだけの編集とmain更新後の依存PR失効/再検証を検証する管理gate修正。Issueと依存参照の取得切断/不正応答でも既知PRをpending化し、他PR処理と元エラーを保持する。製品、build、Case、証明内容、元観察と失敗は変更しない。",
   "cli_checks": [
     "python3 -m unittest discover -s scripts/workflow -p test_impact_evidence_reuse.py",
     "python3 -m unittest discover -s scripts/workflow -p test_acceptance_ci.py",
     "python3 scripts/check.py",
     "python3 scripts/workflow/product_check.py",
-    "python3 scripts/workflow/change_impact.py --base origin/main --run-tests"
+    "python3 scripts/workflow/change_impact.py --base origin/main (live-base分類) と同じclean HEADの通常pre-push hook --run-testsの実結果"
   ],
   "cases": []
 }

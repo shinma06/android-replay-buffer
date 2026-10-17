@@ -1480,10 +1480,11 @@ def certificate_sync_main(pr, path, files, api, git):
         return None
     trusted = api('git/ref/heads/main').get('object', {}).get('sha')
     load_impact_source(trusted, git)
+    adopted_sources = set(git('rev-list', '--first-parent', trusted).splitlines())
     for commit, parents in edges:
         source = parents[1] if len(parents) == 2 else None
-        if source:
-            git('merge-base', '--is-ancestor', source, trusted)
+        if source and source not in adopted_sources:
+            raise ValueError('Certificate sync source must belong to trusted main first-parent history')
         for changed in git('diff', '--no-renames', '--name-only', parents[0], commit).splitlines():
             if changed == path:
                 record = regular_json(commit, path, git)

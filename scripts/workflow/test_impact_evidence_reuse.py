@@ -1042,6 +1042,41 @@ class CertificateSyncTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'archive differs'):
             self.verify()
 
+    def test_main_side_ancestor_with_discarded_tooling_is_not_an_adopted_sync_source(self):
+        own_record = self.git('show', self.clean + ':' + self.path)
+        tooling = 'scripts/workflow/adopted.py'
+        self.git('checkout', '-q', '-b', 'unadopted-side', self.base)
+        self.write(tooling, 'unadopted side code')
+        self.write(CERT_PATH, json.dumps(self.record))
+        self.commit('side offers archive and unsafe tooling')
+        side = self.git('rev-parse', 'HEAD')
+        self.git('checkout', '-q', 'trusted-main')
+        self.write(tooling, 'adopted safe code')
+        self.commit('main chooses safe tooling')
+        self.git('merge', '--no-ff', '--no-commit', '-s', 'ours', side)
+        self.commit('main retains archive but discards side tooling')
+        self.main = self.git('rev-parse', 'HEAD')
+        self.git('merge-base', '--is-ancestor', side, self.main)
+        self.assertNotIn(side, self.git('rev-list', '--first-parent', self.main).splitlines())
+        self.assertEqual(self.git('ls-tree', side, '--', CERT_PATH),
+                         self.git('ls-tree', self.main, '--', CERT_PATH))
+        for source in (side, self.main):
+            with self.subTest(source=source):
+                self.git('checkout', '-q', 'sync')
+                self.git('reset', '--hard', self.base)
+                self.git('merge', '--no-ff', '--no-edit', source)
+                self.write(self.path, own_record)
+                self.commit('sync with fixed source')
+                if source == side:
+                    self.assertNotEqual(self.git('ls-tree', 'HEAD', '--', tooling),
+                                        self.git('ls-tree', self.main, '--', tooling))
+                    with self.assertRaisesRegex(ValueError, 'main first-parent'):
+                        self.verify()
+                else:
+                    self.assertEqual(self.verify()['certificate_sync_main'], self.main)
+                    self.assertEqual(self.git('ls-tree', 'HEAD', '--', tooling),
+                                     self.git('ls-tree', self.main, '--', tooling))
+
     def test_main_push_invalidates_previously_successful_sync_without_repair_declaration(self):
         import acceptance_ci as ci
         from unittest.mock import patch
@@ -1098,7 +1133,7 @@ class CertificateSyncTests(unittest.TestCase):
             self.verify()
         self.git('reset', '--hard', self.clean)
         self.main = self.base
-        with self.assertRaises(subprocess.CalledProcessError):
+        with self.assertRaisesRegex(ValueError, 'main first-parent'):
             self.verify()
 
     def test_edits_deletion_mode_changes_and_reverts_cannot_hide_in_sync(self):
