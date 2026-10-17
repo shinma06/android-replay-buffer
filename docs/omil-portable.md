@@ -2,6 +2,8 @@
 
 Use this brief for authorized work and when transferring its operating method to a fresh session or client. It carries operational judgment, not access rights, project acceptance, or a prescribed sequence of tools. Read the actual assignment, authority, project facts, and available capabilities with it. The repository's [worker request](team-worker-prompt.md), [workflow](workflow.md), and [ownership rules](work-management.md) remain canonical for work in this repository.
 
+For this project’s adopted decisions, scoped results and phase-review handoff, use the [current OMIL reference](omil-current.md). It separates current adoption from historical proposals and private runtime routes; it does not grant authority.
+
 Treat client-provided instructions and required general skills as runtime context. Record permitted sources, identities and actual reads before claiming input-only reproduction; a task packet cannot override higher-priority instructions. Assess unexpected context and limit the resulting claim instead of silently treating the run as isolated.
 
 ## Separate the obligation from its client
