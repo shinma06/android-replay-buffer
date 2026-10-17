@@ -137,14 +137,15 @@ class DelayedAcceptanceTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, 'changed during acceptance validation'):
                     ci.check_pr(self.event, api)
 
-    def test_repair_main_dependency_is_read_back_after_validation(self):
-        self.verify.return_value = {'mode': 'develop', 'repair_contract_base': BASE}
+    def test_main_dependencies_are_read_back_after_validation(self):
         current = pr_data()
         current['base']['ref'] = 'develop'
         current['body'] = current['body'].replace('tooling', 'develop')
         event = copy.deepcopy(current)
-        for main in (BASE, MOVED):
-            with self.subTest(main=main):
+        for field, main in ((field, main) for field in ('repair_contract_base', 'certificate_sync_main')
+                            for main in (BASE, MOVED)):
+            with self.subTest(field=field, main=main):
+                self.verify.return_value = {'mode': 'develop', field: BASE}
                 def api(path):
                     if path == 'pulls/90': return copy.deepcopy(current)
                     return {'object': {'sha': main if path.endswith('/main') else BASE}}

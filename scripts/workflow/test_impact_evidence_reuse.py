@@ -966,5 +966,133 @@ class CertificateArchivePromotionTests(unittest.TestCase):
         self.assertEqual(self.verify()['cases'], 1)
 
 
+class CertificateSyncTests(unittest.TestCase):
+    git = PromotionTreeTests.git
+    write = PromotionTreeTests.write
+    commit = PromotionTreeTests.commit
+
+    def setUp(self):
+        from test_verification import change
+        self.folder = tempfile.TemporaryDirectory()
+        self.addCleanup(self.folder.cleanup)
+        self.root = Path(self.folder.name)
+        self.git('init', '-q')
+        self.git('config', 'user.email', 'fixture@example.invalid')
+        self.git('config', 'user.name', 'Synthetic fixture')
+        self.write(COMPONENT, 'preserved product')
+        self.commit('common')
+        self.base = self.git('rev-parse', 'HEAD')
+        self.git('checkout', '-q', '-b', 'trusted-main')
+        self.record = dict(change(246, False), evidence_certificates={'sample': {'fixed': 'old'}})
+        self.write(CERT_PATH, json.dumps(self.record))
+        self.commit('adopt old certificate')
+        self.record['evidence_certificates']['sample']['fixed'] = 'current'
+        self.write(CERT_PATH, json.dumps(self.record))
+        self.commit('adopt current certificate')
+        self.main = self.git('rev-parse', 'HEAD')
+        self.git('checkout', '-q', '-b', 'sync', self.base)
+        self.git('merge', '--no-ff', '--no-edit', self.main)
+        self.path = 'docs/verification/changes/issue-287.json'
+        self.write(self.path, json.dumps(change(287, False)))
+        self.commit('sync acceptance')
+        self.clean = self.git('rev-parse', 'HEAD')
+
+    def api(self, path):
+        if path == 'git/ref/heads/main':
+            return {'object': {'sha': self.main}}
+        if path == 'issues/287':
+            return {'number': 287, 'body': 'Acceptance repair: none', 'labels': []}
+        raise AssertionError(path)
+
+    def verify(self, api=None):
+        from verification import verify_pr
+        pr = {'head': {'sha': self.git('rev-parse', 'HEAD'), 'ref': 'codex/287-chore-sync-main'},
+              'base': {'sha': self.base, 'ref': 'develop'},
+              'body': 'Issue: #287\nIntegration: develop\nGUI: not-required\nVerification: ' + self.path}
+        return verify_pr(pr, api or self.api, self.git)
+
+    def test_actual_merge_retains_main_history_without_registering_or_rewriting_evidence(self):
+        before = self.git('show', 'HEAD:' + CERT_PATH)
+        result = self.verify()
+        self.assertEqual(result, {'mode': 'develop', 'gui_complete': True, 'cases': 0,
+                                 'certificate_sync_main': self.main})
+        self.assertEqual(self.git('show', 'HEAD:' + CERT_PATH), before)
+        self.assertEqual(self.git('diff', '--name-only', self.base, 'HEAD', '--', COMPONENT), '')
+
+    def test_copy_without_main_merge_and_untrusted_merge_source_are_rejected(self):
+        self.git('reset', '--hard', self.base)
+        self.write(CERT_PATH, json.dumps(self.record))
+        from test_verification import change
+        self.write(self.path, json.dumps(change(287, False)))
+        self.commit('copied archives without source merge')
+        with self.assertRaises(ValueError):
+            self.verify()
+        self.git('reset', '--hard', self.clean)
+        self.main = self.base
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.verify()
+
+    def test_edits_deletion_mode_changes_and_reverts_cannot_hide_in_sync(self):
+        for mutation in ('certificate', 'metadata', 'delete', 'mode', 'product', 'foreign'):
+            with self.subTest(mutation=mutation):
+                self.git('reset', '--hard', self.clean)
+                record = copy.deepcopy(self.record)
+                if mutation == 'certificate':
+                    record['evidence_certificates']['sample']['fixed'] = 'forged'
+                    self.write(CERT_PATH, json.dumps(record))
+                elif mutation == 'metadata':
+                    record['reason'] = 'unreviewed replacement'
+                    self.write(CERT_PATH, json.dumps(record))
+                elif mutation == 'delete':
+                    (self.root / CERT_PATH).unlink()
+                elif mutation == 'mode':
+                    (self.root / CERT_PATH).chmod(0o755)
+                elif mutation == 'product':
+                    self.write(COMPONENT, 'changed product')
+                else:
+                    self.write('docs/verification/changes/issue-999.json', json.dumps(record))
+                self.commit('candidate alteration')
+                altered = self.git('rev-parse', 'HEAD')
+                with self.assertRaises(ValueError):
+                    self.verify()
+                self.git('revert', '--no-edit', altered)
+                with self.assertRaises(ValueError):
+                    self.verify()
+
+    def test_current_main_lookup_failures_and_mid_validation_change_fail_closed(self):
+        for value in (None, 'main', 'a' * 39):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                self.verify(lambda _: {'object': {'sha': value}})
+        with self.assertRaises(OSError):
+            self.verify(Mock(side_effect=OSError('unavailable')))
+        calls = 0
+        def moving(path):
+            nonlocal calls
+            if path == 'git/ref/heads/main':
+                calls += 1
+                return {'object': {'sha': self.main if calls == 1 else self.base}}
+            return self.api(path)
+        with self.assertRaisesRegex(ValueError, 'main changed'):
+            self.verify(moving)
+
+    def test_main_advance_preserves_only_unchanged_archives_and_accepts_another_real_sync(self):
+        self.git('checkout', '-q', 'trusted-main')
+        self.write('docs/new-policy.md', 'adopted unrelated policy')
+        self.commit('unrelated main advance')
+        self.main = self.git('rev-parse', 'HEAD')
+        self.git('checkout', '-q', 'sync')
+        self.assertEqual(self.verify()['certificate_sync_main'], self.main)
+        self.git('checkout', '-q', 'trusted-main')
+        self.record['evidence_certificates']['sample']['fixed'] = 'new adoption'
+        self.write(CERT_PATH, json.dumps(self.record))
+        self.commit('main changes archive')
+        self.main = self.git('rev-parse', 'HEAD')
+        self.git('checkout', '-q', 'sync')
+        with self.assertRaisesRegex(ValueError, 'archive differs'):
+            self.verify()
+        self.git('merge', '--no-ff', '--no-edit', self.main)
+        self.assertEqual(self.verify()['certificate_sync_main'], self.main)
+
+
 if __name__ == '__main__':
     unittest.main()

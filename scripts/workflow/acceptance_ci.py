@@ -171,8 +171,9 @@ def check_pr(pr, api):
             or latest_base != trusted_head or latest.get('body') != current.get('body')
             or latest.get('title') != current.get('title')):
         raise ValueError('PR/base changed during acceptance validation; rerun')
-    if result.get('repair_contract_base') and api('git/ref/heads/main')['object']['sha'] != result['repair_contract_base']:
-        raise ValueError('Trusted main contract changed during acceptance validation; rerun')
+    for field in ('repair_contract_base', 'certificate_sync_main'):
+        if result.get(field) and api('git/ref/heads/main')['object']['sha'] != result[field]:
+            raise ValueError('Trusted main contract changed during acceptance validation; rerun')
     return result
 
 

@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "issue": 289,
+  "gui_required": false,
+  "reason": "採用済みmain証明の通常develop同期について、現在mainの取得・実merge履歴・正確なblob/mode・同期Issueだけの編集を検証する管理gate修正。製品、build、Case、証明内容、元観察と失敗は変更しない。",
+  "cli_checks": [
+    "python3 -m unittest discover -s scripts/workflow -p test_impact_evidence_reuse.py",
+    "python3 -m unittest discover -s scripts/workflow -p test_acceptance_ci.py",
+    "python3 scripts/check.py",
+    "python3 scripts/workflow/product_check.py",
+    "python3 scripts/workflow/change_impact.py --base origin/main --run-tests"
+  ],
+  "cases": []
+}
