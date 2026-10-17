@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "issue": 304,
+  "gui_required": false,
+  "reason": "配布管理のworkflow出自確認を修正する。現在workflowのIDと正確なpathをAPIで照合し、通常pathとrunのref付きpathを両consumerで扱う。製品・CLI原型・Case/元観察を変更せず、metadata回帰と管理/CLI保全検査で確認できるためGUIやRelease実行は不要。",
+  "cli_checks": [
+    "python3 -m unittest discover -s scripts/workflow -p test_release_delivery.py",
+    "python3 scripts/check.py",
+    "python3 scripts/workflow/product_check.py",
+    "python3 scripts/workflow/change_impact.py --run-tests"
+  ],
+  "cases": []
+}
