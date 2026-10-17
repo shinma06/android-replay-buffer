@@ -103,7 +103,8 @@ def recheck_main_repairs(api, repo, source_issue=None):
                     if declaration == ['none'] or (not declaration and not any(
                             label.get('name') == 'type:bug' for label in issue.get('labels', []))):
                         try:
-                            base, head = pr['base']['sha'], pr['head']['sha']
+                            base = api('git/ref/heads/develop')['object']['sha']
+                            head = pr['head']['sha']
                             subprocess.run(['git', 'fetch', '--no-tags', 'origin', base, head], check=True)
                             files = git_read('diff', '--no-renames', '--name-only', base, head).splitlines()
                             if not any(certificate_changes(base, head, files, git_read)):

@@ -199,6 +199,7 @@ class MainContractEventTests(unittest.TestCase):
         if method == 'POST': return None
         if path.startswith('pulls?'): return [copy.deepcopy(self.pr)]
         if path == 'issues/90': return copy.deepcopy(self.issue)
+        if path == 'git/ref/heads/develop': return {'object': {'sha': BASE}}
         if path.startswith('actions/workflows/'): return {'workflow_runs': [copy.deepcopy(self.run)]}
         raise AssertionError(path)
 

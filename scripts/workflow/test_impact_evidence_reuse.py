@@ -1060,10 +1060,12 @@ class CertificateSyncTests(unittest.TestCase):
               'body': 'Issue: #287\nIntegration: develop\nGUI: not-required\n'
                       'GUI reason: Synthetic certificate sync\nVerification: ' + self.path}
         calls = []
+        live_base = self.base
         def api(path, method='GET', data=None):
             calls.append((path, method, data))
             if method == 'POST': return None
             if path.startswith('pulls?'): return [pr]
+            if path == 'git/ref/heads/develop': return {'object': {'sha': live_base}}
             if path.startswith('actions/workflows/'):
                 return {'workflow_runs': [{'id': 42, 'head_sha': self.clean, 'event': 'pull_request',
                                           'status': 'completed', 'pull_requests': [{'number': 288}]}]}
@@ -1078,7 +1080,7 @@ class CertificateSyncTests(unittest.TestCase):
         self.assertEqual(writes[0][2]['state'], 'pending')
         self.assertEqual(writes[1][:2], ('actions/runs/42/rerun', 'POST'))
         # Already adopted base archives create no cross-branch dependency.
-        pr['base']['sha'] = adopted
+        live_base = adopted  # PR payload may retain an older base after the branch advances.
         calls.clear()
         with patch.object(ci.subprocess, 'run', side_effect=fetched), patch.object(ci, 'git_read', self.git):
             self.assertEqual(ci.recheck_main_repairs(api, repo['full_name']), [])
