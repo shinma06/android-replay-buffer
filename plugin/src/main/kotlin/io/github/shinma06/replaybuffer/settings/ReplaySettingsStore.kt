@@ -9,6 +9,7 @@ import com.intellij.util.messages.Topic
 import com.intellij.util.xmlb.annotations.OptionTag
 import io.github.shinma06.replaybuffer.core.ApplicationMode
 import io.github.shinma06.replaybuffer.core.ApplicationTarget
+import io.github.shinma06.replaybuffer.core.CaptureMode
 import io.github.shinma06.replaybuffer.core.ReplaySettings as CoreReplaySettings
 import java.io.IOException
 import java.nio.file.Files
@@ -30,6 +31,7 @@ data class ReplaySettings(
     val destination: String = "",
     val appSelection: AppSelectionMode = AppSelectionMode.AUTOMATIC,
     val manualPackage: String = "",
+    val captureMode: CaptureMode = CaptureMode.VIDEO_AND_LOGS,
 ) {
     fun validationError(): String? = validationError(validateDestination(destination))
 
@@ -90,6 +92,8 @@ data class ReplaySettingsState(
     @JvmField val appSelection: AppSelectionMode = AppSelectionMode.AUTOMATIC,
     @field:OptionTag("manualPackage")
     @JvmField val manualPackage: String = "",
+    @field:OptionTag("captureMode")
+    @JvmField val captureMode: CaptureMode = CaptureMode.VIDEO_AND_LOGS,
 )
 
 @Service(Service.Level.PROJECT)
@@ -103,7 +107,7 @@ class ReplaySettingsStore : SerializablePersistentStateComponent<ReplaySettingsS
 
     fun settings(): ReplaySettings {
         val snapshot = state
-        return ReplaySettings(snapshot.retentionSeconds, snapshot.destination, snapshot.appSelection, snapshot.manualPackage)
+        return ReplaySettings(snapshot.retentionSeconds, snapshot.destination, snapshot.appSelection, snapshot.manualPackage, snapshot.captureMode)
     }
 
     fun setEnabled(value: Boolean) {
@@ -119,11 +123,13 @@ class ReplaySettingsStore : SerializablePersistentStateComponent<ReplaySettingsS
         val error = settings.validationError(destinationValidation)
         require(error == null) { error.orEmpty() }
         updateState {
+            require(!it.enabled || settings.captureMode == it.captureMode) { "取得モードは取得をOFFにしてから変更してください。" }
             it.copy(
                 retentionSeconds = settings.retentionSeconds,
                 destination = settings.destination,
                 appSelection = settings.appSelection,
                 manualPackage = settings.manualPackage,
+                captureMode = settings.captureMode,
             )
         }
     }

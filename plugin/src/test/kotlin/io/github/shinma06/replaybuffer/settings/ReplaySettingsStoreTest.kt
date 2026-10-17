@@ -3,6 +3,7 @@ package io.github.shinma06.replaybuffer.settings
 import com.intellij.util.xmlb.XmlSerializer
 import io.github.shinma06.replaybuffer.core.ApplicationMode
 import io.github.shinma06.replaybuffer.core.ApplicationTarget
+import io.github.shinma06.replaybuffer.core.CaptureMode
 import io.github.shinma06.replaybuffer.core.ReplaySettings as CoreReplaySettings
 import org.jdom.Element
 import org.junit.jupiter.api.Assertions.assertEquals
@@ -21,6 +22,29 @@ class ReplaySettingsStoreTest {
     lateinit var destinationRoot: Path
 
     private val directory = Path.of(System.getProperty("java.io.tmpdir")).toAbsolutePath().toString()
+
+    @Test
+    fun `mode persists and changes are rejected atomically while enabled`() {
+        val store = ReplaySettingsStore()
+        val selected = ReplaySettings(captureMode = CaptureMode.LOG_ONLY)
+        store.apply(selected)
+        store.setEnabled(true)
+        val restored = ReplaySettingsStore()
+        restored.loadState(XmlSerializer.deserialize(XmlSerializer.serialize(store.state), ReplaySettingsState::class.java))
+        assertEquals(selected, restored.settings())
+        assertTrue(restored.enabled)
+        val before = store.stateModificationCount
+        assertThrows(IllegalArgumentException::class.java) {
+            store.apply(selected.copy(captureMode = CaptureMode.VIDEO_AND_LOGS, retentionSeconds = 12))
+        }
+        assertEquals(before, store.stateModificationCount)
+        assertEquals(selected, store.settings())
+        store.apply(selected.copy(retentionSeconds = 60))
+        assertEquals(CaptureMode.LOG_ONLY, store.settings().captureMode)
+        store.setEnabled(false)
+        store.apply(selected.copy(captureMode = CaptureMode.VIDEO_AND_LOGS))
+        assertEquals(CaptureMode.VIDEO_AND_LOGS, store.settings().captureMode)
+    }
 
     @Test
     fun `existing regular file is rejected before Apply while directory and unset destination are accepted`() {
@@ -103,6 +127,7 @@ class ReplaySettingsStoreTest {
         assertEquals(valid, restored.settings())
         val oldXml = XmlSerializer.deserialize(Element("state"), ReplaySettingsState::class.java)
         assertEquals(180, oldXml.retentionSeconds)
+        assertEquals(CaptureMode.VIDEO_AND_LOGS, oldXml.captureMode)
         restored.loadState(oldXml.copy(retentionSeconds = -10))
         assertFalse(restored.enabled)
         assertEquals(180, restored.settings().retentionSeconds)

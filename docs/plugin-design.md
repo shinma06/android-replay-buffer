@@ -2,7 +2,7 @@
 
 [製品要件](https://github.com/shinma06/android-replay-buffer/blob/4d278e65dec0c55e71d584ff24c7f6fa407586cb/docs/requirements.md)を実装するための設計です。設計の採用と実装・実機受入の完了は区別します。UI配置は [採用済みのIDE UI設計](https://github.com/shinma06/android-replay-buffer/blob/4d278e65dec0c55e71d584ff24c7f6fa407586cb/docs/design/ide-ui.md)（[#12](https://github.com/shinma06/android-replay-buffer/issues/12)）を参照してください。時刻・録画方式・出力形式は [採用済みの同期設計](https://github.com/shinma06/android-replay-buffer/blob/4d278e65dec0c55e71d584ff24c7f6fa407586cb/docs/design/timeline.md)（[#13](https://github.com/shinma06/android-replay-buffer/issues/13)）を参照してください。CLI原型の仕様とコードは変更しません。
 
-[固定develop原設計](https://github.com/shinma06/android-replay-buffer/blob/4d278e65dec0c55e71d584ff24c7f6fa407586cb/docs/plugin-design.md)を管理側へ接続し、保存attempt保全だけを#201で改訂します。製品のmain promotionや受入完了を意味しません。
+[固定develop原設計](https://github.com/shinma06/android-replay-buffer/blob/4d278e65dec0c55e71d584ff24c7f6fa407586cb/docs/plugin-design.md)を管理側へ接続し、保存attempt保全を#201、取得モードと正常0行の保存条件を#274で改訂します。製品のmain promotionや受入完了を意味しません。
 
 ## 保存失敗とデータ保全
 
@@ -16,11 +16,13 @@
 
 ### 保存要求の境界
 
-保存ボタンを押した時点で、要求ID、シーケンス、保持時間、開始・終了時刻、端末、アプリ選択履歴、取得済み動画と両ログへの参照を固定します。以後の取得・設定変更・再接続で保存対象を変えません。バッファの削除処理は保存中・失敗保持中の参照を削除しません。動画の未確定部分を確定する方法と切り出し精度は[同期設計](https://github.com/shinma06/android-replay-buffer/blob/4d278e65dec0c55e71d584ff24c7f6fa407586cb/docs/design/timeline.md)に従います。
+保存ボタンを押した時点で、要求ID、シーケンス、有効な取得モード、保持時間、開始・終了時刻、端末、アプリ選択履歴、取得済み動画と両ログへの参照を固定します。以後の取得・設定変更・再接続で保存対象を変えません。バッファの削除処理は保存中・失敗保持中の参照を削除しません。動画の未確定部分を確定する方法と切り出し精度は[同期設計](https://github.com/shinma06/android-replay-buffer/blob/4d278e65dec0c55e71d584ff24c7f6fa407586cb/docs/design/timeline.md)に従います。
 
 動画のある保存はMP4を1件にまとめ、再接続・config切替・時計不明を同じファイル内の再生区間として保存します。元frameとPTS、復号prefix、gapの既知/不明は[同期設計](https://github.com/shinma06/android-replay-buffer/blob/4d278e65dec0c55e71d584ff24c7f6fa407586cb/docs/design/timeline.md)に従います。必要な全対象を保存できない場合は成功を公開せず固定要求を保ちます。
 
-保存処理は同時に1件です。処理中は保存ボタンを「保存中」にし、重複要求を起動しません。取得は継続します。成功後はすぐ次を保存でき、保存区間の重複を許容します。動画も両ログも取得量が0なら、空の成功フォルダを作らず「保存できるデータがありません」と表示します。1種類でもあれば、取得できた内容を保存します。
+保存処理は同時に1件です。処理中は保存ボタンを「保存中」にし、重複要求を起動しません。取得は継続します。成功後はすぐ次を保存でき、保存区間の重複を許容します。動画＋ログモードで全種類0件なら、空の成功フォルダを作らず「保存できるデータがありません」と表示します。1種類でもあれば、取得できた内容を保存します。ログ専用は例外として、必要readerが正常headerを確認し、同じ取得世代の有効な時計・現在epochの対象アプリ・正の取得窓が揃った場合だけ両0行のmetadata保存を受理します。取得開始前のtailはreader確認にのみ使い、保存行にはしません。未開始、reader障害、不明時計、対象未確定、完全切断中の両0行は新規保存不可です。正常0行のcoverage秒数は0のままで、窓・clock/app履歴・gapを別に保存します。再試行は受理時のモードと同じ固定対象を使います。
+
+ログ専用は動画経路と動画ringを開始せず、MP4と動画sourceを生成しません。`session.json` schema 3に`capture_mode`、`settings.video_requested`、`coverage.*.requested`を加え、動画stateを`NOT_REQUESTED`とします。`frames.jsonl`は0行、動画欠落範囲・動画clock scope・partsは空、video file/tailはnullです。共有clockのgapは両ログの不足へ反映し、意図した動画なしをmissingKindsへ加えません。従来schema 2までの保存物を変更せず、通常モードの動画欠落・保存失敗は従来どおりです。
 
 ### 成功・一部取得・書込み失敗
 

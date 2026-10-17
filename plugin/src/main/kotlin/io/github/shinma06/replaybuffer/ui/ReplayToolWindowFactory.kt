@@ -24,6 +24,7 @@ import io.github.shinma06.replaybuffer.core.ReplaySnapshot
 import io.github.shinma06.replaybuffer.core.SavePhase
 import io.github.shinma06.replaybuffer.core.SaveSnapshot
 import io.github.shinma06.replaybuffer.core.StreamSnapshot
+import io.github.shinma06.replaybuffer.core.CaptureMode
 import io.github.shinma06.replaybuffer.core.StreamState
 import io.github.shinma06.replaybuffer.ide.ReplayProjectService
 import io.github.shinma06.replaybuffer.ide.streamName
@@ -141,6 +142,7 @@ private class ReplayToolWindowPanel(private val project: Project) : JPanel(Borde
         val snapshot = view.snapshot
         val busy = service.resolving || view.pending > 0
         enabled.isSelected = store.enabled
+        enabled.isEnabled = store.enabled || !busy
         device.text = snapshot?.device?.let {
             "端末: ${it.name}（${if (it.kind == DeviceKind.EMULATOR) "Emulator" else "実機"}・${if (it.connected) "接続済み" else "切断中"}）"
         } ?: "端末: 未接続"
@@ -148,6 +150,9 @@ private class ReplayToolWindowPanel(private val project: Project) : JPanel(Borde
         application.text = "アプリ: ${app?.packageName ?: app?.unresolvedReason ?: "確認中…"}（${if (app?.mode == ApplicationMode.MANUAL) "手動" else "自動"}）"
         sdk.text = "Android SDK: ${service.environment?.adb ?: service.environment?.adbReason ?: "確認中…"}"
         state.text = snapshot?.captureDescription() ?: if (view.initializationError != null) "取得を初期化できません" else "取得を初期化中…"
+        state.text += " / 取得モード: ${captureModeDescription(snapshot?.settings?.captureMode ?: store.settings().captureMode)}"
+        if (snapshot != null && snapshot.settings.captureMode != store.settings().captureMode)
+            state.text += "（設定の反映待ち: ${captureModeDescription(store.settings().captureMode)}）"
         video.text = streamDescription("動画", snapshot?.video)
         deviceLog.text = streamDescription("端末ログ", snapshot?.deviceLog)
         appLog.text = streamDescription("アプリログ", snapshot?.appLog)
@@ -217,6 +222,7 @@ internal fun streamDescription(label: String, stream: StreamSnapshot?): String {
         StreamState.CAPTURING -> "取得中"
         StreamState.RECOVERING -> "復旧中"
         StreamState.UNAVAILABLE -> "未取得"
+        StreamState.NOT_REQUESTED -> return "$label: 対象外（ログ専用）"
     }
     return "$label: $state / ${String.format(Locale.ROOT, "%.1f", stream.availableSeconds)}秒分" +
         (stream.reason?.let { " / $it" } ?: "") +
@@ -253,15 +259,20 @@ internal fun frozenTargetDescription(save: SaveSnapshot?): String {
         "${it.packageName ?: "対象未確定"}: ${recordTime(it.fromNs)}〜${recordTime(it.toNs)}" +
             if (it.resolved) "" else "（帰属未確定）"
     }.ifEmpty { "記録なし" }
-    return "固定端末: $device\n固定アプリ: ${app?.packageName ?: app?.unresolvedReason ?: "未確定"}（$mode）\n対象アプリ履歴:\n$history"
+    return "固定モード: ${captureModeDescription(save.captureMode)}\n固定端末: $device\n固定アプリ: ${app?.packageName ?: app?.unresolvedReason ?: "未確定"}（$mode）\n対象アプリ履歴:\n$history"
 }
 
-internal fun saveDescription(save: SaveSnapshot?): String = when (save?.phase) {
+internal fun captureModeDescription(mode: CaptureMode): String = when (mode) {
+    CaptureMode.VIDEO_AND_LOGS -> "動画＋ログ"
+    CaptureMode.LOG_ONLY -> "ログ専用"
+}
+
+internal fun saveDescription(save: SaveSnapshot?): String = (when (save?.phase) {
     SavePhase.WRITING -> "保存: 保存中…（取得は継続しています）"
     SavePhase.FAILED -> "保存: 保存失敗（固定した対象を再試行できます）"
     SavePhase.COMPLETED -> "保存: 完了" + if (save.missingKinds.isNotEmpty()) " / 不足・欠落: ${save.missingKinds.map(::streamName).joinToString("、")}" else ""
     else -> "保存: 待機"
-}
+}) + if (save != null && save.phase != SavePhase.IDLE) " / ${captureModeDescription(save.captureMode)}" else ""
 
 internal fun videoTailDescription(save: SaveSnapshot?): String {
     val tail = save?.videoTail ?: return ""

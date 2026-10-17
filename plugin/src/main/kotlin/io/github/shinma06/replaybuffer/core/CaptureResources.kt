@@ -19,10 +19,14 @@ internal fun sha256(path: Path): String {
 }
 
 internal class CaptureResources(private val directory: Path, private val created: (Path) -> Unit = {}) : AutoCloseable {
-    val server: Path = extract("scrcpy-server-v5.0.1", SERVER_HASH)
+    private val serverResource = lazy { extract("scrcpy-server-v5.0.1", SERVER_HASH) }
+    val server: Path get() = serverResource.value
     val clock: Path = extract("replay-clock.jar", identity().getValue("clock"))
 
-    override fun close() { Files.deleteIfExists(server); Files.deleteIfExists(clock) }
+    override fun close() {
+        if (serverResource.isInitialized()) Files.deleteIfExists(server)
+        Files.deleteIfExists(clock)
+    }
 
     private fun extract(name: String, expected: String?): Path {
         val target = directory.resolve(name)

@@ -4,6 +4,7 @@ import io.github.shinma06.replaybuffer.core.ApplicationMode
 import io.github.shinma06.replaybuffer.core.ApplicationPeriodSnapshot
 import io.github.shinma06.replaybuffer.core.ApplicationTarget
 import io.github.shinma06.replaybuffer.core.CaptureGap
+import io.github.shinma06.replaybuffer.core.CaptureMode
 import io.github.shinma06.replaybuffer.core.CaptureState
 import io.github.shinma06.replaybuffer.core.CaptureStore
 import io.github.shinma06.replaybuffer.core.DeviceKind
@@ -32,6 +33,16 @@ class ReplayDescriptionsTest {
         settings = ReplaySettings(replaySeconds = 1), settingsRevision = 1,
         video = streams.getValue("video"), deviceLog = streams.getValue("device_log"), appLog = streams.getValue("app_log"),
     )
+
+    @Test
+    fun `log only mode is explicit in current stream completed save and frozen retry descriptions`() {
+        assertEquals("動画: 対象外（ログ専用）", streamDescription("動画", StreamSnapshot(StreamState.NOT_REQUESTED)))
+        val save = SaveSnapshot(SavePhase.COMPLETED, "quiet", captureMode = CaptureMode.LOG_ONLY)
+        assertEquals("保存: 完了 / ログ専用", saveDescription(save))
+        assertTrue(frozenTargetDescription(save).startsWith("固定モード: ログ専用"))
+        assertEquals(frozenTargetDescription(save), frozenTargetDescription(save.copy(phase = SavePhase.FAILED)))
+        assertEquals("", videoTailDescription(save))
+    }
 
     @Test
     fun `real recovered gaps show reasons and ranges until the core window expires them`() {
@@ -90,14 +101,14 @@ class ReplayDescriptionsTest {
         val save = SaveSnapshot(SavePhase.COMPLETED, "fixed", videoTail = tail)
         val healthy = StreamSnapshot(StreamState.CAPTURING, 6.0)
         val current = snapshot(mapOf("video" to healthy, "device_log" to healthy, "app_log" to healthy)).copy(save = save)
-        assertEquals("保存: 完了", saveDescription(current.save))
+        assertEquals("保存: 完了 / 動画＋ログ", saveDescription(current.save))
         assertTrue(videoTailDescription(current.save).contains("前の画像を表示・新frame未確認"))
         assertTrue(videoTailDescription(current.save).contains("1.000秒〜6.000秒"))
         assertEquals("取得中", current.captureDescription())
         assertEquals("動画: 取得中 / 6.0秒分", streamDescription("動画", current.video))
         assertEquals("", currentGapDescription(current))
         assertTrue(save.missingKinds.isEmpty())
-        assertEquals("保存: 完了", saveDescription(save.copy(videoTail = null)))
+        assertEquals("保存: 完了 / 動画＋ログ", saveDescription(save.copy(videoTail = null)))
         assertEquals("", videoTailDescription(save.copy(videoTail = null)))
         assertEquals("", videoTailDescription(null))
     }
@@ -109,7 +120,7 @@ class ReplayDescriptionsTest {
         val save = SaveSnapshot(SavePhase.COMPLETED, "fixed", missingKinds = listOf("video"),
             videoTail = VideoTailSnapshot(1_000_000_000, 5_000_000_000, 123, 1_000_000_000, 0, 1, true))
         val current = snapshot(mapOf("video" to healthy.copy(gaps = listOf(gap)), "device_log" to healthy, "app_log" to healthy)).copy(save = save)
-        assertEquals("保存: 完了 / 不足・欠落: 動画", saveDescription(save))
+        assertEquals("保存: 完了 / 不足・欠落: 動画 / 動画＋ログ", saveDescription(save))
         assertTrue(videoTailDescription(save).contains("前の画像を表示・新frame未確認"))
         assertTrue(videoTailDescription(save).contains("1.000秒〜5.000秒"))
         assertTrue(currentGapDescription(current).contains("5.000秒〜6.000秒 / 動画の接続が中断しました"))
@@ -149,7 +160,7 @@ class ReplayDescriptionsTest {
         assertEquals("保存: 待機", saveDescription(failed.copy(phase = SavePhase.IDLE)))
         assertEquals("", videoTailDescription(failed.copy(phase = SavePhase.IDLE)))
         val completed = retry.copy(phase = SavePhase.COMPLETED)
-        assertEquals("保存: 完了", saveDescription(completed))
+        assertEquals("保存: 完了 / 動画＋ログ", saveDescription(completed))
         assertTrue(videoTailDescription(completed).contains("前の画像を表示・新frame未確認"))
         assertEquals(tail, completed.videoTail)
     }

@@ -37,6 +37,7 @@ class ReplayCore(initialSettings: ReplaySettings, private val workspace: Path, c
     private var saveTask: Future<*>? = null
     private var cancelSave = AtomicBoolean()
     @Volatile private var current = ReplaySnapshot(0, 0, false, CaptureState.DISABLED, settings, 0,
+        video = StreamSnapshot(if (settings.captureMode.videoRequested) StreamState.WAITING else StreamState.NOT_REQUESTED),
         saveDisabledReason = "取得を有効にしてください")
 
     init {
@@ -72,8 +73,8 @@ class ReplayCore(initialSettings: ReplaySettings, private val workspace: Path, c
                 localOwnership = ownership
                 val root = ownership.root
                 try {
-                    resources = CaptureResources(root, ownership::created)
-                    store = CaptureStore(root.resolve("ring"), created = ownership::created, removed = ownership::removed)
+                    resources = CaptureResources(root, ownership::created).also { if (settings.captureMode.videoRequested) it.server }
+                    store = CaptureStore(root.resolve("ring"), created = ownership::created, removed = ownership::removed, captureMode = settings.captureMode)
                 } catch (e: Exception) {
                     try {
                         resources?.close(); resources = null
@@ -99,6 +100,8 @@ class ReplayCore(initialSettings: ReplaySettings, private val workspace: Path, c
 
     fun applySettings(value: ReplaySettings): CompletableFuture<ReplayOperation> = operation {
         val applied = value.validate()
+        if (enabled && applied.captureMode != settings.captureMode)
+            return@operation ReplayOperation(false, "取得モードは取得をOFFにしてから変更してください")
         val changedAdb = applied.adbPath != settings.adbPath
         val changedApp = applied.application != settings.application
         settings = applied
@@ -162,12 +165,12 @@ class ReplayCore(initialSettings: ReplaySettings, private val workspace: Path, c
     private fun startSave(capture: FrozenCapture, directory: Path) {
         cancelSave = AtomicBoolean()
         val cancellation = cancelSave
-        val missing = (capture.states.filterValues { it.state != StreamState.CAPTURING || it.reason != null }.keys +
-            capture.gaps.filter { gap -> !capture.windowKnown || gap.intersects(capture.start, capture.end, capture.endUncertainty) }.flatMap { if (it.stream == "clock") listOf("video", "device_log", "app_log") else listOf(it.stream) } +
+        val missing = (capture.states.filterValues { it.state != StreamState.NOT_REQUESTED && (it.state != StreamState.CAPTURING || it.reason != null) }.keys +
+            capture.gaps.filter { gap -> !capture.windowKnown || gap.intersects(capture.start, capture.end, capture.endUncertainty) }.flatMap { if (it.stream == "clock") capture.settings.captureMode.streams else listOf(it.stream) } +
             if (capture.logs.any { it.app == null }) listOf("app_log") else emptyList()).distinct().let { java.util.List.copyOf(it) }
         saveState = SaveSnapshot(SavePhase.WRITING, capture.id, capture.sequence, capture.start, capture.end,
             capture.seconds, directory, missingKinds = missing, device = capture.device,
-            application = capture.settings.application, applicationHistory = capture.applicationHistory(), videoTail = capture.videoTail())
+            application = capture.settings.application, applicationHistory = capture.applicationHistory(), videoTail = capture.videoTail(), captureMode = capture.settings.captureMode)
         publish()
         saveTask = writer.submit {
             val result = runCatching { SaveWriter().write(capture, directory, { cancellation.get() || closed.get() }) { publication ->
@@ -246,7 +249,7 @@ class ReplayCore(initialSettings: ReplaySettings, private val workspace: Path, c
         val states = data.streams(settings.replaySeconds)
         captureState = when {
             devices.size > 1 -> CaptureState.MULTIPLE_DEVICES
-            states.values.all { it.state == StreamState.CAPTURING && it.reason == null } -> CaptureState.CAPTURING
+            states.values.all { it.state == StreamState.NOT_REQUESTED || it.state == StreamState.CAPTURING && it.reason == null } -> CaptureState.CAPTURING
             states["video"]?.state == StreamState.CAPTURING || states["device_log"]?.state == StreamState.CAPTURING -> CaptureState.PARTIAL
             else -> CaptureState.RECOVERING
         }
@@ -260,7 +263,7 @@ class ReplayCore(initialSettings: ReplaySettings, private val workspace: Path, c
     private fun stopBackend() {
         val capture = backend ?: return
         store?.freeze()
-        listOf("video", "device_log", "app_log").forEach { store?.status(it, StreamState.RECOVERING, "端末との取得接続が中断しています", generation) }
+        settings.captureMode.streams.forEach { store?.status(it, StreamState.RECOVERING, "端末との取得接続が中断しています", generation) }
         val stopped = runCatching { capture.close() }
         val retained = runCatching {
             val record = capture.cleanupRecord()
@@ -316,7 +319,7 @@ class ReplayCore(initialSettings: ReplaySettings, private val workspace: Path, c
             else -> null
         }
         current = ReplaySnapshot(++revision, generation, enabled, captureState, settings, settingsRevision,
-            device, data?.sequence, data?.end(), data?.frozen() ?: false, streams["video"] ?: StreamSnapshot(),
+            device, data?.sequence, data?.end(), data?.frozen() ?: false, streams["video"] ?: StreamSnapshot(if (settings.captureMode.videoRequested) StreamState.WAITING else StreamState.NOT_REQUESTED),
             streams["device_log"] ?: StreamSnapshot(), streams["app_log"] ?: StreamSnapshot(), saveState,
             disabled == null, disabled, error, windowStartNs = data?.windowStart(settings.replaySeconds),
             cleanupPendingCount = cleanup.pendingCount)

@@ -1,6 +1,7 @@
 package io.github.shinma06.replaybuffer.ide
 
 import io.github.shinma06.replaybuffer.core.ApplicationMode
+import io.github.shinma06.replaybuffer.core.CaptureMode
 import io.github.shinma06.replaybuffer.core.CaptureState
 import io.github.shinma06.replaybuffer.core.RemoteCleanup
 import io.github.shinma06.replaybuffer.core.RemoteCleanupJournal
@@ -31,6 +32,33 @@ import java.util.concurrent.atomic.AtomicBoolean
 class ReplayProjectCaptureTest {
     @TempDir lateinit var directory: Path
     private val unresolved = AndroidReplayEnvironment(null, "SDK未設定", ApplicationSelection(null, "fixture", "実行対象未選択"))
+
+    @Test
+    fun `enabled cannot overtake an unapplied mode and startup restores the selected mode`() {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val store = ReplaySettingsStore()
+        store.loadState(ReplaySettingsState(enabled = true, captureMode = CaptureMode.LOG_ONLY))
+        val capture = ReplayProjectCapture(scope, store, {}, {})
+        try {
+            assertTrue(capture.applySettings(store.settings(), unresolved, 0).get(15, TimeUnit.SECONDS).accepted)
+            assertTrue(capture.view.snapshot!!.enabled)
+            assertEquals(CaptureMode.LOG_ONLY, capture.view.snapshot!!.settings.captureMode)
+            assertTrue(capture.setEnabled(false).get(15, TimeUnit.SECONDS).accepted)
+            store.apply(store.settings().copy(captureMode = CaptureMode.VIDEO_AND_LOGS))
+            assertFalse(capture.setEnabled(true).get(15, TimeUnit.SECONDS).accepted)
+            assertFalse(store.enabled)
+            assertFalse(capture.view.snapshot!!.enabled)
+            assertEquals(CaptureMode.LOG_ONLY, capture.view.snapshot!!.settings.captureMode)
+            assertEquals(CaptureMode.VIDEO_AND_LOGS, store.settings().captureMode)
+            assertTrue(capture.applySettings(store.settings(), unresolved, 0).get(15, TimeUnit.SECONDS).accepted)
+            assertTrue(capture.setEnabled(true).get(15, TimeUnit.SECONDS).accepted)
+            assertEquals(CaptureMode.VIDEO_AND_LOGS, capture.view.snapshot!!.settings.captureMode)
+        } finally {
+            capture.close()
+            capture.termination.get(15, TimeUnit.SECONDS)
+            scope.cancel()
+        }
+    }
 
     @Test
     fun `persisted enabled restores without a panel and Apply preserves the latest toggle`() {
