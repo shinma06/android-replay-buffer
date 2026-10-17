@@ -1,0 +1,45 @@
+{
+  "schema": 1,
+  "issue": 283,
+  "gui_required": true,
+  "reason": "今回の変更はH1（live後のログreaderで不要なclock履歴コピーを省く）だけ。有限Wire比較・回帰と実ロードした取得経路の内容/負荷確認を区別する。#283全体の保持/保存/HW/IDE共存/Android非悪化/寿命・復旧の元受入は未完としてIssueに保持する。",
+  "cli_checks": [
+    "DeviceLogTailTestで起動tail除外、最初のlive行、live後の時計後退とunknown、reader再呼出し時のtail再判定、payload/順序/ID関係を確認する。",
+    "既存CaptureProtocolTest・CaptureClockTestとReplayCoreWireTestのpartition/legacy/empty/timeout/partial recovery/LOG_ONLYを再利用する。#284採用後の実baseでautosaveに届く行の回帰も照合する。",
+    "固定83fのproduction DeviceCapture.logsを通る同一の有限wire入力・clock履歴で変更前後の内容と割当量/CPU/wall/GCを記録する。合成host原点・JVM・負荷条件・ばらつきを明記し、Android/IDE/native受入やSave性能へ拡張しない。",
+    "最終採用baseのclean committed HEADでpython3 scripts/workflow/change_impact.py --run-testsを実行し、必要なcheck.py・product_check.py・plugin_check.pyを通す。実結果はIssue/PRへ記録する。"
+  ],
+  "cases": [
+    {
+      "id": "HOST-LOG-TAIL",
+      "artifact": "plugin",
+      "change": "live判定を通過したreaderのclock履歴コピーだけを省き、元のログ取得・保存内容とAndroid側の取得条件を維持する",
+      "preconditions": "#301/#284等の実採用developへ同期した固定source/標準ZIP/全JARと実ロード版を識別する。共有host/GUI枠・所有fixture・有限の入力/時間/容量・停止/復元条件を事前に固定する。既存の有効な責任契約と元観察/失敗/延期を保持し、unit/fakeの成功をnativeへ転記しない。",
+      "steps": [
+        "固定baseline/candidateで同一Wire入力の内容・順序・時刻/unknown・所属・ID関係と割当量を比較する。起動tail、live後の時刻後退、reconnect、buffer分割/部分失敗はproduction回帰で精密に確認し、nativeで同じ故障行列を繰り返さない。",
+        "#224等の割当済み取得観察と共有し、実ロードした候補で選んだ固定mode・buffer群・対象アプリ・入力頻度/分母を記録する。保持済み観察と影響評価で証明できない実取得/保存の不足だけを確認し、保存窓全体のraw payload・行数/順序・所属・source時刻/unknown/gapを照合する。",
+        "取得コマンド・buffer構成・周期・動画設定を変更していないことを固定差分で照合し、対応する比較条件でAndroid側非悪化とhost資源を評価する。未測定のIDE応答・端末/電力・保存/HW性能を推定せず、host競合や観察器の差を残す。"
+      ],
+      "expected": "起動前tailを混入させず、live後の遅延/後退行を捨てない。reader再接続は新たにtail判定し、opaque payload・各bufferの一意な取込み・所属・unknown/gap・部分障害・停止/所有・保存保護を維持する。同一入力の不要な履歴コピーによる割当を減らし、測定条件で裏付けられない速度やAndroid負荷の改善を主張しない。",
+      "provenance": [
+        "https://github.com/shinma06/android-replay-buffer/issues/283",
+        "https://github.com/shinma06/android-replay-buffer/issues/283#issuecomment-6233756028",
+        "https://github.com/shinma06/android-replay-buffer/issues/283#issuecomment-6233799440",
+        "docs/verification/performance.md",
+        "docs/verification/responsibility.md"
+      ],
+      "gpt": {
+        "status": "pending",
+        "reason": "H1の有限Wire比較・回帰はIssue/PRに別記する。最終採用baseの固定artifactと実取得/Android側guardの不足事実は未確認。"
+      },
+      "human": {
+        "status": "pending",
+        "reason": "未観察。今回の変更から新たな一律human必須条件を追加せず、既存のREAL/人間延期を維持する。"
+      },
+      "fix_issue": null,
+      "fix_pr": null,
+      "recheck": "コピー省略が影響するログ取込みとhost割当を確認する。時計算法・動画codec・SaveWriter・UIは変更しないため、無関係な全player/editorの再試験を追加しない。",
+      "next_action": "writerが固定HEAD/base/tree、実比較条件/原結果、回帰結果と残native確認をPMへ渡す。別セッションの独立reviewと最終base上の通常checksを経て、#224等の共有観察で不足を埋める。H1だけで#283全体をcloseしない。"
+    }
+  ]
+}
