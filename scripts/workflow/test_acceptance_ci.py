@@ -407,7 +407,7 @@ class MainContractEventTests(unittest.TestCase):
                         def log_message(handler, *args): pass
 
                     server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
-                    thread = threading.Thread(target=server.serve_forever)
+                    thread = threading.Thread(target=server.serve_forever, kwargs={'poll_interval': 0.01})
                     thread.start()
                     def api(path, method='GET', data=None):
                         if path.startswith('pulls?'):
@@ -520,7 +520,7 @@ class MainContractEventTests(unittest.TestCase):
                     def log_message(handler, *args): pass
 
                 server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
-                thread = threading.Thread(target=server.serve_forever)
+                thread = threading.Thread(target=server.serve_forever, kwargs={'poll_interval': 0.01})
                 thread.start()
                 def local_urlopen(request, timeout):
                     local = Request(f'http://127.0.0.1:{server.server_port}/' + request.full_url.split('/repos/shinma06/android-replay-buffer/', 1)[1],
