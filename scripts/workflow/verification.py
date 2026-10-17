@@ -1485,6 +1485,13 @@ def certificate_sync_main(pr, path, files, api, git):
         source = parents[1] if len(parents) == 2 else None
         if source and source not in adopted_sources:
             raise ValueError('Certificate sync source must belong to trusted main first-parent history')
+        if source:
+            common = git('merge-base', parents[0], source)
+            if common == source:
+                raise ValueError('Certificate sync source was already merged; backward/repeated merges are invalid')
+            for adopted in git('diff', '--no-renames', '--name-only', common, source).splitlines():
+                if adopted != path and git('ls-tree', commit, '--', adopted) != git('ls-tree', source, '--', adopted):
+                    raise ValueError('Certificate sync discarded main change: ' + adopted)
         for changed in git('diff', '--no-renames', '--name-only', parents[0], commit).splitlines():
             if changed == path:
                 record = regular_json(commit, path, git)
@@ -1493,6 +1500,11 @@ def certificate_sync_main(pr, path, files, api, git):
                     raise ValueError('Certificate sync cannot register certificates or repair results')
                 continue
             before, after = (git('ls-tree', ref, '--', changed) for ref in (parents[0], commit))
+            if (before and re.fullmatch(r'docs/verification/changes/issue-[1-9][0-9]*\.json', changed) and
+                    'evidence_certificates' in regular_json(parents[0], changed, git)):
+                record = regular_json(commit, changed, git) if after else {}
+                if not isinstance(record.get('evidence_certificates'), dict) or not record['evidence_certificates']:
+                    raise ValueError('Certificate sync archive removal is forbidden at every history edge')
             modes = tuple(entry.split()[0] if entry else '000000' for entry in (before, after))
             allowed = {TOOLING, KNOWLEDGE, METADATA}
             if changed == '.github/workflows/ci.yml' and all(mode in ('000000', '100644') for mode in modes):

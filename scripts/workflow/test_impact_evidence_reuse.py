@@ -1123,6 +1123,90 @@ class CertificateSyncTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'archive differs'):
             self.verify()
 
+    def test_merge_must_adopt_main_changes_and_preserve_develop_only_content(self):
+        own_record = self.git('show', self.clean + ':' + self.path)
+        tooling = 'scripts/workflow/adopted.py'
+        self.git('checkout', '-q', 'sync')
+        self.git('reset', '--hard', self.base)
+        self.write(tooling, 'old shared tooling')
+        self.commit('shared tooling baseline')
+        common = self.git('rev-parse', 'HEAD')
+        self.write(COMPONENT, 'newer develop product')
+        self.write('docs/develop-only.md', 'preserve develop content')
+        self.commit('develop-only work')
+        self.base = self.git('rev-parse', 'HEAD')
+        for mutation in ('modify', 'delete', 'mode', 'add'):
+            with self.subTest(mutation=mutation):
+                self.git('checkout', '-q', 'trusted-main')
+                self.git('reset', '--hard', common)
+                self.write(CERT_PATH, json.dumps(self.record))
+                changed = 'scripts/workflow/new.py' if mutation == 'add' else tooling
+                if mutation == 'delete':
+                    (self.root / changed).unlink()
+                elif mutation == 'mode':
+                    (self.root / changed).chmod(0o755)
+                else:
+                    self.write(changed, 'adopted main tooling')
+                self.commit('main adopts certificate and tooling change')
+                self.main = self.git('rev-parse', 'HEAD')
+                for omit in (True, False):
+                    with self.subTest(omit=omit):
+                        self.git('checkout', '-q', 'sync')
+                        self.git('reset', '--hard', self.base)
+                        self.git('merge', '--no-ff', '--no-commit', self.main)
+                        if omit:
+                            self.git('restore', '--source=' + self.base, '--staged', '--worktree', '--', changed)
+                        self.write(self.path, own_record)
+                        self.commit('sync main with or without discarded tooling')
+                        if omit:
+                            with self.assertRaisesRegex(ValueError, 'discarded main change'):
+                                self.verify()
+                        else:
+                            self.assertEqual(self.verify()['certificate_sync_main'], self.main)
+                            for preserved in (COMPONENT, 'docs/develop-only.md'):
+                                self.assertEqual(self.git('ls-tree', 'HEAD', '--', preserved),
+                                                 self.git('ls-tree', self.base, '--', preserved))
+
+    def test_intermediate_archive_removal_and_restoration_cannot_hide_in_merges(self):
+        for removal in ('ancestor', 'forward-delete', 'forward-strip'):
+            with self.subTest(removal=removal):
+                self.git('checkout', '-q', 'trusted-main')
+                self.git('reset', '--hard', self.main)
+                original_main = self.main
+                if removal != 'ancestor':
+                    if removal == 'forward-delete':
+                        (self.root / CERT_PATH).unlink()
+                    else:
+                        record = dict(self.record)
+                        del record['evidence_certificates']
+                        self.write(CERT_PATH, json.dumps(record))
+                    self.commit('main archive removal fixture')
+                    removed_source = self.git('rev-parse', 'HEAD')
+                    self.write(CERT_PATH, json.dumps(self.record))
+                    self.commit('main archive restoration fixture')
+                    self.main = self.git('rev-parse', 'HEAD')
+                self.git('checkout', '-q', 'sync')
+                self.git('reset', '--hard', self.clean)
+                if removal == 'ancestor':
+                    (self.root / CERT_PATH).unlink()
+                    self.git('add', '.')
+                    removed = self.git('commit-tree', self.git('write-tree'), '-p', self.clean,
+                                       '-p', self.base, '-m', 'synthetic backward merge removes archive')
+                    self.git('reset', '--hard', removed)
+                    self.write(CERT_PATH, json.dumps(self.record))
+                    self.git('add', '.')
+                    restored = self.git('commit-tree', self.git('write-tree'), '-p', removed,
+                                        '-p', original_main, '-m', 'synthetic repeated merge restores archive')
+                    self.git('reset', '--hard', restored)
+                else:
+                    self.git('merge', '--no-ff', '--no-edit', removed_source)
+                    self.git('merge', '--no-ff', '--no-edit', self.main)
+                self.assertEqual(self.git('ls-tree', 'HEAD', '--', CERT_PATH),
+                                 self.git('ls-tree', self.main, '--', CERT_PATH))
+                with self.assertRaisesRegex(ValueError, 'already merged|archive removal'):
+                    self.verify()
+                self.main = original_main
+
     def test_copy_without_main_merge_and_untrusted_merge_source_are_rejected(self):
         self.git('reset', '--hard', self.base)
         self.write(CERT_PATH, json.dumps(self.record))
