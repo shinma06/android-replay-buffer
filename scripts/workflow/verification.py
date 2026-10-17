@@ -1463,14 +1463,75 @@ def promotion_metadata_history(base, candidate, head, allowed, carried, git):
         if any(p in carried and git('ls-tree', commit, '--', p) != carried[p] for p in changed):
             raise ValueError('Changed or reverted policy/certificate metadata differs from trusted main')
 
-def verify_pr(pr, api, git=git_read):
-    """api(path) uses the same repo; git sees fetched PR/candidate objects only as data."""
-    issue, path, mode = metadata(pr)
-    head, base = pr['head']['sha'], pr['base']['sha']
-    data = regular_json(head, path, git)
-    gui = field(pr['body'], 'GUI') == 'required'
-    validate_change(data, issue, gui)
-    files = git('diff', '--no-renames', '--name-only', base, head).splitlines()
+
+def certificate_sync_main(pr, path, files, api, git):
+    """Retain adopted archives through actual main merges, never candidate registration."""
+    from change_impact import path_impacts, BUILD, TOOLING, KNOWLEDGE, METADATA
+    base, head = pr['base']['sha'], pr['head']['sha']
+    chain = git('rev-list', '--first-parent', f'{base}..{head}').splitlines()
+    edges, previous = [], base
+    for commit in reversed(chain):
+        parents = git('rev-list', '--parents', '-n', '1', commit).split()[1:]
+        if not parents or len(parents) > 2 or parents[0] != previous:
+            return None
+        edges.append((commit, parents))
+        previous = commit
+    if previous != head or not any(len(parents) == 2 for _, parents in edges):
+        return None
+    trusted = api('git/ref/heads/main').get('object', {}).get('sha')
+    load_impact_source(trusted, git)
+    adopted_sources = set(git('rev-list', '--first-parent', trusted).splitlines())
+    for commit, parents in edges:
+        source = parents[1] if len(parents) == 2 else None
+        if source and source not in adopted_sources:
+            raise ValueError('Certificate sync source must belong to trusted main first-parent history')
+        if source:
+            common = git('merge-base', parents[0], source)
+            if common == source:
+                raise ValueError('Certificate sync source was already merged; backward/repeated merges are invalid')
+            for adopted in git('diff', '--no-renames', '--name-only', common, source).splitlines():
+                if adopted != path and git('ls-tree', commit, '--', adopted) != git('ls-tree', source, '--', adopted):
+                    raise ValueError('Certificate sync discarded main change: ' + adopted)
+        for changed in git('diff', '--no-renames', '--name-only', parents[0], commit).splitlines():
+            if changed == path:
+                record = regular_json(commit, path, git)
+                validate_change(record, int(Path(path).stem.removeprefix('issue-')), False)
+                if 'evidence_certificates' in record or 'repair' in record:
+                    raise ValueError('Certificate sync cannot register certificates or repair results')
+                continue
+            before, after = (git('ls-tree', ref, '--', changed) for ref in (parents[0], commit))
+            if (before and re.fullmatch(r'docs/verification/changes/issue-[1-9][0-9]*\.json', changed) and
+                    'evidence_certificates' in regular_json(parents[0], changed, git)):
+                record = regular_json(commit, changed, git) if after else {}
+                if not isinstance(record.get('evidence_certificates'), dict) or not record['evidence_certificates']:
+                    raise ValueError('Certificate sync archive removal is forbidden at every history edge')
+            modes = tuple(entry.split()[0] if entry else '000000' for entry in (before, after))
+            allowed = {TOOLING, KNOWLEDGE, METADATA}
+            if changed == '.github/workflows/ci.yml' and all(mode in ('000000', '100644') for mode in modes):
+                allowed.add(BUILD)  # Trusted CI policy still requires the classifier's product checks.
+            if (not source or path_impacts(changed, modes) - allowed or
+                    after != git('ls-tree', source, '--', changed)):
+                raise ValueError('Certificate sync requires exact main blobs and only its own acceptance edits')
+    # All non-first-parent history must already belong to the fixed trusted main.
+    if set(chain) != set(git('rev-list', head, '--not', base, trusted).splitlines()):
+        raise ValueError('Certificate sync contains unexplained or already-main first-parent history')
+    for changed in sorted(set(files) | set(git('diff', '--no-renames', '--name-only', base, trusted).splitlines())):
+        if not re.fullmatch(r'docs/verification/changes/issue-[1-9][0-9]*\.json', changed):
+            continue
+        records = [regular_json(ref, changed, git) for ref in (base, head, trusted)
+                   if git('ls-tree', ref, '--', changed)]
+        if not any('evidence_certificates' in record for record in records):
+            continue
+        adopted = regular_json(trusted, changed, git)
+        validate_change(adopted, int(Path(changed).stem.removeprefix('issue-')), False)
+        if (not isinstance(adopted.get('evidence_certificates'), dict) or not adopted['evidence_certificates'] or
+                git('ls-tree', head, '--', changed) != git('ls-tree', trusted, '--', changed)):
+            raise ValueError('Certificate sync archive differs from current trusted main')
+    return trusted
+
+
+def certificate_changes(base, head, files, git):
+    """Include archive metadata/mode and reverted history, excluding exact base adoption."""
     pairs = [(base, head)]
     for commit in git('rev-list', head, '--not', base).splitlines():
         for parent in git('rev-list', '--parents', '-n', '1', commit).split()[1:]:
@@ -1481,10 +1542,31 @@ def verify_pr(pr, api, git=git_read):
         for changed in changed_paths:
             if not re.fullmatch(r'docs/verification/changes/issue-[1-9][0-9]*\.json', changed):
                 continue
-            before = regular_json(before_ref, changed, git).get('evidence_certificates') if git('ls-tree', before_ref, '--', changed) else None
-            after = regular_json(after_ref, changed, git).get('evidence_certificates') if git('ls-tree', after_ref, '--', changed) else None
-            adopted = after and git('ls-tree', after_ref, '--', changed) == git('ls-tree', base, '--', changed)
-            if before != after and not adopted and (mode != 'tooling' or changed != path or not after):
+            before_blob, after_blob = (git('ls-tree', ref, '--', changed) for ref in (before_ref, after_ref))
+            before = regular_json(before_ref, changed, git) if before_blob else {}
+            after = regular_json(after_ref, changed, git) if after_blob else {}
+            if not isinstance(before, dict) or not isinstance(after, dict):
+                raise ValueError('Changed acceptance record must be a JSON object')
+            if (before_blob != after_blob and
+                    ('evidence_certificates' in before or 'evidence_certificates' in after) and
+                    after_blob != git('ls-tree', base, '--', changed)):
+                yield changed, after.get('evidence_certificates')
+
+
+def verify_pr(pr, api, git=git_read):
+    """api(path) uses the same repo; git sees fetched PR/candidate objects only as data."""
+    issue, path, mode = metadata(pr)
+    head, base = pr['head']['sha'], pr['base']['sha']
+    data = regular_json(head, path, git)
+    gui = field(pr['body'], 'GUI') == 'required'
+    validate_change(data, issue, gui)
+    files = git('diff', '--no-renames', '--name-only', base, head).splitlines()
+    sync_main = None
+    for changed, after in certificate_changes(base, head, files, git):
+        if mode != 'tooling' or changed != path or not after:
+            if mode == 'develop' and not gui and sync_main is None:
+                sync_main = certificate_sync_main(pr, path, files, api, git)
+            if not sync_main:
                 raise ValueError('Changed certificates require their dedicated current-Issue main tooling registration')
     if 'evidence_certificates' in data and mode != 'tooling':
         raise ValueError('Evidence certificate registration requires its independent main tooling route')
@@ -1496,7 +1578,10 @@ def verify_pr(pr, api, git=git_read):
                 if fix.get('state') != 'open' or 'pull_request' in fix:
                     raise ValueError('Product failure needs an open dedicated fix Issue')
         repair = verify_repair(pr, api(f'issues/{issue}'), data, path, api, git)
-        return {'mode': mode, 'gui_complete': not gui, 'cases': len(data['cases']), **repair}
+        if sync_main and api('git/ref/heads/main').get('object', {}).get('sha') != sync_main:
+            raise ValueError('Trusted main changed during certificate sync validation; rerun')
+        return {'mode': mode, 'gui_complete': not gui, 'cases': len(data['cases']), **repair,
+                **({'certificate_sync_main': sync_main} if sync_main else {})}
     if mode == 'tooling':
         if gui or not files or any(not tooling_path(f) for f in files):
             raise ValueError('Direct main tooling route is restricted to documented non-product paths')
