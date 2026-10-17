@@ -39,8 +39,10 @@ internal class CrashAutosave {
 
     @Synchronized
     fun configure(preference: Boolean, active: Boolean, target: String?, revision: Long) {
+        if (revision != optionRevision && preference == this.preference && target == this.target)
+            invalidate(AutoSaveReason.NOT_SAVED_PRE_ARM_EVENT)
+        optionRevision = revision
         if (preference != this.preference) {
-            optionRevision = revision
             invalidate(AutoSaveReason.NOT_SAVED_DISABLED)
             if (preference) {
                 terminal.clear()
@@ -156,6 +158,8 @@ internal class CrashAutosave {
     fun admissionProblem(pair: CrashPair, host: Long): AutoSaveReason? = when {
         !active || !preference -> AutoSaveReason.NOT_SAVED_DISABLED
         pair.java.targetRevision != targetRevision -> AutoSaveReason.NOT_SAVED_TARGET_CHANGED
+        pair.java.optionRevision != optionRevision || pair.platform.optionRevision != optionRevision ->
+            AutoSaveReason.NOT_SAVED_PRE_ARM_EVENT
         barrier != pair.java.barrier || pair.platform.barrier != pair.java.barrier -> AutoSaveReason.NOT_SAVED_CLOCK_UNKNOWN
         suspended != null || admissions >= 8 -> AutoSaveReason.LIMIT_REACHED
         lastAdmission?.let { host < it || host - it < 30_000_000_000 } == true -> AutoSaveReason.NOT_SAVED_COOLDOWN

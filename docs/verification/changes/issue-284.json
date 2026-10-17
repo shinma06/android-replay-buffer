@@ -5,6 +5,7 @@
   "reason": "クラッシュ報告による自動保存の検出・Apply・保存・結果/UIを変更する。固定候補の独立reviewと最小native/FILE/寿命/負荷受入は決定的検査と区別する。",
   "cli_checks": [
     "CrashProtocolTest / CrashAutosaveTest / CrashSaveLifecycleTestと既存protocol/store/core/writer/settings/ProjectCapture/UI回帰。宣言82仕様の実行結果とは呼ばない。",
+    "python3 tests/fixtures/replay-marker/build.pyで2つの新固定APKのassemble/lintと回帰APKのcompileを行い、source/dirty/APK hash/専用署名を記録する。実crash/非fatal入力・正常markerのnative回帰は別割当で未実施。",
     "python3 scripts/workflow/product_check.py、python3 scripts/workflow/plugin_check.py、必要なpython3 scripts/check.py、clean committed HEADでpython3 scripts/workflow/change_impact.py --base origin/develop --run-tests。"
   ],
   "cases": [

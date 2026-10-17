@@ -16,6 +16,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
+import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
 class CrashAutosaveTest {
@@ -214,10 +215,92 @@ class CrashAutosaveTest {
             }
             assertEquals(0, f.store.autosave.snapshot().admissionsRemaining)
             assertEquals(AutoSaveState.SUSPENDED, f.store.autosave.snapshot().state)
+            val suspended = f.store.autosave.snapshot()
             val manual = assertNotNull(f.store.capture(f.settings, host = f.at(anchor + 21_000_000)))
             assertNull(manual.autoTrigger)
             f.store.configureAuto(f.settings.copy(replaySeconds = 60), 2, "fixture", true, f.at(anchor + 22_000_000))
-            assertEquals(0, f.store.autosave.snapshot().admissionsRemaining)
+            assertEquals(suspended, f.store.autosave.snapshot())
+        }
+    }
+
+    @Test
+    fun applyInvalidatesOnlyUnadmittedReportsAndFreshPairsUseTheNewRevision() {
+        for (stage in listOf("java-only", "pair-before-drain", "pair-after-drain")) {
+            CrashFixture(Files.createDirectory(root.resolve(stage))).use { f ->
+                f.log(javaCrash(), 10_005_000_000)
+                if (stage != "java-only") f.log(platformCrash(), 10_006_000_000)
+                val oldPair = if (stage == "pair-after-drain") f.pair() else null
+                val applied = if (stage == "java-only") f.settings.copy(saveDirectory = root.resolve("new-destination"))
+                    else f.settings.copy(replaySeconds = 60)
+                f.store.configureAuto(applied, 2, "fixture", true, f.at(10_020_000_000))
+                if (stage == "java-only") f.log(platformCrash(), 10_025_000_000)
+                assertTrue(f.store.autosave.drain(f.at(10_030_000_000)).isEmpty(), stage)
+                if (oldPair != null) {
+                    assertEquals(AutoSaveReason.NOT_SAVED_PRE_ARM_EVENT,
+                        assertFailsWith<AutoSaveRejected> { f.store.capture(applied, oldPair, f.at(10_030_000_000)) }.reason)
+                } else {
+                    assertEquals(AutoSaveReason.NOT_SAVED_PRE_ARM_EVENT, f.store.autosave.snapshot().lastOutcome?.reason, stage)
+                    assertEquals(if (stage == "java-only") 1 else 2, f.store.autosave.snapshot().notSavedCount)
+                }
+                assertEquals(8, f.store.autosave.snapshot().admissionsRemaining)
+
+                val time = if (stage == "java-only") {
+                    f.anchor(12_000_000_000)
+                    f.anchor(16_000_000_000)
+                    f.reporter(15_500_000_000, 15_501_000_000)
+                    assertTrue(f.store.autosave.drain(f.at(16_020_000_000)).isEmpty())
+                    assertEquals(AutoSaveReason.UNKNOWN_UNCORROBORATED, f.store.autosave.snapshot().lastOutcome?.reason)
+                    16_040_000_000
+                } else 10_040_000_000
+                // Source/receipt/identity/window stay valid; only the Apply boundary separates these pairs.
+                val java = javaCrash(wall = CRASH_WALL + time)
+                val platform = platformCrash(wall = CRASH_WALL + time + 1_000_000)
+                f.log(java, time + 2_000_000)
+                f.store.configureAuto(applied, 2, "fixture", true, f.at(time + 3_000_000))
+                f.log(platform, time + 4_000_000)
+                val host = f.at(time + 20_000_000)
+                val fresh = f.store.autosave.drain(host).single()
+                val capture = assertNotNull(f.store.capture(applied, fresh, host))
+                f.store.autosave.admitted(fresh, capture.id, host)
+                val trigger = assertNotNull(capture.autoTrigger)
+                assertEquals(2L, trigger.facts["option_revision"])
+                assertEquals(f.at(10_020_000_000).toString(), trigger.facts["arming_host_ns"])
+                assertEquals(7, f.store.autosave.snapshot().admissionsRemaining)
+                f.store.configureAuto(applied.copy(replaySeconds = 90), 3, "fixture", true, f.at(time + 30_000_000))
+                assertSame(trigger, capture.autoTrigger)
+                assertEquals(2L, trigger.facts["option_revision"])
+                assertFailsWith<IllegalStateException> { f.store.capture(applied, host = f.at(time + 40_000_000)) }
+                f.store.release(capture.id)
+                f.log(java, time + 42_000_000)
+                f.log(platform, time + 44_000_000)
+                assertTrue(f.store.autosave.drain(f.at(time + 50_000_000)).isEmpty())
+                assertEquals(7, f.store.autosave.snapshot().admissionsRemaining)
+            }
+        }
+    }
+
+    @Test
+    fun sameRevisionPollingAndOrdinaryApplyPreserveHistoryCooldownAndWarning() {
+        CrashFixture(root).use { f ->
+            f.log(javaCrash(), 10_005_000_000)
+            f.store.configureAuto(f.settings, 1, "fixture", true, f.at(10_005_500_000))
+            f.log(platformCrash(), 10_006_000_000)
+            val pair = f.pair()
+            assertEquals(f.at(100_000_000), pair.java.barrier.host)
+            val capture = assertNotNull(f.store.capture(f.settings, pair, f.at(10_020_000_000)))
+            f.store.autosave.admitted(pair, capture.id, f.at(10_020_000_000))
+            f.store.autosave.outcome(pair.id, AutoSaveReason.SAVE_FAILED, capture.id)
+            f.store.release(capture.id)
+            val before = f.store.autosave.snapshot()
+            val applied = f.settings.copy(replaySeconds = 60)
+            f.store.configureAuto(applied, 2, "fixture", true, f.at(10_030_000_000))
+            assertEquals(before, f.store.autosave.snapshot())
+            f.log(javaCrash(wall = CRASH_WALL + 10_050_000_000), 10_052_000_000)
+            f.log(platformCrash(wall = CRASH_WALL + 10_051_000_000), 10_053_000_000)
+            val next = f.store.autosave.drain(f.at(10_070_000_000)).single()
+            assertEquals(AutoSaveReason.NOT_SAVED_COOLDOWN, f.store.autosave.admissionProblem(next, f.at(10_070_000_000)))
+            assertEquals(7, f.store.autosave.snapshot().admissionsRemaining)
+            assertEquals(before.warning, f.store.autosave.snapshot().warning)
         }
     }
 
@@ -259,6 +342,7 @@ internal class CrashFixture(
     exclusive: Boolean = true,
     suppliedStore: CaptureStore? = null,
     val host: Long = System.nanoTime() + 1_000_000_000,
+    revision: Long = 1,
 ) : AutoCloseable {
     val store = suppliedStore ?: CaptureStore(root.resolve("ring"), minFree = 0, captureMode = mode)
     val settings = ReplaySettings(saveDirectory = root, replaySeconds = seconds,
@@ -267,7 +351,7 @@ internal class CrashFixture(
         store.generation(1)
         anchor(0)
         store.app("com.example.target", uid, setOf(pid), 1, exclusive, at(1_000_000))
-        store.configureAuto(settings, 1, "fixture", true, at(100_000_000))
+        store.configureAuto(settings, revision, "fixture", true, at(100_000_000))
         for (time in listOf(4L, 8)) anchor(time * 1_000_000_000)
         if (start >= 10_000_000_000) anchor(10_000_000_000)
         // Establish the actual ring start; ordinary rows are not detector candidates.

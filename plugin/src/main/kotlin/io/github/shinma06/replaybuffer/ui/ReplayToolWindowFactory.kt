@@ -274,7 +274,7 @@ internal fun captureModeDescription(mode: CaptureMode): String = when (mode) {
 
 internal fun saveDescription(save: SaveSnapshot?): String = (when (save?.phase) {
     SavePhase.WRITING -> "保存: 保存中…（取得は継続しています）"
-    SavePhase.FAILED -> "保存: 保存失敗（固定した対象を再試行できます）"
+    SavePhase.FAILED -> "保存: 保存失敗"
     SavePhase.CANCELLED -> "保存: 公開前に取消し"
     SavePhase.COMPLETED -> "保存: 完了" + if (save.missingKinds.isNotEmpty()) " / 不足・欠落: ${save.missingKinds.map(::streamName).joinToString("、")}" else ""
     else -> "保存: 待機"

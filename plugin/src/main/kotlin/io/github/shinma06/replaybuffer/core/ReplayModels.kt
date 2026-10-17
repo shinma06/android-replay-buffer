@@ -72,7 +72,7 @@ enum class AutoSaveReason(val description: String) {
     DETECTED("対象の例外報告を照合しました"),
     ACCEPTED_WRITING("自動保存中です"),
     SAVED("自動保存が完了しました"),
-    SAVE_FAILED("自動保存に失敗しました。固定対象を再試行できます"),
+    SAVE_FAILED("自動保存に失敗しました"),
     CANCELLED("公開前に自動保存を取消しました"),
     UNKNOWN_FORMAT("対象の報告形式を確認できません"),
     UNKNOWN_IDENTITY("対象またはsystem_serverの帰属を確認できません"),

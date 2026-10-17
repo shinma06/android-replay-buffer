@@ -12,5 +12,12 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <activity
+            android:name="io.github.shinma06.replaybuffer.fixture.CrashTestActivity"
+            android:exported="true" />
+        <activity
+            android:name="io.github.shinma06.replaybuffer.fixture.CrashTestActivity$Subprocess"
+            android:exported="false"
+            android:process=":crash" />
     </application>
 </manifest>

@@ -49,6 +49,33 @@ DRAWは表示完了ではありません。[frame commitの公式仕様](https:/
 
 保存動画で、各番号が最初に見えるフレームPTSとその直前フレームPTSを読みます。package/run/eventを両ログと対応づけ、#13の時計変換と精度基準を適用します。REQUEST→DRAW→commit callbackの差、callback dispatch、render→表示→録画の遅延、フレーム間隔、時計対応のサンプル幅を不確かさとして記録します。閾値より不確かさが大きければ「精度内pass」とせず、測定不能としてblockedまたは設計へ戻します。このfixtureだけで物理ディスプレイの実表示時刻を直接測定することはできません。
 
+## クラッシュ自動保存の専用入力
+
+通常のlauncherは従来の`MarkerActivity`です。画面・番号更新・描画/lifecycle入力は変更せず、別の`CrashTestActivity`を明示的に選んだときだけ専用画面を開きます。新しい固定APKのbuild成功と実端末での入力確認・自動保存PASSは別です。計測中の既存APKや署名鍵を置き換えません。
+
+PMの実行割当・GUI lease・固定source/APK/署名の確認後、Android Studioの「Specified Activity」で`io.github.shinma06.replaybuffer.fixture.CrashTestActivity`を選ぶか、所有端末へ明示起動します。appBを使う場合はapplicationIdだけを変更します。
+
+```bash
+adb -s OWNED_SERIAL shell am start -n io.github.shinma06.replaybuffer.qa.appa.debug/io.github.shinma06.replaybuffer.fixture.CrashTestActivity
+```
+
+起動自体はクラッシュしません。画面のpackage/source/process/PID/UID/runと、`REPLAY_CRASH_QA`の操作記録を照合してから、1つずつボタンを操作します。
+
+| ボタン / 操作tag | 実際の入力 |
+| --- | --- |
+| 通常のERRORログ / `ordinary_error` | 対象アプリUIDからERRORを1件出し、画面へ戻る |
+| catchする例外 / `caught` | アプリ内で例外をthrow/catchし、stackをログへ出して画面へ戻る |
+| このThreadだけのhandlerで例外を処理 / `custom_handler` | 1回だけのworker Threadに個別handlerを設定し、そのThreadの未処理例外を受ける。Thread終了後に画面へ継続状態を表示する |
+| この画面を通常終了 / `normal_finish` | `Activity.finish()`を呼ぶ。Androidがprocessを残す場合も、process終了とは偽らない |
+| 未処理例外でこのアプリを終了 / `uncaught_main` | main-threadのbutton callbackから例外をthrowし、標準runtimeの処理へ渡す |
+| :crash の試験画面を開く / `open_subprocess` | 同じAPKの非exportedな`:crash` Activityを起動する。表示された子processの帰属を確認してから、`uncaught_subprocess`ボタンでそのprocessの未処理例外を起こす |
+
+handlerは[そのThreadにだけ設定](https://developer.android.com/reference/java/lang/Thread#setUncaughtExceptionHandler(java.lang.Thread.UncaughtExceptionHandler))し、process全体のdefault handlerは置き換えません。子Activityは[アプリ専用process](https://developer.android.com/guide/topics/manifest/activity-element#proc)で、外部から直接起動できません。入口は明示起動の専用画面だけで、通常markerにボタンや自動処理を足していません。NDK/ANR、service、shell UIDの偽ログ、常駐処理は追加しません。
+
+最小のnative計画は、同じruntimeでLOG_ONLYのmain processとVIDEO_AND_LOGSの`:crash`を1回ずつ、計2保存です。既存ps/UID/clockの実際の準備を確認してから実行します。同runtimeの上表4 guardと、プラグインの手動対象をappAに保持したままのappB実クラッシュで自動保存しないことを確認します。標準header/typed am_crash/reporterが実際に対応形式でなければUNKNOWNを残し、手製の入力で埋め合わせません。2保存の全FILE検証はGUI操作と分け、[現行責任範囲](../../../docs/verification/responsibility.md)に従います。実行担当・容量・時刻・復元期限はPMが実行前に固定し、提案の所要時間を新しい一律受入条件にしません。
+
+既存`RegressionInstrumentation`には非fatal入力・Thread個別handler・通常終了・子Activity宣言と、専用画面終了後の通常markerを確認する回帰を追加しています。fatalボタンはrunner自体を終了させ得るため、このrunnerでは押しません。回帰APKのcompileと端末での実行を区別し、実行前は未実施として保持します。
+
 ## 後片付け
 
 GUI担当の所有と停止確認後、自分が導入した2 package・AVD・sandboxだけを扱います。共有ADB serverや他アプリは止めません。署名鍵、APK、IDEのlocal.properties、録画・logは非追跡で保管します。鍵を失った場合は専用fixtureだけのuninstall/再導入をPMと調整し、通常ユーザーアプリのデータを消しません。
