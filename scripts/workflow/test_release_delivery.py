@@ -415,20 +415,53 @@ class ReleaseDeliveryTest(unittest.TestCase):
         self.repo.files[12] = transport.getvalue()
         run = {'repository': {'full_name': delivery.REPO}, 'head_repository': {'full_name': delivery.REPO},
                'head_sha': SOURCE, 'status': 'completed', 'conclusion': 'success', 'event': 'push',
-               'head_branch': 'develop', 'path': '.github/workflows/ci.yml'}
+               'head_branch': 'develop', 'path': '.github/workflows/ci.yml', 'workflow_id': 7}
+        workflow = {'id': 7, 'path': '.github/workflows/ci.yml'}
         item = {'id': 12, 'name': 'plugin-' + SOURCE, 'expired': False,
                 'size_in_bytes': len(transport.getvalue()),
                 'digest': 'sha256:' + hashlib.sha256(transport.getvalue()).hexdigest()}
         listing = {'total_count': 1, 'artifacts': [item]}
         for field, bad in (('head_sha', NEXT), ('event', 'pull_request'), ('conclusion', 'failure'),
                            ('path', '.github/workflows/other.yml'), ('repository', {'full_name': 'other/repo'})):
-            with self.subTest(field=field), patch.object(delivery, 'api', return_value=dict(run, **{field: bad})):
+            with self.subTest(field=field), patch.object(delivery, 'api', side_effect=[dict(run, **{field: bad}), workflow]):
                 with self.assertRaises(ValueError):
                     delivery.artifact(42, SOURCE, self.directory)
-        with patch.object(delivery, 'api', side_effect=[run, listing]):
+        with patch.object(delivery, 'api', side_effect=[run, workflow, listing]):
             product, returned = delivery.artifact(42, SOURCE, self.directory)
         self.assertEqual(product.read_bytes(), package())
         self.assertEqual(returned, run)
+
+    def test_producer_path_forms_require_the_current_workflow_identity(self):
+        path = '.github/workflows/ci.yml'
+        workflow = {'id': 7, 'path': path}
+        run = {'repository': {'full_name': delivery.REPO}, 'head_repository': {'full_name': delivery.REPO},
+               'head_sha': SOURCE, 'head_branch': 'develop', 'event': 'push',
+               'status': 'completed', 'conclusion': 'success', 'path': path, 'workflow_id': 7}
+        for branch in ('develop', 'main'):
+            for suffix in ('', '@' + branch):
+                observed = dict(run, head_branch=branch, path=path + suffix)
+                with self.subTest(branch=branch, suffix=suffix), patch.object(
+                        delivery, 'api', side_effect=[observed, workflow]) as api:
+                    self.assertEqual(delivery.producer_run(42, SOURCE), observed)
+                self.assertEqual(api.call_args.args, ('actions/workflows/ci.yml',))
+        for bad_path in (None, '', path + '@', path + '@main', path + '@develop@other',
+                         path + '@develop\n', path + '.other', '.github/workflows/other.yml@develop'):
+            with self.subTest(path=bad_path), patch.object(delivery, 'api', side_effect=[
+                    dict(run, path=bad_path), workflow]), self.assertRaises(ValueError):
+                delivery.producer_run(42, SOURCE)
+        for bad_id in (None, 0, -1, True, '7', 7.0, 8):
+            with self.subTest(run_id=bad_id), patch.object(delivery, 'api', side_effect=[
+                    dict(run, workflow_id=bad_id), workflow]), self.assertRaises(ValueError):
+                delivery.producer_run(42, SOURCE)
+        for current in (None, {}, {'id': 7}, {'path': path}, {'id': True, 'path': path},
+                        {'id': '7', 'path': path}, {'id': 8, 'path': path},
+                        {'id': 7, 'path': '.github/workflows/other.yml'}):
+            with self.subTest(workflow=current), patch.object(delivery, 'api', side_effect=[
+                    run, current]), self.assertRaises(ValueError):
+                delivery.producer_run(42, SOURCE)
+        with patch.object(delivery, 'api', side_effect=[run, RuntimeError('workflow lookup failed')]), \
+             self.assertRaises(RuntimeError):
+            delivery.producer_run(42, SOURCE)
 
     def test_candidate_is_successful_trusted_main_workflow_and_exact_accepted_bytes(self):
         expected = delivery.digest(self.archive)
@@ -436,18 +469,28 @@ class ReleaseDeliveryTest(unittest.TestCase):
         listing = {'total_count': 1, 'artifacts': [item]}
         run = {'repository': {'full_name': delivery.REPO}, 'head_repository': {'full_name': delivery.REPO},
                'head_sha': MAIN, 'head_branch': 'main', 'event': 'workflow_dispatch',
-               'path': '.github/workflows/release-candidate.yml', 'status': 'completed', 'conclusion': 'success'}
-        with patch.object(delivery, 'git') as git, patch.object(delivery, 'download_artifact', return_value=self.archive):
-            with patch.object(delivery, 'api', side_effect=[listing, run]):
-                self.assertEqual(delivery.candidate_archive(expected, self.directory), self.archive)
-            git.assert_called_once_with('merge-base', '--is-ancestor', MAIN, 'origin/main')
+               'path': '.github/workflows/release-candidate.yml', 'workflow_id': 8,
+               'status': 'completed', 'conclusion': 'success'}
+        workflow = {'id': 8, 'path': '.github/workflows/release-candidate.yml'}
+        with patch.object(delivery, 'git') as git, patch.object(
+                delivery, 'download_artifact', return_value=self.archive) as download:
+            for suffix in ('', '@main'):
+                with self.subTest(suffix=suffix), patch.object(delivery, 'api', side_effect=[
+                        listing, dict(run, path=workflow['path'] + suffix), workflow]) as api:
+                    self.assertEqual(delivery.candidate_archive(expected, self.directory), self.archive)
+                self.assertEqual(api.call_args.args, ('actions/workflows/release-candidate.yml',))
+                git.assert_called_with('merge-base', '--is-ancestor', MAIN, 'origin/main')
             for field, bad in (('head_branch', 'develop'), ('event', 'pull_request'), ('conclusion', 'failure'),
-                               ('path', '.github/workflows/other.yml')):
-                with self.subTest(field=field), patch.object(delivery, 'api', side_effect=[listing, dict(run, **{field: bad})]):
+                               ('path', '.github/workflows/other.yml'), ('workflow_id', 7),
+                               ('path', workflow['path'] + '@'), ('path', workflow['path'] + '@develop')):
+                download.reset_mock()
+                with self.subTest(field=field), patch.object(delivery, 'api', side_effect=[
+                        listing, dict(run, **{field: bad}), workflow]):
                     with self.assertRaises(ValueError):
                         delivery.candidate_archive(expected, self.directory)
+                download.assert_not_called()
             self.archive.write_bytes(package(NEXT))
-            with patch.object(delivery, 'api', side_effect=[listing, run]), self.assertRaises(ValueError):
+            with patch.object(delivery, 'api', side_effect=[listing, run, workflow]), self.assertRaises(ValueError):
                 delivery.candidate_archive(expected, self.directory)
         for data in ({'total_count': 0, 'artifacts': []},
                      {'total_count': 2, 'artifacts': [item]},
@@ -458,12 +501,13 @@ class ReleaseDeliveryTest(unittest.TestCase):
     def test_only_explicitly_skipped_producer_can_omit_early_artifact(self):
         run = {'repository': {'full_name': delivery.REPO}, 'head_repository': {'full_name': delivery.REPO},
                'head_sha': SOURCE, 'status': 'completed', 'conclusion': 'success', 'event': 'push',
-               'head_branch': 'develop', 'path': '.github/workflows/ci.yml'}
+               'head_branch': 'develop', 'path': '.github/workflows/ci.yml', 'workflow_id': 7}
+        workflow = {'id': 7, 'path': '.github/workflows/ci.yml'}
         listing = {'total_count': 0, 'artifacts': []}
         for conclusion in ('skipped', 'success', 'failure', None):
             jobs = {'total_count': 1, 'jobs': [{'name': 'test', 'conclusion': 'success',
                     'steps': [{'name': 'Run actions/upload-artifact@v4', 'conclusion': conclusion}]}]}
-            with patch.object(delivery, 'api', side_effect=[run, listing, jobs]):
+            with patch.object(delivery, 'api', side_effect=[run, workflow, listing, jobs]):
                 if conclusion == 'skipped':
                     self.assertEqual(delivery.artifact(42, SOURCE, self.directory), (None, run))
                 else:
@@ -483,13 +527,14 @@ class ReleaseDeliveryTest(unittest.TestCase):
         runs = {number: {'id': number, 'repository': {'full_name': delivery.REPO},
                         'head_repository': {'full_name': delivery.REPO}, 'head_sha': source,
                         'status': 'completed', 'conclusion': 'success', 'event': 'push',
-                        'head_branch': 'develop', 'path': '.github/workflows/ci.yml'}
+                        'head_branch': 'develop', 'path': '.github/workflows/ci.yml', 'workflow_id': 7}
                 for number, source in ((42, SOURCE), (43, NEXT))}
         prs = {n: {'number': n, 'merged': True, 'merge_commit_sha': r['head_sha'],
                    'base': {'ref': 'develop', 'repo': {'full_name': delivery.REPO}},
                    'head': {'repo': {'full_name': delivery.REPO}}} for n, r in runs.items()}
         def api(path, method='GET', data=None):
             if path == 'git/ref/heads/main': return {'object': {'sha': MAIN}}
+            if path == 'actions/workflows/ci.yml': return {'id': 7, 'path': '.github/workflows/ci.yml'}
             if path.startswith('actions/workflows/'):
                 selected = [r for r in runs.values() if 'head_sha=' + r['head_sha'] in path]
                 return {'total_count': len(selected), 'workflow_runs': selected}
