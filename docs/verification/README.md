@@ -7,6 +7,8 @@
 
 `changes/issue-N.json` はIssueの受入、`promotion.json` はmainへ入れる固定候補と全Caseの観察の正本です。過去の観察を別SHA/buildで新たに実行したpassへ付け替えません。[影響単位の評価](#修正影響による保証単位の証拠再利用246)では、元の成功事実を保持し、現在buildへの適用評価と区別します。未実施はpending、環境不足はblocked、製品不具合はfailと区別します。
 
+第2版の負荷比較は[Android負荷を優先する性能比較](performance.md)を参照します。方法案・過去の観測・未実測を区別し、既存Caseの合否や実機/人間延期は変更しません。
+
 ## Caseの記録
 
 GUI不要なら具体的理由と実行したCLI検証を記録します。
