@@ -80,6 +80,7 @@ class ProductCheckTests(unittest.TestCase):
             self.assertFalse(calls.exists())
             valid = run('--plugin')
             self.assertEqual(valid.returncode, 0, valid.stderr)
+            self.assertEqual(valid.stdout.splitlines()[-1], 'ARB_PRODUCT_PLUGIN_CHECK_COMPLETE')
             self.assertEqual(calls.read_text(), 'run\n')
             failure = root / 'tests/test_injected_failure.py'
             failure.write_text('import unittest\nclass Failure(unittest.TestCase):\n'

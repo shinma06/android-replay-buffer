@@ -706,9 +706,19 @@ class LoopTests(unittest.TestCase):
         for during_tests in (False, True):
             pr = pr_data(); changed = copy.deepcopy(pr); changed['title'] = 'fix: 題名を変更する (#35)'
             self.gh.pr = Mock(side_effect=[pr, changed] if during_tests else [changed])
-            with patch.object(al, 'command', return_value=''):
+            with patch.object(al, 'command', return_value='ARB_PRODUCT_PLUGIN_CHECK_COMPLETE'):
                 with self.assertRaisesRegex(ValueError, 'changed'):
                     al.Loop.test_and_push(self.loop, pr, self.checkout, {})
+            self.assertFalse(any(c.args[0] == 'push' for c in al.git.call_args_list))
+
+    def test_old_or_unknown_product_completion_cannot_publish(self):
+        for output in ('', 'Compiled and imported 12 CLI modules',
+                       'ARB_PRODUCT_PLUGIN_CHECK_COMPLETE\nunfinished output'):
+            state = {'review': report(), 'binding': {'head': HEAD}}
+            with self.subTest(output=output), patch.object(al, 'command', return_value=output):
+                with self.assertRaisesRegex(ValueError, 'synchronize the shared entry'):
+                    al.Loop.test_and_push(self.loop, pr_data(), self.checkout, state)
+            self.assertNotIn('review', state)
             self.assertFalse(any(c.args[0] == 'push' for c in al.git.call_args_list))
 
     def prepare_issue_guard_review(self, target):
@@ -812,7 +822,7 @@ class LoopTests(unittest.TestCase):
         al.subprocess.run.return_value.returncode = 1
         # Run the real publishing method with test commands stubbed, not the transition fake.
         self.loop.test_and_push = lambda *args: al.Loop.test_and_push(self.loop, *args)
-        with patch.object(al, 'command', return_value='') as commands:
+        with patch.object(al, 'command', return_value='ARB_PRODUCT_PLUGIN_CHECK_COMPLETE') as commands:
             self.assertEqual(self.loop.tick(36)['phase'], 'base-synced')
         expected = [[sys.executable, 'scripts/check.py'],
                     [sys.executable, 'scripts/workflow/product_check.py', '--plugin']]
@@ -895,7 +905,7 @@ class LoopTests(unittest.TestCase):
         self.local_head = NEW
         def commands(*args):
             self.gh.pull['head']['sha'] = 'f' * 40
-            return ''
+            return 'ARB_PRODUCT_PLUGIN_CHECK_COMPLETE'
         with patch.object(al, 'command', side_effect=commands):
             with self.assertRaisesRegex(ValueError, 'during tests'):
                 al.Loop.test_and_push(self.loop, pr_data(), self.checkout, state)

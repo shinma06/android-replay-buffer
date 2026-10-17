@@ -30,3 +30,4 @@ if __name__ == '__main__':
                    cwd=ROOT, check=True)
     if args.plugin:
         subprocess.run([sys.executable, str(ROOT / 'scripts/workflow/plugin_check.py')], cwd=ROOT, check=True)
+        print('ARB_PRODUCT_PLUGIN_CHECK_COMPLETE', flush=True)

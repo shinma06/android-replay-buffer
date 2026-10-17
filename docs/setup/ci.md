@@ -19,7 +19,7 @@ Python原型を配布するbranchでは、`test`の先頭でPython 3.9を選び�
 
 旧job/重複stepは、#103 ownerがそのbranchで実CLI内包・互換/明示移行・回復と原型退役を確認した時に除去します。mainがPython原型を配布し続ける間の必要な3.9検査は残します。保護の移行だけを原型退役とみなさず、未実行の検査を旧名のsuccessで代用しません。
 
-coordinatorはtrusted mainのclassifierで候補の必要検査を選び、候補checkoutの共通入口`product_check.py`を呼びます。Plugin検査が必要なら`--plugin`を付け、原型保全・CLI検査の成功後に既存`plugin_check.py`を1回実行します。Pluginだけの変更でもこの小さいCLI検査を含めます。未対応引数・checker欠落・CLI/Plugin検査失敗は非zeroで止まり、存在しない製品をskipで通しません。#103の原型退役後も同じ入口と`--plugin`を維持して実統合製品の検査へ接続し、trusted coordinatorが旧checkerを別途呼ぶ状態や二重buildを残しません。
+coordinatorはtrusted mainのclassifierで候補の必要検査を選び、候補checkoutの共通入口`product_check.py`を呼びます。Plugin検査が必要なら`--plugin`を付け、原型保全・CLI検査の成功後に既存`plugin_check.py`を1回実行します。Pluginだけの変更でもこの小さいCLI検査を含めます。成功時だけ最後の標準出力行に`ARB_PRODUCT_PLUGIN_CHECK_COMPLETE`を出し、trusted coordinatorもこの完了表示を要求します。未知引数を無視する旧checkerや不明な出力は同期待ちとして拒否し、checker欠落・CLI/Plugin検査失敗も非zeroで止めます。存在しない製品をskipで通しません。#103の原型退役後も同じ入口・`--plugin`・実検査後の完了表示を維持して実統合製品の検査へ接続し、旧checkerの別呼出しや二重buildを残しません。
 
 trusted mainの`Release candidate`は固定candidate内の`plugin_check.py`も直接呼びます。#103ではこの実build helperを維持し、共通入口から委譲します。配布CLIのPython依存退役と管理scriptの削除を混同しません。この入口を将来整理する場合は、過去の固定candidateもbuildできるtrusted workflowの移行と一体で扱います。
 
