@@ -171,17 +171,18 @@ tasks.processResources {
 val captureIdentity = tasks.register("captureIdentity") {
     dependsOn(clockJar)
     val runtime = configurations.named("runtimeClasspath")
+    val artifactVersion = project.version.toString()
     inputs.files(clockJar.flatMap { it.archiveFile }, clockCompiler, clockLibrary, runtime)
     inputs.file("src/main/resources/replay/deps/scrcpy-server-v5.0.1")
     inputs.property("sourceCommit", sourceCommit)
     inputs.property("sourceDirty", sourceDirty)
-    inputs.property("version", project.version.toString())
+    inputs.property("version", artifactVersion)
     val output = layout.buildDirectory.file("clock/resource/replay/deps/identity.properties")
     outputs.file(output)
     doLast {
         val jcodec = runtime.get().files.single { it.name == "jcodec-0.2.5.jar" }
         val server = file("src/main/resources/replay/deps/scrcpy-server-v5.0.1")
-        output.get().asFile.writeText("source=$sourceCommit\ndirty=$sourceDirty\nversion=${project.version}\nserver=${hash(server)}\nclock=${hash(clockJar.get().archiveFile.get().asFile)}\njcodec=${hash(jcodec)}\nr8=${hash(clockCompiler.singleFile)}\nandroid_api=${hash(clockLibrary.singleFile)}\n")
+        output.get().asFile.writeText("source=$sourceCommit\ndirty=$sourceDirty\nversion=$artifactVersion\nserver=${hash(server)}\nclock=${hash(clockJar.get().archiveFile.get().asFile)}\njcodec=${hash(jcodec)}\nr8=${hash(clockCompiler.singleFile)}\nandroid_api=${hash(clockLibrary.singleFile)}\n")
     }
 }
 tasks.processResources { dependsOn(captureIdentity) }
