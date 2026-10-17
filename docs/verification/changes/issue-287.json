@@ -2,13 +2,12 @@
   "schema": 1,
   "issue": 287,
   "gui_required": false,
-  "reason": "固定main 215700b4ba1daa3d685336667fcfc1f7a26c8843 の採用済み管理規約と受入履歴をdevelopへ通常mergeする。製品・CLI・build・fixture・正式計画と原証拠を変更しないためGUI不要。新しいCaseや成果物は作らない。",
+  "reason": "固定main 4698664b796ac33a51f15766dc177d884e117783 の採用済み管理規約・CI運用・受入履歴・証明同期gateをdevelopへ通常mergeする。製品・CLI・build設定・fixture・正式計画と原証拠を保持し、製品の実行経路を変更しないためGUI不要。CI定義の同期に必要なbuild検査は既存classifierで実行し、検査用ZIPを既存の受入成果物へ置き換えない。新しいCaseは追加しない。",
   "cli_checks": [
-    "固定develop a49bef8ec4e934c24c1d7e16cf7bb9a953dd645f と固定mainのplugin/replay_buffer/bin/launchd/config.json.example/正式initial-agent計画の差分なし: pass",
-    "python3 scripts/check.py: pending（共有ホストの検査枠を調整中）",
-    "python3 scripts/workflow/product_check.py: pending",
-    "clean committed HEADのchange_impact.py --base origin/develop --run-tests: pending",
-    "既存verify_prのcertificate同期route: 事前確認で拒否。固定HEADで実確認し、未達を保持する"
+    "固定develop a49bef8ec4e934c24c1d7e16cf7bb9a953dd645f の製品/CLI/build/fixture・既存Case・正式計画と、採用mainの全blob/mode・certificate/promotion履歴の照合",
+    "python3 scripts/workflow/change_impact.py --base origin/develop --run-tests（clean committed HEADのharness/CLI/Plugin検査）",
+    "通常pre-push hook、hosted CI、CLI Python 3.9",
+    "採用済みmainのverification.verify_prによる固定HEAD/base・実Git履歴のcertificate同期検査。旧checkerの原拒否はIssue #287で保持"
   ],
   "cases": []
 }
