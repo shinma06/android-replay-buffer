@@ -4,7 +4,6 @@ import android.app.Activity;
 import android.app.Instrumentation;
 import android.content.Intent;
 import android.graphics.Insets;
-import android.graphics.Rect;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.ParcelFileDescriptor;
@@ -17,7 +16,6 @@ import android.widget.Button;
 import android.widget.TextView;
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 import org.json.JSONObject;
@@ -58,7 +56,7 @@ public final class RegressionInstrumentation extends Instrumentation {
                 } else {
                     builder.setSystemWindowInsets(bars);
                 }
-                builder.setDisplayCutout(new DisplayCutout(new Rect(41, 47, 23, 97), Collections.emptyList()));
+                builder.setDisplayCutout(new DisplayCutout(Insets.of(41, 47, 23, 97), null, null, null, null));
                 WindowInsets insets = builder.build();
                 for (int i = 0; i < 2; i++) {
                     layout.dispatchApplyWindowInsets(insets);
