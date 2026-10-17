@@ -4,9 +4,10 @@
   "gui_required": false,
   "reason": "CI起動条件とハーネス診断表示だけを変更。製品コード・build command・成果物・IDE/端末操作は変更しない。",
   "cli_checks": [
-    "Python 3.15: test_harness.py の実check入口・正常/失敗/0件を含む回帰は成功。",
-    "python3.15 scripts/workflow/product_check.py: CLI原型21ファイル照合・全モジュールcompile/import・2 tests成功。",
-    "clean committed HEAD の変更影響検査はpre-push hookで実行予定。実結果とhosted比較はIssue281へ記録。"
+    "基準 d366013: 既存pre-pushの全519 tests成功（正当なskip 1）。PR CI run38997075162 とCLI Python3.9成功。",
+    "候補 5052282: 既存pre-pushの全519 tests成功（正当なskip 1）。HTTP故障の既存45 tests成功。",
+    "CLI原型21ファイル照合・12 modules compile/import・既存2 tests成功。",
+    "最終clean HEADのpre-push/CI、原本48観点・AT・6条件・比較と切戻しはIssue281の固定結果で追跡。未実施は成功としない。"
   ],
   "cases": []
 }
