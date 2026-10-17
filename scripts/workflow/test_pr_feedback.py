@@ -7,6 +7,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 import agent_loop as al
+import release_delivery as delivery
 from agent_policy import next_action
 from test_agent_loop import HEAD, NEW, pr_data
 import test_agent_loop as tal
@@ -159,26 +160,42 @@ class FeedbackTests(unittest.TestCase):
             with patch.object(al, 'command'), self.assertRaisesRegex(ValueError, 'identity'):
                 gh.ready(dict(pr_data(), draft=True))
 
-    def test_python39_failure_missing_check_and_missing_protection_block_merge(self):
+    def test_shared_runtime_failure_or_missing_result_blocks_ci_and_delivery(self):
         gh = al.GitHub()
-        checks = [{'name': name, 'state': 'SUCCESS'} for name in al.CI_CHECKS]
+        checks = [{'name': name, 'state': 'SUCCESS'}
+                  for name in ('test', 'PR policy', 'Acceptance gate', 'Agent review')]
         with patch.object(al, 'command', return_value=json.dumps(checks)):
             self.assertEqual(gh.ci(pr_data()), 'success')
-        checks[-1]['state'] = 'FAILURE'
-        with patch.object(al, 'command', return_value=json.dumps(checks)):
-            self.assertEqual(gh.ci(pr_data()), 'failure')
-        with patch.object(al, 'command', return_value=json.dumps(checks[:-1])):
-            self.assertEqual(gh.ci(pr_data()), 'pending')
-        rules = json.loads((al.ROOT / '.github/main-ruleset.json').read_text())['rules']
-        for rule in rules:
-            rule['ruleset_id'] = 1
-            if rule['type'] == 'required_status_checks':
-                rule['parameters']['required_status_checks'] = [
-                    x for x in rule['parameters']['required_status_checks'] if x['context'] != 'CLI Python 3.9']
-        gh.api = Mock(return_value=rules)
-        with self.assertRaisesRegex(ValueError, 'protection'):
-            gh.merge(dict(pr_data(), draft=False))
-        self.assertEqual(gh.api.call_count, 1)
+        with patch.object(delivery, 'command', return_value=json.dumps(checks)):
+            delivery.checks(pr_data())
+        for name in ('test', 'PR policy', 'Acceptance gate'):
+            for state in ('FAILURE', 'CANCELLED', 'TIMED_OUT', 'PENDING', None):
+                data = [row for row in checks if row['name'] != name]
+                if state:
+                    data.append({'name': name, 'state': state})
+                data.append({'name': 'CLI Python 3.9', 'state': 'SUCCESS'})
+                with self.subTest(name=name, state=state):
+                    with patch.object(al, 'command', return_value=json.dumps(data)):
+                        self.assertEqual(gh.ci(pr_data()),
+                                         'pending' if state in ('PENDING', None) else 'failure')
+                    with patch.object(delivery, 'command', return_value=json.dumps(data)):
+                        with self.assertRaisesRegex(ValueError, name):
+                            delivery.checks(pr_data())
+
+    def test_missing_shared_check_protection_blocks_merge_on_either_branch(self):
+        for branch in ('main', 'develop'):
+            for missing in ('test', 'PR policy', 'Acceptance gate', 'Agent review'):
+                rules = json.loads((al.ROOT / f'.github/{branch}-ruleset.json').read_text())['rules']
+                for rule in rules:
+                    rule['ruleset_id'] = 1
+                    if rule['type'] == 'required_status_checks':
+                        rule['parameters']['required_status_checks'] = [
+                            x for x in rule['parameters']['required_status_checks'] if x['context'] != missing]
+                gh = al.GitHub()
+                gh.api = Mock(return_value=rules)
+                with self.subTest(branch=branch, missing=missing), self.assertRaisesRegex(ValueError, 'protection'):
+                    gh.merge(dict(pr_data(), draft=False, base={'ref': branch}))
+                self.assertEqual(gh.api.call_count, 1)
 
     def test_pages_and_threads_read_all_pages_and_fail_closed(self):
         gh = al.GitHub()

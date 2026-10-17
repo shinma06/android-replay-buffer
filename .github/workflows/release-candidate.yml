@@ -1,0 +1,72 @@
+name: Release candidate
+on:
+  workflow_dispatch:
+    inputs:
+      source:
+        description: Full fixed develop candidate SHA
+        required: true
+        type: string
+      version:
+        description: Formal major.minor.patch version selected before acceptance
+        required: true
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: release-candidate-${{ inputs.source }}-${{ inputs.version }}
+  cancel-in-progress: false
+jobs:
+  build:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: refs/heads/main
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v7.0.0
+        with:
+          python-version: '3.15.0'
+      - name: Validate and select the fixed candidate
+        env:
+          SOURCE: ${{ inputs.source }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          python3 - <<'PY'
+          import os, re
+          assert re.fullmatch('[0-9a-f]{40}', os.environ['SOURCE']), 'Full candidate SHA required'
+          assert re.fullmatch(r'(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)', os.environ['VERSION']), 'Formal version required'
+          PY
+          git merge-base --is-ancestor "$SOURCE" origin/develop
+          # Keep the trusted inspector outside the product checkout; its imports stay on main.
+          git worktree add --detach "$RUNNER_TEMP/delivery-inspector" HEAD
+          git checkout --detach "$SOURCE"
+      - uses: actions/setup-java@v6.1.0
+        with:
+          distribution: temurin
+          java-version: '27'
+      - uses: gradle/actions/setup-gradle@v6.4.0
+      - name: Build and test once with the formal version
+        env:
+          ORG_GRADLE_PROJECT_pluginVersion: ${{ inputs.version }}
+        run: python3 scripts/workflow/plugin_check.py
+      - name: Identify the exact standard ZIP
+        id: package
+        env:
+          SOURCE: ${{ inputs.source }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          archives=(plugin/build/distributions/*.zip)
+          test "${#archives[@]}" -eq 1
+          test -z "$(git status --porcelain)"
+          hash=$(python3 "$RUNNER_TEMP/delivery-inspector/scripts/workflow/release_delivery.py" inspect \
+            --archive "${archives[0]}" --source "$SOURCE" --version "$VERSION")
+          echo "sha256=$hash" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: candidate-${{ steps.package.outputs.sha256 }}
+          path: plugin/build/distributions/*.zip
+          if-no-files-found: error
+          retention-days: 90

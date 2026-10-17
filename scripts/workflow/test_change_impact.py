@@ -17,10 +17,8 @@ class ClassificationTest(unittest.TestCase):
             result = ci.classify([], reason='missing history')
             expected = [
                 ['/selected/python3', 'scripts/check.py'],
-                ['/selected/python3', 'scripts/workflow/product_check.py'],
+                ['/selected/python3', 'scripts/workflow/product_check.py', '--plugin'],
             ]
-            if (Path(__file__).resolve().parents[2] / 'plugin').is_dir():
-                expected.append(['/selected/python3', 'scripts/workflow/plugin_check.py'])
             self.assertEqual(ci.test_commands(result), expected)
 
     def test_required_eight_cases_and_semantic_exceptions(self):
@@ -60,10 +58,20 @@ class ClassificationTest(unittest.TestCase):
                        ci.classify([('README.md', ('100644',))], force_full=True)):
             self.assertTrue(all(result[x] for x in ('product_check', 'tooling_test')))
             expected = [[sys.executable, 'scripts/check.py'],
-                        [sys.executable, 'scripts/workflow/product_check.py']]
-            if (Path(__file__).resolve().parents[2] / 'plugin').is_dir():
-                expected.append([sys.executable, 'scripts/workflow/plugin_check.py'])
+                        [sys.executable, 'scripts/workflow/product_check.py', '--plugin']]
             self.assertEqual(ci.test_commands(result), expected)
+
+    def test_product_entry_keeps_cli_only_plugin_only_and_mixed_obligations(self):
+        for path, arguments in (
+                ('docs/design.md', None), ('replay_buffer/save.py', []),
+                ('plugin/src/main/kotlin/Action.kt', ['--plugin']),
+                ('scripts/workflow/product_check.py', ['--plugin'])):
+            result = ci.classify([(path, ('100644',))])
+            expected = [[sys.executable, 'scripts/check.py']]
+            if arguments is not None:
+                expected.append([sys.executable, 'scripts/workflow/product_check.py', *arguments])
+            with self.subTest(path=path):
+                self.assertEqual(ci.test_commands(result), expected)
 
 
 class GitImpactTest(unittest.TestCase):

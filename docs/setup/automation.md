@@ -76,7 +76,7 @@ reviewer は read-only、fixer は指定 scope の workspace-write。生成し�
 
 旧path-only履歴は現在のbytesから自動でhashを作り直しません。明示的な復旧には、既存trusted adapter発行の`origin_receipt`を含む元のprivate報告と完全なbindingを`{"review": <元報告>, "binding": <発行時binding>}`で保持したprivate JSONを、`rebind-target ... --retained-review <private-proof-json>`へ渡します。複数束なら同flagを繰り返せます。既存registryで全報告/bindingを照合し、その保護されたbundle hashと宣言済receipt hashだけから旧identityを復元します。原本の欠落/改変、未結合のpath、発行証拠不足は停止し、再封印・copy・chmod・registry全走査や承認の復元はしません。PAUSEDと所有を維持し、現在候補のfresh独立評価は別途必要です。
 
-base 更新は通常 merge → 必要テスト → 非 force push → 独立再レビュー。HEAD/base/target/Issue/本文/feedback が変わると旧承認を失効させます。5 checks、会話解決、strict base、force/削除禁止、bypass なしの実サーバー設定を確認できなければ merge しません。CI を待つ間の Agent review は独立レビューの記録であり、GUI 受入を作り出しません。受入NG修正では共通validatorの`repair_revision`と独立報告の`repair_assessment`を照合し、全元失敗保証の再試験と実質評価が揃うまで成功status/mergeへ進みません。[修正gate](../verification/README.md#受入ng修正のdevelop統合226)を手動統合にも適用します。
+base 更新は通常 merge → 必要テスト → 非 force push → 独立再レビュー。HEAD/base/target/Issue/本文/feedback が変わると旧承認を失効させます。共通4 checks、会話解決、strict base、force/削除禁止、bypass なしの実サーバー設定を確認できなければ merge しません。[runtime移行中](github.md#runtime検査の共通testへの段階移行)の旧CLI contextも実保護に従い、test内の実runtime検査を旧名successで代用しません。CI を待つ間の Agent review は独立レビューの記録であり、GUI 受入を作り出しません。受入NG修正では共通validatorの`repair_revision`と独立報告の`repair_assessment`を照合し、全元失敗保証の再試験と実質評価が揃うまで成功status/mergeへ進みません。[修正gate](../verification/README.md#受入ng修正のdevelop統合226)を手動統合にも適用します。
 
 ## 復旧
 
