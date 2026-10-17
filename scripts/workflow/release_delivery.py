@@ -54,9 +54,9 @@ def digest(path):
         return hashlib.file_digest(stream, 'sha256').hexdigest()
 
 
-def download(path, destination):
+def download(path, destination, accept='application/octet-stream'):
     with destination.open('xb') as output:
-        subprocess.run(['gh', 'api', f'repos/{REPO}/{path}', '-H', 'Accept: application/octet-stream'],
+        subprocess.run(['gh', 'api', f'repos/{REPO}/{path}', '-H', 'Accept: ' + accept],
                        stdout=output, check=True, timeout=180)
     require(destination.stat().st_size <= MAX_ARCHIVE, 'Downloaded archive exceeds the delivery limit')
 
@@ -146,7 +146,8 @@ def download_artifact(item, directory):
             and re.fullmatch(r'sha256:[0-9a-f]{64}', item.get('digest', '')),
             'Missing artifact transport identity')
     transport = directory / 'transport.zip'
-    download(f'actions/artifacts/{item["id"]}/zip', transport)
+    # Artifact API redirects use JSON negotiation; release assets request binary content.
+    download(f'actions/artifacts/{item["id"]}/zip', transport, accept='application/vnd.github+json')
     require('sha256:' + digest(transport) == item['digest'], 'Artifact transport digest mismatch')
     product = directory / 'plugin.zip'
     with zipfile.ZipFile(transport) as archive:
