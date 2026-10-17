@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "issue": 299,
+  "gui_required": false,
+  "reason": "本人のstream基準の同期要件と7つの有効precision契約、trusted過去plan復元・判定/一覧・関連回帰を揃えるtooling変更。全139 Case/208出典、原Case/hash/観察/FAIL、人間/REAL延期と製品の内容/時刻/保全を維持し、製品・fixture・build入力・保存formatは変更しない。旧QA294結果を新実行又は機械promotion成功にせず、#206用adapterも追加しない。GUI・録画・精度校正・Dの再build/reloadは不要。",
+  "cli_checks": [
+    "python3 -m unittest discover -s scripts/workflow -p test_responsibility_revision.py -v",
+    "python3 scripts/check.py",
+    "python3 scripts/workflow/change_impact.py --base origin/main --run-tests"
+  ],
+  "cases": []
+}
