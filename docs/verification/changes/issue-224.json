@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "issue": 224,
+  "gui_required": false,
+  "reason": "この差分は性能比較方法案・既存証拠の限界・実測準備を文書化するのみで、製品コード/build/fixtureと既存Caseを変更しない。#224の実測baseline・性能予算・目標達成は未完了のままIssueで保持し、本文の短時間pilotも未実施。文書の検証をGUI/実機のPASSやIssue完了へ転用しない。",
+  "cli_checks": [
+    "python3 scripts/check.py: pass (415 tests, 1 skipped)",
+    "python3 scripts/workflow/product_check.py: pass (2 tests; CLI origin 21 files unchanged)",
+    "python3 scripts/workflow/change_impact.py --run-tests: clean committed HEADのpre-pushで実行し結果をIssue/PRへ記録"
+  ],
+  "cases": []
+}
