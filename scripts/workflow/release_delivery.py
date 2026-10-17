@@ -12,7 +12,7 @@ from urllib.parse import quote
 import xml.etree.ElementTree as ET
 import zipfile
 
-from agent_loop import GitHub, REPO, CI_CHECKS, command, git
+from agent_loop import REPO, CI_CHECKS, git
 from agent_policy import CONTEXT
 from verification import PROMOTION, verify_pr
 
@@ -28,12 +28,24 @@ def require(condition, message):
         raise ValueError(message)
 
 
+def command(args, input=None):
+    # Reviewed publisher code needs the workflow token; agent workers must still strip it.
+    result = subprocess.run(args, input=input, text=True, capture_output=True, timeout=180)
+    if result.returncode:
+        raise RuntimeError(f'{args[0]} failed: {result.stderr[-1800:]}')
+    return result.stdout.strip()
+
+
 def api(path, method='GET', data=None):
-    return GitHub().api(f'repos/{REPO}/{path}', method, data)
+    args = ['gh', 'api', '--method', method, f'repos/{REPO}/{path}']
+    out = command(args + (['--input', '-'] if data is not None else []),
+                  json.dumps(data) if data is not None else None)
+    return json.loads(out) if out else None
 
 
 def pages(path):
-    return GitHub().pages(f'repos/{REPO}/{path}')
+    return [item for page in json.loads(command(['gh', 'api', '--paginate', '--slurp',
+                                                 f'repos/{REPO}/{path}'])) for item in page]
 
 
 def digest(path):
@@ -95,7 +107,7 @@ def identity(path, source, expected_hash):
     return {'source': source, 'version': found[0], 'sha256': expected_hash, 'size': path.stat().st_size}
 
 
-def artifact(run_id, source, directory, workflow='.github/workflows/ci.yml'):
+def producer_run(run_id, source, workflow='.github/workflows/ci.yml'):
     require(type(run_id) is int and run_id > 0 and SHA.fullmatch(source or ''), 'Invalid run or source')
     run = api(f'actions/runs/{run_id}')
     require(run.get('repository', {}).get('full_name') == REPO
@@ -104,6 +116,11 @@ def artifact(run_id, source, directory, workflow='.github/workflows/ci.yml'):
             and run.get('conclusion') == 'success' and run.get('path') == workflow,
             'Artifact must come from the identified successful repository workflow')
     require(run.get('event') in ('push', 'workflow_dispatch'), 'PR artifacts cannot directly become release assets')
+    return run
+
+
+def artifact(run_id, source, directory, workflow='.github/workflows/ci.yml'):
+    run = producer_run(run_id, source, workflow)
     collection = api(f'actions/runs/{run_id}/artifacts?per_page=100')
     items = collection.get('artifacts', [])
     require(collection.get('total_count') == len(items), 'Incomplete artifact listing')
@@ -175,10 +192,10 @@ def current_develop(source):
             'Develop advanced; a stale run must not replace early')
 
 
-def early_gate(run):
+def early_gate(run, head):
     source = run['head_sha']
     require(run.get('event') == 'push' and run.get('head_branch') == 'develop', 'Early requires a develop push')
-    current_develop(source)
+    current_develop(head)
     matches = [p for p in pages(f'commits/{source}/pulls?per_page=100')
                if p.get('merge_commit_sha') == source and p.get('base', {}).get('ref') == 'develop']
     require(len(matches) == 1, 'Early source needs one merged develop PR')
@@ -188,6 +205,30 @@ def early_gate(run):
             'Early source needs a merged same-repository PR')
     checks(pr)
     return pr['number']
+
+
+def early_product(run_id, source, directory):
+    trigger = producer_run(run_id, source)
+    require(trigger.get('event') == 'push' and trigger.get('head_branch') == 'develop',
+            'Early requires a develop push')
+    head = api('git/ref/heads/develop').get('object', {}).get('sha')
+    require(SHA.fullmatch(head or ''), 'Current develop identity missing')
+    git('fetch', '--no-tags', 'origin', head)
+    git('merge-base', '--is-ancestor', source, head)
+    for candidate in git('rev-list', '--first-parent', head).splitlines():
+        current_develop(head)
+        runs = api('actions/workflows/ci.yml/runs?branch=develop&event=push&head_sha=' + candidate + '&per_page=100')
+        items = runs.get('workflow_runs', [])
+        require(runs.get('total_count') == len(items) and items
+                and all(type(r.get('id')) is int and r['id'] > 0 for r in items),
+                'Current product history needs complete CI records; do not fall back past unknown history')
+        selected = max(items, key=lambda run: run['id'])
+        archive, run = artifact(selected['id'], candidate, directory)
+        number = early_gate(run, head)
+        if archive is not None:
+            return archive, run, number, head
+        # Only the explicit producer skip above permits looking at the previous product.
+    raise ValueError('No identified product artifact in the verified develop history')
 
 
 def promotion_gate(number):
@@ -244,6 +285,8 @@ def release_body(record):
             f'- [変更・受入](https://github.com/{REPO}/pull/{record["pr"]})\n\n'
             'GitHub自動生成のSource code ZIPはインストール用ではありません。'
             + (' early tagは保管場所の固定識別子です。製品sourceは上記のSHAです。' if early else '') + '\n')
+    if early and 'develop_head' in record:
+        text += f'\n追従を確認したdevelop: `{record["develop_head"]}`\n'
     return text + '\n' + MARKER + json.dumps(record, sort_keys=True, ensure_ascii=False) + '\n-->\n'
 
 
@@ -260,6 +303,22 @@ def verify_asset(asset, path):
         fetched = Path(temporary) / 'asset.zip'
         download(f'releases/assets/{asset["id"]}', fetched)
         require(digest(fetched) == digest(path), 'Published asset bytes differ')
+
+
+def latest_setting(record):
+    if record['channel'] == 'early':
+        return 'false'
+    parsed_version = VERSION.fullmatch(record['version'])
+    require(parsed_version, 'Formal release version required')
+    version = tuple(map(int, parsed_version.groups()))
+    for release in pages('releases?per_page=100'):
+        if release['draft'] or release['prerelease']:
+            continue
+        tag = release['tag_name']
+        parsed = VERSION.fullmatch(tag[1:]) if tag.startswith('v') else None
+        if not parsed or tuple(map(int, parsed.groups())) > version:
+            return 'false'
+    return 'true'
 
 
 def publish(path, record, target):
@@ -282,7 +341,7 @@ def publish(path, record, target):
                 refs[0]['object']['sha'] == target), 'Existing tag is not the owned fixed target')
     require(not release or release['draft'] or refs, 'Published release tag missing')
     if early:
-        current_develop(record['source'])
+        current_develop(record.get('develop_head', record['source']))
     if not release:
         release = api('releases', 'POST', {'tag_name': tag, 'target_commitish': target,
                       'name': 'Android Replay Buffer ' + ('early' if early else record['version']),
@@ -303,10 +362,10 @@ def publish(path, record, target):
     require(current and all(current[k] == release[k] for k in ('id', 'body', 'draft', 'prerelease')),
             'Release changed during preparation; preserve both assets')
     if early:
-        current_develop(record['source'])
+        current_develop(record.get('develop_head', record['source']))
     if current['body'] != body or current['draft']:
         api(f'releases/{release["id"]}', 'PATCH', {'body': body, 'draft': False,
-            'make_latest': 'false' if early else 'true'})
+            'make_latest': latest_setting(record)})
     final = find_release(tag)
     require(final and final['id'] == release['id'] and not final['draft'] and final['body'] == body
             and final['prerelease'] == early, 'Publication readback differs')
@@ -367,13 +426,9 @@ def main():
     args = parser.parse_args()
     if args.channel == 'early':
         with tempfile.TemporaryDirectory() as temporary:
-            archive, run = artifact(args.run, args.source, Path(temporary))
-            number = early_gate(run)
-            if archive is None:
-                print('CI deliberately skipped the plugin build; early retains its last identified product.')
-                return
-            record = dict(identity(archive, args.source, digest(archive)), schema=1,
-                          repository=REPO, channel='early', pr=number, run=args.run)
+            archive, run, number, head = early_product(args.run, args.source, Path(temporary))
+            record = dict(identity(archive, run['head_sha'], digest(archive)), schema=1,
+                          repository=REPO, channel='early', pr=number, run=run['id'], develop_head=head)
             target = api('git/ref/heads/main')['object']['sha']
             print(publish(archive, record, target))
     elif args.channel == 'inspect':

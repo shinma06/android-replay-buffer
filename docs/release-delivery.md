@@ -4,7 +4,7 @@
 
 | 経路 | 起点 | 公開物・判定 |
 |---|---|---|
-| early | developへのpushのCI成功 | そのsourceの標準ZIP、単一の`early` prerelease。merged PRの必須5 checksも確認 |
+| early | developへのpushのCI成功 | 現在developから生成省略を確認できた履歴だけ遡った最新製品ZIP、単一の`early` prerelease。対象履歴のmerged PRの必須5 checksも確認 |
 | 正式候補 | main上の`Release candidate`を固定develop SHA/versionで手動実行 | check/buildPlugin/verifyPluginStructureを実行したZIPを`candidate-<ZIP SHA-256>` Artifactへ保存。ここではReleaseを公開しない |
 | 正式 | main promotion mergeのCI成功 | 既存promotion validatorで受入と固定hashを再確認し、保存済み候補の同じbytesを`v<version>`へ公開 |
 | 復旧 | main上の`Release delivery`へpromotion PR番号を指定 | 同じ入力を再照合。新しいversion・別ZIP・tag移動による修復はしない |
@@ -26,13 +26,17 @@ CIが完了しても、対象commitがpromotionでなければ正式Releaseを�
 
 1つのReleaseページを維持し、tagをforce更新しません。`early` tagは最初の保管場所を指す固定識別子です。**製品sourceはRelease本文・ZIP内部のSHA**であり、GitHub自動生成のSource code ZIPはインストール用ではありません。
 
-公開処理は全channelを同じconcurrency groupで直列化し、途中で自動キャンセルしません。開始時と本文切替直前にdevelop HEADを確認し、遅れて到着した旧runによる巻戻りを拒否します。
+公開処理は全channelを同じconcurrency groupで直列化し、途中で自動キャンセルしません。遅れて届いたrunも現在のdevelop HEADを固定して解決し、旧sourceへ巻き戻しません。現在HEADの最新CIが未完了/失敗なら公開しません。開始時・履歴照合中・本文切替直前に固定したdevelop HEADを再確認します。
 
-文書・管理だけの変更では既存classifierがPlugin buildを省くため、CIの成功jobでArtifact upload stepが明示的にskippedだった場合だけ、earlyを最後の識別済み製品のまま保持します。製品が生成されるはずなのにArtifactが欠落した場合や、producerの省略を確認できない場合は失敗です。CI側のstep名/構成変更ではこの接点も更新・検証します。
+文書・管理だけの変更では既存classifierがPlugin buildを省くため、CIの成功jobでArtifact upload stepが明示的にskippedだったcommitだけ、developの第一親を遡ります。各commitの最新push CIとmerged PRの5 checksを確認し、最初に見つかった製品ZIPを同じbytesで公開します。製品commit Aの配布より先に文書commit BがHEADになっても、Bまたは遅着したAのrunからAのZIPを回収できます。BのCIがAより先に完了してAが未完了なら失敗を保ち、Aの完了eventで現在HEADを再解決します。本文は製品sourceと追従確認したdevelop HEADを分けます。CI履歴不明、未完了/失敗、生成されるはずのZIPの欠落、期限切れは、それより古い製品へ飛ばさず失敗にします。CI側のstep名/構成変更ではこの接点も更新・検証します。
 
 新しいhash名のZIPを先にupload・再download検証し、本文を切り替えて読み戻した後だけ、旧本文で識別済みの旧assetを削除します。途中失敗時は旧本文と旧ZIPを残し、既存の同じbytesを確認して再開します。公開前の失敗ならdraftのまま残します。不明なassetや所有markerのないReleaseは削除/上書きしません。未知の中断で残った追加assetは担当が現状態と所有を確認し、後片付けを別に記録します。
 
 正式版の既存tag/内容は不変です。同じ入力の再実行は再照合だけを行い、異なるbytesや不完全な公開済み正式版を自動置換しません。Release説明の編集も現在のpublisherの所有recordと一致しなければ止まるため、変更前に担当が方針を決めます。
+
+古い正式版を初めて公開・復旧する場合、公開済み正式版のversionを数値で比較し、より新しい版があればlatestを変更しません。既存の正式tagのversionが判定できない場合もlatestを維持します。draft/prereleaseは比較から除きます。APIの`make_latest: true`は指定Releaseをlatestへ設定するため、復旧時に無条件で使いません。[GitHub Releases API](https://docs.github.com/en/rest/releases/releases#update-a-release)
+
+publisherのGitHub CLI呼出しはworkflowの`GH_TOKEN`を保持します。agent worker用の認証情報を除去する共通実行関数とは分離し、workerの制限は変更しません。read/list/check/uploadを同じ認証経路で実行し、tokenを引数や公開記録へ出しません。[GitHub CLIの認証環境変数](https://cli.github.com/manual/gh_help_environment)
 
 ## 復旧と停止
 

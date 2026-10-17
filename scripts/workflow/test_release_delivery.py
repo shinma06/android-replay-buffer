@@ -2,7 +2,9 @@ import copy
 import hashlib
 import io
 import json
+import os
 from pathlib import Path
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -41,6 +43,7 @@ class Repository:
         self.fail_after_patch = False
         self.fail_patch = False
         self.advance_after_upload = False
+        self.latest = None
 
     def pages(self, path):
         if path.startswith('releases?'):
@@ -70,6 +73,8 @@ class Repository:
                 raise OSError('connection failed before PATCH')
             result = next(r for r in self.releases if r['id'] == int(path.split('/')[1]))
             result.update(data)
+            if data.get('make_latest') == 'true':
+                self.latest = result['id']
             self.refs.setdefault(result['tag_name'], {'type': 'commit', 'sha': result['target_commitish'], 'url': 'tag-url'})
             if self.fail_after_patch:
                 raise OSError('connection lost after PATCH')
@@ -97,6 +102,31 @@ class Repository:
 
     def download(self, path, destination):
         destination.write_bytes(self.files[int(path.split('/')[2])])
+
+
+class DeliveryCredentialsTest(unittest.TestCase):
+    def test_workflow_token_reaches_reads_pages_checks_and_upload_commands(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            executable = root / 'gh'
+            executable.write_text(f'''#!{sys.executable}
+import json, os, sys
+assert os.environ.get('GH_TOKEN') == 'workflow-token-fixture'
+if sys.argv[1:3] == ['pr', 'checks']:
+    print(json.dumps([{{'name': n, 'state': 'SUCCESS'}} for n in {(*delivery.CI_CHECKS, delivery.CONTEXT)!r}]))
+elif '--slurp' in sys.argv:
+    print('[[], []]')
+else:
+    print('{{"authenticated": true}}')
+''')
+            executable.chmod(0o755)
+            with patch.dict(os.environ, {'GH_TOKEN': 'workflow-token-fixture', 'GH_CONFIG_DIR': folder,
+                                         'PATH': folder + os.pathsep + os.environ['PATH']}):
+                self.assertTrue(delivery.api('releases')['authenticated'])
+                self.assertEqual(delivery.pages('releases?per_page=100'), [])
+                delivery.checks({'number': 1})
+                self.assertTrue(json.loads(delivery.command(['gh', 'api', '--method', 'POST',
+                    'https://uploads.github.com/repos/' + delivery.REPO + '/releases/1/assets']))['authenticated'])
 
 
 class ReleaseDeliveryTest(unittest.TestCase):
@@ -182,6 +212,15 @@ class ReleaseDeliveryTest(unittest.TestCase):
         delivery.publish(self.archive, record, MAIN)
         self.assertEqual(sum(path == 'upload' for path, _, _ in self.repo.mutations), 1)
         self.assertFalse(self.repo.releases[0]['draft'])
+
+    def test_recovering_older_stable_does_not_move_latest_back(self):
+        self.archive.write_bytes(package(NEXT, version='0.10.0'))
+        delivery.publish(self.archive, self.record('stable', NEXT), 'd' * 40)
+        newest = self.repo.latest
+        self.archive.write_bytes(package(version='0.9.0'))
+        delivery.publish(self.archive, self.record('stable'), MAIN)
+        self.assertIsNotNone(newest)
+        self.assertEqual(self.repo.latest, newest)
 
     def test_uncertain_patch_is_read_back_on_retry(self):
         record = self.record()
@@ -312,6 +351,68 @@ class ReleaseDeliveryTest(unittest.TestCase):
                     with self.assertRaises(ValueError):
                         delivery.artifact(42, SOURCE, self.directory)
         self.assertEqual(self.repo.mutations, [])
+
+    def test_early_follows_product_overtaken_by_skipped_head_in_both_completion_orders(self):
+        self.repo.head = NEXT
+        transport = io.BytesIO()
+        with zipfile.ZipFile(transport, 'w') as archive:
+            archive.writestr('plugin.zip', self.archive.read_bytes())
+        self.repo.files[12] = transport.getvalue()
+        item = {'id': 12, 'name': 'plugin-' + SOURCE, 'expired': False,
+                'size_in_bytes': len(transport.getvalue()),
+                'digest': 'sha256:' + hashlib.sha256(transport.getvalue()).hexdigest()}
+        runs = {number: {'id': number, 'repository': {'full_name': delivery.REPO},
+                        'head_repository': {'full_name': delivery.REPO}, 'head_sha': source,
+                        'status': 'completed', 'conclusion': 'success', 'event': 'push',
+                        'head_branch': 'develop', 'path': '.github/workflows/ci.yml'}
+                for number, source in ((42, SOURCE), (43, NEXT))}
+        prs = {n: {'number': n, 'merged': True, 'merge_commit_sha': r['head_sha'],
+                   'base': {'ref': 'develop', 'repo': {'full_name': delivery.REPO}},
+                   'head': {'repo': {'full_name': delivery.REPO}}} for n, r in runs.items()}
+        def api(path, method='GET', data=None):
+            if path == 'git/ref/heads/main': return {'object': {'sha': MAIN}}
+            if path.startswith('actions/workflows/'):
+                selected = [r for r in runs.values() if 'head_sha=' + r['head_sha'] in path]
+                return {'total_count': len(selected), 'workflow_runs': selected}
+            if path.startswith('actions/runs/'):
+                number = int(path.split('/')[2])
+                if '/artifacts?' in path:
+                    return {'total_count': 1 if number == 42 else 0, 'artifacts': [item] if number == 42 else []}
+                if '/jobs?' in path:
+                    return {'total_count': 1, 'jobs': [{'name': 'test', 'conclusion': 'success',
+                            'steps': [{'name': 'Run actions/upload-artifact@v4', 'conclusion': 'skipped'}]}]}
+                return runs[number]
+            if path.startswith('pulls/'): return copy.deepcopy(prs[int(path.split('/')[1])])
+            return self.repo.api(path, method, data)
+        def pages(path):
+            if path.startswith('commits/'):
+                return [p for p in prs.values() if p['merge_commit_sha'] == path.split('/')[1]]
+            return self.repo.pages(path)
+        def git(*args):
+            return NEXT + '\n' + SOURCE if args[0] == 'rev-list' else ''
+        with patch.object(delivery, 'api', side_effect=api), patch.object(delivery, 'pages', side_effect=pages), \
+             patch.object(delivery, 'git', side_effect=git):
+            # B's small skipped build can complete before A's product build.
+            runs[42]['status'] = 'in_progress'
+            with patch.object(sys, 'argv', ['delivery', 'early', '--run', '43', '--source', NEXT]), \
+                 self.assertRaises(ValueError):
+                delivery.main()
+            self.assertEqual(self.repo.releases, [])
+            runs[42]['status'] = 'completed'
+            for number in (42, 43):
+                with patch.object(sys, 'argv', ['delivery', 'early', '--run', str(number),
+                                              '--source', runs[number]['head_sha']]):
+                    delivery.main()
+                record = delivery.read_record(self.repo.releases[0]['body'])
+                self.assertEqual((record['source'], record['develop_head'], record['run']), (SOURCE, NEXT, 42))
+                self.assertEqual(len(self.repo.assets), 1)
+                self.assertEqual(len(self.repo.releases), 1)
+            before = copy.deepcopy(self.repo.releases)
+            item['expired'] = True
+            with patch.object(sys, 'argv', ['delivery', 'early', '--run', '43', '--source', NEXT]), \
+                 self.assertRaises(ValueError):
+                delivery.main()
+            self.assertEqual(self.repo.releases, before)
 
     def test_promotion_reconstructs_reviewed_base_and_requires_complete_acceptance(self):
         pr = {'number': 286, 'merged': True, 'merge_commit_sha': MAIN,
