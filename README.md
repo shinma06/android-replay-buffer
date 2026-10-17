@@ -136,7 +136,7 @@ Android ──USB──▶ ADB ──┬── scrcpy ──▶ ffmpeg segments 
 
 ## 開発ハーネス・Android Studioプラグイン開発
 
-Python CLI原型を維持し、Android Studioプラグインを開発します。[開発手順](docs/workflow.md)、[プロジェクト情報](docs/project.md)、[共通IDE知見](docs/android-studio.md)を入口にします。製品変更はdevelop、固定した検証済み候補はmainへ統合します。初期版完成後は [#206 stable基盤更新](https://github.com/shinma06/android-replay-buffer/issues/206) → [#103 CLI内包](https://github.com/shinma06/android-replay-buffer/issues/103) の順です。[過去管理欄の整備 #237](https://github.com/shinma06/android-replay-buffer/issues/237)は初期版後に行います。
+Python CLI原型を維持し、Android Studioプラグインを開発します。[開発手順](docs/workflow.md)、[プロジェクト情報](docs/project.md)、[仕様の正本と任意の外部知見](docs/android-studio.md)を入口にします。製品変更はdevelop、固定した検証済み候補はmainへ統合します。初期版完成後は [#206 stable基盤更新](https://github.com/shinma06/android-replay-buffer/issues/206) → [#103 CLI内包](https://github.com/shinma06/android-replay-buffer/issues/103) の順です。[過去管理欄の整備 #237](https://github.com/shinma06/android-replay-buffer/issues/237)は初期版後に行います。
 
 - [開発マップ](https://github.com/users/shinma06/projects/5) / [Issue](https://github.com/shinma06/android-replay-buffer/issues)
 - [初回導入の検証・未実施項目](docs/validation.md) / [ハーネスの出典・対応表](docs/inventory.md)

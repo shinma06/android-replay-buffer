@@ -1,6 +1,6 @@
 # Issue・Project・Milestone の管理
 
-参照元と同じ責務分担で運用します。Issue は具体的な作業と受入、Project は全体の状態・優先順位・ロードマップ、Milestone は到達目標、native Relationship は実際の分解・依存を表します。
+本プロジェクトでは次の責務分担で運用します。Issue は具体的な作業と受入、Project は全体の状態・優先順位・ロードマップ、Milestone は到達目標、native Relationship は実際の分解・依存を表します。
 
 ## Issue 作成・triage
 
