@@ -108,6 +108,16 @@ def artifact(run_id, source, directory, workflow='.github/workflows/ci.yml'):
     items = collection.get('artifacts', [])
     require(collection.get('total_count') == len(items), 'Incomplete artifact listing')
     selected = [a for a in items if a.get('name') == f'plugin-{source}']
+    if not items:
+        jobs = api(f'actions/runs/{run_id}/jobs?filter=latest&per_page=100')
+        require(jobs.get('total_count') == len(jobs.get('jobs', [])), 'Incomplete job listing')
+        tests = [job for job in jobs['jobs'] if job.get('name') == 'test']
+        require(len(tests) == 1 and tests[0].get('conclusion') == 'success', 'Successful producer job required')
+        uploads = [step for step in tests[0].get('steps', [])
+                   if re.fullmatch(r'Run actions/upload-artifact@v[0-9.]+', step.get('name', ''))]
+        require(len(uploads) == 1 and uploads[0].get('conclusion') == 'skipped',
+                'Missing artifact without an explicitly skipped producer')
+        return None, run
     require(len(selected) == 1 and selected[0].get('expired') is False, 'One live source-bound artifact required')
     return download_artifact(selected[0], directory), run
 
@@ -359,6 +369,9 @@ def main():
         with tempfile.TemporaryDirectory() as temporary:
             archive, run = artifact(args.run, args.source, Path(temporary))
             number = early_gate(run)
+            if archive is None:
+                print('CI deliberately skipped the plugin build; early retains its last identified product.')
+                return
             record = dict(identity(archive, args.source, digest(archive)), schema=1,
                           repository=REPO, channel='early', pr=number, run=args.run)
             target = api('git/ref/heads/main')['object']['sha']
