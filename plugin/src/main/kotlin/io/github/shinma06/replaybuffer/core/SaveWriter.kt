@@ -570,7 +570,7 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
         }
     }
 
-    private fun bytesHash(bytes: ByteArray) = java.security.MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
+    private fun bytesHash(bytes: ByteArray) = java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(bytes))
 
     private fun readFrame(frame: VideoEntry): ByteArray {
         require(frame.offset >= 0 && frame.size in 1..16 * 1024 * 1024)

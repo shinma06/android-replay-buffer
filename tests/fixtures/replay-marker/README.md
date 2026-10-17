@@ -6,20 +6,20 @@
 | --- | --- |
 | modules / debug applicationId | `appA` / `io.github.shinma06.replaybuffer.qa.appa.debug`、`appB` / `io.github.shinma06.replaybuffer.qa.appb.debug` |
 | 共通namespace | `io.github.shinma06.replaybuffer.fixture`。自動対象はこれではなく実applicationIdで照合する |
-| AGP / Gradle | 9.1.1 / 9.3.1（Wrapper配布SHA-256固定） |
-| SDK / build tools / minSdk | 37.0 / 36.0.0 / 29。これより古い端末はこのfixtureでは検証できない |
-| Java source/target | 17。今回のbuild実行には対象IDE同梱JBR25を使用 |
+| AGP / Gradle | 9.4.1 / 9.8.1（Wrapper配布SHA-256固定） |
+| SDK / build tools / minSdk | 37.2 / 37.0.0 / 29。これより古い端末はこのfixtureでは検証できない |
+| Java source/target | 17（Android向けdesugar対象）。build実行はJDK 27 |
 | log tag | `REPLAY_QA`。識別子はpackage + source + run UUID + view UUID + PID + event番号 |
 
-AGP/Gradleの組合せは[公式互換表](https://developer.android.com/build/releases/agp-9-1-0-release-notes)に従います。Android Studioではこのフォルダを独立プロジェクトとして開き、`appA`と`appB`を通常のAndroid App Run configurationで選びます。開く／Sync／Run／インストールは共有GUI leaseとPM割当の後に行ってください。既存ユーザープロジェクトへmoduleを追加しません。
+AGP/Gradleの組合せは[公式互換表](https://developer.android.com/build/releases/agp-9-4-0-release-notes)に従います。Android Studioではこのフォルダを独立プロジェクトとして開き、`appA`と`appB`を通常のAndroid App Run configurationで選びます。開く／Sync／Run／インストールは共有GUI leaseとPM割当の後に行ってください。既存ユーザープロジェクトへmoduleを追加しません。
 
 ## buildと識別
 
-既存SDKの`platforms;android-37.0`と`build-tools;36.0.0`、JDKを使用します。次はbuildだけです。ADB、install、Emulator、IDE起動は呼びません。
+既存SDKの`platforms;android-37.2`と`build-tools;37.0.0`、JDKを使用します。次はbuildだけです。ADB、install、Emulator、IDE起動は呼びません。
 
 ```bash
 # repository root。SDK/JDKは準備担当が実環境に合わせる
-export JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"
+export JAVA_HOME="/opt/homebrew/opt/openjdk/libexec/openjdk.jdk/Contents/Home"
 export ANDROID_HOME="$HOME/Library/Android/sdk"
 python3 tests/fixtures/replay-marker/build.py
 # 全依存がcacheにあるときだけ --offline を付けられる
@@ -71,11 +71,11 @@ lease/対象確認とQAの明示割当後にだけ、生成した対象APKとそ
 
 ## 同期測定補助（macOS標準API）
 
-`transitions.swift`は[AVAssetReaderTrackOutput](https://developer.apple.com/documentation/avfoundation/avassetreadertrackoutput)でローカルMP4を復号し、[sampleのpresentation timestamp](https://developer.apple.com/documentation/coremedia/cmsamplebuffergetpresentationtimestamp(_:))と背景色の境界を抽出します。Xcode Command Line ToolsのSwiftとmacOS標準frameworkだけを使い、新しい依存・製品viewerを追加しません。GUI/録画/ADB/時計変換は呼びません。現SDKの一部同期reader APIはdeprecatedですが利用可能です。これはQA補助の制約であり製品互換性の根拠ではありません。
+`transitions.swift`はmacOS 26以降の[AVAssetReader output provider](https://developer.apple.com/documentation/avfoundation/avassetreader/outputprovider(for:))でローカルMP4を非同期に全量復号し、sampleのpresentation timestampと背景色の境界を抽出します。read-only pixel bufferの所有された読取り範囲で画素へアクセスし、Swift 6のactor隔離を保ちます。Xcode Command Line ToolsのApple Swift 6.4（Swift 6 language mode）とmacOS標準frameworkだけを使い、新しい依存・製品viewerを追加しません。GUI/録画/ADB/時計変換は呼びません。このOS条件はQA補助専用であり、配布CLIやプラグインの対応OSを変更しません。
 
 ```bash
 # INPUTはprivateの固定出力。出力先は未存在の専用directoryを指定する
-xcrun swift tests/fixtures/replay-marker/transitions.swift INPUT.mp4 NEW_PRIVATE_OUTPUT 0.15 0.55
+xcrun swift -swift-version 6 tests/fixtures/replay-marker/transitions.swift INPUT.mp4 NEW_PRIVATE_OUTPUT 0.15 0.55
 ```
 
 座標は復号画像の左上原点、幅/高さで正規化した値です。初回の`transition-0000-first.png`で、5×5 pixel領域が背景内・番号/identity/端/回転後の余白にかからないことを確認してから採用します。背景2色へのRGB距離50以内だけをeven/oddとし、その他はunknownにします。codec/色変換でunknownになったら閾値を黙って緩めず、測定条件を調整して新runへ分けます。新directoryのみへ0600のJSONL/PNGを書き、途中失敗を完成結果にしません。生画像/ログは公開しません。

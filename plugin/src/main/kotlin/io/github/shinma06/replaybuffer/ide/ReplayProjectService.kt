@@ -43,7 +43,7 @@ import java.nio.file.Path
 
 /** Owns IDE subscriptions and background model resolution independently of the ToolWindow. */
 @Service(Service.Level.PROJECT)
-class ReplayProjectService(private val project: Project, private val scope: CoroutineScope) : Disposable {
+class ReplayProjectService(private val project: Project, internal val scope: CoroutineScope) : Disposable {
     @Volatile
     var environment: AndroidReplayEnvironment? = null
         private set

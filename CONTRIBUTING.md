@@ -6,7 +6,7 @@
 python3 scripts/bootstrap.py
 python3 scripts/check.py
 python3 scripts/workflow/product_check.py
-# plugin変更はJDK 25を設定して実施
+# plugin変更はJDK 27 / ANDROID_HOME（SDK API 37.2 revision 1）を設定して実施
 python3 scripts/workflow/plugin_check.py
 ```
 

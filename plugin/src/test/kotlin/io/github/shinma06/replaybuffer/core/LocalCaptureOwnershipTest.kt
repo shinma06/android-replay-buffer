@@ -24,7 +24,11 @@ object LocalCaptureOwnerFixture {
     @JvmStatic
     fun main(args: Array<String>) {
         val ownership = LocalCaptureOwnership.create(Path.of(args[0]))
-        CaptureResources(ownership.root, ownership::created)
+        if (args[1] == "legacy") {
+            for (name in listOf("scrcpy-server-v4.0", "replay-clock.jar")) {
+                ownership.created(Files.writeString(ownership.root.resolve(name), "legacy helper"))
+            }
+        } else CaptureResources(ownership.root, ownership::created)
         val store = CaptureStore(ownership.root.resolve("ring"), minFree = 0,
             videoLimit = if (args[1] == "cycled") 2 else ReplaySettings.VIDEO_BYTES,
             created = ownership::created, removed = ownership::removed)
@@ -40,7 +44,7 @@ object LocalCaptureOwnerFixture {
         if (args[1] == "unlocked") ownership.close()
         println(ownership.root.fileName)
         System.out.flush()
-        if (args[1] !in listOf("stopped", "cycled")) System.`in`.read()
+        if (args[1] !in listOf("stopped", "cycled", "legacy")) System.`in`.read()
     }
 }
 
@@ -73,7 +77,7 @@ class LocalCaptureOwnershipTest {
         try {
             val root = namespace.resolve(line.get(10, TimeUnit.SECONDS) ?: error("fixture failed"))
             val fixture = Fixture(process, root, namespace.resolve("local-capture-${root.fileName.toString().removePrefix("replay-")}.json"))
-            if (mode in listOf("stopped", "cycled")) {
+            if (mode in listOf("stopped", "cycled", "legacy")) {
                 assertTrue(process.waitFor(10, TimeUnit.SECONDS))
                 assertEquals(0, process.exitValue())
                 assertTrue(ProcessHandle.of(process.pid()).isEmpty)
@@ -130,6 +134,17 @@ class LocalCaptureOwnershipTest {
             assertTrue(Files.exists(other.root))
             assertTrue(Files.exists(other.descriptor))
         } }
+    }
+
+    @Test
+    fun legacyVersionResourceJournalRemainsRecoverable() {
+        val namespace = namespace("legacy")
+        fixture(namespace, "legacy").use { old ->
+            assertTrue("scrcpy-server-v4.0" in entries(old.descriptor))
+            LocalCaptureOwnership.recover(namespace)
+            assertFalse(Files.exists(old.root))
+            assertFalse(Files.exists(old.descriptor))
+        }
     }
 
     @Test
@@ -192,7 +207,7 @@ class LocalCaptureOwnershipTest {
                 LocalCaptureOwnership.recover(namespace)
                 assertArrayEquals(before, Files.readAllBytes(marker))
                 assertEquals(key, Files.readAttributes(marker, java.nio.file.attribute.BasicFileAttributes::class.java).fileKey())
-                assertTrue(Files.exists(old.root.resolve("scrcpy-server-v4.0")))
+                assertTrue(Files.exists(old.root.resolve("scrcpy-server-v5.0.1")))
                 assertTrue(Files.exists(old.descriptor))
             }
         }
@@ -619,7 +634,7 @@ class LocalCaptureOwnershipTest {
             assertTrue(core.setEnabled(true).get(10, TimeUnit.SECONDS).accepted)
             val descriptor = Files.newDirectoryStream(workspace, "local-capture-*.json").use { it.single() }
             val json = header(descriptor)
-            assertEquals(setOf(".", "ring", "scrcpy-server-v4.0", "replay-clock.jar"), entries(descriptor).keys)
+            assertEquals(setOf(".", "ring", "scrcpy-server-v5.0.1", "replay-clock.jar"), entries(descriptor).keys)
             LocalCaptureOwnership.recover(workspace)
             assertTrue(Files.exists(descriptor))
             assertTrue(core.setEnabled(false).get(10, TimeUnit.SECONDS).accepted)

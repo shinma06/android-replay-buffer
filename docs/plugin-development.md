@@ -10,22 +10,27 @@
 | Kotlin package | `io.github.shinma06.replaybuffer` |
 | Android Studio SDK | Rabbit 1 `2026.2.1.8` / `AI-262.9437.185.2621.16467767` |
 | 宣言するIDE範囲 | `262.9437.185` 〜 `262.*`。実受入は固定Rabbitで実施し、全patchの動作を保証した意味ではない |
-| JDK / JVM target | 25 |
-| Kotlin | 2.4.20、IDE同梱stdlibを使用 |
+| Build JDK / JVM・API target | 27 / 25（実IDEは同梱JBR 25） |
+| Kotlin | 2.4.21、language/API 2.4。IDE同梱stdlib 2.4.0を使用 |
 | IntelliJ Platform Gradle Plugin | 2.19.0 |
-| Gradle Wrapper | 9.7.1、distribution SHA-256固定 |
-| 開発版 | `0.1.0-dev.<source SHA>`。未commit差分があるbuildには `-dirty` が付く |
+| Gradle Wrapper | 9.8.1、distribution SHA-256固定 |
+| JVM test | JUnit BOM 6.1.3。JupiterとPlatform launcherを同じBOMで解決 |
+| 時計DEXのbuild入力 | R8/D8 9.5.26、Android SDK API 37.2 revision 1。DEX min API 24 |
+| 開発版 / 正式候補 | 既定は `0.2.0-dev.<source SHA>`。未commit差分には `-dirty`。正式候補はcleanなsourceで `-PpluginVersion=0.2.0` |
 
-SDK版は[公式Android Studio一覧](https://plugins.jetbrains.com/docs/intellij/android-studio-releases-list.html)と対象IDEのproduct-infoで照合しています。Kotlinの[公式互換表](https://kotlinlang.org/docs/whatsnew2420.html)はGradle 9.7.0までを明記しており、9.7.1はpatch版をこのプロジェクトで実build検証します。JDK 25は対象IDEの最小要求に合わせています。
+2026-10-17時点の公式stableを採用します。[Android Studio一覧](https://plugins.jetbrains.com/docs/intellij/android-studio-releases-list.html)と対象IDEのproduct-info、[Kotlin 2.4.21](https://github.com/JetBrains/kotlin/releases/tag/v2.4.21)、[Gradle 9.8.1](https://docs.gradle.org/9.8.1/release-notes.html)、[JUnit 6.1.3](https://github.com/junit-team/junit-framework/releases/tag/r6.1.3)を照合しました。[Kotlinの公式互換表](https://kotlinlang.org/docs/gradle-configure-project.html)の完全対応範囲はGradle 9.7.0までなので、9.8.1は本projectの実build/testsで適合を確認します。GradleはJava 27をサポートし、プラグインのJVM/API targetはIDEが使う25に限定します。[Platform pluginのtask convention](https://github.com/JetBrains/intellij-platform-gradle-plugin/blob/2.19.0/src/main/kotlin/org/jetbrains/intellij/platform/gradle/plugins/KotlinJvmToolchainConventions.kt)がtoolchain値を使うため、Kotlinコンパイルtaskにもtarget 25を明示しています。
 
 [公式のAndroid Studioプラグイン開発手順](https://plugins.jetbrains.com/docs/intellij/android-studio.html)に従いAndroid Studio SDKを使用します。projectのAndroid SDK、Run configurationのapplicationId、Gradle同期・Android modelの変更を読むため、同梱Android pluginのAPIを利用します。Terminal・JCEFへの依存はありません。録画用の固定scrcpy server、時計測定DEX、JCodecをZIPに含め、利用時に取得する追加ツールはありません。
 
+設定の保存は`SerializablePersistentStateComponent`のimmutable stateとatomic更新を使い、旧XMLキー・値を明示bindingで保持します。保存先の確認はIDEが注入するservice scopeが所有し、画面の破棄・再入力で取消します。UI反映は[UI専用dispatcher](https://github.com/JetBrains/intellij-community/blob/06e208526c9db65ce95892b546c0c226d39e950f/platform/core-api/src/com/intellij/openapi/application/coroutines.kt#L459)とlaunch時のmodalityを使い、filesystem読取りはIOへ分離します。
+
 ## ビルド
 
-JDK 25を用意して `JAVA_HOME` に設定します。macOSで対応Android Studioがインストール済みなら、その同梱JBRを使えます。
+JDK 27を `JAVA_HOME`、Android SDKを `ANDROID_HOME` に設定します。SDKの `platforms;android-37.2` revision 1がbuild専用の公開API入力です。`android.jar`、R8、scrcpy server、JCodecのSHA-256をbuildで照合します。IDE同梱JBR 25だけではbuild toolchainを満たしません。
 
 ```bash
-export JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"
+export JAVA_HOME="/opt/homebrew/opt/openjdk/libexec/openjdk.jdk/Contents/Home"
+export ANDROID_HOME="$HOME/Library/Android/sdk"
 python3 scripts/workflow/plugin_check.py
 ```
 
@@ -42,6 +47,12 @@ REPLAY_PLATFORM_PATH="/Applications/Android Studio.app/Contents" \
 
 ```bash
 plugin/gradlew -p plugin --no-daemon check buildPlugin verifyPluginStructure
+```
+
+正式候補はcleanなcommitから次のように一度buildし、そのZIPのSHA-256を固定して受入・main昇格・公開へ渡します。`pluginVersion`は接頭辞・接尾辞・先頭ゼロのない `major.minor.patch` だけを受け付け、dirtyな正式候補は拒否します。`identity.properties`の`source/dirty/version`とPlugin descriptorの版は同じbuild値です。版はidentity生成taskの入力にも含めるため、同じsourceで版を変更しても古いidentityを再利用しません。公開処理での版書換え・再buildは行いません。計画上の「第2版」と配布版番号の管理は別です。
+
+```bash
+plugin/gradlew -p plugin --no-daemon -PpluginVersion=0.2.0 check buildPlugin verifyPluginStructure
 ```
 
 ZIPは `plugin/build/distributions/` に出ます。原型PythonコードはZIPへ同梱しません。CIの `test` でも同じ変更影響判定から実行し、ZIPを14日保持のActions artifactとして保存します。これは検証用でありMarketplace/Release公開ではありません。長期保存する候補は保持期限内に取得し、SHA-256とsourceを記録してください。
