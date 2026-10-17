@@ -291,6 +291,11 @@ class ReleaseDeliveryTest(unittest.TestCase):
             self.archive.write_bytes(package(NEXT))
             with patch.object(delivery, 'api', side_effect=[listing, run]), self.assertRaises(ValueError):
                 delivery.candidate_archive(expected, self.directory)
+        for data in ({'total_count': 0, 'artifacts': []},
+                     {'total_count': 2, 'artifacts': [item]},
+                     {'total_count': 1, 'artifacts': [dict(item, expired=True)]}):
+            with patch.object(delivery, 'api', return_value=data), self.assertRaises(ValueError):
+                delivery.candidate_archive(expected, self.directory)
 
     def test_only_explicitly_skipped_producer_can_omit_early_artifact(self):
         run = {'repository': {'full_name': delivery.REPO}, 'head_repository': {'full_name': delivery.REPO},
@@ -307,11 +312,6 @@ class ReleaseDeliveryTest(unittest.TestCase):
                     with self.assertRaises(ValueError):
                         delivery.artifact(42, SOURCE, self.directory)
         self.assertEqual(self.repo.mutations, [])
-        for data in ({'total_count': 0, 'artifacts': []},
-                     {'total_count': 2, 'artifacts': [item]},
-                     {'total_count': 1, 'artifacts': [dict(item, expired=True)]}):
-            with patch.object(delivery, 'api', return_value=data), self.assertRaises(ValueError):
-                delivery.candidate_archive(expected, self.directory)
 
     def test_promotion_reconstructs_reviewed_base_and_requires_complete_acceptance(self):
         pr = {'number': 286, 'merged': True, 'merge_commit_sha': MAIN,
