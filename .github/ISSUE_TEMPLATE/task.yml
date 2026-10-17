@@ -1,13 +1,13 @@
 name: 開発・調査・GUI検証タスク
-description: 題名とtype/priority/statusの各1ラベルを指定。QA題名は [試験] #元Issue 要約
-title: "[運用] "
+description: "題名とtype/priority/statusの各1ラベルを指定。新規題名は type: 日本語の要約、QAは test: #元Issue 要約"
+title: "chore: "
 labels: ["type:maintenance", "priority:P2", "status:ready"]
 body:
   - type: textarea
     id: outcome
     attributes:
       label: 目的・現象
-      description: 単一の具体的な問題と期待する成果。実際の作業分解がある場合だけ親Issueを記載。題名はtypeに合わせ [機能]/[修正]/[調査]/[試験]/[運用]/[追跡]。ラベルは各軸1つに変更し、優先度は題名に重ねない。
+      description: "単一の具体的な問題と期待する成果。実際の作業分解がある場合だけ親Issueを記載。題名はtype labelに合わせ feat/fix/research/test/chore/track: 日本語の要約。QAだけは test: #元Issue 要約。Issue自身の番号は重ねない。ラベルは各軸1つに変更し、優先度は題名に重ねない。"
     validations:
       required: true
   - type: textarea

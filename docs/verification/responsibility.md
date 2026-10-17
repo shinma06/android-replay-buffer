@@ -123,6 +123,8 @@ CLIの2 testはthreadtime正常/不正行のparser互換だけを示します。
 
 ## trusted-main改訂と旧観察の再評価
 
+以下の不変artifact/history条件は従来の責任改訂経路です。製品修正を跨ぐ現在の成功事実再利用には、別の[保証単位の影響証明](README.md#修正影響による保証単位の証拠再利用246)を適用できます。全ZIP不変/元promotion必須をその新経路へ戻さず、原記録/hash/失敗と全Case/plan/延期を保持し、現在load・影響部分のfresh factsと独立実質評価を要求します。方法改訂と実行、元identityと現在identityを区別します。
+
 #190は`plan_extension`に旧required ancestorと追加Caseを明記し、原135 entryを再構成して上記の原plan hashへ照合します。#182のgroup/override/分担は保持し、recoveryへ`186:CLOCK-BATCH-SAVE`を1件追加します。全5手順の同ZIP Clock/Store/Wire回帰と実IDEの保存・継続取得・失敗固定retryをQA74/27の同候補/同条件の観察で共有し、最大4096履歴の長時間GUI反復を追加しません。新required ancestorはPR189実統合です。旧135計画は歴史上の有効計画として保持しますが、新136計画と一致するものへ扱い直しません。今回のclock製品class変更をまたぐ旧観察の再利用は既存history gateが拒否し、旧pending/fail/延期を新PASSへ変更しません。
 
 #201は#190と同じplan_extensionにPR199/200実develop mergeの197/198 Caseを累積追加し、required ancestorを `4d278e65dec0c55e71d584ff24c7f6fa407586cb` へ進めます。previous_required_ancestorは原135計画の `5bf9e84a887171df5f0287b036e9ba288fbfae9f`、previous_plan_sha256も原135hashのままです。追加3keyを除いて原135全文hashを照合し、直前136 entry/205出典も保全します。全138/207・recovery57・REAL34と固定source/hashを共通resolverで検証し、candidate-only改訂や欠落/不一致を拒否します。新Case全手順の同ZIP製品class回帰と代表native失敗場所表示/固定retry・起動回復/設定復元・通常取得/Save/継続/OFF/closeはQA27の同候補観察へ束ね、全故障のGUI反復・新human/REAL延期・新QAを追加しません。main統合後の専用develop同期・新候補/標準ZIP固定、QA27/65・release10の双方向移管/readbackはPMの後続作業です。契約/計画統合を製品受入にしません。

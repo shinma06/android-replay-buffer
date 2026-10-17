@@ -727,6 +727,9 @@ class RepairLoopTests(unittest.TestCase):
                     elif phase == 'feedback':
                         evidence = self.recovery_evidence()
                         evidence['review'].update(session=session)
+                        evidence['review'].pop('origin_receipt')
+                        evidence['review'] = issue_review_origin(self.loop.storage, evidence['review'], evidence['binding'],
+                                                               session, 'manual')
                         with self.assertRaisesRegex(ValueError, 'self-reviewed'):
                             self.loop.reconcile_feedback(self.gh.pr(36), evidence)
                     else:

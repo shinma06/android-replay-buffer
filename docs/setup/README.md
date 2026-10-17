@@ -12,6 +12,8 @@
 | 6 | [GUI・リモート環境](gui-and-remote.md) | 必要な場合だけ、画面取得・対象識別・共通lease |
 | 7 | [自動進行](automation.md) | 単発のdry-run、その後明示起動・停止・復旧 |
 
+CIの起動範囲、時間の読み方、全量検証と切り戻しは[CIの運用](ci.md)を参照してください。
+
 ## runtimeと配置
 
 Python標準ライブラリだけで共通ツールが動きます。Node/npmはContext7のstdio版やPonytail等、選んだ外部ツールが必要とする場合に導入します。製品のAndroid Studio SDK/JDK・実機の条件はdocs/project.mdへ記載し、ハーネスの依存と分けます。

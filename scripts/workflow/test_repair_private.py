@@ -10,9 +10,9 @@ import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
-from agent_policy import session_fingerprint, validate_review
-from agent_worker import main as bind_manual_report, private_repair_evidence, run_worker
-from handoff_registry import issue_review_origin, register, restore_review
+from agent_policy import canonical_session, native_session, session_fingerprint, validate_review
+from agent_worker import bind_native_review, main as bind_manual_report, private_repair_evidence, run_worker
+from handoff_registry import digest, issue_review_origin, register, restore_review, verify_review_origin
 import test_agent_loop as tal
 from verification import repair_contributors
 
@@ -175,8 +175,974 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual(target.stat().st_mode & 0o777, 0o600)
 
 
+class NativePublicationTests(unittest.TestCase):
+    setUp = tal.LoopTests.setUp
+
+    def issued(self, raw=None, identity='Actual-Native-Reviewer', bound=None):
+        bound = bound or self.loop.bound(self.gh.pull, self.gh.issues[35], self.gh.comments(36))[0]
+        raw = dict(tal.report() if raw is None else raw); raw.pop('session', None)
+        def observe(submitted, binding):
+            return {'session_id': identity, 'source': 'native://host/private-source/', 'operation_id': 'opaque/operation/',
+                    'report_sha256': digest(submitted), 'binding_sha256': digest(binding)}
+        return bind_native_review(raw, bound, self.loop.storage, issuer='example.invalid', observe_origin=observe), bound
+
+    def test_native_details_and_state_are_private_with_exact_roundtrip(self):
+        from urllib.parse import quote
+        private = 'Case-Sensitive/Native-Detail-99'
+        variants = [private, quote(private, safe=''), 'native://operation/1)?', 'native%3A%2F%2Foperation%2F1%3F',
+                    'opaque/source/receipt', 'https://host.invalid/private/receipt', 'native://operation/%FF?',
+                    '[record](native://operation/1)?', '[private origin]', '\x00\t\r\n', 'Operation (native://operation/end) and native://operation/end))?']
+        for identity in ('Actual-Native-Reviewer', tal.report()['session'], '/', '1', 'e', 'session', tal.HEAD):
+            with self.subTest(identity=identity):
+                raw = dict(tal.report('changes_requested'), findings=variants,
+                           evidence={'findings': variants, private: 'kept', 'publication_format': 'safe',
+                                     'binding': {'head': private}, 'private_sessions': [private]},
+                           repair_assessment=private, certificate_assessment=private, publication_format='private-review-v1',
+                           finding_count=999, summary=private, **{private: {'nested': variants}})
+                issued, bound = self.issued(raw, identity)
+                receipt = self.loop.storage / 'registry' / (issued['origin_receipt'] + '.json'); original = receipt.read_bytes()
+                state = {'phase': 'reviewed', 'binding': bound, 'review': issued, 'paused': True,
+                         'next': private, 'extension': {private: variants},
+                         'gui': {'head': tal.HEAD, 'base': tal.BASE, 'artifact_sha256': 'e' * 64,
+                                 'run': private, 'observer': private, 'loaded_identity': private, 'cases': [private]},
+                         'acceptance': {'allowed': False, 'mode': 'tooling', 'reason': private}}
+                sid = self.loop.save(self.gh.pull, state, None)
+                public = tal.al.unpack(self.gh.comments(36), tal.al.STATE)[0]
+                self.assertEqual(public['review']['publication_format'], 'private-review-v1')
+                self.assertEqual(public['review']['finding_count'], len(variants))
+                self.assertEqual(public['review']['session'], session_fingerprint(issued['session']))
+                self.assertEqual(public['review']['head'], tal.HEAD)
+                self.assertEqual(public['binding'], bound)
+                self.assertTrue(public['paused'])
+                self.assertEqual(public['next'], 'owner-resume-required')
+                for field in ('findings', 'evidence', 'repair_assessment', 'certificate_assessment', private):
+                    self.assertNotIn(field, public['review'])
+                self.assertNotIn('extension', public)
+                self.assertNotIn(private, json.dumps(self.gh.messages, ensure_ascii=False))
+                self.assertEqual(public['review']['report_sha256'], digest({'binding': bound, 'review': issued}))
+                restored = self.loop.load(36)[1]
+                for field in ('review', 'gui', 'acceptance', 'next', 'extension', 'paused'):
+                    self.assertEqual(restored[field], state[field])
+                self.loop.save(self.gh.pull, restored, sid)
+                self.assertEqual(self.loop.load(36)[1]['review'], issued)
+                self.assertEqual(receipt.read_bytes(), original)
+                with self.assertRaises(ValueError): validate_review(public['review'], bound, storage=self.loop.storage)
+
+    def test_distinct_native_keys_are_retained_without_public_map_projection(self):
+        keys = {'native://host/private-source/': 'first', 'native://host/private-source/child': 'second',
+                'opaque/operation/': 'third', '[private origin]': 'fourth',
+                'native://operation/%31?': 'raw', 'native%3A%2F%2Foperation%2F1%3F': 'encoded'}
+        issued, bound = self.issued(dict(tal.report(), evidence=keys, **{'opaque/operation/': 'extra', '[private origin]': 'extra-2'}))
+        receipt = self.loop.storage / 'registry' / (issued['origin_receipt'] + '.json'); original = receipt.read_bytes()
+        self.loop.save(self.gh.pull, {'phase': 'reviewed', 'binding': bound, 'review': issued}, None)
+        public = tal.al.unpack(self.gh.comments(36), tal.al.STATE)[0]
+        self.assertNotIn('evidence', public['review'])
+        self.assertEqual(self.loop.load(36)[1]['review'], issued)
+        self.assertEqual(self.loop.load(36)[1]['review']['evidence'], keys)
+        self.assertEqual(receipt.read_bytes(), original)
+
+
+    def test_verified_mixed_contributors_keep_raw_repair_and_certificate_evidence(self):
+        for revision in ('repair_revision', 'certificate_revision'):
+            for adapter in ('manual', 'cli'):
+                with self.subTest(revision=revision, adapter=adapter):
+                    fixture = EvidenceTests(); fixture.setUp(); self.addCleanup(fixture.doCleanups)
+                    contributor = native_session('example.invalid', 'Actual-Native-Contributor')
+                    fixture.sessions[1] = contributor
+                    fixture.bundle['origins'][1]['session'] = contributor
+                    fixture.items[1]['session'] = session_fingerprint(contributor)
+                    if revision == 'certificate_revision':
+                        fixture.bundle[revision] = fixture.bundle.pop('repair_revision')
+                    fixture.seal()
+                    bound = self.loop.bound(self.gh.pull, self.gh.issues[35], self.gh.comments(36))[0]
+                    accepted = dict(fixture.accepted, allowed=True, mode='tooling')
+                    if revision == 'certificate_revision':
+                        accepted = {'allowed': True, 'mode': 'tooling', revision: 'e' * 64,
+                                    'certificate_provenance': {'sample': fixture.observed},
+                                    'certificate_reviewers': [session_fingerprint(tal.report()['session'])]}
+                    packet = private_repair_evidence(fixture.path, accepted, bound, revision_field=revision)
+                    prefix = revision.split('_')[0]
+                    accepted[prefix + '_observers'] = list(map(session_fingerprint, fixture.sessions))
+                    accepted[prefix + '_evidence_sha256'] = packet['bundle_sha256']
+                    raw = dict(tal.report(), evidence='private contributor ' + contributor,
+                               **{revision: 'e' * 64, prefix + '_assessment': 'private full assessment',
+                                  prefix + '_evidence_sha256': packet['bundle_sha256'], 'evidence_records': packet['evidence_records']})
+                    issued = issue_review_origin(self.loop.storage, raw, bound, raw['session'], adapter,
+                                                 packet['private_paths'], [origin['session'] for origin in packet['origins']])
+                    validate_review(issued, bound, accepted, self.loop.storage)
+                    receipt = self.loop.storage / 'registry' / (issued['origin_receipt'] + '.json'); original = receipt.read_bytes()
+                    originals = {p: p.read_bytes() for p in (fixture.path, fixture.receipt)}
+                    sid = self.loop.save(self.gh.pull, {'phase': 'reviewed', 'binding': bound, 'review': issued, 'acceptance': accepted}, None)
+                    public = tal.al.unpack(self.gh.comments(36), tal.al.STATE)[0]
+                    self.assertEqual(public['review']['publication_format'], 'private-review-v1')
+                    self.assertNotIn('evidence', public['review'])
+                    self.assertNotIn(contributor, json.dumps(public))
+                    restored = self.loop.load(36)[1]
+                    self.assertEqual(restored['review'], issued)
+                    validate_review(restored['review'], bound, restored['acceptance'], self.loop.storage)
+                    from agent_policy import next_action
+                    self.assertEqual(next_action(restored, bound, 'pending', False, accepted, self.loop.storage), 'ci-wait')
+                    restored['phase'] = 'ci-wait'
+                    self.loop.save(self.gh.pull, restored, sid)
+                    self.assertEqual(tal.al.unpack(self.gh.comments(36), tal.al.STATE)[0]['next'], 'wait-for-required-ci-checks')
+                    self.assertEqual(receipt.read_bytes(), original)
+                    for path, before in originals.items(): self.assertEqual(path.read_bytes(), before)
+                    invalid = dict(accepted, **{prefix + '_observers': [session_fingerprint(issued['session'])]})
+                    with self.assertRaises(ValueError): validate_review(issued, bound, invalid, self.loop.storage)
+
+    def test_uuid_only_public_text_and_old_cache_do_not_select_from_report_flags(self):
+        from handoff_registry import store_review
+        bound = self.loop.bound(self.gh.pull, self.gh.issues[35], self.gh.comments(36))[0]
+        for adapter in (None, 'manual', 'cli'):
+            with self.subTest(adapter=adapter):
+                raw = dict(tal.report('changes_requested'), evidence='ordinary UUID-only public explanation',
+                           publication_format='private-review-v1', finding_count=999, source_label='native')
+                issued = (issue_review_origin(self.loop.storage, raw, bound, raw['session'], adapter)
+                          if adapter else raw)
+                projected = self.loop.public_state({'binding': bound, 'review': issued})
+                self.assertEqual(projected['review']['evidence'], raw['evidence'])
+                self.assertEqual(projected['review']['findings'], raw['findings'])
+                self.assertEqual(projected['review']['session'], session_fingerprint(raw['session']))
+                public = {'binding': bound, 'review': projected['review']}
+                ref = store_review(self.loop.storage, public, issued)
+                record = self.loop.storage / 'registry' / (ref + '.json'); original = record.read_bytes()
+                self.gh.comment(36, tal.al.pack(tal.al.STATE, dict(public, review_ref=ref, phase='reviewed')))
+                self.assertEqual(self.loop.load(36)[1]['review'], issued)
+                self.assertEqual(record.read_bytes(), original)
+        session = tal.report()['session']
+        raw = dict(tal.report(), evidence={session: 'first', session_fingerprint(session): 'second'})
+        comments = copy.deepcopy(self.gh.messages)
+        with self.assertRaisesRegex(ValueError, 'diagnostic key collision'):
+            self.loop.save(self.gh.pull, {'phase': 'reviewed', 'binding': bound, 'review': raw}, None)
+        self.assertEqual(self.gh.messages, comments)
+
+    def test_old_native_cache_is_explicit_recovery_without_reseal_or_pause_loss(self):
+        from handoff_registry import store_review
+        for identity in ('Native-Old-Reviewer', tal.report()['session']):
+            with self.subTest(identity=identity):
+                issued, bound = self.issued(identity=identity)
+                old_review = dict(issued, session=session_fingerprint(issued['session']), evidence='old native projection')
+                old_review.pop('private_identifiers')
+                public = {'binding': bound, 'review': old_review}
+                ref = store_review(self.loop.storage, public, issued)
+                old = dict(public, review_ref=ref, phase='blocked', paused=True, owner='previous-owner')
+                self.gh.comment(36, tal.al.pack(tal.al.STATE, old))
+                files = {p: p.read_bytes() for p in (self.loop.storage / 'registry').glob('*.json')}
+                comments = copy.deepcopy(self.gh.messages)
+                with self.assertRaisesRegex(ValueError, 'Unsupported old native publication.*owner recovery'):
+                    self.loop.load(36)
+                self.assertEqual(self.gh.messages, comments)
+                for path, before in files.items(): self.assertEqual(path.read_bytes(), before)
+                self.assertEqual(set(files), set((self.loop.storage / 'registry').glob('*.json')))
+                self.assertTrue(old['paused']); self.assertEqual(old['owner'], 'previous-owner')
+                self.loop.cleanup.assert_not_called(); self.assertEqual(self.gh.merges, 0)
+
+    def test_publication_rejects_missing_tampered_and_wrapped_native_origins(self):
+        from handoff_registry import store_review
+        for identity in ('Native-Reviewer', tal.report()['session']):
+            with self.subTest(identity=identity):
+                issued, bound = self.issued(identity=identity)
+                original_report = {k: v for k, v in issued.items() if k != 'origin_receipt'}
+                wrapped = {'kind': 'adapter-review-origin-v1', 'adapter': 'manual', 'session': issued['session'], 'report': original_report}
+                ref = store_review(self.loop.storage, {'binding': bound, 'review': original_report}, wrapped)
+                bads = [original_report, dict(issued, evidence='altered'), dict(issued, origin_receipt=ref),
+                        dict(issued, private_sessions=['native-session-sha256:' + 'a' * 64])]
+                comments = copy.deepcopy(self.gh.messages)
+                for bad in bads:
+                    state = {'phase': 'reviewed', 'binding': bound, 'review': bad}
+                    with self.assertRaises((ValueError, OSError)): self.loop.public_state(state)
+                    with self.assertRaises((ValueError, OSError)): self.loop.public_result(state)
+                    with self.assertRaises((ValueError, OSError)): self.loop.save(self.gh.pull, state, None)
+                with self.assertRaises(ValueError):
+                    self.loop.public_state({'phase': 'reviewed', 'binding': dict(bound, issue_hash='changed'), 'review': issued})
+                self.assertEqual(self.gh.messages, comments)
+        raw = tal.report()
+        issued = issue_review_origin(self.loop.storage, raw, bound, raw['session'], 'manual')
+        origin = json.loads((self.loop.storage / 'registry' / (issued['origin_receipt'] + '.json')).read_text())['review']
+        for contributors in ('invalid collection', [native_session('example.invalid', 'unverified-contributor')]):
+            ref = store_review(self.loop.storage, {'binding': bound, 'review': raw}, dict(origin, contributor_sessions=contributors))
+            with self.assertRaisesRegex(ValueError, 'publication provenance'):
+                self.loop.public_state({'phase': 'reviewed', 'binding': bound, 'review': dict(issued, origin_receipt=ref)})
+        issued, bound = self.issued(dict(tal.report(), evidence={19: 'invalid non-string diagnostic key'}))
+        comments = copy.deepcopy(self.gh.messages)
+        with self.assertRaises(ValueError):
+            self.loop.save(self.gh.pull, {'phase': 'reviewed', 'binding': bound, 'review': issued}, None)
+        self.assertEqual(self.gh.messages, comments)
+
+    def test_private_state_tampering_and_false_format_cannot_publish_or_resume(self):
+        from handoff_registry import store_review
+        issued, bound = self.issued()
+        self.loop.save(self.gh.pull, {'phase': 'reviewed', 'binding': bound, 'review': issued, 'paused': True,
+                                    'next': 'private reason'}, None)
+        public = tal.al.unpack(self.gh.comments(36), tal.al.STATE)[0]
+        record = self.loop.storage / 'registry' / (public['review_ref'] + '.json'); original = record.read_bytes()
+        changed = dict(public, paused=False)
+        self.gh.comment(36, tal.al.pack(tal.al.STATE, changed))
+        with self.assertRaises(ValueError): self.loop.load(36)
+        self.assertEqual(record.read_bytes(), original)
+        saved = json.loads(original)['review']; saved['state']['next'] = 'changed private reason'
+        ref = store_review(self.loop.storage, {k: v for k, v in public.items() if k != 'review_ref'}, saved)
+        self.gh.comment(36, tal.al.pack(tal.al.STATE, dict(public, review_ref=ref)))
+        with self.assertRaisesRegex(ValueError, 'projection mismatch'): self.loop.load(36)
+        legacy = {'binding': bound, 'review': tal.report(), 'phase': 'reviewed'}
+        fake = dict(public)
+        ref = store_review(self.loop.storage, {k: v for k, v in fake.items() if k != 'review_ref'},
+                           {'kind': 'private-review-v1', 'state': legacy})
+        with self.assertRaisesRegex(ValueError, 'verified native provenance'):
+            self.loop.public_result(dict(fake, review_ref=ref))
+        self.assertEqual(record.read_bytes(), original)
+        self.assertEqual(self.gh.merges, 0); self.loop.cleanup.assert_not_called()
+
+    def test_fixer_receives_raw_native_findings_and_review_reset_stays_private(self):
+        findings = ['Concrete private native finding']
+        calls = []
+        def worker(role, path, packet, output, **kwargs):
+            calls.append(role)
+            if role == 'review':
+                report, _ = self.issued(dict(tal.report('changes_requested'), findings=findings), bound=kwargs['origin_binding'])
+                return report
+            self.assertEqual(packet['findings'], findings)
+            raise RuntimeError('fixture stop after raw fixer intake')
+        self.loop.worker = worker
+        self.assertEqual(self.loop.tick(36)['phase'], 'reviewed')
+        public = tal.al.unpack(self.gh.comments(36), tal.al.STATE)[0]
+        self.assertNotIn('findings', public['review'])
+        self.assertEqual(public['review']['finding_count'], 1)
+        self.loop.tick(36)
+        self.assertEqual(calls, ['review', 'fix'])
+        self.assertNotIn(findings[0], json.dumps(self.gh.messages))
+        state = self.loop.load(36)[1]
+        self.loop.invalidate_acceptance(state)
+        state['next'] = findings[0]
+        self.loop.save(self.gh.pull, state, None)
+        public = tal.al.unpack(self.gh.comments(36), tal.al.STATE)[0]
+        self.assertEqual(public['review']['status'], 'pending')
+        self.assertNotIn('review', self.loop.load(36)[1])
+        self.assertNotIn(findings[0], json.dumps(public))
+        self.assertEqual(self.gh.merges, 0); self.loop.cleanup.assert_not_called()
+
+    def test_resume_and_gui_main_outputs_keep_raw_details_private(self):
+        import sys
+        for action in ('resume', 'gui'):
+            self.doCleanups(); self.setUp()
+            with self.subTest(action=action):
+                secret = 'Private-Native-Details-99'
+                issued, bound = self.issued(tal.report('blocked'))
+                gui = {'head': tal.HEAD, 'base': tal.BASE, 'artifact_sha256': 'e' * 64, 'processes_stopped': True,
+                       'run': secret, 'observer': secret, 'loaded_identity': secret, 'evidence_url': secret,
+                       'cases': [{'id': 'MV-001', 'status': 'pass', 'observation': secret}]}
+                self.loop.save(self.gh.pull, {'phase': 'blocked', 'binding': bound, 'review': issued,
+                                            'paused': True, 'gui': gui}, None)
+                args = ['agent_loop.py', action, '--pr', '36']
+                if action == 'resume': args += ['--reason', secret]
+                else:
+                    path = Path(self.tmp.name) / 'gui-evidence.json'; path.write_text(json.dumps(gui)); path.chmod(0o600)
+                    args += ['--evidence', str(path), '--lease-token', 'fixture-token']
+                lease = {'token': 'fixture-token', 'expired': False, 'issue': 35, 'head': tal.HEAD, 'owner': secret}
+                with patch.object(tal.al, 'Loop', return_value=self.loop), patch.object(tal.al, 'coordinator_lock'), \
+                        patch.object(tal.al, 'ROOT', self.checkout), patch.object(sys, 'argv', args), \
+                        patch('gui_lease.locked'), patch('gui_lease.transition', return_value=lease), patch('builtins.print') as printed:
+                    self.assertEqual(tal.al.main(), 0)
+                text = '\n'.join(str(call.args[0]) for call in printed.call_args_list)
+                self.assertNotIn(secret, text)
+                public = json.loads(printed.call_args_list[-1].args[0])
+                self.assertEqual(public['review']['publication_format'], 'private-review-v1')
+                restored = self.loop.load(36)[1]
+                self.assertEqual(restored['gui'], gui)
+                if action == 'resume':
+                    self.assertFalse(restored['paused']); self.assertNotIn('review', restored)
+                    self.assertEqual(restored['next'], secret)
+                    self.assertEqual(public['review']['status'], 'pending')
+                else:
+                    from agent_policy import gui_pass
+                    self.assertTrue(gui_pass(restored['gui'], bound))
+                self.assertNotIn(secret, json.dumps(self.gh.messages))
+
+    def test_direct_reconcile_and_main_print_publish_only_verified_envelope(self):
+        import sys
+        self.assertEqual(self.loop.tick(36)['phase'], 'reviewed')
+        self.gh.pull.update(merged=True, state='closed')
+        bound = self.loop.bound(self.gh.pull, self.gh.issues[35], self.gh.comments(36))[0]
+        secret = 'Private-Reconcile-Detail-99'
+        issued, _ = self.issued(dict(tal.report(), evidence=secret, feedback_hash=bound['feedback_hash']), bound=bound)
+        path = Path(self.tmp.name) / 'disposition.json'
+        path.write_text(json.dumps({'binding': bound, 'review': issued})); path.chmod(0o600)
+        original = path.read_bytes()
+        args = ['agent_loop.py', 'reconcile-feedback', '--pr', '36', '--review', str(path)]
+        with patch.object(tal.al, 'Loop', return_value=self.loop), patch.object(tal.al, 'coordinator_lock'), \
+                patch.object(tal.al, 'ROOT', self.checkout), patch.object(sys, 'argv', args), patch('builtins.print') as printed:
+            self.assertEqual(tal.al.main(), 0)
+        result = json.loads(printed.call_args_list[-1].args[0])
+        self.assertNotIn(secret, json.dumps(result)); self.assertNotIn('evidence', result['review'])
+        direct = self.loop.reconcile_feedback(self.gh.pull, {'binding': bound, 'review': issued})
+        self.assertNotIn(secret, json.dumps(direct)); self.assertNotIn('evidence', direct['review'])
+        self.assertEqual(self.loop.load(36)[1]['review'], issued)
+        self.assertEqual(path.read_bytes(), original)
+
+    def test_pending_provider_obligations_survive_native_envelope(self):
+        from agent_policy import next_action
+        self.loop.github_reviewer = 'native-reviewer'
+        self.gh.pull.update(requested_reviewers=[], requested_teams=[], created_at='2026-10-11T04:00:00Z')
+        requests = [{'method': 'codex-summary-v1', 'reviewer': None, 'not_before': None},
+                    {'method': 'github-review-v1', 'reviewer': 'native-reviewer', 'not_before': None}]
+        self.gh.comment(36, tal.al.pack(tal.al.STATE, {'phase': 'queued', 'review_requests': requests}))
+        with patch.object(tal.al, 'remote_review_complete', return_value=False):
+            bound = self.loop.bound(self.gh.pull, self.gh.issues[35], self.gh.comments(36))[0]
+        self.assertFalse(bound['remote_review_complete'])
+        issued, _ = self.issued(bound=bound)
+        self.loop.save(self.gh.pull, {'phase': 'reviewed', 'binding': bound, 'review': issued, 'review_requests': requests}, None)
+        public = tal.al.unpack(self.gh.comments(36), tal.al.STATE)[0]
+        self.assertEqual(public['binding'], bound)
+        self.assertEqual(public['review_requests'], requests)
+        restored = self.loop.load(36)[1]
+        self.assertEqual(next_action(restored, bound, 'success', False, storage=self.loop.storage), 'remote-review-wait')
+        self.assertEqual(restored['review'], issued)
+        self.assertEqual(self.gh.merges, 0)
+
+
+    def test_tick_and_main_result_hide_native_acceptance_reason(self):
+        import sys
+        issued, bound = self.issued()
+        self.loop.save(self.gh.pull, {'phase': 'reviewed', 'binding': bound, 'review': issued, 'expected_head': tal.HEAD}, None)
+        secret = 'Private-Acceptance-Reason-99'
+        self.loop.acceptance.return_value = {'allowed': False, 'reason': secret}
+        result = self.loop.tick(36)
+        self.assertEqual(result['phase'], 'acceptance-wait')
+        self.assertNotIn(secret, json.dumps(result))
+        self.assertEqual(self.loop.load(36)[1]['next'], secret)
+        args = ['agent_loop.py', 'tick', '--pr', '36']
+        with patch.object(tal.al, 'Loop', return_value=self.loop), patch.object(tal.al, 'coordinator_lock'), \
+                patch.object(tal.al, 'ROOT', self.checkout), patch.object(sys, 'argv', args), patch('builtins.print') as printed:
+            self.assertEqual(tal.al.main(), 0)
+        self.assertNotIn(secret, '\n'.join(str(call.args[0]) for call in printed.call_args_list))
+        self.assertNotIn(secret, json.dumps(self.gh.messages))
+        self.worker.assert_not_called(); self.assertEqual(self.gh.merges, 0)
+
+
+    def test_native_next_tracks_reachable_phase_pause_and_review_conditions(self):
+        from agent_policy import next_action
+        cases = [
+            ('ci-wait', 'approved', {}, 'wait-for-required-ci-checks'),
+            ('merging', 'approved', {}, 'confirm-github-merge-result'),
+            ('cleanup', 'approved', {}, 'verify-post-merge-review-and-recovery-before-issue-or-resource-changes'),
+            ('done', 'approved', {}, 'pm-confirm-issue-qa-project-and-roadmap-status'),
+            ('acceptance-wait', 'approved', {}, 'complete-required-acceptance'),
+            ('gui-queued', 'approved', {}, 'designated-operator-observe-required-gui-evidence'),
+            ('remote-review-wait', 'approved', {}, 'wait-for-current-head-review-completion'),
+            ('syncing', None, {}, 'merge-current-base-then-publish'),
+            ('publishing', None, {}, 'validate-and-publish-issue-branch'),
+            ('reviewing', None, {}, 'complete-independent-read-only-review'),
+            ('remote-review-wait', None, {}, 'wait-for-current-head-review-completion'),
+            ('queued', None, {}, 'review'), ('reviewed', None, {}, 'review'),
+            ('ci-wait', None, {}, 'review'), ('done', None, {}, 'review'),
+            ('cleanup', None, {}, 'verify-post-merge-review-and-recovery-before-issue-or-resource-changes'),
+            ('cleanup', None, {'paused': True}, 'owner-resume-required'),
+            ('fixing', 'changes_requested', {'fixes': 1}, 'apply-bounded-private-review-findings'),
+            ('reviewed', 'changes_requested', {'fixes': 1}, 'fix'),
+            ('reviewed', 'changes_requested', {'fixes': 3}, 'owner-recovery'),
+            ('reviewed', 'blocked', {}, 'owner-recovery'),
+            ('blocked', 'blocked', {}, 'owner-recovery'),
+            ('ci-failed', 'approved', {}, 'inspect-ci-failure-and-recover'),
+            ('ci-failed', 'approved', {'paused': True}, 'owner-resume-required'),
+            ('reviewed', 'blocked', {'paused': True}, 'owner-resume-required'),
+            ('reviewing', None, {'paused': True}, 'owner-resume-required'),
+            ('fixing', 'changes_requested', {'errors': 1, 'retry_at': 1234}, 'check-scheduled-retry-and-private-diagnostic'),
+            ('merging', 'approved', {'errors': 1, 'retry_at': 1234}, 'confirm-github-merge-result'),
+            ('cleanup', 'approved', {'issue_complete': False}, 'verify-post-merge-review-and-recovery-before-issue-or-resource-changes'),
+            ('done', 'approved', {'issue_complete': False}, 'pm-confirm-issue-qa-project-and-roadmap-status'),
+            ('reviewed', 'approved', {'pending_provider': True}, 'wait-for-current-head-review-completion'),
+            ('reviewed', 'approved', {}, 'reconcile-acceptance-and-review-obligations'),
+        ]
+        for phase, verdict, fields, expected in cases:
+            with self.subTest(phase=phase, verdict=verdict, fields=fields):
+                bound = self.loop.bound(self.gh.pull, self.gh.issues[35], self.gh.comments(36))[0]
+                if fields.get('pending_provider'): bound = dict(bound, remote_review_complete=False)
+                self.gh.pull.update(merged=phase in ('cleanup', 'done'), state='closed' if phase in ('cleanup', 'done') else 'open')
+                self.gh.issues[35]['state'] = 'closed' if phase == 'done' and fields.get('issue_complete', True) else 'open'
+                raw = tal.report(verdict or 'approved')
+                if 'issue_complete' in fields: raw['issue_complete'] = fields['issue_complete']
+                if phase == 'gui-queued': raw['gui_required'] = True
+                identity = tal.report()['session'] if phase == 'ci-wait' and verdict == 'approved' else 'Actual-Native-Reviewer'
+                issued, _ = self.issued(raw, identity=identity, bound=bound)
+                receipt = self.loop.storage / 'registry' / (issued['origin_receipt'] + '.json'); original = receipt.read_bytes()
+                state = {'phase': 'reviewed', 'binding': bound, 'review': issued, 'next': 'private detailed next action'}
+                sid = self.loop.save(self.gh.pull, state, None)
+                state = self.loop.load(36)[1]
+                state.update(phase=phase, **{k: v for k, v in fields.items() if k not in ('pending_provider', 'issue_complete')})
+                if phase in ('merging', 'cleanup', 'done'):
+                    state['acceptance'] = {'allowed': True, 'mode': 'tooling', 'head': bound['head'], 'base': bound['base']}
+                if phase == 'done': state['merge_sha'] = self.gh.pull['merge_commit_sha']
+                if verdict is None: self.loop.invalidate_acceptance(state)
+                if phase == 'gui-queued':
+                    self.assertEqual(next_action(state, bound, 'success', True, storage=self.loop.storage), 'gui-queued')
+                if phase == 'reviewed' and verdict == 'changes_requested':
+                    self.assertEqual(next_action(state, bound, 'success', False, storage=self.loop.storage),
+                                     'blocked' if fields['fixes'] == 3 else 'fix')
+                self.loop.save(self.gh.pull, state, sid)
+                public = tal.al.unpack(self.gh.comments(36), tal.al.STATE)[0]
+                self.assertEqual(public['next'], expected)
+                self.assertEqual(public['phase'], phase)
+                if verdict is None:
+                    self.assertEqual(public['review']['status'], 'pending')
+                    self.assertIsNone(public['review']['finding_count'])
+                progress = [c['body'] for c in self.gh.comments(35) if c['body'].startswith('<!-- agent-loop-progress:')][-1]
+                self.assertIn('Next: ' + expected, progress)
+                restored = self.loop.load(36)[1]
+                self.assertEqual(restored['next'], 'private detailed next action')
+                self.assertEqual(restored.get('review'), issued if verdict else None)
+                self.assertEqual(self.loop.public_result(restored)['next'], expected)
+                self.assertEqual(self.loop.public_result(public)['next'], expected)
+                self.assertNotIn('private detailed next action', json.dumps(public))
+                self.assertEqual(receipt.read_bytes(), original)
+                if fields.get('retry_at'):
+                    with patch.object(tal.al.time, 'time', return_value=0): early = self.loop.public_state(restored)
+                    with patch.object(tal.al.time, 'time', return_value=9999999999): late = self.loop.public_state(restored)
+                    self.assertEqual(early, late)
+        legacy = {'phase': 'ci-wait', 'binding': bound, 'review': tal.report(), 'next': 'Ordinary UUID public action'}
+        self.assertEqual(self.loop.public_state(legacy)['next'], legacy['next'])
+
+    def test_merged_develop_reconcile_acceptance_refusal_keeps_pending_cleanup_checkpoint(self):
+        self.gh.pull['base']['ref'] = 'develop'
+        h, hid = tal.al.unpack(self.gh.comments(36), tal.al.HANDOFF)
+        h['target'] = 'develop'
+        self.gh.comment(36, tal.al.pack(tal.al.HANDOFF, h), hid)
+        issued, bound = self.issued()
+        self.loop.save(self.gh.pull, {'phase': 'reviewed', 'binding': bound, 'review': issued,
+                                   'expected_head': tal.HEAD}, None)
+        self.gh.merge(self.gh.pr(36))
+        secret = 'Private current merged acceptance refusal'
+        self.loop.acceptance.return_value = {'allowed': False, 'mode': 'develop', 'reason': secret}
+        self.assertEqual(self.loop.tick(36)['phase'], 'cleanup')
+        previous = self.loop.load(36)[1]
+        retained = copy.deepcopy(previous['private_publication'])
+        self.gh.comment(36, 'New post-merge feedback requiring independent disposition')
+        fresh_bound = self.loop.bound(self.gh.pr(36), self.gh.issue(35), self.gh.comments(36))[0]
+        fresh, _ = self.issued(dict(tal.report(), feedback_hash=fresh_bound['feedback_hash']),
+                               identity='Actual-Feedback-Reviewer', bound=fresh_bound)
+        originals = {p: p.read_bytes() for folder in ('registry', 'diagnostics')
+                     for p in (self.loop.storage / folder).iterdir() if p.is_file()}
+        with patch.object(self.gh, 'api', wraps=self.gh.api) as mutation, \
+                patch.object(self.loop, 'merged_acceptance', wraps=self.loop.merged_acceptance) as merged:
+            with self.assertRaisesRegex(ValueError, secret):
+                self.loop.reconcile_feedback(self.gh.pr(36), {'binding': fresh_bound, 'review': fresh})
+        merged.assert_called_once()
+        self.loop.acceptance.assert_called_with(self.gh.pr(36), self.checkout)
+        self.assertEqual(self.gh.statuses[-1][1], 'pending')
+        mutation.assert_not_called(); self.loop.cleanup.assert_not_called(); self.worker.assert_not_called()
+        self.assertEqual(self.gh.issues[35]['state'], 'open'); self.assertEqual(self.gh.development_links, [])
+        public = tal.al.unpack(self.gh.comments(36), tal.al.STATE)[0]
+        progress = [c['body'] for c in self.gh.comments(35) if c['body'].startswith('<!-- agent-loop-progress:')][-1]
+        restored = self.loop.load(36)[1]
+        self.assertEqual(restored['phase'], 'cleanup')
+        for key in ('review', 'binding', 'acceptance'): self.assertNotIn(key, restored)
+        self.assertEqual(restored['private_publication'], retained)
+        self.assertEqual(restored['next'], previous['next'])
+        self.assertTrue(self.loop.publication_privacy(restored)[2])
+        self.assertEqual(public['binding'], {})
+        self.assertEqual(public['review']['status'], 'pending'); self.assertIsNone(public['review']['finding_count'])
+        self.assertNotIn('verdict', public['review']); self.assertNotIn('private_publication', public)
+        private = restore_review(self.loop.storage, public['review_ref'], {k: v for k, v in public.items() if k != 'review_ref'})
+        self.assertEqual(private['state'], {k: v for k, v in restored.items() if k != 'review_ref'})
+        originals.update({p: p.read_bytes() for p in (self.loop.storage / 'registry').glob('*.json')})
+        self.loop.save(self.gh.pull, restored, self.loop.load(36)[2])
+        again = self.loop.load(36)[1]
+        self.assertEqual({k: v for k, v in again.items() if k not in ('updated_at', 'review_ref')},
+                         {k: v for k, v in restored.items() if k not in ('updated_at', 'review_ref')})
+        with patch.object(tal.al.time, 'time', side_effect=AssertionError('projection read clock')), \
+                patch.object(self.loop, 'bound', side_effect=AssertionError('projection rechecked live policy')):
+            raw_result = self.loop.public_result(again)
+            public_result = self.loop.public_result(public)
+            paused = self.loop.public_state(dict(again, paused=True))
+        self.assertEqual(paused['next'], 'owner-resume-required')
+        args = ['agent_loop.py', 'tick', '--pr', '36']
+        with patch.object(tal.al, 'Loop', return_value=self.loop), patch.object(tal.al, 'coordinator_lock'), \
+                patch.object(tal.al, 'ROOT', self.checkout), patch.object(sys, 'argv', args), \
+                patch.object(self.gh, 'api', wraps=self.gh.api) as mutation, patch('builtins.print') as printed:
+            self.assertEqual(tal.al.main(), 0)
+        output = json.loads(printed.call_args_list[-1].args[0])[0]
+        self.assertEqual(output['phase'], 'cleanup'); self.assertIn('private diagnostic', output['error'])
+        self.assertNotIn(secret, json.dumps(output)); self.assertNotIn(secret, json.dumps(self.gh.messages))
+        mutation.assert_not_called(); self.loop.cleanup.assert_not_called(); self.worker.assert_not_called()
+        after_tick = self.loop.load(36)[1]
+        self.assertNotIn('review', after_tick); self.assertNotIn('binding', after_tick)
+        self.assertEqual(after_tick['private_publication'], retained)
+        current_public = tal.al.unpack(self.gh.comments(36), tal.al.STATE)[0]
+        self.assertEqual(current_public['review']['status'], 'pending'); self.assertIsNone(current_public['review']['finding_count'])
+        for path, original in originals.items(): self.assertEqual(path.read_bytes(), original)
+        expected = 'verify-post-merge-review-and-recovery-before-issue-or-resource-changes'
+        self.assertEqual(public['next'], expected)
+        self.assertIn('Next: ' + expected, progress)
+        self.assertEqual(raw_result['next'], expected); self.assertEqual(public_result['next'], expected)
+        self.assertEqual(current_public['next'], expected)
+
+    def assert_post_merge_recovery_checkpoint(self, failure):
+        self.loop.github_reviewer = 'native-reviewer'
+        self.gh.pull.update(requested_reviewers=[], requested_teams=[], created_at='2026-10-11T04:00:00Z')
+        provider = {'id': 51, 'user': {'login': 'native-reviewer'}, 'state': 'APPROVED',
+                    'commit_id': tal.HEAD, 'submitted_at': '2026-10-11T04:46:46Z',
+                    'pull_request_url': f'https://api.github.com/repos/{tal.al.REPO}/pulls/36', 'body': 'Prior review'}
+        self.gh.pages = Mock(side_effect=lambda path: [copy.deepcopy(provider)] if '/reviews?' in path else [])
+        issued, bound = self.issued()
+        self.assertTrue(bound['remote_review_complete'])
+        self.loop.save(self.gh.pull, {'phase': 'merging', 'binding': bound, 'review': issued,
+                                   'expected_head': tal.HEAD}, None)
+        self.gh.merge(self.gh.pr(36))
+        save = self.loop.save
+        if failure == 'pending-request':
+            self.gh.pull['requested_reviewers'] = [{'login': 'native-reviewer'}]
+        elif failure == 'changed-feedback':
+            self.gh.pull['requested_reviewers'] = [{'login': 'native-reviewer'}]
+            self.assertFalse(self.loop.bound(self.gh.pr(36), self.gh.issue(35), self.gh.comments(36))[0]['remote_review_complete'])
+            self.gh.pull['requested_reviewers'] = []
+            provider.update(id=52, body='New feedback after provider completion', submitted_at='2026-10-11T04:50:00Z')
+        elif failure == 'late-guard':
+            def change_after_save(pr, state, sid):
+                result = save(pr, state, sid)
+                self.gh.comment(36, 'Feedback changed during handoff')
+                return result
+            self.loop.save = Mock(side_effect=change_after_save)
+        else:
+            self.loop.retained_history = Mock(side_effect=ValueError('Unrelated retained-history failure'))
+        fresh = self.loop.bound(self.gh.pr(36), self.gh.issue(35), self.gh.comments(36))[0]
+        self.assertEqual(fresh['remote_review_complete'], failure != 'pending-request')
+        if failure in ('pending-request', 'changed-feedback'): self.assertNotEqual(fresh, bound)
+        with patch.object(self.gh, 'api', wraps=self.gh.api) as mutation:
+            result = self.loop.tick(36)
+        self.assertEqual(result['phase'], 'cleanup')
+        mutation.assert_not_called(); self.loop.cleanup.assert_not_called(); self.worker.assert_not_called()
+        self.assertEqual(self.gh.issues[35]['state'], 'open')
+        self.assertEqual(self.gh.development_links, [])
+        self.loop.save = save
+        public = tal.al.unpack(self.gh.comments(36), tal.al.STATE)[0]
+        progress = [c['body'] for c in self.gh.comments(35) if c['body'].startswith('<!-- agent-loop-progress:')][-1]
+        restored = self.loop.load(36)[1]
+        self.assertEqual(restored['review'], issued)
+        self.assertEqual(restored['binding'], bound)
+        self.assertTrue(restored['binding']['remote_review_complete'])
+        self.assertEqual(restored['next'], result['error'])
+        diagnostic = self.loop.storage / 'diagnostics' / (restored['next'].split()[-1] + '.txt')
+        detail = diagnostic.read_text()
+        expected_detail = {'pending-request': 'after merge', 'changed-feedback': 'after merge',
+                           'late-guard': 'during handoff', 'unrelated': 'Unrelated retained-history failure'}[failure]
+        self.assertIn(expected_detail, detail)
+        originals = {p: p.read_bytes() for p in (self.loop.storage / 'registry').glob('*.json')}
+        originals[diagnostic] = diagnostic.read_bytes()
+        private = restore_review(self.loop.storage, public['review_ref'], {k: v for k, v in public.items() if k != 'review_ref'})
+        self.assertEqual(private['kind'], 'private-review-v1')
+        self.assertEqual(private['state'], {k: v for k, v in restored.items() if k != 'review_ref'})
+        self.loop.save(self.gh.pull, restored, self.loop.load(36)[2])
+        again = self.loop.load(36)[1]
+        self.assertEqual(again['review'], issued); self.assertEqual(again['binding'], bound)
+        self.assertEqual(again['next'], result['error'])
+        for path, original in originals.items(): self.assertEqual(path.read_bytes(), original)
+        with patch.object(tal.al.time, 'time', side_effect=AssertionError('projection read clock')), \
+                patch.object(self.loop, 'bound', side_effect=AssertionError('projection rechecked live policy')):
+            projected = self.loop.public_result(again)
+        self.assertNotIn(detail, json.dumps(public))
+        expected = 'verify-post-merge-review-and-recovery-before-issue-or-resource-changes'
+        self.assertEqual(public['next'], expected)
+        self.assertIn('Next: ' + expected, progress)
+        self.assertEqual(projected['next'], expected)
+        self.assertEqual(self.loop.public_result(public)['next'], expected)
+
+    def test_native_post_merge_pending_request_checks_review_before_cleanup(self):
+        self.assert_post_merge_recovery_checkpoint('pending-request')
+
+    def test_native_post_merge_completed_provider_changed_feedback_checks_recovery(self):
+        self.assert_post_merge_recovery_checkpoint('changed-feedback')
+
+    def test_native_post_merge_late_guard_checks_recovery_before_closure(self):
+        self.assert_post_merge_recovery_checkpoint('late-guard')
+
+    def test_native_post_merge_unrelated_failure_checks_diagnostic_without_inventing_pending(self):
+        self.assert_post_merge_recovery_checkpoint('unrelated')
+
+    def test_native_next_outward_ci_merge_issue_cleanup_and_done_are_separate(self):
+        import sys
+        issued, bound = self.issued()
+        receipt = self.loop.storage / 'registry' / (issued['origin_receipt'] + '.json'); original = receipt.read_bytes()
+        self.loop.save(self.gh.pull, {'phase': 'reviewed', 'binding': bound, 'review': issued, 'expected_head': tal.HEAD}, None)
+        self.gh.ci = Mock(return_value='pending')
+        result = self.loop.tick(36)
+        self.assertEqual(result['phase'], 'ci-wait')
+        self.assertEqual(result['next'], 'wait-for-required-ci-checks')
+        args = ['agent_loop.py', 'tick', '--pr', '36']
+        with patch.object(tal.al, 'Loop', return_value=self.loop), patch.object(tal.al, 'coordinator_lock'), \
+                patch.object(tal.al, 'ROOT', self.checkout), patch.object(sys, 'argv', args), patch('builtins.print') as printed:
+            self.assertEqual(tal.al.main(), 0)
+        self.assertEqual(json.loads(printed.call_args_list[-1].args[0])[0]['next'], 'wait-for-required-ci-checks')
+        self.gh.ci.return_value = 'success'
+        save = self.loop.save
+        observed = []
+        def capture(pr, state, sid):
+            result = save(pr, state, sid)
+            public = tal.al.unpack(self.gh.comments(36), tal.al.STATE)[0]
+            observed.append((public['phase'], public['next'], self.gh.pull['merged'], self.gh.issues[35]['state'], self.loop.cleanup.call_count))
+            return result
+        with patch.object(self.loop, 'save', side_effect=capture):
+            self.assertEqual(self.loop.tick(36)['phase'], 'done')
+        self.assertIn(('merging', 'confirm-github-merge-result', False, 'open', 0), observed)
+        self.assertIn(('cleanup', 'verify-post-merge-review-and-recovery-before-issue-or-resource-changes', True, 'open', 0), observed)
+        self.assertIn(('done', 'pm-confirm-issue-qa-project-and-roadmap-status', True, 'closed', 1), observed)
+        self.assertEqual(self.loop.load(36)[1]['review'], issued)
+        self.assertEqual(receipt.read_bytes(), original)
+        self.worker.assert_not_called(); self.loop.cleanup.assert_called_once()
+
+
 class PrivacyTests(unittest.TestCase):
     setUp = tal.LoopTests.setUp
+
+    def test_native_reports_require_actual_origin_at_shared_consumers(self):
+        from agent_policy import next_action
+        from handoff_registry import review_privacy, store_review
+        bound = self.loop.bound(self.gh.pull, self.gh.issues[35], self.gh.comments(36))[0]
+        claimed = dict(tal.report(), session=native_session('example.invalid', 'Invented-Reviewer'))
+        for verdict in ('approved', 'changes_requested', 'blocked'):
+            report = dict(claimed, verdict=verdict, findings=['Concrete finding'] if verdict == 'changes_requested' else [])
+            with self.subTest(verdict=verdict), self.assertRaises(ValueError):
+                validate_review(report, bound, storage=self.loop.storage)
+            with self.assertRaises(ValueError):
+                next_action({'binding': bound, 'review': report}, bound, 'success', False, storage=self.loop.storage)
+        with self.assertRaises(ValueError): review_privacy(self.loop.storage, claimed, bound)
+        comments = copy.deepcopy(self.gh.messages)
+        with self.assertRaises(ValueError):
+            self.loop.save(self.gh.pull, {'binding': bound, 'review': claimed, 'phase': 'reviewed'}, None)
+        self.assertEqual(self.gh.messages, comments)
+        for kind in ('manual', 'cli'):
+            with self.assertRaises(ValueError): issue_review_origin(self.loop.storage, claimed, bound, claimed['session'], kind)
+        with self.assertRaises(ValueError): self.loop.public_state({'binding': bound, 'review': claimed})
+        public = self.loop._legacy_public_state({'binding': bound, 'review': claimed})
+        cache = store_review(self.loop.storage, public, claimed)
+        path = self.loop.storage / 'registry' / (cache + '.json'); original = path.read_bytes()
+        self.gh.comment(36, tal.al.pack(tal.al.STATE, dict(public, review_ref=cache)))
+        with self.assertRaises(ValueError): self.loop.load(36)
+        self.assertEqual(path.read_bytes(), original)
+        self.gh.messages = comments
+        self.gh.comment(36, tal.al.pack(tal.al.STATE, {'binding': bound, 'review': claimed}))
+        with self.assertRaises(ValueError): self.loop.load(36)
+        self.gh.messages = comments
+        raw = tal.report(); raw.pop('session')
+        observed = {'session_id': 'Actual-Reviewer', 'source': 'native://host/review', 'operation_id': 'origin-operation',
+                    'report_sha256': digest(raw), 'binding_sha256': digest(bound)}
+        issued = bind_native_review(raw, bound, self.loop.storage, issuer='example.invalid', observe_origin=Mock(return_value=observed))
+        with self.assertRaises(ValueError): validate_review(issued, bound)
+        validate_review(issued, bound, storage=self.loop.storage)
+        with self.assertRaises(ValueError): validate_review(issued, dict(bound, issue_hash='changed'), storage=self.loop.storage)
+        record = self.loop.storage / 'registry' / (issued['origin_receipt'] + '.json'); original = record.read_bytes()
+        held = record.with_suffix('.held')
+        record.rename(held)
+        try:
+            with self.assertRaises(OSError): validate_review(issued, bound, storage=self.loop.storage)
+        finally:
+            held.rename(record)
+        sid = self.loop.save(self.gh.pull, {'binding': bound, 'review': issued, 'phase': 'reviewed'}, None)
+        restored = self.loop.load(36)[1]
+        self.assertEqual(restored['review'], issued)
+        self.loop.save(self.gh.pull, restored, sid)
+        self.assertEqual(record.read_bytes(), original)
+        validate_review(tal.report(), bound)  # Ordinary legacy UUID reports retain their existing contract.
+        for report in (issued, tal.report()):
+            self.assertEqual(next_action({'binding': bound, 'review': report}, bound, 'success', False,
+                             {'allowed': False, 'repair_revision': 'e' * 64}, self.loop.storage), 'acceptance-wait')
+
+
+    def test_native_uuid_receipt_still_verifies_observation_and_legacy_manual_remains_valid(self):
+        from handoff_registry import store_review
+        bound = self.loop.bound(self.gh.pull, self.gh.issues[35], self.gh.comments(36))[0]
+        raw = tal.report(); identity = raw.pop('session')
+        observed = {'session_id': identity, 'source': 'native://host/uuid-record', 'operation_id': 'uuid-operation',
+                    'report_sha256': digest(raw), 'binding_sha256': digest(bound)}
+        issued = bind_native_review(raw, bound, self.loop.storage, issuer='example.invalid', observe_origin=Mock(return_value=observed))
+        self.assertEqual(issued['session'], identity)
+        validate_review(issued, bound, storage=self.loop.storage)
+        path = self.loop.storage / 'registry' / (issued['origin_receipt'] + '.json'); original = path.read_bytes()
+        receipt = json.loads(original)['review']
+        receipt['native_origin']['observation']['binding_sha256'] = '0' * 64
+        report = {k: v for k, v in issued.items() if k != 'origin_receipt'}
+        ref = store_review(self.loop.storage, {'binding': bound, 'review': report}, receipt)
+        tampered = dict(issued, origin_receipt=ref)
+        with self.assertRaises(ValueError): verify_review_origin(self.loop.storage, tampered, bound)
+        with self.assertRaises(ValueError): validate_review(tampered, bound, storage=self.loop.storage)
+        self.assertEqual(path.read_bytes(), original)
+        for adapter in ('manual', 'cli'):
+            legacy = issue_review_origin(self.loop.storage, dict(raw, session=identity), bound, identity, adapter)
+            validate_review(legacy, bound, storage=self.loop.storage)
+            verify_review_origin(self.loop.storage, legacy, bound)
+
+
+    def test_submitted_private_sessions_cannot_exempt_private_operation_on_roundtrip(self):
+        from agent_worker import bind_report_session
+        operation = 'a' * 64
+        claimed = 'native-session-sha256:' + operation
+        for metadata in (None, [claimed], [native_session('example.invalid', 'unverified contributor')]):
+            with self.subTest(metadata=metadata):
+                bound = self.loop.bound(self.gh.pull, self.gh.issues[35], self.gh.comments(36))[0]
+                raw = dict(tal.report(), evidence='Operation: ' + claimed); raw.pop('session')
+                if metadata is not None:
+                    raw['private_sessions'] = metadata
+                original = copy.deepcopy(raw)
+                observed = {'session_id': 'Actual-Session-99', 'source': 'native://host/private-record',
+                            'operation_id': operation, 'report_sha256': digest(raw), 'binding_sha256': digest(bound)}
+                issued = bind_native_review(raw, bound, self.loop.storage, issuer='example.invalid',
+                                            observe_origin=Mock(return_value=observed))
+                actual = session_fingerprint(issued['session'])
+                self.assertNotEqual(actual, claimed)
+                self.assertNotIn('private_sessions', issued)
+                validate_review(issued, bound, storage=self.loop.storage)
+                receipt = self.loop.storage / 'registry' / (issued['origin_receipt'] + '.json')
+                receipt_bytes = receipt.read_bytes()
+                self.assertEqual(json.loads(receipt_bytes)['review']['native_origin']['submitted_report'], original)
+                state = {'phase': 'reviewed', 'binding': bound, 'review': issued}
+                sid = self.loop.save(self.gh.pull, state, None)
+                public = tal.al.unpack(self.gh.comments(36), tal.al.STATE)[0]
+                self.assertNotIn('evidence', public['review'])
+                self.assertEqual(public['review']['session'], actual)
+                restored = self.loop.load(36)[1]
+                self.assertEqual(restored['review'], issued)
+                validate_review(restored['review'], bound, storage=self.loop.storage)
+                verify_review_origin(self.loop.storage, restored['review'], bound)
+                self.loop.save(self.gh.pull, restored, sid)
+                self.assertEqual(self.loop.load(36)[1]['review'], issued)
+                self.assertEqual(receipt.read_bytes(), receipt_bytes)
+                self.assertEqual(raw, original)
+                # Legacy file/CLI intake also cannot turn extra fields into provenance.
+                legacy = bind_report_session(raw, tal.report()['session'])
+                self.assertNotIn('private_sessions', legacy)
+                if metadata is not None:
+                    submitted = dict(raw, session=tal.report()['session'])
+                    manual = issue_review_origin(self.loop.storage, submitted, bound, submitted['session'], 'manual')
+                    self.assertNotIn('private_sessions', manual)
+                    record = self.loop.storage / 'registry' / (manual['origin_receipt'] + '.json')
+                    self.assertEqual(json.loads(record.read_bytes())['review']['submitted_report'], submitted)
+                    verify_review_origin(self.loop.storage, manual, bound)
+
+
+    def test_verified_contributors_and_legacy_bundle_survive_public_resume(self):
+        from handoff_registry import store_review
+        fixture = EvidenceTests(); fixture.setUp(); self.addCleanup(fixture.doCleanups)
+        contributor = native_session('example.invalid', 'session')
+        fixture.sessions[1] = contributor
+        fixture.bundle['origins'][1]['session'] = contributor
+        fixture.items[1]['session'] = session_fingerprint(contributor)
+        fixture.seal()
+        bound = self.loop.bound(self.gh.pull, self.gh.issues[35], self.gh.comments(36))[0]
+        raw = dict(tal.report(), repair_revision='e' * 64, repair_assessment='Synthetic original evidence assessment',
+                   evidence=' '.join(fixture.sessions)); raw.pop('session')
+        def observe(submitted, binding):
+            return {'session_id': 'Actual-Reviewer', 'source': 'native://host/review', 'operation_id': '1',
+                    'report_sha256': digest(submitted), 'binding_sha256': digest(binding)}
+        issued = bind_native_review(raw, bound, self.loop.storage, issuer='example.invalid', observe_origin=observe,
+                                    acceptance=fixture.accepted, repair_evidence=fixture.path)
+        accepted = dict(fixture.accepted, repair_observers=list(map(session_fingerprint, fixture.sessions)),
+                        repair_evidence_sha256=issued['repair_evidence_sha256'])
+        original_path = self.loop.storage / 'registry' / (issued['origin_receipt'] + '.json')
+        original_bytes = original_path.read_bytes()
+        # Construct a separate old-format fixture; never rewrite the sealed current receipt.
+        legacy = json.loads(original_bytes)['review']; legacy.pop('contributor_sessions', None)
+        unbound = {k: v for k, v in issued.items() if k != 'origin_receipt'}
+        legacy_ref = store_review(self.loop.storage, {'binding': bound, 'review': unbound}, legacy,
+                                  verify_review_origin(self.loop.storage, issued, bound))
+        for report in (issued, dict(unbound, origin_receipt=legacy_ref)):
+            with self.subTest(receipt=report['origin_receipt']):
+                path = self.loop.storage / 'registry' / (report['origin_receipt'] + '.json')
+                before = path.read_bytes()
+                state = {'phase': 'reviewed', 'binding': bound, 'review': report, 'acceptance': accepted}
+                self.loop.save(self.gh.pull, state, None)
+                public = tal.al.unpack(self.gh.comments(36), tal.al.STATE)[0]
+                self.assertNotIn('evidence', public['review'])
+                self.assertEqual(public['review']['session'], session_fingerprint(issued['session']))
+                restored = self.loop.load(36)[1]
+                self.assertEqual(restored['review'], report)
+                validate_review(restored['review'], bound, restored['acceptance'], self.loop.storage)
+                self.assertEqual(path.read_bytes(), before)
+        self.assertEqual(original_path.read_bytes(), original_bytes)
+        claimed = dict(unbound, private_sessions=['native-session-sha256:' + 'a' * 64])
+        unsupported = dict(legacy, report=claimed)
+        ref = store_review(self.loop.storage, {'binding': bound, 'review': claimed}, unsupported,
+                           verify_review_origin(self.loop.storage, issued, bound))
+        before = copy.deepcopy(self.gh.messages)
+        with self.assertRaisesRegex(ValueError, 'adapter-verified identities'):
+            self.loop.save(self.gh.pull, {'phase': 'reviewed', 'binding': bound,
+                           'review': dict(claimed, origin_receipt=ref)}, None)
+        self.assertEqual(self.gh.messages, before)
+
+
+    def test_non_string_diagnostic_keys_fail_before_public_write(self):
+        bound = self.loop.bound(self.gh.pull, self.gh.issues[35], self.gh.comments(36))[0]
+        raw = dict(tal.report(), evidence={19: 'unsupported Python mapping key'})
+        comments = copy.deepcopy(self.gh.messages)
+        with self.assertRaisesRegex(ValueError, 'diagnostic keys must be strings'):
+            self.loop.save(self.gh.pull, {'phase': 'reviewed', 'binding': bound, 'review': raw}, None)
+        self.assertEqual(self.gh.messages, comments)
+
+
+    def test_native_source_locator_is_not_a_verified_filesystem_path(self):
+        from handoff_registry import store_review
+        from urllib.parse import quote
+        fixture = EvidenceTests(); fixture.setUp(); self.addCleanup(fixture.doCleanups)
+        fixture.bundle['certificate_revision'] = fixture.bundle.pop('repair_revision'); fixture.seal()
+        accepted = {'allowed': True, 'mode': 'tooling', 'certificate_revision': 'e' * 64,
+                    'certificate_provenance': {'sample': fixture.observed},
+                    'certificate_observers': list(map(session_fingerprint, fixture.sessions))}
+        expected_paths = {str(p) for p in (fixture.path, fixture.path.resolve(), fixture.receipt, fixture.receipt.resolve())}
+        for source in ('/', '/a', '/v', '/scope/record', str(fixture.receipt)):
+            with self.subTest(source=source):
+                ordinary = {'/alpha': 'https://public.invalid/guide', '/beta': 'https://public.invalid/view',
+                            'root': 'https://public.invalid/', 'about': 'https://public.invalid/about',
+                            'longer': '/value name/path'}
+                raw = dict(tal.report(), certificate_revision='e' * 64, certificate_assessment='Synthetic complete assessment',
+                           evidence={'ordinary': ordinary, 'source-token': f'Source [{source}]',
+                                     'source-link': 'https://public.invalid/?locator=' + quote(source, safe=''),
+                                     'file': f'Original {fixture.receipt}',
+                                     'file-link': '[receipt](file://' + quote(str(fixture.receipt), safe='/').replace('receipt', '%72eceipt') + ')'})
+                raw.pop('session')
+                if source == '/scope/record':
+                    raw['evidence']['source-child'] = 'Source /scope/record/child'
+                bound = self.loop.bound(self.gh.pull, self.gh.issues[35], self.gh.comments(36))[0]
+                def observe(submitted, binding):
+                    return {'session_id': 'Actual-Reviewer', 'source': source, 'operation_id': 'operation-source',
+                            'report_sha256': digest(submitted), 'binding_sha256': digest(binding)}
+                issued = bind_native_review(raw, bound, self.loop.storage, issuer='example.invalid',
+                                            observe_origin=observe, acceptance=accepted, repair_evidence=fixture.path)
+                record = self.loop.storage / 'registry' / (issued['origin_receipt'] + '.json')
+                original = record.read_bytes()
+                paths = json.loads(original)['private_paths']
+                self.assertEqual(set(paths), expected_paths)
+                self.assertEqual(len(paths), len(expected_paths))
+                sid = self.loop.save(self.gh.pull, {'phase': 'reviewed', 'binding': bound, 'review': issued}, None)
+                published = tal.al.unpack(self.gh.comments(36), tal.al.STATE)[0]['review']
+                self.assertNotIn('evidence', published)
+                public = self.loop.load(36)[1]['review']['evidence']
+                self.assertEqual(public['ordinary'], ordinary)
+                self.assertEqual(public, issued['evidence'])
+                restored = self.loop.load(36)[1]
+                self.assertEqual(restored['review'], issued)
+                verify_review_origin(self.loop.storage, restored['review'], bound)
+                self.loop.save(self.gh.pull, restored, sid)
+                self.assertEqual(record.read_bytes(), original)
+                if source in ('/', str(fixture.receipt)):
+                    receipt = json.loads(original)['review']
+                    legacy_paths = [*paths, source]
+                    legacy = issue_review_origin(self.loop.storage, {k: v for k, v in issued.items() if k != 'origin_receipt'},
+                        bound, issued['session'], 'native', legacy_paths, receipt['contributor_sessions'], receipt['native_origin'])
+                    legacy_record = self.loop.storage / 'registry' / (legacy['origin_receipt'] + '.json')
+                    before = legacy_record.read_bytes()
+                    if source == '/':
+                        projected = self.loop._legacy_public_state({'review': legacy, 'binding': bound}, legacy_paths)
+                        ref = store_review(self.loop.storage, projected, legacy, legacy_paths)
+                        cache = self.loop.storage / 'registry' / (ref + '.json'); cache_before = cache.read_bytes()
+                        self.gh.comment(36, tal.al.pack(tal.al.STATE, dict(projected, phase='reviewed', review_ref=ref)))
+                        messages = copy.deepcopy(self.gh.messages)
+                        with self.assertRaisesRegex(ValueError, 'Unbound retained|filesystem evidence provenance'):
+                            self.loop.load(36)
+                        with self.assertRaisesRegex(ValueError, 'Unbound retained|filesystem evidence provenance'):
+                            self.loop.save(self.gh.pull, {'binding': bound, 'review': legacy}, None)
+                        self.assertEqual(self.gh.messages, messages)
+                        self.assertEqual(cache.read_bytes(), cache_before)
+                    else:
+                        self.loop.save(self.gh.pull, {'phase': 'reviewed', 'binding': bound, 'review': legacy}, None)
+                        self.assertEqual(self.loop.load(36)[1]['review'], legacy)
+                    self.assertEqual(legacy_record.read_bytes(), before)
+
+
+    def test_unverified_privacy_controls_cannot_hide_diagnostics(self):
+        from agent_worker import bind_report_session
+        bound = self.loop.bound(self.gh.pull, self.gh.issues[35], self.gh.comments(36))[0]
+        for field in ('private_identifiers', 'private_paths'):
+            with self.subTest(field=field):
+                raw = dict(tal.report('changes_requested'), findings=['critical finding remains'],
+                           **{field: ['finding']})
+                before = copy.deepcopy(raw)
+                comments = copy.deepcopy(self.gh.messages)
+                with self.assertRaises(ValueError):
+                    self.loop.save(self.gh.pull, {'phase': 'reviewed', 'binding': bound, 'review': raw}, None)
+                self.assertEqual(self.gh.messages, comments)
+                self.assertEqual(raw, before)
+                normalized = bind_report_session(raw, raw['session'])
+                self.assertNotIn(field, normalized)
+                self.assertEqual(normalized['findings'], raw['findings'])
+                issued = issue_review_origin(self.loop.storage, raw, bound, raw['session'], 'manual')
+                self.loop.save(self.gh.pull, {'phase': 'reviewed', 'binding': bound, 'review': issued}, None)
+                public = tal.al.unpack(self.gh.comments(36), tal.al.STATE)[0]
+                self.assertEqual(public['review']['findings'], ['critical finding remains'])
+                self.assertEqual(self.loop.load(36)[1]['review'], issued)
+        public = self.loop.public_state({'private_identifiers': ['critical'], 'private_paths': ['finding'],
+                                         'next': 'critical finding remains'})
+        self.assertEqual(public['next'], 'critical finding remains')
+
+
+    def test_native_machine_bindings_survive_close_interruption_and_resume(self):
+        for field in ('head', 'base', 'issue_hash', 'feedback_hash', 'merge_sha'):
+            self.doCleanups(); self.setUp()
+            with self.subTest(field=field):
+                self.gh.pull.update(merged=True, state='closed')
+                h, _, _, _ = self.loop.load(36)
+                bound = self.loop.bound(self.gh.pull, self.gh.issues[35], self.gh.comments(36))[0]
+                operation = self.gh.pull['merge_commit_sha'] if field == 'merge_sha' else bound[field]
+                raw = dict(tal.report(), feedback_hash=bound['feedback_hash']); raw.pop('session')
+                observed = {'session_id': 'Actual-Reviewer', 'source': 'native://host/receipt', 'operation_id': operation,
+                            'report_sha256': digest(raw), 'binding_sha256': digest(bound)}
+                issued = bind_native_review(raw, bound, self.loop.storage, issuer='example.invalid',
+                                            observe_origin=Mock(return_value=observed))
+                state = {'phase': 'cleanup', 'binding': bound, 'review': issued, 'expected_head': tal.HEAD,
+                         'acceptance': {'allowed': True, 'mode': 'tooling'}}
+                sid = self.loop.save(self.gh.pull, state, None)
+                api = self.gh.api
+                def interrupted(path, method='GET', data=None):
+                    result = api(path, method, data)
+                    if method == 'PATCH' and path.endswith('/issues/35') and (data or {}).get('state') == 'closed':
+                        raise RuntimeError('fixture interruption after actual fake Issue close')
+                    return result
+                with patch.object(self.gh, 'api', side_effect=interrupted), self.assertRaisesRegex(RuntimeError, 'fixture interruption'):
+                    self.loop.finish(self.gh.pull, h, state, sid)
+                self.loop.cleanup.assert_not_called()
+                _, restored, sid, _ = self.loop.load(36)
+                self.assertEqual(restored['issue_closure'], {k: bound[k] for k in ('head', 'base', 'issue_hash')})
+                public = tal.al.unpack(self.gh.comments(36), tal.al.STATE)[0]
+                self.assertEqual(public['review']['feedback_hash'], bound['feedback_hash'])
+                self.assertEqual(self.loop.finish(self.gh.pull, h, restored, sid)['phase'], 'done')
+                final = self.loop.load(36)[1]
+                self.assertEqual(final['merge_sha'], self.gh.pull['merge_commit_sha'])
+                self.assertEqual(final['review'], issued)
+                self.loop.cleanup.assert_called_once()
+
+
+    def test_short_native_operation_preserves_certificate_reviewer_on_resume(self):
+        fixture = EvidenceTests(); fixture.setUp(); self.addCleanup(fixture.doCleanups)
+        fixture.bundle['certificate_revision'] = fixture.bundle.pop('repair_revision')
+        fixture.seal()
+        accepted = {'allowed': True, 'mode': 'tooling', 'head': tal.HEAD, 'base': tal.BASE,
+                    'certificate_revision': 'e' * 64,
+                    'certificate_provenance': {'sample': fixture.observed},
+                    'certificate_observers': list(map(session_fingerprint, fixture.sessions))}
+        raw = dict(tal.report(), certificate_revision='e' * 64,
+                   certificate_assessment='Synthetic independent original evidence assessment')
+        raw.pop('session')
+        def observe(submitted, bound):
+            return {'session_id': 'NativeReviewSession', 'source': 'native://host/review', 'operation_id': '1',
+                    'report_sha256': digest(submitted), 'binding_sha256': digest(bound)}
+        bound = self.loop.bound(self.gh.pull, self.gh.issues[35], self.gh.comments(36))[0]
+        issued = bind_native_review(raw, bound, self.loop.storage, issuer='example.invalid',
+                                    observe_origin=observe, acceptance=accepted, repair_evidence=fixture.path)
+        accepted.update(certificate_reviewers=[session_fingerprint(issued['session'])],
+                        certificate_evidence_sha256=issued['certificate_evidence_sha256'])
+        self.assertIn('1', accepted['certificate_reviewers'][0])
+        validate_review(issued, bound, accepted, self.loop.storage)
+        state = {'phase': 'reviewed', 'binding': bound, 'review': issued, 'acceptance': accepted}
+        sid = self.loop.save(self.gh.pull, state, None)
+        restored = self.loop.load(36)[1]
+        self.assertEqual(restored['review'], issued)
+        for key in ('mode', 'head', 'base', 'certificate_revision', 'certificate_evidence_sha256',
+                    'certificate_observers', 'certificate_reviewers'):
+            self.assertEqual(restored['acceptance'][key], accepted[key], key)
+        validate_review(restored['review'], restored['binding'], restored['acceptance'], self.loop.storage)
+        self.loop.save(self.gh.pull, restored, sid)
+        restored = self.loop.load(36)[1]
+        validate_review(restored['review'], restored['binding'], restored['acceptance'], self.loop.storage)
+        invalid = copy.deepcopy(state)
+        invalid['review']['evidence'] = {'certificate_reviewers': ['1', 'native://host/review']}
+        with self.assertRaises(ValueError): self.loop.public_state(invalid)
+
 
     def test_private_session_restores_only_from_bound_private_record(self):
         raw = tal.report()['session']
@@ -200,10 +1166,12 @@ class PrivacyTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate_review(public['review'], public['binding'], {'repair_revision': 'e' * 64})
 
+
     def test_public_fingerprint_cannot_be_sealed_as_a_new_origin(self):
         state = {'phase': 'reviewed', 'binding': {}, 'review': self.loop.public_state(tal.report())}
         with self.assertRaises(ValueError): self.loop.save(self.gh.pull, state, None)
         self.assertFalse(any(comment['body'].startswith(tal.al.STATE) for comment in self.gh.comments(36)))
+
 
     def test_public_fingerprint_without_private_reference_cannot_resume_ordinary_approval(self):
         state = {'phase': 'reviewed', 'binding': {}, 'review': self.loop.public_state(tal.report())}
@@ -213,6 +1181,9 @@ class PrivacyTests(unittest.TestCase):
         self.assertNotIn((tal.HEAD, 'success'), self.gh.statuses)
         self.assertEqual(self.gh.merges, 0)
         self.loop.cleanup.assert_not_called()
+
+
+
 
 
 class ConsumerTests(unittest.TestCase):
@@ -295,6 +1266,62 @@ class OriginTests(unittest.TestCase):
     setUp = EvidenceTests.setUp
     seal = EvidenceTests.seal
     load = EvidenceTests.load
+
+    def test_native_host_acquisition_binds_report_and_mixed_legacy_contributors(self):
+        self.sessions[1] = native_session('example.invalid/host-1', 'Actual-Executor/Session-2')
+        self.bundle['origins'][1]['session'] = self.sessions[1]
+        self.items[1]['session'] = session_fingerprint(self.sessions[1])
+        self.seal()
+        raw = dict(tal.report(), repair_revision='e' * 64, repair_assessment='synthetic native source')
+        raw.pop('session')
+        packet = self.load()
+        submitted = dict(raw, repair_evidence_sha256=packet['bundle_sha256'], evidence_records=packet['evidence_records'])
+        source = {'session_id': 'Actual-Host/Session-99', 'source': 'native://host/execution/operation-19',
+                  'operation_id': 'operation-19', 'report_sha256': digest(submitted), 'binding_sha256': digest(self.bound)}
+        host = Mock(return_value=copy.deepcopy(source))
+        issued = bind_native_review(raw, self.bound, self.root, issuer='example.invalid/host-1',
+                                    observe_origin=host, acceptance=self.accepted, repair_evidence=self.path)
+        host.assert_called_once_with(submitted, self.bound)
+        accepted = dict(self.accepted, repair_observers=list(map(session_fingerprint, self.sessions)),
+                        repair_evidence_sha256=packet['bundle_sha256'])
+        validate_review(issued, self.bound, accepted, self.root)
+        self.assertEqual(issued['session'], native_session('example.invalid/host-1', source['session_id']))
+        receipt = json.loads((self.root / 'registry' / (issued['origin_receipt'] + '.json')).read_text())
+        self.assertEqual(receipt['review']['native_origin']['observation'], source)
+        with self.assertRaisesRegex(ValueError, 'self-reviewed'):
+            validate_review(issued, self.bound, dict(accepted, repair_observers=[session_fingerprint(issued['session'])]), self.root)
+        for mutated in (dict(issued, evidence='rewritten'), dict(issued, origin_receipt='0' * 32)):
+            with self.assertRaises((ValueError, OSError)): validate_review(mutated, self.bound, accepted, self.root)
+        with self.assertRaises(ValueError): validate_review(issued, dict(self.bound, feedback_hash='changed'), accepted, self.root)
+        for invalid in (None, {}, dict(source, report_sha256='0' * 64), dict(source, binding_sha256='0' * 64)):
+            with self.assertRaises(ValueError):
+                bind_native_review(raw, self.bound, self.root, issuer='example.invalid/host-1',
+                                   observe_origin=Mock(return_value=invalid), acceptance=self.accepted, repair_evidence=self.path)
+        claimed = dict(submitted, session=native_session('example.invalid/host-1', 'Different-Session'))
+        with self.assertRaisesRegex(ValueError, 'differs'):
+            bind_native_review(claimed, self.bound, self.root, issuer='example.invalid/host-1',
+                               observe_origin=Mock(return_value=dict(source, report_sha256=digest(claimed))),
+                               acceptance=self.accepted, repair_evidence=self.path)
+        self.receipt.write_text('changed original')
+        with self.assertRaises(ValueError):
+            bind_native_review(raw, self.bound, self.root, issuer='example.invalid/host-1',
+                               observe_origin=host, acceptance=self.accepted, repair_evidence=self.path)
+
+    def test_native_identity_preserves_case_and_legacy_uuid_without_aliases(self):
+        legacy = self.sessions[0]
+        expected = 'codex-session-sha256:' + hashlib.sha256(('codex-session-v1:' + legacy).encode()).hexdigest()
+        self.assertEqual(session_fingerprint(legacy), expected)
+        self.assertEqual(native_session('example.invalid', legacy), legacy)
+        self.assertEqual(session_fingerprint(native_session('example.invalid', legacy)), expected)
+        identity = native_session('example.invalid', 'Case-Sensitive-ID')
+        self.assertEqual(canonical_session(identity), identity)
+        self.assertNotEqual(session_fingerprint(identity), session_fingerprint(native_session('example.invalid', 'case-sensitive-id')))
+        alias = f'native-session-v1:{"example.invalid".encode().hex()}:{legacy.encode().hex()}'
+        for invalid in (alias, identity.upper(), 'native-session-v1:zz:00', session_fingerprint(identity)):
+            with self.assertRaises(ValueError): canonical_session(invalid)
+        for issuer, raw in [('codex', legacy), ('role label', 'some-id'), ('example.invalid', ''),
+                            ('example.invalid', legacy.replace('-', '')), ('example.invalid', 'bad\nID')]:
+            with self.assertRaises(ValueError): native_session(issuer, raw)
     def test_complete_report_binding_and_adapter_kind_are_required(self):
         from handoff_registry import store_review
         accepted = dict(self.accepted, repair_observers=list(map(session_fingerprint, self.sessions)),
@@ -536,7 +1563,8 @@ class PrivatePathTests(unittest.TestCase):
         self.assertEqual(projected['review']['evidence'], '[origin]([private URI])')
         target = '&#104;ttps&colon;&sol;&sol;public.example&sol;session&sol;' + session.replace('-', '&#45;')
         projected = self.loop.public_state({'private_sessions': [session_fingerprint(session)],
-                                           'review': {'session': session, 'evidence': f'[origin]({target})'}})
+                                           'review': {'session': session, 'evidence': f'[origin]({target})'}},
+                                           private_sessions=[session_fingerprint(session)])
         self.assertEqual(projected['review']['evidence'], '[origin]([private URI])')
         self.assertEqual(self.loop.public_state('prefix:file:///mnt/receipts/event.json:suffix', [known]),
                          'prefix:file://[private path]:suffix')
@@ -581,7 +1609,7 @@ class PrivatePathTests(unittest.TestCase):
                 with self.subTest(source=source):
                     self.assertEqual(self.loop.public_state(source), source)
             public = self.loop.public_state({'private_sessions': [session_fingerprint(session)],
-                                            'evidence': f'[private]({target})'})
+                                            'evidence': f'[private]({target})'}, private_sessions=[session_fingerprint(session)])
             self.assertEqual(public['evidence'], '[private]([private URI])')
         self.assertEqual(self.loop.public_state('standalone:' + session), 'standalone:' + session_fingerprint(session))
         literal = f'[literal](&#104;ttps&COLON;&sol;&sol;public.example&sol;runs&sol;{session})'
@@ -626,7 +1654,7 @@ class PrivatePathTests(unittest.TestCase):
         token = 'https&colon;&sol;&sol;x/r/' + session
         for delimiter in ('(', ':'):
             for count in (1, 2, 3, 4):
-                source = '\\' * count + ']' + delimiter + token + ')'
+                source = ('[label' if delimiter == ':' else '') + '\\' * count + ']' + delimiter + token + ')'
                 expected = source.replace(session, session_fingerprint(session)) if count % 2 else source
                 self.assertEqual(self.loop.public_state(source), expected)
 
@@ -634,10 +1662,10 @@ class PrivatePathTests(unittest.TestCase):
         session = tal.report()['session']
         for target in (session.replace('-', '&#45;'), session.replace('-', r'\-')):
             state = {'private_sessions': [session_fingerprint(session)], 'evidence': 'Observer: prefix' + target + 'suffix tail'}
-            self.assertEqual(self.loop.public_state(state)['evidence'], 'Observer: prefix' + session_fingerprint(session) + 'suffix tail')
+            self.assertEqual(self.loop.public_state(state, private_sessions=[session_fingerprint(session)])['evidence'], 'Observer: prefix' + session_fingerprint(session) + 'suffix tail')
         for target in (session.replace('-', '&amp;#45;'), session.replace('-', r'\&num;45;')):
             state = {'private_sessions': [session_fingerprint(session)], 'evidence': 'Observer: ' + target + ' tail'}
-            self.assertEqual(self.loop.public_state(state)['evidence'], state['evidence'])
+            self.assertEqual(self.loop.public_state(state, private_sessions=[session_fingerprint(session)])['evidence'], state['evidence'])
 
     def test_isolated_known_session_escaped_close_does_not_add_suffix(self):
         session = tal.report()['session']
@@ -645,7 +1673,7 @@ class PrivatePathTests(unittest.TestCase):
                        'https://example/session/' + session.replace('-', '%2D') + r'\)',
                        'https://example/session/' + session + '&rpar;'):
             source = {'private_sessions': [session_fingerprint(session)], 'evidence': f'[origin]({target})tail'}
-            self.assertEqual(self.loop.public_state(source)['evidence'], '[origin]([private URI])tail')
+            self.assertEqual(self.loop.public_state(source, private_sessions=[session_fingerprint(session)])['evidence'], '[origin]([private URI])tail')
     def test_known_uri_filename_closings_are_distinct_from_markdown_enclosure(self):
         from urllib.parse import quote
         known = '/mnt/private receipt/event(1.json'

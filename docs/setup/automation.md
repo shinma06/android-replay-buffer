@@ -28,6 +28,38 @@ python3 scripts/workflow/agent_loop.py tick --pr 123
 
 公開 handoff は opaque ID・Issue/PR・HEAD/base/target・scope・停止宣言です。source/host は Git common-dir 配下の `agent-loop/registry` に 0600 で保存します。実行状態は移植元からコピーしません。
 
+## レビュー元と実行元の選択
+
+共通の義務は、期待する現候補のレビューが終わり、全feedbackを固定した別セッションの評価があることです。既定のCodex summary経路を維持し、明示的に採用したGitHub native reviewは `agent_loop.py --github-reviewer <実login> feedback --pr N` で読めます。同じglobal optionをtick・再取得・reconcile-feedbackにも指定します。既定のCLI workerを変更するoptionではなく、worker実行の許可も作りません。
+
+選択元は信頼されたローカル起動設定で、PR本文・報告・未着summaryから自動選択しません。native経路はGitHub APIから取得した指定reviewerの最後のreviewが、対象repo/PR・完全なHEADと一致し、要求境界以降の `APPROVED` または `CHANGES_REQUESTED` で、未処理のreview requestがない場合だけ完了とします。`COMMENTED`・`PENDING`・`DISMISSED`・不明/欠落値は完了にしません。完了したchanges requestも指摘解消と独立評価が必要です。[GitHub review API](https://docs.github.com/en/rest/pulls/reviews)、[review requests](https://docs.github.com/en/rest/pulls/review-requests)の実レコードを使い、追加の外部serviceは呼びません。
+
+秒単位の `submitted_at` が小数秒付き要求境界と同じ秒に入る場合、現レコードだけでは前後関係を証明できずpendingを維持します。同じ値の再取得だけでは解消しません。境界以降と確認できる後続のterminal review、または要求から提出への順序を独立に立証できる根拠が必要です。時刻の丸めや別方式への自動切替で完了にせず、GitHubの精度・丸め規則や実serviceの停止をこの条件から推定しません。
+
+方式・版・reviewer・要求境界・要求中のreviewers/teamsの内容hashと、全review本文を含むfeedback hashをbindingへ含めます。既存Codex依頼/summaryや保存済みの別方式の依頼は、選択を変えてもその方式の完了を確認します。旧bindingを新方式へ補完して承認を再利用せず、元receiptを保持して必要な再評価へ戻します。service側の設定変更や既存義務の廃止をこのoptionで代行しません。
+
+実行元はCodex CLI envelope/`CODEX_THREAD_ID`に加え、信頼されたhostから `agent_worker.bind_native_review(report, bound, storage, issuer=..., observe_origin=..., acceptance=..., repair_evidence=...)` を呼ぶembedding入口を提供します。呼出し元は認証済みruntimeのexecution recordを取得できるhostです。`observe_origin(report, bound)` は、そのレビュー操作の実session、実operationと提出内容をhost記録から照合して、次の値を返します。reportからsessionやcallbackを選ぶこと、渡されたhashを単にechoすること、架空のreceipt JSONで置き換えることは禁止です。
+
+| 値 | hostが取得・確認する事実 |
+| --- | --- |
+| `session_id` | 実操作を行ったsessionのopaque ID。model/role変更でも同じactorは同じID |
+| `source`, `operation_id` | その実操作を再参照できる原記録のlocatorとoperation ID。非公開receiptに保存 |
+| `report_sha256`, `binding_sha256` | 原操作に対応する提出内容と完全なbindingを `handoff_registry.digest` と同じJSON規則で照合したhash |
+
+`issuer`はhostコードに固定するruntimeのidentity domainで、局所IDなら実instance scopeを含めます。実originを取得してから共通正規化し、報告内の異なるsession主張を拒否します。native IDの大小文字を保持し、UUIDは旧identityへ統一して別名の独立役を作りません。原observation、除去前の提出内容、完全なreport/bindingは既存private registryへ保持し、旧Codex fingerprint/receiptと入力ファイルは変更しません。
+
+新しいnative origin（UUIDへ正規化されたnativeを含む）と、検証済みの任意native contributor IDを含む新しい組合せは、検証済み機械値・定型status・finding数・次action・opaque参照だけを公開します。adapter種別と実contributorsはsealed receiptから検証し、report内のflag、session文字列、issuerや診断キーの自己申告で公開方式を選びません。任意のfindings・evidence・assessment・拡張フィールドと全診断mapは非公開のままです。GitHubだけの閲覧者はnativeの詳細理由を読めなくなる実際の差を受容します。既存UUIDのみのCodex/manual公開本文と必要なpath/UUID保護は維持します。 phase由来のnextは検証・回復の確認点であり、操作許可や現在実行できる手順の保証ではありません。cleanupでは、まずmerge後の最新review request、feedback/bindingと非公開診断を確認し、providerが未完了なら完了を待ち、feedbackが変わったならfreshな独立評価を得ます。既存finish gateを通るまでIssue変更・resource削除は行わず、通過後もIssueの扱いと所有resourceのcleanupを別々に確認します。
+
+保存は既存の `store_review` / `restore_review` を使い、`private-review-v1` の公開状態と完全な内部状態のhash・bindingを結びます。内部のfixer、feedback照合、受入、修復・certificate評価は復元した原報告を使い、findingsを持たない公開envelopeを承認報告として検証しません。GUI証拠・resume理由もprivateに保持し、review無効化後は検証済みnative出典を公開方針の根拠として残します。その根拠は承認の代用ではなく、公開側はfresh review待ちとします。state/progress、direct reconcile、resume/GUIとCLI出力に同じ方針を適用します。旧native branch cacheは原本・公開履歴・PAUSED・ownerを保持して明示的なowner回復へ戻し、自動移行・再封印・承認再利用はしません。既存mainの通常UUID cacheは維持します。
+
+`private_sessions`・`private_identifiers`・`private_paths`はadapter所有の予約metadataです。提出reportの同名fieldはsession bindと下位origin発行時に除き、除去前の原形を別の非公開receipt項目へ保持します。source/operationはnative observation、contributorsは検証済みbundle、pathはprivate registry/evidence/handoffだけを根拠にし、report/stateやnested diagnostics自身の同名fieldは規則を指定できません。absoluteなsource表記だけでfilesystem出典にせず、sourceをprivate_pathsへ追加しません。sourceをpathへ混在させた旧receipt/cacheは、同じ文字列が保持された実証bundleのfileとして再hash・照合できる場合だけfilesystem出典を維持し、裏付けがなければowner回復待ちです。旧contributor receiptも元reportと保持bundle・原本を再hashしてcanonicalな出典を照合できる場合だけ利用します。保存済みclaimや再wrapperを新たな出典にしません。
+
+新native経路は診断mapを公開へ投影しないため、異なる全キーと値を完全な原本・binding・hashで保持し、envelopeと衝突できないことを確認します。旧native投影の衝突エラー自体を維持するために任意本文parserは残しません。既存公開経路の必要なキー衝突拒否と文字列キー検証は維持します。原本再hash、全contributorsとの独立性、修復・certificateの原assessment、秘匿/保存条件、未検証の予約metadataの拒否は共通validatorで維持します。
+
+`native-session-v1` の報告は通常のfeedback dispositionでも、予約privacy fieldの有無やverdictに関係なく、現report・完全なbindingに一致するnative adapterの実observation付きreceiptを共通validator・保存・復元で検証します。公開cacheやmanual/CLI wrapperはnative出典の代用にしません。UUIDへ正規化されたnative originも、そのnative receiptの検査を維持します。従来の通常UUID manual/CLI契約は変えず、提示されたreceiptや予約metadataは共通の出典検証へ通します。
+
+この入口はhostを信頼する境界であり、ローカルhost自体の改竄への認証基盤ではありません。`issue_review_origin`は取得済み情報を封印する下位APIです。対応するhostの実source取得・認証・operationとの対応づけはhost側でレビューしてください。embeddingの回帰試験は別providerの実接続/実行成功を証明せず、Codexのworkerや現serviceを無効化するものでもありません。
+
 ## 状態と制限
 
 ```text
@@ -54,6 +86,8 @@ python3 scripts/workflow/agent_loop.py rebind-target --pr 123 --writer-stopped
 python3 scripts/workflow/agent_loop.py cleanup-branches
 # 候補の所有・clean・停止・remote ref を確認した場合だけ --apply を付ける
 ```
+
+このbranch補助監査はmerged-onlyです。closed-unmerged/withdrawn/supersededは保持として報告し、claimを解放せずworkerを再起動しません。[branch lifecycle](../workflow.md#branch-lifecycle)に従ってowner/PMが保全・実復元確認・所有引継ぎ後に整理します。閉じたPRをmerged cleanupへ再登録せず、既存snapshot/bundle等を使い、新job/保管frameworkは追加しません。
 
 resume は停止原因と元 writer/worker の停止を確認してから使います。target 変更は rebind-target で明示し、旧承認を再利用しません。source が消失した場合は旧所有の確認と private 移転記録が必要です。registry 喪失、別 host、外部 push、dirty を reset/stash で隠しません。
 
