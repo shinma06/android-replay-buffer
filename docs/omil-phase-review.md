@@ -1,51 +1,51 @@
-# フェーズ点検の運用と再開入口
+# Phase-review operations and handoff
 
-運用版はOMIL-PHASE-OPS-v1.1。2026-10-17に準備・PM受入れを終えた限定運用を、[#278](https://github.com/shinma06/android-replay-buffer/issues/278)で公開用に整理しました。[現行判断](omil-current.md)と[連絡規約](team-communication.md)に接続します。新しい全面停止権、承認gate、常駐監視を作る運用ではありません。
+This is the public operational rendition of OMIL-PHASE-OPS-v1.1, prepared and accepted by the PM on 2026-10-17 and published through [Issue #278](https://github.com/shinma06/android-replay-buffer/issues/278). Read the Japanese [current decisions and results](omil-current.md) and the [communication contract](team-communication.md) with it. This procedure creates no new whole-project stop authority, approval gate or continuous monitor.
 
-## 責任と開始
+## Responsibility and entry
 
-PMは成果・品質・日常調整と委任内の改善を続け、OMILの助言待ちで通常業務を止めません。OMILは重要イベント・中間標本・フェーズ末に、目的・方法・前提・役割・負担を点検します。元の観察/検査は既存担当、重要判断の不足分と節目の記録はPM、OMILの助言・点検結果はOMILが担当します。既存のIssue/PR・割当・成果・評価・終了記録を再利用し、OMIL用の日報や検査の代行を要求しません。
+The PM continues delivery, quality, everyday coordination and improvements within the actual delegation. Do not hold ordinary work for OMIL advice. OMIL reviews purpose, methods, assumptions, roles and burden at material events, an intermediate sample and phase end. Existing executors own original observations and tests; the PM owns missing material decision context and milestone records; OMIL owns its advice and review outcome. Reuse existing Issues, PRs, assignments, artifacts, assessments and completion records. Do not require OMIL-specific daily reports or substitute OMIL for the existing test owner.
 
-PM/OMILの開始・引継ぎでは、本書→[現行判断](omil-current.md)→対象Issue/計画と未処理イベントを読みます。実連絡先と本人指示の参照は既存private引継ぎ記録で確認します。新ホストで連絡先がなければ、現在の担当者と許可された連絡手段を確認し、対象イベント・必要資料・保管ownerを既存作業記録へ残します。公開文書だけで旧セッションの存在や呼出し成功を仮定しません。
+At PM/OMIL start or handoff, read this document, the [current decisions](omil-current.md), the actual phase Issue/plan and any unprocessed events. Resolve live contacts and the human authority source through the existing private handoff record. On a new host without that route, identify the current role owner and an authorized communication capability; preserve the event, necessary source references and custody owner in the existing work record. A public role description does not prove an old session still exists or can be called.
 
-次段階の開始承認と計画は[#267](https://github.com/shinma06/android-replay-buffer/issues/267)で確定します。今回の準備は次段階の開始ではありません。PMは最初の実イベント前に、フェーズの名称/目的・対象外・品質/成果条件・優先順位・担当/決定権・運用版・開始終了の定義・原記録/保持条件・次の点検契機を既存計画へ結びます。未確定のphase番号・日付・Milestone・具体PRを創作しません。
+The human's next-phase start authorization and plan are established in [Issue #267](https://github.com/shinma06/android-replay-buffer/issues/267). This preparation did not start that phase. Before its first actual event, the PM connects the phase name/purpose, exclusions, quality/outcome requirements, priorities, roles/decision rights, operating revision, start/end definitions, source/custody records and next review trigger to the existing plan. Do not invent a phase number, date, Milestone or PR while these remain undecided.
 
-## 点検の契機と有限枠
+## Triggers and finite bounds
 
-| 契機 | 発見・送信する担当 | OMILの処理 |
+| Trigger | Observer and sender | OMIL action |
 | --- | --- | --- |
-| 情報が増えない同種差戻し、待ち・再実行・引継ぎ・管理負担の増加 | PMが既存割当/受領を更新する時 | 次の同じ割当前に、必要保証と方法を少数資料から区別。必要な品質是正は省かない |
-| 人の個別助言による変更、明確な成功候補 | PMが重要判断/結果を残す時 | 気づいた主体、条件・代案・結果を結び、助言後の学習と独立発見を分ける |
-| 目的・品質・役割・環境・許可の重要変更、証拠参照切れ・所有不明・機密懸念 | PM、または既存の発見者からPMへ | 影響部分だけ点検。必要な停止は既存権限者が該当範囲に限定 |
-| 最初の中間節目 | 開始承認・#267計画確定後、PMが[#206](https://github.com/shinma06/android-replay-buffer/issues/206)の最初の実PR統合と必要受入れ回収を観測して送信。正式計画で順序が変われば最初の固定成果 | PMの問題申告に偏らず、既存作業一覧から通常成功、例外/未完、変更/人介入の少数例をOMILが選び、選定理由を残す |
-| 到達目標/Milestone終了、正式な中止・凍結 | PMが対象期間・終了範囲・取得時点を確定して送信 | 全領域を概観し、重要な変化・未知・相互作用を深掘り |
+| Repeated returns without new information; increasing waiting, reruns, handoffs or administration | PM while updating existing assignments or receipts | Before repeating the assignment, distinguish the required guarantee from its method using a few relevant sources. Retain necessary quality corrections |
+| A method change after individual human advice, or a clear candidate success | PM when recording the material decision/result | Connect who noticed it, conditions, alternatives and results. Separate assisted learning from independent discovery |
+| Material changes to purpose, quality, roles, environment or authority; broken evidence references, unknown ownership or confidentiality concerns | PM, or an existing finder through the PM | Examine only the affected scope. Necessary stops remain with existing authorized owners and the smallest affected scope |
+| First intermediate milestone | After the authorized start and #267 plan, PM observes the first actual [#206](https://github.com/shinma06/android-replay-buffer/issues/206) PR integration and receipt of its required acceptance. If the formal plan changes the sequence, use its first fixed outcome | Select a small sample from the existing work inventory, including ordinary success, exception/incomplete work and change/human intervention. OMIL chooses the sample and records the reason rather than relying only on problems reported by the PM |
+| Completion of the planned outcome/Milestone, or formal cancellation/freeze | PM fixes the period, completion boundary and retrieval time | Survey all domains, then investigate material changes, unknowns and interactions |
 
-初期枠は、軽い点検15分/元資料3件程度、中間3案件/30分、終了時は全領域概観と必要確認60分＋結果/未達の回収15分です。未実測の初期値であり恒久基準ではありません。巨大な1資料に全履歴を詰めて件数枠を回避せず、時間/件数だけで自動合否にしません。結果を変える追加確認が必要なら理由・既存許可・有限枠を事前に明示し、必要な対象だけ別の有限仕事へ分けます。同条件の再試行はしません。
+Initial bounds are 15 minutes/about 3 original sources for a light review, up to 3 work items/30 minutes for the intermediate sample, and 60 minutes for the phase-end survey/investigation plus 15 minutes to collect outcomes and unmet obligations. These are unmeasured starting values, not permanent acceptance criteria. Do not evade the source count by packing an entire history into one document or make time/count alone determine pass/fail. If a further check can materially change the decision, state the reason, existing authority and finite bounds prospectively, and split only the necessary scope into another finite task. Do not repeat an unchanged trial.
 
-短いフェーズで最初の固定成果と終了が同じ節目になる場合だけ、中間と終了を一度にまとめ、その理由と中間標本の範囲を残します。最初の実節目で、有用性・見落とし・手戻り・成功条件への寄与と、PM/OMIL/人の負担、空振り通知、重複記録、助言待ちを見直します。価値のない通知・欄・点検は縮小/廃止できますが、必須品質・権限・本人が求めた節目レビューは黙って削りません。
+Combine intermediate and end reviews only when a short phase's first fixed outcome is also its end milestone; record why and what intermediate sample was covered. At the first real milestone, assess usefulness, missed facts, rework and success conditions together with PM/OMIL/human burden, empty notifications, duplicate records and waiting for advice. Reduce or remove notices, fields or reviews that add no value, but do not silently remove required quality, authority or a milestone review requested by the human.
 
-## 記録と評価
+## Records and assessment
 
-重要判断に限り、既存記録で不足する部分を補います。対象時点/版、目的と守る条件、事実と気づいた主体/人助言、維持/変更理由と重要代案、権限/変更範囲/戻す条件、実結果/副作用/未確認、継承条件と残ownerを結びます。既存参照で足りる内容は複写せず、内部思考全文や全件フォームは作りません。
+For material decisions only, supplement what is missing from existing records: time/revision; purpose and guarantees; observations, discoverer and human assistance; reason to retain/change and significant alternatives; authority, affected scope and rollback conditions; actual results, side effects and unknowns; inheritance conditions and residual owner. Use references instead of copying adequate existing content. Do not require private reasoning transcripts or a form for every operation.
 
-新実行、原事実の再評価、証拠再利用、独立評価、受領、実終了を分け、元FAIL/PENDING/未実行を保持します。負担は受付・着手・待ち・実行・評価・受領・終了のうち判断に必要な時点と理由で扱い、並行時間を足しません。usageは定義と期間を併記し、料金・CPU・人の実働へ換算しません。欠測は未測定です。
+Distinguish new execution, reassessment of retained observations, evidence reuse, independent assessment, receipt and actual termination. Preserve original FAIL/PENDING/unperformed states. For burden, use the relevant reception/start/wait/execution/assessment/receipt/end times and reasons without adding overlapping intervals. Report usage with its definition and period, not as money, CPU or human labor. Missing measurements remain unmeasured.
 
-終了点検では、PMが示す一覧に未完・中止・延期も含め、[L1〜L7と34観点](omil-review-map.md)で全領域を概観します。価値・品質の到達、成功条件、問題と代替説明、比較限界、人介入、全役の負担、維持/変更/廃止/追加観測、残ownerを原証拠へ結びます。全34項目の再実証は要求しません。OMILの重要な採否結論に別観点の確認が必要な場合だけ、既存許可内の最小の独立標本確認を使い、コードreviewで内容評価を代用しません。
+At phase end, include incomplete, cancelled and deferred work in the PM's inventory. Use [L1-L7 and the 34 review topics](omil-review-map.md) to survey all domains. Connect outcome/quality attainment, success conditions, problems and alternative explanations, comparison limits, human intervention, all-role burden, retain/change/remove/additional-observation decisions and residual owners to the evidence. Do not re-demonstrate all 34 topics. Only when a material OMIL adoption judgment needs another perspective, use the smallest authorized independent sample assessment. Code review does not substitute for the assessment of operational substance.
 
-## 連絡・重複・不在
+## Communication, duplicates and absence
 
-実環境で使える許可済みの送信/状態読取を使い、現在の役割・宛先・本人の連携許可を確認します。当時の実経路は既存のタスク間送信でした。同名toolの存在、過去の逆方向通信、セッション保存だけでは起動確認済みにしません。新しい担当の作成も既存の本人委任とclient制約を別に照合します。
+Use an available, authorized send/state-read capability. Verify the actual role, destination and applicable human permission for communication. The prepared environment used existing task-to-task messaging. The existence of a similarly named tool, past reverse-direction communication or a saved session does not prove a call can start the intended recipient. Creating a replacement role still requires the existing human delegation and actual client permission.
 
-PMはphase/event ID、事実・問い・影響、元資料/版、許可範囲、終了条件を短く渡します。IDは確定phase＋既存Issue/節目＋発生revision等から決め、同じ意味の再配送では変えません。OMILは元イベントの既存記録に受付・進行/終了・結果参照・残ownerを結び、PMは元業務記録へ結果参照を返します。運用中のprivate状態記録がある場合はそれを引き継ぎ、Issueとの二重正本や新しいregistryを作りません。
+The PM sends a short phase/event ID, facts/question/impact, original sources/revisions, authority scope and completion condition. Derive the ID from the established phase, existing Issue/milestone and occurrence revision, and keep it unchanged for equivalent redelivery. The existing event record carries receipt, in-progress/completed state, result reference and residual owner. During preparation this was the private operating state record; inherit it where available rather than starting a second authority. The PM's original business record links the event and result. On a new host, reconcile the preserved event state and current owner before processing; do not infer an empty queue from a fresh clone or add a new registry.
 
-既処理は同じ結果参照へ戻し、新レビューやACKを発生させません。進行中は新しい証拠だけ同じeventへまとめ、内容/条件が重要に変わった時だけ関連する次revisionを作ります。未受信・処理不明は送信結果と同じ宛先/handleの実状態を必要時に確認し、timeoutだけで再送しません。
+Return an already processed event to its existing result reference without a new review or ACK. Add new evidence to the same in-progress event; create a related revision only for a material content/condition change. For unreceived or uncertain delivery, inspect the original send outcome and the same recipient/handle as needed. Timeout alone does not justify a duplicate send.
 
-PMは次の既存の割当・受領・開始/引継ぎで未処理を扱います。未受理と確認できた場合のみ、次の実在する機会に同じIDを1回送ります。宛先不在・誤り・停止は元event・資料・ownerを残して現担当を確認します。本人pause/STOPを迂回せず、archive済み担当の自動再起動、人手転送の通常工程化、poll/job/heartbeatは追加しません。経路不足は具体的に未達として保持し、模擬成功へ変えません。結果と残責任を返したらそのeventを終え、未来のeventを待ち続けません。
+The PM handles unprocessed work at the next existing assignment, receipt, start or handoff. Only if non-acceptance is confirmed, send the same ID once at the next actual opportunity. For an absent, wrong or stopped recipient, preserve the original event, sources and owner and verify the current responsible role. Do not bypass human pause/STOP, automatically restart an archived role, make human forwarding the normal route, or add polling, jobs or heartbeats. Preserve a concrete route gap as unmet, never as a simulated success. Return the result and residual responsibility, then end the event instead of waiting for future events.
 
-## 準備時の実観測と未確認
+## Preparation evidence and limits
 
-準備判定は**READY（既存PM＋OMIL・当時のlocal環境限定）**です。PREP_CHECK 1件で、PMからOMILへの稼働中の実受信、代表例の目的・理由・条件・成果・人介入・品質・負担・限界の参照、記録、返送、PM受入れを確認しました。原仕様との対応、参照リンク、重複/ACK処理、後任入口は静的に確認し、本人の採用根拠へのリンクを1点補いました。旧試験を再実行した結果ではありません。
+Preparation was **READY for the existing PM and OMIL in the then-current local environment**. One PREP_CHECK completed: the PM's actual message reached the running OMIL, a representative source was read for purpose, reasons, conditions, outcome, human intervention, quality, burden and limits, and the result was recorded, returned and accepted by the PM. Specification correspondence, links, duplicate/ACK handling and successor entry were checked statically. One explicit link to the human adoption source was added. This was not a rerun of historical trials. The preparation event was completed; future phase events were not generated or executed by this preparation.
 
-インストール済みアプリの実装には休止sessionのresume→新turn開始経路がありました。逆方向の休止PM起動は実観測済みですが、**OMIL自身の休止後起動は未実測**です。稼働プロセスとinstalled assetの版同一性、アプリ終了中・host不通・後任/別環境の実行も未確認です。必要な機能・担当・権限が変わった時に影響箇所だけ確認し、旧READYを新環境のPASSへ転用しません。
+Installed application code contained a resume-to-new-turn path for an idle session. The reverse-direction call waking the PM was observed, but **waking OMIL itself after it became idle was not measured**. Running-process/installed-asset revision equivalence, application-closed, host-unreachable and successor/other-environment execution were also unverified. Recheck only the affected capability, ownership or authority when it changes. Do not transfer this historical READY to a new environment as PASS.
 
-既存2役・1論理テスト・1修正で準備し、Goal制御の完了回収は1,225秒でした。取得されたtokensUsedは338,611で、料金・CPU・人の実働・純利益には換算していません。新契約・購入は0、観察目標の7秒超過も原記録に保持しています。準備完了と将来の運用効果は別です。
+Preparation used the existing two roles, one logical test and one correction. Completion accounting reported 1,225 seconds and tokensUsed 338,611; these were not converted to money, CPU, human labor or net benefit. New contracts/purchases were zero, and a 7-second observation-target overrun remains in the original record. Preparation completion and future operational benefit are different claims.
