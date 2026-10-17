@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "issue": 271,
+  "gui_required": false,
+  "reason": "GitHub配布toolingを追加する。製品source/build設定と受入Caseは変更せず、既存の固定ZIP、promotion validatorと必須checksを公開前に検証する。IDE操作は不要で、実workflow・Release・downloadの結果はIssueで別途受入する。正式versionのbuild入力対応は#206、最終製品受入は#280の対象であり、本toolingの試験で代替しない。",
+  "cli_checks": [
+    "python3 -m unittest discover -s scripts/workflow -p test_release_delivery.py -v",
+    "python3 scripts/check.py",
+    "python3 scripts/workflow/product_check.py",
+    "python3 scripts/workflow/change_impact.py --run-tests"
+  ],
+  "cases": []
+}

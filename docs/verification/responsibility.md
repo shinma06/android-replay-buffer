@@ -1,6 +1,6 @@
 # 製品の保証範囲と最小の十分な検証
 
-[Issue #223](https://github.com/shinma06/android-replay-buffer/issues/223)の全試験改訂に、[Issue #230](https://github.com/shinma06/android-replay-buffer/issues/230)のconsumer別方法改訂を適用した現行条件です。**保証目的→必要な証拠と精度→実行可能な最小方法**の順で決めます。旧手順に書かれた操作・秒数・回数は、それだけで維持理由になりません。全139 Case/208出典、105 Agent/34 REALと原記録を保持し、[正式計画](amendments/initial-agent.json)の`responsibility_revision.method_revision`を有効条件とします。下の過去改訂にある30分/300event・GOP6証拠・固定操作数等は履歴で、現行の必須方法へ戻しません。
+[Issue #223](https://github.com/shinma06/android-replay-buffer/issues/223)の全試験改訂、[Issue #230](https://github.com/shinma06/android-replay-buffer/issues/230)のconsumer別方法に、[本人の同期要件を反映する #299](https://github.com/shinma06/android-replay-buffer/issues/299)を適用した現行条件です。**保証目的→必要な証拠と精度→実行可能な最小方法**の順で決めます。旧手順に書かれた操作・秒数・回数は、それだけで維持理由になりません。全139 Case/208出典、105 Agent/34 REALと原記録を保持し、[正式計画](amendments/initial-agent.json)の`responsibility_revision.method_revision`を有効条件とします。下の過去改訂にある30分/300event・旧画像精度値・GOP6証拠・固定操作数等は履歴で、明示的に置換した条件を現行gateへ戻しません。
 
 ## 全試験の目的と方法
 
@@ -10,7 +10,7 @@
 |---|---|---|
 | environment / 6 | 同梱依存・SDK adb・実ロードと追加導入不要 | ZIP/hash/licenseとSDK解決回帰＋実起動command/CodeSource/保存。PATH改造や20秒取得は保証と無関係 |
 | markers / 2 | 画面とlogの独立ID真値、表示/非表示・coalescing/viewの区別 | fixture回帰＋代表実表示/両log。欠陥を区別する最小入力を用い、各5回/1秒等は固定しない |
-| precision / 7 | p95≤100ms・最大≤250ms・中央値drift≤50ms・clock≤20ms、実画像/両logの対応と欠落説明 | 有限の開始/後半を含む識別可能な更新を全解析。中間/追加数は目的で選び固定しない。長時間/sample更新/4096履歴/時計境界は既知時刻回帰へ。30分/300件は標本設計であり製品の精度値ではない |
+| precision / 7 | streamの元PTS・実画像ID/両logと、支持clock変換・窓/索引・unknown/欠落説明の整合 | 有限の開始/後半の予定event/全phase・全FILEを照合し、独立した画像IDと時計モデル/適用限界を示す。長時間/sample更新/4096履歴/時計境界は既知時刻回帰へ。streamが独立に提供しない画像時刻の追加校正を一律gateにしない |
 | recipient / 6 | 全保存内容・時刻・不足説明と受取人の利用 | 既知入力の全byte/画素回帰＋native成果の全FILE/sample/両logと、保証ごとに共有する代表player・editor観察。全GUI検索/全Play/全native raw exportは不要 |
 | buffer / 9 | 実T/N窓、未満時の最大保存・prune/IDR prefix/pin、保存中取得/次保存 | N未満・N超・重複Saveを別工程で共有。0/N前後・GOP前中後・VFR/品質/容量はproduction回帰＋FILE。20秒/200秒/10秒後/GOP6本は方法例 |
 | recovery / 57 | 所有/世代/終了、gap/loss/unknown、固定失敗retry・atomic非上書き/保全 | 全fault/raceはfake SDK/loopback/所有filesystemの回帰。実IDEは代表取得/復旧/OFF/close/保存・理由表示、固定失敗場所→UI consumer→retryは同ZIP隔離public経路、OS atomicは実callを共有 |
@@ -18,7 +18,9 @@
 | video / 12 | VFR/unknown/decodeRun・全frame/PTS/geometry/Level・単一MP4/失敗pin | 既知source全packet/config/画素と全内部境界は回帰、nativeは通常/静止/実回転混在・再接続/表示と全FILE。独立工程を短い同runへ詰めない |
 | log-reader / 3 | main/非mainの範囲・identity/順序/二重取込防止、復旧/実停止 | Protocol/Wireの全header/fragment/fault回帰＋有限のmain/非main陽性入力の全FILEと代表OFF/再接続。100入力/300phaseは固定しない |
 
-精度値を維持する理由は、場面とログの対応が利用目的であり、unknownを既知へ見せず切出しを忠実にするためです。cut≤1観測frame間隔＋時計誤差、mux/index≤1msも窓と索引の意味を守ります。有限実測のp95はその予定系列の実測値です。母集団の確率保証や30分実測とは呼びません。長時間の内部時刻/履歴境界を回帰で検証し、端末固有の経時差が残ればその目的へ観察を追加します。短い無関係なsmokeやlog順から画像番号を推定する方法で同期を証明しません。
+場面とログの対応、unknownを既知へ見せないこと、取得済み内容と窓を忠実に保存することを保証します。clock変換モデルの見積誤差≤20ms・読取幅≤2ms・RTT≤40ms・鮮度≤5秒、支持された対応でのcut≤1観測frame間隔＋時計誤差、mux/index丸め≤1msを維持します。これらはAndroidの描画/取得/encoder/物理表示を含む総合精度ではありません。時計モデルの根拠とruntimeの未確認を明記し、長時間内部時刻/履歴境界は既知入力回帰で検査します。log順から画像番号を推定せず、独立した実画像IDと全対象の保存内容を確認します。
+
+#299は[本人の要求範囲](https://github.com/shinma06/android-replay-buffer/issues/206#issuecomment-6232582806)の改訂です。独立画像時刻のp95≤100ms・最大≤250ms・中央値drift≤50msを現在のAgent/後続実装/性能baselineの一律前提から外し、代替数値を発明しません。元REQUEST/DRAWのFAIL・未校正・原因未帰属、回転境界unknownやconsumer制約はそのまま保持します。FRAME_COMMITへの付替え、旧結果のPASS化、Android原因の断定はしません。具体的な誤変換・誤帰属・黙示的欠落・破損・既存出力上書き・失敗pin喪失・虚偽の時刻/成功表示は引き続き影響する受入を止めます。旧画像時刻の未帰属だけをその自製品違反と同一視しません。
 
 全byte/画素/headers/edit/PTS/IDR prefix/後半欠落の厳密さは、保存対象の内容と時刻を失わないためです。既知入力と真値を持つ同ZIP production class回帰へ分担し、nativeの未公開raw/configを無条件に追加採取しません。native成果は全sample/行/index/manifestを検査し、実操作/実表示と結び付けます。再圧縮の全画素一致を誤適用せず、原rectangle/aspect/文字/色/全frame対応を確認します。source読解だけは実行証拠ではありません。
 
@@ -30,7 +32,7 @@
 - cleanupは所有process/reader/forwardの実停止と、識別済み残留の安全な保全/通常再接続での回収です。remote JAR/journalの即時消失を一律gateにしません。現在候補で通常reopenにより回収できた事実を使えます。生存/未知/別projectや完成出力を削除せず、失敗保存attemptの保全は取得root回収とは別です。
 - 設定はApplyによるStore反映、Cancelの不変、通常close/reopen後の永続化を保証します。現在候補では通常closeの2 GUI入力とclose後の元設定復元・所有thread終了・既存出力保全が独立確認されています。これは一つの実証済み方法です。全試験の所要時間短縮やactive/失敗中closeの合格までは示しません。
 
-REAL34の初期段階延期と利用者の実機保留を保持し、共通host/IDE/code目的の18件は同artifact証拠を共有、実機固有残差の16件は保留解除後の少数共有smokeへ分担します。34回や16回の新実機工程を要求しません。実機固有取得/USB/描画/負荷をEMU又は合成から成功としません。内部数値・faultの保証をproduction回帰へ再分担した分と、実機の残差を区別します。既存の再起動後About操作経路延期を拡張せず、画像oracleの未校正、未帰属/欠落/過大な不確かさも未完了です。
+REAL34の初期段階延期と利用者の実機保留を保持し、共通host/IDE/code目的の18件は同artifact証拠を共有、実機固有残差の16件は保留解除後の少数共有smokeへ分担します。34回や16回の新実機工程を要求しません。実機固有取得/USB/描画/負荷をEMU又は合成から成功としません。内部数値・faultの保証をproduction回帰へ再分担した分と、実機の残差を区別します。既存の再起動後About操作経路延期を拡張せず、現行保証に必要な実画像IDの識別不足・未帰属/欠落/過大な不確かさは未完了です。旧延期文言に残る画像精度値は履歴として読み、再開時も現行の明示改訂と残るREAL固有契約を適用します。
 
 ## 既存試験群と今後の依頼
 
@@ -58,13 +60,15 @@ OS標準という名前やdecoderの多様性だけで別player/GUIを追加し�
 
 ## trusted-main改訂と現在候補
 
-`method_revision`はIssue230と直前223版のcanonical hash `3ee1d401997722423b4db5f52c07d8edb4b6e377bc1f6f5456c66fab8460af57`を固定します。変更したrecipient/videoの旧文言だけを`previous_methods`に保持し、223版の計画全文を再構成して照合します。そのmethod blockを除いた登録139計画のhash `993e76bb7a0bd6f9f864c2974b3ef4d4392665de51a4791c9cc0c094c394b50c`も照合し、全139key/208出典・原hash/延期が保全されることを共通resolverで検証します。groupは全Caseを一度ずつ覆い、置換は固定現契約にだけ適用します。後続製品Caseの変更を旧overrideで消しません。
+`method_revision`はIssue299と直前230版のcanonical hash `d544da51fd949b415001c2b4c939e1701fa6d7608eccfed2991b7db544ffd896`を固定します。`previous_precision`にprecisionの旧目的/方法/除外/前提、共通未完条件の旧文言と旧drift overrideを保持し、変更した7 expectedだけを戻して230版の全文を復元します。既存`previous_methods`から223版 `3ee1d401997722423b4db5f52c07d8edb4b6e377bc1f6f5456c66fab8460af57`、method blockを除いて登録139計画 `993e76bb7a0bd6f9f864c2974b3ef4d4392665de51a4791c9cc0c094c394b50c`も正確に復元・照合します。過去hashを改変後の文書から付け直しません。全139key/208出典・原hash/延期、全Caseを一度ずつ覆うgroupを共通resolverで検証します。置換は固定現契約だけに適用し、後続製品Caseの変更を旧overrideで消しません。
 
-改訂は独立レビュー後の固定main baseだけから読みます。候補830の正確な旧計画全文、登録223版と現行230版を許可し、method-only更新のため新build/導入/全GUIを要求しません。candidate単独改訂・任意の旧計画・欠落/不一致・symlink/重複JSON keyは拒否します。通常のdevelop管理同期/promotion条件は別にPMが引き継ぎます。製品/build/fixture変更や途中revert・不明な条件は既存history gateで拒否します。
+改訂は独立レビュー後の固定main baseだけから読みます。候補830の正確な旧計画全文、登録223/230版と現行299版を許可し、要件/方法だけの更新のため新build/導入/全GUIを要求しません。candidate単独改訂・任意の旧計画・欠落/不一致・symlink/重複JSON keyは拒否します。通常のmain→develop管理同期/promotion条件は別にPMが引き継ぎます。製品/build/fixture変更や途中revert・不明な条件は既存history gateで拒否します。
 
 現結果には現plan/revisionとgroup別全証拠を要求します。GOPの6個の旧証拠欄は現行bufferの`window_and_gop`へ統合し、1秒prune反例・IDR前中後・VFR/品質/容量/切出しを全て覆う回帰/FILEの参照を必須にします。旧観察のGOP6証拠は歴史上の旧条件で照合し保全します。旧aggregate pending/blocked/failからの成功事実は既存`responsibility_assessment`で原JSON/hash、正確な元plan、実成功facts、全有効条件へのcoverage、不変artifact/条件、未解決自製品失敗なしを確認します。文字列の存在だけで証拠の内容は保証できず、独立レビューが対応内容を確認します。方法変更や構造checkは遡及PASSではありません。
 
 本改訂から採用件数は増えません。#223当時の3/105と4件の再評価候補は履歴です。その後のsource830評価も自動で新revisionへ移行せず、PM/QAが各保持事実を現条件へ実際に対応付け、独立レビュー後に再集計します。未達/REAL・QA27/65/87/release10を引き継ぎ、計画改訂完了と製品受入完了を分けます。
+
+#206は初期139件の登録対象ではありません。QA294の旧aggregate FAILを`reassessed`で包んだり、`responsibility_assessment`を付けて機械promotion成功にしたりしません。採用後はPMが既存#206/QA294/#280へ、採用revision・固定D/ZIP・原観察者/実行日時・全3 Caseの保証対応・独立評価・新しい評価日時を記録し、旧観察と分けて読み戻します。現在要件の受入により#103は通常の#206→#103順、#224は精度だけの保留を解除できますが、実測計画/候補/モード/lease/復元は別条件です。QA65のhuman/REAL・#104最終GUI・#280最終v2の全Case/main条件は残り、完了済み初期版#10は再開しません。新しいpromotion adapterやQAを本改訂のために作りません。
 
 ## 過去改訂の記録
 
