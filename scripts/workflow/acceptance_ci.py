@@ -8,7 +8,7 @@ import subprocess
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 from pr_policy import validate
-from verification import verify_pr
+from verification import SHA, certificate_changes, git_read, verify_pr
 from agent_policy import CONTEXT
 
 
@@ -98,13 +98,34 @@ def recheck_main_repairs(api, repo, source_issue=None):
                 continue
             try:
                 if source_issue is None:
-                    issue = api(f'issues/{issue_id}')
-                    declaration = re.findall(r'^Acceptance repair: (.*)$', issue.get('body') or '', re.M)
-                    if declaration == ['none'] or (not declaration and not any(
-                            label.get('name') == 'type:bug' for label in issue.get('labels', []))):
-                        continue
+                    try:
+                        issue = api(f'issues/{issue_id}')
+                        if (not isinstance(issue, dict) or 'body' not in issue or
+                                issue['body'] is not None and not isinstance(issue['body'], str)):
+                            raise ValueError('Issue response requires a body string or null')
+                        declaration = re.findall(r'^Acceptance repair: (.*)$', issue['body'] or '', re.M)
+                        labels = issue.get('labels')
+                        if not declaration and (not isinstance(labels, list) or any(
+                                not isinstance(label, dict) or not isinstance(label.get('name'), str)
+                                for label in labels)):
+                            raise ValueError('Issue response requires labels to establish repair classification')
+                        if declaration == ['none'] or (not declaration and not any(
+                                label['name'] == 'type:bug' for label in labels)):
+                            ref = api('git/ref/heads/develop')
+                            obj = ref.get('object') if isinstance(ref, dict) else None
+                            base = obj.get('sha') if isinstance(obj, dict) else None
+                            if not isinstance(base, str) or not SHA.fullmatch(base):
+                                raise ValueError('Develop ref response requires a full commit SHA')
+                            head = pr['head']['sha']
+                            subprocess.run(['git', 'fetch', '--no-tags', 'origin', base, head], check=True)
+                            files = git_read('diff', '--no-renames', '--name-only', base, head).splitlines()
+                            if not any(certificate_changes(base, head, files, git_read)):
+                                continue
+                    except (OSError, IncompleteRead, ValueError, subprocess.CalledProcessError) as error:
+                        error.add_note(f'PR {pr["number"]}: acceptance dependency unknown; preserve pending review')
+                        errors.append(error)
                 api('statuses/' + pr['head']['sha'], 'POST', {'context': CONTEXT, 'state': 'pending',
-                    'description': 'Repair source or trusted main changed; recheck acceptance and independent assessment'})
+                    'description': 'Acceptance source or trusted main changed; recheck acceptance and independent assessment'})
                 pending.append(pr)
             except (OSError, IncompleteRead, json.JSONDecodeError, UnicodeDecodeError) as error:
                 error.add_note(f'PR {pr["number"]}: source lookup or review invalidation failed')
@@ -171,8 +192,9 @@ def check_pr(pr, api):
             or latest_base != trusted_head or latest.get('body') != current.get('body')
             or latest.get('title') != current.get('title')):
         raise ValueError('PR/base changed during acceptance validation; rerun')
-    if result.get('repair_contract_base') and api('git/ref/heads/main')['object']['sha'] != result['repair_contract_base']:
-        raise ValueError('Trusted main contract changed during acceptance validation; rerun')
+    for field in ('repair_contract_base', 'certificate_sync_main'):
+        if result.get(field) and api('git/ref/heads/main')['object']['sha'] != result[field]:
+            raise ValueError('Trusted main contract changed during acceptance validation; rerun')
     return result
 
 

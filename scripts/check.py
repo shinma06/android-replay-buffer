@@ -57,7 +57,8 @@ def main():
     subprocess.run(['git', 'diff', '--check'], cwd=ROOT, check=True)
     subprocess.run(['git', 'diff', '--cached', '--check'], cwd=ROOT, check=True)
     env = {key: value for key, value in os.environ.items() if not key.startswith('GIT_')}
-    subprocess.run([sys.executable, '-m', 'unittest', 'discover', '-s', 'scripts/workflow', '-p', 'test_*.py'],
+    subprocess.run([sys.executable, '-m', 'unittest', 'discover', '-s', 'scripts/workflow', '-p', 'test_*.py',
+                    '--durations', '10'],
                    cwd=ROOT, env=env, check=True)
     print('Harness checks passed. Application tests and real client/GUI acceptance are separate.')
     return 0

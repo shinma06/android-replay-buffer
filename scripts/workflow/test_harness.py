@@ -16,6 +16,33 @@ import handoff_registry
 
 
 class HarnessTest(unittest.TestCase):
+    def test_check_entrypoint_reports_durations_without_hiding_failure_or_empty_suite(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env = {k: v for k, v in os.environ.items() if not k.startswith('GIT_')}
+            env.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM='1')
+            subprocess.run(['git', 'init', '-q', tmp], env=env, check=True)
+            tests = root / 'scripts/workflow'
+            tests.mkdir(parents=True)
+            checker = root / 'scripts/check.py'
+            checker.write_bytes(Path(check.__file__).read_bytes())
+            for name, source, success in (
+                ('empty', '', False),
+                ('pass', 'import unittest\nclass Check(unittest.TestCase):\n'
+                         '    def test_example(self): self.assertTrue(True)\n', True),
+                ('fail', 'import unittest\nclass Check(unittest.TestCase):\n'
+                         '    def test_example(self): self.fail("intentional fixture failure")\n', False),
+            ):
+                with self.subTest(name=name):
+                    (tests / 'test_example.py').write_text(source)
+                    result = subprocess.run([sys.executable, str(checker)], cwd=root, env=env,
+                                            capture_output=True, text=True)
+                    self.assertEqual(result.returncode == 0, success, result.stderr)
+                    self.assertEqual('Harness checks passed.' in result.stdout, success)
+                    if source:
+                        self.assertIn('Ran 1 test', result.stderr)
+                        self.assertIn('Slowest test durations', result.stderr)
+
     def test_push_guard(self):
         branch = 'agent/12-sample'
         sha, old, zero = 'a' * 40, 'b' * 40, '0' * 40

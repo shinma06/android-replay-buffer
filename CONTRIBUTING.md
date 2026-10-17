@@ -10,6 +10,6 @@ python3 scripts/workflow/product_check.py
 python3 scripts/workflow/plugin_check.py
 ```
 
-PRには[テンプレート](.github/pull_request_template.md)のmetadata・Case JSON・実際の検証結果を記載し、[作業管理](docs/work-management.md)でProject/Milestone/実関係を確認します。Android Studioの実装は[共通知見](docs/android-studio.md)を入口にしてください。
+PRには[テンプレート](.github/pull_request_template.md)のmetadata・Case JSON・実際の検証結果を記載し、[作業管理](docs/work-management.md)でProject/Milestone/実関係を確認します。Android Studioの実装は[製品要件](docs/requirements.md)と[有効な製品責任](docs/verification/responsibility.md)を基準にし、[外部知見](docs/android-studio.md)は必要な場合に任意で利用します。
 
 プラグインの開始手順は [plugin開発](docs/plugin-development.md)、CLIの変更制約は [原型保全](docs/cli-origin.md) を参照してください。
