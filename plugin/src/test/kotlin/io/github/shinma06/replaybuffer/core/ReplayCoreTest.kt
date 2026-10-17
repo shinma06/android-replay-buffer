@@ -10,6 +10,40 @@ import kotlin.test.assertTrue
 
 class ReplayCoreTest {
     @Test
+    fun queuedEnableRejectsALaterModeChangeInsideTheControlBoundary() {
+        val workspace = Files.createTempDirectory("replay-mode-race-")
+        val core = ReplayCore(ReplaySettings(), workspace)
+        val blocked = java.util.concurrent.CountDownLatch(1)
+        val release = java.util.concurrent.CountDownLatch(1)
+        val once = java.util.concurrent.atomic.AtomicBoolean()
+        val subscription = core.subscribe {
+            if (!it.enabled && once.compareAndSet(false, true)) {
+                blocked.countDown()
+                check(release.await(10, TimeUnit.SECONDS))
+            }
+        }
+        try {
+            assertTrue(blocked.await(10, TimeUnit.SECONDS))
+            val on = core.setEnabled(true)
+            val change = core.applySettings(ReplaySettings(captureMode = CaptureMode.LOG_ONLY, replaySeconds = 60))
+            release.countDown()
+            assertTrue(on.get(10, TimeUnit.SECONDS).accepted)
+            assertFalse(change.get(10, TimeUnit.SECONDS).accepted)
+            assertEquals(ReplaySettings(), core.snapshot().settings)
+            assertEquals(0L, core.snapshot().settingsRevision)
+            assertTrue(core.snapshot().enabled)
+            assertTrue(core.setEnabled(false).get(10, TimeUnit.SECONDS).accepted)
+            assertTrue(core.applySettings(ReplaySettings(captureMode = CaptureMode.LOG_ONLY)).get().accepted)
+            assertEquals(StreamState.NOT_REQUESTED, core.snapshot().video.state)
+        } finally {
+            release.countDown()
+            subscription.close()
+            core.closeAsync().get(10, TimeUnit.SECONDS)
+            Files.delete(workspace)
+        }
+    }
+
+    @Test
     fun unresolvedSdkStillEnablesAndCloseStopsCallbacks() {
         val workspace = Files.createTempDirectory("replay-core-test-")
         val core = ReplayCore(ReplaySettings(), workspace)

@@ -64,7 +64,7 @@
       "steps": [
         "同候補のresource/store/fake回帰で動画resourceが使えない場合もclock準備が成立し、LOG_ONLYに動画push/server/forward/socket/GOPがないことを確認する。必要readerのheader未確認/不正入力を正常にしない。",
         "同じ実ロード候補・所有端末のログ専用ONでclock/helper・main/all又はlegacy all・対象識別を観察する。所有video server/encoder/forwardとhost動画ringがないことを確認する。対象アプリの通常再起動・許可済みの1回の切断再接続で帰属/世代・窓/欠落を確認する。",
-        "同じfixtureの有限marker入力を固定してSaveする。device/appの全対象行のID・元payload・時刻/帰属・clockと窓をFILEで照合する。71 LOG-REMAP、106 LOG-READER、206 CAPTUREと影響する保証を対応づける。",
+        "同じfixtureの有限marker入力を固定してSaveする。device/appの全対象行のID・元payload・時刻/帰属・clockと窓をFILEで照合する。71 LOG-REMAP、106 LOG-READER、206 CAPTURE-DEPENDENCIESと影響する保証を対応づける。",
         "OFF後に動画＋ログへ戻し、同じ候補で通常の動画取得と単一MP4・両ログSaveを代表観察する。全frame/PTS/窓/元データは既存FILE検査と共有し、Dの同期精度FAILや未測定性能の解消に換えない。"
       ],
       "expected": "ログ専用では動画経路が起動せず、必要な時計・全体ログと対象アプリログを維持する。通常モードで動画経路が復帰する。silent drop、動画由来の架空gap、時計不明の既知化、旧FAILの付け替えがない。"

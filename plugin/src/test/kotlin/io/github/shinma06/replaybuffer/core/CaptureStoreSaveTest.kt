@@ -948,7 +948,8 @@ class CaptureStoreSaveTest {
             val completed = output.directory
             val manifest = JsonParser.parseString(Files.readString(completed.resolve("session.json"))).asJsonObject
             assertFalse(manifest["files_sha256"].asJsonObject.has("session.json"))
-            assertEquals(setOf("state", "availableSeconds", "reason"), manifest["coverage"].asJsonObject["video"].asJsonObject.keySet())
+            assertEquals(setOf("state", "requested", "availableSeconds", "reason"), manifest["coverage"].asJsonObject["video"].asJsonObject.keySet())
+            assertTrue(manifest["coverage"].asJsonObject["video"].asJsonObject["requested"].asBoolean)
             val gap = manifest["gaps"].asJsonArray.single().asJsonObject
             assertTrue(gap["from_ns"].asJsonPrimitive.isString && gap["to_ns"].asJsonPrimitive.isString)
             assertTrue(manifest["build"].asJsonObject["source"].asString.matches(Regex("[a-f0-9]{40}")))
