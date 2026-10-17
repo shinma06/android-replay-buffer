@@ -2,7 +2,7 @@
 
 [製品要件](https://github.com/shinma06/android-replay-buffer/blob/4d278e65dec0c55e71d584ff24c7f6fa407586cb/docs/requirements.md)を実装するための設計です。設計の採用と実装・実機受入の完了は区別します。UI配置は [採用済みのIDE UI設計](https://github.com/shinma06/android-replay-buffer/blob/4d278e65dec0c55e71d584ff24c7f6fa407586cb/docs/design/ide-ui.md)（[#12](https://github.com/shinma06/android-replay-buffer/issues/12)）を参照してください。時刻・録画方式・出力形式は [採用済みの同期設計](https://github.com/shinma06/android-replay-buffer/blob/4d278e65dec0c55e71d584ff24c7f6fa407586cb/docs/design/timeline.md)（[#13](https://github.com/shinma06/android-replay-buffer/issues/13)）を参照してください。CLI原型の仕様とコードは変更しません。
 
-[固定develop原設計](https://github.com/shinma06/android-replay-buffer/blob/4d278e65dec0c55e71d584ff24c7f6fa407586cb/docs/plugin-design.md)を管理側へ接続し、保存attempt保全を#201、取得モードと正常0行の保存条件を#274で改訂します。製品のmain promotionや受入完了を意味しません。
+[固定develop原設計](https://github.com/shinma06/android-replay-buffer/blob/4d278e65dec0c55e71d584ff24c7f6fa407586cb/docs/plugin-design.md)を管理側へ接続し、保存attempt保全を#201、取得モードと正常0行の保存条件を#274で改訂します。#284の既定OFFの[クラッシュ報告による自動保存](crash-autosave.md)は同じ単一pin/writerへ接続します。製品のmain promotionや受入完了を意味しません。
 
 ## 保存失敗とデータ保全
 

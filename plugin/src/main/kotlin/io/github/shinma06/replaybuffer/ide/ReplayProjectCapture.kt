@@ -210,7 +210,7 @@ internal class ReplayProjectCapture(
             view = view.copy(snapshot = next)
             next.save.takeIf {
                 it.phase in setOf(SavePhase.COMPLETED, SavePhase.FAILED) &&
-                    (previous?.save?.requestId != it.requestId || previous?.save?.phase != it.phase)
+                    (previous?.save?.requestId != it.requestId || previous?.save?.attempt != it.attempt || previous?.save?.phase != it.phase)
             }
         }
         changed()
@@ -262,6 +262,7 @@ internal fun ReplaySettings.toCoreSettings(environment: AndroidReplayEnvironment
     saveDirectory = destination.takeIf(String::isNotEmpty)?.let(Path::of),
     replaySeconds = retentionSeconds,
     captureMode = captureMode,
+    autoSaveOnCrash = autoSaveOnCrash,
     application = if (appSelection == AppSelectionMode.MANUAL) {
         ApplicationTarget(manualPackage, ApplicationMode.MANUAL)
     } else {

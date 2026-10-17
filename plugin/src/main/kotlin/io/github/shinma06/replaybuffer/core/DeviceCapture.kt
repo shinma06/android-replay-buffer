@@ -71,12 +71,17 @@ internal class DeviceCapture(
                         }.toList()
                         val uid = identities.singleOrNull { it.first == selected.packageName }?.second
                         val exclusive = uid != null && identities.count { it.second == uid } == 1
+                        val psStart = System.nanoTime()
                         val ps = adb.command("-s", serial, "shell", "ps", "-A", "-o", "PID,UID,NAME")
+                        val psEnd = System.nanoTime()
                         val pids = ps.lineSequence().drop(1).mapNotNull {
                             val f = it.trim().split(Regex("\\s+"))
                             if (f.size >= 3 && (f[2] == selected.packageName || f[2].startsWith(selected.packageName + ":"))) f[0].toIntOrNull() else null
                         }.toSet()
-                        if (selected == application) store.app(selected.packageName, uid, pids, generation, exclusive)
+                        if (selected == application) {
+                            store.reporter(ReporterPoll(psStart, psEnd, generation, systemServerPid(ps)))
+                            store.app(selected.packageName, uid, pids, generation, exclusive)
+                        }
                     }.onFailure { if (selected == application) store.app(selected.packageName, null, emptySet(), generation) }
                 }
                 if (!pause(1000)) break

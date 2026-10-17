@@ -1,0 +1,124 @@
+{
+  "schema": 1,
+  "issue": 284,
+  "gui_required": true,
+  "reason": "クラッシュ報告による自動保存の検出・Apply・保存・結果/UIを変更する。固定候補の独立reviewと最小native/FILE/寿命/負荷受入は決定的検査と区別する。",
+  "cli_checks": [
+    "CrashProtocolTest / CrashAutosaveTest / CrashSaveLifecycleTestと既存protocol/store/core/writer/settings/ProjectCapture/UI回帰。宣言82仕様の実行結果とは呼ばない。",
+    "python3 scripts/workflow/product_check.py、python3 scripts/workflow/plugin_check.py、必要なpython3 scripts/check.py、clean committed HEADでpython3 scripts/workflow/change_impact.py --base origin/develop --run-tests。"
+  ],
+  "cases": [
+    {
+      "artifact": "plugin",
+      "preconditions": "#284のcleanな固定source SHA・標準ZIP/全JAR hash・version/source/dirtyと実ロードを同定する。native操作は別割当の共有GUI leaseと所有fixture、元設定の復元手順を用いる。unit/fake・FILE・native・実測を区別する。",
+      "provenance": [
+        "https://github.com/shinma06/android-replay-buffer/issues/284#issuecomment-6232598191",
+        "docs/crash-autosave.md",
+        "docs/verification/responsibility.md"
+      ],
+      "gpt": {
+        "status": "pending",
+        "reason": "実装と決定的検査の結果は固定PRへ記録する。新候補のnative/FILE/寿命/負荷受入はこの割当で未実施。"
+      },
+      "human": {
+        "status": "pending",
+        "reason": "未観察。既存の人間/REAL延期を保持し、新しい一律免除や必須条件を作らない。"
+      },
+      "fix_issue": null,
+      "fix_pr": null,
+      "recheck": "変更した検出・適用・固定保存・結果通知の保証を同一候補で評価する。元FAIL/unknownとQA65/298のpendingを保持し、旧観察を自動転記しない。",
+      "next_action": "writerは固定HEAD/base/check/ZIP/未実施範囲を渡して停止。PMが別sessionの独立実装reviewと必要な最小native/FILEを割当てる。独立残試験のQA移管と#280へのmain反映移管を双方向readbackするまで実装Issueをcloseしない。",
+      "id": "CRASH-AUTO-DETECT",
+      "change": "標準Java/Kotlin報告とtrusted platform eventを照合し、誤検出と不明帰属を保存しない",
+      "steps": [
+        "決定的検査で必須型/長さ/終端/UID/PID/process/epoch/receipt/poll freshness、opaque MUTF-8、重複/曖昧/PID再利用と別対象trafficを確認する。元record ID/raw/decode statusを保つ。",
+        "同じruntime/所有fixtureで実際の標準headerとam_crash/reporter帰属を照合する。各有効modeで1回の標準JVM positiveを観察し、普通ERROR/handled/非終了custom handler/別アプリ/正常終了を各1回確認する。公表するsubprocessだけ1例追加する。形式不一致はUNKNOWNを残す。"
+      ],
+      "expected": "照合済み対象だけ1事象として扱う。別対象/reportersは対象会計を使わず元ログへ残る。native/ANR・不明形式/帰属は成功にしない。全Androidやログ無欠損は主張しない。"
+    },
+    {
+      "artifact": "plugin",
+      "preconditions": "#284のcleanな固定source SHA・標準ZIP/全JAR hash・version/source/dirtyと実ロードを同定する。native操作は別割当の共有GUI leaseと所有fixture、元設定の復元手順を用いる。unit/fake・FILE・native・実測を区別する。",
+      "provenance": [
+        "https://github.com/shinma06/android-replay-buffer/issues/284#issuecomment-6232598191",
+        "docs/crash-autosave.md",
+        "docs/verification/responsibility.md"
+      ],
+      "gpt": {
+        "status": "pending",
+        "reason": "実装と決定的検査の結果は固定PRへ記録する。新候補のnative/FILE/寿命/負荷受入はこの割当で未実施。"
+      },
+      "human": {
+        "status": "pending",
+        "reason": "未観察。既存の人間/REAL延期を保持し、新しい一律免除や必須条件を作らない。"
+      },
+      "fix_issue": null,
+      "fix_pr": null,
+      "recheck": "変更した検出・適用・固定保存・結果通知の保証を同一候補で評価する。元FAIL/unknownとQA65/298のpendingを保持し、旧観察を自動転記しない。",
+      "next_action": "writerは固定HEAD/base/check/ZIP/未実施範囲を渡して停止。PMが別sessionの独立実装reviewと必要な最小native/FILEを割当てる。独立残試験のQA移管と#280へのmain反映移管を双方向readbackするまで実装Issueをcloseしない。",
+      "id": "CRASH-AUTO-SAVE",
+      "change": "1つの固定mapperと保持窓で単一pin/writerへ自動保存し、元データと報告時刻の限界を保存する",
+      "steps": [
+        "決定的検査で両mode、最終mapperによる境界変化、26秒でのdrain、5秒receipt境界、Java証拠の窓外、不足の上下限、既存pinとの競合とretryを確認する。保存先なし/時刻不明/窓外/実データなしで空pinを作らない。",
+        "DETECTの2保存を共有して、全ログ行の元bytes/ID/status/帰属/時刻、auto_triggerの不変事実と実窓、既存frame/PTS/gap/hashの全対象をFILE検査する。動画＋ログは動画があれば単一MP4、ログ専用は意図的な動画なし。代表的な読取りは既存の必要観察に合わせる。"
+      ],
+      "expected": "eligibility・出力行・triggerは同じ固定換算。再試行は同じ窓/triggerを保持する。platform報告を死亡時刻と呼ばず、先行証拠不在や直前区間不足を明記する。元FAILや同期不明を消さない。"
+    },
+    {
+      "artifact": "plugin",
+      "preconditions": "#284のcleanな固定source SHA・標準ZIP/全JAR hash・version/source/dirtyと実ロードを同定する。native操作は別割当の共有GUI leaseと所有fixture、元設定の復元手順を用いる。unit/fake・FILE・native・実測を区別する。",
+      "provenance": [
+        "https://github.com/shinma06/android-replay-buffer/issues/284#issuecomment-6232598191",
+        "docs/crash-autosave.md",
+        "docs/verification/responsibility.md"
+      ],
+      "gpt": {
+        "status": "pending",
+        "reason": "実装と決定的検査の結果は固定PRへ記録する。新候補のnative/FILE/寿命/負荷受入はこの割当で未実施。"
+      },
+      "human": {
+        "status": "pending",
+        "reason": "未観察。既存の人間/REAL延期を保持し、新しい一律免除や必須条件を作らない。"
+      },
+      "fix_issue": null,
+      "fix_pr": null,
+      "recheck": "変更した検出・適用・固定保存・結果通知の保証を同一候補で評価する。元FAIL/unknownとQA65/298のpendingを保持し、旧観察を自動転記しない。",
+      "next_action": "writerは固定HEAD/base/check/ZIP/未実施範囲を渡して停止。PMが別sessionの独立実装reviewと必要な最小native/FILEを割当てる。独立残試験のQA移管と#280へのmain反映移管を双方向readbackするまで実装Issueをcloseしない。",
+      "id": "CRASH-AUTO-LIFETIME",
+      "change": "既定OFFのApply境界・設定復元とcallbackに依存しない保存結果を保持する",
+      "steps": [
+        "設定/ProjectCapture/Coreで旧XML defaultfalse、Applyと取消/再設定、OFF中の設定保持、対象/世代/時計境界を検査する。実writerの公開前取消・検証済み完了後OFF/dispose・rename後検証失敗・終了待ちtimeout・retry/古いcallbackを順序制御して検査する。",
+        "同じロード候補で設定下書き/Apply/通常再open、待機/有効/上限停止・直近結果/残警告とkeyboard/狭幅を確認する。変更した接続で残る不足を明示し、保存競合又はOFF/project closeの1つだけ代表観察する。QA298の同一保証/同一候補の観察を共有できる。"
+      ],
+      "expected": "未適用設定や古い観測を使わない。writerの検証済み結果はoptional callback以前に確定し、OFF/disposeで失わない。flag/timeoutだけで取消完了とせず、失敗pin/保全出力を維持する。UIは生stackを公開せず、閉じたprojectへ更新しない。"
+    },
+    {
+      "artifact": "plugin",
+      "preconditions": "#284のcleanな固定source SHA・標準ZIP/全JAR hash・version/source/dirtyと実ロードを同定する。native操作は別割当の共有GUI leaseと所有fixture、元設定の復元手順を用いる。unit/fake・FILE・native・実測を区別する。",
+      "provenance": [
+        "https://github.com/shinma06/android-replay-buffer/issues/284#issuecomment-6232598191",
+        "docs/crash-autosave.md",
+        "docs/verification/responsibility.md"
+      ],
+      "gpt": {
+        "status": "pending",
+        "reason": "実装と決定的検査の結果は固定PRへ記録する。新候補のnative/FILE/寿命/負荷受入はこの割当で未実施。"
+      },
+      "human": {
+        "status": "pending",
+        "reason": "未観察。既存の人間/REAL延期を保持し、新しい一律免除や必須条件を作らない。"
+      },
+      "fix_issue": null,
+      "fix_pr": null,
+      "recheck": "変更した検出・適用・固定保存・結果通知の保証を同一候補で評価する。元FAIL/unknownとQA65/298のpendingを保持し、旧観察を自動転記しない。",
+      "next_action": "writerは固定HEAD/base/check/ZIP/未実施範囲を渡して停止。PMが別sessionの独立実装reviewと必要な最小native/FILEを割当てる。独立残試験のQA移管と#280へのmain反映移管を双方向readbackするまで実装Issueをcloseしない。",
+      "id": "CRASH-AUTO-BOUNDS",
+      "change": "検出・履歴・受付数を有界にし、長時間/負荷/累積出力の残検証を追跡する",
+      "steps": [
+        "16件/64KiB・256終端・8受付・30秒の各境界、別対象300組以上の無会計、上限停止と明示的再arm、手動保存維持を決定的に検査する。queue/自動retry/別readerが増えないことを確認する。",
+        "#224/QA298担当が既存の同一候補の有限長時間/負荷計画へ自動保存ON/OFF、成功/失敗試行、ring/pin/完成物/partial別の集計を組み込む。時間・入力量・回数・観測器・容量停止/復元条件を実行前に固定する。今回のsource検査をRSS/Android負荷の実測に換えない。"
+      ],
+      "expected": "上限で停止し手動保存と所有cleanupを保つ。8受付やring上限を全diskのquotaと呼ばない。完成物/失敗出力を自動削除しない。未測定/不利な結果を残し、負荷改善や全v2受入を推測しない。"
+    }
+  ]
+}

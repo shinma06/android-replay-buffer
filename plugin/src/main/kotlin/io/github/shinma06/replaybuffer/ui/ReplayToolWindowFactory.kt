@@ -72,6 +72,7 @@ private class ReplayToolWindowPanel(private val project: Project) : JPanel(Borde
     private val message = JBLabel()
     private val cleanup = JBLabel()
     private val saveState = JBLabel()
+    private val autoSave = readOnlyDetails("クラッシュ自動保存の適用状態と直近の結果", 3)
     private val videoTail = JBLabel()
     private val saveReason = JBLabel()
     private val failure = JBLabel()
@@ -110,6 +111,7 @@ private class ReplayToolWindowPanel(private val project: Project) : JPanel(Borde
             .addComponent(video).addComponent(deviceLog).addComponent(appLog)
             .addComponent(window).addComponent(sequence).addComponent(destination).addComponent(message)
             .addComponent(cleanup)
+            .addComponent(JBScrollPane(autoSave))
             .addComponent(saveButton).addComponent(saveReason).addComponent(saveState).addComponent(videoTail)
             .addComponent(openButton).addComponent(failureCard)
             .addComponent(gapScroll)
@@ -161,6 +163,9 @@ private class ReplayToolWindowPanel(private val project: Project) : JPanel(Borde
             if (snapshot?.frozen == true) "（切断前で固定・無効化まで保持）" else "（現在の窓）"
         sequence.text = "記録セッション: ${snapshot?.sequenceId ?: "未開始"}"
         destination.text = "保存先: ${snapshot?.settings?.saveDirectory ?: "未指定（設定で指定してください）"}"
+        val autoText = autoSaveDescription(snapshot) + if (snapshot != null &&
+            snapshot.settings.autoSaveOnCrash != store.settings().autoSaveOnCrash) "\n自動保存設定の反映待ち" else ""
+        if (autoSave.text != autoText) autoSave.text = autoText
         message.text = if (busy) "設定・操作を反映中…（新規保存は完了まで待ってください）" else view.message ?: snapshot?.error ?: " "
         cleanup.text = cleanupDescription(snapshot?.cleanupPendingCount ?: 0)
         cleanup.isVisible = cleanup.text.isNotEmpty()
@@ -270,9 +275,28 @@ internal fun captureModeDescription(mode: CaptureMode): String = when (mode) {
 internal fun saveDescription(save: SaveSnapshot?): String = (when (save?.phase) {
     SavePhase.WRITING -> "保存: 保存中…（取得は継続しています）"
     SavePhase.FAILED -> "保存: 保存失敗（固定した対象を再試行できます）"
+    SavePhase.CANCELLED -> "保存: 公開前に取消し"
     SavePhase.COMPLETED -> "保存: 完了" + if (save.missingKinds.isNotEmpty()) " / 不足・欠落: ${save.missingKinds.map(::streamName).joinToString("、")}" else ""
     else -> "保存: 待機"
-}) + if (save != null && save.phase != SavePhase.IDLE) " / ${captureModeDescription(save.captureMode)}" else ""
+}) + (if (save?.autoEventId != null) "（自動保存）" else "") +
+    if (save != null && save.phase != SavePhase.IDLE) " / ${captureModeDescription(save.captureMode)}" else ""
+
+internal fun autoSaveDescription(snapshot: ReplaySnapshot?): String {
+    if (snapshot == null) return "クラッシュ自動保存: 設定を確認中…"
+    val auto = snapshot.autoSave
+    return buildString {
+        append("クラッシュ自動保存: ${if (snapshot.settings.autoSaveOnCrash) "設定ON" else "設定OFF"} / ${auto.reason.orEmpty()}")
+        append("\n受付可能: 残り${auto.admissionsRemaining}回 / 保存しなかった報告: ${auto.notSavedCount}件")
+        auto.lastOutcome?.let { append("\n直近: ${it.reason.description}") }
+        auto.warning?.let { append("\n要確認: $it") }
+        snapshot.lastSave?.takeIf { it.autoEventId != null }?.let {
+            append("\n保存要求: ${it.requestId} / 試行${it.attempt} / ${saveDescription(it)}")
+            append("\n保存先: ${it.directory}")
+            it.retainedPath?.let { path -> append("\n保全した出力: $path") }
+        }
+        append("\nnative/ANRは対応外。基準はplatformの報告時刻で、死亡時刻ではありません。")
+    }
+}
 
 internal fun videoTailDescription(save: SaveSnapshot?): String {
     val tail = save?.videoTail ?: return ""

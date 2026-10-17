@@ -36,6 +36,7 @@ internal data class FrozenCapture(
     val endUncertainty: Long = 0, val windowClockEpoch: Int? = null,
     val clockRecoveries: Map<CaptureGap, ClockSample> = emptyMap(),
     val videoCuts: Map<CaptureGap, VideoCut> = emptyMap(),
+    val autoTrigger: AutoTrigger? = null,
 ) {
     val empty: Boolean get() = video.isEmpty() && logs.isEmpty()
     val windowKnown: Boolean get() = endUncertainty != Long.MAX_VALUE
@@ -51,6 +52,7 @@ internal class CaptureStore(
     private val created: (Path) -> Unit = {},
     private val removed: (Path) -> Unit = {},
     val captureMode: CaptureMode = CaptureMode.VIDEO_AND_LOGS,
+    val autosave: CrashAutosave = CrashAutosave(),
 ) : AutoCloseable {
     val sequence: String = UUID.randomUUID().toString()
     private val video by lazy { ArrayDeque<VideoEntry>() }
@@ -87,6 +89,9 @@ internal class CaptureStore(
     private val videoFileRefs = mutableMapOf<Path, Int>()
     private var pinnedFiles = emptySet<Path>()
     private val unusedCandidates = mutableSetOf<Path>()
+    private var reporter: ReporterPoll? = null
+    private var autoDevice: String? = null
+    private var autoTarget: String? = null
 
     init {
         Files.createDirectory(directory, PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rwx------")))
@@ -98,6 +103,8 @@ internal class CaptureStore(
 
     @Synchronized
     fun generation(value: Long) {
+        autosave.refresh(null)
+        reporter = null
         decodeRun = Math.incrementExact(decodeRun)
         generation = value
         generationClockSample = clock.snapshot().lastOrNull()
@@ -239,7 +246,8 @@ internal class CaptureStore(
     private fun videoReady(): Boolean = channel != null && video.lastOrNull { it.key }?.file == currentFile
 
     @Synchronized
-    fun app(packageName: String?, uid: Long?, pids: Set<Int>, owner: Long, uidExclusive: Boolean = false) {
+    fun app(packageName: String?, uid: Long?, pids: Set<Int>, owner: Long, uidExclusive: Boolean = false,
+            host: Long = System.nanoTime()) {
         if (closed || owner != generation) return
         require(pids.size <= 1024)
         appResolved = uid != null
@@ -248,7 +256,7 @@ internal class CaptureStore(
         val anchor = samples.lastOrNull { it.valid }
         if (last == null || last.packageName != packageName || last.uid != uid || last.pids != pids ||
             last.uidExclusive != uidExclusive || last.from == null || last.epoch != anchor?.epoch) {
-            val now = anchor?.let { it.elapsed + (System.nanoTime() - it.received).coerceAtLeast(0) }
+            val now = anchor?.let { it.elapsed + (host - it.received).coerceAtLeast(0) }
             if (last != null) {
                 val end = if (last.epoch == anchor?.epoch) now else samples.lastOrNull { it.epoch == last.epoch }?.elapsed
                 // A previous sample cannot close a period that began later by host extrapolation.
@@ -261,6 +269,33 @@ internal class CaptureStore(
         }
         status("app_log", if (uid != null) StreamState.CAPTURING else StreamState.UNAVAILABLE,
             if (uid == null) "対象アプリを解決できません" else null, owner)
+    }
+
+    @Synchronized
+    fun reporter(value: ReporterPoll) {
+        if (!closed && value.generation == generation) reporter = value
+    }
+
+    @Synchronized
+    fun configureAuto(settings: ReplaySettings, revision: Long, device: String?, active: Boolean,
+                      host: Long = System.nanoTime()) {
+        autoDevice = device
+        autoTarget = settings.application.packageName
+        autosave.configure(settings.autoSaveOnCrash, active, autoTarget, revision)
+        refreshAuto(host)
+    }
+
+    private fun refreshAuto(host: Long) = synchronized(clock) {
+        val anchor = clock.snapshot().lastOrNull()
+        val device = autoDevice
+        val ready = !closed && fixedEnd == null && device != null && autoTarget != null &&
+            apps.peekLast()?.packageName == autoTarget && anchor != null && anchor !== generationClockSample &&
+            clock.certain(host) && host >= anchor.received
+        val boundary = if (ready) try {
+            CrashBarrier(device, anchor.boot, generation, clock.currentEpoch(), host,
+                Math.addExact(anchor.wall, host - anchor.received))
+        } catch (_: ArithmeticException) { null } else null
+        autosave.refresh(boundary)
     }
 
     @Synchronized
@@ -280,6 +315,9 @@ internal class CaptureStore(
         }
         val row = LogEntry(UUID.randomUUID().toString(), source, generation, time, retained, app, host)
         logs += row
+        refreshAuto(host)
+        val selectedUid = apps.peekLast()?.takeIf { it.packageName == autoTarget && it.uidExclusive }?.uid
+        autosave.observe(row, period, reporter, selectedUid)
         logBytes += source.raw.size + 256
         if (logBytes > logLimit && fixedEnd == null) logRetentionSeconds?.let { seconds ->
             synchronized(clock) {
@@ -370,11 +408,11 @@ internal class CaptureStore(
     }
 
     @Synchronized
-    fun capture(settings: ReplaySettings): FrozenCapture? = synchronized(clock) {
+    fun capture(settings: ReplaySettings, trigger: CrashPair? = null, host: Long = System.nanoTime()): FrozenCapture? = synchronized(clock) {
         check(pinned == null) { "保存対象は既に固定されています" }
         require(settings.captureMode == captureMode) { "取得中のモードと保存設定が一致しません" }
-        val end = end() ?: return null
-        val uncertainty = fixedUncertainty ?: clock.endUncertainty()
+        val end = fixedEnd ?: clock.now(host) ?: latest() ?: return null
+        val uncertainty = fixedUncertainty ?: clock.endUncertainty(host)
         val known = uncertainty != Long.MAX_VALUE
         val start = maxOf(0L, started ?: end, end - settings.replaySeconds * 1_000_000_000L)
         val logTime = clock.logMapper()
@@ -403,11 +441,16 @@ internal class CaptureStore(
         val frames = all.filter { (!known || it.retainedAt <= end) && it.file in files }.map { frame ->
             frame.copy(time = clock.video(frame.pts, frame.host, frame.time.epoch))
         }
-        val value = FrozenCapture(UUID.randomUUID().toString(), sequence, generation, start, end,
+        var value = FrozenCapture(UUID.randomUUID().toString(), sequence, generation, start, end,
             settings.replaySeconds, frames.toList(), rows.toList(), gaps.toList(), clock.snapshot(), apps.toList(), settings,
             streams(settings.replaySeconds, end), endUncertainty = uncertainty, windowClockEpoch = fixedEpoch ?: clock.currentEpoch(),
             clockRecoveries = clockRecoveries.toMap(), videoCuts = videoCuts.toMap())
-        if (value.empty && !(logWindowReady() && start < end)) return null
+        if (trigger != null) {
+            autosave.admissionProblem(trigger, host)?.let { throw AutoSaveRejected(it) }
+            if (fixedEnd != null || !clock.certain(host)) throw AutoSaveRejected(AutoSaveReason.NOT_SAVED_CLOCK_UNKNOWN)
+            value = value.copy(autoTrigger = frozenAutoTrigger(trigger, value, logTime, host))
+        }
+        if (value.empty && (trigger != null || !(logWindowReady() && start < end))) return null
         pinned = value
         pinnedFiles = value.video.map { it.file }.toSet()
         return value

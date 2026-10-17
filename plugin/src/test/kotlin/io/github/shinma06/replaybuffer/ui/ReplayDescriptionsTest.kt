@@ -35,6 +35,21 @@ class ReplayDescriptionsTest {
     )
 
     @Test
+    fun `auto result and sticky warning remain distinct after acquisition is off`() {
+        val current = ReplaySnapshot(1, 1, false, CaptureState.DISABLED, ReplaySettings(autoSaveOnCrash = true), 1,
+            autoSave = io.github.shinma06.replaybuffer.core.AutoSaveSnapshot(
+                io.github.shinma06.replaybuffer.core.AutoSaveState.WAITING, "取得待ち", 7, 1,
+                io.github.shinma06.replaybuffer.core.AutoSaveOutcome("event", true,
+                    io.github.shinma06.replaybuffer.core.AutoSaveReason.SAVED, "request"),
+                "以前の報告を保存できませんでした"),
+            lastSave = SaveSnapshot(SavePhase.COMPLETED, "request", directory = directory, attempt = 2, autoEventId = "event"))
+        val text = autoSaveDescription(current)
+        for (part in listOf("設定ON", "取得待ち", "残り7回", "1件", "自動保存が完了", "要確認", "request", "試行2", directory.toString(), "native/ANR"))
+            assertTrue(text.contains(part), part)
+        assertFalse(saveDescription(current.lastSave).contains("待機"))
+    }
+
+    @Test
     fun `log only mode is explicit in current stream completed save and frozen retry descriptions`() {
         assertEquals("動画: 対象外（ログ専用）", streamDescription("動画", StreamSnapshot(StreamState.NOT_REQUESTED)))
         val save = SaveSnapshot(SavePhase.COMPLETED, "quiet", captureMode = CaptureMode.LOG_ONLY)

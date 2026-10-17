@@ -312,10 +312,10 @@ Files.writeString(fake,"#!/usr/bin/python3\nimport sys,pathlib\nr=pathlib.Path(_
 fake.toFile().setExecutable(true);
 
   CaptureResources resources=(CaptureResources)ctor(CaptureResources.class,4,Files.createDirectory(r.resolve("resources")),null,2,null);
-CaptureStore store=(CaptureStore)ctor(CaptureStore.class,10,r.resolve("ring"),null,0L,0L,0L,null,null,null,254,null);
+CaptureStore store=(CaptureStore)ctor(CaptureStore.class,11,r.resolve("ring"),null,0L,0L,0L,null,null,null,null,510,null);
 ApplicationTarget app=(ApplicationTarget)ctor(ApplicationTarget.class,5,null,null,null,7,null);
 DeviceCapture cap=new DeviceCapture(fake,"fixture-1",resources,store,1,app);
-ReplaySettings settings=new ReplaySettings(fake,null,60,app,CaptureMode.VIDEO_AND_LOGS);
+ReplaySettings settings=new ReplaySettings(fake,null,60,app,CaptureMode.VIDEO_AND_LOGS,false);
 ReplayCore core=new ReplayCore(settings,r.resolve("workspace"),r.resolve("journal"));
 core.applySettings(settings).get(5,TimeUnit.SECONDS);
 ScheduledThreadPoolExecutor control=(ScheduledThreadPoolExecutor)get(get(core,"control"),"e");
