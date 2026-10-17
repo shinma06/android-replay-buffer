@@ -11,6 +11,7 @@ GUI reason: <Case IDと必要挙動。不要なら具体的理由とCLI検証>
 ## 検証
 
 - Tests: <コマンド/結果とCI URL>
+- CI impact: <[変更時の運用](../docs/setup/ci.md#変更時の運用)に従う影響・品質条件・測定/既存証拠再利用/省略の理由とIssue記録。実行への影響がなければ理由一言。劣化/切戻しのownerと残条件>
 - Independent review: <担当session・固定HEAD/base・指摘と解決・結果URL>
 - Context review: <開発コンテキストを作成/更新/監査した場合、docs/context.mdの共通規則で用途/言語/形式/正本/読込経路/証拠・例外、旧要件の配置、検証済みと未確認を照合。対象外ならその旨>
 - 外部知見（採用した場合のみ）: <docs/android-studio.mdに従い固定source・採用/適合理由・ARBでの検証を記録。不参照の申告は不要>
