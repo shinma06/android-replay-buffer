@@ -1532,6 +1532,8 @@ def certificate_changes(base, head, files, git):
             before_blob, after_blob = (git('ls-tree', ref, '--', changed) for ref in (before_ref, after_ref))
             before = regular_json(before_ref, changed, git) if before_blob else {}
             after = regular_json(after_ref, changed, git) if after_blob else {}
+            if not isinstance(before, dict) or not isinstance(after, dict):
+                raise ValueError('Changed acceptance record must be a JSON object')
             if (before_blob != after_blob and
                     ('evidence_certificates' in before or 'evidence_certificates' in after) and
                     after_blob != git('ls-tree', base, '--', changed)):

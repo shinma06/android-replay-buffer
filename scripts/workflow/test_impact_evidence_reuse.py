@@ -1142,6 +1142,15 @@ class CertificateSyncTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'main changed'):
             self.verify(moving)
 
+    def test_malformed_archive_shape_is_an_explicit_dependency_failure(self):
+        for record in (None, [], 'invalid'):
+            with self.subTest(record=record):
+                self.git('reset', '--hard', self.clean)
+                self.write(CERT_PATH, json.dumps(record))
+                self.commit('malformed archive fixture')
+                with self.assertRaisesRegex(ValueError, 'JSON object'):
+                    self.verify()
+
     def test_merge_cannot_discard_main_archives_while_leaving_no_net_certificate_diff(self):
         own_record = self.git('show', self.clean + ':' + self.path)
         self.git('reset', '--hard', self.base)
