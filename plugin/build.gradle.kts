@@ -109,7 +109,7 @@ tasks.buildSearchableOptions { enabled = false }
 
 // Build-only D8: users need neither an Android build-tools installation nor a runtime download.
 val clockCompiler = configurations.create("clockCompiler")
-val clockLibrary = files(providers.environmentVariable("ANDROID_HOME").map { "$it/platforms/android-37.0/android.jar" })
+val clockLibrary = files(providers.environmentVariable("ANDROID_HOME").map { "$it/platforms/android-37.2/android.jar" })
 dependencies {
     add(clockCompiler.name, "com.android.tools:r8:9.5.26")
 }
@@ -121,7 +121,7 @@ val verifyCaptureInputs = tasks.register("verifyCaptureInputs") {
         val jcodec = runtime.get().files.single { it.name == "jcodec-0.2.5.jar" }
         check(hash(jcodec) == "890329dad124e8b739c1d6602a59a53c8a474daddff265c2561e21c498496c81")
         check(hash(clockCompiler.singleFile) == "3502f087388ce95bbf5254555927f09385dc2636873964d0bd53f3eaf4fb49ad")
-        check(hash(clockLibrary.singleFile) == "bf1b4387cc7ca94fc6ef684f040d9d16fbf16248e181819f020736ea2053f177")
+        check(hash(clockLibrary.singleFile) == "1db2419dbd45457f83b90ef8a7ef41e118174782c9a5c2185b55899df022767f")
         val server = file("src/main/resources/replay/deps/scrcpy-server-v5.0.1")
         check(hash(server) == "764eb6f79811d5211fe9df341120882ba9994c7a61b897d7bf3fb662e53bc536")
     }

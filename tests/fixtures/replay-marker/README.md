@@ -7,7 +7,7 @@
 | modules / debug applicationId | `appA` / `io.github.shinma06.replaybuffer.qa.appa.debug`、`appB` / `io.github.shinma06.replaybuffer.qa.appb.debug` |
 | 共通namespace | `io.github.shinma06.replaybuffer.fixture`。自動対象はこれではなく実applicationIdで照合する |
 | AGP / Gradle | 9.4.1 / 9.8.1（Wrapper配布SHA-256固定） |
-| SDK / build tools / minSdk | 37.0 / 37.0.0 / 29。これより古い端末はこのfixtureでは検証できない |
+| SDK / build tools / minSdk | 37.2 / 37.0.0 / 29。これより古い端末はこのfixtureでは検証できない |
 | Java source/target | 17（Android向けdesugar対象）。build実行はJDK 27 |
 | log tag | `REPLAY_QA`。識別子はpackage + source + run UUID + view UUID + PID + event番号 |
 
@@ -15,7 +15,7 @@ AGP/Gradleの組合せは[公式互換表](https://developer.android.com/build/r
 
 ## buildと識別
 
-既存SDKの`platforms;android-37.0`と`build-tools;37.0.0`、JDKを使用します。次はbuildだけです。ADB、install、Emulator、IDE起動は呼びません。
+既存SDKの`platforms;android-37.2`と`build-tools;37.0.0`、JDKを使用します。次はbuildだけです。ADB、install、Emulator、IDE起動は呼びません。
 
 ```bash
 # repository root。SDK/JDKは準備担当が実環境に合わせる

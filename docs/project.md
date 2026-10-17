@@ -35,6 +35,6 @@ python3 scripts/workflow/product_check.py
 python3 scripts/workflow/change_impact.py --base origin/main --run-tests
 ```
 
-check.pyは管理ファイル・リンク・symlink・秘密候補の限定検査とハーネス回帰試験、product_check.pyは全CLI Pythonモジュールのcompile/importと既存2ケースです。CLI原型保全checkerがある候補/昇格後ツリーでは、先にmanifestによる21ファイルの保全照合も行います。Python3.9 jobは同じ検査と、未読込みモジュールに3.10構文を入れた所有fixtureの拒否回帰を実行します。構文・import確認はAPI/録画/実機互換性全体の保証ではありません。daemonやADB、録画、launchdを起動しません。プラグイン変更は `python3 scripts/workflow/plugin_check.py`（JDK 27 / JAVA_HOME、SDK API 37.0 revision 2 / ANDROID_HOMEが必要）でGradleのcheck/buildPlugin/verifyPluginStructureを実行します。build成功はIDE受入を意味しません。
+check.pyは管理ファイル・リンク・symlink・秘密候補の限定検査とハーネス回帰試験、product_check.pyは全CLI Pythonモジュールのcompile/importと既存2ケースです。CLI原型保全checkerがある候補/昇格後ツリーでは、先にmanifestによる21ファイルの保全照合も行います。Python3.9 jobは同じ検査と、未読込みモジュールに3.10構文を入れた所有fixtureの拒否回帰を実行します。構文・import確認はAPI/録画/実機互換性全体の保証ではありません。daemonやADB、録画、launchdを起動しません。プラグイン変更は `python3 scripts/workflow/plugin_check.py`（JDK 27 / JAVA_HOME、SDK API 37.2 revision 1 / ANDROID_HOMEが必要）でGradleのcheck/buildPlugin/verifyPluginStructureを実行します。build成功はIDE受入を意味しません。
 
 CLI変更ではprocessの所有と停止、再接続、バッファ容量、時刻対応、保存失敗時のデータ保全、ログの秘密情報を確認します。Android Studio側はLifecycle/EDT/dispose、非同期設定反映、購読解除と取得process終了を確認します。DBを使用しないためDBクエリ検証は対象外です。

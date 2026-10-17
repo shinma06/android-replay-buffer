@@ -14,7 +14,7 @@ License: jcodec-LICENSE.txt, source license revision 4ba922aca445c4df59f99e183c7
 https://github.com/jcodec/jcodec/blob/4ba922aca445c4df59f99e183c79d0538e5cb53f/LICENSE
 
 Replay clock helper is this project's Java source compiled to a deterministic DEX JAR.
-Build-only: Google R8/D8 9.5.26 (BSD 3-Clause), Android SDK API 37.0 revision 2 (Apache 2.0 API stubs).
+Build-only: Google R8/D8 9.5.26 (BSD 3-Clause), Android SDK API 37.2 revision 1 (Apache 2.0 API stubs).
 These build tools are not shipped in the plugin. Their input JAR hashes are verified by verifyCaptureInputs.
 Generated replay/deps/identity.properties records source SHA, dirty flag, clock JAR and dependency hashes.
 Users need only their Android SDK adb. There is no runtime download, PATH tool resolution, Python or ffmpeg invocation.

@@ -15,7 +15,7 @@
 | IntelliJ Platform Gradle Plugin | 2.19.0 |
 | Gradle Wrapper | 9.8.1、distribution SHA-256固定 |
 | JVM test | JUnit BOM 6.1.3。JupiterとPlatform launcherを同じBOMで解決 |
-| 時計DEXのbuild入力 | R8/D8 9.5.26、Android SDK API 37.0 revision 2。DEX min API 24 |
+| 時計DEXのbuild入力 | R8/D8 9.5.26、Android SDK API 37.2 revision 1。DEX min API 24 |
 | 開発版 / 正式候補 | 既定は `0.2.0-dev.<source SHA>`。未commit差分には `-dirty`。正式候補はcleanなsourceで `-PpluginVersion=0.2.0` |
 
 2026-10-17時点の公式stableを採用します。[Android Studio一覧](https://plugins.jetbrains.com/docs/intellij/android-studio-releases-list.html)と対象IDEのproduct-info、[Kotlin 2.4.21](https://github.com/JetBrains/kotlin/releases/tag/v2.4.21)、[Gradle 9.8.1](https://docs.gradle.org/9.8.1/release-notes.html)、[JUnit 6.1.3](https://github.com/junit-team/junit-framework/releases/tag/r6.1.3)を照合しました。[Kotlinの公式互換表](https://kotlinlang.org/docs/gradle-configure-project.html)の完全対応範囲はGradle 9.7.0までなので、9.8.1は本projectの実build/testsで適合を確認します。GradleはJava 27をサポートし、プラグインのJVM/API targetはIDEが使う25に限定します。[Platform pluginのtask convention](https://github.com/JetBrains/intellij-platform-gradle-plugin/blob/2.19.0/src/main/kotlin/org/jetbrains/intellij/platform/gradle/plugins/KotlinJvmToolchainConventions.kt)がtoolchain値を使うため、Kotlinコンパイルtaskにもtarget 25を明示しています。
@@ -26,7 +26,7 @@
 
 ## ビルド
 
-JDK 27を `JAVA_HOME`、Android SDKを `ANDROID_HOME` に設定します。SDKの `platforms;android-37.0` revision 2がbuild専用の公開API入力です。`android.jar`、R8、scrcpy server、JCodecのSHA-256をbuildで照合します。IDE同梱JBR 25だけではbuild toolchainを満たしません。
+JDK 27を `JAVA_HOME`、Android SDKを `ANDROID_HOME` に設定します。SDKの `platforms;android-37.2` revision 1がbuild専用の公開API入力です。`android.jar`、R8、scrcpy server、JCodecのSHA-256をbuildで照合します。IDE同梱JBR 25だけではbuild toolchainを満たしません。
 
 ```bash
 export JAVA_HOME="/opt/homebrew/opt/openjdk/libexec/openjdk.jdk/Contents/Home"
