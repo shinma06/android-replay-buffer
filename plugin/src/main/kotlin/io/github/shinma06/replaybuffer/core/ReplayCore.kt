@@ -78,7 +78,7 @@ class ReplayCore(initialSettings: ReplaySettings, private val workspace: Path, c
                     try {
                         resources?.close(); resources = null
                         // Extraction writes only these exact new names; never clean unrelated entries.
-                        Files.deleteIfExists(root.resolve("scrcpy-server-v4.0"))
+                        Files.deleteIfExists(root.resolve("scrcpy-server-v5.0.1"))
                         Files.deleteIfExists(root.resolve("replay-clock.jar"))
                         closeLocalOwnership()
                     } catch (cleanup: Exception) { e.addSuppressed(cleanup) }

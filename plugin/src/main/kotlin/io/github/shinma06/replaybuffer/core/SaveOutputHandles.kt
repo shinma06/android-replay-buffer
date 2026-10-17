@@ -187,7 +187,7 @@ internal class SaveOutputFile private constructor(private val descriptor: Int) :
             val bytes = ByteBuffer.allocate(8192)
             while (channel.read(bytes) >= 0) { bytes.flip(); digest.update(bytes); bytes.clear() }
         }
-        return digest.digest().joinToString("") { "%02x".format(it) }
+        return java.util.HexFormat.of().formatHex(digest.digest())
     }
 
     override fun close() {

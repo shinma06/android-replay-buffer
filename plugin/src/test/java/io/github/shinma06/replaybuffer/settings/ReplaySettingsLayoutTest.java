@@ -50,8 +50,7 @@ class ReplaySettingsLayoutTest {
         try {
             SwingUtilities.invokeAndWait(() -> {
                 for (String destination : List.of("", "/disposable/" + "long-directory/".repeat(12) + "save")) {
-                    var saved = new ReplaySettingsState();
-                    saved.setDestination(destination);
+                    var saved = new ReplaySettingsState(false, 180, destination, AppSelectionMode.AUTOMATIC, "");
                     store.loadState(saved);
                     var configurable = new ReplaySettingsConfigurable(project);
                     try {

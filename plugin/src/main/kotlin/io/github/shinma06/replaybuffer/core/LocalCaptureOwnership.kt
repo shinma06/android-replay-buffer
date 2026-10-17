@@ -112,7 +112,7 @@ internal class LocalCaptureOwnership private constructor(
         internal const val MAX_BYTES = (MAX_ENTRIES + 2) * (MAX_IDENTITY_BYTES + 64) + 8192
         private val tokenPattern = Regex("[0-9a-f-]{36}")
         private val packetPattern = Regex("ring/gop-[0-9a-f-]{36}\\.h264")
-        private fun allowed(name: String) = name in setOf(".", "ring", "scrcpy-server-v4.0", "replay-clock.jar") || packetPattern.matches(name)
+        private fun allowed(name: String) = name in setOf(".", "ring", "scrcpy-server-v4.0", "scrcpy-server-v5.0.1", "replay-clock.jar") || packetPattern.matches(name)
         private fun identity(attributes: PosixFileAttributes): List<String> {
             require(!attributes.isSymbolicLink && (attributes.isDirectory || attributes.isRegularFile))
             require(attributes.owner().name == System.getProperty("user.name") && attributes.permissions().none {
@@ -240,7 +240,7 @@ internal class LocalCaptureOwnership private constructor(
                 if (path == ring) {
                     require(Files.isDirectory(path, NOFOLLOW_LINKS))
                     packets += Files.newDirectoryStream(path).use { it.take(MAX_ENTRIES + 1) }.also { require(it.size <= MAX_ENTRIES) }
-                } else require(path.fileName.toString() in setOf("scrcpy-server-v4.0", "replay-clock.jar") && Files.isRegularFile(path, NOFOLLOW_LINKS))
+                } else require(path.fileName.toString() in setOf("scrcpy-server-v4.0", "scrcpy-server-v5.0.1", "replay-clock.jar") && Files.isRegularFile(path, NOFOLLOW_LINKS))
             }
             for (path in packets) {
                 require(Files.isRegularFile(path, NOFOLLOW_LINKS) && identity(path) == entries["ring/${path.fileName}"])

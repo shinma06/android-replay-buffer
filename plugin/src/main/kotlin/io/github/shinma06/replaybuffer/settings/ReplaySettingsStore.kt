@@ -1,11 +1,12 @@
 package io.github.shinma06.replaybuffer.settings
 
-import com.intellij.openapi.components.PersistentStateComponent
+import com.intellij.openapi.components.SerializablePersistentStateComponent
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.components.State
 import com.intellij.openapi.components.Storage
 import com.intellij.openapi.components.StoragePathMacros
 import com.intellij.util.messages.Topic
+import com.intellij.util.xmlb.annotations.OptionTag
 import io.github.shinma06.replaybuffer.core.ApplicationMode
 import io.github.shinma06.replaybuffer.core.ApplicationTarget
 import io.github.shinma06.replaybuffer.core.ReplaySettings as CoreReplaySettings
@@ -77,13 +78,18 @@ internal fun isApplicationId(value: String): Boolean = try {
     false
 }
 
-/** Keep mutable XML state detached from the immutable settings consumed by capture. */
+/** Explicit option bindings keep legacy XML fields when the state becomes immutable. */
 data class ReplaySettingsState(
-    var enabled: Boolean = false,
-    var retentionSeconds: Int = 180,
-    var destination: String = "",
-    var appSelection: AppSelectionMode = AppSelectionMode.AUTOMATIC,
-    var manualPackage: String = "",
+    @field:OptionTag("enabled")
+    @JvmField val enabled: Boolean = false,
+    @field:OptionTag("retentionSeconds")
+    @JvmField val retentionSeconds: Int = 180,
+    @field:OptionTag("destination")
+    @JvmField val destination: String = "",
+    @field:OptionTag("appSelection")
+    @JvmField val appSelection: AppSelectionMode = AppSelectionMode.AUTOMATIC,
+    @field:OptionTag("manualPackage")
+    @JvmField val manualPackage: String = "",
 )
 
 @Service(Service.Level.PROJECT)
@@ -91,20 +97,17 @@ data class ReplaySettingsState(
     name = "io.github.shinma06.replaybuffer.settings.ReplaySettingsStore",
     storages = [Storage(StoragePathMacros.WORKSPACE_FILE)],
 )
-class ReplaySettingsStore : PersistentStateComponent<ReplaySettingsState> {
-    @Volatile
-    private var stored = ReplaySettingsState()
+class ReplaySettingsStore : SerializablePersistentStateComponent<ReplaySettingsState>(ReplaySettingsState()) {
 
-    val enabled: Boolean get() = stored.enabled
+    val enabled: Boolean get() = state.enabled
 
     fun settings(): ReplaySettings {
-        val state = stored
-        return ReplaySettings(state.retentionSeconds, state.destination, state.appSelection, state.manualPackage)
+        val snapshot = state
+        return ReplaySettings(snapshot.retentionSeconds, snapshot.destination, snapshot.appSelection, snapshot.manualPackage)
     }
 
-    @Synchronized
     fun setEnabled(value: Boolean) {
-        stored = stored.copy(enabled = value)
+        updateState { it.copy(enabled = value) }
     }
 
     fun apply(settings: ReplaySettings) {
@@ -112,23 +115,21 @@ class ReplaySettingsStore : PersistentStateComponent<ReplaySettingsState> {
     }
 
     /** Configurable supplies the result already checked in the background for this exact path. */
-    @Synchronized
     internal fun apply(settings: ReplaySettings, destinationValidation: DestinationValidation) {
         val error = settings.validationError(destinationValidation)
         require(error == null) { error.orEmpty() }
-        stored = stored.copy(
-            retentionSeconds = settings.retentionSeconds,
-            destination = settings.destination,
-            appSelection = settings.appSelection,
-            manualPackage = settings.manualPackage,
-        )
+        updateState {
+            it.copy(
+                retentionSeconds = settings.retentionSeconds,
+                destination = settings.destination,
+                appSelection = settings.appSelection,
+                manualPackage = settings.manualPackage,
+            )
+        }
     }
 
-    override fun getState(): ReplaySettingsState = stored.copy()
-
-    @Synchronized
     override fun loadState(state: ReplaySettingsState) {
-        stored = state.copy(retentionSeconds = state.retentionSeconds.takeIf { it in 1..CoreReplaySettings.MAX_REPLAY_SECONDS } ?: 180)
+        super.loadState(state.copy(retentionSeconds = state.retentionSeconds.takeIf { it in 1..CoreReplaySettings.MAX_REPLAY_SECONDS } ?: 180))
     }
 
     companion object {

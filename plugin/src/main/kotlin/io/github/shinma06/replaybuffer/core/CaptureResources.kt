@@ -15,11 +15,11 @@ internal fun sha256(path: Path): String {
         val bytes = ByteArray(8192)
         while (true) { val count = input.read(bytes); if (count < 0) break; digest.update(bytes, 0, count) }
     }
-    return digest.digest().joinToString("") { "%02x".format(it) }
+    return java.util.HexFormat.of().formatHex(digest.digest())
 }
 
 internal class CaptureResources(private val directory: Path, private val created: (Path) -> Unit = {}) : AutoCloseable {
-    val server: Path = extract("scrcpy-server-v4.0", SERVER_HASH)
+    val server: Path = extract("scrcpy-server-v5.0.1", SERVER_HASH)
     val clock: Path = extract("replay-clock.jar", identity().getValue("clock"))
 
     override fun close() { Files.deleteIfExists(server); Files.deleteIfExists(clock) }
@@ -51,6 +51,6 @@ internal class CaptureResources(private val directory: Path, private val created
             }
             return properties.stringPropertyNames().associateWith { properties.getProperty(it) }
         }
-        const val SERVER_HASH = "84924bd564a1eb6089c872c7521f968058977f91f5ff02514a8c74aff3210f3a"
+        const val SERVER_HASH = "764eb6f79811d5211fe9df341120882ba9994c7a61b897d7bf3fb662e53bc536"
     }
 }

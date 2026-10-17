@@ -149,4 +149,4 @@ python3 scripts/check.py
 python3 scripts/workflow/product_check.py
 ```
 
-プラグイン変更では、昇格後の `plugin/` と checker が存在するツリーで `python3 scripts/workflow/plugin_check.py` を実行します（JDK 25 / JAVA_HOMEが必要）。プラグインがまだないmainでbuild成功や安全なskipを主張しません。
+プラグイン変更では `python3 scripts/workflow/plugin_check.py` を実行します。JDK 27 / `JAVA_HOME`とSDK API 37.0 revision 2 / `ANDROID_HOME`が必要です。固定SDK・依存・正式候補のbuildは[plugin開発](docs/plugin-development.md)を参照してください。build成功はIDE・端末受入とは別です。

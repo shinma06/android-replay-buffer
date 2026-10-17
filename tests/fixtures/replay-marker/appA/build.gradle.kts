@@ -5,7 +5,7 @@ plugins {
 android {
     namespace = "io.github.shinma06.replaybuffer.fixture"
     compileSdk { version = release(37) { minorApiLevel = 0 } }
-    buildToolsVersion = "36.0.0"
+    buildToolsVersion = "37.0.0"
     defaultConfig {
         applicationId = "io.github.shinma06.replaybuffer.qa.appa"
         minSdk = 29
