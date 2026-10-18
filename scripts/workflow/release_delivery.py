@@ -385,6 +385,9 @@ def publish(path, record, target):
     with tempfile.TemporaryDirectory() as temporary:
         fixed = Path(temporary) / 'accepted.zip'
         fixed.write_bytes(data)
+        require(identity(fixed, record['source'], record['sha256']) ==
+                {key: record[key] for key in ('source', 'version', 'sha256', 'size')},
+                'Fixed ZIP identity differs from the accepted record; no release changed')
         return publish_fixed(fixed, record, target)
 
 

@@ -228,6 +228,26 @@ class ReleaseDeliveryTest(unittest.TestCase):
         self.assertEqual(list(self.repo.files.values()), [original])
         self.assertEqual(delivery.read_record(self.repo.releases[0]['body']), accepted)
 
+    def test_identity_swap_between_digest_and_parse_is_rejected_before_remote_writes(self):
+        original = self.archive.read_bytes()
+        replacement = package(version='0.3.0')
+        self.assertEqual(len(original), len(replacement))
+        expected = hashlib.sha256(original).hexdigest()
+        digest = delivery.digest
+        def swapped(path):
+            result = digest(path)
+            self.archive.write_bytes(replacement)
+            return result
+        with patch.object(delivery, 'digest', side_effect=swapped):
+            accepted = dict(delivery.identity(self.archive, SOURCE, expected), schema=1,
+                            repository=delivery.REPO, channel='stable', pr=286)
+        self.assertEqual(accepted['version'], '0.3.0')
+        self.assertEqual(accepted['sha256'], expected)
+        self.archive.write_bytes(original)
+        with self.assertRaisesRegex(ValueError, 'Fixed ZIP identity differs'):
+            delivery.publish(self.archive, accepted, MAIN)
+        self.assertEqual(self.repo.mutations, [])
+
     def test_asset_verification_uses_accepted_hash_even_if_staged_path_changes(self):
         accepted = self.record('stable')
         upload = self.repo.command
