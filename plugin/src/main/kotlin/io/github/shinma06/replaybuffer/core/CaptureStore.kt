@@ -277,6 +277,11 @@ internal class CaptureStore(
     }
 
     @Synchronized
+    fun logReaderBoundary(owner: Long) {
+        if (!closed && owner == generation) autosave.refresh(null)
+    }
+
+    @Synchronized
     fun configureAuto(settings: ReplaySettings, revision: Long, device: String?, active: Boolean,
                       host: Long = System.nanoTime()) {
         autoDevice = device

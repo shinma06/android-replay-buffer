@@ -153,6 +153,55 @@ class CrashAutosaveTest {
     }
 
     @Test
+    fun evictedPlatformEvidenceRejectsBeforePinEvenWithUnrelatedLogsOrVideo() {
+        for (mode in CaptureMode.entries) {
+            val directory = Files.createDirectory(root.resolve(mode.name))
+            val store = CaptureStore(directory.resolve("ring"), logLimit = 1024, minFree = 0, captureMode = mode)
+            CrashFixture(directory, mode, suppliedStore = store).use { f ->
+                if (mode.videoRequested) f.video()
+                f.standard()
+                val ordinary = wireLog(byteArrayOf(4, 84, 0) + ByteArray(700) { 120 } + byteArrayOf(0),
+                    0, 4242, 10123, CRASH_WALL + 10_007_000_000)
+                val retained = f.log(ordinary, 10_008_000_000)
+                val pair = f.pair()
+                assertEquals(AutoSaveReason.NOT_SAVED_EVIDENCE_LOST,
+                    assertFailsWith<AutoSaveRejected> { f.store.capture(f.settings, pair, f.at(10_020_000_000)) }.reason)
+                assertEquals(8, f.store.autosave.snapshot().admissionsRemaining)
+                val manual = assertNotNull(f.store.capture(f.settings, host = f.at(10_020_000_000)))
+                assertEquals(listOf(retained), manual.logs.map { it.id })
+                assertEquals(mode.videoRequested, manual.video.isNotEmpty())
+                assertNull(manual.autoTrigger)
+            }
+        }
+    }
+
+    @Test
+    fun mismatchedPlatformDoesNotConsumeJavaBeforeCorrectReportOrItsDeadline() {
+        for (tickBetween in listOf(false, true)) {
+            CrashFixture(Files.createDirectory(root.resolve("tick-$tickBetween"))).use { f ->
+                val java = f.log(javaCrash(), 10_005_000_000)
+                f.log(platformCrash(first = 7777), 10_006_000_000)
+                if (tickBetween) assertTrue(f.store.autosave.drain(f.at(10_007_000_000)).isEmpty())
+                val platform = f.log(platformCrash(wall = CRASH_WALL + 10_008_000_000), 10_009_000_000)
+                val pair = f.pair()
+                assertEquals(java, pair.java.row.id)
+                assertEquals(platform, pair.platform.row.id)
+                assertEquals(1, f.store.autosave.snapshot().notSavedCount)
+                assertNotNull(f.store.capture(f.settings, pair, f.at(10_020_000_000)))
+            }
+        }
+        CrashFixture(Files.createDirectory(root.resolve("expiry"))).use { f ->
+            f.log(javaCrash(), 10_005_000_000)
+            f.log(platformCrash(first = 7777), 10_006_000_000)
+            assertTrue(f.store.autosave.drain(f.at(10_007_000_000)).isEmpty())
+            assertEquals(1, f.store.autosave.snapshot().notSavedCount)
+            assertTrue(f.store.autosave.drain(f.at(15_005_000_001)).isEmpty())
+            assertEquals(2, f.store.autosave.snapshot().notSavedCount)
+            assertEquals(AutoSaveReason.UNKNOWN_UNCORROBORATED, f.store.autosave.snapshot().lastOutcome?.reason)
+        }
+    }
+
+    @Test
     fun equivalentPidUserOrderIsOneIdentityWhileMismatchesSharedUidAndAmbiguityReject() {
         CrashFixture(root, uid = 1010123, pid = 10).use { f ->
             f.log(javaCrash(pid = 10, uid = 1010123), 10_005_000_000)

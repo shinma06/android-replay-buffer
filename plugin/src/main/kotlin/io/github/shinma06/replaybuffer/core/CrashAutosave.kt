@@ -141,7 +141,7 @@ internal class CrashAutosave {
                     pairs += CrashPair(java, platform, host)
                 }
             } else if (nearby.isNotEmpty()) {
-                val sources = (nearby + platform).map { it.fingerprint }.toSet()
+                val sources = (matches + platform).map { it.fingerprint }.toSet()
                 observations.removeAll { it.fingerprint in sources }
                 record(AutoSaveOutcome(platform.fingerprint, true, if (matches.size > 1)
                     AutoSaveReason.UNKNOWN_AMBIGUOUS else AutoSaveReason.UNKNOWN_IDENTITY), sources)

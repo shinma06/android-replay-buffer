@@ -166,6 +166,7 @@ internal class DeviceCapture(
             store.status(kind, state, reason, generation)
             return
         }
+        if (kind == "device_log-all" && state != StreamState.CAPTURING) store.logReaderBoundary(generation)
         val role = kind.removePrefix("device_log-")
         logStates[role] = StreamSnapshot(state, reason = reason)
         val required = if (partitionLogs.getNow(true)) logStates else mapOf("all" to logStates.getValue("all"))

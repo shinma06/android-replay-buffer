@@ -90,6 +90,7 @@ enum class AutoSaveReason(val description: String) {
     NOT_SAVED_COOLDOWN("前回の自動保存受付から30秒未満のため保存しません"),
     NOT_SAVED_DESTINATION_UNSET("保存先が未指定のため自動保存しません"),
     NOT_SAVED_NO_DATA("保存できる取得データがありません"),
+    NOT_SAVED_EVIDENCE_LOST("例外報告の元データが保持されていないため保存しません"),
     NOT_SAVED_EVENT_OUTSIDE_WINDOW("例外報告が保持窓より前のため保存しません"),
     NOT_SAVED_WINDOW_UNKNOWN("例外報告が保持窓内と確定できないため保存しません"),
     DETECTOR_OVERFLOW("検出の保持上限です。自動保存をOFF→ONで再設定してください"),

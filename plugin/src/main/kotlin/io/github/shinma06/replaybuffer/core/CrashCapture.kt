@@ -48,6 +48,7 @@ internal fun frozenAutoTrigger(pair: CrashPair, capture: FrozenCapture, mapper: 
         if (upper < Math.subtractExact(capture.start, v)) reject(AutoSaveReason.NOT_SAVED_EVENT_OUTSIDE_WINDOW)
         if (lower < Math.addExact(capture.start, v) || upper > Math.subtractExact(capture.end, v))
             reject(AutoSaveReason.NOT_SAVED_WINDOW_UNKNOWN)
+        if (capture.logs.none { it.id == platform.row.id }) reject(AutoSaveReason.NOT_SAVED_EVIDENCE_LOST)
         val duration = capture.seconds * 1_000_000_000L
         val desired = Math.subtractExact(t, duration)
         fun evidence(observation: CrashObservation, time: MappedTime): Map<String, Any?> = mapOf(
