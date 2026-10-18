@@ -322,13 +322,13 @@ def find_release(tag):
     return matches[0] if matches else None
 
 
-def verify_asset(asset, path):
-    require(asset.get('state') == 'uploaded' and asset.get('size') == path.stat().st_size
-            and asset.get('digest') == 'sha256:' + digest(path), 'Published asset metadata differs')
+def verify_asset(asset, record):
+    require(asset.get('state') == 'uploaded' and asset.get('size') == record['size']
+            and asset.get('digest') == 'sha256:' + record['sha256'], 'Published asset metadata differs')
     with tempfile.TemporaryDirectory() as temporary:
         fetched = Path(temporary) / 'asset.zip'
         download(f'releases/assets/{asset["id"]}', fetched)
-        require(digest(fetched) == digest(path), 'Published asset bytes differ')
+        require(digest(fetched) == record['sha256'], 'Published asset bytes differ')
 
 
 def historical_initial(record):
@@ -375,6 +375,20 @@ def automatic_release_target(target):
 
 
 def publish(path, record, target):
+    # Own the accepted bytes throughout upload/readback; the caller's path may change.
+    require(path.is_file() and not path.is_symlink() and 0 < record['size'] <= MAX_ARCHIVE,
+            'A bounded regular accepted ZIP is required')
+    with path.open('rb') as source:
+        data = source.read(MAX_ARCHIVE + 1)
+    require(len(data) == record['size'] and hashlib.sha256(data).hexdigest() == record['sha256'],
+            'ZIP changed after identity verification; no release changed')
+    with tempfile.TemporaryDirectory() as temporary:
+        fixed = Path(temporary) / 'accepted.zip'
+        fixed.write_bytes(data)
+        return publish_fixed(fixed, record, target)
+
+
+def publish_fixed(path, record, target):
     early = record['channel'] == 'early'
     develop_head = record.get('develop_head', record['source'])
     tag = 'early' if early else 'v' + record['version']
@@ -419,13 +433,13 @@ def publish(path, record, target):
     require(early or {a['name'] for a in assets} <= {name}, 'Unexpected stable assets')
     existing = next((a for a in assets if a['name'] == name), None)
     if existing:
-        verify_asset(existing, path)
+        verify_asset(existing, record)
     else:
         require(early or release['draft'], 'Published stable release is incomplete; preserve it for recovery')
         uploaded = json.loads(command(['gh', 'api', '--method', 'POST',
             f'https://uploads.github.com/repos/{REPO}/releases/{release["id"]}/assets?name={quote(name)}',
             '-H', 'Content-Type: application/zip', '--input', str(path)]))
-        verify_asset(uploaded, path)
+        verify_asset(uploaded, record)
     current = find_release(tag)
     require(current and all(current[k] == release[k] for k in ('id', 'body', 'draft', 'prerelease', 'target_commitish')),
             'Release changed during preparation; preserve both assets')
@@ -444,7 +458,7 @@ def publish(path, record, target):
     final_assets = pages(f'releases/{release["id"]}/assets?per_page=100')
     published = [a for a in final_assets if a['name'] == name]
     require(len(published) == 1, 'Published asset missing or ambiguous')
-    verify_asset(published[0], path)
+    verify_asset(published[0], record)
     # Keep the old download until the new body and bytes are confirmed.
     if early and previous and asset_name(previous) != name:
         old = [a for a in final_assets if a['name'] == asset_name(previous)]

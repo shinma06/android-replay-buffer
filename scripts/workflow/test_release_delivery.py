@@ -171,7 +171,8 @@ class DeliveryDownloadTest(unittest.TestCase):
             archive = delivery.download_artifact(item, Path(folder))
             self.assertEqual(archive.read_bytes(), product)
             delivery.verify_asset({'id': 34, 'state': 'uploaded', 'size': len(product),
-                                   'digest': 'sha256:' + hashlib.sha256(product).hexdigest()}, archive)
+                                   'digest': 'sha256:' + hashlib.sha256(product).hexdigest()},
+                                  {'size': len(product), 'sha256': hashlib.sha256(product).hexdigest()})
             self.assertEqual(run.call_count, 2)
 
 
@@ -206,6 +207,38 @@ class ReleaseDeliveryTest(unittest.TestCase):
             archive.writestr('../outside.zip', b'unsafe')
         with self.assertRaises(ValueError):
             delivery.identity(self.archive, SOURCE, delivery.digest(self.archive))
+
+    def test_zip_changed_after_identity_is_rejected_before_remote_writes(self):
+        accepted = self.record('stable')
+        self.archive.write_bytes(package(NEXT))
+        with self.assertRaisesRegex(ValueError, 'ZIP changed after identity'):
+            delivery.publish(self.archive, accepted, MAIN)
+        self.assertEqual(self.repo.mutations, [])
+
+    def test_original_path_replacement_during_upload_cannot_replace_pinned_bytes(self):
+        accepted = self.record('stable')
+        original = self.archive.read_bytes()
+        upload = self.repo.command
+        def replaced(args):
+            self.archive.write_bytes(package(NEXT))
+            return upload(args)
+        with patch.object(delivery, 'command', side_effect=replaced):
+            delivery.publish(self.archive, accepted, MAIN)
+        self.assertNotEqual(self.archive.read_bytes(), original)
+        self.assertEqual(list(self.repo.files.values()), [original])
+        self.assertEqual(delivery.read_record(self.repo.releases[0]['body']), accepted)
+
+    def test_asset_verification_uses_accepted_hash_even_if_staged_path_changes(self):
+        accepted = self.record('stable')
+        upload = self.repo.command
+        def replaced(args):
+            Path(args[args.index('--input') + 1]).write_bytes(package(NEXT))
+            return upload(args)
+        with patch.object(delivery, 'command', side_effect=replaced), \
+             self.assertRaisesRegex(ValueError, 'asset metadata differs'):
+            delivery.publish(self.archive, accepted, MAIN)
+        self.assertTrue(self.repo.releases[0]['draft'])
+        self.assertFalse(any(method == 'PATCH' for _, method, _ in self.repo.mutations))
 
     def test_new_early_update_readback_and_unchanged_retry(self):
         first = self.record()
