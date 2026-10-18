@@ -6,17 +6,18 @@ import com.intellij.openapi.fileChooser.FileChooserDescriptorFactory
 import com.intellij.openapi.options.ShowSettingsUtil
 import com.intellij.openapi.project.DumbAware
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.roots.ui.componentsList.components.ScrollablePanel
 import com.intellij.openapi.ui.Messages
 import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.wm.ToolWindow
 import com.intellij.openapi.wm.ToolWindowFactory
 import com.intellij.openapi.wm.ToolWindowManager
 import com.intellij.ui.components.JBCheckBox
-import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.components.JBTextArea
 import com.intellij.ui.content.ContentFactory
 import com.intellij.util.ui.FormBuilder
+import com.intellij.util.ui.WrapLayout
 import io.github.shinma06.replaybuffer.core.ApplicationMode
 import io.github.shinma06.replaybuffer.core.CaptureState
 import io.github.shinma06.replaybuffer.core.DeviceKind
@@ -31,10 +32,14 @@ import io.github.shinma06.replaybuffer.ide.streamName
 import io.github.shinma06.replaybuffer.settings.ReplaySettingsConfigurable
 import io.github.shinma06.replaybuffer.settings.ReplaySettingsStore
 import java.awt.BorderLayout
+import java.awt.Dimension
 import java.awt.FlowLayout
 import java.util.Locale
 import javax.swing.JButton
 import javax.swing.JPanel
+import javax.swing.text.DefaultCaret
+import javax.swing.text.View
+import kotlin.math.ceil
 
 class ReplayToolWindowFactory : ToolWindowFactory, DumbAware {
     override fun createToolWindowContent(project: Project, toolWindow: ToolWindow) {
@@ -59,24 +64,24 @@ private class ReplayToolWindowPanel(private val project: Project) : JPanel(Borde
         toolTipText = "取得が無効でも設定を編集できます。"
         addActionListener { if (alive) ShowSettingsUtil.getInstance().showSettingsDialog(project, ReplaySettingsConfigurable::class.java) }
     }
-    private val device = JBLabel()
-    private val application = JBLabel()
-    private val sdk = JBLabel()
-    private val state = JBLabel()
-    private val video = JBLabel()
-    private val deviceLog = JBLabel()
-    private val appLog = JBLabel()
-    private val window = JBLabel()
-    private val sequence = JBLabel()
-    private val destination = JBLabel()
-    private val message = JBLabel()
-    private val cleanup = JBLabel()
-    private val saveState = JBLabel()
+    private val device = wrappingLabel()
+    private val application = wrappingLabel()
+    private val sdk = wrappingLabel()
+    private val state = wrappingLabel()
+    private val video = wrappingLabel()
+    private val deviceLog = wrappingLabel()
+    private val appLog = wrappingLabel()
+    private val window = wrappingLabel()
+    private val sequence = wrappingLabel()
+    private val destination = wrappingLabel()
+    private val message = wrappingLabel()
+    private val cleanup = wrappingLabel()
+    private val saveState = wrappingLabel()
     private val autoSave = readOnlyDetails("クラッシュ自動保存の適用状態と直近の結果", 3)
-    private val videoTail = JBLabel()
-    private val saveReason = JBLabel()
-    private val failure = JBLabel()
-    private val frozenRequest = JBLabel()
+    private val videoTail = wrappingLabel()
+    private val saveReason = wrappingLabel()
+    private val failure = wrappingLabel()
+    private val frozenRequest = wrappingLabel()
     private val frozenTarget = readOnlyDetails("固定した保存対象の端末とアプリ履歴", 4)
     private val gapDetails = readOnlyDetails("現在の保存窓の欠落", 4)
     private val gapScroll = JBScrollPane(gapDetails)
@@ -101,12 +106,12 @@ private class ReplayToolWindowPanel(private val project: Project) : JPanel(Borde
             .addComponent(failure)
             .addComponent(frozenRequest)
             .addComponent(JBScrollPane(frozenTarget))
-            .addComponent(JBLabel("無効化またはproject終了で、この未保存の対象を破棄します。"))
+            .addComponent(wrappingLabel("無効化またはproject終了で、この未保存の対象を破棄します。"))
             .addComponent(row(retryButton, retryElsewhere, discardButton))
             .panel
         val form = FormBuilder.createFormBuilder()
             .addComponent(row(enabled, settingsButton))
-            .addComponent(JBLabel("無効にすると未保存のデータと再試行待ちの内容を破棄します。"))
+            .addComponent(wrappingLabel("無効にすると未保存のデータと再試行待ちの内容を破棄します。"))
             .addComponent(device).addComponent(application).addComponent(sdk).addComponent(state)
             .addComponent(video).addComponent(deviceLog).addComponent(appLog)
             .addComponent(window).addComponent(sequence).addComponent(destination).addComponent(message)
@@ -116,7 +121,8 @@ private class ReplayToolWindowPanel(private val project: Project) : JPanel(Borde
             .addComponent(openButton).addComponent(failureCard)
             .addComponent(gapScroll)
             .addComponentFillVertically(JPanel(), 0).panel
-        add(JBScrollPane(form).apply { border = null }, BorderLayout.CENTER)
+        val content = ScrollablePanel(BorderLayout()).apply { add(form, BorderLayout.CENTER) }
+        add(JBScrollPane(content).apply { border = null }, BorderLayout.CENTER)
         val refresh = Runnable {
             if (alive) ToolWindowManager.getInstance(project).invokeLater { if (alive) render() }
         }
@@ -199,8 +205,37 @@ private class ReplayToolWindowPanel(private val project: Project) : JPanel(Borde
     override fun dispose() { disposed = true }
 }
 
-private fun row(vararg components: java.awt.Component): JPanel = JPanel(FlowLayout(FlowLayout.LEFT)).apply {
+private fun row(vararg components: java.awt.Component): JPanel = JPanel(WrapLayout(FlowLayout.LEFT)).apply {
     components.forEach(::add)
+}
+
+private fun wrappingLabel(text: String = ""): JBTextArea = object : JBTextArea(text) {
+    override fun updateUI() {
+        super.updateUI()
+        (caret as DefaultCaret).updatePolicy = DefaultCaret.NEVER_UPDATE
+    }
+
+    override fun getPreferredSize(): Dimension {
+        val size = super.getPreferredSize().apply { width = 0 }
+        val container = parent ?: return size
+        val textUi = getUI()
+        val view = textUi.getRootView(this)
+        // Match the existing settings guidance sizing, including insets and caret space.
+        val reservedWidth = textUi.getPreferredSize(this).width - view.getPreferredSpan(View.X_AXIS).toInt()
+        val contentWidth = container.width - container.insets.left - container.insets.right - reservedWidth
+        if (contentWidth > 0) {
+            view.setSize(contentWidth.toFloat(), Float.MAX_VALUE)
+            size.height = ceil(view.getPreferredSpan(View.Y_AXIS).toDouble()).toInt() + insets.top + insets.bottom
+        }
+        return size
+    }
+}.apply {
+    isEditable = false
+    isFocusable = false
+    isOpaque = false
+    lineWrap = true
+    wrapStyleWord = true
+    font = javax.swing.UIManager.getFont("Label.font")
 }
 
 private fun readOnlyDetails(name: String, visibleRows: Int): JBTextArea = JBTextArea(visibleRows, 30).apply {
