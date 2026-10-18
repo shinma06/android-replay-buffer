@@ -190,13 +190,16 @@ class ReplayToolWindowLayoutTest {
             SwingUtilities.invokeAndWait(() -> refreshSnapshot(actual[0], service, 1));
             // Observe after the document-update caret callbacks queued by the previous EDT turn.
             SwingUtilities.invokeAndWait(() -> {});
-            for (int selectedY : new int[]{0, 60}) {
-                var selected = new Point(0, selectedY);
+            for (int position : new int[]{0, 1}) {
+                var selected = new Point();
                 SwingUtilities.invokeAndWait(() -> {
                     var viewport = ((JScrollPane) actual[0].getComponent(0)).getViewport();
+                    var scrollableHeight = viewport.getViewSize().height - viewport.getExtentSize().height;
+                    if (position != 0) assertTrue(scrollableHeight > 1, "fixture needs a nonzero interior scroll position");
+                    selected.y = position == 0 ? 0 : scrollableHeight / 2;
                     viewport.setViewPosition(selected);
-                    assertEquals(selected, viewport.getViewPosition());
-                    refreshSnapshot(actual[0], service, selectedY + 2);
+                    assertEquals(selected, viewport.getViewPosition(), "fixture must select a reachable scroll position");
+                    refreshSnapshot(actual[0], service, position + 2);
                 });
                 SwingUtilities.invokeAndWait(() -> assertEquals(selected,
                     ((JScrollPane) actual[0].getComponent(0)).getViewport().getViewPosition(),
