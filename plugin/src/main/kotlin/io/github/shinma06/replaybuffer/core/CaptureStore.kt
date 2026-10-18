@@ -321,7 +321,7 @@ internal class CaptureStore(
         val row = LogEntry(UUID.randomUUID().toString(), source, generation, time, retained, app, host)
         logs += row
         refreshAuto(host)
-        val selectedUid = apps.peekLast()?.takeIf { it.packageName == autoTarget && it.uidExclusive }?.uid
+        val selectedUid = (period ?: apps.peekLast())?.takeIf { it.packageName == autoTarget && it.uidExclusive }?.uid
         autosave.observe(row, period, reporter, selectedUid)
         logBytes += source.raw.size + 256
         if (logBytes > logLimit && fixedEnd == null) logRetentionSeconds?.let { seconds ->

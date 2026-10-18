@@ -87,6 +87,48 @@ class CrashAutosaveTest {
     }
 
     @Test
+    fun delayedCrashUsesHistoricalUidAfterReinstallAndDoesNotBorrowCurrentIdentity() {
+        for (exclusive in listOf(true, false)) {
+            CrashFixture(Files.createDirectory(root.resolve("historical-$exclusive")), exclusive = exclusive).use { f ->
+                f.store.app("com.example.target", 10124, setOf(4243), 1, true, f.at(10_100_000_000))
+                if (exclusive) {
+                    f.log(javaCrash(uid = 10124), 10_200_000_000)
+                    assertEquals(0, f.store.autosave.snapshot().notSavedCount)
+                }
+                val java = javaCrash()
+                val platform = platformCrash()
+                val ids = listOf(f.log(java, 10_201_000_000), f.log(platform, 10_202_000_000))
+                val pairs = f.store.autosave.drain(f.at(10_220_000_000))
+                if (!exclusive) {
+                    assertTrue(pairs.isEmpty())
+                    assertEquals(AutoSaveReason.UNKNOWN_IDENTITY, f.store.autosave.snapshot().lastOutcome?.reason)
+                    assertEquals(8, f.store.autosave.snapshot().admissionsRemaining)
+                    assertNotNull(f.store.capture(f.settings, host = f.at(10_220_000_000)))
+                } else {
+                    val capture = assertNotNull(f.store.capture(f.settings, pairs.single(), f.at(10_220_000_000)))
+                    assertEquals(10123L, (capture.autoTrigger!!.facts["target_identity"] as Map<*, *>)["uid"])
+                    val output = SaveWriter().write(capture, f.root, { false }) { Files.move(it.partial, it.complete) }
+                    val rows = Files.readAllLines(output.directory.resolve("logcat-device.jsonl")).map { JsonParser.parseString(it).asJsonObject }
+                    for ((id, source) in ids.zip(listOf(java, platform))) {
+                        val row = rows.single { it["record_id"].asString == id }
+                        assertContentEquals(source.raw, Base64.getDecoder().decode(row["payload_base64"].asString))
+                        assertEquals(source.decodeStatus, row["decode_status"].asString)
+                    }
+                }
+            }
+        }
+        CrashFixture(Files.createDirectory(root.resolve("historical-boundary"))).use { f ->
+            f.store.app("com.example.target", 10124, setOf(4243), 1, true, f.at(10_004_500_000))
+            f.log(javaCrash(), 10_201_000_000)
+            f.log(platformCrash(), 10_202_000_000)
+            val pair = f.store.autosave.drain(f.at(10_220_000_000)).single()
+            assertEquals(AutoSaveReason.UNKNOWN_IDENTITY,
+                assertFailsWith<AutoSaveRejected> { f.store.capture(f.settings, pair, f.at(10_220_000_000)) }.reason)
+            assertNotNull(f.store.capture(f.settings, host = f.at(10_220_000_000)))
+        }
+    }
+
+    @Test
     fun finalMapperRefinesTriggerAndRowsTogetherAndRejectsBoundaryCrossingBeforePin() {
         for (start in listOf(9_900_000_000, 10_001_500_000)) {
             CrashFixture(Files.createDirectory(root.resolve("s$start")), start = start).use { f ->
