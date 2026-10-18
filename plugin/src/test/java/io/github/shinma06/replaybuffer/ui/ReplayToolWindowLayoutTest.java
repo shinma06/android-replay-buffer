@@ -15,6 +15,15 @@ import com.intellij.openapi.project.Project;
 import com.intellij.openapi.util.Disposer;
 import com.intellij.ui.ExperimentalUI;
 import com.intellij.ui.ExperimentalUIImpl;
+import io.github.shinma06.replaybuffer.core.ApplicationTarget;
+import io.github.shinma06.replaybuffer.core.AutoSaveSnapshot;
+import io.github.shinma06.replaybuffer.core.CaptureMode;
+import io.github.shinma06.replaybuffer.core.CaptureState;
+import io.github.shinma06.replaybuffer.core.ReplaySettings;
+import io.github.shinma06.replaybuffer.core.ReplaySnapshot;
+import io.github.shinma06.replaybuffer.core.SaveSnapshot;
+import io.github.shinma06.replaybuffer.core.StreamSnapshot;
+import io.github.shinma06.replaybuffer.ide.ReplayCaptureView;
 import io.github.shinma06.replaybuffer.ide.ReplayProjectService;
 import io.github.shinma06.replaybuffer.settings.ReplaySettingsStore;
 import kotlinx.coroutines.CoroutineScope;
@@ -24,7 +33,9 @@ import org.junit.jupiter.api.Test;
 
 import java.awt.Component;
 import java.awt.Container;
+import java.awt.Point;
 import java.awt.event.ActionEvent;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import javax.swing.AbstractButton;
@@ -78,6 +89,7 @@ class ReplayToolWindowLayoutTest {
         var service = new ReplayProjectService(project, CoroutineScopeKt.CoroutineScope(job));
         project.registerService(ReplayProjectService.class, service);
         Disposer.register(lifetime, service);
+        var actual = new JPanel[1];
         try {
             SwingUtilities.invokeAndWait(() -> {
                 try {
@@ -85,6 +97,7 @@ class ReplayToolWindowLayoutTest {
                     var constructor = type.getDeclaredConstructor(Project.class);
                     constructor.setAccessible(true);
                     var panel = (JPanel) constructor.newInstance(project);
+                    actual[0] = panel;
                     Disposer.register(lifetime, (Disposable) panel);
                     var outer = (JScrollPane) panel.getComponent(0);
                     var summary = (JTextArea) field(panel, "autoSave");
@@ -174,8 +187,48 @@ class ReplayToolWindowLayoutTest {
                     throw new AssertionError(failure);
                 }
             });
+            SwingUtilities.invokeAndWait(() -> refreshSnapshot(actual[0], service, 1));
+            // Observe after the document-update caret callbacks queued by the previous EDT turn.
+            SwingUtilities.invokeAndWait(() -> {});
+            for (int selectedY : new int[]{0, 60}) {
+                var selected = new Point(0, selectedY);
+                SwingUtilities.invokeAndWait(() -> {
+                    var viewport = ((JScrollPane) actual[0].getComponent(0)).getViewport();
+                    viewport.setViewPosition(selected);
+                    assertEquals(selected, viewport.getViewPosition());
+                    refreshSnapshot(actual[0], service, selectedY + 2);
+                });
+                SwingUtilities.invokeAndWait(() -> assertEquals(selected,
+                    ((JScrollPane) actual[0].getComponent(0)).getViewport().getViewPosition(),
+                    "changing snapshot must preserve the selected viewport after queued caret work"));
+            }
         } finally {
             Disposer.dispose(lifetime);
+        }
+    }
+
+    private static void refreshSnapshot(JPanel panel, ReplayProjectService service, long revision) {
+        try {
+            var settings = new ReplaySettings(null, Path.of("/disposable/" + "long-directory/".repeat(16)),
+                180, new ApplicationTarget(), CaptureMode.VIDEO_AND_LOGS, false);
+            var snapshot = new ReplaySnapshot(revision, 1, true, CaptureState.CAPTURING, settings, 1,
+                null, "layout-test", revision * 1_000_000_000L, false,
+                new StreamSnapshot(), new StreamSnapshot(), new StreamSnapshot(), new SaveSnapshot(),
+                false, null, null, 0L, 0, new AutoSaveSnapshot(), null);
+            var capture = field(service, "capture");
+            var view = capture.getClass().getDeclaredField("view");
+            view.setAccessible(true);
+            view.set(capture, new ReplayCaptureView(snapshot, 0, null, null));
+            var window = (JTextArea) field(panel, "window");
+            var previousText = window.getText();
+            var render = panel.getClass().getDeclaredMethod("render");
+            render.setAccessible(true);
+            render.invoke(panel);
+            layout(panel);
+            layout(panel);
+            assertFalse(previousText.equals(window.getText()), "the snapshot refresh must really change displayed text");
+        } catch (ReflectiveOperationException failure) {
+            throw new AssertionError(failure);
         }
     }
 

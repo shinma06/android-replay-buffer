@@ -4,7 +4,7 @@
   "gui_required": true,
   "reason": "#284/QA308で実観察されたToolWindow狭幅表示の受入NGを修正する。元49e0の観察と停止を保持し、関連unit成功を実表示PASSへ付け替えない。",
   "cli_checks": [
-    "ReplayToolWindowLayoutTestの実フォームwide→narrow回帰、ReplayDescriptionsTest、既存ReplaySettingsLayoutTest。長いpath/要約、実viewport/文字境界、全文末尾・操作への縦scroll、keyboard binding/既存focus属性と設定不変を確認する。",
+    "ReplayToolWindowLayoutTestの実フォームwide→narrow回帰、ReplayDescriptionsTest、既存ReplaySettingsLayoutTest。長いpath/要約、実viewport/文字境界、全文末尾・操作への縦scroll、keyboard binding/既存focus属性と設定不変を確認する。実snapshotの表示文を変更し、遅延EDT処理後も選択したscroll位置を保持する。",
     "clean committed HEADで通常pre-push classifierの管理・CLI・plugin検査を実行する。元のnative観察や修正後の実ロード/表示とは区別する。"
   ],
   "cases": [
@@ -17,7 +17,7 @@
         "長い保存先と自動保存の状態/残回数/警告/結果を表示し、広い表示から実狭幅へ変更する。IDE全体幅とToolWindow/要約の実表示領域を区別して記録する。",
         "要約と保存先の全文末尾へ縦方向で到達でき、取得・設定・保存・必要時の再試行/破棄の操作とkeyboard経路を保持することを実画像と操作readbackで確認する。"
       ],
-      "expected": "長いlabel/pathが要約を表示領域の外へ押し広げず、文字や必要操作を右側で欠落させない。元データ・設定・検出/保存/エラー内容とLifecycleを変えない。",
+      "expected": "長いlabel/pathが要約を表示領域の外へ押し広げず、文字や必要操作を右側で欠落させない。状態文の更新で読んでいるscroll位置を移動させず、元データ・設定・検出/保存/エラー内容とLifecycleを変えない。",
       "provenance": [
         "https://github.com/shinma06/android-replay-buffer/issues/311",
         "https://github.com/shinma06/android-replay-buffer/issues/308",

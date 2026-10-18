@@ -37,6 +37,7 @@ import java.awt.FlowLayout
 import java.util.Locale
 import javax.swing.JButton
 import javax.swing.JPanel
+import javax.swing.text.DefaultCaret
 import javax.swing.text.View
 import kotlin.math.ceil
 
@@ -209,6 +210,11 @@ private fun row(vararg components: java.awt.Component): JPanel = JPanel(WrapLayo
 }
 
 private fun wrappingLabel(text: String = ""): JBTextArea = object : JBTextArea(text) {
+    override fun updateUI() {
+        super.updateUI()
+        (caret as DefaultCaret).updatePolicy = DefaultCaret.NEVER_UPDATE
+    }
+
     override fun getPreferredSize(): Dimension {
         val size = super.getPreferredSize().apply { width = 0 }
         val container = parent ?: return size
