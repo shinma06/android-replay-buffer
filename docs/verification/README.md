@@ -35,7 +35,8 @@ CLIではUSB切断/再接続、直前区間の動画/logcat時刻整合、log-on
 元NGは修正Issueに一つのコメントとして保全します。本文を `<!-- acceptance-repair:v1 -->` と改行から開始し、その後へJSONオブジェクトを直接置きます（code fenceなし）。`schema: 1 / fix_issue / failures`を持ち、`failures`は `GAP-1` などの一意なIDから以下の値への対応です。記録の変更は旧記録を消さず新しいコメントへ移し、Issue宣言・修正結果hash・独立レビューを更新します。媒体・生ログ・私的pathは公開せず、固定公開要約と担当が保持する封印証拠への参照を使います。
 
 - `case`: 元の `Issue番号:Case ID`。
-- `source_candidate / source_case_sha256`: 失敗した固定40桁sourceと、その時点のCase全文のcanonical SHA-256。元sourceはdevelop baseの祖先で、そのCase JSONはregular fileでなければなりません。
+- `source_candidate / source_case_sha256`: 失敗した固定40桁sourceと、その時点のCase全文のcanonical SHA-256。元sourceはdevelop baseの祖先、又は以下の`source_adoption`で採用を確認できるものに限り、そのCase JSONは元sourceのregular fileでなければなりません。
+- `source_adoption`（任意）: `{"pr": <正の整数>, "commit": "<採用commitの40桁SHA>"}`。squash等で元sourceが祖先に残らない場合に、同じrepositoryの実merged develop PRを指定します。APIのPR番号・head＝元source・merge commit＝採用commit・両repoを照合し、固定commitを取得して採用commitがdevelop baseの祖先かつ元sourceと完全に同じtreeであることを確認します。指定した参照の欠落・不一致・取得失敗は拒否し、旧祖先経路へ逃がしません。元Case/hash・`original_result`は実際に観測したsourceのまま保持します。採用の出典確認であり、別ZIPの実行・同等性や成功を認定するものではありません。
 - `original_result`: 元の `status: fail / head / artifact_sha256 / actor / observer / at / evidence / loaded_identity / reason`。元source/成果物・実条件・確認者・日時・固定証拠を保持します。未実施や関連unitの結果をnative失敗記録へ換えません。
 - `guarantees`: 失敗した保証IDから目的・失敗条件への対応。複数NG・全失敗保証を列挙し、Case全体を未実施のまま再試験の合格にしません。
 

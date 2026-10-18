@@ -1379,7 +1379,9 @@ def verify_repair(pr, issue, data, path, api, git):
     cases, observers, receipts = set(), set(), {}
     for identifier, failure in record['failures'].items():
         if (not re.fullmatch(r'[A-Z][A-Z0-9-]+', identifier) or not isinstance(failure, dict) or
-                set(failure) != {'case', 'source_candidate', 'source_case_sha256', 'original_result', 'guarantees'} or
+                set(failure) not in (
+                    {'case', 'source_candidate', 'source_case_sha256', 'original_result', 'guarantees'},
+                    {'case', 'source_candidate', 'source_case_sha256', 'original_result', 'guarantees', 'source_adoption'}) or
                 not re.fullmatch(r'[1-9][0-9]*:[A-Z][A-Z0-9-]+', failure['case']) or
                 not isinstance(failure['guarantees'], dict) or not failure['guarantees'] or
                 not all(nonempty(k) and nonempty(v) for k, v in failure['guarantees'].items())):
@@ -1389,7 +1391,30 @@ def verify_repair(pr, issue, data, path, api, git):
         if not isinstance(old, dict) or old.get('status') != 'fail':
             raise ValueError('Preserve the original failed observation')
         validate_observation(dict(old, status='pass'), source)
-        git('merge-base', '--is-ancestor', source, base)
+        if 'source_adoption' in failure:
+            adoption = failure['source_adoption']
+            if (not isinstance(adoption, dict) or set(adoption) != {'pr', 'commit'} or
+                    type(adoption['pr']) is not int or adoption['pr'] <= 0 or
+                    not isinstance(adoption['commit'], str) or not SHA.fullmatch(adoption['commit'])):
+                raise ValueError('Source adoption requires a positive PR number and fixed commit')
+            adopted = api(f'pulls/{adoption["pr"]}')
+            try:
+                identified = (type(adopted['number']) is int and adopted['number'] == adoption['pr'] and
+                    adopted['merged'] is True and adopted['base']['ref'] == 'develop' and
+                    adopted['base']['repo']['full_name'] == pr['base']['repo']['full_name'] and
+                    adopted['head']['repo']['full_name'] == pr['base']['repo']['full_name'] and
+                    adopted['head']['sha'] == source and adopted['merge_commit_sha'] == adoption['commit'])
+            except (KeyError, TypeError):
+                identified = False
+            if not identified:
+                raise ValueError('Source adoption must identify its same-repository merged develop PR')
+            git('fetch', '--no-tags', 'origin', source, adoption['commit'])
+            git('merge-base', '--is-ancestor', adoption['commit'], base)
+            trees = [git('rev-parse', '--verify', ref + '^{tree}') for ref in (source, adoption['commit'])]
+            if not all(SHA.fullmatch(tree) for tree in trees) or trees[0] != trees[1]:
+                raise ValueError('Source adoption requires identical complete source and adopted trees')
+        else:
+            git('merge-base', '--is-ancestor', source, base)
         number, case_id = failure['case'].split(':')
         original = regular_json(source, f'docs/verification/changes/issue-{number}.json', git)
         validate_change(original, int(number), True)

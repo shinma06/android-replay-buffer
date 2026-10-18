@@ -98,10 +98,159 @@ class RepairTests(unittest.TestCase):
         if path == 'issues/comments/123':
             return {'issue_url': self.issue['url'], 'body': REPAIR_MARKER + '\n' + json.dumps(self.record),
                     'created_at': self.record_created, 'updated_at': self.record_updated}
+        if path == 'pulls/42':
+            return self.adopted_pr
         raise AssertionError(path)
 
     def verify(self):
         return verify_pr(self.pr, self.api, self.git)
+
+    def squash_source(self, pending=False, changed_tree=False):
+        self.git('checkout', '-q', self.source)
+        self.git('checkout', '--orphan', 'squash-baseline-' + str(pending))
+        baseline = change(36)
+        self.write('docs/verification/changes/issue-36.json', baseline)
+        self.write('replay_buffer/fixture.py', 'baseline')
+        base = self.commit('baseline without original failure')
+        if pending:
+            self.case['gpt']['status'] = 'pending'
+            self.case['fix_issue'] = None
+        source = change(36); source['cases'] = [self.case]
+        self.write('docs/verification/changes/issue-36.json', source)
+        self.write('replay_buffer/fixture.py', 'original failure')
+        self.source = self.commit('actual observed source')
+        self.git('checkout', '-q', base)
+        self.git('merge', '--squash', self.source)
+        if changed_tree:
+            self.write('docs/unrelated.md', 'unreviewed adoption change')
+        adopted = self.commit('squash adoption')
+        self.pr['base']['sha'] = adopted
+        self.adopted_pr = pr_data()
+        self.adopted_pr.update(number=42, merged=True, merge_commit_sha=adopted)
+        self.adopted_pr['base']['ref'] = 'develop'
+        self.adopted_pr['head']['sha'] = self.source
+        failure = self.record['failures']['GAP-1']
+        failure.update(source_candidate=self.source, source_case_sha256=canonical_hash(self.case),
+                       source_adoption={'pr': 42, 'commit': adopted})
+        failure['original_result']['head'] = self.source
+        self.write('replay_buffer/fixture.py', 'corrected production path')
+        self.candidate = self.commit('actual correction after adoption')
+        self.data['repair']['candidate'] = self.candidate
+        self.data['repair']['failure_record_sha256'] = canonical_hash(self.record)
+        self.data['repair']['results']['GAP-1']['observation'].update(
+            head=self.candidate, at=self.git('show', '-s', '--format=%cI', self.candidate))
+        self.freeze()
+
+    def test_equal_tree_squash_keeps_failed_or_pending_original_identity(self):
+        for pending in (False, True):
+            with self.subTest(pending=pending):
+                self.squash_source(pending)
+                original = copy.deepcopy(self.record)
+                with self.assertRaises(subprocess.CalledProcessError):
+                    self.git('merge-base', '--is-ancestor', self.source, self.pr['base']['sha'])
+                with patch.object(self, 'git', wraps=self.git) as git:
+                    accepted = self.verify()
+                git.assert_any_call('fetch', '--no-tags', 'origin', self.source, self.pr['base']['sha'])
+                self.assertEqual(accepted['repair_record'], original)
+                self.assertEqual(self.record, original)
+                self.assertTrue(accepted['repair_revision'])
+                del self.record['failures']['GAP-1']['source_adoption']
+                self.data['repair']['failure_record_sha256'] = canonical_hash(self.record)
+                self.freeze()
+                with self.assertRaises(subprocess.CalledProcessError):
+                    self.verify()
+                self.record = original
+                self.data['repair']['failure_record_sha256'] = canonical_hash(self.record)
+                self.freeze()
+                self.assertTrue(self.verify()['repair_revision'])
+
+    def test_invalid_adoption_shape_never_falls_back_to_legacy_ancestry(self):
+        for adoption in (None, [], {}, {'pr': 42}, {'pr': 42, 'commit': self.source, 'extra': True},
+                         *({'pr': value, 'commit': self.source} for value in (True, 0, -1, '42', 42.0)),
+                         *({'pr': 42, 'commit': value} for value in (None, 1, '', self.source[:7]))):
+            self.record['failures']['GAP-1']['source_adoption'] = adoption
+            self.data['repair']['failure_record_sha256'] = canonical_hash(self.record)
+            self.freeze()
+            with self.subTest(adoption=adoption), self.assertRaisesRegex(ValueError, 'Source adoption'):
+                self.verify()
+
+    def test_squashed_source_is_fetched_in_fresh_checkout(self):
+        self.squash_source()
+        checkout = self.root / 'fresh-checkout'
+        checkout.mkdir()
+        def git(*args):
+            return subprocess.check_output(['git', *args], cwd=checkout, text=True,
+                                           stderr=subprocess.DEVNULL).strip()
+        git('init', '-q')
+        git('remote', 'add', 'origin', str(self.root))
+        git('fetch', '--no-tags', 'origin', self.pr['head']['sha'])
+        with self.assertRaises(subprocess.CalledProcessError):
+            git('cat-file', '-e', self.source)
+        def api(path):
+            if path == 'git/ref/heads/main': return {'object': {'sha': self.pr['base']['sha']}}
+            return self.api(path)
+        self.assertTrue(verify_pr(self.pr, api, git)['repair_revision'])
+        git('cat-file', '-e', self.source)
+
+    def test_adoption_api_identity_and_lookup_fail_closed(self):
+        self.squash_source()
+        original = copy.deepcopy(self.adopted_pr)
+        for path, value in ((('number',), 43), (('number',), '42'), (('merged',), False), (('merged',), 1),
+                            (('base', 'ref'), 'main'), (('base', 'repo', 'full_name'), 'other/repo'),
+                            (('head', 'repo', 'full_name'), 'fork/repo'), (('head', 'repo'), None),
+                            (('head', 'sha'), self.pr['base']['sha']), (('merge_commit_sha',), self.source),
+                            (('base',), {}), (('head',), None)):
+            self.adopted_pr = copy.deepcopy(original)
+            entry = self.adopted_pr
+            for key in path[:-1]: entry = entry[key]
+            entry[path[-1]] = value
+            with self.subTest(path=path, value=value), self.assertRaisesRegex(ValueError, 'identify'):
+                self.verify()
+        self.adopted_pr = original
+        original_api = self.api
+        def unavailable(path):
+            if path == 'pulls/42': raise RuntimeError('fixture API unavailable')
+            return original_api(path)
+        with patch.object(self, 'api', side_effect=unavailable), self.assertRaises(RuntimeError):
+            self.verify()
+        original_git = self.git
+        def missing(*args):
+            if args[:4] == ('fetch', '--no-tags', 'origin', self.source):
+                raise subprocess.CalledProcessError(128, args)
+            return original_git(*args)
+        with patch.object(self, 'git', side_effect=missing), self.assertRaises(subprocess.CalledProcessError):
+            self.verify()
+        self.assertTrue(self.verify()['repair_revision'])
+
+    def test_adoption_requires_whole_tree_and_ancestor_not_only_original_case(self):
+        self.squash_source(changed_tree=True)
+        with self.assertRaisesRegex(ValueError, 'identical complete'):
+            self.verify()
+        detached = self.git('commit-tree', self.git('rev-parse', self.source + '^{tree}'), '-m', 'unadopted identical tree')
+        self.adopted_pr['merge_commit_sha'] = detached
+        self.record['failures']['GAP-1']['source_adoption']['commit'] = detached
+        self.data['repair']['failure_record_sha256'] = canonical_hash(self.record)
+        self.freeze()
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.verify()
+
+    def test_squash_does_not_relax_original_identity_or_repair_evidence(self):
+        self.squash_source(pending=True)
+        record, data = copy.deepcopy(self.record), copy.deepcopy(self.data)
+        for mutation in ('old-head', 'case-hash', 'coverage', 'artifact', 'time', 'writer'):
+            self.record, self.data = copy.deepcopy(record), copy.deepcopy(data)
+            failure = self.record['failures']['GAP-1']
+            result = self.data['repair']['results']['GAP-1']
+            if mutation == 'old-head': failure['original_result']['head'] = self.pr['base']['sha']
+            if mutation == 'case-hash': failure['source_case_sha256'] = '0' * 64
+            if mutation == 'coverage': result['coverage'].pop('metadata')
+            if mutation == 'artifact': self.data['repair']['artifacts']['plugin'] = '1' * 64
+            if mutation == 'time': result['observation']['at'] = '2000-01-01T00:00:00Z'
+            if mutation == 'writer': self.data['repair']['writer_session'] = 'different writer'
+            self.data['repair']['failure_record_sha256'] = canonical_hash(self.record)
+            self.freeze()
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                self.verify()
 
     def test_equivalent_method_all_failures_and_independent_assessment(self):
         accepted = dict(self.verify(), allowed=True, repair_evidence_sha256='d' * 64)
