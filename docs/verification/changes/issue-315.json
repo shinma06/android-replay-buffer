@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "issue": 315,
+  "gui_required": false,
+  "reason": "main 006a39bで採用した元NGのsquash出典照合を通常mergeでdevelopへ同期する。元source/Case/hash/観察identityと全失敗保証・担当分離・独立評価・metadata-only条件を維持し、develop専用製品・CLI退役・既存Case/FAIL/pending/human/REALは変更しない。管理同期のみでGUI不要・新Casesなし。静穏解除後に必須検査を実行し、同期を#311のnative PASS又は第2版完了としない。",
+  "cli_checks": [
+    "python3 scripts/check.py",
+    "python3 scripts/workflow/product_check.py",
+    "python3 scripts/workflow/change_impact.py --base origin/develop --run-tests"
+  ],
+  "cases": []
+}
