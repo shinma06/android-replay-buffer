@@ -31,14 +31,14 @@ JDK 27を `JAVA_HOME`、Android SDKを `ANDROID_HOME` に設定します。SDK�
 ```bash
 export JAVA_HOME="/opt/homebrew/opt/openjdk/libexec/openjdk.jdk/Contents/Home"
 export ANDROID_HOME="$HOME/Library/Android/sdk"
-python3 scripts/workflow/plugin_check.py
+python3 scripts/workflow/product_check.py
 ```
 
 既定では固定SDKをGradleが取得します。初回はネットワーク接続とSDK展開用の空き容量が必要です。同じSDKが手元にある場合だけ、明示して取得を省けます。
 
 ```bash
 REPLAY_PLATFORM_PATH="/Applications/Android Studio.app/Contents" \
-  python3 scripts/workflow/plugin_check.py
+  python3 scripts/workflow/product_check.py
 ```
 
 `REPLAY_PLATFORM_PATH` は共通scriptが `-PuseLocalPlatform=true -PplatformPath=...` に変換します。Gradleを直接呼ぶ場合も両方指定します。個人のGradle設定に `platformPath` だけがあっても既定SDKを置き換えません。指定先が固定Rabbitと異なる場合はbuildを失敗させます。
@@ -55,7 +55,7 @@ plugin/gradlew -p plugin --no-daemon check buildPlugin verifyPluginStructure
 plugin/gradlew -p plugin --no-daemon -PpluginVersion=0.2.0 check buildPlugin verifyPluginStructure
 ```
 
-ZIPは `plugin/build/distributions/` に出ます。原型PythonコードはZIPへ同梱しません。CIの `test` でも同じ変更影響判定から実行し、ZIPを14日保持のActions artifactとして保存します。これは検証用でありMarketplace/Release公開ではありません。長期保存する候補は保持期限内に取得し、SHA-256とsourceを記録してください。
+ZIPは `plugin/build/distributions/` に出ます。同じJARを使う`bin/replay` / `bin/replayd`と案内を同梱します。[CLIの配置・移行](cli.md)を参照してください。CIの `test` でも同じ変更影響判定から実行し、ZIPを14日保持のActions artifactとして保存します。これは検証用でありMarketplace/Release公開ではありません。長期保存する候補は保持期限内に取得し、SHA-256とsourceを記録してください。
 
 ## IDEでロード確認する
 
@@ -102,10 +102,10 @@ plugin/gradlew -p plugin runIde
 
 ## 実装と受入の責務
 
-製品の動作と優先順は[製品要件](requirements.md)を正本とします。CLIの既存設定値や過去の設計から、将来プラグインの方式を自動決定しません。
+製品の動作と優先順は[製品要件](requirements.md)を正本とします。旧CLIの設定値や過去の設計から、プラグインの方式を自動決定しません。
 
 1. **採用設計を実装へ接続**: 保存失敗時は1件の固定対象を保持して再試行・保存先変更・破棄、入口は独立ToolWindowと常設設定、取得は固定scrcpy serverとJVM mux、同期は端末elapsedの共通軸を採用した。[設計の入口](plugin-design.md)、[IDE UI](design/ide-ui.md)、[時刻・録画方式](design/timeline.md)を正本とする。設計の採用を実機動作の合格に置き換えない。
-2. **取得エンジンと接続契約を検証**: projectのAndroid SDKからadbを解決し、固定server・時計測定DEX・JCodecをPlugin ZIPへ同梱する。利用者による追加ツールの手動導入や実行時ダウンロードに依存しない。processの所有、接続先、timeout、取消し、入力サイズ・エラー・並行要求、同梱依存のidentityを検証する。他の利用者が起動したprocessや共有adb serverを停止しない。Python CLIと既存JSON IPCの互換性は引き続き保全する。
+2. **取得エンジンと接続契約を検証**: projectのAndroid SDKからadbを解決し、固定server・時計測定DEX・JCodecをPlugin ZIPへ同梱する。利用者による追加ツールの手動導入や実行時ダウンロードに依存しない。processの所有、接続先、timeout、取消し、入力サイズ・エラー・並行要求、同梱依存のidentityを検証する。他の利用者が起動したprocessや共有adb serverを停止しない。CLIは同じproject serviceを呼び、[操作・設定・形式の移行](cli.md)、相互認証・対象/版一致・有限待機・確定保存結果を検証する。
 3. **初期版の取得・状態表示・保存を実装**: 有効化トグルと状態復元、接続自動取得、明示的な設定適用、180秒の実時間バッファ、両ログ、1ボタン保存、同期、自動復旧と同一シーケンスを要件に照合する。接続・process待ちはEDTで行わず、dispose後のUI反映を抑止する。macOSを先に実機/Emulatorで検証する。
 4. **初期版候補を受入**: 同一ZIPで要件に対応するCaseとAPI互換性を確認し、developからmainへpromotionする。基盤の既存QAを含め、未実施のまま製品完成と扱わない。Marketplace公開は別の依頼範囲。
 5. **macOSメニューバー連携へ最初に着手**: IDE内初期版の完成直後に実施する。その後のOS対応はWindows、Linuxの順を基本にし、後続TODOは指定優先度と利用者の計画に従う。

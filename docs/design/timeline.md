@@ -2,6 +2,8 @@
 
 [要件](../requirements.md)のENV-03、BUF-01〜07、LOG-01/02、SYNC-01、SAVE-01/02、VIDEO-01/02/04に対する初期版の実装契約。#13の設計であり、取得機能の実装・実機合格ではない。保存失敗UXは#11、UI配置は#12が正本を持つ。CLI原型のコード・設定・出力は変更しない。
 
+CLI原型の保全に関する記述は、この設計当時の変更範囲です。第2版の同梱CLI・明示移行・復旧は[CLI契約](../cli.md)に従い、本設計の取得・保存・UI保証は保持します。
+
 ## 採用する方式
 
 **固定scrcpy serverのH.264/PTSをJVMで受け、単一MP4と2種類のJSONLログ、時刻対応JSONを保存する。** Android SDKのadbを絶対パスで使い、server・小さな時計測定用DEX・JCodecをPlugin ZIPへ同梱する。利用者のscrcpy/ffmpeg/Python導入、PATH設定、実行時ダウンロードは不要。音声・操作注入・clipboard連携は無効。独自の録画・H.264実装、専用ビューア、常駐HTTPサーバーは作らない。

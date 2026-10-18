@@ -3,6 +3,7 @@ package io.github.shinma06.replaybuffer.core
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.concurrent.CompletableFuture
+import java.util.concurrent.CompletionStage
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
@@ -150,21 +151,21 @@ class ReplayCore internal constructor(
         val capture = store?.capture(settings)?.copy(device = device)
         if (capture == null) return@operation ReplayOperation(false, "保存できる取得データがありません")
         pending = capture
-        startSave(capture, settings.saveDirectory!!)
-        ReplayOperation(true, requestId = capture.id)
+        val result = startSave(capture, settings.saveDirectory!!)
+        ReplayOperation(true, requestId = capture.id, saveResult = result)
     }
 
     fun retry(requestId: String): CompletableFuture<ReplayOperation> = operation {
         val capture = failedRequest(requestId) ?: return@operation ReplayOperation(false, "再試行できる保存対象がありません")
-        startSave(capture, saveState.directory ?: settings.saveDirectory ?: return@operation ReplayOperation(false, "保存先を指定してください"))
-        ReplayOperation(true, requestId = capture.id)
+        val result = startSave(capture, saveState.directory ?: settings.saveDirectory ?: return@operation ReplayOperation(false, "保存先を指定してください"))
+        ReplayOperation(true, requestId = capture.id, saveResult = result)
     }
 
     fun retryAtDirectory(requestId: String, directory: Path): CompletableFuture<ReplayOperation> = operation {
         require(directory.isAbsolute) { "保存先は絶対パスで指定してください" }
         val capture = failedRequest(requestId) ?: return@operation ReplayOperation(false, "再試行できる保存対象がありません")
-        startSave(capture, directory.normalize())
-        ReplayOperation(true, requestId = capture.id)
+        val result = startSave(capture, directory.normalize())
+        ReplayOperation(true, requestId = capture.id, saveResult = result)
     }
 
     fun discard(requestId: String): CompletableFuture<ReplayOperation> = operation {
@@ -178,7 +179,7 @@ class ReplayCore internal constructor(
 
     private fun failedRequest(id: String): FrozenCapture? = pending?.takeIf { enabled && it.id == id && saveState.phase == SavePhase.FAILED }
 
-    private fun startSave(capture: FrozenCapture, directory: Path) {
+    private fun startSave(capture: FrozenCapture, directory: Path): CompletionStage<SaveSnapshot> {
         cancelSave = AtomicBoolean()
         val cancellation = cancelSave
         val missing = (capture.states.filterValues { it.state != StreamState.NOT_REQUESTED && (it.state != StreamState.CAPTURING || it.reason != null) }.keys +
@@ -206,6 +207,7 @@ class ReplayCore internal constructor(
             }, capture.id) }
             if (!closed.get()) runCatching { control.execute { settleSave(attempt); publish() } }
         }
+        return attempt.completion
     }
 
     private fun settleSave(attempt: SaveAttempt? = saveAttempt) {
@@ -430,6 +432,8 @@ class ReplayCore internal constructor(
 
 /** The writer records its result once before a best-effort control/UI callback. */
 internal class SaveAttempt(val initial: SaveSnapshot) {
+    private val completed = CompletableFuture<SaveSnapshot>()
+    val completion: CompletionStage<SaveSnapshot> = completed.minimalCompletionStage()
     @Volatile var result: SaveSnapshot? = null
         private set
 
@@ -443,6 +447,7 @@ internal class SaveAttempt(val initial: SaveSnapshot) {
                 retainedPath = when (failure) { is SaveFailure -> failure.partial; is SaveCancelled -> failure.partial; else -> null })
         })
         result = value
+        completed.complete(value)
         return value
     }
 }

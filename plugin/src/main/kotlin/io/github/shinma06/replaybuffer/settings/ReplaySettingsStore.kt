@@ -139,6 +139,19 @@ class ReplaySettingsStore : SerializablePersistentStateComponent<ReplaySettingsS
         }
     }
 
+    /** Imports only legacy capture values; concurrent GUI choices retain their own fields. */
+    internal fun importLegacy(
+        retentionSeconds: Int,
+        destination: String,
+        destinationValidation: DestinationValidation = validateDestination(destination),
+    ) {
+        ReplaySettings(retentionSeconds, destination).validationError(destinationValidation)?.let { throw IllegalArgumentException(it) }
+        updateState {
+            require(!it.enabled) { "旧設定の移行前に取得をOFFにしてください。" }
+            it.copy(retentionSeconds = retentionSeconds, destination = destination)
+        }
+    }
+
     override fun loadState(state: ReplaySettingsState) {
         super.loadState(state.copy(retentionSeconds = state.retentionSeconds.takeIf { it in 1..CoreReplaySettings.MAX_REPLAY_SECONDS } ?: 180))
     }

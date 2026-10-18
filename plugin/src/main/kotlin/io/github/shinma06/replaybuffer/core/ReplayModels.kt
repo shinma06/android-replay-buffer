@@ -2,6 +2,7 @@ package io.github.shinma06.replaybuffer.core
 
 import java.nio.file.Files
 import java.nio.file.Path
+import java.util.concurrent.CompletionStage
 
 /** Applied values only. SDK/Run configuration resolution and draft settings belong to the IDE layer. */
 data class ReplaySettings(
@@ -181,4 +182,9 @@ data class ReplaySnapshot(
     val lastSave: SaveSnapshot? = null,
 )
 
-data class ReplayOperation(val accepted: Boolean, val reason: String? = null, val requestId: String? = null)
+data class ReplayOperation(
+    val accepted: Boolean,
+    val reason: String? = null,
+    val requestId: String? = null,
+    val saveResult: CompletionStage<SaveSnapshot>? = null,
+)

@@ -1,0 +1,10 @@
+#!/bin/sh
+set -eu
+plugin_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+studio_home=${REPLAY_STUDIO_HOME:-/Applications/Android Studio.app/Contents}
+java="$studio_home/jbr/Contents/Home/bin/java"
+if [ ! -x "$java" ] || [ ! -f "$studio_home/lib/util-8.jar" ]; then
+    printf '%s\n' '対応するAndroid StudioのContentsをREPLAY_STUDIO_HOMEで指定してください。' >&2
+    exit 1
+fi
+exec "$java" -cp "$plugin_dir/lib/*:$studio_home/lib/util-8.jar" io.github.shinma06.replaybuffer.cli.ReplayCli "$@"

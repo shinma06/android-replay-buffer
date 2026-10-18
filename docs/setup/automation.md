@@ -1,11 +1,11 @@
 # 自動レビュー・修正・統合
 
-`scripts/workflow/agent_loop.py` は、明示登録した同一 repository・maintainer の PR を一工程ずつ進めます。参照元の engine を移植し、既存Python CLI tests、共通 GUI lease、private registry に接続しています。スケジューラーへの登録と、実 PR の自動処理開始は別です。
+`scripts/workflow/agent_loop.py` は、明示登録した同一 repository・maintainer の PR を一工程ずつ進めます。参照元の engine を移植し、製品の共通検査、共通 GUI lease、private registry に接続しています。スケジューラーへの登録と、実 PR の自動処理開始は別です。
 
 ## 起動条件
 
 - [GitHub の有効化](github.md)を完了し、trusted main にこのハーネスを統合する。
-- GitHub CLI の正規認証、Codex CLI の正規認証、管理/開発用Python 3.15以上、製品に必要なadb/scrcpy/ffmpeg を用意する。[runtime選択・旧環境の移行](README.md#runtimeと配置)を確認する。token・認証ファイルを複製しない。
+- GitHub CLI の正規認証、Codex CLI の正規認証、管理/開発用Python 3.15以上、製品buildに必要な[固定JDK・Android SDK](../plugin-development.md#固定した開発環境)を用意する。[runtime選択・旧環境の移行](README.md#runtimeと配置)を確認する。token・認証ファイルを複製しない。
 - Issue の受入・ラベル・Project・Milestone・担当を確認し、専用 worktree の clean な HEAD と remote PR HEAD を一致させる。
 - writer が編集・commit・push・GUI を停止し、scope と次の owner を確定する。
 - worker 実行は実環境で許可される場合だけ使う。`codex exec` は coordinator が起動する子プロセスであり、名前を変えても独立 top-level セッションになるわけではない。子エージェント禁止の環境から `tick` を実行して迂回しない。許可された実行者へ packet を引き継ぐ。
@@ -17,7 +17,7 @@
 ```bash
 python3 scripts/workflow/agent_loop.py enroll \
   --pr 123 --source ../android-replay-buffer-issue-12 --owner implementation-session \
-  --scope replay_buffer/ docs/verification/ --writer-stopped
+  --scope plugin/ docs/verification/ --writer-stopped
 python3 scripts/workflow/agent_loop.py scan
 python3 scripts/workflow/agent_loop.py tick --pr 123
 ```
