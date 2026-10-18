@@ -67,6 +67,22 @@ sys.exit(int(status.read_text()) if status.exists() else 0)
         self.assertEqual([COMPLETE], recovered.stdout.splitlines()[-1:])
         self.assertEqual(2, len(self.calls()))
 
+    def test_tests_only_forwards_once_and_preserves_failure_and_recovery(self):
+        invalid = self.run_check('--plugin-tests-only')
+        self.assertEqual(2, invalid.returncode)
+        self.assertIn('requires --plugin', invalid.stderr)
+        self.assertEqual([], self.calls())
+        status = self.root / 'exit-code'
+        status.write_text('7')
+        failed = self.run_check('--plugin', '--plugin-tests-only')
+        self.assertNotEqual(0, failed.returncode)
+        self.assertNotIn(COMPLETE, failed.stdout)
+        status.unlink()
+        recovered = self.run_check('--plugin', '--plugin-tests-only')
+        self.assertEqual(0, recovered.returncode, recovered.stderr)
+        self.assertEqual([COMPLETE], recovered.stdout.splitlines()[-1:])
+        self.assertEqual([['-p', str(self.root / 'plugin'), '--no-daemon', 'check']] * 2, self.calls())
+
     def test_unknown_option_and_missing_required_inputs_fail_without_completion(self):
         invalid = self.run_check('--skip-plugin')
         self.assertEqual(2, invalid.returncode)

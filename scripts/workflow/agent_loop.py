@@ -818,7 +818,7 @@ class Loop:
         for test in test_commands(impact):
             output = command(test, path, 600)
             # Older product checkers ignored unknown arguments and never built the plugin.
-            if test[-1] == '--plugin' and output.splitlines()[-1:] != ['ARB_PRODUCT_PLUGIN_CHECK_COMPLETE']:
+            if '--plugin' in test and output.splitlines()[-1:] != ['ARB_PRODUCT_PLUGIN_CHECK_COMPLETE']:
                 raise ValueError('Candidate product checker did not confirm plugin validation; synchronize the shared entry first')
         if impact.get('base'):
             command(['git', 'diff', '--check', impact['base'], impact['head'], '--'], path)

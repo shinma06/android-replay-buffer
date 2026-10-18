@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "issue": 322,
+  "gui_required": false,
+  "reason": "採用済みmain2a27a9cの配布toolingをdevelopへ通常同期する。developのCLI内包・製品source/build設定・既存Case/受入観察を不変に保ち、CIのArtifact条件と検査helperだけを適合する。IDE/ADB操作は不要。新Caseは0、親320/271の無人認証・Actions追従とdocs-only no-opは別の未完受入として保持する。",
+  "cli_checks": [
+    "python3 scripts/check.py",
+    "python3 scripts/workflow/product_check.py",
+    "python3 scripts/workflow/change_impact.py --base origin/develop --run-tests"
+  ],
+  "cases": []
+}
