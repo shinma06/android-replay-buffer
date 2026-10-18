@@ -51,7 +51,7 @@ class ReplaySettingsLayoutTest {
         try {
             SwingUtilities.invokeAndWait(() -> {
                 for (String destination : List.of("", "/disposable/" + "long-directory/".repeat(12) + "save")) {
-                    var saved = new ReplaySettingsState(false, 180, destination, AppSelectionMode.AUTOMATIC, "", CaptureMode.VIDEO_AND_LOGS);
+                    var saved = new ReplaySettingsState(false, 180, destination, AppSelectionMode.AUTOMATIC, "", CaptureMode.VIDEO_AND_LOGS, false);
                     store.loadState(saved);
                     var configurable = new ReplaySettingsConfigurable(project);
                     try {
@@ -125,6 +125,14 @@ class ReplaySettingsLayoutTest {
                         assertEquals(destination, ((TextFieldWithBrowseButton) fields.get(1)).getText());
                         assertFalse(configurable.isModified());
                         assertEquals(saved, store.getState(), "layout must not apply settings");
+                        var autoSave = (javax.swing.JCheckBox) find(panel, "クラッシュ報告の自動保存");
+                        assertFalse(autoSave.isSelected());
+                        autoSave.setSelected(true);
+                        assertTrue(configurable.isModified());
+                        assertFalse(store.settings().getAutoSaveOnCrash(), "draft must not change effective preference");
+                        configurable.reset();
+                        assertFalse(autoSave.isSelected());
+                        assertFalse(configurable.isModified());
                     } finally {
                         configurable.disposeUIResources();
                     }

@@ -10,7 +10,16 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 /** Project-owned concrete core. All device/disk work and notifications run outside EDT. */
-class ReplayCore(initialSettings: ReplaySettings, private val workspace: Path, cleanupDirectory: Path = workspace) : AutoCloseable {
+class ReplayCore internal constructor(
+    initialSettings: ReplaySettings,
+    private val workspace: Path,
+    cleanupDirectory: Path,
+    private val writeCapture: (FrozenCapture, Path, () -> Boolean, (SavePublication) -> Unit) -> SaveOutput,
+) : AutoCloseable {
+    constructor(initialSettings: ReplaySettings, workspace: Path, cleanupDirectory: Path = workspace) :
+        this(initialSettings, workspace, cleanupDirectory, { capture, directory, cancelled, publish ->
+            SaveWriter().write(capture, directory, cancelled, publish)
+        })
     private val control = Executors.newSingleThreadScheduledExecutor { r -> Thread(r, "replay-control").apply { isDaemon = true } }
     private val writer = Executors.newSingleThreadExecutor { r -> Thread(r, "replay-save").apply { isDaemon = true } }
     private val listeners = CopyOnWriteArrayList<(ReplaySnapshot) -> Unit>()
@@ -36,12 +45,16 @@ class ReplayCore(initialSettings: ReplaySettings, private val workspace: Path, c
     private var pending: FrozenCapture? = null
     private var saveTask: Future<*>? = null
     private var cancelSave = AtomicBoolean()
+    private val autosave = CrashAutosave()
+    @Volatile private var saveAttempt: SaveAttempt? = null
+    private var attemptOrdinal = 0L
     @Volatile private var current = ReplaySnapshot(0, 0, false, CaptureState.DISABLED, settings, 0,
         video = StreamSnapshot(if (settings.captureMode.videoRequested) StreamState.WAITING else StreamState.NOT_REQUESTED),
         saveDisabledReason = "取得を有効にしてください")
 
     init {
         require(workspace.isAbsolute) { "一時領域は絶対パスで指定してください" }
+        autosave.configure(settings.autoSaveOnCrash, false, settings.application.packageName, settingsRevision)
         control.execute { if (!closed.get()) runCatching { LocalCaptureOwnership.recover(workspace); cleanup.recover(); publish() }.onFailure {
             error = "取得の終了情報を読み戻せません（記録を保全しました）"; publish()
         } }
@@ -50,7 +63,7 @@ class ReplayCore(initialSettings: ReplaySettings, private val workspace: Path, c
         } }, 1, 1, TimeUnit.SECONDS)
     }
 
-    fun snapshot(): ReplaySnapshot = current
+    fun snapshot(): ReplaySnapshot = current.copy(lastSave = saveAttempt?.let { it.result ?: it.initial }, autoSave = autosave.snapshot())
 
     fun subscribe(listener: (ReplaySnapshot) -> Unit): AutoCloseable {
         if (closed.get()) return AutoCloseable { }
@@ -74,7 +87,8 @@ class ReplayCore(initialSettings: ReplaySettings, private val workspace: Path, c
                 val root = ownership.root
                 try {
                     resources = CaptureResources(root, ownership::created).also { if (settings.captureMode.videoRequested) it.server }
-                    store = CaptureStore(root.resolve("ring"), created = ownership::created, removed = ownership::removed, captureMode = settings.captureMode)
+                    store = CaptureStore(root.resolve("ring"), created = ownership::created, removed = ownership::removed,
+                        captureMode = settings.captureMode, autosave = autosave)
                 } catch (e: Exception) {
                     try {
                         resources?.close(); resources = null
@@ -106,6 +120,7 @@ class ReplayCore(initialSettings: ReplaySettings, private val workspace: Path, c
         val changedApp = applied.application != settings.application
         settings = applied
         settingsRevision++
+        configureAuto()
         if (changedAdb) {
             stopBackend()
             probe?.close(); probe = if (enabled) settings.adbPath?.let { OwnedAdb(it) } else null
@@ -122,6 +137,7 @@ class ReplayCore(initialSettings: ReplaySettings, private val workspace: Path, c
         if (settings.application.mode == ApplicationMode.AUTO) {
             settings = settings.copy(application = value.copy(mode = ApplicationMode.AUTO))
             settingsRevision++
+            configureAuto()
             backend?.application(settings.application)
             publish()
         }
@@ -170,35 +186,69 @@ class ReplayCore(initialSettings: ReplaySettings, private val workspace: Path, c
             if (capture.logs.any { it.app == null }) listOf("app_log") else emptyList()).distinct().let { java.util.List.copyOf(it) }
         saveState = SaveSnapshot(SavePhase.WRITING, capture.id, capture.sequence, capture.start, capture.end,
             capture.seconds, directory, missingKinds = missing, device = capture.device,
-            application = capture.settings.application, applicationHistory = capture.applicationHistory(), videoTail = capture.videoTail(), captureMode = capture.settings.captureMode)
+            application = capture.settings.application, applicationHistory = capture.applicationHistory(), videoTail = capture.videoTail(),
+            captureMode = capture.settings.captureMode, attempt = ++attemptOrdinal, autoEventId = capture.autoTrigger?.eventId)
+        val attempt = SaveAttempt(saveState)
+        saveAttempt = attempt
         publish()
         saveTask = writer.submit {
-            val result = runCatching { SaveWriter().write(capture, directory, { cancellation.get() || closed.get() }) { publication ->
+            val result = runCatching { writeCapture(capture, directory, { cancellation.get() || closed.get() }) { publication ->
                 synchronized(publishing) {
-                    check(!cancellation.get() && !closed.get()) { "保存が取消されました" }
+                    if (cancellation.get() || closed.get()) throw SaveCancelled(null)
                     publication.publish()
                 }
             } }
-            if (!closed.get()) runCatching { control.execute {
-                if (!cancellation.get() && pending?.id == capture.id && enabled) {
-                    if (result.isSuccess) {
-                        store?.release(capture.id)
-                        pending = null
-                        val output = result.getOrThrow()
-                        saveState = saveState.copy(phase = SavePhase.COMPLETED, directory = output.directory, error = null,
-                            missingKinds = java.util.List.copyOf((saveState.missingKinds + output.missingKinds).distinct()))
-                    } else {
-                        saveState = saveState.copy(phase = SavePhase.FAILED,
-                            error = (result.exceptionOrNull() as? SaveFailure)?.message ?: "保存に失敗しました")
-                    }
-                    publish()
-                }
-            } }
+            val completed = attempt.complete(result)
+            capture.autoTrigger?.eventId?.let { id -> autosave.outcome(id, when (completed.phase) {
+                SavePhase.COMPLETED -> AutoSaveReason.SAVED
+                SavePhase.CANCELLED -> AutoSaveReason.CANCELLED
+                else -> AutoSaveReason.SAVE_FAILED
+            }, capture.id) }
+            if (!closed.get()) runCatching { control.execute { settleSave(attempt); publish() } }
+        }
+    }
+
+    private fun settleSave(attempt: SaveAttempt? = saveAttempt) {
+        val completed = attempt?.result ?: return
+        if (saveAttempt !== attempt || pending?.id != completed.requestId || saveState.attempt != completed.attempt || !enabled) return
+        saveState = completed
+        if (completed.phase == SavePhase.COMPLETED || completed.phase == SavePhase.CANCELLED) {
+            store?.release(completed.requestId!!)
+            pending = null
+        }
+    }
+
+    private fun configureAuto(host: Long = System.nanoTime()) {
+        val data = store
+        if (data == null) autosave.configure(settings.autoSaveOnCrash, enabled, settings.application.packageName, settingsRevision)
+        else data.configureAuto(settings, settingsRevision, device?.serial, enabled, host)
+    }
+
+    private fun autoSave(host: Long = System.nanoTime()) {
+        val data = store ?: return
+        configureAuto(host)
+        for (pair in autosave.drain(host)) {
+            val problem = when {
+                pending != null -> if (saveState.phase == SavePhase.WRITING) AutoSaveReason.NOT_SAVED_BUSY else AutoSaveReason.NOT_SAVED_FAILED_PIN
+                settings.saveDirectory == null -> AutoSaveReason.NOT_SAVED_DESTINATION_UNSET
+                else -> autosave.admissionProblem(pair, host)
+            }
+            if (problem != null) { autosave.outcome(pair.id, problem); continue }
+            val capture = try { data.capture(settings, pair, host)?.copy(device = device) } catch (failure: AutoSaveRejected) {
+                autosave.outcome(pair.id, failure.reason); continue
+            }
+            if (capture == null) { autosave.outcome(pair.id, AutoSaveReason.NOT_SAVED_NO_DATA); continue }
+            pending = capture
+            autosave.admitted(pair, capture.id, host)
+            startSave(capture, settings.saveDirectory!!)
         }
     }
 
     private fun poll() {
         if (closed.get()) return
+        settleSave()
+        configureAuto()
+        if (enabled) autoSave()
         if (!enabled) {
             cleanup.recover()
             val executable = settings.adbPath
@@ -240,12 +290,14 @@ class ReplayCore(initialSettings: ReplaySettings, private val workspace: Path, c
             val data = store ?: return
             generation++
             data.generation(generation)
+            configureAuto()
             backendStarted = System.nanoTime()
             backend = DeviceCapture(settings.adbPath!!, device!!.serial, resources!!, data, generation, settings.application).also { it.start() }
         }
         val data = store!!
         if (data.clock.snapshot().lastOrNull()?.received?.let { it >= backendStarted } == true) data.resume()
         data.prune(settings.replaySeconds)
+        configureAuto()
         val states = data.streams(settings.replaySeconds)
         captureState = when {
             devices.size > 1 -> CaptureState.MULTIPLE_DEVICES
@@ -263,6 +315,7 @@ class ReplayCore(initialSettings: ReplaySettings, private val workspace: Path, c
     private fun stopBackend() {
         val capture = backend ?: return
         store?.freeze()
+        autosave.refresh(null)
         settings.captureMode.streams.forEach { store?.status(it, StreamState.RECOVERING, "端末との取得接続が中断しています", generation) }
         val stopped = runCatching { capture.close() }
         val retained = runCatching {
@@ -284,6 +337,7 @@ class ReplayCore(initialSettings: ReplaySettings, private val workspace: Path, c
         probe?.close(); probe = null
         // Packet files are removed only after their pinned reader has really finished.
         saveTask?.get(10, TimeUnit.SECONDS)
+        settleSave()
         saveTask = null
         pending = null
         store?.close(); store = null
@@ -292,6 +346,7 @@ class ReplayCore(initialSettings: ReplaySettings, private val workspace: Path, c
         if (localOwnership != null) localCleanup.getOrThrow()
         device = null
         enabled = false
+        configureAuto()
         generation++
         captureState = CaptureState.DISABLED
         saveState = SaveSnapshot()
@@ -323,6 +378,7 @@ class ReplayCore(initialSettings: ReplaySettings, private val workspace: Path, c
             streams["device_log"] ?: StreamSnapshot(), streams["app_log"] ?: StreamSnapshot(), saveState,
             disabled == null, disabled, error, windowStartNs = data?.windowStart(settings.replaySeconds),
             cleanupPendingCount = cleanup.pendingCount)
+        current = current.copy(autoSave = autosave.snapshot(), lastSave = saveAttempt?.let { it.result ?: it.initial })
         listeners.forEach { if (!closed.get()) runCatching { it(current) } }
     }
 
@@ -370,4 +426,23 @@ class ReplayCore(initialSettings: ReplaySettings, private val workspace: Path, c
     }
 
     override fun close() { closeAsync() }
+}
+
+/** The writer records its result once before a best-effort control/UI callback. */
+internal class SaveAttempt(val initial: SaveSnapshot) {
+    @Volatile var result: SaveSnapshot? = null
+        private set
+
+    @Synchronized
+    fun complete(output: Result<SaveOutput>): SaveSnapshot {
+        check(result == null) { "保存attemptの結果は確定済みです" }
+        val value = output.fold({ saved -> initial.copy(phase = SavePhase.COMPLETED, directory = saved.directory,
+            missingKinds = java.util.List.copyOf((initial.missingKinds + saved.missingKinds).distinct())) }, { failure ->
+            initial.copy(phase = if (failure is SaveCancelled) SavePhase.CANCELLED else SavePhase.FAILED,
+                error = if (failure is SaveFailure || failure is SaveCancelled) failure.message else "保存に失敗しました",
+                retainedPath = when (failure) { is SaveFailure -> failure.partial; is SaveCancelled -> failure.partial; else -> null })
+        })
+        result = value
+        return value
+    }
 }

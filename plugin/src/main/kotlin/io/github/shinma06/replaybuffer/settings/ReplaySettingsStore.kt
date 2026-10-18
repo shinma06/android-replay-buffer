@@ -32,6 +32,7 @@ data class ReplaySettings(
     val appSelection: AppSelectionMode = AppSelectionMode.AUTOMATIC,
     val manualPackage: String = "",
     val captureMode: CaptureMode = CaptureMode.VIDEO_AND_LOGS,
+    val autoSaveOnCrash: Boolean = false,
 ) {
     fun validationError(): String? = validationError(validateDestination(destination))
 
@@ -94,6 +95,8 @@ data class ReplaySettingsState(
     @JvmField val manualPackage: String = "",
     @field:OptionTag("captureMode")
     @JvmField val captureMode: CaptureMode = CaptureMode.VIDEO_AND_LOGS,
+    @field:OptionTag("autoSaveOnCrash")
+    @JvmField val autoSaveOnCrash: Boolean = false,
 )
 
 @Service(Service.Level.PROJECT)
@@ -107,7 +110,8 @@ class ReplaySettingsStore : SerializablePersistentStateComponent<ReplaySettingsS
 
     fun settings(): ReplaySettings {
         val snapshot = state
-        return ReplaySettings(snapshot.retentionSeconds, snapshot.destination, snapshot.appSelection, snapshot.manualPackage, snapshot.captureMode)
+        return ReplaySettings(snapshot.retentionSeconds, snapshot.destination, snapshot.appSelection, snapshot.manualPackage,
+            snapshot.captureMode, snapshot.autoSaveOnCrash)
     }
 
     fun setEnabled(value: Boolean) {
@@ -130,6 +134,7 @@ class ReplaySettingsStore : SerializablePersistentStateComponent<ReplaySettingsS
                 appSelection = settings.appSelection,
                 manualPackage = settings.manualPackage,
                 captureMode = settings.captureMode,
+                autoSaveOnCrash = settings.autoSaveOnCrash,
             )
         }
     }
