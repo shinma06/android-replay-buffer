@@ -3566,12 +3566,12 @@
       "previous_plan_sha256": "13bd1e294519915d8c8a66be2770811a4d6b28465432061e7c2eae91a87fd8a3"
     },
     "method_revision": {
-      "issue": 230,
-      "previous_plan_sha256": "3ee1d401997722423b4db5f52c07d8edb4b6e377bc1f6f5456c66fab8460af57",
+      "issue": 299,
+      "previous_plan_sha256": "d544da51fd949b415001c2b4c939e1701fa6d7608eccfed2991b7db544ffd896",
       "common_requirements": [
         "目的→自製品の必要な証拠/精度→実行可能な最小方法の順で選ぶ。本改訂のgroup分担とCase固有expectedを有効条件とし、旧手順/回数/秒数/同時実行指定そのものは保証理由にしない。固定全139 Case/208出典と原plan/観察/失敗は保持し、方法変更を実行PASSにしない。 groupは関連する保証/方法の集合であり、本Case固有expectedに該当する目的だけを充足する。短時間保存へN超取得/長時間精度・回転・独立失敗retry等を新しい依存として加えない。",
         "対象データ・内容/順序/帰属・時刻窓・unknown/loss説明・固定pin/retry・原子性/非上書き・所有/終了・実API接続を保つ。決定的production回帰は既知入力の真値と全対象を照合し、代表nativeは接続/操作/表示を確かめる。native成果へ未公開の全raw/config取得を一律要求しない。",
-        "別run/別工程の証拠を、同じ製品artifactと条件/保証の対応を確認して束ねる。独立保証を短い同一runへ集約しない。予定母数は実行前に明示し全予定対象の欠落/重複/unknownを照合する。失敗・識別不能・過大な不確かさ・未帰属・未実施は未完了。REAL固有の観察と利用者保留は合成/EMUから推定しない。 REALラベルだけで共通host/IDE/code保証を物理端末で反復しない。監査で分けた18共通Caseは同artifact証拠を共有し、16の実機固有残差は実機保留解除後に共有smokeへ束ねる。初期段階の34延期値は履歴/再開先として保持する。",
+        "別run/別工程の証拠を、同じ製品artifactと条件/保証の対応を確認して束ねる。独立保証を短い同一runへ集約しない。予定母数は実行前に明示し全予定対象の欠落/重複/unknownを照合する。現行保証に必要な事実の失敗・識別不能・過大な不確かさ・未帰属・未実施は未完了。REAL固有の観察と利用者保留は合成/EMUから推定しない。 REALラベルだけで共通host/IDE/code保証を物理端末で反復しない。監査で分けた18共通Caseは同artifact証拠を共有し、16の実機固有残差は実機保留解除後に共有smokeへ束ねる。初期段階の34延期値は履歴/再開先として保持する。",
         "不変artifact/製品入力/fixture/条件を実証した既存の成功事実だけを現条件へ対応付け、不足する事実だけ追加確認する。旧aggregate failは不変のまま保持事実を再評価できるが、未解決の自製品失敗を除外してはならない。方法revisionだけで新build/導入/全GUIを要求しない。"
       ],
       "groups": {
@@ -3619,15 +3619,15 @@
             "41:SYNC-CLOCK"
           ],
           "disposition": "置換",
-          "purpose": "正常のp95≤100ms・最大≤250ms・中央値drift≤50ms・clock見積誤差≤20msと、実画像/両logの対応・欠落説明を保証する。",
-          "methods": "Clock/Storeの既知時刻fixtureで長時間進行・sample更新/4096履歴・offset変化・sleep/boot/壁時計境界・invalid/stale/unknownを決定的に検査する。nativeは通常Computer Useで識別可能な連番更新を開始/後半を含む観測区間から選んで取得する。中間や追加更新は目的に必要な範囲で選び、固定回数/間隔にしない。実行前に有限の予定event集合と区間を決め、実PTS/全関連frame/全phase/誤差とp95/最大/前後中央値を全件解析する。時計driftはその実観測区間と回帰の長時間条件を明記し、30分の実測や母集団の統計的保証とは呼ばない。判定に必要な精度を満たさないoracle誤差/欠落/識別不能を成功へ除外しない。画像番号を独立した既知画素の校正済み識別又は実画像確認で求め、色/parity/期待log順だけで推定しない。端末固有の経時差が未帰属なら当該目的へ追加観察する。",
-          "excluded": "30分/300event/各100という選んだ標本設計を廃し、短時間保存・回転・受取人Caseへ精度系列を連鎖必須にしない。小系列のp95を母集団の確率保証にしない。",
+          "purpose": "Android取得streamの元時刻・実画像ID・両logと、製品のclock変換・実時間窓・不確かさの説明が整合すること。clock見積誤差≤20msは変換モデルの条件で、描画/取得/物理表示を含む画像時刻の総合保証ではない。",
+          "methods": "Clock/Storeの既知時刻fixtureで長時間進行・sample更新/4096履歴・offset変化・sleep/boot/壁時計境界・invalid/stale/unknownを決定的に検査する。nativeは固定artifactの実取得/保存と全FILE/frame/両logを結び、開始/後半を含む有限の予定event/全phaseの画像ID・元PTS・順序・帰属・窓・欠落/重複/unknownを照合する。画像番号は独立した既知画素の校正済み識別又は実画像確認で求め、色/parity/期待log順だけで推定しない。measurementは全予定対象と元時刻/保存内容の対応、visual_oracleは独立した実画像ID、clock_durationは実観測区間と長時間/境界回帰・変換式/支持sample/不確かさを証拠化する。PTSの時計モデルと根拠・runtime適用限界を明記し、clock見積誤差≤20ms・読取幅≤2ms・RTT≤40ms・鮮度≤5秒を保つ。REQUEST/DRAW/commitは別位相として元計測/FAIL/未校正/原因未帰属を保持し、callback時刻を物理表示真値へ換えない。既存適格証拠を共有し、独立画像時刻の追加校正だけを目的とした再build/全native/traceを要求しない。",
+          "excluded": "本人の現在要件により、Android取得streamが独立に提供しない画像時刻のp95≤100ms・最大≤250ms・中央値drift≤50msをAgent/後続実装/性能baselineの一律gateから外す。代替数値を発明せず旧値・元FAIL・未校正/原因未帰属は履歴として保持し、FRAME_COMMIT等の良い位相へ付け替えない。旧延期文言の画像精度値も履歴であり、REAL固有の観察/利用者保留とその他の有効保証は維持する。自製品の誤変換・誤帰属・黙示的欠落・破損・虚偽の時刻/成功表示は除外しない。",
           "evidence_keys": [
             "measurement",
             "visual_oracle",
             "clock_duration"
           ],
-          "preconditions": "固定candidate/source・同じZIP/実classへのbindingと既存証拠の条件を確認する。所有fixtureを使い、native操作には共有GUI lease/実tool権限・対象識別/復旧を整える。正常取得で画像ID/元PTS・両log/clockの独立真値と測定誤差を記録できるfixture。予定系列/区間/環境を固定する。時計/sleep/boot境界は既知時刻隔離fixtureで別に確認する。 REAL固有取得/USB/表示/負荷と利用者保留は実観察なしに完了としない。"
+          "preconditions": "固定candidate/source・同じZIP/実classと条件のbinding、所有fixture、native操作の共有GUI lease/実tool権限・対象識別/復旧を確認する。有限の予定event/区間/環境、画像IDと元PTS/両log/clockを記録し、採用する時計モデルと根拠・runtimeの未確認を明記する。Android全体の時刻原点/数値精度や物理表示時刻の校正済み保証は仮定しない。時計/sleep/boot境界は既知時刻隔離fixtureで確認し、REAL固有取得/USB/表示/負荷と利用者保留は実観察なしに完了としない。"
         },
         "recipient": {
           "cases": [
@@ -3859,7 +3859,7 @@
         },
         "27:SYNC-DRIFT-REAL": {
           "case": {
-            "expected": "開始/末尾のずれを実測し採用精度内。時計変化/epoch/空白を誤対応しない。共有端末時計は変更しない。 SYNC-CLOCK: 通常p95<=100ms、最大<=250ms、中央値drift<=50ms、clock見積誤差<=20ms。全欠落/uncertainも集計し隠さない。100ms等は未実測の設計基準。 SYNC-JUMP: 境界跨ぎ補間なし、曖昧logはelapsed/window nullと推定幅。正常precisionを偽装しない。sequence/旧履歴/pinは保持、新bootを旧elapsedとして計算しない。失った容量上限区間はloss。 SYNC-JUMPの結果はこの専用実機だけに帰属する。正常精度と時計境界試験を別に集計し、安全に再現・測定できない操作を完了扱いしない。"
+            "expected": "取得した元PTS・log時刻/内容/順序/帰属を保ち、実画像ID/両log・支持clock sampleによる変換・実時間窓/索引を照合する。clock見積誤差≤20ms・読取幅≤2ms・RTT≤40ms・鮮度≤5秒、対応が支持されたcut≤1観測frame間隔＋時計誤差、mux/index丸め≤1msを維持する。時計モデル/適用限界と全欠落/unknownを明記し、取得streamが定義しない画像時刻精度を確認済みとしない。元の位相別計測/FAIL・未校正/原因未帰属を保持し、追加の独立画像時刻校正を一律gateにしない。 開始/後半の対応と長時間clock履歴を確認し、共有端末時計は変更しない。SYNC-JUMP: 境界跨ぎ補間なし、曖昧logはelapsed/window nullと推定幅。sequence/旧履歴/pinは保持し、新bootを旧elapsedとして計算しない。失った容量上限区間はloss。端末固有の実観察はその専用実機にだけ帰属し、既知入力回帰と区別する。現行保証に必要で安全に再現・測定できない操作は未完了とする。"
           }
         },
         "27:SAVE-FAIL-08-REAL": {
@@ -3884,7 +3884,7 @@
         },
         "27:SYNC-DRIFT-EMU": {
           "case": {
-            "expected": "開始/末尾のずれを実測し採用精度内。時計変化/epoch/空白を誤対応しない。共有端末時計は変更しない。 SYNC-CLOCK: 通常p95<=100ms、最大<=250ms、中央値drift<=50ms、clock見積誤差<=20ms。全欠落/uncertainも集計し隠さない。100ms等は未実測の設計基準。 SYNC-JUMP: 境界跨ぎ補間なし、曖昧logはelapsed/window nullと推定幅。正常precisionを偽装しない。sequence/旧履歴/pinは保持、新bootを旧elapsedとして計算しない。失った容量上限区間はloss。 SYNC-JUMPの結果はこの専用Emulatorだけに帰属する。正常精度と時計境界試験を別に集計し、安全に再現・測定できない操作を完了扱いしない。"
+            "expected": "取得した元PTS・log時刻/内容/順序/帰属を保ち、実画像ID/両log・支持clock sampleによる変換・実時間窓/索引を照合する。clock見積誤差≤20ms・読取幅≤2ms・RTT≤40ms・鮮度≤5秒、対応が支持されたcut≤1観測frame間隔＋時計誤差、mux/index丸め≤1msを維持する。時計モデル/適用限界と全欠落/unknownを明記し、取得streamが定義しない画像時刻精度を確認済みとしない。元の位相別計測/FAIL・未校正/原因未帰属を保持し、追加の独立画像時刻校正を一律gateにしない。 開始/後半の対応と長時間clock履歴を確認し、共有端末時計は変更しない。SYNC-JUMP: 境界跨ぎ補間なし、曖昧logはelapsed/window nullと推定幅。sequence/旧履歴/pinは保持し、新bootを旧elapsedとして計算しない。失った容量上限区間はloss。端末固有の実観察はその専用Emulatorにだけ帰属し、既知入力回帰と区別する。現行保証に必要で安全に再現・測定できない操作は未完了とする。"
           }
         },
         "27:SAVE-FAIL-08-EMU": {
@@ -3956,6 +3956,31 @@
           "case": {
             "expected": "時計履歴のgroup/next/neighbor探索を行ごとに全走査しない。最大履歴と多数行、境界・曖昧性・未知・例外、元の窓/order/ID/帰属/pinを同ZIP製品classで確認する。同じ新候補の代表glueの実public経路では保存完了と継続取得、失敗した固定対象のretryが従来どおり動作する。実停止時間/欠落改善は観測した証拠がある範囲だけ報告する。 失敗場所と固定retryの内部伝播は同ZIP production classの隔離public経路へ分担し、実IDEの代表正常保存/表示と安全な失敗表示へbindingする。実stagingのruntime mutationを必須にしない。"
           }
+        },
+        "13:SYNC-CLOCK": {
+          "case": {
+            "expected": "取得した元PTS・log時刻/内容/順序/帰属を保ち、実画像ID/両log・支持clock sampleによる変換・実時間窓/索引を照合する。clock見積誤差≤20ms・読取幅≤2ms・RTT≤40ms・鮮度≤5秒、対応が支持されたcut≤1観測frame間隔＋時計誤差、mux/index丸め≤1msを維持する。時計モデル/適用限界と全欠落/unknownを明記し、取得streamが定義しない画像時刻精度を確認済みとしない。元の位相別計測/FAIL・未校正/原因未帰属を保持し、追加の独立画像時刻校正を一律gateにしない。"
+          }
+        },
+        "27:SYNC-PRECISION-REAL": {
+          "case": {
+            "expected": "取得した元PTS・log時刻/内容/順序/帰属を保ち、実画像ID/両log・支持clock sampleによる変換・実時間窓/索引を照合する。clock見積誤差≤20ms・読取幅≤2ms・RTT≤40ms・鮮度≤5秒、対応が支持されたcut≤1観測frame間隔＋時計誤差、mux/index丸め≤1msを維持する。時計モデル/適用限界と全欠落/unknownを明記し、取得streamが定義しない画像時刻精度を確認済みとしない。元の位相別計測/FAIL・未校正/原因未帰属を保持し、追加の独立画像時刻校正を一律gateにしない。"
+          }
+        },
+        "27:SYNC-PRECISION-EMU": {
+          "case": {
+            "expected": "取得した元PTS・log時刻/内容/順序/帰属を保ち、実画像ID/両log・支持clock sampleによる変換・実時間窓/索引を照合する。clock見積誤差≤20ms・読取幅≤2ms・RTT≤40ms・鮮度≤5秒、対応が支持されたcut≤1観測frame間隔＋時計誤差、mux/index丸め≤1msを維持する。時計モデル/適用限界と全欠落/unknownを明記し、取得streamが定義しない画像時刻精度を確認済みとしない。元の位相別計測/FAIL・未校正/原因未帰属を保持し、追加の独立画像時刻校正を一律gateにしない。"
+          }
+        },
+        "31:SYNC-CLOCK": {
+          "case": {
+            "expected": "取得した元PTS・log時刻/内容/順序/帰属を保ち、実画像ID/両log・支持clock sampleによる変換・実時間窓/索引を照合する。clock見積誤差≤20ms・読取幅≤2ms・RTT≤40ms・鮮度≤5秒、対応が支持されたcut≤1観測frame間隔＋時計誤差、mux/index丸め≤1msを維持する。時計モデル/適用限界と全欠落/unknownを明記し、取得streamが定義しない画像時刻精度を確認済みとしない。元の位相別計測/FAIL・未校正/原因未帰属を保持し、追加の独立画像時刻校正を一律gateにしない。"
+          }
+        },
+        "41:SYNC-CLOCK": {
+          "case": {
+            "expected": "取得した元PTS・log時刻/内容/順序/帰属を保ち、実画像ID/両log・支持clock sampleによる変換・実時間窓/索引を照合する。clock見積誤差≤20ms・読取幅≤2ms・RTT≤40ms・鮮度≤5秒、対応が支持されたcut≤1観測frame間隔＋時計誤差、mux/index丸め≤1msを維持する。時計モデル/適用限界と全欠落/unknownを明記し、取得streamが定義しない画像時刻精度を確認済みとしない。元の位相別計測/FAIL・未校正/原因未帰属を保持し、追加の独立画像時刻校正を一律gateにしない。"
+          }
         }
       },
       "previous_methods": {
@@ -3968,6 +3993,25 @@
         "video": {
           "methods": "既知packet/config/元PTS/復号画素を持つ同ZIP production Writer回帰で、全対象packet/frame・単一MP4/1track・sample/index/headers/edit/実VFR・原寸/aspect/文字/色・null/MAX/held/terminal・後半故障を照合する。native保存物は全FILE/sample/両log/record ID/clock/window/manifestを独立readerで読み、実保存/glueに結び付ける。native未公開raw/configの全取得を別の必須条件にせず、既知入力の全byte/画素真値とnative成果の実構造/表示を分担する。標準playerのopen・短いPlay・前後seekと標準editorでREADMEから代表同ID/不足説明へ辿る操作は同条件の一回を共有する。製品違反と未帰属は未完了、根拠付き外部reader差は診断/制約として残す。 内部の全break種・前/中/後・unknown/整数・PTS reset/config/geometry/後半欠落は決定的回帰。実IDEでは通常/静止/実回転混在Saveと通常再接続を別工程で観察できる。通常と再接続前後に識別可能な陽性eventを予定し、全予定対象を実窓内で照合する。N300/通常3/PRE3/POST3・9/18phaseは固定せず、全phaseと欠落検出能力は保つ。",
           "excluded": "全境界native故障・全精密seek・生config同native成果必須・30分系列・同一短時間run/240秒余裕を除外する。"
+        }
+      },
+      "previous_precision": {
+        "purpose": "正常のp95≤100ms・最大≤250ms・中央値drift≤50ms・clock見積誤差≤20msと、実画像/両logの対応・欠落説明を保証する。",
+        "methods": "Clock/Storeの既知時刻fixtureで長時間進行・sample更新/4096履歴・offset変化・sleep/boot/壁時計境界・invalid/stale/unknownを決定的に検査する。nativeは通常Computer Useで識別可能な連番更新を開始/後半を含む観測区間から選んで取得する。中間や追加更新は目的に必要な範囲で選び、固定回数/間隔にしない。実行前に有限の予定event集合と区間を決め、実PTS/全関連frame/全phase/誤差とp95/最大/前後中央値を全件解析する。時計driftはその実観測区間と回帰の長時間条件を明記し、30分の実測や母集団の統計的保証とは呼ばない。判定に必要な精度を満たさないoracle誤差/欠落/識別不能を成功へ除外しない。画像番号を独立した既知画素の校正済み識別又は実画像確認で求め、色/parity/期待log順だけで推定しない。端末固有の経時差が未帰属なら当該目的へ追加観察する。",
+        "excluded": "30分/300event/各100という選んだ標本設計を廃し、短時間保存・回転・受取人Caseへ精度系列を連鎖必須にしない。小系列のp95を母集団の確率保証にしない。",
+        "preconditions": "固定candidate/source・同じZIP/実classへのbindingと既存証拠の条件を確認する。所有fixtureを使い、native操作には共有GUI lease/実tool権限・対象識別/復旧を整える。正常取得で画像ID/元PTS・両log/clockの独立真値と測定誤差を記録できるfixture。予定系列/区間/環境を固定する。時計/sleep/boot境界は既知時刻隔離fixtureで別に確認する。 REAL固有取得/USB/表示/負荷と利用者保留は実観察なしに完了としない。",
+        "common_requirement": "別run/別工程の証拠を、同じ製品artifactと条件/保証の対応を確認して束ねる。独立保証を短い同一runへ集約しない。予定母数は実行前に明示し全予定対象の欠落/重複/unknownを照合する。失敗・識別不能・過大な不確かさ・未帰属・未実施は未完了。REAL固有の観察と利用者保留は合成/EMUから推定しない。 REALラベルだけで共通host/IDE/code保証を物理端末で反復しない。監査で分けた18共通Caseは同artifact証拠を共有し、16の実機固有残差は実機保留解除後に共有smokeへ束ねる。初期段階の34延期値は履歴/再開先として保持する。",
+        "overrides": {
+          "27:SYNC-DRIFT-REAL": {
+            "case": {
+              "expected": "開始/末尾のずれを実測し採用精度内。時計変化/epoch/空白を誤対応しない。共有端末時計は変更しない。 SYNC-CLOCK: 通常p95<=100ms、最大<=250ms、中央値drift<=50ms、clock見積誤差<=20ms。全欠落/uncertainも集計し隠さない。100ms等は未実測の設計基準。 SYNC-JUMP: 境界跨ぎ補間なし、曖昧logはelapsed/window nullと推定幅。正常precisionを偽装しない。sequence/旧履歴/pinは保持、新bootを旧elapsedとして計算しない。失った容量上限区間はloss。 SYNC-JUMPの結果はこの専用実機だけに帰属する。正常精度と時計境界試験を別に集計し、安全に再現・測定できない操作を完了扱いしない。"
+            }
+          },
+          "27:SYNC-DRIFT-EMU": {
+            "case": {
+              "expected": "開始/末尾のずれを実測し採用精度内。時計変化/epoch/空白を誤対応しない。共有端末時計は変更しない。 SYNC-CLOCK: 通常p95<=100ms、最大<=250ms、中央値drift<=50ms、clock見積誤差<=20ms。全欠落/uncertainも集計し隠さない。100ms等は未実測の設計基準。 SYNC-JUMP: 境界跨ぎ補間なし、曖昧logはelapsed/window nullと推定幅。正常precisionを偽装しない。sequence/旧履歴/pinは保持、新bootを旧elapsedとして計算しない。失った容量上限区間はloss。 SYNC-JUMPの結果はこの専用Emulatorだけに帰属する。正常精度と時計境界試験を別に集計し、安全に再現・測定できない操作を完了扱いしない。"
+            }
+          }
         }
       }
     }

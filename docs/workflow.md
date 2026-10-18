@@ -88,7 +88,7 @@ PM・担当・レビュアーは現状の手段を当然とせず、検査失敗
 
 未完了の作業を停止・引継ぎ・blockedとする直前に、[停止の最終再考フロー](omil-portable.md#reconsider-before-stopping-unfinished-work)を順に適用します。本人停止・実拒否・安全/実資源の限界は先に影響範囲を即時停止します。それ以外は停止範囲、原因の根拠、制約の出所、目的を保つ代案と独立した作業、有限な計画変更の可否を確認します。試行回数や同じ報告の繰返しだけで全体停止を正当化しません。全体停止が不要なら撤回して許可済みの次操作を実行し、妥当なら原因、保全/未達、再開条件と解決担当、既知の解決手順/未知/次操作を報告します。既存Issue/計画を使い、新しい承認gateや監視は追加しません。
 
-writer が編集・commit・push・GUI を停止してから [自動進行](setup/automation.md) へ登録します。5 checks（test、PR policy、Acceptance gate、Agent review、CLI Python 3.9）と会話解決、現在の HEAD/base/受入を再確認し、保護付きの通常 PR merge を使います。
+writer が編集・commit・push・GUI を停止してから [自動進行](setup/automation.md) へ登録します。共通4 checks（test、PR policy、Acceptance gate、Agent review）と会話解決、現在の HEAD/base/受入を再確認し、保護付きの通常 PR merge を使います。[runtime移行中](setup/github.md#runtime検査の共通testへの段階移行)は実serverが要求する旧CLI contextも満たし、Python原型の実検査は必須test内に残します。
 
 merge 後は [作業管理の終了確認](work-management.md) と QA 引継ぎを行い、次のbranch lifecycleで資源を整理します。統合・Issue完了・claim移管/解放・資源削除は別に読み戻します。
 

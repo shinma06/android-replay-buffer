@@ -52,16 +52,23 @@ class ReplayCoreWireTest {
         runWireFixture(false, "partition", captureMode = CaptureMode.LOG_ONLY)
     }
 
+    @Test
+    @EnabledOnOs(OS.MAC)
+    fun productionReaderAndExistingPsPollAdmitOneCorroboratedAutomaticSave() {
+        runWireFixture(false, "partition", captureMode = CaptureMode.LOG_ONLY, autoCrash = true)
+    }
+
     private fun runWireFixture(
         discardInitialPFrame: Boolean,
         logMode: String? = null,
         logReaderStartupDelayMillis: Long = 0,
         captureMode: CaptureMode = CaptureMode.VIDEO_AND_LOGS,
+        autoCrash: Boolean = false,
     ) {
         val root = Files.createTempDirectory("replay-wire-fixture-")
         Files.writeString(root.resolve("probe-mode.txt"), logMode ?: "partition")
         Files.writeString(root.resolve("log-events.txt"), "")
-        if (captureMode == CaptureMode.LOG_ONLY) {
+        if (captureMode == CaptureMode.LOG_ONLY && !autoCrash) {
             Files.createFile(root.resolve("unconfirmed-logs"))
             Files.createFile(root.resolve("quiet-logs"))
         }
@@ -171,15 +178,17 @@ elif len(a)>2 and a[2]=='forward':
 elif len(a)>2 and a[2]=='logcat':
     mode=(root/'probe-mode.txt').read_text()
     buffer=a[a.index('-b')+1]
-    def emit(lid,message,epoch=None,pid=12,uid=10001,header=28,tag='Fixture'):
+    def wire(lid,payload,epoch=None,pid=12,uid=10001,header=28):
         epoch=time.time_ns() if epoch is None else epoch
-        payload=(b'\x06'+message.encode()) if lid==2 else b'\x04'+tag.encode()+b'\x00'+message.encode()+b'\x00'
         raw=struct.pack('<HHiiII',len(payload),header,pid,pid,epoch//1000000000,epoch%1000000000)
         if header>=24: raw+=struct.pack('<I',lid)
         if header>=28: raw+=struct.pack('<I',uid)
         raw+=payload
         for i in range(0,len(raw),3):
             sys.stdout.buffer.write(raw[i:i+3]); sys.stdout.buffer.flush()
+    def emit(lid,message,epoch=None,pid=12,uid=10001,header=28,tag='Fixture'):
+        payload=(b'\x06'+message.encode()) if lid==2 else b'\x04'+tag.encode()+b'\x00'+message.encode()+b'\x00'
+        wire(lid,payload,epoch,pid,uid,header)
     if '-d' in a:
         (root/'probe-started').touch()
         if mode=='empty': sys.exit(0)
@@ -193,6 +202,7 @@ elif len(a)>2 and a[2]=='logcat':
     seen=len((root/'log-events.txt').read_text().splitlines())
     with launches.open('a') as f: f.write(buffer+' '+str(os.getpid())+'\n')
     quiet_sent=False
+    crash_sent=False
     while True:
         if (root/'unconfirmed-logs').exists(): time.sleep(.05); continue
         if (root/('fail-'+buffer)).exists(): sys.exit(7)
@@ -203,6 +213,11 @@ elif len(a)>2 and a[2]=='logcat':
             if not quiet_sent: emit(0,'old tail',epoch=1000000000); quiet_sent=True
             time.sleep(.05); continue
         emit(0,'hello',header=20 if mode=='legacy' else 28)
+        if buffer=='all' and not crash_sent and (root/'crash-wire.txt').exists():
+            for crash in (root/'crash-wire.txt').read_text().splitlines():
+                lid,pid,uid,wall,payload=crash.split(' ')
+                wire(int(lid),bytes.fromhex(payload),int(wall),int(pid),int(uid))
+            crash_sent=True
         lines=(root/'log-events.txt').read_text().splitlines()
         for line in lines[seen:]:
             wall,label=line.split(' ',1); wall=int(wall)
@@ -229,7 +244,7 @@ elif len(a)>3 and a[3]=='settings':
 elif len(a)>3 and a[3]=='cmd':
     print('package:com.fixture.app uid:10001')
 elif len(a)>3 and a[3]=='ps':
-    print('PID UID NAME\n12 10001 com.fixture.app' if a[-1]=='PID,UID,NAME' else 'PID ARGS')
+    print('PID UID NAME\n12 10001 com.fixture.app\n500 1000 system_server' if a[-1]=='PID,UID,NAME' else 'PID ARGS')
 """)
         assertTrue(fake.toFile().setExecutable(true))
         val core = ReplayCore(ReplaySettings(fake, root.resolve("missing"), if (captureMode.videoRequested) 1 else 30,
@@ -249,6 +264,28 @@ elif len(a)>3 and a[3]=='ps':
             assertTrue(enabled.accepted, enabled.reason)
             awaitState("unselected-multiple") { it.captureState == CaptureState.MULTIPLE_DEVICES && it.device == null }
             Files.writeString(devices, "List of devices attached\nfixture-1 device model:Fixture\n")
+            if (autoCrash) {
+                assertTrue(core.updateApplication(ApplicationTarget("com.fixture.app")).get().accepted)
+                assertTrue(core.applySettings(core.snapshot().settings.copy(saveDirectory = root, autoSaveOnCrash = true)).get().accepted)
+                awaitState("auto-armed") { it.autoSave.state == AutoSaveState.ARMED && it.captureState == CaptureState.CAPTURING }
+                val wall = System.currentTimeMillis() * 1_000_000
+                val sources = listOf(javaCrash(process = "com.fixture.app", pid = 12, uid = 10001, wall = wall),
+                    platformCrash(process = "com.fixture.app", first = 12, wall = wall + 1_000_000))
+                Files.writeString(root.resolve("crash-wire.tmp"), sources.joinToString("\n") {
+                    "${it.lid} ${it.pid} ${it.uid} ${it.wall} ${java.util.HexFormat.of().formatHex(it.raw)}"
+                })
+                Files.move(root.resolve("crash-wire.tmp"), root.resolve("crash-wire.txt"))
+                val done = awaitState("auto-save-completed") { it.lastSave?.phase == SavePhase.COMPLETED }
+                assertEquals(AutoSaveReason.SAVED, done.autoSave.lastOutcome?.reason)
+                assertEquals(7, done.autoSave.admissionsRemaining)
+                assertEquals(1, done.lastSave?.attempt)
+                val manifest = JsonParser.parseString(Files.readString(done.lastSave!!.directory!!.resolve("session.json"))).asJsonObject
+                assertEquals("com.fixture.app", manifest["auto_trigger"].asJsonObject["target_identity"].asJsonObject["package"].asString)
+                assertEquals(500, manifest["auto_trigger"].asJsonObject["reporter_poll"].asJsonObject["pid"].asInt)
+                assertEquals("LOG_ONLY", manifest["capture_mode"].asString)
+                assertTrue(core.setEnabled(false).get(15, TimeUnit.SECONDS).accepted)
+                return
+            }
             if (captureMode == CaptureMode.LOG_ONLY) {
                 awaitState("readers-started-without-headers") {
                     val launches = root.resolve("log-launches.txt")

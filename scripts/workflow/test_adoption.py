@@ -59,7 +59,7 @@ class AdoptionTests(unittest.TestCase):
         rules += [{'type': 'pull_request', 'ruleset_id': 12, 'parameters': {'required_review_thread_resolution': True}},
                   {'type': 'required_status_checks', 'ruleset_id': 12, 'parameters': {
                       'strict_required_status_checks_policy': True,
-                      'required_status_checks': [{'context': x} for x in ('test', 'PR policy', 'Acceptance gate', 'Agent review', 'CLI Python 3.9')]}}]
+                      'required_status_checks': [{'context': x} for x in ('test', 'PR policy', 'Acceptance gate', 'Agent review')]}}]
         for invalid in ([], rules[:-1]):
             gh.api = Mock(return_value=invalid)
             with self.assertRaises(ValueError): gh.merge(pull)

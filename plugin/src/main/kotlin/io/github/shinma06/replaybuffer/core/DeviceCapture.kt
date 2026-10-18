@@ -71,12 +71,17 @@ internal class DeviceCapture(
                         }.toList()
                         val uid = identities.singleOrNull { it.first == selected.packageName }?.second
                         val exclusive = uid != null && identities.count { it.second == uid } == 1
+                        val psStart = System.nanoTime()
                         val ps = adb.command("-s", serial, "shell", "ps", "-A", "-o", "PID,UID,NAME")
+                        val psEnd = System.nanoTime()
                         val pids = ps.lineSequence().drop(1).mapNotNull {
                             val f = it.trim().split(Regex("\\s+"))
                             if (f.size >= 3 && (f[2] == selected.packageName || f[2].startsWith(selected.packageName + ":"))) f[0].toIntOrNull() else null
                         }.toSet()
-                        if (selected == application) store.app(selected.packageName, uid, pids, generation, exclusive)
+                        if (selected == application) {
+                            store.app(selected.packageName, uid, pids, generation, exclusive,
+                                poll = ReporterPoll(psStart, psEnd, generation, systemServerPid(ps)))
+                        }
                     }.onFailure { if (selected == application) store.app(selected.packageName, null, emptySet(), generation) }
                 }
                 if (!pause(1000)) break
@@ -161,6 +166,7 @@ internal class DeviceCapture(
             store.status(kind, state, reason, generation)
             return
         }
+        if (kind == "device_log-all" && state != StreamState.CAPTURING) store.logReaderBoundary(generation)
         val role = kind.removePrefix("device_log-")
         logStates[role] = StreamSnapshot(state, reason = reason)
         val required = if (partitionLogs.getNow(true)) logStates else mapOf("all" to logStates.getValue("all"))

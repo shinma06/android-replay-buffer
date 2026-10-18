@@ -1,0 +1,63 @@
+name: Release delivery
+on:
+  workflow_run:
+    workflows: [CI]
+    branches: [main, develop]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      promotion_pr:
+        description: Merged main promotion PR to publish or recover
+        required: true
+        type: number
+permissions:
+  contents: read
+concurrency:
+  group: release-delivery
+  queue: max
+  cancel-in-progress: false
+jobs:
+  publish:
+    if: >-
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'workflow_run' && github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_repository.full_name == github.repository)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      actions: read
+      checks: read
+      statuses: read
+      pull-requests: read
+      issues: read
+    steps:
+      # Publisher code is reviewed main; downloaded ZIP contents are never executed.
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: refs/heads/main
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v7.0.0
+        with:
+          python-version: '3.15.0'
+      - name: Deliver the identified candidate bytes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          BRANCH: ${{ github.event.workflow_run.head_branch }}
+          SOURCE: ${{ github.event.workflow_run.head_sha }}
+          RUN: ${{ github.event.workflow_run.id }}
+          PROMOTION_PR: ${{ inputs.promotion_pr }}
+        run: |
+          if [ "$EVENT" = workflow_dispatch ]; then
+            python3 scripts/workflow/release_delivery.py stable --promotion-pr "$PROMOTION_PR"
+          elif [ "$BRANCH" = develop ]; then
+            python3 scripts/workflow/release_delivery.py early --run "$RUN" --source "$SOURCE"
+          elif [ "$BRANCH" = main ]; then
+            python3 scripts/workflow/release_delivery.py promoted --source "$SOURCE"
+          else
+            echo 'Unexpected delivery branch' >&2
+            exit 1
+          fi

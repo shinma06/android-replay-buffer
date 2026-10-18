@@ -2,11 +2,14 @@ package io.github.shinma06.replaybuffer.fixture;
 
 import android.app.Activity;
 import android.app.Instrumentation;
+import android.content.ComponentName;
 import android.content.Intent;
+import android.content.pm.ActivityInfo;
 import android.graphics.Insets;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.ParcelFileDescriptor;
+import android.os.Process;
 import android.os.SystemClock;
 import android.view.DisplayCutout;
 import android.view.View;
@@ -76,7 +79,14 @@ public final class RegressionInstrumentation extends Instrumentation {
             awaitPhases(event(), false);
             runOnMainSync(() -> emit.performClick());
             awaitPhases(event(), true);
-            result.putString("stream", "PASS: idle commit, coalescing, dispose/reopen, bars/cutout insets\n");
+            verifyCrashGuards();
+            open();
+            runOnMainSync(() -> {
+                check(layout.getChildCount() == 3, "normal marker layout changed");
+                emit.performClick();
+            });
+            awaitPhases(event(), true);
+            result.putString("stream", "PASS: idle commit, coalescing, dispose/reopen, bars/cutout insets, crash-panel nonfatal guards\n");
 
         } catch (Exception | AssertionError error) {
             result.putString("stream", "FAIL: " + error.getMessage() + "\n");
@@ -104,6 +114,50 @@ public final class RegressionInstrumentation extends Instrumentation {
         long[] value = new long[1];
         runOnMainSync(() -> value[0] = Long.parseLong(marker.getContentDescription().toString().split(" ")[1]));
         return value[0];
+    }
+
+    private void verifyCrashGuards() throws Exception {
+        runOnMainSync(() -> activity.finish());
+        Intent intent = new Intent().setClassName(getTargetContext().getPackageName(), CrashTestActivity.class.getName());
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        activity = startActivitySync(intent);
+        int pid = Process.myPid();
+        Thread.UncaughtExceptionHandler original = Thread.getDefaultUncaughtExceptionHandler();
+        Button[] custom = new Button[1];
+        TextView[] status = new TextView[1];
+        runOnMainSync(() -> {
+            View content = activity.findViewById(android.R.id.content);
+            status[0] = content.findViewWithTag("crash_test_status");
+            for (String action : new String[] {"ordinary_error", "caught", "custom_handler", "normal_finish", "uncaught_main", "open_subprocess"}) {
+                Button button = content.findViewWithTag(action);
+                check(button != null && button.isEnabled() && button.getText().length() > 0, "missing labeled action: " + action);
+            }
+            ((Button) content.findViewWithTag("ordinary_error")).performClick();
+            check(status[0].getText().toString().contains("ERRORログを出しました"), "ordinary error action did not return");
+            ((Button) content.findViewWithTag("caught")).performClick();
+            check(status[0].getText().toString().contains("例外をcatchしました"), "caught action did not return");
+            custom[0] = content.findViewWithTag("custom_handler");
+            custom[0].performClick();
+        });
+        long deadline = SystemClock.uptimeMillis() + 5000;
+        boolean[] handled = new boolean[1];
+        do {
+            runOnMainSync(() -> handled[0] = custom[0].isEnabled()
+                    && status[0].getText().toString().contains("Threadの例外を処理しました"));
+            if (handled[0]) break;
+            SystemClock.sleep(50);
+        } while (SystemClock.uptimeMillis() < deadline);
+        check(handled[0], "thread-local handler did not finish");
+        check(Process.myPid() == pid, "nonfatal guards changed the process");
+        check(Thread.getDefaultUncaughtExceptionHandler() == original, "process-wide handler changed");
+        ActivityInfo child = getTargetContext().getPackageManager().getActivityInfo(
+                new ComponentName(getTargetContext(), CrashTestActivity.Subprocess.class), 0);
+        check(!child.exported && child.processName.equals(getTargetContext().getPackageName() + ":crash"),
+                "subprocess must be private and use :crash");
+        runOnMainSync(() -> ((Button) activity.findViewById(android.R.id.content).findViewWithTag("normal_finish")).performClick());
+        deadline = SystemClock.uptimeMillis() + 5000;
+        while (!activity.isDestroyed() && SystemClock.uptimeMillis() < deadline) SystemClock.sleep(50);
+        check(activity.isDestroyed(), "normal finish action did not finish the panel");
     }
 
     private Map<String, Long> awaitPhases(long event, boolean request) throws Exception {

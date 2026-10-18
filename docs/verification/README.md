@@ -1,9 +1,9 @@
 # 受入・固定候補・QA
 
-現行の全139 Caseの方法は[保証目的とconsumer別方法の改訂 #223/#230](responsibility.md)と正式計画の`method_revision`を使います。以下の段階受入/履歴にある固定30分/300event・操作回数・GOP6証拠などは原記録であり、現行groupの必要証拠へ置換します。精度・データ/窓/保全・実接続・REAL未達を保持し、方法だけの更新を実行PASSにしません。
+現行の全139 Caseは[保証目的・consumer別方法・stream基準の同期要件 #223/#230/#299](responsibility.md)と正式計画の`method_revision`を使います。以下の段階受入/履歴にある固定30分/300event・旧画像精度値・操作回数・GOP6証拠などは原記録であり、明示改訂後の有効条件へ置換します。元時刻・clock変換・内容/窓/保全・実接続・REAL未達と原FAILを保持し、要件/方法の更新を実行PASSにしません。
 
 
-**現在の保証境界**: [保証目的と最小検証（#223/#230）](responsibility.md)と正式計画の`responsibility_revision.method_revision`を適用します。原Case/旧計画/以下の過去改訂説明は履歴として保持し、外部player全Play/精密seek・一律human番号読取り・native故障全種反復・無変更artifactの再build義務は明示改訂後の有効条件で判断します。未達をPASSにしません。gateと一覧は同じresolverを使います。
+**現在の保証境界**: [保証目的と最小検証（#223/#230/#299）](responsibility.md)と正式計画の`responsibility_revision.method_revision`を適用します。原Case/旧計画/以下の過去改訂説明は履歴として保持し、独立画像時刻の旧数値基準・外部player全Play/精密seek・一律human番号読取り・native故障全種反復・無変更artifactの再build義務は明示改訂後の有効条件で判断します。現行保証の未達をPASSにしません。gateと一覧は同じresolverを使います。
 
 `changes/issue-N.json` はIssueの受入、`promotion.json` はmainへ入れる固定候補と全Caseの観察の正本です。過去の観察を別SHA/buildで新たに実行したpassへ付け替えません。[影響単位の評価](#修正影響による保証単位の証拠再利用246)では、元の成功事実を保持し、現在buildへの適用評価と区別します。未実施はpending、環境不足はblocked、製品不具合はfailと区別します。
 
@@ -126,6 +126,8 @@ mainはdevelop baseとは別のrefなので、GitHubのHEAD/strict-base保護だ
 Plugin ZIP生成はプラグイン基盤の導入時に実buildへ接続します。現在は存在しないGradle/ZIP成果物を仮定せず、製品promotion前に再現できる固定成果物の作成・照合手順をそのIssueで定義します。main起点の限定変更も、trusted mainの`docs/verification/scopes/issue-N.json`による事前承認範囲と全Caseの観察が必要です。
 
 ### 実測GOPの境界試験（#56）
+
+この節は当時の改訂履歴です。画像時刻のp95/最大/drift値を含む以下の旧精度条件は、現在の[明示改訂 #299](responsibility.md)で読み替え、後続作業のgateへ戻しません。元GOP/精度の観察・失敗は保持します。
 
 [GOP限定改訂](amendments/gop-boundaries.json)は、#13/#31/#41の`SYNC-WINDOW`と#27の`BUFFER-180`・`BUFFER-SHORT`・`SAVE-CONTINUE`（REAL/EMU）の9 Caseへ適用する。元PRの固定merge・全Case内容のSHA-256を照合し、#27はPR #33と#38の両出典を保持する。合計15出典の不足・追加・矛盾は拒否し、最後のPRを任意に採用しない。Case ID・artifact・実施方法・既存操作・期待結果・過去の状態は変更しない。
 

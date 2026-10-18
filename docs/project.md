@@ -11,7 +11,7 @@
 | テスト | `tests/test_log_buffer.py` の既存2ケース。実機録画・再接続・動画保存を網羅するものではない |
 | 開発ハーネス | 主検査/CIはPython 3.15.0 stable。管理/開発scriptの対応下限はPython 3.15以上、標準ライブラリ、Bash、macOS/Linux。配布CLIのPython 3.9以上とは別。[runtime選択・移行](setup/README.md#runtimeと配置) |
 | 統合先 | 製品変更は `develop`。固定候補を `main` へpromotion。GUI不要toolingは `main`。main/developは作成済み |
-| 必須checks | `test` / `PR policy` / `Acceptance gate` / `Agent review` / `CLI Python 3.9`。追加contextは対象branchのworkflow導入後に有効化し、実適用は [導入Issue #1](https://github.com/shinma06/android-replay-buffer/issues/1) でreadbackする |
+| 必須checks | 共通集合は `test` / `PR policy` / `Acceptance gate` / `Agent review`。Python原型の実3.9検査は`test`に含め、旧`CLI Python 3.9` jobも移行中は実行する。実保護の旧contextは[branchごとの移行条件](setup/github.md#runtime検査の共通testへの段階移行)を満たしてから外す |
 | 管理 | [Project #5](https://github.com/users/shinma06/projects/5)、現行は [Milestone #4 — 第2版](https://github.com/shinma06/android-replay-buffer/milestone/4)。[Milestone #3 — 初期版](https://github.com/shinma06/android-replay-buffer/milestone/3)はAgent段階完了。完了済み [Milestone #1](https://github.com/shinma06/android-replay-buffer/milestone/1) は初回ハーネス導入の履歴。各作業は対応 Issue の実 Milestone を確認する。[作業管理](work-management.md) |
 | Android Studio plugin | `plugin/`に取得コア・ToolWindow・設定・SDK/対象アプリ解決・情報表示actionを実装。初期版はmain反映済み。第2版 #206のbuildはRabbit 1 / JDK 27（JVM/API target 25）/ Gradle 9.8.1 / Kotlin 2.4.21、ID `io.github.shinma06.android-replay-buffer`。[現行の開発手順](plugin-development.md)と固定候補ごとの受入を区別する |
 
@@ -35,6 +35,6 @@ python3 scripts/workflow/product_check.py
 python3 scripts/workflow/change_impact.py --base origin/main --run-tests
 ```
 
-check.pyは管理ファイル・リンク・symlink・秘密候補の限定検査とハーネス回帰試験、product_check.pyは全CLI Pythonモジュールのcompile/importと既存2ケースです。CLI原型保全checkerがある候補/昇格後ツリーでは、先にmanifestによる21ファイルの保全照合も行います。Python3.9 jobは同じ検査と、未読込みモジュールに3.10構文を入れた所有fixtureの拒否回帰を実行します。構文・import確認はAPI/録画/実機互換性全体の保証ではありません。daemonやADB、録画、launchdを起動しません。プラグイン変更は `python3 scripts/workflow/plugin_check.py`（JDK 27 / JAVA_HOME、SDK API 37.2 revision 1 / ANDROID_HOMEが必要）でGradleのcheck/buildPlugin/verifyPluginStructureを実行します。build成功はIDE受入を意味しません。
+check.pyは管理ファイル・リンク・symlink・秘密候補の限定検査とハーネス回帰試験、product_check.pyは全CLI Pythonモジュールのcompile/importと既存2ケースです。CLI原型保全checkerがある候補/昇格後ツリーでは、先にmanifestによる21ファイルの保全照合も行います。必須`test`と移行中の旧jobはPython 3.9で同じ検査と、未読込みモジュールに3.10構文を入れた所有fixtureの拒否・元の内容への復旧回帰を実行します。構文・import確認はAPI/録画/実機互換性全体の保証ではありません。daemonやADB、録画、launchdを起動しません。プラグイン変更は `python3 scripts/workflow/plugin_check.py`（JDK 27 / JAVA_HOME、SDK API 37.2 revision 1 / ANDROID_HOMEが必要）でGradleのcheck/buildPlugin/verifyPluginStructureを実行します。build成功はIDE受入を意味しません。
 
 CLI変更ではprocessの所有と停止、再接続、バッファ容量、時刻対応、保存失敗時のデータ保全、ログの秘密情報を確認します。Android Studio側はLifecycle/EDT/dispose、非同期設定反映、購読解除と取得process終了を確認します。DBを使用しないためDBクエリ検証は対象外です。

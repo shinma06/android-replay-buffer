@@ -149,7 +149,8 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
     private fun notifySave(save: SaveSnapshot) {
         onUi {
             if (save.phase == SavePhase.FAILED &&
-                (capture.view.snapshot?.save?.requestId != save.requestId || capture.view.snapshot?.save?.phase != SavePhase.FAILED)) return@onUi
+                (capture.view.snapshot?.save?.requestId != save.requestId || capture.view.snapshot?.save?.attempt != save.attempt ||
+                    capture.view.snapshot?.save?.phase != SavePhase.FAILED)) return@onUi
             val group = NotificationGroupManager.getInstance().getNotificationGroup("Android Replay Buffer")
             val notification = if (save.phase == SavePhase.COMPLETED && save.directory != null) {
                 val missing = save.missingKinds.map(::streamName).joinToString("、")
