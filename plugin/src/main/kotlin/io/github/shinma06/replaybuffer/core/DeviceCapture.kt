@@ -219,8 +219,10 @@ internal class DeviceCapture(
                     confirmed = true
                 }
                 // Exclude the old -T 1 tail; clock jumps remain explicitly uncertain, never backfilled.
-                val anchor = store.clock.snapshot().lastOrNull { it.valid }
-                if (lower == null || anchor?.epoch != initial.epoch || record.wall >= lower) live = true
+                if (!live) {
+                    val anchor = store.clock.snapshot().lastOrNull { it.valid }
+                    if (lower == null || anchor?.epoch != initial.epoch || record.wall >= lower) live = true
+                }
                 if (live && (!partition || (buffer == "main") == (record.lid == 0)))
                     store.log(record, generation, received)
             }

@@ -21,6 +21,52 @@ import kotlin.test.assertTrue
 
 class CaptureStoreSaveTest {
     @Test
+    fun frameSelectionKeepsCutPredecessorAndUnknownRowsWithoutCrossingGaps() {
+        for (gap in listOf(false, true)) {
+            val root = Files.createTempDirectory("replay-frame-selection-")
+            val store = CaptureStore(root.resolve("ring"), minFree = 0)
+            val host = System.nanoTime() + 60_000_000_000
+            val bytes = sample()
+            try {
+                store.generation(1); store.session(VideoPacket.Session(32, 32), 1)
+                store.frame(VideoPacket.Frame(0, true, false, config(bytes)), 1)
+                for (second in 1L..7L) {
+                    val received = host + (second - 1) * 1_000_000_000
+                    anchor(store.clock, second * 1_000_000_000, received)
+                    if (second == 1L) assertTrue(store.frame(VideoPacket.Frame(0, false, true, bytes), 1, received))
+                    if (second in listOf(1L, 2L, 4L, 5L, 6L))
+                        assertTrue(store.frame(VideoPacket.Frame(second * 1_000_000, false, true, bytes), 1, received))
+                    if (gap && second == 4L) store.status("video", StreamState.RECOVERING, "cut gap", 1)
+                }
+                store.freeze()
+                assertTrue(store.frame(VideoPacket.Frame(8_000_000, false, true, bytes), 1, host + 7_000_000_000))
+                val selected = store.capture(ReplaySettings(replaySeconds = 2))!!
+                assertTrue(selected.windowKnown)
+                assertEquals(4_000_000_000, selected.start)
+                assertEquals(6_000_000_000, selected.end)
+                assertEquals(if (gap) listOf(0L, 5_000_000L, 6_000_000L) else listOf(0L, 4_000_000L, 5_000_000L, 6_000_000L),
+                    selected.video.map { it.pts })
+                assertNull(selected.video.first().time.sequence)
+                assertEquals(gap, selected.gaps.any { it.reason == "cut gap" })
+                val pinned = selected.video.toList()
+                store.prune(1)
+                assertEquals(pinned, selected.video)
+                assertTrue(pinned.all { Files.exists(it.file) })
+                assertFailsWith<IllegalStateException> { store.capture(ReplaySettings()) }
+                store.release(selected.id)
+                store.resume()
+                store.clock.boundary()
+                val unknown = store.capture(ReplaySettings(replaySeconds = 2))!!
+                assertFalse(unknown.windowKnown)
+                assertEquals(listOf(0L, 1_000_000L, 2_000_000L, 4_000_000L, 5_000_000L, 6_000_000L, 8_000_000L),
+                    unknown.video.map { it.pts })
+                assertEquals(selected.gaps, unknown.gaps)
+                store.release(unknown.id)
+            } finally { store.close(); root.toFile().deleteRecursively() }
+        }
+    }
+
+    @Test
     fun manyLogsUseMaximumClockHistoryWithoutChangingOrderIdsOrPinnedRows() {
         val root = Files.createTempDirectory("replay-batch-clock-")
         val store = CaptureStore(root.resolve("ring"), minFree = 0)

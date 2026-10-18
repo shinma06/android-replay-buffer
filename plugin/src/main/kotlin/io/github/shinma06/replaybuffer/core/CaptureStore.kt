@@ -438,11 +438,12 @@ internal class CaptureStore(
             } catch (_: ArithmeticException) { true } // Overflow cannot prove that the record is outside.
         }
         val all = if (captureMode.videoRequested) video.toList() else emptyList()
-        val inside = all.filter { !known || it.time.sequence == null || it.retainedAt <= end && it.retainedAt >= start }
-        val files = inside.map { it.file }.toMutableSet()
-        inside.forEach { entry ->
-            val index = all.indexOf(entry)
-            if (index > 0 && continuousAcrossCut(all[index - 1], entry, start)) files.add(all[index - 1].file)
+        val files = mutableSetOf<Path>()
+        all.forEachIndexed { index, entry ->
+            if (!known || entry.time.sequence == null || entry.retainedAt <= end && entry.retainedAt >= start) {
+                files.add(entry.file)
+                if (index > 0 && continuousAcrossCut(all[index - 1], entry, start)) files.add(all[index - 1].file)
+            }
         }
         all.lastOrNull()?.takeIf { known && it.retainedAt < start && currentVideo(it) }?.let { files.add(it.file) }
         val frames = all.filter { (!known || it.retainedAt <= end) && it.file in files }.map { frame ->
