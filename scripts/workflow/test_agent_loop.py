@@ -712,14 +712,23 @@ class LoopTests(unittest.TestCase):
             self.assertFalse(any(c.args[0] == 'push' for c in al.git.call_args_list))
 
     def test_old_or_unknown_product_completion_cannot_publish(self):
-        for output in ('', 'Compiled and imported 12 CLI modules',
-                       'ARB_PRODUCT_PLUGIN_CHECK_COMPLETE\nunfinished output'):
-            state = {'review': report(), 'binding': {'head': HEAD}}
-            with self.subTest(output=output), patch.object(al, 'command', return_value=output):
-                with self.assertRaisesRegex(ValueError, 'synchronize the shared entry'):
-                    al.Loop.test_and_push(self.loop, pr_data(), self.checkout, state)
-            self.assertNotIn('review', state)
-            self.assertFalse(any(c.args[0] == 'push' for c in al.git.call_args_list))
+        for path in ('plugin/src/main/java/Example.java', 'plugin/src/test/java/ExampleTest.java'):
+            self.impact.return_value = classify([(path, ('100644',))])
+            for output in ('', 'Compiled and imported 12 CLI modules',
+                           'ARB_PRODUCT_PLUGIN_CHECK_COMPLETE\nunfinished output',
+                           'ARB_PRODUCT_PLUGIN_CHECK_COMPLETE'):
+                al.git.reset_mock()
+                state = {'review': report(), 'binding': {'head': HEAD}}
+                complete = output == 'ARB_PRODUCT_PLUGIN_CHECK_COMPLETE'
+                with self.subTest(path=path, output=output), patch.object(al, 'command', return_value=output):
+                    if complete:
+                        al.Loop.test_and_push(self.loop, pr_data(), self.checkout, state)
+                        self.assertEqual(state['phase'], 'queued')
+                    else:
+                        with self.assertRaisesRegex(ValueError, 'synchronize the shared entry'):
+                            al.Loop.test_and_push(self.loop, pr_data(), self.checkout, state)
+                self.assertNotIn('review', state)
+                self.assertEqual(any(c.args[0] == 'push' for c in al.git.call_args_list), complete)
 
     def prepare_issue_guard_review(self, target):
         # Keep each race scenario independent, including its saved controller state.

@@ -60,6 +60,22 @@ def path_impacts(path, modes=('100644',)):
     return {UNKNOWN}
 
 
+def distribution_input(path, modes=('100644',)):
+    """Separate shipped/build inputs from checks; unknown inputs never silently skip."""
+    impacts = path_impacts(path, modes)
+    if UNKNOWN in impacts:
+        return True
+    if path.startswith('plugin/'):
+        return not (path.startswith('plugin/src/test/') and
+                    all(mode in ('000000', '100644', '100755') for mode in modes))
+    if path in ('.gitattributes', '.gitignore', '.github/workflows/ci.yml',
+                '.github/workflows/release-candidate.yml', 'scripts/workflow/plugin_check.py'):
+        return True
+    return bool(impacts & {RUNTIME, BUILD}) and path not in (
+        'scripts/workflow/change_impact.py', 'scripts/workflow/product_check.py',
+        'scripts/workflow/cli_origin.py') and not path.startswith('docs/cli-origin/')
+
+
 def classify(changes, *, reason=None, force_full=False):
     files = [{'path': path, 'impacts': sorted(path_impacts(path, modes))} for path, modes in changes]
     impacts = set().union(*(set(f['impacts']) for f in files))
@@ -67,9 +83,11 @@ def classify(changes, *, reason=None, force_full=False):
         impacts.add(UNKNOWN)
         reason = reason or 'No changed files established; run full validation'
     full = force_full or UNKNOWN in impacts
+    distribution = full or any(distribution_input(path, modes) for path, modes in changes)
     return {'impacts': [x for x in ORDER if x in impacts], 'files': files,
             'product_check': full or bool(impacts & {RUNTIME, BUILD, TEST}),
-            'plugin_check': full or bool(impacts & {PLUGIN, BUILD}),
+            'plugin_check': distribution or bool(impacts & {PLUGIN, BUILD}),
+            'distribution': distribution,
             'tooling_test': True,  # Small shared checks also validate documentation and metadata.
             'force_full': force_full, 'reason': reason}
 
@@ -120,14 +138,15 @@ def test_commands(result):
     commands = [[sys.executable, 'scripts/check.py']]
     if result['product_check'] or result['plugin_check']:
         commands.append([sys.executable, 'scripts/workflow/product_check.py'] +
-                        (['--plugin'] if result['plugin_check'] else []))
+                        (['--plugin'] + ([] if result['distribution'] else ['--plugin-tests-only'])
+                         if result['plugin_check'] else []))
     return commands
 
 
 def report(result):
     summary = 'Change Impact: ' + ', '.join(result['impacts']) + '\n'
     summary += '\n'.join(f'{name}: {"required" if result[name] else "skipped (no relevant impact)"}'
-                         for name in ('product_check', 'plugin_check', 'tooling_test'))
+                         for name in ('product_check', 'plugin_check', 'tooling_test', 'distribution'))
     if result['reason']:
         summary += '\n' + result['reason']
     return summary
@@ -159,7 +178,7 @@ def main():
     print(report(result), flush=True)
     if os.environ.get('GITHUB_OUTPUT'):
         with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
-            for key in ('product_check', 'plugin_check', 'tooling_test'):
+            for key in ('product_check', 'plugin_check', 'tooling_test', 'distribution'):
                 output.write(f'{key}={str(result[key]).lower()}\n')
     if os.environ.get('GITHUB_STEP_SUMMARY'):
         with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:

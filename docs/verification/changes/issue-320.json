@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "issue": 320,
+  "gui_required": false,
+  "reason": "配布toolingの不具合修正。必要CIと配布生成を区別し、既存Releaseの書込み前preflight、対象限定App構成、受入済み初期原本だけのversion互換を加える。製品source/build設定・既存ZIP・受入Caseと元FAIL/QA65延期は変更しない。IDE/ADB操作は不要。実認証設定・Actions追従・初期版公開・download bytesの受入はIssue320/親271に残し、unit testで代替しない。",
+  "cli_checks": [
+    "python3 -m unittest discover -s scripts/workflow -p test_release_delivery.py -v",
+    "python3 -m unittest discover -s scripts/workflow -p test_change_impact.py -v",
+    "python3 -m unittest discover -s scripts/workflow -p test_product_check.py -v",
+    "python3 scripts/check.py",
+    "python3 scripts/workflow/product_check.py",
+    "python3 scripts/workflow/change_impact.py --base origin/main --run-tests"
+  ],
+  "cases": []
+}

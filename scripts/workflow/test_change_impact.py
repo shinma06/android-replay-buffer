@@ -63,15 +63,43 @@ class ClassificationTest(unittest.TestCase):
 
     def test_product_entry_keeps_cli_only_plugin_only_and_mixed_obligations(self):
         for path, arguments in (
-                ('docs/design.md', None), ('replay_buffer/save.py', []),
+                ('docs/design.md', None), ('replay_buffer/save.py', ['--plugin']),
                 ('plugin/src/main/kotlin/Action.kt', ['--plugin']),
-                ('scripts/workflow/product_check.py', ['--plugin'])):
+                ('scripts/workflow/product_check.py', ['--plugin', '--plugin-tests-only'])):
             result = ci.classify([(path, ('100644',))])
             expected = [[sys.executable, 'scripts/check.py']]
             if arguments is not None:
                 expected.append([sys.executable, 'scripts/workflow/product_check.py', *arguments])
             with self.subTest(path=path):
                 self.assertEqual(ci.test_commands(result), expected)
+
+    def test_distribution_inputs_are_separate_from_required_checks(self):
+        positive = ('plugin/src/main/cli/README.txt', 'plugin/src/main/cli/replay',
+                    'plugin/src/main/resources/META-INF/plugin.xml', 'plugin/src/clock/java/Clock.java',
+                    'plugin/gradle/libs.versions.toml', 'plugin/build.gradle.kts',
+                    'plugin/settings.gradle.kts', 'plugin/gradle.properties', 'plugin/gradlew',
+                    'scripts/workflow/plugin_check.py', '.github/workflows/ci.yml',
+                    '.github/workflows/release-candidate.yml', 'unknown-generator.data')
+        negative = ('docs/release-delivery.md', 'README.md', 'AGENTS.md',
+                    'plugin/src/test/kotlin/ArchiveTest.kt', 'plugin/src/test/resources/fixture.zip',
+                    'tests/test_save.py', 'scripts/workflow/test_release_delivery.py',
+                    'scripts/workflow/release_delivery.py', 'docs/verification/changes/issue-320.json',
+                    'docs/cli-origin/README.md', 'scripts/workflow/product_check.py')
+        for expected, paths in ((True, positive), (False, negative)):
+            for path in paths:
+                with self.subTest(path=path):
+                    result = ci.classify([(path, ('100644',))])
+                    self.assertEqual(result['distribution'], expected)
+                    self.assertTrue(result['tooling_test'])
+                    if expected:
+                        self.assertTrue(result['plugin_check'])
+        tests = ci.classify([('plugin/src/test/java/ArchiveTest.java', ('100644',))])
+        self.assertTrue(tests['plugin_check'])
+        self.assertEqual(ci.test_commands(tests)[-1][-2:], ['--plugin', '--plugin-tests-only'])
+        self.assertTrue(ci.classify([('plugin/src/test/link', ('120000',))])['distribution'])
+        self.assertTrue(ci.classify([('docs/release-delivery.md', ('100755',))])['distribution'])
+        self.assertTrue(ci.classify([])['distribution'])
+        self.assertTrue(ci.classify([('README.md', ('100644',))], force_full=True)['distribution'])
 
 
 class GitImpactTest(unittest.TestCase):
@@ -111,9 +139,22 @@ class GitImpactTest(unittest.TestCase):
         result = ci.git_impact(self.base, head, cwd=self.root)
         self.assertIn(ci.RUNTIME, result['impacts']); self.assertIn(ci.KNOWLEDGE, result['impacts'])
         self.assertEqual(len(result['files']), 2)
+        self.assertTrue(result['distribution'])
         self.git('reset', '--hard', self.base)  # Disposable fixture only.
         self.git('rm', 'replay_buffer/resources/help.md'); head = self.commit()
         self.assertTrue(ci.git_impact(self.base, head, cwd=self.root)['product_check'])
+
+    def test_test_only_then_bundled_readme_changes_in_real_git(self):
+        self.write('plugin/src/test/resources/input.json', '{}\n')
+        tests = self.commit()
+        result = ci.git_impact(self.base, tests, cwd=self.root)
+        self.assertTrue(result['plugin_check'])
+        self.assertFalse(result['distribution'])
+        self.write('plugin/src/main/cli/README.txt', 'bundled instructions\n')
+        bundled = self.commit()
+        self.assertTrue(ci.git_impact(tests, bundled, cwd=self.root)['distribution'])
+        self.git('mv', 'plugin/src/main/cli/README.txt', 'docs/cli-instructions.md')
+        self.assertTrue(ci.git_impact(bundled, self.commit(), cwd=self.root)['distribution'])
 
     def test_chmod_unicode_and_newline_paths_are_not_lost(self):
         self.write('docs/日本語\nnotes.md', 'text\n')
