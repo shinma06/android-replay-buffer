@@ -192,3 +192,31 @@ tasks.withType<AbstractArchiveTask>().configureEach {
     isPreserveFileTimestamps = false
     isReproducibleFileOrder = true
 }
+
+// The terminal entry uses the same plugin classes and the selected Studio's JBR/Kotlin runtime.
+tasks.prepareSandbox {
+    from(layout.projectDirectory.dir("src/main/cli")) {
+        include("replay", "replayd")
+        into(pluginName.map { "$it/bin" })
+        filePermissions { unix("755") }
+    }
+    from(layout.projectDirectory.file("src/main/cli/README.txt")) {
+        into(pluginName.map { "$it/bin" })
+        expand("sourceCommit" to sourceCommit)
+    }
+}
+
+tasks.buildPlugin {
+    val cliLaunchers = listOf("bin/replay", "bin/replayd")
+    inputs.property("executableCliLaunchers", cliLaunchers)
+    filesMatching(cliLaunchers) { permissions { unix("755") } }
+}
+
+tasks.test {
+    dependsOn(tasks.buildPlugin)
+    inputs.file(tasks.buildPlugin.flatMap { it.archiveFile })
+    doFirst {
+        systemProperty("replay.cli.archive", tasks.buildPlugin.get().archiveFile.get().asFile.absolutePath)
+        systemProperty("replay.cli.platform", tasks.prepareSandbox.get().platformPath.toString())
+    }
+}

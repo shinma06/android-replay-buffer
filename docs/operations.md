@@ -2,7 +2,7 @@
 
 ## Android CLIによる開発支援
 
-[Android CLI](https://developer.android.com/tools/agents/android-cli) は任意の開発支援です。導入されていれば `android --version` と対象commandの `--help` で実際の機能を確認して活用します。製品のPython CLIとは別であり、製品利用者やCIの必須依存には追加しません。
+[Android CLI](https://developer.android.com/tools/agents/android-cli) は任意の開発支援です。導入されていれば `android --version` と対象commandの `--help` で実際の機能を確認して活用します。製品同梱のCLIとは別であり、製品利用者やCIの必須依存には追加しません。
 
 公式資料の調査は `android docs search '検索語'`、返された `kb://` URLの取得は `android docs fetch kb://...` を使えます。検索はローカル索引の初回downloadを伴い、検索結果だけではAPIの挙動を確定できません。必要な本文・API referenceを確認し、公開記録には通常の公式HTTPSリンクと確認した事実を残します。実際のcommand・版・成功/失敗はIssueに記録し、未実施のIDE/端末受入とは区別します。
 

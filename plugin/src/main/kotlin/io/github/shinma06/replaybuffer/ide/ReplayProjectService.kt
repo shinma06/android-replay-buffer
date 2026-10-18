@@ -4,6 +4,7 @@ import com.android.tools.idea.gradle.project.sync.GradleSyncListener
 import com.android.tools.idea.gradle.project.sync.GradleSyncState
 import com.android.tools.idea.projectsystem.PROJECT_SYSTEM_MODELS_UPDATED_TOPIC
 import com.android.tools.idea.projectsystem.ProjectSystemSyncManager
+import com.google.gson.Gson
 import com.intellij.execution.RunManagerListener
 import com.intellij.execution.RunnerAndConfigurationSettings
 import com.intellij.notification.Notification
@@ -27,19 +28,32 @@ import com.intellij.openapi.startup.ProjectActivity
 import com.intellij.openapi.util.text.StringUtil
 import com.intellij.openapi.wm.ToolWindowManager
 import com.intellij.util.messages.Topic
+import io.github.shinma06.replaybuffer.cli.CliCommand
+import io.github.shinma06.replaybuffer.cli.CliRequest
+import io.github.shinma06.replaybuffer.cli.CliResponse
+import io.github.shinma06.replaybuffer.cli.LegacyCliConfig
+import io.github.shinma06.replaybuffer.cli.ReplayCliRegistry
+import io.github.shinma06.replaybuffer.cli.ReplayCliServer
+import io.github.shinma06.replaybuffer.cli.cliSaveResponse
+import io.github.shinma06.replaybuffer.core.ReplayOperation
 import io.github.shinma06.replaybuffer.core.SavePhase
 import io.github.shinma06.replaybuffer.core.SaveSnapshot
 import io.github.shinma06.replaybuffer.settings.ReplaySettingsStore
+import io.github.shinma06.replaybuffer.settings.validateDestination
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.future.await
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.awt.Desktop
 import java.awt.datatransfer.StringSelection
 import java.nio.file.Files
 import java.nio.file.Path
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
 
 /** Owns IDE subscriptions and background model resolution independently of the ToolWindow. */
 @Service(Service.Level.PROJECT)
@@ -50,6 +64,7 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
     private var requestRevision = 0L
     @Volatile private var disposed = false
     private var resolution: Job? = null
+    private var cliServer: ReplayCliServer? = null
     @Volatile var resolving = true
         private set
     private val notifications = mutableListOf<Notification>()
@@ -85,6 +100,20 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
             override fun syncSkipped(project: Project) = refresh()
         }, this)
         refresh()
+        scope.launch(Dispatchers.IO) {
+            var server: ReplayCliServer? = null
+            try {
+                val base = projectBasePath ?: return@launch
+                server = ReplayCliServer(ReplayCliRegistry.directory(), Path.of(base), ReplayCliRegistry.buildIdentity(), ::executeCli)
+                synchronized(this@ReplayProjectService) {
+                    if (alive && coroutineContext.isActive) { cliServer = server; server = null }
+                }
+            } catch (_: Exception) {
+                if (alive) capture.showMessage("CLI入口を開けません。利用者専用の接続情報とprojectの保存場所を確認してください。")
+            } finally {
+                server?.let(::closeCliServer)
+            }
+        }
     }
 
     @Synchronized
@@ -129,15 +158,105 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
         }
     }
 
-    internal fun setEnabled(value: Boolean) {
-        if (!alive) return
-        if (value && (resolving || capture.view.pending > 0)) capture.showMessage("設定・操作を反映中です。完了後に取得をONにしてください。")
+    @Synchronized
+    internal fun setEnabled(value: Boolean): CompletableFuture<ReplayOperation> {
+        if (!alive) return rejected("projectは終了しています。")
+        return if (value && (resolving || capture.view.pending > 0)) rejected("設定・操作を反映中です。完了後に取得をONにしてください。")
         else capture.setEnabled(value)
     }
-    internal fun save() {
-        if (!alive) return
-        if (resolving || capture.view.pending > 0) capture.showMessage("設定・操作を反映中です。完了後に保存してください。") else capture.save()
+
+    @Synchronized
+    internal fun save(): CompletableFuture<ReplayOperation> {
+        if (!alive) return rejected("projectは終了しています。")
+        return if (resolving || capture.view.pending > 0) rejected("設定・操作を反映中です。完了後に保存してください。") else capture.save()
     }
+
+    private fun rejected(reason: String): CompletableFuture<ReplayOperation> {
+        if (alive) capture.showMessage(reason)
+        return CompletableFuture.completedFuture(ReplayOperation(false, reason))
+    }
+
+    private fun importLegacy(config: LegacyCliConfig): CompletableFuture<ReplayOperation> {
+        val validated = validateDestination(config.destination)
+        return synchronized(this) {
+            if (!alive) return rejected("projectは終了しています。")
+            if (resolving || capture.view.pending > 0) return rejected("設定・操作の反映後に旧設定を移行してください。")
+            val store = project.getService(ReplaySettingsStore::class.java)
+            store.importLegacy(config.seconds, config.destination, validated)
+            refresh()
+            val completed = CompletableFuture<ReplayOperation>()
+            val revision = requestRevision
+            resolution!!.invokeOnCompletion { failure ->
+                synchronized(this) {
+                    val current = capture.view.snapshot?.settings
+                    completed.complete(if (failure == null && alive && revision == requestRevision &&
+                        current?.replaySeconds == config.seconds && current.saveDirectory?.toString() == config.destination) ReplayOperation(true)
+                    else ReplayOperation(false, "旧設定は保存しましたが反映を確認できません。GUIの設定・状態を確認してください。"))
+                }
+            }
+            completed
+        }
+    }
+
+    /** Runs only on the CLI worker, never EDT; GUI and CLI enter the same command queue. */
+    private fun executeCli(request: CliRequest): CliResponse {
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(120)
+        var requestId: String? = null
+        fun await(operation: CompletableFuture<ReplayOperation>): ReplayOperation = operation.get(
+            (deadline - System.nanoTime()).coerceAtLeast(1), TimeUnit.NANOSECONDS)
+        try {
+            if (!alive) return CliResponse(1, error = "projectは終了しています。")
+            var warning = ""
+            if (request.configText != null) {
+                val config = LegacyCliConfig.parse(request.configText, request.yaml, Path.of(request.workingDirectory))
+                val imported = await(importLegacy(config))
+                if (!imported.accepted) return CliResponse(1, error = imported.reason.orEmpty())
+                warning = config.warning
+            }
+            if (request.command == CliCommand.STATUS) {
+                val view = capture.view
+                val snapshot = view.snapshot
+                return CliResponse(0, Gson().toJson(linkedMapOf(
+                    "project" to projectBasePath, "running" to (snapshot?.enabled == true),
+                    "capture_state" to snapshot?.captureState?.name, "capture_mode" to snapshot?.settings?.captureMode?.name,
+                    "device_name" to snapshot?.device?.name, "device_serial" to snapshot?.device?.serial,
+                    "error" to (view.initializationError ?: snapshot?.error),
+                    "pending" to view.pending, "resolving" to resolving, "save_state" to snapshot?.save?.phase?.name,
+                    "request_id" to snapshot?.save?.requestId, "replay_seconds" to snapshot?.settings?.replaySeconds,
+                    "output_directory" to snapshot?.settings?.saveDirectory?.toString(),
+                    "last_save" to snapshot?.lastSave?.let { last -> linkedMapOf(
+                        "phase" to last.phase.name, "request_id" to last.requestId, "attempt" to last.attempt,
+                        "directory" to last.directory?.takeIf { last.phase == SavePhase.COMPLETED }?.toString(),
+                        "retained_path" to last.retainedPath?.toString(),
+                        "error" to last.error, "missing_kinds" to last.missingKinds,
+                    ) },
+                    "reason" to (view.message ?: view.initializationError ?: snapshot?.saveDisabledReason),
+                )))
+            }
+            if (request.command == CliCommand.SAVE && capture.view.snapshot?.enabled != true) {
+                val enabled = await(setEnabled(true))
+                if (!enabled.accepted) return CliResponse(1, error = enabled.reason.orEmpty())
+            }
+            val operation = await(when (request.command) {
+                CliCommand.SAVE -> save()
+                CliCommand.DAEMON -> setEnabled(true)
+                CliCommand.STOP -> setEnabled(false)
+                CliCommand.STATUS -> error("status already handled")
+            })
+            if (!operation.accepted) return CliResponse(1, error = listOf(warning, operation.reason.orEmpty()).filter(String::isNotEmpty).joinToString("\n"))
+            if (request.command != CliCommand.SAVE) return CliResponse(0,
+                if (request.command == CliCommand.STOP) "stopped" else "started", warning)
+            requestId = operation.requestId
+            return cliSaveResponse(operation.requestId, checkNotNull(operation.saveResult), deadline, warning)
+        } catch (_: TimeoutException) {
+            return CliResponse(1, error = "操作結果の待機が時間切れになりました${requestId?.let { "（request: $it）" }.orEmpty()}。GUIの状態・保存結果を確認してください。自動再試行はしません。")
+        } catch (failure: IllegalArgumentException) {
+            return CliResponse(2, error = failure.message ?: "入力内容を確認してください。")
+        } catch (_: Exception) {
+            return CliResponse(1, error = "projectの終了または操作中のエラーで結果を確認できません。GUIの状態・保存結果を確認してください。")
+        }
+    }
+
     internal fun retry(id: String) { if (alive) capture.retry(id) }
     internal fun retryAtDirectory(id: String, path: Path) { if (alive) capture.retryAtDirectory(id, path) }
     internal fun discard(id: String) { if (alive) capture.discard(id) }
@@ -207,9 +326,20 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
         ApplicationManager.getApplication().invokeLater({ if (alive) action() }, ModalityState.nonModal())
     }
 
+    private fun closeCliServer(server: ReplayCliServer) {
+        runCatching { server.close() }.onFailure {
+            Logger.getInstance(ReplayProjectService::class.java).warn("CLI接続の停止を確認できません。取得本体の終了処理を続けます。")
+        }
+        server.termination.whenComplete { _, failure ->
+            if (failure != null) Logger.getInstance(ReplayProjectService::class.java).warn("CLI入口の終了・接続情報の削除を確認できません。所有情報を保全します。")
+        }
+    }
+
     @Synchronized
     override fun dispose() {
         disposed = true
+        cliServer?.let(::closeCliServer)
+        cliServer = null
         requestRevision++
         resolution?.cancel()
         resolution = null

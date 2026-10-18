@@ -4,13 +4,13 @@ ARBの開発・レビュー・受入は、本repositoryの要件、有効な責�
 
 ## このプロジェクトで守る仕様と保証
 
-開発対象はAndroid Studioプラグインです。実装済み・受入済み・未確認を[プロジェクト情報](project.md)と対象Issue/QAの固定証拠から区別します。Python CLIは[凍結した原型](cli-origin.md)として、そのpath・command・設定互換性を保全します。
+開発対象はAndroid Studioプラグインです。実装済み・受入済み・未確認を[プロジェクト情報](project.md)と対象Issue/QAの固定証拠から区別します。同梱CLIは同じプラグインを操作し、旧原型からの差異と復旧は[移行契約](cli.md)に従います。旧source・受入観察・失敗はGitと元の記録に保持します。
 
 | 対象 | 保持する保証と正本 |
 |---|---|
 | IDE・build互換性 | 実際のIDE/JBR、Kotlin/Gradle targetと依存を[開発手順](plugin-development.md)で整合させる。別製品の固定版やbuild成功を本製品のIDE受入にしない |
 | UI・非同期処理・process | [IDE UI設計](design/ide-ui.md)と実装/テストでAPI/EDT境界、background処理、dispose後の結果破棄、取消しと子processの実停止・所有、入力/設定のatomic反映を確認する |
-| 取得・保存・互換性 | [製品要件](requirements.md)・[保存設計](plugin-design.md)・[CLI原型](cli-origin.md)に従い、対象/時刻/内容、loss/unknown、容量/pin、失敗時保全・atomic非上書き、Plugin ID/保存キー/出力形式と既存CLI互換を維持する |
+| 取得・保存・互換性 | [製品要件](requirements.md)・[保存設計](plugin-design.md)・[CLI移行契約](cli.md)に従い、対象/時刻/内容、loss/unknown、容量/pin、失敗時保全・atomic非上書き、Plugin ID/保存キー/出力形式と文書化したCLI移行契約を維持する |
 | 日本語UI・accessibility | [製品要件](requirements.md)と[IDE UI設計](design/ide-ui.md)に従い、判断できる日本語の説明/エラー、可読性・keyboard操作を保つ。commandやSDK ID等は翻訳しない |
 | 検証・配布の同一性 | [受入](verification/README.md)・[製品責任](verification/responsibility.md)に従い、固定source/ZIP hash/実ロード、全有効Case、原観察・失敗、独立レビューと正式な証拠再利用条件を保つ。外部製品の合格を転記しない |
 | IDE・端末・実行環境の共有状態 | [運用](operations.md)・[実行規約](execution-policy.md)に従い、共有host/user lease、所有fixture、停止/復旧/cleanup、実tool権限を守る。他projectのdaemon/端末/作業へ影響させない |

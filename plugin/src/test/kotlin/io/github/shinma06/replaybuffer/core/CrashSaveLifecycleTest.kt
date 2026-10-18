@@ -134,12 +134,15 @@ class CrashSaveLifecycleTest {
             assertEquals(AutoSaveReason.NOT_SAVED_FAILED_PIN, f.core.snapshot().autoSave.lastOutcome?.reason)
             assertEquals(1, captures.size)
             val destination = Files.createDirectory(root.resolve("retry"))
-            assertTrue(f.core.retryAtDirectory(failed.requestId!!, destination).get(5, TimeUnit.SECONDS).accepted)
+            val retried = f.core.retryAtDirectory(failed.requestId!!, destination).get(5, TimeUnit.SECONDS)
+            assertTrue(retried.accepted)
             f.finishWriter()
             val completed = assertNotNull(f.core.snapshot().lastSave)
             assertEquals(SavePhase.COMPLETED, completed.phase)
             assertEquals(failed.requestId, completed.requestId)
             assertEquals(failed.attempt + 1, completed.attempt)
+            assertEquals(completed, retried.saveResult!!.toCompletableFuture().get(5, TimeUnit.SECONDS))
+            assertEquals(failed, oldAttempt.completion.toCompletableFuture().get(5, TimeUnit.SECONDS))
             assertEquals(failed.autoEventId, completed.autoEventId)
             assertSame(captures[0], captures[1])
             assertEquals(destination.toRealPath(), completed.directory?.parent)
@@ -164,8 +167,12 @@ class CrashSaveLifecycleTest {
             SaveWriter().write(capture, directory, cancelled, publish)
         }.use { f ->
             try {
-                assertTrue(f.core.save().get(5, TimeUnit.SECONDS).accepted)
+                val requested = f.core.save().get(5, TimeUnit.SECONDS)
+                assertTrue(requested.accepted)
+                val result = assertNotNull(requested.saveResult)
                 assertTrue(entered.await(5, TimeUnit.SECONDS))
+                assertTrue(result.toCompletableFuture().cancel(true))
+                assertFalse(result.toCompletableFuture().isDone)
                 val manual = f.field<FrozenCapture>("pending")
                 f.trigger()
                 assertEquals(AutoSaveReason.NOT_SAVED_BUSY, f.core.snapshot().autoSave.lastOutcome?.reason)
@@ -175,6 +182,10 @@ class CrashSaveLifecycleTest {
                 f.finishWriter()
                 f.onControl { f.tick(10_030_000_000) }
                 assertEquals(1, calls)
+                val saved = result.toCompletableFuture().get(5, TimeUnit.SECONDS)
+                assertEquals(SavePhase.COMPLETED, saved.phase)
+                assertEquals(requested.requestId, saved.requestId)
+                assertTrue(Files.isRegularFile(saved.directory!!.resolve("session.json")))
                 assertEquals(8, f.core.snapshot().autoSave.admissionsRemaining)
             } finally { release.countDown() }
         }
@@ -246,6 +257,7 @@ class CrashSaveLifecycleTest {
             }.use { f ->
                 try {
                     f.trigger()
+                    val terminal = f.field<SaveAttempt>("saveAttempt").completion
                     assertTrue(resultReady.await(5, TimeUnit.SECONDS))
                     // Hold the callback lane: completion must already be visible from the writer.
                     val controlEntered = CountDownLatch(1)
@@ -261,6 +273,7 @@ class CrashSaveLifecycleTest {
                     f.field<Future<*>>("saveTask").get(5, TimeUnit.SECONDS)
                     val completed = assertNotNull(f.core.snapshot().lastSave)
                     assertEquals(SavePhase.COMPLETED, completed.phase, transition)
+                    assertEquals(completed, terminal.toCompletableFuture().get(5, TimeUnit.SECONDS))
                     assertEquals(AutoSaveReason.SAVED, f.core.snapshot().autoSave.lastOutcome?.reason, transition)
                     assertTrue(Files.isRegularFile(completed.directory!!.resolve("session.json")))
                     controlRelease.countDown()

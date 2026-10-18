@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "issue": 312,
+  "gui_required": false,
+  "reason": "squash採用で祖先に残らない実観察sourceの出典を、元NG・Case/hash・観察identityを保持して検証する任意のsource_adoptionを追加する。実merged develop PR・同repo・元head・採用commit・全tree一致・採用後の祖先関係を確認し、既存の全失敗保証・修正版artifact/時刻・担当分離・独立評価・metadata-only gateを維持する。検証管理のみの変更で製品・build・GUIを変えず、元native再現とGUI受入は不要。#311製品修正と受入、main採用後のdevelop同期は各担当の別作業。",
+  "cli_checks": [
+    "python3 -m unittest discover -s scripts/workflow -p test_acceptance_repair.py -v",
+    "python3 scripts/check.py",
+    "python3 scripts/workflow/change_impact.py --base origin/main --run-tests",
+    "隔離Gitで実squash正常・不正な採用参照/元identity等の拒否・参照復旧と旧validatorへのrollbackを確認"
+  ],
+  "cases": []
+}
