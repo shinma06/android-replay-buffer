@@ -1,0 +1,41 @@
+{
+  "schema": 1,
+  "issue": 311,
+  "gui_required": true,
+  "reason": "#284/QA308で実観察されたToolWindow狭幅表示の受入NGを修正する。元49e0の観察と停止を保持し、関連unit成功を実表示PASSへ付け替えない。",
+  "cli_checks": [
+    "ReplayToolWindowLayoutTestの実フォームwide→narrow回帰、ReplayDescriptionsTest、既存ReplaySettingsLayoutTest。長いpath/要約、実viewport/文字境界、全文末尾・操作への縦scroll、keyboard binding/既存focus属性と設定不変を確認する。",
+    "clean committed HEADで通常pre-push classifierの管理・CLI・plugin検査を実行する。元のnative観察や修正後の実ロード/表示とは区別する。"
+  ],
+  "cases": [
+    {
+      "id": "TOOLWINDOW-NARROW",
+      "artifact": "plugin",
+      "change": "ToolWindowのフォームと要約viewportを実表示幅へ追従させ、長文と操作の到達性を保つ",
+      "preconditions": "修正版のcleanな固定source/標準ZIP/全JARと実ロードを同定する。共有GUI leaseと復元条件を持つ既存QA308継続割当で行い、単独の追加GUI訪問は作らない。",
+      "steps": [
+        "長い保存先と自動保存の状態/残回数/警告/結果を表示し、広い表示から実狭幅へ変更する。IDE全体幅とToolWindow/要約の実表示領域を区別して記録する。",
+        "要約と保存先の全文末尾へ縦方向で到達でき、取得・設定・保存・必要時の再試行/破棄の操作とkeyboard経路を保持することを実画像と操作readbackで確認する。"
+      ],
+      "expected": "長いlabel/pathが要約を表示領域の外へ押し広げず、文字や必要操作を右側で欠落させない。元データ・設定・検出/保存/エラー内容とLifecycleを変えない。",
+      "provenance": [
+        "https://github.com/shinma06/android-replay-buffer/issues/311",
+        "https://github.com/shinma06/android-replay-buffer/issues/308",
+        "docs/verification/changes/issue-284.json",
+        "docs/verification/responsibility.md"
+      ],
+      "gpt": {
+        "status": "pending",
+        "reason": "元49e0の狭幅NGを保持。修正後の実ロード/画像/操作はQA308継続で未実施。unit/layout成功のみでは合格にしない。"
+      },
+      "human": {
+        "status": "pending",
+        "reason": "未観察。既存human/REAL条件を保持する。"
+      },
+      "fix_issue": null,
+      "fix_pr": null,
+      "recheck": "原284:CRASH-AUTO-LIFETIMEの失敗した狭幅保証だけを修正候補で確認する。#312の正式採用で原49e0と同tree squash066565の出典を保持できる修正記録を用い、実観察・独立評価を統合前に結合する。",
+      "next_action": "writerはsource/重点検査/標準成果物を固定してPMへ渡す。PMが#312のmain採用とdevelop同期、QA308の修正後狭幅観察、別セッション独立修復評価を調整する。元NG記録と修正結果のformal repairは実事実が揃った後に反映し、none/架空PASSを作らない。"
+    }
+  ]
+}
