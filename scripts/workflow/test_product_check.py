@@ -2,12 +2,14 @@
 import hashlib
 import json
 import os
+import runpy
 from pathlib import Path
 import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -100,6 +102,35 @@ class ProductCheckTests(unittest.TestCase):
             recovered = run('--plugin')
             self.assertEqual(recovered.returncode, 0, recovered.stderr)
             self.assertEqual(calls.read_text(), 'run\nrun\nrun\n')
+
+    def test_tests_only_keeps_gradle_checks_without_requesting_distribution_tasks(self):
+        for arguments, tasks in (([], ['check', 'buildPlugin', 'verifyPluginStructure']),
+                                 (['--tests-only'], ['check'])):
+            with self.subTest(arguments=arguments), \
+                 patch.object(sys, 'argv', ['plugin_check.py', *arguments]), \
+                 patch.dict(os.environ, {'REPLAY_PLATFORM_PATH': '/owned/sdk'}), \
+                 patch('subprocess.run') as run:
+                runpy.run_path(str(ROOT / 'scripts/workflow/plugin_check.py'), run_name='__main__')
+            command = run.call_args.args[0]
+            self.assertEqual(command[4:-2], tasks)
+            self.assertEqual(command[-2:], ['-PuseLocalPlatform=true', '-PplatformPath=/owned/sdk'])
+            self.assertTrue(run.call_args.kwargs['check'])
+
+    def test_tests_only_is_forwarded_after_real_cli_checks_and_failure_propagates(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            checker = self.copy_cli(root)
+            plugin = checker.parent / 'plugin_check.py'
+            plugin.write_text("import sys\nassert sys.argv[1:] == ['--tests-only']\nraise SystemExit(19)\n")
+            result = subprocess.run([sys.executable, str(checker), '--plugin', '--plugin-tests-only'],
+                                    cwd=root, text=True, capture_output=True, timeout=30)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('exit status 19', result.stderr)
+            self.assertNotIn('ARB_PRODUCT_PLUGIN_CHECK_COMPLETE', result.stdout)
+            invalid = subprocess.run([sys.executable, str(checker), '--plugin-tests-only'],
+                                     cwd=root, text=True, capture_output=True, timeout=30)
+            self.assertNotEqual(invalid.returncode, 0)
+            self.assertIn('requires --plugin', invalid.stderr)
 
 
 if __name__ == '__main__':

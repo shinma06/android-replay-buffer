@@ -1,10 +1,10 @@
 # GitHubへのZIP配布
 
-配布先はこのrepositoryのGitHub Releasesです。Marketplace、別サービス、定期jobは使いません。計画上の第1版・第2版とは別に、正式な配布版は `major.minor.patch` で採番します。第2版の正式候補は `0.2.0` を選び、**受入前のbuild時に確定**します。公開のためにZIP内のversionを書き換えたり再buildしたりしません。
+配布先はこのrepositoryのGitHub Releasesです。Marketplace、別サービス、定期jobは使いません。計画上の第1版・第2版とは別に、新しくbuildする正式な配布版は `major.minor.patch` で採番します。採用済み初期版だけは後述の固定原本互換経路を使います。第2版の正式候補は `0.2.0` を選び、**受入前のbuild時に確定**します。公開のためにZIP内のversionを書き換えたり再buildしたりしません。
 
 | 経路 | 起点 | 公開物・判定 |
 |---|---|---|
-| early | developへのpushのCI成功 | 現在developから生成省略を確認できた履歴だけ遡った最新製品ZIP、単一の`early` prerelease。対象履歴のmerged PRの共通4 checksも確認 |
+| early | developへのpushのCI成功 | 配布入力が変わったeventだけ、現在developの最新製品ZIPを単一の`early` prereleaseへ反映。運用docs/test-only eventは配布no-op。対象履歴のmerged PRの共通4 checksも確認 |
 | 正式候補 | main上の`Release candidate`を固定develop SHA/versionで手動実行 | check/buildPlugin/verifyPluginStructureを実行したZIPを`candidate-<ZIP SHA-256>` Artifactへ保存。ここではReleaseを公開しない |
 | 正式 | main promotion mergeのCI成功 | 既存promotion validatorで受入と固定hashを再確認し、保存済み候補の同じbytesを`v<version>`へ公開 |
 | 復旧 | main上の`Release delivery`へpromotion PR番号を指定 | 同じ入力を再照合。新しいversion・別ZIP・tag移動による修復はしない |
@@ -22,13 +22,31 @@
 
 CIが完了しても、対象commitがpromotionでなければ正式Releaseを増やしません。別候補、未知のworkflow、欠落/期限切れArtifact、失敗・中断・未完check、内部source/versionの不一致は公開を止めます。Artifact digestの警告だけに頼らず、publisherが不一致を明示的に拒否します。
 
+## 採用済み初期版の保持原本
+
+初期版は正式versionをbuild入力にする前に受入・main昇格済みです。[PR264](https://github.com/shinma06/android-replay-buffer/pull/264) の元候補 `a49bef8ec4e934c24c1d7e16cf7bb9a953dd645f`、promotion merge `52bcde9f24bcfc1cb11acc1cb073cedfbd693df5`、SHA-256 `dbbc2ab8e03085812e75368d1403044ab919529b4fe02b955c44fe59d7626520`、3,091,274 bytes、内部version `0.1.0-dev.a49bef8ec4e934c24c1d7e16cf7bb9a953dd645f` の原本だけを、通常のpromotion gateとidentity照合の後に許可します。別source/hash/size/version、dirty、別promotion、initial-agent以外への読替えはこの例外に入りません。
+
+```bash
+python3 scripts/workflow/release_delivery.py stable \
+  --archive "$ACCEPTED_INITIAL_ZIP" --promotion-pr 264 \
+  --version 0.1.0-dev.a49bef8ec4e934c24c1d7e16cf7bb9a953dd645f
+```
+
+Release名は「初期配布」と実versionを併記し、tagは `v0.1.0-dev.a49bef8ec4e934c24c1d7e16cf7bb9a953dd645f`、targetは元promotion mergeから動かしません。ZIPの実versionを `0.1.0` と偽称したり再包装したりしません。本文には初期Agent段階とQA #65の人間・REAL延期を残します。例外は任意のdev版を正式経路へ通すものではなく、未完成v2の受入待ちにも置き換えません。通常validatorの現在の成功は依然必要です。
+
+latestの比較だけではこの既知の初期版を数値版0.1.0より前に置き、既存の0.1.0以降を降格させません。後続の数値版は、所有markerまで一致するこの既知の初期版を越えてlatestになれます。未知のversion/tagは従来どおりlatestを変更しません。この文書は実公開完了や完全GUI受入の証明ではありません。
+
 ## earlyの更新と途中失敗
 
 1つのReleaseページを維持し、tagをforce更新しません。`early` tagは最初の保管場所を指す固定識別子です。**製品sourceはRelease本文・ZIP内部のSHA**であり、GitHub自動生成のSource code ZIPはインストール用ではありません。
 
-公開処理は全channelを同じconcurrency groupで直列化し、`queue: max` と `cancel-in-progress: false` を使います。実行中A・待機中の正式配布Bへearly Cが後着しても、BをCで置き換えず両方を待機させます。待機の上限は100 runで、それを超える追加runは取消しになります。待機を開始した順の処理で、event発生順そのものは保証しません。取消し/失敗した正式配布は対象promotion PR番号の手動復旧、earlyは後続の正常CI event又は元runの再実行で現在HEADを再解決します。上限なし/取消しなしを保証せず、残件は#271 ownerがrunと配布先を照合します。[GitHub concurrency](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency)遅れて届いたrunも現在のdevelop HEADを固定して解決し、旧sourceへ巻き戻しません。現在HEADの最新CIが未完了/失敗なら公開しません。開始時・履歴照合中・本文切替直前に固定したdevelop HEADを再確認します。
+公開処理は全channelを同じconcurrency groupで直列化し、`queue: max` と `cancel-in-progress: false` を使います。実行中A・待機中の正式配布Bへearly Cが後着しても、BをCで置き換えず両方を待機させます。待機の上限は100 runで、それを超える追加runは取消しになります。待機を開始した順の処理で、event発生順そのものは保証しません。取消し/失敗した正式配布は対象promotion PR番号の手動復旧、earlyは後続の配布入力が変わった正常CI event又は元製品runの再実行で現在HEADを再解決します。上限なし/取消しなしを保証せず、残件は#271 ownerがrunと配布先を照合します。[GitHub concurrency](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency)遅れて届いたrunも現在のdevelop HEADを固定して解決し、旧sourceへ巻き戻しません。現在HEADの最新CIが未完了/失敗なら公開しません。開始時・履歴照合中・本文切替直前に固定したdevelop HEADを再確認します。
 
-文書・管理だけの変更では既存classifierがPlugin buildを省くため、CIの成功jobでArtifact upload stepが明示的にskippedだったcommitだけ、developの第一親を遡ります。各commitの最新push CIとmerged PRの共通4 checksを確認し、最初に見つかった製品ZIPを同じbytesで公開します。製品commit Aの配布より先に文書commit BがHEADになっても、Bまたは遅着したAのrunからAのZIPを回収できます。BのCIがAより先に完了してAが未完了なら失敗を保ち、Aの完了eventで現在HEADを再解決します。本文は製品sourceと追従確認したdevelop HEADを分けます。CI履歴不明、未完了/失敗、生成されるはずのZIPの欠落、期限切れは、それより古い製品へ飛ばさず失敗にします。CI側のstep名/構成変更ではこの接点も更新・検証します。
+配布の要否は既存classifierの `distribution` で判定し、必要な試験の判定と分けます。Pluginのruntime/resource/clock/同梱CLIとそのREADME、build設定・wrapper・依存、CI/build helperなどの生成入力は配布対象です。未知の入力も省略しません。運用文書・管理・test-onlyは必要な検査を維持しますが、配布用の追加buildとArtifact uploadを要求しません。Plugin試験は `--plugin --plugin-tests-only` からGradle `check` を実行し、製品の試験自体が必要とする生成物はその依存関係に従って作ります。例えばdevelopのCLI archive試験は `check` から試験用ZIPを必要としますが、これを配布Artifactへuploadしません。試験義務を消すためにその依存関係を外しません。
+
+publisherは通知元commitの第一親との差分をtrusted mainのclassifierで照合します。運用docs/test-onlyだけなら過去Artifact探索・Release読取り/書込み・marker更新をせず終了します。製品commit Aの配布より先に文書commit BがHEADになった場合、遅着したAの正常eventは現在HEADから第一親を遡り、成功した各CIとmerged PR checks、配布入力が変わっていない差分を確認してAのZIPを使えます。Bのevent自体はAの公開を代行しません。途中に新製品CがあればCの正常CI/Artifactが必要で、未完了・失敗・期限切れ・生成欠落・履歴不明を越えてAへ戻りません。source SHAだけが違う通知を配布変更とは扱わず、同一source/hash/size/versionの再照合は既存本文のrun/develop_headも保持します。開始時・履歴照合中・公開直前のdevelop再確認は維持します。
+
+CI側の変更はmain採用後、developにも通常のtooling同期で反映する必要があります。trusted mainのpublisherだけを更新しても、旧develop CIの生成条件が更新済みとはみなしません。反映前の余分な過去Artifactを新製品の根拠に使いません。
 
 新しいhash名のZIPを先にupload・再download検証し、本文を切り替えて読み戻した後だけ、旧本文で識別済みの旧assetを削除します。途中失敗時は旧本文と旧ZIPを残し、既存の同じbytesを確認して再開します。公開前の失敗ならdraftのまま残します。tag未作成の既存draftは保存済みの40桁`target_commitish`を保持し、earlyではmain履歴への包含、正式では元promotion mergeとの一致を確認します。現在mainが進んでも新しいtargetへ付け替えず、保存済みtargetで公開後を照合します。準備中のdraft target変更も公開前に拒否します。不明なassetや所有markerのないReleaseは削除/上書きしません。未知の中断で残った追加assetは担当が現状態と所有を確認し、後片付けを別に記録します。
 
@@ -55,7 +73,13 @@ python3 scripts/workflow/release_delivery.py stable \
 
 固定targetと現在のdefault branchで`.github/workflows/`が異なるRelease作成/更新には、Contents writeに加えてWorkflows writeが必要です。`GITHUB_TOKEN`には後者を付与できません。[GitHub Release API](https://docs.github.com/en/rest/releases/releases#create-a-release)
 
-自動publisherはRelease作成前と本文/公開状態の切替前に現在default branchを取得し、固定targetとのworkflow差分を確認します。差分・取得不能は失敗として残し、targetとZIPを維持します。これは事前検査であり、検査直後のdefault更新やその他のAPI権限拒否も成功へ読み替えません。既存assetとdraftは保全し、同じGITHUB_TOKENの再実行では不足権限が増えないことをエラーへ明記します。既に公開・一致しているReleaseの読み戻しは新しい公開操作とは分けます。
+自動publisherは新規・既存の更新とも、最初のRelease/asset書込み前と本文/公開状態の切替直前に現在default branchを取得し、固定targetとのworkflow差分を確認します。差分があり対応するApp権限がない場合・取得不能は、既知の条件なら書込み前に失敗として残し、targetとZIPを維持します。これは事前検査であり、検査直後のdefault更新やその他のAPI権限拒否も成功へ読み替えません。既存assetとdraftは保全し、同じGITHUB_TOKENの再実行では不足権限が増えないことをエラーへ明記します。既に公開・一致しているReleaseの読み戻しは新しい公開操作とは分けます。
+
+無人追従には、対象repositoryだけにinstallした配布用GitHub Appの `Contents: write`、`Workflows: write` と `Actions / Checks / Commit statuses / Pull requests / Issues: read` を使います。repository variable `DELIVERY_APP_CLIENT_ID` とsecret `DELIVERY_APP_PRIVATE_KEY` を認証管理者が設定します。個人の既存tokenを読み出してsecretへ転送する手順ではありません。新Appの登録・権限付与・key保存は実際の許可範囲を担当者と整合してから行い、sourceの採用だけで設定済みにしません。
+
+workflowは公式 `actions/create-github-app-token` の固定revision `64ab729a6294000f5aa4a4bc0b73d1f32bc45510` を使い、このrepositoryと上記permissionsを明示して短命tokenを要求します。要求権限がinstallationに無ければGitHubの発行が失敗し、publisherを実行しません。発行成功のstepだけがtokenと `ARB_DELIVERY_APP_TOKEN` をpublisherへ渡します。この信号を手動設定してGITHUB_TOKENの不足を隠してはいけません。tokenは終了時に失効し、ログやArtifactへ保存しません。[公式actionの権限指定と失効](https://github.com/actions/create-github-app-token/tree/64ab729a6294000f5aa4a4bc0b73d1f32bc45510)
+
+App ID未設定の場合は標準tokenで従来の権限境界を守ります。IDのみ設定されkey不備・不足権限なら発行失敗として停止し、成功へのfallbackをしません。構成・unit testは実発行/公開の成功証明ではなく、認証管理者の設定後にeligible eventの実更新とdocs-onlyの配布no-opを確認します。未設定・未確認は#320/#271で残条件として保持します。
 
 担当は#271の配布owner（GitHub assignee shinma06）です。復旧時は次の手順を使います。
 

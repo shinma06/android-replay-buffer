@@ -183,7 +183,7 @@ class ReleaseDeliveryTest(unittest.TestCase):
         self.archive = self.directory / 'product.zip'
         self.archive.write_bytes(package())
         self.repo = Repository()
-        self.enterContext(patch.dict(os.environ, {'GITHUB_ACTIONS': 'false'}))
+        self.enterContext(patch.dict(os.environ, {'GITHUB_ACTIONS': 'false', 'ARB_DELIVERY_APP_TOKEN': 'false'}))
         for name in ('api', 'pages', 'command', 'download', 'git'):
             self.addCleanup(patch.stopall)
             patch.object(delivery, name, getattr(self.repo, name)).start()
@@ -296,6 +296,56 @@ class ReleaseDeliveryTest(unittest.TestCase):
         delivery.publish(self.archive, record, MAIN)
         self.assertEqual(self.repo.refs['v0.2.0']['sha'], MAIN)
         self.assertEqual(sum(path == 'upload' for path, _, _ in self.repo.mutations), 1)
+
+    def test_known_permission_or_lookup_failure_precedes_existing_early_upload(self):
+        old = self.record()
+        delivery.publish(self.archive, old, MAIN)
+        self.archive.write_bytes(package(NEXT))
+        self.repo.head = NEXT
+        new = self.record(source=NEXT)
+        before = copy.deepcopy((self.repo.releases, self.repo.refs, self.repo.assets, self.repo.mutations))
+        self.repo.workflow_changes = '.github/workflows/ci.yml'
+        with patch.dict(os.environ, GITHUB_ACTIONS='true'), self.assertRaisesRegex(ValueError, 'Workflows'):
+            delivery.publish(self.archive, new, MAIN)
+        self.assertEqual((self.repo.releases, self.repo.refs, self.repo.assets, self.repo.mutations), before)
+        with patch.object(delivery, 'automatic_release_target', side_effect=OSError('lookup failed')):
+            with self.assertRaises(OSError):
+                delivery.publish(self.archive, new, MAIN)
+        self.assertEqual((self.repo.releases, self.repo.refs, self.repo.assets, self.repo.mutations), before)
+        # Successful explicitly scoped App issuance is the trusted workflow's capability signal.
+        with patch.dict(os.environ, GITHUB_ACTIONS='true', ARB_DELIVERY_APP_TOKEN='true'):
+            delivery.publish(self.archive, new, MAIN)
+        self.assertEqual(delivery.read_record(self.repo.releases[0]['body']), new)
+        self.assertEqual(self.repo.refs['early']['sha'], MAIN)
+
+    def test_same_product_retry_does_not_rewrite_metadata_after_docs_advance(self):
+        first = dict(self.record(), develop_head=SOURCE, run=42)
+        delivery.publish(self.archive, first, MAIN)
+        self.repo.head = NEXT
+        before = copy.deepcopy((self.repo.releases, self.repo.refs, self.repo.assets, self.repo.mutations))
+        delivery.publish(self.archive, dict(first, develop_head=NEXT, run=43), MAIN)
+        self.assertEqual((self.repo.releases, self.repo.refs, self.repo.assets, self.repo.mutations), before)
+
+    def test_existing_release_race_preserves_old_body_and_both_assets(self):
+        old = self.record()
+        delivery.publish(self.archive, old, MAIN)
+        self.archive.write_bytes(package(NEXT))
+        self.repo.head = NEXT
+        self.repo.advance_workflows_after_upload = True
+        original = copy.deepcopy(self.repo.refs)
+        with patch.dict(os.environ, GITHUB_ACTIONS='true'), self.assertRaisesRegex(ValueError, 'Workflows'):
+            delivery.publish(self.archive, self.record(source=NEXT), MAIN)
+        self.assertEqual(delivery.read_record(self.repo.releases[0]['body']), old)
+        self.assertEqual(self.repo.refs, original)
+        self.assertEqual(len(self.repo.assets), 2)
+        uploaded = sum(path == 'upload' for path, _, _ in self.repo.mutations)
+        delivery.publish(self.archive, self.record(source=NEXT), MAIN)
+        self.assertEqual(sum(path == 'upload' for path, _, _ in self.repo.mutations), uploaded)
+
+    def test_distribution_lookup_failure_never_becomes_a_skip(self):
+        with patch.object(delivery, 'git_impact', return_value={'reason': 'missing history', 'distribution': True}):
+            with self.assertRaisesRegex(ValueError, 'complete delivery inputs'):
+                delivery.distribution_change(SOURCE)
 
     def test_invalid_or_changed_draft_target_is_not_published(self):
         record = self.record()
@@ -498,21 +548,25 @@ class ReleaseDeliveryTest(unittest.TestCase):
             with patch.object(delivery, 'api', return_value=data), self.assertRaises(ValueError):
                 delivery.candidate_archive(expected, self.directory)
 
-    def test_only_explicitly_skipped_producer_can_omit_early_artifact(self):
-        run = {'repository': {'full_name': delivery.REPO}, 'head_repository': {'full_name': delivery.REPO},
-               'head_sha': SOURCE, 'status': 'completed', 'conclusion': 'success', 'event': 'push',
-               'head_branch': 'develop', 'path': '.github/workflows/ci.yml', 'workflow_id': 7}
-        workflow = {'id': 7, 'path': '.github/workflows/ci.yml'}
-        listing = {'total_count': 0, 'artifacts': []}
-        for conclusion in ('skipped', 'success', 'failure', None):
-            jobs = {'total_count': 1, 'jobs': [{'name': 'test', 'conclusion': 'success',
-                    'steps': [{'name': 'Run actions/upload-artifact@v4', 'conclusion': conclusion}]}]}
-            with patch.object(delivery, 'api', side_effect=[run, workflow, listing, jobs]):
-                if conclusion == 'skipped':
-                    self.assertEqual(delivery.artifact(42, SOURCE, self.directory), (None, run))
-                else:
-                    with self.assertRaises(ValueError):
-                        delivery.artifact(42, SOURCE, self.directory)
+    def test_product_input_without_artifact_never_falls_back(self):
+        run = {'head_sha': SOURCE, 'event': 'push', 'head_branch': 'develop'}
+        with patch.object(delivery, 'producer_run', return_value=run), \
+             patch.object(delivery, 'api', return_value={'total_count': 0, 'artifacts': []}), \
+             patch.object(delivery, 'download_artifact') as download:
+            with self.assertRaisesRegex(ValueError, 'live source-bound artifact'):
+                delivery.artifact(42, SOURCE, self.directory)
+            download.assert_not_called()
+        self.assertEqual(self.repo.mutations, [])
+
+    def test_nonproduct_event_exits_before_history_artifact_or_release_lookup(self):
+        run = {'head_sha': SOURCE, 'event': 'push', 'head_branch': 'develop'}
+        with patch.object(delivery, 'producer_run', return_value=run), \
+             patch.object(delivery, 'distribution_change', return_value=False), \
+             patch.object(delivery, 'api', side_effect=AssertionError('unexpected lookup')), \
+             patch.object(delivery, 'artifact', side_effect=AssertionError('unexpected download')), \
+             patch.object(delivery, 'publish', side_effect=AssertionError('unexpected publication')), \
+             patch.object(sys, 'argv', ['delivery', 'early', '--run', '42', '--source', SOURCE]):
+            delivery.main()
         self.assertEqual(self.repo.mutations, [])
 
     def test_early_follows_product_overtaken_by_skipped_head_in_both_completion_orders(self):
@@ -555,12 +609,14 @@ class ReleaseDeliveryTest(unittest.TestCase):
         def git(*args):
             return NEXT + '\n' + SOURCE if args[0] == 'rev-list' else ''
         with patch.object(delivery, 'api', side_effect=api), patch.object(delivery, 'pages', side_effect=pages), \
-             patch.object(delivery, 'git', side_effect=git):
-            # B's small skipped build can complete before A's product build.
+             patch.object(delivery, 'git', side_effect=git), \
+             patch.object(delivery, 'distribution_change', side_effect=lambda source: source == SOURCE):
+            # A docs-only event never retries publication, regardless of product CI order.
             runs[42]['status'] = 'in_progress'
             with patch.object(sys, 'argv', ['delivery', 'early', '--run', '43', '--source', NEXT]), \
-                 self.assertRaises(ValueError):
+                 patch.object(delivery, 'publish') as publish:
                 delivery.main()
+                publish.assert_not_called()
             self.assertEqual(self.repo.releases, [])
             runs[42]['status'] = 'completed'
             for number in (42, 43):
@@ -572,8 +628,20 @@ class ReleaseDeliveryTest(unittest.TestCase):
                 self.assertEqual(len(self.repo.assets), 1)
                 self.assertEqual(len(self.repo.releases), 1)
             before = copy.deepcopy(self.repo.releases)
+            # A newer product without its artifact blocks the old product's delayed event.
+            with patch.object(delivery, 'distribution_change', return_value=True), \
+                 patch.object(sys, 'argv', ['delivery', 'early', '--run', '42', '--source', SOURCE]), \
+                 self.assertRaisesRegex(ValueError, 'live source-bound artifact'):
+                delivery.main()
+            self.assertEqual(self.repo.releases, before)
+            runs[43]['conclusion'] = 'failure'
+            with patch.object(sys, 'argv', ['delivery', 'early', '--run', '42', '--source', SOURCE]), \
+                 self.assertRaises(ValueError):
+                delivery.main()
+            self.assertEqual(self.repo.releases, before)
+            runs[43]['conclusion'] = 'success'
             item['expired'] = True
-            with patch.object(sys, 'argv', ['delivery', 'early', '--run', '43', '--source', NEXT]), \
+            with patch.object(sys, 'argv', ['delivery', 'early', '--run', '42', '--source', SOURCE]), \
                  self.assertRaises(ValueError):
                 delivery.main()
             self.assertEqual(self.repo.releases, before)
@@ -617,6 +685,48 @@ class ReleaseDeliveryTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 delivery.stable_release(286, self.directory, version='0.3.0')
         self.assertEqual(self.archive.read_bytes(), package())
+
+    def test_historical_initial_is_an_exact_exception_after_normal_promotion_gate(self):
+        original = copy.deepcopy(delivery.INITIAL)
+        accepted = dict(original, schema=1, repository=delivery.REPO)
+        identity = {key: accepted[key] for key in ('source', 'sha256', 'size', 'version')}
+        promotion = (original['source'], original['sha256'], original['main_merge'],
+                     {'stage': 'initial-agent', 'stage_complete': True})
+        with patch.object(delivery, 'promotion_gate', return_value=promotion) as gate, \
+             patch.object(delivery, 'identity', return_value=identity) as identify, \
+             patch.object(delivery, 'publish', return_value='published') as publish:
+            self.assertEqual(delivery.stable_release(264, self.directory, self.archive), 'published')
+            gate.assert_called_once_with(264)
+            identify.assert_called_once_with(self.archive, original['source'], original['sha256'])
+            self.assertEqual(publish.call_args.args[1], accepted)
+            for key, value in (('source', NEXT), ('sha256', 'e' * 64), ('size', original['size'] + 1),
+                               ('version', '0.1.0-dev.' + NEXT)):
+                with self.subTest(key=key), patch.object(delivery, 'identity', return_value=dict(identity, **{key: value})):
+                    with self.assertRaises(ValueError):
+                        delivery.stable_release(264, self.directory, self.archive)
+            for number, result in ((265, promotion), (264, (*promotion[:3], {'stage': 'full'})),
+                                   (264, (promotion[0], promotion[1], NEXT, promotion[3]))):
+                with patch.object(delivery, 'promotion_gate', return_value=result), self.assertRaises(ValueError):
+                    delivery.stable_release(number, self.directory, self.archive)
+            with self.assertRaises(ValueError):
+                delivery.stable_release(264, self.directory, self.archive, version='0.1.0')
+        self.assertIn('初期配布', delivery.release_body(accepted))
+        self.assertIn('QA #65', delivery.release_body(accepted))
+        self.assertIn(original['version'], delivery.release_body(accepted))
+        self.assertEqual(self.repo.mutations, [])
+
+    def test_historical_initial_and_numeric_latest_never_downgrade(self):
+        initial = dict(delivery.INITIAL, schema=1, repository=delivery.REPO)
+        self.assertEqual(delivery.latest_setting(initial), 'true')
+        self.repo.releases = [{'tag_name': 'v' + initial['version'], 'draft': False, 'prerelease': False,
+                               'body': delivery.release_body(initial)}]
+        stable = self.record('stable')
+        self.assertEqual(delivery.latest_setting(stable), 'true')
+        for version in ('0.1.0', '0.2.0', '0.10.0'):
+            self.repo.releases = [{'tag_name': 'v' + version, 'draft': False, 'prerelease': False}]
+            self.assertEqual(delivery.latest_setting(initial), 'false')
+        self.repo.releases = [{'tag_name': 'v0.1.0-dev.unknown', 'draft': False, 'prerelease': False}]
+        self.assertEqual(delivery.latest_setting(stable), 'false')
 
     def test_main_tooling_commit_does_not_publish_and_only_unique_promotion_dispatches(self):
         promotion = {'number': 286, 'merge_commit_sha': MAIN, 'base': {'ref': 'main'},

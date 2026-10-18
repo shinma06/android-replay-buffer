@@ -15,12 +15,22 @@ import zipfile
 
 from agent_loop import REPO, CI_CHECKS, git
 from agent_policy import CONTEXT
+from change_impact import git_impact
 from verification import PROMOTION, verify_pr
 
 MARKER = '<!-- arb-delivery:v1\n'
 MAX_ARCHIVE = 256 * 1024 * 1024
 SHA = re.compile(r'[0-9a-f]{40}')
 HASH = re.compile(r'[0-9a-f]{64}')
+# Only this adopted historical archive predates formal build-time version selection.
+INITIAL = {
+    'source': 'a49bef8ec4e934c24c1d7e16cf7bb9a953dd645f',
+    'sha256': 'dbbc2ab8e03085812e75368d1403044ab919529b4fe02b955c44fe59d7626520',
+    'size': 3091274, 'pr': 264,
+    'main_merge': '52bcde9f24bcfc1cb11acc1cb073cedfbd693df5',
+    'stage': 'initial-agent', 'channel': 'stable',
+    'version': '0.1.0-dev.a49bef8ec4e934c24c1d7e16cf7bb9a953dd645f',
+}
 VERSION = re.compile(r'(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)')
 
 
@@ -137,16 +147,6 @@ def artifact(run_id, source, directory, workflow='.github/workflows/ci.yml'):
     items = collection.get('artifacts', [])
     require(collection.get('total_count') == len(items), 'Incomplete artifact listing')
     selected = [a for a in items if a.get('name') == f'plugin-{source}']
-    if not items:
-        jobs = api(f'actions/runs/{run_id}/jobs?filter=latest&per_page=100')
-        require(jobs.get('total_count') == len(jobs.get('jobs', [])), 'Incomplete job listing')
-        tests = [job for job in jobs['jobs'] if job.get('name') == 'test']
-        require(len(tests) == 1 and tests[0].get('conclusion') == 'success', 'Successful producer job required')
-        uploads = [step for step in tests[0].get('steps', [])
-                   if re.fullmatch(r'Run actions/upload-artifact@v[0-9.]+', step.get('name', ''))]
-        require(len(uploads) == 1 and uploads[0].get('conclusion') == 'skipped',
-                'Missing artifact without an explicitly skipped producer')
-        return None, run
     require(len(selected) == 1 and selected[0].get('expired') is False, 'One live source-bound artifact required')
     return download_artifact(selected[0], directory), run
 
@@ -220,10 +220,21 @@ def early_gate(run, head):
     return pr['number']
 
 
+def distribution_change(source):
+    result = git_impact(source + '^1', source, merge_base=False)
+    if result.get('base') and not result['files']:
+        return False
+    require(not result['reason'], 'Cannot establish complete delivery inputs')
+    return result['distribution']
+
+
 def early_product(run_id, source, directory):
     trigger = producer_run(run_id, source)
     require(trigger.get('event') == 'push' and trigger.get('head_branch') == 'develop',
             'Early requires a develop push')
+    git('fetch', '--no-tags', 'origin', source)
+    if not distribution_change(source):
+        return None  # An operational/test-only event cannot retry or rewrite a release.
     head = api('git/ref/heads/develop').get('object', {}).get('sha')
     require(SHA.fullmatch(head or ''), 'Current develop identity missing')
     git('fetch', '--no-tags', 'origin', head)
@@ -236,11 +247,12 @@ def early_product(run_id, source, directory):
                 and all(type(r.get('id')) is int and r['id'] > 0 for r in items),
                 'Current product history needs complete CI records; do not fall back past unknown history')
         selected = max(items, key=lambda run: run['id'])
-        archive, run = artifact(selected['id'], candidate, directory)
+        run = producer_run(selected['id'], candidate)
         number = early_gate(run, head)
-        if archive is not None:
+        if distribution_change(candidate):
+            archive, run = artifact(selected['id'], candidate, directory)
             return archive, run, number, head
-        # Only the explicit producer skip above permits looking at the previous product.
+        # A later non-product commit needs successful checks, but no replacement ZIP.
     raise ValueError('No identified product artifact in the verified develop history')
 
 
@@ -291,7 +303,8 @@ def release_body(record):
     if record.get('stage') == 'initial-agent':
         acceptance += ' 初期Agent段階の受入であり、人間・REALの延期はQA #65に残っています。'
     tag = 'early' if early else 'v' + record['version']
-    text = (f'# Android Replay Buffer {"early" if early else record["version"]}\n\n{acceptance}\n\n'
+    title = 'early' if early else ('初期配布 ' if historical_initial(record) else '') + record['version']
+    text = (f'# Android Replay Buffer {title}\n\n{acceptance}\n\n'
             f'[インストール用ZIP](https://github.com/{REPO}/releases/download/{tag}/{asset_name(record)})\n\n'
             f'- Plugin version: `{record["version"]}`\n- Source: `{record["source"]}`\n'
             f'- SHA-256: `{record["sha256"]}`\n'
@@ -318,18 +331,29 @@ def verify_asset(asset, path):
         require(digest(fetched) == digest(path), 'Published asset bytes differ')
 
 
+def historical_initial(record):
+    return all(record.get(key) == value for key, value in INITIAL.items())
+
+
 def latest_setting(record):
     if record['channel'] == 'early':
         return 'false'
     parsed_version = VERSION.fullmatch(record['version'])
-    require(parsed_version, 'Formal release version required')
-    version = tuple(map(int, parsed_version.groups()))
+    require(parsed_version or historical_initial(record), 'Formal release version required')
+    version = tuple(map(int, parsed_version.groups())) if parsed_version else (0, 1, 0)
     for release in pages('releases?per_page=100'):
         if release['draft'] or release['prerelease']:
             continue
         tag = release['tag_name']
         parsed = VERSION.fullmatch(tag[1:]) if tag.startswith('v') else None
-        if not parsed or tuple(map(int, parsed.groups())) > version:
+        if not parsed:
+            if tag == 'v' + INITIAL['version'] and historical_initial(read_record(release.get('body'))):
+                other = (0, 1, 0)
+            else:
+                return 'false'
+        else:
+            other = tuple(map(int, parsed.groups()))
+        if other > version or historical_initial(record) and parsed and other >= version:
             return 'false'
     return 'true'
 
@@ -342,14 +366,17 @@ def automatic_release_target(target):
     head = api('git/ref/heads/' + quote(default, safe='')).get('object', {}).get('sha')
     require(SHA.fullmatch(head or ''), 'Default branch commit missing')
     git('fetch', '--no-tags', 'origin', head, target)
-    require(not git('diff', '--name-only', head, target, '--', '.github/workflows'),
+    changed = git('diff', '--name-only', head, target, '--', '.github/workflows')
+    # Trusted workflow sets this only after GitHub grants the explicitly requested permissions.
+    require(not changed or os.environ.get('ARB_DELIVERY_APP_TOKEN') == 'true',
             'Automatic delivery needs Workflows write permission for fixed target ' + target +
-            '; GITHUB_TOKEN cannot provide it. Preserve the target/ZIP and use the #271 owner local recovery '
+            '; GITHUB_TOKEN cannot provide it. Configure the scoped delivery App or preserve the target/ZIP and use the owner recovery '
             'in docs/release-delivery.md; retrying this workflow cannot grant permission.')
 
 
 def publish(path, record, target):
     early = record['channel'] == 'early'
+    develop_head = record.get('develop_head', record['source'])
     tag = 'early' if early else 'v' + record['version']
     body, name = release_body(record), asset_name(record)
     require(SHA.fullmatch(target or ''), 'Fixed tag target required')
@@ -361,6 +388,8 @@ def publish(path, record, target):
         require(previous['channel'] == record['channel'] and (not early or not release.get('immutable'))
                 and release['prerelease'] == early, 'Release ownership/channel/immutability mismatch')
         require(early or previous == record, 'Stable release identity cannot be replaced')
+        if early and all(previous.get(key) == record.get(key) for key in ('source', 'sha256', 'size', 'version')):
+            body = release['body']  # Rechecking the same product does not churn its run/head metadata.
     refs = [r for r in api('git/matching-refs/tags/' + tag) if r['ref'] == 'refs/tags/' + tag]
     require(len(refs) <= 1, 'Ambiguous tag')
     if refs:
@@ -376,11 +405,14 @@ def publish(path, record, target):
             git('merge-base', '--is-ancestor', fixed_target, 'origin/main')
     require(not release or release['draft'] or refs, 'Published release tag missing')
     if early:
-        current_develop(record.get('develop_head', record['source']))
-    if not release:
+        current_develop(develop_head)
+    if not release or release['draft'] or release['body'] != body:
         automatic_release_target(fixed_target)
+        latest_setting(record)  # Resolve known publication conditions before any write.
+    if not release:
         release = api('releases', 'POST', {'tag_name': tag, 'target_commitish': target,
-                      'name': 'Android Replay Buffer ' + ('early' if early else record['version']),
+                      'name': 'Android Replay Buffer ' + ('early' if early else
+                              ('初期配布 ' if historical_initial(record) else '') + record['version']),
                       'body': body, 'draft': True, 'prerelease': early, 'make_latest': 'false'})
     assets = pages(f'releases/{release["id"]}/assets?per_page=100')
     require(len({a['name'] for a in assets}) == len(assets), 'Duplicate release assets')
@@ -398,7 +430,7 @@ def publish(path, record, target):
     require(current and all(current[k] == release[k] for k in ('id', 'body', 'draft', 'prerelease', 'target_commitish')),
             'Release changed during preparation; preserve both assets')
     if early:
-        current_develop(record.get('develop_head', record['source']))
+        current_develop(develop_head)
     if current['body'] != body or current['draft']:
         automatic_release_target(fixed_target)
         api(f'releases/{release["id"]}', 'PATCH', {'body': body, 'draft': False,
@@ -427,7 +459,8 @@ def stable_release(number, directory, archive=None, version=None):
     archive = archive or candidate_archive(expected, directory)
     record = dict(identity(archive, source, expected), schema=1, repository=REPO,
                   channel='stable', pr=number, main_merge=merge, stage=result.get('stage', 'full'))
-    require(VERSION.fullmatch(record['version']) and (version is None or record['version'] == version),
+    require((VERSION.fullmatch(record['version']) or historical_initial(record))
+            and (version is None or record['version'] == version),
             'Select the formal version before building/testing; never rewrite the ZIP')
     return publish(archive, record, merge)
 
@@ -462,7 +495,11 @@ def main():
     args = parser.parse_args()
     if args.channel == 'early':
         with tempfile.TemporaryDirectory() as temporary:
-            archive, run, number, head = early_product(args.run, args.source, Path(temporary))
+            product = early_product(args.run, args.source, Path(temporary))
+            if product is None:
+                print('No distribution input changed; no release changed.')
+                return
+            archive, run, number, head = product
             record = dict(identity(archive, run['head_sha'], digest(archive)), schema=1,
                           repository=REPO, channel='early', pr=number, run=run['id'], develop_head=head)
             target = api('git/ref/heads/main')['object']['sha']
