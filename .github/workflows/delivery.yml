@@ -42,9 +42,26 @@ jobs:
       - uses: actions/setup-python@v7.0.0
         with:
           python-version: '3.15.0'
+      - name: Obtain repository-scoped delivery permission
+        if: vars.DELIVERY_APP_CLIENT_ID != ''
+        id: delivery-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3
+        with:
+          client-id: ${{ vars.DELIVERY_APP_CLIENT_ID }}
+          private-key: ${{ secrets.DELIVERY_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+          permission-workflows: write
+          permission-actions: read
+          permission-checks: read
+          permission-statuses: read
+          permission-pull-requests: read
+          permission-issues: read
       - name: Deliver the identified candidate bytes
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.delivery-token.outputs.token || github.token }}
+          ARB_DELIVERY_APP_TOKEN: ${{ steps.delivery-token.outcome == 'success' && steps.delivery-token.outputs.token != '' && 'true' || 'false' }}
           EVENT: ${{ github.event_name }}
           BRANCH: ${{ github.event.workflow_run.head_branch }}
           SOURCE: ${{ github.event.workflow_run.head_sha }}

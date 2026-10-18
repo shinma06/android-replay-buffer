@@ -13,13 +13,15 @@ gh workflow run ci.yml --repo shinma06/android-replay-buffer --ref codex/281-ci-
 - 共通の必須checkは `test` / `PR policy` / `Acceptance gate` / `Agent review`。旧`CLI Python 3.9`からの[branchごとの置換確認](github.md#runtime検査の共通testへの段階移行)と実serverのreadbackは#305の記録を参照します。CI成功は独立レビューやGUI受入の代わりになりません。
 - 取消しは同じPR番号又は同じrefのCIだけに適用。新規commit後は最新HEADの結果を読み、旧成功・取消し・未完了を採用しません。
 - PRの実行はread-only token、checkoutのcredential保存なし。trusted acceptance/policyと製品検査の信頼境界を保持します。
-- 製品buildが必要なら既存commandで生成し、`plugin/build/distributions/*.zip` を `plugin-${{ github.sha }}` として保存。保存元run/event/head、実checkout SHAと内容を照合し、別headのZIPへ名前を付け替えません。CDは同一の検証済みartifactを使い、PRで生成したZIPを公開へ自動昇格しません。
+- 配布入力の変更を示す `distribution` が真なら既存commandで生成し、`plugin/build/distributions/*.zip` を `plugin-${{ github.sha }}` として保存。保存元run/event/head、実checkout SHAと内容を照合し、別headのZIPへ名前を付け替えません。CDは同一の検証済みartifactを使い、PRで生成したZIPを公開へ自動昇格しません。
 
 Python原型を配布するbranchでは、`test`の先頭でPython 3.9を選び、`product_check.py`と`test_product_check.py`の正常・非対応構文拒否・復旧を実行してから管理Pythonへ戻します。旧jobも同じ実検査を続けるため、移行中はsetupとCLI検査が重複します。#305 ownerが固定base/候補のjob・step時刻と追加コストを記録し、速度改善とは扱いません。イベント、runner、cache、既存classifier・Plugin build・artifact条件は保持します。
 
 #103の統合製品では、CLIをPlugin ZIPへ内包し、互換範囲・明示移行・固定Git履歴からの復旧を確認して原型を退役します。このtreeの旧job/重複stepと原型専用checker/testsを除き、CLIの通信・設定・保存結果・実配布launcherを既存Plugin buildの同じ検査へ含めます。Python原型をまだ配布するmain等の別branchは、そのbranchの退役まで必要な3.9検査を保持します。保護の移行だけを原型退役とみなさず、旧名のsuccessで代用しません。
 
-coordinatorはtrusted mainのclassifierで候補の必要検査を選び、候補checkoutの共通入口`product_check.py`を呼びます。このtreeでは引数なし・互換`--plugin`のどちらも、既存`plugin_check.py`へ委譲して統合製品のcheck/build/structureを1回実行します。製品・fixture・未知pathの変更はJDK準備とartifact保存まで含めます。成功時だけ最後の標準出力行に`ARB_PRODUCT_PLUGIN_CHECK_COMPLETE`を出し、trusted coordinatorもこの完了表示を要求します。未知引数、checker欠落、製品検査失敗は非zeroで止め、失敗と復旧を隔離fixtureで検証します。原型を残す過去の候補では当時のcheckerが原型検査後にPluginを検査します。存在しない製品のskipや二重buildを残しません。
+配布判定は試験判定から分離します。運用docsは必要なharness検査、test-onlyは必要なCLI/Plugin試験を維持し、配布用の追加build/Artifact uploadを省きます。Plugin試験だけなら共通入口の `--plugin --plugin-tests-only` から `plugin_check.py --tests-only` のGradle `check` を使います。試験自身がarchiveを入力にする場合の生成は残し、そのZIPを配布Artifactとして保存しません。未知/実生成入力・手動全量は通常のbuild/構造検査/Artifact保存へ戻ります。条件とpublisherの通知no-opは[配布仕様](../release-delivery.md#earlyの更新と途中失敗)に従います。両branchへの実反映と実CIの結果はIssueで確認します。
+
+coordinatorはtrusted mainのclassifierで候補の必要検査を選び、候補checkoutの共通入口`product_check.py`を呼びます。このtreeでは引数なし・互換`--plugin`のどちらも、既存`plugin_check.py`へ委譲して統合製品のcheck/build/structureを1回実行します。試験だけの変更は`--plugin --plugin-tests-only`でGradle `check`を維持し、配布用Artifact保存を省きます。実配布入力・未知pathの変更はJDK準備とartifact保存まで含めます。成功時だけ最後の標準出力行に`ARB_PRODUCT_PLUGIN_CHECK_COMPLETE`を出し、trusted coordinatorもこの完了表示を要求します。未知引数、checker欠落、製品検査失敗は非zeroで止め、失敗と復旧を隔離fixtureで検証します。原型を残す過去の候補では当時のcheckerが原型検査後にPluginを検査します。存在しない製品のskipや二重buildを残しません。
 
 trusted mainの`Release candidate`は固定candidate内の`plugin_check.py`も直接呼びます。#103ではこの実build helperを維持し、共通入口から委譲します。配布CLIのPython依存退役と管理scriptの削除を混同しません。この入口を将来整理する場合は、過去の固定candidateもbuildできるtrusted workflowの移行と一体で扱います。
 

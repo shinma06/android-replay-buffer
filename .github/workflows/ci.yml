@@ -36,7 +36,7 @@ jobs:
       - name: Harness and affected integrated product checks
         run: python3 scripts/workflow/change_impact.py --event --run-tests
       - uses: actions/upload-artifact@v7.0.2
-        if: steps.impact.outputs.plugin_check == 'true'
+        if: steps.impact.outputs.distribution == 'true'
         with:
           name: plugin-${{ github.sha }}
           path: plugin/build/distributions/*.zip
