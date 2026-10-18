@@ -20,7 +20,7 @@ class LegacyCliConfigTest {
     }
 
     @Test fun `simple YAML and tilde keep legacy scalar meaning`() {
-        val config = LegacyCliConfig.parse("""
+        val text = """
             # legacy
             replay_seconds: 15
             output_directory: "~/My Replays"
@@ -28,10 +28,22 @@ class LegacyCliConfigTest {
             state_directory: ~/.replay-buffer
             scrcpy_path: /old/scrcpy
             ffmpeg_path: /old/ffmpeg
-        """.trimIndent(), true, cwd, home)
+        """.trimIndent()
+        val config = LegacyCliConfig.parse(text, true, cwd, home)
         assertEquals(15, config.seconds)
         assertEquals("/home/owner/My Replays", config.destination)
+        assertEquals(config, LegacyCliConfig.parse(text.prependIndent("  "), true, cwd, home))
         for (key in listOf("segment_seconds", "state_directory", "scrcpy_path", "ffmpeg_path")) assertTrue(config.warning.contains(key))
+    }
+
+    @Test fun `nested YAML cannot promote child values into shared settings`() {
+        for (child in listOf("output_directory: /existing/output", "replay_seconds: 15")) {
+            for (indent in listOf("  ", "\t")) {
+                assertFailsWith<IllegalArgumentException> {
+                    LegacyCliConfig.parse("state_directory:\n$indent$child", true, cwd, home)
+                }
+            }
+        }
     }
 
     @Test fun `malformed unknown duplicate nested and out of range settings fail before migration`() {

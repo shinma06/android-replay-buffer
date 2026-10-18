@@ -62,9 +62,13 @@ internal data class LegacyCliConfig(val seconds: Int, val destination: String, v
 
         private fun parseYaml(text: String): Map<String, String?> {
             val values = linkedMapOf<String, String?>()
+            var indentation: String? = null
             for (line in text.lineSequence()) {
+                val prefix = line.takeWhile(Char::isWhitespace)
                 val value = line.trim()
                 if (value.isEmpty() || value.startsWith('#')) continue
+                if (indentation == null) indentation = prefix
+                require(prefix == indentation) { "設定項目は同じ階層に並べてください。入れ子のYAMLは移行できません。" }
                 val split = value.indexOf(':')
                 require(split > 0) { "旧CLIの簡易YAMLはkey: valueの形式です。" }
                 val key = value.substring(0, split).trim()
