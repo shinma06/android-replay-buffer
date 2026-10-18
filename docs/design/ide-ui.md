@@ -2,6 +2,8 @@
 
 **独立した `Android Replay Buffer` ToolWindowを採用する。** 初期配置は右側、1つのパネルとし、Logcatとは独立して取得・保存状態を表示する。Logcatへの埋込み、独自ヘッダー、ログ閲覧機能の再実装は行わない。この文書は [#12](https://github.com/shinma06/android-replay-buffer/issues/12) の設計決定であり、UIの実装・IDE受入済みという意味ではない。[製品要件](../requirements.md) を正本とし、実装は [#14](https://github.com/shinma06/android-replay-buffer/issues/14) で行う。既存CLI原型のコマンド・設定・ファイルを変更しない。
 
+CLI原型の保全に関する記述は、この設計当時の変更範囲です。第2版の同梱CLI・明示移行・復旧は[CLI契約](../cli.md)に従い、本設計の取得・保存・UI保証は保持します。
+
 ## 配置の比較と根拠
 
 対象は [既存基盤](../plugin-development.md) と同じRabbit 1 `2026.2.1.8` / `AI-262.9437.185.2621.16467767`。設計調査ではこのbuildのSDK JAR・XMLを読取り、`javap`でAPI署名を確認した。IDEを起動したり、プラグインをインストールしたり、ADBや端末を操作したりしていない。

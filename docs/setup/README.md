@@ -20,7 +20,7 @@ Python標準ライブラリだけで共通ツールが動きます。Node/npmは
 
 技術スタックは依存関係に問題がなければ最新stableを使います。更新時に一次情報と実版を確認し、互換性の問題があれば最新stableに適合する公式・既存の方法を先に調べ、妥当な方法を採用します。実現できない場合だけ更新可能な最大のstableを選び、具体的な制約と再開条件をIssue/PRへ残します。pre-releaseは採用しません。製品の固定候補・SDK/build・対応版の契約は各変更の検証と統合手順を通して更新し、版の方針だけで既存受入を読み替えません。
 
-主検査版は[プロジェクト情報](../project.md)、最新stableの確認は[Python公式](https://www.python.org/downloads/)を参照します。repositoryの管理/開発script（検査・hooks・QA/受入・GUI lease・coordinator）はPython 3.15以上を対応対象とし、主検査/CIはstable 3.15.0を使用します。旧3.11下限は[`tomllib`の追加版](https://docs.python.org/3/library/tomllib.html)が技術的根拠でしたが、最新stable方針と実検査版に合わせて対応範囲を更新します。配布CLIのPython 3.9以上と専用互換CIは維持し、JVM plugin利用者のruntime要件とも区別します。CIは既存の[setup-python](https://github.com/actions/setup-python/blob/v7.0.0/docs/advanced-usage.md#specifying-a-python-version)で確認したstableを指定します。
+主検査版は[プロジェクト情報](../project.md)、最新stableの確認は[Python公式](https://www.python.org/downloads/)を参照します。repositoryの管理/開発script（検査・hooks・QA/受入・GUI lease・coordinator）はPython 3.15以上を対応対象とし、主検査/CIはstable 3.15.0を使用します。旧3.11下限は[`tomllib`の追加版](https://docs.python.org/3/library/tomllib.html)が技術的根拠でしたが、最新stable方針と実検査版に合わせて対応範囲を更新します。製品同梱CLIはAndroid StudioのJBRを使うため、製品利用者の環境へ管理用Pythonを要求しません。原型Python CLIの復元は[移行・復旧](../cli.md)を参照してください。CIは既存の[setup-python](https://github.com/actions/setup-python/blob/v7.0.0/docs/advanced-usage.md#specifying-a-python-version)で確認したstableを指定します。
 
 旧3.11〜3.14で管理作業を行う開発者は、既存managerで3.15を導入/選択し、`python3 --version`を確認してから下の検査を実行してください。別shell、GUIアプリ起動のCLI、既存の管理ジョブもそれぞれ実runtimeを確認します。登録済み処理の停止・移行・再開は既存の所有/PAUSED状態と[自動進行の起動条件](automation.md#起動条件)を保ちます。古いPythonで動くコードを強制拒否するguardは追加せず、3.15未満の管理互換性は対応・CI検証対象から外します。CLIだけを利用する環境にはこの移行を求めません。
 
@@ -34,7 +34,7 @@ python3 scripts/check.py
 
 このPATHを選んだshellでbootstrap・commit/pushも実行し、hooksの`python3`を揃えます。Python内の検査起動は`sys.executable`で親と同じ版を使います。実runtimeと子processを照合してから検査結果を記録し、PATH変更はそのshellの終了で戻せます。
 
-macOS/Linuxが共通CLIの対象です。GUI leaseは `fcntl` と同一OSユーザーのPOSIX権限を利用します。Windows nativeの動作は未確認です。WSLでコード検証する場合も、Windowsデスクトップ操作とは別ホスト扱いにせず、実際に共有する画面の操作者・予約を一本化してください。WSLのlockファイルがWindows側の操作を強制禁止するわけではありません。
+macOS/Linuxが共通の管理CLIの対象です。GUI leaseは `fcntl` と同一OSユーザーのPOSIX権限を利用します。Windows nativeの動作は未確認です。WSLでコード検証する場合も、Windowsデスクトップ操作とは別ホスト扱いにせず、実際に共有する画面の操作者・予約を一本化してください。WSLのlockファイルがWindows側の操作を強制禁止するわけではありません。
 
 新しい環境で自分のPATHを確認します。GUIアプリから起動するCLIは対話shellとPATHが異なる場合があります。既存機のNode絶対パス、app bundle内部の実行ファイル、socket、trusted code pathsは移植せず、正式なinstallerが再生成する値を使います。
 

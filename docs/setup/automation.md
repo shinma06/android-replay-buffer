@@ -1,6 +1,6 @@
 # 自動レビュー・修正・統合
 
-`scripts/workflow/agent_loop.py` は、明示登録した同一 repository・maintainer の PR を一工程ずつ進めます。参照元の engine を移植し、既存Python CLI tests、共通 GUI lease、private registry に接続しています。スケジューラーへの登録と、実 PR の自動処理開始は別です。
+`scripts/workflow/agent_loop.py` は、明示登録した同一 repository・maintainer の PR を一工程ずつ進めます。参照元の engine を移植し、製品の共通検査、共通 GUI lease、private registry に接続しています。スケジューラーへの登録と、実 PR の自動処理開始は別です。
 
 ## 起動条件
 
@@ -17,7 +17,7 @@
 ```bash
 python3 scripts/workflow/agent_loop.py enroll \
   --pr 123 --source ../android-replay-buffer-issue-12 --owner implementation-session \
-  --scope replay_buffer/ docs/verification/ --writer-stopped
+  --scope plugin/ docs/verification/ --writer-stopped
 python3 scripts/workflow/agent_loop.py scan
 python3 scripts/workflow/agent_loop.py tick --pr 123
 ```

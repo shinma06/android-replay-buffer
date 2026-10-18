@@ -1,5 +1,3 @@
-"""Declared-runtime regression using owned CLI copies; never start the daemon."""
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -10,96 +8,79 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
+COMPLETE = 'ARB_PRODUCT_PLUGIN_CHECK_COMPLETE'
 
 
-class ProductCheckTests(unittest.TestCase):
-    def copy_cli(self, root):
-        for name in ('replay_buffer', 'tests'):
-            shutil.copytree(ROOT / name, root / name, ignore=shutil.ignore_patterns('__pycache__'))
-        checker = root / 'scripts/workflow/product_check.py'
-        checker.parent.mkdir(parents=True)
-        shutil.copy2(ROOT / 'scripts/workflow/product_check.py', checker)
-        origin = ROOT / 'scripts/workflow/cli_origin.py'
-        if origin.is_file():
-            shutil.copy2(origin, checker.parent / origin.name)
-            for name in ('docs/cli-origin', 'bin', 'launchd'):
-                shutil.copytree(ROOT / name, root / name)
-            for name in ('config.json.example', 'pyproject.toml'):
-                shutil.copy2(ROOT / name, root / name)
-        return checker
+class ProductCheckTest(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name).resolve()
+        checkers = self.root / 'scripts/workflow'
+        checkers.mkdir(parents=True)
+        for name in ('product_check.py', 'plugin_check.py'):
+            shutil.copy2(ROOT / 'scripts/workflow' / name, checkers / name)
+        self.launcher = self.root / 'plugin/gradlew'
+        self.launcher.parent.mkdir()
+        self.launcher.write_text('''#!/usr/bin/env python3
+import json
+from pathlib import Path
+import sys
+root = Path(__file__).resolve().parents[1]
+with (root / 'calls.jsonl').open('a') as output:
+    output.write(json.dumps(sys.argv[1:]) + '\\n')
+status = root / 'exit-code'
+sys.exit(int(status.read_text()) if status.exists() else 0)
+''')
+        self.launcher.chmod(0o755)
 
-    @unittest.skipUnless(sys.version_info[:2] == (3, 9), 'Run on the declared Python 3.9 runtime')
-    def test_unsupported_syntax_is_rejected_and_valid_cli_recovers_on_python39(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            checker = self.copy_cli(root)
-            origin = checker.parent / 'cli_origin.py'
-            env = dict(os.environ, PYTHONDONTWRITEBYTECODE='1')
-            valid = subprocess.run([sys.executable, str(checker)], cwd=root, env=env,
-                                   text=True, capture_output=True, timeout=30)
-            self.assertEqual(valid.returncode, 0, valid.stderr)
-            self.assertIn('Ran 2 tests', valid.stderr)
-            target = root / 'replay_buffer/save.py'
-            original = target.read_bytes()
-            target.write_text(target.read_text() + '\nmatch None:\n    case _:\n        pass\n')
-            if origin.is_file():
-                # Keep fixture identity valid so unsupported syntax reaches compile.
-                manifest_path = root / 'docs/cli-origin/manifest.json'
-                manifest_bytes = manifest_path.read_bytes()
-                manifest = json.loads(manifest_bytes)
-                manifest['files']['replay_buffer/save.py']['sha256'] = hashlib.sha256(target.read_bytes()).hexdigest()
-                manifest_path.write_text(json.dumps(manifest))
-            invalid = subprocess.run([sys.executable, str(checker)], cwd=root, env=env,
-                                     text=True, capture_output=True, timeout=30)
-            self.assertNotEqual(invalid.returncode, 0)
-            self.assertIn('SyntaxError', invalid.stderr)
-            self.assertIn('save.py', invalid.stderr)
-            target.write_bytes(original)
-            if origin.is_file():
-                manifest_path.write_bytes(manifest_bytes)
-            recovered = subprocess.run([sys.executable, str(checker)], cwd=root, env=env,
-                                       text=True, capture_output=True, timeout=30)
-            self.assertEqual(recovered.returncode, 0, recovered.stderr)
-            self.assertIn('Ran 2 tests', recovered.stderr)
+    def run_check(self, *arguments):
+        environment = os.environ.copy()
+        environment.pop('REPLAY_PLATFORM_PATH', None)
+        return subprocess.run([sys.executable, str(self.root / 'scripts/workflow/product_check.py'), *arguments],
+                              cwd=self.root, env=environment, capture_output=True, text=True, timeout=10)
 
-    def test_plugin_runs_once_after_cli_and_propagates_failures(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            checker = self.copy_cli(root)
-            plugin = checker.parent / 'plugin_check.py'
-            calls = root / 'plugin-calls'
-            source = "with open('plugin-calls', 'a') as output:\n    output.write('run\\n')\n"
-            plugin.write_text(source)
-            env = dict(os.environ, PYTHONDONTWRITEBYTECODE='1')
+    def calls(self):
+        log = self.root / 'calls.jsonl'
+        return [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
 
-            def run(*arguments):
-                return subprocess.run([sys.executable, str(checker), *arguments], cwd=root,
-                                      env=env, text=True, capture_output=True, timeout=30)
+    def test_default_and_transition_option_each_run_the_same_plugin_check_once(self):
+        for arguments in ((), ('--plugin',)):
+            with self.subTest(arguments=arguments):
+                result = self.run_check(*arguments)
+                self.assertEqual(0, result.returncode, result.stderr)
+                self.assertEqual([COMPLETE], result.stdout.splitlines()[-1:])
+                self.assertEqual([['-p', str(self.root / 'plugin'), '--no-daemon', 'check', 'buildPlugin',
+                                   'verifyPluginStructure']], self.calls())
+                (self.root / 'calls.jsonl').unlink()
 
-            self.assertEqual(run().returncode, 0)
-            self.assertFalse(calls.exists())
-            valid = run('--plugin')
-            self.assertEqual(valid.returncode, 0, valid.stderr)
-            self.assertEqual(valid.stdout.splitlines()[-1], 'ARB_PRODUCT_PLUGIN_CHECK_COMPLETE')
-            self.assertEqual(calls.read_text(), 'run\n')
-            failure = root / 'tests/test_injected_failure.py'
-            failure.write_text('import unittest\nclass Failure(unittest.TestCase):\n'
-                               '    def test_failure(self): self.fail("owned CLI test failure")\n')
-            invalid = run('--plugin')
-            self.assertNotEqual(invalid.returncode, 0)
-            self.assertIn('owned CLI test failure', invalid.stderr)
-            self.assertEqual(calls.read_text(), 'run\n')
-            failure.unlink()
-            plugin.write_text(source + 'raise SystemExit(17)\n')
-            self.assertNotEqual(run('--plugin').returncode, 0)
-            self.assertEqual(calls.read_text(), 'run\nrun\n')
-            plugin.unlink()
-            self.assertNotEqual(run('--plugin').returncode, 0)
-            self.assertEqual(calls.read_text(), 'run\nrun\n')
-            plugin.write_text(source)
-            recovered = run('--plugin')
-            self.assertEqual(recovered.returncode, 0, recovered.stderr)
-            self.assertEqual(calls.read_text(), 'run\nrun\nrun\n')
+    def test_failed_plugin_propagates_without_completion_and_recovery_runs_once(self):
+        status = self.root / 'exit-code'
+        status.write_text('7')
+        failed = self.run_check('--plugin')
+        self.assertNotEqual(0, failed.returncode)
+        self.assertNotIn(COMPLETE, failed.stdout)
+        self.assertEqual(1, len(self.calls()))
+        status.unlink()
+        recovered = self.run_check('--plugin')
+        self.assertEqual(0, recovered.returncode, recovered.stderr)
+        self.assertEqual([COMPLETE], recovered.stdout.splitlines()[-1:])
+        self.assertEqual(2, len(self.calls()))
+
+    def test_unknown_option_and_missing_required_inputs_fail_without_completion(self):
+        invalid = self.run_check('--skip-plugin')
+        self.assertEqual(2, invalid.returncode)
+        self.assertEqual([], self.calls())
+        self.assertNotIn(COMPLETE, invalid.stdout)
+        self.launcher.unlink()
+        missing_product = self.run_check()
+        self.assertNotEqual(0, missing_product.returncode)
+        self.assertNotIn(COMPLETE, missing_product.stdout)
+        self.assertEqual([], self.calls())
+        (self.root / 'scripts/workflow/plugin_check.py').unlink()
+        missing_checker = self.run_check('--plugin')
+        self.assertNotEqual(0, missing_checker.returncode)
+        self.assertNotIn(COMPLETE, missing_checker.stdout)
 
 
 if __name__ == '__main__':

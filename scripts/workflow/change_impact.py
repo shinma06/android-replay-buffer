@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""One conservative impact classifier for CI, hooks, and Python CLI checks."""
+"""One conservative impact classifier for CI, hooks, and the integrated product."""
 import argparse
 import json
 import os
@@ -25,6 +25,7 @@ def path_impacts(path, modes=('100644',)):
         return {UNKNOWN}
     if path.startswith('plugin/'):
         return {PLUGIN}
+    # Retired paths still matter when comparing old candidates or deleting their runtime.
     if path.startswith('docs/cli-origin/') or path in ('scripts/workflow/cli_origin.py', 'scripts/workflow/plugin_check.py'):
         return {BUILD, TOOLING}
     if path.startswith('tests/'):
@@ -67,9 +68,10 @@ def classify(changes, *, reason=None, force_full=False):
         impacts.add(UNKNOWN)
         reason = reason or 'No changed files established; run full validation'
     full = force_full or UNKNOWN in impacts
+    product = full or bool(impacts & {RUNTIME, BUILD, TEST, PLUGIN})
     return {'impacts': [x for x in ORDER if x in impacts], 'files': files,
-            'product_check': full or bool(impacts & {RUNTIME, BUILD, TEST}),
-            'plugin_check': full or bool(impacts & {PLUGIN, BUILD}),
+            'product_check': product,
+            'plugin_check': product,
             'tooling_test': True,  # Small shared checks also validate documentation and metadata.
             'force_full': force_full, 'reason': reason}
 

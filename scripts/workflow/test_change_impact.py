@@ -24,6 +24,10 @@ class ClassificationTest(unittest.TestCase):
     def test_required_eight_cases_and_semantic_exceptions(self):
         cases = [
             (['AGENTS.md'], {ci.KNOWLEDGE}, False),
+            (['plugin/src/main/cli/replay'], {ci.PLUGIN}, True),
+            (['plugin/src/main/cli/README.txt'], {ci.PLUGIN}, True),
+            (['plugin/src/test/kotlin/ReplayCliTest.kt'], {ci.PLUGIN}, True),
+            (['tests/fixtures/session.json'], {ci.TEST}, True),
             (['docs/design.md'], {ci.KNOWLEDGE}, False),
             (['replay_buffer/kotlin/Service.kt'], {ci.RUNTIME}, True),
             (['replay_buffer/res/layout/main.xml'], {ci.RUNTIME}, True),
@@ -47,6 +51,7 @@ class ClassificationTest(unittest.TestCase):
                 result = ci.classify([(p, ('100644',)) for p in paths])
                 self.assertEqual(set(result['impacts']), impacts)
                 self.assertEqual(result['product_check'], build)
+                self.assertEqual(result['plugin_check'], build)
                 self.assertTrue(result['tooling_test'])
 
     def test_executable_symlink_unknown_and_force_full_never_skip(self):
@@ -56,14 +61,17 @@ class ClassificationTest(unittest.TestCase):
         self.assertEqual(ci.path_impacts('AGENTS.md', ('120000',)), {ci.KNOWLEDGE})
         for result in (ci.classify([]), ci.classify([], reason='API/history failure'),
                        ci.classify([('README.md', ('100644',))], force_full=True)):
-            self.assertTrue(all(result[x] for x in ('product_check', 'tooling_test')))
+            self.assertTrue(all(result[x] for x in ('product_check', 'plugin_check', 'tooling_test')))
             expected = [[sys.executable, 'scripts/check.py'],
                         [sys.executable, 'scripts/workflow/product_check.py', '--plugin']]
             self.assertEqual(ci.test_commands(result), expected)
 
-    def test_product_entry_keeps_cli_only_plugin_only_and_mixed_obligations(self):
+    def test_product_impacts_use_one_real_plugin_entry_and_metadata_does_not(self):
         for path, arguments in (
-                ('docs/design.md', None), ('replay_buffer/save.py', []),
+                ('docs/design.md', None), ('replay_buffer/save.py', ['--plugin']),
+                ('tests/fixtures/input.json', ['--plugin']),
+                ('plugin/src/main/cli/replay', ['--plugin']),
+                ('new/input.unknown', ['--plugin']),
                 ('plugin/src/main/kotlin/Action.kt', ['--plugin']),
                 ('scripts/workflow/product_check.py', ['--plugin'])):
             result = ci.classify([(path, ('100644',))])
@@ -72,6 +80,18 @@ class ClassificationTest(unittest.TestCase):
                 expected.append([sys.executable, 'scripts/workflow/product_check.py', *arguments])
             with self.subTest(path=path):
                 self.assertEqual(ci.test_commands(result), expected)
+
+
+    def test_packaged_and_retired_inputs_cannot_skip_checks(self):
+        for path in ('plugin/build.gradle.kts', 'plugin/src/main/resources/help.md',
+                     'plugin/gradle/wrapper/gradle-wrapper.jar', 'plugin/src/main/kotlin/Action.kt'):
+            result = ci.classify([(path, ('100644', '000000'))])
+            self.assertTrue(result['plugin_check'])
+        for path in ('docs/cli-origin/manifest.json', 'docs/cli-origin/README.md',
+                     'scripts/workflow/cli_origin.py', '.github/workflows/ci.yml'):
+            result = ci.classify([(path, ('100644',))])
+            self.assertTrue(result['plugin_check'])
+            self.assertTrue(result['product_check'])
 
 
 class GitImpactTest(unittest.TestCase):
@@ -146,7 +166,7 @@ class GitImpactTest(unittest.TestCase):
             with self.subTest(operation=operation):
                 self.assertEqual({f['path'] for f in result['files']}, {'vendor/module', 'docs/design.md'})
                 self.assertIn(ci.UNKNOWN, result['impacts'])
-                self.assertTrue(result['product_check']); self.assertTrue(result['product_check'])
+                self.assertTrue(result['product_check']); self.assertTrue(result['plugin_check'])
             previous = head
 
 
@@ -172,6 +192,7 @@ class GitImpactTest(unittest.TestCase):
             subprocess.run([sys.executable, script, '--event', '--head', head], cwd=self.root,
                            env=env, check=True, capture_output=True)
             self.assertIn('product_check=' + str(expected).lower(), output.read_text())
+            self.assertIn('plugin_check=' + str(expected).lower(), output.read_text())
             self.assertIn('Change Impact', summary.read_text())
 
 
