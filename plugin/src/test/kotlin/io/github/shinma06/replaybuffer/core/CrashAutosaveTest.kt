@@ -87,6 +87,55 @@ class CrashAutosaveTest {
     }
 
     @Test
+    fun appPollPublishesItsReporterWithIdentityAndRejectsInvalidOwnersOrInputsTogether() {
+        CrashFixture(root).use { f ->
+            val poll = ReporterPoll(f.at(10_080_000_000), f.at(10_090_000_000), 1, 600)
+            for ((owner, value) in listOf(0L to poll.copy(generation = 0), 1L to poll.copy(generation = 0))) {
+                f.store.app("com.example.target", 10124, setOf(4243), owner, true, f.at(10_100_000_000), value)
+            }
+            assertFailsWith<IllegalArgumentException> {
+                f.store.app("com.example.target", 10124, (1..1025).toSet(), 1, true, f.at(10_100_000_000), poll)
+            }
+            f.standard()
+            val original = assertNotNull(f.store.capture(f.settings, f.pair(), f.at(10_020_000_000)))
+            assertEquals(10123L, (original.autoTrigger!!.facts["target_identity"] as Map<*, *>)["uid"])
+            assertEquals(500, (original.autoTrigger!!.facts["reporter_poll"] as Map<*, *>)["pid"])
+            f.store.release(original.id)
+            f.store.app("com.example.target", 10124, setOf(4243), 1, true, f.at(10_100_000_000), poll)
+            f.log(javaCrash(pid = 4243, uid = 10124, wall = CRASH_WALL + 10_103_000_000), 10_105_000_000)
+            f.log(platformCrash(first = 4243, pid = 600, wall = CRASH_WALL + 10_104_000_000), 10_106_000_000)
+            val pair = f.store.autosave.drain(f.at(10_120_000_000)).single()
+            val capture = assertNotNull(f.store.capture(f.settings, pair, f.at(10_120_000_000)))
+            assertEquals(10124L, (capture.autoTrigger!!.facts["target_identity"] as Map<*, *>)["uid"])
+            assertEquals(600, (capture.autoTrigger!!.facts["reporter_poll"] as Map<*, *>)["pid"])
+        }
+    }
+
+    @Test
+    fun historicalOtherPackageCannotSpendBudgetByClaimingTheNewTarget() {
+        CrashFixture(root).use { f ->
+            val settings = f.settings.copy(application = ApplicationTarget("com.example.next"))
+            f.store.app("com.example.next", 10124, setOf(4243), 1, true, f.at(10_100_000_000))
+            f.store.configureAuto(settings, 2, "fixture", true, f.at(10_110_000_000))
+            repeat(300) { index ->
+                f.log(javaCrash(process = "com.example.next", wall = CRASH_WALL + 10_003_000_000 + index), 10_120_000_000)
+            }
+            assertEquals(AutoSaveState.ARMED, f.store.autosave.snapshot().state)
+            assertEquals(0, f.store.autosave.snapshot().notSavedCount)
+            assertNull(f.store.autosave.snapshot().lastOutcome)
+            assertNull(f.store.autosave.snapshot().warning)
+            assertEquals(8, f.store.autosave.snapshot().admissionsRemaining)
+            f.log(javaCrash(process = "com.example.next", uid = 10124, pid = 4243, wall = CRASH_WALL + 10_200_000_000), 10_210_000_000)
+            f.log(platformCrash(process = "com.example.next", first = 4243, wall = CRASH_WALL + 10_201_000_000), 10_211_000_000)
+            val pair = f.store.autosave.drain(f.at(10_220_000_000)).single()
+            val capture = assertNotNull(f.store.capture(settings, pair, f.at(10_220_000_000)))
+            assertEquals(10124L, (capture.autoTrigger!!.facts["target_identity"] as Map<*, *>)["uid"])
+            assertEquals(303, capture.logs.size)
+            assertEquals(301, capture.logs.count { it.source.uid == 10123L })
+        }
+    }
+
+    @Test
     fun delayedCrashUsesHistoricalUidAfterReinstallAndDoesNotBorrowCurrentIdentity() {
         for (exclusive in listOf(true, false)) {
             CrashFixture(Files.createDirectory(root.resolve("historical-$exclusive")), exclusive = exclusive).use { f ->

@@ -247,8 +247,8 @@ internal class CaptureStore(
 
     @Synchronized
     fun app(packageName: String?, uid: Long?, pids: Set<Int>, owner: Long, uidExclusive: Boolean = false,
-            host: Long = System.nanoTime()) {
-        if (closed || owner != generation) return
+            host: Long = System.nanoTime(), poll: ReporterPoll? = null) {
+        if (closed || owner != generation || poll != null && poll.generation != owner) return
         require(pids.size <= 1024)
         appResolved = uid != null
         val last = apps.peekLast()
@@ -267,6 +267,7 @@ internal class CaptureStore(
             apps += AppPeriod(packageName, uid, java.util.Set.copyOf(pids), now, null, anchor?.epoch ?: 0, uidExclusive)
             while (apps.size > 2048) apps.removeFirst()
         }
+        if (poll != null) reporter = poll
         status("app_log", if (uid != null) StreamState.CAPTURING else StreamState.UNAVAILABLE,
             if (uid == null) "対象アプリを解決できません" else null, owner)
     }
@@ -321,7 +322,8 @@ internal class CaptureStore(
         val row = LogEntry(UUID.randomUUID().toString(), source, generation, time, retained, app, host)
         logs += row
         refreshAuto(host)
-        val selectedUid = (period ?: apps.peekLast())?.takeIf { it.packageName == autoTarget && it.uidExclusive }?.uid
+        val selectedUid = (period?.takeIf { it.packageName == autoTarget } ?: apps.peekLast())
+            ?.takeIf { it.packageName == autoTarget && it.uidExclusive }?.uid
         autosave.observe(row, period, reporter, selectedUid)
         logBytes += source.raw.size + 256
         if (logBytes > logLimit && fixedEnd == null) logRetentionSeconds?.let { seconds ->

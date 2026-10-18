@@ -12,6 +12,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Future
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.TimeUnit
+import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
@@ -175,6 +176,59 @@ class CrashSaveLifecycleTest {
                 f.onControl { f.tick(10_030_000_000) }
                 assertEquals(1, calls)
                 assertEquals(8, f.core.snapshot().autoSave.admissionsRemaining)
+            } finally { release.countDown() }
+        }
+    }
+
+    @Test
+    fun unassessedPairCanBeAdmittedOnceAfterManualResultIsSettled() {
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val captures = mutableListOf<FrozenCapture>()
+        CoreCrashFixture(root) { capture, directory, cancelled, publish ->
+            captures += capture
+            if (capture.autoTrigger == null) {
+                entered.countDown()
+                check(release.await(10, TimeUnit.SECONDS))
+            }
+            SaveWriter().write(capture, directory, cancelled, publish)
+        }.use { f ->
+            try {
+                assertTrue(f.core.save().get(5, TimeUnit.SECONDS).accepted)
+                assertTrue(entered.await(5, TimeUnit.SECONDS))
+                val manual = f.field<FrozenCapture>("pending")
+                val attempt = f.field<SaveAttempt>("saveAttempt")
+                val (manualResult, manualBytes) = f.onControl {
+                    f.data.standard()
+                    release.countDown()
+                    f.field<Future<*>>("saveTask").get(5, TimeUnit.SECONDS)
+                    val result = assertNotNull(attempt.result)
+                    assertEquals(SavePhase.COMPLETED, result.phase)
+                    val bytes = Files.readAllBytes(result.directory!!.resolve("session.json"))
+                    f.settle(attempt)
+                    assertNull(f.field<FrozenCapture?>("pending"))
+                    assertEquals(8, f.core.snapshot().autoSave.admissionsRemaining)
+                    f.tick(10_030_000_000)
+                    result to bytes
+                }
+                f.finishWriter()
+                assertEquals(2, captures.size)
+                assertSame(manual, captures[0])
+                assertNull(manual.autoTrigger)
+                assertEquals(manualResult, attempt.result)
+                assertContentEquals(manualBytes, Files.readAllBytes(manualResult.directory!!.resolve("session.json")))
+                val automatic = captures[1]
+                assertTrue(automatic.id != manual.id)
+                val facts = assertNotNull(automatic.autoTrigger).facts
+                for ((key, receipt) in listOf("java_evidence" to 10_005_000_000L, "platform_evidence" to 10_006_000_000L)) {
+                    val evidence = facts[key] as Map<*, *>
+                    assertEquals(f.data.at(receipt).toString(), evidence["receipt_host_ns"])
+                    assertEquals(f.data.at(receipt), automatic.logs.single { it.id == evidence["record_id"] }.host)
+                    assertTrue(manual.logs.none { it.id == evidence["record_id"] })
+                }
+                assertEquals(7, f.core.snapshot().autoSave.admissionsRemaining)
+                assertEquals(0, f.core.snapshot().autoSave.notSavedCount)
+                assertEquals(SavePhase.COMPLETED, f.core.snapshot().lastSave?.phase)
             } finally { release.countDown() }
         }
     }

@@ -79,8 +79,8 @@ internal class DeviceCapture(
                             if (f.size >= 3 && (f[2] == selected.packageName || f[2].startsWith(selected.packageName + ":"))) f[0].toIntOrNull() else null
                         }.toSet()
                         if (selected == application) {
-                            store.reporter(ReporterPoll(psStart, psEnd, generation, systemServerPid(ps)))
-                            store.app(selected.packageName, uid, pids, generation, exclusive)
+                            store.app(selected.packageName, uid, pids, generation, exclusive,
+                                poll = ReporterPoll(psStart, psEnd, generation, systemServerPid(ps)))
                         }
                     }.onFailure { if (selected == application) store.app(selected.packageName, null, emptySet(), generation) }
                 }
