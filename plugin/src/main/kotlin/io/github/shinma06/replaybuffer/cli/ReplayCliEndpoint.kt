@@ -4,6 +4,7 @@ import java.io.DataInputStream
 import java.io.DataOutputStream
 import java.net.InetAddress
 import java.net.InetSocketAddress
+import java.net.JarURLConnection
 import java.net.ServerSocket
 import java.net.Socket
 import java.nio.channels.Channels
@@ -52,7 +53,14 @@ internal object ReplayCliRegistry {
     fun directory(): Path = Path.of(System.getProperty("user.home"), ".android-replay-buffer-cli")
 
     fun buildIdentity(): String {
-        val jar = Path.of(ReplayCliRegistry::class.java.protectionDomain.codeSource.location.toURI())
+        // IDE class loaders can omit CodeSource.location while retaining the class resource URL.
+        val resource = ReplayCliRegistry::class.java.getResource("ReplayCliRegistry.class")
+        require(resource?.protocol == "jar") { "配布物のCLIを利用してください。" }
+        val connection = resource.openConnection()
+        require(connection is JarURLConnection && connection.jarFileURL.protocol == "file") {
+            "配布物のCLIを利用してください。"
+        }
+        val jar = Path.of(connection.jarFileURL.toURI())
         require(Files.isRegularFile(jar)) { "配布物のCLIを利用してください。" }
         val hash = MessageDigest.getInstance("SHA-256")
         Files.newInputStream(jar).use { input ->
