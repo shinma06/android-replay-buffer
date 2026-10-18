@@ -26,7 +26,7 @@
       ],
       "gpt": {
         "status": "pending",
-        "reason": "元49e0の狭幅NGを保持。修正後の実ロード/画像/操作はQA308継続で未実施。unit/layout成功のみでは合格にしない。"
+        "reason": "固定1bef0cfの実ロード・狭幅画像/操作と実フォーム回帰、保持証拠評価は揃った。元NGだけの修復結果をrepairへ記録し、Case全体の正式独立確認・残条件はpendingのまま保持する。"
       },
       "human": {
         "status": "pending",
@@ -35,7 +35,83 @@
       "fix_issue": null,
       "fix_pr": null,
       "recheck": "原284:CRASH-AUTO-LIFETIMEの失敗した狭幅保証だけを修正候補で確認する。#312の正式採用で原49e0と同tree squash066565の出典を保持できる修正記録を用い、実観察・独立評価を統合前に結合する。",
-      "next_action": "writerはsource/重点検査/標準成果物を固定してPMへ渡す。PMが#312のmain採用とdevelop同期、QA308の修正後狭幅観察、別セッション独立修復評価を調整する。元NG記録と修正結果のformal repairは実事実が揃った後に反映し、none/架空PASSを作らない。"
+      "next_action": "固定metadata HEADと実行candidate1bef0cfを区別して通常必須検査・現feedback/providerを確認し、全contributorと異なる独立sessionが原本bundleと正式repair/whole PRを検証する。QA308残consumer/BOUNDS22、QA316、human/REALとmain統合は既存ownerへ保持し、元NGを消さない。"
     }
-  ]
+  ],
+  "repair": {
+    "candidate": "1bef0cf8ce40fc8315f850d71605c233126e8bb0",
+    "artifacts": {
+      "plugin": "705fc37f4299ca5590e8b025400d9afeed293a6408d1bf7532224515b6e7a761"
+    },
+    "failure_record_sha256": "a69d7b3c1b32fda813a4ab78614b6b95aeb0e8d3e707da964107006970298ce6",
+    "writer_session": "既存284製品・311修復source/metadata担当",
+    "results": {
+      "NARROW-READABILITY": {
+        "observation": {
+          "status": "pass",
+          "head": "1bef0cf8ce40fc8315f850d71605c233126e8bb0",
+          "artifact_sha256": "705fc37f4299ca5590e8b025400d9afeed293a6408d1bf7532224515b6e7a761",
+          "actor": "gpt",
+          "observer": "原実行・評価を保持した修復記録構成担当",
+          "at": "2026-10-18T05:40:41.566699+00:00",
+          "loaded_identity": "実ロードsource 1bef0cf8ce40fc8315f850d71605c233126e8bb0 / version 0.2.0-dev.1bef0cf8ce40fc8315f850d71605c233126e8bb0 / dirty=false。標準ZIP 3237736 bytes。Aboutとopen済み全3 JARを照合: main c549a3e6a288346dd5363f99149b8b463840626326dcfffbf037ac5ddfcd7678 / searchableOptions c6deada2fac53b8ea6523dbda77597b128006674616f140f04df23264c6d1aa3 / jcodec 890329dad124e8b739c1d6602a59a53c8a474daddff265c2561e21c498496c81。Android Studio AI-262.9437.185.2621.16467767 / JBR25.0.3+-15898627-b508.16 / macOS27.0.1。実process開始identityを原receiptに保持。後続metadata HEADの別buildを実ロード済みとはしない。",
+          "evidence": "保持native seal SHA-256 3cbd7de6bbf745d95f7585167ae6f7094424a80a73e4f4adda9e3c45ea9d489e、completion binding aba3814d493be4d8ddfc59e4f6bba0da272940982170dc090f2ac70feb77950d、geometry 224acef99c80316cb641c6ec9d142814d46bb680ad0aaae9e954e393111adfaf。保持証拠評価 980c991b2b7c276fb41584b825a1d6b39a25fa5c68e97b8513242d17e01746a9。固定候補回帰記録 331cf1d507403f1e25d806c2ec377cf22c12e92042cb437746ad17092a9c09ca。原本・画像・実origin対応は非公開bundleに保持。",
+          "reason": "原NGの利用可能幅への追従・全文と必要操作の到達性を、修正版の実狭幅画像・AX・keyboard操作と実フォーム回帰で確認。atは構成時刻であり、native原観察05:07:54.331630+00:00や原評価05:33:39.933063+00:00を置換しない。元NG・Case全体の未達・human/REALを保持し、正式な独立修復レビューは別途必要。",
+          "attribution": {
+            "writer": "codex-session-sha256:18f9d188574b37e9e962fb8ac4b7737b055026e7dba679a960d986effe54e0a8",
+            "observer": "codex-session-sha256:18f9d188574b37e9e962fb8ac4b7737b055026e7dba679a960d986effe54e0a8",
+            "contributors": [
+              {
+                "role": "元製品・修復source writer",
+                "session": "codex-session-sha256:18f9d188574b37e9e962fb8ac4b7737b055026e7dba679a960d986effe54e0a8",
+                "activity": "writer",
+                "at": "2026-10-18T02:10:24Z",
+                "receipt_sha256": "bc1de8bc5d34b7f3ce36e42756d9eaed6c6e1e16d3288dfe641e8c9c9b505e01"
+              },
+              {
+                "role": "固定候補の回帰検査担当",
+                "session": "codex-session-sha256:18f9d188574b37e9e962fb8ac4b7737b055026e7dba679a960d986effe54e0a8",
+                "activity": "execution",
+                "at": "2026-10-18T04:54:02.099103+00:00",
+                "receipt_sha256": "331cf1d507403f1e25d806c2ec377cf22c12e92042cb437746ad17092a9c09ca"
+              },
+              {
+                "role": "修復native実行担当（suite開始）",
+                "session": "codex-session-sha256:cb54214b9b4399ae155cf9692e7f9f2148f74904eca9ccd8134ada88cf9dca09",
+                "activity": "execution",
+                "at": "2026-10-18T05:04:58.529854+00:00",
+                "receipt_sha256": "d6a82776a1ef8597e4830d3b01f69ea8b00350a7e2b054337a71f8c6937bb50a"
+              },
+              {
+                "role": "修復native狭幅観察担当",
+                "session": "codex-session-sha256:cb54214b9b4399ae155cf9692e7f9f2148f74904eca9ccd8134ada88cf9dca09",
+                "activity": "execution",
+                "at": "2026-10-18T05:07:54.331630+00:00",
+                "receipt_sha256": "89860dc53eea9b6ee6dfcc6d21f6774ccb1b098059645c297e6e0f89eb18ffbb"
+              },
+              {
+                "role": "保持証拠の評価担当",
+                "session": "codex-session-sha256:22e3d1f81b8f0b8a7481a0484352a7a63755be2cbfa7c0cfe678d2c69998a27d",
+                "activity": "assessment",
+                "at": "2026-10-18T05:33:39.933063+00:00",
+                "receipt_sha256": "6a045972f134e699e37f57a69bba19b085834ebb79c88ba1a02e7c50aa9343ca"
+              },
+              {
+                "role": "修復metadata構成担当",
+                "session": "codex-session-sha256:18f9d188574b37e9e962fb8ac4b7737b055026e7dba679a960d986effe54e0a8",
+                "activity": "composition",
+                "at": "2026-10-18T05:40:41.566699+00:00",
+                "receipt_sha256": "56a6312290db98f829d716152dfbe39e535b3ef0977fe467317a95b1e7b09505"
+              }
+            ]
+          }
+        },
+        "coverage": {
+          "NARROW-READABILITY": "実IDE700×1000pt、ToolWindow外261pt/content255pt、summary viewport249×33pt/document249×112pt。長いpath/状態・残回数・理由が折返され、OFF/liveともnative/ANR・報告時刻の末尾へ縦scrollで到達。設定/取得/保存を画像とreadbackで確認し、Shift-Tabで取得checkboxへfocusしてOFF値0を保持。geometry SHA-256 224acef99c80316cb641c6ec9d142814d46bb680ad0aaae9e954e393111adfaf。画像4種と原操作receiptは封印nativeに保持。実フォームwide→narrow回帰は長文・全文末尾と条件別retry/discard配置を確認。"
+        },
+        "method": "現在のtrusted責任契約で、利用可能な実ToolWindow幅への追従と到達性を確認。旧IDE全体幅500/340ptの再現は主張しない。実nativeのOFF/live表示・操作と固定1befのproduction実フォーム回帰を分担し、後者は上端/有効非ゼロ位置で実text更新後・別EDT turn後のviewport厳密一致を確認。nativeの精密座標連続測定、failure pinのない場でretry/discard実操作を行ったとはしない。元データ/設定/検出・保存仕様は変更せず、既存source確認と今回Apply/2保存/OFF結果保持を補助事実とする。元284 Case全体、QA308全4 Case、consumer/BOUNDS22、QA316、human/REAL/最終mainの合格ではない。",
+        "contract_revision": "85296114925d6947be93158e3eca90fcd69e561b3d8a5d1e6845407b73108f61"
+      }
+    }
+  }
 }
