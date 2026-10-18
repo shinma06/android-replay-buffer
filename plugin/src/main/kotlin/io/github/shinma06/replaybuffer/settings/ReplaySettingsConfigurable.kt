@@ -13,6 +13,7 @@ import com.intellij.openapi.ui.TextFieldWithBrowseButton
 import com.intellij.openapi.util.Disposer
 import com.intellij.ui.DocumentAdapter
 import com.intellij.ui.components.JBLabel
+import com.intellij.ui.components.JBCheckBox
 import com.intellij.ui.components.JBTextArea
 import com.intellij.ui.components.JBTextField
 import com.intellij.util.ui.FormBuilder
@@ -39,6 +40,7 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable {
     private var destination: TextFieldWithBrowseButton? = null
     private var mode: JComboBox<AppSelectionMode>? = null
     private var captureMode: JComboBox<CaptureMode>? = null
+    private var autoSave: JBCheckBox? = null
     private var manualPackage: JBTextField? = null
     private var destinationStatus: JBLabel? = null
     private var uiLifetime: Disposable? = null
@@ -89,9 +91,14 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable {
                     super.getListCellRendererComponent(list, (value as? CaptureMode)?.let(::captureModeDescription), index, selected, focus)
             }
         }
+        autoSave = JBCheckBox("対象アプリのクラッシュ報告で自動保存する（標準Java/Kotlin）").apply {
+            accessibleContext.accessibleName = "クラッシュ報告の自動保存"
+            toolTipText = "既定OFF。適用後の報告が対象です。native/ANRは対応外。8回受付または検出上限で停止し、OFF→ONで再設定します。"
+        }
         panel = FormBuilder.createFormBuilder()
             .addLabeledComponent("取得モード:", captureMode!!)
             .addComponent(JBLabel("取得をOFFにしてから変更してください。ログ専用は動画を取得・保存しません。"))
+            .addComponent(autoSave!!)
             .addLabeledComponent("保持時間（1〜900秒）:", retention!!)
             .addLabeledComponent("保存先フォルダ:", destination!!)
             .addComponent(destinationStatus!!)
@@ -168,6 +175,7 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable {
         appSelection = mode?.selectedItem as? AppSelectionMode ?: AppSelectionMode.AUTOMATIC,
         manualPackage = manualPackage?.text.orEmpty(),
         captureMode = captureMode?.selectedItem as? CaptureMode ?: CaptureMode.VIDEO_AND_LOGS,
+        autoSaveOnCrash = autoSave?.isSelected == true,
     )
 
     override fun isModified(): Boolean = panel != null && draft() != store().settings()
@@ -195,6 +203,7 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable {
         destination?.text = settings.destination
         mode?.selectedItem = settings.appSelection
         captureMode?.selectedItem = settings.captureMode
+        autoSave?.isSelected = settings.autoSaveOnCrash
         manualPackage?.text = settings.manualPackage
         manualPackage?.isEnabled = settings.appSelection == AppSelectionMode.MANUAL
         checkDestination()
@@ -215,6 +224,7 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable {
         destination = null
         mode = null
         captureMode = null
+        autoSave = null
         manualPackage = null
     }
 

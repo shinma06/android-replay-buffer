@@ -10,6 +10,7 @@ data class ReplaySettings(
     val replaySeconds: Int = 180,
     val application: ApplicationTarget = ApplicationTarget(),
     val captureMode: CaptureMode = CaptureMode.VIDEO_AND_LOGS,
+    val autoSaveOnCrash: Boolean = false,
 ) {
     fun validate(): ReplaySettings {
         require(adbPath == null || adbPath.isAbsolute && Files.isRegularFile(adbPath) && Files.isExecutable(adbPath)) {
@@ -63,7 +64,54 @@ data class ApplicationTarget(
 enum class CaptureState { DISABLED, WAITING, CAPTURING, RECOVERING, PARTIAL, MULTIPLE_DEVICES }
 enum class StreamState { WAITING, CAPTURING, RECOVERING, UNAVAILABLE, NOT_REQUESTED }
 enum class DeviceKind { PHYSICAL, EMULATOR }
-enum class SavePhase { IDLE, WRITING, FAILED, COMPLETED }
+enum class SavePhase { IDLE, WRITING, FAILED, COMPLETED, CANCELLED }
+
+enum class AutoSaveState { OFF, WAITING, ARMED, SUSPENDED }
+
+enum class AutoSaveReason(val description: String) {
+    DETECTED("対象の例外報告を照合しました"),
+    ACCEPTED_WRITING("自動保存中です"),
+    SAVED("自動保存が完了しました"),
+    SAVE_FAILED("自動保存に失敗しました"),
+    CANCELLED("公開前に自動保存を取消しました"),
+    UNKNOWN_FORMAT("対象の報告形式を確認できません"),
+    UNKNOWN_IDENTITY("対象またはsystem_serverの帰属を確認できません"),
+    UNKNOWN_UNCORROBORATED("対象の例外報告を相互確認できません"),
+    UNKNOWN_AMBIGUOUS("複数の報告が対応し、同一事象を確定できません"),
+    UNSUPPORTED_NATIVE("native crashは自動保存の対応外です"),
+    NOT_A_SUPPORTED_FATAL_EVENT("回復可能な報告は自動保存しません"),
+    NOT_SAVED_DISABLED("自動保存を無効にしました"),
+    NOT_SAVED_TARGET_CHANGED("対象アプリが変更されたため保存しません"),
+    NOT_SAVED_STALE_OWNER("取得接続が変更されたため保存しません"),
+    NOT_SAVED_CLOCK_UNKNOWN("報告の時計対応を確認できません"),
+    NOT_SAVED_PRE_ARM_EVENT("自動保存の適用前の報告は保存しません"),
+    NOT_SAVED_BUSY("別の保存中のため自動保存しません"),
+    NOT_SAVED_FAILED_PIN("失敗した固定対象を保全するため自動保存しません"),
+    NOT_SAVED_COOLDOWN("前回の自動保存受付から30秒未満のため保存しません"),
+    NOT_SAVED_DESTINATION_UNSET("保存先が未指定のため自動保存しません"),
+    NOT_SAVED_NO_DATA("保存できる取得データがありません"),
+    NOT_SAVED_EVIDENCE_LOST("例外報告の元データが保持されていないため保存しません"),
+    NOT_SAVED_EVENT_OUTSIDE_WINDOW("例外報告が保持窓より前のため保存しません"),
+    NOT_SAVED_WINDOW_UNKNOWN("例外報告が保持窓内と確定できないため保存しません"),
+    DETECTOR_OVERFLOW("検出の保持上限です。自動保存をOFF→ONで再設定してください"),
+    LIMIT_REACHED("自動保存の回数・記録上限です。OFF→ONで再設定してください"),
+}
+
+data class AutoSaveOutcome(
+    val id: String,
+    val event: Boolean,
+    val reason: AutoSaveReason,
+    val requestId: String? = null,
+)
+
+data class AutoSaveSnapshot(
+    val state: AutoSaveState = AutoSaveState.OFF,
+    val reason: String? = null,
+    val admissionsRemaining: Int = 8,
+    val notSavedCount: Int = 0,
+    val lastOutcome: AutoSaveOutcome? = null,
+    val warning: String? = null,
+)
 
 data class ReplayDevice(val serial: String, val name: String, val kind: DeviceKind, val connected: Boolean)
 data class CaptureGap(
@@ -103,6 +151,9 @@ data class SaveSnapshot(
     val applicationHistory: List<ApplicationPeriodSnapshot> = emptyList(),
     val videoTail: VideoTailSnapshot? = null,
     val captureMode: CaptureMode = CaptureMode.VIDEO_AND_LOGS,
+    val attempt: Long = 0,
+    val autoEventId: String? = null,
+    val retainedPath: Path? = null,
 )
 
 /** Callbacks run on replay-control, never EDT. Consumers must dispatch to EDT and reject stale revisions. */
@@ -126,6 +177,8 @@ data class ReplaySnapshot(
     val error: String? = null,
     val windowStartNs: Long? = null,
     val cleanupPendingCount: Int = 0,
+    val autoSave: AutoSaveSnapshot = AutoSaveSnapshot(),
+    val lastSave: SaveSnapshot? = null,
 )
 
 data class ReplayOperation(val accepted: Boolean, val reason: String? = null, val requestId: String? = null)

@@ -24,6 +24,12 @@ internal data class SaveOutput(val directory: Path, val missingKinds: List<Strin
 
 internal class SaveFailure(val partial: Path?, message: String, cause: Throwable? = null) : Exception(message, cause)
 
+internal class SaveCancelled(val partial: Path?, cause: Throwable? = null) : CancellationException(
+    "保存を取消しました" + (partial?.let { "。未完成の出力を保全しています: $it" } ?: ""),
+) {
+    init { if (cause != null) initCause(cause) }
+}
+
 /** No external encoder/process: immutable packet indices -> AVC MP4 and matching JSONL/manifest. */
 internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.getFileStore(it).usableSpace }) {
     private val gson = GsonBuilder().serializeNulls().disableHtmlEscaping().create()
@@ -67,7 +73,7 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
         var normalizationCpuStarted = 0L
         val cpu = java.lang.management.ManagementFactory.getThreadMXBean()
         fun checkActive() {
-            if (cancelled() || Thread.currentThread().isInterrupted) throw CancellationException()
+            if (cancelled() || Thread.currentThread().isInterrupted) throw SaveCancelled(null)
             normalizationStarted?.let { start ->
                 check(System.nanoTime() - start < 4L * 60 * 60 * 1_000_000_000 &&
                     (!cpu.isCurrentThreadCpuTimeSupported || cpu.currentThreadCpuTime - normalizationCpuStarted < 4L * 60 * 60 * 1_000_000_000)) {
@@ -454,6 +460,11 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                 }
                 appendLine("全体ログはshell権限で読めるlogcat bufferです。security等の全端末ログ取得を保証しません。app_membership=nullは対象未確定です。")
                 appendLine("0行は正常な無出力の場合もあります。取得状態・時計・アプリ履歴・lossをsession.jsonで確認してください。")
+                capture.autoTrigger?.let { trigger ->
+                    appendLine("対象アプリの例外報告を相互確認して自動保存しました。event_id: ${trigger.eventId}")
+                    appendLine("基準はplatformの報告時刻で、processの死亡時刻ではありません。報告前の記録不足・各原行の包含はsession.jsonのauto_triggerを確認してください。")
+                    appendLine("報告前の不足（概算）: ${trigger.facts["pre_report_shortfall_nominal_ns"]}ns。取得gapと未観測の端末ログは別で、完全なクラッシュ直前の記録を保証しません。")
+                }
                 parts.forEach { appendLine("${it["file"]} 区間${it["segment_index"]} / 動画µs=${it["movie_start_us"]}〜${it["movie_end_us"]}: 時計対応確認=${it["clock_alignment_known"]} / 窓開始ns=${it["window_start_ns"]} / 窓終了ns=${it["window_end_ns"]} / preroll=${it["preroll_samples"]}") }
                 capture.gaps.forEach { appendLine("${it.stream}: ${it.fromNs}〜${it.toNs}ns / ${it.reason}") }
                 losses.forEach { appendLine("loss: $it") }
@@ -489,6 +500,7 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                 it.intersects(capture.start, capture.end, capture.endUncertainty) }
             val videoIncomplete = videoRequested && (parts.isEmpty() || losses.isNotEmpty() || knownLoss || videoHoles.isNotEmpty())
             manifest = mapOf("schema" to 3, "capture_mode" to capture.settings.captureMode, "complete" to true, "save_id" to capture.id,
+                "auto_trigger" to capture.autoTrigger?.facts,
                 "sequence_id" to capture.sequence, "generation" to capture.generation, "device" to capture.device,
                 "window_clock_epoch" to capture.windowClockEpoch,
                 "window_clock_known" to capture.windowKnown,
@@ -568,7 +580,7 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
             } } }
             val retained = listOfNotNull(partial, complete).firstOrNull(::ownsDirectory)
             val location = retained?.let { "。未完成の出力を保全しています: $it" } ?: ""
-            if (e is CancellationException) throw CancellationException("保存を取消しました$location").apply { initCause(e) }
+            if (e is SaveCancelled) throw SaveCancelled(retained, e)
             val reason = if (e is IllegalArgumentException || e is IllegalStateException) e.message ?: "保存できません"
                 else "保存に失敗しました（保存先・空き容量・アクセス権を確認してください）"
             throw SaveFailure(retained, reason + location, e)

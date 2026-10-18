@@ -26,7 +26,7 @@ class ReplaySettingsStoreTest {
     @Test
     fun `mode persists and changes are rejected atomically while enabled`() {
         val store = ReplaySettingsStore()
-        val selected = ReplaySettings(captureMode = CaptureMode.LOG_ONLY)
+        val selected = ReplaySettings(captureMode = CaptureMode.LOG_ONLY, autoSaveOnCrash = true)
         store.apply(selected)
         store.setEnabled(true)
         val restored = ReplaySettingsStore()
@@ -128,6 +128,7 @@ class ReplaySettingsStoreTest {
         val oldXml = XmlSerializer.deserialize(Element("state"), ReplaySettingsState::class.java)
         assertEquals(180, oldXml.retentionSeconds)
         assertEquals(CaptureMode.VIDEO_AND_LOGS, oldXml.captureMode)
+        assertFalse(oldXml.autoSaveOnCrash)
         restored.loadState(oldXml.copy(retentionSeconds = -10))
         assertFalse(restored.enabled)
         assertEquals(180, restored.settings().retentionSeconds)
