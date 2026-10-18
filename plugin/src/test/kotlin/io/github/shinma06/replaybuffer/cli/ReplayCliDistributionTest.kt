@@ -1,5 +1,6 @@
 package io.github.shinma06.replaybuffer.cli
 
+import com.intellij.util.lang.UrlClassLoader
 import java.nio.file.Files
 import java.nio.file.FileSystems
 import java.nio.file.attribute.PosixFilePermissions
@@ -10,6 +11,7 @@ import java.util.concurrent.TimeUnit
 import java.util.jar.JarFile
 import java.util.zip.ZipFile
 import kotlin.test.assertEquals
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
@@ -64,7 +66,12 @@ class ReplayCliDistributionTest {
         val jar = Files.list(plugin.resolve("lib")).use { files -> files.filter { it.toString().endsWith(".jar") }.toList().single { path ->
             JarFile(path.toFile()).use { it.getJarEntry("io/github/shinma06/replaybuffer/cli/ReplayCli.class") != null }
         } }
-        val build = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(Files.readAllBytes(jar)))
+        val expectedBuild = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(Files.readAllBytes(jar)))
+        val loader = UrlClassLoader.build().files(listOf(jar, kotlinRuntime)).parent(ClassLoader.getPlatformClassLoader()).get()
+        val registry = loader.loadClass(ReplayCliRegistry::class.java.name)
+        assertNull(registry.protectionDomain.codeSource.location, "Exercise the IDE loader without a CodeSource location")
+        val build = registry.getMethod("buildIdentity").invoke(registry.getField("INSTANCE").get(null)) as String
+        assertEquals(expectedBuild, build)
         val home = Files.createDirectory(temporary.resolve("home"))
         val project = Files.createDirectory(temporary.resolve("project"))
         val server = ReplayCliServer(home.resolve(".android-replay-buffer-cli"), project, build) { request ->

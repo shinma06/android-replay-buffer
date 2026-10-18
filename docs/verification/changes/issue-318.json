@@ -1,0 +1,41 @@
+{
+  "schema": 1,
+  "issue": 318,
+  "gui_required": true,
+  "reason": "IDE loaderでの同梱CLI JAR同定を修復する。原offline同定失敗と修正後同経路の検査をrepairへ固定し、実native descriptor/statusはQA316へ残す。元103の3 Caseと原観察・未達は変更しない。",
+  "cli_checks": [
+    "同じ標準ZIPのIDE UrlClassLoaderによる実JAR SHA256一致、通常JBR clientとの相互認証と既存distribution/security回帰。",
+    "local JAR以外、欠落resource、directory、欠落fileの拒否。通常hook/CIの結果はIssue/PRへ記録。"
+  ],
+  "cases": [
+    {
+      "id": "CLI-IDENTITY-IDE",
+      "artifact": "plugin",
+      "change": "IDEで同定した実JARと同梱CLIが同じbuildで接続できる",
+      "preconditions": "#318修正版を含む最終combined候補のsource/標準ZIP/全JAR/実ロード、共有GUI leaseと所有projectをPMが固定する。今回writer枠ではnative未実施。",
+      "steps": [
+        "対象projectでdescriptorの生成・所有者・directory0700/file0600・PID開始時刻・実JAR hashを確認する。",
+        "同梱CLIのstatusを1回実行してGUI状態と照合する。OFF/終了時の所有資源解放を既存CLI寿命契約に従って確認する。"
+      ],
+      "expected": "IDE loaderでの同定失敗がなく、同じ配布JARのCLIだけが対象projectへ接続する。未知/別build/不正入力の拒否を保ち、所有外のprojectやIDEを変更しない。",
+      "provenance": [
+        "https://github.com/shinma06/android-replay-buffer/issues/318",
+        "https://github.com/shinma06/android-replay-buffer/issues/318#issuecomment-6245251414",
+        "https://github.com/shinma06/android-replay-buffer/issues/316",
+        "docs/verification/changes/issue-103.json"
+      ],
+      "gpt": {
+        "status": "pending",
+        "reason": "offline修復の確認と実native接続を分け、実ロード/descriptor/status/終了はQA316で未実施。"
+      },
+      "human": {
+        "status": "pending",
+        "reason": "元human/REAL延期と全Case条件を保持し、新たな免除や合格を作らない。"
+      },
+      "fix_issue": null,
+      "fix_pr": null,
+      "recheck": "固定修正を含む最終combined候補で、QA316の既存枠にreadiness確認を組み込む。",
+      "next_action": "PMがQA316へ固定成果物と残保証を双方向引継ぎし、readiness成立後に既存のCLI/FILE受入を続ける。#311最終候補と#224のCLI条件に共有する。"
+    }
+  ]
+}
