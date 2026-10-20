@@ -82,7 +82,11 @@ internal fun saveScreenshot(adbPath: Path, application: String, destination: Pat
     }
     active()
     validateScreenshotPng(bytes)
-    val root = destination.normalize()
+    val root = try {
+        destination.toRealPath()
+    } catch (_: Exception) {
+        throw ScreenshotSaveFailure("保存先フォルダを確認できません。設定の保存先・アクセス権を確認してください。")
+    }
     val name = "screenshot-${LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss-SSS"))}-${UUID.randomUUID()}"
     val partial = root.resolve(".$name.partial")
     val complete = root.resolve(name)

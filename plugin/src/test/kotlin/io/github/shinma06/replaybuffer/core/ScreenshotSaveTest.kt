@@ -69,15 +69,32 @@ class ScreenshotSaveTest {
     }
 
     @Test
-    fun missingAndSymlinkedDestinationsAreNotCreatedOrFollowed() {
+    fun missingDestinationIsNotCreated() {
         fixture { root, adb ->
             val missing = root.resolve("missing")
             assertFails { saveScreenshot(adb, "sample.app", missing) }
             assertFalse(Files.exists(missing))
+        }
+    }
+
+    @Test
+    fun configuredLinkedDestinationResolvesButLaterLinkChangesCannotRedirectDeletion() {
+        assumeTrue(System.getProperty("os.name") == "Mac OS X")
+        fixture { root, adb ->
             val other = Files.createDirectory(root.resolve("other"))
             val link = Files.createSymbolicLink(root.resolve("linked-output"), other)
-            assertFails { saveScreenshot(adb, "sample.app", link) }
-            assertEquals(0, Files.list(other).use { it.count() })
+            val saved = saveScreenshot(adb, "sample.app", link)
+            assertEquals(other, saved.file.parent.parent)
+            assertContentEquals(Files.readAllBytes(root.resolve("image.png")), Files.readAllBytes(saved.file))
+            val replacement = Files.createDirectory(root.resolve("replacement"))
+            Files.writeString(replacement.resolve("keep"), "unrelated")
+            Files.delete(link)
+            Files.createSymbolicLink(link, replacement)
+            saved.delete()
+            assertFalse(Files.exists(saved.file))
+            assertTrue(Files.isDirectory(other))
+            assertTrue(Files.isSymbolicLink(link))
+            assertEquals("unrelated", Files.readString(replacement.resolve("keep")))
         }
     }
 
