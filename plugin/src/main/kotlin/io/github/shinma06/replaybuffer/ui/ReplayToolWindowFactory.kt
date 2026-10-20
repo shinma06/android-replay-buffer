@@ -64,6 +64,10 @@ private class ReplayToolWindowPanel(private val project: Project) : JPanel(Borde
         toolTipText = "取得が無効でも設定を編集できます。"
         addActionListener { if (alive) ShowSettingsUtil.getInstance().showSettingsDialog(project, ReplaySettingsConfigurable::class.java) }
     }
+    private val screenshotButton = JButton("スクリーンショットを保存").apply {
+        addActionListener { if (alive) service.screenshot() }
+    }
+    private val screenshotReason = wrappingLabel()
     private val device = wrappingLabel()
     private val application = wrappingLabel()
     private val sdk = wrappingLabel()
@@ -112,6 +116,7 @@ private class ReplayToolWindowPanel(private val project: Project) : JPanel(Borde
         val form = FormBuilder.createFormBuilder()
             .addComponent(row(enabled, settingsButton))
             .addComponent(wrappingLabel("無効にすると未保存のデータと再試行待ちの内容を破棄します。"))
+            .addComponent(screenshotButton).addComponent(screenshotReason)
             .addComponent(device).addComponent(application).addComponent(sdk).addComponent(state)
             .addComponent(video).addComponent(deviceLog).addComponent(appLog)
             .addComponent(window).addComponent(sequence).addComponent(destination).addComponent(message)
@@ -149,6 +154,12 @@ private class ReplayToolWindowPanel(private val project: Project) : JPanel(Borde
         val view = service.captureView
         val snapshot = view.snapshot
         val busy = service.resolving || view.pending > 0
+        val screenshotDisabled = service.screenshotDisabledReason
+        screenshotButton.isEnabled = screenshotDisabled == null
+        screenshotButton.text = if (service.screenshotBusy) "スクリーンショットを保存中…" else "スクリーンショットを保存"
+        screenshotButton.toolTipText = screenshotDisabled ?: "USB端末で選択アプリを表示してください。取得OFFでも現在の画面全体を保存します。"
+        screenshotReason.text = screenshotDisabled ?: "スクショ対象: ${service.environment?.application?.packageName} / 保存先: ${store.settings().destination}\n" +
+            "撮影中は画面を切り替えないでください。通知・キーボードも写り、保護領域は空白になる場合があります。"
         enabled.isSelected = store.enabled
         enabled.isEnabled = store.enabled || !busy
         device.text = snapshot?.device?.let {

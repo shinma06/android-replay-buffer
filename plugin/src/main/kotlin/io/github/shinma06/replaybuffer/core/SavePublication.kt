@@ -25,11 +25,7 @@ internal class SavePublication(
         check(System.getProperty("os.name") == "Mac OS X") { "この環境は原子・非上書き保存に対応していません" }
         require(partial.parent == complete.parent && partial.isAbsolute && complete.isAbsolute)
         verify(partial)
-        val result = try {
-            exclusiveRename.renameatx_np(parent.descriptor, partial.fileName.toString(),
-                parent.descriptor, complete.fileName.toString(), 0x4)
-        } catch (_: LinkageError) { error("原子・非上書き保存を利用できません") }
-        check(result == 0) { "完成先の公開に失敗しました（既存出力・対応filesystem・アクセス権を確認してください）" }
+        renameExclusive(parent.descriptor, partial.fileName.toString(), parent.descriptor, complete.fileName.toString())
         verify(complete)
     }
 
@@ -41,4 +37,12 @@ internal class SavePublication(
         checkEntries()
         // shortcut: observations do not exclude arbitrary later same-UID edits; stronger isolation needs a separate process boundary.
     }
+}
+
+internal fun renameExclusive(sourceParent: Int, source: String, destinationParent: Int, destination: String) {
+    check(System.getProperty("os.name") == "Mac OS X") { "この環境は原子・非上書き保存に対応していません" }
+    val result = try {
+        exclusiveRename.renameatx_np(sourceParent, source, destinationParent, destination, 0x4)
+    } catch (_: LinkageError) { error("原子・非上書き保存を利用できません") }
+    check(result == 0) { "完成先の公開に失敗しました（既存出力・対応filesystem・アクセス権を確認してください）" }
 }

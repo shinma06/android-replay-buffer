@@ -91,6 +91,20 @@ Settings → Tools → Android Replay Buffer をproject-level `Configurable`で�
 
 フォルダを開く操作はRabbitで確認した `RevealFileAction.openDirectory(Path)` を利用する候補とし、存在・directory・OSサポートを再確認する。開けない場合は簡潔な理由とpathコピーを提供する。Finder専用command・HTTP URL・shell文字列で実装を固定しない。project破棄後の通知actionは取得サービスを再生成せず、安全に失効させる。[公式通知API](https://plugins.jetbrains.com/docs/intellij/notification-types.html) の利用とOSで開けることの実受入は区別する。
 
+## 第2版の独立スクリーンショット（#325）
+
+ToolWindow上部に「スクリーンショットを保存」を常設する。取得OFF・ログ専用・取得初期化/保存中/失敗固定対象の有無では無効化しない。解決済みの最新の対象アプリ・適用済み保存先・SDKのadbを押下時に固定し、project scopeの独立IO処理を直ちに開始する。選択解決待ち、対象未選択、保存先未指定、スクショ処理中、project終了時は理由を示す。画面内にスクショ自身の対象と保存先を表示し、取得snapshotの旧条件と混同させない。
+
+SDKのadbで`-d get-serialno`を使い、USB端末を1台に限定する。`dumpsys SurfaceFlinger --display-id`で物理画面を一つに特定して、そのIDを`exec-out screencap -p -d <id>`へ渡す。`dumpsys window`の標準画面・現在focus・keyguardの点灯/解除情報を撮影前後に確認し、選択packageと同じwindowでなければ保存しない。複数/仮想画面、未知の診断形式、未認証・切断、解決不能はエラーとする。端末側のファイル作成、録画server、logcat、共有adb serverの停止、アプリ起動、スクショ履歴は追加しない。
+
+これはアプリ専用の原子的な撮影ではなく、端末に表示中の画面全体を撮影する。前後の観察の間に別画面へ切り替わって戻る競合やoverlayは検出しきれないため、撮影中に画面を切り替えない前提を表示する。通知・キーボード等も写る。`FLAG_SECURE`等の保護を回避せず、空白も有効なPNGとして保存し、保護領域の内容取得を成功条件にしない。SDKのadbと診断出力に対応する端末が必要で、未知機種を推測で成功にしない。実機ごとの対応は受入で確定する。
+
+取得PNGは最大64 MiB、縦横それぞれ16384以下かつ16777216画素以下に制限し、署名・全chunkの長さ/CRC・終端・全画像の復号を確認する。画像は再圧縮せず元byteを保存する。adb待ちは通常要求5秒、PNG取得15秒を上限とし、EDTでは待たない。設定済み保存先は通常保存と同じ`toRealPath()`で実rootへ解決し、macOSの`/tmp`や利用者指定のフォルダリンクも受け付ける。その固定rootを所有directory/file handleで開き、直下の`.screenshot-日時-UUID.partial/screen.png`を0700/0600で作成し、書込み完了後にmacOSの排他的renameで`screenshot-日時-UUID/screen.png`へ公開する。所有子directory/PNGではsymlinkを辿らず、実体を照合して既存成果物を上書きしない。書込み/公開失敗・取消しの部分出力は保全し、確認できる残留先は失敗通知からコピーできる。取消し後の成功通知は行わない。
+
+成功通知の「保存場所を開く」は今回のフォルダを既存のOS連携で開く。「保存したファイルを削除」は親/保存directory/fileの実体と完成時hashを照合し、私有削除用directoryへの排他的移動後も対象を再確認して、そのPNGだけを削除する。置換/改変/消失や権限失敗ではエラーを示す。照合不一致時は非上書きで復元を試み、戻せない出力を保全する。親フォルダ、他のファイル、後のスクショは残す。同一利用者による任意の同時変更まで原子的に排除する保証ではなく、既存保存と同じ所有観察の境界を持つ。project終了後は通知actionを失効させ、進行中の取得clientだけを取消す。
+
+根拠は[Android公式adbのスクショ](https://developer.android.com/tools/adb#screencap)、[FLAG_SECURE](https://developer.android.com/security/fraud-prevention/activities)、AOSPの固定[WindowManagerService / DisplayContent / PhoneWindowManager / KeyguardServiceDelegate / screencap](https://android.googlesource.com/platform/frameworks/base/+/1cdfff555f4a21f71ccc978290e2e212e2f8b168/)と[SurfaceFlingerの画面ID出力](https://android.googlesource.com/platform/frameworks/native/+/db4192ada9dee591ec897a51c07c489c84c860c1/services/surfaceflinger/SurfaceFlinger.cpp)。固定sourceの形式確認と、製品の実IDE/USB観察は区別する。[Case #325](../verification/changes/issue-325.json)が残保証を追跡する。
+
 ## 実装のAPI境界
 
 UIには取得エンジンの実装、LogcatのSwingツリー、タイムライン変換を持たせない。新たな汎用interface群やDBを先に作らず、projectの取得所有者に表示snapshotと明示操作をまとめる。PMのコア契約へ接続する最小の値と操作は次のとおり。型名・API名は実装担当間で確定するための案であり、新たな公開SDKを要求するものではない。

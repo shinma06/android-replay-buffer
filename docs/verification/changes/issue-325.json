@@ -1,0 +1,59 @@
+{
+  "schema": 1,
+  "issue": 325,
+  "gui_required": true,
+  "reason": "第2版に独立スクリーンショットと保存通知の開く/削除を追加する。fake adb・実filesystem・Swing回帰はnative USB/IDE操作を代替しない。既存Case/原FAIL/REAL・human延期を変更しない。",
+  "cli_checks": [
+    "ScreenshotSaveTest: PNG全chunk/復号、元byte保存、USB/画面/前面app限定、失敗/取消し、同一対象削除と置換保全。結果は固定HEADのIssue/PRへ記録する。",
+    "OwnedAdbTest、SavePublicationTest、ReplayToolWindowLayoutTestと通常change_impact検査。初回の削除前hash読取り失敗を保全し、修正後の実結果と区別する。"
+  ],
+  "cases": [
+    {
+      "id": "SCREENSHOT-USB",
+      "artifact": "plugin",
+      "change": "取得状態に依存せず選択アプリの現在画面を1クリックで完全保存する",
+      "preconditions": "PMが固定source/標準ZIP/実ロード、共有GUI/端末lease、廃棄可能なUSB端末の公開可能fixture画面と保存先を割当。製品の旧Caseと同期保証は別途保持する。",
+      "steps": [
+        "取得OFF/履歴なしで対象アプリを前面表示し、ToolWindowのボタンを1回押す。追加dialogなしの処理開始、EDT応答、成功通知、実PNGの元byte/全復号/画面内容と保存先を確認する。",
+        "同じ端末の既存取得中にもう1回保存し、既存取得状態・設定・未保存データを壊さず、別の完成フォルダになることを確認する。動画保存完了をスクショ開始の前提にしない。",
+        "対応する実端末の画面ID/focus/keyguard形式と非表示app/ロック時の説明を確認する。未接続/複数/切断/不正PNG/取消し/保存不可の回帰事実を照合し、native固有の不足だけを追加する。保護領域は空白になり得る説明を確認し、保護回避を要求しない。"
+      ],
+      "expected": "1クリックで非同期取得が始まり、完全なPNGだけを非上書きで公開する。取得OFFでも有効で、取得ONの所有データを変えない。曖昧な端末/画面/appを推測で保存せず、画面全体・overlay・前後観察の非原子性・secure空白を明示する。",
+      "provenance": [
+        "https://github.com/shinma06/android-replay-buffer/issues/325",
+        "docs/requirements.md",
+        "docs/design/ide-ui.md",
+        "docs/verification/responsibility.md"
+      ],
+      "gpt": {"status": "pending", "reason": "writerはsource/回帰を担当。実IDE/USBの割当と観察は未実施。"},
+      "human": {"status": "pending", "reason": "実際の操作感・画面の読みやすさは未観察。既存のhuman/REAL範囲を変更しない。"},
+      "fix_issue": null,
+      "fix_pr": null,
+      "recheck": "最終候補で新しい撮影経路と既存取得への影響を確認する。無変更artifactの同じ証拠を目的なく再取得しない。",
+      "next_action": "PMが固定レビュー後に最小の実IDE/USB枠を割当し、残保証と実成果物を既存v2受入担当へ双方向引継ぎする。"
+    },
+    {
+      "id": "SCREENSHOT-ACTIONS",
+      "artifact": "plugin",
+      "change": "通知からその保存場所を開き、その保存ファイルだけを削除する",
+      "preconditions": "SCREENSHOT-USBと同じ固定候補・lease・廃棄可能出力。2件のスクショと無関係な保持ファイルを区別できること。",
+      "steps": [
+        "成功通知の「保存場所を開く」でそのPNGを含むフォルダが実際に開くことを確認する。後のスクショ保存後も古い通知の対象が変わらないことを照合する。",
+        "「保存したファイルを削除」を押し、追加確認なしでそのPNGだけが消え、親フォルダ・他の保存・無関係なファイルは残ることを確認する。",
+        "改変/消失/置換/権限失敗/連続クリックの回帰と実通知の失敗説明を照合する。project終了時に進行中の撮影clientが停止し、遅延成功通知や旧通知による再起動がないことを目的に応じた最小方法で確認する。"
+      ],
+      "expected": "通知は要求ごとの完成出力を保持する。OSで開けない/削除できない失敗を成功にせず、変更済み・置換済み・他人の出力を削除しない。UI応答・project寿命を保つ。",
+      "provenance": [
+        "https://github.com/shinma06/android-replay-buffer/issues/325",
+        "docs/design/ide-ui.md",
+        "plugin/src/test/kotlin/io/github/shinma06/replaybuffer/core/ScreenshotSaveTest.kt"
+      ],
+      "gpt": {"status": "pending", "reason": "実通知action→Finder/ファイルと終了のnative連携は未実施。"},
+      "human": {"status": "pending", "reason": "通知の分かりやすさと操作感は未観察。"},
+      "fix_issue": null,
+      "fix_pr": null,
+      "recheck": "同じ出力を使える既存観察とFILE回帰を再利用し、OS連携と実通知の不足を追加する。",
+      "next_action": "PMがSCREENSHOT-USBと同じ短い枠へまとめ、観察と残保証をv2受入担当へ渡す。"
+    }
+  ]
+}

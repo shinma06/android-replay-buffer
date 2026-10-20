@@ -27,7 +27,11 @@ internal class OwnedAdb(private val executable: Path) : AutoCloseable {
         return process
     }
 
-    fun command(vararg args: String, limit: Int = 1024 * 1024): String {
+    fun command(vararg args: String, limit: Int = 1024 * 1024): String =
+        commandBytes(*args, limit = limit).toString(Charsets.UTF_8)
+
+    fun commandBytes(vararg args: String, limit: Int, timeoutSeconds: Long = 5): ByteArray {
+        require(limit > 0 && timeoutSeconds in 1..15)
         val process = start(*args)
         val output = ByteArrayOutputStream()
         val failed = AtomicBoolean()
@@ -43,11 +47,16 @@ internal class OwnedAdb(private val executable: Path) : AutoCloseable {
             } }.onFailure { failed.set(true); process.destroy() }
         }
         try {
-            check(process.waitFor(5, TimeUnit.SECONDS)) { "adbの応答がタイムアウトしました" }
+            check(process.waitFor(timeoutSeconds, TimeUnit.SECONDS)) { "adbの応答がタイムアウトしました" }
             reader.join(1000)
             check(!reader.isAlive && !failed.get() && process.exitValue() == 0) { "adbの要求に失敗しました" }
-            return output.toString(Charsets.UTF_8)
-        } finally { stop(process) }
+            return output.toByteArray()
+        } finally {
+            stop(process)
+            val interrupted = Thread.interrupted()
+            try { reader.join(1000) } finally { if (interrupted) Thread.currentThread().interrupt() }
+            check(!reader.isAlive) { "所有adb出力readerの終了を確認できません" }
+        }
     }
 
     @Synchronized
