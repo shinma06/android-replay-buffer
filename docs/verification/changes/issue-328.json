@@ -23,10 +23,10 @@
           "artifact_sha256": "ea1a99989eebae1ef4b5fb92fd07b8097a59db27607a1bfe5a9890b708a141a6",
           "actor": "gpt",
           "observer": "CLI修正担当（実行とmetadata構成）",
-          "at": "2026-10-20T08:37:34.138777+00:00",
-          "evidence": "修復証拠構成SHA256 d972a74613df0418f1763bf5feab58db89accb4654f69a03cc810bf90467cc9f。実配布物回帰1件pass（1.229秒、fail/error/skip0）とraw出力4条件一致。原本・実行ログ・JUnit・全JAR・raw bytesと全8帰属receiptを私有保管。",
+          "at": "2026-10-20T08:42:08.522906+00:00",
+          "evidence": "修復証拠構成SHA256 e0de84d8a20425a70606de39a45883d14a151b426249179fa67f9c86c2e5336d。実配布物回帰1件pass（1.229秒、fail/error/skip0）とraw出力4条件一致。原本・実行ログ・JUnit・全JAR・raw bytesと修復5帰属receiptと元失敗文脈receiptを私有保管。",
           "loaded_identity": "source 2a0c6bb6af03e024b252dd052a85a1149ddd2864 / 標準ZIP ea1a99989eebae1ef4b5fb92fd07b8097a59db27607a1bfe5a9890b708a141a6 / main JAR 60c731b1daf1411e45af32b8a85cd615666057c86d4cf2912d64d76df7f7781e / Studio JBR JetBrains25.0.3。C/en_US.UTF-8条件、Java encoding option注入なし、launcher755。IDE起動なし。",
-          "reason": "G-CLI-OUTPUT-UTF8だけの直接修復確認。C/UTF-8両条件でhelp・引数エラー・相互認証後の日本語pathとwarningを両streamへUTF-8 bytesで保持し、終了コードを維持。atはmetadata構成時刻で、配布回帰終了は2026-10-20T08:33:30.748321+00:00、raw出力確認終了は2026-10-20T08:34:37.047086+00:00。元1befNGと全4 Caseのpending、Save/lifetime/human/REAL/main未達は変更しない。",
+          "reason": "G-CLI-OUTPUT-UTF8だけの直接修復確認。C/UTF-8両条件でhelp・引数エラー・相互認証後の日本語pathとwarningを両streamへUTF-8 bytesで保持し、終了コードを維持。atはmetadata構成時刻で、配布回帰終了は2026-10-20T08:33:30.748321+00:00、raw出力確認終了は2026-10-20T08:34:37.047086+00:00。元1befNGと全4 Caseのpending、Save/lifetime/human/REAL/main未達は変更しない。 修復前の実行・失敗評価は別の原観察として保持し、修復PASS実行の帰属には含めない。元観察担当・評価担当も独立reviewer候補から除外する。",
           "attribution": {
             "writer": "codex-session-sha256:91c312d0d698aea1e218c3435549f9f7881c1cb75003aa036410101f84bd658d",
             "observer": "codex-session-sha256:91c312d0d698aea1e218c3435549f9f7881c1cb75003aa036410101f84bd658d",
@@ -37,27 +37,6 @@
                 "activity": "writer",
                 "at": "2026-10-18T02:44:28.683017+00:00",
                 "receipt_sha256": "b6dcfdea3d92eb2f459cbc5d1d19888be78e03fb5f0a4c4bf0c58e06fc6e4425"
-              },
-              {
-                "role": "保持した元1bef失敗の実行・終了確認担当（文脈）",
-                "session": "codex-session-sha256:cb54214b9b4399ae155cf9692e7f9f2148f74904eca9ccd8134ada88cf9dca09",
-                "activity": "execution",
-                "at": "2026-10-20T07:58:12.987847+00:00",
-                "receipt_sha256": "4130e0988cb2ad02144821db573149029b119568e76c182b60adc61ad3c8f348"
-              },
-              {
-                "role": "保持した元1bef失敗の独立評価担当（文脈）",
-                "session": "codex-session-sha256:22e3d1f81b8f0b8a7481a0484352a7a63755be2cbfa7c0cfe678d2c69998a27d",
-                "activity": "assessment",
-                "at": "2026-10-20T08:13:31.849848+00:00",
-                "receipt_sha256": "aa002e29d3b76093489b0f132e073d691c78961fd09d9bb3752dcec6b14ac996"
-              },
-              {
-                "role": "現develop祖先の新規失敗観察担当",
-                "session": "codex-session-sha256:91c312d0d698aea1e218c3435549f9f7881c1cb75003aa036410101f84bd658d",
-                "activity": "execution",
-                "at": "2026-10-20T08:26:10.518267+00:00",
-                "receipt_sha256": "bca40bea8a9f2c66aefd3788abbfd0c398ab997003af28bb0fc0e51045376328"
               },
               {
                 "role": "328修復source writer",
@@ -84,14 +63,14 @@
                 "role": "修復結果照合・metadata構成担当",
                 "session": "codex-session-sha256:91c312d0d698aea1e218c3435549f9f7881c1cb75003aa036410101f84bd658d",
                 "activity": "composition",
-                "at": "2026-10-20T08:37:34.138777+00:00",
-                "receipt_sha256": "d972a74613df0418f1763bf5feab58db89accb4654f69a03cc810bf90467cc9f"
+                "at": "2026-10-20T08:42:08.522906+00:00",
+                "receipt_sha256": "e0de84d8a20425a70606de39a45883d14a151b426249179fa67f9c86c2e5336d"
               }
             ]
           }
         },
         "coverage": {
-          "G-CLI-OUTPUT-UTF8": "実配布replay/replaydの日本語help、引数errorのexit2/stderr、固定IDE loaderで同定した同じJARの認証付きclient/fixture応答の日本語path/stdout・warning/stderrをC/UTF-8条件で検査。fileへのraw bytesをJUnitで比較し、別の実launcher pipe出力4条件も全期待bytesと一致。証拠構成SHA256 d972a74613df0418f1763bf5feab58db89accb4654f69a03cc810bf90467cc9f。"
+          "G-CLI-OUTPUT-UTF8": "実配布replay/replaydの日本語help、引数errorのexit2/stderr、固定IDE loaderで同定した同じJARの認証付きclient/fixture応答の日本語path/stdout・warning/stderrをC/UTF-8条件で検査。fileへのraw bytesをJUnitで比較し、別の実launcher pipe出力4条件も全期待bytesと一致。証拠構成SHA256 e0de84d8a20425a70606de39a45883d14a151b426249179fa67f9c86c2e5336d。"
         },
         "method": "失敗保証はIDE起動前のCLI processの文字列からstdout/stderr bytesへの変換で、cleanな現develop祖先0b217の実標準配布物でも新規失敗を直接確認した。同じ固定JBRの修正版実launcherとraw bytesを使い、helper実装の模倣や環境のUTF-8化でC失敗を隠していない。配布回帰の認証付きloopbackは通常テストfixtureで実IDEではない。UI・端末・Save・終了寿命・全Caseや元成功事実の新buildへの適用は別条件で、再利用証明を作らない。",
         "contract_revision": "85296114925d6947be93158e3eca90fcd69e561b3d8a5d1e6845407b73108f61"
