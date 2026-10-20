@@ -38,15 +38,21 @@ import io.github.shinma06.replaybuffer.cli.cliSaveResponse
 import io.github.shinma06.replaybuffer.core.ReplayOperation
 import io.github.shinma06.replaybuffer.core.SavePhase
 import io.github.shinma06.replaybuffer.core.SaveSnapshot
+import io.github.shinma06.replaybuffer.core.SavedScreenshot
+import io.github.shinma06.replaybuffer.core.ScreenshotSaveFailure
+import io.github.shinma06.replaybuffer.core.saveScreenshot
+import io.github.shinma06.replaybuffer.settings.ReplaySettings
 import io.github.shinma06.replaybuffer.settings.ReplaySettingsStore
 import io.github.shinma06.replaybuffer.settings.validateDestination
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.future.await
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runInterruptible
 import java.awt.Desktop
 import java.awt.datatransfer.StringSelection
 import java.nio.file.Files
@@ -65,6 +71,11 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
     @Volatile private var disposed = false
     private var resolution: Job? = null
     private var cliServer: ReplayCliServer? = null
+    private var screenshotJob: Job? = null
+    private var screenshotRevision = -1L
+    private var screenshotSettings: ReplaySettings? = null
+    @Volatile internal var screenshotBusy = false
+        private set
     @Volatile var resolving = true
         private set
     private val notifications = mutableListOf<Notification>()
@@ -143,6 +154,8 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
                 synchronized(this@ReplayProjectService) {
                     if (disposed || project.isDisposed || revision != requestRevision) return@launch
                     environment = next
+                    screenshotSettings = settings
+                    screenshotRevision = revision
                 }
                 publishChanged()
                 capture.applySettings(settings, next, revision).await()
@@ -169,6 +182,83 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
     internal fun save(): CompletableFuture<ReplayOperation> {
         if (!alive) return rejected("projectは終了しています。")
         return if (resolving || capture.view.pending > 0) rejected("設定・操作を反映中です。完了後に保存してください。") else capture.save()
+    }
+
+    internal val screenshotDisabledReason: String?
+        @Synchronized get() = when {
+            !alive -> "projectは終了しています。"
+            screenshotBusy -> "スクリーンショットを保存中です。"
+            screenshotRevision != requestRevision -> "対象アプリ・設定を確認中です。"
+            environment?.adb == null -> environment?.adbReason ?: "Android SDKを確認してください。"
+            environment?.application?.packageName == null -> environment?.application?.reason ?: "対象アプリを選択してください。"
+            screenshotSettings?.destination.isNullOrEmpty() -> "設定で保存先を指定してください。"
+            else -> null
+        }
+
+    @Synchronized
+    internal fun screenshot() {
+        screenshotDisabledReason?.let { screenshotError(it); return }
+        val selected = checkNotNull(environment)
+        val destination = checkNotNull(screenshotSettings).destination
+        screenshotBusy = true
+        val job = scope.launch(Dispatchers.IO, start = CoroutineStart.LAZY) {
+            try {
+                val saved = runInterruptible {
+                    saveScreenshot(checkNotNull(selected.adb), checkNotNull(selected.application.packageName), Path.of(destination))
+                }
+                notifyScreenshot(saved)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                screenshotError(failure.message ?: "端末接続または保存に失敗しました。", (failure as? ScreenshotSaveFailure)?.retained)
+            }
+        }
+        screenshotJob = job
+        job.invokeOnCompletion {
+            synchronized(this) {
+                if (screenshotJob === job) { screenshotJob = null; screenshotBusy = false }
+            }
+            publishChanged()
+        }
+        publishChanged()
+        job.start()
+    }
+
+    private fun notifyScreenshot(saved: SavedScreenshot) = onUi {
+        val deleting = java.util.concurrent.atomic.AtomicBoolean()
+        val notification = NotificationGroupManager.getInstance().getNotificationGroup("Android Replay Buffer")
+            .createNotification("スクリーンショットを保存しました",
+                "端末の表示画面をPNGで保存しました。選択アプリ: ${StringUtil.escapeXmlEntities(saved.application)}。保護領域は空白になる場合があります。",
+                NotificationType.INFORMATION)
+            .addAction(NotificationAction.create("保存場所を開く") { _, event ->
+                if (alive) openDirectory(saved.file.parent) else event.expire()
+            })
+            .addAction(NotificationAction.create("保存したファイルを削除") { _, event ->
+                if (!alive) { event.expire(); return@create }
+                if (!deleting.compareAndSet(false, true)) return@create
+                scope.launch(Dispatchers.IO) {
+                    try {
+                        saved.delete()
+                        onUi {
+                            event.expire()
+                            showNotification(NotificationGroupManager.getInstance().getNotificationGroup("Android Replay Buffer")
+                                .createNotification("スクリーンショットを削除しました", "保存フォルダと他のファイルは残しています。", NotificationType.INFORMATION))
+                        }
+                    } catch (failure: Exception) {
+                        deleting.set(false)
+                        screenshotError("保存したファイルを削除できません。消失・変更・アクセス権を確認してください。",
+                            (failure as? ScreenshotSaveFailure)?.retained ?: saved.file.parent)
+                    }
+                }
+            })
+        showNotification(notification)
+    }
+
+    private fun screenshotError(reason: String, retained: Path? = null) = onUi {
+        val notification = NotificationGroupManager.getInstance().getNotificationGroup("Android Replay Buffer")
+            .createNotification("スクリーンショットの操作を完了できません", StringUtil.escapeXmlEntities(reason), NotificationType.ERROR)
+        if (retained != null) notification.addAction(copyPathAction(retained))
+        showNotification(notification)
     }
 
     private fun rejected(reason: String): CompletableFuture<ReplayOperation> {
@@ -343,6 +433,7 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
         requestRevision++
         resolution?.cancel()
         resolution = null
+        screenshotJob?.cancel()
         capture.close()
         capture.termination.whenComplete { _, failure ->
             if (failure != null) Logger.getInstance(ReplayProjectService::class.java).warn("Replay Bufferの終了・cleanupを確認できません。一時領域の所有情報を保全します。")

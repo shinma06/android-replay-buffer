@@ -17,6 +17,8 @@ internal interface SaveFileDescriptors : Library {
     fun open(path: String, flags: Int, vararg mode: Any): Int
     fun openat(parent: Int, name: String, flags: Int, vararg mode: Any): Int
     fun mkdirat(parent: Int, name: String, mode: Int): Int
+    fun unlinkat(parent: Int, name: String, flags: Int): Int
+    fun fsync(descriptor: Int): Int
     fun close(descriptor: Int): Int
     fun geteuid(): Int
     fun fdopendir(descriptor: Int): Pointer?
@@ -85,6 +87,35 @@ internal class SaveOutputDirectory private constructor(internal val descriptor: 
         childName(name)
         return SaveOutputFile.fromDescriptor(checkedDescriptor(descriptors.openat(descriptor, name,
             if (mac) 0x01000b02 else 0x000a00c2, 0x180), name))
+    }
+
+    fun openFile(name: String): SaveOutputFile {
+        check(!closed)
+        childName(name)
+        return SaveOutputFile.fromDescriptor(checkedDescriptor(descriptors.openat(descriptor, name,
+            if (mac) 0x01000104 else 0x000a0800), name))
+    }
+
+    fun moveFile(name: String, destination: SaveOutputDirectory, target: String) {
+        check(!closed && !destination.closed)
+        childName(name)
+        childName(target)
+        renameExclusive(descriptor, name, destination.descriptor, target)
+    }
+
+    fun deleteFile(name: String, output: SaveOutputFile) {
+        verifyFile(name, output)
+        check(descriptors.unlinkat(descriptor, name, 0) == 0) { "保存したファイルを削除できません。アクセス権を確認してください。" }
+    }
+
+    fun deleteEmptyDirectory(name: String) {
+        check(!closed)
+        childName(name)
+        check(descriptors.unlinkat(descriptor, name, if (mac) 0x80 else 0x200) == 0) { "削除用の空フォルダを片付けられません。" }
+    }
+
+    fun flush() {
+        check(!closed && descriptors.fsync(descriptor) == 0) { "保存先への書込み完了を確認できません。" }
     }
 
     fun verifyFile(name: String, output: SaveOutputFile) {
@@ -181,8 +212,9 @@ internal class SaveOutputFile private constructor(private val descriptor: Int) :
     }
 
     fun hash(): String {
+        check(!closed)
         val digest = java.security.MessageDigest.getInstance("SHA-256")
-        channel().use { channel ->
+        FileChannel.open(Path.of(if (mac) "/dev/fd" else "/proc/self/fd", descriptor.toString()), READ).use { channel ->
             channel.position(0)
             val bytes = ByteBuffer.allocate(8192)
             while (channel.read(bytes) >= 0) { bytes.flip(); digest.update(bytes); bytes.clear() }

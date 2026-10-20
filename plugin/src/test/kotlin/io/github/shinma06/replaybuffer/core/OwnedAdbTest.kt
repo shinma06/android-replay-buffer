@@ -8,6 +8,28 @@ import kotlin.test.assertTrue
 
 class OwnedAdbTest {
     @Test
+    fun finiteBinaryCommandPreservesBytesAndRejectsOverflowTimeoutAndNonzeroExit() {
+        val directory = Files.createTempDirectory("replay-binary-adb-")
+        val fake = directory.resolve("adb")
+        try {
+            Files.writeString(fake, """#!/usr/bin/env python3
+import sys,time
+if sys.argv[1]=='wait': time.sleep(30)
+sys.stdout.buffer.write(bytes(range(256)))
+sys.exit(1 if sys.argv[1]=='fail' else 0)
+""")
+            assertTrue(fake.toFile().setExecutable(true))
+            OwnedAdb(fake).use { adb ->
+                kotlin.test.assertContentEquals(ByteArray(256) { it.toByte() }, adb.commandBytes("ok", limit = 256))
+                assertFailsWith<IllegalStateException> { adb.commandBytes("ok", limit = 255) }
+                assertFailsWith<IllegalStateException> { adb.commandBytes("fail", limit = 256) }
+                assertFailsWith<IllegalStateException> { adb.commandBytes("wait", limit = 256, timeoutSeconds = 1) }
+                assertFailsWith<IllegalArgumentException> { adb.commandBytes("ok", limit = 0) }
+            }
+        } finally { directory.toFile().deleteRecursively() }
+    }
+
+    @Test
     fun shortFailuresRecoverImmediatelyOnceAndHealthyAcquisitionResetsBackoff() {
         val recovery = RecoveryDelay()
         kotlin.test.assertEquals(listOf(0L, 1000L, 2000L, 4000L, 5000L, 5000L), (1..6).map { recovery.next(false) })

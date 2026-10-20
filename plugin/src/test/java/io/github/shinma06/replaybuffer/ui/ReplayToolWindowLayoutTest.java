@@ -99,6 +99,7 @@ class ReplayToolWindowLayoutTest {
                     var panel = (JPanel) constructor.newInstance(project);
                     actual[0] = panel;
                     Disposer.register(lifetime, (Disposable) panel);
+                    verifyScreenshotAvailability(panel, service, store);
                     var outer = (JScrollPane) panel.getComponent(0);
                     var summary = (JTextArea) field(panel, "autoSave");
                     var summaryScroll = (JScrollPane) SwingUtilities.getAncestorOfClass(JScrollPane.class, summary);
@@ -116,7 +117,7 @@ class ReplayToolWindowLayoutTest {
                     assertFalse(summary.isEditable());
                     ((JPanel) field(panel, "failureCard")).setVisible(true);
                     var controls = new ArrayList<AbstractButton>();
-                    for (var name : List.of("enabled", "settingsButton", "saveButton", "openButton",
+                    for (var name : List.of("enabled", "settingsButton", "screenshotButton", "saveButton", "openButton",
                         "retryButton", "retryElsewhere", "discardButton")) {
                         var control = (AbstractButton) field(panel, name);
                         control.setEnabled(true);
@@ -208,6 +209,38 @@ class ReplayToolWindowLayoutTest {
         } finally {
             Disposer.dispose(lifetime);
         }
+    }
+
+    private static void verifyScreenshotAvailability(JPanel panel, ReplayProjectService service,
+                                                     ReplaySettingsStore store) throws ReflectiveOperationException {
+        var button = (AbstractButton) field(panel, "screenshotButton");
+        assertFalse(button.isEnabled(), "unresolved application cannot capture another app");
+        var environment = service.getClass().getDeclaredField("environment");
+        environment.setAccessible(true);
+        environment.set(service, new io.github.shinma06.replaybuffer.ide.AndroidReplayEnvironment(
+            Path.of("/disposable/adb"), null,
+            new io.github.shinma06.replaybuffer.ide.ApplicationSelection("sample.app", "sample", null)));
+        var settings = service.getClass().getDeclaredField("screenshotSettings");
+        settings.setAccessible(true);
+        settings.set(service, new io.github.shinma06.replaybuffer.settings.ReplaySettings(180, "/disposable",
+            io.github.shinma06.replaybuffer.settings.AppSelectionMode.AUTOMATIC, "", CaptureMode.VIDEO_AND_LOGS, false));
+        var revision = service.getClass().getDeclaredField("screenshotRevision");
+        revision.setAccessible(true);
+        revision.set(service, field(service, "requestRevision"));
+        var render = panel.getClass().getDeclaredMethod("render");
+        render.setAccessible(true);
+        render.invoke(panel);
+        assertTrue(button.isEnabled(), "screenshot is available with replay OFF and capture initialization pending");
+        var busy = service.getClass().getDeclaredField("screenshotBusy");
+        busy.setAccessible(true);
+        busy.setBoolean(service, true);
+        render.invoke(panel);
+        assertFalse(button.isEnabled(), "overlapping screenshot requests are disabled");
+        busy.setBoolean(service, false);
+        assertFalse(store.getEnabled(), "screenshot must not enable replay acquisition");
+        revision.setLong(service, -1L);
+        render.invoke(panel);
+        assertFalse(button.isEnabled(), "stale selection cannot capture the previously selected app");
     }
 
     private static void refreshSnapshot(JPanel panel, ReplayProjectService service, long revision) {
