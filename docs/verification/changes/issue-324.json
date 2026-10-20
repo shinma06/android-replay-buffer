@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "issue": 324,
+  "gui_required": false,
+  "reason": "配布runbookのApp鍵管理と実Actions発行・失効確認の説明だけを補う。製品・workflow・classifier・配布入力・既存受入観察は変更しない。新Caseは0。必須の本JSONは管理toolingに分類されるため、純粋docs-onlyの実event受入は親320/271に残す。",
+  "cli_checks": [
+    "python3 scripts/check.py",
+    "python3 scripts/workflow/change_impact.py --base origin/develop --run-tests"
+  ],
+  "cases": []
+}

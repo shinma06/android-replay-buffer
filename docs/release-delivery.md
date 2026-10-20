@@ -77,9 +77,17 @@ python3 scripts/workflow/release_delivery.py stable \
 
 無人追従には、対象repositoryだけにinstallした配布用GitHub Appの `Contents: write`、`Workflows: write` と `Actions / Checks / Commit statuses / Pull requests / Issues: read` を使います。repository variable `DELIVERY_APP_CLIENT_ID` とsecret `DELIVERY_APP_PRIVATE_KEY` を認証管理者が設定します。個人の既存tokenを読み出してsecretへ転送する手順ではありません。新Appの登録・権限付与・key保存は実際の許可範囲を担当者と整合してから行い、sourceの採用だけで設定済みにしません。
 
+設定時はinstallationの選択先がこのrepositoryだけであることを読み戻します。新しい秘密鍵はGit管理外の所有者限定一時directory（0700）へ保存し、fileを0600にして、内容を表示せず標準入力から `gh secret set DELIVERY_APP_PRIVATE_KEY --repo shinma06/android-replay-buffer --app actions` へ渡します。登録成功とsecretの名前・更新日時を確認したら、その操作で作ったローカル鍵fileと空の一時directoryを削除し、別のダウンロード先やバックアップにコピーを残しません。結果不明なら設定状態を先に調べ、鍵の再生成を繰り返しません。Appの秘密鍵は短命tokenと異なり自動失効しないため、漏洩・紛失時は担当が鍵の交換と旧鍵の失効を扱います。設定済みのApp/secretを確認だけのために作り直しません。[GitHub Appの鍵管理](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/managing-private-keys-for-github-apps)・[secretの標準入力と暗号化](https://cli.github.com/manual/gh_secret_set)
+
 workflowは公式 `actions/create-github-app-token` の固定revision `64ab729a6294000f5aa4a4bc0b73d1f32bc45510` を使い、このrepositoryと上記permissionsを明示して短命tokenを要求します。要求権限がinstallationに無ければGitHubの発行が失敗し、publisherを実行しません。発行成功のstepだけがtokenと `ARB_DELIVERY_APP_TOKEN` をpublisherへ渡します。この信号を手動設定してGITHUB_TOKENの不足を隠してはいけません。tokenは終了時に失効し、ログやArtifactへ保存しません。[公式actionの権限指定と失効](https://github.com/actions/create-github-app-token/tree/64ab729a6294000f5aa4a4bc0b73d1f32bc45510)
 
 App ID未設定の場合は標準tokenで従来の権限境界を守ります。IDのみ設定されkey不備・不足権限なら発行失敗として停止し、成功へのfallbackをしません。構成・unit testは実発行/公開の成功証明ではなく、認証管理者の設定後にeligible eventの実更新とdocs-onlyの配布no-opを確認します。未設定・未確認は#320/#271で残条件として保持します。
+
+実行確認はrun ID・attempt・通知元branch/sourceを固定し、次の範囲を区別してIssueへ記録します。秘密値や生ログは公開しません。
+
+- **発行・失効**: `Obtain repository-scoped delivery permission` がskipではなく成功し、publisherにApp tokenが渡ったことと、同attemptのpost stepの `Token revoked` を確認する。promotionのないmain通知で `No promotion in this main commit; no release changed.` となったrunは、この認証経路の確認には使えるが、early更新・docs-only通知の確認には使わない。
+- **配布更新**: 配布入力が変わったdevelop通知で、通常gateを通った同一ZIPの公開とReleaseの読み戻しを確認する。認証stepやjob全体の成功だけで代用しない。
+- **配布省略**: 対象eventの完全差分とclassifier結果、CIのArtifact upload省略、publisherの配布no-op、Releaseの前後不変を確認する。新Issueの受入JSONを含む変更は管理toolingを含むため、`distribution=false`でも純粋docs-onlyの観察とは区別する。
 
 担当は#271の配布owner（GitHub assignee shinma06）です。復旧時は次の手順を使います。
 
