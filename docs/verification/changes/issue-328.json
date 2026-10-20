@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "issue": 328,
+  "gui_required": false,
+  "reason": "CLI processのstdout/stderr文字コードだけを修復する。失敗保証はIDE起動前の実配布CLIでも直接観察でき、固定JBRでの生bytesと配布回帰で確認する。IDE/ADB/native操作は不要で、QA316の既存Save/lifetimeと全4 Caseの未達は変更しない。",
+  "cli_checks": [
+    "cleanな現develop祖先の標準配布物でC条件のstdout/stderr欠損を別観察として固定し、元1befの原観察・失敗・評価を保持する。",
+    "C/UTF-8条件で実配布replay/replaydの日本語help、引数エラー、相互認証後の日本語pathとwarningのUTF-8 bytes・終了コードを検査する。通常hook/CIの実結果はIssue/PRへ記録する。"
+  ],
+  "cases": []
+}

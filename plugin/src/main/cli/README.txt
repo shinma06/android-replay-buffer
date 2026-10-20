@@ -2,6 +2,7 @@ Android Replay Buffer — ターミナル入口
 
 このbin/replayとbin/replaydは、同じ配布物を導入済みのAndroid Studioへ接続します。
 起動済みprojectのGUIと同じ取得・バッファ・保存結果を使います。
+stdout/stderrはUTF-8です。Cロケールでも日本語を保持し、pipeやファイル出力も同じです。
 
 replay --help
 replay --project /absolute/project/path daemon

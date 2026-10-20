@@ -2,6 +2,8 @@
 
 `replay` / `replayd` は、起動済みAndroid Studioで開いているprojectの取得・保存を操作します。GUIと同じ設定・バッファ・保存処理を使います。IDEを終了すると取得も終了します。独立した録画daemonやPython実行環境の導入は不要です。
 
+標準出力・標準エラーはUTF-8です。Cロケールでも日本語の説明・理由・保存先を保持し、pipeやファイルへの出力も同じ文字コードを使います。
+
 これは#103の候補の利用契約です。固定ZIPでのIDE・端末受入結果は[Case](verification/changes/issue-103.json)とIssue/QAに記録し、実装やJVMテストだけで合格とは扱いません。対応環境は[固定した開発環境](plugin-development.md#固定した開発環境)のmacOS / Android Studioです。
 
 ## 配置と最初の操作
