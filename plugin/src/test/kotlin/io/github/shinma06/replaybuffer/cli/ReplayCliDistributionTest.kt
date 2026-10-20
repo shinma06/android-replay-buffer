@@ -10,6 +10,7 @@ import java.util.HexFormat
 import java.util.concurrent.TimeUnit
 import java.util.jar.JarFile
 import java.util.zip.ZipFile
+import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -57,12 +58,21 @@ class ReplayCliDistributionTest {
         Files.createDirectories(studio.resolve("lib"))
         Files.createSymbolicLink(studio.resolve("jbr/Contents/Home/bin/java"), java)
         Files.createSymbolicLink(studio.resolve("lib/util-8.jar"), kotlinRuntime)
-        for (launcher in listOf(replay, replayd)) {
-            val result = run(listOf(launcher.toString(), "--help"), mapOf("REPLAY_STUDIO_HOME" to studio.toString()))
-            assertEquals(0, result.first, result.second)
-            assertTrue(result.second.contains("Usage: replay"))
+        for (locale in listOf("C", "en_US.UTF-8")) {
+            val environment = mapOf("REPLAY_STUDIO_HOME" to studio.toString(), "LC_ALL" to locale)
+            for (launcher in listOf(replay, replayd)) {
+                val result = run(listOf(launcher.toString(), "--help"), environment)
+                assertEquals(0, result.first, result.third.decodeToString())
+                val help = result.second.decodeToString(throwOnInvalidSequence = true)
+                assertTrue(help.contains("Usage: replay"))
+                assertTrue(help.contains("起動済みAndroid Studioの同じ取得・保存処理を操作します。"))
+                assertContentEquals(byteArrayOf(), result.third)
+            }
+            val invalid = run(listOf(replay.toString(), "start"), environment)
+            assertEquals(2, invalid.first)
+            assertContentEquals(byteArrayOf(), invalid.second)
+            assertContentEquals("不明な操作・optionです。replay --helpを確認してください。\n".toByteArray(Charsets.UTF_8), invalid.third)
         }
-        assertEquals(2, run(listOf(replay.toString(), "start"), mapOf("REPLAY_STUDIO_HOME" to studio.toString())).first)
         val jar = Files.list(plugin.resolve("lib")).use { files -> files.filter { it.toString().endsWith(".jar") }.toList().single { path ->
             JarFile(path.toFile()).use { it.getJarEntry("io/github/shinma06/replaybuffer/cli/ReplayCli.class") != null }
         } }
@@ -74,24 +84,31 @@ class ReplayCliDistributionTest {
         assertEquals(expectedBuild, build)
         val home = Files.createDirectory(temporary.resolve("home"))
         val project = Files.createDirectory(temporary.resolve("project"))
+        val sharedOutput = temporary.resolve("日本語の保存先 with spaces").toString()
+        val sharedError = "一部のログがありません。"
         val server = ReplayCliServer(home.resolve(".android-replay-buffer-cli"), project, build) { request ->
             assertEquals(CliCommand.STATUS, request.command)
-            CliResponse(0, "shared result")
+            CliResponse(0, sharedOutput, sharedError)
         }
         try {
-            val result = run(listOf(java.toString(), "-Duser.home=$home", "-cp", "$plugin/lib/*:$kotlinRuntime",
-                "io.github.shinma06.replaybuffer.cli.ReplayCli", "--project", project.toString(), "status"))
-            assertEquals(0, result.first, result.second)
-            assertEquals("shared result\n", result.second)
+            for (locale in listOf("C", "en_US.UTF-8")) {
+                val result = run(listOf(java.toString(), "-Duser.home=$home", "-cp", "$plugin/lib/*:$kotlinRuntime",
+                    "io.github.shinma06.replaybuffer.cli.ReplayCli", "--project", project.toString(), "status"),
+                    mapOf("LC_ALL" to locale))
+                assertEquals(0, result.first, result.third.decodeToString())
+                assertContentEquals("$sharedOutput\n".toByteArray(Charsets.UTF_8), result.second)
+                assertContentEquals("$sharedError\n".toByteArray(Charsets.UTF_8), result.third)
+            }
         } finally {
             server.close()
             server.termination.get(5, TimeUnit.SECONDS)
         }
     }
 
-    private fun run(command: List<String>, environment: Map<String, String> = emptyMap()): Pair<Int, String> {
+    private fun run(command: List<String>, environment: Map<String, String> = emptyMap()): Triple<Int, ByteArray, ByteArray> {
         val output = Files.createTempFile(temporary, "cli-output-", ".txt")
-        val builder = ProcessBuilder(command).redirectErrorStream(true).redirectOutput(output.toFile())
+        val error = Files.createTempFile(temporary, "cli-error-", ".txt")
+        val builder = ProcessBuilder(command).redirectOutput(output.toFile()).redirectError(error.toFile())
         builder.environment().apply {
             remove("JAVA_TOOL_OPTIONS"); remove("JDK_JAVA_OPTIONS"); remove("_JAVA_OPTIONS")
             putAll(environment)
@@ -99,7 +116,7 @@ class ReplayCliDistributionTest {
         val process = builder.start()
         try {
             assertTrue(process.waitFor(10, TimeUnit.SECONDS), "Packaged CLI must return without starting an IDE")
-            return process.exitValue() to Files.readString(output)
+            return Triple(process.exitValue(), Files.readAllBytes(output), Files.readAllBytes(error))
         } finally {
             if (process.isAlive) { process.destroyForcibly(); process.waitFor(5, TimeUnit.SECONDS) }
         }

@@ -83,8 +83,8 @@ status: 設定を変えずに状態を表示します。stop: 対象projectの�
 
     internal fun run(
         arguments: List<String>,
-        output: PrintStream = System.out,
-        error: PrintStream = System.err,
+        output: PrintStream = PrintStream(System.out, true, Charsets.UTF_8),
+        error: PrintStream = PrintStream(System.err, true, Charsets.UTF_8),
         directory: Path = ReplayCliRegistry.directory(),
         build: () -> String = ReplayCliRegistry::buildIdentity,
     ): Int {
