@@ -65,7 +65,7 @@ class Repository:
             tag = path.removeprefix('git/matching-refs/tags/')
             return [{'ref': 'refs/tags/' + tag, 'object': self.refs[tag]}] if tag in self.refs else []
         if path.startswith('git/ref/tags/'):
-            return {'object': self.refs[path.removeprefix('git/ref/tags/')]}
+            return {'object': copy.deepcopy(self.refs[path.removeprefix('git/ref/tags/')])}
         self.mutations.append((path, method, copy.deepcopy(data)))
         if path == 'releases' and method == 'POST':
             result = dict(data, id=self.next_id, immutable=False)
@@ -469,6 +469,144 @@ class ReleaseDeliveryTest(unittest.TestCase):
         delivery.publish(self.archive, new, MAIN)
         self.assertEqual(len(self.repo.assets), 1)
         self.assertEqual(delivery.read_record(self.repo.releases[0]['body']), new)
+
+    def test_update_cleans_all_hash_named_leftovers_and_preserves_unknown_assets(self):
+        first = self.record()
+        delivery.publish(self.archive, first, MAIN)
+        original_tag = copy.deepcopy(self.repo.refs)
+        self.repo.fail_patch = True
+        for source in (NEXT, 'd' * 40):
+            self.archive.write_bytes(package(source))
+            self.repo.head = source
+            with self.assertRaises(OSError):
+                delivery.publish(self.archive, self.record(source=source), MAIN)
+        self.assertEqual(len(self.repo.assets), 3)
+        unknown = dict(next(iter(self.repo.assets.values())), id=900, name='owner-notes.zip')
+        self.repo.assets[900] = unknown
+        self.repo.fail_patch = False
+        self.repo.head = 'e' * 40
+        self.archive.write_bytes(package(self.repo.head))
+        latest = self.record(source=self.repo.head)
+        delivery.publish(self.archive, latest, MAIN)
+        self.assertEqual({a['name'] for a in self.repo.assets.values()},
+                         {delivery.asset_name(latest), 'owner-notes.zip'})
+        self.assertEqual(self.repo.assets[900], unknown)
+        self.assertEqual(self.repo.refs, original_tag)
+        self.assertEqual(delivery.read_record(self.repo.releases[0]['body']), latest)
+
+    def test_same_product_retry_cleans_leftovers_without_changing_body_or_upload(self):
+        delivery.publish(self.archive, self.record(), MAIN)
+        self.archive.write_bytes(package(NEXT))
+        self.repo.head = NEXT
+        latest = self.record(source=NEXT)
+        self.repo.fail_after_patch = True
+        with self.assertRaises(OSError):
+            delivery.publish(self.archive, latest, MAIN)
+        self.assertEqual(len(self.repo.assets), 2)
+        body = self.repo.releases[0]['body']
+        self.repo.fail_after_patch = False
+        self.repo.head = 'd' * 40
+        before = len(self.repo.mutations)
+        delivery.publish(self.archive, dict(latest, develop_head=self.repo.head, run=99), MAIN)
+        self.assertEqual(self.repo.releases[0]['body'], body)
+        self.assertEqual([a['name'] for a in self.repo.assets.values()], [delivery.asset_name(latest)])
+        self.assertEqual([method for _, method, _ in self.repo.mutations[before:]], ['DELETE'])
+
+    def test_cleanup_failure_is_not_success_and_retry_converges(self):
+        delivery.publish(self.archive, self.record(), MAIN)
+        self.archive.write_bytes(package(NEXT))
+        self.repo.head = NEXT
+        latest = self.record(source=NEXT)
+        api = self.repo.api
+        def fail_delete(path, method='GET', data=None):
+            if method == 'DELETE':
+                raise OSError('delete failed')
+            return api(path, method, data)
+        with patch.object(delivery, 'api', side_effect=fail_delete), self.assertRaises(OSError):
+            delivery.publish(self.archive, latest, MAIN)
+        self.assertEqual(len(self.repo.assets), 2)
+        self.assertEqual(delivery.read_record(self.repo.releases[0]['body']), latest)
+        delivery.publish(self.archive, latest, MAIN)
+        self.assertEqual([a['name'] for a in self.repo.assets.values()], [delivery.asset_name(latest)])
+
+    def test_cleanup_rejects_changed_old_digest_before_any_delete(self):
+        delivery.publish(self.archive, self.record(), MAIN)
+        old = next(iter(self.repo.assets.values()))
+        old['digest'] = 'sha256:' + '0' * 64
+        self.archive.write_bytes(package(NEXT))
+        self.repo.head = NEXT
+        with self.assertRaisesRegex(ValueError, 'Old asset identity'):
+            delivery.publish(self.archive, self.record(source=NEXT), MAIN)
+        self.assertEqual(len(self.repo.assets), 2)
+        self.assertFalse(any(method == 'DELETE' for _, method, _ in self.repo.mutations))
+
+    def test_new_download_failure_after_body_switch_keeps_both_assets(self):
+        delivery.publish(self.archive, self.record(), MAIN)
+        self.archive.write_bytes(package(NEXT))
+        self.repo.head = NEXT
+        latest = self.record(source=NEXT)
+        download = self.repo.download
+        calls = 0
+        def corrupt_readback(path, destination, accept='application/octet-stream'):
+            nonlocal calls
+            download(path, destination, accept)
+            calls += 1
+            if calls == 2:
+                destination.write_bytes(b'corrupt response')
+        with patch.object(delivery, 'download', side_effect=corrupt_readback), self.assertRaises(ValueError):
+            delivery.publish(self.archive, latest, MAIN)
+        self.assertEqual(delivery.read_record(self.repo.releases[0]['body']), latest)
+        self.assertEqual(len(self.repo.assets), 2)
+        self.assertFalse(any(method == 'DELETE' for _, method, _ in self.repo.mutations))
+
+    def test_cleanup_rechecks_release_tag_head_and_assets_after_new_bytes_verification(self):
+        delivery.publish(self.archive, self.record(), MAIN)
+        self.archive.write_bytes(package(NEXT))
+        self.repo.head = NEXT
+        latest = self.record(source=NEXT)
+        self.repo.fail_after_patch = True
+        with self.assertRaises(OSError):
+            delivery.publish(self.archive, latest, MAIN)
+        self.repo.fail_after_patch = False
+        saved = copy.deepcopy((self.repo.releases, self.repo.refs, self.repo.assets))
+        download = self.repo.download
+        for kind in ('body', 'tag', 'head', 'old', 'new'):
+            self.repo.releases, self.repo.refs, self.repo.assets = copy.deepcopy(saved)
+            self.repo.head = NEXT
+            calls = 0
+            def changed(path, destination, accept='application/octet-stream'):
+                nonlocal calls
+                download(path, destination, accept)
+                calls += 1
+                if calls != 2:
+                    return
+                if kind == 'body':
+                    self.repo.releases[0]['body'] += '\nOwner edit'
+                elif kind == 'tag':
+                    self.repo.refs['early']['sha'] = NEXT
+                elif kind == 'head':
+                    self.repo.head = MAIN
+                else:
+                    asset = next(a for a in self.repo.assets.values()
+                                 if (a['name'] == delivery.asset_name(latest)) == (kind == 'new'))
+                    asset['digest'] = 'sha256:' + '0' * 64
+            with self.subTest(kind=kind), patch.object(delivery, 'download', side_effect=changed):
+                with self.assertRaises(ValueError):
+                    delivery.publish(self.archive, latest, MAIN)
+            self.assertEqual(len(self.repo.assets), 2)
+            self.assertFalse(any(method == 'DELETE' for _, method, _ in self.repo.mutations))
+
+    def test_cleanup_checks_final_state_and_detects_unsuccessful_delete(self):
+        delivery.publish(self.archive, self.record(), MAIN)
+        self.archive.write_bytes(package(NEXT))
+        self.repo.head = NEXT
+        api = self.repo.api
+        def ignored_delete(path, method='GET', data=None):
+            return None if method == 'DELETE' else api(path, method, data)
+        with patch.object(delivery, 'api', side_effect=ignored_delete):
+            with self.assertRaisesRegex(ValueError, 'assets changed during cleanup'):
+                delivery.publish(self.archive, self.record(source=NEXT), MAIN)
+        self.assertEqual(len(self.repo.assets), 2)
 
     def test_branch_advance_after_upload_does_not_publish_stale_asset(self):
         self.repo.advance_after_upload = True
