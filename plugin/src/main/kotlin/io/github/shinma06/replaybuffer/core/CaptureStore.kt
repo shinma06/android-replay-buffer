@@ -10,6 +10,7 @@ import java.nio.file.attribute.PosixFilePermissions
 import java.util.ArrayDeque
 import java.util.UUID
 
+/** pts is source µs; offset/size select original packet bytes, while mapped/retention/host times are ns. */
 internal data class VideoEntry(
     val file: Path, val offset: Long, val size: Int, val pts: Long, val key: Boolean,
     val width: Int, val height: Int, val generation: Long, val time: MappedTime,
@@ -28,6 +29,11 @@ internal data class AppPeriod(
     val packageName: String?, val uid: Long?, val pids: Set<Int>, val from: Long?, val to: Long?, val epoch: Int,
     val uidExclusive: Boolean = false, val endUnknown: Boolean = false,
 )
+/**
+ * One admitted window on the sequence ns axis, with fixed clocks, membership and original gap history.
+ * Packet files are borrowed from the store's pin; keep it until the writer finishes, including failed retries.
+ * Later acquisition/clock samples must not reinterpret this request. See docs/plugin-design.md.
+ */
 internal data class FrozenCapture(
     val id: String, val sequence: String, val generation: Long, val start: Long, val end: Long,
     val seconds: Int, val video: List<VideoEntry>, val logs: List<LogEntry>, val gaps: List<CaptureGap>,
@@ -42,7 +48,11 @@ internal data class FrozenCapture(
     val windowKnown: Boolean get() = endUncertainty != Long.MAX_VALUE
 }
 
-/** Packet bytes are append-only; a frozen request reads exactly each indexed packet's original length. */
+/**
+ * Owns the disk ring and one save pin. Packet bytes are append-only; snapshots read indexed lengths only.
+ * Store mutations are synchronized; combined snapshots acquire this store before its clock.
+ * close() removes owned packet files, so the caller must first finish the pinned writer.
+ */
 internal class CaptureStore(
     val directory: Path,
     val clock: CaptureClock = CaptureClock(),
@@ -348,6 +358,7 @@ internal class CaptureStore(
         return row.id // Accepted into the store; retention and membership are separate decisions.
     }
 
+    /** Freezes the disconnected live window; this is separate from the admitted save pin. */
     @Synchronized
     fun freeze() {
         if (fixedEnd == null) synchronized(clock) {
@@ -414,6 +425,7 @@ internal class CaptureStore(
         }
     }
 
+    /** Null/no admissible content or AutoSaveRejected creates no new pin; an existing pin rejects another capture. */
     @Synchronized
     fun capture(settings: ReplaySettings, trigger: CrashPair? = null, host: Long = System.nanoTime()): FrozenCapture? = synchronized(clock) {
         check(pinned == null) { "保存対象は既に固定されています" }
@@ -464,6 +476,7 @@ internal class CaptureStore(
         return value
     }
 
+    /** Releases only the matching request after all reads finish; a failed save remains pinned for retry. */
     @Synchronized
     fun release(id: String) {
         if (pinned?.id == id) {
@@ -474,6 +487,7 @@ internal class CaptureStore(
         }
     }
 
+    /** Window-filtered warnings for live/frozen display; row span is not proof of continuous coverage. */
     @Synchronized
     fun streams(seconds: Int = 180, atEnd: Long? = null): Map<String, StreamSnapshot> = synchronized(clock) {
         val end = atEnd ?: end() ?: 0
@@ -639,7 +653,11 @@ internal fun VideoEntry.continuousTo(next: VideoEntry, gaps: Iterable<CaptureGap
         gaps.none { gap -> (gap.stream == "video" || gap.stream == "clock") &&
             gap.intersects(time.sequence, next.time.sequence, maxOf(time.uncertainty, next.time.uncertainty)) }
 
-/** Conservative outer bounds; deriving them never confirms the original gap's exact duration. */
+/**
+ * One sequence-ns envelope per original gap, in input order, for conservative overlap checks only.
+ * Supported anchors may bound a recovered gap without confirming its exact duration; retain original history.
+ * videoProofs optionally receives the video anchors used by the saved manifest, not source-adjacency proof.
+ */
 internal fun List<CaptureGap>.gapScopes(
     clocks: List<ClockSample>, recoveries: Map<CaptureGap, ClockSample> = emptyMap(),
     videoProofs: MutableMap<CaptureGap, Pair<ClockSample, ClockSample>>? = null,
@@ -690,7 +708,10 @@ internal fun List<CaptureGap>.gapScopes(
     }
 }
 
-/** Exclude only proven outside history; keep original uncertainty for every retained gap. */
+/**
+ * Returns original gaps whose envelopes may overlap `[start, end]` (sequence ns, including both errors).
+ * Unknown window/bounds stay visible. Supply this window's clocks/recoveries, never later samples on retry.
+ */
 internal fun List<CaptureGap>.inWindow(
     start: Long?, end: Long, uncertainty: Long, clocks: List<ClockSample>,
     recoveries: Map<CaptureGap, ClockSample> = emptyMap(),

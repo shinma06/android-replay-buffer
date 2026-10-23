@@ -30,10 +30,15 @@ internal class SaveCancelled(val partial: Path?, cause: Throwable? = null) : Can
     init { if (cause != null) initCause(cause) }
 }
 
-/** No external encoder/process: immutable packet indices -> AVC MP4 and matching JSONL/manifest. */
+/** No external encoder/process: pinned packet indices -> AVC MP4 and matching JSONL/manifest. Runs outside EDT. */
 internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.getFileStore(it).usableSpace }) {
     private val gson = GsonBuilder().serializeNulls().disableHtmlEscaping().create()
 
+    /**
+     * Caller retains the capture pin until return/throw and serializes cancellation with the publication callback.
+     * Partial/failed attempts remain on disk; SaveFailure/SaveCancelled may identify an owned retained directory.
+     * A failure after rename can leave the completed name present: failure is not proof that no output exists.
+     */
     fun write(capture: FrozenCapture, folder: Path, cancelled: () -> Boolean,
               publish: (SavePublication) -> Unit): SaveOutput {
         var partial: Path? = null

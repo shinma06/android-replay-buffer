@@ -115,10 +115,12 @@ data class AutoSaveSnapshot(
 )
 
 data class ReplayDevice(val serial: String, val name: String, val kind: DeviceKind, val connected: Boolean)
+/** Sequence-ns history; null bounds or null/MAX uncertainty are unknown, not zero loss or a proven duration. */
 data class CaptureGap(
     val stream: String, val fromNs: Long?, val toNs: Long?, val reason: String,
     val boundaryUncertaintyNs: Long? = null, val generation: Long = 0, val clockEpoch: Int? = null,
 )
+/** gaps may affect this window; availableSeconds is observed row/frame span minus known gaps, not full coverage. */
 data class StreamSnapshot(
     val state: StreamState = StreamState.WAITING,
     val availableSeconds: Double = 0.0,
@@ -137,6 +139,11 @@ data class VideoTailSnapshot(
     val clockEpoch: Int, val generation: Long, val displayHeld: Boolean,
 )
 
+/**
+ * One writer attempt: fixed sequence-ns window/target, plus its result. Retrying keeps requestId, changes attempt.
+ * directory may be only the intended destination until COMPLETED; retainedPath is best-effort failure evidence.
+ * missingKinds includes unconfirmed recording, so a completed folder need not imply complete acquisition.
+ */
 data class SaveSnapshot(
     val phase: SavePhase = SavePhase.IDLE,
     val requestId: String? = null,
@@ -182,6 +189,7 @@ data class ReplaySnapshot(
     val lastSave: SaveSnapshot? = null,
 )
 
+/** accepted admits the operation; saveResult, when supplied, settles that attempt independently of later UI state. */
 data class ReplayOperation(
     val accepted: Boolean,
     val reason: String? = null,

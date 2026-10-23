@@ -10,7 +10,10 @@ import java.util.concurrent.Future
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
-/** Project-owned concrete core. All device/disk work and notifications run outside EDT. */
+/**
+ * Project-owned core: replay-control serializes commands/state; replay-save reads a single pinned capture.
+ * Listeners run on control, outside EDT. The owner must await closeAsync before treating resources as stopped.
+ */
 class ReplayCore internal constructor(
     initialSettings: ReplaySettings,
     private val workspace: Path,
@@ -66,6 +69,7 @@ class ReplayCore internal constructor(
 
     fun snapshot(): ReplaySnapshot = current.copy(lastSave = saveAttempt?.let { it.result ?: it.initial }, autoSave = autosave.snapshot())
 
+    /** Delivers asynchronously; close removes the listener, but a callback from an in-flight publish may still run. */
     fun subscribe(listener: (ReplaySnapshot) -> Unit): AutoCloseable {
         if (closed.get()) return AutoCloseable { }
         listeners += listener
@@ -155,6 +159,7 @@ class ReplayCore internal constructor(
         ReplayOperation(true, requestId = capture.id, saveResult = result)
     }
 
+    /** Uses the failed pin's original clocks/window/target; current acquisition and settings do not replace it. */
     fun retry(requestId: String): CompletableFuture<ReplayOperation> = operation {
         val capture = failedRequest(requestId) ?: return@operation ReplayOperation(false, "再試行できる保存対象がありません")
         val result = startSave(capture, saveState.directory ?: settings.saveDirectory ?: return@operation ReplayOperation(false, "保存先を指定してください"))
@@ -179,6 +184,7 @@ class ReplayCore internal constructor(
 
     private fun failedRequest(id: String): FrozenCapture? = pending?.takeIf { enabled && it.id == id && saveState.phase == SavePhase.FAILED }
 
+    // Freeze warning inputs with the request; a live window can advance while this attempt or its retry runs.
     private fun startSave(capture: FrozenCapture, directory: Path): CompletionStage<SaveSnapshot> {
         cancelSave = AtomicBoolean()
         val cancellation = cancelSave
@@ -428,6 +434,7 @@ class ReplayCore internal constructor(
         return done
     }
 
+    /** Starts asynchronous shutdown; use closeAsync's result when termination must be confirmed. */
     override fun close() { closeAsync() }
 }
 

@@ -53,6 +53,7 @@ class ReplayToolWindowFactory : ToolWindowFactory, DumbAware {
     }
 }
 
+/** Content-owned view only; disposing the panel unsubscribes through its bus lifetime, not the project core. */
 private class ReplayToolWindowPanel(private val project: Project) : JPanel(BorderLayout()), Disposable {
     private val service = project.getService(ReplayProjectService::class.java)
     private val store = project.getService(ReplaySettingsStore::class.java)
@@ -311,6 +312,7 @@ internal fun streamDescription(label: String, stream: StreamSnapshot?): String {
         if (stream.gaps.isEmpty()) "" else " / 現在窓に不足・未確認${stream.gaps.size}件（下の詳細）"
 }
 
+/** Describe the core's window-filtered original gaps; presentation must not recompute time membership. */
 internal fun currentGapDescription(snapshot: ReplaySnapshot?): String {
     if (snapshot == null) return ""
     val gaps = (snapshot.video.gaps + snapshot.deviceLog.gaps + snapshot.appLog.gaps).distinct()

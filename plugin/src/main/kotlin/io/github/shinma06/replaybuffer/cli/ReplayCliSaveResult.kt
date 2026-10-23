@@ -5,7 +5,10 @@ import io.github.shinma06.replaybuffer.core.SaveSnapshot
 import java.util.concurrent.CompletionStage
 import java.util.concurrent.TimeUnit
 
-/** A result belongs to the admitted writer attempt, even if OFF or a retry changes the UI snapshot. */
+/**
+ * Waits on the CLI worker until a host-monotonic ns deadline; timeout does not cancel or retry the writer.
+ * The admitted attempt owns its result even after OFF/UI changes; only COMPLETED yields a stdout path.
+ */
 internal fun cliSaveResponse(requestId: String?, result: CompletionStage<SaveSnapshot>, deadline: Long, warning: String): CliResponse {
     val saved = result.toCompletableFuture().get((deadline - System.nanoTime()).coerceAtLeast(1), TimeUnit.NANOSECONDS)
     check(requestId != null && saved.requestId == requestId) { "保存要求と結果が一致しません。" }

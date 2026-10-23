@@ -390,10 +390,12 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
     internal fun retryAtDirectory(id: String, path: Path) { if (alive) capture.retryAtDirectory(id, path) }
     internal fun discard(id: String) { if (alive) capture.discard(id) }
 
+    // Synchronous bus delivery can originate off EDT; UI subscribers must dispatch and recheck disposal.
     private fun publishChanged() {
         if (alive) project.messageBus.syncPublisher(ENVIRONMENT_CHANGED).run()
     }
 
+    // Use the completed attempt's warnings, not the moving live window; suppress obsolete failure actions.
     private fun notifySave(save: SaveSnapshot) {
         onUi {
             if (save.phase == SavePhase.FAILED &&
