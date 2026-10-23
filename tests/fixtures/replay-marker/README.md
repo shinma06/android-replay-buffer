@@ -109,7 +109,11 @@ xcrun swift -swift-version 6 tests/fixtures/replay-marker/transitions.swift INPU
 
 `frames.jsonl`に全復号frameのsample_index、CMTimeの整数value/timescale、us丸め値、色、境界、直前PTSを残します。色が変わるたびに最初のframeと直前frameをPNGへ保存します。最初の画像は初期状態で、eventの遷移件数には数えません。非単調PTS/復号失敗は停止、unknown件数も集計します。抽出sample数と製品frames indexの対応を確認します。MP4 edit listによりdecoded PTSがmedia/source PTSと同一とは限らず、source originを単純加算しません。製品のpart/edit/prerollとsample index、PTS差分を照合し一意対応できない場合はblockedです。
 
-色のparityだけでは偶数個のイベント欠落を検知できません。全境界pairの**表示番号を人が読み**、package/run/view/eventのDRAW記録へ対応づけます。既知の300イベントを開始100/中間100/終了100（30分連続取得、各1秒以上間隔、各batchを期限内に保存）で発生させ、初期画像＋各遷移の前後2枚、最低601画像を確認します。期待した番号がなければ欠落、同じ番号が複数の初回遷移を持てば重複、unknown/読めない番号/時計対応不明はuncertainとし、いずれも300件の母数から除いて正常を装いません。回転/再生成はview UUIDで別系列に分けます。DRAWされなかったcoalesced REQUESTも別件数で記録します。全frameのVFR PTSを使い、30fps固定としてframe番号から時刻を算出しません。
+色のparityだけでは偶数個のイベント欠落を検知できません。表示番号を画像から独立に読み、package/run/view/eventのDRAW記録へ対応づけます。色の抽出だけで番号対応を証明しません。
+
+以下の300event・30分・画像枚数・旧画像時刻精度値は、#13当時の測定方法を保持する履歴です。現在の保証・方法は[#299を適用した責任方針](../../../docs/verification/responsibility.md#全試験の目的と方法)と[同期設計の有効精度](../../../docs/design/timeline.md#許容精度と受取人の確認)に従い、必要な不足事実を示して有限の入力・確認方法を選びます。旧回数や閾値を一律gateへ戻さず、原FAIL・未校正・原因未帰属は保持します。この区別は元観察を新たなPASSにするものではありません。
+
+当時の方法では、既知の300イベントを開始100/中間100/終了100（30分連続取得、各1秒以上間隔、各batchを期限内に保存）で発生させ、初期画像＋各遷移の前後2枚、最低601画像を確認します。期待した番号がなければ欠落、同じ番号が複数の初回遷移を持てば重複、unknown/読めない番号/時計対応不明はuncertainとし、いずれも300件の母数から除いて正常を装いません。回転/再生成はview UUIDで別系列に分けます。DRAWされなかったcoalesced REQUESTも別件数で記録します。全frameのVFR PTSを使い、30fps固定としてframe番号から時刻を算出しません。
 
 各eventの最初の表示frame `F`、その直前 `P`を製品clock mappingで共通elapsedへ変換します。表示開始の録画上の区間は`(P,F]`、間隔`F-P`がframe観測の不確かさです。各phaseのelapsedはbefore/afterの中点、幅を保持し、`F-REQUEST`、`F-DRAW`、`F-FRAME_COMMIT`を**別列**へ記録します。callbackのdispatch遅延によりFRAME_COMMITがFより後でも自動補正しません。物理表示の真値は測れません。ログheaderのelapsed/record_id一致、時計sample読取幅/量子化/offset差による誤差も別列に保持し、host受信を発生時刻へ代入しません。
 

@@ -6,11 +6,13 @@ import java.io.InputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
+/** Fixed-server wire values: frame PTS is in microseconds; config packets do not establish frame time. */
 internal sealed interface VideoPacket {
     data class Session(val width: Int, val height: Int) : VideoPacket
     data class Frame(val pts: Long, val config: Boolean, val key: Boolean, val bytes: ByteArray) : VideoPacket
 }
 
+/** Reads one bounded packet; [started] marks its first byte so the caller can enforce a whole-packet deadline. */
 internal fun readVideo(input: DataInputStream, started: () -> Unit = {}): VideoPacket {
     val first = input.readUnsignedByte()
     started()
@@ -32,6 +34,11 @@ internal fun readVideo(input: DataInputStream, started: () -> Unit = {}): VideoP
         flags and (1L shl 61) != 0L, bytes)
 }
 
+/**
+ * Wall time is epoch nanoseconds; raw is the payload, not the binary header. Decoded text can be lossy.
+ *
+ * Legacy headers leave UID null and default lid to zero; [lidPresent] distinguishes that from proven main.
+ */
 internal data class DeviceLog(
     val wall: Long,
     val pid: Int,

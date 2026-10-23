@@ -15,6 +15,7 @@ import uuid
 
 @contextmanager
 def locked(directory):
+    """Hold the short filesystem mutex; the durable lease outlives this context."""
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     info = directory.lstat()
     if directory.is_symlink() or info.st_uid != os.getuid() or info.st_mode & 0o077:
@@ -26,6 +27,7 @@ def locked(directory):
 
 
 def transition(path, action, *, token=None, owner=None, issue=None, run=None, head=None, minutes=45):
+    """Read/update the lease while locked; expiry never permits another owner to acquire it."""
     now = time.time()
     if not 1 <= minutes <= 45:
         raise ValueError('minutes must be 1..45; renewal does not authorize a larger loop budget')

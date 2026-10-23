@@ -10,6 +10,12 @@ internal data class LegacyCliConfig(val seconds: Int, val destination: String, v
     companion object {
         private val fields = setOf("replay_seconds", "output_directory", "segment_seconds", "state_directory", "adb_path", "scrcpy_path", "ffmpeg_path")
 
+        /**
+         * Validates flat legacy JSON or simplified key/value YAML without applying settings or I/O.
+         *
+         * Relative destinations use the CLI caller's absolute [workingDirectory]; omitted values
+         * retain legacy defaults (60 seconds and home/Replays), not current GUI defaults.
+         */
         fun parse(text: String, yaml: Boolean, workingDirectory: Path, home: Path = Path.of(System.getProperty("user.home"))): LegacyCliConfig {
             require(text.toByteArray(Charsets.UTF_8).size <= ReplayCliProtocol.MAX_CONFIG_BYTES) { "設定は64 KiB以内で指定してください。" }
             require(workingDirectory.isAbsolute && home.isAbsolute) { "設定の基準パスが不正です。" }

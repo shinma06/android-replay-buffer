@@ -33,6 +33,7 @@ import javax.swing.JComponent
 import javax.swing.JPanel
 import javax.swing.event.DocumentEvent
 
+/** Owns an EDT form draft; only Apply persists it, and async checks are bound to form identity and revision. */
 class ReplaySettingsConfigurable(private val project: Project) : Configurable {
     private var panel: JPanel? = null
     private var retention: JBTextField? = null
@@ -292,7 +293,11 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable {
 
 internal const val LOGCAT_DESTINATION_UNAVAILABLE = "Logcatのスクショ保存先を取得できません。Android Studioの画面撮影設定を確認するか、手動の保存先を指定してください。"
 
-/** The injected service scope owns the job; each form cancels its own pending check. */
+/**
+ * The service scope owns the job: resolve/attribute checks run on IO and [publish] returns on UI.
+ *
+ * Forms cancel their pending job and reject stale lifetime/revision results before touching widgets.
+ */
 internal fun CoroutineScope.checkDestination(
     value: String,
     resolve: () -> String = { value },

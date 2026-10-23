@@ -1,4 +1,5 @@
 // macOS QA helper: decode local MP4 frames with native AVFoundation. No GUI/ADB.
+// Writes only a new output directory; failure leaves partial evidence, not a completed report.
 import AVFoundation
 import AppKit
 import CoreImage
@@ -30,6 +31,14 @@ let report = output.appendingPathComponent("frames.jsonl")
 fm.createFile(atPath: report.path, contents: nil, attributes: [.posixPermissions: 0o600])
 let handle = try FileHandle(forWritingTo: report)
 let context = CIContext()
+/// Writes one decoded frame to a new PNG in this run's private output directory.
+///
+/// Conversion failures terminate the helper; prior output remains.
+///
+/// - Parameters:
+///   - pixel: The decoded buffer to convert without modifying its pixels.
+///   - name: A generated filename within the output directory.
+/// - Throws: Write or permission-setting errors; a created PNG can remain.
 @available(macOS 26.0, *)
 @MainActor
 func image(_ pixel: CVReadOnlyPixelBuffer, _ name: String) throws {

@@ -37,7 +37,7 @@ def main():
 
 
 def repair_source_issue(event, name):
-    """Only repair declaration/record or bug classification changes invalidate the Issue."""
+    """Return the source Issue for repair declaration/record or bug-label changes."""
     issue = event['issue']
     if 'pull_request' in issue:
         return None
@@ -159,7 +159,7 @@ def recheck_main_repairs(api, repo, source_issue=None):
 
 
 def closed_result(pr):
-    """A live closed PR needs no decision; never label this as acceptance."""
+    """Return a skip for a live closed PR, never an acceptance decision."""
     state = pr.get('state')
     if state not in ('open', 'closed') or (state == 'open' and pr.get('merged') is True):
         raise ValueError('Live PR state is missing or inconsistent')

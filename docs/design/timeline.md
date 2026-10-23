@@ -4,6 +4,8 @@
 
 CLI原型の保全に関する記述は、この設計当時の変更範囲です。第2版の同梱CLI・明示移行・復旧は[CLI契約](../cli.md)に従い、本設計の取得・保存・UI保証は保持します。
 
+当時の試作・未実施・CLI原型に関する記録は履歴です。現行buildと実装の入口は[project facts](../project.md)、現在の実行済み/未達・延期は[Case台帳](../verification/README.md)を参照し、本設計の改訂だけで観察を追加・変更しません。
+
 ## 採用する方式
 
 **固定scrcpy serverのH.264/PTSをJVMで受け、単一MP4と2種類のJSONLログ、時刻対応JSONを保存する。** Android SDKのadbを絶対パスで使い、server・小さな時計測定用DEX・JCodecをPlugin ZIPへ同梱する。利用者のscrcpy/ffmpeg/Python導入、PATH設定、実行時ダウンロードは不要。音声・操作注入・clipboard連携は無効。独自の録画・H.264実装、専用ビューア、常駐HTTPサーバーは作らない。
@@ -75,7 +77,9 @@ boot跨ぎでは新旧epoch間のoffsetを、最後/最初のhost時計sampleか
 
 gapはstream毎に`kind / from / to / reason / boundary_uncertainty / generation`を保存する。ログの無出力だけではgapと判定しない。正常なreaderでもAndroid log bufferのoverflow、binary framing失敗、捨てた件数/不明件数を別のlossとして記録する。正常streamの終了/復旧境界は最後の正常watermarkと再開anchorで表し、その間を収録成功として埋めない。
 
-表示用StreamSnapshot.gapsも現在の論理窓に交差するimmutableコピーを返す。clock gapは全stream、device_log gapはapp_logにも関連付ける。境界または現在窓の時計対応が不明なら窓外と断定せず保持し、完全切断時は凍結した窓の不確実性を使う。SaveSnapshotの端末・app選択・窓内app履歴は固定保存対象から生成し、現在設定や再試行先によって変えない。概要にUID/PIDを出さず、範囲不明はnullのまま示す。
+表示用StreamSnapshot.gapsも現在の論理窓に交差し得るimmutableコピーを返す。clock gapは全stream、device_log gapはapp_logにも関連付ける。Storeの表示、Coreの保存warning、Writerの不足判定は共通の`inWindow`で判定し、有効なclock sampleから保守的な外側境界を導ける履歴だけを窓外と証明できる。取得中断は両境界と取得世代の根拠を必要とし、open/null・未解決のclock bridge・overflow等から有限の範囲を作らない。境界または現在窓の時計対応が不明なら窓外と断定せず保持し、完全切断時は凍結した窓の不確実性を使う。
+
+範囲判定用の`gapScopes`は元履歴とは別であり、元gapのnull/MAXや実duration不明を確定値へ書き換えない。保存物の`gaps`とREADMEには窓外と確認できた取得履歴も保全するため、履歴の存在だけでその保存のwarningを再計算しない。SaveSnapshotの端末・app選択・窓内app履歴・判定用clockは固定保存対象から生成し、後続sample・現在設定・再試行先によって変えない。概要にUID/PIDを出さず、範囲不明はnullのまま示す。
 
 端末側cleanupが再接続待ちになる場合、停止済みreader/clientのUUID・serial・exact forward endpointをcaller指定のstable private cleanupDirectoryへ記録する。session workspaceを探索せず、未知/破損/未来schema/生存file-lock ownerを保全する。新CoreはOFFでも同directoryの保留をローカルで読み戻して表示する。検証済みrecordのlock取得後だけ引継ぎ、解決済みSDKと所有pendingがある場合に限り、OFFのまま有界・取消可能なcleanupを再試行する。取得backend/時計/logcat/recordingは開始せず、pendingなし・破損/未来/lockedのみの初回OFFはADB照会もしない。旧serial自身が接続したときに二重psのowned名確認・forward serial/port/endpoint再照合を行う。port再利用・別device・共有ADBには作用せず、成功recordだけ削除する。IDE callerはsession tempとstable directoryの寿命を分ける。旧tempに残った未参照markerは所有者による既知資源管理へ残し、host-wide探索で移行しない。
 

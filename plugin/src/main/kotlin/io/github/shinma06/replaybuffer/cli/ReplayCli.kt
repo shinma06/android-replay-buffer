@@ -63,6 +63,7 @@ internal fun parseCliArguments(rawArguments: List<String>): CliArguments {
     return CliArguments(selected, project, config, foreground)
 }
 
+/** Distribution entrypoint for an already running IDE; never starts a separate capture daemon. */
 object ReplayCli {
     private const val HELP = """Usage: replay [--project PATH] [--config FILE] save|status|stop|daemon
        replayd [--project PATH] [--config FILE] [--foreground]
@@ -130,6 +131,7 @@ status: 設定を変えずに状態を表示します。stop: 対象projectの�
                 require(ReplayCliProtocol.readText(input) == endpoint.id && ReplayCliProtocol.readText(input) == endpoint.project &&
                     ReplayCliProtocol.readText(input) == endpoint.build) { "CLI接続先が変わりました。操作していません。" }
                 socket.soTimeout = ReplayCliProtocol.RESULT_TIMEOUT_MS
+                // A partial write can reach the server; subsequent failures must report an unknown outcome.
                 submitted = true
                 ReplayCliProtocol.writeRequest(wireOutput, CliRequest(parsed.command, config,
                     parsed.config?.fileName?.toString()?.let { it.endsWith(".yaml") || it.endsWith(".yml") } == true,

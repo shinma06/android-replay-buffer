@@ -26,7 +26,7 @@ GUI不要なら具体的理由と実行したCLI検証を記録します。
 
 実機/IDE観察が必要なら`gui_required: true`とし、各Caseに`id / artifact / change / preconditions / steps / expected / provenance / gpt / human / fix_issue / fix_pr / recheck / next_action`を記入します。`gpt`はschema互換キーでモデル指定ではありません。`gpt/human`には`status`と`reason`を置き、未観察をpassにしません。failには別の実在open修正Issueが必要です。Computer Use経路自体が要件なら`required_execution: computer_use`を指定します。
 
-CLIではUSB切断/再接続、直前区間の動画/logcat時刻整合、log-only保存、保存失敗、daemon停止等を変更範囲に応じて選びます。プラグインではさらにEDT/dispose/取消し/設定保存/IDE再起動を確認します。既存2 unit testsは全製品の受入を代替しません。
+CLIではUSB切断/再接続、直前区間の動画/logcat時刻整合、log-only保存、保存失敗、daemon停止等を変更範囲に応じて選びます。プラグインではさらにEDT/dispose/取消し/設定保存/IDE再起動を確認します。[CLIとPluginの自動試験](../plugin-development.md)は全製品の受入を代替しません。
 
 ## 受入NG修正のdevelop統合（#226）
 
@@ -124,7 +124,7 @@ mainはdevelop baseとは別のrefなので、GitHubのHEAD/strict-base保護だ
 4. resultsのキーは`Issue番号:Case ID`。passは`status / actor / observer / at / head / artifact_sha256 / evidence / loaded_identity / reason`を持つ。日時はtimezone付きISO8601、head/hashは候補と一致。loaded_identityに実際のCLI/Pluginのロード識別を書く。
 5. 候補後に新しく記述できるのはpromotion.jsonとpromotion IssueのCase JSONのみ。採用済み証明のIssue JSON（未参照の過去候補分を含む）と、条件を満たすmain方針は、trusted mainの正確なblob/modeで保持する。過去候補の証明を今回の候補の証拠へ読み替えず、全範囲のgate・CI・独立レビューを通し、merge commitでmainへ統合する。
 
-Plugin ZIP生成はプラグイン基盤の導入時に実buildへ接続します。現在は存在しないGradle/ZIP成果物を仮定せず、製品promotion前に再現できる固定成果物の作成・照合手順をそのIssueで定義します。main起点の限定変更も、trusted mainの`docs/verification/scopes/issue-N.json`による事前承認範囲と全Caseの観察が必要です。
+Plugin ZIPは[標準build](../plugin-development.md)で生成し、[配布仕様](../release-delivery.md)に従って固定source・同梱CLI・JAR・ZIPのidentityを照合します。build成功は実IDEへのロードや製品Caseの合格を示しません。main起点の限定変更も、trusted mainの`docs/verification/scopes/issue-N.json`による事前承認範囲と全Caseの観察が必要です。
 
 ### 実測GOPの境界試験（#56）
 

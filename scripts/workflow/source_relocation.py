@@ -4,6 +4,10 @@ from pathlib import Path
 
 
 def relocated_source(root, handoff, source, record, git):
+    """Return the verified original linked worktree; do not move files or transfer ownership.
+
+    An absent old path requires verified migration evidence; branch/HEAD changes and dirty work are rejected.
+    """
     old = Path(handoff['source'])
     source = Path(source).resolve(strict=True)
     common = Path(git('rev-parse', '--path-format=absolute', '--git-common-dir', cwd=root)).resolve()

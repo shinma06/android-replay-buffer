@@ -13,7 +13,12 @@ private val exclusiveRename by lazy {
     Native.load("c", MacExclusiveRename::class.java, mapOf(Library.OPTION_STRING_ENCODING to "UTF-8"))
 }
 
-/** Bounded ownership observations surround a descriptor-relative, exclusive publication. */
+/**
+ * Bounded ownership observations surround descriptor-relative, exclusive publication on macOS.
+ *
+ * The caller keeps parent/staging handles alive. Verification can fail after rename, so an exception
+ * does not imply the complete path is absent; the writer must retain and assess the actual output.
+ */
 internal class SavePublication(
     val partial: Path,
     val complete: Path,

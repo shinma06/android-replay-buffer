@@ -4,4 +4,6 @@ Review the supplied fixed HEAD against the supplied fixed base and Issue accepta
 
 Do not edit, commit, push, contact external services with private data, operate GUI, change settings or claim writer ownership. Use read-only tools in the authorized checkout. Distinguish a concrete defect from missing environmental verification; do not invent findings or call this review GUI acceptance.
 
+For changed source/comments/Doc, examples, configuration/schema or instructions, use docs/comment-doc.md to assess meaningful contracts, local why/non-obvious how, affected explanations/tests/references and protected history. For an assigned whole-existing-code application, inspect the fixed coverage and concurrent adopted delta; do not accept an entrypoint link or unread paths as completed application.
+
 Report: session identifier, exact HEAD/base, scope reviewed, verdict (approved / changes_requested / blocked), findings with file/line and impact, checks actually executed, acceptance assessment and unresolved conditions. Explain in Japanese. Never claim an unexecuted check passed. The coordinator owns publication and integration.

@@ -1,3 +1,4 @@
+"""Exercise QA/release handoffs with fake remote state, never live acceptance evidence."""
 import copy
 import unittest
 from unittest.mock import patch

@@ -1,5 +1,7 @@
 # 初期版の固定ZIP受入
 
+以下は #27 の初期準備時点の計画と環境記録です。本文の「現在」「未実施」、旧stack・MP4 parts・数値精度・全件GUI確認は、その時点の条件として保持します。新しい実行には[有効な製品責任](responsibility.md)と[trusted正式計画の適用規則](README.md)を使い、実際のCase・固定成果物・不足事実を読み直します。この文書の保持や現在の方法での再評価を、新観察や旧FAILの解消へ読み替えません。
+
 [QA Issue #27](https://github.com/shinma06/android-replay-buffer/issues/27)は[実装 #14](https://github.com/shinma06/android-replay-buffer/issues/14)のnative子です。Project #5 / Milestone #3、PMは[#10](https://github.com/shinma06/android-replay-buffer/issues/10)、QAは初期版QAチャット。ここは準備手順であり、製品機能・実機・Emulatorのpass記録ではありません。[人間向けQA](human-qa.md)と[受入規約](README.md)に従い、具体Caseの正本は[issue-27.json](changes/issue-27.json)です。
 
 利用者は実機を用意できないため**実機受入を保留**しています。`-REAL`全Caseは環境不足・利用者保留としてblocked、`-EMU`は未実施pendingです。実機の再確認質問は不要です。実機対応保証を出さず、全必要Caseを求めるmain gateと初期版完成条件も緩めません。再開条件は利用者が専用実機を用意し、PMが改めて実行を割り当てた時点です。

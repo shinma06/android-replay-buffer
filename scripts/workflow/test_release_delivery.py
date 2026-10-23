@@ -1,3 +1,4 @@
+"""Synthetic ZIPs and fake GitHub responses; no live publication or product execution."""
 import copy
 import hashlib
 import io

@@ -32,7 +32,12 @@ internal data class ReplayCaptureView(
     val initializationError: String? = null,
 )
 
-/** One project's concrete core owner. No Swing, SDK lookup, or device selection is performed here. */
+/**
+ * One project's core owner; commands queue through a coroutine mutex and callbacks may arrive off EDT.
+ *
+ * The caller owns scope and UI dispatch. close starts cleanup; termination confirms its result separately.
+ * No Swing, SDK lookup, or device selection is performed here.
+ */
 internal class ReplayProjectCapture(
     private val scope: CoroutineScope,
     private val store: ReplaySettingsStore,
@@ -204,6 +209,7 @@ internal class ReplayProjectCapture(
         return result
     }
 
+    // A retried request has a new attempt; notify once for that attempt's terminal transition, not each refresh.
     internal fun acceptSnapshot(next: ReplaySnapshot) {
         val terminal = synchronized(this) {
             val previous = view.snapshot

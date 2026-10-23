@@ -18,6 +18,12 @@ internal fun sha256(path: Path): String {
     return java.util.HexFormat.of().formatHex(digest.digest())
 }
 
+/**
+ * Extracts fixed helpers into a caller-owned private directory, registering each new file before payload.
+ *
+ * The clock is eager and video server lazy. Construction/extraction can fail after creating a file;
+ * the caller retains root/ownership cleanup responsibility. Close removes initialized helpers, not the directory.
+ */
 internal class CaptureResources(private val directory: Path, private val created: (Path) -> Unit = {}) : AutoCloseable {
     private val serverResource = lazy { extract("scrcpy-server-v5.0.1", SERVER_HASH) }
     val server: Path get() = serverResource.value

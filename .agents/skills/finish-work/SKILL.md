@@ -9,6 +9,8 @@ Before an unfinished-work stop, handoff or blocked conclusion, apply docs/omil-p
 
 Use docs/workflow.md and the Issue acceptance; for context changes also docs/context.md. Review-only requests return findings/evidence without new Issues or writer mutations.
 
+For source/comment/Doc, example, configuration/schema or instruction changes, assess docs/comment-doc.md against the actual diff and affected callers, contracts, examples/tests and references. Preserve necessary why/non-obvious how and source/artifact identity; link syntax alone does not prove semantic conformity. For an assigned whole-existing-code application, require fixed-revision coverage and reconcile concurrent adopted changes; unread or other-owner pending paths cannot become compliant by default.
+
 For a method/tool/policy update, follow docs/context.md's superseded-management guidance: trace affected active rules, effective plan/resolver/gates, templates/handoffs and actual consumers; reconcile them while preserving history and explicit contracts. Record retained debt with reason, impact, owner and a concrete retirement condition in the existing Issue/PR, without a new ledger.
 
 Review docs/workflow.md's method-improvement cycle when applicable, including concrete nonfatal friction: a guarantee-preserving alternative, bounded reversible trial and feedback for adoption/refinement/reversion. An improvement chosen for execution needs an actual trial/result/feedback and named owner; proposed/static comparisons alone are not completion. Keep blocked/unperformed trials unfinished with their owner/next action, without invented efficacy, endless experiments or unrelated GUI tests. Do not freeze a method instead of a necessary formal revision.

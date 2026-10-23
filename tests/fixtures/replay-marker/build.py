@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Build only the disposable APKs; never install or contact ADB."""
+"""Build disposable APKs and their identity record; never install or contact ADB.
+
+Creates/reuses this fixture's private debug key. A failed build can leave local
+key/build outputs, which are not an observed native regression or product PASS.
+"""
 import argparse
 import hashlib
 import json

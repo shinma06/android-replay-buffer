@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "issue": 345,
+  "gui_required": false,
+  "reason": "本人提供のコメント・Doc原案を本projectの契約へ適合し、全既存対象を確認して必要な説明を実適用する。対象は作業入口・Doc・ソース内説明であり、実行文・設定値・保存内容・警告判定・UI表示を変更しない。生成物・固定観察/失敗・vendor/licenseは保全し、並行担当の未統合対象はpendingのまま採用後に再照合する。説明変更でもsource/JAR/ZIP identityは変わり得るため既存候補の実行済み受入を付け替えない。CLI通信・設定の既存JVM/配布試験と管理検査で変更を検証し、追加GUI/ADB/録画Caseは設けない。全適用coverage・独立レビュー・CIと並行採用差分の照合はIssue/PRで確認する。",
+  "cli_checks": [
+    "python3 scripts/check.py",
+    "python3 scripts/workflow/product_check.py",
+    "python3 scripts/workflow/change_impact.py --base origin/develop --run-tests",
+    "固定base/HEADの全tracked対象一覧を実読・必要変更・既準拠・保護対象・pendingで根拠付き照合し、採用された並行変更も含めて完了を確認する",
+    "ソース内説明変更は実行文・機械注釈・設定値を維持した差分であることを確認し、Doc/例/設定/参照元・読込経路の整合を確認する"
+  ],
+  "cases": []
+}

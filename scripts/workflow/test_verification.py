@@ -1,3 +1,4 @@
+"""Exercise acceptance gates with synthetic observations and disposable Git history."""
 import copy
 import json
 from pathlib import Path

@@ -75,7 +75,7 @@ PR の題名は **`type: 日本語の要約 (#N)`** に統一します。例: `f
 | --- | --- |
 | Assignees | 実在し、依頼範囲の責任を持つ GitHub account を設定する。単独 owner の本 repository では `shinma06` の assign-to-self を使える。内部の sole writer/PM と別に記録し、架空の agent account を作らない |
 | Labels | 対応 Issue の `type` / `priority` を各1つ、PR 自身の現在の `status` を1つ設定する。実装中は in-progress、レビュー中は review、必要条件の障害待ちは blocked、延期は deferred。Issue が未完でも merge/closed の PR は done とし、未統合 close はその理由と Issue の残条件を保持する。Issue の status を機械的にコピーしない |
-| Projects / Milestone | 対応 Issue の実 Project/Milestone を使う（現行は Project #5 / Milestone #3）。PR 自体を Project に追加し、PR の Status は下の Project Status 対応へ同期する。Issue 項目を代用しない。別計画なら実在する対象と理由を記録する |
+| Projects / Milestone | 対応 Issue の実 Project/Milestone を使う（Project #5、Milestoneは各Issueの実計画を確認）。PR 自体を Project に追加し、PR の Status は下の Project Status 対応へ同期する。Issue 項目を代用しない。別計画なら実在する対象と理由を記録する |
 | Reviewers | 実際の review/request と reviewer を読む。既存 Codex service の review を保持し、必要な current-HEAD review は既存の依頼/ready 手順を使う。空欄を埋めるため無関係な人への依頼や自己承認をしない。bot の COMMENTED/Completed、GitHub の request、別 session の独立評価は区別する |
 | Development | 次節の関連時期・両端 readback・default branch の close 境界に従う |
 

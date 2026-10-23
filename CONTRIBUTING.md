@@ -2,6 +2,8 @@
 
 [プロジェクト情報](docs/project.md)・[開発手順](docs/workflow.md)を読み、実在するIssueに紐づく専用branch/worktreeで作業します。
 
+コード・コメント・Doc・例や設定を変更するときは、[コメント・Docの契約](docs/comment-doc.md)に従い、影響する呼出し元/先・説明・tests・参照も確認します。必要な契約と局所の理由を保ち、説明の数を増やすことは目的にしません。
+
 ```bash
 python3 scripts/bootstrap.py
 python3 scripts/check.py

@@ -375,6 +375,12 @@ def automatic_release_target(target):
 
 
 def publish(path, record, target):
+    """Publish a fixed copy of accepted bytes and return its verified Release URL.
+
+    Remote writes are not a transaction: an exception may leave a draft, uploaded
+    asset or published body. Reconcile that state with the same record before
+    retrying; serialize callers as described in docs/release-delivery.md.
+    """
     # Own the accepted bytes throughout upload/readback; the caller's path may change.
     require(path.is_file() and not path.is_symlink() and 0 < record['size'] <= MAX_ARCHIVE,
             'A bounded regular accepted ZIP is required')

@@ -55,7 +55,13 @@ internal class SavedScreenshot(
     }
 }
 
-/** One finite request; does not create a replay capture, device file, forward, or server. */
+/**
+ * One blocking request off EDT; no replay capture, device file, forward or server is created.
+ *
+ * Uses the selected serial or requires exactly one connected device. Foreground checks bracket
+ * screencap but cannot exclude screen switches/overlays. Failure/cancellation may leave output;
+ * [ScreenshotSaveFailure.retained] identifies confirmed retained output when available.
+ */
 internal fun saveScreenshot(adbPath: Path, application: String, destination: Path, selectedSerial: String? = null): SavedScreenshot {
     ApplicationTarget(application, ApplicationMode.MANUAL).validate()
     require(destination.isAbsolute) { "設定で保存先の絶対パスを指定してください。" }

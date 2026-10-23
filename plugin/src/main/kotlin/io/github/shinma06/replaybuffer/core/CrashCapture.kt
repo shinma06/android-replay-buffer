@@ -2,7 +2,12 @@ package io.github.shinma06.replaybuffer.core
 
 internal data class AutoTrigger(val eventId: String, val facts: Map<String, Any?>)
 
-/** Called inside the store/clock freeze, before a pin exists, using the output rows' exact mapper. */
+/**
+ * Called inside the store/clock freeze before pin admission, using the output rows' exact mapper.
+ *
+ * mapper accepts wall/host ns; admitted is host monotonic ns. Unknown identity/time throws AutoSaveRejected.
+ * Returned facts concern platform reports, not a measured process-death or physical-image timestamp.
+ */
 internal fun frozenAutoTrigger(pair: CrashPair, capture: FrozenCapture, mapper: (Long, Long) -> MappedTime,
                               admitted: Long): AutoTrigger {
     fun reject(reason: AutoSaveReason): Nothing = throw AutoSaveRejected(reason)
