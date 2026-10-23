@@ -351,15 +351,15 @@ class CaptureStoreSaveTest {
         for (unproven in listOf(recovery.copy(sequenceOffset = null), recovery.copy(bridgeError = Long.MAX_VALUE),
                 recovery.copy(bridgeError = 20_000_001), recovery.copy(sequenceOffset = Long.MAX_VALUE),
                 recovery.copy(received = 100_000_000))) {
-            assertEquals(null, listOf(gap).videoScopes(clocks, mapOf(gap to unproven)).single().toNs)
+            assertEquals(null, listOf(gap).gapScopes(clocks, mapOf(gap to unproven)).single().toNs)
         }
-        val proven = listOf(gap).videoScopes(clocks, mapOf(gap to recovery)).single()
+        val proven = listOf(gap).gapScopes(clocks, mapOf(gap to recovery)).single()
         assertEquals(gap.toNs, proven.toNs)
         assertEquals(1_000_000, proven.boundaryUncertaintyNs)
         val unknownStart = gap.copy(fromNs = null)
-        assertEquals(null, listOf(unknownStart).videoScopes(clocks, mapOf(unknownStart to recovery)).single().fromNs)
+        assertEquals(null, listOf(unknownStart).gapScopes(clocks, mapOf(unknownStart to recovery)).single().fromNs)
         val open = gap.copy(toNs = null)
-        assertEquals(null, listOf(open).videoScopes(clocks, mapOf(open to recovery)).single().toNs)
+        assertEquals(null, listOf(open).gapScopes(clocks, mapOf(open to recovery)).single().toNs)
         assertEquals(Long.MAX_VALUE, gap.boundaryUncertaintyNs)
     }
 
@@ -496,10 +496,24 @@ class CaptureStoreSaveTest {
             val laterOutput = SaveWriter().write(later, root, { false }) { publication -> Files.move(publication.partial, publication.complete) }
             val laterManifest = JsonParser.parseString(Files.readString(laterOutput.directory.resolve("session.json"))).asJsonObject
             assertEquals(1, laterManifest["parts"].asJsonArray.size())
-            assertEquals("900000", laterManifest["parts"].asJsonArray.single().asJsonObject["duration_us"].asString)
-            assertEquals(listOf("video"), laterOutput.missingKinds) // The original unbounded clock warning is not erased.
+            assertEquals("1000000", laterManifest["parts"].asJsonArray.single().asJsonObject["duration_us"].asString)
+            assertTrue(laterOutput.missingKinds.isEmpty())
             assertEquals(gap, later.gaps.single())
             store.release(later.id)
+            if (!immediateRecovery) {
+                val afterGap = store.capture(ReplaySettings(replaySeconds = 1), host = host + 7_200_000_000)!!
+                assertEquals(6_200_000_000, afterGap.start)
+                assertEquals(7_200_000_000, afterGap.end)
+                assertEquals(gap, afterGap.gaps.single()) // Preserve the original uncertain history.
+                val clean = SaveWriter().write(afterGap, root, { false }) { publication -> Files.move(publication.partial, publication.complete) }
+                assertTrue(clean.missingKinds.isEmpty(), Files.readString(clean.directory.resolve("session.json")))
+                assertTrue(afterGap.states.values.all { state -> state.gaps.isEmpty() })
+                assertTrue(store.streams(1, afterGap.end).values.all { state -> state.gaps.isEmpty() })
+                val cleanManifest = JsonParser.parseString(Files.readString(clean.directory.resolve("session.json"))).asJsonObject
+                assertTrue(cleanManifest["video_missing_ranges"].asJsonArray.isEmpty)
+                assertEquals(Long.MAX_VALUE.toString(), cleanManifest["gaps"].asJsonArray.single().asJsonObject["boundary_uncertainty_ns"].asString)
+                store.release(afterGap.id)
+            }
         } finally {
             store.close()
             Files.walk(root).use { paths -> paths.sorted(java.util.Comparator.reverseOrder()).forEach { Files.deleteIfExists(it) } }
