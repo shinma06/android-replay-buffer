@@ -87,7 +87,7 @@ private class ReplayToolWindowPanel(private val project: Project) : JPanel(Borde
     private val failure = wrappingLabel()
     private val frozenRequest = wrappingLabel()
     private val frozenTarget = readOnlyDetails("固定した保存対象の端末とアプリ履歴", 4)
-    private val gapDetails = readOnlyDetails("現在の保存窓の欠落", 4)
+    private val gapDetails = readOnlyDetails("現在の保存窓の不足・未確認区間", 4)
     private val gapScroll = JBScrollPane(gapDetails)
     private val saveButton = JButton().apply { addActionListener { if (alive) service.save() } }
     private val openButton = JButton("フォルダを開く").apply {
@@ -200,7 +200,7 @@ private class ReplayToolWindowPanel(private val project: Project) : JPanel(Borde
         failure.text = "保存できません: ${saved?.error ?: "保存先を確認してください。"}"
         frozenRequest.text = "固定対象: ${recordTime(saved?.windowStartNs)}〜${recordTime(saved?.windowEndNs)} / ${saved?.replaySeconds ?: seconds}秒" +
             " / セッション: ${saved?.sequenceId ?: "未確定"}" +
-            " / 不足・欠落: ${saved?.missingKinds?.map(::streamName)?.joinToString("、")?.ifEmpty { "なし" } ?: "なし"}"
+            " / 記録の不足・未確認: ${saved?.missingKinds?.map(::streamName)?.joinToString("、")?.ifEmpty { "なし" } ?: "なし"}"
         val targetText = frozenTargetDescription(saved)
         if (frozenTarget.text != targetText) frozenTarget.text = targetText
         val gapText = currentGapDescription(snapshot)
@@ -277,14 +277,14 @@ internal fun streamDescription(label: String, stream: StreamSnapshot?): String {
     }
     return "$label: $state / ${String.format(Locale.ROOT, "%.1f", stream.availableSeconds)}秒分" +
         (stream.reason?.let { " / $it" } ?: "") +
-        if (stream.gaps.isEmpty()) "" else " / 現在窓に欠落${stream.gaps.size}件（下の欠落詳細）"
+        if (stream.gaps.isEmpty()) "" else " / 現在窓に不足・未確認${stream.gaps.size}件（下の詳細）"
 }
 
 internal fun currentGapDescription(snapshot: ReplaySnapshot?): String {
     if (snapshot == null) return ""
     val gaps = (snapshot.video.gaps + snapshot.deviceLog.gaps + snapshot.appLog.gaps).distinct()
     if (gaps.isEmpty()) return ""
-    return "現在窓内の欠落（記録時刻）:\n" + gaps.joinToString("\n") { gap ->
+    return "現在窓内の不足・未確認（記録時刻）:\n" + gaps.joinToString("\n") { gap ->
         val kind = if (gap.stream == "clock") "時計" else streamName(gap.stream)
         val boundary = when (gap.boundaryUncertaintyNs) {
             null, Long.MAX_VALUE -> " / 境界の誤差は未確定"
@@ -322,7 +322,7 @@ internal fun saveDescription(save: SaveSnapshot?): String = (when (save?.phase) 
     SavePhase.WRITING -> "保存: 保存中…（取得は継続しています）"
     SavePhase.FAILED -> "保存: 保存失敗"
     SavePhase.CANCELLED -> "保存: 公開前に取消し"
-    SavePhase.COMPLETED -> "保存: 完了" + if (save.missingKinds.isNotEmpty()) " / 不足・欠落: ${save.missingKinds.map(::streamName).joinToString("、")}" else ""
+    SavePhase.COMPLETED -> "保存: 完了" + if (save.missingKinds.isNotEmpty()) " / 記録の不足・未確認: ${save.missingKinds.map(::streamName).joinToString("、")}" else ""
     else -> "保存: 待機"
 }) + (if (save?.autoEventId != null) "（自動保存）" else "") +
     if (save != null && save.phase != SavePhase.IDLE) " / ${captureModeDescription(save.captureMode)}" else ""

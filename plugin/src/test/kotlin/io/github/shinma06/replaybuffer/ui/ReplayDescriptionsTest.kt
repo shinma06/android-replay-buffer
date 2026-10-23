@@ -79,7 +79,7 @@ class ReplayDescriptionsTest {
             assertEquals(StreamState.CAPTURING, recovered.deviceLog.state)
             val status = streamDescription("端末ログ", recovered.deviceLog)
             assertTrue(status.contains("取得中"))
-            assertTrue(status.contains("現在窓に欠落2件"))
+            assertTrue(status.contains("現在窓に不足・未確認2件"))
             val detail = currentGapDescription(recovered)
             assertTrue(detail.contains("ログの取得が中断しました"))
             val logGap = recovered.deviceLog.gaps.first { it.stream == "device_log" }
@@ -102,11 +102,17 @@ class ReplayDescriptionsTest {
         val known = CaptureGap("video", 9_000_000_000, 10_000_000_000, "動画の取得が中断しました", 20_000_000)
         val uncertain = healthy.copy(gaps = listOf(gap, known))
         val detail = currentGapDescription(snapshot(mapOf("video" to uncertain, "device_log" to healthy, "app_log" to healthy)))
+        assertTrue(detail.startsWith("現在窓内の不足・未確認"))
+        assertTrue(detail.contains("時計対応を確認できません"))
         assertTrue(detail.contains("未確定〜未確定"))
         assertTrue(detail.contains("境界の誤差は未確定"))
         assertFalse(detail.contains("9223372036"))
         assertTrue(detail.contains("動画: 9.000秒〜10.000秒"))
         assertTrue(detail.contains("境界の誤差±0.020秒"))
+        val save = SaveSnapshot(SavePhase.COMPLETED, "clock-uncertain", missingKinds = listOf("video"))
+        val saved = saveDescription(save)
+        assertTrue(saved.contains("記録の不足・未確認: 動画"))
+        assertFalse(saved.contains("欠落"))
         assertEquals("", currentGapDescription(snapshot(mapOf("video" to healthy, "device_log" to healthy, "app_log" to healthy))))
     }
 
@@ -135,7 +141,7 @@ class ReplayDescriptionsTest {
         val save = SaveSnapshot(SavePhase.COMPLETED, "fixed", missingKinds = listOf("video"),
             videoTail = VideoTailSnapshot(1_000_000_000, 5_000_000_000, 123, 1_000_000_000, 0, 1, true))
         val current = snapshot(mapOf("video" to healthy.copy(gaps = listOf(gap)), "device_log" to healthy, "app_log" to healthy)).copy(save = save)
-        assertEquals("保存: 完了 / 不足・欠落: 動画 / 動画＋ログ", saveDescription(save))
+        assertEquals("保存: 完了 / 記録の不足・未確認: 動画 / 動画＋ログ", saveDescription(save))
         assertTrue(videoTailDescription(save).contains("前の画像を表示・新frame未確認"))
         assertTrue(videoTailDescription(save).contains("1.000秒〜5.000秒"))
         assertTrue(currentGapDescription(current).contains("5.000秒〜6.000秒 / 動画の接続が中断しました"))

@@ -25,6 +25,8 @@ class ReplayCliSaveResultTest {
         assertEquals(0, result.code)
         assertEquals("/completed folder", result.output)
         assertTrue(result.error.contains("video"))
+        assertTrue(result.error.contains("記録の不足・未確認: video"))
+        assertFalse(result.error.contains("欠落"))
         assertTrue(result.error.contains("legacy warning"))
     }
 
