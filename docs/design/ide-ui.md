@@ -109,6 +109,31 @@ ToolWindow上部に「スクリーンショットを保存」を常設する。�
 
 根拠は[Android公式adbのスクショ](https://developer.android.com/tools/adb#screencap)、[FLAG_SECURE](https://developer.android.com/security/fraud-prevention/activities)、AOSPの固定[WindowManagerService / DisplayContent / PhoneWindowManager / KeyguardServiceDelegate / screencap](https://android.googlesource.com/platform/frameworks/base/+/1cdfff555f4a21f71ccc978290e2e212e2f8b168/)と[SurfaceFlingerの画面ID出力](https://android.googlesource.com/platform/frameworks/native/+/db4192ada9dee591ec897a51c07c489c84c860c1/services/surfaceflinger/SurfaceFlinger.cpp)。固定sourceの形式確認と、製品の実IDE/USB観察は区別する。[Case #325](../verification/changes/issue-325.json)が残保証を追跡する。
 
+
+## 第2版のGUI整理（#104）
+
+第2版の機能を採用した`ac9a1b2`を起点に、既存の1パネルと設定画面を整理する。以下を現在の配置・表示名とし、上段の初期版の配置例は設計履歴として保持する。取得/保存のsnapshot・操作/validation・通知の所有と寿命は変えない。新しい端末選択や独自状態、UI frameworkは追加しない。
+
+| 順序 | 表示と操作 |
+| --- | --- |
+| 上部 | 「取得を有効にする」と「設定…」、即時ON/OFFと未保存対象の破棄の説明。取得状態/モード・端末・アプリ・保持時間と記録区間を続ける |
+| 主要操作 | 「直前N秒を保存」と「スクリーンショット」。幅が足りなければ行を折り返す。各操作の不可理由とスクショ自身の対象/実保存先・画面上の注意を近接表示する。スクショは取得OFFでも独立利用する |
+| 保存結果 | 待機/保存中/取消し/失敗/完了、固定モード・記録の不足と未確認・動画末尾の未確認を保持する。完了時はその要求の実フォルダを表示し、開く操作を置く。失敗時は判明している出力の保全先を示す |
+| 失敗の復旧 | 理由・固定区間/不足と未確認の下に「同じ対象を再試行」「別の保存先で再試行…」「未保存の対象を破棄」を置き、その後に固定端末/アプリ履歴を表示する。再試行の固定対象と破棄しても取得継続という意味を説明する。既存の明示保存先確認・要求ID照合・保全を維持する |
+| 記録の状態 | 動画/端末ログ/アプリログの状態・取得済み範囲、窓内の不足/未確認区間と理由・時計境界の未知を表示する。ログ0件やLOG_ONLYの対象外を欠損と断定しない。重要な状態を折り畳まない |
+| 保存先・自動保存 | 動画ログの設定root、クラッシュ自動保存の設定/受付/未保存報告/直近結果/残るwarningと対応外範囲を表示する |
+| 接続情報 | SDKの実パス/不備、sessionと端末処理の片付け待ちを表示する。詳細を取得状態や保存完了と混同しない |
+
+スクショは#338の`screenshot-日時-UUID.png`1枚を共通root（既定）または明示専用rootへ直接保存する。表示名を短くしても、録画対象serial固定/OFF独立・要求時の保存先固定・不正専用先からの非fallback、通知から実画像の親を開く/同じ画像だけを削除する保証は変えない。
+
+設定画面は、冒頭に「適用/OKで一式反映、キャンセルでは変更しない」「取得ON/OFFはToolWindowですぐ反映」を表示する。対象アプリ、取得する記録、動画ログ保存先、スクショ保存先の順に標準見出しで区切る。モードのOFF条件・package構文・自動保存の対象/上限・保存先の確認結果は既存の幅追従textを共用して折り返す。自動保存の受付上限を解除する際は、その設定をOFFで適用してからONで再度適用することを説明し、取得トグルのOFF/ONと混同させない。全入力のvalidation・非同期結果の世代/寿命・Apply/Cancel・既存XML/CLI互換は変えない。
+
+標準`TitledSeparator`とscaledな余白、既存`WrapLayout`を使い、固定色や独自themeを持たせない。状態textには意味のあるaccessible nameを置き、設定のlabel associationを保つ。最初のfocusは操作可能な取得トグル（操作不可なら設定）。主要操作→保存結果/復旧→読取詳細の順に標準Tab/Space操作へつなげる。選択/コピー可能な不足詳細・固定アプリ履歴・自動保存の読取欄は維持する。新しいショートカット割当は追加しない。
+
+通常通知の完成フォルダ/コピー、失敗通知の保存対象確認、スクショ通知の開く/削除は既存経路を使う。新しい再確認・保存入力・通知によるサービス再生成を追加しない。全CLI/取得コア・保存アルゴリズムは変更しない。
+
+[Case #104](../verification/changes/issue-104.json)は未実施の実IDE/keyboard/theme/DPI受入を追跡する。自動回帰の標準LAF/拡大font・280幅の往復・headless描画は実IDEの操作事実ではない。最終固定候補で既存#329/#298/#337と必要#283の共有観察へ接続し、旧FAIL/UNKNOWN・human/REAL・性能未達を保持する。更新前のAX index・ボタン名・寸法は現在値とせず、実操作前に再同定する。
+
 ## 実装のAPI境界
 
 UIには取得エンジンの実装、LogcatのSwingツリー、タイムライン変換を持たせない。新たな汎用interface群やDBを先に作らず、projectの取得所有者に表示snapshotと明示操作をまとめる。PMのコア契約へ接続する最小の値と操作は次のとおり。型名・API名は実装担当間で確定するための案であり、新たな公開SDKを要求するものではない。

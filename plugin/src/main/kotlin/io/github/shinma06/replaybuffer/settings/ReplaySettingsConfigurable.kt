@@ -12,7 +12,7 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.TextFieldWithBrowseButton
 import com.intellij.openapi.util.Disposer
 import com.intellij.ui.DocumentAdapter
-import com.intellij.ui.components.JBLabel
+import com.intellij.ui.TitledSeparator
 import com.intellij.ui.components.JBCheckBox
 import com.intellij.ui.components.JBTextArea
 import com.intellij.ui.components.JBTextField
@@ -20,19 +20,17 @@ import com.intellij.util.ui.FormBuilder
 import io.github.shinma06.replaybuffer.core.CaptureMode
 import io.github.shinma06.replaybuffer.ide.ReplayProjectService
 import io.github.shinma06.replaybuffer.ui.captureModeDescription
+import io.github.shinma06.replaybuffer.ui.wrappingLabel
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.awt.Dimension
 import javax.swing.JComboBox
 import javax.swing.JComponent
 import javax.swing.JPanel
 import javax.swing.event.DocumentEvent
-import javax.swing.text.View
-import kotlin.math.ceil
 
 class ReplaySettingsConfigurable(private val project: Project) : Configurable {
     private var panel: JPanel? = null
@@ -40,7 +38,7 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable {
     private var destination: TextFieldWithBrowseButton? = null
     private var screenshotCommon: JBCheckBox? = null
     private var screenshotDirectory: TextFieldWithBrowseButton? = null
-    private var screenshotStatus: JBLabel? = null
+    private var screenshotStatus: JBTextArea? = null
     private var screenshotValidation: DestinationValidation? = null
     private var screenshotValidationJob: Job? = null
     private var screenshotRevision = 0L
@@ -48,19 +46,19 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable {
     private var captureMode: JComboBox<CaptureMode>? = null
     private var autoSave: JBCheckBox? = null
     private var manualPackage: JBTextField? = null
-    private var destinationStatus: JBLabel? = null
+    private var destinationStatus: JBTextArea? = null
     private var uiLifetime: Disposable? = null
     private var validationJob: Job? = null
     private var destinationValidation: DestinationValidation? = null
     private var destinationRevision = 0L
     private var replayService: ReplayProjectService? = null
-    private var applicationStatus: JBLabel? = null
+    private var applicationStatus: JBTextArea? = null
 
     override fun getDisplayName(): String = "Android Replay Buffer"
 
     override fun createComponent(): JComponent {
         replayService = project.getService(ReplayProjectService::class.java)
-        applicationStatus = JBLabel().apply { accessibleContext.accessibleName = "対象アプリの解決結果" }
+        applicationStatus = wrappingLabel(name = "対象アプリの解決結果")
         val lifetime = Disposer.newDisposable("Replay Buffer settings UI")
         uiLifetime = lifetime
         Disposer.register(replayService ?: project, lifetime)
@@ -70,7 +68,7 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable {
                 if (uiLifetime === lifetime && !project.isDisposed) renderApplication()
             }, ModalityState.any())
         })
-        destinationStatus = JBLabel().apply { accessibleContext.accessibleName = "保存先の確認結果" }
+        destinationStatus = wrappingLabel(name = "保存先の確認結果")
         retention = JBTextField().apply { accessibleContext.accessibleName = "保持時間（1〜900秒）" }
         destination = TextFieldWithBrowseButton().apply {
             addBrowseFolderListener(project, FileChooserDescriptorFactory.createSingleFolderDescriptor())
@@ -79,7 +77,7 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable {
                 override fun textChanged(event: DocumentEvent) = checkDestination()
             })
         }
-        screenshotStatus = JBLabel().apply { accessibleContext.accessibleName = "スクリーンショット保存先の確認結果" }
+        screenshotStatus = wrappingLabel(name = "スクリーンショット保存先の確認結果")
         screenshotDirectory = TextFieldWithBrowseButton().apply {
             addBrowseFolderListener(project, FileChooserDescriptorFactory.createSingleFolderDescriptor())
             accessibleContext.accessibleName = "スクリーンショット専用フォルダ"
@@ -110,49 +108,32 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable {
                     super.getListCellRendererComponent(list, (value as? CaptureMode)?.let(::captureModeDescription), index, selected, focus)
             }
         }
-        autoSave = JBCheckBox("対象アプリのクラッシュ報告で自動保存する（標準Java/Kotlin）").apply {
+        autoSave = JBCheckBox("クラッシュ報告で自動保存する").apply {
             accessibleContext.accessibleName = "クラッシュ報告の自動保存"
-            toolTipText = "既定OFF。適用後の報告が対象です。native/ANRは対応外。8回受付または検出上限で停止し、OFF→ONで再設定します。"
+            toolTipText = "既定OFF。適用後の報告が対象です。native/ANRは対応外。8回受付または検出上限で停止します。再開は自動保存をOFFで適用してからONで適用してください。"
         }
         panel = FormBuilder.createFormBuilder()
+            .addComponent(wrappingLabel("編集内容は「適用」または「OK」で反映します。キャンセルでは変更しません。" +
+                "取得のON/OFFはToolWindowですぐ反映します。", "設定の適用方法"))
+            .addComponent(TitledSeparator("対象アプリ"))
+            .addLabeledComponent("選択方法:", mode!!)
+            .addLabeledComponent("package名:", manualPackage!!)
+            .addComponent(wrappingLabel(packageGuidance, "package名の入力条件"))
+            .addComponent(applicationStatus!!)
+            .addComponent(TitledSeparator("取得する記録"))
             .addLabeledComponent("取得モード:", captureMode!!)
-            .addComponent(JBLabel("取得をOFFにしてから変更してください。ログ専用は動画を取得・保存しません。"))
-            .addComponent(autoSave!!)
+            .addComponent(wrappingLabel("取得モードは取得OFFで変更してください。ログ専用は動画を取得・保存しません。"))
             .addLabeledComponent("保持時間（1〜900秒）:", retention!!)
+            .addComponent(autoSave!!)
+            .addComponent(wrappingLabel("対象アプリの標準Java/Kotlinクラッシュ報告が対象です。native/ANRは対応外です。" +
+                "8回受付または検出上限で停止します。再開はこの設定をOFFで適用してから、ONで再び適用してください。", "クラッシュ自動保存の対応範囲"))
+            .addComponent(TitledSeparator("動画・ログの保存先"))
             .addLabeledComponent("保存先フォルダ:", destination!!)
             .addComponent(destinationStatus!!)
-            .addLabeledComponent("スクリーンショット保存先:", screenshotCommon!!)
-            .addLabeledComponent("専用の別フォルダ:", screenshotDirectory!!)
+            .addComponent(TitledSeparator("スクリーンショットの保存先"))
+            .addComponent(screenshotCommon!!)
+            .addLabeledComponent("専用フォルダ:", screenshotDirectory!!)
             .addComponent(screenshotStatus!!)
-            .addLabeledComponent("対象アプリ:", mode!!)
-            .addLabeledComponent("package名:", manualPackage!!)
-            .addComponent(object : JBTextArea(packageGuidance) {
-                override fun getPreferredSize(): Dimension {
-                    val size = super.getPreferredSize().apply { width = 0 }
-                    val container = parent ?: return size
-                    val textUi = getUI()
-                    val view = textUi.getRootView(this)
-                    // The UI reserves both component insets and caret space outside the text span.
-                    val reservedWidth = textUi.getPreferredSize(this).width - view.getPreferredSpan(View.X_AXIS).toInt()
-                    val contentWidth = container.width - container.insets.left - container.insets.right - reservedWidth
-                    if (contentWidth > 0) {
-                        view.setSize(contentWidth.toFloat(), Float.MAX_VALUE)
-                        size.height = ceil(view.getPreferredSpan(View.Y_AXIS).toDouble()).toInt() +
-                            insets.top + insets.bottom
-                    }
-                    return size
-                }
-            }.apply {
-                isEditable = false
-                isFocusable = false
-                isOpaque = false
-                lineWrap = true
-                wrapStyleWord = true
-                accessibleContext.accessibleName = "package名の入力条件"
-            })
-            .addComponent(applicationStatus!!)
-            .addComponent(JBLabel("編集だけでは取得条件を変更しません。「適用」または「OK」で反映します。"))
-            .addComponent(JBLabel("取得の有効・無効はToolWindowから即時に切り替えます。"))
             .addComponentFillVertically(JPanel(), 0)
             .panel
         checkDestination()

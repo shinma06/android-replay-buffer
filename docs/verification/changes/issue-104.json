@@ -1,0 +1,74 @@
+{
+  "schema": 1,
+  "issue": 104,
+  "gui_required": true,
+  "reason": "第2版のToolWindow/設定の情報優先順位・保存結果/復旧・説明/可達性を整理する。source/通常回帰/headless描画は実IDE/keyboard/theme/DPIの合格を意味しない。旧Case/FAIL/UNKNOWN/human/REAL/性能未達を保持する。",
+  "cli_checks": [
+    "ReplayToolWindowLayoutTest: 実panelの通常/保存中/失敗/完了/取消し、LOG_ONLY・保持範囲/時計未知・自動保存warning、完成/保全先、操作可否と階層、280幅往復/拡大font/標準LAF/SPACE可達性とスクロール保持。新旧スクショ要求snapshot/保存先固定とApply/Cancelも維持する。",
+    "ReplaySettingsLayoutTest/ReplayDescriptionsTest/ReplaySettingsStoreTest/ReplayDestinationValidationTest/ScreenshotSaveTest: 長い説明/エラー・入力label・未適用draft、旧XML/共通専用保存先/CLI移行・非同期検証・不足詳細・同じ画像だけ削除などの既存回帰。固定HEADの通常change_impact/harness/product/check/build/structure。"
+  ],
+  "cases": [
+    {
+      "artifact": "plugin",
+      "provenance": [
+        "https://github.com/shinma06/android-replay-buffer/issues/104",
+        "docs/design/ide-ui.md",
+        "docs/requirements.md",
+        "docs/verification/changes/issue-338.json",
+        "docs/verification/responsibility.md"
+      ],
+      "gpt": {
+        "status": "pending",
+        "reason": "writerはsource/自動回帰とheadless表示資料を担当。実IDE/操作の観察は未実施。"
+      },
+      "human": {
+        "status": "pending",
+        "reason": "実際の分かりやすさ/読みやすさ・操作感は未観察。既存human/REAL延期を保持する。"
+      },
+      "fix_issue": null,
+      "fix_pr": null,
+      "next_action": "固定review/develop採用後、PMが既存329/298/337と必要283の最終候補共有枠へ残保証を双方向引継ぎし、main/全v2は280/配布は271へ別途移管する。新QA/native枠を自動追加しない。",
+      "id": "GUI-FLOW",
+      "change": "主要操作・対象/状態/保持窓と保存結果/失敗復旧を近接させる",
+      "preconditions": "104採用後の最終固定source/ZIP/JAR/実ロードを同定し、PM割当の既存共有機能枠と所有fixtureを使う。原FILE/通常24入力/成功2保存を無条件に繰り返さない。",
+      "steps": [
+        "OFFで設定とスクショが独立利用でき、即時ON/OFFとApply/Cancelの違い、対象アプリ/共通または専用保存先が読み取れることを同じ設定観察で確認する。",
+        "既に必要な取得/保存/失敗/復旧の観察に合わせ、主要操作・現在の保持区間/LOG_ONLY/不足と未知・自動保存warningと保存完了/保全先を表示snapshot/実結果へ結び付ける。新しい故障を見た目のためだけに追加しない。",
+        "同じ失敗pinの理由・固定区間/アプリ履歴と再試行/別保存先/破棄の意味を確認する。完成時の開く/スクショの実画像親と所有画像削除は既存SCREENSHOT-ACTIONS/DESTINATIONと共有する。未完成を成功へ読み替えない。"
+      ],
+      "expected": "頻繁な操作と対象・状態・保持窓が上部で分かり、保存結果と次操作を近くで確認できる。GUIの簡略化でgap/時計未知/失敗/固定pin/自動保存warningを隠さず、#335の不足・未確認、#338の直下PNGと保存先契約を維持する。",
+      "recheck": "同一最終候補の既存329/298/337/必要283へ接続する。旧原観察を維持し、変更した表示/導線と現在の実ロード/統合だけを追加する。"
+    },
+    {
+      "artifact": "plugin",
+      "provenance": [
+        "https://github.com/shinma06/android-replay-buffer/issues/104",
+        "docs/design/ide-ui.md",
+        "docs/requirements.md",
+        "docs/verification/changes/issue-338.json",
+        "docs/verification/responsibility.md"
+      ],
+      "gpt": {
+        "status": "pending",
+        "reason": "writerはsource/自動回帰とheadless表示資料を担当。実IDE/操作の観察は未実施。"
+      },
+      "human": {
+        "status": "pending",
+        "reason": "実際の分かりやすさ/読みやすさ・操作感は未観察。既存human/REAL延期を保持する。"
+      },
+      "fix_issue": null,
+      "fix_pr": null,
+      "next_action": "固定review/develop採用後、PMが既存329/298/337と必要283の最終候補共有枠へ残保証を双方向引継ぎし、main/全v2は280/配布は271へ別途移管する。新QA/native枠を自動追加しない。",
+      "id": "GUI-ACCESS",
+      "change": "狭幅・theme/DPI・keyboardと設定のラベル/説明を整える",
+      "preconditions": "GUI-FLOWと同じ最終候補/実IDE/fixture。元の操作手順やAX index/寸法を固定値として流用せず、現在の内容を同定する。",
+      "steps": [
+        "狭いToolWindowと広幅を往復し、主要操作/保存復旧/長いパス・説明・不足詳細が横に切れず、縦scrollで全体へ到達することを必要な表示観察で確認する。",
+        "利用中のIDE theme/表示倍率と標準keyboardで、操作名・label/選択状態・focus/Tab/Space・読取詳細の選択とコピーが使えることを確認する。自動回帰の標準LAF/拡大fontを実IDE切替の事実にしない。",
+        "同じ設定画面で長いpackage/Run情報/保存先エラーとApply/Cancelを確認し、取得ON/OFFを設定Cancelで巻き戻さないことを既存設定観察と共有する。"
+      ],
+      "expected": "状態を色だけで伝えず、重要な操作と全文へ到達できる。標準focus/keyboardとlabel associationを保ち、設定編集の反映時期と入力エラーが分かる。旧失敗・人間/REAL残件を合格へ換えない。",
+      "recheck": "影響したlayout・ラベル・focus・IDE統合を最小の共有観察で確認し、既に十分な内容/FILE事実を鮮度だけの理由で再実行しない。"
+    }
+  ]
+}

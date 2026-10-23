@@ -64,6 +64,21 @@ class ReplaySettingsLayoutTest {
                         assertEquals(guide.getText(), fields.get(3).getAccessibleContext().getAccessibleDescription());
                         assertFalse(guide.isEditable());
                         assertFalse(guide.isFocusable());
+                        var status = new ArrayList<JBTextArea>();
+                        for (String name : List.of("保存先の確認結果", "対象アプリの解決結果", "スクリーンショット保存先の確認結果", "設定の適用方法")) {
+                            var text = (JBTextArea) find(panel, name);
+                            assertFalse(text.isFocusable());
+                            assertFalse(text.isEditable());
+                            if (!name.equals("設定の適用方法")) text.setText("確認できません。設定の保存先・アクセス権を確認してください。" + "長い説明とパス/".repeat(18));
+                            status.add(text);
+                        }
+                        assertTrue(status.get(3).getText().contains("キャンセル"));
+                        assertTrue(status.get(3).getText().contains("ON/OFF"));
+                        var autoGuidance = (JBTextArea) find(panel, "クラッシュ自動保存の対応範囲");
+                        assertTrue(autoGuidance.getText().contains("この設定をOFFで適用してから、ONで再び適用"));
+                        assertFalse(autoGuidance.getText().contains("取得OFF→ON"));
+                        status.add(autoGuidance);
+                        for (int index : new int[]{0, 1, 2, 3, 4, 6}) assertTrue(hasLabelFor(panel, fields.get(index)), "label association for " + index);
                         panel.setBorder(JBUI.Borders.empty(11, 16, 16, 16));
                         var scroll = ScrollPaneFactory.createScrollPane(null, true);
                         scroll.setViewport(new GradientViewport(panel, JBUI.insetsTop(5), true));
@@ -89,11 +104,14 @@ class ReplaySettingsLayoutTest {
                         for (int width : new int[]{wide, narrow, wide, narrow, 600, 800, 600}) {
                             scroll.setSize(width, 650);
                             layout(scroll);
+                            // A wrapped row needs its newly assigned viewport width before computing height.
+                            layout(scroll);
                             int viewportWidth = scroll.getViewport().getExtentSize().width;
                             assertEquals(viewportWidth, panel.getWidth(), "form width after resize to " + width);
                             assertFalse(scroll.getHorizontalScrollBar().isVisible(), "unexpected horizontal overflow");
                             var components = new ArrayList<>(fields);
                             components.add(guide);
+                            components.addAll(status);
                             for (var component : components) {
                                 var bounds = SwingUtilities.convertRectangle(component.getParent(), component.getBounds(), panel);
                                 assertTrue(bounds.x >= 0 && bounds.width > 0 && bounds.x + bounds.width <= viewportWidth,
@@ -110,6 +128,16 @@ class ReplaySettingsLayoutTest {
                                 rowEnds.add(Utilities.getRowEnd(guide, 0));
                             } catch (javax.swing.text.BadLocationException e) {
                                 throw new AssertionError(e);
+                            }
+                            for (var text : status) {
+                                try {
+                                    for (int offset = 0; offset < text.getText().length(); offset++) {
+                                        var character = text.modelToView2D(offset);
+                                        assertTrue(character.getX() >= 0 && character.getMaxX() <= text.getWidth()
+                                            && character.getY() >= 0 && character.getMaxY() <= text.getHeight(),
+                                            text.getAccessibleContext().getAccessibleName() + " must wrap completely at " + width + ": offset=" + offset + ", character=" + character + ", size=" + text.getSize());
+                                    }
+                                } catch (javax.swing.text.BadLocationException failure) { throw new AssertionError(failure); }
                             }
                             heights.add(guide.getHeight());
                         }
@@ -157,6 +185,15 @@ class ReplaySettingsLayoutTest {
         } finally {
             Disposer.dispose(root);
         }
+    }
+
+    private static boolean hasLabelFor(Container parent, JComponent field) {
+        for (var child : parent.getComponents()) {
+            if (child instanceof javax.swing.JLabel label && label.getLabelFor() != null
+                && (label.getLabelFor() == field || SwingUtilities.isDescendingFrom(field, label.getLabelFor()))) return true;
+            if (child instanceof Container container && hasLabelFor(container, field)) return true;
+        }
+        return false;
     }
 
     private static JComponent find(Container parent, String name) {
