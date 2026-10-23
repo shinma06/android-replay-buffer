@@ -7,7 +7,11 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
 
-/** Only directly launched processes are owned. Never restarts/kills the shared adb server. */
+/**
+ * Owns only directly launched clients, never the shared adb server. Blocking commands/stop/close run off EDT.
+ * Streaming callers own stdout/stdin use; this owner drains stderr and retains clients until exit/drain
+ * is confirmed. A failed close is not proof of termination and may be retried on this same owner.
+ */
 internal class OwnedAdb(private val executable: Path) : AutoCloseable {
     private val closing = AtomicBoolean()
     private val owned = ConcurrentHashMap.newKeySet<Process>()

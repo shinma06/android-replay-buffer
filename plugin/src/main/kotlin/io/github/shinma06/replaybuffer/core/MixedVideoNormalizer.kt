@@ -17,7 +17,11 @@ import org.jcodec.common.model.Picture
 import org.jcodec.common.model.Size
 import java.nio.ByteBuffer
 
-/** Only mixed geometry uses decode/pad/encode; no scaling or colour conversion. */
+/**
+ * Per-save, single-threaded decode/pad/encode for mixed geometry; no scaling or colour conversion.
+ * Start each source decode run with one supplied config before encoding. The minimum source interval
+ * is observed PTS duration in microseconds, or null when unknown, never an authored tail duration.
+ */
 internal class MixedVideoNormalizer(private val configs: List<ByteArray>, minimumSourceDurationUs: Long?) {
     private val sources = configs.map { config ->
         require(config.size in 1..ReplaySettings.MAX_CONFIG_PACKET_BYTES) { "変換元configのサイズが不正です" }
@@ -197,7 +201,7 @@ internal class MixedVideoNormalizer(private val configs: List<ByteArray>, minimu
 
     private fun serialDecoder(): H264Decoder = H264Decoder().also { value ->
         // Fixed JCodec 0.2.5 exposes neither close nor serial mode. Disable its unused pool before any work,
-        // keeping multislice decode on the cancellable save thread and preventing permanent daemon/decoder leaks.
+        // keeping multislice decode on the save thread; cancellation is checked around codec calls.
         H264Decoder::class.java.getDeclaredField("threaded").apply { isAccessible = true }.setBoolean(value, false)
         val pool = H264Decoder::class.java.getDeclaredField("tp").apply { isAccessible = true }.get(value) as? java.util.concurrent.ExecutorService
         pool?.shutdown()

@@ -5,7 +5,10 @@ import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 
-/** Runs as the adb shell user, never installs an APK or changes device state. */
+/**
+ * Reads elapsed-before, monotonic, wall and elapsed-after under adb shell, all in nanoseconds.
+ * Wall retains currentTimeMillis resolution; the host caller owns deployment, deadlines and cleanup.
+ */
 public final class ClockProbe {
     public static void main(String[] args) throws Exception {
         BufferedReader input = new BufferedReader(new InputStreamReader(System.in, StandardCharsets.UTF_8));

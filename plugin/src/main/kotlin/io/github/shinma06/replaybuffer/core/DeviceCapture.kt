@@ -15,6 +15,11 @@ import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
 import kotlin.random.Random
 
+/**
+ * Owns readers, clients and sockets for one device/generation, not the supplied store/resources.
+ * Close blocks off EDT. Even a normal close can leave remote cleanup pending; a thrown close leaves
+ * host termination unconfirmed, so the core retains the exact cleanup identity before recovery.
+ */
 internal class DeviceCapture(
     private val adbPath: Path,
     serial: String,

@@ -1,4 +1,5 @@
 // macOS QA helper: decode local MP4 frames with native AVFoundation. No GUI/ADB.
+// Writes only a new output directory; failure leaves partial evidence, not a completed report.
 import AVFoundation
 import AppKit
 import CoreImage

@@ -21,7 +21,10 @@ import java.util.UUID;
 import org.json.JSONException;
 import org.json.JSONObject;
 
-/** Disposable marker app: no network, storage, background work, or recording. */
+/**
+ * Disposable marker app: no network, storage, background work, or recording.
+ * REQUEST, DRAW and FRAME_COMMIT identify app phases, not physical presentation timestamps.
+ */
 public final class MarkerActivity extends Activity {
     private static final String RUN = UUID.randomUUID().toString();
     private static long sequence;

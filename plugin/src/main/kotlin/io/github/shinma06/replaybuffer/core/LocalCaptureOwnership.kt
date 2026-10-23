@@ -19,7 +19,11 @@ import java.util.ArrayDeque
 import java.util.UUID
 import java.util.zip.CRC32
 
-/** A locked record for one local capture, never a saved output or a host-temp search. */
+/**
+ * A locked durable record for one local capture, never saved output or a host-temp search.
+ * Register exact identities before payload writes and notify removals only after unlink succeeds.
+ * Close releases the live lock; it removes the record only when the capture root is absent.
+ */
 internal class LocalCaptureOwnership private constructor(
     val root: Path,
     private val descriptor: Path,

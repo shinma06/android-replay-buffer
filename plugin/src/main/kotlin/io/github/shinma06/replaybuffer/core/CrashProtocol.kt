@@ -17,7 +17,10 @@ internal data class CrashHeader(
     val problem: AutoSaveReason? = null,
 )
 
-/** Only the two RuntimeInit header lines and am_crash's required typed fields are interpreted. */
+/**
+ * Interprets only RuntimeInit's two header lines and am_crash's required typed fields.
+ * Recognized malformed candidates retain a problem; parsing alone proves neither identity nor save admission.
+ */
 internal fun crashHeader(source: DeviceLog): CrashHeader? {
     val raw = source.raw
     if (source.lid == 2) {
@@ -127,6 +130,7 @@ internal fun crashFingerprint(device: String, boot: String, source: DeviceLog): 
     return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes.toByteArray()))
 }
 
+/** Host-monotonic nanosecond interval for the reporter lookup, bound to its capture generation. */
 internal data class ReporterPoll(val start: Long, val end: Long, val generation: Long, val pid: Int?) {
     fun fresh(receipt: Long, owner: Long): Boolean = generation == owner && pid != null &&
         start >= 0 && start <= end && end <= receipt && receipt - start <= 2_000_000_000

@@ -5,6 +5,11 @@ from verification import field, metadata, validate_change
 
 
 def handoff(gh, repo, pr, origin, change):
+    """Write/reuse QA and release receipts after merge; return the QA number or None for no Cases.
+
+    Failure may leave partial transfers; retry lookup reuses matching markers. Origin closure and
+    Project updates belong to the caller/PM after readback, not to this helper.
+    """
     number, path, mode = metadata(pr)
     if mode != 'develop' or not pr.get('merged') or not re.fullmatch(r'[0-9a-f]{40}', pr.get('merge_commit_sha', '')):
         raise ValueError('QA transfer requires a confirmed develop merge')

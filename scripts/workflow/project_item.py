@@ -117,6 +117,10 @@ def single_select(fields, name, value):
 
 
 def mutate(gh, action, url, field='Status', value=None):
+    """Mutate only a freshly resolved own-repository item and verify the result by readback.
+
+    A post-write error can leave changed remote state; inspect it before retrying through this entry.
+    """
     match = re.fullmatch(r'https://github\.com/' + re.escape(REPO) + r'/(issues|pull)/([1-9][0-9]*)', url)
     if not match or action not in ('add', 'set', 'remove'):
         raise ValueError('Only an exact own-repository Issue/PR URL is allowed')

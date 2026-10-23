@@ -12,6 +12,10 @@ def labels(issue):
 
 
 def validate_issue(issue, *, allow_legacy=True):
+    """Return the validated label axes or raise ValueError for this supplied Issue representation.
+
+    Legacy titles are read compatibility; validation neither renames nor verifies live ownership/relations.
+    """
     if 'pull_request' in issue or issue.get('state') not in ('open', 'closed'):
         raise ValueError('Expected an Issue with a valid state')
     selected = {}
