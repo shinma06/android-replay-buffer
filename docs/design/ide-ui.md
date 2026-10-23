@@ -93,9 +93,13 @@ Settings → Tools → Android Replay Buffer をproject-level `Configurable`で�
 
 ## 第2版の独立スクリーンショット（#325）
 
-設定に「動画・ログと同じ場所に保存する」（既定ON）とスクショ専用の別フォルダを設ける。共通は動画/ログの設定rootを参照し、replay出力の子フォルダは使わない。OFFにした場合は専用フォルダを必須とし、空欄・相対パス・消失・非フォルダを理由付きで拒否して共通先へfallbackしない。入力のfilesystem確認は非同期で、Apply/OKだけが永続化する。Cancel/resetは破棄する。取得ON中も保存先を変更でき、既に開始した要求は押下時の保存先を使う。旧XMLで追加キーがなければ共通となり、旧成果物の移行は行わない。CLI移行は旧保持時間/動画ログrootだけを更新し、専用の選択とパスは保持する。専用先だけの不備は動画/ログの取得を停止しない。残受入は[#338 Case](../verification/changes/issue-338.json)で旧SCREENSHOT-USB/ACTIONS/DEVICEと区別する。
+設定に「Logcatのスクショ保存先と同じ場所に保存する」（既定ON）と手動の保存先を設ける。Logcat toolbarが利用するAndroid StudioのAPP service `DeviceScreenshotSettings.saveConfig.saveLocation`を押下時に読み、PROJECT service `SaveConfigurationResolver`の保存場所展開をbackgroundで使う。保存先だけを参照し、nativeのファイル名templateや撮影dialogは使わない。未保存のnative stateの初期値は`$DESKTOP_DIR$`で、IDEがOSのデスクトップを解決する。nativeが受理した空/相対の保存場所はIDE同様user home基準となる。独自の設定key/既定pathやreplay rootへのfallbackは作らない。設定を取得できなければLogcatの画面撮影設定の確認か手動指定を案内する。不存在フォルダを無断作成せず、従来同様利用者が用意したrootへ保存する。
 
-ToolWindow上部に「スクリーンショットを保存」を常設する。取得OFF・ログ専用・取得初期化/保存中/失敗固定対象の有無では無効化しない。解決済みの最新の対象アプリ・適用済み保存先・SDKのadbを押下時に固定し、project scopeの独立IO処理を直ちに開始する。選択解決待ち、対象未選択、保存先未指定、スクショ処理中、project終了時は理由を示す。画面内にスクショ自身の対象と保存先を表示し、取得snapshotの旧条件と混同させない。
+OFFでは手動フォルダを必須とし、空欄・相対パス・消失・非フォルダを理由付きで拒否する。動画・ログと同じpathでも受理する。設定画面はLogcatの参照先を非同期で展開・確認し、保存時には最新値を再読取する旨を示す。Apply/OKだけが選択と手動pathを永続化し、Cancel/resetは破棄する。取得ON中も保存先を変更でき、開始済み要求は固定した場所を使う。旧XMLの`screenshotUsesCommonDestination` keyは互換のため保持し、true/欠落を新Logcat追従、falseを既存手動pathとして読む。旧成果物の一括移動はしない。CLI importは旧保持時間/動画ログrootだけを更新し、新しい選択/pathを保持する。スクショ先だけの不備は動画/ログ取得を止めない。[#341 Case](../verification/changes/issue-341.json)が現在の保存先契約を扱い、[#338](../verification/changes/issue-338.json)の原観察と他の保証を保持する。
+
+参照ABIは対応IDE `AI-262.9437.185.2621.16467767` の実classで確認した。Kotlin internalの設定getter/保存場所resolverへJavaの小さな境界で接続し、不一致は取得不能として扱う。SDK更新時にはこの接続を再確認する。一次sourceの補強はAOSP固定[DeviceScreenshotSettings](https://android.googlesource.com/platform/tools/adt/idea/+/9c5bdbd3170b02d52891c4194c2ca8ca38b74245/android-adb-ui/src/com/android/tools/idea/ui/screenshot/DeviceScreenshotSettings.kt)・[SaveConfigurationResolver](https://android.googlesource.com/platform/tools/adt/idea/+/9c5bdbd3170b02d52891c4194c2ca8ca38b74245/android-adb-ui/src/com/android/tools/idea/ui/save/SaveConfigurationResolver.kt)。このsource commitとインストール済みSDKの完全な版一致、および実profileでの統合受入は未証明。
+
+ToolWindow上部に「スクリーンショットを保存」を常設する。取得OFF・ログ専用・取得初期化/保存中/失敗固定対象の有無では無効化しない。解決済みの最新の対象アプリ・適用済み保存先・SDKのadbを押下時に固定し、project scopeの独立IO処理を直ちに開始する。選択解決待ち、対象未選択、手動保存先未指定、スクショ処理中、project終了時は理由を示す。画面内にスクショ自身の対象と保存先の参照元または手動pathを表示し、取得snapshotの旧条件と混同させない。
 
 #333の本人指示により、端末選択は録画と同じ規則を共有する。要求時の取得snapshotが有効ならそのserialを固定し、SDK設定の反映待ちや取得ONの対象未確定では理由を示す。OFF反映中も実際の取得snapshotに対象が残っている間は同じserialを使う。OFF・履歴なしではSDKのadbの`devices -l`から接続済み候補を1台だけ解決し、取得開始や履歴作成を行わない。選択済み端末があれば、ほかの接続端末の数やUSB/Emulatorの別によらずその端末を使い、消失・offline・未認証時に別端末へ切り替えない。すべての撮影commandは要求に固定した`-s <serial>`へ送る。以前の`-d get-serialno`によるUSB専用選択は履歴であり、原観察は新経路のPASSへ換えない。
 

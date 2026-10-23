@@ -42,6 +42,7 @@ import io.github.shinma06.replaybuffer.core.SaveSnapshot
 import io.github.shinma06.replaybuffer.core.SavedScreenshot
 import io.github.shinma06.replaybuffer.core.ScreenshotSaveFailure
 import io.github.shinma06.replaybuffer.core.saveScreenshot
+import io.github.shinma06.replaybuffer.settings.LOGCAT_DESTINATION_UNAVAILABLE
 import io.github.shinma06.replaybuffer.settings.ReplaySettings
 import io.github.shinma06.replaybuffer.settings.ReplaySettingsStore
 import io.github.shinma06.replaybuffer.settings.validateDestination
@@ -194,7 +195,7 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
         screenshotRevision != requestRevision -> "対象アプリ・設定を確認中です。"
         environment?.adb == null -> environment?.adbReason ?: "Android SDKを確認してください。"
         environment?.application?.packageName == null -> environment?.application?.reason ?: "対象アプリを選択してください。"
-        screenshotSettings?.screenshotDestination.isNullOrEmpty() -> "設定でスクリーンショットの保存先を指定してください。"
+        screenshotSettings?.let { !it.screenshotUsesLogcatDestination && it.screenshotDirectory.isEmpty() } != false -> "設定でスクリーンショットの保存先を指定してください。"
         else -> runCatching { screenshotDeviceSerial(snapshot) }.exceptionOrNull()?.message
     }
 
@@ -213,7 +214,18 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
         val snapshot = capture.view.snapshot
         screenshotDisabledReason(snapshot)?.let { screenshotError(it); return }
         val selected = checkNotNull(environment)
-        val destination = checkNotNull(screenshotSettings).screenshotDestination
+        val settings = checkNotNull(screenshotSettings)
+        val logcatLocation = if (settings.screenshotUsesLogcatDestination) {
+            try { LogcatScreenshotSettings.saveLocation() } catch (cancelled: ProcessCanceledException) {
+                throw cancelled
+            } catch (_: RuntimeException) {
+                screenshotError(LOGCAT_DESTINATION_UNAVAILABLE)
+                return
+            } catch (_: LinkageError) {
+                screenshotError(LOGCAT_DESTINATION_UNAVAILABLE)
+                return
+            }
+        } else null
         val serial = runCatching { screenshotDeviceSerial(snapshot) }.getOrElse {
             screenshotError(it.message ?: "録画対象の端末を確認できません。")
             return
@@ -222,7 +234,16 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
         val job = scope.launch(Dispatchers.IO, start = CoroutineStart.LAZY) {
             try {
                 val saved = runInterruptible {
-                    saveScreenshot(checkNotNull(selected.adb), checkNotNull(selected.application.packageName), Path.of(destination), serial)
+                    val destination = if (logcatLocation == null) Path.of(settings.screenshotDirectory) else {
+                        try { LogcatScreenshotSettings.resolveDirectory(project, logcatLocation) } catch (cancelled: ProcessCanceledException) {
+                            throw cancelled
+                        } catch (_: RuntimeException) {
+                            throw IllegalStateException(LOGCAT_DESTINATION_UNAVAILABLE)
+                        } catch (_: LinkageError) {
+                            throw IllegalStateException(LOGCAT_DESTINATION_UNAVAILABLE)
+                        }
+                    }
+                    saveScreenshot(checkNotNull(selected.adb), checkNotNull(selected.application.packageName), destination, serial)
                 }
                 notifyScreenshot(saved)
             } catch (cancelled: CancellationException) {

@@ -45,12 +45,19 @@ class ReplayDestinationValidationTest {
             assertTrue(current.isCompleted && !current.isCancelled)
             assertEquals(listOf(DestinationValidation(directory.toString(), null)), results)
             SwingUtilities.invokeAndWait {
+                current = scope.checkDestination("native-location", { throw IllegalStateException("unavailable native service") }) {
+                    results += it
+                }
+            }
+            withTimeout(10_000) { current.join() }
+            assertEquals(DestinationValidation("native-location", LOGCAT_DESTINATION_UNAVAILABLE), results.last())
+            SwingUtilities.invokeAndWait {
                 current = scope.checkDestination("another/path") { results += it }
                 scope.cancel()
             }
             withTimeout(10_000) { current.join() }
             assertTrue(current.isCancelled)
-            assertEquals(1, results.size)
+            assertEquals(2, results.size)
         } finally {
             scope.cancel()
             Disposer.dispose(lifetime)

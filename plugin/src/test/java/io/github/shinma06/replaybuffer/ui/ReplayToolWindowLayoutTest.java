@@ -68,7 +68,13 @@ class ReplayToolWindowLayoutTest {
     void actualToolWindowReflowsAfterWideningAndKeepsTextEndAndControlsReachable() throws Exception {
         var lifetime = Disposer.newDisposable("tool window layout test");
         var uiCallbacks = new ConcurrentLinkedQueue<Runnable>();
+        var logcatUnavailable = new AtomicBoolean(true);
         var application = new MockApplication(lifetime) {
+            @Override
+            public <T> T getService(Class<T> serviceClass) {
+                if (serviceClass == com.android.tools.idea.ui.screenshot.DeviceScreenshotSettings.class && logcatUnavailable.get()) return null;
+                return super.getService(serviceClass);
+            }
             @Override
             public void invokeLater(Runnable action, ModalityState modality) { uiCallbacks.add(action); }
         };
@@ -108,7 +114,7 @@ class ReplayToolWindowLayoutTest {
             verifyScreenshotSettingsApplyAndCancel(project, service, store);
             SwingUtilities.invokeAndWait(() -> {
                 try {
-                    verifyScreenshotRequestKeepsTargetAcrossOffPublication(service, store, uiCallbacks);
+                    verifyScreenshotRequestKeepsTargetAcrossOffPublication(project, service, store, uiCallbacks, logcatUnavailable);
                     var type = Class.forName("io.github.shinma06.replaybuffer.ui.ReplayToolWindowPanel");
                     var constructor = type.getDeclaredConstructor(Project.class);
                     constructor.setAccessible(true);
@@ -230,7 +236,8 @@ class ReplayToolWindowLayoutTest {
     }
 
     private static void verifyScreenshotRequestKeepsTargetAcrossOffPublication(
-        ReplayProjectService service, ReplaySettingsStore store, ConcurrentLinkedQueue<Runnable> uiCallbacks
+        MockProject project, ReplayProjectService service, ReplaySettingsStore store, ConcurrentLinkedQueue<Runnable> uiCallbacks,
+        AtomicBoolean logcatUnavailable
     ) throws Exception {
         var root = Files.createTempDirectory("replay-screenshot-off-boundary-");
         var scope = service.getClass().getDeclaredField("scope");
@@ -294,7 +301,7 @@ class ReplayToolWindowLayoutTest {
             environment.set(service, new io.github.shinma06.replaybuffer.ide.AndroidReplayEnvironment(validationPath, null,
                 new io.github.shinma06.replaybuffer.ide.ApplicationSelection("sample.app", "sample", null)));
             settings.set(service, new io.github.shinma06.replaybuffer.settings.ReplaySettings(180, root.toString(),
-                io.github.shinma06.replaybuffer.settings.AppSelectionMode.AUTOMATIC, "", CaptureMode.VIDEO_AND_LOGS, false, true, ""));
+                io.github.shinma06.replaybuffer.settings.AppSelectionMode.AUTOMATIC, "", CaptureMode.VIDEO_AND_LOGS, false, false, root.toString()));
             revision.set(service, field(service, "requestRevision"));
             scope.set(service, CoroutineScopeKt.CoroutineScope(requestScope));
             uiCallbacks.clear();
@@ -346,6 +353,59 @@ class ReplayToolWindowLayoutTest {
                 }
                 assertFalse(store.getEnabled());
                 assertNull(field(capture, "core"));
+
+                var beforeMissingNative = Files.readAllLines(root.resolve("commands"));
+                var beforeErrors = uiCallbacks.size();
+                var previousJob = field(service, "screenshotJob");
+                request.invoke(service);
+                assertTrue(previousJob == field(service, "screenshotJob"), "unavailable settings cannot start a screenshot job");
+                assertEquals(beforeMissingNative, Files.readAllLines(root.resolve("commands")), "unavailable Logcat settings must not reach adb or replay root");
+                assertEquals(beforeErrors + 1, uiCallbacks.size(), "unavailable native settings need an actionable explanation");
+
+                var nativeSettings = new com.android.tools.idea.ui.screenshot.DeviceScreenshotSettings();
+                ((MockApplication) ApplicationManager.getApplication()).registerService(
+                    com.android.tools.idea.ui.screenshot.DeviceScreenshotSettings.class, nativeSettings);
+                project.registerService(com.android.tools.idea.ui.save.SaveConfigurationResolver.class,
+                    new com.android.tools.idea.ui.save.SaveConfigurationResolver(project));
+                var followed = Files.createDirectory(root.resolve("logcat"));
+                var next = Files.createDirectory(root.resolve("logcat-changed"));
+                nativeSettings.getSaveConfig$intellij_android_adb_ui().setSaveLocation(followed.toString());
+                logcatUnavailable.set(false);
+                Files.delete(root.resolve("started"));
+                Files.delete(root.resolve("continue"));
+                var redirectedBeforeStart = new AtomicBoolean();
+                var nativeChange = project.getMessageBus().connect();
+                nativeChange.subscribe(ReplayProjectService.Companion.getENVIRONMENT_CHANGED(), (Runnable) () -> {
+                    if (redirectedBeforeStart.compareAndSet(false, true))
+                        nativeSettings.getSaveConfig$intellij_android_adb_ui().setSaveLocation(next.toString());
+                });
+                try { request.invoke(service); } finally { nativeChange.disconnect(); }
+                assertTrue(redirectedBeforeStart.get(), "native settings must change before the lazy IO job starts");
+                saving = (Job) field(service, "screenshotJob");
+                assertNotNull(saving);
+                deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+                while (!Files.exists(root.resolve("started")) && System.nanoTime() < deadline) Thread.sleep(10);
+                assertTrue(Files.exists(root.resolve("started")));
+                Files.createFile(root.resolve("continue"));
+                var logcatSaved = new CompletableFuture<Void>();
+                saving.invokeOnCompletion(failure -> { logcatSaved.complete(null); return kotlin.Unit.INSTANCE; });
+                logcatSaved.get(15, TimeUnit.SECONDS);
+                try (var images = Files.list(followed); var other = Files.list(next); var replay = Files.list(common)) {
+                    assertEquals(1, images.count(), "Logcat location must be frozen for the current request");
+                    assertEquals(0, other.count());
+                    assertEquals(0, replay.count());
+                }
+                request.invoke(service);
+                saving = (Job) field(service, "screenshotJob");
+                assertNotNull(saving);
+                var nextSaved = new CompletableFuture<Void>();
+                saving.invokeOnCompletion(failure -> { nextSaved.complete(null); return kotlin.Unit.INSTANCE; });
+                nextSaved.get(15, TimeUnit.SECONDS);
+                try (var images = Files.list(next)) {
+                    assertEquals(1, images.count(), "the next request must re-read the changed native setting");
+                }
+                assertFalse(store.getEnabled());
+                assertNull(field(capture, "core"));
             }
         } finally {
             requestScope.cancel(null);
@@ -384,8 +444,9 @@ class ReplayToolWindowLayoutTest {
                 configurable.createComponent();
                 configurable.reset();
                 try {
-                    var common = (javax.swing.JCheckBox) field(configurable, "screenshotCommon");
-                    common.doClick();
+                    assertTrue(((JTextArea) field(configurable, "screenshotStatus")).getText().contains("取得できません"));
+                    var logcat = (javax.swing.JCheckBox) field(configurable, "screenshotLogcat");
+                    logcat.doClick();
                     org.junit.jupiter.api.Assertions.assertThrows(com.intellij.openapi.options.ConfigurationException.class, configurable::apply);
                     var directory = (com.intellij.openapi.ui.TextFieldWithBrowseButton) field(configurable, "screenshotDirectory");
                     directory.setText(root.toString());
@@ -405,18 +466,18 @@ class ReplayToolWindowLayoutTest {
             scope.set(service, originalScope);
             SwingUtilities.invokeAndWait(() -> {
                 try {
-                    assertTrue(store.settings().getScreenshotUsesCommonDestination(), "checking a draft is not Apply");
+                    assertTrue(store.settings().getScreenshotUsesLogcatDestination(), "checking a draft is not Apply");
                     configurable.apply();
-                    assertFalse(store.settings().getScreenshotUsesCommonDestination());
-                    assertEquals(root.toString(), store.settings().getScreenshotDestination());
+                    assertFalse(store.settings().getScreenshotUsesLogcatDestination());
+                    assertEquals(root.toString(), store.settings().getScreenshotDirectory());
                     assertEquals("", store.settings().getDestination());
                     assertFalse(configurable.isModified());
-                    ((javax.swing.JCheckBox) field(configurable, "screenshotCommon")).doClick();
+                    ((javax.swing.JCheckBox) field(configurable, "screenshotLogcat")).doClick();
                     assertTrue(configurable.isModified());
                     configurable.reset();
-                    assertFalse(((javax.swing.JCheckBox) field(configurable, "screenshotCommon")).isSelected());
+                    assertFalse(((javax.swing.JCheckBox) field(configurable, "screenshotLogcat")).isSelected());
                     assertFalse(configurable.isModified());
-                    assertEquals(root.toString(), store.settings().getScreenshotDestination());
+                    assertEquals(root.toString(), store.settings().getScreenshotDirectory());
                 } catch (Exception failure) { throw new AssertionError(failure); }
             });
         } finally {

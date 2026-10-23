@@ -60,7 +60,7 @@ class ReplaySettingsLayoutTest {
                         var guide = (JBTextArea) find(panel, "package名の入力条件");
                         var fields = List.of(find(panel, "保持時間（1〜900秒）"), find(panel, "保存先フォルダ"),
                             find(panel, "対象アプリの選択方法"), find(panel, "対象アプリのpackage名"), find(panel, "取得モード"),
-                            find(panel, "スクリーンショットを共通の保存先へ保存"), find(panel, "スクリーンショット専用フォルダ"));
+                            find(panel, "スクリーンショットをLogcatのスクショ保存先へ保存"), find(panel, "スクリーンショットの手動保存先"));
                         assertEquals(guide.getText(), fields.get(3).getAccessibleContext().getAccessibleDescription());
                         assertFalse(guide.isEditable());
                         assertFalse(guide.isFocusable());
@@ -154,18 +154,18 @@ class ReplaySettingsLayoutTest {
                         assertEquals(destination, ((TextFieldWithBrowseButton) fields.get(1)).getText());
                         assertFalse(configurable.isModified());
                         assertEquals(saved, store.getState(), "layout must not apply settings");
-                        var common = (javax.swing.JCheckBox) fields.get(5);
+                        var logcat = (javax.swing.JCheckBox) fields.get(5);
                         var screenshot = (TextFieldWithBrowseButton) fields.get(6);
-                        assertTrue(common.isSelected());
+                        assertTrue(logcat.isSelected());
                         assertFalse(screenshot.isEnabled());
-                        common.doClick();
+                        logcat.doClick();
                         assertTrue(screenshot.isEnabled());
                         assertTrue(configurable.isModified());
-                        assertTrue(store.settings().getScreenshotUsesCommonDestination(), "draft must not change effective destination");
+                        assertTrue(store.settings().getScreenshotUsesLogcatDestination(), "draft must not change effective destination");
                         screenshot.setText("relative-folder");
                         assertEquals("", store.settings().getScreenshotDirectory());
                         configurable.reset();
-                        assertTrue(common.isSelected());
+                        assertTrue(logcat.isSelected());
                         assertFalse(screenshot.isEnabled());
                         assertEquals("", screenshot.getText());
                         assertFalse(configurable.isModified(), "Cancel/reset discards screenshot destination edits");
