@@ -8,6 +8,7 @@ import unittest
 from unittest.mock import patch
 
 from test_agent_loop import BASE, HEAD, NEW
+from initial_continuation_cases import CASES
 import test_initial_acceptance as initial_tests
 from test_verification import change, observation
 import verification as v
@@ -157,8 +158,9 @@ class InitialContinuationTests(unittest.TestCase):
         record_path = 'docs/verification/changes/issue-344.json'
         product_path = 'docs/verification/changes/issue-37.json'
         script = 'scripts/workflow/verification.py'
+        fixture = 'scripts/workflow/initial_continuation_cases.py'
         unknown = 'docs/verification/unknown.json'
-        paths = [v.INITIAL_CONTINUATION, record_path, product_path, script, unknown]
+        paths = [v.INITIAL_CONTINUATION, record_path, product_path, script, fixture, unknown]
         records = {record_path: change(344, gui=False), product_path: change(37)}
 
         def git(*args):
@@ -176,7 +178,7 @@ class InitialContinuationTests(unittest.TestCase):
 
         with patch.object(v, 'initial_stage_plan', return_value=self.initial.policy):
             carried = v.promotion_policy_blobs(BASE, NEW, git, continuation=True)
-        self.assertEqual({v.INITIAL_CONTINUATION, record_path, script}, set(carried))
+        self.assertEqual({v.INITIAL_CONTINUATION, record_path, script, fixture}, set(carried))
 
 
 class RegisteredContinuationTests(unittest.TestCase):
@@ -189,7 +191,7 @@ class RegisteredContinuationTests(unittest.TestCase):
 
         # Exact 56dad Case contracts; the develop DAG/PR metadata remain synthetic.
         # Historical 139-Case documents are read only from main's reachable history.
-        cases = json.loads((root / 'docs/verification/fixtures/initial-continuation-cases.json').read_text())
+        cases = CASES
         self.assertEqual({item['source_path'] for item in registration['changes']}, set(cases))
         documents = {}
         parents = {}
