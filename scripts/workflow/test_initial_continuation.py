@@ -283,6 +283,8 @@ class InitialContinuationTests(unittest.TestCase):
             if args[0] == 'ls-tree':
                 if args[-1] == 'scripts/workflow/change_impact.py':
                     return f'100644 blob {classifier[args[1]]}\t{args[-1]}'
+                if args[-1] not in paths and args[-1] not in modules:
+                    return ''
                 if args[1] == NEW:
                     return ''
                 return f'100644 blob {"0" * 40}\t{args[-1]}'

@@ -960,6 +960,58 @@ class PromotionTreeTests(unittest.TestCase):
                         cwd=self.root, capture_output=True, text=True)
                     self.assertEqual(0, result.returncode, result.stderr)
 
+    def test_import_namespace_shadows_are_rejected_in_both_trees_and_modes(self):
+        from verification import promotion_policy_blobs
+        cases = [
+            ('candidate', 'import json', 'scripts/workflow/json.py', False),
+            ('candidate', 'import json', 'scripts/workflow/json/__init__.py', False),
+            ('candidate', 'from datetime import datetime', 'scripts/workflow/datetime.py', False),
+            ('candidate', 'from datetime import datetime', 'scripts/workflow/datetime/__init__.py', False),
+            ('candidate', 'import git_guard', 'scripts/workflow/git_guard/__init__.py', False),
+            ('base', 'import git_guard', 'scripts/workflow/git_guard/__init__.py', False),
+            ('candidate', 'import json', 'scripts/workflow/verification/__init__.py', False),
+            ('candidate', 'import urllib.request', 'scripts/workflow/urllib.py', False),
+            ('base', 'import urllib.request', 'scripts/workflow/urllib.py', False),
+            ('candidate', 'from xml.etree import ElementTree', 'scripts/workflow/xml/__init__.py', False),
+            ('candidate', 'import xml.etree.ElementTree', 'scripts/workflow/xml/etree/__init__.py', False),
+            ('candidate', "VALUE = __import__('types')", 'scripts/workflow/types.py', True),
+            ('candidate', "VALUE = __import__('types')", 'scripts/workflow/types/__init__.py', True),
+            ('base', "VALUE = __import__('types')", 'scripts/workflow/types/__init__.py', True),
+        ]
+        for side, code, shadow, regression in cases:
+            with self.subTest(side=side, code=code, shadow=shadow):
+                self.git('checkout', '-q', '-B', 'namespace-main', self.base)
+                path = ('scripts/workflow/test_initial_continuation.py' if regression else
+                        'scripts/workflow/verification.py')
+                self.write(path, code)
+                if side == 'base':
+                    self.write(shadow, 'raise AssertionError("shadow code must never execute")')
+                self.commit('reviewed import source')
+                base = self.git('rev-parse', 'HEAD')
+                self.git('checkout', '-q', '-B', 'namespace-candidate', self.candidate)
+                self.write(COMPONENT, 'later namespace fixture product')
+                if side == 'candidate':
+                    self.write(shadow, 'raise AssertionError("shadow code must never execute")')
+                self.commit('candidate namespace fixture')
+                candidate = self.git('rev-parse', 'HEAD')
+                for continuation in (False, True):
+                    with self.subTest(continuation=continuation), self.assertRaises(ValueError):
+                        promotion_policy_blobs(base, candidate, self.git, continuation)
+
+        self.git('checkout', '-q', '-B', 'valid-namespace-main', self.base)
+        self.write('scripts/workflow/verification.py',
+                   'import json\nfrom datetime import datetime\nimport urllib.request\n'
+                   'from xml.etree import ElementTree\nfrom git_guard import old_gate_api\n')
+        self.write('scripts/workflow/test_initial_continuation.py', "VALUE = __import__('types')")
+        self.commit('valid flat and standard-library imports')
+        base = self.git('rev-parse', 'HEAD')
+        for continuation in (False, True):
+            with self.subTest(valid=True, continuation=continuation):
+                carried = promotion_policy_blobs(base, self.candidate, self.git, continuation)
+                self.assertEqual({'scripts/workflow/verification.py',
+                                  'scripts/workflow/test_initial_continuation.py',
+                                  'docs/verification/README.md'}, set(carried))
+
     def test_candidate_only_protected_data_changes_keep_the_registered_full_case_set(self):
         import verification as v
         root = Path(__file__).resolve().parents[2]

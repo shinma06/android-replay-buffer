@@ -1640,16 +1640,33 @@ def promotion_policy_blobs(base, candidate, git, continuation=False):
     pending = [('scripts/workflow/verification.py', False),
                ('scripts/workflow/test_initial_continuation.py', True),
                ('scripts/workflow/test_impact_evidence_reuse.py', True)]
+    namespaces = {}
+
+    def import_entries(name):
+        parts = name.split('.')
+        for size in range(1, len(parts) + 1):
+            stem = 'scripts/workflow/' + '/'.join(parts[:size])
+            if stem not in namespaces:
+                if any(git('ls-tree', ref, '--', stem) for ref in (base, candidate)):
+                    raise ValueError('Gate import namespace contains a local package: ' + stem)
+                entries = tuple(git('ls-tree', ref, '--', stem + '.py') for ref in (base, candidate))
+                if entries[1] and not entries[0]:
+                    raise ValueError('Candidate shadows an import absent from trusted main: ' + name)
+                namespaces[stem] = entries
+            if size < len(parts) and any(namespaces[stem]):
+                raise ValueError('Dotted gate import has a local flat prefix: ' + name)
+        return namespaces[stem]
+
     dependencies, imports, visited = set(), set(), set()
     while pending:
         dependency, regression = pending.pop()
         if (dependency, regression) in visited:
             continue
         visited.add((dependency, regression))
-        entry = git('ls-tree', base, '--', dependency).split()
+        module = dependency.removeprefix('scripts/workflow/').removesuffix('.py').replace('/', '.')
+        entry, _ = import_entries(module)
+        entry = entry.split()
         if not entry:
-            if git('ls-tree', base, '--', dependency[:-3] + '/__init__.py'):
-                raise ValueError('Gate package dependency needs an explicit carry update: ' + dependency)
             continue
         if (entry[:2] != ['100644', 'blob'] or '/' in dependency.removeprefix('scripts/workflow/') or
                 dependency in ('scripts/workflow/test_change_impact.py', 'scripts/workflow/test_product_check.py') or
@@ -1671,9 +1688,8 @@ def promotion_policy_blobs(base, candidate, git, continuation=False):
             if (regression and isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and
                     node.func.id == '__import__' and len(node.args) == 1 and
                     isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str) and
-                    node.args[0].value in sys.stdlib_module_names and not any(
-                        git('ls-tree', ref, '--', 'scripts/workflow/' + node.args[0].value + '.py')
-                        for ref in (base, candidate))):
+                    node.args[0].value in sys.stdlib_module_names and
+                    not any(import_entries(node.args[0].value))):
                 continue
             if ((isinstance(node, ast.ImportFrom) and node.level) or
                     (isinstance(node, ast.Call) and
