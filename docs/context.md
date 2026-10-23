@@ -7,6 +7,7 @@
 | 作業手順 | `.agents/skills/*/SKILL.md`、英語 | 該当作業時。Claude経路はsymlink |
 | Cursor入口 | `.cursor/rules/harness.mdc` | projectで常時適用 |
 | プロジェクト事実 | project.md、共有docs、日本語 | 判断に必要な範囲 |
+| コメント・Docの契約 | [comment-doc.md](comment-doc.md)、共有正本、日本語 | source/コメント/Doc・例・設定/schema・作業入口の変更/レビューと、その影響先 |
 | チーム連絡と窓口 | [team-communication.md](team-communication.md)、[窓口依頼文](human-liaison-prompt.md)・[作業担当依頼文](team-worker-prompt.md) | チーム編成・引継ぎ・本人判断時 |
 | 独立レビュー依頼 | [review-prompt.md](review-prompt.md)、英語 | 固定HEAD/baseを別sessionへ渡すとき |
 | 作業の進行・受入 | Issue/PR | 開始、再開、レビュー、終了 |

@@ -26,6 +26,7 @@ enum class AppSelectionMode(private val label: String) {
     override fun toString(): String = label
 }
 
+/** Applied preferences in seconds/absolute folder paths; an empty replay destination permits capture only. */
 data class ReplaySettings(
     val retentionSeconds: Int = 180,
     val destination: String = "",
@@ -61,7 +62,10 @@ data class ReplaySettings(
 
 internal data class DestinationValidation(val destination: String, val error: String?)
 
-/** Reads filesystem attributes; call off EDT for nonempty destinations. */
+/**
+ * Checks current folder attributes without creating or probing writes; call off EDT for nonempty paths.
+ * An empty path is valid for capture-only settings. Success is not a lease on the folder or a save guarantee.
+ */
 internal fun validateDestination(destination: String): DestinationValidation {
     val error = if (destination.isEmpty()) {
         null

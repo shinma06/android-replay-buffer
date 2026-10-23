@@ -44,7 +44,10 @@ internal data class CliEndpoint(
     fun isLive(): Boolean = ProcessHandle.of(pid).map { it.isAlive && it.info().startInstant().orElse(null) == started }.orElse(false)
 }
 
-/** Separate from legacy replayd state and IDE-internal lock/socket formats. */
+/**
+ * Current-user-only endpoint descriptors, separate from legacy replayd and IDE lock/socket formats.
+ * Selection rejects unsafe, ambiguous or mismatched descriptors without repairing or deleting them.
+ */
 internal object ReplayCliRegistry {
     private val directoryMode = PosixFilePermissions.fromString("rwx------")
     private val fileMode = PosixFilePermissions.fromString("rw-------")
@@ -52,6 +55,7 @@ internal object ReplayCliRegistry {
 
     fun directory(): Path = Path.of(System.getProperty("user.home"), ".android-replay-buffer-cli")
 
+    /** Hashes the containing local distribution JAR, not a version label or source revision. */
     fun buildIdentity(): String {
         // IDE class loaders can omit CodeSource.location while retaining the class resource URL.
         val resource = ReplayCliRegistry::class.java.getResource("ReplayCliRegistry.class")
@@ -165,6 +169,12 @@ internal object ReplayCliRegistry {
     }
 }
 
+/**
+ * Owns one project's loopback endpoint and bounded request workers; [execute] runs off EDT.
+ * [close] requests shutdown without waiting. Observe [termination] for worker exit and descriptor
+ * cleanup; exceptional completion does not confirm cleanup. A closed connection
+ * does not establish the outcome of an already dispatched capture/save operation.
+ */
 internal class ReplayCliServer(
     private val directory: Path,
     project: Path,
