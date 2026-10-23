@@ -1,4 +1,4 @@
-"""Exact registered 56dad Case contracts for unit tests, never acceptance evidence."""
+"""Exact registered 818b7e1 Case contracts for unit tests, never acceptance evidence."""
 
 CASES = {'docs/verification/changes/issue-287.json': [],
  'docs/verification/changes/issue-206.json': [{'artifact': 'plugin',
@@ -651,4 +651,34 @@ CASES = {'docs/verification/changes/issue-287.json': [],
                                                          '設定画面の狭幅は実IDEが提供するviewport条件で評価し、ToolWindowの280幅を同一条件として押し付けない。'],
                                                'expected': '状態を色だけで伝えず、重要な操作と全文へ到達できる。標準focus/keyboardとlabel '
                                                            'associationを保ち、設定編集の反映時期と入力エラーが分かる。旧失敗・人間/REAL残件を合格へ換えない。',
-                                               'recheck': '影響したlayout・ラベル・focus・IDE統合を最小の共有観察で確認し、既に十分な内容/FILE事実を鮮度だけの理由で再実行しない。'}]}
+                                               'recheck': '影響したlayout・ラベル・focus・IDE統合を最小の共有観察で確認し、既に十分な内容/FILE事実を鮮度だけの理由で再実行しない。'}],
+ 'docs/verification/changes/issue-347.json': [{'id': 'SAVE-WARNING-WINDOW',
+                                               'artifact': 'plugin',
+                                               'change': '保存範囲外と証明できる復旧履歴だけを不足・未確認の判定から除外し、窓開始の動画frameを保持する',
+                                               'preconditions': '本変更と第2版最終UIを含む固定source/標準ZIP/実ロードを同定し、同ZIP製品classの限定回帰と既存337/343等の代表実IDE保存/表示を別証拠として共有する。精密fault注入のための新しい製品test '
+                                                                'hookや全GUI matrixを追加しない。',
+                                               'steps': ['同一gapのwindow内→誤差を含めwindow外への経過と再接続履歴をproduction '
+                                                         'Store/Core/Writerの回帰で照合する。外側境界が証明できる場合だけ新規保存のwarning対象から外れ、動画の窓開始・元PTS/packet/config/履歴が保全されることを確認する。',
+                                                         '本当に不明な時刻/境界、open/null、誤差範囲の交差、裏付け欠如/overflow/unknown boot '
+                                                         'bridgeと窓内実lossの警告を保持する。実保存失敗後livewindowが進んでも元frozen対象のretryが元T/N/対象/bytes/理由を使い、新規saveとは区別されることを確認する。LOG_ONLYの未要求動画と正常app0行は警告理由にしない。',
+                                                         '既存の最終候補の代表保存で、通知・詳細と同梱CLIがそのattemptの結果を表示し、正常保存/不足・未確認を伴う成功/保存失敗を区別する。READMEの履歴保全説明とsession.jsonの原gap/clockを確認する。精密な範囲内外は同じ固定ZIPのproduction '
+                                                         'class証拠に結び付け、旧native観察を新実行としない。'],
+                                               'expected': '証明可能な範囲外履歴が後の完全保存へwarningや動画先頭不足として残らない。重なりを否定できない不確実性と実不足は残り、元履歴/不明duration/時計/固定retry/失敗時保全を変更しない。#335の「不足・未確認」の用語、CLIのexit/stdout/JSON互換を維持する。',
+                                               'provenance': ['https://github.com/shinma06/android-replay-buffer/issues/347',
+                                                              'docs/verification/changes/issue-41.json',
+                                                              'docs/verification/changes/issue-71.json',
+                                                              'docs/verification/changes/issue-335.json',
+                                                              'docs/verification/responsibility.md',
+                                                              'https://github.com/shinma06/android-replay-buffer/pull/350#discussion_r4357407923'],
+                                               'gpt': {'status': 'pending',
+                                                       'reason': 'writerがproduction回帰と通常checkを行うが、最終固定候補/実ロードの代表結合は未実施。自動成功だけでnative合格にしない。'},
+                                               'human': {'status': 'pending',
+                                                         'reason': '未観察。既存のhuman/REAL条件と正式な延期を維持し、新しい延期や実行済みを追加しない。'},
+                                               'fix_issue': None,
+                                               'fix_pr': None,
+                                               'recheck': '41:CORE-SNAPSHOT/SYNC-PARTIAL/SYNC-WINDOW、71の保存窓・固定retry、52/85のclock '
+                                                          'gap、274のLOG_ONLY、103の共有保存結果、335の表示へ影響する。原観察/FAILを保持し、影響部分/現在loadのfresh '
+                                                          'factsと独立保証別影響評価を要する。',
+                                               'next_action': 'PMが最終source/標準ZIPを固定し、同ZIPの精密production回帰と既存最終機能受入の代表表示へ結び付けてQAへ移管する。全v2/main受入は280で継続する。'}],
+ 'docs/verification/changes/issue-352.json': [],
+ 'docs/verification/changes/issue-345.json': []}

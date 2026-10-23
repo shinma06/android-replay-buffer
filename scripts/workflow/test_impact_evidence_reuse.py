@@ -714,7 +714,13 @@ class PromotionTreeTests(unittest.TestCase):
         plan['responsibility_revision']['previous_plan_sha256'] = canonical_hash(
             {k: v for k, v in plan.items() if k != 'responsibility_revision'})
         self.write(INITIAL_PLAN, json.dumps(plan))
-        self.write('scripts/workflow/verification.py', 'old policy')
+        self.preserved = ['AGENTS.md', 'README.md', 'docs/android-studio.md', 'docs/design/timeline.md',
+                          'docs/project.md', 'docs/requirements.md', 'docs/setup/ci.md',
+                          'scripts/workflow/test_change_impact.py', 'scripts/workflow/test_product_check.py']
+        for path in self.preserved:
+            self.write(path, 'current candidate facts')
+        self.write('scripts/workflow/verification.py', 'adopted candidate Doc\nold policy')
+        self.write('docs/verification/README.md', 'adopted candidate Doc\nold explanation')
         self.write(COMPONENT, 'old product')
         self.commit('common')
         self.common = self.git('rev-parse', 'HEAD')
@@ -723,8 +729,10 @@ class PromotionTreeTests(unittest.TestCase):
         self.commit('tested repair')
         self.candidate = self.git('rev-parse', 'HEAD')
         self.git('checkout', '-q', '-b', 'trusted-main', self.common)
-        self.write('scripts/workflow/verification.py', 'reviewed policy')
-        self.write('AGENTS.md', 'reviewed instructions')
+        self.write('scripts/workflow/verification.py', 'adopted candidate Doc\nreviewed policy')
+        self.write('docs/verification/README.md', 'adopted candidate Doc\nreviewed explanation')
+        for path in self.preserved:
+            self.write(path, 'older main facts')
         self.write('.github/workflows/ci.yml', 'mixed build policy')
         self.write(CERT_PATH, json.dumps({'schema': 1, 'issue': 246, 'gui_required': False,
                    'reason': 'Certificate only.', 'cli_checks': ['Synthetic'], 'cases': [],
@@ -766,13 +774,23 @@ class PromotionTreeTests(unittest.TestCase):
 
     def test_real_divergent_tree_retains_reviewed_policy_and_certificate_without_product_rebuild(self):
         self.verify()
-        self.assertEqual(set(self.carried), {CERT_PATH, 'scripts/workflow/verification.py', 'AGENTS.md'})
+        self.assertEqual(set(self.carried), {CERT_PATH, 'scripts/workflow/verification.py',
+                                            'docs/verification/README.md'})
         self.assertEqual(self.git('diff', '--name-only', self.candidate, 'HEAD', '--', COMPONENT), '')
         self.assertNotIn('.github/workflows/ci.yml', self.carried)
+        for path in self.preserved:
+            self.assertEqual(self.git('show', f'HEAD:{path}'), 'current candidate facts')
+        for path in ('scripts/workflow/verification.py', 'docs/verification/README.md'):
+            self.assertIn('adopted candidate Doc', self.git('show', f'HEAD:{path}'))
+        from verification import promotion_policy_blobs
+        self.assertEqual(set(self.carried) - {CERT_PATH}, set(
+            promotion_policy_blobs(self.base, self.candidate, self.git, continuation=True)))
 
     def test_unreviewed_policy_product_unknown_and_reverts_remain_blocked(self):
         clean = self.git('rev-parse', 'HEAD')
-        for path in ('scripts/workflow/verification.py', COMPONENT, 'unknown.bin', '.github/workflows/ci.yml', CERT_PATH):
+        for path in ('scripts/workflow/verification.py', 'docs/verification/README.md', COMPONENT,
+                     'unknown.bin', '.github/workflows/ci.yml', CERT_PATH, CASE_PATH,
+                     'docs/verification/unknown.json', 'docs/verification/changes/issue-999.json'):
             with self.subTest(path=path):
                 self.git('reset', '--hard', clean)
                 self.write(path, 'unreviewed alteration')

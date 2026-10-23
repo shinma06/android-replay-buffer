@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "issue": 356,
+  "gui_required": false,
+  "reason": "最終候補818b7e1の全23 commit/追加28 Caseを既存trusted-main登録へ固定し、promotionのmandatory carryを必要な7管理ファイルと別途検証する証明archiveへ限定する。元139 Case/208出典・plan hash・人間REAL延期は変更しない。採用済み345 Doc/commentsとCの製品factsを保持する。製品runtime/build/Case結果・GUI/ADB/実admission/promotion/Release・正式証明の承認は対象外。schema origin344を維持し、本改訂の所有/認可は356と対応PRへ結ぶ。",
+  "cli_checks": [
+    "python3 -m unittest discover -s scripts/workflow -p test_initial_continuation.py -v",
+    "python3 -m unittest discover -s scripts/workflow -p test_impact_evidence_reuse.py -v",
+    "python3 scripts/check.py",
+    "python3 scripts/workflow/product_check.py",
+    "python3 scripts/workflow/change_impact.py --base origin/main --run-tests"
+  ],
+  "cases": []
+}

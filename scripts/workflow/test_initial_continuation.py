@@ -155,13 +155,21 @@ class InitialContinuationTests(unittest.TestCase):
         self.assertTrue(self.verify()['stage_complete'])
 
     def test_metadata_carry_keeps_only_exact_main_policy_and_case_free_records(self):
-        record_path = 'docs/verification/changes/issue-344.json'
+        record_path = 'docs/verification/changes/issue-356.json'
         product_path = 'docs/verification/changes/issue-37.json'
         script = 'scripts/workflow/verification.py'
         fixture = 'scripts/workflow/initial_continuation_cases.py'
         unknown = 'docs/verification/unknown.json'
-        paths = [v.INITIAL_CONTINUATION, record_path, product_path, script, fixture, unknown]
-        records = {record_path: change(344, gui=False), product_path: change(37)}
+        required = {v.INITIAL_CONTINUATION, record_path, script, fixture,
+                    'scripts/workflow/test_initial_continuation.py',
+                    'scripts/workflow/test_impact_evidence_reuse.py', 'docs/verification/README.md'}
+        unrelated = ['AGENTS.md', 'README.md', 'docs/android-studio.md', 'docs/design/timeline.md',
+                     'docs/project.md', 'docs/requirements.md', 'docs/setup/ci.md',
+                     'scripts/workflow/test_change_impact.py', 'scripts/workflow/test_product_check.py',
+                     'CONTRIBUTING.md', 'docs/verification/changes/issue-999.json']
+        paths = [*required, product_path, unknown, *unrelated]
+        records = {record_path: change(356, gui=False), product_path: change(37),
+                   unrelated[-1]: change(999, gui=False), v.INITIAL_CONTINUATION: self.registration}
 
         def git(*args):
             if args[0] == 'merge-base':
@@ -176,20 +184,31 @@ class InitialContinuationTests(unittest.TestCase):
                 return json.dumps(records[args[1].split(':', 1)[1]])
             raise AssertionError(args)
 
-        with patch.object(v, 'initial_stage_plan', return_value=self.initial.policy):
-            carried = v.promotion_policy_blobs(BASE, NEW, git, continuation=True)
-        self.assertEqual({v.INITIAL_CONTINUATION, record_path, script, fixture}, set(carried))
+        for continuation in (False, True):
+            with self.subTest(continuation=continuation), patch.object(
+                    v, 'initial_stage_plan', return_value=self.initial.policy):
+                carried = v.promotion_policy_blobs(BASE, NEW, git, continuation=continuation)
+                self.assertEqual(required, set(carried))
+        records[record_path] = change(356)
+        with patch.object(v, 'initial_stage_plan', return_value=self.initial.policy), self.assertRaises(ValueError):
+            v.promotion_policy_blobs(BASE, NEW, git, continuation=True)
 
 
 class RegisteredContinuationTests(unittest.TestCase):
-    def test_registered_166_contracts_and_235_sources_render_without_inventing_results(self):
+    def test_registered_167_contracts_and_236_sources_render_without_inventing_results(self):
         root = Path(__file__).resolve().parents[2]
         registration = json.loads((root / v.INITIAL_CONTINUATION).read_text())
         policy = json.loads((root / v.INITIAL_PLAN).read_text())
-        base, candidate = '8e6a1d626e103d5e0c67850bc53445d18ab5791e', registration['candidate']
+        self.assertEqual('818b7e1adbcd0af79e146d1795f833b75a1b1302', registration['candidate'])
+        warning = registration['cases']['347:SAVE-WARNING-WINDOW']
+        self.assertEqual('aa9b28b5d6eec07756c29ffce51dda1192926004e8c4ac99aac5d3c37f216a4b',
+                         warning['current_case_sha256'])
+        self.assertEqual([warning['current_case_sha256']],
+                         [source['original_case_sha256'] for source in warning['sources']])
+        base, candidate = 'c66363ea0b27add98de9853ccf87728235662b17', registration['candidate']
         read = cache(lambda *args: subprocess.check_output(['git', *args], cwd=root, text=True).strip())
 
-        # Exact 56dad Case contracts; the develop DAG/PR metadata remain synthetic.
+        # Exact 818b7e1 Case contracts; the develop DAG/PR metadata remain synthetic.
         # Historical 139-Case documents are read only from main's reachable history.
         cases = CASES
         self.assertEqual({item['source_path'] for item in registration['changes']}, set(cases))
@@ -243,12 +262,12 @@ class RegisteredContinuationTests(unittest.TestCase):
         changes = [{k: item[k] for k in ('commit', 'pr')} for item in registration['changes']]
         sources = v.initial_stage_sources(policy, v.initial_continuation(policy, base, candidate, git),
                                          None, changes, candidate, git)
-        self.assertEqual((166, 235, 27, 20), (len({k for k, _, _ in sources}), len(sources),
+        self.assertEqual((167, 236, 28, 23), (len({k for k, _, _ in sources}), len(sources),
                                             len(extra), len(registration['changes'])))
         manifest = {'stage': v.INITIAL_STAGE, 'base': base, 'candidate': candidate,
                     'changes': changes, 'results': {}}
         output = v.render_queue([], manifest, git)
-        self.assertEqual(166, sum(line.startswith('| ') and ' / #' in line for line in output.splitlines()))
+        self.assertEqual(167, sum(line.startswith('| ') and ' / #' in line for line in output.splitlines()))
         self.assertNotIn('Case合格（', output)
         self.assertNotIn('初期版範囲合格／', output)
         self.assertEqual(139, len(policy['cases']))
@@ -317,13 +336,16 @@ class RegisteredContinuationTests(unittest.TestCase):
             return {'object': {'sha': candidate}} if path == 'git/ref/heads/develop' else prs[path]
 
         result = v.verify_pr(pr, api, virtual_git)
-        self.assertEqual((166, 132, 34), (result['cases'], result['initial_cases'], result['deferred_cases']))
+        self.assertEqual((167, 133, 34), (result['cases'], result['initial_cases'], result['deferred_cases']))
         self.assertTrue(result['stage_complete'])
         self.assertFalse(result['gui_complete'])
         self.assertFalse(result['full_acceptance_complete'])
-        manifest['results']['104:GUI-FLOW']['status'] = 'deferred'
-        with self.assertRaisesRegex(ValueError, 'must pass'):
-            v.verify_pr(pr, api, virtual_git)
+        for key in ('104:GUI-FLOW', '347:SAVE-WARNING-WINDOW'):
+            for status in ('deferred', 'initial-pass'):
+                manifest['results'][key]['status'] = status
+                with self.subTest(key=key, status=status), self.assertRaisesRegex(ValueError, 'must pass'):
+                    v.verify_pr(pr, api, virtual_git)
+            manifest['results'][key]['status'] = 'pass'
 
 
 if __name__ == '__main__':

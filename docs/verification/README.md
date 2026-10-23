@@ -7,6 +7,8 @@
 
 `changes/issue-N.json` はIssueの受入、`promotion.json` はmainへ入れる固定候補と全Caseの観察の正本です。過去の観察を別SHA/buildで新たに実行したpassへ付け替えません。[影響単位の評価](#修正影響による保証単位の証拠再利用246)では、元の成功事実を保持し、現在buildへの適用評価と区別します。未実施はpending、環境不足はblocked、製品不具合はfailと区別します。
 
+第2版の負荷比較は[Android負荷を優先する性能比較](https://github.com/shinma06/android-replay-buffer/blob/818b7e1adbcd0af79e146d1795f833b75a1b1302/docs/verification/performance.md)を参照します。方法案・過去の観測・未実測を区別し、既存Caseの合否や実機/人間延期は変更しません。
+
 ## Caseの記録
 
 GUI不要なら具体的理由と実行したCLI検証を記録します。
@@ -24,7 +26,7 @@ GUI不要なら具体的理由と実行したCLI検証を記録します。
 
 実機/IDE観察が必要なら`gui_required: true`とし、各Caseに`id / artifact / change / preconditions / steps / expected / provenance / gpt / human / fix_issue / fix_pr / recheck / next_action`を記入します。`gpt`はschema互換キーでモデル指定ではありません。`gpt/human`には`status`と`reason`を置き、未観察をpassにしません。failには別の実在open修正Issueが必要です。Computer Use経路自体が要件なら`required_execution: computer_use`を指定します。
 
-CLIではUSB切断/再接続、直前区間の動画/logcat時刻整合、log-only保存、保存失敗、daemon停止等を変更範囲に応じて選びます。プラグインではさらにEDT/dispose/取消し/設定保存/IDE再起動を確認します。既存2 unit testsは全製品の受入を代替しません。
+CLIではUSB切断/再接続、直前区間の動画/logcat時刻整合、log-only保存、保存失敗、daemon停止等を変更範囲に応じて選びます。プラグインではさらにEDT/dispose/取消し/設定保存/IDE再起動を確認します。[CLIとPluginの自動試験](https://github.com/shinma06/android-replay-buffer/blob/818b7e1adbcd0af79e146d1795f833b75a1b1302/docs/plugin-development.md)は全製品の受入を代替しません。
 
 ## 受入NG修正のdevelop統合（#226）
 
@@ -122,7 +124,7 @@ mainはdevelop baseとは別のrefなので、GitHubのHEAD/strict-base保護だ
 4. resultsのキーは`Issue番号:Case ID`。passは`status / actor / observer / at / head / artifact_sha256 / evidence / loaded_identity / reason`を持つ。日時はtimezone付きISO8601、head/hashは候補と一致。loaded_identityに実際のCLI/Pluginのロード識別を書く。
 5. 候補後に新しく記述できるのはpromotion.jsonとpromotion IssueのCase JSONのみ。採用済み証明のIssue JSON（未参照の過去候補分を含む）と、条件を満たすmain方針は、trusted mainの正確なblob/modeで保持する。過去候補の証明を今回の候補の証拠へ読み替えず、全範囲のgate・CI・独立レビューを通し、merge commitでmainへ統合する。
 
-Plugin ZIP生成はプラグイン基盤の導入時に実buildへ接続します。現在は存在しないGradle/ZIP成果物を仮定せず、製品promotion前に再現できる固定成果物の作成・照合手順をそのIssueで定義します。main起点の限定変更も、trusted mainの`docs/verification/scopes/issue-N.json`による事前承認範囲と全Caseの観察が必要です。
+Plugin ZIPは[標準build](https://github.com/shinma06/android-replay-buffer/blob/818b7e1adbcd0af79e146d1795f833b75a1b1302/docs/plugin-development.md)で生成し、[配布仕様](https://github.com/shinma06/android-replay-buffer/blob/818b7e1adbcd0af79e146d1795f833b75a1b1302/docs/release-delivery.md)に従って固定source・同梱CLI・JAR・ZIPのidentityを照合します。build成功は実IDEへのロードや製品Caseの合格を示しません。main起点の限定変更も、trusted mainの`docs/verification/scopes/issue-N.json`による事前承認範囲と全Caseの観察が必要です。
 
 ### 実測GOPの境界試験（#56）
 
@@ -226,13 +228,15 @@ promotionには`stage: initial-agent`を明記し、元の139 keyの各値は以
 
 全必須Agent範囲が合格すると`stage_complete: true`になるが、`gui_complete`と`full_acceptance_complete`はfalseのまま。一覧でも「初期版範囲合格」「延期・未実施」を原Case全体の合格と区別する。既存coordinatorの全GUI完了判定を変更せず、PMが初期版と後続QAの状態を別々に読み戻す。
 
-第2版候補 `56dad1d9c63cbfd8c504099498bb993791520109` は、trusted mainの[固定接続登録](amendments/initial-agent-continuation.json)（#344）で同じ`initial-agent`段階へ接続する。元の計画139 Case / 208出典とcanonical hash、既存の責任・方法改訂、人間・REAL延期、後続#65を変更しない。登録は候補SHA、元計画hash、20 commitと各merged develop PR・Caseファイル、追加27 keyの出典と現在契約hashを固定する。通常の全commit/実PR provenance検証も継続する。登録をcandidate側だけへ置く、未知Case・別候補・出典の重複や欠落・契約差分を自動で許可する仕組みではない。後続の追加には別の明示的なtrusted main改訂が必要となる。
+第2版の最終候補 `818b7e1adbcd0af79e146d1795f833b75a1b1302` は、trusted mainの[固定接続登録](amendments/initial-agent-continuation.json)（#356改訂、schema機構のorigin #344は維持）で同じ`initial-agent`段階へ接続する。元の計画139 Case / 208出典とcanonical hash、既存の責任・方法改訂、人間・REAL延期、後続#65を変更しない。登録は候補SHA、元計画hash、23 commitと各merged develop PR・Caseファイル、追加28 keyの出典と現在契約hashを固定する。通常の全commit/実PR provenance検証も継続する。登録をcandidate側だけへ置く、未知Case・別候補・出典の重複や欠落・契約差分を自動で許可する仕組みではない。後続の追加には別の明示的なtrusted main改訂が必要となる。
 
-この候補の`results`は139+27の全166 key（計235出典）を必要とする。元139は既存の`initial-pass` / `deferred`の厳密な条件を維持し、追加27は通常の同一candidate/artifactに結び付いた全保証の`pass`を必要とする。追加分に新しい延期や旧139の責任改訂を継承させない。追加分の未実施・pending・blocked・failを残したまま段階完了にはできない。一覧も同じ固定接続から166 Caseを生成し、追加分を「Case合格」、元139を従来の段階範囲と区別する。全必要結果が揃った段階完了でも、完全受入は未完了のままとする。
+この候補の`results`は139+28の全167 key（計236出典）を必要とする。元139は既存の`initial-pass` / `deferred`の厳密な条件を維持し、追加28は通常の同一candidate/artifactに結び付いた全保証の`pass`を必要とする。追加分に新しい延期や旧139の責任改訂を継承させない。追加分の未実施・pending・blocked・failを残したまま段階完了にはできない。一覧も同じ固定接続から167 Caseを生成し、追加分を「Case合格」、元139を従来の段階範囲と区別する。全必要結果が揃った段階完了でも、完全受入は未完了のままとする。
 
-この接続でmainの管理更新を取り込む場合は、既存のeffective plan同一性検査を通し、固定接続登録とCaseなしの管理記録を含むtrusted mainの正確なblobだけをmetadataとして許可する。製品Caseの書換え、未知JSON、候補外の製品差分、途中commitでの改変・revertは許可しない。判定入口はAcceptance CI・coordinator・配布処理が共有する`verify_pr`のままで、接続の採用や合成unit testは実promotion・実機/IDE受入・証拠再利用の承認ではない。#246の正式証明書や旧成果物から本候補へのlineage評価は別の既存契約を満たす必要があり、本登録で代替しない。
+旧56dad登録と#344の承認は[固定main c663の履歴](https://github.com/shinma06/android-replay-buffer/blob/c66363ea0b27add98de9853ccf87728235662b17/docs/verification/amendments/initial-agent-continuation.json)として残す。今回のC登録の認可・所有は[#356のCaseなし管理記録](changes/issue-356.json)と対応PRに結び、#344を再開しない。352/345のCase0も全commit/PRの登録から省略しない。
 
-登録の回帰試験は[追加27 Caseの原契約fixture](../../scripts/workflow/initial_continuation_cases.py)を読み、固定登録のoriginal/current hashへ照合する。fixtureは登録された20出典の`cases`だけを固定Git原本から抽出したもので、各出典と56dad上の契約は同一である。試験用のdevelop履歴・PR metadata・候補結果は合成し、元139の原本はmainの到達可能な履歴から読む。develop objectを持たないmain単独checkoutでも実行でき、実行時fetchや追加のネットワーク接続を必要としない。このfixtureや合成結果を実受入の証拠として扱わない。
+この接続又はcertificate-onlyのpromotionでmainの管理更新を取り込む場合は、既存のeffective plan同一性検査を通し、必要な7ファイル（固定接続登録、`verification.py`、原契約fixture、`test_initial_continuation.py`、`test_impact_evidence_reuse.py`、本README、`issue-356.json`）の変更されたtrusted mainの正確なblob/modeだけをmetadataとして許可する。登録・fixture・回帰試験を一緒に保持して検査の不整合を避ける。証明archiveは別の既存identity/origin検証を通して保持する。無関係なmetadata・Case0記録を一括で運ばず、製品factsを含む他のファイルはCの内容を保つ。必要なmain blobもCで採用済みの345 Doc/commentsを保持し、gateの変更部分だけ整合させる。製品Caseの書換え、未知JSON、候補外の製品差分、途中commitでの改変・revertは許可しない。判定入口はAcceptance CI・coordinator・配布処理が共有する`verify_pr`のままで、接続の採用や合成unit testは実promotion・実機/IDE受入・証拠再利用の承認ではない。#246の正式証明書や旧成果物から本候補へのlineage評価は別の既存契約を満たす必要があり、本登録で代替しない。
+
+登録の回帰試験は[追加28 Caseの原契約fixture](../../scripts/workflow/initial_continuation_cases.py)を読み、固定登録のoriginal/current hashへ照合する。fixtureは登録された23出典の`cases`だけを固定Git原本から抽出したもので、各出典と最終818b7e1上の契約は同一である。試験用のdevelop履歴・PR metadata・候補結果は合成し、元139の原本はmainの到達可能な履歴から読む。develop objectを持たないmain単独checkoutでも実行でき、実行時fetchや追加のネットワーク接続を必要としない。このfixtureや合成結果を実受入の証拠として扱わない。
 
 初回main反映後も計画は残る。通常の完全受入では、`base..candidate`に現れなくなった延期Caseも固定出典から必要集合へ戻し、通常の全体passを要求する。`stage`を外すだけで延期を消せない。履歴の一覧も同じresolverで固定出典を読み、原契約・延期理由・担当・再開条件を保持する。初期段階のJSONへ過去の観察や計画hashを追記するだけでは新候補の実観察にならない。
 
