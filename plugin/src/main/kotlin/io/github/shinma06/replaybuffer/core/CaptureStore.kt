@@ -653,21 +653,32 @@ internal fun List<CaptureGap>.gapScopes(
         } catch (_: ArithmeticException) { null }
     }
     val anchors = clocks.mapNotNull { sample -> anchor(sample)?.let { Triple(it.first, it.second, sample) } }.sortedBy { it.first }
+    val acquisitionAnchors = anchors.filter { (_, error, sample) ->
+        error >= 0 && sample.before >= 0 && sample.after >= sample.before && sample.received >= sample.sent
+    }
+    fun boundarySample(candidates: List<Triple<Long, Long, ClockSample>>, time: Long, after: Boolean): Triple<Long, Long, ClockSample>? {
+        var low = 0
+        var high = candidates.size
+        while (low < high) {
+            val middle = low + (high - low) / 2
+            val point = candidates[middle].first
+            if (point < time || !after && point == time) low = middle + 1 else high = middle
+        }
+        return candidates.getOrNull(if (after) low else low - 1)
+    }
     return map { gap ->
         val acquisition = gap.stream == "video" || gap.stream == "device_log" || gap.stream == "app_log"
         if (!acquisition && gap.stream != "clock" || gap.boundaryUncertaintyNs != null && gap.boundaryUncertaintyNs != Long.MAX_VALUE) return@map gap
         // Acquisition loss needs both observed boundaries; clocks do not make an open/unknown-owner loss finite.
         if (acquisition && (gap.generation <= 0 || gap.fromNs == null || gap.toNs == null || gap.fromNs > gap.toNs)) return@map gap
-        val candidates = if (acquisition) anchors.filter { (_, error, sample) ->
-            error >= 0 && sample.before >= 0 && sample.after >= sample.before && sample.received >= sample.sent
-        } else anchors
+        val candidates = if (acquisition) acquisitionAnchors else anchors
         // Widen to observed normal samples, never treat nominal from/to as zero-error boundaries.
-        val before = gap.fromNs?.let { from -> candidates.lastOrNull { it.first <= from } }
+        val before = gap.fromNs?.let { from -> boundarySample(candidates, from, after = false) }
         val after = gap.toNs?.let { to ->
             // Status closes after receiving its sample; preserve nominal closure and that sample's error.
             recoveries[gap]?.takeIf { gap.stream == "clock" }?.let { sample -> anchor(sample)?.let {
                 Triple(maxOf(to, it.first), it.second, sample)
-            } } ?: candidates.firstOrNull { it.first >= to }
+            } } ?: boundarySample(candidates, to, after = true)
         }
         if (acquisition && (before == null || after == null) ||
             before == null && after == null || before != null && after != null && before.first > after.first) gap

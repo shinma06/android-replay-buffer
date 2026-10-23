@@ -5,7 +5,7 @@
   "reason": "復旧済み履歴の保存窓判定と動画開始位置のpredecessor選択を変更する。同一固定ZIPのproduction class回帰で内外・誤差・unknown・再接続・固定retryを確認し、最終候補の既存機能受入で通知/詳細/CLIの代表結合を別に確認する。旧受入FAILや未実施をPASSへ変えない。",
   "cli_checks": [
     "CaptureStoreSaveTest: 時計不達/epoch境界の同じ履歴を含む保存、窓外へ過ぎた完全な保存、preroll/末尾・元gap保全・固定retryを確認する。",
-    "VideoClockRegionTest / LogOnlyStoreTest: 外側境界の両誤差、未解決境界/無境界/裏付け不良/unknown bridge、取得ownerなし、再接続後の両ログ、LOG_ONLY/正常0行と失敗後の固定windowを確認する。",
+    "VideoClockRegionTest / LogOnlyStoreTest: 外側境界の両誤差、未解決境界/無境界/裏付け不良/unknown bridge、取得ownerなし、再接続後の両ログ、LOG_ONLY/正常0行と失敗後の固定windowを確認する。 最大4096 gap/clockの範囲選択でgapごとのanchor一覧複製を拒否する生成量回帰と、同一時刻の前後sample選択を確認する。",
     "ReplayCoreWireTest / ReplayCliSaveResultTestと通常全product回帰: 共通保存結果、保存成功warning/失敗exit、元T/N/対象/pin/atomic非上書き/取消しを維持する。clean committed HEADの通常change_impact --run-testsとhook/CIを実施する。"
   ],
   "cases": [
@@ -25,7 +25,8 @@
         "docs/verification/changes/issue-41.json",
         "docs/verification/changes/issue-71.json",
         "docs/verification/changes/issue-335.json",
-        "docs/verification/responsibility.md"
+        "docs/verification/responsibility.md",
+        "https://github.com/shinma06/android-replay-buffer/pull/350#discussion_r4357407923"
       ],
       "gpt": {
         "status": "pending",
