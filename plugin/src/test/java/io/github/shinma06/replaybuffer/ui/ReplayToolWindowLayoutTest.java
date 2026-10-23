@@ -19,6 +19,8 @@ import io.github.shinma06.replaybuffer.core.ApplicationTarget;
 import io.github.shinma06.replaybuffer.core.AutoSaveSnapshot;
 import io.github.shinma06.replaybuffer.core.CaptureMode;
 import io.github.shinma06.replaybuffer.core.CaptureState;
+import io.github.shinma06.replaybuffer.core.DeviceKind;
+import io.github.shinma06.replaybuffer.core.ReplayDevice;
 import io.github.shinma06.replaybuffer.core.ReplaySettings;
 import io.github.shinma06.replaybuffer.core.ReplaySnapshot;
 import io.github.shinma06.replaybuffer.core.SaveSnapshot;
@@ -51,6 +53,7 @@ import javax.swing.text.DefaultEditorKit;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class ReplayToolWindowLayoutTest {
@@ -231,6 +234,41 @@ class ReplayToolWindowLayoutTest {
         render.setAccessible(true);
         render.invoke(panel);
         assertTrue(button.isEnabled(), "screenshot is available with replay OFF and capture initialization pending");
+        var serial = service.getClass().getDeclaredMethod("screenshotDeviceSerial");
+        serial.setAccessible(true);
+        assertNull(serial.invoke(service), "OFF uses shared device resolution without starting capture");
+        store.setEnabled(true);
+        render.invoke(panel);
+        assertFalse(button.isEnabled(), "pending startup must not independently select a different device");
+        var capture = field(service, "capture");
+        var view = capture.getClass().getDeclaredField("view");
+        view.setAccessible(true);
+        var activeSettings = new ReplaySettings(Path.of("/disposable/adb"), Path.of("/disposable"),
+            180, new ApplicationTarget(), CaptureMode.VIDEO_AND_LOGS, false);
+        for (boolean connected : new boolean[]{true, false}) {
+            var snapshot = new ReplaySnapshot(1, 1, true, CaptureState.CAPTURING, activeSettings, 1,
+                new ReplayDevice("emulator-5554", "Recording", DeviceKind.EMULATOR, connected),
+                "screenshot-test", 1L, false,
+                new StreamSnapshot(), new StreamSnapshot(), new StreamSnapshot(), new SaveSnapshot(),
+                false, null, null, 0L, 0, new AutoSaveSnapshot(), null);
+            view.set(capture, new ReplayCaptureView(snapshot, 0, null, null));
+            render.invoke(panel);
+            assertTrue(button.isEnabled());
+            assertEquals("emulator-5554", serial.invoke(service), "disconnection must retain the recording serial");
+            store.setEnabled(false);
+            assertEquals("emulator-5554", serial.invoke(service), "pending OFF must not lose the actual capture target");
+            store.setEnabled(true);
+        }
+        environment.set(service, new io.github.shinma06.replaybuffer.ide.AndroidReplayEnvironment(
+            Path.of("/different-sdk/adb"), null,
+            new io.github.shinma06.replaybuffer.ide.ApplicationSelection("sample.app", "sample", null)));
+        render.invoke(panel);
+        assertFalse(button.isEnabled(), "pending SDK change cannot resolve the recording serial on another server");
+        environment.set(service, new io.github.shinma06.replaybuffer.ide.AndroidReplayEnvironment(
+            Path.of("/disposable/adb"), null,
+            new io.github.shinma06.replaybuffer.ide.ApplicationSelection("sample.app", "sample", null)));
+        view.set(capture, new ReplayCaptureView(null, 0, null, null));
+        store.setEnabled(false);
         var busy = service.getClass().getDeclaredField("screenshotBusy");
         busy.setAccessible(true);
         busy.setBoolean(service, true);

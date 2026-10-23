@@ -127,3 +127,6 @@ internal fun parseDevices(output: String): List<ReplayDevice> = output.lineSeque
     val model = fields.firstOrNull { it.startsWith("model:") }?.substringAfter(':')?.replace('_', ' ') ?: serial
     ReplayDevice(serial, model.take(256), if (serial.startsWith("emulator-")) DeviceKind.EMULATOR else DeviceKind.PHYSICAL, true)
 }.toList()
+
+internal fun selectDevice(devices: List<ReplayDevice>, selectedSerial: String?): ReplayDevice? =
+    if (selectedSerial == null) devices.singleOrNull() else devices.firstOrNull { it.serial == selectedSerial }

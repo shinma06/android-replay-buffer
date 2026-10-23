@@ -192,19 +192,33 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
             environment?.adb == null -> environment?.adbReason ?: "Android SDKを確認してください。"
             environment?.application?.packageName == null -> environment?.application?.reason ?: "対象アプリを選択してください。"
             screenshotSettings?.destination.isNullOrEmpty() -> "設定で保存先を指定してください。"
-            else -> null
+            else -> runCatching { screenshotDeviceSerial() }.exceptionOrNull()?.message
         }
+
+    private fun screenshotDeviceSerial(): String? {
+        val snapshot = capture.view.snapshot
+        if (snapshot?.enabled != true) {
+            check(!project.getService(ReplaySettingsStore::class.java).enabled) { "取得対象の反映を待っています。完了後に保存してください。" }
+            return null
+        }
+        check(snapshot.settings.adbPath == environment?.adb?.normalize()) { "取得対象のSDK設定を反映中です。完了後に保存してください。" }
+        return checkNotNull(snapshot.device) { "録画対象の端末が未確定です。端末の接続状態を確認してください。" }.serial
+    }
 
     @Synchronized
     internal fun screenshot() {
         screenshotDisabledReason?.let { screenshotError(it); return }
         val selected = checkNotNull(environment)
         val destination = checkNotNull(screenshotSettings).destination
+        val serial = runCatching { screenshotDeviceSerial() }.getOrElse {
+            screenshotError(it.message ?: "録画対象の端末を確認できません。")
+            return
+        }
         screenshotBusy = true
         val job = scope.launch(Dispatchers.IO, start = CoroutineStart.LAZY) {
             try {
                 val saved = runInterruptible {
-                    saveScreenshot(checkNotNull(selected.adb), checkNotNull(selected.application.packageName), Path.of(destination))
+                    saveScreenshot(checkNotNull(selected.adb), checkNotNull(selected.application.packageName), Path.of(destination), serial)
                 }
                 notifyScreenshot(saved)
             } catch (cancelled: CancellationException) {

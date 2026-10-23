@@ -592,6 +592,13 @@ elif len(a)>3 and a[3]=='ps':
             Thread.sleep(1100)
             assertEquals(disconnected.windowEndNs, core.snapshot().windowEndNs)
             assertEquals(fixed.windowEndNs, core.snapshot().save.windowEndNs)
+            Files.writeString(devices, "List of devices attached\nfixture-2 device model:Other\n")
+            val waitingForOriginal = awaitState("different-device-must-not-replace-target") {
+                it.error == "最初に選択した端末の再接続を待っています"
+            }
+            assertEquals("fixture-1", waitingForOriginal.device?.serial)
+            assertFalse(waitingForOriginal.device!!.connected)
+            assertEquals(disconnected.windowEndNs, waitingForOriginal.windowEndNs)
             Files.writeString(devices, "List of devices attached\nfixture-1 device model:Fixture\n")
             val resumed = awaitState("reconnected") { !it.frozen && it.generation > capturing.generation && it.video.state == StreamState.CAPTURING }
             assertEquals(sequence, resumed.sequenceId)

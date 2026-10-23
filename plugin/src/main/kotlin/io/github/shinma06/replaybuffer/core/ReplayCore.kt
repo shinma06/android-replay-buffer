@@ -278,8 +278,8 @@ class ReplayCore internal constructor(
         }
         if (closed.get()) return
         cleanup.recover()
-        val selected = device?.let { current -> devices.firstOrNull { it.serial == current.serial } }
-        if (device == null && devices.size != 1 || device != null && selected == null) {
+        val selected = selectDevice(devices, device?.serial)
+        if (selected == null) {
             stopBackend()
             device = device?.copy(connected = false)
             captureState = if (devices.size > 1) CaptureState.MULTIPLE_DEVICES else if (device != null) CaptureState.RECOVERING else CaptureState.WAITING
@@ -287,7 +287,7 @@ class ReplayCore internal constructor(
             cleanup.clean(settings.adbPath!!, devices.map { it.serial }.toSet(), closed::get)
             publish(); return
         }
-        if (device == null) device = devices.single() else device = device?.copy(connected = true)
+        if (device == null) device = selected else device = device?.copy(connected = true)
         if (backend == null) {
             val data = store ?: return
             generation++

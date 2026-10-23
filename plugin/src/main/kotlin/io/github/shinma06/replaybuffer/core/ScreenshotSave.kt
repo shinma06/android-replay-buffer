@@ -60,15 +60,19 @@ internal class SavedScreenshot(
     }
 }
 
-/** One finite USB request; does not create or access a replay capture, device file, forward, or server. */
-internal fun saveScreenshot(adbPath: Path, application: String, destination: Path): SavedScreenshot {
+/** One finite request; does not create a replay capture, device file, forward, or server. */
+internal fun saveScreenshot(adbPath: Path, application: String, destination: Path, selectedSerial: String? = null): SavedScreenshot {
     ApplicationTarget(application, ApplicationMode.MANUAL).validate()
     require(destination.isAbsolute) { "設定で保存先の絶対パスを指定してください。" }
     fun active() { if (Thread.currentThread().isInterrupted) throw InterruptedException("スクリーンショットを取り消しました。") }
     val bytes = OwnedAdb(adbPath).use { adb ->
         active()
-        val serial = try { serialArgument(adb.command("-d", "get-serialno").trim()).also { check(it != "unknown") } }
-        catch (_: Exception) { active(); throw ScreenshotSaveFailure("USB端末を1台だけ接続し、USBデバッグを許可してください。") }
+        val devices = try { parseDevices(adb.command("devices", "-l")) }
+        catch (_: Exception) { active(); throw ScreenshotSaveFailure("端末の接続状態を確認できません。接続とデバッグ許可を確認してください。") }
+        val serial = selectDevice(devices, selectedSerial)?.serial ?: throw ScreenshotSaveFailure(
+            if (selectedSerial == null) "端末を1台だけ接続し、デバッグを許可してください。"
+            else "録画対象の端末が接続されていません。同じ端末を再接続してください。",
+        )
         fun foreground(): String {
             active()
             return screenshotForeground(adb.command("-s", serial, "shell", "dumpsys", "window", limit = 4 * 1024 * 1024), application)
