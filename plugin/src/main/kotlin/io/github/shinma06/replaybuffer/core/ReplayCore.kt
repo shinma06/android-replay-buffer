@@ -183,7 +183,8 @@ class ReplayCore internal constructor(
         cancelSave = AtomicBoolean()
         val cancellation = cancelSave
         val missing = (capture.states.filterValues { it.state != StreamState.NOT_REQUESTED && (it.state != StreamState.CAPTURING || it.reason != null) }.keys +
-            capture.gaps.filter { gap -> !capture.windowKnown || gap.intersects(capture.start, capture.end, capture.endUncertainty) }.flatMap { if (it.stream == "clock") capture.settings.captureMode.streams else listOf(it.stream) } +
+            capture.gaps.inWindow(capture.start, capture.end, capture.endUncertainty, capture.clocks, capture.clockRecoveries)
+                .flatMap { if (it.stream == "clock") capture.settings.captureMode.streams else listOf(it.stream) } +
             if (capture.logs.any { it.app == null }) listOf("app_log") else emptyList()).distinct().let { java.util.List.copyOf(it) }
         saveState = SaveSnapshot(SavePhase.WRITING, capture.id, capture.sequence, capture.start, capture.end,
             capture.seconds, directory, missingKinds = missing, device = capture.device,

@@ -159,7 +159,7 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
             val runBoundaries = mutableListOf<Map<String, Any?>>()
             val losses = mutableListOf<String>()
             val videoProofs = mutableMapOf<CaptureGap, Pair<ClockSample, ClockSample>>()
-            val videoScopes = capture.gaps.videoScopes(capture.clocks, capture.clockRecoveries, videoProofs)
+            val videoScopes = capture.gaps.gapScopes(capture.clocks, capture.clockRecoveries, videoProofs)
             fun aligned(frame: VideoEntry): Boolean {
                 val sequence = frame.time.sequence ?: return false
                 return capture.windowKnown && frame.time.uncertainty != Long.MAX_VALUE && videoScopes.none { gap ->
@@ -466,6 +466,7 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                     appendLine("報告前の不足（概算）: ${trigger.facts["pre_report_shortfall_nominal_ns"]}ns。取得gapと未観測の端末ログは別で、完全なクラッシュ直前の記録を保証しません。")
                 }
                 parts.forEach { appendLine("${it["file"]} 区間${it["segment_index"]} / 動画µs=${it["movie_start_us"]}〜${it["movie_end_us"]}: 時計対応確認=${it["clock_alignment_known"]} / 窓開始ns=${it["window_start_ns"]} / 窓終了ns=${it["window_end_ns"]} / preroll=${it["preroll_samples"]}") }
+                if (capture.gaps.isNotEmpty()) appendLine("以下は取得履歴です。保存窓の外と確認できた履歴も保全しています。保存時の警告は保存窓内又は重なり未確認の記録が対象です。")
                 capture.gaps.forEach { appendLine("${it.stream}: ${it.fromNs}〜${it.toNs}ns / ${it.reason}") }
                 losses.forEach { appendLine("loss: $it") }
             }) }
@@ -496,8 +497,8 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                 }
                 videoHoles.clear(); videoHoles.addAll(remainingHoles)
             }
-            val knownLoss = capture.gaps.any { (it.stream == "video" || it.stream == "clock") &&
-                it.intersects(capture.start, capture.end, capture.endUncertainty) }
+            val knownLoss = capture.gaps.inWindow(capture.start, capture.end, capture.endUncertainty, capture.clocks, capture.clockRecoveries)
+                .any { it.stream == "video" || it.stream == "clock" }
             val videoIncomplete = videoRequested && (parts.isEmpty() || losses.isNotEmpty() || knownLoss || videoHoles.isNotEmpty())
             manifest = mapOf("schema" to 3, "capture_mode" to capture.settings.captureMode, "complete" to true, "save_id" to capture.id,
                 "auto_trigger" to capture.autoTrigger?.facts,
