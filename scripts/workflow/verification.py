@@ -1638,11 +1638,28 @@ def promotion_policy_blobs(base, candidate, git, continuation=False):
                'scripts/workflow/initial_continuation_cases.py',
                'scripts/workflow/test_initial_continuation.py',
                'scripts/workflow/test_impact_evidence_reuse.py', 'docs/verification/README.md'}
-    pending = [('scripts/workflow/verification.py', False),
+    # Trusted policy entrypoints; product/build checkers retain the tested candidate version.
+    pending = [('scripts/workflow/acceptance_ci.py', False),
+               ('scripts/workflow/agent_loop.py', False),
+               ('scripts/workflow/agent_worker.py', False),
+               ('scripts/workflow/pr_policy.py', False),
+               ('scripts/workflow/git_guard.py', False),
+               ('scripts/workflow/change_impact.py', False),
+               ('scripts/workflow/release_delivery.py', False),
+               ('scripts/workflow/verification.py', False),
                ('scripts/workflow/test_initial_continuation.py', True),
                ('scripts/workflow/test_impact_evidence_reuse.py', True)]
+    suffixes = all_suffixes()
+    for ref in (base, candidate):
+        for entry in git('ls-tree', ref, '--', 'scripts/workflow/').splitlines():
+            filename = entry.rsplit('\t', 1)[-1].removeprefix('scripts/workflow/')
+            for suffix in ('', *suffixes):
+                name = filename.removesuffix(suffix)
+                if name in sys.stdlib_module_names:
+                    pending.append(('scripts/workflow/' + name + '.py', False))
+                    break
     namespaces = {}
-    unsupported_suffixes = [suffix for suffix in all_suffixes() if suffix != '.py']
+    unsupported_suffixes = [suffix for suffix in suffixes if suffix != '.py']
 
     def import_entries(name):
         parts = name.split('.')

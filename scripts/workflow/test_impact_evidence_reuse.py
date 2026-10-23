@@ -960,6 +960,57 @@ class PromotionTreeTests(unittest.TestCase):
                         cwd=self.root, capture_output=True, text=True)
                     self.assertEqual(0, result.returncode, result.stderr)
 
+    def test_gate_entries_and_direct_dependencies_carry_as_production_code(self):
+        from verification import promotion_policy_blobs
+        for module in ('acceptance_ci', 'agent_loop', 'release_delivery', 'agent_worker', 'pr_policy', 'git_guard'):
+            entry = 'scripts/workflow/' + module + '.py'
+            dependency = 'scripts/workflow/' + ('policy_dependency' if module == 'pr_policy' else 'pr_policy') + '.py'
+            self.git('checkout', '-q', '-B', 'entry-common', self.common)
+            self.write(entry, 'VALUE = "old entry"')
+            self.write(dependency, 'def old_api():\n    return "old policy"\n')
+            self.commit('common acceptance entry')
+            common = self.git('rev-parse', 'HEAD')
+            self.git('checkout', '-q', '-B', 'entry-candidate', common)
+            self.write(COMPONENT, 'tested later product')
+            self.commit('entry candidate product')
+            candidate = self.git('rev-parse', 'HEAD')
+            self.git('checkout', '-q', '-B', 'entry-main', common)
+            self.write(entry, f'from {Path(dependency).stem} import api\nVALUE = api()\n')
+            self.write(dependency, 'def api():\n    return "reviewed entry policy"\n')
+            self.commit('reviewed entry and direct policy API')
+            base = self.git('rev-parse', 'HEAD')
+            for continuation in (False, True):
+                with self.subTest(continuation=continuation):
+                    carried = promotion_policy_blobs(base, candidate, self.git, continuation)
+                    self.assertEqual({entry, dependency}, set(carried))
+                    self.git('checkout', '-q', '-B', 'coherent-entry', candidate)
+                    for path in carried:
+                        self.git('checkout', base, '--', path)
+                    self.commit('exact reviewed entry and policy')
+                    result = subprocess.run([sys.executable, '-B', '-I', '-c',
+                        'import sys; sys.path.insert(0, "scripts/workflow"); import ' + module + '; '
+                        'assert ' + module + '.VALUE == "reviewed entry policy"'],
+                        cwd=self.root, capture_output=True, text=True)
+                    self.assertEqual(0, result.returncode, result.stderr)
+            self.git('checkout', '-q', 'entry-main')
+            self.write(entry, 'from test_agent_loop import old_fixture_api\n')
+            self.commit('invalid production entry depends on a test helper')
+            for continuation in (False, True):
+                with self.subTest(test_dependency=continuation), self.assertRaises(ValueError):
+                    promotion_policy_blobs(self.git('rev-parse', 'HEAD'), candidate, self.git, continuation)
+
+    def test_stdlib_internal_import_shadows_are_checked_without_repo_import_edges(self):
+        from importlib.machinery import EXTENSION_SUFFIXES
+        from verification import promotion_policy_blobs
+        for suffix in ('.py', '/__init__.py', '.pyc', EXTENSION_SUFFIXES[0]):
+            self.git('checkout', '-q', '-B', 'internal-shadow', self.candidate)
+            self.write('scripts/workflow/_hashlib' + suffix, 'raise AssertionError("must not execute")')
+            self.commit('candidate shadows a stdlib internal dependency')
+            candidate = self.git('rev-parse', 'HEAD')
+            for continuation in (False, True):
+                with self.subTest(suffix=suffix, continuation=continuation), self.assertRaises(ValueError):
+                    promotion_policy_blobs(self.base, candidate, self.git, continuation)
+
     def test_import_namespace_shadows_are_rejected_in_both_trees_and_modes(self):
         from importlib.machinery import EXTENSION_SUFFIXES
         from verification import promotion_policy_blobs
