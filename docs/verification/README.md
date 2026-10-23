@@ -1,6 +1,6 @@
 # 受入・固定候補・QA
 
-現行の全139 Caseは[保証目的・consumer別方法・stream基準の同期要件 #223/#230/#299](responsibility.md)と正式計画の`method_revision`を使います。以下の段階受入/履歴にある固定30分/300event・旧画像精度値・操作回数・GOP6証拠などは原記録であり、明示改訂後の有効条件へ置換します。元時刻・clock変換・内容/窓/保全・実接続・REAL未達と原FAILを保持し、要件/方法の更新を実行PASSにしません。
+既存139 Caseは[保証目的・consumer別方法・stream基準の同期要件 #223/#230/#299](responsibility.md)と正式計画の`method_revision`を使います。第2版の追加27 Caseは下記の固定接続で必要集合へ加え、通常の全保証検証を要求します。以下の段階受入/履歴にある固定30分/300event・旧画像精度値・操作回数・GOP6証拠などは原記録であり、明示改訂後の有効条件へ置換します。元時刻・clock変換・内容/窓/保全・実接続・REAL未達と原FAILを保持し、要件/方法の更新を実行PASSにしません。
 
 
 **現在の保証境界**: [保証目的と最小検証（#223/#230/#299）](responsibility.md)と正式計画の`responsibility_revision.method_revision`を適用します。原Case/旧計画/以下の過去改訂説明は履歴として保持し、独立画像時刻の旧数値基準・外部player全Play/精密seek・一律human番号読取り・native故障全種反復・無変更artifactの再build義務は明示改訂後の有効条件で判断します。現行保証の未達をPASSにしません。gateと一覧は同じresolverを使います。
@@ -199,7 +199,7 @@ PR98反映時の計画は128 Case・197出典を持ち、既存196出典のPR/me
 
 同geometryは元VCL/configをremuxし、mixed geometryは現在契約の固定canvas・原寸/aspect/文字と色・全frame対応を検査する。元AnnexB config/全対象packet（必要decoder prefix含む）のraw sidecar・offset/size/hashと全画素/PTS/duration/headers/edit/indexを同ZIPで照合する。後半read/codec/disk/取消し/必要IDR不足で全対象を完成できない場合は成功フォルダを公開せずFAILEDと固定pinを保持し、後半drop・複数MP4fallback・非公開の部分成功にしない。device/app両logの共通record_id/UID/帰属/全9・18phaseと未知行、固定T/N/対象・設定履歴・原gap/clock・retry不変、atomic非上書き/UI不足表示を維持する。保存attemptの失敗・取消し残留は上記#201の保全契約に従い、取得・remote cleanupと区別する。全deferred_scopeと既存人間範囲を維持する。実装scopeは既存のコードgate・独立レビュー・双方向QA移管を確認して終了する。初期版/mainは同ZIPの全必要Agent受入と未観察・製品failの解消まで未完了とし、full GUI受入は既存延期範囲の完了まで未完了とする。
 
-promotionには`stage: initial-agent`を明記し、`results`に全139 keyを置く。各値は以下の形とし、`stage_revision`には計画全体のcanonical SHA-256を入れる。
+promotionには`stage: initial-agent`を明記し、元の139 keyの各値は以下の形とする。`stage_revision`には計画全体のcanonical SHA-256を入れる。追加候補の必要集合は後述の固定接続に従い、139 keyだけで追加Caseを省略しない。
 
 ```json
 {
@@ -225,6 +225,12 @@ promotionには`stage: initial-agent`を明記し、`results`に全139 keyを置
 内部の観察には通常の同一候補・hash・確認者・日時・証拠を要求し、指定された`execution: computer_use`も維持する。GOP対象のAgent観察には従来のrevisionと6種類の証拠を追加する。REAL延期値は`status: deferred`とし、`initial_observation`を置かない。他の5キーは同じで、候補・計画・後続先の紐付けを記録するだけであり、REALの実観察を意味しない。未実施の確認者・時刻・ロード・GOP証拠を作らない。
 
 全必須Agent範囲が合格すると`stage_complete: true`になるが、`gui_complete`と`full_acceptance_complete`はfalseのまま。一覧でも「初期版範囲合格」「延期・未実施」を原Case全体の合格と区別する。既存coordinatorの全GUI完了判定を変更せず、PMが初期版と後続QAの状態を別々に読み戻す。
+
+第2版候補 `56dad1d9c63cbfd8c504099498bb993791520109` は、trusted mainの[固定接続登録](amendments/initial-agent-continuation.json)（#344）で同じ`initial-agent`段階へ接続する。元の計画139 Case / 208出典とcanonical hash、既存の責任・方法改訂、人間・REAL延期、後続#65を変更しない。登録は候補SHA、元計画hash、20 commitと各merged develop PR・Caseファイル、追加27 keyの出典と現在契約hashを固定する。通常の全commit/実PR provenance検証も継続する。登録をcandidate側だけへ置く、未知Case・別候補・出典の重複や欠落・契約差分を自動で許可する仕組みではない。後続の追加には別の明示的なtrusted main改訂が必要となる。
+
+この候補の`results`は139+27の全166 key（計235出典）を必要とする。元139は既存の`initial-pass` / `deferred`の厳密な条件を維持し、追加27は通常の同一candidate/artifactに結び付いた全保証の`pass`を必要とする。追加分に新しい延期や旧139の責任改訂を継承させない。追加分の未実施・pending・blocked・failを残したまま段階完了にはできない。一覧も同じ固定接続から166 Caseを生成し、追加分を「Case合格」、元139を従来の段階範囲と区別する。全必要結果が揃った段階完了でも、完全受入は未完了のままとする。
+
+この接続でmainの管理更新を取り込む場合は、既存のeffective plan同一性検査を通し、固定接続登録とCaseなしの管理記録を含むtrusted mainの正確なblobだけをmetadataとして許可する。製品Caseの書換え、未知JSON、候補外の製品差分、途中commitでの改変・revertは許可しない。判定入口はAcceptance CI・coordinator・配布処理が共有する`verify_pr`のままで、接続の採用や合成unit testは実promotion・実機/IDE受入・証拠再利用の承認ではない。#246の正式証明書や旧成果物から本候補へのlineage評価は別の既存契約を満たす必要があり、本登録で代替しない。
 
 初回main反映後も計画は残る。通常の完全受入では、`base..candidate`に現れなくなった延期Caseも固定出典から必要集合へ戻し、通常の全体passを要求する。`stage`を外すだけで延期を消せない。履歴の一覧も同じresolverで固定出典を読み、原契約・延期理由・担当・再開条件を保持する。初期段階のJSONへ過去の観察や計画hashを追記するだけでは新候補の実観察にならない。
 
