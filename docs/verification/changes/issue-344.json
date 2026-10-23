@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "issue": 344,
+  "gui_required": false,
+  "reason": "固定候補56dadの追加27 Caseをtrusted main登録に限定して既存initial-agent段階へ接続する検証tooling変更。元139 Case/208出典/計画hash/責任改訂/人間・REAL延期と後続65を保持し、全166結果と追加27の通常全保証passを要求する。製品source/build/Case観察は変更せず、実promotion・正式証明書やlineageの補完・GUI/ADB操作・再build/reloadは行わない。",
+  "cli_checks": [
+    "python3 -m unittest discover -s scripts/workflow -p test_initial_continuation.py -v",
+    "python3 scripts/check.py",
+    "python3 scripts/workflow/product_check.py",
+    "python3 scripts/workflow/change_impact.py --base origin/main --run-tests"
+  ],
+  "cases": []
+}

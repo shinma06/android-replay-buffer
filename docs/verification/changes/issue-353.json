@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "issue": 353,
+  "gui_required": false,
+  "reason": "QA引継ぎの題名生成を既存canonical契約へ整合し、元題名全文をQA本文へ保持する管理tooling修正。原Case/観察/状態・validator/identity・no-Cases custodyを変更せず、実QA作成は隔離fixture内だけで確認する。",
+  "cli_checks": [
+    "python3 -m unittest discover -s scripts/workflow -p test_qa_handoff.py -v",
+    "python3 scripts/workflow/product_check.py",
+    "python3 scripts/workflow/change_impact.py --base origin/main --run-tests"
+  ],
+  "cases": []
+}
