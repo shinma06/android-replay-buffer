@@ -8,6 +8,7 @@ import com.intellij.notification.NotificationGroup;
 import com.intellij.notification.NotificationGroupManager;
 import com.intellij.openapi.Disposable;
 import com.intellij.openapi.application.ApplicationManager;
+import com.intellij.openapi.application.ModalityState;
 import com.intellij.openapi.client.ClientSession;
 import com.intellij.openapi.client.ClientSessionsManager;
 import com.intellij.openapi.extensions.ExtensionPoint;
@@ -19,6 +20,8 @@ import io.github.shinma06.replaybuffer.core.ApplicationTarget;
 import io.github.shinma06.replaybuffer.core.AutoSaveSnapshot;
 import io.github.shinma06.replaybuffer.core.CaptureMode;
 import io.github.shinma06.replaybuffer.core.CaptureState;
+import io.github.shinma06.replaybuffer.core.DeviceKind;
+import io.github.shinma06.replaybuffer.core.ReplayDevice;
 import io.github.shinma06.replaybuffer.core.ReplaySettings;
 import io.github.shinma06.replaybuffer.core.ReplaySnapshot;
 import io.github.shinma06.replaybuffer.core.SaveSnapshot;
@@ -28,6 +31,7 @@ import io.github.shinma06.replaybuffer.ide.ReplayProjectService;
 import io.github.shinma06.replaybuffer.settings.ReplaySettingsStore;
 import kotlinx.coroutines.CoroutineScope;
 import kotlinx.coroutines.CoroutineScopeKt;
+import kotlinx.coroutines.Job;
 import kotlinx.coroutines.SupervisorKt;
 import org.junit.jupiter.api.Test;
 
@@ -36,8 +40,13 @@ import java.awt.Container;
 import java.awt.Point;
 import java.awt.event.ActionEvent;
 import java.nio.file.Path;
+import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import javax.swing.AbstractButton;
 import javax.swing.JComponent;
 import javax.swing.JLabel;
@@ -51,13 +60,18 @@ import javax.swing.text.DefaultEditorKit;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class ReplayToolWindowLayoutTest {
     @Test
     void actualToolWindowReflowsAfterWideningAndKeepsTextEndAndControlsReachable() throws Exception {
         var lifetime = Disposer.newDisposable("tool window layout test");
-        var application = new MockApplication(lifetime);
+        var uiCallbacks = new ConcurrentLinkedQueue<Runnable>();
+        var application = new MockApplication(lifetime) {
+            @Override
+            public void invokeLater(Runnable action, ModalityState modality) { uiCallbacks.add(action); }
+        };
         ApplicationManager.setApplication(application, lifetime);
         application.registerService(CoroutineScope.class, application.getCoroutineScope());
         application.registerService(ClientSessionsManager.class,
@@ -93,6 +107,7 @@ class ReplayToolWindowLayoutTest {
         try {
             SwingUtilities.invokeAndWait(() -> {
                 try {
+                    verifyScreenshotRequestKeepsTargetAcrossOffPublication(service, store, uiCallbacks);
                     var type = Class.forName("io.github.shinma06.replaybuffer.ui.ReplayToolWindowPanel");
                     var constructor = type.getDeclaredConstructor(Project.class);
                     constructor.setAccessible(true);
@@ -184,7 +199,7 @@ class ReplayToolWindowLayoutTest {
                     assertEquals(endHeights.get(1), endHeights.get(3), "narrow wrapping must recover");
                     assertFalse(store.getEnabled(), "layout does not enable acquisition");
                     assertEquals(originalSettings, store.getState(), "layout does not apply settings");
-                } catch (ReflectiveOperationException | javax.swing.text.BadLocationException failure) {
+                } catch (Exception failure) {
                     throw new AssertionError(failure);
                 }
             });
@@ -211,6 +226,103 @@ class ReplayToolWindowLayoutTest {
         }
     }
 
+    private static void verifyScreenshotRequestKeepsTargetAcrossOffPublication(
+        ReplayProjectService service, ReplaySettingsStore store, ConcurrentLinkedQueue<Runnable> uiCallbacks
+    ) throws Exception {
+        var root = Files.createTempDirectory("replay-screenshot-off-boundary-");
+        var scope = service.getClass().getDeclaredField("scope");
+        scope.setAccessible(true);
+        var originalScope = scope.get(service);
+        var environment = service.getClass().getDeclaredField("environment");
+        environment.setAccessible(true);
+        var originalEnvironment = environment.get(service);
+        var settings = service.getClass().getDeclaredField("screenshotSettings");
+        settings.setAccessible(true);
+        var originalSettings = settings.get(service);
+        var revision = service.getClass().getDeclaredField("screenshotRevision");
+        revision.setAccessible(true);
+        var originalRevision = revision.getLong(service);
+        var capture = field(service, "capture");
+        var view = capture.getClass().getDeclaredField("view");
+        view.setAccessible(true);
+        var originalView = view.get(capture);
+        var requestScope = SupervisorKt.SupervisorJob(null);
+        var completed = new CompletableFuture<Void>();
+        try {
+            var adb = root.resolve("adb");
+            Files.writeString(adb, """
+                #!/usr/bin/env python3
+                import pathlib,sys
+                command=' '.join(sys.argv[1:])
+                with pathlib.Path(__file__).with_name('commands').open('a') as log: log.write(command+'\\n')
+                if command=='devices -l': print('List of devices attached\\nusb-B device model:Other')
+                elif command=='-s usb-B shell dumpsys SurfaceFlinger --display-id': print('Display 1 (HWC display 0): port=0')
+                elif command=='-s usb-B shell dumpsys window': print('KeyguardServiceDelegate\\nshowing=false\\ninputRestricted=false\\ndreaming=false\\nscreenState=SCREEN_STATE_ON\\nDisplay: mDisplayId=0\\nmCurrentFocus=Window{12ab u0 sample.app/.MainActivity}')
+                elif command=='-s usb-B exec-out screencap -p -d 1': sys.stdout.buffer.write(b'invalid image')
+                else: sys.exit(2)
+                """);
+            assertTrue(adb.toFile().setExecutable(true));
+            var applied = new ReplaySettings(adb, root, 180, new ApplicationTarget(), CaptureMode.VIDEO_AND_LOGS, false);
+            var active = new ReplaySnapshot(1, 1, true, CaptureState.CAPTURING, applied, 1,
+                new ReplayDevice("target-A", "Recording", DeviceKind.PHYSICAL, true), "request-boundary", 1L, false,
+                new StreamSnapshot(), new StreamSnapshot(), new StreamSnapshot(), new SaveSnapshot(),
+                false, null, null, 0L, 0, new AutoSaveSnapshot(), null);
+            var off = new ReplaySnapshot(2, 2, false, CaptureState.DISABLED, applied, 1,
+                null, null, null, false, new StreamSnapshot(), new StreamSnapshot(), new StreamSnapshot(),
+                new SaveSnapshot(), false, null, null, 0L, 0, new AutoSaveSnapshot(), null);
+            view.set(capture, new ReplayCaptureView(active, 0, null, null));
+            var publishedOff = new AtomicBoolean();
+            var validationPath = (Path) java.lang.reflect.Proxy.newProxyInstance(Path.class.getClassLoader(),
+                new Class<?>[]{Path.class}, (proxy, method, arguments) -> {
+                    // Publish OFF after validation read A, before the old request's second live snapshot read.
+                    if (method.getName().equals("normalize") && publishedOff.compareAndSet(false, true)) {
+                        synchronized (capture) { view.set(capture, new ReplayCaptureView(off, 0, null, null)); }
+                    }
+                    return method.invoke(adb, arguments);
+                });
+            environment.set(service, new io.github.shinma06.replaybuffer.ide.AndroidReplayEnvironment(validationPath, null,
+                new io.github.shinma06.replaybuffer.ide.ApplicationSelection("sample.app", "sample", null)));
+            settings.set(service, new io.github.shinma06.replaybuffer.settings.ReplaySettings(180, root.toString(),
+                io.github.shinma06.replaybuffer.settings.AppSelectionMode.AUTOMATIC, "", CaptureMode.VIDEO_AND_LOGS, false));
+            revision.set(service, field(service, "requestRevision"));
+            scope.set(service, CoroutineScopeKt.CoroutineScope(requestScope));
+            uiCallbacks.clear();
+            var request = java.util.Arrays.stream(service.getClass().getDeclaredMethods())
+                .filter(method -> method.getName().startsWith("screenshot$") && method.getParameterCount() == 0)
+                .findFirst().orElseThrow();
+            request.setAccessible(true);
+            request.invoke(service);
+            var action = (Job) field(service, "screenshotJob");
+            if (action == null) completed.complete(null);
+            else action.invokeOnCompletion(failure -> { completed.complete(null); return kotlin.Unit.INSTANCE; });
+            completed.get(15, TimeUnit.SECONDS);
+            assertTrue(publishedOff.get(), "OFF must really be published inside the request validation");
+            assertEquals(off, ((ReplayCaptureView) view.get(capture)).getSnapshot());
+            assertEquals(List.of("devices -l"), Files.readAllLines(root.resolve("commands")),
+                "unavailable A must reject the request without any command targeting B");
+            assertEquals(1, uiCallbacks.size(), "the rejected request must schedule its error explanation");
+            assertFalse(store.getEnabled(), "screenshot must not enable acquisition");
+            assertNull(field(capture, "core"), "screenshot must not start a capture or create history");
+        } finally {
+            requestScope.cancel(null);
+            var pending = (Job) field(service, "screenshotJob");
+            if (pending != null) {
+                var stopped = new CompletableFuture<Void>();
+                pending.invokeOnCompletion(failure -> { stopped.complete(null); return kotlin.Unit.INSTANCE; });
+                stopped.get(15, TimeUnit.SECONDS);
+            }
+            scope.set(service, originalScope);
+            environment.set(service, originalEnvironment);
+            settings.set(service, originalSettings);
+            revision.setLong(service, originalRevision);
+            view.set(capture, originalView);
+            uiCallbacks.clear();
+            try (var paths = Files.walk(root)) {
+                for (var path : paths.sorted(java.util.Comparator.reverseOrder()).toList()) Files.deleteIfExists(path);
+            }
+        }
+    }
+
     private static void verifyScreenshotAvailability(JPanel panel, ReplayProjectService service,
                                                      ReplaySettingsStore store) throws ReflectiveOperationException {
         var button = (AbstractButton) field(panel, "screenshotButton");
@@ -231,6 +343,41 @@ class ReplayToolWindowLayoutTest {
         render.setAccessible(true);
         render.invoke(panel);
         assertTrue(button.isEnabled(), "screenshot is available with replay OFF and capture initialization pending");
+        var serial = service.getClass().getDeclaredMethod("screenshotDeviceSerial", ReplaySnapshot.class);
+        serial.setAccessible(true);
+        assertNull(serial.invoke(service, (Object) null), "OFF uses shared device resolution without starting capture");
+        store.setEnabled(true);
+        render.invoke(panel);
+        assertFalse(button.isEnabled(), "pending startup must not independently select a different device");
+        var capture = field(service, "capture");
+        var view = capture.getClass().getDeclaredField("view");
+        view.setAccessible(true);
+        var activeSettings = new ReplaySettings(Path.of("/disposable/adb"), Path.of("/disposable"),
+            180, new ApplicationTarget(), CaptureMode.VIDEO_AND_LOGS, false);
+        for (boolean connected : new boolean[]{true, false}) {
+            var snapshot = new ReplaySnapshot(1, 1, true, CaptureState.CAPTURING, activeSettings, 1,
+                new ReplayDevice("emulator-5554", "Recording", DeviceKind.EMULATOR, connected),
+                "screenshot-test", 1L, false,
+                new StreamSnapshot(), new StreamSnapshot(), new StreamSnapshot(), new SaveSnapshot(),
+                false, null, null, 0L, 0, new AutoSaveSnapshot(), null);
+            view.set(capture, new ReplayCaptureView(snapshot, 0, null, null));
+            render.invoke(panel);
+            assertTrue(button.isEnabled());
+            assertEquals("emulator-5554", serial.invoke(service, snapshot), "disconnection must retain the recording serial");
+            store.setEnabled(false);
+            assertEquals("emulator-5554", serial.invoke(service, snapshot), "pending OFF must not lose the actual capture target");
+            store.setEnabled(true);
+        }
+        environment.set(service, new io.github.shinma06.replaybuffer.ide.AndroidReplayEnvironment(
+            Path.of("/different-sdk/adb"), null,
+            new io.github.shinma06.replaybuffer.ide.ApplicationSelection("sample.app", "sample", null)));
+        render.invoke(panel);
+        assertFalse(button.isEnabled(), "pending SDK change cannot resolve the recording serial on another server");
+        environment.set(service, new io.github.shinma06.replaybuffer.ide.AndroidReplayEnvironment(
+            Path.of("/disposable/adb"), null,
+            new io.github.shinma06.replaybuffer.ide.ApplicationSelection("sample.app", "sample", null)));
+        view.set(capture, new ReplayCaptureView(null, 0, null, null));
+        store.setEnabled(false);
         var busy = service.getClass().getDeclaredField("screenshotBusy");
         busy.setAccessible(true);
         busy.setBoolean(service, true);

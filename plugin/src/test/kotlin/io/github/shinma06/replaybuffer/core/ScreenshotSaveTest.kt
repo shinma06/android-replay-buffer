@@ -99,7 +99,7 @@ class ScreenshotSaveTest {
     }
 
     @Test
-    fun usbCommandStreamsBinaryWithoutRecordingAndPublishesExactImageThenDeletesOnlyThatImage() {
+    fun singleDeviceStreamsBinaryWithoutRecordingAndPublishesExactImageThenDeletesOnlyThatImage() {
         assumeTrue(System.getProperty("os.name") == "Mac OS X", "Production exclusive publication uses macOS syscall")
         fixture { root, adb ->
             val destination = Files.createDirectory(root.resolve("output"))
@@ -108,7 +108,7 @@ class ScreenshotSaveTest {
             assertContentEquals(Files.readAllBytes(root.resolve("image.png")), Files.readAllBytes(saved.file))
             assertEquals(destination, saved.file.parent.parent)
             assertEquals("sample.app", saved.application)
-            assertEquals(listOf("-d get-serialno", "-s usb123 shell dumpsys SurfaceFlinger --display-id",
+            assertEquals(listOf("devices -l", "-s usb123 shell dumpsys SurfaceFlinger --display-id",
                 "-s usb123 shell dumpsys window", "-s usb123 exec-out screencap -p -d 4619827551948147201", "-s usb123 shell dumpsys window"),
                 Files.readAllLines(root.resolve("commands")))
             val second = saveScreenshot(adb, "sample.app", destination)
@@ -119,6 +119,52 @@ class ScreenshotSaveTest {
             assertTrue(Files.isDirectory(saved.file.parent))
             assertTrue(Files.exists(second.file))
             assertEquals("unrelated", Files.readString(destination.resolve("keep")))
+        }
+    }
+
+    @Test
+    fun recordingTargetWinsOverOtherDeviceAndNeverFallsBackAfterDisconnect() {
+        assumeTrue(System.getProperty("os.name") == "Mac OS X")
+        fixture { root, adb ->
+            val destination = Files.createDirectory(root.resolve("output"))
+            val target = "emulator-5554 device model:Recording"
+            val other = "usb123 device model:Other"
+            Files.writeString(root.resolve("devices"), "List of devices attached\n$target\n$other\n")
+            val saved = saveScreenshot(adb, "sample.app", destination, "emulator-5554")
+            assertContentEquals(Files.readAllBytes(root.resolve("image.png")), Files.readAllBytes(saved.file))
+            assertEquals(listOf("devices -l", "-s emulator-5554 shell dumpsys SurfaceFlinger --display-id",
+                "-s emulator-5554 shell dumpsys window", "-s emulator-5554 exec-out screencap -p -d 4619827551948147201",
+                "-s emulator-5554 shell dumpsys window"), Files.readAllLines(root.resolve("commands")))
+            for (missing in listOf("", "emulator-5554 offline\n", "emulator-5554 unauthorized\n")) {
+                Files.writeString(root.resolve("commands"), "")
+                Files.writeString(root.resolve("devices"), "List of devices attached\n$missing$other\n")
+                val failure = kotlin.test.assertFailsWith<ScreenshotSaveFailure> {
+                    saveScreenshot(adb, "sample.app", destination, "emulator-5554")
+                }
+                assertTrue(failure.message!!.contains("録画対象"))
+                assertEquals(listOf("devices -l"), Files.readAllLines(root.resolve("commands")))
+                assertEquals(1, Files.list(destination).use { it.count() })
+            }
+        }
+    }
+
+    @Test
+    fun withoutRecordingHistoryUsesSameUniqueDeviceRuleAndRejectsAmbiguity() {
+        assumeTrue(System.getProperty("os.name") == "Mac OS X")
+        fixture { root, adb ->
+            val destination = Files.createDirectory(root.resolve("output"))
+            Files.writeString(root.resolve("devices"), "List of devices attached\nemulator-5554 device model:Only\n")
+            val saved = saveScreenshot(adb, "sample.app", destination)
+            assertTrue(Files.exists(saved.file))
+            assertTrue(Files.readAllLines(root.resolve("commands")).drop(1).all { it.startsWith("-s emulator-5554 ") })
+            for (devices in listOf("", "usb123 offline\n", "usb123 unauthorized\n",
+                "emulator-5554 device\nusb123 device\n")) {
+                Files.writeString(root.resolve("commands"), "")
+                Files.writeString(root.resolve("devices"), "List of devices attached\n$devices")
+                assertFails { saveScreenshot(adb, "sample.app", destination) }
+                assertEquals(listOf("devices -l"), Files.readAllLines(root.resolve("commands")))
+                assertEquals(1, Files.list(destination).use { it.count() })
+            }
         }
     }
 
@@ -200,6 +246,7 @@ class ScreenshotSaveTest {
         try {
             Files.write(root.resolve("image.png"), png())
             Files.writeString(root.resolve("foreground"), foreground)
+            Files.writeString(root.resolve("devices"), "List of devices attached\nusb123 device model:Fixture\n")
             val adb = root.resolve("adb")
             Files.writeString(adb, """#!/usr/bin/env python3
 import os,pathlib,sys,time
@@ -207,24 +254,27 @@ root=pathlib.Path(__file__).parent
 mode=(root/'mode').read_text() if (root/'mode').exists() else ''
 command=' '.join(sys.argv[1:])
 with (root/'commands').open('a') as log: log.write(command+'\n')
-if command=='-d get-serialno':
+if command=='devices -l':
  if mode=='disconnected': sys.exit(1)
  (root/'phase').write_text('before')
- print('usb123')
-elif command=='-s usb123 shell dumpsys SurfaceFlinger --display-id':
+ print((root/'devices').read_text(),end='')
+elif sys.argv[1]=='-s' and sys.argv[2] in ('usb123','emulator-5554'):
+ command=' '.join(sys.argv[3:])
+else: sys.exit(2)
+if command=='shell dumpsys SurfaceFlinger --display-id':
  print('Display 4619827551948147201 (HWC display 0): port=0')
  if mode=='ambiguous-display': print('Display 4619827551948147202 (HWC display 1): port=1')
-elif command=='-s usb123 shell dumpsys window':
+elif command=='shell dumpsys window':
  text=(root/'foreground').read_text()
  if mode=='changed' and (root/'phase').read_text()=='after': text=text.replace('12ab','45cd')
  print(text)
-elif command=='-s usb123 exec-out screencap -p -d 4619827551948147201':
+elif command=='exec-out screencap -p -d 4619827551948147201':
  (root/'phase').write_text('after')
  if mode=='wait':
   (root/'pid').write_text(str(os.getpid()))
   time.sleep(30)
  sys.stdout.buffer.write(b'broken' if mode=='broken' else (root/'image.png').read_bytes())
-else: sys.exit(2)
+elif command!='devices -l': sys.exit(2)
 """)
             check(adb.toFile().setExecutable(true))
             body(root, adb)

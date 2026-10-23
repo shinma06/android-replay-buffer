@@ -157,7 +157,7 @@ private class ReplayToolWindowPanel(private val project: Project) : JPanel(Borde
         val screenshotDisabled = service.screenshotDisabledReason
         screenshotButton.isEnabled = screenshotDisabled == null
         screenshotButton.text = if (service.screenshotBusy) "スクリーンショットを保存中…" else "スクリーンショットを保存"
-        screenshotButton.toolTipText = screenshotDisabled ?: "USB端末で選択アプリを表示してください。取得OFFでも現在の画面全体を保存します。"
+        screenshotButton.toolTipText = screenshotDisabled ?: "録画対象の端末で選択アプリを表示してください。取得OFFでは接続済みの1台から現在の画面全体を保存します。"
         screenshotReason.text = screenshotDisabled ?: "スクショ対象: ${service.environment?.application?.packageName} / 保存先: ${store.settings().destination}\n" +
             "撮影中は画面を切り替えないでください。通知・キーボードも写り、保護領域は空白になる場合があります。"
         enabled.isSelected = store.enabled
