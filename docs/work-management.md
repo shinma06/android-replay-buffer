@@ -26,6 +26,8 @@
 
 新規作成/指定された改名はこの形式を確認します。共有validatorとCIの実inline copyはラベルとの対応・QA元番号・日本語文字・自身の番号/優先度の重複を確認し、旧角括弧形式は既存/未移行/固定履歴の読取りだけに残します。文字検査は意味の正しさを保証しません。新規自動QAはcanonical形式を公開前に検査し、検索/再利用/読み戻しは新旧どちらの元番号も区切り込みで照合します。#3と#35を混同せず、新旧2件なら勝手に片方を採らずownerへ戻します。重いparser、日付/ID cutoff、registry、新hookは作りません。
 
+自動QAでは数字付き`#`を含む要約を「元Issueの残受入を確認する」にし、色・URL・識別子をIssue参照として書き換えません。元題名全文はHTML escapeして固定のpre要素内へ置き、新規QAの本文（既存QAの再利用時は追記コメント）へ保持します。Case・担当・次操作はその要素の外に置きます。旧形式の余分な空白を整え、日本語のない旧要約には `残りの受入試験: ` を補います。元Issue番号・リンク・Case出典と既存QAの題名/本文は維持し、新規QAのcanonical検証は緩めません。
+
 実Issueの改名は、規約の独立レビュー・main採用後に、PMが固定した当repoのOPEN一覧と単独metadata ownerへ引き継ぎます。prefixだけを変え、要約・本文・state/labels/assignee/Milestone・native関係・Project値を変更前後に照合します。closed/固定履歴は改名せず、稼働中のwriter/review bindingへの影響を先に調整します。タイトル変更だけで内容・受入・所有権を変更しません。
 
 priority は `priority:P0` / `priority:P1` / `priority:P2`、status は `status:ready` / `status:in-progress` / `status:review` / `status:blocked` / `status:deferred` / `status:done`。closed は done、open は done 以外。優先度を題名に重複させません。PR policy が型・番号・ラベルを検査します。

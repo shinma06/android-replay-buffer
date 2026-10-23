@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "issue": 349,
+  "gui_required": false,
+  "reason": "main CIのPython 3.9取得を、配布buildのあるUbuntu 24.04 runnerへ固定して復旧する。既存の3.9 CLI正常・非対応構文拒否・復旧と3.15管理検査、classifierによる製品検査を保持する。CI環境の選択だけを変更し、製品source・実行時設定・IDEや端末操作・製品Caseを変更しないためGUI不要。実CI結果と原FAILはIssue349へ記録し、Caseなしの新QAは作成しない。",
+  "cli_checks": [
+    "python3 scripts/check.py",
+    "python3 scripts/workflow/product_check.py",
+    "python3 -m unittest discover -s scripts/workflow -p test_product_check.py -v (CI Python 3.9)",
+    "python3 scripts/workflow/change_impact.py --run-tests (clean committed HEAD / pre-push hook)",
+    "GitHub Actions CI: Python 3.9 setupとCLI正常・非対応構文拒否・復旧、Python 3.15.0管理検査、既存classifierが要求する製品検査"
+  ],
+  "cases": []
+}

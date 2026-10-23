@@ -468,12 +468,35 @@ def publish_fixed(path, record, target):
     published = [a for a in final_assets if a['name'] == name]
     require(len(published) == 1, 'Published asset missing or ambiguous')
     verify_asset(published[0], record)
-    # Keep the old download until the new body and bytes are confirmed.
-    if early and previous and asset_name(previous) != name:
-        old = [a for a in final_assets if a['name'] == asset_name(previous)]
+    # Failed earlier updates can leave more than the previous body's ZIP behind.
+    if early:
+        old = [a for a in final_assets if a['name'] != name
+               and re.fullmatch(r'android-replay-buffer-[0-9a-f]{64}\.zip', a['name'])]
         for asset in old:
-            require(asset.get('digest') == 'sha256:' + previous['sha256'], 'Old asset identity changed')
+            old_hash = asset['name'].removeprefix('android-replay-buffer-').removesuffix('.zip')
+            require(asset.get('state') == 'uploaded'
+                    and type(asset.get('size')) is int and 0 < asset['size'] <= MAX_ARCHIVE
+                    and asset.get('digest') == 'sha256:' + old_hash,
+                    'Old asset identity changed')
+        fields = ('id', 'name', 'state', 'size', 'digest', 'updated_at')
+        remaining = {a['id']: tuple(a.get(k) for k in fields) for a in final_assets}
+        require(len(remaining) == len(final_assets)
+                and len({a['name'] for a in final_assets}) == len(final_assets), 'Duplicate release assets')
+        for asset in [*old, None]:
+            current_develop(develop_head)
+            current = find_release(tag)
+            require(current and all(current.get(k) == final.get(k) for k in
+                    ('id', 'body', 'draft', 'prerelease', 'target_commitish', 'immutable')),
+                    'Release changed during cleanup; preserve remaining assets')
+            require(api('git/ref/tags/' + tag)['object'] == final_ref['object'], 'Published tag moved')
+            current_assets = pages(f'releases/{release["id"]}/assets?per_page=100')
+            require(len(current_assets) == len(remaining)
+                    and {a['id']: tuple(a.get(k) for k in fields) for a in current_assets} == remaining,
+                    'Release assets changed during cleanup; preserve remaining assets')
+            if asset is None:
+                break
             api(f'releases/assets/{asset["id"]}', 'DELETE')
+            del remaining[asset['id']]
     return f'https://github.com/{REPO}/releases/tag/{tag}'
 
 

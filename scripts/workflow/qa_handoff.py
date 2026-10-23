@@ -1,4 +1,5 @@
 """Read-back verified QA transfer. Called only by the single coordinator after merge."""
+import html
 import re
 from issue_schema import validate_issue
 from verification import field, metadata, validate_change
@@ -32,6 +33,12 @@ def handoff(gh, repo, pr, origin, change):
         summary = re.sub(r'^\[[^]]+\]\s*|^[a-z]+: ', '', origin['title'])
         if axes['type'] == 'qa':
             summary = re.sub(r'^#[1-9][0-9]* ', '', summary)
+        summary = ' '.join(summary.split())
+        # QA forbids numeric hashes even in colors/URLs; preserve the literal title below.
+        if re.search(r'#[0-9]+', summary):
+            summary = '元Issueの残受入を確認する'
+        elif not re.search(r'[ぁ-んァ-ヶ一-龯]', summary):
+            summary = '残りの受入試験: ' + summary
         data = {'title': f'test: #{number} {summary}', 'state': 'open',
                 'labels': ['type:qa', 'priority:' + axes['priority'], 'status:ready']}
         validate_issue(data, allow_legacy=False)
@@ -53,6 +60,7 @@ def handoff(gh, repo, pr, origin, change):
             raise ValueError('Release transfer readback failed')
         return None
     payload = (f'試験内容ドキュメント: https://github.com/{repo}/blob/main/docs/verification/human-qa.md\n' + source +
+               f'<pre>元Issue題名: {html.escape(origin["title"])}</pre>\n'
                '\n## 受入・次操作・依存\n'
                '固定出典の全Case・前提・操作・期待・actor・再確認条件を正本とし、固定候補/buildで残試験を確認する。\n'
                'Case: ' + ', '.join(case['id'] for case in change['cases']) + '\n'

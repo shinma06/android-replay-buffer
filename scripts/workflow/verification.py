@@ -18,6 +18,7 @@ TOOLING = ('docs/', 'scripts/', '.github/', '.githooks/', '.agents/', '.claude/s
 GOP_AMENDMENT = 'docs/verification/amendments/gop-boundaries.json'
 INITIAL_STAGE = 'initial-agent'
 INITIAL_PLAN = 'docs/verification/amendments/initial-agent.json'
+INITIAL_CONTINUATION = 'docs/verification/amendments/initial-agent-continuation.json'
 INSTALLATION_PREVIOUS_PLAN_SHA256 = '13bd1e294519915d8c8a66be2770811a4d6b28465432061e7c2eae91a87fd8a3'
 SETTINGS_PREVIOUS_PLAN_SHA256 = '6d11e3cdee0b6189c743fb1a4c8ee3a4e582d72af7e9643bb001536dd4e0c79f'
 PURPOSE_PREVIOUS_PLAN_SHA256 = '993e76bb7a0bd6f9f864c2974b3ef4d4392665de51a4791c9cc0c094c394b50c'
@@ -654,6 +655,81 @@ def historical_initial_sources(policy, candidate, git):
                          ('source_pr', 'source_merge', 'source_path')}))
     bind_initial_sources(policy, rows)
     return rows
+
+
+def initial_continuation(policy, base, candidate, git):
+    """A reviewed main registration admits only its fixed additional batch."""
+    if not git('ls-tree', base, '--', INITIAL_CONTINUATION):
+        return None
+    registration = regular_json(base, INITIAL_CONTINUATION, git)
+    if (not isinstance(registration, dict) or set(registration) != {
+            'schema', 'issue', 'candidate', 'plan_sha256', 'changes', 'cases'} or
+            type(registration['schema']) is not int or registration['schema'] != 1 or
+            registration['issue'] != 344 or
+            not isinstance(registration['candidate'], str) or not SHA.fullmatch(registration['candidate']) or
+            registration['plan_sha256'] != canonical_hash(policy) or
+            not isinstance(registration['changes'], list) or not registration['changes'] or
+            not isinstance(registration['cases'], dict) or not registration['cases'] or
+            set(registration['cases']) & set(policy['cases'])):
+        raise ValueError('Invalid initial-agent continuation registration')
+    changes = {}
+    for item in registration['changes']:
+        if (not isinstance(item, dict) or set(item) != {'commit', 'pr', 'source_path'} or
+                not isinstance(item['commit'], str) or not SHA.fullmatch(item['commit']) or
+                not isinstance(item['source_path'], str) or not re.fullmatch(
+                    r'docs/verification/changes/issue-[1-9][0-9]*\.json', item['source_path']) or
+                type(item['pr']) is not int or item['pr'] <= 0 or item['commit'] in changes):
+            raise ValueError('Continuation requires exact unique commit/PR bindings')
+        changes[item['commit']] = item
+    for key, entry in registration['cases'].items():
+        if (not re.fullmatch(r'[1-9][0-9]*:[A-Z][A-Z0-9-]+', key) or
+                not isinstance(entry, dict) or set(entry) != {'sources', 'current_case_sha256'} or
+                not isinstance(entry['current_case_sha256'], str) or not HASH.fullmatch(entry['current_case_sha256']) or
+                not isinstance(entry['sources'], list) or not entry['sources']):
+            raise ValueError('Invalid continuation Case contract: ' + key)
+        seen = set()
+        for source in entry['sources']:
+            if (not isinstance(source, dict) or set(source) != {
+                    'source_pr', 'source_merge', 'source_path', 'original_case_sha256'} or
+                    not isinstance(source['source_merge'], str) or
+                    type(source['source_pr']) is not int or source['source_pr'] <= 0 or
+                    changes.get(source['source_merge'], {}).get('pr') != source['source_pr'] or
+                    changes[source['source_merge']]['source_path'] != source['source_path'] or
+                    source['source_path'] != f'docs/verification/changes/issue-{key.split(":")[0]}.json' or
+                    not isinstance(source['original_case_sha256'], str) or
+                    not HASH.fullmatch(source['original_case_sha256']) or source['source_pr'] in seen):
+                raise ValueError('Invalid continuation Case source: ' + key)
+            seen.add(source['source_pr'])
+    return registration if candidate == registration['candidate'] else None
+
+
+def initial_stage_sources(policy, registration, source_cases, changes, candidate, git):
+    if registration is None:
+        bind_initial_sources(policy, source_cases)
+        return source_cases
+    if (not isinstance(changes, list) or
+            sorted(changes, key=lambda x: x.get('commit', '')) !=
+            sorted(({k: item[k] for k in ('commit', 'pr')} for item in registration['changes']),
+                   key=lambda x: x['commit'])):
+        raise ValueError('Continuation must match every registered commit/PR exactly')
+    if source_cases is None:
+        source_cases = []
+        for item in registration['changes']:
+            git('merge-base', '--is-ancestor', item['commit'], candidate)
+            data = regular_json(item['commit'], item['source_path'], git)
+            issue = int(Path(item['source_path']).stem.removeprefix('issue-'))
+            validate_change(data, issue, data.get('gui_required'))
+            for case in data['cases']:
+                source_cases.append((f'{issue}:{case["id"]}', case, {'source_pr': item['pr'],
+                    'source_merge': item['commit'], 'source_path': item['source_path']}))
+    bind_initial_sources(registration, source_cases)
+    for key, entry in registration['cases'].items():
+        current = regular_json(candidate, entry['sources'][0]['source_path'], git)
+        validate_change(current, int(key.split(':')[0]), True)
+        cases = [case for case in current['cases'] if case['id'] == key.split(':')[1]]
+        if len(cases) != 1 or canonical_hash(cases[0]) != entry['current_case_sha256']:
+            raise ValueError('Continuation current Case identity differs: ' + key)
+    return historical_initial_sources(policy, candidate, git) + source_cases
 
 
 def validate_initial_result(result, key, policy, candidate, artifact, execution, gop):
@@ -1496,7 +1572,7 @@ def promotion_certificates(promotion, base, candidate, git):
 
 
 
-def promotion_policy_blobs(base, candidate, git):
+def promotion_policy_blobs(base, candidate, git, continuation=False):
     """Keep reviewed main policy without changing the candidate's effective contract."""
     from change_impact import path_impacts, TOOLING, KNOWLEDGE, METADATA
     if initial_stage_plan(base, candidate, git) != initial_stage_plan(candidate, candidate, git):
@@ -1505,7 +1581,19 @@ def promotion_policy_blobs(base, candidate, git):
     paths = {}
     for path in git('diff', '--no-renames', '--name-only', ancestor, base).splitlines():
         if path.startswith('docs/verification/') and not path.endswith('.md'):
-            continue  # Certificate archives and consumed evidence have their own adoption gate.
+            if not continuation:
+                continue  # Certificate archives and consumed evidence have their own adoption gate.
+            if path != INITIAL_CONTINUATION:
+                if (not re.fullmatch(r'docs/verification/changes/issue-[1-9][0-9]*\.json', path) or
+                        not git('ls-tree', base, '--', path)):
+                    continue
+                record = regular_json(base, path, git)
+                if record.get('gui_required') is not False or record.get('cases') != []:
+                    continue
+                validate_change(record, int(Path(path).stem.removeprefix('issue-')), False)
+                if git('ls-tree', candidate, '--', path):
+                    previous = regular_json(candidate, path, git)
+                    validate_change(previous, record['issue'], False)
         blob = git('ls-tree', base, '--', path)
         old_blob = git('ls-tree', candidate, '--', path)
         modes = tuple(x.split()[0] if x else '000000' for x in (old_blob, blob))
@@ -1691,8 +1779,12 @@ def verify_pr(pr, api, git=git_read):
         # Metadata-only changes after the tested candidate. No untested product edits or main conflict resolutions.
         certificates = promotion_certificates(promotion, base, candidate, git)
         carried = dict(certificates)
-        if certificates:
-            carried.update(promotion_policy_blobs(base, candidate, git))
+        continuation = None
+        if stage == INITIAL_STAGE:
+            initial_policy = initial_stage_plan(base, candidate, git)
+            continuation = initial_continuation(initial_policy, base, candidate, git)
+        if certificates or continuation:
+            carried.update(promotion_policy_blobs(base, candidate, git, bool(continuation)))
         allowed = {PROMOTION, path} | set(carried)
         promotion_metadata_history(base, candidate, head, allowed, carried, git)
         commits = git('rev-list', f'{base}..{candidate}').splitlines()
@@ -1735,10 +1827,14 @@ def verify_pr(pr, api, git=git_read):
         if set(required) & GOP_KEYS:
             gop_cases = effective_gop_cases(gop_amendment(base, candidate, git), source_cases)
         if stage == INITIAL_STAGE:
-            initial_policy = initial_stage_plan(base, candidate, git)
-            bind_initial_sources(initial_policy, source_cases)
-            if set(initial_policy['cases']) != set(required):
+            source_cases = initial_stage_sources(initial_policy, continuation, source_cases,
+                                                 changes, candidate, git)
+            for key, case, _ in source_cases:
+                required.setdefault(key, (case.get('required_execution'), case.get('artifact', 'app')))
+            if set(initial_policy['cases']) | set((continuation or {}).get('cases', {})) != set(required):
                 raise ValueError('Initial stage cannot omit baseline or other required Cases')
+            if continuation and set(required) & GOP_KEYS:
+                gop_cases = effective_gop_cases(gop_amendment(base, candidate, git), source_cases)
     if stage is None and git('ls-tree', base, '--', INITIAL_PLAN):
         # A later promotion does not erase deferred work merely because its
         # original commits are now in main. Full acceptance still needs it.
@@ -1777,7 +1873,8 @@ def verify_pr(pr, api, git=git_read):
         artifact = artifacts.get(artifact_name)
         if not HASH.fullmatch(artifact or ''):
             raise ValueError('Fixed candidate artifact hash is required: ' + artifact_name)
-        validate_candidate_result(result, key, initial_policy or full_policy, stage, candidate,
+        case_stage = stage if initial_policy and key in initial_policy['cases'] else None
+        validate_candidate_result(result, key, initial_policy or full_policy, case_stage, candidate,
                                   artifact, execution, gop_cases.get(key), git, base, case)
     if initial_policy:
         deferred = sum(entry['initial_scope'] == 'deferred' for entry in initial_policy['cases'].values())
@@ -1808,7 +1905,22 @@ def render_queue(paths, promotion=None, git=git_read):
                              git('ls-tree', promotion['base'], '--', INITIAL_PLAN)):
         initial_policy = initial_stage_plan(promotion.get('base'), candidate, git)
         historical = historical_initial_sources(initial_policy, candidate, git)
-        if stage:
+        continuation = initial_continuation(initial_policy, promotion.get('base'), candidate, git) if stage else None
+        if continuation:
+            sources = initial_stage_sources(initial_policy, continuation, None,
+                                            promotion.get('changes'), candidate, git)
+            entries = dict(initial_policy['cases'], **continuation['cases'])
+            for data, case in rows:
+                entry = entries.get(f'{data["issue"]}:{case["id"]}')
+                if entry is None or canonical_hash(case) not in {
+                        entry['current_case_sha256'], *(s['original_case_sha256'] for s in entry['sources'])}:
+                    raise ValueError('Current Case differs from its registered initial contract')
+            rows = []
+            for key in sorted({key for key, _, _ in sources}):
+                ref = initial_policy['required_ancestor'] if key in initial_policy['cases'] else candidate
+                data = regular_json(ref, entries[key]['sources'][0]['source_path'], git)
+                rows.append((data, next(c for c in data['cases'] if c['id'] == key.split(':')[1])))
+        elif stage:
             for data, case in rows:
                 entry = initial_policy['cases'].get(f'{data["issue"]}:{case["id"]}')
                 if entry is None or canonical_hash(case) not in {
@@ -1879,6 +1991,7 @@ def render_queue(paths, promotion=None, git=git_read):
              '|---|---|---|---|---|']
     for data, case in rows:
         key = f'{data["issue"]}:{case["id"]}'
+        case_stage = stage if initial_policy and key in initial_policy['cases'] else None
         result = results.get(key, {})
         label = '不可・固定候補のpass未登録'
         try:
@@ -1888,10 +2001,10 @@ def render_queue(paths, promotion=None, git=git_read):
             artifact = artifacts.get(case.get('artifact', 'app'))
             if not HASH.fullmatch(artifact or ''):
                 raise ValueError('Candidate artifact not registered')
-            observed = validate_candidate_result(result, key, initial_policy, stage, candidate,
+            observed = validate_candidate_result(result, key, initial_policy, case_stage, candidate,
                         artifact, case.get('required_execution'), gop_cases.get(key), git,
-                        promotion.get('base'), contracts[key] if not stage else None)
-            if stage:
+                        promotion.get('base'), contracts[key] if not case_stage else None)
+            if case_stage:
                 label = ('延期・未実施／初期版必須外・後続#65' if observed['status'] == 'deferred' else
                          '初期版範囲合格／原Case未完了（全範囲gateは別途必要）')
             else:
@@ -1900,8 +2013,8 @@ def render_queue(paths, promotion=None, git=git_read):
                 label = '同一成果物の旧観察を再利用／' + label
             elif result.get('status') == 'reassessed':
                 label = '旧観察を有効条件へ再評価／新しい試験実行ではない／' + label
-            elif (observed.get('initial_observation', {}) if stage else observed).get('responsibility_assessment'):
-                assessment = (observed.get('initial_observation', {}) if stage else observed)['responsibility_assessment']
+            elif (observed.get('initial_observation', {}) if case_stage else observed).get('responsibility_assessment'):
+                assessment = (observed.get('initial_observation', {}) if case_stage else observed)['responsibility_assessment']
                 label = ('修正影響を保証ごとに評価／旧観察と現在事実を区別／' if 'impact_reuse' in assessment else
                          '保持事実を有効条件へ再評価／新しい試験実行ではない／') + label
         except ValueError as exc:
@@ -1926,7 +2039,7 @@ def render_queue(paths, promotion=None, git=git_read):
             result = result.get('source_result', {})
             if not isinstance(result, dict):
                 result = {}
-        if stage:
+        if stage and f'{data["issue"]}:{case["id"]}' in initial_policy['cases']:
             result = result.get('initial_observation', {})
         responsibility_observed = confirmation if reassessed else result
         if not isinstance(responsibility_observed, dict):
