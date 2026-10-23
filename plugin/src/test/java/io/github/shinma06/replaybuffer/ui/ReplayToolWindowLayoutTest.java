@@ -514,6 +514,7 @@ class ReplayToolWindowLayoutTest {
                 if (failed) assertTrue(bounds(panel, "retryButton").y < bounds(panel, "frozenTarget").y);
                 for (var name : List.of("state", "device", "application", "window", "saveReason", "screenshotReason", "saveOutput"))
                     assertFalse(((JComponent) field(panel, name)).getAccessibleContext().getAccessibleName().isBlank(), name);
+                verifyWrappedText(panel);
                 if (failed || complete) writePreview(panel, "tool-window-" + phase.name().toLowerCase(java.util.Locale.ROOT));
             }
             view.set(capture, new ReplayCaptureView(null, 0, null, "一時領域のアクセス権を確認してください。"));
@@ -539,22 +540,18 @@ class ReplayToolWindowLayoutTest {
 
     private static void verifyLargeFontPresentation(JPanel panel) throws Exception {
         var previous = javax.swing.UIManager.getLookAndFeel();
-        var keys = List.of("Label.font", "Button.font", "CheckBox.font", "TextArea.font", "TextField.font", "ComboBox.font");
-        var fonts = new java.util.HashMap<String, Object>();
-        for (var key : keys) fonts.put(key, javax.swing.UIManager.get(key));
+        var fonts = new java.util.IdentityHashMap<Component, java.awt.Font>();
         try {
             javax.swing.UIManager.setLookAndFeel(new javax.swing.plaf.nimbus.NimbusLookAndFeel());
-            for (var key : keys) {
-                var font = javax.swing.UIManager.getFont(key);
-                javax.swing.UIManager.put(key, new javax.swing.plaf.FontUIResource(font.deriveFont(font.getSize2D() * 1.5f)));
-            }
             SwingUtilities.updateComponentTreeUI(panel);
+            enlargeFonts(panel, fonts);
             for (int width : new int[]{280, 900, 280}) {
                 panel.setSize(width, 700);
                 layout(panel); layout(panel);
                 var outer = (JScrollPane) panel.getComponent(0);
                 var form = (JComponent) outer.getViewport().getView();
                 assertFalse(outer.getHorizontalScrollBar().isVisible());
+                verifyWrappedText(panel);
                 for (var name : List.of("enabled", "settingsButton", "saveButton", "screenshotButton", "retryButton", "retryElsewhere", "discardButton")) {
                     var button = (AbstractButton) field(panel, name);
                     var area = SwingUtilities.convertRectangle(button.getParent(), button.getBounds(), form);
@@ -567,9 +564,35 @@ class ReplayToolWindowLayoutTest {
             }
             writePreview(panel, "tool-window-280-large-font");
         } finally {
+            fonts.forEach(Component::setFont);
             javax.swing.UIManager.setLookAndFeel(previous);
-            fonts.forEach(javax.swing.UIManager::put);
             SwingUtilities.updateComponentTreeUI(panel);
+        }
+    }
+
+    private static void enlargeFonts(Component component, java.util.Map<Component, java.awt.Font> originals) {
+        if (component.getFont() != null) {
+            var font = component.getFont();
+            originals.put(component, font);
+            component.setFont(font.deriveFont(font.getSize2D() * 1.5f));
+            assertEquals(font.getSize2D() * 1.5f, component.getFont().getSize2D(), 0.01f, "font fixture must actually enlarge each component");
+        }
+        if (component instanceof Container parent) for (var child : parent.getComponents()) enlargeFonts(child, originals);
+    }
+
+    private static void verifyWrappedText(Container parent) throws javax.swing.text.BadLocationException {
+        for (var component : parent.getComponents()) {
+            if (!component.isVisible()) continue;
+            if (component instanceof JTextArea text && !text.isFocusable()) {
+                for (int offset = 0; offset < text.getText().length(); offset++) {
+                    var character = text.modelToView2D(offset);
+                    assertTrue(character != null && character.getX() >= 0 && character.getMaxX() <= text.getWidth()
+                        && character.getY() >= 0 && character.getMaxY() <= text.getHeight(),
+                        "wrapped text must fit: " + text.getAccessibleContext().getAccessibleName() + ", offset=" + offset +
+                            ", character=" + character + ", size=" + text.getSize());
+                }
+            }
+            if (component instanceof Container container) verifyWrappedText(container);
         }
     }
 
