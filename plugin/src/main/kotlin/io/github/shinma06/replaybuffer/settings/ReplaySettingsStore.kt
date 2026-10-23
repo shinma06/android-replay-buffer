@@ -33,22 +33,22 @@ data class ReplaySettings(
     val manualPackage: String = "",
     val captureMode: CaptureMode = CaptureMode.VIDEO_AND_LOGS,
     val autoSaveOnCrash: Boolean = false,
-    val screenshotUsesCommonDestination: Boolean = true,
+    val screenshotUsesLogcatDestination: Boolean = true,
     val screenshotDirectory: String = "",
 ) {
-    val screenshotDestination: String get() = if (screenshotUsesCommonDestination) destination else screenshotDirectory
+    val manualScreenshotDestination: String get() = if (screenshotUsesLogcatDestination) "" else screenshotDirectory
 
-    fun validationError(): String? = validationError(validateDestination(destination), validateDestination(screenshotDestination))
+    fun validationError(): String? = validationError(validateDestination(destination), validateDestination(manualScreenshotDestination))
 
     internal fun validationError(
         destinationValidation: DestinationValidation,
-        screenshotValidation: DestinationValidation = validateDestination(screenshotDestination),
+        screenshotValidation: DestinationValidation = validateDestination(manualScreenshotDestination),
     ): String? {
         require(destinationValidation.destination == destination)
         if (retentionSeconds !in 1..CoreReplaySettings.MAX_REPLAY_SECONDS) return "保持時間は1〜900秒で指定してください。"
         destinationValidation.error?.let { return it }
-        require(screenshotValidation.destination == screenshotDestination)
-        if (!screenshotUsesCommonDestination) {
+        require(screenshotValidation.destination == manualScreenshotDestination)
+        if (!screenshotUsesLogcatDestination) {
             if (screenshotDirectory.isEmpty()) return "スクリーンショット専用の保存先を指定してください。"
             screenshotValidation.error?.let { return "スクリーンショット: $it" }
         }
@@ -109,8 +109,9 @@ data class ReplaySettingsState(
     @JvmField val captureMode: CaptureMode = CaptureMode.VIDEO_AND_LOGS,
     @field:OptionTag("autoSaveOnCrash")
     @JvmField val autoSaveOnCrash: Boolean = false,
+    // Keep the legacy key: true or absent now follows Logcat; false retains the explicit folder.
     @field:OptionTag("screenshotUsesCommonDestination")
-    @JvmField val screenshotUsesCommonDestination: Boolean = true,
+    @JvmField val screenshotUsesLogcatDestination: Boolean = true,
     @field:OptionTag("screenshotDirectory")
     @JvmField val screenshotDirectory: String = "",
 )
@@ -127,7 +128,7 @@ class ReplaySettingsStore : SerializablePersistentStateComponent<ReplaySettingsS
     fun settings(): ReplaySettings {
         val snapshot = state
         return ReplaySettings(snapshot.retentionSeconds, snapshot.destination, snapshot.appSelection, snapshot.manualPackage,
-            snapshot.captureMode, snapshot.autoSaveOnCrash, snapshot.screenshotUsesCommonDestination, snapshot.screenshotDirectory)
+            snapshot.captureMode, snapshot.autoSaveOnCrash, snapshot.screenshotUsesLogcatDestination, snapshot.screenshotDirectory)
     }
 
     fun setEnabled(value: Boolean) {
@@ -135,14 +136,14 @@ class ReplaySettingsStore : SerializablePersistentStateComponent<ReplaySettingsS
     }
 
     fun apply(settings: ReplaySettings) {
-        apply(settings, validateDestination(settings.destination), validateDestination(settings.screenshotDestination))
+        apply(settings, validateDestination(settings.destination), validateDestination(settings.manualScreenshotDestination))
     }
 
     /** Configurable supplies the result already checked in the background for this exact path. */
     internal fun apply(
         settings: ReplaySettings,
         destinationValidation: DestinationValidation,
-        screenshotValidation: DestinationValidation = validateDestination(settings.screenshotDestination),
+        screenshotValidation: DestinationValidation = validateDestination(settings.manualScreenshotDestination),
     ) {
         val error = settings.validationError(destinationValidation, screenshotValidation)
         require(error == null) { error.orEmpty() }
@@ -155,7 +156,7 @@ class ReplaySettingsStore : SerializablePersistentStateComponent<ReplaySettingsS
                 manualPackage = settings.manualPackage,
                 captureMode = settings.captureMode,
                 autoSaveOnCrash = settings.autoSaveOnCrash,
-                screenshotUsesCommonDestination = settings.screenshotUsesCommonDestination,
+                screenshotUsesLogcatDestination = settings.screenshotUsesLogcatDestination,
                 screenshotDirectory = settings.screenshotDirectory,
             )
         }

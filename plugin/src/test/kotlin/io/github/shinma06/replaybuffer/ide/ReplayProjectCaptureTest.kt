@@ -68,7 +68,7 @@ class ReplayProjectCaptureTest {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val store = ReplaySettingsStore()
         store.loadState(ReplaySettingsState(enabled = true, retentionSeconds = 60, appSelection = AppSelectionMode.MANUAL, manualPackage = "com.manual.app",
-            screenshotUsesCommonDestination = false, screenshotDirectory = directory.resolve("missing-screenshots").toString()))
+            screenshotUsesLogcatDestination = false, screenshotDirectory = directory.resolve("missing-screenshots").toString()))
         val capture = ReplayProjectCapture(scope, store, {}, {})
         try {
             assertTrue(capture.applySettings(store.settings(), unresolved, 0).get(15, TimeUnit.SECONDS).accepted)
@@ -78,11 +78,11 @@ class ReplayProjectCaptureTest {
             assertEquals(60, restored.settings.replaySeconds)
             assertNull(restored.settings.adbPath)
             assertNull(restored.settings.saveDirectory)
-            assertFalse(Files.exists(Path.of(store.settings().screenshotDestination)))
+            assertFalse(Files.exists(Path.of(store.settings().screenshotDirectory)))
             assertEquals("com.manual.app", restored.settings.application.packageName)
             assertEquals(ApplicationMode.MANUAL, restored.settings.application.mode)
             val disable = capture.setEnabled(false)
-            val next = store.settings().copy(retentionSeconds = 900, destination = directory.toString(), screenshotUsesCommonDestination = true)
+            val next = store.settings().copy(retentionSeconds = 900, destination = directory.toString(), screenshotUsesLogcatDestination = true)
             store.apply(next)
             val apply = capture.applySettings(next, unresolved, 0)
             assertTrue(disable.get(15, TimeUnit.SECONDS).accepted)
