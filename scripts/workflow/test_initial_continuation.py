@@ -187,11 +187,51 @@ class RegisteredContinuationTests(unittest.TestCase):
         base, candidate = '8e6a1d626e103d5e0c67850bc53445d18ab5791e', registration['candidate']
         read = cache(lambda *args: subprocess.check_output(['git', *args], cwd=root, text=True).strip())
 
+        # Exact 56dad Case contracts; the develop DAG/PR metadata remain synthetic.
+        # Historical 139-Case documents are read only from main's reachable history.
+        cases = json.loads((root / 'docs/verification/fixtures/initial-continuation-cases.json').read_text())
+        self.assertEqual({item['source_path'] for item in registration['changes']}, set(cases))
+        documents = {}
+        parents = {}
+        previous = base
+        for item in registration['changes']:
+            path = item['source_path']
+            data = change(int(Path(path).stem.removeprefix('issue-')), gui=bool(cases[path]))
+            data['cases'] = cases[path]
+            documents[f'{item["commit"]}:{path}'] = data
+            documents[f'{candidate}:{path}'] = data
+            parents[item['commit']] = previous
+            previous = item['commit']
+        self.assertEqual(candidate, previous)
+
         def git(*args):
             if args == ('ls-tree', base, '--', v.INITIAL_CONTINUATION):
                 return f'100644 blob {"0" * 40}\t{v.INITIAL_CONTINUATION}'
             if args == ('show', base + ':' + v.INITIAL_CONTINUATION):
                 return json.dumps(registration)
+            if args[0] == 'ls-tree' and f'{args[1]}:{args[-1]}' in documents:
+                return f'100644 blob {"0" * 40}\t{args[-1]}'
+            if args[0] == 'show' and args[1] in documents:
+                return json.dumps(documents[args[1]])
+            if args[:2] == ('ls-tree', candidate):
+                return read('ls-tree', base, '--', args[-1])
+            if args[0] == 'show' and args[1].startswith(candidate + ':'):
+                return read('show', base + ':' + args[1].split(':', 1)[1])
+            if args[:2] == ('merge-base', '--is-ancestor') and args[-1] == candidate:
+                self.assertIn(args[2], {policy['required_ancestor'], *parents,
+                    *(source['source_merge'] for entry in policy['cases'].values() for source in entry['sources'])})
+                return ''
+            if args == ('merge-base', candidate, base):
+                return base
+            if args[:3] == ('diff', '--no-renames', '--name-only') and args[3:] in (
+                    (base, base), (candidate, base)):
+                return ''
+            if args == ('rev-list', f'{base}..{candidate}'):
+                return '\n'.join(parents)
+            if args[:4] == ('rev-list', '--parents', '-n', '1') and args[-1] in parents:
+                return args[-1] + ' ' + parents[args[-1]]
+            self.assertFalse(any(ref in arg for ref in parents for arg in args), args)
+            self.assertNotEqual('fetch', args[0])
             return read(*args)
 
         self.assertEqual('0b6d9c6d2d5054ed642565afdbaeb5a88ee198a4ea5398ff96ff36168ce0eda5',
@@ -264,7 +304,7 @@ class RegisteredContinuationTests(unittest.TestCase):
               'body': f'Issue: #999\nGUI: required\nIntegration: promotion\nVerification: {path}'}
         prs = {}
         for item in registration['changes']:
-            data = json.loads(read('show', item['commit'] + ':' + item['source_path']))
+            data = json.loads(git('show', item['commit'] + ':' + item['source_path']))
             gui = 'required' if data['gui_required'] else 'not-required'
             prs[f'pulls/{item["pr"]}'] = {'merged': True, 'merge_commit_sha': item['commit'],
                 'base': {'ref': 'develop', 'repo': repo},

@@ -232,6 +232,8 @@ promotionには`stage: initial-agent`を明記し、元の139 keyの各値は以
 
 この接続でmainの管理更新を取り込む場合は、既存のeffective plan同一性検査を通し、固定接続登録とCaseなしの管理記録を含むtrusted mainの正確なblobだけをmetadataとして許可する。製品Caseの書換え、未知JSON、候補外の製品差分、途中commitでの改変・revertは許可しない。判定入口はAcceptance CI・coordinator・配布処理が共有する`verify_pr`のままで、接続の採用や合成unit testは実promotion・実機/IDE受入・証拠再利用の承認ではない。#246の正式証明書や旧成果物から本候補へのlineage評価は別の既存契約を満たす必要があり、本登録で代替しない。
 
+登録の回帰試験は[追加27 Caseの原契約fixture](fixtures/initial-continuation-cases.json)を読み、固定登録のoriginal/current hashへ照合する。fixtureは登録された20出典の`cases`だけを固定Git原本から抽出したもので、各出典と56dad上の契約は同一である。試験用のdevelop履歴・PR metadata・候補結果は合成し、元139の原本はmainの到達可能な履歴から読む。develop objectを持たないmain単独checkoutでも実行でき、実行時fetchや追加のネットワーク接続を必要としない。このfixtureや合成結果を実受入の証拠として扱わない。
+
 初回main反映後も計画は残る。通常の完全受入では、`base..candidate`に現れなくなった延期Caseも固定出典から必要集合へ戻し、通常の全体passを要求する。`stage`を外すだけで延期を消せない。履歴の一覧も同じresolverで固定出典を読み、原契約・延期理由・担当・再開条件を保持する。初期段階のJSONへ過去の観察や計画hashを追記するだけでは新候補の実観察にならない。
 
 人間による番号確認、またはその確認へ依存する16 Caseには、計画で`full_acceptance_actor: human`を指定する。完全受入の最終確認者を表し、Agentが実行できる測定やGUI操作を全て人間へ移す指定ではない。通常passの同一candidate/artifact・実確認者・日時・証拠に加え、`actor: human`と`human_evidence`を必須とする。`human_evidence`は同じ候補・成果物について、人間が行った番号確認またはその依存先の確認記録を参照する。同じ測定・確認を複数Caseで共有でき、16回の重複実行は不要。REAL準備保留だけのCaseや`PLUGIN-LOAD`の操作経路制限へhuman必須を追加しない。
