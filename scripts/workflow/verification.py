@@ -144,7 +144,7 @@ def tooling_path(path):
 
 
 def baseline_cases(base, entries, git):
-    """Legacy develop history needs a reviewed main-side plan and full real acceptance."""
+    """Load legacy develop Cases from the reviewed main-side plan for full acceptance."""
     selected = [item for item in entries if item.get('baseline') is True]
     if not selected:
         return {}
@@ -218,7 +218,7 @@ def canonical_hash(value):
 
 
 def gop_amendment(base, candidate, git):
-    """One reviewed premise amendment, read from trusted main, never promotion HEAD."""
+    """Load the reviewed premise amendment from trusted main, never promotion HEAD."""
     if not SHA.fullmatch(base or '') or not SHA.fullmatch(candidate or ''):
         raise ValueError('GOP amendment requires fixed base and candidate')
     if not git('ls-tree', base, '--', GOP_AMENDMENT):
@@ -299,7 +299,7 @@ def validate_gop_observation(result, contract):
 
 
 def initial_stage_plan(base, candidate, git):
-    """The one initial-release plan is authorized in main, not in the candidate."""
+    """Load the main-authorized initial plan and reject unregistered candidate changes."""
     policy = regular_json(base, INITIAL_PLAN, git)
     if (not isinstance(policy, dict) or set(policy) - {'responsibility_revision'} != {
             'schema', 'issue', 'stage', 'required_ancestor', 'followup_issue',
@@ -463,7 +463,7 @@ def previous_installation_plan(policy):
 
 
 def validate_responsibility_policy(policy):
-    """Issue 182 amends methods without erasing the fixed original plan or Cases."""
+    """Validate method amendments while preserving the fixed original plan and Cases."""
     revision = policy['responsibility_revision']
     original = {k: v for k, v in policy.items() if k != 'responsibility_revision'}
     if not isinstance(revision, dict):
@@ -658,7 +658,11 @@ def historical_initial_sources(policy, candidate, git):
 
 
 def initial_continuation(policy, base, candidate, git):
-    """A reviewed main registration admits only its fixed additional batch."""
+    """Return the trusted-main continuation only for its exact registered candidate.
+
+    Validate an existing registration even for another candidate; malformed policy
+    must not silently become absent. Later Cases gain no deferrals from this batch.
+    """
     if not git('ls-tree', base, '--', INITIAL_CONTINUATION):
         return None
     registration = regular_json(base, INITIAL_CONTINUATION, git)
@@ -704,6 +708,11 @@ def initial_continuation(policy, base, candidate, git):
 
 
 def initial_stage_sources(policy, registration, source_cases, changes, candidate, git):
+    """Bind original and registered sources to the exact continuation batch.
+
+    Preserve every historical source and current Case hash. Only the original
+    plan controls initial-stage deferrals; added Cases retain full acceptance.
+    """
     if registration is None:
         bind_initial_sources(policy, source_cases)
         return source_cases
@@ -825,7 +834,10 @@ IMPACT_DIMENSIONS = {'source', 'callers', 'callees', 'dataflow', 'build', 'confi
 
 
 def load_impact_source(source, git):
-    """A public pre-squash commit may be absent from a fresh acceptance checkout."""
+    """Load an immutable impact source, fetching only from this repository's origin.
+
+    A public pre-squash commit may be absent from a fresh acceptance checkout.
+    """
     if not isinstance(source, str) or not SHA.fullmatch(source):
         raise ValueError('Impact source must be a full immutable commit SHA')
     try:
@@ -886,7 +898,11 @@ def impact_history(source, candidate, key, git):
 
 
 def certificate_review(certificate, receipts=None):
-    """Public fingerprint/receipt structure; actual origins are checked by the approval adapter."""
+    """Validate public contributor fingerprints and receipt structure.
+
+    The approval adapter must check actual originating sessions; these claims
+    alone cannot establish independent review.
+    """
     review = certificate.get('review', {})
     provenance = certificate.get('provenance')
     if (not isinstance(review, dict) or review.get('status') != 'approved' or
@@ -1302,7 +1318,7 @@ REPAIR_MARKER = '<!-- acceptance-repair:v1 -->'
 
 
 def repair_record(issue, api):
-    """Remote scope is reviewed with the Issue; the PR cannot shrink its failure set."""
+    """Bind the repair to the reviewed Issue scope; reject a PR-shrunken failure set."""
     declaration = re.findall(r'^Acceptance repair: (.+)$', issue.get('body') or '', re.M)
     bug = any(label.get('name') == 'type:bug' for label in issue.get('labels', []))
     if not declaration and not bug:
@@ -1348,7 +1364,7 @@ def bind_receipt_claim(receipts, receipt, claim):
 
 
 def repair_contributors(observed, writer, earliest, receipts=None):
-    """Public roles are display text; only originating-session fingerprints exclude reviewers."""
+    """Identify excluded reviewers by originating-session fingerprints, never display roles."""
     attribution = observed.get('attribution')
     if 'attribution' not in observed:
         # Only the unambiguous one-session legacy form can retain scalar attribution.
@@ -1396,7 +1412,10 @@ def repair_contributors(observed, writer, earliest, receipts=None):
 
 
 def verify_repair(pr, issue, data, path, api, git):
-    """Structure/provenance only. An independent reviewer must assess the actual evidence."""
+    """Check repair structure and provenance without approving the actual evidence.
+
+    An independent reviewer must assess the evidence before integration.
+    """
     record = repair_record(issue, api)
     tracked, seen = set(), set()
     base, head = pr['base']['sha'], pr['head']['sha']
@@ -1573,7 +1592,11 @@ def promotion_certificates(promotion, base, candidate, git):
 
 
 def promotion_policy_blobs(base, candidate, git, continuation=False):
-    """Keep reviewed main policy without changing the candidate's effective contract."""
+    """Keep reviewed main policy without changing the candidate's effective contract.
+
+    Continuation carry admits only exact trusted registration and no-Case
+    records alongside tooling/knowledge metadata; product edits remain excluded.
+    """
     from change_impact import path_impacts, TOOLING, KNOWLEDGE, METADATA
     if initial_stage_plan(base, candidate, git) != initial_stage_plan(candidate, candidate, git):
         raise ValueError('Policy carry requires the unchanged effective candidate contract')
@@ -1708,7 +1731,12 @@ def certificate_changes(base, head, files, git):
 
 
 def verify_pr(pr, api, git=git_read):
-    """api(path) uses the same repo; git sees fetched PR/candidate objects only as data."""
+    """Validate the fixed PR's acceptance metadata and return its gate verdict.
+
+    The api callback reads this repository; git may fetch PR/candidate objects
+    but must treat their contents as data. A verdict does not execute product
+    acceptance or replace independent review of the evidence.
+    """
     issue, path, mode = metadata(pr)
     head, base = pr['head']['sha'], pr['base']['sha']
     data = regular_json(head, path, git)
@@ -1887,7 +1915,7 @@ def verify_pr(pr, api, git=git_read):
 
 
 def render_queue(paths, promotion=None, git=git_read):
-    """Human view is generated from JSON; it is never a second editable status source."""
+    """Render the JSON-derived human view without creating a second editable status source."""
     promotion = promotion or {}
     candidate = promotion.get('candidate')
     results = promotion.get('results', {})
