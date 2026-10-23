@@ -46,6 +46,7 @@ internal data class CliEndpoint(
 
 /**
  * Current-user-only endpoint descriptors, separate from legacy replayd and IDE lock/socket formats.
+ *
  * Selection rejects unsafe, ambiguous or mismatched descriptors without repairing or deleting them.
  */
 internal object ReplayCliRegistry {
@@ -171,6 +172,7 @@ internal object ReplayCliRegistry {
 
 /**
  * Owns one project's loopback endpoint and bounded request workers; [execute] runs off EDT.
+ *
  * [close] requests shutdown without waiting. Observe [termination] for worker exit and descriptor
  * cleanup; exceptional completion does not confirm cleanup. A closed connection
  * does not establish the outcome of an already dispatched capture/save operation.

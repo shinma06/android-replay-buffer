@@ -19,6 +19,7 @@ internal data class CrashHeader(
 
 /**
  * Interprets only RuntimeInit's two header lines and am_crash's required typed fields.
+ *
  * Recognized malformed candidates retain a problem; parsing alone proves neither identity nor save admission.
  */
 internal fun crashHeader(source: DeviceLog): CrashHeader? {

@@ -141,6 +141,7 @@ data class VideoTailSnapshot(
 
 /**
  * One writer attempt: fixed sequence-ns window/target, plus its result. Retrying keeps requestId, changes attempt.
+ *
  * directory may be only the intended destination until COMPLETED; retainedPath is best-effort failure evidence.
  * missingKinds includes unconfirmed recording, so a completed folder need not imply complete acquisition.
  */

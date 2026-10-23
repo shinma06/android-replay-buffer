@@ -19,6 +19,7 @@ import java.nio.ByteBuffer
 
 /**
  * Per-save, single-threaded decode/pad/encode for mixed geometry; no scaling or colour conversion.
+ *
  * Start each source decode run with one supplied config before encoding. The minimum source interval
  * is observed PTS duration in microseconds, or null when unknown, never an authored tail duration.
  */

@@ -36,6 +36,7 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
 
     /**
      * Caller retains the capture pin until return/throw and serializes cancellation with the publication callback.
+     *
      * Partial/failed attempts remain on disk; SaveFailure/SaveCancelled may identify an owned retained directory.
      * A failure after rename can leave the completed name present: failure is not proof that no output exists.
      */

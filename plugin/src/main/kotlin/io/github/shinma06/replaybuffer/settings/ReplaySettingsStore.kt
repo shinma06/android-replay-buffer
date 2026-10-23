@@ -64,6 +64,7 @@ internal data class DestinationValidation(val destination: String, val error: St
 
 /**
  * Checks current folder attributes without creating or probing writes; call off EDT for nonempty paths.
+ *
  * An empty path is valid for capture-only settings. Success is not a lease on the folder or a save guarantee.
  */
 internal fun validateDestination(destination: String): DestinationValidation {

@@ -22,6 +22,7 @@ internal data class CliResponse(val code: Int, val output: String = "", val erro
 
 /**
  * One mutually authenticated connection carries one request with length-prefixed UTF-8 byte bounds.
+ *
  * The client/server own stream closure and deadlines; these blocking serializers do not impose them.
  * A lost response cannot establish whether a mutation ran, so callers must not automatically retry.
  */

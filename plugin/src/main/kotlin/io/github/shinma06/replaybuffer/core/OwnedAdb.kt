@@ -9,6 +9,7 @@ import kotlin.concurrent.thread
 
 /**
  * Owns only directly launched clients, never the shared adb server. Blocking commands/stop/close run off EDT.
+ *
  * Streaming callers own stdout/stdin use; this owner drains stderr and retains clients until exit/drain
  * is confirmed. A failed close is not proof of termination and may be retried on this same owner.
  */

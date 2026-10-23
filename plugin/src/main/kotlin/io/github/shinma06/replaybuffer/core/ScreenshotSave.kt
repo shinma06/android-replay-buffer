@@ -57,6 +57,7 @@ internal class SavedScreenshot(
 
 /**
  * One blocking request off EDT; no replay capture, device file, forward or server is created.
+ *
  * Uses the selected serial or requires exactly one connected device. Foreground checks bracket
  * screencap but cannot exclude screen switches/overlays. Failure/cancellation may leave output;
  * [ScreenshotSaveFailure.retained] identifies confirmed retained output when available.

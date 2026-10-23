@@ -93,6 +93,7 @@ internal fun removeOwnedForwards(
 
 /**
  * The core serializes this journal's calls in its caller-supplied private directory; no host-wide sweep.
+ *
  * Recovery reads/locks descriptors without contacting devices; pending count also includes quarantined
  * records. Close releases locks and keeps descriptors. Retire removes only a verified owned record
  * after the caller confirms the corresponding client/reader and remote cleanup outcome.

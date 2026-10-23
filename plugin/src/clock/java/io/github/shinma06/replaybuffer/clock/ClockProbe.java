@@ -7,7 +7,7 @@ import java.nio.charset.StandardCharsets;
 
 /**
  * Reads elapsed-before, monotonic, wall and elapsed-after under adb shell, all in nanoseconds.
- * Wall retains currentTimeMillis resolution; the host caller owns deployment, deadlines and cleanup.
+ * Wall retains {@link System#currentTimeMillis()} resolution; the host caller owns deployment, deadlines and cleanup.
  */
 public final class ClockProbe {
     public static void main(String[] args) throws Exception {

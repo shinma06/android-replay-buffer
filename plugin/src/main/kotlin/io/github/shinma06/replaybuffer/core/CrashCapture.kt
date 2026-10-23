@@ -4,6 +4,7 @@ internal data class AutoTrigger(val eventId: String, val facts: Map<String, Any?
 
 /**
  * Called inside the store/clock freeze before pin admission, using the output rows' exact mapper.
+ *
  * mapper accepts wall/host ns; admitted is host monotonic ns. Unknown identity/time throws AutoSaveRejected.
  * Returned facts concern platform reports, not a measured process-death or physical-image timestamp.
  */

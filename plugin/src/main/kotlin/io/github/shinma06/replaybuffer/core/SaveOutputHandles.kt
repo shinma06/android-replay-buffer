@@ -89,6 +89,7 @@ private fun requirePrivate(descriptor: Int, permissions: Int) {
 
 /**
  * Holds one directory descriptor; child operations accept a single name and key is device/inode identity.
+ *
  * Open walks a normalized absolute path without following symlinks. Close releases the handle only;
  * the caller owns created output and must keep parent/child handles alive through verification/publication.
  */

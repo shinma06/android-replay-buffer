@@ -36,6 +36,7 @@ internal fun readVideo(input: DataInputStream, started: () -> Unit = {}): VideoP
 
 /**
  * Wall time is epoch nanoseconds; raw is the payload, not the binary header. Decoded text can be lossy.
+ *
  * Legacy headers leave UID null and default lid to zero; [lidPresent] distinguishes that from proven main.
  */
 internal data class DeviceLog(

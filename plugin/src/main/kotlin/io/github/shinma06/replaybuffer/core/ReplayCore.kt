@@ -12,6 +12,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Project-owned core: replay-control serializes commands/state; replay-save reads a single pinned capture.
+ *
  * Listeners run on control, outside EDT. The owner must await closeAsync before treating resources as stopped.
  */
 class ReplayCore internal constructor(

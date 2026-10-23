@@ -295,6 +295,7 @@ internal const val LOGCAT_DESTINATION_UNAVAILABLE = "Logcatのスクショ保存
 
 /**
  * The service scope owns the job: resolve/attribute checks run on IO and [publish] returns on UI.
+ *
  * Forms cancel their pending job and reject stale lifetime/revision results before touching widgets.
  */
 internal fun CoroutineScope.checkDestination(

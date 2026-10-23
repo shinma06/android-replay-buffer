@@ -16,6 +16,20 @@
 
 人間向けDocは日本語、agent専用の指示はEnglishを維持します。ソースでは周辺のKDoc、Javaコメント、Python docstring、Swift、shell等の既存記法を使い、識別子と機械的記法を実物に一致させます。内容に問題のない既存説明を、表記統一だけで一律翻訳・全面改稿しません。
 
+## 公式記法とprojectでの適用
+
+対象言語・実toolchainの公式資料で、Docとして認識される位置、区切り、markup、tagと参照解決を確認します。公式構文・意味を守り、公式の推奨styleとprojectが選ぶ記述範囲を区別します。下表は本projectで使う基準であり、全symbolへの定型Doc、全tag、別generatorの導入を要求しません。言語/toolchainの更新や新しい記法を使うときに該当する公式資料を再確認し、採用版・適用先・検証と残条件を既存Issue/PRへ残します。
+
+| 対象・公式資料 | 本projectで確認する記法と意味 |
+| --- | --- |
+| Kotlin / Kotlin script — [KDoc](https://kotlinlang.org/docs/kotlin-doc.html)、[公式Doc規約](https://kotlinlang.org/docs/coding-conventions.html#documentation-comments) | 宣言のDocは`/** … */`とMarkdownを使い、概要段落と詳細を空行で分ける。`[symbol]`は実際に解決する識別子へ、単なる値や範囲はcode spanへ。引数・戻り値は通常本文で説明し、長い個別説明が必要な場合に`@param` / `@return`を使う。tagを使う場合はKDocで対応するものと実引数・property・例外等を照合し、Javadocのinline tagや非対応の`@deprecated`を持ち込まない。 |
+| Python — [言語上のdocstring](https://docs.python.org/3.15/reference/compound_stmts.html#function-definitions)、[PEP 257](https://peps.python.org/pep-0257/)、[PEP 8のDoc節](https://peps.python.org/pep-0008/#documentation-strings) | Docstringはmodule/class/function等の最初の文字列文で、`__doc__`やhelpから使われ得る。`"""`、要約、複数行なら空行と詳細・独立した閉じ行を使い、関数の要約は動作を命令形で述べる。PEP 257は公式の慣例でmarkup仕様ではない。Google/NumPy/reStructuredText形式をPython必須とせず、必要な契約を既存の平文で書く。 |
+| Java — [実JDKのJavadoc仕様](https://docs.oracle.com/en/java/javase/27/docs/specs/javadoc/doc-comment-spec.html) | 既存の`/** … */`を宣言・annotationの直前へ置き、先頭文を概要にする。本文はHTMLとJavadoc tagの規則で扱い、コードや参照には必要に応じて`{@code …}` / `{@link …}`を使う。KDocの`[symbol]`やMarkdownのbacktickをJavadocの機能と混同せず、tagの対象と参照先を実物へ合わせる。 |
+| Swift — [公式API記述指針](https://www.swift.org/documentation/api-design-guidelines/#fundamentals)、[公式Doc comment構文](https://github.com/swiftlang/swift/blob/b6239b8cee724e8062b044089058505d1efdd5f2/docs/DocumentationComments.md) | symbolのDocは宣言前の`///`等と対応するMarkdownを使い、概要と詳細を空行で分ける。必要な引数・戻り値・throw条件は`- Parameters:` / `- Returns:` / `- Throws:`等で記す。通常の局所`//`コメントと区別し、内部QA scriptの自明な宣言まで定型文で埋めない。 |
+| shell / config / 独立Markdown | shellの通常コメントとshebang・解析directiveを区別する。[YAML](https://yaml.org/spec/1.2.2/#66-comments) / [TOML](https://toml.io/en/v1.1.0#comment)は各形式のcomment規則、[XML](https://www.w3.org/TR/xml/#sec-comments)はXML comment規則に従い、[JSON](https://www.rfc-editor.org/rfc/rfc8259#section-2)へコメントや説明用の未定義fieldを追加しない。専用の必須Doc構文を創作せず、必要な説明は既存README/schema正本に置く。Markdownは使用先の方言を確認し、KDoc・Javadoc・Swiftの記法を相互流用しない。 |
+
+既存の内部helperやtestsへ、公式style guideの公開API向け推奨を機械的に広げません。説明が必要な境界を省略せず、Docを付ける箇所では公式の構造を守ります。通常コメント、license、生成物、固定証拠はDoc付与率のために変換しません。Pythonの`__doc__`を利用するhelpやDocから抽出される参照・例は実際のconsumerまで確認し、構文/静的確認と実生成・表示の確認を区別します。
+
 ## 必要な説明を残す
 
 - 公開/共有境界と重要な内部制約では、利用・変更判断に必要な目的、入力の意味/units/範囲/空値、結果、state、副作用、所有権・寿命、並行性、取消し、再試行、部分失敗/回復、互換性を選んで記述します。該当しない欄や自明な型の反復は不要です。

@@ -34,6 +34,7 @@ internal data class ReplayCaptureView(
 
 /**
  * One project's core owner; commands queue through a coroutine mutex and callbacks may arrive off EDT.
+ *
  * The caller owns scope and UI dispatch. close starts cleanup; termination confirms its result separately.
  * No Swing, SDK lookup, or device selection is performed here.
  */

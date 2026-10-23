@@ -31,6 +31,7 @@ internal data class AppPeriod(
 )
 /**
  * One admitted window on the sequence ns axis, with fixed clocks, membership and original gap history.
+ *
  * Packet files are borrowed from the store's pin; keep it until the writer finishes, including failed retries.
  * Later acquisition/clock samples must not reinterpret this request. See docs/plugin-design.md.
  */
@@ -50,6 +51,7 @@ internal data class FrozenCapture(
 
 /**
  * Owns the disk ring and one save pin. Packet bytes are append-only; snapshots read indexed lengths only.
+ *
  * Store mutations are synchronized; combined snapshots acquire this store before its clock.
  * close() removes owned packet files, so the caller must first finish the pinned writer.
  */
@@ -655,6 +657,7 @@ internal fun VideoEntry.continuousTo(next: VideoEntry, gaps: Iterable<CaptureGap
 
 /**
  * One sequence-ns envelope per original gap, in input order, for conservative overlap checks only.
+ *
  * Supported anchors may bound a recovered gap without confirming its exact duration; retain original history.
  * videoProofs optionally receives the video anchors used by the saved manifest, not source-adjacency proof.
  */
@@ -710,6 +713,7 @@ internal fun List<CaptureGap>.gapScopes(
 
 /**
  * Returns original gaps whose envelopes may overlap `[start, end]` (sequence ns, including both errors).
+ *
  * Unknown window/bounds stay visible. Supply this window's clocks/recoveries, never later samples on retry.
  */
 internal fun List<CaptureGap>.inWindow(

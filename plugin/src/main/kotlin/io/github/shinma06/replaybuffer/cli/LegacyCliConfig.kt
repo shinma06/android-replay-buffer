@@ -12,6 +12,7 @@ internal data class LegacyCliConfig(val seconds: Int, val destination: String, v
 
         /**
          * Validates flat legacy JSON or simplified key/value YAML without applying settings or I/O.
+         *
          * Relative destinations use the CLI caller's absolute [workingDirectory]; omitted values
          * retain legacy defaults (60 seconds and home/Replays), not current GUI defaults.
          */

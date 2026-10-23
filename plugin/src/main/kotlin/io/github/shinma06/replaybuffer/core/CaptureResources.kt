@@ -20,6 +20,7 @@ internal fun sha256(path: Path): String {
 
 /**
  * Extracts fixed helpers into a caller-owned private directory, registering each new file before payload.
+ *
  * The clock is eager and video server lazy. Construction/extraction can fail after creating a file;
  * the caller retains root/ownership cleanup responsibility. Close removes initialized helpers, not the directory.
  */

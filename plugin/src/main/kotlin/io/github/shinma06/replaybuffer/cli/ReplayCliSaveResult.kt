@@ -7,6 +7,7 @@ import java.util.concurrent.TimeUnit
 
 /**
  * Waits on the CLI worker until a host-monotonic ns deadline; timeout does not cancel or retry the writer.
+ *
  * The admitted attempt owns its result even after OFF/UI changes; only COMPLETED yields a stdout path.
  */
 internal fun cliSaveResponse(requestId: String?, result: CompletionStage<SaveSnapshot>, deadline: Long, warning: String): CliResponse {
