@@ -36,6 +36,7 @@ import io.github.shinma06.replaybuffer.cli.ReplayCliRegistry
 import io.github.shinma06.replaybuffer.cli.ReplayCliServer
 import io.github.shinma06.replaybuffer.cli.cliSaveResponse
 import io.github.shinma06.replaybuffer.core.ReplayOperation
+import io.github.shinma06.replaybuffer.core.ReplaySnapshot
 import io.github.shinma06.replaybuffer.core.SavePhase
 import io.github.shinma06.replaybuffer.core.SaveSnapshot
 import io.github.shinma06.replaybuffer.core.SavedScreenshot
@@ -185,18 +186,19 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
     }
 
     internal val screenshotDisabledReason: String?
-        @Synchronized get() = when {
-            !alive -> "projectは終了しています。"
-            screenshotBusy -> "スクリーンショットを保存中です。"
-            screenshotRevision != requestRevision -> "対象アプリ・設定を確認中です。"
-            environment?.adb == null -> environment?.adbReason ?: "Android SDKを確認してください。"
-            environment?.application?.packageName == null -> environment?.application?.reason ?: "対象アプリを選択してください。"
-            screenshotSettings?.destination.isNullOrEmpty() -> "設定で保存先を指定してください。"
-            else -> runCatching { screenshotDeviceSerial() }.exceptionOrNull()?.message
-        }
+        @Synchronized get() = screenshotDisabledReason(capture.view.snapshot)
 
-    private fun screenshotDeviceSerial(): String? {
-        val snapshot = capture.view.snapshot
+    private fun screenshotDisabledReason(snapshot: ReplaySnapshot?): String? = when {
+        !alive -> "projectは終了しています。"
+        screenshotBusy -> "スクリーンショットを保存中です。"
+        screenshotRevision != requestRevision -> "対象アプリ・設定を確認中です。"
+        environment?.adb == null -> environment?.adbReason ?: "Android SDKを確認してください。"
+        environment?.application?.packageName == null -> environment?.application?.reason ?: "対象アプリを選択してください。"
+        screenshotSettings?.destination.isNullOrEmpty() -> "設定で保存先を指定してください。"
+        else -> runCatching { screenshotDeviceSerial(snapshot) }.exceptionOrNull()?.message
+    }
+
+    private fun screenshotDeviceSerial(snapshot: ReplaySnapshot?): String? {
         if (snapshot?.enabled != true) {
             check(!project.getService(ReplaySettingsStore::class.java).enabled) { "取得対象の反映を待っています。完了後に保存してください。" }
             return null
@@ -207,10 +209,12 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
 
     @Synchronized
     internal fun screenshot() {
-        screenshotDisabledReason?.let { screenshotError(it); return }
+        // Capture publishes under a different lock; validate and execute against this one snapshot.
+        val snapshot = capture.view.snapshot
+        screenshotDisabledReason(snapshot)?.let { screenshotError(it); return }
         val selected = checkNotNull(environment)
         val destination = checkNotNull(screenshotSettings).destination
-        val serial = runCatching { screenshotDeviceSerial() }.getOrElse {
+        val serial = runCatching { screenshotDeviceSerial(snapshot) }.getOrElse {
             screenshotError(it.message ?: "録画対象の端末を確認できません。")
             return
         }

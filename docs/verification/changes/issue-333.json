@@ -5,7 +5,7 @@
   "reason": "録画とスクショの端末選択を共有し、要求時の対象を固定する。source/fake回帰は実ロード・端末画面の観察を代替しない。旧SCREENSHOT-USB/ACTIONSのID・観察・未達は保持する。",
   "cli_checks": [
     "ScreenshotSaveTest: 録画対象Aと別USB B、A消失/offline/未認証時の非fallback、OFF/履歴なしの単一候補と曖昧時拒否、全commandのserial固定、既存PNG/保存/削除/取消し回帰。",
-    "ReplayToolWindowLayoutTest: 実serviceの対象serial取得、ON反映待ち・OFF反映中・SDK変更・古い解決revisionと取得OFF独立。ReplayCoreWireTestと通常change_impact/product checks。実結果は固定HEADのIssue/PRへ記録する。"
+    "ReplayToolWindowLayoutTest: 実serviceの対象serial取得、実際のscreenshot要求の検証直後にOFFを公開しても別Bへ撮影commandを送らないこと、ON反映待ち・SDK変更・古い解決revisionと取得OFF独立。ReplayCoreWireTestと通常change_impact/product checks。実結果は固定HEADのIssue/PRへ記録する。"
   ],
   "cases": [
     {
