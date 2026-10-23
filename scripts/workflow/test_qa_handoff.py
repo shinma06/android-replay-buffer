@@ -84,12 +84,12 @@ class HandoffTests(unittest.TestCase):
 
     def test_supported_origin_summaries_generate_canonical_qa_and_keep_full_title(self):
         examples = (
-            ('bug', 'fix: #123 の回帰を修正する', 'Issue 123 の回帰を修正する'),
-            ('bug', '[修正] #123 の回帰を修正する (#45)', 'Issue 123 の回帰を修正する (Issue 45)'),
+            ('bug', 'fix: #123 の回帰を修正する', '元Issueの残受入を確認する'),
+            ('bug', '[修正] #123 の回帰を修正する (#45)', '元Issueの残受入を確認する'),
             ('maintenance', '[運用] legacy English', '残りの受入試験: legacy English'),
             ('maintenance', '[運用] 試験対象  \r継続\t ', '試験対象 継続'),
             ('qa', 'test: #12 試験対象', '試験対象'),
-            ('qa', '[試験] #12 #123 の試験対象', 'Issue 123 の試験対象'),
+            ('qa', '[試験] #12 #123 の試験対象', '元Issueの残受入を確認する'),
         )
         for kind, title, summary in examples:
             with self.subTest(title=title):
@@ -110,6 +110,44 @@ class HandoffTests(unittest.TestCase):
                 self.assertEqual(self.transfer(), 100)
                 self.assertEqual(self.gh.created, 1)
                 self.assertEqual(self.gh.issue(35), origin)
+
+    def test_numeric_hashes_keep_literal_meaning_in_original_title(self):
+        for title in ('fix: 色#123456の扱いを直す',
+                      'fix: https://example.test/#123 の表示を修正する',
+                      'fix: 識別子#123abcの表示を直す'):
+            with self.subTest(title=title):
+                self.setUp()
+                self.gh.issues[35].update(number=35, title=title,
+                    labels=['type:bug', 'priority:P2', 'status:ready'])
+                validate_issue(self.gh.issue(35))
+                self.transfer()
+                qa = self.gh.issue(100)
+                self.assertEqual(qa['title'], 'test: #35 元Issueの残受入を確認する')
+                self.assertIn('元Issue題名: ' + title, qa['body'])
+                validate_issue(qa, allow_legacy=False)
+
+    def test_original_title_markup_stays_literal_and_case_details_stay_outside(self):
+        examples = (
+            ('fix: <!-- 日本語の表示を直す', 'fix: &lt;!-- 日本語の表示を直す'),
+            ('fix: <details> 日本語の表示を直す', 'fix: &lt;details&gt; 日本語の表示を直す'),
+            ('fix: `日本語` *表示* & 終了</pre>',
+             'fix: `日本語` *表示* &amp; 終了&lt;/pre&gt;'),
+        )
+        for title, escaped in examples:
+            with self.subTest(title=title):
+                self.setUp()
+                self.gh.issues[35].update(number=35, title=title,
+                    labels=['type:bug', 'priority:P2', 'status:ready'])
+                validate_issue(self.gh.issue(35))
+                self.transfer()
+                body = self.gh.issue(100)['body']
+                self.assertIn('<pre>元Issue題名: ' + escaped + '</pre>\n\n## 受入・次操作・依存', body)
+                literal, details = body.split('</pre>', 1)
+                self.assertNotIn('<!-- 日本語', literal)
+                self.assertNotIn('<details>', literal)
+                self.assertIn('Case: QA-1', details)
+                self.assertIn('担当: PM', details)
+                self.assertIn('次操作:', details)
 
     def test_title_aliases_and_origin_boundaries_do_not_duplicate_or_misidentify_qa(self):
         self.transfer()
