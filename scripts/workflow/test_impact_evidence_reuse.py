@@ -880,26 +880,35 @@ class PromotionTreeTests(unittest.TestCase):
 
     def test_gate_and_dependency_updates_import_together_in_both_promotion_modes(self):
         from verification import promotion_policy_blobs
-        self.git('checkout', '-q', 'trusted-main')
-        self.write('scripts/workflow/verification.py',
-                   '"""adopted candidate Doc"""\nfrom git_guard import gate_api\nVALUE = gate_api()\n')
-        self.write('scripts/workflow/git_guard.py',
-                   'from policy_dependency import api\ndef gate_api():\n    return api()\n')
-        self.write('scripts/workflow/policy_dependency.py', 'def api():\n    return "reviewed API"\n')
-        self.commit('gate and dependency update')
-        base = self.git('rev-parse', 'HEAD')
-        for continuation in (False, True):
-            with self.subTest(continuation=continuation):
-                self.git('checkout', '-q', '-B', 'coherent-policy', self.candidate)
-                carried = promotion_policy_blobs(base, self.candidate, self.git, continuation=continuation)
-                for path in carried:
-                    self.write(path, self.git('show', f'{base}:{path}'))
-                self.commit('exact main gate and dependencies')
-                result = subprocess.run([sys.executable, '-B', '-I', '-c',
-                    'import sys; sys.path.insert(0, "scripts/workflow"); '
-                    'import verification; assert verification.VALUE == "reviewed API"'],
-                    cwd=self.root, capture_output=True, text=True)
-                self.assertEqual(0, result.returncode, result.stderr)
+        for candidate_only in (False, True):
+            self.git('checkout', '-q', '-B', 'trusted-main', self.base)
+            name = 'old_gate_api' if candidate_only else 'gate_api'
+            self.write('scripts/workflow/verification.py',
+                       f'"""adopted candidate Doc"""\nfrom git_guard import {name}\nVALUE = {name}()\n')
+            if not candidate_only:
+                self.write('scripts/workflow/git_guard.py',
+                           'from policy_dependency import api\ndef gate_api():\n    return api()\n')
+                self.write('scripts/workflow/policy_dependency.py', 'def api():\n    return "reviewed API"\n')
+            self.commit('reviewed gate')
+            base = self.git('rev-parse', 'HEAD')
+            self.git('checkout', '-q', '-B', 'dependency-candidate', self.candidate)
+            if candidate_only:
+                self.write('scripts/workflow/git_guard.py', 'def gate_api():\n    return "candidate API"\n')
+                self.commit('candidate-only dependency API change')
+            candidate = self.git('rev-parse', 'HEAD')
+            expected = 'old API' if candidate_only else 'reviewed API'
+            for continuation in (False, True):
+                with self.subTest(candidate_only=candidate_only, continuation=continuation):
+                    self.git('checkout', '-q', '-B', 'coherent-policy', candidate)
+                    carried = promotion_policy_blobs(base, candidate, self.git, continuation=continuation)
+                    for path in carried:
+                        self.write(path, self.git('show', f'{base}:{path}'))
+                    self.commit('exact main gate and dependencies')
+                    result = subprocess.run([sys.executable, '-B', '-I', '-c',
+                        'import sys; sys.path.insert(0, "scripts/workflow"); '
+                        f'import verification; assert verification.VALUE == {expected!r}'],
+                        cwd=self.root, capture_output=True, text=True)
+                    self.assertEqual(0, result.returncode, result.stderr)
 
     def test_unsupported_gate_imports_fail_closed_instead_of_mixing_dependencies(self):
         from verification import promotion_policy_blobs

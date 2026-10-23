@@ -1675,7 +1675,7 @@ def promotion_policy_blobs(base, candidate, git, continuation=False):
                 path = 'scripts/workflow/' + name.replace('.', '/') + '.py'
                 if path not in dependencies:
                     pending.append(path)
-    for path in git('diff', '--no-renames', '--name-only', ancestor, base).splitlines():
+    for path in sorted(set(git('diff', '--no-renames', '--name-only', ancestor, base).splitlines()) | dependencies):
         if path not in allowed:
             continue
         blob = git('ls-tree', base, '--', path)
