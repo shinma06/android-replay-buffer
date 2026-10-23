@@ -160,6 +160,13 @@ class InitialContinuationTests(unittest.TestCase):
             return original(*args)
         with self.assertRaisesRegex(ValueError, 'already-adopted'):
             v.initial_continuation(self.initial.policy, BASE, later, adopted, historical=True)
+        for target in (later, BASE):
+            def unavailable(*args):
+                if args == ('merge-base', '--is-ancestor', NEW, target):
+                    raise subprocess.CalledProcessError(128, ['git', *args])
+                return unrelated(*args)
+            with self.subTest(unavailable=target), self.assertRaises(ValueError):
+                v.initial_continuation(self.initial.policy, BASE, later, unavailable, historical=True)
 
     def test_registered_new_execution_requirement_is_preserved(self):
         case = self.fixture.documents[f'{NEW}:docs/verification/changes/issue-37.json']['cases'][0]

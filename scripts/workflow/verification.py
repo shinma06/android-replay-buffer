@@ -716,10 +716,14 @@ def initial_continuation(policy, base, candidate, git, historical=False):
     if historical:
         try:
             git('merge-base', '--is-ancestor', registration['candidate'], candidate)
-        except subprocess.CalledProcessError:
+        except subprocess.CalledProcessError as error:
+            if error.returncode != 1:
+                raise ValueError('Cannot establish registered continuation ancestry') from error
             try:
                 git('merge-base', '--is-ancestor', registration['candidate'], base)
-            except subprocess.CalledProcessError:
+            except subprocess.CalledProcessError as error:
+                if error.returncode != 1:
+                    raise ValueError('Cannot establish adopted continuation ancestry') from error
                 return None
             raise ValueError('Candidate omits already-adopted continuation history')
         return registration
