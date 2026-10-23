@@ -18,6 +18,7 @@ import com.intellij.ui.components.JBTextArea
 import com.intellij.ui.components.JBTextField
 import com.intellij.util.ui.FormBuilder
 import io.github.shinma06.replaybuffer.core.CaptureMode
+import io.github.shinma06.replaybuffer.ide.LogcatScreenshotSettings
 import io.github.shinma06.replaybuffer.ide.ReplayProjectService
 import io.github.shinma06.replaybuffer.ui.captureModeDescription
 import kotlinx.coroutines.CoroutineScope
@@ -38,7 +39,7 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable {
     private var panel: JPanel? = null
     private var retention: JBTextField? = null
     private var destination: TextFieldWithBrowseButton? = null
-    private var screenshotCommon: JBCheckBox? = null
+    private var screenshotLogcat: JBCheckBox? = null
     private var screenshotDirectory: TextFieldWithBrowseButton? = null
     private var screenshotStatus: JBLabel? = null
     private var screenshotValidation: DestinationValidation? = null
@@ -82,14 +83,14 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable {
         screenshotStatus = JBLabel().apply { accessibleContext.accessibleName = "スクリーンショット保存先の確認結果" }
         screenshotDirectory = TextFieldWithBrowseButton().apply {
             addBrowseFolderListener(project, FileChooserDescriptorFactory.createSingleFolderDescriptor())
-            accessibleContext.accessibleName = "スクリーンショット専用フォルダ"
+            accessibleContext.accessibleName = "スクリーンショットの手動保存先"
             textField.document.addDocumentListener(object : DocumentAdapter() {
                 override fun textChanged(event: DocumentEvent) = checkScreenshotDestination()
             })
         }
-        screenshotCommon = JBCheckBox("動画・ログと同じ場所に保存する", true).apply {
-            accessibleContext.accessibleName = "スクリーンショットを共通の保存先へ保存"
-            toolTipText = "OFFにするとスクリーンショット専用の別フォルダを指定できます。画像は選択先の直下に保存します。"
+        screenshotLogcat = JBCheckBox("Logcatのスクショ保存先と同じ場所に保存する", true).apply {
+            accessibleContext.accessibleName = "スクリーンショットをLogcatのスクショ保存先へ保存"
+            toolTipText = "Logcatの画面撮影設定に追従します。OFFでは手動指定できます。動画・ログと同じフォルダも使えます。"
             addActionListener { checkScreenshotDestination() }
         }
         val packageGuidance = "255文字以内。英字で始まる2つ以上の部分をピリオドで区切ります。" +
@@ -121,8 +122,8 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable {
             .addLabeledComponent("保持時間（1〜900秒）:", retention!!)
             .addLabeledComponent("保存先フォルダ:", destination!!)
             .addComponent(destinationStatus!!)
-            .addLabeledComponent("スクリーンショット保存先:", screenshotCommon!!)
-            .addLabeledComponent("専用の別フォルダ:", screenshotDirectory!!)
+            .addLabeledComponent("スクリーンショット保存先:", screenshotLogcat!!)
+            .addLabeledComponent("手動の保存先フォルダ:", screenshotDirectory!!)
             .addComponent(screenshotStatus!!)
             .addLabeledComponent("対象アプリ:", mode!!)
             .addLabeledComponent("package名:", manualPackage!!)
@@ -195,26 +196,38 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable {
     private fun checkScreenshotDestination() {
         val field = screenshotDirectory ?: return
         val lifetime = uiLifetime ?: return
-        val common = screenshotCommon?.isSelected != false
-        field.isEnabled = !common
+        val followsLogcat = screenshotLogcat?.isSelected != false
+        field.isEnabled = !followsLogcat
         val revision = ++screenshotRevision
         screenshotValidationJob?.cancel()
         screenshotValidationJob = null
         screenshotValidation = null
-        if (common) {
-            screenshotStatus?.text = "動画・ログの保存先フォルダ直下にPNG画像1枚を保存します。"
-            return
-        }
-        val value = field.text
-        screenshotStatus?.text = if (value.isEmpty()) "スクリーンショット専用の保存先を指定してください。" else "保存先を確認中…"
-        if (value.isEmpty()) {
+        val location = if (followsLogcat) {
+            try { LogcatScreenshotSettings.saveLocation() } catch (cancelled: com.intellij.openapi.progress.ProcessCanceledException) {
+                throw cancelled
+            } catch (_: RuntimeException) {
+                screenshotStatus?.text = LOGCAT_DESTINATION_UNAVAILABLE
+                return
+            } catch (_: LinkageError) {
+                screenshotStatus?.text = LOGCAT_DESTINATION_UNAVAILABLE
+                return
+            }
+        } else null
+        val value = location ?: field.text
+        screenshotStatus?.text = if (!followsLogcat && value.isEmpty()) "スクリーンショット専用の保存先を指定してください。" else "保存先を確認中…"
+        if (!followsLogcat && value.isEmpty()) {
             screenshotValidation = validateDestination(value)
             return
         }
-        screenshotValidationJob = replayService?.scope?.checkDestination(value) { result ->
+        screenshotValidationJob = replayService?.scope?.checkDestination(value, {
+            if (location == null) value else LogcatScreenshotSettings.resolveDirectory(project, location).toString()
+        }) { result ->
             if (uiLifetime === lifetime && !project.isDisposed && revision == screenshotRevision) {
                 screenshotValidation = result
-                screenshotStatus?.text = result.error ?: "専用フォルダ直下にPNG画像1枚を保存します。"
+                screenshotStatus?.text = if (followsLogcat) {
+                    "Logcatのスクショ保存先: ${result.destination}。" +
+                        (result.error ?: "保存時の最新設定を使い、直下へPNG1枚を保存します。IDE設定の初期値はデスクトップです。")
+                } else result.error ?: "専用フォルダ直下にPNG画像1枚を保存します。"
             }
         }
     }
@@ -226,7 +239,7 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable {
         manualPackage = manualPackage?.text.orEmpty(),
         captureMode = captureMode?.selectedItem as? CaptureMode ?: CaptureMode.VIDEO_AND_LOGS,
         autoSaveOnCrash = autoSave?.isSelected == true,
-        screenshotUsesCommonDestination = screenshotCommon?.isSelected != false,
+        screenshotUsesLogcatDestination = screenshotLogcat?.isSelected != false,
         screenshotDirectory = screenshotDirectory?.text.orEmpty(),
     )
 
@@ -237,7 +250,7 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable {
         val settings = draft()
         val checked = destinationValidation?.takeIf { it.destination == settings.destination }
             ?: throw ConfigurationException("保存先を確認中です。確認が終わってから適用してください。")
-        val screenshotChecked = if (settings.screenshotUsesCommonDestination) checked else {
+        val screenshotChecked = if (settings.screenshotUsesLogcatDestination) DestinationValidation("", null) else {
             screenshotValidation?.takeIf { it.destination == settings.screenshotDirectory }
                 ?: throw ConfigurationException("スクリーンショットの保存先を確認中です。確認が終わってから適用してください。")
         }
@@ -257,7 +270,7 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable {
         val settings = store().settings()
         retention?.text = settings.retentionSeconds.toString()
         destination?.text = settings.destination
-        screenshotCommon?.isSelected = settings.screenshotUsesCommonDestination
+        screenshotLogcat?.isSelected = settings.screenshotUsesLogcatDestination
         screenshotDirectory?.text = settings.screenshotDirectory
         mode?.selectedItem = settings.appSelection
         captureMode?.selectedItem = settings.captureMode
@@ -286,7 +299,7 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable {
         retention = null
         destination = null
         screenshotDirectory = null
-        screenshotCommon = null
+        screenshotLogcat = null
         mode = null
         captureMode = null
         autoSave = null
@@ -296,10 +309,26 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable {
     private fun store(): ReplaySettingsStore = project.getService(ReplaySettingsStore::class.java)
 }
 
+internal const val LOGCAT_DESTINATION_UNAVAILABLE = "Logcatのスクショ保存先を取得できません。Android Studioの画面撮影設定を確認するか、手動の保存先を指定してください。"
+
 /** The injected service scope owns the job; each form cancels its own pending check. */
-internal fun CoroutineScope.checkDestination(value: String, publish: (DestinationValidation) -> Unit): Job =
+internal fun CoroutineScope.checkDestination(
+    value: String,
+    resolve: () -> String = { value },
+    publish: (DestinationValidation) -> Unit,
+): Job =
     launch(Dispatchers.UI + ModalityState.current().asContextElement()) {
         delay(150)
-        val result = withContext(Dispatchers.IO) { validateDestination(value) }
+        val result = withContext(Dispatchers.IO) {
+            try { validateDestination(resolve()) } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (cancelled: com.intellij.openapi.progress.ProcessCanceledException) {
+                throw cancelled
+            } catch (_: RuntimeException) {
+                DestinationValidation(value, LOGCAT_DESTINATION_UNAVAILABLE)
+            } catch (_: LinkageError) {
+                DestinationValidation(value, LOGCAT_DESTINATION_UNAVAILABLE)
+            }
+        }
         publish(result)
     }
