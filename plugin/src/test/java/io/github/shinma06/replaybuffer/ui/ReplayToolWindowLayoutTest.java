@@ -122,6 +122,7 @@ class ReplayToolWindowLayoutTest {
                     actual[0] = panel;
                     Disposer.register(lifetime, (Disposable) panel);
                     verifyScreenshotAvailability(panel, service, store);
+                    verifySaveStatesAndHierarchy(panel, service, store);
                     var outer = (JScrollPane) panel.getComponent(0);
                     var summary = (JTextArea) field(panel, "autoSave");
                     var summaryScroll = (JScrollPane) SwingUtilities.getAncestorOfClass(JScrollPane.class, summary);
@@ -204,6 +205,7 @@ class ReplayToolWindowLayoutTest {
                     assertTrue(endHeights.get(1) > endHeights.get(0), "narrow width must add wrapped lines");
                     assertEquals(endHeights.get(0), endHeights.get(2), "wide wrapping must recover");
                     assertEquals(endHeights.get(1), endHeights.get(3), "narrow wrapping must recover");
+                    verifyLargeFontPresentation(panel);
                     assertFalse(store.getEnabled(), "layout does not enable acquisition");
                     assertEquals(originalSettings, store.getState(), "layout does not apply settings");
                 } catch (Exception failure) {
@@ -442,7 +444,7 @@ class ReplayToolWindowLayoutTest {
                 configurable.createComponent();
                 configurable.reset();
                 try {
-                    assertTrue(((JLabel) field(configurable, "screenshotStatus")).getText().contains("取得できません"));
+                    assertTrue(((JTextArea) field(configurable, "screenshotStatus")).getText().contains("取得できません"));
                     var logcat = (javax.swing.JCheckBox) field(configurable, "screenshotLogcat");
                     logcat.doClick();
                     org.junit.jupiter.api.Assertions.assertThrows(com.intellij.openapi.options.ConfigurationException.class, configurable::apply);
@@ -485,6 +487,196 @@ class ReplayToolWindowLayoutTest {
             store.loadState(originalState);
             Files.delete(root);
         }
+    }
+
+    private static void verifySaveStatesAndHierarchy(JPanel panel, ReplayProjectService service,
+                                                     ReplaySettingsStore store) throws Exception {
+        var capture = field(service, "capture");
+        var view = capture.getClass().getDeclaredField("view");
+        view.setAccessible(true);
+        var originalView = view.get(capture);
+        var resolving = service.getClass().getDeclaredField("resolving");
+        resolving.setAccessible(true);
+        var originalResolving = resolving.getBoolean(service);
+        var originalSettings = store.getState();
+        var screenshotSettings = service.getClass().getDeclaredField("screenshotSettings");
+        screenshotSettings.setAccessible(true);
+        var originalScreenshotSettings = screenshotSettings.get(service);
+        var screenshotRevision = service.getClass().getDeclaredField("screenshotRevision");
+        screenshotRevision.setAccessible(true);
+        var originalScreenshotRevision = screenshotRevision.getLong(service);
+        var render = panel.getClass().getDeclaredMethod("render");
+        render.setAccessible(true);
+        var app = new ApplicationTarget("com.fixture.visible", io.github.shinma06.replaybuffer.core.ApplicationMode.MANUAL, null);
+        var device = new ReplayDevice("target-A", "Fixture", DeviceKind.EMULATOR, true);
+        var settings = new ReplaySettings(Path.of("/disposable/adb"), Path.of("/disposable/configured"),
+            30, app, CaptureMode.LOG_ONLY, true);
+        var gap = new io.github.shinma06.replaybuffer.core.CaptureGap("clock", null, null,
+            "時計対応を確認できません", Long.MAX_VALUE, 0, null);
+        var logs = new StreamSnapshot(io.github.shinma06.replaybuffer.core.StreamState.CAPTURING, 0.0, null, List.of(gap));
+        var video = new StreamSnapshot(io.github.shinma06.replaybuffer.core.StreamState.NOT_REQUESTED, 0.0, null, List.of());
+        var phases = List.of(io.github.shinma06.replaybuffer.core.SavePhase.IDLE,
+            io.github.shinma06.replaybuffer.core.SavePhase.WRITING, io.github.shinma06.replaybuffer.core.SavePhase.FAILED,
+            io.github.shinma06.replaybuffer.core.SavePhase.COMPLETED, io.github.shinma06.replaybuffer.core.SavePhase.CANCELLED);
+        var states = List.of(CaptureState.CAPTURING, CaptureState.CAPTURING, CaptureState.PARTIAL,
+            CaptureState.RECOVERING, CaptureState.CAPTURING);
+        try {
+            resolving.setBoolean(service, false);
+            store.loadState(new io.github.shinma06.replaybuffer.settings.ReplaySettingsState(true, 30, "/disposable/configured",
+                io.github.shinma06.replaybuffer.settings.AppSelectionMode.MANUAL, "com.fixture.visible", CaptureMode.LOG_ONLY, true, true, ""));
+            screenshotSettings.set(service, store.settings());
+            screenshotRevision.set(service, field(service, "requestRevision"));
+            for (int index = 0; index < phases.size(); index++) {
+                var phase = phases.get(index);
+                var save = new SaveSnapshot(phase, "fixed-request", "fixed-session", 1_000_000_000L, 30_000_000_000L,
+                    30, Path.of("/disposable/actual-result"), "空き容量を確認してください。", List.of("device_log"),
+                    device, app, List.of(), null, CaptureMode.LOG_ONLY, 2L, null, Path.of("/disposable/preserved.partial"));
+                var auto = new AutoSaveSnapshot(io.github.shinma06.replaybuffer.core.AutoSaveState.WAITING,
+                    "報告待ち", 7, 1, null, "自動保存の帰属は未確認です");
+                var snapshot = new ReplaySnapshot(index + 1L, 1, true, states.get(index), settings, 1,
+                    device, "current-session", 30_000_000_000L, index == 3, video, logs, logs, save,
+                    index == 0 || index == 3, "固定した対象を確認してください。", null, 1_000_000_000L, 0, auto, save);
+                view.set(capture, new ReplayCaptureView(snapshot, 0, null, null));
+                render.invoke(panel);
+                panel.setSize(360, 700);
+                layout(panel); layout(panel);
+                var failed = phase == io.github.shinma06.replaybuffer.core.SavePhase.FAILED;
+                var complete = phase == io.github.shinma06.replaybuffer.core.SavePhase.COMPLETED;
+                assertEquals(failed, ((JPanel) field(panel, "failureCard")).isVisible());
+                assertEquals(failed, ((AbstractButton) field(panel, "retryButton")).isEnabled());
+                assertEquals(failed, ((AbstractButton) field(panel, "retryElsewhere")).isEnabled());
+                assertEquals(failed, ((AbstractButton) field(panel, "discardButton")).isEnabled());
+                assertEquals(complete, ((AbstractButton) field(panel, "openButton")).isVisible());
+                assertEquals(index == 0 || index == 3, ((AbstractButton) field(panel, "saveButton")).isEnabled());
+                var output = (JTextArea) field(panel, "saveOutput");
+                assertEquals(failed || complete, output.isVisible());
+                if (failed) {
+                    assertTrue(output.getText().contains("/disposable/preserved.partial"));
+                    assertTrue(((JTextArea) field(panel, "failure")).getText().contains("空き容量"));
+                    assertTrue(((JTextArea) field(panel, "frozenRequest")).getText().contains("固定対象: 1.000秒〜30.000秒"));
+                    assertTrue(((JTextArea) field(panel, "frozenTarget")).getText().contains("com.fixture.visible"));
+                }
+                if (complete) {
+                    assertTrue(output.getText().contains("/disposable/actual-result"));
+                    assertFalse(output.getText().contains("configured"));
+                    assertTrue(((JTextArea) field(panel, "saveState")).getText().contains("記録の不足・未確認: 端末ログ"));
+                }
+                assertFalse(((JTextArea) field(panel, "message")).isVisible(), "empty status must not add an unexplained row");
+                assertTrue(((JTextArea) field(panel, "state")).getText().contains("ログ専用"));
+                assertEquals("動画: 対象外（ログ専用）", ((JTextArea) field(panel, "video")).getText());
+                assertTrue(((JTextArea) field(panel, "gapDetails")).getText().contains("時計対応を確認できません"));
+                assertTrue(((JTextArea) field(panel, "gapDetails")).getText().contains("未確定〜未確定"));
+                assertTrue(((JTextArea) field(panel, "autoSave")).getText().contains("自動保存の帰属は未確認"));
+                assertTrue(((JTextArea) field(panel, "window")).getText().contains("保持時間: 30秒"));
+                assertTrue(bounds(panel, "state").y < bounds(panel, "saveButton").y);
+                assertTrue(bounds(panel, "saveButton").y < bounds(panel, "video").y);
+                assertTrue(bounds(panel, "screenshotButton").y < bounds(panel, "sdk").y);
+                assertTrue(bounds(panel, "saveState").y < bounds(panel, "video").y);
+                if (failed) assertTrue(bounds(panel, "retryButton").y < bounds(panel, "frozenTarget").y);
+                for (var name : List.of("state", "device", "application", "window", "saveReason", "screenshotReason", "saveOutput"))
+                    assertFalse(((JComponent) field(panel, name)).getAccessibleContext().getAccessibleName().isBlank(), name);
+                verifyFirstPaint(panel, "tool-window-" + phase.name().toLowerCase(java.util.Locale.ROOT));
+            }
+            view.set(capture, new ReplayCaptureView(null, 0, null, "一時領域のアクセス権を確認してください。"));
+            render.invoke(panel);
+            assertTrue(((JTextArea) field(panel, "state")).getText().contains("初期化できません"));
+            assertTrue(((JTextArea) field(panel, "message")).isVisible());
+            assertTrue(((JTextArea) field(panel, "message")).getText().contains("一時領域のアクセス権"));
+            assertFalse(((AbstractButton) field(panel, "saveButton")).isEnabled());
+        } finally {
+            view.set(capture, originalView);
+            resolving.setBoolean(service, originalResolving);
+            store.loadState(originalSettings);
+            screenshotSettings.set(service, originalScreenshotSettings);
+            screenshotRevision.setLong(service, originalScreenshotRevision);
+            render.invoke(panel);
+        }
+    }
+
+    private static java.awt.Rectangle bounds(JPanel panel, String name) throws ReflectiveOperationException {
+        var component = (JComponent) field(panel, name);
+        return SwingUtilities.convertRectangle(component.getParent(), component.getBounds(), panel);
+    }
+
+    private static void verifyLargeFontPresentation(JPanel panel) throws Exception {
+        var previous = javax.swing.UIManager.getLookAndFeel();
+        var fonts = new java.util.IdentityHashMap<Component, java.awt.Font>();
+        try {
+            javax.swing.UIManager.setLookAndFeel(new javax.swing.plaf.nimbus.NimbusLookAndFeel());
+            SwingUtilities.updateComponentTreeUI(panel);
+            collectFonts(panel, fonts);
+            fonts.forEach((component, font) -> {
+                component.setFont(font.deriveFont(font.getSize2D() * 1.5f));
+                assertEquals(font.getSize2D() * 1.5f, component.getFont().getSize2D(), 0.01f);
+            });
+            for (int width : new int[]{280, 900, 280}) {
+                panel.setSize(width, 700);
+                layout(panel); layout(panel);
+                var outer = (JScrollPane) panel.getComponent(0);
+                var form = (JComponent) outer.getViewport().getView();
+                assertFalse(outer.getHorizontalScrollBar().isVisible());
+                verifyFirstPaint(panel, "tool-window-" + width + "-large-font");
+                for (var name : List.of("enabled", "settingsButton", "saveButton", "screenshotButton", "retryButton", "retryElsewhere", "discardButton")) {
+                    var button = (AbstractButton) field(panel, name);
+                    var area = SwingUtilities.convertRectangle(button.getParent(), button.getBounds(), form);
+                    assertTrue(area.width >= button.getPreferredSize().width, "full button label at enlarged font: " + name);
+                    assertTrue(button.getY() >= 0 && button.getY() + button.getHeight() <= button.getParent().getHeight(),
+                        name + " must not be clipped by its wrapping row: button=" + button.getBounds() + ", row=" +
+                            button.getParent().getSize() + ", preferred=" + button.getParent().getPreferredSize());
+                    assertTrue(area.x >= 0 && area.getMaxX() <= form.getWidth(), name + " must fit enlarged font at " + width);
+                    form.scrollRectToVisible(area);
+                    assertTrue(outer.getViewport().getViewRect().contains(area), name + " must remain reachable");
+                    assertNotNull(button.getInputMap(JComponent.WHEN_FOCUSED).get(KeyStroke.getKeyStroke("SPACE")));
+                }
+            }
+        } finally {
+            fonts.forEach(Component::setFont);
+            javax.swing.UIManager.setLookAndFeel(previous);
+            SwingUtilities.updateComponentTreeUI(panel);
+        }
+    }
+
+    private static void collectFonts(Component component, java.util.Map<Component, java.awt.Font> originals) {
+        if (component.getFont() != null) originals.put(component, component.getFont());
+        if (component instanceof Container parent) for (var child : parent.getComponents()) collectFonts(child, originals);
+    }
+
+    private static void verifyFirstPaint(JPanel panel, String name) throws Exception {
+        var first = writePreview(panel, name + "-first-paint");
+        verifyWrappedText(panel);
+        var measured = writePreview(panel, name + "-after-measurement");
+        org.junit.jupiter.api.Assertions.assertArrayEquals(
+            ((java.awt.image.DataBufferInt) first.getRaster().getDataBuffer()).getData(),
+            ((java.awt.image.DataBufferInt) measured.getRaster().getDataBuffer()).getData(),
+            "modelToView measurement must not repair the first paint: " + name);
+    }
+
+    private static void verifyWrappedText(Container parent) throws javax.swing.text.BadLocationException {
+        for (var component : parent.getComponents()) {
+            if (!component.isVisible()) continue;
+            if (component instanceof JTextArea text && !text.isFocusable()) {
+                for (int offset = 0; offset < text.getText().length(); offset++) {
+                    var character = text.modelToView2D(offset);
+                    assertTrue(character != null && character.getX() >= 0 && character.getMaxX() <= text.getWidth()
+                        && character.getY() >= 0 && character.getMaxY() <= text.getHeight(),
+                        "wrapped text must fit: " + text.getAccessibleContext().getAccessibleName() + ", offset=" + offset +
+                            ", character=" + character + ", size=" + text.getSize());
+                }
+            }
+            if (component instanceof Container container) verifyWrappedText(container);
+        }
+    }
+
+    private static java.awt.image.BufferedImage writePreview(JPanel panel, String name) throws java.io.IOException {
+        var outer = (JScrollPane) panel.getComponent(0);
+        outer.getViewport().setViewPosition(new Point());
+        var image = new java.awt.image.BufferedImage(panel.getWidth(), panel.getHeight(), java.awt.image.BufferedImage.TYPE_INT_RGB);
+        var graphics = image.createGraphics();
+        try { panel.printAll(graphics); } finally { graphics.dispose(); }
+        var path = Path.of("build/reports/tests/ui", name + ".png");
+        Files.createDirectories(path.getParent());
+        javax.imageio.ImageIO.write(image, "png", path.toFile());
+        return image;
     }
 
     private static void verifyScreenshotAvailability(JPanel panel, ReplayProjectService service,

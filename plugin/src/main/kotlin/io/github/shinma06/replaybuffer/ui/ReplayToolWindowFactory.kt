@@ -12,11 +12,13 @@ import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.wm.ToolWindow
 import com.intellij.openapi.wm.ToolWindowFactory
 import com.intellij.openapi.wm.ToolWindowManager
+import com.intellij.ui.TitledSeparator
 import com.intellij.ui.components.JBCheckBox
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.components.JBTextArea
 import com.intellij.ui.content.ContentFactory
 import com.intellij.util.ui.FormBuilder
+import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.WrapLayout
 import io.github.shinma06.replaybuffer.core.ApplicationMode
 import io.github.shinma06.replaybuffer.core.CaptureState
@@ -46,7 +48,7 @@ class ReplayToolWindowFactory : ToolWindowFactory, DumbAware {
         val panel = ReplayToolWindowPanel(project)
         val content = ContentFactory.getInstance().createContent(panel, "", false)
         Disposer.register(content, panel)
-        content.setPreferredFocusableComponent(panel.settingsButton)
+        content.setPreferredFocusableComponent(if (panel.enabled.isEnabled) panel.enabled else panel.settingsButton)
         toolWindow.contentManager.addContent(content)
     }
 }
@@ -56,36 +58,38 @@ private class ReplayToolWindowPanel(private val project: Project) : JPanel(Borde
     private val store = project.getService(ReplaySettingsStore::class.java)
     private var disposed = false
     private var shownSave: SaveSnapshot? = null
-    private val enabled = JBCheckBox("取得を有効にする").apply {
-        toolTipText = "無効にすると未保存のデータと再試行待ちの内容を破棄します。"
+    val enabled = JBCheckBox("取得を有効にする").apply {
+        toolTipText = "ON/OFFはすぐ反映します。OFFにすると未保存の記録と再試行待ちの対象を破棄します。"
         addActionListener { if (alive) service.setEnabled(isSelected) }
     }
     val settingsButton = JButton("設定…").apply {
-        toolTipText = "取得が無効でも設定を編集できます。"
+        toolTipText = "取得OFFでも編集できます。変更は設定画面の「適用」または「OK」で反映します。"
         addActionListener { if (alive) ShowSettingsUtil.getInstance().showSettingsDialog(project, ReplaySettingsConfigurable::class.java) }
     }
-    private val screenshotButton = JButton("スクリーンショットを保存").apply {
+    private val screenshotButton = JButton("スクリーンショット").apply {
+        accessibleContext.accessibleName = "現在画面のスクリーンショットを保存"
         addActionListener { if (alive) service.screenshot() }
     }
-    private val screenshotReason = wrappingLabel()
-    private val device = wrappingLabel()
-    private val application = wrappingLabel()
-    private val sdk = wrappingLabel()
-    private val state = wrappingLabel()
-    private val video = wrappingLabel()
-    private val deviceLog = wrappingLabel()
-    private val appLog = wrappingLabel()
-    private val window = wrappingLabel()
-    private val sequence = wrappingLabel()
-    private val destination = wrappingLabel()
-    private val message = wrappingLabel()
-    private val cleanup = wrappingLabel()
-    private val saveState = wrappingLabel()
+    private val screenshotReason = wrappingLabel(name = "スクリーンショットの対象・保存先と操作条件")
+    private val device = wrappingLabel(name = "取得対象の端末")
+    private val application = wrappingLabel(name = "取得対象のアプリ")
+    private val sdk = wrappingLabel(name = "Android SDKの接続情報")
+    private val state = wrappingLabel(name = "取得状態と取得モード")
+    private val video = wrappingLabel(name = "動画の取得状態")
+    private val deviceLog = wrappingLabel(name = "端末ログの取得状態")
+    private val appLog = wrappingLabel(name = "アプリログの取得状態")
+    private val window = wrappingLabel(name = "保持時間と現在の記録区間")
+    private val sequence = wrappingLabel(name = "記録セッション")
+    private val destination = wrappingLabel(name = "動画・ログの保存先")
+    private val message = wrappingLabel(name = "設定・操作の結果と取得エラー")
+    private val cleanup = wrappingLabel(name = "端末処理の片付け待ち")
+    private val saveState = wrappingLabel(name = "直前保存の結果")
+    private val saveOutput = wrappingLabel(name = "完成または保全した出力の場所")
     private val autoSave = readOnlyDetails("クラッシュ自動保存の適用状態と直近の結果", 3)
-    private val videoTail = wrappingLabel()
-    private val saveReason = wrappingLabel()
-    private val failure = wrappingLabel()
-    private val frozenRequest = wrappingLabel()
+    private val videoTail = wrappingLabel(name = "保存対象の動画末尾の確認状態")
+    private val saveReason = wrappingLabel(name = "直前保存の操作条件")
+    private val failure = wrappingLabel(name = "保存失敗の理由")
+    private val frozenRequest = wrappingLabel(name = "再試行する固定保存区間と不足・未確認")
     private val frozenTarget = readOnlyDetails("固定した保存対象の端末とアプリ履歴", 4)
     private val gapDetails = readOnlyDetails("現在の保存窓の不足・未確認区間", 4)
     private val gapScroll = JBScrollPane(gapDetails)
@@ -93,13 +97,13 @@ private class ReplayToolWindowPanel(private val project: Project) : JPanel(Borde
     private val openButton = JButton("フォルダを開く").apply {
         addActionListener { if (alive) shownSave?.takeIf { it.phase == SavePhase.COMPLETED }?.directory?.let(service::openDirectory) }
     }
-    private val retryButton = JButton("再試行").apply {
+    private val retryButton = JButton("同じ対象を再試行").apply {
         addActionListener { if (alive) failedId()?.let(service::retry) }
     }
-    private val retryElsewhere = JButton("保存先を変更して再試行…").apply {
+    private val retryElsewhere = JButton("別の保存先で再試行…").apply {
         addActionListener { if (alive) failedId()?.let(::chooseRetryDirectory) }
     }
-    private val discardButton = JButton("破棄").apply {
+    private val discardButton = JButton("未保存の対象を破棄").apply {
         addActionListener { if (alive) failedId()?.let(service::discard) }
     }
     private val failureCard: JPanel
@@ -109,23 +113,27 @@ private class ReplayToolWindowPanel(private val project: Project) : JPanel(Borde
         failureCard = FormBuilder.createFormBuilder()
             .addComponent(failure)
             .addComponent(frozenRequest)
-            .addComponent(JBScrollPane(frozenTarget))
-            .addComponent(wrappingLabel("無効化またはproject終了で、この未保存の対象を破棄します。"))
+            .addComponent(wrappingLabel("再試行はこの固定した区間を使います。破棄しても取得は続きます。"))
             .addComponent(row(retryButton, retryElsewhere, discardButton))
+            .addComponent(JBScrollPane(frozenTarget))
+            .addComponent(wrappingLabel("取得OFFまたはproject終了で、この未保存の対象を破棄します。"))
             .panel
         val form = FormBuilder.createFormBuilder()
             .addComponent(row(enabled, settingsButton))
-            .addComponent(wrappingLabel("無効にすると未保存のデータと再試行待ちの内容を破棄します。"))
-            .addComponent(screenshotButton).addComponent(screenshotReason)
-            .addComponent(device).addComponent(application).addComponent(sdk).addComponent(state)
-            .addComponent(video).addComponent(deviceLog).addComponent(appLog)
-            .addComponent(window).addComponent(sequence).addComponent(destination).addComponent(message)
-            .addComponent(cleanup)
-            .addComponent(JBScrollPane(autoSave))
-            .addComponent(saveButton).addComponent(saveReason).addComponent(saveState).addComponent(videoTail)
-            .addComponent(openButton).addComponent(failureCard)
-            .addComponent(gapScroll)
-            .addComponentFillVertically(JPanel(), 0).panel
+            .addComponent(wrappingLabel("ON/OFFはすぐ反映します。OFFで未保存の記録と再試行待ちの対象を破棄します。"))
+            .addComponent(state).addComponent(message).addComponent(device).addComponent(application).addComponent(window)
+            .addComponent(row(saveButton, screenshotButton))
+            .addComponent(saveReason).addComponent(screenshotReason)
+            .addComponent(TitledSeparator("保存結果"))
+            .addComponent(saveState).addComponent(videoTail).addComponent(saveOutput).addComponent(openButton)
+            .addComponent(failureCard)
+            .addComponent(TitledSeparator("記録の状態"))
+            .addComponent(video).addComponent(deviceLog).addComponent(appLog).addComponent(gapScroll)
+            .addComponent(TitledSeparator("保存先・自動保存"))
+            .addComponent(destination).addComponent(JBScrollPane(autoSave))
+            .addComponent(TitledSeparator("接続情報"))
+            .addComponent(sdk).addComponent(sequence).addComponent(cleanup)
+            .addComponentFillVertically(JPanel(), 0).panel.apply { border = JBUI.Borders.empty(8) }
         val content = ScrollablePanel(BorderLayout()).apply { add(form, BorderLayout.CENTER) }
         add(JBScrollPane(content).apply { border = null }, BorderLayout.CENTER)
         val refresh = Runnable {
@@ -156,7 +164,7 @@ private class ReplayToolWindowPanel(private val project: Project) : JPanel(Borde
         val busy = service.resolving || view.pending > 0
         val screenshotDisabled = service.screenshotDisabledReason
         screenshotButton.isEnabled = screenshotDisabled == null
-        screenshotButton.text = if (service.screenshotBusy) "スクリーンショットを保存中…" else "スクリーンショットを保存"
+        screenshotButton.text = if (service.screenshotBusy) "スクショを保存中…" else "スクリーンショット"
         screenshotButton.toolTipText = screenshotDisabled ?: "録画対象の端末で選択アプリを表示してください。取得OFFでは接続済みの1台から現在の画面全体を保存します。"
         screenshotReason.text = screenshotDisabled ?: "スクショ対象: ${service.environment?.application?.packageName} / 保存先: ${if (store.settings().screenshotUsesLogcatDestination) "Logcatのスクショ保存先（保存時の最新設定）" else store.settings().screenshotDirectory}\n" +
             "撮影中は画面を切り替えないでください。通知・キーボードも写り、保護領域は空白になる場合があります。"
@@ -183,21 +191,29 @@ private class ReplayToolWindowPanel(private val project: Project) : JPanel(Borde
         val autoText = autoSaveDescription(snapshot) + if (snapshot != null &&
             snapshot.settings.autoSaveOnCrash != store.settings().autoSaveOnCrash) "\n自動保存設定の反映待ち" else ""
         if (autoSave.text != autoText) autoSave.text = autoText
-        message.text = if (busy) "設定・操作を反映中…（新規保存は完了まで待ってください）" else view.message ?: snapshot?.error ?: " "
+        message.text = if (busy) "設定・操作を反映中…（新規保存は完了まで待ってください）" else view.message ?: view.initializationError ?: snapshot?.error ?: " "
+        message.isVisible = message.text.isNotBlank()
         cleanup.text = cleanupDescription(snapshot?.cleanupPendingCount ?: 0)
         cleanup.isVisible = cleanup.text.isNotEmpty()
         saveButton.text = "直前${seconds}秒を保存"
         saveButton.isEnabled = !busy && snapshot?.canSave == true
         saveReason.text = if (busy) "設定・操作を反映中です。" else snapshot?.saveDisabledReason ?: " "
+        saveReason.isVisible = saveReason.text.isNotBlank()
         saveButton.toolTipText = saveReason.text
         shownSave = snapshot?.save
         val saved = snapshot?.save
         saveState.text = saveDescription(saved)
+        saveOutput.text = when (saved?.phase) {
+            SavePhase.COMPLETED -> saved.directory?.let { "保存したフォルダ: $it" }.orEmpty()
+            SavePhase.FAILED -> saved.retainedPath?.let { "保全した出力: $it" }.orEmpty()
+            else -> ""
+        }
+        saveOutput.isVisible = saveOutput.text.isNotEmpty()
         videoTail.text = videoTailDescription(saved)
         videoTail.isVisible = videoTail.text.isNotEmpty()
         openButton.isVisible = saved?.phase == SavePhase.COMPLETED && saved.directory != null
         failureCard.isVisible = saved?.phase == SavePhase.FAILED
-        failure.text = "保存できません: ${saved?.error ?: "保存先を確認してください。"}"
+        failure.text = "保存失敗の理由: ${saved?.error ?: "保存先を確認してください。"}"
         frozenRequest.text = "固定対象: ${recordTime(saved?.windowStartNs)}〜${recordTime(saved?.windowEndNs)} / ${saved?.replaySeconds ?: seconds}秒" +
             " / セッション: ${saved?.sequenceId ?: "未確定"}" +
             " / 記録の不足・未確認: ${saved?.missingKinds?.map(::streamName)?.joinToString("、")?.ifEmpty { "なし" } ?: "なし"}"
@@ -216,14 +232,29 @@ private class ReplayToolWindowPanel(private val project: Project) : JPanel(Borde
     override fun dispose() { disposed = true }
 }
 
-private fun row(vararg components: java.awt.Component): JPanel = JPanel(WrapLayout(FlowLayout.LEFT)).apply {
+private fun row(vararg components: java.awt.Component): JPanel = object : JPanel(WrapLayout(FlowLayout.LEFT).apply {
+    hgap = JBUI.scale(4)
+    vgap = JBUI.scale(2)
+}) {
+    override fun getPreferredSize(): Dimension {
+        // The form asks for height before assigning the row its new width after a resize.
+        parent?.let { container ->
+            val available = container.width - container.insets.left - container.insets.right
+            if (available > 0) setSize(available, height)
+        }
+        return super.getPreferredSize()
+    }
+
+    override fun getMinimumSize(): Dimension = preferredSize
+}.apply {
     components.forEach(::add)
 }
 
-private fun wrappingLabel(text: String = ""): JBTextArea = object : JBTextArea(text) {
+internal fun wrappingLabel(text: String = "", name: String = text): JBTextArea = object : JBTextArea(text) {
     override fun updateUI() {
         super.updateUI()
         (caret as DefaultCaret).updatePolicy = DefaultCaret.NEVER_UPDATE
+        font = javax.swing.UIManager.getFont("Label.font")
     }
 
     override fun getPreferredSize(): Dimension {
@@ -246,7 +277,7 @@ private fun wrappingLabel(text: String = ""): JBTextArea = object : JBTextArea(t
     isOpaque = false
     lineWrap = true
     wrapStyleWord = true
-    font = javax.swing.UIManager.getFont("Label.font")
+    accessibleContext.accessibleName = name
 }
 
 private fun readOnlyDetails(name: String, visibleRows: Int): JBTextArea = JBTextArea(visibleRows, 30).apply {
