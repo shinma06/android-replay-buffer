@@ -27,6 +27,10 @@ def handoff(gh, repo, pr, origin, change):
         summary = re.sub(r'^\[[^]]+\]\s*|^[a-z]+: ', '', origin['title'])
         if axes['type'] == 'qa':
             summary = re.sub(r'^#[1-9][0-9]* ', '', summary)
+        # Only the true QA origin uses #number; retain the full title in its body.
+        summary = re.sub(r'#([0-9]+)', r'Issue \1', ' '.join(summary.split()))
+        if not re.search(r'[ぁ-んァ-ヶ一-龯]', summary):
+            summary = '残りの受入試験: ' + summary
         data = {'title': f'test: #{number} {summary}', 'state': 'open',
                 'labels': ['type:qa', 'priority:' + axes['priority'], 'status:ready']}
         validate_issue(data, allow_legacy=False)
@@ -48,6 +52,7 @@ def handoff(gh, repo, pr, origin, change):
             raise ValueError('Release transfer readback failed')
         return None
     payload = (f'試験内容ドキュメント: https://github.com/{repo}/blob/main/docs/verification/human-qa.md\n' + source +
+               f'元Issue題名: {origin["title"]}\n'
                '\n## 受入・次操作・依存\n'
                '固定出典の全Case・前提・操作・期待・actor・再確認条件を正本とし、固定候補/buildで残試験を確認する。\n'
                'Case: ' + ', '.join(case['id'] for case in change['cases']) + '\n'

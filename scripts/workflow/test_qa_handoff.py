@@ -82,6 +82,35 @@ class HandoffTests(unittest.TestCase):
                 self.assertEqual(self.transfer(), 100)
                 self.assertEqual(self.gh.created, 1)
 
+    def test_supported_origin_summaries_generate_canonical_qa_and_keep_full_title(self):
+        examples = (
+            ('bug', 'fix: #123 の回帰を修正する', 'Issue 123 の回帰を修正する'),
+            ('bug', '[修正] #123 の回帰を修正する (#45)', 'Issue 123 の回帰を修正する (Issue 45)'),
+            ('maintenance', '[運用] legacy English', '残りの受入試験: legacy English'),
+            ('maintenance', '[運用] 試験対象  \r継続\t ', '試験対象 継続'),
+            ('qa', 'test: #12 試験対象', '試験対象'),
+            ('qa', '[試験] #12 #123 の試験対象', 'Issue 123 の試験対象'),
+        )
+        for kind, title, summary in examples:
+            with self.subTest(title=title):
+                self.setUp()
+                self.gh.issues[35].update(title=title,
+                    labels=['type:' + kind, 'priority:P2', 'status:ready'], milestone={'number': 7})
+                origin = self.gh.issue(35)
+                self.assertEqual(validate_issue(origin)['type'], kind)
+                self.assertEqual(self.transfer(), 100)
+                qa = self.gh.issue(100)
+                self.assertEqual(qa['title'], 'test: #35 ' + summary)
+                self.assertEqual(validate_issue(qa, allow_legacy=False)['type'], 'qa')
+                self.assertIn('元Issue題名: ' + title, qa['body'])
+                self.assertIn('元Issue: #35', qa['body'])
+                self.assertIn('Case: QA-1', qa['body'])
+                self.assertEqual(qa['milestone'], origin['milestone'])
+                self.assertEqual([item['number'] for item in self.gh.children], [100])
+                self.assertEqual(self.transfer(), 100)
+                self.assertEqual(self.gh.created, 1)
+                self.assertEqual(self.gh.issue(35), origin)
+
     def test_title_aliases_and_origin_boundaries_do_not_duplicate_or_misidentify_qa(self):
         self.transfer()
         self.gh.issues[101] = dict(self.gh.issue(100), number=101, id=10001,
@@ -100,8 +129,9 @@ class HandoffTests(unittest.TestCase):
         self.assertEqual(self.transfer(), 100)
         self.assertEqual(self.gh.created, 1)
 
-    def test_invalid_new_qa_summary_is_rejected_before_transfer_writes(self):
-        for title in ('[運用] legacy English', 'chore: #99 試験対象'):
+    def test_invalid_origin_titles_are_rejected_before_transfer_writes(self):
+        self.gh.issues[35]['number'] = 35
+        for title in ('chore: legacy English', 'chore: #35 試験対象', 'chore: 試験対象 (#99)'):
             self.gh.issues[35]['title'] = title
             with self.assertRaisesRegex(ValueError, 'Japanese summary'):
                 self.transfer()
@@ -180,6 +210,7 @@ class HandoffTests(unittest.TestCase):
         self.assertEqual(self.gh.created, 0)
 
     def test_no_cases_reuses_release_without_qa_or_body_replacement(self):
+        self.gh.issues[35]['title'] = 'chore: #123 の回帰を確認する'
         for _ in range(2):
             self.assertIsNone(self.transfer_without_cases())
         self.assertEqual(self.gh.created, 0)
