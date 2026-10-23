@@ -3,6 +3,7 @@ import copy
 import json
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import Mock, call, patch
@@ -714,7 +715,15 @@ class PromotionTreeTests(unittest.TestCase):
         plan['responsibility_revision']['previous_plan_sha256'] = canonical_hash(
             {k: v for k, v in plan.items() if k != 'responsibility_revision'})
         self.write(INITIAL_PLAN, json.dumps(plan))
-        self.write('scripts/workflow/verification.py', 'old policy')
+        self.preserved = ['AGENTS.md', 'README.md', 'docs/android-studio.md', 'docs/design/timeline.md',
+                          'docs/project.md', 'docs/requirements.md', 'docs/setup/ci.md',
+                          'scripts/workflow/test_change_impact.py', 'scripts/workflow/test_product_check.py']
+        for path in self.preserved:
+            self.write(path, 'current candidate facts')
+        self.write('scripts/workflow/verification.py', '"""adopted candidate Doc"""\nPOLICY = "old policy"')
+        self.write('scripts/workflow/git_guard.py', 'def old_gate_api():\n    return "old API"\n')
+        self.write('scripts/workflow/test_agent_loop.py', 'def old_fixture_api():\n    return "old fixture"\n')
+        self.write('docs/verification/README.md', 'adopted candidate Doc\nold explanation')
         self.write(COMPONENT, 'old product')
         self.commit('common')
         self.common = self.git('rev-parse', 'HEAD')
@@ -723,8 +732,10 @@ class PromotionTreeTests(unittest.TestCase):
         self.commit('tested repair')
         self.candidate = self.git('rev-parse', 'HEAD')
         self.git('checkout', '-q', '-b', 'trusted-main', self.common)
-        self.write('scripts/workflow/verification.py', 'reviewed policy')
-        self.write('AGENTS.md', 'reviewed instructions')
+        self.write('scripts/workflow/verification.py', '"""adopted candidate Doc"""\nPOLICY = "reviewed policy"')
+        self.write('docs/verification/README.md', 'adopted candidate Doc\nreviewed explanation')
+        for path in self.preserved:
+            self.write(path, 'older main facts')
         self.write('.github/workflows/ci.yml', 'mixed build policy')
         self.write(CERT_PATH, json.dumps({'schema': 1, 'issue': 246, 'gui_required': False,
                    'reason': 'Certificate only.', 'cli_checks': ['Synthetic'], 'cases': [],
@@ -766,13 +777,23 @@ class PromotionTreeTests(unittest.TestCase):
 
     def test_real_divergent_tree_retains_reviewed_policy_and_certificate_without_product_rebuild(self):
         self.verify()
-        self.assertEqual(set(self.carried), {CERT_PATH, 'scripts/workflow/verification.py', 'AGENTS.md'})
+        self.assertEqual(set(self.carried), {CERT_PATH, 'scripts/workflow/verification.py',
+                                            'docs/verification/README.md'})
         self.assertEqual(self.git('diff', '--name-only', self.candidate, 'HEAD', '--', COMPONENT), '')
         self.assertNotIn('.github/workflows/ci.yml', self.carried)
+        for path in self.preserved:
+            self.assertEqual(self.git('show', f'HEAD:{path}'), 'current candidate facts')
+        for path in ('scripts/workflow/verification.py', 'docs/verification/README.md'):
+            self.assertIn('adopted candidate Doc', self.git('show', f'HEAD:{path}'))
+        from verification import promotion_policy_blobs
+        self.assertEqual(set(self.carried) - {CERT_PATH}, set(
+            promotion_policy_blobs(self.base, self.candidate, self.git, continuation=True)))
 
     def test_unreviewed_policy_product_unknown_and_reverts_remain_blocked(self):
         clean = self.git('rev-parse', 'HEAD')
-        for path in ('scripts/workflow/verification.py', COMPONENT, 'unknown.bin', '.github/workflows/ci.yml', CERT_PATH):
+        for path in ('scripts/workflow/verification.py', 'docs/verification/README.md', COMPONENT,
+                     'unknown.bin', '.github/workflows/ci.yml', CERT_PATH, CASE_PATH,
+                     'docs/verification/unknown.json', 'docs/verification/changes/issue-999.json'):
             with self.subTest(path=path):
                 self.git('reset', '--hard', clean)
                 self.write(path, 'unreviewed alteration')
@@ -857,6 +878,286 @@ class PromotionTreeTests(unittest.TestCase):
         self.write(INITIAL_PLAN, json.dumps(plan)); self.commit('changed contract')
         with self.assertRaises(ValueError):
             promotion_policy_blobs(self.git('rev-parse', 'HEAD'), self.candidate, self.git)
+
+    def test_gate_and_dependency_updates_import_together_in_both_promotion_modes(self):
+        from verification import promotion_policy_blobs
+        for candidate_only in (False, True):
+            self.git('checkout', '-q', '-B', 'trusted-main', self.base)
+            name = 'old_gate_api' if candidate_only else 'gate_api'
+            self.write('scripts/workflow/verification.py',
+                       f'"""adopted candidate Doc"""\nfrom git_guard import {name}\nVALUE = {name}()\n')
+            if not candidate_only:
+                self.write('scripts/workflow/git_guard.py',
+                           'from policy_dependency import api\ndef gate_api():\n    return api()\n')
+                self.write('scripts/workflow/policy_dependency.py', 'def api():\n    return "reviewed API"\n')
+            self.commit('reviewed gate')
+            base = self.git('rev-parse', 'HEAD')
+            self.git('checkout', '-q', '-B', 'dependency-candidate', self.candidate)
+            if candidate_only:
+                self.write('scripts/workflow/git_guard.py', 'def gate_api():\n    return "candidate API"\n')
+                self.commit('candidate-only dependency API change')
+            candidate = self.git('rev-parse', 'HEAD')
+            expected = 'old API' if candidate_only else 'reviewed API'
+            for continuation in (False, True):
+                with self.subTest(candidate_only=candidate_only, continuation=continuation):
+                    self.git('checkout', '-q', '-B', 'coherent-policy', candidate)
+                    carried = promotion_policy_blobs(base, candidate, self.git, continuation=continuation)
+                    for path in carried:
+                        self.write(path, self.git('show', f'{base}:{path}'))
+                    self.commit('exact main gate and dependencies')
+                    result = subprocess.run([sys.executable, '-B', '-I', '-c',
+                        'import sys; sys.path.insert(0, "scripts/workflow"); '
+                        f'import verification; assert verification.VALUE == {expected!r}'],
+                        cwd=self.root, capture_output=True, text=True)
+                    self.assertEqual(0, result.returncode, result.stderr)
+
+    def test_unsupported_gate_imports_fail_closed_instead_of_mixing_dependencies(self):
+        from verification import promotion_policy_blobs
+        self.git('checkout', '-q', 'trusted-main')
+        for code, module in (('from . import dependency', None),
+                             ('__import__("dependency")', None),
+                             ('import dependency', 'scripts/workflow/dependency/__init__.py'),
+                             ('import dependency.api', 'scripts/workflow/dependency/api.py'),
+                             ('import product_check', 'scripts/workflow/product_check.py'),
+                             ('import test_product_check', 'scripts/workflow/test_product_check.py')):
+            with self.subTest(code=code, module=module):
+                self.write('scripts/workflow/verification.py', code)
+                if module:
+                    self.write(module, 'VALUE = 1')
+                self.commit('unsupported gate import')
+                with self.assertRaises(ValueError):
+                    promotion_policy_blobs(self.git('rev-parse', 'HEAD'), self.candidate, self.git)
+
+    def test_regression_and_fixture_dependency_import_together_in_both_modes(self):
+        from verification import promotion_policy_blobs
+        for candidate_only in (False, True):
+            self.git('checkout', '-q', '-B', 'trusted-main', self.base)
+            name = 'old_fixture_api' if candidate_only else 'fixture_api'
+            self.write('scripts/workflow/test_initial_continuation.py',
+                       f'from test_agent_loop import {name}\nVALUE = {name}()\n')
+            if not candidate_only:
+                self.write('scripts/workflow/test_agent_loop.py',
+                           'def fixture_api():\n    return "reviewed fixture"\n')
+            self.commit('reviewed regression and fixture')
+            base = self.git('rev-parse', 'HEAD')
+            self.git('checkout', '-q', '-B', 'fixture-candidate', self.candidate)
+            if candidate_only:
+                self.write('scripts/workflow/test_agent_loop.py',
+                           'def fixture_api():\n    return "candidate fixture"\n')
+                self.commit('candidate-only fixture API change')
+            candidate = self.git('rev-parse', 'HEAD')
+            expected = 'old fixture' if candidate_only else 'reviewed fixture'
+            for continuation in (False, True):
+                with self.subTest(candidate_only=candidate_only, continuation=continuation):
+                    self.git('checkout', '-q', '-B', 'coherent-regression', candidate)
+                    carried = promotion_policy_blobs(base, candidate, self.git, continuation=continuation)
+                    for path in carried:
+                        self.write(path, self.git('show', f'{base}:{path}'))
+                    self.commit('exact regression and fixture')
+                    result = subprocess.run([sys.executable, '-B', '-I', '-c',
+                        'import sys; sys.path.insert(0, "scripts/workflow"); '
+                        f'import test_initial_continuation as t; assert t.VALUE == {expected!r}'],
+                        cwd=self.root, capture_output=True, text=True)
+                    self.assertEqual(0, result.returncode, result.stderr)
+
+    def test_gate_entries_and_direct_dependencies_carry_as_production_code(self):
+        from verification import promotion_policy_blobs
+        for module in ('acceptance_ci', 'agent_loop', 'release_delivery', 'agent_worker', 'pr_policy', 'git_guard'):
+            entry = 'scripts/workflow/' + module + '.py'
+            dependency = 'scripts/workflow/' + ('policy_dependency' if module == 'pr_policy' else 'pr_policy') + '.py'
+            self.git('checkout', '-q', '-B', 'entry-common', self.common)
+            self.write(entry, 'VALUE = "old entry"')
+            self.write(dependency, 'def old_api():\n    return "old policy"\n')
+            self.commit('common acceptance entry')
+            common = self.git('rev-parse', 'HEAD')
+            self.git('checkout', '-q', '-B', 'entry-candidate', common)
+            self.write(COMPONENT, 'tested later product')
+            self.commit('entry candidate product')
+            candidate = self.git('rev-parse', 'HEAD')
+            self.git('checkout', '-q', '-B', 'entry-main', common)
+            self.write(entry, f'from {Path(dependency).stem} import api\nVALUE = api()\n')
+            self.write(dependency, 'def api():\n    return "reviewed entry policy"\n')
+            self.commit('reviewed entry and direct policy API')
+            base = self.git('rev-parse', 'HEAD')
+            for continuation in (False, True):
+                with self.subTest(continuation=continuation):
+                    carried = promotion_policy_blobs(base, candidate, self.git, continuation)
+                    self.assertEqual({entry, dependency}, set(carried))
+                    self.git('checkout', '-q', '-B', 'coherent-entry', candidate)
+                    for path in carried:
+                        self.git('checkout', base, '--', path)
+                    self.commit('exact reviewed entry and policy')
+                    result = subprocess.run([sys.executable, '-B', '-I', '-c',
+                        'import sys; sys.path.insert(0, "scripts/workflow"); import ' + module + '; '
+                        'assert ' + module + '.VALUE == "reviewed entry policy"'],
+                        cwd=self.root, capture_output=True, text=True)
+                    self.assertEqual(0, result.returncode, result.stderr)
+            self.git('checkout', '-q', 'entry-main')
+            self.write(entry, 'from test_agent_loop import old_fixture_api\n')
+            self.commit('invalid production entry depends on a test helper')
+            for continuation in (False, True):
+                with self.subTest(test_dependency=continuation), self.assertRaises(ValueError):
+                    promotion_policy_blobs(self.git('rev-parse', 'HEAD'), candidate, self.git, continuation)
+
+    def test_stdlib_internal_import_shadows_are_checked_without_repo_import_edges(self):
+        from importlib.machinery import EXTENSION_SUFFIXES
+        from verification import promotion_policy_blobs
+        for suffix in ('.py', '/__init__.py', '.pyc', EXTENSION_SUFFIXES[0]):
+            self.git('checkout', '-q', '-B', 'internal-shadow', self.candidate)
+            self.write('scripts/workflow/_hashlib' + suffix, 'raise AssertionError("must not execute")')
+            self.commit('candidate shadows a stdlib internal dependency')
+            candidate = self.git('rev-parse', 'HEAD')
+            for continuation in (False, True):
+                with self.subTest(suffix=suffix, continuation=continuation), self.assertRaises(ValueError):
+                    promotion_policy_blobs(self.base, candidate, self.git, continuation)
+
+    def test_import_namespace_shadows_are_rejected_in_both_trees_and_modes(self):
+        from importlib.machinery import EXTENSION_SUFFIXES
+        from verification import promotion_policy_blobs
+        cases = [
+            ('candidate', 'import json', 'scripts/workflow/json.py', False),
+            ('candidate', 'import json', 'scripts/workflow/json/__init__.py', False),
+            ('candidate', 'from datetime import datetime', 'scripts/workflow/datetime.py', False),
+            ('candidate', 'from datetime import datetime', 'scripts/workflow/datetime/__init__.py', False),
+            ('candidate', 'import git_guard', 'scripts/workflow/git_guard/__init__.py', False),
+            ('base', 'import git_guard', 'scripts/workflow/git_guard/__init__.py', False),
+            ('candidate', 'import json', 'scripts/workflow/verification/__init__.py', False),
+            ('candidate', 'import urllib.request', 'scripts/workflow/urllib.py', False),
+            ('base', 'import urllib.request', 'scripts/workflow/urllib.py', False),
+            ('candidate', 'from xml.etree import ElementTree', 'scripts/workflow/xml/__init__.py', False),
+            ('candidate', 'import xml.etree.ElementTree', 'scripts/workflow/xml/etree/__init__.py', False),
+            ('candidate', "VALUE = __import__('types')", 'scripts/workflow/types.py', True),
+            ('candidate', "VALUE = __import__('types')", 'scripts/workflow/types/__init__.py', True),
+            ('base', "VALUE = __import__('types')", 'scripts/workflow/types/__init__.py', True),
+        ]
+        cases.extend((side, 'import json', 'scripts/workflow/json' + suffix, False)
+                     for side in ('base', 'candidate') for suffix in ('.pyc', EXTENSION_SUFFIXES[0]))
+        cases.extend([
+            ('candidate', 'import git_guard', 'scripts/workflow/git_guard' + EXTENSION_SUFFIXES[0], False),
+            ('candidate', "VALUE = __import__('types')", 'scripts/workflow/types.pyc', True),
+        ])
+        for side, code, shadow, regression in cases:
+            with self.subTest(side=side, code=code, shadow=shadow):
+                self.git('checkout', '-q', '-B', 'namespace-main', self.base)
+                path = ('scripts/workflow/test_initial_continuation.py' if regression else
+                        'scripts/workflow/verification.py')
+                self.write(path, code)
+                if side == 'base':
+                    self.write(shadow, 'raise AssertionError("shadow code must never execute")')
+                self.commit('reviewed import source')
+                base = self.git('rev-parse', 'HEAD')
+                self.git('checkout', '-q', '-B', 'namespace-candidate', self.candidate)
+                self.write(COMPONENT, 'later namespace fixture product')
+                if side == 'candidate':
+                    self.write(shadow, 'raise AssertionError("shadow code must never execute")')
+                self.commit('candidate namespace fixture')
+                candidate = self.git('rev-parse', 'HEAD')
+                for continuation in (False, True):
+                    with self.subTest(continuation=continuation), self.assertRaises(ValueError):
+                        promotion_policy_blobs(base, candidate, self.git, continuation)
+
+        self.git('checkout', '-q', '-B', 'valid-namespace-main', self.base)
+        self.write('scripts/workflow/verification.py',
+                   'import json\nfrom datetime import datetime\nimport urllib.request\n'
+                   'from xml.etree import ElementTree\nfrom git_guard import old_gate_api\n')
+        self.write('scripts/workflow/test_initial_continuation.py', "VALUE = __import__('types')")
+        self.commit('valid flat and standard-library imports')
+        base = self.git('rev-parse', 'HEAD')
+        for continuation in (False, True):
+            with self.subTest(valid=True, continuation=continuation):
+                carried = promotion_policy_blobs(base, self.candidate, self.git, continuation)
+                self.assertEqual({'scripts/workflow/verification.py',
+                                  'scripts/workflow/test_initial_continuation.py',
+                                  'docs/verification/README.md'}, set(carried))
+
+    def test_candidate_only_protected_data_changes_keep_the_registered_full_case_set(self):
+        import verification as v
+        root = Path(__file__).resolve().parents[2]
+        policy = json.loads((root / INITIAL_PLAN).read_text())
+        protected = (v.INITIAL_CONTINUATION, 'docs/verification/changes/issue-356.json')
+        self.git('checkout', '-q', '-B', 'registered-common', self.common)
+        for path in protected:
+            self.write(path, (root / path).read_text())
+        self.commit('registration already adopted in common history')
+        common = self.git('rev-parse', 'HEAD')
+        self.git('checkout', '-q', '-B', 'registered-main', common)
+        self.write('scripts/workflow/verification.py', 'POLICY = "reviewed policy"')
+        self.commit('main changes only Python policy')
+        base = self.git('rev-parse', 'HEAD')
+        for path in protected:
+            for edit in ('unchanged', 'delete', 'content', 'mode'):
+                with self.subTest(path=path, edit=edit):
+                    self.git('checkout', '-q', '-B', 'registered-candidate', common)
+                    self.write(COMPONENT, 'later product')
+                    if edit == 'delete':
+                        (self.root / path).unlink()
+                    elif edit == 'content':
+                        data = json.loads((self.root / path).read_text())
+                        if path == v.INITIAL_CONTINUATION:
+                            next(iter(data['cases'].values()))['current_case_sha256'] = 'f' * 64
+                        else:
+                            data['reason'] = 'Candidate-only changed metadata.'
+                        self.write(path, json.dumps(data))
+                    elif edit == 'mode':
+                        (self.root / path).chmod(0o755)
+                    self.commit('candidate-only ' + edit)
+                    candidate = self.git('rev-parse', 'HEAD')
+                    for continuation in (False, True):
+                        with self.subTest(continuation=continuation), patch.object(
+                                v, 'initial_stage_plan', return_value=policy):
+                            if edit == 'mode':
+                                with self.assertRaisesRegex(ValueError, 'regular JSON'):
+                                    v.promotion_policy_blobs(base, candidate, self.git, continuation)
+                                continue
+                            carried = v.promotion_policy_blobs(base, candidate, self.git, continuation)
+                            if edit == 'unchanged':
+                                self.assertNotIn(path, carried)
+                            else:
+                                self.assertEqual(self.git('ls-tree', base, '--', path), carried.get(path))
+                            self.git('checkout', '-q', '-B', 'registered-promotion', candidate)
+                            for copied in carried:
+                                self.git('checkout', base, '--', copied)
+                            self.commit('exact protected policy retained')
+                            promoted = self.git('rev-parse', 'HEAD')
+                            # Use the carried real registration in the later-full lookup;
+                            # the fixture DAG/product and all observations are synthetic.
+                            registration = v.initial_continuation(policy, promoted,
+                                json.loads((root / v.INITIAL_CONTINUATION).read_text())['candidate'],
+                                self.git, historical=True)
+                            self.assertIsNotNone(registration)
+                            self.assertEqual(28, len(registration['cases']))
+                            self.assertEqual(167, len(set(policy['cases']) | set(registration['cases'])))
+                            self.assertIn('347:SAVE-WARNING-WINDOW', registration['cases'])
+
+    def test_candidate_cannot_add_protected_data_absent_from_trusted_main(self):
+        from verification import INITIAL_CONTINUATION, promotion_policy_blobs
+        for path in (INITIAL_CONTINUATION, 'docs/verification/changes/issue-356.json'):
+            self.git('checkout', '-q', '-B', 'untrusted-policy-candidate', self.candidate)
+            self.write(path, '{}')
+            self.commit('candidate-only untrusted policy addition')
+            candidate = self.git('rev-parse', 'HEAD')
+            for continuation in (False, True):
+                with self.subTest(path=path, continuation=continuation), self.assertRaisesRegex(
+                        ValueError, 'regular JSON'):
+                    promotion_policy_blobs(self.base, candidate, self.git, continuation)
+
+    def test_candidate_readme_additions_require_explicit_main_reconciliation(self):
+        from verification import promotion_policy_blobs
+        self.git('checkout', '-q', '-B', 'readme-candidate', self.candidate)
+        text = self.git('show', f'{self.candidate}:docs/verification/README.md') + '\nCandidate-only guarantee'
+        self.write('docs/verification/README.md', text)
+        self.commit('candidate-only acceptance explanation')
+        candidate = self.git('rev-parse', 'HEAD')
+        for continuation in (False, True):
+            self.assertNotIn('docs/verification/README.md', promotion_policy_blobs(
+                self.common, candidate, self.git, continuation=continuation))
+            with self.subTest(continuation=continuation), self.assertRaisesRegex(ValueError, 'README'):
+                promotion_policy_blobs(self.base, candidate, self.git, continuation=continuation)
+        self.git('checkout', '-q', 'trusted-main')
+        self.write('docs/verification/README.md', text)
+        self.commit('explicitly reconciled candidate explanation')
+        carried = promotion_policy_blobs(self.git('rev-parse', 'HEAD'), candidate, self.git)
+        self.assertNotIn('docs/verification/README.md', carried)
 
 class CertificateArchivePromotionTests(unittest.TestCase):
     git = PromotionTreeTests.git

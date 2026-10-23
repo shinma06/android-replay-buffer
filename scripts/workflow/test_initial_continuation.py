@@ -43,6 +43,7 @@ class InitialContinuationTests(unittest.TestCase):
                 'source_path': 'docs/verification/changes/issue-37.json',
                 'original_case_sha256': v.canonical_hash(case)}]}}}
         self.fixture.documents[f'{BASE}:{v.INITIAL_CONTINUATION}'] = self.registration
+        self.fixture.documents[f'{HEAD}:{v.INITIAL_CONTINUATION}'] = self.registration
 
     def verify(self):
         return self.initial.verify()
@@ -143,6 +144,31 @@ class InitialContinuationTests(unittest.TestCase):
                                    for key in self.manifest['results']}
         self.assertTrue(self.verify()['gui_complete'])
 
+    def test_full_history_lookup_requires_ancestry_without_extending_initial_admission(self):
+        later = 'd' * 40
+        self.assertIsNone(v.initial_continuation(self.initial.policy, BASE, later, self.fixture.git))
+        self.assertEqual(self.registration, v.initial_continuation(
+            self.initial.policy, BASE, later, self.fixture.git, historical=True))
+        original = self.fixture.git
+        def unrelated(*args):
+            if args[:3] == ('merge-base', '--is-ancestor', NEW) and args[-1] in (later, BASE):
+                raise subprocess.CalledProcessError(1, ['git', *args])
+            return original(*args)
+        self.assertIsNone(v.initial_continuation(self.initial.policy, BASE, later, unrelated, historical=True))
+        def adopted(*args):
+            if args == ('merge-base', '--is-ancestor', NEW, later):
+                raise subprocess.CalledProcessError(1, ['git', *args])
+            return original(*args)
+        with self.assertRaisesRegex(ValueError, 'already-adopted'):
+            v.initial_continuation(self.initial.policy, BASE, later, adopted, historical=True)
+        for target in (later, BASE):
+            def unavailable(*args):
+                if args == ('merge-base', '--is-ancestor', NEW, target):
+                    raise subprocess.CalledProcessError(128, ['git', *args])
+                return unrelated(*args)
+            with self.subTest(unavailable=target), self.assertRaises(ValueError):
+                v.initial_continuation(self.initial.policy, BASE, later, unavailable, historical=True)
+
     def test_registered_new_execution_requirement_is_preserved(self):
         case = self.fixture.documents[f'{NEW}:docs/verification/changes/issue-37.json']['cases'][0]
         case['required_execution'] = 'computer_use'
@@ -154,14 +180,100 @@ class InitialContinuationTests(unittest.TestCase):
         self.manifest['results']['37:QA-1']['execution'] = 'computer_use'
         self.assertTrue(self.verify()['stage_complete'])
 
+    def test_later_full_gate_and_queue_retain_added_contracts_after_the_batch_is_in_main(self):
+        later = 'd' * 40
+        self.manifest.pop('stage')
+        self.manifest['candidate'] = later
+        self.manifest['changes'] = [{'commit': later, 'pr': 101}]
+        self.fixture.range = [later]
+        self.fixture.source['merge_commit_sha'] = later
+        self.fixture.source['head']['ref'] = 'codex/38-source'
+        self.fixture.source['body'] = ('Issue: #38\nGUI: required\nIntegration: develop\n'
+                                       'Verification: docs/verification/changes/issue-38.json')
+        self.fixture.documents[f'{later}:docs/verification/changes/issue-38.json'] = change(38)
+        self.fixture.documents[f'{later}:{v.INITIAL_PLAN}'] = copy.deepcopy(self.initial.policy)
+        case = self.fixture.documents[f'{NEW}:docs/verification/changes/issue-37.json']['cases'][0]
+        case['required_execution'] = 'computer_use'
+        self.registration['cases']['37:QA-1']['current_case_sha256'] = v.canonical_hash(case)
+        self.registration['cases']['37:QA-1']['sources'][0]['original_case_sha256'] = v.canonical_hash(case)
+        self.fixture.documents[f'{later}:docs/verification/changes/issue-37.json'] = copy.deepcopy(
+            self.fixture.documents[f'{NEW}:docs/verification/changes/issue-37.json'])
+        self.manifest['results'] = {key: dict(observation(), head=later, execution='computer_use')
+                                   for key in (*self.initial.policy['cases'], '38:QA-1')}
+        with self.subTest(missing='37:QA-1'), self.assertRaisesRegex(ValueError, 'missing=.*37:QA-1'):
+            self.verify()
+        with self.subTest(queue='retained'):
+            output = self.render()
+            self.assertIn('QA-1 / #37', output)
+            self.assertIn('固定原契約 / PR #100', output)
+            self.assertNotIn('Case合格（', output.split('## #37', 1)[-1])
+        self.manifest['results']['37:QA-1'] = dict(observation(), head=later)
+        with self.subTest(execution='missing'), self.assertRaisesRegex(ValueError, 'execution method'):
+            self.verify()
+        self.manifest['results']['37:QA-1']['execution'] = 'computer_use'
+        self.assertEqual(4, self.verify()['cases'])
+        for status in ('initial-pass', 'deferred', 'pending', 'blocked', 'fail'):
+            self.manifest['results']['37:QA-1']['status'] = status
+            with self.subTest(status=status), self.assertRaisesRegex(ValueError, 'must pass'):
+                self.verify()
+        self.manifest['results']['37:QA-1']['status'] = 'pass'
+        current = self.fixture.documents[f'{later}:docs/verification/changes/issue-37.json']['cases'][0]
+        current['expected'] += ' Current contract also applies.'
+        with self.subTest(current_hash='missing'), self.assertRaisesRegex(ValueError, 'exact current'):
+            self.verify()
+        self.manifest['results']['37:QA-1']['case_sha256'] = v.canonical_hash(current)
+        self.assertTrue(self.verify()['gui_complete'])
+        output = self.render()
+        self.assertIn('Current contract also applies.', output)
+        self.assertIn('原期待結果: ' + case['expected'], output)
+        self.assertIn('Case合格（', output)
+        current.pop('required_execution')
+        self.manifest['results']['37:QA-1']['case_sha256'] = v.canonical_hash(current)
+        self.manifest['results']['37:QA-1'].pop('execution')
+        with self.subTest(original_execution='preserved'), self.assertRaisesRegex(ValueError, 'execution method'):
+            self.verify()
+        row = next(line for line in self.render().splitlines() if line.startswith('| QA-1 / #37'))
+        self.assertNotIn('Case合格（', row)
+        self.manifest['results']['37:QA-1']['execution'] = 'computer_use'
+        self.assertTrue(self.verify()['gui_complete'])
+        current['artifact'] = 'plugin'
+        with self.subTest(original_artifact='preserved'), self.assertRaisesRegex(ValueError, 'artifact contract'):
+            self.verify()
+        current.pop('artifact')
+        del self.fixture.documents[f'{later}:docs/verification/changes/issue-37.json']
+        self.assertIn('QA-1 / #37', self.render())
+        self.assertEqual(4, self.verify()['cases'])
+
     def test_metadata_carry_keeps_only_exact_main_policy_and_case_free_records(self):
-        record_path = 'docs/verification/changes/issue-344.json'
+        record_path = 'docs/verification/changes/issue-356.json'
         product_path = 'docs/verification/changes/issue-37.json'
         script = 'scripts/workflow/verification.py'
         fixture = 'scripts/workflow/initial_continuation_cases.py'
         unknown = 'docs/verification/unknown.json'
-        paths = [v.INITIAL_CONTINUATION, record_path, product_path, script, fixture, unknown]
-        records = {record_path: change(344, gui=False), product_path: change(37)}
+        required = {v.INITIAL_CONTINUATION, record_path, script, fixture,
+                    'scripts/workflow/test_initial_continuation.py',
+                    'scripts/workflow/test_impact_evidence_reuse.py', 'docs/verification/README.md',
+                    'scripts/workflow/test_agent_loop.py',
+                    *('scripts/workflow/' + name + '.py' for name in
+                      ('git_guard', 'agent_policy', 'issue_schema', 'handoff_registry', 'agent_worker'))}
+        unrelated = ['AGENTS.md', 'README.md', 'docs/android-studio.md', 'docs/design/timeline.md',
+                     'docs/project.md', 'docs/requirements.md', 'docs/setup/ci.md',
+                     'scripts/workflow/test_change_impact.py', 'scripts/workflow/test_product_check.py',
+                     'CONTRIBUTING.md', 'docs/verification/changes/issue-999.json']
+        paths = [*required, product_path, unknown, *unrelated]
+        records = {record_path: change(356, gui=False), product_path: change(37),
+                   unrelated[-1]: change(999, gui=False), v.INITIAL_CONTINUATION: self.registration}
+        classifier = {BASE: '364b42de6cffde531ad631ae88e20a4271b76d7f',
+                      NEW: '8beb4c9aa39196f10a76b6cea2ec757ffa52569c'}
+        modules = {script: 'from agent_policy import api\nfrom git_guard import api\nfrom change_impact import api',
+                   'scripts/workflow/agent_policy.py': 'from issue_schema import api\nfrom handoff_registry import api',
+                   'scripts/workflow/handoff_registry.py': 'from agent_worker import api',
+                   'scripts/workflow/agent_worker.py': 'from verification import api',
+                   'scripts/workflow/issue_schema.py': '', 'scripts/workflow/git_guard.py': '',
+                   'scripts/workflow/change_impact.py': '',
+                   'scripts/workflow/test_initial_continuation.py': 'from test_agent_loop import api',
+                   'scripts/workflow/test_impact_evidence_reuse.py': '',
+                   'scripts/workflow/test_agent_loop.py': ''}
 
         def git(*args):
             if args[0] == 'merge-base':
@@ -169,27 +281,50 @@ class InitialContinuationTests(unittest.TestCase):
             if args[0] == 'diff':
                 return '\n'.join(paths)
             if args[0] == 'ls-tree':
+                if args[-1] == 'scripts/workflow/change_impact.py':
+                    return f'100644 blob {classifier[args[1]]}\t{args[-1]}'
+                if args[-1] not in paths and args[-1] not in modules:
+                    return ''
                 if args[1] == NEW:
                     return ''
                 return f'100644 blob {"0" * 40}\t{args[-1]}'
             if args[0] == 'show':
-                return json.dumps(records[args[1].split(':', 1)[1]])
+                path = args[1].split(':', 1)[1]
+                return modules[path] if path in modules else json.dumps(records[path])
             raise AssertionError(args)
 
-        with patch.object(v, 'initial_stage_plan', return_value=self.initial.policy):
-            carried = v.promotion_policy_blobs(BASE, NEW, git, continuation=True)
-        self.assertEqual({v.INITIAL_CONTINUATION, record_path, script, fixture}, set(carried))
+        for continuation in (False, True):
+            with self.subTest(continuation=continuation), patch.object(
+                    v, 'initial_stage_plan', return_value=self.initial.policy):
+                carried = v.promotion_policy_blobs(BASE, NEW, git, continuation=continuation)
+                self.assertEqual(required, set(carried))
+        classifier[BASE] = 'f' * 40
+        for continuation in (False, True):
+            with self.subTest(changed_classifier=continuation), patch.object(
+                    v, 'initial_stage_plan', return_value=self.initial.policy), self.assertRaisesRegex(
+                        ValueError, 'classifier'):
+                v.promotion_policy_blobs(BASE, NEW, git, continuation=continuation)
+        classifier[BASE] = classifier[NEW]
+        records[record_path] = change(356)
+        with patch.object(v, 'initial_stage_plan', return_value=self.initial.policy), self.assertRaises(ValueError):
+            v.promotion_policy_blobs(BASE, NEW, git, continuation=True)
 
 
 class RegisteredContinuationTests(unittest.TestCase):
-    def test_registered_166_contracts_and_235_sources_render_without_inventing_results(self):
+    def test_registered_167_contracts_and_236_sources_render_without_inventing_results(self):
         root = Path(__file__).resolve().parents[2]
         registration = json.loads((root / v.INITIAL_CONTINUATION).read_text())
         policy = json.loads((root / v.INITIAL_PLAN).read_text())
-        base, candidate = '8e6a1d626e103d5e0c67850bc53445d18ab5791e', registration['candidate']
+        self.assertEqual('818b7e1adbcd0af79e146d1795f833b75a1b1302', registration['candidate'])
+        warning = registration['cases']['347:SAVE-WARNING-WINDOW']
+        self.assertEqual('aa9b28b5d6eec07756c29ffce51dda1192926004e8c4ac99aac5d3c37f216a4b',
+                         warning['current_case_sha256'])
+        self.assertEqual([warning['current_case_sha256']],
+                         [source['original_case_sha256'] for source in warning['sources']])
+        base, candidate = 'c66363ea0b27add98de9853ccf87728235662b17', registration['candidate']
         read = cache(lambda *args: subprocess.check_output(['git', *args], cwd=root, text=True).strip())
 
-        # Exact 56dad Case contracts; the develop DAG/PR metadata remain synthetic.
+        # Exact 818b7e1 Case contracts; the develop DAG/PR metadata remain synthetic.
         # Historical 139-Case documents are read only from main's reachable history.
         cases = CASES
         self.assertEqual({item['source_path'] for item in registration['changes']}, set(cases))
@@ -243,12 +378,22 @@ class RegisteredContinuationTests(unittest.TestCase):
         changes = [{k: item[k] for k in ('commit', 'pr')} for item in registration['changes']]
         sources = v.initial_stage_sources(policy, v.initial_continuation(policy, base, candidate, git),
                                          None, changes, candidate, git)
-        self.assertEqual((166, 235, 27, 20), (len({k for k, _, _ in sources}), len(sources),
+        self.assertEqual((167, 236, 28, 23), (len({k for k, _, _ in sources}), len(sources),
                                             len(extra), len(registration['changes'])))
+        later = 'd' * 40
+        def later_git(*args):
+            if args == ('merge-base', '--is-ancestor', candidate, later):
+                return ''
+            return git(*args)
+        self.assertIsNone(v.initial_continuation(policy, base, later, later_git))
+        historical_registration = v.initial_continuation(policy, base, later, later_git, historical=True)
+        full_sources = v.historical_initial_sources(policy, later, later_git, historical_registration)
+        self.assertEqual((167, 236), (len({key for key, _, _ in full_sources}), len(full_sources)))
+        self.assertIn('347:SAVE-WARNING-WINDOW', {key for key, _, _ in full_sources})
         manifest = {'stage': v.INITIAL_STAGE, 'base': base, 'candidate': candidate,
                     'changes': changes, 'results': {}}
         output = v.render_queue([], manifest, git)
-        self.assertEqual(166, sum(line.startswith('| ') and ' / #' in line for line in output.splitlines()))
+        self.assertEqual(167, sum(line.startswith('| ') and ' / #' in line for line in output.splitlines()))
         self.assertNotIn('Case合格（', output)
         self.assertNotIn('初期版範囲合格／', output)
         self.assertEqual(139, len(policy['cases']))
@@ -317,13 +462,16 @@ class RegisteredContinuationTests(unittest.TestCase):
             return {'object': {'sha': candidate}} if path == 'git/ref/heads/develop' else prs[path]
 
         result = v.verify_pr(pr, api, virtual_git)
-        self.assertEqual((166, 132, 34), (result['cases'], result['initial_cases'], result['deferred_cases']))
+        self.assertEqual((167, 133, 34), (result['cases'], result['initial_cases'], result['deferred_cases']))
         self.assertTrue(result['stage_complete'])
         self.assertFalse(result['gui_complete'])
         self.assertFalse(result['full_acceptance_complete'])
-        manifest['results']['104:GUI-FLOW']['status'] = 'deferred'
-        with self.assertRaisesRegex(ValueError, 'must pass'):
-            v.verify_pr(pr, api, virtual_git)
+        for key in ('104:GUI-FLOW', '347:SAVE-WARNING-WINDOW'):
+            for status in ('deferred', 'initial-pass'):
+                manifest['results'][key]['status'] = status
+                with self.subTest(key=key, status=status), self.assertRaisesRegex(ValueError, 'must pass'):
+                    v.verify_pr(pr, api, virtual_git)
+            manifest['results'][key]['status'] = 'pass'
 
 
 if __name__ == '__main__':

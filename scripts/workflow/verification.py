@@ -1,11 +1,13 @@
 """Acceptance data and fixed-candidate gates. Never execute code from a PR."""
 import argparse
+import ast
 from datetime import datetime
 import hashlib
 import json
 from pathlib import Path
 import re
 import subprocess
+import sys
 from git_guard import BRANCH
 from agent_policy import SESSION_HASH, session_fingerprint
 
@@ -144,7 +146,7 @@ def tooling_path(path):
 
 
 def baseline_cases(base, entries, git):
-    """Legacy develop history needs a reviewed main-side plan and full real acceptance."""
+    """Load legacy develop Cases from the reviewed main-side plan for full acceptance."""
     selected = [item for item in entries if item.get('baseline') is True]
     if not selected:
         return {}
@@ -218,7 +220,7 @@ def canonical_hash(value):
 
 
 def gop_amendment(base, candidate, git):
-    """One reviewed premise amendment, read from trusted main, never promotion HEAD."""
+    """Load the reviewed premise amendment from trusted main, never promotion HEAD."""
     if not SHA.fullmatch(base or '') or not SHA.fullmatch(candidate or ''):
         raise ValueError('GOP amendment requires fixed base and candidate')
     if not git('ls-tree', base, '--', GOP_AMENDMENT):
@@ -299,7 +301,7 @@ def validate_gop_observation(result, contract):
 
 
 def initial_stage_plan(base, candidate, git):
-    """The one initial-release plan is authorized in main, not in the candidate."""
+    """Load the main-authorized initial plan and reject unregistered candidate changes."""
     policy = regular_json(base, INITIAL_PLAN, git)
     if (not isinstance(policy, dict) or set(policy) - {'responsibility_revision'} != {
             'schema', 'issue', 'stage', 'required_ancestor', 'followup_issue',
@@ -463,7 +465,7 @@ def previous_installation_plan(policy):
 
 
 def validate_responsibility_policy(policy):
-    """Issue 182 amends methods without erasing the fixed original plan or Cases."""
+    """Validate method amendments while preserving the fixed original plan and Cases."""
     revision = policy['responsibility_revision']
     original = {k: v for k, v in policy.items() if k != 'responsibility_revision'}
     if not isinstance(revision, dict):
@@ -640,8 +642,12 @@ def bind_initial_sources(policy, source_cases):
         raise ValueError('Initial plan must bind ALL original Case source occurrences')
 
 
-def historical_initial_sources(policy, candidate, git):
-    """Keep deferred contracts readable after their commits are already in main."""
+def historical_initial_sources(policy, candidate, git, continuation=None):
+    """Keep original and registered contracts after their commits are already in main."""
+    if continuation:
+        git('merge-base', '--is-ancestor', continuation['candidate'], candidate)
+        changes = [{k: item[k] for k in ('commit', 'pr')} for item in continuation['changes']]
+        return initial_stage_sources(policy, continuation, None, changes, continuation['candidate'], git)
     rows = []
     for key, entry in policy['cases'].items():
         for source in entry['sources']:
@@ -657,8 +663,14 @@ def historical_initial_sources(policy, candidate, git):
     return rows
 
 
-def initial_continuation(policy, base, candidate, git):
-    """A reviewed main registration admits only its fixed additional batch."""
+def initial_continuation(policy, base, candidate, git, historical=False):
+    """Load trusted continuation for admission or an explicit full-history lookup.
+
+    Default admission requires its exact registered candidate.
+    Validate an existing registration even for another candidate; malformed policy
+    must not silently become absent. Later Cases gain no deferrals from this batch.
+    Historical lookup requires a descendant and never extends initial-stage admission.
+    """
     if not git('ls-tree', base, '--', INITIAL_CONTINUATION):
         return None
     registration = regular_json(base, INITIAL_CONTINUATION, git)
@@ -700,10 +712,31 @@ def initial_continuation(policy, base, candidate, git):
                     not HASH.fullmatch(source['original_case_sha256']) or source['source_pr'] in seen):
                 raise ValueError('Invalid continuation Case source: ' + key)
             seen.add(source['source_pr'])
-    return registration if candidate == registration['candidate'] else None
+    if candidate == registration['candidate']:
+        return registration
+    if historical:
+        try:
+            git('merge-base', '--is-ancestor', registration['candidate'], candidate)
+        except subprocess.CalledProcessError as error:
+            if error.returncode != 1:
+                raise ValueError('Cannot establish registered continuation ancestry') from error
+            try:
+                git('merge-base', '--is-ancestor', registration['candidate'], base)
+            except subprocess.CalledProcessError as error:
+                if error.returncode != 1:
+                    raise ValueError('Cannot establish adopted continuation ancestry') from error
+                return None
+            raise ValueError('Candidate omits already-adopted continuation history')
+        return registration
+    return None
 
 
 def initial_stage_sources(policy, registration, source_cases, changes, candidate, git):
+    """Bind original and registered sources to the exact continuation batch.
+
+    Preserve every historical source and current Case hash. Only the original
+    plan controls initial-stage deferrals; added Cases retain full acceptance.
+    """
     if registration is None:
         bind_initial_sources(policy, source_cases)
         return source_cases
@@ -825,7 +858,10 @@ IMPACT_DIMENSIONS = {'source', 'callers', 'callees', 'dataflow', 'build', 'confi
 
 
 def load_impact_source(source, git):
-    """A public pre-squash commit may be absent from a fresh acceptance checkout."""
+    """Load an immutable impact source, fetching only from this repository's origin.
+
+    A public pre-squash commit may be absent from a fresh acceptance checkout.
+    """
     if not isinstance(source, str) or not SHA.fullmatch(source):
         raise ValueError('Impact source must be a full immutable commit SHA')
     try:
@@ -886,7 +922,11 @@ def impact_history(source, candidate, key, git):
 
 
 def certificate_review(certificate, receipts=None):
-    """Public fingerprint/receipt structure; actual origins are checked by the approval adapter."""
+    """Validate public contributor fingerprints and receipt structure.
+
+    The approval adapter must check actual originating sessions; these claims
+    alone cannot establish independent review.
+    """
     review = certificate.get('review', {})
     provenance = certificate.get('provenance')
     if (not isinstance(review, dict) or review.get('status') != 'approved' or
@@ -1162,8 +1202,11 @@ def validate_fact_assessment(observed, key, policy, candidate, artifact, git, tr
 
 
 def validate_candidate_result(result, key, policy, stage, candidate, artifact, execution, gop, git,
-                              trusted_base=None, case=None):
-    """Keep old observations intact; accept reuse only with fresh equivalence evidence."""
+                              trusted_base=None, case=None, contract_entry=None):
+    """Keep old observations intact; accept reuse only with fresh equivalence evidence.
+
+    contract_entry binds an added Case without extending the original plan's scope.
+    """
     if not isinstance(result, dict):
         raise ValueError('Case result must be an object')
     source = candidate
@@ -1248,7 +1291,8 @@ def validate_candidate_result(result, key, policy, stage, candidate, artifact, e
     if source == candidate and not reassessed:
         validate_fact_assessment(result.get('initial_observation', {}) if stage else result,
                                  key, policy, candidate, artifact, git, trusted_base)
-    if case and policy and key in policy['cases'] and canonical_hash(case) != policy['cases'][key]['current_case_sha256']:
+    entry = contract_entry or (policy or {}).get('cases', {}).get(key)
+    if case and entry and canonical_hash(case) != entry['current_case_sha256']:
         observed = result.get('initial_observation', {}) if stage else result
         if observed.get('case_sha256') != canonical_hash(effective_responsibility_case(policy, key, case)):
             raise ValueError('Updated Case requires observation of the exact current effective contract: ' + key)
@@ -1302,7 +1346,7 @@ REPAIR_MARKER = '<!-- acceptance-repair:v1 -->'
 
 
 def repair_record(issue, api):
-    """Remote scope is reviewed with the Issue; the PR cannot shrink its failure set."""
+    """Bind the repair to the reviewed Issue scope; reject a PR-shrunken failure set."""
     declaration = re.findall(r'^Acceptance repair: (.+)$', issue.get('body') or '', re.M)
     bug = any(label.get('name') == 'type:bug' for label in issue.get('labels', []))
     if not declaration and not bug:
@@ -1348,7 +1392,7 @@ def bind_receipt_claim(receipts, receipt, claim):
 
 
 def repair_contributors(observed, writer, earliest, receipts=None):
-    """Public roles are display text; only originating-session fingerprints exclude reviewers."""
+    """Identify excluded reviewers by originating-session fingerprints, never display roles."""
     attribution = observed.get('attribution')
     if 'attribution' not in observed:
         # Only the unambiguous one-session legacy form can retain scalar attribution.
@@ -1396,7 +1440,10 @@ def repair_contributors(observed, writer, earliest, receipts=None):
 
 
 def verify_repair(pr, issue, data, path, api, git):
-    """Structure/provenance only. An independent reviewer must assess the actual evidence."""
+    """Check repair structure and provenance without approving the actual evidence.
+
+    An independent reviewer must assess the evidence before integration.
+    """
     record = repair_record(issue, api)
     tracked, seen = set(), set()
     base, head = pr['base']['sha'], pr['head']['sha']
@@ -1573,31 +1620,136 @@ def promotion_certificates(promotion, base, candidate, git):
 
 
 def promotion_policy_blobs(base, candidate, git, continuation=False):
-    """Keep reviewed main policy without changing the candidate's effective contract."""
+    """Keep reviewed main policy without changing the candidate's effective contract.
+
+    Carry the coherent gate/fixture/regression set and its Case-free amendment
+    record in both continuation and certificate-only promotions. Certificate
+    archives have their own adoption gate; unrelated candidate facts stay intact.
+    """
+    from importlib.machinery import all_suffixes
     from change_impact import path_impacts, TOOLING, KNOWLEDGE, METADATA
-    if initial_stage_plan(base, candidate, git) != initial_stage_plan(candidate, candidate, git):
+    policy = initial_stage_plan(base, candidate, git)
+    if policy != initial_stage_plan(candidate, candidate, git):
         raise ValueError('Policy carry requires the unchanged effective candidate contract')
     ancestor = git('merge-base', candidate, base)
     paths = {}
-    for path in git('diff', '--no-renames', '--name-only', ancestor, base).splitlines():
-        if path.startswith('docs/verification/') and not path.endswith('.md'):
-            if not continuation:
-                continue  # Certificate archives and consumed evidence have their own adoption gate.
-            if path != INITIAL_CONTINUATION:
-                if (not re.fullmatch(r'docs/verification/changes/issue-[1-9][0-9]*\.json', path) or
-                        not git('ls-tree', base, '--', path)):
+    protected = {INITIAL_CONTINUATION, 'docs/verification/changes/issue-356.json'}
+    allowed = {*protected, 'scripts/workflow/verification.py',
+               'scripts/workflow/initial_continuation_cases.py',
+               'scripts/workflow/test_initial_continuation.py',
+               'scripts/workflow/test_impact_evidence_reuse.py', 'docs/verification/README.md'}
+    # Trusted policy entrypoints; product/build checkers retain the tested candidate version.
+    pending = [('scripts/workflow/acceptance_ci.py', False),
+               ('scripts/workflow/agent_loop.py', False),
+               ('scripts/workflow/agent_worker.py', False),
+               ('scripts/workflow/pr_policy.py', False),
+               ('scripts/workflow/git_guard.py', False),
+               ('scripts/workflow/change_impact.py', False),
+               ('scripts/workflow/release_delivery.py', False),
+               ('scripts/workflow/verification.py', False),
+               ('scripts/workflow/test_initial_continuation.py', True),
+               ('scripts/workflow/test_impact_evidence_reuse.py', True)]
+    suffixes = all_suffixes()
+    for ref in (base, candidate):
+        for entry in git('ls-tree', ref, '--', 'scripts/workflow/').splitlines():
+            filename = entry.rsplit('\t', 1)[-1].removeprefix('scripts/workflow/')
+            for suffix in ('', *suffixes):
+                name = filename.removesuffix(suffix)
+                if name in sys.stdlib_module_names:
+                    pending.append(('scripts/workflow/' + name + '.py', False))
+                    break
+    namespaces = {}
+    unsupported_suffixes = [suffix for suffix in suffixes if suffix != '.py']
+
+    def import_entries(name):
+        parts = name.split('.')
+        for size in range(1, len(parts) + 1):
+            stem = 'scripts/workflow/' + '/'.join(parts[:size])
+            if stem not in namespaces:
+                if any(git('ls-tree', ref, '--', stem, *(stem + suffix for suffix in unsupported_suffixes))
+                       for ref in (base, candidate)):
+                    raise ValueError('Gate import namespace contains a package or non-source module: ' + stem)
+                entries = tuple(git('ls-tree', ref, '--', stem + '.py') for ref in (base, candidate))
+                if entries[1] and not entries[0]:
+                    raise ValueError('Candidate shadows an import absent from trusted main: ' + name)
+                namespaces[stem] = entries
+            if size < len(parts) and any(namespaces[stem]):
+                raise ValueError('Dotted gate import has a local flat prefix: ' + name)
+        return namespaces[stem]
+
+    dependencies, imports, visited = set(), set(), set()
+    while pending:
+        dependency, regression = pending.pop()
+        if (dependency, regression) in visited:
+            continue
+        visited.add((dependency, regression))
+        module = dependency.removeprefix('scripts/workflow/').removesuffix('.py').replace('/', '.')
+        entry, _ = import_entries(module)
+        entry = entry.split()
+        if not entry:
+            continue
+        if (entry[:2] != ['100644', 'blob'] or '/' in dependency.removeprefix('scripts/workflow/') or
+                dependency in ('scripts/workflow/test_change_impact.py', 'scripts/workflow/test_product_check.py') or
+                not regression and dependency.startswith('scripts/workflow/test_')):
+            raise ValueError('Gate dependency must be a regular flat workflow module: ' + dependency)
+        dependencies.add(dependency)
+        if dependency == 'scripts/workflow/change_impact.py':
+            tested = git('ls-tree', candidate, '--', dependency).split()
+            # Only classify() differs in executable logic across this reviewed fixed pair.
+            if entry != tested and (entry, tested) != (
+                    ['100644', 'blob', '364b42de6cffde531ad631ae88e20a4271b76d7f', dependency],
+                    ['100644', 'blob', '8beb4c9aa39196f10a76b6cea2ec757ffa52569c', dependency]):
+                raise ValueError('Gate classifier differs; update and verify the candidate before carry')
+        elif path_impacts(dependency) - {TOOLING, KNOWLEDGE, METADATA}:
+            raise ValueError('Gate dependency would overwrite build/product inputs: ' + dependency)
+        else:
+            allowed.add(dependency)
+        for node in ast.walk(ast.parse(git('show', f'{base}:{dependency}'))):
+            if (regression and isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and
+                    node.func.id == '__import__' and len(node.args) == 1 and
+                    isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str) and
+                    node.args[0].value in sys.stdlib_module_names and
+                    not any(import_entries(node.args[0].value))):
+                continue
+            if ((isinstance(node, ast.ImportFrom) and node.level) or
+                    (isinstance(node, ast.Call) and
+                     (isinstance(node.func, ast.Name) and node.func.id == '__import__' or
+                      isinstance(node.func, ast.Attribute) and node.func.attr == 'import_module'))):
+                raise ValueError('Relative/dynamic gate imports need an explicit carry update')
+            names = ([node.module] if isinstance(node, ast.ImportFrom) else
+                     [alias.name for alias in node.names] if isinstance(node, ast.Import) else [])
+            for name in names:
+                if not name or (name, regression) in imports:
                     continue
-                record = regular_json(base, path, git)
-                if record.get('gui_required') is not False or record.get('cases') != []:
-                    continue
-                validate_change(record, int(Path(path).stem.removeprefix('issue-')), False)
-                if git('ls-tree', candidate, '--', path):
-                    previous = regular_json(candidate, path, git)
-                    validate_change(previous, record['issue'], False)
+                imports.add((name, regression))
+                path = 'scripts/workflow/' + name.replace('.', '/') + '.py'
+                if (path, regression) not in visited:
+                    pending.append((path, regression))
+    for path in sorted(set(git('diff', '--no-renames', '--name-only', ancestor, base).splitlines()) |
+                       dependencies | protected):
+        if path not in allowed:
+            continue
         blob = git('ls-tree', base, '--', path)
         old_blob = git('ls-tree', candidate, '--', path)
+        if path in protected and (blob or old_blob):
+            regular_json(base, path, git)
+            if old_blob:
+                regular_json(candidate, path, git)
+        if not blob or blob == old_blob:
+            continue
+        if path == 'docs/verification/README.md' and old_blob:
+            common = git('ls-tree', ancestor, '--', path)
+            if common not in (blob, old_blob) and (old_blob.split()[2], blob.split()[2]) != (
+                    '3ae14aa6205aed699b52f3c67e96038130389240', 'ae527ba6ec98c8e04d198359bd146b33552b975c'):
+                raise ValueError('Candidate README changes require explicit trusted-main reconciliation')
+        if path == INITIAL_CONTINUATION:
+            initial_continuation(policy, base, candidate, git)
+        elif path == 'docs/verification/changes/issue-356.json':
+            validate_change(regular_json(base, path, git), 356, False)
+            if old_blob:
+                validate_change(regular_json(candidate, path, git), 356, False)
         modes = tuple(x.split()[0] if x else '000000' for x in (old_blob, blob))
-        if path_impacts(path, modes) <= {TOOLING, KNOWLEDGE, METADATA} and blob != old_blob:
+        if path_impacts(path, modes) <= {TOOLING, KNOWLEDGE, METADATA}:
             paths[path] = blob
     return paths
 
@@ -1708,7 +1860,12 @@ def certificate_changes(base, head, files, git):
 
 
 def verify_pr(pr, api, git=git_read):
-    """api(path) uses the same repo; git sees fetched PR/candidate objects only as data."""
+    """Validate the fixed PR's acceptance metadata and return its gate verdict.
+
+    The api callback reads this repository; git may fetch PR/candidate objects
+    but must treat their contents as data. A verdict does not execute product
+    acceptance or replace independent review of the evidence.
+    """
     issue, path, mode = metadata(pr)
     head, base = pr['head']['sha'], pr['base']['sha']
     data = regular_json(head, path, git)
@@ -1839,12 +1996,20 @@ def verify_pr(pr, api, git=git_read):
         # A later promotion does not erase deferred work merely because its
         # original commits are now in main. Full acceptance still needs it.
         carried = full_policy = initial_stage_plan(base, candidate, git)
-        historical = historical_initial_sources(carried, candidate, git)
+        full_continuation = initial_continuation(carried, base, candidate, git, historical=True)
+        full_entries = dict(carried['cases'], **(full_continuation or {}).get('cases', {}))
+        historical = historical_initial_sources(carried, candidate, git, full_continuation)
         for key, case, _ in historical:
-            if carried.get('responsibility_revision') or effective_initial_entry(carried, key)['deferred_scope']:
+            if (key not in carried['cases'] or carried.get('responsibility_revision') or
+                    effective_initial_entry(carried, key)['deferred_scope']):
                 requirement = (case.get('required_execution'), case.get('artifact', 'app'))
                 if key not in required:
                     required[key] = requirement
+                elif key not in carried['cases']:
+                    execution, artifact_name = required[key]
+                    if artifact_name != requirement[1]:
+                        raise ValueError('Registered Case artifact contract changed: ' + key)
+                    required[key] = (execution or requirement[0], artifact_name)
         if set(required) & GOP_KEYS:
             sources = {canonical_hash([key, case, source]): (key, case, source)
                        for key, case, source in source_cases + historical}
@@ -1861,21 +2026,28 @@ def verify_pr(pr, api, git=git_read):
         artifacts['app'] = promotion['artifact_sha256']
     for key, result in results.items():
         case = None
-        if full_policy and key in full_policy['cases']:
+        if full_policy and key in full_entries:
             path = f'docs/verification/changes/issue-{key.split(":")[0]}.json'
             if git('ls-tree', candidate, '--', path):
                 current = regular_json(candidate, path, git)
                 validate_change(current, int(key.split(':')[0]), True)
                 case = next((c for c in current['cases'] if c['id'] == key.split(':')[1]), None)
             if case:
-                required[key] = (case.get('required_execution'), case.get('artifact', 'app'))
+                execution, artifact_name = case.get('required_execution'), case.get('artifact', 'app')
+                if key not in full_policy['cases']:
+                    original_execution, original_artifact = required[key]
+                    if artifact_name != original_artifact:
+                        raise ValueError('Registered Case artifact contract changed: ' + key)
+                    execution = execution or original_execution
+                required[key] = (execution, artifact_name)
         execution, artifact_name = required[key]
         artifact = artifacts.get(artifact_name)
         if not HASH.fullmatch(artifact or ''):
             raise ValueError('Fixed candidate artifact hash is required: ' + artifact_name)
         case_stage = stage if initial_policy and key in initial_policy['cases'] else None
         validate_candidate_result(result, key, initial_policy or full_policy, case_stage, candidate,
-                                  artifact, execution, gop_cases.get(key), git, base, case)
+                                  artifact, execution, gop_cases.get(key), git, base, case,
+                                  full_entries.get(key) if full_policy else None)
     if initial_policy:
         deferred = sum(entry['initial_scope'] == 'deferred' for entry in initial_policy['cases'].values())
         return {'mode': mode, 'gui_complete': False, 'stage': INITIAL_STAGE, 'stage_complete': True,
@@ -1887,7 +2059,7 @@ def verify_pr(pr, api, git=git_read):
 
 
 def render_queue(paths, promotion=None, git=git_read):
-    """Human view is generated from JSON; it is never a second editable status source."""
+    """Render the JSON-derived human view without creating a second editable status source."""
     promotion = promotion or {}
     candidate = promotion.get('candidate')
     results = promotion.get('results', {})
@@ -1897,6 +2069,8 @@ def render_queue(paths, promotion=None, git=git_read):
         validate_change(data, data['issue'], data['gui_required'])
         rows.extend((data, case) for case in data['cases'])
     initial_policy = None
+    continuation = None
+    entries = {}
     historical = []
     stage = promotion.get('stage')
     if stage is not None and (stage != INITIAL_STAGE or promotion.get('scope', 'develop') != 'develop'):
@@ -1904,12 +2078,15 @@ def render_queue(paths, promotion=None, git=git_read):
     if stage is not None or (candidate and promotion.get('base') and
                              git('ls-tree', promotion['base'], '--', INITIAL_PLAN)):
         initial_policy = initial_stage_plan(promotion.get('base'), candidate, git)
-        historical = historical_initial_sources(initial_policy, candidate, git)
-        continuation = initial_continuation(initial_policy, promotion.get('base'), candidate, git) if stage else None
-        if continuation:
+        continuation = initial_continuation(initial_policy, promotion.get('base'), candidate, git,
+                                            historical=not stage)
+        entries = dict(initial_policy['cases'], **(continuation or {}).get('cases', {}))
+        historical = historical_initial_sources(initial_policy, candidate, git,
+                                                continuation if not stage else None)
+        if continuation and stage:
             sources = initial_stage_sources(initial_policy, continuation, None,
                                             promotion.get('changes'), candidate, git)
-            entries = dict(initial_policy['cases'], **continuation['cases'])
+            historical = sources
             for data, case in rows:
                 entry = entries.get(f'{data["issue"]}:{case["id"]}')
                 if entry is None or canonical_hash(case) not in {
@@ -1935,7 +2112,7 @@ def render_queue(paths, promotion=None, git=git_read):
         else:
             current_rows = []
             for data, case in rows:
-                if f'{data["issue"]}:{case["id"]}' in initial_policy['cases']:
+                if f'{data["issue"]}:{case["id"]}' in entries:
                     path = f'docs/verification/changes/issue-{data["issue"]}.json'
                     current = regular_json(candidate, path, git) if git('ls-tree', candidate, '--', path) else {'cases': []}
                     if 'issue' in current:
@@ -1946,15 +2123,33 @@ def render_queue(paths, promotion=None, git=git_read):
             rows = current_rows
             carried = {key for key in initial_policy['cases'] if initial_policy.get('responsibility_revision') or
                        effective_initial_entry(initial_policy, key)['deferred_scope']}
+            carried.update((continuation or {}).get('cases', {}))
             current_keys = {f'{data["issue"]}:{case["id"]}' for data, case in rows}
             for key in sorted(carried):
                 if key in current_keys:
                     continue
-                entry = initial_policy['cases'][key]
-                data = regular_json(initial_policy['required_ancestor'], entry['sources'][0]['source_path'], git)
+                entry = entries[key]
+                path = entry['sources'][0]['source_path']
+                if key not in initial_policy['cases'] and git('ls-tree', candidate, '--', path):
+                    data = regular_json(candidate, path, git)
+                    validate_change(data, int(key.split(':')[0]), True)
+                    case = next((c for c in data['cases'] if c['id'] == key.split(':')[1]), None)
+                    if case:
+                        rows.append((data, case))
+                        continue
+                ref = (initial_policy['required_ancestor'] if key in initial_policy['cases'] else
+                       continuation['candidate'])
+                data = regular_json(ref, path, git)
                 case = next(c for c in data['cases'] if c['id'] == key.split(':')[1])
                 rows.append((data, case))
     contracts = {f'{data["issue"]}:{case["id"]}': case for data, case in rows}
+    registered_requirements = {}
+    for key, case, _ in historical:
+        if key in (continuation or {}).get('cases', {}):
+            execution, artifact = registered_requirements.get(key, (None, case.get('artifact', 'app')))
+            if artifact != case.get('artifact', 'app'):
+                raise ValueError('Registered Case artifact contract changed: ' + key)
+            registered_requirements[key] = (execution or case.get('required_execution'), artifact)
     gop_cases = {}
     if candidate and any(f'{data["issue"]}:{case["id"]}' in GOP_KEYS for data, case in rows):
         policy = gop_amendment(promotion.get('base'), candidate, git)
@@ -2001,9 +2196,15 @@ def render_queue(paths, promotion=None, git=git_read):
             artifact = artifacts.get(case.get('artifact', 'app'))
             if not HASH.fullmatch(artifact or ''):
                 raise ValueError('Candidate artifact not registered')
+            execution = case.get('required_execution')
+            if key in registered_requirements:
+                original_execution, original_artifact = registered_requirements[key]
+                if original_artifact != case.get('artifact', 'app'):
+                    raise ValueError('Registered Case artifact contract changed: ' + key)
+                execution = execution or original_execution
             observed = validate_candidate_result(result, key, initial_policy, case_stage, candidate,
-                        artifact, case.get('required_execution'), gop_cases.get(key), git,
-                        promotion.get('base'), contracts[key] if not case_stage else None)
+                        artifact, execution, gop_cases.get(key), git,
+                        promotion.get('base'), contracts[key] if not case_stage else None, entries.get(key))
             if case_stage:
                 label = ('延期・未実施／初期版必須外・後続#65' if observed['status'] == 'deferred' else
                          '初期版範囲合格／原Case未完了（全範囲gateは別途必要）')
@@ -2078,6 +2279,7 @@ def render_queue(paths, promotion=None, git=git_read):
                           '以下の固定原契約は履歴。有効条件は明示改訂と上の分担を適用する。', '']
             if stage and entry['initial_scope'] == 'deferred':
                 lines += ['このREAL専用Caseは全工程を延期。以下は再開用の原契約。', '']
+        if entry or (continuation and key in continuation['cases']):
             versions = {}
             for source_key, original, source in historical:
                 if source_key == f'{data["issue"]}:{case["id"]}':
