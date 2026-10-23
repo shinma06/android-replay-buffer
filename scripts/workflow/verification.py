@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 import re
 import subprocess
+import sys
 from git_guard import BRANCH
 from agent_policy import SESSION_HASH, session_fingerprint
 
@@ -1636,17 +1637,23 @@ def promotion_policy_blobs(base, candidate, git, continuation=False):
                'scripts/workflow/test_initial_continuation.py',
                'scripts/workflow/test_impact_evidence_reuse.py', 'docs/verification/README.md',
                'docs/verification/changes/issue-356.json'}
-    pending = ['scripts/workflow/verification.py']
-    dependencies, imports = set(), set()
+    pending = [('scripts/workflow/verification.py', False),
+               ('scripts/workflow/test_initial_continuation.py', True),
+               ('scripts/workflow/test_impact_evidence_reuse.py', True)]
+    dependencies, imports, visited = set(), set(), set()
     while pending:
-        dependency = pending.pop()
+        dependency, regression = pending.pop()
+        if (dependency, regression) in visited:
+            continue
+        visited.add((dependency, regression))
         entry = git('ls-tree', base, '--', dependency).split()
         if not entry:
             if git('ls-tree', base, '--', dependency[:-3] + '/__init__.py'):
                 raise ValueError('Gate package dependency needs an explicit carry update: ' + dependency)
             continue
         if (entry[:2] != ['100644', 'blob'] or '/' in dependency.removeprefix('scripts/workflow/') or
-                dependency.startswith('scripts/workflow/test_')):
+                dependency in ('scripts/workflow/test_change_impact.py', 'scripts/workflow/test_product_check.py') or
+                not regression and dependency.startswith('scripts/workflow/test_')):
             raise ValueError('Gate dependency must be a regular flat workflow module: ' + dependency)
         dependencies.add(dependency)
         if dependency == 'scripts/workflow/change_impact.py':
@@ -1661,6 +1668,13 @@ def promotion_policy_blobs(base, candidate, git, continuation=False):
         else:
             allowed.add(dependency)
         for node in ast.walk(ast.parse(git('show', f'{base}:{dependency}'))):
+            if (regression and isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and
+                    node.func.id == '__import__' and len(node.args) == 1 and
+                    isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str) and
+                    node.args[0].value in sys.stdlib_module_names and not any(
+                        git('ls-tree', ref, '--', 'scripts/workflow/' + node.args[0].value + '.py')
+                        for ref in (base, candidate))):
+                continue
             if ((isinstance(node, ast.ImportFrom) and node.level) or
                     (isinstance(node, ast.Call) and
                      (isinstance(node.func, ast.Name) and node.func.id == '__import__' or
@@ -1669,12 +1683,12 @@ def promotion_policy_blobs(base, candidate, git, continuation=False):
             names = ([node.module] if isinstance(node, ast.ImportFrom) else
                      [alias.name for alias in node.names] if isinstance(node, ast.Import) else [])
             for name in names:
-                if not name or name in imports:
+                if not name or (name, regression) in imports:
                     continue
-                imports.add(name)
+                imports.add((name, regression))
                 path = 'scripts/workflow/' + name.replace('.', '/') + '.py'
-                if path not in dependencies:
-                    pending.append(path)
+                if (path, regression) not in visited:
+                    pending.append((path, regression))
     for path in sorted(set(git('diff', '--no-renames', '--name-only', ancestor, base).splitlines()) | dependencies):
         if path not in allowed:
             continue
@@ -1682,6 +1696,11 @@ def promotion_policy_blobs(base, candidate, git, continuation=False):
         old_blob = git('ls-tree', candidate, '--', path)
         if not blob or blob == old_blob:
             continue
+        if path == 'docs/verification/README.md' and old_blob:
+            common = git('ls-tree', ancestor, '--', path)
+            if common not in (blob, old_blob) and (old_blob.split()[2], blob.split()[2]) != (
+                    '3ae14aa6205aed699b52f3c67e96038130389240', 'ae527ba6ec98c8e04d198359bd146b33552b975c'):
+                raise ValueError('Candidate README changes require explicit trusted-main reconciliation')
         if path == INITIAL_CONTINUATION:
             initial_continuation(policy, base, candidate, git)
         elif path == 'docs/verification/changes/issue-356.json':

@@ -252,6 +252,7 @@ class InitialContinuationTests(unittest.TestCase):
         required = {v.INITIAL_CONTINUATION, record_path, script, fixture,
                     'scripts/workflow/test_initial_continuation.py',
                     'scripts/workflow/test_impact_evidence_reuse.py', 'docs/verification/README.md',
+                    'scripts/workflow/test_agent_loop.py',
                     *('scripts/workflow/' + name + '.py' for name in
                       ('git_guard', 'agent_policy', 'issue_schema', 'handoff_registry', 'agent_worker'))}
         unrelated = ['AGENTS.md', 'README.md', 'docs/android-studio.md', 'docs/design/timeline.md',
@@ -268,7 +269,10 @@ class InitialContinuationTests(unittest.TestCase):
                    'scripts/workflow/handoff_registry.py': 'from agent_worker import api',
                    'scripts/workflow/agent_worker.py': 'from verification import api',
                    'scripts/workflow/issue_schema.py': '', 'scripts/workflow/git_guard.py': '',
-                   'scripts/workflow/change_impact.py': ''}
+                   'scripts/workflow/change_impact.py': '',
+                   'scripts/workflow/test_initial_continuation.py': 'from test_agent_loop import api',
+                   'scripts/workflow/test_impact_evidence_reuse.py': '',
+                   'scripts/workflow/test_agent_loop.py': ''}
 
         def git(*args):
             if args[0] == 'merge-base':

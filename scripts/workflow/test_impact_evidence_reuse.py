@@ -722,6 +722,7 @@ class PromotionTreeTests(unittest.TestCase):
             self.write(path, 'current candidate facts')
         self.write('scripts/workflow/verification.py', '"""adopted candidate Doc"""\nPOLICY = "old policy"')
         self.write('scripts/workflow/git_guard.py', 'def old_gate_api():\n    return "old API"\n')
+        self.write('scripts/workflow/test_agent_loop.py', 'def old_fixture_api():\n    return "old fixture"\n')
         self.write('docs/verification/README.md', 'adopted candidate Doc\nold explanation')
         self.write(COMPONENT, 'old product')
         self.commit('common')
@@ -926,6 +927,54 @@ class PromotionTreeTests(unittest.TestCase):
                 self.commit('unsupported gate import')
                 with self.assertRaises(ValueError):
                     promotion_policy_blobs(self.git('rev-parse', 'HEAD'), self.candidate, self.git)
+
+    def test_regression_and_fixture_dependency_import_together_in_both_modes(self):
+        from verification import promotion_policy_blobs
+        for candidate_only in (False, True):
+            self.git('checkout', '-q', '-B', 'trusted-main', self.base)
+            name = 'old_fixture_api' if candidate_only else 'fixture_api'
+            self.write('scripts/workflow/test_initial_continuation.py',
+                       f'from test_agent_loop import {name}\nVALUE = {name}()\n')
+            if not candidate_only:
+                self.write('scripts/workflow/test_agent_loop.py',
+                           'def fixture_api():\n    return "reviewed fixture"\n')
+            self.commit('reviewed regression and fixture')
+            base = self.git('rev-parse', 'HEAD')
+            self.git('checkout', '-q', '-B', 'fixture-candidate', self.candidate)
+            if candidate_only:
+                self.write('scripts/workflow/test_agent_loop.py',
+                           'def fixture_api():\n    return "candidate fixture"\n')
+                self.commit('candidate-only fixture API change')
+            candidate = self.git('rev-parse', 'HEAD')
+            expected = 'old fixture' if candidate_only else 'reviewed fixture'
+            for continuation in (False, True):
+                with self.subTest(candidate_only=candidate_only, continuation=continuation):
+                    self.git('checkout', '-q', '-B', 'coherent-regression', candidate)
+                    carried = promotion_policy_blobs(base, candidate, self.git, continuation=continuation)
+                    for path in carried:
+                        self.write(path, self.git('show', f'{base}:{path}'))
+                    self.commit('exact regression and fixture')
+                    result = subprocess.run([sys.executable, '-B', '-I', '-c',
+                        'import sys; sys.path.insert(0, "scripts/workflow"); '
+                        f'import test_initial_continuation as t; assert t.VALUE == {expected!r}'],
+                        cwd=self.root, capture_output=True, text=True)
+                    self.assertEqual(0, result.returncode, result.stderr)
+
+    def test_candidate_readme_additions_require_explicit_main_reconciliation(self):
+        from verification import promotion_policy_blobs
+        self.git('checkout', '-q', '-B', 'readme-candidate', self.candidate)
+        text = self.git('show', f'{self.candidate}:docs/verification/README.md') + '\nCandidate-only guarantee'
+        self.write('docs/verification/README.md', text)
+        self.commit('candidate-only acceptance explanation')
+        candidate = self.git('rev-parse', 'HEAD')
+        for continuation in (False, True):
+            with self.subTest(continuation=continuation), self.assertRaisesRegex(ValueError, 'README'):
+                promotion_policy_blobs(self.base, candidate, self.git, continuation=continuation)
+        self.git('checkout', '-q', 'trusted-main')
+        self.write('docs/verification/README.md', text)
+        self.commit('explicitly reconciled candidate explanation')
+        carried = promotion_policy_blobs(self.git('rev-parse', 'HEAD'), candidate, self.git)
+        self.assertNotIn('docs/verification/README.md', carried)
 
 class CertificateArchivePromotionTests(unittest.TestCase):
     git = PromotionTreeTests.git
