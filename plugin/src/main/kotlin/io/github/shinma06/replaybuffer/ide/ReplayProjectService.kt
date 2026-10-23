@@ -364,8 +364,8 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
             val notification = if (save.phase == SavePhase.COMPLETED && save.directory != null) {
                 val missing = save.missingKinds.map(::streamName).joinToString("、")
                 group.createNotification(
-                    if (missing.isEmpty()) "保存しました" else "保存しました（一部の記録に欠落があります）",
-                    if (missing.isEmpty()) "直前の記録を完成フォルダへ保存しました。" else "不足・欠落: $missing",
+                    if (missing.isEmpty()) "保存しました" else "保存しました（記録の不足・未確認があります）",
+                    if (missing.isEmpty()) "直前の記録を完成フォルダへ保存しました。" else "記録の不足・未確認: $missing",
                     if (missing.isEmpty()) NotificationType.INFORMATION else NotificationType.WARNING,
                 ).addAction(NotificationAction.create("フォルダを開く") { _, event ->
                     if (alive) openDirectory(save.directory) else event.expire()
