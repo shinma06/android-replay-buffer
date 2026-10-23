@@ -124,7 +124,8 @@ internal class ReplayProjectCapture(
     }
 
     fun applySettings(settings: ReplaySettings, environment: AndroidReplayEnvironment, revision: Long): CompletableFuture<ReplayOperation> = submit(revision) { engine ->
-        settings.validationError()?.let { return@submit settingsFailure(engine, revision, it) }
+        // A screenshot-only folder must not prevent video/log capture from applying its own settings.
+        settings.copy(screenshotUsesCommonDestination = true).validationError()?.let { return@submit settingsFailure(engine, revision, it) }
         val target = settings.toCoreSettings(environment)
         // Only the nonblocking core enqueue is inside this boundary. No callback, IO, or await
         // can reenter refresh between checking the generation and submitting its settings.

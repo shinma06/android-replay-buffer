@@ -84,7 +84,7 @@ class ScreenshotSaveTest {
             val other = Files.createDirectory(root.resolve("other"))
             val link = Files.createSymbolicLink(root.resolve("linked-output"), other)
             val saved = saveScreenshot(adb, "sample.app", link)
-            assertEquals(other, saved.file.parent.parent)
+            assertEquals(other, saved.file.parent)
             assertContentEquals(Files.readAllBytes(root.resolve("image.png")), Files.readAllBytes(saved.file))
             val replacement = Files.createDirectory(root.resolve("replacement"))
             Files.writeString(replacement.resolve("keep"), "unrelated")
@@ -106,8 +106,11 @@ class ScreenshotSaveTest {
             Files.writeString(destination.resolve("keep"), "unrelated")
             val saved = saveScreenshot(adb, "sample.app", destination)
             assertContentEquals(Files.readAllBytes(root.resolve("image.png")), Files.readAllBytes(saved.file))
-            assertEquals(destination, saved.file.parent.parent)
+            assertEquals(destination, saved.file.parent)
             assertEquals("sample.app", saved.application)
+            assertTrue(Regex("screenshot-[0-9]{8}-[0-9]{6}-[0-9]{3}-[0-9a-f-]{36}\\.png").matches(saved.file.fileName.toString()))
+            assertEquals(setOf("keep", saved.file.fileName.toString()), Files.list(destination).use { it.map { path -> path.fileName.toString() }.toList().toSet() })
+            assertEquals(java.nio.file.attribute.PosixFilePermissions.fromString("rw-------"), Files.getPosixFilePermissions(saved.file))
             assertEquals(listOf("devices -l", "-s usb123 shell dumpsys SurfaceFlinger --display-id",
                 "-s usb123 shell dumpsys window", "-s usb123 exec-out screencap -p -d 4619827551948147201", "-s usb123 shell dumpsys window"),
                 Files.readAllLines(root.resolve("commands")))
@@ -119,6 +122,35 @@ class ScreenshotSaveTest {
             assertTrue(Files.isDirectory(saved.file.parent))
             assertTrue(Files.exists(second.file))
             assertEquals("unrelated", Files.readString(destination.resolve("keep")))
+        }
+    }
+
+    @Test
+    fun concurrentDirectImagesAreUniqueAndExclusiveFileCollisionPreservesBothInputs() {
+        assumeTrue(System.getProperty("os.name") == "Mac OS X")
+        fixture { root, adb ->
+            val destination = Files.createDirectory(root.resolve("output"))
+            java.util.concurrent.Executors.newFixedThreadPool(2).use { executor ->
+                val start = java.util.concurrent.CyclicBarrier(2)
+                val requests = List(2) { executor.submit<SavedScreenshot> {
+                    start.await()
+                    saveScreenshot(adb, "sample.app", destination)
+                } }
+                val saved = requests.map { it.get(10, java.util.concurrent.TimeUnit.SECONDS) }
+                assertEquals(2, saved.map { it.file }.toSet().size)
+                assertEquals(saved.map { it.file }.toSet(), Files.list(destination).use { it.toList().toSet() })
+                saved.forEach { assertEquals(destination, it.file.parent); validateScreenshotPng(Files.readAllBytes(it.file)) }
+            }
+            SaveOutputDirectory.open(destination).use { parent ->
+                parent.createFile(".collision.partial").use { partial ->
+                    partial.channel().use { it.write(java.nio.ByteBuffer.wrap("preserved".toByteArray())); it.force(true) }
+                    Files.writeString(destination.resolve("existing.png"), "unrelated")
+                    assertFails { parent.moveFile(".collision.partial", parent, "existing.png") }
+                    parent.verifyFile(".collision.partial", partial)
+                    assertEquals("preserved", Files.readString(destination.resolve(".collision.partial")))
+                    assertEquals("unrelated", Files.readString(destination.resolve("existing.png")))
+                }
+            }
         }
     }
 

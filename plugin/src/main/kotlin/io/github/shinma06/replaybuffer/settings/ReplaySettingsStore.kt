@@ -33,13 +33,25 @@ data class ReplaySettings(
     val manualPackage: String = "",
     val captureMode: CaptureMode = CaptureMode.VIDEO_AND_LOGS,
     val autoSaveOnCrash: Boolean = false,
+    val screenshotUsesCommonDestination: Boolean = true,
+    val screenshotDirectory: String = "",
 ) {
-    fun validationError(): String? = validationError(validateDestination(destination))
+    val screenshotDestination: String get() = if (screenshotUsesCommonDestination) destination else screenshotDirectory
 
-    internal fun validationError(destinationValidation: DestinationValidation): String? {
+    fun validationError(): String? = validationError(validateDestination(destination), validateDestination(screenshotDestination))
+
+    internal fun validationError(
+        destinationValidation: DestinationValidation,
+        screenshotValidation: DestinationValidation = validateDestination(screenshotDestination),
+    ): String? {
         require(destinationValidation.destination == destination)
         if (retentionSeconds !in 1..CoreReplaySettings.MAX_REPLAY_SECONDS) return "保持時間は1〜900秒で指定してください。"
         destinationValidation.error?.let { return it }
+        require(screenshotValidation.destination == screenshotDestination)
+        if (!screenshotUsesCommonDestination) {
+            if (screenshotDirectory.isEmpty()) return "スクリーンショット専用の保存先を指定してください。"
+            screenshotValidation.error?.let { return "スクリーンショット: $it" }
+        }
         if (appSelection == AppSelectionMode.MANUAL && !isApplicationId(manualPackage)) {
             return "package名は255文字以内で、英字で始まる各部分をピリオドで区切って指定してください。"
         }
@@ -97,6 +109,10 @@ data class ReplaySettingsState(
     @JvmField val captureMode: CaptureMode = CaptureMode.VIDEO_AND_LOGS,
     @field:OptionTag("autoSaveOnCrash")
     @JvmField val autoSaveOnCrash: Boolean = false,
+    @field:OptionTag("screenshotUsesCommonDestination")
+    @JvmField val screenshotUsesCommonDestination: Boolean = true,
+    @field:OptionTag("screenshotDirectory")
+    @JvmField val screenshotDirectory: String = "",
 )
 
 @Service(Service.Level.PROJECT)
@@ -111,7 +127,7 @@ class ReplaySettingsStore : SerializablePersistentStateComponent<ReplaySettingsS
     fun settings(): ReplaySettings {
         val snapshot = state
         return ReplaySettings(snapshot.retentionSeconds, snapshot.destination, snapshot.appSelection, snapshot.manualPackage,
-            snapshot.captureMode, snapshot.autoSaveOnCrash)
+            snapshot.captureMode, snapshot.autoSaveOnCrash, snapshot.screenshotUsesCommonDestination, snapshot.screenshotDirectory)
     }
 
     fun setEnabled(value: Boolean) {
@@ -119,12 +135,16 @@ class ReplaySettingsStore : SerializablePersistentStateComponent<ReplaySettingsS
     }
 
     fun apply(settings: ReplaySettings) {
-        apply(settings, validateDestination(settings.destination))
+        apply(settings, validateDestination(settings.destination), validateDestination(settings.screenshotDestination))
     }
 
     /** Configurable supplies the result already checked in the background for this exact path. */
-    internal fun apply(settings: ReplaySettings, destinationValidation: DestinationValidation) {
-        val error = settings.validationError(destinationValidation)
+    internal fun apply(
+        settings: ReplaySettings,
+        destinationValidation: DestinationValidation,
+        screenshotValidation: DestinationValidation = validateDestination(settings.screenshotDestination),
+    ) {
+        val error = settings.validationError(destinationValidation, screenshotValidation)
         require(error == null) { error.orEmpty() }
         updateState {
             require(!it.enabled || settings.captureMode == it.captureMode) { "取得モードは取得をOFFにしてから変更してください。" }
@@ -135,6 +155,8 @@ class ReplaySettingsStore : SerializablePersistentStateComponent<ReplaySettingsS
                 manualPackage = settings.manualPackage,
                 captureMode = settings.captureMode,
                 autoSaveOnCrash = settings.autoSaveOnCrash,
+                screenshotUsesCommonDestination = settings.screenshotUsesCommonDestination,
+                screenshotDirectory = settings.screenshotDirectory,
             )
         }
     }

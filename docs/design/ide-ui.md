@@ -93,6 +93,8 @@ Settings → Tools → Android Replay Buffer をproject-level `Configurable`で�
 
 ## 第2版の独立スクリーンショット（#325）
 
+設定に「動画・ログと同じ場所に保存する」（既定ON）とスクショ専用の別フォルダを設ける。共通は動画/ログの設定rootを参照し、replay出力の子フォルダは使わない。OFFにした場合は専用フォルダを必須とし、空欄・相対パス・消失・非フォルダを理由付きで拒否して共通先へfallbackしない。入力のfilesystem確認は非同期で、Apply/OKだけが永続化する。Cancel/resetは破棄する。取得ON中も保存先を変更でき、既に開始した要求は押下時の保存先を使う。旧XMLで追加キーがなければ共通となり、旧成果物の移行は行わない。CLI移行は旧保持時間/動画ログrootだけを更新し、専用の選択とパスは保持する。専用先だけの不備は動画/ログの取得を停止しない。残受入は[#338 Case](../verification/changes/issue-338.json)で旧SCREENSHOT-USB/ACTIONS/DEVICEと区別する。
+
 ToolWindow上部に「スクリーンショットを保存」を常設する。取得OFF・ログ専用・取得初期化/保存中/失敗固定対象の有無では無効化しない。解決済みの最新の対象アプリ・適用済み保存先・SDKのadbを押下時に固定し、project scopeの独立IO処理を直ちに開始する。選択解決待ち、対象未選択、保存先未指定、スクショ処理中、project終了時は理由を示す。画面内にスクショ自身の対象と保存先を表示し、取得snapshotの旧条件と混同させない。
 
 #333の本人指示により、端末選択は録画と同じ規則を共有する。要求時の取得snapshotが有効ならそのserialを固定し、SDK設定の反映待ちや取得ONの対象未確定では理由を示す。OFF反映中も実際の取得snapshotに対象が残っている間は同じserialを使う。OFF・履歴なしではSDKのadbの`devices -l`から接続済み候補を1台だけ解決し、取得開始や履歴作成を行わない。選択済み端末があれば、ほかの接続端末の数やUSB/Emulatorの別によらずその端末を使い、消失・offline・未認証時に別端末へ切り替えない。すべての撮影commandは要求に固定した`-s <serial>`へ送る。以前の`-d get-serialno`によるUSB専用選択は履歴であり、原観察は新経路のPASSへ換えない。
@@ -101,9 +103,9 @@ ToolWindow上部に「スクリーンショットを保存」を常設する。�
 
 これはアプリ専用の原子的な撮影ではなく、端末に表示中の画面全体を撮影する。前後の観察の間に別画面へ切り替わって戻る競合やoverlayは検出しきれないため、撮影中に画面を切り替えない前提を表示する。通知・キーボード等も写る。`FLAG_SECURE`等の保護を回避せず、空白も有効なPNGとして保存し、保護領域の内容取得を成功条件にしない。SDKのadbと診断出力に対応する端末が必要で、未知機種を推測で成功にしない。実機ごとの対応は受入で確定する。
 
-取得PNGは最大64 MiB、縦横それぞれ16384以下かつ16777216画素以下に制限し、署名・全chunkの長さ/CRC・終端・全画像の復号を確認する。画像は再圧縮せず元byteを保存する。adb待ちは通常要求5秒、PNG取得15秒を上限とし、EDTでは待たない。設定済み保存先は通常保存と同じ`toRealPath()`で実rootへ解決し、macOSの`/tmp`や利用者指定のフォルダリンクも受け付ける。その固定rootを所有directory/file handleで開き、直下の`.screenshot-日時-UUID.partial/screen.png`を0700/0600で作成し、書込み完了後にmacOSの排他的renameで`screenshot-日時-UUID/screen.png`へ公開する。所有子directory/PNGではsymlinkを辿らず、実体を照合して既存成果物を上書きしない。書込み/公開失敗・取消しの部分出力は保全し、確認できる残留先は失敗通知からコピーできる。取消し後の成功通知は行わない。
+取得PNGは最大64 MiB、縦横それぞれ16384以下かつ16777216画素以下に制限し、署名・全chunkの長さ/CRC・終端・全画像の復号を確認する。画像は再圧縮せず元byteを保存する。adb待ちは通常要求5秒、PNG取得15秒を上限とし、EDTでは待たない。設定済み保存先は通常保存と同じ`toRealPath()`で実rootへ解決し、macOSの`/tmp`や利用者指定のフォルダリンクも受け付ける。その固定rootを所有directory/file handleで開き、直下の`.screenshot-日時-UUID.partial`を0600で作成し、owner/mode/ACL・全画像hashと実体を照合する。書込み完了後にmacOSの排他的renameで`screenshot-日時-UUID.png`へ公開し、再照合する。所有PNGではsymlinkを辿らず、既存成果物を上書きしない。撮影別の完成フォルダ・README・sidecarは作らない。書込み/公開失敗・取消しの部分出力は保全し、確認できる残留先は失敗通知からコピーできる。取消し後の成功通知は行わない。
 
-成功通知の「保存場所を開く」は今回のフォルダを既存のOS連携で開く。「保存したファイルを削除」は親/保存directory/fileの実体と完成時hashを照合し、私有削除用directoryへの排他的移動後も対象を再確認して、そのPNGだけを削除する。置換/改変/消失や権限失敗ではエラーを示す。照合不一致時は非上書きで復元を試み、戻せない出力を保全する。親フォルダ、他のファイル、後のスクショは残す。同一利用者による任意の同時変更まで原子的に排除する保証ではなく、既存保存と同じ所有観察の境界を持つ。project終了後は通知actionを失効させ、進行中の取得clientだけを取消す。
+成功通知の「保存場所を開く」は実画像の親フォルダを既存のOS連携で開く。「保存したファイルを削除」は保存先directory/画像fileの実体と完成時hashを照合し、私有削除用directoryへの排他的移動後も対象を再確認して、そのPNGだけを削除する。置換/改変/消失や権限失敗ではエラーを示す。照合不一致時は非上書きで復元を試み、戻せない出力を保全する。親フォルダ、他のファイル、後のスクショは残す。同一利用者による任意の同時変更まで原子的に排除する保証ではなく、既存保存と同じ所有観察の境界を持つ。project終了後は通知actionを失効させ、進行中の取得clientだけを取消す。
 
 根拠は[Android公式adbのスクショ](https://developer.android.com/tools/adb#screencap)、[FLAG_SECURE](https://developer.android.com/security/fraud-prevention/activities)、AOSPの固定[WindowManagerService / DisplayContent / PhoneWindowManager / KeyguardServiceDelegate / screencap](https://android.googlesource.com/platform/frameworks/base/+/1cdfff555f4a21f71ccc978290e2e212e2f8b168/)と[SurfaceFlingerの画面ID出力](https://android.googlesource.com/platform/frameworks/native/+/db4192ada9dee591ec897a51c07c489c84c860c1/services/surfaceflinger/SurfaceFlinger.cpp)。固定sourceの形式確認と、製品の実IDE/USB観察は区別する。[Case #325](../verification/changes/issue-325.json)が残保証を追跡する。
 

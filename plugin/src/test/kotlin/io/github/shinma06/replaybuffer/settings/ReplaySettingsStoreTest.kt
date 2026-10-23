@@ -49,7 +49,8 @@ class ReplaySettingsStoreTest {
     @Test
     fun `CLI import changes only legacy values while OFF and invalid input is atomic`() {
         val store = ReplaySettingsStore()
-        val selected = ReplaySettings(180, "", AppSelectionMode.MANUAL, "com.example.app", CaptureMode.LOG_ONLY, autoSaveOnCrash = true)
+        val selected = ReplaySettings(180, "", AppSelectionMode.MANUAL, "com.example.app", CaptureMode.LOG_ONLY, autoSaveOnCrash = true,
+            screenshotUsesCommonDestination = false, screenshotDirectory = destinationRoot.toString())
         store.apply(selected)
         store.importLegacy(60, destinationRoot.toString())
         assertEquals(selected.copy(retentionSeconds = 60, destination = destinationRoot.toString()), store.settings())
@@ -62,6 +63,40 @@ class ReplaySettingsStoreTest {
         assertThrows(IllegalArgumentException::class.java) { store.importLegacy(12, destinationRoot.toString()) }
         assertTrue(store.enabled)
         assertEquals(60, store.settings().retentionSeconds)
+    }
+
+    @Test
+    fun `screenshot destination defaults to common and dedicated settings persist without fallback`() {
+        val oldXml = XmlSerializer.deserialize(Element("state").apply {
+            addContent(Element("option").setAttribute("name", "destination").setAttribute("value", destinationRoot.toString()))
+        }, ReplaySettingsState::class.java)
+        val store = ReplaySettingsStore()
+        store.loadState(oldXml)
+        assertTrue(store.settings().screenshotUsesCommonDestination)
+        assertEquals(destinationRoot.toString(), store.settings().screenshotDestination)
+        val dedicated = Files.createDirectory(destinationRoot.resolve("screenshots")).toString()
+        val selected = store.settings().copy(screenshotUsesCommonDestination = false, screenshotDirectory = dedicated)
+        store.setEnabled(true)
+        store.apply(selected)
+        val restored = ReplaySettingsStore()
+        restored.loadState(XmlSerializer.deserialize(XmlSerializer.serialize(store.state), ReplaySettingsState::class.java))
+        assertEquals(selected, restored.settings())
+        assertEquals(dedicated, restored.settings().screenshotDestination)
+        assertTrue(restored.enabled)
+        val checked = validateDestination(dedicated)
+        for (invalid in listOf("", "relative", destinationRoot.resolve("missing").toString(), Files.createFile(destinationRoot.resolve("file")).toString())) {
+            val draft = selected.copy(screenshotDirectory = invalid)
+            assertEquals(invalid, draft.screenshotDestination, "invalid dedicated path must never fall back")
+            assertNotNull(draft.validationError())
+            assertThrows(IllegalArgumentException::class.java) { store.apply(draft) }
+            assertThrows(IllegalArgumentException::class.java) { store.apply(draft, validateDestination(selected.destination), checked) }
+            assertEquals(selected, store.settings(), "invalid Apply must be atomic")
+        }
+        val common = selected.copy(screenshotUsesCommonDestination = true, screenshotDirectory = "unused-relative")
+        store.apply(common)
+        assertEquals(common.destination, store.settings().screenshotDestination)
+        store.apply(selected.copy(destination = ""))
+        assertEquals(dedicated, store.settings().screenshotDestination, "screenshot-only folder works without a video/log destination")
     }
 
     @Test

@@ -38,6 +38,12 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable {
     private var panel: JPanel? = null
     private var retention: JBTextField? = null
     private var destination: TextFieldWithBrowseButton? = null
+    private var screenshotCommon: JBCheckBox? = null
+    private var screenshotDirectory: TextFieldWithBrowseButton? = null
+    private var screenshotStatus: JBLabel? = null
+    private var screenshotValidation: DestinationValidation? = null
+    private var screenshotValidationJob: Job? = null
+    private var screenshotRevision = 0L
     private var mode: JComboBox<AppSelectionMode>? = null
     private var captureMode: JComboBox<CaptureMode>? = null
     private var autoSave: JBCheckBox? = null
@@ -58,7 +64,7 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable {
         val lifetime = Disposer.newDisposable("Replay Buffer settings UI")
         uiLifetime = lifetime
         Disposer.register(replayService ?: project, lifetime)
-        Disposer.register(lifetime) { validationJob?.cancel() }
+        Disposer.register(lifetime) { validationJob?.cancel(); screenshotValidationJob?.cancel() }
         project.messageBus.connect(lifetime).subscribe(ReplayProjectService.ENVIRONMENT_CHANGED, Runnable {
             ApplicationManager.getApplication().invokeLater({
                 if (uiLifetime === lifetime && !project.isDisposed) renderApplication()
@@ -72,6 +78,19 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable {
             textField.document.addDocumentListener(object : DocumentAdapter() {
                 override fun textChanged(event: DocumentEvent) = checkDestination()
             })
+        }
+        screenshotStatus = JBLabel().apply { accessibleContext.accessibleName = "スクリーンショット保存先の確認結果" }
+        screenshotDirectory = TextFieldWithBrowseButton().apply {
+            addBrowseFolderListener(project, FileChooserDescriptorFactory.createSingleFolderDescriptor())
+            accessibleContext.accessibleName = "スクリーンショット専用フォルダ"
+            textField.document.addDocumentListener(object : DocumentAdapter() {
+                override fun textChanged(event: DocumentEvent) = checkScreenshotDestination()
+            })
+        }
+        screenshotCommon = JBCheckBox("動画・ログと同じ場所に保存する", true).apply {
+            accessibleContext.accessibleName = "スクリーンショットを共通の保存先へ保存"
+            toolTipText = "OFFにするとスクリーンショット専用の別フォルダを指定できます。画像は選択先の直下に保存します。"
+            addActionListener { checkScreenshotDestination() }
         }
         val packageGuidance = "255文字以内。英字で始まる2つ以上の部分をピリオドで区切ります。" +
             "各部分には半角英数字と「_」を使えます（例: com.example.app）。"
@@ -102,6 +121,9 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable {
             .addLabeledComponent("保持時間（1〜900秒）:", retention!!)
             .addLabeledComponent("保存先フォルダ:", destination!!)
             .addComponent(destinationStatus!!)
+            .addLabeledComponent("スクリーンショット保存先:", screenshotCommon!!)
+            .addLabeledComponent("専用の別フォルダ:", screenshotDirectory!!)
+            .addComponent(screenshotStatus!!)
             .addLabeledComponent("対象アプリ:", mode!!)
             .addLabeledComponent("package名:", manualPackage!!)
             .addComponent(object : JBTextArea(packageGuidance) {
@@ -134,6 +156,7 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable {
             .addComponentFillVertically(JPanel(), 0)
             .panel
         checkDestination()
+        checkScreenshotDestination()
         renderApplication()
         return panel!!
     }
@@ -169,6 +192,33 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable {
         }
     }
 
+    private fun checkScreenshotDestination() {
+        val field = screenshotDirectory ?: return
+        val lifetime = uiLifetime ?: return
+        val common = screenshotCommon?.isSelected != false
+        field.isEnabled = !common
+        val revision = ++screenshotRevision
+        screenshotValidationJob?.cancel()
+        screenshotValidationJob = null
+        screenshotValidation = null
+        if (common) {
+            screenshotStatus?.text = "動画・ログの保存先フォルダ直下にPNG画像1枚を保存します。"
+            return
+        }
+        val value = field.text
+        screenshotStatus?.text = if (value.isEmpty()) "スクリーンショット専用の保存先を指定してください。" else "保存先を確認中…"
+        if (value.isEmpty()) {
+            screenshotValidation = validateDestination(value)
+            return
+        }
+        screenshotValidationJob = replayService?.scope?.checkDestination(value) { result ->
+            if (uiLifetime === lifetime && !project.isDisposed && revision == screenshotRevision) {
+                screenshotValidation = result
+                screenshotStatus?.text = result.error ?: "専用フォルダ直下にPNG画像1枚を保存します。"
+            }
+        }
+    }
+
     private fun draft(): ReplaySettings = ReplaySettings(
         retentionSeconds = retention?.text?.toIntOrNull() ?: 0,
         destination = destination?.text.orEmpty(),
@@ -176,6 +226,8 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable {
         manualPackage = manualPackage?.text.orEmpty(),
         captureMode = captureMode?.selectedItem as? CaptureMode ?: CaptureMode.VIDEO_AND_LOGS,
         autoSaveOnCrash = autoSave?.isSelected == true,
+        screenshotUsesCommonDestination = screenshotCommon?.isSelected != false,
+        screenshotDirectory = screenshotDirectory?.text.orEmpty(),
     )
 
     override fun isModified(): Boolean = panel != null && draft() != store().settings()
@@ -185,12 +237,16 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable {
         val settings = draft()
         val checked = destinationValidation?.takeIf { it.destination == settings.destination }
             ?: throw ConfigurationException("保存先を確認中です。確認が終わってから適用してください。")
-        settings.validationError(checked)?.let { throw ConfigurationException(it) }
+        val screenshotChecked = if (settings.screenshotUsesCommonDestination) checked else {
+            screenshotValidation?.takeIf { it.destination == settings.screenshotDirectory }
+                ?: throw ConfigurationException("スクリーンショットの保存先を確認中です。確認が終わってから適用してください。")
+        }
+        settings.validationError(checked, screenshotChecked)?.let { throw ConfigurationException(it) }
         val service = replayService
         if (settings.captureMode != store().settings().captureMode &&
             (store().enabled || service?.captureView?.snapshot?.enabled == true || service?.resolving == true || (service?.captureView?.pending ?: 0) > 0))
             throw ConfigurationException("取得をOFFにし、設定・操作の反映が終わってから取得モードを変更してください。")
-        try { store().apply(settings, checked) } catch (failure: IllegalArgumentException) {
+        try { store().apply(settings, checked, screenshotChecked) } catch (failure: IllegalArgumentException) {
             throw ConfigurationException(failure.message.orEmpty())
         }
         project.messageBus.syncPublisher(ReplaySettingsStore.CHANGED).run()
@@ -201,12 +257,15 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable {
         val settings = store().settings()
         retention?.text = settings.retentionSeconds.toString()
         destination?.text = settings.destination
+        screenshotCommon?.isSelected = settings.screenshotUsesCommonDestination
+        screenshotDirectory?.text = settings.screenshotDirectory
         mode?.selectedItem = settings.appSelection
         captureMode?.selectedItem = settings.captureMode
         autoSave?.isSelected = settings.autoSaveOnCrash
         manualPackage?.text = settings.manualPackage
         manualPackage?.isEnabled = settings.appSelection == AppSelectionMode.MANUAL
         checkDestination()
+        checkScreenshotDestination()
         renderApplication()
     }
 
@@ -215,13 +274,19 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable {
         uiLifetime = null
         validationJob = null
         destinationValidation = null
+        screenshotValidation = null
+        screenshotValidationJob = null
+        screenshotStatus = null
         destinationStatus = null
         applicationStatus = null
         replayService = null
         destination?.dispose()
+        screenshotDirectory?.dispose()
         panel = null
         retention = null
         destination = null
+        screenshotDirectory = null
+        screenshotCommon = null
         mode = null
         captureMode = null
         autoSave = null

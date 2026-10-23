@@ -18,7 +18,6 @@ internal class SavedScreenshot(
     val file: Path,
     val application: String,
     private val parentKey: Pair<Long, Long>,
-    private val directoryKey: Pair<Long, Long>,
     private val fileKey: Pair<Long, Long>,
     private val hash: String,
 ) {
@@ -27,34 +26,30 @@ internal class SavedScreenshot(
     @Synchronized
     fun delete() {
         if (deleted) return
-        SaveOutputDirectory.open(file.parent.parent).use { parent ->
-            check(parent.key == parentKey) { "保存先が変更されています。ファイルは削除しません。" }
-            parent.openChild(file.parent.fileName.toString()).use { directory ->
-                check(directory.key == directoryKey) { "保存フォルダが変更されています。ファイルは削除しません。" }
-                directory.requirePrivate()
-                directory.openFile(file.fileName.toString()).use { original ->
-                    check(original.key == fileKey && original.hash() == hash) { "保存後にファイルが変更されています。削除しません。" }
-                    val quarantineName = ".delete-${UUID.randomUUID()}"
-                    directory.createDirectory(quarantineName).use { quarantine ->
-                        quarantine.requireEntries(emptyMap())
-                        // Move first, then verify the moved object; a stale name must never delete its replacement.
-                        directory.moveFile(file.fileName.toString(), quarantine, "image.png")
-                        try {
-                            quarantine.requireEntries(mapOf("image.png" to original))
-                            check(original.hash() == hash) { "保存後にファイルが変更されています。削除しません。" }
-                            quarantine.deleteFile("image.png", original)
-                        } catch (failure: Exception) {
-                            val restored = runCatching { quarantine.moveFile("image.png", directory, file.fileName.toString()) }.isSuccess
-                            if (restored) runCatching { directory.deleteEmptyDirectory(quarantineName) }
-                            throw ScreenshotSaveFailure("ファイルの変更または削除失敗を検出しました。保全した出力を確認してください。",
-                                if (restored) file.parent else file.parent.resolve(quarantineName))
-                        }
-                        deleted = true
-                        runCatching { quarantine.flush() }
+        SaveOutputDirectory.open(file.parent).use { directory ->
+            check(directory.key == parentKey) { "保存先が変更されています。ファイルは削除しません。" }
+            directory.openFile(file.fileName.toString()).use { original ->
+                check(original.key == fileKey && original.hash() == hash) { "保存後にファイルが変更されています。削除しません。" }
+                val quarantineName = ".delete-${UUID.randomUUID()}"
+                directory.createDirectory(quarantineName).use { quarantine ->
+                    quarantine.requireEntries(emptyMap())
+                    // Move first, then verify the moved object; a stale name must never delete its replacement.
+                    directory.moveFile(file.fileName.toString(), quarantine, "image.png")
+                    try {
+                        quarantine.requireEntries(mapOf("image.png" to original))
+                        check(original.hash() == hash) { "保存後にファイルが変更されています。削除しません。" }
+                        quarantine.deleteFile("image.png", original)
+                    } catch (failure: Exception) {
+                        val restored = runCatching { quarantine.moveFile("image.png", directory, file.fileName.toString()) }.isSuccess
+                        if (restored) runCatching { directory.deleteEmptyDirectory(quarantineName) }
+                        throw ScreenshotSaveFailure("ファイルの変更または削除失敗を検出しました。保全した出力を確認してください。",
+                            if (restored) file.parent else file.parent.resolve(quarantineName))
                     }
-                    // The PNG is already deleted; empty-directory housekeeping cannot change that outcome.
-                    runCatching { directory.deleteEmptyDirectory(quarantineName); directory.flush() }
+                    deleted = true
+                    runCatching { quarantine.flush() }
                 }
+                // The PNG is already deleted; empty-directory housekeeping cannot change that outcome.
+                runCatching { directory.deleteEmptyDirectory(quarantineName); directory.flush() }
             }
         }
     }
@@ -93,42 +88,45 @@ internal fun saveScreenshot(adbPath: Path, application: String, destination: Pat
     }
     val name = "screenshot-${LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss-SSS"))}-${UUID.randomUUID()}"
     val partial = root.resolve(".$name.partial")
-    val complete = root.resolve(name)
+    val complete = root.resolve("$name.png")
     var retained: Path? = null
     try {
         SaveOutputDirectory.open(root).use { parent ->
             active()
-            parent.createDirectory(partial.fileName.toString()).use { staging ->
+            parent.createFile(partial.fileName.toString()).use { output ->
                 retained = partial
-                staging.requireEntries(emptyMap())
-                staging.createFile("screen.png").use { output ->
-                    output.channel().use { channel ->
-                        val data = ByteBuffer.wrap(bytes)
-                        while (data.hasRemaining()) { active(); channel.write(data) }
-                        channel.force(true)
-                    }
-                    staging.flush()
-                    active()
-                    val publication = SavePublication(partial, complete, parent, staging) {
-                        staging.requireEntries(mapOf("screen.png" to output))
-                    }
-                    try {
-                        publication.publish()
-                    } catch (failure: Exception) {
-                        retained = listOf(partial, complete).firstOrNull { candidate ->
-                            runCatching {
-                                SaveOutputDirectory.open(candidate.parent).use { currentParent ->
-                                    currentParent.key == parent.key &&
-                                        currentParent.openChild(candidate.fileName.toString()).use { it.key == staging.key }
-                                }
-                            }.getOrDefault(false)
-                        }
-                        throw failure
-                    }
-                    retained = complete
-                    parent.flush()
-                    return SavedScreenshot(complete.resolve("screen.png"), application, parent.key, staging.key, output.key, output.hash())
+                output.requirePrivate()
+                output.channel().use { channel ->
+                    val data = ByteBuffer.wrap(bytes)
+                    while (data.hasRemaining()) { active(); channel.write(data) }
+                    channel.force(true)
                 }
+                val hash = java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(bytes))
+                fun verify(path: Path) {
+                    SaveOutputDirectory.open(root).use { current ->
+                        check(current.key == parent.key) { "保存先が変更されています。" }
+                        current.verifyFile(path.fileName.toString(), output)
+                    }
+                    output.requirePrivate()
+                    check(output.hash() == hash) { "保存画像が変更されています。" }
+                }
+                try {
+                    active()
+                    verify(partial)
+                    parent.moveFile(partial.fileName.toString(), parent, complete.fileName.toString())
+                    retained = complete
+                    verify(complete)
+                    parent.flush()
+                } catch (failure: Exception) {
+                    retained = listOf(partial, complete).firstOrNull { candidate -> runCatching {
+                        SaveOutputDirectory.open(root).use { current ->
+                            check(current.key == parent.key)
+                            current.verifyFile(candidate.fileName.toString(), output)
+                        }
+                    }.isSuccess }
+                    throw failure
+                }
+                return SavedScreenshot(complete, application, parent.key, output.key, hash)
             }
         }
     } catch (failure: InterruptedException) {
