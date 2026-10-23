@@ -961,6 +961,7 @@ class PromotionTreeTests(unittest.TestCase):
                     self.assertEqual(0, result.returncode, result.stderr)
 
     def test_import_namespace_shadows_are_rejected_in_both_trees_and_modes(self):
+        from importlib.machinery import EXTENSION_SUFFIXES
         from verification import promotion_policy_blobs
         cases = [
             ('candidate', 'import json', 'scripts/workflow/json.py', False),
@@ -978,6 +979,12 @@ class PromotionTreeTests(unittest.TestCase):
             ('candidate', "VALUE = __import__('types')", 'scripts/workflow/types/__init__.py', True),
             ('base', "VALUE = __import__('types')", 'scripts/workflow/types/__init__.py', True),
         ]
+        cases.extend((side, 'import json', 'scripts/workflow/json' + suffix, False)
+                     for side in ('base', 'candidate') for suffix in ('.pyc', EXTENSION_SUFFIXES[0]))
+        cases.extend([
+            ('candidate', 'import git_guard', 'scripts/workflow/git_guard' + EXTENSION_SUFFIXES[0], False),
+            ('candidate', "VALUE = __import__('types')", 'scripts/workflow/types.pyc', True),
+        ])
         for side, code, shadow, regression in cases:
             with self.subTest(side=side, code=code, shadow=shadow):
                 self.git('checkout', '-q', '-B', 'namespace-main', self.base)

@@ -1626,6 +1626,7 @@ def promotion_policy_blobs(base, candidate, git, continuation=False):
     record in both continuation and certificate-only promotions. Certificate
     archives have their own adoption gate; unrelated candidate facts stay intact.
     """
+    from importlib.machinery import all_suffixes
     from change_impact import path_impacts, TOOLING, KNOWLEDGE, METADATA
     policy = initial_stage_plan(base, candidate, git)
     if policy != initial_stage_plan(candidate, candidate, git):
@@ -1641,14 +1642,16 @@ def promotion_policy_blobs(base, candidate, git, continuation=False):
                ('scripts/workflow/test_initial_continuation.py', True),
                ('scripts/workflow/test_impact_evidence_reuse.py', True)]
     namespaces = {}
+    unsupported_suffixes = [suffix for suffix in all_suffixes() if suffix != '.py']
 
     def import_entries(name):
         parts = name.split('.')
         for size in range(1, len(parts) + 1):
             stem = 'scripts/workflow/' + '/'.join(parts[:size])
             if stem not in namespaces:
-                if any(git('ls-tree', ref, '--', stem) for ref in (base, candidate)):
-                    raise ValueError('Gate import namespace contains a local package: ' + stem)
+                if any(git('ls-tree', ref, '--', stem, *(stem + suffix for suffix in unsupported_suffixes))
+                       for ref in (base, candidate)):
+                    raise ValueError('Gate import namespace contains a package or non-source module: ' + stem)
                 entries = tuple(git('ls-tree', ref, '--', stem + '.py') for ref in (base, candidate))
                 if entries[1] and not entries[0]:
                     raise ValueError('Candidate shadows an import absent from trusted main: ' + name)
