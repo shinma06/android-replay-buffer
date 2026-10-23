@@ -44,7 +44,7 @@ def bind_report_session(report, session):
 
 
 def bind_native_review(report, bound, storage, *, issuer, observe_origin, acceptance=None, repair_evidence=None):
-    """Trusted host embedding entry; the host acquires its native execution receipt.
+    """Bind a native review using execution records acquired by its trusted host.
 
     observe_origin reads the host's authenticated execution record for this review,
     independently of report fields. It returns session_id, source (private locator),

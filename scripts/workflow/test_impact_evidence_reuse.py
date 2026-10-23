@@ -3,6 +3,7 @@ import copy
 import json
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import Mock, call, patch
@@ -719,7 +720,8 @@ class PromotionTreeTests(unittest.TestCase):
                           'scripts/workflow/test_change_impact.py', 'scripts/workflow/test_product_check.py']
         for path in self.preserved:
             self.write(path, 'current candidate facts')
-        self.write('scripts/workflow/verification.py', 'adopted candidate Doc\nold policy')
+        self.write('scripts/workflow/verification.py', '"""adopted candidate Doc"""\nPOLICY = "old policy"')
+        self.write('scripts/workflow/git_guard.py', 'def old_gate_api():\n    return "old API"\n')
         self.write('docs/verification/README.md', 'adopted candidate Doc\nold explanation')
         self.write(COMPONENT, 'old product')
         self.commit('common')
@@ -729,7 +731,7 @@ class PromotionTreeTests(unittest.TestCase):
         self.commit('tested repair')
         self.candidate = self.git('rev-parse', 'HEAD')
         self.git('checkout', '-q', '-b', 'trusted-main', self.common)
-        self.write('scripts/workflow/verification.py', 'adopted candidate Doc\nreviewed policy')
+        self.write('scripts/workflow/verification.py', '"""adopted candidate Doc"""\nPOLICY = "reviewed policy"')
         self.write('docs/verification/README.md', 'adopted candidate Doc\nreviewed explanation')
         for path in self.preserved:
             self.write(path, 'older main facts')
@@ -875,6 +877,45 @@ class PromotionTreeTests(unittest.TestCase):
         self.write(INITIAL_PLAN, json.dumps(plan)); self.commit('changed contract')
         with self.assertRaises(ValueError):
             promotion_policy_blobs(self.git('rev-parse', 'HEAD'), self.candidate, self.git)
+
+    def test_gate_and_dependency_updates_import_together_in_both_promotion_modes(self):
+        from verification import promotion_policy_blobs
+        self.git('checkout', '-q', 'trusted-main')
+        self.write('scripts/workflow/verification.py',
+                   '"""adopted candidate Doc"""\nfrom git_guard import gate_api\nVALUE = gate_api()\n')
+        self.write('scripts/workflow/git_guard.py',
+                   'from policy_dependency import api\ndef gate_api():\n    return api()\n')
+        self.write('scripts/workflow/policy_dependency.py', 'def api():\n    return "reviewed API"\n')
+        self.commit('gate and dependency update')
+        base = self.git('rev-parse', 'HEAD')
+        for continuation in (False, True):
+            with self.subTest(continuation=continuation):
+                self.git('checkout', '-q', '-B', 'coherent-policy', self.candidate)
+                carried = promotion_policy_blobs(base, self.candidate, self.git, continuation=continuation)
+                for path in carried:
+                    self.write(path, self.git('show', f'{base}:{path}'))
+                self.commit('exact main gate and dependencies')
+                result = subprocess.run([sys.executable, '-B', '-I', '-c',
+                    'import sys; sys.path.insert(0, "scripts/workflow"); '
+                    'import verification; assert verification.VALUE == "reviewed API"'],
+                    cwd=self.root, capture_output=True, text=True)
+                self.assertEqual(0, result.returncode, result.stderr)
+
+    def test_unsupported_gate_imports_fail_closed_instead_of_mixing_dependencies(self):
+        from verification import promotion_policy_blobs
+        self.git('checkout', '-q', 'trusted-main')
+        for code, module in (('from . import dependency', None),
+                             ('__import__("dependency")', None),
+                             ('import dependency', 'scripts/workflow/dependency/__init__.py'),
+                             ('import product_check', 'scripts/workflow/product_check.py'),
+                             ('import test_product_check', 'scripts/workflow/test_product_check.py')):
+            with self.subTest(code=code, module=module):
+                self.write('scripts/workflow/verification.py', code)
+                if module:
+                    self.write(module, 'VALUE = 1')
+                self.commit('unsupported gate import')
+                with self.assertRaises(ValueError):
+                    promotion_policy_blobs(self.git('rev-parse', 'HEAD'), self.candidate, self.git)
 
 class CertificateArchivePromotionTests(unittest.TestCase):
     git = PromotionTreeTests.git

@@ -107,7 +107,10 @@ def restore_review(storage, identifier, public, with_paths=False):
 
 
 def issue_review_origin(storage, report, bound, session, kind, private_paths=(), private_sessions=(), native_origin=None):
-    """Trusted adapter boundary, not authentication against a writer of local files/environment."""
+    """Issue a bound review-origin receipt at the trusted adapter boundary.
+
+    This does not authenticate against a writer of local files/environment.
+    """
     from agent_policy import canonical_session, session_fingerprint
     session = canonical_session(session)
     if session.startswith('native-session-v1:') and kind != 'native':

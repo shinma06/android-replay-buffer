@@ -14,7 +14,10 @@ NATIVE_SESSION = re.compile(r'native-session-v1:([0-9a-f]+):([0-9a-f]+)')
 
 
 def native_session(issuer, identity):
-    """Issuer/instance and opaque ID come from the trusted host, never a role/model label."""
+    """Encode a session identity supplied by the trusted host.
+
+    Issuer/instance and opaque ID must come from that host, never a role/model label.
+    """
     if (not isinstance(issuer, str) or not re.fullmatch(r'[a-z0-9][a-z0-9./_-]*', issuer) or
             'codex' in issuer or not isinstance(identity, str) or not identity or
             any(ord(c) < 32 or ord(c) == 127 for c in identity) or SESSION_HASH.fullmatch(identity) or
