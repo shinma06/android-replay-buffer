@@ -1632,11 +1632,11 @@ def promotion_policy_blobs(base, candidate, git, continuation=False):
         raise ValueError('Policy carry requires the unchanged effective candidate contract')
     ancestor = git('merge-base', candidate, base)
     paths = {}
-    allowed = {INITIAL_CONTINUATION, 'scripts/workflow/verification.py',
+    protected = {INITIAL_CONTINUATION, 'docs/verification/changes/issue-356.json'}
+    allowed = {*protected, 'scripts/workflow/verification.py',
                'scripts/workflow/initial_continuation_cases.py',
                'scripts/workflow/test_initial_continuation.py',
-               'scripts/workflow/test_impact_evidence_reuse.py', 'docs/verification/README.md',
-               'docs/verification/changes/issue-356.json'}
+               'scripts/workflow/test_impact_evidence_reuse.py', 'docs/verification/README.md'}
     pending = [('scripts/workflow/verification.py', False),
                ('scripts/workflow/test_initial_continuation.py', True),
                ('scripts/workflow/test_impact_evidence_reuse.py', True)]
@@ -1689,11 +1689,16 @@ def promotion_policy_blobs(base, candidate, git, continuation=False):
                 path = 'scripts/workflow/' + name.replace('.', '/') + '.py'
                 if (path, regression) not in visited:
                     pending.append((path, regression))
-    for path in sorted(set(git('diff', '--no-renames', '--name-only', ancestor, base).splitlines()) | dependencies):
+    for path in sorted(set(git('diff', '--no-renames', '--name-only', ancestor, base).splitlines()) |
+                       dependencies | protected):
         if path not in allowed:
             continue
         blob = git('ls-tree', base, '--', path)
         old_blob = git('ls-tree', candidate, '--', path)
+        if path in protected and (blob or old_blob):
+            regular_json(base, path, git)
+            if old_blob:
+                regular_json(candidate, path, git)
         if not blob or blob == old_blob:
             continue
         if path == 'docs/verification/README.md' and old_blob:

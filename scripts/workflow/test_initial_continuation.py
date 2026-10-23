@@ -43,6 +43,7 @@ class InitialContinuationTests(unittest.TestCase):
                 'source_path': 'docs/verification/changes/issue-37.json',
                 'original_case_sha256': v.canonical_hash(case)}]}}}
         self.fixture.documents[f'{BASE}:{v.INITIAL_CONTINUATION}'] = self.registration
+        self.fixture.documents[f'{HEAD}:{v.INITIAL_CONTINUATION}'] = self.registration
 
     def verify(self):
         return self.initial.verify()

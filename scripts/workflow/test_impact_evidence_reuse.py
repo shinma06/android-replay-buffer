@@ -960,6 +960,77 @@ class PromotionTreeTests(unittest.TestCase):
                         cwd=self.root, capture_output=True, text=True)
                     self.assertEqual(0, result.returncode, result.stderr)
 
+    def test_candidate_only_protected_data_changes_keep_the_registered_full_case_set(self):
+        import verification as v
+        root = Path(__file__).resolve().parents[2]
+        policy = json.loads((root / INITIAL_PLAN).read_text())
+        protected = (v.INITIAL_CONTINUATION, 'docs/verification/changes/issue-356.json')
+        self.git('checkout', '-q', '-B', 'registered-common', self.common)
+        for path in protected:
+            self.write(path, (root / path).read_text())
+        self.commit('registration already adopted in common history')
+        common = self.git('rev-parse', 'HEAD')
+        self.git('checkout', '-q', '-B', 'registered-main', common)
+        self.write('scripts/workflow/verification.py', 'POLICY = "reviewed policy"')
+        self.commit('main changes only Python policy')
+        base = self.git('rev-parse', 'HEAD')
+        for path in protected:
+            for edit in ('unchanged', 'delete', 'content', 'mode'):
+                with self.subTest(path=path, edit=edit):
+                    self.git('checkout', '-q', '-B', 'registered-candidate', common)
+                    self.write(COMPONENT, 'later product')
+                    if edit == 'delete':
+                        (self.root / path).unlink()
+                    elif edit == 'content':
+                        data = json.loads((self.root / path).read_text())
+                        if path == v.INITIAL_CONTINUATION:
+                            next(iter(data['cases'].values()))['current_case_sha256'] = 'f' * 64
+                        else:
+                            data['reason'] = 'Candidate-only changed metadata.'
+                        self.write(path, json.dumps(data))
+                    elif edit == 'mode':
+                        (self.root / path).chmod(0o755)
+                    self.commit('candidate-only ' + edit)
+                    candidate = self.git('rev-parse', 'HEAD')
+                    for continuation in (False, True):
+                        with self.subTest(continuation=continuation), patch.object(
+                                v, 'initial_stage_plan', return_value=policy):
+                            if edit == 'mode':
+                                with self.assertRaisesRegex(ValueError, 'regular JSON'):
+                                    v.promotion_policy_blobs(base, candidate, self.git, continuation)
+                                continue
+                            carried = v.promotion_policy_blobs(base, candidate, self.git, continuation)
+                            if edit == 'unchanged':
+                                self.assertNotIn(path, carried)
+                            else:
+                                self.assertEqual(self.git('ls-tree', base, '--', path), carried.get(path))
+                            self.git('checkout', '-q', '-B', 'registered-promotion', candidate)
+                            for copied in carried:
+                                self.git('checkout', base, '--', copied)
+                            self.commit('exact protected policy retained')
+                            promoted = self.git('rev-parse', 'HEAD')
+                            # Use the carried real registration in the later-full lookup;
+                            # the fixture DAG/product and all observations are synthetic.
+                            registration = v.initial_continuation(policy, promoted,
+                                json.loads((root / v.INITIAL_CONTINUATION).read_text())['candidate'],
+                                self.git, historical=True)
+                            self.assertIsNotNone(registration)
+                            self.assertEqual(28, len(registration['cases']))
+                            self.assertEqual(167, len(set(policy['cases']) | set(registration['cases'])))
+                            self.assertIn('347:SAVE-WARNING-WINDOW', registration['cases'])
+
+    def test_candidate_cannot_add_protected_data_absent_from_trusted_main(self):
+        from verification import INITIAL_CONTINUATION, promotion_policy_blobs
+        for path in (INITIAL_CONTINUATION, 'docs/verification/changes/issue-356.json'):
+            self.git('checkout', '-q', '-B', 'untrusted-policy-candidate', self.candidate)
+            self.write(path, '{}')
+            self.commit('candidate-only untrusted policy addition')
+            candidate = self.git('rev-parse', 'HEAD')
+            for continuation in (False, True):
+                with self.subTest(path=path, continuation=continuation), self.assertRaisesRegex(
+                        ValueError, 'regular JSON'):
+                    promotion_policy_blobs(self.base, candidate, self.git, continuation)
+
     def test_candidate_readme_additions_require_explicit_main_reconciliation(self):
         from verification import promotion_policy_blobs
         self.git('checkout', '-q', '-B', 'readme-candidate', self.candidate)
@@ -968,6 +1039,8 @@ class PromotionTreeTests(unittest.TestCase):
         self.commit('candidate-only acceptance explanation')
         candidate = self.git('rev-parse', 'HEAD')
         for continuation in (False, True):
+            self.assertNotIn('docs/verification/README.md', promotion_policy_blobs(
+                self.common, candidate, self.git, continuation=continuation))
             with self.subTest(continuation=continuation), self.assertRaisesRegex(ValueError, 'README'):
                 promotion_policy_blobs(self.base, candidate, self.git, continuation=continuation)
         self.git('checkout', '-q', 'trusted-main')
