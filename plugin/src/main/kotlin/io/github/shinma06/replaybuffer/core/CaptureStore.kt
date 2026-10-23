@@ -475,27 +475,30 @@ internal class CaptureStore(
     }
 
     @Synchronized
-    fun streams(seconds: Int = 180, atEnd: Long? = null): Map<String, StreamSnapshot> = states.mapValues { (kind, value) ->
-        if (value.state == StreamState.NOT_REQUESTED) return@mapValues value
+    fun streams(seconds: Int = 180, atEnd: Long? = null): Map<String, StreamSnapshot> = synchronized(clock) {
         val end = atEnd ?: end() ?: 0
-        val cutoff = maxOf(0, end - seconds * 1_000_000_000L)
-        val times = if (kind == "video") video.mapNotNull { it.time.sequence }.filter { it >= cutoff } else
-            logs.filter { kind == "device_log" || it.app == true }.mapNotNull { it.time.sequence }.filter { it >= cutoff }
-        val span = if (times.isEmpty()) 0L else (times.max() - times.min()).coerceAtLeast(0)
-        val missing = gaps.filter { it.stream == kind }.sumOf { gap ->
-            val from = gap.fromNs ?: return@sumOf 0L
-            val to = gap.toNs ?: end
-            (minOf(to, end) - maxOf(from, cutoff)).coerceAtLeast(0)
+        val windowGaps = gaps.toList().inWindow(windowStart(seconds, end), end,
+            fixedUncertainty ?: clock.endUncertainty(), clock.snapshot(), clockRecoveries)
+        states.mapValues { (kind, value) ->
+            if (value.state == StreamState.NOT_REQUESTED) return@mapValues value
+            val cutoff = maxOf(0, end - seconds * 1_000_000_000L)
+            val times = if (kind == "video") video.mapNotNull { it.time.sequence }.filter { it >= cutoff } else
+                logs.filter { kind == "device_log" || it.app == true }.mapNotNull { it.time.sequence }.filter { it >= cutoff }
+            val span = if (times.isEmpty()) 0L else (times.max() - times.min()).coerceAtLeast(0)
+            val missing = gaps.filter { it.stream == kind }.sumOf { gap ->
+                val from = gap.fromNs ?: return@sumOf 0L
+                val to = gap.toNs ?: end
+                (minOf(to, end) - maxOf(from, cutoff)).coerceAtLeast(0)
+            }
+            val effective = if (kind == "app_log" && value.state == StreamState.CAPTURING && states.getValue("device_log").state != StreamState.CAPTURING)
+                value.copy(state = states.getValue("device_log").state, reason = states.getValue("device_log").reason) else value
+            val uncertain = !clock.certain()
+            effective.copy(availableSeconds = (span - missing).coerceAtLeast(0) / 1e9,
+                reason = effective.reason ?: if (uncertain && effective.state == StreamState.CAPTURING) "時計対応を確認できません" else null,
+                gaps = java.util.List.copyOf(windowGaps.filter { gap ->
+                    gap.stream == kind || gap.stream == "clock" || kind == "app_log" && gap.stream == "device_log"
+                }))
         }
-        val effective = if (kind == "app_log" && value.state == StreamState.CAPTURING && states.getValue("device_log").state != StreamState.CAPTURING)
-            value.copy(state = states.getValue("device_log").state, reason = states.getValue("device_log").reason) else value
-        val uncertain = !clock.certain()
-        effective.copy(availableSeconds = (span - missing).coerceAtLeast(0) / 1e9,
-            reason = effective.reason ?: if (uncertain && effective.state == StreamState.CAPTURING) "時計対応を確認できません" else null,
-            gaps = java.util.List.copyOf(gaps.filter { gap ->
-                (gap.stream == kind || gap.stream == "clock" || kind == "app_log" && gap.stream == "device_log") &&
-                    gap.intersects(windowStart(seconds, end), end, fixedUncertainty ?: clock.endUncertainty())
-            }))
     }
 
     @Synchronized
@@ -521,7 +524,8 @@ internal class CaptureStore(
 
     private fun continuousAcrossCut(a: VideoEntry, b: VideoEntry, cut: Long): Boolean =
         a.time.sequence != null && b.time.sequence != null && a.time.sequence < cut && b.time.sequence >= cut &&
-            a.continuousTo(b, gaps)
+            a.continuousTo(b, gaps.toList().inWindow(a.time.sequence, b.time.sequence,
+                maxOf(a.time.uncertainty, b.time.uncertainty), clock.snapshot(), clockRecoveries))
 
     private fun currentVideo(frame: VideoEntry): Boolean = frame.generation == generation && frame.session == videoSession &&
         frame.time.epoch == clock.currentEpoch() && frame.width == width && frame.height == height && frame.config.contentEquals(config)
@@ -635,8 +639,8 @@ internal fun VideoEntry.continuousTo(next: VideoEntry, gaps: Iterable<CaptureGap
         gaps.none { gap -> (gap.stream == "video" || gap.stream == "clock") &&
             gap.intersects(time.sequence, next.time.sequence, maxOf(time.uncertainty, next.time.uncertainty)) }
 
-/** Mux-only envelopes. The original uncertain gaps still govern coverage, UI and retention. */
-internal fun List<CaptureGap>.videoScopes(
+/** Conservative outer bounds; deriving them never confirms the original gap's exact duration. */
+internal fun List<CaptureGap>.gapScopes(
     clocks: List<ClockSample>, recoveries: Map<CaptureGap, ClockSample> = emptyMap(),
     videoProofs: MutableMap<CaptureGap, Pair<ClockSample, ClockSample>>? = null,
 ): List<CaptureGap> {
@@ -649,22 +653,34 @@ internal fun List<CaptureGap>.videoScopes(
         } catch (_: ArithmeticException) { null }
     }
     val anchors = clocks.mapNotNull { sample -> anchor(sample)?.let { Triple(it.first, it.second, sample) } }.sortedBy { it.first }
+    val acquisitionAnchors = anchors.filter { (_, error, sample) ->
+        error >= 0 && sample.before >= 0 && sample.after >= sample.before && sample.received >= sample.sent
+    }
+    fun boundarySample(candidates: List<Triple<Long, Long, ClockSample>>, time: Long, after: Boolean): Triple<Long, Long, ClockSample>? {
+        var low = 0
+        var high = candidates.size
+        while (low < high) {
+            val middle = low + (high - low) / 2
+            val point = candidates[middle].first
+            if (point < time || !after && point == time) low = middle + 1 else high = middle
+        }
+        return candidates.getOrNull(if (after) low else low - 1)
+    }
     return map { gap ->
-        if (gap.stream != "clock" && gap.stream != "video" || gap.boundaryUncertaintyNs != null && gap.boundaryUncertaintyNs != Long.MAX_VALUE) return@map gap
+        val acquisition = gap.stream == "video" || gap.stream == "device_log" || gap.stream == "app_log"
+        if (!acquisition && gap.stream != "clock" || gap.boundaryUncertaintyNs != null && gap.boundaryUncertaintyNs != Long.MAX_VALUE) return@map gap
         // Acquisition loss needs both observed boundaries; clocks do not make an open/unknown-owner loss finite.
-        if (gap.stream == "video" && (gap.generation <= 0 || gap.fromNs == null || gap.toNs == null || gap.fromNs > gap.toNs)) return@map gap
-        val candidates = if (gap.stream == "video") anchors.filter { (_, error, sample) ->
-            error >= 0 && sample.before >= 0 && sample.after >= sample.before && sample.received >= sample.sent
-        } else anchors
+        if (acquisition && (gap.generation <= 0 || gap.fromNs == null || gap.toNs == null || gap.fromNs > gap.toNs)) return@map gap
+        val candidates = if (acquisition) acquisitionAnchors else anchors
         // Widen to observed normal samples, never treat nominal from/to as zero-error boundaries.
-        val before = gap.fromNs?.let { from -> candidates.lastOrNull { it.first <= from } }
+        val before = gap.fromNs?.let { from -> boundarySample(candidates, from, after = false) }
         val after = gap.toNs?.let { to ->
             // Status closes after receiving its sample; preserve nominal closure and that sample's error.
             recoveries[gap]?.takeIf { gap.stream == "clock" }?.let { sample -> anchor(sample)?.let {
                 Triple(maxOf(to, it.first), it.second, sample)
-            } } ?: candidates.firstOrNull { it.first >= to }
+            } } ?: boundarySample(candidates, to, after = true)
         }
-        if (gap.stream == "video" && (before == null || after == null) ||
+        if (acquisition && (before == null || after == null) ||
             before == null && after == null || before != null && after != null && before.first > after.first) gap
         else {
             if (gap.stream == "video") videoProofs?.put(gap, before!!.third to after!!.third)
@@ -672,6 +688,16 @@ internal fun List<CaptureGap>.videoScopes(
                 boundaryUncertaintyNs = maxOf(before?.second ?: 0, after?.second ?: 0))
         }
     }
+}
+
+/** Exclude only proven outside history; keep original uncertainty for every retained gap. */
+internal fun List<CaptureGap>.inWindow(
+    start: Long?, end: Long, uncertainty: Long, clocks: List<ClockSample>,
+    recoveries: Map<CaptureGap, ClockSample> = emptyMap(),
+): List<CaptureGap> {
+    if (start == null || uncertainty == Long.MAX_VALUE) return toList()
+    val scopes = gapScopes(clocks, recoveries)
+    return filterIndexed { index, _ -> scopes[index].intersects(start, end, uncertainty) }
 }
 
 /** The same retained IDR/config requirement is used for both MP4 selection and its display metadata. */

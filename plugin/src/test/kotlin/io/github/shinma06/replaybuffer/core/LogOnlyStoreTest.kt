@@ -100,6 +100,48 @@ class LogOnlyStoreTest {
     }
 
     @Test
+    fun recoveredReconnectHistoryLeavesTheWindowButFailedRetryKeepsItsOriginalScope() {
+        CaptureStore(root.resolve("reconnect"), captureMode = CaptureMode.LOG_ONLY).use { store ->
+            val host = System.nanoTime() + 1_000_000_000
+            store.generation(1)
+            sample(store, host, 1)
+            store.status("device_log", StreamState.CAPTURING, null, 1)
+            store.app("com.fixture.app", 10001, setOf(12), 1, true)
+            sample(store, host, 2)
+            store.clock.boundary(host + 1_000_000_000)
+            store.status("device_log", StreamState.RECOVERING, "disconnected", 1)
+            store.status("app_log", StreamState.RECOVERING, "disconnected", 1)
+            store.freeze()
+            store.generation(2)
+            sample(store, host, 4, 2)
+            store.status("device_log", StreamState.CAPTURING, null, 2)
+            store.app("com.fixture.app", 10001, setOf(12), 2, true)
+            store.resume()
+            val inside = assertNotNull(store.capture(settings.copy(replaySeconds = 2), host = host + 3_500_000_000))
+            assertEquals(setOf("device_log", "app_log"), inside.gaps.map { it.stream }.toSet())
+            assertTrue(inside.gaps.all { it.boundaryUncertaintyNs == Long.MAX_VALUE && it.toNs != null })
+            assertTrue(inside.states.getValue("app_log").gaps.isNotEmpty())
+            assertFailsWith<SaveFailure> {
+                SaveWriter().write(inside, root.resolve("missing"), { false }) { publication -> Files.move(publication.partial, publication.complete) }
+            }
+            sample(store, host, 6, 2)
+            store.prune(1)
+            assertFailsWith<IllegalStateException> { store.capture(settings.copy(replaySeconds = 1)) }
+            val retry = SaveWriter().write(inside, root, { false }) { publication -> Files.move(publication.partial, publication.complete) }
+            assertTrue(inside.gaps.inWindow(inside.start, inside.end, inside.endUncertainty, inside.clocks, inside.clockRecoveries).isNotEmpty())
+            assertEquals(inside.end.toString(), JsonParser.parseString(Files.readString(retry.directory.resolve("session.json"))).asJsonObject["window_end_ns"].asString)
+            store.release(inside.id)
+            val outside = assertNotNull(store.capture(settings.copy(replaySeconds = 1), host = host + 5_500_000_000))
+            assertTrue(outside.logs.isEmpty())
+            assertEquals(inside.gaps, outside.gaps)
+            assertTrue(outside.states.values.all { it.gaps.isEmpty() })
+            assertTrue(outside.gaps.inWindow(outside.start, outside.end, outside.endUncertainty, outside.clocks, outside.clockRecoveries).isEmpty())
+            assertEquals(StreamState.NOT_REQUESTED, outside.states.getValue("video").state)
+            store.release(outside.id)
+        }
+    }
+
+    @Test
     fun logBoundsPartialSaveAndFrozenOwnershipReuseTheExistingWriter() {
         CaptureStore(root.resolve("ring"), logLimit = 514, minFree = 0, captureMode = CaptureMode.LOG_ONLY).use { store ->
             val host = System.nanoTime() + 1_000_000_000
