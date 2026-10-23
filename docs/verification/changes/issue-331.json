@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "issue": 331,
+  "gui_required": false,
+  "reason": "early Releaseの所有旧ZIPを、検証済み最新ZIPと本文の確認後に全件整理する配布tooling修正。同一製品の再試行、途中失敗、競合時の保全を含む。製品source/version/bytes、初期stable、固定tag、docs/test-only配布no-opは維持。IDE/ADB操作と製品Case追加は不要。実Releaseの旧5本整理とdownload identity確認はIssue331に記録し、再発防止コードの検査・独立reviewとは区別する。",
+  "cli_checks": [
+    "python3 -m unittest discover -s scripts/workflow -p test_release_delivery.py -v",
+    "python3 scripts/check.py",
+    "python3 scripts/workflow/product_check.py",
+    "python3 scripts/workflow/change_impact.py --base origin/main --run-tests"
+  ],
+  "cases": []
+}
