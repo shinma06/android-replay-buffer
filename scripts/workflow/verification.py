@@ -1645,8 +1645,9 @@ def promotion_policy_blobs(base, candidate, git, continuation=False):
             if git('ls-tree', base, '--', dependency[:-3] + '/__init__.py'):
                 raise ValueError('Gate package dependency needs an explicit carry update: ' + dependency)
             continue
-        if entry[:2] != ['100644', 'blob'] or dependency.startswith('scripts/workflow/test_'):
-            raise ValueError('Gate dependency must be a regular workflow module: ' + dependency)
+        if (entry[:2] != ['100644', 'blob'] or '/' in dependency.removeprefix('scripts/workflow/') or
+                dependency.startswith('scripts/workflow/test_')):
+            raise ValueError('Gate dependency must be a regular flat workflow module: ' + dependency)
         dependencies.add(dependency)
         if dependency == 'scripts/workflow/change_impact.py':
             tested = git('ls-tree', candidate, '--', dependency).split()

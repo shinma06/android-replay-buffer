@@ -907,6 +907,7 @@ class PromotionTreeTests(unittest.TestCase):
         for code, module in (('from . import dependency', None),
                              ('__import__("dependency")', None),
                              ('import dependency', 'scripts/workflow/dependency/__init__.py'),
+                             ('import dependency.api', 'scripts/workflow/dependency/api.py'),
                              ('import product_check', 'scripts/workflow/product_check.py'),
                              ('import test_product_check', 'scripts/workflow/test_product_check.py')):
             with self.subTest(code=code, module=module):
