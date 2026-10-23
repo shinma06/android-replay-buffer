@@ -575,8 +575,7 @@ class ReplayToolWindowLayoutTest {
                 if (failed) assertTrue(bounds(panel, "retryButton").y < bounds(panel, "frozenTarget").y);
                 for (var name : List.of("state", "device", "application", "window", "saveReason", "screenshotReason", "saveOutput"))
                     assertFalse(((JComponent) field(panel, name)).getAccessibleContext().getAccessibleName().isBlank(), name);
-                verifyWrappedText(panel);
-                if (failed || complete) writePreview(panel, "tool-window-" + phase.name().toLowerCase(java.util.Locale.ROOT));
+                verifyFirstPaint(panel, "tool-window-" + phase.name().toLowerCase(java.util.Locale.ROOT));
             }
             view.set(capture, new ReplayCaptureView(null, 0, null, "一時領域のアクセス権を確認してください。"));
             render.invoke(panel);
@@ -605,25 +604,31 @@ class ReplayToolWindowLayoutTest {
         try {
             javax.swing.UIManager.setLookAndFeel(new javax.swing.plaf.nimbus.NimbusLookAndFeel());
             SwingUtilities.updateComponentTreeUI(panel);
-            enlargeFonts(panel, fonts);
+            collectFonts(panel, fonts);
+            fonts.forEach((component, font) -> {
+                component.setFont(font.deriveFont(font.getSize2D() * 1.5f));
+                assertEquals(font.getSize2D() * 1.5f, component.getFont().getSize2D(), 0.01f);
+            });
             for (int width : new int[]{280, 900, 280}) {
                 panel.setSize(width, 700);
                 layout(panel); layout(panel);
                 var outer = (JScrollPane) panel.getComponent(0);
                 var form = (JComponent) outer.getViewport().getView();
                 assertFalse(outer.getHorizontalScrollBar().isVisible());
-                verifyWrappedText(panel);
+                verifyFirstPaint(panel, "tool-window-" + width + "-large-font");
                 for (var name : List.of("enabled", "settingsButton", "saveButton", "screenshotButton", "retryButton", "retryElsewhere", "discardButton")) {
                     var button = (AbstractButton) field(panel, name);
                     var area = SwingUtilities.convertRectangle(button.getParent(), button.getBounds(), form);
                     assertTrue(area.width >= button.getPreferredSize().width, "full button label at enlarged font: " + name);
+                    assertTrue(button.getY() >= 0 && button.getY() + button.getHeight() <= button.getParent().getHeight(),
+                        name + " must not be clipped by its wrapping row: button=" + button.getBounds() + ", row=" +
+                            button.getParent().getSize() + ", preferred=" + button.getParent().getPreferredSize());
                     assertTrue(area.x >= 0 && area.getMaxX() <= form.getWidth(), name + " must fit enlarged font at " + width);
                     form.scrollRectToVisible(area);
                     assertTrue(outer.getViewport().getViewRect().contains(area), name + " must remain reachable");
                     assertNotNull(button.getInputMap(JComponent.WHEN_FOCUSED).get(KeyStroke.getKeyStroke("SPACE")));
                 }
             }
-            writePreview(panel, "tool-window-280-large-font");
         } finally {
             fonts.forEach(Component::setFont);
             javax.swing.UIManager.setLookAndFeel(previous);
@@ -631,14 +636,19 @@ class ReplayToolWindowLayoutTest {
         }
     }
 
-    private static void enlargeFonts(Component component, java.util.Map<Component, java.awt.Font> originals) {
-        if (component.getFont() != null) {
-            var font = component.getFont();
-            originals.put(component, font);
-            component.setFont(font.deriveFont(font.getSize2D() * 1.5f));
-            assertEquals(font.getSize2D() * 1.5f, component.getFont().getSize2D(), 0.01f, "font fixture must actually enlarge each component");
-        }
-        if (component instanceof Container parent) for (var child : parent.getComponents()) enlargeFonts(child, originals);
+    private static void collectFonts(Component component, java.util.Map<Component, java.awt.Font> originals) {
+        if (component.getFont() != null) originals.put(component, component.getFont());
+        if (component instanceof Container parent) for (var child : parent.getComponents()) collectFonts(child, originals);
+    }
+
+    private static void verifyFirstPaint(JPanel panel, String name) throws Exception {
+        var first = writePreview(panel, name + "-first-paint");
+        verifyWrappedText(panel);
+        var measured = writePreview(panel, name + "-after-measurement");
+        org.junit.jupiter.api.Assertions.assertArrayEquals(
+            ((java.awt.image.DataBufferInt) first.getRaster().getDataBuffer()).getData(),
+            ((java.awt.image.DataBufferInt) measured.getRaster().getDataBuffer()).getData(),
+            "modelToView measurement must not repair the first paint: " + name);
     }
 
     private static void verifyWrappedText(Container parent) throws javax.swing.text.BadLocationException {
@@ -657,7 +667,7 @@ class ReplayToolWindowLayoutTest {
         }
     }
 
-    private static void writePreview(JPanel panel, String name) throws java.io.IOException {
+    private static java.awt.image.BufferedImage writePreview(JPanel panel, String name) throws java.io.IOException {
         var outer = (JScrollPane) panel.getComponent(0);
         outer.getViewport().setViewPosition(new Point());
         var image = new java.awt.image.BufferedImage(panel.getWidth(), panel.getHeight(), java.awt.image.BufferedImage.TYPE_INT_RGB);
@@ -666,6 +676,7 @@ class ReplayToolWindowLayoutTest {
         var path = Path.of("build/reports/tests/ui", name + ".png");
         Files.createDirectories(path.getParent());
         javax.imageio.ImageIO.write(image, "png", path.toFile());
+        return image;
     }
 
     private static void verifyScreenshotAvailability(JPanel panel, ReplayProjectService service,

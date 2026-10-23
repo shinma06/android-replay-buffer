@@ -232,10 +232,21 @@ private class ReplayToolWindowPanel(private val project: Project) : JPanel(Borde
     override fun dispose() { disposed = true }
 }
 
-private fun row(vararg components: java.awt.Component): JPanel = JPanel(WrapLayout(FlowLayout.LEFT).apply {
+private fun row(vararg components: java.awt.Component): JPanel = object : JPanel(WrapLayout(FlowLayout.LEFT).apply {
     hgap = JBUI.scale(4)
     vgap = JBUI.scale(2)
-}).apply {
+}) {
+    override fun getPreferredSize(): Dimension {
+        // The form asks for height before assigning the row its new width after a resize.
+        parent?.let { container ->
+            val available = container.width - container.insets.left - container.insets.right
+            if (available > 0) setSize(available, height)
+        }
+        return super.getPreferredSize()
+    }
+
+    override fun getMinimumSize(): Dimension = preferredSize
+}.apply {
     components.forEach(::add)
 }
 

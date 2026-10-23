@@ -106,6 +106,7 @@ class ReplaySettingsLayoutTest {
                             layout(scroll);
                             // A wrapped row needs its newly assigned viewport width before computing height.
                             layout(scroll);
+                            var beforeMeasurement = paint(scroll);
                             int viewportWidth = scroll.getViewport().getExtentSize().width;
                             assertEquals(viewportWidth, panel.getWidth(), "form width after resize to " + width);
                             assertFalse(scroll.getHorizontalScrollBar().isVisible(), "unexpected horizontal overflow");
@@ -139,6 +140,8 @@ class ReplaySettingsLayoutTest {
                                     }
                                 } catch (javax.swing.text.BadLocationException failure) { throw new AssertionError(failure); }
                             }
+                            org.junit.jupiter.api.Assertions.assertArrayEquals(beforeMeasurement, paint(scroll),
+                                "measuring text must not repair the first settings paint at " + width);
                             heights.add(guide.getHeight());
                         }
                         assertEquals(rowEnds.get(0), rowEnds.get(2), "wide wrapping must recover");
@@ -185,6 +188,13 @@ class ReplaySettingsLayoutTest {
         } finally {
             Disposer.dispose(root);
         }
+    }
+
+    private static int[] paint(JComponent component) {
+        var image = new java.awt.image.BufferedImage(component.getWidth(), component.getHeight(), java.awt.image.BufferedImage.TYPE_INT_RGB);
+        var graphics = image.createGraphics();
+        try { component.printAll(graphics); } finally { graphics.dispose(); }
+        return ((java.awt.image.DataBufferInt) image.getRaster().getDataBuffer()).getData();
     }
 
     private static boolean hasLabelFor(Container parent, JComponent field) {
