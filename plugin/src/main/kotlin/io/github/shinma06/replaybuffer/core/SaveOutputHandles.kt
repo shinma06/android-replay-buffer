@@ -65,6 +65,28 @@ private fun descriptorKey(descriptor: Int, type: Int): Pair<Long, Long> = stat(d
     (if (mac) value.getInt(0).toLong() and 0xffffffffL else value.getLong(0)) to value.getLong(8)
 }
 
+private fun requirePrivate(descriptor: Int, permissions: Int) {
+    stat(descriptor) { value, mode ->
+        val uid = value.getInt(if (mac) 16 else if (arm) 24 else 28)
+        check(mode and 0xfff == permissions && uid == descriptors.geteuid()) { "未完成フォルダーのアクセス権を確認できません" }
+    }
+    if (mac) {
+        Native.setLastError(0)
+        val acl = descriptors.acl_get_fd_np(descriptor, 0x100)
+        if (acl == null) {
+            // Darwin filesec_get_property reports ENOENT for an absent ACL on this held descriptor.
+            if (Native.getLastError() == 2) return
+            throw IOException("未完成フォルダーのACLを確認できません")
+        }
+        try { Memory(Native.POINTER_SIZE.toLong()).use { entry ->
+            Native.setLastError(0)
+            check(descriptors.acl_get_entry(acl, 0, entry) == -1 && Native.getLastError() == 22) {
+                "未完成フォルダーに継承されたACLがあります"
+            }
+        } } finally { descriptors.acl_free(acl) }
+    }
+}
+
 internal class SaveOutputDirectory private constructor(internal val descriptor: Int) : AutoCloseable {
     private var closed = false
     val key = descriptorKey(descriptor, 0x4000)
@@ -126,27 +148,7 @@ internal class SaveOutputDirectory private constructor(internal val descriptor: 
         finally { descriptors.close(current) }
     }
 
-    fun requirePrivate() {
-        stat(descriptor) { value, mode ->
-            val uid = value.getInt(if (mac) 16 else if (arm) 24 else 28)
-            check(mode and 0xfff == 0x1c0 && uid == descriptors.geteuid()) { "未完成フォルダーのアクセス権を確認できません" }
-        }
-        if (mac) {
-            Native.setLastError(0)
-            val acl = descriptors.acl_get_fd_np(descriptor, 0x100)
-            if (acl == null) {
-                // Darwin filesec_get_property reports ENOENT for an absent ACL on this held descriptor.
-                if (Native.getLastError() == 2) return
-                throw IOException("未完成フォルダーのACLを確認できません")
-            }
-            try { Memory(Native.POINTER_SIZE.toLong()).use { entry ->
-                Native.setLastError(0)
-                check(descriptors.acl_get_entry(acl, 0, entry) == -1 && Native.getLastError() == 22) {
-                    "未完成フォルダーに継承されたACLがあります"
-                }
-            } } finally { descriptors.acl_free(acl) }
-        }
-    }
+    fun requirePrivate() = requirePrivate(descriptor, 0x1c0)
 
     fun requireEntries(outputs: Map<String, SaveOutputFile>) {
         requirePrivate()
@@ -210,6 +212,8 @@ internal class SaveOutputFile private constructor(private val descriptor: Int) :
         check(!closed)
         return FileChannel.open(Path.of(if (mac) "/dev/fd" else "/proc/self/fd", descriptor.toString()), READ, WRITE)
     }
+
+    fun requirePrivate() = requirePrivate(descriptor, 0x180)
 
     fun hash(): String {
         check(!closed)

@@ -194,7 +194,7 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
         screenshotRevision != requestRevision -> "対象アプリ・設定を確認中です。"
         environment?.adb == null -> environment?.adbReason ?: "Android SDKを確認してください。"
         environment?.application?.packageName == null -> environment?.application?.reason ?: "対象アプリを選択してください。"
-        screenshotSettings?.destination.isNullOrEmpty() -> "設定で保存先を指定してください。"
+        screenshotSettings?.screenshotDestination.isNullOrEmpty() -> "設定でスクリーンショットの保存先を指定してください。"
         else -> runCatching { screenshotDeviceSerial(snapshot) }.exceptionOrNull()?.message
     }
 
@@ -213,7 +213,7 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
         val snapshot = capture.view.snapshot
         screenshotDisabledReason(snapshot)?.let { screenshotError(it); return }
         val selected = checkNotNull(environment)
-        val destination = checkNotNull(screenshotSettings).destination
+        val destination = checkNotNull(screenshotSettings).screenshotDestination
         val serial = runCatching { screenshotDeviceSerial(snapshot) }.getOrElse {
             screenshotError(it.message ?: "録画対象の端末を確認できません。")
             return

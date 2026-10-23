@@ -51,7 +51,7 @@ class ReplaySettingsLayoutTest {
         try {
             SwingUtilities.invokeAndWait(() -> {
                 for (String destination : List.of("", "/disposable/" + "long-directory/".repeat(12) + "save")) {
-                    var saved = new ReplaySettingsState(false, 180, destination, AppSelectionMode.AUTOMATIC, "", CaptureMode.VIDEO_AND_LOGS, false);
+                    var saved = new ReplaySettingsState(false, 180, destination, AppSelectionMode.AUTOMATIC, "", CaptureMode.VIDEO_AND_LOGS, false, true, "");
                     store.loadState(saved);
                     var configurable = new ReplaySettingsConfigurable(project);
                     try {
@@ -59,7 +59,8 @@ class ReplaySettingsLayoutTest {
                         configurable.reset();
                         var guide = (JBTextArea) find(panel, "package名の入力条件");
                         var fields = List.of(find(panel, "保持時間（1〜900秒）"), find(panel, "保存先フォルダ"),
-                            find(panel, "対象アプリの選択方法"), find(panel, "対象アプリのpackage名"), find(panel, "取得モード"));
+                            find(panel, "対象アプリの選択方法"), find(panel, "対象アプリのpackage名"), find(panel, "取得モード"),
+                            find(panel, "スクリーンショットを共通の保存先へ保存"), find(panel, "スクリーンショット専用フォルダ"));
                         assertEquals(guide.getText(), fields.get(3).getAccessibleContext().getAccessibleDescription());
                         assertFalse(guide.isEditable());
                         assertFalse(guide.isFocusable());
@@ -125,6 +126,21 @@ class ReplaySettingsLayoutTest {
                         assertEquals(destination, ((TextFieldWithBrowseButton) fields.get(1)).getText());
                         assertFalse(configurable.isModified());
                         assertEquals(saved, store.getState(), "layout must not apply settings");
+                        var common = (javax.swing.JCheckBox) fields.get(5);
+                        var screenshot = (TextFieldWithBrowseButton) fields.get(6);
+                        assertTrue(common.isSelected());
+                        assertFalse(screenshot.isEnabled());
+                        common.doClick();
+                        assertTrue(screenshot.isEnabled());
+                        assertTrue(configurable.isModified());
+                        assertTrue(store.settings().getScreenshotUsesCommonDestination(), "draft must not change effective destination");
+                        screenshot.setText("relative-folder");
+                        assertEquals("", store.settings().getScreenshotDirectory());
+                        configurable.reset();
+                        assertTrue(common.isSelected());
+                        assertFalse(screenshot.isEnabled());
+                        assertEquals("", screenshot.getText());
+                        assertFalse(configurable.isModified(), "Cancel/reset discards screenshot destination edits");
                         var autoSave = (javax.swing.JCheckBox) find(panel, "クラッシュ報告の自動保存");
                         assertFalse(autoSave.isSelected());
                         autoSave.setSelected(true);
