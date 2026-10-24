@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "issue": 358,
+  "gui_required": false,
+  "reason": "mainのAGENTS入口から採用済みDoc規約へ条件付きで接続する文書変更。正本がcheckout内にある場合はlocalを、ない場合は採用済み固定revisionを参照する。製品/runtime/build/CLI/API・既存Case/観察・QA/受入契約は変更せず、GUI確認は不要。",
+  "cli_checks": [
+    "python3 scripts/check.py",
+    "python3 scripts/workflow/product_check.py",
+    "python3 scripts/workflow/change_impact.py --base origin/main --run-tests"
+  ],
+  "cases": []
+}
