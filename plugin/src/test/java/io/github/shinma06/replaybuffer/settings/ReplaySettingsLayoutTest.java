@@ -52,7 +52,11 @@ class ReplaySettingsLayoutTest {
         assertNull(project.getService(ReplayProjectService.class));
         try {
             SwingUtilities.invokeAndWait(() -> {
-                for (String destination : List.of("", "/disposable/" + "long-directory/".repeat(12) + "save")) {
+                record LayoutCase(String destination, boolean occupiedScrollbar) {}
+                var longDestination = "/disposable/" + "long-directory/".repeat(12) + "save";
+                for (var fixture : List.of(new LayoutCase("", false), new LayoutCase(longDestination, false),
+                    new LayoutCase("", true), new LayoutCase(longDestination, true))) {
+                    String destination = fixture.destination();
                     var saved = new ReplaySettingsState(false, 180, destination, AppSelectionMode.AUTOMATIC, "", CaptureMode.VIDEO_AND_LOGS, false, true, "", VideoQuality.STANDARD);
                     store.loadState(saved);
                     var configurable = new ReplaySettingsConfigurable(project);
@@ -96,23 +100,27 @@ class ReplaySettingsLayoutTest {
                         panel.setBorder(JBUI.Borders.empty(11, 16, 16, 16));
                         var scroll = ScrollPaneFactory.createScrollPane(null, true);
                         scroll.setViewport(new GradientViewport(panel, JBUI.insetsTop(5), true));
+                        if (fixture.occupiedScrollbar()) {
+                            scroll.setLayout(new javax.swing.ScrollPaneLayout());
+                            scroll.setVerticalScrollBar(new javax.swing.JScrollBar());
+                            scroll.setVerticalScrollBarPolicy(javax.swing.ScrollPaneConstants.VERTICAL_SCROLLBAR_ALWAYS);
+                        }
                         var reference = new JBTextArea(guide.getText());
                         reference.setFont(guide.getFont());
                         reference.setBorder(guide.getBorder());
                         reference.setMargin(guide.getMargin());
                         reference.setLineWrap(true);
                         reference.setWrapStyleWord(true);
-                        int boundary = -1;
-                        int previousHeight = naturalHeight(reference, 400);
-                        for (int width = 401; width <= 1800; width++) {
-                            int height = naturalHeight(reference, width);
-                            if (height < previousHeight) boundary = width;
-                            previousHeight = height;
+                        int narrow = 400;
+                        int wide = 1800;
+                        int minimumHeight = expectedHeightAtWidth(scroll, guide, reference, wide);
+                        assertTrue(expectedHeightAtWidth(scroll, guide, reference, narrow) > minimumHeight,
+                            "the actual allocated widths must cross a measured wrap transition");
+                        while (wide - narrow > 1) {
+                            int middle = (wide + narrow) / 2;
+                            if (expectedHeightAtWidth(scroll, guide, reference, middle) > minimumHeight) narrow = middle;
+                            else wide = middle;
                         }
-                        assertTrue(boundary > 0, "the actual font must have a measured wrap transition");
-                        int padding = panel.getInsets().left + panel.getInsets().right;
-                        int wide = boundary + padding;
-                        int narrow = wide - 1;
                         var rowEnds = new ArrayList<Integer>();
                         var heights = new ArrayList<Integer>();
                         for (int width : new int[]{wide, narrow, wide, narrow, 600, 800, 600}) {
@@ -230,6 +238,14 @@ class ReplaySettingsLayoutTest {
             }
         }
         return null;
+    }
+
+    private static int expectedHeightAtWidth(JComponent scroll, JBTextArea guide, JBTextArea reference, int width) {
+        scroll.setSize(width, 650);
+        layout(scroll);
+        layout(scroll);
+        // Non-overlay scrollbars consume width; measure the independent oracle at the allocated width.
+        return naturalHeight(reference, guide.getWidth());
     }
 
     private static int naturalHeight(JBTextArea reference, int width) {
