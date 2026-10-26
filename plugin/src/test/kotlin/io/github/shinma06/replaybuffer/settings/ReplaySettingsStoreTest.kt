@@ -4,6 +4,7 @@ import com.intellij.util.xmlb.XmlSerializer
 import io.github.shinma06.replaybuffer.core.ApplicationMode
 import io.github.shinma06.replaybuffer.core.ApplicationTarget
 import io.github.shinma06.replaybuffer.core.CaptureMode
+import io.github.shinma06.replaybuffer.core.VideoQuality
 import io.github.shinma06.replaybuffer.core.ReplaySettings as CoreReplaySettings
 import org.jdom.Element
 import org.junit.jupiter.api.Assertions.assertEquals
@@ -26,7 +27,7 @@ class ReplaySettingsStoreTest {
     @Test
     fun `mode persists and changes are rejected atomically while enabled`() {
         val store = ReplaySettingsStore()
-        val selected = ReplaySettings(captureMode = CaptureMode.LOG_ONLY, autoSaveOnCrash = true)
+        val selected = ReplaySettings(captureMode = CaptureMode.LOG_ONLY, autoSaveOnCrash = true, videoQuality = VideoQuality.LIGHTWEIGHT)
         store.apply(selected)
         store.setEnabled(true)
         val restored = ReplaySettingsStore()
@@ -36,6 +37,9 @@ class ReplaySettingsStoreTest {
         val before = store.stateModificationCount
         assertThrows(IllegalArgumentException::class.java) {
             store.apply(selected.copy(captureMode = CaptureMode.VIDEO_AND_LOGS, retentionSeconds = 12))
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            store.apply(selected.copy(videoQuality = VideoQuality.STANDARD, retentionSeconds = 12))
         }
         assertEquals(before, store.stateModificationCount)
         assertEquals(selected, store.settings())
@@ -50,7 +54,7 @@ class ReplaySettingsStoreTest {
     fun `CLI import changes only legacy values while OFF and invalid input is atomic`() {
         val store = ReplaySettingsStore()
         val selected = ReplaySettings(180, "", AppSelectionMode.MANUAL, "com.example.app", CaptureMode.LOG_ONLY, autoSaveOnCrash = true,
-            screenshotUsesLogcatDestination = false, screenshotDirectory = destinationRoot.toString())
+            screenshotUsesLogcatDestination = false, screenshotDirectory = destinationRoot.toString(), videoQuality = VideoQuality.LIGHTWEIGHT)
         store.apply(selected)
         store.importLegacy(60, destinationRoot.toString())
         assertEquals(selected.copy(retentionSeconds = 60, destination = destinationRoot.toString()), store.settings())
@@ -196,6 +200,7 @@ class ReplaySettingsStoreTest {
         val oldXml = XmlSerializer.deserialize(Element("state"), ReplaySettingsState::class.java)
         assertEquals(180, oldXml.retentionSeconds)
         assertEquals(CaptureMode.VIDEO_AND_LOGS, oldXml.captureMode)
+        assertEquals(VideoQuality.STANDARD, oldXml.videoQuality)
         assertFalse(oldXml.autoSaveOnCrash)
         restored.loadState(oldXml.copy(retentionSeconds = -10))
         assertFalse(restored.enabled)

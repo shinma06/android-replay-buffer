@@ -26,7 +26,7 @@ import kotlin.test.assertTrue
 class ReplayCoreWireTest {
     @Test
     fun failedRequestRetriesItsOriginalWindowWhileAcquisitionReconfigurationAndReconnectContinue() {
-        runWireFixture(false)
+        runWireFixture(false, videoQuality = VideoQuality.LIGHTWEIGHT)
     }
 
     @Test
@@ -49,7 +49,7 @@ class ReplayCoreWireTest {
     @Test
     @EnabledOnOs(OS.MAC)
     fun logOnlySkipsEveryVideoPathAndQuietRequestsRetryWithTheirFrozenMode() {
-        runWireFixture(false, "partition", captureMode = CaptureMode.LOG_ONLY)
+        runWireFixture(false, "partition", captureMode = CaptureMode.LOG_ONLY, videoQuality = VideoQuality.LIGHTWEIGHT)
     }
 
     @Test
@@ -64,6 +64,7 @@ class ReplayCoreWireTest {
         logReaderStartupDelayMillis: Long = 0,
         captureMode: CaptureMode = CaptureMode.VIDEO_AND_LOGS,
         autoCrash: Boolean = false,
+        videoQuality: VideoQuality = VideoQuality.STANDARD,
     ) {
         val root = Files.createTempDirectory("replay-wire-fixture-")
         Files.writeString(root.resolve("probe-mode.txt"), logMode ?: "partition")
@@ -237,7 +238,7 @@ elif len(a)>3 and 'ClockProbe' in a[3]:
             writer.write(nonce); writer.flush()
             print(reader.readline().strip(),flush=True)
 elif len(a)>3 and 'scrcpy.Server' in a[3]:
-    with (root/'video-launches.txt').open('a') as f: f.write('start\n')
+    with (root/'video-launches.txt').open('a') as f: f.write(a[3]+'\n')
     time.sleep(90)
 elif len(a)>3 and a[3]=='settings':
     print(1)
@@ -248,7 +249,7 @@ elif len(a)>3 and a[3]=='ps':
 """)
         assertTrue(fake.toFile().setExecutable(true))
         val core = ReplayCore(ReplaySettings(fake, root.resolve("missing"), if (captureMode.videoRequested) 1 else 30,
-            ApplicationTarget(), captureMode), root.resolve("workspace"))
+            ApplicationTarget(), captureMode, videoQuality = videoQuality), root.resolve("workspace"))
         fun awaitState(phase: String, predicate: (ReplaySnapshot) -> Boolean): ReplaySnapshot {
             val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(15)
             while (System.nanoTime() < deadline) {
@@ -334,6 +335,16 @@ elif len(a)>3 and a[3]=='ps':
                 assertTrue(completed.save.missingKinds.isEmpty())
                 val folder = completed.save.directory!!
                 val json = JsonParser.parseString(Files.readString(folder.resolve("session.json"))).asJsonObject
+                val request = json["settings"].asJsonObject["video_request"]
+                if (captureMode.videoRequested) {
+                    assertEquals("H.264 / ${videoQuality.maxSize} / ${videoQuality.maxFps}fps / ${videoQuality.bitRate / 1_000_000}Mbps / no B-frame",
+                        json["settings"].asJsonObject["video"].asString)
+                    assertEquals(videoQuality.name, request.asJsonObject["quality"].asString)
+                    assertEquals(videoQuality.maxSize, request.asJsonObject["max_size"].asInt)
+                    assertEquals(videoQuality.maxFps, request.asJsonObject["max_fps"].asInt)
+                    assertEquals(videoQuality.bitRate, request.asJsonObject["video_bit_rate"].asInt)
+                    assertFalse(request.asJsonObject["downsize_on_error"].asBoolean)
+                } else assertTrue(request.isJsonNull)
                 assertEquals("LOG_ONLY", json["capture_mode"].asString)
                 assertEquals("NOT_REQUESTED", json["coverage"].asJsonObject["video"].asJsonObject["state"].asString)
                 assertTrue(json["video_missing_ranges"].asJsonArray.isEmpty)
@@ -380,6 +391,7 @@ elif len(a)>3 and a[3]=='ps':
                 assertTrue(video.sequenceId != quiet.sequenceId)
                 assertEquals(CaptureMode.VIDEO_AND_LOGS, video.settings.captureMode)
                 assertTrue(Files.exists(root.resolve("video-launches.txt")))
+                assertTrue(Files.readString(root.resolve("video-launches.txt")).contains("max_size=1024 max_fps=15 video_bit_rate=2000000 downsize_on_error=false"))
                 assertTrue(core.setEnabled(false).get(15, TimeUnit.SECONDS).accepted)
                 core.closeAsync().get(15, TimeUnit.SECONDS)
                 Files.readAllLines(pids).forEach { pid -> assertFalse(ProcessHandle.of(pid.toLong()).map { it.isAlive }.orElse(false)) }
@@ -407,6 +419,10 @@ elif len(a)>3 and a[3]=='ps':
             awaitState("unresolved-app") { it.video.state == StreamState.CAPTURING && it.appLog.state == StreamState.UNAVAILABLE }
             assertTrue(core.updateApplication(ApplicationTarget("com.fixture.app")).get().accepted)
             val capturing = awaitState("initial-capture") { it.canSave && it.video.state == StreamState.CAPTURING && it.appLog.state == StreamState.CAPTURING }
+            val launch = Files.readAllLines(root.resolve("video-launches.txt")).first()
+            assertTrue(launch.contains("max_size=${videoQuality.maxSize} max_fps=${videoQuality.maxFps} video_bit_rate=${videoQuality.bitRate} downsize_on_error=false"))
+            assertTrue(launch.contains("video_codec=h264") && launch.contains("max-bframes:int=0,i-frame-interval:int=1"))
+            assertFalse(launch.contains("video_encoder="))
             if (logMode != null) {
                 assertTrue(core.applySettings(core.snapshot().settings.copy(replaySeconds = 30, saveDirectory = root)).get().accepted)
                 val readers = mutableMapOf<String, Long>()
@@ -618,6 +634,16 @@ elif len(a)>3 and a[3]=='ps':
                 assertEquals(fixed.videoTail, done.save.videoTail)
                 val folder = done.save.directory!!
                 val json = JsonParser.parseString(Files.readString(folder.resolve("session.json"))).asJsonObject
+                val request = json["settings"].asJsonObject["video_request"]
+                if (captureMode.videoRequested) {
+                    assertEquals("H.264 / ${videoQuality.maxSize} / ${videoQuality.maxFps}fps / ${videoQuality.bitRate / 1_000_000}Mbps / no B-frame",
+                        json["settings"].asJsonObject["video"].asString)
+                    assertEquals(videoQuality.name, request.asJsonObject["quality"].asString)
+                    assertEquals(videoQuality.maxSize, request.asJsonObject["max_size"].asInt)
+                    assertEquals(videoQuality.maxFps, request.asJsonObject["max_fps"].asInt)
+                    assertEquals(videoQuality.bitRate, request.asJsonObject["video_bit_rate"].asInt)
+                    assertFalse(request.asJsonObject["downsize_on_error"].asBoolean)
+                } else assertTrue(request.isJsonNull)
                 assertEquals(operation.requestId, json["save_id"].asString)
                 assertEquals(1, json["replay_seconds"].asInt)
                 assertTrue(json["clock_samples"].asJsonArray.any { it.asJsonObject["valid"].asBoolean })

@@ -2,6 +2,7 @@ package io.github.shinma06.replaybuffer.ide
 
 import io.github.shinma06.replaybuffer.core.ApplicationMode
 import io.github.shinma06.replaybuffer.core.CaptureMode
+import io.github.shinma06.replaybuffer.core.VideoQuality
 import io.github.shinma06.replaybuffer.core.CaptureState
 import io.github.shinma06.replaybuffer.core.RemoteCleanup
 import io.github.shinma06.replaybuffer.core.RemoteCleanupJournal
@@ -37,21 +38,29 @@ class ReplayProjectCaptureTest {
     fun `enabled cannot overtake an unapplied mode and startup restores the selected mode`() {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val store = ReplaySettingsStore()
-        store.loadState(ReplaySettingsState(enabled = true, captureMode = CaptureMode.LOG_ONLY, autoSaveOnCrash = true))
+        store.loadState(ReplaySettingsState(enabled = true, captureMode = CaptureMode.LOG_ONLY, autoSaveOnCrash = true, videoQuality = VideoQuality.LIGHTWEIGHT))
         val capture = ReplayProjectCapture(scope, store, {}, {})
         try {
             assertTrue(capture.applySettings(store.settings(), unresolved, 0).get(15, TimeUnit.SECONDS).accepted)
             assertTrue(capture.view.snapshot!!.enabled)
             assertEquals(CaptureMode.LOG_ONLY, capture.view.snapshot!!.settings.captureMode)
+            assertEquals(VideoQuality.LIGHTWEIGHT, capture.view.snapshot!!.settings.videoQuality)
             assertTrue(capture.view.snapshot!!.settings.autoSaveOnCrash)
             assertEquals(io.github.shinma06.replaybuffer.core.AutoSaveState.WAITING, capture.view.snapshot!!.autoSave.state)
             assertTrue(capture.setEnabled(false).get(15, TimeUnit.SECONDS).accepted)
+            store.apply(store.settings().copy(videoQuality = VideoQuality.STANDARD))
+            assertFalse(capture.setEnabled(true).get(15, TimeUnit.SECONDS).accepted)
+            assertFalse(store.enabled)
+            assertEquals(VideoQuality.LIGHTWEIGHT, capture.view.snapshot!!.settings.videoQuality)
+            assertTrue(capture.applySettings(store.settings(), unresolved, 0).get(15, TimeUnit.SECONDS).accepted)
+            assertEquals(VideoQuality.STANDARD, capture.view.snapshot!!.settings.videoQuality)
             store.apply(store.settings().copy(captureMode = CaptureMode.VIDEO_AND_LOGS))
             assertFalse(capture.setEnabled(true).get(15, TimeUnit.SECONDS).accepted)
             assertFalse(store.enabled)
             assertFalse(capture.view.snapshot!!.enabled)
             assertTrue(capture.view.snapshot!!.settings.autoSaveOnCrash)
             assertEquals(CaptureMode.LOG_ONLY, capture.view.snapshot!!.settings.captureMode)
+            assertEquals(VideoQuality.STANDARD, capture.view.snapshot!!.settings.videoQuality)
             assertEquals(CaptureMode.VIDEO_AND_LOGS, store.settings().captureMode)
             assertTrue(capture.applySettings(store.settings(), unresolved, 0).get(15, TimeUnit.SECONDS).accepted)
             assertTrue(capture.setEnabled(true).get(15, TimeUnit.SECONDS).accepted)

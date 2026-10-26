@@ -182,6 +182,11 @@ private class ReplayToolWindowPanel(private val project: Project) : JPanel(Borde
         if (snapshot != null && snapshot.settings.captureMode != store.settings().captureMode)
             state.text += "（設定の反映待ち: ${captureModeDescription(store.settings().captureMode)}）"
         video.text = streamDescription("動画", snapshot?.video)
+        if ((snapshot?.settings?.captureMode ?: store.settings().captureMode).videoRequested) {
+            video.text += " / 指定品質: ${snapshot?.settings?.videoQuality ?: store.settings().videoQuality}"
+            if (snapshot != null && snapshot.settings.videoQuality != store.settings().videoQuality)
+                video.text += "（品質設定の反映待ち）"
+        }
         deviceLog.text = streamDescription("端末ログ", snapshot?.deviceLog)
         appLog.text = streamDescription("アプリログ", snapshot?.appLog)
         val seconds = snapshot?.settings?.replaySeconds ?: store.settings().retentionSeconds

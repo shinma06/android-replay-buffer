@@ -19,7 +19,7 @@
       "steps": [
         "固定baseline/candidateで同一Wire入力の内容・順序・時刻/unknown・所属・ID関係と割当量を比較する。起動tail、live後の時刻後退、reconnect、buffer分割/部分失敗はproduction回帰で精密に確認し、nativeで同じ故障行列を繰り返さない。",
         "#224等の割当済み取得観察と共有し、実ロードした候補で選んだ固定mode・buffer群・対象アプリ・入力頻度/分母を記録する。保持済み観察と影響評価で証明できない実取得/保存の不足だけを確認し、保存窓全体のraw payload・行数/順序・所属・source時刻/unknown/gapを照合する。",
-        "取得コマンド・buffer構成・周期・動画設定を変更していないことを固定差分で照合し、対応する比較条件でAndroid側非悪化とhost資源を評価する。未測定のIDE応答・端末/電力・保存/HW性能を推定せず、host競合や観察器の差を残す。"
+        "H1当時の取得コマンド・buffer構成・周期・動画設定の不変事実を固定履歴で保持し、現在候補の#282品質選択とは分ける。Android/host数値非悪化の自動証明は要求せず、未測定を改善へ読み替えない。性能は完成版本人比較へ引き継ぐ。"
       ],
       "expected": "起動前tailを混入させず、live後の遅延/後退行を捨てない。reader再接続は新たにtail判定し、opaque payload・各bufferの一意な取込み・所属・unknown/gap・部分障害・停止/所有・保存保護を維持する。同一入力の不要な履歴コピーによる割当を減らし、測定条件で裏付けられない速度やAndroid負荷の改善を主張しない。",
       "provenance": [
@@ -31,25 +31,25 @@
       ],
       "gpt": {
         "status": "pending",
-        "reason": "H1の有限Wire比較・回帰はIssue/PRに別記する。最終採用baseの固定artifactと実取得/Android側guardの不足事実は未確認。"
+        "reason": "H1の有限Wire比較・回帰と原観察は履歴として保持。現候補のログ内容/時計/所有・保存保証への適用と不足事実を評価し、追加の性能対照比較は要求しない。"
       },
       "human": {
         "status": "pending",
-        "reason": "未観察。今回の変更から新たな一律human必須条件を追加せず、既存のREAL/人間延期を維持する。"
+        "reason": "性能は完成版を本人環境で比較し、本人が問題なしと判断するまでpending。既存のREAL/人間延期と旧不利結果・FAIL/unknownは保持する。"
       },
       "fix_issue": null,
       "fix_pr": null,
       "recheck": "コピー省略が影響するログ取込みとhost割当を確認する。時計算法・動画codec・SaveWriter・UIは変更しないため、無関係な全player/editorの再試験を追加しない。",
-      "next_action": "writerが固定HEAD/base/tree、実比較条件/原結果、回帰結果と残native確認をPMへ渡す。別セッションの独立reviewと最終base上の通常checksを経て、#224等の共有観察で不足を埋める。H1だけで#283全体をcloseしない。"
+      "next_action": "固定候補・原観察/FAIL/unknown・必要回帰をPM/独立reviewへ渡す。既存証拠と影響評価で不足する機能/内容観察だけを既存QAで補い、性能は完成版の本人環境比較・問題なし判断待ち。自動対照比較・再profileを先行条件にしない。#280でmainを別管理する。"
     },
     {
       "id": "HOST-VIDEO-SELECTION",
       "artifact": "plugin",
       "change": "保存窓と直前GOPを選ぶ反復indexOfを一巡へ置換し、選択条件・順序・時刻対応・pinと保存内容を維持する",
-      "preconditions": "固定baseline/candidateのsourceとJARを識別し、同じ有限driver・入力・時計履歴・測定回数を使う。候補測定は通常build後に1回だけ実行し、全工程14分の外部watchdogと容量制限を適用する。旧83f比較と最終採用baseを区別する。",
+      "preconditions": "固定候補source/標準artifactと原baseline/候補の保持証拠を識別し、既存の内容・時刻・pin回帰と影響評価を使う。旧profileのdriver・回数・14分watchdogは過去の条件で、今回再実行の先行条件ではない。旧83f比較と最終採用baseを区別する。",
       "steps": [
         "既存Store/Save回帰に加え、切出し直前の連続フレームとgap境界、unknown行、固定窓外、pin/releaseを確認する。",
-        "5400/27000フレームでproduction captureの内容digest、caller割当/CPU/wallと対象thread・区間のprofileを記録する。63フレームremuxと133フレームmixedは同じ実sourceを保存し、全frame/config/順序/時刻と出力のgeometry/色/paddingを照合する。合成unknown境界を元native観察へ読み替えない。",
+        "旧5400/27000フレームprofileと63フレームremux/133フレームmixedの原結果を保持し、未測定の候補値へ付け替えない。変更の影響するframe/config/順序/時刻・geometry/色/paddingの不足だけを既存回帰/機能観察で照合する。追加profileや数値比較を完了条件にしない。",
         "#284採用後の実baseでmanual/自動保存の呼出しと変更範囲を再確認し、影響する回帰と通常checksを行う。共有native受入では保持済み証拠で証明できない実保存の不足だけを確認する。"
       ],
       "expected": "保存するframe/GOP、順序、時刻・unknown/gap、pin/release、出力内容を維持し、同じ一覧に対する反復indexOfを除く。競合条件下の単回比較から速度改善率・IDE応答・Android負荷・HW効果を断定しない。時計mapの割当とcodec処理は別の未変更箇所として扱う。",
@@ -61,16 +61,16 @@
       ],
       "gpt": {
         "status": "pending",
-        "reason": "有限profileと回帰の実結果はIssueへ別記する。最終採用baseと実ロード版の不足確認は未完。"
+        "reason": "有限profile/回帰の原結果は保持。最終候補の保存内容・時刻/pin等の適用評価と必要な不足機能観察を扱い、性能は本人比較へ引き継ぐ。"
       },
       "human": {
         "status": "pending",
-        "reason": "未観察。既存のREAL/人間延期を維持し、新たな一律human必須条件を追加しない。"
+        "reason": "性能は完成版を本人環境で比較し、本人が問題なしと判断するまでpending。既存のREAL/人間延期と旧不利結果・FAIL/unknownは保持する。"
       },
       "fix_issue": null,
       "fix_pr": null,
       "recheck": "対象選択と保存内容・時刻/品質を確認する。時計算法・codec・取得コマンド・UIは変更せず、H3/cache/HW試作や全player/editor行列を追加しない。",
-      "next_action": "固定候補と有限比較・原結果をPMへ渡し別セッションの独立reviewを受ける。#284採用後の実base上のchecksと残native受入を経るまで、この段階だけで#283をcloseしない。"
+      "next_action": "固定候補・原観察/FAIL/unknown・必要回帰をPM/独立reviewへ渡す。既存証拠と影響評価で不足する機能/内容観察だけを既存QAで補い、性能は完成版の本人環境比較・問題なし判断待ち。自動対照比較・再profileを先行条件にしない。#280でmainを別管理する。"
     }
   ]
 }

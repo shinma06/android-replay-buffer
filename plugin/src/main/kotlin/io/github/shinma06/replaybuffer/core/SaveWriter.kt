@@ -521,7 +521,14 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                     "video_byte_limit" to ReplaySettings.VIDEO_BYTES, "log_byte_limit" to ReplaySettings.LOG_BYTES,
                     "min_free_bytes" to ReplaySettings.MIN_FREE_BYTES,
                     "max_video_packets" to ReplaySettings.MAX_VIDEO_PACKETS, "max_config_packet_bytes" to ReplaySettings.MAX_CONFIG_PACKET_BYTES,
-                    "config_memory_bytes" to ReplaySettings.CONFIG_MEMORY_BYTES, "video" to "H.264 / 1920 / 30fps / 8Mbps / no B-frame".takeIf { videoRequested }),
+                    "config_memory_bytes" to ReplaySettings.CONFIG_MEMORY_BYTES,
+                    "video" to capture.settings.videoQuality.let {
+                        "H.264 / ${it.maxSize} / ${it.maxFps}fps / ${it.bitRate / 1_000_000}Mbps / no B-frame"
+                    }.takeIf { videoRequested },
+                    "video_request" to capture.settings.videoQuality.let {
+                        mapOf("quality" to it, "max_size" to it.maxSize, "max_fps" to it.maxFps,
+                            "video_bit_rate" to it.bitRate, "downsize_on_error" to false)
+                    }.takeIf { videoRequested }),
                 "window_end_uncertainty_ns" to capture.endUncertainty.toString(),
                 "clock_samples" to capture.clocks.map { clockJson(it) },
                 "clock_epochs" to (capture.clocks.map { it.epoch } + capture.video.map { it.time.epoch } + capture.logs.map { it.time.epoch } +

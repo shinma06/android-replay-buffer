@@ -16,6 +16,8 @@ import com.intellij.ui.components.JBTextArea;
 import com.intellij.util.ui.JBUI;
 import io.github.shinma06.replaybuffer.ide.ReplayProjectService;
 import io.github.shinma06.replaybuffer.core.CaptureMode;
+import io.github.shinma06.replaybuffer.core.VideoQuality;
+import javax.swing.JComboBox;
 import kotlinx.coroutines.CoroutineScope;
 import org.junit.jupiter.api.Test;
 
@@ -51,16 +53,27 @@ class ReplaySettingsLayoutTest {
         try {
             SwingUtilities.invokeAndWait(() -> {
                 for (String destination : List.of("", "/disposable/" + "long-directory/".repeat(12) + "save")) {
-                    var saved = new ReplaySettingsState(false, 180, destination, AppSelectionMode.AUTOMATIC, "", CaptureMode.VIDEO_AND_LOGS, false, true, "");
+                    var saved = new ReplaySettingsState(false, 180, destination, AppSelectionMode.AUTOMATIC, "", CaptureMode.VIDEO_AND_LOGS, false, true, "", VideoQuality.STANDARD);
                     store.loadState(saved);
                     var configurable = new ReplaySettingsConfigurable(project);
                     try {
                         var panel = configurable.createComponent();
                         configurable.reset();
+                        var quality = (JComboBox<?>) find(panel, "動画品質");
+                        assertEquals(VideoQuality.STANDARD, quality.getSelectedItem());
+                        assertTrue(quality.isEnabled());
+                        quality.setSelectedItem(VideoQuality.LIGHTWEIGHT);
+                        assertTrue(configurable.isModified());
+                        ((JComboBox<?>) find(panel, "取得モード")).setSelectedItem(CaptureMode.LOG_ONLY);
+                        assertFalse(quality.isEnabled());
+                        assertEquals(VideoQuality.LIGHTWEIGHT, quality.getSelectedItem());
+                        configurable.reset();
+                        assertEquals(VideoQuality.STANDARD, quality.getSelectedItem());
+                        assertTrue(quality.isEnabled());
                         var guide = (JBTextArea) find(panel, "package名の入力条件");
                         var fields = List.of(find(panel, "保持時間（1〜900秒）"), find(panel, "保存先フォルダ"),
                             find(panel, "対象アプリの選択方法"), find(panel, "対象アプリのpackage名"), find(panel, "取得モード"),
-                            find(panel, "スクリーンショットをLogcatのスクショ保存先へ保存"), find(panel, "スクリーンショットの手動保存先"));
+                            find(panel, "スクリーンショットをLogcatのスクショ保存先へ保存"), find(panel, "スクリーンショットの手動保存先"), quality);
                         assertEquals(guide.getText(), fields.get(3).getAccessibleContext().getAccessibleDescription());
                         assertFalse(guide.isEditable());
                         assertFalse(guide.isFocusable());
@@ -78,7 +91,8 @@ class ReplaySettingsLayoutTest {
                         assertTrue(autoGuidance.getText().contains("この設定をOFFで適用してから、ONで再び適用"));
                         assertFalse(autoGuidance.getText().contains("取得OFF→ON"));
                         status.add(autoGuidance);
-                        for (int index : new int[]{0, 1, 2, 3, 4, 6}) assertTrue(hasLabelFor(panel, fields.get(index)), "label association for " + index);
+                        status.add((JBTextArea) find(panel, "動画品質の説明"));
+                        for (int index : new int[]{0, 1, 2, 3, 4, 6, 7}) assertTrue(hasLabelFor(panel, fields.get(index)), "label association for " + index);
                         panel.setBorder(JBUI.Borders.empty(11, 16, 16, 16));
                         var scroll = ScrollPaneFactory.createScrollPane(null, true);
                         scroll.setViewport(new GradientViewport(panel, JBUI.insetsTop(5), true));
