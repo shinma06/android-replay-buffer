@@ -17,7 +17,7 @@
       "change": "live判定を通過したreaderのclock履歴コピーだけを省き、元のログ取得・保存内容とAndroid側の取得条件を維持する",
       "preconditions": "#301/#284等の実採用developへ同期した固定source/標準ZIP/全JARと実ロード版を識別する。共有host/GUI枠・所有fixture・有限の入力/時間/容量・停止/復元条件を事前に固定する。既存の有効な責任契約と元観察/失敗/延期を保持し、unit/fakeの成功をnativeへ転記しない。",
       "steps": [
-        "固定baseline/candidateで同一Wire入力の内容・順序・時刻/unknown・所属・ID関係と割当量を比較する。起動tail、live後の時刻後退、reconnect、buffer分割/部分失敗はproduction回帰で精密に確認し、nativeで同じ故障行列を繰り返さない。",
+        "保持済みの固定baseline/candidateのWire比較と割当量の原結果を歴史上の証拠として参照し、再実行を要求しない。変更した内容・順序・時刻/unknown・所属・ID関係の不足だけを、起動tail・live後の時刻後退・reconnect・buffer分割/部分失敗の必要なproduction回帰で確認する。nativeで同じ故障行列を繰り返さない。",
         "#224等の割当済み取得観察と共有し、実ロードした候補で選んだ固定mode・buffer群・対象アプリ・入力頻度/分母を記録する。保持済み観察と影響評価で証明できない実取得/保存の不足だけを確認し、保存窓全体のraw payload・行数/順序・所属・source時刻/unknown/gapを照合する。",
         "H1当時の取得コマンド・buffer構成・周期・動画設定の不変事実を固定履歴で保持し、現在候補の#282品質選択とは分ける。Android/host数値非悪化の自動証明は要求せず、未測定を改善へ読み替えない。性能は完成版本人比較へ引き継ぐ。"
       ],
