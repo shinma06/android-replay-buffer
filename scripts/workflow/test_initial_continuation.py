@@ -8,7 +8,7 @@ import unittest
 from unittest.mock import patch
 
 from test_agent_loop import BASE, HEAD, NEW
-from initial_continuation_cases import CASES
+from initial_continuation_cases import CASES, QUALITY_CASES, QUALITY_UPDATES
 import test_initial_acceptance as initial_tests
 from test_verification import change, observation
 import verification as v
@@ -250,7 +250,7 @@ class InitialContinuationTests(unittest.TestCase):
         script = 'scripts/workflow/verification.py'
         fixture = 'scripts/workflow/initial_continuation_cases.py'
         unknown = 'docs/verification/unknown.json'
-        required = {v.INITIAL_CONTINUATION, record_path, script, fixture,
+        required = {v.INITIAL_CONTINUATION, record_path, 'docs/verification/changes/issue-364.json', script, fixture,
                     'scripts/workflow/test_initial_continuation.py',
                     'scripts/workflow/test_impact_evidence_reuse.py', 'docs/verification/README.md',
                     'scripts/workflow/test_agent_loop.py',
@@ -261,7 +261,8 @@ class InitialContinuationTests(unittest.TestCase):
                      'scripts/workflow/test_change_impact.py', 'scripts/workflow/test_product_check.py',
                      'CONTRIBUTING.md', 'docs/verification/changes/issue-999.json']
         paths = [*required, product_path, unknown, *unrelated]
-        records = {record_path: change(356, gui=False), product_path: change(37),
+        records = {record_path: change(356, gui=False),
+                   'docs/verification/changes/issue-364.json': change(364, gui=False), product_path: change(37),
                    unrelated[-1]: change(999, gui=False), v.INITIAL_CONTINUATION: self.registration}
         classifier = {BASE: '364b42de6cffde531ad631ae88e20a4271b76d7f',
                       NEW: '8beb4c9aa39196f10a76b6cea2ec757ffa52569c'}
@@ -311,11 +312,25 @@ class InitialContinuationTests(unittest.TestCase):
 
 
 class RegisteredContinuationTests(unittest.TestCase):
-    def test_registered_167_contracts_and_236_sources_render_without_inventing_results(self):
+    def test_historical_818b_registration_keeps_167_contracts_and_236_sources(self):
+        root = Path(__file__).resolve().parents[2]
+        registration = json.loads(subprocess.check_output(['git', 'show',
+            '1e49596da78b0e0529dd336b73d18c73a2fd12de:' + v.INITIAL_CONTINUATION], cwd=root, text=True))
+        self.check_registration(registration, '818b7e1adbcd0af79e146d1795f833b75a1b1302',
+                                (167, 236, 28, 23))
+
+    def test_quality_registration_keeps_169_contracts_and_238_sources(self):
         root = Path(__file__).resolve().parents[2]
         registration = json.loads((root / v.INITIAL_CONTINUATION).read_text())
+        self.check_registration(registration, '210ed0473c3f87e02f3ea065506d4616b6fdadd8',
+                                (169, 238, 30, 24))
+
+    def check_registration(self, registration, expected_candidate, counts):
+        root = Path(__file__).resolve().parents[2]
         policy = json.loads((root / v.INITIAL_PLAN).read_text())
-        self.assertEqual('818b7e1adbcd0af79e146d1795f833b75a1b1302', registration['candidate'])
+        self.assertEqual(expected_candidate, registration['candidate'])
+        total, source_count, extra_count, commit_count = counts
+        quality = expected_candidate == '210ed0473c3f87e02f3ea065506d4616b6fdadd8'
         warning = registration['cases']['347:SAVE-WARNING-WINDOW']
         self.assertEqual('aa9b28b5d6eec07756c29ffce51dda1192926004e8c4ac99aac5d3c37f216a4b',
                          warning['current_case_sha256'])
@@ -324,9 +339,11 @@ class RegisteredContinuationTests(unittest.TestCase):
         base, candidate = 'c66363ea0b27add98de9853ccf87728235662b17', registration['candidate']
         read = cache(lambda *args: subprocess.check_output(['git', *args], cwd=root, text=True).strip())
 
-        # Exact 818b7e1 Case contracts; the develop DAG/PR metadata remain synthetic.
+        # Exact original contracts and fixed quality changes; the DAG/PR metadata remain synthetic.
         # Historical 139-Case documents are read only from main's reachable history.
-        cases = CASES
+        cases = copy.deepcopy(CASES)
+        if quality:
+            cases.update(copy.deepcopy(QUALITY_CASES))
         self.assertEqual({item['source_path'] for item in registration['changes']}, set(cases))
         documents = {}
         parents = {}
@@ -340,6 +357,18 @@ class RegisteredContinuationTests(unittest.TestCase):
             parents[item['commit']] = previous
             previous = item['commit']
         self.assertEqual(candidate, previous)
+        if quality:
+            for path, updates in QUALITY_UPDATES.items():
+                data = copy.deepcopy(documents[f'{candidate}:{path}'])
+                for case in data['cases']:
+                    case.update(updates.get(case['id'], {}))
+                documents[f'{candidate}:{path}'] = data
+            old = json.loads(read('show',
+                '1e49596da78b0e0529dd336b73d18c73a2fd12de:' + v.INITIAL_CONTINUATION))
+            for key, entry in old['cases'].items():
+                self.assertEqual(entry['sources'], registration['cases'][key]['sources'])
+            self.assertNotEqual(old['cases']['274:LOG-ONLY-LOAD']['current_case_sha256'],
+                                registration['cases']['274:LOG-ONLY-LOAD']['current_case_sha256'])
 
         def git(*args):
             if args == ('ls-tree', base, '--', v.INITIAL_CONTINUATION):
@@ -378,7 +407,7 @@ class RegisteredContinuationTests(unittest.TestCase):
         changes = [{k: item[k] for k in ('commit', 'pr')} for item in registration['changes']]
         sources = v.initial_stage_sources(policy, v.initial_continuation(policy, base, candidate, git),
                                          None, changes, candidate, git)
-        self.assertEqual((167, 236, 28, 23), (len({k for k, _, _ in sources}), len(sources),
+        self.assertEqual((total, source_count, extra_count, commit_count), (len({k for k, _, _ in sources}), len(sources),
                                             len(extra), len(registration['changes'])))
         later = 'd' * 40
         def later_git(*args):
@@ -388,12 +417,12 @@ class RegisteredContinuationTests(unittest.TestCase):
         self.assertIsNone(v.initial_continuation(policy, base, later, later_git))
         historical_registration = v.initial_continuation(policy, base, later, later_git, historical=True)
         full_sources = v.historical_initial_sources(policy, later, later_git, historical_registration)
-        self.assertEqual((167, 236), (len({key for key, _, _ in full_sources}), len(full_sources)))
+        self.assertEqual((total, source_count), (len({key for key, _, _ in full_sources}), len(full_sources)))
         self.assertIn('347:SAVE-WARNING-WINDOW', {key for key, _, _ in full_sources})
         manifest = {'stage': v.INITIAL_STAGE, 'base': base, 'candidate': candidate,
                     'changes': changes, 'results': {}}
         output = v.render_queue([], manifest, git)
-        self.assertEqual(167, sum(line.startswith('| ') and ' / #' in line for line in output.splitlines()))
+        self.assertEqual(total, sum(line.startswith('| ') and ' / #' in line for line in output.splitlines()))
         self.assertNotIn('Case合格（', output)
         self.assertNotIn('初期版範囲合格／', output)
         self.assertEqual(139, len(policy['cases']))
@@ -462,12 +491,15 @@ class RegisteredContinuationTests(unittest.TestCase):
             return {'object': {'sha': candidate}} if path == 'git/ref/heads/develop' else prs[path]
 
         result = v.verify_pr(pr, api, virtual_git)
-        self.assertEqual((167, 133, 34), (result['cases'], result['initial_cases'], result['deferred_cases']))
+        self.assertEqual((total, total - 34, 34), (result['cases'], result['initial_cases'], result['deferred_cases']))
         self.assertTrue(result['stage_complete'])
         self.assertFalse(result['gui_complete'])
         self.assertFalse(result['full_acceptance_complete'])
-        for key in ('104:GUI-FLOW', '347:SAVE-WARNING-WINDOW'):
-            for status in ('deferred', 'initial-pass'):
+        keys = ['104:GUI-FLOW', '347:SAVE-WARNING-WINDOW']
+        if quality:
+            keys += ['282:VIDEO-QUALITY-SETTINGS', '282:VIDEO-QUALITY-CAPTURE']
+        for key in keys:
+            for status in ('pending', 'blocked', 'fail', 'deferred', 'initial-pass'):
                 manifest['results'][key]['status'] = status
                 with self.subTest(key=key, status=status), self.assertRaisesRegex(ValueError, 'must pass'):
                     v.verify_pr(pr, api, virtual_git)

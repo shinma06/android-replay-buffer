@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "issue": 344,
-  "candidate": "818b7e1adbcd0af79e146d1795f833b75a1b1302",
+  "candidate": "210ed0473c3f87e02f3ea065506d4616b6fdadd8",
   "plan_sha256": "0b6d9c6d2d5054ed642565afdbaeb5a88ee198a4ea5398ff96ff36168ce0eda5",
   "changes": [
     {
@@ -118,6 +118,11 @@
       "commit": "818b7e1adbcd0af79e146d1795f833b75a1b1302",
       "pr": 348,
       "source_path": "docs/verification/changes/issue-345.json"
+    },
+    {
+      "commit": "210ed0473c3f87e02f3ea065506d4616b6fdadd8",
+      "pr": 362,
+      "source_path": "docs/verification/changes/issue-282.json"
     }
   ],
   "cases": {
@@ -210,7 +215,7 @@
       ]
     },
     "274:LOG-ONLY-CAPTURE": {
-      "current_case_sha256": "31015b334c008d5f9ac6ae9037ceba0ecfe1156471ccece8c3e9f636b938132b",
+      "current_case_sha256": "8c733519264bfdb824ba9c2e43277dbb174b355735711a5c85e1cc35fe57917b",
       "sources": [
         {
           "source_pr": 297,
@@ -221,7 +226,7 @@
       ]
     },
     "274:LOG-ONLY-EMPTY": {
-      "current_case_sha256": "855be905166a903719f1542eb0967596fc7357a0d152fa7d0d0cbfb3e8db3e86",
+      "current_case_sha256": "71ea0663a9cb31576fc0e47585767298258f80b05dcbd02b735644950b6897f2",
       "sources": [
         {
           "source_pr": 297,
@@ -232,7 +237,7 @@
       ]
     },
     "274:LOG-ONLY-LOAD": {
-      "current_case_sha256": "5ed0fca71f95e572b62cea8da0798cf84efdbf634b8015847bea2aa4236983f6",
+      "current_case_sha256": "8968dd13bcc1fb49f9b0c4fc9cc5b7562c26d9388a532622519be99824dcc124",
       "sources": [
         {
           "source_pr": 297,
@@ -243,7 +248,7 @@
       ]
     },
     "274:LOG-ONLY-MODE": {
-      "current_case_sha256": "b49bac483d796a4018ed4604a442ef5b9471ed81e4e4119e75e0617a32489c16",
+      "current_case_sha256": "f7395b4620af007be6b7ace915156126891bdb868b0f8694f473180ee77738b0",
       "sources": [
         {
           "source_pr": 297,
@@ -254,7 +259,7 @@
       ]
     },
     "274:LOG-ONLY-SAVE-LIFETIME": {
-      "current_case_sha256": "d37f143545b915fc38b9dc7c21cd0cfa14dbc351b0f1c6c410e00eb2f2f5854d",
+      "current_case_sha256": "d5eb56815dcccc996ec71a5f6a525720528977b4c9f4e61627567eed47c401c9",
       "sources": [
         {
           "source_pr": 297,
@@ -265,7 +270,7 @@
       ]
     },
     "283:HOST-LOG-TAIL": {
-      "current_case_sha256": "e9f5535171d68d31726c2df189ea919548379bbb09e4f941505611d930831489",
+      "current_case_sha256": "e3b8093fa78dcd6bf0e4342935c6045d28157413826c41936822f1c143b84508",
       "sources": [
         {
           "source_pr": 309,
@@ -276,7 +281,7 @@
       ]
     },
     "283:HOST-VIDEO-SELECTION": {
-      "current_case_sha256": "4f970f9385ca395b3913a19e6a24a49df1b055c18aea7a225a8a13c586e9bfc8",
+      "current_case_sha256": "d6e3f931832e8f4a59e223c7ef8f07b52e3821497186412140e63163d3cc1149",
       "sources": [
         {
           "source_pr": 309,
@@ -428,6 +433,28 @@
           "original_case_sha256": "aa9b28b5d6eec07756c29ffce51dda1192926004e8c4ac99aac5d3c37f216a4b"
         }
       ]
+    },
+    "282:VIDEO-QUALITY-SETTINGS": {
+      "sources": [
+        {
+          "source_pr": 362,
+          "source_merge": "210ed0473c3f87e02f3ea065506d4616b6fdadd8",
+          "source_path": "docs/verification/changes/issue-282.json",
+          "original_case_sha256": "446e0f2aa660cd194ed19f91e6b78f3c015aa4ee06634c7f5aba7a770cf6ed19"
+        }
+      ],
+      "current_case_sha256": "446e0f2aa660cd194ed19f91e6b78f3c015aa4ee06634c7f5aba7a770cf6ed19"
+    },
+    "282:VIDEO-QUALITY-CAPTURE": {
+      "sources": [
+        {
+          "source_pr": 362,
+          "source_merge": "210ed0473c3f87e02f3ea065506d4616b6fdadd8",
+          "source_path": "docs/verification/changes/issue-282.json",
+          "original_case_sha256": "0a31023e52da9f009df09acc72c1312d0259a54ea8665b4fb53965d7d363f43d"
+        }
+      ],
+      "current_case_sha256": "0a31023e52da9f009df09acc72c1312d0259a54ea8665b4fb53965d7d363f43d"
     }
   }
 }

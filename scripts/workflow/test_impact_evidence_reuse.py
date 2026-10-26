@@ -1074,7 +1074,8 @@ class PromotionTreeTests(unittest.TestCase):
         import verification as v
         root = Path(__file__).resolve().parents[2]
         policy = json.loads((root / INITIAL_PLAN).read_text())
-        protected = (v.INITIAL_CONTINUATION, 'docs/verification/changes/issue-356.json')
+        protected = (v.INITIAL_CONTINUATION, 'docs/verification/changes/issue-356.json',
+                     'docs/verification/changes/issue-364.json')
         self.git('checkout', '-q', '-B', 'registered-common', self.common)
         for path in protected:
             self.write(path, (root / path).read_text())
@@ -1125,13 +1126,14 @@ class PromotionTreeTests(unittest.TestCase):
                                 json.loads((root / v.INITIAL_CONTINUATION).read_text())['candidate'],
                                 self.git, historical=True)
                             self.assertIsNotNone(registration)
-                            self.assertEqual(28, len(registration['cases']))
-                            self.assertEqual(167, len(set(policy['cases']) | set(registration['cases'])))
+                            self.assertEqual(30, len(registration['cases']))
+                            self.assertEqual(169, len(set(policy['cases']) | set(registration['cases'])))
                             self.assertIn('347:SAVE-WARNING-WINDOW', registration['cases'])
 
     def test_candidate_cannot_add_protected_data_absent_from_trusted_main(self):
         from verification import INITIAL_CONTINUATION, promotion_policy_blobs
-        for path in (INITIAL_CONTINUATION, 'docs/verification/changes/issue-356.json'):
+        for path in (INITIAL_CONTINUATION, 'docs/verification/changes/issue-356.json',
+                     'docs/verification/changes/issue-364.json'):
             self.git('checkout', '-q', '-B', 'untrusted-policy-candidate', self.candidate)
             self.write(path, '{}')
             self.commit('candidate-only untrusted policy addition')

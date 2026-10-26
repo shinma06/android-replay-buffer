@@ -1633,7 +1633,8 @@ def promotion_policy_blobs(base, candidate, git, continuation=False):
         raise ValueError('Policy carry requires the unchanged effective candidate contract')
     ancestor = git('merge-base', candidate, base)
     paths = {}
-    protected = {INITIAL_CONTINUATION, 'docs/verification/changes/issue-356.json'}
+    protected = {INITIAL_CONTINUATION, 'docs/verification/changes/issue-356.json',
+                 'docs/verification/changes/issue-364.json'}
     allowed = {*protected, 'scripts/workflow/verification.py',
                'scripts/workflow/initial_continuation_cases.py',
                'scripts/workflow/test_initial_continuation.py',
@@ -1739,15 +1740,18 @@ def promotion_policy_blobs(base, candidate, git, continuation=False):
             continue
         if path == 'docs/verification/README.md' and old_blob:
             common = git('ls-tree', ancestor, '--', path)
-            if common not in (blob, old_blob) and (old_blob.split()[2], blob.split()[2]) != (
-                    '3ae14aa6205aed699b52f3c67e96038130389240', 'ae527ba6ec98c8e04d198359bd146b33552b975c'):
+            if common not in (blob, old_blob) and (old_blob.split()[2], blob.split()[2]) not in (
+                    ('3ae14aa6205aed699b52f3c67e96038130389240', 'ae527ba6ec98c8e04d198359bd146b33552b975c'),
+                    ('3ae14aa6205aed699b52f3c67e96038130389240', '1b7f719523d75117c496685fecc1103192f17b89')):
                 raise ValueError('Candidate README changes require explicit trusted-main reconciliation')
         if path == INITIAL_CONTINUATION:
             initial_continuation(policy, base, candidate, git)
-        elif path == 'docs/verification/changes/issue-356.json':
-            validate_change(regular_json(base, path, git), 356, False)
+        elif path in ('docs/verification/changes/issue-356.json',
+                      'docs/verification/changes/issue-364.json'):
+            record_issue = int(Path(path).stem.removeprefix('issue-'))
+            validate_change(regular_json(base, path, git), record_issue, False)
             if old_blob:
-                validate_change(regular_json(candidate, path, git), 356, False)
+                validate_change(regular_json(candidate, path, git), record_issue, False)
         modes = tuple(x.split()[0] if x else '000000' for x in (old_blob, blob))
         if path_impacts(path, modes) <= {TOOLING, KNOWLEDGE, METADATA}:
             paths[path] = blob

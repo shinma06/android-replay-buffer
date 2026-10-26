@@ -1,4 +1,4 @@
-"""Preserve exact registered 818b7e1 contracts for historical unit tests.
+"""Preserve exact 818b7e1 and 210ed047 contracts for historical unit tests.
 
 This is not a generator or current task plan. Keep original wording and hashes;
 current performance acceptance follows docs/verification/responsibility.md.
@@ -687,3 +687,81 @@ CASES = {'docs/verification/changes/issue-287.json': [],
                                                'next_action': 'PMが最終source/標準ZIPを固定し、同ZIPの精密production回帰と既存最終機能受入の代表表示へ結び付けてQAへ移管する。全v2/main受入は280で継続する。'}],
  'docs/verification/changes/issue-352.json': [],
  'docs/verification/changes/issue-345.json': []}
+
+
+# Exact 210ed047 additions and changed fields; CASES keeps the 818b7e1 originals.
+QUALITY_CASES = {'docs/verification/changes/issue-282.json': [{'artifact': 'plugin',
+                                               'provenance': ['https://github.com/shinma06/android-replay-buffer/issues/282',
+                                                              'docs/plugin-design.md',
+                                                              'docs/verification/performance.md',
+                                                              'docs/verification/responsibility.md'],
+                                               'gpt': {'status': 'pending',
+                                                       'reason': '実IDEでの設定/適用・取得の観察は未実施。unit/fake/buildは別記しnative '
+                                                                 'PASSにしない。'},
+                                               'human': {'status': 'pending',
+                                                         'reason': '完成版の本人環境での比較と問題なし判断は未実施。'},
+                                               'fix_issue': None,
+                                               'fix_pr': None,
+                                               'recheck': '影響する設定/品質引渡し・取得/保存と現在の実ロードを確認する。旧観察を新artifactの実行へ転記せず、自動性能比較を追加しない。',
+                                               'next_action': 'writerが固定HEAD/base/check/artifactを04の独立レビューへ渡し、PMが必要な機能観察を既存QAへ接続する。性能は完成版本人比較の判断待ち、mainは#280で管理する。',
+                                               'id': 'VIDEO-QUALITY-SETTINGS',
+                                               'change': '既存設定で標準/軽量を選択し、明示適用・旧設定互換を保つ',
+                                               'preconditions': '固定source/標準ZIP/全JAR・実ロードと所有fixtureを同定し、PM割当の機能枠/leaseで観察する。自動性能比較枠は割り当てない。',
+                                               'steps': ['固定artifact/実ロードを同定し、既存設定で2選択肢の長辺/fps上限・指定bitrateと軽量tradeoff、取得OFF条件を確認する。',
+                                                         'Apply/Cancelと保存/再ロード、旧XMLでの標準既定、LOG_ONLYの選択不可/値保持、取得ON/反映中の変更拒否を影響範囲で確認する。'],
+                                               'expected': '既存の保持/保存先/アプリ等を保ち、勝手に軽量へ変えない。選択・現在適用値・反映待ちが区別できる。'},
+                                              {'artifact': 'plugin',
+                                               'provenance': ['https://github.com/shinma06/android-replay-buffer/issues/282',
+                                                              'docs/plugin-design.md',
+                                                              'docs/verification/performance.md',
+                                                              'docs/verification/responsibility.md'],
+                                               'gpt': {'status': 'pending',
+                                                       'reason': '実IDEでの設定/適用・取得の観察は未実施。unit/fake/buildは別記しnative '
+                                                                 'PASSにしない。'},
+                                               'human': {'status': 'pending',
+                                                         'reason': '完成版の本人環境での比較と問題なし判断は未実施。'},
+                                               'fix_issue': None,
+                                               'fix_pr': None,
+                                               'recheck': '影響する設定/品質引渡し・取得/保存と現在の実ロードを確認する。旧観察を新artifactの実行へ転記せず、自動性能比較を追加しない。',
+                                               'next_action': 'writerが固定HEAD/base/check/artifactを04の独立レビューへ渡し、PMが必要な機能観察を既存QAへ接続する。性能は完成版本人比較の判断待ち、mainは#280で管理する。',
+                                               'id': 'VIDEO-QUALITY-CAPTURE',
+                                               'change': '選択した取得条件を固定し保存metadataへ正しく残す',
+                                               'preconditions': '固定source/標準ZIP/全JAR・実ロードと所有fixtureを同定し、PM割当の機能枠/leaseで観察する。自動性能比較枠は割り当てない。',
+                                               'steps': ['同じ機能観察で必要な標準/軽量の取得を確認する。H.264/B-frameなし/IDR '
+                                                         'interval指定/既存encoder選択を維持し、LOG_ONLYで動画を開始しない。実負荷の自動比較は行わない。',
+                                                         '保存された要求quality/max_size/max_fps/video_bit_rateを取得時の設定と照合し、実寸法/PTS/内容とは分ける。既存の窓/時刻/gap/失敗pin・retryの証拠と影響回帰を使い、不足だけを確認する。'],
+                                               'expected': '指定値が取得へ渡り、encode失敗で暗黙の解像度低下を行わない。受理済み保存の設定と内容を後の設定で付け替えず、既存保存/時計/ログ保証を維持する。'}]}
+
+QUALITY_UPDATES = {'docs/verification/changes/issue-274.json': {'LOG-ONLY-MODE': {'next_action': 'PMが既存QA/最終候補で不足する機能観察だけを割り当て、性能は#224/#282の完成版本人比較・問題なし判断を待つ。自動対照比較枠を追加しない。残受入とmain反映は#280へ双方向readbackする。'},
+                                              'LOG-ONLY-CAPTURE': {'next_action': 'PMが既存QA/最終候補で不足する機能観察だけを割り当て、性能は#224/#282の完成版本人比較・問題なし判断を待つ。自動対照比較枠を追加しない。残受入とmain反映は#280へ双方向readbackする。'},
+                                              'LOG-ONLY-EMPTY': {'next_action': 'PMが既存QA/最終候補で不足する機能観察だけを割り当て、性能は#224/#282の完成版本人比較・問題なし判断を待つ。自動対照比較枠を追加しない。残受入とmain反映は#280へ双方向readbackする。'},
+                                              'LOG-ONLY-SAVE-LIFETIME': {'next_action': 'PMが既存QA/最終候補で不足する機能観察だけを割り当て、性能は#224/#282の完成版本人比較・問題なし判断を待つ。自動対照比較枠を追加しない。残受入とmain反映は#280へ双方向readbackする。'},
+                                              'LOG-ONLY-LOAD': {'gpt': {'status': 'pending',
+                                                                        'reason': '旧の自動比較要求は終了。動画停止等の機能は既存事実・影響評価と不足観察を照合し、本人の完成版比較は代行しない。'},
+                                                                'human': {'status': 'pending',
+                                                                          'reason': '完成版を本人環境で比較し、問題なしという本人の明示判断待ち。現時点ではpending。'},
+                                                                'next_action': 'PMが既存QA/最終候補で不足する機能観察だけを割り当て、性能は#224/#282の完成版本人比較・問題なし判断を待つ。自動対照比較枠を追加しない。残受入とmain反映は#280へ双方向readbackする。',
+                                                                'change': 'ログ専用の動画経路停止を確認し、性能は完成版の本人環境比較・判断へ引き継ぐ',
+                                                                'steps': ['動画OFF/LOG_ONLYでscrcpy/video '
+                                                                          'socket/動画ringが始まらず、両ログ・時計・窓・欠落/保全が維持される機能事実を既存回帰と不足する機能観察で確認する。',
+                                                                          '完成版のsource/配布artifactと本人環境で比較した品質選択・モード・利用条件・本人の実際の判断を記録する。現在は未実施であり、数値目標や自動比較を先行条件にしない。',
+                                                                          '本人が問題なしと判断した場合に性能タスク完了可能とする。旧測定・不利結果・FAIL/unknownを保持し、この判断をAndroid≤Studioや実機全指標の数値証明へ換えない。'],
+                                                                'expected': '動画を開始しない機能保証と、完成版の本人による性能受入を区別する。品質/内容/時計/窓/gap/保存・所有保証を維持し、本人判断前に性能PASSにしない。'}},
+ 'docs/verification/changes/issue-283.json': {'HOST-LOG-TAIL': {'steps': ['保持済みの固定baseline/candidateのWire比較と割当量の原結果を歴史上の証拠として参照し、再実行を要求しない。変更した内容・順序・時刻/unknown・所属・ID関係の不足だけを、起動tail・live後の時刻後退・reconnect・buffer分割/部分失敗の必要なproduction回帰で確認する。nativeで同じ故障行列を繰り返さない。',
+                                                                          '#224等の割当済み取得観察と共有し、実ロードした候補で選んだ固定mode・buffer群・対象アプリ・入力頻度/分母を記録する。保持済み観察と影響評価で証明できない実取得/保存の不足だけを確認し、保存窓全体のraw '
+                                                                          'payload・行数/順序・所属・source時刻/unknown/gapを照合する。',
+                                                                          'H1当時の取得コマンド・buffer構成・周期・動画設定の不変事実を固定履歴で保持し、現在候補の#282品質選択とは分ける。Android/host数値非悪化の自動証明は要求せず、未測定を改善へ読み替えない。性能は完成版本人比較へ引き継ぐ。'],
+                                                                'gpt': {'status': 'pending',
+                                                                        'reason': 'H1の有限Wire比較・回帰と原観察は履歴として保持。現候補のログ内容/時計/所有・保存保証への適用と不足事実を評価し、追加の性能対照比較は要求しない。'},
+                                                                'human': {'status': 'pending',
+                                                                          'reason': '性能は完成版を本人環境で比較し、本人が問題なしと判断するまでpending。既存のREAL/人間延期と旧不利結果・FAIL/unknownは保持する。'},
+                                                                'next_action': '固定候補・原観察/FAIL/unknown・必要回帰をPM/独立reviewへ渡す。既存証拠と影響評価で不足する機能/内容観察だけを既存QAで補い、性能は完成版の本人環境比較・問題なし判断待ち。自動対照比較・再profileを先行条件にしない。#280でmainを別管理する。'},
+                                              'HOST-VIDEO-SELECTION': {'preconditions': '固定候補source/標準artifactと原baseline/候補の保持証拠を識別し、既存の内容・時刻・pin回帰と影響評価を使う。旧profileのdriver・回数・14分watchdogは過去の条件で、今回再実行の先行条件ではない。旧83f比較と最終採用baseを区別する。',
+                                                                       'steps': ['既存Store/Save回帰に加え、切出し直前の連続フレームとgap境界、unknown行、固定窓外、pin/releaseを確認する。',
+                                                                                 '旧5400/27000フレームprofileと63フレームremux/133フレームmixedの原結果を保持し、未測定の候補値へ付け替えない。変更の影響するframe/config/順序/時刻・geometry/色/paddingの不足だけを既存回帰/機能観察で照合する。追加profileや数値比較を完了条件にしない。',
+                                                                                 '#284採用後の実baseでmanual/自動保存の呼出しと変更範囲を再確認し、影響する回帰と通常checksを行う。共有native受入では保持済み証拠で証明できない実保存の不足だけを確認する。'],
+                                                                       'gpt': {'status': 'pending',
+                                                                               'reason': '有限profile/回帰の原結果は保持。最終候補の保存内容・時刻/pin等の適用評価と必要な不足機能観察を扱い、性能は本人比較へ引き継ぐ。'},
+                                                                       'human': {'status': 'pending',
+                                                                                 'reason': '性能は完成版を本人環境で比較し、本人が問題なしと判断するまでpending。既存のREAL/人間延期と旧不利結果・FAIL/unknownは保持する。'},
+                                                                       'next_action': '固定候補・原観察/FAIL/unknown・必要回帰をPM/独立reviewへ渡す。既存証拠と影響評価で不足する機能/内容観察だけを既存QAで補い、性能は完成版の本人環境比較・問題なし判断待ち。自動対照比較・再profileを先行条件にしない。#280でmainを別管理する。'}}}
