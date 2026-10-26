@@ -16,6 +16,8 @@ import com.intellij.ui.components.JBTextArea;
 import com.intellij.util.ui.JBUI;
 import io.github.shinma06.replaybuffer.ide.ReplayProjectService;
 import io.github.shinma06.replaybuffer.core.CaptureMode;
+import io.github.shinma06.replaybuffer.core.VideoQuality;
+import javax.swing.JComboBox;
 import kotlinx.coroutines.CoroutineScope;
 import org.junit.jupiter.api.Test;
 
@@ -50,17 +52,32 @@ class ReplaySettingsLayoutTest {
         assertNull(project.getService(ReplayProjectService.class));
         try {
             SwingUtilities.invokeAndWait(() -> {
-                for (String destination : List.of("", "/disposable/" + "long-directory/".repeat(12) + "save")) {
-                    var saved = new ReplaySettingsState(false, 180, destination, AppSelectionMode.AUTOMATIC, "", CaptureMode.VIDEO_AND_LOGS, false, true, "");
+                record LayoutCase(String destination, boolean occupiedScrollbar) {}
+                var longDestination = "/disposable/" + "long-directory/".repeat(12) + "save";
+                for (var fixture : List.of(new LayoutCase("", false), new LayoutCase(longDestination, false),
+                    new LayoutCase("", true), new LayoutCase(longDestination, true))) {
+                    String destination = fixture.destination();
+                    var saved = new ReplaySettingsState(false, 180, destination, AppSelectionMode.AUTOMATIC, "", CaptureMode.VIDEO_AND_LOGS, false, true, "", VideoQuality.STANDARD);
                     store.loadState(saved);
                     var configurable = new ReplaySettingsConfigurable(project);
                     try {
                         var panel = configurable.createComponent();
                         configurable.reset();
+                        var quality = (JComboBox<?>) find(panel, "動画品質");
+                        assertEquals(VideoQuality.STANDARD, quality.getSelectedItem());
+                        assertTrue(quality.isEnabled());
+                        quality.setSelectedItem(VideoQuality.LIGHTWEIGHT);
+                        assertTrue(configurable.isModified());
+                        ((JComboBox<?>) find(panel, "取得モード")).setSelectedItem(CaptureMode.LOG_ONLY);
+                        assertFalse(quality.isEnabled());
+                        assertEquals(VideoQuality.LIGHTWEIGHT, quality.getSelectedItem());
+                        configurable.reset();
+                        assertEquals(VideoQuality.STANDARD, quality.getSelectedItem());
+                        assertTrue(quality.isEnabled());
                         var guide = (JBTextArea) find(panel, "package名の入力条件");
                         var fields = List.of(find(panel, "保持時間（1〜900秒）"), find(panel, "保存先フォルダ"),
                             find(panel, "対象アプリの選択方法"), find(panel, "対象アプリのpackage名"), find(panel, "取得モード"),
-                            find(panel, "スクリーンショットをLogcatのスクショ保存先へ保存"), find(panel, "スクリーンショットの手動保存先"));
+                            find(panel, "スクリーンショットをLogcatのスクショ保存先へ保存"), find(panel, "スクリーンショットの手動保存先"), quality);
                         assertEquals(guide.getText(), fields.get(3).getAccessibleContext().getAccessibleDescription());
                         assertFalse(guide.isEditable());
                         assertFalse(guide.isFocusable());
@@ -78,27 +95,32 @@ class ReplaySettingsLayoutTest {
                         assertTrue(autoGuidance.getText().contains("この設定をOFFで適用してから、ONで再び適用"));
                         assertFalse(autoGuidance.getText().contains("取得OFF→ON"));
                         status.add(autoGuidance);
-                        for (int index : new int[]{0, 1, 2, 3, 4, 6}) assertTrue(hasLabelFor(panel, fields.get(index)), "label association for " + index);
+                        status.add((JBTextArea) find(panel, "動画品質の説明"));
+                        for (int index : new int[]{0, 1, 2, 3, 4, 6, 7}) assertTrue(hasLabelFor(panel, fields.get(index)), "label association for " + index);
                         panel.setBorder(JBUI.Borders.empty(11, 16, 16, 16));
                         var scroll = ScrollPaneFactory.createScrollPane(null, true);
                         scroll.setViewport(new GradientViewport(panel, JBUI.insetsTop(5), true));
+                        if (fixture.occupiedScrollbar()) {
+                            scroll.setLayout(new javax.swing.ScrollPaneLayout());
+                            scroll.setVerticalScrollBar(new javax.swing.JScrollBar());
+                            scroll.setVerticalScrollBarPolicy(javax.swing.ScrollPaneConstants.VERTICAL_SCROLLBAR_ALWAYS);
+                        }
                         var reference = new JBTextArea(guide.getText());
                         reference.setFont(guide.getFont());
                         reference.setBorder(guide.getBorder());
                         reference.setMargin(guide.getMargin());
                         reference.setLineWrap(true);
                         reference.setWrapStyleWord(true);
-                        int boundary = -1;
-                        int previousHeight = naturalHeight(reference, 400);
-                        for (int width = 401; width <= 1800; width++) {
-                            int height = naturalHeight(reference, width);
-                            if (height < previousHeight) boundary = width;
-                            previousHeight = height;
+                        int narrow = 400;
+                        int wide = 1800;
+                        int minimumHeight = expectedHeightAtWidth(scroll, guide, reference, wide);
+                        assertTrue(expectedHeightAtWidth(scroll, guide, reference, narrow) > minimumHeight,
+                            "the actual allocated widths must cross a measured wrap transition");
+                        while (wide - narrow > 1) {
+                            int middle = (wide + narrow) / 2;
+                            if (expectedHeightAtWidth(scroll, guide, reference, middle) > minimumHeight) narrow = middle;
+                            else wide = middle;
                         }
-                        assertTrue(boundary > 0, "the actual font must have a measured wrap transition");
-                        int padding = panel.getInsets().left + panel.getInsets().right;
-                        int wide = boundary + padding;
-                        int narrow = wide - 1;
                         var rowEnds = new ArrayList<Integer>();
                         var heights = new ArrayList<Integer>();
                         for (int width : new int[]{wide, narrow, wide, narrow, 600, 800, 600}) {
@@ -216,6 +238,14 @@ class ReplaySettingsLayoutTest {
             }
         }
         return null;
+    }
+
+    private static int expectedHeightAtWidth(JComponent scroll, JBTextArea guide, JBTextArea reference, int width) {
+        scroll.setSize(width, 650);
+        layout(scroll);
+        layout(scroll);
+        // Non-overlay scrollbars consume width; measure the independent oracle at the allocated width.
+        return naturalHeight(reference, guide.getWidth());
     }
 
     private static int naturalHeight(JBTextArea reference, int width) {

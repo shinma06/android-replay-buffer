@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "issue": 361,
+  "gui_required": false,
+  "reason": "性能受入の説明を本人の完成版評価へ整合し、履歴fixtureと現行作業条件の区別を明記する管理変更。固定818b7e1のCase本文・hash・原観察・製品/CLI/buildは変更しないためGUIは不要。本人の性能評価は未実施で性能PASSを意味しない。",
+  "cli_checks": [
+    "python3 scripts/check.py",
+    "python3 scripts/workflow/product_check.py",
+    "python3 scripts/workflow/change_impact.py --base origin/main --run-tests"
+  ],
+  "cases": []
+}

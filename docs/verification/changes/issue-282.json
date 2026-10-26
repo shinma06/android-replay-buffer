@@ -1,0 +1,70 @@
+{
+  "schema": 1,
+  "issue": 282,
+  "gui_required": true,
+  "reason": "品質選択の設定UI・取得条件と保存metadataを変更する。性能は完成版の本人比較・問題なし判断待ちとし、機能/内容受入を別に保持する。",
+  "cli_checks": [
+    "通常product_check/plugin_check・clean committed HEADのchange_impact --run-tests。",
+    "旧XML/roundtrip/CLI import、UI draft/reset/LOG_ONLY、core active拒否、模擬wire launchargs/保存metadata/pin retryの回帰を実施し、結果をIssue/PRへ記録する。"
+  ],
+  "cases": [
+    {
+      "artifact": "plugin",
+      "provenance": [
+        "https://github.com/shinma06/android-replay-buffer/issues/282",
+        "docs/plugin-design.md",
+        "docs/verification/performance.md",
+        "docs/verification/responsibility.md"
+      ],
+      "gpt": {
+        "status": "pending",
+        "reason": "実IDEでの設定/適用・取得の観察は未実施。unit/fake/buildは別記しnative PASSにしない。"
+      },
+      "human": {
+        "status": "pending",
+        "reason": "完成版の本人環境での比較と問題なし判断は未実施。"
+      },
+      "fix_issue": null,
+      "fix_pr": null,
+      "recheck": "影響する設定/品質引渡し・取得/保存と現在の実ロードを確認する。旧観察を新artifactの実行へ転記せず、自動性能比較を追加しない。",
+      "next_action": "writerが固定HEAD/base/check/artifactを04の独立レビューへ渡し、PMが必要な機能観察を既存QAへ接続する。性能は完成版本人比較の判断待ち、mainは#280で管理する。",
+      "id": "VIDEO-QUALITY-SETTINGS",
+      "change": "既存設定で標準/軽量を選択し、明示適用・旧設定互換を保つ",
+      "preconditions": "固定source/標準ZIP/全JAR・実ロードと所有fixtureを同定し、PM割当の機能枠/leaseで観察する。自動性能比較枠は割り当てない。",
+      "steps": [
+        "固定artifact/実ロードを同定し、既存設定で2選択肢の長辺/fps上限・指定bitrateと軽量tradeoff、取得OFF条件を確認する。",
+        "Apply/Cancelと保存/再ロード、旧XMLでの標準既定、LOG_ONLYの選択不可/値保持、取得ON/反映中の変更拒否を影響範囲で確認する。"
+      ],
+      "expected": "既存の保持/保存先/アプリ等を保ち、勝手に軽量へ変えない。選択・現在適用値・反映待ちが区別できる。"
+    },
+    {
+      "artifact": "plugin",
+      "provenance": [
+        "https://github.com/shinma06/android-replay-buffer/issues/282",
+        "docs/plugin-design.md",
+        "docs/verification/performance.md",
+        "docs/verification/responsibility.md"
+      ],
+      "gpt": {
+        "status": "pending",
+        "reason": "実IDEでの設定/適用・取得の観察は未実施。unit/fake/buildは別記しnative PASSにしない。"
+      },
+      "human": {
+        "status": "pending",
+        "reason": "完成版の本人環境での比較と問題なし判断は未実施。"
+      },
+      "fix_issue": null,
+      "fix_pr": null,
+      "recheck": "影響する設定/品質引渡し・取得/保存と現在の実ロードを確認する。旧観察を新artifactの実行へ転記せず、自動性能比較を追加しない。",
+      "next_action": "writerが固定HEAD/base/check/artifactを04の独立レビューへ渡し、PMが必要な機能観察を既存QAへ接続する。性能は完成版本人比較の判断待ち、mainは#280で管理する。",
+      "id": "VIDEO-QUALITY-CAPTURE",
+      "change": "選択した取得条件を固定し保存metadataへ正しく残す",
+      "preconditions": "固定source/標準ZIP/全JAR・実ロードと所有fixtureを同定し、PM割当の機能枠/leaseで観察する。自動性能比較枠は割り当てない。",
+      "steps": [
+        "同じ機能観察で必要な標準/軽量の取得を確認する。H.264/B-frameなし/IDR interval指定/既存encoder選択を維持し、LOG_ONLYで動画を開始しない。実負荷の自動比較は行わない。",
+        "保存された要求quality/max_size/max_fps/video_bit_rateを取得時の設定と照合し、実寸法/PTS/内容とは分ける。既存の窓/時刻/gap/失敗pin・retryの証拠と影響回帰を使い、不足だけを確認する。"
+      ],
+      "expected": "指定値が取得へ渡り、encode失敗で暗黙の解像度低下を行わない。受理済み保存の設定と内容を後の設定で付け替えず、既存保存/時計/ログ保証を維持する。"
+    }
+  ]
+}

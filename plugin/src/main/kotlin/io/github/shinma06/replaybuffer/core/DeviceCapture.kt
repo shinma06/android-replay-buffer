@@ -28,6 +28,7 @@ internal class DeviceCapture(
     private val store: CaptureStore,
     private val generation: Long,
     application: ApplicationTarget,
+    private val videoQuality: VideoQuality = VideoQuality.STANDARD,
 ) : AutoCloseable {
     private val serial = serialArgument(serial)
     private val adb = OwnedAdb(adbPath)
@@ -135,10 +136,12 @@ internal class DeviceCapture(
             pendingEndpoints.remove(endpoint)
             allocated
         }
-        // All shell tokens are fixed or generated hex; no user-supplied shell text is interpolated.
+        // Tokens are fixed, enum-owned integers or generated hex; never interpolate user shell text.
+        // Reject encoder errors instead of silently retrying at a lower resolution.
         val server = adb.start("-s", serial, "shell", "CLASSPATH=$serverFile app_process / --nice-name=$serverName com.genymobile.scrcpy.Server 5.0.1 " +
             "scid=$scid tunnel_forward=true audio=false control=false video_codec=h264 send_device_meta=false " +
-            "send_frame_meta=true send_stream_meta=true max_size=1920 max_fps=30 video_bit_rate=8000000 " +
+            "send_frame_meta=true send_stream_meta=true max_size=${videoQuality.maxSize} max_fps=${videoQuality.maxFps} " +
+            "video_bit_rate=${videoQuality.bitRate} downsize_on_error=false " +
             "video_codec_options=max-bframes:int=0,i-frame-interval:int=1")
         var socket: Socket? = null
         var monitor: VideoReadMonitor? = null

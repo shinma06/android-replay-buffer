@@ -2,7 +2,7 @@
   "schema": 1,
   "issue": 274,
   "gui_required": true,
-  "reason": "ログ専用モードの設定・取得・保存・UIを変更する。unit/fake/buildと新固定候補のnative/FILE・長時間/負荷比較を区別し、元Dの同期精度FAILと既存QA65延期を保持する。",
+  "reason": "ログ専用モードの設定・取得・保存・UIの機能保証を保持する。2026-10-27の本人指示により性能は完成版の本人環境比較・問題なし判断待ちへ変更し、自動対照比較を前提にしない。元Dの精度FAILと既存QA65延期・原観察を保持する。",
   "cli_checks": [
     "同一候補の既存全JVM回帰に、LogOnlyStoreTest・resource/settings/project/UI・fake wireのモード/0行/障害/固定retry/終了の回帰を加える。実行結果はIssue/PRへ記録する。",
     "python3 scripts/workflow/product_check.py、python3 scripts/workflow/plugin_check.py、clean committed HEADでpython3 scripts/workflow/change_impact.py --run-tests。harness対象を含む場合はpython3 scripts/check.py。"
@@ -28,7 +28,7 @@
       "fix_issue": null,
       "fix_pr": null,
       "recheck": "変更した取得・設定・保存・UIと共有clock/log/所有境界を新しい固定候補で確認する。旧観察を新buildへ自動転記しない。",
-      "next_action": "writerが固定HEAD/base/check/ZIPと最小native計画を渡して停止。既存の独立reviewerが評価し、PMが必要観察と#224の比較枠を割り当てる。実装Issueはこの段階でcloseせず、残試験とmain反映を対応QA/#280へ双方向readbackしてから移管する。",
+      "next_action": "PMが既存QA/最終候補で不足する機能観察だけを割り当て、性能は#224/#282の完成版本人比較・問題なし判断を待つ。自動対照比較枠を追加しない。残受入とmain反映は#280へ双方向readbackする。",
       "id": "LOG-ONLY-MODE",
       "change": "既定値を動画＋ログに保ち、OFF時だけログ専用へ変更し、設定・有効取得・固定保存のモードを区別する",
       "steps": [
@@ -58,7 +58,7 @@
       "fix_issue": null,
       "fix_pr": null,
       "recheck": "変更した取得・設定・保存・UIと共有clock/log/所有境界を新しい固定候補で確認する。旧観察を新buildへ自動転記しない。",
-      "next_action": "writerが固定HEAD/base/check/ZIPと最小native計画を渡して停止。既存の独立reviewerが評価し、PMが必要観察と#224の比較枠を割り当てる。実装Issueはこの段階でcloseせず、残試験とmain反映を対応QA/#280へ双方向readbackしてから移管する。",
+      "next_action": "PMが既存QA/最終候補で不足する機能観察だけを割り当て、性能は#224/#282の完成版本人比較・問題なし判断を待つ。自動対照比較枠を追加しない。残受入とmain反映は#280へ双方向readbackする。",
       "id": "LOG-ONLY-CAPTURE",
       "change": "動画準備・端末server/encoder・forward/socket・動画ringを開始せず、時計と両ログを保つ",
       "steps": [
@@ -89,7 +89,7 @@
       "fix_issue": null,
       "fix_pr": null,
       "recheck": "変更した取得・設定・保存・UIと共有clock/log/所有境界を新しい固定候補で確認する。旧観察を新buildへ自動転記しない。",
-      "next_action": "writerが固定HEAD/base/check/ZIPと最小native計画を渡して停止。既存の独立reviewerが評価し、PMが必要観察と#224の比較枠を割り当てる。実装Issueはこの段階でcloseせず、残試験とmain反映を対応QA/#280へ双方向readbackしてから移管する。",
+      "next_action": "PMが既存QA/最終候補で不足する機能観察だけを割り当て、性能は#224/#282の完成版本人比較・問題なし判断を待つ。自動対照比較枠を追加しない。残受入とmain反映は#280へ双方向readbackする。",
       "id": "LOG-ONLY-EMPTY",
       "change": "正常な両ログ0行を、未開始・取得失敗・対象/時計不明から区別してmetadata保存する",
       "steps": [
@@ -119,7 +119,7 @@
       "fix_issue": null,
       "fix_pr": null,
       "recheck": "変更した取得・設定・保存・UIと共有clock/log/所有境界を新しい固定候補で確認する。旧観察を新buildへ自動転記しない。",
-      "next_action": "writerが固定HEAD/base/check/ZIPと最小native計画を渡して停止。既存の独立reviewerが評価し、PMが必要観察と#224の比較枠を割り当てる。実装Issueはこの段階でcloseせず、残試験とmain反映を対応QA/#280へ双方向readbackしてから移管する。",
+      "next_action": "PMが既存QA/最終候補で不足する機能観察だけを割り当て、性能は#224/#282の完成版本人比較・問題なし判断を待つ。自動対照比較枠を追加しない。残受入とmain反映は#280へ双方向readbackする。",
       "id": "LOG-ONLY-SAVE-LIFETIME",
       "change": "既存の保持上限・単一writer/pin・retry/discard・失敗試行保全と所有終了をログ専用へ適用する",
       "steps": [
@@ -140,24 +140,24 @@
       ],
       "gpt": {
         "status": "pending",
-        "reason": "固定した新候補のnative/FILE・性能観察は未実施。unit/fake/buildの結果はIssue/PRへ別記し実受入に換えない。"
+        "reason": "旧の自動比較要求は終了。動画停止等の機能は既存事実・影響評価と不足観察を照合し、本人の完成版比較は代行しない。"
       },
       "human": {
         "status": "pending",
-        "reason": "未観察。既存の人間/REAL延期を保持し、新たな一律human必須・免除・延期は作らない。"
+        "reason": "完成版を本人環境で比較し、問題なしという本人の明示判断待ち。現時点ではpending。"
       },
       "fix_issue": null,
       "fix_pr": null,
       "recheck": "変更した取得・設定・保存・UIと共有clock/log/所有境界を新しい固定候補で確認する。旧観察を新buildへ自動転記しない。",
-      "next_action": "writerが固定HEAD/base/check/ZIPと最小native計画を渡して停止。既存の独立reviewerが評価し、PMが必要観察と#224の比較枠を割り当てる。実装Issueはこの段階でcloseせず、残試験とmain反映を対応QA/#280へ双方向readbackしてから移管する。",
+      "next_action": "PMが既存QA/最終候補で不足する機能観察だけを割り当て、性能は#224/#282の完成版本人比較・問題なし判断を待つ。自動対照比較枠を追加しない。残受入とmain反映は#280へ双方向readbackする。",
       "id": "LOG-ONLY-LOAD",
-      "change": "同じ端末・アプリ・入力条件の動画＋ログとログ専用を比較し、Android負荷とhost負荷を分ける",
+      "change": "ログ専用の動画経路停止を確認し、性能は完成版の本人環境比較・判断へ引き継ぐ",
       "steps": [
-        "docs/verification/performance.mdの#224担当と、同一candidate/ZIP/実ロード・端末/IDE・入力・保持/Save・温度/容量・観測手段、回数/時間/停止/復元条件を比較前に固定する。ARB-log相当は実装されたLOG_ONLYを用い、動画取得後の削除で代用しない。",
-        "探索pilotは効果判定と分ける。Android側のCPU/メモリ/encoder/転送とhost側のCPU/RSS/ディスク/保存待ち、観測器負荷・未測定を別記し、同条件の有限な対比較を行う。実機とEmulator host値を混同しない。",
-        "ログ/時計/窓/欠落/保全の品質を同時に照合する。Studio-logcatとの第2版目標、#282/#283最適化、Dの精度未受入は別の残条件として保持し、根拠のない改善率や全性能達成を主張しない。"
+        "動画OFF/LOG_ONLYでscrcpy/video socket/動画ringが始まらず、両ログ・時計・窓・欠落/保全が維持される機能事実を既存回帰と不足する機能観察で確認する。",
+        "完成版のsource/配布artifactと本人環境で比較した品質選択・モード・利用条件・本人の実際の判断を記録する。現在は未実施であり、数値目標や自動比較を先行条件にしない。",
+        "本人が問題なしと判断した場合に性能タスク完了可能とする。旧測定・不利結果・FAIL/unknownを保持し、この判断をAndroid≤Studioや実機全指標の数値証明へ換えない。"
       ],
-      "expected": "動画停止の事実と実測負荷の差を別に示す。未測定・条件不足・不利な結果を残し、同等性/改善を推測しない。比較中も両ログ・時計・保存/所有保証を満たす。"
+      "expected": "動画を開始しない機能保証と、完成版の本人による性能受入を区別する。品質/内容/時計/窓/gap/保存・所有保証を維持し、本人判断前に性能PASSにしない。"
     }
   ]
 }

@@ -1,4 +1,9 @@
-"""Exact registered 56dad Case contracts for unit tests, never acceptance evidence."""
+"""Preserve exact registered 56dad contracts for historical unit tests.
+
+This is not a generator or current task plan. Keep original wording and hashes;
+current performance acceptance follows docs/verification/responsibility.md.
+Synthetic test results never establish product acceptance.
+"""
 
 CASES = {'docs/verification/changes/issue-287.json': [],
  'docs/verification/changes/issue-206.json': [{'artifact': 'plugin',

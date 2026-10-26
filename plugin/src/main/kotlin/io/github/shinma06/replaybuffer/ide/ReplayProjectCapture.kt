@@ -109,8 +109,10 @@ internal class ReplayProjectCapture(
             ++enabledIntent
         }
         return submit { engine ->
-            if (value && engine.snapshot().settings.captureMode != store.settings().captureMode)
-                ReplayOperation(false, "取得モードを反映できていません。設定を確認してから取得をONにしてください。")
+            val applied = engine.snapshot().settings
+            val requested = store.settings()
+            if (value && (applied.captureMode != requested.captureMode || applied.videoQuality != requested.videoQuality))
+                ReplayOperation(false, "取得モード・動画品質を反映できていません。設定を確認してから取得をONにしてください。")
             else engine.setEnabled(value).await()
         }.whenComplete { result, _ ->
             val notify = synchronized(this) {
@@ -269,6 +271,7 @@ internal fun ReplaySettings.toCoreSettings(environment: AndroidReplayEnvironment
     saveDirectory = destination.takeIf(String::isNotEmpty)?.let(Path::of),
     replaySeconds = retentionSeconds,
     captureMode = captureMode,
+    videoQuality = videoQuality,
     autoSaveOnCrash = autoSaveOnCrash,
     application = if (appSelection == AppSelectionMode.MANUAL) {
         ApplicationTarget(manualPackage, ApplicationMode.MANUAL)

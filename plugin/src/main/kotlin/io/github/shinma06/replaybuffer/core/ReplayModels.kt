@@ -12,6 +12,7 @@ data class ReplaySettings(
     val application: ApplicationTarget = ApplicationTarget(),
     val captureMode: CaptureMode = CaptureMode.VIDEO_AND_LOGS,
     val autoSaveOnCrash: Boolean = false,
+    val videoQuality: VideoQuality = VideoQuality.STANDARD,
 ) {
     fun validate(): ReplaySettings {
         require(adbPath == null || adbPath.isAbsolute && Files.isRegularFile(adbPath) && Files.isExecutable(adbPath)) {
@@ -40,6 +41,15 @@ enum class CaptureMode {
 
     val videoRequested: Boolean get() = this == VIDEO_AND_LOGS
     val streams: List<String> get() = if (videoRequested) listOf("video", "device_log", "app_log") else listOf("device_log", "app_log")
+}
+
+/** Requested scrcpy limits, not effective dimensions/fps/bitrate or a measured load guarantee. */
+enum class VideoQuality(val maxSize: Int, val maxFps: Int, val bitRate: Int, private val label: String) {
+    STANDARD(1920, 30, 8_000_000, "標準"),
+    LIGHTWEIGHT(1024, 15, 2_000_000, "軽量"),
+    ;
+
+    override fun toString(): String = "$label（${maxSize}px / ${maxFps}fps / ${bitRate / 1_000_000}Mbps）"
 }
 
 enum class ApplicationMode { AUTO, MANUAL }

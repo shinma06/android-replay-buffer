@@ -19,6 +19,7 @@ import com.intellij.ui.ExperimentalUIImpl;
 import io.github.shinma06.replaybuffer.core.ApplicationTarget;
 import io.github.shinma06.replaybuffer.core.AutoSaveSnapshot;
 import io.github.shinma06.replaybuffer.core.CaptureMode;
+import io.github.shinma06.replaybuffer.core.VideoQuality;
 import io.github.shinma06.replaybuffer.core.CaptureState;
 import io.github.shinma06.replaybuffer.core.DeviceKind;
 import io.github.shinma06.replaybuffer.core.ReplayDevice;
@@ -280,7 +281,7 @@ class ReplayToolWindowLayoutTest {
                 else: sys.exit(2)
                 """);
             assertTrue(adb.toFile().setExecutable(true));
-            var applied = new ReplaySettings(adb, root, 180, new ApplicationTarget(), CaptureMode.VIDEO_AND_LOGS, false);
+            var applied = new ReplaySettings(adb, root, 180, new ApplicationTarget(), CaptureMode.VIDEO_AND_LOGS, false, VideoQuality.STANDARD);
             var active = new ReplaySnapshot(1, 1, true, CaptureState.CAPTURING, applied, 1,
                 new ReplayDevice("target-A", "Recording", DeviceKind.PHYSICAL, true), "request-boundary", 1L, false,
                 new StreamSnapshot(), new StreamSnapshot(), new StreamSnapshot(), new SaveSnapshot(),
@@ -301,7 +302,7 @@ class ReplayToolWindowLayoutTest {
             environment.set(service, new io.github.shinma06.replaybuffer.ide.AndroidReplayEnvironment(validationPath, null,
                 new io.github.shinma06.replaybuffer.ide.ApplicationSelection("sample.app", "sample", null)));
             settings.set(service, new io.github.shinma06.replaybuffer.settings.ReplaySettings(180, root.toString(),
-                io.github.shinma06.replaybuffer.settings.AppSelectionMode.AUTOMATIC, "", CaptureMode.VIDEO_AND_LOGS, false, false, root.toString()));
+                io.github.shinma06.replaybuffer.settings.AppSelectionMode.AUTOMATIC, "", CaptureMode.VIDEO_AND_LOGS, false, false, root.toString(), VideoQuality.STANDARD));
             revision.set(service, field(service, "requestRevision"));
             scope.set(service, CoroutineScopeKt.CoroutineScope(requestScope));
             uiCallbacks.clear();
@@ -331,7 +332,7 @@ class ReplayToolWindowLayoutTest {
                     new io.github.shinma06.replaybuffer.ide.ApplicationSelection("sample.app", "sample", null)));
                 settings.set(service, new io.github.shinma06.replaybuffer.settings.ReplaySettings(180, common.toString(),
                     io.github.shinma06.replaybuffer.settings.AppSelectionMode.AUTOMATIC, "", CaptureMode.VIDEO_AND_LOGS,
-                    false, false, dedicated.toString()));
+                    false, false, dedicated.toString(), VideoQuality.STANDARD));
                 request.invoke(service);
                 var saving = (Job) field(service, "screenshotJob");
                 var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
@@ -339,7 +340,7 @@ class ReplayToolWindowLayoutTest {
                 assertTrue(Files.exists(root.resolve("started")));
                 settings.set(service, new io.github.shinma06.replaybuffer.settings.ReplaySettings(180, common.toString(),
                     io.github.shinma06.replaybuffer.settings.AppSelectionMode.AUTOMATIC, "", CaptureMode.VIDEO_AND_LOGS,
-                    false, true, ""));
+                    false, true, "", VideoQuality.STANDARD));
                 Files.createFile(root.resolve("continue"));
                 var saved = new CompletableFuture<Void>();
                 saving.invokeOnCompletion(failure -> { saved.complete(null); return kotlin.Unit.INSTANCE; });
@@ -510,7 +511,7 @@ class ReplayToolWindowLayoutTest {
         var app = new ApplicationTarget("com.fixture.visible", io.github.shinma06.replaybuffer.core.ApplicationMode.MANUAL, null);
         var device = new ReplayDevice("target-A", "Fixture", DeviceKind.EMULATOR, true);
         var settings = new ReplaySettings(Path.of("/disposable/adb"), Path.of("/disposable/configured"),
-            30, app, CaptureMode.LOG_ONLY, true);
+            30, app, CaptureMode.LOG_ONLY, true, VideoQuality.STANDARD);
         var gap = new io.github.shinma06.replaybuffer.core.CaptureGap("clock", null, null,
             "時計対応を確認できません", Long.MAX_VALUE, 0, null);
         var logs = new StreamSnapshot(io.github.shinma06.replaybuffer.core.StreamState.CAPTURING, 0.0, null, List.of(gap));
@@ -523,7 +524,7 @@ class ReplayToolWindowLayoutTest {
         try {
             resolving.setBoolean(service, false);
             store.loadState(new io.github.shinma06.replaybuffer.settings.ReplaySettingsState(true, 30, "/disposable/configured",
-                io.github.shinma06.replaybuffer.settings.AppSelectionMode.MANUAL, "com.fixture.visible", CaptureMode.LOG_ONLY, true, true, ""));
+                io.github.shinma06.replaybuffer.settings.AppSelectionMode.MANUAL, "com.fixture.visible", CaptureMode.LOG_ONLY, true, true, "", VideoQuality.STANDARD));
             screenshotSettings.set(service, store.settings());
             screenshotRevision.set(service, field(service, "requestRevision"));
             for (int index = 0; index < phases.size(); index++) {
@@ -691,7 +692,7 @@ class ReplayToolWindowLayoutTest {
         var settings = service.getClass().getDeclaredField("screenshotSettings");
         settings.setAccessible(true);
         settings.set(service, new io.github.shinma06.replaybuffer.settings.ReplaySettings(180, "/disposable",
-            io.github.shinma06.replaybuffer.settings.AppSelectionMode.AUTOMATIC, "", CaptureMode.VIDEO_AND_LOGS, false, true, ""));
+            io.github.shinma06.replaybuffer.settings.AppSelectionMode.AUTOMATIC, "", CaptureMode.VIDEO_AND_LOGS, false, true, "", VideoQuality.STANDARD));
         var revision = service.getClass().getDeclaredField("screenshotRevision");
         revision.setAccessible(true);
         revision.set(service, field(service, "requestRevision"));
@@ -709,7 +710,7 @@ class ReplayToolWindowLayoutTest {
         var view = capture.getClass().getDeclaredField("view");
         view.setAccessible(true);
         var activeSettings = new ReplaySettings(Path.of("/disposable/adb"), Path.of("/disposable"),
-            180, new ApplicationTarget(), CaptureMode.VIDEO_AND_LOGS, false);
+            180, new ApplicationTarget(), CaptureMode.VIDEO_AND_LOGS, false, VideoQuality.STANDARD);
         for (boolean connected : new boolean[]{true, false}) {
             var snapshot = new ReplaySnapshot(1, 1, true, CaptureState.CAPTURING, activeSettings, 1,
                 new ReplayDevice("emulator-5554", "Recording", DeviceKind.EMULATOR, connected),
@@ -749,7 +750,7 @@ class ReplayToolWindowLayoutTest {
     private static void refreshSnapshot(JPanel panel, ReplayProjectService service, long revision) {
         try {
             var settings = new ReplaySettings(null, Path.of("/disposable/" + "long-directory/".repeat(16)),
-                180, new ApplicationTarget(), CaptureMode.VIDEO_AND_LOGS, false);
+                180, new ApplicationTarget(), CaptureMode.VIDEO_AND_LOGS, false, VideoQuality.STANDARD);
             var snapshot = new ReplaySnapshot(revision, 1, true, CaptureState.CAPTURING, settings, 1,
                 null, "layout-test", revision * 1_000_000_000L, false,
                 new StreamSnapshot(), new StreamSnapshot(), new StreamSnapshot(), new SaveSnapshot(),

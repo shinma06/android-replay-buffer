@@ -10,6 +10,7 @@ import com.intellij.util.xmlb.annotations.OptionTag
 import io.github.shinma06.replaybuffer.core.ApplicationMode
 import io.github.shinma06.replaybuffer.core.ApplicationTarget
 import io.github.shinma06.replaybuffer.core.CaptureMode
+import io.github.shinma06.replaybuffer.core.VideoQuality
 import io.github.shinma06.replaybuffer.core.ReplaySettings as CoreReplaySettings
 import java.io.IOException
 import java.nio.file.Files
@@ -36,6 +37,7 @@ data class ReplaySettings(
     val autoSaveOnCrash: Boolean = false,
     val screenshotUsesLogcatDestination: Boolean = true,
     val screenshotDirectory: String = "",
+    val videoQuality: VideoQuality = VideoQuality.STANDARD,
 ) {
     val manualScreenshotDestination: String get() = if (screenshotUsesLogcatDestination) "" else screenshotDirectory
 
@@ -119,6 +121,8 @@ data class ReplaySettingsState(
     @JvmField val screenshotUsesLogcatDestination: Boolean = true,
     @field:OptionTag("screenshotDirectory")
     @JvmField val screenshotDirectory: String = "",
+    @field:OptionTag("videoQuality")
+    @JvmField val videoQuality: VideoQuality = VideoQuality.STANDARD,
 )
 
 @Service(Service.Level.PROJECT)
@@ -133,7 +137,7 @@ class ReplaySettingsStore : SerializablePersistentStateComponent<ReplaySettingsS
     fun settings(): ReplaySettings {
         val snapshot = state
         return ReplaySettings(snapshot.retentionSeconds, snapshot.destination, snapshot.appSelection, snapshot.manualPackage,
-            snapshot.captureMode, snapshot.autoSaveOnCrash, snapshot.screenshotUsesLogcatDestination, snapshot.screenshotDirectory)
+            snapshot.captureMode, snapshot.autoSaveOnCrash, snapshot.screenshotUsesLogcatDestination, snapshot.screenshotDirectory, snapshot.videoQuality)
     }
 
     fun setEnabled(value: Boolean) {
@@ -153,13 +157,16 @@ class ReplaySettingsStore : SerializablePersistentStateComponent<ReplaySettingsS
         val error = settings.validationError(destinationValidation, screenshotValidation)
         require(error == null) { error.orEmpty() }
         updateState {
-            require(!it.enabled || settings.captureMode == it.captureMode) { "取得モードは取得をOFFにしてから変更してください。" }
+            require(!it.enabled || settings.captureMode == it.captureMode && settings.videoQuality == it.videoQuality) {
+                "取得モード・動画品質は取得をOFFにしてから変更してください。"
+            }
             it.copy(
                 retentionSeconds = settings.retentionSeconds,
                 destination = settings.destination,
                 appSelection = settings.appSelection,
                 manualPackage = settings.manualPackage,
                 captureMode = settings.captureMode,
+                videoQuality = settings.videoQuality,
                 autoSaveOnCrash = settings.autoSaveOnCrash,
                 screenshotUsesLogcatDestination = settings.screenshotUsesLogcatDestination,
                 screenshotDirectory = settings.screenshotDirectory,

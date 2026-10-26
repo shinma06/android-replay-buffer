@@ -18,6 +18,7 @@ import com.intellij.ui.components.JBTextArea
 import com.intellij.ui.components.JBTextField
 import com.intellij.util.ui.FormBuilder
 import io.github.shinma06.replaybuffer.core.CaptureMode
+import io.github.shinma06.replaybuffer.core.VideoQuality
 import io.github.shinma06.replaybuffer.ide.LogcatScreenshotSettings
 import io.github.shinma06.replaybuffer.ide.ReplayProjectService
 import io.github.shinma06.replaybuffer.ui.captureModeDescription
@@ -46,6 +47,7 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable {
     private var screenshotRevision = 0L
     private var mode: JComboBox<AppSelectionMode>? = null
     private var captureMode: JComboBox<CaptureMode>? = null
+    private var videoQuality: JComboBox<VideoQuality>? = null
     private var autoSave: JBCheckBox? = null
     private var manualPackage: JBTextField? = null
     private var destinationStatus: JBTextArea? = null
@@ -102,7 +104,12 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable {
             accessibleContext.accessibleName = "対象アプリの選択方法"
             addActionListener { manualPackage?.isEnabled = selectedItem == AppSelectionMode.MANUAL }
         }
+        videoQuality = JComboBox(VideoQuality.entries.toTypedArray()).apply {
+            accessibleContext.accessibleName = "動画品質"
+            accessibleContext.accessibleDescription = "長辺・fpsは上限、Mbpsは指定bitrateです。取得OFFで変更します。ログ専用では使いません。"
+        }
         captureMode = JComboBox(CaptureMode.entries.toTypedArray()).apply {
+            addActionListener { videoQuality?.isEnabled = selectedItem == CaptureMode.VIDEO_AND_LOGS }
             accessibleContext.accessibleName = "取得モード"
             accessibleContext.accessibleDescription = "取得をOFFにしてから変更してください。ログ専用は動画を取得・保存しません。"
             renderer = object : javax.swing.DefaultListCellRenderer() {
@@ -125,6 +132,10 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable {
             .addComponent(TitledSeparator("取得する記録"))
             .addLabeledComponent("取得モード:", captureMode!!)
             .addComponent(wrappingLabel("取得モードは取得OFFで変更してください。ログ専用は動画を取得・保存しません。"))
+            .addLabeledComponent("動画品質:", videoQuality!!)
+            .addComponent(wrappingLabel("長辺・fpsは上限、Mbpsは指定bitrateです。取得OFFで変更してください。" +
+                "軽量は細かい文字・短い変化・滑らかさを捉えにくくなります。負荷の低下は環境に依存します。" +
+                "ログ専用では動画品質を使いません。", "動画品質の説明"))
             .addLabeledComponent("保持時間（1〜900秒）:", retention!!)
             .addComponent(autoSave!!)
             .addComponent(wrappingLabel("対象アプリの標準Java/Kotlinクラッシュ報告が対象です。native/ANRは対応外です。" +
@@ -223,6 +234,7 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable {
         autoSaveOnCrash = autoSave?.isSelected == true,
         screenshotUsesLogcatDestination = screenshotLogcat?.isSelected != false,
         screenshotDirectory = screenshotDirectory?.text.orEmpty(),
+        videoQuality = videoQuality?.selectedItem as? VideoQuality ?: VideoQuality.STANDARD,
     )
 
     override fun isModified(): Boolean = panel != null && draft() != store().settings()
@@ -238,9 +250,9 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable {
         }
         settings.validationError(checked, screenshotChecked)?.let { throw ConfigurationException(it) }
         val service = replayService
-        if (settings.captureMode != store().settings().captureMode &&
+        if ((settings.captureMode != store().settings().captureMode || settings.videoQuality != store().settings().videoQuality) &&
             (store().enabled || service?.captureView?.snapshot?.enabled == true || service?.resolving == true || (service?.captureView?.pending ?: 0) > 0))
-            throw ConfigurationException("取得をOFFにし、設定・操作の反映が終わってから取得モードを変更してください。")
+            throw ConfigurationException("取得をOFFにし、設定・操作の反映が終わってから取得モード・動画品質を変更してください。")
         try { store().apply(settings, checked, screenshotChecked) } catch (failure: IllegalArgumentException) {
             throw ConfigurationException(failure.message.orEmpty())
         }
@@ -256,6 +268,8 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable {
         screenshotDirectory?.text = settings.screenshotDirectory
         mode?.selectedItem = settings.appSelection
         captureMode?.selectedItem = settings.captureMode
+        videoQuality?.selectedItem = settings.videoQuality
+        videoQuality?.isEnabled = settings.captureMode.videoRequested
         autoSave?.isSelected = settings.autoSaveOnCrash
         manualPackage?.text = settings.manualPackage
         manualPackage?.isEnabled = settings.appSelection == AppSelectionMode.MANUAL
@@ -284,6 +298,7 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable {
         screenshotLogcat = null
         mode = null
         captureMode = null
+        videoQuality = null
         autoSave = null
         manualPackage = null
     }

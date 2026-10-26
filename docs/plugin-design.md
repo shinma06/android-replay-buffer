@@ -6,6 +6,14 @@
 
 冒頭の固定リンクは設計採用時の出典です。改訂後の時刻・保存窓・出力形式は[現行の同期設計](design/timeline.md)、UIは[現行のIDE UI設計](design/ide-ui.md)、実装と受入の状態は[Case台帳](verification/README.md)を照合します。末尾の初期Case表や当時の未実施記述を、現在の一律pending・実行済みPASSへ読み替えません。
 
+## 動画品質の選択（#282）
+
+設定画面の動画品質は、標準（長辺最大1920px・最大30fps・指定8Mbps、従来の既定値）と軽量（長辺最大1024px・最大15fps・指定2Mbps）です。未指定の旧XMLは標準で読み、既存の保持時間・保存先・アプリ・スクショ等の値と旧CLI importを維持します。品質は取得OFFかつ設定/操作反映後に変更し、Apply/OKだけで保存します。LOG_ONLYでは選択欄を無効にし、値を保持したまま動画を開始しません。
+
+軽量は文字の細部、短い変化、滑らかさと圧縮品質を優先しない選択です。scrcpy [v5.0.1の公式例](https://github.com/Genymobile/scrcpy/blob/a60891aea193d92e7e5c3942700eca63f9d19a5f/doc/video.md)の各値を組み合わせた初期候補であり、最適な組合せ・CPU/RAM/電力の削減率を測定したものではありません。長辺・fpsは上限、bitrateはencoderへの指定値で、実解像度・実fps・実bitrateとは区別します。H.264・B-frameなし・IDR interval指定1秒・既存encoder選択を維持します。[serverのdownsize_on_error](https://github.com/Genymobile/scrcpy/blob/a60891aea193d92e7e5c3942700eca63f9d19a5f/server/src/main/java/com/genymobile/scrcpy/Options.java)はfalseを明示し、encode失敗で黙って解像度を下げず、既存の取得中断・復旧/gap表示へ返します。
+
+保存時は受理したimmutable settingsの品質を固定し、`session.json.settings.video`の既存形式を値に合わせて出力、追加の`video_request`へquality/max_size/max_fps/video_bit_rate/downsize_on_errorを記録します。これらは要求値で、実際の寸法・PTS・内容は既存のparts/frame/config記録を使います。LOG_ONLYの両動画設定はnullです。設定の現在値で失敗pin/既存保存物を付け替えません。品質の選択自体では時計・窓・ログ・欠落表示・pin/再試行・保存失敗保全を変更しません。性能の完了条件は[現行方針](verification/performance.md)です。
+
 ## 保存失敗とデータ保全
 
 設計対象: [#11](https://github.com/shinma06/android-replay-buffer/issues/11)。SAVE-05の未決事項について、次の比較から**失敗した保存対象を1件だけ固定して再試行する方式**を採用します。以前の会話の案を合意済みとみなしたものではなく、今回の設計判断です。
