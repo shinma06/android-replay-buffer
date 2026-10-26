@@ -6,8 +6,8 @@
   "cli_checks": [
     "DeviceLogTailTestで起動tail除外、最初のlive行、live後の時計後退とunknown、reader再呼出し時のtail再判定、payload/順序/ID関係を確認する。",
     "既存CaptureProtocolTest・CaptureClockTestとReplayCoreWireTestのpartition/legacy/empty/timeout/partial recovery/LOG_ONLYを再利用する。#284採用後の実baseでautosaveに届く行の回帰も照合する。",
-    "固定83fのproduction DeviceCapture.logsを通る同一の有限wire入力・clock履歴で変更前後の内容と割当量/CPU/wall/GCを記録する。合成host原点・JVM・負荷条件・ばらつきを明記し、Android/IDE/native受入やSave性能へ拡張しない。",
-    "CaptureStoreSaveTestとSingleMp4SaveTestで切出し前GOP・unknown・gap・固定窓外・pin/release・保持と保存形式の回帰を確認する。同一の有限driver/入力で5400/27000フレームのcaptureと実sourceの63フレームremux/133フレームmixed保存を1回の上限14分で比較し、内容/時刻/品質の原結果を保持する。",
+    "固定83fで取得済みの有限wire比較・割当量/CPU/wall/GCの原結果と合成host原点・JVM・負荷条件・ばらつきを保持する。追加の固定baseline比較やprofileを要求せず、変更したログ内容・順序・時刻/unknown・ID関係の不足だけを必要な機能回帰で照合する。旧値を現在候補のAndroid/IDE/native受入やSave性能へ転記しない。",
+    "CaptureStoreSaveTestとSingleMp4SaveTestで切出し前GOP・unknown・gap・固定窓外・pin/release・保持と保存形式の回帰を確認する。旧5400/27000フレームcaptureと63フレームremux/133フレームmixed保存の原結果を保持し、driver再実行・14分比較を要求しない。内容/時刻/品質への影響と不足事実だけを必要な機能回帰で照合する。",
     "最終採用baseのclean committed HEADでpython3 scripts/workflow/change_impact.py --run-testsを実行し、必要なcheck.py・product_check.py・plugin_check.pyを通す。実結果はIssue/PRへ記録する。"
   ],
   "cases": [
