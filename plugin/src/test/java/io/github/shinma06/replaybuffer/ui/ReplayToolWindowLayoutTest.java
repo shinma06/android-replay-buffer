@@ -141,7 +141,7 @@ class ReplayToolWindowLayoutTest {
                     assertFalse(summary.isEditable());
                     ((JPanel) field(panel, "failureCard")).setVisible(true);
                     var controls = new ArrayList<AbstractButton>();
-                    for (var name : List.of("enabled", "settingsButton", "screenshotButton", "saveButton", "openButton",
+                    for (var name : List.of("enabled", "settingsButton", "logcatButton", "screenshotButton", "saveButton", "openButton",
                         "retryButton", "retryElsewhere", "discardButton")) {
                         var control = (AbstractButton) field(panel, name);
                         control.setEnabled(true);
