@@ -1,4 +1,4 @@
-"""Preserve exact 818b7e1 and 210ed047 contracts for historical unit tests.
+"""Preserve exact 818b7e1, 210ed047 and 945c9e0 contracts for historical unit tests.
 
 This is not a generator or current task plan. Keep original wording and hashes;
 current performance acceptance follows docs/verification/responsibility.md.
@@ -765,3 +765,26 @@ QUALITY_UPDATES = {'docs/verification/changes/issue-274.json': {'LOG-ONLY-MODE':
                                                                        'human': {'status': 'pending',
                                                                                  'reason': '性能は完成版を本人環境で比較し、本人が問題なしと判断するまでpending。既存のREAL/人間延期と旧不利結果・FAIL/unknownは保持する。'},
                                                                        'next_action': '固定候補・原観察/FAIL/unknown・必要回帰をPM/独立reviewへ渡す。既存証拠と影響評価で不足する機能/内容観察だけを既存QAで補い、性能は完成版の本人環境比較・問題なし判断待ち。自動対照比較・再profileを先行条件にしない。#280でmainを別管理する。'}}}
+
+
+# Exact 945c9e0 addition; historical fixtures above remain unchanged.
+LOGCAT_CASES = {'docs/verification/changes/issue-369.json': [{'id': 'LOGCAT-PANEL-TOGGLE',
+                                               'artifact': 'plugin',
+                                               'change': 'IDE標準Logcatパネルを実表示状態に基づいて開閉する',
+                                               'preconditions': '#369採用後の固定source/標準ZIP/全JARと実ロードを同定する。A6の復元・共有予約返却後、PMが既存QAの枠と所有projectを割り当てる。現在の旧候補の観察はそのidentityのまま保持する。',
+                                               'steps': ['標準Logcatが利用可能なprojectでボタンから表示・非表示にし、IDE標準の実パネルと操作名/tooltipが一致することを確認する。IDE側で別に開閉した後も表示が追従し、次のボタン操作が実状態に対応する。',
+                                                         '登録/利用不可・破棄後の拒否と遅延更新の寿命は回帰証拠を照合し、実IDEでは利用不可条件の無効表示/案内を不足分だけ確認する。同じ表示でTab/Spaceと幅の折返し・操作到達性を確認する。プラグインの取得ON/OFF・設定・保存とLogcatの既存tab/filterをこの操作が変更しないことを照合する。'],
+                                               'expected': '独自Logcat '
+                                                           'UIや取得processを追加せず標準パネルだけを開閉する。外部変更に追従し、未登録/利用不可/破棄後は無効化と理由表示、content/project破棄後は操作/予約更新を行わない。既存取得・保存・設定の契約を維持する。',
+                                               'provenance': ['https://github.com/shinma06/android-replay-buffer/issues/369',
+                                                              'docs/design/ide-ui.md',
+                                                              'docs/verification/responsibility.md'],
+                                               'gpt': {'status': 'pending',
+                                                       'reason': '実IDEの開閉・外部状態変更・可読性/keyboardは未観察。模擬/回帰/buildは実IDEの受入とは別。'},
+                                               'human': {'status': 'pending',
+                                                         'reason': '実操作・表示は未観察。既存human/REALの延期を変更せず、追加の本人判断gateを作らない。'},
+                                               'fix_issue': None,
+                                               'fix_pr': None,
+                                               'recheck': '新固定候補の実ロードと本Caseの影響範囲を確認し、旧source/ZIPの事実を新build実行へ転記しない。無影響の取得/保存/性能試験は反復せず、影響不明は不足として残す。',
+                                               'next_action': '固定レビューとdevelop採用後、PMが実際のscopeに応じ既存QA329/343へ未完の独立試験を、280/271へ新候補/標準ZIPとmain反映を双方向readbackして移管する。writerはGUI/ADB/導入/再起動や正式ZIP '
+                                                              'dispatchを行わない。'}]}

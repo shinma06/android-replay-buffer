@@ -1637,7 +1637,7 @@ def promotion_policy_blobs(base, candidate, git, continuation=False):
     ancestor = git('merge-base', candidate, base)
     paths = {}
     protected = {INITIAL_CONTINUATION, 'docs/verification/changes/issue-356.json',
-                 'docs/verification/changes/issue-364.json'}
+                 'docs/verification/changes/issue-364.json', 'docs/verification/changes/issue-371.json'}
     allowed = {*protected, 'scripts/workflow/verification.py',
                'scripts/workflow/initial_continuation_cases.py',
                'scripts/workflow/test_initial_continuation.py',
@@ -1745,12 +1745,13 @@ def promotion_policy_blobs(base, candidate, git, continuation=False):
             common = git('ls-tree', ancestor, '--', path)
             if common not in (blob, old_blob) and (old_blob.split()[2], blob.split()[2]) not in (
                     ('3ae14aa6205aed699b52f3c67e96038130389240', 'ae527ba6ec98c8e04d198359bd146b33552b975c'),
-                    ('3ae14aa6205aed699b52f3c67e96038130389240', '1b7f719523d75117c496685fecc1103192f17b89')):
+                    ('3ae14aa6205aed699b52f3c67e96038130389240', '1b7f719523d75117c496685fecc1103192f17b89'),
+                    ('3ae14aa6205aed699b52f3c67e96038130389240', '6666172d6fad3315831f1e7122dceb2eb6928c2c')):
                 raise ValueError('Candidate README changes require explicit trusted-main reconciliation')
         if path == INITIAL_CONTINUATION:
             initial_continuation(policy, base, candidate, git)
         elif path in ('docs/verification/changes/issue-356.json',
-                      'docs/verification/changes/issue-364.json'):
+                      'docs/verification/changes/issue-364.json', 'docs/verification/changes/issue-371.json'):
             record_issue = int(Path(path).stem.removeprefix('issue-'))
             validate_change(regular_json(base, path, git), record_issue, False)
             if old_blob:
