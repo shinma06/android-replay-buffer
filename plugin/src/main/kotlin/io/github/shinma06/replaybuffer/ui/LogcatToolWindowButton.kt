@@ -27,8 +27,8 @@ internal class LogcatToolWindowButton(
             window.isVisible -> "IDE標準Logcatパネルを非表示にします。"
             else -> "IDE標準Logcatパネルを表示します。"
         }
-        accessibleContext.accessibleName = text
-        accessibleContext.accessibleDescription = toolTipText
+        getAccessibleContext().accessibleName = text
+        getAccessibleContext().accessibleDescription = toolTipText
     }
 
     private fun availableWindow(): ToolWindow? = if (alive()) {
