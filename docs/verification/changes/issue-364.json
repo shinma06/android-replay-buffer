@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "issue": 364,
+  "gui_required": false,
+  "reason": "品質選択後の固定candidate210ed047・全24commit/PR・旧139+28と新282の2Caseを既存段階受入へ明示登録する管理変更。元plan/出典/hash/観察・FAIL/unknown・human/REAL延期を保持し、274/283の現在契約hashは原契約と区別する。固定818b7e1の登録は採用済みmain履歴と既存fixture/回帰へ保持する。製品/version/CI workflow/配布は変更せず、登録をCase PASSや実ロード/性能受入としないためGUI不要。",
+  "cli_checks": [
+    "python3 -m unittest discover -s scripts/workflow -p test_initial_continuation.py",
+    "python3 -m unittest discover -s scripts/workflow -p test_impact_evidence_reuse.py",
+    "python3 scripts/check.py",
+    "python3 scripts/workflow/product_check.py",
+    "python3 scripts/workflow/change_impact.py --base origin/main --run-tests"
+  ],
+  "cases": []
+}
