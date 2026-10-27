@@ -1010,7 +1010,8 @@ def validate_certificate(certificate, git, trusted_base=None):
         history, case_hash = impact_history(source, candidate, key, git)
         policy = initial_stage_plan(trusted_base or candidate, candidate, git)
         if (history != certificate.get('history') or case_hash != certificate['case_sha256'] or
-                initial_stage_plan(source, source, git) != policy or canonical_hash(policy) != certificate['plan_sha256']):
+                initial_stage_plan(trusted_base or source, source, git) != policy or
+                canonical_hash(policy) != certificate['plan_sha256']):
             raise ValueError('Certificate registration differs from fixed Git history/Case/plan')
     except subprocess.CalledProcessError as error:
         raise ValueError('Certificate registration Git identity/history is unavailable') from error
@@ -1071,7 +1072,9 @@ def validate_impact_reuse(observed, assessment, key, policy, candidate, artifact
             raise ValueError('Trusted Issue has no evidence certificates')
         certificate = certificates.get(ref['id'])
         history, case_hash = impact_history(assessment['source_candidate'], candidate, key, git)
+        # Qualify only the comparison; original records still require their original plan.
         source_plan = initial_stage_plan(assessment['source_candidate'], assessment['source_candidate'], git)
+        qualified_source_plan = initial_stage_plan(trusted_base, assessment['source_candidate'], git)
     except subprocess.CalledProcessError as exc:
         raise ValueError('Impact certificate provenance or source history could not be verified') from exc
     payload = {k: v for k, v in assessment.items() if k != 'impact_reuse'}
@@ -1086,7 +1089,7 @@ def validate_impact_reuse(observed, assessment, key, policy, candidate, artifact
                                                                     if k != 'responsibility_assessment'}) or
             assessment['source_candidate'] == candidate or
             certificate.get('case_sha256') != case_hash or
-            certificate.get('plan_sha256') != canonical_hash(policy) or source_plan != policy or
+            certificate.get('plan_sha256') != canonical_hash(policy) or qualified_source_plan != policy or
             certificate.get('history') != history or
             not isinstance(certificate.get('original_file_sha256'), str) or
             not HASH.fullmatch(certificate['original_file_sha256']) or
