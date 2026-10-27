@@ -122,7 +122,7 @@ ToolWindow上部に「スクリーンショットを保存」を常設する。�
 
 | 順序 | 表示と操作 |
 | --- | --- |
-| 上部 | 「取得を有効にする」と「設定…」、即時ON/OFFと未保存対象の破棄の説明。取得状態/モード・端末・アプリ・保持時間と記録区間を続ける |
+| 上部 | 「取得を有効にする」と「設定…」、IDE標準Logcatの開閉。即時ON/OFFと未保存対象の破棄の説明、取得状態/モード・端末・アプリ・保持時間と記録区間を続ける |
 | 主要操作 | 「直前N秒を保存」と「スクリーンショット」。幅が足りなければ行を折り返す。各操作の不可理由とスクショ自身の対象/実保存先・画面上の注意を近接表示する。スクショは取得OFFでも独立利用する |
 | 保存結果 | 待機/保存中/取消し/失敗/完了、固定モード・記録の不足と未確認・動画末尾の未確認を保持する。完了時はその要求の実フォルダを表示し、開く操作を置く。失敗時は判明している出力の保全先を示す |
 | 失敗の復旧 | 理由・固定区間/不足と未確認の下に「同じ対象を再試行」「別の保存先で再試行…」「未保存の対象を破棄」を置き、その後に固定端末/アプリ履歴を表示する。再試行の固定対象と破棄しても取得継続という意味を説明する。既存の明示保存先確認・要求ID照合・保全を維持する |
@@ -133,6 +133,10 @@ ToolWindow上部に「スクリーンショットを保存」を常設する。�
 スクショは#338の`screenshot-日時-UUID.png`1枚を、#341のLogcat画面撮影設定への追従（既定）または手動rootへ直接保存する。手動で動画・ログと同じpathを指定してよい。表示名を短くしても、録画対象serial固定/OFF独立・要求時の保存先固定・取得不能/不正な保存先からの非fallback、通知から実画像の親を開く/同じ画像だけを削除する保証は変えない。
 
 動画品質の選択は既存の「取得する記録」内に置き、標準/軽量の長辺・fps上限と指定bitrate、軽量の可読性・短い変化/滑らかさへの影響を示す。取得OFFと反映完了後だけ適用し、LOG_ONLYでは選択不可だが保存値は保持する。ToolWindowは適用済みの指定品質と反映待ちを区別して表示する。値と保存metadataの正本は[動画品質の選択](../plugin-design.md#動画品質の選択282)。
+
+#369の「Logcatを開く／Logcatを閉じる」はIDE標準Logcatパネルの実表示状態から次の操作名を示す。IDE側の開閉・登録/解除・利用可否変更へ追従し、クリック時も状態を再確認する。未登録・利用不可・破棄済みでは無効化してtooltipとaccessible descriptionで案内する。操作は標準パネルの表示/非表示だけとし、プラグインの取得トグル・設定・保存を呼び出さない。Logcat自身の端末・filter・tabを変更しない。
+
+Rabbit SDKの`android.jar`内`META-INF/logcat.xml`に登録されたID `Logcat`を使い、Logcat内部classには依存しない。[公式ToolWindow API](https://plugins.jetbrains.com/docs/intellij/tool-windows.html)と[262系listener定義](https://github.com/JetBrains/intellij-community/blob/idea/262.10968.63/platform/platform-api/src/com/intellij/openapi/wm/ex/ToolWindowManagerListener.java)に従い、content寿命のmessage bus購読で状態と登録/解除の両方を扱う。EDT外の登録通知も`ToolWindowManager.invokeLater`へ渡し、予約時と実行時にcontent/projectの寿命を確認する。[Case #369](../verification/changes/issue-369.json)は固定候補の実ロード・開閉・外部操作後の表示と操作・利用不可・keyboard/可読性を追跡し、模擬ToolWindowの回帰やbuildを実IDEのPASSへ置き換えない。
 
 設定画面は、冒頭に「適用/OKで一式反映、キャンセルでは変更しない」「取得ON/OFFはToolWindowですぐ反映」を表示する。対象アプリ、取得する記録、動画ログ保存先、スクショ保存先の順に標準見出しで区切る。モードのOFF条件・package構文・自動保存の対象/上限・保存先の確認結果は既存の幅追従textを共用して折り返す。自動保存の受付上限を解除する際は、その設定をOFFで適用してからONで再度適用することを説明し、取得トグルのOFF/ONと混同させない。全入力のvalidation・非同期結果の世代/寿命・Apply/Cancel・既存XML/CLI互換は変えない。
 

@@ -12,6 +12,7 @@ import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.wm.ToolWindow
 import com.intellij.openapi.wm.ToolWindowFactory
 import com.intellij.openapi.wm.ToolWindowManager
+import com.intellij.openapi.wm.ex.ToolWindowManagerListener
 import com.intellij.ui.TitledSeparator
 import com.intellij.ui.components.JBCheckBox
 import com.intellij.ui.components.JBScrollPane
@@ -57,6 +58,7 @@ class ReplayToolWindowFactory : ToolWindowFactory, DumbAware {
 private class ReplayToolWindowPanel(private val project: Project) : JPanel(BorderLayout()), Disposable {
     private val service = project.getService(ReplayProjectService::class.java)
     private val store = project.getService(ReplaySettingsStore::class.java)
+    private val toolWindowManager = project.getService(ToolWindowManager::class.java)
     private var disposed = false
     private var shownSave: SaveSnapshot? = null
     val enabled = JBCheckBox("取得を有効にする").apply {
@@ -66,6 +68,9 @@ private class ReplayToolWindowPanel(private val project: Project) : JPanel(Borde
     val settingsButton = JButton("設定…").apply {
         toolTipText = "取得OFFでも編集できます。変更は設定画面の「適用」または「OK」で反映します。"
         addActionListener { if (alive) ShowSettingsUtil.getInstance().showSettingsDialog(project, ReplaySettingsConfigurable::class.java) }
+    }
+    private val logcatButton = LogcatToolWindowButton({ alive }) {
+        toolWindowManager?.getToolWindow("Logcat")
     }
     private val screenshotButton = JButton("スクリーンショット").apply {
         accessibleContext.accessibleName = "現在画面のスクリーンショットを保存"
@@ -120,7 +125,7 @@ private class ReplayToolWindowPanel(private val project: Project) : JPanel(Borde
             .addComponent(wrappingLabel("取得OFFまたはproject終了で、この未保存の対象を破棄します。"))
             .panel
         val form = FormBuilder.createFormBuilder()
-            .addComponent(row(enabled, settingsButton))
+            .addComponent(row(enabled, settingsButton, logcatButton))
             .addComponent(wrappingLabel("ON/OFFはすぐ反映します。OFFで未保存の記録と再試行待ちの対象を破棄します。"))
             .addComponent(state).addComponent(message).addComponent(device).addComponent(application).addComponent(window)
             .addComponent(row(saveButton, screenshotButton))
@@ -143,6 +148,16 @@ private class ReplayToolWindowPanel(private val project: Project) : JPanel(Borde
         val connection = project.messageBus.connect(this)
         connection.subscribe(ReplayProjectService.ENVIRONMENT_CHANGED, refresh)
         connection.subscribe(ReplaySettingsStore.CHANGED, refresh)
+        val refreshLogcat = Runnable {
+            if (alive) toolWindowManager?.invokeLater { if (alive) logcatButton.refresh() }
+        }
+        connection.subscribe(ToolWindowManagerListener.TOPIC, object : ToolWindowManagerListener {
+            override fun stateChanged(toolWindowManager: ToolWindowManager) = refreshLogcat.run()
+
+            override fun toolWindowsRegistered(ids: List<String>, toolWindowManager: ToolWindowManager) = refreshLogcat.run()
+
+            override fun toolWindowUnregistered(id: String, toolWindow: ToolWindow) = refreshLogcat.run()
+        })
         render()
     }
 
@@ -160,6 +175,7 @@ private class ReplayToolWindowPanel(private val project: Project) : JPanel(Borde
     }
 
     private fun render() {
+        logcatButton.refresh()
         val view = service.captureView
         val snapshot = view.snapshot
         val busy = service.resolving || view.pending > 0
