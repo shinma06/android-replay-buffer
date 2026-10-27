@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "issue": 375,
+  "gui_required": false,
+  "reason": "既存OMILフェーズ点検の発動をPM/workerの停止範囲・方法・割当判断へ接続するagent運用文書と受入宣言のみの変更。製品コード・有効Case・原FAIL/unknown・権限や実上限は変更しない。GUI不要で、事例比較は机上評価とし実運用の効率改善や新しい製品受入を主張しない。",
+  "cli_checks": [
+    "python3 scripts/check.py",
+    "python3 scripts/workflow/product_check.py",
+    "python3 scripts/workflow/change_impact.py --base 482032d2ae2609f736d2adb84e820cc372ba6170 --run-tests"
+  ],
+  "cases": []
+}
