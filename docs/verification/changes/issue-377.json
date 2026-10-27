@@ -1,0 +1,44 @@
+{
+  "schema": 1,
+  "issue": 377,
+  "gui_required": true,
+  "reason": "録画ON中のfocusなし仮想mirrorで標準画面撮影が拒否された原NGの修正。325:SCREENSHOT-USBと333:SCREENSHOT-DEVICEの実観察・未達を保持し、source回帰だけで原NGを解消扱いにしない。",
+  "cli_checks": [
+    "ScreenshotSaveTest: 実ON形のfocusなし追加display、ID/順序変更、標準0以外だけの対象focus・帰属不明/重複/未知/lockの拒否、同一serial/物理ID/前後focus確認と元PNG byte保存、後focus変更時の非公開。既存の物理複数/unknown、PNG寸法/完全性、取消し/atomic/非上書き/保全の回帰を維持。",
+    "python3 scripts/workflow/change_impact.py --run-tests（clean committed HEAD、製品共通検査を含む）。結果はIssue/PRへ固定HEADと記録する。"
+  ],
+  "cases": [
+    {
+      "id": "SCREENSHOT-MIRROR",
+      "artifact": "plugin",
+      "change": "録画のfocusなしmirrorがあっても標準物理画面の対象アプリを撮影できる",
+      "preconditions": "元NGはIssue377の未編集acceptance-repairコメント6455508465と固定e091/f66 packetで保持。PMが修正固定candidate/正式ZIP/JAR/実ロード・所有fixture・有限共有lease/返却を同定し既存QA329の枠へ割当。source担当はGUI操作しない。",
+      "steps": [
+        "原失敗の標準0＋focusなし仮想mirror、単一物理画面、選択serial/対象アプリ前面・点灯解除の条件を修正候補で対応付ける。",
+        "録画ON中に製品Screenshotを要求し、実PNGの対象画面/全復号/保存と既存取得の継続・設定/未保存データの保全を確認する。既存の適格なOFF/FILE/故障回帰と保証対応し、原NGに無関係な性能・全操作の反復を追加しない。",
+        "同じ成功PNG/通知を既存329の保存先・開く/所有画像削除の残保証へ共有できる場合は共有する。原FAIL/unknown/human/REALと旧/新artifact identityを別に保持する。"
+      ],
+      "expected": "focusなし追加logical displayだけで拒否せず、一意の物理画面の標準0に属する対象アプリを撮影する。ID2やscrcpy名に依存しない。曖昧な物理画面・focus/標準0不明・lock/未知形式は拒否し、serial固定、PNGとatomic非上書き、失敗保全と既存取得を維持する。",
+      "provenance": [
+        "https://github.com/shinma06/android-replay-buffer/issues/377#issuecomment-6455508465",
+        "https://github.com/shinma06/android-replay-buffer/issues/329",
+        "docs/verification/changes/issue-325.json",
+        "docs/verification/changes/issue-333.json",
+        "docs/design/ide-ui.md",
+        "docs/verification/responsibility.md"
+      ],
+      "gpt": {
+        "status": "pending",
+        "reason": "source修正/回帰のscope。修正固定candidateの実ON撮影は未実施、原NGの解消未確認。"
+      },
+      "human": {
+        "status": "pending",
+        "reason": "未観察。既存human/REAL・実機制約を保持する。"
+      },
+      "fix_issue": null,
+      "fix_pr": null,
+      "recheck": "原NGのON撮影と関連する実ロード/取得継続を新候補で再確認し、元失敗全保証のrepair結果と独立実質評価をdevelop統合前に固定する。",
+      "next_action": "PMが既存QA329で必要な新候補観察と独立証拠評価を割当。v2/main/正式公開は280/271へ保持し、新QAや性能測定を追加しない。"
+    }
+  ]
+}

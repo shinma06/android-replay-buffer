@@ -49,6 +49,51 @@ class ScreenshotSaveTest {
         )) assertFails { screenshotForeground(bad, "sample.app") }
     }
 
+    // Reduced from the retained ON diagnostics: a focusless mirror precedes the physical default.
+    private fun mirroredForeground(id: String) = foreground.replace(
+        "Display: mDisplayId=0",
+        "Display: mDisplayId=$id\n  mCurrentFocus=null\n  Display: mDisplayId=0 (organized)",
+    )
+
+    @Test
+    fun focuslessMirrorsDoNotHideOrSupplyTheDefaultDisplayFocus() {
+        val selected = "Window{12ab u0 sample.app/.MainActivity}"
+        for (id in listOf("2", "7")) {
+            val before = mirroredForeground(id)
+            val after = foreground + "\nDisplay: mDisplayId=$id\nmCurrentFocus=null"
+            assertEquals(selected, screenshotForeground(before, "sample.app"))
+            assertEquals(selected, screenshotForeground(after, "sample.app"))
+            for (bad in listOf(
+                before.replace("mCurrentFocus=$selected", "mCurrentFocus=null").replaceFirst("mCurrentFocus=null", "mCurrentFocus=$selected"),
+                "mCurrentFocus=$selected\n$before",
+                before.replace("mCurrentFocus=null", "mCurrentFocus=Window{45cd u0 other.app/.Main}"),
+                before.replace("mCurrentFocus=null", "unknownFocus=null"),
+                before.replace("Display: mDisplayId=0 (organized)", "Display: mDisplayId=1"),
+                before.replace("Display: mDisplayId=$id", "Display: mDisplayId=0"),
+                before.replace("Display: mDisplayId=$id", "Display: mDisplayId=unknown"),
+                before.replace("sample.app/.MainActivity", "other.app/.MainActivity"),
+                before.replace("showing=false", "showing=true"),
+            )) assertFails { screenshotForeground(bad, "sample.app") }
+        }
+    }
+
+    @Test
+    fun recordingMirrorPreservesSerialPhysicalCaptureAndBothForegroundChecks() {
+        assumeTrue(System.getProperty("os.name") == "Mac OS X")
+        fixture { root, adb ->
+            Files.writeString(root.resolve("foreground"), mirroredForeground("2"))
+            val destination = Files.createDirectory(root.resolve("output"))
+            val saved = saveScreenshot(adb, "sample.app", destination, "usb123")
+            assertContentEquals(Files.readAllBytes(root.resolve("image.png")), Files.readAllBytes(saved.file))
+            assertEquals(listOf("devices -l", "-s usb123 shell dumpsys SurfaceFlinger --display-id",
+                "-s usb123 shell dumpsys window", "-s usb123 exec-out screencap -p -d 4619827551948147201",
+                "-s usb123 shell dumpsys window"), Files.readAllLines(root.resolve("commands")))
+            Files.writeString(root.resolve("mode"), "changed")
+            assertFails { saveScreenshot(adb, "sample.app", destination, "usb123") }
+            assertEquals(listOf(saved.file), Files.list(destination).use { it.toList() })
+        }
+    }
+
     @Test
     fun pngMustBeCompleteAndUnmodifiedIncludingEveryChunk() {
         val bytes = png()
