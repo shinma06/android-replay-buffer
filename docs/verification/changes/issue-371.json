@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "issue": 371,
+  "gui_required": false,
+  "reason": "Logcat開閉追加後の実merge945c9e0・全25commit/実PR・旧139+30と新369の完全な1Caseを既存段階受入へ明示登録する管理変更。元plan/既存169契約とhash/出典・観察・FAIL/unknown・human/REAL延期を保持する。旧210ed047登録は固定main605efc9履歴と既存fixture/回帰へ保持する。製品source/build/version/CI workflow/配布や受入結果を変更せず、登録をCase PASSや実ロード/性能受入としないためGUI不要。",
+  "cli_checks": [
+    "python3 -m unittest discover -s scripts/workflow -p test_initial_continuation.py",
+    "python3 -m unittest discover -s scripts/workflow -p test_impact_evidence_reuse.py",
+    "python3 scripts/check.py",
+    "python3 scripts/workflow/product_check.py",
+    "python3 scripts/workflow/change_impact.py --base origin/main --run-tests"
+  ],
+  "cases": []
+}

@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "issue": 344,
-  "candidate": "210ed0473c3f87e02f3ea065506d4616b6fdadd8",
+  "candidate": "945c9e0c6ec899d14dcabc98665c7df10c82935c",
   "plan_sha256": "0b6d9c6d2d5054ed642565afdbaeb5a88ee198a4ea5398ff96ff36168ce0eda5",
   "changes": [
     {
@@ -123,6 +123,11 @@
       "commit": "210ed0473c3f87e02f3ea065506d4616b6fdadd8",
       "pr": 362,
       "source_path": "docs/verification/changes/issue-282.json"
+    },
+    {
+      "commit": "945c9e0c6ec899d14dcabc98665c7df10c82935c",
+      "pr": 370,
+      "source_path": "docs/verification/changes/issue-369.json"
     }
   ],
   "cases": {
@@ -455,6 +460,17 @@
         }
       ],
       "current_case_sha256": "0a31023e52da9f009df09acc72c1312d0259a54ea8665b4fb53965d7d363f43d"
+    },
+    "369:LOGCAT-PANEL-TOGGLE": {
+      "sources": [
+        {
+          "source_pr": 370,
+          "source_merge": "945c9e0c6ec899d14dcabc98665c7df10c82935c",
+          "source_path": "docs/verification/changes/issue-369.json",
+          "original_case_sha256": "b14461581bef7d09b781e1d4a2fabe05f1237b204e201459121e47f9039da1cf"
+        }
+      ],
+      "current_case_sha256": "b14461581bef7d09b781e1d4a2fabe05f1237b204e201459121e47f9039da1cf"
     }
   }
 }
