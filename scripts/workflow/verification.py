@@ -1752,8 +1752,9 @@ def promotion_policy_blobs(base, candidate, git, continuation=False):
                     ('3ae14aa6205aed699b52f3c67e96038130389240', '3fd8535b32a6b291ffcf8ec4c4d303bd566541ea')):
                 raise ValueError('Candidate README changes require explicit trusted-main reconciliation')
         # Carry only the reviewed human-scope amendment, never arbitrary candidate policy edits.
-        if path == 'docs/verification/responsibility.md' and old_blob and (old_blob.split()[2], blob.split()[2]) != (
-                '4f760887c06349b1095b9f4a5fcb7187a3d8b9cb', '0791bbec5bdbcd8debe27675445c7b2996ca91be'):
+        if path == 'docs/verification/responsibility.md' and (
+                old_blob.split() != ['100644', 'blob', '4f760887c06349b1095b9f4a5fcb7187a3d8b9cb', path] or
+                blob.split() != ['100644', 'blob', '0791bbec5bdbcd8debe27675445c7b2996ca91be', path]):
             raise ValueError('Responsibility changes require explicit trusted-main reconciliation')
         if path == INITIAL_CONTINUATION:
             initial_continuation(policy, base, candidate, git)

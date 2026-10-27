@@ -289,7 +289,7 @@ class InitialContinuationTests(unittest.TestCase):
                 return '\n'.join(paths)
             if args[0] == 'ls-tree':
                 if args[-1] == 'docs/verification/responsibility.md':
-                    return f'100644 blob {responsibility[args[1]]}\t{args[-1]}'
+                    return f'100644 blob {responsibility[args[1]]}\t{args[-1]}' if responsibility[args[1]] else ''
                 if args[-1] == 'scripts/workflow/change_impact.py':
                     return f'100644 blob {classifier[args[1]]}\t{args[-1]}'
                 if args[-1] not in paths and args[-1] not in modules:
@@ -315,6 +315,14 @@ class InitialContinuationTests(unittest.TestCase):
                         ValueError, 'Responsibility'):
                 v.promotion_policy_blobs(BASE, NEW, git, continuation=True)
             responsibility[ref] = original
+        original = responsibility[NEW]
+        responsibility[NEW] = ''
+        for continuation in (False, True):
+            with self.subTest(missing_candidate_responsibility=continuation), patch.object(
+                    v, 'initial_stage_plan', return_value=self.initial.policy), self.assertRaisesRegex(
+                        ValueError, 'Responsibility'):
+                v.promotion_policy_blobs(BASE, NEW, git, continuation=continuation)
+        responsibility[NEW] = original
         classifier[BASE] = 'f' * 40
         for continuation in (False, True):
             with self.subTest(changed_classifier=continuation), patch.object(
