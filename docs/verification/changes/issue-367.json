@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "issue": 367,
+  "gui_required": false,
+  "reason": "保証別影響証明書の登録・参照で、trusted mainの既存resolverにより正式登録済みのsource方法を対象planへ解決して比較する管理修正。元の結果・観察は元source planで検証し、履歴・保証coverage・出典・独立性・fresh identity/affected/current-loadの制約を維持する。製品・配布物・Case契約と追加Caseの責任groupは変更せず、実証明書登録やCase PASS採用も行わないためGUI不要。",
+  "cli_checks": [
+    "python3 -m unittest discover -s scripts/workflow -p test_impact_evidence_reuse.py",
+    "python3 scripts/check.py",
+    "python3 scripts/workflow/product_check.py",
+    "python3 scripts/workflow/change_impact.py --base origin/main --run-tests"
+  ],
+  "cases": []
+}

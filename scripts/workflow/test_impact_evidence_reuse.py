@@ -282,6 +282,73 @@ class ImpactEvidenceTests(unittest.TestCase):
         self.assertIn('修正影響を保証ごとに評価', self.render())
         self.assertNotIn(f'{RECORD}:docs/verification/promotion.json', self.fixture.documents)
 
+    def test_registered_230_to_299_method_binds_both_gates_and_keeps_original_validation(self):
+        from verification import INITIAL_STAGE, certificate_acceptance, validate_candidate_result
+        revision = tr.PrecisionRequirementRevisionTests(); revision.setUp()
+        self.key, self.policy = revision.key, revision.policy
+        source_policy = revision.old
+        case_path = 'docs/verification/changes/issue-13.json'
+        ancestor = self.policy['required_ancestor']
+        case_record = json.loads(revision.git('show', ancestor + ':' + case_path))
+        case = next(c for c in case_record['cases'] if c['id'] == 'SYNC-CLOCK')
+        for ref, policy in ((BASE, self.policy), (NEW, self.policy), (OLD, source_policy)):
+            self.fixture.documents[f'{ref}:{INITIAL_PLAN}'] = copy.deepcopy(policy)
+        for ref in (OLD, NEW):
+            self.fixture.documents[f'{ref}:{case_path}'] = copy.deepcopy(case_record)
+
+        def git(*args):
+            if (args[0] == 'ls-tree' and args[1] == ancestor or
+                    args[0] == 'show' and args[1].startswith(ancestor + ':')):
+                return revision.git(*args)
+            return self.git(*args)
+
+        required = {'contract_coverage', 'artifact_binding', 'failure_attribution',
+                    *tr.responsibility_group(self.policy, self.key)['evidence_keys']}
+        self.observed.update(responsibility_revision=canonical_hash(self.policy['responsibility_revision']),
+                             responsibility_evidence={k: 'Synthetic executed proof: ' + k for k in required})
+        for name, fact in self.assessment['facts'].items():
+            policy = source_policy if name == 'prior' else self.policy
+            fact.update(responsibility_revision=canonical_hash(policy['responsibility_revision']),
+                        responsibility_evidence=copy.deepcopy(self.observed['responsibility_evidence']))
+        original = self.assessment['source_result']
+        original.update(stage_revision=canonical_hash(source_policy),
+                        initial_observation=copy.deepcopy(self.assessment['facts']['prior']))
+        self.assessment['source_result_sha256'] = canonical_hash(original)
+        self.assessment['coverage'] = {k: ['current' if k == 'artifact_binding' else 'prior'] for k in required}
+        old_proofs = self.certificate['guarantees']
+        self.certificate['guarantees'] = {k: copy.deepcopy(old_proofs[
+            'artifact_binding' if k == 'artifact_binding' else 'file_integrity']) for k in required}
+        history, case_hash = impact_history(OLD, NEW, self.key, git)
+        self.certificate.update(key=self.key, history=history, case_sha256=case_hash,
+                                plan_sha256=canonical_hash(self.policy))
+        self.seal()
+        current = dict(copy.deepcopy(original), head=NEW, artifact_sha256='e' * 64,
+                       stage_revision=canonical_hash(self.policy), initial_observation=self.observed)
+        saved = copy.deepcopy(original)
+
+        def consume():
+            validate_candidate_result(current, self.key, self.policy, INITIAL_STAGE, NEW, 'e' * 64,
+                                      case.get('required_execution'), None, git, BASE, case)
+
+        accepted = certificate_acceptance({'sample': self.certificate}, git, BASE)
+        self.assertEqual(accepted['certificate_revision'], canonical_hash({'sample': self.certificate}))
+        consume()
+        self.assertEqual(original, saved)
+        for trusted in (None, OLD):
+            with self.subTest(trusted=trusted), self.assertRaises(ValueError):
+                certificate_acceptance({'sample': self.certificate}, git, trusted)
+        self.fixture.documents[f'{OLD}:{INITIAL_PLAN}']['owner'] += ' unregistered change'
+        with self.assertRaisesRegex(ValueError, 'exact trusted'):
+            certificate_acceptance({'sample': self.certificate}, git, BASE)
+        with self.assertRaises(ValueError):
+            consume()
+        self.fixture.documents[f'{OLD}:{INITIAL_PLAN}'] = source_policy
+        original['stage_revision'] = canonical_hash(self.policy)
+        self.assessment['source_result_sha256'] = canonical_hash(original)
+        self.seal()
+        with self.assertRaisesRegex(ValueError, 'exact scope'):
+            consume()
+
     def test_structural_provenance_coverage_identity_and_review_fail_closed_in_gate_and_view(self):
         edits = ['missing-original', 'forged-hash', 'writer-review', 'executor-review', 'missing-review',
                  'wrong-artifact', 'old-as-current', 'future-fact', 'unknown-runtime', 'missing-impact',
