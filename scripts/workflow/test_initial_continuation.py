@@ -251,9 +251,10 @@ class InitialContinuationTests(unittest.TestCase):
         fixture = 'scripts/workflow/initial_continuation_cases.py'
         unknown = 'docs/verification/unknown.json'
         required = {v.INITIAL_CONTINUATION, record_path, 'docs/verification/changes/issue-364.json',
-                    'docs/verification/changes/issue-371.json', script, fixture,
+                    'docs/verification/changes/issue-371.json', 'docs/verification/changes/issue-373.json', script, fixture,
                     'scripts/workflow/test_initial_continuation.py',
                     'scripts/workflow/test_impact_evidence_reuse.py', 'docs/verification/README.md',
+                    'docs/verification/responsibility.md',
                     'scripts/workflow/test_agent_loop.py',
                     *('scripts/workflow/' + name + '.py' for name in
                       ('git_guard', 'agent_policy', 'issue_schema', 'handoff_registry', 'agent_worker'))}
@@ -264,10 +265,13 @@ class InitialContinuationTests(unittest.TestCase):
         paths = [*required, product_path, unknown, *unrelated]
         records = {record_path: change(356, gui=False),
                    'docs/verification/changes/issue-364.json': change(364, gui=False),
-                   'docs/verification/changes/issue-371.json': change(371, gui=False), product_path: change(37),
+                   'docs/verification/changes/issue-371.json': change(371, gui=False),
+                   'docs/verification/changes/issue-373.json': change(373, gui=False), product_path: change(37),
                    unrelated[-1]: change(999, gui=False), v.INITIAL_CONTINUATION: self.registration}
         classifier = {BASE: '364b42de6cffde531ad631ae88e20a4271b76d7f',
                       NEW: '8beb4c9aa39196f10a76b6cea2ec757ffa52569c'}
+        responsibility = {BASE: '0791bbec5bdbcd8debe27675445c7b2996ca91be',
+                          NEW: '4f760887c06349b1095b9f4a5fcb7187a3d8b9cb'}
         modules = {script: 'from agent_policy import api\nfrom git_guard import api\nfrom change_impact import api',
                    'scripts/workflow/agent_policy.py': 'from issue_schema import api\nfrom handoff_registry import api',
                    'scripts/workflow/handoff_registry.py': 'from agent_worker import api',
@@ -284,6 +288,8 @@ class InitialContinuationTests(unittest.TestCase):
             if args[0] == 'diff':
                 return '\n'.join(paths)
             if args[0] == 'ls-tree':
+                if args[-1] == 'docs/verification/responsibility.md':
+                    return f'100644 blob {responsibility[args[1]]}\t{args[-1]}' if responsibility[args[1]] else ''
                 if args[-1] == 'scripts/workflow/change_impact.py':
                     return f'100644 blob {classifier[args[1]]}\t{args[-1]}'
                 if args[-1] not in paths and args[-1] not in modules:
@@ -301,6 +307,22 @@ class InitialContinuationTests(unittest.TestCase):
                     v, 'initial_stage_plan', return_value=self.initial.policy):
                 carried = v.promotion_policy_blobs(BASE, NEW, git, continuation=continuation)
                 self.assertEqual(required, set(carried))
+        for ref in (BASE, NEW):
+            original = responsibility[ref]
+            responsibility[ref] = 'f' * 40
+            with self.subTest(changed_responsibility=ref), patch.object(
+                    v, 'initial_stage_plan', return_value=self.initial.policy), self.assertRaisesRegex(
+                        ValueError, 'Responsibility'):
+                v.promotion_policy_blobs(BASE, NEW, git, continuation=True)
+            responsibility[ref] = original
+        original = responsibility[NEW]
+        responsibility[NEW] = ''
+        for continuation in (False, True):
+            with self.subTest(missing_candidate_responsibility=continuation), patch.object(
+                    v, 'initial_stage_plan', return_value=self.initial.policy), self.assertRaisesRegex(
+                        ValueError, 'Responsibility'):
+                v.promotion_policy_blobs(BASE, NEW, git, continuation=continuation)
+        responsibility[NEW] = original
         classifier[BASE] = 'f' * 40
         for continuation in (False, True):
             with self.subTest(changed_classifier=continuation), patch.object(
@@ -308,9 +330,13 @@ class InitialContinuationTests(unittest.TestCase):
                         ValueError, 'classifier'):
                 v.promotion_policy_blobs(BASE, NEW, git, continuation=continuation)
         classifier[BASE] = classifier[NEW]
-        records[record_path] = change(356)
-        with patch.object(v, 'initial_stage_plan', return_value=self.initial.policy), self.assertRaises(ValueError):
-            v.promotion_policy_blobs(BASE, NEW, git, continuation=True)
+        for issue in (356, 373):
+            path = f'docs/verification/changes/issue-{issue}.json'
+            records[path] = change(issue)
+            with self.subTest(nonempty_record=issue), patch.object(
+                    v, 'initial_stage_plan', return_value=self.initial.policy), self.assertRaises(ValueError):
+                v.promotion_policy_blobs(BASE, NEW, git, continuation=True)
+            records[path] = change(issue, gui=False)
 
 
 class RegisteredContinuationTests(unittest.TestCase):

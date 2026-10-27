@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "issue": 373,
+  "gui_required": false,
+  "reason": "本人の低負荷モード暫定受入と第二版の追加性能タスク終了を有効な責任/受入説明へ反映する管理変更。原Case/計画/hash・945c候補/標準ZIP・原観察/FAIL/unknownを変更せず、性能目的の本人待ちだけを終了し機能保証を維持する。新しい実測PASSや製品変更ではないためGUIは不要。",
+  "cli_checks": [
+    "python3 scripts/check.py",
+    "python3 scripts/workflow/product_check.py",
+    "python3 scripts/workflow/change_impact.py --base 373f993938e3dfa0f5b2d81c08397f8dddf7b6bd --run-tests"
+  ],
+  "cases": []
+}

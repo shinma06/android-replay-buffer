@@ -7,7 +7,7 @@
 
 `changes/issue-N.json` はIssueの受入、`promotion.json` はmainへ入れる固定候補と全Caseの観察の正本です。過去の観察を別SHA/buildで新たに実行したpassへ付け替えません。[影響単位の評価](#修正影響による保証単位の証拠再利用246)では、元の成功事実を保持し、現在buildへの適用評価と区別します。未実施はpending、環境不足はblocked、製品不具合はfailと区別します。
 
-第2版の性能受入は[現行の責任方針](responsibility.md)に従い、完成版を本人の環境で比較して問題ないと判断するまで未完了です。自動比較・再profile・比較専用準備は再開せず、過去の観測・FAIL/unknownと機能保証・実機/人間延期を保持します。
+第2版の性能は、2026-10-27の本人の「低負荷モードで暫定ok、第二版でこれ以上の性能系タスクは不要」という判断により、[現行の責任方針](responsibility.md)の範囲で暫定受入・終了です。完成版の本人性能比較待ちと追加の性能評価・最適化・比較やその準備を完了条件にしません。新しい実測PASSへ換えず、原Case/hash・観測・FAIL/unknownを保持します。品質設定・実引数・録画/保存・内容/時刻/所有等の機能保証と、性能以外の実機/人間延期は継続します。
 
 ## Caseの記録
 
@@ -230,7 +230,7 @@ promotionには`stage: initial-agent`を明記し、元の139 keyの各値は以
 
 第2版のLogcat開閉追加後の固定候補 `945c9e0c6ec899d14dcabc98665c7df10c82935c` は、trusted mainの[固定接続登録](amendments/initial-agent-continuation.json)（#371改訂、schema機構のorigin #344は維持）で同じ`initial-agent`段階へ接続する。元の計画139 Case / 208出典とcanonical hash、既存の責任・方法改訂、人間・REAL延期、後続#65を変更しない。登録は候補SHA、元計画hash、全25 commitと各merged develop PR・Caseファイル、追加31 keyの出典と現在契約hashを固定する。旧24 commit/30 keyの原出典・現在契約hashを保持し、PR370の実mergeと369の完全な1 Caseを追加する。274/283の原契約と変更後契約hashの区別も維持する。通常の全commit/実PR provenance検証を継続し、登録をcandidate側だけへ置く、未知Case・別候補・出典の重複や欠落・契約差分を自動で許可しない。後続の追加には別の明示的なtrusted main改訂が必要となる。
 
-この候補の`results`は139+31の全170 key（計239出典）を必要とする。元139は既存の`initial-pass` / `deferred`の厳密な条件を維持し、追加31は通常の同一candidate/artifactに結び付いた全保証の`pass`を必要とする。追加分に新しい延期や旧139の責任改訂を継承させない。追加分の未実施・pending・blocked・failを残したまま段階完了にはできない。一覧も同じ固定接続から170 Caseを生成し、追加分を「Case合格」、元139を従来の段階範囲と区別する。全必要結果が揃った段階完了でも、完全受入は未完了のままとする。本人の性能評価未実施とLogcat開閉を含む未完機能Caseを登録でPASSへ変えない。
+この候補の`results`は139+31の全170 key（計239出典）を必要とする。元139は既存の`initial-pass` / `deferred`の厳密な条件を維持し、追加31は通常の同一candidate/artifactに結び付いた全保証の`pass`を必要とする。追加分に新しい延期や旧139の責任改訂を継承させない。追加分の未実施・pending・blocked・failを残したまま段階完了にはできない。一覧も同じ固定接続から170 Caseを生成し、追加分を「Case合格」、元139を従来の段階範囲と区別する。全必要結果が揃った段階完了でも、完全受入は未完了のままとする。本人判断による性能scopeの終了を、Logcat開閉を含む未完機能CaseのPASSへ変えない。固定Case/fixtureに残る完成版の本人性能比較待ちは原文を保持し、性能目的だけ[現行の責任方針](responsibility.md)の#373改訂で第二版の完了条件から外す。機能保証と同一source/artifactの同定は引き続き必要とする。
 
 旧56dad登録と#344の承認は[固定main c663の履歴](https://github.com/shinma06/android-replay-buffer/blob/c66363ea0b27add98de9853ccf87728235662b17/docs/verification/amendments/initial-agent-continuation.json)、旧818b7e1の23 commit/28 Case登録と#356の承認は[固定main 1e49596の履歴](https://github.com/shinma06/android-replay-buffer/blob/1e49596da78b0e0529dd336b73d18c73a2fd12de/docs/verification/amendments/initial-agent-continuation.json)、旧210ed047の24 commit/30 Case登録と#364の承認は[固定main 605efc9の履歴](https://github.com/shinma06/android-replay-buffer/blob/605efc9fcd19fb6422b9baef174fbb38d4829875/docs/verification/amendments/initial-agent-continuation.json)として残す。今回の登録の認可・所有は[#371のCaseなし管理記録](changes/issue-371.json)と対応PRに結び、#344/#356/#364を再開しない。352/345のCase0も全commit/PRの登録から省略しない。
 
