@@ -12,6 +12,7 @@ CONTEXT = 'Agent review'
 SHA = re.compile(r'[0-9a-f]{40}')
 SESSION_HASH = re.compile(r'(?:codex|native)-session-sha256:[0-9a-f]{64}')
 NATIVE_SESSION = re.compile(r'native-session-v1:([0-9a-f]+):([0-9a-f]+)')
+REVIEW_ORIGINAL_REF = re.compile(r'[0-9a-f]{32}:[0-9a-f]{64}')
 
 
 def native_session(issuer, identity):
@@ -166,8 +167,10 @@ def remote_review_ready(bound, now=None):
     if bound.get('remote_review_complete') is not False:
         return True
     retry = bound.get('review_retry')
-    if (not isinstance(retry, dict) or set(retry) != {'head', 'base', 'comment_id', 'created_at'} or
+    required = {'head', 'base', 'comment_id', 'created_at'}
+    if (not isinstance(retry, dict) or set(retry) not in (required, required | {'original_ref'}) or
             type(retry['comment_id']) is not int or retry['comment_id'] <= 0 or
+            ('original_ref' in retry and not REVIEW_ORIGINAL_REF.fullmatch(str(retry['original_ref']))) or
             any(retry.get(k) != bound.get(k) for k in ('head', 'base'))):
         return False
     try:

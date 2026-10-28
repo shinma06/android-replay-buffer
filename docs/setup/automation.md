@@ -82,11 +82,13 @@ base 更新は通常 merge → 必要テスト → 非 force push → 独立再�
 
 必要な外部レビューの応答停滞がブロッカーと判断された場合、担当は理由を既存Issue/PRに記録し、同じ完全なHEADを明記して**一度だけ明示的に再依頼**します。Codexは通常の `@codex review`、選択したnative reviewerは `@login please review` のPRコメントに「再依頼」と理由を書き、実投稿のID・server `created_at`を読み戻します。既存の再依頼を重ねず、以前の待ち時間、本文中の時刻、edited時刻を起点にしません。
 
-`agent_loop.py --review-retry-comment <実comment ID> feedback --pr N`で実レコードを確認し、同じoptionをtick・再取得・reconcile-feedbackへ使います。これは読取・判定の指定で、再依頼を投稿せず、workerの実行権限も作りません。coordinatorは採用したIDを保持します。最新の未編集コメントがmaintainerによる再依頼で、同じHEAD、先行するreview義務、選択元/保存済み義務が一致し、必要な応答がなお欠ける場合だけ `binding.review_retry` に実ID/server時刻を記録します。先行するreview義務は手動依頼コメントに限定せず、同じHEADの自動起動したRunning/Queued service記録でも確認します。その実コメントの作成と表示された開始時刻がともに再依頼より前であることが必要で、古いdashboardの作成時刻だけ、又は再依頼後に始まった記録だけを元レビューの証拠にしません。不明な形式・実failure・外部の具体的な応答/指摘・別方式の未完了義務はこの例外で通しません。
+自動レビューのsummaryは同じコメントを上書きします。停滞を確認した時点・再依頼前に `agent_loop.py prepare-review-retry --pr N` をtrusted mainから実行し、現在の実API観測を既存private registryへ1件だけ保存します。返る `review_retry_original` はopaque IDと内容hashの参照で、元の同HEAD/base/選択元と観測時刻・rawコメントを結合します。再依頼や承認を作らず、保存しただけで元義務の適格性を認定しません。別ledgerやjobは作りません。
+
+`agent_loop.py --review-retry-comment <実comment ID> --review-retry-original <保存した参照> feedback --pr N`で実レコードを確認し、同じoptionをtick・再取得・reconcile-feedbackへ使います。これは読取・判定の指定で、再依頼を投稿せず、workerの実行権限も作りません。coordinatorは採用したIDと元観測の参照を保持します。現在も元service記録を直接確認できる場合や先行manual依頼がある場合は、元観測の参照なしでも従来の確認ができます。最新の未編集コメントがmaintainerによる再依頼で、同じHEAD、先行するreview義務、選択元/保存済み義務が一致し、必要な応答がなお欠ける場合だけ `binding.review_retry` に実ID/server時刻を記録します。先行するreview義務は手動依頼コメントに限定せず、同じHEADの自動起動したRunning/Queued service記録でも確認します。その実コメントの作成と表示された開始時刻がともに再依頼より前であることが必要で、古いdashboardの作成時刻だけ、又は再依頼後に始まった記録だけを元レビューの証拠にしません。同じdashboardが再依頼後のRunning/Queuedへ更新された場合は、再依頼前に実観測した保存記録を読み戻し、内容hash・HEAD/base/PR/選択元と観測時刻を照合します。現在の失敗/未知形式/応答/指摘は先に確認し、古い記録で無視しません。元観測なしの同じ最終状態はpendingを維持します。不明な形式・実failure・外部の具体的な応答/指摘・別方式の未完了義務はこの例外で通しません。
 
 **その新しい再依頼から30分**経っても必要な応答がなければ、外部の待機だけを解除できます。`remote_review_complete`はfalseのまま、`review_wait_satisfied`で待機条件を区別します。通常と同じ独立した別sessionが全feedback・固定HEAD/base/title/body/Issueと未解決指摘なしを評価し、approved/scope_complete・一致するfeedback_hashを持つ報告を、そのreviewer自身の既存adapterとprivate registryでorigin結合する必要があります。時間経過だけではAgent review成功・統合にはなりません。通常のCI・strict base・branch protection・Case/受入・所有・実権限は変えません。
 
-非repairの手動評価はreviewer自身のsessionで `agent_worker.py --report <private-report> --binding <private-binding> --storage <既存registry> --output <新private-output>` を使います。元報告は保持し、実sessionと完全bindingへorigin_receiptを発行します。受入NG/certificateでは従来どおり元証拠・acceptanceも必要です。報告を作ったsource writer、設計/証拠の寄与者と最終評価者の独立性は既存契約に従って確認します。
+非repairの手動評価はreviewer自身のsessionで `agent_worker.py --report <private-report> --binding <private-binding> --storage <既存registry> --output <新private-output>` を使います。元報告は保持し、実sessionと完全bindingへorigin_receiptを発行します。受入NG/certificateでは従来どおり元証拠・acceptanceも必要です。元観測の参照を使う場合は、その実registry記録（CLI workerには`review_original`で渡す）も読んで時系列と出典を評価します。報告を作ったsource writer、設計/証拠の寄与者と最終評価者の独立性は既存契約に従って確認します。
 
 再依頼・HEAD/base/metadata/feedbackや選択元の変更は旧評価を失効させます。30分後も全feedbackを再取得し、応答が来ていれば通常経路で扱います。merge直前、merge後/close前、後着指摘の既存復旧経路も同じ共通判定とorigin評価を使い、provider Completedを偽りません。局所的な待機だけで独立して進められる全作業まで停止したとみなしません。
 

@@ -11,7 +11,7 @@ from unittest.mock import Mock, patch
 
 import agent_loop as al
 import release_delivery as delivery
-from agent_policy import next_action, remote_review_ready, validate_review
+from agent_policy import next_action, remote_review_ready, validate_review, native_session
 from handoff_registry import issue_review_origin
 from test_agent_loop import HEAD, NEW, pr_data
 import test_agent_loop as tal
@@ -305,6 +305,82 @@ class StalledReviewTests(unittest.TestCase):
                 self.assertEqual('review_retry' in bound, eligible)
                 self.assertEqual(remote_review_ready(bound), eligible)
                 self.assertFalse(bound['remote_review_complete'])
+
+    def test_original_observation_survives_dashboard_overwrite_without_another_retry(self):
+        service = summary(status='🔄 **Running**')
+        service['created_at'] = '2026-10-11T04:00:00Z'
+        service['body'] = service['body'].replace('2026-10-11T04:46:46Z', '2026-10-11T04:05:00Z')
+        self.gh.messages[36].append(service)
+        before = copy.deepcopy(self.gh.messages)
+        with patch.object(al, 'datetime', wraps=datetime) as clock:
+            clock.now.return_value = datetime.fromisoformat('2026-10-11T04:09:00+00:00')
+            observation = self.loop.prepare_review_retry(self.gh.pr(36))
+        self.assertEqual(self.gh.messages, before)
+        self.loop.review_retry_original = observation['review_retry_original']
+        retry = self.gh.comment(36, '@codex review\nExplicit re-request after observed stall. HEAD ' + HEAD)
+        self.gh.messages[36][-1]['created_at'] = '2026-10-11T04:10:00Z'
+        self.loop.review_retry_comment = retry['id']
+        service['body'] = service['body'].replace('2026-10-11T04:05:00Z', '2026-10-11T04:11:00Z')
+        service['updated_at'] = '2026-10-11T04:11:00Z'
+        current = self.gh.comments(36)
+        bound = self.loop.bound(self.gh.pr(36), self.gh.issue(35), current)[0]
+        self.assertEqual(bound['review_retry']['original_ref'], observation['review_retry_original'])
+        self.assertFalse(bound['remote_review_complete'])
+        self.assertFalse(remote_review_ready(bound, datetime.fromisoformat('2026-10-11T04:39:59+00:00')))
+        self.assertTrue(remote_review_ready(bound, datetime.fromisoformat('2026-10-11T04:40:00+00:00')))
+        self.loop.review_retry_original = None
+        self.assertNotIn('review_retry', self.loop.bound(self.gh.pr(36), self.gh.issue(35), current)[0])
+        live_body = service['body']
+        service['body'] = before[36][-1]['body']
+        with patch.object(al, 'datetime', wraps=datetime) as clock:
+            clock.now.return_value = datetime.fromisoformat('2026-10-11T04:12:00+00:00')
+            late_observation = self.loop.prepare_review_retry(self.gh.pr(36))
+        service['body'] = live_body
+        self.loop.review_retry_original = late_observation['review_retry_original']
+        self.assertNotIn('review_retry', self.loop.bound(self.gh.pr(36), self.gh.issue(35), current)[0])
+        self.loop.review_retry_original = observation['review_retry_original']
+        response = dict(summary(), id=1000, body='Concrete finding', created_at='2026-10-11T04:12:00Z')
+        self.assertNotIn('review_retry', self.loop.bound(self.gh.pr(36), self.gh.issue(35), current + [response])[0])
+        def worker(role, path, packet, out, **kw):
+            original = packet['review_original']
+            self.assertEqual(original['comments'][-1]['body'], before[36][-1]['body'])
+            raw = dict(tal.report(), feedback_hash=kw['origin_binding']['feedback_hash'])
+            return issue_review_origin(self.loop.storage, raw, kw['origin_binding'], raw['session'], 'manual',
+                                      private_sessions=[native_session('example.invalid', 'fixture-writer')])
+        self.worker.side_effect = worker
+        self.assertEqual(self.loop.tick(36)['phase'], 'reviewed')
+        self.assertEqual(self.loop.load(36)[1]['review_retry_original'], observation['review_retry_original'])
+        self.loop.review_retry_original = self.loop.review_retry_comment = None
+        self.assertEqual(self.loop.tick(36)['phase'], 'done')
+        self.assertEqual(self.gh.merges, 1)
+        self.assertEqual(sum(r['body'].startswith('@codex review') for r in self.gh.comments(36)), 1)
+
+    def test_original_registry_rejects_changed_content_head_base_and_source(self):
+        observation = self.loop.prepare_review_retry(self.gh.pr(36))
+        reference = observation['review_retry_original']
+        selected = {'method': 'codex-summary-v1', 'reviewer': None}
+        for key in ('head', 'base'):
+            pr = copy.deepcopy(self.gh.pr(36)); pr[key]['sha'] = NEW
+            with self.subTest(key=key), self.assertRaises(ValueError): self.loop.review_original(pr, selected, reference)
+        with self.assertRaises(ValueError):
+            self.loop.review_original(self.gh.pr(36), {'method': 'github-review-v1', 'reviewer': 'other'}, reference)
+        path = self.loop.storage / 'registry' / (reference.split(':')[0] + '.json')
+        value = json.loads(path.read_text()); value['review']['observed_at'] = '2000-01-01T00:00:00Z'
+        path.write_text(json.dumps(value))
+        with self.assertRaises(ValueError): self.loop.review_original(self.gh.pr(36), selected, reference)
+
+    def test_original_observation_command_writes_only_existing_private_registry(self):
+        before = copy.deepcopy(self.gh.messages)
+        args = ['agent_loop.py', 'prepare-review-retry', '--pr', '36']
+        with patch.object(sys, 'argv', args), patch.object(al, 'GitHub', return_value=self.gh), \
+                patch.object(al.Loop, '__init__', side_effect=AssertionError), \
+                patch.object(al, 'coordinator_lock', side_effect=AssertionError), \
+                patch.object(sys, 'stdout', new_callable=io.StringIO) as output:
+            self.assertEqual(al.main(), 0)
+        self.assertRegex(json.loads(output.getvalue())['review_retry_original'], al.REVIEW_ORIGINAL_REF)
+        self.assertEqual(self.gh.messages, before)
+        self.assertEqual(self.gh.statuses, [])
+        self.worker.assert_not_called()
 
     def test_selected_native_reviewer_uses_its_own_explicit_request(self):
         self.retry()

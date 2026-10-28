@@ -346,6 +346,8 @@ def run_worker(role, checkout, packet, output_dir, timeout=600, on_start=lambda 
         'Inspect every supplied feedback record (including bots, replies and resolved/outdated findings). '
         'For a stalled external review retry, return feedback_hash equal to the complete supplied snapshot, '
         'and assess the real re-request/server time, missing response and all unresolved findings; never call it provider completion. '
+        'If review_original is supplied, inspect its hash-bound actual API observation made before retry; '
+        'a mutable dashboard updated after retry cannot replace the preserved same-HEAD original. '
         'In evidence, map each actionable ID/URL and original commit to a fixed-head fix with checks, '
         'or a reasoned non-applicable/superseded disposition; unresolved or unknown findings block approval. '
         if role == 'review' else
