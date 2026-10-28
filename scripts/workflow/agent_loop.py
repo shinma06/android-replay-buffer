@@ -1416,9 +1416,6 @@ def stalled_review_retry(pr, comments, inline, reviews, requests, selected, comm
     method, reviewer = selected['method'], selected['reviewer']
     if any((r['method'], r['reviewer']) != (method, reviewer) for r in requests):
         return None
-    if not reviewer and sum(c.get('body', '').startswith('<!-- codex-pull-request-review-summary -->')
-                            for c in comments if c.get('user', {}).get('login') == 'chatgpt-codex-connector[bot]') > 1:
-        return None
     login = reviewer or 'codex'
     pattern = rf'^\s*@{re.escape(login)}\s+(?:please\s+)?review\b'
     requested = [c for c in comments if re.search(pattern, c.get('body', ''), re.I | re.M)]
@@ -1440,59 +1437,65 @@ def stalled_review_retry(pr, comments, inline, reviews, requests, selected, comm
                 any(r['not_before'] and datetime.fromisoformat(r['not_before'].replace('Z', '+00:00')) > started
                     for r in requests)):
             return None
-        originals = [posted(c) for c in requested if posted(c) < started and c['user']['login'] == OWNER and
-                     pr['head']['sha'] in re.findall(r'\b[0-9a-f]{40}\b', c['body']) and
-                     c.get('updated_at', c['created_at']) == c['created_at']]
-        original_after = max(originals) if originals else None
-        original = original_after is not None
-        provider = reviewer or 'chatgpt-codex-connector[bot]'
-        for record in comments + inline + reviews:
-            if record.get('user', {}).get('login', '').lower() != provider:
-                continue
-            body = record.get('body') or ''
-            if not reviewer and body.startswith('<!-- codex-pull-request-review-summary -->'):
-                machine = re.search(r'<!-- codex-review-state:v1 (.+?) -->', body)
-                if machine:
-                    state = json.loads(machine[1])['code_review']
-                    if (state['status'] not in ('running', 'queued', 'completed') or
-                            state.get('has_unresolved_findings') is True):
-                        return None
-                rows = [line for line in body.splitlines() if '**Code Review**' in line]
-                match = re.fullmatch(r'\|[^|]*\*\*Code Review\*\*[^|]*\| [^|]*\*\*(Running|Queued|Completed)\*\* '
-                                     r'(?:since )?<relative-time datetime="([^"]+)">[^<]+</relative-time> '
-                                     r'\| `([0-9a-f]{7,40})` \|[^|]*\|', rows[0]) if len(rows) == 1 else None
-                if not match:
-                    return None
-                at = datetime.fromisoformat(match[2].replace('Z', '+00:00'))
-                if at.tzinfo is None or match[1] == 'Completed' and at >= started:
-                    return None
-                if (match[1] == 'Completed' and pr['head']['sha'].startswith(match[3]) and
-                        (original_after is None or at >= original_after)):
-                    return None
-                # Automatic ready/open reviews need no earlier manual request comment.
-                if (match[1] in ('Running', 'Queued') and at < started and posted(record) < started and
-                        pr['head']['sha'].startswith(match[3]) and
-                        (not machine or state.get('commit_sha') == pr['head']['sha'])):
-                    original = True
-                # Running is no terminal response; failed/unknown formats are never timeouts.
-                continue
-            receipt = (re.search(r'\*\*Reviewed commit:\*\*\s*`([0-9a-f]{7,40})`', body)
-                       if not reviewer and body.startswith('<!-- codex-review-receipt:v1 -->') else None)
-            if (receipt and pr['head']['sha'].startswith(receipt[1]) and
-                    (original_after is None or posted(record) >= original_after)):
-                return None
-            current = record.get('commit_id', record.get('original_commit_id')) == pr['head']['sha']
-            at = record.get('submitted_at') or record.get('created_at')
-            if current or at and datetime.fromisoformat(at.replace('Z', '+00:00')) >= started:
-                return None
+        groups = [(comments, inline + reviews, started)]
         if retained:
-            prior = stalled_review_retry(pr, [*retained['comments'], latest], [], [], requests, selected, comment_id)
-            if not prior:
+            observed = datetime.fromisoformat(retained['observed_at'].replace('Z', '+00:00'))
+            if observed.tzinfo is None or observed >= started:
                 return None
-            if datetime.fromisoformat(retained['observed_at'].replace('Z', '+00:00')) < started:
-                return dict(prior, original_ref=retained['reference'])
-        if original:
-            return {'comment_id': comment_id, 'created_at': latest['created_at']}
+            groups.append((retained['comments'], [], observed))
+        originals, completions = [], []
+        provider = reviewer or 'chatgpt-codex-connector[bot]'
+        for observed_comments, responses, cutoff in groups:
+            originals.extend(posted(c) for c in observed_comments
+                             if re.search(pattern, c.get('body', ''), re.I | re.M) and posted(c) < cutoff and
+                             c['user']['login'] == OWNER and
+                             pr['head']['sha'] in re.findall(r'\b[0-9a-f]{40}\b', c['body']) and
+                             c.get('updated_at', c['created_at']) == c['created_at'])
+            if not reviewer and sum(c.get('body', '').startswith('<!-- codex-pull-request-review-summary -->')
+                                    for c in observed_comments if c.get('user', {}).get('login') == provider) > 1:
+                return None
+            for record in observed_comments + responses:
+                if record.get('user', {}).get('login', '').lower() != provider:
+                    continue
+                body = record.get('body') or ''
+                if not reviewer and body.startswith('<!-- codex-pull-request-review-summary -->'):
+                    machine = re.search(r'<!-- codex-review-state:v1 (.+?) -->', body)
+                    if machine:
+                        state = json.loads(machine[1])['code_review']
+                        if (state['status'] not in ('running', 'queued', 'completed') or
+                                state.get('has_unresolved_findings') is True):
+                            return None
+                    rows = [line for line in body.splitlines() if '**Code Review**' in line]
+                    match = re.fullmatch(r'\|[^|]*\*\*Code Review\*\*[^|]*\| [^|]*\*\*(Running|Queued|Completed)\*\* '
+                                         r'(?:since )?<relative-time datetime="([^"]+)">[^<]+</relative-time> '
+                                         r'\| `([0-9a-f]{7,40})` \|[^|]*\|', rows[0]) if len(rows) == 1 else None
+                    if not match:
+                        return None
+                    at = datetime.fromisoformat(match[2].replace('Z', '+00:00'))
+                    if at.tzinfo is None or match[1] == 'Completed' and at >= started:
+                        return None
+                    if pr['head']['sha'].startswith(match[3]):
+                        if match[1] == 'Completed':
+                            completions.append(at)
+                        # Automatic ready/open reviews need no earlier manual request comment.
+                        elif (at < cutoff and posted(record) < cutoff and
+                                (not machine or state.get('commit_sha') == pr['head']['sha'])):
+                            originals.append(at)
+                    # Running is no terminal response; failed/unknown formats are never timeouts.
+                    continue
+                receipt = (re.search(r'\*\*Reviewed commit:\*\*\s*`([0-9a-f]{7,40})`', body)
+                           if not reviewer and body.startswith('<!-- codex-review-receipt:v1 -->') else None)
+                if receipt and pr['head']['sha'].startswith(receipt[1]):
+                    completions.append(posted(record))
+                current = record.get('commit_id', record.get('original_commit_id')) == pr['head']['sha']
+                at = record.get('submitted_at') or record.get('created_at')
+                if current or at and datetime.fromisoformat(at.replace('Z', '+00:00')) >= started:
+                    return None
+        if originals and not any(at >= max(originals) for at in completions):
+            result = {'comment_id': comment_id, 'created_at': latest['created_at']}
+            if retained:
+                result['original_ref'] = retained['reference']
+            return result
         return None
     except (KeyError, TypeError, ValueError, AttributeError):
         return None

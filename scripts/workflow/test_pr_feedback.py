@@ -330,6 +330,41 @@ class StalledReviewTests(unittest.TestCase):
         self.loop.review_retry_original = observation['review_retry_original']
         self.assertNotIn('review_retry', self.loop.bound(self.gh.pr(36), self.gh.issue(35), self.gh.comments(36))[0])
 
+    def test_completion_fulfills_only_earlier_manual_automatic_or_retained_originals(self):
+        for source in ('manual', 'automatic', 'retained'):
+            for minute in ('04', '05', '06'):
+                with self.subTest(source=source, original_minute=minute):
+                    self.doCleanups(); self.setUp()
+                    self.retry()
+                    rows = self.gh.messages[36]
+                    first = next(r for r in rows if r.get('body') == '@codex review\nHEAD ' + HEAD)
+                    retry = next(r for r in rows if r['id'] == self.loop.review_retry_comment)
+                    service = rows[-1]
+                    at = '2026-10-11T04:' + minute + ':00Z'
+                    if source == 'manual':
+                        first['created_at'] = at
+                    else:
+                        rows.remove(first)
+                        service['created_at'] = '2026-10-11T04:00:00Z'
+                        service['body'] = service['body'].replace('2026-10-11T04:46:46Z', at)
+                    rows.append(dict(summary(), id=1001, created_at='2026-10-11T04:05:00Z',
+                                     body='<!-- codex-review-receipt:v1 -->\n**Reviewed commit:** `' + HEAD[:10] + '`'))
+                    if source == 'retained':
+                        rows.remove(retry)
+                        with patch.object(al, 'datetime', wraps=datetime) as clock:
+                            clock.now.return_value = datetime.fromisoformat('2026-10-11T04:09:00+00:00')
+                            observation = self.loop.prepare_review_retry(self.gh.pr(36))
+                        rows.append(retry)
+                        service['body'] = service['body'].replace(at, '2026-10-11T04:11:00Z')
+                        service['updated_at'] = '2026-10-11T04:11:00Z'
+                        self.loop.review_retry_original = observation['review_retry_original']
+                    bound = self.loop.bound(self.gh.pr(36), self.gh.issue(35), self.gh.comments(36))[0]
+                    self.assertEqual('review_retry' in bound, minute == '06')
+                    self.assertFalse(bound['remote_review_complete'])
+                    if source == 'retained':
+                        self.loop.review_retry_original = None
+                        self.assertNotIn('review_retry', self.loop.bound(self.gh.pr(36), self.gh.issue(35), self.gh.comments(36))[0])
+
     def test_automatic_original_then_one_explicit_retry_requires_pre_retry_service_provenance(self):
         self.retry()
         rows = [r for r in self.gh.messages[36] if r.get('body') != '@codex review\nHEAD ' + HEAD]
