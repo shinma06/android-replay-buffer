@@ -8,7 +8,7 @@ import unittest
 from unittest.mock import patch
 
 from test_agent_loop import BASE, HEAD, NEW
-from initial_continuation_cases import CASES, QUALITY_CASES, QUALITY_UPDATES, LOGCAT_CASES
+from initial_continuation_cases import CASES, QUALITY_CASES, QUALITY_UPDATES, LOGCAT_CASES, SCREENSHOT_CASES
 import test_initial_acceptance as initial_tests
 from test_verification import change, observation
 import verification as v
@@ -251,7 +251,8 @@ class InitialContinuationTests(unittest.TestCase):
         fixture = 'scripts/workflow/initial_continuation_cases.py'
         unknown = 'docs/verification/unknown.json'
         required = {v.INITIAL_CONTINUATION, record_path, 'docs/verification/changes/issue-364.json',
-                    'docs/verification/changes/issue-371.json', 'docs/verification/changes/issue-373.json', script, fixture,
+                    'docs/verification/changes/issue-371.json', 'docs/verification/changes/issue-373.json',
+                    'docs/verification/changes/issue-379.json', script, fixture,
                     'scripts/workflow/test_initial_continuation.py',
                     'scripts/workflow/test_impact_evidence_reuse.py', 'docs/verification/README.md',
                     'docs/verification/responsibility.md',
@@ -266,7 +267,8 @@ class InitialContinuationTests(unittest.TestCase):
         records = {record_path: change(356, gui=False),
                    'docs/verification/changes/issue-364.json': change(364, gui=False),
                    'docs/verification/changes/issue-371.json': change(371, gui=False),
-                   'docs/verification/changes/issue-373.json': change(373, gui=False), product_path: change(37),
+                   'docs/verification/changes/issue-373.json': change(373, gui=False),
+                   'docs/verification/changes/issue-379.json': change(379, gui=False), product_path: change(37),
                    unrelated[-1]: change(999, gui=False), v.INITIAL_CONTINUATION: self.registration}
         classifier = {BASE: '364b42de6cffde531ad631ae88e20a4271b76d7f',
                       NEW: '8beb4c9aa39196f10a76b6cea2ec757ffa52569c'}
@@ -330,7 +332,7 @@ class InitialContinuationTests(unittest.TestCase):
                         ValueError, 'classifier'):
                 v.promotion_policy_blobs(BASE, NEW, git, continuation=continuation)
         classifier[BASE] = classifier[NEW]
-        for issue in (356, 373):
+        for issue in (356, 373, 379):
             path = f'docs/verification/changes/issue-{issue}.json'
             records[path] = change(issue)
             with self.subTest(nonempty_record=issue), patch.object(
@@ -356,7 +358,8 @@ class RegisteredContinuationTests(unittest.TestCase):
 
     def test_logcat_registration_keeps_170_contracts_and_239_sources(self):
         root = Path(__file__).resolve().parents[2]
-        registration = json.loads((root / v.INITIAL_CONTINUATION).read_text())
+        registration = json.loads(subprocess.check_output(['git', 'show',
+            '373f993938e3dfa0f5b2d81c08397f8dddf7b6bd:' + v.INITIAL_CONTINUATION], cwd=root, text=True))
         previous = json.loads(subprocess.check_output(['git', 'show',
             '605efc9fcd19fb6422b9baef174fbb38d4829875:' + v.INITIAL_CONTINUATION], cwd=root, text=True))
         self.assertEqual(previous['changes'], registration['changes'][:-1])
@@ -365,6 +368,17 @@ class RegisteredContinuationTests(unittest.TestCase):
         self.check_registration(registration, '945c9e0c6ec899d14dcabc98665c7df10c82935c',
                                 (170, 239, 31, 25))
 
+    def test_screenshot_registration_keeps_old_sources_and_requires_full_new_case(self):
+        root = Path(__file__).resolve().parents[2]
+        registration = json.loads((root / v.INITIAL_CONTINUATION).read_text())
+        previous = json.loads(subprocess.check_output(['git', 'show',
+            '373f993938e3dfa0f5b2d81c08397f8dddf7b6bd:' + v.INITIAL_CONTINUATION], cwd=root, text=True))
+        self.assertEqual(previous['changes'], registration['changes'][:-1])
+        self.assertEqual(previous['cases'], {key: entry for key, entry in registration['cases'].items()
+                                           if key != '377:SCREENSHOT-MIRROR'})
+        self.check_registration(registration, '4b17fffd763f12b52ffa1456d93e7de02138cbfe',
+                                (171, 240, 32, 26))
+
     def check_registration(self, registration, expected_candidate, counts):
         root = Path(__file__).resolve().parents[2]
         policy = json.loads((root / v.INITIAL_PLAN).read_text())
@@ -372,6 +386,7 @@ class RegisteredContinuationTests(unittest.TestCase):
         total, source_count, extra_count, commit_count = counts
         quality = '282:VIDEO-QUALITY-SETTINGS' in registration['cases']
         logcat = '369:LOGCAT-PANEL-TOGGLE' in registration['cases']
+        screenshot = '377:SCREENSHOT-MIRROR' in registration['cases']
         warning = registration['cases']['347:SAVE-WARNING-WINDOW']
         self.assertEqual('aa9b28b5d6eec07756c29ffce51dda1192926004e8c4ac99aac5d3c37f216a4b',
                          warning['current_case_sha256'])
@@ -387,6 +402,8 @@ class RegisteredContinuationTests(unittest.TestCase):
             cases.update(copy.deepcopy(QUALITY_CASES))
         if logcat:
             cases.update(copy.deepcopy(LOGCAT_CASES))
+        if screenshot:
+            cases.update(copy.deepcopy(SCREENSHOT_CASES))
         self.assertEqual({item['source_path'] for item in registration['changes']}, set(cases))
         documents = {}
         parents = {}
@@ -543,6 +560,8 @@ class RegisteredContinuationTests(unittest.TestCase):
             keys += ['282:VIDEO-QUALITY-SETTINGS', '282:VIDEO-QUALITY-CAPTURE']
         if logcat:
             keys += ['369:LOGCAT-PANEL-TOGGLE']
+        if screenshot:
+            keys += ['377:SCREENSHOT-MIRROR']
         for key in keys:
             for status in ('pending', 'blocked', 'fail', 'deferred', 'initial-pass'):
                 manifest['results'][key]['status'] = status

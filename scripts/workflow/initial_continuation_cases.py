@@ -1,4 +1,4 @@
-"""Preserve exact 818b7e1, 210ed047 and 945c9e0 contracts for historical unit tests.
+"""Preserve exact 818b7e1, 210ed047, 945c9e0 and 4b17fff contracts for historical unit tests.
 
 This is not a generator or current task plan. Keep original wording and hashes;
 current performance acceptance follows docs/verification/responsibility.md.
@@ -788,3 +788,34 @@ LOGCAT_CASES = {'docs/verification/changes/issue-369.json': [{'id': 'LOGCAT-PANE
                                                'recheck': '新固定候補の実ロードと本Caseの影響範囲を確認し、旧source/ZIPの事実を新build実行へ転記しない。無影響の取得/保存/性能試験は反復せず、影響不明は不足として残す。',
                                                'next_action': '固定レビューとdevelop採用後、PMが実際のscopeに応じ既存QA329/343へ未完の独立試験を、280/271へ新候補/標準ZIPとmain反映を双方向readbackして移管する。writerはGUI/ADB/導入/再起動や正式ZIP '
                                                               'dispatchを行わない。'}]}
+
+
+# Exact adopted 4b17fff addition; retain original pending status and repair boundaries.
+SCREENSHOT_CASES = {'docs/verification/changes/issue-377.json': [{'id': 'SCREENSHOT-MIRROR',
+                                               'artifact': 'plugin',
+                                               'change': '録画のfocusなしmirrorがあっても標準物理画面の対象アプリを撮影できる',
+                                               'preconditions': '元NGはIssue377の未編集acceptance-repairコメント6455508465と固定e091/f66 '
+                                                                'packetで保持。PMが修正固定candidate/正式ZIP/JAR/実ロード・所有fixture・有限共有lease/返却を同定し既存QA329の枠へ割当。source担当はGUI操作しない。',
+                                               'steps': ['原失敗の標準0＋focusなし仮想mirror、単一物理画面、選択serial/対象アプリ前面・点灯解除の条件を修正候補で対応付ける。',
+                                                         '録画ON中に製品Screenshotを要求し、実PNGの対象画面/全復号/保存と既存取得の継続・設定/未保存データの保全を確認する。既存の適格なOFF/FILE/故障回帰と保証対応し、原NGに無関係な性能・全操作の反復を追加しない。',
+                                                         '同じ成功PNG/通知を既存329の保存先・開く/所有画像削除の残保証へ共有できる場合は共有する。原FAIL/unknown/human/REALと旧/新artifact '
+                                                         'identityを別に保持する。'],
+                                               'expected': 'focusなし追加logical '
+                                                           'displayだけで拒否せず、一意の物理画面の標準0に属する対象アプリを撮影する。ID2やscrcpy名に依存しない。曖昧な物理画面・focus/標準0不明・lock/未知形式は拒否し、serial固定、PNGとatomic非上書き、失敗保全と既存取得を維持する。',
+                                               'provenance': ['https://github.com/shinma06/android-replay-buffer/issues/377#issuecomment-6455508465',
+                                                              'https://github.com/shinma06/android-replay-buffer/issues/329',
+                                                              'docs/verification/changes/issue-325.json',
+                                                              'docs/verification/changes/issue-333.json',
+                                                              'docs/design/ide-ui.md',
+                                                              'docs/verification/responsibility.md'],
+                                               'gpt': {'status': 'pending',
+                                                       'reason': '原NGの実ON撮影・完全PNG・同取得継続はrepair.GAP-1へ構成済み。手順FAILを保持し、最終metadata '
+                                                                 'HEADの独立証拠評価・origin '
+                                                                 'binding・必須checksは未完。Case全体のPASSではない。'},
+                                               'human': {'status': 'pending',
+                                                         'reason': '未観察。既存human/REAL・実機制約を保持する。'},
+                                               'fix_issue': None,
+                                               'fix_pr': None,
+                                               'recheck': '原NGのON撮影と関連する実ロード/取得継続を新候補で再確認し、元失敗全保証のrepair結果と独立実質評価をdevelop統合前に固定する。',
+                                               'next_action': 'BFが固定candidate f939の後に本Issue受入JSONだけをmetadata '
+                                                              'commitする。04が最終HEAD/base/feedbackと原NG全保証の原本・帰属を独立評価してbindし、必須checks後にPMが統合判断。329/280/271の他残件・human/REALを保持。'}]}
