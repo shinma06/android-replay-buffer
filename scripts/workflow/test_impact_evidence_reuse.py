@@ -1143,7 +1143,8 @@ class PromotionTreeTests(unittest.TestCase):
         policy = json.loads((root / INITIAL_PLAN).read_text())
         protected = (v.INITIAL_CONTINUATION, 'docs/verification/changes/issue-356.json',
                      'docs/verification/changes/issue-364.json', 'docs/verification/changes/issue-371.json',
-                     'docs/verification/changes/issue-379.json', 'docs/verification/changes/issue-384.json')
+                     'docs/verification/changes/issue-379.json', 'docs/verification/changes/issue-384.json',
+                     'docs/verification/changes/issue-389.json')
         self.git('checkout', '-q', '-B', 'registered-common', self.common)
         for path in protected:
             self.write(path, (root / path).read_text())
@@ -1194,18 +1195,20 @@ class PromotionTreeTests(unittest.TestCase):
                                 json.loads((root / v.INITIAL_CONTINUATION).read_text())['candidate'],
                                 self.git, historical=True)
                             self.assertIsNotNone(registration)
-                            self.assertEqual(33, len(registration['cases']))
-                            self.assertEqual(172, len(set(policy['cases']) | set(registration['cases'])))
+                            self.assertEqual(34, len(registration['cases']))
+                            self.assertEqual(173, len(set(policy['cases']) | set(registration['cases'])))
                             self.assertIn('347:SAVE-WARNING-WINDOW', registration['cases'])
                             self.assertIn('369:LOGCAT-PANEL-TOGGLE', registration['cases'])
                             self.assertIn('377:SCREENSHOT-MIRROR', registration['cases'])
                             self.assertIn('381:LOGCAT-TARGET-DEVICE', registration['cases'])
+                            self.assertIn('387:ABOUT-SOURCE-IDENTITY', registration['cases'])
 
     def test_candidate_cannot_add_protected_data_absent_from_trusted_main(self):
         from verification import INITIAL_CONTINUATION, promotion_policy_blobs
         for path in (INITIAL_CONTINUATION, 'docs/verification/changes/issue-356.json',
                      'docs/verification/changes/issue-364.json', 'docs/verification/changes/issue-371.json',
-                     'docs/verification/changes/issue-379.json', 'docs/verification/changes/issue-384.json'):
+                     'docs/verification/changes/issue-379.json', 'docs/verification/changes/issue-384.json',
+                     'docs/verification/changes/issue-389.json'):
             self.git('checkout', '-q', '-B', 'untrusted-policy-candidate', self.candidate)
             self.write(path, '{}')
             self.commit('candidate-only untrusted policy addition')
