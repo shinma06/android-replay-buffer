@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "issue": 344,
-  "candidate": "e22cac5cfe3e3eca80f0fcef53254bf802197b51",
+  "candidate": "30c62bba2fcf0d27b43d04292206c070de34d808",
   "plan_sha256": "0b6d9c6d2d5054ed642565afdbaeb5a88ee198a4ea5398ff96ff36168ce0eda5",
   "changes": [
     {
@@ -138,6 +138,11 @@
       "commit": "e22cac5cfe3e3eca80f0fcef53254bf802197b51",
       "pr": 382,
       "source_path": "docs/verification/changes/issue-381.json"
+    },
+    {
+      "commit": "30c62bba2fcf0d27b43d04292206c070de34d808",
+      "pr": 388,
+      "source_path": "docs/verification/changes/issue-387.json"
     }
   ],
   "cases": {
@@ -503,6 +508,17 @@
           "original_case_sha256": "812c25c1e08fe01be01ae95d5c15574518748ad5093f63ab1c841559617448bb"
         }
       ]
+    },
+    "387:ABOUT-SOURCE-IDENTITY": {
+      "sources": [
+        {
+          "source_pr": 388,
+          "source_merge": "30c62bba2fcf0d27b43d04292206c070de34d808",
+          "source_path": "docs/verification/changes/issue-387.json",
+          "original_case_sha256": "f3f8ef65c9fbca1425a78caa61dfdf861b527c585bfe59462dcd9cce1c7d5344"
+        }
+      ],
+      "current_case_sha256": "f3f8ef65c9fbca1425a78caa61dfdf861b527c585bfe59462dcd9cce1c7d5344"
     }
   }
 }

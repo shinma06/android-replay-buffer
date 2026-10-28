@@ -1,4 +1,4 @@
-"""Preserve exact 818b7e1, 210ed047, 945c9e0, 4b17fff and e22cac5 contracts for historical unit tests.
+"""Preserve exact 818b7e1, 210ed047, 945c9e0, 4b17fff, e22cac5 and 30c62bb contracts for historical unit tests.
 
 This is not a generator or current task plan. Keep original wording and hashes;
 current performance acceptance follows docs/verification/responsibility.md.
@@ -848,3 +848,37 @@ LOGCAT_TARGET_CASES = {'docs/verification/changes/issue-381.json': [{'id': 'LOGC
                                                'recheck': '新固定候補の実ロードと端末選択の影響範囲を確認する。旧Case369/元候補の観察を新sourceの実行PASSへ転記しない。モデル選択・native接続・実stream/描画を区別し、切断後の再接続で古いOpenが復活しないことと、初期化後に5秒budgetを取り直さないことを確認する。待機中の対象/手動選択/tab/分割/表示/切断/dispose変更後に遅いOpenを行わないことを確認する。',
                                                'next_action': '固定sourceの独立09bレビューとdevelop採用後、PMが既存QA343だけへ本381の残る独立native試験、280/271へ固定候補/標準ZIPとmain反映を双方向readbackして移管する。QA329の従来責任を拡張しない。現在のsource担当にGUI/ADB/導入/再起動/正式ZIP '
                                                               'dispatchは割り当てない。'}]}
+
+
+# Exact adopted 30c62bb addition; preserve all three steps and original pending actors.
+ABOUT_SOURCE_CASES = {'docs/verification/changes/issue-387.json': [{'id': 'ABOUT-SOURCE-IDENTITY',
+                                               'artifact': 'plugin',
+                                               'change': '正式版descriptorを保持し、Aboutに同梱fullsource '
+                                                         'SHAを併記して欠落/不正/読取失敗を明示する',
+                                               'preconditions': 'Root割当の修正済みclean固定source/正式version0.2.0/標準ZIP/全3JAR/同梱identityと実ロードを同定する。元e22/aa97 '
+                                                                'AboutのSHA未表示・原3/F8-01・既にqualifiedなartifact_binding/206load-restart/585事実と原FAIL/UNKNOWNを別identityで保持する。GUIは後段の既存共有枠/所有profile/fixtureで行い、本source/unit成功だけでは実表示/3行をPASSにしない。',
+                                               'steps': ['About '
+                                                         'actionを取得OFFの実ロード候補で開き、既存日本語説明・descriptor正式version0.2.0と、同じJARのidentity.sourceに一致する40桁source '
+                                                         'SHAの初回表示/実action接続を確認する。descriptor/versionやZIPを書き換えず、旧e22 '
+                                                         'SHAをhardcodeしない。',
+                                                         '同梱sourceの欠落/短縮/不正文字/余分な文字とidentity読取失敗は小さいJVM回帰で明示unknown/reason・版と説明保持を確認する。例外の私的詳細や別値をSHAとして表示せず、CaptureResourcesのinstance/helper抽出・git/network/SDK/取得開始を実装に追加しない。実GUIで改変ZIPの新しい故障matrixは作らない。',
+                                                         '原3のcontract_coverage/failure_attribution/integrationへ新固定候補の表示証拠と影響評価を結び、既存artifact_binding/206load-restart/原139planとhumanREAL延期を保持する。未影響の保証は実差分/条件に基づき既存impact '
+                                                         'routeで再利用し、About再起動後の既存延期を増減しない。'],
+                                               'expected': '正式descriptorは0.2.0のまま、初回Aboutに日本語説明と実ロードJAR由来のfullsource '
+                                                           'SHAが明示される。identity不明/不正はunknown/reasonであり捏造しない。情報表示はcapture '
+                                                           'helper準備・外部git/network/SDKやCLI/capture設定の変更を伴わない。',
+                                               'provenance': ['https://github.com/shinma06/android-replay-buffer/issues/387',
+                                                              'https://github.com/shinma06/android-replay-buffer/issues/280',
+                                                              'docs/verification/changes/issue-3.json',
+                                                              'docs/release-delivery.md',
+                                                              'docs/verification/responsibility.md'],
+                                               'gpt': {'status': 'pending',
+                                                       'reason': '修正source/回帰を準備中。新固定正式ZIP/実ロードの初回Aboutと元F8-01の3保証は未観察。'},
+                                               'human': {'status': 'pending',
+                                                         'reason': '未観察。原human/REALと再起動後Aboutの延期を保持し、新しい本人必須gateを作らない。'},
+                                               'fix_issue': None,
+                                               'fix_pr': None,
+                                               'recheck': 'About表示/同梱identity/descriptorとaction接続の影響を別04が固定HEAD/baseで評価する。修正版の元3行表示保証は実artifactに結び独立評価し、unit/build成功や旧e22実表示を新PASSへ転記しない。',
+                                               'next_action': '通常required checks/currentHEAD '
+                                                              'feedback/04独立source '
+                                                              'review後、Rootが一度の標準正式候補と限定初回Aboutを既存担当へ割り当てる。残る独立試験は既存QA/release280/271へ双方向移管し、自己merge/正式公開しない。'}]}
