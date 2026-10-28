@@ -66,6 +66,30 @@ class LogcatTargetDeviceTest {
     }
 
     @Test
+    void restoredOfflineSeedWaitsForOnlineArrivalWithinTheSameDeadline() throws Exception {
+        var request = new AtomicReference<CompletableFuture<String>>();
+        var connected = new AtomicReference<Device>();
+        try {
+            SwingUtilities.invokeAndWait(() -> {
+                var box = new JComboBox<DeviceComboItem>();
+                var deadlineNs = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+                request.set(LogcatTargetDevice.awaitDevice(box, "A", connected::get, () -> true, deadlineNs));
+                assertFalse(request.get().isDone());
+                box.addItem(device("A", false)); // Restored identity arrives before live discovery.
+                assertFalse(request.get().isDone(), "An initial offline seed is not an online-to-offline transition");
+                var online = device("A", true);
+                var liveModel = new DefaultComboBoxModel<DeviceComboItem>(new DeviceComboItem[]{online});
+                liveModel.setSelectedItem(online);
+                connected.set(online.getDevice());
+                box.setModel(liveModel);
+            });
+            assertNull(request.get().get(2, TimeUnit.SECONDS));
+        } finally {
+            if (request.get() != null) request.get().cancel(false);
+        }
+    }
+
+    @Test
     void manualSelectionDuringSwitchIsPreservedAndCancelsTheRequest() throws Exception {
         var request = new AtomicReference<CompletableFuture<String>>();
         var box = new AtomicReference<JComboBox<DeviceComboItem>>();
@@ -90,7 +114,7 @@ class LogcatTargetDeviceTest {
             var other = device("B", true);
             var box = new JComboBox<DeviceComboItem>(new DeviceComboItem[]{other, device("A", false)});
             var pending = LogcatTargetDevice.awaitDevice(box, "A", other::getDevice, () -> true, Long.MAX_VALUE);
-            assertTrue(pending.join().contains("切断"));
+            assertFalse(pending.isDone()); // No online target has been observed yet.
             assertSame(other, box.getSelectedItem());
             pending.cancel(false);
             assertNotNull(LogcatTargetDevice.awaitDevice(box, "A", other::getDevice, () -> true, 0).join());

@@ -85,8 +85,12 @@ public final class LogcatTargetDevice {
                         for (int i = 0; i < box.getItemCount(); i++) {
                             if (box.getItemAt(i) instanceof DeviceItem item && serial.equals(item.getDevice().getSerialNumber())) {
                                 if (!item.getDevice().isOnline()) {
-                                    result.complete("標準Logcatの対象端末が切断されました。再接続後に改めて開いてください。");
-                                    return;
+                                    if (selected) {
+                                        result.complete("標準Logcatの対象端末が切断されました。再接続後に改めて開いてください。");
+                                        return;
+                                    }
+                                    // Restored identities arrive offline before live discovery.
+                                    continue;
                                 }
                                 if (target != null) {
                                     result.complete("標準Logcatの対象端末を一意に確認できません。");
