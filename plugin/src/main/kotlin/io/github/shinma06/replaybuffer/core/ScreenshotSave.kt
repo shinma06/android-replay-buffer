@@ -151,13 +151,28 @@ internal fun screenshotDisplay(dump: String): String {
 }
 
 internal fun screenshotForeground(dump: String, application: String): String {
-    val displays = Regex("(?m)^\\s*Display: mDisplayId=(\\d+)\\b").findAll(dump).map { it.groupValues[1] }.toList()
-    check(displays == listOf("0")) { "単一の標準画面を確認できません。外部画面を外し、端末画面で対象アプリを表示してください。" }
+    val headers = Regex("(?m)^\\s*Display: mDisplayId=([^\\r\\n]+)").findAll(dump).toList()
+    val displays = headers.map { it.groupValues[1].removeSuffix(" (organized)") }
+    check(displays.count { it == "0" } == 1 && displays.distinct().size == displays.size &&
+        displays.all { it.toUIntOrNull()?.toString() == it }) {
+        "単一の標準画面を確認できません。外部画面を外し、端末画面で対象アプリを表示してください。"
+    }
+    // Recording adds a focusless virtual mirror; only the physical default display may own focus.
+    val focusPattern = Regex("(?m)^\\s*mCurrentFocus=([^\\r\\n]+)")
+    val focusByDisplay = headers.mapIndexed { index, header ->
+        focusPattern.findAll(
+            dump.substring(header.range.last + 1, headers.getOrNull(index + 1)?.range?.first ?: dump.length),
+        ).map { it.groupValues[1].trim() }.toList()
+    }
+    check(focusByDisplay.sumOf { it.size } == focusPattern.findAll(dump).count() &&
+        focusByDisplay.withIndex().all { (index, focus) -> displays[index] == "0" || focus == listOf("null") }) {
+        "標準画面以外のfocusを確認しました。端末画面で対象アプリを表示してください。"
+    }
     val keyguard = dump.lineSequence().dropWhile { it.trim() != "KeyguardServiceDelegate" }.drop(1).take(20).map(String::trim).toList()
     check(listOf("showing=false", "inputRestricted=false", "dreaming=false", "screenState=SCREEN_STATE_ON").all { it in keyguard }) {
         "画面の点灯とロック解除を確認できません。端末を操作してから再度保存してください。"
     }
-    val focus = Regex("(?m)^\\s*mCurrentFocus=(Window\\{[^\\r\\n}]+})\\s*$").findAll(dump).map { it.groupValues[1] }.toList()
+    val focus = focusByDisplay[displays.indexOf("0")]
     check(focus.size == 1 && Regex("Window\\{[0-9a-fA-F]+ u[0-9]+ " + Regex.escape(application) + "/[^\\s}]+}").matches(focus.single())) {
         "選択アプリが最前面にありません。端末で対象アプリを表示してください。"
     }

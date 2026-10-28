@@ -105,7 +105,7 @@ ToolWindow上部に「スクリーンショットを保存」を常設する。�
 
 #333の本人指示により、端末選択は録画と同じ規則を共有する。要求時の取得snapshotが有効ならそのserialを固定し、SDK設定の反映待ちや取得ONの対象未確定では理由を示す。OFF反映中も実際の取得snapshotに対象が残っている間は同じserialを使う。OFF・履歴なしではSDKのadbの`devices -l`から接続済み候補を1台だけ解決し、取得開始や履歴作成を行わない。選択済み端末があれば、ほかの接続端末の数やUSB/Emulatorの別によらずその端末を使い、消失・offline・未認証時に別端末へ切り替えない。すべての撮影commandは要求に固定した`-s <serial>`へ送る。以前の`-d get-serialno`によるUSB専用選択は履歴であり、原観察は新経路のPASSへ換えない。
 
-`dumpsys SurfaceFlinger --display-id`で物理画面を一つに特定して、そのIDを`exec-out screencap -p -d <id>`へ渡す。`dumpsys window`の標準画面・現在focus・keyguardの点灯/解除情報を撮影前後に確認し、選択packageと同じwindowでなければ保存しない。複数/仮想画面、未知の診断形式、未認証・切断、解決不能はエラーとする。端末選択の共有は、すべての実機/Emulatorの画面診断形式への対応を保証しない。端末側のファイル作成、録画server、logcat、共有adb serverの停止、アプリ起動、スクショ履歴は追加しない。
+`dumpsys SurfaceFlinger --display-id`で物理画面を一つに特定して、そのIDを`exec-out screencap -p -d <id>`へ渡す。`dumpsys window`の標準画面・現在focus・keyguardの点灯/解除情報を撮影前後に確認し、選択packageと同じwindowでなければ保存しない。録画が作るfocusのない追加logical displayだけでは拒否しない。標準display 0は1つに限定し、その区画のfocusだけを選択アプリと照合する。追加displayにfocusがある場合、物理画面が複数の場合、標準画面/focusの帰属不明、未知の診断形式、未認証・切断、解決不能はエラーとする。端末選択の共有は、すべての実機/Emulatorの画面診断形式への対応を保証しない。端末側のファイル作成、録画server、logcat、共有adb serverの停止、アプリ起動、スクショ履歴は追加しない。
 
 これはアプリ専用の原子的な撮影ではなく、端末に表示中の画面全体を撮影する。前後の観察の間に別画面へ切り替わって戻る競合やoverlayは検出しきれないため、撮影中に画面を切り替えない前提を表示する。通知・キーボード等も写る。`FLAG_SECURE`等の保護を回避せず、空白も有効なPNGとして保存し、保護領域の内容取得を成功条件にしない。SDKのadbと診断出力に対応する端末が必要で、未知機種を推測で成功にしない。実機ごとの対応は受入で確定する。
 

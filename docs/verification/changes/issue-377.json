@@ -1,0 +1,142 @@
+{
+  "schema": 1,
+  "issue": 377,
+  "gui_required": true,
+  "reason": "録画ON中のfocusなし仮想mirrorで標準画面撮影が拒否された原NGの修正。325:SCREENSHOT-USBと333:SCREENSHOT-DEVICEの実観察・未達を保持し、source回帰だけで原NGを解消扱いにしない。",
+  "cli_checks": [
+    "ScreenshotSaveTest: 実ON形のfocusなし追加display、ID/順序変更、標準0以外だけの対象focus・帰属不明/重複/未知/lockの拒否、同一serial/物理ID/前後focus確認と元PNG byte保存、後focus変更時の非公開。既存の物理複数/unknown、PNG寸法/完全性、取消し/atomic/非上書き/保全の回帰を維持。",
+    "python3 scripts/workflow/change_impact.py --run-tests（clean committed HEAD、製品共通検査を含む）。結果はIssue/PRへ固定HEADと記録する。"
+  ],
+  "cases": [
+    {
+      "id": "SCREENSHOT-MIRROR",
+      "artifact": "plugin",
+      "change": "録画のfocusなしmirrorがあっても標準物理画面の対象アプリを撮影できる",
+      "preconditions": "元NGはIssue377の未編集acceptance-repairコメント6455508465と固定e091/f66 packetで保持。PMが修正固定candidate/正式ZIP/JAR/実ロード・所有fixture・有限共有lease/返却を同定し既存QA329の枠へ割当。source担当はGUI操作しない。",
+      "steps": [
+        "原失敗の標準0＋focusなし仮想mirror、単一物理画面、選択serial/対象アプリ前面・点灯解除の条件を修正候補で対応付ける。",
+        "録画ON中に製品Screenshotを要求し、実PNGの対象画面/全復号/保存と既存取得の継続・設定/未保存データの保全を確認する。既存の適格なOFF/FILE/故障回帰と保証対応し、原NGに無関係な性能・全操作の反復を追加しない。",
+        "同じ成功PNG/通知を既存329の保存先・開く/所有画像削除の残保証へ共有できる場合は共有する。原FAIL/unknown/human/REALと旧/新artifact identityを別に保持する。"
+      ],
+      "expected": "focusなし追加logical displayだけで拒否せず、一意の物理画面の標準0に属する対象アプリを撮影する。ID2やscrcpy名に依存しない。曖昧な物理画面・focus/標準0不明・lock/未知形式は拒否し、serial固定、PNGとatomic非上書き、失敗保全と既存取得を維持する。",
+      "provenance": [
+        "https://github.com/shinma06/android-replay-buffer/issues/377#issuecomment-6455508465",
+        "https://github.com/shinma06/android-replay-buffer/issues/329",
+        "docs/verification/changes/issue-325.json",
+        "docs/verification/changes/issue-333.json",
+        "docs/design/ide-ui.md",
+        "docs/verification/responsibility.md"
+      ],
+      "gpt": {
+        "status": "pending",
+        "reason": "原NGの実ON撮影・完全PNG・同取得継続はrepair.GAP-1へ構成済み。手順FAILを保持し、最終metadata HEADの独立証拠評価・origin binding・必須checksは未完。Case全体のPASSではない。"
+      },
+      "human": {
+        "status": "pending",
+        "reason": "未観察。既存human/REAL・実機制約を保持する。"
+      },
+      "fix_issue": null,
+      "fix_pr": null,
+      "recheck": "原NGのON撮影と関連する実ロード/取得継続を新候補で再確認し、元失敗全保証のrepair結果と独立実質評価をdevelop統合前に固定する。",
+      "next_action": "BFが固定candidate f939の後に本Issue受入JSONだけをmetadata commitする。04が最終HEAD/base/feedbackと原NG全保証の原本・帰属を独立評価してbindし、必須checks後にPMが統合判断。329/280/271の他残件・human/REALを保持。"
+    }
+  ],
+  "repair": {
+    "candidate": "f939b40ee83d74a1cbf4a218f0607f915c25ccc6",
+    "artifacts": {
+      "plugin": "a95cb92eb92b0fb48a15824bb705f8760c180d3fbb23fa10c9368c5a1d8c27be"
+    },
+    "failure_record_sha256": "be3b9ff37a30ad8475466462b924ba39760660e8c790086f5edd38a1aa16fc91",
+    "writer_session": "BF（修正source/配布物/実行）、D6（metadata案構成）",
+    "results": {
+      "GAP-1": {
+        "observation": {
+          "status": "pass",
+          "head": "f939b40ee83d74a1cbf4a218f0607f915c25ccc6",
+          "artifact_sha256": "a95cb92eb92b0fb48a15824bb705f8760c180d3fbb23fa10c9368c5a1d8c27be",
+          "actor": "gpt",
+          "observer": "D6（BF実行とF1 FILE/PNG評価を構成。実行時刻は各contributorsへ保持）",
+          "at": "2026-10-28T00:08:41.168531+00:00",
+          "loaded_identity": "正式0.2.0 ZIP a95cb92eb92b0fb48a15824bb705f8760c180d3fbb23fa10c9368c5a1d8c27be / source f939b40ee83d74a1cbf4a218f0607f915c25ccc6 / dirty=false。main JAR d2c95de4e4cc481f7a4c63d46420e962399fe55bcee3a6ed303040b4a08822ff と全3JARの導入byte・実REG handle、公開CLI/session buildを照合。Aboutは版のみ。QA fixtureの旧source表示は製品sourceと区別。",
+          "evidence": "BF native handoff SHA-256 73b28f3ac4875b3c43d1ff67285f19286d019bb19c7cdcf9b819de3b3d125766 / manifest18ab2fd0214d198c220afdc19c38ac017ddddcc0b8b0d0001e7ecf9ec1e623db、F1 FILE/PNG handoff b7ec5b23787621b0d92e58981334c8080914256ed003e3146c8307bdf1522383、D6 source review6631559ad13fb420bd0f0210bc835b478fe1f8513b76738c46620e68bfddeac4。原NG https://github.com/shinma06/android-replay-buffer/issues/377#issuecomment-6455508465 を不変保持。個別原本・locator・実originは非公開bundleへ固定。",
+          "reason": "原NGと同じ単一物理画面・標準0対象app・focusなしmirror・点灯解除で製品ON撮影が成功し、PNG b87772e1b5cdc0b822548ff287a49530f6c0fb022bb9f8068bd642d0e06c017e（82894B、1080x2400）を全復号・内容確認。撮影約29.779秒と同じ取得sequenceの74.407秒までのGUI継続は120秒内。後続通常Saveは同sequenceの6FILE/65samples/884device/0appと後撮影panelを確認し、設定・未保存取得を壊す事実は認めない。これは原失敗保証のみの修正結果。control bracket155.585秒>120、Save141.829秒の手順FAIL、capacity scanの2静的root漏れ・後測定、初期launcher/早期返却訂正・SDK cause UNKNOWNを保持し、overall plan/wholeCase合格へ拡張しない。",
+          "attribution": {
+            "writer": "codex-session-sha256:e7637c541d8097e4e35c8b6b496da4a8cbe7161455b8ab1c0bda86854c4d3476",
+            "observer": "codex-session-sha256:e7637c541d8097e4e35c8b6b496da4a8cbe7161455b8ab1c0bda86854c4d3476",
+            "contributors": [
+              {
+                "role": "修正source・正式配布物writer（原source記録の日時）",
+                "session": "codex-session-sha256:250ef5d1061f126ca01a1313b3def08babdc310815842f20cffa63c2013eb3a9",
+                "activity": "writer",
+                "at": "2026-10-27T23:16:06.238392+00:00",
+                "receipt_sha256": "d6ac2e01279a43211725008f03c40092626a607a28aaedc876646b986a959da5",
+                "receipt_locator": ""
+              },
+              {
+                "role": "実装前の診断・修正設計提案の著者（コード編集・修正版実行なし）",
+                "session": "codex-session-sha256:cb54214b9b4399ae155cf9692e7f9f2148f74904eca9ccd8134ada88cf9dca09",
+                "activity": "writer",
+                "at": "2026-10-27T22:45:46.018Z",
+                "receipt_sha256": "811fb464ed7516e94336d88e470fcedb54a3f668f3f3ae391ca5cd528fb80043",
+                "receipt_locator": "/original_design_event"
+              },
+              {
+                "role": "製品ON撮影の実入力intent（完了時刻ではない）",
+                "session": "codex-session-sha256:250ef5d1061f126ca01a1313b3def08babdc310815842f20cffa63c2013eb3a9",
+                "activity": "execution",
+                "at": "2026-10-27T23:30:49.699000+00:00",
+                "receipt_sha256": "f1bef80b302c15cb1e727e10c4868de2c61f27f8b11c42b861bdcf19a63e93a3",
+                "receipt_locator": ""
+              },
+              {
+                "role": "同じ取得の通常Save終了（上限後の実行を保持）",
+                "session": "codex-session-sha256:250ef5d1061f126ca01a1313b3def08babdc310815842f20cffa63c2013eb3a9",
+                "activity": "execution",
+                "at": "2026-10-27T23:32:41.965933+00:00",
+                "receipt_sha256": "c07cc77590794afdbdce5e35eea73a1abff26ca072e67fdbf0ee81387e140da9",
+                "receipt_locator": ""
+              },
+              {
+                "role": "修正済み所有返却・別読取りFREEの実観察",
+                "session": "codex-session-sha256:250ef5d1061f126ca01a1313b3def08babdc310815842f20cffa63c2013eb3a9",
+                "activity": "execution",
+                "at": "2026-10-27T23:38:08.922284+00:00",
+                "receipt_sha256": "e61403d2b3d4e562b54bf7f3ed306087596caf54b7326f4d81cab466812b9129",
+                "receipt_locator": ""
+              },
+              {
+                "role": "新FILE・PNGの全対象読取／復号実行と実画像評価（原評価receipt日時、個別method開始時刻は推測しない）",
+                "session": "codex-session-sha256:8f02d5541eb47504649997303bd14991d74e12338a62d4d4054ba9555ea70484",
+                "activity": "assessment",
+                "at": "2026-10-27T23:51:08.807207+00:00",
+                "receipt_sha256": "aaaa38beda2260bf8476b35a6df0c8d9ba5fd81f9b6d1fbb9f8ca266e45ad4fe",
+                "receipt_locator": ""
+              },
+              {
+                "role": "固定source・呼出元・回帰の独立評価（source-only）",
+                "session": "codex-session-sha256:e7637c541d8097e4e35c8b6b496da4a8cbe7161455b8ab1c0bda86854c4d3476",
+                "activity": "assessment",
+                "at": "2026-10-27T23:13:25.205777+00:00",
+                "receipt_sha256": "6b921592dccc0543c52f84ba64daf108eda4e9fc22637f804f5bdb01418e7546",
+                "receipt_locator": ""
+              },
+              {
+                "role": "保持済み実観察のmetadata案構成（新native実行ではない）",
+                "session": "codex-session-sha256:e7637c541d8097e4e35c8b6b496da4a8cbe7161455b8ab1c0bda86854c4d3476",
+                "activity": "composition",
+                "at": "2026-10-28T00:08:41.168531+00:00",
+                "receipt_sha256": "11c86c0704d759a0618b0629c39f91ddf3013e44ba4ad692c2e7c3471277ca29",
+                "receipt_locator": ""
+              }
+            ]
+          }
+        },
+        "coverage": {
+          "ON-STANDARD-SCREENSHOT": "同じ物理HWC/標準display0/対象app focusとfocusなしmirror条件で、製品button→成功通知→一意な完全PNG/物理画面内容を実確認。撮影約29.779秒、同sequenceの取得window進行74.407秒は上限内。後続同sequenceの正常保存と全FILE整合は実際の長いrunの事実としてだけ採用し、PNGが最終30秒MP4内にある・連続motion/newframe・上限内Saveとは主張しない。serial/誤focus/複数物理/unknown/lock/PNG/取消し/atomic非上書きは固定sourceと273件の回帰/D6評価へ対応。原FAIL・unknown・human/REALを保持。"
+        },
+        "method": "trusted responsibility目的に沿い、所有fixtureの一意な物理標準画面と選択app、focusなし追加mirrorを実診断し、正式f939/a95の1回の製品ON PNGを完全FILE/実画素で照合。同じ取得sequenceのGUI進行と後続Saveの全文/全sampleを共有する。前後guardの内部traceや全時点の新frameは推測しない。120秒超過・上限後Saveは不変の手順FAILであり、上限を遡及延長しない。tail11.294555585秒はdisplay_held/new_frame_confirmed=false。原PNGは最終保存窓外、app0はnormal_finish等の証明ではない。normal_finish/client-wait-end/Details Copy・全体GUI/interop/性能・wholeCase合格は対象外。",
+        "contract_revision": "85296114925d6947be93158e3eca90fcd69e561b3d8a5d1e6845407b73108f61"
+      }
+    }
+  }
+}
