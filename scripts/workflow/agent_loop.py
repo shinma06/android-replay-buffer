@@ -1440,7 +1440,11 @@ def stalled_review_retry(pr, comments, inline, reviews, requests, selected, comm
                 any(r['not_before'] and datetime.fromisoformat(r['not_before'].replace('Z', '+00:00')) > started
                     for r in requests)):
             return None
-        original = any(posted(c) < started for c in requested)
+        originals = [posted(c) for c in requested if posted(c) < started and c['user']['login'] == OWNER and
+                     pr['head']['sha'] in re.findall(r'\b[0-9a-f]{40}\b', c['body']) and
+                     c.get('updated_at', c['created_at']) == c['created_at']]
+        original_after = max(originals) if originals else None
+        original = original_after is not None
         provider = reviewer or 'chatgpt-codex-connector[bot]'
         for record in comments + inline + reviews:
             if record.get('user', {}).get('login', '').lower() != provider:
@@ -1462,6 +1466,9 @@ def stalled_review_retry(pr, comments, inline, reviews, requests, selected, comm
                 at = datetime.fromisoformat(match[2].replace('Z', '+00:00'))
                 if at.tzinfo is None or match[1] == 'Completed' and at >= started:
                     return None
+                if (match[1] == 'Completed' and pr['head']['sha'].startswith(match[3]) and
+                        (original_after is None or at >= original_after)):
+                    return None
                 # Automatic ready/open reviews need no earlier manual request comment.
                 if (match[1] in ('Running', 'Queued') and at < started and posted(record) < started and
                         pr['head']['sha'].startswith(match[3]) and
@@ -1469,16 +1476,23 @@ def stalled_review_retry(pr, comments, inline, reviews, requests, selected, comm
                     original = True
                 # Running is no terminal response; failed/unknown formats are never timeouts.
                 continue
+            receipt = (re.search(r'\*\*Reviewed commit:\*\*\s*`([0-9a-f]{7,40})`', body)
+                       if not reviewer and body.startswith('<!-- codex-review-receipt:v1 -->') else None)
+            if (receipt and pr['head']['sha'].startswith(receipt[1]) and
+                    (original_after is None or posted(record) >= original_after)):
+                return None
             current = record.get('commit_id', record.get('original_commit_id')) == pr['head']['sha']
             at = record.get('submitted_at') or record.get('created_at')
             if current or at and datetime.fromisoformat(at.replace('Z', '+00:00')) >= started:
                 return None
+        if retained:
+            prior = stalled_review_retry(pr, [*retained['comments'], latest], [], [], requests, selected, comment_id)
+            if not prior:
+                return None
+            if datetime.fromisoformat(retained['observed_at'].replace('Z', '+00:00')) < started:
+                return dict(prior, original_ref=retained['reference'])
         if original:
             return {'comment_id': comment_id, 'created_at': latest['created_at']}
-        if retained and datetime.fromisoformat(retained['observed_at'].replace('Z', '+00:00')) < started:
-            prior = stalled_review_retry(pr, [*retained['comments'], latest], [], [], requests, selected, comment_id)
-            if prior:
-                return dict(prior, original_ref=retained['reference'])
         return None
     except (KeyError, TypeError, ValueError, AttributeError):
         return None

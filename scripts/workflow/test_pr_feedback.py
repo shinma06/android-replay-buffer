@@ -248,7 +248,7 @@ class StalledReviewTests(unittest.TestCase):
         pending.start(); self.addCleanup(pending.stop)
 
     def retry(self):
-        for at, text in [('2026-10-11T04:00:00Z', '@codex review'),
+        for at, text in [('2026-10-11T04:00:00Z', '@codex review\nHEAD ' + HEAD),
                          ('2026-10-11T04:10:00Z', '@codex review\nExplicit re-request after observed stall. HEAD ' + HEAD)]:
             row = self.gh.comment(36, text)
             self.gh.messages[36][-1]['created_at'] = at
@@ -277,7 +277,7 @@ class StalledReviewTests(unittest.TestCase):
                 selected = next(x for x in rows if x['id'] == retry)
                 self.loop.review_retry_comment = retry
                 if case == 'no-retry': self.loop.review_retry_comment = None
-                if case == 'no-original': rows = [x for x in rows if x.get('body') != '@codex review']
+                if case == 'no-original': rows = [x for x in rows if x.get('body') != '@codex review\nHEAD ' + HEAD]
                 if case == 'head': selected['body'] = selected['body'].replace(HEAD, NEW)
                 if case == 'not-rerequest': selected['body'] = '@codex review\nHEAD ' + HEAD
                 if case == 'duplicate-summary': rows.append(summary(status='🔄 **Running**'))
@@ -292,9 +292,47 @@ class StalledReviewTests(unittest.TestCase):
                 self.assertNotIn('review_retry', bound)
                 self.assertFalse(remote_review_ready(bound))
 
+    def test_original_manual_request_must_target_current_head_and_remain_unfulfilled(self):
+        self.retry()
+        original = copy.deepcopy(self.gh.messages[36])
+        for case in ('old-head-completed', 'same-head-completed', 'same-head-receipt'):
+            with self.subTest(case=case):
+                rows = copy.deepcopy(original)
+                first = next(r for r in rows if r.get('created_at') == '2026-10-11T04:00:00Z')
+                target = NEW if case == 'old-head-completed' else HEAD
+                first['body'] = '@codex review\nHEAD ' + target
+                rows[-1] = summary(target)
+                rows[-1]['body'] = rows[-1]['body'].replace('2026-10-11T04:46:46Z', '2026-10-11T04:05:00Z')
+                if case == 'same-head-receipt':
+                    rows[-1] = summary(status='🔄 **Running**')
+                    rows.append(dict(summary(), id=1001, created_at='2026-10-11T04:05:00Z',
+                                     body='<!-- codex-review-receipt:v1 -->\n**Reviewed commit:** `' + HEAD[:10] + '`'))
+                bound = self.loop.bound(self.gh.pr(36), self.gh.issue(35), rows)[0]
+                self.assertFalse(bound['remote_review_complete'])
+                self.assertNotIn('review_retry', bound)
+                self.assertFalse(remote_review_ready(bound))
+        rows = copy.deepcopy(original)
+        first = next(r for r in rows if r.get('created_at') == '2026-10-11T04:00:00Z')
+        first['body'] = '@codex review\nHEAD ' + HEAD
+        first['created_at'] = '2026-10-11T04:06:00Z'
+        rows[-1] = summary()
+        rows[-1]['body'] = rows[-1]['body'].replace('2026-10-11T04:46:46Z', '2026-10-11T04:05:00Z')
+        self.assertIn('review_retry', self.loop.bound(self.gh.pr(36), self.gh.issue(35), rows)[0])
+        retry = next(r for r in self.gh.messages[36] if r['id'] == self.loop.review_retry_comment)
+        self.gh.messages[36] = [r for r in self.gh.messages[36] if r['id'] != retry['id']]
+        service = self.gh.messages[36][-1]
+        service['body'] = rows[-1]['body']
+        with patch.object(al, 'datetime', wraps=datetime) as clock:
+            clock.now.return_value = datetime.fromisoformat('2026-10-11T04:09:00+00:00')
+            observation = self.loop.prepare_review_retry(self.gh.pr(36))
+        self.gh.messages[36].append(retry)
+        service['body'] = summary(status='🔄 **Running**')['body']
+        self.loop.review_retry_original = observation['review_retry_original']
+        self.assertNotIn('review_retry', self.loop.bound(self.gh.pr(36), self.gh.issue(35), self.gh.comments(36))[0])
+
     def test_automatic_original_then_one_explicit_retry_requires_pre_retry_service_provenance(self):
         self.retry()
-        rows = [r for r in self.gh.messages[36] if r.get('body') != '@codex review']
+        rows = [r for r in self.gh.messages[36] if r.get('body') != '@codex review\nHEAD ' + HEAD]
         service = rows[-1]
         service['created_at'] = '2026-10-11T04:00:00Z'
         original_body = service['body']
