@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "issue": 383,
+  "gui_required": false,
+  "reason": "外部レビューの再依頼時刻・固定binding・独立originを扱う管理判定と文書だけを変更する。製品runtime/build/配布物・GUI/端末の状態は変更せず、実API形のfixtureとcoordinator回帰で判定を検証する。",
+  "cli_checks": [
+    "python3 -m unittest discover -s scripts/workflow -p test_pr_feedback.py",
+    "python3 scripts/check.py",
+    "python3 scripts/workflow/change_impact.py --run-tests"
+  ],
+  "cases": []
+}

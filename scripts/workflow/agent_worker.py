@@ -23,6 +23,7 @@ REPORT_SCHEMA = {
         'gui_required': {'type': 'boolean'},
         'findings': {'type': 'array', 'items': {'type': 'string'}},
         'evidence': {'type': 'string'},
+        'feedback_hash': {'type': 'string'},
         'repair_revision': {'type': 'string'}, 'repair_assessment': {'type': 'string'},
         'certificate_revision': {'type': 'string'}, 'certificate_assessment': {'type': 'string'},
     },
@@ -343,6 +344,10 @@ def run_worker(role, checkout, packet, output_dir, timeout=600, on_start=lambda 
         'with substantive original/impact/coverage/failure findings; public fingerprints alone are not proof. '
         'Concrete code defects and failing tests still require changes. For develop feature/bug/maintenance, issue_complete means all implementation acceptance is met or unfinished implementation has been preserved in explicitly linked separate Issues; GUI/main verification may remain in Cases for QA transfer. Never mark research/tracking complete merely because a child PR merged. For main, issue_complete requires all Issue acceptance. '
         'Inspect every supplied feedback record (including bots, replies and resolved/outdated findings). '
+        'For a stalled external review retry, return feedback_hash equal to the complete supplied snapshot, '
+        'and assess the real re-request/server time, missing response and all unresolved findings; never call it provider completion. '
+        'If review_original is supplied, inspect its hash-bound actual API observation made before retry; '
+        'a mutable dashboard updated after retry cannot replace the preserved same-HEAD original. '
         'In evidence, map each actionable ID/URL and original commit to a fixed-head fix with checks, '
         'or a reasoned non-applicable/superseded disposition; unresolved or unknown findings block approval. '
         if role == 'review' else
@@ -400,6 +405,10 @@ def run_worker(role, checkout, packet, output_dir, timeout=600, on_start=lambda 
         report = issue_review_origin(origin_storage, report, origin_binding, report['session'], 'cli',
                                      packet['private_repair_evidence']['private_paths'],
                                      [origin['session'] for origin in packet['private_repair_evidence']['origins']])
+    elif origin_binding and origin_binding.get('remote_review_complete') is False:
+        if not origin_binding.get('review_retry') or report.get('feedback_hash') != origin_binding.get('feedback_hash'):
+            raise ValueError('Stalled-review report must identify its complete feedback snapshot')
+        report = issue_review_origin(origin_storage, report, origin_binding, report['session'], 'cli')
     return report
 
 
@@ -426,6 +435,14 @@ def main():
             raise ValueError('Manual binding differs from fixed report')
         report = issue_review_origin(args.storage, report, bound, report['session'], 'manual', evidence['private_paths'],
                                      [origin['session'] for origin in evidence['origins']])
+    elif args.binding or args.storage:
+        if not args.binding or not args.storage:
+            raise ValueError('Manual origin requires both complete binding and private registry')
+        bound = json.loads(private_original(args.binding))
+        if (bound.get('remote_review_complete') is not False or not bound.get('review_retry') or
+                report.get('feedback_hash') != bound.get('feedback_hash')):
+            raise ValueError('Ordinary manual origin is limited to the exact stalled-review feedback disposition')
+        report = issue_review_origin(args.storage, report, bound, report['session'], 'manual')
     # Preserve original reports and refuse to replace an existing bound receipt.
     fd = os.open(args.output, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     with os.fdopen(fd, 'w') as stream:
