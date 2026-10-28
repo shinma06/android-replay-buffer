@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "issue": 384,
+  "gui_required": false,
+  "reason": "Logcat対象端末選択の実merge e22cac5/PR382と381の全1Caseを既存strict段階登録へ追加する管理変更。旧171契約/240出典/26commit・元139plan/hash・humanREAL・原観察/FAIL/UNKNOWNと373性能scope終了を保持し、source/JAR/load/native接続/実描画やCasePASSを登録成功へ換えない。原fixture/回帰/metadata carry/説明だけを同期し、製品source/build/version・383方針・実操作を変更しないためGUI不要。",
+  "cli_checks": [
+    "python3 -m unittest discover -s scripts/workflow -p test_initial_continuation.py",
+    "python3 -m unittest discover -s scripts/workflow -p test_impact_evidence_reuse.py",
+    "python3 scripts/check.py",
+    "python3 scripts/workflow/product_check.py",
+    "python3 scripts/workflow/change_impact.py --base origin/main --run-tests"
+  ],
+  "cases": []
+}
