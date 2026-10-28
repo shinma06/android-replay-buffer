@@ -5,6 +5,7 @@ import com.intellij.openapi.wm.ToolWindow
 import io.github.shinma06.replaybuffer.core.ReplayDevice
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CancellationException
+import java.util.concurrent.TimeUnit
 import java.util.function.BooleanSupplier
 import javax.swing.JButton
 import javax.swing.SwingUtilities
@@ -17,7 +18,7 @@ internal fun logcatTargetBuildReason(build: String): String? =
 internal class LogcatToolWindowButton(
     private val alive: () -> Boolean,
     private val target: () -> ReplayDevice?,
-    private val selectDevice: (ToolWindow, String, BooleanSupplier) -> CompletableFuture<String?>,
+    private val selectDevice: (ToolWindow, String, BooleanSupplier, Long) -> CompletableFuture<String?>,
     private val logcat: () -> ToolWindow?,
 ) : JButton(), Disposable {
     private var failure: String? = null
@@ -34,6 +35,7 @@ internal class LogcatToolWindowButton(
                 refresh()
                 return@addActionListener
             }
+            val deadlineNs = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
             // Re-read on click: the IDE may have changed visibility or availability since the last notification.
             availableWindow()?.let { window ->
                 if (window.isVisible) {
@@ -46,7 +48,7 @@ internal class LogcatToolWindowButton(
                         val request: CompletableFuture<String?> = try {
                             selectDevice(window, device.serial, BooleanSupplier {
                                 isAlive() && target()?.let { it.connected && it.serial == device.serial } == true
-                            })
+                            }, deadlineNs)
                         } catch (_: CancellationException) {
                             CompletableFuture<String?>().apply { cancel(false) }
                         } catch (_: LinkageError) {
@@ -69,6 +71,8 @@ internal class LogcatToolWindowButton(
                                 if (current?.connected != true || current.serial != device.serial) {
                                     failedSerial = current?.serial
                                     failure = "Replay Bufferの対象端末が変わりました。再試行してください。"
+                                } else if (failure == null && System.nanoTime() >= deadlineNs) {
+                                    failure = "標準Logcatの準備が期限内に完了しませんでした。再試行してください。"
                                 } else if (failure == null && availableWindow() === window && !window.isVisible) {
                                     window.show()
                                 }

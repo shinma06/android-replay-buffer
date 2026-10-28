@@ -14,7 +14,6 @@ import java.awt.event.ActionListener;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CancellationException;
-import java.util.concurrent.TimeUnit;
 import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 import javax.swing.JComboBox;
@@ -27,8 +26,9 @@ import javax.swing.Timer;
 public final class LogcatTargetDevice {
     private LogcatTargetDevice() {}
 
-    public static CompletableFuture<String> prepare(ToolWindow window, String serial, BooleanSupplier active) {
+    public static CompletableFuture<String> prepare(ToolWindow window, String serial, BooleanSupplier active, long deadlineNs) {
         if (!SwingUtilities.isEventDispatchThread()) throw new IllegalStateException("Logcat selection requires EDT");
+        if (System.nanoTime() >= deadlineNs) return CompletableFuture.completedFuture("標準Logcatの準備が期限内に完了しませんでした。再試行してください。");
         if (window.isDisposed() || !window.isAvailable()) return CompletableFuture.completedFuture("IDE標準Logcatを利用できません。");
         var manager = window.getContentManager(); // Native lazy factory initializes cold/restored content here.
         var selected = manager.getSelectedContent();
@@ -40,7 +40,7 @@ public final class LogcatTargetDevice {
             () -> active.getAsBoolean() && !window.isDisposed() && window.isAvailable() && !window.isVisible()
                 && !Disposer.isDisposed(selected) && !Disposer.isDisposed(pane)
                 && manager.getSelectedContent() == selected && singlePane(manager, selected) == pane,
-            System.nanoTime() + TimeUnit.SECONDS.toNanos(5));
+            deadlineNs);
     }
 
     private static LogcatMainPanel singlePane(ContentManager manager, Content selected) {
@@ -83,13 +83,21 @@ public final class LogcatTargetDevice {
                     } else {
                         DeviceItem target = null;
                         for (int i = 0; i < box.getItemCount(); i++) {
-                            if (box.getItemAt(i) instanceof DeviceItem item && matches(item.getDevice(), serial)) {
+                            if (box.getItemAt(i) instanceof DeviceItem item && serial.equals(item.getDevice().getSerialNumber())) {
+                                if (!item.getDevice().isOnline()) {
+                                    result.complete("標準Logcatの対象端末が切断されました。再接続後に改めて開いてください。");
+                                    return;
+                                }
                                 if (target != null) {
                                     result.complete("標準Logcatの対象端末を一意に確認できません。");
                                     return;
                                 }
                                 target = item;
                             }
+                        }
+                        if (selected && target == null) {
+                            result.complete("標準Logcatの対象端末が一覧から消えたため、開く操作を中止しました。");
+                            return;
                         }
                         var current = box.getSelectedItem();
                         // The first item is selected by the native cold model, before it can offer a user choice.
@@ -106,8 +114,13 @@ public final class LogcatTargetDevice {
                             }
                             if (!(box.getSelectedItem() instanceof DeviceItem item) || !matches(item.getDevice(), serial)) {
                                 result.complete("標準Logcatの対象端末が変わりました。再試行してください。");
-                            } else if (matches(connected.get(), serial)) {
-                                result.complete(null);
+                            } else {
+                                var connection = connected.get();
+                                if (connection != null && serial.equals(connection.getSerialNumber()) && !connection.isOnline()) {
+                                    result.complete("標準Logcatの対象端末が切断されました。再接続後に改めて開いてください。");
+                                } else if (matches(connection, serial)) {
+                                    result.complete(null);
+                                }
                             }
                         }
                     }

@@ -7,11 +7,14 @@ import com.android.tools.idea.logcat.devices.Device;
 import com.android.tools.idea.logcat.devices.DeviceComboBox.DeviceComboItem;
 import com.android.tools.idea.logcat.devices.DeviceComboBox.DeviceComboItem.DeviceItem;
 import com.android.tools.idea.logcat.devices.DeviceComboBox.DeviceComboItem.FileItem;
+import com.intellij.openapi.wm.ToolWindow;
+import java.lang.reflect.Proxy;
 import java.nio.file.Path;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import javax.swing.JComboBox;
+import javax.swing.DefaultComboBoxModel;
 import javax.swing.SwingUtilities;
 import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
@@ -87,7 +90,7 @@ class LogcatTargetDeviceTest {
             var other = device("B", true);
             var box = new JComboBox<DeviceComboItem>(new DeviceComboItem[]{other, device("A", false)});
             var pending = LogcatTargetDevice.awaitDevice(box, "A", other::getDevice, () -> true, Long.MAX_VALUE);
-            assertFalse(pending.isDone());
+            assertTrue(pending.join().contains("切断"));
             assertSame(other, box.getSelectedItem());
             pending.cancel(false);
             assertNotNull(LogcatTargetDevice.awaitDevice(box, "A", other::getDevice, () -> true, 0).join());
@@ -98,10 +101,58 @@ class LogcatTargetDeviceTest {
             assertTrue(LogcatTargetDevice.awaitDevice(box, "A", other::getDevice, () -> true, Long.MAX_VALUE).join().contains("保存ログ"));
             assertSame(file, box.getSelectedItem());
             box.setSelectedItem(other);
+            box.removeItemAt(1); // The duplicate-identity fixture has online items, not the earlier offline target.
             box.addItem(device("A", true));
             box.addItem(device("A", true));
             assertTrue(LogcatTargetDevice.awaitDevice(box, "A", other::getDevice, () -> true, Long.MAX_VALUE).join().contains("一意"));
             assertSame(other, box.getSelectedItem());
+            var nativeDisconnected = new AtomicReference<>(device("A", false).getDevice());
+            var online = device("A", true);
+            var nativeRequest = LogcatTargetDevice.awaitDevice(new JComboBox<>(new DeviceComboItem[]{online}), "A",
+                nativeDisconnected::get, () -> true, Long.MAX_VALUE);
+            assertTrue(nativeRequest.join().contains("切断"));
+            nativeDisconnected.set(online.getDevice());
+            assertTrue(nativeRequest.join().contains("切断"));
+        });
+    }
+
+    @Test
+    void disconnectCompletesTheObsoleteOpenAndReconnectionCannotReviveIt() throws Exception {
+        var request = new AtomicReference<CompletableFuture<String>>();
+        var box = new AtomicReference<JComboBox<DeviceComboItem>>();
+        var other = device("B", true);
+        var online = device("A", true);
+        var offline = device("A", false);
+        var connected = new AtomicReference<>(other.getDevice());
+        try {
+            SwingUtilities.invokeAndWait(() -> {
+                box.set(new JComboBox<>(new DeviceComboItem[]{other, online}));
+                request.set(LogcatTargetDevice.awaitDevice(box.get(), "A", connected::get, () -> true,
+                    System.nanoTime() + TimeUnit.SECONDS.toNanos(3)));
+                assertFalse(request.get().isDone());
+                var disconnectedModel = new DefaultComboBoxModel<DeviceComboItem>(new DeviceComboItem[]{other, offline});
+                disconnectedModel.setSelectedItem(offline);
+                box.get().setModel(disconnectedModel);
+            });
+            assertTrue(request.get().get(2, TimeUnit.SECONDS).contains("切断"));
+            SwingUtilities.invokeAndWait(() -> {
+                var reconnectedModel = new DefaultComboBoxModel<DeviceComboItem>(new DeviceComboItem[]{other, online});
+                reconnectedModel.setSelectedItem(online);
+                box.get().setModel(reconnectedModel);
+                connected.set(online.getDevice());
+                assertTrue(request.get().join().contains("切断"));
+            });
+        } finally {
+            if (request.get() != null) request.get().cancel(false);
+        }
+    }
+
+    @Test
+    void anExpiredOriginBudgetCannotStartOrRenewNativeInitialization() throws Exception {
+        SwingUtilities.invokeAndWait(() -> {
+            var window = (ToolWindow) Proxy.newProxyInstance(ToolWindow.class.getClassLoader(), new Class<?>[]{ToolWindow.class},
+                (proxy, method, args) -> { throw new AssertionError("Expired Open must not initialize the IDE: " + method.getName()); });
+            assertNotNull(LogcatTargetDevice.prepare(window, "A", () -> true, System.nanoTime() - 1).join());
         });
     }
 

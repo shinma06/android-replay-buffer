@@ -11,6 +11,7 @@ import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Test
 import java.lang.reflect.Proxy
 import java.util.concurrent.CompletableFuture
+import java.util.concurrent.TimeUnit
 import javax.swing.SwingUtilities
 
 class LogcatToolWindowButtonTest {
@@ -43,11 +44,14 @@ class LogcatToolWindowButtonTest {
                 }
             } as ToolWindow
             var registered: ToolWindow? = null
-            val button = LogcatToolWindowButton({ alive }, { ReplayDevice("A", "target", DeviceKind.PHYSICAL, true) }, { _, serial, _ ->
+            var resolvedAt = 0L
+            val button = LogcatToolWindowButton({ alive }, { ReplayDevice("A", "target", DeviceKind.PHYSICAL, true) }, { _, serial, _, deadlineNs ->
                 assertEquals("A", serial)
+                assertTrue(deadlineNs - TimeUnit.SECONDS.toNanos(5) <= resolvedAt, "Budget starts before resolving or initializing the IDE")
                 CompletableFuture.completedFuture(null)
             }) {
                 check(alive) { "Disposed content must not resolve the project service" }
+                resolvedAt = System.nanoTime()
                 registered
             }
             button.refresh()
@@ -116,7 +120,7 @@ class LogcatToolWindowButtonTest {
             val button = LogcatToolWindowButton({ alive }, {
                 check(alive)
                 target
-            }, { _, serial, _ ->
+            }, { _, serial, _, _ ->
                 selected += serial
                 duringSelection()
                 CompletableFuture.completedFuture(reason)
@@ -184,7 +188,7 @@ class LogcatToolWindowButtonTest {
             } as ToolWindow
             var next = CompletableFuture<String?>()
             val button = LogcatToolWindowButton({ true }, { ReplayDevice("A", "target", DeviceKind.PHYSICAL, true) },
-                { _, _, active -> assertTrue(active.asBoolean); next }) { window }
+                { _, _, active, _ -> assertTrue(active.asBoolean); next }) { window }
             button.refresh()
             button.doClick(0)
             assertTrue(operations.isEmpty())
