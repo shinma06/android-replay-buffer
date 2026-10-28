@@ -1389,12 +1389,12 @@ def stalled_review_retry(pr, comments, inline, reviews, requests, selected, comm
                 not re.search(r're-request|再(?:レビュー)?依頼', latest['body'], re.I) or
                 pr['head']['sha'] not in re.findall(r'\b[0-9a-f]{40}\b', latest['body']) or
                 latest.get('updated_at', latest['created_at']) != latest['created_at'] or
-                not any(posted(c) < started for c in requested) or
                 any(datetime.fromisoformat(c.get('updated_at', c['created_at']).replace('Z', '+00:00')) > started
                     for c in requested) or
                 any(r['not_before'] and datetime.fromisoformat(r['not_before'].replace('Z', '+00:00')) > started
                     for r in requests)):
             return None
+        original = any(posted(c) < started for c in requested)
         provider = reviewer or 'chatgpt-codex-connector[bot]'
         for record in comments + inline + reviews:
             if record.get('user', {}).get('login', '').lower() != provider:
@@ -1416,13 +1416,18 @@ def stalled_review_retry(pr, comments, inline, reviews, requests, selected, comm
                 at = datetime.fromisoformat(match[2].replace('Z', '+00:00'))
                 if at.tzinfo is None or match[1] == 'Completed' and at >= started:
                     return None
+                # Automatic ready/open reviews need no earlier manual request comment.
+                if (match[1] in ('Running', 'Queued') and at < started and posted(record) < started and
+                        pr['head']['sha'].startswith(match[3]) and
+                        (not machine or state.get('commit_sha') == pr['head']['sha'])):
+                    original = True
                 # Running is no terminal response; failed/unknown formats are never timeouts.
                 continue
             current = record.get('commit_id', record.get('original_commit_id')) == pr['head']['sha']
             at = record.get('submitted_at') or record.get('created_at')
             if current or at and datetime.fromisoformat(at.replace('Z', '+00:00')) >= started:
                 return None
-        return {'comment_id': comment_id, 'created_at': latest['created_at']}
+        return {'comment_id': comment_id, 'created_at': latest['created_at']} if original else None
     except (KeyError, TypeError, ValueError, AttributeError):
         return None
 

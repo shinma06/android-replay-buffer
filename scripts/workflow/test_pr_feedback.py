@@ -292,6 +292,20 @@ class StalledReviewTests(unittest.TestCase):
                 self.assertNotIn('review_retry', bound)
                 self.assertFalse(remote_review_ready(bound))
 
+    def test_automatic_original_then_one_explicit_retry_requires_pre_retry_service_provenance(self):
+        self.retry()
+        rows = [r for r in self.gh.messages[36] if r.get('body') != '@codex review']
+        service = rows[-1]
+        service['created_at'] = '2026-10-11T04:00:00Z'
+        original_body = service['body']
+        for since, eligible in [('2026-10-11T04:05:00Z', True), ('2026-10-11T04:11:00Z', False)]:
+            with self.subTest(since=since):
+                service['body'] = original_body.replace('2026-10-11T04:46:46Z', since)
+                bound = self.loop.bound(self.gh.pr(36), self.gh.issue(35), rows)[0]
+                self.assertEqual('review_retry' in bound, eligible)
+                self.assertEqual(remote_review_ready(bound), eligible)
+                self.assertFalse(bound['remote_review_complete'])
+
     def test_selected_native_reviewer_uses_its_own_explicit_request(self):
         self.retry()
         self.loop.github_reviewer = 'native-reviewer'

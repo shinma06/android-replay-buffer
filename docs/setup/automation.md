@@ -82,7 +82,7 @@ base 更新は通常 merge → 必要テスト → 非 force push → 独立再�
 
 必要な外部レビューの応答停滞がブロッカーと判断された場合、担当は理由を既存Issue/PRに記録し、同じ完全なHEADを明記して**一度だけ明示的に再依頼**します。Codexは通常の `@codex review`、選択したnative reviewerは `@login please review` のPRコメントに「再依頼」と理由を書き、実投稿のID・server `created_at`を読み戻します。既存の再依頼を重ねず、以前の待ち時間、本文中の時刻、edited時刻を起点にしません。
 
-`agent_loop.py --review-retry-comment <実comment ID> feedback --pr N`で実レコードを確認し、同じoptionをtick・再取得・reconcile-feedbackへ使います。これは読取・判定の指定で、再依頼を投稿せず、workerの実行権限も作りません。coordinatorは採用したIDを保持します。最新の未編集コメントがmaintainerによる再依頼で、同じHEAD、先行依頼、選択元/保存済み義務が一致し、必要な応答がなお欠ける場合だけ `binding.review_retry` に実ID/server時刻を記録します。不明な形式・実failure・外部の具体的な応答/指摘・別方式の未完了義務はこの例外で通しません。
+`agent_loop.py --review-retry-comment <実comment ID> feedback --pr N`で実レコードを確認し、同じoptionをtick・再取得・reconcile-feedbackへ使います。これは読取・判定の指定で、再依頼を投稿せず、workerの実行権限も作りません。coordinatorは採用したIDを保持します。最新の未編集コメントがmaintainerによる再依頼で、同じHEAD、先行するreview義務、選択元/保存済み義務が一致し、必要な応答がなお欠ける場合だけ `binding.review_retry` に実ID/server時刻を記録します。先行するreview義務は手動依頼コメントに限定せず、同じHEADの自動起動したRunning/Queued service記録でも確認します。その実コメントの作成と表示された開始時刻がともに再依頼より前であることが必要で、古いdashboardの作成時刻だけ、又は再依頼後に始まった記録だけを元レビューの証拠にしません。不明な形式・実failure・外部の具体的な応答/指摘・別方式の未完了義務はこの例外で通しません。
 
 **その新しい再依頼から30分**経っても必要な応答がなければ、外部の待機だけを解除できます。`remote_review_complete`はfalseのまま、`review_wait_satisfied`で待機条件を区別します。通常と同じ独立した別sessionが全feedback・固定HEAD/base/title/body/Issueと未解決指摘なしを評価し、approved/scope_complete・一致するfeedback_hashを持つ報告を、そのreviewer自身の既存adapterとprivate registryでorigin結合する必要があります。時間経過だけではAgent review成功・統合にはなりません。通常のCI・strict base・branch protection・Case/受入・所有・実権限は変えません。
 
