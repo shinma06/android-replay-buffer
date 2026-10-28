@@ -20,7 +20,7 @@ import time
 import uuid
 from urllib.parse import quote, unquote, urlsplit
 
-from agent_policy import CONTEXT, SESSION_HASH, binding, eligible, gui_pass, in_scope, issue_number, next_action, session_fingerprint, update_parent, validate_review
+from agent_policy import CONTEXT, SESSION_HASH, binding, eligible, gui_pass, in_scope, issue_number, next_action, remote_review_ready, session_fingerprint, update_parent, validate_review
 from agent_worker import (REPORT_SCHEMA, private_repair_evidence, read_repair_bundle, recover_originals,
                           require_retained_evidence, retained_originals, run_worker, worker_environment)
 from handoff_registry import digest, register, resolve, restore_review, review_privacy, store_review, verify_review_origin
@@ -275,10 +275,12 @@ def coordinator_lock():
 
 class Loop:
     github_reviewer = None
+    review_retry_comment = None
 
-    def __init__(self, gh=None, storage=None, worker=run_worker, github_reviewer=None):
+    def __init__(self, gh=None, storage=None, worker=run_worker, github_reviewer=None, review_retry_comment=None):
         self.gh = gh or GitHub()
         self.github_reviewer = review_selection(github_reviewer)
+        self.review_retry_comment = review_retry_comment
         # Stable across linked worktrees, persists through app restarts. Not checked in.
         common = Path(git('rev-parse', '--git-common-dir'))
         if not common.is_absolute():
@@ -465,7 +467,7 @@ class Loop:
         elif report is None:
             selected_next = 'review'
         elif phase in ('queued', 'reviewed'):
-            selected_next = ('wait-for-current-head-review-completion' if bound.get('remote_review_complete') is False else
+            selected_next = ('wait-for-current-head-review-completion' if not remote_review_ready(bound) else
                              {'approved': 'reconcile-acceptance-and-review-obligations',
                               'changes_requested': 'fix' if state.get('fixes', 0) < 3 else 'owner-recovery',
                               'blocked': 'owner-recovery'}[report['verdict']])
@@ -497,7 +499,7 @@ class Loop:
                     if type(source[key]) is not bool:
                         raise ValueError('Invalid coordinator boolean')
                     target[key] = source[key]
-        for key in ('updated_at', 'errors', 'fixes', 'reviews', 'qa_issue', 'main_tracking_issue'):
+        for key in ('updated_at', 'errors', 'fixes', 'reviews', 'qa_issue', 'main_tracking_issue', 'review_retry_comment'):
             if key in state:
                 if type(state[key]) is not int or state[key] < 0:
                     raise ValueError('Invalid coordinator counter')
@@ -532,6 +534,14 @@ class Loop:
                         item['requests_hash'] = record['requests_hash']
                     projected.append(item)
                 target[key] = projected if key == 'review_requests' else projected[0]
+        if 'review_retry' in bound:
+            retry = bound['review_retry']
+            if (not isinstance(retry, dict) or set(retry) != {'head', 'base', 'comment_id', 'created_at'} or
+                    type(retry['comment_id']) is not int or retry['comment_id'] <= 0 or
+                    any(not public_machine_value(('binding', key), retry[key]) for key in ('head', 'base')) or
+                    not public_machine_value(('remote_review_after',), retry['created_at'])):
+                raise ValueError('Invalid external review retry fact')
+            public['binding']['review_retry'] = dict(retry)
         return public
 
     def _legacy_public_state(self, value, private_paths=(), private_sessions=(), location=()):
@@ -776,6 +786,11 @@ class Loop:
                 raise ValueError('Review completion must be an observed boolean')
             complete = complete and observed
         value['remote_review_complete'] = complete
+        retry_id = self.review_retry_comment or (prior or {}).get('review_retry_comment')
+        if not complete and retry_id is not None:
+            retry = stalled_review_retry(pr, comments, inline, reviews, requests, value['review_completion'], retry_id)
+            if retry:
+                value['review_retry'] = dict(retry, head=value['head'], base=value['base'])
         return value, feedback
 
     def source_safe(self, h):
@@ -891,6 +906,8 @@ class Loop:
                     raise ValueError('External push after handoff; explicit re-enrollment required')
             bound, feedback = self.bound(pr, issue, comments, state.get('remote_review_after'))
             state['review_requests'] = bound['review_requests']
+            if self.review_retry_comment is not None:
+                state['review_retry_comment'] = self.review_retry_comment
             if any(record and any(record.get(k) != bound[k] for k in ('head', 'base'))
                    for record in (state.get('binding'), state.get('gui'))):
                 self.invalidate_acceptance(state)
@@ -1068,7 +1085,7 @@ class Loop:
         report = state.get('review', {})
         current_issue = self.gh.issue(h['issue'])
         now, _ = self.bound(pr, current_issue, self.gh.comments(pr['number']), state.get('remote_review_after'))
-        if now != bound or now.get('remote_review_complete') is not True:
+        if now != bound or not remote_review_ready(now):
             raise ValueError('PR/Issue/feedback changed or remote review is pending after merge; preserve scope/resources for disposition')
         self.retained_history(h)
         accepted = state.get('acceptance', {})
@@ -1110,7 +1127,7 @@ class Loop:
             raise ValueError('Cleanup requires confirmed GitHub merge')
         issue = self.gh.issue(h['issue'])
         fresh, _ = self.bound(pr, issue, self.gh.comments(pr['number']), state.get('remote_review_after'))
-        if fresh != bound or fresh.get('remote_review_complete') is not True:
+        if fresh != bound or not remote_review_ready(fresh):
             raise ValueError('PR/Issue/feedback changed during handoff; preserve scope/resources before closure')
         self.retained_history(h)
         if pr['base']['ref'] == 'develop':
@@ -1155,7 +1172,7 @@ class Loop:
             raise ValueError('Worker must be stopped before feedback recovery')
         self.source_safe(h)
         bound, _ = self.bound(pr, self.gh.issue(h['issue']), comments, state.get('remote_review_after'))
-        if not bound['remote_review_complete'] or evidence.get('binding') != bound:
+        if not remote_review_ready(bound) or evidence.get('binding') != bound:
             raise ValueError('Pending or changed feedback; independent disposition must bind the exact snapshot')
         report = evidence['review']
         if report.get('feedback_hash') != bound['feedback_hash']:
@@ -1348,6 +1365,68 @@ def github_review_complete(pr, reviews, reviewer, not_before=None):
         return False
 
 
+def stalled_review_retry(pr, comments, inline, reviews, requests, selected, comment_id):
+    """Read an explicitly selected real re-request; never post or retry automatically."""
+    method, reviewer = selected['method'], selected['reviewer']
+    if any((r['method'], r['reviewer']) != (method, reviewer) for r in requests):
+        return None
+    if not reviewer and sum(c.get('body', '').startswith('<!-- codex-pull-request-review-summary -->')
+                            for c in comments if c.get('user', {}).get('login') == 'chatgpt-codex-connector[bot]') > 1:
+        return None
+    login = reviewer or 'codex'
+    pattern = rf'^\s*@{re.escape(login)}\s+(?:please\s+)?review\b'
+    requested = [c for c in comments if re.search(pattern, c.get('body', ''), re.I | re.M)]
+    try:
+        def posted(c):
+            value = datetime.fromisoformat(c['created_at'].replace('Z', '+00:00'))
+            if value.tzinfo is None:
+                raise ValueError('Missing server timezone')
+            return value
+        latest = max(requested, key=posted)
+        started = posted(latest)
+        if (type(comment_id) is not int or latest['id'] != comment_id or
+                latest['user']['login'] != OWNER or
+                not re.search(r're-request|再(?:レビュー)?依頼', latest['body'], re.I) or
+                pr['head']['sha'] not in re.findall(r'\b[0-9a-f]{40}\b', latest['body']) or
+                latest.get('updated_at', latest['created_at']) != latest['created_at'] or
+                not any(posted(c) < started for c in requested) or
+                any(datetime.fromisoformat(c.get('updated_at', c['created_at']).replace('Z', '+00:00')) > started
+                    for c in requested) or
+                any(r['not_before'] and datetime.fromisoformat(r['not_before'].replace('Z', '+00:00')) > started
+                    for r in requests)):
+            return None
+        provider = reviewer or 'chatgpt-codex-connector[bot]'
+        for record in comments + inline + reviews:
+            if record.get('user', {}).get('login', '').lower() != provider:
+                continue
+            body = record.get('body') or ''
+            if not reviewer and body.startswith('<!-- codex-pull-request-review-summary -->'):
+                machine = re.search(r'<!-- codex-review-state:v1 (.+?) -->', body)
+                if machine:
+                    state = json.loads(machine[1])['code_review']
+                    if (state['status'] not in ('running', 'queued', 'completed') or
+                            state.get('has_unresolved_findings') is True):
+                        return None
+                rows = [line for line in body.splitlines() if '**Code Review**' in line]
+                match = re.fullmatch(r'\|[^|]*\*\*Code Review\*\*[^|]*\| [^|]*\*\*(Running|Queued|Completed)\*\* '
+                                     r'(?:since )?<relative-time datetime="([^"]+)">[^<]+</relative-time> '
+                                     r'\| `([0-9a-f]{7,40})` \|[^|]*\|', rows[0]) if len(rows) == 1 else None
+                if not match:
+                    return None
+                at = datetime.fromisoformat(match[2].replace('Z', '+00:00'))
+                if at.tzinfo is None or match[1] == 'Completed' and at >= started:
+                    return None
+                # Running is no terminal response; failed/unknown formats are never timeouts.
+                continue
+            current = record.get('commit_id', record.get('original_commit_id')) == pr['head']['sha']
+            at = record.get('submitted_at') or record.get('created_at')
+            if current or at and datetime.fromisoformat(at.replace('Z', '+00:00')) >= started:
+                return None
+        return {'comment_id': comment_id, 'created_at': latest['created_at']}
+    except (KeyError, TypeError, ValueError, AttributeError):
+        return None
+
+
 def remote_review_complete(head, comments, not_before=None):
     summaries = [c for c in comments if c['user']['login'] == 'chatgpt-codex-connector[bot]' and
                  c['body'].startswith('<!-- codex-pull-request-review-summary -->')]
@@ -1535,6 +1614,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--repo-root', type=Path, default=ROOT, help='Trusted main checkout (bootstrap/test override)')
     parser.add_argument('--github-reviewer', help='Explicit authorized native review source; default remains Codex')
+    parser.add_argument('--review-retry-comment', type=int,
+                        help='Actual latest re-request comment after observed external review stall; no request is posted')
     sub = parser.add_subparsers(dest='action', required=True)
     tick = sub.add_parser('tick'); tick.add_argument('--pr', type=int)
     sub.add_parser('scan')
@@ -1571,11 +1652,13 @@ def main():
             loop = object.__new__(Loop)
             loop.gh = gh
             loop.github_reviewer = reviewer
+            loop.review_retry_comment = args.review_retry_comment
             bound, records = loop.bound(pr, gh.issue(issue_number(pr)), gh.comments(args.pr))
-            print(json.dumps({'pr': args.pr, 'binding': bound, 'feedback': records}, ensure_ascii=False))
+            print(json.dumps({'pr': args.pr, 'binding': bound, 'feedback': records,
+                              'review_wait_satisfied': remote_review_ready(bound)}, ensure_ascii=False))
             return 0
         with coordinator_lock():
-            loop = Loop(github_reviewer=reviewer)
+            loop = Loop(github_reviewer=reviewer, review_retry_comment=args.review_retry_comment)
             if args.action == 'cleanup-branches':
                 result = audit_branches(loop.gh, args.apply)
             elif args.action == 'rebind-target':

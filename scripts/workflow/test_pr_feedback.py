@@ -4,11 +4,15 @@ import json
 import io
 import sys
 import unittest
+import os
+from pathlib import Path
+from datetime import datetime
 from unittest.mock import Mock, patch
 
 import agent_loop as al
 import release_delivery as delivery
-from agent_policy import next_action
+from agent_policy import next_action, remote_review_ready, validate_review
+from handoff_registry import issue_review_origin
 from test_agent_loop import HEAD, NEW, pr_data
 import test_agent_loop as tal
 
@@ -235,6 +239,135 @@ class FeedbackTests(unittest.TestCase):
         changed, _ = loop.bound(pr_data(), gh.issue(35), records)
         self.assertNotEqual(edited['feedback_hash'], changed['feedback_hash'])
         self.assertIn(HEAD, next(r for r in feedback if r.get('id') == 4)['original_commit_id'])
+
+
+class StalledReviewTests(unittest.TestCase):
+    def setUp(self):
+        tal.LoopTests.setUp(self)
+        pending = patch.object(al, 'remote_review_complete', return_value=False)
+        pending.start(); self.addCleanup(pending.stop)
+
+    def retry(self):
+        for at, text in [('2026-10-11T04:00:00Z', '@codex review'),
+                         ('2026-10-11T04:10:00Z', '@codex review\nExplicit re-request after observed stall. HEAD ' + HEAD)]:
+            row = self.gh.comment(36, text)
+            self.gh.messages[36][-1]['created_at'] = at
+        self.loop.review_retry_comment = row['id']
+        self.gh.messages[36].append(summary(status='🔄 **Running**'))
+        return self.loop.bound(self.gh.pr(36), self.gh.issue(35), self.gh.comments(36))[0]
+
+    def test_new_server_anchor_boundary_and_real_provider_status_stay_distinct(self):
+        bound = self.retry()
+        self.assertFalse(bound['remote_review_complete'])
+        self.assertEqual(bound['review_retry']['created_at'], '2026-10-11T04:10:00Z')
+        for at, ready in [('2026-10-11T04:39:59+00:00', False), ('2026-10-11T04:40:00+00:00', True)]:
+            self.assertEqual(remote_review_ready(bound, datetime.fromisoformat(at)), ready)
+        self.assertFalse(remote_review_ready(dict(bound, head=NEW)))
+        self.assertFalse(remote_review_ready(dict(bound, base=NEW)))
+        self.assertTrue(remote_review_ready(dict(bound, remote_review_complete=True)))
+
+    def test_no_retry_wrong_head_edited_newer_request_failed_unknown_and_response_stay_pending(self):
+        self.retry()
+        original = copy.deepcopy(self.gh.messages[36])
+        retry = self.loop.review_retry_comment
+        cases = ['no-retry', 'no-original', 'head', 'edited', 'newer', 'failed', 'unknown', 'response', 'mixed-source', 'not-rerequest', 'duplicate-summary']
+        for case in cases:
+            with self.subTest(case=case):
+                rows = copy.deepcopy(original)
+                selected = next(x for x in rows if x['id'] == retry)
+                self.loop.review_retry_comment = retry
+                if case == 'no-retry': self.loop.review_retry_comment = None
+                if case == 'no-original': rows = [x for x in rows if x.get('body') != '@codex review']
+                if case == 'head': selected['body'] = selected['body'].replace(HEAD, NEW)
+                if case == 'not-rerequest': selected['body'] = '@codex review\nHEAD ' + HEAD
+                if case == 'duplicate-summary': rows.append(summary(status='🔄 **Running**'))
+                if case == 'edited': selected['updated_at'] = '2026-10-11T04:10:01Z'
+                if case == 'newer': rows.append(dict(selected, id=999, created_at='2026-10-11T04:11:00Z'))
+                if case in ('failed', 'unknown'): rows[-1] = summary(status='❌ **Failed**' if case == 'failed' else 'New format')
+                if case == 'response': rows.append(dict(summary(), id=998, body='Concrete finding', created_at='2026-10-11T04:11:00Z'))
+                if case == 'mixed-source':
+                    rows.append({'id': 997, 'user': {'login': al.OWNER}, 'body': al.pack(al.STATE,
+                                 {'review_requests': [{'method': 'github-review-v1', 'reviewer': 'other', 'not_before': None}]})})
+                bound = self.loop.bound(self.gh.pr(36), self.gh.issue(35), rows)[0]
+                self.assertNotIn('review_retry', bound)
+                self.assertFalse(remote_review_ready(bound))
+
+    def test_selected_native_reviewer_uses_its_own_explicit_request(self):
+        self.retry()
+        self.loop.github_reviewer = 'native-reviewer'
+        self.gh.pull.update(requested_reviewers=[{'login': 'native-reviewer'}], requested_teams=[],
+                            created_at='2026-10-11T03:00:00Z')
+        rows = [r for r in self.gh.messages[36] if r['user']['login'] != 'chatgpt-codex-connector[bot]']
+        for row in rows: row['body'] = row['body'].replace('@codex review', '@native-reviewer please review')
+        bound = self.loop.bound(self.gh.pr(36), self.gh.issue(35), rows)[0]
+        self.assertFalse(bound['remote_review_complete'])
+        self.assertTrue(remote_review_ready(bound))
+        self.assertEqual(bound['review_completion']['reviewer'], 'native-reviewer')
+
+    def test_timer_alone_cannot_approve_missing_origin_stale_feedback_or_unresolved_findings(self):
+        bound = self.retry()
+        raw = dict(tal.report(), feedback_hash=bound['feedback_hash'])
+        with self.assertRaises(ValueError): validate_review(raw, bound, storage=self.loop.storage)
+        issued = issue_review_origin(self.loop.storage, raw, bound, raw['session'], 'manual')
+        validate_review(issued, bound, storage=self.loop.storage)
+        for field, value in [('head', NEW), ('base', NEW), ('feedback_hash', 'f' * 64)]:
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                validate_review(issued, dict(bound, **{field: value}), storage=self.loop.storage)
+        with self.assertRaises(ValueError):
+            validate_review(dict(issued, findings=['Unresolved defect']), bound, storage=self.loop.storage)
+        self.assertEqual(next_action({}, bound, 'success', False), 'review')
+        state = {'binding': bound, 'review': issued}
+        self.assertEqual(next_action(state, bound, 'failure', False, storage=self.loop.storage), 'ci-failed')
+        self.assertEqual(next_action(state, bound, 'success', True, storage=self.loop.storage), 'gui-queued')
+        self.assertEqual(next_action(state, bound, 'success', False, storage=self.loop.storage), 'merge')
+
+    def test_coordinator_uses_origin_bound_approval_then_normal_merge_and_finish(self):
+        self.retry()
+        def worker(role, path, packet, out, **kw):
+            bound = kw['origin_binding']
+            raw = dict(tal.report(), feedback_hash=bound['feedback_hash'])
+            return issue_review_origin(self.loop.storage, raw, bound, raw['session'], 'manual')
+        self.worker.side_effect = worker
+        with patch.object(al, 'remote_review_complete', return_value=False):
+            self.assertEqual(self.loop.tick(36)['phase'], 'reviewed')
+            state = self.loop.load(36)[1]
+            self.assertFalse(state['binding']['remote_review_complete'])
+            self.assertEqual(state['review_retry_comment'], self.loop.review_retry_comment)
+            self.assertEqual(self.loop.tick(36)['phase'], 'done')
+        self.assertEqual(self.gh.merges, 1)
+        self.assertEqual(self.worker.call_count, 1)
+        self.assertTrue(self.loop.cleanup.called)
+        self.gh.comment(35, 'Post-merge feedback needs independent disposition')
+        fresh = self.loop.bound(self.gh.pr(36), self.gh.issue(35), self.gh.comments(36))[0]
+        raw = dict(tal.report(), feedback_hash=fresh['feedback_hash'])
+        issued = issue_review_origin(self.loop.storage, raw, fresh, raw['session'], 'manual')
+        recovered = self.loop.reconcile_feedback(self.gh.pr(36), {'binding': fresh, 'review': issued})
+        self.assertEqual(recovered['phase'], 'cleanup')
+        self.assertFalse(recovered['binding']['remote_review_complete'])
+
+    def test_late_feedback_changes_binding_and_requires_fresh_disposition(self):
+        bound = self.retry()
+        raw = dict(tal.report(), feedback_hash=bound['feedback_hash'])
+        issued = issue_review_origin(self.loop.storage, raw, bound, raw['session'], 'manual')
+        self.gh.comment(35, 'Late actionable feedback')
+        fresh = self.loop.bound(self.gh.pr(36), self.gh.issue(35), self.gh.comments(36))[0]
+        self.assertNotEqual(bound['feedback_hash'], fresh['feedback_hash'])
+        with self.assertRaises(ValueError): validate_review(issued, fresh, storage=self.loop.storage)
+        self.assertEqual(next_action({'binding': bound, 'review': issued}, fresh, 'success', False), 'review')
+
+    def test_manual_adapter_binds_actual_session_exact_feedback_without_repair_bundle(self):
+        bound = self.retry()
+        raw = dict(tal.report(), feedback_hash=bound['feedback_hash'])
+        root = Path(self.tmp.name)
+        source, binding, output = root / 'source.json', root / 'binding.json', root / 'issued.json'
+        source.write_text(json.dumps(raw)); source.chmod(0o600)
+        binding.write_text(json.dumps(bound)); binding.chmod(0o600)
+        args = ['agent_worker.py', '--report', str(source), '--binding', str(binding), '--storage',
+                str(self.loop.storage), '--output', str(output)]
+        with patch.object(sys, 'argv', args), patch.dict(os.environ, CODEX_THREAD_ID=raw['session']):
+            tal.bind_manual_report()
+        validate_review(json.loads(output.read_text()), bound, storage=self.loop.storage)
+        self.assertEqual(json.loads(source.read_text()), raw)
 
 
 class FeedbackLoopTests(unittest.TestCase):

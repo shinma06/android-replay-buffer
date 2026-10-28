@@ -4,6 +4,7 @@ import hashlib
 import json
 import re
 import uuid
+from datetime import datetime, timezone
 from git_guard import BRANCH
 from issue_schema import labels
 
@@ -107,6 +108,12 @@ def validate_review(report, expected, acceptance=None, storage=None):
         raise ValueError('Review session/evidence missing')
     if report['verdict'] == 'approved' and (report['findings'] or not report['scope_complete']):
         raise ValueError('Approval conflicts with incomplete scope or unresolved findings')
+    if (report['verdict'] == 'approved' and expected.get('remote_review_complete') is False and
+            'review_retry' in expected):
+        if not remote_review_ready(expected) or report.get('feedback_hash') != expected.get('feedback_hash'):
+            raise ValueError('Pending external review requires the elapsed retry and exact feedback disposition')
+        from handoff_registry import verify_review_origin
+        verify_review_origin(storage, report, expected)
     if report['verdict'] == 'approved' and (acceptance or {}).get('repair_revision'):
         reviewer = session_fingerprint(report['session'])
         observers = acceptance.get('repair_observers')
@@ -154,8 +161,24 @@ def gui_pass(evidence, bound):
                                               for x in evidence['cases']))
 
 
+def remote_review_ready(bound, now=None):
+    """Allow the bounded wait exception without changing provider completion."""
+    if bound.get('remote_review_complete') is not False:
+        return True
+    retry = bound.get('review_retry')
+    if (not isinstance(retry, dict) or set(retry) != {'head', 'base', 'comment_id', 'created_at'} or
+            type(retry['comment_id']) is not int or retry['comment_id'] <= 0 or
+            any(retry.get(k) != bound.get(k) for k in ('head', 'base'))):
+        return False
+    try:
+        started = datetime.fromisoformat(retry['created_at'].replace('Z', '+00:00'))
+        return started.tzinfo is not None and ((now or datetime.now(timezone.utc)) - started).total_seconds() >= 1800
+    except (KeyError, TypeError, ValueError, AttributeError):
+        return False
+
+
 def next_action(state, bound, ci, gui, acceptance=None, storage=None):
-    if bound.get('remote_review_complete') is False:
+    if not remote_review_ready(bound):
         return 'remote-review-wait'
     if state.get('binding') != bound:
         return 'review'

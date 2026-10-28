@@ -30,7 +30,7 @@ python3 scripts/workflow/agent_loop.py tick --pr 123
 
 ## レビュー元と実行元の選択
 
-共通の義務は、期待する現候補のレビューが終わり、全feedbackを固定した別セッションの評価があることです。既定のCodex summary経路を維持し、明示的に採用したGitHub native reviewは `agent_loop.py --github-reviewer <実login> feedback --pr N` で読めます。同じglobal optionをtick・再取得・reconcile-feedbackにも指定します。既定のCLI workerを変更するoptionではなく、worker実行の許可も作りません。
+通常の義務は、期待する現候補の外部レビューが終わり、全feedbackを固定した別セッションの評価があることです。応答停滞時だけは[限定進行](#外部レビュー停滞時の限定進行)を使えます。既定のCodex summary経路を維持し、明示的に採用したGitHub native reviewは `agent_loop.py --github-reviewer <実login> feedback --pr N` で読めます。同じglobal optionをtick・再取得・reconcile-feedbackにも指定します。既定のCLI workerを変更するoptionではなく、worker実行の許可も作りません。
 
 選択元は信頼されたローカル起動設定で、PR本文・報告・未着summaryから自動選択しません。native経路はGitHub APIから取得した指定reviewerの最後のreviewが、対象repo/PR・完全なHEADと一致し、要求境界以降の `APPROVED` または `CHANGES_REQUESTED` で、未処理のreview requestがない場合だけ完了とします。`COMMENTED`・`PENDING`・`DISMISSED`・不明/欠落値は完了にしません。完了したchanges requestも指摘解消と独立評価が必要です。[GitHub review API](https://docs.github.com/en/rest/pulls/reviews)、[review requests](https://docs.github.com/en/rest/pulls/review-requests)の実レコードを使い、追加の外部serviceは呼びません。
 
@@ -78,6 +78,18 @@ reviewer は read-only、fixer は指定 scope の workspace-write。生成し�
 
 base 更新は通常 merge → 必要テスト → 非 force push → 独立再レビュー。HEAD/base/target/Issue/本文/feedback が変わると旧承認を失効させます。共通4 checks、会話解決、strict base、force/削除禁止、bypass なしの実サーバー設定を確認できなければ merge しません。[runtime移行中](github.md#runtime検査の共通testへの段階移行)の旧CLI contextも実保護に従い、test内の実runtime検査を旧名successで代用しません。CI を待つ間の Agent review は独立レビューの記録であり、GUI 受入を作り出しません。受入NG修正では共通validatorの`repair_revision`と独立報告の`repair_assessment`を照合し、全元失敗保証の再試験と実質評価が揃うまで成功status/mergeへ進みません。[修正gate](../verification/README.md#受入ng修正のdevelop統合226)を手動統合にも適用します。
 
+### 外部レビュー停滞時の限定進行
+
+必要な外部レビューの応答停滞がブロッカーと判断された場合、担当は理由を既存Issue/PRに記録し、同じ完全なHEADを明記して**一度だけ明示的に再依頼**します。Codexは通常の `@codex review`、選択したnative reviewerは `@login please review` のPRコメントに「再依頼」と理由を書き、実投稿のID・server `created_at`を読み戻します。既存の再依頼を重ねず、以前の待ち時間、本文中の時刻、edited時刻を起点にしません。
+
+`agent_loop.py --review-retry-comment <実comment ID> feedback --pr N`で実レコードを確認し、同じoptionをtick・再取得・reconcile-feedbackへ使います。これは読取・判定の指定で、再依頼を投稿せず、workerの実行権限も作りません。coordinatorは採用したIDを保持します。最新の未編集コメントがmaintainerによる再依頼で、同じHEAD、先行依頼、選択元/保存済み義務が一致し、必要な応答がなお欠ける場合だけ `binding.review_retry` に実ID/server時刻を記録します。不明な形式・実failure・外部の具体的な応答/指摘・別方式の未完了義務はこの例外で通しません。
+
+**その新しい再依頼から30分**経っても必要な応答がなければ、外部の待機だけを解除できます。`remote_review_complete`はfalseのまま、`review_wait_satisfied`で待機条件を区別します。通常と同じ独立した別sessionが全feedback・固定HEAD/base/title/body/Issueと未解決指摘なしを評価し、approved/scope_complete・一致するfeedback_hashを持つ報告を、そのreviewer自身の既存adapterとprivate registryでorigin結合する必要があります。時間経過だけではAgent review成功・統合にはなりません。通常のCI・strict base・branch protection・Case/受入・所有・実権限は変えません。
+
+非repairの手動評価はreviewer自身のsessionで `agent_worker.py --report <private-report> --binding <private-binding> --storage <既存registry> --output <新private-output>` を使います。元報告は保持し、実sessionと完全bindingへorigin_receiptを発行します。受入NG/certificateでは従来どおり元証拠・acceptanceも必要です。報告を作ったsource writer、設計/証拠の寄与者と最終評価者の独立性は既存契約に従って確認します。
+
+再依頼・HEAD/base/metadata/feedbackや選択元の変更は旧評価を失効させます。30分後も全feedbackを再取得し、応答が来ていれば通常経路で扱います。merge直前、merge後/close前、後着指摘の既存復旧経路も同じ共通判定とorigin評価を使い、provider Completedを偽りません。局所的な待機だけで独立して進められる全作業まで停止したとみなしません。
+
 ## 復旧
 
 ```bash
@@ -101,4 +113,4 @@ develop の実装完了は、Caseがある場合にQAを作成/再利用し、�
 
 ## 後着指摘後の終了処理再開
 
-merge後にfeedbackが変わるとclosure/cleanupを止めて資源を保持する。指摘を修正先へ移管した根拠や非該当の根拠を既存Issue/PRで固定し、最新terminalと全feedbackを別の許可された独立reviewerへ渡す。通常resumeや対応コメントだけを承認としない。新しい独立報告をprivate JSON `{"binding": <feedback snapshotの全binding>, "review": <validate_review準拠＋reviewerが確認したfeedback_hashを含む実独立報告>}` に保存し、trusted mainで `python3 scripts/workflow/agent_loop.py reconcile-feedback --pr N --review <private-json>` を実行する。古いreviewを新wrapperへ移すだけでは再開できず、report自身もreviewed feedback_hashの一致を要する。approved/scope_completeと全binding一致・remote完了・停止/所有を検査した後、次のtickがclosure直前に再取得する。再取得後の変化は再停止する。HEAD/base/target/受入本文が変わった場合は旧GUI/acceptanceを捨て、未達のIssueを閉じない。元writerが再開/消失又はworkerが残っていればこの操作では回復できず、既存の所有/移転確認へ戻る。旧承認は履歴で保持し、この操作で新reviewerを起動したり未修正を自動承認したりしない。
+merge後にfeedbackが変わるとclosure/cleanupを止めて資源を保持する。指摘を修正先へ移管した根拠や非該当の根拠を既存Issue/PRで固定し、最新terminal（又は上記の有効な停滞例外）と全feedbackを別の許可された独立reviewerへ渡す。通常resumeや対応コメントだけを承認としない。新しい独立報告をprivate JSON `{"binding": <feedback snapshotの全binding>, "review": <validate_review準拠＋reviewerが確認したfeedback_hashを含む実独立報告>}` に保存し、trusted mainで `python3 scripts/workflow/agent_loop.py reconcile-feedback --pr N --review <private-json>` を実行する。古いreviewを新wrapperへ移すだけでは再開できず、report自身もreviewed feedback_hashの一致を要する。approved/scope_completeと全binding一致・remote完了又は有効な停滞例外・停止/所有を検査した後、次のtickがclosure直前に再取得する。再取得後の変化は再停止する。HEAD/base/target/受入本文が変わった場合は旧GUI/acceptanceを捨て、未達のIssueを閉じない。元writerが再開/消失又はworkerが残っていればこの操作では回復できず、既存の所有/移転確認へ戻る。旧承認は履歴で保持し、この操作で新reviewerを起動したり未修正を自動承認したりしない。
