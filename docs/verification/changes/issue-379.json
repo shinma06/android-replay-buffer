@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "issue": 379,
+  "gui_required": false,
+  "reason": "撮影修正採用後の実merge4b17fff・全26commit/実PRと新377の完全な1Caseを既存段階受入へ明示登録する管理変更。旧945cの170Case/239出典・元139plan/hash・原観察/FAIL/unknown・human/REALと373性能scope終了を保持する。修復GAP-1承認をwholeCase PASSへ換えず、新候補の実ロード/全保証の独立評価は別scopeへ残す。製品source/build/version/CIや配布・受入結果を変更せずGUI不要。",
+  "cli_checks": [
+    "python3 -m unittest discover -s scripts/workflow -p test_initial_continuation.py",
+    "python3 -m unittest discover -s scripts/workflow -p test_impact_evidence_reuse.py",
+    "python3 scripts/check.py",
+    "python3 scripts/workflow/product_check.py",
+    "python3 scripts/workflow/change_impact.py --base origin/main --run-tests"
+  ],
+  "cases": []
+}
