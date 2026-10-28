@@ -1,6 +1,7 @@
 package io.github.shinma06.replaybuffer.ui
 
 import com.intellij.openapi.Disposable
+import com.intellij.openapi.application.ApplicationInfo
 import com.intellij.openapi.fileChooser.FileChooser
 import com.intellij.openapi.fileChooser.FileChooserDescriptorFactory
 import com.intellij.openapi.options.ShowSettingsUtil
@@ -31,6 +32,7 @@ import io.github.shinma06.replaybuffer.core.StreamSnapshot
 import io.github.shinma06.replaybuffer.core.CaptureMode
 import io.github.shinma06.replaybuffer.core.StreamState
 import io.github.shinma06.replaybuffer.ide.ReplayProjectService
+import io.github.shinma06.replaybuffer.ide.LogcatTargetDevice
 import io.github.shinma06.replaybuffer.ide.streamName
 import io.github.shinma06.replaybuffer.settings.ReplaySettingsConfigurable
 import io.github.shinma06.replaybuffer.settings.ReplaySettingsStore
@@ -38,8 +40,10 @@ import java.awt.BorderLayout
 import java.awt.Dimension
 import java.awt.FlowLayout
 import java.util.Locale
+import java.util.concurrent.CompletableFuture
 import javax.swing.JButton
 import javax.swing.JPanel
+import javax.swing.SwingUtilities
 import javax.swing.text.DefaultCaret
 import javax.swing.text.View
 import kotlin.math.ceil
@@ -69,8 +73,15 @@ private class ReplayToolWindowPanel(private val project: Project) : JPanel(Borde
         toolTipText = "取得OFFでも編集できます。変更は設定画面の「適用」または「OK」で反映します。"
         addActionListener { if (alive) ShowSettingsUtil.getInstance().showSettingsDialog(project, ReplaySettingsConfigurable::class.java) }
     }
-    private val logcatButton = LogcatToolWindowButton({ alive }) {
+    private val logcatReason = wrappingLabel(name = "Logcatの対象端末と操作条件")
+    private val logcatButton = LogcatToolWindowButton({ alive }, { service.captureView.snapshot?.device }, { window, serial, active, deadlineNs ->
+        // Guard before loading the version-bound Java bridge; close remains available on other IDE builds.
+        val reason = logcatTargetBuildReason(ApplicationInfo.getInstance().build.asString())
+        if (reason != null) CompletableFuture.completedFuture(reason) else LogcatTargetDevice.prepare(window, serial, active, deadlineNs)
+    }) {
         toolWindowManager?.getToolWindow("Logcat")
+    }.apply {
+        addPropertyChangeListener("toolTipText") { logcatReason.text = toolTipText }
     }
     private val screenshotButton = JButton("スクリーンショット").apply {
         accessibleContext.accessibleName = "現在画面のスクリーンショットを保存"
@@ -116,6 +127,7 @@ private class ReplayToolWindowPanel(private val project: Project) : JPanel(Borde
     private val alive: Boolean get() = !disposed && !project.isDisposed
 
     init {
+        Disposer.register(this, logcatButton)
         failureCard = FormBuilder.createFormBuilder()
             .addComponent(failure)
             .addComponent(frozenRequest)
@@ -126,6 +138,7 @@ private class ReplayToolWindowPanel(private val project: Project) : JPanel(Borde
             .panel
         val form = FormBuilder.createFormBuilder()
             .addComponent(row(enabled, settingsButton, logcatButton))
+            .addComponent(logcatReason)
             .addComponent(wrappingLabel("ON/OFFはすぐ反映します。OFFで未保存の記録と再試行待ちの対象を破棄します。"))
             .addComponent(state).addComponent(message).addComponent(device).addComponent(application).addComponent(window)
             .addComponent(row(saveButton, screenshotButton))
@@ -152,6 +165,14 @@ private class ReplayToolWindowPanel(private val project: Project) : JPanel(Borde
             if (alive) toolWindowManager?.invokeLater { if (alive) logcatButton.refresh() }
         }
         connection.subscribe(ToolWindowManagerListener.TOPIC, object : ToolWindowManagerListener {
+            override fun toolWindowShown(toolWindow: ToolWindow) {
+                if (alive && toolWindow.id == "Logcat") {
+                    // Retain the show event even if the IDE hides the window again before a queued refresh.
+                    val cancel = Runnable { if (alive) logcatButton.cancelOpen() }
+                    if (SwingUtilities.isEventDispatchThread()) cancel.run() else toolWindowManager?.invokeLater(cancel)
+                }
+            }
+
             override fun stateChanged(toolWindowManager: ToolWindowManager) = refreshLogcat.run()
 
             override fun toolWindowsRegistered(ids: List<String>, toolWindowManager: ToolWindowManager) = refreshLogcat.run()

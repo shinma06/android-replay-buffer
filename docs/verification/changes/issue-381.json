@@ -1,0 +1,41 @@
+{
+  "schema": 1,
+  "issue": 381,
+  "gui_required": true,
+  "reason": "標準Logcatを開く際の端末選択と非同期切替後の実表示を変更するため、固定候補の実IDEで対象一致と既存操作の保持を確認する。",
+  "cli_checks": [
+    "LogcatTargetDeviceTest: 実SDKの端末itemとSwingモデルで正規serialの一致、別端末/不在/offline/一覧到着/重複/保存ログ、1回の要求からのモデル到着/非同期接続待ち、手動変更/取消し/期限切れを確認する。",
+    "LogcatToolWindowButtonTest: 対象なし/切断、古い表示からの開閉、1回のOpen完了、取消し/外部表示、未確認build/ABI不一致の理由、選択中に変わる正規対象、content破棄と対象なしでの閉じる動作を確認する。既存実パネルlayout回帰とclean-HEAD change_impact --run-testsから通常product/build/structure検査を行う。"
+  ],
+  "cases": [
+    {
+      "id": "LOGCAT-TARGET-DEVICE",
+      "artifact": "plugin",
+      "change": "標準Logcatを開く際に現在のReplay Buffer対象端末だけを選び、未準備・不明・破棄は明示する",
+      "preconditions": "#381の固定source/標準ZIP/全JARと実ロード、確認済みStudio buildを同定する。共有GUI枠と対象project/端末は既存PM/QAの割当に従う。旧4b/既存観察・原FAILと他の未完functional unitは保持し、今回source writerはGUI/ADB/導入/再起動/captureを行わない。",
+      "steps": [
+        "正規Replay対象Aと別端末Bを識別する。標準Logcatの選択中の単一端末タブをBにした後に閉じ、Replay Bufferから開く。初回/復元/一覧準備/端末切替はIDE解決/初期化前の元クリックから固定された5秒の有限待機を確認する。復元offline seedからonline/native接続へ元の期限内に到着すれば、再クリックせず表示されること、初めてonlineを確認した後の切断では要求を失効させること、同じボタンで待機を中止できることを確認する。全tabを閉じた空状態ではIDE側で端末用tabを開いてから再試行する案内を確認する。実端末セレクタがAを示し、実ログstream/表示がAのものでBのログが誤って表示されないことを区別して確認する。端末名やタブ名だけを根拠にしない。",
+        "標準側で手動の端末変更・タブ改名・セッション復元がある条件でも実所属とserialを確認する。分割tab・保存ログtab・対象なし/切断/未準備・非対応build/ABI・disposeでは該当する回帰証拠と不足する実表示を照合し、誤った端末を開かず理由を示すことを確認する。利用者のtab/filterを追加/削除/改名/強制変更しない。",
+        "同じ観察で閉じる操作、IDE側からの手動開閉同期、Tab/Spaceと理由の可読性を確認する。対象なしでも表示中Logcatを閉じられ、取得ON/OFF・Save・設定や他project/tabに変更を与えないことを確認する。未影響の保存/録画/性能試験は反復しない。"
+      ],
+      "expected": "開く直前の正規serial/接続を再確認し、選択中の単一標準端末パネルの実モデルとnative接続端末が一致した場合だけ表示する。非同期切替のproperty一致を実stream/描画の証明とはせずnative観察を保持する。曖昧/保存ログ/不在/切断/未準備/非対応/破棄時は別端末へfallbackせず明示する。tab数とfilter、他tab/project、取得/Saveを維持する。",
+      "provenance": [
+        "https://github.com/shinma06/android-replay-buffer/issues/381",
+        "docs/design/ide-ui.md",
+        "docs/verification/responsibility.md"
+      ],
+      "gpt": {
+        "status": "pending",
+        "reason": "実SDK型のコンパイル/モデル/ボタン回帰と、実IDEの端末切替・stream/描画は別。新固定候補でのnative観察は未実施。"
+      },
+      "human": {
+        "status": "pending",
+        "reason": "実操作/表示は未観察。既存human/REAL延期は保持し、新しい本人承認gateは作らない。"
+      },
+      "fix_issue": null,
+      "fix_pr": null,
+      "recheck": "新固定候補の実ロードと端末選択の影響範囲を確認する。旧Case369/元候補の観察を新sourceの実行PASSへ転記しない。モデル選択・native接続・実stream/描画を区別し、切断後の再接続で古いOpenが復活しないことと、初期化後に5秒budgetを取り直さないことを確認する。待機中の対象/手動選択/tab/分割/表示/切断/dispose変更後に遅いOpenを行わないことを確認する。",
+      "next_action": "固定sourceの独立09bレビューとdevelop採用後、PMが既存QA343だけへ本381の残る独立native試験、280/271へ固定候補/標準ZIPとmain反映を双方向readbackして移管する。QA329の従来責任を拡張しない。現在のsource担当にGUI/ADB/導入/再起動/正式ZIP dispatchは割り当てない。"
+    }
+  ]
+}
