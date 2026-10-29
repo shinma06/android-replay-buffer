@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "issue": 344,
-  "candidate": "30c62bba2fcf0d27b43d04292206c070de34d808",
+  "candidate": "4d0430daf90c420e3b86064f839bbafd35d84131",
   "plan_sha256": "0b6d9c6d2d5054ed642565afdbaeb5a88ee198a4ea5398ff96ff36168ce0eda5",
   "changes": [
     {
@@ -143,6 +143,11 @@
       "commit": "30c62bba2fcf0d27b43d04292206c070de34d808",
       "pr": 388,
       "source_path": "docs/verification/changes/issue-387.json"
+    },
+    {
+      "commit": "4d0430daf90c420e3b86064f839bbafd35d84131",
+      "pr": 392,
+      "source_path": "docs/verification/changes/issue-391.json"
     }
   ],
   "cases": {
@@ -519,6 +524,39 @@
         }
       ],
       "current_case_sha256": "f3f8ef65c9fbca1425a78caa61dfdf861b527c585bfe59462dcd9cce1c7d5344"
+    },
+    "391:RABBIT2-LOGCAT-TARGET": {
+      "sources": [
+        {
+          "source_pr": 392,
+          "source_merge": "4d0430daf90c420e3b86064f839bbafd35d84131",
+          "source_path": "docs/verification/changes/issue-391.json",
+          "original_case_sha256": "aa1b8b6fbbae060b2dfca02f9a8b944e9d47f16545d5009678b21a2dacba5487"
+        }
+      ],
+      "current_case_sha256": "aa1b8b6fbbae060b2dfca02f9a8b944e9d47f16545d5009678b21a2dacba5487"
+    },
+    "391:RABBIT2-SETTINGS-SCREENSHOT": {
+      "sources": [
+        {
+          "source_pr": 392,
+          "source_merge": "4d0430daf90c420e3b86064f839bbafd35d84131",
+          "source_path": "docs/verification/changes/issue-391.json",
+          "original_case_sha256": "8f9907ff125871f0af446c245ce6540eb2cf07341e30d8a8d936afbd1199babd"
+        }
+      ],
+      "current_case_sha256": "8f9907ff125871f0af446c245ce6540eb2cf07341e30d8a8d936afbd1199babd"
+    },
+    "391:RABBIT2-CORE-CLI-RETURN": {
+      "sources": [
+        {
+          "source_pr": 392,
+          "source_merge": "4d0430daf90c420e3b86064f839bbafd35d84131",
+          "source_path": "docs/verification/changes/issue-391.json",
+          "original_case_sha256": "364309f9ac1ea38a89b5b3748265f791af6d5a18fac9cae7c123bed0876d8302"
+        }
+      ],
+      "current_case_sha256": "364309f9ac1ea38a89b5b3748265f791af6d5a18fac9cae7c123bed0876d8302"
     }
   }
 }

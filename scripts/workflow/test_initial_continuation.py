@@ -9,7 +9,8 @@ from unittest.mock import patch
 
 from test_agent_loop import BASE, HEAD, NEW
 from initial_continuation_cases import (CASES, QUALITY_CASES, QUALITY_UPDATES, LOGCAT_CASES,
-                                        SCREENSHOT_CASES, LOGCAT_TARGET_CASES, ABOUT_SOURCE_CASES)
+                                        SCREENSHOT_CASES, LOGCAT_TARGET_CASES, ABOUT_SOURCE_CASES,
+                                        RABBIT_CASES)
 import test_initial_acceptance as initial_tests
 from test_verification import change, observation
 import verification as v
@@ -254,7 +255,8 @@ class InitialContinuationTests(unittest.TestCase):
         required = {v.INITIAL_CONTINUATION, record_path, 'docs/verification/changes/issue-364.json',
                     'docs/verification/changes/issue-371.json', 'docs/verification/changes/issue-373.json',
                     'docs/verification/changes/issue-379.json', 'docs/verification/changes/issue-384.json',
-                    'docs/verification/changes/issue-389.json', script, fixture,
+                    'docs/verification/changes/issue-389.json',
+                    'docs/verification/changes/issue-393.json', script, fixture,
                     'scripts/workflow/test_initial_continuation.py',
                     'scripts/workflow/test_impact_evidence_reuse.py', 'docs/verification/README.md',
                     'docs/verification/responsibility.md',
@@ -272,7 +274,8 @@ class InitialContinuationTests(unittest.TestCase):
                    'docs/verification/changes/issue-373.json': change(373, gui=False),
                    'docs/verification/changes/issue-379.json': change(379, gui=False),
                    'docs/verification/changes/issue-384.json': change(384, gui=False),
-                   'docs/verification/changes/issue-389.json': change(389, gui=False), product_path: change(37),
+                   'docs/verification/changes/issue-389.json': change(389, gui=False),
+                   'docs/verification/changes/issue-393.json': change(393, gui=False), product_path: change(37),
                    unrelated[-1]: change(999, gui=False), v.INITIAL_CONTINUATION: self.registration}
         classifier = {BASE: '364b42de6cffde531ad631ae88e20a4271b76d7f',
                       NEW: '8beb4c9aa39196f10a76b6cea2ec757ffa52569c'}
@@ -336,7 +339,7 @@ class InitialContinuationTests(unittest.TestCase):
                         ValueError, 'classifier'):
                 v.promotion_policy_blobs(BASE, NEW, git, continuation=continuation)
         classifier[BASE] = classifier[NEW]
-        for issue in (356, 373, 379, 384, 389):
+        for issue in (356, 373, 379, 384, 389, 393):
             path = f'docs/verification/changes/issue-{issue}.json'
             records[path] = change(issue)
             with self.subTest(nonempty_record=issue), patch.object(
@@ -398,7 +401,8 @@ class RegisteredContinuationTests(unittest.TestCase):
 
     def test_about_source_registration_preserves_old_sources_and_requires_all_three_steps(self):
         root = Path(__file__).resolve().parents[2]
-        registration = json.loads((root / v.INITIAL_CONTINUATION).read_text())
+        registration = json.loads(subprocess.check_output(['git', 'show',
+            '396ed93ff8fe06fcd41cde01ff0bbf570da02238:' + v.INITIAL_CONTINUATION], cwd=root, text=True))
         previous = json.loads(subprocess.check_output(['git', 'show',
             '8beed9c87b2432c34a074b792719f187d66799d1:' + v.INITIAL_CONTINUATION], cwd=root, text=True))
         self.assertEqual(previous['changes'], registration['changes'][:-1])
@@ -412,6 +416,30 @@ class RegisteredContinuationTests(unittest.TestCase):
         self.check_registration(registration, '30c62bba2fcf0d27b43d04292206c070de34d808',
                                 (173, 242, 34, 28))
 
+    def test_rabbit_registration_preserves_old_sources_and_requires_all_three_full_cases(self):
+        root = Path(__file__).resolve().parents[2]
+        registration = json.loads((root / v.INITIAL_CONTINUATION).read_text())
+        previous = json.loads(subprocess.check_output(['git', 'show',
+            '396ed93ff8fe06fcd41cde01ff0bbf570da02238:' + v.INITIAL_CONTINUATION], cwd=root, text=True))
+        self.assertEqual(previous['changes'], registration['changes'][:-1])
+        self.assertEqual(previous['cases'], {key: entry for key, entry in registration['cases'].items()
+                                           if not key.startswith('391:')})
+        path = 'docs/verification/changes/issue-391.json'
+        self.assertEqual({'commit': registration['candidate'], 'pr': 392, 'source_path': path},
+                         registration['changes'][-1])
+        expected = {
+            'RABBIT2-LOGCAT-TARGET': 'aa1b8b6fbbae060b2dfca02f9a8b944e9d47f16545d5009678b21a2dacba5487',
+            'RABBIT2-SETTINGS-SCREENSHOT': '8f9907ff125871f0af446c245ce6540eb2cf07341e30d8a8d936afbd1199babd',
+            'RABBIT2-CORE-CLI-RETURN': '364309f9ac1ea38a89b5b3748265f791af6d5a18fac9cae7c123bed0876d8302'}
+        self.assertEqual(set(expected), {case['id'] for case in RABBIT_CASES[path]})
+        for case in RABBIT_CASES[path]:
+            with self.subTest(case=case['id']):
+                self.assertEqual(3, len(case['steps']))
+                self.assertEqual(expected[case['id']], v.canonical_hash(case))
+                self.assertEqual(('pending', 'pending'), (case['gpt']['status'], case['human']['status']))
+        self.check_registration(registration, '4d0430daf90c420e3b86064f839bbafd35d84131',
+                                (176, 245, 37, 29))
+
     def check_registration(self, registration, expected_candidate, counts):
         root = Path(__file__).resolve().parents[2]
         policy = json.loads((root / v.INITIAL_PLAN).read_text())
@@ -422,6 +450,7 @@ class RegisteredContinuationTests(unittest.TestCase):
         screenshot = '377:SCREENSHOT-MIRROR' in registration['cases']
         logcat_target = '381:LOGCAT-TARGET-DEVICE' in registration['cases']
         about_source = '387:ABOUT-SOURCE-IDENTITY' in registration['cases']
+        rabbit = '391:RABBIT2-LOGCAT-TARGET' in registration['cases']
         warning = registration['cases']['347:SAVE-WARNING-WINDOW']
         self.assertEqual('aa9b28b5d6eec07756c29ffce51dda1192926004e8c4ac99aac5d3c37f216a4b',
                          warning['current_case_sha256'])
@@ -443,6 +472,8 @@ class RegisteredContinuationTests(unittest.TestCase):
             cases.update(copy.deepcopy(LOGCAT_TARGET_CASES))
         if about_source:
             cases.update(copy.deepcopy(ABOUT_SOURCE_CASES))
+        if rabbit:
+            cases.update(copy.deepcopy(RABBIT_CASES))
         self.assertEqual({item['source_path'] for item in registration['changes']}, set(cases))
         documents = {}
         parents = {}
@@ -605,6 +636,8 @@ class RegisteredContinuationTests(unittest.TestCase):
             keys += ['381:LOGCAT-TARGET-DEVICE']
         if about_source:
             keys += ['387:ABOUT-SOURCE-IDENTITY']
+        if rabbit:
+            keys += ['391:' + case['id'] for case in RABBIT_CASES['docs/verification/changes/issue-391.json']]
         for key in keys:
             for status in ('pending', 'blocked', 'fail', 'deferred', 'initial-pass'):
                 manifest['results'][key]['status'] = status
