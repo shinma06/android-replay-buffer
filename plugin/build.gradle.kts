@@ -41,7 +41,7 @@ dependencies {
         if (providers.gradleProperty("useLocalPlatform").orNull == "true") {
             local(providers.gradleProperty("platformPath"))
         } else {
-            androidStudio("2026.2.1.8")
+            androidStudio("2026.2.2.8")
         }
         bundledPlugin("org.jetbrains.android")
     }
@@ -95,8 +95,8 @@ val verifyBuildSdk = tasks.register("verifyBuildSdk") {
     group = "verification"
     doLast {
         val info = intellijPlatform.productInfo
-        check(info.productCode == "AI" && info.buildNumber == "262.9437.185.2621.16467767") {
-            "Expected Android Studio Rabbit 1 (AI-262.9437.185.2621.16467767), got ${info.productCode}-${info.buildNumber}"
+        check(info.productCode == "AI" && info.buildNumber == "262.10968.63.2622.16730706") {
+            "Expected Android Studio Rabbit 2 (AI-262.10968.63.2622.16730706), got ${info.productCode}-${info.buildNumber}"
         }
     }
 }

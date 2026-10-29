@@ -11,8 +11,10 @@ import javax.swing.JButton
 import javax.swing.SwingUtilities
 
 internal fun logcatTargetBuildReason(build: String): String? =
-    if (build == "AI-262.9437.185.2621.16467767") null
-    else "このAndroid Studioのバージョンでは、対象端末を指定してLogcatを開けません。"
+    when (build) {
+        "AI-262.9437.185.2621.16467767", "AI-262.10968.63.2622.16730706" -> null
+        else -> "このAndroid Studioのバージョンでは、対象端末を指定してLogcatを開けません。"
+    }
 
 /** EDT-only view of the IDE-owned window; callbacks must stop resolving it after content/project disposal. */
 internal class LogcatToolWindowButton(
