@@ -1639,7 +1639,8 @@ def promotion_policy_blobs(base, candidate, git, continuation=False):
     protected = {INITIAL_CONTINUATION, 'docs/verification/changes/issue-356.json',
                  'docs/verification/changes/issue-364.json', 'docs/verification/changes/issue-371.json',
                  'docs/verification/changes/issue-373.json', 'docs/verification/changes/issue-379.json',
-                 'docs/verification/changes/issue-384.json', 'docs/verification/changes/issue-389.json'}
+                 'docs/verification/changes/issue-384.json', 'docs/verification/changes/issue-389.json',
+                 'docs/verification/changes/issue-393.json'}
     allowed = {*protected, 'scripts/workflow/verification.py',
                'scripts/workflow/initial_continuation_cases.py',
                'scripts/workflow/test_initial_continuation.py',
@@ -1753,7 +1754,8 @@ def promotion_policy_blobs(base, candidate, git, continuation=False):
                     ('3ae14aa6205aed699b52f3c67e96038130389240', '3fd8535b32a6b291ffcf8ec4c4d303bd566541ea'),
                     ('3ae14aa6205aed699b52f3c67e96038130389240', 'eca791ea7bdbd30fef8d7f9417be9a897c2f720c'),
                     ('3ae14aa6205aed699b52f3c67e96038130389240', '14af90869df14cea12fad1d3304d6d3bab75b5ab'),
-                    ('3ae14aa6205aed699b52f3c67e96038130389240', 'cfa0c978d6b498c060f99e474e9aeb0713f4c96d')):
+                    ('3ae14aa6205aed699b52f3c67e96038130389240', 'cfa0c978d6b498c060f99e474e9aeb0713f4c96d'),
+                    ('3ae14aa6205aed699b52f3c67e96038130389240', '1d44121aa1169f29e3d88ac4d304ddb82694af5b')):
                 raise ValueError('Candidate README changes require explicit trusted-main reconciliation')
         # Carry only the reviewed human-scope amendment, never arbitrary candidate policy edits.
         if path == 'docs/verification/responsibility.md' and (
@@ -1765,7 +1767,8 @@ def promotion_policy_blobs(base, candidate, git, continuation=False):
         elif path in ('docs/verification/changes/issue-356.json',
                       'docs/verification/changes/issue-364.json', 'docs/verification/changes/issue-371.json',
                       'docs/verification/changes/issue-373.json', 'docs/verification/changes/issue-379.json',
-                      'docs/verification/changes/issue-384.json', 'docs/verification/changes/issue-389.json'):
+                      'docs/verification/changes/issue-384.json', 'docs/verification/changes/issue-389.json',
+                      'docs/verification/changes/issue-393.json'):
             record_issue = int(Path(path).stem.removeprefix('issue-'))
             validate_change(regular_json(base, path, git), record_issue, False)
             if old_blob:

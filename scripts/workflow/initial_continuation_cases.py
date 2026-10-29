@@ -1,4 +1,4 @@
-"""Preserve exact 818b7e1, 210ed047, 945c9e0, 4b17fff, e22cac5 and 30c62bb contracts for historical unit tests.
+"""Preserve exact 818b7e1, 210ed047, 945c9e0, 4b17fff, e22cac5, 30c62bb and 4d0430d contracts for historical unit tests.
 
 This is not a generator or current task plan. Keep original wording and hashes;
 current performance acceptance follows docs/verification/responsibility.md.
@@ -882,3 +882,82 @@ ABOUT_SOURCE_CASES = {'docs/verification/changes/issue-387.json': [{'id': 'ABOUT
                                                'next_action': '通常required checks/currentHEAD '
                                                               'feedback/04独立source '
                                                               'review後、Rootが一度の標準正式候補と限定初回Aboutを既存担当へ割り当てる。残る独立試験は既存QA/release280/271へ双方向移管し、自己merge/正式公開しない。'}]}
+
+
+RABBIT_CASES = {'docs/verification/changes/issue-391.json': [{'artifact': 'plugin',
+                                               'gpt': {'status': 'pending',
+                                                       'reason': '初回source準備のみ。新Mac SDK '
+                                                                 'compile/build/実ロードとaffected受入は未実施。'},
+                                               'human': {'status': 'pending',
+                                                         'reason': '未観察。既存human/REAL延期を保持し、新しい本人承認gateを作らない。'},
+                                               'fix_issue': None,
+                                               'fix_pr': None,
+                                               'id': 'RABBIT2-LOGCAT-TARGET',
+                                               'change': '新exact buildをruntime '
+                                                         'gateへ追加し、旧buildと381の対象端末・取消し・有限待機保証を維持する',
+                                               'preconditions': '同じclean固定source/標準ZIP/全3JARと実ロード、AI-262.10968.63.2622.16730706、実Mac '
+                                                                'JBRを同定する。共有host復旧後にRootが既存QA343/280の所有と調整し、旧381/387・7/294の観察/原FAIL/未達は変更しない。',
+                                               'steps': ['LogcatToolWindowButtonTestの既存admission回帰で旧exactと新exactの受理、双方の未確認隣接build・別product・短縮buildの拒否を確認する。実SDKのLogcatTargetDeviceTestで既存のserial/online/nativeモデル、一覧到着、取消し/手動変更/対象変更/dispose/保存ログ/分割tabと元クリック起点の有限待機を確認する。',
+                                                         '新IDEで正規対象Aと選択中Bを識別し、選択中の単一端末パネルを開く操作の実selector、native接続、Aのstream/描画を区別して確認する。初回/復元offline-to-online等の381保証は既存回帰と不足する実接続へ分担し、model一致だけで実描画PASSにしない。',
+                                                         '閉じる・IDE側の手動開閉同期・Tab/Space・理由の可読性を確認し、tab/filterと他project、取得/Saveを維持する。旧Rabbit1 '
+                                                         'exactの対応を除かず、旧成功/失敗を新buildの結果にしない。'],
+                                               'expected': '新exactのGate拒否を解消し、型付きbridgeと381の元のserial/有限待機/取消し/非対応拒否/実stream保証を維持する。全262系の互換性、Windows静的ABIからのMac/実描画PASSを主張しない。',
+                                               'provenance': ['https://github.com/shinma06/android-replay-buffer/issues/391',
+                                                              'docs/verification/changes/issue-381.json',
+                                                              'docs/verification/responsibility.md'],
+                                               'recheck': '28 required member '
+                                                          'descriptorのWindows静的一致は予備資料として保持し、新Mac '
+                                                          'SDK/JBR/API compileと実接続の不足は新固定候補で別途確認する。',
+                                               'next_action': 'BFの既存復旧・資源引継ぎ完了後、Rootが新Mac '
+                                                              'SDK検証と固定source/ZIPの独立04レビュー・必要なnative担当を割当する。'},
+                                              {'artifact': 'plugin',
+                                               'gpt': {'status': 'pending',
+                                                       'reason': '初回source準備のみ。新Mac SDK '
+                                                                 'compile/build/実ロードとaffected受入は未実施。'},
+                                               'human': {'status': 'pending',
+                                                         'reason': '未観察。既存human/REAL延期を保持し、新しい本人承認gateを作らない。'},
+                                               'fix_issue': None,
+                                               'fix_pr': None,
+                                               'id': 'RABBIT2-SETTINGS-SCREENSHOT',
+                                               'change': '新IDE/SDK境界でSettingsとLogcat保存先連携を確認する',
+                                               'preconditions': '新build/JBR/固定ZIPを同定し、旧app/profileを上書きしない専用fixtureと通常返却を確保する。旧Settings/スクリーンショットの原事実は別identityで保持する。',
+                                               'steps': ['取得OFFの初期ロードと日本語ToolWindow/Settings、実modelを照合し、既存値/Apply/Cancel/reopenと有効状態を確認する。既存の設定schema/キーとCLI設定互換を変更しない。',
+                                                         '新SDKで既存のLogcatScreenshotSettings/ReplaySettings/Environment系回帰を行い、必要な実連携でLogcatの保存先を読み、正しい所有先へ1枚のPNGが保存されることを確認する。manual保存先は未影響保証の適格な既存証拠を評価し、不必要な再実行を増やさない。',
+                                                         '内部resolver等の未知/LinkageErrorで別folderへfallbackしない理由を保ち、元Settings/Run/plugins/完成出力と通常返却を照合する。'],
+                                               'expected': '新IDEで適用・取消し・永続化と実保存先/画像の自製品glueを維持する。build成功だけでUIや保存効果をPASSにせず、他人の設定/成果物を破壊しない。',
+                                               'provenance': ['https://github.com/shinma06/android-replay-buffer/issues/391',
+                                                              'docs/plugin-development.md',
+                                                              'docs/verification/changes/issue-341.json',
+                                                              'docs/verification/responsibility.md'],
+                                               'recheck': '新Mac '
+                                                          'API/JBRによる影響と必要な実操作だけを評価し、旧F6等の観察を新版の実行へ付け替えない。',
+                                               'next_action': 'Rootが共有host復旧・資源/leaseを確定後に、既存の検証責任と調整してaffected '
+                                                              'Settings/保存先事実を割当する。'},
+                                              {'artifact': 'plugin',
+                                               'gpt': {'status': 'pending',
+                                                       'reason': '初回source準備のみ。新Mac SDK '
+                                                                 'compile/build/実ロードとaffected受入は未実施。'},
+                                               'human': {'status': 'pending',
+                                                         'reason': '未観察。既存human/REAL延期を保持し、新しい本人承認gateを作らない。'},
+                                               'fix_issue': None,
+                                               'fix_pr': None,
+                                               'id': 'RABBIT2-CORE-CLI-RETURN',
+                                               'change': '新Mac runtimeで共通capture '
+                                                         'core/CLI/保存と通常返却のaffected境界を確認する',
+                                               'preconditions': '新Mac '
+                                                                'build/JBR、同梱CLIのjava/classpath、source/ZIP/全JARとendpoint/projectを同定する。既存app/profile/完成出力と原失敗は保持する。',
+                                               'steps': ['新SDKの標準compile/check/buildPlugin/verifyPluginStructureと必要なPlugin '
+                                                         'Verifier、既存CLI/設定/取得保存/終了のaffected回帰を実行する。同じ固定候補のbundled '
+                                                         'CLIから正規project/status/版・認証・有限待機を確認する。',
+                                                         '限定fixtureで必要なON/OFFとcapture-to-saveの内容/時刻/窓/失敗pin/atomicityと実保存導線を確認する。server/clock/JCodecのbyte不変などは保証別に適格な既存回帰/FILE/consumer証拠を評価し、新SDK更新だけを理由に全履歴や性能を反復しない。',
+                                                         'current own '
+                                                         'process/SDK/endpointと元profile/settings/Run/plugins/完成出力、停止/復元、lease '
+                                                         'release ACKと別status '
+                                                         'FREEをそれぞれ確認する。未達/UNKNOWNは保全し、未確認の新host効果を成功にしない。'],
+                                               'expected': '同じ製品coreとCLI互換を維持し、変わったruntimeの実接続と保証上の必要な事実だけを新identityで確認する。追加性能計測・未検証の再利用・見かけの即時cleanup成功を作らない。',
+                                               'provenance': ['https://github.com/shinma06/android-replay-buffer/issues/391',
+                                                              'docs/cli.md',
+                                                              'docs/verification/responsibility.md',
+                                                              'docs/operations.md'],
+                                               'recheck': 'SDK/host変更の影響が不明な保証はaffected再確認とし、原FAILを保持する。新ZIPだけで未影響の成功を無条件失効させず、正式なimpact/reuse条件と独立評価を使う。',
+                                               'next_action': '通常checksと独立固定レビューを満たし、Rootが資源/既存復旧/共有GUIを調整して残試験を割当する。実装準備だけでclose/merge/main反映しない。'}]}

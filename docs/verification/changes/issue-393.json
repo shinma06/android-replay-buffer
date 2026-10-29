@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "issue": 393,
+  "gui_required": false,
+  "reason": "Rabbit修正の実merge4d0430d/PR392と391の完全3Case・各3手順を既存strict段階登録へ追加する管理変更。旧173契約/242出典/28commit、追加34key、元139plan/hash・34humanREAL・原観察/FAIL/UNKNOWNと既存の責任改訂を保持する。登録を新IDEロード/接続/描画・CasePASS・製品昇格へ換えず、新3Caseのpendingを維持する。fixture・回帰・exact metadata carryと説明だけを同期し、製品source/build/versionや元Caseを変更しないためGUI不要。",
+  "cli_checks": [
+    "python3 -m unittest discover -s scripts/workflow -p test_initial_continuation.py",
+    "python3 -m unittest discover -s scripts/workflow -p test_impact_evidence_reuse.py",
+    "python3 scripts/check.py",
+    "python3 scripts/workflow/product_check.py",
+    "python3 scripts/workflow/change_impact.py --base origin/main --run-tests"
+  ],
+  "cases": []
+}
