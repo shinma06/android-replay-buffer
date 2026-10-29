@@ -16,10 +16,15 @@ import javax.swing.SwingUtilities
 
 class LogcatToolWindowButtonTest {
     @Test
-    fun `only the confirmed full Studio build can enter the target selection bridge`() {
+    fun `only the pinned full Studio builds can enter the target selection bridge`() {
         assertNull(logcatTargetBuildReason("AI-262.9437.185.2621.16467767"))
         assertNotNull(logcatTargetBuildReason("AI-262.9437.185.2621.16467768"))
         assertNotNull(logcatTargetBuildReason("IC-262.9437.185.2621.16467767"))
+        assertNull(logcatTargetBuildReason("AI-262.10968.63.2622.16730706"))
+        assertNotNull(logcatTargetBuildReason("AI-262.10968.63.2622.16730705"))
+        assertNotNull(logcatTargetBuildReason("AI-262.10968.63.2622.16730707"))
+        assertNotNull(logcatTargetBuildReason("IC-262.10968.63.2622.16730706"))
+        assertNotNull(logcatTargetBuildReason("AI-262.10968.63"))
     }
 
     @Test

@@ -13,7 +13,7 @@
 | 統合先 | 製品変更は `develop`。固定候補を `main` へpromotion。GUI不要toolingは `main`。main/developは作成済み |
 | 必須checks | `test` / `PR policy` / `Acceptance gate` / `Agent review`。旧Python専用contextからの移行は[#305](https://github.com/shinma06/android-replay-buffer/issues/305)の[branch別検査・保護移行](setup/github.md#runtime検査の共通testへの段階移行)と実readbackを前提とする。source定義をserverへの適用済み証拠にしない |
 | 管理 | [Project #5](https://github.com/users/shinma06/projects/5)、現行は [Milestone #4 — 第2版](https://github.com/shinma06/android-replay-buffer/milestone/4)。[Milestone #3 — 初期版](https://github.com/shinma06/android-replay-buffer/milestone/3)はAgent段階完了。完了済み [Milestone #1](https://github.com/shinma06/android-replay-buffer/milestone/1) は初回ハーネス導入の履歴。各作業は対応 Issue の実 Milestone を確認する。[作業管理](work-management.md) |
-| Android Studio plugin | `plugin/`に取得コア・ToolWindow・設定・SDK/対象アプリ解決・情報表示actionを実装。初期版はmain反映済み。第2版 #206のbuildはRabbit 1 / JDK 27（JVM/API target 25）/ Gradle 9.8.1 / Kotlin 2.4.21、ID `io.github.shinma06.android-replay-buffer`。[現行の開発手順](plugin-development.md)と固定候補ごとの受入を区別する |
+| Android Studio plugin | `plugin/`に取得コア・ToolWindow・設定・SDK/対象アプリ解決・情報表示actionを実装。初期版はmain反映済み。第2版のbuild SDKはRabbit 2（#391で更新、互換性受入は別）/ JDK 27（JVM/API target 25）/ Gradle 9.8.1 / Kotlin 2.4.21、ID `io.github.shinma06.android-replay-buffer`。[現行の開発手順](plugin-development.md)と固定候補ごとの受入を区別する |
 
 ## 製品候補と受入の現在地
 

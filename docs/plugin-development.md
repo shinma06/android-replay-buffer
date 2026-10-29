@@ -8,21 +8,23 @@
 | --- | --- |
 | Plugin ID | `io.github.shinma06.android-replay-buffer` |
 | Kotlin package | `io.github.shinma06.replaybuffer` |
-| Android Studio SDK | Rabbit 1 `2026.2.1.8` / `AI-262.9437.185.2621.16467767` |
+| Android Studio build SDK | Rabbit 2 `2026.2.2.8` / `AI-262.10968.63.2622.16730706`（platform `2026.2.3`） |
 | 宣言するIDE範囲 | `262.9437.185` 〜 `262.*`。実受入は固定Rabbitで実施し、全patchの動作を保証した意味ではない |
-| Build JDK / JVM・API target | 27 / 25（実IDEは同梱JBR 25） |
-| Kotlin | 2.4.21、language/API 2.4。IDE同梱stdlib 2.4.0を使用 |
+| Build JDK / JVM・API target | 27 / 25。新Mac同梱JBRの実identityは受入時に確認する |
+| Kotlin | 2.4.21、language/API 2.4。IDE同梱stdlibを使用（旧Rabbit 1は2.4.0、新Rabbit 2は実SDKで確認） |
 | IntelliJ Platform Gradle Plugin | 2.19.0 |
 | Gradle Wrapper | 9.8.1、distribution SHA-256固定 |
 | JVM test | JUnit BOM 6.1.3。JupiterとPlatform launcherを同じBOMで解決 |
 | 時計DEXのbuild入力 | R8/D8 9.5.26、Android SDK API 37.2 revision 1。DEX min API 24 |
 | 開発版 / 正式候補 | 既定は `0.2.0-dev.<source SHA>`。未commit差分には `-dirty`。正式候補はcleanなsourceで `-PpluginVersion=0.2.0` |
 
-2026-10-17時点の公式stableを採用します。[Android Studio一覧](https://plugins.jetbrains.com/docs/intellij/android-studio-releases-list.html)と対象IDEのproduct-info、[Kotlin 2.4.21](https://github.com/JetBrains/kotlin/releases/tag/v2.4.21)、[Gradle 9.8.1](https://docs.gradle.org/9.8.1/release-notes.html)、[JUnit 6.1.3](https://github.com/junit-team/junit-framework/releases/tag/r6.1.3)を照合しました。[Kotlinの公式互換表](https://kotlinlang.org/docs/gradle-configure-project.html)の完全対応範囲はGradle 9.7.0までなので、9.8.1は本projectの実build/testsで適合を確認します。GradleはJava 27をサポートし、プラグインのJVM/API targetはIDEが使う25に限定します。[Platform pluginのtask convention](https://github.com/JetBrains/intellij-platform-gradle-plugin/blob/2.19.0/src/main/kotlin/org/jetbrains/intellij/platform/gradle/plugins/KotlinJvmToolchainConventions.kt)がtoolchain値を使うため、Kotlinコンパイルtaskにもtarget 25を明示しています。
+Android Studio SDKは2026-10-29に公式情報を照合したRabbit 2へ固定します。SDK更新に伴うbuild・実ロード・機能受入は[#391](https://github.com/shinma06/android-replay-buffer/issues/391)で別々に確認し、pin更新やWindows JARの静的ABI一致をMacでの互換性PASSにしません。その他のstackは2026-10-17時点の公式stableを維持します。[Android Studio一覧](https://plugins.jetbrains.com/docs/intellij/android-studio-releases-list.html)と対象IDEのproduct-info、[Kotlin 2.4.21](https://github.com/JetBrains/kotlin/releases/tag/v2.4.21)、[Gradle 9.8.1](https://docs.gradle.org/9.8.1/release-notes.html)、[JUnit 6.1.3](https://github.com/junit-team/junit-framework/releases/tag/r6.1.3)を照合しました。[Kotlinの公式互換表](https://kotlinlang.org/docs/gradle-configure-project.html)の完全対応範囲はGradle 9.7.0までなので、9.8.1は本projectの実build/testsで適合を確認します。GradleはJava 27をサポートし、プラグインのJVM/API targetはIDEが使う25に限定します。[Platform pluginのtask convention](https://github.com/JetBrains/intellij-platform-gradle-plugin/blob/2.19.0/src/main/kotlin/org/jetbrains/intellij/platform/gradle/plugins/KotlinJvmToolchainConventions.kt)がtoolchain値を使うため、Kotlinコンパイルtaskにもtarget 25を明示しています。
 
 [公式のAndroid Studioプラグイン開発手順](https://plugins.jetbrains.com/docs/intellij/android-studio.html)に従いAndroid Studio SDKを使用します。projectのAndroid SDK、Run configurationのapplicationId、Gradle同期・Android modelの変更を読むため、同梱Android pluginのAPIを利用します。Terminal・JCEFへの依存はありません。録画用の固定scrcpy server、時計測定DEX、JCodecをZIPに含め、利用時に取得する追加ツールはありません。
 
 設定の保存は`SerializablePersistentStateComponent`のimmutable stateとatomic更新を使い、旧XMLキー・値を明示bindingで保持します。保存先の確認はIDEが注入するservice scopeが所有し、画面の破棄・再入力で取消します。UI反映は[UI専用dispatcher](https://github.com/JetBrains/intellij-community/blob/06e208526c9db65ce95892b546c0c226d39e950f/platform/core-api/src/com/intellij/openapi/application/coroutines.kt#L459)とlaunch時のmodalityを使い、filesystem読取りはIOへ分離します。
+
+Logcatの内部APIへ進むruntime gateは、旧Rabbit 1の`AI-262.9437.185.2621.16467767`と新Rabbit 2の`AI-262.10968.63.2622.16730706`だけを許可します。隣接buildや別productは許可せず、標準Logcatを閉じる経路は維持します。旧版の固定観察は旧identityのまま保持し、新版の実接続・stream/描画を保証する証拠には転記しません。
 
 ## ビルド
 
@@ -34,7 +36,7 @@ export ANDROID_HOME="$HOME/Library/Android/sdk"
 python3 scripts/workflow/product_check.py
 ```
 
-既定では固定SDKをGradleが取得します。初回はネットワーク接続とSDK展開用の空き容量が必要です。同じSDKが手元にある場合だけ、明示して取得を省けます。
+既定では固定SDKをGradleが取得します。初回はネットワーク接続とSDK展開用の空き容量が必要です。同じRabbit 2のexact buildを識別済みの場合だけ、明示して取得を省けます。local指定でも`verifyBuildSdk`はAIと上記buildの完全一致を要求します。旧Rabbit 1のアプリ・SDK・profileを上書きせず、新SDKの展開・transforms・sandboxと復旧用の容量を先に確保します。
 
 ```bash
 REPLAY_PLATFORM_PATH="/Applications/Android Studio.app/Contents" \
