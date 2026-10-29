@@ -10,8 +10,8 @@
 | Kotlin package | `io.github.shinma06.replaybuffer` |
 | Android Studio build SDK | Rabbit 2 `2026.2.2.8` / `AI-262.10968.63.2622.16730706`（platform `2026.2.3`） |
 | 宣言するIDE範囲 | `262.9437.185` 〜 `262.*`。実受入は固定Rabbitで実施し、全patchの動作を保証した意味ではない |
-| Build JDK / JVM・API target | 27 / 25（実IDEは同梱JBR 25） |
-| Kotlin | 2.4.21、language/API 2.4。IDE同梱stdlib 2.4.0を使用 |
+| Build JDK / JVM・API target | 27 / 25。新Mac同梱JBRの実identityは受入時に確認する |
+| Kotlin | 2.4.21、language/API 2.4。IDE同梱stdlibを使用（旧Rabbit 1は2.4.0、新Rabbit 2は実SDKで確認） |
 | IntelliJ Platform Gradle Plugin | 2.19.0 |
 | Gradle Wrapper | 9.8.1、distribution SHA-256固定 |
 | JVM test | JUnit BOM 6.1.3。JupiterとPlatform launcherを同じBOMで解決 |

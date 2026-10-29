@@ -82,7 +82,7 @@
       "fix_pr": null,
       "id": "RABBIT2-CORE-CLI-RETURN",
       "change": "新Mac runtimeで共通capture core/CLI/保存と通常返却のaffected境界を確認する",
-      "preconditions": "新Mac build/JBR、同梱CLIのjava/classpath、source/ZIP/全JARとendpoint/projectを同定する。既存app/profile/68出力と原失敗は保持する。",
+      "preconditions": "新Mac build/JBR、同梱CLIのjava/classpath、source/ZIP/全JARとendpoint/projectを同定する。既存app/profile/完成出力と原失敗は保持する。",
       "steps": [
         "新SDKの標準compile/check/buildPlugin/verifyPluginStructureと必要なPlugin Verifier、既存CLI/設定/取得保存/終了のaffected回帰を実行する。同じ固定候補のbundled CLIから正規project/status/版・認証・有限待機を確認する。",
         "限定fixtureで必要なON/OFFとcapture-to-saveの内容/時刻/窓/失敗pin/atomicityと実保存導線を確認する。server/clock/JCodecのbyte不変などは保証別に適格な既存回帰/FILE/consumer証拠を評価し、新SDK更新だけを理由に全履歴や性能を反復しない。",
