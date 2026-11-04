@@ -177,7 +177,7 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
     internal fun setEnabled(value: Boolean): CompletableFuture<ReplayOperation> {
         if (!alive) return rejected("projectは終了しています。")
         return if (value && (resolving || capture.view.pending > 0)) rejected("設定・操作を反映中です。完了後に取得をONにしてください。")
-        else capture.setEnabled(value)
+        else capture.setEnabled(value, environment)
     }
 
     @Synchronized
