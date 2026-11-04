@@ -29,21 +29,32 @@ import java.io.PrintStream
 import java.lang.reflect.Proxy
 import java.nio.file.Files
 import java.nio.file.Path
+import java.nio.file.attribute.PosixFilePermissions
 import java.util.concurrent.TimeUnit
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
-import org.junit.jupiter.api.Test
+import org.junit.jupiter.params.ParameterizedTest
+import org.junit.jupiter.params.provider.ValueSource
 import org.junit.jupiter.api.io.TempDir
 
 class ReplayInitializationCliTest {
     @TempDir lateinit var temporary: Path
 
-    @Test fun `status reports unsafe storage and explicit daemon recovers settings on the same project`() {
+    @ParameterizedTest
+    @ValueSource(booleans = [false, true])
+    fun `status and daemon on the same imported project preserve security and capture settings`(unsafe: Boolean) {
         val config = Files.createDirectory(temporary.resolve("config"))
         val projectPath = Files.createDirectory(temporary.resolve("project"))
         val outside = Files.createDirectory(temporary.resolve("outside"))
-        val namespace = Files.createSymbolicLink(config.resolve("android-replay-buffer"), outside)
+        val stable = prepareCleanupDirectory(config, projectPath.toString())
+        val components = listOf(stable.parent.parent, stable.parent, stable)
+        val imported = PosixFilePermissions.fromString("rwxr-xr-x")
+        components.forEach { Files.setPosixFilePermissions(it, imported) }
+        if (unsafe) {
+            Files.delete(stable)
+            Files.createSymbolicLink(stable, outside)
+        }
         val lifetime = Disposer.newDisposable()
         val app = MockApplication(lifetime)
         ApplicationManager.setApplication(app, lifetime)
@@ -58,7 +69,7 @@ class ReplayInitializationCliTest {
         })
         val project = object : MockProject(null, lifetime) { override fun getBasePath() = projectPath.toString() }
         val store = ReplaySettingsStore()
-        store.loadState(ReplaySettingsState(captureMode = CaptureMode.LOG_ONLY, retentionSeconds = 83))
+        store.loadState(ReplaySettingsState(enabled = !unsafe, captureMode = CaptureMode.LOG_ONLY, retentionSeconds = 83))
         project.registerService(ReplaySettingsStore::class.java, store)
         project.registerService(GradleSyncState::class.java, Proxy.newProxyInstance(
             javaClass.classLoader, arrayOf(GradleSyncState::class.java),
@@ -78,7 +89,7 @@ class ReplayInitializationCliTest {
         val handler = service.javaClass.getDeclaredMethod("executeCli", CliRequest::class.java).apply { isAccessible = true }
         val registry = temporary.resolve("registry")
         try {
-            assertFalse(capture.applySettings(store.settings(), environment, 0).get(15, TimeUnit.SECONDS).accepted)
+            assertEquals(!unsafe, capture.applySettings(store.settings(), environment, 0).get(15, TimeUnit.SECONDS).accepted)
             ReplayCliServer(registry, projectPath, "build") { handler.invoke(service, it) as CliResponse }.use { server ->
                 fun cli(command: String, expected: Int): String {
                     val output = ByteArrayOutputStream()
@@ -89,20 +100,25 @@ class ReplayInitializationCliTest {
                     return (if (expected == 0) output else error).toString().trim()
                 }
                 fun status() = JsonParser.parseString(cli("status", 0)).asJsonObject
-                val failed = status()
-                assertFalse(failed["running"].asBoolean)
-                val reason = failed["error"].asString
-                assertTrue(cli("daemon", 1).contains(reason))
-                assertTrue(Files.isSymbolicLink(namespace))
-                Files.delete(namespace)
-                Files.createDirectory(namespace)
-                Files.setPosixFilePermissions(namespace, java.nio.file.attribute.PosixFilePermissions.fromString("rwxr-xr-x"))
-                assertFalse(status()["running"].asBoolean)
+                if (unsafe) {
+                    val failed = status()
+                    assertFalse(failed["running"].asBoolean)
+                    val reason = failed["error"].asString
+                    assertTrue(reason.contains(config.toRealPath().relativize(stable).toString()) && reason.contains("700"), reason)
+                    assertTrue(cli("daemon", 1).contains(reason))
+                    assertTrue(Files.isSymbolicLink(stable))
+                    Files.delete(stable)
+                    Files.createDirectory(stable)
+                    Files.setPosixFilePermissions(stable, imported)
+                    assertFalse(status()["running"].asBoolean)
+                    assertEquals(imported, Files.getPosixFilePermissions(stable))
+                } else assertTrue(status()["running"].asBoolean)
                 assertEquals("started", cli("daemon", 0))
-                assertTrue(reason.contains("android-replay-buffer") && reason.contains("700"), reason)
                 val restored = status()
                 assertTrue(restored["running"].asBoolean)
-                assertFalse(restored.has("error") && !restored["error"].isJsonNull)
+                assertEquals(null, capture.view.initializationError)
+                assertEquals(capture.view.snapshot!!.error, restored["error"]?.takeUnless { it.isJsonNull }?.asString)
+                for (component in components) assertEquals(PosixFilePermissions.fromString("rwx------"), Files.getPosixFilePermissions(component))
                 assertEquals("LOG_ONLY", restored["capture_mode"].asString)
                 assertEquals(83, restored["replay_seconds"].asInt)
                 server.close()

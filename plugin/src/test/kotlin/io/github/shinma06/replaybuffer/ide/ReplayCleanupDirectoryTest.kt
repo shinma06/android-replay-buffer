@@ -47,6 +47,19 @@ class ReplayCleanupDirectoryTest {
     }
 
     @Test
+    fun `an owner mismatch never normalizes an existing directory`() {
+        val existing = Files.createDirectory(directory.resolve("cleanup"))
+        val mode = PosixFilePermissions.fromString("rwxr-xr-x")
+        Files.setPosixFilePermissions(existing, mode)
+        val failure = assertThrows(CleanupDirectoryFailure::class.java) {
+            preparePrivateDirectory(existing, Path.of("cleanup")) { "different-owner" }
+        }
+        assertTrue(failure.message!!.contains("所有者が異な"))
+        assertTrue(failure.message!!.contains("rwxr-xr-x"))
+        assertEquals(mode, Files.getPosixFilePermissions(existing))
+    }
+
+    @Test
     fun `untrusted namespace entries and missing project are preserved and rejected`() {
         val project = Files.createDirectory(directory.resolve("project"))
         val outside = Files.createDirectory(directory.resolve("outside"))

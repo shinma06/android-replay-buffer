@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "issue": 395,
+  "gui_required": false,
+  "reason": "保証は現在projectのprivate directoryの検査・必要な権限縮小、失敗診断と同一projectでの明示的再初期化。使い捨て領域の実POSIX操作と、認証済みCLIからproductionのproject handler・coreへ入る回帰で確認できる。IDEの設定コピー実装・録画内容・性能は対象外。",
+  "cli_checks": [
+    "ReplayCleanupDirectoryTest: 既存3階層の755を700に戻し、別projectと配下の既存内容を保持。リンク、通常ファイル、所有者不一致、共有書込み可能または本人権限不足なら変更せず拒否。",
+    "ReplayInitializationCliTest: status/daemonの終了コード、原因・相対パス・必要権限、外部修正後の同一project再試行、設定済み保持秒数とLOG_ONLYの復元を実client/serverで確認。statusは照会のみ。",
+    "ReplayProjectCaptureTestと通常のclean HEAD検査で、FIFO・最新のON/OFF・設定世代・終了中の遅延初期化とCLI互換を確認。develop採用とmain反映を分ける。"
+  ],
+  "cases": []
+}

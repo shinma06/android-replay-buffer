@@ -303,6 +303,49 @@ else: sys.exit(1)
     }
 
     @Test
+    fun `a pending initialization retry honors later OFF and project close without another core`() {
+        for (closing in listOf(false, true)) {
+            val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+            val store = ReplaySettingsStore()
+            val started = java.util.concurrent.CountDownLatch(1)
+            val release = java.util.concurrent.CountDownLatch(1)
+            val attempts = java.util.concurrent.atomic.AtomicInteger()
+            val stable = Files.createDirectory(directory.resolve("retry-$closing"))
+            val capture = ReplayProjectCapture(scope, store, {}, {}) {
+                if (attempts.incrementAndGet() == 1) error("fixture unavailable")
+                started.countDown()
+                check(release.await(15, TimeUnit.SECONDS))
+                stable
+            }
+            try {
+                assertFalse(capture.applySettings(store.settings(), unresolved, 0).get(15, TimeUnit.SECONDS).accepted)
+                val retry = capture.setEnabled(true, unresolved)
+                assertTrue(started.await(15, TimeUnit.SECONDS))
+                if (closing) {
+                    capture.close()
+                    release.countDown()
+                    capture.termination.get(15, TimeUnit.SECONDS)
+                    assertTrue(retry.isCompletedExceptionally)
+                    assertNull(capture.view.snapshot)
+                } else {
+                    val off = capture.setEnabled(false)
+                    release.countDown()
+                    assertTrue(retry.get(15, TimeUnit.SECONDS).accepted)
+                    assertTrue(off.get(15, TimeUnit.SECONDS).accepted)
+                    assertFalse(store.enabled)
+                    assertFalse(capture.view.snapshot!!.enabled)
+                }
+                assertEquals(2, attempts.get())
+            } finally {
+                release.countDown()
+                capture.close()
+                capture.termination.get(15, TimeUnit.SECONDS)
+                scope.cancel()
+            }
+        }
+    }
+
+    @Test
     fun `close during journal preparation leaves the stable folder and rejects late ownership`() {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val store = ReplaySettingsStore()
