@@ -6,19 +6,23 @@
 
 公式資料の調査は `android docs search '検索語'`、返された `kb://` URLの取得は `android docs fetch kb://...` を使えます。検索はローカル索引の初回downloadを伴い、検索結果だけではAPIの挙動を確定できません。必要な本文・API referenceを確認し、公開記録には通常の公式HTTPSリンクと確認した事実を残します。実際のcommand・版・成功/失敗はIssueに記録し、未実施のIDE/端末受入とは区別します。
 
-SDK・IDE情報、解析、使い捨てAndroid fixtureのbuild/install/runを支援に使う場合は、対象project/deviceを明示し、下記GUI leaseと保全・復元の条件を適用します。`describe` 等もmetadata生成やbuildを伴い得るためhelpで副作用を確認します。Androidアプリ用のinstall/runをIntelliJ plugin ZIPの導入・ロード確認の代わりにしません。`screen` / `layout` 等の補助観測は[Computer Useの規約](computer-use.md)とCase契約に従い、必要な実UI操作を実施したと読み替えません。媒体・生ログ・端末識別子・認証値はprivateに保持します。
+SDK・IDE情報、解析、使い捨てAndroid fixtureのbuild/install/runを支援に使う場合は、対象project/deviceを明示し、下記の資源影響判定と必要なGUI lease・保全・復元の条件を適用します。`describe` 等もmetadata生成やbuildを伴い得るためhelpで副作用を確認します。Androidアプリ用のinstall/runをIntelliJ plugin ZIPの導入・ロード確認の代わりにしません。`screen` / `layout` 等の補助観測は[Computer Useの規約](computer-use.md)とCase契約に従い、必要な実UI操作を実施したと読み替えません。媒体・生ログ・端末識別子・認証値はprivateに保持します。
 
 [`android init`](https://developer.android.com/tools/agents/android-cli/commands/init) は検出した複数agentの設定へskillを導入するため、通常の利用開始には不要です。skill追加が必要な場合だけ、導入版のhelpで対象agent/projectと変更先を確認して範囲を限定します。未依頼の全体設定変更・一括初期化は行いません。
 
 ## GUI lease
 
-GUIの観察・入力と今後のGUI試験は`agent-desktop`を第一選択とし、操作前に[対象指定とフォールバック](computer-use.md)を読む。操作結果が元画面に見えない場合は、別ウィンドウ等への反映と対応する対象切替を確認する。主経路の具体的な未対応・取得/入力の制約がある操作だけ、用途に合うPeekabooまたは利用中agentの純正Computer Useへ切り替える。両fallbackに一律の優先順は付けず、同じlease・保全・上限と新しい対象確認を使う。実拒否・認証要求は別経路で回避しない。
+GUIの観察・入力と今後のGUI試験は`agent-desktop`を第一選択とし、操作前に[対象指定とフォールバック](computer-use.md)を読む。操作結果が元画面に見えない場合は、別ウィンドウ等への反映と対応する対象切替を確認する。主経路の具体的な未対応・取得/入力の制約がある操作だけ、用途に合うPeekabooまたは利用中agentの純正Computer Useへ切り替える。両fallbackに一律の優先順は付けず、同じ資源範囲・必要なlease・保全・上限と新しい対象確認を使う。実拒否・認証要求は別経路で回避しない。
 
-`scripts/workflow/gui_lease.py`は、同一project内および別project間のComputer Use競合を防ぐ、ホスト/OSユーザーごとの協調予約です。OSの入力自体は遮断しません。承認済み作業では共有予約とGitHub上の担当・待機状態を確認し、他の担当が使っていなければ、本人への枠単位の追加確認なしで取得します。他projectが動いていない場合も、同一project内の競合防止のため共有予約は使います。
+排他の要否はツール名や画面全体ではなく、操作ごとの共有可変状態と観測・証拠への影響で判断する。現在のPID・起動instance・window・snapshotを照合し、対象と予期する結果先のアプリ状態を独立して所有し、他担当の操作・観測を妨げないと確認できる対象限定のbackground AX/ref操作は、globalなホスト予約なしで並行してよい。異なるwindow、対象指定flag、exit 0だけを独立性の根拠にしない。semantic clickでもdialogや共有アプリ状態を変え得るため、入力先だけでなく結果先を含めて判断する。
 
-競合時の利用順・停止確認・引継ぎは、担当GPTセッション同士が既存の許可された連絡経路で調整します。必要なら進行役が調整し、通常の枠調整を本人への許可依頼に置き換えません。実際の人間操作を認めた場合は競合する操作を止めますが、空き枠の取得ごとに「今使ってよいか」を尋ねる手順は設けません。
+前面・global key・物理入力・cursor・clipboard・display、trace/session出力、profile/plugin、ADB/device/daemon、録画・fixture等を共有する操作、またはその共通影響が具体的に不明な部分には、既存の共有GUI leaseと担当間調整を適用する。観測も他担当の対象状態や証拠へ干渉するなら同じ扱いとし、競合しない準備・解析・対象限定操作まで停止しない。activeな旧来の全体排他予約、またはownerの影響範囲が不明な予約がある場合は、そのownerと対象・副作用の範囲を合意するまで重ねない。
 
-予約は排他の仕組みであり、安全性や作業範囲の代用ではありません。[継続判断](workflow.md#公開操作の承認範囲と失敗の扱い)に従い、担当が対象・保存先・保全/復元・回数/時間上限を整えて録画・保存等を進めます。既存の割当と計画内なら、枠ごとの本人承認やPMのGOを取り直しません。競合や計画の影響変更は担当間で調整し、本人にしか解消できない境界だけを戻します。空き予約を未依頼の操作や権限拡張の根拠にはしません。
+`scripts/workflow/gui_lease.py`は、同一project内および別project間の実競合に使うホスト/OSユーザーごとの協調予約であり、OSの入力を遮断せず、対象別予約や優先順も機械的に強制しない。共有予約とGitHub上の担当・待機状態を確認し、必要な区間の空きがあれば、本人への枠単位の追加確認なしで取得する。新しいlock機構やproject別の代替予約は作らない。
+
+実際の共有ホスト競合では、現在操作中のownerが安全な区切りで保全・通常復帰・解放/引継ぎを行い、次は準備済みのARB作業を他projectより優先する。これはこの共有環境の利用順であり、leaseの奪取、実行中操作の横取り、強制終了、人間の停止指示の上書き、未準備のARB作業による空き枠の先取りを許可しない。担当GPTセッション同士が既存の許可された連絡経路で対象範囲・停止確認・順番を調整し、必要なら進行役が整合する。通常の枠調整を本人への許可依頼に置き換えない。実際の人間操作を認めた場合は競合する操作を止める。
+
+予約の有無は安全性や作業範囲の代用ではない。[継続判断](workflow.md#公開操作の承認範囲と失敗の扱い)に従い、担当が対象・保存先・保全/復元・回数/時間上限を整えて録画・保存等を進める。既存の割当と計画内なら、枠ごとの本人承認やPMのGOを取り直さない。新しい運用判断は[Omil事前相談](workflow.md#運用プロファイルとomil事前相談)へ戻し、本人にしか解消できない境界だけを本人へ戻す。空き予約を未依頼の操作や権限拡張の根拠にしない。
 
 ```bash
 python3 scripts/workflow/gui_lease.py status
@@ -29,11 +33,11 @@ python3 scripts/workflow/gui_lease.py release --token PRIVATE_LEASE_TOKEN
 
 SHAとtokenは実値へ置き換えます。返却にはtoken・host等が含まれるため、チャット/GitHubにそのまま貼らず、private記録に保存します。1回の期限は1〜45分。renewは試験全体の予算を延長する許可ではありません。
 
-既定保存先は `/tmp/cursor-in-android-studio-gui-<uid>` でCursorプラグインと共有します。namespace名は既存の予約との互換性のため維持します。すべてのproject/clone/worktreeでこの同一予約を使います。`--state-dir`は隔離テスト専用です。projectごとの保存先で同じ画面を並行操作しません。既存ハーネスが別のleaseを使うホストでは、この新leaseだけで操作を始めず、全操作者と旧lease解放・移行先を調整してください。
+既定保存先は `/tmp/cursor-in-android-studio-gui-<uid>` でCursorプラグインと共有する。namespace名は既存の予約との互換性のため維持し、排他が必要な操作では全project/clone/worktreeがこの同一予約を使う。`--state-dir`は隔離テスト専用で、別の保存先を作って競合を回避したことにしない。既存ハーネスが別のleaseを使うホストでは、全操作者と旧予約の範囲・正規解放/移行を整合し、旧予約を無視して操作しない。CAS等への引継ぎではこの環境の共有ホスト規約として伝え、別環境の優先順や予約機構を暗黙に変更しない。
 
-最初の操作とinstall/起動/再起動/送信/復元の直前にtoken/期限を確認します。期限切れでも別ownerのacquireは拒否します。元ownerまたは調整担当が旧処理停止・画面状態・未保存データを確認し、現在tokenでreleaseしてから次担当へ渡します。PIDや時間だけで自動削除しません。
+leaseが必要な区間の最初の操作と、共有状態に影響するinstall/起動/再起動/送信/復元の直前にtoken/期限を確認する。期限切れでも別ownerのacquireは拒否する。元ownerまたは調整担当が旧処理停止・画面状態・未保存データを確認し、現在tokenでreleaseしてから次担当へ渡す。優先順やPID・時間を理由に他ownerの予約を削除しない。
 
-画面で対象アプリ・fixture・buildを識別し、source SHAと実ロードartifactのhashを照合します。古い画面要素・座標を使い回さず最新状態から操作します。終了時は自分の処理だけ停止/引継ぎ、Case別結果と次操作を残してreleaseします。
+対象アプリ・fixture・buildを識別し、source SHAと実ロードartifactのhashを照合する。古い画面要素・座標を使い回さず最新状態から操作し、描画を保証する場面では実画像も確認する。終了時は自分の処理だけ停止/引継ぎ、Case別結果と次操作を残し、取得したleaseをreleaseする。個別Caseが明示する予約・native-only経路と元の観察/失敗は保持する。
 
 ## 固定Plugin ZIPのターミナル導入
 
@@ -50,7 +54,7 @@ Settings → PluginsのInstall Plugin from Diskや版探索は通常QAの必須�
 
 ## 試験の準備・実行上限
 
-準備（計画確認・スクリプト/fixtureの用意・静的検査・証拠の保存先確認）と、測定（取得ON・操作・Save・解析）と、復元/cleanupを分けます。端末/IDEを触る準備にもleaseと対象識別は必要です。計測時刻を遅らせて実際の取得時間・容量・共有環境占有を隠しません。
+準備（計画確認・スクリプト/fixtureの用意・静的検査・証拠の保存先確認）と、測定（取得ON・操作・Save・解析）と、復元/cleanupを分けます。端末/IDEを触る準備にも対象識別と上記の資源影響判定を適用し、共有状態を触る区間はleaseを取得します。計測時刻を遅らせて実際の取得時間・容量・共有環境占有を隠しません。
 
 測定の開始条件、終了/中止条件、取得時間・試行回数・容量と復元時間を既存計画にまとめます。trustedな現行の保証目的/必要証拠・精度と本人指定上限、tool制約を保持します。30分/300event等の旧方法の回数・時間は[有効な方法改訂](verification/responsibility.md)に従って選び、原文だけを理由に再導入しません。担当が定めた内部の準備/ARM/cleanup上限は過去実測に余裕を見込み、次の試行前にPMが[Omil事前相談](workflow.md#運用プロファイルとomil事前相談)を経て理由と影響を記録して調整できます。実行中/事後の期限延長や無制限の再試行はしません。
 

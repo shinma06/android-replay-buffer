@@ -2,13 +2,14 @@
   "schema": 1,
   "issue": 396,
   "gui_required": false,
-  "reason": "pstack運用profile・新運用判断前のOmil相談とGUI標準agent-desktopを既存入口へ同期する運用文書のみ。製品・CI依存・Case契約・固定候補を変更せず、BF/QAの実host導入・smokeとPM/Omilの実適用確認は別の実結果として引き継ぐ。静的整合・公式資料/CLI構文・harnessを検証し、製品GUI受入の成功は主張しない。",
+  "reason": "pstack運用profile・新運用判断前のOmil相談、GUI標準agent-desktop、操作ごとの共有資源影響に応じた並行可否と実競合時の準備済みARB優先を既存入口へ同期する運用文書のみ。製品・CI依存・個別Caseの明示条件・固定候補を変更せず、BF/QAの実host導入・smokeとPM/Omilの実適用確認は別の実結果として引き継ぐ。静的整合・公式資料/CLI構文・harnessを検証し、製品GUI受入の成功は主張しない。",
   "cli_checks": [
     "python3 scripts/check.py",
     "python3 scripts/workflow/change_impact.py --run-tests（clean committed HEADの通常pre-push hookで実行）",
     "固定公式v1.1.0のdocs/help定義と、観察・入力・結果確認/フォールバックの具体例を照合する",
     "旧default指定の現行入口検索と、main/developの限定した運用hunk差分を照合する",
     "新運用判断の事前相談・合意済み通常作業・即時安全停止・Omil不在の具体例と実入口を照合する",
+    "対象限定の非競合操作・共有/不明な副作用・activeな旧排他予約・安全な区切り後の準備済みARB優先を現行入口と照合する（実競合試験や新lock実装は追加しない）",
     "python3 scripts/workflow/change_impact.py --base origin/main（所有差分の分類を別に確認）"
   ],
   "cases": []

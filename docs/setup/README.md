@@ -34,7 +34,7 @@ python3 scripts/check.py
 
 このPATHを選んだshellでbootstrap・commit/pushも実行し、hooksの`python3`を揃えます。Python内の検査起動は`sys.executable`で親と同じ版を使います。実runtimeと子processを照合してから検査結果を記録し、PATH変更はそのshellの終了で戻せます。
 
-macOS/Linuxが共通CLIの対象です。GUI leaseは `fcntl` と同一OSユーザーのPOSIX権限を利用します。Windows nativeの動作は未確認です。WSLでコード検証する場合も、Windowsデスクトップ操作とは別ホスト扱いにせず、実際に共有する画面の操作者・予約を一本化してください。WSLのlockファイルがWindows側の操作を強制禁止するわけではありません。
+macOS/Linuxが共通CLIの対象です。GUI leaseは `fcntl` と同一OSユーザーのPOSIX権限を利用します。Windows nativeの動作は未確認です。WSLからWindowsデスクトップを操作する場合も別ホスト扱いにせず、[資源影響と並行可否](../operations.md#gui-lease)に従って共有資源の操作者・必要な予約を一本化してください。非競合の対象限定操作に一律のglobal予約を追加せず、WSLのlockファイルがWindows側の操作を強制禁止するとも扱いません。
 
 新しい環境で自分のPATHを確認します。GUIアプリから起動するCLIは対話shellとPATHが異なる場合があります。既存機のNode絶対パス、app bundle内部の実行ファイル、socket、trusted code pathsは移植せず、正式なinstallerが再生成する値を使います。
 
