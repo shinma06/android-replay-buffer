@@ -4,6 +4,10 @@ import com.android.tools.idea.gradle.project.sync.GradleSyncState
 import com.google.gson.JsonParser
 import com.intellij.mock.MockApplication
 import com.intellij.mock.MockProject
+import com.intellij.notification.NotificationDisplayType
+import com.intellij.notification.NotificationGroup
+import com.intellij.notification.NotificationGroupManager
+import com.intellij.openapi.extensions.PluginId
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.client.ClientSession
@@ -43,11 +47,18 @@ class ReplayInitializationCliTest {
         val lifetime = Disposer.newDisposable()
         val app = MockApplication(lifetime)
         ApplicationManager.setApplication(app, lifetime)
-        app.registerService(CoroutineScope::class.java, app.coroutineScope)
-        app.registerService(ClientSessionsManager::class.java, ClientSessionsManager<ClientSession>(app.coroutineScope))
+        app.registerService(CoroutineScope::class.java, app.getCoroutineScope())
+        app.registerService(ClientSessionsManager::class.java, ClientSessionsManager<ClientSession>(app.getCoroutineScope()))
+        app.registerService(NotificationGroupManager::class.java, object : NotificationGroupManager {
+            override fun getNotificationGroup(id: String) =
+                NotificationGroup.create(id, NotificationDisplayType.NONE, false, null, null, PluginId.getId("com.intellij"))
+            override fun isGroupRegistered(id: String) = false
+            override fun getRegisteredNotificationGroups() = emptyList<NotificationGroup>()
+            override fun isRegisteredNotificationId(id: String) = false
+        })
         val project = object : MockProject(null, lifetime) { override fun getBasePath() = projectPath.toString() }
         val store = ReplaySettingsStore()
-        store.loadState(ReplaySettingsState(captureMode = CaptureMode.LOG_ONLY, replaySeconds = 83))
+        store.loadState(ReplaySettingsState(captureMode = CaptureMode.LOG_ONLY, retentionSeconds = 83))
         project.registerService(ReplaySettingsStore::class.java, store)
         project.registerService(GradleSyncState::class.java, Proxy.newProxyInstance(
             javaClass.classLoader, arrayOf(GradleSyncState::class.java),
@@ -81,7 +92,6 @@ class ReplayInitializationCliTest {
                 val failed = status()
                 assertFalse(failed["running"].asBoolean)
                 val reason = failed["error"].asString
-                assertTrue(reason.contains("android-replay-buffer") && reason.contains("700"), reason)
                 assertTrue(cli("daemon", 1).contains(reason))
                 assertTrue(Files.isSymbolicLink(namespace))
                 Files.delete(namespace)
@@ -89,6 +99,7 @@ class ReplayInitializationCliTest {
                 Files.setPosixFilePermissions(namespace, java.nio.file.attribute.PosixFilePermissions.fromString("rwxr-xr-x"))
                 assertFalse(status()["running"].asBoolean)
                 assertEquals("started", cli("daemon", 0))
+                assertTrue(reason.contains("android-replay-buffer") && reason.contains("700"), reason)
                 val restored = status()
                 assertTrue(restored["running"].asBoolean)
                 assertFalse(restored.has("error") && !restored["error"].isJsonNull)
