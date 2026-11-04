@@ -15,6 +15,8 @@ cat "$pstack_source_root/skills/poteto-mode/playbooks/orchestrate.md"
 cat "$pstack_source_root/skills/principle-prove-it-works/SKILL.md"
 ```
 
+cache未作成のcloneでは、保管ownerだけが次の短い手順で用意する。公式`cursor/plugins`の固定commit `bb68f2365eceafa0cb2d253112f675acf5f144cc`を使い捨てcheckoutへ取得し、`git rev-parse <固定commit>:pstack`がsubtree `4719e1c4b4c43bac85d4206a8b41dd2899769c1c`と一致することを確認する。`git archive <固定commit> pstack`等で同じfilesystemの所有stagingへ原fileをexportし、path/type/mode・全blob/subtreeの一致を確認する。上記保存先がなければ限定renameで公開し、既存なら全内容が同一のときだけ再利用する。不一致は上書き・削除せずownerと整合する。私的なsetup scriptを前提にせず、upstream code/hookも実行しない。
+
 別clone/hostは同じcacheだと仮定せず、PMが指定したsource保管元checkoutでcommon-dirを解決する。欠落・不一致時は上記の固定公式sourceを直接読む方法を使い、単一の保管ownerが同じpinへ復元する。各agentのvendor複製、global/npx hook、新しいinstaller frameworkは加えない。
 
 - 複数工程の運営は[Orchestrate](https://github.com/cursor/plugins/blob/bb68f2365eceafa0cb2d253112f675acf5f144cc/pstack/skills/poteto-mode/playbooks/orchestrate.md)を参照し、目的・成果物・対象/対象外・一人のowner・完了証拠を先に定める。PMは割当と実成果を回収し、単一writerと別sessionの固定レビューを維持する。人数や並列数を埋める編成はしない。
@@ -30,7 +32,7 @@ cat "$pstack_source_root/skills/principle-prove-it-works/SKILL.md"
 
 [重要イベント・中間標本・終了点検](omil-phase-review.md)は事前相談に加えて行う点検であり、相談をイベント時だけ・事後だけへ狭めない。本人にしか解消できない境界は下記の分担を維持する。
 
-今回の第2版の順序は[#396の運用実適用・host smoke・保護統合](https://github.com/shinma06/android-replay-buffer/issues/396)→[#395の再現・最小修正・固定確認](https://github.com/shinma06/android-replay-buffer/issues/395)→修正候補での残GUI受入→[#271のmain反映・配布](https://github.com/shinma06/android-replay-buffer/issues/271)。途中で未達を後続の成功へ読み替えず、順序変更は上の事前相談へ戻す。
+今回の第2版の順序は[#396の運用実適用・host smoke・保護統合](https://github.com/shinma06/android-replay-buffer/issues/396)→[#397の限定develop運用同期](https://github.com/shinma06/android-replay-buffer/issues/397)→[#395のCLI status/daemon/unitsの再現・最小修正・固定確認](https://github.com/shinma06/android-replay-buffer/issues/395)→修正候補で必要な残GUI受入→[#271のmain反映・配布](https://github.com/shinma06/android-replay-buffer/issues/271)。途中で未達を後続の成功へ読み替えず、順序変更は上の事前相談へ戻す。
 
 ## 公開操作の承認範囲と失敗の扱い
 
