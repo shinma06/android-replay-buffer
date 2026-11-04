@@ -188,7 +188,7 @@ Cursor固有の会話・ACP・権限・Agent session・header pixel値・製品I
 
 ## 実装受入Case案と残条件
 
-以下は#14とQAへ接続する未実装Case案で、実行結果ではない。設計PR自身のCase JSONはGUI不要とし、この表の将来観察をpassにしない。全Caseで固定source SHA / ZIP SHA-256 / Rabbit build / 実ロードPlugin版 / fixtureを照合し、共有GUI lease取得後に操作する。実機とEmulatorの両方で取得・保存関係を確認する。
+以下は#14とQAへ接続する未実装Case案で、実行結果ではない。設計PR自身のCase JSONはGUI不要とし、この表の将来観察をpassにしない。全Caseで固定source SHA / ZIP SHA-256 / Rabbit build / 実ロードPlugin版 / fixtureを照合し、[資源影響と並行可否](../operations.md#gui-lease)に従い、共有状態・証拠へ影響する区間は共有GUI lease取得後に操作する。個別Caseの明示条件と元の観察は維持する。実機とEmulatorの両方で取得・保存関係を確認する。
 
 | ID | 手順 | 観察可能な期待 |
 | --- | --- | --- |
