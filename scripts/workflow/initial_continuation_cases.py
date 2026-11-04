@@ -961,3 +961,7 @@ RABBIT_CASES = {'docs/verification/changes/issue-391.json': [{'artifact': 'plugi
                                                               'docs/operations.md'],
                                                'recheck': 'SDK/host変更の影響が不明な保証はaffected再確認とし、原FAILを保持する。新ZIPだけで未影響の成功を無条件失効させず、正式なimpact/reuse条件と独立評価を使う。',
                                                'next_action': '通常checksと独立固定レビューを満たし、Rootが資源/既存復旧/共有GUIを調整して残試験を割当する。実装準備だけでclose/merge/main反映しない。'}]}
+
+# These two source changes add no Cases; keep older fixed contracts untouched.
+CLEANUP_CANDIDATE_CASES = {'docs/verification/changes/issue-397.json': [],
+                           'docs/verification/changes/issue-395.json': []}
