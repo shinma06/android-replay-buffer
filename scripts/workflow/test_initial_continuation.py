@@ -10,7 +10,7 @@ from unittest.mock import patch
 from test_agent_loop import BASE, HEAD, NEW
 from initial_continuation_cases import (CASES, QUALITY_CASES, QUALITY_UPDATES, LOGCAT_CASES,
                                         SCREENSHOT_CASES, LOGCAT_TARGET_CASES, ABOUT_SOURCE_CASES,
-                                        RABBIT_CASES)
+                                        RABBIT_CASES, CLEANUP_CANDIDATE_CASES)
 import test_initial_acceptance as initial_tests
 from test_verification import change, observation
 import verification as v
@@ -418,7 +418,8 @@ class RegisteredContinuationTests(unittest.TestCase):
 
     def test_rabbit_registration_preserves_old_sources_and_requires_all_three_full_cases(self):
         root = Path(__file__).resolve().parents[2]
-        registration = json.loads((root / v.INITIAL_CONTINUATION).read_text())
+        registration = json.loads(subprocess.check_output(['git', 'show',
+            '3c9fc3b4a5c28d8a9bd08a1056c11d43817f0548:' + v.INITIAL_CONTINUATION], cwd=root, text=True))
         previous = json.loads(subprocess.check_output(['git', 'show',
             '396ed93ff8fe06fcd41cde01ff0bbf570da02238:' + v.INITIAL_CONTINUATION], cwd=root, text=True))
         self.assertEqual(previous['changes'], registration['changes'][:-1])
@@ -439,6 +440,23 @@ class RegisteredContinuationTests(unittest.TestCase):
                 self.assertEqual(('pending', 'pending'), (case['gpt']['status'], case['human']['status']))
         self.check_registration(registration, '4d0430daf90c420e3b86064f839bbafd35d84131',
                                 (176, 245, 37, 29))
+
+    def test_cleanup_candidate_adds_case_free_changes_without_changing_any_contract(self):
+        root = Path(__file__).resolve().parents[2]
+        registration = json.loads((root / v.INITIAL_CONTINUATION).read_text())
+        previous = json.loads(subprocess.check_output(['git', 'show',
+            '3c9fc3b4a5c28d8a9bd08a1056c11d43817f0548:' + v.INITIAL_CONTINUATION], cwd=root, text=True))
+        self.assertEqual(previous['changes'], registration['changes'][:-2])
+        self.assertEqual(previous['cases'], registration['cases'])
+        self.assertEqual(previous['plan_sha256'], registration['plan_sha256'])
+        self.assertEqual([
+            {'commit': '05a947a7bf5bcbec6869f036bb5acce3a09eba31', 'pr': 399,
+             'source_path': 'docs/verification/changes/issue-397.json'},
+            {'commit': '948b1ad2f18ee266c79935327a403dd7471fdc3b', 'pr': 400,
+             'source_path': 'docs/verification/changes/issue-395.json'}], registration['changes'][-2:])
+        self.assertTrue(all(cases == [] for cases in CLEANUP_CANDIDATE_CASES.values()))
+        self.check_registration(registration, '948b1ad2f18ee266c79935327a403dd7471fdc3b',
+                                (176, 245, 37, 31))
 
     def check_registration(self, registration, expected_candidate, counts):
         root = Path(__file__).resolve().parents[2]
@@ -474,6 +492,8 @@ class RegisteredContinuationTests(unittest.TestCase):
             cases.update(copy.deepcopy(ABOUT_SOURCE_CASES))
         if rabbit:
             cases.update(copy.deepcopy(RABBIT_CASES))
+        if any(item['pr'] == 400 for item in registration['changes']):
+            cases.update(copy.deepcopy(CLEANUP_CANDIDATE_CASES))
         self.assertEqual({item['source_path'] for item in registration['changes']}, set(cases))
         documents = {}
         parents = {}

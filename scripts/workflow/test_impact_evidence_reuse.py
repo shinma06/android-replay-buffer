@@ -1144,7 +1144,8 @@ class PromotionTreeTests(unittest.TestCase):
         protected = (v.INITIAL_CONTINUATION, 'docs/verification/changes/issue-356.json',
                      'docs/verification/changes/issue-364.json', 'docs/verification/changes/issue-371.json',
                      'docs/verification/changes/issue-379.json', 'docs/verification/changes/issue-384.json',
-                     'docs/verification/changes/issue-389.json', 'docs/verification/changes/issue-393.json')
+                     'docs/verification/changes/issue-389.json', 'docs/verification/changes/issue-393.json',
+                     'docs/verification/changes/issue-401.json')
         self.git('checkout', '-q', '-B', 'registered-common', self.common)
         for path in protected:
             self.write(path, (root / path).read_text())
@@ -1210,7 +1211,8 @@ class PromotionTreeTests(unittest.TestCase):
         for path in (INITIAL_CONTINUATION, 'docs/verification/changes/issue-356.json',
                      'docs/verification/changes/issue-364.json', 'docs/verification/changes/issue-371.json',
                      'docs/verification/changes/issue-379.json', 'docs/verification/changes/issue-384.json',
-                     'docs/verification/changes/issue-389.json', 'docs/verification/changes/issue-393.json'):
+                     'docs/verification/changes/issue-389.json', 'docs/verification/changes/issue-393.json',
+                     'docs/verification/changes/issue-401.json'):
             self.git('checkout', '-q', '-B', 'untrusted-policy-candidate', self.candidate)
             self.write(path, '{}')
             self.commit('candidate-only untrusted policy addition')

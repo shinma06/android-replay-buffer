@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "issue": 344,
-  "candidate": "4d0430daf90c420e3b86064f839bbafd35d84131",
+  "candidate": "948b1ad2f18ee266c79935327a403dd7471fdc3b",
   "plan_sha256": "0b6d9c6d2d5054ed642565afdbaeb5a88ee198a4ea5398ff96ff36168ce0eda5",
   "changes": [
     {
@@ -148,6 +148,16 @@
       "commit": "4d0430daf90c420e3b86064f839bbafd35d84131",
       "pr": 392,
       "source_path": "docs/verification/changes/issue-391.json"
+    },
+    {
+      "commit": "05a947a7bf5bcbec6869f036bb5acce3a09eba31",
+      "pr": 399,
+      "source_path": "docs/verification/changes/issue-397.json"
+    },
+    {
+      "commit": "948b1ad2f18ee266c79935327a403dd7471fdc3b",
+      "pr": 400,
+      "source_path": "docs/verification/changes/issue-395.json"
     }
   ],
   "cases": {
