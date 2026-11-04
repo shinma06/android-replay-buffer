@@ -24,7 +24,7 @@
 今回の読取確認: macOS arm64、Android Studio full build `AI-262.9437.185.2621.16467767`、JBR `25.0.3`。標準SDKはplatform-tools `37.0.1` / Emulator `37.1.11` / platform `android-37.0` / build-tools `36.0.0`あり、system image / cmdline-tools / 標準AVDはなし。この時点ではIDE起動、install、SDK追加、AVD作成起動、ADB照会をしていません。共有GUI leaseは別作業が保持中で、時間切れを所有移譲と扱いません。
 
 1. PMが他操作者と停止/画面状態/leaseの正規解放を調整し、QAのIssue/run/source/予算/許可対象を割り当てる。
-2. QAは[operations](../operations.md)の共有leaseを取得し、最初の操作・install・起動・再起動直前にtoken/期限をprivateで確認する。タスク別lease directoryで並行操作しない。
+2. QAは[operations](../operations.md#gui-lease)の資源影響判定に従い、共有状態・証拠へ影響する準備・操作・install・起動・再起動の区間で共有leaseを取得し、直前にtoken/期限をprivateで確認する。activeな全体排他/範囲不明の予約を無視せず、タスク別lease directoryで競合を回避したことにしない。個別Caseの明示条件と過去の予約・観察記録は維持する。
 3. 同じRabbit SDKの専用IDE sandbox/config/systemと新規の非VCS共有設定を用意し、通常IDE/他プロジェクトを開かない。fixtureは[replay-marker](../../tests/fixtures/replay-marker/README.md)を専用プロジェクトとして使用する。
 4. Android StudioのSDK Managerで**Android SDK Command-line Tools**の版を選んで導入し、正確な版/packageとSDK rootを記録する。ネットワーク・容量・license操作はPMの環境割当後に行う。SDK全体の更新や既存packageの置換はしない。
 5. 同梱sdkmanagerの一覧で実在するAPI 29以上の`arm64-v8a` imageを選び、package ID/版を固定する。公式sdkmanager 23.0の一覧で`system-images;android-37.0;google_apis;arm64-v8a` revision 6.0.0の存在を照合しました。実インストール/互換性は別確認です。なければ利用可能な版をPMが決め、未存在のpackageを準備済みとしない。

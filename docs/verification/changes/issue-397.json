@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "issue": 397,
+  "gui_required": false,
+  "reason": "mainで採用した#396/PR#398の運用差分だけをdevelopの担当入口へ同期する。pstack正本・Omil事前相談・agent-desktopの観察/入力優先・操作ごとの共有資源判定と実競合時のARB優先を、develop固有の製品/CLI・comment/Doc・runtime文脈を保持して適用する。製品・build・CI/fixture入力・Case原本・固定4d ZIPは不変。方針評価と限定host試行は396の実証拠を再利用し、本件は適用差分と読込経路を検証する。新しいGUI受入・競合試験・製品再buildの成功を主張しない。",
+  "cli_checks": [
+    "python3 scripts/check.py",
+    "python3 scripts/workflow/change_impact.py --run-tests（clean committed HEADの通常pre-push hookで実行）",
+    "固定採用main bf410270fff73aa50f43ce8f3390c7df9d374ab1の対象運用hunkとdevelop固有文脈を照合する",
+    "AGENTSからPM/Omil/worker/GUIの実入口と正本リンクを辿り、新worktreeのGit common-dirから固定pstack原典を読み戻す",
+    "製品・build・CI・fixture・既存Case/観察の差分なしと、旧native優先/全操作排他の現行指定が残らないことを確認する",
+    "合意済み通常作業・新運用判断・対象限定非競合操作・実競合/旧予約・準備済みARB優先の条件を採用元と照合する"
+  ],
+  "cases": []
+}

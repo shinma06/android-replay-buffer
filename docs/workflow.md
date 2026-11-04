@@ -2,6 +2,38 @@
 
 作業は Issue → claim → 専用 branch/worktree → Draft PR → 必要な検証 → 独立レビュー → target 別 gate → merge → QA/Project/後片付けの順に進めます。読み取りだけの相談・レビューでは Issue を新設しません。公開操作は利用者の依頼範囲に従います。
 
+## 運用プロファイルとOmil事前相談
+
+運用は[公式pstack 0.15.36の固定版](https://github.com/cursor/plugins/tree/bb68f2365eceafa0cb2d253112f675acf5f144cc/pstack)を本projectの既存workflowへ対応付ける。コードの実装・修正・code reviewは引き続きPonytail fullを使う。pstack未登録のagentも、下記の共有sourceを通常のfile読取りで利用する。slash pluginの登録・導入済みとは扱わない。[poteto-mode](https://github.com/cursor/plugins/blob/bb68f2365eceafa0cb2d253112f675acf5f144cc/pstack/skills/poteto-mode/SKILL.md)と該当playbook/leafを直接読む。global pluginや他agent設定の導入は不要。
+
+同じGit common-dirを使うagent/worktreeは、単一の変更していない公式source snapshotを共用する。保管ownerと固定pin/file hashを引継ぎ記録で照合してから、該当するentry/playbook/leafを読む。
+
+```bash
+pstack_source_root="$(git rev-parse --path-format=absolute --git-common-dir)/pstack/bb68f2365eceafa0cb2d253112f675acf5f144cc/pstack"
+cat "$pstack_source_root/skills/poteto-mode/SKILL.md"
+cat "$pstack_source_root/skills/poteto-mode/playbooks/orchestrate.md"
+cat "$pstack_source_root/skills/principle-prove-it-works/SKILL.md"
+```
+
+cache未作成のcloneでは、保管ownerだけが次の短い手順で用意する。公式`cursor/plugins`の固定commit `bb68f2365eceafa0cb2d253112f675acf5f144cc`を使い捨てcheckoutへ取得し、`git rev-parse <固定commit>:pstack`がsubtree `4719e1c4b4c43bac85d4206a8b41dd2899769c1c`と一致することを確認する。`git archive <固定commit> pstack`等で同じfilesystemの所有stagingへ原fileをexportし、path/type/mode・全blob/subtreeの一致を確認する。上記保存先がなければ限定renameで公開し、既存なら全内容が同一のときだけ再利用する。不一致は上書き・削除せずownerと整合する。私的なsetup scriptを前提にせず、upstream code/hookも実行しない。
+
+別clone/hostは同じcacheだと仮定せず、PMが指定したsource保管元checkoutでcommon-dirを解決する。欠落・不一致時は上記の固定公式sourceを直接読む方法を使い、単一の保管ownerが同じpinへ復元する。各agentのvendor複製、global/npx hook、新しいinstaller frameworkは加えない。
+
+- 複数工程の運営は[Orchestrate](https://github.com/cursor/plugins/blob/bb68f2365eceafa0cb2d253112f675acf5f144cc/pstack/skills/poteto-mode/playbooks/orchestrate.md)を参照し、目的・成果物・対象/対象外・一人のowner・完了証拠を先に定める。PMは割当と実成果を回収し、単一writerと別sessionの固定レビューを維持する。人数や並列数を埋める編成はしない。
+- [Outcome-Oriented Execution](https://github.com/cursor/plugins/blob/bb68f2365eceafa0cb2d253112f675acf5f144cc/pstack/skills/principle-outcome-oriented-execution/SKILL.md)と[Sequence work into verifiable units](https://github.com/cursor/plugins/blob/bb68f2365eceafa0cb2d253112f675acf5f144cc/pstack/skills/principle-sequence-verifiable-units/SKILL.md)に従い、目的を満たす小さい単位で確認してから、その結果に依存する次工程へ進む。順序・不足・ownerは既存Issue/planで扱い、独立した着手可能作業を一律に止めない。
+- [Prove It Works](https://github.com/cursor/plugins/blob/bb68f2365eceafa0cb2d253112f675acf5f144cc/pstack/skills/principle-prove-it-works/SKILL.md)に従い、実差分・実成果物・必要な観察値を読み戻す。自己申告、command受理、green CI、build成功は、それだけで製品挙動・GUI受入・統合完了を証明しない。
+- 不具合対応は[Bug fix](https://github.com/cursor/plugins/blob/bb68f2365eceafa0cb2d253112f675acf5f144cc/pstack/skills/poteto-mode/playbooks/bug-fix.md)と[Fix Root Causes](https://github.com/cursor/plugins/blob/bb68f2365eceafa0cb2d253112f675acf5f144cc/pstack/skills/principle-fix-root-causes/SKILL.md)の、同じ対象で再現→原因を絞る→最小修正→元の再現条件で確認、を使う。未再現・別条件・未実施をPASSにせず、保証を隠す回避策を加えない。
+
+原典のmodel既定値、cloud VM/subagent起動、watcher、force/rebase、Draft省略や自動的なscope拡張は取り込まない。本projectの実行権限、本人指示、Issue/branch/PR、独立レビュー、CI/保護、外部レビュー再依頼の30分条件を優先する。固定Case・原観察・失敗、human/REAL延期と証拠再利用の条件も維持する。
+
+**PMは、新しい運用判断を決める前に必ずOmilへ相談する。** 対象は運用方針・検証等の方法、分担/割当・依存scopeを進める順序、停止/再開、共有資源・復旧・統合手順の新しい選択や変更。workerは運用上の矛盾・不足・変更案をPMへ返し、PMはOmilの助言を受けて、採否・理由・影響範囲・次のownerを既存Issue/planへ簡潔に残してから判断を実行する。助言の受領と実適用、実行結果は区別する。
+
+合意済み手順内の編集・検査・空きlease取得などに、操作ごとの再相談や本人承認を追加しない。既に合意した条件内でのagent-desktopから対応fallbackへの切替も通常手順であり、対象・影響や方法を新たに広げる場合だけ事前相談する。危険・実拒否・本人停止では直ちに該当範囲を止めて保全し、その後の新しい復旧/再開判断を相談する。Omilが不在/未応答ならその新判断だけを保留し、安全な保全と既に合意した独立作業を続ける。不在を理由に相談を省略したり、全体停止・新agent/監視を自動追加したりしない。実連絡は[既存の許可された経路](team-communication.md)を使う。
+
+[重要イベント・中間標本・終了点検](omil-phase-review.md)は事前相談に加えて行う点検であり、相談をイベント時だけ・事後だけへ狭めない。本人にしか解消できない境界は下記の分担を維持する。
+
+今回の第2版の順序は[#396の運用実適用・host smoke・保護統合](https://github.com/shinma06/android-replay-buffer/issues/396)→[#397の限定develop運用同期](https://github.com/shinma06/android-replay-buffer/issues/397)→[#395のCLI status/daemon/unitsの再現・最小修正・固定確認](https://github.com/shinma06/android-replay-buffer/issues/395)→修正候補で必要な残GUI受入→[#271のmain反映・配布](https://github.com/shinma06/android-replay-buffer/issues/271)。途中で未達を後続の成功へ読み替えず、順序変更は上の事前相談へ戻す。
+
 ## 公開操作の承認範囲と失敗の扱い
 
 **担当者が普段の作業でリスクを抑え、依頼範囲の作業を継続することを既定にします。** 承認を安全性の代用にせず、未確認を安全とみなしません。対象確認・隔離・復旧準備など自分で解消できる不足は、その作業を進めて解消します。作業停止にもコストがあるため、具体的な損失や未充足条件を示せない追加承認待ちは設けません。
@@ -15,9 +47,9 @@
 
 ### 続行・調整・本人確認の分担
 
-条件が揃った通常の編集・検査、専用branchのpush、Issueコメント、PR作成・更新、通常の統合、所有資源の整理は、依頼範囲内で担当判断により進めます。GUI操作・導入・通常再起動・限定診断も、対象・保全・復元・実行上限を整えれば都度の本人承認を求めません。独立レビュー・CI・受入・保護条件は継続の品質条件であり、本人承認に置き換えません。
+上記で合意した手順の条件が揃った通常の編集・検査、専用branchのpush、Issueコメント、PR作成・更新、通常の統合、所有資源の整理は、依頼範囲内で担当判断により進めます。GUI操作・導入・通常再起動・限定診断も、対象・保全・復元・実行上限を整えれば都度の本人承認を求めません。独立レビュー・CI・受入・保護条件は継続の品質条件であり、本人承認に置き換えません。
 
-PMは担当・共有資源・依存・実行計画を調整します。既存の割当と計画内の操作ごとにPMのGOを取り直さず、競合や影響が変わる部分だけ担当間で調整します。内部の運用上限を変える必要があれば、次の試行前に理由・影響・復元を記録して計画を更新します。本人の指定上限、正式な受入条件、ツール制約は変更せず、期限を事後に延ばして過去の失敗を成功にしません。「別途承認」だけの記述は、誰が何を判断する条件かを確認し、直ちに本人承認待ちとは解釈しません。
+PMは[事前相談](#運用プロファイルとomil事前相談)を経て担当・共有資源・依存・実行計画の新しい判断/変更を決めます。既存の割当と計画内の操作ごとにPMのGOを取り直さず、競合や影響が変わる部分だけ担当間で調整します。内部の運用上限を変える必要があれば、次の試行前に理由・影響・復元を記録して計画を更新します。本人の指定上限、正式な受入条件、ツール制約は変更せず、期限を事後に延ばして過去の失敗を成功にしません。「別途承認」だけの記述は、誰が何を判断する条件かを確認し、直ちに本人承認待ちとは解釈しません。
 
 本人へ戻すのは、必要な準備を済ませても、次の境界が残る場合です。
 
@@ -82,7 +114,7 @@ merge直前にHEAD/base/feedback hashを再取得し、変更があれば対応�
 
 PM・担当・レビュアーは現状の手段を当然とせず、検査失敗がなくても改善できる負担・重複操作・停止の具体的な根拠を捉え、過去の手順を反復する前に問題と代替案を提案します。守るべき製品保証・実権限・本人の制限と、変更できる実施方法/管理上の宣言を分けます。固さ自体を欠陥とせず、その方法が目的を満たすために必要かを[最小検証](verification/responsibility.md)で確認します。
 
-改善は「観測した負担/不足→保証を保つ代替案→範囲・保全/復元・成功/中止条件を定めた有限で戻せる試行→実結果を使った採用/修正/撤回→[古い管理前提の整合](context.md#更新時の古い管理前提)」で進めます。依頼範囲内で担当が進め、既存Issue/計画へ重要な事実だけ記録します。実OS/tool権限・本人境界と正式契約の改訂/独立レビュー条件は維持し、方法hashを固定するためだけに必要な改訂を避けません。実行する改善案には実試行と結果/feedback、担当を確保し、提案/机上比較だけで改善完了にしません。未実施/blockedの試行は担当・残条件を持つ未完了として引き継ぎ、次の自然な該当作業で確認する場合も実結果を回収します。改善案と無関係な追加GUI試験、無限loop/job、長い様式や新承認gateは作りません。
+改善は「観測した負担/不足→保証を保つ代替案→範囲・保全/復元・成功/中止条件を定めた有限で戻せる試行→実結果を使った採用/修正/撤回→[古い管理前提の整合](context.md#更新時の古い管理前提)」で進めます。新しい方法の選択・変更は[Omil事前相談](#運用プロファイルとomil事前相談)を経て決め、合意した依頼範囲を担当が実行し、既存Issue/計画へ重要な事実だけ記録します。実OS/tool権限・本人境界と正式契約の改訂/独立レビュー条件は維持し、方法hashを固定するためだけに必要な改訂を避けません。実行する改善案には実試行と結果/feedback、担当を確保し、提案/机上比較だけで改善完了にしません。未実施/blockedの試行は担当・残条件を持つ未完了として引き継ぎ、次の自然な該当作業で確認する場合も実結果を回収します。改善案と無関係な追加GUI試験、無限loop/job、長い様式や新承認gateは作りません。
 
 ## 自動進行と終了
 
