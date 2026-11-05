@@ -112,14 +112,15 @@ class ManagementCIHistoryTests(unittest.TestCase):
     def test_retained_fact_assessment_uses_the_same_trusted_history(self):
         policy = {'cases': {'36:QA-1': {}}, 'responsibility_revision': {
             'previous_plan_sha256': v.canonical_hash({}),
-            'groups': {'fixture': {'cases': ['36:QA-1']}}}}
+            'groups': {'fixture': {'cases': ['36:QA-1'], 'evidence_keys': []}}}}
+        required = ('contract_coverage', 'artifact_binding', 'failure_attribution')
         aggregate = dict(self.original, status='pending')
         observed = dict(observation(), head=self.candidate, at='2099-01-01T00:00:00Z',
-            responsibility_evidence={'artifact_binding': 'Synthetic complete binding.'})
+            responsibility_evidence={key: 'Synthetic complete proof: ' + key for key in required})
         observed['responsibility_assessment'] = {
             'source_candidate': self.source, 'source_result': aggregate,
             'source_result_sha256': v.canonical_hash(aggregate), 'source_record_evidence': 'Fixed report.',
-            'facts': {'output': self.original}, 'coverage': {'artifact_binding': ['output']},
+            'facts': {'output': self.original}, 'coverage': {key: ['output'] for key in required},
             'missing_requirements': [], 'unresolved_owned_failures': []}
         with patch.object(v, 'initial_stage_plan', return_value={}):
             v.validate_fact_assessment(observed, '36:QA-1', policy, self.candidate,

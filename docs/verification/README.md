@@ -342,6 +342,12 @@ Gateと一覧は共通の検証を使います。一覧には再利用可否、�
 - `guarantees`: coverageの全keyへ`facts`（coverageと同じfact ID配列）、`disposition: unaffected | equivalent | fresh`と`impact`を置きます。impactは`source / callers / callees / dataflow / build / configuration / dependencies / fixtures / runtime / display / failure_attribution`ごとの具体的証拠・理由です。非該当も理由を記載し、影響不明をunaffectedにしません。
 - 旧事実を使う保証の`components`は、関連するregular file pathから`source_blob / candidate_blob`への対応です。gitの実blob・modeを照合します。変更/途中revertした関連componentは`equivalent`と`equivalence_evidence`が必要で、reviewerが意味とbuild/runtime/display条件を確認します。影響を受けた保証は`fresh`へ戻し、実際の現在factがなければ未達です。
 
+初期139のgroupに属さない通常Caseは、trusted mainの固定接続登録と**候補SHA・Case key・全固定出典の原Case hash・現在契約hashが一致するもの**だけをこの経路へ渡せます。候補側だけの登録、未知Case、別候補、契約変更・途中revertは拒否します。登録・保持fact評価・元通常`pass`の検証・一覧・promotionは同じ契約解決を使います。初期139のgroup・override・延期は通常Caseへ適用しません。
+
+通常Caseの`guarantees`、assessmentの`coverage`、観察の`responsibility_evidence`は、共通の`contract_coverage / artifact_binding / failure_attribution`に加え、固定原Caseの`preconditions / step_1 / … / step_N / expected`を全て必要とします。Nは原`steps`の件数で、証明側の任意keyや空集合から必須集合を決めません。`responsibility_revision`は既存形式のtrusted責任revisionへのbindingであり、初期方法や延期の適用を意味しません。原Caseの実施経路・artifact条件と通常の全保証`pass`を保ち、原`initial-pass`の借用も拒否します。
+
+この機械coverageは**原条項の存在と参照**を検査します。一条項内の複数保証が全て実証されたことは、原文と原本の独立実質評価で確認します。例えば`206:SETTINGS-PERSISTENCE`は、step 1の旧XML／実状態・Apply・Cancel／reopen・通常再起動、step 2のinvalid／partial Apply・latest／pending Apply・dispose／取消し／reopen・toggle・狭幅／accessibility／Help、expectedのimmutable／変更追跡／atomicと非EDT filesystem、preconditionsのsource／ZIP／全JAR／実ロード／環境・所有bindingを全て対応付ける必要があります。必須keyが7個あることや、このハーネスの合成試験成功だけでは、12保証の実質評価や個別証明・Caseの正式採用になりません。
+
 採用手順は、(1)元ファイル/hashを不変保全、(2)保証と影響を分類し必要な新事実だけ実施、(3)公開安全な要約・assessment・証明を作成、(4)別sessionが実証と原NG/全coverageを評価、(5)既存Issueのtooling PRで証明をmain統合、(6)証明commit/hashを指定してpromotion gateと一覧をdry validation、(7)PMがQAの正式採用を行います。証明登録だけは製品PASSではありません。policyのみの変更では製品再build/再導入を要求せず、固定製品ZIPを保持します。product/source/build条件が実際に変わった部分はその影響の事実を取得します。
 
 #246の合成回帰では、AppHistoryの変更とZIP変更を含む履歴に対し、未promotionの旧Video成功事実＋現在load事実を受理し、未知影響・証明/hash/独立review/原fact欠落・旧ZIP混同・契約/plan変更・未解決失敗を拒否します。これは方法の有限試行であり、実QAの再試験削減件数・実務時間・Case PASSを測定した結果ではありません。PMと独立assessorが実候補への採用と残条件を回収します。

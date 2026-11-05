@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "issue": 410,
+  "gui_required": false,
+  "reason": "初期139のgroupを前提とする保証単位再利用の不足を、trusted continuationに候補・全固定出典・原/current Case hashが一致する通常Caseの原前提・全手順・期待結果へ接続する。証明登録、保持fact評価、元通常pass、一覧、promotionの共通検証と回帰・説明だけを変更する。既存schema・private origin/binding・原失敗・初期139/REAL34/plan・全176/245出典、製品948/正式ZIP a582を維持し、個別証明やCaseの採用、製品/build/GUI/device変更は行わないためGUI不要。",
+  "cli_checks": [
+    "python3 -m unittest discover -s scripts/workflow -p test_impact_evidence_reuse.py",
+    "python3 -m unittest discover -s scripts/workflow -p test_initial_continuation.py",
+    "python3 -m unittest discover -s scripts/workflow -p test_responsibility_revision.py",
+    "python3 scripts/check.py",
+    "python3 scripts/workflow/product_check.py",
+    "python3 scripts/workflow/change_impact.py --base origin/main --run-tests"
+  ],
+  "cases": []
+}

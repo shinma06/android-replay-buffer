@@ -582,6 +582,37 @@ def responsibility_group(policy, key):
     return None
 
 
+def assessment_contract(policy, key, candidate, git, trusted_base):
+    """Resolve required proof from trusted policy, never from certificate keys.
+
+    Normal Cases use their registered clauses without initial overrides or
+    deferrals. Clause presence is mechanical; complete meaning within each
+    clause still requires independent evidence review.
+    """
+    common = {'contract_coverage', 'artifact_binding', 'failure_attribution'}
+    group = responsibility_group(policy, key)
+    if group:
+        return common | set(group['evidence_keys']), None
+    registration = initial_continuation(policy, trusted_base, candidate, git) if trusted_base and policy else None
+    if not registration or key not in registration['cases']:
+        raise ValueError('Retained-fact assessment requires a trusted registered Case and exact candidate: ' + key)
+    entry = registration['cases'][key]
+    sources = historical_initial_sources({'cases': {key: entry}}, candidate, git)
+    data = regular_json(candidate, entry['sources'][0]['source_path'], git)
+    validate_change(data, int(key.split(':')[0]), True)
+    matches = [case for case in data['cases'] if case['id'] == key.split(':')[1]]
+    if len(matches) != 1 or canonical_hash(matches[0]) != entry['current_case_sha256']:
+        raise ValueError('Registered assessment Case identity differs: ' + key)
+    case = dict(matches[0])
+    for _, original, _ in sources:
+        if original.get('artifact', 'app') != case.get('artifact', 'app'):
+            raise ValueError('Registered Case artifact contract changed: ' + key)
+        if original.get('required_execution'):
+            case['required_execution'] = original['required_execution']
+    required = common | {'preconditions', 'expected', *(f'step_{i}' for i in range(1, len(case['steps']) + 1))}
+    return required, case
+
+
 def effective_initial_entry(policy, key):
     entry = dict(policy['cases'][key])
     override = policy.get('responsibility_revision', {}).get('overrides', {}).get(key, {})
@@ -1015,8 +1046,7 @@ def validate_certificate(certificate, git, trusted_base=None):
             raise ValueError('Certificate registration differs from fixed Git history/Case/plan')
     except subprocess.CalledProcessError as error:
         raise ValueError('Certificate registration Git identity/history is unavailable') from error
-    group = responsibility_group(policy, key)
-    required = {'contract_coverage', 'artifact_binding', 'failure_attribution', *group['evidence_keys']} if group else set()
+    required, _ = assessment_contract(policy, key, candidate, git, trusted_base)
     if set(certificate['guarantees']) != required or not required:
         raise ValueError('Certificate registration needs all effective guarantees')
     coverage = {}
@@ -1072,8 +1102,7 @@ def validate_impact_reuse(observed, assessment, key, policy, candidate, artifact
             raise ValueError('Trusted Issue has no evidence certificates')
         certificate = certificates.get(ref['id'])
         history, case_hash = impact_history(assessment['source_candidate'], candidate, key, git)
-        # Qualify only the comparison; original records still require their original plan.
-        source_plan = initial_stage_plan(assessment['source_candidate'], assessment['source_candidate'], git)
+        # Qualify only the comparison; the shared source check retains the original plan.
         qualified_source_plan = initial_stage_plan(trusted_base, assessment['source_candidate'], git)
     except subprocess.CalledProcessError as exc:
         raise ValueError('Impact certificate provenance or source history could not be verified') from exc
@@ -1112,41 +1141,21 @@ def validate_impact_reuse(observed, assessment, key, policy, candidate, artifact
     if fixed_at.tzinfo is None or assessed_at < fixed_at or reviewed_at < assessed_at:
         raise ValueError('Impact assessment/review predates the fixed candidate or assessment')
     validate_certificate_guarantees(certificate, assessment['coverage'], git, assessment['facts'])
-    source_result = assessment['source_result']
-    original_observation = (source_result.get('initial_observation', {})
-                            if source_result['status'] == 'initial-pass' else source_result)
-    if not isinstance(original_observation, dict):
-        raise ValueError('Original successful observation missing')
-    original_assessment = original_observation.get('responsibility_assessment') or {}
-    if not isinstance(original_assessment, dict) or original_assessment.get('impact_reuse'):
-        raise ValueError('Impact reuse chains cannot create an original successful execution')
-    if source_result['status'] in ('pass', 'initial-pass'):
-        execution = regular_json(assessment['source_candidate'],
-            f'docs/verification/changes/issue-{key.split(":")[0]}.json', git)
-        execution = next(c.get('required_execution') for c in execution['cases'] if c['id'] == key.split(':')[1])
-        source_gop = None
-        if key in GOP_KEYS and not policy['responsibility_revision'].get('method_revision'):
-            amendment = gop_amendment(assessment['source_candidate'], assessment['source_candidate'], git)
-            source_gop = {'revision': canonical_hash(amendment)} if amendment else None
-        if source_result['status'] == 'initial-pass':
-            validate_initial_result(source_result, key, source_plan, assessment['source_candidate'], source_artifact, execution, source_gop)
-        else:
-            validate_full_result(source_result, assessment['source_candidate'], source_artifact, execution, source_gop,
-                                 effective_initial_entry(source_plan, key))
-            validate_responsibility_observation(source_result, key, source_plan)
-        validate_fact_assessment(original_observation, key, source_plan, assessment['source_candidate'],
-                                 source_artifact, git, trusted_base, allow_impact=False)
     return source_artifact
 
 
-def validate_fact_assessment(observed, key, policy, candidate, artifact, git, trusted_base=None, allow_impact=True):
+def validate_fact_assessment(observed, key, policy, candidate, artifact, git, trusted_base=None, allow_impact=True,
+                             normal_contract=None):
     assessment = observed.get('responsibility_assessment')
     if assessment is None:
         return
     if isinstance(assessment, dict) and 'impact_reuse' in assessment and not allow_impact:
         raise ValueError('Nested impact reuse is not supported; retain original successful facts directly')
-    group = responsibility_group(policy, key)
-    if (not group or not isinstance(assessment, dict) or set(assessment) != {
+    # Recursive source assessments retain this already-resolved normal contract;
+    # their old candidate need not be the current continuation admission candidate.
+    required, case = normal_contract or assessment_contract(policy, key, candidate, git, trusted_base)
+    evidence = observed.get('responsibility_evidence')
+    if (not isinstance(assessment, dict) or set(assessment) != {
             'source_candidate', 'source_result', 'source_result_sha256', 'source_record_evidence',
             'facts', 'coverage', 'missing_requirements', 'unresolved_owned_failures'} |
             ({'impact_reuse'} if 'impact_reuse' in assessment else set()) or
@@ -1159,9 +1168,17 @@ def validate_fact_assessment(observed, key, policy, candidate, artifact, git, tr
             not isinstance(assessment['facts'], dict) or not assessment['facts'] or
             not all(nonempty(x) for x in assessment['facts']) or
             not isinstance(assessment['coverage'], dict) or
-            set(assessment['coverage']) != set(observed['responsibility_evidence']) or
+            set(assessment['coverage']) != required or not isinstance(evidence, dict) or
+            set(evidence) != required or not all(nonempty(value) for value in evidence.values()) or
             assessment['missing_requirements'] != [] or assessment['unresolved_owned_failures'] != []):
         raise ValueError('Retained-fact assessment needs original record, complete coverage and no unresolved owned failure')
+    if case:
+        normal_contract = (required, case)
+        validate_full_result(observed, candidate, artifact, case.get('required_execution'), None)
+        if observed.get('responsibility_revision') != canonical_hash(policy.get('responsibility_revision')):
+            raise ValueError('Normal assessment must bind the trusted responsibility revision')
+        if assessment['source_result']['status'] == 'initial-pass':
+            raise ValueError('Normal Case cannot borrow an initial-stage result')
     for facts in assessment['coverage'].values():
         if (not isinstance(facts, list) or not facts or not all(isinstance(x, str) for x in facts) or
                 len(facts) != len(set(facts)) or set(facts) - set(assessment['facts'])):
@@ -1187,6 +1204,32 @@ def validate_fact_assessment(observed, key, policy, candidate, artifact, git, tr
             PURPOSE_PREVIOUS_PLAN_SHA256 if previous_consumer_plan(policy) else None,
             SETTINGS_PREVIOUS_PLAN_SHA256 if previous_settings_plan(policy) else None}:
         raise ValueError('Retained facts must bind the exact original or trusted current responsibility plan')
+    source_result = assessment['source_result']
+    original_observation = (source_result.get('initial_observation', {})
+                            if source_result['status'] == 'initial-pass' else source_result)
+    if not isinstance(original_observation, dict):
+        raise ValueError('Original successful observation missing')
+    original_assessment = original_observation.get('responsibility_assessment') or {}
+    if not isinstance(original_assessment, dict) or 'impact_reuse' in original_assessment:
+        raise ValueError('Impact reuse chains cannot create an original successful execution')
+    # A successful aggregate must be valid before either reuse path can rely on it.
+    if source_result['status'] in ('pass', 'initial-pass'):
+        execution = regular_json(source, f'docs/verification/changes/issue-{key.split(":")[0]}.json', git)
+        execution = next(c.get('required_execution') for c in execution['cases'] if c['id'] == key.split(':')[1])
+        if normal_contract:
+            execution = normal_contract[1].get('required_execution')
+        source_gop = None
+        if key in GOP_KEYS and not policy['responsibility_revision'].get('method_revision'):
+            amendment = gop_amendment(source, source, git)
+            source_gop = {'revision': canonical_hash(amendment)} if amendment else None
+        if source_result['status'] == 'initial-pass':
+            validate_initial_result(source_result, key, original_policy, source, source_artifact, execution, source_gop)
+        else:
+            validate_full_result(source_result, source, source_artifact, execution, source_gop,
+                                 effective_initial_entry(original_policy, key) if key in original_policy['cases'] else None)
+            validate_responsibility_observation(source_result, key, original_policy)
+        validate_fact_assessment(original_observation, key, original_policy, source,
+                                 source_artifact, git, trusted_base, allow_impact=False, normal_contract=normal_contract)
     for fact in assessment['facts'].values():
         if not isinstance(fact, dict):
             raise ValueError('Retained fact must be an actual successful observation')
@@ -1201,7 +1244,8 @@ def validate_fact_assessment(observed, key, policy, candidate, artifact, git, tr
         if datetime.fromisoformat(fact['at'].replace('Z', '+00:00')) > datetime.fromisoformat(observed['at'].replace('Z', '+00:00')):
             raise ValueError('Assessment predates its retained facts')
         validate_fact_assessment(fact, key, policy if fact_head == candidate else original_policy, fact_head,
-                                 artifact if fact_head == candidate else source_artifact, git, trusted_base, allow_impact=False)
+                                 artifact if fact_head == candidate else source_artifact, git, trusted_base, allow_impact=False,
+                                 normal_contract=normal_contract)
 
 
 def validate_candidate_result(result, key, policy, stage, candidate, artifact, execution, gop, git,
@@ -1644,6 +1688,7 @@ def promotion_policy_blobs(base, candidate, git, continuation=False):
     allowed = {*protected, 'scripts/workflow/verification.py',
                'scripts/workflow/initial_continuation_cases.py',
                'scripts/workflow/test_initial_continuation.py',
+               'scripts/workflow/test_management_ci_history.py',
                'scripts/workflow/test_impact_evidence_reuse.py', 'docs/verification/README.md',
                'docs/verification/responsibility.md'}
     # Trusted policy entrypoints; product/build checkers retain the tested candidate version.
@@ -1656,6 +1701,7 @@ def promotion_policy_blobs(base, candidate, git, continuation=False):
                ('scripts/workflow/release_delivery.py', False),
                ('scripts/workflow/verification.py', False),
                ('scripts/workflow/test_initial_continuation.py', True),
+               ('scripts/workflow/test_management_ci_history.py', True),
                ('scripts/workflow/test_impact_evidence_reuse.py', True)]
     suffixes = all_suffixes()
     for ref in (base, candidate):
@@ -1757,7 +1803,8 @@ def promotion_policy_blobs(base, candidate, git, continuation=False):
                     ('3ae14aa6205aed699b52f3c67e96038130389240', 'cfa0c978d6b498c060f99e474e9aeb0713f4c96d'),
                     ('3ae14aa6205aed699b52f3c67e96038130389240', '1d44121aa1169f29e3d88ac4d304ddb82694af5b'),
                     ('3ae14aa6205aed699b52f3c67e96038130389240', 'b358b6bf01d81b845994871aa97bad5f2dfa9f76'),
-                    ('3ae14aa6205aed699b52f3c67e96038130389240', '2355674d835027464551b34e960ab23a0420cac2')):
+                    ('3ae14aa6205aed699b52f3c67e96038130389240', '2355674d835027464551b34e960ab23a0420cac2'),
+                    ('3ae14aa6205aed699b52f3c67e96038130389240', 'b3c345def14d53dc099ba2b836d3c47a1d890d17')):
                 raise ValueError('Candidate README changes require explicit trusted-main reconciliation')
         # Carry only the reviewed human-scope amendment, never arbitrary candidate policy edits.
         if path == 'docs/verification/responsibility.md' and (

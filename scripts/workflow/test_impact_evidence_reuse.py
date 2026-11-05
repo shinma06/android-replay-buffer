@@ -587,6 +587,329 @@ class ImpactEvidenceTests(unittest.TestCase):
         self.assertTrue(self.prior.verify()['stage_complete'])
 
 
+class NormalCaseImpactTests(unittest.TestCase):
+    """Exercise normal contracts through the same certificate, result and listing gates."""
+
+    def setUp(self):
+        from test_verification import change
+        import verification as v
+        self.impact = ImpactEvidenceTests()
+        self.impact.setUp()
+        self.fixture = self.impact.fixture
+        self.policy = self.impact.policy
+        self.initial = self.impact.prior.initial
+        ancestor = '1' * 40
+        self.policy['required_ancestor'] = ancestor
+        for entry in self.policy['cases'].values():
+            entry['sources'][0]['source_merge'] = ancestor
+        self.policy['responsibility_revision']['previous_plan_sha256'] = canonical_hash(
+            {k: value for k, value in self.policy.items() if k != 'responsibility_revision'})
+        self.fixture.documents[f'{ancestor}:{CASE_PATH}'] = copy.deepcopy(
+            self.fixture.documents[f'{NEW}:{CASE_PATH}'])
+        for ref in (BASE, OLD, NEW):
+            self.fixture.documents[f'{ref}:{INITIAL_PLAN}'] = copy.deepcopy(self.policy)
+        self.initial.record_results()
+        self.impact.prior.proof(self.initial.manifest['results']['36:QA-1-EMU']['initial_observation'])
+        self.key, self.path = '37:QA-1', 'docs/verification/changes/issue-37.json'
+        record = change(37)
+        self.case = record['cases'][0]
+        self.case['required_execution'] = 'computer_use'
+        for ref in (OLD, NEW):
+            self.fixture.documents[f'{ref}:{self.path}'] = copy.deepcopy(record)
+        self.fixture.source['body'] = ('Issue: #37\nGUI: required\nIntegration: develop\n'
+                                      'Verification: ' + self.path)
+        self.fixture.source['head']['ref'] = 'codex/37-source'
+        self.registration = {'schema': 1, 'issue': 344, 'candidate': NEW,
+            'plan_sha256': canonical_hash(self.policy),
+            'changes': [{'commit': NEW, 'pr': 99, 'source_path': self.path}],
+            'cases': {self.key: {'current_case_sha256': canonical_hash(self.case), 'sources': [{
+                'source_pr': 99, 'source_merge': NEW, 'source_path': self.path,
+                'original_case_sha256': canonical_hash(self.case)}]}}}
+        for ref in (BASE, HEAD):
+            self.fixture.documents[f'{ref}:{v.INITIAL_CONTINUATION}'] = self.registration
+        self.required = {'contract_coverage', 'artifact_binding', 'failure_attribution',
+                         'preconditions', 'step_1', 'step_2', 'expected'}
+        self.observed = self.impact.observed
+        self.assessment = self.impact.assessment
+        self.certificate = self.impact.certificate
+        for observed in (self.observed, *self.assessment['facts'].values()):
+            observed['responsibility_revision'] = canonical_hash(self.policy['responsibility_revision'])
+            observed['responsibility_evidence'] = {k: 'Synthetic clause evidence: ' + k for k in self.required}
+        self.assessment['source_result'] = copy.deepcopy(self.assessment['facts']['prior'])
+        self.assessment['coverage'] = {k: ['current' if k == 'artifact_binding' else 'prior'] for k in self.required}
+        proofs = self.certificate['guarantees']
+        self.certificate['guarantees'] = {k: copy.deepcopy(proofs[
+            'artifact_binding' if k == 'artifact_binding' else 'file_integrity']) for k in self.required}
+        self.certificate.update(key=self.key, plan_sha256=canonical_hash(self.policy),
+                                case_sha256=canonical_hash(self.case))
+        self.initial.manifest['results'][self.key] = self.observed
+        self.seal()
+
+    def seal(self):
+        impact = 'impact_reuse' in self.assessment
+        self.assessment['source_result_sha256'] = canonical_hash(self.assessment['source_result'])
+        self.impact.seal()
+        if not impact:
+            self.assessment.pop('impact_reuse')
+
+    def use_same_artifact(self):
+        self.assessment.pop('impact_reuse')
+        self.impact.paths = 'docs/unrelated.md'
+        self.assessment['source_result']['artifact_sha256'] = 'e' * 64
+        self.assessment['facts'].pop('current')
+        self.assessment['facts']['prior']['artifact_sha256'] = 'e' * 64
+        self.assessment['coverage'] = {k: ['prior'] for k in self.required}
+        self.seal()
+
+    def register(self):
+        from verification import certificate_acceptance
+        return certificate_acceptance({'sample': self.certificate}, self.fixture.git, BASE)
+
+    def consume(self):
+        from verification import validate_candidate_result
+        return validate_candidate_result(self.observed, self.key, self.policy, None, NEW, 'e' * 64,
+                                         'computer_use', None, self.fixture.git, BASE, self.case,
+                                         self.registration['cases'].get(self.key))
+
+    def render(self):
+        return render_queue([], self.initial.manifest, self.fixture.git)
+
+    def test_registration_reference_normal_pass_listing_and_promotion_keep_originals(self):
+        saved = copy.deepcopy(self.assessment)
+        self.assertIn('certificate_revision', self.register())
+        self.consume()
+        accepted = self.initial.verify()
+        self.assertEqual((3, 2, 1), (accepted['cases'], accepted['initial_cases'], accepted['deferred_cases']))
+        self.assertTrue(accepted['stage_complete'])
+        self.assertFalse(accepted['full_acceptance_complete'])
+        self.assertEqual(saved, self.assessment)
+        self.assertIn('修正影響を保証ごとに評価／旧観察と現在事実を区別／Case合格', self.render())
+
+    def assert_rejected(self, registration=True):
+        if registration:
+            with self.assertRaises(ValueError):
+                self.register()
+        with self.assertRaises(ValueError):
+            self.consume()
+        with self.assertRaises(ValueError):
+            self.initial.verify()
+        try:
+            output = self.render()
+        except ValueError:
+            return  # Invalid trusted registration prevents the entire listing.
+        self.assertNotIn('修正影響を保証ごとに評価／旧観察と現在事実を区別／Case合格', output)
+        self.assertNotIn('Case合格', next((line for line in output.splitlines() if line.startswith('| QA-1 / #37 ')), ''))
+
+    def test_fixed_clauses_not_self_declared_keys_determine_complete_coverage(self):
+        for name in sorted(self.required):
+            for replacement in (None, 'invented', 'file_integrity'):
+                with self.subTest(clause=name, replacement=replacement):
+                    self.setUp()
+                    for mapping in (self.observed['responsibility_evidence'], self.assessment['coverage'],
+                                    self.certificate['guarantees']):
+                        value = mapping.pop(name)
+                        if replacement:
+                            mapping[replacement] = value
+                    self.seal()
+                    self.assert_rejected()
+        for mapping_name in ('all-keys', 'empty-facts', 'empty-evidence'):
+            with self.subTest(empty=mapping_name):
+                self.setUp()
+                if mapping_name == 'all-keys':
+                    self.observed['responsibility_evidence'].clear()
+                    self.assessment['coverage'].clear()
+                    self.certificate['guarantees'].clear()
+                elif mapping_name == 'empty-facts':
+                    self.assessment['coverage']['step_2'] = []
+                    self.certificate['guarantees']['step_2']['facts'] = []
+                else:
+                    self.observed['responsibility_evidence']['step_2'] = ''
+                self.seal()
+                self.assert_rejected(registration=mapping_name != 'empty-evidence')
+
+    def test_registration_candidate_sources_hashes_and_artifact_cannot_be_self_registered(self):
+        import verification as v
+        for edit in ('missing-trusted', 'other-candidate', 'unknown-key', 'source-hash', 'current-hash',
+                     'source-pr', 'source-mode', 'extra-source', 'current-contract', 'artifact', 'revert'):
+            with self.subTest(edit=edit):
+                self.setUp()
+                entry = self.registration['cases'][self.key]
+                if edit == 'missing-trusted':
+                    self.fixture.documents[f'{NEW}:{v.INITIAL_CONTINUATION}'] = self.registration
+                    self.fixture.documents.pop(f'{BASE}:{v.INITIAL_CONTINUATION}')
+                elif edit == 'other-candidate':
+                    self.registration['candidate'] = OLD
+                elif edit == 'unknown-key':
+                    self.registration['cases'] = {'37:UNKNOWN': entry}
+                elif edit == 'source-hash':
+                    entry['sources'][0]['original_case_sha256'] = 'f' * 64
+                elif edit == 'current-hash':
+                    entry['current_case_sha256'] = 'f' * 64
+                elif edit == 'source-pr':
+                    entry['sources'][0]['source_pr'] = 100
+                elif edit == 'source-mode':
+                    self.initial.modes[NEW, self.path] = '120000'
+                elif edit == 'extra-source':
+                    entry['sources'].append(copy.deepcopy(entry['sources'][0]))
+                elif edit == 'current-contract':
+                    self.fixture.documents[f'{NEW}:{self.path}']['cases'][0]['expected'] += ' changed'
+                elif edit == 'artifact':
+                    self.fixture.documents[f'{OLD}:{self.path}']['cases'][0]['artifact'] = 'different'
+                else:
+                    self.impact.paths += '\n' + self.path
+                self.seal()
+                self.assert_rejected()
+
+    def test_pending_blocked_and_failed_aggregates_keep_successful_facts_and_original_status(self):
+        for status in ('pending', 'blocked', 'fail'):
+            with self.subTest(status=status):
+                self.setUp()
+                self.assessment['source_result']['status'] = status
+                self.assessment['source_result']['reason'] = 'Synthetic aggregate failure retained, successful purposes assessed separately.'
+                self.seal()
+                saved = copy.deepcopy(self.assessment['source_result'])
+                self.register()
+                self.consume()
+                self.assertTrue(self.initial.verify()['stage_complete'])
+                self.assertEqual(saved, self.assessment['source_result'])
+
+    def test_normal_case_cannot_borrow_initial_results_or_deferrals(self):
+        for status in ('initial-pass', 'deferred', 'pending', 'blocked', 'fail'):
+            with self.subTest(current=status):
+                self.setUp()
+                self.observed['status'] = status
+                self.seal()
+                self.assert_rejected(registration=False)
+        self.setUp()
+        self.assessment['source_result']['status'] = 'initial-pass'
+        self.seal()
+        self.assert_rejected(registration=False)
+
+    def test_original_normal_pass_and_inner_assessment_are_revalidated(self):
+        for impact in (True, False):
+            with self.subTest(impact_reuse=impact):
+                self.setUp()
+                if not impact:
+                    self.use_same_artifact()
+                self.check_original_normal_pass_and_inner_assessment()
+
+    def check_original_normal_pass_and_inner_assessment(self):
+        original = self.assessment['source_result']
+        old_fact = copy.deepcopy(self.assessment['facts']['prior'])
+        original['responsibility_assessment'] = {
+            'source_candidate': OLD, 'source_result': {'status': 'pending'},
+            'source_result_sha256': canonical_hash({'status': 'pending'}),
+            'source_record_evidence': 'Synthetic original retained assessment.',
+            'facts': {'old': old_fact}, 'coverage': {k: ['old'] for k in self.required},
+            'missing_requirements': [], 'unresolved_owned_failures': []}
+        self.seal()
+        if 'impact_reuse' in self.assessment:
+            self.register()
+        self.consume()
+        saved = copy.deepcopy(original)
+        for edit in ('missing', 'failure', 'coverage', 'nested', 'execution', 'evidence'):
+            with self.subTest(inner=edit):
+                original.clear()
+                original.update(copy.deepcopy(saved))
+                inner = original['responsibility_assessment']
+                if edit == 'missing':
+                    inner['missing_requirements'] = ['Incomplete native glue']
+                elif edit == 'failure':
+                    inner['unresolved_owned_failures'] = ['Original owned failure retained']
+                elif edit == 'coverage':
+                    inner['coverage'].pop('step_2')
+                elif edit == 'nested':
+                    inner['impact_reuse'] = self.assessment.get('impact_reuse', {})
+                else:
+                    original[edit] = ''
+                self.seal()
+                self.assert_rejected(registration=False)
+
+    def test_unresolved_failure_nested_reuse_identity_times_and_fresh_binding_stay_rejected(self):
+        for edit in ('missing', 'failure', 'nested', 'failed-nested', 'fact-nested', 'source', 'old-zip', 'current-zip',
+                     'old-load', 'future', 'revision', 'reviewer', 'contributor', 'component', 'unknown-impact'):
+            with self.subTest(edit=edit):
+                self.setUp()
+                if edit == 'missing':
+                    self.assessment['missing_requirements'] = ['Uncovered clause']
+                elif edit == 'failure':
+                    self.assessment['unresolved_owned_failures'] = ['Owned failure']
+                elif edit in ('nested', 'failed-nested'):
+                    self.assessment['source_result']['responsibility_assessment'] = {'impact_reuse': {}}
+                    if edit == 'failed-nested':
+                        self.assessment['source_result']['status'] = 'fail'
+                elif edit == 'fact-nested':
+                    self.assessment['facts']['prior']['responsibility_assessment'] = {'impact_reuse': {}}
+                elif edit == 'source':
+                    self.assessment['facts']['prior']['head'] = '9' * 40
+                elif edit == 'old-zip':
+                    self.assessment['facts']['prior']['artifact_sha256'] = 'e' * 64
+                elif edit == 'current-zip':
+                    self.assessment['facts']['current']['artifact_sha256'] = 'd' * 64
+                elif edit == 'old-load':
+                    self.assessment['coverage']['artifact_binding'] = ['prior']
+                    self.certificate['guarantees']['artifact_binding']['facts'] = ['prior']
+                elif edit == 'future':
+                    self.assessment['facts']['prior']['at'] = '2099-01-01T00:00:00Z'
+                elif edit == 'revision':
+                    self.observed['responsibility_revision'] = 'f' * 64
+                elif edit == 'reviewer':
+                    self.certificate['review']['reviewer_session'] = self.certificate['review']['writer_session']
+                elif edit == 'contributor':
+                    self.certificate['provenance']['attribution']['contributors'].pop(0)
+                elif edit == 'component':
+                    self.certificate['guarantees']['step_1']['components'][COMPONENT]['source_blob'] = 'f' * 40
+                else:
+                    self.certificate['guarantees']['step_1']['impact']['runtime'] = ''
+                self.seal()
+                self.assert_rejected(registration=edit in ('old-load', 'reviewer', 'contributor', 'component', 'unknown-impact'))
+
+    def test_same_artifact_retained_fact_assessment_uses_the_same_normal_contract(self):
+        self.use_same_artifact()
+        self.consume()
+        original = copy.deepcopy(self.assessment['source_result'])
+        for field in ('execution', 'evidence'):
+            with self.subTest(original_field=field):
+                self.assessment['source_result'] = dict(original, **{field: ''})
+                self.seal()
+                self.assert_rejected(registration=False)
+        self.assessment['source_result'] = original
+        self.seal()
+        self.assessment['coverage'].pop('step_2')
+        self.assert_rejected(registration=False)
+
+    def test_full_promotion_keeps_normal_assessment_without_inheriting_deferrals(self):
+        from test_verification import observation
+        self.initial.manifest.pop('stage')
+        for key in self.policy['cases']:
+            observed = dict(observation(), execution='computer_use')
+            self.impact.prior.proof(observed)
+            self.initial.manifest['results'][key] = observed
+        self.assertTrue(self.initial.verify()['gui_complete'])
+        self.assertIn('修正影響を保証ごとに評価／旧観察と現在事実を区別／Case合格', self.render())
+
+    def test_current_issue_tooling_registration_uses_the_same_contract(self):
+        from verification import verify_pr
+        pr = copy.deepcopy(self.fixture.pr)
+        pr['body'] = ('Issue: #246\nGUI: not-required\nIntegration: tooling\n'
+                      'Verification: ' + CERT_PATH)
+        pr['head']['ref'] = 'codex/246-fixture'
+        self.fixture.documents.pop(f'{BASE}:{CERT_PATH}')
+
+        def git(*args):
+            if args[0] == 'diff' and args[-2:] == (BASE, HEAD):
+                return CERT_PATH
+            return self.fixture.git(*args)
+
+        accepted = verify_pr(pr, self.fixture.api, git)
+        self.assertEqual('tooling', accepted['mode'])
+        self.assertEqual(canonical_hash({'sample': self.certificate}), accepted['certificate_revision'])
+        self.certificate['guarantees'].pop('step_2')
+        self.seal()
+        with self.assertRaisesRegex(ValueError, 'all effective guarantees'):
+            verify_pr(pr, self.fixture.api, git)
+
+
 class CertificateOriginTests(unittest.TestCase):
     def accept_certificates(self, certificates):
         from verification import certificate_acceptance
@@ -766,6 +1089,25 @@ class CertificateOriginTests(unittest.TestCase):
 
 
 
+class NormalCertificateOriginTests(CertificateOriginTests):
+    """Run existing sealed-origin/binding regressions with a normal-Case certificate."""
+
+    def accept_certificates(self, certificates):
+        from verification import certificate_acceptance
+        normal = NormalCaseImpactTests()
+        normal.setUp()
+        bound = {key: dict(copy.deepcopy(normal.certificate), provenance=value['provenance'], review=value['review'])
+                 for key, value in certificates.items()}
+        return certificate_acceptance(bound, normal.fixture.git, BASE)
+
+    def setUp(self):
+        super().setUp()
+        normal = NormalCaseImpactTests()
+        normal.setUp()
+        self.validation_git = normal.fixture.git
+        self.certificate_template = normal.certificate
+
+
 class PromotionTreeTests(unittest.TestCase):
     def setUp(self):
         self.folder = tempfile.TemporaryDirectory()
@@ -817,6 +1159,7 @@ class PromotionTreeTests(unittest.TestCase):
         from verification import promotion_certificates, promotion_policy_blobs
         self.carried = promotion_certificates(self.promotion, self.base, self.candidate, self.git)
         self.carried.update(promotion_policy_blobs(self.base, self.candidate, self.git))
+
         self.allowed = set(self.carried) | {'docs/verification/promotion.json'}
         self.git('checkout', '-q', 'candidate')
         # A real merge retains tested product bytes and copies only the exact permitted main blobs.
@@ -825,6 +1168,17 @@ class PromotionTreeTests(unittest.TestCase):
             self.write(path, self.git('show', f'{self.base}:{path}'))
         self.write('docs/verification/promotion.json', json.dumps(self.promotion))
         self.commit('promotion metadata')
+
+    def test_management_history_fixture_is_carried_with_the_shared_validator(self):
+        from verification import promotion_policy_blobs
+        self.git('checkout', '-q', 'trusted-main')
+        regression = 'scripts/workflow/test_management_ci_history.py'
+        self.write(regression, 'import verification\n# complete synthetic responsibility coverage\n')
+        self.commit('reviewed history fixture for shared validator')
+        base = self.git('rev-parse', 'HEAD')
+        for continuation in (False, True):
+            carried = promotion_policy_blobs(base, self.candidate, self.git, continuation)
+            self.assertEqual(self.git('ls-tree', base, '--', regression), carried[regression])
 
     def git(self, *args):
         return subprocess.check_output(['git', *args], cwd=self.root, text=True, stderr=subprocess.PIPE).strip()
