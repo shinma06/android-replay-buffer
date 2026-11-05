@@ -43,11 +43,11 @@ jobs:
           trap 'rm -f "$archive"' EXIT
           curl --fail --location --max-time 120 --output "$archive" \
             https://dl.google.com/android/repository/platform-37.2_r01.zip
-          echo "916410633df92a98da56aa7c87a1955f865f4d3b888373660794ef8173f72972  $archive" | sha256sum --check --strict
+          echo "916410633df92a98da56aa7c87a1955f865f4d3b888373660794ef8173f72972  $archive" | sha256sum -c -
           mkdir -p "$sdk_dir/platforms/android-37.2"
           jar="$sdk_dir/platforms/android-37.2/android.jar"
           unzip -p "$archive" android-37.2/android.jar > "$jar"
-          echo "1db2419dbd45457f83b90ef8a7ef41e118174782c9a5c2185b55899df022767f  $jar" | sha256sum --check --strict
+          echo "1db2419dbd45457f83b90ef8a7ef41e118174782c9a5c2185b55899df022767f  $jar" | sha256sum -c -
           echo "ANDROID_HOME=$sdk_dir" >> "$GITHUB_ENV"
       - name: Harness and affected integrated product checks
         run: python3 scripts/workflow/change_impact.py --event --run-tests
