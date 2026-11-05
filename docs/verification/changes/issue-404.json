@@ -1,0 +1,793 @@
+{
+  "schema": 1,
+  "issue": 404,
+  "gui_required": false,
+  "reason": "42:UI-12-01だけの既存事実による保証別影響証明登録。製品source/build/plan/Case原文/CIは変えず、追加GUI/端末実行なし。正式review前のpending証明書を公開・採用しない。",
+  "cli_checks": [
+    "既存verificationで全identity/Case/plan/history/components/保証を照合",
+    "元raw/file/canonical hash・実観察者/時刻・公開projectionと意味上の全coverageを独立reviewで確認",
+    "既存private_repair_evidenceで原帰属bundleを照合し、実origin receiptは同じ正式reviewer sessionが発行",
+    "正式review後にcommit/clean HEAD change_impact --run-tests/hooksを満たしてからpush/Draft PR"
+  ],
+  "cases": [],
+  "evidence_certificates": {
+    "ui-12-01-948b": {
+      "schema": 1,
+      "key": "42:UI-12-01",
+      "candidate": "948b1ad2f18ee266c79935327a403dd7471fdc3b",
+      "artifact_sha256": "a582052844272ad004f3e3429d50b12a7ec6b6783bc686457465a02f20546316",
+      "source_candidate": "4d0430daf90c420e3b86064f839bbafd35d84131",
+      "source_artifact_sha256": "4d966bdda81ccd929e365f556d7fc2006dfc7818e7f35c7d3cd891143518c09f",
+      "case_sha256": "99a321c6accdf8bd9b4912da0391b4cac7eb0f3f89c7b3da3f96d2eb9d630081",
+      "plan_sha256": "0b6d9c6d2d5054ed642565afdbaeb5a88ee198a4ea5398ff96ff36168ce0eda5",
+      "history": [
+        {
+          "commit": "05a947a7bf5bcbec6869f036bb5acce3a09eba31",
+          "parent": "4d0430daf90c420e3b86064f839bbafd35d84131",
+          "paths": [
+            ".agents/skills/finish-work/SKILL.md",
+            ".agents/skills/start-work/SKILL.md",
+            "AGENTS.md",
+            "docs/computer-use.md",
+            "docs/design/ide-ui.md",
+            "docs/omil-current.md",
+            "docs/omil-phase-review.md",
+            "docs/omil-portable.md",
+            "docs/operations.md",
+            "docs/setup/README.md",
+            "docs/setup/gui-and-remote.md",
+            "docs/team-communication.md",
+            "docs/team-worker-prompt.md",
+            "docs/verification/changes/issue-397.json",
+            "docs/verification/initial-version.md",
+            "docs/workflow.md"
+          ]
+        },
+        {
+          "commit": "948b1ad2f18ee266c79935327a403dd7471fdc3b",
+          "parent": "05a947a7bf5bcbec6869f036bb5acce3a09eba31",
+          "paths": [
+            "docs/cli.md",
+            "docs/plugin-development.md",
+            "docs/verification/changes/issue-395.json",
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ide/ReplayCleanupDirectory.kt",
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ide/ReplayProjectCapture.kt",
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ide/ReplayProjectService.kt",
+            "plugin/src/test/kotlin/io/github/shinma06/replaybuffer/ide/ReplayCleanupDirectoryTest.kt",
+            "plugin/src/test/kotlin/io/github/shinma06/replaybuffer/ide/ReplayInitializationCliTest.kt",
+            "plugin/src/test/kotlin/io/github/shinma06/replaybuffer/ide/ReplayProjectCaptureTest.kt"
+          ]
+        }
+      ],
+      "original_file_sha256": "d52b66c66317bb4b1349300c6895899f87b51fca9d92e984d4e1259876086056",
+      "original_result_sha256": "40819a62e85737261d9d684b78d3d1634223ee0aba56e436fac31186b365423a",
+      "original_fact_sha256": {
+        "OLD_A_NORMAL_S1": "d05e3e1eec512d15b167d59428f1f6296443b8303e1f94643412e4fd89df418a",
+        "N2_ORIGINAL_APPLY_MODIFIED_CANCEL_REOPEN": "0471cb99fee310e489baa91334c6cd73cec9dedb78f03bf275895802c6d2a8dd"
+      },
+      "original_record_evidence": "Immutable Git 4d0430daf90c420e3b86064f839bbafd35d84131:docs/verification/changes/issue-42.json byte SHA-256 d52b66c66317bb4b1349300c6895899f87b51fca9d92e984d4e1259876086056; original Case42 pending canonical SHA-256 40819a62e85737261d9d684b78d3d1634223ee0aba56e436fac31186b365423a. Public source-result adds only old source/ZIP context to the unchanged pending record. Successful original BF subfacts are distinct from that aggregate.",
+      "assessment_sha256": "f3e5b6e9505a6a815e3ca5df5ec65b2e04de4911917e3129921a96f698ccad17",
+      "observation_sha256": "326bb5771682a13e8deed5ef9e19bf29be64f4a0297825e0fab6a4d750e0fede",
+      "review": {
+        "status": "approved",
+        "writer_session": "codex-session-sha256:d84b234013a9716e246ed27593f5d64d5690248a86c6d56eb54b625203854778",
+        "executor_sessions": [
+          "codex-session-sha256:18f9d188574b37e9e962fb8ac4b7737b055026e7dba679a960d986effe54e0a8",
+          "codex-session-sha256:250ef5d1061f126ca01a1313b3def08babdc310815842f20cffa63c2013eb3a9"
+        ],
+        "reviewer_session": "codex-session-sha256:cb54214b9b4399ae155cf9692e7f9f2148f74904eca9ccd8134ada88cf9dca09",
+        "at": "2026-11-05T09:55:19.585992+00:00",
+        "evidence": "Actual independent SAME A6 corrected Case42 substantive review; report SHA-256 ea2de87b3a0275e7fa3035691050dccbe9cdf50be2dfd22077abe8921aad4fe0; C42-FAILURE-COUNT-01 resolved at all17 exact pointers; unchanged all5functional guarantees reused from actual prior review. Final fixed HEAD/PR and actual adapter binding remain a separate required step."
+      },
+      "guarantees": {
+        "contract_coverage": {
+          "facts": [
+            "N2_ORIGINAL_APPLY_MODIFIED_CANCEL_REOPEN",
+            "OLD_A_NORMAL_S1",
+            "N3_CURRENT_READ_S1",
+            "S0_GUI_AND_RUNTIME",
+            "S0_NORMAL_CLOSE_XML",
+            "CURRENT_ORIGINAL_EXECUTION_EQUIVALENCE"
+          ],
+          "disposition": "equivalent",
+          "impact": {
+            "source": "Direct original4d/current948 Git component bindings and complete2-edge history preserved. Store/Configurable/ToolWindow/Core sources unchanged. Changed Capture/Service/Cleanup initialization/submit/retry paths use executed f62 fault/public-path facts and exactcurrent classes, not only prior healthy equivalence. Renderer uses same tested source/service view model.",
+            "callers": "Native Settings Apply/Cancel/current STOP/Apply connect Store/UI/core. Production Capture tests use actual Apply/setEnabled/close and realCore queues. InitializationCli invokes actual CLI/server/Service handler with isolated injected Capture/environment. Actual LayoutTest invokes real panel.render on EDT after injected error view; automatic notification delivery is not asserted.",
+            "callees": "Actual Store validation/persistence snapshots, real Core states, real isolated filesystem file/missing/symlink permissions and Capture retry lifecycle are asserted by originaltests. ToolWindow reads Service.captureView and writes real Swing state/message/save components. Native service/load and representative normal Settings glue remain separately observed.",
+            "dataflow": "Savedenabled/retention/destination flows old4d closeXML -> current948 firstread, then supportedSTOP/GUIApply -> coreOFF/defaultXML after normalclose. Failure dataflow splits producer view.initializationError/persistedfalse from executed renderer error caption/visible reason/Savefalse. Each fact keeps origin and branch; no late error or Cancel overwrites latestintent in actual finite regression.",
+            "build": "Original f62 tested source=f62cbfd73a84f7b036a6b638306877a42817208b ZIP=a57aabe05ad12b9e198a319c3223adc485ef9e6a3613d98087eaaba3a84524b9 and exact14 execution support byte SHA-256=d7b80c936b470d9eea65ff103373e63980455e1d26352b27636570b9fbf13529; actual current source/selected-class equality SHA-256=cab3ede3f1fe0cd1324f93b22b212a17e5e7ecda49f0611cd5a5fd850f266a29; renderer original suite SHA-256=4f75ffe5c237277dc952e2d8ede849cceddf039b0e86f3d751e5273b8ece9723. Case42 settings/init-failure/race/retry and consumer purpose only; no fresh948 tests/nativefault/errorpixels/automaticbus delivery claimed.",
+            "configuration": "Fixed original test Store values (file/missing/no-destination/LOG_ONLY83 and native181/S0) kept separate. No-SDK mock fixture does not become realSDK/device execution. Current native owned project/profile and observed Rabbit/JBR/current plugin are pinned in exact private originals. Original139 plan/REAL deferral preserved.",
+            "dependencies": "Fixedsource/build inputs and actual current installed3JAR/service mainJAR retained. Selected44+renderer9 class union and four renderer source files are byte-equal to originalf62; full source tree identical. Version/build-ID resource changes are not called wholeZIP equality. New CLI regression source is originalf62 and exactcurrent Git tree, not an old4d component.",
+            "fixtures": "Original retained BF disposable native fixture and current zero-device environment only. Isolated realFS fault fixture, no-SDK Core, mockIDE and reflection injection limitations are retained. No new liveGUI/permission fault/device/recording is required merely to repeat these trusted production purposes.",
+            "runtime": "BF observed Rabbit AI-262.10968.63.2622.16730706/JBR25.0.4/SDK37.0.1/current948 service. f62 regressions remain their originaltest runtime and suite timestamps. No claim of current device acquisition; INITIAL139 ui-settings permits productionfault/race plus representative native. Additional206/274 same-version restart contracts are outside this42 proof.",
+            "display": "Originalnative settings transaction and current AX/upperpixels/OFF support representative realUI. Executed realSwing renderer consumes injected initializationError; state contains failure caption, message component visible and text matches, Save disabled. FirstPaint belongs to previous phase loop, not thiserror; native isShowing/errorpixels/automaticbus are unobserved and not inferred.",
+            "failure_attribution": "原Case42 pendingと旧VFR6失敗/旧承認撤回・native/Verifier未完の原記述を保持する。今回映像/VFR保証を判定しない。元BF Cancel後の非一意入口、SDK初回abort、prelaunch手続きFAIL、oldB UNKNOWN、offscreen診断と下部pixel未観察を保持。f62中間green-final.logの21件実行中1件失敗（InitializationCliTest unsafe=true）も消さず、最終の個別JUnit原実行だけを使う。故障回帰の意図した拒否を製品不具合へ読み替えず、初期化失敗/復元失敗は各実assertで処理される。この42有効保証に未帰属の製品失敗を発見したとは主張しない。"
+          },
+          "components": {
+            "plugin/build.gradle.kts": {
+              "source_blob": "0bc1a08393f9ad4450c8dd31bd45df51756104a8",
+              "candidate_blob": "0bc1a08393f9ad4450c8dd31bd45df51756104a8"
+            },
+            "plugin/gradle.properties": {
+              "source_blob": "1a79bc188396afcaeef36f2ae9387759b5821cef",
+              "candidate_blob": "1a79bc188396afcaeef36f2ae9387759b5821cef"
+            },
+            "plugin/gradle/wrapper/gradle-wrapper.properties": {
+              "source_blob": "a78c88e5392b8d74a8c3e8c665b11bbca0ad5b30",
+              "candidate_blob": "a78c88e5392b8d74a8c3e8c665b11bbca0ad5b30"
+            },
+            "plugin/settings.gradle.kts": {
+              "source_blob": "eb1c5691474ba939e3a1b459dc76df152837c39d",
+              "candidate_blob": "eb1c5691474ba939e3a1b459dc76df152837c39d"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/cli/ReplayCli.kt": {
+              "source_blob": "6033b10c4e2dfe07d30b32c97d65b0ca68d9919b",
+              "candidate_blob": "6033b10c4e2dfe07d30b32c97d65b0ca68d9919b"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/cli/ReplayCliEndpoint.kt": {
+              "source_blob": "c0d6a7b0115dfb915bc45305eda9650b7b814b39",
+              "candidate_blob": "c0d6a7b0115dfb915bc45305eda9650b7b814b39"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/cli/ReplayCliProtocol.kt": {
+              "source_blob": "690446f07611ef753389539c70410b27b7ad87d6",
+              "candidate_blob": "690446f07611ef753389539c70410b27b7ad87d6"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/core/ReplayCore.kt": {
+              "source_blob": "613e3b0ee1ff92d1be68d98a08fb2aee961e43f1",
+              "candidate_blob": "613e3b0ee1ff92d1be68d98a08fb2aee961e43f1"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/core/ReplayModels.kt": {
+              "source_blob": "f025f7ac034a2b673f060ad29972cb26a7a62f77",
+              "candidate_blob": "f025f7ac034a2b673f060ad29972cb26a7a62f77"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ide/ReplayAndroidEnvironment.kt": {
+              "source_blob": "4d88b753567f9cbefc2e2c71efbe76bf43a5036e",
+              "candidate_blob": "4d88b753567f9cbefc2e2c71efbe76bf43a5036e"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ide/ReplayCleanupDirectory.kt": {
+              "source_blob": "f6ce8c1b7f298528df6d289a7f4f3cfe17e60c1b",
+              "candidate_blob": "993cece326de450c441b438d51ed1a2c5bf32092",
+              "equivalence_evidence": "Original f62 tested source=f62cbfd73a84f7b036a6b638306877a42817208b ZIP=a57aabe05ad12b9e198a319c3223adc485ef9e6a3613d98087eaaba3a84524b9 and exact14 execution support byte SHA-256=d7b80c936b470d9eea65ff103373e63980455e1d26352b27636570b9fbf13529; actual current source/selected-class equality SHA-256=cab3ede3f1fe0cd1324f93b22b212a17e5e7ecda49f0611cd5a5fd850f266a29; renderer original suite SHA-256=4f75ffe5c237277dc952e2d8ede849cceddf039b0e86f3d751e5273b8ece9723. Case42 settings/init-failure/race/retry and consumer purpose only; no fresh948 tests/nativefault/errorpixels/automaticbus delivery claimed."
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ide/ReplayProjectCapture.kt": {
+              "source_blob": "6b6c9b97138fabf7e08ac65e3d9223f4f8a1baa2",
+              "candidate_blob": "e8b44c0ce95c13a47105e971de8c656432057677",
+              "equivalence_evidence": "Original f62 tested source=f62cbfd73a84f7b036a6b638306877a42817208b ZIP=a57aabe05ad12b9e198a319c3223adc485ef9e6a3613d98087eaaba3a84524b9 and exact14 execution support byte SHA-256=d7b80c936b470d9eea65ff103373e63980455e1d26352b27636570b9fbf13529; actual current source/selected-class equality SHA-256=cab3ede3f1fe0cd1324f93b22b212a17e5e7ecda49f0611cd5a5fd850f266a29; renderer original suite SHA-256=4f75ffe5c237277dc952e2d8ede849cceddf039b0e86f3d751e5273b8ece9723. Case42 settings/init-failure/race/retry and consumer purpose only; no fresh948 tests/nativefault/errorpixels/automaticbus delivery claimed."
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ide/ReplayProjectService.kt": {
+              "source_blob": "aa5297ae7e47fb69e38870da5c15149e0fafb861",
+              "candidate_blob": "749df544dff0c87b92b3bccf3da2145940bdc17a",
+              "equivalence_evidence": "Original f62 tested source=f62cbfd73a84f7b036a6b638306877a42817208b ZIP=a57aabe05ad12b9e198a319c3223adc485ef9e6a3613d98087eaaba3a84524b9 and exact14 execution support byte SHA-256=d7b80c936b470d9eea65ff103373e63980455e1d26352b27636570b9fbf13529; actual current source/selected-class equality SHA-256=cab3ede3f1fe0cd1324f93b22b212a17e5e7ecda49f0611cd5a5fd850f266a29; renderer original suite SHA-256=4f75ffe5c237277dc952e2d8ede849cceddf039b0e86f3d751e5273b8ece9723. Case42 settings/init-failure/race/retry and consumer purpose only; no fresh948 tests/nativefault/errorpixels/automaticbus delivery claimed."
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/settings/ReplaySettingsConfigurable.kt": {
+              "source_blob": "7a668e4512bf79d4dfedc922fe4d8b718921d400",
+              "candidate_blob": "7a668e4512bf79d4dfedc922fe4d8b718921d400"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/settings/ReplaySettingsStore.kt": {
+              "source_blob": "64eec1d2670a0cf6d6a94de4206ce789999ad1dc",
+              "candidate_blob": "64eec1d2670a0cf6d6a94de4206ce789999ad1dc"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ui/ReplayToolWindowFactory.kt": {
+              "source_blob": "de2242b3d1b64e668869d0192136b7167f733b9c",
+              "candidate_blob": "de2242b3d1b64e668869d0192136b7167f733b9c"
+            },
+            "plugin/src/main/resources/META-INF/plugin.xml": {
+              "source_blob": "3f139f71c8ac3dcefb5a8b35eaf14ff76f4e702b",
+              "candidate_blob": "3f139f71c8ac3dcefb5a8b35eaf14ff76f4e702b"
+            },
+            "plugin/src/test/java/io/github/shinma06/replaybuffer/ui/ReplayToolWindowLayoutTest.java": {
+              "source_blob": "0b7bf320f56ce9b272d63928d801292f96276b6b",
+              "candidate_blob": "0b7bf320f56ce9b272d63928d801292f96276b6b"
+            },
+            "plugin/src/test/kotlin/io/github/shinma06/replaybuffer/ide/ReplayProjectCaptureTest.kt": {
+              "source_blob": "14db3f1d3a69e9a6aea7c2750eab2fc4385f5889",
+              "candidate_blob": "1e94fb2f877e1e5c0a935485bc19995f069eff5f",
+              "equivalence_evidence": "Original f62 tested source=f62cbfd73a84f7b036a6b638306877a42817208b ZIP=a57aabe05ad12b9e198a319c3223adc485ef9e6a3613d98087eaaba3a84524b9 and exact14 execution support byte SHA-256=d7b80c936b470d9eea65ff103373e63980455e1d26352b27636570b9fbf13529; actual current source/selected-class equality SHA-256=cab3ede3f1fe0cd1324f93b22b212a17e5e7ecda49f0611cd5a5fd850f266a29; renderer original suite SHA-256=4f75ffe5c237277dc952e2d8ede849cceddf039b0e86f3d751e5273b8ece9723. Case42 settings/init-failure/race/retry and consumer purpose only; no fresh948 tests/nativefault/errorpixels/automaticbus delivery claimed."
+            },
+            "plugin/src/test/kotlin/io/github/shinma06/replaybuffer/settings/ReplayDestinationValidationTest.kt": {
+              "source_blob": "6de4e28b51e10b23274c3fd90cb66736b690f926",
+              "candidate_blob": "6de4e28b51e10b23274c3fd90cb66736b690f926"
+            },
+            "plugin/src/test/kotlin/io/github/shinma06/replaybuffer/settings/ReplaySettingsStoreTest.kt": {
+              "source_blob": "dadd1947ddbebaa54747de85f3855f0850cfa731",
+              "candidate_blob": "dadd1947ddbebaa54747de85f3855f0850cfa731"
+            }
+          }
+        },
+        "artifact_binding": {
+          "facts": [
+            "B0_IDENTITY",
+            "B0_RUNTIME",
+            "B0_HEALTHY_S1",
+            "B0_APP_MODEL"
+          ],
+          "disposition": "fresh",
+          "impact": {
+            "source": "Direct original4d/current948 Git component bindings and complete2-edge history preserved. Store/Configurable/ToolWindow/Core sources unchanged. Changed Capture/Service/Cleanup initialization/submit/retry paths use executed f62 fault/public-path facts and exactcurrent classes, not only prior healthy equivalence. Renderer uses same tested source/service view model.",
+            "callers": "Native Settings Apply/Cancel/current STOP/Apply connect Store/UI/core. Production Capture tests use actual Apply/setEnabled/close and realCore queues. InitializationCli invokes actual CLI/server/Service handler with isolated injected Capture/environment. Actual LayoutTest invokes real panel.render on EDT after injected error view; automatic notification delivery is not asserted.",
+            "callees": "Actual Store validation/persistence snapshots, real Core states, real isolated filesystem file/missing/symlink permissions and Capture retry lifecycle are asserted by originaltests. ToolWindow reads Service.captureView and writes real Swing state/message/save components. Native service/load and representative normal Settings glue remain separately observed.",
+            "dataflow": "Savedenabled/retention/destination flows old4d closeXML -> current948 firstread, then supportedSTOP/GUIApply -> coreOFF/defaultXML after normalclose. Failure dataflow splits producer view.initializationError/persistedfalse from executed renderer error caption/visible reason/Savefalse. Each fact keeps origin and branch; no late error or Cancel overwrites latestintent in actual finite regression.",
+            "build": "Original f62 tested source=f62cbfd73a84f7b036a6b638306877a42817208b ZIP=a57aabe05ad12b9e198a319c3223adc485ef9e6a3613d98087eaaba3a84524b9 and exact14 execution support byte SHA-256=d7b80c936b470d9eea65ff103373e63980455e1d26352b27636570b9fbf13529; actual current source/selected-class equality SHA-256=cab3ede3f1fe0cd1324f93b22b212a17e5e7ecda49f0611cd5a5fd850f266a29; renderer original suite SHA-256=4f75ffe5c237277dc952e2d8ede849cceddf039b0e86f3d751e5273b8ece9723. Case42 settings/init-failure/race/retry and consumer purpose only; no fresh948 tests/nativefault/errorpixels/automaticbus delivery claimed.",
+            "configuration": "Fixed original test Store values (file/missing/no-destination/LOG_ONLY83 and native181/S0) kept separate. No-SDK mock fixture does not become realSDK/device execution. Current native owned project/profile and observed Rabbit/JBR/current plugin are pinned in exact private originals. Original139 plan/REAL deferral preserved.",
+            "dependencies": "Fixedsource/build inputs and actual current installed3JAR/service mainJAR retained. Selected44+renderer9 class union and four renderer source files are byte-equal to originalf62; full source tree identical. Version/build-ID resource changes are not called wholeZIP equality. New CLI regression source is originalf62 and exactcurrent Git tree, not an old4d component.",
+            "fixtures": "Original retained BF disposable native fixture and current zero-device environment only. Isolated realFS fault fixture, no-SDK Core, mockIDE and reflection injection limitations are retained. No new liveGUI/permission fault/device/recording is required merely to repeat these trusted production purposes.",
+            "runtime": "BF observed Rabbit AI-262.10968.63.2622.16730706/JBR25.0.4/SDK37.0.1/current948 service. f62 regressions remain their originaltest runtime and suite timestamps. No claim of current device acquisition; INITIAL139 ui-settings permits productionfault/race plus representative native. Additional206/274 same-version restart contracts are outside this42 proof.",
+            "display": "Originalnative settings transaction and current AX/upperpixels/OFF support representative realUI. Executed realSwing renderer consumes injected initializationError; state contains failure caption, message component visible and text matches, Save disabled. FirstPaint belongs to previous phase loop, not thiserror; native isShowing/errorpixels/automaticbus are unobserved and not inferred.",
+            "failure_attribution": "原Case42 pendingと旧VFR6失敗/旧承認撤回・native/Verifier未完の原記述を保持する。今回映像/VFR保証を判定しない。元BF Cancel後の非一意入口、SDK初回abort、prelaunch手続きFAIL、oldB UNKNOWN、offscreen診断と下部pixel未観察を保持。f62中間green-final.logの21件実行中1件失敗（InitializationCliTest unsafe=true）も消さず、最終の個別JUnit原実行だけを使う。故障回帰の意図した拒否を製品不具合へ読み替えず、初期化失敗/復元失敗は各実assertで処理される。この42有効保証に未帰属の製品失敗を発見したとは主張しない。"
+          },
+          "components": {
+            "plugin/build.gradle.kts": {
+              "source_blob": "0bc1a08393f9ad4450c8dd31bd45df51756104a8",
+              "candidate_blob": "0bc1a08393f9ad4450c8dd31bd45df51756104a8"
+            },
+            "plugin/gradle.properties": {
+              "source_blob": "1a79bc188396afcaeef36f2ae9387759b5821cef",
+              "candidate_blob": "1a79bc188396afcaeef36f2ae9387759b5821cef"
+            },
+            "plugin/gradle/wrapper/gradle-wrapper.properties": {
+              "source_blob": "a78c88e5392b8d74a8c3e8c665b11bbca0ad5b30",
+              "candidate_blob": "a78c88e5392b8d74a8c3e8c665b11bbca0ad5b30"
+            },
+            "plugin/settings.gradle.kts": {
+              "source_blob": "eb1c5691474ba939e3a1b459dc76df152837c39d",
+              "candidate_blob": "eb1c5691474ba939e3a1b459dc76df152837c39d"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/cli/ReplayCli.kt": {
+              "source_blob": "6033b10c4e2dfe07d30b32c97d65b0ca68d9919b",
+              "candidate_blob": "6033b10c4e2dfe07d30b32c97d65b0ca68d9919b"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/cli/ReplayCliEndpoint.kt": {
+              "source_blob": "c0d6a7b0115dfb915bc45305eda9650b7b814b39",
+              "candidate_blob": "c0d6a7b0115dfb915bc45305eda9650b7b814b39"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/cli/ReplayCliProtocol.kt": {
+              "source_blob": "690446f07611ef753389539c70410b27b7ad87d6",
+              "candidate_blob": "690446f07611ef753389539c70410b27b7ad87d6"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/core/ReplayCore.kt": {
+              "source_blob": "613e3b0ee1ff92d1be68d98a08fb2aee961e43f1",
+              "candidate_blob": "613e3b0ee1ff92d1be68d98a08fb2aee961e43f1"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/core/ReplayModels.kt": {
+              "source_blob": "f025f7ac034a2b673f060ad29972cb26a7a62f77",
+              "candidate_blob": "f025f7ac034a2b673f060ad29972cb26a7a62f77"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ide/ReplayAndroidEnvironment.kt": {
+              "source_blob": "4d88b753567f9cbefc2e2c71efbe76bf43a5036e",
+              "candidate_blob": "4d88b753567f9cbefc2e2c71efbe76bf43a5036e"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ide/ReplayCleanupDirectory.kt": {
+              "source_blob": "f6ce8c1b7f298528df6d289a7f4f3cfe17e60c1b",
+              "candidate_blob": "993cece326de450c441b438d51ed1a2c5bf32092",
+              "equivalence_evidence": "Original f62 tested source=f62cbfd73a84f7b036a6b638306877a42817208b ZIP=a57aabe05ad12b9e198a319c3223adc485ef9e6a3613d98087eaaba3a84524b9 and exact14 execution support byte SHA-256=d7b80c936b470d9eea65ff103373e63980455e1d26352b27636570b9fbf13529; actual current source/selected-class equality SHA-256=cab3ede3f1fe0cd1324f93b22b212a17e5e7ecda49f0611cd5a5fd850f266a29; renderer original suite SHA-256=4f75ffe5c237277dc952e2d8ede849cceddf039b0e86f3d751e5273b8ece9723. Case42 settings/init-failure/race/retry and consumer purpose only; no fresh948 tests/nativefault/errorpixels/automaticbus delivery claimed."
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ide/ReplayProjectCapture.kt": {
+              "source_blob": "6b6c9b97138fabf7e08ac65e3d9223f4f8a1baa2",
+              "candidate_blob": "e8b44c0ce95c13a47105e971de8c656432057677",
+              "equivalence_evidence": "Original f62 tested source=f62cbfd73a84f7b036a6b638306877a42817208b ZIP=a57aabe05ad12b9e198a319c3223adc485ef9e6a3613d98087eaaba3a84524b9 and exact14 execution support byte SHA-256=d7b80c936b470d9eea65ff103373e63980455e1d26352b27636570b9fbf13529; actual current source/selected-class equality SHA-256=cab3ede3f1fe0cd1324f93b22b212a17e5e7ecda49f0611cd5a5fd850f266a29; renderer original suite SHA-256=4f75ffe5c237277dc952e2d8ede849cceddf039b0e86f3d751e5273b8ece9723. Case42 settings/init-failure/race/retry and consumer purpose only; no fresh948 tests/nativefault/errorpixels/automaticbus delivery claimed."
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ide/ReplayProjectService.kt": {
+              "source_blob": "aa5297ae7e47fb69e38870da5c15149e0fafb861",
+              "candidate_blob": "749df544dff0c87b92b3bccf3da2145940bdc17a",
+              "equivalence_evidence": "Original f62 tested source=f62cbfd73a84f7b036a6b638306877a42817208b ZIP=a57aabe05ad12b9e198a319c3223adc485ef9e6a3613d98087eaaba3a84524b9 and exact14 execution support byte SHA-256=d7b80c936b470d9eea65ff103373e63980455e1d26352b27636570b9fbf13529; actual current source/selected-class equality SHA-256=cab3ede3f1fe0cd1324f93b22b212a17e5e7ecda49f0611cd5a5fd850f266a29; renderer original suite SHA-256=4f75ffe5c237277dc952e2d8ede849cceddf039b0e86f3d751e5273b8ece9723. Case42 settings/init-failure/race/retry and consumer purpose only; no fresh948 tests/nativefault/errorpixels/automaticbus delivery claimed."
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/settings/ReplaySettingsConfigurable.kt": {
+              "source_blob": "7a668e4512bf79d4dfedc922fe4d8b718921d400",
+              "candidate_blob": "7a668e4512bf79d4dfedc922fe4d8b718921d400"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/settings/ReplaySettingsStore.kt": {
+              "source_blob": "64eec1d2670a0cf6d6a94de4206ce789999ad1dc",
+              "candidate_blob": "64eec1d2670a0cf6d6a94de4206ce789999ad1dc"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ui/ReplayToolWindowFactory.kt": {
+              "source_blob": "de2242b3d1b64e668869d0192136b7167f733b9c",
+              "candidate_blob": "de2242b3d1b64e668869d0192136b7167f733b9c"
+            },
+            "plugin/src/main/resources/META-INF/plugin.xml": {
+              "source_blob": "3f139f71c8ac3dcefb5a8b35eaf14ff76f4e702b",
+              "candidate_blob": "3f139f71c8ac3dcefb5a8b35eaf14ff76f4e702b"
+            },
+            "plugin/src/test/java/io/github/shinma06/replaybuffer/ui/ReplayToolWindowLayoutTest.java": {
+              "source_blob": "0b7bf320f56ce9b272d63928d801292f96276b6b",
+              "candidate_blob": "0b7bf320f56ce9b272d63928d801292f96276b6b"
+            },
+            "plugin/src/test/kotlin/io/github/shinma06/replaybuffer/ide/ReplayProjectCaptureTest.kt": {
+              "source_blob": "14db3f1d3a69e9a6aea7c2750eab2fc4385f5889",
+              "candidate_blob": "1e94fb2f877e1e5c0a935485bc19995f069eff5f",
+              "equivalence_evidence": "Original f62 tested source=f62cbfd73a84f7b036a6b638306877a42817208b ZIP=a57aabe05ad12b9e198a319c3223adc485ef9e6a3613d98087eaaba3a84524b9 and exact14 execution support byte SHA-256=d7b80c936b470d9eea65ff103373e63980455e1d26352b27636570b9fbf13529; actual current source/selected-class equality SHA-256=cab3ede3f1fe0cd1324f93b22b212a17e5e7ecda49f0611cd5a5fd850f266a29; renderer original suite SHA-256=4f75ffe5c237277dc952e2d8ede849cceddf039b0e86f3d751e5273b8ece9723. Case42 settings/init-failure/race/retry and consumer purpose only; no fresh948 tests/nativefault/errorpixels/automaticbus delivery claimed."
+            },
+            "plugin/src/test/kotlin/io/github/shinma06/replaybuffer/settings/ReplayDestinationValidationTest.kt": {
+              "source_blob": "6de4e28b51e10b23274c3fd90cb66736b690f926",
+              "candidate_blob": "6de4e28b51e10b23274c3fd90cb66736b690f926"
+            },
+            "plugin/src/test/kotlin/io/github/shinma06/replaybuffer/settings/ReplaySettingsStoreTest.kt": {
+              "source_blob": "dadd1947ddbebaa54747de85f3855f0850cfa731",
+              "candidate_blob": "dadd1947ddbebaa54747de85f3855f0850cfa731"
+            }
+          }
+        },
+        "failure_attribution": {
+          "facts": [
+            "N2_ORIGINAL_APPLY_MODIFIED_CANCEL_REOPEN",
+            "RETURN_PRESERVATION",
+            "S0_NORMAL_CLOSE_XML",
+            "CURRENT_ORIGINAL_EXECUTION_EQUIVALENCE"
+          ],
+          "disposition": "equivalent",
+          "impact": {
+            "source": "Direct original4d/current948 Git component bindings and complete2-edge history preserved. Store/Configurable/ToolWindow/Core sources unchanged. Changed Capture/Service/Cleanup initialization/submit/retry paths use executed f62 fault/public-path facts and exactcurrent classes, not only prior healthy equivalence. Renderer uses same tested source/service view model.",
+            "callers": "Native Settings Apply/Cancel/current STOP/Apply connect Store/UI/core. Production Capture tests use actual Apply/setEnabled/close and realCore queues. InitializationCli invokes actual CLI/server/Service handler with isolated injected Capture/environment. Actual LayoutTest invokes real panel.render on EDT after injected error view; automatic notification delivery is not asserted.",
+            "callees": "Actual Store validation/persistence snapshots, real Core states, real isolated filesystem file/missing/symlink permissions and Capture retry lifecycle are asserted by originaltests. ToolWindow reads Service.captureView and writes real Swing state/message/save components. Native service/load and representative normal Settings glue remain separately observed.",
+            "dataflow": "Savedenabled/retention/destination flows old4d closeXML -> current948 firstread, then supportedSTOP/GUIApply -> coreOFF/defaultXML after normalclose. Failure dataflow splits producer view.initializationError/persistedfalse from executed renderer error caption/visible reason/Savefalse. Each fact keeps origin and branch; no late error or Cancel overwrites latestintent in actual finite regression.",
+            "build": "Original f62 tested source=f62cbfd73a84f7b036a6b638306877a42817208b ZIP=a57aabe05ad12b9e198a319c3223adc485ef9e6a3613d98087eaaba3a84524b9 and exact14 execution support byte SHA-256=d7b80c936b470d9eea65ff103373e63980455e1d26352b27636570b9fbf13529; actual current source/selected-class equality SHA-256=cab3ede3f1fe0cd1324f93b22b212a17e5e7ecda49f0611cd5a5fd850f266a29; renderer original suite SHA-256=4f75ffe5c237277dc952e2d8ede849cceddf039b0e86f3d751e5273b8ece9723. Case42 settings/init-failure/race/retry and consumer purpose only; no fresh948 tests/nativefault/errorpixels/automaticbus delivery claimed.",
+            "configuration": "Fixed original test Store values (file/missing/no-destination/LOG_ONLY83 and native181/S0) kept separate. No-SDK mock fixture does not become realSDK/device execution. Current native owned project/profile and observed Rabbit/JBR/current plugin are pinned in exact private originals. Original139 plan/REAL deferral preserved.",
+            "dependencies": "Fixedsource/build inputs and actual current installed3JAR/service mainJAR retained. Selected44+renderer9 class union and four renderer source files are byte-equal to originalf62; full source tree identical. Version/build-ID resource changes are not called wholeZIP equality. New CLI regression source is originalf62 and exactcurrent Git tree, not an old4d component.",
+            "fixtures": "Original retained BF disposable native fixture and current zero-device environment only. Isolated realFS fault fixture, no-SDK Core, mockIDE and reflection injection limitations are retained. No new liveGUI/permission fault/device/recording is required merely to repeat these trusted production purposes.",
+            "runtime": "BF observed Rabbit AI-262.10968.63.2622.16730706/JBR25.0.4/SDK37.0.1/current948 service. f62 regressions remain their originaltest runtime and suite timestamps. No claim of current device acquisition; INITIAL139 ui-settings permits productionfault/race plus representative native. Additional206/274 same-version restart contracts are outside this42 proof.",
+            "display": "Originalnative settings transaction and current AX/upperpixels/OFF support representative realUI. Executed realSwing renderer consumes injected initializationError; state contains failure caption, message component visible and text matches, Save disabled. FirstPaint belongs to previous phase loop, not thiserror; native isShowing/errorpixels/automaticbus are unobserved and not inferred.",
+            "failure_attribution": "原Case42 pendingと旧VFR6失敗/旧承認撤回・native/Verifier未完の原記述を保持する。今回映像/VFR保証を判定しない。元BF Cancel後の非一意入口、SDK初回abort、prelaunch手続きFAIL、oldB UNKNOWN、offscreen診断と下部pixel未観察を保持。f62中間green-final.logの21件実行中1件失敗（InitializationCliTest unsafe=true）も消さず、最終の個別JUnit原実行だけを使う。故障回帰の意図した拒否を製品不具合へ読み替えず、初期化失敗/復元失敗は各実assertで処理される。この42有効保証に未帰属の製品失敗を発見したとは主張しない。"
+          },
+          "components": {
+            "plugin/build.gradle.kts": {
+              "source_blob": "0bc1a08393f9ad4450c8dd31bd45df51756104a8",
+              "candidate_blob": "0bc1a08393f9ad4450c8dd31bd45df51756104a8"
+            },
+            "plugin/gradle.properties": {
+              "source_blob": "1a79bc188396afcaeef36f2ae9387759b5821cef",
+              "candidate_blob": "1a79bc188396afcaeef36f2ae9387759b5821cef"
+            },
+            "plugin/gradle/wrapper/gradle-wrapper.properties": {
+              "source_blob": "a78c88e5392b8d74a8c3e8c665b11bbca0ad5b30",
+              "candidate_blob": "a78c88e5392b8d74a8c3e8c665b11bbca0ad5b30"
+            },
+            "plugin/settings.gradle.kts": {
+              "source_blob": "eb1c5691474ba939e3a1b459dc76df152837c39d",
+              "candidate_blob": "eb1c5691474ba939e3a1b459dc76df152837c39d"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/cli/ReplayCli.kt": {
+              "source_blob": "6033b10c4e2dfe07d30b32c97d65b0ca68d9919b",
+              "candidate_blob": "6033b10c4e2dfe07d30b32c97d65b0ca68d9919b"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/cli/ReplayCliEndpoint.kt": {
+              "source_blob": "c0d6a7b0115dfb915bc45305eda9650b7b814b39",
+              "candidate_blob": "c0d6a7b0115dfb915bc45305eda9650b7b814b39"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/cli/ReplayCliProtocol.kt": {
+              "source_blob": "690446f07611ef753389539c70410b27b7ad87d6",
+              "candidate_blob": "690446f07611ef753389539c70410b27b7ad87d6"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/core/ReplayCore.kt": {
+              "source_blob": "613e3b0ee1ff92d1be68d98a08fb2aee961e43f1",
+              "candidate_blob": "613e3b0ee1ff92d1be68d98a08fb2aee961e43f1"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/core/ReplayModels.kt": {
+              "source_blob": "f025f7ac034a2b673f060ad29972cb26a7a62f77",
+              "candidate_blob": "f025f7ac034a2b673f060ad29972cb26a7a62f77"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ide/ReplayAndroidEnvironment.kt": {
+              "source_blob": "4d88b753567f9cbefc2e2c71efbe76bf43a5036e",
+              "candidate_blob": "4d88b753567f9cbefc2e2c71efbe76bf43a5036e"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ide/ReplayCleanupDirectory.kt": {
+              "source_blob": "f6ce8c1b7f298528df6d289a7f4f3cfe17e60c1b",
+              "candidate_blob": "993cece326de450c441b438d51ed1a2c5bf32092",
+              "equivalence_evidence": "Original f62 tested source=f62cbfd73a84f7b036a6b638306877a42817208b ZIP=a57aabe05ad12b9e198a319c3223adc485ef9e6a3613d98087eaaba3a84524b9 and exact14 execution support byte SHA-256=d7b80c936b470d9eea65ff103373e63980455e1d26352b27636570b9fbf13529; actual current source/selected-class equality SHA-256=cab3ede3f1fe0cd1324f93b22b212a17e5e7ecda49f0611cd5a5fd850f266a29; renderer original suite SHA-256=4f75ffe5c237277dc952e2d8ede849cceddf039b0e86f3d751e5273b8ece9723. Case42 settings/init-failure/race/retry and consumer purpose only; no fresh948 tests/nativefault/errorpixels/automaticbus delivery claimed."
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ide/ReplayProjectCapture.kt": {
+              "source_blob": "6b6c9b97138fabf7e08ac65e3d9223f4f8a1baa2",
+              "candidate_blob": "e8b44c0ce95c13a47105e971de8c656432057677",
+              "equivalence_evidence": "Original f62 tested source=f62cbfd73a84f7b036a6b638306877a42817208b ZIP=a57aabe05ad12b9e198a319c3223adc485ef9e6a3613d98087eaaba3a84524b9 and exact14 execution support byte SHA-256=d7b80c936b470d9eea65ff103373e63980455e1d26352b27636570b9fbf13529; actual current source/selected-class equality SHA-256=cab3ede3f1fe0cd1324f93b22b212a17e5e7ecda49f0611cd5a5fd850f266a29; renderer original suite SHA-256=4f75ffe5c237277dc952e2d8ede849cceddf039b0e86f3d751e5273b8ece9723. Case42 settings/init-failure/race/retry and consumer purpose only; no fresh948 tests/nativefault/errorpixels/automaticbus delivery claimed."
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ide/ReplayProjectService.kt": {
+              "source_blob": "aa5297ae7e47fb69e38870da5c15149e0fafb861",
+              "candidate_blob": "749df544dff0c87b92b3bccf3da2145940bdc17a",
+              "equivalence_evidence": "Original f62 tested source=f62cbfd73a84f7b036a6b638306877a42817208b ZIP=a57aabe05ad12b9e198a319c3223adc485ef9e6a3613d98087eaaba3a84524b9 and exact14 execution support byte SHA-256=d7b80c936b470d9eea65ff103373e63980455e1d26352b27636570b9fbf13529; actual current source/selected-class equality SHA-256=cab3ede3f1fe0cd1324f93b22b212a17e5e7ecda49f0611cd5a5fd850f266a29; renderer original suite SHA-256=4f75ffe5c237277dc952e2d8ede849cceddf039b0e86f3d751e5273b8ece9723. Case42 settings/init-failure/race/retry and consumer purpose only; no fresh948 tests/nativefault/errorpixels/automaticbus delivery claimed."
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/settings/ReplaySettingsConfigurable.kt": {
+              "source_blob": "7a668e4512bf79d4dfedc922fe4d8b718921d400",
+              "candidate_blob": "7a668e4512bf79d4dfedc922fe4d8b718921d400"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/settings/ReplaySettingsStore.kt": {
+              "source_blob": "64eec1d2670a0cf6d6a94de4206ce789999ad1dc",
+              "candidate_blob": "64eec1d2670a0cf6d6a94de4206ce789999ad1dc"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ui/ReplayToolWindowFactory.kt": {
+              "source_blob": "de2242b3d1b64e668869d0192136b7167f733b9c",
+              "candidate_blob": "de2242b3d1b64e668869d0192136b7167f733b9c"
+            },
+            "plugin/src/main/resources/META-INF/plugin.xml": {
+              "source_blob": "3f139f71c8ac3dcefb5a8b35eaf14ff76f4e702b",
+              "candidate_blob": "3f139f71c8ac3dcefb5a8b35eaf14ff76f4e702b"
+            },
+            "plugin/src/test/java/io/github/shinma06/replaybuffer/ui/ReplayToolWindowLayoutTest.java": {
+              "source_blob": "0b7bf320f56ce9b272d63928d801292f96276b6b",
+              "candidate_blob": "0b7bf320f56ce9b272d63928d801292f96276b6b"
+            },
+            "plugin/src/test/kotlin/io/github/shinma06/replaybuffer/ide/ReplayProjectCaptureTest.kt": {
+              "source_blob": "14db3f1d3a69e9a6aea7c2750eab2fc4385f5889",
+              "candidate_blob": "1e94fb2f877e1e5c0a935485bc19995f069eff5f",
+              "equivalence_evidence": "Original f62 tested source=f62cbfd73a84f7b036a6b638306877a42817208b ZIP=a57aabe05ad12b9e198a319c3223adc485ef9e6a3613d98087eaaba3a84524b9 and exact14 execution support byte SHA-256=d7b80c936b470d9eea65ff103373e63980455e1d26352b27636570b9fbf13529; actual current source/selected-class equality SHA-256=cab3ede3f1fe0cd1324f93b22b212a17e5e7ecda49f0611cd5a5fd850f266a29; renderer original suite SHA-256=4f75ffe5c237277dc952e2d8ede849cceddf039b0e86f3d751e5273b8ece9723. Case42 settings/init-failure/race/retry and consumer purpose only; no fresh948 tests/nativefault/errorpixels/automaticbus delivery claimed."
+            },
+            "plugin/src/test/kotlin/io/github/shinma06/replaybuffer/settings/ReplayDestinationValidationTest.kt": {
+              "source_blob": "6de4e28b51e10b23274c3fd90cb66736b690f926",
+              "candidate_blob": "6de4e28b51e10b23274c3fd90cb66736b690f926"
+            },
+            "plugin/src/test/kotlin/io/github/shinma06/replaybuffer/settings/ReplaySettingsStoreTest.kt": {
+              "source_blob": "dadd1947ddbebaa54747de85f3855f0850cfa731",
+              "candidate_blob": "dadd1947ddbebaa54747de85f3855f0850cfa731"
+            }
+          }
+        },
+        "regression": {
+          "facts": [
+            "CURRENT_ORIGINAL_EXECUTION_EQUIVALENCE"
+          ],
+          "disposition": "equivalent",
+          "impact": {
+            "source": "Direct original4d/current948 Git component bindings and complete2-edge history preserved. Store/Configurable/ToolWindow/Core sources unchanged. Changed Capture/Service/Cleanup initialization/submit/retry paths use executed f62 fault/public-path facts and exactcurrent classes, not only prior healthy equivalence. Renderer uses same tested source/service view model.",
+            "callers": "Native Settings Apply/Cancel/current STOP/Apply connect Store/UI/core. Production Capture tests use actual Apply/setEnabled/close and realCore queues. InitializationCli invokes actual CLI/server/Service handler with isolated injected Capture/environment. Actual LayoutTest invokes real panel.render on EDT after injected error view; automatic notification delivery is not asserted.",
+            "callees": "Actual Store validation/persistence snapshots, real Core states, real isolated filesystem file/missing/symlink permissions and Capture retry lifecycle are asserted by originaltests. ToolWindow reads Service.captureView and writes real Swing state/message/save components. Native service/load and representative normal Settings glue remain separately observed.",
+            "dataflow": "Savedenabled/retention/destination flows old4d closeXML -> current948 firstread, then supportedSTOP/GUIApply -> coreOFF/defaultXML after normalclose. Failure dataflow splits producer view.initializationError/persistedfalse from executed renderer error caption/visible reason/Savefalse. Each fact keeps origin and branch; no late error or Cancel overwrites latestintent in actual finite regression.",
+            "build": "Original f62 tested source=f62cbfd73a84f7b036a6b638306877a42817208b ZIP=a57aabe05ad12b9e198a319c3223adc485ef9e6a3613d98087eaaba3a84524b9 and exact14 execution support byte SHA-256=d7b80c936b470d9eea65ff103373e63980455e1d26352b27636570b9fbf13529; actual current source/selected-class equality SHA-256=cab3ede3f1fe0cd1324f93b22b212a17e5e7ecda49f0611cd5a5fd850f266a29; renderer original suite SHA-256=4f75ffe5c237277dc952e2d8ede849cceddf039b0e86f3d751e5273b8ece9723. Case42 settings/init-failure/race/retry and consumer purpose only; no fresh948 tests/nativefault/errorpixels/automaticbus delivery claimed.",
+            "configuration": "Fixed original test Store values (file/missing/no-destination/LOG_ONLY83 and native181/S0) kept separate. No-SDK mock fixture does not become realSDK/device execution. Current native owned project/profile and observed Rabbit/JBR/current plugin are pinned in exact private originals. Original139 plan/REAL deferral preserved.",
+            "dependencies": "Fixedsource/build inputs and actual current installed3JAR/service mainJAR retained. Selected44+renderer9 class union and four renderer source files are byte-equal to originalf62; full source tree identical. Version/build-ID resource changes are not called wholeZIP equality. New CLI regression source is originalf62 and exactcurrent Git tree, not an old4d component.",
+            "fixtures": "Original retained BF disposable native fixture and current zero-device environment only. Isolated realFS fault fixture, no-SDK Core, mockIDE and reflection injection limitations are retained. No new liveGUI/permission fault/device/recording is required merely to repeat these trusted production purposes.",
+            "runtime": "BF observed Rabbit AI-262.10968.63.2622.16730706/JBR25.0.4/SDK37.0.1/current948 service. f62 regressions remain their originaltest runtime and suite timestamps. No claim of current device acquisition; INITIAL139 ui-settings permits productionfault/race plus representative native. Additional206/274 same-version restart contracts are outside this42 proof.",
+            "display": "Originalnative settings transaction and current AX/upperpixels/OFF support representative realUI. Executed realSwing renderer consumes injected initializationError; state contains failure caption, message component visible and text matches, Save disabled. FirstPaint belongs to previous phase loop, not thiserror; native isShowing/errorpixels/automaticbus are unobserved and not inferred.",
+            "failure_attribution": "原Case42 pendingと旧VFR6失敗/旧承認撤回・native/Verifier未完の原記述を保持する。今回映像/VFR保証を判定しない。元BF Cancel後の非一意入口、SDK初回abort、prelaunch手続きFAIL、oldB UNKNOWN、offscreen診断と下部pixel未観察を保持。f62中間green-final.logの21件実行中1件失敗（InitializationCliTest unsafe=true）も消さず、最終の個別JUnit原実行だけを使う。故障回帰の意図した拒否を製品不具合へ読み替えず、初期化失敗/復元失敗は各実assertで処理される。この42有効保証に未帰属の製品失敗を発見したとは主張しない。"
+          },
+          "components": {
+            "plugin/build.gradle.kts": {
+              "source_blob": "0bc1a08393f9ad4450c8dd31bd45df51756104a8",
+              "candidate_blob": "0bc1a08393f9ad4450c8dd31bd45df51756104a8"
+            },
+            "plugin/gradle.properties": {
+              "source_blob": "1a79bc188396afcaeef36f2ae9387759b5821cef",
+              "candidate_blob": "1a79bc188396afcaeef36f2ae9387759b5821cef"
+            },
+            "plugin/gradle/wrapper/gradle-wrapper.properties": {
+              "source_blob": "a78c88e5392b8d74a8c3e8c665b11bbca0ad5b30",
+              "candidate_blob": "a78c88e5392b8d74a8c3e8c665b11bbca0ad5b30"
+            },
+            "plugin/settings.gradle.kts": {
+              "source_blob": "eb1c5691474ba939e3a1b459dc76df152837c39d",
+              "candidate_blob": "eb1c5691474ba939e3a1b459dc76df152837c39d"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/cli/ReplayCli.kt": {
+              "source_blob": "6033b10c4e2dfe07d30b32c97d65b0ca68d9919b",
+              "candidate_blob": "6033b10c4e2dfe07d30b32c97d65b0ca68d9919b"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/cli/ReplayCliEndpoint.kt": {
+              "source_blob": "c0d6a7b0115dfb915bc45305eda9650b7b814b39",
+              "candidate_blob": "c0d6a7b0115dfb915bc45305eda9650b7b814b39"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/cli/ReplayCliProtocol.kt": {
+              "source_blob": "690446f07611ef753389539c70410b27b7ad87d6",
+              "candidate_blob": "690446f07611ef753389539c70410b27b7ad87d6"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/core/ReplayCore.kt": {
+              "source_blob": "613e3b0ee1ff92d1be68d98a08fb2aee961e43f1",
+              "candidate_blob": "613e3b0ee1ff92d1be68d98a08fb2aee961e43f1"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/core/ReplayModels.kt": {
+              "source_blob": "f025f7ac034a2b673f060ad29972cb26a7a62f77",
+              "candidate_blob": "f025f7ac034a2b673f060ad29972cb26a7a62f77"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ide/ReplayAndroidEnvironment.kt": {
+              "source_blob": "4d88b753567f9cbefc2e2c71efbe76bf43a5036e",
+              "candidate_blob": "4d88b753567f9cbefc2e2c71efbe76bf43a5036e"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ide/ReplayCleanupDirectory.kt": {
+              "source_blob": "f6ce8c1b7f298528df6d289a7f4f3cfe17e60c1b",
+              "candidate_blob": "993cece326de450c441b438d51ed1a2c5bf32092",
+              "equivalence_evidence": "Original f62 tested source=f62cbfd73a84f7b036a6b638306877a42817208b ZIP=a57aabe05ad12b9e198a319c3223adc485ef9e6a3613d98087eaaba3a84524b9 and exact14 execution support byte SHA-256=d7b80c936b470d9eea65ff103373e63980455e1d26352b27636570b9fbf13529; actual current source/selected-class equality SHA-256=cab3ede3f1fe0cd1324f93b22b212a17e5e7ecda49f0611cd5a5fd850f266a29; renderer original suite SHA-256=4f75ffe5c237277dc952e2d8ede849cceddf039b0e86f3d751e5273b8ece9723. Case42 settings/init-failure/race/retry and consumer purpose only; no fresh948 tests/nativefault/errorpixels/automaticbus delivery claimed."
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ide/ReplayProjectCapture.kt": {
+              "source_blob": "6b6c9b97138fabf7e08ac65e3d9223f4f8a1baa2",
+              "candidate_blob": "e8b44c0ce95c13a47105e971de8c656432057677",
+              "equivalence_evidence": "Original f62 tested source=f62cbfd73a84f7b036a6b638306877a42817208b ZIP=a57aabe05ad12b9e198a319c3223adc485ef9e6a3613d98087eaaba3a84524b9 and exact14 execution support byte SHA-256=d7b80c936b470d9eea65ff103373e63980455e1d26352b27636570b9fbf13529; actual current source/selected-class equality SHA-256=cab3ede3f1fe0cd1324f93b22b212a17e5e7ecda49f0611cd5a5fd850f266a29; renderer original suite SHA-256=4f75ffe5c237277dc952e2d8ede849cceddf039b0e86f3d751e5273b8ece9723. Case42 settings/init-failure/race/retry and consumer purpose only; no fresh948 tests/nativefault/errorpixels/automaticbus delivery claimed."
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ide/ReplayProjectService.kt": {
+              "source_blob": "aa5297ae7e47fb69e38870da5c15149e0fafb861",
+              "candidate_blob": "749df544dff0c87b92b3bccf3da2145940bdc17a",
+              "equivalence_evidence": "Original f62 tested source=f62cbfd73a84f7b036a6b638306877a42817208b ZIP=a57aabe05ad12b9e198a319c3223adc485ef9e6a3613d98087eaaba3a84524b9 and exact14 execution support byte SHA-256=d7b80c936b470d9eea65ff103373e63980455e1d26352b27636570b9fbf13529; actual current source/selected-class equality SHA-256=cab3ede3f1fe0cd1324f93b22b212a17e5e7ecda49f0611cd5a5fd850f266a29; renderer original suite SHA-256=4f75ffe5c237277dc952e2d8ede849cceddf039b0e86f3d751e5273b8ece9723. Case42 settings/init-failure/race/retry and consumer purpose only; no fresh948 tests/nativefault/errorpixels/automaticbus delivery claimed."
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/settings/ReplaySettingsConfigurable.kt": {
+              "source_blob": "7a668e4512bf79d4dfedc922fe4d8b718921d400",
+              "candidate_blob": "7a668e4512bf79d4dfedc922fe4d8b718921d400"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/settings/ReplaySettingsStore.kt": {
+              "source_blob": "64eec1d2670a0cf6d6a94de4206ce789999ad1dc",
+              "candidate_blob": "64eec1d2670a0cf6d6a94de4206ce789999ad1dc"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ui/ReplayToolWindowFactory.kt": {
+              "source_blob": "de2242b3d1b64e668869d0192136b7167f733b9c",
+              "candidate_blob": "de2242b3d1b64e668869d0192136b7167f733b9c"
+            },
+            "plugin/src/main/resources/META-INF/plugin.xml": {
+              "source_blob": "3f139f71c8ac3dcefb5a8b35eaf14ff76f4e702b",
+              "candidate_blob": "3f139f71c8ac3dcefb5a8b35eaf14ff76f4e702b"
+            },
+            "plugin/src/test/java/io/github/shinma06/replaybuffer/ui/ReplayToolWindowLayoutTest.java": {
+              "source_blob": "0b7bf320f56ce9b272d63928d801292f96276b6b",
+              "candidate_blob": "0b7bf320f56ce9b272d63928d801292f96276b6b"
+            },
+            "plugin/src/test/kotlin/io/github/shinma06/replaybuffer/ide/ReplayProjectCaptureTest.kt": {
+              "source_blob": "14db3f1d3a69e9a6aea7c2750eab2fc4385f5889",
+              "candidate_blob": "1e94fb2f877e1e5c0a935485bc19995f069eff5f",
+              "equivalence_evidence": "Original f62 tested source=f62cbfd73a84f7b036a6b638306877a42817208b ZIP=a57aabe05ad12b9e198a319c3223adc485ef9e6a3613d98087eaaba3a84524b9 and exact14 execution support byte SHA-256=d7b80c936b470d9eea65ff103373e63980455e1d26352b27636570b9fbf13529; actual current source/selected-class equality SHA-256=cab3ede3f1fe0cd1324f93b22b212a17e5e7ecda49f0611cd5a5fd850f266a29; renderer original suite SHA-256=4f75ffe5c237277dc952e2d8ede849cceddf039b0e86f3d751e5273b8ece9723. Case42 settings/init-failure/race/retry and consumer purpose only; no fresh948 tests/nativefault/errorpixels/automaticbus delivery claimed."
+            },
+            "plugin/src/test/kotlin/io/github/shinma06/replaybuffer/settings/ReplayDestinationValidationTest.kt": {
+              "source_blob": "6de4e28b51e10b23274c3fd90cb66736b690f926",
+              "candidate_blob": "6de4e28b51e10b23274c3fd90cb66736b690f926"
+            },
+            "plugin/src/test/kotlin/io/github/shinma06/replaybuffer/settings/ReplaySettingsStoreTest.kt": {
+              "source_blob": "dadd1947ddbebaa54747de85f3855f0850cfa731",
+              "candidate_blob": "dadd1947ddbebaa54747de85f3855f0850cfa731"
+            }
+          }
+        },
+        "integration": {
+          "facts": [
+            "N2_ORIGINAL_APPLY_MODIFIED_CANCEL_REOPEN",
+            "OLD_A_NORMAL_S1",
+            "N3_CURRENT_READ_S1",
+            "B0_HEALTHY_S1",
+            "S0_GUI_AND_RUNTIME",
+            "S0_NORMAL_CLOSE_XML",
+            "CURRENT_ORIGINAL_EXECUTION_EQUIVALENCE"
+          ],
+          "disposition": "equivalent",
+          "impact": {
+            "source": "Direct original4d/current948 Git component bindings and complete2-edge history preserved. Store/Configurable/ToolWindow/Core sources unchanged. Changed Capture/Service/Cleanup initialization/submit/retry paths use executed f62 fault/public-path facts and exactcurrent classes, not only prior healthy equivalence. Renderer uses same tested source/service view model.",
+            "callers": "Native Settings Apply/Cancel/current STOP/Apply connect Store/UI/core. Production Capture tests use actual Apply/setEnabled/close and realCore queues. InitializationCli invokes actual CLI/server/Service handler with isolated injected Capture/environment. Actual LayoutTest invokes real panel.render on EDT after injected error view; automatic notification delivery is not asserted.",
+            "callees": "Actual Store validation/persistence snapshots, real Core states, real isolated filesystem file/missing/symlink permissions and Capture retry lifecycle are asserted by originaltests. ToolWindow reads Service.captureView and writes real Swing state/message/save components. Native service/load and representative normal Settings glue remain separately observed.",
+            "dataflow": "Savedenabled/retention/destination flows old4d closeXML -> current948 firstread, then supportedSTOP/GUIApply -> coreOFF/defaultXML after normalclose. Failure dataflow splits producer view.initializationError/persistedfalse from executed renderer error caption/visible reason/Savefalse. Each fact keeps origin and branch; no late error or Cancel overwrites latestintent in actual finite regression.",
+            "build": "Original f62 tested source=f62cbfd73a84f7b036a6b638306877a42817208b ZIP=a57aabe05ad12b9e198a319c3223adc485ef9e6a3613d98087eaaba3a84524b9 and exact14 execution support byte SHA-256=d7b80c936b470d9eea65ff103373e63980455e1d26352b27636570b9fbf13529; actual current source/selected-class equality SHA-256=cab3ede3f1fe0cd1324f93b22b212a17e5e7ecda49f0611cd5a5fd850f266a29; renderer original suite SHA-256=4f75ffe5c237277dc952e2d8ede849cceddf039b0e86f3d751e5273b8ece9723. Case42 settings/init-failure/race/retry and consumer purpose only; no fresh948 tests/nativefault/errorpixels/automaticbus delivery claimed.",
+            "configuration": "Fixed original test Store values (file/missing/no-destination/LOG_ONLY83 and native181/S0) kept separate. No-SDK mock fixture does not become realSDK/device execution. Current native owned project/profile and observed Rabbit/JBR/current plugin are pinned in exact private originals. Original139 plan/REAL deferral preserved.",
+            "dependencies": "Fixedsource/build inputs and actual current installed3JAR/service mainJAR retained. Selected44+renderer9 class union and four renderer source files are byte-equal to originalf62; full source tree identical. Version/build-ID resource changes are not called wholeZIP equality. New CLI regression source is originalf62 and exactcurrent Git tree, not an old4d component.",
+            "fixtures": "Original retained BF disposable native fixture and current zero-device environment only. Isolated realFS fault fixture, no-SDK Core, mockIDE and reflection injection limitations are retained. No new liveGUI/permission fault/device/recording is required merely to repeat these trusted production purposes.",
+            "runtime": "BF observed Rabbit AI-262.10968.63.2622.16730706/JBR25.0.4/SDK37.0.1/current948 service. f62 regressions remain their originaltest runtime and suite timestamps. No claim of current device acquisition; INITIAL139 ui-settings permits productionfault/race plus representative native. Additional206/274 same-version restart contracts are outside this42 proof.",
+            "display": "Originalnative settings transaction and current AX/upperpixels/OFF support representative realUI. Executed realSwing renderer consumes injected initializationError; state contains failure caption, message component visible and text matches, Save disabled. FirstPaint belongs to previous phase loop, not thiserror; native isShowing/errorpixels/automaticbus are unobserved and not inferred.",
+            "failure_attribution": "原Case42 pendingと旧VFR6失敗/旧承認撤回・native/Verifier未完の原記述を保持する。今回映像/VFR保証を判定しない。元BF Cancel後の非一意入口、SDK初回abort、prelaunch手続きFAIL、oldB UNKNOWN、offscreen診断と下部pixel未観察を保持。f62中間green-final.logの21件実行中1件失敗（InitializationCliTest unsafe=true）も消さず、最終の個別JUnit原実行だけを使う。故障回帰の意図した拒否を製品不具合へ読み替えず、初期化失敗/復元失敗は各実assertで処理される。この42有効保証に未帰属の製品失敗を発見したとは主張しない。"
+          },
+          "components": {
+            "plugin/build.gradle.kts": {
+              "source_blob": "0bc1a08393f9ad4450c8dd31bd45df51756104a8",
+              "candidate_blob": "0bc1a08393f9ad4450c8dd31bd45df51756104a8"
+            },
+            "plugin/gradle.properties": {
+              "source_blob": "1a79bc188396afcaeef36f2ae9387759b5821cef",
+              "candidate_blob": "1a79bc188396afcaeef36f2ae9387759b5821cef"
+            },
+            "plugin/gradle/wrapper/gradle-wrapper.properties": {
+              "source_blob": "a78c88e5392b8d74a8c3e8c665b11bbca0ad5b30",
+              "candidate_blob": "a78c88e5392b8d74a8c3e8c665b11bbca0ad5b30"
+            },
+            "plugin/settings.gradle.kts": {
+              "source_blob": "eb1c5691474ba939e3a1b459dc76df152837c39d",
+              "candidate_blob": "eb1c5691474ba939e3a1b459dc76df152837c39d"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/cli/ReplayCli.kt": {
+              "source_blob": "6033b10c4e2dfe07d30b32c97d65b0ca68d9919b",
+              "candidate_blob": "6033b10c4e2dfe07d30b32c97d65b0ca68d9919b"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/cli/ReplayCliEndpoint.kt": {
+              "source_blob": "c0d6a7b0115dfb915bc45305eda9650b7b814b39",
+              "candidate_blob": "c0d6a7b0115dfb915bc45305eda9650b7b814b39"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/cli/ReplayCliProtocol.kt": {
+              "source_blob": "690446f07611ef753389539c70410b27b7ad87d6",
+              "candidate_blob": "690446f07611ef753389539c70410b27b7ad87d6"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/core/ReplayCore.kt": {
+              "source_blob": "613e3b0ee1ff92d1be68d98a08fb2aee961e43f1",
+              "candidate_blob": "613e3b0ee1ff92d1be68d98a08fb2aee961e43f1"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/core/ReplayModels.kt": {
+              "source_blob": "f025f7ac034a2b673f060ad29972cb26a7a62f77",
+              "candidate_blob": "f025f7ac034a2b673f060ad29972cb26a7a62f77"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ide/ReplayAndroidEnvironment.kt": {
+              "source_blob": "4d88b753567f9cbefc2e2c71efbe76bf43a5036e",
+              "candidate_blob": "4d88b753567f9cbefc2e2c71efbe76bf43a5036e"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ide/ReplayCleanupDirectory.kt": {
+              "source_blob": "f6ce8c1b7f298528df6d289a7f4f3cfe17e60c1b",
+              "candidate_blob": "993cece326de450c441b438d51ed1a2c5bf32092",
+              "equivalence_evidence": "Original f62 tested source=f62cbfd73a84f7b036a6b638306877a42817208b ZIP=a57aabe05ad12b9e198a319c3223adc485ef9e6a3613d98087eaaba3a84524b9 and exact14 execution support byte SHA-256=d7b80c936b470d9eea65ff103373e63980455e1d26352b27636570b9fbf13529; actual current source/selected-class equality SHA-256=cab3ede3f1fe0cd1324f93b22b212a17e5e7ecda49f0611cd5a5fd850f266a29; renderer original suite SHA-256=4f75ffe5c237277dc952e2d8ede849cceddf039b0e86f3d751e5273b8ece9723. Case42 settings/init-failure/race/retry and consumer purpose only; no fresh948 tests/nativefault/errorpixels/automaticbus delivery claimed."
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ide/ReplayProjectCapture.kt": {
+              "source_blob": "6b6c9b97138fabf7e08ac65e3d9223f4f8a1baa2",
+              "candidate_blob": "e8b44c0ce95c13a47105e971de8c656432057677",
+              "equivalence_evidence": "Original f62 tested source=f62cbfd73a84f7b036a6b638306877a42817208b ZIP=a57aabe05ad12b9e198a319c3223adc485ef9e6a3613d98087eaaba3a84524b9 and exact14 execution support byte SHA-256=d7b80c936b470d9eea65ff103373e63980455e1d26352b27636570b9fbf13529; actual current source/selected-class equality SHA-256=cab3ede3f1fe0cd1324f93b22b212a17e5e7ecda49f0611cd5a5fd850f266a29; renderer original suite SHA-256=4f75ffe5c237277dc952e2d8ede849cceddf039b0e86f3d751e5273b8ece9723. Case42 settings/init-failure/race/retry and consumer purpose only; no fresh948 tests/nativefault/errorpixels/automaticbus delivery claimed."
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ide/ReplayProjectService.kt": {
+              "source_blob": "aa5297ae7e47fb69e38870da5c15149e0fafb861",
+              "candidate_blob": "749df544dff0c87b92b3bccf3da2145940bdc17a",
+              "equivalence_evidence": "Original f62 tested source=f62cbfd73a84f7b036a6b638306877a42817208b ZIP=a57aabe05ad12b9e198a319c3223adc485ef9e6a3613d98087eaaba3a84524b9 and exact14 execution support byte SHA-256=d7b80c936b470d9eea65ff103373e63980455e1d26352b27636570b9fbf13529; actual current source/selected-class equality SHA-256=cab3ede3f1fe0cd1324f93b22b212a17e5e7ecda49f0611cd5a5fd850f266a29; renderer original suite SHA-256=4f75ffe5c237277dc952e2d8ede849cceddf039b0e86f3d751e5273b8ece9723. Case42 settings/init-failure/race/retry and consumer purpose only; no fresh948 tests/nativefault/errorpixels/automaticbus delivery claimed."
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/settings/ReplaySettingsConfigurable.kt": {
+              "source_blob": "7a668e4512bf79d4dfedc922fe4d8b718921d400",
+              "candidate_blob": "7a668e4512bf79d4dfedc922fe4d8b718921d400"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/settings/ReplaySettingsStore.kt": {
+              "source_blob": "64eec1d2670a0cf6d6a94de4206ce789999ad1dc",
+              "candidate_blob": "64eec1d2670a0cf6d6a94de4206ce789999ad1dc"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ui/ReplayToolWindowFactory.kt": {
+              "source_blob": "de2242b3d1b64e668869d0192136b7167f733b9c",
+              "candidate_blob": "de2242b3d1b64e668869d0192136b7167f733b9c"
+            },
+            "plugin/src/main/resources/META-INF/plugin.xml": {
+              "source_blob": "3f139f71c8ac3dcefb5a8b35eaf14ff76f4e702b",
+              "candidate_blob": "3f139f71c8ac3dcefb5a8b35eaf14ff76f4e702b"
+            },
+            "plugin/src/test/java/io/github/shinma06/replaybuffer/ui/ReplayToolWindowLayoutTest.java": {
+              "source_blob": "0b7bf320f56ce9b272d63928d801292f96276b6b",
+              "candidate_blob": "0b7bf320f56ce9b272d63928d801292f96276b6b"
+            },
+            "plugin/src/test/kotlin/io/github/shinma06/replaybuffer/ide/ReplayProjectCaptureTest.kt": {
+              "source_blob": "14db3f1d3a69e9a6aea7c2750eab2fc4385f5889",
+              "candidate_blob": "1e94fb2f877e1e5c0a935485bc19995f069eff5f",
+              "equivalence_evidence": "Original f62 tested source=f62cbfd73a84f7b036a6b638306877a42817208b ZIP=a57aabe05ad12b9e198a319c3223adc485ef9e6a3613d98087eaaba3a84524b9 and exact14 execution support byte SHA-256=d7b80c936b470d9eea65ff103373e63980455e1d26352b27636570b9fbf13529; actual current source/selected-class equality SHA-256=cab3ede3f1fe0cd1324f93b22b212a17e5e7ecda49f0611cd5a5fd850f266a29; renderer original suite SHA-256=4f75ffe5c237277dc952e2d8ede849cceddf039b0e86f3d751e5273b8ece9723. Case42 settings/init-failure/race/retry and consumer purpose only; no fresh948 tests/nativefault/errorpixels/automaticbus delivery claimed."
+            },
+            "plugin/src/test/kotlin/io/github/shinma06/replaybuffer/settings/ReplayDestinationValidationTest.kt": {
+              "source_blob": "6de4e28b51e10b23274c3fd90cb66736b690f926",
+              "candidate_blob": "6de4e28b51e10b23274c3fd90cb66736b690f926"
+            },
+            "plugin/src/test/kotlin/io/github/shinma06/replaybuffer/settings/ReplaySettingsStoreTest.kt": {
+              "source_blob": "dadd1947ddbebaa54747de85f3855f0850cfa731",
+              "candidate_blob": "dadd1947ddbebaa54747de85f3855f0850cfa731"
+            }
+          }
+        }
+      },
+      "provenance": {
+        "at": "2026-11-05T09:43:20.602726+00:00",
+        "attribution": {
+          "writer": "codex-session-sha256:d84b234013a9716e246ed27593f5d64d5690248a86c6d56eb54b625203854778",
+          "observer": "codex-session-sha256:d84b234013a9716e246ed27593f5d64d5690248a86c6d56eb54b625203854778",
+          "contributors": [
+            {
+              "role": "original and current BF observer/executor",
+              "session": "codex-session-sha256:250ef5d1061f126ca01a1313b3def08babdc310815842f20cffa63c2013eb3a9",
+              "activity": "execution",
+              "at": "2026-10-29T23:45:09.895Z",
+              "receipt_sha256": "3b214ff9350c544bd5e1ba725a5b080b195511540e85a8b1fa812f81eb1f9d44",
+              "receipt_locator": "/payload"
+            },
+            {
+              "role": "current BF observer/executor",
+              "session": "codex-session-sha256:250ef5d1061f126ca01a1313b3def08babdc310815842f20cffa63c2013eb3a9",
+              "activity": "execution",
+              "at": "2026-11-04T22:41:30.787Z",
+              "receipt_sha256": "837d81a8047a00d525e5327116e7d9c6a654f34f3095ec9866d74a2f4f90aeba",
+              "receipt_locator": "/payload"
+            },
+            {
+              "role": "EA13 source-impact and EA14 fact preassessment contributor, same actual session",
+              "session": "codex-session-sha256:d84b234013a9716e246ed27593f5d64d5690248a86c6d56eb54b625203854778",
+              "activity": "assessment",
+              "at": "2026-11-04T23:15:30.840601+00:00",
+              "receipt_sha256": "190cb51d4bbe14f079fa0b57cb613a76ce6e86934d7a7cc839afb8f70df4d2a9",
+              "receipt_locator": ""
+            },
+            {
+              "role": "EA13 source-impact proof contributor, same EA as EA14",
+              "session": "codex-session-sha256:d84b234013a9716e246ed27593f5d64d5690248a86c6d56eb54b625203854778",
+              "activity": "assessment",
+              "at": "2026-11-04T22:48:33.077408+00:00",
+              "receipt_sha256": "25ebba8e5c7cb95d38e7959a83aea15c7549067d8f630ecea34dc770d2ff1b88",
+              "receipt_locator": ""
+            },
+            {
+              "role": "09b common draft writer and composer, same original activity",
+              "session": "codex-session-sha256:22e3d1f81b8f0b8a7481a0484352a7a63755be2cbfa7c0cfe678d2c69998a27d",
+              "activity": "composition",
+              "at": "2026-11-05T07:28:45.624025+00:00",
+              "receipt_sha256": "2267d85657dfb478dd81fbd3948ca1a6cf5d2044f1ba20b790f31928fc481f41",
+              "receipt_locator": ""
+            },
+            {
+              "role": "sourcewriter67 and actual selected13 regression executor",
+              "session": "codex-session-sha256:18f9d188574b37e9e962fb8ac4b7737b055026e7dba679a960d986effe54e0a8",
+              "activity": "execution",
+              "at": "2026-11-04T14:43:07.108Z",
+              "receipt_sha256": "bb62618fed1c09c12c6725f47ae39fdcdbdceb632779a5353ee47f0e82b20637",
+              "receipt_locator": "/payload"
+            },
+            {
+              "role": "sourcewriter67 original source/test seal writer",
+              "session": "codex-session-sha256:18f9d188574b37e9e962fb8ac4b7737b055026e7dba679a960d986effe54e0a8",
+              "activity": "writer",
+              "at": "2026-11-04T14:51:57.872Z",
+              "receipt_sha256": "ac9b7e74ace582444d1ab807509700048bb12d0de895b5b3a4b464fda1668b90",
+              "receipt_locator": "/payload"
+            },
+            {
+              "role": "D6 actual selected class-lineage assessor",
+              "session": "codex-session-sha256:e7637c541d8097e4e35c8b6b496da4a8cbe7161455b8ab1c0bda86854c4d3476",
+              "activity": "assessment",
+              "at": "2026-11-04T22:29:11.546Z",
+              "receipt_sha256": "be713ea68e7809a28a0676036420ca134962c056e78c869003bc2f2d86933ec5",
+              "receipt_locator": "/payload"
+            },
+            {
+              "role": "D6 formal948 artifact/custody packet composer",
+              "session": "codex-session-sha256:e7637c541d8097e4e35c8b6b496da4a8cbe7161455b8ab1c0bda86854c4d3476",
+              "activity": "composition",
+              "at": "2026-11-04T22:31:55.749Z",
+              "receipt_sha256": "119c3f86cc0e1b0d6e472b8b8a07e99c4e84f4ff4bb1cb9b97da6a79c394f285",
+              "receipt_locator": "/payload"
+            },
+            {
+              "role": "F1 adopted fixed source/evidence assessment contributor",
+              "session": "codex-session-sha256:8f02d5541eb47504649997303bd14991d74e12338a62d4d4054ba9555ea70484",
+              "activity": "assessment",
+              "at": "2026-11-04T15:01:25.889Z",
+              "receipt_sha256": "16e22da1cbad15616f4bf73ab7bec24dd4c41757a92c12b3a58e2187ee1a052e",
+              "receipt_locator": "/payload"
+            },
+            {
+              "role": "09b addendum composer",
+              "session": "codex-session-sha256:22e3d1f81b8f0b8a7481a0484352a7a63755be2cbfa7c0cfe678d2c69998a27d",
+              "activity": "composition",
+              "at": "2026-11-05T07:45:53.316767+00:00",
+              "receipt_sha256": "1f977d61626fa15afadc368afda0dd9609712455667b4e278252e289b8f5b146",
+              "receipt_locator": ""
+            },
+            {
+              "role": "BF original4d modifiedCancel and corrected Settings reopen executor",
+              "session": "codex-session-sha256:250ef5d1061f126ca01a1313b3def08babdc310815842f20cffa63c2013eb3a9",
+              "activity": "execution",
+              "at": "2026-10-29T13:49:51.164Z",
+              "receipt_sha256": "d958c9797cc634e4fd8340029cd6675c348a5317fa6cb4456c23f000ae707a08",
+              "receipt_locator": "/payload"
+            },
+            {
+              "role": "EA original renderer execution join and9class4source applicability composer",
+              "session": "codex-session-sha256:d84b234013a9716e246ed27593f5d64d5690248a86c6d56eb54b625203854778",
+              "activity": "composition",
+              "at": "2026-11-05T08:53:37.350449+00:00",
+              "receipt_sha256": "eeed960d62e563f45cd41ab30c0565436d1804125ccf6f9c431b07066432bf79",
+              "receipt_locator": ""
+            },
+            {
+              "role": "EA actual Case42 writer",
+              "session": "codex-session-sha256:d84b234013a9716e246ed27593f5d64d5690248a86c6d56eb54b625203854778",
+              "activity": "writer",
+              "at": "2026-11-05T09:10:00.988338+00:00",
+              "receipt_sha256": "e749ece3f36f6a9be32b79e3ca5525a2c0716c65271ac9150432b23a428b75aa",
+              "receipt_locator": "/writer"
+            },
+            {
+              "role": "EA actual Case42 composition",
+              "session": "codex-session-sha256:d84b234013a9716e246ed27593f5d64d5690248a86c6d56eb54b625203854778",
+              "activity": "composition",
+              "at": "2026-11-05T09:10:00.988338+00:00",
+              "receipt_sha256": "e749ece3f36f6a9be32b79e3ca5525a2c0716c65271ac9150432b23a428b75aa",
+              "receipt_locator": "/composition"
+            },
+            {
+              "role": "EA actual Case42 assessment",
+              "session": "codex-session-sha256:d84b234013a9716e246ed27593f5d64d5690248a86c6d56eb54b625203854778",
+              "activity": "assessment",
+              "at": "2026-11-05T09:10:00.988338+00:00",
+              "receipt_sha256": "e749ece3f36f6a9be32b79e3ca5525a2c0716c65271ac9150432b23a428b75aa",
+              "receipt_locator": "/assessment"
+            },
+            {
+              "role": "EA actual Case42 failure-count correction compositor",
+              "session": "codex-session-sha256:d84b234013a9716e246ed27593f5d64d5690248a86c6d56eb54b625203854778",
+              "activity": "composition",
+              "at": "2026-11-05T09:43:20.602726+00:00",
+              "receipt_sha256": "48ee3043751d3f4f46292b1bfef9f5f62d942b096aa875321f647942bb3800ab",
+              "receipt_locator": ""
+            }
+          ]
+        }
+      }
+    }
+  }
+}
