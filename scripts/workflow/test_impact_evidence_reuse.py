@@ -646,8 +646,20 @@ class NormalCaseImpactTests(unittest.TestCase):
         self.seal()
 
     def seal(self):
+        impact = 'impact_reuse' in self.assessment
         self.assessment['source_result_sha256'] = canonical_hash(self.assessment['source_result'])
         self.impact.seal()
+        if not impact:
+            self.assessment.pop('impact_reuse')
+
+    def use_same_artifact(self):
+        self.assessment.pop('impact_reuse')
+        self.impact.paths = 'docs/unrelated.md'
+        self.assessment['source_result']['artifact_sha256'] = 'e' * 64
+        self.assessment['facts'].pop('current')
+        self.assessment['facts']['prior']['artifact_sha256'] = 'e' * 64
+        self.assessment['coverage'] = {k: ['prior'] for k in self.required}
+        self.seal()
 
     def register(self):
         from verification import certificate_acceptance
@@ -686,6 +698,7 @@ class NormalCaseImpactTests(unittest.TestCase):
         except ValueError:
             return  # Invalid trusted registration prevents the entire listing.
         self.assertNotIn('修正影響を保証ごとに評価／旧観察と現在事実を区別／Case合格', output)
+        self.assertNotIn('Case合格', next((line for line in output.splitlines() if line.startswith('| QA-1 / #37 ')), ''))
 
     def test_fixed_clauses_not_self_declared_keys_determine_complete_coverage(self):
         for name in sorted(self.required):
@@ -773,6 +786,14 @@ class NormalCaseImpactTests(unittest.TestCase):
         self.assert_rejected(registration=False)
 
     def test_original_normal_pass_and_inner_assessment_are_revalidated(self):
+        for impact in (True, False):
+            with self.subTest(impact_reuse=impact):
+                self.setUp()
+                if not impact:
+                    self.use_same_artifact()
+                self.check_original_normal_pass_and_inner_assessment()
+
+    def check_original_normal_pass_and_inner_assessment(self):
         original = self.assessment['source_result']
         old_fact = copy.deepcopy(self.assessment['facts']['prior'])
         original['responsibility_assessment'] = {
@@ -782,7 +803,8 @@ class NormalCaseImpactTests(unittest.TestCase):
             'facts': {'old': old_fact}, 'coverage': {k: ['old'] for k in self.required},
             'missing_requirements': [], 'unresolved_owned_failures': []}
         self.seal()
-        self.register()
+        if 'impact_reuse' in self.assessment:
+            self.register()
         self.consume()
         saved = copy.deepcopy(original)
         for edit in ('missing', 'failure', 'coverage', 'nested', 'execution', 'evidence'):
@@ -797,7 +819,7 @@ class NormalCaseImpactTests(unittest.TestCase):
                 elif edit == 'coverage':
                     inner['coverage'].pop('step_2')
                 elif edit == 'nested':
-                    inner['impact_reuse'] = self.assessment['impact_reuse']
+                    inner['impact_reuse'] = self.assessment.get('impact_reuse', {})
                 else:
                     original[edit] = ''
                 self.seal()
@@ -843,14 +865,16 @@ class NormalCaseImpactTests(unittest.TestCase):
                 self.assert_rejected(registration=edit in ('old-load', 'reviewer', 'contributor', 'component', 'unknown-impact'))
 
     def test_same_artifact_retained_fact_assessment_uses_the_same_normal_contract(self):
-        self.assessment.pop('impact_reuse')
-        self.impact.paths = 'docs/unrelated.md'
-        self.assessment['source_result']['artifact_sha256'] = 'e' * 64
-        self.assessment['facts'].pop('current')
-        self.assessment['facts']['prior']['artifact_sha256'] = 'e' * 64
-        self.assessment['coverage'] = {k: ['prior'] for k in self.required}
-        self.assessment['source_result_sha256'] = canonical_hash(self.assessment['source_result'])
+        self.use_same_artifact()
         self.consume()
+        original = copy.deepcopy(self.assessment['source_result'])
+        for field in ('execution', 'evidence'):
+            with self.subTest(original_field=field):
+                self.assessment['source_result'] = dict(original, **{field: ''})
+                self.seal()
+                self.assert_rejected(registration=False)
+        self.assessment['source_result'] = original
+        self.seal()
         self.assessment['coverage'].pop('step_2')
         self.assert_rejected(registration=False)
 

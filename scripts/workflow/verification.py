@@ -1082,8 +1082,7 @@ def certificate_acceptance(certificates, git=git_read, trusted_base=None):
             'certificate_provenance': {k: c['provenance'] for k, c in certificates.items()}}
 
 
-def validate_impact_reuse(observed, assessment, key, policy, candidate, artifact, git, trusted_base,
-                          normal_contract=None):
+def validate_impact_reuse(observed, assessment, key, policy, candidate, artifact, git, trusted_base):
     """Trust an independently reviewed, public-safe certificate, never a writer's assertion."""
     ref = assessment['impact_reuse']
     if (not isinstance(ref, dict) or set(ref) != {'commit', 'path', 'id', 'sha256'} or
@@ -1103,8 +1102,7 @@ def validate_impact_reuse(observed, assessment, key, policy, candidate, artifact
             raise ValueError('Trusted Issue has no evidence certificates')
         certificate = certificates.get(ref['id'])
         history, case_hash = impact_history(assessment['source_candidate'], candidate, key, git)
-        # Qualify only the comparison; original records still require their original plan.
-        source_plan = initial_stage_plan(assessment['source_candidate'], assessment['source_candidate'], git)
+        # Qualify only the comparison; the shared source check retains the original plan.
         qualified_source_plan = initial_stage_plan(trusted_base, assessment['source_candidate'], git)
     except subprocess.CalledProcessError as exc:
         raise ValueError('Impact certificate provenance or source history could not be verified') from exc
@@ -1143,32 +1141,6 @@ def validate_impact_reuse(observed, assessment, key, policy, candidate, artifact
     if fixed_at.tzinfo is None or assessed_at < fixed_at or reviewed_at < assessed_at:
         raise ValueError('Impact assessment/review predates the fixed candidate or assessment')
     validate_certificate_guarantees(certificate, assessment['coverage'], git, assessment['facts'])
-    source_result = assessment['source_result']
-    original_observation = (source_result.get('initial_observation', {})
-                            if source_result['status'] == 'initial-pass' else source_result)
-    if not isinstance(original_observation, dict):
-        raise ValueError('Original successful observation missing')
-    original_assessment = original_observation.get('responsibility_assessment') or {}
-    if not isinstance(original_assessment, dict) or 'impact_reuse' in original_assessment:
-        raise ValueError('Impact reuse chains cannot create an original successful execution')
-    if source_result['status'] in ('pass', 'initial-pass'):
-        execution = regular_json(assessment['source_candidate'],
-            f'docs/verification/changes/issue-{key.split(":")[0]}.json', git)
-        execution = next(c.get('required_execution') for c in execution['cases'] if c['id'] == key.split(':')[1])
-        if normal_contract:
-            execution = normal_contract[1].get('required_execution')
-        source_gop = None
-        if key in GOP_KEYS and not policy['responsibility_revision'].get('method_revision'):
-            amendment = gop_amendment(assessment['source_candidate'], assessment['source_candidate'], git)
-            source_gop = {'revision': canonical_hash(amendment)} if amendment else None
-        if source_result['status'] == 'initial-pass':
-            validate_initial_result(source_result, key, source_plan, assessment['source_candidate'], source_artifact, execution, source_gop)
-        else:
-            validate_full_result(source_result, assessment['source_candidate'], source_artifact, execution, source_gop,
-                                 effective_initial_entry(source_plan, key) if key in source_plan['cases'] else None)
-            validate_responsibility_observation(source_result, key, source_plan)
-        validate_fact_assessment(original_observation, key, source_plan, assessment['source_candidate'],
-                                 source_artifact, git, trusted_base, allow_impact=False, normal_contract=normal_contract)
     return source_artifact
 
 
@@ -1213,8 +1185,7 @@ def validate_fact_assessment(observed, key, policy, candidate, artifact, git, tr
             raise ValueError('Each effective condition needs identified passing facts')
     source = assessment['source_candidate']
     impact = 'impact_reuse' in assessment
-    source_artifact = (validate_impact_reuse(observed, assessment, key, policy, candidate, artifact, git, trusted_base,
-                                          normal_contract)
+    source_artifact = (validate_impact_reuse(observed, assessment, key, policy, candidate, artifact, git, trusted_base)
                        if impact else artifact)
     if (assessment['source_result'].get('head', source) != source or
             assessment['source_result'].get('artifact_sha256', source_artifact) != source_artifact):
@@ -1233,6 +1204,32 @@ def validate_fact_assessment(observed, key, policy, candidate, artifact, git, tr
             PURPOSE_PREVIOUS_PLAN_SHA256 if previous_consumer_plan(policy) else None,
             SETTINGS_PREVIOUS_PLAN_SHA256 if previous_settings_plan(policy) else None}:
         raise ValueError('Retained facts must bind the exact original or trusted current responsibility plan')
+    source_result = assessment['source_result']
+    original_observation = (source_result.get('initial_observation', {})
+                            if source_result['status'] == 'initial-pass' else source_result)
+    if not isinstance(original_observation, dict):
+        raise ValueError('Original successful observation missing')
+    original_assessment = original_observation.get('responsibility_assessment') or {}
+    if not isinstance(original_assessment, dict) or 'impact_reuse' in original_assessment:
+        raise ValueError('Impact reuse chains cannot create an original successful execution')
+    # A successful aggregate must be valid before either reuse path can rely on it.
+    if source_result['status'] in ('pass', 'initial-pass'):
+        execution = regular_json(source, f'docs/verification/changes/issue-{key.split(":")[0]}.json', git)
+        execution = next(c.get('required_execution') for c in execution['cases'] if c['id'] == key.split(':')[1])
+        if normal_contract:
+            execution = normal_contract[1].get('required_execution')
+        source_gop = None
+        if key in GOP_KEYS and not policy['responsibility_revision'].get('method_revision'):
+            amendment = gop_amendment(source, source, git)
+            source_gop = {'revision': canonical_hash(amendment)} if amendment else None
+        if source_result['status'] == 'initial-pass':
+            validate_initial_result(source_result, key, original_policy, source, source_artifact, execution, source_gop)
+        else:
+            validate_full_result(source_result, source, source_artifact, execution, source_gop,
+                                 effective_initial_entry(original_policy, key) if key in original_policy['cases'] else None)
+            validate_responsibility_observation(source_result, key, original_policy)
+        validate_fact_assessment(original_observation, key, original_policy, source,
+                                 source_artifact, git, trusted_base, allow_impact=False, normal_contract=normal_contract)
     for fact in assessment['facts'].values():
         if not isinstance(fact, dict):
             raise ValueError('Retained fact must be an actual successful observation')
