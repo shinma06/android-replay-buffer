@@ -1691,6 +1691,7 @@ def promotion_policy_blobs(base, candidate, git, continuation=False):
     allowed = {*protected, 'scripts/workflow/verification.py',
                'scripts/workflow/initial_continuation_cases.py',
                'scripts/workflow/test_initial_continuation.py',
+               'scripts/workflow/test_management_ci_history.py',
                'scripts/workflow/test_impact_evidence_reuse.py', 'docs/verification/README.md',
                'docs/verification/responsibility.md'}
     # Trusted policy entrypoints; product/build checkers retain the tested candidate version.
@@ -1703,6 +1704,7 @@ def promotion_policy_blobs(base, candidate, git, continuation=False):
                ('scripts/workflow/release_delivery.py', False),
                ('scripts/workflow/verification.py', False),
                ('scripts/workflow/test_initial_continuation.py', True),
+               ('scripts/workflow/test_management_ci_history.py', True),
                ('scripts/workflow/test_impact_evidence_reuse.py', True)]
     suffixes = all_suffixes()
     for ref in (base, candidate):

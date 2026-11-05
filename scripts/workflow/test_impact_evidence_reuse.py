@@ -1135,6 +1135,7 @@ class PromotionTreeTests(unittest.TestCase):
         from verification import promotion_certificates, promotion_policy_blobs
         self.carried = promotion_certificates(self.promotion, self.base, self.candidate, self.git)
         self.carried.update(promotion_policy_blobs(self.base, self.candidate, self.git))
+
         self.allowed = set(self.carried) | {'docs/verification/promotion.json'}
         self.git('checkout', '-q', 'candidate')
         # A real merge retains tested product bytes and copies only the exact permitted main blobs.
@@ -1143,6 +1144,17 @@ class PromotionTreeTests(unittest.TestCase):
             self.write(path, self.git('show', f'{self.base}:{path}'))
         self.write('docs/verification/promotion.json', json.dumps(self.promotion))
         self.commit('promotion metadata')
+
+    def test_management_history_fixture_is_carried_with_the_shared_validator(self):
+        from verification import promotion_policy_blobs
+        self.git('checkout', '-q', 'trusted-main')
+        regression = 'scripts/workflow/test_management_ci_history.py'
+        self.write(regression, 'import verification\n# complete synthetic responsibility coverage\n')
+        self.commit('reviewed history fixture for shared validator')
+        base = self.git('rev-parse', 'HEAD')
+        for continuation in (False, True):
+            carried = promotion_policy_blobs(base, self.candidate, self.git, continuation)
+            self.assertEqual(self.git('ls-tree', base, '--', regression), carried[regression])
 
     def git(self, *args):
         return subprocess.check_output(['git', *args], cwd=self.root, text=True, stderr=subprocess.PIPE).strip()
