@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "issue": 412,
+  "gui_required": false,
+  "reason": "初期化再試行テストのproject close側で、core cleanupと別経路のcommand取消し完了を期限付きで待つ。製品source・UI・CLI・設定・配布物・Case契約は変更しない。",
+  "cli_checks": [
+    "ReplayProjectCaptureTest: pending initialization retryのOFF/close、取消し例外のcause、late snapshot拒否と初期化試行数を確認する",
+    "python3 scripts/workflow/product_check.py: 製品test・buildPlugin・verifyPluginStructureを実行する",
+    "python3 scripts/workflow/change_impact.py --base origin/develop --run-tests: clean committed HEADの必要検査を実行する"
+  ],
+  "cases": []
+}

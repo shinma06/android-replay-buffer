@@ -20,12 +20,15 @@ import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertNull
+import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 import java.nio.file.Files
 import java.nio.file.Path
+import java.util.concurrent.CancellationException
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.ExecutionException
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -325,7 +328,9 @@ else: sys.exit(1)
                     capture.close()
                     release.countDown()
                     capture.termination.get(15, TimeUnit.SECONDS)
-                    assertTrue(retry.isCompletedExceptionally)
+                    // Core cleanup and the waiting command's cancellation complete independently.
+                    val failure = assertThrows(ExecutionException::class.java) { retry.get(15, TimeUnit.SECONDS) }
+                    assertTrue(failure.cause is CancellationException)
                     assertNull(capture.view.snapshot)
                 } else {
                     val off = capture.setEnabled(false)
