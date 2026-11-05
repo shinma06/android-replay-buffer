@@ -1,0 +1,692 @@
+{
+  "schema": 1,
+  "issue": 403,
+  "gui_required": false,
+  "reason": "32:UI-12-01の既存事実による保証別影響証明だけを登録する。製品source/build/plan/Case原契約/CIは変更せず、実GUI/端末観察を追加しない。固定証明の実質reviewは承認済み。最終HEAD/PRに結んだ同じ実reviewerのorigin adapter受付、trusted-main登録とPM採用は別の未完了工程として保持する。",
+  "cli_checks": [
+    "既存verification.validate_certificateでidentity/Case/plan/history/componentと全保証を照合",
+    "元raw/file/canonical hash・観察者/時刻と公開projectionを独立reviewで照合",
+    "既存agent_worker.private_repair_evidenceで完全なprivate原帰属を検証。実origin receipt発行は正式reviewerが行う",
+    "正式review後、clean committed HEADのchange_impact --run-testsと既存hooks/CIを実行してからpush"
+  ],
+  "cases": [],
+  "evidence_certificates": {
+    "ui-12-01-948b": {
+      "schema": 1,
+      "key": "32:UI-12-01",
+      "candidate": "948b1ad2f18ee266c79935327a403dd7471fdc3b",
+      "artifact_sha256": "a582052844272ad004f3e3429d50b12a7ec6b6783bc686457465a02f20546316",
+      "source_candidate": "4d0430daf90c420e3b86064f839bbafd35d84131",
+      "source_artifact_sha256": "4d966bdda81ccd929e365f556d7fc2006dfc7818e7f35c7d3cd891143518c09f",
+      "case_sha256": "7779cdd622436a5460d745bc2dfa9695826abc218aed521bd33d8892c0817f4b",
+      "plan_sha256": "0b6d9c6d2d5054ed642565afdbaeb5a88ee198a4ea5398ff96ff36168ce0eda5",
+      "history": [
+        {
+          "commit": "05a947a7bf5bcbec6869f036bb5acce3a09eba31",
+          "parent": "4d0430daf90c420e3b86064f839bbafd35d84131",
+          "paths": [
+            ".agents/skills/finish-work/SKILL.md",
+            ".agents/skills/start-work/SKILL.md",
+            "AGENTS.md",
+            "docs/computer-use.md",
+            "docs/design/ide-ui.md",
+            "docs/omil-current.md",
+            "docs/omil-phase-review.md",
+            "docs/omil-portable.md",
+            "docs/operations.md",
+            "docs/setup/README.md",
+            "docs/setup/gui-and-remote.md",
+            "docs/team-communication.md",
+            "docs/team-worker-prompt.md",
+            "docs/verification/changes/issue-397.json",
+            "docs/verification/initial-version.md",
+            "docs/workflow.md"
+          ]
+        },
+        {
+          "commit": "948b1ad2f18ee266c79935327a403dd7471fdc3b",
+          "parent": "05a947a7bf5bcbec6869f036bb5acce3a09eba31",
+          "paths": [
+            "docs/cli.md",
+            "docs/plugin-development.md",
+            "docs/verification/changes/issue-395.json",
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ide/ReplayCleanupDirectory.kt",
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ide/ReplayProjectCapture.kt",
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ide/ReplayProjectService.kt",
+            "plugin/src/test/kotlin/io/github/shinma06/replaybuffer/ide/ReplayCleanupDirectoryTest.kt",
+            "plugin/src/test/kotlin/io/github/shinma06/replaybuffer/ide/ReplayInitializationCliTest.kt",
+            "plugin/src/test/kotlin/io/github/shinma06/replaybuffer/ide/ReplayProjectCaptureTest.kt"
+          ]
+        }
+      ],
+      "original_file_sha256": "3d8208ac57671f449b586d099e83b88417066d7a9973f1a95f273527bb465682",
+      "original_result_sha256": "ac09b6cf46ba67e96a0aa715cea967a003ed30606a4ece00e6c88c806bbaa10f",
+      "original_fact_sha256": {
+        "OLD_A_NORMAL_S1": "d05e3e1eec512d15b167d59428f1f6296443b8303e1f94643412e4fd89df418a",
+        "N2_ORIGINAL_APPLY_MODIFIED_CANCEL_REOPEN": "0471cb99fee310e489baa91334c6cd73cec9dedb78f03bf275895802c6d2a8dd"
+      },
+      "original_record_evidence": "Immutable Git 4d0430daf90c420e3b86064f839bbafd35d84131:docs/verification/changes/issue-32.json original file byte SHA-256 3d8208ac57671f449b586d099e83b88417066d7a9973f1a95f273527bb465682; original Case32 pending-result canonical SHA-256 ac09b6cf46ba67e96a0aa715cea967a003ed30606a4ece00e6c88c806bbaa10f. Public source-result adds only contextual old source/formal ZIP to that unchanged pending status/reason, not an old Case PASS. Original successful subfacts come from BF direct4d records, not the pending aggregate.",
+      "assessment_sha256": "a383d7827776ccb5aa9cbc4c03a1efeb15c4bb7ac89ed352b284906e25180824",
+      "observation_sha256": "c0f9a17599f77a3cfe4bd8a6eb0fbd468095307ddc9df5154a5b0bc84ee3b20e",
+      "review": {
+        "status": "approved",
+        "writer_session": "codex-session-sha256:22e3d1f81b8f0b8a7481a0484352a7a63755be2cbfa7c0cfe678d2c69998a27d",
+        "executor_sessions": [
+          "codex-session-sha256:18f9d188574b37e9e962fb8ac4b7737b055026e7dba679a960d986effe54e0a8",
+          "codex-session-sha256:250ef5d1061f126ca01a1313b3def08babdc310815842f20cffa63c2013eb3a9"
+        ],
+        "reviewer_session": "codex-session-sha256:cb54214b9b4399ae155cf9692e7f9f2148f74904eca9ccd8134ada88cf9dca09",
+        "at": "2026-11-05T08:58:43.104548+00:00",
+        "evidence": "Actual independent A6 substantive review of fixed Case32 proof; private report SHA-256 fe5e0d3b748c34553138dfed8b2a673db6c3671bb23e7d77e6aad9458e0dabf6; approved facts/impact/all5coverage/origin/failure attribution. Final fixed HEAD and adapter binding remain a separate required step."
+      },
+      "guarantees": {
+        "contract_coverage": {
+          "facts": [
+            "N2_ORIGINAL_APPLY_MODIFIED_CANCEL_REOPEN",
+            "OLD_A_NORMAL_S1",
+            "N3_CURRENT_READ_S1",
+            "S0_GUI_AND_RUNTIME",
+            "S0_NORMAL_CLOSE_XML",
+            "CURRENT_REGRESSION_CLASS_SOURCE_BINDING"
+          ],
+          "disposition": "equivalent",
+          "impact": {
+            "source": "Old4d Settings Store/Configurable/Core/ToolWindow source bytes unchanged; actual Git component blobs/modes and all2 history edges retained. Changed Capture/Service/Cleanup relevant initialized-success path is supported by exact f62 original tests and current actual healthy core, not by healthy equivalence over failure/retry branches.",
+            "callers": "Actual original native Settings Apply/Cancel/reopen and current UI/Store OFF connect the Configurable; startup through actual project service/current core is bound. No-panel production assertion calls actual ProjectCapture without constructing panel.",
+            "callees": "Actual production Store/serialization and Capture/Core are asserted in the original f62 tests. Their selected44 current/dev class bytes and full tree identity were actually checked; no fake reexecution.",
+            "dataflow": "OldA enabled181/LOG_ONLY/destination normal-close XML equals current first-load preimage in all bytes49226f92..., then current actual first status reads them. Supported STOP/GUI Apply -> current coreOFF180 -> normal-close default XML. Original Apply/draft/Cancel values remain separately observed4d.",
+            "build": "Original f62 JUnit source=f62cbfd73a84f7b036a6b638306877a42817208b ZIP=a57aabe05ad12b9e198a319c3223adc485ef9e6a3613d98087eaaba3a84524b9; selected original fact canonical hashes={\"REG:ReplayProjectCaptureTest:persisted enabled restores without a panel and Apply preserves the latest toggle\": \"7817a8541b513b8b0112928a013aaaad5695516f59d20bcd2f07f1ef90f25eb4\", \"REG:ReplaySettingsStoreTest:draft edits do not change applied settings and Apply preserves immediate toggle\": \"9ad691b9f7aa33329f6c5e5438a8fb3ff01dbdd0f6f09701df818891464831bc\", \"REG:ReplaySettingsStoreTest:invalid Apply is atomic and persisted state is an immutable snapshot\": \"ea0e0c5a0a863152d964bf5fab37042573994ec1618d210980de8dd5a2a03f3a\", \"REG:ReplaySettingsStoreTest:legacy XML fields load without migration and changes advance the IDE modification tracker\": \"d923227536cde4cf0121137a6eff7621e97c836dd7e92f726e486c132676871f\"}; actual current binary/source binding SHA-256=c2d34d5501c30e21109e13efaad46140c3050505caac13e4b92a84f34dc2c010; equal class manifest SHA-256=eff2cf92e107af152ed1bd6c12953b466efc6526addd79ec8fe5db1ef01d42a5. Only Case32 initialized healthy Store/Apply/panel-independent restoration purpose; no claim about Case42 initialization-failure/retry/renderer acceptance.",
+            "configuration": "Same owned project/profile binding and exact actual native values kept in private raw originals. Current fixture945c9e0c6ec899d14dcabc98665c7df10c82935c. Initial defaults proven from original Store/serialization true values plus current actual UI/OFF; custom181 not renamed default.",
+            "dependencies": "Pinned source/build configuration and current actual installed3JAR/mainJAR matched. Relevant selected production classes identical f62/formal948. Existing JCodec/server/clock pins remain, no claim that unrelated decode/runtime features executed.",
+            "fixtures": "Original actual BF owned fixtures, old4d PID/window and new948 current service kept distinct; no devices in current WAITING context. Mock IDE/no-SDK finite assertions are explicitly regression facts only, sufficient for these Settings guarantees under effective method; no new device condition.",
+            "runtime": "Current BF observed Rabbit AI262.10968.63.2622.16730706/JBR25.0.4/SDK37.0.1/current loaded source948/core success. Regressions ran on f62 at their original suite times, not this runtime. Zero devices is not recording success; that is outside Case32 settings purpose.",
+            "display": "Original real native retention UI Apply/modifiedCancel/reopen plus current Settings AX/upper pixels and real OFF connect unchanged UI/model. Lower-pixel visibility unobserved and not used to assert every field visual state. Default truth is not inferred from custom181.",
+            "failure_attribution": "Old Case32 pending is retained, not a failing result repaired by assertion. Original Cancel executed then reopen lookup was nonunique; the raw error and next successful181 reopen are retained. SDK first abort, prelaunch recording/sequence failure, oldB UNKNOWN, offscreen/malformed launcher and lower-pixel limits remain with their original conditions. None is rewritten as procedural PASS or as an unresolved product failure of the three Case32 settings guarantees. No new product defect was found."
+          },
+          "components": {
+            "plugin/build.gradle.kts": {
+              "source_blob": "0bc1a08393f9ad4450c8dd31bd45df51756104a8",
+              "candidate_blob": "0bc1a08393f9ad4450c8dd31bd45df51756104a8"
+            },
+            "plugin/gradle.properties": {
+              "source_blob": "1a79bc188396afcaeef36f2ae9387759b5821cef",
+              "candidate_blob": "1a79bc188396afcaeef36f2ae9387759b5821cef"
+            },
+            "plugin/gradle/wrapper/gradle-wrapper.properties": {
+              "source_blob": "a78c88e5392b8d74a8c3e8c665b11bbca0ad5b30",
+              "candidate_blob": "a78c88e5392b8d74a8c3e8c665b11bbca0ad5b30"
+            },
+            "plugin/settings.gradle.kts": {
+              "source_blob": "eb1c5691474ba939e3a1b459dc76df152837c39d",
+              "candidate_blob": "eb1c5691474ba939e3a1b459dc76df152837c39d"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/cli/ReplayCliEndpoint.kt": {
+              "source_blob": "c0d6a7b0115dfb915bc45305eda9650b7b814b39",
+              "candidate_blob": "c0d6a7b0115dfb915bc45305eda9650b7b814b39"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/cli/ReplayCliProtocol.kt": {
+              "source_blob": "690446f07611ef753389539c70410b27b7ad87d6",
+              "candidate_blob": "690446f07611ef753389539c70410b27b7ad87d6"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/core/ReplayCore.kt": {
+              "source_blob": "613e3b0ee1ff92d1be68d98a08fb2aee961e43f1",
+              "candidate_blob": "613e3b0ee1ff92d1be68d98a08fb2aee961e43f1"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/core/ReplayModels.kt": {
+              "source_blob": "f025f7ac034a2b673f060ad29972cb26a7a62f77",
+              "candidate_blob": "f025f7ac034a2b673f060ad29972cb26a7a62f77"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ide/ReplayAndroidEnvironment.kt": {
+              "source_blob": "4d88b753567f9cbefc2e2c71efbe76bf43a5036e",
+              "candidate_blob": "4d88b753567f9cbefc2e2c71efbe76bf43a5036e"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ide/ReplayCleanupDirectory.kt": {
+              "source_blob": "f6ce8c1b7f298528df6d289a7f4f3cfe17e60c1b",
+              "candidate_blob": "993cece326de450c441b438d51ed1a2c5bf32092",
+              "equivalence_evidence": "Original f62 JUnit source=f62cbfd73a84f7b036a6b638306877a42817208b ZIP=a57aabe05ad12b9e198a319c3223adc485ef9e6a3613d98087eaaba3a84524b9; selected original fact canonical hashes={\"REG:ReplayProjectCaptureTest:persisted enabled restores without a panel and Apply preserves the latest toggle\": \"7817a8541b513b8b0112928a013aaaad5695516f59d20bcd2f07f1ef90f25eb4\", \"REG:ReplaySettingsStoreTest:draft edits do not change applied settings and Apply preserves immediate toggle\": \"9ad691b9f7aa33329f6c5e5438a8fb3ff01dbdd0f6f09701df818891464831bc\", \"REG:ReplaySettingsStoreTest:invalid Apply is atomic and persisted state is an immutable snapshot\": \"ea0e0c5a0a863152d964bf5fab37042573994ec1618d210980de8dd5a2a03f3a\", \"REG:ReplaySettingsStoreTest:legacy XML fields load without migration and changes advance the IDE modification tracker\": \"d923227536cde4cf0121137a6eff7621e97c836dd7e92f726e486c132676871f\"}; actual current binary/source binding SHA-256=c2d34d5501c30e21109e13efaad46140c3050505caac13e4b92a84f34dc2c010; equal class manifest SHA-256=eff2cf92e107af152ed1bd6c12953b466efc6526addd79ec8fe5db1ef01d42a5. Only Case32 initialized healthy Store/Apply/panel-independent restoration purpose; no claim about Case42 initialization-failure/retry/renderer acceptance."
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ide/ReplayProjectCapture.kt": {
+              "source_blob": "6b6c9b97138fabf7e08ac65e3d9223f4f8a1baa2",
+              "candidate_blob": "e8b44c0ce95c13a47105e971de8c656432057677",
+              "equivalence_evidence": "Original f62 JUnit source=f62cbfd73a84f7b036a6b638306877a42817208b ZIP=a57aabe05ad12b9e198a319c3223adc485ef9e6a3613d98087eaaba3a84524b9; selected original fact canonical hashes={\"REG:ReplayProjectCaptureTest:persisted enabled restores without a panel and Apply preserves the latest toggle\": \"7817a8541b513b8b0112928a013aaaad5695516f59d20bcd2f07f1ef90f25eb4\", \"REG:ReplaySettingsStoreTest:draft edits do not change applied settings and Apply preserves immediate toggle\": \"9ad691b9f7aa33329f6c5e5438a8fb3ff01dbdd0f6f09701df818891464831bc\", \"REG:ReplaySettingsStoreTest:invalid Apply is atomic and persisted state is an immutable snapshot\": \"ea0e0c5a0a863152d964bf5fab37042573994ec1618d210980de8dd5a2a03f3a\", \"REG:ReplaySettingsStoreTest:legacy XML fields load without migration and changes advance the IDE modification tracker\": \"d923227536cde4cf0121137a6eff7621e97c836dd7e92f726e486c132676871f\"}; actual current binary/source binding SHA-256=c2d34d5501c30e21109e13efaad46140c3050505caac13e4b92a84f34dc2c010; equal class manifest SHA-256=eff2cf92e107af152ed1bd6c12953b466efc6526addd79ec8fe5db1ef01d42a5. Only Case32 initialized healthy Store/Apply/panel-independent restoration purpose; no claim about Case42 initialization-failure/retry/renderer acceptance."
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ide/ReplayProjectService.kt": {
+              "source_blob": "aa5297ae7e47fb69e38870da5c15149e0fafb861",
+              "candidate_blob": "749df544dff0c87b92b3bccf3da2145940bdc17a",
+              "equivalence_evidence": "Original f62 JUnit source=f62cbfd73a84f7b036a6b638306877a42817208b ZIP=a57aabe05ad12b9e198a319c3223adc485ef9e6a3613d98087eaaba3a84524b9; selected original fact canonical hashes={\"REG:ReplayProjectCaptureTest:persisted enabled restores without a panel and Apply preserves the latest toggle\": \"7817a8541b513b8b0112928a013aaaad5695516f59d20bcd2f07f1ef90f25eb4\", \"REG:ReplaySettingsStoreTest:draft edits do not change applied settings and Apply preserves immediate toggle\": \"9ad691b9f7aa33329f6c5e5438a8fb3ff01dbdd0f6f09701df818891464831bc\", \"REG:ReplaySettingsStoreTest:invalid Apply is atomic and persisted state is an immutable snapshot\": \"ea0e0c5a0a863152d964bf5fab37042573994ec1618d210980de8dd5a2a03f3a\", \"REG:ReplaySettingsStoreTest:legacy XML fields load without migration and changes advance the IDE modification tracker\": \"d923227536cde4cf0121137a6eff7621e97c836dd7e92f726e486c132676871f\"}; actual current binary/source binding SHA-256=c2d34d5501c30e21109e13efaad46140c3050505caac13e4b92a84f34dc2c010; equal class manifest SHA-256=eff2cf92e107af152ed1bd6c12953b466efc6526addd79ec8fe5db1ef01d42a5. Only Case32 initialized healthy Store/Apply/panel-independent restoration purpose; no claim about Case42 initialization-failure/retry/renderer acceptance."
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/settings/ReplaySettingsConfigurable.kt": {
+              "source_blob": "7a668e4512bf79d4dfedc922fe4d8b718921d400",
+              "candidate_blob": "7a668e4512bf79d4dfedc922fe4d8b718921d400"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/settings/ReplaySettingsStore.kt": {
+              "source_blob": "64eec1d2670a0cf6d6a94de4206ce789999ad1dc",
+              "candidate_blob": "64eec1d2670a0cf6d6a94de4206ce789999ad1dc"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ui/ReplayToolWindowFactory.kt": {
+              "source_blob": "de2242b3d1b64e668869d0192136b7167f733b9c",
+              "candidate_blob": "de2242b3d1b64e668869d0192136b7167f733b9c"
+            },
+            "plugin/src/main/resources/META-INF/plugin.xml": {
+              "source_blob": "3f139f71c8ac3dcefb5a8b35eaf14ff76f4e702b",
+              "candidate_blob": "3f139f71c8ac3dcefb5a8b35eaf14ff76f4e702b"
+            },
+            "plugin/src/test/kotlin/io/github/shinma06/replaybuffer/ide/ReplayProjectCaptureTest.kt": {
+              "source_blob": "14db3f1d3a69e9a6aea7c2750eab2fc4385f5889",
+              "candidate_blob": "1e94fb2f877e1e5c0a935485bc19995f069eff5f",
+              "equivalence_evidence": "Original f62 JUnit source=f62cbfd73a84f7b036a6b638306877a42817208b ZIP=a57aabe05ad12b9e198a319c3223adc485ef9e6a3613d98087eaaba3a84524b9; selected original fact canonical hashes={\"REG:ReplayProjectCaptureTest:persisted enabled restores without a panel and Apply preserves the latest toggle\": \"7817a8541b513b8b0112928a013aaaad5695516f59d20bcd2f07f1ef90f25eb4\", \"REG:ReplaySettingsStoreTest:draft edits do not change applied settings and Apply preserves immediate toggle\": \"9ad691b9f7aa33329f6c5e5438a8fb3ff01dbdd0f6f09701df818891464831bc\", \"REG:ReplaySettingsStoreTest:invalid Apply is atomic and persisted state is an immutable snapshot\": \"ea0e0c5a0a863152d964bf5fab37042573994ec1618d210980de8dd5a2a03f3a\", \"REG:ReplaySettingsStoreTest:legacy XML fields load without migration and changes advance the IDE modification tracker\": \"d923227536cde4cf0121137a6eff7621e97c836dd7e92f726e486c132676871f\"}; actual current binary/source binding SHA-256=c2d34d5501c30e21109e13efaad46140c3050505caac13e4b92a84f34dc2c010; equal class manifest SHA-256=eff2cf92e107af152ed1bd6c12953b466efc6526addd79ec8fe5db1ef01d42a5. Only Case32 initialized healthy Store/Apply/panel-independent restoration purpose; no claim about Case42 initialization-failure/retry/renderer acceptance."
+            },
+            "plugin/src/test/kotlin/io/github/shinma06/replaybuffer/settings/ReplaySettingsStoreTest.kt": {
+              "source_blob": "dadd1947ddbebaa54747de85f3855f0850cfa731",
+              "candidate_blob": "dadd1947ddbebaa54747de85f3855f0850cfa731"
+            }
+          }
+        },
+        "artifact_binding": {
+          "facts": [
+            "B0_IDENTITY",
+            "B0_RUNTIME",
+            "B0_HEALTHY_S1",
+            "B0_APP_MODEL"
+          ],
+          "disposition": "fresh",
+          "impact": {
+            "source": "Old4d Settings Store/Configurable/Core/ToolWindow source bytes unchanged; actual Git component blobs/modes and all2 history edges retained. Changed Capture/Service/Cleanup relevant initialized-success path is supported by exact f62 original tests and current actual healthy core, not by healthy equivalence over failure/retry branches.",
+            "callers": "Actual original native Settings Apply/Cancel/reopen and current UI/Store OFF connect the Configurable; startup through actual project service/current core is bound. No-panel production assertion calls actual ProjectCapture without constructing panel.",
+            "callees": "Actual production Store/serialization and Capture/Core are asserted in the original f62 tests. Their selected44 current/dev class bytes and full tree identity were actually checked; no fake reexecution.",
+            "dataflow": "OldA enabled181/LOG_ONLY/destination normal-close XML equals current first-load preimage in all bytes49226f92..., then current actual first status reads them. Supported STOP/GUI Apply -> current coreOFF180 -> normal-close default XML. Original Apply/draft/Cancel values remain separately observed4d.",
+            "build": "Original f62 JUnit source=f62cbfd73a84f7b036a6b638306877a42817208b ZIP=a57aabe05ad12b9e198a319c3223adc485ef9e6a3613d98087eaaba3a84524b9; selected original fact canonical hashes={\"REG:ReplayProjectCaptureTest:persisted enabled restores without a panel and Apply preserves the latest toggle\": \"7817a8541b513b8b0112928a013aaaad5695516f59d20bcd2f07f1ef90f25eb4\", \"REG:ReplaySettingsStoreTest:draft edits do not change applied settings and Apply preserves immediate toggle\": \"9ad691b9f7aa33329f6c5e5438a8fb3ff01dbdd0f6f09701df818891464831bc\", \"REG:ReplaySettingsStoreTest:invalid Apply is atomic and persisted state is an immutable snapshot\": \"ea0e0c5a0a863152d964bf5fab37042573994ec1618d210980de8dd5a2a03f3a\", \"REG:ReplaySettingsStoreTest:legacy XML fields load without migration and changes advance the IDE modification tracker\": \"d923227536cde4cf0121137a6eff7621e97c836dd7e92f726e486c132676871f\"}; actual current binary/source binding SHA-256=c2d34d5501c30e21109e13efaad46140c3050505caac13e4b92a84f34dc2c010; equal class manifest SHA-256=eff2cf92e107af152ed1bd6c12953b466efc6526addd79ec8fe5db1ef01d42a5. Only Case32 initialized healthy Store/Apply/panel-independent restoration purpose; no claim about Case42 initialization-failure/retry/renderer acceptance.",
+            "configuration": "Same owned project/profile binding and exact actual native values kept in private raw originals. Current fixture945c9e0c6ec899d14dcabc98665c7df10c82935c. Initial defaults proven from original Store/serialization true values plus current actual UI/OFF; custom181 not renamed default.",
+            "dependencies": "Pinned source/build configuration and current actual installed3JAR/mainJAR matched. Relevant selected production classes identical f62/formal948. Existing JCodec/server/clock pins remain, no claim that unrelated decode/runtime features executed.",
+            "fixtures": "Original actual BF owned fixtures, old4d PID/window and new948 current service kept distinct; no devices in current WAITING context. Mock IDE/no-SDK finite assertions are explicitly regression facts only, sufficient for these Settings guarantees under effective method; no new device condition.",
+            "runtime": "Current BF observed Rabbit AI262.10968.63.2622.16730706/JBR25.0.4/SDK37.0.1/current loaded source948/core success. Regressions ran on f62 at their original suite times, not this runtime. Zero devices is not recording success; that is outside Case32 settings purpose.",
+            "display": "Original real native retention UI Apply/modifiedCancel/reopen plus current Settings AX/upper pixels and real OFF connect unchanged UI/model. Lower-pixel visibility unobserved and not used to assert every field visual state. Default truth is not inferred from custom181.",
+            "failure_attribution": "Old Case32 pending is retained, not a failing result repaired by assertion. Original Cancel executed then reopen lookup was nonunique; the raw error and next successful181 reopen are retained. SDK first abort, prelaunch recording/sequence failure, oldB UNKNOWN, offscreen/malformed launcher and lower-pixel limits remain with their original conditions. None is rewritten as procedural PASS or as an unresolved product failure of the three Case32 settings guarantees. No new product defect was found."
+          },
+          "components": {
+            "plugin/build.gradle.kts": {
+              "source_blob": "0bc1a08393f9ad4450c8dd31bd45df51756104a8",
+              "candidate_blob": "0bc1a08393f9ad4450c8dd31bd45df51756104a8"
+            },
+            "plugin/gradle.properties": {
+              "source_blob": "1a79bc188396afcaeef36f2ae9387759b5821cef",
+              "candidate_blob": "1a79bc188396afcaeef36f2ae9387759b5821cef"
+            },
+            "plugin/gradle/wrapper/gradle-wrapper.properties": {
+              "source_blob": "a78c88e5392b8d74a8c3e8c665b11bbca0ad5b30",
+              "candidate_blob": "a78c88e5392b8d74a8c3e8c665b11bbca0ad5b30"
+            },
+            "plugin/settings.gradle.kts": {
+              "source_blob": "eb1c5691474ba939e3a1b459dc76df152837c39d",
+              "candidate_blob": "eb1c5691474ba939e3a1b459dc76df152837c39d"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/cli/ReplayCliEndpoint.kt": {
+              "source_blob": "c0d6a7b0115dfb915bc45305eda9650b7b814b39",
+              "candidate_blob": "c0d6a7b0115dfb915bc45305eda9650b7b814b39"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/cli/ReplayCliProtocol.kt": {
+              "source_blob": "690446f07611ef753389539c70410b27b7ad87d6",
+              "candidate_blob": "690446f07611ef753389539c70410b27b7ad87d6"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/core/ReplayCore.kt": {
+              "source_blob": "613e3b0ee1ff92d1be68d98a08fb2aee961e43f1",
+              "candidate_blob": "613e3b0ee1ff92d1be68d98a08fb2aee961e43f1"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/core/ReplayModels.kt": {
+              "source_blob": "f025f7ac034a2b673f060ad29972cb26a7a62f77",
+              "candidate_blob": "f025f7ac034a2b673f060ad29972cb26a7a62f77"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ide/ReplayAndroidEnvironment.kt": {
+              "source_blob": "4d88b753567f9cbefc2e2c71efbe76bf43a5036e",
+              "candidate_blob": "4d88b753567f9cbefc2e2c71efbe76bf43a5036e"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ide/ReplayCleanupDirectory.kt": {
+              "source_blob": "f6ce8c1b7f298528df6d289a7f4f3cfe17e60c1b",
+              "candidate_blob": "993cece326de450c441b438d51ed1a2c5bf32092",
+              "equivalence_evidence": "Original f62 JUnit source=f62cbfd73a84f7b036a6b638306877a42817208b ZIP=a57aabe05ad12b9e198a319c3223adc485ef9e6a3613d98087eaaba3a84524b9; selected original fact canonical hashes={\"REG:ReplayProjectCaptureTest:persisted enabled restores without a panel and Apply preserves the latest toggle\": \"7817a8541b513b8b0112928a013aaaad5695516f59d20bcd2f07f1ef90f25eb4\", \"REG:ReplaySettingsStoreTest:draft edits do not change applied settings and Apply preserves immediate toggle\": \"9ad691b9f7aa33329f6c5e5438a8fb3ff01dbdd0f6f09701df818891464831bc\", \"REG:ReplaySettingsStoreTest:invalid Apply is atomic and persisted state is an immutable snapshot\": \"ea0e0c5a0a863152d964bf5fab37042573994ec1618d210980de8dd5a2a03f3a\", \"REG:ReplaySettingsStoreTest:legacy XML fields load without migration and changes advance the IDE modification tracker\": \"d923227536cde4cf0121137a6eff7621e97c836dd7e92f726e486c132676871f\"}; actual current binary/source binding SHA-256=c2d34d5501c30e21109e13efaad46140c3050505caac13e4b92a84f34dc2c010; equal class manifest SHA-256=eff2cf92e107af152ed1bd6c12953b466efc6526addd79ec8fe5db1ef01d42a5. Only Case32 initialized healthy Store/Apply/panel-independent restoration purpose; no claim about Case42 initialization-failure/retry/renderer acceptance."
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ide/ReplayProjectCapture.kt": {
+              "source_blob": "6b6c9b97138fabf7e08ac65e3d9223f4f8a1baa2",
+              "candidate_blob": "e8b44c0ce95c13a47105e971de8c656432057677",
+              "equivalence_evidence": "Original f62 JUnit source=f62cbfd73a84f7b036a6b638306877a42817208b ZIP=a57aabe05ad12b9e198a319c3223adc485ef9e6a3613d98087eaaba3a84524b9; selected original fact canonical hashes={\"REG:ReplayProjectCaptureTest:persisted enabled restores without a panel and Apply preserves the latest toggle\": \"7817a8541b513b8b0112928a013aaaad5695516f59d20bcd2f07f1ef90f25eb4\", \"REG:ReplaySettingsStoreTest:draft edits do not change applied settings and Apply preserves immediate toggle\": \"9ad691b9f7aa33329f6c5e5438a8fb3ff01dbdd0f6f09701df818891464831bc\", \"REG:ReplaySettingsStoreTest:invalid Apply is atomic and persisted state is an immutable snapshot\": \"ea0e0c5a0a863152d964bf5fab37042573994ec1618d210980de8dd5a2a03f3a\", \"REG:ReplaySettingsStoreTest:legacy XML fields load without migration and changes advance the IDE modification tracker\": \"d923227536cde4cf0121137a6eff7621e97c836dd7e92f726e486c132676871f\"}; actual current binary/source binding SHA-256=c2d34d5501c30e21109e13efaad46140c3050505caac13e4b92a84f34dc2c010; equal class manifest SHA-256=eff2cf92e107af152ed1bd6c12953b466efc6526addd79ec8fe5db1ef01d42a5. Only Case32 initialized healthy Store/Apply/panel-independent restoration purpose; no claim about Case42 initialization-failure/retry/renderer acceptance."
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ide/ReplayProjectService.kt": {
+              "source_blob": "aa5297ae7e47fb69e38870da5c15149e0fafb861",
+              "candidate_blob": "749df544dff0c87b92b3bccf3da2145940bdc17a",
+              "equivalence_evidence": "Original f62 JUnit source=f62cbfd73a84f7b036a6b638306877a42817208b ZIP=a57aabe05ad12b9e198a319c3223adc485ef9e6a3613d98087eaaba3a84524b9; selected original fact canonical hashes={\"REG:ReplayProjectCaptureTest:persisted enabled restores without a panel and Apply preserves the latest toggle\": \"7817a8541b513b8b0112928a013aaaad5695516f59d20bcd2f07f1ef90f25eb4\", \"REG:ReplaySettingsStoreTest:draft edits do not change applied settings and Apply preserves immediate toggle\": \"9ad691b9f7aa33329f6c5e5438a8fb3ff01dbdd0f6f09701df818891464831bc\", \"REG:ReplaySettingsStoreTest:invalid Apply is atomic and persisted state is an immutable snapshot\": \"ea0e0c5a0a863152d964bf5fab37042573994ec1618d210980de8dd5a2a03f3a\", \"REG:ReplaySettingsStoreTest:legacy XML fields load without migration and changes advance the IDE modification tracker\": \"d923227536cde4cf0121137a6eff7621e97c836dd7e92f726e486c132676871f\"}; actual current binary/source binding SHA-256=c2d34d5501c30e21109e13efaad46140c3050505caac13e4b92a84f34dc2c010; equal class manifest SHA-256=eff2cf92e107af152ed1bd6c12953b466efc6526addd79ec8fe5db1ef01d42a5. Only Case32 initialized healthy Store/Apply/panel-independent restoration purpose; no claim about Case42 initialization-failure/retry/renderer acceptance."
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/settings/ReplaySettingsConfigurable.kt": {
+              "source_blob": "7a668e4512bf79d4dfedc922fe4d8b718921d400",
+              "candidate_blob": "7a668e4512bf79d4dfedc922fe4d8b718921d400"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/settings/ReplaySettingsStore.kt": {
+              "source_blob": "64eec1d2670a0cf6d6a94de4206ce789999ad1dc",
+              "candidate_blob": "64eec1d2670a0cf6d6a94de4206ce789999ad1dc"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ui/ReplayToolWindowFactory.kt": {
+              "source_blob": "de2242b3d1b64e668869d0192136b7167f733b9c",
+              "candidate_blob": "de2242b3d1b64e668869d0192136b7167f733b9c"
+            },
+            "plugin/src/main/resources/META-INF/plugin.xml": {
+              "source_blob": "3f139f71c8ac3dcefb5a8b35eaf14ff76f4e702b",
+              "candidate_blob": "3f139f71c8ac3dcefb5a8b35eaf14ff76f4e702b"
+            },
+            "plugin/src/test/kotlin/io/github/shinma06/replaybuffer/ide/ReplayProjectCaptureTest.kt": {
+              "source_blob": "14db3f1d3a69e9a6aea7c2750eab2fc4385f5889",
+              "candidate_blob": "1e94fb2f877e1e5c0a935485bc19995f069eff5f",
+              "equivalence_evidence": "Original f62 JUnit source=f62cbfd73a84f7b036a6b638306877a42817208b ZIP=a57aabe05ad12b9e198a319c3223adc485ef9e6a3613d98087eaaba3a84524b9; selected original fact canonical hashes={\"REG:ReplayProjectCaptureTest:persisted enabled restores without a panel and Apply preserves the latest toggle\": \"7817a8541b513b8b0112928a013aaaad5695516f59d20bcd2f07f1ef90f25eb4\", \"REG:ReplaySettingsStoreTest:draft edits do not change applied settings and Apply preserves immediate toggle\": \"9ad691b9f7aa33329f6c5e5438a8fb3ff01dbdd0f6f09701df818891464831bc\", \"REG:ReplaySettingsStoreTest:invalid Apply is atomic and persisted state is an immutable snapshot\": \"ea0e0c5a0a863152d964bf5fab37042573994ec1618d210980de8dd5a2a03f3a\", \"REG:ReplaySettingsStoreTest:legacy XML fields load without migration and changes advance the IDE modification tracker\": \"d923227536cde4cf0121137a6eff7621e97c836dd7e92f726e486c132676871f\"}; actual current binary/source binding SHA-256=c2d34d5501c30e21109e13efaad46140c3050505caac13e4b92a84f34dc2c010; equal class manifest SHA-256=eff2cf92e107af152ed1bd6c12953b466efc6526addd79ec8fe5db1ef01d42a5. Only Case32 initialized healthy Store/Apply/panel-independent restoration purpose; no claim about Case42 initialization-failure/retry/renderer acceptance."
+            },
+            "plugin/src/test/kotlin/io/github/shinma06/replaybuffer/settings/ReplaySettingsStoreTest.kt": {
+              "source_blob": "dadd1947ddbebaa54747de85f3855f0850cfa731",
+              "candidate_blob": "dadd1947ddbebaa54747de85f3855f0850cfa731"
+            }
+          }
+        },
+        "failure_attribution": {
+          "facts": [
+            "N2_ORIGINAL_APPLY_MODIFIED_CANCEL_REOPEN",
+            "RETURN_PRESERVATION",
+            "S0_NORMAL_CLOSE_XML"
+          ],
+          "disposition": "equivalent",
+          "impact": {
+            "source": "Old4d Settings Store/Configurable/Core/ToolWindow source bytes unchanged; actual Git component blobs/modes and all2 history edges retained. Changed Capture/Service/Cleanup relevant initialized-success path is supported by exact f62 original tests and current actual healthy core, not by healthy equivalence over failure/retry branches.",
+            "callers": "Actual original native Settings Apply/Cancel/reopen and current UI/Store OFF connect the Configurable; startup through actual project service/current core is bound. No-panel production assertion calls actual ProjectCapture without constructing panel.",
+            "callees": "Actual production Store/serialization and Capture/Core are asserted in the original f62 tests. Their selected44 current/dev class bytes and full tree identity were actually checked; no fake reexecution.",
+            "dataflow": "OldA enabled181/LOG_ONLY/destination normal-close XML equals current first-load preimage in all bytes49226f92..., then current actual first status reads them. Supported STOP/GUI Apply -> current coreOFF180 -> normal-close default XML. Original Apply/draft/Cancel values remain separately observed4d.",
+            "build": "Original f62 JUnit source=f62cbfd73a84f7b036a6b638306877a42817208b ZIP=a57aabe05ad12b9e198a319c3223adc485ef9e6a3613d98087eaaba3a84524b9; selected original fact canonical hashes={\"REG:ReplayProjectCaptureTest:persisted enabled restores without a panel and Apply preserves the latest toggle\": \"7817a8541b513b8b0112928a013aaaad5695516f59d20bcd2f07f1ef90f25eb4\", \"REG:ReplaySettingsStoreTest:draft edits do not change applied settings and Apply preserves immediate toggle\": \"9ad691b9f7aa33329f6c5e5438a8fb3ff01dbdd0f6f09701df818891464831bc\", \"REG:ReplaySettingsStoreTest:invalid Apply is atomic and persisted state is an immutable snapshot\": \"ea0e0c5a0a863152d964bf5fab37042573994ec1618d210980de8dd5a2a03f3a\", \"REG:ReplaySettingsStoreTest:legacy XML fields load without migration and changes advance the IDE modification tracker\": \"d923227536cde4cf0121137a6eff7621e97c836dd7e92f726e486c132676871f\"}; actual current binary/source binding SHA-256=c2d34d5501c30e21109e13efaad46140c3050505caac13e4b92a84f34dc2c010; equal class manifest SHA-256=eff2cf92e107af152ed1bd6c12953b466efc6526addd79ec8fe5db1ef01d42a5. Only Case32 initialized healthy Store/Apply/panel-independent restoration purpose; no claim about Case42 initialization-failure/retry/renderer acceptance.",
+            "configuration": "Same owned project/profile binding and exact actual native values kept in private raw originals. Current fixture945c9e0c6ec899d14dcabc98665c7df10c82935c. Initial defaults proven from original Store/serialization true values plus current actual UI/OFF; custom181 not renamed default.",
+            "dependencies": "Pinned source/build configuration and current actual installed3JAR/mainJAR matched. Relevant selected production classes identical f62/formal948. Existing JCodec/server/clock pins remain, no claim that unrelated decode/runtime features executed.",
+            "fixtures": "Original actual BF owned fixtures, old4d PID/window and new948 current service kept distinct; no devices in current WAITING context. Mock IDE/no-SDK finite assertions are explicitly regression facts only, sufficient for these Settings guarantees under effective method; no new device condition.",
+            "runtime": "Current BF observed Rabbit AI262.10968.63.2622.16730706/JBR25.0.4/SDK37.0.1/current loaded source948/core success. Regressions ran on f62 at their original suite times, not this runtime. Zero devices is not recording success; that is outside Case32 settings purpose.",
+            "display": "Original real native retention UI Apply/modifiedCancel/reopen plus current Settings AX/upper pixels and real OFF connect unchanged UI/model. Lower-pixel visibility unobserved and not used to assert every field visual state. Default truth is not inferred from custom181.",
+            "failure_attribution": "Old Case32 pending is retained, not a failing result repaired by assertion. Original Cancel executed then reopen lookup was nonunique; the raw error and next successful181 reopen are retained. SDK first abort, prelaunch recording/sequence failure, oldB UNKNOWN, offscreen/malformed launcher and lower-pixel limits remain with their original conditions. None is rewritten as procedural PASS or as an unresolved product failure of the three Case32 settings guarantees. No new product defect was found."
+          },
+          "components": {
+            "plugin/build.gradle.kts": {
+              "source_blob": "0bc1a08393f9ad4450c8dd31bd45df51756104a8",
+              "candidate_blob": "0bc1a08393f9ad4450c8dd31bd45df51756104a8"
+            },
+            "plugin/gradle.properties": {
+              "source_blob": "1a79bc188396afcaeef36f2ae9387759b5821cef",
+              "candidate_blob": "1a79bc188396afcaeef36f2ae9387759b5821cef"
+            },
+            "plugin/gradle/wrapper/gradle-wrapper.properties": {
+              "source_blob": "a78c88e5392b8d74a8c3e8c665b11bbca0ad5b30",
+              "candidate_blob": "a78c88e5392b8d74a8c3e8c665b11bbca0ad5b30"
+            },
+            "plugin/settings.gradle.kts": {
+              "source_blob": "eb1c5691474ba939e3a1b459dc76df152837c39d",
+              "candidate_blob": "eb1c5691474ba939e3a1b459dc76df152837c39d"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/cli/ReplayCliEndpoint.kt": {
+              "source_blob": "c0d6a7b0115dfb915bc45305eda9650b7b814b39",
+              "candidate_blob": "c0d6a7b0115dfb915bc45305eda9650b7b814b39"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/cli/ReplayCliProtocol.kt": {
+              "source_blob": "690446f07611ef753389539c70410b27b7ad87d6",
+              "candidate_blob": "690446f07611ef753389539c70410b27b7ad87d6"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/core/ReplayCore.kt": {
+              "source_blob": "613e3b0ee1ff92d1be68d98a08fb2aee961e43f1",
+              "candidate_blob": "613e3b0ee1ff92d1be68d98a08fb2aee961e43f1"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/core/ReplayModels.kt": {
+              "source_blob": "f025f7ac034a2b673f060ad29972cb26a7a62f77",
+              "candidate_blob": "f025f7ac034a2b673f060ad29972cb26a7a62f77"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ide/ReplayAndroidEnvironment.kt": {
+              "source_blob": "4d88b753567f9cbefc2e2c71efbe76bf43a5036e",
+              "candidate_blob": "4d88b753567f9cbefc2e2c71efbe76bf43a5036e"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ide/ReplayCleanupDirectory.kt": {
+              "source_blob": "f6ce8c1b7f298528df6d289a7f4f3cfe17e60c1b",
+              "candidate_blob": "993cece326de450c441b438d51ed1a2c5bf32092",
+              "equivalence_evidence": "Original f62 JUnit source=f62cbfd73a84f7b036a6b638306877a42817208b ZIP=a57aabe05ad12b9e198a319c3223adc485ef9e6a3613d98087eaaba3a84524b9; selected original fact canonical hashes={\"REG:ReplayProjectCaptureTest:persisted enabled restores without a panel and Apply preserves the latest toggle\": \"7817a8541b513b8b0112928a013aaaad5695516f59d20bcd2f07f1ef90f25eb4\", \"REG:ReplaySettingsStoreTest:draft edits do not change applied settings and Apply preserves immediate toggle\": \"9ad691b9f7aa33329f6c5e5438a8fb3ff01dbdd0f6f09701df818891464831bc\", \"REG:ReplaySettingsStoreTest:invalid Apply is atomic and persisted state is an immutable snapshot\": \"ea0e0c5a0a863152d964bf5fab37042573994ec1618d210980de8dd5a2a03f3a\", \"REG:ReplaySettingsStoreTest:legacy XML fields load without migration and changes advance the IDE modification tracker\": \"d923227536cde4cf0121137a6eff7621e97c836dd7e92f726e486c132676871f\"}; actual current binary/source binding SHA-256=c2d34d5501c30e21109e13efaad46140c3050505caac13e4b92a84f34dc2c010; equal class manifest SHA-256=eff2cf92e107af152ed1bd6c12953b466efc6526addd79ec8fe5db1ef01d42a5. Only Case32 initialized healthy Store/Apply/panel-independent restoration purpose; no claim about Case42 initialization-failure/retry/renderer acceptance."
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ide/ReplayProjectCapture.kt": {
+              "source_blob": "6b6c9b97138fabf7e08ac65e3d9223f4f8a1baa2",
+              "candidate_blob": "e8b44c0ce95c13a47105e971de8c656432057677",
+              "equivalence_evidence": "Original f62 JUnit source=f62cbfd73a84f7b036a6b638306877a42817208b ZIP=a57aabe05ad12b9e198a319c3223adc485ef9e6a3613d98087eaaba3a84524b9; selected original fact canonical hashes={\"REG:ReplayProjectCaptureTest:persisted enabled restores without a panel and Apply preserves the latest toggle\": \"7817a8541b513b8b0112928a013aaaad5695516f59d20bcd2f07f1ef90f25eb4\", \"REG:ReplaySettingsStoreTest:draft edits do not change applied settings and Apply preserves immediate toggle\": \"9ad691b9f7aa33329f6c5e5438a8fb3ff01dbdd0f6f09701df818891464831bc\", \"REG:ReplaySettingsStoreTest:invalid Apply is atomic and persisted state is an immutable snapshot\": \"ea0e0c5a0a863152d964bf5fab37042573994ec1618d210980de8dd5a2a03f3a\", \"REG:ReplaySettingsStoreTest:legacy XML fields load without migration and changes advance the IDE modification tracker\": \"d923227536cde4cf0121137a6eff7621e97c836dd7e92f726e486c132676871f\"}; actual current binary/source binding SHA-256=c2d34d5501c30e21109e13efaad46140c3050505caac13e4b92a84f34dc2c010; equal class manifest SHA-256=eff2cf92e107af152ed1bd6c12953b466efc6526addd79ec8fe5db1ef01d42a5. Only Case32 initialized healthy Store/Apply/panel-independent restoration purpose; no claim about Case42 initialization-failure/retry/renderer acceptance."
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ide/ReplayProjectService.kt": {
+              "source_blob": "aa5297ae7e47fb69e38870da5c15149e0fafb861",
+              "candidate_blob": "749df544dff0c87b92b3bccf3da2145940bdc17a",
+              "equivalence_evidence": "Original f62 JUnit source=f62cbfd73a84f7b036a6b638306877a42817208b ZIP=a57aabe05ad12b9e198a319c3223adc485ef9e6a3613d98087eaaba3a84524b9; selected original fact canonical hashes={\"REG:ReplayProjectCaptureTest:persisted enabled restores without a panel and Apply preserves the latest toggle\": \"7817a8541b513b8b0112928a013aaaad5695516f59d20bcd2f07f1ef90f25eb4\", \"REG:ReplaySettingsStoreTest:draft edits do not change applied settings and Apply preserves immediate toggle\": \"9ad691b9f7aa33329f6c5e5438a8fb3ff01dbdd0f6f09701df818891464831bc\", \"REG:ReplaySettingsStoreTest:invalid Apply is atomic and persisted state is an immutable snapshot\": \"ea0e0c5a0a863152d964bf5fab37042573994ec1618d210980de8dd5a2a03f3a\", \"REG:ReplaySettingsStoreTest:legacy XML fields load without migration and changes advance the IDE modification tracker\": \"d923227536cde4cf0121137a6eff7621e97c836dd7e92f726e486c132676871f\"}; actual current binary/source binding SHA-256=c2d34d5501c30e21109e13efaad46140c3050505caac13e4b92a84f34dc2c010; equal class manifest SHA-256=eff2cf92e107af152ed1bd6c12953b466efc6526addd79ec8fe5db1ef01d42a5. Only Case32 initialized healthy Store/Apply/panel-independent restoration purpose; no claim about Case42 initialization-failure/retry/renderer acceptance."
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/settings/ReplaySettingsConfigurable.kt": {
+              "source_blob": "7a668e4512bf79d4dfedc922fe4d8b718921d400",
+              "candidate_blob": "7a668e4512bf79d4dfedc922fe4d8b718921d400"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/settings/ReplaySettingsStore.kt": {
+              "source_blob": "64eec1d2670a0cf6d6a94de4206ce789999ad1dc",
+              "candidate_blob": "64eec1d2670a0cf6d6a94de4206ce789999ad1dc"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ui/ReplayToolWindowFactory.kt": {
+              "source_blob": "de2242b3d1b64e668869d0192136b7167f733b9c",
+              "candidate_blob": "de2242b3d1b64e668869d0192136b7167f733b9c"
+            },
+            "plugin/src/main/resources/META-INF/plugin.xml": {
+              "source_blob": "3f139f71c8ac3dcefb5a8b35eaf14ff76f4e702b",
+              "candidate_blob": "3f139f71c8ac3dcefb5a8b35eaf14ff76f4e702b"
+            },
+            "plugin/src/test/kotlin/io/github/shinma06/replaybuffer/ide/ReplayProjectCaptureTest.kt": {
+              "source_blob": "14db3f1d3a69e9a6aea7c2750eab2fc4385f5889",
+              "candidate_blob": "1e94fb2f877e1e5c0a935485bc19995f069eff5f",
+              "equivalence_evidence": "Original f62 JUnit source=f62cbfd73a84f7b036a6b638306877a42817208b ZIP=a57aabe05ad12b9e198a319c3223adc485ef9e6a3613d98087eaaba3a84524b9; selected original fact canonical hashes={\"REG:ReplayProjectCaptureTest:persisted enabled restores without a panel and Apply preserves the latest toggle\": \"7817a8541b513b8b0112928a013aaaad5695516f59d20bcd2f07f1ef90f25eb4\", \"REG:ReplaySettingsStoreTest:draft edits do not change applied settings and Apply preserves immediate toggle\": \"9ad691b9f7aa33329f6c5e5438a8fb3ff01dbdd0f6f09701df818891464831bc\", \"REG:ReplaySettingsStoreTest:invalid Apply is atomic and persisted state is an immutable snapshot\": \"ea0e0c5a0a863152d964bf5fab37042573994ec1618d210980de8dd5a2a03f3a\", \"REG:ReplaySettingsStoreTest:legacy XML fields load without migration and changes advance the IDE modification tracker\": \"d923227536cde4cf0121137a6eff7621e97c836dd7e92f726e486c132676871f\"}; actual current binary/source binding SHA-256=c2d34d5501c30e21109e13efaad46140c3050505caac13e4b92a84f34dc2c010; equal class manifest SHA-256=eff2cf92e107af152ed1bd6c12953b466efc6526addd79ec8fe5db1ef01d42a5. Only Case32 initialized healthy Store/Apply/panel-independent restoration purpose; no claim about Case42 initialization-failure/retry/renderer acceptance."
+            },
+            "plugin/src/test/kotlin/io/github/shinma06/replaybuffer/settings/ReplaySettingsStoreTest.kt": {
+              "source_blob": "dadd1947ddbebaa54747de85f3855f0850cfa731",
+              "candidate_blob": "dadd1947ddbebaa54747de85f3855f0850cfa731"
+            }
+          }
+        },
+        "regression": {
+          "facts": [
+            "CURRENT_REGRESSION_CLASS_SOURCE_BINDING"
+          ],
+          "disposition": "equivalent",
+          "impact": {
+            "source": "Old4d Settings Store/Configurable/Core/ToolWindow source bytes unchanged; actual Git component blobs/modes and all2 history edges retained. Changed Capture/Service/Cleanup relevant initialized-success path is supported by exact f62 original tests and current actual healthy core, not by healthy equivalence over failure/retry branches.",
+            "callers": "Actual original native Settings Apply/Cancel/reopen and current UI/Store OFF connect the Configurable; startup through actual project service/current core is bound. No-panel production assertion calls actual ProjectCapture without constructing panel.",
+            "callees": "Actual production Store/serialization and Capture/Core are asserted in the original f62 tests. Their selected44 current/dev class bytes and full tree identity were actually checked; no fake reexecution.",
+            "dataflow": "OldA enabled181/LOG_ONLY/destination normal-close XML equals current first-load preimage in all bytes49226f92..., then current actual first status reads them. Supported STOP/GUI Apply -> current coreOFF180 -> normal-close default XML. Original Apply/draft/Cancel values remain separately observed4d.",
+            "build": "Original f62 JUnit source=f62cbfd73a84f7b036a6b638306877a42817208b ZIP=a57aabe05ad12b9e198a319c3223adc485ef9e6a3613d98087eaaba3a84524b9; selected original fact canonical hashes={\"REG:ReplayProjectCaptureTest:persisted enabled restores without a panel and Apply preserves the latest toggle\": \"7817a8541b513b8b0112928a013aaaad5695516f59d20bcd2f07f1ef90f25eb4\", \"REG:ReplaySettingsStoreTest:draft edits do not change applied settings and Apply preserves immediate toggle\": \"9ad691b9f7aa33329f6c5e5438a8fb3ff01dbdd0f6f09701df818891464831bc\", \"REG:ReplaySettingsStoreTest:invalid Apply is atomic and persisted state is an immutable snapshot\": \"ea0e0c5a0a863152d964bf5fab37042573994ec1618d210980de8dd5a2a03f3a\", \"REG:ReplaySettingsStoreTest:legacy XML fields load without migration and changes advance the IDE modification tracker\": \"d923227536cde4cf0121137a6eff7621e97c836dd7e92f726e486c132676871f\"}; actual current binary/source binding SHA-256=c2d34d5501c30e21109e13efaad46140c3050505caac13e4b92a84f34dc2c010; equal class manifest SHA-256=eff2cf92e107af152ed1bd6c12953b466efc6526addd79ec8fe5db1ef01d42a5. Only Case32 initialized healthy Store/Apply/panel-independent restoration purpose; no claim about Case42 initialization-failure/retry/renderer acceptance.",
+            "configuration": "Same owned project/profile binding and exact actual native values kept in private raw originals. Current fixture945c9e0c6ec899d14dcabc98665c7df10c82935c. Initial defaults proven from original Store/serialization true values plus current actual UI/OFF; custom181 not renamed default.",
+            "dependencies": "Pinned source/build configuration and current actual installed3JAR/mainJAR matched. Relevant selected production classes identical f62/formal948. Existing JCodec/server/clock pins remain, no claim that unrelated decode/runtime features executed.",
+            "fixtures": "Original actual BF owned fixtures, old4d PID/window and new948 current service kept distinct; no devices in current WAITING context. Mock IDE/no-SDK finite assertions are explicitly regression facts only, sufficient for these Settings guarantees under effective method; no new device condition.",
+            "runtime": "Current BF observed Rabbit AI262.10968.63.2622.16730706/JBR25.0.4/SDK37.0.1/current loaded source948/core success. Regressions ran on f62 at their original suite times, not this runtime. Zero devices is not recording success; that is outside Case32 settings purpose.",
+            "display": "Original real native retention UI Apply/modifiedCancel/reopen plus current Settings AX/upper pixels and real OFF connect unchanged UI/model. Lower-pixel visibility unobserved and not used to assert every field visual state. Default truth is not inferred from custom181.",
+            "failure_attribution": "Old Case32 pending is retained, not a failing result repaired by assertion. Original Cancel executed then reopen lookup was nonunique; the raw error and next successful181 reopen are retained. SDK first abort, prelaunch recording/sequence failure, oldB UNKNOWN, offscreen/malformed launcher and lower-pixel limits remain with their original conditions. None is rewritten as procedural PASS or as an unresolved product failure of the three Case32 settings guarantees. No new product defect was found."
+          },
+          "components": {
+            "plugin/build.gradle.kts": {
+              "source_blob": "0bc1a08393f9ad4450c8dd31bd45df51756104a8",
+              "candidate_blob": "0bc1a08393f9ad4450c8dd31bd45df51756104a8"
+            },
+            "plugin/gradle.properties": {
+              "source_blob": "1a79bc188396afcaeef36f2ae9387759b5821cef",
+              "candidate_blob": "1a79bc188396afcaeef36f2ae9387759b5821cef"
+            },
+            "plugin/gradle/wrapper/gradle-wrapper.properties": {
+              "source_blob": "a78c88e5392b8d74a8c3e8c665b11bbca0ad5b30",
+              "candidate_blob": "a78c88e5392b8d74a8c3e8c665b11bbca0ad5b30"
+            },
+            "plugin/settings.gradle.kts": {
+              "source_blob": "eb1c5691474ba939e3a1b459dc76df152837c39d",
+              "candidate_blob": "eb1c5691474ba939e3a1b459dc76df152837c39d"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/cli/ReplayCliEndpoint.kt": {
+              "source_blob": "c0d6a7b0115dfb915bc45305eda9650b7b814b39",
+              "candidate_blob": "c0d6a7b0115dfb915bc45305eda9650b7b814b39"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/cli/ReplayCliProtocol.kt": {
+              "source_blob": "690446f07611ef753389539c70410b27b7ad87d6",
+              "candidate_blob": "690446f07611ef753389539c70410b27b7ad87d6"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/core/ReplayCore.kt": {
+              "source_blob": "613e3b0ee1ff92d1be68d98a08fb2aee961e43f1",
+              "candidate_blob": "613e3b0ee1ff92d1be68d98a08fb2aee961e43f1"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/core/ReplayModels.kt": {
+              "source_blob": "f025f7ac034a2b673f060ad29972cb26a7a62f77",
+              "candidate_blob": "f025f7ac034a2b673f060ad29972cb26a7a62f77"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ide/ReplayAndroidEnvironment.kt": {
+              "source_blob": "4d88b753567f9cbefc2e2c71efbe76bf43a5036e",
+              "candidate_blob": "4d88b753567f9cbefc2e2c71efbe76bf43a5036e"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ide/ReplayCleanupDirectory.kt": {
+              "source_blob": "f6ce8c1b7f298528df6d289a7f4f3cfe17e60c1b",
+              "candidate_blob": "993cece326de450c441b438d51ed1a2c5bf32092",
+              "equivalence_evidence": "Original f62 JUnit source=f62cbfd73a84f7b036a6b638306877a42817208b ZIP=a57aabe05ad12b9e198a319c3223adc485ef9e6a3613d98087eaaba3a84524b9; selected original fact canonical hashes={\"REG:ReplayProjectCaptureTest:persisted enabled restores without a panel and Apply preserves the latest toggle\": \"7817a8541b513b8b0112928a013aaaad5695516f59d20bcd2f07f1ef90f25eb4\", \"REG:ReplaySettingsStoreTest:draft edits do not change applied settings and Apply preserves immediate toggle\": \"9ad691b9f7aa33329f6c5e5438a8fb3ff01dbdd0f6f09701df818891464831bc\", \"REG:ReplaySettingsStoreTest:invalid Apply is atomic and persisted state is an immutable snapshot\": \"ea0e0c5a0a863152d964bf5fab37042573994ec1618d210980de8dd5a2a03f3a\", \"REG:ReplaySettingsStoreTest:legacy XML fields load without migration and changes advance the IDE modification tracker\": \"d923227536cde4cf0121137a6eff7621e97c836dd7e92f726e486c132676871f\"}; actual current binary/source binding SHA-256=c2d34d5501c30e21109e13efaad46140c3050505caac13e4b92a84f34dc2c010; equal class manifest SHA-256=eff2cf92e107af152ed1bd6c12953b466efc6526addd79ec8fe5db1ef01d42a5. Only Case32 initialized healthy Store/Apply/panel-independent restoration purpose; no claim about Case42 initialization-failure/retry/renderer acceptance."
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ide/ReplayProjectCapture.kt": {
+              "source_blob": "6b6c9b97138fabf7e08ac65e3d9223f4f8a1baa2",
+              "candidate_blob": "e8b44c0ce95c13a47105e971de8c656432057677",
+              "equivalence_evidence": "Original f62 JUnit source=f62cbfd73a84f7b036a6b638306877a42817208b ZIP=a57aabe05ad12b9e198a319c3223adc485ef9e6a3613d98087eaaba3a84524b9; selected original fact canonical hashes={\"REG:ReplayProjectCaptureTest:persisted enabled restores without a panel and Apply preserves the latest toggle\": \"7817a8541b513b8b0112928a013aaaad5695516f59d20bcd2f07f1ef90f25eb4\", \"REG:ReplaySettingsStoreTest:draft edits do not change applied settings and Apply preserves immediate toggle\": \"9ad691b9f7aa33329f6c5e5438a8fb3ff01dbdd0f6f09701df818891464831bc\", \"REG:ReplaySettingsStoreTest:invalid Apply is atomic and persisted state is an immutable snapshot\": \"ea0e0c5a0a863152d964bf5fab37042573994ec1618d210980de8dd5a2a03f3a\", \"REG:ReplaySettingsStoreTest:legacy XML fields load without migration and changes advance the IDE modification tracker\": \"d923227536cde4cf0121137a6eff7621e97c836dd7e92f726e486c132676871f\"}; actual current binary/source binding SHA-256=c2d34d5501c30e21109e13efaad46140c3050505caac13e4b92a84f34dc2c010; equal class manifest SHA-256=eff2cf92e107af152ed1bd6c12953b466efc6526addd79ec8fe5db1ef01d42a5. Only Case32 initialized healthy Store/Apply/panel-independent restoration purpose; no claim about Case42 initialization-failure/retry/renderer acceptance."
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ide/ReplayProjectService.kt": {
+              "source_blob": "aa5297ae7e47fb69e38870da5c15149e0fafb861",
+              "candidate_blob": "749df544dff0c87b92b3bccf3da2145940bdc17a",
+              "equivalence_evidence": "Original f62 JUnit source=f62cbfd73a84f7b036a6b638306877a42817208b ZIP=a57aabe05ad12b9e198a319c3223adc485ef9e6a3613d98087eaaba3a84524b9; selected original fact canonical hashes={\"REG:ReplayProjectCaptureTest:persisted enabled restores without a panel and Apply preserves the latest toggle\": \"7817a8541b513b8b0112928a013aaaad5695516f59d20bcd2f07f1ef90f25eb4\", \"REG:ReplaySettingsStoreTest:draft edits do not change applied settings and Apply preserves immediate toggle\": \"9ad691b9f7aa33329f6c5e5438a8fb3ff01dbdd0f6f09701df818891464831bc\", \"REG:ReplaySettingsStoreTest:invalid Apply is atomic and persisted state is an immutable snapshot\": \"ea0e0c5a0a863152d964bf5fab37042573994ec1618d210980de8dd5a2a03f3a\", \"REG:ReplaySettingsStoreTest:legacy XML fields load without migration and changes advance the IDE modification tracker\": \"d923227536cde4cf0121137a6eff7621e97c836dd7e92f726e486c132676871f\"}; actual current binary/source binding SHA-256=c2d34d5501c30e21109e13efaad46140c3050505caac13e4b92a84f34dc2c010; equal class manifest SHA-256=eff2cf92e107af152ed1bd6c12953b466efc6526addd79ec8fe5db1ef01d42a5. Only Case32 initialized healthy Store/Apply/panel-independent restoration purpose; no claim about Case42 initialization-failure/retry/renderer acceptance."
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/settings/ReplaySettingsConfigurable.kt": {
+              "source_blob": "7a668e4512bf79d4dfedc922fe4d8b718921d400",
+              "candidate_blob": "7a668e4512bf79d4dfedc922fe4d8b718921d400"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/settings/ReplaySettingsStore.kt": {
+              "source_blob": "64eec1d2670a0cf6d6a94de4206ce789999ad1dc",
+              "candidate_blob": "64eec1d2670a0cf6d6a94de4206ce789999ad1dc"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ui/ReplayToolWindowFactory.kt": {
+              "source_blob": "de2242b3d1b64e668869d0192136b7167f733b9c",
+              "candidate_blob": "de2242b3d1b64e668869d0192136b7167f733b9c"
+            },
+            "plugin/src/main/resources/META-INF/plugin.xml": {
+              "source_blob": "3f139f71c8ac3dcefb5a8b35eaf14ff76f4e702b",
+              "candidate_blob": "3f139f71c8ac3dcefb5a8b35eaf14ff76f4e702b"
+            },
+            "plugin/src/test/kotlin/io/github/shinma06/replaybuffer/ide/ReplayProjectCaptureTest.kt": {
+              "source_blob": "14db3f1d3a69e9a6aea7c2750eab2fc4385f5889",
+              "candidate_blob": "1e94fb2f877e1e5c0a935485bc19995f069eff5f",
+              "equivalence_evidence": "Original f62 JUnit source=f62cbfd73a84f7b036a6b638306877a42817208b ZIP=a57aabe05ad12b9e198a319c3223adc485ef9e6a3613d98087eaaba3a84524b9; selected original fact canonical hashes={\"REG:ReplayProjectCaptureTest:persisted enabled restores without a panel and Apply preserves the latest toggle\": \"7817a8541b513b8b0112928a013aaaad5695516f59d20bcd2f07f1ef90f25eb4\", \"REG:ReplaySettingsStoreTest:draft edits do not change applied settings and Apply preserves immediate toggle\": \"9ad691b9f7aa33329f6c5e5438a8fb3ff01dbdd0f6f09701df818891464831bc\", \"REG:ReplaySettingsStoreTest:invalid Apply is atomic and persisted state is an immutable snapshot\": \"ea0e0c5a0a863152d964bf5fab37042573994ec1618d210980de8dd5a2a03f3a\", \"REG:ReplaySettingsStoreTest:legacy XML fields load without migration and changes advance the IDE modification tracker\": \"d923227536cde4cf0121137a6eff7621e97c836dd7e92f726e486c132676871f\"}; actual current binary/source binding SHA-256=c2d34d5501c30e21109e13efaad46140c3050505caac13e4b92a84f34dc2c010; equal class manifest SHA-256=eff2cf92e107af152ed1bd6c12953b466efc6526addd79ec8fe5db1ef01d42a5. Only Case32 initialized healthy Store/Apply/panel-independent restoration purpose; no claim about Case42 initialization-failure/retry/renderer acceptance."
+            },
+            "plugin/src/test/kotlin/io/github/shinma06/replaybuffer/settings/ReplaySettingsStoreTest.kt": {
+              "source_blob": "dadd1947ddbebaa54747de85f3855f0850cfa731",
+              "candidate_blob": "dadd1947ddbebaa54747de85f3855f0850cfa731"
+            }
+          }
+        },
+        "integration": {
+          "facts": [
+            "N2_ORIGINAL_APPLY_MODIFIED_CANCEL_REOPEN",
+            "OLD_A_NORMAL_S1",
+            "N3_CURRENT_READ_S1",
+            "B0_HEALTHY_S1",
+            "S0_GUI_AND_RUNTIME",
+            "S0_NORMAL_CLOSE_XML",
+            "CURRENT_REGRESSION_CLASS_SOURCE_BINDING"
+          ],
+          "disposition": "equivalent",
+          "impact": {
+            "source": "Old4d Settings Store/Configurable/Core/ToolWindow source bytes unchanged; actual Git component blobs/modes and all2 history edges retained. Changed Capture/Service/Cleanup relevant initialized-success path is supported by exact f62 original tests and current actual healthy core, not by healthy equivalence over failure/retry branches.",
+            "callers": "Actual original native Settings Apply/Cancel/reopen and current UI/Store OFF connect the Configurable; startup through actual project service/current core is bound. No-panel production assertion calls actual ProjectCapture without constructing panel.",
+            "callees": "Actual production Store/serialization and Capture/Core are asserted in the original f62 tests. Their selected44 current/dev class bytes and full tree identity were actually checked; no fake reexecution.",
+            "dataflow": "OldA enabled181/LOG_ONLY/destination normal-close XML equals current first-load preimage in all bytes49226f92..., then current actual first status reads them. Supported STOP/GUI Apply -> current coreOFF180 -> normal-close default XML. Original Apply/draft/Cancel values remain separately observed4d.",
+            "build": "Original f62 JUnit source=f62cbfd73a84f7b036a6b638306877a42817208b ZIP=a57aabe05ad12b9e198a319c3223adc485ef9e6a3613d98087eaaba3a84524b9; selected original fact canonical hashes={\"REG:ReplayProjectCaptureTest:persisted enabled restores without a panel and Apply preserves the latest toggle\": \"7817a8541b513b8b0112928a013aaaad5695516f59d20bcd2f07f1ef90f25eb4\", \"REG:ReplaySettingsStoreTest:draft edits do not change applied settings and Apply preserves immediate toggle\": \"9ad691b9f7aa33329f6c5e5438a8fb3ff01dbdd0f6f09701df818891464831bc\", \"REG:ReplaySettingsStoreTest:invalid Apply is atomic and persisted state is an immutable snapshot\": \"ea0e0c5a0a863152d964bf5fab37042573994ec1618d210980de8dd5a2a03f3a\", \"REG:ReplaySettingsStoreTest:legacy XML fields load without migration and changes advance the IDE modification tracker\": \"d923227536cde4cf0121137a6eff7621e97c836dd7e92f726e486c132676871f\"}; actual current binary/source binding SHA-256=c2d34d5501c30e21109e13efaad46140c3050505caac13e4b92a84f34dc2c010; equal class manifest SHA-256=eff2cf92e107af152ed1bd6c12953b466efc6526addd79ec8fe5db1ef01d42a5. Only Case32 initialized healthy Store/Apply/panel-independent restoration purpose; no claim about Case42 initialization-failure/retry/renderer acceptance.",
+            "configuration": "Same owned project/profile binding and exact actual native values kept in private raw originals. Current fixture945c9e0c6ec899d14dcabc98665c7df10c82935c. Initial defaults proven from original Store/serialization true values plus current actual UI/OFF; custom181 not renamed default.",
+            "dependencies": "Pinned source/build configuration and current actual installed3JAR/mainJAR matched. Relevant selected production classes identical f62/formal948. Existing JCodec/server/clock pins remain, no claim that unrelated decode/runtime features executed.",
+            "fixtures": "Original actual BF owned fixtures, old4d PID/window and new948 current service kept distinct; no devices in current WAITING context. Mock IDE/no-SDK finite assertions are explicitly regression facts only, sufficient for these Settings guarantees under effective method; no new device condition.",
+            "runtime": "Current BF observed Rabbit AI262.10968.63.2622.16730706/JBR25.0.4/SDK37.0.1/current loaded source948/core success. Regressions ran on f62 at their original suite times, not this runtime. Zero devices is not recording success; that is outside Case32 settings purpose.",
+            "display": "Original real native retention UI Apply/modifiedCancel/reopen plus current Settings AX/upper pixels and real OFF connect unchanged UI/model. Lower-pixel visibility unobserved and not used to assert every field visual state. Default truth is not inferred from custom181.",
+            "failure_attribution": "Old Case32 pending is retained, not a failing result repaired by assertion. Original Cancel executed then reopen lookup was nonunique; the raw error and next successful181 reopen are retained. SDK first abort, prelaunch recording/sequence failure, oldB UNKNOWN, offscreen/malformed launcher and lower-pixel limits remain with their original conditions. None is rewritten as procedural PASS or as an unresolved product failure of the three Case32 settings guarantees. No new product defect was found."
+          },
+          "components": {
+            "plugin/build.gradle.kts": {
+              "source_blob": "0bc1a08393f9ad4450c8dd31bd45df51756104a8",
+              "candidate_blob": "0bc1a08393f9ad4450c8dd31bd45df51756104a8"
+            },
+            "plugin/gradle.properties": {
+              "source_blob": "1a79bc188396afcaeef36f2ae9387759b5821cef",
+              "candidate_blob": "1a79bc188396afcaeef36f2ae9387759b5821cef"
+            },
+            "plugin/gradle/wrapper/gradle-wrapper.properties": {
+              "source_blob": "a78c88e5392b8d74a8c3e8c665b11bbca0ad5b30",
+              "candidate_blob": "a78c88e5392b8d74a8c3e8c665b11bbca0ad5b30"
+            },
+            "plugin/settings.gradle.kts": {
+              "source_blob": "eb1c5691474ba939e3a1b459dc76df152837c39d",
+              "candidate_blob": "eb1c5691474ba939e3a1b459dc76df152837c39d"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/cli/ReplayCliEndpoint.kt": {
+              "source_blob": "c0d6a7b0115dfb915bc45305eda9650b7b814b39",
+              "candidate_blob": "c0d6a7b0115dfb915bc45305eda9650b7b814b39"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/cli/ReplayCliProtocol.kt": {
+              "source_blob": "690446f07611ef753389539c70410b27b7ad87d6",
+              "candidate_blob": "690446f07611ef753389539c70410b27b7ad87d6"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/core/ReplayCore.kt": {
+              "source_blob": "613e3b0ee1ff92d1be68d98a08fb2aee961e43f1",
+              "candidate_blob": "613e3b0ee1ff92d1be68d98a08fb2aee961e43f1"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/core/ReplayModels.kt": {
+              "source_blob": "f025f7ac034a2b673f060ad29972cb26a7a62f77",
+              "candidate_blob": "f025f7ac034a2b673f060ad29972cb26a7a62f77"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ide/ReplayAndroidEnvironment.kt": {
+              "source_blob": "4d88b753567f9cbefc2e2c71efbe76bf43a5036e",
+              "candidate_blob": "4d88b753567f9cbefc2e2c71efbe76bf43a5036e"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ide/ReplayCleanupDirectory.kt": {
+              "source_blob": "f6ce8c1b7f298528df6d289a7f4f3cfe17e60c1b",
+              "candidate_blob": "993cece326de450c441b438d51ed1a2c5bf32092",
+              "equivalence_evidence": "Original f62 JUnit source=f62cbfd73a84f7b036a6b638306877a42817208b ZIP=a57aabe05ad12b9e198a319c3223adc485ef9e6a3613d98087eaaba3a84524b9; selected original fact canonical hashes={\"REG:ReplayProjectCaptureTest:persisted enabled restores without a panel and Apply preserves the latest toggle\": \"7817a8541b513b8b0112928a013aaaad5695516f59d20bcd2f07f1ef90f25eb4\", \"REG:ReplaySettingsStoreTest:draft edits do not change applied settings and Apply preserves immediate toggle\": \"9ad691b9f7aa33329f6c5e5438a8fb3ff01dbdd0f6f09701df818891464831bc\", \"REG:ReplaySettingsStoreTest:invalid Apply is atomic and persisted state is an immutable snapshot\": \"ea0e0c5a0a863152d964bf5fab37042573994ec1618d210980de8dd5a2a03f3a\", \"REG:ReplaySettingsStoreTest:legacy XML fields load without migration and changes advance the IDE modification tracker\": \"d923227536cde4cf0121137a6eff7621e97c836dd7e92f726e486c132676871f\"}; actual current binary/source binding SHA-256=c2d34d5501c30e21109e13efaad46140c3050505caac13e4b92a84f34dc2c010; equal class manifest SHA-256=eff2cf92e107af152ed1bd6c12953b466efc6526addd79ec8fe5db1ef01d42a5. Only Case32 initialized healthy Store/Apply/panel-independent restoration purpose; no claim about Case42 initialization-failure/retry/renderer acceptance."
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ide/ReplayProjectCapture.kt": {
+              "source_blob": "6b6c9b97138fabf7e08ac65e3d9223f4f8a1baa2",
+              "candidate_blob": "e8b44c0ce95c13a47105e971de8c656432057677",
+              "equivalence_evidence": "Original f62 JUnit source=f62cbfd73a84f7b036a6b638306877a42817208b ZIP=a57aabe05ad12b9e198a319c3223adc485ef9e6a3613d98087eaaba3a84524b9; selected original fact canonical hashes={\"REG:ReplayProjectCaptureTest:persisted enabled restores without a panel and Apply preserves the latest toggle\": \"7817a8541b513b8b0112928a013aaaad5695516f59d20bcd2f07f1ef90f25eb4\", \"REG:ReplaySettingsStoreTest:draft edits do not change applied settings and Apply preserves immediate toggle\": \"9ad691b9f7aa33329f6c5e5438a8fb3ff01dbdd0f6f09701df818891464831bc\", \"REG:ReplaySettingsStoreTest:invalid Apply is atomic and persisted state is an immutable snapshot\": \"ea0e0c5a0a863152d964bf5fab37042573994ec1618d210980de8dd5a2a03f3a\", \"REG:ReplaySettingsStoreTest:legacy XML fields load without migration and changes advance the IDE modification tracker\": \"d923227536cde4cf0121137a6eff7621e97c836dd7e92f726e486c132676871f\"}; actual current binary/source binding SHA-256=c2d34d5501c30e21109e13efaad46140c3050505caac13e4b92a84f34dc2c010; equal class manifest SHA-256=eff2cf92e107af152ed1bd6c12953b466efc6526addd79ec8fe5db1ef01d42a5. Only Case32 initialized healthy Store/Apply/panel-independent restoration purpose; no claim about Case42 initialization-failure/retry/renderer acceptance."
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ide/ReplayProjectService.kt": {
+              "source_blob": "aa5297ae7e47fb69e38870da5c15149e0fafb861",
+              "candidate_blob": "749df544dff0c87b92b3bccf3da2145940bdc17a",
+              "equivalence_evidence": "Original f62 JUnit source=f62cbfd73a84f7b036a6b638306877a42817208b ZIP=a57aabe05ad12b9e198a319c3223adc485ef9e6a3613d98087eaaba3a84524b9; selected original fact canonical hashes={\"REG:ReplayProjectCaptureTest:persisted enabled restores without a panel and Apply preserves the latest toggle\": \"7817a8541b513b8b0112928a013aaaad5695516f59d20bcd2f07f1ef90f25eb4\", \"REG:ReplaySettingsStoreTest:draft edits do not change applied settings and Apply preserves immediate toggle\": \"9ad691b9f7aa33329f6c5e5438a8fb3ff01dbdd0f6f09701df818891464831bc\", \"REG:ReplaySettingsStoreTest:invalid Apply is atomic and persisted state is an immutable snapshot\": \"ea0e0c5a0a863152d964bf5fab37042573994ec1618d210980de8dd5a2a03f3a\", \"REG:ReplaySettingsStoreTest:legacy XML fields load without migration and changes advance the IDE modification tracker\": \"d923227536cde4cf0121137a6eff7621e97c836dd7e92f726e486c132676871f\"}; actual current binary/source binding SHA-256=c2d34d5501c30e21109e13efaad46140c3050505caac13e4b92a84f34dc2c010; equal class manifest SHA-256=eff2cf92e107af152ed1bd6c12953b466efc6526addd79ec8fe5db1ef01d42a5. Only Case32 initialized healthy Store/Apply/panel-independent restoration purpose; no claim about Case42 initialization-failure/retry/renderer acceptance."
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/settings/ReplaySettingsConfigurable.kt": {
+              "source_blob": "7a668e4512bf79d4dfedc922fe4d8b718921d400",
+              "candidate_blob": "7a668e4512bf79d4dfedc922fe4d8b718921d400"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/settings/ReplaySettingsStore.kt": {
+              "source_blob": "64eec1d2670a0cf6d6a94de4206ce789999ad1dc",
+              "candidate_blob": "64eec1d2670a0cf6d6a94de4206ce789999ad1dc"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ui/ReplayToolWindowFactory.kt": {
+              "source_blob": "de2242b3d1b64e668869d0192136b7167f733b9c",
+              "candidate_blob": "de2242b3d1b64e668869d0192136b7167f733b9c"
+            },
+            "plugin/src/main/resources/META-INF/plugin.xml": {
+              "source_blob": "3f139f71c8ac3dcefb5a8b35eaf14ff76f4e702b",
+              "candidate_blob": "3f139f71c8ac3dcefb5a8b35eaf14ff76f4e702b"
+            },
+            "plugin/src/test/kotlin/io/github/shinma06/replaybuffer/ide/ReplayProjectCaptureTest.kt": {
+              "source_blob": "14db3f1d3a69e9a6aea7c2750eab2fc4385f5889",
+              "candidate_blob": "1e94fb2f877e1e5c0a935485bc19995f069eff5f",
+              "equivalence_evidence": "Original f62 JUnit source=f62cbfd73a84f7b036a6b638306877a42817208b ZIP=a57aabe05ad12b9e198a319c3223adc485ef9e6a3613d98087eaaba3a84524b9; selected original fact canonical hashes={\"REG:ReplayProjectCaptureTest:persisted enabled restores without a panel and Apply preserves the latest toggle\": \"7817a8541b513b8b0112928a013aaaad5695516f59d20bcd2f07f1ef90f25eb4\", \"REG:ReplaySettingsStoreTest:draft edits do not change applied settings and Apply preserves immediate toggle\": \"9ad691b9f7aa33329f6c5e5438a8fb3ff01dbdd0f6f09701df818891464831bc\", \"REG:ReplaySettingsStoreTest:invalid Apply is atomic and persisted state is an immutable snapshot\": \"ea0e0c5a0a863152d964bf5fab37042573994ec1618d210980de8dd5a2a03f3a\", \"REG:ReplaySettingsStoreTest:legacy XML fields load without migration and changes advance the IDE modification tracker\": \"d923227536cde4cf0121137a6eff7621e97c836dd7e92f726e486c132676871f\"}; actual current binary/source binding SHA-256=c2d34d5501c30e21109e13efaad46140c3050505caac13e4b92a84f34dc2c010; equal class manifest SHA-256=eff2cf92e107af152ed1bd6c12953b466efc6526addd79ec8fe5db1ef01d42a5. Only Case32 initialized healthy Store/Apply/panel-independent restoration purpose; no claim about Case42 initialization-failure/retry/renderer acceptance."
+            },
+            "plugin/src/test/kotlin/io/github/shinma06/replaybuffer/settings/ReplaySettingsStoreTest.kt": {
+              "source_blob": "dadd1947ddbebaa54747de85f3855f0850cfa731",
+              "candidate_blob": "dadd1947ddbebaa54747de85f3855f0850cfa731"
+            }
+          }
+        }
+      },
+      "provenance": {
+        "at": "2026-11-05T08:24:03.006037+00:00",
+        "attribution": {
+          "writer": "codex-session-sha256:22e3d1f81b8f0b8a7481a0484352a7a63755be2cbfa7c0cfe678d2c69998a27d",
+          "observer": "codex-session-sha256:22e3d1f81b8f0b8a7481a0484352a7a63755be2cbfa7c0cfe678d2c69998a27d",
+          "contributors": [
+            {
+              "role": "original and current BF observer/executor",
+              "session": "codex-session-sha256:250ef5d1061f126ca01a1313b3def08babdc310815842f20cffa63c2013eb3a9",
+              "activity": "execution",
+              "at": "2026-10-29T23:45:09.895Z",
+              "receipt_sha256": "3b214ff9350c544bd5e1ba725a5b080b195511540e85a8b1fa812f81eb1f9d44",
+              "receipt_locator": "/payload"
+            },
+            {
+              "role": "current BF observer/executor",
+              "session": "codex-session-sha256:250ef5d1061f126ca01a1313b3def08babdc310815842f20cffa63c2013eb3a9",
+              "activity": "execution",
+              "at": "2026-11-04T22:41:30.787Z",
+              "receipt_sha256": "837d81a8047a00d525e5327116e7d9c6a654f34f3095ec9866d74a2f4f90aeba",
+              "receipt_locator": "/payload"
+            },
+            {
+              "role": "EA13 source-impact and EA14 fact preassessment contributor, same actual session",
+              "session": "codex-session-sha256:d84b234013a9716e246ed27593f5d64d5690248a86c6d56eb54b625203854778",
+              "activity": "assessment",
+              "at": "2026-11-04T23:15:30.840601+00:00",
+              "receipt_sha256": "190cb51d4bbe14f079fa0b57cb613a76ce6e86934d7a7cc839afb8f70df4d2a9",
+              "receipt_locator": ""
+            },
+            {
+              "role": "EA13 source-impact proof contributor, same EA as EA14",
+              "session": "codex-session-sha256:d84b234013a9716e246ed27593f5d64d5690248a86c6d56eb54b625203854778",
+              "activity": "assessment",
+              "at": "2026-11-04T22:48:33.077408+00:00",
+              "receipt_sha256": "25ebba8e5c7cb95d38e7959a83aea15c7549067d8f630ecea34dc770d2ff1b88",
+              "receipt_locator": ""
+            },
+            {
+              "role": "sourcewriter67 and actual selected13 regression executor",
+              "session": "codex-session-sha256:18f9d188574b37e9e962fb8ac4b7737b055026e7dba679a960d986effe54e0a8",
+              "activity": "execution",
+              "at": "2026-11-04T14:43:07.108Z",
+              "receipt_sha256": "bb62618fed1c09c12c6725f47ae39fdcdbdceb632779a5353ee47f0e82b20637",
+              "receipt_locator": "/payload"
+            },
+            {
+              "role": "sourcewriter67 original source/test seal writer",
+              "session": "codex-session-sha256:18f9d188574b37e9e962fb8ac4b7737b055026e7dba679a960d986effe54e0a8",
+              "activity": "writer",
+              "at": "2026-11-04T14:51:57.872Z",
+              "receipt_sha256": "ac9b7e74ace582444d1ab807509700048bb12d0de895b5b3a4b464fda1668b90",
+              "receipt_locator": "/payload"
+            },
+            {
+              "role": "D6 actual selected class-lineage assessor",
+              "session": "codex-session-sha256:e7637c541d8097e4e35c8b6b496da4a8cbe7161455b8ab1c0bda86854c4d3476",
+              "activity": "assessment",
+              "at": "2026-11-04T22:29:11.546Z",
+              "receipt_sha256": "be713ea68e7809a28a0676036420ca134962c056e78c869003bc2f2d86933ec5",
+              "receipt_locator": "/payload"
+            },
+            {
+              "role": "D6 formal948 artifact/custody packet composer",
+              "session": "codex-session-sha256:e7637c541d8097e4e35c8b6b496da4a8cbe7161455b8ab1c0bda86854c4d3476",
+              "activity": "composition",
+              "at": "2026-11-04T22:31:55.749Z",
+              "receipt_sha256": "119c3f86cc0e1b0d6e472b8b8a07e99c4e84f4ff4bb1cb9b97da6a79c394f285",
+              "receipt_locator": "/payload"
+            },
+            {
+              "role": "F1 adopted fixed source/evidence assessment contributor",
+              "session": "codex-session-sha256:8f02d5541eb47504649997303bd14991d74e12338a62d4d4054ba9555ea70484",
+              "activity": "assessment",
+              "at": "2026-11-04T15:01:25.889Z",
+              "receipt_sha256": "16e22da1cbad15616f4bf73ab7bec24dd4c41757a92c12b3a58e2187ee1a052e",
+              "receipt_locator": "/payload"
+            },
+            {
+              "role": "BF original4d modifiedCancel and corrected Settings reopen executor",
+              "session": "codex-session-sha256:250ef5d1061f126ca01a1313b3def08babdc310815842f20cffa63c2013eb3a9",
+              "activity": "execution",
+              "at": "2026-10-29T13:49:51.164Z",
+              "receipt_sha256": "d958c9797cc634e4fd8340029cd6675c348a5317fa6cb4456c23f000ae707a08",
+              "receipt_locator": "/payload"
+            },
+            {
+              "role": "09b actual Case32 writer",
+              "session": "codex-session-sha256:22e3d1f81b8f0b8a7481a0484352a7a63755be2cbfa7c0cfe678d2c69998a27d",
+              "activity": "writer",
+              "at": "2026-11-05T08:24:03.006037+00:00",
+              "receipt_sha256": "dc107c93ceae7ce810107f780241c0c88c2cf8ac09b3dff64b56e668aec2ca89",
+              "receipt_locator": "/writer_event"
+            },
+            {
+              "role": "09b actual Case32 composition",
+              "session": "codex-session-sha256:22e3d1f81b8f0b8a7481a0484352a7a63755be2cbfa7c0cfe678d2c69998a27d",
+              "activity": "composition",
+              "at": "2026-11-05T08:24:03.006037+00:00",
+              "receipt_sha256": "dc107c93ceae7ce810107f780241c0c88c2cf8ac09b3dff64b56e668aec2ca89",
+              "receipt_locator": "/composition_event"
+            }
+          ]
+        }
+      }
+    }
+  }
+}
