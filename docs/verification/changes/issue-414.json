@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "issue": 414,
+  "gui_required": false,
+  "reason": "Build入力の拒否診断のみ。4pins・順序・検査義務を維持し、製品runtimeや固定948/a582、GUI/deviceを変更しない。正常・不一致・欠落を隔離fixtureで比較し、CIで実入力の失敗対象を確認する。",
+  "cli_checks": [
+    "python3 scripts/check.py",
+    "python3 scripts/workflow/product_check.py --plugin",
+    "python3 scripts/workflow/change_impact.py --run-tests"
+  ],
+  "cases": []
+}

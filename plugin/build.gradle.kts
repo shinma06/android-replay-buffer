@@ -18,6 +18,14 @@ fun hash(file: java.io.File): String {
     return HexFormat.of().formatHex(digest.digest())
 }
 
+fun verifyCaptureInput(name: String, file: java.io.File, expected: String) {
+    check(file.isFile) { "Capture input $name: missing or not a regular file; expected SHA-256=$expected" }
+    val actual = hash(file)
+    check(actual == expected) {
+        "Capture input $name: SHA-256 mismatch; expected=$expected actual=$actual"
+    }
+}
+
 group = "io.github.shinma06.replaybuffer"
 val sourceCommit = providers.exec { commandLine("git", "rev-parse", "HEAD") }.standardOutput.asText.get().trim()
 val sourceDirty = providers.exec {
@@ -119,11 +127,11 @@ val verifyCaptureInputs = tasks.register("verifyCaptureInputs") {
     inputs.file("src/main/resources/replay/deps/scrcpy-server-v5.0.1")
     doLast {
         val jcodec = runtime.get().files.single { it.name == "jcodec-0.2.5.jar" }
-        check(hash(jcodec) == "890329dad124e8b739c1d6602a59a53c8a474daddff265c2561e21c498496c81")
-        check(hash(clockCompiler.singleFile) == "3502f087388ce95bbf5254555927f09385dc2636873964d0bd53f3eaf4fb49ad")
-        check(hash(clockLibrary.singleFile) == "1db2419dbd45457f83b90ef8a7ef41e118174782c9a5c2185b55899df022767f")
+        verifyCaptureInput("jcodec-0.2.5.jar", jcodec, "890329dad124e8b739c1d6602a59a53c8a474daddff265c2561e21c498496c81")
+        verifyCaptureInput("r8-9.5.26.jar", clockCompiler.singleFile, "3502f087388ce95bbf5254555927f09385dc2636873964d0bd53f3eaf4fb49ad")
+        verifyCaptureInput("android-37.2/android.jar", clockLibrary.singleFile, "1db2419dbd45457f83b90ef8a7ef41e118174782c9a5c2185b55899df022767f")
         val server = file("src/main/resources/replay/deps/scrcpy-server-v5.0.1")
-        check(hash(server) == "764eb6f79811d5211fe9df341120882ba9994c7a61b897d7bf3fb662e53bc536")
+        verifyCaptureInput("scrcpy-server-v5.0.1", server, "764eb6f79811d5211fe9df341120882ba9994c7a61b897d7bf3fb662e53bc536")
     }
 }
 val compileClock = tasks.register<JavaCompile>("compileClock") {
