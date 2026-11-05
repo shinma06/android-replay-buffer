@@ -96,7 +96,9 @@ class ReplaySettingsLayoutTest {
                         assertFalse(autoGuidance.getText().contains("取得OFF→ON"));
                         status.add(autoGuidance);
                         status.add((JBTextArea) find(panel, "動画品質の説明"));
-                        for (int index : new int[]{0, 1, 2, 3, 4, 6, 7}) assertTrue(hasLabelFor(panel, fields.get(index)), "label association for " + index);
+                        for (int index : new int[]{0, 2, 3, 4, 7}) assertTrue(hasLabelFor(panel, fields.get(index)), "label association for " + index);
+                        assertBrowseEditorLabel(panel, (TextFieldWithBrowseButton) fields.get(1), "保存先フォルダ", "保存先フォルダ:");
+                        assertBrowseEditorLabel(panel, (TextFieldWithBrowseButton) fields.get(6), "スクリーンショットの手動保存先", "手動の保存先フォルダ:");
                         panel.setBorder(JBUI.Borders.empty(11, 16, 16, 16));
                         var scroll = ScrollPaneFactory.createScrollPane(null, true);
                         scroll.setViewport(new GradientViewport(panel, JBUI.insetsTop(5), true));
@@ -185,6 +187,8 @@ class ReplaySettingsLayoutTest {
                         assertFalse(screenshot.isEnabled());
                         logcat.doClick();
                         assertTrue(screenshot.isEnabled());
+                        assertTrue(screenshot.getTextField().isEnabled());
+                        assertBrowseEditorLabel(panel, screenshot, "スクリーンショットの手動保存先", "手動の保存先フォルダ:");
                         assertTrue(configurable.isModified());
                         assertTrue(store.settings().getScreenshotUsesLogcatDestination(), "draft must not change effective destination");
                         screenshot.setText("relative-folder");
@@ -210,6 +214,23 @@ class ReplaySettingsLayoutTest {
         } finally {
             Disposer.dispose(root);
         }
+    }
+
+    private static void assertBrowseEditorLabel(Container panel, TextFieldWithBrowseButton field, String name, String labelText) {
+        var editor = field.getTextField();
+        assertTrue(editor.isFocusable());
+        assertTrue(SwingUtilities.isDescendingFrom(editor, panel));
+        assertEquals(name, editor.getAccessibleContext().getAccessibleName());
+        // JLabel.labelFor records the exact labeled component, not merely its ancestor wrapper.
+        assertTrue(hasExactLabelFor(panel, editor, labelText), "label must target the actual editor: " + name);
+    }
+
+    private static boolean hasExactLabelFor(Container parent, JComponent editor, String text) {
+        for (var child : parent.getComponents()) {
+            if (child instanceof javax.swing.JLabel label && label.getLabelFor() == editor && text.equals(label.getText())) return true;
+            if (child instanceof Container container && hasExactLabelFor(container, editor, text)) return true;
+        }
+        return false;
     }
 
     private static int[] paint(JComponent component) {

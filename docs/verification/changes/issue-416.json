@@ -1,0 +1,41 @@
+{
+  "schema": 1,
+  "issue": 416,
+  "gui_required": true,
+  "reason": "2つの実入力欄のaccessibility metadataとlabel接続を修正する。headless実form回帰とは別に、修正版固定候補の小さい実Settings focus/label/既存Help到達を確認する。",
+  "cli_checks": [
+    "実inner editorを直接検査するReplaySettingsLayoutTestとSettings関連検査、clean committed HEADのchange_impact --run-tests。実結果はIssue/PRへ記録する。"
+  ],
+  "cases": [
+    {
+      "id": "SETTINGS-INNER-ACCESSIBILITY",
+      "artifact": "plugin",
+      "change": "動画・ログ保存先とスクリーンショット手動保存先のfocusable inner editorに既存の名前と実labelを関連付ける。",
+      "preconditions": "修正版固定source/ZIP/全JARと実ロードを同定し、既存の所有Settings fixture/共有GUI運用を使う。元948のheadless metadata NGと未観察のnative/人間/REALを保持する。",
+      "steps": [
+        "実ConfigurableをEDTで生成して、2つのwrapper内の実textFieldが意味のある既存accessible nameを持ち、実form JLabel.labelForがそのeditorを直接指すことを検査する。Logcat追従から手動指定へ切り替えた有効状態も同じ検査を行い、入力/Cancelと保存値・有効切替を保つ。",
+        "同じ修正版の実Settingsで、動画・ログ保存先と有効なスクリーンショット手動保存先へ標準keyboardでfocusでき、labelと既存の保存先案内を辿れることを小さい共有観察で確認する。新たな撮影・取得・保存や全theme/AX/screenreader行列は要求しない。"
+      ],
+      "expected": "実操作対象に名前と正しいlabel接続があり、wrapperやbrowse/編集/有効状態/入力検証/Apply/Cancel/寿命を変えない。description nullだけを独立した不具合や新Help文の理由にしない。headless回帰をnative観察へ読み替えない。",
+      "provenance": [
+        "https://github.com/shinma06/android-replay-buffer/issues/416",
+        "https://github.com/shinma06/android-replay-buffer/issues/280#issuecomment-6672432265",
+        "docs/verification/changes/issue-206.json",
+        "docs/verification/changes/issue-104.json",
+        "docs/verification/responsibility.md"
+      ],
+      "gpt": {
+        "status": "pending",
+        "reason": "修正版の実form回帰/固定buildと必要な小さい実Settings観察を別々に確認する。"
+      },
+      "human": {
+        "status": "pending",
+        "reason": "実際の利用感・読みやすさは未観察。既存の人間/REAL条件を保持する。"
+      },
+      "fix_issue": null,
+      "fix_pr": null,
+      "recheck": "Settingsのbrowse wrapper/editor又はform label生成を変更したときに同じ実inner regressionと影響する実Settings接続を確認する。",
+      "next_action": "writerが固定HEAD/base/checksを返し、PMが別sessionの独立評価と必要な修正版Settings観察を既存QA/280へ割当する。main反映は271へ別途移管する。"
+    }
+  ]
+}
