@@ -1,0 +1,1373 @@
+{
+  "schema": 1,
+  "issue": 428,
+  "gui_required": false,
+  "reason": "正式2e/f327の保証別証明を集約する未承認Draft。F1/F2と既存支持差分を反映。原Case/PASS/FAIL/UNKNOWN・artifact/actor/timeは不変。reviewとorigin未成立のため登録/merge不可。",
+  "cli_checks": [
+    "python3 scripts/check.py",
+    "python3 scripts/workflow/change_impact.py --base origin/main --run-tests (clean committed HEAD)",
+    "通常pre-push hookとrequired CI。証明の独立review/origin未成立はAcceptance未完として保持。"
+  ],
+  "cases": [],
+  "evidence_certificates": {
+    "normal-338-948-to-2e-f327": {
+      "schema": 1,
+      "key": "338:SCREENSHOT-DESTINATION",
+      "source_candidate": "948b1ad2f18ee266c79935327a403dd7471fdc3b",
+      "source_artifact_sha256": "a582052844272ad004f3e3429d50b12a7ec6b6783bc686457465a02f20546316",
+      "candidate": "2e576ce3c724dc95ccf0688b8a1bf7cd92d774a8",
+      "artifact_sha256": "f3274d7501f9d173ece5de6b1cb729a7fb40d247cfe2a17c6c937fcc085a2c88",
+      "case_sha256": "f4387c541d9576f9039d09890970aa8cd70e6fdf3864470e6d9f6061d25defc7",
+      "plan_sha256": "0b6d9c6d2d5054ed642565afdbaeb5a88ee198a4ea5398ff96ff36168ce0eda5",
+      "assessment_sha256": "cf2c9c62a3b098a5fa5b580fef9d31f59995bf79df1b69c5a6996ec9b9ab73dd",
+      "observation_sha256": "b0891cb25eb2f86369e832070023d2a8765ef96885d1823f6d78211e6a5a34aa",
+      "original_file_sha256": "bc88f515a03684dc129831e9e6481b5ad7e2afcb4cefdacd9bfbe9ac628342bd",
+      "original_result_sha256": "aabe7ad54113619d1e55406ade28e562ace1b059860c90b67383dd9f30c564be",
+      "original_fact_sha256": {
+        "RETAINED_NORMAL_338_WHOLE_RESULT": "aabe7ad54113619d1e55406ade28e562ace1b059860c90b67383dd9f30c564be"
+      },
+      "original_record_evidence": "Private immutable normal338 projection sha256=bc88f515a03684dc129831e9e6481b5ad7e2afcb4cefdacd9bfbe9ac628342bd; original pending aggregates, ordinary nested assessment and actual limited review remain unchanged. Current independent approval NOT ESTABLISHED.",
+      "history": [
+        {
+          "commit": "0f75cce7cffade20ed23c00101faf3b8d0bf9eb9",
+          "parent": "8fd4f6669137c6fa0a97b0914f8d7e8cde14dc85",
+          "paths": [
+            "docs/verification/changes/issue-422.json",
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/core/ReplayCore.kt",
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ide/ReplayProjectCapture.kt",
+            "plugin/src/test/kotlin/io/github/shinma06/replaybuffer/ide/ReplayProjectCaptureTest.kt"
+          ]
+        },
+        {
+          "commit": "2e576ce3c724dc95ccf0688b8a1bf7cd92d774a8",
+          "parent": "0f75cce7cffade20ed23c00101faf3b8d0bf9eb9",
+          "paths": [
+            "docs/verification/changes/issue-424.json",
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ui/ReplayToolWindowFactory.kt",
+            "plugin/src/test/java/io/github/shinma06/replaybuffer/ui/ReplayToolWindowLayoutTest.java"
+          ]
+        },
+        {
+          "commit": "515ba790dac716b38cbc638c2d1e2f4a39d6ddba",
+          "parent": "c570310fe9e1053203d1c0ac6025d0645a59e5e0",
+          "paths": [
+            "docs/verification/changes/issue-412.json",
+            "plugin/src/test/kotlin/io/github/shinma06/replaybuffer/ide/ReplayProjectCaptureTest.kt"
+          ]
+        },
+        {
+          "commit": "8fd4f6669137c6fa0a97b0914f8d7e8cde14dc85",
+          "parent": "515ba790dac716b38cbc638c2d1e2f4a39d6ddba",
+          "paths": [
+            ".github/workflows/release-candidate.yml",
+            "docs/setup/ci.md",
+            "docs/verification/changes/issue-418.json",
+            "docs/verification/changes/issue-420.json"
+          ]
+        },
+        {
+          "commit": "c570310fe9e1053203d1c0ac6025d0645a59e5e0",
+          "parent": "d7c5859ffad6fac9c1e6e1f6520467680ab1a0be",
+          "paths": [
+            "docs/verification/changes/issue-416.json",
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/settings/ReplaySettingsConfigurable.kt",
+            "plugin/src/test/java/io/github/shinma06/replaybuffer/settings/ReplaySettingsLayoutTest.java"
+          ]
+        },
+        {
+          "commit": "d7c5859ffad6fac9c1e6e1f6520467680ab1a0be",
+          "parent": "948b1ad2f18ee266c79935327a403dd7471fdc3b",
+          "paths": [
+            ".github/workflows/ci.yml",
+            "docs/setup/ci.md",
+            "docs/verification/changes/issue-414.json",
+            "plugin/build.gradle.kts"
+          ]
+        }
+      ],
+      "review": {
+        "status": "pending",
+        "reviewer_session": null,
+        "writer_session": "codex-session-sha256:7b2456c4ac692a16695fa3b6f035ac2149e76f23bd63e479f43f81ca687087e1",
+        "executor_sessions": null,
+        "at": null,
+        "evidence": null
+      },
+      "provenance": {
+        "at": "2026-11-06T13:58:56.017172+00:00",
+        "attribution": {
+          "writer": "codex-session-sha256:7b2456c4ac692a16695fa3b6f035ac2149e76f23bd63e479f43f81ca687087e1",
+          "observer": "codex-session-sha256:7b2456c4ac692a16695fa3b6f035ac2149e76f23bd63e479f43f81ca687087e1",
+          "contributors": null
+        }
+      },
+      "guarantees": {
+        "contract_coverage": {
+          "facts": [
+            "RETAINED_NORMAL_338_WHOLE_RESULT"
+          ],
+          "disposition": "equivalent",
+          "impact": {
+            "source": "Actual full 8fd→2e diff has7paths:3 production,2 tests,2 repair metadata. No other product path or history edge;2 single-parent repair merges. Full source diff retained. 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "callers": "Capture.acceptSnapshot/showMessage → immutable view → Service STATUS.reason at362 and ToolWindow.message at238. Panel listener copies LogcatButton.tooltip to permanent label; LogcatButton own device/target/SDK/manager path does not read Capture.message. 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "callees": "Core save/retry/discard/Writer admission unchanged; const extraction gives identical symbolic ReplayCore opcodes. Capture changed2methods only. Panel constructor actual ToolTipText key only, unchanged refresh/open/close/target supplier/manager/dispose bodies and actual LogcatButton class. 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "dataflow": "Only matching SAVE_IN_PROGRESS_REASON view message cleared when next phase!=WRITING; late busy rejected outsideWRITING. closed/intent/settingsRevision/revision ordering guards remain. Other message/errors/FAILED pin preserved by actual422probe. Store/packet/raw/header/frame/time/request/attempt/path/save_id flows untouched. 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "build": "Same trusted main formalworkflow and pinnedbuild.gradle; exactlyone newformalrun/attempt1 success. Actual formal all193mainclasses byteequal tested3583;187/193 equal422, six differences Panel-related. Old25of27binarychangedclasses match symbolic disassembly. No rebuild/test execution in this composition. 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "configuration": "No settings/schema/validation/default/storage/import path change; Store andConfigurable blobs/classes unchanged. Old native settings/profile/fixture are their actual original values; newprocess values not guessed. 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "dependencies": "No dependency/pin/build change. Actual clock/server/JCodec helper bytes andsearchableOptions equal across formal17a/f327; plugin.xml/version0.2.0 unchanged. READMEfixedsource URL/identity/Kotlinmodule/JARcontainer change retained. 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "fixtures": "fixture sourceは8fd→2eで不変。元native/settings/profile/入力/FILEは元の実条件に固定。今回OFF unitの通常exit/reap/CAS/G12保全/leaseFREEはCURRENT_NATIVE原returnで受領済みであり、未返却扱いに戻さない。 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "runtime": "元nativeのactor/JBR/SDK/source/ZIP/process条件を原本のまま保持。現在f327の3 installed JAR/hash/size/mode・loaded paths/JBR・About0.2.0/full2eはCURRENT_NATIVE直接原本で受領済み。current GUI操作の新実行や全heap/class同定は主張しない。 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。 Actual trusted registration base fb3c417a。追加native fact待ちを既存current load未観測へ戻さない。",
+            "display": "元Settings/PNG/Logcatの表示・可読性・操作事実は元条件で保持。今回影響する常設理由はCURRENT_NATIVEの初期→Close後disabledOpen/理由全文→native再表示を正確AX/画像で受領済み。f327でSettings/Save/keyboardを再実行したとはしない。 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "failure_attribution": "旧stale busy/empty permanent reason FAILとhover UNKNOWN、初回headless POLICY_DENIED/not_delivered、元compile/partial/writerFAILED/physicalFAIL/unknown/REAL/humanを不変保全。修復の実限定結果・formal class binding・current reason fresh事実を区別して接続。Case PASSや実独立承認は未成立。 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。 独立適用report3d48390aのF1/F2を反映し、未支持とされていた416labelForは実JUnit/14classで支持、clipboardは104に帰属。D4copy229byteの条件付き支持と原UNKNOWNを分離。"
+          },
+          "components": {
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/core/ScreenshotSave.kt": {
+              "source_blob": "b9ec9c4d0b26da634ab0df3f46be1b732c7eb5d4",
+              "candidate_blob": "b9ec9c4d0b26da634ab0df3f46be1b732c7eb5d4",
+              "equivalence_evidence": "Original normal338 whole proof + PRIOR_REVISION3/actual_source_and_archive_deltas + IMPACT + SOURCE_DELTA + REPAIR_FORMAL_BINDING. 948→8fdの既存source/class適用と8fd→2eのbusy理由/ToolTipText修正を区別し、保存先・PNG・Settings値・request/取消し/寿命の保持範囲を後続独立reviewで実質評価する。"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ide/ReplayProjectService.kt": {
+              "source_blob": "749df544dff0c87b92b3bccf3da2145940bdc17a",
+              "candidate_blob": "749df544dff0c87b92b3bccf3da2145940bdc17a",
+              "equivalence_evidence": "Original normal338 whole proof + PRIOR_REVISION3/actual_source_and_archive_deltas + IMPACT + SOURCE_DELTA + REPAIR_FORMAL_BINDING. 948→8fdの既存source/class適用と8fd→2eのbusy理由/ToolTipText修正を区別し、保存先・PNG・Settings値・request/取消し/寿命の保持範囲を後続独立reviewで実質評価する。"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ide/ReplayProjectCapture.kt": {
+              "source_blob": "e8b44c0ce95c13a47105e971de8c656432057677",
+              "candidate_blob": "0f7fbf1f26e2c3a763556859894bfa87c2ef0252",
+              "equivalence_evidence": "Original normal338 whole proof + PRIOR_REVISION3/actual_source_and_archive_deltas + IMPACT + SOURCE_DELTA + REPAIR_FORMAL_BINDING. 948→8fdの既存source/class適用と8fd→2eのbusy理由/ToolTipText修正を区別し、保存先・PNG・Settings値・request/取消し/寿命の保持範囲を後続独立reviewで実質評価する。"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/settings/ReplaySettingsStore.kt": {
+              "source_blob": "64eec1d2670a0cf6d6a94de4206ce789999ad1dc",
+              "candidate_blob": "64eec1d2670a0cf6d6a94de4206ce789999ad1dc",
+              "equivalence_evidence": "Original normal338 whole proof + PRIOR_REVISION3/actual_source_and_archive_deltas + IMPACT + SOURCE_DELTA + REPAIR_FORMAL_BINDING. 948→8fdの既存source/class適用と8fd→2eのbusy理由/ToolTipText修正を区別し、保存先・PNG・Settings値・request/取消し/寿命の保持範囲を後続独立reviewで実質評価する。"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/settings/ReplaySettingsConfigurable.kt": {
+              "source_blob": "7a668e4512bf79d4dfedc922fe4d8b718921d400",
+              "candidate_blob": "75e47c484d6491c8e1f45cd36cf8128c9551e15d",
+              "equivalence_evidence": "Original normal338 whole proof + PRIOR_REVISION3/actual_source_and_archive_deltas + IMPACT + SOURCE_DELTA + REPAIR_FORMAL_BINDING. 948→8fdの既存source/class適用と8fd→2eのbusy理由/ToolTipText修正を区別し、保存先・PNG・Settings値・request/取消し/寿命の保持範囲を後続独立reviewで実質評価する。"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/core/ReplayCore.kt": {
+              "source_blob": "613e3b0ee1ff92d1be68d98a08fb2aee961e43f1",
+              "candidate_blob": "32053ef79050a9b224f542c6a658f88106d6ba9f",
+              "equivalence_evidence": "Original normal338 whole proof + PRIOR_REVISION3/actual_source_and_archive_deltas + IMPACT + SOURCE_DELTA + REPAIR_FORMAL_BINDING. 948→8fdの既存source/class適用と8fd→2eのbusy理由/ToolTipText修正を区別し、保存先・PNG・Settings値・request/取消し/寿命の保持範囲を後続独立reviewで実質評価する。"
+            }
+          }
+        },
+        "artifact_binding": {
+          "facts": [
+            "CURRENT_F327_LOAD"
+          ],
+          "disposition": "fresh",
+          "impact": {
+            "source": "Actual full 8fd→2e diff has7paths:3 production,2 tests,2 repair metadata. No other product path or history edge;2 single-parent repair merges. Full source diff retained. この保証は現在f327の実placement/load/About辺だけに限定する。",
+            "callers": "Capture.acceptSnapshot/showMessage → immutable view → Service STATUS.reason at362 and ToolWindow.message at238. Panel listener copies LogcatButton.tooltip to permanent label; LogcatButton own device/target/SDK/manager path does not read Capture.message. この保証は現在f327の実placement/load/About辺だけに限定する。",
+            "callees": "Core save/retry/discard/Writer admission unchanged; const extraction gives identical symbolic ReplayCore opcodes. Capture changed2methods only. Panel constructor actual ToolTipText key only, unchanged refresh/open/close/target supplier/manager/dispose bodies and actual LogcatButton class. この保証は現在f327の実placement/load/About辺だけに限定する。",
+            "dataflow": "Only matching SAVE_IN_PROGRESS_REASON view message cleared when next phase!=WRITING; late busy rejected outsideWRITING. closed/intent/settingsRevision/revision ordering guards remain. Other message/errors/FAILED pin preserved by actual422probe. Store/packet/raw/header/frame/time/request/attempt/path/save_id flows untouched. この保証は現在f327の実placement/load/About辺だけに限定する。",
+            "build": "Same trusted main formalworkflow and pinnedbuild.gradle; exactlyone newformalrun/attempt1 success. Actual formal all193mainclasses byteequal tested3583;187/193 equal422, six differences Panel-related. Old25of27binarychangedclasses match symbolic disassembly. No rebuild/test execution in this composition. この保証は現在f327の実placement/load/About辺だけに限定する。",
+            "configuration": "No settings/schema/validation/default/storage/import path change; Store andConfigurable blobs/classes unchanged. Old native settings/profile/fixture are their actual original values; newprocess values not guessed. この保証は現在f327の実placement/load/About辺だけに限定する。",
+            "dependencies": "No dependency/pin/build change. Actual clock/server/JCodec helper bytes andsearchableOptions equal across formal17a/f327; plugin.xml/version0.2.0 unchanged. READMEfixedsource URL/identity/Kotlinmodule/JARcontainer change retained. この保証は現在f327の実placement/load/About辺だけに限定する。",
+            "fixtures": "fixture sourceは8fd→2eで不変。元native/settings/profile/入力/FILEは元の実条件に固定。今回OFF unitの通常exit/reap/CAS/G12保全/leaseFREEはCURRENT_NATIVE原returnで受領済みであり、未返却扱いに戻さない。 この保証は現在f327の実placement/load/About辺だけに限定する。",
+            "runtime": "元nativeのactor/JBR/SDK/source/ZIP/process条件を原本のまま保持。現在f327の3 installed JAR/hash/size/mode・loaded paths/JBR・About0.2.0/full2eはCURRENT_NATIVE直接原本で受領済み。current GUI操作の新実行や全heap/class同定は主張しない。 この保証は現在f327の実placement/load/About辺だけに限定する。 Actual trusted registration base fb3c417a。追加native fact待ちを既存current load未観測へ戻さない。",
+            "display": "元Settings/PNG/Logcatの表示・可読性・操作事実は元条件で保持。今回影響する常設理由はCURRENT_NATIVEの初期→Close後disabledOpen/理由全文→native再表示を正確AX/画像で受領済み。f327でSettings/Save/keyboardを再実行したとはしない。 この保証は現在f327の実placement/load/About辺だけに限定する。",
+            "failure_attribution": "旧stale busy/empty permanent reason FAILとhover UNKNOWN、初回headless POLICY_DENIED/not_delivered、元compile/partial/writerFAILED/physicalFAIL/unknown/REAL/humanを不変保全。修復の実限定結果・formal class binding・current reason fresh事実を区別して接続。Case PASSや実独立承認は未成立。 この保証は現在f327の実placement/load/About辺だけに限定する。 独立適用report3d48390aのF1/F2を反映し、未支持とされていた416labelForは実JUnit/14classで支持、clipboardは104に帰属。D4copy229byteの条件付き支持と原UNKNOWNを分離。"
+          }
+        },
+        "failure_attribution": {
+          "facts": [
+            "RETAINED_NORMAL_338_WHOLE_RESULT"
+          ],
+          "disposition": "equivalent",
+          "impact": {
+            "source": "Actual full 8fd→2e diff has7paths:3 production,2 tests,2 repair metadata. No other product path or history edge;2 single-parent repair merges. Full source diff retained. 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "callers": "Capture.acceptSnapshot/showMessage → immutable view → Service STATUS.reason at362 and ToolWindow.message at238. Panel listener copies LogcatButton.tooltip to permanent label; LogcatButton own device/target/SDK/manager path does not read Capture.message. 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "callees": "Core save/retry/discard/Writer admission unchanged; const extraction gives identical symbolic ReplayCore opcodes. Capture changed2methods only. Panel constructor actual ToolTipText key only, unchanged refresh/open/close/target supplier/manager/dispose bodies and actual LogcatButton class. 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "dataflow": "Only matching SAVE_IN_PROGRESS_REASON view message cleared when next phase!=WRITING; late busy rejected outsideWRITING. closed/intent/settingsRevision/revision ordering guards remain. Other message/errors/FAILED pin preserved by actual422probe. Store/packet/raw/header/frame/time/request/attempt/path/save_id flows untouched. 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "build": "Same trusted main formalworkflow and pinnedbuild.gradle; exactlyone newformalrun/attempt1 success. Actual formal all193mainclasses byteequal tested3583;187/193 equal422, six differences Panel-related. Old25of27binarychangedclasses match symbolic disassembly. No rebuild/test execution in this composition. 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "configuration": "No settings/schema/validation/default/storage/import path change; Store andConfigurable blobs/classes unchanged. Old native settings/profile/fixture are their actual original values; newprocess values not guessed. 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "dependencies": "No dependency/pin/build change. Actual clock/server/JCodec helper bytes andsearchableOptions equal across formal17a/f327; plugin.xml/version0.2.0 unchanged. READMEfixedsource URL/identity/Kotlinmodule/JARcontainer change retained. 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "fixtures": "fixture sourceは8fd→2eで不変。元native/settings/profile/入力/FILEは元の実条件に固定。今回OFF unitの通常exit/reap/CAS/G12保全/leaseFREEはCURRENT_NATIVE原returnで受領済みであり、未返却扱いに戻さない。 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "runtime": "元nativeのactor/JBR/SDK/source/ZIP/process条件を原本のまま保持。現在f327の3 installed JAR/hash/size/mode・loaded paths/JBR・About0.2.0/full2eはCURRENT_NATIVE直接原本で受領済み。current GUI操作の新実行や全heap/class同定は主張しない。 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。 Actual trusted registration base fb3c417a。追加native fact待ちを既存current load未観測へ戻さない。",
+            "display": "元Settings/PNG/Logcatの表示・可読性・操作事実は元条件で保持。今回影響する常設理由はCURRENT_NATIVEの初期→Close後disabledOpen/理由全文→native再表示を正確AX/画像で受領済み。f327でSettings/Save/keyboardを再実行したとはしない。 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "failure_attribution": "旧stale busy/empty permanent reason FAILとhover UNKNOWN、初回headless POLICY_DENIED/not_delivered、元compile/partial/writerFAILED/physicalFAIL/unknown/REAL/humanを不変保全。修復の実限定結果・formal class binding・current reason fresh事実を区別して接続。Case PASSや実独立承認は未成立。 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。 独立適用report3d48390aのF1/F2を反映し、未支持とされていた416labelForは実JUnit/14classで支持、clipboardは104に帰属。D4copy229byteの条件付き支持と原UNKNOWNを分離。"
+          },
+          "components": {
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/core/ScreenshotSave.kt": {
+              "source_blob": "b9ec9c4d0b26da634ab0df3f46be1b732c7eb5d4",
+              "candidate_blob": "b9ec9c4d0b26da634ab0df3f46be1b732c7eb5d4",
+              "equivalence_evidence": "Original normal338 whole proof + PRIOR_REVISION3/actual_source_and_archive_deltas + IMPACT + SOURCE_DELTA + REPAIR_FORMAL_BINDING. 948→8fdの既存source/class適用と8fd→2eのbusy理由/ToolTipText修正を区別し、保存先・PNG・Settings値・request/取消し/寿命の保持範囲を後続独立reviewで実質評価する。"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ide/ReplayProjectService.kt": {
+              "source_blob": "749df544dff0c87b92b3bccf3da2145940bdc17a",
+              "candidate_blob": "749df544dff0c87b92b3bccf3da2145940bdc17a",
+              "equivalence_evidence": "Original normal338 whole proof + PRIOR_REVISION3/actual_source_and_archive_deltas + IMPACT + SOURCE_DELTA + REPAIR_FORMAL_BINDING. 948→8fdの既存source/class適用と8fd→2eのbusy理由/ToolTipText修正を区別し、保存先・PNG・Settings値・request/取消し/寿命の保持範囲を後続独立reviewで実質評価する。"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ide/ReplayProjectCapture.kt": {
+              "source_blob": "e8b44c0ce95c13a47105e971de8c656432057677",
+              "candidate_blob": "0f7fbf1f26e2c3a763556859894bfa87c2ef0252",
+              "equivalence_evidence": "Original normal338 whole proof + PRIOR_REVISION3/actual_source_and_archive_deltas + IMPACT + SOURCE_DELTA + REPAIR_FORMAL_BINDING. 948→8fdの既存source/class適用と8fd→2eのbusy理由/ToolTipText修正を区別し、保存先・PNG・Settings値・request/取消し/寿命の保持範囲を後続独立reviewで実質評価する。"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/settings/ReplaySettingsStore.kt": {
+              "source_blob": "64eec1d2670a0cf6d6a94de4206ce789999ad1dc",
+              "candidate_blob": "64eec1d2670a0cf6d6a94de4206ce789999ad1dc",
+              "equivalence_evidence": "Original normal338 whole proof + PRIOR_REVISION3/actual_source_and_archive_deltas + IMPACT + SOURCE_DELTA + REPAIR_FORMAL_BINDING. 948→8fdの既存source/class適用と8fd→2eのbusy理由/ToolTipText修正を区別し、保存先・PNG・Settings値・request/取消し/寿命の保持範囲を後続独立reviewで実質評価する。"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/settings/ReplaySettingsConfigurable.kt": {
+              "source_blob": "7a668e4512bf79d4dfedc922fe4d8b718921d400",
+              "candidate_blob": "75e47c484d6491c8e1f45cd36cf8128c9551e15d",
+              "equivalence_evidence": "Original normal338 whole proof + PRIOR_REVISION3/actual_source_and_archive_deltas + IMPACT + SOURCE_DELTA + REPAIR_FORMAL_BINDING. 948→8fdの既存source/class適用と8fd→2eのbusy理由/ToolTipText修正を区別し、保存先・PNG・Settings値・request/取消し/寿命の保持範囲を後続独立reviewで実質評価する。"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/core/ReplayCore.kt": {
+              "source_blob": "613e3b0ee1ff92d1be68d98a08fb2aee961e43f1",
+              "candidate_blob": "32053ef79050a9b224f542c6a658f88106d6ba9f",
+              "equivalence_evidence": "Original normal338 whole proof + PRIOR_REVISION3/actual_source_and_archive_deltas + IMPACT + SOURCE_DELTA + REPAIR_FORMAL_BINDING. 948→8fdの既存source/class適用と8fd→2eのbusy理由/ToolTipText修正を区別し、保存先・PNG・Settings値・request/取消し/寿命の保持範囲を後続独立reviewで実質評価する。"
+            }
+          }
+        },
+        "preconditions": {
+          "facts": [
+            "RETAINED_NORMAL_338_WHOLE_RESULT"
+          ],
+          "disposition": "equivalent",
+          "impact": {
+            "source": "Actual full 8fd→2e diff has7paths:3 production,2 tests,2 repair metadata. No other product path or history edge;2 single-parent repair merges. Full source diff retained. 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "callers": "Capture.acceptSnapshot/showMessage → immutable view → Service STATUS.reason at362 and ToolWindow.message at238. Panel listener copies LogcatButton.tooltip to permanent label; LogcatButton own device/target/SDK/manager path does not read Capture.message. 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "callees": "Core save/retry/discard/Writer admission unchanged; const extraction gives identical symbolic ReplayCore opcodes. Capture changed2methods only. Panel constructor actual ToolTipText key only, unchanged refresh/open/close/target supplier/manager/dispose bodies and actual LogcatButton class. 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "dataflow": "Only matching SAVE_IN_PROGRESS_REASON view message cleared when next phase!=WRITING; late busy rejected outsideWRITING. closed/intent/settingsRevision/revision ordering guards remain. Other message/errors/FAILED pin preserved by actual422probe. Store/packet/raw/header/frame/time/request/attempt/path/save_id flows untouched. 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "build": "Same trusted main formalworkflow and pinnedbuild.gradle; exactlyone newformalrun/attempt1 success. Actual formal all193mainclasses byteequal tested3583;187/193 equal422, six differences Panel-related. Old25of27binarychangedclasses match symbolic disassembly. No rebuild/test execution in this composition. 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "configuration": "No settings/schema/validation/default/storage/import path change; Store andConfigurable blobs/classes unchanged. Old native settings/profile/fixture are their actual original values; newprocess values not guessed. 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "dependencies": "No dependency/pin/build change. Actual clock/server/JCodec helper bytes andsearchableOptions equal across formal17a/f327; plugin.xml/version0.2.0 unchanged. READMEfixedsource URL/identity/Kotlinmodule/JARcontainer change retained. 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "fixtures": "fixture sourceは8fd→2eで不変。元native/settings/profile/入力/FILEは元の実条件に固定。今回OFF unitの通常exit/reap/CAS/G12保全/leaseFREEはCURRENT_NATIVE原returnで受領済みであり、未返却扱いに戻さない。 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "runtime": "元nativeのactor/JBR/SDK/source/ZIP/process条件を原本のまま保持。現在f327の3 installed JAR/hash/size/mode・loaded paths/JBR・About0.2.0/full2eはCURRENT_NATIVE直接原本で受領済み。current GUI操作の新実行や全heap/class同定は主張しない。 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。 Actual trusted registration base fb3c417a。追加native fact待ちを既存current load未観測へ戻さない。",
+            "display": "元Settings/PNG/Logcatの表示・可読性・操作事実は元条件で保持。今回影響する常設理由はCURRENT_NATIVEの初期→Close後disabledOpen/理由全文→native再表示を正確AX/画像で受領済み。f327でSettings/Save/keyboardを再実行したとはしない。 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "failure_attribution": "旧stale busy/empty permanent reason FAILとhover UNKNOWN、初回headless POLICY_DENIED/not_delivered、元compile/partial/writerFAILED/physicalFAIL/unknown/REAL/humanを不変保全。修復の実限定結果・formal class binding・current reason fresh事実を区別して接続。Case PASSや実独立承認は未成立。 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。 独立適用report3d48390aのF1/F2を反映し、未支持とされていた416labelForは実JUnit/14classで支持、clipboardは104に帰属。D4copy229byteの条件付き支持と原UNKNOWNを分離。"
+          },
+          "components": {
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/core/ScreenshotSave.kt": {
+              "source_blob": "b9ec9c4d0b26da634ab0df3f46be1b732c7eb5d4",
+              "candidate_blob": "b9ec9c4d0b26da634ab0df3f46be1b732c7eb5d4",
+              "equivalence_evidence": "Original normal338 whole proof + PRIOR_REVISION3/actual_source_and_archive_deltas + IMPACT + SOURCE_DELTA + REPAIR_FORMAL_BINDING. 948→8fdの既存source/class適用と8fd→2eのbusy理由/ToolTipText修正を区別し、保存先・PNG・Settings値・request/取消し/寿命の保持範囲を後続独立reviewで実質評価する。"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ide/ReplayProjectService.kt": {
+              "source_blob": "749df544dff0c87b92b3bccf3da2145940bdc17a",
+              "candidate_blob": "749df544dff0c87b92b3bccf3da2145940bdc17a",
+              "equivalence_evidence": "Original normal338 whole proof + PRIOR_REVISION3/actual_source_and_archive_deltas + IMPACT + SOURCE_DELTA + REPAIR_FORMAL_BINDING. 948→8fdの既存source/class適用と8fd→2eのbusy理由/ToolTipText修正を区別し、保存先・PNG・Settings値・request/取消し/寿命の保持範囲を後続独立reviewで実質評価する。"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ide/ReplayProjectCapture.kt": {
+              "source_blob": "e8b44c0ce95c13a47105e971de8c656432057677",
+              "candidate_blob": "0f7fbf1f26e2c3a763556859894bfa87c2ef0252",
+              "equivalence_evidence": "Original normal338 whole proof + PRIOR_REVISION3/actual_source_and_archive_deltas + IMPACT + SOURCE_DELTA + REPAIR_FORMAL_BINDING. 948→8fdの既存source/class適用と8fd→2eのbusy理由/ToolTipText修正を区別し、保存先・PNG・Settings値・request/取消し/寿命の保持範囲を後続独立reviewで実質評価する。"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/settings/ReplaySettingsStore.kt": {
+              "source_blob": "64eec1d2670a0cf6d6a94de4206ce789999ad1dc",
+              "candidate_blob": "64eec1d2670a0cf6d6a94de4206ce789999ad1dc",
+              "equivalence_evidence": "Original normal338 whole proof + PRIOR_REVISION3/actual_source_and_archive_deltas + IMPACT + SOURCE_DELTA + REPAIR_FORMAL_BINDING. 948→8fdの既存source/class適用と8fd→2eのbusy理由/ToolTipText修正を区別し、保存先・PNG・Settings値・request/取消し/寿命の保持範囲を後続独立reviewで実質評価する。"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/settings/ReplaySettingsConfigurable.kt": {
+              "source_blob": "7a668e4512bf79d4dfedc922fe4d8b718921d400",
+              "candidate_blob": "75e47c484d6491c8e1f45cd36cf8128c9551e15d",
+              "equivalence_evidence": "Original normal338 whole proof + PRIOR_REVISION3/actual_source_and_archive_deltas + IMPACT + SOURCE_DELTA + REPAIR_FORMAL_BINDING. 948→8fdの既存source/class適用と8fd→2eのbusy理由/ToolTipText修正を区別し、保存先・PNG・Settings値・request/取消し/寿命の保持範囲を後続独立reviewで実質評価する。"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/core/ReplayCore.kt": {
+              "source_blob": "613e3b0ee1ff92d1be68d98a08fb2aee961e43f1",
+              "candidate_blob": "32053ef79050a9b224f542c6a658f88106d6ba9f",
+              "equivalence_evidence": "Original normal338 whole proof + PRIOR_REVISION3/actual_source_and_archive_deltas + IMPACT + SOURCE_DELTA + REPAIR_FORMAL_BINDING. 948→8fdの既存source/class適用と8fd→2eのbusy理由/ToolTipText修正を区別し、保存先・PNG・Settings値・request/取消し/寿命の保持範囲を後続独立reviewで実質評価する。"
+            }
+          }
+        },
+        "step_1": {
+          "facts": [
+            "RETAINED_NORMAL_338_WHOLE_RESULT"
+          ],
+          "disposition": "equivalent",
+          "impact": {
+            "source": "Actual full 8fd→2e diff has7paths:3 production,2 tests,2 repair metadata. No other product path or history edge;2 single-parent repair merges. Full source diff retained. 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "callers": "Capture.acceptSnapshot/showMessage → immutable view → Service STATUS.reason at362 and ToolWindow.message at238. Panel listener copies LogcatButton.tooltip to permanent label; LogcatButton own device/target/SDK/manager path does not read Capture.message. 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "callees": "Core save/retry/discard/Writer admission unchanged; const extraction gives identical symbolic ReplayCore opcodes. Capture changed2methods only. Panel constructor actual ToolTipText key only, unchanged refresh/open/close/target supplier/manager/dispose bodies and actual LogcatButton class. 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "dataflow": "Only matching SAVE_IN_PROGRESS_REASON view message cleared when next phase!=WRITING; late busy rejected outsideWRITING. closed/intent/settingsRevision/revision ordering guards remain. Other message/errors/FAILED pin preserved by actual422probe. Store/packet/raw/header/frame/time/request/attempt/path/save_id flows untouched. 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "build": "Same trusted main formalworkflow and pinnedbuild.gradle; exactlyone newformalrun/attempt1 success. Actual formal all193mainclasses byteequal tested3583;187/193 equal422, six differences Panel-related. Old25of27binarychangedclasses match symbolic disassembly. No rebuild/test execution in this composition. 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "configuration": "No settings/schema/validation/default/storage/import path change; Store andConfigurable blobs/classes unchanged. Old native settings/profile/fixture are their actual original values; newprocess values not guessed. 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "dependencies": "No dependency/pin/build change. Actual clock/server/JCodec helper bytes andsearchableOptions equal across formal17a/f327; plugin.xml/version0.2.0 unchanged. READMEfixedsource URL/identity/Kotlinmodule/JARcontainer change retained. 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "fixtures": "fixture sourceは8fd→2eで不変。元native/settings/profile/入力/FILEは元の実条件に固定。今回OFF unitの通常exit/reap/CAS/G12保全/leaseFREEはCURRENT_NATIVE原returnで受領済みであり、未返却扱いに戻さない。 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "runtime": "元nativeのactor/JBR/SDK/source/ZIP/process条件を原本のまま保持。現在f327の3 installed JAR/hash/size/mode・loaded paths/JBR・About0.2.0/full2eはCURRENT_NATIVE直接原本で受領済み。current GUI操作の新実行や全heap/class同定は主張しない。 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。 Actual trusted registration base fb3c417a。追加native fact待ちを既存current load未観測へ戻さない。",
+            "display": "元Settings/PNG/Logcatの表示・可読性・操作事実は元条件で保持。今回影響する常設理由はCURRENT_NATIVEの初期→Close後disabledOpen/理由全文→native再表示を正確AX/画像で受領済み。f327でSettings/Save/keyboardを再実行したとはしない。 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "failure_attribution": "旧stale busy/empty permanent reason FAILとhover UNKNOWN、初回headless POLICY_DENIED/not_delivered、元compile/partial/writerFAILED/physicalFAIL/unknown/REAL/humanを不変保全。修復の実限定結果・formal class binding・current reason fresh事実を区別して接続。Case PASSや実独立承認は未成立。 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。 独立適用report3d48390aのF1/F2を反映し、未支持とされていた416labelForは実JUnit/14classで支持、clipboardは104に帰属。D4copy229byteの条件付き支持と原UNKNOWNを分離。"
+          },
+          "components": {
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/core/ScreenshotSave.kt": {
+              "source_blob": "b9ec9c4d0b26da634ab0df3f46be1b732c7eb5d4",
+              "candidate_blob": "b9ec9c4d0b26da634ab0df3f46be1b732c7eb5d4",
+              "equivalence_evidence": "Original normal338 whole proof + PRIOR_REVISION3/actual_source_and_archive_deltas + IMPACT + SOURCE_DELTA + REPAIR_FORMAL_BINDING. 948→8fdの既存source/class適用と8fd→2eのbusy理由/ToolTipText修正を区別し、保存先・PNG・Settings値・request/取消し/寿命の保持範囲を後続独立reviewで実質評価する。"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ide/ReplayProjectService.kt": {
+              "source_blob": "749df544dff0c87b92b3bccf3da2145940bdc17a",
+              "candidate_blob": "749df544dff0c87b92b3bccf3da2145940bdc17a",
+              "equivalence_evidence": "Original normal338 whole proof + PRIOR_REVISION3/actual_source_and_archive_deltas + IMPACT + SOURCE_DELTA + REPAIR_FORMAL_BINDING. 948→8fdの既存source/class適用と8fd→2eのbusy理由/ToolTipText修正を区別し、保存先・PNG・Settings値・request/取消し/寿命の保持範囲を後続独立reviewで実質評価する。"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ide/ReplayProjectCapture.kt": {
+              "source_blob": "e8b44c0ce95c13a47105e971de8c656432057677",
+              "candidate_blob": "0f7fbf1f26e2c3a763556859894bfa87c2ef0252",
+              "equivalence_evidence": "Original normal338 whole proof + PRIOR_REVISION3/actual_source_and_archive_deltas + IMPACT + SOURCE_DELTA + REPAIR_FORMAL_BINDING. 948→8fdの既存source/class適用と8fd→2eのbusy理由/ToolTipText修正を区別し、保存先・PNG・Settings値・request/取消し/寿命の保持範囲を後続独立reviewで実質評価する。"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/settings/ReplaySettingsStore.kt": {
+              "source_blob": "64eec1d2670a0cf6d6a94de4206ce789999ad1dc",
+              "candidate_blob": "64eec1d2670a0cf6d6a94de4206ce789999ad1dc",
+              "equivalence_evidence": "Original normal338 whole proof + PRIOR_REVISION3/actual_source_and_archive_deltas + IMPACT + SOURCE_DELTA + REPAIR_FORMAL_BINDING. 948→8fdの既存source/class適用と8fd→2eのbusy理由/ToolTipText修正を区別し、保存先・PNG・Settings値・request/取消し/寿命の保持範囲を後続独立reviewで実質評価する。"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/settings/ReplaySettingsConfigurable.kt": {
+              "source_blob": "7a668e4512bf79d4dfedc922fe4d8b718921d400",
+              "candidate_blob": "75e47c484d6491c8e1f45cd36cf8128c9551e15d",
+              "equivalence_evidence": "Original normal338 whole proof + PRIOR_REVISION3/actual_source_and_archive_deltas + IMPACT + SOURCE_DELTA + REPAIR_FORMAL_BINDING. 948→8fdの既存source/class適用と8fd→2eのbusy理由/ToolTipText修正を区別し、保存先・PNG・Settings値・request/取消し/寿命の保持範囲を後続独立reviewで実質評価する。"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/core/ReplayCore.kt": {
+              "source_blob": "613e3b0ee1ff92d1be68d98a08fb2aee961e43f1",
+              "candidate_blob": "32053ef79050a9b224f542c6a658f88106d6ba9f",
+              "equivalence_evidence": "Original normal338 whole proof + PRIOR_REVISION3/actual_source_and_archive_deltas + IMPACT + SOURCE_DELTA + REPAIR_FORMAL_BINDING. 948→8fdの既存source/class適用と8fd→2eのbusy理由/ToolTipText修正を区別し、保存先・PNG・Settings値・request/取消し/寿命の保持範囲を後続独立reviewで実質評価する。"
+            }
+          }
+        },
+        "step_2": {
+          "facts": [
+            "RETAINED_NORMAL_338_WHOLE_RESULT"
+          ],
+          "disposition": "equivalent",
+          "impact": {
+            "source": "Actual full 8fd→2e diff has7paths:3 production,2 tests,2 repair metadata. No other product path or history edge;2 single-parent repair merges. Full source diff retained. 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "callers": "Capture.acceptSnapshot/showMessage → immutable view → Service STATUS.reason at362 and ToolWindow.message at238. Panel listener copies LogcatButton.tooltip to permanent label; LogcatButton own device/target/SDK/manager path does not read Capture.message. 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "callees": "Core save/retry/discard/Writer admission unchanged; const extraction gives identical symbolic ReplayCore opcodes. Capture changed2methods only. Panel constructor actual ToolTipText key only, unchanged refresh/open/close/target supplier/manager/dispose bodies and actual LogcatButton class. 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "dataflow": "Only matching SAVE_IN_PROGRESS_REASON view message cleared when next phase!=WRITING; late busy rejected outsideWRITING. closed/intent/settingsRevision/revision ordering guards remain. Other message/errors/FAILED pin preserved by actual422probe. Store/packet/raw/header/frame/time/request/attempt/path/save_id flows untouched. 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "build": "Same trusted main formalworkflow and pinnedbuild.gradle; exactlyone newformalrun/attempt1 success. Actual formal all193mainclasses byteequal tested3583;187/193 equal422, six differences Panel-related. Old25of27binarychangedclasses match symbolic disassembly. No rebuild/test execution in this composition. 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "configuration": "No settings/schema/validation/default/storage/import path change; Store andConfigurable blobs/classes unchanged. Old native settings/profile/fixture are their actual original values; newprocess values not guessed. 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "dependencies": "No dependency/pin/build change. Actual clock/server/JCodec helper bytes andsearchableOptions equal across formal17a/f327; plugin.xml/version0.2.0 unchanged. READMEfixedsource URL/identity/Kotlinmodule/JARcontainer change retained. 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "fixtures": "fixture sourceは8fd→2eで不変。元native/settings/profile/入力/FILEは元の実条件に固定。今回OFF unitの通常exit/reap/CAS/G12保全/leaseFREEはCURRENT_NATIVE原returnで受領済みであり、未返却扱いに戻さない。 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "runtime": "元nativeのactor/JBR/SDK/source/ZIP/process条件を原本のまま保持。現在f327の3 installed JAR/hash/size/mode・loaded paths/JBR・About0.2.0/full2eはCURRENT_NATIVE直接原本で受領済み。current GUI操作の新実行や全heap/class同定は主張しない。 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。 Actual trusted registration base fb3c417a。追加native fact待ちを既存current load未観測へ戻さない。",
+            "display": "元Settings/PNG/Logcatの表示・可読性・操作事実は元条件で保持。今回影響する常設理由はCURRENT_NATIVEの初期→Close後disabledOpen/理由全文→native再表示を正確AX/画像で受領済み。f327でSettings/Save/keyboardを再実行したとはしない。 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "failure_attribution": "旧stale busy/empty permanent reason FAILとhover UNKNOWN、初回headless POLICY_DENIED/not_delivered、元compile/partial/writerFAILED/physicalFAIL/unknown/REAL/humanを不変保全。修復の実限定結果・formal class binding・current reason fresh事実を区別して接続。Case PASSや実独立承認は未成立。 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。 独立適用report3d48390aのF1/F2を反映し、未支持とされていた416labelForは実JUnit/14classで支持、clipboardは104に帰属。D4copy229byteの条件付き支持と原UNKNOWNを分離。"
+          },
+          "components": {
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/core/ScreenshotSave.kt": {
+              "source_blob": "b9ec9c4d0b26da634ab0df3f46be1b732c7eb5d4",
+              "candidate_blob": "b9ec9c4d0b26da634ab0df3f46be1b732c7eb5d4",
+              "equivalence_evidence": "Original normal338 whole proof + PRIOR_REVISION3/actual_source_and_archive_deltas + IMPACT + SOURCE_DELTA + REPAIR_FORMAL_BINDING. 948→8fdの既存source/class適用と8fd→2eのbusy理由/ToolTipText修正を区別し、保存先・PNG・Settings値・request/取消し/寿命の保持範囲を後続独立reviewで実質評価する。"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ide/ReplayProjectService.kt": {
+              "source_blob": "749df544dff0c87b92b3bccf3da2145940bdc17a",
+              "candidate_blob": "749df544dff0c87b92b3bccf3da2145940bdc17a",
+              "equivalence_evidence": "Original normal338 whole proof + PRIOR_REVISION3/actual_source_and_archive_deltas + IMPACT + SOURCE_DELTA + REPAIR_FORMAL_BINDING. 948→8fdの既存source/class適用と8fd→2eのbusy理由/ToolTipText修正を区別し、保存先・PNG・Settings値・request/取消し/寿命の保持範囲を後続独立reviewで実質評価する。"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ide/ReplayProjectCapture.kt": {
+              "source_blob": "e8b44c0ce95c13a47105e971de8c656432057677",
+              "candidate_blob": "0f7fbf1f26e2c3a763556859894bfa87c2ef0252",
+              "equivalence_evidence": "Original normal338 whole proof + PRIOR_REVISION3/actual_source_and_archive_deltas + IMPACT + SOURCE_DELTA + REPAIR_FORMAL_BINDING. 948→8fdの既存source/class適用と8fd→2eのbusy理由/ToolTipText修正を区別し、保存先・PNG・Settings値・request/取消し/寿命の保持範囲を後続独立reviewで実質評価する。"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/settings/ReplaySettingsStore.kt": {
+              "source_blob": "64eec1d2670a0cf6d6a94de4206ce789999ad1dc",
+              "candidate_blob": "64eec1d2670a0cf6d6a94de4206ce789999ad1dc",
+              "equivalence_evidence": "Original normal338 whole proof + PRIOR_REVISION3/actual_source_and_archive_deltas + IMPACT + SOURCE_DELTA + REPAIR_FORMAL_BINDING. 948→8fdの既存source/class適用と8fd→2eのbusy理由/ToolTipText修正を区別し、保存先・PNG・Settings値・request/取消し/寿命の保持範囲を後続独立reviewで実質評価する。"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/settings/ReplaySettingsConfigurable.kt": {
+              "source_blob": "7a668e4512bf79d4dfedc922fe4d8b718921d400",
+              "candidate_blob": "75e47c484d6491c8e1f45cd36cf8128c9551e15d",
+              "equivalence_evidence": "Original normal338 whole proof + PRIOR_REVISION3/actual_source_and_archive_deltas + IMPACT + SOURCE_DELTA + REPAIR_FORMAL_BINDING. 948→8fdの既存source/class適用と8fd→2eのbusy理由/ToolTipText修正を区別し、保存先・PNG・Settings値・request/取消し/寿命の保持範囲を後続独立reviewで実質評価する。"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/core/ReplayCore.kt": {
+              "source_blob": "613e3b0ee1ff92d1be68d98a08fb2aee961e43f1",
+              "candidate_blob": "32053ef79050a9b224f542c6a658f88106d6ba9f",
+              "equivalence_evidence": "Original normal338 whole proof + PRIOR_REVISION3/actual_source_and_archive_deltas + IMPACT + SOURCE_DELTA + REPAIR_FORMAL_BINDING. 948→8fdの既存source/class適用と8fd→2eのbusy理由/ToolTipText修正を区別し、保存先・PNG・Settings値・request/取消し/寿命の保持範囲を後続独立reviewで実質評価する。"
+            }
+          }
+        },
+        "step_3": {
+          "facts": [
+            "RETAINED_NORMAL_338_WHOLE_RESULT"
+          ],
+          "disposition": "equivalent",
+          "impact": {
+            "source": "Actual full 8fd→2e diff has7paths:3 production,2 tests,2 repair metadata. No other product path or history edge;2 single-parent repair merges. Full source diff retained. 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "callers": "Capture.acceptSnapshot/showMessage → immutable view → Service STATUS.reason at362 and ToolWindow.message at238. Panel listener copies LogcatButton.tooltip to permanent label; LogcatButton own device/target/SDK/manager path does not read Capture.message. 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "callees": "Core save/retry/discard/Writer admission unchanged; const extraction gives identical symbolic ReplayCore opcodes. Capture changed2methods only. Panel constructor actual ToolTipText key only, unchanged refresh/open/close/target supplier/manager/dispose bodies and actual LogcatButton class. 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "dataflow": "Only matching SAVE_IN_PROGRESS_REASON view message cleared when next phase!=WRITING; late busy rejected outsideWRITING. closed/intent/settingsRevision/revision ordering guards remain. Other message/errors/FAILED pin preserved by actual422probe. Store/packet/raw/header/frame/time/request/attempt/path/save_id flows untouched. 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "build": "Same trusted main formalworkflow and pinnedbuild.gradle; exactlyone newformalrun/attempt1 success. Actual formal all193mainclasses byteequal tested3583;187/193 equal422, six differences Panel-related. Old25of27binarychangedclasses match symbolic disassembly. No rebuild/test execution in this composition. 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "configuration": "No settings/schema/validation/default/storage/import path change; Store andConfigurable blobs/classes unchanged. Old native settings/profile/fixture are their actual original values; newprocess values not guessed. 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "dependencies": "No dependency/pin/build change. Actual clock/server/JCodec helper bytes andsearchableOptions equal across formal17a/f327; plugin.xml/version0.2.0 unchanged. READMEfixedsource URL/identity/Kotlinmodule/JARcontainer change retained. 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "fixtures": "fixture sourceは8fd→2eで不変。元native/settings/profile/入力/FILEは元の実条件に固定。今回OFF unitの通常exit/reap/CAS/G12保全/leaseFREEはCURRENT_NATIVE原returnで受領済みであり、未返却扱いに戻さない。 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "runtime": "元nativeのactor/JBR/SDK/source/ZIP/process条件を原本のまま保持。現在f327の3 installed JAR/hash/size/mode・loaded paths/JBR・About0.2.0/full2eはCURRENT_NATIVE直接原本で受領済み。current GUI操作の新実行や全heap/class同定は主張しない。 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。 Actual trusted registration base fb3c417a。追加native fact待ちを既存current load未観測へ戻さない。",
+            "display": "元Settings/PNG/Logcatの表示・可読性・操作事実は元条件で保持。今回影響する常設理由はCURRENT_NATIVEの初期→Close後disabledOpen/理由全文→native再表示を正確AX/画像で受領済み。f327でSettings/Save/keyboardを再実行したとはしない。 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "failure_attribution": "旧stale busy/empty permanent reason FAILとhover UNKNOWN、初回headless POLICY_DENIED/not_delivered、元compile/partial/writerFAILED/physicalFAIL/unknown/REAL/humanを不変保全。修復の実限定結果・formal class binding・current reason fresh事実を区別して接続。Case PASSや実独立承認は未成立。 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。 独立適用report3d48390aのF1/F2を反映し、未支持とされていた416labelForは実JUnit/14classで支持、clipboardは104に帰属。D4copy229byteの条件付き支持と原UNKNOWNを分離。"
+          },
+          "components": {
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/core/ScreenshotSave.kt": {
+              "source_blob": "b9ec9c4d0b26da634ab0df3f46be1b732c7eb5d4",
+              "candidate_blob": "b9ec9c4d0b26da634ab0df3f46be1b732c7eb5d4",
+              "equivalence_evidence": "Original normal338 whole proof + PRIOR_REVISION3/actual_source_and_archive_deltas + IMPACT + SOURCE_DELTA + REPAIR_FORMAL_BINDING. 948→8fdの既存source/class適用と8fd→2eのbusy理由/ToolTipText修正を区別し、保存先・PNG・Settings値・request/取消し/寿命の保持範囲を後続独立reviewで実質評価する。"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ide/ReplayProjectService.kt": {
+              "source_blob": "749df544dff0c87b92b3bccf3da2145940bdc17a",
+              "candidate_blob": "749df544dff0c87b92b3bccf3da2145940bdc17a",
+              "equivalence_evidence": "Original normal338 whole proof + PRIOR_REVISION3/actual_source_and_archive_deltas + IMPACT + SOURCE_DELTA + REPAIR_FORMAL_BINDING. 948→8fdの既存source/class適用と8fd→2eのbusy理由/ToolTipText修正を区別し、保存先・PNG・Settings値・request/取消し/寿命の保持範囲を後続独立reviewで実質評価する。"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ide/ReplayProjectCapture.kt": {
+              "source_blob": "e8b44c0ce95c13a47105e971de8c656432057677",
+              "candidate_blob": "0f7fbf1f26e2c3a763556859894bfa87c2ef0252",
+              "equivalence_evidence": "Original normal338 whole proof + PRIOR_REVISION3/actual_source_and_archive_deltas + IMPACT + SOURCE_DELTA + REPAIR_FORMAL_BINDING. 948→8fdの既存source/class適用と8fd→2eのbusy理由/ToolTipText修正を区別し、保存先・PNG・Settings値・request/取消し/寿命の保持範囲を後続独立reviewで実質評価する。"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/settings/ReplaySettingsStore.kt": {
+              "source_blob": "64eec1d2670a0cf6d6a94de4206ce789999ad1dc",
+              "candidate_blob": "64eec1d2670a0cf6d6a94de4206ce789999ad1dc",
+              "equivalence_evidence": "Original normal338 whole proof + PRIOR_REVISION3/actual_source_and_archive_deltas + IMPACT + SOURCE_DELTA + REPAIR_FORMAL_BINDING. 948→8fdの既存source/class適用と8fd→2eのbusy理由/ToolTipText修正を区別し、保存先・PNG・Settings値・request/取消し/寿命の保持範囲を後続独立reviewで実質評価する。"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/settings/ReplaySettingsConfigurable.kt": {
+              "source_blob": "7a668e4512bf79d4dfedc922fe4d8b718921d400",
+              "candidate_blob": "75e47c484d6491c8e1f45cd36cf8128c9551e15d",
+              "equivalence_evidence": "Original normal338 whole proof + PRIOR_REVISION3/actual_source_and_archive_deltas + IMPACT + SOURCE_DELTA + REPAIR_FORMAL_BINDING. 948→8fdの既存source/class適用と8fd→2eのbusy理由/ToolTipText修正を区別し、保存先・PNG・Settings値・request/取消し/寿命の保持範囲を後続独立reviewで実質評価する。"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/core/ReplayCore.kt": {
+              "source_blob": "613e3b0ee1ff92d1be68d98a08fb2aee961e43f1",
+              "candidate_blob": "32053ef79050a9b224f542c6a658f88106d6ba9f",
+              "equivalence_evidence": "Original normal338 whole proof + PRIOR_REVISION3/actual_source_and_archive_deltas + IMPACT + SOURCE_DELTA + REPAIR_FORMAL_BINDING. 948→8fdの既存source/class適用と8fd→2eのbusy理由/ToolTipText修正を区別し、保存先・PNG・Settings値・request/取消し/寿命の保持範囲を後続独立reviewで実質評価する。"
+            }
+          }
+        },
+        "expected": {
+          "facts": [
+            "RETAINED_NORMAL_338_WHOLE_RESULT"
+          ],
+          "disposition": "equivalent",
+          "impact": {
+            "source": "Actual full 8fd→2e diff has7paths:3 production,2 tests,2 repair metadata. No other product path or history edge;2 single-parent repair merges. Full source diff retained. 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "callers": "Capture.acceptSnapshot/showMessage → immutable view → Service STATUS.reason at362 and ToolWindow.message at238. Panel listener copies LogcatButton.tooltip to permanent label; LogcatButton own device/target/SDK/manager path does not read Capture.message. 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "callees": "Core save/retry/discard/Writer admission unchanged; const extraction gives identical symbolic ReplayCore opcodes. Capture changed2methods only. Panel constructor actual ToolTipText key only, unchanged refresh/open/close/target supplier/manager/dispose bodies and actual LogcatButton class. 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "dataflow": "Only matching SAVE_IN_PROGRESS_REASON view message cleared when next phase!=WRITING; late busy rejected outsideWRITING. closed/intent/settingsRevision/revision ordering guards remain. Other message/errors/FAILED pin preserved by actual422probe. Store/packet/raw/header/frame/time/request/attempt/path/save_id flows untouched. 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "build": "Same trusted main formalworkflow and pinnedbuild.gradle; exactlyone newformalrun/attempt1 success. Actual formal all193mainclasses byteequal tested3583;187/193 equal422, six differences Panel-related. Old25of27binarychangedclasses match symbolic disassembly. No rebuild/test execution in this composition. 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "configuration": "No settings/schema/validation/default/storage/import path change; Store andConfigurable blobs/classes unchanged. Old native settings/profile/fixture are their actual original values; newprocess values not guessed. 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "dependencies": "No dependency/pin/build change. Actual clock/server/JCodec helper bytes andsearchableOptions equal across formal17a/f327; plugin.xml/version0.2.0 unchanged. READMEfixedsource URL/identity/Kotlinmodule/JARcontainer change retained. 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "fixtures": "fixture sourceは8fd→2eで不変。元native/settings/profile/入力/FILEは元の実条件に固定。今回OFF unitの通常exit/reap/CAS/G12保全/leaseFREEはCURRENT_NATIVE原returnで受領済みであり、未返却扱いに戻さない。 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "runtime": "元nativeのactor/JBR/SDK/source/ZIP/process条件を原本のまま保持。現在f327の3 installed JAR/hash/size/mode・loaded paths/JBR・About0.2.0/full2eはCURRENT_NATIVE直接原本で受領済み。current GUI操作の新実行や全heap/class同定は主張しない。 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。 Actual trusted registration base fb3c417a。追加native fact待ちを既存current load未観測へ戻さない。",
+            "display": "元Settings/PNG/Logcatの表示・可読性・操作事実は元条件で保持。今回影響する常設理由はCURRENT_NATIVEの初期→Close後disabledOpen/理由全文→native再表示を正確AX/画像で受領済み。f327でSettings/Save/keyboardを再実行したとはしない。 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "failure_attribution": "旧stale busy/empty permanent reason FAILとhover UNKNOWN、初回headless POLICY_DENIED/not_delivered、元compile/partial/writerFAILED/physicalFAIL/unknown/REAL/humanを不変保全。修復の実限定結果・formal class binding・current reason fresh事実を区別して接続。Case PASSや実独立承認は未成立。 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。 独立適用report3d48390aのF1/F2を反映し、未支持とされていた416labelForは実JUnit/14classで支持、clipboardは104に帰属。D4copy229byteの条件付き支持と原UNKNOWNを分離。"
+          },
+          "components": {
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/core/ScreenshotSave.kt": {
+              "source_blob": "b9ec9c4d0b26da634ab0df3f46be1b732c7eb5d4",
+              "candidate_blob": "b9ec9c4d0b26da634ab0df3f46be1b732c7eb5d4",
+              "equivalence_evidence": "Original normal338 whole proof + PRIOR_REVISION3/actual_source_and_archive_deltas + IMPACT + SOURCE_DELTA + REPAIR_FORMAL_BINDING. 948→8fdの既存source/class適用と8fd→2eのbusy理由/ToolTipText修正を区別し、保存先・PNG・Settings値・request/取消し/寿命の保持範囲を後続独立reviewで実質評価する。"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ide/ReplayProjectService.kt": {
+              "source_blob": "749df544dff0c87b92b3bccf3da2145940bdc17a",
+              "candidate_blob": "749df544dff0c87b92b3bccf3da2145940bdc17a",
+              "equivalence_evidence": "Original normal338 whole proof + PRIOR_REVISION3/actual_source_and_archive_deltas + IMPACT + SOURCE_DELTA + REPAIR_FORMAL_BINDING. 948→8fdの既存source/class適用と8fd→2eのbusy理由/ToolTipText修正を区別し、保存先・PNG・Settings値・request/取消し/寿命の保持範囲を後続独立reviewで実質評価する。"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ide/ReplayProjectCapture.kt": {
+              "source_blob": "e8b44c0ce95c13a47105e971de8c656432057677",
+              "candidate_blob": "0f7fbf1f26e2c3a763556859894bfa87c2ef0252",
+              "equivalence_evidence": "Original normal338 whole proof + PRIOR_REVISION3/actual_source_and_archive_deltas + IMPACT + SOURCE_DELTA + REPAIR_FORMAL_BINDING. 948→8fdの既存source/class適用と8fd→2eのbusy理由/ToolTipText修正を区別し、保存先・PNG・Settings値・request/取消し/寿命の保持範囲を後続独立reviewで実質評価する。"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/settings/ReplaySettingsStore.kt": {
+              "source_blob": "64eec1d2670a0cf6d6a94de4206ce789999ad1dc",
+              "candidate_blob": "64eec1d2670a0cf6d6a94de4206ce789999ad1dc",
+              "equivalence_evidence": "Original normal338 whole proof + PRIOR_REVISION3/actual_source_and_archive_deltas + IMPACT + SOURCE_DELTA + REPAIR_FORMAL_BINDING. 948→8fdの既存source/class適用と8fd→2eのbusy理由/ToolTipText修正を区別し、保存先・PNG・Settings値・request/取消し/寿命の保持範囲を後続独立reviewで実質評価する。"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/settings/ReplaySettingsConfigurable.kt": {
+              "source_blob": "7a668e4512bf79d4dfedc922fe4d8b718921d400",
+              "candidate_blob": "75e47c484d6491c8e1f45cd36cf8128c9551e15d",
+              "equivalence_evidence": "Original normal338 whole proof + PRIOR_REVISION3/actual_source_and_archive_deltas + IMPACT + SOURCE_DELTA + REPAIR_FORMAL_BINDING. 948→8fdの既存source/class適用と8fd→2eのbusy理由/ToolTipText修正を区別し、保存先・PNG・Settings値・request/取消し/寿命の保持範囲を後続独立reviewで実質評価する。"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/core/ReplayCore.kt": {
+              "source_blob": "613e3b0ee1ff92d1be68d98a08fb2aee961e43f1",
+              "candidate_blob": "32053ef79050a9b224f542c6a658f88106d6ba9f",
+              "equivalence_evidence": "Original normal338 whole proof + PRIOR_REVISION3/actual_source_and_archive_deltas + IMPACT + SOURCE_DELTA + REPAIR_FORMAL_BINDING. 948→8fdの既存source/class適用と8fd→2eのbusy理由/ToolTipText修正を区別し、保存先・PNG・Settings値・request/取消し/寿命の保持範囲を後続独立reviewで実質評価する。"
+            }
+          }
+        }
+      }
+    },
+    "normal-341-948-to-2e-f327": {
+      "schema": 1,
+      "key": "341:SCREENSHOT-DESTINATION",
+      "source_candidate": "948b1ad2f18ee266c79935327a403dd7471fdc3b",
+      "source_artifact_sha256": "a582052844272ad004f3e3429d50b12a7ec6b6783bc686457465a02f20546316",
+      "candidate": "2e576ce3c724dc95ccf0688b8a1bf7cd92d774a8",
+      "artifact_sha256": "f3274d7501f9d173ece5de6b1cb729a7fb40d247cfe2a17c6c937fcc085a2c88",
+      "case_sha256": "24658b2bbe57bf189377243b35a0823ae133882d4275c910a8c5ebc67e2de366",
+      "plan_sha256": "0b6d9c6d2d5054ed642565afdbaeb5a88ee198a4ea5398ff96ff36168ce0eda5",
+      "assessment_sha256": "b255d4e064a1528628a6977d56a78df7c18dd4983300400398e9e3b30caf76c3",
+      "observation_sha256": "01e7c69bfcd70f5d584561a70429419df5cde0790940c4d216df7e1b9f6be67e",
+      "original_file_sha256": "d4b98df7bdaa0c21b06e94cd104bc903d3d2f5a1a69189c037eb23bab2d7a175",
+      "original_result_sha256": "4990345d01afe0a4ad4e97f52c2bb63180b6b4a3873265fc2030593e12861f38",
+      "original_fact_sha256": {
+        "RETAINED_NORMAL_341_WHOLE_RESULT": "4990345d01afe0a4ad4e97f52c2bb63180b6b4a3873265fc2030593e12861f38"
+      },
+      "original_record_evidence": "Private immutable normal341 projection sha256=d4b98df7bdaa0c21b06e94cd104bc903d3d2f5a1a69189c037eb23bab2d7a175; original pending aggregates, ordinary nested assessment and actual limited review remain unchanged. Current independent approval NOT ESTABLISHED.",
+      "history": [
+        {
+          "commit": "0f75cce7cffade20ed23c00101faf3b8d0bf9eb9",
+          "parent": "8fd4f6669137c6fa0a97b0914f8d7e8cde14dc85",
+          "paths": [
+            "docs/verification/changes/issue-422.json",
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/core/ReplayCore.kt",
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ide/ReplayProjectCapture.kt",
+            "plugin/src/test/kotlin/io/github/shinma06/replaybuffer/ide/ReplayProjectCaptureTest.kt"
+          ]
+        },
+        {
+          "commit": "2e576ce3c724dc95ccf0688b8a1bf7cd92d774a8",
+          "parent": "0f75cce7cffade20ed23c00101faf3b8d0bf9eb9",
+          "paths": [
+            "docs/verification/changes/issue-424.json",
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ui/ReplayToolWindowFactory.kt",
+            "plugin/src/test/java/io/github/shinma06/replaybuffer/ui/ReplayToolWindowLayoutTest.java"
+          ]
+        },
+        {
+          "commit": "515ba790dac716b38cbc638c2d1e2f4a39d6ddba",
+          "parent": "c570310fe9e1053203d1c0ac6025d0645a59e5e0",
+          "paths": [
+            "docs/verification/changes/issue-412.json",
+            "plugin/src/test/kotlin/io/github/shinma06/replaybuffer/ide/ReplayProjectCaptureTest.kt"
+          ]
+        },
+        {
+          "commit": "8fd4f6669137c6fa0a97b0914f8d7e8cde14dc85",
+          "parent": "515ba790dac716b38cbc638c2d1e2f4a39d6ddba",
+          "paths": [
+            ".github/workflows/release-candidate.yml",
+            "docs/setup/ci.md",
+            "docs/verification/changes/issue-418.json",
+            "docs/verification/changes/issue-420.json"
+          ]
+        },
+        {
+          "commit": "c570310fe9e1053203d1c0ac6025d0645a59e5e0",
+          "parent": "d7c5859ffad6fac9c1e6e1f6520467680ab1a0be",
+          "paths": [
+            "docs/verification/changes/issue-416.json",
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/settings/ReplaySettingsConfigurable.kt",
+            "plugin/src/test/java/io/github/shinma06/replaybuffer/settings/ReplaySettingsLayoutTest.java"
+          ]
+        },
+        {
+          "commit": "d7c5859ffad6fac9c1e6e1f6520467680ab1a0be",
+          "parent": "948b1ad2f18ee266c79935327a403dd7471fdc3b",
+          "paths": [
+            ".github/workflows/ci.yml",
+            "docs/setup/ci.md",
+            "docs/verification/changes/issue-414.json",
+            "plugin/build.gradle.kts"
+          ]
+        }
+      ],
+      "review": {
+        "status": "pending",
+        "reviewer_session": null,
+        "writer_session": "codex-session-sha256:7b2456c4ac692a16695fa3b6f035ac2149e76f23bd63e479f43f81ca687087e1",
+        "executor_sessions": null,
+        "at": null,
+        "evidence": null
+      },
+      "provenance": {
+        "at": "2026-11-06T13:58:56.017172+00:00",
+        "attribution": {
+          "writer": "codex-session-sha256:7b2456c4ac692a16695fa3b6f035ac2149e76f23bd63e479f43f81ca687087e1",
+          "observer": "codex-session-sha256:7b2456c4ac692a16695fa3b6f035ac2149e76f23bd63e479f43f81ca687087e1",
+          "contributors": null
+        }
+      },
+      "guarantees": {
+        "contract_coverage": {
+          "facts": [
+            "RETAINED_NORMAL_341_WHOLE_RESULT"
+          ],
+          "disposition": "equivalent",
+          "impact": {
+            "source": "Actual full 8fd→2e diff has7paths:3 production,2 tests,2 repair metadata. No other product path or history edge;2 single-parent repair merges. Full source diff retained. 948→8fdについては保存済みnormal341 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "callers": "Capture.acceptSnapshot/showMessage → immutable view → Service STATUS.reason at362 and ToolWindow.message at238. Panel listener copies LogcatButton.tooltip to permanent label; LogcatButton own device/target/SDK/manager path does not read Capture.message. 948→8fdについては保存済みnormal341 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "callees": "Core save/retry/discard/Writer admission unchanged; const extraction gives identical symbolic ReplayCore opcodes. Capture changed2methods only. Panel constructor actual ToolTipText key only, unchanged refresh/open/close/target supplier/manager/dispose bodies and actual LogcatButton class. 948→8fdについては保存済みnormal341 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "dataflow": "Only matching SAVE_IN_PROGRESS_REASON view message cleared when next phase!=WRITING; late busy rejected outsideWRITING. closed/intent/settingsRevision/revision ordering guards remain. Other message/errors/FAILED pin preserved by actual422probe. Store/packet/raw/header/frame/time/request/attempt/path/save_id flows untouched. 948→8fdについては保存済みnormal341 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "build": "Same trusted main formalworkflow and pinnedbuild.gradle; exactlyone newformalrun/attempt1 success. Actual formal all193mainclasses byteequal tested3583;187/193 equal422, six differences Panel-related. Old25of27binarychangedclasses match symbolic disassembly. No rebuild/test execution in this composition. 948→8fdについては保存済みnormal341 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "configuration": "No settings/schema/validation/default/storage/import path change; Store andConfigurable blobs/classes unchanged. Old native settings/profile/fixture are their actual original values; newprocess values not guessed. 948→8fdについては保存済みnormal341 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "dependencies": "No dependency/pin/build change. Actual clock/server/JCodec helper bytes andsearchableOptions equal across formal17a/f327; plugin.xml/version0.2.0 unchanged. READMEfixedsource URL/identity/Kotlinmodule/JARcontainer change retained. 948→8fdについては保存済みnormal341 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "fixtures": "fixture sourceは8fd→2eで不変。元native/settings/profile/入力/FILEは元の実条件に固定。今回OFF unitの通常exit/reap/CAS/G12保全/leaseFREEはCURRENT_NATIVE原returnで受領済みであり、未返却扱いに戻さない。 948→8fdについては保存済みnormal341 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "runtime": "元nativeのactor/JBR/SDK/source/ZIP/process条件を原本のまま保持。現在f327の3 installed JAR/hash/size/mode・loaded paths/JBR・About0.2.0/full2eはCURRENT_NATIVE直接原本で受領済み。current GUI操作の新実行や全heap/class同定は主張しない。 948→8fdについては保存済みnormal341 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。 Actual trusted registration base fb3c417a。追加native fact待ちを既存current load未観測へ戻さない。",
+            "display": "元Settings/PNG/Logcatの表示・可読性・操作事実は元条件で保持。今回影響する常設理由はCURRENT_NATIVEの初期→Close後disabledOpen/理由全文→native再表示を正確AX/画像で受領済み。f327でSettings/Save/keyboardを再実行したとはしない。 948→8fdについては保存済みnormal341 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "failure_attribution": "旧stale busy/empty permanent reason FAILとhover UNKNOWN、初回headless POLICY_DENIED/not_delivered、元compile/partial/writerFAILED/physicalFAIL/unknown/REAL/humanを不変保全。修復の実限定結果・formal class binding・current reason fresh事実を区別して接続。Case PASSや実独立承認は未成立。 948→8fdについては保存済みnormal341 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。 独立適用report3d48390aのF1/F2を反映し、未支持とされていた416labelForは実JUnit/14classで支持、clipboardは104に帰属。D4copy229byteの条件付き支持と原UNKNOWNを分離。"
+          },
+          "components": {
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/core/ScreenshotSave.kt": {
+              "source_blob": "b9ec9c4d0b26da634ab0df3f46be1b732c7eb5d4",
+              "candidate_blob": "b9ec9c4d0b26da634ab0df3f46be1b732c7eb5d4",
+              "equivalence_evidence": "Original normal341 whole proof + PRIOR_REVISION3/actual_source_and_archive_deltas + IMPACT + SOURCE_DELTA + REPAIR_FORMAL_BINDING. 948→8fdの既存source/class適用と8fd→2eのbusy理由/ToolTipText修正を区別し、保存先・PNG・Settings値・request/取消し/寿命の保持範囲を後続独立reviewで実質評価する。"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ide/ReplayProjectService.kt": {
+              "source_blob": "749df544dff0c87b92b3bccf3da2145940bdc17a",
+              "candidate_blob": "749df544dff0c87b92b3bccf3da2145940bdc17a",
+              "equivalence_evidence": "Original normal341 whole proof + PRIOR_REVISION3/actual_source_and_archive_deltas + IMPACT + SOURCE_DELTA + REPAIR_FORMAL_BINDING. 948→8fdの既存source/class適用と8fd→2eのbusy理由/ToolTipText修正を区別し、保存先・PNG・Settings値・request/取消し/寿命の保持範囲を後続独立reviewで実質評価する。"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ide/ReplayProjectCapture.kt": {
+              "source_blob": "e8b44c0ce95c13a47105e971de8c656432057677",
+              "candidate_blob": "0f7fbf1f26e2c3a763556859894bfa87c2ef0252",
+              "equivalence_evidence": "Original normal341 whole proof + PRIOR_REVISION3/actual_source_and_archive_deltas + IMPACT + SOURCE_DELTA + REPAIR_FORMAL_BINDING. 948→8fdの既存source/class適用と8fd→2eのbusy理由/ToolTipText修正を区別し、保存先・PNG・Settings値・request/取消し/寿命の保持範囲を後続独立reviewで実質評価する。"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/settings/ReplaySettingsStore.kt": {
+              "source_blob": "64eec1d2670a0cf6d6a94de4206ce789999ad1dc",
+              "candidate_blob": "64eec1d2670a0cf6d6a94de4206ce789999ad1dc",
+              "equivalence_evidence": "Original normal341 whole proof + PRIOR_REVISION3/actual_source_and_archive_deltas + IMPACT + SOURCE_DELTA + REPAIR_FORMAL_BINDING. 948→8fdの既存source/class適用と8fd→2eのbusy理由/ToolTipText修正を区別し、保存先・PNG・Settings値・request/取消し/寿命の保持範囲を後続独立reviewで実質評価する。"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/settings/ReplaySettingsConfigurable.kt": {
+              "source_blob": "7a668e4512bf79d4dfedc922fe4d8b718921d400",
+              "candidate_blob": "75e47c484d6491c8e1f45cd36cf8128c9551e15d",
+              "equivalence_evidence": "Original normal341 whole proof + PRIOR_REVISION3/actual_source_and_archive_deltas + IMPACT + SOURCE_DELTA + REPAIR_FORMAL_BINDING. 948→8fdの既存source/class適用と8fd→2eのbusy理由/ToolTipText修正を区別し、保存先・PNG・Settings値・request/取消し/寿命の保持範囲を後続独立reviewで実質評価する。"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/core/ReplayCore.kt": {
+              "source_blob": "613e3b0ee1ff92d1be68d98a08fb2aee961e43f1",
+              "candidate_blob": "32053ef79050a9b224f542c6a658f88106d6ba9f",
+              "equivalence_evidence": "Original normal341 whole proof + PRIOR_REVISION3/actual_source_and_archive_deltas + IMPACT + SOURCE_DELTA + REPAIR_FORMAL_BINDING. 948→8fdの既存source/class適用と8fd→2eのbusy理由/ToolTipText修正を区別し、保存先・PNG・Settings値・request/取消し/寿命の保持範囲を後続独立reviewで実質評価する。"
+            }
+          }
+        },
+        "artifact_binding": {
+          "facts": [
+            "CURRENT_F327_LOAD"
+          ],
+          "disposition": "fresh",
+          "impact": {
+            "source": "Actual full 8fd→2e diff has7paths:3 production,2 tests,2 repair metadata. No other product path or history edge;2 single-parent repair merges. Full source diff retained. この保証は現在f327の実placement/load/About辺だけに限定する。",
+            "callers": "Capture.acceptSnapshot/showMessage → immutable view → Service STATUS.reason at362 and ToolWindow.message at238. Panel listener copies LogcatButton.tooltip to permanent label; LogcatButton own device/target/SDK/manager path does not read Capture.message. この保証は現在f327の実placement/load/About辺だけに限定する。",
+            "callees": "Core save/retry/discard/Writer admission unchanged; const extraction gives identical symbolic ReplayCore opcodes. Capture changed2methods only. Panel constructor actual ToolTipText key only, unchanged refresh/open/close/target supplier/manager/dispose bodies and actual LogcatButton class. この保証は現在f327の実placement/load/About辺だけに限定する。",
+            "dataflow": "Only matching SAVE_IN_PROGRESS_REASON view message cleared when next phase!=WRITING; late busy rejected outsideWRITING. closed/intent/settingsRevision/revision ordering guards remain. Other message/errors/FAILED pin preserved by actual422probe. Store/packet/raw/header/frame/time/request/attempt/path/save_id flows untouched. この保証は現在f327の実placement/load/About辺だけに限定する。",
+            "build": "Same trusted main formalworkflow and pinnedbuild.gradle; exactlyone newformalrun/attempt1 success. Actual formal all193mainclasses byteequal tested3583;187/193 equal422, six differences Panel-related. Old25of27binarychangedclasses match symbolic disassembly. No rebuild/test execution in this composition. この保証は現在f327の実placement/load/About辺だけに限定する。",
+            "configuration": "No settings/schema/validation/default/storage/import path change; Store andConfigurable blobs/classes unchanged. Old native settings/profile/fixture are their actual original values; newprocess values not guessed. この保証は現在f327の実placement/load/About辺だけに限定する。",
+            "dependencies": "No dependency/pin/build change. Actual clock/server/JCodec helper bytes andsearchableOptions equal across formal17a/f327; plugin.xml/version0.2.0 unchanged. READMEfixedsource URL/identity/Kotlinmodule/JARcontainer change retained. この保証は現在f327の実placement/load/About辺だけに限定する。",
+            "fixtures": "fixture sourceは8fd→2eで不変。元native/settings/profile/入力/FILEは元の実条件に固定。今回OFF unitの通常exit/reap/CAS/G12保全/leaseFREEはCURRENT_NATIVE原returnで受領済みであり、未返却扱いに戻さない。 この保証は現在f327の実placement/load/About辺だけに限定する。",
+            "runtime": "元nativeのactor/JBR/SDK/source/ZIP/process条件を原本のまま保持。現在f327の3 installed JAR/hash/size/mode・loaded paths/JBR・About0.2.0/full2eはCURRENT_NATIVE直接原本で受領済み。current GUI操作の新実行や全heap/class同定は主張しない。 この保証は現在f327の実placement/load/About辺だけに限定する。 Actual trusted registration base fb3c417a。追加native fact待ちを既存current load未観測へ戻さない。",
+            "display": "元Settings/PNG/Logcatの表示・可読性・操作事実は元条件で保持。今回影響する常設理由はCURRENT_NATIVEの初期→Close後disabledOpen/理由全文→native再表示を正確AX/画像で受領済み。f327でSettings/Save/keyboardを再実行したとはしない。 この保証は現在f327の実placement/load/About辺だけに限定する。",
+            "failure_attribution": "旧stale busy/empty permanent reason FAILとhover UNKNOWN、初回headless POLICY_DENIED/not_delivered、元compile/partial/writerFAILED/physicalFAIL/unknown/REAL/humanを不変保全。修復の実限定結果・formal class binding・current reason fresh事実を区別して接続。Case PASSや実独立承認は未成立。 この保証は現在f327の実placement/load/About辺だけに限定する。 独立適用report3d48390aのF1/F2を反映し、未支持とされていた416labelForは実JUnit/14classで支持、clipboardは104に帰属。D4copy229byteの条件付き支持と原UNKNOWNを分離。"
+          }
+        },
+        "failure_attribution": {
+          "facts": [
+            "RETAINED_NORMAL_341_WHOLE_RESULT"
+          ],
+          "disposition": "equivalent",
+          "impact": {
+            "source": "Actual full 8fd→2e diff has7paths:3 production,2 tests,2 repair metadata. No other product path or history edge;2 single-parent repair merges. Full source diff retained. 948→8fdについては保存済みnormal341 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "callers": "Capture.acceptSnapshot/showMessage → immutable view → Service STATUS.reason at362 and ToolWindow.message at238. Panel listener copies LogcatButton.tooltip to permanent label; LogcatButton own device/target/SDK/manager path does not read Capture.message. 948→8fdについては保存済みnormal341 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "callees": "Core save/retry/discard/Writer admission unchanged; const extraction gives identical symbolic ReplayCore opcodes. Capture changed2methods only. Panel constructor actual ToolTipText key only, unchanged refresh/open/close/target supplier/manager/dispose bodies and actual LogcatButton class. 948→8fdについては保存済みnormal341 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "dataflow": "Only matching SAVE_IN_PROGRESS_REASON view message cleared when next phase!=WRITING; late busy rejected outsideWRITING. closed/intent/settingsRevision/revision ordering guards remain. Other message/errors/FAILED pin preserved by actual422probe. Store/packet/raw/header/frame/time/request/attempt/path/save_id flows untouched. 948→8fdについては保存済みnormal341 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "build": "Same trusted main formalworkflow and pinnedbuild.gradle; exactlyone newformalrun/attempt1 success. Actual formal all193mainclasses byteequal tested3583;187/193 equal422, six differences Panel-related. Old25of27binarychangedclasses match symbolic disassembly. No rebuild/test execution in this composition. 948→8fdについては保存済みnormal341 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "configuration": "No settings/schema/validation/default/storage/import path change; Store andConfigurable blobs/classes unchanged. Old native settings/profile/fixture are their actual original values; newprocess values not guessed. 948→8fdについては保存済みnormal341 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "dependencies": "No dependency/pin/build change. Actual clock/server/JCodec helper bytes andsearchableOptions equal across formal17a/f327; plugin.xml/version0.2.0 unchanged. READMEfixedsource URL/identity/Kotlinmodule/JARcontainer change retained. 948→8fdについては保存済みnormal341 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "fixtures": "fixture sourceは8fd→2eで不変。元native/settings/profile/入力/FILEは元の実条件に固定。今回OFF unitの通常exit/reap/CAS/G12保全/leaseFREEはCURRENT_NATIVE原returnで受領済みであり、未返却扱いに戻さない。 948→8fdについては保存済みnormal341 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "runtime": "元nativeのactor/JBR/SDK/source/ZIP/process条件を原本のまま保持。現在f327の3 installed JAR/hash/size/mode・loaded paths/JBR・About0.2.0/full2eはCURRENT_NATIVE直接原本で受領済み。current GUI操作の新実行や全heap/class同定は主張しない。 948→8fdについては保存済みnormal341 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。 Actual trusted registration base fb3c417a。追加native fact待ちを既存current load未観測へ戻さない。",
+            "display": "元Settings/PNG/Logcatの表示・可読性・操作事実は元条件で保持。今回影響する常設理由はCURRENT_NATIVEの初期→Close後disabledOpen/理由全文→native再表示を正確AX/画像で受領済み。f327でSettings/Save/keyboardを再実行したとはしない。 948→8fdについては保存済みnormal341 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "failure_attribution": "旧stale busy/empty permanent reason FAILとhover UNKNOWN、初回headless POLICY_DENIED/not_delivered、元compile/partial/writerFAILED/physicalFAIL/unknown/REAL/humanを不変保全。修復の実限定結果・formal class binding・current reason fresh事実を区別して接続。Case PASSや実独立承認は未成立。 948→8fdについては保存済みnormal341 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。 独立適用report3d48390aのF1/F2を反映し、未支持とされていた416labelForは実JUnit/14classで支持、clipboardは104に帰属。D4copy229byteの条件付き支持と原UNKNOWNを分離。"
+          },
+          "components": {
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/core/ScreenshotSave.kt": {
+              "source_blob": "b9ec9c4d0b26da634ab0df3f46be1b732c7eb5d4",
+              "candidate_blob": "b9ec9c4d0b26da634ab0df3f46be1b732c7eb5d4",
+              "equivalence_evidence": "Original normal341 whole proof + PRIOR_REVISION3/actual_source_and_archive_deltas + IMPACT + SOURCE_DELTA + REPAIR_FORMAL_BINDING. 948→8fdの既存source/class適用と8fd→2eのbusy理由/ToolTipText修正を区別し、保存先・PNG・Settings値・request/取消し/寿命の保持範囲を後続独立reviewで実質評価する。"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ide/ReplayProjectService.kt": {
+              "source_blob": "749df544dff0c87b92b3bccf3da2145940bdc17a",
+              "candidate_blob": "749df544dff0c87b92b3bccf3da2145940bdc17a",
+              "equivalence_evidence": "Original normal341 whole proof + PRIOR_REVISION3/actual_source_and_archive_deltas + IMPACT + SOURCE_DELTA + REPAIR_FORMAL_BINDING. 948→8fdの既存source/class適用と8fd→2eのbusy理由/ToolTipText修正を区別し、保存先・PNG・Settings値・request/取消し/寿命の保持範囲を後続独立reviewで実質評価する。"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ide/ReplayProjectCapture.kt": {
+              "source_blob": "e8b44c0ce95c13a47105e971de8c656432057677",
+              "candidate_blob": "0f7fbf1f26e2c3a763556859894bfa87c2ef0252",
+              "equivalence_evidence": "Original normal341 whole proof + PRIOR_REVISION3/actual_source_and_archive_deltas + IMPACT + SOURCE_DELTA + REPAIR_FORMAL_BINDING. 948→8fdの既存source/class適用と8fd→2eのbusy理由/ToolTipText修正を区別し、保存先・PNG・Settings値・request/取消し/寿命の保持範囲を後続独立reviewで実質評価する。"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/settings/ReplaySettingsStore.kt": {
+              "source_blob": "64eec1d2670a0cf6d6a94de4206ce789999ad1dc",
+              "candidate_blob": "64eec1d2670a0cf6d6a94de4206ce789999ad1dc",
+              "equivalence_evidence": "Original normal341 whole proof + PRIOR_REVISION3/actual_source_and_archive_deltas + IMPACT + SOURCE_DELTA + REPAIR_FORMAL_BINDING. 948→8fdの既存source/class適用と8fd→2eのbusy理由/ToolTipText修正を区別し、保存先・PNG・Settings値・request/取消し/寿命の保持範囲を後続独立reviewで実質評価する。"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/settings/ReplaySettingsConfigurable.kt": {
+              "source_blob": "7a668e4512bf79d4dfedc922fe4d8b718921d400",
+              "candidate_blob": "75e47c484d6491c8e1f45cd36cf8128c9551e15d",
+              "equivalence_evidence": "Original normal341 whole proof + PRIOR_REVISION3/actual_source_and_archive_deltas + IMPACT + SOURCE_DELTA + REPAIR_FORMAL_BINDING. 948→8fdの既存source/class適用と8fd→2eのbusy理由/ToolTipText修正を区別し、保存先・PNG・Settings値・request/取消し/寿命の保持範囲を後続独立reviewで実質評価する。"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/core/ReplayCore.kt": {
+              "source_blob": "613e3b0ee1ff92d1be68d98a08fb2aee961e43f1",
+              "candidate_blob": "32053ef79050a9b224f542c6a658f88106d6ba9f",
+              "equivalence_evidence": "Original normal341 whole proof + PRIOR_REVISION3/actual_source_and_archive_deltas + IMPACT + SOURCE_DELTA + REPAIR_FORMAL_BINDING. 948→8fdの既存source/class適用と8fd→2eのbusy理由/ToolTipText修正を区別し、保存先・PNG・Settings値・request/取消し/寿命の保持範囲を後続独立reviewで実質評価する。"
+            }
+          }
+        },
+        "preconditions": {
+          "facts": [
+            "RETAINED_NORMAL_341_WHOLE_RESULT"
+          ],
+          "disposition": "equivalent",
+          "impact": {
+            "source": "Actual full 8fd→2e diff has7paths:3 production,2 tests,2 repair metadata. No other product path or history edge;2 single-parent repair merges. Full source diff retained. 948→8fdについては保存済みnormal341 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "callers": "Capture.acceptSnapshot/showMessage → immutable view → Service STATUS.reason at362 and ToolWindow.message at238. Panel listener copies LogcatButton.tooltip to permanent label; LogcatButton own device/target/SDK/manager path does not read Capture.message. 948→8fdについては保存済みnormal341 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "callees": "Core save/retry/discard/Writer admission unchanged; const extraction gives identical symbolic ReplayCore opcodes. Capture changed2methods only. Panel constructor actual ToolTipText key only, unchanged refresh/open/close/target supplier/manager/dispose bodies and actual LogcatButton class. 948→8fdについては保存済みnormal341 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "dataflow": "Only matching SAVE_IN_PROGRESS_REASON view message cleared when next phase!=WRITING; late busy rejected outsideWRITING. closed/intent/settingsRevision/revision ordering guards remain. Other message/errors/FAILED pin preserved by actual422probe. Store/packet/raw/header/frame/time/request/attempt/path/save_id flows untouched. 948→8fdについては保存済みnormal341 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "build": "Same trusted main formalworkflow and pinnedbuild.gradle; exactlyone newformalrun/attempt1 success. Actual formal all193mainclasses byteequal tested3583;187/193 equal422, six differences Panel-related. Old25of27binarychangedclasses match symbolic disassembly. No rebuild/test execution in this composition. 948→8fdについては保存済みnormal341 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "configuration": "No settings/schema/validation/default/storage/import path change; Store andConfigurable blobs/classes unchanged. Old native settings/profile/fixture are their actual original values; newprocess values not guessed. 948→8fdについては保存済みnormal341 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "dependencies": "No dependency/pin/build change. Actual clock/server/JCodec helper bytes andsearchableOptions equal across formal17a/f327; plugin.xml/version0.2.0 unchanged. READMEfixedsource URL/identity/Kotlinmodule/JARcontainer change retained. 948→8fdについては保存済みnormal341 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "fixtures": "fixture sourceは8fd→2eで不変。元native/settings/profile/入力/FILEは元の実条件に固定。今回OFF unitの通常exit/reap/CAS/G12保全/leaseFREEはCURRENT_NATIVE原returnで受領済みであり、未返却扱いに戻さない。 948→8fdについては保存済みnormal341 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "runtime": "元nativeのactor/JBR/SDK/source/ZIP/process条件を原本のまま保持。現在f327の3 installed JAR/hash/size/mode・loaded paths/JBR・About0.2.0/full2eはCURRENT_NATIVE直接原本で受領済み。current GUI操作の新実行や全heap/class同定は主張しない。 948→8fdについては保存済みnormal341 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。 Actual trusted registration base fb3c417a。追加native fact待ちを既存current load未観測へ戻さない。",
+            "display": "元Settings/PNG/Logcatの表示・可読性・操作事実は元条件で保持。今回影響する常設理由はCURRENT_NATIVEの初期→Close後disabledOpen/理由全文→native再表示を正確AX/画像で受領済み。f327でSettings/Save/keyboardを再実行したとはしない。 948→8fdについては保存済みnormal341 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "failure_attribution": "旧stale busy/empty permanent reason FAILとhover UNKNOWN、初回headless POLICY_DENIED/not_delivered、元compile/partial/writerFAILED/physicalFAIL/unknown/REAL/humanを不変保全。修復の実限定結果・formal class binding・current reason fresh事実を区別して接続。Case PASSや実独立承認は未成立。 948→8fdについては保存済みnormal341 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。 独立適用report3d48390aのF1/F2を反映し、未支持とされていた416labelForは実JUnit/14classで支持、clipboardは104に帰属。D4copy229byteの条件付き支持と原UNKNOWNを分離。"
+          },
+          "components": {
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/core/ScreenshotSave.kt": {
+              "source_blob": "b9ec9c4d0b26da634ab0df3f46be1b732c7eb5d4",
+              "candidate_blob": "b9ec9c4d0b26da634ab0df3f46be1b732c7eb5d4",
+              "equivalence_evidence": "Original normal341 whole proof + PRIOR_REVISION3/actual_source_and_archive_deltas + IMPACT + SOURCE_DELTA + REPAIR_FORMAL_BINDING. 948→8fdの既存source/class適用と8fd→2eのbusy理由/ToolTipText修正を区別し、保存先・PNG・Settings値・request/取消し/寿命の保持範囲を後続独立reviewで実質評価する。"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ide/ReplayProjectService.kt": {
+              "source_blob": "749df544dff0c87b92b3bccf3da2145940bdc17a",
+              "candidate_blob": "749df544dff0c87b92b3bccf3da2145940bdc17a",
+              "equivalence_evidence": "Original normal341 whole proof + PRIOR_REVISION3/actual_source_and_archive_deltas + IMPACT + SOURCE_DELTA + REPAIR_FORMAL_BINDING. 948→8fdの既存source/class適用と8fd→2eのbusy理由/ToolTipText修正を区別し、保存先・PNG・Settings値・request/取消し/寿命の保持範囲を後続独立reviewで実質評価する。"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ide/ReplayProjectCapture.kt": {
+              "source_blob": "e8b44c0ce95c13a47105e971de8c656432057677",
+              "candidate_blob": "0f7fbf1f26e2c3a763556859894bfa87c2ef0252",
+              "equivalence_evidence": "Original normal341 whole proof + PRIOR_REVISION3/actual_source_and_archive_deltas + IMPACT + SOURCE_DELTA + REPAIR_FORMAL_BINDING. 948→8fdの既存source/class適用と8fd→2eのbusy理由/ToolTipText修正を区別し、保存先・PNG・Settings値・request/取消し/寿命の保持範囲を後続独立reviewで実質評価する。"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/settings/ReplaySettingsStore.kt": {
+              "source_blob": "64eec1d2670a0cf6d6a94de4206ce789999ad1dc",
+              "candidate_blob": "64eec1d2670a0cf6d6a94de4206ce789999ad1dc",
+              "equivalence_evidence": "Original normal341 whole proof + PRIOR_REVISION3/actual_source_and_archive_deltas + IMPACT + SOURCE_DELTA + REPAIR_FORMAL_BINDING. 948→8fdの既存source/class適用と8fd→2eのbusy理由/ToolTipText修正を区別し、保存先・PNG・Settings値・request/取消し/寿命の保持範囲を後続独立reviewで実質評価する。"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/settings/ReplaySettingsConfigurable.kt": {
+              "source_blob": "7a668e4512bf79d4dfedc922fe4d8b718921d400",
+              "candidate_blob": "75e47c484d6491c8e1f45cd36cf8128c9551e15d",
+              "equivalence_evidence": "Original normal341 whole proof + PRIOR_REVISION3/actual_source_and_archive_deltas + IMPACT + SOURCE_DELTA + REPAIR_FORMAL_BINDING. 948→8fdの既存source/class適用と8fd→2eのbusy理由/ToolTipText修正を区別し、保存先・PNG・Settings値・request/取消し/寿命の保持範囲を後続独立reviewで実質評価する。"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/core/ReplayCore.kt": {
+              "source_blob": "613e3b0ee1ff92d1be68d98a08fb2aee961e43f1",
+              "candidate_blob": "32053ef79050a9b224f542c6a658f88106d6ba9f",
+              "equivalence_evidence": "Original normal341 whole proof + PRIOR_REVISION3/actual_source_and_archive_deltas + IMPACT + SOURCE_DELTA + REPAIR_FORMAL_BINDING. 948→8fdの既存source/class適用と8fd→2eのbusy理由/ToolTipText修正を区別し、保存先・PNG・Settings値・request/取消し/寿命の保持範囲を後続独立reviewで実質評価する。"
+            }
+          }
+        },
+        "step_1": {
+          "facts": [
+            "RETAINED_NORMAL_341_WHOLE_RESULT"
+          ],
+          "disposition": "equivalent",
+          "impact": {
+            "source": "Actual full 8fd→2e diff has7paths:3 production,2 tests,2 repair metadata. No other product path or history edge;2 single-parent repair merges. Full source diff retained. 948→8fdについては保存済みnormal341 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "callers": "Capture.acceptSnapshot/showMessage → immutable view → Service STATUS.reason at362 and ToolWindow.message at238. Panel listener copies LogcatButton.tooltip to permanent label; LogcatButton own device/target/SDK/manager path does not read Capture.message. 948→8fdについては保存済みnormal341 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "callees": "Core save/retry/discard/Writer admission unchanged; const extraction gives identical symbolic ReplayCore opcodes. Capture changed2methods only. Panel constructor actual ToolTipText key only, unchanged refresh/open/close/target supplier/manager/dispose bodies and actual LogcatButton class. 948→8fdについては保存済みnormal341 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "dataflow": "Only matching SAVE_IN_PROGRESS_REASON view message cleared when next phase!=WRITING; late busy rejected outsideWRITING. closed/intent/settingsRevision/revision ordering guards remain. Other message/errors/FAILED pin preserved by actual422probe. Store/packet/raw/header/frame/time/request/attempt/path/save_id flows untouched. 948→8fdについては保存済みnormal341 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "build": "Same trusted main formalworkflow and pinnedbuild.gradle; exactlyone newformalrun/attempt1 success. Actual formal all193mainclasses byteequal tested3583;187/193 equal422, six differences Panel-related. Old25of27binarychangedclasses match symbolic disassembly. No rebuild/test execution in this composition. 948→8fdについては保存済みnormal341 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "configuration": "No settings/schema/validation/default/storage/import path change; Store andConfigurable blobs/classes unchanged. Old native settings/profile/fixture are their actual original values; newprocess values not guessed. 948→8fdについては保存済みnormal341 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "dependencies": "No dependency/pin/build change. Actual clock/server/JCodec helper bytes andsearchableOptions equal across formal17a/f327; plugin.xml/version0.2.0 unchanged. READMEfixedsource URL/identity/Kotlinmodule/JARcontainer change retained. 948→8fdについては保存済みnormal341 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "fixtures": "fixture sourceは8fd→2eで不変。元native/settings/profile/入力/FILEは元の実条件に固定。今回OFF unitの通常exit/reap/CAS/G12保全/leaseFREEはCURRENT_NATIVE原returnで受領済みであり、未返却扱いに戻さない。 948→8fdについては保存済みnormal341 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "runtime": "元nativeのactor/JBR/SDK/source/ZIP/process条件を原本のまま保持。現在f327の3 installed JAR/hash/size/mode・loaded paths/JBR・About0.2.0/full2eはCURRENT_NATIVE直接原本で受領済み。current GUI操作の新実行や全heap/class同定は主張しない。 948→8fdについては保存済みnormal341 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。 Actual trusted registration base fb3c417a。追加native fact待ちを既存current load未観測へ戻さない。",
+            "display": "元Settings/PNG/Logcatの表示・可読性・操作事実は元条件で保持。今回影響する常設理由はCURRENT_NATIVEの初期→Close後disabledOpen/理由全文→native再表示を正確AX/画像で受領済み。f327でSettings/Save/keyboardを再実行したとはしない。 948→8fdについては保存済みnormal341 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "failure_attribution": "旧stale busy/empty permanent reason FAILとhover UNKNOWN、初回headless POLICY_DENIED/not_delivered、元compile/partial/writerFAILED/physicalFAIL/unknown/REAL/humanを不変保全。修復の実限定結果・formal class binding・current reason fresh事実を区別して接続。Case PASSや実独立承認は未成立。 948→8fdについては保存済みnormal341 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。 独立適用report3d48390aのF1/F2を反映し、未支持とされていた416labelForは実JUnit/14classで支持、clipboardは104に帰属。D4copy229byteの条件付き支持と原UNKNOWNを分離。"
+          },
+          "components": {
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/core/ScreenshotSave.kt": {
+              "source_blob": "b9ec9c4d0b26da634ab0df3f46be1b732c7eb5d4",
+              "candidate_blob": "b9ec9c4d0b26da634ab0df3f46be1b732c7eb5d4",
+              "equivalence_evidence": "Original normal341 whole proof + PRIOR_REVISION3/actual_source_and_archive_deltas + IMPACT + SOURCE_DELTA + REPAIR_FORMAL_BINDING. 948→8fdの既存source/class適用と8fd→2eのbusy理由/ToolTipText修正を区別し、保存先・PNG・Settings値・request/取消し/寿命の保持範囲を後続独立reviewで実質評価する。"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ide/ReplayProjectService.kt": {
+              "source_blob": "749df544dff0c87b92b3bccf3da2145940bdc17a",
+              "candidate_blob": "749df544dff0c87b92b3bccf3da2145940bdc17a",
+              "equivalence_evidence": "Original normal341 whole proof + PRIOR_REVISION3/actual_source_and_archive_deltas + IMPACT + SOURCE_DELTA + REPAIR_FORMAL_BINDING. 948→8fdの既存source/class適用と8fd→2eのbusy理由/ToolTipText修正を区別し、保存先・PNG・Settings値・request/取消し/寿命の保持範囲を後続独立reviewで実質評価する。"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ide/ReplayProjectCapture.kt": {
+              "source_blob": "e8b44c0ce95c13a47105e971de8c656432057677",
+              "candidate_blob": "0f7fbf1f26e2c3a763556859894bfa87c2ef0252",
+              "equivalence_evidence": "Original normal341 whole proof + PRIOR_REVISION3/actual_source_and_archive_deltas + IMPACT + SOURCE_DELTA + REPAIR_FORMAL_BINDING. 948→8fdの既存source/class適用と8fd→2eのbusy理由/ToolTipText修正を区別し、保存先・PNG・Settings値・request/取消し/寿命の保持範囲を後続独立reviewで実質評価する。"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/settings/ReplaySettingsStore.kt": {
+              "source_blob": "64eec1d2670a0cf6d6a94de4206ce789999ad1dc",
+              "candidate_blob": "64eec1d2670a0cf6d6a94de4206ce789999ad1dc",
+              "equivalence_evidence": "Original normal341 whole proof + PRIOR_REVISION3/actual_source_and_archive_deltas + IMPACT + SOURCE_DELTA + REPAIR_FORMAL_BINDING. 948→8fdの既存source/class適用と8fd→2eのbusy理由/ToolTipText修正を区別し、保存先・PNG・Settings値・request/取消し/寿命の保持範囲を後続独立reviewで実質評価する。"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/settings/ReplaySettingsConfigurable.kt": {
+              "source_blob": "7a668e4512bf79d4dfedc922fe4d8b718921d400",
+              "candidate_blob": "75e47c484d6491c8e1f45cd36cf8128c9551e15d",
+              "equivalence_evidence": "Original normal341 whole proof + PRIOR_REVISION3/actual_source_and_archive_deltas + IMPACT + SOURCE_DELTA + REPAIR_FORMAL_BINDING. 948→8fdの既存source/class適用と8fd→2eのbusy理由/ToolTipText修正を区別し、保存先・PNG・Settings値・request/取消し/寿命の保持範囲を後続独立reviewで実質評価する。"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/core/ReplayCore.kt": {
+              "source_blob": "613e3b0ee1ff92d1be68d98a08fb2aee961e43f1",
+              "candidate_blob": "32053ef79050a9b224f542c6a658f88106d6ba9f",
+              "equivalence_evidence": "Original normal341 whole proof + PRIOR_REVISION3/actual_source_and_archive_deltas + IMPACT + SOURCE_DELTA + REPAIR_FORMAL_BINDING. 948→8fdの既存source/class適用と8fd→2eのbusy理由/ToolTipText修正を区別し、保存先・PNG・Settings値・request/取消し/寿命の保持範囲を後続独立reviewで実質評価する。"
+            }
+          }
+        },
+        "step_2": {
+          "facts": [
+            "RETAINED_NORMAL_341_WHOLE_RESULT"
+          ],
+          "disposition": "equivalent",
+          "impact": {
+            "source": "Actual full 8fd→2e diff has7paths:3 production,2 tests,2 repair metadata. No other product path or history edge;2 single-parent repair merges. Full source diff retained. 948→8fdについては保存済みnormal341 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "callers": "Capture.acceptSnapshot/showMessage → immutable view → Service STATUS.reason at362 and ToolWindow.message at238. Panel listener copies LogcatButton.tooltip to permanent label; LogcatButton own device/target/SDK/manager path does not read Capture.message. 948→8fdについては保存済みnormal341 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "callees": "Core save/retry/discard/Writer admission unchanged; const extraction gives identical symbolic ReplayCore opcodes. Capture changed2methods only. Panel constructor actual ToolTipText key only, unchanged refresh/open/close/target supplier/manager/dispose bodies and actual LogcatButton class. 948→8fdについては保存済みnormal341 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "dataflow": "Only matching SAVE_IN_PROGRESS_REASON view message cleared when next phase!=WRITING; late busy rejected outsideWRITING. closed/intent/settingsRevision/revision ordering guards remain. Other message/errors/FAILED pin preserved by actual422probe. Store/packet/raw/header/frame/time/request/attempt/path/save_id flows untouched. 948→8fdについては保存済みnormal341 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "build": "Same trusted main formalworkflow and pinnedbuild.gradle; exactlyone newformalrun/attempt1 success. Actual formal all193mainclasses byteequal tested3583;187/193 equal422, six differences Panel-related. Old25of27binarychangedclasses match symbolic disassembly. No rebuild/test execution in this composition. 948→8fdについては保存済みnormal341 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "configuration": "No settings/schema/validation/default/storage/import path change; Store andConfigurable blobs/classes unchanged. Old native settings/profile/fixture are their actual original values; newprocess values not guessed. 948→8fdについては保存済みnormal341 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "dependencies": "No dependency/pin/build change. Actual clock/server/JCodec helper bytes andsearchableOptions equal across formal17a/f327; plugin.xml/version0.2.0 unchanged. READMEfixedsource URL/identity/Kotlinmodule/JARcontainer change retained. 948→8fdについては保存済みnormal341 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "fixtures": "fixture sourceは8fd→2eで不変。元native/settings/profile/入力/FILEは元の実条件に固定。今回OFF unitの通常exit/reap/CAS/G12保全/leaseFREEはCURRENT_NATIVE原returnで受領済みであり、未返却扱いに戻さない。 948→8fdについては保存済みnormal341 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "runtime": "元nativeのactor/JBR/SDK/source/ZIP/process条件を原本のまま保持。現在f327の3 installed JAR/hash/size/mode・loaded paths/JBR・About0.2.0/full2eはCURRENT_NATIVE直接原本で受領済み。current GUI操作の新実行や全heap/class同定は主張しない。 948→8fdについては保存済みnormal341 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。 Actual trusted registration base fb3c417a。追加native fact待ちを既存current load未観測へ戻さない。",
+            "display": "元Settings/PNG/Logcatの表示・可読性・操作事実は元条件で保持。今回影響する常設理由はCURRENT_NATIVEの初期→Close後disabledOpen/理由全文→native再表示を正確AX/画像で受領済み。f327でSettings/Save/keyboardを再実行したとはしない。 948→8fdについては保存済みnormal341 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "failure_attribution": "旧stale busy/empty permanent reason FAILとhover UNKNOWN、初回headless POLICY_DENIED/not_delivered、元compile/partial/writerFAILED/physicalFAIL/unknown/REAL/humanを不変保全。修復の実限定結果・formal class binding・current reason fresh事実を区別して接続。Case PASSや実独立承認は未成立。 948→8fdについては保存済みnormal341 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。 独立適用report3d48390aのF1/F2を反映し、未支持とされていた416labelForは実JUnit/14classで支持、clipboardは104に帰属。D4copy229byteの条件付き支持と原UNKNOWNを分離。"
+          },
+          "components": {
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/core/ScreenshotSave.kt": {
+              "source_blob": "b9ec9c4d0b26da634ab0df3f46be1b732c7eb5d4",
+              "candidate_blob": "b9ec9c4d0b26da634ab0df3f46be1b732c7eb5d4",
+              "equivalence_evidence": "Original normal341 whole proof + PRIOR_REVISION3/actual_source_and_archive_deltas + IMPACT + SOURCE_DELTA + REPAIR_FORMAL_BINDING. 948→8fdの既存source/class適用と8fd→2eのbusy理由/ToolTipText修正を区別し、保存先・PNG・Settings値・request/取消し/寿命の保持範囲を後続独立reviewで実質評価する。"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ide/ReplayProjectService.kt": {
+              "source_blob": "749df544dff0c87b92b3bccf3da2145940bdc17a",
+              "candidate_blob": "749df544dff0c87b92b3bccf3da2145940bdc17a",
+              "equivalence_evidence": "Original normal341 whole proof + PRIOR_REVISION3/actual_source_and_archive_deltas + IMPACT + SOURCE_DELTA + REPAIR_FORMAL_BINDING. 948→8fdの既存source/class適用と8fd→2eのbusy理由/ToolTipText修正を区別し、保存先・PNG・Settings値・request/取消し/寿命の保持範囲を後続独立reviewで実質評価する。"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ide/ReplayProjectCapture.kt": {
+              "source_blob": "e8b44c0ce95c13a47105e971de8c656432057677",
+              "candidate_blob": "0f7fbf1f26e2c3a763556859894bfa87c2ef0252",
+              "equivalence_evidence": "Original normal341 whole proof + PRIOR_REVISION3/actual_source_and_archive_deltas + IMPACT + SOURCE_DELTA + REPAIR_FORMAL_BINDING. 948→8fdの既存source/class適用と8fd→2eのbusy理由/ToolTipText修正を区別し、保存先・PNG・Settings値・request/取消し/寿命の保持範囲を後続独立reviewで実質評価する。"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/settings/ReplaySettingsStore.kt": {
+              "source_blob": "64eec1d2670a0cf6d6a94de4206ce789999ad1dc",
+              "candidate_blob": "64eec1d2670a0cf6d6a94de4206ce789999ad1dc",
+              "equivalence_evidence": "Original normal341 whole proof + PRIOR_REVISION3/actual_source_and_archive_deltas + IMPACT + SOURCE_DELTA + REPAIR_FORMAL_BINDING. 948→8fdの既存source/class適用と8fd→2eのbusy理由/ToolTipText修正を区別し、保存先・PNG・Settings値・request/取消し/寿命の保持範囲を後続独立reviewで実質評価する。"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/settings/ReplaySettingsConfigurable.kt": {
+              "source_blob": "7a668e4512bf79d4dfedc922fe4d8b718921d400",
+              "candidate_blob": "75e47c484d6491c8e1f45cd36cf8128c9551e15d",
+              "equivalence_evidence": "Original normal341 whole proof + PRIOR_REVISION3/actual_source_and_archive_deltas + IMPACT + SOURCE_DELTA + REPAIR_FORMAL_BINDING. 948→8fdの既存source/class適用と8fd→2eのbusy理由/ToolTipText修正を区別し、保存先・PNG・Settings値・request/取消し/寿命の保持範囲を後続独立reviewで実質評価する。"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/core/ReplayCore.kt": {
+              "source_blob": "613e3b0ee1ff92d1be68d98a08fb2aee961e43f1",
+              "candidate_blob": "32053ef79050a9b224f542c6a658f88106d6ba9f",
+              "equivalence_evidence": "Original normal341 whole proof + PRIOR_REVISION3/actual_source_and_archive_deltas + IMPACT + SOURCE_DELTA + REPAIR_FORMAL_BINDING. 948→8fdの既存source/class適用と8fd→2eのbusy理由/ToolTipText修正を区別し、保存先・PNG・Settings値・request/取消し/寿命の保持範囲を後続独立reviewで実質評価する。"
+            }
+          }
+        },
+        "step_3": {
+          "facts": [
+            "RETAINED_NORMAL_341_WHOLE_RESULT"
+          ],
+          "disposition": "equivalent",
+          "impact": {
+            "source": "Actual full 8fd→2e diff has7paths:3 production,2 tests,2 repair metadata. No other product path or history edge;2 single-parent repair merges. Full source diff retained. 948→8fdについては保存済みnormal341 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "callers": "Capture.acceptSnapshot/showMessage → immutable view → Service STATUS.reason at362 and ToolWindow.message at238. Panel listener copies LogcatButton.tooltip to permanent label; LogcatButton own device/target/SDK/manager path does not read Capture.message. 948→8fdについては保存済みnormal341 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "callees": "Core save/retry/discard/Writer admission unchanged; const extraction gives identical symbolic ReplayCore opcodes. Capture changed2methods only. Panel constructor actual ToolTipText key only, unchanged refresh/open/close/target supplier/manager/dispose bodies and actual LogcatButton class. 948→8fdについては保存済みnormal341 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "dataflow": "Only matching SAVE_IN_PROGRESS_REASON view message cleared when next phase!=WRITING; late busy rejected outsideWRITING. closed/intent/settingsRevision/revision ordering guards remain. Other message/errors/FAILED pin preserved by actual422probe. Store/packet/raw/header/frame/time/request/attempt/path/save_id flows untouched. 948→8fdについては保存済みnormal341 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "build": "Same trusted main formalworkflow and pinnedbuild.gradle; exactlyone newformalrun/attempt1 success. Actual formal all193mainclasses byteequal tested3583;187/193 equal422, six differences Panel-related. Old25of27binarychangedclasses match symbolic disassembly. No rebuild/test execution in this composition. 948→8fdについては保存済みnormal341 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "configuration": "No settings/schema/validation/default/storage/import path change; Store andConfigurable blobs/classes unchanged. Old native settings/profile/fixture are their actual original values; newprocess values not guessed. 948→8fdについては保存済みnormal341 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "dependencies": "No dependency/pin/build change. Actual clock/server/JCodec helper bytes andsearchableOptions equal across formal17a/f327; plugin.xml/version0.2.0 unchanged. READMEfixedsource URL/identity/Kotlinmodule/JARcontainer change retained. 948→8fdについては保存済みnormal341 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "fixtures": "fixture sourceは8fd→2eで不変。元native/settings/profile/入力/FILEは元の実条件に固定。今回OFF unitの通常exit/reap/CAS/G12保全/leaseFREEはCURRENT_NATIVE原returnで受領済みであり、未返却扱いに戻さない。 948→8fdについては保存済みnormal341 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "runtime": "元nativeのactor/JBR/SDK/source/ZIP/process条件を原本のまま保持。現在f327の3 installed JAR/hash/size/mode・loaded paths/JBR・About0.2.0/full2eはCURRENT_NATIVE直接原本で受領済み。current GUI操作の新実行や全heap/class同定は主張しない。 948→8fdについては保存済みnormal341 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。 Actual trusted registration base fb3c417a。追加native fact待ちを既存current load未観測へ戻さない。",
+            "display": "元Settings/PNG/Logcatの表示・可読性・操作事実は元条件で保持。今回影響する常設理由はCURRENT_NATIVEの初期→Close後disabledOpen/理由全文→native再表示を正確AX/画像で受領済み。f327でSettings/Save/keyboardを再実行したとはしない。 948→8fdについては保存済みnormal341 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "failure_attribution": "旧stale busy/empty permanent reason FAILとhover UNKNOWN、初回headless POLICY_DENIED/not_delivered、元compile/partial/writerFAILED/physicalFAIL/unknown/REAL/humanを不変保全。修復の実限定結果・formal class binding・current reason fresh事実を区別して接続。Case PASSや実独立承認は未成立。 948→8fdについては保存済みnormal341 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。 独立適用report3d48390aのF1/F2を反映し、未支持とされていた416labelForは実JUnit/14classで支持、clipboardは104に帰属。D4copy229byteの条件付き支持と原UNKNOWNを分離。"
+          },
+          "components": {
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/core/ScreenshotSave.kt": {
+              "source_blob": "b9ec9c4d0b26da634ab0df3f46be1b732c7eb5d4",
+              "candidate_blob": "b9ec9c4d0b26da634ab0df3f46be1b732c7eb5d4",
+              "equivalence_evidence": "Original normal341 whole proof + PRIOR_REVISION3/actual_source_and_archive_deltas + IMPACT + SOURCE_DELTA + REPAIR_FORMAL_BINDING. 948→8fdの既存source/class適用と8fd→2eのbusy理由/ToolTipText修正を区別し、保存先・PNG・Settings値・request/取消し/寿命の保持範囲を後続独立reviewで実質評価する。"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ide/ReplayProjectService.kt": {
+              "source_blob": "749df544dff0c87b92b3bccf3da2145940bdc17a",
+              "candidate_blob": "749df544dff0c87b92b3bccf3da2145940bdc17a",
+              "equivalence_evidence": "Original normal341 whole proof + PRIOR_REVISION3/actual_source_and_archive_deltas + IMPACT + SOURCE_DELTA + REPAIR_FORMAL_BINDING. 948→8fdの既存source/class適用と8fd→2eのbusy理由/ToolTipText修正を区別し、保存先・PNG・Settings値・request/取消し/寿命の保持範囲を後続独立reviewで実質評価する。"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ide/ReplayProjectCapture.kt": {
+              "source_blob": "e8b44c0ce95c13a47105e971de8c656432057677",
+              "candidate_blob": "0f7fbf1f26e2c3a763556859894bfa87c2ef0252",
+              "equivalence_evidence": "Original normal341 whole proof + PRIOR_REVISION3/actual_source_and_archive_deltas + IMPACT + SOURCE_DELTA + REPAIR_FORMAL_BINDING. 948→8fdの既存source/class適用と8fd→2eのbusy理由/ToolTipText修正を区別し、保存先・PNG・Settings値・request/取消し/寿命の保持範囲を後続独立reviewで実質評価する。"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/settings/ReplaySettingsStore.kt": {
+              "source_blob": "64eec1d2670a0cf6d6a94de4206ce789999ad1dc",
+              "candidate_blob": "64eec1d2670a0cf6d6a94de4206ce789999ad1dc",
+              "equivalence_evidence": "Original normal341 whole proof + PRIOR_REVISION3/actual_source_and_archive_deltas + IMPACT + SOURCE_DELTA + REPAIR_FORMAL_BINDING. 948→8fdの既存source/class適用と8fd→2eのbusy理由/ToolTipText修正を区別し、保存先・PNG・Settings値・request/取消し/寿命の保持範囲を後続独立reviewで実質評価する。"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/settings/ReplaySettingsConfigurable.kt": {
+              "source_blob": "7a668e4512bf79d4dfedc922fe4d8b718921d400",
+              "candidate_blob": "75e47c484d6491c8e1f45cd36cf8128c9551e15d",
+              "equivalence_evidence": "Original normal341 whole proof + PRIOR_REVISION3/actual_source_and_archive_deltas + IMPACT + SOURCE_DELTA + REPAIR_FORMAL_BINDING. 948→8fdの既存source/class適用と8fd→2eのbusy理由/ToolTipText修正を区別し、保存先・PNG・Settings値・request/取消し/寿命の保持範囲を後続独立reviewで実質評価する。"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/core/ReplayCore.kt": {
+              "source_blob": "613e3b0ee1ff92d1be68d98a08fb2aee961e43f1",
+              "candidate_blob": "32053ef79050a9b224f542c6a658f88106d6ba9f",
+              "equivalence_evidence": "Original normal341 whole proof + PRIOR_REVISION3/actual_source_and_archive_deltas + IMPACT + SOURCE_DELTA + REPAIR_FORMAL_BINDING. 948→8fdの既存source/class適用と8fd→2eのbusy理由/ToolTipText修正を区別し、保存先・PNG・Settings値・request/取消し/寿命の保持範囲を後続独立reviewで実質評価する。"
+            }
+          }
+        },
+        "expected": {
+          "facts": [
+            "RETAINED_NORMAL_341_WHOLE_RESULT"
+          ],
+          "disposition": "equivalent",
+          "impact": {
+            "source": "Actual full 8fd→2e diff has7paths:3 production,2 tests,2 repair metadata. No other product path or history edge;2 single-parent repair merges. Full source diff retained. 948→8fdについては保存済みnormal341 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "callers": "Capture.acceptSnapshot/showMessage → immutable view → Service STATUS.reason at362 and ToolWindow.message at238. Panel listener copies LogcatButton.tooltip to permanent label; LogcatButton own device/target/SDK/manager path does not read Capture.message. 948→8fdについては保存済みnormal341 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "callees": "Core save/retry/discard/Writer admission unchanged; const extraction gives identical symbolic ReplayCore opcodes. Capture changed2methods only. Panel constructor actual ToolTipText key only, unchanged refresh/open/close/target supplier/manager/dispose bodies and actual LogcatButton class. 948→8fdについては保存済みnormal341 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "dataflow": "Only matching SAVE_IN_PROGRESS_REASON view message cleared when next phase!=WRITING; late busy rejected outsideWRITING. closed/intent/settingsRevision/revision ordering guards remain. Other message/errors/FAILED pin preserved by actual422probe. Store/packet/raw/header/frame/time/request/attempt/path/save_id flows untouched. 948→8fdについては保存済みnormal341 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "build": "Same trusted main formalworkflow and pinnedbuild.gradle; exactlyone newformalrun/attempt1 success. Actual formal all193mainclasses byteequal tested3583;187/193 equal422, six differences Panel-related. Old25of27binarychangedclasses match symbolic disassembly. No rebuild/test execution in this composition. 948→8fdについては保存済みnormal341 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "configuration": "No settings/schema/validation/default/storage/import path change; Store andConfigurable blobs/classes unchanged. Old native settings/profile/fixture are their actual original values; newprocess values not guessed. 948→8fdについては保存済みnormal341 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "dependencies": "No dependency/pin/build change. Actual clock/server/JCodec helper bytes andsearchableOptions equal across formal17a/f327; plugin.xml/version0.2.0 unchanged. READMEfixedsource URL/identity/Kotlinmodule/JARcontainer change retained. 948→8fdについては保存済みnormal341 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "fixtures": "fixture sourceは8fd→2eで不変。元native/settings/profile/入力/FILEは元の実条件に固定。今回OFF unitの通常exit/reap/CAS/G12保全/leaseFREEはCURRENT_NATIVE原returnで受領済みであり、未返却扱いに戻さない。 948→8fdについては保存済みnormal341 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "runtime": "元nativeのactor/JBR/SDK/source/ZIP/process条件を原本のまま保持。現在f327の3 installed JAR/hash/size/mode・loaded paths/JBR・About0.2.0/full2eはCURRENT_NATIVE直接原本で受領済み。current GUI操作の新実行や全heap/class同定は主張しない。 948→8fdについては保存済みnormal341 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。 Actual trusted registration base fb3c417a。追加native fact待ちを既存current load未観測へ戻さない。",
+            "display": "元Settings/PNG/Logcatの表示・可読性・操作事実は元条件で保持。今回影響する常設理由はCURRENT_NATIVEの初期→Close後disabledOpen/理由全文→native再表示を正確AX/画像で受領済み。f327でSettings/Save/keyboardを再実行したとはしない。 948→8fdについては保存済みnormal341 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "failure_attribution": "旧stale busy/empty permanent reason FAILとhover UNKNOWN、初回headless POLICY_DENIED/not_delivered、元compile/partial/writerFAILED/physicalFAIL/unknown/REAL/humanを不変保全。修復の実限定結果・formal class binding・current reason fresh事実を区別して接続。Case PASSや実独立承認は未成立。 948→8fdについては保存済みnormal341 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。 独立適用report3d48390aのF1/F2を反映し、未支持とされていた416labelForは実JUnit/14classで支持、clipboardは104に帰属。D4copy229byteの条件付き支持と原UNKNOWNを分離。"
+          },
+          "components": {
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/core/ScreenshotSave.kt": {
+              "source_blob": "b9ec9c4d0b26da634ab0df3f46be1b732c7eb5d4",
+              "candidate_blob": "b9ec9c4d0b26da634ab0df3f46be1b732c7eb5d4",
+              "equivalence_evidence": "Original normal341 whole proof + PRIOR_REVISION3/actual_source_and_archive_deltas + IMPACT + SOURCE_DELTA + REPAIR_FORMAL_BINDING. 948→8fdの既存source/class適用と8fd→2eのbusy理由/ToolTipText修正を区別し、保存先・PNG・Settings値・request/取消し/寿命の保持範囲を後続独立reviewで実質評価する。"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ide/ReplayProjectService.kt": {
+              "source_blob": "749df544dff0c87b92b3bccf3da2145940bdc17a",
+              "candidate_blob": "749df544dff0c87b92b3bccf3da2145940bdc17a",
+              "equivalence_evidence": "Original normal341 whole proof + PRIOR_REVISION3/actual_source_and_archive_deltas + IMPACT + SOURCE_DELTA + REPAIR_FORMAL_BINDING. 948→8fdの既存source/class適用と8fd→2eのbusy理由/ToolTipText修正を区別し、保存先・PNG・Settings値・request/取消し/寿命の保持範囲を後続独立reviewで実質評価する。"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ide/ReplayProjectCapture.kt": {
+              "source_blob": "e8b44c0ce95c13a47105e971de8c656432057677",
+              "candidate_blob": "0f7fbf1f26e2c3a763556859894bfa87c2ef0252",
+              "equivalence_evidence": "Original normal341 whole proof + PRIOR_REVISION3/actual_source_and_archive_deltas + IMPACT + SOURCE_DELTA + REPAIR_FORMAL_BINDING. 948→8fdの既存source/class適用と8fd→2eのbusy理由/ToolTipText修正を区別し、保存先・PNG・Settings値・request/取消し/寿命の保持範囲を後続独立reviewで実質評価する。"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/settings/ReplaySettingsStore.kt": {
+              "source_blob": "64eec1d2670a0cf6d6a94de4206ce789999ad1dc",
+              "candidate_blob": "64eec1d2670a0cf6d6a94de4206ce789999ad1dc",
+              "equivalence_evidence": "Original normal341 whole proof + PRIOR_REVISION3/actual_source_and_archive_deltas + IMPACT + SOURCE_DELTA + REPAIR_FORMAL_BINDING. 948→8fdの既存source/class適用と8fd→2eのbusy理由/ToolTipText修正を区別し、保存先・PNG・Settings値・request/取消し/寿命の保持範囲を後続独立reviewで実質評価する。"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/settings/ReplaySettingsConfigurable.kt": {
+              "source_blob": "7a668e4512bf79d4dfedc922fe4d8b718921d400",
+              "candidate_blob": "75e47c484d6491c8e1f45cd36cf8128c9551e15d",
+              "equivalence_evidence": "Original normal341 whole proof + PRIOR_REVISION3/actual_source_and_archive_deltas + IMPACT + SOURCE_DELTA + REPAIR_FORMAL_BINDING. 948→8fdの既存source/class適用と8fd→2eのbusy理由/ToolTipText修正を区別し、保存先・PNG・Settings値・request/取消し/寿命の保持範囲を後続独立reviewで実質評価する。"
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/core/ReplayCore.kt": {
+              "source_blob": "613e3b0ee1ff92d1be68d98a08fb2aee961e43f1",
+              "candidate_blob": "32053ef79050a9b224f542c6a658f88106d6ba9f",
+              "equivalence_evidence": "Original normal341 whole proof + PRIOR_REVISION3/actual_source_and_archive_deltas + IMPACT + SOURCE_DELTA + REPAIR_FORMAL_BINDING. 948→8fdの既存source/class適用と8fd→2eのbusy理由/ToolTipText修正を区別し、保存先・PNG・Settings値・request/取消し/寿命の保持範囲を後続独立reviewで実質評価する。"
+            }
+          }
+        }
+      }
+    },
+    "normal-284-bounds-948-to-2e-f327": {
+      "schema": 1,
+      "key": "284:CRASH-AUTO-BOUNDS",
+      "source_candidate": "948b1ad2f18ee266c79935327a403dd7471fdc3b",
+      "source_artifact_sha256": "a582052844272ad004f3e3429d50b12a7ec6b6783bc686457465a02f20546316",
+      "candidate": "2e576ce3c724dc95ccf0688b8a1bf7cd92d774a8",
+      "artifact_sha256": "f3274d7501f9d173ece5de6b1cb729a7fb40d247cfe2a17c6c937fcc085a2c88",
+      "case_sha256": "ec22e67fe841900660a03ddd60eaa758020227e7b0e10eb324273b15b997dc86",
+      "plan_sha256": "0b6d9c6d2d5054ed642565afdbaeb5a88ee198a4ea5398ff96ff36168ce0eda5",
+      "assessment_sha256": "f807622d46ab3545beb8d14946805c113a2abd7ed7bb7ce7571539f8c016dee2",
+      "observation_sha256": "2dfc87e790053a6c753f6b2ce532ce87c885b40a192b6165e8ec58584967d395",
+      "original_file_sha256": "00aa6ac89fdeb49f31a93b6ea826a500635598ee8b7223dea2b415f8f7d9dc90",
+      "original_result_sha256": "2d22c2339d0ab6c12177a2f1881a4669a0286c93778ba4a5a33f39f631e5731e",
+      "original_fact_sha256": {
+        "RETAINED_NORMAL_284_BOUNDS_WHOLE_RESULT": "2d22c2339d0ab6c12177a2f1881a4669a0286c93778ba4a5a33f39f631e5731e"
+      },
+      "original_record_evidence": "Immutable normal284BOUNDS projection byte-sha256=00aa6ac89fdeb49f31a93b6ea826a500635598ee8b7223dea2b415f8f7d9dc90; original whole decision319c2c0b qualified scope preserved. New fixed PR review/origin not established.",
+      "history": [
+        {
+          "commit": "0f75cce7cffade20ed23c00101faf3b8d0bf9eb9",
+          "parent": "8fd4f6669137c6fa0a97b0914f8d7e8cde14dc85",
+          "paths": [
+            "docs/verification/changes/issue-422.json",
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/core/ReplayCore.kt",
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ide/ReplayProjectCapture.kt",
+            "plugin/src/test/kotlin/io/github/shinma06/replaybuffer/ide/ReplayProjectCaptureTest.kt"
+          ]
+        },
+        {
+          "commit": "2e576ce3c724dc95ccf0688b8a1bf7cd92d774a8",
+          "parent": "0f75cce7cffade20ed23c00101faf3b8d0bf9eb9",
+          "paths": [
+            "docs/verification/changes/issue-424.json",
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ui/ReplayToolWindowFactory.kt",
+            "plugin/src/test/java/io/github/shinma06/replaybuffer/ui/ReplayToolWindowLayoutTest.java"
+          ]
+        },
+        {
+          "commit": "515ba790dac716b38cbc638c2d1e2f4a39d6ddba",
+          "parent": "c570310fe9e1053203d1c0ac6025d0645a59e5e0",
+          "paths": [
+            "docs/verification/changes/issue-412.json",
+            "plugin/src/test/kotlin/io/github/shinma06/replaybuffer/ide/ReplayProjectCaptureTest.kt"
+          ]
+        },
+        {
+          "commit": "8fd4f6669137c6fa0a97b0914f8d7e8cde14dc85",
+          "parent": "515ba790dac716b38cbc638c2d1e2f4a39d6ddba",
+          "paths": [
+            ".github/workflows/release-candidate.yml",
+            "docs/setup/ci.md",
+            "docs/verification/changes/issue-418.json",
+            "docs/verification/changes/issue-420.json"
+          ]
+        },
+        {
+          "commit": "c570310fe9e1053203d1c0ac6025d0645a59e5e0",
+          "parent": "d7c5859ffad6fac9c1e6e1f6520467680ab1a0be",
+          "paths": [
+            "docs/verification/changes/issue-416.json",
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/settings/ReplaySettingsConfigurable.kt",
+            "plugin/src/test/java/io/github/shinma06/replaybuffer/settings/ReplaySettingsLayoutTest.java"
+          ]
+        },
+        {
+          "commit": "d7c5859ffad6fac9c1e6e1f6520467680ab1a0be",
+          "parent": "948b1ad2f18ee266c79935327a403dd7471fdc3b",
+          "paths": [
+            ".github/workflows/ci.yml",
+            "docs/setup/ci.md",
+            "docs/verification/changes/issue-414.json",
+            "plugin/build.gradle.kts"
+          ]
+        }
+      ],
+      "review": {
+        "status": "pending",
+        "reviewer_session": null,
+        "writer_session": "codex-session-sha256:7b2456c4ac692a16695fa3b6f035ac2149e76f23bd63e479f43f81ca687087e1",
+        "executor_sessions": null,
+        "at": null,
+        "evidence": null
+      },
+      "provenance": {
+        "at": "2026-11-06T13:58:56.017172+00:00",
+        "attribution": {
+          "writer": "codex-session-sha256:7b2456c4ac692a16695fa3b6f035ac2149e76f23bd63e479f43f81ca687087e1",
+          "observer": "codex-session-sha256:7b2456c4ac692a16695fa3b6f035ac2149e76f23bd63e479f43f81ca687087e1",
+          "contributors": null
+        }
+      },
+      "guarantees": {
+        "contract_coverage": {
+          "facts": [
+            "RETAINED_NORMAL_284_BOUNDS_WHOLE_RESULT"
+          ],
+          "disposition": "equivalent",
+          "impact": {
+            "source": "BOUNDS guard/accounting/target semantics unchanged through948→8fd→2e;原whole評価319c2c0bと現適用3d48390aを接続。",
+            "callers": "Capture.acceptSnapshot/showMessage → immutable view → Service STATUS.reason at362 and ToolWindow.message at238. Panel listener copies LogcatButton.tooltip to permanent label; LogcatButton own device/target/SDK/manager path does not read Capture.message. 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "callees": "Core save/retry/discard/Writer admission unchanged; const extraction gives identical symbolic ReplayCore opcodes. Capture changed2methods only. Panel constructor actual ToolTipText key only, unchanged refresh/open/close/target supplier/manager/dispose bodies and actual LogcatButton class. 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "dataflow": "Only matching SAVE_IN_PROGRESS_REASON view message cleared when next phase!=WRITING; late busy rejected outsideWRITING. closed/intent/settingsRevision/revision ordering guards remain. Other message/errors/FAILED pin preserved by actual422probe. Store/packet/raw/header/frame/time/request/attempt/path/save_id flows untouched. 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "build": "Same trusted main formalworkflow and pinnedbuild.gradle; exactlyone newformalrun/attempt1 success. Actual formal all193mainclasses byteequal tested3583;187/193 equal422, six differences Panel-related. Old25of27binarychangedclasses match symbolic disassembly. No rebuild/test execution in this composition. 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "configuration": "No settings/schema/validation/default/storage/import path change; Store andConfigurable blobs/classes unchanged. Old native settings/profile/fixture are their actual original values; newprocess values not guessed. 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "dependencies": "No dependency/pin/build change. Actual clock/server/JCodec helper bytes andsearchableOptions equal across formal17a/f327; plugin.xml/version0.2.0 unchanged. READMEfixedsource URL/identity/Kotlinmodule/JARcontainer change retained. 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "fixtures": "fixture sourceは8fd→2eで不変。元native/settings/profile/入力/FILEは元の実条件に固定。今回OFF unitの通常exit/reap/CAS/G12保全/leaseFREEはCURRENT_NATIVE原returnで受領済みであり、未返却扱いに戻さない。 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "runtime": "元nativeのactor/JBR/SDK/source/ZIP/process条件を原本のまま保持。現在f327の3 installed JAR/hash/size/mode・loaded paths/JBR・About0.2.0/full2eはCURRENT_NATIVE直接原本で受領済み。current GUI操作の新実行や全heap/class同定は主張しない。 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。 Actual trusted registration base fb3c417a。追加native fact待ちを既存current load未観測へ戻さない。",
+            "display": "原manualSUCCESS/autoFAILED/8段階会計の表示・FILE・回帰の分担を維持。理由修復とcurrent load/OFFは別辺。新autoSUCCESS同時native・飽和/heapを要求しない。",
+            "failure_attribution": "旧stale busy/empty permanent reason FAILとhover UNKNOWN、初回headless POLICY_DENIED/not_delivered、元compile/partial/writerFAILED/physicalFAIL/unknown/REAL/humanを不変保全。修復の実限定結果・formal class binding・current reason fresh事実を区別して接続。Case PASSや実独立承認は未成立。 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。 独立適用report3d48390aのF1/F2を反映し、未支持とされていた416labelForは実JUnit/14classで支持、clipboardは104に帰属。D4copy229byteの条件付き支持と原UNKNOWNを分離。"
+          },
+          "components": {
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/core/CrashAutosave.kt": {
+              "source_blob": "95a664cdfa4e3a0dd9e6afdaebf146706fd8b007",
+              "candidate_blob": "95a664cdfa4e3a0dd9e6afdaebf146706fd8b007",
+              "equivalence_evidence": "Original319c2c0b whole BOUNDS decision plus current independent application3d48390a; unchanged budget/target/guard/writer semantics, actual 89 original regressions and finite manualSUCCESS/autoFAILED/resource facts retain original identities. Current f327 load is separate."
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/core/CrashCapture.kt": {
+              "source_blob": "be154c5eb9c80c120e03c3b8e52ceb3707f6f099",
+              "candidate_blob": "be154c5eb9c80c120e03c3b8e52ceb3707f6f099",
+              "equivalence_evidence": "Original319c2c0b whole BOUNDS decision plus current independent application3d48390a; unchanged budget/target/guard/writer semantics, actual 89 original regressions and finite manualSUCCESS/autoFAILED/resource facts retain original identities. Current f327 load is separate."
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/core/CrashProtocol.kt": {
+              "source_blob": "e471bd081400d24f323b97314a3c24919dfe20e1",
+              "candidate_blob": "e471bd081400d24f323b97314a3c24919dfe20e1",
+              "equivalence_evidence": "Original319c2c0b whole BOUNDS decision plus current independent application3d48390a; unchanged budget/target/guard/writer semantics, actual 89 original regressions and finite manualSUCCESS/autoFAILED/resource facts retain original identities. Current f327 load is separate."
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/core/ReplayCore.kt": {
+              "source_blob": "613e3b0ee1ff92d1be68d98a08fb2aee961e43f1",
+              "candidate_blob": "32053ef79050a9b224f542c6a658f88106d6ba9f",
+              "equivalence_evidence": "Original319c2c0b whole BOUNDS decision plus current independent application3d48390a; unchanged budget/target/guard/writer semantics, actual 89 original regressions and finite manualSUCCESS/autoFAILED/resource facts retain original identities. Current f327 load is separate."
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ide/ReplayProjectCapture.kt": {
+              "source_blob": "e8b44c0ce95c13a47105e971de8c656432057677",
+              "candidate_blob": "0f7fbf1f26e2c3a763556859894bfa87c2ef0252",
+              "equivalence_evidence": "Original319c2c0b whole BOUNDS decision plus current independent application3d48390a; unchanged budget/target/guard/writer semantics, actual 89 original regressions and finite manualSUCCESS/autoFAILED/resource facts retain original identities. Current f327 load is separate."
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ide/ReplayProjectService.kt": {
+              "source_blob": "749df544dff0c87b92b3bccf3da2145940bdc17a",
+              "candidate_blob": "749df544dff0c87b92b3bccf3da2145940bdc17a",
+              "equivalence_evidence": "Original319c2c0b whole BOUNDS decision plus current independent application3d48390a; unchanged budget/target/guard/writer semantics, actual 89 original regressions and finite manualSUCCESS/autoFAILED/resource facts retain original identities. Current f327 load is separate."
+            }
+          }
+        },
+        "artifact_binding": {
+          "facts": [
+            "CURRENT_F327_LOAD"
+          ],
+          "disposition": "fresh",
+          "impact": {
+            "source": "Actual full 8fd→2e diff has7paths:3 production,2 tests,2 repair metadata. No other product path or history edge;2 single-parent repair merges. Full source diff retained. この保証は現在f327の実placement/load/About辺だけに限定する。",
+            "callers": "Capture.acceptSnapshot/showMessage → immutable view → Service STATUS.reason at362 and ToolWindow.message at238. Panel listener copies LogcatButton.tooltip to permanent label; LogcatButton own device/target/SDK/manager path does not read Capture.message. この保証は現在f327の実placement/load/About辺だけに限定する。",
+            "callees": "Core save/retry/discard/Writer admission unchanged; const extraction gives identical symbolic ReplayCore opcodes. Capture changed2methods only. Panel constructor actual ToolTipText key only, unchanged refresh/open/close/target supplier/manager/dispose bodies and actual LogcatButton class. この保証は現在f327の実placement/load/About辺だけに限定する。",
+            "dataflow": "Only matching SAVE_IN_PROGRESS_REASON view message cleared when next phase!=WRITING; late busy rejected outsideWRITING. closed/intent/settingsRevision/revision ordering guards remain. Other message/errors/FAILED pin preserved by actual422probe. Store/packet/raw/header/frame/time/request/attempt/path/save_id flows untouched. この保証は現在f327の実placement/load/About辺だけに限定する。",
+            "build": "Same trusted main formalworkflow and pinnedbuild.gradle; exactlyone newformalrun/attempt1 success. Actual formal all193mainclasses byteequal tested3583;187/193 equal422, six differences Panel-related. Old25of27binarychangedclasses match symbolic disassembly. No rebuild/test execution in this composition. この保証は現在f327の実placement/load/About辺だけに限定する。",
+            "configuration": "No settings/schema/validation/default/storage/import path change; Store andConfigurable blobs/classes unchanged. Old native settings/profile/fixture are their actual original values; newprocess values not guessed. この保証は現在f327の実placement/load/About辺だけに限定する。",
+            "dependencies": "No dependency/pin/build change. Actual clock/server/JCodec helper bytes andsearchableOptions equal across formal17a/f327; plugin.xml/version0.2.0 unchanged. READMEfixedsource URL/identity/Kotlinmodule/JARcontainer change retained. この保証は現在f327の実placement/load/About辺だけに限定する。",
+            "fixtures": "fixture sourceは8fd→2eで不変。元native/settings/profile/入力/FILEは元の実条件に固定。今回OFF unitの通常exit/reap/CAS/G12保全/leaseFREEはCURRENT_NATIVE原returnで受領済みであり、未返却扱いに戻さない。 この保証は現在f327の実placement/load/About辺だけに限定する。",
+            "runtime": "元nativeのactor/JBR/SDK/source/ZIP/process条件を原本のまま保持。現在f327の3 installed JAR/hash/size/mode・loaded paths/JBR・About0.2.0/full2eはCURRENT_NATIVE直接原本で受領済み。current GUI操作の新実行や全heap/class同定は主張しない。 この保証は現在f327の実placement/load/About辺だけに限定する。 Actual trusted registration base fb3c417a。追加native fact待ちを既存current load未観測へ戻さない。",
+            "display": "元Settings/PNG/Logcatの表示・可読性・操作事実は元条件で保持。今回影響する常設理由はCURRENT_NATIVEの初期→Close後disabledOpen/理由全文→native再表示を正確AX/画像で受領済み。f327でSettings/Save/keyboardを再実行したとはしない。 この保証は現在f327の実placement/load/About辺だけに限定する。",
+            "failure_attribution": "旧stale busy/empty permanent reason FAILとhover UNKNOWN、初回headless POLICY_DENIED/not_delivered、元compile/partial/writerFAILED/physicalFAIL/unknown/REAL/humanを不変保全。修復の実限定結果・formal class binding・current reason fresh事実を区別して接続。Case PASSや実独立承認は未成立。 この保証は現在f327の実placement/load/About辺だけに限定する。 独立適用report3d48390aのF1/F2を反映し、未支持とされていた416labelForは実JUnit/14classで支持、clipboardは104に帰属。D4copy229byteの条件付き支持と原UNKNOWNを分離。"
+          }
+        },
+        "failure_attribution": {
+          "facts": [
+            "RETAINED_NORMAL_284_BOUNDS_WHOLE_RESULT"
+          ],
+          "disposition": "equivalent",
+          "impact": {
+            "source": "BOUNDS guard/accounting/target semantics unchanged through948→8fd→2e;原whole評価319c2c0bと現適用3d48390aを接続。",
+            "callers": "Capture.acceptSnapshot/showMessage → immutable view → Service STATUS.reason at362 and ToolWindow.message at238. Panel listener copies LogcatButton.tooltip to permanent label; LogcatButton own device/target/SDK/manager path does not read Capture.message. 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "callees": "Core save/retry/discard/Writer admission unchanged; const extraction gives identical symbolic ReplayCore opcodes. Capture changed2methods only. Panel constructor actual ToolTipText key only, unchanged refresh/open/close/target supplier/manager/dispose bodies and actual LogcatButton class. 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "dataflow": "Only matching SAVE_IN_PROGRESS_REASON view message cleared when next phase!=WRITING; late busy rejected outsideWRITING. closed/intent/settingsRevision/revision ordering guards remain. Other message/errors/FAILED pin preserved by actual422probe. Store/packet/raw/header/frame/time/request/attempt/path/save_id flows untouched. 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "build": "Same trusted main formalworkflow and pinnedbuild.gradle; exactlyone newformalrun/attempt1 success. Actual formal all193mainclasses byteequal tested3583;187/193 equal422, six differences Panel-related. Old25of27binarychangedclasses match symbolic disassembly. No rebuild/test execution in this composition. 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "configuration": "No settings/schema/validation/default/storage/import path change; Store andConfigurable blobs/classes unchanged. Old native settings/profile/fixture are their actual original values; newprocess values not guessed. 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "dependencies": "No dependency/pin/build change. Actual clock/server/JCodec helper bytes andsearchableOptions equal across formal17a/f327; plugin.xml/version0.2.0 unchanged. READMEfixedsource URL/identity/Kotlinmodule/JARcontainer change retained. 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "fixtures": "fixture sourceは8fd→2eで不変。元native/settings/profile/入力/FILEは元の実条件に固定。今回OFF unitの通常exit/reap/CAS/G12保全/leaseFREEはCURRENT_NATIVE原returnで受領済みであり、未返却扱いに戻さない。 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "runtime": "元nativeのactor/JBR/SDK/source/ZIP/process条件を原本のまま保持。現在f327の3 installed JAR/hash/size/mode・loaded paths/JBR・About0.2.0/full2eはCURRENT_NATIVE直接原本で受領済み。current GUI操作の新実行や全heap/class同定は主張しない。 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。 Actual trusted registration base fb3c417a。追加native fact待ちを既存current load未観測へ戻さない。",
+            "display": "原manualSUCCESS/autoFAILED/8段階会計の表示・FILE・回帰の分担を維持。理由修復とcurrent load/OFFは別辺。新autoSUCCESS同時native・飽和/heapを要求しない。",
+            "failure_attribution": "旧stale busy/empty permanent reason FAILとhover UNKNOWN、初回headless POLICY_DENIED/not_delivered、元compile/partial/writerFAILED/physicalFAIL/unknown/REAL/humanを不変保全。修復の実限定結果・formal class binding・current reason fresh事実を区別して接続。Case PASSや実独立承認は未成立。 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。 独立適用report3d48390aのF1/F2を反映し、未支持とされていた416labelForは実JUnit/14classで支持、clipboardは104に帰属。D4copy229byteの条件付き支持と原UNKNOWNを分離。"
+          },
+          "components": {
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/core/CrashAutosave.kt": {
+              "source_blob": "95a664cdfa4e3a0dd9e6afdaebf146706fd8b007",
+              "candidate_blob": "95a664cdfa4e3a0dd9e6afdaebf146706fd8b007",
+              "equivalence_evidence": "Original319c2c0b whole BOUNDS decision plus current independent application3d48390a; unchanged budget/target/guard/writer semantics, actual 89 original regressions and finite manualSUCCESS/autoFAILED/resource facts retain original identities. Current f327 load is separate."
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/core/CrashCapture.kt": {
+              "source_blob": "be154c5eb9c80c120e03c3b8e52ceb3707f6f099",
+              "candidate_blob": "be154c5eb9c80c120e03c3b8e52ceb3707f6f099",
+              "equivalence_evidence": "Original319c2c0b whole BOUNDS decision plus current independent application3d48390a; unchanged budget/target/guard/writer semantics, actual 89 original regressions and finite manualSUCCESS/autoFAILED/resource facts retain original identities. Current f327 load is separate."
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/core/CrashProtocol.kt": {
+              "source_blob": "e471bd081400d24f323b97314a3c24919dfe20e1",
+              "candidate_blob": "e471bd081400d24f323b97314a3c24919dfe20e1",
+              "equivalence_evidence": "Original319c2c0b whole BOUNDS decision plus current independent application3d48390a; unchanged budget/target/guard/writer semantics, actual 89 original regressions and finite manualSUCCESS/autoFAILED/resource facts retain original identities. Current f327 load is separate."
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/core/ReplayCore.kt": {
+              "source_blob": "613e3b0ee1ff92d1be68d98a08fb2aee961e43f1",
+              "candidate_blob": "32053ef79050a9b224f542c6a658f88106d6ba9f",
+              "equivalence_evidence": "Original319c2c0b whole BOUNDS decision plus current independent application3d48390a; unchanged budget/target/guard/writer semantics, actual 89 original regressions and finite manualSUCCESS/autoFAILED/resource facts retain original identities. Current f327 load is separate."
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ide/ReplayProjectCapture.kt": {
+              "source_blob": "e8b44c0ce95c13a47105e971de8c656432057677",
+              "candidate_blob": "0f7fbf1f26e2c3a763556859894bfa87c2ef0252",
+              "equivalence_evidence": "Original319c2c0b whole BOUNDS decision plus current independent application3d48390a; unchanged budget/target/guard/writer semantics, actual 89 original regressions and finite manualSUCCESS/autoFAILED/resource facts retain original identities. Current f327 load is separate."
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ide/ReplayProjectService.kt": {
+              "source_blob": "749df544dff0c87b92b3bccf3da2145940bdc17a",
+              "candidate_blob": "749df544dff0c87b92b3bccf3da2145940bdc17a",
+              "equivalence_evidence": "Original319c2c0b whole BOUNDS decision plus current independent application3d48390a; unchanged budget/target/guard/writer semantics, actual 89 original regressions and finite manualSUCCESS/autoFAILED/resource facts retain original identities. Current f327 load is separate."
+            }
+          }
+        },
+        "preconditions": {
+          "facts": [
+            "RETAINED_NORMAL_284_BOUNDS_WHOLE_RESULT"
+          ],
+          "disposition": "equivalent",
+          "impact": {
+            "source": "BOUNDS guard/accounting/target semantics unchanged through948→8fd→2e;原whole評価319c2c0bと現適用3d48390aを接続。",
+            "callers": "Capture.acceptSnapshot/showMessage → immutable view → Service STATUS.reason at362 and ToolWindow.message at238. Panel listener copies LogcatButton.tooltip to permanent label; LogcatButton own device/target/SDK/manager path does not read Capture.message. 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "callees": "Core save/retry/discard/Writer admission unchanged; const extraction gives identical symbolic ReplayCore opcodes. Capture changed2methods only. Panel constructor actual ToolTipText key only, unchanged refresh/open/close/target supplier/manager/dispose bodies and actual LogcatButton class. 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "dataflow": "Only matching SAVE_IN_PROGRESS_REASON view message cleared when next phase!=WRITING; late busy rejected outsideWRITING. closed/intent/settingsRevision/revision ordering guards remain. Other message/errors/FAILED pin preserved by actual422probe. Store/packet/raw/header/frame/time/request/attempt/path/save_id flows untouched. 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "build": "Same trusted main formalworkflow and pinnedbuild.gradle; exactlyone newformalrun/attempt1 success. Actual formal all193mainclasses byteequal tested3583;187/193 equal422, six differences Panel-related. Old25of27binarychangedclasses match symbolic disassembly. No rebuild/test execution in this composition. 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "configuration": "No settings/schema/validation/default/storage/import path change; Store andConfigurable blobs/classes unchanged. Old native settings/profile/fixture are their actual original values; newprocess values not guessed. 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "dependencies": "No dependency/pin/build change. Actual clock/server/JCodec helper bytes andsearchableOptions equal across formal17a/f327; plugin.xml/version0.2.0 unchanged. READMEfixedsource URL/identity/Kotlinmodule/JARcontainer change retained. 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "fixtures": "fixture sourceは8fd→2eで不変。元native/settings/profile/入力/FILEは元の実条件に固定。今回OFF unitの通常exit/reap/CAS/G12保全/leaseFREEはCURRENT_NATIVE原returnで受領済みであり、未返却扱いに戻さない。 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "runtime": "元nativeのactor/JBR/SDK/source/ZIP/process条件を原本のまま保持。現在f327の3 installed JAR/hash/size/mode・loaded paths/JBR・About0.2.0/full2eはCURRENT_NATIVE直接原本で受領済み。current GUI操作の新実行や全heap/class同定は主張しない。 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。 Actual trusted registration base fb3c417a。追加native fact待ちを既存current load未観測へ戻さない。",
+            "display": "原manualSUCCESS/autoFAILED/8段階会計の表示・FILE・回帰の分担を維持。理由修復とcurrent load/OFFは別辺。新autoSUCCESS同時native・飽和/heapを要求しない。",
+            "failure_attribution": "旧stale busy/empty permanent reason FAILとhover UNKNOWN、初回headless POLICY_DENIED/not_delivered、元compile/partial/writerFAILED/physicalFAIL/unknown/REAL/humanを不変保全。修復の実限定結果・formal class binding・current reason fresh事実を区別して接続。Case PASSや実独立承認は未成立。 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。 独立適用report3d48390aのF1/F2を反映し、未支持とされていた416labelForは実JUnit/14classで支持、clipboardは104に帰属。D4copy229byteの条件付き支持と原UNKNOWNを分離。"
+          },
+          "components": {
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/core/CrashAutosave.kt": {
+              "source_blob": "95a664cdfa4e3a0dd9e6afdaebf146706fd8b007",
+              "candidate_blob": "95a664cdfa4e3a0dd9e6afdaebf146706fd8b007",
+              "equivalence_evidence": "Original319c2c0b whole BOUNDS decision plus current independent application3d48390a; unchanged budget/target/guard/writer semantics, actual 89 original regressions and finite manualSUCCESS/autoFAILED/resource facts retain original identities. Current f327 load is separate."
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/core/CrashCapture.kt": {
+              "source_blob": "be154c5eb9c80c120e03c3b8e52ceb3707f6f099",
+              "candidate_blob": "be154c5eb9c80c120e03c3b8e52ceb3707f6f099",
+              "equivalence_evidence": "Original319c2c0b whole BOUNDS decision plus current independent application3d48390a; unchanged budget/target/guard/writer semantics, actual 89 original regressions and finite manualSUCCESS/autoFAILED/resource facts retain original identities. Current f327 load is separate."
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/core/CrashProtocol.kt": {
+              "source_blob": "e471bd081400d24f323b97314a3c24919dfe20e1",
+              "candidate_blob": "e471bd081400d24f323b97314a3c24919dfe20e1",
+              "equivalence_evidence": "Original319c2c0b whole BOUNDS decision plus current independent application3d48390a; unchanged budget/target/guard/writer semantics, actual 89 original regressions and finite manualSUCCESS/autoFAILED/resource facts retain original identities. Current f327 load is separate."
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/core/ReplayCore.kt": {
+              "source_blob": "613e3b0ee1ff92d1be68d98a08fb2aee961e43f1",
+              "candidate_blob": "32053ef79050a9b224f542c6a658f88106d6ba9f",
+              "equivalence_evidence": "Original319c2c0b whole BOUNDS decision plus current independent application3d48390a; unchanged budget/target/guard/writer semantics, actual 89 original regressions and finite manualSUCCESS/autoFAILED/resource facts retain original identities. Current f327 load is separate."
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ide/ReplayProjectCapture.kt": {
+              "source_blob": "e8b44c0ce95c13a47105e971de8c656432057677",
+              "candidate_blob": "0f7fbf1f26e2c3a763556859894bfa87c2ef0252",
+              "equivalence_evidence": "Original319c2c0b whole BOUNDS decision plus current independent application3d48390a; unchanged budget/target/guard/writer semantics, actual 89 original regressions and finite manualSUCCESS/autoFAILED/resource facts retain original identities. Current f327 load is separate."
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ide/ReplayProjectService.kt": {
+              "source_blob": "749df544dff0c87b92b3bccf3da2145940bdc17a",
+              "candidate_blob": "749df544dff0c87b92b3bccf3da2145940bdc17a",
+              "equivalence_evidence": "Original319c2c0b whole BOUNDS decision plus current independent application3d48390a; unchanged budget/target/guard/writer semantics, actual 89 original regressions and finite manualSUCCESS/autoFAILED/resource facts retain original identities. Current f327 load is separate."
+            }
+          }
+        },
+        "step_1": {
+          "facts": [
+            "RETAINED_NORMAL_284_BOUNDS_WHOLE_RESULT"
+          ],
+          "disposition": "equivalent",
+          "impact": {
+            "source": "BOUNDS guard/accounting/target semantics unchanged through948→8fd→2e;原whole評価319c2c0bと現適用3d48390aを接続。",
+            "callers": "Capture.acceptSnapshot/showMessage → immutable view → Service STATUS.reason at362 and ToolWindow.message at238. Panel listener copies LogcatButton.tooltip to permanent label; LogcatButton own device/target/SDK/manager path does not read Capture.message. 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "callees": "Core save/retry/discard/Writer admission unchanged; const extraction gives identical symbolic ReplayCore opcodes. Capture changed2methods only. Panel constructor actual ToolTipText key only, unchanged refresh/open/close/target supplier/manager/dispose bodies and actual LogcatButton class. 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "dataflow": "Only matching SAVE_IN_PROGRESS_REASON view message cleared when next phase!=WRITING; late busy rejected outsideWRITING. closed/intent/settingsRevision/revision ordering guards remain. Other message/errors/FAILED pin preserved by actual422probe. Store/packet/raw/header/frame/time/request/attempt/path/save_id flows untouched. 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "build": "Same trusted main formalworkflow and pinnedbuild.gradle; exactlyone newformalrun/attempt1 success. Actual formal all193mainclasses byteequal tested3583;187/193 equal422, six differences Panel-related. Old25of27binarychangedclasses match symbolic disassembly. No rebuild/test execution in this composition. 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "configuration": "No settings/schema/validation/default/storage/import path change; Store andConfigurable blobs/classes unchanged. Old native settings/profile/fixture are their actual original values; newprocess values not guessed. 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "dependencies": "No dependency/pin/build change. Actual clock/server/JCodec helper bytes andsearchableOptions equal across formal17a/f327; plugin.xml/version0.2.0 unchanged. READMEfixedsource URL/identity/Kotlinmodule/JARcontainer change retained. 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "fixtures": "fixture sourceは8fd→2eで不変。元native/settings/profile/入力/FILEは元の実条件に固定。今回OFF unitの通常exit/reap/CAS/G12保全/leaseFREEはCURRENT_NATIVE原returnで受領済みであり、未返却扱いに戻さない。 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "runtime": "元nativeのactor/JBR/SDK/source/ZIP/process条件を原本のまま保持。現在f327の3 installed JAR/hash/size/mode・loaded paths/JBR・About0.2.0/full2eはCURRENT_NATIVE直接原本で受領済み。current GUI操作の新実行や全heap/class同定は主張しない。 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。 Actual trusted registration base fb3c417a。追加native fact待ちを既存current load未観測へ戻さない。",
+            "display": "原manualSUCCESS/autoFAILED/8段階会計の表示・FILE・回帰の分担を維持。理由修復とcurrent load/OFFは別辺。新autoSUCCESS同時native・飽和/heapを要求しない。",
+            "failure_attribution": "旧stale busy/empty permanent reason FAILとhover UNKNOWN、初回headless POLICY_DENIED/not_delivered、元compile/partial/writerFAILED/physicalFAIL/unknown/REAL/humanを不変保全。修復の実限定結果・formal class binding・current reason fresh事実を区別して接続。Case PASSや実独立承認は未成立。 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。 独立適用report3d48390aのF1/F2を反映し、未支持とされていた416labelForは実JUnit/14classで支持、clipboardは104に帰属。D4copy229byteの条件付き支持と原UNKNOWNを分離。"
+          },
+          "components": {
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/core/CrashAutosave.kt": {
+              "source_blob": "95a664cdfa4e3a0dd9e6afdaebf146706fd8b007",
+              "candidate_blob": "95a664cdfa4e3a0dd9e6afdaebf146706fd8b007",
+              "equivalence_evidence": "Original319c2c0b whole BOUNDS decision plus current independent application3d48390a; unchanged budget/target/guard/writer semantics, actual 89 original regressions and finite manualSUCCESS/autoFAILED/resource facts retain original identities. Current f327 load is separate."
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/core/CrashCapture.kt": {
+              "source_blob": "be154c5eb9c80c120e03c3b8e52ceb3707f6f099",
+              "candidate_blob": "be154c5eb9c80c120e03c3b8e52ceb3707f6f099",
+              "equivalence_evidence": "Original319c2c0b whole BOUNDS decision plus current independent application3d48390a; unchanged budget/target/guard/writer semantics, actual 89 original regressions and finite manualSUCCESS/autoFAILED/resource facts retain original identities. Current f327 load is separate."
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/core/CrashProtocol.kt": {
+              "source_blob": "e471bd081400d24f323b97314a3c24919dfe20e1",
+              "candidate_blob": "e471bd081400d24f323b97314a3c24919dfe20e1",
+              "equivalence_evidence": "Original319c2c0b whole BOUNDS decision plus current independent application3d48390a; unchanged budget/target/guard/writer semantics, actual 89 original regressions and finite manualSUCCESS/autoFAILED/resource facts retain original identities. Current f327 load is separate."
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/core/ReplayCore.kt": {
+              "source_blob": "613e3b0ee1ff92d1be68d98a08fb2aee961e43f1",
+              "candidate_blob": "32053ef79050a9b224f542c6a658f88106d6ba9f",
+              "equivalence_evidence": "Original319c2c0b whole BOUNDS decision plus current independent application3d48390a; unchanged budget/target/guard/writer semantics, actual 89 original regressions and finite manualSUCCESS/autoFAILED/resource facts retain original identities. Current f327 load is separate."
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ide/ReplayProjectCapture.kt": {
+              "source_blob": "e8b44c0ce95c13a47105e971de8c656432057677",
+              "candidate_blob": "0f7fbf1f26e2c3a763556859894bfa87c2ef0252",
+              "equivalence_evidence": "Original319c2c0b whole BOUNDS decision plus current independent application3d48390a; unchanged budget/target/guard/writer semantics, actual 89 original regressions and finite manualSUCCESS/autoFAILED/resource facts retain original identities. Current f327 load is separate."
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ide/ReplayProjectService.kt": {
+              "source_blob": "749df544dff0c87b92b3bccf3da2145940bdc17a",
+              "candidate_blob": "749df544dff0c87b92b3bccf3da2145940bdc17a",
+              "equivalence_evidence": "Original319c2c0b whole BOUNDS decision plus current independent application3d48390a; unchanged budget/target/guard/writer semantics, actual 89 original regressions and finite manualSUCCESS/autoFAILED/resource facts retain original identities. Current f327 load is separate."
+            }
+          }
+        },
+        "step_2": {
+          "facts": [
+            "RETAINED_NORMAL_284_BOUNDS_WHOLE_RESULT"
+          ],
+          "disposition": "equivalent",
+          "impact": {
+            "source": "BOUNDS guard/accounting/target semantics unchanged through948→8fd→2e;原whole評価319c2c0bと現適用3d48390aを接続。",
+            "callers": "Capture.acceptSnapshot/showMessage → immutable view → Service STATUS.reason at362 and ToolWindow.message at238. Panel listener copies LogcatButton.tooltip to permanent label; LogcatButton own device/target/SDK/manager path does not read Capture.message. 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "callees": "Core save/retry/discard/Writer admission unchanged; const extraction gives identical symbolic ReplayCore opcodes. Capture changed2methods only. Panel constructor actual ToolTipText key only, unchanged refresh/open/close/target supplier/manager/dispose bodies and actual LogcatButton class. 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "dataflow": "Only matching SAVE_IN_PROGRESS_REASON view message cleared when next phase!=WRITING; late busy rejected outsideWRITING. closed/intent/settingsRevision/revision ordering guards remain. Other message/errors/FAILED pin preserved by actual422probe. Store/packet/raw/header/frame/time/request/attempt/path/save_id flows untouched. 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "build": "Same trusted main formalworkflow and pinnedbuild.gradle; exactlyone newformalrun/attempt1 success. Actual formal all193mainclasses byteequal tested3583;187/193 equal422, six differences Panel-related. Old25of27binarychangedclasses match symbolic disassembly. No rebuild/test execution in this composition. 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "configuration": "No settings/schema/validation/default/storage/import path change; Store andConfigurable blobs/classes unchanged. Old native settings/profile/fixture are their actual original values; newprocess values not guessed. 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "dependencies": "No dependency/pin/build change. Actual clock/server/JCodec helper bytes andsearchableOptions equal across formal17a/f327; plugin.xml/version0.2.0 unchanged. READMEfixedsource URL/identity/Kotlinmodule/JARcontainer change retained. 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "fixtures": "fixture sourceは8fd→2eで不変。元native/settings/profile/入力/FILEは元の実条件に固定。今回OFF unitの通常exit/reap/CAS/G12保全/leaseFREEはCURRENT_NATIVE原returnで受領済みであり、未返却扱いに戻さない。 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "runtime": "元nativeのactor/JBR/SDK/source/ZIP/process条件を原本のまま保持。現在f327の3 installed JAR/hash/size/mode・loaded paths/JBR・About0.2.0/full2eはCURRENT_NATIVE直接原本で受領済み。current GUI操作の新実行や全heap/class同定は主張しない。 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。 Actual trusted registration base fb3c417a。追加native fact待ちを既存current load未観測へ戻さない。",
+            "display": "原manualSUCCESS/autoFAILED/8段階会計の表示・FILE・回帰の分担を維持。理由修復とcurrent load/OFFは別辺。新autoSUCCESS同時native・飽和/heapを要求しない。",
+            "failure_attribution": "旧stale busy/empty permanent reason FAILとhover UNKNOWN、初回headless POLICY_DENIED/not_delivered、元compile/partial/writerFAILED/physicalFAIL/unknown/REAL/humanを不変保全。修復の実限定結果・formal class binding・current reason fresh事実を区別して接続。Case PASSや実独立承認は未成立。 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。 独立適用report3d48390aのF1/F2を反映し、未支持とされていた416labelForは実JUnit/14classで支持、clipboardは104に帰属。D4copy229byteの条件付き支持と原UNKNOWNを分離。"
+          },
+          "components": {
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/core/CrashAutosave.kt": {
+              "source_blob": "95a664cdfa4e3a0dd9e6afdaebf146706fd8b007",
+              "candidate_blob": "95a664cdfa4e3a0dd9e6afdaebf146706fd8b007",
+              "equivalence_evidence": "Original319c2c0b whole BOUNDS decision plus current independent application3d48390a; unchanged budget/target/guard/writer semantics, actual 89 original regressions and finite manualSUCCESS/autoFAILED/resource facts retain original identities. Current f327 load is separate."
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/core/CrashCapture.kt": {
+              "source_blob": "be154c5eb9c80c120e03c3b8e52ceb3707f6f099",
+              "candidate_blob": "be154c5eb9c80c120e03c3b8e52ceb3707f6f099",
+              "equivalence_evidence": "Original319c2c0b whole BOUNDS decision plus current independent application3d48390a; unchanged budget/target/guard/writer semantics, actual 89 original regressions and finite manualSUCCESS/autoFAILED/resource facts retain original identities. Current f327 load is separate."
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/core/CrashProtocol.kt": {
+              "source_blob": "e471bd081400d24f323b97314a3c24919dfe20e1",
+              "candidate_blob": "e471bd081400d24f323b97314a3c24919dfe20e1",
+              "equivalence_evidence": "Original319c2c0b whole BOUNDS decision plus current independent application3d48390a; unchanged budget/target/guard/writer semantics, actual 89 original regressions and finite manualSUCCESS/autoFAILED/resource facts retain original identities. Current f327 load is separate."
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/core/ReplayCore.kt": {
+              "source_blob": "613e3b0ee1ff92d1be68d98a08fb2aee961e43f1",
+              "candidate_blob": "32053ef79050a9b224f542c6a658f88106d6ba9f",
+              "equivalence_evidence": "Original319c2c0b whole BOUNDS decision plus current independent application3d48390a; unchanged budget/target/guard/writer semantics, actual 89 original regressions and finite manualSUCCESS/autoFAILED/resource facts retain original identities. Current f327 load is separate."
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ide/ReplayProjectCapture.kt": {
+              "source_blob": "e8b44c0ce95c13a47105e971de8c656432057677",
+              "candidate_blob": "0f7fbf1f26e2c3a763556859894bfa87c2ef0252",
+              "equivalence_evidence": "Original319c2c0b whole BOUNDS decision plus current independent application3d48390a; unchanged budget/target/guard/writer semantics, actual 89 original regressions and finite manualSUCCESS/autoFAILED/resource facts retain original identities. Current f327 load is separate."
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ide/ReplayProjectService.kt": {
+              "source_blob": "749df544dff0c87b92b3bccf3da2145940bdc17a",
+              "candidate_blob": "749df544dff0c87b92b3bccf3da2145940bdc17a",
+              "equivalence_evidence": "Original319c2c0b whole BOUNDS decision plus current independent application3d48390a; unchanged budget/target/guard/writer semantics, actual 89 original regressions and finite manualSUCCESS/autoFAILED/resource facts retain original identities. Current f327 load is separate."
+            }
+          }
+        },
+        "expected": {
+          "facts": [
+            "RETAINED_NORMAL_284_BOUNDS_WHOLE_RESULT"
+          ],
+          "disposition": "equivalent",
+          "impact": {
+            "source": "BOUNDS guard/accounting/target semantics unchanged through948→8fd→2e;原whole評価319c2c0bと現適用3d48390aを接続。",
+            "callers": "Capture.acceptSnapshot/showMessage → immutable view → Service STATUS.reason at362 and ToolWindow.message at238. Panel listener copies LogcatButton.tooltip to permanent label; LogcatButton own device/target/SDK/manager path does not read Capture.message. 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "callees": "Core save/retry/discard/Writer admission unchanged; const extraction gives identical symbolic ReplayCore opcodes. Capture changed2methods only. Panel constructor actual ToolTipText key only, unchanged refresh/open/close/target supplier/manager/dispose bodies and actual LogcatButton class. 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "dataflow": "Only matching SAVE_IN_PROGRESS_REASON view message cleared when next phase!=WRITING; late busy rejected outsideWRITING. closed/intent/settingsRevision/revision ordering guards remain. Other message/errors/FAILED pin preserved by actual422probe. Store/packet/raw/header/frame/time/request/attempt/path/save_id flows untouched. 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "build": "Same trusted main formalworkflow and pinnedbuild.gradle; exactlyone newformalrun/attempt1 success. Actual formal all193mainclasses byteequal tested3583;187/193 equal422, six differences Panel-related. Old25of27binarychangedclasses match symbolic disassembly. No rebuild/test execution in this composition. 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "configuration": "No settings/schema/validation/default/storage/import path change; Store andConfigurable blobs/classes unchanged. Old native settings/profile/fixture are their actual original values; newprocess values not guessed. 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "dependencies": "No dependency/pin/build change. Actual clock/server/JCodec helper bytes andsearchableOptions equal across formal17a/f327; plugin.xml/version0.2.0 unchanged. READMEfixedsource URL/identity/Kotlinmodule/JARcontainer change retained. 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "fixtures": "fixture sourceは8fd→2eで不変。元native/settings/profile/入力/FILEは元の実条件に固定。今回OFF unitの通常exit/reap/CAS/G12保全/leaseFREEはCURRENT_NATIVE原returnで受領済みであり、未返却扱いに戻さない。 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。",
+            "runtime": "元nativeのactor/JBR/SDK/source/ZIP/process条件を原本のまま保持。現在f327の3 installed JAR/hash/size/mode・loaded paths/JBR・About0.2.0/full2eはCURRENT_NATIVE直接原本で受領済み。current GUI操作の新実行や全heap/class同定は主張しない。 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。 Actual trusted registration base fb3c417a。追加native fact待ちを既存current load未観測へ戻さない。",
+            "display": "原manualSUCCESS/autoFAILED/8段階会計の表示・FILE・回帰の分担を維持。理由修復とcurrent load/OFFは別辺。新autoSUCCESS同時native・飽和/heapを要求しない。",
+            "failure_attribution": "旧stale busy/empty permanent reason FAILとhover UNKNOWN、初回headless POLICY_DENIED/not_delivered、元compile/partial/writerFAILED/physicalFAIL/unknown/REAL/humanを不変保全。修復の実限定結果・formal class binding・current reason fresh事実を区別して接続。Case PASSや実独立承認は未成立。 948→8fdについては保存済みnormal338 whole proofとPRIOR_REVISION3のsource/class条件を併せて評価する。 独立適用report3d48390aのF1/F2を反映し、未支持とされていた416labelForは実JUnit/14classで支持、clipboardは104に帰属。D4copy229byteの条件付き支持と原UNKNOWNを分離。"
+          },
+          "components": {
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/core/CrashAutosave.kt": {
+              "source_blob": "95a664cdfa4e3a0dd9e6afdaebf146706fd8b007",
+              "candidate_blob": "95a664cdfa4e3a0dd9e6afdaebf146706fd8b007",
+              "equivalence_evidence": "Original319c2c0b whole BOUNDS decision plus current independent application3d48390a; unchanged budget/target/guard/writer semantics, actual 89 original regressions and finite manualSUCCESS/autoFAILED/resource facts retain original identities. Current f327 load is separate."
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/core/CrashCapture.kt": {
+              "source_blob": "be154c5eb9c80c120e03c3b8e52ceb3707f6f099",
+              "candidate_blob": "be154c5eb9c80c120e03c3b8e52ceb3707f6f099",
+              "equivalence_evidence": "Original319c2c0b whole BOUNDS decision plus current independent application3d48390a; unchanged budget/target/guard/writer semantics, actual 89 original regressions and finite manualSUCCESS/autoFAILED/resource facts retain original identities. Current f327 load is separate."
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/core/CrashProtocol.kt": {
+              "source_blob": "e471bd081400d24f323b97314a3c24919dfe20e1",
+              "candidate_blob": "e471bd081400d24f323b97314a3c24919dfe20e1",
+              "equivalence_evidence": "Original319c2c0b whole BOUNDS decision plus current independent application3d48390a; unchanged budget/target/guard/writer semantics, actual 89 original regressions and finite manualSUCCESS/autoFAILED/resource facts retain original identities. Current f327 load is separate."
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/core/ReplayCore.kt": {
+              "source_blob": "613e3b0ee1ff92d1be68d98a08fb2aee961e43f1",
+              "candidate_blob": "32053ef79050a9b224f542c6a658f88106d6ba9f",
+              "equivalence_evidence": "Original319c2c0b whole BOUNDS decision plus current independent application3d48390a; unchanged budget/target/guard/writer semantics, actual 89 original regressions and finite manualSUCCESS/autoFAILED/resource facts retain original identities. Current f327 load is separate."
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ide/ReplayProjectCapture.kt": {
+              "source_blob": "e8b44c0ce95c13a47105e971de8c656432057677",
+              "candidate_blob": "0f7fbf1f26e2c3a763556859894bfa87c2ef0252",
+              "equivalence_evidence": "Original319c2c0b whole BOUNDS decision plus current independent application3d48390a; unchanged budget/target/guard/writer semantics, actual 89 original regressions and finite manualSUCCESS/autoFAILED/resource facts retain original identities. Current f327 load is separate."
+            },
+            "plugin/src/main/kotlin/io/github/shinma06/replaybuffer/ide/ReplayProjectService.kt": {
+              "source_blob": "749df544dff0c87b92b3bccf3da2145940bdc17a",
+              "candidate_blob": "749df544dff0c87b92b3bccf3da2145940bdc17a",
+              "equivalence_evidence": "Original319c2c0b whole BOUNDS decision plus current independent application3d48390a; unchanged budget/target/guard/writer semantics, actual 89 original regressions and finite manualSUCCESS/autoFAILED/resource facts retain original identities. Current f327 load is separate."
+            }
+          }
+        }
+      }
+    }
+  }
+}
