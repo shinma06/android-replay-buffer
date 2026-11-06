@@ -6,6 +6,7 @@ import io.github.shinma06.replaybuffer.core.ReplayCore
 import io.github.shinma06.replaybuffer.core.ReplayOperation
 import io.github.shinma06.replaybuffer.core.ReplaySnapshot
 import io.github.shinma06.replaybuffer.core.ReplaySettings as CoreSettings
+import io.github.shinma06.replaybuffer.core.SAVE_IN_PROGRESS_REASON
 import io.github.shinma06.replaybuffer.core.SavePhase
 import io.github.shinma06.replaybuffer.core.SaveSnapshot
 import io.github.shinma06.replaybuffer.settings.AppSelectionMode
@@ -245,7 +246,10 @@ internal class ReplayProjectCapture(
         val terminal = synchronized(this) {
             val previous = view.snapshot
             if (closed || previous != null && next.revision <= previous.revision) return
-            view = view.copy(snapshot = next)
+            val message = view.message.takeUnless {
+                it == SAVE_IN_PROGRESS_REASON && next.save.phase != SavePhase.WRITING
+            }
+            view = view.copy(snapshot = next, message = message)
             next.save.takeIf {
                 it.phase in setOf(SavePhase.COMPLETED, SavePhase.FAILED) &&
                     (previous?.save?.requestId != it.requestId || previous?.save?.attempt != it.attempt || previous?.save?.phase != it.phase)
@@ -260,6 +264,8 @@ internal class ReplayProjectCapture(
     private fun showMessage(message: String, intent: Long?, revision: Long? = null) {
         synchronized(this) {
             if (closed || intent != null && intent != operationIntent || revision != null && revision != settingsRevision) return
+            // A command's rejection can arrive after the writer has already published its terminal snapshot.
+            if (message == SAVE_IN_PROGRESS_REASON && view.snapshot?.save?.phase != SavePhase.WRITING) return
             if (intent == null) operationIntent++
             view = view.copy(message = message)
         }
