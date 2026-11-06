@@ -1,0 +1,69 @@
+{
+  "schema": 1,
+  "issue": 424,
+  "gui_required": false,
+  "reason": "今回のdevelop修復は実JBRの本番Panel/EDT理由伝播を忠実に再現・解消する限定回帰。実IDE理由可視性は既存280/271の最終候補対象へ残し、wholeCaseをPASSにしない。",
+  "cli_checks": [
+    "ReplayToolWindowLayoutTest: old production/JBR RED, fixed candidate/JBR PASS on initial/current reason text and normal setter/refresh transitions.",
+    "Required harness/product/build/structure and clean committed HEAD impact/hook/CI are retained separately in Issue/PR and fixed private handoff."
+  ],
+  "cases": [],
+  "repair": {
+    "candidate": "3583ea7ada64975d3f3e7738679cadc98cb34acd",
+    "artifacts": {
+      "plugin": "60d2555f6b1f0e6de5306c956706d15a1add6b2266b55de57dc6f607a8e60f06"
+    },
+    "failure_record_sha256": "a21fa987f5fb1a5e461d285cbc564e8533ae6597533406caefb9181a90a61661",
+    "writer_session": "codex-session-sha256:026c095d10bdce839daf168b7283a3ded18bc72cd97d11483aac53f43f663847",
+    "results": {
+      "LOGCAT-REASON": {
+        "observation": {
+          "status": "pass",
+          "head": "3583ea7ada64975d3f3e7738679cadc98cb34acd",
+          "artifact_sha256": "60d2555f6b1f0e6de5306c956706d15a1add6b2266b55de57dc6f607a8e60f06",
+          "actor": "gpt",
+          "observer": "codex-session-sha256:026c095d10bdce839daf168b7283a3ded18bc72cd97d11483aac53f43f663847",
+          "at": "2026-11-06T11:37:29.322831+00:00",
+          "evidence": "Fixed real EDT Panel initial reason / normal setToolTipText update / refresh restoration PASS; original RED and fixed JBR XML retained. Mapping receipt SHA256 6953ea04d2807f66ac43cd35029b8ab5be7a2b2b1d7abfc7eafa29324f95c82a; original suite at 2026-11-06T11:37:00.427ZZ. at is metadata composition, not another execution.",
+          "loaded_identity": "Clean development candidate 3583ea7ada64975d3f3e7738679cadc98cb34acd / test ZIP 60d2555f6b1f0e6de5306c956706d15a1add6b2266b55de57dc6f607a8e60f06 / main JAR c6deada2fac53b8ea6523dbda77597b128006674616f140f04df23264c6d1aa3. Real SDK JBR25 headless Panel and MockProject/Service cancelled scope. Actual JBR java bytes match installed Studio JBR; no native IDE load or formal candidate.",
+          "reason": "元原因と同じ本番listener/実JBR property経路を修正し初期値・変更・refreshの常設理由を検査。元nativeFAILと原actor/time/sourceを保持。最終候補native視認、全Case/humanREALはPM280/271へpending。",
+          "attribution": {
+            "writer": "codex-session-sha256:026c095d10bdce839daf168b7283a3ded18bc72cd97d11483aac53f43f663847",
+            "observer": "codex-session-sha256:026c095d10bdce839daf168b7283a3ded18bc72cd97d11483aac53f43f663847",
+            "contributors": [
+              {
+                "role": "修復sourceと回帰writer",
+                "session": "codex-session-sha256:026c095d10bdce839daf168b7283a3ded18bc72cd97d11483aac53f43f663847",
+                "activity": "writer",
+                "at": "2026-11-06T20:36:43+09:00",
+                "receipt_sha256": "6953ea04d2807f66ac43cd35029b8ab5be7a2b2b1d7abfc7eafa29324f95c82a",
+                "receipt_locator": "/writer"
+              },
+              {
+                "role": "実JBR本番Panel回帰実行（原suite開始）",
+                "session": "codex-session-sha256:026c095d10bdce839daf168b7283a3ded18bc72cd97d11483aac53f43f663847",
+                "activity": "execution",
+                "at": "2026-11-06T11:37:00.427ZZ",
+                "receipt_sha256": "6953ea04d2807f66ac43cd35029b8ab5be7a2b2b1d7abfc7eafa29324f95c82a",
+                "receipt_locator": "/execution"
+              },
+              {
+                "role": "修復metadata構成（新試験なし）",
+                "session": "codex-session-sha256:026c095d10bdce839daf168b7283a3ded18bc72cd97d11483aac53f43f663847",
+                "activity": "composition",
+                "at": "2026-11-06T11:37:29.322831+00:00",
+                "receipt_sha256": "6953ea04d2807f66ac43cd35029b8ab5be7a2b2b1d7abfc7eafa29324f95c82a",
+                "receipt_locator": "/composition"
+              }
+            ]
+          }
+        },
+        "coverage": {
+          "reason-label-delivery": "Actual production ReplayToolWindowPanel/LogcatToolWindowButton on EDT; initial text nonblank and equals reason label; real setToolTipText updates label; production refresh restores current reason. Old matching JBR regression fails on initial empty label. No synthetic property events."
+        },
+        "method": "Omil/PM scoped faithful component regression for develop repair. Standard JComponent.TOOL_TIP_TEXT_KEY restores actual JBR setter notification hookup; no retarget or external tooltip manager change. Component/lifecycle fixture remains existing real Panel test. Native final candidate reason visibility stays pending separately, not silently passed.",
+        "contract_revision": "85296114925d6947be93158e3eca90fcd69e561b3d8a5d1e6845407b73108f61"
+      }
+    }
+  }
+}
