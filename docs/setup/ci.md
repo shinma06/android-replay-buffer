@@ -8,6 +8,8 @@ gh workflow run ci.yml --repo shinma06/android-replay-buffer --ref codex/281-ci-
 
 `--ref`は実際の所有branchへ置き換えます。手動実行はclassifierの全量指定であり、必要なJDK/Gradle、CLI、Plugin検査も実行します。通常のPR全差分、未知path、履歴取得不能、削除/改名等は[既存classifier](../../scripts/workflow/change_impact.py)で判定します。新しいpath filter、結果cache、skip-success、再試行は追加しません。
 
+main上の`Release candidate`は、固定SOURCEを選択しtrusted inspectorを別worktreeへ保持した後、正式buildの直前に公式`platform-37.2_r01.zip`をjob専用tempへ取得します。ZIP全体と内部`android.jar`を固定SHA-256で照合してから`ANDROID_HOME`を公開し、SOURCE側のJavaCompile／D8が既存r01 pinを再照合して使います。inline stepはSOURCE checkoutで置換されません。対象buildごとに68,056,472bytes（約68MB）の取得・hash・展開が増え、通信は120秒で打切り、retry／cache追加はしません。runner既設SDK、正式version／identity、single build、Artifact90日保存は維持します。[#418](https://github.com/shinma06/android-replay-buffer/issues/418)はこの準備だけのtooling修正であり、最終source／version確定後の実main-dispatch→formal build→Artifact uploadは[#271](https://github.com/shinma06/android-replay-buffer/issues/271)で別に確認します。main自身の現行製品検査（JDK25／既存Maven API入力）と、SOURCEへcheckout後の正式build条件を混同しません。
+
 ## 保持する境界
 
 - 共通の必須checkは `test` / `PR policy` / `Acceptance gate` / `Agent review`。移行中の実server保護には旧`CLI Python 3.9`も残り、[branchごとの置換確認](github.md#runtime検査の共通testへの段階移行)が済むまで外しません。CI成功は独立レビューやGUI受入の代わりになりません。

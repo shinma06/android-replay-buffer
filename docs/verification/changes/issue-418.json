@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "issue": 418,
+  "gui_required": false,
+  "reason": "mainのRelease candidate workflow内で、固定SOURCE checkout後・正式build前に公式r01公開APIをjob専用領域へ固定配置するtooling修正。製品Gradle/code/pins、main製品の旧Maven API入力、権限/trigger/正式version/identity/単一buildとArtifact条件は維持。inlineとSOURCEの順序、trusted inspector保持、compiler入力接続を隔離検証し、GUI/device/runtime変更や実Release dispatchは行わない。",
+  "cli_checks": [
+    "python3 scripts/check.py",
+    "python3 scripts/workflow/change_impact.py --base origin/main --run-tests"
+  ],
+  "cases": []
+}
