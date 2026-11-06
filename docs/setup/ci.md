@@ -8,6 +8,8 @@ gh workflow run ci.yml --repo shinma06/android-replay-buffer --ref codex/281-ci-
 
 `--ref`は実際の所有branchへ置き換えます。手動実行はclassifierの全量指定であり、必要なJDK/GradleとCLIを含む統合Plugin検査も実行します。通常のPR全差分、未知path、履歴取得不能、削除/改名等は[既存classifier](../../scripts/workflow/change_impact.py)で判定します。新しいpath filter、結果cache、skip-success、再試行は追加しません。
 
+Plugin検査が必要なjobでは、公式`platform-37.2_r01.zip`（68,056,472 bytes）をjob専用の一時領域へ取得し、固定archive SHA-256と内部`android.jar`の既存pinを照合してから`ANDROID_HOME`を設定します。公開API jarのみを取り出し、runner既設SDKは変更しません。revision 2が同じSDK IDで配布されても自動追従せず、取得・照合・展開の失敗は検査を止めます。対象jobごとに約68 MBの取得・hash・展開コストが増えます。新cacheやretryは加えず、通常の製品検査も同じjarを再照合します。固定根拠と元のFAILは[#414](https://github.com/shinma06/android-replay-buffer/issues/414)に保持します。
+
 ## 保持する境界
 
 - 共通の必須checkは `test` / `PR policy` / `Acceptance gate` / `Agent review`。旧`CLI Python 3.9`からの[branchごとの置換確認](github.md#runtime検査の共通testへの段階移行)と実serverのreadbackは#305の記録を参照します。CI成功は独立レビューやGUI受入の代わりになりません。
