@@ -68,7 +68,7 @@ PARTIALの4辺は古いB/B1の未接合文言を、後続の固定実行証拠�
 | G1b | 同step2／OWNERSHIP step2の同attempt native表示とFILE | client切断/Service/FILEは支持済み。表示の実接続だけ既存native担当で確認、先取りしない |
 | G1c | 同step3の同pin UI retry又はdiscard→同request/attempt | 既存native担当。内部pin/retryの支持を保持しGUI原条項を消さない |
 | G2 | 106 PARTITIONの有限予定main/nonmain陽性入力集合→全対象FILE分母 | 既存有限nonGUI担当。4tupleの支持を維持し、100/300や全wire不在を新gateにしない |
-| G3 | 325 ACTIONSの実OS Open／実通知失敗説明 | 既存native担当。R1/R2の支持を維持し実OS辺だけ。clipboardは含めない |
+| G3 | 325 ACTIONSの実OS Open／実通知失敗説明 | 新f327の1通知→Finder同名PNG・意図的不在Delete案内を支持へ更新。元R1/R2と他条項の資格を保持、clipboardは含めない |
 | G4 | 104 step2の該当詳細選択・Copy-content | D4の条件付き229byte支持へ更新済み。同担当の最終固定資格を結合。別通知や全clipboard機能へ広げず、新Copy不要の方向 |
 | G5 | 284 DETECT step2/expectedのnegative/別対象→counter不変 | 既存有限nonGUI担当。元negative/accountingだけを扱い、BOUNDSや2成功で先取りしない |
 
@@ -97,7 +97,17 @@ REAL/humanは一括「全体未完」にせず、初期139の既存34REAL等の�
 媒体・raw log/diagnostics・private path・canonical origin UUIDは公開しない。原file/result/factの対応は独立reviewのprivate bundleで照合する。
 
 
-<details><summary>未採用のcandidate-specific assessment（既存results形式）</summary>
+
+## G3追加原本（初回push検査中に受領）
+
+新しいf327の1回のScreenshot成功通知から保存場所を開き、Finderの同じPNG名へ到達した。元owned PNGを同inode/bytesのまま一時退避し、同じ通知のDeleteで実際のmissing-file失敗案内を確認し、元pathに同inode/hashで復元した。正常終了・元設定復元・lease FREEを原unitへ固定した。これは2つの履歴通知・自然権限失敗・破壊的Delete成功・clipboard・whole325の証拠ではない。
+
+原report SHA-256 `72ac56eac04b5a239def72753262210dd2c8ecc8da85444a69547b1033f535cb`、23参照manifest `8d3de8a796927a7c7a6d62064e7560ea83b4c08b332601e61d44e9cbd9d87406` を照合し、成功通知・Finder・実失敗案内の保存画像も確認した。G3のこの実OS/通知辺を支持へ進め、既存R1/R2・元Case内の他保証はそれぞれの条件で接合する。下の未承認resultsにはcurrent G3 partial assessmentを加える。
+
+G1はpackaged launcherのPopenがchild/request/Saveより前にerrno13で失敗した。installed2launcherは0644、正式ZIPは0755でbytesは一致する。製品CLI/writerの拒否・OS同意拒否・自動承認拒否へ読み替えない。mode診断は別既存担当であり、本proof writerはchmod・再実行を行わない。G1はpendingのまま。
+
+
+<details><summary>未採用のcandidate-specific assessment（3元whole結果＋current G3部分、既存results形式）</summary>
 
 ```json
 {
@@ -1357,6 +1367,82 @@ REAL/humanは一括「全体未完」にせず、初期139の既存34REAL等の�
           ]
         },
         "missing_requirements": [],
+        "unresolved_owned_failures": []
+      }
+    },
+    "325:SCREENSHOT-ACTIONS": {
+      "status": "pending",
+      "head": "2e576ce3c724dc95ccf0688b8a1bf7cd92d774a8",
+      "artifact_sha256": "f3274d7501f9d173ece5de6b1cb729a7fb40d247cfe2a17c6c937fcc085a2c88",
+      "actor": "gpt",
+      "observer": "codex-session-sha256:7b2456c4ac692a16695fa3b6f035ac2149e76f23bd63e479f43f81ca687087e1",
+      "at": "2026-11-06T14:08:43.356962+00:00",
+      "evidence": "Direct retained native report sha256=72ac56eac04b5a239def72753262210dd2c8ecc8da85444a69547b1033f535cb; 23ref manifest sha256=8d3de8a796927a7c7a6d62064e7560ea83b4c08b332601e61d44e9cbd9d87406; source snapshots/images and PNG restored sameinode/hash.",
+      "loaded_identity": "Originalexecutor abcf currentf327 installed3JAR/hash/size/mode + loaded3paths/JBR for owned46887; no new executor or present GUI assertion.",
+      "reason": "同じproof428に新たに受領したcurrent native G3の部分適用。wholeCase承認は未成立。",
+      "responsibility_revision": "85296114925d6947be93158e3eca90fcd69e561b3d8a5d1e6845407b73108f61",
+      "responsibility_evidence": {
+        "contract_coverage": "CurrentG3partial/contract_coverage; fact=CURRENT_G3_NOTIFICATION_OS; 原条項内の未支持conjunctionはmissing_requirementsに保持。",
+        "artifact_binding": "CurrentG3partial/artifact_binding; fact=CURRENT_G3_NOTIFICATION_OS; 原条項内の未支持conjunctionはmissing_requirementsに保持。",
+        "failure_attribution": "CurrentG3partial/failure_attribution; fact=CURRENT_G3_NOTIFICATION_OS; 原条項内の未支持conjunctionはmissing_requirementsに保持。",
+        "preconditions": "CurrentG3partial/preconditions; fact=CURRENT_G3_NOTIFICATION_OS; 原条項内の未支持conjunctionはmissing_requirementsに保持。",
+        "step_1": "CurrentG3partial/step_1; fact=CURRENT_G3_NOTIFICATION_OS; 原条項内の未支持conjunctionはmissing_requirementsに保持。",
+        "step_2": "CurrentG3partial/step_2; fact=CURRENT_G3_NOTIFICATION_OS; 原条項内の未支持conjunctionはmissing_requirementsに保持。",
+        "step_3": "CurrentG3partial/step_3; fact=CURRENT_G3_NOTIFICATION_OS; 原条項内の未支持conjunctionはmissing_requirementsに保持。",
+        "expected": "CurrentG3partial/expected; fact=CURRENT_G3_NOTIFICATION_OS; 原条項内の未支持conjunctionはmissing_requirementsに保持。"
+      },
+      "responsibility_assessment": {
+        "source_candidate": "2e576ce3c724dc95ccf0688b8a1bf7cd92d774a8",
+        "source_result": {
+          "status": "pending",
+          "reason": "実通知action→Finder/ファイルと終了のnative連携は未実施。"
+        },
+        "source_result_sha256": "9223b8d93d1849f176571ea4ff1a421eed2dd2df7114360408bff0f3886f00e7",
+        "source_record_evidence": "git:2e576ce3c724dc95ccf0688b8a1bf7cd92d774a8:docs/verification/changes/issue-325.json#/cases/1/gpt; original pending preserved.",
+        "facts": {
+          "CURRENT_G3_NOTIFICATION_OS": {
+            "status": "pass",
+            "head": "2e576ce3c724dc95ccf0688b8a1bf7cd92d774a8",
+            "artifact_sha256": "f3274d7501f9d173ece5de6b1cb729a7fb40d247cfe2a17c6c937fcc085a2c88",
+            "actor": "gpt",
+            "observer": "codex-session-sha256:7b2456c4ac692a16695fa3b6f035ac2149e76f23bd63e479f43f81ca687087e1",
+            "at": "2026-11-06T14:08:43.356962+00:00",
+            "evidence": "Direct retained native report sha256=72ac56eac04b5a239def72753262210dd2c8ecc8da85444a69547b1033f535cb; 23ref manifest sha256=8d3de8a796927a7c7a6d62064e7560ea83b4c08b332601e61d44e9cbd9d87406; source snapshots/images and PNG restored sameinode/hash.",
+            "loaded_identity": "Originalexecutor abcf currentf327 installed3JAR/hash/size/mode + loaded3paths/JBR for owned46887; no new executor or present GUI assertion.",
+            "reason": "本時刻は保存済み原本の限定適用評価。実success通知1→OS Finder folder/同filename、意図的owned PNG一時不在で同通知Delete失敗案内、元pathへ同inode/hash復元を支持。元native時刻は原processunit/actions、厳密snapshot瞬間は補完しない。2履歴通知・自然permission失敗・破壊的Delete成功・clipboard・wholeCaseは主張しない。"
+          }
+        },
+        "coverage": {
+          "contract_coverage": [
+            "CURRENT_G3_NOTIFICATION_OS"
+          ],
+          "artifact_binding": [
+            "CURRENT_G3_NOTIFICATION_OS"
+          ],
+          "failure_attribution": [
+            "CURRENT_G3_NOTIFICATION_OS"
+          ],
+          "preconditions": [
+            "CURRENT_G3_NOTIFICATION_OS"
+          ],
+          "step_1": [
+            "CURRENT_G3_NOTIFICATION_OS"
+          ],
+          "step_2": [
+            "CURRENT_G3_NOTIFICATION_OS"
+          ],
+          "step_3": [
+            "CURRENT_G3_NOTIFICATION_OS"
+          ],
+          "expected": [
+            "CURRENT_G3_NOTIFICATION_OS"
+          ]
+        },
+        "missing_requirements": [
+          "step1:後の撮影後も旧通知対象が変わらない保証は元回帰と該当事実の接合を維持。今回は1実通知のOS経路だけで全条項完了としない。新2通知試験を一律要求しない。",
+          "step2:破壊的な所有PNG Delete成功を今回の意図的不在エラーから作らない。元回帰/実行の該当保証を別に接合する。",
+          "step3:実通知のmissing-file案内は支持。全OS/全race/faultは該当実回帰の等価bindingを使い、今回の1工程へ変換しない。"
+        ],
         "unresolved_owned_failures": []
       }
     }
