@@ -4,7 +4,7 @@
   "gui_required": true,
   "reason": "2つの実入力欄のaccessibility metadataとlabel接続を修正する。headless実form回帰とは別に、修正版固定候補の小さい実Settings focus/label/既存Help到達を確認する。",
   "cli_checks": [
-    "Fixed code candidate25fe31b: SettingsLayout/Destination/Store13 PASS; clean HEAD classifier: harness612 PASS, plugin47 suites/291 PASS, buildPlugin/verifyPluginStructure PASS. Evidence metadata commit is checked separately before push."
+    "Fixed merge candidate 7b0b4481cf391b92300f29be3019bf5821553efa: harness612 PASS, plugin47 suites/291 PASS, buildPlugin/verifyPluginStructure PASS. Final metadata HEAD is checked by normal pre-push hook."
   ],
   "cases": [
     {
@@ -26,7 +26,7 @@
       ],
       "gpt": {
         "status": "pending",
-        "reason": "固定code候補25fe31bの実inner metadata回帰は成功。実IDEの小さいfocus/label/既存Help接続は未観察でpending。"
+        "reason": "新base d7c5859を含む固定merge候補7b0b448の実inner metadata回帰は成功。実IDEの小さいfocus/label/既存Help接続は未観察でpending。"
       },
       "human": {
         "status": "pending",
@@ -39,9 +39,9 @@
     }
   ],
   "repair": {
-    "candidate": "25fe31bb50d84a2ef65942ac0346a20b97c27317",
+    "candidate": "7b0b4481cf391b92300f29be3019bf5821553efa",
     "artifacts": {
-      "plugin": "7d26a7729732f61776f7d0b2cf23dce4509b9d04eb630fd01baf179e41b12db2"
+      "plugin": "b0dfb35fdf726d4cc5b9b5c9af903a224b90599863e22806abced82cb64332c2"
     },
     "failure_record_sha256": "b9b147b69661b9da65d789dd812dd734d1f8edf352ff1d55fe71c3da30e178e7",
     "writer_session": "01a1abb7-78cd-7e22-b193-b489e4bad4b5",
@@ -49,39 +49,39 @@
       "SETTINGS-EDITORS": {
         "observation": {
           "status": "pass",
-          "head": "25fe31bb50d84a2ef65942ac0346a20b97c27317",
-          "artifact_sha256": "7d26a7729732f61776f7d0b2cf23dce4509b9d04eb630fd01baf179e41b12db2",
+          "head": "7b0b4481cf391b92300f29be3019bf5821553efa",
+          "artifact_sha256": "b0dfb35fdf726d4cc5b9b5c9af903a224b90599863e22806abced82cb64332c2",
           "actor": "gpt",
           "observer": "01a1abb7-78cd-7e22-b193-b489e4bad4b5",
-          "at": "2026-11-05T23:53:02.518Z",
-          "evidence": "Fixed candidate checks bundle SHA256 1746cf5ae26e890cfd02b48b5269ad0ba8dd1366ce6eb33ab1323a554f5b376e; real ReplaySettingsLayoutTest XML SHA256 205181cceea74ff217ad1522bc9cef431bfe7085edb92a0449b59d98ee7af4d6; original RED exact inner-name-null failure retained separately.",
-          "loaded_identity": "Clean source25fe31b development ZIP 7d26a7729732f61776f7d0b2cf23dce4509b9d04eb630fd01baf179e41b12db2; test sandbox main JAR c5332eacb540adf1649b81f49df4fa92d281f01aa596b617191732d1a8ed4e2a matches frozen ZIP; actual Gradle/JBR25 headless real Configurable EDT form, not running IDE/native AX/screenreader.",
-          "reason": "修正前nullを検出する回帰で、2つの実inner editorの名前・正確なlabelFor接続・実form所属/focusable、手動保存先有効時を確認した。原NGのmetadata保証に限定した再試験成功で、Case全体/実IDE/人間評価はpending。writerと今回の検査実行者は同じcanonical sessionで、独立reviewは別途必要。"
+          "at": "2026-11-06T00:21:32.248Z",
+          "evidence": "New base-refresh candidate checks bundle SHA256 e21cbd2b55dc03afb3c2e262a64ce45805da1ff6e1d115d0edc41cd613e77fd7; fresh real ReplaySettingsLayoutTest XML SHA256 c901d70bb2d6c8cd834981770c8cfab516842a27c4204e0acf15d054b4d5c58b. Original25fe RED/green and bff packet remain immutable.",
+          "loaded_identity": "Clean merged source7b0b4481cf391b92300f29be3019bf5821553efa / development ZIP b0dfb35fdf726d4cc5b9b5c9af903a224b90599863e22806abced82cb64332c2 / main JAR 405e74d6706c5106b6522aa5de1e586ebdf97bdac2d875099e3614f0eeb970ac; actual test sandbox JAR equals ZIP JAR. JBR25 headless actual Configurable/EDT form, not native IDE/AX/screenreader.",
+          "reason": "新develop d7c5859取り込み後の固定clean候補で実inner名/正確labelFor/手動enabledを同じ回帰で新実行し成功。元25fe/bffの観察・時刻は不変保全し、原metadata NGの2保証だけへ接合する。実IDE/人間/REALとCase全体はpending。"
         },
         "coverage": {
           "destination-editor-name-label": "実getTextField()のaccessibleName=保存先フォルダ、実form JLabel「保存先フォルダ:」のlabelForがそのeditorと同一。focusable/実form所属も検査。",
           "manual-screenshot-editor-name-label": "実getTextField()のaccessibleName=スクリーンショットの手動保存先、実form JLabel「手動の保存先フォルダ:」のlabelForがそのeditorと同一。Logcat追従OFF後にinner enabledと同じmetadataを再検査。"
         },
-        "method": "元と同じ実Configurable/EDT/Swing metadataという保証層を既存Layout回帰で検査する。wrapper-only検査を実innerと正確なlabelForへ直し、原nullを赤再現後、固定clean候補/ZIPと一致するtest sandboxで緑を確認した。description null単独、native AX又はscreenreaderの新保証を追加しない。",
+        "method": "既存の実Configurable/EDT/Layout回帰を、新base d7c5859の固定merge候補で実行した。Settings source/testは旧bffから不変で、全product class/helper bytesも一致することを確認。414のCI入力固定/診断だけを取り込み、原NG保証に必要なinner名/実label/手動enabledを新実行で確認した。原記録は保持し、native AX/screenreaderの新保証を追加しない。",
         "contract_revision": "85296114925d6947be93158e3eca90fcd69e561b3d8a5d1e6845407b73108f61"
       },
       "GUI-EDITORS": {
         "observation": {
           "status": "pass",
-          "head": "25fe31bb50d84a2ef65942ac0346a20b97c27317",
-          "artifact_sha256": "7d26a7729732f61776f7d0b2cf23dce4509b9d04eb630fd01baf179e41b12db2",
+          "head": "7b0b4481cf391b92300f29be3019bf5821553efa",
+          "artifact_sha256": "b0dfb35fdf726d4cc5b9b5c9af903a224b90599863e22806abced82cb64332c2",
           "actor": "gpt",
           "observer": "01a1abb7-78cd-7e22-b193-b489e4bad4b5",
-          "at": "2026-11-05T23:53:02.518Z",
-          "evidence": "Fixed candidate checks bundle SHA256 1746cf5ae26e890cfd02b48b5269ad0ba8dd1366ce6eb33ab1323a554f5b376e; real ReplaySettingsLayoutTest XML SHA256 205181cceea74ff217ad1522bc9cef431bfe7085edb92a0449b59d98ee7af4d6; original RED exact inner-name-null failure retained separately.",
-          "loaded_identity": "Clean source25fe31b development ZIP 7d26a7729732f61776f7d0b2cf23dce4509b9d04eb630fd01baf179e41b12db2; test sandbox main JAR c5332eacb540adf1649b81f49df4fa92d281f01aa596b617191732d1a8ed4e2a matches frozen ZIP; actual Gradle/JBR25 headless real Configurable EDT form, not running IDE/native AX/screenreader.",
-          "reason": "修正前nullを検出する回帰で、2つの実inner editorの名前・正確なlabelFor接続・実form所属/focusable、手動保存先有効時を確認した。原NGのmetadata保証に限定した再試験成功で、Case全体/実IDE/人間評価はpending。writerと今回の検査実行者は同じcanonical sessionで、独立reviewは別途必要。"
+          "at": "2026-11-06T00:21:32.248Z",
+          "evidence": "New base-refresh candidate checks bundle SHA256 e21cbd2b55dc03afb3c2e262a64ce45805da1ff6e1d115d0edc41cd613e77fd7; fresh real ReplaySettingsLayoutTest XML SHA256 c901d70bb2d6c8cd834981770c8cfab516842a27c4204e0acf15d054b4d5c58b. Original25fe RED/green and bff packet remain immutable.",
+          "loaded_identity": "Clean merged source7b0b4481cf391b92300f29be3019bf5821553efa / development ZIP b0dfb35fdf726d4cc5b9b5c9af903a224b90599863e22806abced82cb64332c2 / main JAR 405e74d6706c5106b6522aa5de1e586ebdf97bdac2d875099e3614f0eeb970ac; actual test sandbox JAR equals ZIP JAR. JBR25 headless actual Configurable/EDT form, not native IDE/AX/screenreader.",
+          "reason": "新develop d7c5859取り込み後の固定clean候補で実inner名/正確labelFor/手動enabledを同じ回帰で新実行し成功。元25fe/bffの観察・時刻は不変保全し、原metadata NGの2保証だけへ接合する。実IDE/人間/REALとCase全体はpending。"
         },
         "coverage": {
           "destination-editor-name-label": "実getTextField()のaccessibleName=保存先フォルダ、実form JLabel「保存先フォルダ:」のlabelForがそのeditorと同一。focusable/実form所属も検査。",
           "manual-screenshot-editor-name-label": "実getTextField()のaccessibleName=スクリーンショットの手動保存先、実form JLabel「手動の保存先フォルダ:」のlabelForがそのeditorと同一。Logcat追従OFF後にinner enabledと同じmetadataを再検査。"
         },
-        "method": "元と同じ実Configurable/EDT/Swing metadataという保証層を既存Layout回帰で検査する。wrapper-only検査を実innerと正確なlabelForへ直し、原nullを赤再現後、固定clean候補/ZIPと一致するtest sandboxで緑を確認した。description null単独、native AX又はscreenreaderの新保証を追加しない。",
+        "method": "既存の実Configurable/EDT/Layout回帰を、新base d7c5859の固定merge候補で実行した。Settings source/testは旧bffから不変で、全product class/helper bytesも一致することを確認。414のCI入力固定/診断だけを取り込み、原NG保証に必要なinner名/実label/手動enabledを新実行で確認した。原記録は保持し、native AX/screenreaderの新保証を追加しない。",
         "contract_revision": "85296114925d6947be93158e3eca90fcd69e561b3d8a5d1e6845407b73108f61"
       }
     }
