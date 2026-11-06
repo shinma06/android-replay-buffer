@@ -42,6 +42,7 @@ import java.awt.FlowLayout
 import java.util.Locale
 import java.util.concurrent.CompletableFuture
 import javax.swing.JButton
+import javax.swing.JComponent
 import javax.swing.JPanel
 import javax.swing.SwingUtilities
 import javax.swing.text.DefaultCaret
@@ -81,7 +82,7 @@ private class ReplayToolWindowPanel(private val project: Project) : JPanel(Borde
     }) {
         toolWindowManager?.getToolWindow("Logcat")
     }.apply {
-        addPropertyChangeListener("toolTipText") { logcatReason.text = toolTipText }
+        addPropertyChangeListener(JComponent.TOOL_TIP_TEXT_KEY) { logcatReason.text = toolTipText }
     }
     private val screenshotButton = JButton("スクリーンショット").apply {
         accessibleContext.accessibleName = "現在画面のスクリーンショットを保存"
