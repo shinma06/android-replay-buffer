@@ -1550,8 +1550,9 @@ class PromotionTreeTests(unittest.TestCase):
                                 json.loads((root / v.INITIAL_CONTINUATION).read_text())['candidate'],
                                 self.git, historical=True)
                             self.assertIsNotNone(registration)
-                            self.assertEqual(37, len(registration['cases']))
-                            self.assertEqual(176, len(set(policy['cases']) | set(registration['cases'])))
+                            self.assertEqual(38, len(registration['cases']))
+                            self.assertEqual(177, len(set(policy['cases']) | set(registration['cases'])))
+                            self.assertIn('416:SETTINGS-INNER-ACCESSIBILITY', registration['cases'])
                             self.assertIn('347:SAVE-WARNING-WINDOW', registration['cases'])
                             self.assertIn('369:LOGCAT-PANEL-TOGGLE', registration['cases'])
                             self.assertIn('377:SCREENSHOT-MIRROR', registration['cases'])
