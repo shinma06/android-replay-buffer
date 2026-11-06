@@ -10,6 +10,8 @@ import java.util.concurrent.Future
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
+internal const val SAVE_IN_PROGRESS_REASON = "保存中です"
+
 /**
  * Project-owned core: replay-control serializes commands/state; replay-save reads a single pinned capture.
  *
@@ -378,7 +380,7 @@ class ReplayCore internal constructor(
         val streams = data?.streams(settings.replaySeconds).orEmpty()
         val disabled = when {
             !enabled -> "取得を有効にしてください"
-            pending != null -> if (saveState.phase == SavePhase.WRITING) "保存中です" else "固定した保存対象を再試行または破棄してください"
+            pending != null -> if (saveState.phase == SavePhase.WRITING) SAVE_IN_PROGRESS_REASON else "固定した保存対象を再試行または破棄してください"
             settings.saveDirectory == null -> "保存先を設定してください"
             data?.hasData() != true -> "保存できる取得データがありません"
             else -> null

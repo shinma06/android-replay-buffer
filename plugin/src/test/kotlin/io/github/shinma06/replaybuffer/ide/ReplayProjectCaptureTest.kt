@@ -521,6 +521,64 @@ else: sys.exit(1)
     }
 
     @Test
+    fun `busy rejection expires when the displayed save completes or fails`() {
+        for (phase in listOf(SavePhase.COMPLETED, SavePhase.FAILED)) {
+            val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+            val capture = ReplayProjectCapture(scope, ReplaySettingsStore(), {}, {})
+            try {
+                assertTrue(capture.applySettings(ReplaySettings(), unresolved, 0).get(15, TimeUnit.SECONDS).accepted)
+                val base = capture.view.snapshot!!
+                val writing = base.copy(revision = base.revision + 100,
+                    save = SaveSnapshot(SavePhase.WRITING, "busy-request", attempt = 1), saveDisabledReason = "保存中です")
+                capture.acceptSnapshot(writing)
+                capture.showMessage("保存中です")
+                assertEquals("保存中です", capture.view.message)
+                val currentReason = if (phase == SavePhase.FAILED) "固定した保存対象を再試行または破棄してください" else null
+                val terminal = writing.copy(revision = writing.revision + 1,
+                    save = writing.save.copy(phase = phase, directory = directory.resolve("result")),
+                    saveDisabledReason = currentReason)
+                capture.acceptSnapshot(terminal)
+                assertNull(capture.view.message)
+                assertEquals(currentReason, capture.view.snapshot!!.saveDisabledReason)
+                assertEquals("busy-request", capture.view.snapshot!!.save.requestId)
+                assertEquals(1, capture.view.snapshot!!.save.attempt)
+                assertEquals(directory.resolve("result"), capture.view.snapshot!!.save.directory)
+                // A rejected command's continuation may arrive after the writer's terminal snapshot.
+                capture.showMessage("保存中です")
+                assertNull(capture.view.message)
+            } finally {
+                capture.close()
+                capture.termination.get(15, TimeUnit.SECONDS)
+                scope.cancel()
+            }
+        }
+    }
+
+    @Test
+    fun `old save completion preserves a newer unrelated operation error`() {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val capture = ReplayProjectCapture(scope, ReplaySettingsStore(), {}, {})
+        try {
+            assertTrue(capture.applySettings(ReplaySettings(), unresolved, 0).get(15, TimeUnit.SECONDS).accepted)
+            val base = capture.view.snapshot!!
+            val writing = base.copy(revision = base.revision + 100,
+                save = SaveSnapshot(SavePhase.WRITING, "old-request"), saveDisabledReason = "保存中です")
+            capture.acceptSnapshot(writing)
+            capture.showMessage("保存中です")
+            capture.showMessage("新しい操作の保存先にアクセスできません")
+            capture.acceptSnapshot(writing.copy(revision = writing.revision + 1,
+                save = writing.save.copy(phase = SavePhase.COMPLETED), saveDisabledReason = null))
+            assertEquals("新しい操作の保存先にアクセスできません", capture.view.message)
+            capture.showMessage("保存中です")
+            assertEquals("新しい操作の保存先にアクセスできません", capture.view.message)
+        } finally {
+            capture.close()
+            capture.termination.get(15, TimeUnit.SECONDS)
+            scope.cancel()
+        }
+    }
+
+    @Test
     fun `manual settings remain authoritative and clearing override restores resolved automatic application`() {
         val env = unresolved.copy(application = ApplicationSelection("com.auto.debug", "debug", null))
         val manual = ReplaySettings(appSelection = AppSelectionMode.MANUAL, manualPackage = "com.manual.app")
