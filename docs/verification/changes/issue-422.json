@@ -1,0 +1,116 @@
+{
+  "schema": 1,
+  "issue": 422,
+  "gui_required": false,
+  "reason": "実保存状態/CLI現在理由の不整合だけを修正。既存production Capture回帰と同じ実CLI/Service原因経路で再現・解消でき、GUI/取得/FILE内容の新matrixを要しない。Logcat no-target経路は独立。",
+  "cli_checks": [
+    "Clean codecandidate f5408ab: harness612 PASS, plugin293/47suites PASS (0failure/error/skip), buildPlugin+verifyPluginStructure PASS; actualCLI originalFAIL/fixedPASS/currentFAILED/newererrorPASS. Final metadataHEAD uses normal classifier/hook/CI separately."
+  ],
+  "cases": [],
+  "repair": {
+    "candidate": "f5408ab17e983aa82a14d7f748f294dde7b24a01",
+    "artifacts": {
+      "plugin": "c347dc782566bf9edff7784337dff1dd61e083c09215e760e812a5bf22e204f5"
+    },
+    "failure_record_sha256": "06094901a4d410c56d32ca641ab8bd20a621c860c8c526b4fe800835df318dce",
+    "writer_session": "codex-session-sha256:35435126951e243c5660db83be8f3626e301607366bb0ff94048adfef9e64f33",
+    "results": {
+      "CLI-STATUS": {
+        "observation": {
+          "status": "pass",
+          "head": "f5408ab17e983aa82a14d7f748f294dde7b24a01",
+          "artifact_sha256": "c347dc782566bf9edff7784337dff1dd61e083c09215e760e812a5bf22e204f5",
+          "actor": "gpt",
+          "observer": "codex-session-sha256:35435126951e243c5660db83be8f3626e301607366bb0ff94048adfef9e64f33",
+          "at": "2026-11-06T10:50:30.729Z",
+          "evidence": "Repair composition SHA256 810f3ec68fe514d2ad71d595d5e8b944380e02a234f86074c81fb90b1d40b828; sealed host event receipt 854752617909c29ab3ed9c0e4eb682eb559df2c8b951c216135492ff709ada88; actual original/fixed/new-error outputs and input bindings retained privately.",
+          "loaded_identity": "Clean codecandidate f5408ab development test ZIP c347dc782566bf9edff7784337dff1dd61e083c09215e760e812a5bf22e204f5 / actual realService CLI/Core/Writer loaded class hashes. Actual Homebrew JDK27.0.1.0.3/b5c3ed... in isolated nonGUI SDK-unset fixture. No officialcandidate/release/IDE/device observation.",
+          "reason": "同じ実CLI/Service/Writer境界で元17aはCOMPLETED後のbusy理由でFAIL、修正版は現在理由null、busy→FAILEDの固定pin案内、新しい別エラー維持でPASS。同request/attempt/path・元positiveと原FAILは保持。atは証拠構成host記録の原時刻であり再実行時刻ではない。実行10:43:58.220473Z〜10:44:01.695019Zとcanonical結果10:44:20.535Zはexecution receiptに不変で保持。",
+          "attribution": {
+            "writer": "codex-session-sha256:35435126951e243c5660db83be8f3626e301607366bb0ff94048adfef9e64f33",
+            "observer": "codex-session-sha256:35435126951e243c5660db83be8f3626e301607366bb0ff94048adfef9e64f33",
+            "contributors": [
+              {
+                "role": "修復source/tests writer",
+                "session": "codex-session-sha256:35435126951e243c5660db83be8f3626e301607366bb0ff94048adfef9e64f33",
+                "activity": "writer",
+                "at": "2026-11-06T10:41:20.308Z",
+                "receipt_sha256": "854752617909c29ab3ed9c0e4eb682eb559df2c8b951c216135492ff709ada88",
+                "receipt_locator": "/writer/raw"
+              },
+              {
+                "role": "修復実行とcanonical結果読戻し",
+                "session": "codex-session-sha256:35435126951e243c5660db83be8f3626e301607366bb0ff94048adfef9e64f33",
+                "activity": "execution",
+                "at": "2026-11-06T10:44:20.535Z",
+                "receipt_sha256": "854752617909c29ab3ed9c0e4eb682eb559df2c8b951c216135492ff709ada88",
+                "receipt_locator": "/execution/raw"
+              },
+              {
+                "role": "修復証拠の構成担当",
+                "session": "codex-session-sha256:35435126951e243c5660db83be8f3626e301607366bb0ff94048adfef9e64f33",
+                "activity": "composition",
+                "at": "2026-11-06T10:50:30.729Z",
+                "receipt_sha256": "854752617909c29ab3ed9c0e4eb682eb559df2c8b951c216135492ff709ada88",
+                "receipt_locator": "/composition/raw"
+              }
+            ]
+          }
+        },
+        "coverage": {
+          "current-save-reason": "Actual original FAIL and candidate fixed PASS on same production CLI status surface; busy→COMPLETED/null + same request/attempt/path, busy→FAILED/current pin guidance, newer unrelated error retained; focused Capture18PASS including latebusy. No fullCase/native matrix inferred."
+        },
+        "method": "現trusted責任契約に従うreason-only修復。既存actual CLI/Service/Capture/Core/Writerとpublication latch/IO fault seamで同じ原因を制御し、偽結果を供給しない。Capture境界回帰と実CLIを接合。任意エラーを消さず初期化/設定エラー・operationIntent/settingsRevisionを保持。GUI描画やLogcat no-targetは別経路で今回新native義務にしない。",
+        "contract_revision": "85296114925d6947be93158e3eca90fcd69e561b3d8a5d1e6845407b73108f61"
+      },
+      "SHARED-RESULT": {
+        "observation": {
+          "status": "pass",
+          "head": "f5408ab17e983aa82a14d7f748f294dde7b24a01",
+          "artifact_sha256": "c347dc782566bf9edff7784337dff1dd61e083c09215e760e812a5bf22e204f5",
+          "actor": "gpt",
+          "observer": "codex-session-sha256:35435126951e243c5660db83be8f3626e301607366bb0ff94048adfef9e64f33",
+          "at": "2026-11-06T10:50:30.729Z",
+          "evidence": "Repair composition SHA256 810f3ec68fe514d2ad71d595d5e8b944380e02a234f86074c81fb90b1d40b828; sealed host event receipt 854752617909c29ab3ed9c0e4eb682eb559df2c8b951c216135492ff709ada88; actual original/fixed/new-error outputs and input bindings retained privately.",
+          "loaded_identity": "Clean codecandidate f5408ab development test ZIP c347dc782566bf9edff7784337dff1dd61e083c09215e760e812a5bf22e204f5 / actual realService CLI/Core/Writer loaded class hashes. Actual Homebrew JDK27.0.1.0.3/b5c3ed... in isolated nonGUI SDK-unset fixture. No officialcandidate/release/IDE/device observation.",
+          "reason": "同じ実CLI/Service/Writer境界で元17aはCOMPLETED後のbusy理由でFAIL、修正版は現在理由null、busy→FAILEDの固定pin案内、新しい別エラー維持でPASS。同request/attempt/path・元positiveと原FAILは保持。atは証拠構成host記録の原時刻であり再実行時刻ではない。実行10:43:58.220473Z〜10:44:01.695019Zとcanonical結果10:44:20.535Zはexecution receiptに不変で保持。",
+          "attribution": {
+            "writer": "codex-session-sha256:35435126951e243c5660db83be8f3626e301607366bb0ff94048adfef9e64f33",
+            "observer": "codex-session-sha256:35435126951e243c5660db83be8f3626e301607366bb0ff94048adfef9e64f33",
+            "contributors": [
+              {
+                "role": "修復source/tests writer",
+                "session": "codex-session-sha256:35435126951e243c5660db83be8f3626e301607366bb0ff94048adfef9e64f33",
+                "activity": "writer",
+                "at": "2026-11-06T10:41:20.308Z",
+                "receipt_sha256": "854752617909c29ab3ed9c0e4eb682eb559df2c8b951c216135492ff709ada88",
+                "receipt_locator": "/writer/raw"
+              },
+              {
+                "role": "修復実行とcanonical結果読戻し",
+                "session": "codex-session-sha256:35435126951e243c5660db83be8f3626e301607366bb0ff94048adfef9e64f33",
+                "activity": "execution",
+                "at": "2026-11-06T10:44:20.535Z",
+                "receipt_sha256": "854752617909c29ab3ed9c0e4eb682eb559df2c8b951c216135492ff709ada88",
+                "receipt_locator": "/execution/raw"
+              },
+              {
+                "role": "修復証拠の構成担当",
+                "session": "codex-session-sha256:35435126951e243c5660db83be8f3626e301607366bb0ff94048adfef9e64f33",
+                "activity": "composition",
+                "at": "2026-11-06T10:50:30.729Z",
+                "receipt_sha256": "854752617909c29ab3ed9c0e4eb682eb559df2c8b951c216135492ff709ada88",
+                "receipt_locator": "/composition/raw"
+              }
+            ]
+          }
+        },
+        "coverage": {
+          "current-save-reason": "Actual original FAIL and candidate fixed PASS on same production CLI status surface; busy→COMPLETED/null + same request/attempt/path, busy→FAILED/current pin guidance, newer unrelated error retained; focused Capture18PASS including latebusy. No fullCase/native matrix inferred."
+        },
+        "method": "現trusted責任契約に従うreason-only修復。既存actual CLI/Service/Capture/Core/Writerとpublication latch/IO fault seamで同じ原因を制御し、偽結果を供給しない。Capture境界回帰と実CLIを接合。任意エラーを消さず初期化/設定エラー・operationIntent/settingsRevisionを保持。GUI描画やLogcat no-targetは別経路で今回新native義務にしない。",
+        "contract_revision": "85296114925d6947be93158e3eca90fcd69e561b3d8a5d1e6845407b73108f61"
+      }
+    }
+  }
+}
