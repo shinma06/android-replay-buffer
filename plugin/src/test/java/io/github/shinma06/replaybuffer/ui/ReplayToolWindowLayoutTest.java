@@ -122,6 +122,16 @@ class ReplayToolWindowLayoutTest {
                     var panel = (JPanel) constructor.newInstance(project);
                     actual[0] = panel;
                     Disposer.register(lifetime, (Disposable) panel);
+                    var logcat = (LogcatToolWindowButton) field(panel, "logcatButton");
+                    var logcatReason = (JTextArea) field(panel, "logcatReason");
+                    var initialReason = logcat.getToolTipText();
+                    assertNotNull(initialReason);
+                    assertFalse(initialReason.isBlank());
+                    assertEquals(initialReason, logcatReason.getText(), "initial Logcat reason must be visible");
+                    logcat.setToolTipText("Logcatの接続先を確認しています。");
+                    assertEquals(logcat.getToolTipText(), logcatReason.getText(), "changed Logcat reason must be visible");
+                    logcat.refresh();
+                    assertEquals(initialReason, logcatReason.getText(), "refresh must restore the current Logcat reason");
                     verifyScreenshotAvailability(panel, service, store);
                     verifySaveStatesAndHierarchy(panel, service, store);
                     var outer = (JScrollPane) panel.getComponent(0);
