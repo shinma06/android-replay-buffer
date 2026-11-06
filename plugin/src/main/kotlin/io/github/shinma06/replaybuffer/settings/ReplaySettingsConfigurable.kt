@@ -31,6 +31,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import javax.swing.JComboBox
 import javax.swing.JComponent
+import javax.swing.JLabel
 import javax.swing.JPanel
 import javax.swing.event.DocumentEvent
 
@@ -77,6 +78,7 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable {
         destination = TextFieldWithBrowseButton().apply {
             addBrowseFolderListener(project, FileChooserDescriptorFactory.createSingleFolderDescriptor())
             accessibleContext.accessibleName = "保存先フォルダ"
+            textField.accessibleContext.accessibleName = accessibleContext.accessibleName
             textField.document.addDocumentListener(object : DocumentAdapter() {
                 override fun textChanged(event: DocumentEvent) = checkDestination()
             })
@@ -85,6 +87,7 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable {
         screenshotDirectory = TextFieldWithBrowseButton().apply {
             addBrowseFolderListener(project, FileChooserDescriptorFactory.createSingleFolderDescriptor())
             accessibleContext.accessibleName = "スクリーンショットの手動保存先"
+            textField.accessibleContext.accessibleName = accessibleContext.accessibleName
             textField.document.addDocumentListener(object : DocumentAdapter() {
                 override fun textChanged(event: DocumentEvent) = checkScreenshotDestination()
             })
@@ -121,6 +124,8 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable {
             accessibleContext.accessibleName = "クラッシュ報告の自動保存"
             toolTipText = "既定OFF。適用後の報告が対象です。native/ANRは対応外。8回受付または検出上限で停止します。再開は自動保存をOFFで適用してからONで適用してください。"
         }
+        val destinationLabel = JLabel("保存先フォルダ:").apply { labelFor = destination!!.textField }
+        val screenshotDirectoryLabel = JLabel("手動の保存先フォルダ:").apply { labelFor = screenshotDirectory!!.textField }
         panel = FormBuilder.createFormBuilder()
             .addComponent(wrappingLabel("編集内容は「適用」または「OK」で反映します。キャンセルでは変更しません。" +
                 "取得のON/OFFはToolWindowですぐ反映します。", "設定の適用方法"))
@@ -141,11 +146,11 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable {
             .addComponent(wrappingLabel("対象アプリの標準Java/Kotlinクラッシュ報告が対象です。native/ANRは対応外です。" +
                 "8回受付または検出上限で停止します。再開はこの設定をOFFで適用してから、ONで再び適用してください。", "クラッシュ自動保存の対応範囲"))
             .addComponent(TitledSeparator("動画・ログの保存先"))
-            .addLabeledComponent("保存先フォルダ:", destination!!)
+            .addLabeledComponent(destinationLabel, destination!!)
             .addComponent(destinationStatus!!)
             .addComponent(TitledSeparator("スクリーンショットの保存先"))
             .addComponent(screenshotLogcat!!)
-            .addLabeledComponent("手動の保存先フォルダ:", screenshotDirectory!!)
+            .addLabeledComponent(screenshotDirectoryLabel, screenshotDirectory!!)
             .addComponent(screenshotStatus!!)
             .addComponentFillVertically(JPanel(), 0)
             .panel
