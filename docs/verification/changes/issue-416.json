@@ -44,7 +44,7 @@
       "plugin": "b0dfb35fdf726d4cc5b9b5c9af903a224b90599863e22806abced82cb64332c2"
     },
     "failure_record_sha256": "b9b147b69661b9da65d789dd812dd734d1f8edf352ff1d55fe71c3da30e178e7",
-    "writer_session": "01a1abb7-78cd-7e22-b193-b489e4bad4b5",
+    "writer_session": "修復source・回帰実行・metadata構成担当",
     "results": {
       "SETTINGS-EDITORS": {
         "observation": {
@@ -52,11 +52,57 @@
           "head": "7b0b4481cf391b92300f29be3019bf5821553efa",
           "artifact_sha256": "b0dfb35fdf726d4cc5b9b5c9af903a224b90599863e22806abced82cb64332c2",
           "actor": "gpt",
-          "observer": "01a1abb7-78cd-7e22-b193-b489e4bad4b5",
-          "at": "2026-11-06T00:21:32.248Z",
-          "evidence": "New base-refresh candidate checks bundle SHA256 e21cbd2b55dc03afb3c2e262a64ce45805da1ff6e1d115d0edc41cd613e77fd7; fresh real ReplaySettingsLayoutTest XML SHA256 c901d70bb2d6c8cd834981770c8cfab516842a27c4204e0acf15d054b4d5c58b. Original25fe RED/green and bff packet remain immutable.",
+          "observer": "保持7b実行証拠の帰属構成担当",
+          "at": "2026-11-06T01:01:22.567542Z",
+          "evidence": "New base-refresh candidate checks bundle SHA256 e21cbd2b55dc03afb3c2e262a64ce45805da1ff6e1d115d0edc41cd613e77fd7; fresh real ReplaySettingsLayoutTest XML SHA256 c901d70bb2d6c8cd834981770c8cfab516842a27c4204e0acf15d054b4d5c58b. Original25fe RED/green and bff packet remain immutable. 原実行suite開始=2026-11-06T00:21:32.248Z。現在atは構造化帰属の構成日時であり、新試験ではない。sealed mapping SHA256 1537a29678d1af279932100ac570a9006b758df19743c09661dc52216918bd43。",
           "loaded_identity": "Clean merged source7b0b4481cf391b92300f29be3019bf5821553efa / development ZIP b0dfb35fdf726d4cc5b9b5c9af903a224b90599863e22806abced82cb64332c2 / main JAR 405e74d6706c5106b6522aa5de1e586ebdf97bdac2d875099e3614f0eeb970ac; actual test sandbox JAR equals ZIP JAR. JBR25 headless actual Configurable/EDT form, not native IDE/AX/screenreader.",
-          "reason": "新develop d7c5859取り込み後の固定clean候補で実inner名/正確labelFor/手動enabledを同じ回帰で新実行し成功。元25fe/bffの観察・時刻は不変保全し、原metadata NGの2保証だけへ接合する。実IDE/人間/REALとCase全体はpending。"
+          "reason": "新develop d7c5859取り込み後の固定clean候補で実inner名/正確labelFor/手動enabledを同じ回帰で新実行し成功。元25fe/bffの観察・時刻は不変保全し、原metadata NGの2保証だけへ接合する。実IDE/人間/REALとCase全体はpending。 今回は原7b実行証拠の帰属をhash形式へ移し、実source/回帰writer・原実行・保持証拠構成と現在構成を区別した。",
+          "attribution": {
+            "writer": "codex-session-sha256:026c095d10bdce839daf168b7283a3ded18bc72cd97d11483aac53f43f663847",
+            "observer": "codex-session-sha256:026c095d10bdce839daf168b7283a3ded18bc72cd97d11483aac53f43f663847",
+            "contributors": [
+              {
+                "role": "修復回帰source担当",
+                "session": "codex-session-sha256:026c095d10bdce839daf168b7283a3ded18bc72cd97d11483aac53f43f663847",
+                "activity": "writer",
+                "at": "2026-11-05T23:42:43.357Z",
+                "receipt_sha256": "11a0650559cfdb28687a44af13b1c199770f6cc49738d656950fc9ba35224de9",
+                "receipt_locator": ""
+              },
+              {
+                "role": "修復製品source担当",
+                "session": "codex-session-sha256:026c095d10bdce839daf168b7283a3ded18bc72cd97d11483aac53f43f663847",
+                "activity": "writer",
+                "at": "2026-11-05T23:44:30.175Z",
+                "receipt_sha256": "7c6525624b479cad94c908dc5ec71dd3c57ecdbe2e7519c92f19391aae0f225d",
+                "receipt_locator": ""
+              },
+              {
+                "role": "7b保持証拠照合・修復metadata構成担当",
+                "session": "codex-session-sha256:026c095d10bdce839daf168b7283a3ded18bc72cd97d11483aac53f43f663847",
+                "activity": "composition",
+                "at": "2026-11-06T00:22:38.203Z",
+                "receipt_sha256": "8c77d0ed4eaa6cbe39d1c5a719e864a89b767d05e18072d07bec703b4f79b7d8",
+                "receipt_locator": ""
+              },
+              {
+                "role": "7b実Configurable回帰実行担当（原suite開始時刻）",
+                "session": "codex-session-sha256:026c095d10bdce839daf168b7283a3ded18bc72cd97d11483aac53f43f663847",
+                "activity": "execution",
+                "at": "2026-11-06T00:21:32.248Z",
+                "receipt_sha256": "c901d70bb2d6c8cd834981770c8cfab516842a27c4204e0acf15d054b4d5c58b",
+                "receipt_locator": ""
+              },
+              {
+                "role": "構造化帰属・privacyの現在構成担当（新試験なし）",
+                "session": "codex-session-sha256:026c095d10bdce839daf168b7283a3ded18bc72cd97d11483aac53f43f663847",
+                "activity": "composition",
+                "at": "2026-11-06T01:01:22.567542Z",
+                "receipt_sha256": "c5bdc783e41516ebeb29852297853d55aa571adb37211a325c33721c36ecab0d",
+                "receipt_locator": ""
+              }
+            ]
+          }
         },
         "coverage": {
           "destination-editor-name-label": "実getTextField()のaccessibleName=保存先フォルダ、実form JLabel「保存先フォルダ:」のlabelForがそのeditorと同一。focusable/実form所属も検査。",
@@ -71,11 +117,57 @@
           "head": "7b0b4481cf391b92300f29be3019bf5821553efa",
           "artifact_sha256": "b0dfb35fdf726d4cc5b9b5c9af903a224b90599863e22806abced82cb64332c2",
           "actor": "gpt",
-          "observer": "01a1abb7-78cd-7e22-b193-b489e4bad4b5",
-          "at": "2026-11-06T00:21:32.248Z",
-          "evidence": "New base-refresh candidate checks bundle SHA256 e21cbd2b55dc03afb3c2e262a64ce45805da1ff6e1d115d0edc41cd613e77fd7; fresh real ReplaySettingsLayoutTest XML SHA256 c901d70bb2d6c8cd834981770c8cfab516842a27c4204e0acf15d054b4d5c58b. Original25fe RED/green and bff packet remain immutable.",
+          "observer": "保持7b実行証拠の帰属構成担当",
+          "at": "2026-11-06T01:01:22.567542Z",
+          "evidence": "New base-refresh candidate checks bundle SHA256 e21cbd2b55dc03afb3c2e262a64ce45805da1ff6e1d115d0edc41cd613e77fd7; fresh real ReplaySettingsLayoutTest XML SHA256 c901d70bb2d6c8cd834981770c8cfab516842a27c4204e0acf15d054b4d5c58b. Original25fe RED/green and bff packet remain immutable. 原実行suite開始=2026-11-06T00:21:32.248Z。現在atは構造化帰属の構成日時であり、新試験ではない。sealed mapping SHA256 1537a29678d1af279932100ac570a9006b758df19743c09661dc52216918bd43。",
           "loaded_identity": "Clean merged source7b0b4481cf391b92300f29be3019bf5821553efa / development ZIP b0dfb35fdf726d4cc5b9b5c9af903a224b90599863e22806abced82cb64332c2 / main JAR 405e74d6706c5106b6522aa5de1e586ebdf97bdac2d875099e3614f0eeb970ac; actual test sandbox JAR equals ZIP JAR. JBR25 headless actual Configurable/EDT form, not native IDE/AX/screenreader.",
-          "reason": "新develop d7c5859取り込み後の固定clean候補で実inner名/正確labelFor/手動enabledを同じ回帰で新実行し成功。元25fe/bffの観察・時刻は不変保全し、原metadata NGの2保証だけへ接合する。実IDE/人間/REALとCase全体はpending。"
+          "reason": "新develop d7c5859取り込み後の固定clean候補で実inner名/正確labelFor/手動enabledを同じ回帰で新実行し成功。元25fe/bffの観察・時刻は不変保全し、原metadata NGの2保証だけへ接合する。実IDE/人間/REALとCase全体はpending。 今回は原7b実行証拠の帰属をhash形式へ移し、実source/回帰writer・原実行・保持証拠構成と現在構成を区別した。",
+          "attribution": {
+            "writer": "codex-session-sha256:026c095d10bdce839daf168b7283a3ded18bc72cd97d11483aac53f43f663847",
+            "observer": "codex-session-sha256:026c095d10bdce839daf168b7283a3ded18bc72cd97d11483aac53f43f663847",
+            "contributors": [
+              {
+                "role": "修復回帰source担当",
+                "session": "codex-session-sha256:026c095d10bdce839daf168b7283a3ded18bc72cd97d11483aac53f43f663847",
+                "activity": "writer",
+                "at": "2026-11-05T23:42:43.357Z",
+                "receipt_sha256": "11a0650559cfdb28687a44af13b1c199770f6cc49738d656950fc9ba35224de9",
+                "receipt_locator": ""
+              },
+              {
+                "role": "修復製品source担当",
+                "session": "codex-session-sha256:026c095d10bdce839daf168b7283a3ded18bc72cd97d11483aac53f43f663847",
+                "activity": "writer",
+                "at": "2026-11-05T23:44:30.175Z",
+                "receipt_sha256": "7c6525624b479cad94c908dc5ec71dd3c57ecdbe2e7519c92f19391aae0f225d",
+                "receipt_locator": ""
+              },
+              {
+                "role": "7b保持証拠照合・修復metadata構成担当",
+                "session": "codex-session-sha256:026c095d10bdce839daf168b7283a3ded18bc72cd97d11483aac53f43f663847",
+                "activity": "composition",
+                "at": "2026-11-06T00:22:38.203Z",
+                "receipt_sha256": "8c77d0ed4eaa6cbe39d1c5a719e864a89b767d05e18072d07bec703b4f79b7d8",
+                "receipt_locator": ""
+              },
+              {
+                "role": "7b実Configurable回帰実行担当（原suite開始時刻）",
+                "session": "codex-session-sha256:026c095d10bdce839daf168b7283a3ded18bc72cd97d11483aac53f43f663847",
+                "activity": "execution",
+                "at": "2026-11-06T00:21:32.248Z",
+                "receipt_sha256": "c901d70bb2d6c8cd834981770c8cfab516842a27c4204e0acf15d054b4d5c58b",
+                "receipt_locator": ""
+              },
+              {
+                "role": "構造化帰属・privacyの現在構成担当（新試験なし）",
+                "session": "codex-session-sha256:026c095d10bdce839daf168b7283a3ded18bc72cd97d11483aac53f43f663847",
+                "activity": "composition",
+                "at": "2026-11-06T01:01:22.567542Z",
+                "receipt_sha256": "c5bdc783e41516ebeb29852297853d55aa571adb37211a325c33721c36ecab0d",
+                "receipt_locator": ""
+              }
+            ]
+          }
         },
         "coverage": {
           "destination-editor-name-label": "実getTextField()のaccessibleName=保存先フォルダ、実form JLabel「保存先フォルダ:」のlabelForがそのeditorと同一。focusable/実form所属も検査。",
