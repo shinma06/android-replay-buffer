@@ -10,6 +10,8 @@ gh workflow run ci.yml --repo shinma06/android-replay-buffer --ref codex/281-ci-
 
 Plugin検査が必要なjobでは、公式`platform-37.2_r01.zip`（68,056,472 bytes）をjob専用の一時領域へ取得し、固定archive SHA-256と内部`android.jar`の既存pinを照合してから`ANDROID_HOME`を設定します。公開API jarのみを取り出し、runner既設SDKは変更しません。revision 2が同じSDK IDで配布されても自動追従せず、取得・照合・展開の失敗は検査を止めます。対象jobごとに約68 MBの取得・hash・展開コストが増えます。新cacheやretryは加えず、通常の製品検査も同じjarを再照合します。固定根拠と元のFAILは[#414](https://github.com/shinma06/android-replay-buffer/issues/414)に保持します。
 
+main上の`Release candidate`は、固定SOURCEを選択しtrusted inspectorを別worktreeへ保持した後、正式buildの直前に公式`platform-37.2_r01.zip`をjob専用tempへ取得します。ZIP全体と内部`android.jar`を固定SHA-256で照合してから`ANDROID_HOME`を公開し、SOURCE側のJavaCompile／D8が既存r01 pinを再照合して使います。inline stepはSOURCE checkoutで置換されません。対象buildごとに68,056,472bytes（約68MB）の取得・hash・展開が増え、通信は120秒で打切り、retry／cache追加はしません。runner既設SDK、正式version／identity、single build、Artifact90日保存は維持します。[#418](https://github.com/shinma06/android-replay-buffer/issues/418)はこの準備だけのtooling修正であり、最終source／version確定後の実main-dispatch→formal build→Artifact uploadは[#271](https://github.com/shinma06/android-replay-buffer/issues/271)で別に確認します。main自身の現行製品検査（JDK25／既存Maven API入力）と、SOURCEへcheckout後の正式build条件を混同しません。
+
 ## 保持する境界
 
 - 共通の必須checkは `test` / `PR policy` / `Acceptance gate` / `Agent review`。旧`CLI Python 3.9`からの[branchごとの置換確認](github.md#runtime検査の共通testへの段階移行)と実serverのreadbackは#305の記録を参照します。CI成功は独立レビューやGUI受入の代わりになりません。
