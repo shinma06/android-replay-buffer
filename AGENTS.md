@@ -4,12 +4,14 @@ Android Studio plugin (`plugin/`) that keeps the last moments of an Android devi
 
 ## Work
 
-Entire Trails drive the change; GitHub runs CI and publishes releases. Use `R=gh/shinma06/android-replay-buffer`.
+Entire Trails drive the change; GitHub runs CI and publishes releases. Always pass `--repo gh/shinma06/android-replay-buffer` to `entire trail` commands: in Devin, `origin` goes through a proxy URL that Entire cannot map to this repository.
 
 - Tasks are GitHub Issues. One Issue → one branch `devin/<issue>-<slug>` from `develop` → one trail.
-- Push the branch to `origin`, then `entire trail create --repo $R --branch <branch> --base develop --title "<type>: <日本語の要約>" --body "Closes #<issue>"` and `entire trail ci-pr <n> --repo $R` (opens the GitHub PR that runs CI `test`).
-- Entire's review agents (Code review, Security review) review every push. Read `entire trail finding list <n> --repo $R`, fix real findings, and resolve the rest with a reason.
-- Merge with `entire trail merge <n> --repo $R` once its gates pass. Never `--force`. No human approval is needed for `develop`.
+- Push the branch to `origin`, then `entire trail create --branch <branch> --base develop --title "<type>: <日本語の要約>" --body "Closes #<issue>"`.
+- `entire trail ci-pr <n>` opens a draft GitHub PR titled with the branch name. Edit its title to the trail title and add `Closes #<issue>` to its body (keep the `<!-- entire-shadow-pr -->` marker), then `entire trail ready <n>` so reviews and CI `test` run.
+- Review: `entire review` (Codex, output to the trail) is primary. If it cannot run, have a separate Devin session review the diff and post each issue with `entire trail finding add`.
+- Before merging, fix real findings and resolve the rest with a reason, both in `entire trail finding list <n>` and in GitHub PR review threads (the `develop` ruleset requires resolved threads).
+- Merge with `entire trail merge <n>` once its gates (findings, `test`, up to date) pass. Never `--force`. No human approval is needed for `develop`.
 - `develop` → `main` is a release: open the PR and merge it only after the user confirms the candidate on a real device/IDE. Tag `vX.Y.Z` on `main` to publish a GitHub Release.
 - Proceed on reversible decisions and report them; stop only for public exposure, data deletion, billing, credentials, or anything a platform gate requires.
 
