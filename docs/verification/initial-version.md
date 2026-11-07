@@ -24,8 +24,8 @@
 今回の読取確認: macOS arm64、Android Studio full build `AI-262.9437.185.2621.16467767`、JBR `25.0.3`。標準SDKはplatform-tools `37.0.1` / Emulator `37.1.11` / platform `android-37.0` / build-tools `36.0.0`あり、system image / cmdline-tools / 標準AVDはなし。この時点ではIDE起動、install、SDK追加、AVD作成起動、ADB照会をしていません。共有GUI leaseは別作業が保持中で、時間切れを所有移譲と扱いません。
 
 1. PMが他操作者と停止/画面状態/leaseの正規解放を調整し、QAのIssue/run/source/予算/許可対象を割り当てる。
-2. QAは[operations](../operations.md#gui-lease)の資源影響判定に従い、共有状態・証拠へ影響する準備・操作・install・起動・再起動の区間で共有leaseを取得し、直前にtoken/期限をprivateで確認する。activeな全体排他/範囲不明の予約を無視せず、タスク別lease directoryで競合を回避したことにしない。個別Caseの明示条件と過去の予約・観察記録は維持する。
-3. 同じRabbit SDKの専用IDE sandbox/config/systemと新規の非VCS共有設定を用意し、通常IDE/他プロジェクトを開かない。fixtureは[replay-marker](../../tests/fixtures/replay-marker/README.md)を専用プロジェクトとして使用する。
+2. QAは[operations](https://github.com/shinma06/android-replay-buffer/blob/legacy-ops-develop/docs/operations.md#gui-lease)の資源影響判定に従い、共有状態・証拠へ影響する準備・操作・install・起動・再起動の区間で共有leaseを取得し、直前にtoken/期限をprivateで確認する。activeな全体排他/範囲不明の予約を無視せず、タスク別lease directoryで競合を回避したことにしない。個別Caseの明示条件と過去の予約・観察記録は維持する。
+3. 同じRabbit SDKの専用IDE sandbox/config/systemと新規の非VCS共有設定を用意し、通常IDE/他プロジェクトを開かない。fixtureは[replay-marker](https://github.com/shinma06/android-replay-buffer/blob/legacy-ops-develop/tests/fixtures/replay-marker/README.md)を専用プロジェクトとして使用する。
 4. Android StudioのSDK Managerで**Android SDK Command-line Tools**の版を選んで導入し、正確な版/packageとSDK rootを記録する。ネットワーク・容量・license操作はPMの環境割当後に行う。SDK全体の更新や既存packageの置換はしない。
 5. 同梱sdkmanagerの一覧で実在するAPI 29以上の`arm64-v8a` imageを選び、package ID/版を固定する。公式sdkmanager 23.0の一覧で`system-images;android-37.0;google_apis;arm64-v8a` revision 6.0.0の存在を照合しました。実インストール/互換性は別確認です。なければ利用可能な版をPMが決め、未存在のpackageを準備済みとしない。
 6. Android Studio Device Managerで製品専用の新規AVDを作り、image/API/ABI/端末profileを記録する。初回はfresh data、ユーザーアカウントなし。既存AVDのwipe/snapshot変更はしない。専用AVD以外を停止しない。
@@ -36,9 +36,9 @@ SDK導入は[公式SDK Manager](https://developer.android.com/studio/intro/updat
 
 ## 固定buildと記録
 
-必要変更のdevelop統合後、PMがcleanなcandidate sourceを固定し標準`buildPlugin`で一度ZIPを生成します。ZIP SHA-256、Plugin ID/version/source、Rabbit full build/JBR、API Verifier結果を同じZIPへ対応づけます。固定ZIPを[公式ターミナル配置手順](../operations.md#固定plugin-zipのターミナル導入)で専用profileへ導入し、自製品About/actionと実process/PID/profile/version/source・全3JAR/ZIP一致・取得OFFを照合します。Settings GUIは自製品設定の表示/入力/Apply/Cancel/検証/アクセシビリティ/寿命に使います。source ZIP、別hash、`-dirty`版、旧ロード実体で観察しません。再起動後も再照合します。
+必要変更のdevelop統合後、PMがcleanなcandidate sourceを固定し標準`buildPlugin`で一度ZIPを生成します。ZIP SHA-256、Plugin ID/version/source、Rabbit full build/JBR、API Verifier結果を同じZIPへ対応づけます。固定ZIPを[公式ターミナル配置手順](https://github.com/shinma06/android-replay-buffer/blob/legacy-ops-develop/docs/operations.md#固定plugin-zipのターミナル導入)で専用profileへ導入し、自製品About/actionと実process/PID/profile/version/source・全3JAR/ZIP一致・取得OFFを照合します。Settings GUIは自製品設定の表示/入力/Apply/Cancel/検証/アクセシビリティ/寿命に使います。source ZIP、別hash、`-dirty`版、旧ロード実体で観察しません。再起動後も再照合します。
 
-fixtureは同じ最終candidateから[build.py](../../tests/fixtures/replay-marker/build.py)で2 APKを生成し、`build/fixture-identity.json`のsource/dirty/APK hashと画面/logのsourceを照合します。専用debug鍵と証明書fingerprintをprivateに保管し、APKのbuild成功と実ロード/描画観察を区別します。通常IDEの設定、上流fixture ID/署名鍵/ランタイム状態をコピーしません。
+fixtureは同じ最終candidateから[build.py](https://github.com/shinma06/android-replay-buffer/blob/legacy-ops-develop/tests/fixtures/replay-marker/build.py)で2 APKを生成し、`build/fixture-identity.json`のsource/dirty/APK hashと画面/logのsourceを照合します。専用debug鍵と証明書fingerprintをprivateに保管し、APKのbuild成功と実ロード/描画観察を区別します。通常IDEの設定、上流fixture ID/署名鍵/ランタイム状態をコピーしません。
 
 Caseごとに実機/Emulator別のIDで記録します。共通記録はcandidate/source、製品ZIP hash、実ロード版/JAR、IDE/JBR、fixture source/2 APK hash、OS/API/ABI、run、観察者、timezone付きISO8601時刻、前提、実観察、private証拠へのopaque参照、次操作です。serial/host/絶対パス/tokenはprivateだけに保存します。例示結果や観察時刻を先に埋めません。
 
@@ -55,7 +55,7 @@ Caseごとに実機/Emulator別のIDで記録します。共通記録はcandidat
 
 同期ではfixtureのpackage/run/eventを両ログと照合し、動画で初めて番号が見えるフレームPTSと直前PTSを記録します。REQUESTは操作callback、DRAWはCanvas命令、FRAME_COMMITはcallback観察で、いずれも真の表示時刻とはみなしません。[公式frame commit仕様](https://developer.android.com/reference/android/view/ViewTreeObserver#registerFrameCommitCallback(java.lang.Runnable))を根拠に、request→draw→commit、callback dispatch、render→表示→録画、frame間隔、wall/elapsedサンプリング幅を測定の不確かさへ含めます。#13の対応方式/閾値を採用し、fixtureだけで物理表示時刻が測れたとは主張しません。
 
-同期の具体測定は[fixture測定補助手順](../../tests/fixtures/replay-marker/README.md#同期測定補助macos標準api)に従い、native復号の色遷移PTS＋全300件の番号確認、欠落/重複/unknown、各phaseと時計誤差を別記します。30分の開始/中間/終了各100件、p95≤100ms/最大≤250ms/drift≤50ms/clock≤20msは採用#13の未実測基準です。
+同期の具体測定は[fixture測定補助手順](https://github.com/shinma06/android-replay-buffer/blob/legacy-ops-develop/tests/fixtures/replay-marker/README.md#同期測定補助macos標準api)に従い、native復号の色遷移PTS＋全300件の番号確認、欠落/重複/unknown、各phaseと時計誤差を別記します。30分の開始/中間/終了各100件、p95≤100ms/最大≤250ms/drift≤50ms/clock≤20msは採用#13の未実測基準です。
 
 保存先障害と取得用一時領域障害を分けます。段階別write/final renameやENOSPCの試験は、実装の承認済みfault injectionまたは容量を制限した使い捨て領域でのみ行います。ホスト全体を埋めず、共有ADB serverを止めず、所有不明processをkillしません。再現方法が不足するCaseはblocked。fault injection/単体試験だけの成功を、実機/Emulatorの受入passへ置き換えません。
 

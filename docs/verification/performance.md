@@ -56,9 +56,9 @@ G06 sample原本SHA-256は `7742d67f54babdfcd2d11cbf2f9d9a354f35c1d58bea3acebf9e
 - ARBの保持秒数、動画設定実値と変更時刻、log buffer/filter、実encoder、対象アプリ、入力時刻列、開始/終了clock、host/device process identityと再起動。
 - 観測tool版/hash・設定・周期・trace data source、hostのbuild/indexing/同期等、測定前後の空き容量、drop/loss/unknown。
 
-[共有leaseと専用fixture](../operations.md)を使用します。leaseはGUIの協調予約であってCPU/I/Oの隔離ではありません。PMが#206 build・#281実験との静穏枠を調整し、区間中の予期しない競合は記録して比較対象から分離します。他担当のprocess/daemonを停止しません。汚染runを削除せず、除外理由と再実施を残します。
+[共有leaseと専用fixture](https://github.com/shinma06/android-replay-buffer/blob/legacy-ops-develop/docs/operations.md)を使用します。leaseはGUIの協調予約であってCPU/I/Oの隔離ではありません。PMが#206 build・#281実験との静穏枠を調整し、区間中の予期しない競合は記録して比較対象から分離します。他担当のprocess/daemonを停止しません。汚染runを削除せず、除外理由と再実施を残します。
 
-[既存marker fixture](../../tests/fixtures/replay-marker/README.md)の同じAPK・同じ入力列を利用します。静止、毎秒1回の番号/色変更、回転を別workloadとします。このfixtureの疎な全画面変化は、連続scroll/動画再生等の高運動量画面の代理にはなりません。高運動量と大量logは同じ再生可能な刺激を追加準備してから別条件で測り、私有アプリ/個人データを使いません。
+[既存marker fixture](https://github.com/shinma06/android-replay-buffer/blob/legacy-ops-develop/tests/fixtures/replay-marker/README.md)の同じAPK・同じ入力列を利用します。静止、毎秒1回の番号/色変更、回転を別workloadとします。このfixtureの疎な全画面変化は、連続scroll/動画再生等の高運動量画面の代理にはなりません。高運動量と大量logは同じ再生可能な刺激を追加準備してから別条件で測り、私有アプリ/個人データを使いません。
 
 起動直後を除外するだけでwarm-up済みとしません。予備測定でclock取得・buffer占有・CPU・thermalの推移を確認してwarm-up条件と測定長を固定し、本測定では全armに同じ手順を適用します。保持上限到達後とpruneは保持秒数を超えるrun、長時間driftは対応する長時間runで扱います。短時間pilotから900秒保持や長時間安定性を主張しません。
 
