@@ -9,7 +9,7 @@ Entire Trails drive the change; GitHub runs CI and publishes releases. Always pa
 - Tasks are GitHub Issues. One Issue → one branch `devin/<issue>-<slug>` from `develop` → one trail.
 - Push the branch to `origin`, then `entire trail create --branch <branch> --base develop --title "<type>: <日本語の要約>" --body "Closes #<issue>"`.
 - `entire trail ci-pr <n>` opens a draft GitHub PR titled with the branch name. Edit its title to the trail title and add `Closes #<issue>` to its body (keep the `<!-- entire-shadow-pr -->` marker), then `entire trail ready <n>` so reviews and CI `test` run.
-- Review: `entire review` (Codex, output to the trail) is primary. If it cannot run, have a separate Devin session review the diff and post each issue with `entire trail finding add`.
+- Review: `codex review --base develop` (uses `OPENAI_API_KEY`) is primary; post each real issue to the trail with `entire trail finding add`. If Codex cannot run (quota, outage), have a separate Devin session review the diff and post its findings the same way. (`entire review` asks for human approval on every push because Devin's git `user.email` differs from the commit author.)
 - Before merging, fix real findings and resolve the rest with a reason, both in `entire trail finding list <n>` and in GitHub PR review threads (the `develop` ruleset requires resolved threads).
 - Merge with `entire trail merge <n>` once its gates (findings, `test`, up to date) pass. Never `--force`. No human approval is needed for `develop`.
 - `develop` → `main` is a release: open the PR and merge it only after the user confirms the candidate on a real device/IDE. Tag `vX.Y.Z` on `main` to publish a GitHub Release.
