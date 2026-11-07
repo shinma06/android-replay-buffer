@@ -80,7 +80,7 @@ CLIではUSB切断/再接続、直前区間の動画/logcat時刻整合、log-on
 }
 ```
 
-`session` は共通 `agent_policy.session_fingerprint` に実originを渡して生成します。[trusted host入口](../setup/automation.md#レビュー元と実行元の選択)のnative originは `native_session(issuer, identity)` で大小文字を保ったcanonical値へ正規化し、`native-session-sha256:` を使います。実際のcanonical UUIDは従来の単一identityへ統一し、旧Codex thread UUID（小文字・標準ハイフン形式）から `SHA256(UTF-8("codex-session-v1:" + UUID))` を生成し、`codex-session-sha256:` を付けます。共通 `agent_policy.session_fingerprint` を使い、UUID・host・private pathは公開しません。役割名の変更や生成したwrapper名はhashの入力にできません。contributorsには元製品writer、修復source/実行担当、保持証拠の評価/構成担当を漏れなく含め、複数の実行receiptはそれぞれ原日時とhashを保持します。`writer` は writer/composition の担当、`observer` は `observation.at` の実 execution/assessment/composition 担当を参照します。writerとexecutionの記録は必須で、その他は実際に寄与した場合に含めます。
+`session` は共通 `agent_policy.session_fingerprint` に実originを渡して生成します。[trusted host入口](https://github.com/shinma06/android-replay-buffer/blob/legacy-ops-develop/docs/setup/automation.md#レビュー元と実行元の選択)のnative originは `native_session(issuer, identity)` で大小文字を保ったcanonical値へ正規化し、`native-session-sha256:` を使います。実際のcanonical UUIDは従来の単一identityへ統一し、旧Codex thread UUID（小文字・標準ハイフン形式）から `SHA256(UTF-8("codex-session-v1:" + UUID))` を生成し、`codex-session-sha256:` を付けます。共通 `agent_policy.session_fingerprint` を使い、UUID・host・private pathは公開しません。役割名の変更や生成したwrapper名はhashの入力にできません。contributorsには元製品writer、修復source/実行担当、保持証拠の評価/構成担当を漏れなく含め、複数の実行receiptはそれぞれ原日時とhashを保持します。`writer` は writer/composition の担当、`observer` は `observation.at` の実 execution/assessment/composition 担当を参照します。writerとexecutionの記録は必須で、その他は実際に寄与した場合に含めます。
 
 観察と証明provenance/reviewの `at` はextended ISO8601（`YYYY-MM-DDTHH:MM:SS`、小数秒は省略又は1–6桁、必須の`Z`又は`±HH:MM`）を使います。原文字列とhashを保持し、比較はmicrosecond精度で行います。receiptの各 `at` はtimezone付きISO8601で、観察/構成日時を越えません。execution/assessment/compositionは元失敗と修正candidateより古い日時を拒否し、元製品writerのreceiptはcandidate以前も許容します。suite開始しか分からない場合はそのreceipt日時をそのまま使い、methodの開始/終了を推測しません。後日の構成日時で原実行日時を置き換えません。欠落・不正・重複・対応不明は拒否します。hashは担当の網羅性や証拠内容を証明しないため、独立reviewerがsealed receiptと実セッション対応、原日時・役割・全保証を実質照合します。
 
@@ -124,7 +124,7 @@ mainはdevelop baseとは別のrefなので、GitHubのHEAD/strict-base保護だ
 4. resultsのキーは`Issue番号:Case ID`。passは`status / actor / observer / at / head / artifact_sha256 / evidence / loaded_identity / reason`を持つ。日時はtimezone付きISO8601、head/hashは候補と一致。loaded_identityに実際のCLI/Pluginのロード識別を書く。
 5. 候補後に新しく記述できるのはpromotion.jsonとpromotion IssueのCase JSONのみ。採用済み証明のIssue JSON（未参照の過去候補分を含む）と、条件を満たすmain方針は、trusted mainの正確なblob/modeで保持する。過去候補の証明を今回の候補の証拠へ読み替えず、全範囲のgate・CI・独立レビューを通し、merge commitでmainへ統合する。
 
-Plugin ZIPは[標準build](../plugin-development.md)で生成し、[配布仕様](../release-delivery.md)に従って固定source・同梱CLI・JAR・ZIPのidentityを照合します。build成功は実IDEへのロードや製品Caseの合格を示しません。main起点の限定変更も、trusted mainの`docs/verification/scopes/issue-N.json`による事前承認範囲と全Caseの観察が必要です。
+Plugin ZIPは[標準build](../plugin-development.md)で生成し、[配布仕様](https://github.com/shinma06/android-replay-buffer/blob/legacy-ops-develop/docs/release-delivery.md)に従って固定source・同梱CLI・JAR・ZIPのidentityを照合します。build成功は実IDEへのロードや製品Caseの合格を示しません。main起点の限定変更も、trusted mainの`docs/verification/scopes/issue-N.json`による事前承認範囲と全Caseの観察が必要です。
 
 ### 実測GOPの境界試験（#56）
 
@@ -189,7 +189,7 @@ PR98反映時の計画は128 Case・197出典を持ち、既存196出典のPR/me
 
 元のCase JSONとpending/blocked/failは書き換えない。`human: pending`だけでは人間工程を追加しない。標準player、GUI/可読性、全300イベント/30分の解析、同期・切出し精度、画質/負荷/容量/pin、失敗・復旧のAgent実行可能部分は維持する。最低601画像の人間による番号確認は初期段階から分離し、その前の解析を原Case全体の正式精度passとは呼ばない。製品failや単に難しい・時間がかかる工程は延期理由にしない。
 
-`3:PLUGIN-LOAD`の通常導入は[固定ZIPのターミナル配置](../operations.md#固定plugin-zipのターミナル導入)とし、Settings → PluginsのInstall Plugin from Disk/版探索を必須にしない。自製品Settingsの表示/入力/Apply/Cancel/検証/アクセシビリティ/寿命は各元契約で維持する。初回自製品About/action、native導入、有効化、通常再起動、実PID/profile/source/versionロード識別、ZIPと全3JAR一致、取得OFFは実観察する。旧経路の原記録を保ち、再起動後のAbout再読取り/dialog終了画面確認だけを既存延期に残す。実体照合を画面確認のpassに置き換えず、別工程へ例外を拡張しない。
+`3:PLUGIN-LOAD`の通常導入は[固定ZIPのターミナル配置](https://github.com/shinma06/android-replay-buffer/blob/legacy-ops-develop/docs/operations.md#固定plugin-zipのターミナル導入)とし、Settings → PluginsのInstall Plugin from Disk/版探索を必須にしない。自製品Settingsの表示/入力/Apply/Cancel/検証/アクセシビリティ/寿命は各元契約で維持する。初回自製品About/action、native導入、有効化、通常再起動、実PID/profile/source/versionロード識別、ZIPと全3JAR一致、取得OFFは実観察する。旧経路の原記録を保ち、再起動後のAbout再読取り/dialog終了画面確認だけを既存延期に残す。実体照合を画面確認のpassに置き換えず、別工程へ例外を拡張しない。
 
 #208時点の`installation_revision`は直前138/207計画全文hash `13bd1e294519915d8c8a66be2770811a4d6b28465432061e7c2eae91a87fd8a3`を登録し、このfieldと追加3 overrideを除いた全文で照合する。原135hash/ancestor/全原entryと履歴は不変。当時の計画又は登録旧計画を持つ固定707等の候補だけを認め、[保持事実の現在評価](responsibility.md#trusted-main改訂と旧観察の再評価)では原観察/原判定/元plan、全有効条件への対応、不変source/全JAR/ZIP/build/fixture/条件と失敗帰属の証拠を独立レビューする。通常reuseの契約同一条件は緩めない。方法改訂だけで再build/再導入を要求せず、不足する事実だけ追加する。原Case JSON・旧fail/pending/blocked・707の既存packetは編集せず、方法変更を新GUI実行やCase PASSにしない。main統合/develop同期とQA27/65/release10の引継ぎはPMが別確認する。
 
@@ -234,7 +234,7 @@ promotionには`stage: initial-agent`を明記し、元の139 keyの各値は以
 
 この接続でmainの管理更新を取り込む場合は、既存のeffective plan同一性検査を通し、固定接続登録とCaseなしの管理記録を含むtrusted mainの正確なblobだけをmetadataとして許可する。製品Caseの書換え、未知JSON、候補外の製品差分、途中commitでの改変・revertは許可しない。判定入口はAcceptance CI・coordinator・配布処理が共有する`verify_pr`のままで、接続の採用や合成unit testは実promotion・実機/IDE受入・証拠再利用の承認ではない。#246の正式証明書や旧成果物から本候補へのlineage評価は別の既存契約を満たす必要があり、本登録で代替しない。
 
-登録の回帰試験は[追加27 Caseの原契約fixture](../../scripts/workflow/initial_continuation_cases.py)を読み、固定登録のoriginal/current hashへ照合する。fixtureは登録された20出典の`cases`だけを固定Git原本から抽出したもので、各出典と56dad上の契約は同一である。試験用のdevelop履歴・PR metadata・候補結果は合成し、元139の原本はmainの到達可能な履歴から読む。develop objectを持たないmain単独checkoutでも実行でき、実行時fetchや追加のネットワーク接続を必要としない。このfixtureや合成結果を実受入の証拠として扱わない。
+登録の回帰試験は[追加27 Caseの原契約fixture](https://github.com/shinma06/android-replay-buffer/blob/legacy-ops-develop/scripts/workflow/initial_continuation_cases.py)を読み、固定登録のoriginal/current hashへ照合する。fixtureは登録された20出典の`cases`だけを固定Git原本から抽出したもので、各出典と56dad上の契約は同一である。試験用のdevelop履歴・PR metadata・候補結果は合成し、元139の原本はmainの到達可能な履歴から読む。develop objectを持たないmain単独checkoutでも実行でき、実行時fetchや追加のネットワーク接続を必要としない。このfixtureや合成結果を実受入の証拠として扱わない。
 
 初回main反映後も計画は残る。通常の完全受入では、`base..candidate`に現れなくなった延期Caseも固定出典から必要集合へ戻し、通常の全体passを要求する。`stage`を外すだけで延期を消せない。履歴の一覧も同じresolverで固定出典を読み、原契約・延期理由・担当・再開条件を保持する。初期段階のJSONへ過去の観察や計画hashを追記するだけでは新候補の実観察にならない。
 
@@ -345,7 +345,7 @@ Gateと一覧は共通の検証を使います。一覧には再利用可否、�
 #246の合成回帰では、AppHistoryの変更とZIP変更を含む履歴に対し、未promotionの旧Video成功事実＋現在load事実を受理し、未知影響・証明/hash/独立review/原fact欠落・旧ZIP混同・契約/plan変更・未解決失敗を拒否します。これは方法の有限試行であり、実QAの再試験削減件数・実務時間・Case PASSを測定した結果ではありません。PMと独立assessorが実候補への採用と残条件を回収します。
 
 
-証明登録のtooling gateは`certificate_revision / certificate_provenance / certificate_observers / certificate_reviewers`を返します。登録PRの独立報告は宣言したreviewerと**同じ実セッション**から、Codexのmanual/CLI adapter又は[trusted native host入口](../setup/automation.md#レビュー元と実行元の選択)が発行したorigin receiptを必須とします。`certificate_revision / certificate_assessment / certificate_evidence_sha256`を固定reportへ結び、実セッションのfingerprintが宣言reviewerと一致し、全contributorと別でなければAgent review成功/統合を拒否します。公開fingerprintの書式だけ、trusted mainへの掲載だけでは登録承認になりません。
+証明登録のtooling gateは`certificate_revision / certificate_provenance / certificate_observers / certificate_reviewers`を返します。登録PRの独立報告は宣言したreviewerと**同じ実セッション**から、Codexのmanual/CLI adapter又は[trusted native host入口](https://github.com/shinma06/android-replay-buffer/blob/legacy-ops-develop/docs/setup/automation.md#レビュー元と実行元の選択)が発行したorigin receiptを必須とします。`certificate_revision / certificate_assessment / certificate_evidence_sha256`を固定reportへ結び、実セッションのfingerprintが宣言reviewerと一致し、全contributorと別でなければAgent review成功/統合を拒否します。公開fingerprintの書式だけ、trusted mainへの掲載だけでは登録承認になりません。
 
 private origin bundleは既存のsealed receipt機構を使い、`head / base / certificate_revision / mapping_receipt_sha256 / receipts / origins`を持ちます。receiptsはprivate原ファイルのpathとbyte hash、originsはreceipt/hash/JSON Pointerごとの実canonical origin・activity・実時刻です。Codexはcanonical UUID、nativeはtrusted hostの実issuer/identityから `native_session(issuer, identity)` で正規化した値を使います。表示aliasからoriginを作りません。
 

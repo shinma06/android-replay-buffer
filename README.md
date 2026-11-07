@@ -27,13 +27,10 @@ replay --project "$HOME/Projects/MyApp" stop
 
 ## 開発する
 
-製品実装は`plugin/`へ統合しています。Pythonはrepositoryの管理・検査用です。[開発手順](docs/workflow.md)と[セットアップ](docs/setup/README.md)に従い、実在するIssueの専用branch/worktreeで作業します。製品変更はdevelop、固定した検証済み候補はmainへ統合します。
+製品実装は`plugin/`にあります。JDK 27（`JAVA_HOME`）とAndroid SDKの`android-37.2`（`ANDROID_HOME`）を用意して、次を実行します。
 
 ```bash
-python3 scripts/bootstrap.py
-python3 scripts/check.py
-# JDK 27 / JAVA_HOME と Android SDK API 37.2 revision 1 / ANDROID_HOMEを設定する
-python3 scripts/workflow/product_check.py
+python3 scripts/workflow/plugin_check.py
 ```
 
-固定toolchain・配布物のbuildは[プラグイン開発](docs/plugin-development.md)、製品契約は[要件](docs/requirements.md)・[保存設計](docs/plugin-design.md)・[受入](docs/verification/README.md)を参照してください。原型のsourceと復元手順は[Git履歴](docs/cli-origin.md)に残しています。
+開発はDevinが担当します。進め方は[AGENTS.md](AGENTS.md)、旧運用の保管と戻し方は[docs/legacy-ops](docs/legacy-ops/README.md)を参照してください。製品契約は[要件](docs/requirements.md)・[保存設計](docs/plugin-design.md)・[受入](docs/verification/README.md)、固定toolchainは[プラグイン開発](docs/plugin-development.md)にあります。

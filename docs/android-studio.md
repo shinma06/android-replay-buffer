@@ -13,7 +13,7 @@ ARBの開発・レビュー・受入は、本repositoryの要件、有効な責�
 | 取得・保存・互換性 | [製品要件](requirements.md)・[保存設計](plugin-design.md)・[CLI移行契約](cli.md)に従い、対象/時刻/内容、loss/unknown、容量/pin、失敗時保全・atomic非上書き、Plugin ID/保存キー/出力形式と文書化したCLI移行契約を維持する |
 | 日本語UI・accessibility | [製品要件](requirements.md)と[IDE UI設計](design/ide-ui.md)に従い、判断できる日本語の説明/エラー、可読性・keyboard操作を保つ。commandやSDK ID等は翻訳しない |
 | 検証・配布の同一性 | [受入](verification/README.md)・[製品責任](verification/responsibility.md)に従い、固定source/ZIP hash/実ロード、全有効Case、原観察・失敗、独立レビューと正式な証拠再利用条件を保つ。外部製品の合格を転記しない |
-| IDE・端末・実行環境の共有状態 | [運用](operations.md)・[実行規約](execution-policy.md)に従い、共有host/user lease、所有fixture、停止/復旧/cleanup、実tool権限を守る。他projectのdaemon/端末/作業へ影響させない |
+| IDE・端末・実行環境の共有状態 | [運用](https://github.com/shinma06/android-replay-buffer/blob/legacy-ops-develop/docs/operations.md)・[実行規約](https://github.com/shinma06/android-replay-buffer/blob/legacy-ops-develop/docs/execution-policy.md)に従い、共有host/user lease、所有fixture、停止/復旧/cleanup、実tool権限を守る。他projectのdaemon/端末/作業へ影響させない |
 
 ## 作業に組み込む運用
 
@@ -25,6 +25,6 @@ ARBの開発・レビュー・受入は、本repositoryの要件、有効な責�
 
 ## 過去の採用根拠を保持する
 
-[導入inventory](inventory.md)、[IDE UIの固定sourceと採否](design/ide-ui.md#cursor知見の採用範囲)、[初期版受入の知見適合](verification/initial-version.md#cursor知見の適合)、元Issue/PRは当時の判断・原観察/失敗の履歴として保持します。参照義務の終了は採用済み保証の削除、過去の適用確認の未実施化、旧FAILの解消や新たなPASSを意味しません。
+[導入inventory](https://github.com/shinma06/android-replay-buffer/blob/legacy-ops-develop/docs/inventory.md)、[IDE UIの固定sourceと採否](design/ide-ui.md#cursor知見の採用範囲)、[初期版受入の知見適合](verification/initial-version.md#cursor知見の適合)、元Issue/PRは当時の判断・原観察/失敗の履歴として保持します。参照義務の終了は採用済み保証の削除、過去の適用確認の未実施化、旧FAILの解消や新たなPASSを意味しません。
 
 [Cursor in Android Studio](https://github.com/shinma06/cursor-in-android-studio)も任意の参考先の一つです。共有GUI leaseの既存namespace、Cursorクライアント用の入口、旧branch形式の読取互換性は別の実運用契約であり、本変更では維持します。
