@@ -4,8 +4,12 @@ Android Studio plugin (`plugin/`) that keeps the last moments of an Android devi
 
 ## Work
 
-- Tasks are GitHub Issues. One Issue → one branch (`devin/<issue>-<slug>`) → one PR into `develop`.
-- Merge your own PR (squash) once CI `test` and Devin Review pass and review findings are triaged. No human approval is needed for `develop`.
+Entire Trails drive the change; GitHub runs CI and publishes releases. Use `R=gh/shinma06/android-replay-buffer`.
+
+- Tasks are GitHub Issues. One Issue → one branch `devin/<issue>-<slug>` from `develop` → one trail.
+- Push the branch to `origin`, then `entire trail create --repo $R --branch <branch> --base develop --title "<type>: <日本語の要約>" --body "Closes #<issue>"` and `entire trail ci-pr <n> --repo $R` (opens the GitHub PR that runs CI `test`).
+- Entire's review agents (Code review, Security review) review every push. Read `entire trail finding list <n> --repo $R`, fix real findings, and resolve the rest with a reason.
+- Merge with `entire trail merge <n> --repo $R` once its gates pass. Never `--force`. No human approval is needed for `develop`.
 - `develop` → `main` is a release: open the PR and merge it only after the user confirms the candidate on a real device/IDE. Tag `vX.Y.Z` on `main` to publish a GitHub Release.
 - Proceed on reversible decisions and report them; stop only for public exposure, data deletion, billing, credentials, or anything a platform gate requires.
 
