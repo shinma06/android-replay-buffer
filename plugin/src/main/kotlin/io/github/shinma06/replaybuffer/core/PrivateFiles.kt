@@ -68,7 +68,23 @@ internal object PrivateFiles {
     /** Replaces the permissions of an existing item, without following a link. */
     fun restrict(path: Path, directory: Boolean) {
         if (posix) view<PosixFileAttributeView>(path).setPermissions(if (directory) directoryMode else fileMode)
-        else view<AclFileAttributeView>(path).acl = ownerAcl(directory)
+        else view<AclFileAttributeView>(path).let { it.owner = owner; it.acl = ownerAcl(directory) }
+    }
+
+    /** Runs [block] with a native owner-only security descriptor, so Windows items are private from creation like mode 700/600. */
+    fun <T> withWindowsDescriptor(directory: Boolean, block: (Pointer) -> T): T {
+        val sid = ByteArray(68)
+        check(WindowsAccounts.advapi.LookupAccountNameW(null, WString(owner.name), sid, IntByReference(sid.size), CharArray(256),
+            IntByReference(256), IntByReference())) { "現在のユーザーを確認できません" }
+        val text = PointerByReference()
+        check(WindowsAccounts.advapi.ConvertSidToStringSidW(sid, text)) { "現在のユーザーを確認できません" }
+        val user = try { text.value.getWideString(0) } finally { WindowsAccounts.kernel.LocalFree(text.value) }
+        val descriptor = PointerByReference()
+        check(WindowsAccounts.advapi.ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            WString("O:${user}D:P(A;${if (directory) "OICI" else ""};FA;;;$user)"), 1, descriptor, null)) {
+            "アクセス権を設定できません"
+        }
+        try { return block(descriptor.value) } finally { WindowsAccounts.kernel.LocalFree(descriptor.value) }
     }
 
     fun isPrivate(path: Path, directory: Boolean): Boolean =
@@ -136,6 +152,11 @@ private object WindowsAccounts {
         fun ConvertStringSidToSidW(sid: WString, out: PointerByReference): Boolean
         fun LookupAccountSidW(system: WString?, sid: Pointer, name: CharArray, nameLength: IntByReference, domain: CharArray,
             domainLength: IntByReference, use: IntByReference): Boolean
+        fun LookupAccountNameW(system: WString?, account: WString, sid: ByteArray, sidLength: IntByReference, domain: CharArray,
+            domainLength: IntByReference, use: IntByReference): Boolean
+        fun ConvertSidToStringSidW(sid: ByteArray, out: PointerByReference): Boolean
+        fun ConvertStringSecurityDescriptorToSecurityDescriptorW(descriptor: WString, revision: Int, out: PointerByReference,
+            length: IntByReference?): Boolean
     }
     interface Kernel : Library {
         fun LocalFree(memory: Pointer): Pointer?

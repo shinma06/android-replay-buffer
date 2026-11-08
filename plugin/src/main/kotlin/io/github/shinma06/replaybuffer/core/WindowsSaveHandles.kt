@@ -60,11 +60,13 @@ internal object WindowsSaveHandles {
     }
 
     fun openDirectory(parent: Long, name: String) = open(parent, name, DIRECTORY_ACCESS, FILE_OPEN, DIRECTORY)
-    fun createDirectory(parent: Long, name: String) = open(parent, name, DIRECTORY_ACCESS, FILE_CREATE, DIRECTORY)
+    fun createDirectory(parent: Long, name: String) =
+        PrivateFiles.withWindowsDescriptor(true) { open(parent, name, DIRECTORY_ACCESS, FILE_CREATE, DIRECTORY, it) }
     fun openFile(parent: Long, name: String) = open(parent, name, FILE_READ, FILE_OPEN, NON_DIRECTORY)
-    fun createFile(parent: Long, name: String) = open(parent, name, FILE_READ_WRITE, FILE_CREATE, NON_DIRECTORY)
+    fun createFile(parent: Long, name: String) =
+        PrivateFiles.withWindowsDescriptor(false) { open(parent, name, FILE_READ_WRITE, FILE_CREATE, NON_DIRECTORY, it) }
 
-    private fun open(parent: Long, name: String, access: Int, disposition: Int, kind: Int): Long {
+    private fun open(parent: Long, name: String, access: Int, disposition: Int, kind: Int, security: Pointer? = null): Long {
         val chars = name.toCharArray()
         val buffer = Memory(chars.size * 2L + 2).apply { clear(); write(0, chars, 0, chars.size) }
         val unicode = Memory(16).apply {
@@ -72,6 +74,7 @@ internal object WindowsSaveHandles {
         }
         val attributes = Memory(48).apply {
             clear(); setInt(0, 48); setLong(8, parent); setPointer(16, unicode); setInt(24, 0x40) // OBJ_CASE_INSENSITIVE
+            setPointer(32, security)
         }
         val handle = Memory(8).apply { clear() }
         val status = nt.NtCreateFile(handle, access, attributes, Memory(16), null, 0x80, SHARE_ALL, disposition,
