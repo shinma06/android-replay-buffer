@@ -50,6 +50,7 @@ internal fun preparePrivateDirectory(directory: Path, relative: Path, owner: Use
             // Validate each parent before using it to reach the next component.
         }
         val before = Files.readAttributes(directory, BasicFileAttributes::class.java, NOFOLLOW_LINKS)
+        val beforeKey = PrivateFiles.fileKey(directory)
         mode = PrivateFiles.describe(directory)
         if (before.isSymbolicLink) throw failure("シンボリックリンクは追跡しません。")
         if (!before.isDirectory) throw failure("ディレクトリではない項目は変更しません。")
@@ -63,7 +64,7 @@ internal fun preparePrivateDirectory(directory: Path, relative: Path, owner: Use
         PrivateFiles.restrict(directory, true)
         val after = Files.readAttributes(directory, BasicFileAttributes::class.java, NOFOLLOW_LINKS)
         mode = PrivateFiles.describe(directory)
-        if (!after.isDirectory || Files.getOwner(directory, NOFOLLOW_LINKS) != owner || after.fileKey() != before.fileKey() ||
+        if (!after.isDirectory || Files.getOwner(directory, NOFOLLOW_LINKS) != owner || PrivateFiles.fileKey(directory) != beforeKey ||
             !PrivateFiles.isPrivate(directory, true)) {
             throw failure("同じディレクトリの権限を確認できません。")
         }

@@ -136,4 +136,10 @@ private object WindowsAccounts {
     }
     val advapi: Advapi by lazy { Native.load("advapi32", Advapi::class.java) }
     val kernel: Kernel by lazy { Native.load("kernel32", Kernel::class.java) }
+
+    /** Stable identity of the item at [path]; Windows reports no NIO file key, so use its volume and file index. */
+    fun fileKey(path: Path): Any = if (posix)
+        Files.readAttributes(path, java.nio.file.attribute.BasicFileAttributes::class.java, java.nio.file.LinkOption.NOFOLLOW_LINKS).fileKey()
+            ?: error("ファイルの実体を確認できません")
+    else WindowsSaveHandles.identity(path)
 }

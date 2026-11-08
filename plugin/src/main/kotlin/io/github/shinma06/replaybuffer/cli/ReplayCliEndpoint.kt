@@ -121,6 +121,7 @@ internal object ReplayCliRegistry {
 
     fun read(path: Path): CliEndpoint {
         val before = checkPrivate(path, false)
+        val beforeKey = PrivateFiles.fileKey(path)
         require(before.size() <= MAX_ENDPOINT_BYTES) { "CLI接続情報が大きすぎます。" }
         val properties = Properties()
         FileChannel.open(path, READ, NOFOLLOW_LINKS).use {
@@ -128,7 +129,7 @@ internal object ReplayCliRegistry {
             require(bytes.size <= MAX_ENDPOINT_BYTES) { "CLI接続情報が大きすぎます。" }
             properties.load(bytes.inputStream())
         }
-        require(checkPrivate(path, false).fileKey() == before.fileKey()) { "CLI接続情報が変更されました。" }
+        require(checkPrivate(path, false).let { PrivateFiles.fileKey(path) } == beforeKey) { "CLI接続情報が変更されました。" }
         require(properties.stringPropertyNames() == setOf("protocol", "id", "project", "build", "port", "token", "pid", "started"))
         require(properties.getProperty("protocol") == ReplayCliProtocol.VERSION.toString()) { "CLI通信の版が異なります。" }
         val id = properties.getProperty("id")
@@ -202,7 +203,7 @@ internal class ReplayCliServer(
             endpoint = CliEndpoint(UUID.randomUUID().toString(), project.toRealPath().toString(), build, server.localPort,
                 ReplayCliProtocol.secret(), process.pid(), process.info().startInstant().orElseThrow())
             path = ReplayCliRegistry.publish(directory, endpoint)
-            fileKey = ReplayCliRegistry.checkPrivate(path, false).fileKey()
+            fileKey = ReplayCliRegistry.checkPrivate(path, false).let { PrivateFiles.fileKey(path) }
         } catch (failure: Exception) {
             server.close()
             workers.shutdownNow()
@@ -232,7 +233,7 @@ internal class ReplayCliServer(
                     "CLI操作の終了を確認できません。"
                 }
                 ReplayCliRegistry.checkPrivate(directory, true)
-                if (Files.exists(path, NOFOLLOW_LINKS) && ReplayCliRegistry.checkPrivate(path, false).fileKey() == fileKey &&
+                if (Files.exists(path, NOFOLLOW_LINKS) && ReplayCliRegistry.checkPrivate(path, false).let { PrivateFiles.fileKey(path) } == fileKey &&
                     ReplayCliRegistry.read(path).id == endpoint.id) Files.delete(path)
             }.fold({ termination.complete(null) }, termination::completeExceptionally)
         }

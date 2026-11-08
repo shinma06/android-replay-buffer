@@ -92,6 +92,19 @@ internal object WindowsSaveHandles {
             ((information.getInt(44).toLong() shl 32) or (information.getInt(48).toLong() and 0xffffffffL))
     }
 
+    /** Identity of an item addressed by path, without following a final reparse point. */
+    fun identity(path: Path): Pair<Long, Long> {
+        val handle = Pointer.nativeValue(win32.CreateFileW(WString(path.toString()), 0x80, SHARE_ALL, null, 3, 0x02000000 or 0x00200000, null))
+        if (handle == -1L || handle == 0L) throw IOException("ファイルの実体を確認できません（error=${Native.getLastError()}）")
+        try {
+            Memory(52).use { information ->
+                if (!win32.GetFileInformationByHandle(Pointer(handle), information)) throw IOException("ファイルの実体を確認できません")
+                return (information.getInt(28).toLong() and 0xffffffffL) to
+                    ((information.getInt(44).toLong() shl 32) or (information.getInt(48).toLong() and 0xffffffffL))
+            }
+        } finally { close(handle) }
+    }
+
     /** Renames without replacing an existing destination. */
     fun renameExclusive(sourceParent: Long, source: String, destinationParent: Long, destination: String) {
         val handle = try { open(sourceParent, source, DELETE or SYNCHRONIZE, FILE_OPEN, 0) }

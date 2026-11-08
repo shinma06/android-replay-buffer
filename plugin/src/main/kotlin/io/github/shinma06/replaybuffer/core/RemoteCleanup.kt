@@ -14,7 +14,6 @@ import java.nio.file.StandardCopyOption.REPLACE_EXISTING
 import java.nio.file.StandardOpenOption.CREATE_NEW
 import java.nio.file.StandardOpenOption.READ
 import java.nio.file.StandardOpenOption.WRITE
-import java.nio.file.attribute.BasicFileAttributes
 
 /** Immutable identities retained while stopping a capture, including unconfirmed host termination. */
 internal data class RemoteCleanup(
@@ -255,7 +254,7 @@ internal class RemoteCleanupJournal(
         PrivateFiles.restrict(directory, true)
     }
 
-    private fun key(path: Path): Any = Files.readAttributes(path, BasicFileAttributes::class.java, NOFOLLOW_LINKS).fileKey()
+    private fun key(path: Path): Any = PrivateFiles.fileKey(path)
         ?: error("終了情報のfile identityを確認できません")
 
     override fun close() {

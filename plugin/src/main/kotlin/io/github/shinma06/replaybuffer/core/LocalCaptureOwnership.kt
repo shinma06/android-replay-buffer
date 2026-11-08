@@ -120,7 +120,7 @@ internal class LocalCaptureOwnership private constructor(
             val attributes = Files.readAttributes(path, BasicFileAttributes::class.java, NOFOLLOW_LINKS)
             require(!attributes.isSymbolicLink && (attributes.isDirectory || attributes.isRegularFile))
             require(PrivateFiles.isOwnedWithoutSharedWrite(path))
-            return listOf(attributes.fileKey()?.toString() ?: error("local file identityが不明です"),
+            return listOf(PrivateFiles.fileKey(path).toString(),
                 attributes.creationTime().toString(), PrivateFiles.owner.name, PrivateFiles.describe(path)).also {
                 require(Gson().toJson(it).toByteArray(Charsets.UTF_8).size <= MAX_IDENTITY_BYTES)
             }
