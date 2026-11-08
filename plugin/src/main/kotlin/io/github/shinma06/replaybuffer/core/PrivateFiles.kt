@@ -140,6 +140,12 @@ internal object PrivateFiles {
         null
     }
 
+    /**
+     * Exclusive owner lock on one byte past any record data. Windows byte-range locks are mandatory, so a whole-file lock
+     * would block other handles from reading the record; this byte still overlaps older whole-file locks.
+     */
+    fun tryOwnerLock(channel: FileChannel): java.nio.channels.FileLock? = channel.tryLock(Long.MAX_VALUE - 1, 1, false)
+
     /** Stable identity of the item at [path]; Windows reports no NIO file key, so use its volume and file index. */
     fun fileKey(path: Path): Any = if (posix)
         Files.readAttributes(path, java.nio.file.attribute.BasicFileAttributes::class.java, java.nio.file.LinkOption.NOFOLLOW_LINKS).fileKey()

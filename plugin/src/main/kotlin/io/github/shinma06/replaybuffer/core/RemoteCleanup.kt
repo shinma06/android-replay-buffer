@@ -136,7 +136,7 @@ internal class RemoteCleanupJournal(
         var published = false
         try {
             stagedKey = key(staged)
-            val lock = channel.tryLock() ?: error("終了情報の所有を確認できません")
+            val lock = PrivateFiles.tryOwnerLock(channel) ?: error("終了情報の所有を確認できません")
             candidate = Entry(record, channel, lock, stagedKey, hostPending)
             val buffer = ByteBuffer.wrap(bytes)
             while (buffer.hasRemaining()) channel.write(buffer)
@@ -178,7 +178,7 @@ internal class RemoteCleanupJournal(
                     require(Files.isRegularFile(path, NOFOLLOW_LINKS))
                     val key = key(path)
                     channel = FileChannel.open(path, READ, WRITE, NOFOLLOW_LINKS)
-                    val lock = channel.tryLock() ?: error("別ownerが終了情報を確認中です")
+                    val lock = PrivateFiles.tryOwnerLock(channel) ?: error("別ownerが終了情報を確認中です")
                     require(key(path) == key && channel.size() in 1..65536)
                     val buffer = ByteBuffer.allocate(channel.size().toInt())
                     while (buffer.hasRemaining()) check(channel.read(buffer) > 0)

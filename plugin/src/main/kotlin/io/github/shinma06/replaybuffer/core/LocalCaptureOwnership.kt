@@ -133,7 +133,7 @@ internal class LocalCaptureOwnership private constructor(
             val descriptor = namespace.resolve("local-capture-$token.json")
             val channel = PrivateFiles.openNew(descriptor, setOf(CREATE_NEW, READ, WRITE, NOFOLLOW_LINKS))
             try {
-                val lock = channel.tryLock() ?: error("local ownerを取得できません")
+                val lock = PrivateFiles.tryOwnerLock(channel) ?: error("local ownerを取得できません")
                 PrivateFiles.createDirectory(root)
                 val ownership = LocalCaptureOwnership(root, descriptor, channel, lock)
                 ownership.created(root)
@@ -161,7 +161,7 @@ internal class LocalCaptureOwnership private constructor(
                         require(tokenPattern.matches(token) && UUID.fromString(token).toString() == token && name.toString() == "local-capture-$token.json")
                         val recordIdentity = identity(path)
                         FileChannel.open(path, READ, WRITE, NOFOLLOW_LINKS).use { channel ->
-                            channel.tryLock()?.use {
+                            PrivateFiles.tryOwnerLock(channel)?.use {
                                 val size = channel.size()
                                 require(identity(path) == recordIdentity && size in (HEADER_BYTES + SLOT_BYTES)..MAX_BYTES.toLong())
                                 require((size - HEADER_BYTES) % SLOT_BYTES == 0L)
