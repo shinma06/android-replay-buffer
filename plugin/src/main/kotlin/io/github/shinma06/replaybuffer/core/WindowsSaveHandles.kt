@@ -121,12 +121,14 @@ internal object WindowsSaveHandles {
         finally { close(handle) }
     }
 
-    fun entries(directory: Long): Set<String> = Memory(64 * 1024).use { buffer ->
+    fun entries(directory: Long): Set<String> {
+        val buffer = Memory(64 * 1024)
         val names = linkedSetOf<String>()
         var informationClass = 15 // FileFullDirectoryRestartInfo, then FileFullDirectoryInfo
         while (true) {
             if (!win32.GetFileInformationByHandleEx(Pointer(directory), informationClass, buffer, buffer.size().toInt())) {
-                if (Native.getLastError() == 18) return names // ERROR_NO_MORE_FILES
+                if (Native.getLastError() == 18) { buffer.close(); return names } // ERROR_NO_MORE_FILES
+                buffer.close()
                 throw IOException("未完成フォルダーの内容を確認できません")
             }
             informationClass = 14
