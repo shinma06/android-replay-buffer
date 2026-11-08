@@ -12,7 +12,7 @@
 | 開発 | Devinが担当し、セッションはEntireに記録する。進め方は[AGENTS.md](../AGENTS.md)、旧運用は[legacy-ops](legacy-ops/README.md) |
 | 統合先 | 製品変更は `develop`。実機・IDEで確認した候補を `main` へ反映し、`vX.Y.Z`タグでGitHub Releaseを作る |
 | 必須checks | `test`（`plugin_check.py`） |
-| 管理 | GitHub Issue |
+| 管理 | Entire Trails。既存のGitHub Issueは背景情報で、目的を達成したか不要になった時点で閉じる |
 | Android Studio plugin | `plugin/`に取得コア・ToolWindow・設定・SDK/対象アプリ解決・情報表示actionを実装。初期版はmain反映済み。第2版のbuild SDKはRabbit 2（#391で更新、互換性受入は別）/ JDK 27（JVM/API target 25）/ Gradle 9.8.1 / Kotlin 2.4.21、ID `io.github.shinma06.android-replay-buffer`。[現行の開発手順](plugin-development.md)と固定候補ごとの受入を区別する |
 
 ## 製品候補と受入の現在地

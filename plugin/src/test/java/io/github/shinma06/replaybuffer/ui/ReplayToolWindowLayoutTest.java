@@ -332,7 +332,7 @@ class ReplayToolWindowLayoutTest {
             assertEquals(1, uiCallbacks.size(), "the rejected request must schedule its error explanation");
             assertFalse(store.getEnabled(), "screenshot must not enable acquisition");
             assertNull(field(capture, "core"), "screenshot must not start a capture or create history");
-            if (System.getProperty("os.name").equals("Mac OS X")) {
+            if (java.util.List.of("Mac OS X", "Linux").contains(System.getProperty("os.name"))) {
                 var common = Files.createDirectory(root.resolve("common"));
                 var dedicated = Files.createDirectory(root.resolve("screenshots"));
                 javax.imageio.ImageIO.write(new java.awt.image.BufferedImage(2, 2, java.awt.image.BufferedImage.TYPE_INT_RGB),
