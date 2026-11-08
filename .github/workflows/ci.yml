@@ -48,3 +48,38 @@ jobs:
           path: plugin/build/distributions/*.zip
           if-no-files-found: error
           retention-days: 14
+  os-parity:
+    name: os-parity (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@v6.1.0
+        with:
+          distribution: temurin
+          java-version: '27'
+      - uses: gradle/actions/setup-gradle@v6.4.0
+      - name: Prepare pinned Android build API
+        shell: python
+        run: |
+          import hashlib, os, pathlib, tempfile, urllib.request, zipfile
+          sdk = pathlib.Path(tempfile.mkdtemp(prefix='replay-android-sdk.', dir=os.environ['RUNNER_TEMP']))
+          archive = sdk / 'platform-37.2_r01.zip'
+          urllib.request.urlretrieve('https://dl.google.com/android/repository/platform-37.2_r01.zip', archive)
+          assert hashlib.sha256(archive.read_bytes()).hexdigest() == '916410633df92a98da56aa7c87a1955f865f4d3b888373660794ef8173f72972'
+          jar = sdk / 'platforms/android-37.2/android.jar'
+          jar.parent.mkdir(parents=True)
+          jar.write_bytes(zipfile.ZipFile(archive).read('android-37.2/android.jar'))
+          archive.unlink()
+          assert hashlib.sha256(jar.read_bytes()).hexdigest() == '1db2419dbd45457f83b90ef8a7ef41e118174782c9a5c2185b55899df022767f'
+          with open(os.environ['GITHUB_ENV'], 'a') as env:
+              env.write(f'ANDROID_HOME={sdk}\n')
+      - name: Plugin tests
+        shell: bash
+        run: plugin/gradlew${{ runner.os == 'Windows' && '.bat' || '' }} -p plugin --no-daemon check
