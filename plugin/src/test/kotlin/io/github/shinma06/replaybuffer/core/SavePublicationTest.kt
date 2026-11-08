@@ -34,7 +34,7 @@ class SavePublicationTest {
                         val outputs = mapOf("proof" to output, "other" to other)
                         staging.requireEntries(outputs)
                         assertEquals(setOf("proof", "other"), staging.entries())
-                        if (System.getProperty("os.name") == "Mac OS X") {
+                        if (System.getProperty("os.name") in setOf("Mac OS X", "Linux")) {
                             val complete = root.resolve("completed")
                             SavePublication(partial, complete, parent, staging) { staging.requireEntries(outputs) }.publish()
                             assertEquals("proof", Files.readString(complete.resolve("proof")))
@@ -48,8 +48,8 @@ class SavePublicationTest {
     }
 
     @Test
-    fun macNativePublicationRejectsEveryExistingTargetAndConcurrentPublisher() {
-        assumeTrue(System.getProperty("os.name") == "Mac OS X", "macOS native syscall is not executed on Linux CI")
+    fun nativePublicationRejectsEveryExistingTargetAndConcurrentPublisher() {
+        assumeTrue(System.getProperty("os.name") in setOf("Mac OS X", "Linux"), "exclusive publication needs macOS or Linux")
         val root = Files.createTempDirectory("replay-publish-fixture-").toRealPath()
         try {
             val partial = Files.createDirectory(root.resolve(".partial"))

@@ -544,7 +544,7 @@ elif len(a)>3 and a[3]=='ps':
                 Files.readAllLines(pids).forEach { pid -> assertFalse(ProcessHandle.of(pid.toLong()).map { it.isAlive }.orElse(false)) }
                 return
             }
-            if (System.getProperty("os.name") == "Mac OS X") {
+            if (System.getProperty("os.name") in setOf("Mac OS X", "Linux")) {
                 Thread.sleep(1300) // Remove the initial unresolved-app interval from the one-second window.
                 pauseVideo.set(true)
                 Thread.sleep(11_000)
@@ -625,7 +625,7 @@ elif len(a)>3 and a[3]=='ps':
             assertTrue(core.retryAtDirectory(operation.requestId!!, root).get().accepted)
             var completed: java.nio.file.Path? = null
             var savedHash: String? = null
-            if (System.getProperty("os.name") == "Mac OS X") {
+            if (System.getProperty("os.name") in setOf("Mac OS X", "Linux")) {
                 val done = awaitState("save-completed") { it.save.phase == SavePhase.COMPLETED }
                 assertEquals(fixed.windowEndNs, done.save.windowEndNs)
                 assertEquals(fixed.device, done.save.device)
