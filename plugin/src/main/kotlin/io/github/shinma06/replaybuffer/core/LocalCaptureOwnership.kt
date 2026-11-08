@@ -11,9 +11,7 @@ import java.nio.file.Path
 import java.nio.file.StandardOpenOption.CREATE_NEW
 import java.nio.file.StandardOpenOption.READ
 import java.nio.file.StandardOpenOption.WRITE
-import java.nio.file.attribute.PosixFileAttributes
-import java.nio.file.attribute.PosixFilePermission
-import java.nio.file.attribute.PosixFilePermissions
+import java.nio.file.attribute.BasicFileAttributes
 import java.time.Instant
 import java.util.ArrayDeque
 import java.util.UUID
@@ -118,28 +116,25 @@ internal class LocalCaptureOwnership private constructor(
         private val tokenPattern = Regex("[0-9a-f-]{36}")
         private val packetPattern = Regex("ring/gop-[0-9a-f-]{36}\\.h264")
         private fun allowed(name: String) = name in setOf(".", "ring", "scrcpy-server-v4.0", "scrcpy-server-v5.0.1", "replay-clock.jar") || packetPattern.matches(name)
-        private fun identity(attributes: PosixFileAttributes): List<String> {
+        private fun identity(path: Path): List<String> {
+            val attributes = Files.readAttributes(path, BasicFileAttributes::class.java, NOFOLLOW_LINKS)
             require(!attributes.isSymbolicLink && (attributes.isDirectory || attributes.isRegularFile))
-            require(attributes.owner().name == System.getProperty("user.name") && attributes.permissions().none {
-                it == PosixFilePermission.GROUP_WRITE || it == PosixFilePermission.OTHERS_WRITE
-            })
+            require(PrivateFiles.isOwnedWithoutSharedWrite(path))
             return listOf(attributes.fileKey()?.toString() ?: error("local file identityが不明です"),
-                attributes.creationTime().toString(), attributes.owner().name, attributes.permissions().sorted().joinToString(",")).also {
+                attributes.creationTime().toString(), PrivateFiles.owner.name, PrivateFiles.describe(path)).also {
                 require(Gson().toJson(it).toByteArray(Charsets.UTF_8).size <= MAX_IDENTITY_BYTES)
             }
         }
-        private fun identity(path: Path) = identity(Files.readAttributes(path, PosixFileAttributes::class.java, NOFOLLOW_LINKS))
 
         fun create(namespace: Path): LocalCaptureOwnership {
             require(namespace.isAbsolute && !Files.isSymbolicLink(namespace))
             val token = UUID.randomUUID().toString()
             val root = namespace.resolve("replay-$token")
             val descriptor = namespace.resolve("local-capture-$token.json")
-            val channel = FileChannel.open(descriptor, setOf<java.nio.file.OpenOption>(CREATE_NEW, READ, WRITE, NOFOLLOW_LINKS),
-                PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rw-------")))
+            val channel = PrivateFiles.openNew(descriptor, setOf(CREATE_NEW, READ, WRITE, NOFOLLOW_LINKS))
             try {
                 val lock = channel.tryLock() ?: error("local ownerを取得できません")
-                Files.createDirectory(root, PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rwx------")))
+                PrivateFiles.createDirectory(root)
                 val ownership = LocalCaptureOwnership(root, descriptor, channel, lock)
                 ownership.created(root)
                 return ownership

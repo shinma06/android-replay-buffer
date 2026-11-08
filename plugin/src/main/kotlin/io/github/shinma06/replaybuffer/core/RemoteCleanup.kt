@@ -15,7 +15,6 @@ import java.nio.file.StandardOpenOption.CREATE_NEW
 import java.nio.file.StandardOpenOption.READ
 import java.nio.file.StandardOpenOption.WRITE
 import java.nio.file.attribute.BasicFileAttributes
-import java.nio.file.attribute.PosixFilePermissions
 
 /** Immutable identities retained while stopping a capture, including unconfirmed host termination. */
 internal data class RemoteCleanup(
@@ -103,8 +102,7 @@ internal class RemoteCleanupJournal(
     private val createChannel: (Path) -> FileChannel,
 ) : AutoCloseable {
     constructor(directory: Path) : this(directory, { path ->
-        FileChannel.open(path, setOf<java.nio.file.OpenOption>(CREATE_NEW, READ, WRITE, NOFOLLOW_LINKS),
-            PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rw-------")))
+        PrivateFiles.openNew(path, setOf(CREATE_NEW, READ, WRITE, NOFOLLOW_LINKS))
     })
     private data class Entry(val record: RemoteCleanup, val channel: FileChannel, val lock: FileLock, val fileKey: Any, val hostPending: Boolean = false)
     private val owned = linkedMapOf<Path, Entry>()
@@ -254,7 +252,7 @@ internal class RemoteCleanupJournal(
         require(!Files.isSymbolicLink(directory)) { "終了情報の保存先を確認してください" }
         Files.createDirectories(directory)
         directory = directory.toRealPath()
-        Files.setPosixFilePermissions(directory, PosixFilePermissions.fromString("rwx------"))
+        PrivateFiles.restrict(directory, true)
     }
 
     private fun key(path: Path): Any = Files.readAttributes(path, BasicFileAttributes::class.java, NOFOLLOW_LINKS).fileKey()

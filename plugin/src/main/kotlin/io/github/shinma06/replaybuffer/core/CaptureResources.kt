@@ -6,7 +6,6 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardOpenOption.CREATE_NEW
 import java.nio.file.StandardOpenOption.WRITE
-import java.nio.file.attribute.PosixFilePermissions
 import java.security.MessageDigest
 
 internal fun sha256(path: Path): String {
@@ -38,8 +37,7 @@ internal class CaptureResources(private val directory: Path, private val created
         val target = directory.resolve(name)
         CaptureResources::class.java.getResourceAsStream("/replay/deps/$name").use { input ->
             check(input != null) { "同梱取得依存がありません" }
-            val channel = FileChannel.open(target, setOf(CREATE_NEW, WRITE),
-                PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rw-------")))
+            val channel = PrivateFiles.openNew(target, setOf(CREATE_NEW, WRITE))
             channel.use {
                 try { created(target) } catch (failure: Exception) {
                     try { channel.close(); Files.delete(target) } catch (cleanup: Exception) { failure.addSuppressed(cleanup) }

@@ -16,8 +16,8 @@ import java.nio.file.Path
 import java.nio.file.StandardOpenOption.CREATE_NEW
 import java.nio.file.StandardOpenOption.READ
 import java.nio.file.StandardOpenOption.WRITE
-import java.nio.file.attribute.PosixFileAttributes
-import java.nio.file.attribute.PosixFilePermissions
+import io.github.shinma06.replaybuffer.core.PrivateFiles
+import java.nio.file.attribute.BasicFileAttributes
 import java.security.MessageDigest
 import java.time.Instant
 import java.util.HexFormat
@@ -50,8 +50,6 @@ internal data class CliEndpoint(
  * Selection rejects unsafe, ambiguous or mismatched descriptors without repairing or deleting them.
  */
 internal object ReplayCliRegistry {
-    private val directoryMode = PosixFilePermissions.fromString("rwx------")
-    private val fileMode = PosixFilePermissions.fromString("rw-------")
     private const val MAX_ENDPOINT_BYTES = 32 * 1024
 
     fun directory(): Path = Path.of(System.getProperty("user.home"), ".android-replay-buffer-cli")
@@ -79,10 +77,9 @@ internal object ReplayCliRegistry {
         return HexFormat.of().formatHex(hash.digest())
     }
 
-    fun checkPrivate(path: Path, directory: Boolean): PosixFileAttributes {
-        val attributes = Files.readAttributes(path, PosixFileAttributes::class.java, NOFOLLOW_LINKS)
-        val owner = path.fileSystem.userPrincipalLookupService.lookupPrincipalByName(System.getProperty("user.name"))
-        require(attributes.owner() == owner && attributes.permissions() == if (directory) directoryMode else fileMode) {
+    fun checkPrivate(path: Path, directory: Boolean): BasicFileAttributes {
+        val attributes = Files.readAttributes(path, BasicFileAttributes::class.java, NOFOLLOW_LINKS)
+        require(PrivateFiles.isPrivate(path, directory)) {
             "CLI接続情報は現在の利用者だけがアクセスできる必要があります。"
         }
         require(if (directory) attributes.isDirectory else attributes.isRegularFile) { "CLI接続情報の形式が不正です。" }
@@ -91,7 +88,7 @@ internal object ReplayCliRegistry {
 
     fun prepare(directory: Path) {
         try {
-            Files.createDirectory(directory, PosixFilePermissions.asFileAttribute(directoryMode))
+            PrivateFiles.createDirectory(directory)
         } catch (_: FileAlreadyExistsException) {
             // Never repair another owner's directory or follow a substituted symbolic link.
         }
@@ -112,7 +109,7 @@ internal object ReplayCliRegistry {
             setProperty("started", endpoint.started.toString())
         }
         val staging = directory.resolve(".${endpoint.id}.tmp")
-        val channel = FileChannel.open(staging, setOf(CREATE_NEW, WRITE, NOFOLLOW_LINKS), PosixFilePermissions.asFileAttribute(fileMode))
+        val channel = PrivateFiles.openNew(staging, setOf(CREATE_NEW, WRITE, NOFOLLOW_LINKS))
         try {
             channel.use { properties.store(Channels.newOutputStream(it), "Android Replay Buffer CLI") }
             Files.createLink(path, staging)
