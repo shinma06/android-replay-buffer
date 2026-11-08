@@ -1,6 +1,7 @@
 package io.github.shinma06.replaybuffer.cli
 
 import com.intellij.util.lang.UrlClassLoader
+import java.io.File
 import java.nio.file.Files
 import java.nio.file.FileSystems
 import java.nio.file.attribute.PosixFilePermissions
@@ -93,7 +94,7 @@ class ReplayCliDistributionTest {
         }
         try {
             for (locale in listOf("C", "en_US.UTF-8")) {
-                val result = run(listOf(java.toString(), "-Duser.home=$home", "-cp", "$plugin${java.io.File.separator}lib${java.io.File.separator}*${java.io.File.pathSeparator}$kotlinRuntime",
+                val result = run(listOf(java.toString(), "-Duser.home=$home", "-cp", "$plugin${File.separator}lib${File.separator}*${File.pathSeparator}$kotlinRuntime",
                     "io.github.shinma06.replaybuffer.cli.ReplayCli", "--project", project.toString(), "status"),
                     mapOf("LC_ALL" to locale))
                 assertEquals(0, result.first, result.third.decodeToString())
