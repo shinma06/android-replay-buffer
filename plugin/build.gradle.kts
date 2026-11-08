@@ -208,6 +208,10 @@ tasks.prepareSandbox {
         into(pluginName.map { "$it/bin" })
         filePermissions { unix("755") }
     }
+    from(layout.projectDirectory.dir("src/main/cli")) {
+        include("replay.cmd", "replayd.cmd")
+        into(pluginName.map { "$it/bin" })
+    }
     from(layout.projectDirectory.file("src/main/cli/README.txt")) {
         into(pluginName.map { "$it/bin" })
         expand("sourceCommit" to sourceCommit)
