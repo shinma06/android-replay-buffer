@@ -5,16 +5,20 @@ import com.sun.jna.Native
 import java.nio.file.Path
 
 /** Use the IDE's existing JNA, not another runtime dependency or a bundled native binary. */
-internal interface MacExclusiveRename : Library {
+internal interface ExclusiveRename : Library {
     fun renameatx_np(sourceParent: Int, source: String, destinationParent: Int, destination: String, flags: Int): Int
+    fun renameat2(sourceParent: Int, source: String, destinationParent: Int, destination: String, flags: Int): Int
 }
 
+private val os = System.getProperty("os.name")
 private val exclusiveRename by lazy {
-    Native.load("c", MacExclusiveRename::class.java, mapOf(Library.OPTION_STRING_ENCODING to "UTF-8"))
+    Native.load("c", ExclusiveRename::class.java, mapOf(Library.OPTION_STRING_ENCODING to "UTF-8"))
 }
+
+private fun checkExclusiveRename() = check(os == "Mac OS X" || os == "Linux") { "この環境は原子・非上書き保存に対応していません" }
 
 /**
- * Bounded ownership observations surround descriptor-relative, exclusive publication on macOS.
+ * Bounded ownership observations surround descriptor-relative, exclusive publication on macOS and Linux.
  *
  * The caller keeps parent/staging handles alive. Verification can fail after rename, so an exception
  * does not imply the complete path is absent; the writer must retain and assess the actual output.
@@ -27,7 +31,7 @@ internal class SavePublication(
     private val checkEntries: () -> Unit,
 ) {
     fun publish() {
-        check(System.getProperty("os.name") == "Mac OS X") { "この環境は原子・非上書き保存に対応していません" }
+        checkExclusiveRename()
         require(partial.parent == complete.parent && partial.isAbsolute && complete.isAbsolute)
         verify(partial)
         renameExclusive(parent.descriptor, partial.fileName.toString(), parent.descriptor, complete.fileName.toString())
@@ -45,9 +49,11 @@ internal class SavePublication(
 }
 
 internal fun renameExclusive(sourceParent: Int, source: String, destinationParent: Int, destination: String) {
-    check(System.getProperty("os.name") == "Mac OS X") { "この環境は原子・非上書き保存に対応していません" }
+    checkExclusiveRename()
+    // RENAME_EXCL (Darwin) / RENAME_NOREPLACE (Linux): fail instead of replacing any existing target.
     val result = try {
-        exclusiveRename.renameatx_np(sourceParent, source, destinationParent, destination, 0x4)
+        if (os == "Mac OS X") exclusiveRename.renameatx_np(sourceParent, source, destinationParent, destination, 0x4)
+        else exclusiveRename.renameat2(sourceParent, source, destinationParent, destination, 0x1)
     } catch (_: LinkageError) { error("原子・非上書き保存を利用できません") }
     check(result == 0) { "完成先の公開に失敗しました（既存出力・対応filesystem・アクセス権を確認してください）" }
 }
