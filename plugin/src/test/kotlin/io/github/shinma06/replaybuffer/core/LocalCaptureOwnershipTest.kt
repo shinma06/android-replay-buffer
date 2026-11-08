@@ -1,5 +1,6 @@
 package io.github.shinma06.replaybuffer.core
 
+import io.github.shinma06.replaybuffer.testing.TestPermissions
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertEquals
@@ -14,7 +15,6 @@ import java.nio.channels.FileChannel
 import java.nio.ByteBuffer
 import java.nio.file.StandardOpenOption.WRITE
 import java.util.zip.CRC32
-import java.nio.file.attribute.PosixFilePermissions
 import java.time.Instant
 import java.util.UUID
 import java.util.concurrent.TimeUnit
@@ -116,8 +116,7 @@ class LocalCaptureOwnershipTest {
     }
 
     private fun packet(root: Path) = Files.list(root.resolve("ring")).use { it.findFirst().orElseThrow() }
-    private fun namespace(name: String) = Files.createDirectory(directory.resolve(name),
-        PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rwx------")))
+    private fun namespace(name: String) = Files.createDirectory(directory.resolve(name)).also { TestPermissions.set(it, "rwx------") }
 
     @Test
     fun stoppedOwnerIsReclaimedAndOtherProjectAndCompletedOutputRemain() {
@@ -415,12 +414,12 @@ class LocalCaptureOwnershipTest {
             store.frame(VideoPacket.Frame(100, false, true, byteArrayOf(2)), 1)
             val pin = store.capture(ReplaySettings())!!
             store.frame(VideoPacket.Frame(200, false, true, byteArrayOf(3)), 1)
-            Files.setPosixFilePermissions(store.directory, PosixFilePermissions.fromString("r-x------"))
+            TestPermissions.set(store.directory, TestPermissions.mode("r-x------"))
             try {
                 assertThrows(java.io.IOException::class.java) { store.release(pin.id) }
                 assertArrayEquals(byteArrayOf(2), Files.readAllBytes(pin.video.single().file))
                 assertTrue(deleted.isEmpty())
-            } finally { Files.setPosixFilePermissions(store.directory, PosixFilePermissions.fromString("rwx------")) }
+            } finally { TestPermissions.set(store.directory, TestPermissions.mode("rwx------")) }
             store.prune(900)
             assertEquals(listOf(pin.video.single().file), deleted)
             assertFalse(Files.exists(pin.video.single().file))
@@ -521,7 +520,7 @@ class LocalCaptureOwnershipTest {
         val ownership = LocalCaptureOwnership.create(namespace("permissions"))
         val created: (Path) -> Unit = { path ->
             val expected = if (Files.isDirectory(path)) "rwx------" else "rw-------"
-            assertEquals(PosixFilePermissions.fromString(expected), Files.getPosixFilePermissions(path))
+            assertEquals(TestPermissions.mode(expected), TestPermissions.get(path))
             ownership.created(path)
         }
         val resources = CaptureResources(ownership.root, created).also { it.server }
@@ -557,7 +556,7 @@ class LocalCaptureOwnershipTest {
             val descriptor = Files.newDirectoryStream(workspace, "local-capture-*.json").use { it.single() }
             val json = header(descriptor)
             val root = workspace.resolve("replay-${json["token"].asString}")
-            Files.setPosixFilePermissions(descriptor, PosixFilePermissions.fromString("rw-rw----"))
+            TestPermissions.set(descriptor, TestPermissions.mode("rw-rw----"))
             val before = Files.readAllBytes(descriptor)
             assertFalse(core.setEnabled(false).get(10, TimeUnit.SECONDS).accepted)
             assertFalse(core.snapshot().enabled)

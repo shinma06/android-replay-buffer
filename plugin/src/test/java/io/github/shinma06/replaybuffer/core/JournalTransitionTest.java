@@ -251,7 +251,7 @@ j.retain(record,true);
 byte[] before=Files.readAllBytes(path);
 
   set(j,"createChannel",(Function1<Path,FileChannel>)p->{try{return new CutChannel(create(p),Integer.MAX_VALUE){public void force(boolean metadata)throws IOException{super.force(metadata);
-Files.setPosixFilePermissions(r,java.nio.file.attribute.PosixFilePermissions.fromString("r-x------"));
+io.github.shinma06.replaybuffer.testing.TestPermissions.set(r,"r-x------");
 }};
 }catch(IOException e){throw new java.io.UncheckedIOException(e);
 }});
@@ -260,7 +260,7 @@ Files.setPosixFilePermissions(r,java.nio.file.attribute.PosixFilePermissions.fro
 assertArrayEquals(before,Files.readAllBytes(path));
 assertFalse(j.getHasRecoverable());
 }
-  finally {Files.setPosixFilePermissions(r,java.nio.file.attribute.PosixFilePermissions.fromString("rwx------"));
+  finally {io.github.shinma06.replaybuffer.testing.TestPermissions.set(r,"rwx------");
 }
   set(j,"createChannel",(Function1<Path,FileChannel>)p->{try{return create(p);
 }catch(IOException e){throw new java.io.UncheckedIOException(e);

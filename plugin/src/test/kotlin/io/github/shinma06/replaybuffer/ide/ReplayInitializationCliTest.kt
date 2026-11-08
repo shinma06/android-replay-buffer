@@ -1,5 +1,6 @@
 package io.github.shinma06.replaybuffer.ide
 
+import io.github.shinma06.replaybuffer.testing.TestPermissions
 import com.android.tools.idea.gradle.project.sync.GradleSyncState
 import com.google.gson.JsonParser
 import com.intellij.mock.MockApplication
@@ -29,7 +30,6 @@ import java.io.PrintStream
 import java.lang.reflect.Proxy
 import java.nio.file.Files
 import java.nio.file.Path
-import java.nio.file.attribute.PosixFilePermissions
 import java.util.concurrent.TimeUnit
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -49,8 +49,8 @@ class ReplayInitializationCliTest {
         val outside = Files.createDirectory(temporary.resolve("outside"))
         val stable = prepareCleanupDirectory(config, projectPath.toString())
         val components = listOf(stable.parent.parent, stable.parent, stable)
-        val imported = PosixFilePermissions.fromString("rwxr-xr-x")
-        components.forEach { Files.setPosixFilePermissions(it, imported) }
+        val imported = TestPermissions.mode("rwxr-xr-x")
+        components.forEach { TestPermissions.set(it, imported) }
         if (unsafe) {
             Files.delete(stable)
             Files.createSymbolicLink(stable, outside)
@@ -109,16 +109,16 @@ class ReplayInitializationCliTest {
                     assertTrue(Files.isSymbolicLink(stable))
                     Files.delete(stable)
                     Files.createDirectory(stable)
-                    Files.setPosixFilePermissions(stable, imported)
+                    TestPermissions.set(stable, imported)
                     assertFalse(status()["running"].asBoolean)
-                    assertEquals(imported, Files.getPosixFilePermissions(stable))
+                    assertEquals(imported, TestPermissions.get(stable))
                 } else assertTrue(status()["running"].asBoolean)
                 assertEquals("started", cli("daemon", 0))
                 val restored = status()
                 assertTrue(restored["running"].asBoolean)
                 assertEquals(null, capture.view.initializationError)
                 assertEquals(capture.view.snapshot!!.error, restored["error"]?.takeUnless { it.isJsonNull }?.asString)
-                for (component in components) assertEquals(PosixFilePermissions.fromString("rwx------"), Files.getPosixFilePermissions(component))
+                for (component in components) assertEquals(TestPermissions.mode("rwx------"), TestPermissions.get(component))
                 assertEquals("LOG_ONLY", restored["capture_mode"].asString)
                 assertEquals(83, restored["replay_seconds"].asInt)
                 server.close()

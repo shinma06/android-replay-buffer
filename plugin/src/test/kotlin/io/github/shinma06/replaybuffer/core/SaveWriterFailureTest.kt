@@ -1,5 +1,6 @@
 package io.github.shinma06.replaybuffer.core
 
+import io.github.shinma06.replaybuffer.testing.TestExecutables
 import com.google.gson.JsonParser
 import org.jcodec.codecs.h264.H264Encoder
 import org.jcodec.codecs.h264.H264Utils
@@ -188,7 +189,7 @@ class SaveWriterFailureTest {
             directory.createFile(first.fileName.toString()).use { created ->
                 created.channel().use { it.write(ByteBuffer.wrap(markerBytes)) }
                 val createdKey = created.key
-                assertEquals((Files.getAttribute(first, "unix:dev") as Number).toLong() to
+                assertEquals(if (TestExecutables.windows) PrivateFiles.fileKey(first) else (Files.getAttribute(first, "unix:dev") as Number).toLong() to
                     (Files.getAttribute(first, "unix:ino") as Number).toLong(), createdKey)
                 assertEquals(sha256(first), created.hash())
                 directory.verifyFile(first.fileName.toString(), created)

@@ -1,5 +1,6 @@
 package io.github.shinma06.replaybuffer.core
 
+import io.github.shinma06.replaybuffer.testing.TestPermissions
 import io.github.shinma06.replaybuffer.testing.TestExecutables
 import org.junit.jupiter.api.Assumptions.assumeTrue
 import java.awt.image.BufferedImage
@@ -156,7 +157,7 @@ class ScreenshotSaveTest {
             assertEquals("sample.app", saved.application)
             assertTrue(Regex("screenshot-[0-9]{8}-[0-9]{6}-[0-9]{3}-[0-9a-f-]{36}\\.png").matches(saved.file.fileName.toString()))
             assertEquals(setOf("keep", saved.file.fileName.toString()), Files.list(destination).use { it.map { path -> path.fileName.toString() }.toList().toSet() })
-            assertEquals(java.nio.file.attribute.PosixFilePermissions.fromString("rw-------"), Files.getPosixFilePermissions(saved.file))
+            assertEquals(TestPermissions.mode("rw-------"), TestPermissions.get(saved.file))
             assertEquals(listOf("devices -l", "-s usb123 shell dumpsys SurfaceFlinger --display-id",
                 "-s usb123 shell dumpsys window", "-s usb123 exec-out screencap -p -d 4619827551948147201", "-s usb123 shell dumpsys window"),
                 Files.readAllLines(root.resolve("commands")))
