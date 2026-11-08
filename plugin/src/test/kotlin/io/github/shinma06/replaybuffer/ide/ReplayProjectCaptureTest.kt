@@ -1,5 +1,6 @@
 package io.github.shinma06.replaybuffer.ide
 
+import io.github.shinma06.replaybuffer.testing.TestExecutables
 import io.github.shinma06.replaybuffer.core.ApplicationMode
 import io.github.shinma06.replaybuffer.core.CaptureMode
 import io.github.shinma06.replaybuffer.core.VideoQuality
@@ -228,9 +229,9 @@ class ReplayProjectCaptureTest {
         val config = Files.createDirectory(directory.resolve("config"))
         val project = Files.createDirectory(directory.resolve("project"))
         val stable = prepareCleanupDirectory(config, project.toString())
-        val fake = directory.resolve("current-sdk-adb")
+        var fake = directory.resolve("current-sdk-adb")
         val calls = directory.resolve("calls")
-        Files.writeString(fake, """#!/usr/bin/python3
+        fake = TestExecutables.python(fake, """#!/usr/bin/python3
 import sys,pathlib,json
 a=sys.argv[1:]
 with (pathlib.Path(__file__).parent/'calls').open('a') as f: f.write(json.dumps(a)+'\n')
@@ -246,8 +247,7 @@ elif a[:2]==['-s','fixture-old']:
     else: sys.exit(1)
 else: sys.exit(1)
 """)
-        assertTrue(fake.toFile().setExecutable(true))
-        // Strict synthetic stopped-owner descriptor; no host adb, device, or capture reader is used.
+                // Strict synthetic stopped-owner descriptor; no host adb, device, or capture reader is used.
         RemoteCleanupJournal(stable).use {
             it.retain(RemoteCleanup("fixture-old", "c".repeat(32), mapOf("12345" to "localabstract:scrcpy_00000001")))
         }

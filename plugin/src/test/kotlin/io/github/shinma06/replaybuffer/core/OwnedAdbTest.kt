@@ -1,5 +1,6 @@
 package io.github.shinma06.replaybuffer.core
 
+import io.github.shinma06.replaybuffer.testing.TestExecutables
 import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertFailsWith
@@ -10,16 +11,15 @@ class OwnedAdbTest {
     @Test
     fun finiteBinaryCommandPreservesBytesAndRejectsOverflowTimeoutAndNonzeroExit() {
         val directory = Files.createTempDirectory("replay-binary-adb-")
-        val fake = directory.resolve("adb")
+        var fake = directory.resolve("adb")
         try {
-            Files.writeString(fake, """#!/usr/bin/env python3
+            fake = TestExecutables.python(fake, """#!/usr/bin/env python3
 import sys,time
 if sys.argv[1]=='wait': time.sleep(30)
 sys.stdout.buffer.write(bytes(range(256)))
 sys.exit(1 if sys.argv[1]=='fail' else 0)
 """)
-            assertTrue(fake.toFile().setExecutable(true))
-            OwnedAdb(fake).use { adb ->
+                        OwnedAdb(fake).use { adb ->
                 kotlin.test.assertContentEquals(ByteArray(256) { it.toByte() }, adb.commandBytes("ok", limit = 256))
                 assertFailsWith<IllegalStateException> { adb.commandBytes("ok", limit = 255) }
                 assertFailsWith<IllegalStateException> { adb.commandBytes("fail", limit = 256) }
@@ -40,15 +40,14 @@ sys.exit(1 if sys.argv[1]=='fail' else 0)
     @Test
     fun cancellationTerminatesOnlyOwnedClientsAndRejectsLateCreation() {
         val directory = Files.createTempDirectory("replay-adb-fixture-")
-        val fake = directory.resolve("adb")
-        Files.writeString(fake, """#!/usr/bin/python3
+        var fake = directory.resolve("adb")
+        fake = TestExecutables.python(fake, """#!/usr/bin/python3
 import signal,time,pathlib,os
 signal.signal(signal.SIGTERM,signal.SIG_IGN)
 pathlib.Path(__file__).with_name(str(os.getpid())+'.ready').touch()
 time.sleep(30)
 """)
-        assertTrue(fake.toFile().setExecutable(true))
-        val unrelated = ProcessBuilder("/bin/sleep", "30").start()
+                val unrelated = TestExecutables.sleeping(30)
         val adb = OwnedAdb(fake)
         try {
             val owned = java.util.concurrent.CopyOnWriteArrayList((1..3).map { adb.start("devices", "-l") })

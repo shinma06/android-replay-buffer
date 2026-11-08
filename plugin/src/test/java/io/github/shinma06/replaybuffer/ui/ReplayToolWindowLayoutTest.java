@@ -1,5 +1,6 @@
 package io.github.shinma06.replaybuffer.ui;
 
+import io.github.shinma06.replaybuffer.testing.TestExecutables;
 import com.android.tools.idea.gradle.project.sync.GradleSyncState;
 import com.intellij.mock.MockApplication;
 import com.intellij.mock.MockProject;
@@ -271,8 +272,7 @@ class ReplayToolWindowLayoutTest {
         var completed = new CompletableFuture<Void>();
         try {
             var adb = root.resolve("adb");
-            Files.writeString(adb, """
-                #!/usr/bin/env python3
+            adb = TestExecutables.python(adb, """
                 import pathlib,sys,time
                 root=pathlib.Path(__file__).parent
                 command=' '.join(sys.argv[1:])
@@ -290,7 +290,6 @@ class ReplayToolWindowLayoutTest {
                 elif command=='-s usb-B exec-out screencap -p -d 1': sys.stdout.buffer.write((root/'image.png').read_bytes() if (root/'image.png').exists() else b'invalid image')
                 else: sys.exit(2)
                 """);
-            assertTrue(adb.toFile().setExecutable(true));
             var applied = new ReplaySettings(adb, root, 180, new ApplicationTarget(), CaptureMode.VIDEO_AND_LOGS, false, VideoQuality.STANDARD);
             var active = new ReplaySnapshot(1, 1, true, CaptureState.CAPTURING, applied, 1,
                 new ReplayDevice("target-A", "Recording", DeviceKind.PHYSICAL, true), "request-boundary", 1L, false,

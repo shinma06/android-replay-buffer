@@ -1,5 +1,6 @@
 package io.github.shinma06.replaybuffer.core
 
+import io.github.shinma06.replaybuffer.testing.TestExecutables
 import com.google.gson.JsonParser
 import java.nio.file.Files
 import java.nio.file.Path
@@ -221,18 +222,18 @@ class DeviceCaptureCloseTest {
         private val resources = CaptureResources(Files.createDirectory(root.resolve("resources")))
         private val store = CaptureStore(root.resolve("ring"))
         private val adbPath = if (forwardFixture) {
-            Files.writeString(root.resolve("adb"), """#!/bin/sh
-if [ "${'$'}1" = forward ] && [ "${'$'}2" = --list ]; then exit 0; fi
-if [ "${'$'}3" = push ]; then exit 0; fi
-if [ "${'$'}3" = forward ]; then
-    touch "${root.resolve("allocating")}"
-    while [ ! -e "${root.resolve("allocated")}" ]; do sleep 0.01; done
-    printf '23456\n'
-    exit 0
-fi
-exit 1
-""").also { assertTrue(it.toFile().setExecutable(true)) }
-        } else Path.of("/bin/sh")
+            TestExecutables.python(root.resolve("adb"), """import pathlib,sys,time
+r=pathlib.Path(__file__).parent;a=sys.argv[1:]
+if a[:2]==['forward','--list']: sys.exit(0)
+if a[2:3]==['push']: sys.exit(0)
+if a[2:3]==['forward']:
+    (r/'allocating').touch()
+    while not (r/'allocated').exists(): time.sleep(0.01)
+    print('23456')
+    sys.exit(0)
+sys.exit(1)
+""")
+        } else TestExecutables.python(root.resolve("adb"), "import sys\nsys.exit(1)\n")
         val capture = DeviceCapture(adbPath, "fixture-1", resources, store, 1, ApplicationTarget())
         private val release = CountDownLatch(1)
         private val blocked = mutableListOf<Thread>()

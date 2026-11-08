@@ -1,5 +1,6 @@
 package io.github.shinma06.replaybuffer.core
 
+import io.github.shinma06.replaybuffer.testing.TestExecutables
 import org.junit.jupiter.api.Assumptions.assumeTrue
 import java.awt.image.BufferedImage
 import java.io.ByteArrayOutputStream
@@ -324,8 +325,8 @@ class ScreenshotSaveTest {
             Files.write(root.resolve("image.png"), png())
             Files.writeString(root.resolve("foreground"), foreground)
             Files.writeString(root.resolve("devices"), "List of devices attached\nusb123 device model:Fixture\n")
-            val adb = root.resolve("adb")
-            Files.writeString(adb, """#!/usr/bin/env python3
+            var adb = root.resolve("adb")
+            adb = TestExecutables.python(adb, """#!/usr/bin/env python3
 import os,pathlib,sys,time
 root=pathlib.Path(__file__).parent
 mode=(root/'mode').read_text() if (root/'mode').exists() else ''
@@ -353,7 +354,6 @@ elif command=='exec-out screencap -p -d 4619827551948147201':
  sys.stdout.buffer.write(b'broken' if mode=='broken' else (root/'image.png').read_bytes())
 elif command!='devices -l': sys.exit(2)
 """)
-            check(adb.toFile().setExecutable(true))
             body(root, adb)
         } finally { root.toFile().deleteRecursively() }
     }
