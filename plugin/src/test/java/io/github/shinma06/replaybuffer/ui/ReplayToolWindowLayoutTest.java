@@ -271,8 +271,7 @@ class ReplayToolWindowLayoutTest {
         var requestScope = SupervisorKt.SupervisorJob(null);
         var completed = new CompletableFuture<Void>();
         try {
-            var adb = root.resolve("adb");
-            adb = TestExecutables.python(adb, """
+            var adb = TestExecutables.python(root.resolve("adb"), """
                 import pathlib,sys,time
                 root=pathlib.Path(__file__).parent
                 command=' '.join(sys.argv[1:])

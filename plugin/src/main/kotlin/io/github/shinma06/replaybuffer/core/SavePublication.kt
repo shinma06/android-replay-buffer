@@ -15,10 +15,10 @@ private val exclusiveRename by lazy {
     Native.load("c", ExclusiveRename::class.java, mapOf(Library.OPTION_STRING_ENCODING to "UTF-8"))
 }
 
-private fun checkExclusiveRename() = check(os == "Mac OS X" || os == "Linux") { "この環境は原子・非上書き保存に対応していません" }
+private fun checkExclusiveRename() = check(os == "Mac OS X" || os == "Linux" || os.startsWith("Windows")) { "この環境は原子・非上書き保存に対応していません" }
 
 /**
- * Bounded ownership observations surround descriptor-relative, exclusive publication on macOS and Linux.
+ * Bounded ownership observations surround descriptor-relative, exclusive publication on macOS, Linux and Windows.
  *
  * The caller keeps parent/staging handles alive. Verification can fail after rename, so an exception
  * does not imply the complete path is absent; the writer must retain and assess the actual output.
@@ -48,12 +48,13 @@ internal class SavePublication(
     }
 }
 
-internal fun renameExclusive(sourceParent: Int, source: String, destinationParent: Int, destination: String) {
+internal fun renameExclusive(sourceParent: Long, source: String, destinationParent: Long, destination: String) {
     checkExclusiveRename()
+    if (os.startsWith("Windows")) return WindowsSaveHandles.renameExclusive(sourceParent, source, destinationParent, destination)
     // RENAME_EXCL (Darwin) / RENAME_NOREPLACE (Linux): fail instead of replacing any existing target.
     val result = try {
-        if (os == "Mac OS X") exclusiveRename.renameatx_np(sourceParent, source, destinationParent, destination, 0x4)
-        else exclusiveRename.renameat2(sourceParent, source, destinationParent, destination, 0x1)
+        if (os == "Mac OS X") exclusiveRename.renameatx_np(sourceParent.toInt(), source, destinationParent.toInt(), destination, 0x4)
+        else exclusiveRename.renameat2(sourceParent.toInt(), source, destinationParent.toInt(), destination, 0x1)
     } catch (_: LinkageError) { error("原子・非上書き保存を利用できません") }
     check(result == 0) { "完成先の公開に失敗しました（既存出力・対応filesystem・アクセス権を確認してください）" }
 }
