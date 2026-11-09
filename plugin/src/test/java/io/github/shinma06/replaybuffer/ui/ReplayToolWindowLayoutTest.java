@@ -560,7 +560,7 @@ class ReplayToolWindowLayoutTest {
                 var output = (JTextArea) field(panel, "saveOutput");
                 assertEquals(failed || complete, output.isVisible());
                 if (failed) {
-                    assertTrue(output.getText().contains("/disposable/preserved.partial"));
+                    assertTrue(output.getText().contains(Path.of("/disposable/preserved.partial").toString()));
                     assertTrue(((JTextArea) field(panel, "failure")).getText().contains("空き容量"));
                     assertTrue(((JTextArea) field(panel, "frozenRequest")).getText().contains("固定対象: 1.000秒〜30.000秒"));
                     assertTrue(((JTextArea) field(panel, "frozenTarget")).getText().contains("com.fixture.visible"));

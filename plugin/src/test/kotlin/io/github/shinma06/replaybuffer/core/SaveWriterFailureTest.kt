@@ -218,7 +218,7 @@ class SaveWriterFailureTest {
         assertFalse(paths.anyMatch { it.fileName.toString().startsWith("replay-") })
     }
 
-    private fun key(path: Path) = assertNotNull(Files.readAttributes(path, BasicFileAttributes::class.java, NOFOLLOW_LINKS).fileKey())
+    private fun key(path: Path) = assertNotNull(PrivateFiles.fileKey(path))
 
     private fun fixture(check: (Path, CaptureStore, FrozenCapture) -> Unit) {
         val root = Files.createTempDirectory("replay-save-failure-").toRealPath()

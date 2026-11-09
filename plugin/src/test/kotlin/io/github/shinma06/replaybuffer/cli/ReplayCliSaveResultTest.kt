@@ -38,7 +38,7 @@ class ReplayCliSaveResultTest {
         assertEquals("", result.output)
         assertTrue(result.error.contains("保存失敗"))
         assertTrue(result.error.contains("attempt: 3"))
-        assertTrue(result.error.contains("/intended/attempt.partial"))
+        assertTrue(result.error.contains(Path.of("/intended/attempt.partial").toString()))
     }
 
     @Test fun `timeout does not cancel the writer and unrelated results cannot become success`() {
