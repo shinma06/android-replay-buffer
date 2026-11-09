@@ -330,92 +330,90 @@ class ReplayToolWindowLayoutTest {
             assertEquals(1, uiCallbacks.size(), "the rejected request must schedule its error explanation");
             assertFalse(store.getEnabled(), "screenshot must not enable acquisition");
             assertNull(field(capture, "core"), "screenshot must not start a capture or create history");
-            if (java.util.List.of("Mac OS X", "Linux").contains(System.getProperty("os.name"))) {
-                var common = Files.createDirectory(root.resolve("common"));
-                var dedicated = Files.createDirectory(root.resolve("screenshots"));
-                javax.imageio.ImageIO.write(new java.awt.image.BufferedImage(2, 2, java.awt.image.BufferedImage.TYPE_INT_RGB),
-                    "png", root.resolve("image.png").toFile());
-                Files.createFile(root.resolve("pause"));
-                environment.set(service, new io.github.shinma06.replaybuffer.ide.AndroidReplayEnvironment(adb, null,
-                    new io.github.shinma06.replaybuffer.ide.ApplicationSelection("sample.app", "sample", null)));
-                settings.set(service, new io.github.shinma06.replaybuffer.settings.ReplaySettings(180, common.toString(),
-                    io.github.shinma06.replaybuffer.settings.AppSelectionMode.AUTOMATIC, "", CaptureMode.VIDEO_AND_LOGS,
-                    false, false, dedicated.toString(), VideoQuality.STANDARD));
-                request.invoke(service);
-                var saving = (Job) field(service, "screenshotJob");
-                var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
-                while (!Files.exists(root.resolve("started")) && System.nanoTime() < deadline) Thread.sleep(10);
-                assertTrue(Files.exists(root.resolve("started")));
-                settings.set(service, new io.github.shinma06.replaybuffer.settings.ReplaySettings(180, common.toString(),
-                    io.github.shinma06.replaybuffer.settings.AppSelectionMode.AUTOMATIC, "", CaptureMode.VIDEO_AND_LOGS,
-                    false, true, "", VideoQuality.STANDARD));
-                Files.createFile(root.resolve("continue"));
-                var saved = new CompletableFuture<Void>();
-                saving.invokeOnCompletion(failure -> { saved.complete(null); return kotlin.Unit.INSTANCE; });
-                saved.get(15, TimeUnit.SECONDS);
-                try (var images = Files.list(dedicated); var other = Files.list(common)) {
-                    var files = images.toList();
-                    assertEquals(1, files.size(), "request must use its captured dedicated root");
-                    assertTrue(files.getFirst().getFileName().toString().endsWith(".png"));
-                    assertTrue(Files.isRegularFile(files.getFirst()));
-                    assertEquals(0, other.count(), "a concurrent settings update must not redirect the request");
-                }
-                assertFalse(store.getEnabled());
-                assertNull(field(capture, "core"));
-
-                var beforeMissingNative = Files.readAllLines(root.resolve("commands"));
-                var beforeErrors = uiCallbacks.size();
-                var previousJob = field(service, "screenshotJob");
-                request.invoke(service);
-                assertTrue(previousJob == field(service, "screenshotJob"), "unavailable settings cannot start a screenshot job");
-                assertEquals(beforeMissingNative, Files.readAllLines(root.resolve("commands")), "unavailable Logcat settings must not reach adb or replay root");
-                assertEquals(beforeErrors + 1, uiCallbacks.size(), "unavailable native settings need an actionable explanation");
-
-                var nativeSettings = new com.android.tools.idea.ui.screenshot.DeviceScreenshotSettings();
-                ((MockApplication) ApplicationManager.getApplication()).registerService(
-                    com.android.tools.idea.ui.screenshot.DeviceScreenshotSettings.class, nativeSettings);
-                project.registerService(com.android.tools.idea.ui.save.SaveConfigurationResolver.class,
-                    new com.android.tools.idea.ui.save.SaveConfigurationResolver(project));
-                var followed = Files.createDirectory(root.resolve("logcat"));
-                var next = Files.createDirectory(root.resolve("logcat-changed"));
-                nativeSettings.getSaveConfig$intellij_android_adb_ui().setSaveLocation(followed.toString());
-                logcatUnavailable.set(false);
-                Files.delete(root.resolve("started"));
-                Files.delete(root.resolve("continue"));
-                var redirectedBeforeStart = new AtomicBoolean();
-                var nativeChange = project.getMessageBus().connect();
-                nativeChange.subscribe(ReplayProjectService.Companion.getENVIRONMENT_CHANGED(), (Runnable) () -> {
-                    if (redirectedBeforeStart.compareAndSet(false, true))
-                        nativeSettings.getSaveConfig$intellij_android_adb_ui().setSaveLocation(next.toString());
-                });
-                try { request.invoke(service); } finally { nativeChange.disconnect(); }
-                assertTrue(redirectedBeforeStart.get(), "native settings must change before the lazy IO job starts");
-                saving = (Job) field(service, "screenshotJob");
-                assertNotNull(saving);
-                deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
-                while (!Files.exists(root.resolve("started")) && System.nanoTime() < deadline) Thread.sleep(10);
-                assertTrue(Files.exists(root.resolve("started")));
-                Files.createFile(root.resolve("continue"));
-                var logcatSaved = new CompletableFuture<Void>();
-                saving.invokeOnCompletion(failure -> { logcatSaved.complete(null); return kotlin.Unit.INSTANCE; });
-                logcatSaved.get(15, TimeUnit.SECONDS);
-                try (var images = Files.list(followed); var other = Files.list(next); var replay = Files.list(common)) {
-                    assertEquals(1, images.count(), "Logcat location must be frozen for the current request");
-                    assertEquals(0, other.count());
-                    assertEquals(0, replay.count());
-                }
-                request.invoke(service);
-                saving = (Job) field(service, "screenshotJob");
-                assertNotNull(saving);
-                var nextSaved = new CompletableFuture<Void>();
-                saving.invokeOnCompletion(failure -> { nextSaved.complete(null); return kotlin.Unit.INSTANCE; });
-                nextSaved.get(15, TimeUnit.SECONDS);
-                try (var images = Files.list(next)) {
-                    assertEquals(1, images.count(), "the next request must re-read the changed native setting");
-                }
-                assertFalse(store.getEnabled());
-                assertNull(field(capture, "core"));
+            var common = Files.createDirectory(root.resolve("common"));
+            var dedicated = Files.createDirectory(root.resolve("screenshots"));
+            javax.imageio.ImageIO.write(new java.awt.image.BufferedImage(2, 2, java.awt.image.BufferedImage.TYPE_INT_RGB),
+                "png", root.resolve("image.png").toFile());
+            Files.createFile(root.resolve("pause"));
+            environment.set(service, new io.github.shinma06.replaybuffer.ide.AndroidReplayEnvironment(adb, null,
+                new io.github.shinma06.replaybuffer.ide.ApplicationSelection("sample.app", "sample", null)));
+            settings.set(service, new io.github.shinma06.replaybuffer.settings.ReplaySettings(180, common.toString(),
+                io.github.shinma06.replaybuffer.settings.AppSelectionMode.AUTOMATIC, "", CaptureMode.VIDEO_AND_LOGS,
+                false, false, dedicated.toString(), VideoQuality.STANDARD));
+            request.invoke(service);
+            var saving = (Job) field(service, "screenshotJob");
+            var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (!Files.exists(root.resolve("started")) && System.nanoTime() < deadline) Thread.sleep(10);
+            assertTrue(Files.exists(root.resolve("started")));
+            settings.set(service, new io.github.shinma06.replaybuffer.settings.ReplaySettings(180, common.toString(),
+                io.github.shinma06.replaybuffer.settings.AppSelectionMode.AUTOMATIC, "", CaptureMode.VIDEO_AND_LOGS,
+                false, true, "", VideoQuality.STANDARD));
+            Files.createFile(root.resolve("continue"));
+            var saved = new CompletableFuture<Void>();
+            saving.invokeOnCompletion(failure -> { saved.complete(null); return kotlin.Unit.INSTANCE; });
+            saved.get(15, TimeUnit.SECONDS);
+            try (var images = Files.list(dedicated); var other = Files.list(common)) {
+                var files = images.toList();
+                assertEquals(1, files.size(), "request must use its captured dedicated root");
+                assertTrue(files.getFirst().getFileName().toString().endsWith(".png"));
+                assertTrue(Files.isRegularFile(files.getFirst()));
+                assertEquals(0, other.count(), "a concurrent settings update must not redirect the request");
             }
+            assertFalse(store.getEnabled());
+            assertNull(field(capture, "core"));
+
+            var beforeMissingNative = Files.readAllLines(root.resolve("commands"));
+            var beforeErrors = uiCallbacks.size();
+            var previousJob = field(service, "screenshotJob");
+            request.invoke(service);
+            assertTrue(previousJob == field(service, "screenshotJob"), "unavailable settings cannot start a screenshot job");
+            assertEquals(beforeMissingNative, Files.readAllLines(root.resolve("commands")), "unavailable Logcat settings must not reach adb or replay root");
+            assertEquals(beforeErrors + 1, uiCallbacks.size(), "unavailable native settings need an actionable explanation");
+
+            var nativeSettings = new com.android.tools.idea.ui.screenshot.DeviceScreenshotSettings();
+            ((MockApplication) ApplicationManager.getApplication()).registerService(
+                com.android.tools.idea.ui.screenshot.DeviceScreenshotSettings.class, nativeSettings);
+            project.registerService(com.android.tools.idea.ui.save.SaveConfigurationResolver.class,
+                new com.android.tools.idea.ui.save.SaveConfigurationResolver(project));
+            var followed = Files.createDirectory(root.resolve("logcat"));
+            var next = Files.createDirectory(root.resolve("logcat-changed"));
+            nativeSettings.getSaveConfig$intellij_android_adb_ui().setSaveLocation(followed.toString());
+            logcatUnavailable.set(false);
+            Files.delete(root.resolve("started"));
+            Files.delete(root.resolve("continue"));
+            var redirectedBeforeStart = new AtomicBoolean();
+            var nativeChange = project.getMessageBus().connect();
+            nativeChange.subscribe(ReplayProjectService.Companion.getENVIRONMENT_CHANGED(), (Runnable) () -> {
+                if (redirectedBeforeStart.compareAndSet(false, true))
+                    nativeSettings.getSaveConfig$intellij_android_adb_ui().setSaveLocation(next.toString());
+            });
+            try { request.invoke(service); } finally { nativeChange.disconnect(); }
+            assertTrue(redirectedBeforeStart.get(), "native settings must change before the lazy IO job starts");
+            saving = (Job) field(service, "screenshotJob");
+            assertNotNull(saving);
+            deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (!Files.exists(root.resolve("started")) && System.nanoTime() < deadline) Thread.sleep(10);
+            assertTrue(Files.exists(root.resolve("started")));
+            Files.createFile(root.resolve("continue"));
+            var logcatSaved = new CompletableFuture<Void>();
+            saving.invokeOnCompletion(failure -> { logcatSaved.complete(null); return kotlin.Unit.INSTANCE; });
+            logcatSaved.get(15, TimeUnit.SECONDS);
+            try (var images = Files.list(followed); var other = Files.list(next); var replay = Files.list(common)) {
+                assertEquals(1, images.count(), "Logcat location must be frozen for the current request");
+                assertEquals(0, other.count());
+                assertEquals(0, replay.count());
+            }
+            request.invoke(service);
+            saving = (Job) field(service, "screenshotJob");
+            assertNotNull(saving);
+            var nextSaved = new CompletableFuture<Void>();
+            saving.invokeOnCompletion(failure -> { nextSaved.complete(null); return kotlin.Unit.INSTANCE; });
+            nextSaved.get(15, TimeUnit.SECONDS);
+            try (var images = Files.list(next)) {
+                assertEquals(1, images.count(), "the next request must re-read the changed native setting");
+            }
+            assertFalse(store.getEnabled());
+            assertNull(field(capture, "core"));
         } finally {
             requestScope.cancel(null);
             var pending = (Job) field(service, "screenshotJob");

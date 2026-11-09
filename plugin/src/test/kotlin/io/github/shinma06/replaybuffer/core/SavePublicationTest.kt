@@ -1,9 +1,7 @@
 package io.github.shinma06.replaybuffer.core
 
-import org.junit.jupiter.api.Assumptions.assumeTrue
 import java.nio.file.Files
 import java.nio.file.Path
-import java.nio.file.attribute.BasicFileAttributes
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.concurrent.thread
@@ -34,13 +32,13 @@ class SavePublicationTest {
                         val outputs = mapOf("proof" to output, "other" to other)
                         staging.requireEntries(outputs)
                         assertEquals(setOf("proof", "other"), staging.entries())
-                        if (System.getProperty("os.name") in setOf("Mac OS X", "Linux")) {
-                            val complete = root.resolve("completed")
-                            SavePublication(partial, complete, parent, staging) { staging.requireEntries(outputs) }.publish()
-                            assertEquals("proof", Files.readString(complete.resolve("proof")))
-                            assertFalse(Files.exists(partial))
-                            assertEquals(staging.key, parent.openChild("completed").use { it.key })
-                        }
+                        // Like SaveWriter: Windows refuses to rename a directory with open files; identities suffice.
+                        other.close(); output.close()
+                        val complete = root.resolve("completed")
+                        SavePublication(partial, complete, parent, staging) { staging.requireEntries(outputs) }.publish()
+                        assertEquals("proof", Files.readString(complete.resolve("proof")))
+                        assertFalse(Files.exists(partial))
+                        assertEquals(staging.key, parent.openChild("completed").use { it.key })
                     }
                 }
             }
@@ -49,7 +47,6 @@ class SavePublicationTest {
 
     @Test
     fun nativePublicationRejectsEveryExistingTargetAndConcurrentPublisher() {
-        assumeTrue(System.getProperty("os.name") in setOf("Mac OS X", "Linux"), "exclusive publication needs macOS or Linux")
         val root = Files.createTempDirectory("replay-publish-fixture-").toRealPath()
         try {
             val partial = Files.createDirectory(root.resolve(".partial"))
@@ -62,9 +59,9 @@ class SavePublicationTest {
                     "file" -> Files.writeString(target, "keep")
                     else -> Files.createSymbolicLink(target, Path.of("does-not-exist"))
                 }
-                val key = Files.readAttributes(target, BasicFileAttributes::class.java, java.nio.file.LinkOption.NOFOLLOW_LINKS).fileKey()
+                val key = PrivateFiles.fileKey(target)
                 assertFailsWith<IllegalStateException> { publishCapture(partial, target) }
-                assertEquals(key, Files.readAttributes(target, BasicFileAttributes::class.java, java.nio.file.LinkOption.NOFOLLOW_LINKS).fileKey())
+                assertEquals(key, PrivateFiles.fileKey(target))
                 assertEquals("complete evidence", Files.readString(partial.resolve("proof")))
                 if (kind == "nonempty") assertEquals("keep", Files.readString(target.resolve("keep")))
                 if (kind == "file") assertEquals("keep", Files.readString(target))

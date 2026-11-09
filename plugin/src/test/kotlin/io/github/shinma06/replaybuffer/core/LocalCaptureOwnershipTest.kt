@@ -204,11 +204,11 @@ class LocalCaptureOwnershipTest {
                     val replacement = Files.writeString(directory.resolve("replacement"), "foreign replacement")
                     Files.move(replacement, file, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
                 }
-                val key = Files.readAttributes(marker, java.nio.file.attribute.BasicFileAttributes::class.java).fileKey()
+                val key = PrivateFiles.fileKey(marker)
                 val before = Files.readAllBytes(marker)
                 LocalCaptureOwnership.recover(namespace)
                 assertArrayEquals(before, Files.readAllBytes(marker))
-                assertEquals(key, Files.readAttributes(marker, java.nio.file.attribute.BasicFileAttributes::class.java).fileKey())
+                assertEquals(key, PrivateFiles.fileKey(marker))
                 assertTrue(Files.exists(old.root.resolve("scrcpy-server-v5.0.1")))
                 assertTrue(Files.exists(old.descriptor))
             }

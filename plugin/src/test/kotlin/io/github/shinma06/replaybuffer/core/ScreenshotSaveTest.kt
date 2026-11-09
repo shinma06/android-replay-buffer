@@ -2,7 +2,6 @@ package io.github.shinma06.replaybuffer.core
 
 import io.github.shinma06.replaybuffer.testing.TestPermissions
 import io.github.shinma06.replaybuffer.testing.TestExecutables
-import org.junit.jupiter.api.Assumptions.assumeTrue
 import java.awt.image.BufferedImage
 import java.io.ByteArrayOutputStream
 import java.nio.file.Files
@@ -81,7 +80,6 @@ class ScreenshotSaveTest {
 
     @Test
     fun recordingMirrorPreservesSerialPhysicalCaptureAndBothForegroundChecks() {
-        assumeTrue(System.getProperty("os.name") in setOf("Mac OS X", "Linux"))
         fixture { root, adb ->
             Files.writeString(root.resolve("foreground"), mirroredForeground("2"))
             val destination = Files.createDirectory(root.resolve("output"))
@@ -126,7 +124,6 @@ class ScreenshotSaveTest {
 
     @Test
     fun configuredLinkedDestinationResolvesButLaterLinkChangesCannotRedirectDeletion() {
-        assumeTrue(System.getProperty("os.name") in setOf("Mac OS X", "Linux"))
         fixture { root, adb ->
             val other = Files.createDirectory(root.resolve("other"))
             val link = Files.createSymbolicLink(root.resolve("linked-output"), other)
@@ -147,7 +144,6 @@ class ScreenshotSaveTest {
 
     @Test
     fun singleDeviceStreamsBinaryWithoutRecordingAndPublishesExactImageThenDeletesOnlyThatImage() {
-        assumeTrue(System.getProperty("os.name") in setOf("Mac OS X", "Linux"), "exclusive publication needs macOS or Linux")
         fixture { root, adb ->
             val destination = Files.createDirectory(root.resolve("output"))
             Files.writeString(destination.resolve("keep"), "unrelated")
@@ -174,7 +170,6 @@ class ScreenshotSaveTest {
 
     @Test
     fun concurrentDirectImagesAreUniqueAndExclusiveFileCollisionPreservesBothInputs() {
-        assumeTrue(System.getProperty("os.name") in setOf("Mac OS X", "Linux"))
         fixture { root, adb ->
             val destination = Files.createDirectory(root.resolve("output"))
             java.util.concurrent.Executors.newFixedThreadPool(2).use { executor ->
@@ -203,7 +198,6 @@ class ScreenshotSaveTest {
 
     @Test
     fun recordingTargetWinsOverOtherDeviceAndNeverFallsBackAfterDisconnect() {
-        assumeTrue(System.getProperty("os.name") in setOf("Mac OS X", "Linux"))
         fixture { root, adb ->
             val destination = Files.createDirectory(root.resolve("output"))
             val target = "emulator-5554 device model:Recording"
@@ -229,7 +223,6 @@ class ScreenshotSaveTest {
 
     @Test
     fun withoutRecordingHistoryUsesSameUniqueDeviceRuleAndRejectsAmbiguity() {
-        assumeTrue(System.getProperty("os.name") in setOf("Mac OS X", "Linux"))
         fixture { root, adb ->
             val destination = Files.createDirectory(root.resolve("output"))
             Files.writeString(root.resolve("devices"), "List of devices attached\nemulator-5554 device model:Only\n")
@@ -249,7 +242,6 @@ class ScreenshotSaveTest {
 
     @Test
     fun deletedReplacedChangedAndSymlinkedFilesCannotDeleteOtherData() {
-        assumeTrue(System.getProperty("os.name") in setOf("Mac OS X", "Linux"))
         fixture { root, adb ->
             val destination = Files.createDirectory(root.resolve("output"))
             for (kind in listOf("removed", "replaced", "changed", "symlink", "directory")) {

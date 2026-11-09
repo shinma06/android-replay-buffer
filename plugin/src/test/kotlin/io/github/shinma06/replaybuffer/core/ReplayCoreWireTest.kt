@@ -6,8 +6,6 @@ import org.jcodec.codecs.h264.H264Encoder
 import org.jcodec.codecs.h264.H264Utils
 import org.jcodec.common.model.ColorSpace
 import org.jcodec.common.model.Picture
-import org.junit.jupiter.api.condition.EnabledOnOs
-import org.junit.jupiter.api.condition.OS
 import java.io.DataOutputStream
 import java.net.InetAddress
 import java.net.ServerSocket
@@ -36,25 +34,21 @@ class ReplayCoreWireTest {
     }
 
     @Test
-    @EnabledOnOs(OS.MAC) // Existing SaveWriter fixture uses macOS AVFoundation; not IDE/device acceptance.
     fun partitionedLogsPreserveIdsAndPartialFailureAndLegacyUnknownHeadersKeepAll() {
         for (mode in listOf("partition", "legacy", "empty", "timeout", "cancel")) runWireFixture(false, mode)
     }
 
     @Test
-    @EnabledOnOs(OS.MAC)
     fun recoveredLogReaderWaitsForInitializationBeforeReceivingEvents() {
         runWireFixture(false, "partition", logReaderStartupDelayMillis = 2000)
     }
 
     @Test
-    @EnabledOnOs(OS.MAC)
     fun logOnlySkipsEveryVideoPathAndQuietRequestsRetryWithTheirFrozenMode() {
         runWireFixture(false, "partition", captureMode = CaptureMode.LOG_ONLY, videoQuality = VideoQuality.LIGHTWEIGHT)
     }
 
     @Test
-    @EnabledOnOs(OS.MAC)
     fun productionReaderAndExistingPsPollAdmitOneCorroboratedAutomaticSave() {
         runWireFixture(false, "partition", captureMode = CaptureMode.LOG_ONLY, autoCrash = true)
     }
