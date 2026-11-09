@@ -121,7 +121,7 @@ internal class LocalCaptureOwnership private constructor(
             require(!attributes.isSymbolicLink && (attributes.isDirectory || attributes.isRegularFile))
             require(PrivateFiles.isOwnedWithoutSharedWrite(path))
             return listOf(PrivateFiles.fileKey(path).toString(),
-                attributes.creationTime().toString(), PrivateFiles.owner.name, PrivateFiles.describe(path)).also {
+                attributes.creationTime().toString(), Files.getOwner(path, NOFOLLOW_LINKS).name, PrivateFiles.recordedPermissions(path)).also {
                 require(Gson().toJson(it).toByteArray(Charsets.UTF_8).size <= MAX_IDENTITY_BYTES)
             }
         }

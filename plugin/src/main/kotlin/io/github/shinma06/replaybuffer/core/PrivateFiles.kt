@@ -116,6 +116,11 @@ internal object PrivateFiles {
             }
         }
 
+    /** Permissions as persisted in local ownership records: POSIX keeps the established enum-name list, Windows the ACL text. */
+    fun recordedPermissions(path: Path): String =
+        if (posix) view<PosixFileAttributeView>(path).readAttributes().permissions().sorted().joinToString(",")
+        else describe(path)
+
     /** Text for messages and identity comparison: the POSIX mode, or the ACL entries. */
     fun describe(path: Path): String =
         if (posix) PosixFilePermissions.toString(view<PosixFileAttributeView>(path).readAttributes().permissions())
