@@ -566,7 +566,7 @@ class ReplayToolWindowLayoutTest {
                     assertTrue(((JTextArea) field(panel, "frozenTarget")).getText().contains("com.fixture.visible"));
                 }
                 if (complete) {
-                    assertTrue(output.getText().contains("/disposable/actual-result"));
+                    assertTrue(output.getText().contains(Path.of("/disposable/actual-result").toString()));
                     assertFalse(output.getText().contains("configured"));
                     assertTrue(((JTextArea) field(panel, "saveState")).getText().contains("記録の不足・未確認: 端末ログ"));
                 }

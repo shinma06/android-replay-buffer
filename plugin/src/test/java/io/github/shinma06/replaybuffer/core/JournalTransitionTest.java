@@ -124,7 +124,7 @@ j.retain(record,true);
 
   Path path=r.resolve("remote-cleanup-"+record.getToken()+".json");
 byte[] before=Files.readAllBytes(path);
-Object oldKey=Files.readAttributes(path,java.nio.file.attribute.BasicFileAttributes.class).fileKey();
+Object oldKey=PrivateFiles.INSTANCE.fileKey(path);
 
   Function1<Path,FileChannel> normal=p->{try{return create(p);
 }catch(IOException e){throw new java.io.UncheckedIOException(e);
@@ -137,7 +137,7 @@ Object oldKey=Files.readAttributes(path,java.nio.file.attribute.BasicFileAttribu
   assertThrows(IOException.class,()->j.retain(record,false));
 
   assertArrayEquals(before,Files.readAllBytes(path));
-assertEquals(oldKey,Files.readAttributes(path,java.nio.file.attribute.BasicFileAttributes.class).fileKey());
+assertEquals(oldKey,PrivateFiles.INSTANCE.fileKey(path));
 assertFalse(j.getHasRecoverable());
 
   RemoteCleanupJournal competitor=new RemoteCleanupJournal(r);
@@ -156,7 +156,7 @@ owned.put(path,entry(previous,previousChannel,new ReleaseFailure((FileLock)get(p
   assertThrows(IOException.class,()->j.retain(record,false));
 assertFalse(previousChannel.isOpen());
 
-  assertNotEquals(oldKey,Files.readAttributes(path,java.nio.file.attribute.BasicFileAttributes.class).fileKey());
+  assertNotEquals(oldKey,PrivateFiles.INSTANCE.fileKey(path));
 assertTrue(j.getHasRecoverable());
 
   competitor=new RemoteCleanupJournal(r);
@@ -208,7 +208,7 @@ j.close();
    Path descriptor=r.resolve("remote-cleanup-"+record.getToken()+".json");
    if(update) j.retain(record,true);
    byte[] oldBytes=update ? Files.readAllBytes(descriptor) : null;
-   Object oldKey=update ? Files.readAttributes(descriptor,java.nio.file.attribute.BasicFileAttributes.class).fileKey() : null;
+   Object oldKey=update ? PrivateFiles.INSTANCE.fileKey(descriptor) : null;
    Object oldEntry=update ? ((Map<?,?>)get(j,"owned")).get(descriptor) : null;
    FileLock oldLock=update ? (FileLock)get(oldEntry,"lock") : null;
    Path[] stage={null}; FileChannel[] channel={null}; FileLock[] lock={null};
@@ -231,7 +231,7 @@ j.close();
    assertFalse(channel[0].isOpen());assertFalse(lock[0].isValid());
    if(update) {
     assertArrayEquals(oldBytes,Files.readAllBytes(descriptor));
-    assertEquals(oldKey,Files.readAttributes(descriptor,java.nio.file.attribute.BasicFileAttributes.class).fileKey());
+    assertEquals(oldKey,PrivateFiles.INSTANCE.fileKey(descriptor));
     assertTrue(oldLock.isValid());assertFalse(j.getHasRecoverable());
    }else assertFalse(Files.exists(descriptor));
    Path foreign=stage[0];

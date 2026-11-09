@@ -31,7 +31,7 @@ object TestPermissions {
     @JvmStatic fun set(path: Path, mode: String) {
         if (!windows) { Files.setPosixFilePermissions(path, PosixFilePermissions.fromString(mode)); return }
         val directory = Files.isDirectory(path, NOFOLLOW_LINKS)
-        deniedChildren.remove(path)?.forEach { (child, acl) -> view(child).acl = acl }
+        deniedChildren.remove(path)?.forEach { (child, acl) -> runCatching { view(child).acl = acl } }
         val entries = mutableListOf<AclEntry>()
         if (directory && mode[1] != 'w') {
             entries += entry(AclEntryType.DENY, owner, writes, false)
@@ -44,7 +44,7 @@ object TestPermissions {
         if (mode.substring(3, 6) != "---") entries += entry(AclEntryType.ALLOW, users, bits(mode.substring(3, 6)), directory)
         if (mode.substring(6, 9) != "---") entries += entry(AclEntryType.ALLOW, everyone, bits(mode.substring(6, 9)), directory)
         // An elevated Windows token makes Administrators the default owner; tests model the user's own items.
-        view(path).let { it.owner = owner; it.acl = entries }
+        view(path).let { if (it.owner != owner) it.owner = owner; it.acl = entries }
     }
 
     @JvmStatic fun get(path: Path): String {

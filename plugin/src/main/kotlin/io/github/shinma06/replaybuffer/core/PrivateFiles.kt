@@ -72,7 +72,7 @@ internal object PrivateFiles {
     /** Replaces the permissions of an existing item, without following a link. */
     fun restrict(path: Path, directory: Boolean) {
         if (posix) view<PosixFileAttributeView>(path).setPermissions(if (directory) directoryMode else fileMode)
-        else view<AclFileAttributeView>(path).let { it.owner = owner; it.acl = ownerAcl(directory) }
+        else view<AclFileAttributeView>(path).let { if (it.owner != owner) it.owner = owner; it.acl = ownerAcl(directory) }
     }
 
     /** Runs [block] with a native owner-only security descriptor, so Windows items are private from creation like mode 700/600. */

@@ -60,6 +60,8 @@ class ReplayCliDistributionTest {
         Files.createDirectories(studio.resolve("lib"))
         Files.createSymbolicLink(studio.resolve("jbr"), platform.resolve("jbr"))
         Files.createSymbolicLink(studio.resolve("lib/util-8.jar"), kotlinRuntime)
+        // Studio keeps JNA's native part outside its jars; the Windows launcher points JNA at it.
+        if (Files.isDirectory(platform.resolve("lib/jna"))) Files.createSymbolicLink(studio.resolve("lib/jna"), platform.resolve("lib/jna"))
         for (locale in listOf("C", "en_US.UTF-8")) {
             val environment = mapOf("REPLAY_STUDIO_HOME" to studio.toString(), "LC_ALL" to locale)
             for (launcher in listOf(replay, replayd)) {
