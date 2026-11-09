@@ -49,7 +49,7 @@ internal class LocalCaptureOwnership private constructor(
     fun created(path: Path) {
         check(!failed) { "local所有記録の書込みが不確かです（保全しました）" }
         require(identity(root.parent) == namespaceIdentity && identity(descriptor) == descriptorIdentity)
-        val name = if (path == root) "." else root.relativize(path).toString()
+        val name = if (path == root) "." else root.relativize(path).joinToString("/")
         require(allowed(name) && name !in entries && entries.size < MAX_ENTRIES)
         val identity = identity(path)
         val slot = freeSlots.peekFirst() ?: slots.also { require(it < MAX_ENTRIES) }
@@ -61,7 +61,7 @@ internal class LocalCaptureOwnership private constructor(
     @Synchronized
     fun removed(path: Path) {
         require(identity(root.parent) == namespaceIdentity && identity(descriptor) == descriptorIdentity)
-        val name = root.relativize(path).toString()
+        val name = root.relativize(path).joinToString("/")
         val entry = entries[name] ?: error("local削除対象の所有記録がありません")
         val absent = try { identity(path); false } catch (_: java.nio.file.NoSuchFileException) { true }
         require(absent)
@@ -250,7 +250,7 @@ internal class LocalCaptureOwnership private constructor(
             for (path in packets + children.sortedBy { it == ring } + listOf(root)) {
                 require(identity(namespace) == namespaceIdentity && identity(root) == entries["."])
                 if (path.parent == ring) require(identity(ring) == entries["ring"])
-                val name = if (path == root) "." else root.relativize(path).toString()
+                val name = if (path == root) "." else root.relativize(path).joinToString("/")
                 require(identity(path) == entries[name])
                 Files.delete(path)
             }
