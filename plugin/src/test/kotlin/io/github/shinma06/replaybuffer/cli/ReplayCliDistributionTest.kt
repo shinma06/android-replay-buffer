@@ -96,7 +96,8 @@ class ReplayCliDistributionTest {
         }
         try {
             for (locale in listOf("C", "en_US.UTF-8")) {
-                val result = run(listOf(java.toString(), "-Duser.home=$home", "-cp", "$plugin${File.separator}lib${File.separator}*${File.pathSeparator}$kotlinRuntime",
+                // Same JVM options as the launchers: the client's file checks may use JNA.
+                val result = run(listOf(java.toString(), "-Duser.home=$home", "--enable-native-access=ALL-UNNAMED", "-cp", "$plugin${File.separator}lib${File.separator}*${File.pathSeparator}$kotlinRuntime",
                     "io.github.shinma06.replaybuffer.cli.ReplayCli", "--project", project.toString(), "status"),
                     mapOf("LC_ALL" to locale))
                 assertEquals(0, result.first, result.third.decodeToString())

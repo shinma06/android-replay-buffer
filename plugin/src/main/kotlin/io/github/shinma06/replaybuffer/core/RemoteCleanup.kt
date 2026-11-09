@@ -9,8 +9,6 @@ import java.nio.file.Files
 import java.nio.file.LinkOption.NOFOLLOW_LINKS
 import java.nio.file.NoSuchFileException
 import java.nio.file.Path
-import java.nio.file.StandardCopyOption.ATOMIC_MOVE
-import java.nio.file.StandardCopyOption.REPLACE_EXISTING
 import java.nio.file.StandardOpenOption.CREATE_NEW
 import java.nio.file.StandardOpenOption.READ
 import java.nio.file.StandardOpenOption.WRITE
@@ -145,7 +143,7 @@ internal class RemoteCleanupJournal(
             if (previous != null) {
                 check(previous.lock.isValid && key(path) == previous.fileKey) { "終了情報の所有が変更されています" }
                 // Both old and replacement inodes remain locked across atomic publication.
-                Files.move(staged, path, ATOMIC_MOVE, REPLACE_EXISTING)
+                PrivateFiles.replace(staged, path)
             } else {
                 // Hard-link publication is exclusive: never replace a foreign same-token descriptor.
                 Files.createLink(path, staged)

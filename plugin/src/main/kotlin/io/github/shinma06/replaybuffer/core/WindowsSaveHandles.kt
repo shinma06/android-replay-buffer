@@ -7,9 +7,15 @@ import com.sun.jna.Pointer
 import com.sun.jna.WString
 import java.io.IOException
 import java.nio.channels.FileChannel
+import java.nio.file.AccessDeniedException
 import java.nio.file.FileAlreadyExistsException
+import java.nio.file.FileSystemException
+import java.nio.file.Files
+import java.nio.file.NoSuchFileException
 import java.nio.file.OpenOption
 import java.nio.file.Path
+import java.nio.file.StandardCopyOption.ATOMIC_MOVE
+import java.nio.file.StandardCopyOption.REPLACE_EXISTING
 
 private interface NtFiles : Library {
     fun NtCreateFile(handle: Memory, access: Int, attributes: Memory, status: Memory, allocation: Pointer?, fileAttributes: Int,
@@ -17,6 +23,28 @@ private interface NtFiles : Library {
     fun NtSetInformationFile(handle: Pointer, status: Memory, information: Memory, length: Int, informationClass: Int): Int
     fun NtFlushBuffersFile(handle: Pointer, status: Memory): Int
     fun NtClose(handle: Pointer): Int
+}
+
+/**
+ * Studio keeps JNA's native part in `lib/jna/<arch>` beside its runtime and sets `jna.boot.library.path` for the IDE.
+ * A packaged CLI started on Studio's runtime finds the same native part there, however it was launched.
+ */
+internal object StudioJna {
+    init {
+        if (System.getProperty("jna.boot.library.path") == null) {
+            val arch = when (System.getProperty("os.arch")) { "amd64", "x86_64" -> "amd64"; "aarch64", "arm64" -> "aarch64"; else -> null }
+            val home = Path.of(System.getProperty("java.home")).parent
+            val directory = if (arch == null || home == null) null else home.resolve("lib").resolve("jna").resolve(arch)
+            if (directory != null && Files.isRegularFile(directory.resolve(System.mapLibraryName("jnidispatch")))) {
+                System.setProperty("jna.boot.library.path", directory.toString())
+            }
+        }
+    }
+
+    /** Call before the first use of any JNA class. */
+    fun ensure() {}
+
+    fun <T : Library> load(name: String, type: Class<T>): T = Native.load(name, type)
 }
 
 private interface Win32Files : Library {
@@ -31,8 +59,8 @@ private interface Win32Files : Library {
  * (like openat), never following reparse points, and identity is the volume serial plus file index.
  */
 internal object WindowsSaveHandles {
-    private val nt by lazy { Native.load("ntdll", NtFiles::class.java) }
-    private val win32 by lazy { Native.load("kernel32", Win32Files::class.java) }
+    private val nt by lazy { StudioJna.load("ntdll", NtFiles::class.java) }
+    private val win32 by lazy { StudioJna.load("kernel32", Win32Files::class.java) }
 
     private const val SHARE_ALL = 7
     private const val SYNCHRONIZE = 0x100000
@@ -49,6 +77,29 @@ internal object WindowsSaveHandles {
     private const val NAME_COLLISION = 0xC0000035.toInt()
     private const val ATTRIBUTE_DIRECTORY = 0x10
     private const val ATTRIBUTE_REPARSE = 0x400
+    private const val OPEN_REPARSE_POINT = 0x00200000
+    private const val RENAME_REPLACE_POSIX = 0x3 // FILE_RENAME_REPLACE_IF_EXISTS | FILE_RENAME_POSIX_SEMANTICS
+
+    init { StudioJna.ensure() }
+
+    /** Win32 name that is not limited to MAX_PATH. */
+    private fun win32Name(path: Path): WString {
+        val name = path.toAbsolutePath().normalize().toString()
+        return WString(when {
+            name.startsWith("\\\\?\\") -> name
+            name.startsWith("\\\\") -> "\\\\?\\UNC\\" + name.removePrefix("\\\\")
+            else -> "\\\\?\\" + name
+        })
+    }
+
+    private fun ntName(path: Path): String {
+        val name = path.toAbsolutePath().normalize().toString()
+        return when {
+            name.startsWith("\\\\?\\") -> "\\??\\" + name.removePrefix("\\\\?\\")
+            name.startsWith("\\\\") -> "\\??\\UNC\\" + name.removePrefix("\\\\")
+            else -> "\\??\\" + name
+        }
+    }
 
     fun openRoot(path: Path): Long {
         val root = path.root.toString()
@@ -97,7 +148,7 @@ internal object WindowsSaveHandles {
 
     /** Identity of an item addressed by path, without following a final reparse point. */
     fun identity(path: Path): Pair<Long, Long> {
-        val handle = Pointer.nativeValue(win32.CreateFileW(WString(path.toString()), 0x80, SHARE_ALL, null, 3, 0x02000000 or 0x00200000, null))
+        val handle = Pointer.nativeValue(win32.CreateFileW(win32Name(path), 0x80, SHARE_ALL, null, 3, 0x02000000 or 0x00200000, null))
         if (handle == -1L || handle == 0L) throw IOException("ファイルの実体を確認できません（error=${Native.getLastError()}）")
         try {
             Memory(52).use { information ->
@@ -106,6 +157,40 @@ internal object WindowsSaveHandles {
                     ((information.getInt(44).toLong() shl 32) or (information.getInt(48).toLong() and 0xffffffffL))
             }
         } finally { close(handle) }
+    }
+
+    /**
+     * Atomically replaces [target] with [source] like POSIX rename(2): the replaced item may still be open, and the
+     * caller's own access to both items and their directory is checked. MoveFileEx refuses an open target and lets an
+     * elevated token bypass the directory's ACL.
+     */
+    fun replace(source: Path, target: Path) {
+        val handle = Pointer.nativeValue(win32.CreateFileW(win32Name(source), DELETE or SYNCHRONIZE, SHARE_ALL, null, 3,
+            OPEN_REPARSE_POINT, null))
+        if (handle == -1L || handle == 0L) throw failure(Native.getLastError(), source, target)
+        val status = try {
+            val chars = ntName(target).toCharArray()
+            val information = Memory(24L + chars.size * 2).apply {
+                clear(); setInt(0, RENAME_REPLACE_POSIX); setInt(16, chars.size * 2); write(20, chars, 0, chars.size)
+            }
+            nt.NtSetInformationFile(Pointer(handle), Memory(16), information, information.size().toInt(), 65) // FileRenameInformationEx
+        } finally { close(handle) }
+        when (status) {
+            0 -> return
+            // Filesystems without POSIX rename keep the platform's replacing move.
+            0xC0000003.toInt(), 0xC000000D.toInt(), 0xC00000BB.toInt() -> Files.move(source, target, ATOMIC_MOVE, REPLACE_EXISTING)
+            0xC0000022.toInt() -> throw AccessDeniedException(source.toString(), target.toString(), null)
+            0xC0000043.toInt() -> throw FileSystemException(source.toString(), target.toString(), "使用中のため置き換えられません")
+            0xC0000034.toInt(), 0xC000003A.toInt() -> throw NoSuchFileException(source.toString(), target.toString(), null)
+            else -> throw FileSystemException(source.toString(), target.toString(), "status=0x${Integer.toHexString(status)}")
+        }
+    }
+
+    private fun failure(error: Int, source: Path, target: Path): IOException = when (error) {
+        2, 3 -> NoSuchFileException(source.toString(), target.toString(), null)
+        5 -> AccessDeniedException(source.toString(), target.toString(), null)
+        32 -> FileSystemException(source.toString(), target.toString(), "使用中のため置き換えられません")
+        else -> FileSystemException(source.toString(), target.toString(), "error=$error")
     }
 
     /** Renames without replacing an existing destination. */
@@ -179,7 +264,7 @@ internal object WindowsSaveHandles {
     }
 
     private fun keyOf(path: Path): Pair<Long, Long> {
-        val handle = Pointer.nativeValue(win32.CreateFileW(WString(path.toString()), 0x80, SHARE_ALL, null, 3, 0x02000000 or 0x00200000, null))
+        val handle = Pointer.nativeValue(win32.CreateFileW(win32Name(path), 0x80, SHARE_ALL, null, 3, 0x02000000 or 0x00200000, null))
         if (handle == -1L || handle == 0L) throw IOException("保存出力の実体を確認できません")
         try { return key(handle, false) } finally { close(handle) }
     }

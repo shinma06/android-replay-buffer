@@ -12,6 +12,7 @@ import java.nio.file.Files
 import java.nio.file.LinkOption.NOFOLLOW_LINKS
 import java.nio.file.OpenOption
 import java.nio.file.Path
+import java.nio.file.StandardCopyOption
 import java.nio.file.attribute.AclEntry
 import java.nio.file.attribute.AclEntryFlag
 import java.nio.file.attribute.AclEntryPermission
@@ -47,6 +48,12 @@ internal object PrivateFiles {
             override fun name() = "acl:acl"
             override fun value() = ownerAcl(directory)
         }
+
+    /** Atomically replaces [target] with [source] with rename(2) semantics on every OS. */
+    fun replace(source: Path, target: Path) {
+        if (posix) Files.move(source, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+        else WindowsSaveHandles.replace(source, target)
+    }
 
     fun createDirectory(path: Path): Path {
         Files.createDirectory(path, attribute(true))
@@ -158,6 +165,7 @@ internal object PrivateFiles {
 }
 
 private object WindowsAccounts {
+    init { StudioJna.ensure() }
     interface Advapi : Library {
         fun ConvertStringSidToSidW(sid: WString, out: PointerByReference): Boolean
         fun LookupAccountSidW(system: WString?, sid: Pointer, name: CharArray, nameLength: IntByReference, domain: CharArray,
@@ -171,7 +179,7 @@ private object WindowsAccounts {
     interface Kernel : Library {
         fun LocalFree(memory: Pointer): Pointer?
     }
-    val advapi: Advapi by lazy { Native.load("advapi32", Advapi::class.java) }
-    val kernel: Kernel by lazy { Native.load("kernel32", Kernel::class.java) }
+    val advapi: Advapi by lazy { StudioJna.load("advapi32", Advapi::class.java) }
+    val kernel: Kernel by lazy { StudioJna.load("kernel32", Kernel::class.java) }
 
 }

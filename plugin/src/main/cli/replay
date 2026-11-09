@@ -12,4 +12,4 @@ if [ ! -x "$java" ] || [ ! -f "$studio_home/lib/util-8.jar" ]; then
     printf '%s\n' '対応するAndroid Studioの導入先（macOSはContents）をREPLAY_STUDIO_HOMEで指定してください。' >&2
     exit 1
 fi
-exec "$java" -cp "$plugin_dir/lib/*:$studio_home/lib/util-8.jar" io.github.shinma06.replaybuffer.cli.ReplayCli "$@"
+exec "$java" --enable-native-access=ALL-UNNAMED -cp "$plugin_dir/lib/*:$studio_home/lib/util-8.jar" io.github.shinma06.replaybuffer.cli.ReplayCli "$@"
