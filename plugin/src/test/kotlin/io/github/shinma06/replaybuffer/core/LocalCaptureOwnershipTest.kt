@@ -66,13 +66,16 @@ class LocalCaptureOwnershipTest {
             if (resource.protocol == "jar") Path.of(java.net.URI.create(resource.toString().removePrefix("jar:").substringBefore("!/"))).toString()
             else Path.of(resource.toURI()).toString().removeSuffix(suffix.replace('/', java.io.File.separatorChar))
         val locations = listOf(LocalCaptureOwnerFixture::class.java, LocalCaptureOwnership::class.java,
-            kotlin.Unit::class.java, com.google.gson.Gson::class.java).map {
+            kotlin.Unit::class.java, com.google.gson.Gson::class.java, com.sun.jna.Native::class.java).map {
             val suffix = "/${it.name.replace('.', '/')}.class"
             location(it.getResource(suffix)!!, suffix)
         } + location(LocalCaptureOwnership::class.java.getResource("/replay/deps/identity.properties")!!, "/replay/deps/identity.properties")
-        val process = ProcessBuilder(Path.of(System.getProperty("java.home"), "bin", "java").toString(),
+        // The owner process runs the same JNA as this one, which finds its native part through jna.* properties.
+        val jna = System.getProperties().stringPropertyNames().filter { it.startsWith("jna.") }.sorted()
+            .map { "-D$it=${System.getProperty(it)}" }
+        val process = ProcessBuilder(listOf(Path.of(System.getProperty("java.home"), "bin", "java").toString()) + jna + listOf(
             "-cp", locations.distinct().joinToString(java.io.File.pathSeparator),
-            LocalCaptureOwnerFixture::class.java.name, namespace.toString(), mode).redirectError(ProcessBuilder.Redirect.INHERIT).start()
+            LocalCaptureOwnerFixture::class.java.name, namespace.toString(), mode)).redirectError(ProcessBuilder.Redirect.INHERIT).start()
         val line = java.util.concurrent.CompletableFuture.supplyAsync { process.inputStream.bufferedReader().readLine() }
         try {
             val root = namespace.resolve(line.get(10, TimeUnit.SECONDS) ?: error("fixture failed"))
