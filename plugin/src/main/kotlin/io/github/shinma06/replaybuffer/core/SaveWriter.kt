@@ -20,8 +20,6 @@ import java.util.Base64
 import java.util.UUID
 import java.util.concurrent.CancellationException
 
-private val windowsHost = System.getProperty("os.name").startsWith("Windows")
-
 internal data class SaveOutput(val directory: Path, val missingKinds: List<String>)
 
 internal class SaveFailure(val partial: Path?, message: String, cause: Throwable? = null) : Exception(message, cause)
@@ -578,8 +576,8 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
             checkActive()
             own.keys.forEach(::checkOwned)
             checkEntries()
-            // Windows refuses to rename a directory while files inside it are open; verification needs only their identities.
-            if (windowsHost) own.values.forEach(SaveOutputFile::close)
+            // Verification needs only their identities, so close them where open files block renaming their directory.
+            if (!SaveOutputDirectory.renamesWithOpenFiles) own.values.forEach(SaveOutputFile::close)
             publish(SavePublication(partial, complete, parentHandle, staging) { checkEntries() })
             own.keys.forEach { checkOwned(complete.resolve(it.fileName)) }
             checkEntries()

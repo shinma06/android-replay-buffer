@@ -6,6 +6,7 @@ import com.android.tools.idea.run.ApkProvisionException
 import com.intellij.execution.RunManager
 import com.intellij.openapi.application.readAction
 import com.intellij.openapi.progress.ProcessCanceledException
+import io.github.shinma06.replaybuffer.core.HostPlatform
 import com.intellij.openapi.project.DumbService
 import com.intellij.openapi.project.Project
 import io.github.shinma06.replaybuffer.settings.AppSelectionMode
@@ -62,7 +63,7 @@ internal fun resolveApplication(configurationName: String?, resolve: () -> Appli
 }
 
 internal fun sdkEnvironment(sdk: Path?, application: ApplicationSelection): AndroidReplayEnvironment {
-    val adb = sdk?.let { sdkAdb(it, System.getProperty("os.name").startsWith("Windows")) }
+    val adb = sdk?.let { sdkAdb(it, HostPlatform.windows) }
         ?.takeIf { Files.isRegularFile(it) && Files.isExecutable(it) }
     return AndroidReplayEnvironment(adb, if (adb == null) "projectのAndroid SDKとplatform-toolsを確認してください。" else null, application)
 }

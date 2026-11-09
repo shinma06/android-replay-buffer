@@ -2,6 +2,7 @@ package io.github.shinma06.replaybuffer.ide
 
 import com.android.tools.idea.run.ApkProvisionException
 import com.intellij.openapi.progress.ProcessCanceledException
+import io.github.shinma06.replaybuffer.core.HostPlatform
 import io.github.shinma06.replaybuffer.settings.AppSelectionMode
 import io.github.shinma06.replaybuffer.settings.ReplaySettings
 import java.nio.file.Files
@@ -22,7 +23,7 @@ class ReplayAndroidEnvironmentTest {
     @Test
     fun `application model failures retain the fresh SDK executable and cancellation is propagated`() {
         val tools = Files.createDirectories(directory.resolve("platform-tools"))
-        val adb = Files.createFile(tools.resolve(if (System.getProperty("os.name").startsWith("Windows")) "adb.exe" else "adb"))
+        val adb = Files.createFile(tools.resolve(if (HostPlatform.windows) "adb.exe" else "adb"))
         adb.toFile().setExecutable(true)
         val missing = resolveApplication("Debug") { throw IllegalStateException("synthetic model unavailable") }
         val environment = sdkEnvironment(directory, missing)
@@ -41,7 +42,7 @@ class ReplayAndroidEnvironmentTest {
     @Test
     fun `unresolved application reasons retain the cause and guide manual settings without losing SDK`() {
         val tools = Files.createDirectories(directory.resolve("platform-tools"))
-        val adb = Files.createFile(tools.resolve(if (System.getProperty("os.name").startsWith("Windows")) "adb.exe" else "adb"))
+        val adb = Files.createFile(tools.resolve(if (HostPlatform.windows) "adb.exe" else "adb"))
         adb.toFile().setExecutable(true)
         for (reason in listOf(
             "Androidの実行対象を選択してください。",

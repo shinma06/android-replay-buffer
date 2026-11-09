@@ -1,11 +1,12 @@
 package io.github.shinma06.replaybuffer.testing
 
+import io.github.shinma06.replaybuffer.core.HostPlatform
 import java.io.File
 import java.nio.file.Files
 import java.nio.file.Path
 
 object TestExecutables {
-    @JvmField val windows: Boolean = System.getProperty("os.name").startsWith("Windows")
+    @JvmField val windows: Boolean = HostPlatform.windows
 
     private val python: String by lazy {
         val names = if (windows) listOf("python.exe", "python3.exe") else listOf("python3", "python")

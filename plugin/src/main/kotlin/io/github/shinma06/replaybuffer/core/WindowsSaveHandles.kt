@@ -55,10 +55,10 @@ private interface Win32Files : Library {
 }
 
 /**
- * Windows counterpart of the descriptor-relative save handles: NT opens relative to a held directory handle
+ * Windows save handles: NT opens relative to a held directory handle
  * (like openat), never following reparse points, and identity is the volume serial plus file index.
  */
-internal object WindowsSaveHandles {
+internal object WindowsSaveHandles : SaveHandles {
     private val nt by lazy { StudioJna.load("ntdll", NtFiles::class.java) }
     private val win32 by lazy { StudioJna.load("kernel32", Win32Files::class.java) }
 
@@ -80,7 +80,13 @@ internal object WindowsSaveHandles {
     private const val OPEN_REPARSE_POINT = 0x00200000
     private const val RENAME_REPLACE_POSIX = 0x3 // FILE_RENAME_REPLACE_IF_EXISTS | FILE_RENAME_POSIX_SEMANTICS
 
+    override val renamesDirectoryWithOpenFiles = false
+
     init { StudioJna.ensure() }
+
+    override fun requireName(name: String) {
+        require(name.none { it in "\\:<>\"|?*" || it < ' ' } && !name.endsWith('.') && !name.endsWith(' '))
+    }
 
     /** Win32 name that is not limited to MAX_PATH. */
     private fun win32Name(path: Path): WString {
@@ -101,7 +107,7 @@ internal object WindowsSaveHandles {
         }
     }
 
-    fun openRoot(path: Path): Long {
+    override fun openRoot(path: Path): Long {
         val root = path.root.toString()
         val name = if (root.startsWith("\\\\")) "\\\\?\\UNC\\" + root.removePrefix("\\\\") else "\\\\?\\$root"
         val handle = win32.CreateFileW(WString(name), DIRECTORY_ACCESS, SHARE_ALL, null, 3, 0x02000000 or 0x00200000, null)
@@ -110,12 +116,12 @@ internal object WindowsSaveHandles {
         return value
     }
 
-    fun openDirectory(parent: Long, name: String) = open(parent, name, DIRECTORY_ACCESS, FILE_OPEN, DIRECTORY)
-    fun createDirectory(parent: Long, name: String) =
-        PrivateFiles.withWindowsDescriptor(true) { open(parent, name, DIRECTORY_ACCESS, FILE_CREATE, DIRECTORY, it) }
-    fun openFile(parent: Long, name: String) = open(parent, name, FILE_READ, FILE_OPEN, NON_DIRECTORY)
-    fun createFile(parent: Long, name: String) =
-        PrivateFiles.withWindowsDescriptor(false) { open(parent, name, FILE_READ_WRITE, FILE_CREATE, NON_DIRECTORY, it) }
+    override fun openDirectory(parent: Long, name: String) = open(parent, name, DIRECTORY_ACCESS, FILE_OPEN, DIRECTORY)
+    override fun createDirectory(parent: Long, name: String) =
+        WindowsPrivateFiles.withOwnerOnlyDescriptor(true) { open(parent, name, DIRECTORY_ACCESS, FILE_CREATE, DIRECTORY, it) }
+    override fun openFile(parent: Long, name: String) = open(parent, name, FILE_READ, FILE_OPEN, NON_DIRECTORY)
+    override fun createFile(parent: Long, name: String) =
+        WindowsPrivateFiles.withOwnerOnlyDescriptor(false) { open(parent, name, FILE_READ_WRITE, FILE_CREATE, NON_DIRECTORY, it) }
 
     private fun open(parent: Long, name: String, access: Int, disposition: Int, kind: Int, security: Pointer? = null): Long {
         val chars = name.toCharArray()
@@ -136,7 +142,7 @@ internal object WindowsSaveHandles {
     }
 
     /** Device/inode-like identity; also rejects reparse points and the wrong kind of item. */
-    fun key(handle: Long, directory: Boolean): Pair<Long, Long> = Memory(52).use { information ->
+    override fun key(handle: Long, directory: Boolean): Pair<Long, Long> = Memory(52).use { information ->
         if (!win32.GetFileInformationByHandle(Pointer(handle), information)) throw IOException("保存出力の実体を確認できません")
         val attributes = information.getInt(0)
         check(attributes and ATTRIBUTE_REPARSE == 0 && (attributes and ATTRIBUTE_DIRECTORY != 0) == directory) {
@@ -193,8 +199,7 @@ internal object WindowsSaveHandles {
         else -> FileSystemException(source.toString(), target.toString(), "error=$error")
     }
 
-    /** Renames without replacing an existing destination. */
-    fun renameExclusive(sourceParent: Long, source: String, destinationParent: Long, destination: String) {
+    override fun renameExclusive(sourceParent: Long, source: String, destinationParent: Long, destination: String) {
         val handle = try { open(sourceParent, source, DELETE or SYNCHRONIZE, FILE_OPEN, 0) }
             catch (_: IOException) { error("完成先の公開に失敗しました（既存出力・対応filesystem・アクセス権を確認してください）") }
         try {
@@ -207,7 +212,12 @@ internal object WindowsSaveHandles {
         } finally { close(handle) }
     }
 
-    fun delete(parent: Long, name: String, directory: Boolean) {
+    override fun deleteFile(parent: Long, name: String) = delete(parent, name, false)
+
+    override fun deleteEmptyDirectory(parent: Long, name: String) =
+        runCatching { delete(parent, name, true) }.getOrElse { error("削除用の空フォルダを片付けられません。") }
+
+    private fun delete(parent: Long, name: String, directory: Boolean) {
         val handle = open(parent, name, DELETE or SYNCHRONIZE, FILE_OPEN, if (directory) DIRECTORY else NON_DIRECTORY)
         try {
             val information = Memory(8).apply { clear(); setByte(0, 1) }
@@ -215,14 +225,14 @@ internal object WindowsSaveHandles {
         } finally { close(handle) }
     }
 
-    fun flush(directory: Long) {
+    override fun flush(directory: Long) {
         // NtFlushBuffersFile needs write access, so flush through a second handle to the same directory.
         val handle = open(directory, "", 0x2 or SYNCHRONIZE, FILE_OPEN, DIRECTORY)
         try { check(nt.NtFlushBuffersFile(Pointer(handle), Memory(16)) == 0) { "保存先への書込み完了を確認できません。" } }
         finally { close(handle) }
     }
 
-    fun entries(directory: Long): Set<String> {
+    override fun entries(directory: Long): Set<String> {
         val buffer = Memory(64 * 1024)
         val names = linkedSetOf<String>()
         var informationClass = 15 // FileFullDirectoryRestartInfo, then FileFullDirectoryInfo
@@ -253,7 +263,7 @@ internal object WindowsSaveHandles {
     }
 
     /** Java cannot adopt a Win32 handle, so open by the held item's current path and confirm it is the same item. */
-    fun channel(handle: Long, options: Set<OpenOption>): FileChannel {
+    override fun channel(handle: Long, options: Set<OpenOption>): FileChannel {
         val expected = key(handle, false)
         val path = path(handle)
         check(keyOf(path) == expected) { "保存出力の実体が変更されています" }
@@ -269,9 +279,9 @@ internal object WindowsSaveHandles {
         try { return key(handle, false) } finally { close(handle) }
     }
 
-    fun requirePrivate(handle: Long, directory: Boolean) {
-        check(PrivateFiles.isPrivate(path(handle), directory)) { "未完成フォルダーのアクセス権を確認できません" }
+    override fun requirePrivate(handle: Long, directory: Boolean) {
+        check(WindowsPrivateFiles.isPrivate(path(handle), directory)) { "未完成フォルダーのアクセス権を確認できません" }
     }
 
-    fun close(handle: Long) { nt.NtClose(Pointer(handle)) }
+    override fun close(handle: Long) { nt.NtClose(Pointer(handle)) }
 }

@@ -30,6 +30,7 @@ Passing tests does not mean IDE/device acceptance; say which was verified.
 
 - Keep the CLI's commands, configuration and exit codes compatible (`docs/cli.md`).
 - Do not publish recordings, logcat, raw diagnostics or credentials.
+- Behaviour must be identical on Linux, macOS and Windows. OS-specific code lives only in the per-OS implementations (`PosixSaveHandles` / `WindowsSaveHandles`, `PosixPrivateFiles` / `WindowsPrivateFiles`) chosen by the single OS-detection point `core/HostPlatform.kt`; callers never branch on the OS. Every change must pass the CI `test` and `os-parity` (macOS, Windows) jobs. Tests must not skip by OS unless they exercise a truly OS-only facility.
 - User-facing text (Issues, PRs, UI, docs) is Japanese; agent-only instructions are English.
 - Entire records Devin sessions. In every new worktree run `entire-agent-devin bootstrap --checkpoint-repo shinma06/entire-checkpoints`; checkpoints must only go to the private `checkpoints` remote, never `origin`.
 
