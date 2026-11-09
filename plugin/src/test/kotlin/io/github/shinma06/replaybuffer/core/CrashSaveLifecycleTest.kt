@@ -3,8 +3,6 @@ package io.github.shinma06.replaybuffer.core
 import com.google.gson.JsonParser
 import io.github.shinma06.replaybuffer.ui.autoSaveDescription
 import org.junit.jupiter.api.Test
-import org.junit.jupiter.api.condition.EnabledOnOs
-import org.junit.jupiter.api.condition.OS
 import org.junit.jupiter.api.io.TempDir
 import java.nio.file.Files
 import java.nio.file.Path
@@ -20,7 +18,6 @@ import kotlin.test.assertNull
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
-@EnabledOnOs(OS.MAC) // Exercises the production descriptor-relative macOS publication, not IDE/device acceptance.
 class CrashSaveLifecycleTest {
     @TempDir lateinit var root: Path
 

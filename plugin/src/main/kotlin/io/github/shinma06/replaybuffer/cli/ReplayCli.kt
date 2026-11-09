@@ -94,10 +94,10 @@ status: 設定を変えずに状態を表示します。stop: 対象projectの�
             return 0
         }
         val parsed = try { parseCliArguments(arguments) } catch (failure: Exception) {
-            error.println(failure.message ?: "引数を確認してください。")
+            error.line(failure.message ?: "引数を確認してください。")
             return 2
         }
-        if (parsed.foreground) error.println("--foregroundは互換aliasです。取得をONにして終了し、IDEが取得を所有します。")
+        if (parsed.foreground) error.line("--foregroundは互換aliasです。取得をONにして終了し、IDEが取得を所有します。")
         val config = try {
             parsed.config?.let { path ->
                 if (!Files.exists(path)) throw java.nio.file.NoSuchFileException(path.toString())
@@ -110,13 +110,13 @@ status: 設定を変えずに状態を表示します。stop: 対象projectの�
                 }
             }
         } catch (_: java.nio.charset.CharacterCodingException) {
-            error.println("設定ファイルはUTF-8で保存してください。")
+            error.line("設定ファイルはUTF-8で保存してください。")
             return 2
         } catch (failure: IllegalArgumentException) {
-            error.println(failure.message ?: "設定ファイルを確認してください。")
+            error.line(failure.message ?: "設定ファイルを確認してください。")
             return 2
         } catch (_: Exception) {
-            error.println("設定ファイルを読めません。パスとアクセス権を確認してください。")
+            error.line("設定ファイルを読めません。パスとアクセス権を確認してください。")
             return 1
         }
         var submitted = false
@@ -137,15 +137,18 @@ status: 設定を変えずに状態を表示します。stop: 対象projectの�
                     parsed.config?.fileName?.toString()?.let { it.endsWith(".yaml") || it.endsWith(".yml") } == true,
                     Path.of("").toAbsolutePath().normalize().toString()))
                 val response = ReplayCliProtocol.readResponse(input)
-                if (response.output.isNotEmpty()) output.println(response.output)
-                if (response.error.isNotEmpty()) error.println(response.error)
+                if (response.output.isNotEmpty()) output.line(response.output)
+                if (response.error.isNotEmpty()) error.line(response.error)
                 response.code
             }
         } catch (failure: Exception) {
-            if (submitted) error.println("通信が終了したため操作結果を確認できません。自動再試行はしません。GUIの保存結果・状態を確認してください。")
-            else error.println(if (failure is IllegalArgumentException || failure is IllegalStateException) failure.message
+            if (submitted) error.line("通信が終了したため操作結果を確認できません。自動再試行はしません。GUIの保存結果・状態を確認してください。")
+            else error.line(if (failure is IllegalArgumentException || failure is IllegalStateException) failure.message
                 else "CLI接続先または設定ファイルを確認できません。IDE/project、パスとアクセス権を確認してください。")
             1
         }
     }
 }
+
+/** One LF-terminated line on every OS, unlike println, which uses CRLF on Windows. */
+private fun PrintStream.line(text: String?) = print("$text\n")

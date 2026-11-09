@@ -1,6 +1,7 @@
 package io.github.shinma06.replaybuffer.cli
 
 import com.intellij.util.lang.UrlClassLoader
+import java.io.File
 import java.nio.file.Files
 import java.nio.file.FileSystems
 import java.nio.file.attribute.PosixFilePermissions
@@ -35,11 +36,13 @@ class ReplayCliDistributionTest {
             }
         }
         val plugin = Files.list(extracted).use { it.toList().single() }
-        val replay = plugin.resolve("bin/replay")
-        val replayd = plugin.resolve("bin/replayd")
+        val windows = System.getProperty("os.name").startsWith("Windows")
+        val suffix = if (windows) ".cmd" else ""
+        val replay = plugin.resolve("bin/replay$suffix")
+        val replayd = plugin.resolve("bin/replayd$suffix")
         assertTrue(Files.isRegularFile(replay) && Files.isRegularFile(replayd))
         assertTrue(Files.readString(plugin.resolve("bin/README.txt")).contains(System.getProperty("replay.expected.source")))
-        FileSystems.newFileSystem(archive, mapOf("accessMode" to "readOnly")).use { zip ->
+        if (!windows) FileSystems.newFileSystem(archive, mapOf("accessMode" to "readOnly")).use { zip ->
             val permissions = PosixFilePermissions.fromString("rwxr-xr-x")
             for (launcher in listOf(replay, replayd)) {
                 val entry = zip.getPath("/${extracted.relativize(launcher)}")
@@ -48,16 +51,17 @@ class ReplayCliDistributionTest {
                 Files.setPosixFilePermissions(launcher, permissions)
             }
         }
-        val java = listOf(platform.resolve("jbr/Contents/Home/bin/java"), platform.resolve("jbr/bin/java"))
-            .single { Files.isExecutable(it) }
+        val java = listOf(platform.resolve("jbr/Contents/Home/bin/java"), platform.resolve("jbr/bin/java"), platform.resolve("jbr/bin/java.exe"))
+            .single { Files.isRegularFile(it) && Files.isExecutable(it) }
         val kotlinRuntime = platform.resolve("lib/util-8.jar")
         assertTrue(Files.isRegularFile(kotlinRuntime), "The fixed Studio Kotlin runtime must be present")
-        // The Linux CI SDK has a different JBR layout; only the launcher's macOS path layout is a fixture.
+        // Link the SDK's own JBR so each launcher resolves its platform layout under a path with spaces.
         val studio = temporary.resolve("Studio path with spaces/Contents")
-        Files.createDirectories(studio.resolve("jbr/Contents/Home/bin"))
         Files.createDirectories(studio.resolve("lib"))
-        Files.createSymbolicLink(studio.resolve("jbr/Contents/Home/bin/java"), java)
+        Files.createSymbolicLink(studio.resolve("jbr"), platform.resolve("jbr"))
         Files.createSymbolicLink(studio.resolve("lib/util-8.jar"), kotlinRuntime)
+        // Studio keeps JNA's native part outside its jars; the Windows launcher points JNA at it.
+        if (Files.isDirectory(platform.resolve("lib/jna"))) Files.createSymbolicLink(studio.resolve("lib/jna"), platform.resolve("lib/jna"))
         for (locale in listOf("C", "en_US.UTF-8")) {
             val environment = mapOf("REPLAY_STUDIO_HOME" to studio.toString(), "LC_ALL" to locale)
             for (launcher in listOf(replay, replayd)) {
@@ -92,7 +96,8 @@ class ReplayCliDistributionTest {
         }
         try {
             for (locale in listOf("C", "en_US.UTF-8")) {
-                val result = run(listOf(java.toString(), "-Duser.home=$home", "-cp", "$plugin/lib/*:$kotlinRuntime",
+                // Same JVM options as the launchers: the client's file checks may use JNA.
+                val result = run(listOf(java.toString(), "-Duser.home=$home", "--enable-native-access=ALL-UNNAMED", "-cp", "$plugin${File.separator}lib${File.separator}*${File.pathSeparator}$kotlinRuntime",
                     "io.github.shinma06.replaybuffer.cli.ReplayCli", "--project", project.toString(), "status"),
                     mapOf("LC_ALL" to locale))
                 assertEquals(0, result.first, result.third.decodeToString())

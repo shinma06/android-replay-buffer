@@ -1,5 +1,6 @@
 package io.github.shinma06.replaybuffer.core
 
+import io.github.shinma06.replaybuffer.testing.TestPermissions
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertEquals
@@ -14,7 +15,6 @@ import java.nio.channels.FileChannel
 import java.nio.ByteBuffer
 import java.nio.file.StandardOpenOption.WRITE
 import java.util.zip.CRC32
-import java.nio.file.attribute.PosixFilePermissions
 import java.time.Instant
 import java.util.UUID
 import java.util.concurrent.TimeUnit
@@ -64,15 +64,18 @@ class LocalCaptureOwnershipTest {
     private fun fixture(namespace: Path, mode: String = "stopped"): Fixture {
         fun location(resource: java.net.URL, suffix: String): String =
             if (resource.protocol == "jar") Path.of(java.net.URI.create(resource.toString().removePrefix("jar:").substringBefore("!/"))).toString()
-            else Path.of(resource.toURI()).toString().removeSuffix(suffix)
+            else Path.of(resource.toURI()).toString().removeSuffix(suffix.replace('/', java.io.File.separatorChar))
         val locations = listOf(LocalCaptureOwnerFixture::class.java, LocalCaptureOwnership::class.java,
-            kotlin.Unit::class.java, com.google.gson.Gson::class.java).map {
+            kotlin.Unit::class.java, com.google.gson.Gson::class.java, com.sun.jna.Native::class.java).map {
             val suffix = "/${it.name.replace('.', '/')}.class"
             location(it.getResource(suffix)!!, suffix)
         } + location(LocalCaptureOwnership::class.java.getResource("/replay/deps/identity.properties")!!, "/replay/deps/identity.properties")
-        val process = ProcessBuilder(Path.of(System.getProperty("java.home"), "bin", "java").toString(),
+        // The owner process runs the same JNA as this one, which finds its native part through jna.* properties.
+        val jna = System.getProperties().stringPropertyNames().filter { it.startsWith("jna.") }.sorted()
+            .map { "-D$it=${System.getProperty(it)}" }
+        val process = ProcessBuilder(listOf(Path.of(System.getProperty("java.home"), "bin", "java").toString()) + jna + listOf(
             "-cp", locations.distinct().joinToString(java.io.File.pathSeparator),
-            LocalCaptureOwnerFixture::class.java.name, namespace.toString(), mode).redirectError(ProcessBuilder.Redirect.INHERIT).start()
+            LocalCaptureOwnerFixture::class.java.name, namespace.toString(), mode)).redirectError(ProcessBuilder.Redirect.INHERIT).start()
         val line = java.util.concurrent.CompletableFuture.supplyAsync { process.inputStream.bufferedReader().readLine() }
         try {
             val root = namespace.resolve(line.get(10, TimeUnit.SECONDS) ?: error("fixture failed"))
@@ -116,8 +119,7 @@ class LocalCaptureOwnershipTest {
     }
 
     private fun packet(root: Path) = Files.list(root.resolve("ring")).use { it.findFirst().orElseThrow() }
-    private fun namespace(name: String) = Files.createDirectory(directory.resolve(name),
-        PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rwx------")))
+    private fun namespace(name: String) = Files.createDirectory(directory.resolve(name)).also { TestPermissions.set(it, "rwx------") }
 
     @Test
     fun stoppedOwnerIsReclaimedAndOtherProjectAndCompletedOutputRemain() {
@@ -202,11 +204,11 @@ class LocalCaptureOwnershipTest {
                     val replacement = Files.writeString(directory.resolve("replacement"), "foreign replacement")
                     Files.move(replacement, file, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
                 }
-                val key = Files.readAttributes(marker, java.nio.file.attribute.BasicFileAttributes::class.java).fileKey()
+                val key = PrivateFiles.fileKey(marker)
                 val before = Files.readAllBytes(marker)
                 LocalCaptureOwnership.recover(namespace)
                 assertArrayEquals(before, Files.readAllBytes(marker))
-                assertEquals(key, Files.readAttributes(marker, java.nio.file.attribute.BasicFileAttributes::class.java).fileKey())
+                assertEquals(key, PrivateFiles.fileKey(marker))
                 assertTrue(Files.exists(old.root.resolve("scrcpy-server-v5.0.1")))
                 assertTrue(Files.exists(old.descriptor))
             }
@@ -415,12 +417,12 @@ class LocalCaptureOwnershipTest {
             store.frame(VideoPacket.Frame(100, false, true, byteArrayOf(2)), 1)
             val pin = store.capture(ReplaySettings())!!
             store.frame(VideoPacket.Frame(200, false, true, byteArrayOf(3)), 1)
-            Files.setPosixFilePermissions(store.directory, PosixFilePermissions.fromString("r-x------"))
+            TestPermissions.set(store.directory, TestPermissions.mode("r-x------"))
             try {
                 assertThrows(java.io.IOException::class.java) { store.release(pin.id) }
                 assertArrayEquals(byteArrayOf(2), Files.readAllBytes(pin.video.single().file))
                 assertTrue(deleted.isEmpty())
-            } finally { Files.setPosixFilePermissions(store.directory, PosixFilePermissions.fromString("rwx------")) }
+            } finally { TestPermissions.set(store.directory, TestPermissions.mode("rwx------")) }
             store.prune(900)
             assertEquals(listOf(pin.video.single().file), deleted)
             assertFalse(Files.exists(pin.video.single().file))
@@ -521,7 +523,7 @@ class LocalCaptureOwnershipTest {
         val ownership = LocalCaptureOwnership.create(namespace("permissions"))
         val created: (Path) -> Unit = { path ->
             val expected = if (Files.isDirectory(path)) "rwx------" else "rw-------"
-            assertEquals(PosixFilePermissions.fromString(expected), Files.getPosixFilePermissions(path))
+            assertEquals(TestPermissions.mode(expected), TestPermissions.get(path))
             ownership.created(path)
         }
         val resources = CaptureResources(ownership.root, created).also { it.server }
@@ -553,18 +555,18 @@ class LocalCaptureOwnershipTest {
         val workspace = namespace("descriptor-failure")
         val core = ReplayCore(ReplaySettings(), workspace)
         try {
-            assertTrue(core.setEnabled(true).get(10, TimeUnit.SECONDS).accepted)
+            core.setEnabled(true).get(10, TimeUnit.SECONDS).let { assertTrue(it.accepted, it.toString()) }
             val descriptor = Files.newDirectoryStream(workspace, "local-capture-*.json").use { it.single() }
             val json = header(descriptor)
             val root = workspace.resolve("replay-${json["token"].asString}")
-            Files.setPosixFilePermissions(descriptor, PosixFilePermissions.fromString("rw-rw----"))
+            TestPermissions.set(descriptor, TestPermissions.mode("rw-rw----"))
             val before = Files.readAllBytes(descriptor)
             assertFalse(core.setEnabled(false).get(10, TimeUnit.SECONDS).accepted)
             assertFalse(core.snapshot().enabled)
             assertEquals(CaptureState.DISABLED, core.snapshot().captureState)
             assertFalse(Files.exists(root))
             assertTrue(core.setEnabled(false).get(10, TimeUnit.SECONDS).accepted)
-            assertTrue(core.setEnabled(true).get(10, TimeUnit.SECONDS).accepted)
+            core.setEnabled(true).get(10, TimeUnit.SECONDS).let { assertTrue(it.accepted, it.toString()) }
             assertTrue(core.snapshot().enabled)
             assertArrayEquals(before, Files.readAllBytes(descriptor))
             assertTrue(core.setEnabled(false).get(10, TimeUnit.SECONDS).accepted)
@@ -576,7 +578,7 @@ class LocalCaptureOwnershipTest {
         val workspace = namespace("root-retry")
         val core = ReplayCore(ReplaySettings(), workspace)
         try {
-            assertTrue(core.setEnabled(true).get(10, TimeUnit.SECONDS).accepted)
+            core.setEnabled(true).get(10, TimeUnit.SECONDS).let { assertTrue(it.accepted, it.toString()) }
             val root = Files.newDirectoryStream(workspace, "replay-*").use { it.single() }
             val foreign = Files.writeString(root.resolve("foreign.txt"), "owned fixture marker")
             assertFalse(core.setEnabled(false).get(10, TimeUnit.SECONDS).accepted)
@@ -597,7 +599,7 @@ class LocalCaptureOwnershipTest {
         val reading = java.util.concurrent.CountDownLatch(1)
         var reader: Thread? = null
         try {
-            assertTrue(core.setEnabled(true).get(10, TimeUnit.SECONDS).accepted)
+            core.setEnabled(true).get(10, TimeUnit.SECONDS).let { assertTrue(it.accepted, it.toString()) }
             val field = ReplayCore::class.java.getDeclaredField("store").apply { isAccessible = true }
             val store = field.get(core) as CaptureStore
             store.generation(1); store.session(VideoPacket.Session(32, 32), 1)
@@ -631,7 +633,7 @@ class LocalCaptureOwnershipTest {
         val output = Files.writeString(workspace.resolve("completed-output.txt"), "saved")
         val core = ReplayCore(ReplaySettings(), workspace)
         try {
-            assertTrue(core.setEnabled(true).get(10, TimeUnit.SECONDS).accepted)
+            core.setEnabled(true).get(10, TimeUnit.SECONDS).let { assertTrue(it.accepted, it.toString()) }
             val descriptor = Files.newDirectoryStream(workspace, "local-capture-*.json").use { it.single() }
             val json = header(descriptor)
             assertEquals(setOf(".", "ring", "scrcpy-server-v5.0.1", "replay-clock.jar"), entries(descriptor).keys)

@@ -23,7 +23,7 @@ class ReplayCliSaveResultTest {
         attempt.complete(Result.success(SaveOutput(Path.of("/completed folder"), emptyList())))
         val result = cliSaveResponse("request", attempt.completion, deadline(), "legacy warning")
         assertEquals(0, result.code)
-        assertEquals("/completed folder", result.output)
+        assertEquals(Path.of("/completed folder").toString(), result.output)
         assertTrue(result.error.contains("video"))
         assertTrue(result.error.contains("記録の不足・未確認: video"))
         assertFalse(result.error.contains("欠落"))
@@ -38,7 +38,7 @@ class ReplayCliSaveResultTest {
         assertEquals("", result.output)
         assertTrue(result.error.contains("保存失敗"))
         assertTrue(result.error.contains("attempt: 3"))
-        assertTrue(result.error.contains("/intended/attempt.partial"))
+        assertTrue(result.error.contains(Path.of("/intended/attempt.partial").toString()))
     }
 
     @Test fun `timeout does not cancel the writer and unrelated results cannot become success`() {

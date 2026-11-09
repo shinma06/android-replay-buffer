@@ -1,5 +1,6 @@
 package io.github.shinma06.replaybuffer.cli
 
+import io.github.shinma06.replaybuffer.testing.TestPermissions
 import java.io.ByteArrayOutputStream
 import java.io.DataInputStream
 import java.io.DataOutputStream
@@ -7,7 +8,6 @@ import java.io.PrintStream
 import java.net.Socket
 import java.nio.file.Files
 import java.nio.file.Path
-import java.nio.file.attribute.PosixFilePermissions
 import java.util.concurrent.CountDownLatch
 import java.util.Properties
 import java.util.concurrent.TimeUnit
@@ -69,9 +69,9 @@ class ReplayCliTest {
             assertEquals("", output)
             assertTrue(error.contains("保存先へ書き込めません。"))
             assertEquals(1, calls.get())
-            assertEquals(PosixFilePermissions.fromString("rwx------"), Files.getPosixFilePermissions(registry))
+            assertEquals(TestPermissions.mode("rwx------"), TestPermissions.get(registry))
             Files.list(registry).use { files -> files.forEach {
-                assertEquals(PosixFilePermissions.fromString("rw-------"), Files.getPosixFilePermissions(it))
+                assertEquals(TestPermissions.mode("rw-------"), TestPermissions.get(it))
             } }
             server.close()
             server.termination.get(5, TimeUnit.SECONDS)
@@ -107,9 +107,9 @@ class ReplayCliTest {
                 assertEquals(1, calls.get())
             }
             val descriptor = registry.resolve("${first.endpoint.id}.properties")
-            Files.setPosixFilePermissions(descriptor, PosixFilePermissions.fromString("rw-r--r--"))
+            TestPermissions.set(descriptor, TestPermissions.mode("rw-r--r--"))
             assertEquals(1, runCli(registry, listOf("status")).first)
-            Files.setPosixFilePermissions(descriptor, PosixFilePermissions.fromString("rw-------"))
+            TestPermissions.set(descriptor, TestPermissions.mode("rw-------"))
             Files.delete(descriptor)
             ReplayCliRegistry.publish(registry, first.endpoint.copy(started = first.endpoint.started.minusSeconds(1)))
             assertEquals(1, runCli(registry, listOf("status")).first)
@@ -173,7 +173,7 @@ class ReplayCliTest {
     }
 
     @Test fun `registry symlinks and nonregular config are rejected without command`() {
-        val actual = Files.createDirectory(temporary.resolve("actual"), PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rwx------")))
+        val actual = Files.createDirectory(temporary.resolve("actual")).also { TestPermissions.set(it, "rwx------") }
         val link = Files.createSymbolicLink(temporary.resolve("link"), actual)
         assertFailsWith<IllegalArgumentException> { ReplayCliRegistry.prepare(link) }
         assertEquals(2, runCli(temporary.resolve("none"), listOf("daemon", "--config", temporary.toString())).first)

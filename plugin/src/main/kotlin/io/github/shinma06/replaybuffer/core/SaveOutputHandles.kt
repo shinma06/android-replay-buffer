@@ -29,6 +29,7 @@ internal interface SaveFileDescriptors : Library {
 }
 
 private val mac = System.getProperty("os.name") == "Mac OS X"
+private val windows = System.getProperty("os.name").startsWith("Windows")
 private val arm = System.getProperty("os.arch") in listOf("aarch64", "arm64")
 private val descriptors by lazy {
     check(System.getProperty("os.name") in listOf("Mac OS X", "Linux") && Native.POINTER_SIZE == 8 &&
@@ -42,6 +43,11 @@ private val directoryFlags get() = if (mac) 0x01100100 else 0x000b0000
 
 private fun childName(name: String) {
     require(name.isNotEmpty() && name != "." && name != ".." && '/' !in name && '\u0000' !in name)
+    require(!windows || name.none { it in "\\:<>\"|?*" || it < ' ' } && !name.endsWith('.') && !name.endsWith(' '))
+}
+
+private fun closeHandle(handle: Long) {
+    if (windows) WindowsSaveHandles.close(handle) else descriptors.close(handle.toInt())
 }
 
 private fun checkedDescriptor(descriptor: Int, name: String): Int {
@@ -93,35 +99,39 @@ private fun requirePrivate(descriptor: Int, permissions: Int) {
  * Open walks a normalized absolute path without following symlinks. Close releases the handle only;
  * the caller owns created output and must keep parent/child handles alive through verification/publication.
  */
-internal class SaveOutputDirectory private constructor(internal val descriptor: Int) : AutoCloseable {
+internal class SaveOutputDirectory private constructor(internal val descriptor: Long) : AutoCloseable {
     private var closed = false
-    val key = descriptorKey(descriptor, 0x4000)
+    val key = if (windows) WindowsSaveHandles.key(descriptor, true) else descriptorKey(descriptor.toInt(), 0x4000)
 
     fun createDirectory(name: String): SaveOutputDirectory {
         check(!closed)
         childName(name)
-        checkedDescriptor(descriptors.mkdirat(descriptor, name, 0x1c0), name)
+        if (windows) return fromDescriptor(WindowsSaveHandles.createDirectory(descriptor, name))
+        checkedDescriptor(descriptors.mkdirat(descriptor.toInt(), name, 0x1c0), name)
         return openChild(name)
     }
 
     fun openChild(name: String): SaveOutputDirectory {
         check(!closed)
         childName(name)
-        return fromDescriptor(checkedDescriptor(descriptors.openat(descriptor, name, directoryFlags), name))
+        if (windows) return fromDescriptor(WindowsSaveHandles.openDirectory(descriptor, name))
+        return fromDescriptor(checkedDescriptor(descriptors.openat(descriptor.toInt(), name, directoryFlags), name).toLong())
     }
 
     fun createFile(name: String): SaveOutputFile {
         check(!closed)
         childName(name)
-        return SaveOutputFile.fromDescriptor(checkedDescriptor(descriptors.openat(descriptor, name,
-            if (mac) 0x01000b02 else 0x000a00c2, 0x180), name))
+        if (windows) return SaveOutputFile.fromDescriptor(WindowsSaveHandles.createFile(descriptor, name))
+        return SaveOutputFile.fromDescriptor(checkedDescriptor(descriptors.openat(descriptor.toInt(), name,
+            if (mac) 0x01000b02 else 0x000a00c2, 0x180), name).toLong())
     }
 
     fun openFile(name: String): SaveOutputFile {
         check(!closed)
         childName(name)
-        return SaveOutputFile.fromDescriptor(checkedDescriptor(descriptors.openat(descriptor, name,
-            if (mac) 0x01000104 else 0x000a0800), name))
+        if (windows) return SaveOutputFile.fromDescriptor(WindowsSaveHandles.openFile(descriptor, name))
+        return SaveOutputFile.fromDescriptor(checkedDescriptor(descriptors.openat(descriptor.toInt(), name,
+            if (mac) 0x01000104 else 0x000a0800), name).toLong())
     }
 
     fun moveFile(name: String, destination: SaveOutputDirectory, target: String) {
@@ -133,28 +143,38 @@ internal class SaveOutputDirectory private constructor(internal val descriptor: 
 
     fun deleteFile(name: String, output: SaveOutputFile) {
         verifyFile(name, output)
-        check(descriptors.unlinkat(descriptor, name, 0) == 0) { "保存したファイルを削除できません。アクセス権を確認してください。" }
+        if (windows) return WindowsSaveHandles.delete(descriptor, name, false)
+        check(descriptors.unlinkat(descriptor.toInt(), name, 0) == 0) { "保存したファイルを削除できません。アクセス権を確認してください。" }
     }
 
     fun deleteEmptyDirectory(name: String) {
         check(!closed)
         childName(name)
-        check(descriptors.unlinkat(descriptor, name, if (mac) 0x80 else 0x200) == 0) { "削除用の空フォルダを片付けられません。" }
+        if (windows) return runCatching { WindowsSaveHandles.delete(descriptor, name, true) }.getOrElse { error("削除用の空フォルダを片付けられません。") }
+        check(descriptors.unlinkat(descriptor.toInt(), name, if (mac) 0x80 else 0x200) == 0) { "削除用の空フォルダを片付けられません。" }
     }
 
     fun flush() {
-        check(!closed && descriptors.fsync(descriptor) == 0) { "保存先への書込み完了を確認できません。" }
+        check(!closed)
+        if (windows) return WindowsSaveHandles.flush(descriptor)
+        check(descriptors.fsync(descriptor.toInt()) == 0) { "保存先への書込み完了を確認できません。" }
     }
 
     fun verifyFile(name: String, output: SaveOutputFile) {
         check(!closed)
         childName(name)
-        val current = checkedDescriptor(descriptors.openat(descriptor, name, if (mac) 0x01000104 else 0x000a0800), name)
+        if (windows) {
+            val current = WindowsSaveHandles.openFile(descriptor, name)
+            try { check(WindowsSaveHandles.key(current, false) == output.key) { "保存出力の実体が変更されています" } }
+            finally { WindowsSaveHandles.close(current) }
+            return
+        }
+        val current = checkedDescriptor(descriptors.openat(descriptor.toInt(), name, if (mac) 0x01000104 else 0x000a0800), name)
         try { check(descriptorKey(current, 0x8000) == output.key) { "保存出力の実体が変更されています" } }
         finally { descriptors.close(current) }
     }
 
-    fun requirePrivate() = requirePrivate(descriptor, 0x1c0)
+    fun requirePrivate() = if (windows) WindowsSaveHandles.requirePrivate(descriptor, true) else requirePrivate(descriptor.toInt(), 0x1c0)
 
     fun requireEntries(outputs: Map<String, SaveOutputFile>) {
         requirePrivate()
@@ -164,7 +184,8 @@ internal class SaveOutputDirectory private constructor(internal val descriptor: 
 
     fun entries(): Set<String> {
         check(!closed)
-        val duplicate = checkedDescriptor(descriptors.openat(descriptor, ".", directoryFlags), ".")
+        if (windows) return WindowsSaveHandles.entries(descriptor)
+        val duplicate = checkedDescriptor(descriptors.openat(descriptor.toInt(), ".", directoryFlags), ".")
         val directory = descriptors.fdopendir(duplicate) ?: run {
             descriptors.close(duplicate)
             throw IOException("未完成フォルダーの内容を確認できません")
@@ -187,13 +208,14 @@ internal class SaveOutputDirectory private constructor(internal val descriptor: 
     }
 
     override fun close() {
-        if (!closed) { closed = true; descriptors.close(descriptor) }
+        if (!closed) { closed = true; closeHandle(descriptor) }
     }
 
     companion object {
         fun open(path: Path): SaveOutputDirectory {
             require(path.isAbsolute && path == path.normalize())
-            var current = fromDescriptor(checkedDescriptor(descriptors.open("/", directoryFlags), "/"))
+            var current = fromDescriptor(if (windows) WindowsSaveHandles.openRoot(path)
+                else checkedDescriptor(descriptors.open("/", directoryFlags), "/").toLong())
             try {
                 for (component in path) {
                     val next = current.openChild(component.toString())
@@ -204,27 +226,30 @@ internal class SaveOutputDirectory private constructor(internal val descriptor: 
             } catch (e: Throwable) { current.close(); throw e }
         }
 
-        private fun fromDescriptor(descriptor: Int): SaveOutputDirectory = try { SaveOutputDirectory(descriptor) }
-            catch (e: Throwable) { descriptors.close(descriptor); throw e }
+        private fun fromDescriptor(descriptor: Long): SaveOutputDirectory = try { SaveOutputDirectory(descriptor) }
+            catch (e: Throwable) { closeHandle(descriptor); throw e }
     }
 }
 
 /** Keep the descriptor alive across pathname changes; callers also close every separately opened channel. */
-internal class SaveOutputFile private constructor(private val descriptor: Int) : AutoCloseable {
+internal class SaveOutputFile private constructor(private val descriptor: Long) : AutoCloseable {
     private var closed = false
-    val key = descriptorKey(descriptor, 0x8000)
+    val isClosed get() = closed
+    val key = if (windows) WindowsSaveHandles.key(descriptor, false) else descriptorKey(descriptor.toInt(), 0x8000)
 
     fun channel(): FileChannel {
         check(!closed)
+        if (windows) return WindowsSaveHandles.channel(descriptor, setOf(READ, WRITE))
         return FileChannel.open(Path.of(if (mac) "/dev/fd" else "/proc/self/fd", descriptor.toString()), READ, WRITE)
     }
 
-    fun requirePrivate() = requirePrivate(descriptor, 0x180)
+    fun requirePrivate() = if (windows) WindowsSaveHandles.requirePrivate(descriptor, false) else requirePrivate(descriptor.toInt(), 0x180)
 
     fun hash(): String {
         check(!closed)
         val digest = java.security.MessageDigest.getInstance("SHA-256")
-        FileChannel.open(Path.of(if (mac) "/dev/fd" else "/proc/self/fd", descriptor.toString()), READ).use { channel ->
+        (if (windows) WindowsSaveHandles.channel(descriptor, setOf(READ))
+            else FileChannel.open(Path.of(if (mac) "/dev/fd" else "/proc/self/fd", descriptor.toString()), READ)).use { channel ->
             channel.position(0)
             val bytes = ByteBuffer.allocate(8192)
             while (channel.read(bytes) >= 0) { bytes.flip(); digest.update(bytes); bytes.clear() }
@@ -233,11 +258,11 @@ internal class SaveOutputFile private constructor(private val descriptor: Int) :
     }
 
     override fun close() {
-        if (!closed) { closed = true; descriptors.close(descriptor) }
+        if (!closed) { closed = true; closeHandle(descriptor) }
     }
 
     companion object {
-        fun fromDescriptor(descriptor: Int): SaveOutputFile = try { SaveOutputFile(descriptor) }
-            catch (e: Throwable) { descriptors.close(descriptor); throw e }
+        fun fromDescriptor(descriptor: Long): SaveOutputFile = try { SaveOutputFile(descriptor) }
+            catch (e: Throwable) { closeHandle(descriptor); throw e }
     }
 }

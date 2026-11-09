@@ -1,5 +1,6 @@
 package io.github.shinma06.replaybuffer.core
 
+import io.github.shinma06.replaybuffer.testing.TestExecutables
 import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
@@ -19,7 +20,7 @@ class VideoConnectionTest {
         val sockets = ConcurrentHashMap.newKeySet<Socket>()
         val accept = thread(isDaemon = true) { runCatching { while (!server.isClosed) held += server.accept() } }
         // Owned fixture process only, not adb or another agent.
-        val process = ProcessBuilder("/bin/sleep", "20").start()
+        val process = TestExecutables.sleeping(20)
         try {
             val started = System.nanoTime()
             assertFailsWith<IllegalStateException> { connectVideo(server.localPort, process, AtomicBoolean(), sockets, 250) }

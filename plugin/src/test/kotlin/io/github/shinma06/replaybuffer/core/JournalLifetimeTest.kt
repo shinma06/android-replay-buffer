@@ -1,5 +1,6 @@
 package io.github.shinma06.replaybuffer.core
 
+import io.github.shinma06.replaybuffer.testing.TestExecutables
 import com.google.gson.JsonParser
 import java.nio.file.Files
 import java.nio.file.Path
@@ -85,7 +86,7 @@ class JournalLifetimeTest {
     @Test
     fun unconfirmedOwnedClientDrainAlsoBlocksJournalUntilSuccessfulCloseRetry() {
         Fixture().use { f ->
-            val adb = get(f.capture, "adb") as OwnedAdb
+            var adb = get(f.capture, "adb") as OwnedAdb
             val process = adb.start("devices", "-l")
             assertTrue(process.waitFor(5, TimeUnit.SECONDS))
             @Suppress("UNCHECKED_CAST")
@@ -142,7 +143,7 @@ class JournalLifetimeTest {
 
     private class Fixture : AutoCloseable {
         val root = Files.createTempDirectory("replay-journal-lifetime-").toRealPath()
-        val adb = root.resolve("adb")
+        var adb = root.resolve("adb")
         private val resources = CaptureResources(Files.createDirectory(root.resolve("resources")))
         private val store = CaptureStore(root.resolve("ring"))
         val capture: DeviceCapture
@@ -153,7 +154,7 @@ class JournalLifetimeTest {
         val descriptor: Path
 
         init {
-            Files.writeString(adb, """#!/usr/bin/python3
+            adb = TestExecutables.python(adb, """#!/usr/bin/python3
 import pathlib,sys
 r=pathlib.Path(__file__).parent;a=sys.argv[1:]
 if a==['devices','-l']:
@@ -166,7 +167,6 @@ elif a[:4]==['-s','fixture-1','shell','rm']: pass
 elif a[:4]==['-s','fixture-1','forward','--remove']: (r/'removed').touch()
 else: sys.exit(1)
 """)
-            check(adb.toFile().setExecutable(true))
             capture = DeviceCapture(adb, "fixture-1", resources, store, 1, ApplicationTarget())
             @Suppress("UNCHECKED_CAST")
             (get(capture, "pendingEndpoints") as MutableSet<String>) += "localabstract:scrcpy_00000001"

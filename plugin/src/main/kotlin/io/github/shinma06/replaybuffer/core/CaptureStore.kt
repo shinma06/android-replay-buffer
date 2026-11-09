@@ -6,7 +6,6 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardOpenOption.CREATE_NEW
 import java.nio.file.StandardOpenOption.WRITE
-import java.nio.file.attribute.PosixFilePermissions
 import java.util.ArrayDeque
 import java.util.UUID
 
@@ -106,7 +105,7 @@ internal class CaptureStore(
     private var autoTarget: String? = null
 
     init {
-        Files.createDirectory(directory, PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rwx------")))
+        PrivateFiles.createDirectory(directory)
         try { created(directory) } catch (failure: Exception) {
             try { Files.delete(directory) } catch (cleanup: Exception) { failure.addSuppressed(cleanup) }
             throw failure
@@ -221,8 +220,7 @@ internal class CaptureStore(
             closeCurrentFile()
             deleteUnused() // Retire unreferenced files even while T is frozen/unknown, before registration.
             val file = directory.resolve("gop-${UUID.randomUUID()}.h264")
-            val opened = FileChannel.open(file, setOf(CREATE_NEW, WRITE),
-                PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rw-------")))
+            val opened = PrivateFiles.openNew(file, setOf(CREATE_NEW, WRITE))
             try { created(file) } catch (failure: Exception) {
                 try { opened.close() } finally {
                     try { Files.delete(file) } catch (cleanup: Exception) { failure.addSuppressed(cleanup) }

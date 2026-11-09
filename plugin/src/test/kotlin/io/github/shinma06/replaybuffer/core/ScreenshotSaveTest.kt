@@ -1,6 +1,7 @@
 package io.github.shinma06.replaybuffer.core
 
-import org.junit.jupiter.api.Assumptions.assumeTrue
+import io.github.shinma06.replaybuffer.testing.TestPermissions
+import io.github.shinma06.replaybuffer.testing.TestExecutables
 import java.awt.image.BufferedImage
 import java.io.ByteArrayOutputStream
 import java.nio.file.Files
@@ -79,7 +80,6 @@ class ScreenshotSaveTest {
 
     @Test
     fun recordingMirrorPreservesSerialPhysicalCaptureAndBothForegroundChecks() {
-        assumeTrue(System.getProperty("os.name") in setOf("Mac OS X", "Linux"))
         fixture { root, adb ->
             Files.writeString(root.resolve("foreground"), mirroredForeground("2"))
             val destination = Files.createDirectory(root.resolve("output"))
@@ -124,7 +124,6 @@ class ScreenshotSaveTest {
 
     @Test
     fun configuredLinkedDestinationResolvesButLaterLinkChangesCannotRedirectDeletion() {
-        assumeTrue(System.getProperty("os.name") in setOf("Mac OS X", "Linux"))
         fixture { root, adb ->
             val other = Files.createDirectory(root.resolve("other"))
             val link = Files.createSymbolicLink(root.resolve("linked-output"), other)
@@ -145,7 +144,6 @@ class ScreenshotSaveTest {
 
     @Test
     fun singleDeviceStreamsBinaryWithoutRecordingAndPublishesExactImageThenDeletesOnlyThatImage() {
-        assumeTrue(System.getProperty("os.name") in setOf("Mac OS X", "Linux"), "exclusive publication needs macOS or Linux")
         fixture { root, adb ->
             val destination = Files.createDirectory(root.resolve("output"))
             Files.writeString(destination.resolve("keep"), "unrelated")
@@ -155,7 +153,7 @@ class ScreenshotSaveTest {
             assertEquals("sample.app", saved.application)
             assertTrue(Regex("screenshot-[0-9]{8}-[0-9]{6}-[0-9]{3}-[0-9a-f-]{36}\\.png").matches(saved.file.fileName.toString()))
             assertEquals(setOf("keep", saved.file.fileName.toString()), Files.list(destination).use { it.map { path -> path.fileName.toString() }.toList().toSet() })
-            assertEquals(java.nio.file.attribute.PosixFilePermissions.fromString("rw-------"), Files.getPosixFilePermissions(saved.file))
+            assertEquals(TestPermissions.mode("rw-------"), TestPermissions.get(saved.file))
             assertEquals(listOf("devices -l", "-s usb123 shell dumpsys SurfaceFlinger --display-id",
                 "-s usb123 shell dumpsys window", "-s usb123 exec-out screencap -p -d 4619827551948147201", "-s usb123 shell dumpsys window"),
                 Files.readAllLines(root.resolve("commands")))
@@ -172,7 +170,6 @@ class ScreenshotSaveTest {
 
     @Test
     fun concurrentDirectImagesAreUniqueAndExclusiveFileCollisionPreservesBothInputs() {
-        assumeTrue(System.getProperty("os.name") in setOf("Mac OS X", "Linux"))
         fixture { root, adb ->
             val destination = Files.createDirectory(root.resolve("output"))
             java.util.concurrent.Executors.newFixedThreadPool(2).use { executor ->
@@ -201,7 +198,6 @@ class ScreenshotSaveTest {
 
     @Test
     fun recordingTargetWinsOverOtherDeviceAndNeverFallsBackAfterDisconnect() {
-        assumeTrue(System.getProperty("os.name") in setOf("Mac OS X", "Linux"))
         fixture { root, adb ->
             val destination = Files.createDirectory(root.resolve("output"))
             val target = "emulator-5554 device model:Recording"
@@ -227,7 +223,6 @@ class ScreenshotSaveTest {
 
     @Test
     fun withoutRecordingHistoryUsesSameUniqueDeviceRuleAndRejectsAmbiguity() {
-        assumeTrue(System.getProperty("os.name") in setOf("Mac OS X", "Linux"))
         fixture { root, adb ->
             val destination = Files.createDirectory(root.resolve("output"))
             Files.writeString(root.resolve("devices"), "List of devices attached\nemulator-5554 device model:Only\n")
@@ -247,7 +242,6 @@ class ScreenshotSaveTest {
 
     @Test
     fun deletedReplacedChangedAndSymlinkedFilesCannotDeleteOtherData() {
-        assumeTrue(System.getProperty("os.name") in setOf("Mac OS X", "Linux"))
         fixture { root, adb ->
             val destination = Files.createDirectory(root.resolve("output"))
             for (kind in listOf("removed", "replaced", "changed", "symlink", "directory")) {
@@ -324,8 +318,8 @@ class ScreenshotSaveTest {
             Files.write(root.resolve("image.png"), png())
             Files.writeString(root.resolve("foreground"), foreground)
             Files.writeString(root.resolve("devices"), "List of devices attached\nusb123 device model:Fixture\n")
-            val adb = root.resolve("adb")
-            Files.writeString(adb, """#!/usr/bin/env python3
+            var adb = root.resolve("adb")
+            adb = TestExecutables.python(adb, """#!/usr/bin/env python3
 import os,pathlib,sys,time
 root=pathlib.Path(__file__).parent
 mode=(root/'mode').read_text() if (root/'mode').exists() else ''
@@ -353,7 +347,6 @@ elif command=='exec-out screencap -p -d 4619827551948147201':
  sys.stdout.buffer.write(b'broken' if mode=='broken' else (root/'image.png').read_bytes())
 elif command!='devices -l': sys.exit(2)
 """)
-            check(adb.toFile().setExecutable(true))
             body(root, adb)
         } finally { root.toFile().deleteRecursively() }
     }

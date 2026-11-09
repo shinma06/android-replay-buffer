@@ -1,5 +1,6 @@
 package io.github.shinma06.replaybuffer.core
 
+import io.github.shinma06.replaybuffer.testing.TestExecutables
 import java.io.EOFException
 import java.lang.reflect.InvocationTargetException
 import java.nio.ByteBuffer
@@ -19,8 +20,8 @@ class DeviceLogTailTest {
     @Test
     fun liveReaderRetainsBackwardClockRowsAndReconnectExcludesItsOwnOldTail() {
         val root = Files.createTempDirectory("replay-log-tail-")
-        val fake = root.resolve("adb")
-        Files.writeString(fake, """#!/usr/bin/python3
+        var fake = root.resolve("adb")
+        fake = TestExecutables.python(fake, """#!/usr/bin/python3
 import pathlib,sys,time
 r=pathlib.Path(__file__).parent;a=sys.argv[1:]
 if a==['-s','fixture-1','logcat','-b','main','-B','-T','1']:
@@ -33,8 +34,7 @@ elif a==['-s','fixture-1','shell','ps','-A','-o','PID,ARGS']: print('PID ARGS')
 elif a[:5]==['-s','fixture-1','shell','rm','-f']: pass
 else: sys.exit(9)
 """)
-        assertTrue(fake.toFile().setExecutable(true))
-        val store = CaptureStore(root.resolve("ring"), minFree = 0, captureMode = CaptureMode.LOG_ONLY)
+                val store = CaptureStore(root.resolve("ring"), minFree = 0, captureMode = CaptureMode.LOG_ONLY)
         val resources = CaptureResources(Files.createDirectory(root.resolve("resources")))
         val capture = DeviceCapture(fake, "fixture-1", resources, store, 1, ApplicationTarget())
         val logs = DeviceCapture::class.java.getDeclaredMethod("logs", String::class.java, Boolean::class.javaPrimitiveType)

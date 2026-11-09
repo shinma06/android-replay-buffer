@@ -1,12 +1,11 @@
 package io.github.shinma06.replaybuffer.core
 
+import io.github.shinma06.replaybuffer.testing.TestExecutables
 import com.google.gson.JsonParser
 import org.jcodec.codecs.h264.H264Encoder
 import org.jcodec.codecs.h264.H264Utils
 import org.jcodec.common.model.ColorSpace
 import org.jcodec.common.model.Picture
-import org.junit.jupiter.api.condition.EnabledOnOs
-import org.junit.jupiter.api.condition.OS
 import java.io.DataOutputStream
 import java.net.InetAddress
 import java.net.ServerSocket
@@ -35,25 +34,21 @@ class ReplayCoreWireTest {
     }
 
     @Test
-    @EnabledOnOs(OS.MAC) // Existing SaveWriter fixture uses macOS AVFoundation; not IDE/device acceptance.
     fun partitionedLogsPreserveIdsAndPartialFailureAndLegacyUnknownHeadersKeepAll() {
         for (mode in listOf("partition", "legacy", "empty", "timeout", "cancel")) runWireFixture(false, mode)
     }
 
     @Test
-    @EnabledOnOs(OS.MAC)
     fun recoveredLogReaderWaitsForInitializationBeforeReceivingEvents() {
         runWireFixture(false, "partition", logReaderStartupDelayMillis = 2000)
     }
 
     @Test
-    @EnabledOnOs(OS.MAC)
     fun logOnlySkipsEveryVideoPathAndQuietRequestsRetryWithTheirFrozenMode() {
         runWireFixture(false, "partition", captureMode = CaptureMode.LOG_ONLY, videoQuality = VideoQuality.LIGHTWEIGHT)
     }
 
     @Test
-    @EnabledOnOs(OS.MAC)
     fun productionReaderAndExistingPsPollAdmitOneCorroboratedAutomaticSave() {
         runWireFixture(false, "partition", captureMode = CaptureMode.LOG_ONLY, autoCrash = true)
     }
@@ -160,8 +155,8 @@ class ReplayCoreWireTest {
                 }
             }
         }
-        val fake = root.resolve("adb")
-        Files.writeString(fake, """#!/usr/bin/python3
+        var fake = root.resolve("adb")
+        fake = TestExecutables.python(fake, """#!/usr/bin/python3
 import sys,time,os,struct,pathlib,socket
 root=pathlib.Path(__file__).parent
 with (root/'owned-pids.txt').open('a') as f: f.write(str(os.getpid())+'\n')
@@ -247,8 +242,7 @@ elif len(a)>3 and a[3]=='cmd':
 elif len(a)>3 and a[3]=='ps':
     print('PID UID NAME\n12 10001 com.fixture.app\n500 1000 system_server' if a[-1]=='PID,UID,NAME' else 'PID ARGS')
 """)
-        assertTrue(fake.toFile().setExecutable(true))
-        val core = ReplayCore(ReplaySettings(fake, root.resolve("missing"), if (captureMode.videoRequested) 1 else 30,
+                val core = ReplayCore(ReplaySettings(fake, root.resolve("missing"), if (captureMode.videoRequested) 1 else 30,
             ApplicationTarget(), captureMode, videoQuality = videoQuality), root.resolve("workspace"))
         fun awaitState(phase: String, predicate: (ReplaySnapshot) -> Boolean): ReplaySnapshot {
             val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(15)
@@ -544,7 +538,7 @@ elif len(a)>3 and a[3]=='ps':
                 Files.readAllLines(pids).forEach { pid -> assertFalse(ProcessHandle.of(pid.toLong()).map { it.isAlive }.orElse(false)) }
                 return
             }
-            if (System.getProperty("os.name") in setOf("Mac OS X", "Linux")) {
+            if (System.getProperty("os.name").let { it in setOf("Mac OS X", "Linux") || it.startsWith("Windows") }) {
                 Thread.sleep(1300) // Remove the initial unresolved-app interval from the one-second window.
                 pauseVideo.set(true)
                 Thread.sleep(11_000)
@@ -625,7 +619,7 @@ elif len(a)>3 and a[3]=='ps':
             assertTrue(core.retryAtDirectory(operation.requestId!!, root).get().accepted)
             var completed: java.nio.file.Path? = null
             var savedHash: String? = null
-            if (System.getProperty("os.name") in setOf("Mac OS X", "Linux")) {
+            if (System.getProperty("os.name").let { it in setOf("Mac OS X", "Linux") || it.startsWith("Windows") }) {
                 val done = awaitState("save-completed") { it.save.phase == SavePhase.COMPLETED }
                 assertEquals(fixed.windowEndNs, done.save.windowEndNs)
                 assertEquals(fixed.device, done.save.device)

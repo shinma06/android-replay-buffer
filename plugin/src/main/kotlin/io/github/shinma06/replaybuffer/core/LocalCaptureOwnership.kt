@@ -11,9 +11,7 @@ import java.nio.file.Path
 import java.nio.file.StandardOpenOption.CREATE_NEW
 import java.nio.file.StandardOpenOption.READ
 import java.nio.file.StandardOpenOption.WRITE
-import java.nio.file.attribute.PosixFileAttributes
-import java.nio.file.attribute.PosixFilePermission
-import java.nio.file.attribute.PosixFilePermissions
+import java.nio.file.attribute.BasicFileAttributes
 import java.time.Instant
 import java.util.ArrayDeque
 import java.util.UUID
@@ -51,7 +49,7 @@ internal class LocalCaptureOwnership private constructor(
     fun created(path: Path) {
         check(!failed) { "local所有記録の書込みが不確かです（保全しました）" }
         require(identity(root.parent) == namespaceIdentity && identity(descriptor) == descriptorIdentity)
-        val name = if (path == root) "." else root.relativize(path).toString()
+        val name = if (path == root) "." else root.relativize(path).joinToString("/")
         require(allowed(name) && name !in entries && entries.size < MAX_ENTRIES)
         val identity = identity(path)
         val slot = freeSlots.peekFirst() ?: slots.also { require(it < MAX_ENTRIES) }
@@ -63,7 +61,7 @@ internal class LocalCaptureOwnership private constructor(
     @Synchronized
     fun removed(path: Path) {
         require(identity(root.parent) == namespaceIdentity && identity(descriptor) == descriptorIdentity)
-        val name = root.relativize(path).toString()
+        val name = root.relativize(path).joinToString("/")
         val entry = entries[name] ?: error("local削除対象の所有記録がありません")
         val absent = try { identity(path); false } catch (_: java.nio.file.NoSuchFileException) { true }
         require(absent)
@@ -118,28 +116,25 @@ internal class LocalCaptureOwnership private constructor(
         private val tokenPattern = Regex("[0-9a-f-]{36}")
         private val packetPattern = Regex("ring/gop-[0-9a-f-]{36}\\.h264")
         private fun allowed(name: String) = name in setOf(".", "ring", "scrcpy-server-v4.0", "scrcpy-server-v5.0.1", "replay-clock.jar") || packetPattern.matches(name)
-        private fun identity(attributes: PosixFileAttributes): List<String> {
+        private fun identity(path: Path): List<String> {
+            val attributes = Files.readAttributes(path, BasicFileAttributes::class.java, NOFOLLOW_LINKS)
             require(!attributes.isSymbolicLink && (attributes.isDirectory || attributes.isRegularFile))
-            require(attributes.owner().name == System.getProperty("user.name") && attributes.permissions().none {
-                it == PosixFilePermission.GROUP_WRITE || it == PosixFilePermission.OTHERS_WRITE
-            })
-            return listOf(attributes.fileKey()?.toString() ?: error("local file identityが不明です"),
-                attributes.creationTime().toString(), attributes.owner().name, attributes.permissions().sorted().joinToString(",")).also {
+            require(PrivateFiles.isOwnedWithoutSharedWrite(path))
+            return listOf(PrivateFiles.fileKey(path).toString(),
+                attributes.creationTime().toString(), Files.getOwner(path, NOFOLLOW_LINKS).name, PrivateFiles.recordedPermissions(path)).also {
                 require(Gson().toJson(it).toByteArray(Charsets.UTF_8).size <= MAX_IDENTITY_BYTES)
             }
         }
-        private fun identity(path: Path) = identity(Files.readAttributes(path, PosixFileAttributes::class.java, NOFOLLOW_LINKS))
 
         fun create(namespace: Path): LocalCaptureOwnership {
             require(namespace.isAbsolute && !Files.isSymbolicLink(namespace))
             val token = UUID.randomUUID().toString()
             val root = namespace.resolve("replay-$token")
             val descriptor = namespace.resolve("local-capture-$token.json")
-            val channel = FileChannel.open(descriptor, setOf<java.nio.file.OpenOption>(CREATE_NEW, READ, WRITE, NOFOLLOW_LINKS),
-                PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rw-------")))
+            val channel = PrivateFiles.openNew(descriptor, setOf(CREATE_NEW, READ, WRITE, NOFOLLOW_LINKS))
             try {
-                val lock = channel.tryLock() ?: error("local ownerを取得できません")
-                Files.createDirectory(root, PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rwx------")))
+                val lock = PrivateFiles.tryOwnerLock(channel) ?: error("local ownerを取得できません")
+                PrivateFiles.createDirectory(root)
                 val ownership = LocalCaptureOwnership(root, descriptor, channel, lock)
                 ownership.created(root)
                 return ownership
@@ -166,7 +161,7 @@ internal class LocalCaptureOwnership private constructor(
                         require(tokenPattern.matches(token) && UUID.fromString(token).toString() == token && name.toString() == "local-capture-$token.json")
                         val recordIdentity = identity(path)
                         FileChannel.open(path, READ, WRITE, NOFOLLOW_LINKS).use { channel ->
-                            channel.tryLock()?.use {
+                            PrivateFiles.tryOwnerLock(channel)?.use {
                                 val size = channel.size()
                                 require(identity(path) == recordIdentity && size in (HEADER_BYTES + SLOT_BYTES)..MAX_BYTES.toLong())
                                 require((size - HEADER_BYTES) % SLOT_BYTES == 0L)
@@ -255,7 +250,7 @@ internal class LocalCaptureOwnership private constructor(
             for (path in packets + children.sortedBy { it == ring } + listOf(root)) {
                 require(identity(namespace) == namespaceIdentity && identity(root) == entries["."])
                 if (path.parent == ring) require(identity(ring) == entries["ring"])
-                val name = if (path == root) "." else root.relativize(path).toString()
+                val name = if (path == root) "." else root.relativize(path).joinToString("/")
                 require(identity(path) == entries[name])
                 Files.delete(path)
             }

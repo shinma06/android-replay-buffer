@@ -12,7 +12,9 @@ replay --project /absolute/project/path stop
 
 空白のあるpathは引用符で囲んでください。対象が複数ある場合は--projectが必須です。
 このbinをPATHへ追加するか、入口の絶対pathを使います。
-Studioが標準配置以外なら、そのContentsをREPLAY_STUDIO_HOMEへ指定してください。
+Windowsではreplay.cmd/replayd.cmdを使います（引数は同じです）。
+Studioが標準配置（macOS: /Applications、Linux: /opt/android-studio、Windows: Program Files内のAndroidフォルダー）以外なら、
+その導入先（macOSはContents）をREPLAY_STUDIO_HOMEへ指定してください。
 
 daemon/replayd/--foregroundは取得ONの有限操作です。IDEを終了すると取得も終了します。
 Saveのexit0/stdoutは完成フォルダです。受付だけでは成功になりません。
