@@ -29,7 +29,7 @@ object TestPermissions {
     @JvmStatic fun mode(mode: String): String = mode
 
     @JvmStatic fun set(path: Path, mode: String) {
-        if (!windows) return Files.setPosixFilePermissions(path, PosixFilePermissions.fromString(mode))
+        if (!windows) { Files.setPosixFilePermissions(path, PosixFilePermissions.fromString(mode)); return }
         val directory = Files.isDirectory(path, NOFOLLOW_LINKS)
         deniedChildren.remove(path)?.forEach { (child, acl) -> view(child).acl = acl }
         val entries = mutableListOf<AclEntry>()
