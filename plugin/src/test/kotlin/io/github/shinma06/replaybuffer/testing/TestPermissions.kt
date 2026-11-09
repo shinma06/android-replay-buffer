@@ -1,6 +1,7 @@
 package io.github.shinma06.replaybuffer.testing
 
 import com.sun.nio.file.ExtendedOpenOption
+import io.github.shinma06.replaybuffer.core.HostPlatform
 import java.nio.channels.FileChannel
 import java.nio.file.FileSystems
 import java.nio.file.Files
@@ -23,7 +24,7 @@ import java.nio.file.attribute.UserPrincipal
  * current child files are also held open without delete sharing until the directory is writable again.
  */
 object TestPermissions {
-    private val windows = System.getProperty("os.name").startsWith("Windows")
+    private val windows = HostPlatform.windows
     private val lookup by lazy { FileSystems.getDefault().userPrincipalLookupService }
     private val owner: UserPrincipal by lazy { lookup.lookupPrincipalByName(System.getProperty("user.name")) }
     private val users: UserPrincipal by lazy { lookup.lookupPrincipalByName("BUILTIN\\Users") }

@@ -1,96 +1,47 @@
 package io.github.shinma06.replaybuffer.core
 
-import com.sun.jna.Library
-import com.sun.jna.Memory
-import com.sun.jna.Native
-import com.sun.jna.NativeLibrary
-import com.sun.jna.Pointer
-import java.io.IOException
 import java.nio.ByteBuffer
 import java.nio.channels.FileChannel
-import java.nio.file.FileAlreadyExistsException
+import java.nio.file.OpenOption
 import java.nio.file.Path
 import java.nio.file.StandardOpenOption.READ
 import java.nio.file.StandardOpenOption.WRITE
 
-internal interface SaveFileDescriptors : Library {
-    fun open(path: String, flags: Int, vararg mode: Any): Int
-    fun openat(parent: Int, name: String, flags: Int, vararg mode: Any): Int
-    fun mkdirat(parent: Int, name: String, mode: Int): Int
-    fun unlinkat(parent: Int, name: String, flags: Int): Int
-    fun fsync(descriptor: Int): Int
-    fun close(descriptor: Int): Int
-    fun geteuid(): Int
-    fun fdopendir(descriptor: Int): Pointer?
-    fun closedir(directory: Pointer): Int
-    fun acl_get_fd_np(descriptor: Int, type: Int): Pointer?
-    fun acl_get_entry(acl: Pointer, entry: Int, result: Pointer): Int
-    fun acl_free(acl: Pointer): Int
+/**
+ * Handle-relative filesystem behind [SaveOutputDirectory] and [SaveOutputFile]: every child operation is relative to a
+ * held directory handle and never follows links. One implementation per OS, chosen by [HostPlatform].
+ */
+internal interface SaveHandles {
+    /** Root directory of the absolute, normalized [path]. */
+    fun openRoot(path: Path): Long
+    fun openDirectory(parent: Long, name: String): Long
+    /** Creates an owner-only directory and opens it. */
+    fun createDirectory(parent: Long, name: String): Long
+    fun openFile(parent: Long, name: String): Long
+    /** Creates an owner-only file exclusively, open for reading and writing. */
+    fun createFile(parent: Long, name: String): Long
+    /** Device/inode-like identity; also rejects links and the wrong kind of item. */
+    fun key(handle: Long, directory: Boolean): Pair<Long, Long>
+    /** Renames without replacing an existing destination. */
+    fun renameExclusive(sourceParent: Long, source: String, destinationParent: Long, destination: String)
+    fun deleteFile(parent: Long, name: String)
+    fun deleteEmptyDirectory(parent: Long, name: String)
+    fun flush(directory: Long)
+    fun entries(directory: Long): Set<String>
+    fun channel(handle: Long, options: Set<OpenOption>): FileChannel
+    fun requirePrivate(handle: Long, directory: Boolean)
+    fun close(handle: Long)
+    /** Rejects a single name that the OS would reinterpret; the portable rules are checked by the caller. */
+    fun requireName(name: String) {}
+    /** False where a directory cannot be renamed while files inside it are open. */
+    val renamesDirectoryWithOpenFiles: Boolean
 }
 
-private val mac = System.getProperty("os.name") == "Mac OS X"
-private val windows = System.getProperty("os.name").startsWith("Windows")
-private val arm = System.getProperty("os.arch") in listOf("aarch64", "arm64")
-private val descriptors by lazy {
-    check(System.getProperty("os.name") in listOf("Mac OS X", "Linux") && Native.POINTER_SIZE == 8 &&
-        System.getProperty("os.arch") in listOf("aarch64", "arm64", "amd64", "x86_64")) {
-        "この環境は保存出力の実体確認に対応していません"
-    }
-    Native.load("c", SaveFileDescriptors::class.java, mapOf(Library.OPTION_STRING_ENCODING to "UTF-8"))
-}
-// O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC, using each platform ABI.
-private val directoryFlags get() = if (mac) 0x01100100 else 0x000b0000
+private val handles get() = HostPlatform.saveHandles
 
 private fun childName(name: String) {
     require(name.isNotEmpty() && name != "." && name != ".." && '/' !in name && '\u0000' !in name)
-    require(!windows || name.none { it in "\\:<>\"|?*" || it < ' ' } && !name.endsWith('.') && !name.endsWith(' '))
-}
-
-private fun closeHandle(handle: Long) {
-    if (windows) WindowsSaveHandles.close(handle) else descriptors.close(handle.toInt())
-}
-
-private fun checkedDescriptor(descriptor: Int, name: String): Int {
-    if (descriptor < 0) {
-        if (Native.getLastError() == 17) throw FileAlreadyExistsException(name)
-        throw IOException("保存出力を開けません（errno=${Native.getLastError()}）")
-    }
-    return descriptor
-}
-
-private fun <T> stat(descriptor: Int, block: (Memory, Int) -> T): T = Memory(256).use { value ->
-    // Fixed Darwin/Linux 64-bit layouts; /dev/fd metadata substitutes the device ID on macOS.
-    val symbol = if (mac && !arm) "fstat\$INODE64" else "fstat"
-    if (NativeLibrary.getInstance("c").getFunction(symbol).invokeInt(arrayOf(descriptor, value)) != 0)
-        throw IOException("保存出力の実体を確認できません")
-    block(value, if (mac) value.getShort(4).toInt() and 0xffff else value.getInt(if (arm) 16 else 24))
-}
-
-private fun descriptorKey(descriptor: Int, type: Int): Pair<Long, Long> = stat(descriptor) { value, mode ->
-    check(mode and 0xf000 == type) { "保存出力の実体を確認できません" }
-    (if (mac) value.getInt(0).toLong() and 0xffffffffL else value.getLong(0)) to value.getLong(8)
-}
-
-private fun requirePrivate(descriptor: Int, permissions: Int) {
-    stat(descriptor) { value, mode ->
-        val uid = value.getInt(if (mac) 16 else if (arm) 24 else 28)
-        check(mode and 0xfff == permissions && uid == descriptors.geteuid()) { "未完成フォルダーのアクセス権を確認できません" }
-    }
-    if (mac) {
-        Native.setLastError(0)
-        val acl = descriptors.acl_get_fd_np(descriptor, 0x100)
-        if (acl == null) {
-            // Darwin filesec_get_property reports ENOENT for an absent ACL on this held descriptor.
-            if (Native.getLastError() == 2) return
-            throw IOException("未完成フォルダーのACLを確認できません")
-        }
-        try { Memory(Native.POINTER_SIZE.toLong()).use { entry ->
-            Native.setLastError(0)
-            check(descriptors.acl_get_entry(acl, 0, entry) == -1 && Native.getLastError() == 22) {
-                "未完成フォルダーに継承されたACLがあります"
-            }
-        } } finally { descriptors.acl_free(acl) }
-    }
+    handles.requireName(name)
 }
 
 /**
@@ -101,80 +52,64 @@ private fun requirePrivate(descriptor: Int, permissions: Int) {
  */
 internal class SaveOutputDirectory private constructor(internal val descriptor: Long) : AutoCloseable {
     private var closed = false
-    val key = if (windows) WindowsSaveHandles.key(descriptor, true) else descriptorKey(descriptor.toInt(), 0x4000)
+    val key = handles.key(descriptor, true)
 
     fun createDirectory(name: String): SaveOutputDirectory {
         check(!closed)
         childName(name)
-        if (windows) return fromDescriptor(WindowsSaveHandles.createDirectory(descriptor, name))
-        checkedDescriptor(descriptors.mkdirat(descriptor.toInt(), name, 0x1c0), name)
-        return openChild(name)
+        return fromDescriptor(handles.createDirectory(descriptor, name))
     }
 
     fun openChild(name: String): SaveOutputDirectory {
         check(!closed)
         childName(name)
-        if (windows) return fromDescriptor(WindowsSaveHandles.openDirectory(descriptor, name))
-        return fromDescriptor(checkedDescriptor(descriptors.openat(descriptor.toInt(), name, directoryFlags), name).toLong())
+        return fromDescriptor(handles.openDirectory(descriptor, name))
     }
 
     fun createFile(name: String): SaveOutputFile {
         check(!closed)
         childName(name)
-        if (windows) return SaveOutputFile.fromDescriptor(WindowsSaveHandles.createFile(descriptor, name))
-        return SaveOutputFile.fromDescriptor(checkedDescriptor(descriptors.openat(descriptor.toInt(), name,
-            if (mac) 0x01000b02 else 0x000a00c2, 0x180), name).toLong())
+        return SaveOutputFile.fromDescriptor(handles.createFile(descriptor, name))
     }
 
     fun openFile(name: String): SaveOutputFile {
         check(!closed)
         childName(name)
-        if (windows) return SaveOutputFile.fromDescriptor(WindowsSaveHandles.openFile(descriptor, name))
-        return SaveOutputFile.fromDescriptor(checkedDescriptor(descriptors.openat(descriptor.toInt(), name,
-            if (mac) 0x01000104 else 0x000a0800), name).toLong())
+        return SaveOutputFile.fromDescriptor(handles.openFile(descriptor, name))
     }
 
     fun moveFile(name: String, destination: SaveOutputDirectory, target: String) {
         check(!closed && !destination.closed)
         childName(name)
         childName(target)
-        renameExclusive(descriptor, name, destination.descriptor, target)
+        handles.renameExclusive(descriptor, name, destination.descriptor, target)
     }
 
     fun deleteFile(name: String, output: SaveOutputFile) {
         verifyFile(name, output)
-        if (windows) return WindowsSaveHandles.delete(descriptor, name, false)
-        check(descriptors.unlinkat(descriptor.toInt(), name, 0) == 0) { "保存したファイルを削除できません。アクセス権を確認してください。" }
+        handles.deleteFile(descriptor, name)
     }
 
     fun deleteEmptyDirectory(name: String) {
         check(!closed)
         childName(name)
-        if (windows) return runCatching { WindowsSaveHandles.delete(descriptor, name, true) }.getOrElse { error("削除用の空フォルダを片付けられません。") }
-        check(descriptors.unlinkat(descriptor.toInt(), name, if (mac) 0x80 else 0x200) == 0) { "削除用の空フォルダを片付けられません。" }
+        handles.deleteEmptyDirectory(descriptor, name)
     }
 
     fun flush() {
         check(!closed)
-        if (windows) return WindowsSaveHandles.flush(descriptor)
-        check(descriptors.fsync(descriptor.toInt()) == 0) { "保存先への書込み完了を確認できません。" }
+        handles.flush(descriptor)
     }
 
     fun verifyFile(name: String, output: SaveOutputFile) {
         check(!closed)
         childName(name)
-        if (windows) {
-            val current = WindowsSaveHandles.openFile(descriptor, name)
-            try { check(WindowsSaveHandles.key(current, false) == output.key) { "保存出力の実体が変更されています" } }
-            finally { WindowsSaveHandles.close(current) }
-            return
-        }
-        val current = checkedDescriptor(descriptors.openat(descriptor.toInt(), name, if (mac) 0x01000104 else 0x000a0800), name)
-        try { check(descriptorKey(current, 0x8000) == output.key) { "保存出力の実体が変更されています" } }
-        finally { descriptors.close(current) }
+        val current = handles.openFile(descriptor, name)
+        try { check(handles.key(current, false) == output.key) { "保存出力の実体が変更されています" } }
+        finally { handles.close(current) }
     }
 
-    fun requirePrivate() = if (windows) WindowsSaveHandles.requirePrivate(descriptor, true) else requirePrivate(descriptor.toInt(), 0x1c0)
+    fun requirePrivate() = handles.requirePrivate(descriptor, true)
 
     fun requireEntries(outputs: Map<String, SaveOutputFile>) {
         requirePrivate()
@@ -184,38 +119,20 @@ internal class SaveOutputDirectory private constructor(internal val descriptor: 
 
     fun entries(): Set<String> {
         check(!closed)
-        if (windows) return WindowsSaveHandles.entries(descriptor)
-        val duplicate = checkedDescriptor(descriptors.openat(descriptor.toInt(), ".", directoryFlags), ".")
-        val directory = descriptors.fdopendir(duplicate) ?: run {
-            descriptors.close(duplicate)
-            throw IOException("未完成フォルダーの内容を確認できません")
-        }
-        try {
-            val names = linkedSetOf<String>()
-            val symbol = if (mac && !arm) "readdir\$INODE64" else "readdir"
-            val read = NativeLibrary.getInstance("c").getFunction(symbol)
-            while (true) {
-                Native.setLastError(0)
-                val entry = read.invokePointer(arrayOf(directory))
-                if (entry == null) {
-                    if (Native.getLastError() != 0) throw IOException("未完成フォルダーの内容を確認できません")
-                    return names
-                }
-                val name = entry.getString(if (mac) 21 else 19, "UTF-8")
-                if (name != "." && name != "..") check(names.add(name)) { "未完成フォルダーの内容が変更されています" }
-            }
-        } finally { descriptors.closedir(directory) }
+        return handles.entries(descriptor)
     }
 
     override fun close() {
-        if (!closed) { closed = true; closeHandle(descriptor) }
+        if (!closed) { closed = true; handles.close(descriptor) }
     }
 
     companion object {
+        /** False where a directory cannot be renamed while files inside it are open; close them before publishing. */
+        val renamesWithOpenFiles get() = handles.renamesDirectoryWithOpenFiles
+
         fun open(path: Path): SaveOutputDirectory {
             require(path.isAbsolute && path == path.normalize())
-            var current = fromDescriptor(if (windows) WindowsSaveHandles.openRoot(path)
-                else checkedDescriptor(descriptors.open("/", directoryFlags), "/").toLong())
+            var current = fromDescriptor(handles.openRoot(path))
             try {
                 for (component in path) {
                     val next = current.openChild(component.toString())
@@ -227,7 +144,7 @@ internal class SaveOutputDirectory private constructor(internal val descriptor: 
         }
 
         private fun fromDescriptor(descriptor: Long): SaveOutputDirectory = try { SaveOutputDirectory(descriptor) }
-            catch (e: Throwable) { closeHandle(descriptor); throw e }
+            catch (e: Throwable) { handles.close(descriptor); throw e }
     }
 }
 
@@ -235,21 +152,19 @@ internal class SaveOutputDirectory private constructor(internal val descriptor: 
 internal class SaveOutputFile private constructor(private val descriptor: Long) : AutoCloseable {
     private var closed = false
     val isClosed get() = closed
-    val key = if (windows) WindowsSaveHandles.key(descriptor, false) else descriptorKey(descriptor.toInt(), 0x8000)
+    val key = handles.key(descriptor, false)
 
     fun channel(): FileChannel {
         check(!closed)
-        if (windows) return WindowsSaveHandles.channel(descriptor, setOf(READ, WRITE))
-        return FileChannel.open(Path.of(if (mac) "/dev/fd" else "/proc/self/fd", descriptor.toString()), READ, WRITE)
+        return handles.channel(descriptor, setOf(READ, WRITE))
     }
 
-    fun requirePrivate() = if (windows) WindowsSaveHandles.requirePrivate(descriptor, false) else requirePrivate(descriptor.toInt(), 0x180)
+    fun requirePrivate() = handles.requirePrivate(descriptor, false)
 
     fun hash(): String {
         check(!closed)
         val digest = java.security.MessageDigest.getInstance("SHA-256")
-        (if (windows) WindowsSaveHandles.channel(descriptor, setOf(READ))
-            else FileChannel.open(Path.of(if (mac) "/dev/fd" else "/proc/self/fd", descriptor.toString()), READ)).use { channel ->
+        handles.channel(descriptor, setOf(READ)).use { channel ->
             channel.position(0)
             val bytes = ByteBuffer.allocate(8192)
             while (channel.read(bytes) >= 0) { bytes.flip(); digest.update(bytes); bytes.clear() }
@@ -258,11 +173,11 @@ internal class SaveOutputFile private constructor(private val descriptor: Long) 
     }
 
     override fun close() {
-        if (!closed) { closed = true; closeHandle(descriptor) }
+        if (!closed) { closed = true; handles.close(descriptor) }
     }
 
     companion object {
         fun fromDescriptor(descriptor: Long): SaveOutputFile = try { SaveOutputFile(descriptor) }
-            catch (e: Throwable) { closeHandle(descriptor); throw e }
+            catch (e: Throwable) { handles.close(descriptor); throw e }
     }
 }

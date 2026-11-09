@@ -1,6 +1,7 @@
 package io.github.shinma06.replaybuffer.cli
 
 import com.intellij.util.lang.UrlClassLoader
+import io.github.shinma06.replaybuffer.core.HostPlatform
 import java.io.File
 import java.nio.file.Files
 import java.nio.file.FileSystems
@@ -36,7 +37,7 @@ class ReplayCliDistributionTest {
             }
         }
         val plugin = Files.list(extracted).use { it.toList().single() }
-        val windows = System.getProperty("os.name").startsWith("Windows")
+        val windows = HostPlatform.windows
         val suffix = if (windows) ".cmd" else ""
         val replay = plugin.resolve("bin/replay$suffix")
         val replayd = plugin.resolve("bin/replayd$suffix")
