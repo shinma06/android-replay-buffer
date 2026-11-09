@@ -7,16 +7,17 @@ import kotlin.test.assertTrue
 import org.junit.jupiter.api.Test
 
 class LegacyCliConfigTest {
-    private val cwd = Path.of("/working directory")
-    private val home = Path.of("/home/owner")
+    private val root = Path.of("").toAbsolutePath().root
+    private val cwd = root.resolve("working directory")
+    private val home = root.resolve("home").resolve("owner")
 
     @Test fun `explicit legacy defaults and relative paths retain their meaning`() {
         val defaults = LegacyCliConfig.parse("{}", false, cwd, home)
         assertEquals(60, defaults.seconds)
-        assertEquals("/home/owner/Replays", defaults.destination)
+        assertEquals(home.resolve("Replays").toString(), defaults.destination)
         val migrated = LegacyCliConfig.parse("""{"replay_seconds":90,"output_directory":"some recordings"}""", false, cwd, home)
         assertEquals(90, migrated.seconds)
-        assertEquals("/working directory/some recordings", migrated.destination)
+        assertEquals(cwd.resolve("some recordings").toString(), migrated.destination)
     }
 
     @Test fun `simple YAML and tilde keep legacy scalar meaning`() {
@@ -31,7 +32,7 @@ class LegacyCliConfigTest {
         """.trimIndent()
         val config = LegacyCliConfig.parse(text, true, cwd, home)
         assertEquals(15, config.seconds)
-        assertEquals("/home/owner/My Replays", config.destination)
+        assertEquals(home.resolve("My Replays").toString(), config.destination)
         assertEquals(config, LegacyCliConfig.parse(text.prependIndent("  "), true, cwd, home))
         for (key in listOf("segment_seconds", "state_directory", "scrcpy_path", "ffmpeg_path")) assertTrue(config.warning.contains(key))
     }

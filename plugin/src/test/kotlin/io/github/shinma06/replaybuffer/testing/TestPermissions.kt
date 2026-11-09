@@ -35,14 +35,16 @@ object TestPermissions {
         val entries = mutableListOf<AclEntry>()
         if (directory && mode[1] != 'w') {
             entries += entry(AclEntryType.DENY, owner, writes, false)
-            val children = Files.list(path).use { stream -> stream.toList() }.associateWith { view(it).acl }
+            val children = Files.list(path).use { stream -> stream.toList() }
+                .mapNotNull { child -> runCatching { child to view(child).acl }.getOrNull() }.toMap()
             children.forEach { (child, acl) -> view(child).acl = listOf(entry(AclEntryType.DENY, owner, setOf(DELETE), false)) + acl }
             deniedChildren[path] = children
         }
         entries += entry(AclEntryType.ALLOW, owner, bits(mode.substring(0, 3)) + setOf(READ_ACL, WRITE_ACL, READ_ATTRIBUTES, SYNCHRONIZE), directory)
         if (mode.substring(3, 6) != "---") entries += entry(AclEntryType.ALLOW, users, bits(mode.substring(3, 6)), directory)
         if (mode.substring(6, 9) != "---") entries += entry(AclEntryType.ALLOW, everyone, bits(mode.substring(6, 9)), directory)
-        view(path).acl = entries
+        // An elevated Windows token makes Administrators the default owner; tests model the user's own items.
+        view(path).let { it.owner = owner; it.acl = entries }
     }
 
     @JvmStatic fun get(path: Path): String {

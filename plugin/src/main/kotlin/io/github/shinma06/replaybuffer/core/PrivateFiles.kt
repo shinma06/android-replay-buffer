@@ -55,7 +55,11 @@ internal object PrivateFiles {
     }
 
     fun openNew(path: Path, options: Set<OpenOption>): FileChannel {
-        val channel = FileChannel.open(path, options, attribute(false))
+        val channel = try { FileChannel.open(path, options, attribute(false)) } catch (denied: java.nio.file.AccessDeniedException) {
+            // Windows reports CREATE_NEW over an existing directory as access denied; POSIX reports it as existing.
+            if (!posix && Files.exists(path, NOFOLLOW_LINKS)) throw java.nio.file.FileAlreadyExistsException(path.toString()).apply { initCause(denied) }
+            throw denied
+        }
         try {
             if (!posix) restrict(path, false)
         } catch (failure: Exception) {

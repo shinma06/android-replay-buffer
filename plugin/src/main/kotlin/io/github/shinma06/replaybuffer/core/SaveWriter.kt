@@ -20,6 +20,8 @@ import java.util.Base64
 import java.util.UUID
 import java.util.concurrent.CancellationException
 
+private val windowsHost = System.getProperty("os.name").startsWith("Windows")
+
 internal data class SaveOutput(val directory: Path, val missingKinds: List<String>)
 
 internal class SaveFailure(val partial: Path?, message: String, cause: Throwable? = null) : Exception(message, cause)
@@ -576,6 +578,8 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
             checkActive()
             own.keys.forEach(::checkOwned)
             checkEntries()
+            // Windows refuses to rename a directory while files inside it are open; verification needs only their identities.
+            if (windowsHost) own.values.forEach(SaveOutputFile::close)
             publish(SavePublication(partial, complete, parentHandle, staging) { checkEntries() })
             own.keys.forEach { checkOwned(complete.resolve(it.fileName)) }
             checkEntries()
@@ -583,14 +587,17 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
         } catch (e: Throwable) {
             if (e !is Exception && e !is LinkageError) throw e
             // No path-based deletion: ownership checks cannot make a subsequent unlink conditional on identity.
-            manifest?.let { value -> own[partial?.resolve("session.json")]?.let { output -> runCatching {
-                output.channel().use { channel ->
+            manifest?.let { value -> own[partial?.resolve("session.json")]?.let { held -> runCatching {
+                val output = if (!held.isClosed) held else staging!!.openFile("session.json").also { reopened ->
+                    if (reopened.key != held.key) { reopened.close(); error("保存出力の実体が変更されています") }
+                }
+                try { output.channel().use { channel ->
                     channel.position(0)
                     channel.truncate(0)
                     val bytes = ByteBuffer.wrap(gson.toJson(value + ("complete" to false)).toByteArray(Charsets.UTF_8))
                     while (bytes.hasRemaining()) channel.write(bytes)
                     channel.force(true)
-                }
+                } } finally { if (output !== held) output.close() }
             } } }
             val retained = listOfNotNull(partial, complete).firstOrNull(::ownsDirectory)
             val location = retained?.let { "。未完成の出力を保全しています: $it" } ?: ""

@@ -234,6 +234,7 @@ internal class SaveOutputDirectory private constructor(internal val descriptor: 
 /** Keep the descriptor alive across pathname changes; callers also close every separately opened channel. */
 internal class SaveOutputFile private constructor(private val descriptor: Long) : AutoCloseable {
     private var closed = false
+    val isClosed get() = closed
     val key = if (windows) WindowsSaveHandles.key(descriptor, false) else descriptorKey(descriptor.toInt(), 0x8000)
 
     fun channel(): FileChannel {
