@@ -150,6 +150,10 @@ Rabbit SDKの`android.jar`内`META-INF/logcat.xml`に登録されたID `Logcat`�
 
 [Case #104](../verification/changes/issue-104.json)は未実施の実IDE/keyboard/theme/DPI受入を追跡する。自動回帰の標準LAF/拡大font・280幅の往復・headless描画は実IDEの操作事実ではない。最終固定候補で既存#329/#298/#337と必要#283の共有観察へ接続し、旧FAIL/UNKNOWN・human/REAL・性能未達を保持する。更新前のAX index・ボタン名・寸法は現在値とせず、実操作前に再同定する。
 
+## Running Devicesの操作ボタン（#23）
+
+Android StudioのRunning Devices上部のtoolbarに、取得のON/OFF・`直前N秒を保存`・`スクリーンショット` を追加する。外部プラグイン向けの公開action group `StreamingToolbarSecondary`（Layout Inspectorも使う枠）へ `add-to-group` で登録し、Running DevicesのSwing treeやfactoryには触れない。各actionはToolWindowと同じ `ReplayProjectService` の操作を呼び、有効・無効と理由もToolWindowと同じ規則で示す。結果はToolWindowと同じ通知で示す。表示中の端末と録画対象の端末が違っても、操作の対象は録画対象の端末のままとする。OSによる違いはない。
+
 ## 実装のAPI境界
 
 UIには取得エンジンの実装、LogcatのSwingツリー、タイムライン変換を持たせない。新たな汎用interface群やDBを先に作らず、projectの取得所有者に表示snapshotと明示操作をまとめる。PMのコア契約へ接続する最小の値と操作は次のとおり。型名・API名は実装担当間で確定するための案であり、新たな公開SDKを要求するものではない。
