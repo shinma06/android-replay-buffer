@@ -10,7 +10,7 @@
 | 仕様 | [製品要件](requirements.md)、[保存設計](plugin-design.md)、[CLI互換・移行](cli.md)。実装・自動テスト・実機受入を区別する |
 | テスト | `plugin/src/test/`のcore・IDE接続・CLI通信/設定/保存結果・配布物検査。実機録画とIDE操作の受入は[Case台帳](verification/README.md)で別途確認する |
 | 開発 | Devinが担当し、セッションはEntireに記録する。進め方は[AGENTS.md](../AGENTS.md)、旧運用は[legacy-ops](legacy-ops/README.md) |
-| 統合先 | 製品変更は `develop`。実機・IDEで確認した候補を `main` へ反映し、`vX.Y.Z`タグでGitHub Releaseを作る |
+| 統合先 | 製品変更は `develop`。`develop`のCI（Linux・macOS・Windows）が通るたびに、そのZIPでプレリリース`early`を差し替える（VM受入なしの開発版で、Latestにはしない）。VMでIDE・エミュレータ受入をした候補を `main` へ反映し、`vX.Y.Z`タグでGitHub Releaseを作る |
 | 必須checks | `test`（`plugin_check.py`） |
 | 管理 | Entire Trails。既存のGitHub Issueは背景情報で、目的を達成したか不要になった時点で閉じる |
 | Android Studio plugin | `plugin/`に取得コア・ToolWindow・設定・SDK/対象アプリ解決・情報表示actionを実装。初期版はmain反映済み。第2版のbuild SDKはRabbit 2（#391で更新、互換性受入は別）/ JDK 27（JVM/API target 25）/ Gradle 9.8.1 / Kotlin 2.4.21、ID `io.github.shinma06.android-replay-buffer`。[現行の開発手順](plugin-development.md)と固定候補ごとの受入を区別する |

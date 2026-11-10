@@ -9,7 +9,8 @@ permissions:
   contents: read
 concurrency:
   group: ci-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  # develop/main pushes queue instead of cancelling, so a running early publish always finishes.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   test:
     name: test
@@ -90,3 +91,64 @@ jobs:
           name: test-results-${{ matrix.os }}
           path: plugin/build/test-results/test/*.xml
           retention-days: 3
+  early:
+    name: early
+    needs: [test, os-parity]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/develop'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      actions: read
+    concurrency:
+      group: early-release
+      cancel-in-progress: false
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      SHA: ${{ github.sha }}
+      RUN_ID: ${{ github.run_id }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - name: Replace the early prerelease with the develop CI ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          current="$(gh api "repos/$GH_REPO/git/ref/heads/develop" -q .object.sha)"
+          if [ "$current" != "$SHA" ]; then
+            echo "develop moved to $current; skipping superseded $SHA"
+            exit 0
+          fi
+          dist="$RUNNER_TEMP/early"
+          gh run download "$RUN_ID" -n "plugin-$SHA" -D "$dist"
+          shopt -s nullglob
+          zips=("$dist"/*.zip)
+          [ "${#zips[@]}" -eq 1 ] || { echo "expected one ZIP, found ${#zips[@]}"; exit 1; }
+          zip="${zips[0]}"
+          name="$(basename "$zip")"
+          case "$name" in
+            android-replay-buffer-plugin-*-dev."$SHA".zip) ;;
+            *) echo "unexpected ZIP name: $name"; exit 1 ;;
+          esac
+          version="${name#android-replay-buffer-plugin-}"
+          version="${version%.zip}"
+          sha256="$(sha256sum "$zip" | cut -d' ' -f1)"
+          gh release upload early "$zip" --clobber
+          notes="$RUNNER_TEMP/early-notes.md"
+          {
+            echo "# Android Replay Buffer early"
+            echo
+            echo "\`develop\` の最新の開発版です。Linux・macOS・WindowsのCIは通っていますが、VMでのIDE・エミュレータ受入はしていません。正式版は [Latest](https://github.com/$GH_REPO/releases/latest) を使ってください。"
+            echo
+            echo "[インストール用ZIP](https://github.com/$GH_REPO/releases/download/early/$name)"
+            echo
+            echo "- Plugin version: \`$version\`"
+            echo "- Commit: \`$SHA\`"
+            echo "- SHA-256: \`$sha256\`"
+            echo "- CI: $RUN_URL"
+          } > "$notes"
+          gh release edit early --prerelease --latest=false --notes-file "$notes"
+          gh api -X PATCH "repos/$GH_REPO/git/refs/tags/early" -f sha="$SHA" -F force=true > /dev/null
+          gh release view early --json assets -q '.assets[].name' | while read -r asset; do
+            if [ "$asset" != "$name" ]; then gh release delete-asset early "$asset" -y; fi
+          done
