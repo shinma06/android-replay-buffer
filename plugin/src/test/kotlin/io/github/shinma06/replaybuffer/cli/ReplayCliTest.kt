@@ -281,6 +281,11 @@ class ReplayCliTest {
         assertEquals(0, runCli(temporary.resolve("missing"), listOf("--help")).first)
         assertEquals(2, runCli(temporary.resolve("missing"), listOf("start")).first)
         assertEquals(1, runCli(temporary.resolve("missing"), listOf("status")).first)
+        val error = ByteArrayOutputStream()
+        val code = ReplayCli.run(listOf("status"), PrintStream(ByteArrayOutputStream()), PrintStream(error, true, Charsets.UTF_8),
+            temporary.resolve("missing")) { error("配布物のCLIを利用してください。") }
+        assertEquals(1, code)
+        assertEquals("配布物のCLIを利用してください。\n", error.toString(Charsets.UTF_8))
     }
 
     private fun runCli(registry: Path, args: List<String>, build: String = "build"): Triple<Int, String, String> {

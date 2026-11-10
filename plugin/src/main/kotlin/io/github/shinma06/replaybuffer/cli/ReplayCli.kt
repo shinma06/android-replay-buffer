@@ -134,7 +134,12 @@ mcp: 標準入出力のMCPサーバーとして動き、エージェントへ状
         if (parsed.command == null) {
             return ReplayMcpServer(System.`in`, output, error, parsed.project, directory, build).run()
         }
-        val response = exchange(directory, parsed.project, build(), CliRequest(parsed.command, config,
+        val identity = try { build() } catch (failure: Exception) {
+            error.line((failure as? IllegalArgumentException ?: failure as? IllegalStateException)?.message
+                ?: "CLI接続先または設定ファイルを確認できません。IDE/project、パスとアクセス権を確認してください。")
+            return 1
+        }
+        val response = exchange(directory, parsed.project, identity, CliRequest(parsed.command, config,
             parsed.config?.fileName?.toString()?.let { it.endsWith(".yaml") || it.endsWith(".yml") } == true,
             Path.of("").toAbsolutePath().normalize().toString()))
         if (response.output.isNotEmpty()) output.line(response.output)
