@@ -139,6 +139,7 @@ internal class DisplaySizeWatch(
  * Folds `getevent -lt` lines (protocol B slots) into pointer samples emitted at each SYN_REPORT.
  * Rotation is not applied: coordinates are in the panel's natural orientation, as the kernel reports them.
  * Raw axis values are kept and scaled at each report, so [resize] applies to every later sample as a whole.
+ * [initial] holds each device's current slot and its X/Y at reader start; other slots start without axis values.
  *
  * evdev only reports changed axes, so SYN_DROPPED does not clear state. Each slot keeps its last X/Y; the current slot
  * and its X/Y are re-read through [TouchSync.current]. Pointers that were down end with `up` at the drop time, events
@@ -147,6 +148,7 @@ internal class DisplaySizeWatch(
  */
 internal class TouchParser(
     private val axes: Map<String, TouchAxes>, width: Int, height: Int, private val sync: TouchSync = object : TouchSync {},
+    initial: Map<String, TouchCurrent> = emptyMap(),
 ) {
     private class Slot(
         var tracking: Int = -1, var x: Int? = null, var y: Int? = null, var down: Boolean = false, var dirty: Boolean = false,
@@ -162,6 +164,11 @@ internal class TouchParser(
         private set
     var height = height
         private set
+
+    init {
+        // evdev does not resend current values to a new reader, so start from the slot and X/Y read just before it.
+        initial.filterKeys { it in axes }.forEach { (device, now) -> applyCurrent(device, now, known = true) }
+    }
 
     fun resize(width: Int, height: Int) {
         this.width = width
@@ -229,16 +236,18 @@ internal class TouchParser(
             s.known = false
             up
         }
-        sync.current(device)?.let { now ->
-            now.slot?.let { current[device] = it }
-            val s = deviceSlots.getOrPut(current[device] ?: 0) { Slot(known = false) }
-            now.x?.let { s.x = it }
-            now.y?.let { s.y = it }
-        }
+        sync.current(device)?.let { applyCurrent(device, it, known = false) }
         discarding += device
         if (device !in resyncing) sync.lost(device, monoNs)
         resyncing[device] = false
         return ended
+    }
+
+    private fun applyCurrent(device: String, now: TouchCurrent, known: Boolean) {
+        now.slot?.let { current[device] = it }
+        val s = slots.getOrPut(device) { mutableMapOf() }.getOrPut(current[device] ?: 0) { Slot(known = known) }
+        now.x?.let { s.x = it }
+        now.y?.let { s.y = it }
     }
 
     private fun scale(value: Int, max: Int, size: Int): Int =

@@ -149,6 +149,36 @@ class TouchEventsTest {
     }
 
     @Test
+    fun `a first tap that omits an axis uses the X and Y read at reader start`() {
+        val parser = TouchParser(parseTouchDevices(devices), 1080, 2400,
+            initial = mapOf("/dev/input/event2" to TouchCurrent(slot = 0, x = 0x7fff, y = 0)))
+        val lines = """
+            [     50.000000] EV_ABS       ABS_MT_TRACKING_ID   00000009
+            [     50.000000] EV_ABS       ABS_MT_POSITION_Y    00007fff
+            [     50.000000] EV_SYN       SYN_REPORT           00000000
+            [     50.050000] EV_ABS       ABS_MT_TRACKING_ID   ffffffff
+            [     50.050000] EV_SYN       SYN_REPORT           00000000
+        """.trimIndent().lines()
+        assertEquals(listOf(
+            TouchSample(50_000_000_000, "/dev/input/event2", 0, TouchAction.DOWN, 1079, 2399),
+            TouchSample(50_050_000_000, "/dev/input/event2", 0, TouchAction.UP, 1079, 2399),
+        ), lines.flatMap(parser::feed))
+    }
+
+    @Test
+    fun `a first tap that omits the slot event uses the slot read at reader start`() {
+        val parser = TouchParser(parseTouchDevices(devices), 1080, 2400,
+            initial = parseTouchCurrent(devices.replace("ABS_MT_SLOT           : value 0", "ABS_MT_SLOT           : value 2")))
+        val lines = """
+            [     60.000000] EV_ABS       ABS_MT_TRACKING_ID   0000000a
+            [     60.000000] EV_ABS       ABS_MT_POSITION_X    00007fff
+            [     60.000000] EV_SYN       SYN_REPORT           00000000
+        """.trimIndent().lines()
+        // Y was 0 in getevent -lp and is not resent.
+        assertEquals(listOf(TouchSample(60_000_000_000, "/dev/input/event2", 2, TouchAction.DOWN, 1079, 0)), lines.flatMap(parser::feed))
+    }
+
+    @Test
     fun `current slot and position are read from getevent -lp values`() {
         val output = devices.replace("ABS_MT_SLOT           : value 0", "ABS_MT_SLOT           : value 3")
             .replace("ABS_MT_POSITION_X     : value 0", "ABS_MT_POSITION_X     : value 120")

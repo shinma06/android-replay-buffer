@@ -276,7 +276,8 @@ internal class DeviceCapture @JvmOverloads constructor(
 
     private fun touches() {
         if (!touchesApplied) store.touchDots(runCatching(::applyShowTouches).getOrDefault(TouchDots.FAILED), generation)
-        val axes = parseTouchDevices(adb.command("-s", serial, "shell", "getevent", "-lp"))
+        val devices = adb.command("-s", serial, "shell", "getevent", "-lp")
+        val axes = parseTouchDevices(devices)
         if (axes.isEmpty()) {
             status("touch", StreamState.UNAVAILABLE, "タッチパネルの入力deviceが見つかりません")
             while (pause(1000)) { /* No multi-touch device: keep video capture unaffected. */ }
@@ -291,7 +292,7 @@ internal class DeviceCapture @JvmOverloads constructor(
                 parseTouchCurrent(adb.command("-s", serial, "shell", "getevent", "-lp", device))[device]
             }.getOrNull()
             override fun resynced(device: String, toNs: Long) = store.touchResynced(device, toNs, generation, received)
-        })
+        }, parseTouchCurrent(devices))
         check(!stopping.get())
         val process = adb.start("-s", serial, "shell", "getevent", "-lt", *listOfNotNull(axes.keys.singleOrNull()).toTypedArray())
         try {
