@@ -43,6 +43,8 @@ internal data class FrozenCapture(
     val clockRecoveries: Map<CaptureGap, ClockSample> = emptyMap(),
     val videoCuts: Map<CaptureGap, VideoCut> = emptyMap(),
     val autoTrigger: AutoTrigger? = null,
+    /** Host receive time before which nothing can be in the window when the device clock mapping is unknown. */
+    val hostStart: Long? = null,
 ) {
     val empty: Boolean get() = video.isEmpty() && logs.isEmpty()
     val windowKnown: Boolean get() = endUncertainty != Long.MAX_VALUE
@@ -389,6 +391,14 @@ internal class CaptureStore(
         val uncertainty = clock.endUncertainty()
         // An unknown boot bridge/current T cannot prove that old known-epoch records are outside the window.
         if (uncertainty == Long.MAX_VALUE) {
+            // A record is generated before it is received, so one received before every possible window start is outside.
+            val cutoff = System.nanoTime() - seconds * 1_000_000_000L - HOST_WINDOW_MARGIN_NS
+            if (captureMode.videoRequested) {
+                val all = video.toList()
+                val firstInside = all.indices.firstOrNull { (all.getOrNull(it + 1)?.host ?: Long.MAX_VALUE) >= cutoff } ?: all.size
+                repeat((minOf(firstInside, all.lastIndex) downTo 0).firstOrNull { all[it].key } ?: 0) { removeVideo() }
+            }
+            pruneLogs { _, _, host -> host < cutoff }
             enforceVideoLimit()
             deleteUnused()
             return
@@ -453,6 +463,7 @@ internal class CaptureStore(
         val uncertainty = fixedUncertainty ?: clock.endUncertainty(host)
         val known = uncertainty != Long.MAX_VALUE
         val start = maxOf(0L, started ?: end, end - settings.replaySeconds * 1_000_000_000L)
+        val hostStart = if (known || fixedEnd != null) null else host - settings.replaySeconds * 1_000_000_000L - HOST_WINDOW_MARGIN_NS
         val logTime = clock.logMapper()
         val latest = clock.latestSequence()
         // An unknown-time record received before a clock read that is already before the window cannot be inside it.
@@ -460,7 +471,8 @@ internal class CaptureStore(
         val rows = logs.map { row -> row.copy(time = logTime(row.source.wall, row.host)) }.filter { row ->
             val point = row.time.sequence
             val error = row.time.uncertainty
-            if (!known || error < 0 || uncertainty < 0) true
+            if (!known) hostStart == null || row.host >= hostStart
+            else if (error < 0 || uncertainty < 0) true
             else if (point == null || error == Long.MAX_VALUE) !beforeWindow(row.host)
             else try {
                 val margin = Math.addExact(error, uncertainty)
@@ -476,8 +488,10 @@ internal class CaptureStore(
         val files = mutableSetOf<Path>()
         all.forEachIndexed { index, entry ->
             val unknownTime = entry.time.sequence == null || entry.time.uncertainty == Long.MAX_VALUE
-            if (!known || unknownTime && !(uncertainty >= 0 && displayEndedBefore(all, index, latest, start - uncertainty)) ||
-                entry.retainedAt <= end && entry.retainedAt >= start) {
+            val inside = if (!known) hostStart == null || (all.getOrNull(index + 1)?.host ?: Long.MAX_VALUE) >= hostStart
+                else unknownTime && !(uncertainty >= 0 && displayEndedBefore(all, index, latest, start - uncertainty)) ||
+                    entry.retainedAt <= end && entry.retainedAt >= start
+            if (inside) {
                 files.add(entry.file)
                 if (index > 0 && continuousAcrossCut(all[index - 1], entry, start)) files.add(all[index - 1].file)
             }
@@ -489,7 +503,7 @@ internal class CaptureStore(
         var value = FrozenCapture(UUID.randomUUID().toString(), sequence, generation, start, end,
             settings.replaySeconds, frames.toList(), rows.toList(), gaps.toList(), clock.snapshot(), apps.toList(), settings,
             streams(settings.replaySeconds, end), endUncertainty = uncertainty, windowClockEpoch = fixedEpoch ?: clock.currentEpoch(),
-            clockRecoveries = clockRecoveries.toMap(), videoCuts = videoCuts.toMap())
+            clockRecoveries = clockRecoveries.toMap(), videoCuts = videoCuts.toMap(), hostStart = hostStart)
         if (trigger != null) {
             autosave.admissionProblem(trigger, host)?.let { throw AutoSaveRejected(it) }
             if (fixedEnd != null || !clock.certain(host)) throw AutoSaveRejected(AutoSaveReason.NOT_SAVED_CLOCK_UNKNOWN)
@@ -788,3 +802,6 @@ internal fun FrozenCapture.applicationHistory(): List<ApplicationPeriodSnapshot>
     if (windowKnown && offset != null && (from != null && from > end || to != null && to < start)) null else
         ApplicationPeriodSnapshot(app.packageName, from?.coerceAtLeast(start), to?.coerceAtMost(end), app.epoch, app.uid != null)
 })
+
+/** Covers device/host clock rate drift over the longest replay window. */
+private const val HOST_WINDOW_MARGIN_NS = 250_000_000L
