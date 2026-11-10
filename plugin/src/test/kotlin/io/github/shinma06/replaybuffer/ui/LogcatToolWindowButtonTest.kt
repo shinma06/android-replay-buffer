@@ -227,4 +227,49 @@ class LogcatToolWindowButtonTest {
             assertEquals(listOf("show", "hide"), operations)
         }
     }
+
+    @Test
+    fun `an empty Logcat is shown first so the IDE creates a tab and the selection survives the show`() {
+        SwingUtilities.invokeAndWait {
+            var visible = false
+            val operations = mutableListOf<String>()
+            val window = Proxy.newProxyInstance(ToolWindow::class.java.classLoader, arrayOf(ToolWindow::class.java)) { _, method, _ ->
+                when (method.name) {
+                    "isVisible" -> visible
+                    "isAvailable" -> true
+                    "isDisposed" -> false
+                    "show", "hide" -> { operations += method.name; visible = method.name == "show"; null }
+                    else -> error("Unexpected ToolWindow call: ${method.name}")
+                }
+            } as ToolWindow
+            var empty = true
+            var next = CompletableFuture<String?>()
+            val button = LogcatToolWindowButton({ true }, { ReplayDevice("A", "target", DeviceKind.PHYSICAL, true) },
+                { _, _, _, _ -> operations += "select"; next }, { empty }) { window }
+            button.refresh()
+            button.doClick(0)
+            assertEquals(listOf("show", "select"), operations)
+            button.cancelOpen()
+            button.refresh()
+            assertFalse(next.isCancelled)
+            assertEquals("Logcatを開くのを中止", button.text)
+            next.complete(null)
+            assertEquals(listOf("show", "select"), operations)
+            assertEquals("Logcatを閉じる", button.text)
+            button.doClick(0)
+            assertEquals(listOf("show", "select", "hide"), operations)
+            next = CompletableFuture()
+            button.doClick(0)
+            visible = false
+            button.refresh()
+            assertTrue(next.isCancelled)
+            empty = false
+            operations.clear()
+            next = CompletableFuture()
+            button.doClick(0)
+            assertEquals(listOf("select"), operations)
+            next.complete(null)
+            assertEquals(listOf("select", "show"), operations)
+        }
+    }
 }

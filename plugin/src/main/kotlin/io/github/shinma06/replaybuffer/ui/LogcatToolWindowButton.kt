@@ -21,6 +21,8 @@ internal class LogcatToolWindowButton(
     private val alive: () -> Boolean,
     private val target: () -> ReplayDevice?,
     private val selectDevice: (ToolWindow, String, BooleanSupplier, Long) -> CompletableFuture<String?>,
+    /** True when Logcat has no tab to select a device in; the IDE creates one only when the window is shown. */
+    private val needsTab: (ToolWindow) -> Boolean = { false },
     private val logcat: () -> ToolWindow?,
 ) : JButton(), Disposable {
     private var failure: String? = null
@@ -29,6 +31,8 @@ internal class LogcatToolWindowButton(
     private var pending: CompletableFuture<String?>? = null
     @Volatile
     private var disposed = false
+    /** The pending selection runs on a window shown first, so showing it must not cancel the request. */
+    private var selectingShown = false
 
     init {
         addActionListener {
@@ -47,6 +51,17 @@ internal class LogcatToolWindowButton(
                     if (device != null) {
                         failedSerial = device.serial
                         failure = null
+                        val shown = try {
+                            needsTab(window)
+                        } catch (_: LinkageError) {
+                            false
+                        } catch (_: RuntimeException) {
+                            false
+                        }
+                        if (shown) {
+                            selectingShown = true
+                            window.show()
+                        }
                         val request: CompletableFuture<String?> = try {
                             selectDevice(window, device.serial, BooleanSupplier {
                                 isAlive() && target()?.let { it.connected && it.serial == device.serial } == true
@@ -63,6 +78,7 @@ internal class LogcatToolWindowButton(
                             val finish = Runnable {
                                 if (pending !== request) return@Runnable
                                 pending = null
+                                selectingShown = false
                                 if (!isAlive()) return@Runnable
                                 if (request.isCancelled) {
                                     refresh()
@@ -92,7 +108,7 @@ internal class LogcatToolWindowButton(
     fun refresh() {
         val window = availableWindow()
         val device = if (isAlive()) target() else null
-        if (window == null || window.isVisible || device?.connected != true || device.serial != failedSerial) cancelPending()
+        if (window == null || window.isVisible != selectingShown || device?.connected != true || device.serial != failedSerial) cancelPending()
         if (window?.isVisible == true || device?.serial != failedSerial) failure = null
         val targetReason = when {
             device == null || device.serial.isBlank() -> "取得を有効にしてReplay Bufferの対象端末を確定してください。"
@@ -101,15 +117,15 @@ internal class LogcatToolWindowButton(
         }
         isEnabled = window != null && (window.isVisible || targetReason == null)
         text = when {
-            window?.isVisible == true -> "Logcatを閉じる"
             pending != null -> "Logcatを開くのを中止"
+            window?.isVisible == true -> "Logcatを閉じる"
             else -> "Logcatを開く"
         }
         toolTipText = when {
             window == null -> "このprojectではIDE標準Logcatを利用できません。"
+            pending != null -> "対象端末のLogcatを準備しています（最大5秒）。再度押すと中止します。"
             window.isVisible -> "IDE標準Logcatパネルを非表示にします。"
             targetReason != null -> targetReason
-            pending != null -> "対象端末のLogcatを準備しています（最大5秒）。再度押すと中止します。"
             failure != null -> failure
             else -> "Replay Bufferの対象端末（${device?.serial}）に合わせてIDE標準Logcatを表示します。"
         }
@@ -118,13 +134,15 @@ internal class LogcatToolWindowButton(
     }
 
     private fun cancelPending() {
-        val request = pending
+        val request = pending ?: return
         pending = null
-        request?.cancel(false)
+        selectingShown = false
+        request.cancel(false)
     }
 
+    /** Called when the IDE shows Logcat; only a selection on an already shown window survives it. */
     fun cancelOpen() {
-        cancelPending()
+        if (!selectingShown) cancelPending()
         refresh()
     }
 
