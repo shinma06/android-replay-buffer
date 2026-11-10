@@ -97,6 +97,10 @@ class ReplayCoreWireTest {
         val discardedFrameSent = CountDownLatch(1)
         val readyConnections = java.util.concurrent.atomic.AtomicInteger()
         var bindReadyAt = 0L
+        // Device wall clock ticking with `mono`, as on a real device. Windows currentTimeMillis follows the
+        // system timer tick (up to 15.6 ms, later under load), which CaptureClock rightly treats as a wall jump.
+        val wallOffset = System.currentTimeMillis() * 1_000_000 - System.nanoTime()
+        fun fakeWall() = System.nanoTime() + wallOffset
         // Use the same JVM clock as the synthetic video PTS; Python's monotonic origin is platform/version dependent.
         val clockAccept = thread(isDaemon = true, name = "replay-clock-fixture") {
             while (!stop.get()) runCatching {
@@ -109,7 +113,7 @@ class ReplayCoreWireTest {
                             val nonce = input.readLine() ?: break
                             val before = System.nanoTime()
                             val mono = System.nanoTime()
-                            val wall = System.currentTimeMillis() * 1_000_000
+                            val wall = fakeWall()
                             val after = System.nanoTime()
                             output.write("$nonce\t$before\t$mono\t$wall\t$after\n"); output.flush()
                         }
@@ -275,7 +279,7 @@ elif len(a)>3 and a[3]=='ps':
                 assertTrue(core.updateApplication(ApplicationTarget("com.fixture.app")).get().accepted)
                 assertTrue(core.applySettings(core.snapshot().settings.copy(saveDirectory = root, autoSaveOnCrash = true)).get().accepted)
                 awaitState("auto-armed") { it.autoSave.state == AutoSaveState.ARMED && it.captureState == CaptureState.CAPTURING }
-                val wall = System.currentTimeMillis() * 1_000_000
+                val wall = fakeWall()
                 val sources = listOf(javaCrash(process = "com.fixture.app", pid = 12, uid = 10001, wall = wall),
                     platformCrash(process = "com.fixture.app", first = 12, wall = wall + 1_000_000))
                 Files.writeString(root.resolve("crash-wire.tmp"), sources.joinToString("\n") {
@@ -369,7 +373,7 @@ elif len(a)>3 and a[3]=='ps':
                 Files.delete(root.resolve("fail-all"))
                 awaitState("quiet-reader-recovered") { it.canSave && it.deviceLog.state == StreamState.CAPTURING }
                 Files.delete(root.resolve("quiet-logs"))
-                Files.writeString(root.resolve("log-events.txt"), "${System.currentTimeMillis() * 1_000_000} live\n")
+                Files.writeString(root.resolve("log-events.txt"), "${fakeWall()} live\n")
                 awaitState("both-readers-live") { Files.exists(root.resolve("main-live.sent")) && Files.exists(root.resolve("all-live.sent")) }
                 Thread.sleep(1200) // Retain a subsequent clock sample for mapping both readers' rows.
                 Files.createFile(root.resolve("fail-all"))
@@ -451,7 +455,7 @@ elif len(a)>3 and a[3]=='ps':
                 }
                 fun emit(label: String, buffer: String = if (logMode == "partition") "main" else "all") {
                     assertEquals(readers.getValue(buffer), ready(buffer))
-                    Files.writeString(root.resolve("log-events.txt"), "${System.currentTimeMillis() * 1_000_000} $label\n",
+                    Files.writeString(root.resolve("log-events.txt"), "${fakeWall()} $label\n",
                         java.nio.file.StandardOpenOption.APPEND)
                     sent(buffer, label)
                 }
