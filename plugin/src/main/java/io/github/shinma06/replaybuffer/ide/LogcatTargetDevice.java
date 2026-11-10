@@ -27,20 +27,72 @@ public final class LogcatTargetDevice {
     private LogcatTargetDevice() {}
 
     public static CompletableFuture<String> prepare(ToolWindow window, String serial, BooleanSupplier active, long deadlineNs) {
+        return prepare(window, serial, active, deadlineNs, false);
+    }
+
+    /** Whether Logcat has no tab; the native factory creates one only when the window is shown. */
+    public static boolean needsTab(ToolWindow window) {
+        if (window.isDisposed() || !window.isAvailable()) return false;
+        var selected = window.getContentManager().getSelectedContent();
+        return selected == null || Disposer.isDisposed(selected);
+    }
+
+    /** {@code shown}: the caller showed the window first, so the selection must keep it visible instead of hidden. */
+    public static CompletableFuture<String> prepare(ToolWindow window, String serial, BooleanSupplier active, long deadlineNs, boolean shown) {
         if (!SwingUtilities.isEventDispatchThread()) throw new IllegalStateException("Logcat selection requires EDT");
         if (System.nanoTime() >= deadlineNs) return CompletableFuture.completedFuture("標準Logcatの準備が期限内に完了しませんでした。再試行してください。");
         if (window.isDisposed() || !window.isAvailable()) return CompletableFuture.completedFuture("IDE標準Logcatを利用できません。");
         var manager = window.getContentManager(); // Native lazy factory initializes cold/restored content here.
         var selected = manager.getSelectedContent();
-        if (selected == null || Disposer.isDisposed(selected)) return CompletableFuture.completedFuture("標準Logcatで端末用のタブをIDE側から開いて再試行してください。");
+        if (selected == null || Disposer.isDisposed(selected)) {
+            if (!shown) return CompletableFuture.completedFuture("標準Logcatで端末用のタブをIDE側から開いて再試行してください。");
+            return afterNewTab(window, serial, active, deadlineNs);
+        }
 
         var pane = singlePane(manager, selected);
         if (pane == null) return CompletableFuture.completedFuture("標準Logcatで分割していない端末用のタブを選び直して再試行してください。");
         return awaitDevice(pane.getHeaderPanel().getDeviceComboBox(), serial, pane::getConnectedDevice,
-            () -> active.getAsBoolean() && !window.isDisposed() && window.isAvailable() && !window.isVisible()
+            () -> active.getAsBoolean() && !window.isDisposed() && window.isAvailable() && window.isVisible() == shown
                 && !Disposer.isDisposed(selected) && !Disposer.isDisposed(pane)
                 && manager.getSelectedContent() == selected && singlePane(manager, selected) == pane,
             deadlineNs);
+    }
+
+    /** Waits on the EDT for the tab the native factory creates when an empty Logcat is shown, then selects in it. */
+    private static CompletableFuture<String> afterNewTab(ToolWindow window, String serial, BooleanSupplier active, long deadlineNs) {
+        var result = new CompletableFuture<String>();
+        var timer = new Timer(100, null);
+        timer.addActionListener(event -> {
+            if (result.isDone()) {
+                timer.stop();
+                return;
+            }
+            try {
+                if (!active.getAsBoolean() || window.isDisposed() || !window.isAvailable() || !window.isVisible()) {
+                    result.complete("Logcatの対象・タブ・表示状態が変わったため、開く操作を中止しました。");
+                } else if (System.nanoTime() >= deadlineNs) {
+                    result.complete("標準Logcatの準備が期限内に完了しませんでした。再試行してください。");
+                } else {
+                    var selected = window.getContentManager().getSelectedContent();
+                    if (selected == null || Disposer.isDisposed(selected)) return;
+                    timer.stop();
+                    var next = prepare(window, serial, active, deadlineNs, true);
+                    result.whenComplete((reason, error) -> { if (result.isCancelled()) next.cancel(false); });
+                    next.whenComplete((reason, error) -> {
+                        if (next.isCancelled()) result.cancel(false);
+                        else if (error != null) result.completeExceptionally(error);
+                        else result.complete(reason);
+                    });
+                }
+            } catch (LinkageError | RuntimeException error) {
+                result.completeExceptionally(error);
+            }
+        });
+        result.whenComplete((reason, error) -> {
+            if (SwingUtilities.isEventDispatchThread()) timer.stop(); else SwingUtilities.invokeLater(timer::stop);
+        });
+        timer.start();
+        return result;
     }
 
     private static LogcatMainPanel singlePane(ContentManager manager, Content selected) {

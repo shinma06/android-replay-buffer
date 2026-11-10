@@ -78,7 +78,10 @@ private class ReplayToolWindowPanel(private val project: Project) : JPanel(Borde
     private val logcatButton = LogcatToolWindowButton({ alive }, { service.captureView.snapshot?.device }, { window, serial, active, deadlineNs ->
         // Guard before loading the version-bound Java bridge; close remains available on other IDE builds.
         val reason = logcatTargetBuildReason(ApplicationInfo.getInstance().build.asString())
-        if (reason != null) CompletableFuture.completedFuture(reason) else LogcatTargetDevice.prepare(window, serial, active, deadlineNs)
+        if (reason != null) CompletableFuture.completedFuture(reason)
+        else LogcatTargetDevice.prepare(window, serial, active, deadlineNs, window.isVisible)
+    }, { window ->
+        logcatTargetBuildReason(ApplicationInfo.getInstance().build.asString()) == null && LogcatTargetDevice.needsTab(window)
     }) {
         toolWindowManager?.getToolWindow("Logcat")
     }.apply {
