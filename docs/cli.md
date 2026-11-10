@@ -9,8 +9,8 @@
 ## 配置と最初の操作
 
 1. 同じ配布ZIPのプラグインを導入し、Android Studioで対象projectを開きます。設定画面で保存先、保持時間、取得モード、対象アプリを確認します。
-2. 配布ZIPを任意の場所へ展開します。展開したプラグインフォルダの`bin/replay`と`bin/replayd`が入口です。この`bin`をPATHへ追加するか、絶対パスで呼びます。旧Python CLIより先に解決されることを`command -v replay`で確認してください。
-3. Studioが標準の`/Applications/Android Studio.app`以外にある場合は、その`Contents`を`REPLAY_STUDIO_HOME`へ指定します。入口はそのStudioのJBRとKotlin runtimeを使います。IDE本体は起動しません。
+2. 配布ZIPを任意の場所へ展開します。展開したプラグインフォルダの`bin/replay`と`bin/replayd`（Windowsでは`bin\replay.cmd`と`bin\replayd.cmd`）が入口です。引数・設定・終了コードはどのOSでも同じです。この`bin`をPATHへ追加するか、絶対パスで呼びます。旧Python CLIより先に解決されることを`command -v replay`（Windowsでは`where replay`）で確認してください。
+3. Studioが標準の場所（macOS: `/Applications/Android Studio.app`、Linux: `/opt/android-studio`、Windows: `%ProgramFiles%\Android\Android Studio`）以外にある場合は、その導入先（macOSは`Contents`）を`REPLAY_STUDIO_HOME`へ指定します。入口はそのStudioのJBRとKotlin runtimeを使います。IDE本体は起動しません。
 
 ```bash
 # 展開先に合わせて指定する。空白のあるパスは引用符で囲む。
