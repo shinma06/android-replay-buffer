@@ -132,14 +132,19 @@ internal class ReplayMcpServer(
         }
         if (message is List<*>) {
             if (message.isEmpty()) { write(error(null, -32600, "空のbatchです。")); return }
-            submit { message.mapNotNull { dispatch(it) }.takeIf { it.isNotEmpty() }?.let(::write) }
+            submit(onRejected = {
+                message.mapNotNull { request -> (request as? Map<*, *>)?.takeIf { "id" in it }?.let { busy(it["id"]) } }
+                    .takeIf { it.isNotEmpty() }?.let(::write)
+            }) { message.mapNotNull { dispatch(it) }.takeIf { it.isNotEmpty() }?.let(::write) }
             return
         }
         val obj = message as? Map<*, *>
-        if (obj?.get("method") == "tools/call" && "id" in obj) submit(onRejected = { write(error(obj["id"], -32000, "同時に実行できる操作の上限です。完了後に再実行してください。")) }) {
+        if (obj?.get("method") == "tools/call" && "id" in obj) submit(onRejected = { write(busy(obj["id"])) }) {
             dispatch(obj)?.let(::write)
         } else dispatch(message)?.let(::write)
     }
+
+    private fun busy(id: Any?) = error(id, -32000, "同時に実行できる操作の上限です。完了後に再実行してください。")
 
     private fun submit(onRejected: () -> Unit = {}, task: () -> Unit) {
         try {
