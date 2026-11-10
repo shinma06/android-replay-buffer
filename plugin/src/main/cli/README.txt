@@ -9,6 +9,8 @@ replay --project /absolute/project/path daemon
 replay --project /absolute/project/path status
 replay --project /absolute/project/path save
 replay --project /absolute/project/path stop
+replay --project /absolute/project/path screenshot
+replay --project /absolute/project/path mcp
 
 空白のあるpathは引用符で囲んでください。対象が複数ある場合は--projectが必須です。
 このbinをPATHへ追加するか、入口の絶対pathを使います。
@@ -21,6 +23,10 @@ Saveのexit0/stdoutは完成フォルダです。受付だけでは成功にな�
 失敗や結果不明はexit1/stderr、引数不正はexit2です。通信断を自動retryしません。
 stopは対象projectの取得だけをOFFにし、未保存バッファ/失敗pinを破棄します。
 保存済み成果物・保全partial・IDE・他project・旧daemonは削除/終了しません。
+
+screenshotはGUIと同じPNGを保存し、パスだけをstdoutへ返します。
+mcpは標準入出力のMCPサーバーです。エージェントが状態・取得ON/OFF・保存・スクショ・設定を操作できます。
+IDE本体は起動しません。設定例とtool一覧はsourceのdocs/mcp.mdを参照してください。
 
 旧設定は自動読込みしません。OFF時に--config FILEをdaemon/saveへ指定すると、
 保持秒数/保存先だけを明示移行します。保存先フォルダは事前に作成してください。

@@ -9,7 +9,12 @@ import java.security.SecureRandom
 import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
 
-internal enum class CliCommand { SAVE, STATUS, STOP, DAEMON }
+/** [SETTINGS] reads and [CONFIGURE] updates the GUI settings; [CONFIGURE] carries a JSON object in [CliRequest.configText]. */
+internal enum class CliCommand {
+    SAVE, STATUS, STOP, DAEMON, SCREENSHOT, SETTINGS, CONFIGURE;
+
+    val acceptsConfig: Boolean get() = this == DAEMON || this == SAVE || this == CONFIGURE
+}
 
 internal data class CliRequest(
     val command: CliCommand,
@@ -88,9 +93,10 @@ internal object ReplayCliProtocol {
         val config = if (input.readBoolean()) readText(input, MAX_CONFIG_BYTES) else null
         val yaml = input.readBoolean()
         val directory = readText(input)
-        require(config == null || command == CliCommand.DAEMON || command == CliCommand.SAVE) {
+        require(config == null || command.acceptsConfig) {
             "--configはdaemon/saveだけで指定できます。status/stopは設定を変更しません。"
         }
+        require(command != CliCommand.CONFIGURE || config != null) { "変更する設定を指定してください。" }
         return CliRequest(command, config, yaml, directory)
     }
 

@@ -151,15 +151,21 @@ internal object ReplayCliRegistry {
         return CliEndpoint(id, project, build, port, HexFormat.of().parseHex(token), pid, started)
     }
 
-    fun select(directory: Path, project: Path?, build: String): CliEndpoint {
+    /** Live endpoints of every open project; any unsafe or malformed descriptor rejects the whole listing. */
+    fun live(directory: Path): List<CliEndpoint> {
         if (!Files.exists(directory, NOFOLLOW_LINKS)) error("起動済みのAndroid Studioで対象projectを開いてください。")
         checkPrivate(directory, true)
-        val target = project?.toRealPath()?.toString()
-        val candidates = Files.newDirectoryStream(directory, "*.properties").use { files ->
+        return Files.newDirectoryStream(directory, "*.properties").use { files ->
             val paths = files.take(129).toList()
             require(paths.size <= 128) { "CLI接続情報が多すぎます。停止済みIDEの接続情報を確認してください。" }
-            paths.map(::read).filter { (target == null || it.project == target) && it.isLive() }
+            paths.map(::read).filter { it.isLive() }
         }
+    }
+
+    fun select(directory: Path, project: Path?, build: String): CliEndpoint {
+        val endpoints = live(directory)
+        val target = project?.toRealPath()?.toString()
+        val candidates = endpoints.filter { target == null || it.project == target }
         require(candidates.isNotEmpty()) { "対象projectのCLI接続先がありません。Android Studioでprojectとプラグインを確認してください。" }
         require(candidates.size == 1) { "対象が複数あります。--projectでprojectを指定し、同じprojectの別IDEを閉じてください。" }
         return candidates.single().also {
