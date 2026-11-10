@@ -57,6 +57,14 @@ class ReplayCoreWireTest {
     private fun ownedPids(dir: Path): List<String> =
         Files.list(dir).use { files -> files.map { it.fileName.toString() }.toList() }
 
+    /** Log reader launches in start order, as `<buffer> <pid>`. */
+    private fun logLaunches(root: Path): List<String> {
+        val dir = root.resolve("log-launches")
+        if (!Files.isDirectory(dir)) return emptyList()
+        return Files.list(dir).use { files -> files.map { it.fileName.toString() }.toList() }.sorted()
+            .map { name -> name.split('-').let { "${it[1]} ${it[2]}" } }
+    }
+
     private fun runWireFixture(
         discardInitialPFrame: Boolean,
         logMode: String? = null,
@@ -195,12 +203,12 @@ elif len(a)>2 and a[2]=='logcat':
         if mode in ('timeout','cancel'): time.sleep(90)
         emit(0,'probe',header=20 if mode=='legacy' else 28)
         sys.exit(0)
-    launches=root/'log-launches.txt'
-    if ${logReaderStartupDelayMillis}>0 and mode=='partition' and buffer=='main' and launches.exists() and any(line.startswith('main ') for line in launches.read_text().splitlines()) and not (root/'fail-main').exists():
+    launches=root/'log-launches'
+    if ${logReaderStartupDelayMillis}>0 and mode=='partition' and buffer=='main' and launches.exists() and any(f.name.split('-')[1]=='main' for f in launches.iterdir()) and not (root/'fail-main').exists():
         (root/'reader-delay-applied').touch()
         time.sleep(${logReaderStartupDelayMillis}/1000)
     seen=len((root/'log-events.txt').read_text().splitlines())
-    with launches.open('a') as f: f.write(buffer+' '+str(os.getpid())+'\n')
+    launches.mkdir(exist_ok=True); (launches/f'{time.time_ns():020d}-{buffer}-{os.getpid()}').touch()  # one file per launch: Windows appends from concurrent processes are not atomic
     quiet_sent=False
     crash_sent=False
     while True:
@@ -287,8 +295,7 @@ elif len(a)>3 and a[3]=='ps':
             }
             if (captureMode == CaptureMode.LOG_ONLY) {
                 awaitState("readers-started-without-headers") {
-                    val launches = root.resolve("log-launches.txt")
-                    Files.exists(launches) && Files.readAllLines(launches).size >= 2
+                    logLaunches(root).size >= 2
                 }
                 assertTrue(core.updateApplication(ApplicationTarget("com.fixture.app")).get().accepted)
                 assertFalse(core.snapshot().canSave)
@@ -403,7 +410,7 @@ elif len(a)>3 and a[3]=='ps':
                 assertTrue(core.setEnabled(false).get(10, TimeUnit.SECONDS).accepted)
                 assertTrue(System.nanoTime() - started < 5_500_000_000)
                 core.closeAsync().get(10, TimeUnit.SECONDS)
-                assertFalse(Files.exists(root.resolve("log-launches.txt")))
+                assertTrue(logLaunches(root).isEmpty())
                 ownedPids(pids).forEach { pid -> assertFalse(ProcessHandle.of(pid.toLong()).map { it.isAlive }.orElse(false)) }
                 return
             }
@@ -427,9 +434,8 @@ elif len(a)>3 and a[3]=='ps':
                 fun ready(buffer: String, previousPid: Long? = null): Long {
                     val deadline = System.nanoTime() + 3_000_000_000
                     while (System.nanoTime() < deadline) {
-                        val launches = root.resolve("log-launches.txt")
-                        val pid = if (Files.exists(launches)) Files.readAllLines(launches)
-                            .lastOrNull { it.startsWith("$buffer ") }?.substringAfter(' ')?.toLongOrNull() else null
+                        val pid = logLaunches(root)
+                            .lastOrNull { it.startsWith("$buffer ") }?.substringAfter(' ')?.toLongOrNull()
                         if (pid != null && pid != previousPid && ProcessHandle.of(pid).map { it.isAlive }.orElse(false)) {
                             readers[buffer] = pid
                             return pid
@@ -476,7 +482,7 @@ elif len(a)>3 and a[3]=='ps':
                     Files.delete(root.resolve("wrong-header-all"))
                     awaitState("all-header-recovered") { it.deviceLog.state == StreamState.CAPTURING }
                     ready("all", readers.getValue("all"))
-                    assertEquals(1, Files.readAllLines(root.resolve("log-launches.txt")).count { it.startsWith("main ") })
+                    assertEquals(1, logLaunches(root).count { it.startsWith("main ") })
                     Files.createFile(root.resolve("fail-main"))
                     awaitState("main-only-failure") { it.deviceLog.state == StreamState.RECOVERING }
                     emit("main-partial", "all")
@@ -519,7 +525,7 @@ elif len(a)>3 and a[3]=='ps':
                 val binary = deviceRows.filter { it["lid"].asInt == 2 }
                 assertEquals(if (logMode == "legacy") 0 else if (logMode == "partition") 3 else 1, binary.size)
                 assertTrue(binary.all { it["decode_status"].asString == "binary" && !it["app_membership"].asBoolean })
-                val launches = Files.readAllLines(root.resolve("log-launches.txt")).map { it.substringBefore(' ') }
+                val launches = logLaunches(root).map { it.substringBefore(' ') }
                 if (logMode == "partition") assertTrue(launches.count { it == "main" } >= 2)
                 else assertEquals(0, launches.count { it == "main" })
                 assertTrue(core.setEnabled(false).get(10, TimeUnit.SECONDS).accepted)
