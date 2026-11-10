@@ -9,7 +9,8 @@ permissions:
   contents: read
 concurrency:
   group: ci-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  # develop/main pushes queue instead of cancelling, so a running early publish always finishes.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   test:
     name: test
@@ -132,11 +133,7 @@ jobs:
           version="${name#android-replay-buffer-plugin-}"
           version="${version%.zip}"
           sha256="$(sha256sum "$zip" | cut -d' ' -f1)"
-          gh api -X PATCH "repos/$GH_REPO/git/refs/tags/early" -f sha="$SHA" -F force=true > /dev/null
           gh release upload early "$zip" --clobber
-          gh release view early --json assets -q '.assets[].name' | while read -r asset; do
-            if [ "$asset" != "$name" ]; then gh release delete-asset early "$asset" -y; fi
-          done
           notes="$RUNNER_TEMP/early-notes.md"
           {
             echo "# Android Replay Buffer early"
@@ -151,3 +148,7 @@ jobs:
             echo "- CI: $RUN_URL"
           } > "$notes"
           gh release edit early --prerelease --latest=false --notes-file "$notes"
+          gh api -X PATCH "repos/$GH_REPO/git/refs/tags/early" -f sha="$SHA" -F force=true > /dev/null
+          gh release view early --json assets -q '.assets[].name' | while read -r asset; do
+            if [ "$asset" != "$name" ]; then gh release delete-asset early "$asset" -y; fi
+          done
