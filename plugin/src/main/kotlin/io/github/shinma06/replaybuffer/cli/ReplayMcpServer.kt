@@ -21,7 +21,7 @@ import java.util.concurrent.TimeUnit
  * Only protocol messages reach [output]; diagnostics go to [log].
  */
 internal class ReplayMcpServer(
-    private val input: InputStream,
+    input: InputStream,
     private val output: OutputStream,
     private val log: PrintStream,
     private val defaultProject: Path?,
@@ -39,6 +39,7 @@ internal class ReplayMcpServer(
         val call: (Map<String, Any?>) -> Map<String, Any?>,
     )
 
+    private val input = input.buffered()
     private val lock = Any()
     @Volatile private var protocolVersion = LATEST_VERSION
     private var buildIdentity: String? = null
