@@ -394,35 +394,45 @@ internal class CaptureStore(
             return
         }
         val cutoff = end - seconds * 1_000_000_000L - uncertainty
-        val expired = expiredBefore(cutoff)
+        val latest = clock.latestSequence()
         if (captureMode.videoRequested) {
             // Keep the complete preceding GOP for decoding the first frame inside the logical window.
-            val firstInside = video.indexOfFirst { !expired(it.time, it.retainedAt, it.host) }
+            val all = video.toList()
+            val firstInside = all.indices.firstOrNull { i ->
+                val frame = all[i]
+                if (frame.time.sequence == null || frame.time.uncertainty == Long.MAX_VALUE) !displayEndedBefore(all, i, latest, cutoff)
+                else frame.retainedAt >= cutoff - frame.time.uncertainty
+            } ?: -1
             if (firstInside > 0) {
-                val all = video.toList()
                 val first = if (continuousAcrossCut(all[firstInside - 1], all[firstInside], cutoff)) firstInside - 1 else firstInside
                 val key = (first downTo 0).firstOrNull { all[it].key } ?: 0
                 repeat(key) { removeVideo() }
             } else if (firstInside < 0) {
-                val all = video.toList()
                 val last = all.lastOrNull()?.takeIf { currentVideo(it) }
                 val key = if (last == null) all.size else (all.lastIndex downTo 0).firstOrNull { all[it].key } ?: 0
                 repeat(key) { removeVideo() }
             }
         }
-        pruneLogs(expired)
+        pruneLogs(expiredBefore(cutoff, latest))
         enforceVideoLimit()
         deleteUnused()
         while (gaps.size > 4096) removeGapProofs(gaps.removeFirst())
     }
 
     /** Unknown-time records are expired only when a later clock read already precedes the cutoff. */
-    private fun expiredBefore(cutoff: Long): (MappedTime, Long, Long) -> Boolean {
-        val latest = clock.latestSequence()
-        return { time, retainedAt, host ->
+    private fun expiredBefore(cutoff: Long, latest: (Long) -> Long? = clock.latestSequence()): (MappedTime, Long, Long) -> Boolean =
+        { time, retainedAt, host ->
             if (time.sequence == null || time.uncertainty == Long.MAX_VALUE) latest(host)?.let { it < cutoff } == true
             else retainedAt < cutoff - time.uncertainty
         }
+
+    /** An unknown-time frame stays on screen until the next frame, so only a next frame starting before `cutoff` ends it. */
+    private fun displayEndedBefore(all: List<VideoEntry>, index: Int, latest: (Long) -> Long?, cutoff: Long): Boolean {
+        val next = all.getOrNull(index + 1) ?: return false
+        val upper = if (next.time.sequence != null && next.time.uncertainty != Long.MAX_VALUE) try {
+            Math.addExact(next.retainedAt, next.time.uncertainty)
+        } catch (_: ArithmeticException) { null } else latest(next.host)
+        return upper != null && upper < cutoff
     }
 
     private fun pruneLogs(expired: (MappedTime, Long, Long) -> Boolean) {
@@ -465,7 +475,9 @@ internal class CaptureStore(
         val all = if (captureMode.videoRequested) video.toList() else emptyList()
         val files = mutableSetOf<Path>()
         all.forEachIndexed { index, entry ->
-            if (!known || entry.time.sequence == null && !beforeWindow(entry.host) || entry.retainedAt <= end && entry.retainedAt >= start) {
+            val unknownTime = entry.time.sequence == null || entry.time.uncertainty == Long.MAX_VALUE
+            if (!known || unknownTime && !(uncertainty >= 0 && displayEndedBefore(all, index, latest, start - uncertainty)) ||
+                entry.retainedAt <= end && entry.retainedAt >= start) {
                 files.add(entry.file)
                 if (index > 0 && continuousAcrossCut(all[index - 1], entry, start)) files.add(all[index - 1].file)
             }

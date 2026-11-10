@@ -973,10 +973,11 @@ class CaptureStoreSaveTest {
     @Test
     fun recordsWithUnknownTimeBeforeAClockEpochBoundaryStayOutsideTheReplayWindow() {
         // sparse: no frames from 6 to 19 seconds, so the unknown-time frame at 5 seconds is still displayed at the window start.
-        for (sparse in listOf(false, true)) unknownTimeWindowFixture(sparse)
+        // keyAfterGap: the frame at 20 seconds starts a new GOP; the clock gap before it cannot prove the 5 second frame was still on screen.
+        for ((sparse, keyAfterGap) in listOf(false to false, true to false, true to true)) unknownTimeWindowFixture(sparse, keyAfterGap)
     }
 
-    private fun unknownTimeWindowFixture(sparse: Boolean) {
+    private fun unknownTimeWindowFixture(sparse: Boolean, keyAfterGap: Boolean) {
         val root = Files.createTempDirectory("replay-epoch-window-")
         val store = CaptureStore(root.resolve("ring"), minFree = 0)
         val host = System.nanoTime() + 60_000_000_000
@@ -992,7 +993,7 @@ class CaptureStoreSaveTest {
                 // No clock reads between 4 and 9 seconds: the next read starts a new clock epoch.
                 if (second !in 4L..9L) anchor(store.clock, second * 1_000_000_000, at(second))
                 if (!sparse || second !in 6L..19L)
-                    assertTrue(store.frame(VideoPacket.Frame(second * 1_000_000, false, second == 1L || second == 5L, bytes), 1, at(second)))
+                    assertTrue(store.frame(VideoPacket.Frame(second * 1_000_000, false, second == 1L || second == 5L || keyAfterGap && second == 20L, bytes), 1, at(second)))
                 store.log(record(second), 1, at(second))
             }
             assertEquals(1, store.clock.currentEpoch())
@@ -1003,11 +1004,12 @@ class CaptureStoreSaveTest {
             val output = SaveWriter().write(selected, root, { false }) { publication -> Files.move(publication.partial, publication.complete) }
             val presented = Files.readAllLines(output.directory.resolve("frames.jsonl")).map { JsonParser.parseString(it).asJsonObject }
                 .filter { it["presented"].asBoolean }.map { it["source_pts_us"].asLong }
-            assertEquals((if (sparse) listOf(5L) + (20L..40L) else (11L..40L).toList()).map { it * 1_000_000 }, presented)
+            assertEquals((if (!sparse) (11L..40L).toList() else if (keyAfterGap) (20L..40L).toList() else listOf(5L) + (20L..40L)).map { it * 1_000_000 }, presented, "sparse=$sparse keyAfterGap=$keyAfterGap")
             store.release(selected.id)
             store.prune(29)
             val next = store.capture(ReplaySettings(replaySeconds = 29), host = at(40))!!
             assertTrue(next.video.none { it.pts in 1_000_000L..4_000_000L }, next.video.map { it.pts }.toString())
+            assertEquals(!keyAfterGap, next.video.any { it.pts == 5_000_000L }, next.video.map { it.pts }.toString())
             store.release(next.id)
         } finally { store.close(); root.toFile().deleteRecursively() }
     }

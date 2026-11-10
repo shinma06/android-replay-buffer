@@ -65,6 +65,7 @@ internal class CaptureClock {
                 samples.removeFirst(); samples.removeFirst(); samples.addFirst(first)
             } else samples.removeFirst()
         }
+        latestCache = null
         return good
     }
 
@@ -152,7 +153,7 @@ internal class CaptureClock {
     }
 
     @Synchronized
-    fun clear() { samples.clear(); closures.clear(); firstHost = null; epoch = 0 }
+    fun clear() { samples.clear(); closures.clear(); firstHost = null; epoch = 0; latestCache = null }
 
     @Synchronized
     fun boundary(host: Long? = null) {
@@ -180,14 +181,12 @@ internal class CaptureClock {
     @Synchronized
     fun snapshot(): List<ClockSample> = samples.toList()
 
-    private var latestCache: Triple<ClockSample, ClockSample, (Long) -> Long?>? = null
+    private var latestCache: ((Long) -> Long?)? = null
 
     @Synchronized
     fun latestSequence(): (Long) -> Long? {
-        val first = samples.peekFirst() ?: return { null }
-        val last = samples.peekLast()
-        latestCache?.let { (cachedFirst, cachedLast, bound) -> if (cachedFirst === first && cachedLast === last) return bound }
-        return latestSequence(samples.toList()).also { latestCache = Triple(first, last, it) }
+        latestCache?.let { return it }
+        return latestSequence(samples.toList()).also { latestCache = it }
     }
 }
 
