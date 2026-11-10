@@ -82,32 +82,77 @@ class TouchEventsTest {
         ), lines.flatMap(parser::feed))
     }
 
+    private class Sync(private val now: TouchCurrent? = null) : TouchSync {
+        val events = mutableListOf<String>()
+        override fun lost(device: String, fromNs: Long) { events += "lost $device $fromNs" }
+        override fun current(device: String): TouchCurrent? = now.also { events += "current $device" }
+        override fun resynced(device: String, toNs: Long) { events += "resynced $device $toNs" }
+    }
+
     @Test
-    fun `SYN_DROPPED ends active pointers and ignores events through the next report`() {
-        val drops = mutableListOf<Triple<String, Long, Long>>()
-        val parser = TouchParser(parseTouchDevices(devices), 1080, 2400) { device, from, to -> drops += Triple(device, from, to) }
+    fun `SYN_DROPPED ends pointers and a later tap with the same X still produces samples`() {
+        val sync = Sync()
+        val parser = TouchParser(parseTouchDevices(devices), 1080, 2400, sync)
         val lines = """
             [     20.000000] /dev/input/event2: EV_ABS       ABS_MT_SLOT          00000000
             [     20.000000] /dev/input/event2: EV_ABS       ABS_MT_TRACKING_ID   00000001
-            [     20.000000] /dev/input/event2: EV_ABS       ABS_MT_POSITION_X    00000000
+            [     20.000000] /dev/input/event2: EV_ABS       ABS_MT_POSITION_X    00007fff
             [     20.000000] /dev/input/event2: EV_ABS       ABS_MT_POSITION_Y    00000000
             [     20.000000] /dev/input/event2: EV_SYN       SYN_REPORT           00000000
             [     20.100000] /dev/input/event2: EV_SYN       SYN_DROPPED          00000000
-            [     20.110000] /dev/input/event2: EV_ABS       ABS_MT_TRACKING_ID   00000002
-            [     20.110000] /dev/input/event2: EV_ABS       ABS_MT_POSITION_X    00007fff
-            [     20.110000] /dev/input/event2: EV_ABS       ABS_MT_POSITION_Y    00007fff
+            [     20.110000] /dev/input/event2: EV_ABS       ABS_MT_TRACKING_ID   ffffffff
             [     20.120000] /dev/input/event2: EV_SYN       SYN_REPORT           00000000
-            [     20.130000] /dev/input/event2: EV_ABS       ABS_MT_TRACKING_ID   00000003
-            [     20.130000] /dev/input/event2: EV_ABS       ABS_MT_POSITION_X    00007fff
-            [     20.130000] /dev/input/event2: EV_ABS       ABS_MT_POSITION_Y    00000000
+            [     20.130000] /dev/input/event2: EV_ABS       ABS_MT_POSITION_Y    00000100
             [     20.130000] /dev/input/event2: EV_SYN       SYN_REPORT           00000000
+            [     20.140000] /dev/input/event2: EV_ABS       ABS_MT_TRACKING_ID   00000003
+            [     20.140000] /dev/input/event2: EV_ABS       ABS_MT_POSITION_Y    00007fff
+            [     20.140000] /dev/input/event2: EV_SYN       SYN_REPORT           00000000
+            [     20.150000] /dev/input/event2: EV_ABS       ABS_MT_TRACKING_ID   ffffffff
+            [     20.150000] /dev/input/event2: EV_SYN       SYN_REPORT           00000000
+        """.trimIndent().lines()
+        // The movement at 20.13 belongs to a pointer of unknown identity and is not guessed; the tap at 20.14 sends no
+        // ABS_MT_SLOT or X because neither changed, and still uses the X kept from before the drop.
+        assertEquals(listOf(
+            TouchSample(20_000_000_000, "/dev/input/event2", 0, TouchAction.DOWN, 1079, 0),
+            TouchSample(20_100_000_000, "/dev/input/event2", 0, TouchAction.UP, 1079, 0),
+            TouchSample(20_140_000_000, "/dev/input/event2", 0, TouchAction.DOWN, 1079, 2399),
+            TouchSample(20_150_000_000, "/dev/input/event2", 0, TouchAction.UP, 1079, 2399),
+        ), lines.flatMap(parser::feed))
+        assertEquals(listOf("current /dev/input/event2", "lost /dev/input/event2 20100000000",
+            "resynced /dev/input/event2 20140000000"), sync.events)
+    }
+
+    @Test
+    fun `the slot and position re-read after a drop place the next pointer`() {
+        val sync = Sync(TouchCurrent(slot = 1, x = 0, y = 0x7fff))
+        val parser = TouchParser(parseTouchDevices(devices), 1080, 2400, sync)
+        val lines = """
+            [     40.000000] EV_ABS       ABS_MT_SLOT          00000000
+            [     40.000000] EV_ABS       ABS_MT_TRACKING_ID   00000001
+            [     40.000000] EV_ABS       ABS_MT_POSITION_X    00007fff
+            [     40.000000] EV_ABS       ABS_MT_POSITION_Y    00000000
+            [     40.000000] EV_SYN       SYN_REPORT           00000000
+            [     40.100000] EV_SYN       SYN_DROPPED          00000000
+            [     40.100000] EV_SYN       SYN_DROPPED          00000000
+            [     40.110000] EV_SYN       SYN_REPORT           00000000
+            [     40.120000] EV_ABS       ABS_MT_TRACKING_ID   00000007
+            [     40.120000] EV_SYN       SYN_REPORT           00000000
         """.trimIndent().lines()
         assertEquals(listOf(
-            TouchSample(20_000_000_000, "/dev/input/event2", 0, TouchAction.DOWN, 0, 0),
-            TouchSample(20_100_000_000, "/dev/input/event2", 0, TouchAction.UP, 0, 0),
-            TouchSample(20_130_000_000, "/dev/input/event2", 0, TouchAction.DOWN, 1079, 0),
+            TouchSample(40_000_000_000, "/dev/input/event2", 0, TouchAction.DOWN, 1079, 0),
+            TouchSample(40_100_000_000, "/dev/input/event2", 0, TouchAction.UP, 1079, 0),
+            TouchSample(40_120_000_000, "/dev/input/event2", 1, TouchAction.DOWN, 0, 2399),
         ), lines.flatMap(parser::feed))
-        assertEquals(listOf(Triple("/dev/input/event2", 20_100_000_000L, 20_120_000_000L)), drops)
+        // A second drop inside the discard period does not open another gap.
+        assertEquals(1, sync.events.count { it.startsWith("lost") })
+        assertEquals("resynced /dev/input/event2 40120000000", sync.events.last())
+    }
+
+    @Test
+    fun `current slot and position are read from getevent -lp values`() {
+        val output = devices.replace("ABS_MT_SLOT           : value 0", "ABS_MT_SLOT           : value 3")
+            .replace("ABS_MT_POSITION_X     : value 0", "ABS_MT_POSITION_X     : value 120")
+        assertEquals(TouchCurrent(3, 120, 0), parseTouchCurrent(output)["/dev/input/event2"])
     }
 
     @Test

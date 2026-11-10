@@ -285,9 +285,13 @@ internal class DeviceCapture @JvmOverloads constructor(
         val readDisplay = { parseDisplaySize(adb.command("-s", serial, "shell", "wm", "size")) }
         val display = DisplaySizeWatch(checkNotNull(readDisplay()) { "画面サイズを取得できません" }, readDisplay)
         var received = System.nanoTime()
-        val parser = TouchParser(axes, display.size.first, display.size.second) { _, from, to ->
-            store.touchLost(from, to, generation, received)
-        }
+        val parser = TouchParser(axes, display.size.first, display.size.second, object : TouchSync {
+            override fun lost(device: String, fromNs: Long) = store.touchLost(device, fromNs, generation, received)
+            override fun current(device: String): TouchCurrent? = runCatching {
+                parseTouchCurrent(adb.command("-s", serial, "shell", "getevent", "-lp", device))[device]
+            }.getOrNull()
+            override fun resynced(device: String, toNs: Long) = store.touchResynced(device, toNs, generation, received)
+        })
         check(!stopping.get())
         val process = adb.start("-s", serial, "shell", "getevent", "-lt", *listOfNotNull(axes.keys.singleOrNull()).toTypedArray())
         try {

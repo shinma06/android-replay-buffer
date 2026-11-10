@@ -79,6 +79,8 @@ internal class CaptureStore(
     private val logs = ArrayDeque<LogEntry>()
     private val touches = ArrayDeque<TouchEntry>()
     private val touchGaps = ArrayDeque<TouchGap>()
+    /** Open SYN_DROPPED gaps per input device, identified by reference in [touchGaps]. */
+    private val touchLostOpen = mutableMapOf<String, TouchGap>()
     private var touchState = StreamSnapshot(StreamState.RECOVERING)
     private var touchDropped = 0L
     /** Latest window time of a row evicted by [MAX_TOUCH_SAMPLES]; MAX_VALUE when that time is unknown. */
@@ -157,19 +159,39 @@ internal class CaptureStore(
         }
     }
 
-    /** Input the kernel dropped (SYN_DROPPED) between two device monotonic times; an unmapped start stays unknown. */
+    /**
+     * The kernel dropped input (SYN_DROPPED) of [device] from [fromMono]; the gap stays open until [touchResynced].
+     * An unmapped start stays unknown.
+     */
     @Synchronized
-    fun touchLost(fromMono: Long, toMono: Long, owner: Long, host: Long = System.nanoTime()) {
+    fun touchLost(device: String, fromMono: Long, owner: Long, host: Long = System.nanoTime()) {
         if (closed || owner != generation || !captureMode.videoRequested) return
-        fun bound(mono: Long, sign: Int): Long? = clock.mono(mono, host).let { time ->
-            val sequence = time.sequence ?: return@let null
-            if (time.uncertainty == Long.MAX_VALUE) null
-            else runCatching { Math.addExact(sequence, sign * time.uncertainty) }.getOrNull()
-        }
-        // The drop ends before it is read, so the receive time bounds an unmapped end from above.
-        touchGaps += TouchGap(bound(fromMono, -1), bound(toMono, 1) ?: clock.now(host),
-            "端末の入力bufferがあふれ、タップ位置の一部が失われました（SYN_DROPPED）")
+        if (device in touchLostOpen) return
+        val gap = TouchGap(touchBound(fromMono, -1, host), null, "端末の入力bufferがあふれ、タップ位置の一部が失われました（SYN_DROPPED）")
+        touchGaps += gap
+        touchLostOpen[device] = gap
         while (touchGaps.size > 4096) touchGaps.removeFirst()
+    }
+
+    /** [device] reported a new pointer after a drop at [toMono], so its input is known again. */
+    @Synchronized
+    fun touchResynced(device: String, toMono: Long, owner: Long, host: Long = System.nanoTime()) {
+        if (closed || owner != generation || !captureMode.videoRequested) return
+        // The resync is read after it happened, so the receive time bounds an unmapped end from above.
+        closeTouchLost(device, touchBound(toMono, 1, host) ?: clock.now(host))
+    }
+
+    private fun touchBound(mono: Long, sign: Int, host: Long): Long? = clock.mono(mono, host).let { time ->
+        val sequence = time.sequence ?: return@let null
+        if (time.uncertainty == Long.MAX_VALUE) null
+        else runCatching { Math.addExact(sequence, sign * time.uncertainty) }.getOrNull()
+    }
+
+    private fun closeTouchLost(device: String, to: Long?) {
+        val open = touchLostOpen.remove(device) ?: return
+        val rows = touchGaps.map { if (it === open) it.copy(to = to) else it }
+        touchGaps.clear()
+        touchGaps.addAll(rows)
     }
 
     @Synchronized
@@ -187,6 +209,8 @@ internal class CaptureStore(
     private fun setTouchState(state: StreamState, reason: String?) {
         val now = clock.now()
         val capturing = touchState.state == StreamState.CAPTURING
+        // A reader that stops never resyncs: its drop gaps end where reading ended.
+        if (capturing && state != StreamState.CAPTURING) touchLostOpen.keys.toList().forEach { closeTouchLost(it, now) }
         if (capturing && state != StreamState.CAPTURING) touchGaps += TouchGap(now, null, reason ?: "タップ位置の取得が中断しました")
         if (!capturing && state == StreamState.CAPTURING) {
             val open = touchGaps.peekLast()?.takeIf { it.to == null }
@@ -753,6 +777,7 @@ internal class CaptureStore(
         logs.clear()
         touches.clear()
         touchGaps.clear()
+        touchLostOpen.clear()
         touchEvictedThrough = null
         apps.clear()
         gaps.clear()

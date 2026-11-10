@@ -75,6 +75,36 @@ internal fun parseTouchDevices(output: String): Map<String, TouchAxes> {
     return result
 }
 
+/** Current slot and its raw MT position, as `getevent -lp` reports them now (the `value` of each axis). */
+internal data class TouchCurrent(val slot: Int?, val x: Int?, val y: Int?)
+
+private val currentLine = Regex("""(ABS_MT_SLOT|ABS_MT_POSITION_X|ABS_MT_POSITION_Y)\s*:\s*value (-?\d+)""")
+
+internal fun parseTouchCurrent(output: String): Map<String, TouchCurrent> {
+    val result = linkedMapOf<String, TouchCurrent>()
+    var device: String? = null
+    output.lineSequence().forEach { line ->
+        deviceLine.find(line)?.let { device = it.groupValues[1]; return@forEach }
+        val d = device ?: return@forEach
+        val m = currentLine.find(line) ?: return@forEach
+        val value = m.groupValues[2].toInt()
+        val old = result[d] ?: TouchCurrent(null, null, null)
+        result[d] = when (m.groupValues[1]) {
+            "ABS_MT_SLOT" -> old.copy(slot = value)
+            "ABS_MT_POSITION_X" -> old.copy(x = value)
+            else -> old.copy(y = value)
+        }
+    }
+    return result
+}
+
+/** Hooks for SYN_DROPPED: report the lost interval and re-read the device's current slot state. */
+internal interface TouchSync {
+    fun lost(device: String, fromNs: Long) {}
+    fun current(device: String): TouchCurrent? = null
+    fun resynced(device: String, toNs: Long) {}
+}
+
 /** Display size from `wm size`; an override wins over the physical size, matching what the screen shows. */
 internal fun parseDisplaySize(output: String): Pair<Int, Int>? {
     val sizes = Regex("""(Physical|Override) size: (\d+)x(\d+)""").findAll(output).associate {
@@ -109,17 +139,25 @@ internal class DisplaySizeWatch(
  * Folds `getevent -lt` lines (protocol B slots) into pointer samples emitted at each SYN_REPORT.
  * Rotation is not applied: coordinates are in the panel's natural orientation, as the kernel reports them.
  * Raw axis values are kept and scaled at each report, so [resize] applies to every later sample as a whole.
- * After SYN_DROPPED the device's pointers end with `up` at the drop time, its events are ignored through the next
- * SYN_REPORT, and [onDrop] receives that interval (device monotonic ns) as lost input.
+ *
+ * evdev only reports changed axes, so SYN_DROPPED does not clear state. Each slot keeps its last X/Y; the current slot
+ * and its X/Y are re-read through [TouchSync.current]. Pointers that were down end with `up` at the drop time, events
+ * are ignored through the next SYN_REPORT, and every slot's pointer stays unknown (no samples) until a new
+ * ABS_MT_TRACKING_ID arrives for it. The lost interval runs from the drop to the first report with such an ID.
  */
 internal class TouchParser(
-    private val axes: Map<String, TouchAxes>, width: Int, height: Int,
-    private val onDrop: (device: String, fromNs: Long, toNs: Long) -> Unit = { _, _, _ -> },
+    private val axes: Map<String, TouchAxes>, width: Int, height: Int, private val sync: TouchSync = object : TouchSync {},
 ) {
-    private class Slot(var tracking: Int = -1, var x: Int? = null, var y: Int? = null, var down: Boolean = false, var dirty: Boolean = false)
+    private class Slot(
+        var tracking: Int = -1, var x: Int? = null, var y: Int? = null, var down: Boolean = false, var dirty: Boolean = false,
+        var known: Boolean = true,
+    )
     private val slots = mutableMapOf<String, MutableMap<Int, Slot>>()
     private val current = mutableMapOf<String, Int>()
-    private val dropped = mutableMapOf<String, Long>()
+    /** Devices whose events are ignored through the next SYN_REPORT after SYN_DROPPED. */
+    private val discarding = mutableSetOf<String>()
+    /** Devices with an open lost interval, and whether the frame being read carries a new tracking ID. */
+    private val resyncing = mutableMapOf<String, Boolean>()
     var width = width
         private set
     var height = height
@@ -137,22 +175,27 @@ internal class TouchParser(
         val axis = axes[device] ?: return emptyList()
         val monoNs = Math.addExact(Math.multiplyExact(m.groupValues[1].toLong(), 1_000_000_000L), m.groupValues[2].toLong() * 1000)
         val code = m.groupValues[5]
-        dropped[device]?.let { from ->
-            if (code == "SYN_REPORT") {
-                dropped.remove(device)
-                onDrop(device, from, monoNs)
-            }
+        if (device in discarding) {
+            if (code == "SYN_REPORT") discarding.remove(device)
             return emptyList()
         }
         val value = m.groupValues[6].toLong(16).toInt()
         val deviceSlots = slots.getOrPut(device) { mutableMapOf() }
-        val slot = { deviceSlots.getOrPut(current[device] ?: 0) { Slot() } }
+        val slot = { deviceSlots.getOrPut(current[device] ?: 0) { Slot(known = device !in resyncing) } }
         when (code) {
             "ABS_MT_SLOT" -> current[device] = value
-            "ABS_MT_TRACKING_ID" -> slot().apply { tracking = value; dirty = true }
+            "ABS_MT_TRACKING_ID" -> {
+                slot().apply { tracking = value; dirty = true; known = true }
+                if (device in resyncing) resyncing[device] = true
+            }
             "ABS_MT_POSITION_X" -> slot().apply { x = value; dirty = true }
             "ABS_MT_POSITION_Y" -> slot().apply { y = value; dirty = true }
-            "SYN_REPORT" -> return report(monoNs, device, axis, deviceSlots)
+            "SYN_REPORT" -> return report(monoNs, device, axis, deviceSlots).also {
+                if (resyncing[device] == true) {
+                    resyncing.remove(device)
+                    sync.resynced(device, monoNs)
+                }
+            }
             "SYN_DROPPED" -> return drop(monoNs, device, axis, deviceSlots)
         }
         return emptyList()
@@ -162,6 +205,7 @@ internal class TouchParser(
         deviceSlots.toSortedMap().mapNotNull { (index, s) ->
             if (!s.dirty) return@mapNotNull null
             s.dirty = false
+            if (!s.known) return@mapNotNull null
             val x = s.x ?: return@mapNotNull null
             val y = s.y ?: return@mapNotNull null
             val action = when {
@@ -173,17 +217,27 @@ internal class TouchParser(
             TouchSample(monoNs, device, index, action, scale(x, axis.maxX, width), scale(y, axis.maxY, height))
         }
 
-    /** The kernel dropped events, so slot state is unknown: end every pointer that was down and start over. */
-    private fun drop(monoNs: Long, device: String, axis: TouchAxes, deviceSlots: Map<Int, Slot>): List<TouchSample> {
+    private fun drop(monoNs: Long, device: String, axis: TouchAxes, deviceSlots: MutableMap<Int, Slot>): List<TouchSample> {
         val ended = deviceSlots.toSortedMap().mapNotNull { (index, s) ->
             val x = s.x
             val y = s.y
-            if (!s.down || x == null || y == null) null
-            else TouchSample(monoNs, device, index, TouchAction.UP, scale(x, axis.maxX, width), scale(y, axis.maxY, height))
+            val up = if (s.down && x != null && y != null)
+                TouchSample(monoNs, device, index, TouchAction.UP, scale(x, axis.maxX, width), scale(y, axis.maxY, height)) else null
+            s.down = false
+            s.tracking = -1
+            s.dirty = false
+            s.known = false
+            up
         }
-        slots.remove(device)
-        current.remove(device)
-        dropped[device] = monoNs
+        sync.current(device)?.let { now ->
+            now.slot?.let { current[device] = it }
+            val s = deviceSlots.getOrPut(current[device] ?: 0) { Slot(known = false) }
+            now.x?.let { s.x = it }
+            now.y?.let { s.y = it }
+        }
+        discarding += device
+        if (device !in resyncing) sync.lost(device, monoNs)
+        resyncing[device] = false
         return ended
     }
 
