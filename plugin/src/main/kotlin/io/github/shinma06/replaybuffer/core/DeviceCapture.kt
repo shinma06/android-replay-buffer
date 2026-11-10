@@ -275,7 +275,7 @@ internal class DeviceCapture @JvmOverloads constructor(
     }
 
     private fun touches() {
-        if (!touchesApplied) store.touchDots(runCatching(::applyShowTouches).getOrDefault(TouchDots.FAILED), generation)
+        if (!touchesApplied) runCatching(::applyShowTouches).getOrDefault(TouchDots.FAILED)?.let { store.touchDots(it, generation) }
         val devices = adb.command("-s", serial, "shell", "getevent", "-lp")
         val axes = parseTouchDevices(devices)
         if (axes.isEmpty()) {
@@ -307,9 +307,17 @@ internal class DeviceCapture @JvmOverloads constructor(
         } finally { adb.stop(process) }
     }
 
-    /** Turns show_touches on once per capture, remembering the previous value before changing it. */
-    private fun applyShowTouches(): TouchDots {
-        if (!showTouches) return TouchDots.OFF.also { touchesApplied = true }
+    /**
+     * Turns show_touches on once per capture, remembering the previous value before changing it. With the setting OFF
+     * the device value is only read, since dots turned on on the device (developer options) are in the video too;
+     * null means that value could not be read.
+     */
+    private fun applyShowTouches(): TouchDots? {
+        if (!showTouches) {
+            touchesApplied = true
+            val now = runCatching { adb.command("-s", serial, "shell", "settings", "get", "system", "show_touches").trim() }
+            return now.getOrNull()?.let { if (it == "1") TouchDots.ALREADY_ON else TouchDots.OFF }
+        }
         // A value left by an unfinished restore is ours, so the device's current "1" is not the original.
         if (!touchRestore.pending(serial)) {
             val original = adb.command("-s", serial, "shell", "settings", "get", "system", "show_touches").trim()

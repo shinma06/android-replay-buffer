@@ -123,6 +123,32 @@ class TouchEventsTest {
     }
 
     @Test
+    fun `releasing a finger held across a drop does not end the lost interval`() {
+        val sync = Sync()
+        val parser = TouchParser(parseTouchDevices(devices), 1080, 2400, sync)
+        val lines = """
+            [     70.000000] EV_ABS       ABS_MT_TRACKING_ID   00000001
+            [     70.000000] EV_ABS       ABS_MT_POSITION_X    00000000
+            [     70.000000] EV_ABS       ABS_MT_POSITION_Y    00000000
+            [     70.000000] EV_SYN       SYN_REPORT           00000000
+            [     70.100000] EV_SYN       SYN_DROPPED          00000000
+            [     70.110000] EV_SYN       SYN_REPORT           00000000
+            [     70.200000] EV_ABS       ABS_MT_TRACKING_ID   ffffffff
+            [     70.200000] EV_SYN       SYN_REPORT           00000000
+            [     70.300000] EV_ABS       ABS_MT_TRACKING_ID   00000002
+            [     70.300000] EV_ABS       ABS_MT_POSITION_X    00007fff
+            [     70.300000] EV_SYN       SYN_REPORT           00000000
+        """.trimIndent().lines()
+        assertEquals(listOf(
+            TouchSample(70_000_000_000, "/dev/input/event2", 0, TouchAction.DOWN, 0, 0),
+            TouchSample(70_100_000_000, "/dev/input/event2", 0, TouchAction.UP, 0, 0),
+            TouchSample(70_300_000_000, "/dev/input/event2", 0, TouchAction.DOWN, 1079, 0),
+        ), lines.flatMap(parser::feed))
+        assertEquals(listOf("current /dev/input/event2", "lost /dev/input/event2 70100000000",
+            "resynced /dev/input/event2 70300000000"), sync.events)
+    }
+
+    @Test
     fun `the slot and position re-read after a drop place the next pointer`() {
         val sync = Sync(TouchCurrent(slot = 1, x = 0, y = 0x7fff))
         val parser = TouchParser(parseTouchDevices(devices), 1080, 2400, sync)

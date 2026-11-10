@@ -11,7 +11,15 @@ class ShowTouchesRestoreTest {
         assertEquals(listOf("get", "put 1", "put 0"), run(showTouches = true, original = "0"))
         assertEquals(listOf("get", "put 1", "delete"), run(showTouches = true, original = "null"))
         assertEquals(listOf("get"), run(showTouches = true, original = "1"))
-        assertEquals(emptyList(), run(showTouches = false, original = "0"))
+        assertEquals(listOf("get"), run(showTouches = false, original = "0"))
+        assertEquals(TouchDots.OFF, dots)
+    }
+
+    @Test
+    fun `with the setting off the device value is read but never changed`() {
+        // Dots turned on in the device's developer options are in the video even though the plugin did not set them.
+        assertEquals(listOf("get"), run(showTouches = false, original = "1"))
+        assertEquals(TouchDots.ALREADY_ON, dots)
     }
 
     @Test
@@ -22,6 +30,8 @@ class ShowTouchesRestoreTest {
         assertEquals(listOf("put 1", "put 0"), run(showTouches = true, original = "1", restore = restore))
         assertEquals(listOf("get"), run(showTouches = true, original = "1", restore = restore))
     }
+
+    private var dots: TouchDots? = null
 
     private fun run(showTouches: Boolean, original: String, restore: ShowTouchesRestore = ShowTouchesRestore(),
                     offlineOnClose: Boolean = false): List<String> {
@@ -39,7 +49,7 @@ sys.exit(0)
             CaptureResources(Files.createDirectory(root.resolve("resources"))).use { resources ->
                 CaptureStore(root.resolve("ring")).use { store ->
                     val capture = DeviceCapture(adb, "fixture-1", resources, store, 1, ApplicationTarget(), showTouches = showTouches, touchRestore = restore)
-                    DeviceCapture::class.java.getDeclaredMethod("applyShowTouches").apply { isAccessible = true }.invoke(capture)
+                    dots = DeviceCapture::class.java.getDeclaredMethod("applyShowTouches").apply { isAccessible = true }.invoke(capture) as TouchDots?
                     if (offlineOnClose) Files.createFile(root.resolve("offline"))
                     runCatching { capture.close() }
                 }

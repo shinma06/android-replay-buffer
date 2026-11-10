@@ -144,7 +144,7 @@ internal class DisplaySizeWatch(
  * evdev only reports changed axes, so SYN_DROPPED does not clear state. Each slot keeps its last X/Y; the current slot
  * and its X/Y are re-read through [TouchSync.current]. Pointers that were down end with `up` at the drop time, events
  * are ignored through the next SYN_REPORT, and every slot's pointer stays unknown (no samples) until a new
- * ABS_MT_TRACKING_ID arrives for it. The lost interval runs from the drop to the first report with such an ID.
+ * ABS_MT_TRACKING_ID arrives for it. The lost interval runs from the drop to the first report with a non-negative ID.
  */
 internal class TouchParser(
     private val axes: Map<String, TouchAxes>, width: Int, height: Int, private val sync: TouchSync = object : TouchSync {},
@@ -193,7 +193,8 @@ internal class TouchParser(
             "ABS_MT_SLOT" -> current[device] = value
             "ABS_MT_TRACKING_ID" -> {
                 slot().apply { tracking = value; dirty = true; known = true }
-                if (device in resyncing) resyncing[device] = true
+                // A release (-1) only ends a pointer held across the drop; only a new pointer makes input known again.
+                if (device in resyncing && value >= 0) resyncing[device] = true
             }
             "ABS_MT_POSITION_X" -> slot().apply { x = value; dirty = true }
             "ABS_MT_POSITION_Y" -> slot().apply { y = value; dirty = true }

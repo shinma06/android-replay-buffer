@@ -498,7 +498,7 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                     appendLine("タップ位置の表示（show_touches）: 設定${if (capture.settings.showTouches) "ON（取得中だけ端末設定を変更し、終了時に元へ戻します）" else "OFF"}、" +
                         when (capture.touchDots) {
                             TouchDots.APPLIED -> "この取得では端末に点を表示しました"
-                            TouchDots.ALREADY_ON -> "端末で既にONだったため設定を変更していません"
+                            TouchDots.ALREADY_ON -> "端末で既にONのため動画に点が映っています（端末設定は変更していません）"
                             TouchDots.FAILED -> "端末設定を変更できず、動画に点は映っていません"
                             TouchDots.OFF -> "動画に点は映っていません"
                             null -> "点を表示できたか確認できていません"

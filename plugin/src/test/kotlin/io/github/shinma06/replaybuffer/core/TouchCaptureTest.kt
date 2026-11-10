@@ -151,6 +151,28 @@ class TouchCaptureTest {
         }
     }
 
+    @Test
+    fun dotsAlreadyOnOnTheDeviceAreReportedEvenWithTheSettingOff() {
+        CaptureStore(root.resolve("ring"), minFree = 0).use { store ->
+            val host = System.nanoTime() + 1_000_000_000
+            store.generation(1)
+            sample(store, host, 1)
+            store.status("device_log", StreamState.CAPTURING, null, 1)
+            store.app("com.fixture.app", 10001, setOf(12), 1, true)
+            store.touchStatus(StreamState.CAPTURING, null, 1)
+            store.touchDots(TouchDots.ALREADY_ON, 1)
+            sample(store, host, 2)
+            store.log(DeviceLog(1_700_000_001_800_000_000, 12, 12, 10001, 0, 4, "Fixture", "row", byteArrayOf(1)), 1, host + 1_000_000_000)
+            val pinned = assertNotNull(store.capture(ReplaySettings(showTouches = false), null, host + 1_800_000_000))
+            val output = SaveWriter().write(pinned, root, { false }) { Files.move(it.partial, it.complete) }
+            val touches = JsonParser.parseString(Files.readString(output.directory.resolve("session.json"))).asJsonObject["touches"].asJsonObject
+            assertEquals(false, touches["show_touches"].asBoolean)
+            assertEquals("already_on", touches["show_touches_state"].asString)
+            assertTrue(Files.readString(output.directory.resolve("README.txt")).contains("設定OFF、端末で既にONのため動画に点が映っています"))
+            store.release(pinned.id)
+        }
+    }
+
     private fun sample(store: CaptureStore, host: Long, second: Long) {
         val elapsed = second * 1_000_000_000
         val received = host + (second - 1) * 1_000_000_000
