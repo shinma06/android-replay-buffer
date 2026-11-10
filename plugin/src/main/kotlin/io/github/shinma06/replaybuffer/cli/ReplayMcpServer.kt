@@ -208,7 +208,8 @@ internal class ReplayMcpServer(
     }
 
     private fun project(args: Map<String, Any?>): Path? {
-        val value = args["project"] ?: return defaultProject
+        if ("project" !in args) return defaultProject
+        val value = args["project"]
         require(value is String && value.isNotEmpty()) { "projectには空でないパスを指定してください。" }
         return try { Path.of(value) } catch (_: InvalidPathException) { throw IllegalArgumentException("projectのパスを確認してください。") }
     }

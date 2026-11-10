@@ -75,6 +75,7 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
     private var requestRevision = 0L
     @Volatile private var disposed = false
     private var resolution: Job? = null
+    private var appliedSettings: Pair<Long, ReplayOperation>? = null
     private var cliServer: ReplayCliServer? = null
     private var screenshotJob: Job? = null
     private var screenshotRevision = -1L
@@ -163,7 +164,8 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
                     screenshotRevision = revision
                 }
                 publishChanged()
-                capture.applySettings(settings, next, revision).await()
+                val applied = capture.applySettings(settings, next, revision).await()
+                synchronized(this@ReplayProjectService) { if (revision == requestRevision) appliedSettings = revision to applied }
             } finally {
                 val current = synchronized(this@ReplayProjectService) {
                     if (disposed || project.isDisposed || revision != requestRevision) false else {
@@ -360,8 +362,10 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
             val pending = resolution ?: return CompletableFuture.completedFuture(ReplayOperation(true))
             pending.invokeOnCompletion { failure ->
                 synchronized(this) {
-                    completed.complete(if (failure == null && alive && revision == requestRevision) ReplayOperation(true)
-                    else ReplayOperation(false, "設定は保存しましたが反映を確認できません。GUIの設定・状態を確認してください。"))
+                    val applied = appliedSettings?.takeIf { it.first == revision }?.second
+                    completed.complete(if (failure == null && alive && revision == requestRevision && applied?.accepted == true) ReplayOperation(true)
+                    else ReplayOperation(false, listOfNotNull("設定は保存しましたが反映できていません。GUIの設定・状態を確認してください。",
+                        applied?.reason).joinToString("\n")))
                 }
             }
             completed

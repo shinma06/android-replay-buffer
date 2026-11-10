@@ -50,6 +50,7 @@ class ReplayMcpServerTest {
             call(4, "update_settings", """{"replay_seconds":30,"auto_save_on_crash":true}"""),
             call(5, "start_capture", """{"unknown":1}"""),
             call(6, "stop_capture"),
+            call(9, "stop_capture", """{"project":null}"""),
             """{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"missing"}}""",
             """{"jsonrpc":"2.0","id":8,"method":"resources/list"}""",
             "{not json",
@@ -90,6 +91,7 @@ class ReplayMcpServerTest {
         assertEquals("stopped", responses[BigDecimal("6")]!!.text())
         assertEquals(BigDecimal("-32602"), (responses[BigDecimal("7")]!!["error"] as Map<*, *>)["code"])
         assertEquals(BigDecimal("-32601"), (responses[BigDecimal("8")]!!["error"] as Map<*, *>)["code"])
+        assertTrue(responses[BigDecimal("9")]!!.text().contains("exit code 2"))
         assertEquals(BigDecimal("-32700"), (responses[null]!!["error"] as Map<*, *>)["code"])
         assertFalse(requests.any { it.command == CliCommand.DAEMON }, "Invalid arguments must not dispatch")
         assertEquals(5, requests.size)
