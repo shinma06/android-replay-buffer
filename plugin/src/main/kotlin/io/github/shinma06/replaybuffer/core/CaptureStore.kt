@@ -341,7 +341,7 @@ internal class CaptureStore(
                 val end = end()
                 val uncertainty = clock.endUncertainty()
                 if (end != null && uncertainty != Long.MAX_VALUE)
-                    pruneLogs(end - seconds * 1_000_000_000L - uncertainty)
+                    pruneLogs(expiredBefore(end - seconds * 1_000_000_000L - uncertainty))
             }
         }
         while (logBytes > logLimit && logs.isNotEmpty()) {
@@ -394,9 +394,10 @@ internal class CaptureStore(
             return
         }
         val cutoff = end - seconds * 1_000_000_000L - uncertainty
+        val expired = expiredBefore(cutoff)
         if (captureMode.videoRequested) {
             // Keep the complete preceding GOP for decoding the first frame inside the logical window.
-            val firstInside = video.indexOfFirst { it.time.sequence == null || it.time.uncertainty == Long.MAX_VALUE || it.retainedAt >= cutoff - it.time.uncertainty }
+            val firstInside = video.indexOfFirst { !expired(it.time, it.retainedAt, it.host) }
             if (firstInside > 0) {
                 val all = video.toList()
                 val first = if (continuousAcrossCut(all[firstInside - 1], all[firstInside], cutoff)) firstInside - 1 else firstInside
@@ -409,19 +410,27 @@ internal class CaptureStore(
                 repeat(key) { removeVideo() }
             }
         }
-        pruneLogs(cutoff)
+        pruneLogs(expired)
         enforceVideoLimit()
         deleteUnused()
         while (gaps.size > 4096) removeGapProofs(gaps.removeFirst())
     }
 
-    private fun pruneLogs(cutoff: Long) {
+    /** Unknown-time records are expired only when a later clock read already precedes the cutoff. */
+    private fun expiredBefore(cutoff: Long): (MappedTime, Long, Long) -> Boolean {
+        val latest = clock.latestSequence()
+        return { time, retainedAt, host ->
+            if (time.sequence == null || time.uncertainty == Long.MAX_VALUE) latest(host)?.let { it < cutoff } == true
+            else retainedAt < cutoff - time.uncertainty
+        }
+    }
+
+    private fun pruneLogs(expired: (MappedTime, Long, Long) -> Boolean) {
         // ponytail: scan the byte-bounded ring; add a time index only if measured pruning cost requires it.
         logs.removeIf { row ->
-            val expired = row.time.sequence != null && row.time.uncertainty != Long.MAX_VALUE &&
-                row.retainedAt < cutoff - row.time.uncertainty
-            if (expired) logBytes -= row.source.raw.size + 256
-            expired
+            val gone = expired(row.time, row.retainedAt, row.host)
+            if (gone) logBytes -= row.source.raw.size + 256
+            gone
         }
     }
 
@@ -435,10 +444,14 @@ internal class CaptureStore(
         val known = uncertainty != Long.MAX_VALUE
         val start = maxOf(0L, started ?: end, end - settings.replaySeconds * 1_000_000_000L)
         val logTime = clock.logMapper()
+        val latest = clock.latestSequence()
+        // An unknown-time record received before a clock read that is already before the window cannot be inside it.
+        fun beforeWindow(host: Long) = known && uncertainty >= 0 && latest(host)?.let { it < start - uncertainty } == true
         val rows = logs.map { row -> row.copy(time = logTime(row.source.wall, row.host)) }.filter { row ->
             val point = row.time.sequence
             val error = row.time.uncertainty
-            if (!known || point == null || error == Long.MAX_VALUE || error < 0 || uncertainty < 0) true
+            if (!known || error < 0 || uncertainty < 0) true
+            else if (point == null || error == Long.MAX_VALUE) !beforeWindow(row.host)
             else try {
                 val margin = Math.addExact(error, uncertainty)
                 val distance = when {
@@ -452,7 +465,7 @@ internal class CaptureStore(
         val all = if (captureMode.videoRequested) video.toList() else emptyList()
         val files = mutableSetOf<Path>()
         all.forEachIndexed { index, entry ->
-            if (!known || entry.time.sequence == null || entry.retainedAt <= end && entry.retainedAt >= start) {
+            if (!known || entry.time.sequence == null && !beforeWindow(entry.host) || entry.retainedAt <= end && entry.retainedAt >= start) {
                 files.add(entry.file)
                 if (index > 0 && continuousAcrossCut(all[index - 1], entry, start)) files.add(all[index - 1].file)
             }

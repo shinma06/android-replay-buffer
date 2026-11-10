@@ -179,6 +179,42 @@ internal class CaptureClock {
 
     @Synchronized
     fun snapshot(): List<ClockSample> = samples.toList()
+
+    private var latestCache: Triple<ClockSample, ClockSample, (Long) -> Long?>? = null
+
+    @Synchronized
+    fun latestSequence(): (Long) -> Long? {
+        val first = samples.peekFirst() ?: return { null }
+        val last = samples.peekLast()
+        latestCache?.let { (cachedFirst, cachedLast, bound) -> if (cachedFirst === first && cachedLast === last) return bound }
+        return latestSequence(samples.toList()).also { latestCache = Triple(first, last, it) }
+    }
+}
+
+/**
+ * Latest sequence a record received by the host at `host` can have: a clock read requested after that moment ran on the
+ * device after the record was produced. This bounds records whose own mapping is unknown (e.g. across a clock epoch).
+ */
+internal fun latestSequence(samples: List<ClockSample>): (Long) -> Long? {
+    val sorted = samples.sortedBy { it.sent }
+    val sent = LongArray(sorted.size) { sorted[it].sent }
+    val bound = arrayOfNulls<Long>(sorted.size)
+    var min: Long? = null
+    for (i in sorted.indices.reversed()) {
+        val sample = sorted[i]
+        val offset = sample.sequenceOffset
+        val upper = if (offset == null || sample.bridgeError == Long.MAX_VALUE) null else try {
+            Math.addExact(Math.addExact(sample.before, offset), sample.bridgeError)
+        } catch (_: ArithmeticException) { null }
+        if (upper != null && (min == null || upper < min)) min = upper
+        bound[i] = min
+    }
+    return { host ->
+        var low = 0
+        var high = sent.size
+        while (low < high) { val mid = (low + high) ushr 1; if (sent[mid] <= host) low = mid + 1 else high = mid }
+        bound.getOrNull(low)
+    }
 }
 
 /** Sorted keys retain insertion-order extrema, including duplicate or locally decreasing wall clocks. */
