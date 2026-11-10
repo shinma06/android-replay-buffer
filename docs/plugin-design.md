@@ -12,9 +12,9 @@
 
 時刻はkernelの入力時刻（`getevent -lt`の端末CLOCK_MONOTONIC）を正本とし、動画PTSと同じ`CaptureClock`の時計対応でsequenceへ写します。host受信時刻で置き換えません。保存窓・固定・pruneの規則は両ログと同じで、保存対象の固定後に新しいclock sampleで再解釈しません。保持件数の上限（200,000件）を超えた古いsampleは`dropped_count`へ数えます。
 
-`touches.jsonl`は1行1sampleで、`clock_epoch / generation / device_mono_ns / elapsed_ns / window_ns / uncertainty_ns / movie_us / action / pointer / x / y / display_width / display_height / input_device`を持ちます。`movie_us`は保存MP4で、その時刻に表示中のframe（`frames.jsonl`の`movie_pts_us〜movie_end_us`）上の位置です。表示区間外、時計対応が不確定、clock gapに重なる行はnullで、同期済みと扱いません。`session.json`は`touch_file`と`touches`（`state / reason / count / in_movie_count / dropped_count / show_touches / time_source / coordinate_space / gaps`）を持ちます。schema番号は3のままの追加fieldです。
+`touches.jsonl`は1行1sampleで、`clock_epoch / generation / device_mono_ns / elapsed_ns / window_ns / uncertainty_ns / movie_us / action / pointer / x / y / display_width / display_height / input_device`を持ちます。`movie_us`は保存MP4で、その時刻に表示中のframe（`frames.jsonl`の`movie_pts_us〜movie_end_us`）上の位置です。表示区間外、時計対応が不確定、clock gapに重なる行はnullで、同期済みと扱いません。`session.json`は`touch_file`と`touches`（`state / reason / count / in_movie_count / dropped_count / show_touches / show_touches_state / time_source / coordinate_space / gaps`）を持ちます。`show_touches`は設定値で、`show_touches_state`は実際の状態（`applied`＝点を表示、`already_on`＝端末で既にON、`failed`＝端末設定を変更できず点なし、`off`＝設定OFF、null＝未確定）です。保持数の上限（200,000件）を超えた古い行は捨て、捨てた範囲が保存窓に重なる場合は`gaps`に記録します。`dropped_count`は取得開始からの累計です。schema番号は3のままの追加fieldです。
 
-動画上の点表示は設定「取得中は端末画面にタップ位置を表示する」（既定OFF）で切り替えます。ONでは取得開始時に端末の`settings get system show_touches`を記録し、`1`でなければ取得中だけ`1`にして、取得終了（OFF・切断による世代終了・project close）時に元の値へ戻します（未設定だった場合は削除）。取得OFFかつ反映完了後だけ変更できます。端末切断中やIDE異常終了で戻せなかった場合、端末側の設定が残ることがあります。点は端末の画面描画として動画に焼き込まれ、`touches.jsonl`の記録とは独立です。
+動画上の点表示は設定「取得中は端末画面にタップ位置を表示する」（既定OFF）で切り替えます。ONでは取得開始時に端末の`settings get system show_touches`を記録し、`1`でなければ取得中だけ`1`にして、取得終了（OFF・切断による世代終了・project close）時に元の値へ戻します（未設定だった場合は削除）。取得OFFかつ反映完了後だけ変更できます。切断中で戻せなかった元の値はproject内で端末serialごとに保持し、同じ端末の次の取得では端末の現在値（自分が設定した`1`）を元の値と取り違えずに、その取得の終了時に戻します。IDE異常終了やproject closeまで端末が戻らなかった場合は、端末側の設定が残ることがあります。点は端末の画面描画として動画に焼き込まれ、`touches.jsonl`の記録とは独立です。
 
 エミュレータでの確認には実際のevdev入力が必要です。`adb shell input tap`や`adb emu finger`はevdevを通らないため記録されません。VMではstandalone emulator windowへの`xdotool`のclickで実イベントを作れます。
 

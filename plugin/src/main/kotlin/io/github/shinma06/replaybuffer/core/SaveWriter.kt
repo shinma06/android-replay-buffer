@@ -495,7 +495,14 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                 if (videoRequested) {
                     appendLine("動画がある保存は1本のMP4です。動画がない保存にはMP4はありません。取得状態・理由はsession.jsonのcoverage.videoを確認してください。動画がある場合は、表示秒に対応するframes.jsonlのmovie_pts_us〜movie_end_usとsource/window情報を使い、両ログと照合してください。session.jsonのpartsは同じファイル内の再生区間です。")
                     appendLine("タップ位置: touches.jsonlに${capture.touches.size}件（うち動画に重なる${touchesInMovie}件）。動画の取得中は自動で記録します。時刻は端末の入力時刻（getevent、CLOCK_MONOTONIC）で、動画PTSと同じ時計対応によりwindow_nsへ写し、表示中の動画位置をmovie_usに記録します。movie_usがnullの行は動画の表示区間外または時刻を確定できない行です。座標は画面の自然な向きのpx（display_width×display_height）です。")
-                    appendLine("タップ位置の表示（show_touches）: ${if (capture.settings.showTouches) "ON（取得中だけ端末設定を変更し、終了時に元へ戻します）" else "OFF"}")
+                    appendLine("タップ位置の表示（show_touches）: 設定${if (capture.settings.showTouches) "ON（取得中だけ端末設定を変更し、終了時に元へ戻します）" else "OFF"}、" +
+                        when (capture.touchDots) {
+                            TouchDots.APPLIED -> "この取得では端末に点を表示しました"
+                            TouchDots.ALREADY_ON -> "端末で既にONだったため設定を変更していません"
+                            TouchDots.FAILED -> "端末設定を変更できず、動画に点は映っていません"
+                            TouchDots.OFF -> "動画に点は映っていません"
+                            null -> "点を表示できたか確認できていません"
+                        })
                     appendLine("frameのclock_alignment_known=falseでは時計対応が不明です。window_ns=null、mapped_window_nsは不確実性を含む変換値で、同期確定やcoverageには使えません。区間開始に動画全体の表示秒を足す方法では照合できません。")
                     if (rawPath != null) appendLine("サイズ変更を含むため固定canvasへ再エンコードしています。拡縮・切捨てはせず、余白を追加しています。元AnnexB config/全packetはvideo-source.binへ保存しframes.jsonlのoffset/size/hashで照合できます。色未指定は不明のままで、色一致の証明ではありません。")
                     appendLine("video_missing_rangesは映像欠落又は時計対応未確認の範囲です。既知の取得gapは空白として表示し、不明gapの実durationはnullのまま、MP4上の表示間隔と区別しています。")
@@ -591,7 +598,7 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                 "touch_file" to touchFile?.fileName?.toString(),
                 "touches" to capture.touchState?.let { state -> mapOf("state" to state.state, "reason" to state.reason,
                     "count" to capture.touches.size, "in_movie_count" to touchesInMovie, "dropped_count" to capture.touchDropped,
-                    "show_touches" to capture.settings.showTouches, "time_source" to "getevent -lt (device CLOCK_MONOTONIC)",
+                    "show_touches" to capture.settings.showTouches, "show_touches_state" to capture.touchDots?.wire, "time_source" to "getevent -lt (device CLOCK_MONOTONIC)",
                     "coordinate_space" to "display_px_natural_orientation",
                     "gaps" to capture.touchGaps.filter { (it.to == null || it.to >= capture.start) && (it.from == null || it.from <= capture.end) }
                         .map { mapOf("from_ns" to it.from?.toString(), "to_ns" to it.to?.toString(), "reason" to it.reason, "time_axis" to "sequence_ns") }) },

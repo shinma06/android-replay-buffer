@@ -17,6 +17,31 @@ internal data class TouchEntry(
 /** Window-time interval (sequence ns) where touch input was not being read; null means outside the known range. */
 internal data class TouchGap(val from: Long?, val to: Long?, val reason: String)
 
+/** How the device show_touches setting stood while touches were captured. */
+internal enum class TouchDots(val wire: String) {
+    OFF("off"),
+    APPLIED("applied"),
+    ALREADY_ON("already_on"),
+    FAILED("failed"),
+}
+
+/**
+ * Original show_touches values per device serial, kept across capture generations so that a restore that failed
+ * while the device was disconnected is retried by a later generation instead of mistaking our own "1" for the original.
+ */
+internal class ShowTouchesRestore {
+    private val originals = java.util.concurrent.ConcurrentHashMap<String, String>()
+
+    fun pending(serial: String): Boolean = originals.containsKey(serial)
+
+    /** Remembers the first original only; empty means the key was unset. */
+    fun remember(serial: String, original: String) { originals.putIfAbsent(serial, original) }
+
+    fun original(serial: String): String? = originals[serial]
+
+    fun restored(serial: String, original: String) { originals.remove(serial, original) }
+}
+
 internal const val MAX_TOUCH_SAMPLES = 200_000
 
 private val deviceLine = Regex("""add device \d+: (/dev/input/event\d+)""")

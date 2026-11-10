@@ -50,6 +50,8 @@ internal data class FrozenCapture(
     val touchState: StreamSnapshot? = null,
     val touchGaps: List<TouchGap> = emptyList(),
     val touchDropped: Long = 0,
+    /** Whether the visible dots were on during this generation; null before the touch reader decided. */
+    val touchDots: TouchDots? = null,
 ) {
     val empty: Boolean get() = video.isEmpty() && logs.isEmpty()
     val windowKnown: Boolean get() = endUncertainty != Long.MAX_VALUE
@@ -79,6 +81,9 @@ internal class CaptureStore(
     private val touchGaps = ArrayDeque<TouchGap>()
     private var touchState = StreamSnapshot(StreamState.RECOVERING)
     private var touchDropped = 0L
+    /** Latest window time of a row evicted by [MAX_TOUCH_SAMPLES]; MAX_VALUE when that time is unknown. */
+    private var touchEvictedThrough: Long? = null
+    private var touchDots: TouchDots? = null
     private val gaps = ArrayDeque<CaptureGap>()
     private val clockRecoveries = mutableMapOf<CaptureGap, ClockSample>()
     private val videoCuts = mutableMapOf<CaptureGap, VideoCut>()
@@ -136,6 +141,7 @@ internal class CaptureStore(
         config = byteArrayOf()
         states.replaceAll { kind, _ -> StreamSnapshot(if (kind == "video" && !captureMode.videoRequested) StreamState.NOT_REQUESTED else StreamState.RECOVERING) }
         if (captureMode.videoRequested) setTouchState(StreamState.RECOVERING, "取得を復旧しています")
+        touchDots = null
     }
 
     /** Touch samples exist only while video is requested; their time comes from the device input clock. */
@@ -143,13 +149,24 @@ internal class CaptureStore(
     fun touch(sample: TouchSample, width: Int, height: Int, owner: Long, host: Long = System.nanoTime()) {
         if (closed || owner != generation || !captureMode.videoRequested) return
         touches += TouchEntry(sample, owner, clock.mono(sample.monoNs, host), host, width, height)
-        while (touches.size > MAX_TOUCH_SAMPLES) { touches.removeFirst(); touchDropped++ }
+        while (touches.size > MAX_TOUCH_SAMPLES) {
+            val evicted = touches.removeFirst().time
+            touchDropped++
+            val through = if (evicted.uncertainty == Long.MAX_VALUE) null else evicted.sequence?.let { it + evicted.uncertainty }
+            touchEvictedThrough = maxOf(touchEvictedThrough ?: Long.MIN_VALUE, through ?: Long.MAX_VALUE)
+        }
     }
 
     @Synchronized
     fun touchStatus(state: StreamState, reason: String?, owner: Long) {
         if (closed || owner != generation || !captureMode.videoRequested) return
         setTouchState(state, reason)
+    }
+
+    @Synchronized
+    fun touchDots(dots: TouchDots, owner: Long) {
+        if (closed || owner != generation || !captureMode.videoRequested) return
+        touchDots = dots
     }
 
     private fun setTouchState(state: StreamState, reason: String?) {
@@ -436,6 +453,7 @@ internal class CaptureStore(
                 repeat((minOf(firstInside, all.lastIndex) downTo 0).firstOrNull { all[it].key } ?: 0) { removeVideo() }
             }
             pruneLogs { _, _, host -> host < cutoff }
+            touches.removeIf { it.host < cutoff }
             enforceVideoLimit()
             deleteUnused()
             return
@@ -549,8 +567,9 @@ internal class CaptureStore(
             settings.replaySeconds, frames.toList(), rows.toList(), gaps.toList(), clock.snapshot(), apps.toList(), settings,
             streams(settings.replaySeconds, end), endUncertainty = uncertainty, windowClockEpoch = fixedEpoch ?: clock.currentEpoch(),
             clockRecoveries = clockRecoveries.toMap(), videoCuts = videoCuts.toMap(), hostStart = hostStart,
-            touches = touchRows, touchState = touchState.takeIf { captureMode.videoRequested }, touchGaps = touchGaps.toList(),
-            touchDropped = touchDropped)
+            touches = touchRows, touchState = touchState.takeIf { captureMode.videoRequested }, touchGaps = touchGaps.toList() +
+                listOfNotNull(touchEvictedThrough?.takeIf { it >= start }?.let { TouchGap(null, it.takeIf { it != Long.MAX_VALUE }, "保持上限を超えた古いタップ位置を破棄しました") }),
+            touchDropped = touchDropped, touchDots = touchDots.takeIf { captureMode.videoRequested })
         if (trigger != null) {
             autosave.admissionProblem(trigger, host)?.let { throw AutoSaveRejected(it) }
             if (fixedEnd != null || !clock.certain(host)) throw AutoSaveRejected(AutoSaveReason.NOT_SAVED_CLOCK_UNKNOWN)
@@ -717,6 +736,7 @@ internal class CaptureStore(
         logs.clear()
         touches.clear()
         touchGaps.clear()
+        touchEvictedThrough = null
         apps.clear()
         gaps.clear()
         clockRecoveries.clear()

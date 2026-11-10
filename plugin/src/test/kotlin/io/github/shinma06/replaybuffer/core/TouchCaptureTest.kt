@@ -85,6 +85,32 @@ class TouchCaptureTest {
         assertNull(anchors.movieTime(1_200_000_000))
     }
 
+    @Test
+    fun rowsEvictedByTheSampleLimitInsideTheWindowAreReportedAsAGap() {
+        CaptureStore(root.resolve("ring"), minFree = 0).use { store ->
+            val host = System.nanoTime() + 1_000_000_000
+            store.generation(1)
+            sample(store, host, 1)
+            store.status("device_log", StreamState.CAPTURING, null, 1)
+            store.app("com.fixture.app", 10001, setOf(12), 1, true)
+            store.touchStatus(StreamState.CAPTURING, null, 1)
+            sample(store, host, 2)
+            store.touchDots(TouchDots.FAILED, 1)
+            repeat(MAX_TOUCH_SAMPLES + 1) {
+                store.touch(TouchSample(2_000_000_000L + it, "/dev/input/event2", 0, TouchAction.MOVE, 1, 1), 1080, 2400, 1, host + 1_700_000_000)
+            }
+            store.log(DeviceLog(1_700_000_001_800_000_000, 12, 12, 10001, 0, 4, "Fixture", "row", byteArrayOf(1)), 1, host + 1_000_000_000)
+            val pinned = assertNotNull(store.capture(ReplaySettings(showTouches = true), null, host + 1_800_000_000))
+            assertEquals(MAX_TOUCH_SAMPLES, pinned.touches.size)
+            assertEquals(1L, pinned.touchDropped)
+            assertTrue(pinned.touchGaps.any { it.reason == "保持上限を超えた古いタップ位置を破棄しました" && it.from == null && it.to != null })
+            val output = SaveWriter().write(pinned, root, { false }) { Files.move(it.partial, it.complete) }
+            val touches = JsonParser.parseString(Files.readString(output.directory.resolve("session.json"))).asJsonObject["touches"].asJsonObject
+            assertEquals("failed", touches["show_touches_state"].asString)
+            assertTrue(touches["show_touches"].asBoolean)
+        }
+    }
+
     private fun sample(store: CaptureStore, host: Long, second: Long) {
         val elapsed = second * 1_000_000_000
         val received = host + (second - 1) * 1_000_000_000

@@ -31,13 +31,12 @@ internal class DeviceCapture @JvmOverloads constructor(
     application: ApplicationTarget,
     private val videoQuality: VideoQuality = VideoQuality.STANDARD,
     private val showTouches: Boolean = false,
+    private val touchRestore: ShowTouchesRestore = ShowTouchesRestore(),
 ) : AutoCloseable {
     private val serial = serialArgument(serial)
     private val adb = OwnedAdb(adbPath)
     private val stopping = AtomicBoolean()
     private var touchesApplied = false
-    /** Device show_touches value to restore; empty means the key was unset. */
-    @Volatile private var touchRestore: String? = null
     private val timer = captureWatchdog()
     private val workers = mutableListOf<Thread>()
     private val sockets = ConcurrentHashMap.newKeySet<Socket>()
@@ -276,7 +275,7 @@ internal class DeviceCapture @JvmOverloads constructor(
     }
 
     private fun touches() {
-        runCatching(::applyShowTouches)
+        if (!touchesApplied) store.touchDots(runCatching(::applyShowTouches).getOrDefault(TouchDots.FAILED), generation)
         val axes = parseTouchDevices(adb.command("-s", serial, "shell", "getevent", "-lp"))
         if (axes.isEmpty()) {
             status("touch", StreamState.UNAVAILABLE, "タッチパネルの入力deviceが見つかりません")
@@ -299,26 +298,29 @@ internal class DeviceCapture @JvmOverloads constructor(
     }
 
     /** Turns show_touches on once per capture, remembering the previous value before changing it. */
-    private fun applyShowTouches() {
-        if (!showTouches || touchesApplied) return
-        val original = adb.command("-s", serial, "shell", "settings", "get", "system", "show_touches").trim()
-        if (original != "1") {
-            touchRestore = if (Regex("-?[0-9]{1,9}").matches(original)) original else ""
-            check(!stopping.get())
-            adb.command("-s", serial, "shell", "settings", "put", "system", "show_touches", "1")
+    private fun applyShowTouches(): TouchDots {
+        if (!showTouches) return TouchDots.OFF.also { touchesApplied = true }
+        // A value left by an unfinished restore is ours, so the device's current "1" is not the original.
+        if (!touchRestore.pending(serial)) {
+            val original = adb.command("-s", serial, "shell", "settings", "get", "system", "show_touches").trim()
+            if (original == "1") return TouchDots.ALREADY_ON.also { touchesApplied = true }
+            touchRestore.remember(serial, if (Regex("-?[0-9]{1,9}").matches(original)) original else "")
         }
+        check(!stopping.get())
+        adb.command("-s", serial, "shell", "settings", "put", "system", "show_touches", "1")
         touchesApplied = true
+        return TouchDots.APPLIED
     }
 
-    /** Best effort: a disconnected device keeps the value until the user changes it. */
+    /** A failed restore stays in [touchRestore] for the next capture of the same device. */
     private fun restoreTouches() {
-        val value = touchRestore ?: return
+        val value = touchRestore.original(serial) ?: return
         runCatching {
             OwnedAdb(adbPath).use { owned ->
                 if (value.isEmpty()) owned.command("-s", serial, "shell", "settings", "delete", "system", "show_touches")
                 else owned.command("-s", serial, "shell", "settings", "put", "system", "show_touches", value)
             }
-        }.onSuccess { touchRestore = null }
+        }.onSuccess { touchRestore.restored(serial, value) }
     }
 
     private fun readTouchLine(input: InputStream): String? {
