@@ -16,81 +16,24 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class ScreenshotSaveTest {
-    private val foreground = """
-        WINDOW MANAGER POLICY STATE
-          KeyguardServiceDelegate
-            showing=false
-            inputRestricted=false
-            dreaming=false
-            screenState=SCREEN_STATE_ON
-        WINDOW MANAGER DISPLAY CONTENTS
-          Display: mDisplayId=0
-          mCurrentFocus=Window{12ab u0 sample.app/.MainActivity}
-    """.trimIndent()
-
     @Test
-    fun foregroundRequiresOneKnownUnlockedDisplayAndExactSelectedApp() {
+    fun physicalDisplayMustBeOneKnownScreen() {
         val display = "Display 4619827551948147201 (HWC display 0): port=0\n"
         assertEquals("4619827551948147201", screenshotDisplay(display))
         assertFails { screenshotDisplay(display + display.replace("7201", "7202")) }
         assertFails { screenshotDisplay("unknown vendor format") }
         assertFails { screenshotDisplay(display.replace("4619827551948147201", "18446744073709551616")) }
-        assertEquals("Window{12ab u0 sample.app/.MainActivity}", screenshotForeground(foreground, "sample.app"))
-        for (bad in listOf(
-            foreground.replace("sample.app/", "sample.app.other/"),
-            foreground.replace("Window{12ab u0 sample.app/.MainActivity}", "null"),
-            foreground.replace("showing=false", "showing=true"),
-            foreground.replace("screenState=SCREEN_STATE_ON", "screenState=SCREEN_STATE_OFF"),
-            foreground.replace("inputRestricted=false", "inputRestricted=true"),
-            foreground.replace("dreaming=false", "dreaming=true"),
-            foreground.replace("KeyguardServiceDelegate", "unknownVendorFormat"),
-            foreground.replace("Display: mDisplayId=0", "Display: mDisplayId=1"),
-            foreground + "\nDisplay: mDisplayId=1",
-            foreground + "\nmCurrentFocus=Window{45cd u0 other.app/.Main}",
-        )) assertFails { screenshotForeground(bad, "sample.app") }
-    }
-
-    // Reduced from the retained ON diagnostics: a focusless mirror precedes the physical default.
-    private fun mirroredForeground(id: String) = foreground.replace(
-        "Display: mDisplayId=0",
-        "Display: mDisplayId=$id\n  mCurrentFocus=null\n  Display: mDisplayId=0 (organized)",
-    )
-
-    @Test
-    fun focuslessMirrorsDoNotHideOrSupplyTheDefaultDisplayFocus() {
-        val selected = "Window{12ab u0 sample.app/.MainActivity}"
-        for (id in listOf("2", "7")) {
-            val before = mirroredForeground(id)
-            val after = foreground + "\nDisplay: mDisplayId=$id\nmCurrentFocus=null"
-            assertEquals(selected, screenshotForeground(before, "sample.app"))
-            assertEquals(selected, screenshotForeground(after, "sample.app"))
-            for (bad in listOf(
-                before.replace("mCurrentFocus=$selected", "mCurrentFocus=null").replaceFirst("mCurrentFocus=null", "mCurrentFocus=$selected"),
-                "mCurrentFocus=$selected\n$before",
-                before.replace("mCurrentFocus=null", "mCurrentFocus=Window{45cd u0 other.app/.Main}"),
-                before.replace("mCurrentFocus=null", "unknownFocus=null"),
-                before.replace("Display: mDisplayId=0 (organized)", "Display: mDisplayId=1"),
-                before.replace("Display: mDisplayId=$id", "Display: mDisplayId=0"),
-                before.replace("Display: mDisplayId=$id", "Display: mDisplayId=unknown"),
-                before.replace("sample.app/.MainActivity", "other.app/.MainActivity"),
-                before.replace("showing=false", "showing=true"),
-            )) assertFails { screenshotForeground(bad, "sample.app") }
-        }
     }
 
     @Test
-    fun recordingMirrorPreservesSerialPhysicalCaptureAndBothForegroundChecks() {
+    fun currentScreenIsSavedWhateverAppOrLockScreenIsInFront() {
         fixture { root, adb ->
-            Files.writeString(root.resolve("foreground"), mirroredForeground("2"))
             val destination = Files.createDirectory(root.resolve("output"))
-            val saved = saveScreenshot(adb, "sample.app", destination, "usb123")
+            val saved = saveScreenshot(adb, destination, "usb123")
             assertContentEquals(Files.readAllBytes(root.resolve("image.png")), Files.readAllBytes(saved.file))
+            assertEquals("usb123", saved.serial)
             assertEquals(listOf("devices -l", "-s usb123 shell dumpsys SurfaceFlinger --display-id",
-                "-s usb123 shell dumpsys window", "-s usb123 exec-out screencap -p -d 4619827551948147201",
-                "-s usb123 shell dumpsys window"), Files.readAllLines(root.resolve("commands")))
-            Files.writeString(root.resolve("mode"), "changed")
-            assertFails { saveScreenshot(adb, "sample.app", destination, "usb123") }
-            assertEquals(listOf(saved.file), Files.list(destination).use { it.toList() })
+                "-s usb123 exec-out screencap -p -d 4619827551948147201"), Files.readAllLines(root.resolve("commands")))
         }
     }
 
@@ -117,7 +60,7 @@ class ScreenshotSaveTest {
     fun missingDestinationIsNotCreated() {
         fixture { root, adb ->
             val missing = root.resolve("missing")
-            assertFails { saveScreenshot(adb, "sample.app", missing) }
+            assertFails { saveScreenshot(adb, missing) }
             assertFalse(Files.exists(missing))
         }
     }
@@ -127,7 +70,7 @@ class ScreenshotSaveTest {
         fixture { root, adb ->
             val other = Files.createDirectory(root.resolve("other"))
             val link = Files.createSymbolicLink(root.resolve("linked-output"), other)
-            val saved = saveScreenshot(adb, "sample.app", link)
+            val saved = saveScreenshot(adb, link)
             assertEquals(other, saved.file.parent)
             assertContentEquals(Files.readAllBytes(root.resolve("image.png")), Files.readAllBytes(saved.file))
             val replacement = Files.createDirectory(root.resolve("replacement"))
@@ -147,17 +90,17 @@ class ScreenshotSaveTest {
         fixture { root, adb ->
             val destination = Files.createDirectory(root.resolve("output"))
             Files.writeString(destination.resolve("keep"), "unrelated")
-            val saved = saveScreenshot(adb, "sample.app", destination)
+            val saved = saveScreenshot(adb, destination)
             assertContentEquals(Files.readAllBytes(root.resolve("image.png")), Files.readAllBytes(saved.file))
             assertEquals(destination, saved.file.parent)
-            assertEquals("sample.app", saved.application)
+            assertEquals("usb123", saved.serial)
             assertTrue(Regex("screenshot-[0-9]{8}-[0-9]{6}-[0-9]{3}-[0-9a-f-]{36}\\.png").matches(saved.file.fileName.toString()))
             assertEquals(setOf("keep", saved.file.fileName.toString()), Files.list(destination).use { it.map { path -> path.fileName.toString() }.toList().toSet() })
             assertEquals(TestPermissions.mode("rw-------"), TestPermissions.get(saved.file))
             assertEquals(listOf("devices -l", "-s usb123 shell dumpsys SurfaceFlinger --display-id",
-                "-s usb123 shell dumpsys window", "-s usb123 exec-out screencap -p -d 4619827551948147201", "-s usb123 shell dumpsys window"),
+                "-s usb123 exec-out screencap -p -d 4619827551948147201"),
                 Files.readAllLines(root.resolve("commands")))
-            val second = saveScreenshot(adb, "sample.app", destination)
+            val second = saveScreenshot(adb, destination)
             assertTrue(saved.file != second.file)
             saved.delete()
             saved.delete()
@@ -176,7 +119,7 @@ class ScreenshotSaveTest {
                 val start = java.util.concurrent.CyclicBarrier(2)
                 val requests = List(2) { executor.submit<SavedScreenshot> {
                     start.await()
-                    saveScreenshot(adb, "sample.app", destination)
+                    saveScreenshot(adb, destination)
                 } }
                 val saved = requests.map { it.get(10, java.util.concurrent.TimeUnit.SECONDS) }
                 assertEquals(2, saved.map { it.file }.toSet().size)
@@ -203,16 +146,15 @@ class ScreenshotSaveTest {
             val target = "emulator-5554 device model:Recording"
             val other = "usb123 device model:Other"
             Files.writeString(root.resolve("devices"), "List of devices attached\n$target\n$other\n")
-            val saved = saveScreenshot(adb, "sample.app", destination, "emulator-5554")
+            val saved = saveScreenshot(adb, destination, "emulator-5554")
             assertContentEquals(Files.readAllBytes(root.resolve("image.png")), Files.readAllBytes(saved.file))
             assertEquals(listOf("devices -l", "-s emulator-5554 shell dumpsys SurfaceFlinger --display-id",
-                "-s emulator-5554 shell dumpsys window", "-s emulator-5554 exec-out screencap -p -d 4619827551948147201",
-                "-s emulator-5554 shell dumpsys window"), Files.readAllLines(root.resolve("commands")))
+                "-s emulator-5554 exec-out screencap -p -d 4619827551948147201"), Files.readAllLines(root.resolve("commands")))
             for (missing in listOf("", "emulator-5554 offline\n", "emulator-5554 unauthorized\n")) {
                 Files.writeString(root.resolve("commands"), "")
                 Files.writeString(root.resolve("devices"), "List of devices attached\n$missing$other\n")
                 val failure = kotlin.test.assertFailsWith<ScreenshotSaveFailure> {
-                    saveScreenshot(adb, "sample.app", destination, "emulator-5554")
+                    saveScreenshot(adb, destination, "emulator-5554")
                 }
                 assertTrue(failure.message!!.contains("録画対象"))
                 assertEquals(listOf("devices -l"), Files.readAllLines(root.resolve("commands")))
@@ -226,14 +168,14 @@ class ScreenshotSaveTest {
         fixture { root, adb ->
             val destination = Files.createDirectory(root.resolve("output"))
             Files.writeString(root.resolve("devices"), "List of devices attached\nemulator-5554 device model:Only\n")
-            val saved = saveScreenshot(adb, "sample.app", destination)
+            val saved = saveScreenshot(adb, destination)
             assertTrue(Files.exists(saved.file))
             assertTrue(Files.readAllLines(root.resolve("commands")).drop(1).all { it.startsWith("-s emulator-5554 ") })
             for (devices in listOf("", "usb123 offline\n", "usb123 unauthorized\n",
                 "emulator-5554 device\nusb123 device\n")) {
                 Files.writeString(root.resolve("commands"), "")
                 Files.writeString(root.resolve("devices"), "List of devices attached\n$devices")
-                assertFails { saveScreenshot(adb, "sample.app", destination) }
+                assertFails { saveScreenshot(adb, destination) }
                 assertEquals(listOf("devices -l"), Files.readAllLines(root.resolve("commands")))
                 assertEquals(1, Files.list(destination).use { it.count() })
             }
@@ -245,7 +187,7 @@ class ScreenshotSaveTest {
         fixture { root, adb ->
             val destination = Files.createDirectory(root.resolve("output"))
             for (kind in listOf("removed", "replaced", "changed", "symlink", "directory")) {
-                val saved = saveScreenshot(adb, "sample.app", destination)
+                val saved = saveScreenshot(adb, destination)
                 val keep = root.resolve("keep-$kind")
                 Files.writeString(keep, "untouched")
                 when (kind) {
@@ -270,12 +212,12 @@ class ScreenshotSaveTest {
     }
 
     @Test
-    fun disconnectedChangingOrInvalidOutputNeverPublishesAnImage() {
+    fun disconnectedAmbiguousOrInvalidOutputNeverPublishesAnImage() {
         fixture { root, adb ->
             val destination = Files.createDirectory(root.resolve("output"))
-            for (mode in listOf("disconnected", "ambiguous-display", "changed", "broken")) {
+            for (mode in listOf("disconnected", "ambiguous-display", "broken")) {
                 Files.writeString(root.resolve("mode"), mode)
-                assertFails { saveScreenshot(adb, "sample.app", destination) }
+                assertFails { saveScreenshot(adb, destination) }
                 assertEquals(0, Files.list(destination).use { it.count() })
             }
         }
@@ -288,7 +230,7 @@ class ScreenshotSaveTest {
             Files.writeString(root.resolve("mode"), "wait")
             val failure = java.util.concurrent.atomic.AtomicReference<Throwable?>()
             val worker = thread {
-                try { saveScreenshot(adb, "sample.app", destination) }
+                try { saveScreenshot(adb, destination) }
                 catch (caught: Throwable) { failure.set(caught) }
             }
             try {
@@ -316,7 +258,6 @@ class ScreenshotSaveTest {
         val root = Files.createTempDirectory("screenshot-fixture-").toRealPath()
         try {
             Files.write(root.resolve("image.png"), png())
-            Files.writeString(root.resolve("foreground"), foreground)
             Files.writeString(root.resolve("devices"), "List of devices attached\nusb123 device model:Fixture\n")
             var adb = root.resolve("adb")
             adb = TestExecutables.python(adb, """#!/usr/bin/env python3
@@ -335,10 +276,6 @@ else: sys.exit(2)
 if command=='shell dumpsys SurfaceFlinger --display-id':
  print('Display 4619827551948147201 (HWC display 0): port=0')
  if mode=='ambiguous-display': print('Display 4619827551948147202 (HWC display 1): port=1')
-elif command=='shell dumpsys window':
- text=(root/'foreground').read_text()
- if mode=='changed' and (root/'phase').read_text()=='after': text=text.replace('12ab','45cd')
- print(text)
 elif command=='exec-out screencap -p -d 4619827551948147201':
  (root/'phase').write_text('after')
  if mode=='wait':

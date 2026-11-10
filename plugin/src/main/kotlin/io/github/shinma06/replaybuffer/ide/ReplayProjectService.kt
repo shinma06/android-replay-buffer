@@ -194,7 +194,6 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
         screenshotBusy -> "スクリーンショットを保存中です。"
         screenshotRevision != requestRevision -> "対象アプリ・設定を確認中です。"
         environment?.adb == null -> environment?.adbReason ?: "Android SDKを確認してください。"
-        environment?.application?.packageName == null -> environment?.application?.reason ?: "対象アプリを選択してください。"
         screenshotSettings?.let { !it.screenshotUsesLogcatDestination && it.screenshotDirectory.isEmpty() } != false -> "設定でスクリーンショットの保存先を指定してください。"
         else -> runCatching { screenshotDeviceSerial(snapshot) }.exceptionOrNull()?.message
     }
@@ -243,7 +242,7 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
                             throw IllegalStateException(LOGCAT_DESTINATION_UNAVAILABLE)
                         }
                     }
-                    saveScreenshot(checkNotNull(selected.adb), checkNotNull(selected.application.packageName), destination, serial)
+                    saveScreenshot(checkNotNull(selected.adb), destination, serial)
                 }
                 notifyScreenshot(saved)
             } catch (cancelled: CancellationException) {
@@ -267,7 +266,7 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
         val deleting = java.util.concurrent.atomic.AtomicBoolean()
         val notification = NotificationGroupManager.getInstance().getNotificationGroup("Android Replay Buffer")
             .createNotification("スクリーンショットを保存しました",
-                "端末の表示画面をPNGで保存しました。選択アプリ: ${StringUtil.escapeXmlEntities(saved.application)}。保護領域は空白になる場合があります。",
+                "端末の表示画面をPNGで保存しました。端末: ${StringUtil.escapeXmlEntities(saved.serial)}。保護領域は空白になる場合があります。",
                 NotificationType.INFORMATION)
             .addAction(NotificationAction.create("保存場所を開く") { _, event ->
                 if (alive) openDirectory(saved.file.parent) else event.expire()
