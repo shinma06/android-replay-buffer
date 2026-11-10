@@ -270,6 +270,18 @@ class LogcatToolWindowButtonTest {
             assertEquals(listOf("select"), operations)
             next.complete(null)
             assertEquals(listOf("select", "show"), operations)
+            button.doClick(0)
+            empty = true
+            operations.clear()
+            next = CompletableFuture()
+            button.doClick(0)
+            next.complete("期限切れ")
+            button.refresh()
+            assertEquals(listOf("show", "select"), operations)
+            assertEquals("Logcatを閉じる", button.text)
+            assertTrue(button.toolTipText.startsWith("期限切れ"))
+            button.doClick(0)
+            assertEquals("期限切れ", button.toolTipText)
         }
     }
 }
