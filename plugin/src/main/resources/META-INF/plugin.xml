@@ -33,5 +33,21 @@
                 description="使い方とプラグインのバージョンを表示します">
             <add-to-group group-id="ToolsMenu" anchor="last"/>
         </action>
+        <group id="io.github.shinma06.replaybuffer.RunningDevices">
+            <separator/>
+            <action id="io.github.shinma06.replaybuffer.RunningDevices.Capture"
+                    class="io.github.shinma06.replaybuffer.ui.ReplayCaptureToggleAction"
+                    text="Replay Bufferの取得を切り替える"
+                    description="Replay Bufferの取得を有効・無効にします"/>
+            <action id="io.github.shinma06.replaybuffer.RunningDevices.Save"
+                    class="io.github.shinma06.replaybuffer.ui.ReplaySaveAction"
+                    text="Replay Buffer: 直前の記録を保存"
+                    description="直前の画面とログを保存します"/>
+            <action id="io.github.shinma06.replaybuffer.RunningDevices.Screenshot"
+                    class="io.github.shinma06.replaybuffer.ui.ReplayScreenshotAction"
+                    text="Replay Buffer: スクリーンショット"
+                    description="録画対象の端末の現在画面を保存します"/>
+            <add-to-group group-id="StreamingToolbarSecondary" anchor="last"/>
+        </group>
     </actions>
 </idea-plugin>
