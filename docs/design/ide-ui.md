@@ -101,11 +101,11 @@ OFFでは手動フォルダを必須とし、空欄・相対パス・消失・�
 
 参照ABIは対応IDE `AI-262.9437.185.2621.16467767` の実classで確認した。Kotlin internalの設定getter/保存場所resolverへJavaの小さな境界で接続し、不一致は取得不能として扱う。SDK更新時にはこの接続を再確認する。一次sourceの補強はAOSP固定[DeviceScreenshotSettings](https://android.googlesource.com/platform/tools/adt/idea/+/9c5bdbd3170b02d52891c4194c2ca8ca38b74245/android-adb-ui/src/com/android/tools/idea/ui/screenshot/DeviceScreenshotSettings.kt)・[SaveConfigurationResolver](https://android.googlesource.com/platform/tools/adt/idea/+/9c5bdbd3170b02d52891c4194c2ca8ca38b74245/android-adb-ui/src/com/android/tools/idea/ui/save/SaveConfigurationResolver.kt)。このsource commitとインストール済みSDKの完全な版一致、および実profileでの統合受入は未証明。
 
-ToolWindow上部に「スクリーンショットを保存」を常設する。取得OFF・ログ専用・取得初期化/保存中/失敗固定対象の有無では無効化しない。解決済みの最新の対象アプリ・適用済み保存先・SDKのadbを押下時に固定し、project scopeの独立IO処理を直ちに開始する。選択解決待ち、対象未選択、手動保存先未指定、スクショ処理中、project終了時は理由を示す。画面内にスクショ自身の対象と保存先の参照元または手動pathを表示し、取得snapshotの旧条件と混同させない。
+ToolWindow上部に「スクリーンショットを保存」を常設する。取得OFF・ログ専用・取得初期化/保存中/失敗固定対象の有無では無効化しない。適用済み保存先・SDKのadbを押下時に固定し、project scopeの独立IO処理を直ちに開始する。対象アプリの選択は条件にしない。設定の反映待ち、手動保存先未指定、スクショ処理中、project終了時は理由を示す。画面内にスクショ自身の対象と保存先の参照元または手動pathを表示し、取得snapshotの旧条件と混同させない。
 
 #333の本人指示により、端末選択は録画と同じ規則を共有する。要求時の取得snapshotが有効ならそのserialを固定し、SDK設定の反映待ちや取得ONの対象未確定では理由を示す。OFF反映中も実際の取得snapshotに対象が残っている間は同じserialを使う。OFF・履歴なしではSDKのadbの`devices -l`から接続済み候補を1台だけ解決し、取得開始や履歴作成を行わない。選択済み端末があれば、ほかの接続端末の数やUSB/Emulatorの別によらずその端末を使い、消失・offline・未認証時に別端末へ切り替えない。すべての撮影commandは要求に固定した`-s <serial>`へ送る。以前の`-d get-serialno`によるUSB専用選択は履歴であり、原観察は新経路のPASSへ換えない。
 
-`dumpsys SurfaceFlinger --display-id`で物理画面を一つに特定して、そのIDを`exec-out screencap -p -d <id>`へ渡す。`dumpsys window`の標準画面・現在focus・keyguardの点灯/解除情報を撮影前後に確認し、選択packageと同じwindowでなければ保存しない。録画が作るfocusのない追加logical displayだけでは拒否しない。標準display 0は1つに限定し、その区画のfocusだけを選択アプリと照合する。追加displayにfocusがある場合、物理画面が複数の場合、標準画面/focusの帰属不明、未知の診断形式、未認証・切断、解決不能はエラーとする。端末選択の共有は、すべての実機/Emulatorの画面診断形式への対応を保証しない。端末側のファイル作成、録画server、logcat、共有adb serverの停止、アプリ起動、スクショ履歴は追加しない。
+`dumpsys SurfaceFlinger --display-id`で物理画面を一つに特定して、そのIDを`exec-out screencap -p -d <id>`へ渡す。表示中のアプリ・ロック画面・通知等は確認せず、録画対象端末の今の画面をそのまま保存する（対象アプリの選択や前面表示を条件にしない）。録画が作る追加logical displayはSurfaceFlingerの物理画面に含まれない。物理画面が複数の場合、未知の診断形式、未認証・切断、解決不能はエラーとする。負荷の高い端末でも応答を待てるよう、画面IDの取得と撮影はそれぞれ15秒まで待つ。端末選択の共有は、すべての実機/Emulatorの画面診断形式への対応を保証しない。端末側のファイル作成、録画server、logcat、共有adb serverの停止、アプリ起動、スクショ履歴は追加しない。
 
 これはアプリ専用の原子的な撮影ではなく、端末に表示中の画面全体を撮影する。前後の観察の間に別画面へ切り替わって戻る競合やoverlayは検出しきれないため、撮影中に画面を切り替えない前提を表示する。通知・キーボード等も写る。`FLAG_SECURE`等の保護を回避せず、空白も有効なPNGとして保存し、保護領域の内容取得を成功条件にしない。SDKのadbと診断出力に対応する端末が必要で、未知機種を推測で成功にしない。実機ごとの対応は受入で確定する。
 

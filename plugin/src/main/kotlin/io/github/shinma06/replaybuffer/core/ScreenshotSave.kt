@@ -16,7 +16,7 @@ internal class ScreenshotSaveFailure(message: String, val retained: Path? = null
 /** Identity belongs to this completed image, never to the latest screenshot or a reusable pathname. */
 internal class SavedScreenshot(
     val file: Path,
-    val application: String,
+    val serial: String,
     private val parentKey: Pair<Long, Long>,
     private val fileKey: Pair<Long, Long>,
     private val hash: String,
@@ -58,32 +58,27 @@ internal class SavedScreenshot(
 /**
  * One blocking request off EDT; no replay capture, device file, forward or server is created.
  *
- * Uses the selected serial or requires exactly one connected device. Foreground checks bracket
- * screencap but cannot exclude screen switches/overlays. Failure/cancellation may leave output;
+ * Saves the current physical screen of the selected serial (or the single connected device) as shown,
+ * whatever app, lock screen or overlay is in front. Failure/cancellation may leave output;
  * [ScreenshotSaveFailure.retained] identifies confirmed retained output when available.
  */
-internal fun saveScreenshot(adbPath: Path, application: String, destination: Path, selectedSerial: String? = null): SavedScreenshot {
-    ApplicationTarget(application, ApplicationMode.MANUAL).validate()
+internal fun saveScreenshot(adbPath: Path, destination: Path, selectedSerial: String? = null): SavedScreenshot {
     require(destination.isAbsolute) { "設定で保存先の絶対パスを指定してください。" }
     fun active() { if (Thread.currentThread().isInterrupted) throw InterruptedException("スクリーンショットを取り消しました。") }
+    lateinit var serial: String
     val bytes = OwnedAdb(adbPath).use { adb ->
         active()
         val devices = try { parseDevices(adb.command("devices", "-l")) }
         catch (_: Exception) { active(); throw ScreenshotSaveFailure("端末の接続状態を確認できません。接続とデバッグ許可を確認してください。") }
-        val serial = selectDevice(devices, selectedSerial)?.serial ?: throw ScreenshotSaveFailure(
+        serial = selectDevice(devices, selectedSerial)?.serial ?: throw ScreenshotSaveFailure(
             if (selectedSerial == null) "端末を1台だけ接続し、デバッグを許可してください。"
             else "録画対象の端末が接続されていません。同じ端末を再接続してください。",
         )
-        fun foreground(): String {
-            active()
-            return screenshotForeground(adb.command("-s", serial, "shell", "dumpsys", "window", limit = 4 * 1024 * 1024), application)
-        }
-        val display = screenshotDisplay(adb.command("-s", serial, "shell", "dumpsys", "SurfaceFlinger", "--display-id"))
-        val before = foreground()
         active()
-        val png = adb.commandBytes("-s", serial, "exec-out", "screencap", "-p", "-d", display, limit = 64 * 1024 * 1024, timeoutSeconds = 15)
-        check(before == foreground()) { "撮影中に表示対象が変わりました。対象アプリを表示して再度保存してください。" }
-        png
+        val display = screenshotDisplay(adb.commandBytes("-s", serial, "shell", "dumpsys", "SurfaceFlinger", "--display-id",
+            limit = 1024 * 1024, timeoutSeconds = 15).toString(Charsets.UTF_8))
+        active()
+        adb.commandBytes("-s", serial, "exec-out", "screencap", "-p", "-d", display, limit = 64 * 1024 * 1024, timeoutSeconds = 15)
     }
     active()
     validateScreenshotPng(bytes)
@@ -132,7 +127,7 @@ internal fun saveScreenshot(adbPath: Path, application: String, destination: Pat
                     }.isSuccess }
                     throw failure
                 }
-                return SavedScreenshot(complete, application, parent.key, output.key, hash)
+                return SavedScreenshot(complete, serial, parent.key, output.key, hash)
             }
         }
     } catch (failure: InterruptedException) {
@@ -148,36 +143,6 @@ internal fun screenshotDisplay(dump: String): String {
         "撮影する端末画面を1つに特定できません。単一画面の対応端末を接続してください。"
     }
     return displays.single()
-}
-
-internal fun screenshotForeground(dump: String, application: String): String {
-    val headers = Regex("(?m)^\\s*Display: mDisplayId=([^\\r\\n]+)").findAll(dump).toList()
-    val displays = headers.map { it.groupValues[1].removeSuffix(" (organized)") }
-    check(displays.count { it == "0" } == 1 && displays.distinct().size == displays.size &&
-        displays.all { it.toUIntOrNull()?.toString() == it }) {
-        "単一の標準画面を確認できません。外部画面を外し、端末画面で対象アプリを表示してください。"
-    }
-    // Recording adds a focusless virtual mirror; only the physical default display may own focus.
-    val focusPattern = Regex("(?m)^\\s*mCurrentFocus=([^\\r\\n]+)")
-    val focusByDisplay = headers.mapIndexed { index, header ->
-        focusPattern.findAll(
-            dump.substring(header.range.last + 1, headers.getOrNull(index + 1)?.range?.first ?: dump.length),
-        ).map { it.groupValues[1].trim() }.toList()
-    }
-    check(focusByDisplay.sumOf { it.size } == focusPattern.findAll(dump).count() &&
-        focusByDisplay.withIndex().all { (index, focus) -> displays[index] == "0" || focus == listOf("null") }) {
-        "標準画面以外のfocusを確認しました。端末画面で対象アプリを表示してください。"
-    }
-    val keyguard = dump.lineSequence().dropWhile { it.trim() != "KeyguardServiceDelegate" }.drop(1).take(20).map(String::trim).toList()
-    check(listOf("showing=false", "inputRestricted=false", "dreaming=false", "screenState=SCREEN_STATE_ON").all { it in keyguard }) {
-        "画面の点灯とロック解除を確認できません。端末を操作してから再度保存してください。"
-    }
-    val focus = focusByDisplay[displays.indexOf("0")]
-    check(focus.size == 1 && Regex("Window\\{[0-9a-fA-F]+ u[0-9]+ " + Regex.escape(application) + "/[^\\s}]+}").matches(focus.single())) {
-        "選択アプリが最前面にありません。端末で対象アプリを表示してください。"
-    }
-    // shortcut: dumpsys observations are not atomic with screencap; retain the documented screen-switch/overlay limit.
-    return focus.single()
 }
 
 internal fun validateScreenshotPng(bytes: ByteArray) {
