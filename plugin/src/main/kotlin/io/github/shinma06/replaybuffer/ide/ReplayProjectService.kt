@@ -31,7 +31,6 @@ import com.intellij.util.messages.Topic
 import io.github.shinma06.replaybuffer.cli.CliCommand
 import io.github.shinma06.replaybuffer.cli.CliRequest
 import io.github.shinma06.replaybuffer.cli.CliResponse
-import io.github.shinma06.replaybuffer.cli.LegacyCliConfig
 import io.github.shinma06.replaybuffer.cli.ReplayCliRegistry
 import io.github.shinma06.replaybuffer.cli.ReplayCliServer
 import io.github.shinma06.replaybuffer.cli.cliSaveResponse
@@ -122,6 +121,8 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
             try {
                 val base = projectBasePath ?: return@launch
                 server = ReplayCliServer(ReplayCliRegistry.directory(), Path.of(base), ReplayCliRegistry.buildIdentity(), ::executeCli)
+                // Only lets the launchers find this IDE without REPLAY_STUDIO_HOME; the endpoint works without it.
+                runCatching { ReplayCliRegistry.recordStudioHome(ReplayCliRegistry.directory(), Path.of(PathManager.getHomePath())) }
                 synchronized(this@ReplayProjectService) {
                     if (alive && coroutineContext.isActive) { cliServer = server; server = null }
                 }
@@ -316,28 +317,6 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
         return CompletableFuture.completedFuture(ReplayOperation(false, reason))
     }
 
-    private fun importLegacy(config: LegacyCliConfig): CompletableFuture<ReplayOperation> {
-        val validated = validateDestination(config.destination)
-        return synchronized(this) {
-            if (!alive) return rejected("projectは終了しています。")
-            if (resolving || capture.view.pending > 0) return rejected("設定・操作の反映後に旧設定を移行してください。")
-            val store = project.getService(ReplaySettingsStore::class.java)
-            store.importLegacy(config.seconds, config.destination, validated)
-            refresh()
-            val completed = CompletableFuture<ReplayOperation>()
-            val revision = requestRevision
-            resolution!!.invokeOnCompletion { failure ->
-                synchronized(this) {
-                    val current = capture.view.snapshot?.settings
-                    completed.complete(if (failure == null && alive && revision == requestRevision &&
-                        current?.replaySeconds == config.seconds && current.saveDirectory?.toString() == config.destination) ReplayOperation(true)
-                    else ReplayOperation(false, "旧設定は保存しましたが反映を確認できません。GUIの設定・状態を確認してください。"))
-                }
-            }
-            completed
-        }
-    }
-
     /** Applies a partial settings object like the settings page Apply; validation failures throw IllegalArgumentException. */
     private fun configure(text: String): CompletableFuture<ReplayOperation> {
         val store = project.getService(ReplaySettingsStore::class.java)
@@ -381,13 +360,6 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
             (deadline - System.nanoTime()).coerceAtLeast(1), TimeUnit.NANOSECONDS)
         try {
             if (!alive) return CliResponse(1, error = "projectは終了しています。")
-            var warning = ""
-            if (request.configText != null && request.command != CliCommand.CONFIGURE) {
-                val config = LegacyCliConfig.parse(request.configText, request.yaml, Path.of(request.workingDirectory))
-                val imported = await(importLegacy(config))
-                if (!imported.accepted) return CliResponse(1, error = imported.reason.orEmpty())
-                warning = config.warning
-            }
             if (request.command == CliCommand.STATUS) {
                 val view = capture.view
                 val snapshot = view.snapshot
@@ -432,15 +404,15 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
             }
             val operation = await(when (request.command) {
                 CliCommand.SAVE -> save()
-                CliCommand.DAEMON -> setEnabled(true)
+                CliCommand.START -> setEnabled(true)
                 CliCommand.STOP -> setEnabled(false)
                 CliCommand.STATUS, CliCommand.SCREENSHOT, CliCommand.SETTINGS, CliCommand.CONFIGURE -> error("already handled")
             })
-            if (!operation.accepted) return CliResponse(1, error = listOf(warning, operation.reason.orEmpty()).filter(String::isNotEmpty).joinToString("\n"))
+            if (!operation.accepted) return CliResponse(1, error = operation.reason.orEmpty())
             if (request.command != CliCommand.SAVE) return CliResponse(0,
-                if (request.command == CliCommand.STOP) "stopped" else "started", warning)
+                if (request.command == CliCommand.STOP) "stopped" else "started")
             requestId = operation.requestId
-            return cliSaveResponse(operation.requestId, checkNotNull(operation.saveResult), deadline, warning)
+            return cliSaveResponse(operation.requestId, checkNotNull(operation.saveResult), deadline)
         } catch (_: TimeoutException) {
             return CliResponse(1, error = "操作結果の待機が時間切れになりました${requestId?.let { "（request: $it）" }.orEmpty()}。GUIの状態・保存結果を確認してください。自動再試行はしません。")
         } catch (failure: IllegalArgumentException) {

@@ -51,25 +51,6 @@ class ReplaySettingsStoreTest {
     }
 
     @Test
-    fun `CLI import changes only legacy values while OFF and invalid input is atomic`() {
-        val store = ReplaySettingsStore()
-        val selected = ReplaySettings(180, "", AppSelectionMode.MANUAL, "com.example.app", CaptureMode.LOG_ONLY, autoSaveOnCrash = true,
-            screenshotUsesLogcatDestination = false, screenshotDirectory = destinationRoot.toString(), videoQuality = VideoQuality.LIGHTWEIGHT)
-        store.apply(selected)
-        store.importLegacy(60, destinationRoot.toString())
-        assertEquals(selected.copy(retentionSeconds = 60, destination = destinationRoot.toString()), store.settings())
-        assertFalse(store.enabled)
-        val before = store.state
-        assertThrows(IllegalArgumentException::class.java) { store.importLegacy(901, destinationRoot.toString()) }
-        assertThrows(IllegalArgumentException::class.java) { store.importLegacy(12, destinationRoot.resolve("missing").toString()) }
-        assertEquals(before, store.state)
-        store.setEnabled(true)
-        assertThrows(IllegalArgumentException::class.java) { store.importLegacy(12, destinationRoot.toString()) }
-        assertTrue(store.enabled)
-        assertEquals(60, store.settings().retentionSeconds)
-    }
-
-    @Test
     fun `legacy common and absent screenshot mode follow Logcat while manual settings persist without fallback`() {
         val oldXml = XmlSerializer.deserialize(Element("state").apply {
             addContent(Element("option").setAttribute("name", "destination").setAttribute("value", destinationRoot.toString()))

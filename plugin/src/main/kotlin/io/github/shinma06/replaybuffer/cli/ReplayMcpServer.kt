@@ -54,10 +54,10 @@ internal class ReplayMcpServer(
             "`running` (capture ON), `capture_state`, `device_serial`, `save_state`, `last_save` (`directory` only when completed, " +
             "`retained_path` for a retained failed attempt), `error` and `reason`. ON does not mean frames are being captured; check `capture_state` and `error`.",
             projectOnly, readOnly) { args -> command(args, CliCommand.STATUS) },
-        Tool("start_capture", "Turn capture ON for the project (same as the GUI toggle and `replay daemon`). The IDE owns the capture; " +
+        Tool("start_capture", "Turn capture ON for the project (same as the GUI toggle and `replay start`). The IDE owns the capture; " +
             "it may wait for a device or a run target. Call get_status afterwards to see whether recording actually started.",
             projectOnly, mapOf("readOnlyHint" to false, "destructiveHint" to false, "idempotentHint" to true, "openWorldHint" to false)) { args ->
-            command(args, CliCommand.DAEMON)
+            command(args, CliCommand.START)
         },
         Tool("stop_capture", "Turn capture OFF for the project only (same as `replay stop`). The unsaved buffer and failed save targets are discarded " +
             "exactly as with the GUI; saved folders, the IDE and other projects are untouched.",
@@ -226,7 +226,7 @@ internal class ReplayMcpServer(
         val identity = try { currentBuild() } catch (failure: Exception) {
             return CliResponse(1, error = (failure as? IllegalArgumentException)?.message ?: "配布物のCLIを利用してください。")
         }
-        return send(directory, project, identity, CliRequest(command, payload, false, Path.of("").toAbsolutePath().normalize().toString()))
+        return send(directory, project, identity, CliRequest(command, payload))
     }
 
     private fun command(args: Map<String, Any?>, command: CliCommand, payload: String? = null): Map<String, Any?> {
@@ -310,7 +310,8 @@ internal class ReplayMcpServer(
         private val readOnly = mapOf("readOnlyHint" to true, "destructiveHint" to false, "idempotentHint" to true, "openWorldHint" to false)
         private val projectOnly = mapOf("project" to mapOf("type" to "string",
             "description" to "Absolute path of the open project. Optional when the server was started with --project or exactly one project is open."))
-        private val SETTINGS_PROPERTIES: Map<String, Any?> = linkedMapOf(
+        /** Settings fields shared by `update_settings` and `replay settings set`; the IDE validates the values. */
+        internal val SETTINGS_PROPERTIES: Map<String, Any?> = linkedMapOf(
             "replay_seconds" to mapOf("type" to "integer", "minimum" to 1, "maximum" to 900, "description" to "Seconds kept in the replay buffer."),
             "output_directory" to mapOf("type" to "string", "description" to "Existing absolute folder for saved replays; empty for capture only."),
             "app_selection" to mapOf("type" to "string", "enum" to listOf("AUTOMATIC", "MANUAL"),

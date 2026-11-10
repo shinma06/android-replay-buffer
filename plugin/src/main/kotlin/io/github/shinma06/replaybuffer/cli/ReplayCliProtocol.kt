@@ -10,18 +10,9 @@ import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
 
 /** [SETTINGS] reads and [CONFIGURE] updates the GUI settings; [CONFIGURE] carries a JSON object in [CliRequest.configText]. */
-internal enum class CliCommand {
-    SAVE, STATUS, STOP, DAEMON, SCREENSHOT, SETTINGS, CONFIGURE;
+internal enum class CliCommand { START, STOP, SAVE, STATUS, SCREENSHOT, SETTINGS, CONFIGURE }
 
-    val acceptsConfig: Boolean get() = this == DAEMON || this == SAVE || this == CONFIGURE
-}
-
-internal data class CliRequest(
-    val command: CliCommand,
-    val configText: String? = null,
-    val yaml: Boolean = false,
-    val workingDirectory: String = "",
-)
+internal data class CliRequest(val command: CliCommand, val configText: String? = null)
 
 internal data class CliResponse(val code: Int, val output: String = "", val error: String = "")
 
@@ -91,21 +82,14 @@ internal object ReplayCliProtocol {
     fun readRequest(input: DataInputStream): CliRequest {
         val command = CliCommand.valueOf(readText(input, 16))
         val config = if (input.readBoolean()) readText(input, MAX_CONFIG_BYTES) else null
-        val yaml = input.readBoolean()
-        val directory = readText(input)
-        require(config == null || command.acceptsConfig) {
-            "--configはdaemon/saveだけで指定できます。status/stopは設定を変更しません。"
-        }
-        require(command != CliCommand.CONFIGURE || config != null) { "変更する設定を指定してください。" }
-        return CliRequest(command, config, yaml, directory)
+        require((command == CliCommand.CONFIGURE) == (config != null)) { "設定の変更内容はsettings setだけで送れます。" }
+        return CliRequest(command, config)
     }
 
     fun writeRequest(output: DataOutputStream, request: CliRequest) {
         writeText(output, request.command.name, 16)
         output.writeBoolean(request.configText != null)
         request.configText?.let { writeText(output, it, MAX_CONFIG_BYTES) }
-        output.writeBoolean(request.yaml)
-        writeText(output, request.workingDirectory)
         output.flush()
     }
 

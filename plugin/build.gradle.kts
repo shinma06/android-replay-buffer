@@ -204,12 +204,12 @@ tasks.withType<AbstractArchiveTask>().configureEach {
 // The terminal entry uses the same plugin classes and the selected Studio's JBR/Kotlin runtime.
 tasks.prepareSandbox {
     from(layout.projectDirectory.dir("src/main/cli")) {
-        include("replay", "replayd")
+        include("replay")
         into(pluginName.map { "$it/bin" })
         filePermissions { unix("755") }
     }
     from(layout.projectDirectory.dir("src/main/cli")) {
-        include("replay.cmd", "replayd.cmd")
+        include("replay.cmd")
         into(pluginName.map { "$it/bin" })
     }
     from(layout.projectDirectory.file("src/main/cli/README.txt")) {
@@ -219,7 +219,7 @@ tasks.prepareSandbox {
 }
 
 tasks.buildPlugin {
-    val cliLaunchers = listOf("bin/replay", "bin/replayd")
+    val cliLaunchers = listOf("bin/replay")
     inputs.property("executableCliLaunchers", cliLaunchers)
     filesMatching(cliLaunchers) { permissions { unix("755") } }
 }

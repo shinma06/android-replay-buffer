@@ -93,7 +93,7 @@ class ReplayMcpServerTest {
         assertEquals(BigDecimal("-32601"), (responses[BigDecimal("8")]!!["error"] as Map<*, *>)["code"])
         assertTrue(responses[BigDecimal("9")]!!.text().contains("exit code 2"))
         assertEquals(BigDecimal("-32700"), (responses[null]!!["error"] as Map<*, *>)["code"])
-        assertFalse(requests.any { it.command == CliCommand.DAEMON }, "Invalid arguments must not dispatch")
+        assertFalse(requests.any { it.command == CliCommand.START }, "Invalid arguments must not dispatch")
         assertEquals(5, requests.size)
     }
 
