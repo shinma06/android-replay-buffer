@@ -17,6 +17,7 @@ import java.nio.file.Path
 import java.nio.file.StandardOpenOption.READ
 import java.time.Instant
 import java.util.Base64
+import java.util.IdentityHashMap
 import java.util.UUID
 import java.util.concurrent.CancellationException
 
@@ -103,10 +104,12 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                 else groups.last() += frame
             }
             val latest = latestSequence(capture.clocks)
+            val nextHost = IdentityHashMap<VideoEntry, Long>().apply { all.zipWithNext { a, b -> put(a, b.host) } }
             fun visible(group: List<VideoEntry>, n: Int): Boolean {
                 val frame = group[n]
                 val sequence = frame.time.sequence
-                if (!capture.windowKnown) return true
+                // Without a clock mapping, a frame is on screen until the next one is received.
+                if (!capture.windowKnown) return capture.hostStart == null || (nextHost[frame] ?: Long.MAX_VALUE) >= capture.hostStart
                 if (sequence == null || frame.time.uncertainty == Long.MAX_VALUE) {
                     // Hidden only when the next frame, which ends this one's display, provably starts before the window.
                     val next = group.getOrNull(n + 1) ?: return true

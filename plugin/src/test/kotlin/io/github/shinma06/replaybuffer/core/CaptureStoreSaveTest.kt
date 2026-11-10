@@ -977,6 +977,40 @@ class CaptureStoreSaveTest {
         for ((sparse, keyAfterGap) in listOf(false to false, true to false, true to true)) unknownTimeWindowFixture(sparse, keyAfterGap)
     }
 
+    @Test
+    fun unknownClockMappingStillTrimsTheWindowByHostReceiveTime() {
+        val root = Files.createTempDirectory("replay-host-window-")
+        val store = CaptureStore(root.resolve("ring"), minFree = 0)
+        val host = System.nanoTime() + 60_000_000_000
+        val bytes = sample()
+        fun at(second: Long) = host + (second - 1) * 1_000_000_000
+        try {
+            store.generation(1)
+            store.status("device_log", StreamState.CAPTURING, null, 1)
+            store.session(VideoPacket.Session(32, 32), 1)
+            store.frame(VideoPacket.Frame(0, true, false, config(bytes)), 1)
+            for (second in 1L..3L) anchor(store.clock, second * 1_000_000_000, at(second))
+            store.clock.boundary(at(3))
+            for (second in 1L..40L) {
+                store.frame(VideoPacket.Frame(second * 1_000_000, false, second == 1L || second == 20L, bytes), 1, at(second))
+                store.log(DeviceLog(1_700_000_000_000_000_000 + second * 1_000_000_000, 12, 12, 10001, 0, 4, "Fixture",
+                    "second $second", byteArrayOf(1)), 1, at(second))
+            }
+            val selected = store.capture(ReplaySettings(replaySeconds = 10), host = at(40))!!
+            assertFalse(selected.windowKnown)
+            assertEquals((30L..40L).map { "second $it" }, selected.logs.map { it.source.message })
+            assertEquals((20L..40L).map { it * 1_000_000 }, selected.video.map { it.pts })
+            val output = SaveWriter().write(selected, root, { false }) { publication ->
+                Files.move(publication.partial, publication.complete)
+            }
+            val presented = Files.readAllLines(output.directory.resolve("frames.jsonl"))
+                .map { JsonParser.parseString(it).asJsonObject }
+                .filter { it["presented"].asBoolean }.map { it["source_pts_us"].asLong }
+            assertEquals((29L..40L).map { it * 1_000_000 }, presented)
+            store.release(selected.id)
+        } finally { store.close(); root.toFile().deleteRecursively() }
+    }
+
     private fun unknownTimeWindowFixture(sparse: Boolean, keyAfterGap: Boolean) {
         val root = Files.createTempDirectory("replay-epoch-window-")
         val store = CaptureStore(root.resolve("ring"), minFree = 0)
