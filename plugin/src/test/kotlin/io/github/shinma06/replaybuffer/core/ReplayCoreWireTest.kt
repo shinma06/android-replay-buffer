@@ -57,6 +57,14 @@ class ReplayCoreWireTest {
     private fun ownedPids(dir: Path): List<String> =
         Files.list(dir).use { files -> files.map { it.fileName.toString() }.toList() }
 
+    /** Log reader launches in start order, as `<buffer> <pid>`. */
+    private fun logLaunches(root: Path): List<String> {
+        val dir = root.resolve("log-launches")
+        if (!Files.isDirectory(dir)) return emptyList()
+        return Files.list(dir).use { files -> files.map { it.fileName.toString() }.toList() }.sorted()
+            .map { name -> name.split('-').let { "${it[1]} ${it[2]}" } }
+    }
+
     private fun runWireFixture(
         discardInitialPFrame: Boolean,
         logMode: String? = null,
@@ -89,6 +97,10 @@ class ReplayCoreWireTest {
         val discardedFrameSent = CountDownLatch(1)
         val readyConnections = java.util.concurrent.atomic.AtomicInteger()
         var bindReadyAt = 0L
+        // Device wall clock ticking with `mono`, as on a real device. Windows currentTimeMillis follows the
+        // system timer tick (up to 15.6 ms, later under load), which CaptureClock rightly treats as a wall jump.
+        val wallOffset = System.currentTimeMillis() * 1_000_000 - System.nanoTime()
+        fun fakeWall() = System.nanoTime() + wallOffset
         // Use the same JVM clock as the synthetic video PTS; Python's monotonic origin is platform/version dependent.
         val clockAccept = thread(isDaemon = true, name = "replay-clock-fixture") {
             while (!stop.get()) runCatching {
@@ -101,7 +113,7 @@ class ReplayCoreWireTest {
                             val nonce = input.readLine() ?: break
                             val before = System.nanoTime()
                             val mono = System.nanoTime()
-                            val wall = System.currentTimeMillis() * 1_000_000
+                            val wall = fakeWall()
                             val after = System.nanoTime()
                             output.write("$nonce\t$before\t$mono\t$wall\t$after\n"); output.flush()
                         }
@@ -195,12 +207,12 @@ elif len(a)>2 and a[2]=='logcat':
         if mode in ('timeout','cancel'): time.sleep(90)
         emit(0,'probe',header=20 if mode=='legacy' else 28)
         sys.exit(0)
-    launches=root/'log-launches.txt'
-    if ${logReaderStartupDelayMillis}>0 and mode=='partition' and buffer=='main' and launches.exists() and any(line.startswith('main ') for line in launches.read_text().splitlines()) and not (root/'fail-main').exists():
+    launches=root/'log-launches'
+    if ${logReaderStartupDelayMillis}>0 and mode=='partition' and buffer=='main' and launches.exists() and any(f.name.split('-')[1]=='main' for f in launches.iterdir()) and not (root/'fail-main').exists():
         (root/'reader-delay-applied').touch()
         time.sleep(${logReaderStartupDelayMillis}/1000)
     seen=len((root/'log-events.txt').read_text().splitlines())
-    with launches.open('a') as f: f.write(buffer+' '+str(os.getpid())+'\n')
+    launches.mkdir(exist_ok=True); (launches/f'{time.time_ns():020d}-{buffer}-{os.getpid()}').touch()  # one file per launch: Windows appends from concurrent processes are not atomic
     quiet_sent=False
     crash_sent=False
     while True:
@@ -267,7 +279,7 @@ elif len(a)>3 and a[3]=='ps':
                 assertTrue(core.updateApplication(ApplicationTarget("com.fixture.app")).get().accepted)
                 assertTrue(core.applySettings(core.snapshot().settings.copy(saveDirectory = root, autoSaveOnCrash = true)).get().accepted)
                 awaitState("auto-armed") { it.autoSave.state == AutoSaveState.ARMED && it.captureState == CaptureState.CAPTURING }
-                val wall = System.currentTimeMillis() * 1_000_000
+                val wall = fakeWall()
                 val sources = listOf(javaCrash(process = "com.fixture.app", pid = 12, uid = 10001, wall = wall),
                     platformCrash(process = "com.fixture.app", first = 12, wall = wall + 1_000_000))
                 Files.writeString(root.resolve("crash-wire.tmp"), sources.joinToString("\n") {
@@ -287,8 +299,7 @@ elif len(a)>3 and a[3]=='ps':
             }
             if (captureMode == CaptureMode.LOG_ONLY) {
                 awaitState("readers-started-without-headers") {
-                    val launches = root.resolve("log-launches.txt")
-                    Files.exists(launches) && Files.readAllLines(launches).size >= 2
+                    logLaunches(root).size >= 2
                 }
                 assertTrue(core.updateApplication(ApplicationTarget("com.fixture.app")).get().accepted)
                 assertFalse(core.snapshot().canSave)
@@ -362,7 +373,7 @@ elif len(a)>3 and a[3]=='ps':
                 Files.delete(root.resolve("fail-all"))
                 awaitState("quiet-reader-recovered") { it.canSave && it.deviceLog.state == StreamState.CAPTURING }
                 Files.delete(root.resolve("quiet-logs"))
-                Files.writeString(root.resolve("log-events.txt"), "${System.currentTimeMillis() * 1_000_000} live\n")
+                Files.writeString(root.resolve("log-events.txt"), "${fakeWall()} live\n")
                 awaitState("both-readers-live") { Files.exists(root.resolve("main-live.sent")) && Files.exists(root.resolve("all-live.sent")) }
                 Thread.sleep(1200) // Retain a subsequent clock sample for mapping both readers' rows.
                 Files.createFile(root.resolve("fail-all"))
@@ -403,7 +414,7 @@ elif len(a)>3 and a[3]=='ps':
                 assertTrue(core.setEnabled(false).get(10, TimeUnit.SECONDS).accepted)
                 assertTrue(System.nanoTime() - started < 5_500_000_000)
                 core.closeAsync().get(10, TimeUnit.SECONDS)
-                assertFalse(Files.exists(root.resolve("log-launches.txt")))
+                assertTrue(logLaunches(root).isEmpty())
                 ownedPids(pids).forEach { pid -> assertFalse(ProcessHandle.of(pid.toLong()).map { it.isAlive }.orElse(false)) }
                 return
             }
@@ -427,9 +438,8 @@ elif len(a)>3 and a[3]=='ps':
                 fun ready(buffer: String, previousPid: Long? = null): Long {
                     val deadline = System.nanoTime() + 3_000_000_000
                     while (System.nanoTime() < deadline) {
-                        val launches = root.resolve("log-launches.txt")
-                        val pid = if (Files.exists(launches)) Files.readAllLines(launches)
-                            .lastOrNull { it.startsWith("$buffer ") }?.substringAfter(' ')?.toLongOrNull() else null
+                        val pid = logLaunches(root)
+                            .lastOrNull { it.startsWith("$buffer ") }?.substringAfter(' ')?.toLongOrNull()
                         if (pid != null && pid != previousPid && ProcessHandle.of(pid).map { it.isAlive }.orElse(false)) {
                             readers[buffer] = pid
                             return pid
@@ -445,7 +455,7 @@ elif len(a)>3 and a[3]=='ps':
                 }
                 fun emit(label: String, buffer: String = if (logMode == "partition") "main" else "all") {
                     assertEquals(readers.getValue(buffer), ready(buffer))
-                    Files.writeString(root.resolve("log-events.txt"), "${System.currentTimeMillis() * 1_000_000} $label\n",
+                    Files.writeString(root.resolve("log-events.txt"), "${fakeWall()} $label\n",
                         java.nio.file.StandardOpenOption.APPEND)
                     sent(buffer, label)
                 }
@@ -476,7 +486,7 @@ elif len(a)>3 and a[3]=='ps':
                     Files.delete(root.resolve("wrong-header-all"))
                     awaitState("all-header-recovered") { it.deviceLog.state == StreamState.CAPTURING }
                     ready("all", readers.getValue("all"))
-                    assertEquals(1, Files.readAllLines(root.resolve("log-launches.txt")).count { it.startsWith("main ") })
+                    assertEquals(1, logLaunches(root).count { it.startsWith("main ") })
                     Files.createFile(root.resolve("fail-main"))
                     awaitState("main-only-failure") { it.deviceLog.state == StreamState.RECOVERING }
                     emit("main-partial", "all")
@@ -519,7 +529,7 @@ elif len(a)>3 and a[3]=='ps':
                 val binary = deviceRows.filter { it["lid"].asInt == 2 }
                 assertEquals(if (logMode == "legacy") 0 else if (logMode == "partition") 3 else 1, binary.size)
                 assertTrue(binary.all { it["decode_status"].asString == "binary" && !it["app_membership"].asBoolean })
-                val launches = Files.readAllLines(root.resolve("log-launches.txt")).map { it.substringBefore(' ') }
+                val launches = logLaunches(root).map { it.substringBefore(' ') }
                 if (logMode == "partition") assertTrue(launches.count { it == "main" } >= 2)
                 else assertEquals(0, launches.count { it == "main" })
                 assertTrue(core.setEnabled(false).get(10, TimeUnit.SECONDS).accepted)
