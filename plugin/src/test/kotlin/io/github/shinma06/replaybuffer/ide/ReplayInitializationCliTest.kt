@@ -105,7 +105,7 @@ class ReplayInitializationCliTest {
                     assertFalse(failed["running"].asBoolean)
                     val reason = failed["error"].asString
                     assertTrue(reason.contains(config.toRealPath().relativize(stable).toString()) && reason.contains("700"), reason)
-                    assertTrue(cli("daemon", 1).contains(reason))
+                    assertTrue(cli("start", 1).contains(reason))
                     assertTrue(Files.isSymbolicLink(stable))
                     Files.delete(stable)
                     Files.createDirectory(stable)
@@ -113,7 +113,7 @@ class ReplayInitializationCliTest {
                     assertFalse(status()["running"].asBoolean)
                     assertEquals(imported, TestPermissions.get(stable))
                 } else assertTrue(status()["running"].asBoolean)
-                assertEquals("started", cli("daemon", 0))
+                assertEquals("started", cli("start", 0))
                 val restored = status()
                 assertTrue(restored["running"].asBoolean)
                 assertEquals(null, capture.view.initializationError)
@@ -121,6 +121,23 @@ class ReplayInitializationCliTest {
                 for (component in components) assertEquals(TestPermissions.mode("rwx------"), TestPermissions.get(component))
                 assertEquals("LOG_ONLY", restored["capture_mode"].asString)
                 assertEquals(83, restored["replay_seconds"].asInt)
+                fun settingsCli(expected: Int, vararg words: String): String {
+                    val output = ByteArrayOutputStream()
+                    val error = ByteArrayOutputStream()
+                    val code = ReplayCli.run(listOf("--project", projectPath.toString(), "settings") + words,
+                        PrintStream(output, true, Charsets.UTF_8), PrintStream(error, true, Charsets.UTF_8), registry) { "build" }
+                    assertEquals(expected, code, error.toString(Charsets.UTF_8))
+                    return (if (expected == 0) output else error).toString(Charsets.UTF_8).trim()
+                }
+                val settings = JsonParser.parseString(settingsCli(0)).asJsonObject
+                assertEquals(83, settings["replay_seconds"].asInt)
+                assertEquals("LOG_ONLY", settings["capture_mode"].asString)
+                assertTrue(settings["enabled"].asBoolean)
+                // Same field validation as MCP update_settings; nothing is applied when it fails.
+                assertEquals("replay_secondsは整数で指定してください。", settingsCli(2, "set", "replay_seconds=abc"))
+                assertTrue(settingsCli(2, "set", "unknown=1").contains("unknown"))
+                assertTrue(settingsCli(2, "set", "replay_seconds=901").isNotEmpty())
+                assertEquals(83, JsonParser.parseString(settingsCli(0)).asJsonObject["replay_seconds"].asInt)
                 server.close()
                 server.termination.get(5, TimeUnit.SECONDS)
             }

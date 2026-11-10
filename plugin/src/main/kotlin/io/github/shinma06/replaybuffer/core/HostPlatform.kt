@@ -10,6 +10,9 @@ internal object HostPlatform {
     /** For OS naming conventions only (executable names, test fixtures); filesystem behaviour goes through the implementations. */
     val windows = name.startsWith("Windows")
 
+    /** File name of the bundled terminal launcher under the plugin's `bin`. */
+    val cliLauncher: String = if (windows) "replay.cmd" else "replay"
+
     private val supportedSaveHandles: SaveHandles? = when {
         windows -> WindowsSaveHandles
         name == "Mac OS X" -> PosixSaveHandles(darwin = true)

@@ -39,14 +39,14 @@ class ReplayCliDistributionTest {
         }
         val plugin = Files.list(extracted).use { it.toList().single() }
         val windows = HostPlatform.windows
-        val suffix = if (windows) ".cmd" else ""
-        val replay = plugin.resolve("bin/replay$suffix")
-        val replayd = plugin.resolve("bin/replayd$suffix")
-        assertTrue(Files.isRegularFile(replay) && Files.isRegularFile(replayd))
+        // The settings page shows this exact path of the installed plugin.
+        val replay = ReplayCliRegistry.launcher(plugin)
+        assertTrue(Files.isRegularFile(replay))
+        assertEquals(setOf("README.txt", "replay", "replay.cmd"), Files.list(plugin.resolve("bin")).use { files -> files.map { it.fileName.toString() }.toList().toSet() })
         assertTrue(Files.readString(plugin.resolve("bin/README.txt")).contains(System.getProperty("replay.expected.source")))
         if (!windows) FileSystems.newFileSystem(archive, mapOf("accessMode" to "readOnly")).use { zip ->
             val permissions = PosixFilePermissions.fromString("rwxr-xr-x")
-            for (launcher in listOf(replay, replayd)) {
+            for (launcher in listOf(replay)) {
                 val entry = zip.getPath("/${extracted.relativize(launcher)}")
                 assertEquals(permissions, Files.getAttribute(entry, "zip:permissions"))
                 // ZipFile byte extraction does not apply the archive's stored permission bits.
@@ -66,19 +66,31 @@ class ReplayCliDistributionTest {
         if (Files.isDirectory(platform.resolve("lib/jna"))) Files.createSymbolicLink(studio.resolve("lib/jna"), platform.resolve("lib/jna"))
         for (locale in listOf("C", "en_US.UTF-8")) {
             val environment = mapOf("REPLAY_STUDIO_HOME" to studio.toString(), "LC_ALL" to locale)
-            for (launcher in listOf(replay, replayd)) {
-                val result = run(listOf(launcher.toString(), "--help"), environment)
-                assertEquals(0, result.first, result.third.decodeToString())
-                val help = result.second.decodeToString(throwOnInvalidSequence = true)
-                assertTrue(help.contains("Usage: replay"))
-                assertTrue(help.contains("起動済みAndroid Studioの同じ取得・保存処理を操作します。"))
-                assertContentEquals(byteArrayOf(), result.third)
-            }
-            val invalid = run(listOf(replay.toString(), "start"), environment)
+            val result = run(listOf(replay.toString(), "--help"), environment)
+            assertEquals(0, result.first, result.third.decodeToString())
+            val help = result.second.decodeToString(throwOnInvalidSequence = true)
+            assertTrue(help.contains("Usage: replay"))
+            assertTrue(help.contains("settings set KEY=VALUE..."))
+            assertTrue(help.contains("起動済みAndroid Studioのプラグインを操作するリモコンです。"))
+            assertContentEquals(byteArrayOf(), result.third)
+            val invalid = run(listOf(replay.toString(), "daemon"), environment)
             assertEquals(2, invalid.first)
             assertContentEquals(byteArrayOf(), invalid.second)
             assertContentEquals("不明な操作・optionです。replay --helpを確認してください。\n".toByteArray(Charsets.UTF_8), invalid.third)
         }
+        // Without REPLAY_STUDIO_HOME the launcher uses the home the running IDE recorded; the variable still wins.
+        val userHome = Files.createDirectory(temporary.resolve("user home"))
+        val homeEnvironment = mapOf("HOME" to userHome.toString(), "USERPROFILE" to userHome.toString(), "LC_ALL" to "C")
+        val unrecorded = run(listOf(replay.toString(), "--help"), homeEnvironment + ("REPLAY_STUDIO_HOME" to temporary.resolve("missing").toString()))
+        assertEquals(1, unrecorded.first)
+        assertTrue(unrecorded.third.decodeToString().contains("REPLAY_STUDIO_HOME"))
+        ReplayCliRegistry.recordStudioHome(userHome.resolve(".android-replay-buffer-cli"), studio)
+        val recorded = run(listOf(replay.toString(), "--help"), homeEnvironment)
+        assertEquals(0, recorded.first, recorded.third.decodeToString())
+        assertTrue(recorded.second.decodeToString().contains("Usage: replay"))
+        val overridden = run(listOf(replay.toString(), "--help"), homeEnvironment + ("REPLAY_STUDIO_HOME" to temporary.resolve("missing").toString()))
+        assertEquals(1, overridden.first)
+        assertContentEquals(byteArrayOf(), overridden.second)
         val jar = Files.list(plugin.resolve("lib")).use { files -> files.filter { it.toString().endsWith(".jar") }.toList().single { path ->
             JarFile(path.toFile()).use { it.getJarEntry("io/github/shinma06/replaybuffer/cli/ReplayCli.class") != null }
         } }
@@ -94,6 +106,7 @@ class ReplayCliDistributionTest {
         val sharedError = "一部のログがありません。"
         val server = ReplayCliServer(home.resolve(".android-replay-buffer-cli"), project, build) { request ->
             if (request.command == CliCommand.SETTINGS) return@ReplayCliServer CliResponse(0, """{"replay_seconds":180}""")
+            if (request.command == CliCommand.CONFIGURE) return@ReplayCliServer CliResponse(0, checkNotNull(request.configText))
             assertEquals(CliCommand.STATUS, request.command)
             CliResponse(0, sharedOutput, sharedError)
         }
@@ -107,6 +120,14 @@ class ReplayCliDistributionTest {
                 assertContentEquals("$sharedOutput\n".toByteArray(Charsets.UTF_8), result.second)
                 assertContentEquals("$sharedError\n".toByteArray(Charsets.UTF_8), result.third)
             }
+            // Arguments stay ASCII: the C locale cannot carry non-ASCII argv into the JVM.
+            val configuredOutput = temporary.resolve("out with spaces").toString()
+            val configured = run(listOf(java.toString(), "-Duser.home=$home", "--enable-native-access=ALL-UNNAMED", "-cp", "$plugin${File.separator}lib${File.separator}*${File.pathSeparator}$kotlinRuntime",
+                "io.github.shinma06.replaybuffer.cli.ReplayCli", "--project", project.toString(), "settings", "set", "replay_seconds=60", "output_directory=$configuredOutput"),
+                mapOf("LC_ALL" to "C"))
+            assertEquals(0, configured.first, configured.third.decodeToString())
+            assertEquals(McpJson.write(linkedMapOf("replay_seconds" to BigDecimal(60), "output_directory" to configuredOutput)) + "\n",
+                configured.second.decodeToString(throwOnInvalidSequence = true))
             val session = listOf(
                 """{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}""",
                 """{"jsonrpc":"2.0","method":"notifications/initialized"}""",
@@ -132,7 +153,7 @@ class ReplayCliDistributionTest {
         val input = Files.writeString(Files.createTempFile(temporary, "cli-input-", ".txt"), stdin)
         val builder = ProcessBuilder(command).redirectInput(input.toFile()).redirectOutput(output.toFile()).redirectError(error.toFile())
         builder.environment().apply {
-            remove("JAVA_TOOL_OPTIONS"); remove("JDK_JAVA_OPTIONS"); remove("_JAVA_OPTIONS")
+            remove("JAVA_TOOL_OPTIONS"); remove("JDK_JAVA_OPTIONS"); remove("_JAVA_OPTIONS"); remove("REPLAY_STUDIO_HOME")
             putAll(environment)
         }
         val process = builder.start()

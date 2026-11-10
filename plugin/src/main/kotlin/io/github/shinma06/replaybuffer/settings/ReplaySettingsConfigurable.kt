@@ -1,11 +1,13 @@
 package io.github.shinma06.replaybuffer.settings
 
+import com.intellij.ide.plugins.cl.PluginAwareClassLoader
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.ModalityState
 import com.intellij.openapi.application.UI
 import com.intellij.openapi.application.asContextElement
 import com.intellij.openapi.fileChooser.FileChooserDescriptorFactory
+import com.intellij.openapi.ide.CopyPasteManager
 import com.intellij.openapi.options.Configurable
 import com.intellij.openapi.options.ConfigurationException
 import com.intellij.openapi.project.Project
@@ -17,6 +19,7 @@ import com.intellij.ui.components.JBCheckBox
 import com.intellij.ui.components.JBTextArea
 import com.intellij.ui.components.JBTextField
 import com.intellij.util.ui.FormBuilder
+import io.github.shinma06.replaybuffer.cli.ReplayCliRegistry
 import io.github.shinma06.replaybuffer.core.CaptureMode
 import io.github.shinma06.replaybuffer.core.VideoQuality
 import io.github.shinma06.replaybuffer.ide.LogcatScreenshotSettings
@@ -29,6 +32,9 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.awt.BorderLayout
+import java.awt.datatransfer.StringSelection
+import javax.swing.JButton
 import javax.swing.JComboBox
 import javax.swing.JComponent
 import javax.swing.JLabel
@@ -61,6 +67,21 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable {
     private var applicationStatus: JBTextArea? = null
 
     override fun getDisplayName(): String = "Android Replay Buffer"
+
+    private fun cliLauncherRow(): JComponent {
+        val pluginDirectory = (javaClass.classLoader as? PluginAwareClassLoader)?.pluginDescriptor?.pluginPath
+        val launcher = pluginDirectory?.let { ReplayCliRegistry.launcher(it).toString() }
+        val field = JBTextField(launcher ?: "CLIの場所を確認できません").apply {
+            isEditable = false
+            accessibleContext.accessibleName = "CLIの場所"
+        }
+        val copy = JButton("コピー").apply {
+            isEnabled = launcher != null
+            accessibleContext.accessibleName = "CLIの場所をコピー"
+            addActionListener { launcher?.let { CopyPasteManager.getInstance().setContents(StringSelection(it)) } }
+        }
+        return JPanel(BorderLayout()).apply { add(field, BorderLayout.CENTER); add(copy, BorderLayout.EAST) }
+    }
 
     override fun createComponent(): JComponent {
         replayService = project.getService(ReplayProjectService::class.java)
@@ -163,6 +184,10 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable {
             .addComponent(screenshotLogcat!!)
             .addLabeledComponent(screenshotDirectoryLabel, screenshotDirectory!!)
             .addComponent(screenshotStatus!!)
+            .addComponent(TitledSeparator("ターミナル・エージェントから操作"))
+            .addComponent(wrappingLabel("導入済みプラグインのbinにあるreplayで、この画面と同じ設定・取得・保存を操作できます。" +
+                "MCPはreplay mcpです。プラグイン更新後も同じ場所を使えます。"))
+            .addLabeledComponent("CLIの場所:", cliLauncherRow())
             .addComponentFillVertically(JPanel(), 0)
             .panel
         checkDestination()

@@ -1,15 +1,28 @@
 #!/bin/sh
 set -eu
 plugin_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-case $(uname -s) in
-    Darwin) default_home='/Applications/Android Studio.app/Contents' ;;
-    *) default_home=/opt/android-studio ;;
-esac
-studio_home=${REPLAY_STUDIO_HOME:-$default_home}
+studio_ok() {
+    [ -f "$1/lib/util-8.jar" ] && { [ -x "$1/jbr/Contents/Home/bin/java" ] || [ -x "$1/jbr/bin/java" ]; }
+}
+# REPLAY_STUDIO_HOME > home recorded by the last started IDE (if usable) > default install location.
+studio_home=${REPLAY_STUDIO_HOME:-}
+if [ -z "$studio_home" ]; then
+    recorded_file="${HOME:-}/.android-replay-buffer-cli/studio-home"
+    if [ -n "${HOME:-}" ] && [ -f "$recorded_file" ]; then
+        recorded=$(cat -- "$recorded_file" 2>/dev/null || :)
+        if [ -n "$recorded" ] && studio_ok "$recorded"; then studio_home=$recorded; fi
+    fi
+fi
+if [ -z "$studio_home" ]; then
+    case $(uname -s) in
+        Darwin) studio_home='/Applications/Android Studio.app/Contents' ;;
+        *) studio_home=/opt/android-studio ;;
+    esac
+fi
 java="$studio_home/jbr/Contents/Home/bin/java"
 [ -x "$java" ] || java="$studio_home/jbr/bin/java"
 if [ ! -x "$java" ] || [ ! -f "$studio_home/lib/util-8.jar" ]; then
-    printf '%s\n' '対応するAndroid Studioの導入先（macOSはContents）をREPLAY_STUDIO_HOMEで指定してください。' >&2
+    printf '%s\n' '対応するAndroid Studioが見つかりません。プラグインを入れたAndroid Studioでprojectを一度開くか、導入先（macOSはContents）をREPLAY_STUDIO_HOMEで指定してください。' >&2
     exit 1
 fi
 exec "$java" --enable-native-access=ALL-UNNAMED -cp "$plugin_dir/lib/*:$studio_home/lib/util-8.jar" io.github.shinma06.replaybuffer.cli.ReplayCli "$@"

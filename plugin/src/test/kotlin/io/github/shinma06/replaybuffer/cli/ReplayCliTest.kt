@@ -1,5 +1,7 @@
 package io.github.shinma06.replaybuffer.cli
 
+import io.github.shinma06.replaybuffer.settings.ReplaySettings
+import io.github.shinma06.replaybuffer.settings.patchSettings
 import io.github.shinma06.replaybuffer.testing.TestPermissions
 import java.io.ByteArrayOutputStream
 import java.io.DataInputStream
@@ -23,19 +25,65 @@ import org.junit.jupiter.api.io.TempDir
 class ReplayCliTest {
     @TempDir lateinit var temporary: Path
 
-    @Test fun `legacy commands and quoted path arguments retain a single target`() {
-        for (command in listOf("save", "status", "stop", "daemon", "screenshot")) {
+    @Test fun `commands and quoted path arguments retain a single target`() {
+        for (command in listOf("start", "stop", "save", "status", "screenshot", "settings")) {
             assertEquals(command.uppercase(), parseCliArguments(listOf("--project", "a project", command)).command?.name)
         }
-        assertEquals(Path.of("old config.json"), parseCliArguments(listOf("--config=old config.json", "daemon")).config)
-        assertEquals(CliArguments(null, Path.of("a project"), null), parseCliArguments(listOf("--project=a project", "mcp")))
-        assertEquals(Path.of("old config.json"), parseCliArguments(listOf("daemon", "--foreground", "--config", "old config.json")).config)
-        for (args in listOf(emptyList(), listOf("start"), listOf("save", "stop"), listOf("--project"),
-            listOf("status", "--config", "x"), listOf("save", "--foreground"), listOf("daemon", "--daemon"),
-            listOf("--project", "x", "--project", "y", "save"), listOf("--project", "", "stop"), listOf("mcp", "status"),
-            listOf("status", "mcp"), listOf("mcp", "--config", "x"), listOf("mcp", "--foreground"), listOf("screenshot", "--config", "x"))) {
-            assertFailsWith<Exception> { parseCliArguments(args) }
+        assertEquals(CliArguments(null, Path.of("a project")), parseCliArguments(listOf("--project=a project", "mcp")))
+        assertEquals(CliArguments(CliCommand.CONFIGURE, Path.of("p"), """{"replay_seconds":60,"auto_save_on_crash":true,"output_directory":"/a b=c"}"""),
+            parseCliArguments(listOf("settings", "set", "replay_seconds=60", "--project", "p", "auto_save_on_crash=true", "output_directory=/a b=c")))
+        for (args in listOf(emptyList(), listOf("daemon"), listOf("save", "stop"), listOf("--project"), listOf("--config", "x", "save"),
+            listOf("start", "--foreground"), listOf("--daemon"), listOf("--project", "x", "--project", "y", "save"), listOf("--project", "", "stop"),
+            listOf("mcp", "status"), listOf("status", "mcp"), listOf("status", "set"), listOf("settings", "get"), listOf("settings", "set"),
+            listOf("settings", "set", "replay_seconds"), listOf("settings", "set", "=60"), listOf("settings", "set", "a=1", "a=2"),
+            listOf("settings", "set", "output_directory=" + "a".repeat(ReplayCliProtocol.MAX_CONFIG_BYTES)))) {
+            assertFailsWith<IllegalArgumentException>(args.toString()) { parseCliArguments(args) }
         }
+    }
+
+    @Test fun `settings set sends the MCP update_settings JSON and shares its validation`() {
+        val current = ReplaySettings()
+        val words = listOf("replay_seconds=60", "auto_save_on_crash=true", "capture_mode=LOG_ONLY", "output_directory=/tmp/out", "manual_package=com.example.app")
+        val cli = checkNotNull(parseCliArguments(listOf("settings", "set") + words).settings)
+        val mcp = McpJson.write(linkedMapOf("replay_seconds" to java.math.BigDecimal(60), "auto_save_on_crash" to true,
+            "capture_mode" to "LOG_ONLY", "output_directory" to "/tmp/out", "manual_package" to "com.example.app"))
+        assertEquals(mcp, cli)
+        assertEquals(patchSettings(current, mcp), patchSettings(current, cli))
+        assertEquals(60, patchSettings(current, cli).retentionSeconds)
+        for ((word, message) in listOf("replay_seconds=abc" to "replay_secondsは整数で指定してください。",
+            "replay_seconds=99999999999" to "replay_secondsは整数で指定してください。",
+            "show_touches=yes" to "show_touchesはtrue/falseで指定してください。")) {
+            val text = checkNotNull(parseCliArguments(listOf("settings", "set", word)).settings)
+            assertEquals(message, assertFailsWith<IllegalArgumentException> { patchSettings(current, text) }.message)
+        }
+        assertFailsWith<IllegalArgumentException> { patchSettings(current, parseCliArguments(listOf("settings", "set", "project=/x")).settings!!) }
+    }
+
+    @Test fun `running IDE records its Studio home owner-only without becoming an endpoint`() {
+        val registry = temporary.resolve("registry")
+        val first = temporary.resolve("Studio one/Contents")
+        ReplayCliRegistry.recordStudioHome(registry, first)
+        val record = registry.resolve(ReplayCliRegistry.STUDIO_HOME_FILE)
+        assertEquals(first.toAbsolutePath().normalize().toString(), Files.readString(record))
+        assertEquals(TestPermissions.mode("rwx------"), TestPermissions.get(registry))
+        assertEquals(TestPermissions.mode("rw-------"), TestPermissions.get(record))
+        val second = temporary.resolve("スタジオ 2")
+        ReplayCliRegistry.recordStudioHome(registry, second.resolve("..").resolve("スタジオ 2"))
+        assertEquals(second.toString(), Files.readString(record))
+        assertEquals(TestPermissions.mode("rw-------"), TestPermissions.get(record))
+        assertFailsWith<IllegalArgumentException> { ReplayCliRegistry.recordStudioHome(registry, Path.of(temporary.toString(), "line\nbreak")) }
+        assertEquals(second.toString(), Files.readString(record))
+        assertEquals(listOf(ReplayCliRegistry.STUDIO_HOME_FILE), Files.list(registry).use { files -> files.map { it.fileName.toString() }.toList() })
+        val project = Files.createDirectory(temporary.resolve("project"))
+        ReplayCliServer(registry, project, "build") { CliResponse(0, "ok") }.use { server ->
+            assertEquals(server.endpoint.id, ReplayCliRegistry.select(registry, null, "build").id)
+            server.close()
+            server.termination.get(5, TimeUnit.SECONDS)
+        }
+        assertEquals(second.toString(), Files.readString(record))
+        val shared = Files.createDirectory(temporary.resolve("shared")).also { TestPermissions.set(it, "rwxrwxrwx") }
+        assertFailsWith<IllegalArgumentException> { ReplayCliRegistry.recordStudioHome(shared, first) }
+        assertFalse(Files.exists(shared.resolve(ReplayCliRegistry.STUDIO_HOME_FILE)))
     }
 
     @Test fun `protocol rejects negative oversized invalid UTF8 and unsupported response`() {
@@ -51,25 +99,21 @@ class ReplayCliTest {
 
     @Test fun `one authenticated client receives exact output and server error`() {
         val project = Files.createDirectory(temporary.resolve("project with spaces"))
-        val config = temporary.resolve("old config.yaml")
-        Files.writeString(config, "replay_seconds: 60")
         val registry = temporary.resolve("registry")
         val calls = AtomicInteger()
         ReplayCliServer(registry, project, "build") { request ->
             calls.incrementAndGet()
-            assertEquals(CliCommand.SAVE, request.command)
-            assertTrue(request.yaml)
-            assertEquals("replay_seconds: 60", request.configText)
-            assertTrue(Path.of(request.workingDirectory).isAbsolute)
-            CliResponse(1, error = "保存先へ書き込めません。")
+            assertEquals(CliCommand.CONFIGURE, request.command)
+            assertEquals("""{"replay_seconds":901}""", request.configText)
+            CliResponse(2, error = "保持時間は1〜900秒で指定してください。")
         }.use { server ->
             assertEquals(server.endpoint.id, ReplayCliRegistry.select(registry, project, "build").id)
             assertFailsWith<java.nio.file.FileAlreadyExistsException> { ReplayCliRegistry.publish(registry, server.endpoint.copy(build = "replacement")) }
             assertEquals("build", ReplayCliRegistry.read(registry.resolve("${server.endpoint.id}.properties")).build)
-            val (code, output, error) = runCli(registry, listOf("--project", project.toString(), "--config", config.toString(), "save"))
-            assertEquals(1, code)
+            val (code, output, error) = runCli(registry, listOf("--project", project.toString(), "settings", "set", "replay_seconds=901"))
+            assertEquals(2, code)
             assertEquals("", output)
-            assertTrue(error.contains("保存先へ書き込めません。"))
+            assertEquals("保持時間は1〜900秒で指定してください。\n", error)
             assertEquals(1, calls.get())
             assertEquals(TestPermissions.mode("rwx------"), TestPermissions.get(registry))
             Files.list(registry).use { files -> files.forEach {
@@ -148,7 +192,7 @@ class ReplayCliTest {
         val calls = AtomicInteger()
         val server = ReplayCliServer(registry, temporary, "build") { calls.incrementAndGet(); CliResponse(0) }
         try {
-            for (command in listOf("UNKNOWN", "STOP")) {
+            for ((command, config) in listOf("UNKNOWN" to "{}", "STOP" to "{}", "SETTINGS" to "{}", "CONFIGURE" to null)) {
                 Socket("127.0.0.1", server.endpoint.port).use { socket ->
                     socket.soTimeout = 2000
                     val input = DataInputStream(socket.getInputStream())
@@ -157,10 +201,8 @@ class ReplayCliTest {
                     repeat(3) { ReplayCliProtocol.readText(input) }
                     val disconnected = try {
                         ReplayCliProtocol.writeText(output, command)
-                        output.writeBoolean(true)
-                        ReplayCliProtocol.writeText(output, "{}")
-                        output.writeBoolean(false)
-                        ReplayCliProtocol.writeText(output, temporary.toString())
+                        output.writeBoolean(config != null)
+                        config?.let { ReplayCliProtocol.writeText(output, it) }
                         output.flush()
                         input.read() == -1
                     } catch (_: java.net.SocketException) { true }
@@ -174,11 +216,10 @@ class ReplayCliTest {
         }
     }
 
-    @Test fun `registry symlinks and nonregular config are rejected without command`() {
+    @Test fun `registry symlinks are rejected without command`() {
         val actual = Files.createDirectory(temporary.resolve("actual")).also { TestPermissions.set(it, "rwx------") }
         val link = Files.createSymbolicLink(temporary.resolve("link"), actual)
         assertFailsWith<IllegalArgumentException> { ReplayCliRegistry.prepare(link) }
-        assertEquals(2, runCli(temporary.resolve("none"), listOf("daemon", "--config", temporary.toString())).first)
     }
 
     @Test fun `disconnect after dispatch gives unknown result and never repeats mutation`() {
@@ -267,19 +308,18 @@ class ReplayCliTest {
         }
     }
 
-    @Test fun `invalid configuration bytes and sizes fail before any connection`() {
-        val config = temporary.resolve("config.json")
-        Files.write(config, byteArrayOf(0xff.toByte()))
-        assertEquals(2, runCli(temporary.resolve("none"), listOf("daemon", "--config", config.toString())).first)
-        Files.writeString(config, " ".repeat(65537))
-        assertEquals(2, runCli(temporary.resolve("none"), listOf("daemon", "--config", config.toString())).first)
-        Files.delete(config)
-        assertEquals(1, runCli(temporary.resolve("none"), listOf("daemon", "--config", config.toString())).first)
+    @Test fun `invalid settings arguments fail before any connection`() {
+        val none = temporary.resolve("none")
+        assertEquals(2, runCli(none, listOf("settings", "set")).first)
+        assertEquals(2, runCli(none, listOf("settings", "set", "replay_seconds")).first)
+        assertEquals(2, runCli(none, listOf("settings", "set", "output_directory=" + "a".repeat(ReplayCliProtocol.MAX_CONFIG_BYTES))).first)
+        assertEquals(1, runCli(none, listOf("settings")).first)
+        assertEquals(1, runCli(none, listOf("settings", "set", "replay_seconds=60")).first)
     }
 
     @Test fun `help is offline and argument errors remain separate from connection errors`() {
         assertEquals(0, runCli(temporary.resolve("missing"), listOf("--help")).first)
-        assertEquals(2, runCli(temporary.resolve("missing"), listOf("start")).first)
+        assertEquals(2, runCli(temporary.resolve("missing"), listOf("daemon")).first)
         assertEquals(1, runCli(temporary.resolve("missing"), listOf("status")).first)
         val error = ByteArrayOutputStream()
         val code = ReplayCli.run(listOf("status"), PrintStream(ByteArrayOutputStream()), PrintStream(error, true, Charsets.UTF_8),

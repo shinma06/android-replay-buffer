@@ -92,7 +92,7 @@ internal class ReplayProjectCapture(
                 val retryable = directory == null && cleanupDirectory != null
                 val message = if (retryable) {
                     val detail = (failure as? CleanupDirectoryFailure)?.message ?: "projectの保存場所とIDE設定領域へのアクセス権を確認してください。"
-                    "取得の初期化に失敗しました。$detail 修正後にdaemonまたは取得ONで再試行してください。"
+                    "取得の初期化に失敗しました。$detail 修正後に取得ONまたはreplay startで再試行してください。"
                 } else "取得の初期化に失敗しました。projectの保存場所とIDE設定領域へのアクセス権を確認し、projectを開き直してください。"
                 val notify = synchronized(this@ReplayProjectCapture) {
                     if (!closed) {

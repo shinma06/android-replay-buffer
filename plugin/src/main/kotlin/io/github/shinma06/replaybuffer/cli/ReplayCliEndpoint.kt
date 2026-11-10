@@ -7,6 +7,7 @@ import java.net.InetSocketAddress
 import java.net.JarURLConnection
 import java.net.ServerSocket
 import java.net.Socket
+import java.nio.ByteBuffer
 import java.nio.channels.Channels
 import java.nio.channels.FileChannel
 import java.nio.file.FileAlreadyExistsException
@@ -16,6 +17,7 @@ import java.nio.file.Path
 import java.nio.file.StandardOpenOption.CREATE_NEW
 import java.nio.file.StandardOpenOption.READ
 import java.nio.file.StandardOpenOption.WRITE
+import io.github.shinma06.replaybuffer.core.HostPlatform
 import io.github.shinma06.replaybuffer.core.PrivateFiles
 import java.nio.file.attribute.BasicFileAttributes
 import java.security.MessageDigest
@@ -45,14 +47,40 @@ internal data class CliEndpoint(
 }
 
 /**
- * Current-user-only endpoint descriptors, separate from legacy replayd and IDE lock/socket formats.
+ * Current-user-only endpoint descriptors, separate from IDE lock/socket formats.
  *
  * Selection rejects unsafe, ambiguous or mismatched descriptors without repairing or deleting them.
  */
 internal object ReplayCliRegistry {
     private const val MAX_ENDPOINT_BYTES = 32 * 1024
 
+    /** Read by the bin launchers when REPLAY_STUDIO_HOME is unset: one UTF-8 line without a terminator. */
+    const val STUDIO_HOME_FILE = "studio-home"
+
     fun directory(): Path = Path.of(System.getProperty("user.home"), ".android-replay-buffer-cli")
+
+    /** The terminal entry of an installed plugin directory, for this OS's launcher convention. */
+    fun launcher(pluginDirectory: Path): Path = pluginDirectory.resolve("bin").resolve(HostPlatform.cliLauncher)
+
+    /**
+     * Atomically records the running IDE's home (macOS: `Contents`) for the launchers; the last started IDE wins.
+     * The record is owner-only like endpoint descriptors and never lists as an endpoint.
+     */
+    fun recordStudioHome(directory: Path, home: Path) {
+        val text = home.toAbsolutePath().normalize().toString()
+        require(text.isNotEmpty() && text.length <= 4096 && text.none { it < ' ' || it == '"' }) { "Android Studioの導入先を記録できません。" }
+        prepare(directory)
+        val staging = directory.resolve(".$STUDIO_HOME_FILE.${UUID.randomUUID()}.tmp")
+        try {
+            PrivateFiles.openNew(staging, setOf(CREATE_NEW, WRITE, NOFOLLOW_LINKS)).use { channel ->
+                val bytes = ByteBuffer.wrap(text.toByteArray(Charsets.UTF_8))
+                while (bytes.hasRemaining()) channel.write(bytes)
+            }
+            PrivateFiles.replace(staging, directory.resolve(STUDIO_HOME_FILE))
+        } finally {
+            Files.deleteIfExists(staging)
+        }
+    }
 
     /** Hashes the containing local distribution JAR, not a version label or source revision. */
     fun buildIdentity(): String {
