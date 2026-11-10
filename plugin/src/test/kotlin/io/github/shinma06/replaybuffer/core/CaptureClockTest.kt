@@ -187,6 +187,44 @@ class CaptureClockTest {
     }
 
     @Test
+    fun fixedMonoMapperMatchesPerRowMonoAcrossEpochsAndSurvivesClockMutation() {
+        val clock = CaptureClock()
+        fun compare() {
+            val mapper = clock.monoMapper()
+            val snapshot = clock.snapshot()
+            val sources = snapshot.flatMap { sample ->
+                listOf(-20_000_001L, -20_000_000L, -1L, 0L, 1L, 20_000_000L, 20_000_001L,
+                    5_000_000_000L, 5_000_000_001L).map { sample.mono + it }
+            } + listOf(0L, Long.MIN_VALUE, Long.MAX_VALUE, 1_500_000_000)
+            val hosts = snapshot.flatMap { sample ->
+                listOf(sample.sent - 1, sample.sent, sample.received, sample.received + 1, sample.received + 5_000_000_001)
+            } + listOf(0L, Long.MAX_VALUE)
+            val hints = (snapshot.map { it.epoch }.distinct() + clock.currentEpoch() + 99).map<Int, Int?> { it } + null
+            for (source in sources) for (host in hosts) for (hint in hints) {
+                val linear = runCatching { clock.mono(source, host, hint) }
+                val indexed = runCatching { mapper(source, host, hint) }
+                assertEquals(linear.getOrNull(), indexed.getOrNull(), "source=$source host=$host hint=$hint")
+                assertEquals(linear.exceptionOrNull()?.javaClass, indexed.exceptionOrNull()?.javaClass)
+            }
+        }
+        compare()
+        add(clock, 1_000_000_000)
+        add(clock, 2_000_000_000, mono = 1_999_800_000)
+        add(clock, 2_000_000_000)
+        compare()
+        clock.boundary(2_000_200_000)
+        add(clock, 3_000_000_000)
+        compare()
+        add(clock, 500_000_000, host = 6_000_000_000, boot = "2")
+        compare()
+        val frozen = clock.monoMapper()
+        val expected = frozen(2_500_000_000, 3_000_200_000, null)
+        clock.clear()
+        add(clock, 20_000_000_000)
+        assertEquals(expected, frozen(2_500_000_000, 3_000_200_000, null))
+    }
+
+    @Test
     fun maximumHistoryIndexReadsTwoSamplesPerRowAndPreservesInsertionOrderExtrema() {
         val points = List(4096) { i ->
             val wall = (i * 37L % 1024) * 1_000_000

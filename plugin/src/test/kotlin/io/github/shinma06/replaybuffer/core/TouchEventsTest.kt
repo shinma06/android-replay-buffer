@@ -21,6 +21,19 @@ class TouchEventsTest {
     }
 
     @Test
+    fun `protocol A devices without slots are not parsed`() {
+        val protocolA = """
+            add device 4: /dev/input/event5
+              name:     "legacy_touch"
+              events:
+                ABS (0003): ABS_MT_POSITION_X     : value 0, min 0, max 4095, fuzz 0, flat 0, resolution 0
+                            ABS_MT_POSITION_Y     : value 0, min 0, max 4095, fuzz 0, flat 0, resolution 0
+        """.trimIndent()
+        assertEquals(emptyMap<String, TouchAxes>(), parseTouchDevices(protocolA))
+        assertEquals(mapOf("/dev/input/event2" to TouchAxes(32767, 32767)), parseTouchDevices(protocolA + "\n" + devices))
+    }
+
+    @Test
     fun `override display size wins`() {
         assertEquals(1080 to 2400, parseDisplaySize("Physical size: 1080x2400\n"))
         assertEquals(720 to 1600, parseDisplaySize("Physical size: 1080x2400\nOverride size: 720x1600\n"))

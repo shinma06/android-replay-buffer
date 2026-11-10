@@ -8,7 +8,7 @@
 
 ## タップ位置の記録と表示（Trail #22）
 
-動画＋ログの取得中は、タップ座標と時刻を自動で記録します（専用の設定はありません）。ログ専用では記録せず、`touches.jsonl`も作りません。端末へは`adb shell getevent -lp`で`ABS_MT_POSITION_X/Y`を持つmulti-touch入力deviceと軸範囲を、`wm size`で画面px（Override sizeを優先）を取得し、`getevent -lt`の各SYN_REPORTでslotごとの`down / move / up`を作ります。座標は軸範囲から画面pxへ換算した、画面の自然な向きの値です（回転は適用しません）。protocol Aやmulti-touch軸のない入力deviceは対象外で、その場合は動画取得を止めずに状態を`UNAVAILABLE`として保存します。
+動画＋ログの取得中は、タップ座標と時刻を自動で記録します（専用の設定はありません）。ログ専用では記録せず、`touches.jsonl`も作りません。端末へは`adb shell getevent -lp`で`ABS_MT_SLOT`と`ABS_MT_POSITION_X/Y`を持つmulti-touch入力device（protocol B）と軸範囲を、`wm size`で画面px（Override sizeを優先）を取得し、`getevent -lt`の各SYN_REPORTでslotごとの`down / move / up`を作ります。座標は軸範囲から画面pxへ換算した、画面の自然な向きの値です（回転は適用しません）。protocol Aやmulti-touch軸のない入力deviceは対象外で、その場合は動画取得を止めずに状態を`UNAVAILABLE`として保存します。
 
 時刻はkernelの入力時刻（`getevent -lt`の端末CLOCK_MONOTONIC）を正本とし、動画PTSと同じ`CaptureClock`の時計対応でsequenceへ写します。host受信時刻で置き換えません。保存窓・固定・pruneの規則は両ログと同じで、保存対象の固定後に新しいclock sampleで再解釈しません。保持件数の上限（200,000件）を超えた古いsampleは`dropped_count`へ数えます。
 

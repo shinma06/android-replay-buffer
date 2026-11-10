@@ -45,21 +45,27 @@ internal class ShowTouchesRestore {
 internal const val MAX_TOUCH_SAMPLES = 200_000
 
 private val deviceLine = Regex("""add device \d+: (/dev/input/event\d+)""")
+private val slotLine = Regex("""ABS_MT_SLOT\s*:""")
 private val axisLine = Regex("""ABS_MT_POSITION_([XY])\s*:\s*value -?\d+, min (-?\d+), max (-?\d+)""")
 private val eventLine = Regex("""\[\s*(\d+)\.(\d{6})\]\s+(?:(/dev/input/event\d+):\s+)?(EV_\w+)\s+(\w+)\s+([0-9a-fA-F]{8})""")
 
-/** Multi-touch devices from `getevent -lp`; devices without both MT position axes are not touchscreens. */
+/**
+ * Multi-touch devices from `getevent -lp`; devices without both MT position axes are not touchscreens. Only protocol B
+ * (ABS_MT_SLOT) is parsed, so protocol-A devices are left out and touch capture reports them as unavailable.
+ */
 internal fun parseTouchDevices(output: String): Map<String, TouchAxes> {
     val result = linkedMapOf<String, TouchAxes>()
     var device: String? = null
     var maxX: Int? = null
     var maxY: Int? = null
+    var slots = false
     fun flush() {
         val d = device ?: return
-        if (maxX != null && maxY != null && maxX!! > 0 && maxY!! > 0) result[d] = TouchAxes(maxX!!, maxY!!)
+        if (slots && maxX != null && maxY != null && maxX!! > 0 && maxY!! > 0) result[d] = TouchAxes(maxX!!, maxY!!)
     }
     output.lineSequence().forEach { line ->
-        deviceLine.find(line)?.let { flush(); device = it.groupValues[1]; maxX = null; maxY = null; return@forEach }
+        deviceLine.find(line)?.let { flush(); device = it.groupValues[1]; maxX = null; maxY = null; slots = false; return@forEach }
+        if (slotLine.containsMatchIn(line)) slots = true
         axisLine.find(line)?.let {
             if (it.groupValues[2].toInt() != 0) return@let
             if (it.groupValues[1] == "X") maxX = it.groupValues[3].toInt() else maxY = it.groupValues[3].toInt()

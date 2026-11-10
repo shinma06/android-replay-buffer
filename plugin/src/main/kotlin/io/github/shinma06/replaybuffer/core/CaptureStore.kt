@@ -544,9 +544,11 @@ internal class CaptureStore(
             } catch (_: ArithmeticException) { true } // Overflow cannot prove that the record is outside.
         }
         val rows = logs.map { row -> row.copy(time = logTime(row.source.wall, row.host)) }.filter { insideWindow(it.time, it.host) }
-        val touchRows = if (!captureMode.videoRequested) emptyList() else touches.map { row ->
-            row.copy(time = clock.mono(row.sample.monoNs, row.host, row.time.epoch))
-        }.filter { insideWindow(it.time, it.host) }
+        val touchRows = if (!captureMode.videoRequested) emptyList() else {
+            val touchTime = clock.monoMapper()
+            touches.map { row -> row.copy(time = touchTime(row.sample.monoNs, row.host, row.time.epoch)) }
+                .filter { insideWindow(it.time, it.host) }
+        }
         val all = if (captureMode.videoRequested) video.toList() else emptyList()
         val files = mutableSetOf<Path>()
         all.forEachIndexed { index, entry ->
