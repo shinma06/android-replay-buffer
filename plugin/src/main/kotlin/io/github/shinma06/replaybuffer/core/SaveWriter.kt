@@ -102,10 +102,20 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                 if (previous == null || !previous.playbackContinuousTo(frame)) groups += mutableListOf(frame)
                 else groups.last() += frame
             }
+            val latest = latestSequence(capture.clocks)
             fun visible(group: List<VideoEntry>, n: Int): Boolean {
                 val frame = group[n]
                 val sequence = frame.time.sequence
-                if (!capture.windowKnown || sequence == null || frame.time.uncertainty == Long.MAX_VALUE) return true
+                if (!capture.windowKnown) return true
+                if (sequence == null || frame.time.uncertainty == Long.MAX_VALUE) {
+                    // Hidden only when the next frame, which ends this one's display, provably starts before the window.
+                    val next = group.getOrNull(n + 1) ?: return true
+                    val nextAt = next.time.sequence
+                    val nextLatest = if (nextAt != null && next.time.uncertainty != Long.MAX_VALUE) try {
+                        Math.addExact(nextAt, next.time.uncertainty)
+                    } catch (_: ArithmeticException) { null } else latest(next.host)
+                    return nextLatest?.let { it < capture.start - capture.endUncertainty } != true
+                }
                 val duration = group.getOrNull(n + 1)?.let { Math.subtractExact(it.pts, frame.pts) }
                 val end = duration?.let { Math.addExact(sequence, Math.multiplyExact(it, 1000)) }
                 return sequence <= capture.end && (sequence >= capture.start || end != null && end > capture.start ||

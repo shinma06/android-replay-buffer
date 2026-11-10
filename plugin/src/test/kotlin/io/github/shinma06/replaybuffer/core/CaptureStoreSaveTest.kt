@@ -44,9 +44,9 @@ class CaptureStoreSaveTest {
                 assertTrue(selected.windowKnown)
                 assertEquals(4_000_000_000, selected.start)
                 assertEquals(6_000_000_000, selected.end)
-                assertEquals(if (gap) listOf(0L, 5_000_000L, 6_000_000L) else listOf(0L, 4_000_000L, 5_000_000L, 6_000_000L),
+                // The unknown-time frame at pts 0 arrived before the 2 second clock read, so it is outside the window.
+                assertEquals(if (gap) listOf(5_000_000L, 6_000_000L) else listOf(4_000_000L, 5_000_000L, 6_000_000L),
                     selected.video.map { it.pts })
-                assertNull(selected.video.first().time.sequence)
                 assertEquals(gap, selected.gaps.any { it.reason == "cut gap" })
                 val pinned = selected.video.toList()
                 store.prune(1)
@@ -969,6 +969,50 @@ class CaptureStoreSaveTest {
     private fun config(bytes: ByteArray): ByteArray = H264Utils.splitFrame(ByteBuffer.wrap(bytes))
         .filter { it.get(0).toInt() and 31 in setOf(7, 8) }
         .fold(byteArrayOf()) { result, nal -> result + byteArrayOf(0, 0, 0, 1) + ByteArray(nal.remaining()).also { nal.get(it) } }
+
+    @Test
+    fun recordsWithUnknownTimeBeforeAClockEpochBoundaryStayOutsideTheReplayWindow() {
+        // sparse: no frames from 6 to 19 seconds, so the unknown-time frame at 5 seconds is still displayed at the window start.
+        // keyAfterGap: the frame at 20 seconds starts a new GOP; the clock gap before it cannot prove the 5 second frame was still on screen.
+        for ((sparse, keyAfterGap) in listOf(false to false, true to false, true to true)) unknownTimeWindowFixture(sparse, keyAfterGap)
+    }
+
+    private fun unknownTimeWindowFixture(sparse: Boolean, keyAfterGap: Boolean) {
+        val root = Files.createTempDirectory("replay-epoch-window-")
+        val store = CaptureStore(root.resolve("ring"), minFree = 0)
+        val host = System.nanoTime() + 60_000_000_000
+        val bytes = sample()
+        fun at(second: Long) = host + (second - 1) * 1_000_000_000
+        fun record(second: Long) = DeviceLog(1_700_000_000_000_000_000 + second * 1_000_000_000, 12, 12, 10001, 0, 4,
+            "Fixture", "second $second", byteArrayOf(1))
+        try {
+            store.generation(1); store.status("device_log", StreamState.CAPTURING, null, 1)
+            store.session(VideoPacket.Session(32, 32), 1)
+            store.frame(VideoPacket.Frame(0, true, false, config(bytes)), 1)
+            for (second in 1L..40L) {
+                // No clock reads between 4 and 9 seconds: the next read starts a new clock epoch.
+                if (second !in 4L..9L) anchor(store.clock, second * 1_000_000_000, at(second))
+                if (!sparse || second !in 6L..19L)
+                    assertTrue(store.frame(VideoPacket.Frame(second * 1_000_000, false, second == 1L || second == 5L || keyAfterGap && second == 20L, bytes), 1, at(second)))
+                store.log(record(second), 1, at(second))
+            }
+            assertEquals(1, store.clock.currentEpoch())
+            val selected = store.capture(ReplaySettings(replaySeconds = 29), host = at(40))!!
+            assertTrue(selected.windowKnown)
+            assertEquals(10_000_000_000, selected.start) // sequence 0 is the first clock read at 1 second.
+            assertTrue(selected.logs.none { it.source.message in (1L..9L).map { "second $it" } }, selected.logs.map { it.source.message }.toString())
+            val output = SaveWriter().write(selected, root, { false }) { publication -> Files.move(publication.partial, publication.complete) }
+            val presented = Files.readAllLines(output.directory.resolve("frames.jsonl")).map { JsonParser.parseString(it).asJsonObject }
+                .filter { it["presented"].asBoolean }.map { it["source_pts_us"].asLong }
+            assertEquals((if (!sparse) (11L..40L).toList() else if (keyAfterGap) (20L..40L).toList() else listOf(5L) + (20L..40L)).map { it * 1_000_000 }, presented, "sparse=$sparse keyAfterGap=$keyAfterGap")
+            store.release(selected.id)
+            store.prune(29)
+            val next = store.capture(ReplaySettings(replaySeconds = 29), host = at(40))!!
+            assertTrue(next.video.none { it.pts in 1_000_000L..4_000_000L }, next.video.map { it.pts }.toString())
+            assertEquals(!keyAfterGap, next.video.any { it.pts == 5_000_000L }, next.video.map { it.pts }.toString())
+            store.release(next.id)
+        } finally { store.close(); root.toFile().deleteRecursively() }
+    }
 
     private fun anchor(clock: CaptureClock, elapsed: Long, host: Long) {
         clock.add("1", listOf(elapsed, elapsed, 1_700_000_000_000_000_000 + elapsed, elapsed), host, host)
