@@ -45,6 +45,8 @@ import io.github.shinma06.replaybuffer.core.saveScreenshot
 import io.github.shinma06.replaybuffer.settings.LOGCAT_DESTINATION_UNAVAILABLE
 import io.github.shinma06.replaybuffer.settings.ReplaySettings
 import io.github.shinma06.replaybuffer.settings.ReplaySettingsStore
+import io.github.shinma06.replaybuffer.settings.patchSettings
+import io.github.shinma06.replaybuffer.settings.settingsJson
 import io.github.shinma06.replaybuffer.settings.validateDestination
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -60,6 +62,7 @@ import java.awt.datatransfer.StringSelection
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.concurrent.CompletableFuture
+import java.util.concurrent.ExecutionException
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
 
@@ -72,6 +75,7 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
     private var requestRevision = 0L
     @Volatile private var disposed = false
     private var resolution: Job? = null
+    private var appliedSettings: Pair<Long, ReplayOperation>? = null
     private var cliServer: ReplayCliServer? = null
     private var screenshotJob: Job? = null
     private var screenshotRevision = -1L
@@ -160,7 +164,8 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
                     screenshotRevision = revision
                 }
                 publishChanged()
-                capture.applySettings(settings, next, revision).await()
+                val applied = capture.applySettings(settings, next, revision).await()
+                synchronized(this@ReplayProjectService) { if (revision == requestRevision) appliedSettings = revision to applied }
             } finally {
                 val current = synchronized(this@ReplayProjectService) {
                     if (disposed || project.isDisposed || revision != requestRevision) false else {
@@ -207,27 +212,30 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
         return checkNotNull(snapshot.device) { "録画対象の端末が未確定です。端末の接続状態を確認してください。" }.serial
     }
 
+    /** GUI and CLI share this path and its notifications; the result completes after the PNG is published or fails. */
     @Synchronized
-    internal fun screenshot() {
+    internal fun screenshot(): CompletableFuture<SavedScreenshot> {
+        val result = CompletableFuture<SavedScreenshot>()
+        fun failed(reason: String): CompletableFuture<SavedScreenshot> {
+            screenshotError(reason)
+            return result.apply { completeExceptionally(ScreenshotSaveFailure(reason)) }
+        }
         // Capture publishes under a different lock; validate and execute against this one snapshot.
         val snapshot = capture.view.snapshot
-        screenshotDisabledReason(snapshot)?.let { screenshotError(it); return }
+        screenshotDisabledReason(snapshot)?.let { return failed(it) }
         val selected = checkNotNull(environment)
         val settings = checkNotNull(screenshotSettings)
         val logcatLocation = if (settings.screenshotUsesLogcatDestination) {
             try { LogcatScreenshotSettings.saveLocation() } catch (cancelled: ProcessCanceledException) {
                 throw cancelled
             } catch (_: RuntimeException) {
-                screenshotError(LOGCAT_DESTINATION_UNAVAILABLE)
-                return
+                return failed(LOGCAT_DESTINATION_UNAVAILABLE)
             } catch (_: LinkageError) {
-                screenshotError(LOGCAT_DESTINATION_UNAVAILABLE)
-                return
+                return failed(LOGCAT_DESTINATION_UNAVAILABLE)
             }
         } else null
         val serial = runCatching { screenshotDeviceSerial(snapshot) }.getOrElse {
-            screenshotError(it.message ?: "録画対象の端末を確認できません。")
-            return
+            return failed(it.message ?: "録画対象の端末を確認できません。")
         }
         screenshotBusy = true
         val job = scope.launch(Dispatchers.IO, start = CoroutineStart.LAZY) {
@@ -245,14 +253,17 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
                     saveScreenshot(checkNotNull(selected.adb), destination, serial)
                 }
                 notifyScreenshot(saved)
+                result.complete(saved)
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (failure: Exception) {
                 screenshotError(failure.message ?: "端末接続または保存に失敗しました。", (failure as? ScreenshotSaveFailure)?.retained)
+                result.completeExceptionally(failure)
             }
         }
         screenshotJob = job
         job.invokeOnCompletion {
+            result.completeExceptionally(ScreenshotSaveFailure("スクリーンショットを取り消しました。"))
             synchronized(this) {
                 if (screenshotJob === job) { screenshotJob = null; screenshotBusy = false }
             }
@@ -260,6 +271,7 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
         }
         publishChanged()
         job.start()
+        return result
     }
 
     private fun notifyScreenshot(saved: SavedScreenshot) = onUi {
@@ -326,6 +338,40 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
         }
     }
 
+    /** Applies a partial settings object like the settings page Apply; validation failures throw IllegalArgumentException. */
+    private fun configure(text: String): CompletableFuture<ReplayOperation> {
+        val store = project.getService(ReplaySettingsStore::class.java)
+        val requested = patchSettings(store.settings(), text)
+        val checked = validateDestination(requested.destination)
+        val screenshotChecked = validateDestination(requested.manualScreenshotDestination)
+        requested.validationError(checked, screenshotChecked)?.let { throw IllegalArgumentException(it) }
+        return synchronized(this) {
+            if (!alive) return rejected("projectは終了しています。")
+            val current = store.settings()
+            val settings = patchSettings(current, text)
+            if (settings.destination != checked.destination || settings.manualScreenshotDestination != screenshotChecked.destination)
+                return rejected("設定が同時に変更されました。設定を確認して再実行してください。")
+            if ((settings.captureMode != current.captureMode || settings.videoQuality != current.videoQuality) &&
+                (store.enabled || capture.view.snapshot?.enabled == true || resolving || capture.view.pending > 0))
+                return rejected("取得をOFFにし、設定・操作の反映が終わってから取得モード・動画品質を変更してください。")
+            if (settings == current) return CompletableFuture.completedFuture(ReplayOperation(true))
+            store.apply(settings, checked, screenshotChecked)
+            project.messageBus.syncPublisher(ReplaySettingsStore.CHANGED).run()
+            val completed = CompletableFuture<ReplayOperation>()
+            val revision = requestRevision
+            val pending = resolution ?: return CompletableFuture.completedFuture(ReplayOperation(true))
+            pending.invokeOnCompletion { failure ->
+                synchronized(this) {
+                    val applied = appliedSettings?.takeIf { it.first == revision }?.second
+                    completed.complete(if (failure == null && alive && revision == requestRevision && applied?.accepted == true) ReplayOperation(true)
+                    else ReplayOperation(false, listOfNotNull("設定は保存しましたが反映できていません。GUIの設定・状態を確認してください。",
+                        applied?.reason).joinToString("\n")))
+                }
+            }
+            completed
+        }
+    }
+
     /** Runs only on the CLI worker, never EDT; GUI and CLI enter the same command queue. */
     private fun executeCli(request: CliRequest): CliResponse {
         val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(120)
@@ -335,7 +381,7 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
         try {
             if (!alive) return CliResponse(1, error = "projectは終了しています。")
             var warning = ""
-            if (request.configText != null) {
+            if (request.configText != null && request.command != CliCommand.CONFIGURE) {
                 val config = LegacyCliConfig.parse(request.configText, request.yaml, Path.of(request.workingDirectory))
                 val imported = await(importLegacy(config))
                 if (!imported.accepted) return CliResponse(1, error = imported.reason.orEmpty())
@@ -361,6 +407,24 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
                     "reason" to (view.message ?: view.initializationError ?: snapshot?.saveDisabledReason),
                 )))
             }
+            if (request.command == CliCommand.SETTINGS || request.command == CliCommand.CONFIGURE) {
+                val store = project.getService(ReplaySettingsStore::class.java)
+                if (request.command == CliCommand.CONFIGURE) {
+                    val configured = await(configure(checkNotNull(request.configText)))
+                    if (!configured.accepted) return CliResponse(1, error = configured.reason.orEmpty())
+                }
+                return CliResponse(0, settingsJson(store.settings(), store.enabled))
+            }
+            if (request.command == CliCommand.SCREENSHOT) {
+                val saved = try {
+                    screenshot().get((deadline - System.nanoTime()).coerceAtLeast(1), TimeUnit.NANOSECONDS)
+                } catch (failure: ExecutionException) {
+                    val cause = failure.cause
+                    return CliResponse(1, error = listOfNotNull(cause?.message ?: "スクリーンショットを保存できません。",
+                        (cause as? ScreenshotSaveFailure)?.retained?.let { "保全した出力: $it" }).joinToString("\n"))
+                }
+                return CliResponse(0, saved.file.toString())
+            }
             if (request.command == CliCommand.SAVE && capture.view.snapshot?.enabled != true) {
                 val enabled = await(setEnabled(true))
                 if (!enabled.accepted) return CliResponse(1, error = enabled.reason.orEmpty())
@@ -369,7 +433,7 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
                 CliCommand.SAVE -> save()
                 CliCommand.DAEMON -> setEnabled(true)
                 CliCommand.STOP -> setEnabled(false)
-                CliCommand.STATUS -> error("status already handled")
+                CliCommand.STATUS, CliCommand.SCREENSHOT, CliCommand.SETTINGS, CliCommand.CONFIGURE -> error("already handled")
             })
             if (!operation.accepted) return CliResponse(1, error = listOf(warning, operation.reason.orEmpty()).filter(String::isNotEmpty).joinToString("\n"))
             if (request.command != CliCommand.SAVE) return CliResponse(0,

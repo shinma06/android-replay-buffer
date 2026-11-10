@@ -24,14 +24,16 @@ class ReplayCliTest {
     @TempDir lateinit var temporary: Path
 
     @Test fun `legacy commands and quoted path arguments retain a single target`() {
-        for (command in listOf("save", "status", "stop", "daemon")) {
-            assertEquals(command.uppercase(), parseCliArguments(listOf("--project", "a project", command)).command.name)
+        for (command in listOf("save", "status", "stop", "daemon", "screenshot")) {
+            assertEquals(command.uppercase(), parseCliArguments(listOf("--project", "a project", command)).command?.name)
         }
         assertEquals(Path.of("old config.json"), parseCliArguments(listOf("--config=old config.json", "daemon")).config)
+        assertEquals(CliArguments(null, Path.of("a project"), null), parseCliArguments(listOf("--project=a project", "mcp")))
         assertEquals(Path.of("old config.json"), parseCliArguments(listOf("daemon", "--foreground", "--config", "old config.json")).config)
         for (args in listOf(emptyList(), listOf("start"), listOf("save", "stop"), listOf("--project"),
             listOf("status", "--config", "x"), listOf("save", "--foreground"), listOf("daemon", "--daemon"),
-            listOf("--project", "x", "--project", "y", "save"), listOf("--project", "", "stop"))) {
+            listOf("--project", "x", "--project", "y", "save"), listOf("--project", "", "stop"), listOf("mcp", "status"),
+            listOf("status", "mcp"), listOf("mcp", "--config", "x"), listOf("mcp", "--foreground"), listOf("screenshot", "--config", "x"))) {
             assertFailsWith<Exception> { parseCliArguments(args) }
         }
     }
@@ -279,6 +281,11 @@ class ReplayCliTest {
         assertEquals(0, runCli(temporary.resolve("missing"), listOf("--help")).first)
         assertEquals(2, runCli(temporary.resolve("missing"), listOf("start")).first)
         assertEquals(1, runCli(temporary.resolve("missing"), listOf("status")).first)
+        val error = ByteArrayOutputStream()
+        val code = ReplayCli.run(listOf("status"), PrintStream(ByteArrayOutputStream()), PrintStream(error, true, Charsets.UTF_8),
+            temporary.resolve("missing")) { error("配布物のCLIを利用してください。") }
+        assertEquals(1, code)
+        assertEquals("配布物のCLIを利用してください。\n", error.toString(Charsets.UTF_8))
     }
 
     private fun runCli(registry: Path, args: List<String>, build: String = "build"): Triple<Int, String, String> {
