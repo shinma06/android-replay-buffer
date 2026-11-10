@@ -9,9 +9,19 @@ internal data class TouchSample(
 
 internal data class TouchAxes(val maxX: Int, val maxY: Int)
 
+/** A retained sample; [time] is mapped from the source time, never from [host] (host only supports the mapping). */
+internal data class TouchEntry(
+    val sample: TouchSample, val generation: Long, val time: MappedTime, val host: Long, val width: Int, val height: Int,
+)
+
+/** Window-time interval (sequence ns) where touch input was not being read; null means outside the known range. */
+internal data class TouchGap(val from: Long?, val to: Long?, val reason: String)
+
+internal const val MAX_TOUCH_SAMPLES = 200_000
+
 private val deviceLine = Regex("""add device \d+: (/dev/input/event\d+)""")
 private val axisLine = Regex("""ABS_MT_POSITION_([XY])\s*:\s*value -?\d+, min (-?\d+), max (-?\d+)""")
-private val eventLine = Regex("""\[\s*(\d+)\.(\d{6})\]\s+(/dev/input/event\d+):\s+(EV_\w+)\s+(\w+)\s+([0-9a-fA-F]{8})""")
+private val eventLine = Regex("""\[\s*(\d+)\.(\d{6})\]\s+(?:(/dev/input/event\d+):\s+)?(EV_\w+)\s+(\w+)\s+([0-9a-fA-F]{8})""")
 
 /** Multi-touch devices from `getevent -lp`; devices without both MT position axes are not touchscreens. */
 internal fun parseTouchDevices(output: String): Map<String, TouchAxes> {
@@ -53,7 +63,8 @@ internal class TouchParser(private val axes: Map<String, TouchAxes>, private val
 
     fun feed(line: String): List<TouchSample> {
         val m = eventLine.find(line) ?: return emptyList()
-        val device = m.groupValues[3]
+        // getevent omits the device prefix when it reads a single device.
+        val device = m.groupValues[3].ifEmpty { axes.keys.singleOrNull() ?: return emptyList() }
         val axis = axes[device] ?: return emptyList()
         val monoNs = Math.addExact(Math.multiplyExact(m.groupValues[1].toLong(), 1_000_000_000L), m.groupValues[2].toLong() * 1000)
         val value = m.groupValues[6].toLong(16).toInt()

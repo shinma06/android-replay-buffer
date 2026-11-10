@@ -73,7 +73,7 @@ JSON又は拡張子`.yaml` / `.yml`の旧簡易YAML（平坦な`key: value`）�
 
 ## 保存形式と復旧
 
-旧原型の`replay.mp4 / logcat.txt / timeline.json`から、GUIと同じ`video-001.mp4 / logcat-device.jsonl / logcat-app.jsonl / frames.jsonl / session.json / README.txt`へ移行します。動画なしの理由、元ログ、frame/PTS・窓・時計・欠落は既存の[保存契約](plugin-design.md)と[同期契約](design/timeline.md)に従います。ログ専用は動画を生成しません。旧形式を期待する利用者側ツールは新形式へ対応が必要です。既存の保存物を変換・上書きする処理はありません。
+旧原型の`replay.mp4 / logcat.txt / timeline.json`から、GUIと同じ`video-001.mp4 / logcat-device.jsonl / logcat-app.jsonl / frames.jsonl / session.json / README.txt`へ移行します。動画＋ログの保存には、動画と同期したタップ座標の`touches.jsonl`（session.jsonの`touch_file / touches`）も加わります。動画なしの理由、元ログ、frame/PTS・窓・時計・欠落は既存の[保存契約](plugin-design.md)と[同期契約](design/timeline.md)に従います。ログ専用は動画を生成しません。旧形式を期待する利用者側ツールは新形式へ対応が必要です。既存の保存物を変換・上書きする処理はありません。
 
 原型のsourceはGitの固定commit `e6fb021b144d4f0f6a1f7916e92449610b3ff80c`から復元できます。取り出し先を新しい別フォルダとし、現在のcheckoutや保存物に重ねません。
 

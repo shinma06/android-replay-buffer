@@ -1,5 +1,6 @@
 package io.github.shinma06.replaybuffer.core
 
+import java.io.ByteArrayOutputStream
 import java.io.DataInputStream
 import java.io.InputStream
 import java.net.InetAddress
@@ -21,7 +22,7 @@ import kotlin.random.Random
  * Close blocks off EDT. Even a normal close can leave remote cleanup pending; a thrown close leaves
  * host termination unconfirmed, so the core retains the exact cleanup identity before recovery.
  */
-internal class DeviceCapture(
+internal class DeviceCapture @JvmOverloads constructor(
     private val adbPath: Path,
     serial: String,
     private val resources: CaptureResources,
@@ -29,10 +30,14 @@ internal class DeviceCapture(
     private val generation: Long,
     application: ApplicationTarget,
     private val videoQuality: VideoQuality = VideoQuality.STANDARD,
+    private val showTouches: Boolean = false,
 ) : AutoCloseable {
     private val serial = serialArgument(serial)
     private val adb = OwnedAdb(adbPath)
     private val stopping = AtomicBoolean()
+    private var touchesApplied = false
+    /** Device show_touches value to restore; empty means the key was unset. */
+    @Volatile private var touchRestore: String? = null
     private val timer = captureWatchdog()
     private val workers = mutableListOf<Thread>()
     private val sockets = ConcurrentHashMap.newKeySet<Socket>()
@@ -54,6 +59,7 @@ internal class DeviceCapture(
     fun start() {
         launch("clock", ::clock)
         if (store.captureMode.videoRequested) launch("video", ::video)
+        if (store.captureMode.videoRequested) launch("touch", ::touches)
         launch("device_log-main") {
             if (!partitionLogs.isDone) {
                 val partition = probeLogLid()
@@ -113,7 +119,8 @@ internal class DeviceCapture(
                 runCatching(operation).onFailure {
                     if (!stopping.get() && kind == "clock") { store.clock.boundary(); store.clockStatus(false, generation) }
                     if (!stopping.get() && kind != "clock") status(kind, StreamState.RECOVERING,
-                        if (kind == "video") "動画取得が中断しました（PTS/config/容量/接続を確認してください）" else "全体ログ取得が中断しました（header/接続を確認してください）")
+                        if (kind == "video") "動画取得が中断しました（PTS/config/容量/接続を確認してください）"
+                        else if (kind == "touch") "タップ位置の取得が中断しました（getevent/接続を確認してください）" else "全体ログ取得が中断しました（header/接続を確認してください）")
                 }
                 delay = recovery.next(System.nanoTime() - attempt >= 10_000_000_000)
             }
@@ -171,6 +178,10 @@ internal class DeviceCapture(
 
     @Synchronized
     private fun status(kind: String, state: StreamState, reason: String?) {
+        if (kind == "touch") {
+            store.touchStatus(state, reason, generation)
+            return
+        }
         if (kind != "device_log-main" && kind != "device_log-all") {
             store.status(kind, state, reason, generation)
             return
@@ -264,6 +275,63 @@ internal class DeviceCapture(
         } finally { adb.stop(process) }
     }
 
+    private fun touches() {
+        runCatching(::applyShowTouches)
+        val axes = parseTouchDevices(adb.command("-s", serial, "shell", "getevent", "-lp"))
+        if (axes.isEmpty()) {
+            status("touch", StreamState.UNAVAILABLE, "タッチパネルの入力deviceが見つかりません")
+            while (pause(1000)) { /* No multi-touch device: keep video capture unaffected. */ }
+            return
+        }
+        val display = checkNotNull(parseDisplaySize(adb.command("-s", serial, "shell", "wm", "size"))) { "画面サイズを取得できません" }
+        val parser = TouchParser(axes, display.first, display.second)
+        check(!stopping.get())
+        val process = adb.start("-s", serial, "shell", "getevent", "-lt", *listOfNotNull(axes.keys.singleOrNull()).toTypedArray())
+        try {
+            status("touch", StreamState.CAPTURING, null)
+            val input = process.inputStream.buffered()
+            while (!stopping.get()) {
+                val line = readTouchLine(input) ?: error("getevent出力が終了しました")
+                val received = System.nanoTime()
+                parser.feed(line).forEach { store.touch(it, display.first, display.second, generation, received) }
+            }
+        } finally { adb.stop(process) }
+    }
+
+    /** Turns show_touches on once per capture, remembering the previous value before changing it. */
+    private fun applyShowTouches() {
+        if (!showTouches || touchesApplied) return
+        val original = adb.command("-s", serial, "shell", "settings", "get", "system", "show_touches").trim()
+        if (original != "1") {
+            touchRestore = if (Regex("-?[0-9]{1,9}").matches(original)) original else ""
+            check(!stopping.get())
+            adb.command("-s", serial, "shell", "settings", "put", "system", "show_touches", "1")
+        }
+        touchesApplied = true
+    }
+
+    /** Best effort: a disconnected device keeps the value until the user changes it. */
+    private fun restoreTouches() {
+        val value = touchRestore ?: return
+        runCatching {
+            OwnedAdb(adbPath).use { owned ->
+                if (value.isEmpty()) owned.command("-s", serial, "shell", "settings", "delete", "system", "show_touches")
+                else owned.command("-s", serial, "shell", "settings", "put", "system", "show_touches", value)
+            }
+        }.onSuccess { touchRestore = null }
+    }
+
+    private fun readTouchLine(input: InputStream): String? {
+        val bytes = ByteArrayOutputStream()
+        while (true) {
+            val next = input.read()
+            if (next < 0) return if (bytes.size() == 0) null else bytes.toString(Charsets.US_ASCII)
+            if (next == '\n'.code) return bytes.toString(Charsets.US_ASCII).trimEnd('\r')
+            check(bytes.size() < 4096) { "getevent出力の1行が長すぎます" }
+            bytes.write(next)
+        }
+    }
+
     private fun pause(millis: Long): Boolean = try { Thread.sleep(millis); !stopping.get() } catch (_: InterruptedException) { false }
 
     override fun close() {
@@ -281,6 +349,7 @@ internal class DeviceCapture(
                 "取得watchdogの終了を確認できません"
             }
         }
+        restoreTouches()
         clients.exceptionOrNull()?.let { failure ->
             readers.exceptionOrNull()?.let(failure::addSuppressed)
             throw failure

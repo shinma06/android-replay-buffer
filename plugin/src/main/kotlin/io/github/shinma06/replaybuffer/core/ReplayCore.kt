@@ -122,8 +122,9 @@ class ReplayCore internal constructor(
 
     fun applySettings(value: ReplaySettings): CompletableFuture<ReplayOperation> = operation {
         val applied = value.validate()
-        if (enabled && (applied.captureMode != settings.captureMode || applied.videoQuality != settings.videoQuality))
-            return@operation ReplayOperation(false, "取得モード・動画品質は取得をOFFにしてから変更してください")
+        if (enabled && (applied.captureMode != settings.captureMode || applied.videoQuality != settings.videoQuality ||
+                applied.showTouches != settings.showTouches))
+            return@operation ReplayOperation(false, "取得モード・動画品質・タップ位置表示は取得をOFFにしてから変更してください")
         val changedAdb = applied.adbPath != settings.adbPath
         val changedApp = applied.application != settings.application
         settings = applied
@@ -304,7 +305,8 @@ class ReplayCore internal constructor(
             data.generation(generation)
             configureAuto()
             backendStarted = System.nanoTime()
-            backend = DeviceCapture(settings.adbPath!!, device!!.serial, resources!!, data, generation, settings.application, settings.videoQuality).also { it.start() }
+            backend = DeviceCapture(settings.adbPath!!, device!!.serial, resources!!, data, generation, settings.application, settings.videoQuality,
+                settings.showTouches).also { it.start() }
         }
         val data = store!!
         if (data.clock.snapshot().lastOrNull()?.received?.let { it >= backendStarted } == true) data.resume()

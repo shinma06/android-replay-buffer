@@ -6,6 +6,18 @@
 
 冒頭の固定リンクは設計採用時の出典です。改訂後の時刻・保存窓・出力形式は[現行の同期設計](design/timeline.md)、UIは[現行のIDE UI設計](design/ide-ui.md)、実装と受入の状態は[Case台帳](verification/README.md)を照合します。末尾の初期Case表や当時の未実施記述を、現在の一律pending・実行済みPASSへ読み替えません。
 
+## タップ位置の記録と表示（Trail #22）
+
+動画＋ログの取得中は、タップ座標と時刻を自動で記録します（専用の設定はありません）。ログ専用では記録せず、`touches.jsonl`も作りません。端末へは`adb shell getevent -lp`で`ABS_MT_POSITION_X/Y`を持つmulti-touch入力deviceと軸範囲を、`wm size`で画面px（Override sizeを優先）を取得し、`getevent -lt`の各SYN_REPORTでslotごとの`down / move / up`を作ります。座標は軸範囲から画面pxへ換算した、画面の自然な向きの値です（回転は適用しません）。protocol Aやmulti-touch軸のない入力deviceは対象外で、その場合は動画取得を止めずに状態を`UNAVAILABLE`として保存します。
+
+時刻はkernelの入力時刻（`getevent -lt`の端末CLOCK_MONOTONIC）を正本とし、動画PTSと同じ`CaptureClock`の時計対応でsequenceへ写します。host受信時刻で置き換えません。保存窓・固定・pruneの規則は両ログと同じで、保存対象の固定後に新しいclock sampleで再解釈しません。保持件数の上限（200,000件）を超えた古いsampleは`dropped_count`へ数えます。
+
+`touches.jsonl`は1行1sampleで、`clock_epoch / generation / device_mono_ns / elapsed_ns / window_ns / uncertainty_ns / movie_us / action / pointer / x / y / display_width / display_height / input_device`を持ちます。`movie_us`は保存MP4で、その時刻に表示中のframe（`frames.jsonl`の`movie_pts_us〜movie_end_us`）上の位置です。表示区間外、時計対応が不確定、clock gapに重なる行はnullで、同期済みと扱いません。`session.json`は`touch_file`と`touches`（`state / reason / count / in_movie_count / dropped_count / show_touches / time_source / coordinate_space / gaps`）を持ちます。schema番号は3のままの追加fieldです。
+
+動画上の点表示は設定「取得中は端末画面にタップ位置を表示する」（既定OFF）で切り替えます。ONでは取得開始時に端末の`settings get system show_touches`を記録し、`1`でなければ取得中だけ`1`にして、取得終了（OFF・切断による世代終了・project close）時に元の値へ戻します（未設定だった場合は削除）。取得OFFかつ反映完了後だけ変更できます。端末切断中やIDE異常終了で戻せなかった場合、端末側の設定が残ることがあります。点は端末の画面描画として動画に焼き込まれ、`touches.jsonl`の記録とは独立です。
+
+エミュレータでの確認には実際のevdev入力が必要です。`adb shell input tap`や`adb emu finger`はevdevを通らないため記録されません。VMではstandalone emulator windowへの`xdotool`のclickで実イベントを作れます。
+
 ## 動画品質の選択（#282）
 
 設定画面の動画品質は、標準（長辺最大1920px・最大30fps・指定8Mbps、従来の既定値）と軽量（長辺最大1024px・最大15fps・指定2Mbps）です。未指定の旧XMLは標準で読み、既存の保持時間・保存先・アプリ・スクショ等の値と旧CLI importを維持します。品質は取得OFFかつ設定/操作反映後に変更し、Apply/OKだけで保存します。LOG_ONLYでは選択欄を無効にし、値を保持したまま動画を開始しません。

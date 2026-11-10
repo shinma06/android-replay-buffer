@@ -82,6 +82,10 @@ internal class CaptureClock {
     @Synchronized
     fun video(pts: Long, host: Long, hint: Int? = null): MappedTime = map(Math.multiplyExact(pts, 1000), host, false, hint ?: epoch)
 
+    /** Device CLOCK_MONOTONIC source time in nanoseconds (for example evdev input times), mapped like video PTS. */
+    @Synchronized
+    fun mono(ns: Long, host: Long, hint: Int? = null): MappedTime = map(ns, host, false, hint ?: epoch)
+
     @Synchronized
     fun log(wall: Long, host: Long): MappedTime = map(wall, host, true, null)
 
