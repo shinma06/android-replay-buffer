@@ -13,12 +13,13 @@ class McpJsonTest {
         assertEquals("日本語 \"q\" \\ \n\t\u0001", parsed["s"])
         assertEquals(McpJson.write(parsed), McpJson.write(McpJson.parse(McpJson.write(parsed))))
         assertEquals("""{"x":"\u2028","n":7}""".replace("\u2028", "\\u2028"), McpJson.write(linkedMapOf("x" to "\u2028", "n" to 7)))
+        assertEquals("[1E+1000]", McpJson.write(McpJson.parse("[1e1000]")))
         assertEquals("\uD83D\uDE00", McpJson.parse("\"\\ud83d\\ude00\""))
     }
 
     @Test fun `rejects malformed duplicate trailing and deeply nested input`() {
         for (text in listOf("", "{", "{\"a\":1,}", "[1 2]", "{\"a\":1,\"a\":2}", "01", "\"\u0001\"", "{} x", "tru", "\"\\x\"",
-            "[".repeat(65) + "]".repeat(65))) {
+            "[".repeat(65) + "]".repeat(65), "1e1000000000", "1e-1001")) {
             assertFailsWith<IllegalArgumentException>(text) { McpJson.parse(text) }
         }
     }

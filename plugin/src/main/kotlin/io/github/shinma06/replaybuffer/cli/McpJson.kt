@@ -9,6 +9,7 @@ import java.math.BigDecimal
  */
 internal object McpJson {
     private const val MAX_DEPTH = 64
+    private const val MAX_SCALE = 1000
 
     fun parse(text: String): Any? = Parser(text).run {
         val value = value(0)
@@ -23,9 +24,9 @@ internal object McpJson {
         when (value) {
             null -> out.append("null")
             is Boolean -> out.append(value)
-            is BigDecimal -> out.append(value.toPlainString())
+            is BigDecimal -> out.append(value.toString())
             is Int, is Long -> out.append(value)
-            is Number -> out.append(BigDecimal(value.toString()).toPlainString())
+            is Number -> out.append(BigDecimal(value.toString()).toString())
             is String -> string(out, value)
             is Map<*, *> -> {
                 out.append('{')
@@ -133,7 +134,9 @@ internal object McpJson {
         fun number(): BigDecimal {
             val match = requireNotNull(NUMBER.matchAt(text, index)) { "JSONの形式が不正です。" }
             index = match.range.last + 1
-            return BigDecimal(match.value)
+            val number = BigDecimal(match.value)
+            require(number.scale() in -MAX_SCALE..MAX_SCALE) { "JSONの数値の桁が大きすぎます。" }
+            return number
         }
 
         fun string(): String {
