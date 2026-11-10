@@ -157,6 +157,21 @@ internal class CaptureStore(
         }
     }
 
+    /** Input the kernel dropped (SYN_DROPPED) between two device monotonic times; an unmapped start stays unknown. */
+    @Synchronized
+    fun touchLost(fromMono: Long, toMono: Long, owner: Long, host: Long = System.nanoTime()) {
+        if (closed || owner != generation || !captureMode.videoRequested) return
+        fun bound(mono: Long, sign: Int): Long? = clock.mono(mono, host).let { time ->
+            val sequence = time.sequence ?: return@let null
+            if (time.uncertainty == Long.MAX_VALUE) null
+            else runCatching { Math.addExact(sequence, sign * time.uncertainty) }.getOrNull()
+        }
+        // The drop ends before it is read, so the receive time bounds an unmapped end from above.
+        touchGaps += TouchGap(bound(fromMono, -1), bound(toMono, 1) ?: clock.now(host),
+            "端末の入力bufferがあふれ、タップ位置の一部が失われました（SYN_DROPPED）")
+        while (touchGaps.size > 4096) touchGaps.removeFirst()
+    }
+
     @Synchronized
     fun touchStatus(state: StreamState, reason: String?, owner: Long) {
         if (closed || owner != generation || !captureMode.videoRequested) return

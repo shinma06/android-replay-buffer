@@ -111,6 +111,37 @@ class TouchCaptureTest {
         }
     }
 
+    @Test
+    fun inputDroppedByTheKernelIsSavedAsAGapAtTheSourceTime() {
+        CaptureStore(root.resolve("ring"), minFree = 0).use { store ->
+            val host = System.nanoTime() + 1_000_000_000
+            store.generation(1)
+            sample(store, host, 1)
+            store.status("device_log", StreamState.CAPTURING, null, 1)
+            store.app("com.fixture.app", 10001, setOf(12), 1, true)
+            store.touchStatus(StreamState.CAPTURING, null, 1)
+            sample(store, host, 2)
+            store.touchLost(2_000_000_000, 2_050_000_000, 1, host + 1_700_000_000)
+            // A start before every clock sample has no supported mapping and stays unknown.
+            store.touchLost(-10_000_000_000, 2_060_000_000, 1, host + 1_700_000_000)
+            store.touchLost(2_070_000_000, 2_080_000_000, 2, host + 1_700_000_000)
+            store.log(DeviceLog(1_700_000_001_800_000_000, 12, 12, 10001, 0, 4, "Fixture", "row", byteArrayOf(1)), 1, host + 1_000_000_000)
+            val pinned = assertNotNull(store.capture(ReplaySettings(), null, host + 1_800_000_000))
+            val lost = pinned.touchGaps.filter { it.reason.contains("SYN_DROPPED") }
+            assertEquals(2, lost.size)
+            val from = assertNotNull(store.clock.mono(2_000_000_000, host + 1_700_000_000).sequence)
+            val to = assertNotNull(store.clock.mono(2_050_000_000, host + 1_700_000_000).sequence)
+            assertTrue(lost[0].from!! <= from && lost[0].to!! >= to && lost[0].to!! - lost[0].from!! < 1_000_000_000)
+            assertNull(lost[1].from)
+            assertNotNull(lost[1].to)
+            val output = SaveWriter().write(pinned, root, { false }) { Files.move(it.partial, it.complete) }
+            val gaps = JsonParser.parseString(Files.readString(output.directory.resolve("session.json"))).asJsonObject["touches"]
+                .asJsonObject["gaps"].asJsonArray
+            assertTrue(gaps.any { it.toString().contains("SYN_DROPPED") })
+            store.release(pinned.id)
+        }
+    }
+
     private fun sample(store: CaptureStore, host: Long, second: Long) {
         val elapsed = second * 1_000_000_000
         val received = host + (second - 1) * 1_000_000_000

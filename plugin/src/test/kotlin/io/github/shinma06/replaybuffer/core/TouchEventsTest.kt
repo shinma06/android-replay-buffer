@@ -81,4 +81,65 @@ class TouchEventsTest {
             TouchSample(10_016_000_000, "/dev/input/event2", 1, TouchAction.DOWN, 1079, 2399),
         ), lines.flatMap(parser::feed))
     }
+
+    @Test
+    fun `SYN_DROPPED ends active pointers and ignores events through the next report`() {
+        val drops = mutableListOf<Triple<String, Long, Long>>()
+        val parser = TouchParser(parseTouchDevices(devices), 1080, 2400) { device, from, to -> drops += Triple(device, from, to) }
+        val lines = """
+            [     20.000000] /dev/input/event2: EV_ABS       ABS_MT_SLOT          00000000
+            [     20.000000] /dev/input/event2: EV_ABS       ABS_MT_TRACKING_ID   00000001
+            [     20.000000] /dev/input/event2: EV_ABS       ABS_MT_POSITION_X    00000000
+            [     20.000000] /dev/input/event2: EV_ABS       ABS_MT_POSITION_Y    00000000
+            [     20.000000] /dev/input/event2: EV_SYN       SYN_REPORT           00000000
+            [     20.100000] /dev/input/event2: EV_SYN       SYN_DROPPED          00000000
+            [     20.110000] /dev/input/event2: EV_ABS       ABS_MT_TRACKING_ID   00000002
+            [     20.110000] /dev/input/event2: EV_ABS       ABS_MT_POSITION_X    00007fff
+            [     20.110000] /dev/input/event2: EV_ABS       ABS_MT_POSITION_Y    00007fff
+            [     20.120000] /dev/input/event2: EV_SYN       SYN_REPORT           00000000
+            [     20.130000] /dev/input/event2: EV_ABS       ABS_MT_TRACKING_ID   00000003
+            [     20.130000] /dev/input/event2: EV_ABS       ABS_MT_POSITION_X    00007fff
+            [     20.130000] /dev/input/event2: EV_ABS       ABS_MT_POSITION_Y    00000000
+            [     20.130000] /dev/input/event2: EV_SYN       SYN_REPORT           00000000
+        """.trimIndent().lines()
+        assertEquals(listOf(
+            TouchSample(20_000_000_000, "/dev/input/event2", 0, TouchAction.DOWN, 0, 0),
+            TouchSample(20_100_000_000, "/dev/input/event2", 0, TouchAction.UP, 0, 0),
+            TouchSample(20_130_000_000, "/dev/input/event2", 0, TouchAction.DOWN, 1079, 0),
+        ), lines.flatMap(parser::feed))
+        assertEquals(listOf(Triple("/dev/input/event2", 20_100_000_000L, 20_120_000_000L)), drops)
+    }
+
+    @Test
+    fun `a resize scales later reports with the new display size`() {
+        val parser = TouchParser(parseTouchDevices(devices), 1080, 2400)
+        val down = """
+            [     30.000000] EV_ABS       ABS_MT_TRACKING_ID   00000001
+            [     30.000000] EV_ABS       ABS_MT_POSITION_X    00007fff
+            [     30.000000] EV_ABS       ABS_MT_POSITION_Y    00007fff
+            [     30.000000] EV_SYN       SYN_REPORT           00000000
+        """.trimIndent().lines()
+        val move = """
+            [     30.016000] EV_ABS       ABS_MT_POSITION_Y    00000000
+            [     30.016000] EV_SYN       SYN_REPORT           00000000
+        """.trimIndent().lines()
+        assertEquals(listOf(TouchSample(30_000_000_000, "/dev/input/event2", 0, TouchAction.DOWN, 1079, 2399)), down.flatMap(parser::feed))
+        parser.resize(720, 1600)
+        // X did not change after the resize but is still rescaled from its raw value.
+        assertEquals(listOf(TouchSample(30_016_000_000, "/dev/input/event2", 0, TouchAction.MOVE, 719, 0)), move.flatMap(parser::feed))
+        assertEquals(720 to 1600, parser.width to parser.height)
+    }
+
+    @Test
+    fun `display size is re-read at most once per interval and a failed read keeps the last size`() {
+        val answers = ArrayDeque<Pair<Int, Int>?>(listOf(720 to 1600, null))
+        var reads = 0
+        val watch = DisplaySizeWatch(1080 to 2400, { reads++; answers.removeFirst() }, intervalNs = 1_000)
+        assertEquals(1080 to 2400, watch.current(0))
+        assertEquals(1080 to 2400, watch.current(999))
+        assertEquals(0, reads)
+        assertEquals(720 to 1600, watch.current(1_000))
+        assertEquals(720 to 1600, watch.current(2_000))
+        assertEquals(2, reads)
+    }
 }

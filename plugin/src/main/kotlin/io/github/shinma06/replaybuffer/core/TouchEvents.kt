@@ -84,13 +84,51 @@ internal fun parseDisplaySize(output: String): Pair<Int, Int>? {
 }
 
 /**
+ * Re-reads the display size when input arrives at least [intervalNs] after the last read, so a `wm size` override or an
+ * emulator resize during capture changes the scale of later samples. A failed read keeps the previous size.
+ */
+internal class DisplaySizeWatch(
+    initial: Pair<Int, Int>, private val read: () -> Pair<Int, Int>?, private val intervalNs: Long = 1_000_000_000,
+) {
+    var size: Pair<Int, Int> = initial
+        private set
+    private var checked: Long? = null
+
+    fun current(host: Long): Pair<Int, Int> {
+        val last = checked
+        if (last == null) checked = host
+        else if (host - last >= intervalNs) {
+            checked = host
+            runCatching(read).getOrNull()?.takeIf { it.first > 0 && it.second > 0 }?.let { size = it }
+        }
+        return size
+    }
+}
+
+/**
  * Folds `getevent -lt` lines (protocol B slots) into pointer samples emitted at each SYN_REPORT.
  * Rotation is not applied: coordinates are in the panel's natural orientation, as the kernel reports them.
+ * Raw axis values are kept and scaled at each report, so [resize] applies to every later sample as a whole.
+ * After SYN_DROPPED the device's pointers end with `up` at the drop time, its events are ignored through the next
+ * SYN_REPORT, and [onDrop] receives that interval (device monotonic ns) as lost input.
  */
-internal class TouchParser(private val axes: Map<String, TouchAxes>, private val width: Int, private val height: Int) {
+internal class TouchParser(
+    private val axes: Map<String, TouchAxes>, width: Int, height: Int,
+    private val onDrop: (device: String, fromNs: Long, toNs: Long) -> Unit = { _, _, _ -> },
+) {
     private class Slot(var tracking: Int = -1, var x: Int? = null, var y: Int? = null, var down: Boolean = false, var dirty: Boolean = false)
     private val slots = mutableMapOf<String, MutableMap<Int, Slot>>()
     private val current = mutableMapOf<String, Int>()
+    private val dropped = mutableMapOf<String, Long>()
+    var width = width
+        private set
+    var height = height
+        private set
+
+    fun resize(width: Int, height: Int) {
+        this.width = width
+        this.height = height
+    }
 
     fun feed(line: String): List<TouchSample> {
         val m = eventLine.find(line) ?: return emptyList()
@@ -98,20 +136,29 @@ internal class TouchParser(private val axes: Map<String, TouchAxes>, private val
         val device = m.groupValues[3].ifEmpty { axes.keys.singleOrNull() ?: return emptyList() }
         val axis = axes[device] ?: return emptyList()
         val monoNs = Math.addExact(Math.multiplyExact(m.groupValues[1].toLong(), 1_000_000_000L), m.groupValues[2].toLong() * 1000)
+        val code = m.groupValues[5]
+        dropped[device]?.let { from ->
+            if (code == "SYN_REPORT") {
+                dropped.remove(device)
+                onDrop(device, from, monoNs)
+            }
+            return emptyList()
+        }
         val value = m.groupValues[6].toLong(16).toInt()
         val deviceSlots = slots.getOrPut(device) { mutableMapOf() }
         val slot = { deviceSlots.getOrPut(current[device] ?: 0) { Slot() } }
-        when (m.groupValues[5]) {
+        when (code) {
             "ABS_MT_SLOT" -> current[device] = value
             "ABS_MT_TRACKING_ID" -> slot().apply { tracking = value; dirty = true }
-            "ABS_MT_POSITION_X" -> slot().apply { x = scale(value, axis.maxX, width); dirty = true }
-            "ABS_MT_POSITION_Y" -> slot().apply { y = scale(value, axis.maxY, height); dirty = true }
-            "SYN_REPORT" -> return report(monoNs, device, deviceSlots)
+            "ABS_MT_POSITION_X" -> slot().apply { x = value; dirty = true }
+            "ABS_MT_POSITION_Y" -> slot().apply { y = value; dirty = true }
+            "SYN_REPORT" -> return report(monoNs, device, axis, deviceSlots)
+            "SYN_DROPPED" -> return drop(monoNs, device, axis, deviceSlots)
         }
         return emptyList()
     }
 
-    private fun report(monoNs: Long, device: String, deviceSlots: Map<Int, Slot>): List<TouchSample> =
+    private fun report(monoNs: Long, device: String, axis: TouchAxes, deviceSlots: Map<Int, Slot>): List<TouchSample> =
         deviceSlots.toSortedMap().mapNotNull { (index, s) ->
             if (!s.dirty) return@mapNotNull null
             s.dirty = false
@@ -123,8 +170,22 @@ internal class TouchParser(private val axes: Map<String, TouchAxes>, private val
                 s.down -> TouchAction.UP.also { s.down = false }
                 else -> return@mapNotNull null
             }
-            TouchSample(monoNs, device, index, action, x, y)
+            TouchSample(monoNs, device, index, action, scale(x, axis.maxX, width), scale(y, axis.maxY, height))
         }
+
+    /** The kernel dropped events, so slot state is unknown: end every pointer that was down and start over. */
+    private fun drop(monoNs: Long, device: String, axis: TouchAxes, deviceSlots: Map<Int, Slot>): List<TouchSample> {
+        val ended = deviceSlots.toSortedMap().mapNotNull { (index, s) ->
+            val x = s.x
+            val y = s.y
+            if (!s.down || x == null || y == null) null
+            else TouchSample(monoNs, device, index, TouchAction.UP, scale(x, axis.maxX, width), scale(y, axis.maxY, height))
+        }
+        slots.remove(device)
+        current.remove(device)
+        dropped[device] = monoNs
+        return ended
+    }
 
     private fun scale(value: Int, max: Int, size: Int): Int =
         ((value.coerceIn(0, max).toLong() * (size - 1) + max / 2) / max).toInt()

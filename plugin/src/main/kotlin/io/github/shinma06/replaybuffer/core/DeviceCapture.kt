@@ -282,8 +282,12 @@ internal class DeviceCapture @JvmOverloads constructor(
             while (pause(1000)) { /* No multi-touch device: keep video capture unaffected. */ }
             return
         }
-        val display = checkNotNull(parseDisplaySize(adb.command("-s", serial, "shell", "wm", "size"))) { "画面サイズを取得できません" }
-        val parser = TouchParser(axes, display.first, display.second)
+        val readDisplay = { parseDisplaySize(adb.command("-s", serial, "shell", "wm", "size")) }
+        val display = DisplaySizeWatch(checkNotNull(readDisplay()) { "画面サイズを取得できません" }, readDisplay)
+        var received = System.nanoTime()
+        val parser = TouchParser(axes, display.size.first, display.size.second) { _, from, to ->
+            store.touchLost(from, to, generation, received)
+        }
         check(!stopping.get())
         val process = adb.start("-s", serial, "shell", "getevent", "-lt", *listOfNotNull(axes.keys.singleOrNull()).toTypedArray())
         try {
@@ -291,8 +295,9 @@ internal class DeviceCapture @JvmOverloads constructor(
             val input = process.inputStream.buffered()
             while (!stopping.get()) {
                 val line = readTouchLine(input) ?: error("getevent出力が終了しました")
-                val received = System.nanoTime()
-                parser.feed(line).forEach { store.touch(it, display.first, display.second, generation, received) }
+                received = System.nanoTime()
+                display.current(received).let { (width, height) -> parser.resize(width, height) }
+                parser.feed(line).forEach { store.touch(it, parser.width, parser.height, generation, received) }
             }
         } finally { adb.stop(process) }
     }
