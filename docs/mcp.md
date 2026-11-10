@@ -45,7 +45,7 @@ Devin: 設定のMCP Marketplaceで「Add your own」からstdioサーバーを�
 | `start_capture` | 取得をONにし、開始を確認して返します。 | `daemon` |
 | `stop_capture` | 取得をOFFにします。未保存バッファは破棄します。保存済み成果物・IDE・他projectは変更しません。 | `stop` |
 | `save_replay` | 保存し、完成したフォルダのパスを返します。 | `save` |
-| `take_screenshot` | GUIのスクリーンショットと同じ処理で、録画対象端末の現在の画面をPNG保存し、パスを返します。`include_image`（既定true）で画像も返します（10 MiBまで）。 | `screenshot` |
+| `take_screenshot` | GUIのスクリーンショットと同じ処理で、録画対象端末の今の画面をPNG保存し（対象アプリが前面である必要はありません）、パスを返します。`include_image`（既定true）で画像も返します（10 MiBまで）。 | `screenshot` |
 | `get_settings` | 設定とON/OFF状態をJSONで返します。 | なし |
 | `update_settings` | 指定した設定だけを変更し、変更後の設定を返します。 | なし |
 

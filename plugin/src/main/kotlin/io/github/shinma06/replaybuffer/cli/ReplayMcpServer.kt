@@ -70,8 +70,8 @@ internal class ReplayMcpServer(
             projectOnly, mapOf("readOnlyHint" to false, "destructiveHint" to false, "idempotentHint" to false, "openWorldHint" to false)) { args ->
             command(args, CliCommand.SAVE)
         },
-        Tool("take_screenshot", "Save a PNG of the device screen through the same path as the GUI screenshot button, into the configured " +
-            "screenshot folder, and return its `path`. With `include_image` (default true) the PNG is also returned as image content.",
+        Tool("take_screenshot", "Save a PNG of the current screen of the recording-target device (no app needs to be in the foreground) through the same " +
+            "path as the GUI screenshot button, into the configured screenshot folder, and return its `path`. With `include_image` (default true) the PNG is also returned as image content.",
             projectOnly + mapOf("include_image" to mapOf("type" to "boolean", "default" to true,
                 "description" to "Also return the saved PNG as MCP image content (omitted above 10 MiB).")),
             mapOf("readOnlyHint" to false, "destructiveHint" to false, "idempotentHint" to false, "openWorldHint" to false)) { args ->
