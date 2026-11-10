@@ -11,7 +11,8 @@ import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.system.exitProcess
 
-internal data class CliArguments(val command: CliCommand, val project: Path?, val config: Path?, val foreground: Boolean = false)
+/** A null [command] runs the stdio MCP server, which sends its own commands per tool call. */
+internal data class CliArguments(val command: CliCommand?, val project: Path?, val config: Path?, val foreground: Boolean = false)
 
 internal fun parseCliArguments(rawArguments: List<String>): CliArguments {
     val arguments = rawArguments.flatMap { value ->
@@ -21,6 +22,7 @@ internal fun parseCliArguments(rawArguments: List<String>): CliArguments {
     var project: Path? = null
     var config: Path? = null
     var command: CliCommand? = null
+    var mcp = false
     var foreground = false
     var index = 0
     while (index < arguments.size) {
@@ -44,18 +46,25 @@ internal fun parseCliArguments(rawArguments: List<String>): CliArguments {
             }
             "--daemon" -> error("独立daemonは終了しました。起動済みIDEでreplaydを使ってください。")
             else -> {
-                require(command == null) { "操作は1つ指定してください。" }
+                require(command == null && !mcp) { "操作は1つ指定してください。" }
+                if (value == "mcp") { mcp = true; continue }
                 command = when (value) {
                     "save" -> CliCommand.SAVE
                     "status" -> CliCommand.STATUS
                     "stop" -> CliCommand.STOP
                     "daemon" -> CliCommand.DAEMON
+                    "screenshot" -> CliCommand.SCREENSHOT
                     else -> throw IllegalArgumentException("不明な操作・optionです。replay --helpを確認してください。")
                 }
             }
         }
     }
-    val selected = requireNotNull(command) { "save/status/stop/daemonを指定してください。" }
+    if (mcp) {
+        require(!foreground) { "--foregroundはdaemonでのみ指定できます。" }
+        require(config == null) { "--configはdaemon/saveだけで指定できます。mcpでは設定ツールを使ってください。" }
+        return CliArguments(null, project, null)
+    }
+    val selected = requireNotNull(command) { "save/status/stop/daemon/screenshot/mcpを指定してください。" }
     require(!foreground || selected == CliCommand.DAEMON) { "--foregroundはdaemonでのみ指定できます。" }
     require(config == null || selected == CliCommand.DAEMON || selected == CliCommand.SAVE) {
         "--configはdaemon/saveだけで指定できます。status/stopは設定を変更しません。"
@@ -65,7 +74,8 @@ internal fun parseCliArguments(rawArguments: List<String>): CliArguments {
 
 /** Distribution entrypoint for an already running IDE; never starts a separate capture daemon. */
 object ReplayCli {
-    private const val HELP = """Usage: replay [--project PATH] [--config FILE] save|status|stop|daemon
+    private const val HELP = """Usage: replay [--project PATH] [--config FILE] save|status|stop|daemon|screenshot
+       replay [--project PATH] mcp
        replayd [--project PATH] [--config FILE] [--foreground]
 
 起動済みAndroid Studioの同じ取得・保存処理を操作します。
@@ -73,6 +83,8 @@ daemon/replayd: 取得をONにして終了します（独立常駐・foreground�
 save: GUIと同じ保存を実行し、完成フォルダだけをstdoutへ返します。OFFなら取得を開始します。
       記録の蓄積前は保存できません。GUIの状態を確認して再実行してください。
 status: 設定を変えずに状態を表示します。stop: 対象projectの取得をOFFにします。
+screenshot: GUIと同じスクリーンショットを保存し、PNGのパスだけをstdoutへ返します。
+mcp: 標準入出力のMCPサーバーとして動き、エージェントへ状態・保存・スクショ・設定の操作を提供します。
 --project: 開いているprojectのフォルダ。省略時は接続先が1つだけ必要です。
 --config: 取得OFF時に旧JSON/簡易YAMLの保持秒数・保存先をGUI設定へ明示移行します。
 設定・保存形式・常駐動作の移行と復旧は同梱CLI案内を確認してください。
@@ -119,9 +131,27 @@ status: 設定を変えずに状態を表示します。stop: 対象projectの�
             error.line("設定ファイルを読めません。パスとアクセス権を確認してください。")
             return 1
         }
+        if (parsed.command == null) {
+            return ReplayMcpServer(System.`in`, output, error, parsed.project, directory, build).run()
+        }
+        val identity = try { build() } catch (failure: Exception) {
+            error.line((failure as? IllegalArgumentException ?: failure as? IllegalStateException)?.message
+                ?: "CLI接続先または設定ファイルを確認できません。IDE/project、パスとアクセス権を確認してください。")
+            return 1
+        }
+        val response = exchange(directory, parsed.project, identity, CliRequest(parsed.command, config,
+            parsed.config?.fileName?.toString()?.let { it.endsWith(".yaml") || it.endsWith(".yml") } == true,
+            Path.of("").toAbsolutePath().normalize().toString()))
+        if (response.output.isNotEmpty()) output.line(response.output)
+        if (response.error.isNotEmpty()) error.line(response.error)
+        return response.code
+    }
+
+    /** Sends one request to the selected project's IDE; never retries once the request may have reached it. */
+    internal fun exchange(directory: Path, project: Path?, build: String, request: CliRequest): CliResponse {
         var submitted = false
         return try {
-            val endpoint = ReplayCliRegistry.select(directory, parsed.project, build())
+            val endpoint = ReplayCliRegistry.select(directory, project, build)
             Socket().use { socket ->
                 socket.connect(InetSocketAddress("127.0.0.1", endpoint.port), ReplayCliProtocol.HANDSHAKE_TIMEOUT_MS)
                 socket.soTimeout = ReplayCliProtocol.HANDSHAKE_TIMEOUT_MS
@@ -133,19 +163,12 @@ status: 設定を変えずに状態を表示します。stop: 対象projectの�
                 socket.soTimeout = ReplayCliProtocol.RESULT_TIMEOUT_MS
                 // A partial write can reach the server; subsequent failures must report an unknown outcome.
                 submitted = true
-                ReplayCliProtocol.writeRequest(wireOutput, CliRequest(parsed.command, config,
-                    parsed.config?.fileName?.toString()?.let { it.endsWith(".yaml") || it.endsWith(".yml") } == true,
-                    Path.of("").toAbsolutePath().normalize().toString()))
-                val response = ReplayCliProtocol.readResponse(input)
-                if (response.output.isNotEmpty()) output.line(response.output)
-                if (response.error.isNotEmpty()) error.line(response.error)
-                response.code
+                ReplayCliProtocol.writeRequest(wireOutput, request)
+                ReplayCliProtocol.readResponse(input)
             }
         } catch (failure: Exception) {
-            if (submitted) error.line("通信が終了したため操作結果を確認できません。自動再試行はしません。GUIの保存結果・状態を確認してください。")
-            else error.line(if (failure is IllegalArgumentException || failure is IllegalStateException) failure.message
-                else "CLI接続先または設定ファイルを確認できません。IDE/project、パスとアクセス権を確認してください。")
-            1
+            CliResponse(1, error = if (submitted) "通信が終了したため操作結果を確認できません。自動再試行はしません。GUIの保存結果・状態を確認してください。"
+                else (failure as? IllegalArgumentException ?: failure as? IllegalStateException)?.message ?: "CLI接続先または設定ファイルを確認できません。IDE/project、パスとアクセス権を確認してください。")
         }
     }
 }

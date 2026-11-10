@@ -20,7 +20,10 @@ replay --project "$HOME/Projects/MyApp" daemon
 replay --project "$HOME/Projects/MyApp" status
 replay --project "$HOME/Projects/MyApp" save
 replay --project "$HOME/Projects/MyApp" stop
+replay --project "$HOME/Projects/MyApp" screenshot
 ```
+
+`screenshot`はGUIと同じスクリーンショットを保存し、PNGのパスだけをstdoutへ返します（失敗はexit 1、引数不正はexit 2）。エージェントからは`replay mcp`で同じ操作と設定の読み書きをMCPとして使えます。設定と提供するtoolは[MCPサーバー](mcp.md)を参照してください。
 
 `--project`は開いているprojectのフォルダです。省略できるのは接続先が1つだけのときです。接続先が複数ある場合は、現在の作業フォルダや前面windowから推測せず失敗します。同じprojectを複数のIDEで開いている場合も、対象を一意にしてから実行します。新旧JARが異なる場合は、同じ配布物の入口と通常再起動したIDEを使います。
 

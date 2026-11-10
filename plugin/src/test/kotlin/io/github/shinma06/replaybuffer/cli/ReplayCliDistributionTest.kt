@@ -3,6 +3,7 @@ package io.github.shinma06.replaybuffer.cli
 import com.intellij.util.lang.UrlClassLoader
 import io.github.shinma06.replaybuffer.core.HostPlatform
 import java.io.File
+import java.math.BigDecimal
 import java.nio.file.Files
 import java.nio.file.FileSystems
 import java.nio.file.attribute.PosixFilePermissions
@@ -92,6 +93,7 @@ class ReplayCliDistributionTest {
         val sharedOutput = temporary.resolve("日本語の保存先 with spaces").toString()
         val sharedError = "一部のログがありません。"
         val server = ReplayCliServer(home.resolve(".android-replay-buffer-cli"), project, build) { request ->
+            if (request.command == CliCommand.SETTINGS) return@ReplayCliServer CliResponse(0, """{"replay_seconds":180}""")
             assertEquals(CliCommand.STATUS, request.command)
             CliResponse(0, sharedOutput, sharedError)
         }
@@ -105,16 +107,30 @@ class ReplayCliDistributionTest {
                 assertContentEquals("$sharedOutput\n".toByteArray(Charsets.UTF_8), result.second)
                 assertContentEquals("$sharedError\n".toByteArray(Charsets.UTF_8), result.third)
             }
+            val session = listOf(
+                """{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}""",
+                """{"jsonrpc":"2.0","method":"notifications/initialized"}""",
+                """{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"get_settings","arguments":{}}}""",
+            ).joinToString("\n", postfix = "\n")
+            val mcp = run(listOf(java.toString(), "-Duser.home=$home", "--enable-native-access=ALL-UNNAMED", "-cp", "$plugin${File.separator}lib${File.separator}*${File.pathSeparator}$kotlinRuntime",
+                "io.github.shinma06.replaybuffer.cli.ReplayCli", "--project", project.toString(), "mcp"), mapOf("LC_ALL" to "C"), session)
+            assertEquals(0, mcp.first, mcp.third.decodeToString())
+            val replies = mcp.second.decodeToString(throwOnInvalidSequence = true).lines().filter(String::isNotEmpty)
+                .map { McpJson.parse(it) as Map<*, *> }
+            assertEquals(2, replies.size, replies.toString())
+            val settings = (replies.single { it["id"] == BigDecimal("2") }["result"] as Map<*, *>)
+            assertEquals(BigDecimal("180"), (settings["structuredContent"] as Map<*, *>)["replay_seconds"])
         } finally {
             server.close()
             server.termination.get(5, TimeUnit.SECONDS)
         }
     }
 
-    private fun run(command: List<String>, environment: Map<String, String> = emptyMap()): Triple<Int, ByteArray, ByteArray> {
+    private fun run(command: List<String>, environment: Map<String, String> = emptyMap(), stdin: String = ""): Triple<Int, ByteArray, ByteArray> {
         val output = Files.createTempFile(temporary, "cli-output-", ".txt")
         val error = Files.createTempFile(temporary, "cli-error-", ".txt")
-        val builder = ProcessBuilder(command).redirectOutput(output.toFile()).redirectError(error.toFile())
+        val input = Files.writeString(Files.createTempFile(temporary, "cli-input-", ".txt"), stdin)
+        val builder = ProcessBuilder(command).redirectInput(input.toFile()).redirectOutput(output.toFile()).redirectError(error.toFile())
         builder.environment().apply {
             remove("JAVA_TOOL_OPTIONS"); remove("JDK_JAVA_OPTIONS"); remove("_JAVA_OPTIONS")
             putAll(environment)
