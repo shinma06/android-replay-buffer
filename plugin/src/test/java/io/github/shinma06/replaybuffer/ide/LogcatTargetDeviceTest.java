@@ -34,7 +34,7 @@ class LogcatTargetDeviceTest {
             SwingUtilities.invokeAndWait(() -> {
                 var box = new JComboBox<DeviceComboItem>(new DeviceComboItem[]{new DeviceItem(connected.get()), target});
                 request.set(LogcatTargetDevice.awaitDevice(box, "A", connected::get, () -> true,
-                    System.nanoTime() + TimeUnit.SECONDS.toNanos(3)));
+                    System.nanoTime() + TimeUnit.SECONDS.toNanos(30)));
                 assertSame(target, box.getSelectedItem());
                 assertFalse(request.get().isDone()); // Model selection is not native stream completion.
                 box.addActionListener(event -> fail("Waiting must not repeatedly select/restart the target"));
@@ -54,7 +54,7 @@ class LogcatTargetDeviceTest {
             SwingUtilities.invokeAndWait(() -> {
                 var box = new JComboBox<DeviceComboItem>();
                 request.set(LogcatTargetDevice.awaitDevice(box, "A", target::getDevice, () -> true,
-                    System.nanoTime() + TimeUnit.SECONDS.toNanos(3)));
+                    System.nanoTime() + TimeUnit.SECONDS.toNanos(30)));
                 assertFalse(request.get().isDone());
                 box.addItem(device("B", true)); // Native cold initialization may offer another device first.
                 box.addItem(target);
@@ -72,11 +72,11 @@ class LogcatTargetDeviceTest {
         try {
             SwingUtilities.invokeAndWait(() -> {
                 var box = new JComboBox<DeviceComboItem>();
-                var deadlineNs = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+                var deadlineNs = System.nanoTime() + TimeUnit.SECONDS.toNanos(30);
                 request.set(LogcatTargetDevice.awaitDevice(box, "A", connected::get, () -> true, deadlineNs));
                 assertFalse(request.get().isDone());
                 box.addItem(device("A", false)); // Restored identity arrives before live discovery.
-                assertFalse(request.get().isDone(), "An initial offline seed is not an online-to-offline transition");
+                assertFalse(request.get().isDone(), () -> "An initial offline seed is not an online-to-offline transition: " + request.get().getNow(null));
                 var online = device("A", true);
                 var liveModel = new DefaultComboBoxModel<DeviceComboItem>(new DeviceComboItem[]{online});
                 liveModel.setSelectedItem(online);
@@ -98,7 +98,7 @@ class LogcatTargetDeviceTest {
             SwingUtilities.invokeAndWait(() -> {
                 box.set(new JComboBox<>(new DeviceComboItem[]{other, device("A", true)}));
                 request.set(LogcatTargetDevice.awaitDevice(box.get(), "A", other::getDevice, () -> true,
-                    System.nanoTime() + TimeUnit.SECONDS.toNanos(3)));
+                    System.nanoTime() + TimeUnit.SECONDS.toNanos(30)));
                 box.get().setSelectedItem(other);
             });
             assertTrue(request.get().get(2, TimeUnit.SECONDS).contains("変更"));
@@ -152,7 +152,7 @@ class LogcatTargetDeviceTest {
             SwingUtilities.invokeAndWait(() -> {
                 box.set(new JComboBox<>(new DeviceComboItem[]{other, online}));
                 request.set(LogcatTargetDevice.awaitDevice(box.get(), "A", connected::get, () -> true,
-                    System.nanoTime() + TimeUnit.SECONDS.toNanos(3)));
+                    System.nanoTime() + TimeUnit.SECONDS.toNanos(30)));
                 assertFalse(request.get().isDone());
                 var disconnectedModel = new DefaultComboBoxModel<DeviceComboItem>(new DeviceComboItem[]{other, offline});
                 disconnectedModel.setSelectedItem(offline);

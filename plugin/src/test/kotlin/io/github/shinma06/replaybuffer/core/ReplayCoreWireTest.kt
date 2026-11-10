@@ -11,6 +11,7 @@ import java.net.InetAddress
 import java.net.ServerSocket
 import java.nio.ByteBuffer
 import java.nio.file.Files
+import java.nio.file.Path
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -53,6 +54,9 @@ class ReplayCoreWireTest {
         runWireFixture(false, "partition", captureMode = CaptureMode.LOG_ONLY, autoCrash = true)
     }
 
+    private fun ownedPids(dir: Path): List<String> =
+        Files.list(dir).use { files -> files.map { it.fileName.toString() }.toList() }
+
     private fun runWireFixture(
         discardInitialPFrame: Boolean,
         logMode: String? = null,
@@ -70,7 +74,7 @@ class ReplayCoreWireTest {
         }
         val devices = root.resolve("devices.txt")
         Files.writeString(devices, "List of devices attached\nfixture-1 device model:Fixture\nfixture-2 device model:Other\n")
-        val pids = root.resolve("owned-pids.txt")
+        val pids = root.resolve("owned-pids")
         val server = ServerSocket(0, 8, InetAddress.getLoopbackAddress())
         val clockServer = ServerSocket(0, 8, InetAddress.getLoopbackAddress())
         val stop = AtomicBoolean()
@@ -159,7 +163,7 @@ class ReplayCoreWireTest {
         fake = TestExecutables.python(fake, """#!/usr/bin/python3
 import sys,time,os,struct,pathlib,socket
 root=pathlib.Path(__file__).parent
-with (root/'owned-pids.txt').open('a') as f: f.write(str(os.getpid())+'\n')
+(root/'owned-pids').mkdir(exist_ok=True); (root/'owned-pids'/str(os.getpid())).touch()  # one file per process: Windows appends from concurrent processes are not atomic
 a=sys.argv[1:]
 if a==['forward','--list']:
     pass
@@ -388,7 +392,7 @@ elif len(a)>3 and a[3]=='ps':
                 assertTrue(Files.readString(root.resolve("video-launches.txt")).contains("max_size=1024 max_fps=15 video_bit_rate=2000000 downsize_on_error=false"))
                 assertTrue(core.setEnabled(false).get(15, TimeUnit.SECONDS).accepted)
                 core.closeAsync().get(15, TimeUnit.SECONDS)
-                Files.readAllLines(pids).forEach { pid -> assertFalse(ProcessHandle.of(pid.toLong()).map { it.isAlive }.orElse(false)) }
+                ownedPids(pids).forEach { pid -> assertFalse(ProcessHandle.of(pid.toLong()).map { it.isAlive }.orElse(false)) }
                 return
             }
             if (logMode == "cancel") {
@@ -400,7 +404,7 @@ elif len(a)>3 and a[3]=='ps':
                 assertTrue(System.nanoTime() - started < 5_500_000_000)
                 core.closeAsync().get(10, TimeUnit.SECONDS)
                 assertFalse(Files.exists(root.resolve("log-launches.txt")))
-                Files.readAllLines(pids).forEach { pid -> assertFalse(ProcessHandle.of(pid.toLong()).map { it.isAlive }.orElse(false)) }
+                ownedPids(pids).forEach { pid -> assertFalse(ProcessHandle.of(pid.toLong()).map { it.isAlive }.orElse(false)) }
                 return
             }
             if (discardInitialPFrame) {
@@ -520,7 +524,7 @@ elif len(a)>3 and a[3]=='ps':
                 else assertEquals(0, launches.count { it == "main" })
                 assertTrue(core.setEnabled(false).get(10, TimeUnit.SECONDS).accepted)
                 core.closeAsync().get(10, TimeUnit.SECONDS)
-                Files.readAllLines(pids).forEach { pid -> assertFalse(ProcessHandle.of(pid.toLong()).map { it.isAlive }.orElse(false)) }
+                ownedPids(pids).forEach { pid -> assertFalse(ProcessHandle.of(pid.toLong()).map { it.isAlive }.orElse(false)) }
                 return
             }
             if (discardInitialPFrame) {
@@ -535,7 +539,7 @@ elif len(a)>3 and a[3]=='ps':
                 awaitState("changed-config-recovered") { readyConnections.get() == 3 && it.video.state == StreamState.CAPTURING }
                 assertTrue(core.setEnabled(false).get(15, TimeUnit.SECONDS).accepted)
                 core.closeAsync().get(15, TimeUnit.SECONDS)
-                Files.readAllLines(pids).forEach { pid -> assertFalse(ProcessHandle.of(pid.toLong()).map { it.isAlive }.orElse(false)) }
+                ownedPids(pids).forEach { pid -> assertFalse(ProcessHandle.of(pid.toLong()).map { it.isAlive }.orElse(false)) }
                 return
             }
             Thread.sleep(1300) // Remove the initial unresolved-app interval from the one-second window.
@@ -669,7 +673,7 @@ elif len(a)>3 and a[3]=='ps':
             core.closeAsync().get(15, TimeUnit.SECONDS)
             completed?.let { assertEquals(savedHash, sha256(it.resolve("session.json"))) }
             assertEquals(0, Files.list(root.resolve("workspace")).use { it.count() })
-            Files.readAllLines(pids).forEach { pid -> assertFalse(ProcessHandle.of(pid.toLong()).map { it.isAlive }.orElse(false)) }
+            ownedPids(pids).forEach { pid -> assertFalse(ProcessHandle.of(pid.toLong()).map { it.isAlive }.orElse(false)) }
         } finally {
             core.closeAsync().get(15, TimeUnit.SECONDS)
             stop.set(true); pauseVideo.set(false); resumeVideo.countDown(); server.close(); clockServer.close(); sockets.forEach { runCatching { it.close() } }
