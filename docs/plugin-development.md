@@ -8,32 +8,39 @@
 | --- | --- |
 | Plugin ID | `io.github.shinma06.android-replay-buffer` |
 | Kotlin package | `io.github.shinma06.replaybuffer` |
-| Android Studio SDK | Rabbit 1 `2026.2.1.8` / `AI-262.9437.185.2621.16467767` |
+| Android Studio build SDK | Rabbit 2 `2026.2.2.8` / `AI-262.10968.63.2622.16730706`（platform `2026.2.3`） |
 | 宣言するIDE範囲 | `262.9437.185` 〜 `262.*`。実受入は固定Rabbitで実施し、全patchの動作を保証した意味ではない |
-| JDK / JVM target | 25 |
-| Kotlin | 2.4.20、IDE同梱stdlibを使用 |
+| Build JDK / JVM・API target | 27 / 25。新Mac同梱JBRの実identityは受入時に確認する |
+| Kotlin | 2.4.21、language/API 2.4。IDE同梱stdlibを使用（旧Rabbit 1は2.4.0、新Rabbit 2は実SDKで確認） |
 | IntelliJ Platform Gradle Plugin | 2.19.0 |
-| Gradle Wrapper | 9.7.1、distribution SHA-256固定 |
-| 開発版 | `0.1.0-dev.<source SHA>`。未commit差分があるbuildには `-dirty` が付く |
+| Gradle Wrapper | 9.8.1、distribution SHA-256固定 |
+| JVM test | JUnit BOM 6.1.3。JupiterとPlatform launcherを同じBOMで解決 |
+| 時計DEXのbuild入力 | R8/D8 9.5.26、Android SDK API 37.2 revision 1。DEX min API 24 |
+| 開発版 / 正式候補 | 既定は `0.2.0-dev.<source SHA>`。未commit差分には `-dirty`。正式候補はcleanなsourceで `-PpluginVersion=0.2.0` |
 
-SDK版は[公式Android Studio一覧](https://plugins.jetbrains.com/docs/intellij/android-studio-releases-list.html)と対象IDEのproduct-infoで照合しています。Kotlinの[公式互換表](https://kotlinlang.org/docs/whatsnew2420.html)はGradle 9.7.0までを明記しており、9.7.1はpatch版をこのプロジェクトで実build検証します。JDK 25は対象IDEの最小要求に合わせています。
+Android Studio SDKは2026-10-29に公式情報を照合したRabbit 2へ固定します。SDK更新に伴うbuild・実ロード・機能受入は[#391](https://github.com/shinma06/android-replay-buffer/issues/391)で別々に確認し、pin更新やWindows JARの静的ABI一致をMacでの互換性PASSにしません。その他のstackは2026-10-17時点の公式stableを維持します。[Android Studio一覧](https://plugins.jetbrains.com/docs/intellij/android-studio-releases-list.html)と対象IDEのproduct-info、[Kotlin 2.4.21](https://github.com/JetBrains/kotlin/releases/tag/v2.4.21)、[Gradle 9.8.1](https://docs.gradle.org/9.8.1/release-notes.html)、[JUnit 6.1.3](https://github.com/junit-team/junit-framework/releases/tag/r6.1.3)を照合しました。[Kotlinの公式互換表](https://kotlinlang.org/docs/gradle-configure-project.html)の完全対応範囲はGradle 9.7.0までなので、9.8.1は本projectの実build/testsで適合を確認します。GradleはJava 27をサポートし、プラグインのJVM/API targetはIDEが使う25に限定します。[Platform pluginのtask convention](https://github.com/JetBrains/intellij-platform-gradle-plugin/blob/2.19.0/src/main/kotlin/org/jetbrains/intellij/platform/gradle/plugins/KotlinJvmToolchainConventions.kt)がtoolchain値を使うため、Kotlinコンパイルtaskにもtarget 25を明示しています。
 
 [公式のAndroid Studioプラグイン開発手順](https://plugins.jetbrains.com/docs/intellij/android-studio.html)に従いAndroid Studio SDKを使用します。projectのAndroid SDK、Run configurationのapplicationId、Gradle同期・Android modelの変更を読むため、同梱Android pluginのAPIを利用します。Terminal・JCEFへの依存はありません。録画用の固定scrcpy server、時計測定DEX、JCodecをZIPに含め、利用時に取得する追加ツールはありません。
 
+設定の保存は`SerializablePersistentStateComponent`のimmutable stateとatomic更新を使い、旧XMLキー・値を明示bindingで保持します。保存先の確認はIDEが注入するservice scopeが所有し、画面の破棄・再入力で取消します。UI反映は[UI専用dispatcher](https://github.com/JetBrains/intellij-community/blob/06e208526c9db65ce95892b546c0c226d39e950f/platform/core-api/src/com/intellij/openapi/application/coroutines.kt#L459)とlaunch時のmodalityを使い、filesystem読取りはIOへ分離します。
+
+Logcatの内部APIへ進むruntime gateは、旧Rabbit 1の`AI-262.9437.185.2621.16467767`と新Rabbit 2の`AI-262.10968.63.2622.16730706`だけを許可します。隣接buildや別productは許可せず、標準Logcatを閉じる経路は維持します。旧版の固定観察は旧identityのまま保持し、新版の実接続・stream/描画を保証する証拠には転記しません。
+
 ## ビルド
 
-JDK 25を用意して `JAVA_HOME` に設定します。macOSで対応Android Studioがインストール済みなら、その同梱JBRを使えます。
+JDK 27を `JAVA_HOME`、Android SDKを `ANDROID_HOME` に設定します。SDKの `platforms;android-37.2` revision 1がbuild専用の公開API入力です。`android.jar`、R8、scrcpy server、JCodecのSHA-256をbuildで照合します。IDE同梱JBR 25だけではbuild toolchainを満たしません。
 
 ```bash
-export JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"
-python3 scripts/workflow/plugin_check.py
+export JAVA_HOME="/opt/homebrew/opt/openjdk/libexec/openjdk.jdk/Contents/Home"
+export ANDROID_HOME="$HOME/Library/Android/sdk"
+python3 scripts/workflow/product_check.py
 ```
 
-既定では固定SDKをGradleが取得します。初回はネットワーク接続とSDK展開用の空き容量が必要です。同じSDKが手元にある場合だけ、明示して取得を省けます。
+既定では固定SDKをGradleが取得します。初回はネットワーク接続とSDK展開用の空き容量が必要です。同じRabbit 2のexact buildを識別済みの場合だけ、明示して取得を省けます。local指定でも`verifyBuildSdk`はAIと上記buildの完全一致を要求します。旧Rabbit 1のアプリ・SDK・profileを上書きせず、新SDKの展開・transforms・sandboxと復旧用の容量を先に確保します。
 
 ```bash
 REPLAY_PLATFORM_PATH="/Applications/Android Studio.app/Contents" \
-  python3 scripts/workflow/plugin_check.py
+  python3 scripts/workflow/product_check.py
 ```
 
 `REPLAY_PLATFORM_PATH` は共通scriptが `-PuseLocalPlatform=true -PplatformPath=...` に変換します。Gradleを直接呼ぶ場合も両方指定します。個人のGradle設定に `platformPath` だけがあっても既定SDKを置き換えません。指定先が固定Rabbitと異なる場合はbuildを失敗させます。
@@ -44,11 +51,17 @@ REPLAY_PLATFORM_PATH="/Applications/Android Studio.app/Contents" \
 plugin/gradlew -p plugin --no-daemon check buildPlugin verifyPluginStructure
 ```
 
-ZIPは `plugin/build/distributions/` に出ます。原型PythonコードはZIPへ同梱しません。CIの `test` でも同じ変更影響判定から実行し、ZIPを14日保持のActions artifactとして保存します。これは検証用でありMarketplace/Release公開ではありません。長期保存する候補は保持期限内に取得し、SHA-256とsourceを記録してください。
+正式候補はcleanなcommitから次のように一度buildし、そのZIPのSHA-256を固定して受入・main昇格・公開へ渡します。`pluginVersion`は接頭辞・接尾辞・先頭ゼロのない `major.minor.patch` だけを受け付け、dirtyな正式候補は拒否します。`identity.properties`の`source/dirty/version`とPlugin descriptorの版は同じbuild値です。版はidentity生成taskの入力にも含めるため、同じsourceで版を変更しても古いidentityを再利用しません。公開処理での版書換え・再buildは行いません。計画上の「第2版」と配布版番号の管理は別です。
+
+```bash
+plugin/gradlew -p plugin --no-daemon -PpluginVersion=0.2.0 check buildPlugin verifyPluginStructure
+```
+
+ZIPは `plugin/build/distributions/` に出ます。同じJARを使う`bin/replay` / `bin/replayd`と案内を同梱します。[CLIの配置・移行](cli.md)を参照してください。CIの `test` でも同じ変更影響判定から実行し、ZIPを14日保持のActions artifactとして保存します。これは検証用でありMarketplace/Release公開ではありません。長期保存する候補は保持期限内に取得し、SHA-256とsourceを記録してください。
 
 ## IDEでロード確認する
 
-[GUI leaseと共有状態の手順](operations.md)を守り、別作業のAndroid Studio・ADB・daemonを操作しないでください。通常利用しているIDEへの上書きインストールより、Gradleの開発用sandboxと使い捨てfixtureを使います。
+[GUI leaseと共有状態の手順](https://github.com/shinma06/android-replay-buffer/blob/legacy-ops-develop/docs/operations.md)を守り、別作業のAndroid Studio・ADB・daemonを操作しないでください。通常利用しているIDEへの上書きインストールより、Gradleの開発用sandboxと使い捨てfixtureを使います。
 
 ```bash
 # GUI lease取得・固定buildとfixtureの確認後に実行
@@ -57,7 +70,7 @@ plugin/gradlew -p plugin runIde
 
 `runIde`はsandboxを準備してIDEを起動します。自動起動は行いません。原型CLIの起動やUSB端末への接続もありません。
 
-配布ZIPを受入する場合は、cleanな固定commitから一度 `buildPlugin` した同じZIPを、[公式ターミナル配置手順](operations.md#固定plugin-zipのターミナル導入)で専用profileへ導入します。固定ZIP/source/hash、全3JARと実IDE process/PID/profile/version、Tools → Android Replay Bufferについて/action、取得OFFと通常再起動を照合します。Settings GUIは自製品設定の表示/入力/Apply/Cancel/検証/アクセシビリティ/寿命に使います。再buildした別ZIPや `-dirty` 版を同じ候補の証拠へ流用しません。
+配布ZIPを受入する場合は、cleanな固定commitから一度 `buildPlugin` した同じZIPを、[公式ターミナル配置手順](https://github.com/shinma06/android-replay-buffer/blob/legacy-ops-develop/docs/operations.md#固定plugin-zipのターミナル導入)で専用profileへ導入します。固定ZIP/source/hash、全3JARと実IDE process/PID/profile/version、Tools → Android Replay Bufferについて/action、取得OFFと通常再起動を照合します。Settings GUIは自製品設定の表示/入力/Apply/Cancel/検証/アクセシビリティ/寿命に使います。再buildした別ZIPや `-dirty` 版を同じ候補の証拠へ流用しません。
 
 [Case JSON](verification/changes/issue-3.json)のIDEロード・情報表示・IDE再起動を確認し、観察者・日時・ロード版・ZIP hashを記録します。Plugin VerifierによるAPI互換性検査やこのGUI受入は、ZIP構造検査と別です。基盤のCaseも初期版と同じ固定ZIPへ対応づけ、未実施項目は[QA #7](https://github.com/shinma06/android-replay-buffer/issues/7)と[初期版QA](https://github.com/shinma06/android-replay-buffer/issues/27)で追跡します。
 
@@ -69,7 +82,7 @@ plugin/gradlew -p plugin runIde
 2. **設定する**: Settings → Tools → Android Replay Buffer、またはAndroid Replay Buffer ToolWindowの設定から、保存先と保持時間を指定します。標準は180秒、設定範囲は1〜900秒です。保存先には作成済みフォルダの絶対パスを指定します。未作成フォルダやファイルは理由を表示して拒否し、旧設定を維持します。保存先が未指定でも取得でき、保存前に指定します。対象アプリは選択中のAndroid Run configurationから自動取得するか、package名を手動指定します。編集した値は「適用」または「OK」で反映します。取得が無効でも設定できます。
 3. **取得を有効にする**: ToolWindowで取得を有効にし、対象の実機またはEmulatorを1台接続します。初回は無効で、有効状態はprojectごとに保存し、IDE再起動後にも復元します。取得状態、端末、対象アプリ、動画と両ログの状態を確認して操作します。対象アプリが解決できない場合は、Run configurationやGradle同期を確認するか手動指定します。
 
-   起動時に保存済み設定を反映できない場合は理由を表示し、有効状態を実際の取得状態に合わせます。設定を修正してから取得を有効にしてください。復元中に自分で切り替えた有効状態は、復元失敗によって巻き戻しません。projectの保存場所やIDE設定領域を安全に確認できない場合は、初期化失敗を表示します。アクセス権を確認し、projectを開き直してください。
+   起動時に保存済み設定を反映できない場合は理由を表示し、有効状態を実際の取得状態に合わせます。設定を修正してから取得を有効にしてください。復元中に自分で切り替えた有効状態は、復元失敗によって巻き戻しません。projectの保存場所やIDE設定領域を安全に確認できない場合は、初期化失敗を表示します。設定取り込み後の本人所有ディレクトリでは、本人のrwxが揃い、他の利用者に書込みを許可していない場合だけ、追加の読取り・実行権限を700に縮めます。対象は現在のprojectの終了情報保存先までの3階層です。リンク・他者所有・共有書込み可能な項目や保存済みデータは変更しません。終了情報の保存先が原因なら、表示された箇所を修正して取得ONまたは `replay daemon` を再実行できます。projectを開き直す必要はありません。
 4. **必要な時に保存する**: 保存操作で直前の保持時間分を保存します。開始直後なら取得済み分、中断があればその欠落を含む実時間の窓が対象です。保存中も取得を続け、保存後もバッファを空にしません。成果物のREADMEで動画・両ログの取得範囲と欠落を確認し、MP4とJSONLを対応する窓内時刻で参照します。動画がある保存は1件のMP4です。途中の復号区間と時計不明はsession/frames情報に残り、既知gapは空白、不明gapの実durationはnullとして区別します。動画全体の表示秒を区間の窓開始へ一律加算せず、フレームごとの対応を使います。ToolWindowの欠落詳細には現在窓内の理由・記録時刻の範囲を表示し、取得復旧後も窓内に残る欠落を確認できます。時刻が未確定の境界は未確定と表示します。
    保存が完了していても、動画末尾に新しいframeを受信したことを確認できない区間が残る場合があります。保存phaseと別に、前の画像で表示する区間は「前の画像を表示・新frame未確認」、表示保持を確認できない区間は「新frame未確認」と記録時刻の範囲を表示します。範囲が不明なら未確定と表示します。確定した欠落があれば従来の欠落表示も残します。保存中・失敗時の末尾説明は、未保存の固定対象についての情報です。
 5. **失敗・切断を扱う**: 保存失敗時は、失敗カードの固定端末・アプリ選択・対象アプリ履歴を確認し、保持された同じ対象の再試行、保存先変更、破棄から選びます。取得中の端末やアプリを変更しても、この固定対象は変わりません。解決するまでは次の保存を受け付けず、取得は続けます。完全切断中は切断前のバッファを保存できますが、再接続後は現在の保持窓へ戻るため古いデータが範囲外になります。無効化やproject終了では未保存バッファと失敗保存の対象を破棄し、保存済みフォルダは残します。
@@ -91,10 +104,10 @@ plugin/gradlew -p plugin runIde
 
 ## 実装と受入の責務
 
-製品の動作と優先順は[製品要件](requirements.md)を正本とします。CLIの既存設定値や過去の設計から、将来プラグインの方式を自動決定しません。
+製品の動作と優先順は[製品要件](requirements.md)を正本とします。旧CLIの設定値や過去の設計から、プラグインの方式を自動決定しません。
 
 1. **採用設計を実装へ接続**: 保存失敗時は1件の固定対象を保持して再試行・保存先変更・破棄、入口は独立ToolWindowと常設設定、取得は固定scrcpy serverとJVM mux、同期は端末elapsedの共通軸を採用した。[設計の入口](plugin-design.md)、[IDE UI](design/ide-ui.md)、[時刻・録画方式](design/timeline.md)を正本とする。設計の採用を実機動作の合格に置き換えない。
-2. **取得エンジンと接続契約を検証**: projectのAndroid SDKからadbを解決し、固定server・時計測定DEX・JCodecをPlugin ZIPへ同梱する。利用者による追加ツールの手動導入や実行時ダウンロードに依存しない。processの所有、接続先、timeout、取消し、入力サイズ・エラー・並行要求、同梱依存のidentityを検証する。他の利用者が起動したprocessや共有adb serverを停止しない。Python CLIと既存JSON IPCの互換性は引き続き保全する。
+2. **取得エンジンと接続契約を検証**: projectのAndroid SDKからadbを解決し、固定server・時計測定DEX・JCodecをPlugin ZIPへ同梱する。利用者による追加ツールの手動導入や実行時ダウンロードに依存しない。processの所有、接続先、timeout、取消し、入力サイズ・エラー・並行要求、同梱依存のidentityを検証する。他の利用者が起動したprocessや共有adb serverを停止しない。CLIは同じproject serviceを呼び、[操作・設定・形式の移行](cli.md)、相互認証・対象/版一致・有限待機・確定保存結果を検証する。
 3. **初期版の取得・状態表示・保存を実装**: 有効化トグルと状態復元、接続自動取得、明示的な設定適用、180秒の実時間バッファ、両ログ、1ボタン保存、同期、自動復旧と同一シーケンスを要件に照合する。接続・process待ちはEDTで行わず、dispose後のUI反映を抑止する。macOSを先に実機/Emulatorで検証する。
 4. **初期版候補を受入**: 同一ZIPで要件に対応するCaseとAPI互換性を確認し、developからmainへpromotionする。基盤の既存QAを含め、未実施のまま製品完成と扱わない。Marketplace公開は別の依頼範囲。
 5. **macOSメニューバー連携へ最初に着手**: IDE内初期版の完成直後に実施する。その後のOS対応はWindows、Linuxの順を基本にし、後続TODOは指定優先度と利用者の計画に従う。

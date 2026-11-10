@@ -1,5 +1,6 @@
 package io.github.shinma06.replaybuffer.core
 
+import io.github.shinma06.replaybuffer.testing.TestExecutables
 import java.nio.file.Files
 import java.util.concurrent.TimeUnit
 import kotlin.test.Test
@@ -12,9 +13,9 @@ class RemoteCleanupTest {
     fun nextCoreWithANewWorkspaceRecoversOnlyStoppedOwnerAndMatchingRemoteIdentities() {
         val root = Files.createTempDirectory("replay-cleanup-fixture-").toRealPath()
         val stable = root.resolve("journal")
-        val fake = root.resolve("adb")
+        var fake = root.resolve("adb")
         Files.writeString(root.resolve("connected"), "no")
-        Files.writeString(fake, """#!/usr/bin/python3
+        fake = TestExecutables.python(fake, """#!/usr/bin/python3
 import sys,pathlib,time,json
 r=pathlib.Path(__file__).parent;a=sys.argv[1:]
 with (r/'calls').open('a') as f: f.write(json.dumps(a)+'\n')
@@ -34,8 +35,7 @@ elif a[:2]==['-s','fixture-1']:
     elif a[2]=='shell' and a[3]=='settings': print(1)
     elif a[2]=='shell' and 'scrcpy.Server' in a[3]: time.sleep(20)
 """)
-        assertTrue(fake.toFile().setExecutable(true))
-        val resources = CaptureResources(Files.createDirectory(root.resolve("resources")))
+                val resources = CaptureResources(Files.createDirectory(root.resolve("resources")))
         val store = CaptureStore(root.resolve("ring"))
         val capture = DeviceCapture(fake, "fixture-1", resources, store, 1, ApplicationTarget())
         capture.close() // Genuine offline close yields a pending owned descriptor; no actual adb/device.
@@ -79,9 +79,8 @@ elif a[:2]==['-s','fixture-1']:
     @Test
     fun offWithNoVerifiedPendingRecordNeverInvokesSdkAdb() {
         val root = Files.createTempDirectory("replay-off-cleanup-").toRealPath()
-        val fake = root.resolve("adb")
-        Files.writeString(fake, "#!/bin/sh\nprintf called >> \"${root.resolve("calls")}\"\nexit 1\n")
-        assertTrue(fake.toFile().setExecutable(true))
+        var fake = root.resolve("adb")
+        fake = TestExecutables.python(fake, "import pathlib,sys\n(pathlib.Path(__file__).parent/'calls').write_text('called')\nsys.exit(1)\n")
         val stable = Files.createDirectory(root.resolve("journal"))
         val core = ReplayCore(ReplaySettings(fake), root.resolve("unused-workspace"), stable)
         try {

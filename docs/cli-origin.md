@@ -1,20 +1,8 @@
-# CLI原型の保全
+# 退役したPython CLIの履歴と復旧
 
-原型はPython packageの版が `0.1.0` だった次のcommitです。リリース済み・実機試験済みという意味の版名ではありません。
+[#103](https://github.com/shinma06/android-replay-buffer/issues/103)でCLIをプラグインの取得core・保存writerへ内包しました。現行の入口・互換範囲・明示移行は[CLI案内](cli.md)を参照してください。Python実装・独立daemon・旧JSON IPC・launchd・設定例・Python packageと原型専用tests/checker・原文コピーは現行treeから退役し、第二の配布製品として維持しません。管理用Python scriptと過去の検証記録は別です。
 
-- 固定source: [`e6fb021b144d4f0f6a1f7916e92449610b3ff80c`](https://github.com/shinma06/android-replay-buffer/tree/e6fb021b144d4f0f6a1f7916e92449610b3ff80c)
-- 内容: 初期CLI実装とlogcat/scrcpy再試行・log-only保存
-- [原README](cli-origin/README.md)、[CLI原型の設計（凍結）](cli-origin/design.md)、[全ファイルmanifest](cli-origin/manifest.json)
-
-原型の実装、起動スクリプト、設定例、launchd、pyproject、テストは既存の実行方法を保つため元の場所に維持します。CLI設計書は現在のプラグイン設計と区別するため `docs/cli-origin/design.md` に移動し、原文を保持しています。プロジェクト共通のREADMEとgitignoreは開発基盤用に更新するため、原文を同じ `docs/cli-origin/` に別保存しています。manifestは元の名前・現在の保存先・SHA-256・実行権限を記録します。元commitの全21ファイルが対象です。
-
-```bash
-python3 scripts/workflow/product_check.py
-```
-
-このコマンドはファイル内容・削除・symlinkへの置換・実行権限の変化を検出し、その後にCLIの既存unit testsを実行します。Git履歴を省いたcheckoutでも保全確認が可能です。デバイス、daemon、ユーザー設定には触れません。
-
-CLI原型は凍結した参考実装です。将来エンジンを変更する場合も、manifestを新しいhashで上書きして原型扱いにしません。別Issueで原型の完全な保存先と互換性方針を決めてから進めます。hashは誤変更の検知であり、悪意あるmanifest改変まで防ぐ署名ではありません。
+原型の完全な復旧元は、Python package版が`0.1.0`だった固定commit [`e6fb021b144d4f0f6a1f7916e92449610b3ff80c`](https://github.com/shinma06/android-replay-buffer/tree/e6fb021b144d4f0f6a1f7916e92449610b3ff80c)です。版名はrelease・実機受入済みを意味しません。[原README](https://github.com/shinma06/android-replay-buffer/blob/e6fb021b144d4f0f6a1f7916e92449610b3ff80c/README.md)・[原設計](https://github.com/shinma06/android-replay-buffer/blob/e6fb021b144d4f0f6a1f7916e92449610b3ff80c/%E8%A8%AD%E8%A8%88%E6%9B%B8.md)・実装・tests・設定例・起動scriptの全21ファイルと実行権限をGit履歴に保持します。既存のユーザー設定、録画、一時領域、launchd登録を移行処理が削除することはありません。
 
 ## 原型だけを取り出す
 
@@ -26,10 +14,8 @@ git archive --format=tar --prefix=android-replay-buffer-cli-origin/ \
   e6fb021b144d4f0f6a1f7916e92449610b3ff80c
 ```
 
-生成したtarを別ディレクトリへ展開すれば、元の配置とREADMEでCLIを利用できます。現在のcheckoutを書き換える必要はありません。shallow cloneにcommitがなければ、元repositoryから履歴を取得するか上記固定sourceリンクからソースを取得します。
+tarを別ディレクトリへ展開し、原READMEの条件で利用します。現在のcheckoutを書き換える必要はありません。shallow cloneにcommitがなければ元repositoryから履歴を取得するか、上記固定sourceからソースを取得します。main/developの履歴を書き換えず、可変tagや別保守branchにも依存しません。Git履歴を含まないPlugin ZIPだけでは旧sourceを復旧できないため、移行前にこのcommitのarchiveを保管できます。
 
-タグや別の保守branchに依存せず、固定commitと現在tree内の全原型ファイルの両方を保持します。main/developの履歴を書き換えず、原型の復元可能性を維持します。
+## 復旧確認と製品受入
 
-## 保全と受入の違い
-
-原READMEのMVPチェック欄は当時の記録です。今回のhash照合と既存2 testsは、動画の品質、USB再接続、保存失敗からの復旧を再検証するものではありません。録画機能を接続する段階で、このプロジェクトの固定build・専用端末・Caseで受入します。
+#103の退役前確認では、元commitの全21ファイルを別ディレクトリへ抽出し、内容・実行権限を照合して旧CLIのhelpを実行しました。元treeの保全checker・compile/import・既存2 testsの結果もIssueに保持します。これらは原型の復旧可能性を確認するもので、旧版の実機録画や新版のIDE受入を表しません。旧観察・FAIL・未実行条件は変更せず、新版は同一候補のCaseで受け入れます。

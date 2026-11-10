@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "issue": 420,
+  "gui_required": false,
+  "reason": "main PR419の正式build用固定API step、関連CI説明と歴史issue418recordだけをdevelop c570へ必要差分で同期する。製品/Gradle/4pins/現在417修復/既存CI/受入は不変。同一shell/拒否/order/compiler証拠を固定hashで再利用し、通常検査と実CIを維持。GUI/device変更や実formal Release dispatchはなくCases0。",
+  "cli_checks": [
+    "python3 scripts/check.py",
+    "python3 scripts/workflow/change_impact.py --base origin/develop --run-tests"
+  ],
+  "cases": []
+}

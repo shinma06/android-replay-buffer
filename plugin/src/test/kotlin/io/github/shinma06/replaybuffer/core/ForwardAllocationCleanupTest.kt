@@ -1,5 +1,6 @@
 package io.github.shinma06.replaybuffer.core
 
+import io.github.shinma06.replaybuffer.testing.TestExecutables
 import com.google.gson.JsonParser
 import java.nio.file.Files
 import java.nio.file.Path
@@ -111,14 +112,14 @@ class ForwardAllocationCleanupTest {
 
     private class Fixture : AutoCloseable {
         val root = Files.createTempDirectory("replay-forward-response-loss-").toRealPath()
-        val adb = root.resolve("adb")
+        var adb = root.resolve("adb")
         private val resources = CaptureResources(Files.createDirectory(root.resolve("resources")))
         private val store = CaptureStore(root.resolve("ring"))
         val capture: DeviceCapture
         private var worker: Thread? = null
 
         init {
-            Files.writeString(adb, """#!/usr/bin/python3
+            adb = TestExecutables.python(adb, """#!/usr/bin/python3
 import sys,time,pathlib
 r=pathlib.Path(__file__).parent;a=sys.argv[1:]
 p=r/'mappings'
@@ -145,8 +146,7 @@ elif a[:3]==['-s','fixture-1','shell']:
     (r/'launched-server').touch();sys.exit(1)
 else: sys.exit(1)
 """)
-            assertTrue(adb.toFile().setExecutable(true))
-            capture = DeviceCapture(adb, "fixture-1", resources, store, 1, ApplicationTarget())
+                        capture = DeviceCapture(adb, "fixture-1", resources, store, 1, ApplicationTarget())
         }
 
         fun allocate() {

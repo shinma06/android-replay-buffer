@@ -1,0 +1,40 @@
+{
+  "schema": 1,
+  "issue": 369,
+  "gui_required": true,
+  "reason": "既存ToolWindowからIDE標準Logcatを開閉する操作を追加するため、実IDEの表示・外部開閉後の追従とkeyboard/可読性を確認する。",
+  "cli_checks": [
+    "LogcatToolWindowButtonTest: 模擬ToolWindowと実Swingボタンで開閉、外部開閉後の古い表示からの操作、利用不可/破棄、content寿命と説明を確認する。",
+    "ReplayToolWindowLayoutTest: 既存の実パネル回帰へ追加ボタンを含め、幅の往復・到達性・Space操作と既存設定/取得の不変を確認する。clean committed HEADのchange_impact --run-testsから通常product/check/buildPlugin/verifyPluginStructureを実行する。"
+  ],
+  "cases": [
+    {
+      "id": "LOGCAT-PANEL-TOGGLE",
+      "artifact": "plugin",
+      "change": "IDE標準Logcatパネルを実表示状態に基づいて開閉する",
+      "preconditions": "#369採用後の固定source/標準ZIP/全JARと実ロードを同定する。A6の復元・共有予約返却後、PMが既存QAの枠と所有projectを割り当てる。現在の旧候補の観察はそのidentityのまま保持する。",
+      "steps": [
+        "標準Logcatが利用可能なprojectでボタンから表示・非表示にし、IDE標準の実パネルと操作名/tooltipが一致することを確認する。IDE側で別に開閉した後も表示が追従し、次のボタン操作が実状態に対応する。",
+        "登録/利用不可・破棄後の拒否と遅延更新の寿命は回帰証拠を照合し、実IDEでは利用不可条件の無効表示/案内を不足分だけ確認する。同じ表示でTab/Spaceと幅の折返し・操作到達性を確認する。プラグインの取得ON/OFF・設定・保存とLogcatの既存tab/filterをこの操作が変更しないことを照合する。"
+      ],
+      "expected": "独自Logcat UIや取得processを追加せず標準パネルだけを開閉する。外部変更に追従し、未登録/利用不可/破棄後は無効化と理由表示、content/project破棄後は操作/予約更新を行わない。既存取得・保存・設定の契約を維持する。",
+      "provenance": [
+        "https://github.com/shinma06/android-replay-buffer/issues/369",
+        "docs/design/ide-ui.md",
+        "docs/verification/responsibility.md"
+      ],
+      "gpt": {
+        "status": "pending",
+        "reason": "実IDEの開閉・外部状態変更・可読性/keyboardは未観察。模擬/回帰/buildは実IDEの受入とは別。"
+      },
+      "human": {
+        "status": "pending",
+        "reason": "実操作・表示は未観察。既存human/REALの延期を変更せず、追加の本人判断gateを作らない。"
+      },
+      "fix_issue": null,
+      "fix_pr": null,
+      "recheck": "新固定候補の実ロードと本Caseの影響範囲を確認し、旧source/ZIPの事実を新build実行へ転記しない。無影響の取得/保存/性能試験は反復せず、影響不明は不足として残す。",
+      "next_action": "固定レビューとdevelop採用後、PMが実際のscopeに応じ既存QA329/343へ未完の独立試験を、280/271へ新候補/標準ZIPとmain反映を双方向readbackして移管する。writerはGUI/ADB/導入/再起動や正式ZIP dispatchを行わない。"
+    }
+  ]
+}

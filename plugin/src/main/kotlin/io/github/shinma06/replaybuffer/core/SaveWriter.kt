@@ -24,10 +24,22 @@ internal data class SaveOutput(val directory: Path, val missingKinds: List<Strin
 
 internal class SaveFailure(val partial: Path?, message: String, cause: Throwable? = null) : Exception(message, cause)
 
-/** No external encoder/process: immutable packet indices -> AVC MP4 and matching JSONL/manifest. */
+internal class SaveCancelled(val partial: Path?, cause: Throwable? = null) : CancellationException(
+    "保存を取消しました" + (partial?.let { "。未完成の出力を保全しています: $it" } ?: ""),
+) {
+    init { if (cause != null) initCause(cause) }
+}
+
+/** No external encoder/process: pinned packet indices -> AVC MP4 and matching JSONL/manifest. Runs outside EDT. */
 internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.getFileStore(it).usableSpace }) {
     private val gson = GsonBuilder().serializeNulls().disableHtmlEscaping().create()
 
+    /**
+     * Caller retains the capture pin until return/throw and serializes cancellation with the publication callback.
+     *
+     * Partial/failed attempts remain on disk; SaveFailure/SaveCancelled may identify an owned retained directory.
+     * A failure after rename can leave the completed name present: failure is not proof that no output exists.
+     */
     fun write(capture: FrozenCapture, folder: Path, cancelled: () -> Boolean,
               publish: (SavePublication) -> Unit): SaveOutput {
         var partial: Path? = null
@@ -67,7 +79,7 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
         var normalizationCpuStarted = 0L
         val cpu = java.lang.management.ManagementFactory.getThreadMXBean()
         fun checkActive() {
-            if (cancelled() || Thread.currentThread().isInterrupted) throw CancellationException()
+            if (cancelled() || Thread.currentThread().isInterrupted) throw SaveCancelled(null)
             normalizationStarted?.let { start ->
                 check(System.nanoTime() - start < 4L * 60 * 60 * 1_000_000_000 &&
                     (!cpu.isCurrentThreadCpuTimeSupported || cpu.currentThreadCpuTime - normalizationCpuStarted < 4L * 60 * 60 * 1_000_000_000)) {
@@ -80,6 +92,8 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
             val parent = folder.toRealPath()
             require(Files.isDirectory(parent) && Files.isWritable(parent)) { "保存先に書き込めません" }
             require(capture.video.size <= ReplaySettings.MAX_VIDEO_PACKETS)
+            val videoRequested = capture.settings.captureMode.videoRequested
+            require(videoRequested || capture.video.isEmpty()) { "ログ専用の保存に動画packetがあります" }
             val tail = capture.videoTail()
             val all = capture.video
             val groups = mutableListOf<MutableList<VideoEntry>>()
@@ -151,7 +165,7 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
             val runBoundaries = mutableListOf<Map<String, Any?>>()
             val losses = mutableListOf<String>()
             val videoProofs = mutableMapOf<CaptureGap, Pair<ClockSample, ClockSample>>()
-            val videoScopes = capture.gaps.videoScopes(capture.clocks, capture.clockRecoveries, videoProofs)
+            val videoScopes = capture.gaps.gapScopes(capture.clocks, capture.clockRecoveries, videoProofs)
             fun aligned(frame: VideoEntry): Boolean {
                 val sequence = frame.time.sequence ?: return false
                 return capture.windowKnown && frame.time.uncertainty != Long.MAX_VALUE && videoScopes.none { gap ->
@@ -438,16 +452,27 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                 appendLine("Android Replay Buffer / 保存対象 ${capture.id}")
                 appendLine("論理窓: ${(capture.end - capture.start) / 1e9}秒（設定${capture.seconds}秒）、sequence ${capture.sequence}")
                 appendLine("動画${if (parts.isEmpty()) 0 else 1}本（再生区間${parts.size}件） / 全体ログ${capture.logs.size}行 / アプリログ${capture.logs.count { it.app == true }}行")
-                appendLine("動画がある保存は1本のMP4です。動画がない保存にはMP4はありません。取得状態・理由はsession.jsonのcoverage.videoを確認してください。動画がある場合は、表示秒に対応するframes.jsonlのmovie_pts_us〜movie_end_usとsource/window情報を使い、両ログと照合してください。session.jsonのpartsは同じファイル内の再生区間です。")
-                appendLine("frameのclock_alignment_known=falseでは時計対応が不明です。window_ns=null、mapped_window_nsは不確実性を含む変換値で、同期確定やcoverageには使えません。区間開始に動画全体の表示秒を足す方法では照合できません。")
-                if (rawPath != null) appendLine("サイズ変更を含むため固定canvasへ再エンコードしています。拡縮・切捨てはせず、余白を追加しています。元AnnexB config/全packetはvideo-source.binへ保存しframes.jsonlのoffset/size/hashで照合できます。色未指定は不明のままで、色一致の証明ではありません。")
-                appendLine("video_missing_rangesは映像欠落又は時計対応未確認の範囲です。既知の取得gapは空白として表示し、不明gapの実durationはnullのまま、MP4上の表示間隔と区別しています。")
-                appendLine("次sampleのない末尾はsource_duration_us=nullです。MP4の最小1tickは表示のための値で、観測した画像の継続時間や取得coverageではありません。")
-                appendLine("MP4内部には論理窓の前のdecoder preroll画像を含むことがあります。edit listで表示範囲を指定しています。標準playerの互換性は製品QAで別途確認します。")
-                if (tail != null) appendLine("動画末尾: ${tail.fromNs}〜${tail.toNs}nsは新frame未確認。前の画像の表示保持=${tail.displayHeld}。再生時間は確認済み取得時間とは異なります。")
+                appendLine("取得モード: ${if (videoRequested) "動画＋ログ" else "ログ専用（動画は意図的に未要求）"}")
+                if (videoRequested) {
+                    appendLine("動画がある保存は1本のMP4です。動画がない保存にはMP4はありません。取得状態・理由はsession.jsonのcoverage.videoを確認してください。動画がある場合は、表示秒に対応するframes.jsonlのmovie_pts_us〜movie_end_usとsource/window情報を使い、両ログと照合してください。session.jsonのpartsは同じファイル内の再生区間です。")
+                    appendLine("frameのclock_alignment_known=falseでは時計対応が不明です。window_ns=null、mapped_window_nsは不確実性を含む変換値で、同期確定やcoverageには使えません。区間開始に動画全体の表示秒を足す方法では照合できません。")
+                    if (rawPath != null) appendLine("サイズ変更を含むため固定canvasへ再エンコードしています。拡縮・切捨てはせず、余白を追加しています。元AnnexB config/全packetはvideo-source.binへ保存しframes.jsonlのoffset/size/hashで照合できます。色未指定は不明のままで、色一致の証明ではありません。")
+                    appendLine("video_missing_rangesは映像欠落又は時計対応未確認の範囲です。既知の取得gapは空白として表示し、不明gapの実durationはnullのまま、MP4上の表示間隔と区別しています。")
+                    appendLine("次sampleのない末尾はsource_duration_us=nullです。MP4の最小1tickは表示のための値で、観測した画像の継続時間や取得coverageではありません。")
+                    appendLine("MP4内部には論理窓の前のdecoder preroll画像を含むことがあります。edit listで表示範囲を指定しています。標準playerの互換性は製品QAで別途確認します。")
+                    if (tail != null) appendLine("動画末尾: ${tail.fromNs}〜${tail.toNs}nsは新frame未確認。前の画像の表示保持=${tail.displayHeld}。再生時間は確認済み取得時間とは異なります。")
+                } else {
+                    appendLine("動画の取得・保存は要求していません。MP4と動画sourceはなく、frames.jsonlは0行です。動画未要求は取得失敗や欠落ではありません。")
+                }
                 appendLine("全体ログはshell権限で読めるlogcat bufferです。security等の全端末ログ取得を保証しません。app_membership=nullは対象未確定です。")
                 appendLine("0行は正常な無出力の場合もあります。取得状態・時計・アプリ履歴・lossをsession.jsonで確認してください。")
+                capture.autoTrigger?.let { trigger ->
+                    appendLine("対象アプリの例外報告を相互確認して自動保存しました。event_id: ${trigger.eventId}")
+                    appendLine("基準はplatformの報告時刻で、processの死亡時刻ではありません。報告前の記録不足・各原行の包含はsession.jsonのauto_triggerを確認してください。")
+                    appendLine("報告前の不足（概算）: ${trigger.facts["pre_report_shortfall_nominal_ns"]}ns。取得gapと未観測の端末ログは別で、完全なクラッシュ直前の記録を保証しません。")
+                }
                 parts.forEach { appendLine("${it["file"]} 区間${it["segment_index"]} / 動画µs=${it["movie_start_us"]}〜${it["movie_end_us"]}: 時計対応確認=${it["clock_alignment_known"]} / 窓開始ns=${it["window_start_ns"]} / 窓終了ns=${it["window_end_ns"]} / preroll=${it["preroll_samples"]}") }
+                if (capture.gaps.isNotEmpty()) appendLine("以下は取得履歴です。保存窓の外と確認できた履歴も保全しています。保存時の警告は保存窓内又は重なり未確認の記録が対象です。")
                 capture.gaps.forEach { appendLine("${it.stream}: ${it.fromNs}〜${it.toNs}ns / ${it.reason}") }
                 losses.forEach { appendLine("loss: $it") }
             }) }
@@ -463,7 +488,7 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                 if (from > coveredUntil + 1_000_000) videoHoles += mapOf("from_window_ns" to coveredUntil.toString(), "to_window_ns" to from.toString())
                 coveredUntil = maxOf(coveredUntil, to)
             }
-            if (coveredUntil + 1_000_000 < windowLength) videoHoles += mapOf("from_window_ns" to coveredUntil.toString(), "to_window_ns" to windowLength.toString())
+            if (videoRequested && coveredUntil + 1_000_000 < windowLength) videoHoles += mapOf("from_window_ns" to coveredUntil.toString(), "to_window_ns" to windowLength.toString())
             // Only a displayed tail can cover a hole without confirming a newly received image.
             if (tail?.displayHeld == true && tail.fromNs != null && tail.toNs != null) {
                 val from = tail.fromNs - capture.start
@@ -478,10 +503,11 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                 }
                 videoHoles.clear(); videoHoles.addAll(remainingHoles)
             }
-            val knownLoss = capture.gaps.any { (it.stream == "video" || it.stream == "clock") &&
-                it.intersects(capture.start, capture.end, capture.endUncertainty) }
-            val videoIncomplete = parts.isEmpty() || losses.isNotEmpty() || knownLoss || videoHoles.isNotEmpty()
-            manifest = mapOf("schema" to 2, "complete" to true, "save_id" to capture.id,
+            val knownLoss = capture.gaps.inWindow(capture.start, capture.end, capture.endUncertainty, capture.clocks, capture.clockRecoveries)
+                .any { it.stream == "video" || it.stream == "clock" }
+            val videoIncomplete = videoRequested && (parts.isEmpty() || losses.isNotEmpty() || knownLoss || videoHoles.isNotEmpty())
+            manifest = mapOf("schema" to 3, "capture_mode" to capture.settings.captureMode, "complete" to true, "save_id" to capture.id,
+                "auto_trigger" to capture.autoTrigger?.facts,
                 "sequence_id" to capture.sequence, "generation" to capture.generation, "device" to capture.device,
                 "window_clock_epoch" to capture.windowClockEpoch,
                 "window_clock_known" to capture.windowKnown,
@@ -491,16 +517,25 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                 "build" to CaptureResources.identity().filterKeys { it in setOf("source", "dirty", "version") },
                 "plugin_id" to "io.github.shinma06.android-replay-buffer",
                 "dependencies" to CaptureResources.identity(), "settings" to mapOf("replay_seconds" to capture.seconds,
+                    "capture_mode" to capture.settings.captureMode, "video_requested" to videoRequested,
                     "video_byte_limit" to ReplaySettings.VIDEO_BYTES, "log_byte_limit" to ReplaySettings.LOG_BYTES,
                     "min_free_bytes" to ReplaySettings.MIN_FREE_BYTES,
                     "max_video_packets" to ReplaySettings.MAX_VIDEO_PACKETS, "max_config_packet_bytes" to ReplaySettings.MAX_CONFIG_PACKET_BYTES,
-                    "config_memory_bytes" to ReplaySettings.CONFIG_MEMORY_BYTES, "video" to "H.264 / 1920 / 30fps / 8Mbps / no B-frame"),
+                    "config_memory_bytes" to ReplaySettings.CONFIG_MEMORY_BYTES,
+                    "video" to capture.settings.videoQuality.let {
+                        "H.264 / ${it.maxSize} / ${it.maxFps}fps / ${it.bitRate / 1_000_000}Mbps / no B-frame"
+                    }.takeIf { videoRequested },
+                    "video_request" to capture.settings.videoQuality.let {
+                        mapOf("quality" to it, "max_size" to it.maxSize, "max_fps" to it.maxFps,
+                            "video_bit_rate" to it.bitRate, "downsize_on_error" to false)
+                    }.takeIf { videoRequested }),
                 "window_end_uncertainty_ns" to capture.endUncertainty.toString(),
                 "clock_samples" to capture.clocks.map { clockJson(it) },
                 "clock_epochs" to (capture.clocks.map { it.epoch } + capture.video.map { it.time.epoch } + capture.logs.map { it.time.epoch } +
                     capture.gaps.mapNotNull { it.clockEpoch }).distinct().map { id -> mapOf("id" to id,
                     "has_valid_sample" to capture.clocks.any { it.epoch == id && it.valid }) }, "application_history" to capture.apps.map { appJson(it) },
                 "coverage" to capture.states.mapValues { (_, state) -> mapOf("state" to state.state,
+                    "requested" to (state.state != StreamState.NOT_REQUESTED),
                     "availableSeconds" to state.availableSeconds, "reason" to state.reason) },
                 "gaps" to capture.gaps.map { gap -> mapOf("kind" to gap.stream,
                     "from_ns" to gap.fromNs?.toString(), "to_ns" to gap.toNs?.toString(), "reason" to gap.reason,
@@ -516,7 +551,7 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                 "video_movie_duration_us" to parts.lastOrNull()?.get("movie_end_us"),
                 "parts" to parts, "video_run_boundaries" to runBoundaries, "video_missing_ranges" to videoHoles,
                 "video_clock_gap_scopes" to capture.gaps.mapIndexedNotNull { i, gap ->
-                    if (gap.stream != "clock") null else videoScopes[i].let { scope -> mapOf(
+                    if (!videoRequested || gap.stream != "clock") null else videoScopes[i].let { scope -> mapOf(
                         "gap_index" to i, "from_ns" to scope.fromNs?.toString(), "to_ns" to scope.toNs?.toString(),
                         "boundary_uncertainty_ns" to scope.boundaryUncertaintyNs?.toString(),
                         "derived_from_valid_samples" to (scope !== gap),
@@ -541,6 +576,8 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
             checkActive()
             own.keys.forEach(::checkOwned)
             checkEntries()
+            // Verification needs only their identities, so close them where open files block renaming their directory.
+            if (!SaveOutputDirectory.renamesWithOpenFiles) own.values.forEach(SaveOutputFile::close)
             publish(SavePublication(partial, complete, parentHandle, staging) { checkEntries() })
             own.keys.forEach { checkOwned(complete.resolve(it.fileName)) }
             checkEntries()
@@ -548,18 +585,21 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
         } catch (e: Throwable) {
             if (e !is Exception && e !is LinkageError) throw e
             // No path-based deletion: ownership checks cannot make a subsequent unlink conditional on identity.
-            manifest?.let { value -> own[partial?.resolve("session.json")]?.let { output -> runCatching {
-                output.channel().use { channel ->
+            manifest?.let { value -> own[partial?.resolve("session.json")]?.let { held -> runCatching {
+                val output = if (!held.isClosed) held else staging!!.openFile("session.json").also { reopened ->
+                    if (reopened.key != held.key) { reopened.close(); error("保存出力の実体が変更されています") }
+                }
+                try { output.channel().use { channel ->
                     channel.position(0)
                     channel.truncate(0)
                     val bytes = ByteBuffer.wrap(gson.toJson(value + ("complete" to false)).toByteArray(Charsets.UTF_8))
                     while (bytes.hasRemaining()) channel.write(bytes)
                     channel.force(true)
-                }
+                } } finally { if (output !== held) output.close() }
             } } }
             val retained = listOfNotNull(partial, complete).firstOrNull(::ownsDirectory)
             val location = retained?.let { "。未完成の出力を保全しています: $it" } ?: ""
-            if (e is CancellationException) throw CancellationException("保存を取消しました$location").apply { initCause(e) }
+            if (e is SaveCancelled) throw SaveCancelled(retained, e)
             val reason = if (e is IllegalArgumentException || e is IllegalStateException) e.message ?: "保存できません"
                 else "保存に失敗しました（保存先・空き容量・アクセス権を確認してください）"
             throw SaveFailure(retained, reason + location, e)
@@ -570,7 +610,7 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
         }
     }
 
-    private fun bytesHash(bytes: ByteArray) = java.security.MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
+    private fun bytesHash(bytes: ByteArray) = java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(bytes))
 
     private fun readFrame(frame: VideoEntry): ByteArray {
         require(frame.offset >= 0 && frame.size in 1..16 * 1024 * 1024)

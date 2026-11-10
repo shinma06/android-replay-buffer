@@ -1,0 +1,102 @@
+{
+  "schema": 1,
+  "issue": 103,
+  "gui_required": true,
+  "reason": "プラグイン同梱CLIをshared project serviceへ接続し、旧CLIの明示移行と原型専用構成の退役を扱う。新native/FILEはpending、旧観察とFAIL/unknownを保つ。",
+  "cli_checks": [
+    "同じsourceのCLI parser/config/registry/auth/transport/result、既存core/writer/設定/ProjectCapture回帰と実配布launcherのJBR/classpathを確認する。実行結果はIssue/PRへ記録。",
+    "現行Python提供中はproduct_check/3.9を維持。正当な退役後は統合plugin check/build/structureとharness、clean committed HEADのchange_impact --run-testsへ一本化。#305の各branch検査/保護移行と区別する。"
+  ],
+  "cases": [
+    {
+      "artifact": "plugin",
+      "preconditions": "#103のclean固定source/ZIP/全JARと実ロードを同定。共有GUI leaseと所有するIDE/project/端末fixture・保存先・復元担当をPMが割り当てる。現在の実装割当はGUI/ADB/device/install/restartを含まない。旧FAIL/unknown、human/REALと最終v2条件を保つ。",
+      "provenance": [
+        "https://github.com/shinma06/android-replay-buffer/issues/103",
+        "https://github.com/shinma06/android-replay-buffer/issues/103#issuecomment-6233411932",
+        "docs/cli.md",
+        "docs/verification/responsibility.md"
+      ],
+      "gpt": {
+        "status": "pending",
+        "reason": "新しい固定候補のnative/FILE観察は未実施。決定的JVM/同梱検査は別に記録する。"
+      },
+      "human": {
+        "status": "pending",
+        "reason": "未観察。既存のhuman/REAL延期を保持し、別の必須条件や免除を仮定しない。"
+      },
+      "fix_issue": null,
+      "fix_pr": null,
+      "recheck": "CLI入口・対象選択・設定移行・shared service/writer結果・停止の変更を同じ候補で確認。既存Caseは元の結果を残し、未変更の事実だけを責任契約に従って評価する。",
+      "next_action": "固定PRの独立レビュー後、PMが以下の最小native/FILEと残条件をQA/#280へ双方向readbackで割り当てる。実装の停止だけでIssue close又は原型退役の受入済みとはしない。",
+      "id": "CLI-ENTRY-MIGRATION",
+      "change": "同梱replay/replayd、旧command/configと出力/exit codeの明示移行",
+      "steps": [
+        "配布ZIPから展開した同じJARのCLIを使い、空白pathでhelpと引数不正を確認する。IDE未起動/未知project/複数接続/別JARは要求を送らず失敗することを決定的回帰と代表nativeで分けて確認する。",
+        "所有projectでOFF時に旧JSON又は簡易YAMLを明示移行し、保持時間/保存先だけが反映し、対象アプリ/モード/自動保存が保たれることをGUIで確認する。ON時や不正/重複/未知値は一式拒否、旧fileは不変。",
+        "replayd/daemonで同じ取得がONになり有限で戻ること、foreground警告/daemon拒否、statusの状態とGUI一致を確認する。旧独立daemon/launchdを混在させず、復旧はGit固定sourceを別の所有fixtureへ取り出して原blob/modeを照合する。"
+      ],
+      "expected": "同じ配布物から利用でき、旧操作/設定/形式の差と復旧が明示される。勝手なIDE起動、対象選択、旧stateの変更、設定の無断上書きがない。"
+    },
+    {
+      "artifact": "plugin",
+      "preconditions": "#103のclean固定source/ZIP/全JARと実ロードを同定。共有GUI leaseと所有するIDE/project/端末fixture・保存先・復元担当をPMが割り当てる。現在の実装割当はGUI/ADB/device/install/restartを含まない。旧FAIL/unknown、human/REALと最終v2条件を保つ。",
+      "provenance": [
+        "https://github.com/shinma06/android-replay-buffer/issues/103",
+        "https://github.com/shinma06/android-replay-buffer/issues/103#issuecomment-6233411932",
+        "docs/cli.md",
+        "docs/verification/responsibility.md"
+      ],
+      "gpt": {
+        "status": "pending",
+        "reason": "新しい固定候補のnative/FILE観察は未実施。決定的JVM/同梱検査は別に記録する。"
+      },
+      "human": {
+        "status": "pending",
+        "reason": "未観察。既存のhuman/REAL延期を保持し、別の必須条件や免除を仮定しない。"
+      },
+      "fix_issue": null,
+      "fix_pr": null,
+      "recheck": "CLI入口・対象選択・設定移行・shared service/writer結果・停止の変更を同じ候補で確認。既存Caseは元の結果を残し、未変更の事実だけを責任契約に従って評価する。",
+      "next_action": "固定PRの独立レビュー後、PMが以下の最小native/FILEと残条件をQA/#280へ双方向readbackで割り当てる。実装の停止だけでIssue close又は原型退役の受入済みとはしない。",
+      "id": "CLI-SHARED-SAVE",
+      "change": "CLI保存とGUIが同じバッファ・single writer・確定結果を共有する",
+      "steps": [
+        "同じロード候補と有限marker入力で、VIDEO_AND_LOGSとLOG_ONLYのCLI保存を各1回。GUI操作とCLIのSaveを競合させ、writer/取得process/接続/バッファを重複生成せず既存のbusy/failed-pin制約になることを確認する。全raceの反復は決定的writer回帰へ委ねる。",
+        "CLIのexit0/path、GUIのrequest/attempt結果、完成sessionのsave_id/内容を照合する。2保存の全対象log rows/bytes/ID/帰属/窓と、AVの全frame/PTS/窓/gap/hashを既存FILE手段で確認する。動画の代表再生と全文検証を区別する。",
+        "代表の保存失敗でexit1/stderr、未完成/retained path、同じpinのGUI retry又はdiscardを確認する。早期writer完了、OFF/closeとの競合、同requestの別attempt、timeout非取消しは決定的回帰で確認し、その結果を実native実施へ読み替えない。"
+      ],
+      "expected": "受理だけを成功にせず、要求したwriter attemptの確定結果だけを返す。別要求のpathを返さず、不足/unknown/失敗は保持する。完成/失敗試行/所有不明物を消さない。"
+    },
+    {
+      "artifact": "plugin",
+      "preconditions": "#103のclean固定source/ZIP/全JARと実ロードを同定。共有GUI leaseと所有するIDE/project/端末fixture・保存先・復元担当をPMが割り当てる。現在の実装割当はGUI/ADB/device/install/restartを含まない。旧FAIL/unknown、human/REALと最終v2条件を保つ。",
+      "provenance": [
+        "https://github.com/shinma06/android-replay-buffer/issues/103",
+        "https://github.com/shinma06/android-replay-buffer/issues/103#issuecomment-6233411932",
+        "docs/cli.md",
+        "docs/verification/responsibility.md"
+      ],
+      "gpt": {
+        "status": "pending",
+        "reason": "新しい固定候補のnative/FILE観察は未実施。決定的JVM/同梱検査は別に記録する。"
+      },
+      "human": {
+        "status": "pending",
+        "reason": "未観察。既存のhuman/REAL延期を保持し、別の必須条件や免除を仮定しない。"
+      },
+      "fix_issue": null,
+      "fix_pr": null,
+      "recheck": "CLI入口・対象選択・設定移行・shared service/writer結果・停止の変更を同じ候補で確認。既存Caseは元の結果を残し、未変更の事実だけを責任契約に従って評価する。",
+      "next_action": "固定PRの独立レビュー後、PMが以下の最小native/FILEと残条件をQA/#280へ双方向readbackで割り当てる。実装の停止だけでIssue close又は原型退役の受入済みとはしない。",
+      "id": "CLI-OWNERSHIP-LIFETIME",
+      "change": "外部入力・接続断・停止・project closeの所有と結果不明を扱う",
+      "steps": [
+        "決定的transport回帰で不正UTF-8/長さ/command、相互認証失敗、symlink/所有権/permission不正、stale PID開始時刻、複数/別build、4worker上限と接続断を確認する。ログや証拠へtoken/raw diagnosticsを公開しない。",
+        "同じnative候補でCLI保存中のclient切断又は結果待ち終了を代表1回観察し、サーバー側の保存結果をGUIとFILEで照合する。自動retryせず結果不明を伝える。",
+        "stop/OFFとproject closeをGUI/CLIで実行し、対象projectの所有取得だけが停止し完成物/保全partial/他project/IDE/旧daemonへ影響しないことを確認する。接続情報/worker終了を確認し、dispose後にUI更新しない。所有元設定を復元する。"
+      ],
+      "expected": "認証前や対象不明の要求は操作しない。入力・worker・待機は有限。終了は所有対象に限定し、通信断を取消し又は保存失敗と誤認しない。"
+    }
+  ]
+}

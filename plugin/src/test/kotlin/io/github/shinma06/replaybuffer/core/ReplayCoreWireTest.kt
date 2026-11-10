@@ -1,17 +1,17 @@
 package io.github.shinma06.replaybuffer.core
 
+import io.github.shinma06.replaybuffer.testing.TestExecutables
 import com.google.gson.JsonParser
 import org.jcodec.codecs.h264.H264Encoder
 import org.jcodec.codecs.h264.H264Utils
 import org.jcodec.common.model.ColorSpace
 import org.jcodec.common.model.Picture
-import org.junit.jupiter.api.condition.EnabledOnOs
-import org.junit.jupiter.api.condition.OS
 import java.io.DataOutputStream
 import java.net.InetAddress
 import java.net.ServerSocket
 import java.nio.ByteBuffer
 import java.nio.file.Files
+import java.nio.file.Path
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -26,7 +26,7 @@ import kotlin.test.assertTrue
 class ReplayCoreWireTest {
     @Test
     fun failedRequestRetriesItsOriginalWindowWhileAcquisitionReconfigurationAndReconnectContinue() {
-        runWireFixture(false)
+        runWireFixture(false, videoQuality = VideoQuality.LIGHTWEIGHT)
     }
 
     @Test
@@ -35,28 +35,46 @@ class ReplayCoreWireTest {
     }
 
     @Test
-    @EnabledOnOs(OS.MAC) // Existing SaveWriter fixture uses macOS AVFoundation; not IDE/device acceptance.
     fun partitionedLogsPreserveIdsAndPartialFailureAndLegacyUnknownHeadersKeepAll() {
         for (mode in listOf("partition", "legacy", "empty", "timeout", "cancel")) runWireFixture(false, mode)
     }
 
     @Test
-    @EnabledOnOs(OS.MAC)
     fun recoveredLogReaderWaitsForInitializationBeforeReceivingEvents() {
         runWireFixture(false, "partition", logReaderStartupDelayMillis = 2000)
     }
+
+    @Test
+    fun logOnlySkipsEveryVideoPathAndQuietRequestsRetryWithTheirFrozenMode() {
+        runWireFixture(false, "partition", captureMode = CaptureMode.LOG_ONLY, videoQuality = VideoQuality.LIGHTWEIGHT)
+    }
+
+    @Test
+    fun productionReaderAndExistingPsPollAdmitOneCorroboratedAutomaticSave() {
+        runWireFixture(false, "partition", captureMode = CaptureMode.LOG_ONLY, autoCrash = true)
+    }
+
+    private fun ownedPids(dir: Path): List<String> =
+        Files.list(dir).use { files -> files.map { it.fileName.toString() }.toList() }
 
     private fun runWireFixture(
         discardInitialPFrame: Boolean,
         logMode: String? = null,
         logReaderStartupDelayMillis: Long = 0,
+        captureMode: CaptureMode = CaptureMode.VIDEO_AND_LOGS,
+        autoCrash: Boolean = false,
+        videoQuality: VideoQuality = VideoQuality.STANDARD,
     ) {
         val root = Files.createTempDirectory("replay-wire-fixture-")
         Files.writeString(root.resolve("probe-mode.txt"), logMode ?: "partition")
         Files.writeString(root.resolve("log-events.txt"), "")
+        if (captureMode == CaptureMode.LOG_ONLY && !autoCrash) {
+            Files.createFile(root.resolve("unconfirmed-logs"))
+            Files.createFile(root.resolve("quiet-logs"))
+        }
         val devices = root.resolve("devices.txt")
         Files.writeString(devices, "List of devices attached\nfixture-1 device model:Fixture\nfixture-2 device model:Other\n")
-        val pids = root.resolve("owned-pids.txt")
+        val pids = root.resolve("owned-pids")
         val server = ServerSocket(0, 8, InetAddress.getLoopbackAddress())
         val clockServer = ServerSocket(0, 8, InetAddress.getLoopbackAddress())
         val stop = AtomicBoolean()
@@ -141,32 +159,36 @@ class ReplayCoreWireTest {
                 }
             }
         }
-        val fake = root.resolve("adb")
-        Files.writeString(fake, """#!/usr/bin/python3
+        var fake = root.resolve("adb")
+        fake = TestExecutables.python(fake, """#!/usr/bin/python3
 import sys,time,os,struct,pathlib,socket
 root=pathlib.Path(__file__).parent
-with (root/'owned-pids.txt').open('a') as f: f.write(str(os.getpid())+'\n')
+(root/'owned-pids').mkdir(exist_ok=True); (root/'owned-pids'/str(os.getpid())).touch()  # one file per process: Windows appends from concurrent processes are not atomic
 a=sys.argv[1:]
 if a==['forward','--list']:
     pass
 elif a==['devices','-l']:
     print((root/'devices.txt').read_text(),end='')
 elif len(a)>2 and a[2]=='push':
-    pass
+    with (root/'pushed-files.txt').open('a') as f: f.write(pathlib.Path(a[3]).name+'\n')
 elif len(a)>2 and a[2]=='forward':
-    if '--remove' not in a: print(${server.localPort})
+    if '--remove' not in a:
+        with (root/'allocated-forwards.txt').open('a') as f: f.write('allocated\n')
+        print(${server.localPort})
 elif len(a)>2 and a[2]=='logcat':
     mode=(root/'probe-mode.txt').read_text()
     buffer=a[a.index('-b')+1]
-    def emit(lid,message,epoch=None,pid=12,uid=10001,header=28,tag='Fixture'):
+    def wire(lid,payload,epoch=None,pid=12,uid=10001,header=28):
         epoch=time.time_ns() if epoch is None else epoch
-        payload=(b'\x06'+message.encode()) if lid==2 else b'\x04'+tag.encode()+b'\x00'+message.encode()+b'\x00'
         raw=struct.pack('<HHiiII',len(payload),header,pid,pid,epoch//1000000000,epoch%1000000000)
         if header>=24: raw+=struct.pack('<I',lid)
         if header>=28: raw+=struct.pack('<I',uid)
         raw+=payload
         for i in range(0,len(raw),3):
             sys.stdout.buffer.write(raw[i:i+3]); sys.stdout.buffer.flush()
+    def emit(lid,message,epoch=None,pid=12,uid=10001,header=28,tag='Fixture'):
+        payload=(b'\x06'+message.encode()) if lid==2 else b'\x04'+tag.encode()+b'\x00'+message.encode()+b'\x00'
+        wire(lid,payload,epoch,pid,uid,header)
     if '-d' in a:
         (root/'probe-started').touch()
         if mode=='empty': sys.exit(0)
@@ -179,12 +201,23 @@ elif len(a)>2 and a[2]=='logcat':
         time.sleep(${logReaderStartupDelayMillis}/1000)
     seen=len((root/'log-events.txt').read_text().splitlines())
     with launches.open('a') as f: f.write(buffer+' '+str(os.getpid())+'\n')
+    quiet_sent=False
+    crash_sent=False
     while True:
+        if (root/'unconfirmed-logs').exists(): time.sleep(.05); continue
         if (root/('fail-'+buffer)).exists(): sys.exit(7)
         if buffer=='all' and (root/'wrong-header-all').exists():
             emit(0,'wrong header',header=20); time.sleep(.1); continue
         if buffer=='all' and (root/'quiet-all').exists(): time.sleep(.1); continue
+        if (root/'quiet-logs').exists():
+            if not quiet_sent: emit(0,'old tail',epoch=1000000000); quiet_sent=True
+            time.sleep(.05); continue
         emit(0,'hello',header=20 if mode=='legacy' else 28)
+        if buffer=='all' and not crash_sent and (root/'crash-wire.txt').exists():
+            for crash in (root/'crash-wire.txt').read_text().splitlines():
+                lid,pid,uid,wall,payload=crash.split(' ')
+                wire(int(lid),bytes.fromhex(payload),int(wall),int(pid),int(uid))
+            crash_sent=True
         lines=(root/'log-events.txt').read_text().splitlines()
         for line in lines[seen:]:
             wall,label=line.split(' ',1); wall=int(wall)
@@ -204,18 +237,17 @@ elif len(a)>3 and 'ClockProbe' in a[3]:
             writer.write(nonce); writer.flush()
             print(reader.readline().strip(),flush=True)
 elif len(a)>3 and 'scrcpy.Server' in a[3]:
-    with (root/'video-launches.txt').open('a') as f: f.write('start\n')
+    with (root/'video-launches.txt').open('a') as f: f.write(a[3]+'\n')
     time.sleep(90)
 elif len(a)>3 and a[3]=='settings':
     print(1)
 elif len(a)>3 and a[3]=='cmd':
     print('package:com.fixture.app uid:10001')
 elif len(a)>3 and a[3]=='ps':
-    print('PID UID NAME\n12 10001 com.fixture.app' if a[-1]=='PID,UID,NAME' else 'PID ARGS')
+    print('PID UID NAME\n12 10001 com.fixture.app\n500 1000 system_server' if a[-1]=='PID,UID,NAME' else 'PID ARGS')
 """)
-        assertTrue(fake.toFile().setExecutable(true))
-        val core = ReplayCore(ReplaySettings(fake, root.resolve("missing"), 1,
-            ApplicationTarget()), root.resolve("workspace"))
+                val core = ReplayCore(ReplaySettings(fake, root.resolve("missing"), if (captureMode.videoRequested) 1 else 30,
+            ApplicationTarget(), captureMode, videoQuality = videoQuality), root.resolve("workspace"))
         fun awaitState(phase: String, predicate: (ReplaySnapshot) -> Boolean): ReplaySnapshot {
             val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(15)
             while (System.nanoTime() < deadline) {
@@ -231,6 +263,138 @@ elif len(a)>3 and a[3]=='ps':
             assertTrue(enabled.accepted, enabled.reason)
             awaitState("unselected-multiple") { it.captureState == CaptureState.MULTIPLE_DEVICES && it.device == null }
             Files.writeString(devices, "List of devices attached\nfixture-1 device model:Fixture\n")
+            if (autoCrash) {
+                assertTrue(core.updateApplication(ApplicationTarget("com.fixture.app")).get().accepted)
+                assertTrue(core.applySettings(core.snapshot().settings.copy(saveDirectory = root, autoSaveOnCrash = true)).get().accepted)
+                awaitState("auto-armed") { it.autoSave.state == AutoSaveState.ARMED && it.captureState == CaptureState.CAPTURING }
+                val wall = System.currentTimeMillis() * 1_000_000
+                val sources = listOf(javaCrash(process = "com.fixture.app", pid = 12, uid = 10001, wall = wall),
+                    platformCrash(process = "com.fixture.app", first = 12, wall = wall + 1_000_000))
+                Files.writeString(root.resolve("crash-wire.tmp"), sources.joinToString("\n") {
+                    "${it.lid} ${it.pid} ${it.uid} ${it.wall} ${java.util.HexFormat.of().formatHex(it.raw)}"
+                })
+                Files.move(root.resolve("crash-wire.tmp"), root.resolve("crash-wire.txt"))
+                val done = awaitState("auto-save-completed") { it.lastSave?.phase == SavePhase.COMPLETED }
+                assertEquals(AutoSaveReason.SAVED, done.autoSave.lastOutcome?.reason)
+                assertEquals(7, done.autoSave.admissionsRemaining)
+                assertEquals(1, done.lastSave?.attempt)
+                val manifest = JsonParser.parseString(Files.readString(done.lastSave!!.directory!!.resolve("session.json"))).asJsonObject
+                assertEquals("com.fixture.app", manifest["auto_trigger"].asJsonObject["target_identity"].asJsonObject["package"].asString)
+                assertEquals(500, manifest["auto_trigger"].asJsonObject["reporter_poll"].asJsonObject["pid"].asInt)
+                assertEquals("LOG_ONLY", manifest["capture_mode"].asString)
+                assertTrue(core.setEnabled(false).get(15, TimeUnit.SECONDS).accepted)
+                return
+            }
+            if (captureMode == CaptureMode.LOG_ONLY) {
+                awaitState("readers-started-without-headers") {
+                    val launches = root.resolve("log-launches.txt")
+                    Files.exists(launches) && Files.readAllLines(launches).size >= 2
+                }
+                assertTrue(core.updateApplication(ApplicationTarget("com.fixture.app")).get().accepted)
+                assertFalse(core.snapshot().canSave)
+                assertFalse(core.save().get().accepted)
+                Files.createFile(root.resolve("wrong-header-all"))
+                Files.delete(root.resolve("unconfirmed-logs"))
+                awaitState("malformed-first-header") {
+                    it.deviceLog.state == StreamState.RECOVERING && it.deviceLog.reason?.contains("header") == true
+                }
+                assertFalse(core.snapshot().canSave)
+                Files.delete(root.resolve("wrong-header-all"))
+                // Readiness is based on a valid old tail, which must never become a stored row.
+                assertTrue(core.applySettings(core.snapshot().settings.copy(saveDirectory = root)).get().accepted)
+                val quiet = awaitState("confirmed-quiet-window") { it.canSave && it.captureState == CaptureState.CAPTURING }
+                assertEquals(StreamState.NOT_REQUESTED, quiet.video.state)
+                assertEquals(0.0, quiet.deviceLog.availableSeconds)
+                assertEquals(0.0, quiet.appLog.availableSeconds)
+                assertTrue(quiet.video.gaps.isEmpty())
+                assertTrue(videoSockets.isEmpty())
+                assertFalse(Files.exists(root.resolve("video-launches.txt")))
+                assertFalse(Files.exists(root.resolve("allocated-forwards.txt")))
+                assertEquals(setOf("replay-clock.jar"), Files.readAllLines(root.resolve("pushed-files.txt")).toSet())
+                Files.walk(root.resolve("workspace")).use { files ->
+                    assertTrue(files.noneMatch { it.fileName.toString().contains("scrcpy") || it.fileName.toString().endsWith(".h264") })
+                }
+                assertTrue(core.applySettings(quiet.settings.copy(saveDirectory = root.resolve("missing"))).get().accepted)
+                val accepted = core.save().get()
+                assertTrue(accepted.accepted)
+                val failed = awaitState("quiet-failed-save") { it.save.phase == SavePhase.FAILED }
+                assertEquals(CaptureMode.LOG_ONLY, failed.save.captureMode)
+                assertFalse(core.save().get().accepted)
+                assertFalse(core.applySettings(failed.settings.copy(captureMode = CaptureMode.VIDEO_AND_LOGS, replaySeconds = 60)).get().accepted)
+                assertEquals(failed.settings, core.snapshot().settings)
+                assertEquals(failed.settingsRevision, core.snapshot().settingsRevision)
+                assertEquals(failed.save, core.snapshot().save)
+                assertEquals(quiet.sequenceId, core.snapshot().sequenceId)
+                assertTrue(core.retryAtDirectory(accepted.requestId!!, root).get().accepted)
+                val completed = awaitState("quiet-retried-save") { it.save.phase == SavePhase.COMPLETED }
+                assertEquals(failed.save.windowStartNs, completed.save.windowStartNs)
+                assertEquals(failed.save.windowEndNs, completed.save.windowEndNs)
+                assertEquals(CaptureMode.LOG_ONLY, completed.save.captureMode)
+                assertTrue(completed.save.missingKinds.isEmpty())
+                val folder = completed.save.directory!!
+                val json = JsonParser.parseString(Files.readString(folder.resolve("session.json"))).asJsonObject
+                val request = json["settings"].asJsonObject["video_request"]
+                if (captureMode.videoRequested) {
+                    assertEquals("H.264 / ${videoQuality.maxSize} / ${videoQuality.maxFps}fps / ${videoQuality.bitRate / 1_000_000}Mbps / no B-frame",
+                        json["settings"].asJsonObject["video"].asString)
+                    assertEquals(videoQuality.name, request.asJsonObject["quality"].asString)
+                    assertEquals(videoQuality.maxSize, request.asJsonObject["max_size"].asInt)
+                    assertEquals(videoQuality.maxFps, request.asJsonObject["max_fps"].asInt)
+                    assertEquals(videoQuality.bitRate, request.asJsonObject["video_bit_rate"].asInt)
+                    assertFalse(request.asJsonObject["downsize_on_error"].asBoolean)
+                } else assertTrue(request.isJsonNull)
+                assertEquals("LOG_ONLY", json["capture_mode"].asString)
+                assertEquals("NOT_REQUESTED", json["coverage"].asJsonObject["video"].asJsonObject["state"].asString)
+                assertTrue(json["video_missing_ranges"].asJsonArray.isEmpty)
+                assertTrue(json["video_clock_gap_scopes"].asJsonArray.isEmpty)
+                assertTrue(json["window_clock_known"].asBoolean)
+                assertTrue(json["clock_samples"].asJsonArray.any { it.asJsonObject["valid"].asBoolean })
+                for (name in listOf("frames.jsonl", "logcat-device.jsonl", "logcat-app.jsonl")) assertEquals(0L, Files.size(folder.resolve(name)))
+                Files.list(folder).use { files -> assertTrue(files.noneMatch { it.fileName.toString().endsWith(".mp4") }) }
+                val savedHash = sha256(folder.resolve("session.json"))
+                assertTrue(core.applySettings(core.snapshot().settings.copy(saveDirectory = root)).get().accepted)
+                assertTrue(core.save().get().accepted)
+                awaitState("second-quiet-save") { it.save.phase == SavePhase.COMPLETED && it.save.requestId != accepted.requestId }
+                // Reader failure disables another zero-row request until its actual header is revalidated.
+                Files.createFile(root.resolve("fail-all"))
+                awaitState("quiet-reader-failure") { it.deviceLog.state == StreamState.RECOVERING && !it.canSave }
+                assertFalse(core.save().get().accepted)
+                Files.delete(root.resolve("fail-all"))
+                awaitState("quiet-reader-recovered") { it.canSave && it.deviceLog.state == StreamState.CAPTURING }
+                Files.delete(root.resolve("quiet-logs"))
+                Files.writeString(root.resolve("log-events.txt"), "${System.currentTimeMillis() * 1_000_000} live\n")
+                awaitState("both-readers-live") { Files.exists(root.resolve("main-live.sent")) && Files.exists(root.resolve("all-live.sent")) }
+                Thread.sleep(1200) // Retain a subsequent clock sample for mapping both readers' rows.
+                Files.createFile(root.resolve("fail-all"))
+                awaitState("partial-log-only") { it.deviceLog.state == StreamState.RECOVERING && it.canSave }
+                val partialRequest = core.save().get()
+                assertTrue(partialRequest.accepted)
+                val partial = awaitState("partial-log-only-save") { it.save.phase == SavePhase.COMPLETED && it.save.requestId == partialRequest.requestId }
+                assertTrue("device_log" in partial.save.missingKinds)
+                assertFalse("video" in partial.save.missingKinds)
+                val rows = Files.readAllLines(partial.save.directory!!.resolve("logcat-device.jsonl")).map { JsonParser.parseString(it).asJsonObject }
+                val appRows = Files.readAllLines(partial.save.directory.resolve("logcat-app.jsonl")).map { JsonParser.parseString(it).asJsonObject }
+                assertTrue(rows.isNotEmpty() && appRows.isNotEmpty())
+                assertTrue(appRows.all { row -> rows.any { it["record_id"] == row["record_id"] } })
+                assertEquals(setOf(0, 1, 3), rows.filter { !it["tag"].isJsonNull && it["tag"].asString == "Partition" }.map { it["lid"].asInt }.toSet())
+                assertTrue(rows.none { !it["message"].isJsonNull && it["message"].asString == "old tail" })
+                assertTrue(core.setEnabled(false).get(15, TimeUnit.SECONDS).accepted)
+                assertEquals(savedHash, sha256(folder.resolve("session.json")))
+                assertEquals(0L, Files.list(root.resolve("workspace")).use { it.count() })
+                // A later explicit OFF/change/ON starts the ordinary video path with a new sequence.
+                Files.delete(root.resolve("fail-all"))
+                assertTrue(core.applySettings(core.snapshot().settings.copy(captureMode = CaptureMode.VIDEO_AND_LOGS)).get().accepted)
+                assertTrue(core.setEnabled(true).get(15, TimeUnit.SECONDS).accepted)
+                val video = awaitState("normal-video-after-mode-change") { it.video.state == StreamState.CAPTURING }
+                assertTrue(video.sequenceId != quiet.sequenceId)
+                assertEquals(CaptureMode.VIDEO_AND_LOGS, video.settings.captureMode)
+                assertTrue(Files.exists(root.resolve("video-launches.txt")))
+                assertTrue(Files.readString(root.resolve("video-launches.txt")).contains("max_size=1024 max_fps=15 video_bit_rate=2000000 downsize_on_error=false"))
+                assertTrue(core.setEnabled(false).get(15, TimeUnit.SECONDS).accepted)
+                core.closeAsync().get(15, TimeUnit.SECONDS)
+                ownedPids(pids).forEach { pid -> assertFalse(ProcessHandle.of(pid.toLong()).map { it.isAlive }.orElse(false)) }
+                return
+            }
             if (logMode == "cancel") {
                 val deadline = System.nanoTime() + 3_000_000_000
                 while (!Files.exists(root.resolve("probe-started")) && System.nanoTime() < deadline) Thread.sleep(10)
@@ -240,7 +404,7 @@ elif len(a)>3 and a[3]=='ps':
                 assertTrue(System.nanoTime() - started < 5_500_000_000)
                 core.closeAsync().get(10, TimeUnit.SECONDS)
                 assertFalse(Files.exists(root.resolve("log-launches.txt")))
-                Files.readAllLines(pids).forEach { pid -> assertFalse(ProcessHandle.of(pid.toLong()).map { it.isAlive }.orElse(false)) }
+                ownedPids(pids).forEach { pid -> assertFalse(ProcessHandle.of(pid.toLong()).map { it.isAlive }.orElse(false)) }
                 return
             }
             if (discardInitialPFrame) {
@@ -253,6 +417,10 @@ elif len(a)>3 and a[3]=='ps':
             awaitState("unresolved-app") { it.video.state == StreamState.CAPTURING && it.appLog.state == StreamState.UNAVAILABLE }
             assertTrue(core.updateApplication(ApplicationTarget("com.fixture.app")).get().accepted)
             val capturing = awaitState("initial-capture") { it.canSave && it.video.state == StreamState.CAPTURING && it.appLog.state == StreamState.CAPTURING }
+            val launch = Files.readAllLines(root.resolve("video-launches.txt")).first()
+            assertTrue(launch.contains("max_size=${videoQuality.maxSize} max_fps=${videoQuality.maxFps} video_bit_rate=${videoQuality.bitRate} downsize_on_error=false"))
+            assertTrue(launch.contains("video_codec=h264") && launch.contains("max-bframes:int=0,i-frame-interval:int=1"))
+            assertFalse(launch.contains("video_encoder="))
             if (logMode != null) {
                 assertTrue(core.applySettings(core.snapshot().settings.copy(replaySeconds = 30, saveDirectory = root)).get().accepted)
                 val readers = mutableMapOf<String, Long>()
@@ -356,7 +524,7 @@ elif len(a)>3 and a[3]=='ps':
                 else assertEquals(0, launches.count { it == "main" })
                 assertTrue(core.setEnabled(false).get(10, TimeUnit.SECONDS).accepted)
                 core.closeAsync().get(10, TimeUnit.SECONDS)
-                Files.readAllLines(pids).forEach { pid -> assertFalse(ProcessHandle.of(pid.toLong()).map { it.isAlive }.orElse(false)) }
+                ownedPids(pids).forEach { pid -> assertFalse(ProcessHandle.of(pid.toLong()).map { it.isAlive }.orElse(false)) }
                 return
             }
             if (discardInitialPFrame) {
@@ -371,34 +539,32 @@ elif len(a)>3 and a[3]=='ps':
                 awaitState("changed-config-recovered") { readyConnections.get() == 3 && it.video.state == StreamState.CAPTURING }
                 assertTrue(core.setEnabled(false).get(15, TimeUnit.SECONDS).accepted)
                 core.closeAsync().get(15, TimeUnit.SECONDS)
-                Files.readAllLines(pids).forEach { pid -> assertFalse(ProcessHandle.of(pid.toLong()).map { it.isAlive }.orElse(false)) }
+                ownedPids(pids).forEach { pid -> assertFalse(ProcessHandle.of(pid.toLong()).map { it.isAlive }.orElse(false)) }
                 return
             }
-            if (System.getProperty("os.name") == "Mac OS X") {
-                Thread.sleep(1300) // Remove the initial unresolved-app interval from the one-second window.
-                pauseVideo.set(true)
-                Thread.sleep(11_000)
-                assertEquals(1, readyConnections.get())
-                assertEquals(StreamState.CAPTURING, core.snapshot().video.state)
-                assertTrue(core.snapshot().video.gaps.isEmpty())
-                assertTrue(core.applySettings(core.snapshot().settings.copy(saveDirectory = root)).get().accepted)
-                repeat(2) {
-                    assertTrue(core.save().get().accepted)
-                    val normal = awaitState("normal-save") { it.save.phase == SavePhase.COMPLETED }
-                    assertTrue(normal.save.missingKinds.isEmpty())
-                    assertTrue(normal.canSave)
-                    assertEquals(StreamState.CAPTURING, normal.video.state)
-                    val tail = normal.save.videoTail!!
-                    assertTrue(tail.displayHeld)
-                    assertTrue(tail.toNs!! > tail.fromNs!!)
-                    val manifest = JsonParser.parseString(Files.readString(normal.save.directory!!.resolve("session.json"))).asJsonObject
-                    assertTrue(manifest["complete"].asBoolean)
-                    assertFalse(manifest["video_tail"].asJsonObject["new_frame_confirmed"].asBoolean)
-                    pauseVideo.set(false)
-                    awaitState("static-resumed") { it.video.availableSeconds > 0 && it.video.gaps.isEmpty() }
-                }
-                assertTrue(core.applySettings(core.snapshot().settings.copy(saveDirectory = root.resolve("missing"))).get().accepted)
+            Thread.sleep(1300) // Remove the initial unresolved-app interval from the one-second window.
+            pauseVideo.set(true)
+            Thread.sleep(11_000)
+            assertEquals(1, readyConnections.get())
+            assertEquals(StreamState.CAPTURING, core.snapshot().video.state)
+            assertTrue(core.snapshot().video.gaps.isEmpty())
+            assertTrue(core.applySettings(core.snapshot().settings.copy(saveDirectory = root)).get().accepted)
+            repeat(2) {
+                assertTrue(core.save().get().accepted)
+                val normal = awaitState("normal-save") { it.save.phase == SavePhase.COMPLETED }
+                assertTrue(normal.save.missingKinds.isEmpty())
+                assertTrue(normal.canSave)
+                assertEquals(StreamState.CAPTURING, normal.video.state)
+                val tail = normal.save.videoTail!!
+                assertTrue(tail.displayHeld)
+                assertTrue(tail.toNs!! > tail.fromNs!!)
+                val manifest = JsonParser.parseString(Files.readString(normal.save.directory!!.resolve("session.json"))).asJsonObject
+                assertTrue(manifest["complete"].asBoolean)
+                assertFalse(manifest["video_tail"].asJsonObject["new_frame_confirmed"].asBoolean)
+                pauseVideo.set(false)
+                awaitState("static-resumed") { it.video.availableSeconds > 0 && it.video.gaps.isEmpty() }
             }
+            assertTrue(core.applySettings(core.snapshot().settings.copy(saveDirectory = root.resolve("missing"))).get().accepted)
             assertEquals(1, Files.readAllLines(root.resolve("video-launches.txt")).size)
             assertTrue(videoSockets.size > 1) // Early forwarded EOFs did not restart the owned server.
             val sequence = capturing.sequenceId
@@ -438,6 +604,13 @@ elif len(a)>3 and a[3]=='ps':
             Thread.sleep(1100)
             assertEquals(disconnected.windowEndNs, core.snapshot().windowEndNs)
             assertEquals(fixed.windowEndNs, core.snapshot().save.windowEndNs)
+            Files.writeString(devices, "List of devices attached\nfixture-2 device model:Other\n")
+            val waitingForOriginal = awaitState("different-device-must-not-replace-target") {
+                it.error == "最初に選択した端末の再接続を待っています"
+            }
+            assertEquals("fixture-1", waitingForOriginal.device?.serial)
+            assertFalse(waitingForOriginal.device!!.connected)
+            assertEquals(disconnected.windowEndNs, waitingForOriginal.windowEndNs)
             Files.writeString(devices, "List of devices attached\nfixture-1 device model:Fixture\n")
             val resumed = awaitState("reconnected") { !it.frozen && it.generation > capturing.generation && it.video.state == StreamState.CAPTURING }
             assertEquals(sequence, resumed.sequenceId)
@@ -448,55 +621,59 @@ elif len(a)>3 and a[3]=='ps':
             assertTrue(core.retryAtDirectory(operation.requestId!!, root).get().accepted)
             var completed: java.nio.file.Path? = null
             var savedHash: String? = null
-            if (System.getProperty("os.name") == "Mac OS X") {
-                val done = awaitState("save-completed") { it.save.phase == SavePhase.COMPLETED }
-                assertEquals(fixed.windowEndNs, done.save.windowEndNs)
-                assertEquals(fixed.device, done.save.device)
-                assertEquals(fixed.application, done.save.application)
-                assertEquals(fixed.applicationHistory, done.save.applicationHistory)
-                assertEquals(fixed.videoTail, done.save.videoTail)
-                val folder = done.save.directory!!
-                val json = JsonParser.parseString(Files.readString(folder.resolve("session.json"))).asJsonObject
-                assertEquals(operation.requestId, json["save_id"].asString)
-                assertEquals(1, json["replay_seconds"].asInt)
-                assertTrue(json["clock_samples"].asJsonArray.any { it.asJsonObject["valid"].asBoolean })
-                val frames = Files.readAllLines(folder.resolve("frames.jsonl")).map { JsonParser.parseString(it).asJsonObject }
-                assertTrue(frames.isNotEmpty())
-                assertTrue(frames.all { !it["elapsed_ns"].isJsonNull && !it["window_ns"].isJsonNull })
-                val parts = json["parts"].asJsonArray
-                assertTrue(parts.size() > 0)
-                assertEquals(setOf("video-001.mp4"), parts.map { it.asJsonObject["file"].asString }.toSet())
-                Files.list(folder).use { paths -> assertEquals(1L, paths.filter { it.fileName.toString().endsWith(".mp4") }.count()) }
-                parts.forEach { part ->
-                    val item = part.asJsonObject
-                    assertTrue(item["edit_start_us"].asString.toLong() >= 0)
-                    // Individual frame mappings survive a source run spanning clock epochs.
-                    if (item["clock_alignment_known"].asBoolean) assertFalse(item["window_start_ns"].isJsonNull)
-                    else assertTrue(item["window_start_ns"].isJsonNull && item["window_end_ns"].isJsonNull)
-                    assertTrue(Files.size(folder.resolve(item["file"].asString)) > 0)
-                }
-                completed = folder
-                savedHash = sha256(folder.resolve("session.json"))
-                assertTrue(core.applySettings(core.snapshot().settings.copy(saveDirectory = root)).get().accepted)
-                assertTrue(core.save().get().accepted)
-                val fresh = awaitState("recovered-window-save") { it.save.phase == SavePhase.COMPLETED && it.save.requestId != operation.requestId }
-                val freshJson = JsonParser.parseString(Files.readString(fresh.save.directory!!.resolve("session.json"))).asJsonObject
-                val appGap = freshJson["gaps"].asJsonArray.single {
-                    it.asJsonObject["kind"].asString == "app_log" && it.asJsonObject["reason"].asString == "端末との取得接続が中断しています"
-                }.asJsonObject
-                assertFalse(appGap["to_ns"].isJsonNull)
-                assertEquals("CAPTURING", freshJson["coverage"].asJsonObject["app_log"].asJsonObject["state"].asString)
-                assertEquals(savedHash, sha256(folder.resolve("session.json")))
-            } else {
-                val unsupported = awaitState("unsupported-native-save") { it.save.phase == SavePhase.FAILED }
-                assertEquals(fixed.applicationHistory, unsupported.save.applicationHistory)
-                assertTrue(core.discard(operation.requestId).get().accepted)
+            val done = awaitState("save-completed") { it.save.phase == SavePhase.COMPLETED }
+            assertEquals(fixed.windowEndNs, done.save.windowEndNs)
+            assertEquals(fixed.device, done.save.device)
+            assertEquals(fixed.application, done.save.application)
+            assertEquals(fixed.applicationHistory, done.save.applicationHistory)
+            assertEquals(fixed.videoTail, done.save.videoTail)
+            val folder = done.save.directory!!
+            val json = JsonParser.parseString(Files.readString(folder.resolve("session.json"))).asJsonObject
+            val request = json["settings"].asJsonObject["video_request"]
+            if (captureMode.videoRequested) {
+                assertEquals("H.264 / ${videoQuality.maxSize} / ${videoQuality.maxFps}fps / ${videoQuality.bitRate / 1_000_000}Mbps / no B-frame",
+                    json["settings"].asJsonObject["video"].asString)
+                assertEquals(videoQuality.name, request.asJsonObject["quality"].asString)
+                assertEquals(videoQuality.maxSize, request.asJsonObject["max_size"].asInt)
+                assertEquals(videoQuality.maxFps, request.asJsonObject["max_fps"].asInt)
+                assertEquals(videoQuality.bitRate, request.asJsonObject["video_bit_rate"].asInt)
+                assertFalse(request.asJsonObject["downsize_on_error"].asBoolean)
+            } else assertTrue(request.isJsonNull)
+            assertEquals(operation.requestId, json["save_id"].asString)
+            assertEquals(1, json["replay_seconds"].asInt)
+            assertTrue(json["clock_samples"].asJsonArray.any { it.asJsonObject["valid"].asBoolean })
+            val frames = Files.readAllLines(folder.resolve("frames.jsonl")).map { JsonParser.parseString(it).asJsonObject }
+            assertTrue(frames.isNotEmpty())
+            assertTrue(frames.all { !it["elapsed_ns"].isJsonNull && !it["window_ns"].isJsonNull })
+            val parts = json["parts"].asJsonArray
+            assertTrue(parts.size() > 0)
+            assertEquals(setOf("video-001.mp4"), parts.map { it.asJsonObject["file"].asString }.toSet())
+            Files.list(folder).use { paths -> assertEquals(1L, paths.filter { it.fileName.toString().endsWith(".mp4") }.count()) }
+            parts.forEach { part ->
+                val item = part.asJsonObject
+                assertTrue(item["edit_start_us"].asString.toLong() >= 0)
+                // Individual frame mappings survive a source run spanning clock epochs.
+                if (item["clock_alignment_known"].asBoolean) assertFalse(item["window_start_ns"].isJsonNull)
+                else assertTrue(item["window_start_ns"].isJsonNull && item["window_end_ns"].isJsonNull)
+                assertTrue(Files.size(folder.resolve(item["file"].asString)) > 0)
             }
+            completed = folder
+            savedHash = sha256(folder.resolve("session.json"))
+            assertTrue(core.applySettings(core.snapshot().settings.copy(saveDirectory = root)).get().accepted)
+            assertTrue(core.save().get().accepted)
+            val fresh = awaitState("recovered-window-save") { it.save.phase == SavePhase.COMPLETED && it.save.requestId != operation.requestId }
+            val freshJson = JsonParser.parseString(Files.readString(fresh.save.directory!!.resolve("session.json"))).asJsonObject
+            val appGap = freshJson["gaps"].asJsonArray.single {
+                it.asJsonObject["kind"].asString == "app_log" && it.asJsonObject["reason"].asString == "端末との取得接続が中断しています"
+            }.asJsonObject
+            assertFalse(appGap["to_ns"].isJsonNull)
+            assertEquals("CAPTURING", freshJson["coverage"].asJsonObject["app_log"].asJsonObject["state"].asString)
+            assertEquals(savedHash, sha256(folder.resolve("session.json")))
             assertTrue(core.setEnabled(false).get(15, TimeUnit.SECONDS).accepted)
             core.closeAsync().get(15, TimeUnit.SECONDS)
             completed?.let { assertEquals(savedHash, sha256(it.resolve("session.json"))) }
             assertEquals(0, Files.list(root.resolve("workspace")).use { it.count() })
-            Files.readAllLines(pids).forEach { pid -> assertFalse(ProcessHandle.of(pid.toLong()).map { it.isAlive }.orElse(false)) }
+            ownedPids(pids).forEach { pid -> assertFalse(ProcessHandle.of(pid.toLong()).map { it.isAlive }.orElse(false)) }
         } finally {
             core.closeAsync().get(15, TimeUnit.SECONDS)
             stop.set(true); pauseVideo.set(false); resumeVideo.countDown(); server.close(); clockServer.close(); sockets.forEach { runCatching { it.close() } }

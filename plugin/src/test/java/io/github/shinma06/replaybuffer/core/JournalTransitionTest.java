@@ -1,6 +1,7 @@
 package io.github.shinma06.replaybuffer.core;
 
 
+import io.github.shinma06.replaybuffer.testing.TestExecutables;
 import java.nio.*;
 
 import java.nio.channels.*;
@@ -123,7 +124,7 @@ j.retain(record,true);
 
   Path path=r.resolve("remote-cleanup-"+record.getToken()+".json");
 byte[] before=Files.readAllBytes(path);
-Object oldKey=Files.readAttributes(path,java.nio.file.attribute.BasicFileAttributes.class).fileKey();
+Object oldKey=PrivateFiles.INSTANCE.fileKey(path);
 
   Function1<Path,FileChannel> normal=p->{try{return create(p);
 }catch(IOException e){throw new java.io.UncheckedIOException(e);
@@ -136,7 +137,7 @@ Object oldKey=Files.readAttributes(path,java.nio.file.attribute.BasicFileAttribu
   assertThrows(IOException.class,()->j.retain(record,false));
 
   assertArrayEquals(before,Files.readAllBytes(path));
-assertEquals(oldKey,Files.readAttributes(path,java.nio.file.attribute.BasicFileAttributes.class).fileKey());
+assertEquals(oldKey,PrivateFiles.INSTANCE.fileKey(path));
 assertFalse(j.getHasRecoverable());
 
   RemoteCleanupJournal competitor=new RemoteCleanupJournal(r);
@@ -155,7 +156,7 @@ owned.put(path,entry(previous,previousChannel,new ReleaseFailure((FileLock)get(p
   assertThrows(IOException.class,()->j.retain(record,false));
 assertFalse(previousChannel.isOpen());
 
-  assertNotEquals(oldKey,Files.readAttributes(path,java.nio.file.attribute.BasicFileAttributes.class).fileKey());
+  assertNotEquals(oldKey,PrivateFiles.INSTANCE.fileKey(path));
 assertTrue(j.getHasRecoverable());
 
   competitor=new RemoteCleanupJournal(r);
@@ -207,7 +208,7 @@ j.close();
    Path descriptor=r.resolve("remote-cleanup-"+record.getToken()+".json");
    if(update) j.retain(record,true);
    byte[] oldBytes=update ? Files.readAllBytes(descriptor) : null;
-   Object oldKey=update ? Files.readAttributes(descriptor,java.nio.file.attribute.BasicFileAttributes.class).fileKey() : null;
+   Object oldKey=update ? PrivateFiles.INSTANCE.fileKey(descriptor) : null;
    Object oldEntry=update ? ((Map<?,?>)get(j,"owned")).get(descriptor) : null;
    FileLock oldLock=update ? (FileLock)get(oldEntry,"lock") : null;
    Path[] stage={null}; FileChannel[] channel={null}; FileLock[] lock={null};
@@ -230,7 +231,7 @@ j.close();
    assertFalse(channel[0].isOpen());assertFalse(lock[0].isValid());
    if(update) {
     assertArrayEquals(oldBytes,Files.readAllBytes(descriptor));
-    assertEquals(oldKey,Files.readAttributes(descriptor,java.nio.file.attribute.BasicFileAttributes.class).fileKey());
+    assertEquals(oldKey,PrivateFiles.INSTANCE.fileKey(descriptor));
     assertTrue(oldLock.isValid());assertFalse(j.getHasRecoverable());
    }else assertFalse(Files.exists(descriptor));
    Path foreign=stage[0];
@@ -250,7 +251,7 @@ j.retain(record,true);
 byte[] before=Files.readAllBytes(path);
 
   set(j,"createChannel",(Function1<Path,FileChannel>)p->{try{return new CutChannel(create(p),Integer.MAX_VALUE){public void force(boolean metadata)throws IOException{super.force(metadata);
-Files.setPosixFilePermissions(r,java.nio.file.attribute.PosixFilePermissions.fromString("r-x------"));
+io.github.shinma06.replaybuffer.testing.TestPermissions.set(r,"r-x------");
 }};
 }catch(IOException e){throw new java.io.UncheckedIOException(e);
 }});
@@ -259,7 +260,7 @@ Files.setPosixFilePermissions(r,java.nio.file.attribute.PosixFilePermissions.fro
 assertArrayEquals(before,Files.readAllBytes(path));
 assertFalse(j.getHasRecoverable());
 }
-  finally {Files.setPosixFilePermissions(r,java.nio.file.attribute.PosixFilePermissions.fromString("rwx------"));
+  finally {io.github.shinma06.replaybuffer.testing.TestPermissions.set(r,"rwx------");
 }
   set(j,"createChannel",(Function1<Path,FileChannel>)p->{try{return create(p);
 }catch(IOException e){throw new java.io.UncheckedIOException(e);
@@ -307,15 +308,13 @@ j.close();
   Path r=root.resolve("capacity");
 
   Files.createDirectories(r);
-Path fake=r.resolve("fake-adb");
-Files.writeString(fake,"#!/usr/bin/python3\nimport sys,pathlib\nr=pathlib.Path(__file__).parent;a=sys.argv[1:];p=r/'mappings'\nif a==['devices','-l']: print('List of devices attached')\nelif a==['forward','--list']: print(p.read_text() if p.exists() else '',end='')\nelif a[:3]==['-s','fixture-1','push']: pass\nelif a[:4]==['-s','fixture-1','forward','tcp:0']:\n lines=p.read_text().splitlines() if p.exists() else []; lines.append('fixture-1 tcp:'+str(20000+len(lines))+' '+a[4]);p.write_text('\\n'.join(lines)+'\\n');sys.exit(1)\nelse: sys.exit(1)\n");
-fake.toFile().setExecutable(true);
+Path fake=TestExecutables.python(r.resolve("fake-adb"),"import sys,pathlib\nr=pathlib.Path(__file__).parent;a=sys.argv[1:];p=r/'mappings'\nif a==['devices','-l']: print('List of devices attached')\nelif a==['forward','--list']: print(p.read_text() if p.exists() else '',end='')\nelif a[:3]==['-s','fixture-1','push']: pass\nelif a[:4]==['-s','fixture-1','forward','tcp:0']:\n lines=p.read_text().splitlines() if p.exists() else []; lines.append('fixture-1 tcp:'+str(20000+len(lines))+' '+a[4]);p.write_text('\\n'.join(lines)+'\\n');sys.exit(1)\nelse: sys.exit(1)\n");
 
   CaptureResources resources=(CaptureResources)ctor(CaptureResources.class,4,Files.createDirectory(r.resolve("resources")),null,2,null);
-CaptureStore store=(CaptureStore)ctor(CaptureStore.class,9,r.resolve("ring"),null,0L,0L,0L,null,null,126,null);
+CaptureStore store=(CaptureStore)ctor(CaptureStore.class,11,r.resolve("ring"),null,0L,0L,0L,null,null,null,null,510,null);
 ApplicationTarget app=(ApplicationTarget)ctor(ApplicationTarget.class,5,null,null,null,7,null);
-DeviceCapture cap=new DeviceCapture(fake,"fixture-1",resources,store,1,app);
-ReplaySettings settings=new ReplaySettings(fake,null,60,app);
+DeviceCapture cap=new DeviceCapture(fake,"fixture-1",resources,store,1,app, VideoQuality.STANDARD);
+ReplaySettings settings=new ReplaySettings(fake,null,60,app,CaptureMode.VIDEO_AND_LOGS,false, VideoQuality.STANDARD);
 ReplayCore core=new ReplayCore(settings,r.resolve("workspace"),r.resolve("journal"));
 core.applySettings(settings).get(5,TimeUnit.SECONDS);
 ScheduledThreadPoolExecutor control=(ScheduledThreadPoolExecutor)get(get(core,"control"),"e");

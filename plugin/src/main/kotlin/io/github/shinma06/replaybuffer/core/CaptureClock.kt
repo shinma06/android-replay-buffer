@@ -3,6 +3,7 @@ package io.github.shinma06.replaybuffer.core
 import java.util.ArrayDeque
 import kotlin.math.abs
 
+/** Device elapsed/mono/wall and host send/receive/wall values are nanoseconds from their separate clocks. */
 internal data class ClockSample(
     val epoch: Int, val boot: String, val before: Long, val mono: Long, val wall: Long, val after: Long,
     val sent: Long, val received: Long, val hostWall: Long, val sequenceOffset: Long?, val bridgeError: Long,
@@ -14,6 +15,7 @@ internal data class ClockSample(
     val valid: Boolean get() = after - before <= 2_000_000 && received - sent <= 40_000_000
 }
 
+/** Nanosecond correspondence: null times and Long.MAX_VALUE uncertainty preserve unsupported/ambiguous mapping. */
 internal data class MappedTime(
     val elapsed: Long?, val epoch: Int, val uncertainty: Long, val sequence: Long? = elapsed,
 )
@@ -82,6 +84,7 @@ internal class CaptureClock {
     @Synchronized
     fun log(wall: Long, host: Long): MappedTime = map(wall, host, true, null)
 
+    /** Captures samples, epochs and closures once; later clock updates cannot change this log conversion. */
     @Synchronized
     fun logMapper(): (Long, Long) -> MappedTime {
         val fixed = samples.toList()

@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "issue": 352,
+  "gui_required": false,
+  "reason": "採用main c663の管理変更331/344/349/353をdevelop02aebへ通常同期する。developの統合JBR CLI/3.15/JDK27/Ubuntu26.04と製品source/build・元Case/観察/失敗を保持し、349の対象のない旧3.9 runner修正は非適用。固定56dadだけの166/235登録とliteral fixture・QA生成/原題名保持を同期し、未来candidate/正式証明書/製品受入を追加しない。",
+  "cli_checks": [
+    "python3 -m unittest discover -s scripts/workflow -p test_initial_continuation.py -v",
+    "python3 -m unittest discover -s scripts/workflow -p test_qa_handoff.py -v",
+    "python3 -m unittest discover -s scripts/workflow -p test_release_delivery.py -v",
+    "python3 scripts/workflow/product_check.py",
+    "python3 scripts/workflow/change_impact.py --base origin/develop --run-tests"
+  ],
+  "cases": []
+}

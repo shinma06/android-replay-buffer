@@ -1,6 +1,9 @@
 package io.github.shinma06.replaybuffer.ide
 
+import io.github.shinma06.replaybuffer.testing.TestExecutables
 import io.github.shinma06.replaybuffer.core.ApplicationMode
+import io.github.shinma06.replaybuffer.core.CaptureMode
+import io.github.shinma06.replaybuffer.core.VideoQuality
 import io.github.shinma06.replaybuffer.core.CaptureState
 import io.github.shinma06.replaybuffer.core.RemoteCleanup
 import io.github.shinma06.replaybuffer.core.RemoteCleanupJournal
@@ -18,12 +21,15 @@ import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertNull
+import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 import java.nio.file.Files
 import java.nio.file.Path
+import java.util.concurrent.CancellationException
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.ExecutionException
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -33,10 +39,49 @@ class ReplayProjectCaptureTest {
     private val unresolved = AndroidReplayEnvironment(null, "SDK未設定", ApplicationSelection(null, "fixture", "実行対象未選択"))
 
     @Test
+    fun `enabled cannot overtake an unapplied mode and startup restores the selected mode`() {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val store = ReplaySettingsStore()
+        store.loadState(ReplaySettingsState(enabled = true, captureMode = CaptureMode.LOG_ONLY, autoSaveOnCrash = true, videoQuality = VideoQuality.LIGHTWEIGHT))
+        val capture = ReplayProjectCapture(scope, store, {}, {})
+        try {
+            assertTrue(capture.applySettings(store.settings(), unresolved, 0).get(15, TimeUnit.SECONDS).accepted)
+            assertTrue(capture.view.snapshot!!.enabled)
+            assertEquals(CaptureMode.LOG_ONLY, capture.view.snapshot!!.settings.captureMode)
+            assertEquals(VideoQuality.LIGHTWEIGHT, capture.view.snapshot!!.settings.videoQuality)
+            assertTrue(capture.view.snapshot!!.settings.autoSaveOnCrash)
+            assertEquals(io.github.shinma06.replaybuffer.core.AutoSaveState.WAITING, capture.view.snapshot!!.autoSave.state)
+            assertTrue(capture.setEnabled(false).get(15, TimeUnit.SECONDS).accepted)
+            store.apply(store.settings().copy(videoQuality = VideoQuality.STANDARD))
+            assertFalse(capture.setEnabled(true).get(15, TimeUnit.SECONDS).accepted)
+            assertFalse(store.enabled)
+            assertEquals(VideoQuality.LIGHTWEIGHT, capture.view.snapshot!!.settings.videoQuality)
+            assertTrue(capture.applySettings(store.settings(), unresolved, 0).get(15, TimeUnit.SECONDS).accepted)
+            assertEquals(VideoQuality.STANDARD, capture.view.snapshot!!.settings.videoQuality)
+            store.apply(store.settings().copy(captureMode = CaptureMode.VIDEO_AND_LOGS))
+            assertFalse(capture.setEnabled(true).get(15, TimeUnit.SECONDS).accepted)
+            assertFalse(store.enabled)
+            assertFalse(capture.view.snapshot!!.enabled)
+            assertTrue(capture.view.snapshot!!.settings.autoSaveOnCrash)
+            assertEquals(CaptureMode.LOG_ONLY, capture.view.snapshot!!.settings.captureMode)
+            assertEquals(VideoQuality.STANDARD, capture.view.snapshot!!.settings.videoQuality)
+            assertEquals(CaptureMode.VIDEO_AND_LOGS, store.settings().captureMode)
+            assertTrue(capture.applySettings(store.settings(), unresolved, 0).get(15, TimeUnit.SECONDS).accepted)
+            assertTrue(capture.setEnabled(true).get(15, TimeUnit.SECONDS).accepted)
+            assertEquals(CaptureMode.VIDEO_AND_LOGS, capture.view.snapshot!!.settings.captureMode)
+        } finally {
+            capture.close()
+            capture.termination.get(15, TimeUnit.SECONDS)
+            scope.cancel()
+        }
+    }
+
+    @Test
     fun `persisted enabled restores without a panel and Apply preserves the latest toggle`() {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val store = ReplaySettingsStore()
-        store.loadState(ReplaySettingsState(enabled = true, retentionSeconds = 60, appSelection = AppSelectionMode.MANUAL, manualPackage = "com.manual.app"))
+        store.loadState(ReplaySettingsState(enabled = true, retentionSeconds = 60, appSelection = AppSelectionMode.MANUAL, manualPackage = "com.manual.app",
+            screenshotUsesLogcatDestination = false, screenshotDirectory = directory.resolve("missing-screenshots").toString()))
         val capture = ReplayProjectCapture(scope, store, {}, {})
         try {
             assertTrue(capture.applySettings(store.settings(), unresolved, 0).get(15, TimeUnit.SECONDS).accepted)
@@ -46,10 +91,11 @@ class ReplayProjectCaptureTest {
             assertEquals(60, restored.settings.replaySeconds)
             assertNull(restored.settings.adbPath)
             assertNull(restored.settings.saveDirectory)
+            assertFalse(Files.exists(Path.of(store.settings().screenshotDirectory)))
             assertEquals("com.manual.app", restored.settings.application.packageName)
             assertEquals(ApplicationMode.MANUAL, restored.settings.application.mode)
             val disable = capture.setEnabled(false)
-            val next = store.settings().copy(retentionSeconds = 900, destination = directory.toString())
+            val next = store.settings().copy(retentionSeconds = 900, destination = directory.toString(), screenshotUsesLogcatDestination = true)
             store.apply(next)
             val apply = capture.applySettings(next, unresolved, 0)
             assertTrue(disable.get(15, TimeUnit.SECONDS).accepted)
@@ -183,9 +229,9 @@ class ReplayProjectCaptureTest {
         val config = Files.createDirectory(directory.resolve("config"))
         val project = Files.createDirectory(directory.resolve("project"))
         val stable = prepareCleanupDirectory(config, project.toString())
-        val fake = directory.resolve("current-sdk-adb")
+        var fake = directory.resolve("current-sdk-adb")
         val calls = directory.resolve("calls")
-        Files.writeString(fake, """#!/usr/bin/python3
+        fake = TestExecutables.python(fake, """#!/usr/bin/python3
 import sys,pathlib,json
 a=sys.argv[1:]
 with (pathlib.Path(__file__).parent/'calls').open('a') as f: f.write(json.dumps(a)+'\n')
@@ -201,8 +247,7 @@ elif a[:2]==['-s','fixture-old']:
     else: sys.exit(1)
 else: sys.exit(1)
 """)
-        assertTrue(fake.toFile().setExecutable(true))
-        // Strict synthetic stopped-owner descriptor; no host adb, device, or capture reader is used.
+                // Strict synthetic stopped-owner descriptor; no host adb, device, or capture reader is used.
         RemoteCleanupJournal(stable).use {
             it.retain(RemoteCleanup("fixture-old", "c".repeat(32), mapOf("12345" to "localabstract:scrcpy_00000001")))
         }
@@ -257,6 +302,51 @@ else: sys.exit(1)
             capture.close()
             capture.termination.get(15, TimeUnit.SECONDS)
             scope.cancel()
+        }
+    }
+
+    @Test
+    fun `a pending initialization retry honors later OFF and project close without another core`() {
+        for (closing in listOf(false, true)) {
+            val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+            val store = ReplaySettingsStore()
+            val started = java.util.concurrent.CountDownLatch(1)
+            val release = java.util.concurrent.CountDownLatch(1)
+            val attempts = java.util.concurrent.atomic.AtomicInteger()
+            val stable = Files.createDirectory(directory.resolve("retry-$closing"))
+            val capture = ReplayProjectCapture(scope, store, {}, {}) {
+                if (attempts.incrementAndGet() == 1) error("fixture unavailable")
+                started.countDown()
+                check(release.await(15, TimeUnit.SECONDS))
+                stable
+            }
+            try {
+                assertFalse(capture.applySettings(store.settings(), unresolved, 0).get(15, TimeUnit.SECONDS).accepted)
+                val retry = capture.setEnabled(true, unresolved)
+                assertTrue(started.await(15, TimeUnit.SECONDS))
+                if (closing) {
+                    capture.close()
+                    release.countDown()
+                    capture.termination.get(15, TimeUnit.SECONDS)
+                    // Core cleanup and the waiting command's cancellation complete independently.
+                    val failure = assertThrows(ExecutionException::class.java) { retry.get(15, TimeUnit.SECONDS) }
+                    assertTrue(failure.cause is CancellationException)
+                    assertNull(capture.view.snapshot)
+                } else {
+                    val off = capture.setEnabled(false)
+                    release.countDown()
+                    assertTrue(retry.get(15, TimeUnit.SECONDS).accepted)
+                    assertTrue(off.get(15, TimeUnit.SECONDS).accepted)
+                    assertFalse(store.enabled)
+                    assertFalse(capture.view.snapshot!!.enabled)
+                }
+                assertEquals(2, attempts.get())
+            } finally {
+                release.countDown()
+                capture.close()
+                capture.termination.get(15, TimeUnit.SECONDS)
+                scope.cancel()
+            }
         }
     }
 
@@ -423,6 +513,64 @@ else: sys.exit(1)
             capture.acceptSnapshot(first.copy(revision = second.revision + 10))
             assertEquals("request-b", capture.view.snapshot!!.save.requestId)
             assertEquals(2, notifications.size)
+        } finally {
+            capture.close()
+            capture.termination.get(15, TimeUnit.SECONDS)
+            scope.cancel()
+        }
+    }
+
+    @Test
+    fun `busy rejection expires when the displayed save completes or fails`() {
+        for (phase in listOf(SavePhase.COMPLETED, SavePhase.FAILED)) {
+            val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+            val capture = ReplayProjectCapture(scope, ReplaySettingsStore(), {}, {})
+            try {
+                assertTrue(capture.applySettings(ReplaySettings(), unresolved, 0).get(15, TimeUnit.SECONDS).accepted)
+                val base = capture.view.snapshot!!
+                val writing = base.copy(revision = base.revision + 100,
+                    save = SaveSnapshot(SavePhase.WRITING, "busy-request", attempt = 1), saveDisabledReason = "保存中です")
+                capture.acceptSnapshot(writing)
+                capture.showMessage("保存中です")
+                assertEquals("保存中です", capture.view.message)
+                val currentReason = if (phase == SavePhase.FAILED) "固定した保存対象を再試行または破棄してください" else null
+                val terminal = writing.copy(revision = writing.revision + 1,
+                    save = writing.save.copy(phase = phase, directory = directory.resolve("result")),
+                    saveDisabledReason = currentReason)
+                capture.acceptSnapshot(terminal)
+                assertNull(capture.view.message)
+                assertEquals(currentReason, capture.view.snapshot!!.saveDisabledReason)
+                assertEquals("busy-request", capture.view.snapshot!!.save.requestId)
+                assertEquals(1, capture.view.snapshot!!.save.attempt)
+                assertEquals(directory.resolve("result"), capture.view.snapshot!!.save.directory)
+                // A rejected command's continuation may arrive after the writer's terminal snapshot.
+                capture.showMessage("保存中です")
+                assertNull(capture.view.message)
+            } finally {
+                capture.close()
+                capture.termination.get(15, TimeUnit.SECONDS)
+                scope.cancel()
+            }
+        }
+    }
+
+    @Test
+    fun `old save completion preserves a newer unrelated operation error`() {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val capture = ReplayProjectCapture(scope, ReplaySettingsStore(), {}, {})
+        try {
+            assertTrue(capture.applySettings(ReplaySettings(), unresolved, 0).get(15, TimeUnit.SECONDS).accepted)
+            val base = capture.view.snapshot!!
+            val writing = base.copy(revision = base.revision + 100,
+                save = SaveSnapshot(SavePhase.WRITING, "old-request"), saveDisabledReason = "保存中です")
+            capture.acceptSnapshot(writing)
+            capture.showMessage("保存中です")
+            capture.showMessage("新しい操作の保存先にアクセスできません")
+            capture.acceptSnapshot(writing.copy(revision = writing.revision + 1,
+                save = writing.save.copy(phase = SavePhase.COMPLETED), saveDisabledReason = null))
+            assertEquals("新しい操作の保存先にアクセスできません", capture.view.message)
+            capture.showMessage("保存中です")
+            assertEquals("新しい操作の保存先にアクセスできません", capture.view.message)
         } finally {
             capture.close()
             capture.termination.get(15, TimeUnit.SECONDS)

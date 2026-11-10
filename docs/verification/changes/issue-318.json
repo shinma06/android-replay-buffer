@@ -1,0 +1,110 @@
+{
+  "schema": 1,
+  "issue": 318,
+  "gui_required": true,
+  "reason": "IDE loaderでの同梱CLI JAR同定を修復する。原offline同定失敗と修正後同経路の検査をrepairへ固定し、実native descriptor/statusはQA316へ残す。元103の3 Caseと原観察・未達は変更しない。",
+  "cli_checks": [
+    "同じ標準ZIPのIDE UrlClassLoaderによる実JAR SHA256一致、通常JBR clientとの相互認証と既存distribution/security回帰。",
+    "local JAR以外、欠落resource、directory、欠落fileの拒否。通常hook/CIの結果はIssue/PRへ記録。"
+  ],
+  "cases": [
+    {
+      "id": "CLI-IDENTITY-IDE",
+      "artifact": "plugin",
+      "change": "IDEで同定した実JARと同梱CLIが同じbuildで接続できる",
+      "preconditions": "#318修正版を含む最終combined候補のsource/標準ZIP/全JAR/実ロード、共有GUI leaseと所有projectをPMが固定する。今回writer枠ではnative未実施。",
+      "steps": [
+        "対象projectでdescriptorの生成・所有者・directory0700/file0600・PID開始時刻・実JAR hashを確認する。",
+        "同梱CLIのstatusを1回実行してGUI状態と照合する。OFF/終了時の所有資源解放を既存CLI寿命契約に従って確認する。"
+      ],
+      "expected": "IDE loaderでの同定失敗がなく、同じ配布JARのCLIだけが対象projectへ接続する。未知/別build/不正入力の拒否を保ち、所有外のprojectやIDEを変更しない。",
+      "provenance": [
+        "https://github.com/shinma06/android-replay-buffer/issues/318",
+        "https://github.com/shinma06/android-replay-buffer/issues/318#issuecomment-6245251414",
+        "https://github.com/shinma06/android-replay-buffer/issues/316",
+        "docs/verification/changes/issue-103.json"
+      ],
+      "gpt": {
+        "status": "pending",
+        "reason": "offline修復の確認と実native接続を分け、実ロード/descriptor/status/終了はQA316で未実施。"
+      },
+      "human": {
+        "status": "pending",
+        "reason": "元human/REAL延期と全Case条件を保持し、新たな免除や合格を作らない。"
+      },
+      "fix_issue": null,
+      "fix_pr": null,
+      "recheck": "固定修正を含む最終combined候補で、QA316の既存枠にreadiness確認を組み込む。",
+      "next_action": "PMがQA316へ固定成果物と残保証を双方向引継ぎし、readiness成立後に既存のCLI/FILE受入を続ける。#311最終候補と#224のCLI条件に共有する。"
+    }
+  ],
+  "repair": {
+    "candidate": "af47fddc93006d451ab106206f9e5273ff9e82f2",
+    "artifacts": {
+      "plugin": "c2105c5b745c705955dfaad7162636d1ad980798edcd9215ca488ea914893f1f"
+    },
+    "failure_record_sha256": "0ebc7bb67e6bd2c57a272011cc7252c244fb74f5a0aaa62b6cda140cad079467",
+    "writer_session": "CLI修正担当",
+    "results": {
+      "GAP-1": {
+        "observation": {
+          "status": "pass",
+          "head": "af47fddc93006d451ab106206f9e5273ff9e82f2",
+          "artifact_sha256": "c2105c5b745c705955dfaad7162636d1ad980798edcd9215ca488ea914893f1f",
+          "actor": "gpt",
+          "observer": "CLI修正担当（実行とmetadata構成）",
+          "at": "2026-10-18T03:42:05.677973+00:00",
+          "evidence": "修復証拠構成SHA256 1ecb6a440b3ee94ba140096abe29137c28b08ece8e1127e8323a6b35eff470b1。固定標準ZIPの配布物/不正resource回帰2件pass、元と同じStudio JBR25・IDE UrlClassLoader比較pass。原実行ログ・JUnit XML・全JAR hash・各receiptを私有領域で保持。",
+          "loaded_identity": "source af47fddc93006d451ab106206f9e5273ff9e82f2 / ZIP c2105c5b745c705955dfaad7162636d1ad980798edcd9215ca488ea914893f1f / main JAR 6eead5345cf2696c75d71c5af3cde5ccaa75b17e1f1c0acddd207cc3307582b2 / fixed Studio AI-262.9437.185.2621.16467767 UrlClassLoader。JBR25の比較でも同一hash。IDE起動なし。",
+          "reason": "G-JAR-IDENTITYだけの修復確認。CodeSource.locationはnullのままでも実local JAR全体のSHA256が一致し、同梱JBR clientとの認証が成功。拒否5条件も維持。atはmetadata構成時刻で、実行終了は2026-10-18T03:38:32.697466+00:00（標準ZIP回帰）と2026-10-18T03:40:34.913475+00:00（同一JBR比較）。元Stage A直接例外と実native接続は未観測のまま。",
+          "attribution": {
+            "writer": "codex-session-sha256:91c312d0d698aea1e218c3435549f9f7881c1cb75003aa036410101f84bd658d",
+            "observer": "codex-session-sha256:91c312d0d698aea1e218c3435549f9f7881c1cb75003aa036410101f84bd658d",
+            "contributors": [
+              {
+                "role": "元103製品writer",
+                "session": "codex-session-sha256:91c312d0d698aea1e218c3435549f9f7881c1cb75003aa036410101f84bd658d",
+                "activity": "writer",
+                "at": "2026-10-18T02:44:28.683017+00:00",
+                "receipt_sha256": "b6dcfdea3d92eb2f459cbc5d1d19888be78e03fb5f0a4c4bf0c58e06fc6e4425"
+              },
+              {
+                "role": "318修復source writer",
+                "session": "codex-session-sha256:91c312d0d698aea1e218c3435549f9f7881c1cb75003aa036410101f84bd658d",
+                "activity": "writer",
+                "at": "2026-10-18T03:37:28.960814+00:00",
+                "receipt_sha256": "aef35de2638003c74d31dd4c75ea1fc043630cf28296b7c71b15feb38f81beed"
+              },
+              {
+                "role": "修正版標準ZIP・配布物回帰の実行担当",
+                "session": "codex-session-sha256:91c312d0d698aea1e218c3435549f9f7881c1cb75003aa036410101f84bd658d",
+                "activity": "execution",
+                "at": "2026-10-18T03:38:32.697466+00:00",
+                "receipt_sha256": "67cad2f3b7322e156c024f01cd60d6c8e8a157def11fada6c9bd3309f9d8de2a"
+              },
+              {
+                "role": "元と同じJBR・IDE loaderの実行担当",
+                "session": "codex-session-sha256:91c312d0d698aea1e218c3435549f9f7881c1cb75003aa036410101f84bd658d",
+                "activity": "execution",
+                "at": "2026-10-18T03:40:34.913475+00:00",
+                "receipt_sha256": "bf80e983e27a63f49a8320b5e9c928c84aa8b6f2404230ca1c18ec16eb09bd8a"
+              },
+              {
+                "role": "修復結果照合・metadata構成担当",
+                "session": "codex-session-sha256:91c312d0d698aea1e218c3435549f9f7881c1cb75003aa036410101f84bd658d",
+                "activity": "composition",
+                "at": "2026-10-18T03:42:05.677973+00:00",
+                "receipt_sha256": "1ecb6a440b3ee94ba140096abe29137c28b08ece8e1127e8323a6b35eff470b1"
+              }
+            ]
+          }
+        },
+        "coverage": {
+          "G-JAR-IDENTITY": "同じ製品buildIdentityを実配布JARから固定IDE UrlClassLoaderで読込み、全JAR SHA256の期待値と比較。配布物回帰はこの値をserverへ渡し通常JBRの実配布clientと認証。追加の元と同じJBR25比較でもstandard/IDE両loaderのhashが一致。証拠構成SHA256 1ecb6a440b3ee94ba140096abe29137c28b08ece8e1127e8323a6b35eff470b1"
+        },
+        "method": "原NGは同じ配布classをIDE基底loaderで読む際のJAR同定NPE。固定SDKのPluginClassLoaderはこのUrlClassLoaderの定義経路を継承する。実配布class/同じSDK loader/同じJBRの限定比較で失敗保証を直接検出し、標準ZIP回帰でclient/server同定を結ぶ。JAR以外/remote/directory/欠落を拒否する5条件も確認。実ProjectService、native descriptor/status/GUI/寿命はこの同等性に含めずQA316 pending。元103全Caseと318:CLI-IDENTITY-IDEはpendingのまま。",
+        "contract_revision": "85296114925d6947be93158e3eca90fcd69e561b3d8a5d1e6845407b73108f61"
+      }
+    }
+  }
+}

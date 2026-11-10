@@ -36,7 +36,7 @@ REAL34の初期段階延期と利用者の実機保留を保持し、共通host/
 
 ## 既存試験群と今後の依頼
 
-CLIの2 testはthreadtime正常/不正行のparser互換を担保し、ADB/daemon/録画全体ではありません。JVM群はClock/Protocol/Wire、Store/Writer、所有/寿命、Settings/IDE/UIの既知入力/全内部境界を担います。instrumentationは測定oracleの表示真値を担い、製品動画合格とは別です。FILEは対象の全行/frame/sample/hashと対応を担い、nativeは実ロード/API/glue/表示・代表相互運用を担います。ハーネス群は出典/plan/trusted gate/listing/reuse、Git保護/影響、registry/lease/handoff/秘密/参照を担い、製品合格を出しません。新たな役割・依存・全GUI matrixを作りません。
+同梱CLIの試験はthreadtime parser互換や入力・出力経路の既知条件を担保します。対象は[CLI仕様](../cli.md)と[自動検査](../plugin-development.md)で確認し、ADB/daemon/録画全体の受入とは区別します。JVM群はClock/Protocol/Wire、Store/Writer、所有/寿命、Settings/IDE/UIの既知入力/全内部境界を担います。instrumentationは測定oracleの表示真値を担い、製品動画合格とは別です。FILEは対象の全行/frame/sample/hashと対応を担い、nativeは実ロード/API/glue/表示・代表相互運用を担います。ハーネス群は出典/plan/trusted gate/listing/reuse、Git保護/影響、registry/lease/handoff/秘密/参照を担い、製品合格を出しません。新たな役割・依存・全GUI matrixを作りません。
 
 担当とレビュアーは既存Issue/計画から「どの自製品欠陥を検出するか、必要精度/真値、最小の実行可能方法、全予定対象、既存事実と不足」を確認します。手順・回数・所要時間・同runを残すときは固有の欠陥を見逃す具体的理由を示します。必要な境界は維持し、既に十分な証拠は共有します。不要な操作期限や再確認、追加承認を作らず、実tool権限・privacy・lease・所有fixture・復旧を全方法で維持します。
 
@@ -68,7 +68,7 @@ OS標準という名前やdecoderの多様性だけで別player/GUIを追加し�
 
 本改訂から採用件数は増えません。#223当時の3/105と4件の再評価候補は履歴です。その後のsource830評価も自動で新revisionへ移行せず、PM/QAが各保持事実を現条件へ実際に対応付け、独立レビュー後に再集計します。未達/REAL・QA27/65/87/release10を引き継ぎ、計画改訂完了と製品受入完了を分けます。
 
-#206は初期139件の登録対象ではありません。QA294の旧aggregate FAILを`reassessed`で包んだり、`responsibility_assessment`を付けて機械promotion成功にしたりしません。採用後はPMが既存#206/QA294/#280へ、採用revision・固定D/ZIP・原観察者/実行日時・全3 Caseの保証対応・独立評価・新しい評価日時を記録し、旧観察と分けて読み戻します。現在要件の受入により#103は通常の#206→#103順、#224の第二版の性能scopeは、[2026-10-27の本人の追加判断を反映する #373](https://github.com/shinma06/android-replay-buffer/issues/373)の「性能系issueについて、低負荷モードで暫定okとします。第二版でこれ以上の性能系タスクは不要」により暫定受入・終了とします。[#361](https://github.com/shinma06/android-replay-buffer/issues/361)で残した完成版の本人比較待ちを置き換え、追加の性能評価・比較・最適化と、そのための準備・研究・サンプリング・構造調査・重複削減検討を第二版の完了条件や次操作にしません。完成版を新たに実測・本人テストした記録、純正Studio以下の数値達成、旧FAIL/unknownの解消を意味しません。原Case・出典/hash・観察は保持し、274:LOG-ONLY-LOADのstep 2/3と283各Case等に残る性能目的の本人待ちへ本改訂を適用します。step 2のsource/artifact同定は機能観察の前提として残します。動画非起動、品質選択の設定保存・実起動引数、取得・録画・Save、全対象内容・時刻・保存窓・gap・clock・pin・atomicity・所有・エラー処理等の不足する機能保証は継続し、Case全体をPASSにしません。過去の原観察・FAIL/unknownも保持します。QA65のhuman/REAL・#104最終GUI・#280最終v2の全Case/main条件は残り、完了済み初期版#10は再開しません。新しいpromotion adapterやQAを本改訂のために作りません。
+#206は初期139件の登録対象ではありません。QA294の旧aggregate FAILを`reassessed`で包んだり、`responsibility_assessment`を付けて機械promotion成功にしたりしません。採用後はPMが既存#206/QA294/#280へ、採用revision・固定D/ZIP・原観察者/実行日時・全3 Caseの保証対応・独立評価・新しい評価日時を記録し、旧観察と分けて読み戻します。現在要件の受入により#103は通常の#206→#103順、#224の性能受入は、[2026-10-27の本人方針を反映する #361](https://github.com/shinma06/android-replay-buffer/issues/361)に従い、完成版を本人の環境で比較して「問題ない」と判断した時点で完了とします。現在は本人評価未実施で、性能PASSではありません。自動の純正比較と比較専用の準備・研究は停止し、旧定量比較・再profileを実装や性能受入の必須前提にしません。品質と負荷を明示的に選べる実装を進め、内容・保存窓・clock・pin・OFF/LOG_ONLYの動画非起動・エラー処理等の機能保証と、過去の原観察・FAIL/unknownは保持します。QA65のhuman/REAL・#104最終GUI・#280最終v2の全Case/main条件は残り、完了済み初期版#10は再開しません。新しいpromotion adapterやQAを本改訂のために作りません。
 
 ## 過去改訂の記録
 
@@ -119,7 +119,7 @@ OS標準という名前やdecoderの多様性だけで別player/GUIを追加し�
 
 ## 既存の自動試験と今後の担当依頼
 
-CLIの2 testはthreadtime正常/不正行のparser互換だけを示します。ADB/daemon/録画・時刻/保存/端末の成功を主張しません。既存JVM20ファイルはProtocol/Clock/Store/Writer、Wire/fake SDK、所有cleanup/資源、Settings/IDE接続/UI説明に分かれます。全packet/画素、整数/悪い入力、原子公開/停止やpinの回帰は自製品責任であり削除しません。IDE bridge/settings回帰を外部IDE全体の合格に換えません。fixture instrumentationはoracleの健全性に使い、製品動画の合格とは別です。
+CLIの自動試験は[同梱CLI](../cli.md)の既知入力と互換経路を検査し、ADB/daemon/録画・時刻/保存/端末の成功を主張しません。JVMの試験群はProtocol/Clock/Store/Writer、Wire/fake SDK、所有cleanup/資源、Settings/IDE接続/UI説明に分かれます。全packet/画素、整数/悪い入力、原子公開/停止やpinの回帰は自製品責任であり削除しません。IDE bridge/settings回帰を外部IDE全体の合格に換えません。fixture instrumentationはoracleの健全性に使い、製品動画の合格とは別です。
 
 ハーネス群はGit保護/影響判定、出典/plan/gate/listing/reuse、registry/lease/worker/handoff/QA、秘密/参照の整合を検査します。候補変更のためだけの無条件再build/全native再試験は要求せず、下記の証拠と変更影響で判断します。テストを読んだ事実と実行成功を区別し、既存の未変更suiteを理由なく反復しません。
 
@@ -137,7 +137,7 @@ CLIの2 testはthreadtime正常/不正行のparser互換だけを示します。
 
 plan_extensionのprevious_plan_sha256は登録旧138計画 `6d11e3cdee0b6189c743fb1a4c8ee3a4e582d72af7e9643bb001536dd4e0c79f` に固定する。追加Caseとui-settings所属を除き、ancestor/extensionを#201へ戻した全文を独立固定hashで照合する。#208 installation_revisionは、その登録旧138計画から追加3 overrideを除いて固定13bdへ照合し、#214の自己申告hash拒否を保持する。原135hash/旧136計画も不変。旧138計画の保持事実/元PASSは出典として照合できるが、新候補は139計画の正確なmain同期を要し、未知の旧計画やcandidate側だけの改訂を認めない。製品JAR変更を跨ぐ旧707等の事実移植はhistory gateが引き続き拒否する。計画統合後の専用develop同期・新固定候補/標準ZIP・native検証、QA27/175/65・release10と元216への双方向移管はPMが行い、登録だけで受入完了にしない。
 
-#208の本人指示で通常導入を[公式ローカルZIPのターミナル配置](../operations.md#固定plugin-zipのターミナル導入)へ変更します。原Case/cases欄・全138/207・104 Agent/REAL34・全出典hash・延期・失敗を不変で保持し、`3:PLUGIN-LOAD`の有効overrideだけでInstall Plugin from DiskとSettings → Pluginsの版探索義務を除外します。自製品Settingsの表示/入力/Apply/Cancel/検証/アクセシビリティ/寿命、初回自製品About/action、全3JAR/ZIP/source/version/PID/profileの実ロード照合、取得OFF、通常再起動は維持します。既存の再起動後About再読取り/dialog終了画面確認だけを延期し、新たな延期は追加しません。
+#208の本人指示で通常導入を[公式ローカルZIPのターミナル配置](https://github.com/shinma06/android-replay-buffer/blob/legacy-ops-develop/docs/operations.md#固定plugin-zipのターミナル導入)へ変更します。原Case/cases欄・全138/207・104 Agent/REAL34・全出典hash・延期・失敗を不変で保持し、`3:PLUGIN-LOAD`の有効overrideだけでInstall Plugin from DiskとSettings → Pluginsの版探索義務を除外します。自製品Settingsの表示/入力/Apply/Cancel/検証/アクセシビリティ/寿命、初回自製品About/action、全3JAR/ZIP/source/version/PID/profileの実ロード照合、取得OFF、通常再起動は維持します。既存の再起動後About再読取り/dialog終了画面確認だけを延期し、新たな延期は追加しません。
 
 #208時点の`installation_revision`はIssue 208と直前138計画全文のcanonical hash `13bd1e294519915d8c8a66be2770811a4d6b28465432061e7c2eae91a87fd8a3`を登録します。このfieldと追加した3のoverrideを除くと、その旧計画の全文へ完全一致しなければ拒否します。#182の原135 `previous_plan_sha256`、#201のancestor/extensionは変更しません。#208時点では候補側は当時の計画又はこの登録旧計画全文だけを許可し、任意の古い計画/候補単独改訂は認めません。707の固定source/ZIP/製品class/全JARと実条件が不変なら、元planと原記録を保持したまま以下の再評価へ対応付けられます。方法改訂だけで再build/再導入/無関係な全再試験を要求せず、不足する実ロード/UI/復旧等の事実だけを実施します。既存history gateは製品/build/fixture/Case変更と途中revertを引き続き拒否します。707のCase PASSは本改訂から作らず、独立レビューが全有効条件・不変artifact・失敗帰属を確認します。
 

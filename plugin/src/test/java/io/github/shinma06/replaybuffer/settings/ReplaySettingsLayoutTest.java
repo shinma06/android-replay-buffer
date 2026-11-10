@@ -15,6 +15,9 @@ import com.intellij.ui.components.GradientViewport;
 import com.intellij.ui.components.JBTextArea;
 import com.intellij.util.ui.JBUI;
 import io.github.shinma06.replaybuffer.ide.ReplayProjectService;
+import io.github.shinma06.replaybuffer.core.CaptureMode;
+import io.github.shinma06.replaybuffer.core.VideoQuality;
+import javax.swing.JComboBox;
 import kotlinx.coroutines.CoroutineScope;
 import org.junit.jupiter.api.Test;
 
@@ -49,50 +52,91 @@ class ReplaySettingsLayoutTest {
         assertNull(project.getService(ReplayProjectService.class));
         try {
             SwingUtilities.invokeAndWait(() -> {
-                for (String destination : List.of("", "/disposable/" + "long-directory/".repeat(12) + "save")) {
-                    var saved = new ReplaySettingsState();
-                    saved.setDestination(destination);
+                record LayoutCase(String destination, boolean occupiedScrollbar) {}
+                var longDestination = "/disposable/" + "long-directory/".repeat(12) + "save";
+                for (var fixture : List.of(new LayoutCase("", false), new LayoutCase(longDestination, false),
+                    new LayoutCase("", true), new LayoutCase(longDestination, true))) {
+                    String destination = fixture.destination();
+                    var saved = new ReplaySettingsState(false, 180, destination, AppSelectionMode.AUTOMATIC, "", CaptureMode.VIDEO_AND_LOGS, false, true, "", VideoQuality.STANDARD);
                     store.loadState(saved);
                     var configurable = new ReplaySettingsConfigurable(project);
                     try {
                         var panel = configurable.createComponent();
                         configurable.reset();
+                        var quality = (JComboBox<?>) find(panel, "動画品質");
+                        assertEquals(VideoQuality.STANDARD, quality.getSelectedItem());
+                        assertTrue(quality.isEnabled());
+                        quality.setSelectedItem(VideoQuality.LIGHTWEIGHT);
+                        assertTrue(configurable.isModified());
+                        ((JComboBox<?>) find(panel, "取得モード")).setSelectedItem(CaptureMode.LOG_ONLY);
+                        assertFalse(quality.isEnabled());
+                        assertEquals(VideoQuality.LIGHTWEIGHT, quality.getSelectedItem());
+                        configurable.reset();
+                        assertEquals(VideoQuality.STANDARD, quality.getSelectedItem());
+                        assertTrue(quality.isEnabled());
                         var guide = (JBTextArea) find(panel, "package名の入力条件");
                         var fields = List.of(find(panel, "保持時間（1〜900秒）"), find(panel, "保存先フォルダ"),
-                            find(panel, "対象アプリの選択方法"), find(panel, "対象アプリのpackage名"));
+                            find(panel, "対象アプリの選択方法"), find(panel, "対象アプリのpackage名"), find(panel, "取得モード"),
+                            find(panel, "スクリーンショットをLogcatのスクショ保存先へ保存"), find(panel, "スクリーンショットの手動保存先"), quality);
                         assertEquals(guide.getText(), fields.get(3).getAccessibleContext().getAccessibleDescription());
                         assertFalse(guide.isEditable());
                         assertFalse(guide.isFocusable());
+                        var status = new ArrayList<JBTextArea>();
+                        for (String name : List.of("保存先の確認結果", "対象アプリの解決結果", "スクリーンショット保存先の確認結果", "設定の適用方法")) {
+                            var text = (JBTextArea) find(panel, name);
+                            assertFalse(text.isFocusable());
+                            assertFalse(text.isEditable());
+                            if (!name.equals("設定の適用方法")) text.setText("確認できません。設定の保存先・アクセス権を確認してください。" + "長い説明とパス/".repeat(18));
+                            status.add(text);
+                        }
+                        assertTrue(status.get(3).getText().contains("キャンセル"));
+                        assertTrue(status.get(3).getText().contains("ON/OFF"));
+                        var autoGuidance = (JBTextArea) find(panel, "クラッシュ自動保存の対応範囲");
+                        assertTrue(autoGuidance.getText().contains("この設定をOFFで適用してから、ONで再び適用"));
+                        assertFalse(autoGuidance.getText().contains("取得OFF→ON"));
+                        status.add(autoGuidance);
+                        status.add((JBTextArea) find(panel, "動画品質の説明"));
+                        for (int index : new int[]{0, 2, 3, 4, 7}) assertTrue(hasLabelFor(panel, fields.get(index)), "label association for " + index);
+                        assertBrowseEditorLabel(panel, (TextFieldWithBrowseButton) fields.get(1), "保存先フォルダ", "保存先フォルダ:");
+                        assertBrowseEditorLabel(panel, (TextFieldWithBrowseButton) fields.get(6), "スクリーンショットの手動保存先", "手動の保存先フォルダ:");
                         panel.setBorder(JBUI.Borders.empty(11, 16, 16, 16));
                         var scroll = ScrollPaneFactory.createScrollPane(null, true);
                         scroll.setViewport(new GradientViewport(panel, JBUI.insetsTop(5), true));
+                        if (fixture.occupiedScrollbar()) {
+                            scroll.setLayout(new javax.swing.ScrollPaneLayout());
+                            scroll.setVerticalScrollBar(new javax.swing.JScrollBar());
+                            scroll.setVerticalScrollBarPolicy(javax.swing.ScrollPaneConstants.VERTICAL_SCROLLBAR_ALWAYS);
+                        }
                         var reference = new JBTextArea(guide.getText());
                         reference.setFont(guide.getFont());
                         reference.setBorder(guide.getBorder());
                         reference.setMargin(guide.getMargin());
                         reference.setLineWrap(true);
                         reference.setWrapStyleWord(true);
-                        int boundary = -1;
-                        int previousHeight = naturalHeight(reference, 400);
-                        for (int width = 401; width <= 1800; width++) {
-                            int height = naturalHeight(reference, width);
-                            if (height < previousHeight) boundary = width;
-                            previousHeight = height;
+                        int narrow = 400;
+                        int wide = 1800;
+                        int minimumHeight = expectedHeightAtWidth(scroll, guide, reference, wide);
+                        assertTrue(expectedHeightAtWidth(scroll, guide, reference, narrow) > minimumHeight,
+                            "the actual allocated widths must cross a measured wrap transition");
+                        while (wide - narrow > 1) {
+                            int middle = (wide + narrow) / 2;
+                            if (expectedHeightAtWidth(scroll, guide, reference, middle) > minimumHeight) narrow = middle;
+                            else wide = middle;
                         }
-                        assertTrue(boundary > 0, "the actual font must have a measured wrap transition");
-                        int padding = panel.getInsets().left + panel.getInsets().right;
-                        int wide = boundary + padding;
-                        int narrow = wide - 1;
                         var rowEnds = new ArrayList<Integer>();
                         var heights = new ArrayList<Integer>();
                         for (int width : new int[]{wide, narrow, wide, narrow, 600, 800, 600}) {
                             scroll.setSize(width, 650);
                             layout(scroll);
+                            // A wrapped row needs its newly assigned viewport width before computing height.
+                            layout(scroll);
+                            var beforeMeasurement = paint(scroll);
                             int viewportWidth = scroll.getViewport().getExtentSize().width;
                             assertEquals(viewportWidth, panel.getWidth(), "form width after resize to " + width);
                             assertFalse(scroll.getHorizontalScrollBar().isVisible(), "unexpected horizontal overflow");
                             var components = new ArrayList<>(fields);
                             components.add(guide);
+                            components.addAll(status);
                             for (var component : components) {
                                 var bounds = SwingUtilities.convertRectangle(component.getParent(), component.getBounds(), panel);
                                 assertTrue(bounds.x >= 0 && bounds.width > 0 && bounds.x + bounds.width <= viewportWidth,
@@ -110,6 +154,18 @@ class ReplaySettingsLayoutTest {
                             } catch (javax.swing.text.BadLocationException e) {
                                 throw new AssertionError(e);
                             }
+                            for (var text : status) {
+                                try {
+                                    for (int offset = 0; offset < text.getText().length(); offset++) {
+                                        var character = text.modelToView2D(offset);
+                                        assertTrue(character.getX() >= 0 && character.getMaxX() <= text.getWidth()
+                                            && character.getY() >= 0 && character.getMaxY() <= text.getHeight(),
+                                            text.getAccessibleContext().getAccessibleName() + " must wrap completely at " + width + ": offset=" + offset + ", character=" + character + ", size=" + text.getSize());
+                                    }
+                                } catch (javax.swing.text.BadLocationException failure) { throw new AssertionError(failure); }
+                            }
+                            org.junit.jupiter.api.Assertions.assertArrayEquals(beforeMeasurement, paint(scroll),
+                                "measuring text must not repair the first settings paint at " + width);
                             heights.add(guide.getHeight());
                         }
                         assertEquals(rowEnds.get(0), rowEnds.get(2), "wide wrapping must recover");
@@ -125,6 +181,31 @@ class ReplaySettingsLayoutTest {
                         assertEquals(destination, ((TextFieldWithBrowseButton) fields.get(1)).getText());
                         assertFalse(configurable.isModified());
                         assertEquals(saved, store.getState(), "layout must not apply settings");
+                        var logcat = (javax.swing.JCheckBox) fields.get(5);
+                        var screenshot = (TextFieldWithBrowseButton) fields.get(6);
+                        assertTrue(logcat.isSelected());
+                        assertFalse(screenshot.isEnabled());
+                        logcat.doClick();
+                        assertTrue(screenshot.isEnabled());
+                        assertTrue(screenshot.getTextField().isEnabled());
+                        assertBrowseEditorLabel(panel, screenshot, "スクリーンショットの手動保存先", "手動の保存先フォルダ:");
+                        assertTrue(configurable.isModified());
+                        assertTrue(store.settings().getScreenshotUsesLogcatDestination(), "draft must not change effective destination");
+                        screenshot.setText("relative-folder");
+                        assertEquals("", store.settings().getScreenshotDirectory());
+                        configurable.reset();
+                        assertTrue(logcat.isSelected());
+                        assertFalse(screenshot.isEnabled());
+                        assertEquals("", screenshot.getText());
+                        assertFalse(configurable.isModified(), "Cancel/reset discards screenshot destination edits");
+                        var autoSave = (javax.swing.JCheckBox) find(panel, "クラッシュ報告の自動保存");
+                        assertFalse(autoSave.isSelected());
+                        autoSave.setSelected(true);
+                        assertTrue(configurable.isModified());
+                        assertFalse(store.settings().getAutoSaveOnCrash(), "draft must not change effective preference");
+                        configurable.reset();
+                        assertFalse(autoSave.isSelected());
+                        assertFalse(configurable.isModified());
                     } finally {
                         configurable.disposeUIResources();
                     }
@@ -133,6 +214,39 @@ class ReplaySettingsLayoutTest {
         } finally {
             Disposer.dispose(root);
         }
+    }
+
+    private static void assertBrowseEditorLabel(Container panel, TextFieldWithBrowseButton field, String name, String labelText) {
+        var editor = field.getTextField();
+        assertTrue(editor.isFocusable());
+        assertTrue(SwingUtilities.isDescendingFrom(editor, panel));
+        assertEquals(name, editor.getAccessibleContext().getAccessibleName());
+        // JLabel.labelFor records the exact labeled component, not merely its ancestor wrapper.
+        assertTrue(hasExactLabelFor(panel, editor, labelText), "label must target the actual editor: " + name);
+    }
+
+    private static boolean hasExactLabelFor(Container parent, JComponent editor, String text) {
+        for (var child : parent.getComponents()) {
+            if (child instanceof javax.swing.JLabel label && label.getLabelFor() == editor && text.equals(label.getText())) return true;
+            if (child instanceof Container container && hasExactLabelFor(container, editor, text)) return true;
+        }
+        return false;
+    }
+
+    private static int[] paint(JComponent component) {
+        var image = new java.awt.image.BufferedImage(component.getWidth(), component.getHeight(), java.awt.image.BufferedImage.TYPE_INT_RGB);
+        var graphics = image.createGraphics();
+        try { component.printAll(graphics); } finally { graphics.dispose(); }
+        return ((java.awt.image.DataBufferInt) image.getRaster().getDataBuffer()).getData();
+    }
+
+    private static boolean hasLabelFor(Container parent, JComponent field) {
+        for (var child : parent.getComponents()) {
+            if (child instanceof javax.swing.JLabel label && label.getLabelFor() != null
+                && (label.getLabelFor() == field || SwingUtilities.isDescendingFrom(field, label.getLabelFor()))) return true;
+            if (child instanceof Container container && hasLabelFor(container, field)) return true;
+        }
+        return false;
     }
 
     private static JComponent find(Container parent, String name) {
@@ -145,6 +259,14 @@ class ReplaySettingsLayoutTest {
             }
         }
         return null;
+    }
+
+    private static int expectedHeightAtWidth(JComponent scroll, JBTextArea guide, JBTextArea reference, int width) {
+        scroll.setSize(width, 650);
+        layout(scroll);
+        layout(scroll);
+        // Non-overlay scrollbars consume width; measure the independent oracle at the allocated width.
+        return naturalHeight(reference, guide.getWidth());
     }
 
     private static int naturalHeight(JBTextArea reference, int width) {

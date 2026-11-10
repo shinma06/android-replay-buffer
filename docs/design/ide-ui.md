@@ -2,6 +2,10 @@
 
 **独立した `Android Replay Buffer` ToolWindowを採用する。** 初期配置は右側、1つのパネルとし、Logcatとは独立して取得・保存状態を表示する。Logcatへの埋込み、独自ヘッダー、ログ閲覧機能の再実装は行わない。この文書は [#12](https://github.com/shinma06/android-replay-buffer/issues/12) の設計決定であり、UIの実装・IDE受入済みという意味ではない。[製品要件](../requirements.md) を正本とし、実装は [#14](https://github.com/shinma06/android-replay-buffer/issues/14) で行う。既存CLI原型のコマンド・設定・ファイルを変更しない。
 
+CLI原型の保全に関する記述は、この設計当時の変更範囲です。第2版の同梱CLI・明示移行・復旧は[CLI契約](../cli.md)に従い、本設計の取得・保存・UI保証は保持します。
+
+初期版のAPI候補・未実装Case案・調査時SDKの記述は設計時点の記録です。現在の配置は本書の「第2版のGUI整理」、実装とbuildは[プロジェクト情報](../project.md)、観察結果と残条件は各Caseを参照し、設計の採用だけで実装済み・受入済みとは判断しません。
+
 ## 配置の比較と根拠
 
 対象は [既存基盤](../plugin-development.md) と同じRabbit 1 `2026.2.1.8` / `AI-262.9437.185.2621.16467767`。設計調査ではこのbuildのSDK JAR・XMLを読取り、`javap`でAPI署名を確認した。IDEを起動したり、プラグインをインストールしたり、ADBや端末を操作したりしていない。
@@ -45,7 +49,7 @@ Android Replay Buffer
 
 ### 取得状態と不足種類
 
-各種類を `取得中／待機／復旧中／未取得／欠落あり` と理由で表示する。ログ0行と取得処理の失敗を区別し、健康な取得中にログが発生していないだけなら障害としない。
+各種類を `取得中／待機／復旧中／未取得／欠落あり／対象外` と理由で表示する。ログ0行と取得処理の失敗を区別し、健康な取得中にログが発生していないだけなら障害としない。#274のログ専用では動画を「対象外（ログ専用）」と表示し、現在の有効モードと固定保存のモードを明示する。正常0行の保存可否は[保存設計](../plugin-design.md#保存要求の境界)の確認条件に従う。
 
 | 条件 | 主表示 | 保存と次操作 |
 | --- | --- | --- |
@@ -66,6 +70,7 @@ Settings → Tools → Android Replay Buffer をproject-level `Configurable`で�
 
 | 設定欄 | 動作 |
 | --- | --- |
+| 取得モード | 「動画＋ログ」が既定。「ログ専用」は動画の取得・保存を行わない。常時編集できるが、モードのApplyは取得OFFかつ設定・操作の反映完了後だけ受理する。取得中は変更一式を拒否し、暗黙に停止・再起動・失敗pin破棄を行わない。 |
 | 保持時間（秒） | 整数・正数を検証。上限は録画エンジンと容量実測後に#14で固定し画面に示す。初期値180を保証し、黙ってclampしない |
 | 保存先フォルダ + `参照…` | IDE標準folder chooser。空・ファイル・不正pathを項目の近くに表示。実書込み失敗は#11の復旧操作へ。入力文字列をshellへ展開しない |
 | 対象アプリ `自動（Android Studioの実行対象）／手動` | 手動時にpackage入力を使用。モードに応じたpackage欄の可否は変えるが、機能無効を理由に設定を操作不能にしない |
@@ -74,7 +79,7 @@ Settings → Tools → Android Replay Buffer をproject-level `Configurable`で�
 
 `reset`は適用済み値をdraftへ読み、編集はdraftだけを変更する。`isModified`で比較、`apply`で全項目を検証し、一式を固定してサービスへ渡す。検証失敗は部分適用しない。Cancelは未適用draftを捨てる。機能トグルは取得条件draftに含めず即時処理し、設定Cancelで無効化が取り消されない。無効中のApplyは保存だけを行い取得しない。
 
-取得中のApplyは `設定を反映中` を表示して必要な取得種類のみ切替え、旧設定を新設定と混在させない。完了までは新規保存を保留せず一時的に操作不可とし、理由を表示する。再起動前の未保存バッファ・固定された失敗対象は消さず、同じsequenceに適用境界と欠落を記録する。保持時間を短くした場合だけ新しい窓の外を期限処理する。失敗対象は自身の固定条件を保ち、通常設定変更で書き替えない。適用不能なら旧稼働条件と保存済み設定の関係を明示し、稼働反映成功を偽装しない。詳細な容量・再起動契約は#11/#14と照合する。
+同じ取得モード内の取得中Applyは `設定を反映中` を表示して必要な取得種類のみ切替え、旧設定を新設定と混在させない。完了までは新規保存を保留せず一時的に操作不可とし、理由を表示する。再起動前の未保存バッファ・固定された失敗対象は消さず、同じsequenceに適用境界と欠落を記録する。保持時間を短くした場合だけ新しい窓の外を期限処理する。失敗対象は自身の固定条件を保ち、通常設定変更で書き替えない。適用不能なら旧稼働条件と保存済み設定の関係を明示し、稼働反映成功を偽装しない。設定・操作の反映中は新規ONを拒否して未反映モードで開始させず、OFFは常に受け付ける。保存済みモードと有効モードが違うときは両方を表示する。詳細な容量・再起動契約は#11/#14と照合する。
 
 自動モードは選択されたAndroid実行構成の実 `applicationId`を取得する。namespace・ソースmanifestのpackage文字列を推測で使わず、variant/applicationIdSuffixを反映する。選択変更・構成編集・Gradle model更新時に解決し直す。これは適用済み自動モード内の実行対象追従であり、設定画面のdraft編集による変更とは区別する。アプリの変更時刻とpackageを記録し、同じsequence内の古い対象ログを新しいpackageのログと誤表示しない。保存対象はクリック時点の対象履歴を固定し、ファイル内の対応情報は#13に従う。
 
@@ -87,6 +92,63 @@ Settings → Tools → Android Replay Buffer をproject-level `Configurable`で�
 保存完了はPlatform `NotificationGroupManager` / `NotificationAction`で通知し、`フォルダを開く` を置く。成功通知は完成したその要求のフォルダを保持し、後続保存のフォルダへすり替えない。不足がある成功は `保存しました（動画に欠落があります）` のように不足を明記する。保存失敗は通知からToolWindowの失敗カードを開く。自動復旧の各試行で通知を連発せず、現在状態をパネルへ反映する。
 
 フォルダを開く操作はRabbitで確認した `RevealFileAction.openDirectory(Path)` を利用する候補とし、存在・directory・OSサポートを再確認する。開けない場合は簡潔な理由とpathコピーを提供する。Finder専用command・HTTP URL・shell文字列で実装を固定しない。project破棄後の通知actionは取得サービスを再生成せず、安全に失効させる。[公式通知API](https://plugins.jetbrains.com/docs/intellij/notification-types.html) の利用とOSで開けることの実受入は区別する。
+
+## 第2版の独立スクリーンショット（#325）
+
+設定に「Logcatのスクショ保存先と同じ場所に保存する」（既定ON）と手動の保存先を設ける。Logcat toolbarが利用するAndroid StudioのAPP service `DeviceScreenshotSettings.saveConfig.saveLocation`を押下時に読み、PROJECT service `SaveConfigurationResolver`の保存場所展開をbackgroundで使う。保存先だけを参照し、nativeのファイル名templateや撮影dialogは使わない。未保存のnative stateの初期値は`$DESKTOP_DIR$`で、IDEがOSのデスクトップを解決する。nativeが受理した空/相対の保存場所はIDE同様user home基準となる。独自の設定key/既定pathやreplay rootへのfallbackは作らない。設定を取得できなければLogcatの画面撮影設定の確認か手動指定を案内する。不存在フォルダを無断作成せず、従来同様利用者が用意したrootへ保存する。
+
+OFFでは手動フォルダを必須とし、空欄・相対パス・消失・非フォルダを理由付きで拒否する。動画・ログと同じpathでも受理する。設定画面はLogcatの参照先を非同期で展開・確認し、保存時には最新値を再読取する旨を示す。Apply/OKだけが選択と手動pathを永続化し、Cancel/resetは破棄する。取得ON中も保存先を変更でき、開始済み要求は固定した場所を使う。旧XMLの`screenshotUsesCommonDestination` keyは互換のため保持し、true/欠落を新Logcat追従、falseを既存手動pathとして読む。旧成果物の一括移動はしない。CLI importは旧保持時間/動画ログrootだけを更新し、新しい選択/pathを保持する。スクショ先だけの不備は動画/ログ取得を止めない。[#341 Case](../verification/changes/issue-341.json)が現在の保存先契約を扱い、[#338](../verification/changes/issue-338.json)の原観察と他の保証を保持する。
+
+参照ABIは対応IDE `AI-262.9437.185.2621.16467767` の実classで確認した。Kotlin internalの設定getter/保存場所resolverへJavaの小さな境界で接続し、不一致は取得不能として扱う。SDK更新時にはこの接続を再確認する。一次sourceの補強はAOSP固定[DeviceScreenshotSettings](https://android.googlesource.com/platform/tools/adt/idea/+/9c5bdbd3170b02d52891c4194c2ca8ca38b74245/android-adb-ui/src/com/android/tools/idea/ui/screenshot/DeviceScreenshotSettings.kt)・[SaveConfigurationResolver](https://android.googlesource.com/platform/tools/adt/idea/+/9c5bdbd3170b02d52891c4194c2ca8ca38b74245/android-adb-ui/src/com/android/tools/idea/ui/save/SaveConfigurationResolver.kt)。このsource commitとインストール済みSDKの完全な版一致、および実profileでの統合受入は未証明。
+
+ToolWindow上部に「スクリーンショットを保存」を常設する。取得OFF・ログ専用・取得初期化/保存中/失敗固定対象の有無では無効化しない。解決済みの最新の対象アプリ・適用済み保存先・SDKのadbを押下時に固定し、project scopeの独立IO処理を直ちに開始する。選択解決待ち、対象未選択、手動保存先未指定、スクショ処理中、project終了時は理由を示す。画面内にスクショ自身の対象と保存先の参照元または手動pathを表示し、取得snapshotの旧条件と混同させない。
+
+#333の本人指示により、端末選択は録画と同じ規則を共有する。要求時の取得snapshotが有効ならそのserialを固定し、SDK設定の反映待ちや取得ONの対象未確定では理由を示す。OFF反映中も実際の取得snapshotに対象が残っている間は同じserialを使う。OFF・履歴なしではSDKのadbの`devices -l`から接続済み候補を1台だけ解決し、取得開始や履歴作成を行わない。選択済み端末があれば、ほかの接続端末の数やUSB/Emulatorの別によらずその端末を使い、消失・offline・未認証時に別端末へ切り替えない。すべての撮影commandは要求に固定した`-s <serial>`へ送る。以前の`-d get-serialno`によるUSB専用選択は履歴であり、原観察は新経路のPASSへ換えない。
+
+`dumpsys SurfaceFlinger --display-id`で物理画面を一つに特定して、そのIDを`exec-out screencap -p -d <id>`へ渡す。`dumpsys window`の標準画面・現在focus・keyguardの点灯/解除情報を撮影前後に確認し、選択packageと同じwindowでなければ保存しない。録画が作るfocusのない追加logical displayだけでは拒否しない。標準display 0は1つに限定し、その区画のfocusだけを選択アプリと照合する。追加displayにfocusがある場合、物理画面が複数の場合、標準画面/focusの帰属不明、未知の診断形式、未認証・切断、解決不能はエラーとする。端末選択の共有は、すべての実機/Emulatorの画面診断形式への対応を保証しない。端末側のファイル作成、録画server、logcat、共有adb serverの停止、アプリ起動、スクショ履歴は追加しない。
+
+これはアプリ専用の原子的な撮影ではなく、端末に表示中の画面全体を撮影する。前後の観察の間に別画面へ切り替わって戻る競合やoverlayは検出しきれないため、撮影中に画面を切り替えない前提を表示する。通知・キーボード等も写る。`FLAG_SECURE`等の保護を回避せず、空白も有効なPNGとして保存し、保護領域の内容取得を成功条件にしない。SDKのadbと診断出力に対応する端末が必要で、未知機種を推測で成功にしない。実機ごとの対応は受入で確定する。
+
+取得PNGは最大64 MiB、縦横それぞれ16384以下かつ16777216画素以下に制限し、署名・全chunkの長さ/CRC・終端・全画像の復号を確認する。画像は再圧縮せず元byteを保存する。adb待ちは通常要求5秒、PNG取得15秒を上限とし、EDTでは待たない。設定済み保存先は通常保存と同じ`toRealPath()`で実rootへ解決し、macOSの`/tmp`や利用者指定のフォルダリンクも受け付ける。その固定rootを所有directory/file handleで開き、直下の`.screenshot-日時-UUID.partial`を0600で作成し、owner/mode/ACL・全画像hashと実体を照合する。書込み完了後にmacOSの排他的renameで`screenshot-日時-UUID.png`へ公開し、再照合する。所有PNGではsymlinkを辿らず、既存成果物を上書きしない。撮影別の完成フォルダ・README・sidecarは作らない。書込み/公開失敗・取消しの部分出力は保全し、確認できる残留先は失敗通知からコピーできる。取消し後の成功通知は行わない。
+
+成功通知の「保存場所を開く」は実画像の親フォルダを既存のOS連携で開く。「保存したファイルを削除」は保存先directory/画像fileの実体と完成時hashを照合し、私有削除用directoryへの排他的移動後も対象を再確認して、そのPNGだけを削除する。置換/改変/消失や権限失敗ではエラーを示す。照合不一致時は非上書きで復元を試み、戻せない出力を保全する。親フォルダ、他のファイル、後のスクショは残す。同一利用者による任意の同時変更まで原子的に排除する保証ではなく、既存保存と同じ所有観察の境界を持つ。project終了後は通知actionを失効させ、進行中の取得clientだけを取消す。
+
+根拠は[Android公式adbのスクショ](https://developer.android.com/tools/adb#screencap)、[FLAG_SECURE](https://developer.android.com/security/fraud-prevention/activities)、AOSPの固定[WindowManagerService / DisplayContent / PhoneWindowManager / KeyguardServiceDelegate / screencap](https://android.googlesource.com/platform/frameworks/base/+/1cdfff555f4a21f71ccc978290e2e212e2f8b168/)と[SurfaceFlingerの画面ID出力](https://android.googlesource.com/platform/frameworks/native/+/db4192ada9dee591ec897a51c07c489c84c860c1/services/surfaceflinger/SurfaceFlinger.cpp)。固定sourceの形式確認と、製品の実IDE/USB観察は区別する。[Case #325](../verification/changes/issue-325.json)が残保証を追跡する。
+
+
+## 第2版のGUI整理（#104）
+
+第2版の機能を採用した`ac9a1b2`を起点に、既存の1パネルと設定画面を整理する。以下を現在の配置・表示名とし、上段の初期版の配置例は設計履歴として保持する。取得/保存のsnapshot・操作/validation・通知の所有と寿命は変えない。新しい端末選択や独自状態、UI frameworkは追加しない。
+
+| 順序 | 表示と操作 |
+| --- | --- |
+| 上部 | 「取得を有効にする」と「設定…」、IDE標準Logcatの開閉。即時ON/OFFと未保存対象の破棄の説明、取得状態/モード・端末・アプリ・保持時間と記録区間を続ける |
+| 主要操作 | 「直前N秒を保存」と「スクリーンショット」。幅が足りなければ行を折り返す。各操作の不可理由とスクショ自身の対象/実保存先・画面上の注意を近接表示する。スクショは取得OFFでも独立利用する |
+| 保存結果 | 待機/保存中/取消し/失敗/完了、固定モード・記録の不足と未確認・動画末尾の未確認を保持する。完了時はその要求の実フォルダを表示し、開く操作を置く。失敗時は判明している出力の保全先を示す |
+| 失敗の復旧 | 理由・固定区間/不足と未確認の下に「同じ対象を再試行」「別の保存先で再試行…」「未保存の対象を破棄」を置き、その後に固定端末/アプリ履歴を表示する。再試行の固定対象と破棄しても取得継続という意味を説明する。既存の明示保存先確認・要求ID照合・保全を維持する |
+| 記録の状態 | 動画/端末ログ/アプリログの状態・取得済み範囲、窓内の不足/未確認区間と理由・時計境界の未知を表示する。ログ0件やLOG_ONLYの対象外を欠損と断定しない。重要な状態を折り畳まない |
+| 保存先・自動保存 | 動画ログの設定root、クラッシュ自動保存の設定/受付/未保存報告/直近結果/残るwarningと対応外範囲を表示する |
+| 接続情報 | SDKの実パス/不備、sessionと端末処理の片付け待ちを表示する。詳細を取得状態や保存完了と混同しない |
+
+スクショは#338の`screenshot-日時-UUID.png`1枚を、#341のLogcat画面撮影設定への追従（既定）または手動rootへ直接保存する。手動で動画・ログと同じpathを指定してよい。表示名を短くしても、録画対象serial固定/OFF独立・要求時の保存先固定・取得不能/不正な保存先からの非fallback、通知から実画像の親を開く/同じ画像だけを削除する保証は変えない。
+
+動画品質の選択は既存の「取得する記録」内に置き、標準/軽量の長辺・fps上限と指定bitrate、軽量の可読性・短い変化/滑らかさへの影響を示す。取得OFFと反映完了後だけ適用し、LOG_ONLYでは選択不可だが保存値は保持する。ToolWindowは適用済みの指定品質と反映待ちを区別して表示する。値と保存metadataの正本は[動画品質の選択](../plugin-design.md#動画品質の選択282)。
+
+#369の「Logcatを開く／Logcatを閉じる」はIDE標準Logcatパネルの実表示状態から次の操作名を示す。IDE側の開閉・登録/解除・利用可否変更へ追従し、クリック時も状態を再確認する。#381では開く際に、取得snapshotの現在の対象serialと接続状態を使い、選択中の標準Logcatタブの単一端末パネルを同じ端末へ合わせる。取得OFF・対象未確定・切断時は理由を示して開かない。閉じる操作は対象端末の有無によらず利用でき、取得トグル・設定・保存を呼び出さない。filterの強制、tabの追加・削除・改名、他tabの変更は行わない。
+
+Rabbit SDKの`android.jar`内`META-INF/logcat.xml`に登録されたID `Logcat`を使う。[公式ToolWindow API](https://plugins.jetbrains.com/docs/intellij/tool-windows.html)と[262系listener定義](https://github.com/JetBrains/intellij-community/blob/idea/262.10968.63/platform/platform-api/src/com/intellij/openapi/wm/ex/ToolWindowManagerListener.java)に従い、content寿命のmessage bus購読で状態と登録/解除の両方を扱う。EDT外の登録通知も`ToolWindowManager.invokeLater`へ渡し、予約時と実行時にcontent/projectの寿命を確認する。#369当時の表示/非表示だけの契約と[Case #369](../verification/changes/issue-369.json)は履歴として保持する。
+
+#381の端末選択には小さなJava ABI境界を使い、確認済みIDE `AI-262.9437.185.2621.16467767` に限ってSDK自身が登録した実パネルと公開`ContentManager.getContent(component)`の所属を照合する。UI tree探索・reflection・タイトルによる端末/所有判定は使わない。選択中tabの分割、保存ログ表示、パネル不明、端末モデル未準備/不在では変更せず再試行を案内する。モデル上の実serial/online一致と、非同期に切り替わるnative接続端末の一致を確認してから表示する。元の1回のクリックで、IDE解決/初期化より前に5秒の期限を固定し、モデル到着/切替をEDTを塞がず待つ。nativeの復元offline初期値はlive discovery前のseedとして同じ期限内で待ち、一度onlineを確認した後のoffline/消失は切断として要求を失効させる。準備中は同じボタンで中止できる。正規対象・手動端末選択・tab/分割・表示状態の変更、切断/disposeは待機を取り消し、再接続しても古い要求を再開しない。期限切れ/準備未完は理由と再試行を案内する。初回/復元は公開Content getterによる標準factoryの初期化を使い、全tabを閉じた空状態ではIDE側で端末用tabを開くよう案内する。独自のtab作成や別端末の先行表示はしない。理由は上部の折返しtext・tooltip・accessible descriptionに示す。未確認build/ABIはこの操作だけ利用不可として案内し、プラグイン全体の対応範囲は狭めない。SDK更新時に型参照と影響受入を再確認する。
+
+一次sourceはAOSP固定revision `19c9dedaf250c2c1b0998d57b4082277273f205f` の[factory/registry](https://android.googlesource.com/platform/tools/adt/idea/+/19c9dedaf250c2c1b0998d57b4082277273f205f/logcat/src/com/android/tools/idea/logcat/LogcatToolWindowFactory.kt)と[パネル/非同期切替](https://android.googlesource.com/platform/tools/adt/idea/+/19c9dedaf250c2c1b0998d57b4082277273f205f/logcat/src/com/android/tools/idea/logcat/LogcatMainPanel.kt)。実SDKのsignature/重要分岐も照合したが、source全体との同版性や実描画は別の事実である。[Case #381](../verification/changes/issue-381.json)は対象一致・手動変更後の再選択・拒否条件と既存操作の保持を追跡し、モデル/ボタンの回帰やbuildをnative表示/streamのPASSへ置き換えない。
+
+設定画面は、冒頭に「適用/OKで一式反映、キャンセルでは変更しない」「取得ON/OFFはToolWindowですぐ反映」を表示する。対象アプリ、取得する記録、動画ログ保存先、スクショ保存先の順に標準見出しで区切る。モードのOFF条件・package構文・自動保存の対象/上限・保存先の確認結果は既存の幅追従textを共用して折り返す。自動保存の受付上限を解除する際は、その設定をOFFで適用してからONで再度適用することを説明し、取得トグルのOFF/ONと混同させない。全入力のvalidation・非同期結果の世代/寿命・Apply/Cancel・既存XML/CLI互換は変えない。
+
+標準`TitledSeparator`とscaledな余白、既存`WrapLayout`を使い、固定色や独自themeを持たせない。状態textには意味のあるaccessible nameを置き、設定のlabel associationを保つ。最初のfocusは操作可能な取得トグル（操作不可なら設定）。主要操作→保存結果/復旧→読取詳細の順に標準Tab/Space操作へつなげる。選択/コピー可能な不足詳細・固定アプリ履歴・自動保存の読取欄は維持する。新しいショートカット割当は追加しない。
+
+通常通知の完成フォルダ/コピー、失敗通知の保存対象確認、スクショ通知の開く/削除は既存経路を使う。新しい再確認・保存入力・通知によるサービス再生成を追加しない。全CLI/取得コア・保存アルゴリズムは変更しない。
+
+[Case #104](../verification/changes/issue-104.json)は未実施の実IDE/keyboard/theme/DPI受入を追跡する。自動回帰の標準LAF/拡大font・280幅の往復・headless描画は実IDEの操作事実ではない。最終固定候補で既存#329/#298/#337と必要#283の共有観察へ接続し、旧FAIL/UNKNOWN・human/REAL・性能未達を保持する。更新前のAX index・ボタン名・寸法は現在値とせず、実操作前に再同定する。
 
 ## 実装のAPI境界
 
@@ -126,7 +188,7 @@ Cursor固有の会話・ACP・権限・Agent session・header pixel値・製品I
 
 ## 実装受入Case案と残条件
 
-以下は#14とQAへ接続する未実装Case案で、実行結果ではない。設計PR自身のCase JSONはGUI不要とし、この表の将来観察をpassにしない。全Caseで固定source SHA / ZIP SHA-256 / Rabbit build / 実ロードPlugin版 / fixtureを照合し、[資源影響と並行可否](../operations.md#gui-lease)に従い、共有状態・証拠へ影響する区間は共有GUI lease取得後に操作する。個別Caseの明示条件と元の観察は維持する。実機とEmulatorの両方で取得・保存関係を確認する。
+以下は#14とQAへ接続する未実装Case案で、実行結果ではない。設計PR自身のCase JSONはGUI不要とし、この表の将来観察をpassにしない。全Caseで固定source SHA / ZIP SHA-256 / Rabbit build / 実ロードPlugin版 / fixtureを照合し、[資源影響と並行可否](https://github.com/shinma06/android-replay-buffer/blob/legacy-ops-develop/docs/operations.md#gui-lease)に従い、共有状態・証拠へ影響する区間は共有GUI lease取得後に操作する。個別Caseの明示条件と元の観察は維持する。実機とEmulatorの両方で取得・保存関係を確認する。
 
 | ID | 手順 | 観察可能な期待 |
 | --- | --- | --- |

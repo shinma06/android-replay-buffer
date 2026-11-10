@@ -15,6 +15,12 @@ import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
 import kotlin.random.Random
 
+/**
+ * Owns readers, clients and sockets for one device/generation, not the supplied store/resources.
+ *
+ * Close blocks off EDT. Even a normal close can leave remote cleanup pending; a thrown close leaves
+ * host termination unconfirmed, so the core retains the exact cleanup identity before recovery.
+ */
 internal class DeviceCapture(
     private val adbPath: Path,
     serial: String,
@@ -22,6 +28,7 @@ internal class DeviceCapture(
     private val store: CaptureStore,
     private val generation: Long,
     application: ApplicationTarget,
+    private val videoQuality: VideoQuality = VideoQuality.STANDARD,
 ) : AutoCloseable {
     private val serial = serialArgument(serial)
     private val adb = OwnedAdb(adbPath)
@@ -46,7 +53,7 @@ internal class DeviceCapture(
 
     fun start() {
         launch("clock", ::clock)
-        launch("video", ::video)
+        if (store.captureMode.videoRequested) launch("video", ::video)
         launch("device_log-main") {
             if (!partitionLogs.isDone) {
                 val partition = probeLogLid()
@@ -71,12 +78,17 @@ internal class DeviceCapture(
                         }.toList()
                         val uid = identities.singleOrNull { it.first == selected.packageName }?.second
                         val exclusive = uid != null && identities.count { it.second == uid } == 1
+                        val psStart = System.nanoTime()
                         val ps = adb.command("-s", serial, "shell", "ps", "-A", "-o", "PID,UID,NAME")
+                        val psEnd = System.nanoTime()
                         val pids = ps.lineSequence().drop(1).mapNotNull {
                             val f = it.trim().split(Regex("\\s+"))
                             if (f.size >= 3 && (f[2] == selected.packageName || f[2].startsWith(selected.packageName + ":"))) f[0].toIntOrNull() else null
                         }.toSet()
-                        if (selected == application) store.app(selected.packageName, uid, pids, generation, exclusive)
+                        if (selected == application) {
+                            store.app(selected.packageName, uid, pids, generation, exclusive,
+                                poll = ReporterPoll(psStart, psEnd, generation, systemServerPid(ps)))
+                        }
                     }.onFailure { if (selected == application) store.app(selected.packageName, null, emptySet(), generation) }
                 }
                 if (!pause(1000)) break
@@ -124,10 +136,12 @@ internal class DeviceCapture(
             pendingEndpoints.remove(endpoint)
             allocated
         }
-        // All shell tokens are fixed or generated hex; no user-supplied shell text is interpolated.
-        val server = adb.start("-s", serial, "shell", "CLASSPATH=$serverFile app_process / --nice-name=$serverName com.genymobile.scrcpy.Server 4.0 " +
+        // Tokens are fixed, enum-owned integers or generated hex; never interpolate user shell text.
+        // Reject encoder errors instead of silently retrying at a lower resolution.
+        val server = adb.start("-s", serial, "shell", "CLASSPATH=$serverFile app_process / --nice-name=$serverName com.genymobile.scrcpy.Server 5.0.1 " +
             "scid=$scid tunnel_forward=true audio=false control=false video_codec=h264 send_device_meta=false " +
-            "send_frame_meta=true send_stream_meta=true max_size=1920 max_fps=30 video_bit_rate=8000000 " +
+            "send_frame_meta=true send_stream_meta=true max_size=${videoQuality.maxSize} max_fps=${videoQuality.maxFps} " +
+            "video_bit_rate=${videoQuality.bitRate} downsize_on_error=false " +
             "video_codec_options=max-bframes:int=0,i-frame-interval:int=1")
         var socket: Socket? = null
         var monitor: VideoReadMonitor? = null
@@ -161,6 +175,7 @@ internal class DeviceCapture(
             store.status(kind, state, reason, generation)
             return
         }
+        if (kind == "device_log-all" && state != StreamState.CAPTURING) store.logReaderBoundary(generation)
         val role = kind.removePrefix("device_log-")
         logStates[role] = StreamSnapshot(state, reason = reason)
         val required = if (partitionLogs.getNow(true)) logStates else mapOf("all" to logStates.getValue("all"))
@@ -199,8 +214,8 @@ internal class DeviceCapture(
         val process = startLogProcess(buffer, "-b", buffer, "-B", "-T", "1")
         try {
             val input = process.inputStream
-            status("device_log-$buffer", StreamState.CAPTURING, null)
             var live = false
+            var confirmed = false
             while (!stopping.get()) {
                 val record = readLog(input)
                 val received = System.nanoTime()
@@ -208,9 +223,15 @@ internal class DeviceCapture(
                     check(record.lidPresent) { "分割取得中のlogcat headerにlidがありません" }
                     if (buffer == "main") check(record.lid == 0) { "main取得に別bufferのrecordがあります" }
                 }
+                if (!confirmed) {
+                    status("device_log-$buffer", StreamState.CAPTURING, null)
+                    confirmed = true
+                }
                 // Exclude the old -T 1 tail; clock jumps remain explicitly uncertain, never backfilled.
-                val anchor = store.clock.snapshot().lastOrNull { it.valid }
-                if (lower == null || anchor?.epoch != initial.epoch || record.wall >= lower) live = true
+                if (!live) {
+                    val anchor = store.clock.snapshot().lastOrNull { it.valid }
+                    if (lower == null || anchor?.epoch != initial.epoch || record.wall >= lower) live = true
+                }
                 if (live && (!partition || (buffer == "main") == (record.lid == 0)))
                     store.log(record, generation, received)
             }

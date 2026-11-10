@@ -1,13 +1,16 @@
 package io.github.shinma06.replaybuffer.settings
 
-import com.intellij.openapi.components.PersistentStateComponent
+import com.intellij.openapi.components.SerializablePersistentStateComponent
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.components.State
 import com.intellij.openapi.components.Storage
 import com.intellij.openapi.components.StoragePathMacros
 import com.intellij.util.messages.Topic
+import com.intellij.util.xmlb.annotations.OptionTag
 import io.github.shinma06.replaybuffer.core.ApplicationMode
 import io.github.shinma06.replaybuffer.core.ApplicationTarget
+import io.github.shinma06.replaybuffer.core.CaptureMode
+import io.github.shinma06.replaybuffer.core.VideoQuality
 import io.github.shinma06.replaybuffer.core.ReplaySettings as CoreReplaySettings
 import java.io.IOException
 import java.nio.file.Files
@@ -24,18 +27,34 @@ enum class AppSelectionMode(private val label: String) {
     override fun toString(): String = label
 }
 
+/** Applied preferences in seconds/absolute folder paths; an empty replay destination permits capture only. */
 data class ReplaySettings(
     val retentionSeconds: Int = 180,
     val destination: String = "",
     val appSelection: AppSelectionMode = AppSelectionMode.AUTOMATIC,
     val manualPackage: String = "",
+    val captureMode: CaptureMode = CaptureMode.VIDEO_AND_LOGS,
+    val autoSaveOnCrash: Boolean = false,
+    val screenshotUsesLogcatDestination: Boolean = true,
+    val screenshotDirectory: String = "",
+    val videoQuality: VideoQuality = VideoQuality.STANDARD,
 ) {
-    fun validationError(): String? = validationError(validateDestination(destination))
+    val manualScreenshotDestination: String get() = if (screenshotUsesLogcatDestination) "" else screenshotDirectory
 
-    internal fun validationError(destinationValidation: DestinationValidation): String? {
+    fun validationError(): String? = validationError(validateDestination(destination), validateDestination(manualScreenshotDestination))
+
+    internal fun validationError(
+        destinationValidation: DestinationValidation,
+        screenshotValidation: DestinationValidation = validateDestination(manualScreenshotDestination),
+    ): String? {
         require(destinationValidation.destination == destination)
         if (retentionSeconds !in 1..CoreReplaySettings.MAX_REPLAY_SECONDS) return "保持時間は1〜900秒で指定してください。"
         destinationValidation.error?.let { return it }
+        require(screenshotValidation.destination == manualScreenshotDestination)
+        if (!screenshotUsesLogcatDestination) {
+            if (screenshotDirectory.isEmpty()) return "スクリーンショット専用の保存先を指定してください。"
+            screenshotValidation.error?.let { return "スクリーンショット: $it" }
+        }
         if (appSelection == AppSelectionMode.MANUAL && !isApplicationId(manualPackage)) {
             return "package名は255文字以内で、英字で始まる各部分をピリオドで区切って指定してください。"
         }
@@ -45,7 +64,11 @@ data class ReplaySettings(
 
 internal data class DestinationValidation(val destination: String, val error: String?)
 
-/** Reads filesystem attributes; call off EDT for nonempty destinations. */
+/**
+ * Checks current folder attributes without creating or probing writes; call off EDT for nonempty paths.
+ *
+ * An empty path is valid for capture-only settings. Success is not a lease on the folder or a save guarantee.
+ */
 internal fun validateDestination(destination: String): DestinationValidation {
     val error = if (destination.isEmpty()) {
         null
@@ -77,13 +100,29 @@ internal fun isApplicationId(value: String): Boolean = try {
     false
 }
 
-/** Keep mutable XML state detached from the immutable settings consumed by capture. */
+/** Explicit option bindings keep legacy XML fields when the state becomes immutable. */
 data class ReplaySettingsState(
-    var enabled: Boolean = false,
-    var retentionSeconds: Int = 180,
-    var destination: String = "",
-    var appSelection: AppSelectionMode = AppSelectionMode.AUTOMATIC,
-    var manualPackage: String = "",
+    @field:OptionTag("enabled")
+    @JvmField val enabled: Boolean = false,
+    @field:OptionTag("retentionSeconds")
+    @JvmField val retentionSeconds: Int = 180,
+    @field:OptionTag("destination")
+    @JvmField val destination: String = "",
+    @field:OptionTag("appSelection")
+    @JvmField val appSelection: AppSelectionMode = AppSelectionMode.AUTOMATIC,
+    @field:OptionTag("manualPackage")
+    @JvmField val manualPackage: String = "",
+    @field:OptionTag("captureMode")
+    @JvmField val captureMode: CaptureMode = CaptureMode.VIDEO_AND_LOGS,
+    @field:OptionTag("autoSaveOnCrash")
+    @JvmField val autoSaveOnCrash: Boolean = false,
+    // Keep the legacy key: true or absent now follows Logcat; false retains the explicit folder.
+    @field:OptionTag("screenshotUsesCommonDestination")
+    @JvmField val screenshotUsesLogcatDestination: Boolean = true,
+    @field:OptionTag("screenshotDirectory")
+    @JvmField val screenshotDirectory: String = "",
+    @field:OptionTag("videoQuality")
+    @JvmField val videoQuality: VideoQuality = VideoQuality.STANDARD,
 )
 
 @Service(Service.Level.PROJECT)
@@ -91,44 +130,65 @@ data class ReplaySettingsState(
     name = "io.github.shinma06.replaybuffer.settings.ReplaySettingsStore",
     storages = [Storage(StoragePathMacros.WORKSPACE_FILE)],
 )
-class ReplaySettingsStore : PersistentStateComponent<ReplaySettingsState> {
-    @Volatile
-    private var stored = ReplaySettingsState()
+class ReplaySettingsStore : SerializablePersistentStateComponent<ReplaySettingsState>(ReplaySettingsState()) {
 
-    val enabled: Boolean get() = stored.enabled
+    val enabled: Boolean get() = state.enabled
 
     fun settings(): ReplaySettings {
-        val state = stored
-        return ReplaySettings(state.retentionSeconds, state.destination, state.appSelection, state.manualPackage)
+        val snapshot = state
+        return ReplaySettings(snapshot.retentionSeconds, snapshot.destination, snapshot.appSelection, snapshot.manualPackage,
+            snapshot.captureMode, snapshot.autoSaveOnCrash, snapshot.screenshotUsesLogcatDestination, snapshot.screenshotDirectory, snapshot.videoQuality)
     }
 
-    @Synchronized
     fun setEnabled(value: Boolean) {
-        stored = stored.copy(enabled = value)
+        updateState { it.copy(enabled = value) }
     }
 
     fun apply(settings: ReplaySettings) {
-        apply(settings, validateDestination(settings.destination))
+        apply(settings, validateDestination(settings.destination), validateDestination(settings.manualScreenshotDestination))
     }
 
     /** Configurable supplies the result already checked in the background for this exact path. */
-    @Synchronized
-    internal fun apply(settings: ReplaySettings, destinationValidation: DestinationValidation) {
-        val error = settings.validationError(destinationValidation)
+    internal fun apply(
+        settings: ReplaySettings,
+        destinationValidation: DestinationValidation,
+        screenshotValidation: DestinationValidation = validateDestination(settings.manualScreenshotDestination),
+    ) {
+        val error = settings.validationError(destinationValidation, screenshotValidation)
         require(error == null) { error.orEmpty() }
-        stored = stored.copy(
-            retentionSeconds = settings.retentionSeconds,
-            destination = settings.destination,
-            appSelection = settings.appSelection,
-            manualPackage = settings.manualPackage,
-        )
+        updateState {
+            require(!it.enabled || settings.captureMode == it.captureMode && settings.videoQuality == it.videoQuality) {
+                "取得モード・動画品質は取得をOFFにしてから変更してください。"
+            }
+            it.copy(
+                retentionSeconds = settings.retentionSeconds,
+                destination = settings.destination,
+                appSelection = settings.appSelection,
+                manualPackage = settings.manualPackage,
+                captureMode = settings.captureMode,
+                videoQuality = settings.videoQuality,
+                autoSaveOnCrash = settings.autoSaveOnCrash,
+                screenshotUsesLogcatDestination = settings.screenshotUsesLogcatDestination,
+                screenshotDirectory = settings.screenshotDirectory,
+            )
+        }
     }
 
-    override fun getState(): ReplaySettingsState = stored.copy()
+    /** Imports only legacy capture values; concurrent GUI choices retain their own fields. */
+    internal fun importLegacy(
+        retentionSeconds: Int,
+        destination: String,
+        destinationValidation: DestinationValidation = validateDestination(destination),
+    ) {
+        ReplaySettings(retentionSeconds, destination).validationError(destinationValidation)?.let { throw IllegalArgumentException(it) }
+        updateState {
+            require(!it.enabled) { "旧設定の移行前に取得をOFFにしてください。" }
+            it.copy(retentionSeconds = retentionSeconds, destination = destination)
+        }
+    }
 
-    @Synchronized
     override fun loadState(state: ReplaySettingsState) {
-        stored = state.copy(retentionSeconds = state.retentionSeconds.takeIf { it in 1..CoreReplaySettings.MAX_REPLAY_SECONDS } ?: 180)
+        super.loadState(state.copy(retentionSeconds = state.retentionSeconds.takeIf { it in 1..CoreReplaySettings.MAX_REPLAY_SECONDS } ?: 180))
     }
 
     companion object {

@@ -1,5 +1,6 @@
 package io.github.shinma06.replaybuffer.core
 
+import io.github.shinma06.replaybuffer.testing.TestExecutables
 import com.google.gson.JsonParser
 import java.nio.file.Files
 import java.nio.file.Path
@@ -10,10 +11,59 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertFailsWith
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
 class DeviceCaptureCloseTest {
+    @Test
+    fun allReaderRecoveryInvalidatesPendingEvidenceAndDrainedPairsButKeepsAnAdmittedPin() {
+        for (stage in listOf("java", "paired", "admitted", "main-only", "stale-owner")) {
+            Fixture().use { fixture ->
+                val store = field(fixture.capture, "store") as CaptureStore
+                CrashFixture(fixture.root, CaptureMode.VIDEO_AND_LOGS, suppliedStore = store).use { f ->
+                    f.log(javaCrash(), 10_005_000_000)
+                    if (stage != "java") f.log(platformCrash(), 10_006_000_000)
+                    val pair = if (stage in listOf("paired", "admitted")) f.pair() else null
+                    val pin = if (stage == "admitted") assertNotNull(store.capture(f.settings, pair, f.at(10_020_000_000))) else null
+                    if (pin != null) store.autosave.admitted(pair!!, pin.id, f.at(10_020_000_000))
+                    val before = store.autosave.snapshot()
+                    if (stage == "stale-owner") store.logReaderBoundary(0) else {
+                        val kind = if (stage == "main-only") "device_log-main" else "device_log-all"
+                        DeviceCapture::class.java.getDeclaredMethod("status", String::class.java, StreamState::class.java,
+                            String::class.java).apply { isAccessible = true }
+                            .invoke(fixture.capture, kind, StreamState.RECOVERING, "synthetic reader restart")
+                    }
+                    store.configureAuto(f.settings, 1, "fixture", true, f.at(10_030_000_000))
+                    when (stage) {
+                        "java" -> {
+                            f.log(platformCrash(), 10_040_000_000)
+                            assertTrue(store.autosave.drain(f.at(10_050_000_000)).isEmpty())
+                            assertEquals(AutoSaveReason.NOT_SAVED_CLOCK_UNKNOWN, store.autosave.snapshot().lastOutcome?.reason)
+                        }
+                        "paired" -> {
+                            assertEquals(AutoSaveReason.NOT_SAVED_CLOCK_UNKNOWN,
+                                assertFailsWith<AutoSaveRejected> { store.capture(f.settings, pair, f.at(10_050_000_000)) }.reason)
+                            assertNotNull(store.capture(f.settings, host = f.at(10_050_000_000)))
+                        }
+                        "admitted" -> {
+                            assertSame(pin, field(store, "pinned"))
+                            assertEquals(before, store.autosave.snapshot())
+                            store.release(pin!!.id)
+                            assertNotNull(store.capture(f.settings, host = f.at(10_050_000_000)))
+                        }
+                        else -> {
+                            val preserved = store.autosave.drain(f.at(10_050_000_000)).single()
+                            assertNull(store.autosave.admissionProblem(preserved, f.at(10_050_000_000)))
+                        }
+                    }
+                    assertEquals(if (stage == "admitted") 7 else 8, store.autosave.snapshot().admissionsRemaining)
+                }
+            }
+        }
+    }
+
     @Test
     fun failedOwnedClientAndReaderTerminationPreservesFirstFailureAndPendingIdentity() {
         Fixture().use { fixture ->
@@ -172,18 +222,18 @@ class DeviceCaptureCloseTest {
         private val resources = CaptureResources(Files.createDirectory(root.resolve("resources")))
         private val store = CaptureStore(root.resolve("ring"))
         private val adbPath = if (forwardFixture) {
-            Files.writeString(root.resolve("adb"), """#!/bin/sh
-if [ "${'$'}1" = forward ] && [ "${'$'}2" = --list ]; then exit 0; fi
-if [ "${'$'}3" = push ]; then exit 0; fi
-if [ "${'$'}3" = forward ]; then
-    touch "${root.resolve("allocating")}"
-    while [ ! -e "${root.resolve("allocated")}" ]; do sleep 0.01; done
-    printf '23456\n'
-    exit 0
-fi
-exit 1
-""").also { assertTrue(it.toFile().setExecutable(true)) }
-        } else Path.of("/bin/sh")
+            TestExecutables.python(root.resolve("adb"), """import pathlib,sys,time
+r=pathlib.Path(__file__).parent;a=sys.argv[1:]
+if a[:2]==['forward','--list']: sys.exit(0)
+if a[2:3]==['push']: sys.exit(0)
+if a[2:3]==['forward']:
+    (r/'allocating').touch()
+    while not (r/'allocated').exists(): time.sleep(0.01)
+    print('23456')
+    sys.exit(0)
+sys.exit(1)
+""")
+        } else TestExecutables.python(root.resolve("adb"), "import sys\nsys.exit(1)\n")
         val capture = DeviceCapture(adbPath, "fixture-1", resources, store, 1, ApplicationTarget())
         private val release = CountDownLatch(1)
         private val blocked = mutableListOf<Thread>()

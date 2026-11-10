@@ -6,10 +6,10 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardOpenOption.CREATE_NEW
 import java.nio.file.StandardOpenOption.WRITE
-import java.nio.file.attribute.PosixFilePermissions
 import java.util.ArrayDeque
 import java.util.UUID
 
+/** pts is source µs; offset/size select original packet bytes, while mapped/retention/host times are ns. */
 internal data class VideoEntry(
     val file: Path, val offset: Long, val size: Int, val pts: Long, val key: Boolean,
     val width: Int, val height: Int, val generation: Long, val time: MappedTime,
@@ -28,6 +28,12 @@ internal data class AppPeriod(
     val packageName: String?, val uid: Long?, val pids: Set<Int>, val from: Long?, val to: Long?, val epoch: Int,
     val uidExclusive: Boolean = false, val endUnknown: Boolean = false,
 )
+/**
+ * One admitted window on the sequence ns axis, with fixed clocks, membership and original gap history.
+ *
+ * Packet files are borrowed from the store's pin; keep it until the writer finishes, including failed retries.
+ * Later acquisition/clock samples must not reinterpret this request. See docs/plugin-design.md.
+ */
 internal data class FrozenCapture(
     val id: String, val sequence: String, val generation: Long, val start: Long, val end: Long,
     val seconds: Int, val video: List<VideoEntry>, val logs: List<LogEntry>, val gaps: List<CaptureGap>,
@@ -36,12 +42,18 @@ internal data class FrozenCapture(
     val endUncertainty: Long = 0, val windowClockEpoch: Int? = null,
     val clockRecoveries: Map<CaptureGap, ClockSample> = emptyMap(),
     val videoCuts: Map<CaptureGap, VideoCut> = emptyMap(),
+    val autoTrigger: AutoTrigger? = null,
 ) {
     val empty: Boolean get() = video.isEmpty() && logs.isEmpty()
     val windowKnown: Boolean get() = endUncertainty != Long.MAX_VALUE
 }
 
-/** Packet bytes are append-only; a frozen request reads exactly each indexed packet's original length. */
+/**
+ * Owns the disk ring and one save pin. Packet bytes are append-only; snapshots read indexed lengths only.
+ *
+ * Store mutations are synchronized; combined snapshots acquire this store before its clock.
+ * close() removes owned packet files, so the caller must first finish the pinned writer.
+ */
 internal class CaptureStore(
     val directory: Path,
     val clock: CaptureClock = CaptureClock(),
@@ -50,15 +62,17 @@ internal class CaptureStore(
     private val minFree: Long = ReplaySettings.MIN_FREE_BYTES,
     private val created: (Path) -> Unit = {},
     private val removed: (Path) -> Unit = {},
+    val captureMode: CaptureMode = CaptureMode.VIDEO_AND_LOGS,
+    val autosave: CrashAutosave = CrashAutosave(),
 ) : AutoCloseable {
     val sequence: String = UUID.randomUUID().toString()
-    private val video = ArrayDeque<VideoEntry>()
+    private val video by lazy { ArrayDeque<VideoEntry>() }
     private val logs = ArrayDeque<LogEntry>()
     private val gaps = ArrayDeque<CaptureGap>()
     private val clockRecoveries = mutableMapOf<CaptureGap, ClockSample>()
     private val videoCuts = mutableMapOf<CaptureGap, VideoCut>()
     private val apps = ArrayDeque<AppPeriod>()
-    private val states = mutableMapOf("video" to StreamSnapshot(), "device_log" to StreamSnapshot(), "app_log" to StreamSnapshot())
+    private val states = mutableMapOf("video" to StreamSnapshot(if (captureMode.videoRequested) StreamState.WAITING else StreamState.NOT_REQUESTED), "device_log" to StreamSnapshot(), "app_log" to StreamSnapshot())
     private var channel: FileChannel? = null
     private var currentFile: Path? = null
     private var config = byteArrayOf()
@@ -86,9 +100,12 @@ internal class CaptureStore(
     private val videoFileRefs = mutableMapOf<Path, Int>()
     private var pinnedFiles = emptySet<Path>()
     private val unusedCandidates = mutableSetOf<Path>()
+    private var reporter: ReporterPoll? = null
+    private var autoDevice: String? = null
+    private var autoTarget: String? = null
 
     init {
-        Files.createDirectory(directory, PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rwx------")))
+        PrivateFiles.createDirectory(directory)
         try { created(directory) } catch (failure: Exception) {
             try { Files.delete(directory) } catch (cleanup: Exception) { failure.addSuppressed(cleanup) }
             throw failure
@@ -97,6 +114,8 @@ internal class CaptureStore(
 
     @Synchronized
     fun generation(value: Long) {
+        autosave.refresh(null)
+        reporter = null
         decodeRun = Math.incrementExact(decodeRun)
         generation = value
         generationClockSample = clock.snapshot().lastOrNull()
@@ -104,7 +123,7 @@ internal class CaptureStore(
         closeCurrentFile()
         previousPts = -1
         config = byteArrayOf()
-        states.replaceAll { _, _ -> StreamSnapshot(StreamState.RECOVERING) }
+        states.replaceAll { kind, _ -> StreamSnapshot(if (kind == "video" && !captureMode.videoRequested) StreamState.NOT_REQUESTED else StreamState.RECOVERING) }
     }
 
     @Synchronized
@@ -113,6 +132,7 @@ internal class CaptureStore(
     private fun status(kind: String, state: StreamState, reason: String?, owner: Long, received: VideoEntry?) {
         if (closed || owner != generation) return
         val old = states.getValue(kind)
+        if (old.state == StreamState.NOT_REQUESTED) return
         if (state != StreamState.CAPTURING && old.state == StreamState.CAPTURING) {
             addGap(kind, clock.now(), null, reason ?: "取得が中断しました")
         }
@@ -145,6 +165,7 @@ internal class CaptureStore(
         // Target resolution and aggregate reader readiness may arrive in either order.
         if (kind == "device_log" && state == StreamState.CAPTURING && appResolved)
             status("app_log", StreamState.CAPTURING, null, owner)
+        if (started == null && logWindowReady()) started = clock.now()
     }
 
     @Synchronized
@@ -167,7 +188,7 @@ internal class CaptureStore(
 
     @Synchronized
     fun session(packet: VideoPacket.Session, owner: Long) {
-        if (closed || owner != generation) return
+        if (closed || owner != generation || !captureMode.videoRequested) return
         decodeRun = Math.incrementExact(decodeRun)
         status("video", StreamState.RECOVERING, "動画sessionを準備しています", owner)
         closeCurrentFile()
@@ -180,7 +201,7 @@ internal class CaptureStore(
 
     @Synchronized
     fun frame(packet: VideoPacket.Frame, owner: Long, host: Long = System.nanoTime()): Boolean {
-        if (closed || owner != generation) return false
+        if (closed || owner != generation || !captureMode.videoRequested) return false
         if (packet.config) {
             require(packet.bytes.size <= ReplaySettings.MAX_CONFIG_PACKET_BYTES) { "動画configが64KiBを超えました" }
             if (!config.contentEquals(packet.bytes)) {
@@ -199,8 +220,7 @@ internal class CaptureStore(
             closeCurrentFile()
             deleteUnused() // Retire unreferenced files even while T is frozen/unknown, before registration.
             val file = directory.resolve("gop-${UUID.randomUUID()}.h264")
-            val opened = FileChannel.open(file, setOf(CREATE_NEW, WRITE),
-                PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rw-------")))
+            val opened = PrivateFiles.openNew(file, setOf(CREATE_NEW, WRITE))
             try { created(file) } catch (failure: Exception) {
                 try { opened.close() } finally {
                     try { Files.delete(file) } catch (cleanup: Exception) { failure.addSuppressed(cleanup) }
@@ -236,8 +256,9 @@ internal class CaptureStore(
     private fun videoReady(): Boolean = channel != null && video.lastOrNull { it.key }?.file == currentFile
 
     @Synchronized
-    fun app(packageName: String?, uid: Long?, pids: Set<Int>, owner: Long, uidExclusive: Boolean = false) {
-        if (closed || owner != generation) return
+    fun app(packageName: String?, uid: Long?, pids: Set<Int>, owner: Long, uidExclusive: Boolean = false,
+            host: Long = System.nanoTime(), poll: ReporterPoll? = null) {
+        if (closed || owner != generation || poll != null && poll.generation != owner) return
         require(pids.size <= 1024)
         appResolved = uid != null
         val last = apps.peekLast()
@@ -245,7 +266,7 @@ internal class CaptureStore(
         val anchor = samples.lastOrNull { it.valid }
         if (last == null || last.packageName != packageName || last.uid != uid || last.pids != pids ||
             last.uidExclusive != uidExclusive || last.from == null || last.epoch != anchor?.epoch) {
-            val now = anchor?.let { it.elapsed + (System.nanoTime() - it.received).coerceAtLeast(0) }
+            val now = anchor?.let { it.elapsed + (host - it.received).coerceAtLeast(0) }
             if (last != null) {
                 val end = if (last.epoch == anchor?.epoch) now else samples.lastOrNull { it.epoch == last.epoch }?.elapsed
                 // A previous sample cannot close a period that began later by host extrapolation.
@@ -256,8 +277,41 @@ internal class CaptureStore(
             apps += AppPeriod(packageName, uid, java.util.Set.copyOf(pids), now, null, anchor?.epoch ?: 0, uidExclusive)
             while (apps.size > 2048) apps.removeFirst()
         }
+        if (poll != null) reporter = poll
         status("app_log", if (uid != null) StreamState.CAPTURING else StreamState.UNAVAILABLE,
             if (uid == null) "対象アプリを解決できません" else null, owner)
+    }
+
+    @Synchronized
+    fun reporter(value: ReporterPoll) {
+        if (!closed && value.generation == generation) reporter = value
+    }
+
+    @Synchronized
+    fun logReaderBoundary(owner: Long) {
+        if (!closed && owner == generation) autosave.refresh(null)
+    }
+
+    @Synchronized
+    fun configureAuto(settings: ReplaySettings, revision: Long, device: String?, active: Boolean,
+                      host: Long = System.nanoTime()) {
+        autoDevice = device
+        autoTarget = settings.application.packageName
+        autosave.configure(settings.autoSaveOnCrash, active, autoTarget, revision)
+        refreshAuto(host)
+    }
+
+    private fun refreshAuto(host: Long) = synchronized(clock) {
+        val anchor = clock.snapshot().lastOrNull()
+        val device = autoDevice
+        val ready = !closed && fixedEnd == null && device != null && autoTarget != null &&
+            apps.peekLast()?.packageName == autoTarget && anchor != null && anchor !== generationClockSample &&
+            clock.certain(host) && host >= anchor.received
+        val boundary = if (ready) try {
+            CrashBarrier(device, anchor.boot, generation, clock.currentEpoch(), host,
+                Math.addExact(anchor.wall, host - anchor.received))
+        } catch (_: ArithmeticException) { null } else null
+        autosave.refresh(boundary)
     }
 
     @Synchronized
@@ -277,6 +331,10 @@ internal class CaptureStore(
         }
         val row = LogEntry(UUID.randomUUID().toString(), source, generation, time, retained, app, host)
         logs += row
+        refreshAuto(host)
+        val selectedUid = (period?.takeIf { it.packageName == autoTarget } ?: apps.peekLast())
+            ?.takeIf { it.packageName == autoTarget && it.uidExclusive }?.uid
+        autosave.observe(row, period, reporter, selectedUid)
         logBytes += source.raw.size + 256
         if (logBytes > logLimit && fixedEnd == null) logRetentionSeconds?.let { seconds ->
             synchronized(clock) {
@@ -300,6 +358,7 @@ internal class CaptureStore(
         return row.id // Accepted into the store; retention and membership are separate decisions.
     }
 
+    /** Freezes the disconnected live window; this is separate from the admitted save pin. */
     @Synchronized
     fun freeze() {
         if (fixedEnd == null) synchronized(clock) {
@@ -319,7 +378,7 @@ internal class CaptureStore(
     @Synchronized
     fun frozen(): Boolean = fixedEnd != null
 
-    private fun latest(): Long? = listOfNotNull(video.peekLast()?.retainedAt, logs.peekLast()?.retainedAt).maxOrNull()
+    private fun latest(): Long? = listOfNotNull(if (captureMode.videoRequested) video.peekLast()?.retainedAt else null, logs.peekLast()?.retainedAt).maxOrNull()
 
     @Synchronized
     fun prune(seconds: Int) {
@@ -335,18 +394,20 @@ internal class CaptureStore(
             return
         }
         val cutoff = end - seconds * 1_000_000_000L - uncertainty
-        // Keep the complete preceding GOP for decoding the first frame inside the logical window.
-        val firstInside = video.indexOfFirst { it.time.sequence == null || it.time.uncertainty == Long.MAX_VALUE || it.retainedAt >= cutoff - it.time.uncertainty }
-        if (firstInside > 0) {
-            val all = video.toList()
-            val first = if (continuousAcrossCut(all[firstInside - 1], all[firstInside], cutoff)) firstInside - 1 else firstInside
-            val key = (first downTo 0).firstOrNull { all[it].key } ?: 0
-            repeat(key) { removeVideo() }
-        } else if (firstInside < 0) {
-            val all = video.toList()
-            val last = all.lastOrNull()?.takeIf { currentVideo(it) }
-            val key = if (last == null) all.size else (all.lastIndex downTo 0).firstOrNull { all[it].key } ?: 0
-            repeat(key) { removeVideo() }
+        if (captureMode.videoRequested) {
+            // Keep the complete preceding GOP for decoding the first frame inside the logical window.
+            val firstInside = video.indexOfFirst { it.time.sequence == null || it.time.uncertainty == Long.MAX_VALUE || it.retainedAt >= cutoff - it.time.uncertainty }
+            if (firstInside > 0) {
+                val all = video.toList()
+                val first = if (continuousAcrossCut(all[firstInside - 1], all[firstInside], cutoff)) firstInside - 1 else firstInside
+                val key = (first downTo 0).firstOrNull { all[it].key } ?: 0
+                repeat(key) { removeVideo() }
+            } else if (firstInside < 0) {
+                val all = video.toList()
+                val last = all.lastOrNull()?.takeIf { currentVideo(it) }
+                val key = if (last == null) all.size else (all.lastIndex downTo 0).firstOrNull { all[it].key } ?: 0
+                repeat(key) { removeVideo() }
+            }
         }
         pruneLogs(cutoff)
         enforceVideoLimit()
@@ -364,11 +425,13 @@ internal class CaptureStore(
         }
     }
 
+    /** Null/no admissible content or AutoSaveRejected creates no new pin; an existing pin rejects another capture. */
     @Synchronized
-    fun capture(settings: ReplaySettings): FrozenCapture? = synchronized(clock) {
+    fun capture(settings: ReplaySettings, trigger: CrashPair? = null, host: Long = System.nanoTime()): FrozenCapture? = synchronized(clock) {
         check(pinned == null) { "保存対象は既に固定されています" }
-        val end = end() ?: return null
-        val uncertainty = fixedUncertainty ?: clock.endUncertainty()
+        require(settings.captureMode == captureMode) { "取得中のモードと保存設定が一致しません" }
+        val end = fixedEnd ?: clock.now(host) ?: latest() ?: return null
+        val uncertainty = fixedUncertainty ?: clock.endUncertainty(host)
         val known = uncertainty != Long.MAX_VALUE
         val start = maxOf(0L, started ?: end, end - settings.replaySeconds * 1_000_000_000L)
         val logTime = clock.logMapper()
@@ -386,27 +449,34 @@ internal class CaptureStore(
                 distance <= margin
             } catch (_: ArithmeticException) { true } // Overflow cannot prove that the record is outside.
         }
-        val inside = video.filter { !known || it.time.sequence == null || it.retainedAt <= end && it.retainedAt >= start }
-        val files = inside.map { it.file }.toMutableSet()
-        val all = video.toList()
-        inside.forEach { entry ->
-            val index = all.indexOf(entry)
-            if (index > 0 && continuousAcrossCut(all[index - 1], entry, start)) files.add(all[index - 1].file)
+        val all = if (captureMode.videoRequested) video.toList() else emptyList()
+        val files = mutableSetOf<Path>()
+        all.forEachIndexed { index, entry ->
+            if (!known || entry.time.sequence == null || entry.retainedAt <= end && entry.retainedAt >= start) {
+                files.add(entry.file)
+                if (index > 0 && continuousAcrossCut(all[index - 1], entry, start)) files.add(all[index - 1].file)
+            }
         }
         all.lastOrNull()?.takeIf { known && it.retainedAt < start && currentVideo(it) }?.let { files.add(it.file) }
-        val frames = video.filter { (!known || it.retainedAt <= end) && it.file in files }.map { frame ->
+        val frames = all.filter { (!known || it.retainedAt <= end) && it.file in files }.map { frame ->
             frame.copy(time = clock.video(frame.pts, frame.host, frame.time.epoch))
         }
-        val value = FrozenCapture(UUID.randomUUID().toString(), sequence, generation, start, end,
+        var value = FrozenCapture(UUID.randomUUID().toString(), sequence, generation, start, end,
             settings.replaySeconds, frames.toList(), rows.toList(), gaps.toList(), clock.snapshot(), apps.toList(), settings,
             streams(settings.replaySeconds, end), endUncertainty = uncertainty, windowClockEpoch = fixedEpoch ?: clock.currentEpoch(),
             clockRecoveries = clockRecoveries.toMap(), videoCuts = videoCuts.toMap())
-        if (value.empty) return null
+        if (trigger != null) {
+            autosave.admissionProblem(trigger, host)?.let { throw AutoSaveRejected(it) }
+            if (fixedEnd != null || !clock.certain(host)) throw AutoSaveRejected(AutoSaveReason.NOT_SAVED_CLOCK_UNKNOWN)
+            value = value.copy(autoTrigger = frozenAutoTrigger(trigger, value, logTime, host))
+        }
+        if (value.empty && (trigger != null || !(logWindowReady() && start < end))) return null
         pinned = value
         pinnedFiles = value.video.map { it.file }.toSet()
         return value
     }
 
+    /** Releases only the matching request after all reads finish; a failed save remains pinned for retry. */
     @Synchronized
     fun release(id: String) {
         if (pinned?.id == id) {
@@ -417,27 +487,32 @@ internal class CaptureStore(
         }
     }
 
+    /** Window-filtered warnings for live/frozen display; row span is not proof of continuous coverage. */
     @Synchronized
-    fun streams(seconds: Int = 180, atEnd: Long? = null): Map<String, StreamSnapshot> = states.mapValues { (kind, value) ->
+    fun streams(seconds: Int = 180, atEnd: Long? = null): Map<String, StreamSnapshot> = synchronized(clock) {
         val end = atEnd ?: end() ?: 0
-        val cutoff = maxOf(0, end - seconds * 1_000_000_000L)
-        val times = if (kind == "video") video.mapNotNull { it.time.sequence }.filter { it >= cutoff } else
-            logs.filter { kind == "device_log" || it.app == true }.mapNotNull { it.time.sequence }.filter { it >= cutoff }
-        val span = if (times.isEmpty()) 0L else (times.max() - times.min()).coerceAtLeast(0)
-        val missing = gaps.filter { it.stream == kind }.sumOf { gap ->
-            val from = gap.fromNs ?: return@sumOf 0L
-            val to = gap.toNs ?: end
-            (minOf(to, end) - maxOf(from, cutoff)).coerceAtLeast(0)
+        val windowGaps = gaps.toList().inWindow(windowStart(seconds, end), end,
+            fixedUncertainty ?: clock.endUncertainty(), clock.snapshot(), clockRecoveries)
+        states.mapValues { (kind, value) ->
+            if (value.state == StreamState.NOT_REQUESTED) return@mapValues value
+            val cutoff = maxOf(0, end - seconds * 1_000_000_000L)
+            val times = if (kind == "video") video.mapNotNull { it.time.sequence }.filter { it >= cutoff } else
+                logs.filter { kind == "device_log" || it.app == true }.mapNotNull { it.time.sequence }.filter { it >= cutoff }
+            val span = if (times.isEmpty()) 0L else (times.max() - times.min()).coerceAtLeast(0)
+            val missing = gaps.filter { it.stream == kind }.sumOf { gap ->
+                val from = gap.fromNs ?: return@sumOf 0L
+                val to = gap.toNs ?: end
+                (minOf(to, end) - maxOf(from, cutoff)).coerceAtLeast(0)
+            }
+            val effective = if (kind == "app_log" && value.state == StreamState.CAPTURING && states.getValue("device_log").state != StreamState.CAPTURING)
+                value.copy(state = states.getValue("device_log").state, reason = states.getValue("device_log").reason) else value
+            val uncertain = !clock.certain()
+            effective.copy(availableSeconds = (span - missing).coerceAtLeast(0) / 1e9,
+                reason = effective.reason ?: if (uncertain && effective.state == StreamState.CAPTURING) "時計対応を確認できません" else null,
+                gaps = java.util.List.copyOf(windowGaps.filter { gap ->
+                    gap.stream == kind || gap.stream == "clock" || kind == "app_log" && gap.stream == "device_log"
+                }))
         }
-        val effective = if (kind == "app_log" && value.state == StreamState.CAPTURING && states.getValue("device_log").state != StreamState.CAPTURING)
-            value.copy(state = states.getValue("device_log").state, reason = states.getValue("device_log").reason) else value
-        val uncertain = !clock.certain()
-        effective.copy(availableSeconds = (span - missing).coerceAtLeast(0) / 1e9,
-            reason = effective.reason ?: if (uncertain && effective.state == StreamState.CAPTURING) "時計対応を確認できません" else null,
-            gaps = java.util.List.copyOf(gaps.filter { gap ->
-                (gap.stream == kind || gap.stream == "clock" || kind == "app_log" && gap.stream == "device_log") &&
-                    gap.intersects(windowStart(seconds, end), end, fixedUncertainty ?: clock.endUncertainty())
-            }))
     }
 
     @Synchronized
@@ -446,11 +521,25 @@ internal class CaptureStore(
     }
 
     @Synchronized
-    fun hasData(): Boolean = video.isNotEmpty() || logs.isNotEmpty()
+    fun hasData(): Boolean = (captureMode.videoRequested && video.isNotEmpty()) || logs.isNotEmpty() ||
+        (logWindowReady() && started?.let { it < (end() ?: it) } == true)
+
+    /** A validated reader, current clock and target prove a quiet window, never row-span coverage. */
+    private fun logWindowReady(): Boolean = synchronized(clock) {
+        captureMode == CaptureMode.LOG_ONLY && !closed && fixedEnd == null &&
+            clock.snapshot().lastOrNull() !== generationClockSample && clock.certain() &&
+            gaps.none { it.stream == "clock" && it.toNs == null } &&
+            listOf("device_log", "app_log").all { states.getValue(it).let { state ->
+                state.state == StreamState.CAPTURING && state.reason == null
+            } } && appResolved && apps.peekLast()?.let {
+                it.uid != null && it.from != null && it.to == null && !it.endUnknown && it.epoch == clock.currentEpoch()
+            } == true
+    }
 
     private fun continuousAcrossCut(a: VideoEntry, b: VideoEntry, cut: Long): Boolean =
         a.time.sequence != null && b.time.sequence != null && a.time.sequence < cut && b.time.sequence >= cut &&
-            a.continuousTo(b, gaps)
+            a.continuousTo(b, gaps.toList().inWindow(a.time.sequence, b.time.sequence,
+                maxOf(a.time.uncertainty, b.time.uncertainty), clock.snapshot(), clockRecoveries))
 
     private fun currentVideo(frame: VideoEntry): Boolean = frame.generation == generation && frame.session == videoSession &&
         frame.time.epoch == clock.currentEpoch() && frame.width == width && frame.height == height && frame.config.contentEquals(config)
@@ -467,6 +556,7 @@ internal class CaptureStore(
     }
 
     private fun enforceVideoLimit() {
+        if (!captureMode.videoRequested) return
         while (video.isNotEmpty() && (videoBytes > videoLimit || video.size > ReplaySettings.MAX_VIDEO_PACKETS ||
                 configBytes > ReplaySettings.CONFIG_MEMORY_BYTES)) {
             val entry = removeVideo()
@@ -535,7 +625,7 @@ internal class CaptureStore(
         closeCurrentFile()
         pinned = null
         pinnedFiles = emptySet()
-        video.clear()
+        if (captureMode.videoRequested) video.clear()
         videoFileRefs.clear()
         unusedCandidates.addAll(ownedFiles)
         logs.clear()
@@ -563,8 +653,13 @@ internal fun VideoEntry.continuousTo(next: VideoEntry, gaps: Iterable<CaptureGap
         gaps.none { gap -> (gap.stream == "video" || gap.stream == "clock") &&
             gap.intersects(time.sequence, next.time.sequence, maxOf(time.uncertainty, next.time.uncertainty)) }
 
-/** Mux-only envelopes. The original uncertain gaps still govern coverage, UI and retention. */
-internal fun List<CaptureGap>.videoScopes(
+/**
+ * One sequence-ns envelope per original gap, in input order, for conservative overlap checks only.
+ *
+ * Supported anchors may bound a recovered gap without confirming its exact duration; retain original history.
+ * videoProofs optionally receives the video anchors used by the saved manifest, not source-adjacency proof.
+ */
+internal fun List<CaptureGap>.gapScopes(
     clocks: List<ClockSample>, recoveries: Map<CaptureGap, ClockSample> = emptyMap(),
     videoProofs: MutableMap<CaptureGap, Pair<ClockSample, ClockSample>>? = null,
 ): List<CaptureGap> {
@@ -577,22 +672,34 @@ internal fun List<CaptureGap>.videoScopes(
         } catch (_: ArithmeticException) { null }
     }
     val anchors = clocks.mapNotNull { sample -> anchor(sample)?.let { Triple(it.first, it.second, sample) } }.sortedBy { it.first }
+    val acquisitionAnchors = anchors.filter { (_, error, sample) ->
+        error >= 0 && sample.before >= 0 && sample.after >= sample.before && sample.received >= sample.sent
+    }
+    fun boundarySample(candidates: List<Triple<Long, Long, ClockSample>>, time: Long, after: Boolean): Triple<Long, Long, ClockSample>? {
+        var low = 0
+        var high = candidates.size
+        while (low < high) {
+            val middle = low + (high - low) / 2
+            val point = candidates[middle].first
+            if (point < time || !after && point == time) low = middle + 1 else high = middle
+        }
+        return candidates.getOrNull(if (after) low else low - 1)
+    }
     return map { gap ->
-        if (gap.stream != "clock" && gap.stream != "video" || gap.boundaryUncertaintyNs != null && gap.boundaryUncertaintyNs != Long.MAX_VALUE) return@map gap
+        val acquisition = gap.stream == "video" || gap.stream == "device_log" || gap.stream == "app_log"
+        if (!acquisition && gap.stream != "clock" || gap.boundaryUncertaintyNs != null && gap.boundaryUncertaintyNs != Long.MAX_VALUE) return@map gap
         // Acquisition loss needs both observed boundaries; clocks do not make an open/unknown-owner loss finite.
-        if (gap.stream == "video" && (gap.generation <= 0 || gap.fromNs == null || gap.toNs == null || gap.fromNs > gap.toNs)) return@map gap
-        val candidates = if (gap.stream == "video") anchors.filter { (_, error, sample) ->
-            error >= 0 && sample.before >= 0 && sample.after >= sample.before && sample.received >= sample.sent
-        } else anchors
+        if (acquisition && (gap.generation <= 0 || gap.fromNs == null || gap.toNs == null || gap.fromNs > gap.toNs)) return@map gap
+        val candidates = if (acquisition) acquisitionAnchors else anchors
         // Widen to observed normal samples, never treat nominal from/to as zero-error boundaries.
-        val before = gap.fromNs?.let { from -> candidates.lastOrNull { it.first <= from } }
+        val before = gap.fromNs?.let { from -> boundarySample(candidates, from, after = false) }
         val after = gap.toNs?.let { to ->
             // Status closes after receiving its sample; preserve nominal closure and that sample's error.
             recoveries[gap]?.takeIf { gap.stream == "clock" }?.let { sample -> anchor(sample)?.let {
                 Triple(maxOf(to, it.first), it.second, sample)
-            } } ?: candidates.firstOrNull { it.first >= to }
+            } } ?: boundarySample(candidates, to, after = true)
         }
-        if (gap.stream == "video" && (before == null || after == null) ||
+        if (acquisition && (before == null || after == null) ||
             before == null && after == null || before != null && after != null && before.first > after.first) gap
         else {
             if (gap.stream == "video") videoProofs?.put(gap, before!!.third to after!!.third)
@@ -600,6 +707,20 @@ internal fun List<CaptureGap>.videoScopes(
                 boundaryUncertaintyNs = maxOf(before?.second ?: 0, after?.second ?: 0))
         }
     }
+}
+
+/**
+ * Returns original gaps whose envelopes may overlap `[start, end]` (sequence ns, including both errors).
+ *
+ * Unknown window/bounds stay visible. Supply this window's clocks/recoveries, never later samples on retry.
+ */
+internal fun List<CaptureGap>.inWindow(
+    start: Long?, end: Long, uncertainty: Long, clocks: List<ClockSample>,
+    recoveries: Map<CaptureGap, ClockSample> = emptyMap(),
+): List<CaptureGap> {
+    if (start == null || uncertainty == Long.MAX_VALUE) return toList()
+    val scopes = gapScopes(clocks, recoveries)
+    return filterIndexed { index, _ -> scopes[index].intersects(start, end, uncertainty) }
 }
 
 /** The same retained IDR/config requirement is used for both MP4 selection and its display metadata. */

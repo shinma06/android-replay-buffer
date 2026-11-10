@@ -1,5 +1,6 @@
 package io.github.shinma06.replaybuffer.core
 
+import io.github.shinma06.replaybuffer.testing.TestExecutables
 import java.io.DataInputStream
 import java.net.InetAddress
 import java.net.ServerSocket
@@ -19,7 +20,7 @@ class VideoReadMonitorTest {
         val listener = ServerSocket(0, 8, InetAddress.getLoopbackAddress())
         val client = Socket(InetAddress.getLoopbackAddress(), listener.localPort)
         val peer = listener.accept()
-        val process = ProcessBuilder("/bin/sleep", "60").start()
+        val process = TestExecutables.sleeping(60)
         val timer = Executors.newSingleThreadScheduledExecutor()
         val monitor = VideoReadMonitor(client, process, timer)
         monitor.received(true)
@@ -45,7 +46,7 @@ class VideoReadMonitorTest {
         val listener = ServerSocket(0, 8, InetAddress.getLoopbackAddress())
         val client = Socket(InetAddress.getLoopbackAddress(), listener.localPort)
         val peer = listener.accept()
-        val process = ProcessBuilder("/bin/sleep", "20").start()
+        val process = TestExecutables.sleeping(20)
         val timer = Executors.newSingleThreadScheduledExecutor()
         val monitor = VideoReadMonitor(client, process, timer)
         monitor.received(true)
@@ -70,7 +71,7 @@ class VideoReadMonitorTest {
         val listener = ServerSocket(0, 8, InetAddress.getLoopbackAddress())
         val client = Socket(InetAddress.getLoopbackAddress(), listener.localPort)
         val peer = listener.accept()
-        val process = ProcessBuilder("/bin/sleep", "20").start()
+        val process = TestExecutables.sleeping(20)
         val timer = Executors.newSingleThreadScheduledExecutor()
         val monitor = VideoReadMonitor(client, process, timer)
         try {
@@ -90,7 +91,7 @@ class VideoReadMonitorTest {
         val listener = ServerSocket(0, 8, InetAddress.getLoopbackAddress())
         val client = Socket(InetAddress.getLoopbackAddress(), listener.localPort)
         val peer = listener.accept()
-        val process = ProcessBuilder("/bin/sleep", "20").start()
+        val process = TestExecutables.sleeping(20)
         val timer = captureWatchdog()
         val stoppingClock = java.util.concurrent.CountDownLatch(1)
         val releaseClock = java.util.concurrent.CountDownLatch(1)
@@ -116,7 +117,7 @@ class VideoReadMonitorTest {
         val oldPeer = listener.accept()
         val next = Socket(InetAddress.getLoopbackAddress(), listener.localPort)
         val nextPeer = listener.accept()
-        val process = ProcessBuilder("/bin/sleep", "20").start()
+        val process = TestExecutables.sleeping(20)
         val timer = Executors.newSingleThreadScheduledExecutor()
         val first = VideoReadMonitor(old, process, timer)
         first.close()

@@ -1,0 +1,44 @@
+{
+  "schema": 1,
+  "issue": 338,
+  "gui_required": true,
+  "reason": "スクショ直下1PNGと共通/専用保存先の設定・実通知を変更する。自動回帰は実IDE/Finder操作を代替しない。旧SCREENSHOT-USB/ACTIONS/DEVICEと原FAIL/UNKNOWN/human/REALを保持する。",
+  "cli_checks": [
+    "ScreenshotSaveTest: root直下1PNG・日時/UUID名・元bytes/0600・並行保存/排他的ファイル移動の衝突保全・親/他画像/差替え保全と既存端末固定/取消し。",
+    "ReplaySettingsStoreTest/ReplaySettingsLayoutTest/ReplayDestinationValidationTest/ReplayToolWindowLayoutTest/ReplayProjectCaptureTest: 旧XML共通既定、共通/専用の永続化・Apply/Cancelと非同期確認、不正先拒否/非fallback、要求時保存先固定、CLI import維持、動画ログ独立性。通常clean HEAD change_impact/product/build/structure。"
+  ],
+  "cases": [
+    {
+      "id": "SCREENSHOT-DESTINATION",
+      "artifact": "plugin",
+      "change": "共通または専用の指定root直下へPNG1枚を保存する",
+      "preconditions": "338→104採用後の同じ最終source/標準ZIP/実ロードを同定し、既存QA329の共有枠と所有fixtureを使う。新native/USB枠は未割当。物理端末は原則利用不可で固有未確認を保持する。",
+      "steps": [
+        "設定の共通既定と専用切替、非同期の入力エラー、Apply/Cancel、実際に表示される保存先を確認する。source/回帰で確認済みの全入力組合せをnativeで反復しない。",
+        "利用可能な対応画面で1クリック保存し、選択root直下のscreenshot-日時-UUID.png 1枚と追加dialog/包装なしを確認する。旧撮影フォルダや動画ログ出力は変わらない。PNGが得られなければ拒否/不足を記録し、旧画像を新撮影成功へ読み替えない。",
+        "同じ出力・既存SCREENSHOT-ACTIONSと共有して実通知の開く/削除を確認する。実画像の親が開き、その画像だけが消えて他画像/保存先は残る。file差替え/衝突/並行/取消しの回帰は既存証拠と照合し、未観察のOS統合だけを補う。"
+      ],
+      "expected": "共通rootか明示専用rootへ、PNG1枚を非上書きで直接公開する。専用先不正時は共通へ無断切替しない。通知は実画像を保持し、所有画像のみ削除する。旧設定/CLI/動画ログ/端末固定/OFF独立/寿命を維持する。",
+      "provenance": [
+        "https://github.com/shinma06/android-replay-buffer/issues/338",
+        "docs/requirements.md",
+        "docs/design/ide-ui.md",
+        "docs/verification/changes/issue-325.json",
+        "docs/verification/changes/issue-333.json",
+        "docs/verification/responsibility.md"
+      ],
+      "gpt": {
+        "status": "pending",
+        "reason": "writerはsource/fake/filesystem/Swing回帰のみ。実IDE/通知/OSの観察は未実施。"
+      },
+      "human": {
+        "status": "pending",
+        "reason": "実操作・表示は未観察。既存human/REALの延期を保持する。"
+      },
+      "fix_issue": null,
+      "fix_pr": null,
+      "recheck": "#104後の最終同一候補と既存329で影響した残保証のみを共有確認する。旧Case/観察/失敗を上書きせず、変更した保存形態は本Case/338で評価する。",
+      "next_action": "固定review/develop採用後にPMが既存329へ残保証・手順/期待を、280へmain/全v2残件を双方向readbackして移管する。"
+    }
+  ]
+}

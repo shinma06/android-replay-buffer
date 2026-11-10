@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "issue": 344,
-  "candidate": "2e576ce3c724dc95ccf0688b8a1bf7cd92d774a8",
+  "candidate": "56dad1d9c63cbfd8c504099498bb993791520109",
   "plan_sha256": "0b6d9c6d2d5054ed642565afdbaeb5a88ee198a4ea5398ff96ff36168ce0eda5",
   "changes": [
     {
@@ -103,91 +103,6 @@
       "commit": "56dad1d9c63cbfd8c504099498bb993791520109",
       "pr": 340,
       "source_path": "docs/verification/changes/issue-104.json"
-    },
-    {
-      "commit": "02aebcdd20e063159f0982f4954ae1502e8b7896",
-      "pr": 350,
-      "source_path": "docs/verification/changes/issue-347.json"
-    },
-    {
-      "commit": "26f9d50c24a921ddc59ee8b7b4fab4a38cfe2443",
-      "pr": 355,
-      "source_path": "docs/verification/changes/issue-352.json"
-    },
-    {
-      "commit": "818b7e1adbcd0af79e146d1795f833b75a1b1302",
-      "pr": 348,
-      "source_path": "docs/verification/changes/issue-345.json"
-    },
-    {
-      "commit": "210ed0473c3f87e02f3ea065506d4616b6fdadd8",
-      "pr": 362,
-      "source_path": "docs/verification/changes/issue-282.json"
-    },
-    {
-      "commit": "945c9e0c6ec899d14dcabc98665c7df10c82935c",
-      "pr": 370,
-      "source_path": "docs/verification/changes/issue-369.json"
-    },
-    {
-      "commit": "4b17fffd763f12b52ffa1456d93e7de02138cbfe",
-      "pr": 378,
-      "source_path": "docs/verification/changes/issue-377.json"
-    },
-    {
-      "commit": "e22cac5cfe3e3eca80f0fcef53254bf802197b51",
-      "pr": 382,
-      "source_path": "docs/verification/changes/issue-381.json"
-    },
-    {
-      "commit": "30c62bba2fcf0d27b43d04292206c070de34d808",
-      "pr": 388,
-      "source_path": "docs/verification/changes/issue-387.json"
-    },
-    {
-      "commit": "4d0430daf90c420e3b86064f839bbafd35d84131",
-      "pr": 392,
-      "source_path": "docs/verification/changes/issue-391.json"
-    },
-    {
-      "commit": "05a947a7bf5bcbec6869f036bb5acce3a09eba31",
-      "pr": 399,
-      "source_path": "docs/verification/changes/issue-397.json"
-    },
-    {
-      "commit": "948b1ad2f18ee266c79935327a403dd7471fdc3b",
-      "pr": 400,
-      "source_path": "docs/verification/changes/issue-395.json"
-    },
-    {
-      "commit": "d7c5859ffad6fac9c1e6e1f6520467680ab1a0be",
-      "pr": 415,
-      "source_path": "docs/verification/changes/issue-414.json"
-    },
-    {
-      "commit": "c570310fe9e1053203d1c0ac6025d0645a59e5e0",
-      "pr": 417,
-      "source_path": "docs/verification/changes/issue-416.json"
-    },
-    {
-      "commit": "515ba790dac716b38cbc638c2d1e2f4a39d6ddba",
-      "pr": 413,
-      "source_path": "docs/verification/changes/issue-412.json"
-    },
-    {
-      "commit": "8fd4f6669137c6fa0a97b0914f8d7e8cde14dc85",
-      "pr": 421,
-      "source_path": "docs/verification/changes/issue-420.json"
-    },
-    {
-      "commit": "0f75cce7cffade20ed23c00101faf3b8d0bf9eb9",
-      "pr": 423,
-      "source_path": "docs/verification/changes/issue-422.json"
-    },
-    {
-      "commit": "2e576ce3c724dc95ccf0688b8a1bf7cd92d774a8",
-      "pr": 425,
-      "source_path": "docs/verification/changes/issue-424.json"
     }
   ],
   "cases": {
@@ -280,7 +195,7 @@
       ]
     },
     "274:LOG-ONLY-CAPTURE": {
-      "current_case_sha256": "8c733519264bfdb824ba9c2e43277dbb174b355735711a5c85e1cc35fe57917b",
+      "current_case_sha256": "31015b334c008d5f9ac6ae9037ceba0ecfe1156471ccece8c3e9f636b938132b",
       "sources": [
         {
           "source_pr": 297,
@@ -291,7 +206,7 @@
       ]
     },
     "274:LOG-ONLY-EMPTY": {
-      "current_case_sha256": "71ea0663a9cb31576fc0e47585767298258f80b05dcbd02b735644950b6897f2",
+      "current_case_sha256": "855be905166a903719f1542eb0967596fc7357a0d152fa7d0d0cbfb3e8db3e86",
       "sources": [
         {
           "source_pr": 297,
@@ -302,7 +217,7 @@
       ]
     },
     "274:LOG-ONLY-LOAD": {
-      "current_case_sha256": "8968dd13bcc1fb49f9b0c4fc9cc5b7562c26d9388a532622519be99824dcc124",
+      "current_case_sha256": "5ed0fca71f95e572b62cea8da0798cf84efdbf634b8015847bea2aa4236983f6",
       "sources": [
         {
           "source_pr": 297,
@@ -313,7 +228,7 @@
       ]
     },
     "274:LOG-ONLY-MODE": {
-      "current_case_sha256": "f7395b4620af007be6b7ace915156126891bdb868b0f8694f473180ee77738b0",
+      "current_case_sha256": "b49bac483d796a4018ed4604a442ef5b9471ed81e4e4119e75e0617a32489c16",
       "sources": [
         {
           "source_pr": 297,
@@ -324,7 +239,7 @@
       ]
     },
     "274:LOG-ONLY-SAVE-LIFETIME": {
-      "current_case_sha256": "d5eb56815dcccc996ec71a5f6a525720528977b4c9f4e61627567eed47c401c9",
+      "current_case_sha256": "d37f143545b915fc38b9dc7c21cd0cfa14dbc351b0f1c6c410e00eb2f2f5854d",
       "sources": [
         {
           "source_pr": 297,
@@ -335,7 +250,7 @@
       ]
     },
     "283:HOST-LOG-TAIL": {
-      "current_case_sha256": "e3b8093fa78dcd6bf0e4342935c6045d28157413826c41936822f1c143b84508",
+      "current_case_sha256": "e9f5535171d68d31726c2df189ea919548379bbb09e4f941505611d930831489",
       "sources": [
         {
           "source_pr": 309,
@@ -346,7 +261,7 @@
       ]
     },
     "283:HOST-VIDEO-SELECTION": {
-      "current_case_sha256": "d6e3f931832e8f4a59e223c7ef8f07b52e3821497186412140e63163d3cc1149",
+      "current_case_sha256": "4f970f9385ca395b3913a19e6a24a49df1b055c18aea7a225a8a13c586e9bfc8",
       "sources": [
         {
           "source_pr": 309,
@@ -485,127 +400,6 @@
           "source_merge": "1f6ec7a41f970d5de0d3a52533934e8567c72857",
           "source_path": "docs/verification/changes/issue-341.json",
           "original_case_sha256": "24658b2bbe57bf189377243b35a0823ae133882d4275c910a8c5ebc67e2de366"
-        }
-      ]
-    },
-    "347:SAVE-WARNING-WINDOW": {
-      "current_case_sha256": "aa9b28b5d6eec07756c29ffce51dda1192926004e8c4ac99aac5d3c37f216a4b",
-      "sources": [
-        {
-          "source_pr": 350,
-          "source_merge": "02aebcdd20e063159f0982f4954ae1502e8b7896",
-          "source_path": "docs/verification/changes/issue-347.json",
-          "original_case_sha256": "aa9b28b5d6eec07756c29ffce51dda1192926004e8c4ac99aac5d3c37f216a4b"
-        }
-      ]
-    },
-    "282:VIDEO-QUALITY-SETTINGS": {
-      "sources": [
-        {
-          "source_pr": 362,
-          "source_merge": "210ed0473c3f87e02f3ea065506d4616b6fdadd8",
-          "source_path": "docs/verification/changes/issue-282.json",
-          "original_case_sha256": "446e0f2aa660cd194ed19f91e6b78f3c015aa4ee06634c7f5aba7a770cf6ed19"
-        }
-      ],
-      "current_case_sha256": "446e0f2aa660cd194ed19f91e6b78f3c015aa4ee06634c7f5aba7a770cf6ed19"
-    },
-    "282:VIDEO-QUALITY-CAPTURE": {
-      "sources": [
-        {
-          "source_pr": 362,
-          "source_merge": "210ed0473c3f87e02f3ea065506d4616b6fdadd8",
-          "source_path": "docs/verification/changes/issue-282.json",
-          "original_case_sha256": "0a31023e52da9f009df09acc72c1312d0259a54ea8665b4fb53965d7d363f43d"
-        }
-      ],
-      "current_case_sha256": "0a31023e52da9f009df09acc72c1312d0259a54ea8665b4fb53965d7d363f43d"
-    },
-    "369:LOGCAT-PANEL-TOGGLE": {
-      "sources": [
-        {
-          "source_pr": 370,
-          "source_merge": "945c9e0c6ec899d14dcabc98665c7df10c82935c",
-          "source_path": "docs/verification/changes/issue-369.json",
-          "original_case_sha256": "b14461581bef7d09b781e1d4a2fabe05f1237b204e201459121e47f9039da1cf"
-        }
-      ],
-      "current_case_sha256": "b14461581bef7d09b781e1d4a2fabe05f1237b204e201459121e47f9039da1cf"
-    },
-    "377:SCREENSHOT-MIRROR": {
-      "current_case_sha256": "87e2a4a4778600c4e979fff3e2115d7fc57d306750f8819a0fbd9b96fedfc611",
-      "sources": [
-        {
-          "source_pr": 378,
-          "source_merge": "4b17fffd763f12b52ffa1456d93e7de02138cbfe",
-          "source_path": "docs/verification/changes/issue-377.json",
-          "original_case_sha256": "87e2a4a4778600c4e979fff3e2115d7fc57d306750f8819a0fbd9b96fedfc611"
-        }
-      ]
-    },
-    "381:LOGCAT-TARGET-DEVICE": {
-      "current_case_sha256": "812c25c1e08fe01be01ae95d5c15574518748ad5093f63ab1c841559617448bb",
-      "sources": [
-        {
-          "source_pr": 382,
-          "source_merge": "e22cac5cfe3e3eca80f0fcef53254bf802197b51",
-          "source_path": "docs/verification/changes/issue-381.json",
-          "original_case_sha256": "812c25c1e08fe01be01ae95d5c15574518748ad5093f63ab1c841559617448bb"
-        }
-      ]
-    },
-    "387:ABOUT-SOURCE-IDENTITY": {
-      "sources": [
-        {
-          "source_pr": 388,
-          "source_merge": "30c62bba2fcf0d27b43d04292206c070de34d808",
-          "source_path": "docs/verification/changes/issue-387.json",
-          "original_case_sha256": "f3f8ef65c9fbca1425a78caa61dfdf861b527c585bfe59462dcd9cce1c7d5344"
-        }
-      ],
-      "current_case_sha256": "f3f8ef65c9fbca1425a78caa61dfdf861b527c585bfe59462dcd9cce1c7d5344"
-    },
-    "391:RABBIT2-LOGCAT-TARGET": {
-      "sources": [
-        {
-          "source_pr": 392,
-          "source_merge": "4d0430daf90c420e3b86064f839bbafd35d84131",
-          "source_path": "docs/verification/changes/issue-391.json",
-          "original_case_sha256": "aa1b8b6fbbae060b2dfca02f9a8b944e9d47f16545d5009678b21a2dacba5487"
-        }
-      ],
-      "current_case_sha256": "aa1b8b6fbbae060b2dfca02f9a8b944e9d47f16545d5009678b21a2dacba5487"
-    },
-    "391:RABBIT2-SETTINGS-SCREENSHOT": {
-      "sources": [
-        {
-          "source_pr": 392,
-          "source_merge": "4d0430daf90c420e3b86064f839bbafd35d84131",
-          "source_path": "docs/verification/changes/issue-391.json",
-          "original_case_sha256": "8f9907ff125871f0af446c245ce6540eb2cf07341e30d8a8d936afbd1199babd"
-        }
-      ],
-      "current_case_sha256": "8f9907ff125871f0af446c245ce6540eb2cf07341e30d8a8d936afbd1199babd"
-    },
-    "391:RABBIT2-CORE-CLI-RETURN": {
-      "sources": [
-        {
-          "source_pr": 392,
-          "source_merge": "4d0430daf90c420e3b86064f839bbafd35d84131",
-          "source_path": "docs/verification/changes/issue-391.json",
-          "original_case_sha256": "364309f9ac1ea38a89b5b3748265f791af6d5a18fac9cae7c123bed0876d8302"
-        }
-      ],
-      "current_case_sha256": "364309f9ac1ea38a89b5b3748265f791af6d5a18fac9cae7c123bed0876d8302"
-    },
-    "416:SETTINGS-INNER-ACCESSIBILITY": {
-      "current_case_sha256": "e5e0cbce769d874ec03cf68d388f355bfb09f47943dd4a0369ade6efc2652745",
-      "sources": [
-        {
-          "source_pr": 417,
-          "source_merge": "c570310fe9e1053203d1c0ac6025d0645a59e5e0",
-          "source_path": "docs/verification/changes/issue-416.json",
-          "original_case_sha256": "e5e0cbce769d874ec03cf68d388f355bfb09f47943dd4a0369ade6efc2652745"
         }
       ]
     }

@@ -1,0 +1,97 @@
+{
+  "schema": 1,
+  "issue": 206,
+  "gui_required": true,
+  "reason": "build/依存/IDE保存APIと非同期検証の変更により固定新ZIPの実ロード、設定互換・寿命、端末server/clock接続の観察が必要。既存の原Case/観察/失敗を維持し、全ての旧native試験を無条件反復又は自動PASSにはしない。",
+  "cli_checks": [
+    "Kotlin/JUnit: 全既存回帰、旧XML/変更追跡/並行Apply、保存先検証取消し、旧4.0 journal回収、同梱DEX/依存とversion/identity整合。実結果はIssue/PRに記録する。",
+    "標準plugin check/buildPlugin/verifyPluginStructure、fixtureの2 APK/lint/回帰APK build、凍結CLI product_check、harness check、clean committed HEADのchange_impact --run-testsとhooks。正式versionの正負入力と変更時のidentity再生成を実確認する。",
+    "Swift 6 / AVFoundation: 合成VFRの全frame/PTS/色判定/境界PNGを旧実装と比較。新規出力の権限、上書き拒否、不正ROI・破損入力の非zeroも確認。製品同期精度のnative PASSとは別。"
+  ],
+  "cases": [
+    {
+      "artifact": "plugin",
+      "preconditions": "cleanな固定source SHA、標準buildの同一ZIP/全JAR hash、identity.propertiesのsource/dirty/versionと実ロード版を照合する。共有GUI leaseと専用IDE/project/Emulator fixture、元設定・所有資源を保全。#224の定量測定と重ねない。既存のQA #65のREAL/人間延期、原Case・原観察・失敗を維持する。",
+      "provenance": [
+        "https://github.com/shinma06/android-replay-buffer/issues/206",
+        "https://github.com/shinma06/android-replay-buffer/issues/280",
+        "docs/verification/responsibility.md: trusted mainの有効保証・最小検証方法。既存Caseの全有効契約と延期を保持する。"
+      ],
+      "gpt": {
+        "status": "pending",
+        "reason": "新しい固定候補での実ロード・native/端末観察は未実施。JVM回帰・build/構造検査とは区別する。"
+      },
+      "human": {
+        "status": "pending",
+        "reason": "未観察。既存のQA #65の人間/REAL延期を保持し、本変更で新しい一律human必須・免除・延期は作らない。"
+      },
+      "fix_issue": null,
+      "fix_pr": null,
+      "next_action": "固定HEAD/baseの別session独立レビュー後、PMが第2版の固定候補で必要なnative/FILE観察を割り当てる。独立して残る試験は既存又は対応QA、main反映は #280 へ双方向readbackして移管する。writer単独のbuild成功で完了にしない。",
+      "id": "STACK-LOAD",
+      "change": "Kotlin/Gradle/JDK/JUnitと同梱依存を最新stableへ更新し、JVM/API target 25を保つ。正式pluginVersionはbuild時に固定し、同じZIPを受入・公開へ渡す。",
+      "steps": [
+        "標準buildで依存hash・ZIP構造・source/dirty/version・Plugin descriptorを照合。正式版の不正syntaxとdirty指定の拒否、同sourceで版を変更した際のidentity再生成を確認する。",
+        "専用profileへ同じ固定ZIPを導入し、実IDE/full build/JBR/全JAR、About/action・ToolWindow・設定入口、取得OFFを確認。通常終了/再起動後も同じ版と設定を確認する。"
+      ],
+      "expected": "対象Rabbit/JBR25でロードし、指定したsource/versionとZIP内容が一致する。旧class/JAR混在・API linkage error・実行時の追加ツール取得がない。正式版を公開時に書き換えない。",
+      "recheck": "compiler/toolchain/SDK・依存・版/identity処理の変更時に影響するbuild/ロードを確認し、異なるZIPへ旧観察を移植しない。"
+    },
+    {
+      "artifact": "plugin",
+      "preconditions": "cleanな固定source SHA、標準buildの同一ZIP/全JAR hash、identity.propertiesのsource/dirty/versionと実ロード版を照合する。共有GUI leaseと専用IDE/project/Emulator fixture、元設定・所有資源を保全。#224の定量測定と重ねない。既存のQA #65のREAL/人間延期、原Case・原観察・失敗を維持する。",
+      "provenance": [
+        "https://github.com/shinma06/android-replay-buffer/issues/206",
+        "https://github.com/shinma06/android-replay-buffer/issues/280",
+        "docs/verification/responsibility.md: trusted mainの有効保証・最小検証方法。既存Caseの全有効契約と延期を保持する。"
+      ],
+      "gpt": {
+        "status": "pending",
+        "reason": "新しい固定候補での実ロード・native/端末観察は未実施。JVM回帰・build/構造検査とは区別する。"
+      },
+      "human": {
+        "status": "pending",
+        "reason": "未観察。既存のQA #65の人間/REAL延期を保持し、本変更で新しい一律human必須・免除・延期は作らない。"
+      },
+      "fix_issue": null,
+      "fix_pr": null,
+      "next_action": "固定HEAD/baseの別session独立レビュー後、PMが第2版の固定候補で必要なnative/FILE観察を割り当てる。独立して残る試験は既存又は対応QA、main反映は #280 へ双方向readbackして移管する。writer単独のbuild成功で完了にしない。",
+      "id": "SETTINGS-PERSISTENCE",
+      "change": "SerializablePersistentStateComponentのimmutable state/atomic更新と変更追跡、service所有CoroutineScopeでの保存先検証を採用する。既存workspace XMLのcomponent/fieldを維持。",
+      "steps": [
+        "旧XML形式で保持時間・保存先・自動/手動package・enabledを持つ使い捨てprojectを読み込み、設定値と実取得状態を照合する。設定を有効値へApplyし、未適用編集のCancel/reopenと通常再起動による復元を確認する。",
+        "保持時間/package/保存先の代表不正入力を拒否し旧設定を維持する。入力を連続変更した場合の最新結果、確認中Apply拒否、画面を閉じた後の取消し・再open、取得toggleとApplyの併存を確認。狭幅の案内・各fieldのaccessible name/Helpを保持する。"
+      ],
+      "expected": "既存設定を失わず、Applyとtoggleの更新を互いに上書きしない。旧snapshotは不変で変更追跡が進む。検証はEDTをfilesystem読取りで塞がず、破棄後/旧入力の結果を画面へ反映しない。入力エラーでpartial applyしない。",
+      "recheck": "保存形式・settings/service/Configurable・SDKの変更時に旧XML互換・atomic更新・dispose/cancellationと必要なnative接続を確認する。"
+    },
+    {
+      "artifact": "plugin",
+      "preconditions": "cleanな固定source SHA、標準buildの同一ZIP/全JAR hash、identity.propertiesのsource/dirty/versionと実ロード版を照合する。共有GUI leaseと専用IDE/project/Emulator fixture、元設定・所有資源を保全。#224の定量測定と重ねない。既存のQA #65のREAL/人間延期、原Case・原観察・失敗を維持する。",
+      "provenance": [
+        "https://github.com/shinma06/android-replay-buffer/issues/206",
+        "https://github.com/shinma06/android-replay-buffer/issues/280",
+        "docs/verification/responsibility.md: trusted mainの有効保証・最小検証方法。既存Caseの全有効契約と延期を保持する。"
+      ],
+      "gpt": {
+        "status": "pending",
+        "reason": "新しい固定候補での実ロード・native/端末観察は未実施。JVM回帰・build/構造検査とは区別する。"
+      },
+      "human": {
+        "status": "pending",
+        "reason": "未観察。既存のQA #65の人間/REAL延期を保持し、本変更で新しい一律human必須・免除・延期は作らない。"
+      },
+      "fix_issue": null,
+      "fix_pr": null,
+      "next_action": "固定HEAD/baseの別session独立レビュー後、PMが第2版の固定候補で必要なnative/FILE観察を割り当てる。独立して残る試験は既存又は対応QA、main反映は #280 へ双方向readbackして移管する。writer単独のbuild成功で完了にしない。",
+      "id": "CAPTURE-DEPENDENCIES",
+      "change": "同梱scrcpy server 5.0.1とR8 9.5.26で作った時計DEXへ更新。公開SystemClock APIを直接呼び、旧4.0の中断取得journalも所有一致時に回収する。",
+      "steps": [
+        "専用Emulatorとmarker fixtureで新server/clockの実起動、動画と両ログ・clock取得、Save後の継続取得、OFF/通常終了の所有cleanupを観察する。旧4.0 journalは合成所有fixture回帰で既知停止ownerの限定回収と未知/生存/置換対象の保全を確認する。",
+        "新しい固定成果物で全FILEの元PTS・config/keyframe/session・MP4 frame/時刻/可変duration/edit/preroll、両JSONLとclock/identityを既存検証器で照合する。正常同期と境界の有効精度/窓/欠落/保全契約を満たす最小の観察を選び、consumerの代表再生/open/copyは既存適格証拠と変更影響を個別評価する。"
+      ],
+      "expected": "wire/nonce/入力上限・clock読取順とmin API 24契約を維持し、固定server/clockが起動する。データ・時刻・切出し・可読性・復旧の既存有効保証を満たす。未知/未達/REALを成功へ換えず、所有外の端末process・ファイル・保存済み成果物を変更しない。",
+      "recheck": "server/DEX/R8/SDK入力・wire/clock/mux又は実行条件の変更時は影響する保証を新成果物で確認する。無変更保証の保持事実利用はtrustedな影響証明と独立評価に限る。"
+    }
+  ]
+}

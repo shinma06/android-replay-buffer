@@ -1,0 +1,45 @@
+{
+  "schema": 1,
+  "issue": 341,
+  "gui_required": true,
+  "reason": "スクショ既定をLogcat画面撮影設定への追従に変更し、旧共通モードを置き換える。実設定/表示/要求時snapshot・通知のIDE/OS統合が必要。旧観察/FAIL/UNKNOWN/human/REALを保持する。",
+  "cli_checks": [
+    "LogcatScreenshotSettingsTest: 対応IDEの実APP bean/PROJECT resolverを所有Mock環境で接続し、native初期値、live変更、絶対/相対/空/homeと不正pathを確認。実IDEの現在profile/OS Desktop統合は別。",
+    "ReplaySettingsStoreTest/ReplaySettingsLayoutTest/ReplayDestinationValidationTest/ReplayToolWindowLayoutTest/ReplayProjectCaptureTest: 旧XML共通/キー欠落→Logcat・明示手動path保持、CLI import、Apply/Cancel/非同期・取得不能/不正/不存在拒否/非fallback、手動root一致受理、要求時固定と次要求のnative変更追従、OFF/端末固定/取消し/lifetime。ScreenshotSaveTestと通常clean HEAD checks/build/structureで直下1PNG・非上書き/保全/所有画像削除を維持。"
+  ],
+  "cases": [
+    {
+      "id": "SCREENSHOT-DESTINATION",
+      "artifact": "plugin",
+      "change": "Logcatのスクリーンショット設定（既定）または手動rootへPNG1枚を保存する",
+      "preconditions": "341→104採用後の同じ最終source/標準ZIP/実ロードを同定し、既存QA329の共有枠と所有fixtureを使う。新native/USB枠は未割当。物理端末は原則利用不可で固有未確認を保持する。Logcatの画面撮影設定とログexport先を区別する。",
+      "steps": [
+        "Logcatのスクショ設定が参照され、設定画面の参照先表示と実際の保存rootが一致することを代表条件で確認する。Logcat設定を変更して次要求が追従すること、手動pathとApply/Cancel/不備の案内を確認する。設定初期値と空/相対の意味・取得不能時の案内は固定source/回帰の証拠と照合し、全入力をnativeで反復しない。",
+        "利用可能な対応画面で1クリック保存し、選択root直下のscreenshot-日時-UUID.png 1枚と追加dialog/包装なしを確認する。旧撮影フォルダや動画ログ出力は変わらない。PNGが得られなければ拒否/不足を記録し、旧画像を新撮影成功へ読み替えない。",
+        "同じ出力・既存SCREENSHOT-ACTIONSと共有して実通知の開く/削除を確認する。実画像の親が開き、その画像だけが消えて他画像/保存先は残る。file差替え/衝突/並行/取消しの回帰は既存証拠と照合し、未観察のOS統合だけを補う。"
+      ],
+      "expected": "既定はLogcatの画面撮影設定を要求時に読み取って固定し、次要求は設定変更へ追従する。旧共通/キー欠落はこの既定へ移り、明示済み手動pathは保持する。手動でreplayと同じrootも受理する。取得不能/不正先では説明し、replay/Logcatの別rootへ無断切替しない。直下PNG1枚の非上書き公開・実画像の親を開く/所有画像のみ削除・端末一致/OFF独立/CLI/動画ログ/寿命を維持する。",
+      "provenance": [
+        "https://github.com/shinma06/android-replay-buffer/issues/341",
+        "docs/requirements.md",
+        "docs/design/ide-ui.md",
+        "docs/verification/changes/issue-325.json",
+        "docs/verification/changes/issue-333.json",
+        "docs/verification/responsibility.md",
+        "docs/verification/changes/issue-338.json"
+      ],
+      "gpt": {
+        "status": "pending",
+        "reason": "writerは固定native class/所有Mock・fake adb/filesystem/Swing回帰のみ。実IDEの現在の設定値・OS Desktop・通知/Finderは未観察。"
+      },
+      "human": {
+        "status": "pending",
+        "reason": "実操作・表示は未観察。既存human/REALの延期を保持する。"
+      },
+      "fix_issue": null,
+      "fix_pr": null,
+      "recheck": "#104後の同一最終候補と既存329で、Logcat設定から保存先への接続と影響した残保証だけを共有確認する。旧Case/観察/失敗を上書きせず、旧共通既定だけを本IssueのLogcat追従へ置き換える。",
+      "next_action": "固定review/develop採用後にPMが既存329へ残保証・手順/期待を、280へmain/全v2残件を双方向readbackして移管する。"
+    }
+  ]
+}

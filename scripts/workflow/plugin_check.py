@@ -1,4 +1,8 @@
-"""Build the plugin ZIP and verify its structure, without launching an IDE."""
+"""Run plugin checks locally; the full mode also requests ZIP/structure verification.
+
+Tests-only omits distribution tasks here, but Gradle tests may still build their
+archive fixture. Neither mode starts an IDE or publishes the resulting archive.
+"""
 import argparse
 import os
 from pathlib import Path

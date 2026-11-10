@@ -1,0 +1,43 @@
+{
+  "schema": 1,
+  "issue": 335,
+  "gui_required": true,
+  "reason": "全frameを保持した時計対応不明も上位表示が欠落と断定する不一致を、通知・ToolWindow・CLIの『記録の不足・未確認』という案内へ修正する。判定・missingKinds/JSON/API・詳細理由・PTS・保存結果は維持する。既存回帰で意味を確認し、新文言の実native表示は#104後の固定最終候補へまとめてpendingを保持する。旧native FAILの修復や新しい画像精度PASSにはしない。",
+  "cli_checks": [
+    "ReplayDescriptionsTest / ReplayCliSaveResultTest: 更新した既存assertionが旧文言を拒否し、新文言で成功する。時計不明でも警告を残し、実取得中断・正常静止VFR・LOG_ONLY・保存失敗の説明を維持する。",
+    "VideoClockRegionTest / CaptureStoreSaveTest / CaptureStoreSourceTest / LogOnlyStoreTest / SaveWriterFailureTest / ReplayCoreWireTest: 全frame保持と時計不明、実loss/reader失敗、held tail、未要求動画・正常0行、公開失敗と固定retryを既存production経路で確認する。",
+    "clean committed HEADの通常pre-push hookでpython3 scripts/workflow/change_impact.py --run-testsを実行し、必要な管理検査・統合製品check/build/structureを維持する。"
+  ],
+  "cases": [
+    {
+      "id": "RECORD-WARNING",
+      "artifact": "plugin",
+      "change": "保存通知・ToolWindow・CLIで、記録不足と未確認の両方を含む上位警告を表示する",
+      "preconditions": "#333と本変更を含み#104最終UIを反映した固定候補/標準ZIP/実ロードを同定する。既存の最終機能受入へまとめ、今回のunit成功や旧artifactの表示を新候補のnative PASSへ換えない。",
+      "steps": [
+        "既存production回帰で時計対応不明でも全frameを保存するケース、実取得中断、保存失敗、正常静止VFR、LOG_ONLY/正常0行を照合し、missingKindsと詳細理由・JSON/API・保存結果の意味が変わらないことを確認する。",
+        "最終候補で通知・ToolWindowの不足/未確認の上位案内と詳細理由、同梱CLIの警告を読み戻す。時刻対応未確認だけを確認済みの映像欠落と断定せず、実不足と失敗の警告・再試行を保持し、正常静止画面と未要求動画を誤警告しないことを確認する。"
+      ],
+      "expected": "未確認を欠落又は成功と断定せず、『記録の不足・未確認』として知らせる。実loss・reader失敗・時計/境界不明・保存失敗の判定と理由を残し、LOG_ONLY・正常0行・静止VFR・pin/原子保存・元PTSを変更しない。CLIのstdout保存先・exit code・JSON構造を維持する。",
+      "provenance": [
+        "https://github.com/shinma06/android-replay-buffer/issues/335",
+        "https://github.com/shinma06/android-replay-buffer/issues/104",
+        "docs/verification/changes/issue-41.json",
+        "docs/verification/changes/issue-103.json",
+        "docs/verification/responsibility.md"
+      ],
+      "gpt": {
+        "status": "pending",
+        "reason": "source/既存回帰と固定独立レビューを今回実施する。新文言の実ロード・表示は#104後の最終候補の受入まで未実施であり、unit結果をnative合格にしない。"
+      },
+      "human": {
+        "status": "pending",
+        "reason": "未観察。既存のhuman/REAL条件を保持し、今回新しい延期は追加しない。"
+      },
+      "fix_issue": null,
+      "fix_pr": null,
+      "recheck": "SYNC-01/UI-01/SAVE-03と41:SYNC-PARTIAL/CORE-SNAPSHOT/CORE-PUBLISH、103:CLI-SHARED-SAVEの説明に影響する。元Case/観察/FAILは保持し、変更していない取得・換算・writerの事実は現契約の独立した保証別影響評価を経て再利用する。",
+      "next_action": "PMが#104後の固定最終候補の既存受入へ本Caseと影響する表示確認を引継ぎ、現source/ZIP/ロードidentityと結果を別途記録する。main統合と全v2受入は#280で保持する。"
+    }
+  ]
+}

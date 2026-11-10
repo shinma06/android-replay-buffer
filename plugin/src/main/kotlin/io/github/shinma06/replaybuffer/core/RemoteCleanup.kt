@@ -9,13 +9,9 @@ import java.nio.file.Files
 import java.nio.file.LinkOption.NOFOLLOW_LINKS
 import java.nio.file.NoSuchFileException
 import java.nio.file.Path
-import java.nio.file.StandardCopyOption.ATOMIC_MOVE
-import java.nio.file.StandardCopyOption.REPLACE_EXISTING
 import java.nio.file.StandardOpenOption.CREATE_NEW
 import java.nio.file.StandardOpenOption.READ
 import java.nio.file.StandardOpenOption.WRITE
-import java.nio.file.attribute.BasicFileAttributes
-import java.nio.file.attribute.PosixFilePermissions
 
 /** Immutable identities retained while stopping a capture, including unconfirmed host termination. */
 internal data class RemoteCleanup(
@@ -91,14 +87,19 @@ internal fun removeOwnedForwards(
     }
 }
 
-/** Only this caller-supplied private directory is inspected; no workspace/host-wide search or sweep. */
+/**
+ * The core serializes this journal's calls in its caller-supplied private directory; no host-wide sweep.
+ *
+ * Recovery reads/locks descriptors without contacting devices; pending count also includes quarantined
+ * records. Close releases locks and keeps descriptors. Retire removes only a verified owned record
+ * after the caller confirms the corresponding client/reader and remote cleanup outcome.
+ */
 internal class RemoteCleanupJournal(
     private var directory: Path,
     private val createChannel: (Path) -> FileChannel,
 ) : AutoCloseable {
     constructor(directory: Path) : this(directory, { path ->
-        FileChannel.open(path, setOf<java.nio.file.OpenOption>(CREATE_NEW, READ, WRITE, NOFOLLOW_LINKS),
-            PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rw-------")))
+        PrivateFiles.openNew(path, setOf(CREATE_NEW, READ, WRITE, NOFOLLOW_LINKS))
     })
     private data class Entry(val record: RemoteCleanup, val channel: FileChannel, val lock: FileLock, val fileKey: Any, val hostPending: Boolean = false)
     private val owned = linkedMapOf<Path, Entry>()
@@ -133,7 +134,7 @@ internal class RemoteCleanupJournal(
         var published = false
         try {
             stagedKey = key(staged)
-            val lock = channel.tryLock() ?: error("終了情報の所有を確認できません")
+            val lock = PrivateFiles.tryOwnerLock(channel) ?: error("終了情報の所有を確認できません")
             candidate = Entry(record, channel, lock, stagedKey, hostPending)
             val buffer = ByteBuffer.wrap(bytes)
             while (buffer.hasRemaining()) channel.write(buffer)
@@ -142,7 +143,7 @@ internal class RemoteCleanupJournal(
             if (previous != null) {
                 check(previous.lock.isValid && key(path) == previous.fileKey) { "終了情報の所有が変更されています" }
                 // Both old and replacement inodes remain locked across atomic publication.
-                Files.move(staged, path, ATOMIC_MOVE, REPLACE_EXISTING)
+                PrivateFiles.replace(staged, path)
             } else {
                 // Hard-link publication is exclusive: never replace a foreign same-token descriptor.
                 Files.createLink(path, staged)
@@ -175,7 +176,7 @@ internal class RemoteCleanupJournal(
                     require(Files.isRegularFile(path, NOFOLLOW_LINKS))
                     val key = key(path)
                     channel = FileChannel.open(path, READ, WRITE, NOFOLLOW_LINKS)
-                    val lock = channel.tryLock() ?: error("別ownerが終了情報を確認中です")
+                    val lock = PrivateFiles.tryOwnerLock(channel) ?: error("別ownerが終了情報を確認中です")
                     require(key(path) == key && channel.size() in 1..65536)
                     val buffer = ByteBuffer.allocate(channel.size().toInt())
                     while (buffer.hasRemaining()) check(channel.read(buffer) > 0)
@@ -248,10 +249,10 @@ internal class RemoteCleanupJournal(
         require(!Files.isSymbolicLink(directory)) { "終了情報の保存先を確認してください" }
         Files.createDirectories(directory)
         directory = directory.toRealPath()
-        Files.setPosixFilePermissions(directory, PosixFilePermissions.fromString("rwx------"))
+        PrivateFiles.restrict(directory, true)
     }
 
-    private fun key(path: Path): Any = Files.readAttributes(path, BasicFileAttributes::class.java, NOFOLLOW_LINKS).fileKey()
+    private fun key(path: Path): Any = PrivateFiles.fileKey(path)
         ?: error("終了情報のfile identityを確認できません")
 
     override fun close() {

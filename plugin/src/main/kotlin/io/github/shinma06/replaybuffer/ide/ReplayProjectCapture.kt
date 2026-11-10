@@ -6,6 +6,7 @@ import io.github.shinma06.replaybuffer.core.ReplayCore
 import io.github.shinma06.replaybuffer.core.ReplayOperation
 import io.github.shinma06.replaybuffer.core.ReplaySnapshot
 import io.github.shinma06.replaybuffer.core.ReplaySettings as CoreSettings
+import io.github.shinma06.replaybuffer.core.SAVE_IN_PROGRESS_REASON
 import io.github.shinma06.replaybuffer.core.SavePhase
 import io.github.shinma06.replaybuffer.core.SaveSnapshot
 import io.github.shinma06.replaybuffer.settings.AppSelectionMode
@@ -32,17 +33,22 @@ internal data class ReplayCaptureView(
     val initializationError: String? = null,
 )
 
-/** One project's concrete core owner. No Swing, SDK lookup, or device selection is performed here. */
+/**
+ * One project's core owner; commands queue through a coroutine mutex and callbacks may arrive off EDT.
+ *
+ * The caller owns scope and UI dispatch. close starts cleanup; termination confirms its result separately.
+ * No Swing, SDK lookup, or device selection is performed here.
+ */
 internal class ReplayProjectCapture(
     private val scope: CoroutineScope,
     private val store: ReplaySettingsStore,
     private val changed: () -> Unit,
     private val saved: (SaveSnapshot) -> Unit,
-    cleanupDirectory: (() -> Path)? = null,
+    private val cleanupDirectory: (() -> Path)? = null,
 ) : AutoCloseable {
     @Volatile var view = ReplayCaptureView()
         private set
-    private val ready = CompletableDeferred<ReplayCore>()
+    private var ready = CompletableDeferred<ReplayCore>()
     private val commands = Mutex()
     private var core: ReplayCore? = null
     private var workspace: Path? = null
@@ -51,12 +57,17 @@ internal class ReplayProjectCapture(
     private var closed = false
     private var closingStarted = false
     private var initializationFinished = false
+    private var cleanupFailed = false
     private var enabledIntent = 0L
     private var operationIntent = 0L
     private var settingsRevision = 0L
     val termination = CompletableFuture<Void>()
 
     init {
+        initialize(ready)
+    }
+
+    private fun initialize(attempt: CompletableDeferred<ReplayCore>) {
         val initialization = scope.launch(Dispatchers.IO) {
             var created: ReplayCore? = null
             var directory: Path? = null
@@ -68,42 +79,70 @@ internal class ReplayProjectCapture(
                 val retained = synchronized(this@ReplayProjectCapture) {
                     if (closed) false else {
                         workspace = directory
+                        view = view.copy(initializationError = null, message = null)
                         core = engine
                         subscription = engine.subscribe(::acceptSnapshot)
-                        ready.complete(engine)
+                        attempt.complete(engine)
                         true
                     }
                 }
                 if (!retained) finishClose(engine, directory)
             } catch (failure: Throwable) {
                 if (created != null) finishClose(created, directory) else if (temporaryWorkspace) directory?.let { Files.deleteIfExists(it) }
-                val message = "取得の初期化に失敗しました。projectの保存場所とIDE設定領域へのアクセス権を確認し、projectを開き直してください。"
-                synchronized(this@ReplayProjectCapture) {
+                val retryable = directory == null && cleanupDirectory != null
+                val message = if (retryable) {
+                    val detail = (failure as? CleanupDirectoryFailure)?.message ?: "projectの保存場所とIDE設定領域へのアクセス権を確認してください。"
+                    "取得の初期化に失敗しました。$detail 修正後にdaemonまたは取得ONで再試行してください。"
+                } else "取得の初期化に失敗しました。projectの保存場所とIDE設定領域へのアクセス権を確認し、projectを開き直してください。"
+                val notify = synchronized(this@ReplayProjectCapture) {
                     if (!closed) {
-                        view = view.copy(initializationError = message)
+                        cleanupFailed = retryable
+                        view = view.copy(initializationError = message, message = message)
+                        ++operationIntent
                         if (enabledIntent == 0L) store.setEnabled(false)
                     }
+                    attempt.completeExceptionally(failure)
+                    !closed
                 }
-                showMessage(message)
-                ready.completeExceptionally(failure)
+                if (notify) changed()
             }
         }
         initialization.invokeOnCompletion { failure ->
-            if (failure != null) ready.completeExceptionally(failure)
+            if (failure != null) attempt.completeExceptionally(failure)
             synchronized(this) {
+                if (attempt !== ready) return@synchronized
                 initializationFinished = true
                 if (closed && core == null && !closingStarted && !termination.isDone) termination.complete(null)
             }
         }
     }
 
-    fun setEnabled(value: Boolean): CompletableFuture<ReplayOperation> {
+    fun setEnabled(value: Boolean, environment: AndroidReplayEnvironment? = null): CompletableFuture<ReplayOperation> {
+        val retryRevision: Long?
         val intent = synchronized(this) {
             if (closed) return CompletableFuture.completedFuture(ReplayOperation(false, "projectは終了しています。"))
+            retryRevision = if (value && environment != null && cleanupFailed) {
+                // The previous attempt failed before creating a core. Only explicit ON retries it.
+                cleanupFailed = false
+                initializationFinished = false
+                ready = CompletableDeferred()
+                initialize(ready)
+                settingsRevision
+            } else null
             store.setEnabled(value)
             ++enabledIntent
         }
-        return submit { engine -> engine.setEnabled(value).await() }.whenComplete { result, _ ->
+        val operation = if (retryRevision != null) {
+            // A fresh core needs the resolved project settings before restoring the latest ON/OFF intent.
+            applySettings(store.settings(), checkNotNull(environment), retryRevision)
+        } else submit { engine ->
+            val applied = engine.snapshot().settings
+            val requested = store.settings()
+            if (value && (applied.captureMode != requested.captureMode || applied.videoQuality != requested.videoQuality))
+                ReplayOperation(false, "取得モード・動画品質を反映できていません。設定を確認してから取得をONにしてください。")
+            else engine.setEnabled(value).await()
+        }
+        return operation.whenComplete { result, _ ->
             val notify = synchronized(this) {
                 if (!closed && intent == enabledIntent && result?.accepted == false) {
                     store.setEnabled(core?.snapshot()?.enabled == true)
@@ -120,7 +159,8 @@ internal class ReplayProjectCapture(
     }
 
     fun applySettings(settings: ReplaySettings, environment: AndroidReplayEnvironment, revision: Long): CompletableFuture<ReplayOperation> = submit(revision) { engine ->
-        settings.validationError()?.let { return@submit settingsFailure(engine, revision, it) }
+        // A screenshot-only folder must not prevent video/log capture from applying its own settings.
+        settings.copy(screenshotUsesLogcatDestination = true).validationError()?.let { return@submit settingsFailure(engine, revision, it) }
         val target = settings.toCoreSettings(environment)
         // Only the nonblocking core enqueue is inside this boundary. No callback, IO, or await
         // can reenter refresh between checking the generation and submitting its settings.
@@ -161,9 +201,11 @@ internal class ReplayProjectCapture(
 
     private fun submit(revision: Long? = null, action: suspend (ReplayCore) -> ReplayOperation): CompletableFuture<ReplayOperation> {
         val result = CompletableFuture<ReplayOperation>()
+        val attempt: CompletableDeferred<ReplayCore>
         val intent = synchronized(this) {
             if (closed) return CompletableFuture.completedFuture(ReplayOperation(false, "projectは終了しています。"))
             if (revision != null && revision != settingsRevision) return CompletableFuture.completedFuture(obsoleteSettings())
+            attempt = ready
             view = view.copy(pending = view.pending + 1, message = null)
             ++operationIntent
         }
@@ -173,7 +215,7 @@ internal class ReplayProjectCapture(
             var outcome: ReplayOperation? = null
             try {
                 outcome = commands.withLock {
-                    val engine = ready.await()
+                    val engine = attempt.await()
                     withContext(Dispatchers.IO) {
                         if (synchronized(this@ReplayProjectCapture) { closed }) ReplayOperation(false, "projectは終了しています。")
                         else action(engine)
@@ -199,14 +241,18 @@ internal class ReplayProjectCapture(
         return result
     }
 
+    // A retried request has a new attempt; notify once for that attempt's terminal transition, not each refresh.
     internal fun acceptSnapshot(next: ReplaySnapshot) {
         val terminal = synchronized(this) {
             val previous = view.snapshot
             if (closed || previous != null && next.revision <= previous.revision) return
-            view = view.copy(snapshot = next)
+            val message = view.message.takeUnless {
+                it == SAVE_IN_PROGRESS_REASON && next.save.phase != SavePhase.WRITING
+            }
+            view = view.copy(snapshot = next, message = message)
             next.save.takeIf {
                 it.phase in setOf(SavePhase.COMPLETED, SavePhase.FAILED) &&
-                    (previous?.save?.requestId != it.requestId || previous?.save?.phase != it.phase)
+                    (previous?.save?.requestId != it.requestId || previous?.save?.attempt != it.attempt || previous?.save?.phase != it.phase)
             }
         }
         changed()
@@ -218,6 +264,8 @@ internal class ReplayProjectCapture(
     private fun showMessage(message: String, intent: Long?, revision: Long? = null) {
         synchronized(this) {
             if (closed || intent != null && intent != operationIntent || revision != null && revision != settingsRevision) return
+            // A command's rejection can arrive after the writer has already published its terminal snapshot.
+            if (message == SAVE_IN_PROGRESS_REASON && view.snapshot?.save?.phase != SavePhase.WRITING) return
             if (intent == null) operationIntent++
             view = view.copy(message = message)
         }
@@ -257,6 +305,9 @@ internal fun ReplaySettings.toCoreSettings(environment: AndroidReplayEnvironment
     adbPath = environment.adb,
     saveDirectory = destination.takeIf(String::isNotEmpty)?.let(Path::of),
     replaySeconds = retentionSeconds,
+    captureMode = captureMode,
+    videoQuality = videoQuality,
+    autoSaveOnCrash = autoSaveOnCrash,
     application = if (appSelection == AppSelectionMode.MANUAL) {
         ApplicationTarget(manualPackage, ApplicationMode.MANUAL)
     } else {

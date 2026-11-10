@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "issue": 414,
+  "gui_required": false,
+  "reason": "Build入力の対象別拒否診断とCI専用の公式Android 37.2 revision 1 API配置。固定archive/jar hashを照合してからANDROID_HOMEをjob専用領域へ設定する。4pins・順序・拒否義務、製品runtime、固定948/a582とhost SDKは維持。正常・破損・欠落の拒否と実CIを確認し、GUI/device変更はない。",
+  "cli_checks": [
+    "python3 scripts/check.py",
+    "python3 scripts/workflow/product_check.py --plugin",
+    "python3 scripts/workflow/change_impact.py --run-tests"
+  ],
+  "cases": []
+}

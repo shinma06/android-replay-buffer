@@ -1,0 +1,37 @@
+{
+  "schema": 1,
+  "issue": 333,
+  "gui_required": true,
+  "reason": "録画とスクショの端末選択を共有し、要求時の対象を固定する。source/fake回帰は実ロード・端末画面の観察を代替しない。旧SCREENSHOT-USB/ACTIONSのID・観察・未達は保持する。",
+  "cli_checks": [
+    "ScreenshotSaveTest: 録画対象Aと別USB B、A消失/offline/未認証時の非fallback、OFF/履歴なしの単一候補と曖昧時拒否、全commandのserial固定、既存PNG/保存/削除/取消し回帰。",
+    "ReplayToolWindowLayoutTest: 実serviceの対象serial取得、実際のscreenshot要求の検証直後にOFFを公開しても別Bへ撮影commandを送らないこと、ON反映待ち・SDK変更・古い解決revisionと取得OFF独立。ReplayCoreWireTestと通常change_impact/product checks。実結果は固定HEADのIssue/PRへ記録する。"
+  ],
+  "cases": [
+    {
+      "id": "SCREENSHOT-DEVICE",
+      "artifact": "plugin",
+      "change": "録画と同じ端末を撮影し、OFFでは同じ解決規則を独立利用する",
+      "preconditions": "#104後の同一固定候補/source/標準ZIP/実ロードを同定し、PM割当の既存#329/final GUI枠・所有fixture・GUI/端末leaseを共有する。物理端末は原則利用不可であり、未確認を保持する。",
+      "steps": [
+        "source/fake回帰の対象A優先・A切断時の別Bへの非fallback・OFF単一候補/曖昧時拒否と要求snapshotの対応を照合する。保証を満たす同じ故障注入をnativeで反復しない。",
+        "利用可能な対応端末で、同じ固定候補の録画対象と撮影先を識別可能な画面で照合する。OFF・履歴なしでも撮影し、録画/ログ取得やbufferが開始されないこと、対象未確定の説明を確認する。Emulatorの画面診断形式が非対応なら、その拒否・未充足を記録し実USB成功へ読み替えない。",
+        "新たな成功PNGが得られれば既存SCREENSHOT-ACTIONSの通知/OS導線へ接続する。得られない場合も既存画像の正当な再利用条件と残保証を分け、新しい per-feature USB枠や免除を自動追加しない。"
+      ],
+      "expected": "取得中は録画対象serialを使い、ほかの端末への無断切替がない。OFFでは同じ単一候補規則で独立撮影し、取得を開始しない。対象/SDKの未確定や非対応は説明付きで拒否する。前面app・完全PNG・非上書き公開・保存ごとの通知/削除・project寿命を維持する。",
+      "provenance": [
+        "https://github.com/shinma06/android-replay-buffer/issues/333",
+        "https://github.com/shinma06/android-replay-buffer/issues/329",
+        "docs/requirements.md",
+        "docs/verification/changes/issue-325.json",
+        "docs/verification/responsibility.md"
+      ],
+      "gpt": {"status": "pending", "reason": "writerはsource/自動回帰のみ。固定候補の実IDE/端末観察は未実施。"},
+      "human": {"status": "pending", "reason": "未観察。既存human/REALの残条件と実USB未確認を保持する。"},
+      "fix_issue": null,
+      "fix_pr": null,
+      "recheck": "既存#329と最終#104候補の共通枠で影響した対象選択・表示/統合だけを確認し、旧成功/失敗や未知を上書きしない。",
+      "next_action": "独立固定reviewとdevelop統合後、PMが既存#329/#280へ残保証を双方向readbackして移管する。main/全v2/実機受入完了は別途。"
+    }
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "issue": 301,
+  "gui_required": false,
+  "reason": "main採用済みの同期保証・配布tooling修正とruntime検査移行を通常mergeする。製品source/build/CLI原型・既存Case/観察を保持し、新GUI/ADB/録画や固定83f候補の再受入を要しない。必須classifierが求める製品検査は通常hookで行う。",
+  "cli_checks": [
+    "python3 scripts/check.py",
+    "python3 scripts/workflow/product_check.py",
+    "python3 scripts/workflow/change_impact.py --run-tests"
+  ],
+  "cases": []
+}

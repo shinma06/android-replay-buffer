@@ -1,7 +1,11 @@
 import java.security.MessageDigest
+import java.util.HexFormat
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+import org.jetbrains.kotlin.gradle.dsl.KotlinVersion
+import org.jetbrains.kotlin.gradle.tasks.KotlinJvmCompile
 
 plugins {
-    kotlin("jvm") version "2.4.20"
+    kotlin("jvm") version "2.4.21"
     id("org.jetbrains.intellij.platform") version "2.19.0"
 }
 
@@ -11,7 +15,15 @@ fun hash(file: java.io.File): String {
         val bytes = ByteArray(8192)
         while (true) { val n = input.read(bytes); if (n < 0) break; digest.update(bytes, 0, n) }
     }
-    return digest.digest().joinToString("") { "%02x".format(it) }
+    return HexFormat.of().formatHex(digest.digest())
+}
+
+fun verifyCaptureInput(name: String, file: java.io.File, expected: String) {
+    check(file.isFile) { "Capture input $name: missing or not a regular file; expected SHA-256=$expected" }
+    val actual = hash(file)
+    check(actual == expected) {
+        "Capture input $name: SHA-256 mismatch; expected=$expected actual=$actual"
+    }
 }
 
 group = "io.github.shinma06.replaybuffer"
@@ -19,7 +31,12 @@ val sourceCommit = providers.exec { commandLine("git", "rev-parse", "HEAD") }.st
 val sourceDirty = providers.exec {
     commandLine("git", "status", "--porcelain", "--untracked-files=normal")
 }.standardOutput.asText.get().isNotBlank()
-version = "0.1.0-dev.$sourceCommit" + if (sourceDirty) "-dirty" else ""
+version = providers.gradleProperty("pluginVersion").orNull?.also {
+    require(Regex("(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)").matches(it)) {
+        "pluginVersion must be a formal major.minor.patch version (no prefix, suffix, or leading zeroes)"
+    }
+    check(!sourceDirty) { "A formal pluginVersion requires a clean committed source tree" }
+} ?: ("0.2.0-dev.$sourceCommit" + if (sourceDirty) "-dirty" else "")
 
 repositories {
     mavenCentral()
@@ -32,18 +49,22 @@ dependencies {
         if (providers.gradleProperty("useLocalPlatform").orNull == "true") {
             local(providers.gradleProperty("platformPath"))
         } else {
-            androidStudio("2026.2.1.8")
+            androidStudio("2026.2.2.8")
         }
         bundledPlugin("org.jetbrains.android")
     }
     implementation("org.jcodec:jcodec:0.2.5")
     testImplementation(kotlin("test-junit5"))
-    testImplementation("org.junit.jupiter:junit-jupiter:5.13.4")
-    testRuntimeOnly("org.junit.platform:junit-platform-launcher:1.13.4")
+    testImplementation(platform("org.junit:junit-bom:6.1.3"))
+    testImplementation("org.junit.jupiter:junit-jupiter")
+    testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
 
 tasks.test {
     useJUnitPlatform()
+    systemProperty("replay.expected.source", sourceCommit)
+    systemProperty("replay.expected.dirty", sourceDirty)
+    systemProperty("replay.expected.version", project.version.toString())
     testLogging {
         exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
         showStackTraces = false
@@ -51,8 +72,21 @@ tasks.test {
 }
 
 kotlin {
-    jvmToolchain(25)
+    jvmToolchain(27)
+    compilerOptions {
+        languageVersion.set(KotlinVersion.KOTLIN_2_4)
+        apiVersion.set(KotlinVersion.KOTLIN_2_4)
+        freeCompilerArgs.add("-Xjdk-release=25")
+    }
 }
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_25
+    targetCompatibility = JavaVersion.VERSION_25
+}
+tasks.withType<JavaCompile>().configureEach { options.release.set(25) }
+// Override the platform plugin's task convention, which otherwise derives the target from JDK 27.
+tasks.withType<KotlinJvmCompile>().configureEach { compilerOptions.jvmTarget.set(JvmTarget.JVM_25) }
 
 intellijPlatform {
     pluginConfiguration {
@@ -69,8 +103,8 @@ val verifyBuildSdk = tasks.register("verifyBuildSdk") {
     group = "verification"
     doLast {
         val info = intellijPlatform.productInfo
-        check(info.productCode == "AI" && info.buildNumber == "262.9437.185.2621.16467767") {
-            "Expected Android Studio Rabbit 1 (AI-262.9437.185.2621.16467767), got ${info.productCode}-${info.buildNumber}"
+        check(info.productCode == "AI" && info.buildNumber == "262.10968.63.2622.16730706") {
+            "Expected Android Studio Rabbit 2 (AI-262.10968.63.2622.16730706), got ${info.productCode}-${info.buildNumber}"
         }
     }
 }
@@ -83,29 +117,28 @@ tasks.buildSearchableOptions { enabled = false }
 
 // Build-only D8: users need neither an Android build-tools installation nor a runtime download.
 val clockCompiler = configurations.create("clockCompiler")
-val clockLibrary = configurations.create("clockLibrary") { isTransitive = false }
+val clockLibrary = files(providers.environmentVariable("ANDROID_HOME").map { "$it/platforms/android-37.2/android.jar" })
 dependencies {
-    add(clockCompiler.name, "com.android.tools:r8:8.10.24")
-    add(clockLibrary.name, "com.google.android:android:4.1.1.4")
+    add(clockCompiler.name, "com.android.tools:r8:9.5.26")
 }
 val verifyCaptureInputs = tasks.register("verifyCaptureInputs") {
     val runtime = configurations.named("runtimeClasspath")
     inputs.files(clockCompiler, clockLibrary, runtime)
-    inputs.file("src/main/resources/replay/deps/scrcpy-server-v4.0")
+    inputs.file("src/main/resources/replay/deps/scrcpy-server-v5.0.1")
     doLast {
         val jcodec = runtime.get().files.single { it.name == "jcodec-0.2.5.jar" }
-        check(hash(jcodec) == "890329dad124e8b739c1d6602a59a53c8a474daddff265c2561e21c498496c81")
-        check(hash(clockCompiler.singleFile) == "ba8ec8958c4cf8d80168364f50c06742c7ef9313aae26eac0b9d28c309e04345")
-        check(hash(clockLibrary.singleFile) == "84072541cbb711eff89f7277100ff854929a446dba7ceb1b195c340e0b4fd3cb")
-        val server = file("src/main/resources/replay/deps/scrcpy-server-v4.0")
-        check(hash(server) == "84924bd564a1eb6089c872c7521f968058977f91f5ff02514a8c74aff3210f3a")
+        verifyCaptureInput("jcodec-0.2.5.jar", jcodec, "890329dad124e8b739c1d6602a59a53c8a474daddff265c2561e21c498496c81")
+        verifyCaptureInput("r8-9.5.26.jar", clockCompiler.singleFile, "3502f087388ce95bbf5254555927f09385dc2636873964d0bd53f3eaf4fb49ad")
+        verifyCaptureInput("android-37.2/android.jar", clockLibrary.singleFile, "1db2419dbd45457f83b90ef8a7ef41e118174782c9a5c2185b55899df022767f")
+        val server = file("src/main/resources/replay/deps/scrcpy-server-v5.0.1")
+        verifyCaptureInput("scrcpy-server-v5.0.1", server, "764eb6f79811d5211fe9df341120882ba9994c7a61b897d7bf3fb662e53bc536")
     }
 }
 val compileClock = tasks.register<JavaCompile>("compileClock") {
     source = fileTree("src/clock/java") { include("**/*.java") }
-    classpath = files()
+    dependsOn(verifyCaptureInputs)
+    classpath = clockLibrary
     destinationDirectory.set(layout.buildDirectory.dir("clock/classes"))
-    options.release.set(8)
 }
 val clockClasses = tasks.register<Jar>("clockClasses") {
     dependsOn(compileClock)
@@ -146,15 +179,18 @@ tasks.processResources {
 val captureIdentity = tasks.register("captureIdentity") {
     dependsOn(clockJar)
     val runtime = configurations.named("runtimeClasspath")
+    val artifactVersion = project.version.toString()
     inputs.files(clockJar.flatMap { it.archiveFile }, clockCompiler, clockLibrary, runtime)
+    inputs.file("src/main/resources/replay/deps/scrcpy-server-v5.0.1")
     inputs.property("sourceCommit", sourceCommit)
     inputs.property("sourceDirty", sourceDirty)
+    inputs.property("version", artifactVersion)
     val output = layout.buildDirectory.file("clock/resource/replay/deps/identity.properties")
     outputs.file(output)
     doLast {
         val jcodec = runtime.get().files.single { it.name == "jcodec-0.2.5.jar" }
-        val server = file("src/main/resources/replay/deps/scrcpy-server-v4.0")
-        output.get().asFile.writeText("source=$sourceCommit\ndirty=$sourceDirty\nversion=${project.version}\nserver=${hash(server)}\nclock=${hash(clockJar.get().archiveFile.get().asFile)}\njcodec=${hash(jcodec)}\nr8=${hash(clockCompiler.singleFile)}\nandroid_api=${hash(clockLibrary.singleFile)}\n")
+        val server = file("src/main/resources/replay/deps/scrcpy-server-v5.0.1")
+        output.get().asFile.writeText("source=$sourceCommit\ndirty=$sourceDirty\nversion=$artifactVersion\nserver=${hash(server)}\nclock=${hash(clockJar.get().archiveFile.get().asFile)}\njcodec=${hash(jcodec)}\nr8=${hash(clockCompiler.singleFile)}\nandroid_api=${hash(clockLibrary.singleFile)}\n")
     }
 }
 tasks.processResources { dependsOn(captureIdentity) }
@@ -163,4 +199,36 @@ tasks.processResources { dependsOn(captureIdentity) }
 tasks.withType<AbstractArchiveTask>().configureEach {
     isPreserveFileTimestamps = false
     isReproducibleFileOrder = true
+}
+
+// The terminal entry uses the same plugin classes and the selected Studio's JBR/Kotlin runtime.
+tasks.prepareSandbox {
+    from(layout.projectDirectory.dir("src/main/cli")) {
+        include("replay", "replayd")
+        into(pluginName.map { "$it/bin" })
+        filePermissions { unix("755") }
+    }
+    from(layout.projectDirectory.dir("src/main/cli")) {
+        include("replay.cmd", "replayd.cmd")
+        into(pluginName.map { "$it/bin" })
+    }
+    from(layout.projectDirectory.file("src/main/cli/README.txt")) {
+        into(pluginName.map { "$it/bin" })
+        expand("sourceCommit" to sourceCommit)
+    }
+}
+
+tasks.buildPlugin {
+    val cliLaunchers = listOf("bin/replay", "bin/replayd")
+    inputs.property("executableCliLaunchers", cliLaunchers)
+    filesMatching(cliLaunchers) { permissions { unix("755") } }
+}
+
+tasks.test {
+    dependsOn(tasks.buildPlugin)
+    inputs.file(tasks.buildPlugin.flatMap { it.archiveFile })
+    doFirst {
+        systemProperty("replay.cli.archive", tasks.buildPlugin.get().archiveFile.get().asFile.absolutePath)
+        systemProperty("replay.cli.platform", tasks.prepareSandbox.get().platformPath.toString())
+    }
 }

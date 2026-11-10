@@ -23,16 +23,59 @@ import kotlin.test.assertTrue
 
 class VideoClockRegionTest {
     @Test
+    fun maximumHistoryWindowSelectionDoesNotAllocateAnAnchorListForEveryGap() {
+        val clocks = List(4096) { n ->
+            val time = n * 2_000_000L
+            ClockSample(0, "boot", time, time, time, time, 0, 0, 0, 0, 0)
+        }
+        val gaps = List(4096) { n ->
+            val from = (n % 4095) * 2_000_000L
+            CaptureGap(listOf("video", "device_log", "app_log", "clock")[n % 4], from + 100, from + 500,
+                "recovered history", Long.MAX_VALUE, 1, 0)
+        }
+        val memory = java.lang.management.ManagementFactory.getThreadMXBean() as com.sun.management.ThreadMXBean
+        assertTrue(memory.isThreadAllocatedMemorySupported)
+        val wasEnabled = memory.isThreadAllocatedMemoryEnabled
+        memory.isThreadAllocatedMemoryEnabled = true
+        try {
+            val thread = Thread.currentThread().threadId()
+            val before = memory.getThreadAllocatedBytes(thread)
+            val started = System.nanoTime()
+            val selected = gaps.inWindow(20_000_000_000, 21_000_000_000, 1_000_000, clocks)
+            val elapsed = System.nanoTime() - started
+            val allocated = memory.getThreadAllocatedBytes(thread) - before
+            println("window-history gaps=4096 clocks=4096 allocated_bytes=$allocated elapsed_ns=$elapsed")
+            assertTrue(selected.isEmpty())
+            assertTrue(allocated < 16 * 1024 * 1024, "Window selection allocated $allocated bytes for bounded history")
+            assertTrue(gaps.all { it.boundaryUncertaintyNs == Long.MAX_VALUE })
+        } finally {
+            memory.isThreadAllocatedMemoryEnabled = wasEnabled
+        }
+    }
+
+    @Test
     fun videoLossEnvelopeRequiresBothFiniteNormalAnchorsAndStillBlocksRealLoss() {
         val before = ClockSample(0, "old", 4_000_000_000, 4_000_000_000, 0, 4_000_000_000,
             0, 0, 0, -1_000_000_000, 0)
         val after = before.copy(epoch = 2, boot = "new", before = 7_000_000_000, after = 7_000_000_000, mono = 7_000_000_000)
         val gap = CaptureGap("video", 3_500_000_000, 5_500_000_000, "connection ended", Long.MAX_VALUE, 1, 1)
-        val scope = listOf(gap).videoScopes(listOf(before, after)).single()
+        val scope = listOf(gap).gapScopes(listOf(before, after)).single()
         assertEquals(3_000_000_000L, scope.fromNs)
         assertEquals(6_000_000_000L, scope.toNs)
         assertEquals(1_000_000L, scope.boundaryUncertaintyNs)
-        assertEquals(Long.MAX_VALUE, gap.boundaryUncertaintyNs) // Original retention/UI/coverage boundary is unchanged.
+        val lastBefore = before.copy(before = 3_999_000_000, after = 4_001_000_000)
+        val firstAfter = after.copy(before = 6_999_000_000, after = 7_001_000_000)
+        val proofs = mutableMapOf<CaptureGap, Pair<ClockSample, ClockSample>>()
+        val duplicateScope = listOf(gap).gapScopes(listOf(before, lastBefore, firstAfter, after), videoProofs = proofs).single()
+        assertEquals(2_000_000L, duplicateScope.boundaryUncertaintyNs)
+        assertEquals(lastBefore to firstAfter, proofs[gap])
+        assertEquals(Long.MAX_VALUE, gap.boundaryUncertaintyNs) // History and overlapping warnings keep the original uncertainty.
+        for (kind in listOf("video", "device_log", "app_log")) {
+            val loss = gap.copy(stream = kind)
+            assertTrue(listOf(loss).inWindow(7_000_000_000, 8_000_000_000, 1_000_000, listOf(before, after)).isEmpty())
+            assertEquals(listOf(loss), listOf(loss).inWindow(6_001_500_000, 8_000_000_000, 1_000_000, listOf(before, after)))
+            assertEquals(listOf(loss), listOf(loss).inWindow(7_000_000_000, 8_000_000_000, Long.MAX_VALUE, listOf(before, after)))
+        }
         val first = VideoEntry(Path.of("unused"), 0, 1, 1_000_000, true, 32, 32, 1,
             MappedTime(1_000_000_000, 0, 1_000_000, 1_000_000_000), 1_000_000_000, byteArrayOf(1), 0, 1)
         fun frame(at: Long) = first.copy(pts = at / 1000, time = first.time.copy(elapsed = at, sequence = at))
@@ -44,19 +87,21 @@ class VideoClockRegionTest {
         assertFalse(frame(2_998_500_000).continuousTo(frame(2_999_000_000), listOf(scope))) // Both error margins count.
         for (unproven in listOf(gap.copy(fromNs = null), gap.copy(toNs = null), gap.copy(generation = 0),
                 gap.copy(generation = -1), gap.copy(fromNs = 6_000_000_000))) {
-            assertEquals(unproven, listOf(unproven).videoScopes(listOf(before, after)).single())
+            assertEquals(unproven, listOf(unproven).gapScopes(listOf(before, after)).single())
+            assertEquals(listOf(unproven), listOf(unproven).inWindow(7_000_000_000, 8_000_000_000, 1_000_000, listOf(before, after)))
         }
         for (unproven in listOf(after.copy(sequenceOffset = null), after.copy(bridgeError = Long.MAX_VALUE),
                 after.copy(bridgeError = 20_000_001), after.copy(sequenceOffset = Long.MAX_VALUE),
                 after.copy(received = 100_000_000), after.copy(sent = 1),
                 after.copy(after = after.before - 1), after.copy(before = -1, after = -1),
                 after.copy(after = after.before + 2_000_001))) {
-            assertEquals(gap, listOf(gap).videoScopes(listOf(before, unproven)).single())
+            assertEquals(gap, listOf(gap).gapScopes(listOf(before, unproven)).single())
+            assertEquals(listOf(gap), listOf(gap).inWindow(7_000_000_000, 8_000_000_000, 1_000_000, listOf(before, unproven)))
         }
-        assertEquals(gap, listOf(gap).videoScopes(listOf(before)).single())
-        assertEquals(gap, listOf(gap).videoScopes(listOf(after)).single())
+        assertEquals(gap, listOf(gap).gapScopes(listOf(before)).single())
+        assertEquals(gap, listOf(gap).gapScopes(listOf(after)).single())
         val known = gap.copy(boundaryUncertaintyNs = 1_000_000)
-        assertEquals(known, listOf(known).videoScopes(listOf(before, after)).single())
+        assertEquals(known, listOf(known).gapScopes(listOf(before, after)).single())
     }
 
     @Test

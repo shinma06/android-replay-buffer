@@ -6,7 +6,6 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardOpenOption.CREATE_NEW
 import java.nio.file.StandardOpenOption.WRITE
-import java.nio.file.attribute.PosixFilePermissions
 import java.security.MessageDigest
 
 internal fun sha256(path: Path): String {
@@ -15,21 +14,30 @@ internal fun sha256(path: Path): String {
         val bytes = ByteArray(8192)
         while (true) { val count = input.read(bytes); if (count < 0) break; digest.update(bytes, 0, count) }
     }
-    return digest.digest().joinToString("") { "%02x".format(it) }
+    return java.util.HexFormat.of().formatHex(digest.digest())
 }
 
+/**
+ * Extracts fixed helpers into a caller-owned private directory, registering each new file before payload.
+ *
+ * The clock is eager and video server lazy. Construction/extraction can fail after creating a file;
+ * the caller retains root/ownership cleanup responsibility. Close removes initialized helpers, not the directory.
+ */
 internal class CaptureResources(private val directory: Path, private val created: (Path) -> Unit = {}) : AutoCloseable {
-    val server: Path = extract("scrcpy-server-v4.0", SERVER_HASH)
+    private val serverResource = lazy { extract("scrcpy-server-v5.0.1", SERVER_HASH) }
+    val server: Path get() = serverResource.value
     val clock: Path = extract("replay-clock.jar", identity().getValue("clock"))
 
-    override fun close() { Files.deleteIfExists(server); Files.deleteIfExists(clock) }
+    override fun close() {
+        if (serverResource.isInitialized()) Files.deleteIfExists(server)
+        Files.deleteIfExists(clock)
+    }
 
     private fun extract(name: String, expected: String?): Path {
         val target = directory.resolve(name)
         CaptureResources::class.java.getResourceAsStream("/replay/deps/$name").use { input ->
             check(input != null) { "同梱取得依存がありません" }
-            val channel = FileChannel.open(target, setOf(CREATE_NEW, WRITE),
-                PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rw-------")))
+            val channel = PrivateFiles.openNew(target, setOf(CREATE_NEW, WRITE))
             channel.use {
                 try { created(target) } catch (failure: Exception) {
                     try { channel.close(); Files.delete(target) } catch (cleanup: Exception) { failure.addSuppressed(cleanup) }
@@ -51,6 +59,6 @@ internal class CaptureResources(private val directory: Path, private val created
             }
             return properties.stringPropertyNames().associateWith { properties.getProperty(it) }
         }
-        const val SERVER_HASH = "84924bd564a1eb6089c872c7521f968058977f91f5ff02514a8c74aff3210f3a"
+        const val SERVER_HASH = "764eb6f79811d5211fe9df341120882ba9994c7a61b897d7bf3fb662e53bc536"
     }
 }

@@ -7,7 +7,12 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
 
-/** Only directly launched processes are owned. Never restarts/kills the shared adb server. */
+/**
+ * Owns only directly launched clients, never the shared adb server. Blocking commands/stop/close run off EDT.
+ *
+ * Streaming callers own stdout/stdin use; this owner drains stderr and retains clients until exit/drain
+ * is confirmed. A failed close is not proof of termination and may be retried on this same owner.
+ */
 internal class OwnedAdb(private val executable: Path) : AutoCloseable {
     private val closing = AtomicBoolean()
     private val owned = ConcurrentHashMap.newKeySet<Process>()
@@ -27,7 +32,11 @@ internal class OwnedAdb(private val executable: Path) : AutoCloseable {
         return process
     }
 
-    fun command(vararg args: String, limit: Int = 1024 * 1024): String {
+    fun command(vararg args: String, limit: Int = 1024 * 1024): String =
+        commandBytes(*args, limit = limit).toString(Charsets.UTF_8)
+
+    fun commandBytes(vararg args: String, limit: Int, timeoutSeconds: Long = 5): ByteArray {
+        require(limit > 0 && timeoutSeconds in 1..15)
         val process = start(*args)
         val output = ByteArrayOutputStream()
         val failed = AtomicBoolean()
@@ -43,11 +52,16 @@ internal class OwnedAdb(private val executable: Path) : AutoCloseable {
             } }.onFailure { failed.set(true); process.destroy() }
         }
         try {
-            check(process.waitFor(5, TimeUnit.SECONDS)) { "adbの応答がタイムアウトしました" }
+            check(process.waitFor(timeoutSeconds, TimeUnit.SECONDS)) { "adbの応答がタイムアウトしました" }
             reader.join(1000)
             check(!reader.isAlive && !failed.get() && process.exitValue() == 0) { "adbの要求に失敗しました" }
-            return output.toString(Charsets.UTF_8)
-        } finally { stop(process) }
+            return output.toByteArray()
+        } finally {
+            stop(process)
+            val interrupted = Thread.interrupted()
+            try { reader.join(1000) } finally { if (interrupted) Thread.currentThread().interrupt() }
+            check(!reader.isAlive) { "所有adb出力readerの終了を確認できません" }
+        }
     }
 
     @Synchronized
@@ -118,3 +132,6 @@ internal fun parseDevices(output: String): List<ReplayDevice> = output.lineSeque
     val model = fields.firstOrNull { it.startsWith("model:") }?.substringAfter(':')?.replace('_', ' ') ?: serial
     ReplayDevice(serial, model.take(256), if (serial.startsWith("emulator-")) DeviceKind.EMULATOR else DeviceKind.PHYSICAL, true)
 }.toList()
+
+internal fun selectDevice(devices: List<ReplayDevice>, selectedSerial: String?): ReplayDevice? =
+    if (selectedSerial == null) devices.singleOrNull() else devices.firstOrNull { it.serial == selectedSerial }
