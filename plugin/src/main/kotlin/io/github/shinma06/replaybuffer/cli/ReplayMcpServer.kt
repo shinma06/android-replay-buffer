@@ -322,6 +322,8 @@ internal class ReplayMcpServer(
             "screenshot_uses_logcat_destination" to mapOf("type" to "boolean",
                 "description" to "true saves screenshots where Logcat saves them; false uses screenshot_directory."),
             "screenshot_directory" to mapOf("type" to "string", "description" to "Existing absolute folder used when screenshot_uses_logcat_destination is false."),
+            "show_touches" to mapOf("type" to "boolean",
+                "description" to "Show tap dots on the device screen (and so in the video) while capturing; restored afterwards. Change only while capture is OFF."),
         )
         private const val INSTRUCTIONS = "Operates Android Replay Buffer inside an already running Android Studio: the same capture, buffer, save, " +
             "screenshot and settings as its GUI. It never starts the IDE. Call get_status first. A tool error whose text ends with exit code 1 is an " +

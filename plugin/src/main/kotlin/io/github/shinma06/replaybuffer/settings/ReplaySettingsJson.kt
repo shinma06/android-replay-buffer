@@ -20,6 +20,7 @@ internal fun settingsJson(settings: ReplaySettings, enabled: Boolean): String = 
     "auto_save_on_crash" to settings.autoSaveOnCrash,
     "screenshot_uses_logcat_destination" to settings.screenshotUsesLogcatDestination,
     "screenshot_directory" to settings.screenshotDirectory,
+    "show_touches" to settings.showTouches,
 ))
 
 /**
@@ -63,6 +64,7 @@ internal fun patchSettings(current: ReplaySettings, text: String): ReplaySetting
                 "auto_save_on_crash" -> settings.copy(autoSaveOnCrash = flag())
                 "screenshot_uses_logcat_destination" -> settings.copy(screenshotUsesLogcatDestination = flag())
                 "screenshot_directory" -> settings.copy(screenshotDirectory = text())
+                "show_touches" -> settings.copy(showTouches = flag())
                 else -> throw IllegalArgumentException("変更できない設定項目です: $key")
             }
         }

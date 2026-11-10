@@ -82,8 +82,29 @@ internal class CaptureClock {
     @Synchronized
     fun video(pts: Long, host: Long, hint: Int? = null): MappedTime = map(Math.multiplyExact(pts, 1000), host, false, hint ?: epoch)
 
+    /** Device CLOCK_MONOTONIC source time in nanoseconds (for example evdev input times), mapped like video PTS. */
+    @Synchronized
+    fun mono(ns: Long, host: Long, hint: Int? = null): MappedTime = map(ns, host, false, hint ?: epoch)
+
     @Synchronized
     fun log(wall: Long, host: Long): MappedTime = map(wall, host, true, null)
+
+    /** Same result as [mono] at this moment for many rows: samples and indexes are built once, not per row. */
+    @Synchronized
+    fun monoMapper(): (Long, Long, Int?) -> MappedTime {
+        val valid = samples.filter { it.valid }
+        val groups = valid.groupBy { it.epoch }.values.toList()
+        val byEpoch = groups.associateBy { it.first().epoch }
+        val indexes = groups.associate { it.first().epoch to ClockSourceIndex(it) { sample -> sample.mono } }
+        val epochs = if (valid.isEmpty()) null else ClockSourceIndex(valid) { it.epoch.toLong() }
+        val next = groups.associate { group -> group.first().epoch to epochs?.after(group.last().epoch.toLong()) }
+        val activeEpoch = epoch
+        val closed = closures.toMap()
+        return { source, host, hint ->
+            val target = hint ?: activeEpoch
+            map(source, host, false, target, listOfNotNull(byEpoch[target]), indexes, next, activeEpoch, closed)
+        }
+    }
 
     /** Captures samples, epochs and closures once; later clock updates cannot change this log conversion. */
     @Synchronized

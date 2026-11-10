@@ -53,6 +53,7 @@ class ReplayCore internal constructor(
     private var saveTask: Future<*>? = null
     private var cancelSave = AtomicBoolean()
     private val autosave = CrashAutosave()
+    private val touchRestore = ShowTouchesRestore()
     @Volatile private var saveAttempt: SaveAttempt? = null
     private var attemptOrdinal = 0L
     @Volatile private var current = ReplaySnapshot(0, 0, false, CaptureState.DISABLED, settings, 0,
@@ -122,8 +123,9 @@ class ReplayCore internal constructor(
 
     fun applySettings(value: ReplaySettings): CompletableFuture<ReplayOperation> = operation {
         val applied = value.validate()
-        if (enabled && (applied.captureMode != settings.captureMode || applied.videoQuality != settings.videoQuality))
-            return@operation ReplayOperation(false, "取得モード・動画品質は取得をOFFにしてから変更してください")
+        if (enabled && (applied.captureMode != settings.captureMode || applied.videoQuality != settings.videoQuality ||
+                applied.showTouches != settings.showTouches))
+            return@operation ReplayOperation(false, "取得モード・動画品質・タップ位置表示は取得をOFFにしてから変更してください")
         val changedAdb = applied.adbPath != settings.adbPath
         val changedApp = applied.application != settings.application
         settings = applied
@@ -304,7 +306,8 @@ class ReplayCore internal constructor(
             data.generation(generation)
             configureAuto()
             backendStarted = System.nanoTime()
-            backend = DeviceCapture(settings.adbPath!!, device!!.serial, resources!!, data, generation, settings.application, settings.videoQuality).also { it.start() }
+            backend = DeviceCapture(settings.adbPath!!, device!!.serial, resources!!, data, generation, settings.application, settings.videoQuality,
+                settings.showTouches, touchRestore).also { it.start() }
         }
         val data = store!!
         if (data.clock.snapshot().lastOrNull()?.received?.let { it >= backendStarted } == true) data.resume()
@@ -329,6 +332,7 @@ class ReplayCore internal constructor(
         store?.freeze()
         autosave.refresh(null)
         settings.captureMode.streams.forEach { store?.status(it, StreamState.RECOVERING, "端末との取得接続が中断しています", generation) }
+        store?.touchStatus(StreamState.RECOVERING, "端末との取得接続が中断しています", generation)
         val stopped = runCatching { capture.close() }
         val retained = runCatching {
             val record = capture.cleanupRecord()

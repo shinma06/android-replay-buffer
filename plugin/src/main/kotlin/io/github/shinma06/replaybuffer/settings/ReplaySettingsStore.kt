@@ -28,7 +28,7 @@ enum class AppSelectionMode(private val label: String) {
 }
 
 /** Applied preferences in seconds/absolute folder paths; an empty replay destination permits capture only. */
-data class ReplaySettings(
+data class ReplaySettings @JvmOverloads constructor(
     val retentionSeconds: Int = 180,
     val destination: String = "",
     val appSelection: AppSelectionMode = AppSelectionMode.AUTOMATIC,
@@ -38,6 +38,7 @@ data class ReplaySettings(
     val screenshotUsesLogcatDestination: Boolean = true,
     val screenshotDirectory: String = "",
     val videoQuality: VideoQuality = VideoQuality.STANDARD,
+    val showTouches: Boolean = false,
 ) {
     val manualScreenshotDestination: String get() = if (screenshotUsesLogcatDestination) "" else screenshotDirectory
 
@@ -101,7 +102,7 @@ internal fun isApplicationId(value: String): Boolean = try {
 }
 
 /** Explicit option bindings keep legacy XML fields when the state becomes immutable. */
-data class ReplaySettingsState(
+data class ReplaySettingsState @JvmOverloads constructor(
     @field:OptionTag("enabled")
     @JvmField val enabled: Boolean = false,
     @field:OptionTag("retentionSeconds")
@@ -123,6 +124,8 @@ data class ReplaySettingsState(
     @JvmField val screenshotDirectory: String = "",
     @field:OptionTag("videoQuality")
     @JvmField val videoQuality: VideoQuality = VideoQuality.STANDARD,
+    @field:OptionTag("showTouches")
+    @JvmField val showTouches: Boolean = false,
 )
 
 @Service(Service.Level.PROJECT)
@@ -137,7 +140,8 @@ class ReplaySettingsStore : SerializablePersistentStateComponent<ReplaySettingsS
     fun settings(): ReplaySettings {
         val snapshot = state
         return ReplaySettings(snapshot.retentionSeconds, snapshot.destination, snapshot.appSelection, snapshot.manualPackage,
-            snapshot.captureMode, snapshot.autoSaveOnCrash, snapshot.screenshotUsesLogcatDestination, snapshot.screenshotDirectory, snapshot.videoQuality)
+            snapshot.captureMode, snapshot.autoSaveOnCrash, snapshot.screenshotUsesLogcatDestination, snapshot.screenshotDirectory, snapshot.videoQuality,
+            snapshot.showTouches)
     }
 
     fun setEnabled(value: Boolean) {
@@ -157,8 +161,9 @@ class ReplaySettingsStore : SerializablePersistentStateComponent<ReplaySettingsS
         val error = settings.validationError(destinationValidation, screenshotValidation)
         require(error == null) { error.orEmpty() }
         updateState {
-            require(!it.enabled || settings.captureMode == it.captureMode && settings.videoQuality == it.videoQuality) {
-                "取得モード・動画品質は取得をOFFにしてから変更してください。"
+            require(!it.enabled || settings.captureMode == it.captureMode && settings.videoQuality == it.videoQuality &&
+                settings.showTouches == it.showTouches) {
+                "取得モード・動画品質・タップ位置表示は取得をOFFにしてから変更してください。"
             }
             it.copy(
                 retentionSeconds = settings.retentionSeconds,
@@ -167,6 +172,7 @@ class ReplaySettingsStore : SerializablePersistentStateComponent<ReplaySettingsS
                 manualPackage = settings.manualPackage,
                 captureMode = settings.captureMode,
                 videoQuality = settings.videoQuality,
+                showTouches = settings.showTouches,
                 autoSaveOnCrash = settings.autoSaveOnCrash,
                 screenshotUsesLogcatDestination = settings.screenshotUsesLogcatDestination,
                 screenshotDirectory = settings.screenshotDirectory,

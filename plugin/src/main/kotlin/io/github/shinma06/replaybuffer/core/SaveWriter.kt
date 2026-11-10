@@ -185,6 +185,7 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                     gap.stream == "clock" && gap.intersects(sequence, sequence, frame.time.uncertainty)
                 }
             }
+            val movieAnchors = mutableListOf<MovieAnchor>()
             val framesFile = file("frames.jsonl")
             val rawPath = if (normalizer != null) file("video-source.bin") else null
             (rawPath?.let(::createFile)).use { raw ->
@@ -375,6 +376,8 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                                     }
                                     if (displayWindowStart != null && confirmedEnd != null && confirmedEnd - capture.start > displayWindowStart)
                                         frameCoverage += maxOf(0, displayWindowStart) to (confirmedEnd - capture.start)
+                                    if (known && moviePts != null) movieAnchors += MovieAnchor(frame.time.epoch,
+                                        Math.addExact(sequence!!, Math.multiplyExact(sourceDisplayOffset, 1000)), displayEnd - displayStart, moviePts)
                                     index.write(gson.toJson(mapOf("part" to videoName, "segment_index" to runIndex, "sample_index" to sampleIndex,
                                         "decode_run" to frame.decodeRun.toString(), "packet_ordinal" to frame.packetOrdinal.toString(),
                                         "generation" to frame.generation, "video_session" to frame.session, "sample_entry" to entry,
@@ -460,6 +463,29 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                     }
                 }
             }
+            val touchFile = if (videoRequested) file("touches.jsonl") else null
+            var touchesInMovie = 0
+            if (touchFile != null) writer(touchFile).use { out ->
+                val anchors = movieAnchors.groupBy { it.epoch }.mapValues { (_, list) -> list.sortedBy { it.from } }
+                capture.touches.forEach { row ->
+                    checkActive()
+                    val point = row.time.sequence?.takeIf { point ->
+                        capture.windowKnown && row.time.uncertainty != Long.MAX_VALUE && videoScopes.none { gap ->
+                            gap.stream == "clock" && gap.intersects(point, point, row.time.uncertainty)
+                        }
+                    }
+                    val movieUs = point?.let { anchors[row.time.epoch]?.movieTime(it) }
+                    if (movieUs != null) touchesInMovie++
+                    val sample = row.sample
+                    out.write(gson.toJson(mapOf("clock_epoch" to row.time.epoch, "generation" to row.generation,
+                        "device_mono_ns" to sample.monoNs.toString(), "elapsed_ns" to row.time.elapsed?.toString(),
+                        "window_ns" to point?.let { (it - capture.start).toString() }, "uncertainty_ns" to row.time.uncertainty.toString(),
+                        "movie_us" to movieUs?.toString(), "action" to sample.action.wire, "pointer" to sample.pointer,
+                        "x" to sample.x, "y" to sample.y, "display_width" to row.width, "display_height" to row.height,
+                        "input_device" to sample.device)))
+                    out.newLine()
+                }
+            }
             val readme = file("README.txt")
             writer(readme).use { it.write(buildString {
                 appendLine("Android Replay Buffer / 保存対象 ${capture.id}")
@@ -468,6 +494,15 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                 appendLine("取得モード: ${if (videoRequested) "動画＋ログ" else "ログ専用（動画は意図的に未要求）"}")
                 if (videoRequested) {
                     appendLine("動画がある保存は1本のMP4です。動画がない保存にはMP4はありません。取得状態・理由はsession.jsonのcoverage.videoを確認してください。動画がある場合は、表示秒に対応するframes.jsonlのmovie_pts_us〜movie_end_usとsource/window情報を使い、両ログと照合してください。session.jsonのpartsは同じファイル内の再生区間です。")
+                    appendLine("タップ位置: touches.jsonlに${capture.touches.size}件（うち動画に重なる${touchesInMovie}件）。動画の取得中は自動で記録します。時刻は端末の入力時刻（getevent、CLOCK_MONOTONIC）で、動画PTSと同じ時計対応によりwindow_nsへ写し、表示中の動画位置をmovie_usに記録します。movie_usがnullの行は動画の表示区間外または時刻を確定できない行です。座標は画面の自然な向きのpx（display_width×display_height）です。")
+                    appendLine("タップ位置の表示（show_touches）: 設定${if (capture.settings.showTouches) "ON（取得中だけ端末設定を変更し、終了時に元へ戻します）" else "OFF"}、" +
+                        when (capture.touchDots) {
+                            TouchDots.APPLIED -> "この取得では端末に点を表示しました"
+                            TouchDots.ALREADY_ON -> "端末で既にONのため動画に点が映っています（端末設定は変更していません）"
+                            TouchDots.FAILED -> "端末設定を変更できず、動画に点は映っていません"
+                            TouchDots.OFF -> "動画に点は映っていません"
+                            null -> "点を表示できたか確認できていません"
+                        })
                     appendLine("frameのclock_alignment_known=falseでは時計対応が不明です。window_ns=null、mapped_window_nsは不確実性を含む変換値で、同期確定やcoverageには使えません。区間開始に動画全体の表示秒を足す方法では照合できません。")
                     if (rawPath != null) appendLine("サイズ変更を含むため固定canvasへ再エンコードしています。拡縮・切捨てはせず、余白を追加しています。元AnnexB config/全packetはvideo-source.binへ保存しframes.jsonlのoffset/size/hashで照合できます。色未指定は不明のままで、色一致の証明ではありません。")
                     appendLine("video_missing_rangesは映像欠落又は時計対応未確認の範囲です。既知の取得gapは空白として表示し、不明gapの実durationはnullのまま、MP4上の表示間隔と区別しています。")
@@ -545,6 +580,7 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                 "window_end_uncertainty_ns" to capture.endUncertainty.toString(),
                 "clock_samples" to capture.clocks.map { clockJson(it) },
                 "clock_epochs" to (capture.clocks.map { it.epoch } + capture.video.map { it.time.epoch } + capture.logs.map { it.time.epoch } +
+                    capture.touches.map { it.time.epoch } +
                     capture.gaps.mapNotNull { it.clockEpoch }).distinct().map { id -> mapOf("id" to id,
                     "has_valid_sample" to capture.clocks.any { it.epoch == id && it.valid }) }, "application_history" to capture.apps.map { appJson(it) },
                 "coverage" to capture.states.mapValues { (_, state) -> mapOf("state" to state.state,
@@ -559,6 +595,13 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                 "logcat_loss_note" to "reader/framing/byte上限の中断はgapsへ記録。Android buffer内の未観測overflow数は不明。tail以前をbackfillしたとは主張しない", "watermarks" to mapOf("video_pts_us" to capture.video.lastOrNull()?.pts?.toString(),
                     "device_log_record_id" to capture.logs.lastOrNull()?.id, "app_log_record_id" to capture.logs.lastOrNull { it.app == true }?.id),
                 "video_file" to "video-001.mp4".takeIf { parts.isNotEmpty() },
+                "touch_file" to touchFile?.fileName?.toString(),
+                "touches" to capture.touchState?.let { state -> mapOf("state" to state.state, "reason" to state.reason,
+                    "count" to capture.touches.size, "in_movie_count" to touchesInMovie, "dropped_count" to capture.touchDropped,
+                    "show_touches" to capture.settings.showTouches, "show_touches_state" to capture.touchDots?.wire, "time_source" to "getevent -lt (device CLOCK_MONOTONIC)",
+                    "coordinate_space" to "display_px_natural_orientation",
+                    "gaps" to capture.touchGaps.filter { (it.to == null || it.to >= capture.start) && (it.from == null || it.from <= capture.end) }
+                        .map { mapOf("from_ns" to it.from?.toString(), "to_ns" to it.to?.toString(), "reason" to it.reason, "time_axis" to "sequence_ns") }) },
                 "video_reencoded" to (normalizer != null), "video_source_file" to rawPath?.fileName?.toString(),
                 "video_canvas" to normalizer?.let { mapOf("width" to it.width, "height" to it.height, "colour_known" to it.colourKnown) },
                 "video_movie_duration_us" to parts.lastOrNull()?.get("movie_end_us"),
@@ -659,4 +702,21 @@ internal fun VideoEntry.playbackContinuousTo(next: VideoEntry): Boolean {
     return if (file != next.file) next.key && next.offset == 0L else try {
         Math.addExact(offset, size.toLong()) == next.offset
     } catch (_: ArithmeticException) { false }
+}
+
+/** A presented frame's display interval: [from] in sequence ns, [durationUs] and [movieUs] on the saved MP4 timeline. */
+internal data class MovieAnchor(val epoch: Int, val from: Long, val durationUs: Long, val movieUs: Long)
+
+/** Movie time showing [point], or null when no presented frame covers it; [this] is sorted by [MovieAnchor.from]. */
+internal fun List<MovieAnchor>.movieTime(point: Long): Long? {
+    var low = 0
+    var high = size - 1
+    var found = -1
+    while (low <= high) {
+        val mid = (low + high) ushr 1
+        if (this[mid].from <= point) { found = mid; low = mid + 1 } else high = mid - 1
+    }
+    val anchor = getOrNull(found) ?: return null
+    val offset = (point - anchor.from) / 1000
+    return if (offset <= anchor.durationUs) anchor.movieUs + offset else null
 }

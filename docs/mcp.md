@@ -51,7 +51,7 @@ Devin: 設定のMCP Marketplaceで「Add your own」からstdioサーバーを�
 
 全toolに任意の`project`（開いているprojectの絶対パス）があります。それ以外の未知の引数は拒否します。
 
-`update_settings`の項目は`get_settings`と同じ名前です: `replay_seconds`（1〜900）、`output_directory`、`app_selection`（`AUTOMATIC` / `MANUAL`）、`manual_package`、`capture_mode`（`VIDEO_AND_LOGS` / `LOG_ONLY`）、`video_quality`（`STANDARD` / `LIGHTWEIGHT`）、`auto_save_on_crash`、`screenshot_uses_logcat_destination`、`screenshot_directory`。設定画面の「適用」と同じ検証をし、保存先フォルダは事前に作成が必要です。取得モードと動画品質は取得OFFで反映が終わってから変更します。取得のON/OFFは`start_capture` / `stop_capture`で行います。
+`update_settings`の項目は`get_settings`と同じ名前です: `replay_seconds`（1〜900）、`output_directory`、`app_selection`（`AUTOMATIC` / `MANUAL`）、`manual_package`、`capture_mode`（`VIDEO_AND_LOGS` / `LOG_ONLY`）、`video_quality`（`STANDARD` / `LIGHTWEIGHT`）、`auto_save_on_crash`、`screenshot_uses_logcat_destination`、`screenshot_directory`、`show_touches`（取得中に端末画面へタップ位置の点を表示し、動画に映す）。設定画面の「適用」と同じ検証をし、保存先フォルダは事前に作成が必要です。取得モード・動画品質・`show_touches`は取得OFFで反映が終わってから変更します。取得のON/OFFは`start_capture` / `stop_capture`で行います。
 
 ## 結果と失敗
 

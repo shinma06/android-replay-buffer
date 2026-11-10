@@ -126,6 +126,10 @@ clock scopesと復旧/両側anchorは同期確度の説明に使い、source隣�
 
 開始cutがIDR間なら直前IDRから復号するprerollを持ち、MP4 edit listで論理start/endだけを再生対象とする。`frames.jsonl`は`part / sample_index / source_pts_us / media_pts_us / elapsed_ns / window_ns / presented / preroll / uncertainty_ns`を保持する。**ファイル内部には窓外のdecoder prerollが含まれ得る**ことをREADMEに明示し、論理取得時間へ加算しない。窓前の画像を含めてはいけない利用には初期版を適合済みとしない。edit listが受取人の標準playerで不適合なら、開始cutだけJVMで再エンコードする代案を実装Issueで比較・再測定する。cutを次IDRへ黙って丸めてBUF-02の取得済みデータを失うfallbackは禁止。
 
+## タップ位置の時刻（Trail #22）
+
+タップ位置は動画の取得中だけ記録する第3のsource streamです。正本は`getevent -lt`が出力するkernel入力時刻で、API 36 emulatorで確認した端末CLOCK_MONOTONIC（動画PTS・時計測定のmonoと同じ時計）として、動画PTSと同じ時計対応（`CaptureClock.mono`）でsequenceへ写します。host受信時刻は時計対応の補助（stale判定・不確かさ）にだけ使い、時刻の代わりにしません。範囲外・曖昧な対応はnullのまま残します。kernelが入力を捨てた区間（`SYN_DROPPED`から、新しい`ABS_MT_TRACKING_ID`で再同期するまで）も、端末の入力時刻を同じ対応で写したgapとして残します。保存窓への採否は両ログと同じ`CaptureStore.capture`の規則（窓端からの距離が両方の不確かさ以内なら含める）で、固定後は再解釈しません。保存時は表示中のframeの`movie_pts_us`と`window_ns`差から`movie_us`を求め、frameが表示されていない時刻・不確定な時刻はnullとします。出力の詳細は[保存設計](../plugin-design.md#タップ位置の記録と表示trail-22)に従います。
+
 ## 許容精度と受取人の確認
 
 現在の保証は[本人要件の明確化 #299](https://github.com/shinma06/android-replay-buffer/issues/299)と[有効受入](../verification/responsibility.md)に従う。元PTS・両ログの内容/順序/帰属と支持されたclock変換、実時間窓・索引・欠落説明を検証する。端末内clock変換の見積誤差 **≤ 20ms**、読取幅 **≤ 2ms**、RTT **≤ 40ms**、sample鮮度 **≤ 5秒**を維持する。支持された対応でのcut境界は1観測frame間隔＋時計誤差以内、mux/indexの丸め誤差は **≤ 1ms**。これらを画像取得/物理表示を含む総合精度に読み替えず、unknownの境界に適用しない。

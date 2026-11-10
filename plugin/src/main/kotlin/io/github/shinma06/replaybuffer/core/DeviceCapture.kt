@@ -1,5 +1,6 @@
 package io.github.shinma06.replaybuffer.core
 
+import java.io.ByteArrayOutputStream
 import java.io.DataInputStream
 import java.io.InputStream
 import java.net.InetAddress
@@ -21,7 +22,7 @@ import kotlin.random.Random
  * Close blocks off EDT. Even a normal close can leave remote cleanup pending; a thrown close leaves
  * host termination unconfirmed, so the core retains the exact cleanup identity before recovery.
  */
-internal class DeviceCapture(
+internal class DeviceCapture @JvmOverloads constructor(
     private val adbPath: Path,
     serial: String,
     private val resources: CaptureResources,
@@ -29,10 +30,13 @@ internal class DeviceCapture(
     private val generation: Long,
     application: ApplicationTarget,
     private val videoQuality: VideoQuality = VideoQuality.STANDARD,
+    private val showTouches: Boolean = false,
+    private val touchRestore: ShowTouchesRestore = ShowTouchesRestore(),
 ) : AutoCloseable {
     private val serial = serialArgument(serial)
     private val adb = OwnedAdb(adbPath)
     private val stopping = AtomicBoolean()
+    private var touchesApplied = false
     private val timer = captureWatchdog()
     private val workers = mutableListOf<Thread>()
     private val sockets = ConcurrentHashMap.newKeySet<Socket>()
@@ -54,6 +58,7 @@ internal class DeviceCapture(
     fun start() {
         launch("clock", ::clock)
         if (store.captureMode.videoRequested) launch("video", ::video)
+        if (store.captureMode.videoRequested) launch("touch", ::touches)
         launch("device_log-main") {
             if (!partitionLogs.isDone) {
                 val partition = probeLogLid()
@@ -113,7 +118,8 @@ internal class DeviceCapture(
                 runCatching(operation).onFailure {
                     if (!stopping.get() && kind == "clock") { store.clock.boundary(); store.clockStatus(false, generation) }
                     if (!stopping.get() && kind != "clock") status(kind, StreamState.RECOVERING,
-                        if (kind == "video") "動画取得が中断しました（PTS/config/容量/接続を確認してください）" else "全体ログ取得が中断しました（header/接続を確認してください）")
+                        if (kind == "video") "動画取得が中断しました（PTS/config/容量/接続を確認してください）"
+                        else if (kind == "touch") "タップ位置の取得が中断しました（getevent/接続を確認してください）" else "全体ログ取得が中断しました（header/接続を確認してください）")
                 }
                 delay = recovery.next(System.nanoTime() - attempt >= 10_000_000_000)
             }
@@ -171,6 +177,10 @@ internal class DeviceCapture(
 
     @Synchronized
     private fun status(kind: String, state: StreamState, reason: String?) {
+        if (kind == "touch") {
+            store.touchStatus(state, reason, generation)
+            return
+        }
         if (kind != "device_log-main" && kind != "device_log-all") {
             store.status(kind, state, reason, generation)
             return
@@ -264,6 +274,84 @@ internal class DeviceCapture(
         } finally { adb.stop(process) }
     }
 
+    private fun touches() {
+        if (!touchesApplied) runCatching(::applyShowTouches).getOrDefault(TouchDots.FAILED)?.let { store.touchDots(it, generation) }
+        val devices = adb.command("-s", serial, "shell", "getevent", "-lp")
+        val axes = parseTouchDevices(devices)
+        if (axes.isEmpty()) {
+            status("touch", StreamState.UNAVAILABLE, "タッチパネルの入力deviceが見つかりません")
+            while (pause(1000)) { /* No multi-touch device: keep video capture unaffected. */ }
+            return
+        }
+        val readDisplay = { parseDisplaySize(adb.command("-s", serial, "shell", "wm", "size")) }
+        val display = DisplaySizeWatch(checkNotNull(readDisplay()) { "画面サイズを取得できません" }, readDisplay)
+        var received = System.nanoTime()
+        val parser = TouchParser(axes, display.size.first, display.size.second, object : TouchSync {
+            override fun lost(device: String, fromNs: Long) = store.touchLost(device, fromNs, generation, received)
+            override fun current(device: String): TouchCurrent? = runCatching {
+                parseTouchCurrent(adb.command("-s", serial, "shell", "getevent", "-lp", device))[device]
+            }.getOrNull()
+            override fun resynced(device: String, toNs: Long) = store.touchResynced(device, toNs, generation, received)
+        }, parseTouchCurrent(devices))
+        check(!stopping.get())
+        val process = adb.start("-s", serial, "shell", "getevent", "-lt", *listOfNotNull(axes.keys.singleOrNull()).toTypedArray())
+        try {
+            status("touch", StreamState.CAPTURING, null)
+            val input = process.inputStream.buffered()
+            while (!stopping.get()) {
+                val line = readTouchLine(input) ?: error("getevent出力が終了しました")
+                received = System.nanoTime()
+                display.current(received).let { (width, height) -> parser.resize(width, height) }
+                parser.feed(line).forEach { store.touch(it, parser.width, parser.height, generation, received) }
+            }
+        } finally { adb.stop(process) }
+    }
+
+    /**
+     * Turns show_touches on once per capture, remembering the previous value before changing it. With the setting OFF
+     * the device value is only read, since dots turned on on the device (developer options) are in the video too;
+     * null means that value could not be read.
+     */
+    private fun applyShowTouches(): TouchDots? {
+        if (!showTouches) {
+            touchesApplied = true
+            val now = runCatching { adb.command("-s", serial, "shell", "settings", "get", "system", "show_touches").trim() }
+            return now.getOrNull()?.let { if (it == "1") TouchDots.ALREADY_ON else TouchDots.OFF }
+        }
+        // A value left by an unfinished restore is ours, so the device's current "1" is not the original.
+        if (!touchRestore.pending(serial)) {
+            val original = adb.command("-s", serial, "shell", "settings", "get", "system", "show_touches").trim()
+            if (original == "1") return TouchDots.ALREADY_ON.also { touchesApplied = true }
+            touchRestore.remember(serial, if (Regex("-?[0-9]{1,9}").matches(original)) original else "")
+        }
+        check(!stopping.get())
+        adb.command("-s", serial, "shell", "settings", "put", "system", "show_touches", "1")
+        touchesApplied = true
+        return TouchDots.APPLIED
+    }
+
+    /** A failed restore stays in [touchRestore] for the next capture of the same device. */
+    private fun restoreTouches() {
+        val value = touchRestore.original(serial) ?: return
+        runCatching {
+            OwnedAdb(adbPath).use { owned ->
+                if (value.isEmpty()) owned.command("-s", serial, "shell", "settings", "delete", "system", "show_touches")
+                else owned.command("-s", serial, "shell", "settings", "put", "system", "show_touches", value)
+            }
+        }.onSuccess { touchRestore.restored(serial, value) }
+    }
+
+    private fun readTouchLine(input: InputStream): String? {
+        val bytes = ByteArrayOutputStream()
+        while (true) {
+            val next = input.read()
+            if (next < 0) return if (bytes.size() == 0) null else bytes.toString(Charsets.US_ASCII)
+            if (next == '\n'.code) return bytes.toString(Charsets.US_ASCII).trimEnd('\r')
+            check(bytes.size() < 4096) { "getevent出力の1行が長すぎます" }
+            bytes.write(next)
+        }
+    }
+
     private fun pause(millis: Long): Boolean = try { Thread.sleep(millis); !stopping.get() } catch (_: InterruptedException) { false }
 
     override fun close() {
@@ -281,6 +369,7 @@ internal class DeviceCapture(
                 "取得watchdogの終了を確認できません"
             }
         }
+        restoreTouches()
         clients.exceptionOrNull()?.let { failure ->
             readers.exceptionOrNull()?.let(failure::addSuppressed)
             throw failure

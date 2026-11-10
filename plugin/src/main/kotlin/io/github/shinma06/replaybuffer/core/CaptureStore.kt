@@ -45,6 +45,13 @@ internal data class FrozenCapture(
     val autoTrigger: AutoTrigger? = null,
     /** Host receive time before which nothing can be in the window when the device clock mapping is unknown. */
     val hostStart: Long? = null,
+    val touches: List<TouchEntry> = emptyList(),
+    /** Touch reader state at freeze; null when video (and therefore touch capture) was not requested. */
+    val touchState: StreamSnapshot? = null,
+    val touchGaps: List<TouchGap> = emptyList(),
+    val touchDropped: Long = 0,
+    /** Whether the visible dots were on during this generation; null before the touch reader decided. */
+    val touchDots: TouchDots? = null,
 ) {
     val empty: Boolean get() = video.isEmpty() && logs.isEmpty()
     val windowKnown: Boolean get() = endUncertainty != Long.MAX_VALUE
@@ -70,6 +77,15 @@ internal class CaptureStore(
     val sequence: String = UUID.randomUUID().toString()
     private val video by lazy { ArrayDeque<VideoEntry>() }
     private val logs = ArrayDeque<LogEntry>()
+    private val touches = ArrayDeque<TouchEntry>()
+    private val touchGaps = ArrayDeque<TouchGap>()
+    /** Open SYN_DROPPED gaps per input device, identified by reference in [touchGaps]. */
+    private val touchLostOpen = mutableMapOf<String, TouchGap>()
+    private var touchState = StreamSnapshot(StreamState.RECOVERING)
+    private var touchDropped = 0L
+    /** Latest window time of a row evicted by [MAX_TOUCH_SAMPLES]; MAX_VALUE when that time is unknown. */
+    private var touchEvictedThrough: Long? = null
+    private var touchDots: TouchDots? = null
     private val gaps = ArrayDeque<CaptureGap>()
     private val clockRecoveries = mutableMapOf<CaptureGap, ClockSample>()
     private val videoCuts = mutableMapOf<CaptureGap, VideoCut>()
@@ -126,6 +142,83 @@ internal class CaptureStore(
         previousPts = -1
         config = byteArrayOf()
         states.replaceAll { kind, _ -> StreamSnapshot(if (kind == "video" && !captureMode.videoRequested) StreamState.NOT_REQUESTED else StreamState.RECOVERING) }
+        if (captureMode.videoRequested) setTouchState(StreamState.RECOVERING, "取得を復旧しています")
+        touchDots = null
+    }
+
+    /** Touch samples exist only while video is requested; their time comes from the device input clock. */
+    @Synchronized
+    fun touch(sample: TouchSample, width: Int, height: Int, owner: Long, host: Long = System.nanoTime()) {
+        if (closed || owner != generation || !captureMode.videoRequested) return
+        touches += TouchEntry(sample, owner, clock.mono(sample.monoNs, host), host, width, height)
+        while (touches.size > MAX_TOUCH_SAMPLES) {
+            val evicted = touches.removeFirst().time
+            touchDropped++
+            val through = if (evicted.uncertainty == Long.MAX_VALUE) null else evicted.sequence?.let { it + evicted.uncertainty }
+            touchEvictedThrough = maxOf(touchEvictedThrough ?: Long.MIN_VALUE, through ?: Long.MAX_VALUE)
+        }
+    }
+
+    /**
+     * The kernel dropped input (SYN_DROPPED) of [device] from [fromMono]; the gap stays open until [touchResynced].
+     * An unmapped start stays unknown.
+     */
+    @Synchronized
+    fun touchLost(device: String, fromMono: Long, owner: Long, host: Long = System.nanoTime()) {
+        if (closed || owner != generation || !captureMode.videoRequested) return
+        if (device in touchLostOpen) return
+        val gap = TouchGap(touchBound(fromMono, -1, host), null, "端末の入力bufferがあふれ、タップ位置の一部が失われました（SYN_DROPPED）")
+        touchGaps += gap
+        touchLostOpen[device] = gap
+        while (touchGaps.size > 4096) touchGaps.removeFirst()
+    }
+
+    /** [device] reported a new pointer after a drop at [toMono], so its input is known again. */
+    @Synchronized
+    fun touchResynced(device: String, toMono: Long, owner: Long, host: Long = System.nanoTime()) {
+        if (closed || owner != generation || !captureMode.videoRequested) return
+        // The resync is read after it happened, so the receive time bounds an unmapped end from above.
+        closeTouchLost(device, touchBound(toMono, 1, host) ?: clock.now(host))
+    }
+
+    private fun touchBound(mono: Long, sign: Int, host: Long): Long? = clock.mono(mono, host).let { time ->
+        val sequence = time.sequence ?: return@let null
+        if (time.uncertainty == Long.MAX_VALUE) null
+        else runCatching { Math.addExact(sequence, sign * time.uncertainty) }.getOrNull()
+    }
+
+    private fun closeTouchLost(device: String, to: Long?) {
+        val open = touchLostOpen.remove(device) ?: return
+        val rows = touchGaps.map { if (it === open) it.copy(to = to) else it }
+        touchGaps.clear()
+        touchGaps.addAll(rows)
+    }
+
+    @Synchronized
+    fun touchStatus(state: StreamState, reason: String?, owner: Long) {
+        if (closed || owner != generation || !captureMode.videoRequested) return
+        setTouchState(state, reason)
+    }
+
+    @Synchronized
+    fun touchDots(dots: TouchDots, owner: Long) {
+        if (closed || owner != generation || !captureMode.videoRequested) return
+        touchDots = dots
+    }
+
+    private fun setTouchState(state: StreamState, reason: String?) {
+        val now = clock.now()
+        val capturing = touchState.state == StreamState.CAPTURING
+        // A reader that stops never resyncs: its drop gaps end where reading ended.
+        if (capturing && state != StreamState.CAPTURING) touchLostOpen.keys.toList().forEach { closeTouchLost(it, now) }
+        if (capturing && state != StreamState.CAPTURING) touchGaps += TouchGap(now, null, reason ?: "タップ位置の取得が中断しました")
+        if (!capturing && state == StreamState.CAPTURING) {
+            val open = touchGaps.peekLast()?.takeIf { it.to == null }
+            if (open != null) { touchGaps.removeLast(); touchGaps.addLast(open.copy(to = now)) }
+            else if (touchGaps.isEmpty()) touchGaps += TouchGap(null, now, "タップ位置の取得開始前です")
+        }
+        touchState = StreamSnapshot(state, reason = reason)
+        while (touchGaps.size > 4096) touchGaps.removeFirst()
     }
 
     @Synchronized
@@ -399,6 +492,7 @@ internal class CaptureStore(
                 repeat((minOf(firstInside, all.lastIndex) downTo 0).firstOrNull { all[it].key } ?: 0) { removeVideo() }
             }
             pruneLogs { _, _, host -> host < cutoff }
+            touches.removeIf { it.host < cutoff }
             enforceVideoLimit()
             deleteUnused()
             return
@@ -424,6 +518,10 @@ internal class CaptureStore(
             }
         }
         pruneLogs(expiredBefore(cutoff, latest))
+        touches.removeIf { row ->
+            val point = row.time.sequence
+            point != null && row.time.uncertainty != Long.MAX_VALUE && point < cutoff - row.time.uncertainty
+        }
         enforceVideoLimit()
         deleteUnused()
         while (gaps.size > 4096) removeGapProofs(gaps.removeFirst())
@@ -468,12 +566,12 @@ internal class CaptureStore(
         val latest = clock.latestSequence()
         // An unknown-time record received before a clock read that is already before the window cannot be inside it.
         fun beforeWindow(host: Long) = known && uncertainty >= 0 && latest(host)?.let { it < start - uncertainty } == true
-        val rows = logs.map { row -> row.copy(time = logTime(row.source.wall, row.host)) }.filter { row ->
-            val point = row.time.sequence
-            val error = row.time.uncertainty
-            if (!known) hostStart == null || row.host >= hostStart
+        fun insideWindow(time: MappedTime, host: Long): Boolean {
+            val point = time.sequence
+            val error = time.uncertainty
+            return if (!known) hostStart == null || host >= hostStart
             else if (error < 0 || uncertainty < 0) true
-            else if (point == null || error == Long.MAX_VALUE) !beforeWindow(row.host)
+            else if (point == null || error == Long.MAX_VALUE) !beforeWindow(host)
             else try {
                 val margin = Math.addExact(error, uncertainty)
                 val distance = when {
@@ -483,6 +581,12 @@ internal class CaptureStore(
                 }
                 distance <= margin
             } catch (_: ArithmeticException) { true } // Overflow cannot prove that the record is outside.
+        }
+        val rows = logs.map { row -> row.copy(time = logTime(row.source.wall, row.host)) }.filter { insideWindow(it.time, it.host) }
+        val touchRows = if (!captureMode.videoRequested) emptyList() else {
+            val touchTime = clock.monoMapper()
+            touches.map { row -> row.copy(time = touchTime(row.sample.monoNs, row.host, row.time.epoch)) }
+                .filter { insideWindow(it.time, it.host) }
         }
         val all = if (captureMode.videoRequested) video.toList() else emptyList()
         val files = mutableSetOf<Path>()
@@ -503,7 +607,10 @@ internal class CaptureStore(
         var value = FrozenCapture(UUID.randomUUID().toString(), sequence, generation, start, end,
             settings.replaySeconds, frames.toList(), rows.toList(), gaps.toList(), clock.snapshot(), apps.toList(), settings,
             streams(settings.replaySeconds, end), endUncertainty = uncertainty, windowClockEpoch = fixedEpoch ?: clock.currentEpoch(),
-            clockRecoveries = clockRecoveries.toMap(), videoCuts = videoCuts.toMap(), hostStart = hostStart)
+            clockRecoveries = clockRecoveries.toMap(), videoCuts = videoCuts.toMap(), hostStart = hostStart,
+            touches = touchRows, touchState = touchState.takeIf { captureMode.videoRequested }, touchGaps = touchGaps.toList() +
+                listOfNotNull(touchEvictedThrough?.takeIf { it >= start }?.let { TouchGap(null, it.takeIf { it != Long.MAX_VALUE }, "保持上限を超えた古いタップ位置を破棄しました") }),
+            touchDropped = touchDropped, touchDots = touchDots.takeIf { captureMode.videoRequested })
         if (trigger != null) {
             autosave.admissionProblem(trigger, host)?.let { throw AutoSaveRejected(it) }
             if (fixedEnd != null || !clock.certain(host)) throw AutoSaveRejected(AutoSaveReason.NOT_SAVED_CLOCK_UNKNOWN)
@@ -668,6 +775,10 @@ internal class CaptureStore(
         videoFileRefs.clear()
         unusedCandidates.addAll(ownedFiles)
         logs.clear()
+        touches.clear()
+        touchGaps.clear()
+        touchLostOpen.clear()
+        touchEvictedThrough = null
         apps.clear()
         gaps.clear()
         clockRecoveries.clear()

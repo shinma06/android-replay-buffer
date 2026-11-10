@@ -5,7 +5,7 @@ import java.nio.file.Path
 import java.util.concurrent.CompletionStage
 
 /** Applied values only. SDK/Run configuration resolution and draft settings belong to the IDE layer. */
-data class ReplaySettings(
+data class ReplaySettings @JvmOverloads constructor(
     val adbPath: Path? = null,
     val saveDirectory: Path? = null,
     val replaySeconds: Int = 180,
@@ -13,6 +13,8 @@ data class ReplaySettings(
     val captureMode: CaptureMode = CaptureMode.VIDEO_AND_LOGS,
     val autoSaveOnCrash: Boolean = false,
     val videoQuality: VideoQuality = VideoQuality.STANDARD,
+    /** Sets the device show_touches option only while video is captured; touch coordinates are always recorded with video. */
+    val showTouches: Boolean = false,
 ) {
     fun validate(): ReplaySettings {
         require(adbPath == null || adbPath.isAbsolute && Files.isRegularFile(adbPath) && Files.isExecutable(adbPath)) {
