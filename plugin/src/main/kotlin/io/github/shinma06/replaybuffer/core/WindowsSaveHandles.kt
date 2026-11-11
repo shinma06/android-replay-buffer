@@ -356,9 +356,20 @@ private class HandleChannel(private val nt: NtFiles, private var handle: Long, p
     }
 
     override fun read(dst: ByteBuffer): Int = io { file -> transfer(file, dst, position, false).also { if (it > 0) position += it } }
-    override fun write(src: ByteBuffer): Int = io { file -> transfer(file, src, position, true).also { position += it } }
+    override fun write(src: ByteBuffer): Int = io { file -> writeAll(file, src, position).also { position += it } }
     override fun read(dst: ByteBuffer, position: Long): Int = io { file -> transfer(file, dst, position, false) }
-    override fun write(src: ByteBuffer, position: Long): Int = io { file -> transfer(file, src, position, true) }
+    override fun write(src: ByteBuffer, position: Long): Int = io { file -> writeAll(file, src, position) }
+
+    /** Writes the whole buffer like the JDK's file channel; callers such as JCodec ignore short writes. */
+    private fun writeAll(file: Pointer, src: ByteBuffer, offset: Long): Int {
+        var total = 0
+        while (src.hasRemaining()) {
+            val done = transfer(file, src, offset + total, true)
+            if (done == 0) break
+            total += done
+        }
+        return total
+    }
 
     override fun read(dsts: Array<out ByteBuffer>, offset: Int, length: Int): Long {
         java.util.Objects.checkFromIndexSize(offset, length, dsts.size)
@@ -378,7 +389,7 @@ private class HandleChannel(private val nt: NtFiles, private var handle: Long, p
         return io { file ->
             var total = 0L
             for (index in offset until offset + length) while (srcs[index].hasRemaining()) {
-                val done = transfer(file, srcs[index], position, true)
+                val done = writeAll(file, srcs[index], position)
                 if (done == 0) return@io total
                 position += done; total += done
             }

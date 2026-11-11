@@ -101,6 +101,28 @@ class SaveOutputChannelTest {
         }
     }
 
+    @Test
+    fun singleWritesStoreTheWholeBufferBeyondOneMebibyte() {
+        val data = ByteArray(5 * 1024 * 1024 + 7) { (it * 31 + it / 4096).toByte() }
+        SaveOutputDirectory.open(root).use { directory ->
+            directory.createFile("out").use { output ->
+                output.channel().use { channel ->
+                    assertEquals(data.size, channel.write(ByteBuffer.wrap(data)))
+                    assertEquals(data.size.toLong(), channel.position())
+                    val direct = ByteBuffer.allocateDirect(data.size).put(data).flip()
+                    assertEquals(data.size, channel.write(direct, data.size.toLong()))
+                    assertFalse(direct.hasRemaining())
+                    assertEquals(data.size.toLong(), channel.position())
+                    assertEquals(2L * data.size, channel.size())
+                }
+                val stored = Files.readAllBytes(root.resolve("out"))
+                assertEquals(2 * data.size, stored.size)
+                assertContentEquals(data, stored.copyOfRange(0, data.size))
+                assertContentEquals(data, stored.copyOfRange(data.size, stored.size))
+            }
+        }
+    }
+
     /** Like a non-blocking socket: accepts [limit] bytes, then makes no progress. */
     private class Stalling(private val limit: Int) : WritableByteChannel, ReadableByteChannel {
         val written = ByteArrayOutputStream()
