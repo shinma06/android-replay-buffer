@@ -423,15 +423,10 @@ internal class CaptureStore(
             CrashBarrier(device, anchor.boot, generation, clock.currentEpoch(), host,
                 Math.addExact(anchor.wall, host - anchor.received), amCrashFields)
         } catch (_: ArithmeticException) { null } else null
-        autosave.refresh(boundary, host, clock.currentEpoch().takeIf { context && boundary == null })
+        autosave.refresh(boundary, host, clock.currentEpoch().takeIf { context && boundary == null }, ::resolveHeld)
     }
 
-    @Synchronized
-    fun log(source: DeviceLog, owner: Long, host: Long = System.nanoTime()): String? {
-        if (closed || owner != generation) return null
-        val time = clock.log(source.wall, host)
-        val retained = time.sequence ?: clock.now(host) ?: 0L
-        if (started == null && time.sequence != null) started = retained
+    private fun membership(source: DeviceLog, time: MappedTime): Pair<AppPeriod?, Boolean?> {
         val period = apps.lastOrNull { it.epoch == time.epoch && time.elapsed != null && it.from != null &&
             time.elapsed >= it.from && (it.to == null || time.elapsed <= it.to) }
         val app = when {
@@ -441,6 +436,28 @@ internal class CaptureStore(
             source.uid == null || source.uid == period.uid -> null // shared/unknown UID: a new PID is not evidence of non-membership.
             else -> false
         }
+        return period to app
+    }
+
+    /** Re-maps a report held through a clock gap with the recovered clock; the stored row gets the same membership. */
+    private fun resolveHeld(row: LogEntry): Pair<LogEntry, AppPeriod?> {
+        val time = clock.log(row.source.wall, row.host)
+        val (period, app) = membership(row.source, time)
+        if (logs.any { it.id == row.id }) {
+            val kept = logs.map { if (it.id == row.id) it.copy(time = time, app = app) else it }
+            logs.clear()
+            logs.addAll(kept)
+        }
+        return row.copy(time = time, app = app) to period
+    }
+
+    @Synchronized
+    fun log(source: DeviceLog, owner: Long, host: Long = System.nanoTime()): String? {
+        if (closed || owner != generation) return null
+        val time = clock.log(source.wall, host)
+        val retained = time.sequence ?: clock.now(host) ?: 0L
+        if (started == null && time.sequence != null) started = retained
+        val (period, app) = membership(source, time)
         val row = LogEntry(UUID.randomUUID().toString(), source, generation, time, retained, app, host)
         logs += row
         refreshAuto(host)

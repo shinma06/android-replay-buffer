@@ -9,6 +9,8 @@ internal data class CrashObservation(
     val row: LogEntry, val header: CrashHeader, val fingerprint: String,
     val barrier: CrashBarrier, val optionRevision: Long, val targetRevision: Long, val armingRevision: Long,
     val reporter: ReporterPoll?,
+    /** A Java report received while the clock is held, whose clock-dependent identity waits for the recovered mapping. */
+    val deferred: Boolean = false,
 ) {
     val bytes: Int get() = row.source.raw.size + (header.process?.length ?: 0) * 2 + 256
 }
@@ -68,9 +70,11 @@ internal class CrashAutosave {
     /**
      * [clockEpoch] is set only when the clock is the sole missing condition: a same-epoch uncertain clock then keeps
      * the barrier and unadmitted reports for at most [CRASH_RECEIPT_NS], and same-epoch recovery resumes them.
+     * [resolve] re-maps a deferred report's row with the recovered clock and returns its app period.
      */
     @Synchronized
-    fun refresh(value: CrashBarrier?, host: Long? = null, clockEpoch: Int? = null) {
+    fun refresh(value: CrashBarrier?, host: Long? = null, clockEpoch: Int? = null,
+                resolve: ((LogEntry) -> Pair<LogEntry, AppPeriod?>)? = null) {
         val old = barrier
         if (old != null && value == null && host != null && clockEpoch == old.epoch) {
             val since = heldSince ?: host.also { heldSince = it }
@@ -87,7 +91,26 @@ internal class CrashAutosave {
         }
         if (value != null) heldSince = null
         if (preference && active && target != null && suspended == null && barrier == null) barrier = value
+        if (barrier != null && heldSince == null) resolveDeferred(resolve)
     }
+
+    private fun resolveDeferred(resolve: ((LogEntry) -> Pair<LogEntry, AppPeriod?>)?) {
+        val selected = target
+        for (held in observations.filter { it.deferred }) {
+            val resolved = if (selected == null) null else resolve?.invoke(held.row)
+            val problem = when {
+                resolved == null || resolved.first.time.elapsed == null -> AutoSaveReason.NOT_SAVED_CLOCK_UNKNOWN
+                else -> javaIdentityProblem(resolved.first, resolved.second, selected!!)
+            }
+            observations.remove(held)
+            if (problem != null) finishObservation(held, problem)
+            else observations += held.copy(row = resolved!!.first, deferred = false)
+        }
+    }
+
+    private fun javaIdentityProblem(row: LogEntry, period: AppPeriod?, selected: String): AutoSaveReason? =
+        if (row.app != true || period?.packageName != selected || period.uidExclusive.not() ||
+            period.uid != row.source.uid) AutoSaveReason.UNKNOWN_IDENTITY else null
 
     private fun invalidate(reason: AutoSaveReason) {
         observations.toList().forEach { finishObservation(it, reason) }
@@ -113,10 +136,12 @@ internal class CrashAutosave {
         val fingerprint = crashFingerprint(arm.device, arm.boot, source)
         if (terminal.values.any { fingerprint in it.sources } || observations.any { it.fingerprint == fingerprint }) return
         if (terminal.size >= 256) { suspend(AutoSaveReason.LIMIT_REACHED); return }
+        // While the clock is held, an unmapped Java report is judged after recovery instead of as an unknown identity.
+        val deferred = header.problem == null && header.java && heldSince != null && row.time.elapsed == null
         val problem = header.problem ?: when {
             row.host <= arm.host -> AutoSaveReason.NOT_SAVED_PRE_ARM_EVENT
-            header.java && (row.app != true || period?.packageName != selected || period.uidExclusive.not() ||
-                period.uid != source.uid) -> AutoSaveReason.UNKNOWN_IDENTITY
+            deferred -> null
+            header.java -> javaIdentityProblem(row, period, selected)
             !header.java && (source.uid != 1000L || reporter?.fresh(row.host, row.generation) != true ||
                 source.pid != reporter.pid) -> AutoSaveReason.UNKNOWN_IDENTITY
             else -> null
@@ -131,7 +156,7 @@ internal class CrashAutosave {
             return
         }
         observations += CrashObservation(row.copy(source = source.copy(raw = source.raw.copyOf(), tag = null, message = null)),
-            header, fingerprint, arm, optionRevision, targetRevision, armingRevision, reporter)
+            header, fingerprint, arm, optionRevision, targetRevision, armingRevision, reporter, deferred)
     }
 
     @Synchronized

@@ -512,6 +512,42 @@ class CrashAutosaveTest {
     }
 
     @Test
+    fun javaReportUnmappedBecauseTheClockIsStaleIsJudgedWithTheRecoveredMapping() {
+        for (owner in listOf(true, false)) {
+            CrashFixture(Files.createDirectory(root.resolve("stale$owner"))).use { f ->
+                f.clockMiss(11_000_000_000)
+                f.refresh(11_000_100_000)
+                // The last good read was received at 10.001 s, so a receipt after 15.001 s maps to no device time.
+                f.reporter(14_900_000_000, 14_901_000_000)
+                val java = f.log(javaCrash(uid = if (owner) 10123 else null, wall = CRASH_WALL + 15_005_000_000),
+                    15_010_000_000)
+                f.log(platformCrash(wall = CRASH_WALL + 15_006_000_000), 15_012_000_000)
+                assertEquals(AutoSaveState.WAITING, f.store.autosave.snapshot().state)
+                if (!owner) {
+                    // A missing UID is not clock-dependent, so it is still rejected without waiting for recovery.
+                    assertEquals(AutoSaveReason.UNKNOWN_IDENTITY, f.store.autosave.snapshot().lastOutcome?.reason)
+                    assertEquals(1, f.store.autosave.snapshot().notSavedCount)
+                    return@use
+                }
+                assertEquals(0, f.store.autosave.snapshot().notSavedCount)
+                val epoch = f.store.clock.currentEpoch()
+                f.anchor(15_000_000_000) // Sent within 5 s of the last good read: same epoch.
+                f.store.clockStatus(true, 1)
+                f.refresh(15_100_000_000)
+                assertEquals(epoch, f.store.clock.currentEpoch())
+                assertEquals(AutoSaveState.ARMED, f.store.autosave.snapshot().state)
+                val pair = f.store.autosave.drain(f.at(15_200_000_000)).single()
+                assertEquals(true, pair.java.row.app)
+                val capture = assertNotNull(f.store.capture(f.settings, pair, f.at(15_200_000_000)))
+                assertNotNull(capture.autoTrigger)
+                assertEquals(true, capture.logs.single { it.id == java }.app)
+                assertTrue(capture.gaps.any { it.stream == "clock" && it.toNs != null })
+                assertEquals(0, f.store.autosave.snapshot().notSavedCount)
+            }
+        }
+    }
+
+    @Test
     fun clockGapOutlastingTheReceiptWindowOrChangingEpochRejectsHeldReports() {
         for (condition in listOf("refresh", "drain", "late-recovery", "recovered-epoch", "uncertain-epoch")) {
             CrashFixture(Files.createDirectory(root.resolve(condition))).use { f ->
