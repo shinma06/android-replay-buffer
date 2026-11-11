@@ -102,7 +102,7 @@ private class ReplayToolWindowPanel(private val project: Project) : JPanel(Borde
     private var renderingDevices = false
     private val deviceChoice = ComboBox<DeviceChoice>().apply {
         accessibleContext.accessibleName = "取得する端末"
-        toolTipText = "複数の端末が接続されているときだけ表示します。選んだ端末はserialで記憶し、切断中も別の端末へは切り替えません。"
+        toolTipText = "複数の端末が接続されているときだけ表示します。選んだ端末はserialで記憶し、切断中も別の端末へは切り替えません。「自動で選ぶ」で記憶を消します（取得中の端末はそのまま続けます）。"
         addActionListener { if (alive && !renderingDevices) (selectedItem as? DeviceChoice)?.serial?.let(::chooseDevice) }
     }
     private val deviceChooser = row(JBLabel("取得する端末:"), deviceChoice)
@@ -386,6 +386,7 @@ internal data class DeviceChoice(val serial: String?, val label: String) {
 
 /**
  * Chooser entries, current target (or a no-choice placeholder) first; empty while fewer than two devices are in play.
+ * A saved serial adds a trailing [AUTOMATIC_DEVICE_CHOICE] entry (serial "") that resets to automatic selection.
  * A saved serial that is not connected counts as one of them, so the GUI can move away from it like CLI/MCP can.
  */
 internal fun deviceChoices(snapshot: ReplaySnapshot?): List<DeviceChoice> {
@@ -399,8 +400,12 @@ internal fun deviceChoices(snapshot: ReplaySnapshot?): List<DeviceChoice> {
     val first = target?.let { DeviceChoice(it.serial, label(it)) }
         ?: saved?.let { DeviceChoice(it, "$it（切断中）") }
         ?: DeviceChoice(null, "選んでください")
-    return listOf(first) + others.map { DeviceChoice(it.serial, label(it)) }
+    val automatic = snapshot.settings.deviceSerial?.let { listOf(DeviceChoice("", AUTOMATIC_DEVICE_CHOICE)) }.orEmpty()
+    return listOf(first) + others.map { DeviceChoice(it.serial, label(it)) } + automatic
 }
+
+/** Clears the saved serial like CLI/MCP `device=""`; a running capture keeps its current device. */
+internal const val AUTOMATIC_DEVICE_CHOICE = "自動で選ぶ"
 
 internal fun streamDescription(label: String, stream: StreamSnapshot?): String {
     if (stream == null) return "$label: 確認中…"
