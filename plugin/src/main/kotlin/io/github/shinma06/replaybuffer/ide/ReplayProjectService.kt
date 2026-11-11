@@ -81,6 +81,9 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
     private var screenshotSettings: ReplaySettings? = null
     @Volatile internal var screenshotBusy = false
         private set
+    /** The newest request from any entry point (ToolWindow, Running Devices, CLI), so every view shows the same result. */
+    @Volatile internal var latestScreenshot: CompletableFuture<SavedScreenshot>? = null
+        private set
     @Volatile var resolving = true
         private set
     private val notifications = mutableListOf<Notification>()
@@ -217,9 +220,12 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
     @Synchronized
     internal fun screenshot(): CompletableFuture<SavedScreenshot> {
         val result = CompletableFuture<SavedScreenshot>()
+        latestScreenshot = result
         fun failed(reason: String): CompletableFuture<SavedScreenshot> {
             screenshotError(reason)
-            return result.apply { completeExceptionally(ScreenshotSaveFailure(reason)) }
+            result.completeExceptionally(ScreenshotSaveFailure(reason))
+            publishChanged()
+            return result
         }
         // Capture publishes under a different lock; validate and execute against this one snapshot.
         val snapshot = capture.view.snapshot

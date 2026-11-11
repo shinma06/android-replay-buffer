@@ -106,6 +106,7 @@ internal class ReplayToolWindowController(private val project: Project) : Dispos
     private var savedKey: Pair<String?, Long>? = null
     private var savedAt: String? = null
     private var screenshotResult: ScreenshotResult? = null
+    private var trackedScreenshot: CompletableFuture<*>? = null
     private val alive: Boolean get() = !disposed && !project.isDisposed
 
     /** Logic-only holder: its click and refresh behaviour stays the tested Swing implementation; it is never shown. */
@@ -184,6 +185,7 @@ internal class ReplayToolWindowController(private val project: Project) : Dispos
     }
 
     fun render() {
+        trackScreenshot()
         logcatButton.refresh()
         publish()
     }
@@ -199,15 +201,23 @@ internal class ReplayToolWindowController(private val project: Project) : Dispos
 
     fun screenshot() {
         if (!alive) return
-        service.screenshot().whenComplete { saved, failure ->
+        service.screenshot()
+        render()
+    }
+
+    /** Shows the newest screenshot result whichever entry point started it. */
+    private fun trackScreenshot() {
+        val latest = service.latestScreenshot ?: return
+        if (latest === trackedScreenshot) return
+        trackedScreenshot = latest
+        latest.whenComplete { saved, failure ->
             val time = LocalTime.now().format(TIME)
             val result = if (saved != null) ScreenshotResult.Saved(time, saved.file) else {
                 val cause = (failure as? CompletionException)?.cause ?: failure
                 ScreenshotResult.Failed(time, cause?.message ?: "スクリーンショットを保存できませんでした。")
             }
-            SwingUtilities.invokeLater { if (alive) { screenshotResult = result; render() } }
+            SwingUtilities.invokeLater { if (alive && trackedScreenshot === latest) { screenshotResult = result; render() } }
         }
-        render()
     }
 
     fun toggleLogcat() { if (alive && logcatButton.isEnabled) logcatButton.doClick(0) }
