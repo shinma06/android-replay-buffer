@@ -26,7 +26,7 @@ class VideoClockRegionTest {
     fun maximumHistoryWindowSelectionDoesNotAllocateAnAnchorListForEveryGap() {
         val clocks = List(4096) { n ->
             val time = n * 2_000_000L
-            ClockSample(0, "boot", time, time, time, time, 0, 0, 0, 0, 0)
+            ClockSample(0, "boot", time, time, time, time, 0, 0, 0)
         }
         val gaps = List(4096) { n ->
             val from = (n % 4095) * 2_000_000L
@@ -56,7 +56,7 @@ class VideoClockRegionTest {
     @Test
     fun videoLossEnvelopeRequiresBothFiniteNormalAnchorsAndStillBlocksRealLoss() {
         val before = ClockSample(0, "old", 4_000_000_000, 4_000_000_000, 0, 4_000_000_000,
-            0, 0, 0, -1_000_000_000, 0)
+            0, 0, -1_000_000_000)
         val after = before.copy(epoch = 2, boot = "new", before = 7_000_000_000, after = 7_000_000_000, mono = 7_000_000_000)
         val gap = CaptureGap("video", 3_500_000_000, 5_500_000_000, "connection ended", Long.MAX_VALUE, 1, 1)
         val scope = listOf(gap).gapScopes(listOf(before, after)).single()
@@ -90,8 +90,8 @@ class VideoClockRegionTest {
             assertEquals(unproven, listOf(unproven).gapScopes(listOf(before, after)).single())
             assertEquals(listOf(unproven), listOf(unproven).inWindow(7_000_000_000, 8_000_000_000, 1_000_000, listOf(before, after)))
         }
-        for (unproven in listOf(after.copy(sequenceOffset = null), after.copy(bridgeError = Long.MAX_VALUE),
-                after.copy(bridgeError = 20_000_001), after.copy(sequenceOffset = Long.MAX_VALUE),
+        // Another boot segment has only an approximate place on the axis, so its read cannot bound the loss.
+        for (unproven in listOf(after.copy(segment = 1), after.copy(sequenceOffset = Long.MAX_VALUE),
                 after.copy(received = 100_000_000), after.copy(sent = 1),
                 after.copy(after = after.before - 1), after.copy(before = -1, after = -1),
                 after.copy(after = after.before + 2_000_001))) {
@@ -105,7 +105,7 @@ class VideoClockRegionTest {
     }
 
     @Test
-    fun denseVideoInsideABoundedClockGapKeepsSourceFramesPlayableAndRetryFrozen() {
+    fun denseVideoInsideAResolvedClockGapStaysAlignedPlayableAndRetryFrozen() {
         val root = Files.createTempDirectory("replay-dense-clock-gap-")
         try {
             val encoder = H264Encoder.createH264Encoder().apply { setKeyInterval(10) }
@@ -132,7 +132,7 @@ class VideoClockRegionTest {
                     config, n * 100_000_000L, 1, decodeRun = 1, packetOrdinal = n + 1L).also { offset += packet.size }
             }
             val before = ClockSample(0, "fixture", 2_000_000_000, 2_000_000_000, 0, 2_000_000_000,
-                0, 0, 0, -1_000_000_000, 0)
+                0, 0, -1_000_000_000)
             val invalid = before.copy(before = 3_000_000_000, after = 3_002_000_001, mono = 3_000_000_000)
             val recovery = before.copy(before = 4_000_000_000, after = 4_000_000_000, mono = 4_000_000_000)
             assertFalse(invalid.valid)
@@ -148,22 +148,20 @@ class VideoClockRegionTest {
             val output = save(capture, root)
             val manifest = manifest(output)
             val parts = manifest["parts"].asJsonArray
-            // This fixture has one bounded clock-uncertain region and no acquisition/codec/epoch break.
-            assertEquals(1, parts.size(), "Clock uncertainty never changes the source run")
-            val uncertain = parts.single { !it.asJsonObject["clock_alignment_known"].asBoolean }.asJsonObject
-            assertTrue(uncertain["duration_us"].asLong >= 2_000_001)
-            for (key in listOf("window_start_ns", "window_end_ns", "confirmed_window_end_ns")) assertTrue(uncertain[key].isJsonNull)
-            assertEquals(listOf("video"), output.missingKinds)
+            // The recovery read proves the clock outage continuous: no acquisition/codec/epoch break and no loss.
+            assertEquals(1, parts.size(), "A clock measurement outage never changes the source run")
+            val part = parts.single().asJsonObject
+            assertTrue(part["clock_alignment_known"].asBoolean)
+            assertTrue(part["duration_us"].asLong >= 2_000_001)
+            for (key in listOf("window_start_ns", "window_end_ns", "confirmed_window_end_ns")) assertFalse(part[key].isJsonNull)
+            assertEquals(emptyList(), output.missingKinds)
             assertEquals(Long.MAX_VALUE.toString(), manifest["gaps"].asJsonArray.single().asJsonObject["boundary_uncertainty_ns"].asString)
             assertTrue(manifest["gaps"].asJsonArray.single().asJsonObject["duration_uncertain"].asBoolean)
-            assertFalse(manifest["video_missing_ranges"].asJsonArray.isEmpty)
+            assertTrue(manifest["video_missing_ranges"].asJsonArray.isEmpty)
             val rows = Files.readAllLines(output.directory.resolve("video-frames.jsonl")).map { JsonParser.parseString(it).asJsonObject }
             assertEquals(frames.map { it.pts }, rows.filter { it["presented"].asBoolean }.map { it["source_pts_us"].asLong })
-            val uncertainRows = rows.filter { !it["clock_alignment_known"].asBoolean }
-            assertTrue(uncertainRows.isNotEmpty())
-            assertTrue(rows.any { it["clock_alignment_known"].asBoolean })
-            assertTrue(uncertainRows.all { it["window_ns"].isJsonNull })
-            assertTrue(uncertainRows.all { !it["mapped_window_ns"].isJsonNull })
+            assertTrue(rows.all { it["clock_alignment_known"].asBoolean && !it["window_ns"].isJsonNull })
+            assertTrue(rows.all { it["window_ns"] == it["mapped_window_ns"] })
             assertTrue(rows.all { it["uncertainty_ns"].asLong == 1_000_000L })
             val deviceLog = Files.readAllLines(output.directory.resolve("logcat-device.jsonl"))
             val appLog = Files.readAllLines(output.directory.resolve("logcat-app.jsonl"))

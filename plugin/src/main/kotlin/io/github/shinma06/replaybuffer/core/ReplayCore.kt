@@ -494,7 +494,7 @@ internal fun FrozenCapture.missingKinds(): List<String> {
     val excluded = request.excludesVideo(settings.captureMode)
     val streams = settings.captureMode.streams.filter { !excluded || it != "video" }
     return (states.filter { (kind, it) -> kind in streams && it.state != StreamState.NOT_REQUESTED && (it.state != StreamState.CAPTURING || it.reason != null) }.keys +
-        gaps.inWindow(start, end, endUncertainty, clocks, clockRecoveries)
-            .flatMap { if (it.stream == "clock") streams else listOf(it.stream) } +
+        gaps.inWindow(start, end, endUncertainty, clocks, clockRecoveries, windowSegment)
+            .flatMap { if (it.resolvedClock(clockRecoveries)) emptyList() else if (it.stream == "clock") streams else listOf(it.stream) } +
         if (logs.any { it.app == null }) listOf("app_log") else emptyList()).distinct().let { java.util.List.copyOf(it) }
 }

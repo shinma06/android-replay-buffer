@@ -310,8 +310,8 @@ internal class CaptureStore(
                 val shown = received?.time?.takeIf { kind == "video" && it.uncertainty != Long.MAX_VALUE && it.epoch == clock.currentEpoch() }?.sequence
                 val now = clock.now()
                 val end = shown?.let { at -> maxOf(index.fromNs ?: at, now?.let { minOf(it, at) } ?: at) } ?: now
-                val closedGap = index.copy(toNs = end, boundaryUncertaintyNs = if (kind == "app_log")
-                    maxOf(index.boundaryUncertaintyNs ?: Long.MAX_VALUE, clock.endUncertainty()) else index.boundaryUncertaintyNs)
+                val closedGap = acrossBoot(index.copy(toNs = end, boundaryUncertaintyNs = if (kind == "app_log")
+                    maxOf(index.boundaryUncertaintyNs ?: Long.MAX_VALUE, clock.endUncertainty()) else index.boundaryUncertaintyNs))
                 gaps.remove(index); gaps.add(closedGap)
                 val cut = videoCuts.remove(index)
                 if (kind == "video" && cut != null && received != null)
@@ -336,13 +336,15 @@ internal class CaptureStore(
     fun clockStatus(healthy: Boolean, owner: Long) {
         if (closed || owner != generation) return
         if (!healthy && gaps.none { it.stream == "clock" && it.toNs == null }) {
+            // The outage belongs to the clock region of its last normal read, not to a newer epoch a rejected read opened.
             val anchor = clock.snapshot().lastOrNull { it.valid }
-            addGap("clock", anchor?.sequenceOffset?.let { anchor.elapsed + it }, null, "時計測定が不達または正常条件を満たしません")
+            addGap("clock", anchor?.let { it.elapsed + it.sequenceOffset }, null, "時計測定が不達または正常条件を満たしません",
+                epoch = anchor?.epoch)
         } else if (healthy) {
             val gap = gaps.lastOrNull { it.stream == "clock" && it.toNs == null }
             if (gap != null) synchronized(clock) {
                 val recovery = clock.snapshot().lastOrNull()?.takeIf { it.valid && it.epoch == clock.currentEpoch() }
-                val closedGap = gap.copy(toNs = clock.now())
+                val closedGap = acrossBoot(gap.copy(toNs = clock.now()))
                 gaps.remove(gap); gaps.add(closedGap)
                 if (recovery != null) clockRecoveries[closedGap] = recovery
             }
@@ -385,7 +387,7 @@ internal class CaptureStore(
             addGap("audio", clock.now(), null, reason ?: "音声の取得が中断しました")
         if (audioState.state != StreamState.CAPTURING && state == StreamState.CAPTURING) {
             gaps.lastOrNull { it.stream == "audio" && it.toNs == null }?.let { open ->
-                gaps.remove(open); gaps.add(open.copy(toNs = clock.now()))
+                gaps.remove(open); gaps.add(acrossBoot(open.copy(toNs = clock.now())))
             }
         }
         audioState = StreamSnapshot(state, reason = reason)
@@ -620,7 +622,7 @@ internal class CaptureStore(
         if (fixedEnd != null) return
         val end = clock.now(host) ?: latest() ?: return
         val uncertainty = clock.endUncertainty(host)
-        // An unknown boot bridge/current T cannot prove that old known-epoch records are outside the window.
+        // An unknown current T cannot prove that old known-epoch records are outside the window.
         if (uncertainty == Long.MAX_VALUE) {
             // A record is generated before it is received, so one received before every possible window start is outside.
             val cutoff = host - seconds * 1_000_000_000L - HOST_WINDOW_MARGIN_NS
@@ -708,7 +710,9 @@ internal class CaptureStore(
         val known = uncertainty != Long.MAX_VALUE
         val start = maxOf(0L, origin(!withVideo) ?: end, end - settings.replaySeconds * 1_000_000_000L)
         val hostStart = if (known || fixedEnd != null) null else host - settings.replaySeconds * 1_000_000_000L - HOST_WINDOW_MARGIN_NS
-        val logTime = clock.logMapper()
+        // Rows of another boot have no exact place on the window's boot and stay unknown-time rows.
+        val reference = clock.segment(fixedEpoch ?: clock.currentEpoch())
+        val logTime = clock.logMapper(reference)
         val latest = clock.latestSequence()
         // An unknown-time record received before a clock read that is already before the window cannot be inside it.
         fun beforeWindow(host: Long) = known && uncertainty >= 0 && latest(host)?.let { it < start - uncertainty } == true
@@ -731,7 +735,7 @@ internal class CaptureStore(
         val rows = logs.map { row -> row.copy(time = logTime(row.source.wall, row.host)) }.filter { insideWindow(it.time, it.host) }
         var heldTouches = emptyList<TouchEntry>()
         val touchRows = (if (!withVideo) emptyList() else {
-            val touchTime = clock.monoMapper()
+            val touchTime = clock.monoMapper(reference)
             touches.map { row -> row.copy(time = touchTime(row.sample.monoNs, row.host, row.time.epoch)) }
         }).let { mapped ->
             heldTouches = mapped.filter { it.time.sequence != null && it.time.uncertainty != Long.MAX_VALUE && it.time.sequence < start }
@@ -740,7 +744,7 @@ internal class CaptureStore(
             mapped.filter { insideWindow(it.time, it.host) }
         }
         val audioRows = if (!audioRequested || !withVideo) emptyList() else
-            audio.map { it.mapped(clock.video(it.pts, it.host, it.time.epoch)) }.filter { insideWindow(it.time, it.host) }
+            audio.map { it.mapped(clock.video(it.pts, it.host, it.time.epoch, reference)) }.filter { insideWindow(it.time, it.host) }
         val all = if (withVideo) video.toList() else emptyList()
         val files = mutableSetOf<Path>()
         all.forEachIndexed { index, entry ->
@@ -755,7 +759,7 @@ internal class CaptureStore(
         }
         all.lastOrNull()?.takeIf { known && it.retainedAt < start && currentVideo(it) }?.let { files.add(it.file) }
         val frames = all.filter { (!known || it.retainedAt <= end) && it.file in files }.map { frame ->
-            frame.copy(time = clock.video(frame.pts, frame.host, frame.time.epoch))
+            frame.copy(time = clock.video(frame.pts, frame.host, frame.time.epoch, reference))
         }
         var value = FrozenCapture(UUID.randomUUID().toString(), sequence, generation, start, end,
             settings.replaySeconds, frames.toList(), rows.toList(), gaps.filter { withVideo || it.stream != "video" }, clock.snapshot(), apps.toList(), settings,
@@ -883,10 +887,16 @@ internal class CaptureStore(
         return VideoSourcePosition(entry.file, offset, entry.generation, entry.session, entry.host)
     }
 
+    /** A gap closed on another boot spans a reboot: its duration is only an approximate host-time distance. */
+    private fun acrossBoot(gap: CaptureGap): CaptureGap = synchronized(clock) {
+        val opened = clock.snapshot().lastOrNull { it.epoch == gap.clockEpoch }?.segment
+        if (opened == null || opened == clock.segment()) gap else gap.copy(boundaryUncertaintyNs = Long.MAX_VALUE)
+    }
+
     private fun removeGapProofs(gap: CaptureGap) { clockRecoveries.remove(gap); videoCuts.remove(gap) }
 
     private fun addGap(stream: String, from: Long?, to: Long?, reason: String, boundary: MappedTime? = null,
-                       lostVideo: VideoEntry? = null) {
+                       lostVideo: VideoEntry? = null, epoch: Int? = null) {
         // Source interruption survives gap coalescing. Evicting an old packet does not interrupt live capture.
         if (stream == "video" && lostVideo == null) decodeRun = Math.incrementExact(decodeRun)
         val previous = gaps.peekLast()
@@ -895,10 +905,10 @@ internal class CaptureStore(
             return
         }
         val anchor = clock.hostAnchor()
-        val uncertainty = boundary?.uncertainty ?: anchor?.let { if (System.nanoTime() - it.received > 5_000_000_000 || it.bridgeError == Long.MAX_VALUE) Long.MAX_VALUE else
-            it.readError + (it.received - it.sent) / 2 + it.bridgeError }
+        val uncertainty = boundary?.uncertainty ?: anchor?.let { if (System.nanoTime() - it.received > 5_000_000_000) Long.MAX_VALUE else
+            it.readError + (it.received - it.sent) / 2 }
         val gap = CaptureGap(stream, from, to, reason, if (boundary != null || clock.certain()) uncertainty else Long.MAX_VALUE,
-            generation, boundary?.epoch ?: clock.currentEpoch())
+            generation, boundary?.epoch ?: epoch ?: clock.currentEpoch())
         gaps += gap
         if (stream == "video") {
             // A retention hole occupies the deleted packet's bytes, not the current source tail.
@@ -926,7 +936,9 @@ internal class CaptureStore(
             val deleted = Files.deleteIfExists(file)
             ownedFiles.remove(file)
             candidates.remove()
-            videoCuts.entries.removeIf { (_, cut) -> cut.before?.file == file || cut.after?.file == file }
+            // The frame that closed a gap still proves where its run resumes after the frame before the gap is gone.
+            videoCuts.entries.removeIf { (_, cut) -> cut.after?.file == file }
+            videoCuts.replaceAll { _, cut -> if (cut.before?.file == file) cut.copy(before = null) else cut }
             if (deleted) removed(file)
         }
     }
@@ -961,13 +973,25 @@ internal class CaptureStore(
     }
 }
 
+/**
+ * A closed clock-read outage whose recovery read proved the same clock region (an epoch never spans boots, so the
+ * opening read's epoch also fixes its boot): rows inside it map by the surrounding
+ * reads, so it is no loss. An open outage or one ending at a clock step stays a loss of clock alignment.
+ */
+internal fun CaptureGap.resolvedClock(recoveries: Map<CaptureGap, ClockSample>): Boolean =
+    stream == "clock" && fromNs != null && toNs != null && clockEpoch != null && recoveries[this]?.epoch == clockEpoch
+
+/** The boot segment of the fixed window; rows and clock reads of other boots have no exact place on it. */
+internal val FrozenCapture.windowSegment: Int?
+    get() = clocks.lastOrNull { it.epoch == windowClockEpoch }?.segment ?: clocks.lastOrNull()?.segment
+
 /** Source PTS, not an assumed frame rate, defines continuity within an uninterrupted stream. */
 internal fun VideoEntry.continuousTo(next: VideoEntry, gaps: Iterable<CaptureGap>): Boolean =
     generation == next.generation && session == next.session && time.epoch == next.time.epoch &&
         width == next.width && height == next.height && config.contentEquals(next.config) && next.pts > pts &&
         time.sequence != null && next.time.sequence != null && next.time.sequence > time.sequence &&
         time.uncertainty != Long.MAX_VALUE && next.time.uncertainty != Long.MAX_VALUE &&
-        gaps.none { gap -> (gap.stream == "video" || gap.stream == "clock") &&
+        gaps.none { gap -> gap.stream == "video" &&
             gap.intersects(time.sequence, next.time.sequence, maxOf(time.uncertainty, next.time.uncertainty)) }
 
 /**
@@ -979,13 +1003,14 @@ internal fun VideoEntry.continuousTo(next: VideoEntry, gaps: Iterable<CaptureGap
 internal fun List<CaptureGap>.gapScopes(
     clocks: List<ClockSample>, recoveries: Map<CaptureGap, ClockSample> = emptyMap(),
     videoProofs: MutableMap<CaptureGap, Pair<ClockSample, ClockSample>>? = null,
+    // Only the window's boot has exact sequence positions; another boot's placement is approximate.
+    reference: Int? = clocks.lastOrNull()?.segment,
 ): List<CaptureGap> {
     fun anchor(sample: ClockSample): Pair<Long, Long>? {
-        val offset = sample.sequenceOffset ?: return null
-        if (!sample.hostAnchored || sample.bridgeError !in 0..20_000_000L) return null
+        if (!sample.hostAnchored || sample.segment != reference) return null
         return try {
-            Math.addExact(sample.elapsed, offset) to Math.addExact(sample.readError,
-                Math.addExact(Math.subtractExact(sample.received, sample.sent) / 2, sample.bridgeError))
+            Math.addExact(sample.elapsed, sample.sequenceOffset) to
+                Math.addExact(sample.readError, Math.subtractExact(sample.received, sample.sent) / 2)
         } catch (_: ArithmeticException) { null }
     }
     val anchors = clocks.mapNotNull { sample -> anchor(sample)?.let { Triple(it.first, it.second, sample) } }.sortedBy { it.first }
@@ -1008,14 +1033,18 @@ internal fun List<CaptureGap>.gapScopes(
         // Acquisition loss needs both observed boundaries; clocks do not make an open/unknown-owner loss finite.
         if (acquisition && (gap.generation <= 0 || gap.fromNs == null || gap.toNs == null || gap.fromNs > gap.toNs)) return@map gap
         val candidates = if (acquisition) acquisitionAnchors else anchors
-        // Widen to observed normal samples, never treat nominal from/to as zero-error boundaries.
-        val before = gap.fromNs?.let { from -> boundarySample(candidates, from, after = false) }
         val after = gap.toNs?.let { to ->
             // Status closes after receiving its sample; preserve nominal closure and that sample's error.
             recoveries[gap]?.takeIf { gap.stream == "clock" }?.let { sample -> anchor(sample)?.let {
                 Triple(maxOf(to, it.first), it.second, sample)
             } } ?: boundarySample(candidates, to, after = true)
         }
+        // A gap opened on another boot has no start on this boot's axis: unbounded before, exact where it closed here.
+        val opened = gap.clockEpoch?.let { epoch -> clocks.lastOrNull { it.epoch == epoch }?.segment }
+        if (reference != null && opened != null && opened != reference)
+            return@map after?.let { gap.copy(fromNs = null, toNs = it.first, boundaryUncertaintyNs = it.second) } ?: gap
+        // Widen to observed normal samples, never treat nominal from/to as zero-error boundaries.
+        val before = gap.fromNs?.let { from -> boundarySample(candidates, from, after = false) }
         if (acquisition && (before == null || after == null) ||
             before == null && after == null || before != null && after != null && before.first > after.first) gap
         else {
@@ -1033,10 +1062,10 @@ internal fun List<CaptureGap>.gapScopes(
  */
 internal fun List<CaptureGap>.inWindow(
     start: Long?, end: Long, uncertainty: Long, clocks: List<ClockSample>,
-    recoveries: Map<CaptureGap, ClockSample> = emptyMap(),
+    recoveries: Map<CaptureGap, ClockSample> = emptyMap(), reference: Int? = clocks.lastOrNull()?.segment,
 ): List<CaptureGap> {
     if (start == null || uncertainty == Long.MAX_VALUE) return toList()
-    val scopes = gapScopes(clocks, recoveries)
+    val scopes = gapScopes(clocks, recoveries, reference = reference)
     return filterIndexed { index, _ -> scopes[index].intersects(start, end, uncertainty) }
 }
 
@@ -1052,7 +1081,7 @@ internal fun FrozenCapture.videoTail(): VideoTailSnapshot? {
     val last = video.lastOrNull() ?: return null
     val source = last.time.sequence.takeIf { windowKnown && last.time.uncertainty != Long.MAX_VALUE }
     if (source != null && source >= end) return null
-    val boundaries = gaps.filter { (it.stream == "video" || it.stream == "clock") &&
+    val boundaries = gaps.filter { it.stream == "video" &&
         !(source != null && it.toNs != null && it.toNs <= source) &&
         it.intersects(source, end, maxOf(endUncertainty, last.time.uncertainty)) }
     val boundary = boundaries.mapNotNull { it.fromNs }.minOrNull()?.coerceAtMost(end) ?: end

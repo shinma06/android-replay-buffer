@@ -2,6 +2,7 @@ package io.github.shinma06.replaybuffer.core
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -9,7 +10,7 @@ import kotlin.test.assertTrue
 class CaptureClockTest {
     private fun receiptClock(roundTrip: Long, measurementDelay: Long = 100_000): CaptureClock = CaptureClock().apply {
         fun sample(elapsed: Long, sent: Long, received: Long) = add("1",
-            listOf(elapsed, elapsed, 1_700_000_000_000_000_000 + elapsed, elapsed), sent, received, received)
+            listOf(elapsed, elapsed, 1_700_000_000_000_000_000 + elapsed, elapsed), sent, received)
         assertTrue(sample(1_000_000_000, 10_000_000_000 + measurementDelay - 100_000,
             10_000_000_000 + measurementDelay + 100_000))
         assertTrue(sample(2_000_000_000, 11_000_000_000, 11_000_000_000 + roundTrip))
@@ -66,7 +67,7 @@ class CaptureClockTest {
         val clock = receiptClock(1_000_000)
         val roundTrip = 69_000_000L
         assertTrue(clock.add("1", listOf(3_000_000_000L, 3_000_000_000L, 1_700_000_003_000_000_000, 3_000_000_000),
-            12_000_000_000, 12_000_000_000 + roundTrip, 12_000_000_000 + roundTrip))
+            12_000_000_000, 12_000_000_000 + roundTrip))
         val slow = clock.snapshot().last()
         assertTrue(slow.valid)
         assertTrue(!slow.hostAnchored)
@@ -83,7 +84,7 @@ class CaptureClockTest {
 
         val onlySlow = CaptureClock()
         assertTrue(onlySlow.add("1", listOf(2_000_000_000L, 2_000_000_000L,
-            1_700_000_002_000_000_000, 2_000_000_000), 11_000_000_000, 11_000_000_000 + roundTrip, 11_000_000_000 + roundTrip))
+            1_700_000_002_000_000_000, 2_000_000_000), 11_000_000_000, 11_000_000_000 + roundTrip))
         assertEquals(1_000_000L + roundTrip / 2, onlySlow.endUncertainty(11_100_000_000))
         assertEquals(2_034_000_000, onlySlow.log(1_700_000_002_034_000_000, 11_100_000_000).elapsed)
     }
@@ -93,7 +94,7 @@ class CaptureClockTest {
         val clock = receiptClock(1_000_000) // Round-trip-supported sample received at 11.001 s.
         val roundTrip = 69_000_000L
         assertTrue(clock.add("1", listOf(6_000_000_000L, 6_000_000_000L, 1_700_000_006_000_000_000, 6_000_000_000),
-            15_000_000_000, 15_000_000_000 + roundTrip, 15_000_000_000 + roundTrip))
+            15_000_000_000, 15_000_000_000 + roundTrip))
         val fresh = 15_100_000_000L
         assertEquals(11_001_000_000, assertNotNull(clock.hostAnchor(fresh)).received)
         assertEquals(1_000_000L + 500_000, clock.endUncertainty(fresh))
@@ -102,14 +103,14 @@ class CaptureClockTest {
         val slow = clock.snapshot().last()
         assertEquals(slow, clock.hostAnchor(late))
         assertEquals(slow.readError + roundTrip / 2, clock.endUncertainty(late))
-        assertEquals(slow.elapsed + slow.sequenceOffset!! + late - slow.received, clock.now(late))
+        assertEquals(slow.elapsed + slow.sequenceOffset + late - slow.received, clock.now(late))
     }
 
     @Test
     fun receiptSupportDoesNotValidateInvalidSamplesOrCrossClosedEpochs() {
         val invalid = CaptureClock()
         assertEquals(false, invalid.add("1", listOf(2_000_000_000L, 2_000_000_000L,
-            1_700_000_002_000_000_000, 2_002_000_001), 11_000_000_000, 11_001_000_000, 11_001_000_000))
+            1_700_000_002_000_000_000, 2_002_000_001), 11_000_000_000, 11_001_000_000))
         assertNull(invalid.log(1_700_000_002_034_000_000, 11_050_000_000).elapsed)
         assertNull(invalid.video(2_034_000, 11_050_000_000).elapsed)
 
@@ -117,7 +118,7 @@ class CaptureClockTest {
         val closedAt = 11_036_842_708L
         clock.boundary(closedAt)
         assertTrue(clock.add("1", listOf(3_000_000_000L, 3_000_000_000L,
-            1_700_000_003_000_000_000, 3_000_000_000), 12_000_000_000, 12_000_200_000, 12_000_200_000))
+            1_700_000_003_000_000_000, 3_000_000_000), 12_000_000_000, 12_000_200_000))
         assertNull(clock.log(1_700_000_002_000_000_000, closedAt + 1).elapsed)
         assertNull(clock.log(1_700_000_002_034_000_000, 11_035_100_000).elapsed)
         assertNull(clock.video(2_034_000, 11_035_100_000, 0).elapsed)
@@ -125,8 +126,8 @@ class CaptureClockTest {
     }
 
     private fun add(clock: CaptureClock, elapsed: Long, mono: Long = elapsed, wall: Long = 1_700_000_000_000_000_000 + elapsed,
-                    host: Long = elapsed, boot: String = "1", hostWall: Long = host) {
-        clock.add(boot, listOf(elapsed, mono, wall, elapsed + 100_000), host, host + 200_000, hostWall)
+                    host: Long = elapsed, boot: String = "1") {
+        clock.add(boot, listOf(elapsed, mono, wall, elapsed + 100_000), host, host + 200_000)
     }
 
     @Test
@@ -162,9 +163,9 @@ class CaptureClockTest {
     fun slowRoundTripAdvancesEstimatedWindowAndKeepsSourceSynchronization() {
         val clock = CaptureClock()
         assertTrue(clock.add("1", listOf(1_000_000_000L, 1_000_000_000L, 1_700_000_001_000_000_000L, 1_000_000_000L),
-            1_000_000_000, 1_100_000_000, 1_100_000_000))
+            1_000_000_000, 1_100_000_000))
         assertTrue(clock.add("1", listOf(2_000_000_000L, 2_000_000_000L, 1_700_000_002_000_000_000L, 2_000_000_000L),
-            2_000_000_000, 2_100_000_000, 2_100_000_000))
+            2_000_000_000, 2_100_000_000))
         assertTrue(clock.now(2_200_000_000)!! >= 1_000_000_000)
         assertEquals(2_000_000_000, clock.video(2_000_000, 2_200_000_000).elapsed)
         assertEquals(1_000_000L + 50_000_000, clock.endUncertainty(2_200_000_000))
@@ -196,8 +197,18 @@ class CaptureClockTest {
         val afterBoot = clock.video(500_000, 5_000_200_000)
         assertEquals(500_050_000, afterBoot.elapsed)
         assertTrue(afterBoot.sequence!! > 3_000_000_000)
-        add(clock, 200_000_000, host = 6_000_000_000, boot = "3", hostWall = 100_000_000_000)
-        assertNull(clock.video(200_000, 6_000_200_000).sequence)
+        // A host-clock jump no longer matters: each boot has its own exact BOOTTIME segment.
+        add(clock, 200_000_000, host = 6_000_000_000, boot = "3")
+        val third = clock.video(200_000, 6_000_200_000)
+        assertEquals(200_050_000, third.elapsed)
+        assertTrue(third.sequence!! > afterBoot.sequence!!)
+        assertTrue(third.uncertainty < 20_000_000)
+        // Boot 2's rows keep their BOOTTIME but get no time on boot 3's axis.
+        val previousBoot = clock.video(500_000, 6_000_200_000, afterBoot.epoch)
+        assertEquals(500_050_000, previousBoot.elapsed)
+        assertNull(previousBoot.sequence)
+        assertEquals(Long.MAX_VALUE, previousBoot.uncertainty)
+        assertEquals(afterBoot, clock.video(500_000, 6_000_200_000, afterBoot.epoch, clock.segment(afterBoot.epoch)))
         assertEquals(6, clock.snapshot().size)
     }
     @Test
@@ -224,7 +235,7 @@ class CaptureClockTest {
         }
         compare() // Empty and entirely invalid snapshots.
         clock.add("1", listOf(1_000_000_000L, 1_000_000_000L, wallBase + 1_000_000_000, 1_000_000_000),
-            1_000_000_000, 1_040_000_001, 1_040_000_001)
+            1_000_000_000, 1_040_000_001)
         compare()
         add(clock, 2_000_000_000)
         add(clock, 2_000_000_000) // Duplicate source keys: low is last, high is first.
@@ -237,9 +248,9 @@ class CaptureClockTest {
         add(clock, 5_000_000_000, wall = wallBase + 3_000_000_000)
         compare() // Overlapping wall-clock epochs.
         add(clock, 500_000_000, host = 6_000_000_000, boot = "2")
-        compare() // Known boot bridge.
-        add(clock, 200_000_000, host = 7_000_000_000, boot = "3", hostWall = 100_000_000_000)
-        compare() // Unknown boot bridge.
+        compare() // Second boot segment.
+        add(clock, 200_000_000, host = 7_000_000_000, boot = "3")
+        compare() // Third boot segment: earlier boots have no time on its axis.
         val frozen = clock.logMapper()
         val expected = frozen(wallBase + 2_000_000_000, 3_000_200_000)
         clock.boundary(8_000_000_000)
@@ -290,7 +301,7 @@ class CaptureClockTest {
     fun maximumHistoryIndexReadsTwoSamplesPerRowAndPreservesInsertionOrderExtrema() {
         val points = List(4096) { i ->
             val wall = (i * 37L % 1024) * 1_000_000
-            ClockSample(0, "1", i.toLong(), i.toLong(), wall, i.toLong(), 0, 0, 0, 0, 0)
+            ClockSample(0, "1", i.toLong(), i.toLong(), wall, i.toLong(), 0, 0, 0)
         }
         var reads = 0L
         val counted = object : AbstractList<ClockSample>() {
@@ -351,13 +362,13 @@ class CaptureClockTest {
             assertNull(mapper(sample.wall + 10_000_000_000 + i, sample.received).elapsed)
         }
         val overflow = CaptureClock()
-        overflow.add("1", listOf(Long.MAX_VALUE - 10, 0L, 0L, Long.MAX_VALUE - 10), 0, 0, 0)
+        overflow.add("1", listOf(Long.MAX_VALUE - 10, 0L, 0L, Long.MAX_VALUE - 10), 0, 0)
         val overflowMapper = overflow.logMapper()
         assertEquals(overflow.log(10, 0), overflowMapper(10, 0))
         kotlin.test.assertFailsWith<ArithmeticException> { overflow.log(11, 0) }
         kotlin.test.assertFailsWith<ArithmeticException> { overflowMapper(11, 0) }
         val extreme = CaptureClock()
-        assertTrue(extreme.add("1", listOf(0L, 0L, 0L, 0L), Long.MIN_VALUE, 0, 0))
+        assertTrue(extreme.add("1", listOf(0L, 0L, 0L, 0L), Long.MIN_VALUE, 0))
         val frozen = extreme.logMapper()
         for (source in listOf(Long.MIN_VALUE, 0, Long.MAX_VALUE)) {
             kotlin.test.assertFailsWith<IllegalArgumentException> { extreme.log(source, 0) }
@@ -365,4 +376,28 @@ class CaptureClockTest {
         }
     }
 
+    @Test
+    fun rebootStartsItsOwnExactSegmentAfterTheHostGapEvenWithAWideFirstRead() {
+        val clock = CaptureClock()
+        add(clock, 5_000_000_000, host = 10_000_000_000)
+        val oldEpoch = clock.currentEpoch()
+        // Too wide to map sources, but the new boot id alone opens the boot's own epoch and segment.
+        assertFalse(clock.add("2", listOf(100_000_000, 100_000_000, 1_700_000_100_000_000_000, 103_000_000),
+            13_000_000_000, 13_000_200_000))
+        val epoch = clock.currentEpoch()
+        assertTrue(epoch > oldEpoch)
+        assertEquals(1, clock.segment())
+        add(clock, 200_000_000, host = 13_100_000_000, boot = "2")
+        assertEquals(epoch, clock.currentEpoch()) // The first good read compares only with reads of the same boot.
+        val mapped = clock.video(250_000, 13_200_000_000)
+        assertEquals(250_050_000, mapped.elapsed)
+        // Placed by the host gap after the old boot's last read (13.0 s - 10.0002 s): ordering only.
+        assertEquals(250_050_000 + 2_999_800_000 - 101_500_000, mapped.sequence)
+        assertTrue(mapped.uncertainty < 20_000_000)
+        val old = clock.video(5_000_000, 13_200_000_000, oldEpoch)
+        assertEquals(5_000_050_000, old.elapsed)
+        assertNull(old.sequence)
+        assertEquals(Long.MAX_VALUE, old.uncertainty)
+        assertEquals(0, clock.video(5_000_000, 13_200_000_000, oldEpoch, 0).sequence)
+    }
 }
