@@ -81,9 +81,10 @@ class SingleMp4SaveTest {
         NIOUtils.readableChannel(output.directory.resolve("video-001.mp4").toFile()).use { input ->
             MP4Demuxer.createRawMP4Demuxer(input).use { demux ->
                 val track = demux.videoTrack as AbstractMP4DemuxerTrack
-                assertEquals(listOf(350_001L, 2_000_000L, 500_001L), track.edits.map { it.duration })
+                // The last image before a known gap stays on screen until the gap starts.
+                assertEquals(listOf(2_000_000L, 2_000_000L, 500_001L), track.edits.map { it.duration })
                 assertEquals(-1, track.edits[1].mediaTime)
-                assertEquals(2_850_002, demux.movie.duration)
+                assertEquals(4_500_001, demux.movie.duration)
             }
         }
         assertPackets(output, original, pixels, expectedEntries = 2)
