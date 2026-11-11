@@ -32,7 +32,10 @@ internal class TapOverlay(
 
     /** Whether any drawn tap is visible in [from]..[to]. */
     fun within(from: Long, to: Long): Boolean = tracks.any { track ->
-        track.any { val t = it.time.sequence!!; t <= to && t >= from - holdNs }
+        track.withIndex().any { (i, row) ->
+            val t = row.time.sequence!!
+            t <= to && (t >= from - holdNs || row.sample.action != TouchAction.UP && (track.getOrNull(i + 1)?.time?.sequence ?: Long.MAX_VALUE) >= from)
+        }
     }
 
     fun dots(sequence: Long, frameWidth: Int, frameHeight: Int, until: Long = sequence, generation: Long? = null): List<OverlayDot> = tracks.map { track ->

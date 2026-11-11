@@ -53,6 +53,23 @@ class InjectedTouchTest {
                       generation: Long = 1) =
         TouchEntry(TouchSample(mono, device, 0, action, x, y), generation, MappedTime(mono, 0, 0), mono, 1080, 2400, rotation)
 
+    @Test fun `a finger held from before the window is drawn while it stays down inside the window`() {
+        // The DOWN is before the window start (1 s) and is only the carried pointer state; the UP is inside.
+        val held = listOf(entry(500_000_000, TouchAction.DOWN, 540, 1200))
+        val rows = held + entry(1_500_000_000, TouchAction.UP, 540, 1200)
+        val overlay = TapOverlay(rows)
+        assertTrue(overlay.within(1_000_000_000, 2_000_000_000))
+        assertEquals(listOf(OverlayDot(270, 600)), overlay.dots(1_000_000_000, 540, 1200))
+        assertEquals(listOf(OverlayDot(270, 600)), overlay.dots(1_400_000_000, 540, 1200))
+        assertEquals(emptyList(), overlay.dots(1_700_000_000, 540, 1200))
+        // Still down with no row inside the window at all.
+        assertTrue(TapOverlay(held).within(1_000_000_000, 2_000_000_000))
+        assertEquals(listOf(OverlayDot(270, 600)), TapOverlay(held).dots(1_800_000_000, 540, 1200))
+        // A reader gap after it, or another generation, still stops it.
+        assertEquals(emptyList(), TapOverlay(held, gaps = listOf(TouchGap(800_000_000, 900_000_000, "切断"))).dots(1_000_000_000, 540, 1200))
+        assertEquals(emptyList(), TapOverlay(held).dots(1_000_000_000, 540, 1200, generation = 2))
+    }
+
     @Test fun `a still frame draws every tap the same pointer makes while it is shown`() {
         val taps = listOf(540 to 1200, 0 to 0, 1079 to 2399).flatMapIndexed { i, (x, y) ->
             val down = 1_000_000_000L + i * 500_000_000L

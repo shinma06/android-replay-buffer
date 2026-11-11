@@ -152,6 +152,36 @@ class TouchCaptureTest {
     }
 
     @Test
+    fun aFingerHeldFromBeforeTheWindowIsCarriedOnlyForTheOverlay() {
+        CaptureStore(root.resolve("ring"), minFree = 0).use { store ->
+            val host = System.nanoTime() + 1_000_000_000
+            store.generation(1)
+            sample(store, host, 1)
+            store.status("device_log", StreamState.CAPTURING, null, 1)
+            store.app("com.fixture.app", 10001, setOf(12), 1, true)
+            store.touchStatus(StreamState.CAPTURING, null, 1)
+            store.touch(TouchSample(1_000_000_000, "/dev/input/event2", 0, TouchAction.DOWN, 10, 20), 1080, 2400, 1, host)
+            store.touch(TouchSample(1_100_000_000, "/dev/input/event2", 0, TouchAction.MOVE, 30, 40), 1080, 2400, 1, host + 100_000_000)
+            store.touch(TouchSample(1_000_000_000, "/dev/input/event2", 1, TouchAction.DOWN, 5, 5), 1080, 2400, 1, host)
+            store.touch(TouchSample(1_200_000_000, "/dev/input/event2", 1, TouchAction.UP, 5, 5), 1080, 2400, 1, host + 200_000_000)
+            for (second in 2L..6L) sample(store, host, second)
+            // Retention pruning keeps pointer 0's last row because it is still down; pointer 1 lifted, so its rows go.
+            store.prune(1)
+            store.log(DeviceLog(1_700_000_006_500_000_000, 12, 12, 10001, 0, 4, "Fixture", "row", byteArrayOf(1)), 1, host + 5_500_000_000)
+            val pinned = assertNotNull(store.capture(ReplaySettings(replaySeconds = 1, tapDisplay = TapDisplay.VIDEO), null, host + 5_800_000_000))
+            assertTrue(pinned.touches.isEmpty())
+            val held = pinned.heldTouches.single()
+            assertEquals(TouchAction.MOVE, held.sample.action)
+            assertEquals(30, held.sample.x)
+            assertTrue(held.time.sequence!! < pinned.start)
+            val output = SaveWriter().write(pinned, root, { false }) { Files.move(it.partial, it.complete) }
+            // touches.jsonl stores only what happened inside the window.
+            assertTrue(!Files.exists(output.directory.resolve("touches.jsonl")) || Files.readAllLines(output.directory.resolve("touches.jsonl")).isEmpty())
+            store.release(pinned.id)
+        }
+    }
+
+    @Test
     fun anInjectedReaderInterruptionIsSavedAsItsOwnGap() {
         CaptureStore(root.resolve("ring"), minFree = 0).use { store ->
             val host = System.nanoTime() + 1_000_000_000

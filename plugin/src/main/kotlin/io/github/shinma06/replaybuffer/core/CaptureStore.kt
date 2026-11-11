@@ -51,6 +51,8 @@ internal data class FrozenCapture(
     /** Host receive time before which nothing can be in the window when the device clock mapping is unknown. */
     val hostStart: Long? = null,
     val touches: List<TouchEntry> = emptyList(),
+    /** Per pointer, its last row before the window start when that is DOWN/MOVE: only tells the video overlay it is still down; never in touches.jsonl. */
+    val heldTouches: List<TouchEntry> = emptyList(),
     /** Touch reader state at freeze; null when video (and therefore touch capture) was not requested. */
     val touchState: StreamSnapshot? = null,
     /** Injected-input (mirroring) reader state at freeze; null when video was not requested. */
@@ -178,6 +180,11 @@ internal class CaptureStore(
             audioConfig = null
         }
     }
+
+    /** Each pointer's latest row of the current generation while still down: kept past pruning so a held finger stays known. */
+    private fun heldTouchRows(): Set<TouchEntry> = touches.filter { it.generation == generation }
+        .groupBy { it.sample.device to it.sample.pointer }.values
+        .map { track -> track.maxBy { it.sample.monoNs } }.filter { it.sample.action != TouchAction.UP }.toSet()
 
     /** Touch samples exist only while video is requested; their time comes from the device input clock. */
     @Synchronized
@@ -623,7 +630,8 @@ internal class CaptureStore(
             }
             pruneLogs { _, _, host -> host < cutoff }
             pruneAudio { _, _, host -> host < cutoff }
-            touches.removeIf { it.host < cutoff }
+            val held = heldTouchRows()
+            touches.removeIf { it !in held && it.host < cutoff }
             enforceVideoLimit()
             deleteUnused()
             return
@@ -650,7 +658,9 @@ internal class CaptureStore(
         }
         pruneLogs(expiredBefore(cutoff, latest))
         pruneAudio(expiredBefore(cutoff, latest))
+        val held = heldTouchRows()
         touches.removeIf { row ->
+            if (row in held) return@removeIf false
             val point = row.time.sequence
             point != null && row.time.uncertainty != Long.MAX_VALUE && point < cutoff - row.time.uncertainty
         }
@@ -718,10 +728,15 @@ internal class CaptureStore(
             } catch (_: ArithmeticException) { true } // Overflow cannot prove that the record is outside.
         }
         val rows = logs.map { row -> row.copy(time = logTime(row.source.wall, row.host)) }.filter { insideWindow(it.time, it.host) }
-        val touchRows = if (!withVideo) emptyList() else {
+        var heldTouches = emptyList<TouchEntry>()
+        val touchRows = (if (!withVideo) emptyList() else {
             val touchTime = clock.monoMapper()
             touches.map { row -> row.copy(time = touchTime(row.sample.monoNs, row.host, row.time.epoch)) }
-                .filter { insideWindow(it.time, it.host) }
+        }).let { mapped ->
+            heldTouches = mapped.filter { it.time.sequence != null && it.time.uncertainty != Long.MAX_VALUE && it.time.sequence < start }
+                .groupBy { Triple(it.generation, it.sample.device, it.sample.pointer) }.values
+                .map { track -> track.maxBy { it.time.sequence!! } }.filter { it.sample.action != TouchAction.UP }
+            mapped.filter { insideWindow(it.time, it.host) }
         }
         val audioRows = if (!audioRequested || !withVideo) emptyList() else
             audio.map { it.mapped(clock.video(it.pts, it.host, it.time.epoch)) }.filter { insideWindow(it.time, it.host) }
@@ -745,7 +760,7 @@ internal class CaptureStore(
             settings.replaySeconds, frames.toList(), rows.toList(), gaps.filter { withVideo || it.stream != "video" }, clock.snapshot(), apps.toList(), settings,
             streams(settings.replaySeconds, end), endUncertainty = uncertainty, windowClockEpoch = fixedEpoch ?: clock.currentEpoch(),
             clockRecoveries = clockRecoveries.toMap(), videoCuts = videoCuts.toMap(), hostStart = hostStart,
-            touches = touchRows, touchState = touchState.takeIf { withVideo },
+            touches = touchRows, heldTouches = heldTouches, touchState = touchState.takeIf { withVideo },
             injectedTouchState = injectedTouchState.takeIf { withVideo }, touchGaps = if (!withVideo) emptyList() else touchGaps.toList() +
                 listOfNotNull(touchEvictedThrough?.takeIf { it >= start }?.let { TouchGap(null, it.takeIf { it != Long.MAX_VALUE }, "保持上限を超えた古いタップ位置を破棄しました") }),
             injectedTouchGaps = if (withVideo) injectedTouchGaps.toList() else emptyList(),

@@ -148,7 +148,7 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                 require(sps.isNotEmpty()) { "動画SPSがありません" }
                 H264Utils.getPicSize(boundedSps(sps.first()))
             }
-            val overlay = TapOverlay(overlayTouches(capture.settings.tapDisplay, capture.touchDots, capture.touches), capture.touchGaps, capture.injectedTouchGaps)
+            val overlay = TapOverlay(overlayTouches(capture.settings.tapDisplay, capture.touchDots, capture.heldTouches + capture.touches), capture.touchGaps, capture.injectedTouchGaps)
                 .takeIf { videoRequested && it.within(capture.start, capture.end) }
             var overlaySkipped: String? = null
             val normalizer = if (sizes.distinct().size > 1 || sizes.isNotEmpty() && overlay != null) {
