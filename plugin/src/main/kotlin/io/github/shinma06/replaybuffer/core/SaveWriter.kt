@@ -187,14 +187,9 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
             }
             // A video gap closed by a run's own frame ends at that frame's source time: it cannot interrupt that frame or later ones.
             /** For each capture gap, the index in [frames] of the frame that closed it, or null. */
-            fun closedAt(frames: List<VideoEntry>): List<Int?> {
-                val index = HashMap<Pair<Path, Long>, Int>(frames.size * 2)
-                frames.forEachIndexed { n, frame -> index.putIfAbsent(frame.file to frame.offset, n) }
-                return capture.gaps.map { gap ->
-                    if (gap.stream != "video") null
-                    else capture.videoCuts[gap]?.after?.let { cut -> index[cut.file to cut.offset] }
-                }
-            }
+            fun closedAt(frames: List<VideoEntry>): List<Int?> = firstIndexes(frames.map { it.file to it.offset }, capture.gaps.map { gap ->
+                if (gap.stream == "video") capture.videoCuts[gap]?.after?.let { cut -> cut.file to cut.offset } else null
+            })
             /** Whether a clock/video gap interrupts frames a→b, where b is frame [through] of the run [closed] was built for. */
             fun interrupted(a: VideoEntry, b: VideoEntry, closed: List<Int?>, through: Int): Boolean = videoScopes.withIndex().any { (i, gap) ->
                 (gap.stream == "clock" || gap.stream == "video") && closed[i].let { it == null || it > through } &&
@@ -716,6 +711,13 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
 }
 
 /** Playback proof is captured at acquisition; clock quality never authorizes source adjacency. */
+/** For each wanted key, the index of its first occurrence in [keys], or null; one pass over [keys], one lookup per key. */
+internal fun <K : Any> firstIndexes(keys: List<K>, wanted: List<K?>): List<Int?> {
+    val index = HashMap<K, Int>(keys.size * 2)
+    keys.forEachIndexed { n, key -> index.putIfAbsent(key, n) }
+    return wanted.map { key -> key?.let(index::get) }
+}
+
 internal fun VideoEntry.playbackContinuousTo(next: VideoEntry): Boolean {
     if (generation <= 0 || generation != next.generation || session <= 0 || session != next.session ||
         decodeRun <= 0 || decodeRun != next.decodeRun || packetOrdinal <= 0 || packetOrdinal == Long.MAX_VALUE ||

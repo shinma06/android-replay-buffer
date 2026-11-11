@@ -15,6 +15,8 @@ import kotlin.test.assertTrue
 
 /** Rotation: the same scrcpy connection reports a new screen size (session) and keeps streaming in one generation. */
 class RotationFollowTest {
+    private var hashes = 0
+
     private fun encode(encoder: H264Encoder, width: Int, height: Int, fill: Int): Pair<ByteArray, ByteArray> {
         val encoded = encoder.encodeFrame(Picture.create(width, height, ColorSpace.YUV420J).apply { fill(fill) },
             ByteBuffer.allocate(65536)).data
@@ -90,10 +92,25 @@ class RotationFollowTest {
     }
 
     @Test
-    fun `a long run before a new video session is checked in linear time and keeps every part aligned`() {
+    fun `cut lookup finds each closing frame once in one pass over the run`() {
+        class Key(val id: Int) {
+            override fun equals(other: Any?) = other is Key && other.id == id
+            override fun hashCode() = id.also { hashes++ }
+        }
+        val run = listOf(5, 6, 7, 6, 8).map(::Key)
+        // A cut closed by a later run is absent; a non-video gap has no cut; a repeated frame counts at its first index.
+        val wanted = listOf(Key(7), null, Key(9), Key(6), Key(5))
+        hashes = 0
+        assertEquals(listOf(2, null, null, 1, 0), firstIndexes(run, wanted))
+        // Each frame is hashed once to build the index and each cut once to look it up: no per-frame prefix scan.
+        assertEquals(run.size + wanted.count { it != null }, hashes)
+    }
+
+    @Test
+    fun `a long run before a new video session keeps every part aligned`() {
         val root = Files.createTempDirectory("replay-rotation-long-")
         val store = CaptureStore(root.resolve("ring"), minFree = 0)
-        val frames = 50_000
+        val frames = 10_000
         val spacing = 2_000_000L
         val span = frames * spacing
         val base = System.nanoTime() - span - 100_000_000
@@ -109,7 +126,7 @@ class RotationFollowTest {
             store.frame(VideoPacket.Frame(0, true, false, config), 1)
             for (n in 0 until frames) {
                 val t = n * spacing
-                // Writing 50,000 frames takes real time: keep anchoring on the real host clock so no anchor gap opens.
+                // Writing many frames takes real time: keep anchoring on the real host clock so no anchor gap opens.
                 if (n % 500 == 0) System.nanoTime().let { host -> anchor(10_000_000_000 + (host - base), host) }
                 assertTrue(store.frame(VideoPacket.Frame((10_000_000_000 + t) / 1000, false, n == 0, if (n == 0) key else delta), 1, base + t))
             }
@@ -129,15 +146,11 @@ class RotationFollowTest {
             anchor(10_000_000_000 + (now - base), now)
             val capture = store.capture(ReplaySettings(replaySeconds = 180), host = now)!!
             assertEquals(frames + 3, capture.video.size)
-            val started = System.nanoTime()
             val output = SaveWriter().write(capture, root, { false }) { publication -> Files.move(publication.partial, publication.complete) }
-            val took = (System.nanoTime() - started) / 1_000_000
             val parts = JsonParser.parseString(Files.readString(output.directory.resolve("session.json"))).asJsonObject
                 .getAsJsonArray("parts").map { it.asJsonObject }
             assertEquals(2, parts.size)
             assertTrue(parts.all { it["clock_alignment_known"].asBoolean }, parts.toString())
-            // The former per-frame prefix scan made this save take about 45 s; the linear check takes about 1 s.
-            assertTrue(took < 20_000, "save took ${took}ms")
             store.release(capture.id)
         } finally {
             store.close()
