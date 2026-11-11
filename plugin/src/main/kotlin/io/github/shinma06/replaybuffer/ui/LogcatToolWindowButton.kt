@@ -50,6 +50,9 @@ internal class LogcatToolWindowButton(
     /** The selection bridge failed to link on this IDE; later opens skip it for this content's lifetime. */
     private var selectionBroken = false
 
+    /** A failed selection is kept in the tooltip; the ToolWindow shows it under the button too. */
+    internal val failed: Boolean get() = failure != null
+
     init {
         addActionListener {
             if (pending != null) {
