@@ -164,7 +164,6 @@ internal class DeviceCapture @JvmOverloads constructor(
         var monitor: VideoReadMonitor? = null
         var audioSocket: Socket? = null
         var audioReader: Thread? = null
-        val videoEnded = AtomicBoolean()
         try {
             socket = connectVideo(port.toInt(), server, stopping, sockets)
             socket.soTimeout = 0
@@ -173,7 +172,7 @@ internal class DeviceCapture @JvmOverloads constructor(
                 audioSocket = Socket().also { sockets.add(it) }
                 audioSocket.connect(InetSocketAddress(InetAddress.getLoopbackAddress(), port.toInt()), 5000)
                 val connected = audioSocket
-                audioReader = thread(name = "replay-audio", isDaemon = true) { readAudioStream(connected, videoEnded) }
+                audioReader = thread(name = "replay-audio", isDaemon = true) { readAudioStream(connected) }
             }
             monitor = VideoReadMonitor(socket, server, timer)
             val input = DataInputStream(socket.getInputStream())
@@ -188,7 +187,6 @@ internal class DeviceCapture @JvmOverloads constructor(
                 if (ready) monitor.received(true) else monitor.awaitFirstFrame()
             }
         } finally {
-            videoEnded.set(true)
             monitor?.close()
             socket?.close()
             socket?.let { sockets.remove(it) }
@@ -200,7 +198,12 @@ internal class DeviceCapture @JvmOverloads constructor(
         }
     }
 
-    private fun readAudioStream(socket: Socket, videoEnded: AtomicBoolean) {
+    /**
+     * A stream that ends mid-capture is never latched: a server exit closes the audio and video sockets in either
+     * order, so the audio state must not depend on which reader notices first. Audio stays off until the next
+     * video server, which requests audio again; only the server's own refusal or error disables it for the generation.
+     */
+    private fun readAudioStream(socket: Socket) {
         store.audioSession(generation)
         try {
             val input = DataInputStream(socket.getInputStream())
@@ -215,9 +218,7 @@ internal class DeviceCapture @JvmOverloads constructor(
                 store.audio(packet, generation)
             }
         } catch (failure: Exception) {
-            // Only a failure seen while video still runs is the audio's own; otherwise the video recovery restarts both.
-            if (!stopping.get() && !videoEnded.get()) stopAudio("音声の取得が中断しました（以降は動画のみ記録しています）")
-            else if (!stopping.get()) store.audioStatus(StreamState.RECOVERING, "動画とともに音声の取得を復旧しています", generation)
+            if (!stopping.get()) store.audioStatus(StreamState.RECOVERING, AUDIO_INTERRUPTED, generation)
         }
     }
 
@@ -477,6 +478,8 @@ internal class RecoveryDelay {
 }
 
 /** A forwarded TCP accept may precede the remote abstract socket's bind. Keep the same server alive. */
+internal const val AUDIO_INTERRUPTED = "音声の取得が中断しました（次の動画の再接続で再開します。それまでは動画のみ記録しています）"
+
 internal fun connectVideo(port: Int, server: Process, stopping: AtomicBoolean, sockets: MutableSet<Socket>,
                           timeoutMillis: Long = 10_000): Socket {
     val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMillis)
