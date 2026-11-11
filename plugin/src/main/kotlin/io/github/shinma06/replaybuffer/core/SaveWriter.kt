@@ -186,10 +186,18 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                 }
             }
             // A video gap closed by a run's own frame ends at that frame's source time: it cannot interrupt that frame or later ones.
-            fun endedBy(gap: CaptureGap, frames: List<VideoEntry>): Boolean = gap.stream == "video" &&
-                capture.videoCuts[gap]?.after?.let { cut -> frames.any { it.file == cut.file && it.offset == cut.offset } } == true
-            fun interrupted(a: VideoEntry, b: VideoEntry, through: List<VideoEntry>): Boolean = videoScopes.withIndex().any { (i, gap) ->
-                (gap.stream == "clock" || gap.stream == "video") && !endedBy(capture.gaps[i], through) &&
+            /** For each capture gap, the index in [frames] of the frame that closed it, or null. */
+            fun closedAt(frames: List<VideoEntry>): List<Int?> {
+                val index = HashMap<Pair<Path, Long>, Int>(frames.size * 2)
+                frames.forEachIndexed { n, frame -> index.putIfAbsent(frame.file to frame.offset, n) }
+                return capture.gaps.map { gap ->
+                    if (gap.stream != "video") null
+                    else capture.videoCuts[gap]?.after?.let { cut -> index[cut.file to cut.offset] }
+                }
+            }
+            /** Whether a clock/video gap interrupts frames a→b, where b is frame [through] of the run [closed] was built for. */
+            fun interrupted(a: VideoEntry, b: VideoEntry, closed: List<Int?>, through: Int): Boolean = videoScopes.withIndex().any { (i, gap) ->
+                (gap.stream == "clock" || gap.stream == "video") && closed[i].let { it == null || it > through } &&
                     gap.intersects(a.time.sequence, b.time.sequence!!, maxOf(a.time.uncertainty, b.time.uncertainty))
             }
             /** Video gaps of one generation between two aligned runs, or null unless every boundary is known. */
@@ -230,6 +238,7 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                                 val visibleIndex = group.indices.first { visible(group, it) }
                                 val keyIndex = ranges[runIndex].first
                                 val samples = group.subList(keyIndex, ranges[runIndex].last + 1)
+                                val closed = closedAt(samples)
                                 val first = group[visibleIndex]
                                 val last = samples.last()
                                 val origin = samples.first().pts
@@ -382,7 +391,7 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                                     val sequence = frame.time.sequence
                                     val next = samples.getOrNull(n + 1)
                                     val confirmedEnd = if (known && next != null && aligned(next) && next.time.epoch == frame.time.epoch &&
-                                        next.time.sequence!! > sequence!! && !interrupted(frame, next, samples.subList(0, n + 1)))
+                                        next.time.sequence!! > sequence!! && !interrupted(frame, next, closed, n))
                                         minOf(capture.end, next.time.sequence) else null
                                     val displayWindowStart = sequence?.takeIf { known && presented }?.let {
                                         Math.addExact(it, Math.multiplyExact(sourceDisplayOffset, 1000)) - capture.start
@@ -428,7 +437,7 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                                 val alignmentKnown = displayed.all(::aligned) && displayed.indices.drop(1).all { k ->
                                     val a = displayed[k - 1]
                                     val b = displayed[k]
-                                    a.time.epoch == b.time.epoch && !interrupted(a, b, samples.subList(0, visibleIndex - keyIndex + k))
+                                    a.time.epoch == b.time.epoch && !interrupted(a, b, closed, visibleIndex - keyIndex + k - 1)
                                 }
                                 parts += mapOf("file" to videoName, "segment_index" to runIndex,
                                     "clock_epoch" to samples.map { it.time.epoch }.distinct().singleOrNull(),

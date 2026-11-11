@@ -88,4 +88,60 @@ class RotationFollowTest {
             Files.walk(root).use { paths -> paths.sorted(java.util.Comparator.reverseOrder()).forEach { Files.deleteIfExists(it) } }
         }
     }
+
+    @Test
+    fun `a long run before a new video session is checked in linear time and keeps every part aligned`() {
+        val root = Files.createTempDirectory("replay-rotation-long-")
+        val store = CaptureStore(root.resolve("ring"), minFree = 0)
+        val frames = 50_000
+        val spacing = 2_000_000L
+        val span = frames * spacing
+        val base = System.nanoTime() - span - 100_000_000
+        fun anchor(elapsed: Long, host: Long) =
+            store.clock.add("1", listOf(elapsed, elapsed, 1_700_000_000_000_000_000 + elapsed, elapsed), host, host)
+        try {
+            store.generation(1)
+            for (t in 0L..span step 1_000_000_000L) anchor(10_000_000_000 + t, base + t)
+            val encoder = H264Encoder.createH264Encoder().apply { setKeyInterval(100) }
+            val (key, config) = encode(encoder, 16, 16, 20)
+            val (delta, _) = encode(encoder, 16, 16, 21)
+            store.session(VideoPacket.Session(16, 16), 1)
+            store.frame(VideoPacket.Frame(0, true, false, config), 1)
+            for (n in 0 until frames) {
+                val t = n * spacing
+                // Writing 50,000 frames takes real time: keep anchoring on the real host clock so no anchor gap opens.
+                if (n % 500 == 0) System.nanoTime().let { host -> anchor(10_000_000_000 + (host - base), host) }
+                assertTrue(store.frame(VideoPacket.Frame((10_000_000_000 + t) / 1000, false, n == 0, if (n == 0) key else delta), 1, base + t))
+            }
+            anchor(10_000_000_000 + (System.nanoTime() - base), System.nanoTime())
+            val offset = store.clock.video(10_000_000, System.nanoTime()).sequence!! - 10_000_000_000
+            store.session(VideoPacket.Session(16, 16), 1)
+            val firstPts = (assertNotNull(store.clock.now()) + 20_000_000 - offset) / 1000
+            Thread.sleep(80)
+            val landscape = H264Encoder.createH264Encoder().apply { setKeyInterval(100) }
+            for (n in 0..2) {
+                val (bytes, landscapeConfig) = encode(landscape, 16, 16, 120 + n)
+                if (n == 0) store.frame(VideoPacket.Frame(0, true, false, landscapeConfig), 1)
+                assertTrue(store.frame(VideoPacket.Frame(firstPts + n * 10_000L, false, n == 0, bytes), 1))
+            }
+            Thread.sleep(50)
+            val now = System.nanoTime()
+            anchor(10_000_000_000 + (now - base), now)
+            val capture = store.capture(ReplaySettings(replaySeconds = 180), host = now)!!
+            assertEquals(frames + 3, capture.video.size)
+            val started = System.nanoTime()
+            val output = SaveWriter().write(capture, root, { false }) { publication -> Files.move(publication.partial, publication.complete) }
+            val took = (System.nanoTime() - started) / 1_000_000
+            val parts = JsonParser.parseString(Files.readString(output.directory.resolve("session.json"))).asJsonObject
+                .getAsJsonArray("parts").map { it.asJsonObject }
+            assertEquals(2, parts.size)
+            assertTrue(parts.all { it["clock_alignment_known"].asBoolean }, parts.toString())
+            // The former per-frame prefix scan made this save take about 45 s; the linear check takes about 1 s.
+            assertTrue(took < 20_000, "save took ${took}ms")
+            store.release(capture.id)
+        } finally {
+            store.close()
+            Files.walk(root).use { paths -> paths.sorted(java.util.Comparator.reverseOrder()).forEach { Files.deleteIfExists(it) } }
+        }
+    }
 }
