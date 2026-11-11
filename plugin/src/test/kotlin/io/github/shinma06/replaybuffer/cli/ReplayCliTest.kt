@@ -251,6 +251,8 @@ class ReplayCliTest {
             release.countDown()
             server.close()
             client.join(5000)
+            // The registry file is removed by the server's own shutdown; Windows cannot delete the folder while it is open.
+            server.termination.get(5, TimeUnit.SECONDS)
         }
     }
 
