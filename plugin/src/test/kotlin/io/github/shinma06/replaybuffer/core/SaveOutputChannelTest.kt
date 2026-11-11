@@ -6,6 +6,8 @@ import java.nio.ByteBuffer
 import java.nio.channels.Channels
 import java.nio.channels.ClosedByInterruptException
 import java.nio.channels.ClosedChannelException
+import java.nio.channels.ReadableByteChannel
+import java.nio.channels.WritableByteChannel
 import java.nio.file.Files
 import java.nio.file.Path
 import java.security.MessageDigest
@@ -17,6 +19,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import org.junit.jupiter.api.condition.EnabledOnOs
+import org.junit.jupiter.api.Timeout
 import org.junit.jupiter.api.condition.OS
 
 class SaveOutputChannelTest {
@@ -94,6 +97,43 @@ class SaveOutputChannelTest {
                     assertFalse(interrupted.isOpen)
                 }
                 assertEquals("hXYZoabcd", Files.readString(root.resolve("out")))
+            }
+        }
+    }
+
+    /** Like a non-blocking socket: accepts [limit] bytes, then makes no progress. */
+    private class Stalling(private val limit: Int) : WritableByteChannel, ReadableByteChannel {
+        val written = ByteArrayOutputStream()
+        private var read = 0
+        override fun write(src: ByteBuffer): Int {
+            val count = minOf(src.remaining(), limit - written.size())
+            repeat(count) { written.write(src.get().toInt()) }
+            return count
+        }
+        override fun read(dst: ByteBuffer): Int {
+            val count = minOf(dst.remaining(), limit - read)
+            repeat(count) { dst.put(('a'.code + read++ % 26).toByte()) }
+            return count
+        }
+        override fun isOpen() = true
+        override fun close() {}
+    }
+
+    @Test
+    @Timeout(30)
+    fun transfersStopWhenTheOtherChannelMakesNoProgress() {
+        SaveOutputDirectory.open(root).use { directory ->
+            directory.createFile("out").use { output ->
+                output.channel().use { channel ->
+                    channel.write(bytes("hello world"))
+                    val target = Stalling(3)
+                    assertEquals(3, channel.transferTo(0, 11, target))
+                    assertEquals("hel", target.written.toString())
+                    assertEquals(2, channel.transferFrom(Stalling(2), 11, 10))
+                    assertEquals(13, channel.size())
+                    assertEquals(11, channel.position())
+                }
+                assertEquals("hello worldab", Files.readString(root.resolve("out")))
             }
         }
     }

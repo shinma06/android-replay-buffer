@@ -379,6 +379,7 @@ private class HandleChannel(private val nt: NtFiles, private var handle: Long, p
             var total = 0L
             for (index in offset until offset + length) while (srcs[index].hasRemaining()) {
                 val done = transfer(file, srcs[index], position, true)
+                if (done == 0) return@io total
                 position += done; total += done
             }
             total
@@ -423,7 +424,11 @@ private class HandleChannel(private val nt: NtFiles, private var handle: Long, p
             buffer.clear().limit(minOf(CHUNK.toLong(), count - total).toInt())
             if (read(buffer, position + total) <= 0) break
             buffer.flip()
-            while (buffer.hasRemaining()) total += target.write(buffer)
+            while (buffer.hasRemaining()) {
+                val written = target.write(buffer)
+                if (written <= 0) return total
+                total += written
+            }
         }
         return total
     }
@@ -436,7 +441,11 @@ private class HandleChannel(private val nt: NtFiles, private var handle: Long, p
             buffer.clear().limit(minOf(CHUNK.toLong(), count - total).toInt())
             if (src.read(buffer) <= 0) break
             buffer.flip()
-            while (buffer.hasRemaining()) total += write(buffer, position + total)
+            while (buffer.hasRemaining()) {
+                val written = write(buffer, position + total)
+                if (written <= 0) return total
+                total += written
+            }
         }
         return total
     }
