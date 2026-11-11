@@ -58,8 +58,9 @@ internal data class FrozenCapture(
     /** Whether the visible dots were on during this generation; null before the touch reader decided. */
     val touchDots: TouchDots? = null,
     val audio: List<AudioEntry> = emptyList(),
-    /** Audio state at freeze; null when audio was not requested (setting OFF or LOG_ONLY). */
+    /** Audio state at freeze; null when audio was not requested (setting OFF or LOG_ONLY) or the save excludes video. */
     val audioState: StreamSnapshot? = null,
+    val request: SaveRequest = SaveRequest(),
 ) {
     val empty: Boolean get() = video.isEmpty() && logs.isEmpty()
     val windowKnown: Boolean get() = endUncertainty != Long.MAX_VALUE
@@ -122,6 +123,8 @@ internal class CaptureStore(
     private var configBytes = 0L
     private val configRefs = java.util.IdentityHashMap<ByteArray, Int>()
     private var started: Long? = null
+    /** When validated readers, clock and target first proved a quiet window; only a save without video starts there. */
+    private var logsStarted: Long? = null
     private var fixedEnd: Long? = null
     private var fixedUncertainty: Long? = null
     private var fixedEpoch: Int? = null
@@ -282,6 +285,7 @@ internal class CaptureStore(
         if (kind == "device_log" && state == StreamState.CAPTURING && appResolved)
             status("app_log", StreamState.CAPTURING, null, owner)
         if (started == null && logWindowReady()) started = clock.now()
+        if (logsStarted == null && logWindowReady(true)) logsStarted = clock.now()
     }
 
     @Synchronized
@@ -627,13 +631,16 @@ internal class CaptureStore(
 
     /** Null/no admissible content or AutoSaveRejected creates no new pin; an existing pin rejects another capture. */
     @Synchronized
-    fun capture(settings: ReplaySettings, trigger: CrashPair? = null, host: Long = System.nanoTime()): FrozenCapture? = synchronized(clock) {
+    fun capture(settings: ReplaySettings, trigger: CrashPair? = null, host: Long = System.nanoTime(),
+                request: SaveRequest = SaveRequest()): FrozenCapture? = synchronized(clock) {
         check(pinned == null) { "保存対象は既に固定されています" }
         require(settings.captureMode == captureMode) { "取得中のモードと保存設定が一致しません" }
+        // A logs-only save neither reads nor pins video, so the running video ring keeps rotating untouched.
+        val withVideo = captureMode.videoRequested && !request.excludesVideo(captureMode)
         val end = fixedEnd ?: clock.now(host) ?: latest() ?: return null
         val uncertainty = fixedUncertainty ?: clock.endUncertainty(host)
         val known = uncertainty != Long.MAX_VALUE
-        val start = maxOf(0L, started ?: end, end - settings.replaySeconds * 1_000_000_000L)
+        val start = maxOf(0L, origin(!withVideo) ?: end, end - settings.replaySeconds * 1_000_000_000L)
         val hostStart = if (known || fixedEnd != null) null else host - settings.replaySeconds * 1_000_000_000L - HOST_WINDOW_MARGIN_NS
         val logTime = clock.logMapper()
         val latest = clock.latestSequence()
@@ -656,14 +663,14 @@ internal class CaptureStore(
             } catch (_: ArithmeticException) { true } // Overflow cannot prove that the record is outside.
         }
         val rows = logs.map { row -> row.copy(time = logTime(row.source.wall, row.host)) }.filter { insideWindow(it.time, it.host) }
-        val touchRows = if (!captureMode.videoRequested) emptyList() else {
+        val touchRows = if (!withVideo) emptyList() else {
             val touchTime = clock.monoMapper()
             touches.map { row -> row.copy(time = touchTime(row.sample.monoNs, row.host, row.time.epoch)) }
                 .filter { insideWindow(it.time, it.host) }
         }
-        val audioRows = if (!audioRequested) emptyList() else
+        val audioRows = if (!audioRequested || !withVideo) emptyList() else
             audio.map { it.mapped(clock.video(it.pts, it.host, it.time.epoch)) }.filter { insideWindow(it.time, it.host) }
-        val all = if (captureMode.videoRequested) video.toList() else emptyList()
+        val all = if (withVideo) video.toList() else emptyList()
         val files = mutableSetOf<Path>()
         all.forEachIndexed { index, entry ->
             val unknownTime = entry.time.sequence == null || entry.time.uncertainty == Long.MAX_VALUE
@@ -680,19 +687,19 @@ internal class CaptureStore(
             frame.copy(time = clock.video(frame.pts, frame.host, frame.time.epoch))
         }
         var value = FrozenCapture(UUID.randomUUID().toString(), sequence, generation, start, end,
-            settings.replaySeconds, frames.toList(), rows.toList(), gaps.toList(), clock.snapshot(), apps.toList(), settings,
+            settings.replaySeconds, frames.toList(), rows.toList(), gaps.filter { withVideo || it.stream != "video" }, clock.snapshot(), apps.toList(), settings,
             streams(settings.replaySeconds, end), endUncertainty = uncertainty, windowClockEpoch = fixedEpoch ?: clock.currentEpoch(),
             clockRecoveries = clockRecoveries.toMap(), videoCuts = videoCuts.toMap(), hostStart = hostStart,
-            touches = touchRows, touchState = touchState.takeIf { captureMode.videoRequested }, touchGaps = touchGaps.toList() +
+            touches = touchRows, touchState = touchState.takeIf { withVideo }, touchGaps = if (!withVideo) emptyList() else touchGaps.toList() +
                 listOfNotNull(touchEvictedThrough?.takeIf { it >= start }?.let { TouchGap(null, it.takeIf { it != Long.MAX_VALUE }, "保持上限を超えた古いタップ位置を破棄しました") }),
-            touchDropped = touchDropped, touchDots = touchDots.takeIf { captureMode.videoRequested },
-            audio = audioRows, audioState = audioState.takeIf { audioRequested })
+            touchDropped = if (withVideo) touchDropped else 0, touchDots = touchDots.takeIf { withVideo }, request = request,
+            audio = audioRows, audioState = audioState.takeIf { audioRequested && withVideo })
         if (trigger != null) {
             autosave.admissionProblem(trigger, host)?.let { throw AutoSaveRejected(it) }
             if (fixedEnd != null || !clock.certain(host)) throw AutoSaveRejected(AutoSaveReason.NOT_SAVED_CLOCK_UNKNOWN)
             value = value.copy(autoTrigger = frozenAutoTrigger(trigger, value, logTime, host))
         }
-        if (value.empty && (trigger != null || !(logWindowReady() && start < end))) return null
+        if (value.empty && (trigger != null || !(logWindowReady(!withVideo) && start < end))) return null
         pinned = value
         pinnedFiles = value.video.map { it.file }.toSet()
         return value
@@ -743,12 +750,22 @@ internal class CaptureStore(
     }
 
     @Synchronized
-    fun hasData(): Boolean = (captureMode.videoRequested && video.isNotEmpty()) || logs.isNotEmpty() ||
-        (logWindowReady() && started?.let { it < (end() ?: it) } == true)
+    fun hasData(content: SaveContent = SaveContent.ALL): Boolean {
+        val logsOnly = !captureMode.videoRequested || content == SaveContent.LOGS_ONLY
+        return (!logsOnly && video.isNotEmpty()) || logs.isNotEmpty() ||
+            (logWindowReady(logsOnly) && origin(logsOnly)?.let { it < (end() ?: it) } == true)
+    }
 
-    /** A validated reader, current clock and target prove a quiet window, never row-span coverage. */
-    private fun logWindowReady(): Boolean = synchronized(clock) {
-        captureMode == CaptureMode.LOG_ONLY && !closed && fixedEnd == null &&
+    /** A save without video may also begin where the quiet log window became valid; saves with video keep the first content. */
+    private fun origin(logsOnly: Boolean): Long? =
+        if (logsOnly) listOfNotNull(started, logsStarted).minOrNull() else started
+
+    /**
+     * A validated reader, current clock and target prove a quiet window, never row-span coverage.
+     * Only a save without video (LOG_ONLY mode or a logs-only request) may consist of a quiet log window.
+     */
+    private fun logWindowReady(logsOnly: Boolean = !captureMode.videoRequested): Boolean = synchronized(clock) {
+        logsOnly && !closed && fixedEnd == null &&
             clock.snapshot().lastOrNull() !== generationClockSample && clock.certain() &&
             gaps.none { it.stream == "clock" && it.toNs == null } &&
             listOf("device_log", "app_log").all { states.getValue(it).let { state ->

@@ -8,6 +8,7 @@ import io.github.shinma06.replaybuffer.core.ReplaySnapshot
 import io.github.shinma06.replaybuffer.core.ReplaySettings as CoreSettings
 import io.github.shinma06.replaybuffer.core.SAVE_IN_PROGRESS_REASON
 import io.github.shinma06.replaybuffer.core.SavePhase
+import io.github.shinma06.replaybuffer.core.SaveRequest
 import io.github.shinma06.replaybuffer.core.SaveSnapshot
 import io.github.shinma06.replaybuffer.settings.AppSelectionMode
 import io.github.shinma06.replaybuffer.settings.ReplaySettings
@@ -192,7 +193,7 @@ internal class ReplayProjectCapture(
 
     private fun obsoleteSettings() = ReplayOperation(false, "新しい設定の解決が開始されたため、旧設定の反映を取り消しました。")
 
-    fun save(): CompletableFuture<ReplayOperation> = submit { it.save().await() }
+    fun save(request: SaveRequest = SaveRequest()): CompletableFuture<ReplayOperation> = submit { it.save(request).await() }
     fun retry(id: String): CompletableFuture<ReplayOperation> = submit { it.retry(id).await() }
     fun retryAtDirectory(id: String, directory: Path): CompletableFuture<ReplayOperation> = submit { engine ->
         ReplaySettings(destination = directory.toString()).validationError()?.let { return@submit ReplayOperation(false, it) }

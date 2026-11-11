@@ -30,11 +30,14 @@ class ReplayCliTest {
             assertEquals(command.uppercase(), parseCliArguments(listOf("--project", "a project", command)).command?.name)
         }
         assertEquals(CliArguments(null, Path.of("a project")), parseCliArguments(listOf("--project=a project", "mcp")))
+        assertEquals(CliCommand.SAVE_LOGS, parseCliArguments(listOf("save", "--logs-only")).command)
+        assertEquals(CliArguments(CliCommand.SAVE_LOGS, Path.of("p")), parseCliArguments(listOf("--logs-only", "--project", "p", "save")))
         assertEquals(CliArguments(CliCommand.CONFIGURE, Path.of("p"), """{"replay_seconds":60,"auto_save_on_crash":true,"output_directory":"/a b=c"}"""),
             parseCliArguments(listOf("settings", "set", "replay_seconds=60", "--project", "p", "auto_save_on_crash=true", "output_directory=/a b=c")))
         for (args in listOf(emptyList(), listOf("daemon"), listOf("save", "stop"), listOf("--project"), listOf("--config", "x", "save"),
             listOf("start", "--foreground"), listOf("--daemon"), listOf("--project", "x", "--project", "y", "save"), listOf("--project", "", "stop"),
-            listOf("mcp", "status"), listOf("status", "mcp"), listOf("status", "set"), listOf("settings", "get"), listOf("settings", "set"),
+            listOf("mcp", "status"), listOf("status", "mcp"), listOf("--logs-only"), listOf("status", "--logs-only"), listOf("mcp", "--logs-only"),
+            listOf("save", "--logs-only", "--logs-only"), listOf("settings", "--logs-only"), listOf("status", "set"), listOf("settings", "get"), listOf("settings", "set"),
             listOf("settings", "set", "replay_seconds"), listOf("settings", "set", "=60"), listOf("settings", "set", "a=1", "a=2"),
             listOf("settings", "set", "output_directory=" + "a".repeat(ReplayCliProtocol.MAX_CONFIG_BYTES)))) {
             assertFailsWith<IllegalArgumentException>(args.toString()) { parseCliArguments(args) }

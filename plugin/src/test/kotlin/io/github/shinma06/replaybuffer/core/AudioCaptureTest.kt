@@ -157,6 +157,34 @@ class AudioCaptureTest {
         }
     }
 
+    @Test
+    fun logsOnlySaveExcludesAudioEvenWhenRecorded() {
+        CaptureStore(root.resolve("ring-logs"), minFree = 0, audioRequested = true).use { store ->
+            val host = System.nanoTime() + 1_000_000_000
+            store.generation(1)
+            sample(store, host, 1)
+            store.status("device_log", StreamState.CAPTURING, null, 1)
+            store.audioSession(1)
+            store.audio(AudioPacket(0, true, config), 1)
+            for (i in 0 until 20) store.audio(AudioPacket(1_000_000 + i * 21_333L, false, byteArrayOf(1)), 1, host + i * 21_333_000L)
+            store.log(DeviceLog(1_700_000_001_100_000_000, 12, 12, 10001, 0, 4, "Fixture", "row", byteArrayOf(1)), 1, host + 100_000_000)
+            sample(store, host, 2)
+            val pinned = assertNotNull(store.capture(ReplaySettings(recordAudio = true), null, host + 1_000_000_000,
+                request = SaveRequest(SaveContent.LOGS_ONLY, SaveOrigin.LOGCAT_TOOLBAR)))
+            assertTrue(pinned.audio.isEmpty())
+            assertNull(pinned.audioState)
+            val output = SaveWriter().write(pinned, root, { false }) { Files.move(it.partial, it.complete) }
+            val json = JsonParser.parseString(Files.readString(output.directory.resolve("session.json"))).asJsonObject
+            val audio = json["coverage"].asJsonObject["audio"].asJsonObject
+            assertEquals("EXCLUDED", audio["state"].asString)
+            assertEquals(false, audio["requested"].asBoolean)
+            assertTrue(audio["excluded"].asBoolean)
+            assertTrue(json["audio_track"].isJsonNull)
+            assertTrue(Files.notExists(output.directory.resolve("video-001.mp4")))
+            store.release(pinned.id)
+        }
+    }
+
     private fun entry(sequence: Long) = AudioEntry(sequence / 1000, byteArrayOf(1), config, MappedTime(sequence, 1, 0, sequence), 1, 1, 0)
 
     private fun sample(store: CaptureStore, host: Long, second: Long) {

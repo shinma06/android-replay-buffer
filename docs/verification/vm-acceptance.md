@@ -33,6 +33,7 @@
 | Logcat | ToolWindowの「Logcatを開く／閉じる」 | Logcatのタブを全部閉じた後でも開け、表示名が実際の開閉に追従する |
 | Logcat（端末指定できないビルド） | 確認済みビルド以外のStudio、または単体テスト `LogcatToolWindowButtonTest` で未確認ビルドを模す | 対象端末を選ばずに標準Logcatを開閉でき、tooltip・accessible descriptionが「対象端末に合わせられないため、IDEで選択中の端末のログが表示される」ことを示す。確認済みビルドでは従来どおり対象端末に合わせる |
 | Running Devices | 上部の「取得ON/OFF」「直前N秒を保存」「スクリーンショット」 | ToolWindowと同じ結果になる |
+| Logcat | 動画＋ログで取得中に、Logcatヘッダー（または右クリック）の「直前N秒のログを保存」 | 完成フォルダに両ログと`session.json`があり、MP4がない。`coverage.video.state`が`EXCLUDED`、`save_request.origin`が`LOGCAT_TOOLBAR`。保存後も動画の取得が続く（続けて通常保存するとMP4ができる） |
 | タップ位置 | 取得中に `adb shell input tap` | 保存した `touches.jsonl` にその座標が入る。「タップを表示」ONなら動画に点が写る |
 | クラッシュ時の自動保存 | 設定ONで取得中に `adb shell am crash <対象package>` | 保存フォルダが1つ増え、`session.json` の `auto_trigger.kind` が `platform_reported_uncaught_exception`。別アプリのクラッシュでは増えない |
 | 端末の再生音 | `settings set record_audio=true`で取得し、1秒ごとに画面の白表示とbeepを同時に出すアプリを動かして保存 | `ffprobe`でAAC trackがあり、`session.json`の`coverage.audio`が`CAPTURING`。白表示からbeep開始までの差を記録する（emulatorの測定値は中央値約0.1秒）。`record_audio=false`ではAAC trackがなく`coverage.audio.requested=false` |
