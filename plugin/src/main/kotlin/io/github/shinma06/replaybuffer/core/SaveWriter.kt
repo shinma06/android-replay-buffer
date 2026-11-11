@@ -793,6 +793,7 @@ internal fun List<MovieAnchor>.movieTime(point: Long): Long? {
 
 internal const val AAC_FRAME_SAMPLES = 1024L
 private const val AUDIO_JOIN_TOLERANCE_US = 20_000L
+private const val SPAN_JOIN_TOLERANCE_US = 1_000L
 private val AAC_RATES = intArrayOf(96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350)
 
 internal class AudioSegment(val movieStartUs: Long, val mediaStart: Long, val count: Int, val durationUs: Long)
@@ -817,7 +818,9 @@ internal fun aacConfig(config: ByteArray): Pair<Int, Int>? {
 /**
  * Places each AAC unit at the movie time of the video frame shown at its device time ([movieTime]); units that no
  * presented frame covers are left out, so audio never runs over video holes. Consecutive units within 20 ms of
- * their nominal cadence share one edit; a larger drift, gap or server session starts a new edit.
+ * their nominal cadence share one edit; a larger drift, gap or server session starts a new edit. An edit never
+ * crosses or runs past the end of its contiguous displayed span ([displayedSpans]), so the last unit before a
+ * video hole is cut at the hole.
  */
 internal fun planAudio(audio: List<AudioEntry>, anchors: Map<Int, List<MovieAnchor>>, movieUs: Long,
                        aligned: (AudioEntry) -> Boolean): AudioTrackPlan? {
@@ -831,24 +834,28 @@ internal fun planAudio(audio: List<AudioEntry>, anchors: Map<Int, List<MovieAnch
     var media = 0L
     var count = 0
     var session = -1L
+    val spans = displayedSpans(anchors)
+    var spanEnd = 0L
     fun close() {
         if (count == 0) return
-        val duration = minOf(span(count), movieUs - start)
+        val duration = minOf(span(count), movieUs - start, spanEnd - start)
         segments += AudioSegment(start, media, count, duration)
-        cursor = start + span(count)
+        cursor = start + duration
         count = 0
     }
     for (row in audio) {
         val point = row.time.sequence
         val at = if (row.config.contentEquals(config) && point != null && aligned(row)) anchors[row.time.epoch]?.movieTime(point) else null
-        if (at == null || at >= movieUs) { close(); continue }
-        if (count > 0 && row.session == session && kotlin.math.abs(at - (start + span(count))) <= AUDIO_JOIN_TOLERANCE_US) {
+        val end = at?.let { spans.endOf(it) }
+        if (at == null || end == null || at >= movieUs) { close(); continue }
+        if (count > 0 && row.session == session && end == spanEnd &&
+            kotlin.math.abs(at - (start + span(count))) <= AUDIO_JOIN_TOLERANCE_US) {
             chosen += row; count++; continue
         }
         close()
         val begin = maxOf(at, cursor)
-        if (begin - at > AUDIO_JOIN_TOLERANCE_US || begin >= movieUs) continue
-        start = begin; media = chosen.size * AAC_FRAME_SAMPLES; count = 1; session = row.session
+        if (begin - at > AUDIO_JOIN_TOLERANCE_US || begin >= movieUs || begin >= end) continue
+        start = begin; media = chosen.size * AAC_FRAME_SAMPLES; count = 1; session = row.session; spanEnd = end
         chosen += row
     }
     close()
@@ -860,6 +867,38 @@ internal fun planAudio(audio: List<AudioEntry>, anchors: Map<Int, List<MovieAnch
         movie = segment.movieStartUs + segment.durationUs
     }
     return AudioTrackPlan(rate, channels, config, chosen, segments, edits)
+}
+
+/**
+ * Movie intervals `[start, end]` shown without a break: adjacent anchors of one clock epoch join only when they
+ * continue in both movie time and device time, so a video hole the movie skips still ends a span.
+ */
+internal fun displayedSpans(anchors: Map<Int, List<MovieAnchor>>): List<LongArray> {
+    val spans = mutableListOf<LongArray>()
+    var previous: MovieAnchor? = null
+    anchors.values.flatten().sortedBy { it.movieUs }.forEach { anchor ->
+        val last = previous
+        val end = anchor.movieUs + anchor.durationUs
+        if (last != null && last.epoch == anchor.epoch &&
+            kotlin.math.abs(anchor.movieUs - (last.movieUs + last.durationUs)) <= SPAN_JOIN_TOLERANCE_US &&
+            kotlin.math.abs((anchor.from - last.from) / 1000 - last.durationUs) <= SPAN_JOIN_TOLERANCE_US)
+            spans.last()[1] = maxOf(spans.last()[1], end)
+        else spans += longArrayOf(anchor.movieUs, end)
+        previous = anchor
+    }
+    return spans
+}
+
+/** End of the span holding movie time [at], or null; [this] is sorted by start. */
+private fun List<LongArray>.endOf(at: Long): Long? {
+    var low = 0
+    var high = size - 1
+    var found = -1
+    while (low <= high) {
+        val mid = (low + high) ushr 1
+        if (this[mid][0] <= at) { found = mid; low = mid + 1 } else high = mid - 1
+    }
+    return getOrNull(found)?.get(1)?.takeIf { at <= it }
 }
 
 internal fun audioCoverage(capture: FrozenCapture, plan: AudioTrackPlan?): Map<String, Any?> {

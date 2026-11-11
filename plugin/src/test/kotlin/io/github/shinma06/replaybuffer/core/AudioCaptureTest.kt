@@ -50,6 +50,27 @@ class AudioCaptureTest {
     }
 
     @Test
+    fun theLastUnitBeforeAVideoHoleIsCutAtTheHole() {
+        val frame = 1024 * 1_000_000_000L / 48_000
+        val rows = (0 until 200).map { i -> entry(i * frame) }
+        // Video ends at 1 s and resumes at 3 s: the unit at 0.981333 s must not play into the hole.
+        val wide = assertNotNull(planAudio(rows, mapOf(1 to listOf(MovieAnchor(1, 0, 1_000_000, 0),
+            MovieAnchor(1, 3_000_000_000, 1_000_000, 1_000_000))), 2_000_000) { true })
+        assertEquals(1_000_000L, wide.segments[0].movieStartUs + wide.segments[0].durationUs)
+        assertEquals(1_000_000 + (141 * frame - 3_000_000_000) / 1000, wide.segments[1].movieStartUs)
+        assertEquals(1_000_000L, wide.edits[0].duration)
+        // A 2 ms hole has no unit inside it; the units on either side still never share an edit across it.
+        val narrow = assertNotNull(planAudio(rows, mapOf(1 to listOf(MovieAnchor(1, 0, 1_000_000, 0),
+            MovieAnchor(1, 1_002_000_000, 1_000_000, 1_000_000))), 2_000_000) { true })
+        assertEquals(2, narrow.segments.size)
+        assertEquals(1_000_000L, narrow.segments[0].movieStartUs + narrow.segments[0].durationUs)
+        assertEquals(1_000_000 + (47 * frame - 1_002_000_000) / 1000, narrow.segments[1].movieStartUs)
+        // Frames that continue in both movie and device time form one span.
+        assertEquals(1, displayedSpans(mapOf(1 to listOf(MovieAnchor(1, 0, 500_000, 0),
+            MovieAnchor(1, 500_000_000, 500_000, 500_000)))).size)
+    }
+
+    @Test
     fun driftBeyondTheToleranceStartsANewEditWithoutOverlap() {
         val anchors = mapOf(1 to listOf(MovieAnchor(1, 0, 10_000_000, 0)))
         val frame = 1024 * 1_000_000_000L / 48_000

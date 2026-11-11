@@ -150,12 +150,7 @@ internal class DeviceCapture @JvmOverloads constructor(
         }
         // Tokens are fixed, enum-owned integers or generated hex; never interpolate user shell text.
         // Reject encoder errors instead of silently retrying at a lower resolution.
-        if (audioStopped == null) {
-            val sdk = runCatching { adb.command("-s", serial, "shell", "getprop", "ro.build.version.sdk").trim().toInt() }.getOrNull()
-            if (sdk != null && sdk < 33) stopAudio("端末のAndroidが13未満のため再生音を取得できません（動画のみ記録しています）")
-        }
-        val audio = audioStopped == null
-        if (audio) adb.command("-s", serial, "push", resources.audioPatch.toString(), audioPatchFile)
+        val audio = prepareAudio()
         // The official server plus a classes.dex that replaces only scrcpy's AudioRecordReader (PTS of each buffer's first frame).
         val classpath = if (audio) audioPatchFile else serverFile
         // Playback capture keeps the device audible (audio_dup) and honours each app's capture policy.
@@ -224,6 +219,24 @@ internal class DeviceCapture @JvmOverloads constructor(
             if (!stopping.get() && !videoEnded.get()) stopAudio("音声の取得が中断しました（以降は動画のみ記録しています）")
             else if (!stopping.get()) store.audioStatus(StreamState.RECOVERING, "動画とともに音声の取得を復旧しています", generation)
         }
+    }
+
+    /** Audio-only preparation: any failure here marks audio unavailable and leaves video on the official server JAR. */
+    private fun prepareAudio(): Boolean {
+        if (audioStopped != null) return false
+        val sdk = runCatching { adb.command("-s", serial, "shell", "getprop", "ro.build.version.sdk").trim().toInt() }.getOrNull()
+        if (sdk != null && sdk < 33) {
+            stopAudio("端末のAndroidが13未満のため再生音を取得できません（動画のみ記録しています）")
+            return false
+        }
+        try {
+            adb.command("-s", serial, "push", resources.audioPatch.toString(), audioPatchFile)
+        } catch (failure: Exception) {
+            if (stopping.get()) throw failure
+            stopAudio("音声用のserverを端末へ準備できませんでした（動画のみ記録しています）")
+            return false
+        }
+        return true
     }
 
     private fun stopAudio(reason: String) {

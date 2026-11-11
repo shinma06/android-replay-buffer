@@ -143,7 +143,7 @@ clock scopesと復旧/両側anchorは同期確度の説明に使い、source隣�
 
 測定（API 36 emulator `arb36`のみ、実機は未測定）: 1秒ごとに画面の白表示とbeepを同時に開始するアプリで30回測りました。補正前はMP4上でbeepが表示より中央値約290ms遅れました。補正後の取得PTSはtickの中央値53ms後で、端末が報告するスピーカー出力（75ms後）より前になり、取得側の遅れは解消しました。残りはMP4上のbeepが取得PTSより中央値112ms（91〜131ms）遅いことで、AAC encoderの遅延（priming）と考えられます。scrcpyの音声streamはencoder遅延を送らず、測った112msはAAC-LCの標準的なpriming（1024〜2048 sample、21〜43ms）だけでは説明できないため、hostでは補正しません。補正後のMP4上のbeepは表示より中央値97ms（61〜128ms）遅れます。
 
-取得できない場合は動画だけを続けます。Android 13未満（`ro.build.version.sdk`で確認）、serverが音声を無効にした（端末が許可しない）、音声設定の失敗、取得途中の中断は、その世代の残りを音声なしで取得し、`coverage.audio`を`state=UNAVAILABLE`と理由で保存します。音声設定OFF・ログ専用では`coverage.audio.requested=false`です。
+取得できない場合は動画だけを続けます。Android 13未満（`ro.build.version.sdk`で確認）、serverが音声を無効にした（端末が許可しない）、音声設定の失敗、音声用serverの準備（抽出・端末へのpush）の失敗、取得途中の中断は、その世代の残りを音声なしで取得し、`coverage.audio`を`state=UNAVAILABLE`と理由で保存します。音声用serverを準備できないときは公式serverで動画だけを開始します。動画が途切れる直前の音声は、その表示区間の終わりで切り、動画のない範囲へはみ出させません。音声設定OFF・ログ専用では`coverage.audio.requested=false`です。
 
 ## 許容精度と受取人の確認
 
