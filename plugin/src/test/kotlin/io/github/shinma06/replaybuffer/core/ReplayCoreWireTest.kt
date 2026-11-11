@@ -22,6 +22,13 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
+/**
+ * Waits end on an observed fixture event or published state; this bound only stops a hung run. Product timeouts and
+ * the one-second snapshot publication already add seconds on a slow runner, so it is far beyond any legitimate wait.
+ */
+private const val FIXTURE_GUARD_SECONDS = 120L
+private val FIXTURE_GUARD_NS = TimeUnit.SECONDS.toNanos(FIXTURE_GUARD_SECONDS)
+
 /** Synthetic SDK client and wire bytes only. Never invokes installed adb, an IDE or a device. */
 class ReplayCoreWireTest {
     @Test
@@ -56,6 +63,13 @@ class ReplayCoreWireTest {
 
     private fun ownedPids(dir: Path): List<String> =
         Files.list(dir).use { files -> files.map { it.fileName.toString() }.toList() }
+
+    /** Completed `ps -A -o PID,UID,NAME` reporter polls in completion order. */
+    private fun psPolls(root: Path): List<String> {
+        val dir = root.resolve("ps-polls")
+        if (!Files.isDirectory(dir)) return emptyList()
+        return Files.list(dir).use { files -> files.map { it.fileName.toString() }.toList() }.sorted()
+    }
 
     /** Log reader launches in start order, as `<buffer> <pid>`. */
     private fun logLaunches(root: Path): List<String> {
@@ -96,6 +110,12 @@ class ReplayCoreWireTest {
         val resumeVideo = CountDownLatch(1)
         val discardedFrameSent = CountDownLatch(1)
         val readyConnections = java.util.concurrent.atomic.AtomicInteger()
+        val clockRequests = java.util.concurrent.atomic.AtomicInteger()
+        // Before any video frame the live window is empty once the device clock is known, so the discarded P-frame
+        // gap is listed only while no clock sample exists. Hold the device clock until the snapshot shows the gap
+        // rather than racing the one-second publication against clock startup.
+        val deviceClockAnswers = CountDownLatch(if (discardInitialPFrame) 1 else 0)
+        val recoveredFramesSent = CountDownLatch(2)
         var bindReadyAt = 0L
         // Device wall clock ticking with `mono`, as on a real device. Windows currentTimeMillis follows the
         // system timer tick (up to 15.6 ms, later under load), which CaptureClock rightly treats as a wall jump.
@@ -111,6 +131,8 @@ class ReplayCoreWireTest {
                         val output = it.getOutputStream().bufferedWriter()
                         while (!stop.get()) {
                             val nonce = input.readLine() ?: break
+                            clockRequests.incrementAndGet()
+                            assertTrue(deviceClockAnswers.await(FIXTURE_GUARD_SECONDS, TimeUnit.SECONDS))
                             val before = System.nanoTime()
                             val mono = System.nanoTime()
                             val wall = fakeWall()
@@ -150,7 +172,7 @@ class ReplayCoreWireTest {
                             assertEquals(-1, it.getInputStream().read()) // Only the client watchdog ends this healthy idle.
                             return@use
                         }
-                        if (connection == 2) assertTrue(resumeVideo.await(15, TimeUnit.SECONDS))
+                        if (connection == 2) assertTrue(resumeVideo.await(FIXTURE_GUARD_SECONDS, TimeUnit.SECONDS))
                         if (discardInitialPFrame && connection >= 3) { repeatRejectedPackets.set(false); pauseVideo.set(false) }
                         Thread.sleep(750) // Exercise a valid clock before the first video frame.
                         while (!stop.get()) {
@@ -165,6 +187,7 @@ class ReplayCoreWireTest {
                             }
                             if (pauseVideo.get()) { Thread.sleep(25); continue }
                             out.writeLong((1L shl 61) or (System.nanoTime() / 1000)); out.writeInt(bytes.size); out.write(bytes); out.flush()
+                            if (connection >= 2) recoveredFramesSent.countDown()
                             Thread.sleep(100)
                         }
                     } }
@@ -256,12 +279,14 @@ elif len(a)>3 and a[3]=='settings':
 elif len(a)>3 and a[3]=='cmd':
     print('package:com.fixture.app uid:10001')
 elif len(a)>3 and a[3]=='ps':
-    print('PID UID NAME\n12 10001 com.fixture.app\n500 1000 system_server' if a[-1]=='PID,UID,NAME' else 'PID ARGS')
+    print('PID UID NAME\n12 10001 com.fixture.app\n500 1000 system_server' if a[-1]=='PID,UID,NAME' else 'PID ARGS',flush=True)
+    if a[-1]=='PID,UID,NAME':
+        polls=root/'ps-polls'; polls.mkdir(exist_ok=True); (polls/f'{time.time_ns():020d}-{os.getpid()}').touch()
 """)
                 val core = ReplayCore(ReplaySettings(fake, root.resolve("missing"), if (captureMode.videoRequested) 1 else 30,
             ApplicationTarget(), captureMode, videoQuality = videoQuality), root.resolve("workspace"))
         fun awaitState(phase: String, predicate: (ReplaySnapshot) -> Boolean): ReplaySnapshot {
-            val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(15)
+            val deadline = System.nanoTime() + FIXTURE_GUARD_NS
             while (System.nanoTime() < deadline) {
                 val state = core.snapshot()
                 if (predicate(state)) return state
@@ -269,6 +294,11 @@ elif len(a)>3 and a[3]=='ps':
             }
             val state = core.snapshot()
             error("fixture deadline ($phase): ${state.captureState}/${state.save.phase}/frozen=${state.frozen}/video=${state.video}/deviceLog=${state.deviceLog}/appLog=${state.appLog}/error=${state.error}")
+        }
+        // The probe stores each sample before it sends the next nonce, so a second later request proves a stored later sample.
+        fun awaitLaterClockSample(phase: String) {
+            val requested = clockRequests.get()
+            awaitState(phase) { clockRequests.get() >= requested + 2 }
         }
         try {
             val enabled = core.setEnabled(true).get(10, TimeUnit.SECONDS)
@@ -279,6 +309,10 @@ elif len(a)>3 and a[3]=='ps':
                 assertTrue(core.updateApplication(ApplicationTarget("com.fixture.app")).get().accepted)
                 assertTrue(core.applySettings(core.snapshot().settings.copy(saveDirectory = root, autoSaveOnCrash = true)).get().accepted)
                 awaitState("auto-armed") { it.autoSave.state == AutoSaveState.ARMED && it.captureState == CaptureState.CAPTURING }
+                // A platform report is corroborated only by a reporter poll started at most 2 s before it. Report right
+                // after a poll completes, not at an arbitrary point of a poll cycle that a slow runner stretches past 2 s.
+                val polls = psPolls(root).size
+                awaitState("reporter-poll-completed") { psPolls(root).size > polls }
                 val wall = fakeWall()
                 val sources = listOf(javaCrash(process = "com.fixture.app", pid = 12, uid = 10001, wall = wall),
                     platformCrash(process = "com.fixture.app", first = 12, wall = wall + 1_000_000))
@@ -375,7 +409,7 @@ elif len(a)>3 and a[3]=='ps':
                 Files.delete(root.resolve("quiet-logs"))
                 Files.writeString(root.resolve("log-events.txt"), "${fakeWall()} live\n")
                 awaitState("both-readers-live") { Files.exists(root.resolve("main-live.sent")) && Files.exists(root.resolve("all-live.sent")) }
-                Thread.sleep(1200) // Retain a subsequent clock sample for mapping both readers' rows.
+                awaitLaterClockSample("clock-after-both-readers-live") // Retain a subsequent clock sample for mapping both readers' rows.
                 Files.createFile(root.resolve("fail-all"))
                 awaitState("partial-log-only") { it.deviceLog.state == StreamState.RECOVERING && it.canSave }
                 val partialRequest = core.save().get()
@@ -407,7 +441,7 @@ elif len(a)>3 and a[3]=='ps':
                 return
             }
             if (logMode == "cancel") {
-                val deadline = System.nanoTime() + 3_000_000_000
+                val deadline = System.nanoTime() + FIXTURE_GUARD_NS
                 while (!Files.exists(root.resolve("probe-started")) && System.nanoTime() < deadline) Thread.sleep(10)
                 assertTrue(Files.exists(root.resolve("probe-started")))
                 val started = System.nanoTime()
@@ -419,10 +453,11 @@ elif len(a)>3 and a[3]=='ps':
                 return
             }
             if (discardInitialPFrame) {
-                assertTrue(discardedFrameSent.await(5, TimeUnit.SECONDS))
+                assertTrue(discardedFrameSent.await(FIXTURE_GUARD_SECONDS, TimeUnit.SECONDS))
                 awaitState("discarded-initial-P-frame") { it.video.state == StreamState.RECOVERING && it.video.gaps.any { gap ->
                     gap.reason == "IDR待ちでframeを保持できません"
                 } }
+                deviceClockAnswers.countDown()
                 resumeVideo.countDown()
             }
             awaitState("unresolved-app") { it.video.state == StreamState.CAPTURING && it.appLog.state == StreamState.UNAVAILABLE }
@@ -436,7 +471,7 @@ elif len(a)>3 and a[3]=='ps':
                 assertTrue(core.applySettings(core.snapshot().settings.copy(replaySeconds = 30, saveDirectory = root)).get().accepted)
                 val readers = mutableMapOf<String, Long>()
                 fun ready(buffer: String, previousPid: Long? = null): Long {
-                    val deadline = System.nanoTime() + 3_000_000_000
+                    val deadline = System.nanoTime() + FIXTURE_GUARD_NS
                     while (System.nanoTime() < deadline) {
                         val pid = logLaunches(root)
                             .lastOrNull { it.startsWith("$buffer ") }?.substringAfter(' ')?.toLongOrNull()
@@ -449,7 +484,7 @@ elif len(a)>3 and a[3]=='ps':
                     error("fixture reader not ready: $buffer after PID $previousPid")
                 }
                 fun sent(buffer: String, label: String) {
-                    val deadline = System.nanoTime() + 3_000_000_000
+                    val deadline = System.nanoTime() + FIXTURE_GUARD_NS
                     while (!Files.exists(root.resolve("$buffer-$label.sent")) && System.nanoTime() < deadline) Thread.sleep(10)
                     assertTrue(Files.exists(root.resolve("$buffer-$label.sent")))
                 }
@@ -499,7 +534,7 @@ elif len(a)>3 and a[3]=='ps':
                     sent("all", "recovered")
                 }
                 // A subsequent supported clock sample maps all returned fixture records.
-                Thread.sleep(1200)
+                awaitLaterClockSample("clock-after-partition-records")
                 assertTrue(core.save().get().accepted)
                 val saved = awaitState("partition-save") { it.save.phase == SavePhase.COMPLETED }
                 val deviceRows = Files.readAllLines(saved.save.directory!!.resolve("logcat-device.jsonl"))
@@ -544,7 +579,7 @@ elif len(a)>3 and a[3]=='ps':
                 assertEquals(2, readyConnections.get())
                 assertEquals(StreamState.CAPTURING, core.snapshot().video.state)
                 resetConfig.set(true)
-                assertTrue(resetConfigSent.await(5, TimeUnit.SECONDS))
+                assertTrue(resetConfigSent.await(FIXTURE_GUARD_SECONDS, TimeUnit.SECONDS))
                 awaitState("changed-config-awaiting-IDR") { it.video.state == StreamState.RECOVERING }
                 awaitState("changed-config-recovered") { readyConnections.get() == 3 && it.video.state == StreamState.CAPTURING }
                 assertTrue(core.setEnabled(false).get(15, TimeUnit.SECONDS).accepted)
@@ -587,10 +622,13 @@ elif len(a)>3 and a[3]=='ps':
             videoSockets.last().close()
             awaitState("video-interrupted") { it.video.state != StreamState.CAPTURING }
             resumeVideo.countDown()
-            awaitState("video-recovered") { readyConnections.get() >= 2 && it.video.state == StreamState.CAPTURING }
+            // The published snapshot trails the store by up to a one-second poll; request the one-second window as soon
+            // as the recovered connection delivers frames so the interruption is inside it on any runner speed.
+            assertTrue(recoveredFramesSent.await(FIXTURE_GUARD_SECONDS, TimeUnit.SECONDS))
             val operation = core.save().get(10, TimeUnit.SECONDS)
             assertTrue(operation.accepted)
             val failed = awaitState("save-failed") { it.save.phase == SavePhase.FAILED }
+            assertTrue(readyConnections.get() >= 2)
             val fixed = failed.save
             assertEquals("fixture-1", fixed.device?.serial)
             assertEquals("com.fixture.app", fixed.application?.packageName)
