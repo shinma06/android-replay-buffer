@@ -190,6 +190,30 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                     gap.stream == "clock" && gap.intersects(sequence, sequence, frame.time.uncertainty)
                 }
             }
+            // A video gap closed by a run's own frame ends at that frame's source time: it cannot interrupt that frame or later ones.
+            /** For each capture gap, the index in [frames] of the frame that closed it, or null. */
+            fun closedAt(frames: List<VideoEntry>): List<Int?> = firstIndexes(frames.map { it.file to it.offset }, capture.gaps.map { gap ->
+                if (gap.stream == "video") capture.videoCuts[gap]?.after?.let { cut -> cut.file to cut.offset } else null
+            })
+            /** Whether a clock/video gap interrupts frames a→b, where b is frame [through] of the run [closed] was built for. */
+            fun interrupted(a: VideoEntry, b: VideoEntry, closed: List<Int?>, through: Int): Boolean = videoScopes.withIndex().any { (i, gap) ->
+                (gap.stream == "clock" || gap.stream == "video") && closed[i].let { it == null || it > through } &&
+                    gap.intersects(a.time.sequence, b.time.sequence!!, maxOf(a.time.uncertainty, b.time.uncertainty))
+            }
+            /** Video gaps of one generation between two aligned runs, or null unless every boundary is known. */
+            fun knownBoundaryGaps(before: VideoEntry, first: VideoEntry): List<CaptureGap>? {
+                val beforeSequence = before.time.sequence
+                val firstSequence = first.time.sequence
+                return capture.gaps.filter { gap ->
+                    val from = gap.fromNs
+                    val to = gap.toNs
+                    gap.stream == "video" && gap.generation == before.generation && from != null && to != null &&
+                        aligned(before) && aligned(first) && beforeSequence != null && firstSequence != null &&
+                        from >= beforeSequence && to <= firstSequence && from <= to
+                }.takeIf { it.isNotEmpty() && it.all { gap ->
+                    gap.boundaryUncertaintyNs != null && gap.boundaryUncertaintyNs in 0 until Long.MAX_VALUE
+                } }
+            }
             val movieAnchors = mutableListOf<MovieAnchor>()
             val framesFile = if (selected.isNotEmpty()) file(ReplayFiles.VIDEO_FRAMES) else null
             val rawPath = if (normalizer != null) file(ReplayFiles.VIDEO_SOURCE) else null
@@ -215,11 +239,17 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                                 val visibleIndex = group.indices.first { visible(group, it) }
                                 val keyIndex = ranges[runIndex].first
                                 val samples = group.subList(keyIndex, ranges[runIndex].last + 1)
+                                val closed = closedAt(samples)
                                 val first = group[visibleIndex]
                                 val last = samples.last()
                                 val origin = samples.first().pts
+                                // Like the tail, a run's last image stays on screen until a known boundary gap starts (e.g. rotation).
+                                val heldUntil = selected.getOrNull(runIndex + 1)?.let { next ->
+                                    knownBoundaryGaps(last, next[next.indices.first { visible(next, it) }])
+                                }?.minOf { it.fromNs!! }
                                 val terminal = if (last === all.lastOrNull() && tail?.displayHeld == true)
-                                    ((tail.toNs!! - last.time.sequence!!) / 1000).coerceAtLeast(1) else 1L
+                                    ((tail.toNs!! - last.time.sequence!!) / 1000).coerceAtLeast(1)
+                                    else heldUntil?.let { ((it - last.time.sequence!!) / 1000).coerceAtLeast(1) } ?: 1L
                                 val sourceDurations = samples.indices.map { n ->
                                     sourceDuration(group, keyIndex + n)
                                 }
@@ -256,18 +286,7 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                                     endUs = Math.addExact(startUs, originalEnd - originalStart)
                                 }
                                 val before = previousLast
-                                val beforeSequence = before?.time?.sequence
-                                val firstSequence = first.time.sequence
-                                val boundaryGaps = if (before == null) emptyList() else capture.gaps.filter { gap ->
-                                    val from = gap.fromNs
-                                    val to = gap.toNs
-                                    gap.stream == "video" && gap.generation == before.generation && from != null && to != null &&
-                                        aligned(before) && aligned(first) && beforeSequence != null && firstSequence != null &&
-                                        from >= beforeSequence && to <= firstSequence && from <= to
-                                }
-                                val knownGap = boundaryGaps.takeIf { it.isNotEmpty() && it.all { gap ->
-                                    gap.boundaryUncertaintyNs != null && gap.boundaryUncertaintyNs in 0 until Long.MAX_VALUE
-                                } }?.sortedBy { it.fromNs }?.let { gaps ->
+                                val knownGap = before?.let { knownBoundaryGaps(it, first) }?.sortedBy { it.fromNs }?.let { gaps ->
                                     var end: Long? = null
                                     var total = 0L
                                     gaps.forEach { gap ->
@@ -373,10 +392,8 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                                     val sequence = frame.time.sequence
                                     val next = samples.getOrNull(n + 1)
                                     val confirmedEnd = if (known && next != null && aligned(next) && next.time.epoch == frame.time.epoch &&
-                                        next.time.sequence!! > sequence!! && videoScopes.none { gap ->
-                                            (gap.stream == "video" || gap.stream == "clock") && gap.intersects(sequence, next.time.sequence,
-                                                maxOf(frame.time.uncertainty, next.time.uncertainty))
-                                        }) minOf(capture.end, next.time.sequence) else null
+                                        next.time.sequence!! > sequence!! && !interrupted(frame, next, closed, n))
+                                        minOf(capture.end, next.time.sequence) else null
                                     val displayWindowStart = sequence?.takeIf { known && presented }?.let {
                                         Math.addExact(it, Math.multiplyExact(sourceDisplayOffset, 1000)) - capture.start
                                     }
@@ -419,11 +436,10 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                                 edits += Edit(segmentDuration, Math.addExact(runMedia, startUs), 1f)
                                 movie = Math.addExact(movie, segmentDuration)
                                 val displayed = samples.drop(visibleIndex - keyIndex)
-                                val alignmentKnown = displayed.all(::aligned) && displayed.zipWithNext().all { (a, b) ->
-                                    a.time.epoch == b.time.epoch && videoScopes.none { gap ->
-                                        (gap.stream == "clock" || gap.stream == "video") && gap.intersects(a.time.sequence, b.time.sequence!!,
-                                            maxOf(a.time.uncertainty, b.time.uncertainty))
-                                    }
+                                val alignmentKnown = displayed.all(::aligned) && displayed.indices.drop(1).all { k ->
+                                    val a = displayed[k - 1]
+                                    val b = displayed[k]
+                                    a.time.epoch == b.time.epoch && !interrupted(a, b, closed, visibleIndex - keyIndex + k - 1)
                                 }
                                 parts += mapOf("file" to videoName, "segment_index" to runIndex,
                                     "clock_epoch" to samples.map { it.time.epoch }.distinct().singleOrNull(),
@@ -484,11 +500,13 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                     val movieUs = point?.let { anchors[row.time.epoch]?.movieTime(it) }
                     if (movieUs != null) touchesInMovie++
                     val sample = row.sample
+                    val screen = row.rotation?.let { screenPoint(sample.x, sample.y, row.width, row.height, it) }
                     out.write(gson.toJson(mapOf("clock_epoch" to row.time.epoch, "generation" to row.generation,
                         "device_mono_ns" to sample.monoNs.toString(), "elapsed_ns" to row.time.elapsed?.toString(),
                         "window_ns" to point?.let { (it - capture.start).toString() }, "uncertainty_ns" to row.time.uncertainty.toString(),
                         "movie_us" to movieUs?.toString(), "action" to sample.action.wire, "pointer" to sample.pointer,
                         "x" to sample.x, "y" to sample.y, "display_width" to row.width, "display_height" to row.height,
+                        "display_rotation" to row.rotation, "screen_x" to screen?.first, "screen_y" to screen?.second,
                         "input_device" to sample.device)))
                     out.newLine()
                 }
@@ -618,7 +636,7 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                 if (videoRequested) {
                     appendLine("- 動画がある保存は1本のMP4です。動画がない保存にはMP4と${ReplayFiles.VIDEO_FRAMES}はありません。取得状態・理由は${ReplayFiles.RECORD}のcoverage.videoを確認してください。")
                     appendLine("- 動画の表示秒に対応する${ReplayFiles.VIDEO_FRAMES}のmovie_pts_us〜movie_end_usとsource/window情報を使い、両ログと照合してください。${ReplayFiles.RECORD}のpartsは同じファイル内の再生区間です。")
-                    appendLine("- タップは動画の取得中に自動で記録します。時刻は端末の入力時刻（getevent、CLOCK_MONOTONIC）で、動画PTSと同じ時計対応によりwindow_nsへ写し、表示中の動画位置をmovie_usに記録します。movie_usがnullの行は動画の表示区間外または時刻を確定できない行です。座標は画面の自然な向きのpx（display_width×display_height）です。")
+                    appendLine("- タップは動画の取得中に自動で記録します。時刻は端末の入力時刻（getevent、CLOCK_MONOTONIC）で、動画PTSと同じ時計対応によりwindow_nsへ写し、表示中の動画位置をmovie_usに記録します。movie_usがnullの行は動画の表示区間外または時刻を確定できない行です。座標は画面の自然な向きのpx（display_width×display_height）です。screen_x/screen_yは回転後の画面（動画に写る向き）のpxで、display_rotationは端末の回転（0〜3、90度単位）、不明ならnullです。回転は最大1秒遅れで読み直し、動画のサイズ変更時はすぐ読み直します。")
                     appendLine("- タップ位置の表示（show_touches）: 設定${if (capture.settings.showTouches) "ON（取得中だけ端末設定を変更し、終了時に元へ戻します）" else "OFF"}、" +
                         when (capture.touchDots) {
                             TouchDots.APPLIED -> "この取得では端末に点を表示しました"
@@ -694,7 +712,7 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                 "touches" to capture.touchState?.let { state -> mapOf("state" to state.state, "reason" to state.reason,
                     "count" to capture.touches.size, "in_movie_count" to touchesInMovie, "dropped_count" to capture.touchDropped,
                     "show_touches" to capture.settings.showTouches, "show_touches_state" to capture.touchDots?.wire, "time_source" to "getevent -lt (device CLOCK_MONOTONIC)",
-                    "coordinate_space" to "display_px_natural_orientation",
+                    "coordinate_space" to "display_px_natural_orientation", "screen_coordinate_space" to "display_px_current_rotation",
                     "gaps" to capture.touchGaps.filter { (it.to == null || it.to >= capture.start) && (it.from == null || it.from <= capture.end) }
                         .map { mapOf("from_ns" to it.from?.toString(), "to_ns" to it.to?.toString(), "reason" to it.reason, "time_axis" to "sequence_ns") }) },
                 "video_reencoded" to (normalizer != null),
@@ -788,6 +806,13 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
 }
 
 /** Playback proof is captured at acquisition; clock quality never authorizes source adjacency. */
+/** For each wanted key, the index of its first occurrence in [keys], or null; one pass over [keys], one lookup per key. */
+internal fun <K : Any> firstIndexes(keys: List<K>, wanted: List<K?>): List<Int?> {
+    val index = HashMap<K, Int>(keys.size * 2)
+    keys.forEachIndexed { n, key -> index.putIfAbsent(key, n) }
+    return wanted.map { key -> key?.let(index::get) }
+}
+
 internal fun VideoEntry.playbackContinuousTo(next: VideoEntry): Boolean {
     if (generation <= 0 || generation != next.generation || session <= 0 || session != next.session ||
         decodeRun <= 0 || decodeRun != next.decodeRun || packetOrdinal <= 0 || packetOrdinal == Long.MAX_VALUE ||
