@@ -57,13 +57,12 @@ internal class DeviceCapture @JvmOverloads constructor(
         private set
     @Volatile private var application = application
     /** Set once audio cannot be captured in this generation; later video servers then run without audio. */
-    @Volatile private var audioStopped: String? = null
+    @Volatile private var audioStopped: String? = if (store.captureMode.videoRequested && recordAudio) null else ""
 
     fun start() {
         launch("clock", ::clock)
         if (store.captureMode.videoRequested) launch("video", ::video)
         if (store.captureMode.videoRequested) launch("touch", ::touches)
-        if (!store.captureMode.videoRequested || !recordAudio) audioStopped = ""
         launch("device_log-main") {
             if (!partitionLogs.isDone) {
                 val partition = probeLogLid()
