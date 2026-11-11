@@ -24,18 +24,20 @@
 | 項目 | 確認方法 | 合格の条件 |
 |---|---|---|
 | 読み込み | `idea.log` | `Loaded custom plugins` に配布ZIPの版が出る |
-| ToolWindow | Find Actionで「Android Replay Buffer」を開く | 状態と操作ボタンが日本語で表示される |
+| ToolWindow | Find Actionで「Android Replay Buffer」を開く | 1行目に `記号 取得状態 · 端末 · package` と右端の「取得」、その下に「直前N秒を保存」「スクリーンショット」「Logcatを開く」、畳んだ「詳細」、「設定…」が日本語で表示される（配置は[GUIの情報設計](../design/ui-ux.md)） |
+| 取得ON/OFF | ToolWindow右上の「取得」を切り替える | 見出しの記号・色・文字が取得中と無効で変わる。保存できない間だけ、ボタンの下に理由が1行出る |
+| Logcat | 「Logcatを開く」「Logcatを閉じる」 | IDE標準のLogcatが開閉し、ボタン名が次の操作に変わる。Logcatのタブを全部閉じた後でも開け、表示名が実際の開閉に追従する |
+| 設定 | 「設定…」から開き、値を変えて「適用」と「キャンセル」 | 基本・記録する内容・スクリーンショットの保存先・クラッシュ時の自動保存の順に並ぶ。適用で反映し、キャンセルでは変わらない |
 | 取得ON・端末 | `bin/replay --project <dir> start` のあと `status` | `capture_state` が `CAPTURING`、`device_serial` がエミュレータ |
 | 保存（CLI） | `bin/replay --project <dir> save` | 終了コード0。出力フォルダ`replay-<日時>-manual-<ID>`に`video.mp4`・`video-frames.jsonl`・`logcat-device.jsonl`・`logcat-app.jsonl`・`touches.jsonl`・`replay.json`（`schema` 4）・`README.md` |
-| 保存（GUI） | ToolWindowの「直前180秒を保存」 | 新しい保存フォルダが同じ構成でできる |
+| 保存（GUI） | ToolWindowの「直前180秒を保存」 | 新しい保存フォルダが同じ構成でできる。直近の結果に `保存しました <時刻>` と「フォルダを開く」が出る |
 | 動画 | `ffprobe` | H.264で、長さが0より大きい |
 | スクリーンショット | ToolWindowの「スクリーンショット」 | 保存先にPNGができる |
-| Logcat | ToolWindowの「Logcatを開く／閉じる」 | Logcatのタブを全部閉じた後でも開け、表示名が実際の開閉に追従する |
 | Logcat（端末指定できないビルド） | 確認済みビルド以外のStudio、または単体テスト `LogcatToolWindowButtonTest` で未確認ビルドを模す | 対象端末を選ばずに標準Logcatを開閉でき、tooltip・accessible descriptionが「対象端末に合わせられないため、IDEで選択中の端末のログが表示される」ことを示す。確認済みビルドでは従来どおり対象端末に合わせる |
 | Running Devices | 上部の「取得ON/OFF」「直前N秒を保存」「スクリーンショット」 | ToolWindowと同じ結果になる |
 | Logcat | 動画＋ログで取得中に、Logcatヘッダー（または右クリック）の「直前N秒のログを保存」 | 完成フォルダ`replay-<日時>-manual-logs-<ID>`に両ログと`replay.json`・`README.md`があり、`video.mp4`・`video-frames.jsonl`がない。`coverage.video.state`が`EXCLUDED`、`save_request.origin`が`LOGCAT_TOOLBAR`。保存後も動画の取得が続く（続けて通常保存するとMP4ができる） |
 | タップ位置 | 取得中に `adb shell input tap` | 保存した `touches.jsonl` にその座標が入る。「タップを表示」ONなら動画に点が写る |
-| クラッシュ時の自動保存 | 設定ONで取得中に `adb shell am crash <対象package>` | 保存フォルダ`replay-<日時>-crash-<ID>`が1つ増え、`replay.json` の `trigger` が `crash`、`auto_trigger.kind` が `platform_reported_uncaught_exception`。別アプリのクラッシュでは増えない。続けて試す場合は30秒以上空け、`am force-stop <対象package>` してから起動し直す（Android 9ではクラッシュのダイアログが落ちたprocessを残し、次の`am crash`が報告を出さない）。報告と同じ時刻に時計の不足区間があると「報告の時計対応を確認できません」で保存しないのは仕様 |
+| クラッシュ時の自動保存 | 設定ONで取得中に `adb shell am crash <対象package>` | 保存フォルダ`replay-<日時>-crash-<ID>`が1つ増え、`replay.json` の `trigger` が `crash`、`auto_trigger.kind` が `platform_reported_uncaught_exception`。別アプリのクラッシュでは増えない。続けて試す場合は30秒以上空け、`am force-stop <対象package>` してから起動し直す（Android 9ではクラッシュのダイアログが落ちたprocessを残し、次の`am crash`が報告を出さない）。報告と同じ時刻に5秒以内の時計の不足区間があっても、回復後に保存される（`replay.json`に時計の不足区間が残る）。5秒を超える途切れや時計の境界をまたぐ場合だけ「報告の時計対応を確認できません」で保存しない |
 | 設定（CLI） | `bin/replay --project <dir> settings`、`settings set replay_seconds=<n>` | 値が設定画面と一致し、変更が反映される |
 | MCP | `bin/replay --project <dir> mcp` に `initialize` と `tools/list` を送る | 保存・スクリーンショット・設定・ON/OFFのtoolが返る |
 
