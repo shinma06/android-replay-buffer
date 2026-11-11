@@ -299,7 +299,8 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable, C
         }
     }
 
-    private fun draft(): ReplaySettings = form?.draft() ?: ReplaySettings()
+    /** The capture target is chosen in the ToolWindow/CLI/MCP, so the form keeps whatever is stored now. */
+    private fun draft(): ReplaySettings = (form?.draft() ?: ReplaySettings()).copy(deviceSerial = store().settings().deviceSerial)
 
     override fun isModified(): Boolean = form != null && draft() != store().settings()
 

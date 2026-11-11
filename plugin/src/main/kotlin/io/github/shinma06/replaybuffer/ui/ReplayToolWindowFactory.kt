@@ -16,6 +16,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -30,6 +32,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ApplicationInfo
+import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.fileChooser.FileChooser
 import com.intellij.openapi.fileChooser.FileChooserDescriptorFactory
 import com.intellij.openapi.options.ShowSettingsUtil
@@ -46,6 +49,7 @@ import io.github.shinma06.replaybuffer.core.ApplicationMode
 import io.github.shinma06.replaybuffer.core.CaptureMode
 import io.github.shinma06.replaybuffer.core.DeviceKind
 import io.github.shinma06.replaybuffer.core.CaptureState
+import io.github.shinma06.replaybuffer.core.ReplayDevice
 import io.github.shinma06.replaybuffer.core.ReplaySnapshot
 import io.github.shinma06.replaybuffer.core.SavePhase
 import io.github.shinma06.replaybuffer.core.SaveSnapshot
@@ -62,6 +66,7 @@ import org.jetbrains.jewel.foundation.theme.JewelTheme
 import org.jetbrains.jewel.ui.component.CheckboxRow
 import org.jetbrains.jewel.ui.component.DefaultButton
 import org.jetbrains.jewel.ui.component.Link
+import org.jetbrains.jewel.ui.component.ListComboBox
 import org.jetbrains.jewel.ui.component.OutlinedButton
 import org.jetbrains.jewel.ui.component.Text
 import org.jetbrains.jewel.ui.component.Tooltip
@@ -122,6 +127,10 @@ internal class ReplayToolWindowController(private val project: Project) : Dispos
     }
 
     var model by mutableStateOf(toolWindowModel(input()))
+        private set
+
+    /** Bumped when a device choice is refused, so the chooser drops the refused pick even if the model is unchanged. */
+    var deviceChoiceResets by mutableIntStateOf(0)
         private set
 
     init {
@@ -218,6 +227,19 @@ internal class ReplayToolWindowController(private val project: Project) : Dispos
                 ScreenshotResult.Failed(time, cause?.message ?: "スクリーンショットを保存できませんでした。")
             }
             SwingUtilities.invokeLater { if (alive && trackedScreenshot === latest) { screenshotResult = result; render() } }
+        }
+    }
+
+    /** Same `device` setting path as CLI/MCP; destination validation touches the file system, so stay off EDT. */
+    fun chooseDevice(serial: String) {
+        if (!alive) return
+        ApplicationManager.getApplication().executeOnPooledThread {
+            val reason = try {
+                service.selectDevice(serial).get().takeUnless { it.accepted }?.let { it.reason ?: "端末を切り替えられませんでした。" }
+            } catch (e: Exception) { (e.cause ?: e).message ?: "端末を切り替えられませんでした。" }
+            if (reason != null) SwingUtilities.invokeLater {
+                if (alive) { deviceChoiceResets++; Messages.showErrorDialog(project, reason, "取得する端末を選べません"); render() }
+            }
         }
     }
 
@@ -341,6 +363,16 @@ internal fun ReplayToolWindowContent(controller: ReplayToolWindowController) {
                     }
                 }
             }
+            // Device chooser, only while two or more devices are in play; the current target stays first.
+            if (model.devices.isNotEmpty()) Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("取得する端末:")
+                WithTooltip(DEVICE_CHOICE_TOOLTIP) {
+                    key(model.devices, controller.deviceChoiceResets) {
+                        ListComboBox(model.devices.map { it.label }, 0, { index -> model.devices[index].serial?.let(controller::chooseDevice) },
+                            modifier = Modifier.semantics { contentDescription = "取得する端末" })
+                    }
+                }
+            }
             // 5. Details, collapsed until asked for.
             var expanded by remember { mutableStateOf(model.detailsInitiallyExpanded) }
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -403,8 +435,37 @@ internal fun ReplaySnapshot.captureDescription(): String = when (captureState) {
     CaptureState.CAPTURING -> "取得中"
     CaptureState.RECOVERING -> if (frozen) "接続待ち — 切断前の記録を保持" else "復旧中"
     CaptureState.PARTIAL -> "一部取得失敗"
-    CaptureState.MULTIPLE_DEVICES -> "初期版は1台に対応しています。ほかの端末を切断してください。"
+    CaptureState.MULTIPLE_DEVICES -> "端末の選択待ち"
 }
+
+internal data class DeviceChoice(val serial: String?, val label: String) {
+    override fun toString(): String = label
+}
+
+/**
+ * Chooser entries, current target (or a no-choice placeholder) first; empty while fewer than two devices are in play.
+ * A saved serial adds a trailing [AUTOMATIC_DEVICE_CHOICE] entry (serial "") that resets to automatic selection.
+ * A saved serial that is not connected counts as one of them, so the GUI can move away from it like CLI/MCP can.
+ */
+internal fun deviceChoices(snapshot: ReplaySnapshot?): List<DeviceChoice> {
+    if (snapshot == null) return emptyList()
+    val target = snapshot.device
+    val saved = snapshot.settings.deviceSerial?.takeIf { serial -> target == null && snapshot.devices.none { it.serial == serial } }
+    val others = snapshot.devices.filter { it.serial != target?.serial }
+    if (others.size + (if (target != null || saved != null) 1 else 0) < 2) return emptyList()
+    fun label(it: ReplayDevice) = "${it.name}（${if (it.kind == DeviceKind.EMULATOR) "Emulator" else "実機"}・${it.serial}" +
+        "${if (it.connected) "" else "・切断中"}）"
+    val first = target?.let { DeviceChoice(it.serial, label(it)) }
+        ?: saved?.let { DeviceChoice(it, "$it（切断中）") }
+        ?: DeviceChoice(null, "選んでください")
+    val automatic = snapshot.settings.deviceSerial?.let { listOf(DeviceChoice("", AUTOMATIC_DEVICE_CHOICE)) }.orEmpty()
+    return listOf(first) + others.map { DeviceChoice(it.serial, label(it)) } + automatic
+}
+
+/** Clears the saved serial like CLI/MCP `device=""`; a running capture keeps its current device. */
+internal const val AUTOMATIC_DEVICE_CHOICE = "自動で選ぶ"
+internal const val DEVICE_CHOICE_TOOLTIP = "複数の端末が接続されているときだけ表示します。選んだ端末はserialで記憶し、切断中も別の端末へは切り替えません。" +
+    "「自動で選ぶ」で記憶を消します（取得中の端末はそのまま続けます）。"
 
 internal fun streamDescription(label: String, stream: StreamSnapshot?): String {
     if (stream == null) return "$label: 確認中…"
