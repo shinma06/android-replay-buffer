@@ -6,6 +6,7 @@ import org.jetbrains.kotlin.gradle.tasks.KotlinJvmCompile
 
 plugins {
     kotlin("jvm") version "2.4.21"
+    kotlin("plugin.compose") version "2.4.21"
     id("org.jetbrains.intellij.platform") version "2.19.0"
 }
 
@@ -52,6 +53,9 @@ dependencies {
             androidStudio("2026.2.2.8")
         }
         bundledPlugin("org.jetbrains.android")
+        // Compose/Jewel bundled with the IDE (intellij.platform.compose and intellij.platform.jewel.*).
+        @Suppress("UnstableApiUsage")
+        composeUI()
     }
     implementation("org.jcodec:jcodec:0.2.5")
     testImplementation(kotlin("test-junit5"))
