@@ -44,7 +44,7 @@ Devin: 設定のMCP Marketplaceで「Add your own」からstdioサーバーを�
 | `get_status` | 取得状態をJSONで返します。変更はしません。 | `status` |
 | `start_capture` | 取得をONにし、開始を確認して返します。 | `start` |
 | `stop_capture` | 取得をOFFにします。未保存バッファは破棄します。保存済み成果物・IDE・他projectは変更しません。 | `stop` |
-| `save_replay` | 保存し、完成したフォルダのパスを返します。`logs_only: true`（既定false）ではLogcatツールバーのボタンと同じくログと`session.json`だけを保存し（MP4なし、`coverage.video.state`は`EXCLUDED`）、動画の取得は止めません。 | `save` / `save --logs-only` |
+| `save_replay` | 保存し、完成したフォルダのパス（`directory`）と、最初に読む要約`README.md`のパス（`summary_path`）を返します。`logs_only: true`（既定false）ではLogcatツールバーのボタンと同じくログと`replay.json`・`README.md`だけを保存し（MP4なし、`coverage.video.state`は`EXCLUDED`）、動画の取得は止めません。 | `save` / `save --logs-only` |
 | `take_screenshot` | GUIのスクリーンショットと同じ処理で、録画対象端末の今の画面をPNG保存し（対象アプリが前面である必要はありません）、パスを返します。`include_image`（既定true）で画像も返します（10 MiBまで）。 | `screenshot` |
 | `get_settings` | 設定とON/OFF状態をJSONで返します。 | `settings` |
 | `update_settings` | 指定した設定だけを変更し、変更後の設定を返します。 | `settings set KEY=VALUE...` |
@@ -57,7 +57,7 @@ Devin: 設定のMCP Marketplaceで「Add your own」からstdioサーバーを�
 
 ## 結果と失敗
 
-成功時は`content`のtextに結果を返します。protocol `2025-06-18`以降では、JSONの結果（`get_status` / `get_settings` / `update_settings` / `list_projects`）とパス（`save_replay`の`path`、`take_screenshot`の`path`）を`structuredContent`にも入れます。
+成功時は`content`のtextに結果を返します。protocol `2025-06-18`以降では、JSONの結果（`get_status` / `get_settings` / `update_settings` / `list_projects`）とパス（`save_replay`の`directory`と`summary_path`、`take_screenshot`の`path`）を`structuredContent`にも入れます。
 
 失敗はtool結果の`isError: true`で返し、textの末尾にCLIと同じ終了コードを付けます。
 

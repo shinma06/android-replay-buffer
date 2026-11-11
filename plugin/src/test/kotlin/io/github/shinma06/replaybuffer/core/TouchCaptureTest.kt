@@ -45,13 +45,13 @@ class TouchCaptureTest {
             assertEquals(10, touch["x"].asInt)
             assertEquals(2400, touch["display_height"].asInt)
             assertTrue(touch["movie_us"].isJsonNull) // No presented frame covers it.
-            val json = JsonParser.parseString(Files.readString(output.directory.resolve("session.json"))).asJsonObject
-            assertEquals("touches.jsonl", json["touch_file"].asString)
+            val json = JsonParser.parseString(Files.readString(output.directory.resolve("replay.json"))).asJsonObject
+            assertEquals("touches.jsonl", json["files"].asJsonObject["touches"].asString)
             val touches = json["touches"].asJsonObject
             assertEquals(1, touches["count"].asInt)
             assertTrue(touches["show_touches"].asBoolean)
             assertEquals("CAPTURING", touches["state"].asString)
-            assertTrue(Files.readString(output.directory.resolve("README.txt")).contains("touches.jsonlに1件"))
+            assertTrue(Files.readString(output.directory.resolve("README.md")).contains("| タップ | 1件（うち動画に重なる"))
             store.release(pinned.id)
         }
     }
@@ -105,7 +105,7 @@ class TouchCaptureTest {
             assertEquals(1L, pinned.touchDropped)
             assertTrue(pinned.touchGaps.any { it.reason == "保持上限を超えた古いタップ位置を破棄しました" && it.from == null && it.to != null })
             val output = SaveWriter().write(pinned, root, { false }) { Files.move(it.partial, it.complete) }
-            val touches = JsonParser.parseString(Files.readString(output.directory.resolve("session.json"))).asJsonObject["touches"].asJsonObject
+            val touches = JsonParser.parseString(Files.readString(output.directory.resolve("replay.json"))).asJsonObject["touches"].asJsonObject
             assertEquals("failed", touches["show_touches_state"].asString)
             assertTrue(touches["show_touches"].asBoolean)
         }
@@ -139,7 +139,7 @@ class TouchCaptureTest {
             assertNull(lost[1].from)
             assertNull(lost[1].to) // Not resynced yet: input of that device is still unknown.
             val output = SaveWriter().write(pinned, root, { false }) { Files.move(it.partial, it.complete) }
-            val gaps = JsonParser.parseString(Files.readString(output.directory.resolve("session.json"))).asJsonObject["touches"]
+            val gaps = JsonParser.parseString(Files.readString(output.directory.resolve("replay.json"))).asJsonObject["touches"]
                 .asJsonObject["gaps"].asJsonArray
             assertTrue(gaps.any { it.toString().contains("SYN_DROPPED") })
             store.release(pinned.id)
@@ -165,10 +165,10 @@ class TouchCaptureTest {
             store.log(DeviceLog(1_700_000_001_800_000_000, 12, 12, 10001, 0, 4, "Fixture", "row", byteArrayOf(1)), 1, host + 1_000_000_000)
             val pinned = assertNotNull(store.capture(ReplaySettings(showTouches = false), null, host + 1_800_000_000))
             val output = SaveWriter().write(pinned, root, { false }) { Files.move(it.partial, it.complete) }
-            val touches = JsonParser.parseString(Files.readString(output.directory.resolve("session.json"))).asJsonObject["touches"].asJsonObject
+            val touches = JsonParser.parseString(Files.readString(output.directory.resolve("replay.json"))).asJsonObject["touches"].asJsonObject
             assertEquals(false, touches["show_touches"].asBoolean)
             assertEquals("already_on", touches["show_touches_state"].asString)
-            assertTrue(Files.readString(output.directory.resolve("README.txt")).contains("設定OFF、端末で既にONのため動画に点が映っています"))
+            assertTrue(Files.readString(output.directory.resolve("README.md")).contains("設定OFF、端末で既にONのため動画に点が映っています"))
             store.release(pinned.id)
         }
     }

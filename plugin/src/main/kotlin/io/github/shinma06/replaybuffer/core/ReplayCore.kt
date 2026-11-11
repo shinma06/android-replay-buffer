@@ -206,12 +206,7 @@ class ReplayCore internal constructor(
     private fun startSave(capture: FrozenCapture, directory: Path): CompletionStage<SaveSnapshot> {
         cancelSave = AtomicBoolean()
         val cancellation = cancelSave
-        val excluded = capture.request.excludesVideo(capture.settings.captureMode)
-        val streams = capture.settings.captureMode.streams.filter { !excluded || it != "video" }
-        val missing = (capture.states.filter { (kind, it) -> kind in streams && it.state != StreamState.NOT_REQUESTED && (it.state != StreamState.CAPTURING || it.reason != null) }.keys +
-            capture.gaps.inWindow(capture.start, capture.end, capture.endUncertainty, capture.clocks, capture.clockRecoveries)
-                .flatMap { if (it.stream == "clock") streams else listOf(it.stream) } +
-            if (capture.logs.any { it.app == null }) listOf("app_log") else emptyList()).distinct().let { java.util.List.copyOf(it) }
+        val missing = capture.missingKinds()
         saveState = SaveSnapshot(SavePhase.WRITING, capture.id, capture.sequence, capture.start, capture.end,
             capture.seconds, directory, missingKinds = missing, device = capture.device,
             application = capture.settings.application, applicationHistory = capture.applicationHistory(), videoTail = capture.videoTail(),
@@ -491,4 +486,14 @@ internal class SaveAttempt(val initial: SaveSnapshot) {
         completed.complete(value)
         return value
     }
+}
+
+/** Streams whose recording in the frozen window is missing or unconfirmed; the save warning and README.md share it. */
+internal fun FrozenCapture.missingKinds(): List<String> {
+    val excluded = request.excludesVideo(settings.captureMode)
+    val streams = settings.captureMode.streams.filter { !excluded || it != "video" }
+    return (states.filter { (kind, it) -> kind in streams && it.state != StreamState.NOT_REQUESTED && (it.state != StreamState.CAPTURING || it.reason != null) }.keys +
+        gaps.inWindow(start, end, endUncertainty, clocks, clockRecoveries)
+            .flatMap { if (it.stream == "clock") streams else listOf(it.stream) } +
+        if (logs.any { it.app == null }) listOf("app_log") else emptyList()).distinct().let { java.util.List.copyOf(it) }
 }

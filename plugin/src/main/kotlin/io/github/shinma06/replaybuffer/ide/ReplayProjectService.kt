@@ -38,6 +38,7 @@ import io.github.shinma06.replaybuffer.core.CaptureState
 import io.github.shinma06.replaybuffer.core.MULTIPLE_DEVICES_REASON
 import io.github.shinma06.replaybuffer.core.ReplayOperation
 import io.github.shinma06.replaybuffer.core.ReplaySnapshot
+import io.github.shinma06.replaybuffer.core.ReplayFiles
 import io.github.shinma06.replaybuffer.core.SavePhase
 import io.github.shinma06.replaybuffer.core.SaveContent
 import io.github.shinma06.replaybuffer.core.SaveOrigin
@@ -400,6 +401,7 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
                     "last_save" to snapshot?.lastSave?.let { last -> linkedMapOf(
                         "phase" to last.phase.name, "request_id" to last.requestId, "attempt" to last.attempt,
                         "directory" to last.directory?.takeIf { last.phase == SavePhase.COMPLETED }?.toString(),
+                        "summary_path" to last.directory?.takeIf { last.phase == SavePhase.COMPLETED }?.resolve(ReplayFiles.SUMMARY)?.toString(),
                         "retained_path" to last.retainedPath?.toString(),
                         "error" to last.error, "missing_kinds" to last.missingKinds, "content" to last.content.name,
                     ) },

@@ -1,5 +1,6 @@
 package io.github.shinma06.replaybuffer.cli
 
+import io.github.shinma06.replaybuffer.core.ReplayFiles
 import java.io.ByteArrayOutputStream
 import java.io.InputStream
 import java.io.OutputStream
@@ -80,7 +81,7 @@ internal class ReplayMcpServer(
             emptyMap(), readOnly) { listProjects() },
         Tool("get_status", "Read the capture state of the project as JSON without changing anything (same as `replay status`): " +
             "`running` (capture ON), `capture_state`, `device_serial` (current capture target), `selected_device` (chosen serial, null = automatic), " +
-            "`devices` (connected devices while ON: `serial`, `name`, `kind`, `target`), `save_state`, `last_save` (`directory` only when completed, " +
+            "`devices` (connected devices while ON: `serial`, `name`, `kind`, `target`), `save_state`, `last_save` (`directory` and `summary_path` only when completed, " +
             "`retained_path` for a retained failed attempt), `error` and `reason`. ON does not mean frames are being captured; check `capture_state` and `error`.",
             projectOnly, readOnly) { args -> command(args, CliCommand.STATUS) },
         Tool("start_capture", "Turn capture ON for the project (same as the GUI toggle and `replay start`). The IDE owns the capture; " +
@@ -94,9 +95,9 @@ internal class ReplayMcpServer(
             command(args, CliCommand.STOP)
         },
         Tool("save_replay", "Save the buffered last seconds of screen video, logcat and timing (same as the GUI save and `replay save`). " +
-            "Turns capture ON first if it is OFF, which cannot save until data is buffered. On success returns the completed folder in `directory`. " +
-            "With `logs_only` true (same as the Logcat toolbar button and `replay save --logs-only`) only device/app logs and session.json are saved: " +
-            "no MP4, session.json `coverage.video.state` is EXCLUDED, and an ongoing video capture keeps running. " +
+            "Turns capture ON first if it is OFF, which cannot save until data is buffered. On success returns the completed folder in `directory` and its README.md (the summary to read first) in `summary_path`. " +
+            "With `logs_only` true (same as the Logcat toolbar button and `replay save --logs-only`) only device/app logs, replay.json and README.md are saved: " +
+            "no MP4, replay.json `coverage.video.state` is EXCLUDED, and an ongoing video capture keeps running. " +
             "If the outcome is unknown (timeout or disconnect), do not retry automatically; check get_status `last_save` first.",
             projectOnly + mapOf("logs_only" to mapOf("type" to "boolean", "default" to false,
                 "description" to "Save logs only, leaving video out of this save while video capture continues.")),
@@ -288,7 +289,8 @@ internal class ReplayMcpServer(
         val parsed = runCatching { McpJson.parse(response.output) }.getOrNull() as? Map<*, *>
         val structured: Map<String, Any?> = when {
             parsed != null -> parsed.entries.associate { (key, value) -> key as String to value }
-            command == CliCommand.SAVE || command == CliCommand.SAVE_LOGS -> linkedMapOf("directory" to response.output)
+            command == CliCommand.SAVE || command == CliCommand.SAVE_LOGS -> linkedMapOf("directory" to response.output,
+                "summary_path" to Path.of(response.output).resolve(ReplayFiles.SUMMARY).toString())
             else -> linkedMapOf("result" to response.output)
         }.let { if (response.error.isEmpty()) it else it + ("message" to response.error) }
         return result(listOf(response.output, response.error).filter(String::isNotEmpty).joinToString("\n"), structured)

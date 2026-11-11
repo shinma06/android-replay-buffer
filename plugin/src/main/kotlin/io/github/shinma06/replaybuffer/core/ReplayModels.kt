@@ -48,10 +48,10 @@ enum class CaptureMode {
     val streams: List<String> get() = if (videoRequested) listOf("video", "device_log", "app_log") else listOf("device_log", "app_log")
 }
 
-/** What one save writes. LOGS_ONLY leaves video acquisition running and records the exclusion in session.json. */
+/** What one save writes. LOGS_ONLY leaves video acquisition running and records the exclusion in replay.json. */
 enum class SaveContent { ALL, LOGS_ONLY }
 
-/** Where a save was requested; recorded in session.json. CLI also covers MCP, which reaches the IDE through the CLI endpoint. */
+/** Where a save was requested; recorded in replay.json. CLI also covers MCP, which reaches the IDE through the CLI endpoint. */
 enum class SaveOrigin { TOOL_WINDOW, RUNNING_DEVICES, LOGCAT_TOOLBAR, CLI, CRASH_AUTOSAVE }
 
 data class SaveRequest(val content: SaveContent = SaveContent.ALL, val origin: SaveOrigin = SaveOrigin.TOOL_WINDOW) {

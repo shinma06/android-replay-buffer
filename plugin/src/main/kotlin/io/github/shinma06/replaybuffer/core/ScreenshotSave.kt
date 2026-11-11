@@ -4,8 +4,7 @@ import java.io.ByteArrayInputStream
 import java.io.DataInputStream
 import java.nio.ByteBuffer
 import java.nio.file.Path
-import java.time.LocalDateTime
-import java.time.format.DateTimeFormatter
+import java.time.ZonedDateTime
 import java.util.UUID
 import java.util.zip.CRC32
 import javax.imageio.ImageIO
@@ -98,9 +97,9 @@ internal fun saveScreenshot(adbPath: Path, destination: Path, selectedSerial: St
     } catch (_: Exception) {
         throw ScreenshotSaveFailure("保存先フォルダを確認できません。設定の保存先・アクセス権を確認してください。")
     }
-    val name = "screenshot-${LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss-SSS"))}-${UUID.randomUUID()}"
-    val partial = root.resolve(".$name.partial")
-    val complete = root.resolve("$name.png")
+    val name = screenshotFileName(ZonedDateTime.now())
+    val partial = root.resolve(".${name.removeSuffix(".png")}.partial")
+    val complete = root.resolve(name)
     var retained: Path? = null
     try {
         SaveOutputDirectory.open(root).use { parent ->

@@ -96,8 +96,8 @@ start: 取得をONにして終了します。取得はIDEが続けます。
 stop: 対象projectの取得をOFFにします。未保存の記録は破棄します。
 save: GUIと同じ保存を実行し、完成フォルダだけをstdoutへ返します。OFFなら取得を開始します。
       記録の蓄積前は保存できません。GUIの状態を確認して再実行してください。
-save --logs-only: Logcatツールバーのボタンと同じく、端末ログ・アプリログ・session.jsonだけを保存します。
-      動画の取得中でもMP4は作らず、動画の取得は止めません（session.jsonのcoverage.videoはEXCLUDED）。
+save --logs-only: Logcatツールバーのボタンと同じく、端末ログ・アプリログ・replay.json・README.mdだけを保存します。
+      動画の取得中でもMP4は作らず、動画の取得は止めません（replay.jsonのcoverage.videoはEXCLUDED）。
 status: 設定を変えずに状態をJSONで表示します。取得ON中は接続中の端末一覧（devices）と取得対象（device_serial）も返します。
 screenshot: GUIと同じスクリーンショットを保存し、PNGのパスだけをstdoutへ返します。
 settings: 現在の設定をMCPのget_settingsと同じJSONでstdoutへ返します。
