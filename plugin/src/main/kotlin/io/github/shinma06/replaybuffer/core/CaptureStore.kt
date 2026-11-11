@@ -51,9 +51,15 @@ internal data class FrozenCapture(
     /** Host receive time before which nothing can be in the window when the device clock mapping is unknown. */
     val hostStart: Long? = null,
     val touches: List<TouchEntry> = emptyList(),
+    /** Per pointer, its last row before the window start when that is DOWN/MOVE: only tells the video overlay it is still down; never in touches.jsonl. */
+    val heldTouches: List<TouchEntry> = emptyList(),
     /** Touch reader state at freeze; null when video (and therefore touch capture) was not requested. */
     val touchState: StreamSnapshot? = null,
+    /** Injected-input (mirroring) reader state at freeze; null when video was not requested. */
+    val injectedTouchState: StreamSnapshot? = null,
     val touchGaps: List<TouchGap> = emptyList(),
+    /** Intervals where the injected-input reader was not reading; a pointer it had down is unknown after one starts. */
+    val injectedTouchGaps: List<TouchGap> = emptyList(),
     val touchDropped: Long = 0,
     /** Whether the visible dots were on during this generation; null before the touch reader decided. */
     val touchDots: TouchDots? = null,
@@ -96,9 +102,11 @@ internal class CaptureStore(
     private val logs = ArrayDeque<LogEntry>()
     private val touches = ArrayDeque<TouchEntry>()
     private val touchGaps = ArrayDeque<TouchGap>()
+    private val injectedTouchGaps = ArrayDeque<TouchGap>()
     /** Open SYN_DROPPED gaps per input device, identified by reference in [touchGaps]. */
     private val touchLostOpen = mutableMapOf<String, TouchGap>()
     private var touchState = StreamSnapshot(StreamState.RECOVERING)
+    private var injectedTouchState = StreamSnapshot(StreamState.RECOVERING)
     private var touchDropped = 0L
     /** Latest window time of a row evicted by [MAX_TOUCH_SAMPLES]; MAX_VALUE when that time is unknown. */
     private var touchEvictedThrough: Long? = null
@@ -165,12 +173,18 @@ internal class CaptureStore(
         states.replaceAll { kind, _ -> StreamSnapshot(if (kind == "video" && !captureMode.videoRequested) StreamState.NOT_REQUESTED else StreamState.RECOVERING) }
         if (captureMode.videoRequested) setTouchState(StreamState.RECOVERING, "取得を復旧しています")
         touchDots = null
+        if (captureMode.videoRequested) setInjectedTouchState(StreamState.RECOVERING, "取得を復旧しています")
         if (audioRequested) {
             if (audioState.state == StreamState.CAPTURING) addGap("audio", clock.now(), null, "端末の接続が切り替わりました")
             audioState = StreamSnapshot(StreamState.WAITING)
             audioConfig = null
         }
     }
+
+    /** Each pointer's latest row of the current generation while still down: kept past pruning so a held finger stays known. */
+    private fun heldTouchRows(): Set<TouchEntry> = touches.filter { it.generation == generation }
+        .groupBy { it.sample.device to it.sample.pointer }.values
+        .map { track -> track.maxBy { it.sample.monoNs } }.filter { it.sample.action != TouchAction.UP }.toSet()
 
     /** Touch samples exist only while video is requested; their time comes from the device input clock. */
     @Synchronized
@@ -224,6 +238,24 @@ internal class CaptureStore(
     fun touchStatus(state: StreamState, reason: String?, owner: Long) {
         if (closed || owner != generation || !captureMode.videoRequested) return
         setTouchState(state, reason)
+    }
+
+    @Synchronized
+    fun injectedTouchStatus(state: StreamState, reason: String?, owner: Long) {
+        if (closed || owner != generation || !captureMode.videoRequested) return
+        setInjectedTouchState(state, reason)
+    }
+
+    private fun setInjectedTouchState(state: StreamState, reason: String?) {
+        val now = clock.now()
+        val capturing = injectedTouchState.state == StreamState.CAPTURING
+        if (capturing && state != StreamState.CAPTURING) injectedTouchGaps += TouchGap(now, null, reason ?: "注入タップの取得が中断しました")
+        if (!capturing && state == StreamState.CAPTURING) {
+            val open = injectedTouchGaps.peekLast()?.takeIf { it.to == null }
+            if (open != null) { injectedTouchGaps.removeLast(); injectedTouchGaps.addLast(open.copy(to = now)) }
+        }
+        injectedTouchState = StreamSnapshot(state, reason = reason)
+        while (injectedTouchGaps.size > 4096) injectedTouchGaps.removeFirst()
     }
 
     @Synchronized
@@ -599,7 +631,8 @@ internal class CaptureStore(
             }
             pruneLogs { _, _, host -> host < cutoff }
             pruneAudio { _, _, host -> host < cutoff }
-            touches.removeIf { it.host < cutoff }
+            val held = heldTouchRows()
+            touches.removeIf { it !in held && it.host < cutoff }
             enforceVideoLimit()
             deleteUnused()
             return
@@ -626,7 +659,9 @@ internal class CaptureStore(
         }
         pruneLogs(expiredBefore(cutoff, latest))
         pruneAudio(expiredBefore(cutoff, latest))
+        val held = heldTouchRows()
         touches.removeIf { row ->
+            if (row in held) return@removeIf false
             val point = row.time.sequence
             point != null && row.time.uncertainty != Long.MAX_VALUE && point < cutoff - row.time.uncertainty
         }
@@ -694,10 +729,15 @@ internal class CaptureStore(
             } catch (_: ArithmeticException) { true } // Overflow cannot prove that the record is outside.
         }
         val rows = logs.map { row -> row.copy(time = logTime(row.source.wall, row.host)) }.filter { insideWindow(it.time, it.host) }
-        val touchRows = if (!withVideo) emptyList() else {
+        var heldTouches = emptyList<TouchEntry>()
+        val touchRows = (if (!withVideo) emptyList() else {
             val touchTime = clock.monoMapper()
             touches.map { row -> row.copy(time = touchTime(row.sample.monoNs, row.host, row.time.epoch)) }
-                .filter { insideWindow(it.time, it.host) }
+        }).let { mapped ->
+            heldTouches = mapped.filter { it.time.sequence != null && it.time.uncertainty != Long.MAX_VALUE && it.time.sequence < start }
+                .groupBy { Triple(it.generation, it.sample.device, it.sample.pointer) }.values
+                .map { track -> track.maxBy { it.time.sequence!! } }.filter { it.sample.action != TouchAction.UP }
+            mapped.filter { insideWindow(it.time, it.host) }
         }
         val audioRows = if (!audioRequested || !withVideo) emptyList() else
             audio.map { it.mapped(clock.video(it.pts, it.host, it.time.epoch)) }.filter { insideWindow(it.time, it.host) }
@@ -721,8 +761,10 @@ internal class CaptureStore(
             settings.replaySeconds, frames.toList(), rows.toList(), gaps.filter { withVideo || it.stream != "video" }, clock.snapshot(), apps.toList(), settings,
             streams(settings.replaySeconds, end), endUncertainty = uncertainty, windowClockEpoch = fixedEpoch ?: clock.currentEpoch(),
             clockRecoveries = clockRecoveries.toMap(), videoCuts = videoCuts.toMap(), hostStart = hostStart,
-            touches = touchRows, touchState = touchState.takeIf { withVideo }, touchGaps = if (!withVideo) emptyList() else touchGaps.toList() +
+            touches = touchRows, heldTouches = heldTouches, touchState = touchState.takeIf { withVideo },
+            injectedTouchState = injectedTouchState.takeIf { withVideo }, touchGaps = if (!withVideo) emptyList() else touchGaps.toList() +
                 listOfNotNull(touchEvictedThrough?.takeIf { it >= start }?.let { TouchGap(null, it.takeIf { it != Long.MAX_VALUE }, "保持上限を超えた古いタップ位置を破棄しました") }),
+            injectedTouchGaps = if (withVideo) injectedTouchGaps.toList() else emptyList(),
             touchDropped = if (withVideo) touchDropped else 0, touchDots = touchDots.takeIf { withVideo }, request = request,
             audio = audioRows, audioState = audioState.takeIf { audioRequested && withVideo })
         if (trigger != null) {
@@ -901,6 +943,7 @@ internal class CaptureStore(
         logs.clear()
         touches.clear()
         touchGaps.clear()
+        injectedTouchGaps.clear()
         touchLostOpen.clear()
         touchEvictedThrough = null
         apps.clear()

@@ -11,6 +11,7 @@ import com.intellij.util.xmlb.annotations.OptionTag
 import io.github.shinma06.replaybuffer.core.ApplicationMode
 import io.github.shinma06.replaybuffer.core.ApplicationTarget
 import io.github.shinma06.replaybuffer.core.CaptureMode
+import io.github.shinma06.replaybuffer.core.TapDisplay
 import io.github.shinma06.replaybuffer.core.VideoQuality
 import io.github.shinma06.replaybuffer.core.ReplaySettings as CoreReplaySettings
 import java.io.IOException
@@ -39,7 +40,7 @@ data class ReplaySettings @JvmOverloads constructor(
     val screenshotUsesLogcatDestination: Boolean = true,
     val screenshotDirectory: String = "",
     val videoQuality: VideoQuality = VideoQuality.STANDARD,
-    val showTouches: Boolean = false,
+    val tapDisplay: TapDisplay = TapDisplay.OFF,
     val recordAudio: Boolean = false,
     /** Serial of the chosen capture target; empty follows the only connected device and asks when several are connected. */
     val deviceSerial: String = "",
@@ -131,13 +132,18 @@ data class ReplaySettingsState @JvmOverloads constructor(
     @JvmField val screenshotDirectory: String = "",
     @field:OptionTag("videoQuality")
     @JvmField val videoQuality: VideoQuality = VideoQuality.STANDARD,
+    // Legacy boolean, still written (DEVICE) so that older plugin versions keep the device dots setting.
     @field:OptionTag("showTouches")
     @JvmField val showTouches: Boolean = false,
+    @field:OptionTag("tapDisplay")
+    @JvmField val tapDisplay: TapDisplay? = null,
     @field:OptionTag("recordAudio")
     @JvmField val recordAudio: Boolean = false,
     @field:OptionTag("deviceSerial")
     @JvmField val deviceSerial: String = "",
-)
+) {
+    val effectiveTapDisplay: TapDisplay get() = tapDisplay ?: if (showTouches) TapDisplay.DEVICE else TapDisplay.OFF
+}
 
 @Service(Service.Level.PROJECT)
 @State(
@@ -152,7 +158,7 @@ class ReplaySettingsStore : SerializablePersistentStateComponent<ReplaySettingsS
         val snapshot = state
         return ReplaySettings(snapshot.retentionSeconds, snapshot.destination, snapshot.appSelection, snapshot.manualPackage,
             snapshot.captureMode, snapshot.autoSaveOnCrash, snapshot.screenshotUsesLogcatDestination, snapshot.screenshotDirectory, snapshot.videoQuality,
-            snapshot.showTouches, snapshot.recordAudio, snapshot.deviceSerial)
+            snapshot.effectiveTapDisplay, snapshot.recordAudio, snapshot.deviceSerial)
     }
 
     fun setEnabled(value: Boolean) {
@@ -173,7 +179,7 @@ class ReplaySettingsStore : SerializablePersistentStateComponent<ReplaySettingsS
         require(error == null) { error.orEmpty() }
         updateState {
             require(!it.enabled || settings.captureMode == it.captureMode && settings.videoQuality == it.videoQuality &&
-                settings.showTouches == it.showTouches && settings.recordAudio == it.recordAudio) {
+                settings.tapDisplay == it.effectiveTapDisplay && settings.recordAudio == it.recordAudio) {
                 "取得モード・動画品質・タップ位置表示・音声の録音は取得をOFFにしてから変更してください。"
             }
             it.copy(
@@ -183,7 +189,8 @@ class ReplaySettingsStore : SerializablePersistentStateComponent<ReplaySettingsS
                 manualPackage = settings.manualPackage,
                 captureMode = settings.captureMode,
                 videoQuality = settings.videoQuality,
-                showTouches = settings.showTouches,
+                showTouches = settings.tapDisplay == TapDisplay.DEVICE,
+                tapDisplay = settings.tapDisplay,
                 recordAudio = settings.recordAudio,
                 autoSaveOnCrash = settings.autoSaveOnCrash,
                 screenshotUsesLogcatDestination = settings.screenshotUsesLogcatDestination,

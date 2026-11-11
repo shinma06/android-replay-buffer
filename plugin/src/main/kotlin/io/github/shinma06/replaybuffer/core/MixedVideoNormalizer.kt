@@ -136,7 +136,7 @@ internal class MixedVideoNormalizer(private val configs: List<ByteArray>, minimu
         }.apply { setKeyInterval(30) }
     }
 
-    fun encode(bytes: ByteArray): ByteBuffer {
+    fun encode(bytes: ByteArray, dots: List<OverlayDot> = emptyList()): ByteBuffer {
         val nals = H264Utils.splitFrame(ByteBuffer.wrap(bytes))
         var slices = 0
         nals.forEach { nal ->
@@ -173,6 +173,7 @@ internal class MixedVideoNormalizer(private val configs: List<ByteArray>, minimu
             for (row in 0 until h) System.arraycopy(decoded.getPlaneData(c), row * w, canvas.getPlaneData(c),
                 (row + (y shr shift)) * (width shr shift) + (x shr shift), w)
         }
+        drawTapDots(canvas, x, y, size.width, size.height, dots)
         encoded.clear()
         val result = encoder.encodeFrame(canvas, encoded).data
         require(result.remaining().toLong() * 8 * 30 <= 240_000_000) { "変換出力のbitrateがLevel 5.1/5.2共通上限を超えています" }

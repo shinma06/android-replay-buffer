@@ -56,6 +56,7 @@ class ReplayCore internal constructor(
     private var cancelSave = AtomicBoolean()
     private val autosave = CrashAutosave()
     private val touchRestore = ShowTouchesRestore()
+    private val inputLogRestore = ShowTouchesRestore()
     @Volatile private var saveAttempt: SaveAttempt? = null
     private var attemptOrdinal = 0L
     @Volatile private var current = ReplaySnapshot(0, 0, false, CaptureState.DISABLED, settings, 0,
@@ -128,7 +129,7 @@ class ReplayCore internal constructor(
     fun applySettings(value: ReplaySettings): CompletableFuture<ReplayOperation> = operation {
         val applied = value.validate()
         if (enabled && (applied.captureMode != settings.captureMode || applied.videoQuality != settings.videoQuality ||
-                applied.showTouches != settings.showTouches || applied.recordAudio != settings.recordAudio))
+                applied.tapDisplay != settings.tapDisplay || applied.recordAudio != settings.recordAudio))
             return@operation ReplayOperation(false, "取得モード・動画品質・タップ位置表示・音声の録音は取得をOFFにしてから変更してください")
         val chosen = applied.deviceSerial
         // An explicit choice replaces the current target only by restarting capture; never mix two devices in one buffer.
@@ -325,7 +326,7 @@ class ReplayCore internal constructor(
             configureAuto()
             backendStarted = System.nanoTime()
             backend = DeviceCapture(settings.adbPath!!, device!!.serial, resources!!, data, generation, settings.application, settings.videoQuality,
-                settings.showTouches, touchRestore, settings.recordAudio).also { it.start() }
+                settings.showTouches, touchRestore, inputLogRestore, settings.recordAudio).also { it.start() }
         }
         val data = store!!
         if (data.clock.snapshot().lastOrNull()?.received?.let { it >= backendStarted } == true) data.resume()
