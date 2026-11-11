@@ -6,12 +6,12 @@
 
 - 配布物: `develop` 先頭のCIが作ったプラグインZIP（`gh run download` で取得）
 - IDE: `plugin/build.gradle.kts` の `androidStudio(...)` と同じAndroid Studio
-- 端末: Android Emulator（headless）
+- 端末: Android Emulator（headless）。最新のAPIに加え、最低版のAndroid 9（API 28、`system-images;android-28;google_apis;x86_64`を`-memory 2048`で起動）でも確かめる（[対応Android](../requirements.md#対象と導入)）。Android 9では取得ON・保存・スクショ・タップ位置・クラッシュ時の自動保存・ログのみ・Running Devicesを確かめる
 - project: Android Studioの新規project（Empty Activity）。Gradle syncが通り、アプリを端末へinstallしておく
 
 ## 環境の準備
 
-1. エミュレータを `-no-window` で起動し、`adb devices` で `device` になるまで待つ
+1. エミュレータを `-qt-hide-window -grpc-use-token -idle-grpc-timeout 300` で起動し、`adb devices` で `device` になるまで待つ。`-no-window` や別windowで起動するとStudioのRunning Devicesに出ない
 2. `Xvfb :99 -screen 0 1920x1080x24` を起動し、`DISPLAY=:99` でStudioを起動する。既定の画面ではOpenGLの初期化に失敗することがある
 3. 日本語のUIを読むため、`fonts-noto-cjk` を入れてからStudioを起動する
 4. ZIPをStudioのplugin置き場（Linuxでは `~/.local/share/Google/AndroidStudio<版>/`）へ展開する
@@ -37,7 +37,7 @@
 | Running Devices | 上部の「取得ON/OFF」「直前N秒を保存」「スクリーンショット」 | ToolWindowと同じ結果になる |
 | Logcat | 動画＋ログで取得中に、Logcatヘッダー（または右クリック）の「直前N秒のログを保存」 | 完成フォルダに両ログと`session.json`があり、MP4がない。`coverage.video.state`が`EXCLUDED`、`save_request.origin`が`LOGCAT_TOOLBAR`。保存後も動画の取得が続く（続けて通常保存するとMP4ができる） |
 | タップ位置 | 取得中に `adb shell input tap` | 保存した `touches.jsonl` にその座標が入る。「タップを表示」ONなら動画に点が写る |
-| クラッシュ時の自動保存 | 設定ONで取得中に `adb shell am crash <対象package>` | 保存フォルダが1つ増え、`session.json` の `auto_trigger.kind` が `platform_reported_uncaught_exception`。別アプリのクラッシュでは増えない |
+| クラッシュ時の自動保存 | 設定ONで取得中に `adb shell am crash <対象package>` | 保存フォルダが1つ増え、`session.json` の `auto_trigger.kind` が `platform_reported_uncaught_exception`。別アプリのクラッシュでは増えない。続けて試す場合は30秒以上空け、`am force-stop <対象package>` してから起動し直す（Android 9ではクラッシュのダイアログが落ちたprocessを残し、次の`am crash`が報告を出さない）。報告と同じ時刻に時計の不足区間があると「報告の時計対応を確認できません」で保存しないのは仕様 |
 | 設定（CLI） | `bin/replay --project <dir> settings`、`settings set replay_seconds=<n>` | 値が設定画面と一致し、変更が反映される |
 | MCP | `bin/replay --project <dir> mcp` に `initialize` と `tools/list` を送る | 保存・スクリーンショット・設定・ON/OFFのtoolが返る |
 
