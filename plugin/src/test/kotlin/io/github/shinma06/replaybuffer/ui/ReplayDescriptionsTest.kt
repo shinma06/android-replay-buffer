@@ -237,6 +237,13 @@ class ReplayDescriptionsTest {
         val waiting = deviceChoices(state(device("b", connected = false), device("a")))
         assertEquals(listOf("b", "a"), waiting.map { it.serial })
         assertTrue(waiting.first().label.contains("切断中"))
-        assertEquals("複数の端末が接続されています — 取得する端末を選んでください", state(null, device("a"), device("b")).captureDescription())
+        assertEquals("端末の選択待ち", state(null, device("a"), device("b")).captureDescription())
+        val savedMissing = ReplaySnapshot(1, 1, true, CaptureState.WAITING, ReplaySettings(deviceSerial = "emulator-5556"), 1,
+            devices = listOf(device("emulator-5554")))
+        val restarted = deviceChoices(savedMissing)
+        assertEquals(listOf("emulator-5556", "emulator-5554"), restarted.map { it.serial })
+        assertEquals("emulator-5556（切断中）", restarted.first().label)
+        assertTrue(deviceChoices(savedMissing.copy(devices = emptyList())).isEmpty())
+        assertTrue(deviceChoices(savedMissing.copy(devices = listOf(device("emulator-5556")))).isEmpty())
     }
 }

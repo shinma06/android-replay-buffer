@@ -28,6 +28,7 @@ import com.intellij.util.ui.WrapLayout
 import io.github.shinma06.replaybuffer.core.ApplicationMode
 import io.github.shinma06.replaybuffer.core.CaptureState
 import io.github.shinma06.replaybuffer.core.DeviceKind
+import io.github.shinma06.replaybuffer.core.MULTIPLE_DEVICES_REASON
 import io.github.shinma06.replaybuffer.core.ReplayDevice
 import io.github.shinma06.replaybuffer.core.ReplaySnapshot
 import io.github.shinma06.replaybuffer.core.SavePhase
@@ -232,7 +233,10 @@ private class ReplayToolWindowPanel(private val project: Project) : JPanel(Borde
         screenshotButton.isEnabled = screenshotDisabled == null
         screenshotButton.text = if (service.screenshotBusy) "スクショを保存中…" else "スクリーンショット"
         screenshotButton.toolTipText = screenshotDisabled ?: "録画対象の端末の今の画面全体を保存します。取得OFFでは接続済みの1台から保存します。"
-        screenshotReason.text = screenshotDisabled ?: "スクショ対象: ${service.environment?.application?.packageName} / 保存先: ${if (store.settings().screenshotUsesLogcatDestination) "Logcatのスクショ保存先（保存時の最新設定）" else store.settings().screenshotDirectory}\n" +
+        // The status message already asks to choose a device; do not repeat it under the screenshot button.
+        val repeatsChoice = snapshot?.captureState == CaptureState.MULTIPLE_DEVICES && screenshotDisabled?.startsWith(MULTIPLE_DEVICES_REASON) == true
+        screenshotReason.isVisible = !repeatsChoice
+        screenshotReason.text = if (repeatsChoice) " " else screenshotDisabled ?: "スクショ対象: ${service.environment?.application?.packageName} / 保存先: ${if (store.settings().screenshotUsesLogcatDestination) "Logcatのスクショ保存先（保存時の最新設定）" else store.settings().screenshotDirectory}\n" +
             "撮影中は画面を切り替えないでください。通知・キーボードも写り、保護領域は空白になる場合があります。"
         enabled.isSelected = store.enabled
         enabled.isEnabled = store.enabled || !busy
@@ -373,23 +377,29 @@ internal fun ReplaySnapshot.captureDescription(): String = when (captureState) {
     CaptureState.CAPTURING -> "取得中"
     CaptureState.RECOVERING -> if (frozen) "接続待ち — 切断前の記録を保持" else "復旧中"
     CaptureState.PARTIAL -> "一部取得失敗"
-    CaptureState.MULTIPLE_DEVICES -> "複数の端末が接続されています — 取得する端末を選んでください"
+    CaptureState.MULTIPLE_DEVICES -> "端末の選択待ち"
 }
 
 internal data class DeviceChoice(val serial: String?, val label: String) {
     override fun toString(): String = label
 }
 
-/** Chooser entries, current target (or a no-choice placeholder) first; empty while fewer than two devices are in play. */
+/**
+ * Chooser entries, current target (or a no-choice placeholder) first; empty while fewer than two devices are in play.
+ * A saved serial that is not connected counts as one of them, so the GUI can move away from it like CLI/MCP can.
+ */
 internal fun deviceChoices(snapshot: ReplaySnapshot?): List<DeviceChoice> {
     if (snapshot == null) return emptyList()
     val target = snapshot.device
+    val saved = snapshot.settings.deviceSerial?.takeIf { serial -> target == null && snapshot.devices.none { it.serial == serial } }
     val others = snapshot.devices.filter { it.serial != target?.serial }
-    if (others.size + (if (target != null) 1 else 0) < 2) return emptyList()
+    if (others.size + (if (target != null || saved != null) 1 else 0) < 2) return emptyList()
     fun label(it: ReplayDevice) = "${it.name}（${if (it.kind == DeviceKind.EMULATOR) "Emulator" else "実機"}・${it.serial}" +
         "${if (it.connected) "" else "・切断中"}）"
-    return listOf(target?.let { DeviceChoice(it.serial, label(it)) } ?: DeviceChoice(null, "選んでください")) +
-        others.map { DeviceChoice(it.serial, label(it)) }
+    val first = target?.let { DeviceChoice(it.serial, label(it)) }
+        ?: saved?.let { DeviceChoice(it, "$it（切断中）") }
+        ?: DeviceChoice(null, "選んでください")
+    return listOf(first) + others.map { DeviceChoice(it.serial, label(it)) }
 }
 
 internal fun streamDescription(label: String, stream: StreamSnapshot?): String {
