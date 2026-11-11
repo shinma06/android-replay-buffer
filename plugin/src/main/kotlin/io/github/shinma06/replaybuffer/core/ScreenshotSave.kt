@@ -76,10 +76,20 @@ internal fun saveScreenshot(adbPath: Path, destination: Path, selectedSerial: St
             else "録画対象の端末が接続されていません。同じ端末を再接続してください。",
         )
         active()
-        val display = screenshotDisplay(adb.commandBytes("-s", serial, "shell", "dumpsys", "SurfaceFlinger", "--display-id",
-            limit = 1024 * 1024, timeoutSeconds = 15).toString(Charsets.UTF_8))
+        val display = try {
+            screenshotDisplay(adb.commandBytes("-s", serial, "shell", "dumpsys", "display",
+                limit = 4 * 1024 * 1024, timeoutSeconds = 15).toString(Charsets.UTF_8))
+        } catch (cancelled: InterruptedException) { throw cancelled } catch (_: Exception) { active(); null }
         active()
-        adb.commandBytes("-s", serial, "exec-out", "screencap", "-p", "-d", display, limit = 64 * 1024 * 1024, timeoutSeconds = 15)
+        val target = if (display == null) emptyArray() else arrayOf("-d", display)
+        try {
+            adb.commandBytes("-s", serial, "exec-out", "screencap", "-p", *target, limit = 64 * 1024 * 1024, timeoutSeconds = 15)
+        } catch (cancelled: InterruptedException) {
+            throw cancelled
+        } catch (_: Exception) {
+            active()
+            throw ScreenshotSaveFailure("端末画面を撮影できません。接続とデバッグ許可を確認して再度保存してください。")
+        }
     }
     active()
     validateScreenshotPng(bytes)
@@ -138,12 +148,29 @@ internal fun saveScreenshot(adbPath: Path, destination: Path, selectedSerial: St
     }
 }
 
-internal fun screenshotDisplay(dump: String): String {
-    val displays = Regex("(?m)^Display ([0-9]+) \\(HWC display [0-9]+\\):").findAll(dump).map { it.groupValues[1] }.toList()
-    check(displays.size == 1 && displays.single().toULongOrNull() != null) {
-        "撮影する端末画面を1つに特定できません。単一画面の対応端末を接続してください。"
+/**
+ * Physical id of logical display 0 (the default screen the user sees and scrcpy records) for `screencap -d`,
+ * read from `dumpsys display`; null when it cannot be determined, so screencap uses its own default screen.
+ *
+ * LocalDisplayAdapter names physical screens `local:<id>`: the SurfaceFlinger physical id since Android 10,
+ * the built-in display index that `screencap -d` takes before. Android 10+ DisplayInfo carries `displayId`;
+ * older dumps only place it on the preceding `mDisplayId=` line of the logical display.
+ */
+internal fun screenshotDisplay(dump: String): String? {
+    val defaultInfo = Regex("""DisplayInfo\{"[^"]*(?:", |, )displayId 0[",]""")
+    val logicalId = Regex("""^\s*mDisplayId=(.*)$""")
+    val logicalInfo = Regex("""^\s*m(?:Base|Override)DisplayInfo=DisplayInfo\{""")
+    val uniqueId = Regex("""\buniqueId "([^"]*)"""")
+    var logical: String? = null
+    val ids = mutableSetOf<String>()
+    for (line in dump.lineSequence()) {
+        val header = logicalId.find(line)
+        if (header != null) logical = header.groupValues[1].trim()
+        val info = defaultInfo.find(line) ?: logicalInfo.find(line)?.takeIf { logical == "0" } ?: continue
+        uniqueId.find(line, info.range.first)?.let { ids += it.groupValues[1] }
     }
-    return displays.single()
+    val id = ids.singleOrNull()?.takeIf { it.startsWith("local:") }?.removePrefix("local:") ?: return null
+    return id.takeIf { it.toULongOrNull()?.toString() == it }
 }
 
 internal fun validateScreenshotPng(bytes: ByteArray) {
