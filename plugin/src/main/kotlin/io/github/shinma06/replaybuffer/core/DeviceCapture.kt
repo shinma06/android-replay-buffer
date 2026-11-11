@@ -321,7 +321,7 @@ internal class DeviceCapture @JvmOverloads constructor(
                 // Exclude the old -T 1 tail; clock jumps remain explicitly uncertain, never backfilled.
                 if (!live) {
                     val anchor = store.clock.snapshot().lastOrNull { it.valid }
-                    if (lower == null || anchor?.epoch != initial.epoch || record.wall >= lower) live = true
+                    if (lower == null || anchor?.region != initial.region || record.wall >= lower) live = true
                 }
                 if (live && (!partition || (buffer == "main") == (record.lid == 0)))
                     store.log(record, generation, received)

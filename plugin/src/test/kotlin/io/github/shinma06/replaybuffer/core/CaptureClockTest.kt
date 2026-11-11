@@ -36,7 +36,7 @@ class CaptureClockTest {
                 assertEquals(video, log)
                 assertEquals(1_034_000_000, log.sequence)
                 assertEquals(1_000_000, log.uncertainty)
-                assertEquals(0, clock.currentEpoch())
+                assertEquals(0, clock.currentRegion())
             }
         }
     }
@@ -73,7 +73,7 @@ class CaptureClockTest {
         assertTrue(!slow.hostAnchored)
         val host = 12_100_000_000L
         assertTrue(clock.certain(host))
-        assertEquals(0, clock.currentEpoch())
+        assertEquals(0, clock.currentRegion())
         assertEquals(3_034_000_000, clock.log(1_700_000_003_034_000_000, host).elapsed)
         assertEquals(3_034_000_000, clock.video(3_034_000, host).elapsed)
         // T and its error come from the latest round-trip-supported sample, not from the slow reply.
@@ -103,7 +103,7 @@ class CaptureClockTest {
         val slow = clock.snapshot().last()
         assertEquals(slow, clock.hostAnchor(late))
         assertEquals(slow.readError + roundTrip / 2, clock.endUncertainty(late))
-        assertEquals(slow.elapsed + slow.sequenceOffset + late - slow.received, clock.now(late))
+        assertEquals(slow.elapsed + slow.segmentOffset + late - slow.received, clock.now(late))
     }
 
     @Test
@@ -116,7 +116,7 @@ class CaptureClockTest {
 
         val clock = receiptClock(31_842_708)
         val closedAt = 11_036_842_708L
-        clock.boundary(closedAt)
+        clock.startRegion()
         assertTrue(clock.add("1", listOf(3_000_000_000L, 3_000_000_000L,
             1_700_000_003_000_000_000, 3_000_000_000), 12_000_000_000, 12_000_200_000))
         assertNull(clock.log(1_700_000_002_000_000_000, closedAt + 1).elapsed)
@@ -137,8 +137,8 @@ class CaptureClockTest {
         val uncertain = clock.video(7_000_000, 7_000_000_000)
         assertNull(uncertain.elapsed) // Stale while the outage lasts.
         add(clock, 11_000_000_000)
-        assertEquals(listOf(0), clock.snapshot().map { it.epoch }.distinct())
-        assertEquals(7_000_050_000, clock.video(7_000_000, 7_000_000_000, uncertain.epoch).elapsed)
+        assertEquals(listOf(0), clock.snapshot().map { it.region }.distinct())
+        assertEquals(7_000_050_000, clock.video(7_000_000, 7_000_000_000, uncertain.region).elapsed)
         assertEquals(7_000_050_000, clock.log(1_700_000_007_000_000_000, 7_000_000_000).elapsed)
         assertTrue(clock.video(11_000_000, 11_000_200_000).elapsed != null)
     }
@@ -153,7 +153,7 @@ class CaptureClockTest {
                 "wall" -> add(clock, 11_000_000_000, wall = 1_700_000_000_000_000_000 + 60_000_000_000)
                 else -> add(clock, 11_000_000_000, boot = "2")
             }
-            assertEquals(1, clock.currentEpoch(), kind)
+            assertEquals(1, clock.currentRegion(), kind)
             assertNull(clock.video(7_000_000, 7_000_000_000, 0).elapsed, kind)
             assertNull(clock.log(1_700_000_007_000_000_000, 7_000_000_000).elapsed, kind)
         }
@@ -176,7 +176,7 @@ class CaptureClockTest {
         val clock = CaptureClock()
         add(clock, 1_000_000_000)
         add(clock, 2_000_000_000, mono = 1_999_800_000)
-        assertEquals(1, clock.snapshot().map { it.epoch }.distinct().size)
+        assertEquals(1, clock.snapshot().map { it.region }.distinct().size)
         val video = clock.video(1_500_000, 2_000_200_000)
         val log = clock.log(1_700_000_001_500_000_000, 2_000_200_000)
         assertTrue(kotlin.math.abs(video.elapsed!! - 1_500_150_000) <= 100)
@@ -204,11 +204,11 @@ class CaptureClockTest {
         assertTrue(third.sequence!! > afterBoot.sequence!!)
         assertTrue(third.uncertainty < 20_000_000)
         // Boot 2's rows keep their BOOTTIME but get no time on boot 3's axis.
-        val previousBoot = clock.video(500_000, 6_000_200_000, afterBoot.epoch)
+        val previousBoot = clock.video(500_000, 6_000_200_000, afterBoot.region)
         assertEquals(500_050_000, previousBoot.elapsed)
         assertNull(previousBoot.sequence)
         assertEquals(Long.MAX_VALUE, previousBoot.uncertainty)
-        assertEquals(afterBoot, clock.video(500_000, 6_000_200_000, afterBoot.epoch, clock.segment(afterBoot.epoch)))
+        assertEquals(afterBoot, clock.video(500_000, 6_000_200_000, afterBoot.region, clock.segment(afterBoot.region)))
         assertEquals(6, clock.snapshot().size)
     }
     @Test
@@ -239,21 +239,21 @@ class CaptureClockTest {
         compare()
         add(clock, 2_000_000_000)
         add(clock, 2_000_000_000) // Duplicate source keys: low is last, high is first.
-        add(clock, 2_000_000_000, wall = wallBase + 1_999_000_000) // Valid local regression within one epoch.
+        add(clock, 2_000_000_000, wall = wallBase + 1_999_000_000) // Valid local regression within one region.
         add(clock, 3_000_000_000)
         compare()
-        clock.boundary(3_000_200_000)
-        compare() // Closed epoch without a successor still counts as an ambiguous candidate.
+        clock.startRegion()
+        compare() // Closed region without a successor still counts as an ambiguous candidate.
         add(clock, 4_000_000_000, wall = wallBase + 2_000_000_000)
         add(clock, 5_000_000_000, wall = wallBase + 3_000_000_000)
-        compare() // Overlapping wall-clock epochs.
+        compare() // Overlapping wall-clock regions.
         add(clock, 500_000_000, host = 6_000_000_000, boot = "2")
         compare() // Second boot segment.
         add(clock, 200_000_000, host = 7_000_000_000, boot = "3")
         compare() // Third boot segment: earlier boots have no time on its axis.
         val frozen = clock.logMapper()
         val expected = frozen(wallBase + 2_000_000_000, 3_000_200_000)
-        clock.boundary(8_000_000_000)
+        clock.startRegion()
         clock.clear()
         add(clock, 20_000_000_000)
         assertEquals(expected, frozen(wallBase + 2_000_000_000, 3_000_200_000))
@@ -272,7 +272,7 @@ class CaptureClockTest {
             val hosts = snapshot.flatMap { sample ->
                 listOf(sample.sent - 1, sample.sent, sample.received, sample.received + 1, sample.received + 5_000_000_001)
             } + listOf(0L, Long.MAX_VALUE)
-            val hints = (snapshot.map { it.epoch }.distinct() + clock.currentEpoch() + 99).map<Int, Int?> { it } + null
+            val hints = (snapshot.map { it.region }.distinct() + clock.currentRegion() + 99).map<Int, Int?> { it } + null
             for (source in sources) for (host in hosts) for (hint in hints) {
                 val linear = runCatching { clock.mono(source, host, hint) }
                 val indexed = runCatching { mapper(source, host, hint) }
@@ -285,7 +285,7 @@ class CaptureClockTest {
         add(clock, 2_000_000_000, mono = 1_999_800_000)
         add(clock, 2_000_000_000)
         compare()
-        clock.boundary(2_000_200_000)
+        clock.startRegion()
         add(clock, 3_000_000_000)
         compare()
         add(clock, 500_000_000, host = 6_000_000_000, boot = "2")
@@ -346,7 +346,7 @@ class CaptureClockTest {
     fun manyEpochMapperMatchesLinearCandidatesAndPreservesExtremeRoundTripExceptions() {
         val clock = CaptureClock()
         for (i in 0 until 4096) {
-            clock.boundary(i * 100_000_000L)
+            clock.startRegion()
             add(clock, 1_000_000_000 + i * 100_000_000L, host = 1_000_000_000 + i * 100_000_000L)
         }
         val mapper = clock.logMapper()
@@ -380,15 +380,15 @@ class CaptureClockTest {
     fun rebootStartsItsOwnExactSegmentAfterTheHostGapEvenWithAWideFirstRead() {
         val clock = CaptureClock()
         add(clock, 5_000_000_000, host = 10_000_000_000)
-        val oldEpoch = clock.currentEpoch()
-        // Too wide to map sources, but the new boot id alone opens the boot's own epoch and segment.
+        val oldEpoch = clock.currentRegion()
+        // Too wide to map sources, but the new boot id alone opens the boot's own region and segment.
         assertFalse(clock.add("2", listOf(100_000_000, 100_000_000, 1_700_000_100_000_000_000, 103_000_000),
             13_000_000_000, 13_000_200_000))
-        val epoch = clock.currentEpoch()
-        assertTrue(epoch > oldEpoch)
+        val region = clock.currentRegion()
+        assertTrue(region > oldEpoch)
         assertEquals(1, clock.segment())
         add(clock, 200_000_000, host = 13_100_000_000, boot = "2")
-        assertEquals(epoch, clock.currentEpoch()) // The first good read compares only with reads of the same boot.
+        assertEquals(region, clock.currentRegion()) // The first good read compares only with reads of the same boot.
         val mapped = clock.video(250_000, 13_200_000_000)
         assertEquals(250_050_000, mapped.elapsed)
         // Placed by the host gap after the old boot's last read (13.0 s - 10.0002 s): ordering only.

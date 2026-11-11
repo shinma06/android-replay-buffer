@@ -475,7 +475,7 @@ class CrashAutosaveTest {
                 f.log(javaCrash(), if (condition == "pre-arm") 10_015_000_000 else 10_005_000_000)
                 if (condition !in listOf("uncorroborated")) f.log(platformCrash(exception = if (condition == "native") "Native crash" else "java.lang.RuntimeException"),
                     if (condition == "pre-arm") 10_016_000_000 else 10_006_000_000)
-                if (condition == "boundary") { f.store.clock.boundary(); f.store.configureAuto(f.settings, 1, "fixture", true, f.at(10_020_000_000)) }
+                if (condition == "boundary") { f.store.clock.startRegion(); f.store.configureAuto(f.settings, 1, "fixture", true, f.at(10_020_000_000)) }
                 if (condition == "target") f.store.configureAuto(f.settings.copy(application = ApplicationTarget("com.example.other")), 2, "fixture", true, f.at(10_020_000_000))
                 val pairs = f.store.autosave.drain(f.at(if (condition == "uncorroborated") 16_000_000_000 else 10_020_000_000))
                 if (condition == "pre-arm") {
@@ -530,11 +530,11 @@ class CrashAutosaveTest {
                     return@use
                 }
                 assertEquals(0, f.store.autosave.snapshot().notSavedCount)
-                val epoch = f.store.clock.currentEpoch()
-                f.anchor(15_000_000_000) // Sent within 5 s of the last good read: same epoch.
+                val region = f.store.clock.currentRegion()
+                f.anchor(15_000_000_000) // Sent within 5 s of the last good read: same region.
                 f.store.clockStatus(true, 1)
                 f.refresh(15_100_000_000)
-                assertEquals(epoch, f.store.clock.currentEpoch())
+                assertEquals(region, f.store.clock.currentRegion())
                 assertEquals(AutoSaveState.ARMED, f.store.autosave.snapshot().state)
                 val pair = f.store.autosave.drain(f.at(15_200_000_000)).single()
                 assertEquals(true, pair.java.row.app)
@@ -549,7 +549,7 @@ class CrashAutosaveTest {
 
     @Test
     fun clockGapOutlastingTheReceiptWindowOrChangingEpochRejectsHeldReports() {
-        for (condition in listOf("refresh", "drain", "late-recovery", "recovered-epoch", "uncertain-epoch")) {
+        for (condition in listOf("refresh", "drain", "late-recovery", "recovered-region", "uncertain-region")) {
             CrashFixture(Files.createDirectory(root.resolve(condition))).use { f ->
                 f.standard()
                 f.clockMiss(10_007_000_000)
@@ -558,16 +558,16 @@ class CrashAutosaveTest {
                     "refresh" -> f.refresh(15_007_200_000)
                     "drain" -> assertTrue(f.store.autosave.drain(f.at(15_007_200_000)).isEmpty())
                     "late-recovery" -> {
-                        // Same-epoch recovery seen by no refresh or drain until after the 5 s hold.
-                        val epoch = f.store.clock.currentEpoch()
+                        // Same-region recovery seen by no refresh or drain until after the 5 s hold.
+                        val region = f.store.clock.currentRegion()
                         f.anchor(12_000_000_000)
                         f.clockMiss(13_000_000_000)
                         f.anchor(15_500_000_000)
                         f.refresh(15_501_100_000)
-                        assertEquals(epoch, f.store.clock.currentEpoch())
+                        assertEquals(region, f.store.clock.currentRegion())
                     }
-                    "recovered-epoch" -> { f.store.clock.boundary(); f.anchor(10_009_000_000); f.refresh(10_010_100_000) }
-                    "uncertain-epoch" -> { f.store.clock.boundary(); f.refresh(10_008_000_000) }
+                    "recovered-region" -> { f.store.clock.startRegion(); f.anchor(10_009_000_000); f.refresh(10_010_100_000) }
+                    "uncertain-region" -> { f.store.clock.startRegion(); f.refresh(10_008_000_000) }
                 }
                 val snapshot = f.store.autosave.snapshot()
                 assertEquals(AutoSaveReason.NOT_SAVED_CLOCK_UNKNOWN, snapshot.lastOutcome?.reason, condition)

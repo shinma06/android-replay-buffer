@@ -218,17 +218,17 @@ elif len(a)>2 and a[2]=='forward':
 elif len(a)>2 and a[2]=='logcat':
     mode=(root/'probe-mode.txt').read_text()
     buffer=a[a.index('-b')+1]
-    def wire(lid,payload,epoch=None,pid=12,uid=10001,header=28):
-        epoch=time.time_ns() if epoch is None else epoch
-        raw=struct.pack('<HHiiII',len(payload),header,pid,pid,epoch//1000000000,epoch%1000000000)
+    def wire(lid,payload,region=None,pid=12,uid=10001,header=28):
+        region=time.time_ns() if region is None else region
+        raw=struct.pack('<HHiiII',len(payload),header,pid,pid,region//1000000000,region%1000000000)
         if header>=24: raw+=struct.pack('<I',lid)
         if header>=28: raw+=struct.pack('<I',uid)
         raw+=payload
         for i in range(0,len(raw),3):
             sys.stdout.buffer.write(raw[i:i+3]); sys.stdout.buffer.flush()
-    def emit(lid,message,epoch=None,pid=12,uid=10001,header=28,tag='Fixture'):
+    def emit(lid,message,region=None,pid=12,uid=10001,header=28,tag='Fixture'):
         payload=(b'\x06'+message.encode()) if lid==2 else b'\x04'+tag.encode()+b'\x00'+message.encode()+b'\x00'
-        wire(lid,payload,epoch,pid,uid,header)
+        wire(lid,payload,region,pid,uid,header)
     if '-d' in a:
         (root/'probe-started').touch()
         if mode=='empty': sys.exit(0)
@@ -250,7 +250,7 @@ elif len(a)>2 and a[2]=='logcat':
             emit(0,'wrong header',header=20); time.sleep(.1); continue
         if buffer=='all' and (root/'quiet-all').exists(): time.sleep(.1); continue
         if (root/'quiet-logs').exists():
-            if not quiet_sent: emit(0,'old tail',epoch=1000000000); quiet_sent=True
+            if not quiet_sent: emit(0,'old tail',region=1000000000); quiet_sent=True
             time.sleep(.05); continue
         emit(0,'hello',header=20 if mode=='legacy' else 28)
         if buffer=='all' and not crash_sent and (root/'crash-wire.txt').exists():
@@ -726,7 +726,7 @@ elif len(a)>3 and a[3]=='ps':
             parts.forEach { part ->
                 val item = part.asJsonObject
                 assertTrue(item["edit_start_us"].asString.toLong() >= 0)
-                // Individual frame mappings survive a source run spanning clock epochs.
+                // Individual frame mappings survive a source run spanning clock regions.
                 if (item["clock_alignment_known"].asBoolean) assertFalse(item["t_start_ns"].isJsonNull)
                 else assertTrue(item["t_start_ns"].isJsonNull && item["t_end_ns"].isJsonNull)
                 assertTrue(Files.size(folder.resolve(item["file"].asString)) > 0)

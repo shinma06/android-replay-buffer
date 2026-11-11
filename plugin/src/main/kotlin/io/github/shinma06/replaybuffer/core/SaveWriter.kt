@@ -207,8 +207,8 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
             // Clock-read outages are described by timebase.clock_steps, so the emitted gaps and their indexes omit them.
             val emittedGaps = capture.gaps.indices.filter { capture.gaps[it].stream != "clock" }
             val videoScopes = capture.gaps.gapScopes(capture.clocks, capture.clockRecoveries, videoProofs, windowSegment)
-            val epochSegments = capture.clocks.associate { it.epoch to it.segment }
-            fun segmentOf(epoch: Int?): Int? = epoch?.let(epochSegments::get)
+            val regionSegments = capture.clocks.associate { it.region to it.segment }
+            fun segmentOf(region: Int?): Int? = region?.let(regionSegments::get)
             /** Saved times are ns from the window start on the window's boot; another boot's value is only approximate. */
             fun windowT(sequence: Long?): String? = sequence?.let { (it - capture.start).toString() }
             fun sampleJson(c: ClockSample) = clockJson(c, capture.start, windowSegment)
@@ -381,7 +381,7 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                                     val known = aligned(frame)
                                     val sequence = frame.time.sequence
                                     val next = samples.getOrNull(n + 1)
-                                    val confirmedEnd = if (known && next != null && aligned(next) && next.time.epoch == frame.time.epoch &&
+                                    val confirmedEnd = if (known && next != null && aligned(next) && next.time.region == frame.time.region &&
                                         next.time.sequence!! > sequence!! && !interrupted(frame, next, closed, n))
                                         minOf(capture.end, next.time.sequence) else null
                                     val dots = tapOverlay?.let { tap -> sequence?.takeIf { known }?.let { start ->
@@ -434,7 +434,7 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                                     }
                                     if (displayWindowStart != null && confirmedEnd != null && confirmedEnd - capture.start > displayWindowStart)
                                         frameCoverage += maxOf(0, displayWindowStart) to (confirmedEnd - capture.start)
-                                    if (known && moviePts != null) movieAnchors += MovieAnchor(frame.time.epoch,
+                                    if (known && moviePts != null) movieAnchors += MovieAnchor(frame.time.region,
                                         Math.addExact(sequence!!, Math.multiplyExact(sourceDisplayOffset, 1000)), displayEnd - displayStart, moviePts)
                                     index.write(gson.toJson(mapOf("part" to videoName, "segment_index" to runIndex, "sample_index" to sampleIndex,
                                         "decode_run" to frame.decodeRun.toString(), "packet_ordinal" to frame.packetOrdinal.toString(),
@@ -453,7 +453,7 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                                         "display_duration_us" to duration.toString(), "media_pts_us" to media.toString(),
                                         "movie_pts_us" to moviePts?.toString(), "movie_end_us" to moviePts?.let { Math.addExact(it, displayEnd - displayStart).toString() },
                                         "source_display_start_us" to if (presented) Math.addExact(frame.pts, sourceDisplayOffset).toString() else null,
-                                        "elapsed_ns" to frame.time.elapsed?.toString(), "boot_segment" to segmentOf(frame.time.epoch),
+                                        "elapsed_ns" to frame.time.elapsed?.toString(), "boot_segment" to segmentOf(frame.time.region),
                                         "t_ns" to sequence?.takeIf { known }?.let { (it - capture.start).toString() },
                                         "display_t_ns" to displayWindowStart?.toString(),
                                         "confirmed_t_end_ns" to confirmedEnd?.let { (it - capture.start).toString() },
@@ -473,7 +473,7 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                                 val alignmentKnown = displayed.all(::aligned) && displayed.indices.drop(1).all { k ->
                                     val a = displayed[k - 1]
                                     val b = displayed[k]
-                                    a.time.epoch == b.time.epoch && !interrupted(a, b, closed, visibleIndex - keyIndex + k - 1)
+                                    a.time.region == b.time.region && !interrupted(a, b, closed, visibleIndex - keyIndex + k - 1)
                                 }
                                 parts += mapOf("file" to videoName, "segment_index" to runIndex, "generation" to first.generation,
                                     "decode_run" to first.decodeRun.toString(), "source_pts_origin_us" to origin.toString(),
@@ -489,8 +489,8 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                                 previousLast = last
                             }
                             track.setEdits(edits)
-                            val anchorsByEpoch = movieAnchors.groupBy { it.epoch }.mapValues { (_, list) -> list.sortedBy { it.from } }
-                            val plan = if (capture.audioState == null) null else planAudio(capture.audio, anchorsByEpoch, movie) { row ->
+                            val anchorsByRegion = movieAnchors.groupBy { it.region }.mapValues { (_, list) -> list.sortedBy { it.from } }
+                            val plan = if (capture.audioState == null) null else planAudio(capture.audio, anchorsByRegion, movie) { row ->
                                 row.time.sequence != null && capture.windowKnown && row.time.uncertainty != Long.MAX_VALUE
                             }
                             audioPlan = plan
@@ -525,7 +525,7 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                     capture.logs.forEach { row ->
                         checkActive()
                         val source = row.source
-                        val record = gson.toJson(mapOf("record_id" to row.id, "boot_segment" to segmentOf(row.time.epoch),
+                        val record = gson.toJson(mapOf("record_id" to row.id, "boot_segment" to segmentOf(row.time.region),
                             "generation" to row.generation, "epoch_ns" to source.wall.toString(),
                             "elapsed_ns" to row.time.elapsed?.toString(), "t_ns" to row.time.sequence?.takeIf { capture.windowKnown }?.let { (it - capture.start).toString() },
                             "t_uncertainty_ns" to row.time.uncertainty.toString(), "uid" to source.uid, "pid" to source.pid,
@@ -540,15 +540,15 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
             val touchFile = if (videoRequested) file(ReplayFiles.TOUCHES) else null
             var touchesInMovie = 0
             if (touchFile != null) writer(touchFile).use { out ->
-                val anchors = movieAnchors.groupBy { it.epoch }.mapValues { (_, list) -> list.sortedBy { it.from } }
+                val anchors = movieAnchors.groupBy { it.region }.mapValues { (_, list) -> list.sortedBy { it.from } }
                 capture.touches.forEach { row ->
                     checkActive()
                     val point = row.time.sequence?.takeIf { capture.windowKnown && row.time.uncertainty != Long.MAX_VALUE }
-                    val movieUs = point?.let { anchors[row.time.epoch]?.movieTime(it) }
+                    val movieUs = point?.let { anchors[row.time.region]?.movieTime(it) }
                     if (movieUs != null) touchesInMovie++
                     val sample = row.sample
                     val screen = row.rotation?.let { screenPoint(sample.x, sample.y, row.width, row.height, it) }
-                    out.write(gson.toJson(mapOf("boot_segment" to segmentOf(row.time.epoch), "generation" to row.generation,
+                    out.write(gson.toJson(mapOf("boot_segment" to segmentOf(row.time.region), "generation" to row.generation,
                         "device_mono_ns" to sample.monoNs.toString(), "elapsed_ns" to row.time.elapsed?.toString(),
                         "t_ns" to point?.let { (it - capture.start).toString() }, "t_uncertainty_ns" to row.time.uncertainty.toString(),
                         "movie_us" to movieUs?.toString(), "action" to sample.action.wire, "pointer" to sample.pointer,
@@ -752,7 +752,7 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                         mapOf("quality" to it, "max_size" to it.maxSize, "max_fps" to it.maxFps,
                             "video_bit_rate" to it.bitRate, "downsize_on_error" to false)
                     }.takeIf { videoRequested }),
-                "application_history" to capture.apps.map { appJson(it, segmentOf(it.epoch)) },
+                "application_history" to capture.apps.map { appJson(it, segmentOf(it.region)) },
                 "coverage" to capture.states.mapValues { (kind, state) -> if (videoExcluded && kind == "video") mapOf("state" to "EXCLUDED",
                     "requested" to false, "excluded" to true, "capture_state" to state.state, "availableSeconds" to 0.0,
                     "reason" to "ログのみの保存として動画を意図的に除外しました（動画の取得は継続しています）") else mapOf("state" to state.state,
@@ -763,7 +763,7 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                     else audioCoverage(capture, audioPlan)),
                 "gaps" to emittedGaps.map { capture.gaps[it] }.map { gap -> mapOf("kind" to gap.stream,
                     "from_t_ns" to windowT(gap.fromNs), "to_t_ns" to windowT(gap.toNs), "reason" to gap.reason,
-                    "generation" to gap.generation, "boot_segment" to segmentOf(gap.clockEpoch),
+                    "generation" to gap.generation, "boot_segment" to segmentOf(gap.clockRegion),
                     "boundary_uncertainty_ns" to gap.boundaryUncertaintyNs?.toString(),
                     "duration_uncertain" to (gap.fromNs == null || gap.toNs == null || gap.boundaryUncertaintyNs == null || gap.boundaryUncertaintyNs == Long.MAX_VALUE)) },
                 "loss" to losses, "logcat_overflow_count" to null,
@@ -792,7 +792,7 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                 "parts" to parts, "video_run_boundaries" to runBoundaries, "video_missing_ranges" to videoHoles,
                 "video_gap_scopes" to capture.gaps.mapIndexedNotNull { i, gap ->
                     if (gap.stream != "video") null else videoScopes[i].let { scope -> mapOf(
-                        "gap_index" to emittedGaps.indexOf(i), "generation" to gap.generation, "boot_segment" to segmentOf(gap.clockEpoch),
+                        "gap_index" to emittedGaps.indexOf(i), "generation" to gap.generation, "boot_segment" to segmentOf(gap.clockRegion),
                         "from_t_ns" to windowT(scope.fromNs), "to_t_ns" to windowT(scope.toNs),
                         "boundary_uncertainty_ns" to scope.boundaryUncertaintyNs?.toString(),
                         "derived_from_valid_samples" to (scope !== gap),
@@ -801,7 +801,7 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                 },
                 "video_tail" to tail?.let { mapOf("from_t_ns" to windowT(it.fromNs), "to_t_ns" to windowT(it.toNs),
                     "source_pts_us" to it.sourcePtsUs.toString(), "source_t_ns" to windowT(it.sourceSequenceNs),
-                    "boot_segment" to segmentOf(it.clockEpoch), "generation" to it.generation, "display_held" to it.displayHeld,
+                    "boot_segment" to segmentOf(it.clockRegion), "generation" to it.generation, "display_held" to it.displayHeld,
                     "new_frame_confirmed" to false) }, "files_sha256" to hashes)
             writer(file(ReplayFiles.RECORD)).use { it.write(gson.toJson(manifest)) }
             own.forEach { (path, output) -> checkActive(); checkOwned(path); output.channel().use { ch -> ch.force(true) }; checkActive() }
@@ -863,7 +863,7 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
         "boot_segment" to c.segment, "boot" to c.boot,
         "elapsed_before_ns" to c.before.toString(), "mono_ns" to c.mono.toString(), "epoch_ns" to c.wall.toString(),
         "elapsed_after_ns" to c.after.toString(), "host_sent_ns" to c.sent.toString(), "host_received_ns" to c.received.toString(),
-        "t_ns" to if (c.segment == windowSegment) (c.elapsed + c.sequenceOffset - start).toString() else null,
+        "t_ns" to if (c.segment == windowSegment) (c.elapsed + c.segmentOffset - start).toString() else null,
         "read_uncertainty_ns" to c.readError.toString(), "valid" to c.valid, "host_anchored" to c.hostAnchored)
 
     /**
@@ -875,11 +875,11 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
         fun t(sequence: Long?): String? = sequence?.let { (it - capture.start).toString() }
         val anchor = capture.clocks.lastOrNull { it.segment == windowSegment }
         val steps = mutableListOf<Pair<Long?, Map<String, Any?>>>()
-        capture.clocks.filter { it.valid }.zipWithNext().filter { (a, b) -> a.epoch != b.epoch }.forEach { (a, b) ->
+        capture.clocks.filter { it.valid }.zipWithNext().filter { (a, b) -> a.region != b.region }.forEach { (a, b) ->
             val reboot = a.segment != b.segment
-            val from = a.elapsed + a.sequenceOffset
+            val from = a.elapsed + a.segmentOffset
             steps += from to mapOf("kind" to if (reboot) "reboot" else "clock_step", "from_t_ns" to t(from),
-                "to_t_ns" to t(b.elapsed + b.sequenceOffset),
+                "to_t_ns" to t(b.elapsed + b.segmentOffset),
                 "boundary_uncertainty_ns" to if (reboot) Long.MAX_VALUE.toString() else maxOf(a.readError, b.readError).toString(),
                 "duration_uncertain" to (reboot || a.segment != windowSegment),
                 "before_sample" to clockJson(a), "after_sample" to clockJson(b))
@@ -896,14 +896,14 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
         }
         return mapOf("domain" to "device_boottime", "t_origin" to "window_start", "known" to capture.windowKnown,
             "boot_segment" to windowSegment, "boot" to anchor?.boot,
-            "window_start_elapsed_ns" to anchor?.takeIf { capture.windowKnown }?.let { (capture.start - it.sequenceOffset).toString() },
+            "window_start_elapsed_ns" to anchor?.takeIf { capture.windowKnown }?.let { (capture.start - it.segmentOffset).toString() },
             "window_duration_ns" to (capture.end - capture.start).toString(),
             "window_end_uncertainty_ns" to capture.endUncertainty.toString(),
             "boot_segments" to capture.clocks.groupBy { it.segment }.map { (segment, samples) -> mapOf(
                 "boot_segment" to segment, "boot" to samples.first().boot,
                 "placement" to if (segment == windowSegment) "exact" else "approximate",
-                "first_sample_t_ns" to t(samples.first().elapsed + samples.first().sequenceOffset),
-                "last_sample_t_ns" to t(samples.last().elapsed + samples.last().sequenceOffset)) },
+                "first_sample_t_ns" to t(samples.first().elapsed + samples.first().segmentOffset),
+                "last_sample_t_ns" to t(samples.last().elapsed + samples.last().segmentOffset)) },
             "clock_steps" to steps.sortedWith(compareBy(nullsFirst()) { it.first }).map { it.second },
             "samples" to capture.clocks.map(clockJson))
     }
@@ -933,7 +933,7 @@ internal fun VideoEntry.playbackContinuousTo(next: VideoEntry): Boolean {
 }
 
 /** A presented frame's display interval: [from] in sequence ns, [durationUs] and [movieUs] on the saved MP4 timeline. */
-internal data class MovieAnchor(val epoch: Int, val from: Long, val durationUs: Long, val movieUs: Long)
+internal data class MovieAnchor(val region: Int, val from: Long, val durationUs: Long, val movieUs: Long)
 
 /** Movie time showing [point], or null when no presented frame covers it; [this] is sorted by [MovieAnchor.from]. */
 internal fun List<MovieAnchor>.movieTime(point: Long): Long? {
@@ -1003,7 +1003,7 @@ internal fun planAudio(audio: List<AudioEntry>, anchors: Map<Int, List<MovieAnch
     }
     for (row in audio) {
         val point = row.time.sequence
-        val at = if (row.config.contentEquals(config) && point != null && aligned(row)) anchors[row.time.epoch]?.movieTime(point) else null
+        val at = if (row.config.contentEquals(config) && point != null && aligned(row)) anchors[row.time.region]?.movieTime(point) else null
         val end = at?.let { spans.endOf(it) }
         if (at == null || end == null || at >= movieUs) { close(); continue }
         if (count > 0 && row.session == session && end == spanEnd &&
@@ -1028,7 +1028,7 @@ internal fun planAudio(audio: List<AudioEntry>, anchors: Map<Int, List<MovieAnch
 }
 
 /**
- * Movie intervals `[start, end]` shown without a break: adjacent anchors of one clock epoch join only when they
+ * Movie intervals `[start, end]` shown without a break: adjacent anchors of one clock region join only when they
  * continue in both movie time and device time, so a video hole the movie skips still ends a span.
  */
 internal fun displayedSpans(anchors: Map<Int, List<MovieAnchor>>): List<LongArray> {
@@ -1037,7 +1037,7 @@ internal fun displayedSpans(anchors: Map<Int, List<MovieAnchor>>): List<LongArra
     anchors.values.flatten().sortedBy { it.movieUs }.forEach { anchor ->
         val last = previous
         val end = anchor.movieUs + anchor.durationUs
-        if (last != null && last.epoch == anchor.epoch &&
+        if (last != null && last.region == anchor.region &&
             kotlin.math.abs(anchor.movieUs - (last.movieUs + last.durationUs)) <= SPAN_JOIN_TOLERANCE_US &&
             kotlin.math.abs((anchor.from - last.from) / 1000 - last.durationUs) <= SPAN_JOIN_TOLERANCE_US)
             spans.last()[1] = maxOf(spans.last()[1], end)

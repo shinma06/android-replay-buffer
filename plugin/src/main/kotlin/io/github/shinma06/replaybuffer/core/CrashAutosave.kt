@@ -1,7 +1,7 @@
 package io.github.shinma06.replaybuffer.core
 
 internal data class CrashBarrier(
-    val device: String, val boot: String, val generation: Long, val epoch: Int,
+    val device: String, val boot: String, val generation: Long, val region: Int,
     val host: Long, val wall: Long, val amCrashFields: Int? = null,
 )
 
@@ -68,15 +68,15 @@ internal class CrashAutosave {
     }
 
     /**
-     * [clockEpoch] is set only when the clock is the sole missing condition: a same-epoch uncertain clock then keeps
-     * the barrier and unadmitted reports for at most [CRASH_RECEIPT_NS], and same-epoch recovery resumes them.
+     * [clockRegion] is set only when the clock is the sole missing condition: a same-region uncertain clock then keeps
+     * the barrier and unadmitted reports for at most [CRASH_RECEIPT_NS], and same-region recovery resumes them.
      * [resolve] re-maps a deferred report's row with the recovered clock and returns its app period.
      */
     @Synchronized
-    fun refresh(value: CrashBarrier?, host: Long? = null, clockEpoch: Int? = null,
+    fun refresh(value: CrashBarrier?, host: Long? = null, clockRegion: Int? = null,
                 resolve: ((LogEntry) -> Pair<LogEntry, AppPeriod?>)? = null) {
         val old = barrier
-        if (old != null && value == null && host != null && clockEpoch == old.epoch) {
+        if (old != null && value == null && host != null && clockRegion == old.region) {
             val since = heldSince ?: host.also { heldSince = it }
             if (host < since || host - since <= CRASH_RECEIPT_NS) return // An earlier receipt is inside the hold.
         }
@@ -85,7 +85,7 @@ internal class CrashAutosave {
         if (old != null && value != null && held != null && host != null && host > held && host - held > CRASH_RECEIPT_NS)
             invalidate(AutoSaveReason.NOT_SAVED_CLOCK_UNKNOWN)
         if (old != null && (value == null || old.generation != value.generation || old.device != value.device ||
-                old.boot != value.boot || old.epoch != value.epoch)) {
+                old.boot != value.boot || old.region != value.region)) {
             invalidate(if (value != null && old.generation != value.generation) AutoSaveReason.NOT_SAVED_STALE_OWNER
                 else AutoSaveReason.NOT_SAVED_CLOCK_UNKNOWN)
         }

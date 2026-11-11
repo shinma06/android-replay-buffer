@@ -19,13 +19,13 @@ internal fun frozenAutoTrigger(pair: CrashPair, capture: FrozenCapture, mapper: 
         java.targetRevision != platform.targetRevision) reject(AutoSaveReason.NOT_SAVED_TARGET_CHANGED)
     if (java.row.generation != capture.generation || platform.row.generation != capture.generation ||
         arm.generation != capture.generation) reject(AutoSaveReason.NOT_SAVED_STALE_OWNER)
-    if (arm != platform.barrier || arm.epoch != capture.windowClockEpoch ||
+    if (arm != platform.barrier || arm.region != capture.windowClockRegion ||
         capture.clocks.lastOrNull()?.boot != arm.boot) reject(AutoSaveReason.NOT_SAVED_CLOCK_UNKNOWN)
     val jt = mapper(java.row.source.wall, java.row.host)
     val pt = mapper(platform.row.source.wall, platform.row.host)
     val bt = mapper(arm.wall, arm.host)
     if (listOf(jt, pt, bt).any { it.sequence == null || it.elapsed == null || it.uncertainty !in 0..20_000_000 ||
-            it.epoch != arm.epoch }) reject(AutoSaveReason.NOT_SAVED_CLOCK_UNKNOWN)
+            it.region != arm.region }) reject(AutoSaveReason.NOT_SAVED_CLOCK_UNKNOWN)
     val v = capture.endUncertainty
     if (v !in 0..20_000_000) reject(AutoSaveReason.NOT_SAVED_CLOCK_UNKNOWN)
     try {
@@ -44,7 +44,7 @@ internal fun frozenAutoTrigger(pair: CrashPair, capture: FrozenCapture, mapper: 
         val elapsedLow = Math.subtractExact(jt.elapsed!!, jt.uncertainty)
         val elapsedHigh = Math.addExact(jt.elapsed, jt.uncertainty)
         val membership = capture.apps.filter { period ->
-            period.packageName == target && period.epoch == jt.epoch && period.uid == java.row.source.uid &&
+            period.packageName == target && period.region == jt.region && period.uid == java.row.source.uid &&
                 period.uidExclusive && !period.endUnknown && period.from != null && elapsedLow >= period.from &&
                 (period.to == null || elapsedHigh <= period.to)
         }.singleOrNull()

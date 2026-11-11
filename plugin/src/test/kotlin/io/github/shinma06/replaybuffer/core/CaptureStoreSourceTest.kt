@@ -19,7 +19,7 @@ class CaptureStoreSourceTest {
         assertEquals(2, first.packetOrdinal)
         assertTrue(first.decodeRun > 0)
         store.clockStatus(false, 1)
-        store.clock.boundary()
+        store.clock.startRegion()
         store.clockStatus(true, 1)
         store.status("device_log", StreamState.RECOVERING, "log-only", 1)
         store.frame(VideoPacket.Frame(300, false, false, byteArrayOf(3)), 1)

@@ -162,7 +162,7 @@ data class ReplayDevice(val serial: String, val name: String, val kind: DeviceKi
 /** Sequence-ns history; null bounds or null/MAX uncertainty are unknown, not zero loss or a proven duration. */
 data class CaptureGap(
     val stream: String, val fromNs: Long?, val toNs: Long?, val reason: String,
-    val boundaryUncertaintyNs: Long? = null, val generation: Long = 0, val clockEpoch: Int? = null,
+    val boundaryUncertaintyNs: Long? = null, val generation: Long = 0, val clockRegion: Int? = null,
 )
 /** gaps may affect this window; availableSeconds is observed row/frame span minus known gaps, not full coverage. */
 data class StreamSnapshot(
@@ -173,14 +173,14 @@ data class StreamSnapshot(
 )
 
 data class ApplicationPeriodSnapshot(
-    val packageName: String?, val fromNs: Long?, val toNs: Long?, val clockEpoch: Int,
+    val packageName: String?, val fromNs: Long?, val toNs: Long?, val clockRegion: Int,
     val resolved: Boolean,
 )
 
 /** Sequence-axis display of the last received image; no new image was confirmed in this range. */
 data class VideoTailSnapshot(
     val fromNs: Long?, val toNs: Long?, val sourcePtsUs: Long, val sourceSequenceNs: Long?,
-    val clockEpoch: Int, val generation: Long, val displayHeld: Boolean,
+    val clockRegion: Int, val generation: Long, val displayHeld: Boolean,
 )
 
 /**

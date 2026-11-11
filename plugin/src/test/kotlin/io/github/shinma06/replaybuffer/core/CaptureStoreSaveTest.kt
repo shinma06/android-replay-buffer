@@ -58,7 +58,7 @@ class CaptureStoreSaveTest {
                 assertFailsWith<IllegalStateException> { store.capture(ReplaySettings()) }
                 store.release(selected.id)
                 store.resume()
-                store.clock.boundary()
+                store.clock.startRegion()
                 val unknown = store.capture(ReplaySettings(replaySeconds = 2))!!
                 assertFalse(unknown.windowKnown)
                 assertEquals(listOf(0L, 1_000_000L, 2_000_000L, 4_000_000L, 5_000_000L, 6_000_000L, 8_000_000L),
@@ -92,7 +92,7 @@ class CaptureStoreSaveTest {
             val rows = capture.logs.toList()
             val clocks = capture.clocks.toList()
             anchor(store.clock, 10_000_000_000, host + 9_000_000_000)
-            store.clock.boundary(host + 9_000_000_000)
+            store.clock.startRegion()
             store.prune(1)
             assertEquals(rows, capture.logs)
             assertEquals(clocks, capture.clocks)
@@ -155,7 +155,7 @@ class CaptureStoreSaveTest {
                 val pinned = if (protection == "frozen-pin") store.capture(ReplaySettings(replaySeconds = 2)) else null
                 if (protection == "frozen-pin") store.freeze()
                 if (protection == "unknown-clock") {
-                    store.clock.boundary()
+                    store.clock.startRegion()
                     assertEquals(Long.MAX_VALUE, store.clock.endUncertainty())
                 }
                 val delayed = row(if (protection == "unknown-row") 40 else 2, 1)
@@ -313,7 +313,7 @@ class CaptureStoreSaveTest {
             assertEquals(null, capture.logs.single { it.source.message == "unknown shared UID" }.app)
             assertTrue(capture.gaps.single().intersects(capture.start, capture.end, capture.endUncertainty))
             store.release(capture.id)
-            store.clock.boundary()
+            store.clock.startRegion()
             val unknownWindow = store.capture(ReplaySettings(replaySeconds = 2))!!
             assertFalse(unknownWindow.windowKnown)
             assertEquals(9, unknownWindow.logs.size)
@@ -351,7 +351,7 @@ class CaptureStoreSaveTest {
         val recovery = before.copy(before = 4_000_000_000, after = 4_000_000_000, mono = 4_000_000_000)
         val gap = CaptureGap("clock", 1_000_000_000, 3_000_009_083, "failure", Long.MAX_VALUE)
         val clocks = listOf(before, recovery)
-        for (unproven in listOf(recovery.copy(segment = 1), recovery.copy(sequenceOffset = Long.MAX_VALUE),
+        for (unproven in listOf(recovery.copy(segment = 1), recovery.copy(segmentOffset = Long.MAX_VALUE),
                 recovery.copy(received = 100_000_000))) {
             assertEquals(null, listOf(gap).gapScopes(clocks, mapOf(gap to unproven)).single().toNs)
         }
@@ -386,7 +386,7 @@ class CaptureStoreSaveTest {
             }
             anchor(store.clock, 2_000_000_000, host + 1_000_000_000)
             if (processFailure) {
-                store.clock.boundary(host + 2_000_000_000)
+                store.clock.startRegion()
                 store.clockStatus(false, 1)
             } else {
                 val healthy = store.clock.add("1", listOf(3_000_000_000, 3_000_000_000,
@@ -535,7 +535,7 @@ class CaptureStoreSaveTest {
 
     @Test
     fun clockEpochChangeKeepsAnUnheldTailMissingEvenWithAnEarlierPlayablePart() {
-        val root = Files.createTempDirectory("replay-unheld-epoch-tail-")
+        val root = Files.createTempDirectory("replay-unheld-region-tail-")
         val store = CaptureStore(root.resolve("ring"), minFree = 0)
         val host = System.nanoTime()
         val bytes = sample()
@@ -552,7 +552,7 @@ class CaptureStoreSaveTest {
             val tail = capture.videoTail()!!
             assertFalse(tail.displayHeld)
             assertTrue(tail.fromNs != null && tail.toNs != null)
-            assertTrue(tail.clockEpoch != capture.windowClockEpoch)
+            assertTrue(tail.clockRegion != capture.windowClockRegion)
             assertTrue(capture.gaps.isEmpty()) // The clock change itself, without an explicit stream gap.
             val output = SaveWriter().write(capture, root, { false }) { publication -> Files.move(publication.partial, publication.complete) }
             val manifest = JsonParser.parseString(Files.readString(output.directory.resolve("replay.json"))).asJsonObject
@@ -883,7 +883,7 @@ class CaptureStoreSaveTest {
             val scope = capture.gaps.gapScopes(capture.clocks, capture.clockRecoveries, reference = capture.windowSegment)[capture.gaps.indexOf(reboot)]
             assertNull(scope.fromNs)
             // Widened only to the next normal read of the new boot, like a gap on one boot.
-            assertEquals(capture.clocks.last().elapsed + capture.clocks.last().sequenceOffset, scope.toNs)
+            assertEquals(capture.clocks.last().elapsed + capture.clocks.last().segmentOffset, scope.toNs)
             assertTrue(scope.toNs!! >= reboot.toNs!!)
             val margin = scope.boundaryUncertaintyNs!!
             assertTrue(margin < 20_000_000)
@@ -981,7 +981,7 @@ class CaptureStoreSaveTest {
                     .map { JsonParser.parseString(it).asJsonObject["record_id"].asString })
                 assertEquals(originalGap, interrupted.gaps.single { it.stream == "app_log" })
                 assertEquals(listOf(first), interrupted.logs.map { it.id })
-                store.clock.boundary(host + 4_000_000_000)
+                store.clock.startRegion()
                 target(2)
                 assertTrue(store.streams().getValue("app_log").reason!!.contains("時計"))
                 assertEquals(recoveredGap, appGap())
@@ -1003,7 +1003,7 @@ class CaptureStoreSaveTest {
                 store.app("com.example.app", 10001, setOf(12), 1, true)
                 store.status("app_log", StreamState.RECOVERING, "connection interrupted", 1)
                 store.generation(2)
-                store.clock.boundary(host)
+                store.clock.startRegion()
                 store.clockStatus(false, 2)
                 store.app("com.example.app", 10001, setOf(12), 2, true)
                 store.status("device_log", StreamState.CAPTURING, null, 2)
@@ -1017,7 +1017,7 @@ class CaptureStoreSaveTest {
                         host + 2_000_000_000, host + 2_000_000_000)
                 } else anchor(store.clock, 3_000_000_000, host + 2_000_000_000)
                 store.clockStatus(true, 2)
-                assertNull(gap().toNs) // The resolved target still belongs to the previous clock epoch.
+                assertNull(gap().toNs) // The resolved target still belongs to the previous clock region.
                 store.app("com.example.app", 10001, setOf(12), 2, true)
                 if (unknownBoot) {
                     // The new boot recovers on its own segment; the gap only has an approximate host-time duration.
@@ -1140,7 +1140,7 @@ class CaptureStoreSaveTest {
             store.session(VideoPacket.Session(32, 32), 1)
             store.frame(VideoPacket.Frame(0, true, false, config(bytes)), 1)
             for (second in 1L..3L) anchor(store.clock, second * 1_000_000_000, at(second))
-            store.clock.boundary(at(3))
+            store.clock.startRegion()
             for (second in 1L..40L) {
                 store.frame(VideoPacket.Frame(second * 1_000_000, false, second == 1L || second == 20L, bytes), 1, at(second))
                 store.log(DeviceLog(1_700_000_000_000_000_000 + second * 1_000_000_000, 12, 12, 10001, 0, 4, "Fixture",
@@ -1162,7 +1162,7 @@ class CaptureStoreSaveTest {
     }
 
     private fun unknownTimeWindowFixture(sparse: Boolean, keyAfterGap: Boolean) {
-        val root = Files.createTempDirectory("replay-epoch-window-")
+        val root = Files.createTempDirectory("replay-region-window-")
         val store = CaptureStore(root.resolve("ring"), minFree = 0)
         val host = System.nanoTime() + 60_000_000_000
         val bytes = sample()
@@ -1174,14 +1174,14 @@ class CaptureStoreSaveTest {
             store.session(VideoPacket.Session(32, 32), 1)
             store.frame(VideoPacket.Frame(0, true, false, config(bytes)), 1)
             for (second in 1L..40L) {
-                // No clock reads between 4 and 9 seconds, and the next read shows a discontinuity: a new clock epoch.
-                if (second == 10L) store.clock.boundary()
+                // No clock reads between 4 and 9 seconds, and the next read shows a discontinuity: a new clock region.
+                if (second == 10L) store.clock.startRegion()
                 if (second !in 4L..9L) anchor(store.clock, second * 1_000_000_000, at(second))
                 if (!sparse || second !in 6L..19L)
                     assertTrue(store.frame(VideoPacket.Frame(second * 1_000_000, false, second == 1L || second == 5L || keyAfterGap && second == 20L, bytes), 1, at(second)))
                 store.log(record(second), 1, at(second))
             }
-            assertEquals(1, store.clock.currentEpoch())
+            assertEquals(1, store.clock.currentRegion())
             val selected = store.capture(ReplaySettings(replaySeconds = 29), host = at(40))!!
             assertTrue(selected.windowKnown)
             assertEquals(10_000_000_000, selected.start) // sequence 0 is the first clock read at 1 second.
@@ -1211,12 +1211,12 @@ class CaptureStoreSaveTest {
             // A row before the reboot opens the window on the old boot, so the outage lies inside it.
             assertNotNull(store.log(DeviceLog(1_700_000_001_500_000_000, 12, 12, 10001, 0, 4, "Fixture", "before-reboot",
                 byteArrayOf(1)), 1, host + 500_000_000))
-            val oldEpoch = store.clock.currentEpoch()
-            // The new boot's first read is wider than 2 ms: add() opens the new epoch, then the outage opens at the old boot's last read.
+            val oldEpoch = store.clock.currentRegion()
+            // The new boot's first read is wider than 2 ms: add() opens the new region, then the outage opens at the old boot's last read.
             val healthy = store.clock.add("2", listOf(100_000_000, 100_000_000, 1_700_000_010_000_000_000, 103_000_000),
                 host + 3_000_000_000, host + 3_000_100_000)
             assertFalse(healthy)
-            assertTrue(store.clock.currentEpoch() > oldEpoch)
+            assertTrue(store.clock.currentRegion() > oldEpoch)
             store.clockStatus(healthy, 1)
             for (elapsed in listOf(200_000_000L, 300_000_000L)) {
                 assertTrue(store.clock.add("2", listOf(elapsed, elapsed, 1_700_000_010_000_000_000 + elapsed, elapsed),
@@ -1227,11 +1227,11 @@ class CaptureStoreSaveTest {
                 1, host + 3_200_000_000)
             val capture = store.capture(ReplaySettings(replaySeconds = 30), host = host + 3_300_000_000)!!
             val gap = capture.gaps.single { it.stream == "clock" }
-            assertEquals(oldEpoch, gap.clockEpoch)
+            assertEquals(oldEpoch, gap.clockRegion)
             assertNotNull(gap.toNs)
-            assertNotEquals(gap.clockEpoch, capture.clockRecoveries[gap]?.epoch)
+            assertNotEquals(gap.clockRegion, capture.clockRecoveries[gap]?.region)
             assertFalse(gap.resolvedClock(capture.clockRecoveries))
-            // Without the fix the gap took the new epoch, so the new boot's recovery read hid the warning.
+            // Without the fix the gap took the new region, so the new boot's recovery read hid the warning.
             assertTrue(capture.gaps.inWindow(capture.start, capture.end, capture.endUncertainty, capture.clocks,
                 capture.clockRecoveries, capture.windowSegment).contains(gap))
             assertTrue("device_log" in capture.missingKinds())
@@ -1405,7 +1405,7 @@ class CaptureStoreSaveTest {
             for (boundary in listOf("session", "clock", "config")) {
                 val second = original.video.last().let { frame -> when (boundary) {
                     "session" -> frame.copy(session = frame.session + 1)
-                    "clock" -> frame.copy(time = frame.time.copy(epoch = frame.time.epoch + 1))
+                    "clock" -> frame.copy(time = frame.time.copy(region = frame.time.region + 1))
                     else -> frame.copy(config = byteArrayOf(0) + frame.config)
                 } }
                 val split = SaveWriter().write(original.copy(video = listOf(original.video.first(), second)), root, { false }) { publication -> Files.move(publication.partial, publication.complete) }
@@ -1496,7 +1496,7 @@ class CaptureStoreSaveTest {
             store.frame(VideoPacket.Frame(1_000_000, false, true, bytes), 1, host)
             store.freeze()
             val frozen = store.end()
-            store.clock.boundary() // The read after the disconnect shows a source-clock discontinuity.
+            store.clock.startRegion() // The read after the disconnect shows a source-clock discontinuity.
             anchor(store.clock, 11_000_000_000, host + 10_000_000_000)
             store.prune(1)
             assertEquals(frozen, store.end())
@@ -1504,7 +1504,7 @@ class CaptureStoreSaveTest {
             val fixed = store.capture(ReplaySettings(replaySeconds = 1))!!
             assertEquals(frozen, fixed.end)
             assertTrue(fixed.windowKnown)
-            assertEquals(0, fixed.windowClockEpoch)
+            assertEquals(0, fixed.windowClockRegion)
             store.release(fixed.id)
             store.resume(); store.prune(1)
             assertFalse(store.hasData())
