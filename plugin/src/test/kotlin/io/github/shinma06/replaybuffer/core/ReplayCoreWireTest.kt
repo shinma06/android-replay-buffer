@@ -621,7 +621,7 @@ elif len(a)>3 and a[3]=='ps':
             assertEquals(fixed.windowEndNs, core.snapshot().save.windowEndNs)
             Files.writeString(devices, "List of devices attached\nfixture-2 device model:Other\n")
             val waitingForOriginal = awaitState("different-device-must-not-replace-target") {
-                it.error == "最初に選択した端末の再接続を待っています"
+                it.error == "選択した端末（fixture-1）の再接続を待っています。ほかの端末には切り替えません"
             }
             assertEquals("fixture-1", waitingForOriginal.device?.serial)
             assertFalse(waitingForOriginal.device!!.connected)

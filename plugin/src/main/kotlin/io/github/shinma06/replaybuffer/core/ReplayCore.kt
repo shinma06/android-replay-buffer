@@ -313,7 +313,7 @@ class ReplayCore internal constructor(
             error = when {
                 wanted == null && devices.size > 1 -> MULTIPLE_DEVICES_REASON
                 device == null && wanted != null -> "選択した端末（$wanted）の接続を待っています。ほかの端末には切り替えません"
-                device != null && devices.isNotEmpty() -> "最初に選択した端末の再接続を待っています"
+                device != null && devices.isNotEmpty() -> "選択した端末（${device!!.serial}）の再接続を待っています。ほかの端末には切り替えません"
                 else -> null
             }
             cleanup.clean(settings.adbPath!!, devices.map { it.serial }.toSet(), closed::get)
