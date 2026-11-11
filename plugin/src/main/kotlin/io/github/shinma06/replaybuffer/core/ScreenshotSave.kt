@@ -70,7 +70,8 @@ internal fun saveScreenshot(adbPath: Path, destination: Path, selectedSerial: St
         val devices = try { parseDevices(adb.command("devices", "-l")) }
         catch (_: Exception) { active(); throw ScreenshotSaveFailure("端末の接続状態を確認できません。接続とデバッグ許可を確認してください。") }
         serial = selectDevice(devices, selectedSerial)?.serial ?: throw ScreenshotSaveFailure(
-            if (selectedSerial == null) "端末を1台だけ接続し、デバッグを許可してください。"
+            if (selectedSerial == null && devices.size > 1) "$MULTIPLE_DEVICES_REASON。"
+            else if (selectedSerial == null) "端末を接続し、デバッグを許可してください。"
             else "録画対象の端末が接続されていません。同じ端末を再接続してください。",
         )
         active()

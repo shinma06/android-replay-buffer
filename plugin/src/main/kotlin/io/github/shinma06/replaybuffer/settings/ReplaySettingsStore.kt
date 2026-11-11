@@ -1,5 +1,6 @@
 package io.github.shinma06.replaybuffer.settings
 
+import io.github.shinma06.replaybuffer.core.serialArgument
 import com.intellij.openapi.components.SerializablePersistentStateComponent
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.components.State
@@ -40,6 +41,8 @@ data class ReplaySettings @JvmOverloads constructor(
     val screenshotDirectory: String = "",
     val videoQuality: VideoQuality = VideoQuality.STANDARD,
     val tapDisplay: TapDisplay = TapDisplay.OFF,
+    /** Serial of the chosen capture target; empty follows the only connected device and asks when several are connected. */
+    val deviceSerial: String = "",
 ) {
     val manualScreenshotDestination: String get() = if (screenshotUsesLogcatDestination) "" else screenshotDirectory
 
@@ -56,6 +59,9 @@ data class ReplaySettings @JvmOverloads constructor(
         if (!screenshotUsesLogcatDestination) {
             if (screenshotDirectory.isEmpty()) return "スクリーンショット専用の保存先を指定してください。"
             screenshotValidation.error?.let { return "スクリーンショット: $it" }
+        }
+        if (deviceSerial.isNotEmpty() && runCatching { serialArgument(deviceSerial) }.isFailure) {
+            return "端末のserialは英数字と . _ : - だけの256文字以内で指定してください（空にすると自動選択）。"
         }
         if (appSelection == AppSelectionMode.MANUAL && !isApplicationId(manualPackage)) {
             return "package名は255文字以内で、英字で始まる各部分をピリオドで区切って指定してください。"
@@ -130,6 +136,8 @@ data class ReplaySettingsState @JvmOverloads constructor(
     @JvmField val showTouches: Boolean = false,
     @field:OptionTag("tapDisplay")
     @JvmField val tapDisplay: TapDisplay? = null,
+    @field:OptionTag("deviceSerial")
+    @JvmField val deviceSerial: String = "",
 ) {
     val effectiveTapDisplay: TapDisplay get() = tapDisplay ?: if (showTouches) TapDisplay.DEVICE else TapDisplay.OFF
 }
@@ -147,7 +155,7 @@ class ReplaySettingsStore : SerializablePersistentStateComponent<ReplaySettingsS
         val snapshot = state
         return ReplaySettings(snapshot.retentionSeconds, snapshot.destination, snapshot.appSelection, snapshot.manualPackage,
             snapshot.captureMode, snapshot.autoSaveOnCrash, snapshot.screenshotUsesLogcatDestination, snapshot.screenshotDirectory, snapshot.videoQuality,
-            snapshot.effectiveTapDisplay)
+            snapshot.effectiveTapDisplay, snapshot.deviceSerial)
     }
 
     fun setEnabled(value: Boolean) {
@@ -183,6 +191,7 @@ class ReplaySettingsStore : SerializablePersistentStateComponent<ReplaySettingsS
                 autoSaveOnCrash = settings.autoSaveOnCrash,
                 screenshotUsesLogcatDestination = settings.screenshotUsesLogcatDestination,
                 screenshotDirectory = settings.screenshotDirectory,
+                deviceSerial = settings.deviceSerial,
             )
         }
     }

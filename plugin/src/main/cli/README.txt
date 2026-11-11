@@ -16,6 +16,7 @@ replay --project /absolute/project/path status
 replay --project /absolute/project/path screenshot
 replay --project /absolute/project/path settings
 replay --project /absolute/project/path settings set replay_seconds=60 auto_save_on_crash=true
+replay --project /absolute/project/path settings set device=emulator-5556
 replay --project /absolute/project/path mcp
 
 空白のあるpathや値は引用符で囲んでください。対象が複数ある場合は--projectが必須です。
@@ -38,6 +39,8 @@ settingsはMCPのget_settings、settings setはupdate_settingsと同じ項目名
 タップ位置の表示はtap_display=OFF（記録のみ、既定）/VIDEO（保存する動画にだけ描画、保存時に再エンコード）/
 DEVICE（取得中だけ端末のshow_touchesをONにして端末画面にも表示）です。取得OFFで変更します。
 ミラーリング（Running Devices等）やadb inputのタップはAndroid 13以上で記録します（12以前は非対応）。
+複数の端末を接続したときはstatusのdevices[].serialから1台をdevice=<serial>で選びます（空は自動）。
+未選択で2台以上なら取得せず選択を待ち、選んだ端末の切断中も別の端末へは切り替えません。
 mcpは標準入出力のMCPサーバーです。IDE本体は起動しません。
 失敗や結果不明はexit1/stderr、引数・設定値の不正はexit2です。通信断を自動retryしません。
 
