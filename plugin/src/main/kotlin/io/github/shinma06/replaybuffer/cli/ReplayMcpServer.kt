@@ -389,7 +389,7 @@ internal class ReplayMcpServer(
                     "DEVICE also turns the device show_touches option on while capturing (restored afterwards) and draws the taps the device cannot show " +
                     "(mirroring/injected input) into the MP4. Change only while capture is OFF."),
             "show_touches" to mapOf("type" to "boolean",
-                "description" to "Legacy alias: true sets tap_display DEVICE, false turns DEVICE into OFF. Do not combine with tap_display."),
+                "description" to "Legacy alias: true sets tap_display DEVICE, false turns DEVICE into OFF. May be combined with tap_display only when they agree."),
         )
         private const val INSTRUCTIONS = "Operates Android Replay Buffer inside an already running Android Studio: the same capture, buffer, save, " +
             "screenshot and settings as its GUI. It never starts the IDE. Call get_status first. A tool error whose text ends with exit code 1 is an " +
