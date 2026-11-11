@@ -34,7 +34,8 @@
 | Logcat（端末指定できないビルド） | 確認済みビルド以外のStudio、または単体テスト `LogcatToolWindowButtonTest` で未確認ビルドを模す | 対象端末を選ばずに標準Logcatを開閉でき、tooltip・accessible descriptionが「対象端末に合わせられないため、IDEで選択中の端末のログが表示される」ことを示す。確認済みビルドでは従来どおり対象端末に合わせる |
 | Running Devices | 上部の「取得ON/OFF」「直前N秒を保存」「スクリーンショット」 | ToolWindowと同じ結果になる |
 | Logcat | 動画＋ログで取得中に、Logcatヘッダー（または右クリック）の「直前N秒のログを保存」 | 完成フォルダ`replay-<日時>-manual-logs-<ID>`に両ログと`replay.json`・`README.md`があり、`video.mp4`・`video-frames.jsonl`がない。`coverage.video.state`が`EXCLUDED`、`save_request.origin`が`LOGCAT_TOOLBAR`。保存後も動画の取得が続く（続けて通常保存するとMP4ができる） |
-| タップ位置 | 取得中に `adb shell input tap` | 保存した `touches.jsonl` にその座標が入る。「タップを表示」ONなら動画に点が写る |
+| タップ位置（端末） | 取得中にevdev入力（API 36は`adb emu event send EV_ABS:ABS_MT_TRACKING_ID:9 EV_ABS:ABS_MT_POSITION_X:<x> EV_ABS:ABS_MT_POSITION_Y:<y> EV_SYN:0:0`、離すのは`ABS_MT_TRACKING_ID:-1`） | `touches.jsonl`に`source=touchscreen`の行が入る。`tap_display=DEVICE`なら端末の点が動画に写る |
+| タップ位置（ミラーリング・注入） | 取得中に `adb shell input tap`（Running Devicesのミラーリングと同じInputManager注入）。Android 13以上 | `touches.jsonl`に`source=injected`の行がその座標で入る。Android 9では`touches.injected.state`が`UNAVAILABLE`。`tap_display=VIDEO` / `DEVICE`なら保存した`video.mp4`の該当時刻に点が描かれ、`touches.video_overlay`が`true`。`VIDEO`・`OFF`では端末の`show_touches`を変えない |
 | クラッシュ時の自動保存 | 設定ONで取得中に `adb shell am crash <対象package>` | 保存フォルダ`replay-<日時>-crash-<ID>`が1つ増え、`replay.json` の `trigger` が `crash`、`auto_trigger.kind` が `platform_reported_uncaught_exception`。別アプリのクラッシュでは増えない。続けて試す場合は30秒以上空け、`am force-stop <対象package>` してから起動し直す（Android 9ではクラッシュのダイアログが落ちたprocessを残し、次の`am crash`が報告を出さない）。報告と同じ時刻に時計の不足区間があると「報告の時計対応を確認できません」で保存しないのは仕様 |
 | 設定（CLI） | `bin/replay --project <dir> settings`、`settings set replay_seconds=<n>` | 値が設定画面と一致し、変更が反映される |
 | MCP | `bin/replay --project <dir> mcp` に `initialize` と `tools/list` を送る | 保存・スクリーンショット・設定・ON/OFFのtoolが返る |

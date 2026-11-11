@@ -13,9 +13,12 @@ data class ReplaySettings @JvmOverloads constructor(
     val captureMode: CaptureMode = CaptureMode.VIDEO_AND_LOGS,
     val autoSaveOnCrash: Boolean = false,
     val videoQuality: VideoQuality = VideoQuality.STANDARD,
-    /** Sets the device show_touches option only while video is captured; touch coordinates are always recorded with video. */
-    val showTouches: Boolean = false,
+    /** Where tap positions are drawn; touch coordinates are always recorded with video. */
+    val tapDisplay: TapDisplay = TapDisplay.OFF,
 ) {
+    /** Whether the device show_touches option is set while video is captured. */
+    val showTouches: Boolean get() = tapDisplay == TapDisplay.DEVICE
+
     fun validate(): ReplaySettings {
         require(adbPath == null || adbPath.isAbsolute && Files.isRegularFile(adbPath) && Files.isExecutable(adbPath)) {
             "Android SDKのadb実行ファイルを指定してください"
@@ -86,6 +89,19 @@ data class ApplicationTarget(
 }
 
 enum class CaptureState { DISABLED, WAITING, CAPTURING, RECOVERING, PARTIAL, MULTIPLE_DEVICES }
+/**
+ * Where tap positions appear. [VIDEO] draws them into the saved MP4 only (re-encoded at save time); [DEVICE] also turns
+ * the device show_touches option on while capturing, and the saved MP4 gets drawn only the taps the device cannot show.
+ */
+enum class TapDisplay(val wire: String, private val label: String) {
+    OFF("off", "表示しない（記録のみ）"),
+    VIDEO("video", "保存する動画にだけ描画する"),
+    DEVICE("device", "端末画面にも表示する"),
+    ;
+
+    override fun toString(): String = label
+}
+
 enum class StreamState { WAITING, CAPTURING, RECOVERING, UNAVAILABLE, NOT_REQUESTED }
 enum class DeviceKind { PHYSICAL, EMULATOR }
 enum class SavePhase { IDLE, WRITING, FAILED, COMPLETED, CANCELLED }

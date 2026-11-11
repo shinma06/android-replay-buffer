@@ -51,7 +51,7 @@ Devin: 設定のMCP Marketplaceで「Add your own」からstdioサーバーを�
 
 全toolに任意の`project`（開いているprojectの絶対パス）があります。それ以外の未知の引数は拒否します。
 
-`update_settings`の項目は`get_settings`と同じ名前です: `replay_seconds`（1〜900）、`output_directory`、`app_selection`（`AUTOMATIC` / `MANUAL`）、`manual_package`、`capture_mode`（`VIDEO_AND_LOGS` / `LOG_ONLY`）、`video_quality`（`STANDARD` / `LIGHTWEIGHT`）、`auto_save_on_crash`、`screenshot_uses_logcat_destination`、`screenshot_directory`、`show_touches`（取得中に端末画面へタップ位置の点を表示し、動画に映す）。設定画面の「適用」と同じ検証をし、保存先フォルダは事前に作成が必要です。取得モード・動画品質・`show_touches`は取得OFFで反映が終わってから変更します。取得のON/OFFは`start_capture` / `stop_capture`で行います。
+`update_settings`の項目は`get_settings`と同じ名前です: `replay_seconds`（1〜900）、`output_directory`、`app_selection`（`AUTOMATIC` / `MANUAL`）、`manual_package`、`capture_mode`（`VIDEO_AND_LOGS` / `LOG_ONLY`）、`video_quality`（`STANDARD` / `LIGHTWEIGHT`）、`auto_save_on_crash`、`screenshot_uses_logcat_destination`、`screenshot_directory`、`tap_display`（`OFF`＝記録のみ・既定、`VIDEO`＝保存する動画にだけ保存時に点を描画（端末設定は変えず、動画を再エンコード）、`DEVICE`＝取得中だけ端末の`show_touches`をONにして端末画面にも表示し、端末が描けないミラーリング等のタップは保存時に動画へ描画）。旧項目`show_touches`（真偽値）も受け付け、`true`は`DEVICE`、`false`は`DEVICE`を`OFF`にします（`get_settings`にも併記。`tap_display`と同時に指定する場合は矛盾しない値のみ）。意味は[CLI](cli.md#設定)と同じです。設定画面の「適用」と同じ検証をし、保存先フォルダは事前に作成が必要です。取得モード・動画品質・`tap_display`は取得OFFで反映が終わってから変更します。取得のON/OFFは`start_capture` / `stop_capture`で行います。
 
 ## 結果と失敗
 

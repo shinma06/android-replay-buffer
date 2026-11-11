@@ -30,7 +30,7 @@ class TouchCaptureTest {
             store.touch(TouchSample(2_100_000_000, "/dev/input/event2", 0, TouchAction.UP, 10, 20), 1080, 2400, 2, host + 1_200_000_000)
             // A touch alone does not make a save; the window also needs video or log rows.
             store.log(DeviceLog(1_700_000_001_800_000_000, 12, 12, 10001, 0, 4, "Fixture", "row", byteArrayOf(1)), 1, host + 1_000_000_000)
-            val pinned = assertNotNull(store.capture(ReplaySettings(showTouches = true), null, host + 1_800_000_000))
+            val pinned = assertNotNull(store.capture(ReplaySettings(tapDisplay = TapDisplay.DEVICE), null, host + 1_800_000_000))
             val row = pinned.touches.single()
             assertEquals(2_000_000_000L, row.time.elapsed)
             for (second in 3L..6L) sample(store, host, second)
@@ -100,7 +100,7 @@ class TouchCaptureTest {
                 store.touch(TouchSample(2_000_000_000L + it, "/dev/input/event2", 0, TouchAction.MOVE, 1, 1), 1080, 2400, 1, host + 1_700_000_000)
             }
             store.log(DeviceLog(1_700_000_001_800_000_000, 12, 12, 10001, 0, 4, "Fixture", "row", byteArrayOf(1)), 1, host + 1_000_000_000)
-            val pinned = assertNotNull(store.capture(ReplaySettings(showTouches = true), null, host + 1_800_000_000))
+            val pinned = assertNotNull(store.capture(ReplaySettings(tapDisplay = TapDisplay.DEVICE), null, host + 1_800_000_000))
             assertEquals(MAX_TOUCH_SAMPLES, pinned.touches.size)
             assertEquals(1L, pinned.touchDropped)
             assertTrue(pinned.touchGaps.any { it.reason == "保持上限を超えた古いタップ位置を破棄しました" && it.from == null && it.to != null })
@@ -163,7 +163,7 @@ class TouchCaptureTest {
             store.touchDots(TouchDots.ALREADY_ON, 1)
             sample(store, host, 2)
             store.log(DeviceLog(1_700_000_001_800_000_000, 12, 12, 10001, 0, 4, "Fixture", "row", byteArrayOf(1)), 1, host + 1_000_000_000)
-            val pinned = assertNotNull(store.capture(ReplaySettings(showTouches = false), null, host + 1_800_000_000))
+            val pinned = assertNotNull(store.capture(ReplaySettings(tapDisplay = TapDisplay.OFF), null, host + 1_800_000_000))
             val output = SaveWriter().write(pinned, root, { false }) { Files.move(it.partial, it.complete) }
             val touches = JsonParser.parseString(Files.readString(output.directory.resolve("replay.json"))).asJsonObject["touches"].asJsonObject
             assertEquals(false, touches["show_touches"].asBoolean)

@@ -35,6 +35,9 @@ save --logs-onlyはLogcatツールバーのボタンと同じく、ログとrepl
 動画の取得中でも取得は止めず、replay.jsonのcoverage.videoをEXCLUDEDとして記録します。
 screenshotはGUIと同じPNGを保存し、パスだけをstdoutへ返します。
 settingsはMCPのget_settings、settings setはupdate_settingsと同じ項目名・検証です。
+タップ位置の表示はtap_display=OFF（記録のみ、既定）/VIDEO（保存する動画にだけ描画、保存時に再エンコード）/
+DEVICE（取得中だけ端末のshow_touchesをONにして端末画面にも表示）です。取得OFFで変更します。
+ミラーリング（Running Devices等）やadb inputのタップはAndroid 13以上で記録します（12以前は非対応）。
 mcpは標準入出力のMCPサーバーです。IDE本体は起動しません。
 失敗や結果不明はexit1/stderr、引数・設定値の不正はexit2です。通信断を自動retryしません。
 

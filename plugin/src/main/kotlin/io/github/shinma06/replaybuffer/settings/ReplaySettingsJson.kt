@@ -5,6 +5,7 @@ import com.google.gson.Strictness
 import com.google.gson.stream.JsonReader
 import com.google.gson.stream.JsonToken
 import io.github.shinma06.replaybuffer.core.CaptureMode
+import io.github.shinma06.replaybuffer.core.TapDisplay
 import io.github.shinma06.replaybuffer.core.VideoQuality
 import java.io.StringReader
 
@@ -20,7 +21,9 @@ internal fun settingsJson(settings: ReplaySettings, enabled: Boolean): String = 
     "auto_save_on_crash" to settings.autoSaveOnCrash,
     "screenshot_uses_logcat_destination" to settings.screenshotUsesLogcatDestination,
     "screenshot_directory" to settings.screenshotDirectory,
-    "show_touches" to settings.showTouches,
+    "tap_display" to settings.tapDisplay.name,
+    // Legacy alias of tap_display == DEVICE, kept for existing scripts.
+    "show_touches" to (settings.tapDisplay == TapDisplay.DEVICE),
 ))
 
 /**
@@ -33,6 +36,8 @@ internal fun patchSettings(current: ReplaySettings, text: String): ReplaySetting
         reader.strictness = Strictness.STRICT
         var settings = current
         val seen = mutableSetOf<String>()
+        var chosenTapDisplay: TapDisplay? = null
+        var legacyShowTouches: Boolean? = null
         reader.beginObject()
         while (reader.hasNext()) {
             val key = reader.nextName()
@@ -64,13 +69,26 @@ internal fun patchSettings(current: ReplaySettings, text: String): ReplaySetting
                 "auto_save_on_crash" -> settings.copy(autoSaveOnCrash = flag())
                 "screenshot_uses_logcat_destination" -> settings.copy(screenshotUsesLogcatDestination = flag())
                 "screenshot_directory" -> settings.copy(screenshotDirectory = text())
-                "show_touches" -> settings.copy(showTouches = flag())
+                "tap_display" -> settings.also { chosenTapDisplay = choice(TapDisplay.entries.toTypedArray()) }
+                "show_touches" -> settings.also { legacyShowTouches = flag() }
                 else -> throw IllegalArgumentException("変更できない設定項目です: $key")
             }
         }
         reader.endObject()
         require(reader.peek() == JsonToken.END_DOCUMENT) { "設定の末尾に余分な内容があります。" }
         require(seen.isNotEmpty()) { "変更する設定を指定してください。" }
+        // show_touches is the legacy alias of tap_display == DEVICE; both may be given (as get_settings prints them) only when they agree.
+        val legacy = legacyShowTouches
+        val chosen = chosenTapDisplay
+        if (chosen != null && legacy != null) {
+            require(legacy == (chosen == TapDisplay.DEVICE)) { "tap_displayとshow_touchesが矛盾しています。" }
+        }
+        settings = when {
+            chosen != null -> settings.copy(tapDisplay = chosen)
+            legacy == true -> settings.copy(tapDisplay = TapDisplay.DEVICE)
+            legacy == false && settings.tapDisplay == TapDisplay.DEVICE -> settings.copy(tapDisplay = TapDisplay.OFF)
+            else -> settings
+        }
         settings
     }
 } catch (failure: java.io.IOException) {

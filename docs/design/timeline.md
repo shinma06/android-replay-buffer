@@ -129,7 +129,7 @@ clock scopesと復旧/両側anchorは同期確度の説明に使い、source隣�
 
 ## タップ位置の時刻（Trail #22）
 
-タップ位置は動画の取得中だけ記録する第3のsource streamです。正本は`getevent -lt`が出力するkernel入力時刻で、API 36 emulatorで確認した端末CLOCK_MONOTONIC（動画PTS・時計測定のmonoと同じ時計）として、動画PTSと同じ時計対応（`CaptureClock.mono`）でsequenceへ写します。host受信時刻は時計対応の補助（stale判定・不確かさ）にだけ使い、時刻の代わりにしません。範囲外・曖昧な対応はnullのまま残します。kernelが入力を捨てた区間（`SYN_DROPPED`から、新しい`ABS_MT_TRACKING_ID`で再同期するまで）も、端末の入力時刻を同じ対応で写したgapとして残します。保存窓への採否は両ログと同じ`CaptureStore.capture`の規則（窓端からの距離が両方の不確かさ以内なら含める）で、固定後は再解釈しません。保存時は表示中のframeの`movie_pts_us`と`window_ns`差から`movie_us`を求め、frameが表示されていない時刻・不確定な時刻はnullとします。出力の詳細は[保存設計](../plugin-design.md#タップ位置の記録と表示trail-22)に従います。
+タップ位置は動画の取得中だけ記録する第3のsource streamです。正本は`getevent -lt`が出力するkernel入力時刻で、API 36 emulatorで確認した端末CLOCK_MONOTONIC（動画PTS・時計測定のmonoと同じ時計）として、動画PTSと同じ時計対応（`CaptureClock.mono`）でsequenceへ写します。host受信時刻は時計対応の補助（stale判定・不確かさ）にだけ使い、時刻の代わりにしません。ミラーリング等の注入タップ（Android 13以上）はInputDispatcherのlogの`eventTime`（同じ端末CLOCK_MONOTONIC、ms精度）を正本として同じ対応で写し、logcatの受信時刻では置き換えません。範囲外・曖昧な対応はnullのまま残します。kernelが入力を捨てた区間（`SYN_DROPPED`から、新しい`ABS_MT_TRACKING_ID`で再同期するまで）も、端末の入力時刻を同じ対応で写したgapとして残します。保存窓への採否は両ログと同じ`CaptureStore.capture`の規則（窓端からの距離が両方の不確かさ以内なら含める）で、固定後は再解釈しません。保存時は表示中のframeの`movie_pts_us`と`window_ns`差から`movie_us`を求め、frameが表示されていない時刻・不確定な時刻はnullとします。出力の詳細は[保存設計](../plugin-design.md#タップ位置の記録と表示trail-22)に従います。
 
 ## 許容精度と受取人の確認
 

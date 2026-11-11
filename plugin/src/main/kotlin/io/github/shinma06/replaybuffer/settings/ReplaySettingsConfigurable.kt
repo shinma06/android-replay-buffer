@@ -21,6 +21,7 @@ import com.intellij.ui.components.JBTextField
 import com.intellij.util.ui.FormBuilder
 import io.github.shinma06.replaybuffer.cli.ReplayCliRegistry
 import io.github.shinma06.replaybuffer.core.CaptureMode
+import io.github.shinma06.replaybuffer.core.TapDisplay
 import io.github.shinma06.replaybuffer.core.VideoQuality
 import io.github.shinma06.replaybuffer.ide.LogcatScreenshotSettings
 import io.github.shinma06.replaybuffer.ide.ReplayProjectService
@@ -56,7 +57,7 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable {
     private var captureMode: JComboBox<CaptureMode>? = null
     private var videoQuality: JComboBox<VideoQuality>? = null
     private var autoSave: JBCheckBox? = null
-    private var showTouches: JBCheckBox? = null
+    private var tapDisplay: JComboBox<TapDisplay>? = null
     private var manualPackage: JBTextField? = null
     private var destinationStatus: JBTextArea? = null
     private var uiLifetime: Disposable? = null
@@ -136,7 +137,7 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable {
         captureMode = JComboBox(CaptureMode.entries.toTypedArray()).apply {
             addActionListener {
                 videoQuality?.isEnabled = selectedItem == CaptureMode.VIDEO_AND_LOGS
-                showTouches?.isEnabled = selectedItem == CaptureMode.VIDEO_AND_LOGS
+                tapDisplay?.isEnabled = selectedItem == CaptureMode.VIDEO_AND_LOGS
             }
             accessibleContext.accessibleName = "取得モード"
             accessibleContext.accessibleDescription = "取得をOFFにしてから変更してください。ログ専用は動画を取得・保存しません。"
@@ -145,9 +146,9 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable {
                     super.getListCellRendererComponent(list, (value as? CaptureMode)?.let(::captureModeDescription), index, selected, focus)
             }
         }
-        showTouches = JBCheckBox("取得中は端末画面にタップ位置を表示する（動画に映ります）").apply {
+        tapDisplay = JComboBox(TapDisplay.entries.toTypedArray()).apply {
             accessibleContext.accessibleName = "タップ位置の表示"
-            toolTipText = "既定OFF。取得中だけ端末のshow_touchesをONにし、取得終了時に元の値へ戻します。取得OFFで変更します。"
+            accessibleContext.accessibleDescription = "既定は表示しない。保存する動画にだけ描画する場合は保存時に動画を再エンコードします。端末画面にも表示する場合は取得中だけ端末のshow_touchesをONにし、終了時に元の値へ戻します。取得OFFで変更します。"
         }
         autoSave = JBCheckBox("クラッシュ報告で自動保存する").apply {
             accessibleContext.accessibleName = "クラッシュ報告の自動保存"
@@ -170,9 +171,12 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable {
             .addComponent(wrappingLabel("長辺・fpsは上限、Mbpsは指定bitrateです。取得OFFで変更してください。" +
                 "軽量は細かい文字・短い変化・滑らかさを捉えにくくなります。負荷の低下は環境に依存します。" +
                 "ログ専用では動画品質を使いません。", "動画品質の説明"))
-            .addComponent(showTouches!!)
-            .addComponent(wrappingLabel("動画を取得している間は、タップ座標と時刻を自動で記録し、保存時にtouches.jsonlへ動画と同期して書き出します。" +
-                "上のチェックをONにすると、端末の「タップを表示」を取得中だけONにして点を動画に映し、取得終了時に元の値へ戻します。取得OFFで変更してください。", "タップ位置の説明"))
+            .addLabeledComponent("タップ位置の表示:", tapDisplay!!)
+            .addComponent(wrappingLabel("動画を取得している間は、端末でのタップとミラーリング（Running Devices等）からのタップの座標・時刻を自動で記録し、" +
+                "保存時にtouches.jsonlへ動画と同期して書き出します。ミラーリングからのタップはAndroid 13以上で記録します。" +
+                "「保存する動画にだけ描画する」は端末画面を変えず、保存時に動画を再エンコードして点を描きます（保存に時間がかかります）。" +
+                "「端末画面にも表示する」は端末の「タップを表示」を取得中だけONにし、終了時に元の値へ戻します。端末が描けないミラーリングのタップは保存時に動画へ描きます。" +
+                "取得OFFで変更してください。", "タップ位置の説明"))
             .addLabeledComponent("保持時間（1〜900秒）:", retention!!)
             .addComponent(autoSave!!)
             .addComponent(wrappingLabel("対象アプリの標準Java/Kotlinクラッシュ報告が対象です。native/ANRは対応外です。" +
@@ -273,7 +277,7 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable {
         manualPackage = manualPackage?.text.orEmpty(),
         captureMode = captureMode?.selectedItem as? CaptureMode ?: CaptureMode.VIDEO_AND_LOGS,
         autoSaveOnCrash = autoSave?.isSelected == true,
-        showTouches = showTouches?.isSelected == true,
+        tapDisplay = tapDisplay?.selectedItem as? TapDisplay ?: TapDisplay.OFF,
         screenshotUsesLogcatDestination = screenshotLogcat?.isSelected != false,
         screenshotDirectory = screenshotDirectory?.text.orEmpty(),
         videoQuality = videoQuality?.selectedItem as? VideoQuality ?: VideoQuality.STANDARD,
@@ -293,7 +297,7 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable {
         settings.validationError(checked, screenshotChecked)?.let { throw ConfigurationException(it) }
         val service = replayService
         if ((settings.captureMode != store().settings().captureMode || settings.videoQuality != store().settings().videoQuality ||
-            settings.showTouches != store().settings().showTouches) &&
+            settings.tapDisplay != store().settings().tapDisplay) &&
             (store().enabled || service?.captureView?.snapshot?.enabled == true || service?.resolving == true || (service?.captureView?.pending ?: 0) > 0))
             throw ConfigurationException("取得をOFFにし、設定・操作の反映が終わってから取得モード・動画品質・タップ位置表示を変更してください。")
         try { store().apply(settings, checked, screenshotChecked) } catch (failure: IllegalArgumentException) {
@@ -314,8 +318,8 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable {
         videoQuality?.selectedItem = settings.videoQuality
         videoQuality?.isEnabled = settings.captureMode.videoRequested
         autoSave?.isSelected = settings.autoSaveOnCrash
-        showTouches?.isSelected = settings.showTouches
-        showTouches?.isEnabled = settings.captureMode.videoRequested
+        tapDisplay?.selectedItem = settings.tapDisplay
+        tapDisplay?.isEnabled = settings.captureMode.videoRequested
         manualPackage?.text = settings.manualPackage
         manualPackage?.isEnabled = settings.appSelection == AppSelectionMode.MANUAL
         checkDestination()
@@ -345,7 +349,7 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable {
         captureMode = null
         videoQuality = null
         autoSave = null
-        showTouches = null
+        tapDisplay = null
         manualPackage = null
     }
 

@@ -104,7 +104,9 @@ settings: 現在の設定をMCPのget_settingsと同じJSONでstdoutへ返しま
 settings set: 指定項目だけをMCPのupdate_settingsと同じ項目名・検証で変更し、変更後の設定JSONを返します。
       例: replay settings set replay_seconds=60 auto_save_on_crash=true
       項目: replay_seconds output_directory app_selection manual_package capture_mode video_quality
-            auto_save_on_crash screenshot_uses_logcat_destination screenshot_directory show_touches
+            auto_save_on_crash screenshot_uses_logcat_destination screenshot_directory tap_display
+      tap_display: OFF=記録のみ、VIDEO=保存する動画にだけタップを描画、DEVICE=端末画面にも表示（取得OFFで変更）。
+      show_touches=true/falseは旧項目で、tap_displayのDEVICE/OFFとして扱います。
 mcp: 標準入出力のMCPサーバーとして動き、エージェントへ同じ操作を提供します。
 --project: 開いているprojectのフォルダ。省略時は接続先が1つだけ必要です。
 CLIはIDEに導入済みのプラグインのbinにあり、場所は設定画面からコピーできます。

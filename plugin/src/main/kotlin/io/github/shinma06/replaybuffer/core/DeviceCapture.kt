@@ -32,6 +32,8 @@ internal class DeviceCapture @JvmOverloads constructor(
     private val videoQuality: VideoQuality = VideoQuality.STANDARD,
     private val showTouches: Boolean = false,
     private val touchRestore: ShowTouchesRestore = ShowTouchesRestore(),
+    /** Original InputDispatcher log tag values, restored like show_touches. */
+    private val inputLogRestore: ShowTouchesRestore = ShowTouchesRestore(),
 ) : AutoCloseable {
     private val serial = serialArgument(serial)
     private val adb = OwnedAdb(adbPath)
@@ -39,6 +41,9 @@ internal class DeviceCapture @JvmOverloads constructor(
     private var touchesApplied = false
     /** The touch reader's display watch, re-read after the video stream reports a new screen size (rotation). */
     @Volatile private var displayWatch: DisplaySizeWatch? = null
+    @Volatile private var injectedDisplayWatch: DisplaySizeWatch? = null
+    /** The last injected-event line read, so a restarted `logcat -T 1` does not record it twice. */
+    private var lastInjectedLine: String? = null
     private val timer = captureWatchdog()
     private val workers = mutableListOf<Thread>()
     private val sockets = ConcurrentHashMap.newKeySet<Socket>()
@@ -61,6 +66,7 @@ internal class DeviceCapture @JvmOverloads constructor(
         launch("clock", ::clock)
         if (store.captureMode.videoRequested) launch("video", ::video)
         if (store.captureMode.videoRequested) launch("touch", ::touches)
+        if (store.captureMode.videoRequested) launch("touch_injected", ::injectedTouches)
         launch("device_log-main") {
             if (!partitionLogs.isDone) {
                 val partition = probeLogLid()
@@ -121,7 +127,8 @@ internal class DeviceCapture @JvmOverloads constructor(
                     if (!stopping.get() && kind == "clock") { store.clock.boundary(); store.clockStatus(false, generation) }
                     if (!stopping.get() && kind != "clock") status(kind, StreamState.RECOVERING,
                         if (kind == "video") "動画取得が中断しました（PTS/config/容量/接続を確認してください）"
-                        else if (kind == "touch") "タップ位置の取得が中断しました（getevent/接続を確認してください）" else "全体ログ取得が中断しました（header/接続を確認してください）")
+                        else if (kind == "touch") "タップ位置の取得が中断しました（getevent/接続を確認してください）"
+                        else if (kind == "touch_injected") "ミラーリング等の注入タップの取得が中断しました（logcat/接続を確認してください）" else "全体ログ取得が中断しました（header/接続を確認してください）")
                 }
                 delay = recovery.next(System.nanoTime() - attempt >= 10_000_000_000)
             }
@@ -163,7 +170,7 @@ internal class DeviceCapture @JvmOverloads constructor(
                 val packet = readVideo(input, monitor::started)
                 monitor.received(false) // Packet read completed; storage readiness is a separate condition.
                 val ready = when (packet) {
-                    is VideoPacket.Session -> { displayWatch?.invalidate(); store.session(packet, generation); false }
+                    is VideoPacket.Session -> { displayWatch?.invalidate(); injectedDisplayWatch?.invalidate(); store.session(packet, generation); false }
                     is VideoPacket.Frame -> store.frame(packet, generation)
                 }
                 if (ready) monitor.received(true) else monitor.awaitFirstFrame()
@@ -181,6 +188,10 @@ internal class DeviceCapture @JvmOverloads constructor(
     private fun status(kind: String, state: StreamState, reason: String?) {
         if (kind == "touch") {
             store.touchStatus(state, reason, generation)
+            return
+        }
+        if (kind == "touch_injected") {
+            store.injectedTouchStatus(state, reason, generation)
             return
         }
         if (kind != "device_log-main" && kind != "device_log-all") {
@@ -338,6 +349,61 @@ internal class DeviceCapture @JvmOverloads constructor(
         return TouchDots.APPLIED
     }
 
+    private fun readDisplay(): DisplayGeometry? =
+        parseDisplayGeometry(adb.command("-s", serial, "shell", "wm size; dumpsys input | grep Viewport || true"))
+
+    /**
+     * Taps injected through InputManager (Running Devices mirroring of a physical device, scrcpy, `adb shell input`) bypass
+     * the touchscreen driver, so getevent never sees them. Android 13+ InputDispatcher logs each one, with its event time
+     * on the same CLOCK_MONOTONIC as getevent, while [INJECTED_TOUCH_LOG_PROPERTY] is DEBUG.
+     */
+    private fun injectedTouches() {
+        val sdk = runCatching { adb.command("-s", serial, "shell", "getprop", "ro.build.version.sdk").trim().toIntOrNull() }.getOrNull()
+        if (sdk == null || sdk < INJECTED_TOUCH_MIN_SDK) {
+            status("touch_injected", StreamState.UNAVAILABLE,
+                if (sdk == null) "Androidのversionを確認できません" else "Android 13未満は注入された入力を記録できません（InputDispatcherにログがありません）")
+            while (pause(1000)) { /* Unsupported OS: physical taps are still read by getevent. */ }
+            return
+        }
+        applyInputLog()
+        val display = DisplaySizeWatch(checkNotNull(readDisplay()) { "画面サイズを取得できません" }, ::readDisplay)
+        injectedDisplayWatch = display
+        check(!stopping.get())
+        val process = adb.start("-s", serial, "logcat", "-T", "1", "-s", "InputDispatcher:I")
+        try {
+            status("touch_injected", StreamState.CAPTURING, null)
+            val input = process.inputStream.buffered()
+            while (!stopping.get()) {
+                val line = readTouchLine(input, 16 * 1024) ?: error("logcat出力が終了しました")
+                val motion = parseInjectedMotion(line) ?: continue
+                if (line == lastInjectedLine) continue
+                lastInjectedLine = line
+                val received = System.nanoTime()
+                val geometry = display.current(received)
+                injectedSamples(motion, geometry).forEach { store.touch(it, geometry.width, geometry.height, generation, received, geometry.rotation) }
+            }
+        } finally { adb.stop(process) }
+    }
+
+    /** Sets the InputDispatcher log tag to DEBUG unless it already logs DEBUG, remembering the original value. */
+    private fun applyInputLog() {
+        if (!inputLogRestore.pending(serial)) {
+            val original = adb.command("-s", serial, "shell", "getprop", INJECTED_TOUCH_LOG_PROPERTY).trim()
+            if (original.uppercase() in setOf("D", "DEBUG", "V", "VERBOSE")) return
+            inputLogRestore.remember(serial, if (Regex("[A-Za-z]{1,16}").matches(original)) original else "")
+        }
+        check(!stopping.get())
+        adb.command("-s", serial, "shell", "setprop", INJECTED_TOUCH_LOG_PROPERTY, "DEBUG")
+    }
+
+    /** A failed restore stays in [inputLogRestore] for the next capture of the same device. */
+    private fun restoreInputLog() {
+        val value = inputLogRestore.original(serial) ?: return
+        runCatching {
+            OwnedAdb(adbPath).use { owned -> owned.command("-s", serial, "shell", "setprop", INJECTED_TOUCH_LOG_PROPERTY, value.ifEmpty { "\"\"" }) }
+        }.onSuccess { inputLogRestore.restored(serial, value) }
+    }
+
     /** A failed restore stays in [touchRestore] for the next capture of the same device. */
     private fun restoreTouches() {
         val value = touchRestore.original(serial) ?: return
@@ -349,13 +415,13 @@ internal class DeviceCapture @JvmOverloads constructor(
         }.onSuccess { touchRestore.restored(serial, value) }
     }
 
-    private fun readTouchLine(input: InputStream): String? {
+    private fun readTouchLine(input: InputStream, limit: Int = 4096): String? {
         val bytes = ByteArrayOutputStream()
         while (true) {
             val next = input.read()
             if (next < 0) return if (bytes.size() == 0) null else bytes.toString(Charsets.US_ASCII)
             if (next == '\n'.code) return bytes.toString(Charsets.US_ASCII).trimEnd('\r')
-            check(bytes.size() < 4096) { "getevent出力の1行が長すぎます" }
+            check(bytes.size() < limit) { "入力ログの1行が長すぎます" }
             bytes.write(next)
         }
     }
@@ -378,6 +444,7 @@ internal class DeviceCapture @JvmOverloads constructor(
             }
         }
         restoreTouches()
+        restoreInputLog()
         clients.exceptionOrNull()?.let { failure ->
             readers.exceptionOrNull()?.let(failure::addSuppressed)
             throw failure
