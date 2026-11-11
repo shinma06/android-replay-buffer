@@ -36,7 +36,7 @@ version = providers.gradleProperty("pluginVersion").orNull?.also {
         "pluginVersion must be a formal major.minor.patch version (no prefix, suffix, or leading zeroes)"
     }
     check(!sourceDirty) { "A formal pluginVersion requires a clean committed source tree" }
-} ?: ("0.2.0-dev.$sourceCommit" + if (sourceDirty) "-dirty" else "")
+} ?: (providers.gradleProperty("devBaseVersion").get() + "-dev.$sourceCommit" + if (sourceDirty) "-dirty" else "")
 
 repositories {
     mavenCentral()
