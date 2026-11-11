@@ -415,14 +415,15 @@ internal class CaptureStore(
     private fun refreshAuto(host: Long) = synchronized(clock) {
         val anchor = clock.snapshot().lastOrNull()
         val device = autoDevice
-        val ready = !closed && fixedEnd == null && device != null && autoTarget != null &&
-            apps.peekLast()?.packageName == autoTarget && anchor != null && anchor !== generationClockSample &&
+        val context = !closed && fixedEnd == null && device != null && autoTarget != null &&
+            apps.peekLast()?.packageName == autoTarget
+        val ready = context && anchor != null && anchor !== generationClockSample &&
             clock.certain(host) && host >= anchor.received
         val boundary = if (ready) try {
             CrashBarrier(device, anchor.boot, generation, clock.currentEpoch(), host,
                 Math.addExact(anchor.wall, host - anchor.received), amCrashFields)
         } catch (_: ArithmeticException) { null } else null
-        autosave.refresh(boundary)
+        autosave.refresh(boundary, host, clock.currentEpoch().takeIf { context && boundary == null })
     }
 
     @Synchronized

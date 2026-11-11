@@ -486,6 +486,53 @@ class CrashAutosaveTest {
             }
         }
     }
+
+    @Test
+    fun briefClockGapHoldsPendingReportsAndSavesWithTheRecoveredMapping() {
+        for (during in listOf(false, true)) {
+            CrashFixture(Files.createDirectory(root.resolve("brief$during"))).use { f ->
+                if (!during) f.standard()
+                f.clockMiss(if (during) 10_004_000_000 else 10_007_000_000)
+                f.refresh(if (during) 10_004_100_000 else 10_007_100_000)
+                if (during) f.standard()
+                assertTrue(f.store.autosave.drain(f.at(10_008_000_000)).isEmpty())
+                assertEquals(AutoSaveState.WAITING, f.store.autosave.snapshot().state)
+                f.anchor(10_011_000_000, sourceDelta = -1_000_000) // The recovered read refines the mapping.
+                f.store.clockStatus(true, 1)
+                f.refresh(10_012_100_000)
+                assertEquals(AutoSaveState.ARMED, f.store.autosave.snapshot().state)
+                val pair = f.store.autosave.drain(f.at(10_012_200_000)).single()
+                val capture = assertNotNull(f.store.capture(f.settings, pair, f.at(10_012_200_000)))
+                val facts = capture.autoTrigger!!.facts
+                assertEquals("10003636364", (facts["platform_evidence"] as Map<*, *>)["frozen_sequence_ns"]) // Unshifted: 10004000000.
+                assertTrue(capture.gaps.any { it.stream == "clock" && it.toNs != null })
+                assertEquals(0, f.store.autosave.snapshot().notSavedCount)
+            }
+        }
+    }
+
+    @Test
+    fun clockGapOutlastingTheReceiptWindowOrChangingEpochRejectsHeldReports() {
+        for (condition in listOf("refresh", "drain", "recovered-epoch", "uncertain-epoch")) {
+            CrashFixture(Files.createDirectory(root.resolve(condition))).use { f ->
+                f.standard()
+                f.clockMiss(10_007_000_000)
+                f.refresh(10_007_100_000)
+                when (condition) {
+                    "refresh" -> f.refresh(15_007_200_000)
+                    "drain" -> assertTrue(f.store.autosave.drain(f.at(15_007_200_000)).isEmpty())
+                    "recovered-epoch" -> { f.store.clock.boundary(); f.anchor(10_009_000_000); f.refresh(10_010_100_000) }
+                    "uncertain-epoch" -> { f.store.clock.boundary(); f.refresh(10_008_000_000) }
+                }
+                val snapshot = f.store.autosave.snapshot()
+                assertEquals(AutoSaveReason.NOT_SAVED_CLOCK_UNKNOWN, snapshot.lastOutcome?.reason, condition)
+                assertEquals(2, snapshot.notSavedCount, condition)
+                f.anchor(16_000_000_000)
+                f.refresh(16_001_100_000)
+                assertTrue(f.store.autosave.drain(f.at(16_001_200_000)).isEmpty(), condition)
+            }
+        }
+    }
 }
 
 internal class CrashFixture(
@@ -523,6 +570,14 @@ internal class CrashFixture(
         assertTrue(store.clock.add("7", listOf(elapsed, elapsed, CRASH_WALL + relative, elapsed),
             at(relative), at(relative + 1_000_000), CRASH_WALL + relative))
     }
+    /** A clock read whose adb round trip exceeds the 40 ms limit, as reported by the device reader. */
+    fun clockMiss(relative: Long) {
+        val elapsed = 100_000_000_000 + relative
+        assertTrue(!store.clock.add("7", listOf(elapsed, elapsed, CRASH_WALL + relative, elapsed),
+            at(relative), at(relative + 50_000_000), CRASH_WALL + relative))
+        store.clockStatus(false, 1)
+    }
+    fun refresh(relative: Long) = store.configureAuto(settings, 1, "fixture", true, at(relative))
     fun reporter(start: Long, end: Long) = store.reporter(ReporterPoll(at(start), at(end), 1, 500))
     fun log(source: DeviceLog, receipt: Long): String = assertNotNull(store.log(source, 1, at(receipt)))
     fun standard() { log(javaCrash(), 10_005_000_000); log(platformCrash(), 10_006_000_000) }

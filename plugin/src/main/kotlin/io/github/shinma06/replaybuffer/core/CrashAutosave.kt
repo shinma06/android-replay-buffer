@@ -36,6 +36,7 @@ internal class CrashAutosave {
     private var last: AutoSaveOutcome? = null
     private var admissions = 0
     private var lastAdmission: Long? = null
+    private var heldSince: Long? = null
 
     @Synchronized
     fun configure(preference: Boolean, active: Boolean, target: String?, revision: Long) {
@@ -64,14 +65,23 @@ internal class CrashAutosave {
         this.target = target
     }
 
+    /**
+     * [clockEpoch] is set only when the clock is the sole missing condition: a same-epoch uncertain clock then keeps
+     * the barrier and unadmitted reports for at most [CRASH_RECEIPT_NS], and same-epoch recovery resumes them.
+     */
     @Synchronized
-    fun refresh(value: CrashBarrier?) {
+    fun refresh(value: CrashBarrier?, host: Long? = null, clockEpoch: Int? = null) {
         val old = barrier
+        if (old != null && value == null && host != null && clockEpoch == old.epoch) {
+            val since = heldSince ?: host.also { heldSince = it }
+            if (host < since || host - since <= CRASH_RECEIPT_NS) return // An earlier receipt is inside the hold.
+        }
         if (old != null && (value == null || old.generation != value.generation || old.device != value.device ||
                 old.boot != value.boot || old.epoch != value.epoch)) {
             invalidate(if (value != null && old.generation != value.generation) AutoSaveReason.NOT_SAVED_STALE_OWNER
                 else AutoSaveReason.NOT_SAVED_CLOCK_UNKNOWN)
         }
+        if (value != null) heldSince = null
         if (preference && active && target != null && suspended == null && barrier == null) barrier = value
     }
 
@@ -79,6 +89,7 @@ internal class CrashAutosave {
         observations.toList().forEach { finishObservation(it, reason) }
         observations.clear()
         barrier = null
+        heldSince = null
     }
 
     @Synchronized
@@ -122,6 +133,10 @@ internal class CrashAutosave {
     @Synchronized
     fun drain(host: Long): List<CrashPair> {
         if (suspended != null || !active || !preference) return emptyList()
+        heldSince?.let { since ->
+            if (host > since && host - since > CRASH_RECEIPT_NS) invalidate(AutoSaveReason.NOT_SAVED_CLOCK_UNKNOWN)
+            return emptyList()
+        }
         val pairs = mutableListOf<CrashPair>()
         // Every already received row participates before an unmatched receipt deadline is applied.
         for (platform in observations.filter { !it.header.java }) {
@@ -147,10 +162,10 @@ internal class CrashAutosave {
                     AutoSaveReason.UNKNOWN_AMBIGUOUS else AutoSaveReason.UNKNOWN_IDENTITY), sources)
             }
         }
-        observations.filter { host > it.row.host && host - it.row.host > 5_000_000_000 }.forEach {
+        observations.filter { host > it.row.host && host - it.row.host > CRASH_RECEIPT_NS }.forEach {
             finishObservation(it, AutoSaveReason.UNKNOWN_UNCORROBORATED)
         }
-        observations.removeAll { host > it.row.host && host - it.row.host > 5_000_000_000 }
+        observations.removeAll { host > it.row.host && host - it.row.host > CRASH_RECEIPT_NS }
         return pairs
     }
 
@@ -160,7 +175,7 @@ internal class CrashAutosave {
         pair.java.targetRevision != targetRevision -> AutoSaveReason.NOT_SAVED_TARGET_CHANGED
         pair.java.optionRevision != optionRevision || pair.platform.optionRevision != optionRevision ->
             AutoSaveReason.NOT_SAVED_PRE_ARM_EVENT
-        barrier != pair.java.barrier || pair.platform.barrier != pair.java.barrier -> AutoSaveReason.NOT_SAVED_CLOCK_UNKNOWN
+        heldSince != null || barrier != pair.java.barrier || pair.platform.barrier != pair.java.barrier -> AutoSaveReason.NOT_SAVED_CLOCK_UNKNOWN
         suspended != null || admissions >= 8 -> AutoSaveReason.LIMIT_REACHED
         lastAdmission?.let { host < it || host - it < 30_000_000_000 } == true -> AutoSaveReason.NOT_SAVED_COOLDOWN
         else -> null
@@ -185,12 +200,13 @@ internal class CrashAutosave {
         val state = when {
             !preference -> AutoSaveState.OFF
             suspended != null -> AutoSaveState.SUSPENDED
-            !active || barrier == null -> AutoSaveState.WAITING
+            !active || barrier == null || heldSince != null -> AutoSaveState.WAITING
             else -> AutoSaveState.ARMED
         }
         return AutoSaveSnapshot(state, when (state) {
             AutoSaveState.OFF -> "自動保存は無効です"
-            AutoSaveState.WAITING -> if (!active) "設定は有効です。取得をONにすると新しい報告から適用します" else "対象・現在の取得接続・時計の確認を待っています"
+            AutoSaveState.WAITING -> if (!active) "設定は有効です。取得をONにすると新しい報告から適用します" else if (heldSince != null)
+                "時計測定が途切れています。受付前の報告を保持し、5秒以内の回復を待っています" else "対象・現在の取得接続・時計の確認を待っています"
             AutoSaveState.ARMED -> "適用済み。標準Java/Kotlin報告を相互確認した場合だけ保存します"
             AutoSaveState.SUSPENDED -> suspended?.description
         }, 8 - admissions, terminal.values.count { isWarning(it.outcome.reason) }, last, warning?.description)
@@ -208,15 +224,18 @@ internal class CrashAutosave {
         return true
     }
 
-    private fun suspend(reason: AutoSaveReason) { suspended = reason; warning = reason; observations.clear(); barrier = null }
+    private fun suspend(reason: AutoSaveReason) { suspended = reason; warning = reason; observations.clear(); barrier = null; heldSince = null }
 
     private fun isWarning(reason: AutoSaveReason): Boolean = reason !in setOf(
         AutoSaveReason.DETECTED, AutoSaveReason.ACCEPTED_WRITING, AutoSaveReason.SAVED,
     )
 }
 
+/** Receipt window for pairing the two reports; also the longest clock gap a pending report survives. */
+private const val CRASH_RECEIPT_NS = 5_000_000_000L
+
 private fun receiptPair(a: Long, b: Long): Boolean = try {
-    Math.subtractExact(maxOf(a, b), minOf(a, b)) <= 5_000_000_000
+    Math.subtractExact(maxOf(a, b), minOf(a, b)) <= CRASH_RECEIPT_NS
 } catch (_: ArithmeticException) { false }
 
 internal fun identityOrder(java: CrashObservation, platform: CrashObservation): String? {
