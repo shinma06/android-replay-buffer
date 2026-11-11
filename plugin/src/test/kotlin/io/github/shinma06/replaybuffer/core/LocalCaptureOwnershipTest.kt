@@ -199,7 +199,7 @@ class LocalCaptureOwnershipTest {
             val namespace = namespace(kind)
             fixture(namespace).use { old ->
                 val file = packet(old.root)
-                val marker = if (kind == "foreign") Files.writeString(old.root.resolve("session.json"), "complete saved output")
+                val marker = if (kind == "foreign") Files.writeString(old.root.resolve("replay.json"), "complete saved output")
                 else {
                     val replacement = Files.writeString(directory.resolve("replacement"), "foreign replacement")
                     Files.move(replacement, file, java.nio.file.StandardCopyOption.REPLACE_EXISTING)

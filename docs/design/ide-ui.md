@@ -109,7 +109,7 @@ ToolWindow上部に「スクリーンショットを保存」を常設する。�
 
 これはアプリ専用の原子的な撮影ではなく、端末に表示中の画面全体を撮影する。前後の観察の間に別画面へ切り替わって戻る競合やoverlayは検出しきれないため、撮影中に画面を切り替えない前提を表示する。通知・キーボード等も写る。`FLAG_SECURE`等の保護を回避せず、空白も有効なPNGとして保存し、保護領域の内容取得を成功条件にしない。SDKのadbと診断出力に対応する端末が必要で、未知機種を推測で成功にしない。実機ごとの対応は受入で確定する。
 
-取得PNGは最大64 MiB、縦横それぞれ16384以下かつ16777216画素以下に制限し、署名・全chunkの長さ/CRC・終端・全画像の復号を確認する。画像は再圧縮せず元byteを保存する。adb待ちは通常要求5秒、PNG取得15秒を上限とし、EDTでは待たない。設定済み保存先は通常保存と同じ`toRealPath()`で実rootへ解決し、macOSの`/tmp`や利用者指定のフォルダリンクも受け付ける。その固定rootを所有directory/file handleで開き、直下の`.screenshot-日時-UUID.partial`を0600で作成し、owner/mode/ACL・全画像hashと実体を照合する。書込み完了後にmacOSの排他的renameで`screenshot-日時-UUID.png`へ公開し、再照合する。所有PNGではsymlinkを辿らず、既存成果物を上書きしない。撮影別の完成フォルダ・README・sidecarは作らない。書込み/公開失敗・取消しの部分出力は保全し、確認できる残留先は失敗通知からコピーできる。取消し後の成功通知は行わない。
+取得PNGは最大64 MiB、縦横それぞれ16384以下かつ16777216画素以下に制限し、署名・全chunkの長さ/CRC・終端・全画像の復号を確認する。画像は再圧縮せず元byteを保存する。adb待ちは通常要求5秒、PNG取得15秒を上限とし、EDTでは待たない。設定済み保存先は通常保存と同じ`toRealPath()`で実rootへ解決し、macOSの`/tmp`や利用者指定のフォルダリンクも受け付ける。その固定rootを所有directory/file handleで開き、直下の`.screenshot-日時-ID.partial`を0600で作成し、owner/mode/ACL・全画像hashと実体を照合する。書込み完了後にmacOSの排他的renameで`screenshot-日時-ID.png`（例: `screenshot-20261111-140312-a1b2c3d4.png`。日時はローカル時刻、IDは8桁の16進数）へ公開し、再照合する。所有PNGではsymlinkを辿らず、既存成果物を上書きしない。撮影別の完成フォルダ・README・sidecarは作らない。書込み/公開失敗・取消しの部分出力は保全し、確認できる残留先は失敗通知からコピーできる。取消し後の成功通知は行わない。
 
 成功通知の「保存場所を開く」は実画像の親フォルダを既存のOS連携で開く。「保存したファイルを削除」は保存先directory/画像fileの実体と完成時hashを照合し、私有削除用directoryへの排他的移動後も対象を再確認して、そのPNGだけを削除する。置換/改変/消失や権限失敗ではエラーを示す。照合不一致時は非上書きで復元を試み、戻せない出力を保全する。親フォルダ、他のファイル、後のスクショは残す。同一利用者による任意の同時変更まで原子的に排除する保証ではなく、既存保存と同じ所有観察の境界を持つ。project終了後は通知actionを失効させ、進行中の取得clientだけを取消す。
 
@@ -130,7 +130,7 @@ ToolWindow上部に「スクリーンショットを保存」を常設する。�
 | 保存先・自動保存 | 動画ログの設定root、クラッシュ自動保存の設定/受付/未保存報告/直近結果/残るwarningと対応外範囲を表示する |
 | 接続情報 | SDKの実パス/不備、sessionと端末処理の片付け待ちを表示する。詳細を取得状態や保存完了と混同しない |
 
-スクショは#338の`screenshot-日時-UUID.png`1枚を、#341のLogcat画面撮影設定への追従（既定）または手動rootへ直接保存する。手動で動画・ログと同じpathを指定してよい。表示名を短くしても、録画対象serial固定/OFF独立・要求時の保存先固定・取得不能/不正な保存先からの非fallback、通知から実画像の親を開く/同じ画像だけを削除する保証は変えない。
+スクショは#338の`screenshot-日時-ID.png`1枚を、#341のLogcat画面撮影設定への追従（既定）または手動rootへ直接保存する。手動で動画・ログと同じpathを指定してよい。表示名を短くしても、録画対象serial固定/OFF独立・要求時の保存先固定・取得不能/不正な保存先からの非fallback、通知から実画像の親を開く/同じ画像だけを削除する保証は変えない。
 
 タップ位置の表示（Trail #22）は動画品質の下のチェックボックス（既定OFF）で、取得中だけ端末の`show_touches`をONにし終了時に戻すこと、タップ座標と時刻は動画取得中に自動で記録され保存時に`touches.jsonl`へ出ることを併記する。取得OFFかつ反映完了後だけ変更でき、LOG_ONLYでは選択不可だが保存値は保持する。
 
@@ -161,9 +161,9 @@ Android StudioのRunning Devices上部のtoolbarに、取得のON/OFF・`直前N
 
 ## Logcatのログ専用保存（Trail #37）
 
-Android StudioのLogcat ToolWindowから `直前N秒のログを保存` を実行できる。動画＋ログで取得中でも、この操作は端末ログ・アプリログ・`session.json`（とREADME・frames.jsonl等の通常の付帯ファイル）だけを保存し、MP4・touches.jsonlは作らない。動画の取得は止めず、設定・取得モードも変えない。保存要求はログだけを固定し、動画packetを読まず・pinもしないため、動画のringはそのまま回り続ける。
+Android StudioのLogcat ToolWindowから `直前N秒のログを保存` を実行できる。動画＋ログで取得中でも、この操作は端末ログ・アプリログ・`replay.json`・`README.md`だけを保存し、`video.mp4`・`video-frames.jsonl`・`touches.jsonl`は作らない。フォルダ名は`replay-<日時>-manual-logs-<ID>`になる。動画の取得は止めず、設定・取得モードも変えない。保存要求はログだけを固定し、動画packetを読まず・pinもしないため、動画のringはそのまま回り続ける。
 
-`session.json` は意図的な除外を未要求・取得失敗と区別して記録する。`coverage.video.state` は `EXCLUDED`（`requested: false`、`excluded: true`、保存時の実際の取得状態 `capture_state`）、`save_request` に `content`（`ALL` / `LOGS_ONLY`）、要求元 `origin`（`TOOL_WINDOW` / `RUNNING_DEVICES` / `LOGCAT_TOOLBAR` / `CLI` / `CRASH_AUTOSAVE`、MCPはCLIの接続を使うため `CLI`）、`video_excluded` を書く。`capture_mode` は取得モード（`VIDEO_AND_LOGS`）のままとする。ログ専用モードでの保存は従来どおり `NOT_REQUESTED` で、`EXCLUDED` にはしない。ログ専用モードと同じく、両ログの取得が正常・時計が確定・対象アプリが確定していれば、ログが1行もない区間も空のログとして保存できる。動画の取得中でまだ動画もログも届いていなくても、ログ保存の区間はこの条件が揃った時点から始まる。保存できるかどうかは保存内容ごと（通常保存・ログのみ保存）に判定し、ログのみの操作（Logcatのボタン、`replay save --logs-only`、MCPの `logs_only`）はログのみ保存の判定で有効になる（通常保存は従来どおり、動画もログもない区間を保存しない）。不足表示（`missingKinds`）は除外した動画を数えない。通知は「ログを保存しました」と動画を含めないことを示す。
+`replay.json` は意図的な除外を未要求・取得失敗と区別して記録する。`coverage.video.state` は `EXCLUDED`（`requested: false`、`excluded: true`、保存時の実際の取得状態 `capture_state`）、`save_request` に `content`（`ALL` / `LOGS_ONLY`）、要求元 `origin`（`TOOL_WINDOW` / `RUNNING_DEVICES` / `LOGCAT_TOOLBAR` / `CLI` / `CRASH_AUTOSAVE`、MCPはCLIの接続を使うため `CLI`）、`video_excluded` を書く。`capture_mode` は取得モード（`VIDEO_AND_LOGS`）のままとする。ログ専用モードでの保存は従来どおり `NOT_REQUESTED` で、`EXCLUDED` にはしない。ログ専用モードと同じく、両ログの取得が正常・時計が確定・対象アプリが確定していれば、ログが1行もない区間も空のログとして保存できる。動画の取得中でまだ動画もログも届いていなくても、ログ保存の区間はこの条件が揃った時点から始まる。保存できるかどうかは保存内容ごと（通常保存・ログのみ保存）に判定し、ログのみの操作（Logcatのボタン、`replay save --logs-only`、MCPの `logs_only`）はログのみ保存の判定で有効になる（通常保存は従来どおり、動画もログもない区間を保存しない）。不足表示（`missingKinds`）は除外した動画を数えない。通知は「ログを保存しました」と動画を含めないことを示す。
 
 配置: Studio 2026.2.2.8 の `android.jar` 内 `META-INF/logcat.xml` と `LogcatMainPanel` を確認した。Logcat本体のtoolbar（place `LogcatMainPanel`）は `createToolbarActions()` がコード内で組む固定の `DefaultActionGroup` で、外部pluginが追加できる公開groupはない。`Logcat.LogcatActions` はkeymap拡張用でtoolbarに出ない。そこで内部構造（Swing tree・reflection）には触れず、公開の方法を2つ使う。
 

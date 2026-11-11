@@ -143,7 +143,7 @@ class CrashSaveLifecycleTest {
             assertEquals(failed.autoEventId, completed.autoEventId)
             assertSame(captures[0], captures[1])
             assertEquals(destination.toRealPath(), completed.directory?.parent)
-            val manifest = JsonParser.parseString(Files.readString(completed.directory!!.resolve("session.json"))).asJsonObject
+            val manifest = JsonParser.parseString(Files.readString(completed.directory!!.resolve("replay.json"))).asJsonObject
             assertEquals(failed.autoEventId, manifest["auto_trigger"].asJsonObject["event_id"].asString)
             assertFalse(manifest["auto_trigger"].asJsonObject.has("terminal_outcome"))
             assertNull(f.field<FrozenCapture?>("pending"))
@@ -182,7 +182,7 @@ class CrashSaveLifecycleTest {
                 val saved = result.toCompletableFuture().get(5, TimeUnit.SECONDS)
                 assertEquals(SavePhase.COMPLETED, saved.phase)
                 assertEquals(requested.requestId, saved.requestId)
-                assertTrue(Files.isRegularFile(saved.directory!!.resolve("session.json")))
+                assertTrue(Files.isRegularFile(saved.directory!!.resolve("replay.json")))
                 assertEquals(8, f.core.snapshot().autoSave.admissionsRemaining)
             } finally { release.countDown() }
         }
@@ -212,7 +212,7 @@ class CrashSaveLifecycleTest {
                     f.field<Future<*>>("saveTask").get(5, TimeUnit.SECONDS)
                     val result = assertNotNull(attempt.result)
                     assertEquals(SavePhase.COMPLETED, result.phase)
-                    val bytes = Files.readAllBytes(result.directory!!.resolve("session.json"))
+                    val bytes = Files.readAllBytes(result.directory!!.resolve("replay.json"))
                     f.settle(attempt)
                     assertNull(f.field<FrozenCapture?>("pending"))
                     assertEquals(8, f.core.snapshot().autoSave.admissionsRemaining)
@@ -224,7 +224,7 @@ class CrashSaveLifecycleTest {
                 assertSame(manual, captures[0])
                 assertNull(manual.autoTrigger)
                 assertEquals(manualResult, attempt.result)
-                assertContentEquals(manualBytes, Files.readAllBytes(manualResult.directory!!.resolve("session.json")))
+                assertContentEquals(manualBytes, Files.readAllBytes(manualResult.directory!!.resolve("replay.json")))
                 val automatic = captures[1]
                 assertTrue(automatic.id != manual.id)
                 val facts = assertNotNull(automatic.autoTrigger).facts
@@ -272,7 +272,7 @@ class CrashSaveLifecycleTest {
                     assertEquals(SavePhase.COMPLETED, completed.phase, transition)
                     assertEquals(completed, terminal.toCompletableFuture().get(5, TimeUnit.SECONDS))
                     assertEquals(AutoSaveReason.SAVED, f.core.snapshot().autoSave.lastOutcome?.reason, transition)
-                    assertTrue(Files.isRegularFile(completed.directory!!.resolve("session.json")))
+                    assertTrue(Files.isRegularFile(completed.directory!!.resolve("replay.json")))
                     controlRelease.countDown()
                     change.get(5, TimeUnit.SECONDS)
                     assertEquals(completed, f.core.snapshot().lastSave, transition)
@@ -311,7 +311,7 @@ class CrashSaveLifecycleTest {
                         f.core.snapshot().autoSave.lastOutcome?.reason)
                     val retained = assertNotNull(result.retainedPath)
                     if (cancel) assertTrue(retained.fileName.toString().endsWith(".partial")) else assertEquals(published, retained)
-                    val manifest = JsonParser.parseString(Files.readString(retained.resolve("session.json"))).asJsonObject
+                    val manifest = JsonParser.parseString(Files.readString(retained.resolve("replay.json"))).asJsonObject
                     assertFalse(manifest["complete"].asBoolean)
                     assertEquals(result.autoEventId, manifest["auto_trigger"].asJsonObject["event_id"].asString)
                 } finally { release.countDown() }

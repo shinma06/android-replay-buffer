@@ -31,8 +31,8 @@ startは取得をONにして終了します。IDEを終了すると取得も終�
 stopは対象projectの取得だけをOFFにし、未保存バッファ/失敗pinを破棄します。
 保存済み成果物・保全partial・IDE・他projectは削除/終了しません。
 saveのexit0/stdoutは完成フォルダです。受付だけでは成功になりません。
-save --logs-onlyはLogcatツールバーのボタンと同じく、ログとsession.jsonだけを保存します（MP4なし）。
-動画の取得中でも取得は止めず、session.jsonのcoverage.videoをEXCLUDEDとして記録します。
+save --logs-onlyはLogcatツールバーのボタンと同じく、ログとreplay.json・README.mdだけを保存します（MP4なし）。
+動画の取得中でも取得は止めず、replay.jsonのcoverage.videoをEXCLUDEDとして記録します。
 screenshotはGUIと同じPNGを保存し、パスだけをstdoutへ返します。
 settingsはMCPのget_settings、settings setはupdate_settingsと同じ項目名・検証です。
 record_audio=trueで動画に端末の再生音（Android 13以上）を録音します。既定はfalseで、取得OFFで変更します。

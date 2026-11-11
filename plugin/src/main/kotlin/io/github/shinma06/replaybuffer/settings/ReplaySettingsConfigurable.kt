@@ -153,7 +153,7 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable {
         }
         recordAudio = JBCheckBox("動画に端末の再生音を録音する（Android 13以上）").apply {
             accessibleContext.accessibleName = "端末の再生音の録音"
-            toolTipText = "既定OFF。取得できない端末・失敗時は動画だけを記録し、理由をsession.jsonのcoverage.audioへ書きます。録音を禁止したアプリの音は入りません。取得OFFで変更します。"
+            toolTipText = "既定OFF。取得できない端末・失敗時は動画だけを記録し、理由をreplay.jsonのcoverage.audioへ書きます。録音を禁止したアプリの音は入りません。取得OFFで変更します。"
         }
         autoSave = JBCheckBox("クラッシュ報告で自動保存する").apply {
             accessibleContext.accessibleName = "クラッシュ報告の自動保存"

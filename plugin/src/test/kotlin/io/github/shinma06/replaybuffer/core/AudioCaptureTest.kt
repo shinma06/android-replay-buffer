@@ -137,7 +137,7 @@ class AudioCaptureTest {
             assertEquals(StreamState.CAPTURING, pinned.audioState?.state)
             assertEquals(40, pinned.audio.size)
             val output = SaveWriter().write(pinned, root, { false }) { Files.move(it.partial, it.complete) }
-            val json = JsonParser.parseString(Files.readString(output.directory.resolve("session.json"))).asJsonObject
+            val json = JsonParser.parseString(Files.readString(output.directory.resolve("replay.json"))).asJsonObject
             val coverage = json["coverage"].asJsonObject["audio"].asJsonObject
             assertEquals("CAPTURING", coverage["state"].asString)
             assertTrue(coverage["requested"].asBoolean)
@@ -146,10 +146,10 @@ class AudioCaptureTest {
             val track = json["audio_track"].asJsonObject
             assertEquals(48_000, track["sample_rate"].asInt)
             val segment = track["segments"].asJsonArray.single().asJsonObject
-            val firstFrame = JsonParser.parseString(Files.readAllLines(output.directory.resolve("frames.jsonl")).first()).asJsonObject
+            val firstFrame = JsonParser.parseString(Files.readAllLines(output.directory.resolve("video-frames.jsonl")).first()).asJsonObject
             // Audio and the first presented frame share the same device instant, so they start together on the movie timeline.
             assertEquals(firstFrame["movie_pts_us"].asString, segment["movie_start_us"].asString)
-            NIOUtils.readableChannel(output.directory.resolve("video-001.mp4").toFile()).use { channel ->
+            NIOUtils.readableChannel(output.directory.resolve("video.mp4").toFile()).use { channel ->
                 val demuxer = MP4Demuxer.createMP4Demuxer(channel)
                 assertEquals(1, demuxer.videoTracks.size)
                 val audio = demuxer.audioTracks.single()
@@ -158,7 +158,7 @@ class AudioCaptureTest {
                 val data = ByteArray(first.data.remaining()).also { first.data.get(it) } // The demuxer prepends an ADTS header.
                 assertContentEquals(byteArrayOf(0x21, 0), data.copyOfRange(data.size - 2, data.size))
             }
-            assertTrue(Files.readString(output.directory.resolve("README.txt")).contains("端末の再生音"))
+            assertTrue(Files.readString(output.directory.resolve("README.md")).contains("端末の再生音"))
             store.release(pinned.id)
         }
     }
@@ -195,13 +195,13 @@ class AudioCaptureTest {
             assertTrue(pinned.audio.isEmpty())
             assertNull(pinned.audioState)
             val output = SaveWriter().write(pinned, root, { false }) { Files.move(it.partial, it.complete) }
-            val json = JsonParser.parseString(Files.readString(output.directory.resolve("session.json"))).asJsonObject
+            val json = JsonParser.parseString(Files.readString(output.directory.resolve("replay.json"))).asJsonObject
             val audio = json["coverage"].asJsonObject["audio"].asJsonObject
             assertEquals("EXCLUDED", audio["state"].asString)
             assertEquals(false, audio["requested"].asBoolean)
             assertTrue(audio["excluded"].asBoolean)
             assertTrue(json["audio_track"].isJsonNull)
-            assertTrue(Files.notExists(output.directory.resolve("video-001.mp4")))
+            assertTrue(Files.notExists(output.directory.resolve("video.mp4")))
             store.release(pinned.id)
         }
     }
