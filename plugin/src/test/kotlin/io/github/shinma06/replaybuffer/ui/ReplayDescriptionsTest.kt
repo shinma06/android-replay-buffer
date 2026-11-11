@@ -221,4 +221,43 @@ class ReplayDescriptionsTest {
         assertFalse(expected.contains("com.fixture.new"))
         assertFalse(expected.contains("新端末"))
     }
+
+    @Test
+    fun deviceChooserAppearsOnlyWithSeveralDevicesAndListsTheTargetFirst() {
+        fun device(serial: String, connected: Boolean = true) = ReplayDevice(serial, "M$serial", DeviceKind.EMULATOR, connected)
+        fun state(target: ReplayDevice?, vararg connected: ReplayDevice) = ReplaySnapshot(1, 1, true,
+            if (target == null && connected.size > 1) CaptureState.MULTIPLE_DEVICES else CaptureState.CAPTURING, ReplaySettings(), 1,
+            device = target, devices = connected.toList())
+        assertTrue(deviceChoices(state(device("a"), device("a"))).isEmpty())
+        assertTrue(deviceChoices(state(null)).isEmpty())
+        val ambiguous = deviceChoices(state(null, device("a"), device("b")))
+        assertEquals(listOf(null, "a", "b"), ambiguous.map { it.serial })
+        assertEquals("選んでください", ambiguous.first().label)
+        assertEquals(listOf("b", "a"), deviceChoices(state(device("b"), device("a"), device("b"))).map { it.serial })
+        val waiting = deviceChoices(state(device("b", connected = false), device("a")))
+        assertEquals(listOf("b", "a"), waiting.map { it.serial })
+        assertTrue(waiting.first().label.contains("切断中"))
+        assertEquals("端末の選択待ち", state(null, device("a"), device("b")).captureDescription())
+        val savedMissing = ReplaySnapshot(1, 1, true, CaptureState.WAITING, ReplaySettings(deviceSerial = "emulator-5556"), 1,
+            devices = listOf(device("emulator-5554")))
+        val restarted = deviceChoices(savedMissing)
+        assertEquals(listOf("emulator-5556", "emulator-5554", ""), restarted.map { it.serial })
+        assertEquals(AUTOMATIC_DEVICE_CHOICE, restarted.last().label)
+        assertEquals("emulator-5556（切断中）", restarted.first().label)
+        assertTrue(deviceChoices(savedMissing.copy(devices = emptyList())).isEmpty())
+        assertTrue(deviceChoices(savedMissing.copy(devices = listOf(device("emulator-5556")))).isEmpty())
+    }
+
+    @Test
+    fun deviceChooserOffersAutomaticSelectionOnlyWhileASerialIsSaved() {
+        fun device(serial: String) = ReplayDevice(serial, "M$serial", DeviceKind.EMULATOR, true)
+        val chosen = ReplaySnapshot(1, 1, true, CaptureState.CAPTURING, ReplaySettings(deviceSerial = "b"), 1,
+            device = device("b"), devices = listOf(device("a"), device("b")))
+        val choices = deviceChoices(chosen)
+        assertEquals(listOf("b", "a", ""), choices.map { it.serial })
+        assertEquals(AUTOMATIC_DEVICE_CHOICE, choices.last().label)
+        // After `device=""` the running capture keeps "b" and the reset entry disappears.
+        assertEquals(listOf("b", "a"), deviceChoices(chosen.copy(settings = ReplaySettings())).map { it.serial })
+        assertTrue(deviceChoices(chosen.copy(devices = listOf(device("b")))).isEmpty())
+    }
 }

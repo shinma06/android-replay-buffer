@@ -3,6 +3,7 @@ package io.github.shinma06.replaybuffer.ui
 import io.github.shinma06.replaybuffer.core.ApplicationMode
 import io.github.shinma06.replaybuffer.core.CaptureState
 import io.github.shinma06.replaybuffer.core.DeviceKind
+import io.github.shinma06.replaybuffer.core.MULTIPLE_DEVICES_REASON
 import io.github.shinma06.replaybuffer.core.ReplaySnapshot
 import io.github.shinma06.replaybuffer.core.SavePhase
 import io.github.shinma06.replaybuffer.core.SaveSnapshot
@@ -76,6 +77,8 @@ internal data class ToolWindowModel(
     val results: List<RecentResult>,
     val notices: List<Notice>,
     val details: List<Detail>,
+    /** Capture-target chooser entries; empty (hidden) while fewer than two devices are in play. */
+    val devices: List<DeviceChoice> = emptyList(),
 ) {
     val showsResults: Boolean get() = results.isNotEmpty()
     val showsFailure: Boolean get() = results.any { it.failure != null }
@@ -128,9 +131,12 @@ internal fun toolWindowModel(input: ToolWindowInput): ToolWindowModel {
     val saveEnabled = !input.busy && snapshot?.canSave == true
     val save = Command("直前${seconds}秒を保存", saveEnabled, saveReason.orEmpty(),
         saveReason?.takeIf { !saveEnabled && it.isNotBlank() })
+    // The notice already asks to choose a device; do not repeat it under the screenshot button.
+    val repeatsChoice = snapshot?.captureState == CaptureState.MULTIPLE_DEVICES &&
+        input.screenshotDisabledReason?.startsWith(MULTIPLE_DEVICES_REASON) == true
     val screenshot = Command(if (input.screenshotBusy) "スクショを保存中…" else "スクリーンショット",
         input.screenshotDisabledReason == null, input.screenshotDisabledReason ?: SCREENSHOT_TOOLTIP,
-        input.screenshotDisabledReason?.takeIf { !input.screenshotBusy })
+        input.screenshotDisabledReason?.takeIf { !input.screenshotBusy && !repeatsChoice })
     val logcat = Command(input.logcat.label, input.logcat.enabled, input.logcat.tooltip,
         input.logcat.tooltip.takeIf { (!input.logcat.enabled || input.logcat.failed) && it.isNotBlank() })
 
@@ -160,7 +166,7 @@ internal fun toolWindowModel(input: ToolWindowInput): ToolWindowModel {
         add(Detail("取得状態と取得モード", "取得状態: $state / 取得モード: ${captureModeDescription(snapshot?.settings?.captureMode ?: settings.captureMode)}"))
         add(Detail("取得対象の端末", snapshot?.device?.let {
             "端末: ${it.name}（${if (it.kind == DeviceKind.EMULATOR) "Emulator" else "実機"}・${if (it.connected) "接続済み" else "切断中"}）"
-        } ?: "端末: 未接続"))
+        } ?: if (snapshot?.captureState == CaptureState.MULTIPLE_DEVICES) "端末: 未選択（${snapshot.devices.size}台接続中）" else "端末: 未接続"))
         val app = snapshot?.settings?.application
         add(Detail("取得対象のアプリ", "アプリ: ${app?.packageName ?: app?.unresolvedReason ?: "確認中…"}（${if (app?.mode == ApplicationMode.MANUAL) "手動" else "自動"}）"))
         var video = streamDescription("動画", snapshot?.video)
@@ -196,6 +202,7 @@ internal fun toolWindowModel(input: ToolWindowInput): ToolWindowModel {
         results = results,
         notices = notices,
         details = details,
+        devices = deviceChoices(snapshot),
     )
 }
 
