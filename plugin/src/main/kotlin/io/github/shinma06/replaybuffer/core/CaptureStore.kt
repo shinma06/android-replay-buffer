@@ -374,7 +374,7 @@ internal class CaptureStore(
         appResolved = uid != null
         val last = apps.peekLast()
         val samples = clock.snapshot()
-        val anchor = samples.lastOrNull { it.valid }
+        val anchor = clock.hostAnchor()
         if (last == null || last.packageName != packageName || last.uid != uid || last.pids != pids ||
             last.uidExclusive != uidExclusive || last.from == null || last.epoch != anchor?.epoch) {
             val now = anchor?.let { it.elapsed + (host - it.received).coerceAtLeast(0) }
@@ -419,8 +419,9 @@ internal class CaptureStore(
             apps.peekLast()?.packageName == autoTarget && anchor != null && anchor !== generationClockSample &&
             clock.certain(host) && host >= anchor.received
         val boundary = if (ready) try {
+            val time = clock.hostAnchor() ?: anchor
             CrashBarrier(device, anchor.boot, generation, clock.currentEpoch(), host,
-                Math.addExact(anchor.wall, host - anchor.received), amCrashFields)
+                Math.addExact(time.wall, host - time.received), amCrashFields)
         } catch (_: ArithmeticException) { null } else null
         autosave.refresh(boundary)
     }
@@ -757,7 +758,7 @@ internal class CaptureStore(
             videoCuts.remove(previous) // Coalesced events no longer have one unambiguous source cut.
             return
         }
-        val anchor = clock.snapshot().lastOrNull { it.valid }
+        val anchor = clock.hostAnchor()
         val uncertainty = boundary?.uncertainty ?: anchor?.let { if (System.nanoTime() - it.received > 5_000_000_000 || it.bridgeError == Long.MAX_VALUE) Long.MAX_VALUE else
             it.readError + (it.received - it.sent) / 2 + it.bridgeError }
         val gap = CaptureGap(stream, from, to, reason, if (boundary != null || clock.certain()) uncertainty else Long.MAX_VALUE,
@@ -844,7 +845,7 @@ internal fun List<CaptureGap>.gapScopes(
 ): List<CaptureGap> {
     fun anchor(sample: ClockSample): Pair<Long, Long>? {
         val offset = sample.sequenceOffset ?: return null
-        if (!sample.valid || sample.bridgeError !in 0..20_000_000L) return null
+        if (!sample.hostAnchored || sample.bridgeError !in 0..20_000_000L) return null
         return try {
             Math.addExact(sample.elapsed, offset) to Math.addExact(sample.readError,
                 Math.addExact(Math.subtractExact(sample.received, sample.sent) / 2, sample.bridgeError))

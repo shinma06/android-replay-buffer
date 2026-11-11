@@ -46,11 +46,11 @@ REQUEST、DRAW、commit callback、mirror取得、encoder出力、物理表示�
 
 時計DEXはapp_processで動く小さな専用helper。端末appの改造・APKインストール・rootを要求しない。hostからnonce付き測定要求を送り、helperは`elapsed before → mono → currentTimeMillis → elapsed after`を返す。clock sampleにはnonce、boot epoch ID、各値、読取幅、host往復幅を保存する。helperの実起動/互換性は未検証。起動不可なら同期不適合を表示し、受入を通さない。
 
-開始/再接続/取得generation変更時に5回測定し最短往復のsampleを初期anchorにする。以後1秒ごとに測定、5秒以上古いanchorは正常同期に使わない。clock sampleの端末読取幅は2ms以下、host往復幅は40ms以下を正常条件にする。offsetのepoch分割は前後sampleの読取幅と1ms量子化による見積誤差を超える不連続で判断し、微小な測定差だけでは分割しない。往復の半分は**対称遅延の推定値**であり、端末内部のmono/elapsed/Epoch変換の保証誤差とは混同しない。
+開始/再接続/取得generation変更時に5回測定し最短往復のsampleを初期anchorにする。以後1秒ごとに測定、5秒以上古いanchorは正常同期に使わない。clock sampleの端末読取幅は2ms以下を正常条件にする。mono/elapsed/Epochのoffsetは端末内で続けて読むので、adbの往復の長さに左右されない。往復が40msを超えたsampleも、video/タップ/ログの変換には使う。hostの時刻から端末の時刻を推定する処理（保存の窓端T、クラッシュの受付時刻、ログ取得開始の下限）だけは、往復40ms以下の直近sample（受信後5秒以内）をanchorにする。そのようなsampleがないときは最新の正常sampleの往復の半分を誤差に含める。offsetのepoch分割は前後sampleの読取幅と1ms量子化による見積誤差を超える不連続で判断し、微小な測定差だけでは分割しない。往復の半分は**対称遅延の推定値**であり、端末内部のmono/elapsed/Epoch変換の保証誤差とは混同しない。
 
 - `E = (elapsed_before + elapsed_after) / 2`。`E - mono`と`E - epoch`を別々に保存する。currentTimeMillisの1ms量子化、読取幅、隣接sampleのoffset差を変換の誤差幅へ加える。
 - 同一clock区間では`video_elapsed = video_pts * 1000 + (E - mono)`、`log_elapsed = log_epoch + (E - epoch)`。各sample間でoffsetを線形補間する。同期精度を装うためにhost受信時刻へ置き換えない。
-- sampleの端末測定はhostの送信〜応答受信の間に起こる。現在epochの新しいsource時刻の支持範囲上限は、最も早い測定時点である送信からの進みを含める。応答受信完了を測定時点と同一視して、許容RTT内の応答遅延だけで到着可能なsourceを不明にしない。閉じたepochの探索境界は広げず、未知候補を新epochの正常sampleへ重ねない。鮮度は引き続き受信後5秒、変換誤差20ms、有効RTT40msを維持し、支持範囲外・epoch/boot境界・曖昧なsourceは不明のまま保持する。支持範囲のhost区間と端末clockの変換誤差を混同せず、生sourceをhost時刻へ置き換えない。
+- sampleの端末測定はhostの送信〜応答受信の間に起こる。現在epochの新しいsource時刻の支持範囲上限は、最も早い測定時点である送信からの進みを含める。応答受信完了を測定時点と同一視して、許容RTT内の応答遅延だけで到着可能なsourceを不明にしない。閉じたepochの探索境界は広げず、未知候補を新epochの正常sampleへ重ねない。鮮度は引き続き受信後5秒、変換誤差20msを維持し（RTT40msはhost時刻からの推定のanchor選択だけに使う）、支持範囲外・epoch/boot境界・曖昧なsourceは不明のまま保持する。支持範囲のhost区間と端末clockの変換誤差を混同せず、生sourceをhost時刻へ置き換えない。
 - `E-mono`の変化（端末sleep）、`E-epoch`の急変（日時変更）、boot変化、PTS逆行、clock測定不達を境界としてclock区間を分ける。境界を跨いで補間しない。取得済みの生PTS・Epoch・arrivalを残し、ambiguousなログには`elapsed_ns: null`、推定範囲、`clock_uncertain`を付ける。日時が戻った場面では同じEpoch値が複数の時点を指し得るため、ログ到着順・generationを含めても一意にならないものを無理に割り当てない。
 - 相関不明でも取得を捨てない。正常な側は継続し、UI/成果物は「時刻対応を確認できない区間」を示す。未対応をSYNC-01合格に数えない。受信遅延でT以前のデータが保存確定後に届いたら、後の保存だけへ含める。前のimmutable保存対象は書き換えず、保存時点のwatermark/遅延疑いを記録する。
 
@@ -133,7 +133,7 @@ clock scopesと復旧/両側anchorは同期確度の説明に使い、source隣�
 
 ## 許容精度と受取人の確認
 
-現在の保証は[本人要件の明確化 #299](https://github.com/shinma06/android-replay-buffer/issues/299)と[有効受入](../verification/responsibility.md)に従う。元PTS・両ログの内容/順序/帰属と支持されたclock変換、実時間窓・索引・欠落説明を検証する。端末内clock変換の見積誤差 **≤ 20ms**、読取幅 **≤ 2ms**、RTT **≤ 40ms**、sample鮮度 **≤ 5秒**を維持する。支持された対応でのcut境界は1観測frame間隔＋時計誤差以内、mux/indexの丸め誤差は **≤ 1ms**。これらを画像取得/物理表示を含む総合精度に読み替えず、unknownの境界に適用しない。
+現在の保証は[本人要件の明確化 #299](https://github.com/shinma06/android-replay-buffer/issues/299)と[有効受入](../verification/responsibility.md)に従う。元PTS・両ログの内容/順序/帰属と支持されたclock変換、実時間窓・索引・欠落説明を検証する。端末内clock変換の見積誤差 **≤ 20ms**、読取幅 **≤ 2ms**、sample鮮度 **≤ 5秒**を維持する。RTT **≤ 40ms**は、hostの時刻から端末の時刻を推定するanchorの条件で、端末内clock変換の可否には使わない。支持された対応でのcut境界は1観測frame間隔＋時計誤差以内、mux/indexの丸め誤差は **≤ 1ms**。これらを画像取得/物理表示を含む総合精度に読み替えず、unknownの境界に適用しない。
 
 旧受入目標の画像/log対応 **p95 ≤ 100ms、最大 ≤ 250ms、中央値drift ≤ 50ms**と当時の30分等の方法は履歴として保持する。streamが独立に提供しない画像時刻の数値精度を、現在のAgent段階・後続実装・性能baselineの一律gateにしない。代替許容値を発明せず、元REQUEST/DRAWのFAIL・未校正・原因未帰属を保持する。FRAME_COMMIT等の良い位相や補正値へ判定を付け替えない。
 

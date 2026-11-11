@@ -12,7 +12,10 @@ internal data class ClockSample(
     val monoOffset: Long get() = elapsed - mono
     val wallOffset: Long get() = elapsed - wall
     val readError: Long get() = (after - before) / 2 + 1_000_000
-    val valid: Boolean get() = after - before <= 2_000_000 && received - sent <= 40_000_000
+    /** Supports offsets and mapping. Offsets are read on the device, so the adb round trip does not affect them. */
+    val valid: Boolean get() = after - before <= 2_000_000
+    /** Also supports host-to-device estimates (T, barriers, start bounds), whose error includes half the round trip. */
+    val hostAnchored: Boolean get() = valid && received - sent <= 40_000_000
 }
 
 /** Nanosecond correspondence: null times and Long.MAX_VALUE uncertainty preserve unsupported/ambiguous mapping. */
@@ -37,7 +40,7 @@ internal class CaptureClock {
         val measured = samples.lastOrNull { it.after - it.before <= 2_000_000 }
         val normal = samples.lastOrNull { it.valid }
         val elapsed = before + (after - before) / 2
-        val good = after - before <= 2_000_000 && received - sent <= 40_000_000
+        val good = after - before <= 2_000_000
         val bootChanged = last != null && (last.boot != boot || elapsed < last.elapsed)
         val sourceBreak = after - before <= 2_000_000 && measured != null &&
             (boot != measured.boot || elapsed < measured.elapsed ||
@@ -72,12 +75,26 @@ internal class CaptureClock {
     @Synchronized
     fun now(host: Long = System.nanoTime()): Long? {
         val latest = samples.peekLast() ?: return null
-        val anchor = if (latest.valid) samples.filter { it.valid && it.epoch == latest.epoch && latest.received - it.received < 100_000_000 }
-            .minBy { it.received - it.sent } else latest
+        val anchor = anchorFor(latest)
         return if (anchor.sequenceOffset == null) firstHost?.let { (host - it).coerceAtLeast(0) } else
             maxOf(latest.elapsed + latest.sequenceOffset!!,
                 Math.addExact(anchor.elapsed + anchor.sequenceOffset, (host - anchor.received).coerceAtLeast(0)))
     }
+
+    /** Newest round-trip-supported sample of [latest]'s epoch within 5 s, else [latest] itself. */
+    private fun hostSample(latest: ClockSample): ClockSample = if (!latest.valid) latest else
+        samples.lastOrNull { it.hostAnchored && it.epoch == latest.epoch && latest.received - it.received <= 5_000_000_000 } ?: latest
+
+    /** Host-to-device anchor for T: the shortest round trip within 100 ms of [hostSample]. */
+    private fun anchorFor(latest: ClockSample): ClockSample = hostSample(latest).let { recent ->
+        if (!recent.hostAnchored) recent else
+            samples.filter { it.hostAnchored && it.epoch == recent.epoch && recent.received - it.received in 0 until 100_000_000 }
+                .minBy { it.received - it.sent }
+    }
+
+    /** Sample for extrapolating device time from host time, or null before the first usable sample. */
+    @Synchronized
+    fun hostAnchor(): ClockSample? = samples.lastOrNull { it.valid }?.let(::hostSample)
 
     @Synchronized
     fun video(pts: Long, host: Long, hint: Int? = null): MappedTime = map(Math.multiplyExact(pts, 1000), host, false, hint ?: epoch)
@@ -196,7 +213,7 @@ internal class CaptureClock {
     fun endUncertainty(host: Long = System.nanoTime()): Long = samples.peekLast()?.let {
         if (it.epoch != epoch || it.sequenceOffset == null || it.bridgeError == Long.MAX_VALUE ||
             host - it.received > 5_000_000_000) Long.MAX_VALUE else
-            it.readError + (it.received - it.sent) / 2 + it.bridgeError
+            anchorFor(it).let { anchor -> anchor.readError + (anchor.received - anchor.sent) / 2 } + it.bridgeError
     } ?: Long.MAX_VALUE
 
     @Synchronized

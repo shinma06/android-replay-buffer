@@ -323,7 +323,7 @@ class CaptureStoreSaveTest {
     }
 
     @Test
-    fun oneInvalidClockRoundTripDoesNotFragmentKnownVideoBeforeAndAfterRecovery() {
+    fun oneInvalidClockReadDoesNotFragmentKnownVideoBeforeAndAfterRecovery() {
         verifyVideoAroundClockFailure(false)
     }
 
@@ -388,7 +388,7 @@ class CaptureStoreSaveTest {
                 store.clockStatus(false, 1)
             } else {
                 val healthy = store.clock.add("1", listOf(3_000_000_000, 3_000_000_000,
-                    1_700_000_003_000_000_000, 3_000_000_000), host + 2_000_000_000, host + 2_100_000_000)
+                    1_700_000_003_000_000_000, 3_002_000_001), host + 2_000_000_000, host + 2_001_000_000)
                 assertFalse(healthy)
                 store.clockStatus(healthy, 1)
             }
