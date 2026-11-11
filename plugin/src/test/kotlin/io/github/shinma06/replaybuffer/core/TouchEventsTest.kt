@@ -239,15 +239,36 @@ class TouchEventsTest {
     }
 
     @Test
-    fun `display size is re-read at most once per interval and a failed read keeps the last size`() {
-        val answers = ArrayDeque<Pair<Int, Int>?>(listOf(720 to 1600, null))
+    fun `display geometry is re-read at most once per interval, at once after invalidate, and a failed read keeps the last`() {
+        val answers = ArrayDeque<DisplayGeometry?>(listOf(DisplayGeometry(720, 1600, 0), null, DisplayGeometry(1080, 2400, 1)))
         var reads = 0
-        val watch = DisplaySizeWatch(1080 to 2400, { reads++; answers.removeFirst() }, intervalNs = 1_000)
-        assertEquals(1080 to 2400, watch.current(0))
-        assertEquals(1080 to 2400, watch.current(999))
+        val watch = DisplaySizeWatch(DisplayGeometry(1080, 2400, 0), { reads++; answers.removeFirst() }, intervalNs = 1_000)
+        assertEquals(DisplayGeometry(1080, 2400, 0), watch.current(0))
+        assertEquals(DisplayGeometry(1080, 2400, 0), watch.current(999))
         assertEquals(0, reads)
-        assertEquals(720 to 1600, watch.current(1_000))
-        assertEquals(720 to 1600, watch.current(2_000))
+        assertEquals(DisplayGeometry(720, 1600, 0), watch.current(1_000))
+        assertEquals(DisplayGeometry(720, 1600, 0), watch.current(2_000))
         assertEquals(2, reads)
+        // The video stream reported a new screen size: the next input re-reads before the interval elapses.
+        watch.invalidate()
+        assertEquals(DisplayGeometry(1080, 2400, 1), watch.current(2_001))
+        assertEquals(3, reads)
+    }
+
+    @Test
+    fun `rotation comes from the built-in display viewport and rotates points as the screen shows them`() {
+        val output = """
+            Physical size: 1080x2400
+                  Viewport INTERNAL: displayId=-1, uniqueId=, port=<none>, orientation=0, logicalFrame=[0, 0, 0, 0], isActive=[0]
+                  Viewport INTERNAL: displayId=0, uniqueId=local:1, port=0, orientation=1, logicalFrame=[0, 0, 2400, 1080], isActive=[1]
+        """.trimIndent()
+        assertEquals(DisplayGeometry(1080, 2400, 1), parseDisplayGeometry(output))
+        assertEquals(DisplayGeometry(1080, 2400, null), parseDisplayGeometry("Physical size: 1080x2400\n"))
+        assertEquals(null, parseDisplayRotation("Viewport INTERNAL: displayId=2, orientation=1"))
+        // Natural top-left (0, 0) is bottom-left after a 90 degree turn, bottom-right after 180, top-right after 270.
+        assertEquals(10 to 20, screenPoint(10, 20, 1080, 2400, 0))
+        assertEquals(20 to 1069, screenPoint(10, 20, 1080, 2400, 1))
+        assertEquals(1069 to 2379, screenPoint(10, 20, 1080, 2400, 2))
+        assertEquals(2379 to 10, screenPoint(10, 20, 1080, 2400, 3))
     }
 }

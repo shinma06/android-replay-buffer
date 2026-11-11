@@ -37,6 +37,23 @@ class ReplayMcpServerTest {
     private fun Map<*, *>.result() = this["result"] as Map<*, *>
     private fun Map<*, *>.text() = ((result()["content"] as List<*>).first() as Map<*, *>)["text"] as String
 
+    @Test fun `save_replay logs_only maps onto the logs-only CLI save`() {
+        val requests = mutableListOf<CliRequest>()
+        val responses = session(listOf(
+            initialize,
+            """{"jsonrpc":"2.0","id":"list","method":"tools/list"}""",
+            call(1, "save_replay", """{"logs_only":true}"""),
+            call(2, "save_replay"),
+            call(3, "save_replay", """{"logs_only":"yes"}"""),
+        ), temporary.resolve("project")) { _, _, _, request -> requests += request; CliResponse(0, "/saved") }
+        assertEquals(listOf(CliCommand.SAVE_LOGS, CliCommand.SAVE), requests.map { it.command })
+        assertEquals("/saved", (responses[BigDecimal("1")]!!.result()["structuredContent"] as Map<*, *>)["directory"])
+        assertEquals(true, responses[BigDecimal("3")]!!.result()["isError"])
+        val save = ((responses["list"]!!.result()["tools"]) as List<*>).map { it as Map<*, *> }.single { it["name"] == "save_replay" }
+        val properties = (save["inputSchema"] as Map<*, *>)["properties"] as Map<*, *>
+        assertEquals("boolean", (properties["logs_only"] as Map<*, *>)["type"])
+    }
+
     @Test fun `scripted session maps tools onto CLI requests and results`() {
         val requests = mutableListOf<CliRequest>()
         val project = temporary.resolve("project")
