@@ -385,8 +385,12 @@ internal class ReplayMcpServer(
             "screenshot_uses_logcat_destination" to mapOf("type" to "boolean",
                 "description" to "true saves screenshots where Logcat saves them; false uses screenshot_directory."),
             "screenshot_directory" to mapOf("type" to "string", "description" to "Existing absolute folder used when screenshot_uses_logcat_destination is false."),
+            "tap_display" to mapOf("type" to "string", "enum" to listOf("OFF", "VIDEO", "DEVICE"),
+                "description" to "Where taps appear: OFF records touches.jsonl only; VIDEO draws them into the saved MP4 only (re-encoded at save, device unchanged); " +
+                    "DEVICE also turns the device show_touches option on while capturing (restored afterwards) and draws the taps the device cannot show " +
+                    "(mirroring/injected input) into the MP4. Change only while capture is OFF."),
             "show_touches" to mapOf("type" to "boolean",
-                "description" to "Show tap dots on the device screen (and so in the video) while capturing; restored afterwards. Change only while capture is OFF."),
+                "description" to "Legacy alias: true sets tap_display DEVICE, false turns DEVICE into OFF. May be combined with tap_display only when they agree."),
             "record_audio" to mapOf("type" to "boolean",
                 "description" to "Record the device playback audio into the video (VIDEO_AND_LOGS only, Android 13+, apps may opt out; coverage.audio in replay.json tells why it is missing). Change only while capture is OFF."),
             "device" to mapOf("type" to "string",

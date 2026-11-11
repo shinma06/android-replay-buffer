@@ -351,7 +351,7 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
             if (settings.destination != checked.destination || settings.manualScreenshotDestination != screenshotChecked.destination)
                 return rejected("設定が同時に変更されました。設定を確認して再実行してください。")
             if ((settings.captureMode != current.captureMode || settings.videoQuality != current.videoQuality ||
-                    settings.showTouches != current.showTouches || settings.recordAudio != current.recordAudio) &&
+                    settings.tapDisplay != current.tapDisplay || settings.recordAudio != current.recordAudio) &&
                 (store.enabled || capture.view.snapshot?.enabled == true || resolving || capture.view.pending > 0))
                 return rejected("取得をOFFにし、設定・操作の反映が終わってから取得モード・動画品質・タップ位置の表示・音声の録音を変更してください。")
             val target = capture.view.snapshot?.device?.serial

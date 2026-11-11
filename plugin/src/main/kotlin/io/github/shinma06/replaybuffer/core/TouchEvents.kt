@@ -26,6 +26,65 @@ internal enum class TouchDots(val wire: String) {
     FAILED("failed"),
 }
 
+/** Input device name of taps injected through InputManager (Running Devices mirroring, scrcpy, `adb shell input`). */
+internal const val INJECTED_INPUT_DEVICE = "injected"
+
+/** Android 13+ InputDispatcher logs each injected event while this runtime log tag is DEBUG; older releases have no such log. */
+internal const val INJECTED_TOUCH_MIN_SDK = 33
+internal const val INJECTED_TOUCH_LOG_PROPERTY = "log.tag.InputDispatcherInboundEvent"
+
+internal val TouchSample.injected: Boolean get() = device == INJECTED_INPUT_DEVICE
+
+/** One injected MotionEvent: pointer ids with logical (rotated) display coordinates, at its CLOCK_MONOTONIC event time. */
+internal data class InjectedMotion(val monoNs: Long, val action: String, val actionIndex: Int?, val pointers: List<Triple<Int, Float, Float>>)
+
+private val injectedLine = Regex("""\binjectInputEvent:.*\bevent=MotionEvent \{(.*)""")
+private val injectedAction = Regex("""\baction=([A-Z_]+)(?:\((\d+)\))?""")
+private val injectedPointer = Regex("""\bid\[(\d+)]=(-?\d+), x\[\1]=(-?[0-9.]+), y\[\1]=(-?[0-9.]+)""")
+private val injectedTime = Regex("""\beventTime=(\d{1,19})\b""")
+private val injectedSource = Regex("""\bsource=([A-Z_ |]+)""")
+private val injectedDisplay = Regex("""\bdisplayId=(-?\d+)""")
+
+/** A touchscreen MotionEvent of the built-in display from an InputDispatcher `injectInputEvent:` logcat line, else null. */
+internal fun parseInjectedMotion(line: String): InjectedMotion? {
+    val body = injectedLine.find(line)?.groupValues?.get(1) ?: return null
+    val source = injectedSource.find(body)?.groupValues?.get(1) ?: return null
+    if ("TOUCHSCREEN" !in source.split('|').map { it.trim() }) return null
+    if ((injectedDisplay.find(body)?.groupValues?.get(1)?.toIntOrNull() ?: 0) != 0) return null
+    val time = injectedTime.find(body)?.groupValues?.get(1)?.toLongOrNull() ?: return null
+    val action = injectedAction.find(body) ?: return null
+    val pointers = injectedPointer.findAll(body).mapNotNull { m ->
+        val (index, id, x, y) = m.destructured
+        val px = x.toFloatOrNull()?.takeIf { it.isFinite() } ?: return@mapNotNull null
+        val py = y.toFloatOrNull()?.takeIf { it.isFinite() } ?: return@mapNotNull null
+        Triple(id.toIntOrNull() ?: return@mapNotNull null, px, py).takeIf { index.toInt() < 32 }
+    }.toList()
+    if (pointers.isEmpty() || pointers.size > 32) return null
+    return InjectedMotion(time, action.groupValues[1], action.groupValues[2].toIntOrNull(), pointers)
+}
+
+/** Touch samples of [motion] in the natural orientation of [geometry]; hover, scroll and other actions give none. */
+internal fun injectedSamples(motion: InjectedMotion, geometry: DisplayGeometry): List<TouchSample> {
+    val rotation = geometry.rotation ?: 0
+    fun sample(pointer: Triple<Int, Float, Float>, action: TouchAction): TouchSample {
+        val rotatedWidth = if (rotation % 2 == 1) geometry.height else geometry.width
+        val rotatedHeight = if (rotation % 2 == 1) geometry.width else geometry.height
+        val sx = Math.round(pointer.second).coerceIn(0, rotatedWidth - 1)
+        val sy = Math.round(pointer.third).coerceIn(0, rotatedHeight - 1)
+        val (x, y) = naturalPoint(sx, sy, geometry.width, geometry.height, rotation)
+        return TouchSample(motion.monoNs, INJECTED_INPUT_DEVICE, pointer.first, action, x, y)
+    }
+    val indexed = motion.actionIndex?.let(motion.pointers::getOrNull)
+    return when (motion.action) {
+        "DOWN" -> listOf(sample(motion.pointers.first(), TouchAction.DOWN))
+        "MOVE" -> motion.pointers.map { sample(it, TouchAction.MOVE) }
+        "UP", "CANCEL" -> motion.pointers.map { sample(it, TouchAction.UP) }
+        "POINTER_DOWN" -> listOfNotNull(indexed?.let { sample(it, TouchAction.DOWN) })
+        "POINTER_UP" -> listOfNotNull(indexed?.let { sample(it, TouchAction.UP) })
+        else -> emptyList()
+    }
+}
+
 /**
  * Original show_touches values per device serial, kept across capture generations so that a restore that failed
  * while the device was disconnected is retried by a later generation instead of mistaking our own "1" for the original.
@@ -138,6 +197,14 @@ internal fun screenPoint(x: Int, y: Int, width: Int, height: Int, rotation: Int)
     2 -> width - 1 - x to height - 1 - y
     3 -> height - 1 - y to x
     else -> x to y
+}
+
+/** The natural-orientation point that [screenPoint] shows at screen point ([sx], [sy]). */
+internal fun naturalPoint(sx: Int, sy: Int, width: Int, height: Int, rotation: Int): Pair<Int, Int> = when (rotation) {
+    1 -> width - 1 - sy to sx
+    2 -> width - 1 - sx to height - 1 - sy
+    3 -> sy to height - 1 - sx
+    else -> sx to sy
 }
 
 /**
