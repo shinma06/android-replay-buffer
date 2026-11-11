@@ -129,7 +129,7 @@ class LogOnlyStoreTest {
             assertFailsWith<IllegalStateException> { store.capture(settings.copy(replaySeconds = 1)) }
             val retry = SaveWriter().write(inside, root, { false }) { publication -> Files.move(publication.partial, publication.complete) }
             assertTrue(inside.gaps.inWindow(inside.start, inside.end, inside.endUncertainty, inside.clocks, inside.clockRecoveries).isNotEmpty())
-            assertEquals(inside.end.toString(), JsonParser.parseString(Files.readString(retry.directory.resolve("session.json"))).asJsonObject["window_end_ns"].asString)
+            assertEquals(inside.end.toString(), JsonParser.parseString(Files.readString(retry.directory.resolve("replay.json"))).asJsonObject["window_end_ns"].asString)
             store.release(inside.id)
             val outside = assertNotNull(store.capture(settings.copy(replaySeconds = 1), host = host + 5_500_000_000))
             assertTrue(outside.logs.isEmpty())
@@ -168,17 +168,17 @@ class LogOnlyStoreTest {
             assertEquals(2, pinned.logs.size)
             val output = SaveWriter().write(pinned, root, { false }) { Files.move(it.partial, it.complete) }
             assertTrue(output.missingKinds.isEmpty()) // Core owns log shortages; the writer adds only video shortages.
-            val json = JsonParser.parseString(Files.readString(output.directory.resolve("session.json"))).asJsonObject
-            assertEquals(3, json["schema"].asInt)
+            val json = JsonParser.parseString(Files.readString(output.directory.resolve("replay.json"))).asJsonObject
+            assertEquals(4, json["schema"].asInt)
             assertEquals("LOG_ONLY", json["capture_mode"].asString)
             assertFalse(json["coverage"].asJsonObject["video"].asJsonObject["requested"].asBoolean)
             assertTrue(json["video_missing_ranges"].asJsonArray.isEmpty)
             assertTrue(json["video_clock_gap_scopes"].asJsonArray.isEmpty)
-            assertTrue(json["video_file"].isJsonNull)
+            assertTrue(json["files"].asJsonObject["video"].isJsonNull)
             assertFalse(json["video_reencoded"].asBoolean)
-            assertEquals(0L, Files.size(output.directory.resolve("frames.jsonl")))
-            assertTrue(Files.readString(output.directory.resolve("README.txt")).contains("意図的に未要求"))
-            assertFalse(Files.exists(output.directory.resolve("video-source.bin")))
+            assertFalse(Files.exists(output.directory.resolve("video-frames.jsonl")))
+            assertTrue(Files.readString(output.directory.resolve("README.md")).contains("動画は未要求"))
+            assertFalse(Files.exists(output.directory.resolve("video-source.h264")))
             assertEquals(2, Files.readAllLines(output.directory.resolve("logcat-app.jsonl")).size)
             store.release(pinned.id)
             val quiet = assertNotNull(store.capture(settings.copy(replaySeconds = 1)))

@@ -78,7 +78,7 @@ class ReplayScreenshotAction : DumbAwareAction() {
     }
 }
 
-/** Logcat toolbar: saves only logs and session.json, even while video is captured; video acquisition keeps running. */
+/** Logcat toolbar: saves only logs, replay.json and README.md, even while video is captured; video acquisition keeps running. */
 class ReplayLogSaveAction : DumbAwareAction() {
     override fun getActionUpdateThread() = ActionUpdateThread.EDT
 

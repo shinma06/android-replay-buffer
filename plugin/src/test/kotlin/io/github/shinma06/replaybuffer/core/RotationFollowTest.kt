@@ -68,7 +68,7 @@ class RotationFollowTest {
             assertEquals(rotated.time.sequence, gap.toNs)
 
             val output = SaveWriter().write(capture, root, { false }) { publication -> Files.move(publication.partial, publication.complete) }
-            val manifest = JsonParser.parseString(Files.readString(output.directory.resolve("session.json"))).asJsonObject
+            val manifest = JsonParser.parseString(Files.readString(output.directory.resolve("replay.json"))).asJsonObject
             val parts = manifest.getAsJsonArray("parts").map { it.asJsonObject }
             assertEquals(2, parts.size)
             assertTrue(parts.all { it["clock_alignment_known"].asBoolean }, parts.toString())
@@ -77,7 +77,7 @@ class RotationFollowTest {
             val boundary = manifest.getAsJsonArray("video_run_boundaries").single().asJsonObject
             assertEquals((gap.toNs!! - gap.fromNs!!) / 1000, boundary["actual_gap_duration_us"].asLong)
             // One movie timeline: movie time and window time differ by the same constant before and after the rotation.
-            val rows = Files.readAllLines(output.directory.resolve("frames.jsonl")).map { JsonParser.parseString(it).asJsonObject }
+            val rows = Files.readAllLines(output.directory.resolve("video-frames.jsonl")).map { JsonParser.parseString(it).asJsonObject }
                 .filter { it["presented"].asBoolean }
             val shifts = rows.map { it["movie_pts_us"].asLong - it["display_window_start_ns"].asLong / 1000 }
             assertTrue(shifts.max() - shifts.min() <= 2, shifts.toString())
@@ -147,7 +147,7 @@ class RotationFollowTest {
             val capture = store.capture(ReplaySettings(replaySeconds = 180), host = now)!!
             assertEquals(frames + 3, capture.video.size)
             val output = SaveWriter().write(capture, root, { false }) { publication -> Files.move(publication.partial, publication.complete) }
-            val parts = JsonParser.parseString(Files.readString(output.directory.resolve("session.json"))).asJsonObject
+            val parts = JsonParser.parseString(Files.readString(output.directory.resolve("replay.json"))).asJsonObject
                 .getAsJsonArray("parts").map { it.asJsonObject }
             assertEquals(2, parts.size)
             assertTrue(parts.all { it["clock_alignment_known"].asBoolean }, parts.toString())

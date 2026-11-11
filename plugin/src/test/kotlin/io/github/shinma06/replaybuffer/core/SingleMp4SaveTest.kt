@@ -45,10 +45,10 @@ class SingleMp4SaveTest {
     ) { root, store, capture, original, pixels ->
         val output = write(capture, root)
         val record = manifest(output)
-        assertEquals(3, record["schema"].asInt)
+        assertEquals(4, record["schema"].asInt)
         assertEquals("VIDEO_AND_LOGS", record["capture_mode"].asString)
         assertEquals(3, record["parts"].asJsonArray.size())
-        assertEquals(setOf("video-001.mp4"), record["parts"].asJsonArray.map { it.asJsonObject["file"].asString }.toSet())
+        assertEquals(setOf("video.mp4"), record["parts"].asJsonArray.map { it.asJsonObject["file"].asString }.toSet())
         val rows = rows(output)
         assertEquals(capture.video.map { it.pts }, rows.map { it["source_pts_us"].asLong })
         assertEquals(listOf(0L, 100_000L, 350_000L, 350_001L, 560_001L, 850_001L, 850_002L, 950_002L, 1_250_002L),
@@ -61,7 +61,7 @@ class SingleMp4SaveTest {
         store.generation(4)
         val retry = write(capture, root)
         assertEquals(record["parts"], manifest(retry)["parts"])
-        assertEquals(Files.readAllLines(output.directory.resolve("frames.jsonl")), Files.readAllLines(retry.directory.resolve("frames.jsonl")))
+        assertEquals(Files.readAllLines(output.directory.resolve("video-frames.jsonl")), Files.readAllLines(retry.directory.resolve("video-frames.jsonl")))
     }
 
     @Test
@@ -78,7 +78,7 @@ class SingleMp4SaveTest {
         val output = write(known, root)
         val boundary = manifest(output)["video_run_boundaries"].asJsonArray.single().asJsonObject
         assertEquals(2_000_000, boundary["actual_gap_duration_us"].asLong)
-        NIOUtils.readableChannel(output.directory.resolve("video-001.mp4").toFile()).use { input ->
+        NIOUtils.readableChannel(output.directory.resolve("video.mp4").toFile()).use { input ->
             MP4Demuxer.createRawMP4Demuxer(input).use { demux ->
                 val track = demux.videoTrack as AbstractMP4DemuxerTrack
                 // The last image before a known gap stays on screen until the gap starts.
@@ -131,7 +131,7 @@ class SingleMp4SaveTest {
         val record = manifest(output)
         assertTrue(record["video_reencoded"].asBoolean)
         assertFalse(record["video_canvas"].asJsonObject["colour_known"].asBoolean)
-        val saved = Files.readAllBytes(output.directory.resolve("video-source.bin"))
+        val saved = Files.readAllBytes(output.directory.resolve("video-source.h264"))
         val rows = rows(output)
         assertEquals(140, rows.size)
         assertTrue(rows.all { it["window_ns"].isJsonNull && it["uncertainty_ns"].asLong == Long.MAX_VALUE })
@@ -146,7 +146,7 @@ class SingleMp4SaveTest {
         assertMixedPackets(output, pixels, colourKnown = false)
         store.generation(9)
         val retry = write(capture, root)
-        assertContentEquals(saved, Files.readAllBytes(retry.directory.resolve("video-source.bin")))
+        assertContentEquals(saved, Files.readAllBytes(retry.directory.resolve("video-source.h264")))
         assertMixedPackets(retry, pixels, colourKnown = false) // Container creation timestamps may differ.
         assertEquals(rows, rows(retry))
     }
@@ -191,7 +191,7 @@ class SingleMp4SaveTest {
         assertFailsWith<java.util.concurrent.CancellationException> {
             SaveWriter().write(capture, root, {
                 val trigger = Files.list(root).use { paths -> paths.filter { it !in earlier && it.fileName.toString().endsWith(".partial") }
-                    .anyMatch { dir -> val source = dir.resolve("video-source.bin"); Files.exists(source) && Files.size(source) > capture.video.first().size } }
+                    .anyMatch { dir -> val source = dir.resolve("video-source.h264"); Files.exists(source) && Files.size(source) > capture.video.first().size } }
                 if (trigger && cancelledAt == 0L) cancelledAt = System.nanoTime()
                 trigger
             }) { _ -> error("partial publish") }
@@ -201,7 +201,7 @@ class SingleMp4SaveTest {
         Files.list(root).use { paths -> assertFalse(paths.anyMatch { it.fileName.toString().startsWith("replay-") }) }
         val retained = Files.list(root).use { paths -> paths.filter { it.fileName.toString().endsWith(".partial") }.toList() }
         assertEquals(3, retained.size) // Failed/cancelled outputs stay intact; path deletion cannot prove ownership.
-        assertTrue(retained.all { Files.exists(it.resolve("video-source.bin")) })
+        assertTrue(retained.all { Files.exists(it.resolve("video-source.h264")) })
         assertEquals(6, rows(write(capture, root)).size)
     }
 
@@ -232,7 +232,7 @@ class SingleMp4SaveTest {
         assertTrue(failure.message!!.contains("aspect"))
         val normal = write(capture.copy(video = capture.video.take(3)), root)
         assertFalse(manifest(normal)["video_reencoded"].asBoolean)
-        assertFalse(Files.exists(normal.directory.resolve("video-source.bin")))
+        assertFalse(Files.exists(normal.directory.resolve("video-source.h264")))
     }
 
     @Test
@@ -245,7 +245,7 @@ class SingleMp4SaveTest {
             assertFailsWith<java.util.concurrent.CancellationException> {
                 SaveWriter().write(capture, root, {
                     if (signal == null && Files.list(root).use { paths -> paths.filter { it.fileName.toString().endsWith(".partial") }
-                        .anyMatch { dir -> val source = dir.resolve("video-source.bin"); Files.exists(source) && Files.size(source) >= capture.video.first().size + capture.video.first().config.size } }) {
+                        .anyMatch { dir -> val source = dir.resolve("video-source.h264"); Files.exists(source) && Files.size(source) >= capture.video.first().size + capture.video.first().config.size } }) {
                         signal = Thread {
                             Thread.sleep(5)
                             requested.set(System.nanoTime())
@@ -260,7 +260,7 @@ class SingleMp4SaveTest {
             val output = write(capture, root)
             val savedRows = rows(output)
             assertEquals(4, savedRows.size)
-            val savedBytes = Files.readAllBytes(output.directory.resolve("video-source.bin"))
+            val savedBytes = Files.readAllBytes(output.directory.resolve("video-source.h264"))
             assertTrue(original.any { bytes -> (0 until bytes.size - 2).any { n -> bytes[n] == 0.toByte() && bytes[n + 1] == 0.toByte() && bytes[n + 2] == 3.toByte() } })
             savedRows.forEachIndexed { n, row ->
                 assertContentEquals(original[n], savedBytes.copyOfRange(row["source_offset"].asInt, row["source_offset"].asInt + row["source_size"].asInt))
@@ -277,7 +277,7 @@ class SingleMp4SaveTest {
         for ((duration, level) in listOf(12_950L to 52, 33_333L to 51, null to 51)) {
             withRuns(List(2) { duration?.let { listOf(0L, it) } ?: listOf(0L) }, listOf(1920 to 1080, 1080 to 1920), knownColour = true) { root, _, capture, original, pixels ->
                 val output = write(capture, root)
-                val saved = Files.readAllBytes(output.directory.resolve("video-source.bin"))
+                val saved = Files.readAllBytes(output.directory.resolve("video-source.h264"))
                 val index = rows(output)
                 assertEquals(capture.video.map { it.pts }, index.map { it["source_pts_us"].asLong })
                 assertEquals(if (duration == null) listOf(null, null) else listOf(duration, null, duration, null),
@@ -368,7 +368,7 @@ class SingleMp4SaveTest {
                     assertFalse(paths.anyMatch { it.fileName.toString().startsWith("replay-") })
                 }
                 val retained = assertNotNull(failure.partial)
-                assertTrue(Files.exists(retained.resolve("video-source.bin")))
+                assertTrue(Files.exists(retained.resolve("video-source.h264")))
                 assertTrue(failure.message.orEmpty().contains(retained.toString()))
             }
         }
@@ -456,7 +456,7 @@ class SingleMp4SaveTest {
         val rows = rows(output)
         val canvas = manifest(output)["video_canvas"].asJsonObject
         val canvasWidth = canvas["width"].asInt; val canvasHeight = canvas["height"].asInt
-        NIOUtils.readableChannel(output.directory.resolve("video-001.mp4").toFile()).use { input ->
+        NIOUtils.readableChannel(output.directory.resolve("video.mp4").toFile()).use { input ->
             MP4Demuxer.createRawMP4Demuxer(input).use { demux ->
                 assertEquals(1, demux.videoTracks.size)
                 val track = demux.videoTrack as AbstractMP4DemuxerTrack
@@ -500,12 +500,12 @@ class SingleMp4SaveTest {
     }
 
     private fun write(capture: FrozenCapture, root: java.nio.file.Path) = SaveWriter().write(capture, root, { false }) { publication -> Files.move(publication.partial, publication.complete) }
-    private fun manifest(output: SaveOutput) = JsonParser.parseString(Files.readString(output.directory.resolve("session.json"))).asJsonObject
-    private fun rows(output: SaveOutput) = Files.readAllLines(output.directory.resolve("frames.jsonl")).map { JsonParser.parseString(it).asJsonObject }
+    private fun manifest(output: SaveOutput) = JsonParser.parseString(Files.readString(output.directory.resolve("replay.json"))).asJsonObject
+    private fun rows(output: SaveOutput) = Files.readAllLines(output.directory.resolve("video-frames.jsonl")).map { JsonParser.parseString(it).asJsonObject }
 
     private fun assertPackets(output: SaveOutput, original: List<ByteArray>, pixels: List<List<ByteArray>>, expectedEntries: Int) {
         val rows = rows(output)
-        NIOUtils.readableChannel(output.directory.resolve("video-001.mp4").toFile()).use { input ->
+        NIOUtils.readableChannel(output.directory.resolve("video.mp4").toFile()).use { input ->
             MP4Demuxer.createRawMP4Demuxer(input).use { demux ->
                 assertEquals(1, demux.videoTracks.size)
                 val track = demux.videoTrack as AbstractMP4DemuxerTrack
@@ -593,7 +593,7 @@ class SingleMp4SaveTest {
 
     @Test
     fun unknownClockKeepsObservedVfrIntervalsInsteadOfOneTickPerFrame() = unknownClockSave { output ->
-        val visible = Files.readAllLines(output.directory.resolve("frames.jsonl"))
+        val visible = Files.readAllLines(output.directory.resolve("video-frames.jsonl"))
             .map { JsonParser.parseString(it).asJsonObject }.filter { it["presented"].asBoolean }
         assertEquals(listOf(1_000_000L, 1_100_000L, 1_350_000L), visible.map { it["source_pts_us"].asLong })
         assertTrue(visible.all { it["window_ns"].isJsonNull && it["uncertainty_ns"].asLong == Long.MAX_VALUE })
