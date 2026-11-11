@@ -18,7 +18,7 @@
 | video / 12 | VFR/unknown/decodeRun・全frame/PTS/geometry/Level・単一MP4/失敗pin | 既知source全packet/config/画素と全内部境界は回帰、nativeは通常/静止/実回転混在・再接続/表示と全FILE。独立工程を短い同runへ詰めない |
 | log-reader / 3 | main/非mainの範囲・identity/順序/二重取込防止、復旧/実停止 | Protocol/Wireの全header/fragment/fault回帰＋有限のmain/非main陽性入力の全FILEと代表OFF/再接続。100入力/300phaseは固定しない |
 
-場面とログの対応、unknownを既知へ見せないこと、取得済み内容と窓を忠実に保存することを保証します。clock変換モデルの見積誤差≤20ms・読取幅≤2ms・RTT≤40ms・鮮度≤5秒、支持された対応でのcut≤1観測frame間隔＋時計誤差、mux/index丸め≤1msを維持します。これらはAndroidの描画/取得/encoder/物理表示を含む総合精度ではありません。時計モデルの根拠とruntimeの未確認を明記し、長時間内部時刻/履歴境界は既知入力回帰で検査します。log順から画像番号を推定せず、独立した実画像IDと全対象の保存内容を確認します。
+場面とログの対応、unknownを既知へ見せないこと、取得済み内容と窓を忠実に保存することを保証します。clock変換モデルの見積誤差≤20ms・読取幅≤2ms・鮮度≤5秒（RTT≤40msはhost時刻から端末時刻を推定するanchorの条件）、支持された対応でのcut≤1観測frame間隔＋時計誤差、mux/index丸め≤1msを維持します。これらはAndroidの描画/取得/encoder/物理表示を含む総合精度ではありません。時計モデルの根拠とruntimeの未確認を明記し、長時間内部時刻/履歴境界は既知入力回帰で検査します。log順から画像番号を推定せず、独立した実画像IDと全対象の保存内容を確認します。
 
 #299は[本人の要求範囲](https://github.com/shinma06/android-replay-buffer/issues/206#issuecomment-6232582806)の改訂です。独立画像時刻のp95≤100ms・最大≤250ms・中央値drift≤50msを現在のAgent/後続実装/性能baselineの一律前提から外し、代替数値を発明しません。元REQUEST/DRAWのFAIL・未校正・原因未帰属、回転境界unknownやconsumer制約はそのまま保持します。FRAME_COMMITへの付替え、旧結果のPASS化、Android原因の断定はしません。具体的な誤変換・誤帰属・黙示的欠落・破損・既存出力上書き・失敗pin喪失・虚偽の時刻/成功表示は引き続き影響する受入を止めます。旧画像時刻の未帰属だけをその自製品違反と同一視しません。
 

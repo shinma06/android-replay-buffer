@@ -133,11 +133,10 @@ class VideoClockRegionTest {
             }
             val before = ClockSample(0, "fixture", 2_000_000_000, 2_000_000_000, 0, 2_000_000_000,
                 0, 0, 0, -1_000_000_000, 0)
-            val invalid = before.copy(before = 3_000_000_000, after = 3_000_000_000, mono = 3_000_000_000,
-                received = 41_716_666)
+            val invalid = before.copy(before = 3_000_000_000, after = 3_002_000_001, mono = 3_000_000_000)
             val recovery = before.copy(before = 4_000_000_000, after = 4_000_000_000, mono = 4_000_000_000)
             assertFalse(invalid.valid)
-            val gap = CaptureGap("clock", 1_000_000_000, 3_000_000_000, "invalid RTT", Long.MAX_VALUE, 1, 0)
+            val gap = CaptureGap("clock", 1_000_000_000, 3_000_000_000, "invalid read width", Long.MAX_VALUE, 1, 0)
             val logSource = DeviceLog(1_700_000_002_500_000_000, 12, 12, 10001, 0, 4, "Fixture", "operation", byteArrayOf(1))
             val knownLog = LogEntry("known", logSource, 1, MappedTime(2_500_000_000, 0, 1_000_000, 1_500_000_000),
                 1_500_000_000, true, 0)

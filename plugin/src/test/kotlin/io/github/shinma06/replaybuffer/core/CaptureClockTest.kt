@@ -2,6 +2,7 @@ package io.github.shinma06.replaybuffer.core
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -61,10 +62,54 @@ class CaptureClockTest {
     }
 
     @Test
+    fun slowRoundTripStillMapsButOnlyWidensTheHostEstimate() {
+        val clock = receiptClock(1_000_000)
+        val roundTrip = 69_000_000L
+        assertTrue(clock.add("1", listOf(3_000_000_000L, 3_000_000_000L, 1_700_000_003_000_000_000, 3_000_000_000),
+            12_000_000_000, 12_000_000_000 + roundTrip, 12_000_000_000 + roundTrip))
+        val slow = clock.snapshot().last()
+        assertTrue(slow.valid)
+        assertTrue(!slow.hostAnchored)
+        val host = 12_100_000_000L
+        assertTrue(clock.certain(host))
+        assertEquals(0, clock.currentEpoch())
+        assertEquals(3_034_000_000, clock.log(1_700_000_003_034_000_000, host).elapsed)
+        assertEquals(3_034_000_000, clock.video(3_034_000, host).elapsed)
+        // T and its error come from the latest round-trip-supported sample, not from the slow reply.
+        val anchor = assertNotNull(clock.hostAnchor(host))
+        assertEquals(11_001_000_000, anchor.received)
+        assertEquals(1_000_000L + 500_000, clock.endUncertainty(host))
+        assertEquals(2_000_000_000 + host - anchor.received - 1_000_000_000, clock.now(host))
+
+        val onlySlow = CaptureClock()
+        assertTrue(onlySlow.add("1", listOf(2_000_000_000L, 2_000_000_000L,
+            1_700_000_002_000_000_000, 2_000_000_000), 11_000_000_000, 11_000_000_000 + roundTrip, 11_000_000_000 + roundTrip))
+        assertEquals(1_000_000L + roundTrip / 2, onlySlow.endUncertainty(11_100_000_000))
+        assertEquals(2_034_000_000, onlySlow.log(1_700_000_002_034_000_000, 11_100_000_000).elapsed)
+    }
+
+    @Test
+    fun hostAnchorOlderThanFiveSecondsAtTheCallerTimeIsNotUsed() {
+        val clock = receiptClock(1_000_000) // Round-trip-supported sample received at 11.001 s.
+        val roundTrip = 69_000_000L
+        assertTrue(clock.add("1", listOf(6_000_000_000L, 6_000_000_000L, 1_700_000_006_000_000_000, 6_000_000_000),
+            15_000_000_000, 15_000_000_000 + roundTrip, 15_000_000_000 + roundTrip))
+        val fresh = 15_100_000_000L
+        assertEquals(11_001_000_000, assertNotNull(clock.hostAnchor(fresh)).received)
+        assertEquals(1_000_000L + 500_000, clock.endUncertainty(fresh))
+        // At 19 s the supported sample is ~8 s old: T and its error come from the slow but fresh sample.
+        val late = 19_000_000_000L
+        val slow = clock.snapshot().last()
+        assertEquals(slow, clock.hostAnchor(late))
+        assertEquals(slow.readError + roundTrip / 2, clock.endUncertainty(late))
+        assertEquals(slow.elapsed + slow.sequenceOffset!! + late - slow.received, clock.now(late))
+    }
+
+    @Test
     fun receiptSupportDoesNotValidateInvalidSamplesOrCrossClosedEpochs() {
         val invalid = CaptureClock()
         assertEquals(false, invalid.add("1", listOf(2_000_000_000L, 2_000_000_000L,
-            1_700_000_002_000_000_000, 2_000_000_000), 11_000_000_000, 11_040_000_001, 11_040_000_001))
+            1_700_000_002_000_000_000, 2_002_000_001), 11_000_000_000, 11_001_000_000, 11_001_000_000))
         assertNull(invalid.log(1_700_000_002_034_000_000, 11_050_000_000).elapsed)
         assertNull(invalid.video(2_034_000, 11_050_000_000).elapsed)
 
@@ -98,14 +143,15 @@ class CaptureClockTest {
     }
 
     @Test
-    fun slowRoundTripAdvancesEstimatedWindowButDoesNotClaimNormalSourceSynchronization() {
+    fun slowRoundTripAdvancesEstimatedWindowAndKeepsSourceSynchronization() {
         val clock = CaptureClock()
-        assertEquals(false, clock.add("1", listOf(1_000_000_000L, 1_000_000_000L, 1_700_000_001_000_000_000L, 1_000_000_000L),
+        assertTrue(clock.add("1", listOf(1_000_000_000L, 1_000_000_000L, 1_700_000_001_000_000_000L, 1_000_000_000L),
             1_000_000_000, 1_100_000_000, 1_100_000_000))
-        assertEquals(false, clock.add("1", listOf(2_000_000_000L, 2_000_000_000L, 1_700_000_002_000_000_000L, 2_000_000_000L),
+        assertTrue(clock.add("1", listOf(2_000_000_000L, 2_000_000_000L, 1_700_000_002_000_000_000L, 2_000_000_000L),
             2_000_000_000, 2_100_000_000, 2_100_000_000))
         assertTrue(clock.now(2_200_000_000)!! >= 1_000_000_000)
-        assertNull(clock.video(2_000_000, 2_200_000_000).elapsed)
+        assertEquals(2_000_000_000, clock.video(2_000_000, 2_200_000_000).elapsed)
+        assertEquals(1_000_000L + 50_000_000, clock.endUncertainty(2_200_000_000))
     }
 
     @Test

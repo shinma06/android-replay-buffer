@@ -870,7 +870,8 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
         "elapsed_before_ns" to c.before.toString(), "mono_ns" to c.mono.toString(), "epoch_ns" to c.wall.toString(),
         "elapsed_after_ns" to c.after.toString(), "host_sent_ns" to c.sent.toString(), "host_received_ns" to c.received.toString(),
         "read_uncertainty_ns" to c.readError.toString(), "sequence_offset_ns" to c.sequenceOffset?.toString(),
-        "bridge_uncertainty_ns" to c.bridgeError.toString(), "valid" to c.valid)
+        "bridge_uncertainty_ns" to c.bridgeError.toString(), "valid" to c.valid,
+        "host_anchored" to c.hostAnchored)
 
     private fun appJson(a: AppPeriod): Map<String, Any?> = mapOf("package" to a.packageName, "uid" to a.uid,
         "pids" to a.pids, "uid_exclusive" to a.uidExclusive, "from_elapsed_ns" to a.from?.toString(), "to_elapsed_ns" to a.to?.toString(),
