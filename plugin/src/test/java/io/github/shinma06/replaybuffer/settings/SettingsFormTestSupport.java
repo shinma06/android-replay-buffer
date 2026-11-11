@@ -6,7 +6,8 @@ public final class SettingsFormTestSupport {
 
     public static SettingsForm createForm(Object configurable) throws ReflectiveOperationException {
         for (var method : configurable.getClass().getDeclaredMethods()) {
-            if (method.getName().startsWith("createForm")) {
+            if (method.getName().startsWith("createForm") && method.getParameterCount() == 0
+                && method.getReturnType() == SettingsForm.class) {
                 method.setAccessible(true);
                 return (SettingsForm) method.invoke(configurable);
             }
