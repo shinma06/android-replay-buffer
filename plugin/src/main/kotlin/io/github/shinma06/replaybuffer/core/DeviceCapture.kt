@@ -321,6 +321,8 @@ internal class DeviceCapture @JvmOverloads constructor(
     private fun clock() {
         val boot = adb.command("-s", serial, "shell", "settings", "get", "global", "boot_count").trim()
         require(Regex("[0-9]{1,12}").matches(boot)) { "boot時計を識別できません（API24以上が必要です）" }
+        store.deviceSdk(runCatching { adb.command("-s", serial, "shell", "getprop", "ro.build.version.sdk").trim().toIntOrNull() }
+            .getOrNull(), generation)
         adb.command("-s", serial, "push", resources.clock.toString(), clockFile)
         val process = adb.start("-s", serial, "shell", "CLASSPATH=$clockFile app_process / --nice-name=$clockName io.github.shinma06.replaybuffer.clock.ClockProbe")
         try {
@@ -365,7 +367,9 @@ internal class DeviceCapture @JvmOverloads constructor(
             override fun resynced(device: String, toNs: Long) = store.touchResynced(device, toNs, generation, received)
         }, parseTouchCurrent(devices))
         check(!stopping.get())
-        val process = adb.start("-s", serial, "shell", "getevent", "-lt", *listOfNotNull(axes.keys.singleOrNull()).toTypedArray())
+        val sdk = runCatching { adb.command("-s", serial, "shell", "getprop", "ro.build.version.sdk").trim().toIntOrNull() }.getOrNull()
+        val process = adb.start("-s", serial, "shell", *geteventShell(sdk).toTypedArray(), "getevent", "-lt",
+            *listOfNotNull(axes.keys.singleOrNull()).toTypedArray())
         try {
             status("touch", StreamState.CAPTURING, null)
             val input = process.inputStream.buffered()
