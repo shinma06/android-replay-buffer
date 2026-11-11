@@ -6,7 +6,7 @@
 
 - 配布物: `develop` 先頭のCIが作ったプラグインZIP（`gh run download` で取得）
 - IDE: `plugin/build.gradle.kts` の `androidStudio(...)` と同じAndroid Studio
-- 端末: Android Emulator（headless）
+- 端末: Android Emulator（headless）。最新のAPIに加え、最低版のAndroid 9（API 28、`system-images;android-28;google_apis;x86_64`を`-memory 2048`で起動）でも確かめる（[対応Android](../requirements.md#対象と導入)）。Android 9では取得ON・保存・スクショ・タップ位置・クラッシュ時の自動保存・ログのみ・Running Devicesを確かめる
 - project: Android Studioの新規project（Empty Activity）。Gradle syncが通り、アプリを端末へinstallしておく
 
 ## 環境の準備

@@ -21,6 +21,19 @@ Android開発のIT（テスト）のエビデンス採取と、日常の動作�
 | ENV-01 | 1プロジェクト・1台での利用を前提にする。複数プロジェクトでの同時利用や設定・取得の共有方式は初期版では検討対象外。 |
 | ENV-02 | Android実機とAndroid Emulatorの両方を対象にする。初期版は合わせて1台。 |
 | ENV-03 | Android StudioでAndroid開発ができる環境を前提に、録画・ログ取得のための追加ツールの個別インストールやPATH設定を利用者に求めない。必要な準備はプラグイン側で行う。採用済みの[同期設計](design/timeline.md)に従い、設定済みAndroid SDKのadbを使い、固定scrcpy server・時計測定用DEX・JCodecをプラグインへ同梱する。実装・同梱・実動作の受入は別途確認する。 |
+| ENV-04 | 中核機能（録画・端末/アプリlogcat・保存・スクショ・タップ位置・クラッシュ時の自動保存）の最低AndroidはAndroid 9（API 28）とする（2026年11月11日の本人指示「aos9を開発で使うので、私個人の希望最低ラインは9です」）。古いOSに合わせて全体の設計を曲げず、OSの制約で不可能な機能は機能ごとに非対応とし、状態と`session.json`の`coverage`に日本語の理由を示す。機能ごとの最低版は次表のとおり。 |
+
+| 機能 | 端末側で使うもの | 最低Android | Android 9での扱い |
+| --- | --- | --- | --- |
+| 録画 | 同梱scrcpy server 5.0.1（`app_process`・H.264） | 9（scrcpy自体は5.0） | 対応 |
+| 時計測定 | 同梱DEX（D8 `--min-api 24`）、`settings get global boot_count` | 9（DEX・boot_countは7.0） | 対応 |
+| 端末/アプリlogcat | `logcat -B -T 1`（main・system・crash・events）、`cmd package list packages -U`、`ps -A -o PID,UID,NAME` | 9（`ps -A`は8.0） | 対応 |
+| スクショ | `dumpsys display`、`screencap -p -d <id>` | 9 | 対応。Android 9以前の`mDisplayId=0`形式を読む（[実装境界](design/ide-ui.md#第2版の独立スクリーンショット325)） |
+| タップ位置・タップを表示 | `getevent -lp` / `-lt`（protocol Bのmulti-touch）、`settings put system show_touches` | 9 | 対応。protocol Bのタッチパネルがない端末は`touch`が`UNAVAILABLE`（「タッチパネルの入力deviceが見つかりません」） |
+| クラッシュ時の自動保存 | crash bufferの`FATAL EXCEPTION`とevents bufferの`am_crash` | 9 | 対応。Android 9〜13の`am_crash`は8フィールド、14以降はRecoverableを加えた9フィールドで、端末のAPIで形式を選ぶ（[自動保存](crash-autosave.md)） |
+| 音声 | 再生音のcapture | 13（API 33） | 非対応（別Trailで扱う） |
+
+Android 8.1以前は対象外で、動作を確認しない。Android 9での確認はVMのAPI 28エミュレータで行い（[VM受入](verification/vm-acceptance.md)）、実機（Rockchip RK3399など）は未確認。
 
 ### 有効化・設定
 

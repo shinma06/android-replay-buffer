@@ -4,7 +4,7 @@
 
 ## 検出と受付
 
-単一のcrash bufferレコードにあるERROR/AndroidRuntimeの標準 `FATAL EXCEPTION` / `Process: …, PID: …` と、events bufferのtyped `am_crash`（30039、9フィールド、recoverable=0）を相互確認します。kernelのPID/UID、選択packageの排他的UIDと当時の帰属期間、process名、現在の取得世代・時計epochを照合します。platform報告は既存のps pollで確認したUID1000の一意なsystem_server PIDからに限定し、poll開始から受信まで2秒以内・poll完了済みを要求します。PID/userの先頭2整数は、独立に確認した値と一致する順序を採用します。
+単一のcrash bufferレコードにあるERROR/AndroidRuntimeの標準 `FATAL EXCEPTION` / `Process: …, PID: …` と、events bufferのtyped `am_crash`（30039。Android 14以降は9フィールドでrecoverable=0、Android 9〜13は回復可能なcrashがなくRecoverableのない8フィールド。どちらの形式かは取得開始時の`ro.build.version.sdk`で決め、APIが不明なら9フィールドだけを受ける）を相互確認します。kernelのPID/UID、選択packageの排他的UIDと当時の帰属期間、process名、現在の取得世代・時計epochを照合します。platform報告は既存のps pollで確認したUID1000の一意なsystem_server PIDからに限定し、poll開始から受信まで2秒以内・poll完了済みを要求します。PID/userの先頭2整数は、独立に確認した値と一致する順序を採用します。
 
 必須の型・長さ・終端・identityは厳密に確認します。不要な例外文・stack・file名はopaqueなbytesとして扱い、Modified-UTF-8等を含んでも必須部分が有効なら照合できます。保存する元record ID、payload、decode statusは変更しません。platform行は端末全体ログに残し、アプリの行と偽りません。形式や帰属が不明なら保存せず理由を残します。native crashとANRは初期対応外です。通常ERROR、handled exception、正常終了、単独の偽装ヘッダーでは保存しません。
 

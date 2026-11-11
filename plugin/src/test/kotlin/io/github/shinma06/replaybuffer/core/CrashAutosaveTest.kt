@@ -64,6 +64,22 @@ class CrashAutosaveTest {
     }
 
     @Test
+    fun android9EightFieldReportsSaveWhileUnknownOrNewerPlatformsKeepRequiringRecoverable() {
+        CrashFixture(Files.createDirectory(root.resolve("api28")), sdk = 28).use { f ->
+            f.log(javaCrash(), 10_005_000_000)
+            f.log(platformCrash(fields = 8), 10_006_000_000)
+            val pair = f.pair()
+            assertNotNull(f.store.capture(f.settings, pair, f.at(10_020_000_000)))
+        }
+        for (sdk in listOf(null, 34)) CrashFixture(Files.createDirectory(root.resolve("api$sdk")), sdk = sdk).use { f ->
+            f.log(javaCrash(), 10_005_000_000)
+            f.log(platformCrash(fields = 8), 10_006_000_000)
+            assertTrue(f.store.autosave.drain(f.at(10_020_000_000)).isEmpty())
+            assertEquals(AutoSaveReason.UNKNOWN_FORMAT, f.store.autosave.snapshot().lastOutcome?.reason)
+        }
+    }
+
+    @Test
     fun knownOtherTrafficAndWrongReportersSpendNoTargetBudgetAndMalformedUnassociatedProcessIsIgnored() {
         CrashFixture(root).use { f ->
             repeat(300) { index ->
@@ -483,12 +499,14 @@ internal class CrashFixture(
     suppliedStore: CaptureStore? = null,
     val host: Long = System.nanoTime() + 1_000_000_000,
     revision: Long = 1,
+    sdk: Int? = null,
 ) : AutoCloseable {
     val store = suppliedStore ?: CaptureStore(root.resolve("ring"), minFree = 0, captureMode = mode)
     val settings = ReplaySettings(saveDirectory = root, replaySeconds = seconds,
         application = ApplicationTarget("com.example.target"), captureMode = mode, autoSaveOnCrash = true)
     init {
         store.generation(1)
+        store.deviceSdk(sdk, 1)
         anchor(0)
         store.app("com.example.target", uid, setOf(pid), 1, exclusive, at(1_000_000))
         store.configureAuto(settings, revision, "fixture", true, at(100_000_000))

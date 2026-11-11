@@ -18,11 +18,23 @@ internal data class CrashHeader(
 )
 
 /**
+ * Field count of the device's am_crash event: Android 14 (API 34) appended Recoverable to the eight fields of
+ * Android 9-13, which had no recoverable crash path. Null when the API level is unknown.
+ */
+internal fun amCrashFields(sdk: Int?): Int? = when {
+    sdk == null || sdk <= 0 -> null
+    sdk < 34 -> 8
+    else -> 9
+}
+
+/**
  * Interprets only RuntimeInit's two header lines and am_crash's required typed fields.
  *
+ * [platformFields] is [amCrashFields] of the reporting device; an eight-field event is complete only where the
+ * platform defines eight fields, otherwise recoverable=0 is never inferred.
  * Recognized malformed candidates retain a problem; parsing alone proves neither identity nor save admission.
  */
-internal fun crashHeader(source: DeviceLog): CrashHeader? {
+internal fun crashHeader(source: DeviceLog, platformFields: Int? = null): CrashHeader? {
     val raw = source.raw
     if (source.lid == 2) {
         if (raw.size < 4 || ByteBuffer.wrap(raw).order(ByteOrder.LITTLE_ENDIAN).int != 30039) return null
@@ -48,13 +60,13 @@ internal fun crashHeader(source: DeviceLog): CrashHeader? {
             first = integer()
             second = integer()
             process = crashProcess(stringBytes())
-            require(process != null && count == 9)
+            require(process != null && count == (platformFields ?: 9))
             integer()
             val native = stringBytes() == ByteBuffer.wrap("Native crash".toByteArray(Charsets.US_ASCII))
             stringBytes()
             stringBytes()
             integer()
-            val recoverable = integer()
+            val recoverable = if (count == 9) integer() else 0
             require(!buffer.hasRemaining())
             CrashHeader(process, false, first = first, second = second, problem = when {
                 recoverable == 1 -> AutoSaveReason.NOT_A_SUPPORTED_FATAL_EVENT
