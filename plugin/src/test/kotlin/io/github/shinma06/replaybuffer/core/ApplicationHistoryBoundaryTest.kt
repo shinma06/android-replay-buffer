@@ -70,7 +70,7 @@ class ApplicationHistoryBoundaryTest {
             assertEquals(clocks, capture.clocks)
             assertEquals(history, capture.applicationHistory())
             val saved = SaveWriter().write(capture, output, { false }) { Files.move(it.partial, it.complete) }
-            val manifest = JsonParser.parseString(Files.readString(saved.directory.resolve("session.json"))).asJsonObject
+            val manifest = JsonParser.parseString(Files.readString(saved.directory.resolve("replay.json"))).asJsonObject
             val exported = manifest["application_history"].asJsonArray
             assertEquals(apps.size, exported.size())
             assertTrue(exported[apps.indexOf(old)].asJsonObject["to_elapsed_ns"].isJsonNull)
