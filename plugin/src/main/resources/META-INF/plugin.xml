@@ -27,6 +27,10 @@
                              instance="io.github.shinma06.replaybuffer.settings.ReplaySettingsConfigurable"/>
         <postStartupActivity implementation="io.github.shinma06.replaybuffer.ide.ReplayProjectActivity"/>
     </extensions>
+    <projectListeners>
+        <listener class="io.github.shinma06.replaybuffer.ui.LogcatTitleActions"
+                  topic="com.intellij.openapi.wm.ex.ToolWindowManagerListener"/>
+    </projectListeners>
     <actions>
         <action id="io.github.shinma06.replaybuffer.About"
                 class="io.github.shinma06.replaybuffer.AboutReplayBufferAction"
@@ -49,6 +53,14 @@
                     text="Replay Buffer: スクリーンショット"
                     description="録画対象の端末の現在画面を保存します"/>
             <add-to-group group-id="StreamingToolbarSecondary" anchor="last"/>
+        </group>
+        <group id="io.github.shinma06.replaybuffer.Logcat">
+            <separator/>
+            <action id="io.github.shinma06.replaybuffer.Logcat.SaveLogs"
+                    class="io.github.shinma06.replaybuffer.ui.ReplayLogSaveAction"
+                    text="Replay Buffer: 直前のログを保存"
+                    description="端末ログ・アプリログだけを保存します。動画の取得中でも動画は保存しません"/>
+            <add-to-group group-id="Logcat.PopupActions" anchor="last"/>
         </group>
     </actions>
 </idea-plugin>

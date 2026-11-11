@@ -16,15 +16,22 @@ import javax.swing.SwingUtilities
 
 class LogcatToolWindowButtonTest {
     @Test
-    fun `only the pinned full Studio builds can enter the target selection bridge`() {
+    fun `patch builds of a verified baseline and Android line can enter the target selection bridge`() {
         assertNull(logcatTargetBuildReason("AI-262.9437.185.2621.16467767"))
-        assertNotNull(logcatTargetBuildReason("AI-262.9437.185.2621.16467768"))
-        assertNotNull(logcatTargetBuildReason("IC-262.9437.185.2621.16467767"))
+        assertNull(logcatTargetBuildReason("AI-262.9437.185.2621.16467768"))
         assertNull(logcatTargetBuildReason("AI-262.10968.63.2622.16730706"))
-        assertNotNull(logcatTargetBuildReason("AI-262.10968.63.2622.16730705"))
-        assertNotNull(logcatTargetBuildReason("AI-262.10968.63.2622.16730707"))
+        assertNull(logcatTargetBuildReason("AI-262.10968.63.2622.16840690"), "Rabbit 2 Patch 1")
+        assertNotNull(logcatTargetBuildReason("IC-262.9437.185.2621.16467767"))
         assertNotNull(logcatTargetBuildReason("IC-262.10968.63.2622.16730706"))
         assertNotNull(logcatTargetBuildReason("AI-262.10968.63"))
+        assertNotNull(logcatTargetBuildReason("AI-262.10968.63.2622"))
+        assertNotNull(logcatTargetBuildReason("AI-262.10968.63.2622."))
+        assertNotNull(logcatTargetBuildReason("AI-262.10968.63.2622.SNAPSHOT"))
+        assertNotNull(logcatTargetBuildReason("AI-262.10968.63.2622.16840690.1"))
+        assertNotNull(logcatTargetBuildReason("AI-262.10968.64.2622.16840690"), "Another IntelliJ baseline")
+        assertNotNull(logcatTargetBuildReason("AI-262.10968.63.2623.16840690"), "Another Android line")
+        assertNotNull(logcatTargetBuildReason("AI-262.9437.185.2622.16730706"), "Baseline and line must come from one release")
+        assertNotNull(logcatTargetBuildReason("262.10968.63.2622.16840690"))
     }
 
     @Test
@@ -54,7 +61,7 @@ class LogcatToolWindowButtonTest {
                 assertEquals("A", serial)
                 assertTrue(deadlineNs - TimeUnit.SECONDS.toNanos(5) <= resolvedAt, "Budget starts before resolving or initializing the IDE")
                 CompletableFuture.completedFuture(null)
-            }) {
+            }, canSelectDevice = { true }) {
                 check(alive) { "Disposed content must not resolve the project service" }
                 resolvedAt = System.nanoTime()
                 registered
@@ -129,7 +136,7 @@ class LogcatToolWindowButtonTest {
                 selected += serial
                 duringSelection()
                 CompletableFuture.completedFuture(reason)
-            }) { window }
+            }, canSelectDevice = { true }) { window }
             button.refresh()
             assertFalse(button.isEnabled)
             assertTrue(button.toolTipText.contains("対象端末"))
@@ -166,10 +173,6 @@ class LogcatToolWindowButtonTest {
 
             target = ReplayDevice("A", "target", DeviceKind.PHYSICAL, true)
             button.refresh()
-            duringSelection = { throw NoSuchMethodError("fixture ABI mismatch") }
-            button.doClick(0)
-            assertTrue(button.toolTipText.contains("互換性"))
-            assertEquals(listOf("show", "hide"), operations)
             duringSelection = { alive = false }
             button.doClick(0)
             assertFalse(button.isEnabled)
@@ -193,7 +196,7 @@ class LogcatToolWindowButtonTest {
             } as ToolWindow
             var next = CompletableFuture<String?>()
             val button = LogcatToolWindowButton({ true }, { ReplayDevice("A", "target", DeviceKind.PHYSICAL, true) },
-                { _, _, active, _ -> assertTrue(active.asBoolean); next }) { window }
+                { _, _, active, _ -> assertTrue(active.asBoolean); next }, canSelectDevice = { true }) { window }
             button.refresh()
             button.doClick(0)
             assertTrue(operations.isEmpty())
@@ -245,7 +248,7 @@ class LogcatToolWindowButtonTest {
             var empty = true
             var next = CompletableFuture<String?>()
             val button = LogcatToolWindowButton({ true }, { ReplayDevice("A", "target", DeviceKind.PHYSICAL, true) },
-                { _, _, _, _ -> operations += "select"; next }, { empty }) { window }
+                { _, _, _, _ -> operations += "select"; next }, { empty }, { true }) { window }
             button.refresh()
             button.doClick(0)
             assertEquals(listOf("show", "select"), operations)
@@ -282,6 +285,111 @@ class LogcatToolWindowButtonTest {
             assertTrue(button.toolTipText.startsWith("期限切れ"))
             button.doClick(0)
             assertEquals("期限切れ", button.toolTipText)
+        }
+    }
+
+    private fun fakeWindow(operations: MutableList<String>): ToolWindow {
+        var visible = false
+        return Proxy.newProxyInstance(ToolWindow::class.java.classLoader, arrayOf(ToolWindow::class.java)) { _, method, _ ->
+            when (method.name) {
+                "isVisible" -> visible
+                "isAvailable" -> true
+                "isDisposed" -> false
+                "show", "hide" -> { operations += method.name; visible = method.name == "show"; null }
+                else -> error("Unexpected ToolWindow call: ${method.name}")
+            }
+        } as ToolWindow
+    }
+
+    @Test
+    fun `an unverified build only opens and closes Logcat without touching the device selection`() {
+        SwingUtilities.invokeAndWait {
+            val operations = mutableListOf<String>()
+            val window = fakeWindow(operations)
+            var target: ReplayDevice? = null
+            val button = LogcatToolWindowButton({ true }, { target },
+                { _, _, _, _ -> error("The selection bridge must not load on an unverified build") },
+                { error("The tab probe must not load on an unverified build") }, { false }) { window }
+            button.refresh()
+            assertTrue(button.isEnabled, "Opening needs no Replay Buffer target when no device is selected")
+            assertEquals("Logcatを開く", button.text)
+            assertTrue(button.toolTipText.contains("対象端末にLogcatを合わせられない"))
+            assertTrue(button.toolTipText.contains("IDEで選択中の端末"))
+            assertEquals(button.toolTipText, button.accessibleContext.accessibleDescription)
+            button.doClick(0)
+            assertEquals(listOf("show"), operations)
+            assertEquals("Logcatを閉じる", button.text)
+            assertTrue(button.toolTipText.startsWith("IDE標準Logcatパネルを非表示にします。"))
+            assertTrue(button.toolTipText.contains("IDEで選択中の端末"))
+            assertEquals(button.toolTipText, button.accessibleContext.accessibleDescription)
+            button.doClick(0)
+            target = ReplayDevice("A", "target", DeviceKind.PHYSICAL, true)
+            button.refresh()
+            button.doClick(0)
+            target = ReplayDevice("A", "target", DeviceKind.PHYSICAL, false)
+            button.refresh()
+            assertTrue(button.isEnabled, "A disconnected target does not block closing or reopening")
+            button.doClick(0)
+            button.doClick(0)
+            assertEquals(listOf("show", "hide", "show", "hide", "show"), operations)
+        }
+    }
+
+    @Test
+    fun `a selection bridge that fails to link falls back to opening Logcat for later clicks too`() {
+        SwingUtilities.invokeAndWait {
+            val operations = mutableListOf<String>()
+            val window = fakeWindow(operations)
+            val button = LogcatToolWindowButton({ true }, { ReplayDevice("A", "target", DeviceKind.PHYSICAL, true) },
+                { _, _, _, _ -> operations += "select"; throw NoSuchMethodError("getLogcatPresenters") }, { false }, { true }) { window }
+            button.refresh()
+            assertEquals("Replay Bufferの対象端末（A）に合わせてIDE標準Logcatを表示します。", button.toolTipText)
+            button.doClick(0)
+            assertEquals(listOf("select", "show"), operations)
+            assertEquals("Logcatを閉じる", button.text)
+            assertTrue(button.toolTipText.contains("IDEで選択中の端末"))
+            button.doClick(0)
+            button.doClick(0)
+            assertEquals(listOf("select", "show", "hide", "show"), operations)
+            assertTrue(button.toolTipText.contains("IDEで選択中の端末"))
+        }
+    }
+
+    @Test
+    fun `an asynchronous link failure opens Logcat while other failures keep the retry reason`() {
+        SwingUtilities.invokeAndWait {
+            val operations = mutableListOf<String>()
+            val window = fakeWindow(operations)
+            var next = CompletableFuture<String?>()
+            val button = LogcatToolWindowButton({ true }, { ReplayDevice("A", "target", DeviceKind.PHYSICAL, true) },
+                { _, _, _, _ -> operations += "select"; next }, { false }, { true }) { window }
+            button.refresh()
+            button.doClick(0)
+            next.completeExceptionally(IllegalStateException("model"))
+            assertEquals(listOf("select"), operations)
+            assertTrue(button.toolTipText.contains("再試行"))
+            next = CompletableFuture()
+            button.doClick(0)
+            next.completeExceptionally(java.util.concurrent.CompletionException(NoClassDefFoundError("DeviceItem")))
+            assertEquals(listOf("select", "select", "show"), operations)
+            assertTrue(button.toolTipText.contains("IDEで選択中の端末"))
+            button.doClick(0)
+            button.doClick(0)
+            assertEquals(listOf("select", "select", "show", "hide", "show"), operations)
+        }
+    }
+
+    @Test
+    fun `a failing build probe is treated as an unverified build`() {
+        SwingUtilities.invokeAndWait {
+            val operations = mutableListOf<String>()
+            val window = fakeWindow(operations)
+            val button = LogcatToolWindowButton({ true }, { null },
+                { _, _, _, _ -> error("unreachable") }, { false }, { throw IllegalStateException("no application") }) { window }
+            button.refresh()
+            assertTrue(button.isEnabled)
+            button.doClick(0)
+            assertEquals(listOf("show"), operations)
         }
     }
 }

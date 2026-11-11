@@ -196,7 +196,7 @@ class ReplayToolWindowLayoutTest {
                    if time.monotonic()>deadline: sys.exit(3)
                    time.sleep(.01)
                  print('List of devices attached\\nusb-B device model:Other')
-                elif command=='-s usb-B shell dumpsys SurfaceFlinger --display-id': print('Display 1 (HWC display 0): port=0')
+                elif command=='-s usb-B shell dumpsys display': print('  Display 0:\\n    mDisplayId=0\\n    mBaseDisplayInfo=DisplayInfo{"Built-in Screen", displayId 0, uniqueId "local:1", real 1 x 1}')
                 elif command=='-s usb-B shell dumpsys window': print('KeyguardServiceDelegate\\nshowing=false\\ninputRestricted=false\\ndreaming=false\\nscreenState=SCREEN_STATE_ON\\nDisplay: mDisplayId=0\\nmCurrentFocus=Window{12ab u0 sample.app/.MainActivity}')
                 elif command=='-s usb-B exec-out screencap -p -d 1': sys.stdout.buffer.write((root/'image.png').read_bytes() if (root/'image.png').exists() else b'invalid image')
                 else: sys.exit(2)

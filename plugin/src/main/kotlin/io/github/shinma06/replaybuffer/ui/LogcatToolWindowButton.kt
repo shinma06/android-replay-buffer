@@ -1,6 +1,7 @@
 package io.github.shinma06.replaybuffer.ui
 
 import com.intellij.openapi.Disposable
+import com.intellij.openapi.application.ApplicationInfo
 import com.intellij.openapi.wm.ToolWindow
 import io.github.shinma06.replaybuffer.core.ReplayDevice
 import java.util.concurrent.CompletableFuture
@@ -10,11 +11,20 @@ import java.util.function.BooleanSupplier
 import javax.swing.JButton
 import javax.swing.SwingUtilities
 
-internal fun logcatTargetBuildReason(build: String): String? =
-    when (build) {
-        "AI-262.9437.185.2621.16467767", "AI-262.10968.63.2622.16730706" -> null
-        else -> "このAndroid Studioのバージョンでは、対象端末を指定してLogcatを開けません。"
-    }
+/** IntelliJ baseline + Android line of Studio releases whose Logcat ABI was verified; patch builds of a line share it. */
+private val verifiedLogcatLines = setOf("262.9437.185.2621", "262.10968.63.2622")
+
+/** Gates loading the selection bridge; a patch whose ABI still fails to link falls back to open-only at runtime. */
+internal fun logcatTargetBuildReason(build: String): String? {
+    val parts = build.removePrefix("AI-").takeIf { it != build }?.split('.')
+    val known = parts != null && parts.size == 5 && parts.all { it.isNotEmpty() && it.all(Char::isDigit) } &&
+        parts.take(4).joinToString(".") in verifiedLogcatLines
+    return if (known) null else "このAndroid Studioのバージョンでは、対象端末を指定してLogcatを開けません。"
+}
+
+private fun currentBuildSelectsDevice(): Boolean = logcatTargetBuildReason(ApplicationInfo.getInstance().build.asString()) == null
+
+private fun Throwable.isLinkageFailure(): Boolean = generateSequence(this) { it.cause }.take(8).any { it is LinkageError }
 
 /** EDT-only view of the IDE-owned window; callbacks must stop resolving it after content/project disposal. */
 internal class LogcatToolWindowButton(
@@ -23,6 +33,8 @@ internal class LogcatToolWindowButton(
     private val selectDevice: (ToolWindow, String, BooleanSupplier, Long) -> CompletableFuture<String?>,
     /** True when Logcat has no tab to select a device in; the IDE creates one only when the window is shown. */
     private val needsTab: (ToolWindow) -> Boolean = { false },
+    /** False on builds whose Logcat ABI is unverified: the button then only opens/closes the IDE's own selection. */
+    private val canSelectDevice: () -> Boolean = ::currentBuildSelectsDevice,
     private val logcat: () -> ToolWindow?,
 ) : JButton(), Disposable {
     private var failure: String? = null
@@ -35,6 +47,8 @@ internal class LogcatToolWindowButton(
     private var selectingShown = false
     /** A selection on a window shown first failed; keep its reason while that window stays visible. */
     private var shownFailure = false
+    /** The selection bridge failed to link on this IDE; later opens skip it for this content's lifetime. */
+    private var selectionBroken = false
 
     /** A failed selection is kept in the tooltip; the ToolWindow shows it under the button too. */
     internal val failed: Boolean get() = failure != null
@@ -51,6 +65,9 @@ internal class LogcatToolWindowButton(
             availableWindow()?.let { window ->
                 if (window.isVisible) {
                     window.hide()
+                } else if (!selectsDevice()) {
+                    failure = null
+                    window.show()
                 } else {
                     val device = target()?.takeIf { it.connected && it.serial.isNotBlank() }
                     if (device != null) {
@@ -74,7 +91,9 @@ internal class LogcatToolWindowButton(
                         } catch (_: CancellationException) {
                             CompletableFuture<String?>().apply { cancel(false) }
                         } catch (_: LinkageError) {
-                            CompletableFuture.completedFuture("Android Studioとの互換性を確認できないため、対象端末のLogcatを開けません。")
+                            openWithoutSelection(window)
+                            refresh()
+                            return@addActionListener
                         } catch (_: RuntimeException) {
                             CompletableFuture.completedFuture("標準Logcatの対象端末を確認できません。接続と選択中のタブを確認して再試行してください。")
                         }
@@ -87,6 +106,11 @@ internal class LogcatToolWindowButton(
                                 selectingShown = false
                                 if (!isAlive()) return@Runnable
                                 if (request.isCancelled) {
+                                    refresh()
+                                    return@Runnable
+                                }
+                                if (error?.isLinkageFailure() == true) {
+                                    if (availableWindow() === window) openWithoutSelection(window) else selectionBroken = true
                                     refresh()
                                     return@Runnable
                                 }
@@ -123,7 +147,8 @@ internal class LogcatToolWindowButton(
             !device.connected -> "Replay Bufferの対象端末が切断されています。再接続後に再試行してください。"
             else -> null
         }
-        isEnabled = window != null && (window.isVisible || targetReason == null)
+        val selects = selectsDevice()
+        isEnabled = window != null && (window.isVisible || !selects || targetReason == null)
         text = when {
             pending != null -> "Logcatを開くのを中止"
             window?.isVisible == true -> "Logcatを閉じる"
@@ -133,13 +158,31 @@ internal class LogcatToolWindowButton(
             window == null -> "このprojectではIDE標準Logcatを利用できません。"
             pending != null -> "対象端末のLogcatを準備しています（最大5秒）。再度押すと中止します。"
             window.isVisible && failure != null -> "$failure 押すとIDE標準Logcatパネルを非表示にします。"
+            window.isVisible && !selects -> "IDE標準Logcatパネルを非表示にします。$UNMATCHED_DEVICE"
             window.isVisible -> "IDE標準Logcatパネルを非表示にします。"
+            !selects -> "IDE標準Logcatを表示します。$UNMATCHED_DEVICE"
             targetReason != null -> targetReason
             failure != null -> failure
             else -> "Replay Bufferの対象端末（${device?.serial}）に合わせてIDE標準Logcatを表示します。"
         }
         getAccessibleContext().accessibleName = text
         getAccessibleContext().accessibleDescription = toolTipText
+    }
+
+    private fun selectsDevice(): Boolean = !selectionBroken && try {
+        canSelectDevice()
+    } catch (_: LinkageError) {
+        false
+    } catch (_: RuntimeException) {
+        false
+    }
+
+    private fun openWithoutSelection(window: ToolWindow) {
+        selectionBroken = true
+        selectingShown = false
+        shownFailure = false
+        failure = null
+        if (!window.isVisible) window.show()
     }
 
     private fun cancelPending() {
@@ -161,6 +204,10 @@ internal class LogcatToolWindowButton(
     }
 
     private fun isAlive(): Boolean = !disposed && alive()
+
+    private companion object {
+        const val UNMATCHED_DEVICE = "このAndroid Studioのビルドでは対象端末にLogcatを合わせられないため、IDEで選択中の端末のログが表示されます。"
+    }
 
     private fun availableWindow(): ToolWindow? = if (isAlive()) {
         logcat()?.takeUnless { it.isDisposed || !it.isAvailable }
