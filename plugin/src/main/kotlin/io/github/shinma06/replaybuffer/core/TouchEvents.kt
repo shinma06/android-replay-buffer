@@ -12,6 +12,7 @@ internal data class TouchAxes(val maxX: Int, val maxY: Int)
 /** A retained sample; [time] is mapped from the source time, never from [host] (host only supports the mapping). */
 internal data class TouchEntry(
     val sample: TouchSample, val generation: Long, val time: MappedTime, val host: Long, val width: Int, val height: Int,
+    val rotation: Int? = null,
 )
 
 /** Window-time interval (sequence ns) where touch input was not being read; null means outside the known range. */
@@ -113,31 +114,56 @@ internal fun parseDisplaySize(output: String): Pair<Int, Int>? {
     return sizes["Override"] ?: sizes["Physical"]
 }
 
+/** Natural-orientation display size and the screen rotation in quarter turns (Surface.ROTATION_*); null when unknown. */
+internal data class DisplayGeometry(val width: Int, val height: Int, val rotation: Int?)
+
+private val viewportLine = Regex("""Viewport[^\n]*\bdisplayId=0,[^\n]*\borientation=([0-3])\b""")
+
+/** Rotation of the built-in display (id 0) from `dumpsys input` viewports, which is what input uses for touches. */
+internal fun parseDisplayRotation(output: String): Int? = viewportLine.find(output)?.groupValues?.get(1)?.toInt()
+
+/** `wm size` followed by `dumpsys input` viewport lines, read in one adb shell call. */
+internal fun parseDisplayGeometry(output: String): DisplayGeometry? =
+    parseDisplaySize(output)?.let { (width, height) -> DisplayGeometry(width, height, parseDisplayRotation(output)) }
+
+/** A natural-orientation point as the rotated screen (and therefore the video) shows it. */
+internal fun screenPoint(x: Int, y: Int, width: Int, height: Int, rotation: Int): Pair<Int, Int> = when (rotation) {
+    1 -> y to width - 1 - x
+    2 -> width - 1 - x to height - 1 - y
+    3 -> height - 1 - y to x
+    else -> x to y
+}
+
 /**
- * Re-reads the display size when input arrives at least [intervalNs] after the last read, so a `wm size` override or an
- * emulator resize during capture changes the scale of later samples. A failed read keeps the previous size.
+ * Re-reads the display geometry when input arrives at least [intervalNs] after the last read, or on the first input after
+ * [invalidate] (the video stream reported a new screen size, e.g. rotation). A `wm size` override or an emulator resize
+ * changes the scale of later samples. A failed read keeps the previous geometry.
  */
 internal class DisplaySizeWatch(
-    initial: Pair<Int, Int>, private val read: () -> Pair<Int, Int>?, private val intervalNs: Long = 1_000_000_000,
+    initial: DisplayGeometry, private val read: () -> DisplayGeometry?, private val intervalNs: Long = 1_000_000_000,
 ) {
-    var size: Pair<Int, Int> = initial
+    var geometry: DisplayGeometry = initial
         private set
     private var checked: Long? = null
+    private val stale = java.util.concurrent.atomic.AtomicBoolean()
 
-    fun current(host: Long): Pair<Int, Int> {
+    fun invalidate() = stale.set(true)
+
+    fun current(host: Long): DisplayGeometry {
         val last = checked
-        if (last == null) checked = host
-        else if (host - last >= intervalNs) {
+        val forced = stale.getAndSet(false)
+        if (last == null && !forced) checked = host
+        else if (forced || host - last!! >= intervalNs) {
             checked = host
-            runCatching(read).getOrNull()?.takeIf { it.first > 0 && it.second > 0 }?.let { size = it }
+            runCatching(read).getOrNull()?.takeIf { it.width > 0 && it.height > 0 }?.let { geometry = it }
         }
-        return size
+        return geometry
     }
 }
 
 /**
  * Folds `getevent -lt` lines (protocol B slots) into pointer samples emitted at each SYN_REPORT.
- * Rotation is not applied: coordinates are in the panel's natural orientation, as the kernel reports them.
+ * Rotation is not applied: coordinates are in the panel's natural orientation, as the kernel reports them; see [screenPoint].
  * Raw axis values are kept and scaled at each report, so [resize] applies to every later sample as a whole.
  * [initial] holds each device's current slot and its X/Y at reader start; other slots start without axis values.
  *
