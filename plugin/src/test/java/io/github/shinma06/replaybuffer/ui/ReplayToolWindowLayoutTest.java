@@ -293,10 +293,10 @@ class ReplayToolWindowLayoutTest {
             var active = new ReplaySnapshot(1, 1, true, CaptureState.CAPTURING, applied, 1,
                 new ReplayDevice("target-A", "Recording", DeviceKind.PHYSICAL, true), "request-boundary", 1L, false,
                 new StreamSnapshot(), new StreamSnapshot(), new StreamSnapshot(), new SaveSnapshot(),
-                false, null, null, 0L, 0, new AutoSaveSnapshot(), null);
+                false, null, null, 0L, 0, new AutoSaveSnapshot(), null, java.util.List.of());
             var off = new ReplaySnapshot(2, 2, false, CaptureState.DISABLED, applied, 1,
                 null, null, null, false, new StreamSnapshot(), new StreamSnapshot(), new StreamSnapshot(),
-                new SaveSnapshot(), false, null, null, 0L, 0, new AutoSaveSnapshot(), null);
+                new SaveSnapshot(), false, null, null, 0L, 0, new AutoSaveSnapshot(), null, java.util.List.of());
             view.set(capture, new ReplayCaptureView(active, 0, null, null));
             var publishedOff = new AtomicBoolean();
             var validationPath = (Path) java.lang.reflect.Proxy.newProxyInstance(Path.class.getClassLoader(),
@@ -542,7 +542,7 @@ class ReplayToolWindowLayoutTest {
                     "報告待ち", 7, 1, null, "自動保存の帰属は未確認です");
                 var snapshot = new ReplaySnapshot(index + 1L, 1, true, states.get(index), settings, 1,
                     device, "current-session", 30_000_000_000L, index == 3, video, logs, logs, save,
-                    index == 0 || index == 3, "固定した対象を確認してください。", null, 1_000_000_000L, 0, auto, save);
+                    index == 0 || index == 3, "固定した対象を確認してください。", null, 1_000_000_000L, 0, auto, save, java.util.List.of());
                 view.set(capture, new ReplayCaptureView(snapshot, 0, null, null));
                 render.invoke(panel);
                 panel.setSize(360, 700);
@@ -722,7 +722,7 @@ class ReplayToolWindowLayoutTest {
                 new ReplayDevice("emulator-5554", "Recording", DeviceKind.EMULATOR, connected),
                 "screenshot-test", 1L, false,
                 new StreamSnapshot(), new StreamSnapshot(), new StreamSnapshot(), new SaveSnapshot(),
-                false, null, null, 0L, 0, new AutoSaveSnapshot(), null);
+                false, null, null, 0L, 0, new AutoSaveSnapshot(), null, java.util.List.of());
             view.set(capture, new ReplayCaptureView(snapshot, 0, null, null));
             render.invoke(panel);
             assertTrue(button.isEnabled());
@@ -760,7 +760,7 @@ class ReplayToolWindowLayoutTest {
             var snapshot = new ReplaySnapshot(revision, 1, true, CaptureState.CAPTURING, settings, 1,
                 null, "layout-test", revision * 1_000_000_000L, false,
                 new StreamSnapshot(), new StreamSnapshot(), new StreamSnapshot(), new SaveSnapshot(),
-                false, null, null, 0L, 0, new AutoSaveSnapshot(), null);
+                false, null, null, 0L, 0, new AutoSaveSnapshot(), null, java.util.List.of());
             var capture = field(service, "capture");
             var view = capture.getClass().getDeclaredField("view");
             view.setAccessible(true);

@@ -2,6 +2,7 @@ package io.github.shinma06.replaybuffer.ui
 
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ApplicationInfo
+import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.fileChooser.FileChooser
 import com.intellij.openapi.fileChooser.FileChooserDescriptorFactory
 import com.intellij.openapi.options.ShowSettingsUtil
@@ -15,7 +16,9 @@ import com.intellij.openapi.wm.ToolWindowFactory
 import com.intellij.openapi.wm.ToolWindowManager
 import com.intellij.openapi.wm.ex.ToolWindowManagerListener
 import com.intellij.ui.TitledSeparator
+import com.intellij.openapi.ui.ComboBox
 import com.intellij.ui.components.JBCheckBox
+import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.components.JBTextArea
 import com.intellij.ui.content.ContentFactory
@@ -25,6 +28,7 @@ import com.intellij.util.ui.WrapLayout
 import io.github.shinma06.replaybuffer.core.ApplicationMode
 import io.github.shinma06.replaybuffer.core.CaptureState
 import io.github.shinma06.replaybuffer.core.DeviceKind
+import io.github.shinma06.replaybuffer.core.ReplayDevice
 import io.github.shinma06.replaybuffer.core.ReplaySnapshot
 import io.github.shinma06.replaybuffer.core.SavePhase
 import io.github.shinma06.replaybuffer.core.SaveSnapshot
@@ -41,6 +45,7 @@ import java.awt.Dimension
 import java.awt.FlowLayout
 import java.util.Locale
 import java.util.concurrent.CompletableFuture
+import javax.swing.DefaultComboBoxModel
 import javax.swing.JButton
 import javax.swing.JComponent
 import javax.swing.JPanel
@@ -93,6 +98,13 @@ private class ReplayToolWindowPanel(private val project: Project) : JPanel(Borde
     }
     private val screenshotReason = wrappingLabel(name = "スクリーンショットの対象・保存先と操作条件")
     private val device = wrappingLabel(name = "取得対象の端末")
+    private var renderingDevices = false
+    private val deviceChoice = ComboBox<DeviceChoice>().apply {
+        accessibleContext.accessibleName = "取得する端末"
+        toolTipText = "複数の端末が接続されているときだけ表示します。選んだ端末はserialで記憶し、切断中も別の端末へは切り替えません。"
+        addActionListener { if (alive && !renderingDevices) (selectedItem as? DeviceChoice)?.serial?.let(::chooseDevice) }
+    }
+    private val deviceChooser = row(JBLabel("取得する端末:"), deviceChoice)
     private val application = wrappingLabel(name = "取得対象のアプリ")
     private val sdk = wrappingLabel(name = "Android SDKの接続情報")
     private val state = wrappingLabel(name = "取得状態と取得モード")
@@ -144,7 +156,7 @@ private class ReplayToolWindowPanel(private val project: Project) : JPanel(Borde
             .addComponent(row(enabled, settingsButton, logcatButton))
             .addComponent(logcatReason)
             .addComponent(wrappingLabel("ON/OFFはすぐ反映します。OFFで未保存の記録と再試行待ちの対象を破棄します。"))
-            .addComponent(state).addComponent(message).addComponent(device).addComponent(application).addComponent(window)
+            .addComponent(state).addComponent(message).addComponent(device).addComponent(deviceChooser).addComponent(application).addComponent(window)
             .addComponent(row(saveButton, screenshotButton))
             .addComponent(saveReason).addComponent(screenshotReason)
             .addComponent(TitledSeparator("保存結果"))
@@ -188,6 +200,18 @@ private class ReplayToolWindowPanel(private val project: Project) : JPanel(Borde
 
     private fun failedId(): String? = shownSave?.takeIf { it.phase == SavePhase.FAILED }?.requestId
 
+    private fun chooseDevice(serial: String) {
+        // Same `device` setting path as CLI/MCP; destination validation touches the file system, so stay off EDT.
+        ApplicationManager.getApplication().executeOnPooledThread {
+            val reason = try {
+                service.selectDevice(serial).get().takeUnless { it.accepted }?.let { it.reason ?: "端末を切り替えられませんでした。" }
+            } catch (e: Exception) { (e.cause ?: e).message ?: "端末を切り替えられませんでした。" }
+            if (reason != null) SwingUtilities.invokeLater {
+                if (alive) { Messages.showErrorDialog(project, reason, "取得する端末を選べません"); render() }
+            }
+        }
+    }
+
     private fun chooseRetryDirectory(id: String) {
         FileChooser.chooseFile(FileChooserDescriptorFactory.createSingleFolderDescriptor(), project, null) { selected ->
             if (!alive) return@chooseFile
@@ -214,7 +238,15 @@ private class ReplayToolWindowPanel(private val project: Project) : JPanel(Borde
         enabled.isEnabled = store.enabled || !busy
         device.text = snapshot?.device?.let {
             "端末: ${it.name}（${if (it.kind == DeviceKind.EMULATOR) "Emulator" else "実機"}・${if (it.connected) "接続済み" else "切断中"}）"
-        } ?: "端末: 未接続"
+        } ?: if (snapshot?.captureState == CaptureState.MULTIPLE_DEVICES) "端末: 未選択（${snapshot.devices.size}台接続中）" else "端末: 未接続"
+        val choices = deviceChoices(snapshot)
+        deviceChooser.isVisible = choices.isNotEmpty()
+        renderingDevices = true
+        try {
+            val model = deviceChoice.model
+            if ((0 until model.size).map(model::getElementAt) != choices) deviceChoice.model = DefaultComboBoxModel(choices.toTypedArray())
+            if (choices.isNotEmpty()) deviceChoice.selectedIndex = 0
+        } finally { renderingDevices = false }
         val app = snapshot?.settings?.application
         application.text = "アプリ: ${app?.packageName ?: app?.unresolvedReason ?: "確認中…"}（${if (app?.mode == ApplicationMode.MANUAL) "手動" else "自動"}）"
         sdk.text = "Android SDK: ${service.environment?.adb ?: service.environment?.adbReason ?: "確認中…"}"
@@ -341,7 +373,23 @@ internal fun ReplaySnapshot.captureDescription(): String = when (captureState) {
     CaptureState.CAPTURING -> "取得中"
     CaptureState.RECOVERING -> if (frozen) "接続待ち — 切断前の記録を保持" else "復旧中"
     CaptureState.PARTIAL -> "一部取得失敗"
-    CaptureState.MULTIPLE_DEVICES -> "初期版は1台に対応しています。ほかの端末を切断してください。"
+    CaptureState.MULTIPLE_DEVICES -> "複数の端末が接続されています — 取得する端末を選んでください"
+}
+
+internal data class DeviceChoice(val serial: String?, val label: String) {
+    override fun toString(): String = label
+}
+
+/** Chooser entries, current target (or a no-choice placeholder) first; empty while fewer than two devices are in play. */
+internal fun deviceChoices(snapshot: ReplaySnapshot?): List<DeviceChoice> {
+    if (snapshot == null) return emptyList()
+    val target = snapshot.device
+    val others = snapshot.devices.filter { it.serial != target?.serial }
+    if (others.size + (if (target != null) 1 else 0) < 2) return emptyList()
+    fun label(it: ReplayDevice) = "${it.name}（${if (it.kind == DeviceKind.EMULATOR) "Emulator" else "実機"}・${it.serial}" +
+        "${if (it.connected) "" else "・切断中"}）"
+    return listOf(target?.let { DeviceChoice(it.serial, label(it)) } ?: DeviceChoice(null, "選んでください")) +
+        others.map { DeviceChoice(it.serial, label(it)) }
 }
 
 internal fun streamDescription(label: String, stream: StreamSnapshot?): String {

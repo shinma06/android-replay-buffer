@@ -277,6 +277,7 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable {
         screenshotUsesLogcatDestination = screenshotLogcat?.isSelected != false,
         screenshotDirectory = screenshotDirectory?.text.orEmpty(),
         videoQuality = videoQuality?.selectedItem as? VideoQuality ?: VideoQuality.STANDARD,
+        deviceSerial = store().settings().deviceSerial,
     )
 
     override fun isModified(): Boolean = panel != null && draft() != store().settings()

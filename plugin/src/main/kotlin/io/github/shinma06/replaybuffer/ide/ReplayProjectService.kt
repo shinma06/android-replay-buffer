@@ -34,6 +34,8 @@ import io.github.shinma06.replaybuffer.cli.CliResponse
 import io.github.shinma06.replaybuffer.cli.ReplayCliRegistry
 import io.github.shinma06.replaybuffer.cli.ReplayCliServer
 import io.github.shinma06.replaybuffer.cli.cliSaveResponse
+import io.github.shinma06.replaybuffer.core.CaptureState
+import io.github.shinma06.replaybuffer.core.MULTIPLE_DEVICES_REASON
 import io.github.shinma06.replaybuffer.core.ReplayOperation
 import io.github.shinma06.replaybuffer.core.ReplaySnapshot
 import io.github.shinma06.replaybuffer.core.SavePhase
@@ -206,11 +208,15 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
 
     private fun screenshotDeviceSerial(snapshot: ReplaySnapshot?): String? {
         if (snapshot?.enabled != true) {
-            check(!project.getService(ReplaySettingsStore::class.java).enabled) { "取得対象の反映を待っています。完了後に保存してください。" }
-            return null
+            val store = project.getService(ReplaySettingsStore::class.java)
+            check(!store.enabled) { "取得対象の反映を待っています。完了後に保存してください。" }
+            return store.settings().deviceSerial.ifEmpty { null }
         }
         check(snapshot.settings.adbPath == environment?.adb?.normalize()) { "取得対象のSDK設定を反映中です。完了後に保存してください。" }
-        return checkNotNull(snapshot.device) { "録画対象の端末が未確定です。端末の接続状態を確認してください。" }.serial
+        return checkNotNull(snapshot.device) {
+            if (snapshot.captureState == CaptureState.MULTIPLE_DEVICES) "$MULTIPLE_DEVICES_REASON。"
+            else "録画対象の端末が未確定です。端末の接続状態を確認してください。"
+        }.serial
     }
 
     /** GUI and CLI share this path and its notifications; the result completes after the PNG is published or fails. */
@@ -317,6 +323,9 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
         return CompletableFuture.completedFuture(ReplayOperation(false, reason))
     }
 
+    /** GUI chooser entry; shares the CLI/MCP `device` setting path, so it validates and persists identically. */
+    internal fun selectDevice(serial: String): CompletableFuture<ReplayOperation> = configure(Gson().toJson(mapOf("device" to serial)))
+
     /** Applies a partial settings object like the settings page Apply; validation failures throw IllegalArgumentException. */
     private fun configure(text: String): CompletableFuture<ReplayOperation> {
         val store = project.getService(ReplaySettingsStore::class.java)
@@ -334,6 +343,10 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
                     settings.showTouches != current.showTouches) &&
                 (store.enabled || capture.view.snapshot?.enabled == true || resolving || capture.view.pending > 0))
                 return rejected("取得をOFFにし、設定・操作の反映が終わってから取得モード・動画品質・タップ位置の表示を変更してください。")
+            val target = capture.view.snapshot?.device?.serial
+            if (settings.deviceSerial != current.deviceSerial && settings.deviceSerial.isNotEmpty() && target != null &&
+                target != settings.deviceSerial && capture.view.snapshot?.save?.phase.let { it == SavePhase.WRITING || it == SavePhase.FAILED })
+                return rejected("保存中または再試行待ちの保存対象があるため端末を切り替えられません。保存の完了または破棄の後に選び直してください。")
             if (settings == current) return CompletableFuture.completedFuture(ReplayOperation(true))
             store.apply(settings, checked, screenshotChecked)
             project.messageBus.syncPublisher(ReplaySettingsStore.CHANGED).run()
@@ -367,6 +380,9 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
                     "project" to projectBasePath, "running" to (snapshot?.enabled == true),
                     "capture_state" to snapshot?.captureState?.name, "capture_mode" to snapshot?.settings?.captureMode?.name,
                     "device_name" to snapshot?.device?.name, "device_serial" to snapshot?.device?.serial,
+                    "selected_device" to project.getService(ReplaySettingsStore::class.java).settings().deviceSerial.ifEmpty { null },
+                    "devices" to snapshot?.devices.orEmpty().map { linkedMapOf("serial" to it.serial, "name" to it.name,
+                        "kind" to it.kind.name, "target" to (it.serial == snapshot?.device?.serial)) },
                     "error" to (view.initializationError ?: snapshot?.error),
                     "pending" to view.pending, "resolving" to resolving, "save_state" to snapshot?.save?.phase?.name,
                     "request_id" to snapshot?.save?.requestId, "replay_seconds" to snapshot?.settings?.replaySeconds,

@@ -88,13 +88,15 @@ start: 取得をONにして終了します。取得はIDEが続けます。
 stop: 対象projectの取得をOFFにします。未保存の記録は破棄します。
 save: GUIと同じ保存を実行し、完成フォルダだけをstdoutへ返します。OFFなら取得を開始します。
       記録の蓄積前は保存できません。GUIの状態を確認して再実行してください。
-status: 設定を変えずに状態をJSONで表示します。
+status: 設定を変えずに状態をJSONで表示します。取得ON中は接続中の端末一覧（devices）と取得対象（device_serial）も返します。
 screenshot: GUIと同じスクリーンショットを保存し、PNGのパスだけをstdoutへ返します。
 settings: 現在の設定をMCPのget_settingsと同じJSONでstdoutへ返します。
 settings set: 指定項目だけをMCPのupdate_settingsと同じ項目名・検証で変更し、変更後の設定JSONを返します。
       例: replay settings set replay_seconds=60 auto_save_on_crash=true
       項目: replay_seconds output_directory app_selection manual_package capture_mode video_quality
-            auto_save_on_crash screenshot_uses_logcat_destination screenshot_directory show_touches
+            auto_save_on_crash screenshot_uses_logcat_destination screenshot_directory show_touches device
+      device: 取得する端末のserial（statusのdevices[].serial）。空（device=）なら1台だけ接続時に自動選択します。
+              複数接続で未選択のときは取得せず選択を待ちます。選んだ端末が切断されても別の端末へは切り替えません。
 mcp: 標準入出力のMCPサーバーとして動き、エージェントへ同じ操作を提供します。
 --project: 開いているprojectのフォルダ。省略時は接続先が1つだけ必要です。
 CLIはIDEに導入済みのプラグインのbinにあり、場所は設定画面からコピーできます。

@@ -273,7 +273,9 @@ elif len(a)>3 and a[3]=='ps':
         try {
             val enabled = core.setEnabled(true).get(10, TimeUnit.SECONDS)
             assertTrue(enabled.accepted, enabled.reason)
-            awaitState("unselected-multiple") { it.captureState == CaptureState.MULTIPLE_DEVICES && it.device == null }
+            val unselected = awaitState("unselected-multiple") { it.captureState == CaptureState.MULTIPLE_DEVICES && it.device == null }
+            assertEquals(MULTIPLE_DEVICES_REASON, unselected.error)
+            assertEquals(listOf("fixture-1", "fixture-2"), unselected.devices.map { it.serial })
             Files.writeString(devices, "List of devices attached\nfixture-1 device model:Fixture\n")
             if (autoCrash) {
                 assertTrue(core.updateApplication(ApplicationTarget("com.fixture.app")).get().accepted)
@@ -579,7 +581,10 @@ elif len(a)>3 and a[3]=='ps':
             assertTrue(videoSockets.size > 1) // Early forwarded EOFs did not restart the owned server.
             val sequence = capturing.sequenceId
             Files.writeString(devices, "List of devices attached\nfixture-1 device model:Fixture\nfixture-2 device model:Other\n")
-            val multiple = awaitState("selected-multiple") { it.captureState == CaptureState.MULTIPLE_DEVICES && it.device != null }
+            val multiple = awaitState("selected-multiple") { it.devices.size == 2 }
+            assertEquals("fixture-1", multiple.device?.serial)
+            assertEquals(CaptureState.CAPTURING, multiple.captureState)
+            assertEquals(null, multiple.error)
             assertFalse(multiple.frozen)
             assertEquals(capturing.generation, multiple.generation)
             assertEquals(StreamState.CAPTURING, multiple.video.state)

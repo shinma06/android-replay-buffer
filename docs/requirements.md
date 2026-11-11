@@ -18,8 +18,8 @@ Android開発のIT（テスト）のエビデンス採取と、日常の動作�
 
 | ID | 要件 |
 | --- | --- |
-| ENV-01 | 1プロジェクト・1台での利用を前提にする。複数プロジェクトでの同時利用や設定・取得の共有方式は初期版では検討対象外。 |
-| ENV-02 | Android実機とAndroid Emulatorの両方を対象にする。初期版は合わせて1台。 |
+| ENV-01 | 1プロジェクトにつき取得対象は1台。複数台が接続されていても取得するのは選んだ1台だけ（[複数端末 #18](https://github.com/shinma06/android-replay-buffer/issues/18)）。複数プロジェクトでの同時利用や設定・取得の共有方式は初期版では検討対象外。 |
+| ENV-02 | Android実機とAndroid Emulatorの両方を対象にする。接続が1台なら自動でその1台、2台以上で未選択なら取得せず選択を求める（勝手に選ばない）。選択はserialでproject設定に記憶し、GUI・CLI・MCPで共有する。選んだ端末の切断中は同じserialの再接続を待ち、別の端末へ切り替えない。 |
 | ENV-03 | Android StudioでAndroid開発ができる環境を前提に、録画・ログ取得のための追加ツールの個別インストールやPATH設定を利用者に求めない。必要な準備はプラグイン側で行う。採用済みの[同期設計](design/timeline.md)に従い、設定済みAndroid SDKのadbを使い、固定scrcpy server・時計測定用DEX・JCodecをプラグインへ同梱する。実装・同梱・実動作の受入は別途確認する。 |
 
 ### 有効化・設定
@@ -111,7 +111,7 @@ Android開発のIT（テスト）のエビデンス採取と、日常の動作�
 | [macOSメニューバー連携 #15](https://github.com/shinma06/android-replay-buffer/issues/15) | **IDE内初期版完成直後に最初に着手。** 前面にないAndroid Studioを操作でき、保存・有効/無効・状態確認など、ほとんどの操作を行う。操作範囲と方式は後で設計。IDE終了後の単独動作は未決で、要件へ自動追加しない。 |
 | [開始・終了位置を指定してトリミング保存 #16](https://github.com/shinma06/android-replay-buffer/issues/16) | **優先度 中**。保持範囲内の開始・終了位置を指定して動画・両ログ・同期情報を同じ区間で保存する。初期版は設定時間分を即保存。 |
 | [保存ショートカットキー #17](https://github.com/shinma06/android-replay-buffer/issues/17) | **優先度 中**。Android Studioのキーマップから保存操作を呼べるようにする。 |
-| [複数端末 #18](https://github.com/shinma06/android-replay-buffer/issues/18) | **優先度 低**。複数接続時の選択・同時取得・保存単位はこの段階で検討。初期版に選択UIや全台取得を要求しない。 |
+| [複数端末 #18](https://github.com/shinma06/android-replay-buffer/issues/18) | 取得対象1台の選択はENV-01/02で対応済み（GUIの「取得する端末」は2台以上の接続時だけ表示、CLI `settings set device=<serial>`・`status`の`devices`、MCP `update_settings`の`device`・`get_status`の`devices`）。複数台の同時取得とその保存単位は対象外。 |
 | [保存後のメモ・テストケースID #19](https://github.com/shinma06/android-replay-buffer/issues/19) | TODO、優先度未定。任意で追記する。保存前の必須入力にはしない。 |
 | [音声録音 #20](https://github.com/shinma06/android-replay-buffer/issues/20) | TODO、優先度未定。対象音声や取得方法は未決。 |
 | [タップ位置の表示 #21](https://github.com/shinma06/android-replay-buffer/issues/21) | TODO、優先度未定。**表示の有効/無効トグル必須**。同じ操作の「表示あり／なし」の両動画を保存できる方法も検討する。 |

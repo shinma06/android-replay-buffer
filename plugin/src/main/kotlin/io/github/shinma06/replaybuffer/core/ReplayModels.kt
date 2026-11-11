@@ -15,6 +15,8 @@ data class ReplaySettings @JvmOverloads constructor(
     val videoQuality: VideoQuality = VideoQuality.STANDARD,
     /** Sets the device show_touches option only while video is captured; touch coordinates are always recorded with video. */
     val showTouches: Boolean = false,
+    /** Capture target chosen by serial; null selects the only connected device and never picks one of several. */
+    val deviceSerial: String? = null,
 ) {
     fun validate(): ReplaySettings {
         require(adbPath == null || adbPath.isAbsolute && Files.isRegularFile(adbPath) && Files.isExecutable(adbPath)) {
@@ -23,6 +25,7 @@ data class ReplaySettings @JvmOverloads constructor(
         require(saveDirectory == null || saveDirectory.isAbsolute) { "保存先は絶対パスで指定してください" }
         require(replaySeconds in 1..MAX_REPLAY_SECONDS) { "保持時間は1〜900秒で指定してください" }
         application.validate()
+        deviceSerial?.let(::serialArgument)
         return copy(adbPath = adbPath?.normalize(), saveDirectory = saveDirectory?.normalize())
     }
 
@@ -200,6 +203,8 @@ data class ReplaySnapshot(
     val cleanupPendingCount: Int = 0,
     val autoSave: AutoSaveSnapshot = AutoSaveSnapshot(),
     val lastSave: SaveSnapshot? = null,
+    /** Devices from the last `adb devices -l` poll while capture is ON; empty while OFF, which never runs adb. */
+    val devices: List<ReplayDevice> = emptyList(),
 )
 
 /** accepted admits the operation; saveResult, when supplied, settles that attempt independently of later UI state. */

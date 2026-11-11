@@ -221,4 +221,22 @@ class ReplayDescriptionsTest {
         assertFalse(expected.contains("com.fixture.new"))
         assertFalse(expected.contains("新端末"))
     }
+
+    @Test
+    fun deviceChooserAppearsOnlyWithSeveralDevicesAndListsTheTargetFirst() {
+        fun device(serial: String, connected: Boolean = true) = ReplayDevice(serial, "M$serial", DeviceKind.EMULATOR, connected)
+        fun state(target: ReplayDevice?, vararg connected: ReplayDevice) = ReplaySnapshot(1, 1, true,
+            if (target == null && connected.size > 1) CaptureState.MULTIPLE_DEVICES else CaptureState.CAPTURING, ReplaySettings(), 1,
+            device = target, devices = connected.toList())
+        assertTrue(deviceChoices(state(device("a"), device("a"))).isEmpty())
+        assertTrue(deviceChoices(state(null)).isEmpty())
+        val ambiguous = deviceChoices(state(null, device("a"), device("b")))
+        assertEquals(listOf(null, "a", "b"), ambiguous.map { it.serial })
+        assertEquals("選んでください", ambiguous.first().label)
+        assertEquals(listOf("b", "a"), deviceChoices(state(device("b"), device("a"), device("b"))).map { it.serial })
+        val waiting = deviceChoices(state(device("b", connected = false), device("a")))
+        assertEquals(listOf("b", "a"), waiting.map { it.serial })
+        assertTrue(waiting.first().label.contains("切断中"))
+        assertEquals("複数の端末が接続されています — 取得する端末を選んでください", state(null, device("a"), device("b")).captureDescription())
+    }
 }

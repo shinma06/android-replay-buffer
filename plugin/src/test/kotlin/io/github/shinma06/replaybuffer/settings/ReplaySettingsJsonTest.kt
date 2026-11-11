@@ -19,6 +19,16 @@ class ReplaySettingsJsonTest {
         assertEquals(settings, patchSettings(ReplaySettings(), json.toString()))
     }
 
+    @Test fun `device is a serial string shared with CLI and MCP`() {
+        val chosen = patchSettings(ReplaySettings(), """{"device":"emulator-5556"}""")
+        assertEquals("emulator-5556", chosen.deviceSerial)
+        assertEquals("emulator-5556", JsonParser.parseString(settingsJson(chosen, false)).asJsonObject["device"].asString)
+        assertEquals("", patchSettings(chosen, """{"device":""}""").deviceSerial)
+        assertEquals(true, chosen.copy(deviceSerial = "bad serial").validationError(DestinationValidation("", null), DestinationValidation("", null)) != null)
+        assertEquals(null, chosen.validationError(DestinationValidation("", null), DestinationValidation("", null)))
+        assertFailsWith<IllegalArgumentException> { patchSettings(chosen, """{"device":5556}""") }
+    }
+
     @Test fun `partial patch keeps omitted fields`() {
         val current = ReplaySettings(destination = "/tmp/out", autoSaveOnCrash = true)
         assertEquals(current.copy(retentionSeconds = 30, captureMode = CaptureMode.LOG_ONLY),
