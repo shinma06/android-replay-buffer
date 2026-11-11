@@ -615,11 +615,11 @@ internal class CrashFixture(
         assertTrue(store.clock.add("7", listOf(elapsed, elapsed, CRASH_WALL + relative, elapsed),
             at(relative), at(relative + 1_000_000), CRASH_WALL + relative))
     }
-    /** A clock read whose adb round trip exceeds the 40 ms limit, as reported by the device reader. */
+    /** A clock read whose device read width exceeds the 2 ms limit, as reported by the device reader. */
     fun clockMiss(relative: Long) {
         val elapsed = 100_000_000_000 + relative
-        assertTrue(!store.clock.add("7", listOf(elapsed, elapsed, CRASH_WALL + relative, elapsed),
-            at(relative), at(relative + 50_000_000), CRASH_WALL + relative))
+        assertTrue(!store.clock.add("7", listOf(elapsed, elapsed, CRASH_WALL + relative, elapsed + 3_000_000),
+            at(relative), at(relative + 1_000_000), CRASH_WALL + relative))
         store.clockStatus(false, 1)
     }
     fun refresh(relative: Long) = store.configureAuto(settings, 1, "fixture", true, at(relative))
