@@ -64,11 +64,11 @@ replay --project "$HOME/Projects/MyApp" settings set replay_seconds=60 auto_save
 replay --project "$HOME/Projects/MyApp" settings set output_directory="$HOME/Replays"
 ```
 
-項目名は`settings`の出力・MCPと同じです: `replay_seconds`（1〜900）、`output_directory`、`app_selection`（`AUTOMATIC` / `MANUAL`）、`manual_package`、`capture_mode`（`VIDEO_AND_LOGS` / `LOG_ONLY`）、`video_quality`（`STANDARD` / `LIGHTWEIGHT`）、`auto_save_on_crash`、`screenshot_uses_logcat_destination`、`screenshot_directory`、`show_touches`、`device`（取得する端末のserial、空は自動選択）。
+項目名は`settings`の出力・MCPと同じです: `replay_seconds`（1〜900）、`output_directory`、`app_selection`（`AUTOMATIC` / `MANUAL`）、`manual_package`、`capture_mode`（`VIDEO_AND_LOGS` / `LOG_ONLY`）、`video_quality`（`STANDARD` / `LIGHTWEIGHT`）、`auto_save_on_crash`、`screenshot_uses_logcat_destination`、`screenshot_directory`、`show_touches`、`record_audio`（動画に端末の再生音を録音する。既定`false`）、`device`（取得する端末のserial、空は自動選択）。
 
 - 1つの引数が`KEY=VALUE`の1項目です。値は最初の`=`より後ろ全体で、空白を含む値はシェルの引用符で囲みます。
 - 整数・真偽値の項目は`60`・`true` / `false`を数値・真偽値として送ります。それ以外の書き方や未知・重複した項目は、MCPの`update_settings`と同じ検証で理由を表示して拒否します（終了コード2）。
-- 設定画面の「適用」と同じ検証をします。保存先フォルダは事前に作成してください。取得モード・動画品質・`show_touches`は取得OFFで変更します。取得のON/OFFは`start` / `stop`で行います。
+- 設定画面の「適用」と同じ検証をします。保存先フォルダは事前に作成してください。取得モード・動画品質・`show_touches`・`record_audio`は取得OFFで変更します。`record_audio`は`VIDEO_AND_LOGS`だけで使い、`LOG_ONLY`では値を保持したまま録音しません。取得のON/OFFは`start` / `stop`で行います。
 
 ### 取得する端末の選択
 

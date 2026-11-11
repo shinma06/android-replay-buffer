@@ -387,6 +387,8 @@ internal class ReplayMcpServer(
             "screenshot_directory" to mapOf("type" to "string", "description" to "Existing absolute folder used when screenshot_uses_logcat_destination is false."),
             "show_touches" to mapOf("type" to "boolean",
                 "description" to "Show tap dots on the device screen (and so in the video) while capturing; restored afterwards. Change only while capture is OFF."),
+            "record_audio" to mapOf("type" to "boolean",
+                "description" to "Record the device playback audio into the video (VIDEO_AND_LOGS only, Android 13+, apps may opt out; coverage.audio in replay.json tells why it is missing). Change only while capture is OFF."),
             "device" to mapOf("type" to "string",
                 "description" to "Serial of the capture target from get_status `devices[].serial`; empty selects the only connected device automatically. " +
                     "With several devices and none chosen, capture waits (capture_state MULTIPLE_DEVICES). A chosen device that disconnects is waited for; " +

@@ -15,6 +15,8 @@ data class ReplaySettings @JvmOverloads constructor(
     val videoQuality: VideoQuality = VideoQuality.STANDARD,
     /** Sets the device show_touches option only while video is captured; touch coordinates are always recorded with video. */
     val showTouches: Boolean = false,
+    /** Adds the device playback audio (Android 13+, apps may opt out) to the video; ignored in LOG_ONLY. */
+    val recordAudio: Boolean = false,
     /** Capture target chosen by serial; null selects the only connected device and never picks one of several. */
     val deviceSerial: String? = null,
 ) {

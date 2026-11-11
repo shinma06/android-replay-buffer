@@ -36,6 +36,7 @@ save --logs-onlyはLogcatツールバーのボタンと同じく、ログとrepl
 動画の取得中でも取得は止めず、replay.jsonのcoverage.videoをEXCLUDEDとして記録します。
 screenshotはGUIと同じPNGを保存し、パスだけをstdoutへ返します。
 settingsはMCPのget_settings、settings setはupdate_settingsと同じ項目名・検証です。
+record_audio=trueで動画に端末の再生音（Android 13以上）を録音します。既定はfalseで、取得OFFで変更します。
 複数の端末を接続したときはstatusのdevices[].serialから1台をdevice=<serial>で選びます（空は自動）。
 未選択で2台以上なら取得せず選択を待ち、選んだ端末の切断中も別の端末へは切り替えません。
 mcpは標準入出力のMCPサーバーです。IDE本体は起動しません。
