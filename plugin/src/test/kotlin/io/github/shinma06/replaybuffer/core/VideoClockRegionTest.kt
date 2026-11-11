@@ -158,7 +158,7 @@ class VideoClockRegionTest {
             assertEquals(Long.MAX_VALUE.toString(), manifest["gaps"].asJsonArray.single().asJsonObject["boundary_uncertainty_ns"].asString)
             assertTrue(manifest["gaps"].asJsonArray.single().asJsonObject["duration_uncertain"].asBoolean)
             assertFalse(manifest["video_missing_ranges"].asJsonArray.isEmpty)
-            val rows = Files.readAllLines(output.directory.resolve("frames.jsonl")).map { JsonParser.parseString(it).asJsonObject }
+            val rows = Files.readAllLines(output.directory.resolve("video-frames.jsonl")).map { JsonParser.parseString(it).asJsonObject }
             assertEquals(frames.map { it.pts }, rows.filter { it["presented"].asBoolean }.map { it["source_pts_us"].asLong })
             val uncertainRows = rows.filter { !it["clock_alignment_known"].asBoolean }
             assertTrue(uncertainRows.isNotEmpty())
@@ -192,7 +192,7 @@ class VideoClockRegionTest {
             val retry = save(capture, root)
             assertEquals(manifest["parts"], manifest(retry)["parts"])
             assertEquals(manifest["video_missing_ranges"], manifest(retry)["video_missing_ranges"])
-            assertEquals(Files.readAllLines(output.directory.resolve("frames.jsonl")), Files.readAllLines(retry.directory.resolve("frames.jsonl")))
+            assertEquals(Files.readAllLines(output.directory.resolve("video-frames.jsonl")), Files.readAllLines(retry.directory.resolve("video-frames.jsonl")))
             assertEquals(deviceLog, Files.readAllLines(retry.directory.resolve("logcat-device.jsonl")))
             assertEquals(appLog, Files.readAllLines(retry.directory.resolve("logcat-app.jsonl")))
             val laterSample = recovery.copy(before = 5_000_000_000, after = 5_000_000_000, mono = 5_000_000_000)
@@ -209,5 +209,5 @@ class VideoClockRegionTest {
     }
 
     private fun save(capture: FrozenCapture, root: Path) = SaveWriter().write(capture, root, { false }) { publication -> Files.move(publication.partial, publication.complete) }
-    private fun manifest(output: SaveOutput) = JsonParser.parseString(Files.readString(output.directory.resolve("session.json"))).asJsonObject
+    private fun manifest(output: SaveOutput) = JsonParser.parseString(Files.readString(output.directory.resolve("replay.json"))).asJsonObject
 }

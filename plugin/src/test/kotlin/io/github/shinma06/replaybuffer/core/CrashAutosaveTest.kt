@@ -39,7 +39,7 @@ class CrashAutosaveTest {
                 val trigger = assertNotNull(capture.autoTrigger)
                 assertEquals(if (reversed) "user_pid" else "pid_user", trigger.facts["identity_interpretation"])
                 val output = SaveWriter().write(capture, f.root, { false }) { Files.move(it.partial, it.complete) }
-                val manifest = JsonParser.parseString(Files.readString(output.directory.resolve("session.json"))).asJsonObject
+                val manifest = JsonParser.parseString(Files.readString(output.directory.resolve("replay.json"))).asJsonObject
                 assertEquals("platform_reported_uncaught_exception", manifest["auto_trigger"].asJsonObject["kind"].asString)
                 assertEquals(mode.name, manifest["capture_mode"].asString)
                 assertEquals(if (mode.videoRequested) 1L else 0L, Files.list(output.directory).use { files -> files.filter { it.toString().endsWith(".mp4") }.count() })
