@@ -69,7 +69,8 @@ boot跨ぎでは新旧epoch間のoffsetを、最後/最初のhost時計sampleか
 | 接続中/片系障害 | 最新の正常clock anchorから現在の端末elapsedを推定しTを進める。片系障害の間も健康な側を保持・保存。clock anchorも不達なら同期degraded、誤差を増やして範囲不明を明示する |
 | 完全切断確定 | 切断を確定したhost時刻に対応する端末elapsed推定値でTを凍結する。実際のUSB抜去瞬間とは区別し、確定の検出遅延と誤差を残す。切断前の最後のsample/frameとT間は未取得のgap。Tとリングpruneも凍結するため長い切断中も保存可能 |
 | 同じbootの再接続 | 再測定後Tを現在のelapsedへ戻し、通常のT-Nでpruneする。長い切断前データが現在窓外なら落ちる。同じsequenceの切断/再開履歴とgapは残す。旧未保存区間が欲しければ切断中に保存する旨をUIへ表示する |
-| 自動復旧/回転/明示設定適用 | 全体リングを消さずgenerationを増やす。必要なstreamだけ再開。適用前後の取得条件をintervalに残す。N変更後の新規保存は新N、失敗保存のpinは旧N/Tを維持 |
+| 自動復旧/明示設定適用 | 全体リングを消さずgenerationを増やす。必要なstreamだけ再開。適用前後の取得条件をintervalに残す。N変更後の新規保存は新N、失敗保存のpinは旧N/Tを維持 |
+| 回転 | generationを変えず同じ接続のまま続ける。scrcpyが新しい画面サイズのsessionを送ると新しいsession/復号区間として保持し、旧画像の最後から新sessionの最初のframeまでをvideo gapにする。gapの終わりはその最初のframeの取得時刻（受信時刻ではない）とし、回転後のframeを時計対応不明にしない |
 | 無効化/project close | 取得停止、未保存リング・pinを破棄。保存済みフォルダは残す。sequence終了を示し次の有効化は別sequence |
 | 全種類0件 | 成功通知/空動画は作らず「保存できるデータなし」。clockだけで記録成功にしない。解決済み保存なしなら次の取得/保存を妨げない |
 
@@ -112,7 +113,7 @@ gapはstream毎に`kind / from / to / reason / boundary_uncertainty / generation
 
 各復号区間のsample間は観測した元PTS差をtimescale=1,000,000のVFR durationへ使う。PTSリセットは独立media originへ移し、元source PTSとrun/gen/sessionはframes.jsonlへ残す。区間ごとに対応するAVC sample entryを指定し、再利用されたSPS IDでもconfig bytesを混同しない。次sampleのない終端は`source_duration_us=null`のまま、許可されたheld tail又は最小1µs authoring tickを別記する。名目fps・直前cadence・host/新boot時刻でsource durationを埋めない。
 
-edit listで各区間のdecoder-only prefixを隠す。有限の元VIDEO gapとその境界を確認できる場合だけ空editを入れ、不明gapは`video_run_boundaries.actual_gap_duration_us=null`・`authored_gap_duration_us=0`として実durationとMP4上の配置を区別する。gapsのfrom/to/MAX・clock復旧/VIDEO cutの証拠・不足は保存して消さない。未知の間隔を0秒と測定したことにはしない。movie/track header durationはchecked edit合計へ補正し、元media duration/sample PTSを変更しない。
+edit listで各区間のdecoder-only prefixを隠す。有限の元VIDEO gapとその境界を確認できる場合だけ空editを入れ、同じ取得世代の既知gapでは、前区間の最後の画像をgapの開始まで表示保持し、空editをgapの長さにして、回転などのsession切替の前後でmovie時刻とwindow時刻の差を一定に保つ。不明gapは`video_run_boundaries.actual_gap_duration_us=null`・`authored_gap_duration_us=0`として実durationとMP4上の配置を区別する。gapsのfrom/to/MAX・clock復旧/VIDEO cutの証拠・不足は保存して消さない。未知の間隔を0秒と測定したことにはしない。movie/track header durationはchecked edit合計へ補正し、元media duration/sample PTSを変更しない。
 
 clock scopesと復旧/両側anchorは同期確度の説明に使い、source隣接の許可には使わない。framesの`clock_alignment_known`・`window_ns`は個別に判定し、未知はnull/MAXのまま、`mapped_window_ns`を同期確定/coverageへ使わない。確認済みcoverageは同期が確認できる隣接frameの区間だけから計算し、clock/VIDEO gap、未知やepoch境界を跨がない。区間全体が未知でも、その内部の個別に確認できるframeの情報を失わない。held tailの明示的控除以外は未表示/未確認範囲をvideo_missing_rangesへ残す。
 
