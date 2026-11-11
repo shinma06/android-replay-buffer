@@ -53,6 +53,24 @@ class InjectedTouchTest {
                       generation: Long = 1) =
         TouchEntry(TouchSample(mono, device, 0, action, x, y), generation, MappedTime(mono, 0, 0), mono, 1080, 2400, rotation)
 
+    @Test fun `a pointer whose UP was lost in a reader gap is not drawn from the gap on`() {
+        val physical = entry(1_000_000_000, TouchAction.DOWN, 540, 1200)
+        val injected = entry(1_000_000_000, TouchAction.DOWN, 1079, 2399, INJECTED_INPUT_DEVICE)
+        val gap = listOf(TouchGap(1_500_000_000, 2_500_000_000, "切断"))
+        val overlay = TapOverlay(listOf(physical, injected, entry(3_000_000_000, TouchAction.DOWN, 0, 0)), gaps = gap)
+        assertEquals(listOf(OverlayDot(270, 600), OverlayDot(539, 1199)), overlay.dots(1_200_000_000, 540, 1200))
+        // getevent stopped at 1.5 s: its pointer is gone, the injected reader kept reading so its pointer stays.
+        assertEquals(listOf(OverlayDot(539, 1199)), overlay.dots(1_500_000_000, 540, 1200))
+        assertEquals(listOf(OverlayDot(539, 1199)), overlay.dots(2_800_000_000, 540, 1200))
+        // A new touch after the gap is drawn again.
+        assertEquals(listOf(OverlayDot(0, 0), OverlayDot(539, 1199)), overlay.dots(3_000_000_000, 540, 1200))
+        val injectedLost = TapOverlay(listOf(physical, injected), injectedGaps = gap)
+        assertEquals(listOf(OverlayDot(270, 600)), injectedLost.dots(2_000_000_000, 540, 1200))
+        // A gap with an unknown start cannot be placed after the pointer's last row.
+        assertEquals(2, TapOverlay(listOf(physical, injected), gaps = listOf(TouchGap(null, 2_000_000_000, "開始前")),
+            injectedGaps = listOf(TouchGap(null, null, "不明"))).dots(2_200_000_000, 540, 1200).size)
+    }
+
     @Test fun `a finger held down across a reconnect is not drawn on the next generation's frames`() {
         // Generation 1 disconnected while the finger was down, so its last row is a DOWN with no UP.
         val overlay = TapOverlay(listOf(entry(1_000_000_000, TouchAction.DOWN, 540, 1200, generation = 1),

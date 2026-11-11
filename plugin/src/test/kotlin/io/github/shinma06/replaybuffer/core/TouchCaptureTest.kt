@@ -152,6 +152,34 @@ class TouchCaptureTest {
     }
 
     @Test
+    fun anInjectedReaderInterruptionIsSavedAsItsOwnGap() {
+        CaptureStore(root.resolve("ring"), minFree = 0).use { store ->
+            val host = System.nanoTime() + 1_000_000_000
+            store.generation(1)
+            sample(store, host, 1)
+            store.status("device_log", StreamState.CAPTURING, null, 1)
+            store.app("com.fixture.app", 10001, setOf(12), 1, true)
+            store.touchStatus(StreamState.CAPTURING, null, 1)
+            store.injectedTouchStatus(StreamState.CAPTURING, null, 1)
+            sample(store, host, 2)
+            store.injectedTouchStatus(StreamState.RECOVERING, "logcat切断", 1)
+            store.injectedTouchStatus(StreamState.RECOVERING, "logcat切断", 1) // Still interrupted: one gap.
+            store.injectedTouchStatus(StreamState.CAPTURING, null, 1)
+            store.log(DeviceLog(1_700_000_001_800_000_000, 12, 12, 10001, 0, 4, "Fixture", "row", byteArrayOf(1)), 1, host + 1_000_000_000)
+            val pinned = assertNotNull(store.capture(ReplaySettings(), null, host + 1_800_000_000))
+            val gap = pinned.injectedTouchGaps.single()
+            assertEquals("logcat切断", gap.reason)
+            assertTrue(gap.from != null && gap.to != null && gap.to!! >= gap.from!!)
+            assertTrue(pinned.touchGaps.none { it.reason == "logcat切断" })
+            val output = SaveWriter().write(pinned, root, { false }) { Files.move(it.partial, it.complete) }
+            val injected = JsonParser.parseString(Files.readString(output.directory.resolve("replay.json"))).asJsonObject["touches"]
+                .asJsonObject["injected"].asJsonObject
+            assertTrue(injected["gaps"].asJsonArray.single().toString().contains("logcat切断"))
+            store.release(pinned.id)
+        }
+    }
+
+    @Test
     fun dotsAlreadyOnOnTheDeviceAreReportedEvenWithTheSettingOff() {
         CaptureStore(root.resolve("ring"), minFree = 0).use { store ->
             val host = System.nanoTime() + 1_000_000_000

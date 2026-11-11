@@ -51,6 +51,8 @@ internal data class FrozenCapture(
     /** Injected-input (mirroring) reader state at freeze; null when video was not requested. */
     val injectedTouchState: StreamSnapshot? = null,
     val touchGaps: List<TouchGap> = emptyList(),
+    /** Intervals where the injected-input reader was not reading; a pointer it had down is unknown after one starts. */
+    val injectedTouchGaps: List<TouchGap> = emptyList(),
     val touchDropped: Long = 0,
     /** Whether the visible dots were on during this generation; null before the touch reader decided. */
     val touchDots: TouchDots? = null,
@@ -82,6 +84,7 @@ internal class CaptureStore(
     private val logs = ArrayDeque<LogEntry>()
     private val touches = ArrayDeque<TouchEntry>()
     private val touchGaps = ArrayDeque<TouchGap>()
+    private val injectedTouchGaps = ArrayDeque<TouchGap>()
     /** Open SYN_DROPPED gaps per input device, identified by reference in [touchGaps]. */
     private val touchLostOpen = mutableMapOf<String, TouchGap>()
     private var touchState = StreamSnapshot(StreamState.RECOVERING)
@@ -152,7 +155,7 @@ internal class CaptureStore(
         states.replaceAll { kind, _ -> StreamSnapshot(if (kind == "video" && !captureMode.videoRequested) StreamState.NOT_REQUESTED else StreamState.RECOVERING) }
         if (captureMode.videoRequested) setTouchState(StreamState.RECOVERING, "取得を復旧しています")
         touchDots = null
-        injectedTouchState = StreamSnapshot(StreamState.RECOVERING)
+        if (captureMode.videoRequested) setInjectedTouchState(StreamState.RECOVERING, "取得を復旧しています")
     }
 
     /** Touch samples exist only while video is requested; their time comes from the device input clock. */
@@ -212,7 +215,19 @@ internal class CaptureStore(
     @Synchronized
     fun injectedTouchStatus(state: StreamState, reason: String?, owner: Long) {
         if (closed || owner != generation || !captureMode.videoRequested) return
+        setInjectedTouchState(state, reason)
+    }
+
+    private fun setInjectedTouchState(state: StreamState, reason: String?) {
+        val now = clock.now()
+        val capturing = injectedTouchState.state == StreamState.CAPTURING
+        if (capturing && state != StreamState.CAPTURING) injectedTouchGaps += TouchGap(now, null, reason ?: "注入タップの取得が中断しました")
+        if (!capturing && state == StreamState.CAPTURING) {
+            val open = injectedTouchGaps.peekLast()?.takeIf { it.to == null }
+            if (open != null) { injectedTouchGaps.removeLast(); injectedTouchGaps.addLast(open.copy(to = now)) }
+        }
         injectedTouchState = StreamSnapshot(state, reason = reason)
+        while (injectedTouchGaps.size > 4096) injectedTouchGaps.removeFirst()
     }
 
     @Synchronized
@@ -658,6 +673,7 @@ internal class CaptureStore(
             touches = touchRows, touchState = touchState.takeIf { withVideo },
             injectedTouchState = injectedTouchState.takeIf { withVideo }, touchGaps = if (!withVideo) emptyList() else touchGaps.toList() +
                 listOfNotNull(touchEvictedThrough?.takeIf { it >= start }?.let { TouchGap(null, it.takeIf { it != Long.MAX_VALUE }, "保持上限を超えた古いタップ位置を破棄しました") }),
+            injectedTouchGaps = if (withVideo) injectedTouchGaps.toList() else emptyList(),
             touchDropped = if (withVideo) touchDropped else 0, touchDots = touchDots.takeIf { withVideo }, request = request)
         if (trigger != null) {
             autosave.admissionProblem(trigger, host)?.let { throw AutoSaveRejected(it) }
@@ -835,6 +851,7 @@ internal class CaptureStore(
         logs.clear()
         touches.clear()
         touchGaps.clear()
+        injectedTouchGaps.clear()
         touchLostOpen.clear()
         touchEvictedThrough = null
         apps.clear()

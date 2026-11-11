@@ -16,9 +16,16 @@ internal fun overlayTouches(mode: TapDisplay, dots: TouchDots?, rows: List<Touch
  * Pointer positions over window time (sequence ns). A pointer is drawn while down and for [holdNs] after it lifts. A frame
  * shown until `until` also draws a pointer that first touches during that time, because a still screen produces no new
  * frame for a tap. A frame only draws taps of its own capture generation: a finger still down when the device
- * disconnected has no UP, and must not stay on the video after the reconnect. Rows without a certain time are left out.
+ * disconnected has no UP, and must not stay on the video after the reconnect. Likewise a reader gap ([gaps] for getevent,
+ * [injectedGaps] for the injected-input reader) that starts after a pointer's last row may have lost its UP, so the
+ * pointer is not drawn from that gap on. Rows without a certain time are left out.
  */
-internal class TapOverlay(rows: List<TouchEntry>, private val holdNs: Long = 100_000_000) {
+internal class TapOverlay(
+    rows: List<TouchEntry>,
+    private val gaps: List<TouchGap> = emptyList(),
+    private val injectedGaps: List<TouchGap> = emptyList(),
+    private val holdNs: Long = 100_000_000,
+) {
     private val tracks = rows.filter { it.time.sequence != null && it.time.uncertainty != Long.MAX_VALUE }
         .groupBy { Triple(it.generation, it.sample.device, it.sample.pointer) }.values
         .map { track -> track.sortedBy { it.time.sequence!! } }
@@ -38,8 +45,14 @@ internal class TapOverlay(rows: List<TouchEntry>, private val holdNs: Long = 100
             if (track[mid].time.sequence!! <= sequence) { found = mid; low = mid + 1 } else high = mid - 1
         }
         val current = track.getOrNull(found)?.takeIf { it.sample.action != TouchAction.UP || sequence - it.time.sequence!! <= holdNs }
+            ?.takeUnless { lost(it, sequence) }
         val row = current ?: track.getOrNull(found + 1)?.takeIf { it.time.sequence!! < until } ?: return@mapNotNull null
         project(row, frameWidth, frameHeight)
+    }
+
+    /** Whether reading stopped after [row] and by [sequence]; a gap with an unknown start cannot be ordered after it. */
+    private fun lost(row: TouchEntry, sequence: Long): Boolean = (if (row.sample.injected) injectedGaps else gaps).any { gap ->
+        gap.from != null && gap.from > row.time.sequence!! && gap.from <= sequence
     }
 
     private fun project(row: TouchEntry, frameWidth: Int, frameHeight: Int): OverlayDot? {

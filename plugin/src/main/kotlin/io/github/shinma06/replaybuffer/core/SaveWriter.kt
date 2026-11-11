@@ -146,7 +146,7 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                 require(sps.isNotEmpty()) { "動画SPSがありません" }
                 H264Utils.getPicSize(boundedSps(sps.first()))
             }
-            val overlay = TapOverlay(overlayTouches(capture.settings.tapDisplay, capture.touchDots, capture.touches))
+            val overlay = TapOverlay(overlayTouches(capture.settings.tapDisplay, capture.touchDots, capture.touches), capture.touchGaps, capture.injectedTouchGaps)
                 .takeIf { videoRequested && it.within(capture.start, capture.end) }
             var overlaySkipped: String? = null
             val normalizer = if (sizes.distinct().size > 1 || sizes.isNotEmpty() && overlay != null) {
@@ -739,6 +739,8 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                     "show_touches" to capture.settings.showTouches, "show_touches_state" to capture.touchDots?.wire, "time_source" to "getevent -lt (device CLOCK_MONOTONIC)",
                     "injected" to capture.injectedTouchState?.let { injected -> mapOf("state" to injected.state, "reason" to injected.reason,
                         "count" to capture.touches.count { it.sample.injected },
+                        "gaps" to capture.injectedTouchGaps.filter { (it.to == null || it.to >= capture.start) && (it.from == null || it.from <= capture.end) }
+                            .map { mapOf("from_ns" to it.from?.toString(), "to_ns" to it.to?.toString(), "reason" to it.reason, "time_axis" to "sequence_ns") },
                         "time_source" to "InputDispatcher injectInputEvent log eventTime (device CLOCK_MONOTONIC, ms resolution)") },
                     "coordinate_space" to "display_px_natural_orientation", "screen_coordinate_space" to "display_px_current_rotation",
                     "gaps" to capture.touchGaps.filter { (it.to == null || it.to >= capture.start) && (it.from == null || it.from <= capture.end) }
