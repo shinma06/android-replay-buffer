@@ -46,7 +46,7 @@ REQUEST、DRAW、commit callback、mirror取得、encoder出力、物理表示�
 
 時計DEXはapp_processで動く小さな専用helper。端末appの改造・APKインストール・rootを要求しない。hostからnonce付き測定要求を送り、helperは`elapsed before → mono → currentTimeMillis → elapsed after`を返す。clock sampleにはnonce、boot epoch ID、各値、読取幅、host往復幅を保存する。helperの実起動/互換性は未検証。起動不可なら同期不適合を表示し、受入を通さない。
 
-開始/再接続/取得generation変更時に5回測定し最短往復のsampleを初期anchorにする。以後1秒ごとに測定、5秒以上古いanchorは正常同期に使わない。clock sampleの端末読取幅は2ms以下を正常条件にする。mono/elapsed/Epochのoffsetは端末内で続けて読むので、adbの往復の長さに左右されない。往復が40msを超えたsampleも、video/タップ/ログの変換には使う。hostの時刻から端末の時刻を推定する処理（保存の窓端T、クラッシュの受付時刻、ログ取得開始の下限）だけは、往復40ms以下の直近sample（受信後5秒以内）をanchorにする。そのようなsampleがないときは最新の正常sampleの往復の半分を誤差に含める。offsetのepoch分割は前後sampleの読取幅と1ms量子化による見積誤差を超える不連続で判断し、微小な測定差だけでは分割しない。往復の半分は**対称遅延の推定値**であり、端末内部のmono/elapsed/Epoch変換の保証誤差とは混同しない。
+開始/再接続/取得generation変更時に5回測定し最短往復のsampleを初期anchorにする。以後1秒ごとに測定、5秒以上古いanchorは正常同期に使わない。clock sampleの端末読取幅は2ms以下を正常条件にする。mono/elapsed/Epochのoffsetは端末内で続けて読むので、adbの往復の長さに左右されない。往復が40msを超えたsampleも、video/タップ/ログの変換には使う。hostの時刻から端末の時刻を推定する処理（保存の窓端T、クラッシュの受付時刻、ログ取得開始の下限）だけは、往復40ms以下の直近sampleをanchorにする。anchorの鮮度は最新sampleからではなく、推定する時点（保存・受付・取得開始のhost時刻）で受信後5秒以内かどうかで判断する。そのようなsampleがないときは最新の正常sampleを使い、その往復の半分を誤差に含める。offsetのepoch分割は前後sampleの読取幅と1ms量子化による見積誤差を超える不連続で判断し、微小な測定差だけでは分割しない。往復の半分は**対称遅延の推定値**であり、端末内部のmono/elapsed/Epoch変換の保証誤差とは混同しない。
 
 - `E = (elapsed_before + elapsed_after) / 2`。`E - mono`と`E - epoch`を別々に保存する。currentTimeMillisの1ms量子化、読取幅、隣接sampleのoffset差を変換の誤差幅へ加える。
 - 同一clock区間では`video_elapsed = video_pts * 1000 + (E - mono)`、`log_elapsed = log_epoch + (E - epoch)`。各sample間でoffsetを線形補間する。同期精度を装うためにhost受信時刻へ置き換えない。

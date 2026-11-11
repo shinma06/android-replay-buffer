@@ -75,18 +75,18 @@ internal class CaptureClock {
     @Synchronized
     fun now(host: Long = System.nanoTime()): Long? {
         val latest = samples.peekLast() ?: return null
-        val anchor = anchorFor(latest)
+        val anchor = anchorFor(latest, host)
         return if (anchor.sequenceOffset == null) firstHost?.let { (host - it).coerceAtLeast(0) } else
             maxOf(latest.elapsed + latest.sequenceOffset!!,
                 Math.addExact(anchor.elapsed + anchor.sequenceOffset, (host - anchor.received).coerceAtLeast(0)))
     }
 
-    /** Newest round-trip-supported sample of [latest]'s epoch within 5 s, else [latest] itself. */
-    private fun hostSample(latest: ClockSample): ClockSample = if (!latest.valid) latest else
-        samples.lastOrNull { it.hostAnchored && it.epoch == latest.epoch && latest.received - it.received <= 5_000_000_000 } ?: latest
+    /** Newest round-trip-supported sample of [latest]'s epoch received within 5 s before [host], else [latest] itself. */
+    private fun hostSample(latest: ClockSample, host: Long): ClockSample = if (!latest.valid) latest else
+        samples.lastOrNull { it.hostAnchored && it.epoch == latest.epoch && host - it.received <= 5_000_000_000 } ?: latest
 
-    /** Host-to-device anchor for T: the shortest round trip within 100 ms of [hostSample]. */
-    private fun anchorFor(latest: ClockSample): ClockSample = hostSample(latest).let { recent ->
+    /** Host-to-device anchor for T at [host]: the shortest round trip within 100 ms of [hostSample]. */
+    private fun anchorFor(latest: ClockSample, host: Long): ClockSample = hostSample(latest, host).let { recent ->
         if (!recent.hostAnchored) recent else
             samples.filter { it.hostAnchored && it.epoch == recent.epoch && recent.received - it.received in 0 until 100_000_000 }
                 .minBy { it.received - it.sent }
@@ -94,7 +94,7 @@ internal class CaptureClock {
 
     /** Sample for extrapolating device time from host time, or null before the first usable sample. */
     @Synchronized
-    fun hostAnchor(): ClockSample? = samples.lastOrNull { it.valid }?.let(::hostSample)
+    fun hostAnchor(host: Long = System.nanoTime()): ClockSample? = samples.lastOrNull { it.valid }?.let { hostSample(it, host) }
 
     @Synchronized
     fun video(pts: Long, host: Long, hint: Int? = null): MappedTime = map(Math.multiplyExact(pts, 1000), host, false, hint ?: epoch)
@@ -213,7 +213,7 @@ internal class CaptureClock {
     fun endUncertainty(host: Long = System.nanoTime()): Long = samples.peekLast()?.let {
         if (it.epoch != epoch || it.sequenceOffset == null || it.bridgeError == Long.MAX_VALUE ||
             host - it.received > 5_000_000_000) Long.MAX_VALUE else
-            anchorFor(it).let { anchor -> anchor.readError + (anchor.received - anchor.sent) / 2 } + it.bridgeError
+            anchorFor(it, host).let { anchor -> anchor.readError + (anchor.received - anchor.sent) / 2 } + it.bridgeError
     } ?: Long.MAX_VALUE
 
     @Synchronized

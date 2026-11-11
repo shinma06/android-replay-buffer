@@ -374,7 +374,7 @@ internal class CaptureStore(
         appResolved = uid != null
         val last = apps.peekLast()
         val samples = clock.snapshot()
-        val anchor = clock.hostAnchor()
+        val anchor = clock.hostAnchor(host)
         if (last == null || last.packageName != packageName || last.uid != uid || last.pids != pids ||
             last.uidExclusive != uidExclusive || last.from == null || last.epoch != anchor?.epoch) {
             val now = anchor?.let { it.elapsed + (host - it.received).coerceAtLeast(0) }
@@ -420,7 +420,7 @@ internal class CaptureStore(
         val ready = context && anchor != null && anchor !== generationClockSample &&
             clock.certain(host) && host >= anchor.received
         val boundary = if (ready) try {
-            val time = clock.hostAnchor() ?: anchor
+            val time = clock.hostAnchor(host) ?: anchor
             CrashBarrier(device, anchor.boot, generation, clock.currentEpoch(), host,
                 Math.addExact(time.wall, host - time.received), amCrashFields)
         } catch (_: ArithmeticException) { null } else null

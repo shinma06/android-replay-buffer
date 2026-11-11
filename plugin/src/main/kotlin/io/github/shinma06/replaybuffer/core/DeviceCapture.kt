@@ -221,7 +221,7 @@ internal class DeviceCapture @JvmOverloads constructor(
         val deadline = System.nanoTime() + 5_000_000_000
         while (store.clock.snapshot().none { it.valid } && System.nanoTime() < deadline) { check(pause(50)) }
         val started = System.nanoTime()
-        val initial = store.clock.hostAnchor()
+        val initial = store.clock.hostAnchor(started)
         val lower = initial?.let { it.wall + (started - it.received).coerceAtLeast(0) }
         val process = startLogProcess(buffer, "-b", buffer, "-B", "-T", "1")
         try {
