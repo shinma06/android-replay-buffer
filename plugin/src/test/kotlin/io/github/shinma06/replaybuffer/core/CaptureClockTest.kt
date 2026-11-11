@@ -326,7 +326,7 @@ class CaptureClockTest {
     @Test
     fun epochRangeIndexKeepsOverlapOrderAndPrunesThousandsOfUnsupportedEpochs() {
         val ranges = List(4096) { i -> ((i * 37L % 4096) * 1000) to ((i * 37L % 4096) * 1000 + 100) }
-        val index = ClockEpochIndex(ranges)
+        val index = SourceRangeIndex(ranges)
         for (i in 0 until 100_000) {
             val source = (i % 4096L) * 1000 + 50
             val matches = index.matches(source)
@@ -335,11 +335,11 @@ class CaptureClockTest {
         }
         val overlap = listOf(0L to 10L, Long.MIN_VALUE to Long.MAX_VALUE, 4L to 6L,
             3L to 2L, Long.MAX_VALUE to Long.MAX_VALUE)
-        val tree = ClockEpochIndex(overlap)
+        val tree = SourceRangeIndex(overlap)
         for (source in listOf(Long.MIN_VALUE, -1, 0, 2, 3, 4, 5, 6, 10, 11, Long.MAX_VALUE)) {
             assertEquals(overlap.indices.filter { source >= overlap[it].first && source <= overlap[it].second }, tree.matches(source))
         }
-        assertTrue(ClockEpochIndex(emptyList()).matches(0).isEmpty())
+        assertTrue(SourceRangeIndex(emptyList()).matches(0).isEmpty())
     }
 
     @Test

@@ -73,6 +73,7 @@ internal class CaptureClock {
             } else samples.removeFirst()
         }
         latestCache = null
+        trackCache = null
         return good
     }
 
@@ -101,111 +102,68 @@ internal class CaptureClock {
 
     @Synchronized
     fun video(pts: Long, host: Long, hint: Int? = null, reference: Int? = null): MappedTime =
-        map(Math.multiplyExact(pts, 1000), host, false, hint ?: epoch, reference = reference ?: segment())
+        map(Math.multiplyExact(pts, 1000), host, false, hint ?: epoch, reference ?: segment())
 
     /** Device CLOCK_MONOTONIC source time in nanoseconds (for example evdev input times), mapped like video PTS. */
     @Synchronized
-    fun mono(ns: Long, host: Long, hint: Int? = null): MappedTime = map(ns, host, false, hint ?: epoch, reference = segment())
+    fun mono(ns: Long, host: Long, hint: Int? = null): MappedTime = map(ns, host, false, hint ?: epoch, segment())
 
     @Synchronized
-    fun log(wall: Long, host: Long): MappedTime = map(wall, host, true, null, reference = segment())
+    fun log(wall: Long, host: Long): MappedTime = map(wall, host, true, null, segment())
 
     /** Boot segment of [epoch] (default: the newest sample), the reference segment whose rows get sequence times. */
     @Synchronized
     fun segment(epoch: Int? = null): Int =
         (if (epoch == null) samples.peekLast() else samples.lastOrNull { it.epoch == epoch })?.segment ?: 0
 
-    /** Same result as [mono] at this moment for many rows: samples and indexes are built once, not per row. */
+    /** Same result as [mono] at this moment for many rows: tracks and indexes are built once, not per row. */
     @Synchronized
     fun monoMapper(reference: Int = segment()): (Long, Long, Int?) -> MappedTime {
-        val valid = samples.filter { it.valid }
-        val groups = valid.groupBy { it.epoch }.values.toList()
-        val byEpoch = groups.associateBy { it.first().epoch }
-        val indexes = groups.associate { it.first().epoch to ClockSourceIndex(it) { sample -> sample.mono } }
-        val epochs = if (valid.isEmpty()) null else ClockSourceIndex(valid) { it.epoch.toLong() }
-        val next = groups.associate { group -> group.first().epoch to epochs?.after(group.last().epoch.toLong()) }
+        val byEpoch = tracks(samples.toList(), false).associateBy { it.epoch }
         val activeEpoch = epoch
-        val closed = closures.toMap()
         return { source, host, hint ->
             val target = hint ?: activeEpoch
-            map(source, host, false, target, listOfNotNull(byEpoch[target]), indexes, next, activeEpoch, closed, reference)
+            convert(source, host, listOfNotNull(byEpoch[target]), target, activeEpoch, reference)
         }
     }
 
-    /** Captures samples, epochs and closures once; later clock updates cannot change this log conversion. */
+    /** Captures samples and tracks once; later clock updates cannot change this log conversion. */
     @Synchronized
     fun logMapper(reference: Int = segment()): (Long, Long) -> MappedTime {
-        val fixed = samples.toList()
-        val valid = fixed.filter { it.valid }
-        val groups = valid.groupBy { it.epoch }.values.toList()
-        val epochs = if (valid.isEmpty()) null else ClockSourceIndex(valid) { it.epoch.toLong() }
-        val indexes = groups.associate { it.first().epoch to ClockSourceIndex(it) }
-        val next = groups.associate { group ->
-            group.first().epoch to epochs?.after(group.last().epoch.toLong())
-        }
-        val ranges = ClockEpochIndex(groups.map { group ->
-            val following = next[group.first().epoch]
-            val last = group.last()
-            val limit = 5_000_000_000 + (last.received - last.sent)
-            // Conservative active bounds must preserve wrapped arithmetic and the original invalid-limit exception.
-            val lower = if (following == null && limit < 0) Long.MIN_VALUE else group.first().wall - 20_000_000
-            val upper = if (following == null) {
-                if (limit < 0) Long.MAX_VALUE else try {
-                    Math.addExact(Math.addExact(last.wall, limit), 20_000_000)
-                } catch (_: ArithmeticException) { Long.MAX_VALUE }
-            } else last.wall + (following.sent - last.received).coerceAtLeast(0) + 20_000_000
-            lower to upper
-        })
+        val fixed = tracks(samples.toList(), true)
+        val ranges = SourceRangeIndex(fixed.map { it.range })
         val activeEpoch = epoch
-        val closed = closures.toMap()
-        return { source, host ->
-            map(source, host, true, null, ranges.matches(source).map { groups[it] }, indexes, next, activeEpoch, closed, reference)
+        return { source, host -> convert(source, host, ranges.matches(source).map { fixed[it] }, null, activeEpoch, reference) }
+    }
+
+    private fun tracks(all: List<ClockSample>, log: Boolean): List<OffsetTrack> {
+        val groups = all.filter { it.valid }.groupBy { it.epoch }.values.toList()
+        return groups.mapIndexed { i, group ->
+            OffsetTrack(group, log, groups.getOrNull(i + 1)?.first(), closures[group.first().epoch])
         }
     }
 
-    private fun map(source: Long, host: Long, log: Boolean, hint: Int?,
-                    groups: Collection<List<ClockSample>> = samples.filter { it.valid }.groupBy { it.epoch }.values,
-                    indexes: Map<Int, ClockSourceIndex>? = null, nextSamples: Map<Int, ClockSample?>? = null,
-                    activeEpoch: Int = epoch, closed: Map<Int, Long> = closures, reference: Int = 0): MappedTime {
-        val candidates = mutableListOf<MappedTime>()
-        groups.forEach { group ->
-            val first = group.first()
-            val last = group.last()
-            if (!log && hint != null && hint != first.epoch) return@forEach
-            val sourceOf: (ClockSample) -> Long = { if (log) it.wall else it.mono }
-            val next = if (nextSamples == null) samples.firstOrNull { it.valid && it.epoch > last.epoch } else nextSamples[first.epoch]
-            // For the active epoch, bound progress from the earliest possible measurement between sent and received.
-            // The stale check below still measures five seconds from receipt, independently of source-clock error.
-            val upper = if (next == null) sourceOf(last) + (host - last.sent).coerceIn(0,
-                5_000_000_000 + (last.received - last.sent)) else
-                sourceOf(last) + (next.sent - last.received).coerceAtLeast(0)
-            if (source < sourceOf(first) - 20_000_000 || source > upper + 20_000_000) return@forEach
-            val index = indexes?.get(first.epoch)
-            val low = index?.low(source) ?: group.lastOrNull { sourceOf(it) <= source } ?: first
-            val high = index?.high(source) ?: group.firstOrNull { sourceOf(it) >= source } ?: last
-            val offsetOf: (ClockSample) -> Long = { if (log) it.wallOffset else it.monoOffset }
-            val delta = sourceOf(high) - sourceOf(low)
-            val interpolated = if (delta > 0) offsetOf(low) +
-                ((offsetOf(high) - offsetOf(low)).toDouble() * (source - sourceOf(low)).toDouble() / delta).toLong() else offsetOf(low)
-            val error = maxOf(low.readError, high.readError) + abs(offsetOf(high) - offsetOf(low))
-            val stale = next == null && host - last.received > 5_000_000_000
-            val boundary = first.epoch < activeEpoch && (source > sourceOf(last) ||
-                log && closed[first.epoch]?.let { host > it } == true) || first.epoch > 0 && source < sourceOf(first)
-            val elapsed = if (stale || boundary || error > 20_000_000) null else Math.addExact(source, interpolated)
-            // Another boot keeps its source and BOOTTIME but has no exact place on the reference boot's timeline.
-            val sequence = if (elapsed != null && last.segment == reference) Math.addExact(elapsed, last.sequenceOffset) else null
-            candidates += MappedTime(elapsed, first.epoch, if (sequence == null) Long.MAX_VALUE else error, sequence)
-        }
-        return candidates.singleOrNull() ?: MappedTime(null, hint ?: activeEpoch, Long.MAX_VALUE, null)
+    private var trackCache: Pair<List<OffsetTrack>, List<OffsetTrack>>? = null
+
+    private fun map(source: Long, host: Long, log: Boolean, hint: Int?, reference: Int): MappedTime {
+        val cached = trackCache ?: (tracks(samples.toList(), false) to tracks(samples.toList(), true)).also { trackCache = it }
+        val all = if (log) cached.second else cached.first
+        return convert(source, host, if (log) all else all.filter { it.epoch == hint }, hint, epoch, reference)
     }
+
+    private fun convert(source: Long, host: Long, candidates: List<OffsetTrack>, hint: Int?, activeEpoch: Int,
+                        reference: Int): MappedTime =
+        candidates.mapNotNull { it.map(source, host, activeEpoch, reference) }.singleOrNull()
+            ?: MappedTime(null, hint ?: activeEpoch, Long.MAX_VALUE, null)
 
     @Synchronized
-    fun clear() { samples.clear(); closures.clear(); epoch = 0; latestCache = null }
+    fun clear() { samples.clear(); closures.clear(); epoch = 0; latestCache = null; trackCache = null }
 
     @Synchronized
     fun boundary(host: Long? = null) {
         closures[epoch] = host ?: samples.lastOrNull { it.valid }?.received ?: System.nanoTime()
         epoch++
+        trackCache = null
         while (closures.size > 4096) closures.remove(closures.keys.first())
     }
 
@@ -304,8 +262,59 @@ internal class ClockSourceIndex(private val samples: List<ClockSample>, sourceOf
     }
 }
 
-/** Prune unsupported epochs while retaining the original candidate order and ambiguity checks. */
-internal class ClockEpochIndex(ranges: List<Pair<Long, Long>>) {
+/**
+ * One continuous offset run of a device source clock (CLOCK_MONOTONIC for video/input, REALTIME for logs) against
+ * BOOTTIME: the valid samples between two clock steps or boots. [next] is the first sample after the run and
+ * [closedAt] the host time the run was closed, when known.
+ */
+internal class OffsetTrack(val samples: List<ClockSample>, private val log: Boolean, private val next: ClockSample?,
+                           private val closedAt: Long?) {
+    val epoch = samples.first().epoch
+    private val first = samples.first()
+    private val last = samples.last()
+    private val index by lazy { ClockSourceIndex(samples) { source(it) } }
+
+    private fun source(sample: ClockSample) = if (log) sample.wall else sample.mono
+    private fun offset(sample: ClockSample) = if (log) sample.wallOffset else sample.monoOffset
+
+    /** Conservative source range for any host time; it keeps wrapped arithmetic and the invalid-limit exception. */
+    val range: Pair<Long, Long> by lazy {
+        val limit = 5_000_000_000 + (last.received - last.sent)
+        val lower = if (next == null && limit < 0) Long.MIN_VALUE else source(first) - 20_000_000
+        val upper = if (next == null) {
+            if (limit < 0) Long.MAX_VALUE else try {
+                Math.addExact(Math.addExact(source(last), limit), 20_000_000)
+            } catch (_: ArithmeticException) { Long.MAX_VALUE }
+        } else source(last) + (next.sent - last.received).coerceAtLeast(0) + 20_000_000
+        lower to upper
+    }
+
+    /** This run's reading of [source], or null when [source] cannot belong to it. */
+    fun map(source: Long, host: Long, activeEpoch: Int, reference: Int): MappedTime? {
+        // For the open run, bound progress from the earliest possible measurement between sent and received.
+        // The stale check below still measures five seconds from receipt, independently of source-clock error.
+        val upper = if (next == null) source(last) + (host - last.sent).coerceIn(0,
+            5_000_000_000 + (last.received - last.sent)) else
+            source(last) + (next.sent - last.received).coerceAtLeast(0)
+        if (source < source(first) - 20_000_000 || source > upper + 20_000_000) return null
+        val low = index.low(source)
+        val high = index.high(source)
+        val delta = source(high) - source(low)
+        val interpolated = if (delta > 0) offset(low) +
+            ((offset(high) - offset(low)).toDouble() * (source - source(low)).toDouble() / delta).toLong() else offset(low)
+        val error = maxOf(low.readError, high.readError) + abs(offset(high) - offset(low))
+        val stale = next == null && host - last.received > 5_000_000_000
+        val boundary = epoch < activeEpoch && (source > source(last) ||
+            log && closedAt?.let { host > it } == true) || epoch > 0 && source < source(first)
+        val elapsed = if (stale || boundary || error > 20_000_000) null else Math.addExact(source, interpolated)
+        // Another boot keeps its source and BOOTTIME but has no exact place on the reference boot's timeline.
+        val sequence = if (elapsed != null && last.segment == reference) Math.addExact(elapsed, last.sequenceOffset) else null
+        return MappedTime(elapsed, epoch, if (sequence == null) Long.MAX_VALUE else error, sequence)
+    }
+}
+
+/** Indexes of the ranges holding a source time, in range order; prunes thousands of unsupported tracks. */
+internal class SourceRangeIndex(ranges: List<Pair<Long, Long>>) {
     private val order = ranges.indices.sortedBy { ranges[it].first }
     private val lower = LongArray(ranges.size) { ranges[order[it]].first }
     private val upper = LongArray(ranges.size) { ranges[order[it]].second }
