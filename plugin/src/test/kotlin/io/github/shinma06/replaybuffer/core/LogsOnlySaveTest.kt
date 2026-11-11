@@ -8,6 +8,8 @@ import org.jcodec.common.model.Picture
 import java.nio.ByteBuffer
 import java.nio.file.Files
 import java.nio.file.Path
+import java.util.concurrent.ScheduledExecutorService
+import java.util.concurrent.TimeUnit
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 import kotlin.test.assertEquals
@@ -124,6 +126,57 @@ class LogsOnlySaveTest {
             }
             assertNull(store.capture(ReplaySettings()))
         }
+    }
+
+    @Test
+    fun replayCoreLogsOnlySaveStartsAtLogReadinessBeforeAnyFrameOrLineWhileAllStaysUnavailable() {
+        val output = Files.createDirectories(root.resolve("out"))
+        val core = ReplayCore(ReplaySettings(saveDirectory = output, application = ApplicationTarget("com.fixture.app"),
+            captureMode = CaptureMode.VIDEO_AND_LOGS, replaySeconds = 30), root.resolve("workspace"))
+        try {
+            assertTrue(core.setEnabled(true).get(5, TimeUnit.SECONDS).accepted)
+            fun <T> field(name: String): T = @Suppress("UNCHECKED_CAST")
+                (ReplayCore::class.java.getDeclaredField(name).apply { isAccessible = true }.get(core) as T)
+            field<ScheduledExecutorService>("control").submit {
+                ReplayCore::class.java.getDeclaredField("device").apply { isAccessible = true }
+                    .set(core, ReplayDevice("fixture", "Synthetic", DeviceKind.EMULATOR, true))
+                val store = field<CaptureStore>("store")
+                val base = System.nanoTime() - 3_000_000_000
+                fun anchor(second: Long) {
+                    val elapsed = 100_000_000_000 + second * 1_000_000_000
+                    val received = base + second * 1_000_000_000
+                    assertTrue(store.clock.add("1", listOf(elapsed, elapsed, 1_700_000_000_000_000_000 + elapsed, elapsed), received, received))
+                    store.clockStatus(true, 1)
+                }
+                store.generation(1)
+                store.status("video", StreamState.WAITING, null, 1)
+                anchor(0)
+                store.status("device_log", StreamState.CAPTURING, null, 1)
+                store.app("com.fixture.app", 10001, setOf(12), 1, true)
+                for (second in 1L..3L) anchor(second)
+            }.get(5, TimeUnit.SECONDS)
+            Thread.sleep(50)
+            // Neither a frame nor a log row exists, so the regular save keeps rejecting the window.
+            val all = core.save().get(5, TimeUnit.SECONDS)
+            assertFalse(all.accepted)
+            assertEquals("保存できる取得データがありません", all.reason)
+            assertFalse(core.snapshot().canSave(SaveContent.ALL))
+            assertTrue(core.snapshot().canSave(SaveContent.LOGS_ONLY))
+            assertNull(core.snapshot().saveDisabledReason(SaveContent.LOGS_ONLY))
+            val logs = core.save(SaveRequest(SaveContent.LOGS_ONLY, SaveOrigin.LOGCAT_TOOLBAR)).get(5, TimeUnit.SECONDS)
+            assertTrue(logs.accepted, logs.reason)
+            val saved = assertNotNull(logs.saveResult).toCompletableFuture().get(15, TimeUnit.SECONDS)
+            assertEquals(SavePhase.COMPLETED, saved.phase, saved.error)
+            assertEquals(SaveContent.LOGS_ONLY, saved.content)
+            val directory = assertNotNull(saved.directory)
+            Files.list(directory).use { files -> assertTrue(files.noneMatch { it.fileName.toString().endsWith(".mp4") }) }
+            assertEquals(0L, Files.size(directory.resolve("logcat-device.jsonl")))
+            val json = JsonParser.parseString(Files.readString(directory.resolve("session.json"))).asJsonObject
+            assertEquals("VIDEO_AND_LOGS", json["capture_mode"].asString)
+            assertEquals("LOGCAT_TOOLBAR", json["save_request"].asJsonObject["origin"].asString)
+            assertEquals("EXCLUDED", json["coverage"].asJsonObject["video"].asJsonObject["state"].asString)
+            assertTrue(core.snapshot().enabled)
+        } finally { core.closeAsync().get(15, TimeUnit.SECONDS) }
     }
 
     private fun frameAndLog(store: CaptureStore, host: Long, second: Long, bytes: ByteArray, log: Boolean = true) {

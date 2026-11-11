@@ -107,6 +107,8 @@ internal class CaptureStore(
     private var configBytes = 0L
     private val configRefs = java.util.IdentityHashMap<ByteArray, Int>()
     private var started: Long? = null
+    /** When validated readers, clock and target first proved a quiet window; only a save without video starts there. */
+    private var logsStarted: Long? = null
     private var fixedEnd: Long? = null
     private var fixedUncertainty: Long? = null
     private var fixedEpoch: Int? = null
@@ -262,6 +264,7 @@ internal class CaptureStore(
         if (kind == "device_log" && state == StreamState.CAPTURING && appResolved)
             status("app_log", StreamState.CAPTURING, null, owner)
         if (started == null && logWindowReady()) started = clock.now()
+        if (logsStarted == null && logWindowReady(true)) logsStarted = clock.now()
     }
 
     @Synchronized
@@ -564,7 +567,7 @@ internal class CaptureStore(
         val end = fixedEnd ?: clock.now(host) ?: latest() ?: return null
         val uncertainty = fixedUncertainty ?: clock.endUncertainty(host)
         val known = uncertainty != Long.MAX_VALUE
-        val start = maxOf(0L, started ?: end, end - settings.replaySeconds * 1_000_000_000L)
+        val start = maxOf(0L, origin(!withVideo) ?: end, end - settings.replaySeconds * 1_000_000_000L)
         val hostStart = if (known || fixedEnd != null) null else host - settings.replaySeconds * 1_000_000_000L - HOST_WINDOW_MARGIN_NS
         val logTime = clock.logMapper()
         val latest = clock.latestSequence()
@@ -671,8 +674,15 @@ internal class CaptureStore(
     }
 
     @Synchronized
-    fun hasData(): Boolean = (captureMode.videoRequested && video.isNotEmpty()) || logs.isNotEmpty() ||
-        (logWindowReady() && started?.let { it < (end() ?: it) } == true)
+    fun hasData(content: SaveContent = SaveContent.ALL): Boolean {
+        val logsOnly = !captureMode.videoRequested || content == SaveContent.LOGS_ONLY
+        return (!logsOnly && video.isNotEmpty()) || logs.isNotEmpty() ||
+            (logWindowReady(logsOnly) && origin(logsOnly)?.let { it < (end() ?: it) } == true)
+    }
+
+    /** A save without video may also begin where the quiet log window became valid; saves with video keep the first content. */
+    private fun origin(logsOnly: Boolean): Long? =
+        if (logsOnly) listOfNotNull(started, logsStarted).minOrNull() else started
 
     /**
      * A validated reader, current clock and target prove a quiet window, never row-span coverage.

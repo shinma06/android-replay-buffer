@@ -58,7 +58,7 @@ class ReplayCore internal constructor(
     private var attemptOrdinal = 0L
     @Volatile private var current = ReplaySnapshot(0, 0, false, CaptureState.DISABLED, settings, 0,
         video = StreamSnapshot(if (settings.captureMode.videoRequested) StreamState.WAITING else StreamState.NOT_REQUESTED),
-        saveDisabledReason = "取得を有効にしてください")
+        saveDisabledReason = "取得を有効にしてください", saveLogsDisabledReason = "取得を有効にしてください")
 
     init {
         require(workspace.isAbsolute) { "一時領域は絶対パスで指定してください" }
@@ -156,7 +156,7 @@ class ReplayCore internal constructor(
 
     fun save(request: SaveRequest = SaveRequest()): CompletableFuture<ReplayOperation> = operation {
         publish()
-        if (!current.canSave) return@operation ReplayOperation(false, current.saveDisabledReason)
+        if (!current.canSave(request.content)) return@operation ReplayOperation(false, current.saveDisabledReason(request.content))
         val capture = store?.capture(settings, request = request)?.copy(device = device)
         if (capture == null) return@operation ReplayOperation(false, "保存できる取得データがありません")
         pending = capture
@@ -385,19 +385,22 @@ class ReplayCore internal constructor(
         if (closed.get()) return
         val data = store
         val streams = data?.streams(settings.replaySeconds).orEmpty()
-        val disabled = when {
+        fun disabled(content: SaveContent) = when {
             !enabled -> "取得を有効にしてください"
             pending != null -> if (saveState.phase == SavePhase.WRITING) SAVE_IN_PROGRESS_REASON else "固定した保存対象を再試行または破棄してください"
             settings.saveDirectory == null -> "保存先を設定してください"
-            data?.hasData() != true -> "保存できる取得データがありません"
+            data?.hasData(content) != true -> "保存できる取得データがありません"
             else -> null
         }
+        val disabled = disabled(SaveContent.ALL)
+        val logsDisabled = disabled(SaveContent.LOGS_ONLY)
         current = ReplaySnapshot(++revision, generation, enabled, captureState, settings, settingsRevision,
             device, data?.sequence, data?.end(), data?.frozen() ?: false, streams["video"] ?: StreamSnapshot(if (settings.captureMode.videoRequested) StreamState.WAITING else StreamState.NOT_REQUESTED),
             streams["device_log"] ?: StreamSnapshot(), streams["app_log"] ?: StreamSnapshot(), saveState,
             disabled == null, disabled, error, windowStartNs = data?.windowStart(settings.replaySeconds),
             cleanupPendingCount = cleanup.pendingCount)
-        current = current.copy(autoSave = autosave.snapshot(), lastSave = saveAttempt?.let { it.result ?: it.initial })
+        current = current.copy(autoSave = autosave.snapshot(), lastSave = saveAttempt?.let { it.result ?: it.initial },
+            canSaveLogs = logsDisabled == null, saveLogsDisabledReason = logsDisabled)
         listeners.forEach { if (!closed.get()) runCatching { it(current) } }
     }
 
@@ -432,7 +435,7 @@ class ReplayCore internal constructor(
             val failure = failures.firstOrNull()
             if (failure == null) {
                 current = current.copy(enabled = false, captureState = CaptureState.DISABLED, canSave = false,
-                    saveDisabledReason = "projectは終了しています", cleanupPendingCount = cleanup.pendingCount, error = error)
+                    saveDisabledReason = "projectは終了しています", canSaveLogs = false, saveLogsDisabledReason = "projectは終了しています", cleanupPendingCount = cleanup.pendingCount, error = error)
                 done.complete(null)
             } else {
                 failures.drop(1).forEach(failure::addSuppressed)

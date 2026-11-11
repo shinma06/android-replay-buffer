@@ -190,7 +190,7 @@ data class SaveSnapshot @JvmOverloads constructor(
 )
 
 /** Callbacks run on replay-control, never EDT. Consumers must dispatch to EDT and reject stale revisions. */
-data class ReplaySnapshot(
+data class ReplaySnapshot @JvmOverloads constructor(
     val revision: Long,
     val generation: Long,
     val enabled: Boolean,
@@ -212,7 +212,14 @@ data class ReplaySnapshot(
     val cleanupPendingCount: Int = 0,
     val autoSave: AutoSaveSnapshot = AutoSaveSnapshot(),
     val lastSave: SaveSnapshot? = null,
-)
+    /** Availability of a logs-only save, which may differ from [canSave] while video is captured. */
+    val canSaveLogs: Boolean = false,
+    val saveLogsDisabledReason: String? = null,
+) {
+    fun canSave(content: SaveContent): Boolean = if (content == SaveContent.LOGS_ONLY) canSaveLogs else canSave
+    fun saveDisabledReason(content: SaveContent): String? =
+        if (content == SaveContent.LOGS_ONLY) saveLogsDisabledReason else saveDisabledReason
+}
 
 /** accepted admits the operation; saveResult, when supplied, settles that attempt independently of later UI state. */
 data class ReplayOperation(

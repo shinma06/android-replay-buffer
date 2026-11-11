@@ -96,8 +96,8 @@ class ReplayLogSaveAction : DumbAwareAction() {
         event.presentation.description = when {
             service == null -> "projectを開いてください。"
             service.busy -> "設定・操作を反映中です。"
-            else -> snapshot?.saveDisabledReason ?: "端末ログ・アプリログだけを保存します。動画の取得中でも動画は保存せず、取得も止めません。"
+            else -> snapshot?.saveDisabledReason(SaveContent.LOGS_ONLY) ?: "端末ログ・アプリログだけを保存します。動画の取得中でも動画は保存せず、取得も止めません。"
         }
-        event.presentation.isEnabled = service != null && !service.busy && snapshot?.canSave == true
+        event.presentation.isEnabled = service != null && !service.busy && snapshot?.canSave(SaveContent.LOGS_ONLY) == true
     }
 }
