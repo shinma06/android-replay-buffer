@@ -225,6 +225,7 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                     gap.boundaryUncertaintyNs != null && gap.boundaryUncertaintyNs in 0 until Long.MAX_VALUE
                 } }
             }
+            val overlayGapStarts = capture.gaps.filter { it.stream == "video" || it.stream == "clock" }.mapNotNull { it.fromNs }
             val movieAnchors = mutableListOf<MovieAnchor>()
             var audioPlan: AudioTrackPlan? = null
             val framesFile = if (selected.isNotEmpty()) file(ReplayFiles.VIDEO_FRAMES) else null
@@ -361,8 +362,16 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                                         checkActive()
                                     }
                                     val codecStarted = System.nanoTime()
-                                    val dots = tapOverlay?.let { tap -> frame.time.sequence?.takeIf { aligned(frame) }?.let { start ->
-                                        tap.dots(start, sourceSize.width, sourceSize.height, samples.getOrNull(n + 1)?.time?.sequence ?: capture.end,
+                                    val known = aligned(frame)
+                                    val sequence = frame.time.sequence
+                                    val next = samples.getOrNull(n + 1)
+                                    val confirmedEnd = if (known && next != null && aligned(next) && next.time.epoch == frame.time.epoch &&
+                                        next.time.sequence!! > sequence!! && !interrupted(frame, next, closed, n))
+                                        minOf(capture.end, next.time.sequence) else null
+                                    val dots = tapOverlay?.let { tap -> sequence?.takeIf { known }?.let { start ->
+                                        val shownUs = if (n == samples.lastIndex) originalEnd - (frame.pts - origin) else sourceDurations[n] ?: terminal
+                                        val heldEnd = minOf(capture.end, Math.addExact(start, Math.multiplyExact(maxOf(0, shownUs), 1000)))
+                                        tap.dots(start, sourceSize.width, sourceSize.height, frameShownUntil(start, confirmedEnd, heldEnd, overlayGapStarts),
                                             frame.generation)
                                     } }.orEmpty()
                                     val encoded = try { normalizer?.encode(bytes, dots) } catch (e: Exception) {
@@ -404,12 +413,6 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                                     val displayEnd = minOf(Math.addExact(localMedia, duration), endUs)
                                     val sourceDisplayOffset = if (clipped) maxOf(0, originalStart - (frame.pts - origin)) else displayStart - localMedia
                                     val moviePts = if (presented) Math.addExact(movieStart, displayStart - startUs) else null
-                                    val known = aligned(frame)
-                                    val sequence = frame.time.sequence
-                                    val next = samples.getOrNull(n + 1)
-                                    val confirmedEnd = if (known && next != null && aligned(next) && next.time.epoch == frame.time.epoch &&
-                                        next.time.sequence!! > sequence!! && !interrupted(frame, next, closed, n))
-                                        minOf(capture.end, next.time.sequence) else null
                                     val displayWindowStart = sequence?.takeIf { known && presented }?.let {
                                         Math.addExact(it, Math.multiplyExact(sourceDisplayOffset, 1000)) - capture.start
                                     }

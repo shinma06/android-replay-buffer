@@ -75,6 +75,13 @@ internal class TapOverlay(
     }
 }
 
+/**
+ * End of the source time a frame stays on screen for drawing taps: the confirmed next frame of its run, else its own
+ * held end, cut at the first video/clock gap that starts after it, so taps in an interruption or a later run stay off it.
+ */
+internal fun frameShownUntil(start: Long, confirmedNext: Long?, heldEnd: Long, gapStarts: List<Long>): Long =
+    confirmedNext ?: gapStarts.filter { it > start }.fold(heldEnd, ::minOf).coerceAtLeast(start)
+
 /** Dot radius in frame pixels, about the size of the device's own touch indicator. */
 internal fun tapDotRadius(width: Int, height: Int): Int = maxOf(6, minOf(width, height) / 28)
 

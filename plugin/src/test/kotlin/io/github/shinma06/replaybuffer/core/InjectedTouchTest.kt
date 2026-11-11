@@ -70,6 +70,20 @@ class InjectedTouchTest {
         assertEquals(16, many.dots(0, 1080, 2400, until = 2_000_000_000).size)
     }
 
+    @Test fun `the last frame before an interruption does not draw taps of the gap or a later run`() {
+        val overlay = TapOverlay(listOf(entry(1_500_000_000, TouchAction.DOWN, 540, 1200), entry(1_550_000_000, TouchAction.UP, 540, 1200),
+            entry(3_000_000_000, TouchAction.DOWN, 0, 0), entry(3_050_000_000, TouchAction.UP, 0, 0)))
+        fun drawn(until: Long) = overlay.dots(1_000_000_000, 540, 1200, until = until)
+        // Inside a run the next confirmed frame bounds the interval.
+        assertEquals(1_200_000_000, frameShownUntil(1_000_000_000, 1_200_000_000, 5_000_000_000, listOf(1_100_000_000)))
+        // The run's last frame shown 1 us (terminal tick) draws neither tap.
+        assertEquals(emptyList(), drawn(frameShownUntil(1_000_000_000, null, 1_000_001_000, emptyList())))
+        // Held until a video gap at 2 s: the tap at 1.5 s is drawn, the one in the later run at 3 s is not.
+        assertEquals(2_000_000_000, frameShownUntil(1_000_000_000, null, 5_000_000_000, listOf(500_000_000, 2_000_000_000, 4_000_000_000)))
+        assertEquals(listOf(OverlayDot(270, 600)), drawn(frameShownUntil(1_000_000_000, null, 5_000_000_000, listOf(2_000_000_000))))
+        assertEquals(listOf(OverlayDot(270, 600), OverlayDot(0, 0)), drawn(5_000_000_000))
+    }
+
     @Test fun `a pointer whose UP was lost in a reader gap is not drawn from the gap on`() {
         val physical = entry(1_000_000_000, TouchAction.DOWN, 540, 1200)
         val injected = entry(1_000_000_000, TouchAction.DOWN, 1079, 2399, INJECTED_INPUT_DEVICE)
