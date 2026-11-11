@@ -148,6 +148,7 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
             }
             val overlay = TapOverlay(overlayTouches(capture.settings.tapDisplay, capture.touchDots, capture.touches))
                 .takeIf { videoRequested && it.within(capture.start, capture.end) }
+            var overlaySkipped: String? = null
             val normalizer = if (sizes.distinct().size > 1 || sizes.isNotEmpty() && overlay != null) {
                 var minimumSourceDuration: Long? = null
                 selected.forEachIndexed { run, group ->
@@ -158,8 +159,14 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                         }
                     }
                 }
-                MixedVideoNormalizer(sourceConfigs, minimumSourceDuration)
+                try { MixedVideoNormalizer(sourceConfigs, minimumSourceDuration) } catch (e: IllegalArgumentException) {
+                    // Only the tap drawing needs this re-encode: keep the original video rather than fail the save.
+                    if (sizes.distinct().size > 1) throw e
+                    overlaySkipped = e.message
+                    null
+                }
             } else null
+            val tapOverlay = overlay?.takeIf { normalizer != null }
             if (normalizer != null) {
                 normalizationStarted = System.nanoTime()
                 normalizationCpuStarted = if (cpu.isCurrentThreadCpuTimeSupported) cpu.currentThreadCpuTime else 0
@@ -351,7 +358,9 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                                         checkActive()
                                     }
                                     val codecStarted = System.nanoTime()
-                                    val dots = overlay?.let { tap -> frame.time.sequence?.takeIf { aligned(frame) }?.let { tap.dots(it, sourceSize.width, sourceSize.height) } }.orEmpty()
+                                    val dots = tapOverlay?.let { tap -> frame.time.sequence?.takeIf { aligned(frame) }?.let { start ->
+                                        tap.dots(start, sourceSize.width, sourceSize.height, samples.getOrNull(n + 1)?.time?.sequence ?: capture.end)
+                                    } }.orEmpty()
                                     val encoded = try { normalizer?.encode(bytes, dots) } catch (e: Exception) {
                                         throw IllegalStateException("動画packetの復号・サイズ変換に失敗しました", e)
                                     }
@@ -648,8 +657,8 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                         }}。")
                     appendLine("- タップ位置の表示: 設定「${capture.settings.tapDisplay}」。" + when (capture.settings.tapDisplay) {
                         TapDisplay.OFF -> "動画にはタップを描画していません。"
-                        TapDisplay.VIDEO -> if (overlay != null) "touches.jsonlから保存時に点を描画し、動画を再エンコードしました（端末設定は変更していません）。" else "表示区間にタップがないため描画していません。"
-                        TapDisplay.DEVICE -> if (overlay != null) "端末が表示できないタップ（ミラーリング等）を保存時に動画へ描画し、再エンコードしました。" else "保存時の描画はしていません。"
+                        TapDisplay.VIDEO -> if (tapOverlay != null) "touches.jsonlから保存時に点を描画し、動画を再エンコードしました（端末設定は変更していません）。" else (overlaySkipped?.let { "元動画のframe間隔が再エンコードの上限を超えるため描画せず、元の動画のまま保存しました（$it）。" } ?: "表示区間にタップがないため描画していません。")
+                        TapDisplay.DEVICE -> if (tapOverlay != null) "端末が表示できないタップ（ミラーリング等）を保存時に動画へ描画し、再エンコードしました。" else (overlaySkipped?.let { "端末が表示できないタップは、元動画のframe間隔が再エンコードの上限を超えるため描画していません（$it）。" } ?: "保存時の描画はしていません。")
                     })
                     appendLine("- 端末のタップ表示（show_touches）: 設定${if (capture.settings.showTouches) "ON（取得中だけ端末設定を変更し、終了時に元へ戻します）" else "OFF"}、" +
                         when (capture.touchDots) {
@@ -660,7 +669,7 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                             null -> "点を表示できたか確認できていません"
                         })
                     appendLine("- frameのclock_alignment_known=falseでは時計対応が不明です。window_ns=null、mapped_window_nsは不確実性を含む変換値で、同期確定やcoverageには使えません。区間開始に動画全体の表示秒を足す方法では照合できません。")
-                    if (rawPath != null) appendLine("- ${if (overlay != null) "タップの描画" else "サイズ変更"}を含むため固定canvasへ再エンコードしています。拡縮・切捨てはせず、余白を追加しています。元AnnexB config/全packetは${ReplayFiles.VIDEO_SOURCE}へ保存し${ReplayFiles.VIDEO_FRAMES}のoffset/size/hashで照合できます。色未指定は不明のままで、色一致の証明ではありません。")
+                    if (rawPath != null) appendLine("- ${if (tapOverlay != null) "タップの描画" else "サイズ変更"}を含むため固定canvasへ再エンコードしています。拡縮・切捨てはせず、余白を追加しています。元AnnexB config/全packetは${ReplayFiles.VIDEO_SOURCE}へ保存し${ReplayFiles.VIDEO_FRAMES}のoffset/size/hashで照合できます。色未指定は不明のままで、色一致の証明ではありません。")
                     appendLine("- video_missing_rangesは映像欠落又は時計対応未確認の範囲です。既知の取得gapは空白として表示し、不明gapの実durationはnullのまま、MP4上の表示間隔と区別しています。")
                     appendLine("- 次sampleのない末尾はsource_duration_us=nullです。MP4の最小1tickは表示のための値で、観測した画像の継続時間や取得coverageではありません。")
                     appendLine("- MP4内部には論理窓の前のdecoder preroll画像を含むことがあります。edit listで表示範囲を指定しています。標準playerの互換性は製品QAで別途確認します。")
@@ -725,7 +734,7 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                     "device_log_record_id" to capture.logs.lastOrNull()?.id, "app_log_record_id" to capture.logs.lastOrNull { it.app == true }?.id),
                 "touches" to capture.touchState?.let { state -> mapOf("state" to state.state, "reason" to state.reason,
                     "count" to capture.touches.size, "in_movie_count" to touchesInMovie, "dropped_count" to capture.touchDropped,
-                    "tap_display" to capture.settings.tapDisplay.wire, "video_overlay" to (overlay != null),
+                    "tap_display" to capture.settings.tapDisplay.wire, "video_overlay" to (tapOverlay != null), "video_overlay_skipped" to overlaySkipped,
                     "show_touches" to capture.settings.showTouches, "show_touches_state" to capture.touchDots?.wire, "time_source" to "getevent -lt (device CLOCK_MONOTONIC)",
                     "injected" to capture.injectedTouchState?.let { injected -> mapOf("state" to injected.state, "reason" to injected.reason,
                         "count" to capture.touches.count { it.sample.injected },

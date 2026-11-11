@@ -13,8 +13,9 @@ internal fun overlayTouches(mode: TapDisplay, dots: TouchDots?, rows: List<Touch
 }
 
 /**
- * Pointer positions over window time (sequence ns). A pointer is drawn while down and for [holdNs] after it lifts, so a tap
- * shorter than one frame interval still shows. Rows without a certain time are left out.
+ * Pointer positions over window time (sequence ns). A pointer is drawn while down and for [holdNs] after it lifts. A frame
+ * shown until `until` also draws a pointer that first touches during that time, because a still screen produces no new
+ * frame for a tap. Rows without a certain time are left out.
  */
 internal class TapOverlay(rows: List<TouchEntry>, private val holdNs: Long = 100_000_000) {
     private val tracks = rows.filter { it.time.sequence != null && it.time.uncertainty != Long.MAX_VALUE }
@@ -26,7 +27,7 @@ internal class TapOverlay(rows: List<TouchEntry>, private val holdNs: Long = 100
         track.any { val t = it.time.sequence!!; t <= to && t >= from - holdNs }
     }
 
-    fun dots(sequence: Long, frameWidth: Int, frameHeight: Int): List<OverlayDot> = tracks.mapNotNull { track ->
+    fun dots(sequence: Long, frameWidth: Int, frameHeight: Int, until: Long = sequence): List<OverlayDot> = tracks.mapNotNull { track ->
         var low = 0
         var high = track.size - 1
         var found = -1
@@ -34,8 +35,8 @@ internal class TapOverlay(rows: List<TouchEntry>, private val holdNs: Long = 100
             val mid = (low + high) ushr 1
             if (track[mid].time.sequence!! <= sequence) { found = mid; low = mid + 1 } else high = mid - 1
         }
-        val row = track.getOrNull(found) ?: return@mapNotNull null
-        if (row.sample.action == TouchAction.UP && sequence - row.time.sequence!! > holdNs) return@mapNotNull null
+        val current = track.getOrNull(found)?.takeIf { it.sample.action != TouchAction.UP || sequence - it.time.sequence!! <= holdNs }
+        val row = current ?: track.getOrNull(found + 1)?.takeIf { it.time.sequence!! < until } ?: return@mapNotNull null
         project(row, frameWidth, frameHeight)
     }
 

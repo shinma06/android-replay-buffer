@@ -72,6 +72,9 @@ class InjectedTouchTest {
         assertEquals(listOf(OverlayDot(270, 600)), overlay.dots(1_200_000_000, 540, 1200))
         assertEquals(listOf(OverlayDot(539, 1199)), overlay.dots(2_050_000_000, 540, 1200))
         assertEquals(emptyList(), overlay.dots(2_200_000_000, 540, 1200))
+        // A still frame shown from 0.5 s to 1.1 s gets the tap that starts at 1.0 s; one that ends before it does not.
+        assertEquals(listOf(OverlayDot(270, 600)), overlay.dots(500_000_000, 540, 1200, until = 1_100_000_000))
+        assertEquals(emptyList(), overlay.dots(500_000_000, 540, 1200, until = 1_000_000_000))
         // Rotation 1 shows the natural point (540, 1200) at screen (1200, 539) of a 2400x1080 frame.
         val landscape = TapOverlay(listOf(entry(1_000, TouchAction.DOWN, 540, 1200, rotation = 1)))
         assertEquals(listOf(OverlayDot(600, 269)), landscape.dots(1_000, 1200, 540))
