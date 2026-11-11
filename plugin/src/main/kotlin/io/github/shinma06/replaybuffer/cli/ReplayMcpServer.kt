@@ -80,7 +80,8 @@ internal class ReplayMcpServer(
             "Use a returned `project` as the `project` argument of the other tools when more than one project is open.",
             emptyMap(), readOnly) { listProjects() },
         Tool("get_status", "Read the capture state of the project as JSON without changing anything (same as `replay status`): " +
-            "`running` (capture ON), `capture_state`, `device_serial`, `save_state`, `last_save` (`directory` and `summary_path` only when completed, " +
+            "`running` (capture ON), `capture_state`, `device_serial` (current capture target), `selected_device` (chosen serial, null = automatic), " +
+            "`devices` (connected devices while ON: `serial`, `name`, `kind`, `target`), `save_state`, `last_save` (`directory` and `summary_path` only when completed, " +
             "`retained_path` for a retained failed attempt), `error` and `reason`. ON does not mean frames are being captured; check `capture_state` and `error`.",
             projectOnly, readOnly) { args -> command(args, CliCommand.STATUS) },
         Tool("start_capture", "Turn capture ON for the project (same as the GUI toggle and `replay start`). The IDE owns the capture; " +
@@ -388,6 +389,10 @@ internal class ReplayMcpServer(
                 "description" to "Show tap dots on the device screen (and so in the video) while capturing; restored afterwards. Change only while capture is OFF."),
             "record_audio" to mapOf("type" to "boolean",
                 "description" to "Record the device playback audio into the video (VIDEO_AND_LOGS only, Android 13+, apps may opt out; coverage.audio in replay.json tells why it is missing). Change only while capture is OFF."),
+            "device" to mapOf("type" to "string",
+                "description" to "Serial of the capture target from get_status `devices[].serial`; empty selects the only connected device automatically. " +
+                    "With several devices and none chosen, capture waits (capture_state MULTIPLE_DEVICES). A chosen device that disconnects is waited for; " +
+                    "capture never switches to another device silently."),
         )
         private const val INSTRUCTIONS = "Operates Android Replay Buffer inside an already running Android Studio: the same capture, buffer, save, " +
             "screenshot and settings as its GUI. It never starts the IDE. Call get_status first. A tool error whose text ends with exit code 1 is an " +

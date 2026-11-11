@@ -51,7 +51,9 @@ Devin: 設定のMCP Marketplaceで「Add your own」からstdioサーバーを�
 
 全toolに任意の`project`（開いているprojectの絶対パス）があります。それ以外の未知の引数は拒否します。
 
-`update_settings`の項目は`get_settings`と同じ名前です: `replay_seconds`（1〜900）、`output_directory`、`app_selection`（`AUTOMATIC` / `MANUAL`）、`manual_package`、`capture_mode`（`VIDEO_AND_LOGS` / `LOG_ONLY`）、`video_quality`（`STANDARD` / `LIGHTWEIGHT`）、`auto_save_on_crash`、`screenshot_uses_logcat_destination`、`screenshot_directory`、`show_touches`（取得中に端末画面へタップ位置の点を表示し、動画に映す）、`record_audio`（動画に端末の再生音を録音する。既定`false`、Android 13以上、`VIDEO_AND_LOGS`だけ）。設定画面の「適用」と同じ検証をし、保存先フォルダは事前に作成が必要です。取得モード・動画品質・`show_touches`・`record_audio`は取得OFFで反映が終わってから変更します。取得のON/OFFは`start_capture` / `stop_capture`で行います。
+`update_settings`の項目は`get_settings`と同じ名前です: `replay_seconds`（1〜900）、`output_directory`、`app_selection`（`AUTOMATIC` / `MANUAL`）、`manual_package`、`capture_mode`（`VIDEO_AND_LOGS` / `LOG_ONLY`）、`video_quality`（`STANDARD` / `LIGHTWEIGHT`）、`auto_save_on_crash`、`screenshot_uses_logcat_destination`、`screenshot_directory`、`show_touches`（取得中に端末画面へタップ位置の点を表示し、動画に映す）、`record_audio`（動画に端末の再生音を録音する。既定`false`、Android 13以上、`VIDEO_AND_LOGS`だけ）。設定画面の「適用」と同じ検証をし、保存先フォルダは事前に作成が必要です。取得モード・動画品質・`show_touches`・`record_audio、`device`（取得する端末のserial。空はGUIの「自動で選ぶ」と同じく自動選択）。設定画面の「適用」と同じ検証をし、保存先フォルダは事前に作成が必要です。取得モード・動画品質・`show_touches`は取得OFFで反映が終わってから変更します。取得のON/OFFは`start_capture` / `stop_capture`で行います。
+
+複数の端末が接続されているときは、`get_status`の`devices`（取得ON中に接続中の端末: `serial`・`name`・`kind`・`target`）から1台を選び、`update_settings`の`device`にserialを渡します。GUIの「取得する端末」・`replay settings set device=<serial>`と同じ設定で、同じ規則です: 未選択で1台なら自動、未選択で2台以上なら`capture_state`が`MULTIPLE_DEVICES`のまま取得せず選択を待ち、選んだ端末が切断されても別の端末へは切り替えずに同じserialの再接続を待ちます。詳細は[CLI](cli.md#取得する端末の選択)を参照してください。
 
 ## 結果と失敗
 

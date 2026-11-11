@@ -22,6 +22,7 @@ internal fun settingsJson(settings: ReplaySettings, enabled: Boolean): String = 
     "screenshot_directory" to settings.screenshotDirectory,
     "show_touches" to settings.showTouches,
     "record_audio" to settings.recordAudio,
+    "device" to settings.deviceSerial,
 ))
 
 /**
@@ -67,6 +68,7 @@ internal fun patchSettings(current: ReplaySettings, text: String): ReplaySetting
                 "screenshot_directory" -> settings.copy(screenshotDirectory = text())
                 "show_touches" -> settings.copy(showTouches = flag())
                 "record_audio" -> settings.copy(recordAudio = flag())
+                "device" -> settings.copy(deviceSerial = text())
                 else -> throw IllegalArgumentException("変更できない設定項目です: $key")
             }
         }

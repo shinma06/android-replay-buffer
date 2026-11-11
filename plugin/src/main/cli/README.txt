@@ -16,6 +16,7 @@ replay --project /absolute/project/path status
 replay --project /absolute/project/path screenshot
 replay --project /absolute/project/path settings
 replay --project /absolute/project/path settings set replay_seconds=60 auto_save_on_crash=true
+replay --project /absolute/project/path settings set device=emulator-5556
 replay --project /absolute/project/path mcp
 
 空白のあるpathや値は引用符で囲んでください。対象が複数ある場合は--projectが必須です。
@@ -36,6 +37,8 @@ save --logs-onlyはLogcatツールバーのボタンと同じく、ログとrepl
 screenshotはGUIと同じPNGを保存し、パスだけをstdoutへ返します。
 settingsはMCPのget_settings、settings setはupdate_settingsと同じ項目名・検証です。
 record_audio=trueで動画に端末の再生音（Android 13以上）を録音します。既定はfalseで、取得OFFで変更します。
+複数の端末を接続したときはstatusのdevices[].serialから1台をdevice=<serial>で選びます（空は自動）。
+未選択で2台以上なら取得せず選択を待ち、選んだ端末の切断中も別の端末へは切り替えません。
 mcpは標準入出力のMCPサーバーです。IDE本体は起動しません。
 失敗や結果不明はexit1/stderr、引数・設定値の不正はexit2です。通信断を自動retryしません。
 

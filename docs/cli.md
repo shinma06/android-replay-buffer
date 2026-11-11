@@ -64,11 +64,29 @@ replay --project "$HOME/Projects/MyApp" settings set replay_seconds=60 auto_save
 replay --project "$HOME/Projects/MyApp" settings set output_directory="$HOME/Replays"
 ```
 
-項目名は`settings`の出力・MCPと同じです: `replay_seconds`（1〜900）、`output_directory`、`app_selection`（`AUTOMATIC` / `MANUAL`）、`manual_package`、`capture_mode`（`VIDEO_AND_LOGS` / `LOG_ONLY`）、`video_quality`（`STANDARD` / `LIGHTWEIGHT`）、`auto_save_on_crash`、`screenshot_uses_logcat_destination`、`screenshot_directory`、`show_touches`、`record_audio`（動画に端末の再生音を録音する。既定`false`）。
+項目名は`settings`の出力・MCPと同じです: `replay_seconds`（1〜900）、`output_directory`、`app_selection`（`AUTOMATIC` / `MANUAL`）、`manual_package`、`capture_mode`（`VIDEO_AND_LOGS` / `LOG_ONLY`）、`video_quality`（`STANDARD` / `LIGHTWEIGHT`）、`auto_save_on_crash`、`screenshot_uses_logcat_destination`、`screenshot_directory`、`show_touches`、`record_audio`（動画に端末の再生音を録音する。既定`false`）、`device`（取得する端末のserial、空は自動選択）。
 
 - 1つの引数が`KEY=VALUE`の1項目です。値は最初の`=`より後ろ全体で、空白を含む値はシェルの引用符で囲みます。
 - 整数・真偽値の項目は`60`・`true` / `false`を数値・真偽値として送ります。それ以外の書き方や未知・重複した項目は、MCPの`update_settings`と同じ検証で理由を表示して拒否します（終了コード2）。
 - 設定画面の「適用」と同じ検証をします。保存先フォルダは事前に作成してください。取得モード・動画品質・`show_touches`・`record_audio`は取得OFFで変更します。`record_audio`は`VIDEO_AND_LOGS`だけで使い、`LOG_ONLY`では値を保持したまま録音しません。取得のON/OFFは`start` / `stop`で行います。
+
+### 取得する端末の選択
+
+複数の端末・Emulatorが接続されているときは、取得する1台を`device`（serial）で選びます。GUIの「取得する端末」・`settings set device=...`・MCPの`update_settings`は同じ設定を書き換え、projectごとにserialで記憶します（IDE再起動後も同じ）。
+
+```bash
+replay --project "$HOME/Projects/MyApp" status            # devices[].serial に接続中の端末（取得ON中）
+replay --project "$HOME/Projects/MyApp" settings set device=emulator-5556
+replay --project "$HOME/Projects/MyApp" settings set device=   # 自動選択へ戻す
+```
+
+- 未選択（`device`が空）で1台だけ接続されていれば、その1台を自動で取得します。
+- 未選択で2台以上接続されていると、どれも取得せず`capture_state`は`MULTIPLE_DEVICES`、`error`は「複数の端末が接続されています。取得する端末を選んでください」です。勝手に1台を選びません。
+- 選んだ端末（または自動選択で取得を始めた端末）が切断されると、同じserialの再接続を待ちます。ほかの端末が接続されていても切り替えません。再接続すると新しい記録区間として取得を再開します。
+- `device=`（GUIでは選択欄の「自動で選ぶ」）は記憶したserialを消して自動選択へ戻します。取得中に戻しても、取得中の端末はそのまま続けます（切断時も同じserialを待ちます）。自動選択からやり直すには取得を一度OFFにします。
+- 取得中に別のserialを選ぶと、未保存の記録を破棄してその端末で取得し直します。保存中・再試行待ちの保存対象がある間は拒否します（終了コード1）。
+- `status`の`devices`は取得ON中の直近の`adb devices -l`の結果です（`serial`・`name`・`kind`=`EMULATOR`/`PHYSICAL`・`target`=取得対象か）。取得OFFでは空です。`selected_device`は記憶しているserial（未選択はnull）、`device_serial`は実際の取得対象です。
+- スクリーンショットも同じ規則です。取得OFFでは`device`のserialを使い、未選択なら接続中の1台だけを使います。
 
 ## 終了コード
 

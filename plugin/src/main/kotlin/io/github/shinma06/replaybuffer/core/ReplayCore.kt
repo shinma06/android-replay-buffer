@@ -11,6 +11,7 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 internal const val SAVE_IN_PROGRESS_REASON = "保存中です"
+internal const val MULTIPLE_DEVICES_REASON = "複数の端末が接続されています。取得する端末を選んでください"
 
 /**
  * Project-owned core: replay-control serializes commands/state; replay-save reads a single pinned capture.
@@ -39,6 +40,7 @@ class ReplayCore internal constructor(
     private var generation = 0L
     private var enabled = false
     private var device: ReplayDevice? = null
+    private var connected: List<ReplayDevice> = emptyList()
     private var store: CaptureStore? = null
     private var resources: CaptureResources? = null
     private var localOwnership: LocalCaptureOwnership? = null
@@ -86,39 +88,41 @@ class ReplayCore internal constructor(
         if (!value) synchronized(publishing) { cancelSave.set(true) }
         return operation {
             if (value == enabled && (value || localOwnership == null)) return@operation ReplayOperation(true)
-            if (value) {
-                if (localOwnership != null) disable()
-                Files.createDirectories(workspace)
-                cleanup.recover()
-                LocalCaptureOwnership.recover(workspace)
-                val ownership = LocalCaptureOwnership.create(workspace)
-                localOwnership = ownership
-                val root = ownership.root
-                try {
-                    resources = CaptureResources(root, ownership::created).also { if (settings.captureMode.videoRequested) it.server }
-                    store = CaptureStore(root.resolve("ring"), created = ownership::created, removed = ownership::removed,
-                        captureMode = settings.captureMode, autosave = autosave, audioRequested = settings.recordAudio)
-                } catch (e: Exception) {
-                    try {
-                        resources?.close(); resources = null
-                        // Extraction writes only these exact new names; never clean unrelated entries.
-                        Files.deleteIfExists(root.resolve("scrcpy-server-v5.0.1"))
-                        Files.deleteIfExists(root.resolve("replay-clock.jar"))
-                        closeLocalOwnership()
-                    } catch (cleanup: Exception) { e.addSuppressed(cleanup) }
-                    finally { try { ownership.close() } catch (cleanup: Exception) { e.addSuppressed(cleanup) } }
-                    throw e
-                }
-                enabled = true
-                captureState = CaptureState.WAITING
-                error = null
-                saveState = SaveSnapshot()
-                probe = settings.adbPath?.let { OwnedAdb(it) }
-                poll()
-            } else disable()
+            if (value) enable() else disable()
             publish()
             ReplayOperation(true)
         }
+    }
+
+    private fun enable() {
+        if (localOwnership != null) disable()
+        Files.createDirectories(workspace)
+        cleanup.recover()
+        LocalCaptureOwnership.recover(workspace)
+        val ownership = LocalCaptureOwnership.create(workspace)
+        localOwnership = ownership
+        val root = ownership.root
+        try {
+            resources = CaptureResources(root, ownership::created).also { if (settings.captureMode.videoRequested) it.server }
+            store = CaptureStore(root.resolve("ring"), created = ownership::created, removed = ownership::removed,
+                captureMode = settings.captureMode, autosave = autosave, audioRequested = settings.recordAudio)
+        } catch (e: Exception) {
+            try {
+                resources?.close(); resources = null
+                // Extraction writes only these exact new names; never clean unrelated entries.
+                Files.deleteIfExists(root.resolve("scrcpy-server-v5.0.1"))
+                Files.deleteIfExists(root.resolve("replay-clock.jar"))
+                closeLocalOwnership()
+            } catch (cleanup: Exception) { e.addSuppressed(cleanup) }
+            finally { try { ownership.close() } catch (cleanup: Exception) { e.addSuppressed(cleanup) } }
+            throw e
+        }
+        enabled = true
+        captureState = CaptureState.WAITING
+        error = null
+        saveState = SaveSnapshot()
+        probe = settings.adbPath?.let { OwnedAdb(it) }
+        poll()
     }
 
     fun applySettings(value: ReplaySettings): CompletableFuture<ReplayOperation> = operation {
@@ -126,9 +130,18 @@ class ReplayCore internal constructor(
         if (enabled && (applied.captureMode != settings.captureMode || applied.videoQuality != settings.videoQuality ||
                 applied.showTouches != settings.showTouches || applied.recordAudio != settings.recordAudio))
             return@operation ReplayOperation(false, "取得モード・動画品質・タップ位置表示・音声の録音は取得をOFFにしてから変更してください")
+        val chosen = applied.deviceSerial
+        // An explicit choice replaces the current target only by restarting capture; never mix two devices in one buffer.
+        val switching = enabled && chosen != null && device?.let { it.serial != chosen } == true
+        if (switching && pending != null)
+            return@operation ReplayOperation(false, "保存中または再試行待ちの保存対象があるため端末を切り替えられません。保存の完了または破棄の後に選び直してください")
         val changedAdb = applied.adbPath != settings.adbPath
         val changedApp = applied.application != settings.application
         settings = applied
+        if (switching) {
+            disable()
+            enable()
+        }
         settingsRevision++
         configureAuto()
         if (changedAdb) {
@@ -288,16 +301,23 @@ class ReplayCore internal constructor(
         }
         if (closed.get()) return
         cleanup.recover()
-        val selected = selectDevice(devices, device?.serial)
+        connected = devices
+        val wanted = settings.deviceSerial ?: device?.serial
+        val selected = selectDevice(devices, wanted)
         if (selected == null) {
             stopBackend()
             device = device?.copy(connected = false)
-            captureState = if (devices.size > 1) CaptureState.MULTIPLE_DEVICES else if (device != null) CaptureState.RECOVERING else CaptureState.WAITING
-            error = if (devices.size > 1) "端末を1台だけ接続してください" else if (devices.size == 1) "最初に選択した端末の再接続を待っています" else null
+            captureState = if (wanted == null && devices.size > 1) CaptureState.MULTIPLE_DEVICES else if (device != null) CaptureState.RECOVERING else CaptureState.WAITING
+            error = when {
+                wanted == null && devices.size > 1 -> MULTIPLE_DEVICES_REASON
+                device == null && wanted != null -> "選択した端末（$wanted）の接続を待っています。ほかの端末には切り替えません"
+                device != null && devices.isNotEmpty() -> "選択した端末（${device!!.serial}）の再接続を待っています。ほかの端末には切り替えません"
+                else -> null
+            }
             cleanup.clean(settings.adbPath!!, devices.map { it.serial }.toSet(), closed::get)
             publish(); return
         }
-        if (device == null) device = selected else device = device?.copy(connected = true)
+        device = selected
         if (backend == null) {
             val data = store ?: return
             generation++
@@ -313,12 +333,11 @@ class ReplayCore internal constructor(
         configureAuto()
         val states = data.streams(settings.replaySeconds)
         captureState = when {
-            devices.size > 1 -> CaptureState.MULTIPLE_DEVICES
             states.values.all { it.state == StreamState.NOT_REQUESTED || it.state == StreamState.CAPTURING && it.reason == null } -> CaptureState.CAPTURING
             states["video"]?.state == StreamState.CAPTURING || states["device_log"]?.state == StreamState.CAPTURING -> CaptureState.PARTIAL
             else -> CaptureState.RECOVERING
         }
-        error = if (devices.size > 1) "初期版は1台に対応しています。ほかの端末を切断してください（既存の取得は継続）" else null
+        error = null
         publish()
         val pendingBeforeCleanup = cleanup.pendingCount
         cleanup.clean(settings.adbPath!!, devices.map { it.serial }.toSet(), closed::get)
@@ -359,6 +378,7 @@ class ReplayCore internal constructor(
         val localCleanup = runCatching { closeLocalOwnership() }
         if (localOwnership != null) localCleanup.getOrThrow()
         device = null
+        connected = emptyList()
         enabled = false
         configureAuto()
         generation++
@@ -393,7 +413,7 @@ class ReplayCore internal constructor(
             device, data?.sequence, data?.end(), data?.frozen() ?: false, streams["video"] ?: StreamSnapshot(if (settings.captureMode.videoRequested) StreamState.WAITING else StreamState.NOT_REQUESTED),
             streams["device_log"] ?: StreamSnapshot(), streams["app_log"] ?: StreamSnapshot(), saveState,
             disabled == null, disabled, error, windowStartNs = data?.windowStart(settings.replaySeconds),
-            cleanupPendingCount = cleanup.pendingCount)
+            cleanupPendingCount = cleanup.pendingCount, devices = java.util.List.copyOf(connected))
         current = current.copy(autoSave = autosave.snapshot(), lastSave = saveAttempt?.let { it.result ?: it.initial },
             canSaveLogs = logsDisabled == null, saveLogsDisabledReason = logsDisabled)
         listeners.forEach { if (!closed.get()) runCatching { it(current) } }

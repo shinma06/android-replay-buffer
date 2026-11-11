@@ -311,6 +311,7 @@ internal fun ReplaySettings.toCoreSettings(environment: AndroidReplayEnvironment
     videoQuality = videoQuality,
     showTouches = showTouches,
     recordAudio = recordAudio,
+    deviceSerial = deviceSerial.ifEmpty { null },
     autoSaveOnCrash = autoSaveOnCrash,
     application = if (appSelection == AppSelectionMode.MANUAL) {
         ApplicationTarget(manualPackage, ApplicationMode.MANUAL)

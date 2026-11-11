@@ -150,4 +150,38 @@ class ReplayToolWindowModelTest {
         assertTrue(on.screenshotDirectoryEnabled)
         assertFalse(settingsControls(AppSelectionMode.AUTOMATIC, CaptureMode.LOG_ONLY, true, false).videoOptionsEnabled)
     }
+
+    @Test
+    fun `several devices without a choice wait for one with a single reason and a chooser`() {
+        val other = ReplayDevice("emulator-5556", "Pixel 8", DeviceKind.EMULATOR, true)
+        val reason = io.github.shinma06.replaybuffer.core.MULTIPLE_DEVICES_REASON
+        val ambiguous = ReplaySnapshot(1, 1, true, CaptureState.MULTIPLE_DEVICES, ReplaySettings(replaySeconds = 30), 1,
+            devices = listOf(device, other), error = reason)
+        val model = toolWindowModel(input(ambiguous).copy(screenshotDisabledReason = "$reason。"))
+        assertEquals(Tone.ERROR, model.header.tone)
+        assertEquals("端末の選択待ち", model.header.text)
+        assertEquals(listOf(reason), model.notices.map { it.text }, "the choice is asked once")
+        assertNull(model.screenshot.reason, "the screenshot hint does not repeat the notice")
+        assertFalse(model.screenshot.enabled)
+        assertEquals(listOf(null, "emulator-5554", "emulator-5556"), model.devices.map { it.serial })
+        assertEquals("選んでください", model.devices.first().label)
+        assertTrue(model.details.any { it.text == "端末: 未選択（2台接続中）" })
+        assertTrue(toolWindowModel(input(capturing())).devices.isEmpty(), "one device shows no chooser")
+    }
+
+    @Test
+    fun `chooser keeps the reconnect wait and offers automatic selection like CLI and MCP`() {
+        val other = ReplayDevice("emulator-5556", "Pixel 8", DeviceKind.EMULATOR, true)
+        val chosen = ReplaySnapshot(1, 1, true, CaptureState.RECOVERING, ReplaySettings(deviceSerial = "emulator-5554"), 1,
+            device = device.copy(connected = false), devices = listOf(other),
+            error = "選択した端末（emulator-5554）の再接続を待っています。ほかの端末には切り替えません")
+        val waiting = toolWindowModel(input(chosen))
+        assertEquals(listOf("emulator-5554", "emulator-5556", ""), waiting.devices.map { it.serial })
+        assertTrue(waiting.devices.first().label.contains("切断中"))
+        assertEquals(AUTOMATIC_DEVICE_CHOICE, waiting.devices.last().label)
+        assertTrue(waiting.notices.any { it.text.contains("再接続を待っています") })
+        val restarted = toolWindowModel(input(chosen.copy(captureState = CaptureState.WAITING, device = null, error = null)))
+        assertEquals(listOf("emulator-5554", "emulator-5556", ""), restarted.devices.map { it.serial })
+        assertEquals("emulator-5554（切断中）", restarted.devices.first().label)
+    }
 }
