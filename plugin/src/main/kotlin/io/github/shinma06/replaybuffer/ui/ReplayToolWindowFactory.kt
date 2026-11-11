@@ -210,10 +210,11 @@ internal class ReplayToolWindowController(private val project: Project) : Dispos
         val latest = service.latestScreenshot ?: return
         if (latest === trackedScreenshot) return
         trackedScreenshot = latest
-        latest.whenComplete { saved, failure ->
-            val time = LocalTime.now().format(TIME)
+        latest.thenAccept { outcome ->
+            val time = outcome.time.format(TIME)
+            val saved = outcome.saved
             val result = if (saved != null) ScreenshotResult.Saved(time, saved.file) else {
-                val cause = (failure as? CompletionException)?.cause ?: failure
+                val cause = (outcome.failure as? CompletionException)?.cause ?: outcome.failure
                 ScreenshotResult.Failed(time, cause?.message ?: "スクリーンショットを保存できませんでした。")
             }
             SwingUtilities.invokeLater { if (alive && trackedScreenshot === latest) { screenshotResult = result; render() } }

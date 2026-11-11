@@ -142,17 +142,18 @@ class ReplayToolWindowLayoutTest {
                 try {
                     var latest = service.getClass().getDeclaredField("latestScreenshot");
                     latest.setAccessible(true);
-                    latest.set(service, java.util.concurrent.CompletableFuture.failedFuture(
-                        new IllegalStateException("Running Devicesから要求した端末を確認してください")));
+                    latest.set(service, java.util.concurrent.CompletableFuture.completedFuture(
+                        new io.github.shinma06.replaybuffer.ide.ScreenshotOutcome(java.time.LocalTime.of(1, 2, 3), null,
+                            new IllegalStateException("Running Devicesから要求した端末を確認してください"))));
                     actual[0].render();
                 } catch (ReflectiveOperationException failure) {
                     throw new AssertionError(failure);
                 }
             });
             SwingUtilities.invokeAndWait(() -> assertTrue(actual[0].getModel().getResults().stream().anyMatch(result ->
-                result.getText().startsWith("スクリーンショットを保存できませんでした")
+                result.getText().equals("スクリーンショットを保存できませんでした 01:02:03")
                     && result.getSecondary().contains("Running Devicesから要求した端末を確認してください")),
-                "a screenshot started outside the ToolWindow is shown as its recent result"));
+                "a screenshot started outside the ToolWindow is shown with the time it finished"));
         } finally {
             Disposer.dispose(lifetime);
         }
