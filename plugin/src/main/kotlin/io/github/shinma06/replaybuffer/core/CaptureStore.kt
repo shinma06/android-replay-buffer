@@ -582,16 +582,16 @@ internal class CaptureStore(
     private fun latest(): Long? = listOfNotNull(if (captureMode.videoRequested) video.peekLast()?.retainedAt else null, logs.peekLast()?.retainedAt).maxOrNull()
 
     @Synchronized
-    fun prune(seconds: Int) {
+    fun prune(seconds: Int, host: Long = System.nanoTime()) {
         if (closed) return
         logRetentionSeconds = seconds
         if (fixedEnd != null) return
-        val end = end() ?: return
-        val uncertainty = clock.endUncertainty()
+        val end = clock.now(host) ?: latest() ?: return
+        val uncertainty = clock.endUncertainty(host)
         // An unknown boot bridge/current T cannot prove that old known-epoch records are outside the window.
         if (uncertainty == Long.MAX_VALUE) {
             // A record is generated before it is received, so one received before every possible window start is outside.
-            val cutoff = System.nanoTime() - seconds * 1_000_000_000L - HOST_WINDOW_MARGIN_NS
+            val cutoff = host - seconds * 1_000_000_000L - HOST_WINDOW_MARGIN_NS
             if (captureMode.videoRequested) {
                 val all = video.toList()
                 val firstInside = all.indices.firstOrNull { (all.getOrNull(it + 1)?.host ?: Long.MAX_VALUE) >= cutoff } ?: all.size

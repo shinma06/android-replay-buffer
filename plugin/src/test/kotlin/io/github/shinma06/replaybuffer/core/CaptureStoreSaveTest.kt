@@ -1182,8 +1182,8 @@ class CaptureStoreSaveTest {
             }
             store.release(original.id)
             anchor(store.clock, 2_050_000_000, host + 1_050_000_000)
-            store.prune(1)
-            // Cut at the anchored host instant, not the current one: the test may run slower than its anchored timeline.
+            // Prune and cut at the anchored host instant, not the current one: the test may run slower than its anchored timeline.
+            store.prune(1, host = host + 1_050_000_000)
             val realCut = store.capture(ReplaySettings(replaySeconds = 1), host = host + 1_050_000_000)!!
             assertEquals(50_000_000, realCut.start)
             assertEquals(1_000_000, realCut.video.first().pts)
