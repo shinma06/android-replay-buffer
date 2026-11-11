@@ -11,7 +11,7 @@
 
 ## 環境の準備
 
-1. エミュレータを `-no-window` で起動し、`adb devices` で `device` になるまで待つ
+1. エミュレータを `-qt-hide-window -grpc-use-token -idle-grpc-timeout 300` で起動し、`adb devices` で `device` になるまで待つ。`-no-window` や別windowで起動するとStudioのRunning Devicesに出ない
 2. `Xvfb :99 -screen 0 1920x1080x24` を起動し、`DISPLAY=:99` でStudioを起動する。既定の画面ではOpenGLの初期化に失敗することがある
 3. 日本語のUIを読むため、`fonts-noto-cjk` を入れてからStudioを起動する
 4. ZIPをStudioのplugin置き場（Linuxでは `~/.local/share/Google/AndroidStudio<版>/`）へ展開する
