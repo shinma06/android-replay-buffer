@@ -682,11 +682,11 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                 appendLine()
                 if (videoRequested) {
                     appendLine("- 動画がある保存は1本のMP4です。動画がない保存にはMP4と${ReplayFiles.VIDEO_FRAMES}はありません。取得状態・理由は${ReplayFiles.RECORD}のcoverage.videoを確認してください。")
-                    appendLine("- 動画の表示秒に対応する${ReplayFiles.VIDEO_FRAMES}のmovie_pts_us〜movie_end_usとsource/window情報を使い、両ログと照合してください。${ReplayFiles.RECORD}のpartsは同じファイル内の再生区間です。")
+                    appendLine("- 動画の表示秒に対応する${ReplayFiles.VIDEO_FRAMES}のmovie_pts_us〜movie_end_usとsource_pts_us・t_nsを使い、両ログと照合してください。${ReplayFiles.RECORD}のpartsは同じファイル内の再生区間です。")
                     if (capture.audioState != null) appendLine(if (audioPlan?.samples?.isNotEmpty() == true)
                         "- MP4には端末の再生音（AAC）も入っています。音声は動画と同じ端末時計で対応づけ、動画のない範囲には入れていません。音声encoderの遅延分だけ音が遅れることがあります（emulatorで約0.1秒）。録音を禁止したアプリの音は無音です。取得状態・理由は${ReplayFiles.RECORD}のcoverage.audioとaudio_trackを確認してください。"
                         else "- 音声の録音を設定していましたが、MP4に音声はありません。理由は${ReplayFiles.RECORD}のcoverage.audioを確認してください。")
-                    appendLine("- タップは動画の取得中に自動で記録します。時刻は端末の入力時刻（getevent、CLOCK_MONOTONIC）で、動画PTSと同じ時計対応によりwindow_nsへ写し、表示中の動画位置をmovie_usに記録します。movie_usがnullの行は動画の表示区間外または時刻を確定できない行です。座標は画面の自然な向きのpx（display_width×display_height）です。screen_x/screen_yは回転後の画面（動画に写る向き）のpxで、display_rotationは端末の回転（0〜3、90度単位）、不明ならnullです。回転は最大1秒遅れで読み直し、動画のサイズ変更時はすぐ読み直します。")
+                    appendLine("- タップは動画の取得中に自動で記録します。時刻は端末の入力時刻（getevent、CLOCK_MONOTONIC）で、動画PTSと同じ時計対応によりt_nsへ写し、表示中の動画位置をmovie_usに記録します。movie_usがnullの行は動画の表示区間外または時刻を確定できない行です。座標は画面の自然な向きのpx（display_width×display_height）です。screen_x/screen_yは回転後の画面（動画に写る向き）のpxで、display_rotationは端末の回転（0〜3、90度単位）、不明ならnullです。回転は最大1秒遅れで読み直し、動画のサイズ変更時はすぐ読み直します。")
                     appendLine("- ミラーリング（Running Devices等）やadb inputなど端末外から注入されたタップは、Android 13以上でInputDispatcherのログ（eventTime、CLOCK_MONOTONIC、ms精度）から記録し、touches.jsonlのsourceをinjectedとします。" +
                         "この取得では${when (capture.injectedTouchState?.state) {
                             StreamState.CAPTURING -> "記録中でした"
