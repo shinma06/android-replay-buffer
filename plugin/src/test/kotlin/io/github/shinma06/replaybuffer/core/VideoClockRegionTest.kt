@@ -57,7 +57,7 @@ class VideoClockRegionTest {
     fun videoLossEnvelopeRequiresBothFiniteNormalAnchorsAndStillBlocksRealLoss() {
         val before = ClockSample(0, "old", 4_000_000_000, 4_000_000_000, 0, 4_000_000_000,
             0, 0, -1_000_000_000)
-        val after = before.copy(epoch = 2, boot = "new", before = 7_000_000_000, after = 7_000_000_000, mono = 7_000_000_000)
+        val after = before.copy(region = 2, boot = "new", before = 7_000_000_000, after = 7_000_000_000, mono = 7_000_000_000)
         val gap = CaptureGap("video", 3_500_000_000, 5_500_000_000, "connection ended", Long.MAX_VALUE, 1, 1)
         val scope = listOf(gap).gapScopes(listOf(before, after)).single()
         assertEquals(3_000_000_000L, scope.fromNs)
@@ -91,7 +91,7 @@ class VideoClockRegionTest {
             assertEquals(listOf(unproven), listOf(unproven).inWindow(7_000_000_000, 8_000_000_000, 1_000_000, listOf(before, after)))
         }
         // Another boot segment has only an approximate place on the axis, so its read cannot bound the loss.
-        for (unproven in listOf(after.copy(segment = 1), after.copy(sequenceOffset = Long.MAX_VALUE),
+        for (unproven in listOf(after.copy(segment = 1), after.copy(segmentOffset = Long.MAX_VALUE),
                 after.copy(received = 100_000_000), after.copy(sent = 1),
                 after.copy(after = after.before - 1), after.copy(before = -1, after = -1),
                 after.copy(after = after.before + 2_000_001))) {
@@ -143,12 +143,12 @@ class VideoClockRegionTest {
             val unknownLog = knownLog.copy(id = "unknown", time = MappedTime(null, 0, Long.MAX_VALUE, null), app = null)
             val capture = FrozenCapture("fixed", "fixture", 1, 0, 4_100_000_000, 180, frames,
                 listOf(knownLog, unknownLog), listOf(gap), listOf(before, invalid, recovery), emptyList(), ReplaySettings(),
-                mapOf("video" to StreamSnapshot(StreamState.CAPTURING)), windowClockEpoch = 0,
+                mapOf("video" to StreamSnapshot(StreamState.CAPTURING)), windowClockRegion = 0,
                 clockRecoveries = mapOf(gap to recovery))
             val output = save(capture, root)
             val manifest = manifest(output)
             val parts = manifest["parts"].asJsonArray
-            // The recovery read proves the clock outage continuous: no acquisition/codec/epoch break and no loss.
+            // The recovery read proves the clock outage continuous: no acquisition/codec/region break and no loss.
             assertEquals(1, parts.size(), "A clock measurement outage never changes the source run")
             val part = parts.single().asJsonObject
             assertTrue(part["clock_alignment_known"].asBoolean)

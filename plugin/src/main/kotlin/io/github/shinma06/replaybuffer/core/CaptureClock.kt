@@ -5,12 +5,13 @@ import kotlin.math.abs
 
 /**
  * Device elapsed(BOOTTIME)/mono/wall and host send/receive values are nanoseconds from their separate clocks.
- * [segment] counts device boots; [sequenceOffset] places this boot's BOOTTIME on the sequence axis. Only segment 0 is
- * exact; a later boot's placement is a host-time lower bound for ordering and never an event time.
+ * [region] numbers the continuous offset runs of the source clocks (a clock step or boot starts a new one); [segment]
+ * counts device boots and [segmentOffset] places this boot's BOOTTIME on the sequence axis. Only segment 0 is exact; a
+ * later boot's placement is a host-time lower bound for ordering and never an event time.
  */
 internal data class ClockSample(
-    val epoch: Int, val boot: String, val before: Long, val mono: Long, val wall: Long, val after: Long,
-    val sent: Long, val received: Long, val sequenceOffset: Long, val segment: Int = 0,
+    val region: Int, val boot: String, val before: Long, val mono: Long, val wall: Long, val after: Long,
+    val sent: Long, val received: Long, val segmentOffset: Long, val segment: Int = 0,
 ) {
     val elapsed: Long get() = before + (after - before) / 2
     val monoOffset: Long get() = elapsed - mono
@@ -20,13 +21,11 @@ internal data class ClockSample(
     val valid: Boolean get() = after - before <= 2_000_000
     /** Also supports host-to-device estimates (T, barriers, start bounds), whose error includes half the round trip. */
     val hostAnchored: Boolean get() = valid && received - sent <= 40_000_000
-    /** Position of the sequence axis relative to the first boot: exact (0) or approximate across a reboot. */
-    val bridgeError: Long get() = if (segment == 0) 0 else Long.MAX_VALUE
 }
 
 /** Nanosecond correspondence: null times and Long.MAX_VALUE uncertainty preserve unsupported/ambiguous mapping. */
 internal data class MappedTime(
-    val elapsed: Long?, val epoch: Int, val uncertainty: Long, val sequence: Long? = elapsed,
+    val elapsed: Long?, val region: Int, val uncertainty: Long, val sequence: Long? = elapsed,
 )
 
 /**
@@ -35,8 +34,7 @@ internal data class MappedTime(
  */
 internal class CaptureClock {
     private val samples = ArrayDeque<ClockSample>()
-    private var epoch = 0
-    private val closures = linkedMapOf<Int, Long>()
+    private var region = 0
 
     @Synchronized
     fun add(boot: String, values: List<Long>, sent: Long, received: Long): Boolean {
@@ -46,7 +44,6 @@ internal class CaptureClock {
         val last = samples.peekLast()
         // Offsets are compared only within this boot; a new boot is a boundary even when its first read is too wide.
         val measured = samples.lastOrNull { it.after - it.before <= 2_000_000 && it.segment == last?.segment }
-        val normal = samples.lastOrNull { it.valid }
         val elapsed = before + (after - before) / 2
         val good = after - before <= 2_000_000
         val bootChanged = last != null && (last.boot != boot || elapsed < last.elapsed)
@@ -55,20 +52,20 @@ internal class CaptureClock {
                 abs(elapsed - mono - measured.monoOffset) > measured.readError + (after - before) / 2 + 1_000_000 ||
                 abs(elapsed - wall - measured.wallOffset) > measured.readError + (after - before) / 2 + 1_000_000)
         // A measurement outage alone is no boundary: the next good read decides continuity from the device offsets.
-        if (sourceBreak || bootChanged) boundary(normal?.received ?: sent)
+        if (sourceBreak || bootChanged) startRegion()
         // A new boot starts its own exact segment. Host time cannot run faster than real time, so placing it after the
         // previous read by the host gap only orders boots; rows of another boot never get a time on this segment.
         val offset = when {
             last == null -> -elapsed
-            !bootChanged -> last.sequenceOffset
-            else -> Math.addExact(last.elapsed + last.sequenceOffset, (sent - last.received).coerceAtLeast(0)) - elapsed
+            !bootChanged -> last.segmentOffset
+            else -> Math.addExact(last.elapsed + last.segmentOffset, (sent - last.received).coerceAtLeast(0)) - elapsed
         }
         val segment = if (last == null) 0 else if (bootChanged) last.segment + 1 else last.segment
-        samples += ClockSample(epoch, boot, before, mono, wall, after, sent, received, offset, segment)
+        samples += ClockSample(region, boot, before, mono, wall, after, sent, received, offset, segment)
         while (samples.size > 4096) {
-            // A still-displayed frame may be older than the recent clock ring. Keep its epoch's original anchor.
+            // A still-displayed frame may be older than the recent clock ring. Keep its region's original anchor.
             val first = samples.peekFirst()
-            if (first.epoch == epoch && first.valid) {
+            if (first.region == region && first.valid) {
                 samples.removeFirst(); samples.removeFirst(); samples.addFirst(first)
             } else samples.removeFirst()
         }
@@ -81,18 +78,18 @@ internal class CaptureClock {
     fun now(host: Long = System.nanoTime()): Long? {
         val latest = samples.peekLast() ?: return null
         val anchor = anchorFor(latest, host)
-        return maxOf(latest.elapsed + latest.sequenceOffset,
-            Math.addExact(anchor.elapsed + anchor.sequenceOffset, (host - anchor.received).coerceAtLeast(0)))
+        return maxOf(latest.elapsed + latest.segmentOffset,
+            Math.addExact(anchor.elapsed + anchor.segmentOffset, (host - anchor.received).coerceAtLeast(0)))
     }
 
-    /** Newest round-trip-supported sample of [latest]'s epoch received within 5 s before [host], else [latest] itself. */
+    /** Newest round-trip-supported sample of [latest]'s region received within 5 s before [host], else [latest] itself. */
     private fun hostSample(latest: ClockSample, host: Long): ClockSample = if (!latest.valid) latest else
-        samples.lastOrNull { it.hostAnchored && it.epoch == latest.epoch && host - it.received <= 5_000_000_000 } ?: latest
+        samples.lastOrNull { it.hostAnchored && it.region == latest.region && host - it.received <= 5_000_000_000 } ?: latest
 
     /** Host-to-device anchor for T at [host]: the shortest round trip within 100 ms of [hostSample]. */
     private fun anchorFor(latest: ClockSample, host: Long): ClockSample = hostSample(latest, host).let { recent ->
         if (!recent.hostAnchored) recent else
-            samples.filter { it.hostAnchored && it.epoch == recent.epoch && recent.received - it.received in 0 until 100_000_000 }
+            samples.filter { it.hostAnchored && it.region == recent.region && recent.received - it.received in 0 until 100_000_000 }
                 .minBy { it.received - it.sent }
     }
 
@@ -102,28 +99,28 @@ internal class CaptureClock {
 
     @Synchronized
     fun video(pts: Long, host: Long, hint: Int? = null, reference: Int? = null): MappedTime =
-        map(Math.multiplyExact(pts, 1000), host, false, hint ?: epoch, reference ?: segment())
+        map(Math.multiplyExact(pts, 1000), host, false, hint ?: region, reference ?: segment())
 
     /** Device CLOCK_MONOTONIC source time in nanoseconds (for example evdev input times), mapped like video PTS. */
     @Synchronized
-    fun mono(ns: Long, host: Long, hint: Int? = null): MappedTime = map(ns, host, false, hint ?: epoch, segment())
+    fun mono(ns: Long, host: Long, hint: Int? = null): MappedTime = map(ns, host, false, hint ?: region, segment())
 
     @Synchronized
     fun log(wall: Long, host: Long): MappedTime = map(wall, host, true, null, segment())
 
-    /** Boot segment of [epoch] (default: the newest sample), the reference segment whose rows get sequence times. */
+    /** Boot segment of [region] (default: the newest sample), the reference segment whose rows get sequence times. */
     @Synchronized
-    fun segment(epoch: Int? = null): Int =
-        (if (epoch == null) samples.peekLast() else samples.lastOrNull { it.epoch == epoch })?.segment ?: 0
+    fun segment(region: Int? = null): Int =
+        (if (region == null) samples.peekLast() else samples.lastOrNull { it.region == region })?.segment ?: 0
 
     /** Same result as [mono] at this moment for many rows: tracks and indexes are built once, not per row. */
     @Synchronized
     fun monoMapper(reference: Int = segment()): (Long, Long, Int?) -> MappedTime {
-        val byEpoch = tracks(samples.toList(), false).associateBy { it.epoch }
-        val activeEpoch = epoch
+        val byRegion = tracks(samples.toList(), false).associateBy { it.region }
+        val activeRegion = region
         return { source, host, hint ->
-            val target = hint ?: activeEpoch
-            convert(source, host, listOfNotNull(byEpoch[target]), target, activeEpoch, reference)
+            val target = hint ?: activeRegion
+            convert(source, host, listOfNotNull(byRegion[target]), target, activeRegion, reference)
         }
     }
 
@@ -132,15 +129,13 @@ internal class CaptureClock {
     fun logMapper(reference: Int = segment()): (Long, Long) -> MappedTime {
         val fixed = tracks(samples.toList(), true)
         val ranges = SourceRangeIndex(fixed.map { it.range })
-        val activeEpoch = epoch
-        return { source, host -> convert(source, host, ranges.matches(source).map { fixed[it] }, null, activeEpoch, reference) }
+        val activeRegion = region
+        return { source, host -> convert(source, host, ranges.matches(source).map { fixed[it] }, null, activeRegion, reference) }
     }
 
     private fun tracks(all: List<ClockSample>, log: Boolean): List<OffsetTrack> {
-        val groups = all.filter { it.valid }.groupBy { it.epoch }.values.toList()
-        return groups.mapIndexed { i, group ->
-            OffsetTrack(group, log, groups.getOrNull(i + 1)?.first(), closures[group.first().epoch])
-        }
+        val groups = all.filter { it.valid }.groupBy { it.region }.values.toList()
+        return groups.mapIndexed { i, group -> OffsetTrack(group, log, groups.getOrNull(i + 1)?.first()) }
     }
 
     private var trackCache: Pair<List<OffsetTrack>, List<OffsetTrack>>? = null
@@ -148,36 +143,35 @@ internal class CaptureClock {
     private fun map(source: Long, host: Long, log: Boolean, hint: Int?, reference: Int): MappedTime {
         val cached = trackCache ?: (tracks(samples.toList(), false) to tracks(samples.toList(), true)).also { trackCache = it }
         val all = if (log) cached.second else cached.first
-        return convert(source, host, if (log) all else all.filter { it.epoch == hint }, hint, epoch, reference)
+        return convert(source, host, if (log) all else all.filter { it.region == hint }, hint, region, reference)
     }
 
-    private fun convert(source: Long, host: Long, candidates: List<OffsetTrack>, hint: Int?, activeEpoch: Int,
+    private fun convert(source: Long, host: Long, candidates: List<OffsetTrack>, hint: Int?, activeRegion: Int,
                         reference: Int): MappedTime =
-        candidates.mapNotNull { it.map(source, host, activeEpoch, reference) }.singleOrNull()
-            ?: MappedTime(null, hint ?: activeEpoch, Long.MAX_VALUE, null)
+        candidates.mapNotNull { it.map(source, host, activeRegion, reference) }.singleOrNull()
+            ?: MappedTime(null, hint ?: activeRegion, Long.MAX_VALUE, null)
 
     @Synchronized
-    fun clear() { samples.clear(); closures.clear(); epoch = 0; latestCache = null; trackCache = null }
+    fun clear() { samples.clear(); region = 0; latestCache = null; trackCache = null }
 
+    /** A source clock may have stepped (offset jump, boot, non-monotonic PTS): later samples open a new region. */
     @Synchronized
-    fun boundary(host: Long? = null) {
-        closures[epoch] = host ?: samples.lastOrNull { it.valid }?.received ?: System.nanoTime()
-        epoch++
+    fun startRegion() {
+        region++
         trackCache = null
-        while (closures.size > 4096) closures.remove(closures.keys.first())
     }
 
     @Synchronized
     fun certain(host: Long = System.nanoTime()): Boolean = samples.peekLast()?.let {
-        it.valid && it.epoch == epoch && host - it.received <= 5_000_000_000
+        it.valid && it.region == region && host - it.received <= 5_000_000_000
     } == true
 
     @Synchronized
-    fun currentEpoch(): Int = epoch
+    fun currentRegion(): Int = region
 
     @Synchronized
     fun endUncertainty(host: Long = System.nanoTime()): Long = samples.peekLast()?.let {
-        if (it.epoch != epoch || host - it.received > 5_000_000_000) Long.MAX_VALUE else
+        if (it.region != region || host - it.received > 5_000_000_000) Long.MAX_VALUE else
             anchorFor(it, host).let { anchor -> anchor.readError + (anchor.received - anchor.sent) / 2 }
     } ?: Long.MAX_VALUE
 
@@ -195,7 +189,7 @@ internal class CaptureClock {
 
 /**
  * Latest sequence a record received by the host at `host` can have: a clock read requested after that moment ran on the
- * device after the record was produced. This bounds records whose own mapping is unknown (e.g. across a clock epoch).
+ * device after the record was produced. This bounds records whose own mapping is unknown (e.g. across a clock region).
  * The first read of a later boot gives no bound: a record received before it may belong to the previous boot, whose
  * position on this axis is only approximate.
  */
@@ -207,7 +201,7 @@ internal fun latestSequence(samples: List<ClockSample>): (Long) -> Long? {
     for (i in sorted.indices.reversed()) {
         val sample = sorted[i]
         if (sorted.getOrNull(i + 1)?.segment != sample.segment) min = null
-        val upper = try { Math.addExact(sample.before, sample.sequenceOffset) } catch (_: ArithmeticException) { null }
+        val upper = try { Math.addExact(sample.before, sample.segmentOffset) } catch (_: ArithmeticException) { null }
         if (upper != null && (min == null || upper < min)) min = upper
         bound[i] = if (i > 0 && sorted[i - 1].segment != sample.segment) null else min
     }
@@ -246,11 +240,6 @@ internal class ClockSourceIndex(private val samples: List<ClockSample>, sourceOf
         return samples[if (start == keys.size) samples.lastIndex else firstAfter[start]]
     }
 
-    fun after(source: Long): ClockSample? {
-        val start = bound(source, true)
-        return if (start == keys.size) null else samples[firstAfter[start]]
-    }
-
     private fun bound(source: Long, inclusive: Boolean): Int {
         var low = 0
         var high = keys.size
@@ -264,12 +253,11 @@ internal class ClockSourceIndex(private val samples: List<ClockSample>, sourceOf
 
 /**
  * One continuous offset run of a device source clock (CLOCK_MONOTONIC for video/input, REALTIME for logs) against
- * BOOTTIME: the valid samples between two clock steps or boots. [next] is the first sample after the run and
- * [closedAt] the host time the run was closed, when known.
+ * BOOTTIME: the valid samples of one clock region. [next] is the first sample after the run. A run is closed once a
+ * later region starts; its last sample's receipt is the last host time that can still belong to it.
  */
-internal class OffsetTrack(val samples: List<ClockSample>, private val log: Boolean, private val next: ClockSample?,
-                           private val closedAt: Long?) {
-    val epoch = samples.first().epoch
+internal class OffsetTrack(val samples: List<ClockSample>, private val log: Boolean, private val next: ClockSample?) {
+    val region = samples.first().region
     private val first = samples.first()
     private val last = samples.last()
     private val index by lazy { ClockSourceIndex(samples) { source(it) } }
@@ -290,7 +278,7 @@ internal class OffsetTrack(val samples: List<ClockSample>, private val log: Bool
     }
 
     /** This run's reading of [source], or null when [source] cannot belong to it. */
-    fun map(source: Long, host: Long, activeEpoch: Int, reference: Int): MappedTime? {
+    fun map(source: Long, host: Long, activeRegion: Int, reference: Int): MappedTime? {
         // For the open run, bound progress from the earliest possible measurement between sent and received.
         // The stale check below still measures five seconds from receipt, independently of source-clock error.
         val upper = if (next == null) source(last) + (host - last.sent).coerceIn(0,
@@ -304,12 +292,12 @@ internal class OffsetTrack(val samples: List<ClockSample>, private val log: Bool
             ((offset(high) - offset(low)).toDouble() * (source - source(low)).toDouble() / delta).toLong() else offset(low)
         val error = maxOf(low.readError, high.readError) + abs(offset(high) - offset(low))
         val stale = next == null && host - last.received > 5_000_000_000
-        val boundary = epoch < activeEpoch && (source > source(last) ||
-            log && closedAt?.let { host > it } == true) || epoch > 0 && source < source(first)
+        val boundary = region < activeRegion && (source > source(last) ||
+            log && host > last.received) || region > 0 && source < source(first)
         val elapsed = if (stale || boundary || error > 20_000_000) null else Math.addExact(source, interpolated)
         // Another boot keeps its source and BOOTTIME but has no exact place on the reference boot's timeline.
-        val sequence = if (elapsed != null && last.segment == reference) Math.addExact(elapsed, last.sequenceOffset) else null
-        return MappedTime(elapsed, epoch, if (sequence == null) Long.MAX_VALUE else error, sequence)
+        val sequence = if (elapsed != null && last.segment == reference) Math.addExact(elapsed, last.segmentOffset) else null
+        return MappedTime(elapsed, region, if (sequence == null) Long.MAX_VALUE else error, sequence)
     }
 }
 

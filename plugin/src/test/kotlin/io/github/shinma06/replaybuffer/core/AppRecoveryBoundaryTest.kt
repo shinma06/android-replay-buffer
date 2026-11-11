@@ -100,28 +100,28 @@ class AppRecoveryBoundaryTest {
         interrupt(store)
         val original = appGap(store)
         val pinned = store.capture(ReplaySettings())!!
-        target(store, 2) // DeviceCapture's app poll resolves against the last old-epoch anchor.
+        target(store, 2) // DeviceCapture's app poll resolves against the last old-region anchor.
         store.status("device_log", StreamState.CAPTURING, null, 2)
-        sample(store, host, 8) // The device slept during the outage, so the real clock.add starts a new epoch.
+        sample(store, host, 8) // The device slept during the outage, so the real clock.add starts a new region.
         store.clockStatus(true, 2)
         store.resume() // ReplayCore's next control poll releases T, but cannot register a target period.
-        assertEquals(1, store.clock.currentEpoch())
+        assertEquals(1, store.clock.currentRegion())
         assertNull(appGap(store).toNs)
         assertEquals(StreamState.RECOVERING, store.streams().getValue("app_log").state)
         val unassigned = row(store, host, 8)
         store.release(pinned.id)
         val waiting = store.capture(ReplaySettings())!!
-        assertEquals(0, waiting.apps.last().epoch)
+        assertEquals(0, waiting.apps.last().region)
         assertNull(waiting.logs.single { it.id == unassigned }.app)
         assertEquals(original, waiting.gaps.single { it.stream == "app_log" })
         store.release(waiting.id)
-        target(store, 2) // Only the next actual target poll registers current-epoch identity.
+        target(store, 2) // Only the next actual target poll registers current-region identity.
         assertEquals(7_000_000_000, appGap(store).toNs)
         assertEquals(StreamState.CAPTURING, store.streams().getValue("app_log").state)
         sample(store, host, 9)
         val recovered = row(store, host, 9)
         val capture = store.capture(ReplaySettings())!!
-        assertEquals(1, capture.apps.last().epoch)
+        assertEquals(1, capture.apps.last().region)
         assertTrue(capture.logs.single { it.id == recovered }.app == true)
         assertNull(capture.logs.single { it.id == unassigned }.app)
         val saved = SaveWriter().write(capture, root, { false }) { publication ->
@@ -176,7 +176,7 @@ class AppRecoveryBoundaryTest {
                 }
                 assertEquals(7_000_000_000, appGap(store).toNs, order.toString())
                 assertEquals(StreamState.CAPTURING, store.streams().getValue("app_log").state)
-                assertEquals(1, store.clock.currentEpoch())
+                assertEquals(1, store.clock.currentRegion())
             }
         }
     }

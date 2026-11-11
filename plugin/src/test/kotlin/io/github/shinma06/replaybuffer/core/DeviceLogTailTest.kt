@@ -65,10 +65,10 @@ else: sys.exit(9)
                 while (rows().size != attempt * 3 + 1 && currentReader.isAlive && System.nanoTime() < deadline) Thread.sleep(10)
                 assertEquals(attempt * 3 + 1, rows().size)
                 if (attempt == 0) {
-                    // The same reader stays live while the sampled wall clock starts a new epoch.
+                    // The same reader stays live while the sampled wall clock starts a new region.
                     assertTrue(store.clock.add("fixture-boot", listOf(1_001_000_000L, 1_001_000_000L, back, 1_001_000_000L),
                         host + 1_000_000L, host + 1_000_000L))
-                    assertEquals(1, store.clock.currentEpoch())
+                    assertEquals(1, store.clock.currentRegion())
                 }
                 Files.createFile(root.resolve("continue"))
                 currentReader.join(5000)
@@ -84,7 +84,7 @@ else: sys.exit(9)
                     assertEquals(1L, row.generation)
                     assertContentEquals(("\u0004Fixture\u0000${row.source.message}\u0000").toByteArray(), row.source.raw)
                 }
-                assertEquals(listOf(attempt, 1), accepted.take(2).map { it.time.epoch })
+                assertEquals(listOf(attempt, 1), accepted.take(2).map { it.time.region })
                 assertTrue(accepted.take(2).all { it.time.elapsed != null })
                 assertNull(accepted.last().time.elapsed)
                 assertNull(accepted.last().time.sequence)

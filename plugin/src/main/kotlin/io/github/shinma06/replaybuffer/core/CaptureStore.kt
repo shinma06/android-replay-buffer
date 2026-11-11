@@ -30,7 +30,7 @@ internal data class LogEntry(
     val retainedAt: Long, val app: Boolean?, val host: Long,
 )
 internal data class AppPeriod(
-    val packageName: String?, val uid: Long?, val pids: Set<Int>, val from: Long?, val to: Long?, val epoch: Int,
+    val packageName: String?, val uid: Long?, val pids: Set<Int>, val from: Long?, val to: Long?, val region: Int,
     val uidExclusive: Boolean = false, val endUnknown: Boolean = false,
 )
 /**
@@ -44,7 +44,7 @@ internal data class FrozenCapture(
     val seconds: Int, val video: List<VideoEntry>, val logs: List<LogEntry>, val gaps: List<CaptureGap>,
     val clocks: List<ClockSample>, val apps: List<AppPeriod>, val settings: ReplaySettings,
     val states: Map<String, StreamSnapshot>, val device: ReplayDevice? = null,
-    val endUncertainty: Long = 0, val windowClockEpoch: Int? = null,
+    val endUncertainty: Long = 0, val windowClockRegion: Int? = null,
     val clockRecoveries: Map<CaptureGap, ClockSample> = emptyMap(),
     val videoCuts: Map<CaptureGap, VideoCut> = emptyMap(),
     val autoTrigger: AutoTrigger? = null,
@@ -135,7 +135,7 @@ internal class CaptureStore(
     private var logsStarted: Long? = null
     private var fixedEnd: Long? = null
     private var fixedUncertainty: Long? = null
-    private var fixedEpoch: Int? = null
+    private var fixedRegion: Int? = null
     private var generation = 0L
     private var generationClockSample: ClockSample? = null
     private var appResolved = false
@@ -296,7 +296,7 @@ internal class CaptureStore(
                     states.getValue("device_log").reason ?: "全体ログ取得の復旧を待っています"
                 clock.snapshot().lastOrNull() === generationClockSample || !clock.certain() -> "時計対応を確認できません"
                 !appResolved || apps.peekLast()?.let { it.uid != null && it.from != null && it.to == null &&
-                    it.epoch == clock.currentEpoch() } != true -> "現在の時計区間で対象アプリの確認を待っています"
+                    it.region == clock.currentRegion() } != true -> "現在の時計区間で対象アプリの確認を待っています"
                 else -> null
             } else null
             if (waiting != null) {
@@ -307,7 +307,7 @@ internal class CaptureStore(
             val index = gaps.lastOrNull { it.stream == kind && it.toNs == null }
             if (index != null) {
                 // The frame that ends a video gap was captured at its own source time, before it arrived.
-                val shown = received?.time?.takeIf { kind == "video" && it.uncertainty != Long.MAX_VALUE && it.epoch == clock.currentEpoch() }?.sequence
+                val shown = received?.time?.takeIf { kind == "video" && it.uncertainty != Long.MAX_VALUE && it.region == clock.currentRegion() }?.sequence
                 val now = clock.now()
                 val end = shown?.let { at -> maxOf(index.fromNs ?: at, now?.let { minOf(it, at) } ?: at) } ?: now
                 val closedGap = acrossBoot(index.copy(toNs = end, boundaryUncertaintyNs = if (kind == "app_log")
@@ -336,14 +336,14 @@ internal class CaptureStore(
     fun clockStatus(healthy: Boolean, owner: Long) {
         if (closed || owner != generation) return
         if (!healthy && gaps.none { it.stream == "clock" && it.toNs == null }) {
-            // The outage belongs to the clock region of its last normal read, not to a newer epoch a rejected read opened.
+            // The outage belongs to the clock region of its last normal read, not to a newer region a rejected read opened.
             val anchor = clock.snapshot().lastOrNull { it.valid }
-            addGap("clock", anchor?.let { it.elapsed + it.sequenceOffset }, null, "時計測定が不達または正常条件を満たしません",
-                epoch = anchor?.epoch)
+            addGap("clock", anchor?.let { it.elapsed + it.segmentOffset }, null, "時計測定が不達または正常条件を満たしません",
+                region = anchor?.region)
         } else if (healthy) {
             val gap = gaps.lastOrNull { it.stream == "clock" && it.toNs == null }
             if (gap != null) synchronized(clock) {
-                val recovery = clock.snapshot().lastOrNull()?.takeIf { it.valid && it.epoch == clock.currentEpoch() }
+                val recovery = clock.snapshot().lastOrNull()?.takeIf { it.valid && it.region == clock.currentRegion() }
                 val closedGap = acrossBoot(gap.copy(toNs = clock.now()))
                 gaps.remove(gap); gaps.add(closedGap)
                 if (recovery != null) clockRecoveries[closedGap] = recovery
@@ -430,7 +430,7 @@ internal class CaptureStore(
         // Consume an ordinal before guards/IDR waiting: rejected source packets leave a detectable hole.
         packetOrdinal = Math.incrementExact(packetOrdinal)
         require(width > 0 && height > 0 && config.isNotEmpty()) { "動画の寸法/configがありません" }
-        if (packet.pts <= previousPts) { clock.boundary(); error("動画PTSが単調ではありません") }
+        if (packet.pts <= previousPts) { clock.startRegion(); error("動画PTSが単調ではありません") }
         previousPts = packet.pts
         if (packet.key) {
             closeCurrentFile()
@@ -481,16 +481,16 @@ internal class CaptureStore(
         val samples = clock.snapshot()
         val anchor = clock.hostAnchor(host)
         if (last == null || last.packageName != packageName || last.uid != uid || last.pids != pids ||
-            last.uidExclusive != uidExclusive || last.from == null || last.epoch != anchor?.epoch) {
+            last.uidExclusive != uidExclusive || last.from == null || last.region != anchor?.region) {
             val now = anchor?.let { it.elapsed + (host - it.received).coerceAtLeast(0) }
             if (last != null) {
-                val end = if (last.epoch == anchor?.epoch) now else samples.lastOrNull { it.epoch == last.epoch }?.elapsed
+                val end = if (last.region == anchor?.region) now else samples.lastOrNull { it.region == last.region }?.elapsed
                 // A previous sample cannot close a period that began later by host extrapolation.
                 val knownEnd = end?.takeIf { last.from == null || it >= last.from }
                 apps.removeLast()
                 apps.add(last.copy(to = knownEnd, endUnknown = knownEnd == null))
             }
-            apps += AppPeriod(packageName, uid, java.util.Set.copyOf(pids), now, null, anchor?.epoch ?: 0, uidExclusive)
+            apps += AppPeriod(packageName, uid, java.util.Set.copyOf(pids), now, null, anchor?.region ?: 0, uidExclusive)
             while (apps.size > 2048) apps.removeFirst()
         }
         if (poll != null) reporter = poll
@@ -530,14 +530,14 @@ internal class CaptureStore(
             clock.certain(host) && host >= anchor.received
         val boundary = if (ready) try {
             val time = clock.hostAnchor(host) ?: anchor
-            CrashBarrier(device, anchor.boot, generation, clock.currentEpoch(), host,
+            CrashBarrier(device, anchor.boot, generation, clock.currentRegion(), host,
                 Math.addExact(time.wall, host - time.received), amCrashFields)
         } catch (_: ArithmeticException) { null } else null
-        autosave.refresh(boundary, host, clock.currentEpoch().takeIf { context && boundary == null }, ::resolveHeld)
+        autosave.refresh(boundary, host, clock.currentRegion().takeIf { context && boundary == null }, ::resolveHeld)
     }
 
     private fun membership(source: DeviceLog, time: MappedTime): Pair<AppPeriod?, Boolean?> {
-        val period = apps.lastOrNull { it.epoch == time.epoch && time.elapsed != null && it.from != null &&
+        val period = apps.lastOrNull { it.region == time.region && time.elapsed != null && it.from != null &&
             time.elapsed >= it.from && (it.to == null || time.elapsed <= it.to) }
         val app = when {
             period?.uid == null || period.endUnknown || time.elapsed == null -> null
@@ -603,12 +603,12 @@ internal class CaptureStore(
         if (fixedEnd == null) synchronized(clock) {
             fixedEnd = clock.now() ?: latest()
             fixedUncertainty = clock.endUncertainty()
-            fixedEpoch = clock.currentEpoch()
+            fixedRegion = clock.currentRegion()
         }
     }
     @Synchronized
     fun resume() {
-        fixedEnd = null; fixedUncertainty = null; fixedEpoch = null
+        fixedEnd = null; fixedUncertainty = null; fixedRegion = null
         if (appResolved && states.getValue("app_log").state != StreamState.CAPTURING)
             status("app_log", StreamState.CAPTURING, null, generation)
     }
@@ -626,7 +626,7 @@ internal class CaptureStore(
         if (fixedEnd != null) return
         val end = clock.now(host) ?: latest() ?: return
         val uncertainty = clock.endUncertainty(host)
-        // An unknown current T cannot prove that old known-epoch records are outside the window.
+        // An unknown current T cannot prove that old known-region records are outside the window.
         if (uncertainty == Long.MAX_VALUE) {
             // A record is generated before it is received, so one received before every possible window start is outside.
             val cutoff = host - seconds * 1_000_000_000L - HOST_WINDOW_MARGIN_NS
@@ -715,7 +715,7 @@ internal class CaptureStore(
         val start = maxOf(0L, origin(!withVideo) ?: end, end - settings.replaySeconds * 1_000_000_000L)
         val hostStart = if (known || fixedEnd != null) null else host - settings.replaySeconds * 1_000_000_000L - HOST_WINDOW_MARGIN_NS
         // Rows of another boot have no exact place on the window's boot and stay unknown-time rows.
-        val reference = clock.segment(fixedEpoch ?: clock.currentEpoch())
+        val reference = clock.segment(fixedRegion ?: clock.currentRegion())
         val logTime = clock.logMapper(reference)
         val latest = clock.latestSequence()
         // An unknown-time record received before a clock read that is already before the window cannot be inside it.
@@ -740,7 +740,7 @@ internal class CaptureStore(
         var heldTouches = emptyList<TouchEntry>()
         val touchRows = (if (!withVideo) emptyList() else {
             val touchTime = clock.monoMapper(reference)
-            touches.map { row -> row.copy(time = touchTime(row.sample.monoNs, row.host, row.time.epoch)) }
+            touches.map { row -> row.copy(time = touchTime(row.sample.monoNs, row.host, row.time.region)) }
         }).let { mapped ->
             heldTouches = mapped.filter { it.time.sequence != null && it.time.uncertainty != Long.MAX_VALUE && it.time.sequence < start }
                 .groupBy { Triple(it.generation, it.sample.device, it.sample.pointer) }.values
@@ -748,7 +748,7 @@ internal class CaptureStore(
             mapped.filter { insideWindow(it.time, it.host) }
         }
         val audioRows = if (!audioRequested || !withVideo) emptyList() else
-            audio.map { it.mapped(clock.video(it.pts, it.host, it.time.epoch, reference)) }.filter { insideWindow(it.time, it.host) }
+            audio.map { it.mapped(clock.video(it.pts, it.host, it.time.region, reference)) }.filter { insideWindow(it.time, it.host) }
         val all = if (withVideo) video.toList() else emptyList()
         val files = mutableSetOf<Path>()
         all.forEachIndexed { index, entry ->
@@ -763,11 +763,11 @@ internal class CaptureStore(
         }
         all.lastOrNull()?.takeIf { known && it.retainedAt < start && currentVideo(it) }?.let { files.add(it.file) }
         val frames = all.filter { (!known || it.retainedAt <= end) && it.file in files }.map { frame ->
-            frame.copy(time = clock.video(frame.pts, frame.host, frame.time.epoch, reference))
+            frame.copy(time = clock.video(frame.pts, frame.host, frame.time.region, reference))
         }
         var value = FrozenCapture(UUID.randomUUID().toString(), sequence, generation, start, end,
             settings.replaySeconds, frames.toList(), rows.toList(), gaps.filter { withVideo || it.stream != "video" }, clock.snapshot(), apps.toList(), settings,
-            streams(settings.replaySeconds, end), endUncertainty = uncertainty, windowClockEpoch = fixedEpoch ?: clock.currentEpoch(),
+            streams(settings.replaySeconds, end), endUncertainty = uncertainty, windowClockRegion = fixedRegion ?: clock.currentRegion(),
             clockRecoveries = clockRecoveries.toMap(), videoCuts = videoCuts.toMap(), hostStart = hostStart,
             touches = touchRows, heldTouches = heldTouches, touchState = touchState.takeIf { withVideo },
             injectedTouchState = injectedTouchState.takeIf { withVideo }, touchGaps = if (!withVideo) emptyList() else touchGaps.toList() +
@@ -852,7 +852,7 @@ internal class CaptureStore(
             listOf("device_log", "app_log").all { states.getValue(it).let { state ->
                 state.state == StreamState.CAPTURING && state.reason == null
             } } && appResolved && apps.peekLast()?.let {
-                it.uid != null && it.from != null && it.to == null && !it.endUnknown && it.epoch == clock.currentEpoch()
+                it.uid != null && it.from != null && it.to == null && !it.endUnknown && it.region == clock.currentRegion()
             } == true
     }
 
@@ -862,7 +862,7 @@ internal class CaptureStore(
                 maxOf(a.time.uncertainty, b.time.uncertainty), clock.snapshot(), clockRecoveries))
 
     private fun currentVideo(frame: VideoEntry): Boolean = frame.generation == generation && frame.session == videoSession &&
-        frame.time.epoch == clock.currentEpoch() && frame.width == width && frame.height == height && frame.config.contentEquals(config)
+        frame.time.region == clock.currentRegion() && frame.width == width && frame.height == height && frame.config.contentEquals(config)
 
     private fun removeVideo(): VideoEntry {
         val entry = video.removeFirst()
@@ -893,14 +893,14 @@ internal class CaptureStore(
 
     /** A gap closed on another boot spans a reboot: its duration is only an approximate host-time distance. */
     private fun acrossBoot(gap: CaptureGap): CaptureGap = synchronized(clock) {
-        val opened = clock.snapshot().lastOrNull { it.epoch == gap.clockEpoch }?.segment
+        val opened = clock.snapshot().lastOrNull { it.region == gap.clockRegion }?.segment
         if (opened == null || opened == clock.segment()) gap else gap.copy(boundaryUncertaintyNs = Long.MAX_VALUE)
     }
 
     private fun removeGapProofs(gap: CaptureGap) { clockRecoveries.remove(gap); videoCuts.remove(gap) }
 
     private fun addGap(stream: String, from: Long?, to: Long?, reason: String, boundary: MappedTime? = null,
-                       lostVideo: VideoEntry? = null, epoch: Int? = null) {
+                       lostVideo: VideoEntry? = null, region: Int? = null) {
         // Source interruption survives gap coalescing. Evicting an old packet does not interrupt live capture.
         if (stream == "video" && lostVideo == null) decodeRun = Math.incrementExact(decodeRun)
         val previous = gaps.peekLast()
@@ -912,7 +912,7 @@ internal class CaptureStore(
         val uncertainty = boundary?.uncertainty ?: anchor?.let { if (System.nanoTime() - it.received > 5_000_000_000) Long.MAX_VALUE else
             it.readError + (it.received - it.sent) / 2 }
         val gap = CaptureGap(stream, from, to, reason, if (boundary != null || clock.certain()) uncertainty else Long.MAX_VALUE,
-            generation, boundary?.epoch ?: epoch ?: clock.currentEpoch())
+            generation, boundary?.region ?: region ?: clock.currentRegion())
         gaps += gap
         if (stream == "video") {
             // A retention hole occupies the deleted packet's bytes, not the current source tail.
@@ -978,20 +978,20 @@ internal class CaptureStore(
 }
 
 /**
- * A closed clock-read outage whose recovery read proved the same clock region (an epoch never spans boots, so the
- * opening read's epoch also fixes its boot): rows inside it map by the surrounding
+ * A closed clock-read outage whose recovery read proved the same clock region (an region never spans boots, so the
+ * opening read's region also fixes its boot): rows inside it map by the surrounding
  * reads, so it is no loss. An open outage or one ending at a clock step stays a loss of clock alignment.
  */
 internal fun CaptureGap.resolvedClock(recoveries: Map<CaptureGap, ClockSample>): Boolean =
-    stream == "clock" && fromNs != null && toNs != null && clockEpoch != null && recoveries[this]?.epoch == clockEpoch
+    stream == "clock" && fromNs != null && toNs != null && clockRegion != null && recoveries[this]?.region == clockRegion
 
 /** The boot segment of the fixed window; rows and clock reads of other boots have no exact place on it. */
 internal val FrozenCapture.windowSegment: Int?
-    get() = clocks.lastOrNull { it.epoch == windowClockEpoch }?.segment ?: clocks.lastOrNull()?.segment
+    get() = clocks.lastOrNull { it.region == windowClockRegion }?.segment ?: clocks.lastOrNull()?.segment
 
 /** Source PTS, not an assumed frame rate, defines continuity within an uninterrupted stream. */
 internal fun VideoEntry.continuousTo(next: VideoEntry, gaps: Iterable<CaptureGap>): Boolean =
-    generation == next.generation && session == next.session && time.epoch == next.time.epoch &&
+    generation == next.generation && session == next.session && time.region == next.time.region &&
         width == next.width && height == next.height && config.contentEquals(next.config) && next.pts > pts &&
         time.sequence != null && next.time.sequence != null && next.time.sequence > time.sequence &&
         time.uncertainty != Long.MAX_VALUE && next.time.uncertainty != Long.MAX_VALUE &&
@@ -1013,7 +1013,7 @@ internal fun List<CaptureGap>.gapScopes(
     fun anchor(sample: ClockSample): Pair<Long, Long>? {
         if (!sample.hostAnchored || sample.segment != reference) return null
         return try {
-            Math.addExact(sample.elapsed, sample.sequenceOffset) to
+            Math.addExact(sample.elapsed, sample.segmentOffset) to
                 Math.addExact(sample.readError, Math.subtractExact(sample.received, sample.sent) / 2)
         } catch (_: ArithmeticException) { null }
     }
@@ -1044,7 +1044,7 @@ internal fun List<CaptureGap>.gapScopes(
             } } ?: boundarySample(candidates, to, after = true)
         }
         // A gap opened on another boot has no start on this boot's axis: unbounded before, exact where it closed here.
-        val opened = gap.clockEpoch?.let { epoch -> clocks.lastOrNull { it.epoch == epoch }?.segment }
+        val opened = gap.clockRegion?.let { region -> clocks.lastOrNull { it.region == region }?.segment }
         if (reference != null && opened != null && opened != reference)
             return@map after?.let { gap.copy(fromNs = null, toNs = it.first, boundaryUncertaintyNs = it.second) } ?: gap
         // Widen to observed normal samples, never treat nominal from/to as zero-error boundaries.
@@ -1092,10 +1092,10 @@ internal fun FrozenCapture.videoTail(): VideoTailSnapshot? {
     val from = source?.let { maxOf(start, it) }
     val to = boundary.takeIf { windowKnown && source != null && it > maxOf(start, source) }
     if (from != null && to == null) return null
-    val held = from != null && to != null && last.time.epoch == windowClockEpoch &&
+    val held = from != null && to != null && last.time.region == windowClockRegion &&
         boundaries.all { it.fromNs != null && it.fromNs >= to && it.boundaryUncertaintyNs != null && it.boundaryUncertaintyNs != Long.MAX_VALUE } &&
         (states["video"]?.state == StreamState.CAPTURING || boundaries.isNotEmpty()) && video.decodeStart(last) != null
-    return VideoTailSnapshot(from, to, last.pts, source, last.time.epoch, last.generation, held)
+    return VideoTailSnapshot(from, to, last.pts, source, last.time.region, last.generation, held)
 }
 
 /** Unknown boundaries remain visible; uncertainty can place a nominally outside boundary in the window. */
@@ -1107,11 +1107,11 @@ internal fun CaptureGap.intersects(start: Long?, end: Long, windowUncertainty: L
 }
 
 internal fun FrozenCapture.applicationHistory(): List<ApplicationPeriodSnapshot> = java.util.List.copyOf(apps.mapNotNull { app ->
-    val offset = if (windowKnown) clocks.lastOrNull { it.valid && it.epoch == app.epoch }?.sequenceOffset else null
+    val offset = if (windowKnown) clocks.lastOrNull { it.valid && it.region == app.region }?.segmentOffset else null
     val from = app.from?.let { time -> offset?.let { Math.addExact(time, it) } }
     val to = app.to?.let { time -> offset?.let { Math.addExact(time, it) } }
     if (windowKnown && offset != null && (from != null && from > end || to != null && to < start)) null else
-        ApplicationPeriodSnapshot(app.packageName, from?.coerceAtLeast(start), to?.coerceAtMost(end), app.epoch, app.uid != null)
+        ApplicationPeriodSnapshot(app.packageName, from?.coerceAtLeast(start), to?.coerceAtMost(end), app.region, app.uid != null)
 })
 
 /** Covers device/host clock rate drift over the longest replay window. */

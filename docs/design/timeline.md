@@ -46,21 +46,21 @@ REQUEST、DRAW、commit callback、mirror取得、encoder出力、物理表示�
 
 時計DEXはapp_processで動く小さな専用helper。端末appの改造・APKインストール・rootを要求しない。hostからnonce付き測定要求を送り、helperは`elapsed before → mono → currentTimeMillis → elapsed after`を返す。clock sampleにはnonce、boot epoch ID、各値、読取幅、host往復幅を保存する。helperの実起動/互換性は未検証。起動不可なら同期不適合を表示し、受入を通さない。
 
-開始/再接続/取得generation変更時に5回測定し最短往復のsampleを初期anchorにする。以後1秒ごとに測定、5秒以上古いanchorは正常同期に使わない。clock sampleの端末読取幅は2ms以下を正常条件にする。mono/elapsed/Epochのoffsetは端末内で続けて読むので、adbの往復の長さに左右されない。往復が40msを超えたsampleも、video/タップ/ログの変換には使う。hostの時刻から端末の時刻を推定する処理（保存の窓端T、クラッシュの受付時刻、ログ取得開始の下限）だけは、往復40ms以下の直近sampleをanchorにする。anchorの鮮度は最新sampleからではなく、推定する時点（保存・受付・取得開始のhost時刻）で受信後5秒以内かどうかで判断する。そのようなsampleがないときは最新の正常sampleを使い、その往復の半分を誤差に含める。offsetのepoch分割は前後sampleの読取幅と1ms量子化による見積誤差を超える不連続で判断し、微小な測定差だけでは分割しない。往復の半分は**対称遅延の推定値**であり、端末内部のmono/elapsed/Epoch変換の保証誤差とは混同しない。
+開始/再接続/取得generation変更時に5回測定し最短往復のsampleを初期anchorにする。以後1秒ごとに測定、5秒以上古いanchorは正常同期に使わない。clock sampleの端末読取幅は2ms以下を正常条件にする。mono/elapsed/Epochのoffsetは端末内で続けて読むので、adbの往復の長さに左右されない。往復が40msを超えたsampleも、video/タップ/ログの変換には使う。hostの時刻から端末の時刻を推定する処理（保存の窓端T、クラッシュの受付時刻、ログ取得開始の下限）だけは、往復40ms以下の直近sampleをanchorにする。anchorの鮮度は最新sampleからではなく、推定する時点（保存・受付・取得開始のhost時刻）で受信後5秒以内かどうかで判断する。そのようなsampleがないときは最新の正常sampleを使い、その往復の半分を誤差に含める。offsetの時計区間の分割は前後sampleの読取幅と1ms量子化による見積誤差を超える不連続で判断し、微小な測定差だけでは分割しない。往復の半分は**対称遅延の推定値**であり、端末内部のmono/elapsed/Epoch変換の保証誤差とは混同しない。
 
 - `E = (elapsed_before + elapsed_after) / 2`。`E - mono`と`E - epoch`を別々に保存する。currentTimeMillisの1ms量子化、読取幅、隣接sampleのoffset差を変換の誤差幅へ加える。
 - 同一clock区間では`video_elapsed = video_pts * 1000 + (E - mono)`、`log_elapsed = log_epoch + (E - epoch)`。各sample間でoffsetを線形補間する。同期精度を装うためにhost受信時刻へ置き換えない。
-- sampleの端末測定はhostの送信〜応答受信の間に起こる。現在epochの新しいsource時刻の支持範囲上限は、最も早い測定時点である送信からの進みを含める。応答受信完了を測定時点と同一視して、許容RTT内の応答遅延だけで到着可能なsourceを不明にしない。閉じたepochの探索境界は広げず、未知候補を新epochの正常sampleへ重ねない。鮮度は引き続き受信後5秒、変換誤差20msを維持し（RTT40msはhost時刻からの推定のanchor選択だけに使う）、支持範囲外・epoch/boot境界・曖昧なsourceは不明のまま保持する。支持範囲のhost区間と端末clockの変換誤差を混同せず、生sourceをhost時刻へ置き換えない。
-- `E-mono`の変化（端末sleep）、`E-epoch`の急変（日時変更）、boot変化、PTS逆行を境界としてclock区間を分ける。境界を跨いで補間しない。clock測定の不達（5秒以上の途切れ、測定processの再起動を含む）だけでは境界にしない。途切れの間は時刻を換算できない（鮮度切れ）が、次の正常sampleで同じbootかつmono/Epochのoffsetが読取誤差内で続いていれば同じepochとし、途切れた間の記録は保存時の換算で前後のsampleから変換する。offsetが不連続なら、その時点で境界とする。途切れはclockの不足区間として`replay.json`とUIに残す。復帰の測定が、途切れる前の最後の正常sampleと同じepoch（epochはbootを跨がないので同じboot）だと確かめられた不足区間は、欠落として扱わない。不足区間のepochは、この途切れる前の正常sampleのものとする。再起動後の最初の測定が読取幅2msを超え、先に新しいepochを開いた場合も同じで、新bootの復帰では解消済みにしない。動画の連続を切らず、区間内のframe・ログ・タップ・音声は前後のsampleで変換し、保存の不足の種類にも数えない。開いたままの区間と、復帰時に境界となった区間は、これまでどおり全streamの時計対応の不足とする。取得済みの生PTS・Epoch・arrivalを残し、ambiguousなログには`elapsed_ns: null`、推定範囲、`clock_uncertain`を付ける。日時が戻った場面では同じEpoch値が複数の時点を指し得るため、ログ到着順・generationを含めても一意にならないものを無理に割り当てない。
+- sampleの端末測定はhostの送信〜応答受信の間に起こる。現在の時計区間の新しいsource時刻の支持範囲上限は、最も早い測定時点である送信からの進みを含める。応答受信完了を測定時点と同一視して、許容RTT内の応答遅延だけで到着可能なsourceを不明にしない。閉じた時計区間の探索境界は広げず、未知候補を新しい時計区間の正常sampleへ重ねない。鮮度は引き続き受信後5秒、変換誤差20msを維持し（RTT40msはhost時刻からの推定のanchor選択だけに使う）、支持範囲外・時計区間/boot境界・曖昧なsourceは不明のまま保持する。支持範囲のhost区間と端末clockの変換誤差を混同せず、生sourceをhost時刻へ置き換えない。
+- `E-mono`の変化（端末sleep）、`E-epoch`の急変（日時変更）、boot変化、PTS逆行を境界としてclock区間を分ける。境界を跨いで補間しない。clock測定の不達（5秒以上の途切れ、測定processの再起動を含む）だけでは境界にしない。途切れの間は時刻を換算できない（鮮度切れ）が、次の正常sampleで同じbootかつmono/Epochのoffsetが読取誤差内で続いていれば同じ時計区間とし、途切れた間の記録は保存時の換算で前後のsampleから変換する。offsetが不連続なら、その時点で境界とする。途切れはclockの不足区間として`replay.json`とUIに残す。復帰の測定が、途切れる前の最後の正常sampleと同じ時計区間（時計区間はbootを跨がないので同じboot）だと確かめられた不足区間は、欠落として扱わない。不足区間の時計区間は、この途切れる前の正常sampleのものとする。再起動後の最初の測定が読取幅2msを超え、先に新しい時計区間を開いた場合も同じで、新bootの復帰では解消済みにしない。動画の連続を切らず、区間内のframe・ログ・タップ・音声は前後のsampleで変換し、保存の不足の種類にも数えない。開いたままの区間と、復帰時に境界となった区間は、これまでどおり全streamの時計対応の不足とする。取得済みの生PTS・Epoch・arrivalを残し、ambiguousなログには`elapsed_ns: null`、推定範囲、`clock_uncertain`を付ける。日時が戻った場面では同じEpoch値が複数の時点を指し得るため、ログ到着順・generationを含めても一意にならないものを無理に割り当てない。
 - 相関不明でも取得を捨てない。正常な側は継続し、UI/成果物は「時刻対応を確認できない区間」を示す。未対応をSYNC-01合格に数えない。受信遅延でT以前のデータが保存確定後に届いたら、後の保存だけへ含める。前のimmutable保存対象は書き換えず、保存時点のwatermark/遅延疑いを記録する。
 
-`sequence_time_ns = device_elapsed_ns - initial_elapsed_ns`が同一bootの軸。`sequence_id`は有効化開始から無効化/project closeまで固定し、再接続・取得process再起動・設定適用・rotationで変えない。generationとclock epochだけ増やす。端末再起動ではelapsedが戻るため、新しいboot epochとboot区間（segment）を作る。最初の測定の読取幅が2msを超えていても、boot IDの変化だけで境界とする。同じsequenceに履歴を残すが、boot間は時刻が厳密につながると主張しない。
+`sequence_time_ns = device_elapsed_ns - initial_elapsed_ns`が同一bootの軸。`sequence_id`は有効化開始から無効化/project closeまで固定し、再接続・取得process再起動・設定適用・rotationで変えない。generationと時計区間だけ増やす。端末再起動ではelapsedが戻るため、新しい時計区間とboot区間（segment）を作る。最初の測定の読取幅が2msを超えていても、boot IDの変化だけで境界とする。同じsequenceに履歴を残すが、boot間は時刻が厳密につながると主張しない。
 
 各bootの端末BOOTTIMEが、そのbootの正確な時間軸になる。新しいbootは最初の正常sampleから自分の軸で時計対応ありとなり、host時計による橋渡しを必要としない（host日時は使わない）。sequence座標上の新bootの位置は、旧bootの最後のsampleの受信から新bootの最初のsampleの送信までのhost `nanoTime`差だけ後ろに置く。この差は2回の端末測定の間の実時間の下限なので、bootの順序と、保守的な側の窓外判定にだけ使い、eventの時刻にはしない（`timebase.boot_segments`の`placement`は窓のbootが`exact`、ほかのbootは参考値の`approximate`）。窓のbootと違うbootのrecordは`elapsed_ns`を保ったまま、窓のboot上の時刻は不明（`t_ns: null`、誤差は最大値）とし、新bootの正確な時刻へ混ぜない。gapの範囲を有限にするclock sampleも窓のbootのものだけを使う。リング全体はリセットせず、旧record/clock/gap履歴とpinを保つ。pruneは下限の位置でも現在窓より前と判定できるrecordを落とす。保持上限によるlossを隠さない。再起動を跨ぐgapはhost時刻差の参考値と`duration_uncertain`（境界の誤差は最大値）を記録し、確定の0秒gapへ変換しない。窓のboot上では、このgapの開始は不明（それより前の全範囲に及び得る）とし、終端だけを閉じた後の窓のbootの正常sampleで有限にする（`video_gap_scopes`の`from_t_ns: null`）。このため、再起動後の動画・ログ・タップを再起動のgapの中と扱わない。再起動の動画gapを閉じた新bootのframeの位置は、旧bootの動画ファイルがリングから消えた後も残す。そのframeから後は、閉じたgapの終端が次の正常sampleまで広がっても中断と扱わない。初期版の対応保証にはこの非致命性Caseを含める。
 
 ### replay.jsonの時刻の表し方（schema 4）
 
-保存物の時刻はすべて、窓のbootの端末BOOTTIME上で、保存窓の先頭からの経過ns（`t_ns`、十進文字列）で表す。frame・ログ・タップの各行は`t_ns`と誤差`t_uncertainty_ns`（最大値は時刻不明）、そのrecordのboot区間`boot_segment`を持ち、元の時刻（`video_pts_us`・`device_mono_ns`・`epoch_ns`・`elapsed_ns`）も残す。窓と別のbootの行は`t_ns: null`。part・gap・`video_missing_ranges`・`video_tail`などの範囲も`*_t_ns`で同じ軸に置く。内部のclock epochや、hostの時刻による橋渡しの値は出力しない。
+保存物の時刻はすべて、窓のbootの端末BOOTTIME上で、保存窓の先頭からの経過ns（`t_ns`、十進文字列）で表す。frame・ログ・タップの各行は`t_ns`と誤差`t_uncertainty_ns`（最大値は時刻不明）、そのrecordのboot区間`boot_segment`を持ち、元の時刻（`video_pts_us`・`device_mono_ns`・`epoch_ns`・`elapsed_ns`）も残す。窓と別のbootの行は`t_ns: null`。part・gap・`video_missing_ranges`・`video_tail`などの範囲も`*_t_ns`で同じ軸に置く。内部の時計区間の番号や、hostの時刻による橋渡しの値は出力しない。
 
 `replay.json`の`timebase`が時刻の基準を示す。
 
@@ -75,7 +75,7 @@ REQUEST、DRAW、commit callback、mirror取得、encoder出力、物理表示�
 
 ログの保存集合は固定clockで時刻を再評価してから選ぶ。再評価済みsequenceの誤差と保存窓の誤差を合算し、範囲全体が窓外と証明できる行だけを除外する。境界へ接する行、時刻/保存窓が不明な行、窓と別のbootの行、整数範囲のため外側と証明できない行は保持する。受信時のretainedAtとapp帰属は書き換えず、app不明を一律falseへ変えない。除外した窓外行を現在窓のapp不足の根拠に混ぜず、正常なapp 0行と本当の未確定/実gap/lossを区別する。固定対象の集合・clock・N・帰属は後続取得や再試行で再評価しない。
 
-保存要求を受けた瞬間に`T / N / sequence_id / clock epoch / generation / per-stream watermark / app selection`を凍結する。選択する論理窓は **`[max(sequence開始, T-N), T]`**。cut後の`t_ns = elapsed_ns - timebase.window_start_elapsed_ns`は動画・両ログ・タップで共通、gapも含めて進む。取得できたN秒を集めるために開始を過去へ広げない。開始20秒ならその20秒を保存する。
+保存要求を受けた瞬間に`T / N / sequence_id / 時計区間 / generation / per-stream watermark / app selection`を凍結する。選択する論理窓は **`[max(sequence開始, T-N), T]`**。cut後の`t_ns = elapsed_ns - timebase.window_start_elapsed_ns`は動画・両ログ・タップで共通、gapも含めて進む。取得できたN秒を集めるために開始を過去へ広げない。開始20秒ならその20秒を保存する。
 
 | 場面 | T・リング・欠落の規則 |
 | --- | --- |
@@ -101,7 +101,7 @@ gapはstream毎に`kind / from / to / reason / boundary_uncertainty / generation
 
 ## 切出しと保存形式
 
-対象アプリ履歴の終了sampleが外挿した開始より前にある場合、終了を確定できない。元clock sample・epoch・開始を保持し、`to_elapsed_ns: null` と `to_elapsed_unknown: true` を保存する。開いた現行履歴のnull終了は `to_elapsed_unknown: false` と区別する。終了未確定の履歴を根拠に新しいログを帰属確定せず、取得済みログの順序・既存帰属と固定保存/retryは変更しない。
+対象アプリ履歴の終了sampleが外挿した開始より前にある場合、終了を確定できない。元clock sample・時計区間・開始を保持し、`to_elapsed_ns: null` と `to_elapsed_unknown: true` を保存する。開いた現行履歴のnull終了は `to_elapsed_unknown: false` と区別する。終了未確定の履歴を根拠に新しいログを帰属確定せず、取得済みログの順序・既存帰属と固定保存/retryは変更しない。
 
 | 形式候補 | 判断 |
 | --- | --- |
@@ -118,23 +118,23 @@ gapはstream毎に`kind / from / to / reason / boundary_uncertainty / generation
 
 各ログ行は少なくとも`record_id / boot_segment / generation / epoch_ns / elapsed_nsまたはnull / t_nsまたはnull / t_uncertainty_ns / uid / pid / tid / lid / priority / tag / message / app_membership`。ns/usの時刻値は桁落ちを防ぐ10進文字列（null可）、単位はキー末尾で固定、JVMでは範囲確認付きLong変換/加減算を使う。改行をJSON escapeして1record=1行、サイズ上限・unknown header/payload・破断したrecordを検証する。UTF-8不正は元bytesとdecode statusを残す。JSONLは端末内容であり、公開Issue/CI artifactへ自動アップロードしない。
 
-動画はIDRとSPS/PPSから始まるGOP単位でraw packetをリングへ保持。各chunkの元PTS、clock epoch、generation、codec config、寸法、keyframe、byte数をindexに記録する。通常は最後のIDR以前のdecoder用データを1GOPだけ余分に保持する。I-frame指定を端末が無視したら実際のGOP長を使い、容量上限に達したため失った先頭を明示する。
+動画はIDRとSPS/PPSから始まるGOP単位でraw packetをリングへ保持。各chunkの元PTS、時計区間、generation、codec config、寸法、keyframe、byte数をindexに記録する。通常は最後のIDR以前のdecoder用データを1GOPだけ余分に保持する。I-frame指定を端末が無視したら実際のGOP長を使い、容量上限に達したため失った先頭を明示する。
 
 保存時は論理窓に交差する取得済みframeと必要なIDR/GOP prefixを選び、**1件のMP4・1video track**へ保存する。再接続・config・PTSリセット等はファイル内の独立media区間で表す。通常の同一geometryは再圧縮せず元VCLとcodec configを保持する。geometry変更時は本書の変換範囲に従って固定canvasへ変換し、必要な全対象を保存できなければFAILEDとしてpinを保つ。後半drop・複数MP4 fallback・非公開の部分成功は禁止する。
 
-映像sourceの連続性は取得時の正の`decodeRun / packetOrdinal`をFrozenCaptureへ固定して証明する。gen/session/config/寸法が一致し、PTSが単調、ordinalが隣接し、同fileのoffset/size又は新IDR fileの先頭が正しい場合だけ同じ復号区間を使う。取得世代・session・config変更や実取得中断はdecodeRunを変更し、受信後の拒否packetもordinalを消費する。0のlegacy値・ordinal欠落・矛盾・整数overflowをpositive proofにしない。通常IDRによるGOP file切替やclock epoch/確度変更だけでは復号区間を分けない。既存`continuousTo`はprune/retention用の保守的判定として維持し、mux専用clock/source-only例外は廃止する。
+映像sourceの連続性は取得時の正の`decodeRun / packetOrdinal`をFrozenCaptureへ固定して証明する。gen/session/config/寸法が一致し、PTSが単調、ordinalが隣接し、同fileのoffset/size又は新IDR fileの先頭が正しい場合だけ同じ復号区間を使う。取得世代・session・config変更や実取得中断はdecodeRunを変更し、受信後の拒否packetもordinalを消費する。0のlegacy値・ordinal欠落・矛盾・整数overflowをpositive proofにしない。通常IDRによるGOP file切替や時計区間/確度の変更だけでは復号区間を分けない。既存`continuousTo`はprune/retention用の保守的判定として維持し、mux専用clock/source-only例外は廃止する。
 
 各復号区間のsample間は観測した元PTS差をtimescale=1,000,000のVFR durationへ使う。PTSリセットは独立media originへ移し、元source PTSとrun/gen/sessionはvideo-frames.jsonlへ残す。区間ごとに対応するAVC sample entryを指定し、再利用されたSPS IDでもconfig bytesを混同しない。次sampleのない終端は`source_duration_us=null`のまま、許可されたheld tail又は最小1µs authoring tickを別記する。名目fps・直前cadence・host/新boot時刻でsource durationを埋めない。
 
 edit listで各区間のdecoder-only prefixを隠す。有限の元VIDEO gapとその境界を確認できる場合だけ空editを入れ、同じ取得世代の既知gapでは、前区間の最後の画像をgapの開始まで表示保持し、空editをgapの長さにして、回転などのsession切替の前後でmovie時刻とwindow時刻の差を一定に保つ。不明gapは`video_run_boundaries.actual_gap_duration_us=null`・`authored_gap_duration_us=0`として実durationとMP4上の配置を区別する。gapsのfrom/to/MAX・clock復旧/VIDEO cutの証拠・不足は保存して消さない。未知の間隔を0秒と測定したことにはしない。movie/track header durationはchecked edit合計へ補正し、元media duration/sample PTSを変更しない。
 
-`timebase.clock_steps`と復旧/両側anchorは同期確度の説明に使い、source隣接の許可には使わない。framesの`clock_alignment_known`・`t_ns`は個別に判定し、未知はnull/MAXのままとする。確認済みcoverageは同期が確認できる隣接frameの区間だけから計算し、clock/VIDEO gap、未知やepoch境界を跨がない。区間全体が未知でも、その内部の個別に確認できるframeの情報を失わない。held tailの明示的控除以外は未表示/未確認範囲をvideo_missing_rangesへ残す。
+`timebase.clock_steps`と復旧/両側anchorは同期確度の説明に使い、source隣接の許可には使わない。framesの`clock_alignment_known`・`t_ns`は個別に判定し、未知はnull/MAXのままとする。確認済みcoverageは同期が確認できる隣接frameの区間だけから計算し、clock/VIDEO gap、未知や時計区間の境界を跨がない。区間全体が未知でも、その内部の個別に確認できるframeの情報を失わない。held tailの明示的控除以外は未表示/未確認範囲をvideo_missing_rangesへ残す。
 
 `parts`は同じ`file=video.mp4`内のpresentation区間で、`segment_index / movie_start_us / movie_end_us / media_start_us / edit_start_us / source_pts_origin_us / decode_run / generation / preroll_samples`を記録する。frame indexはglobal sample index、entry、packet ordinal、元source/media/movie・display window対応を持つ。movie全体の表示秒からpartの窓開始へ一律加算しない。clockの値やgap/cut/clock samples、両JSONL、固定窓・retryは同じFrozenCaptureから保存する。
 
-保存末尾はTで凍結し次frameを待たない。最後の画像をT又は既知の取得境界まで表示保持する場合、新frame未確認の範囲を`video_tail`へ分離する。`from_t_ns / to_t_ns / source_pts_us / source_t_ns / boot_segment / generation / display_held / new_frame_confirmed=false`を記録し、時刻不明はnull、ns/usは十進文字列。確定break/clock不明/epoch変更/取得前/容量dropを跨がない。表示保持は、MP4選択と同じIDR/config/世代/session/寸法条件で固定対象から復号を開始できる場合だけtrueにする。IDR喪失でMP4を作れない対象を保持表示済みとは示さない。partの`t_start_ns / t_end_ns`は再生範囲であり、`confirmed_t_end_ns`は隣接frameで確認できる表示区間の終端（区間なしならnull）。画像保持の再生durationを確認済みcoverageに加算しない。復号可能な表示保持（display_held=true）の末尾未確認だけではgap/loss/video_missing_ranges/missingKindsやCaptureState.PARTIAL/RECOVERINGへ流さず、COMPLETED/session.complete=trueは正常な成果物完成とする。pinを解放し次の保存を可能にする。display_held=falseの未表示範囲は、先行MP4 partが存在してもvideo_missing_ranges/missingKindsから控除しない。既知欠落は従来どおり併記する。
+保存末尾はTで凍結し次frameを待たない。最後の画像をT又は既知の取得境界まで表示保持する場合、新frame未確認の範囲を`video_tail`へ分離する。`from_t_ns / to_t_ns / source_pts_us / source_t_ns / boot_segment / generation / display_held / new_frame_confirmed=false`を記録し、時刻不明はnull、ns/usは十進文字列。確定break/clock不明/時計区間の変更/取得前/容量dropを跨がない。表示保持は、MP4選択と同じIDR/config/世代/session/寸法条件で固定対象から復号を開始できる場合だけtrueにする。IDR喪失でMP4を作れない対象を保持表示済みとは示さない。partの`t_start_ns / t_end_ns`は再生範囲であり、`confirmed_t_end_ns`は隣接frameで確認できる表示区間の終端（区間なしならnull）。画像保持の再生durationを確認済みcoverageに加算しない。復号可能な表示保持（display_held=true）の末尾未確認だけではgap/loss/video_missing_ranges/missingKindsやCaptureState.PARTIAL/RECOVERINGへ流さず、COMPLETED/session.complete=trueは正常な成果物完成とする。pinを解放し次の保存を可能にする。display_held=falseの未表示範囲は、先行MP4 partが存在してもvideo_missing_ranges/missingKindsから控除しない。既知欠落は従来どおり併記する。
 
-`SaveSnapshot.videoTail: VideoTailSnapshot? = null`を末尾へ追加する。immutableな`fromNs / toNs / sourcePtsUs / sourceSequenceNs / clockEpoch / generation / displayHeld`は固定保存対象から生成し、retry/後続frame/現在設定で変更しない。UI callerは保存完了と未確認末尾を別表示する。通常も最終frame時刻<Tとなるため、想定fpsや短い間隔を取得確認の根拠にしない。
+`SaveSnapshot.videoTail: VideoTailSnapshot? = null`を末尾へ追加する。immutableな`fromNs / toNs / sourcePtsUs / sourceSequenceNs / clockRegion / generation / displayHeld`は固定保存対象から生成し、retry/後続frame/現在設定で変更しない。UI callerは保存完了と未確認末尾を別表示する。通常も最終frame時刻<Tとなるため、想定fpsや短い間隔を取得確認の根拠にしない。
 
 通常のmedia PTSは、各復号区間のmedia開始＋`source_pts - 区間最初のsource_pts`。長期静止でMP4のduration/edit整数範囲を超える場合は、窓に表示する実durationを保ち、decoder-only時間だけを短縮して`media_timeline_clipped=true`とする。元source PTS/実frame数は不変、`video-frames.jsonl`の`source_duration_us`（次frameがない末尾はnull）と`display_duration_us / media_pts_us / presentation_pts_us`を別記する。追加画像を作らず、受取人はpartの表示範囲とframe indexで照合する。config packetはframe/PTSに数えない。各区間のSPS/PPSを対応するsample entryへ渡しAVC configとMP4 headerを確定してから完了とする。破断は完全frameだけを使いlossを保持する。
 

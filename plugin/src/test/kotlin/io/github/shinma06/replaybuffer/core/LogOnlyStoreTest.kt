@@ -27,7 +27,7 @@ class LogOnlyStoreTest {
             store.app("com.fixture.app", 10001, setOf(12), 1, true)
             assertFalse(store.hasData())
             sample(store, host, 1)
-            assertFalse(store.hasData()) // The target has not been confirmed in this clock epoch.
+            assertFalse(store.hasData()) // The target has not been confirmed in this clock region.
             store.app("com.fixture.app", 10001, setOf(12), 1, true)
             assertFalse(store.hasData()) // No positive window yet at the fixed fixture clock.
             sample(store, host, 2)
@@ -62,7 +62,7 @@ class LogOnlyStoreTest {
             assertNull(store.capture(settings))
             sample(store, host, 3)
             assertTrue(store.hasData())
-            store.clock.boundary()
+            store.clock.startRegion()
             store.clockStatus(false, 1)
             assertFalse(store.hasData())
             assertNull(store.capture(settings))
@@ -108,7 +108,7 @@ class LogOnlyStoreTest {
             store.status("device_log", StreamState.CAPTURING, null, 1)
             store.app("com.fixture.app", 10001, setOf(12), 1, true)
             sample(store, host, 2)
-            store.clock.boundary(host + 1_000_000_000)
+            store.clock.startRegion()
             store.status("device_log", StreamState.RECOVERING, "disconnected", 1)
             store.status("app_log", StreamState.RECOVERING, "disconnected", 1)
             store.freeze()

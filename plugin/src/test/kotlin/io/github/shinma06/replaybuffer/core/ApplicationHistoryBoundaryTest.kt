@@ -30,7 +30,7 @@ class ApplicationHistoryBoundaryTest {
                     second >= 11 -> host + (second - 5) * 1_000_000_000
                     else -> host
                 }
-                val mono = if (second >= 11) elapsed - 1_000_000_000 else elapsed // A device sleep starts a new epoch.
+                val mono = if (second >= 11) elapsed - 1_000_000_000 else elapsed // A device sleep starts a new region.
                 assertTrue(store.clock.add("same-boot", listOf(elapsed, mono, WALL + elapsed, elapsed), received, received))
             }
             fun target(uid: Long?) = store.app("com.fixture.app", uid, if (uid == null) emptySet() else setOf(12), 1, uid != null)
@@ -51,8 +51,8 @@ class ApplicationHistoryBoundaryTest {
             val recovered = row(12, 10001)
             val foreign = row(12, 10002)
             val capture = store.capture(ReplaySettings())!!
-            val old = capture.apps.last { it.epoch == 0 }
-            assertTrue(old.from!! > capture.clocks.last { it.epoch == 0 }.elapsed)
+            val old = capture.apps.last { it.region == 0 }
+            assertTrue(old.from!! > capture.clocks.last { it.region == 0 }.elapsed)
             assertNull(old.to, "Old sample is not a truthful closure after the extrapolated start")
             assertTrue(old.endUnknown)
             assertTrue(capture.apps.all { it.from == null || it.to == null || it.to >= it.from })
