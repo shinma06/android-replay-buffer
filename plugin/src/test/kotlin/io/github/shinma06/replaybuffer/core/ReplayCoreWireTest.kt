@@ -64,11 +64,16 @@ class ReplayCoreWireTest {
     private fun ownedPids(dir: Path): List<String> =
         Files.list(dir).use { files -> files.map { it.fileName.toString() }.toList() }
 
-    /** Completed `ps -A -o PID,UID,NAME` reporter polls in completion order. */
-    private fun psPolls(root: Path): List<String> {
-        val dir = root.resolve("ps-polls")
-        if (!Files.isDirectory(dir)) return emptyList()
-        return Files.list(dir).use { files -> files.map { it.fileName.toString() }.toList() }.sorted()
+    /**
+     * Fails while a fixture adb started by this JVM still runs. Windows hands a finished process's PID to the next
+     * process at once, so a live process with that PID whose parent is not this JVM is a later, unrelated process.
+     */
+    private fun assertOwnedPidsEnded(dir: Path) {
+        val self = ProcessHandle.current().pid()
+        ownedPids(dir).forEach { pid ->
+            val live = ProcessHandle.of(pid.toLong()).filter { it.isAlive && it.parent().map { p -> p.pid() == self }.orElse(false) }
+            assertFalse(live.isPresent, "fixture adb $pid is still running: ${live.map { it.info() }.orElse(null)}")
+        }
     }
 
     /** Log reader launches in start order, as `<buffer> <pid>`. */
@@ -280,8 +285,6 @@ elif len(a)>3 and a[3]=='cmd':
     print('package:com.fixture.app uid:10001')
 elif len(a)>3 and a[3]=='ps':
     print('PID UID NAME\n12 10001 com.fixture.app\n500 1000 system_server' if a[-1]=='PID,UID,NAME' else 'PID ARGS',flush=True)
-    if a[-1]=='PID,UID,NAME':
-        polls=root/'ps-polls'; polls.mkdir(exist_ok=True); (polls/f'{time.time_ns():020d}-{os.getpid()}').touch()
 """)
                 val core = ReplayCore(ReplaySettings(fake, root.resolve("missing"), if (captureMode.videoRequested) 1 else 30,
             ApplicationTarget(), captureMode, videoQuality = videoQuality), root.resolve("workspace"))
@@ -293,7 +296,7 @@ elif len(a)>3 and a[3]=='ps':
                 Thread.sleep(25)
             }
             val state = core.snapshot()
-            error("fixture deadline ($phase): ${state.captureState}/${state.save.phase}/frozen=${state.frozen}/video=${state.video}/deviceLog=${state.deviceLog}/appLog=${state.appLog}/error=${state.error}")
+            error("fixture deadline ($phase): ${state.captureState}/${state.save.phase}/frozen=${state.frozen}/video=${state.video}/deviceLog=${state.deviceLog}/appLog=${state.appLog}/error=${state.error}/autoSave=${state.autoSave}/lastSave=${state.lastSave}")
         }
         // The probe stores each sample before it sends the next nonce, so a second later request proves a stored later sample.
         fun awaitLaterClockSample(phase: String) {
@@ -311,10 +314,15 @@ elif len(a)>3 and a[3]=='ps':
                 assertTrue(core.updateApplication(ApplicationTarget("com.fixture.app")).get().accepted)
                 assertTrue(core.applySettings(core.snapshot().settings.copy(saveDirectory = root, autoSaveOnCrash = true)).get().accepted)
                 awaitState("auto-armed") { it.autoSave.state == AutoSaveState.ARMED && it.captureState == CaptureState.CAPTURING }
-                // A platform report is corroborated only by a reporter poll started at most 2 s before it. Report right
-                // after a poll completes, not at an arbitrary point of a poll cycle that a slow runner stretches past 2 s.
-                val polls = psPolls(root).size
-                awaitState("reporter-poll-completed") { psPolls(root).size > polls }
+                // A platform report is corroborated only by the poll the host has recorded, started at most 2 s before the
+                // report arrives. The fake ps marks itself done before its process exits and the host records the poll,
+                // so wait for the host's record of a new poll and report right after it.
+                val previous = core.reporterPoll()
+                val recorded = System.nanoTime() + FIXTURE_GUARD_NS
+                while (core.reporterPoll().let { it == null || it == previous || it.pid != 500 }) {
+                    check(System.nanoTime() < recorded) { "fixture deadline (reporter-poll-recorded): ${core.reporterPoll()}" }
+                    Thread.sleep(5)
+                }
                 val wall = fakeWall()
                 val sources = listOf(javaCrash(process = "com.fixture.app", pid = 12, uid = 10001, wall = wall),
                     platformCrash(process = "com.fixture.app", first = 12, wall = wall + 1_000_000))
@@ -393,9 +401,9 @@ elif len(a)>3 and a[3]=='ps':
                 assertEquals("LOG_ONLY", json["capture_mode"].asString)
                 assertEquals("NOT_REQUESTED", json["coverage"].asJsonObject["video"].asJsonObject["state"].asString)
                 assertTrue(json["video_missing_ranges"].asJsonArray.isEmpty)
-                assertTrue(json["video_clock_gap_scopes"].asJsonArray.isEmpty)
-                assertTrue(json["window_clock_known"].asBoolean)
-                assertTrue(json["clock_samples"].asJsonArray.any { it.asJsonObject["valid"].asBoolean })
+                assertTrue(json["timebase"].asJsonObject["clock_steps"].asJsonArray.isEmpty)
+                assertTrue(json["timebase"].asJsonObject["known"].asBoolean)
+                assertTrue(json["timebase"].asJsonObject["samples"].asJsonArray.any { it.asJsonObject["valid"].asBoolean })
                 assertFalse(Files.exists(folder.resolve("video-frames.jsonl")))
                 for (name in listOf("logcat-device.jsonl", "logcat-app.jsonl")) assertEquals(0L, Files.size(folder.resolve(name)))
                 Files.list(folder).use { files -> assertTrue(files.noneMatch { it.fileName.toString().endsWith(".mp4") }) }
@@ -441,7 +449,7 @@ elif len(a)>3 and a[3]=='ps':
                 assertTrue(Files.readString(root.resolve("video-launches.txt")).contains("max_size=1024 max_fps=15 video_bit_rate=2000000 downsize_on_error=false"))
                 assertTrue(core.setEnabled(false).get(15, TimeUnit.SECONDS).accepted)
                 core.closeAsync().get(15, TimeUnit.SECONDS)
-                ownedPids(pids).forEach { pid -> assertFalse(ProcessHandle.of(pid.toLong()).map { it.isAlive }.orElse(false)) }
+                assertOwnedPidsEnded(pids)
                 return
             }
             if (logMode == "cancel") {
@@ -453,7 +461,7 @@ elif len(a)>3 and a[3]=='ps':
                 assertTrue(System.nanoTime() - started < 5_500_000_000)
                 core.closeAsync().get(10, TimeUnit.SECONDS)
                 assertTrue(logLaunches(root).isEmpty())
-                ownedPids(pids).forEach { pid -> assertFalse(ProcessHandle.of(pid.toLong()).map { it.isAlive }.orElse(false)) }
+                assertOwnedPidsEnded(pids)
                 return
             }
             if (discardInitialPFrame) {
@@ -506,8 +514,11 @@ elif len(a)>3 and a[3]=='ps':
                     val quietGaps = core.snapshot().deviceLog.gaps
                     Files.createFile(root.resolve("quiet-all"))
                     Thread.sleep(1200)
-                    assertEquals(StreamState.CAPTURING, core.snapshot().deviceLog.state)
-                    assertEquals(quietGaps, core.snapshot().deviceLog.gaps)
+                    val quiet = core.snapshot().deviceLog
+                    assertEquals(StreamState.CAPTURING, quiet.state)
+                    // The live window may drop earlier gaps or show a clock-read outage on a slow runner; a quiet
+                    // buffer must only add no log gap of its own.
+                    assertEquals(emptyList(), quiet.gaps.filter { it.stream == "device_log" && it !in quietGaps })
                     Files.delete(root.resolve("quiet-all"))
                     Files.createFile(root.resolve("fail-all"))
                     awaitState("all-only-failure") { it.deviceLog.state == StreamState.RECOVERING }
@@ -573,7 +584,7 @@ elif len(a)>3 and a[3]=='ps':
                 else assertEquals(0, launches.count { it == "main" })
                 assertTrue(core.setEnabled(false).get(10, TimeUnit.SECONDS).accepted)
                 core.closeAsync().get(10, TimeUnit.SECONDS)
-                ownedPids(pids).forEach { pid -> assertFalse(ProcessHandle.of(pid.toLong()).map { it.isAlive }.orElse(false)) }
+                assertOwnedPidsEnded(pids)
                 return
             }
             if (discardInitialPFrame) {
@@ -588,15 +599,17 @@ elif len(a)>3 and a[3]=='ps':
                 awaitState("changed-config-recovered") { readyConnections.get() == 3 && it.video.state == StreamState.CAPTURING }
                 assertTrue(core.setEnabled(false).get(15, TimeUnit.SECONDS).accepted)
                 core.closeAsync().get(15, TimeUnit.SECONDS)
-                ownedPids(pids).forEach { pid -> assertFalse(ProcessHandle.of(pid.toLong()).map { it.isAlive }.orElse(false)) }
+                assertOwnedPidsEnded(pids)
                 return
             }
             Thread.sleep(1300) // Remove the initial unresolved-app interval from the one-second window.
             pauseVideo.set(true)
             Thread.sleep(11_000)
+            val idle = core.snapshot().video
             assertEquals(1, readyConnections.get())
-            assertEquals(StreamState.CAPTURING, core.snapshot().video.state)
-            assertTrue(core.snapshot().video.gaps.isEmpty())
+            assertEquals(StreamState.CAPTURING, idle.state)
+            // A clock-read outage on a slow runner is not a video interruption; normal idle must open no video gap.
+            assertEquals(emptyList(), idle.gaps.filter { it.stream == "video" })
             assertTrue(core.applySettings(core.snapshot().settings.copy(saveDirectory = root)).get().accepted)
             repeat(2) {
                 assertTrue(core.save().get().accepted)
@@ -702,10 +715,10 @@ elif len(a)>3 and a[3]=='ps':
             } else assertTrue(request.isJsonNull)
             assertEquals(operation.requestId, json["save_id"].asString)
             assertEquals(1, json["replay_seconds"].asInt)
-            assertTrue(json["clock_samples"].asJsonArray.any { it.asJsonObject["valid"].asBoolean })
+            assertTrue(json["timebase"].asJsonObject["samples"].asJsonArray.any { it.asJsonObject["valid"].asBoolean })
             val frames = Files.readAllLines(folder.resolve("video-frames.jsonl")).map { JsonParser.parseString(it).asJsonObject }
             assertTrue(frames.isNotEmpty())
-            assertTrue(frames.all { !it["elapsed_ns"].isJsonNull && !it["window_ns"].isJsonNull })
+            assertTrue(frames.all { !it["elapsed_ns"].isJsonNull && !it["t_ns"].isJsonNull })
             val parts = json["parts"].asJsonArray
             assertTrue(parts.size() > 0)
             assertEquals(setOf("video.mp4"), parts.map { it.asJsonObject["file"].asString }.toSet())
@@ -714,8 +727,8 @@ elif len(a)>3 and a[3]=='ps':
                 val item = part.asJsonObject
                 assertTrue(item["edit_start_us"].asString.toLong() >= 0)
                 // Individual frame mappings survive a source run spanning clock epochs.
-                if (item["clock_alignment_known"].asBoolean) assertFalse(item["window_start_ns"].isJsonNull)
-                else assertTrue(item["window_start_ns"].isJsonNull && item["window_end_ns"].isJsonNull)
+                if (item["clock_alignment_known"].asBoolean) assertFalse(item["t_start_ns"].isJsonNull)
+                else assertTrue(item["t_start_ns"].isJsonNull && item["t_end_ns"].isJsonNull)
                 assertTrue(Files.size(folder.resolve(item["file"].asString)) > 0)
             }
             completed = folder
@@ -727,14 +740,14 @@ elif len(a)>3 and a[3]=='ps':
             val appGap = freshJson["gaps"].asJsonArray.single {
                 it.asJsonObject["kind"].asString == "app_log" && it.asJsonObject["reason"].asString == "端末との取得接続が中断しています"
             }.asJsonObject
-            assertFalse(appGap["to_ns"].isJsonNull)
+            assertFalse(appGap["to_t_ns"].isJsonNull)
             assertEquals("CAPTURING", freshJson["coverage"].asJsonObject["app_log"].asJsonObject["state"].asString)
             assertEquals(savedHash, sha256(folder.resolve("replay.json")))
             assertTrue(core.setEnabled(false).get(15, TimeUnit.SECONDS).accepted)
             core.closeAsync().get(15, TimeUnit.SECONDS)
             completed?.let { assertEquals(savedHash, sha256(it.resolve("replay.json"))) }
             assertEquals(0, Files.list(root.resolve("workspace")).use { it.count() })
-            ownedPids(pids).forEach { pid -> assertFalse(ProcessHandle.of(pid.toLong()).map { it.isAlive }.orElse(false)) }
+            assertOwnedPidsEnded(pids)
         } finally {
             core.closeAsync().get(15, TimeUnit.SECONDS)
             stop.set(true); pauseVideo.set(false); resumeVideo.countDown(); server.close(); clockServer.close(); sockets.forEach { runCatching { it.close() } }

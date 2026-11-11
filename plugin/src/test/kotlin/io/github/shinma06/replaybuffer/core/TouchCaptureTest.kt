@@ -40,7 +40,7 @@ class TouchCaptureTest {
             val lines = Files.readAllLines(output.directory.resolve("touches.jsonl"))
             val touch = JsonParser.parseString(lines.single()).asJsonObject
             assertEquals("2000000000", touch["device_mono_ns"].asString)
-            assertEquals((row.time.sequence!! - pinned.start).toString(), touch["window_ns"].asString)
+            assertEquals((row.time.sequence!! - pinned.start).toString(), touch["t_ns"].asString)
             assertEquals("down", touch["action"].asString)
             assertEquals(10, touch["x"].asInt)
             assertEquals(2400, touch["display_height"].asInt)

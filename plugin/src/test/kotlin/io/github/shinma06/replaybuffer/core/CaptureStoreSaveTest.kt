@@ -1,5 +1,6 @@
 package io.github.shinma06.replaybuffer.core
 
+import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import org.jcodec.codecs.h264.H264Encoder
 import org.jcodec.codecs.h264.H264Utils
@@ -428,13 +429,20 @@ class CaptureStoreSaveTest {
             assertTrue(parts.single().asJsonObject["duration_us"].asLong > 400001)
             // A clock step stays visible; an outage the recovery read proved continuous is no loss.
             assertEquals(if (processFailure) listOf("video") else emptyList(), output.missingKinds)
-            assertEquals(Long.MAX_VALUE.toString(), manifest["gaps"].asJsonArray.single().asJsonObject["boundary_uncertainty_ns"].asString)
-            assertTrue(manifest["gaps"].asJsonArray.single().asJsonObject["duration_uncertain"].asBoolean)
-            val scope = manifest["video_clock_gap_scopes"].asJsonArray.single().asJsonObject
-            assertTrue(scope["derived_from_valid_samples"].asBoolean)
-            assertTrue(scope["from_ns"].asString.toLong() <= gap.fromNs)
-            assertTrue(scope["to_ns"].asString.toLong() >= gap.toNs)
-            assertTrue(scope["boundary_uncertainty_ns"].asString.toLong() > 0)
+            fun steps(m: JsonObject, kind: String) = m["timebase"].asJsonObject["clock_steps"].asJsonArray.map { it.asJsonObject }.filter { it["kind"].asString == kind }
+            // Clock outages are not stream gaps; only an outage no recovery proved continuous stays in the timebase.
+            assertTrue(manifest["gaps"].asJsonArray.isEmpty)
+            assertEquals(!processFailure, gap.resolvedClock(capture.clockRecoveries))
+            assertEquals(if (processFailure) 1 else 0, steps(manifest, "clock_step").size)
+            val unmeasured = steps(manifest, "unmeasured")
+            assertEquals(if (processFailure) 1 else 0, unmeasured.size)
+            val scope = unmeasured.singleOrNull()
+            if (scope != null) {
+                assertTrue(scope["derived_from_valid_samples"].asBoolean)
+                assertTrue(scope["from_t_ns"].asString.toLong() + capture.start <= gap.fromNs!!)
+                assertTrue(scope["to_t_ns"].asString.toLong() + capture.start >= gap.toNs!!)
+                assertTrue(scope["boundary_uncertainty_ns"].asString.toLong() > 0)
+            }
             assertEquals(!processFailure, manifest["video_missing_ranges"].asJsonArray.isEmpty)
             val frames = Files.readAllLines(output.directory.resolve("video-frames.jsonl")).map { JsonParser.parseString(it).asJsonObject }
             assertEquals(capture.video.map { it.pts.toString() }, frames.filter { it["presented"].asBoolean }.map { it["source_pts_us"].asString })
@@ -445,7 +453,8 @@ class CaptureStoreSaveTest {
             if (immediateRecovery) {
                 assertEquals(if (processFailure) 3 else 4, capture.clocks.size) // No next periodic sample has been added.
                 assertEquals(capture.clocks.last(), capture.clockRecoveries[gap])
-                assertTrue(scope["recovery_sample"].asJsonObject["valid"].asBoolean)
+                assertTrue(capture.clockRecoveries.getValue(gap).valid)
+                scope?.let { assertTrue(it["recovery_sample"].asJsonObject["valid"].asBoolean) }
                 val noRecoveryProof = capture.copy(clockRecoveries = emptyMap())
                 val unproven = SaveWriter().write(noRecoveryProof, root, { false }) { publication -> Files.move(publication.partial, publication.complete) }
                 val unprovenManifest = JsonParser.parseString(Files.readString(unproven.directory.resolve("replay.json"))).asJsonObject
@@ -461,7 +470,8 @@ class CaptureStoreSaveTest {
                 val nextOutput = SaveWriter().write(next, root, { false }) { publication -> Files.move(publication.partial, publication.complete) }
                 val nextManifest = JsonParser.parseString(Files.readString(nextOutput.directory.resolve("replay.json"))).asJsonObject
                 assertEquals(1, nextManifest["parts"].asJsonArray.size())
-                assertEquals(scope, nextManifest["video_clock_gap_scopes"].asJsonArray.single())
+                assertEquals(unmeasured.map { it["from_t_ns"].asString.toLong() + capture.start to it["to_t_ns"].asString.toLong() + capture.start },
+                    steps(nextManifest, "unmeasured").map { it["from_t_ns"].asString.toLong() + next.start to it["to_t_ns"].asString.toLong() + next.start })
                 assertEquals(capture.video.map { it.pts }, next.video.map { it.pts })
                 assertEquals(gap, next.gaps.single())
                 store.release(next.id)
@@ -472,7 +482,7 @@ class CaptureStoreSaveTest {
             val unknownManifest = JsonParser.parseString(Files.readString(unknownOutput.directory.resolve("replay.json"))).asJsonObject
             assertEquals(1, unknownManifest["parts"].asJsonArray.size())
             assertEquals(listOf("video"), unknownOutput.missingKinds)
-            assertFalse(unknownManifest["video_clock_gap_scopes"].asJsonArray.single().asJsonObject["derived_from_valid_samples"].asBoolean)
+            assertFalse(steps(unknownManifest, "unmeasured").single()["derived_from_valid_samples"].asBoolean)
             val open = capture.copy(gaps = listOf(gap.copy(toNs = null)))
             val openOutput = SaveWriter().write(open, root, { false }) { publication -> Files.move(publication.partial, publication.complete) }
             val openManifest = JsonParser.parseString(Files.readString(openOutput.directory.resolve("replay.json"))).asJsonObject
@@ -513,7 +523,8 @@ class CaptureStoreSaveTest {
                 assertTrue(store.streams(1, afterGap.end).values.all { state -> state.gaps.isEmpty() })
                 val cleanManifest = JsonParser.parseString(Files.readString(clean.directory.resolve("replay.json"))).asJsonObject
                 assertTrue(cleanManifest["video_missing_ranges"].asJsonArray.isEmpty)
-                assertEquals(Long.MAX_VALUE.toString(), cleanManifest["gaps"].asJsonArray.single().asJsonObject["boundary_uncertainty_ns"].asString)
+                assertTrue(cleanManifest["gaps"].asJsonArray.isEmpty)
+                assertEquals(if (processFailure) 1 else 0, steps(cleanManifest, "unmeasured").size)
                 store.release(afterGap.id)
             }
         } finally {
@@ -551,7 +562,7 @@ class CaptureStoreSaveTest {
             assertFalse(manifest["video_missing_ranges"].asJsonArray.isEmpty)
             assertEquals(listOf("video"), output.missingKinds)
             val missing = manifest["video_missing_ranges"].asJsonArray.last().asJsonObject
-            assertEquals((capture.end - capture.start).toString(), missing["to_window_ns"].asString)
+            assertEquals((capture.end - capture.start).toString(), missing["to_t_ns"].asString)
             anchor(store.clock, 2_000_000_000, host + 1_000_000_000)
             store.frame(VideoPacket.Frame(2_000_000, false, true, bytes), 1, host + 1_000_000_000)
             assertEquals(tail, capture.videoTail())
@@ -628,7 +639,7 @@ class CaptureStoreSaveTest {
             assertEquals(1, manifest["parts"].asJsonArray.size())
             assertTrue(manifest["video_missing_ranges"].asJsonArray.isEmpty)
             val part = manifest["parts"].asJsonArray.single().asJsonObject
-            assertEquals("0", part["window_start_ns"].asString)
+            assertEquals("0", part["t_start_ns"].asString)
             assertEquals("3000000", part["edit_start_us"].asString)
             NIOUtils.readableChannel(output.directory.resolve("video.mp4").toFile()).use { channel ->
                 val frame = MP4Demuxer.createRawMP4Demuxer(channel).videoTrack.nextFrame()
@@ -644,6 +655,40 @@ class CaptureStoreSaveTest {
                 assertEquals(gap.stream == "clock", brokenManifest["video_missing_ranges"].asJsonArray.isEmpty)
                 assertTrue("video" in broken.missingKinds)
             }
+            store.release(capture.id)
+        } finally {
+            store.close()
+            Files.walk(root).use { paths -> paths.sorted(java.util.Comparator.reverseOrder()).forEach { Files.deleteIfExists(it) } }
+        }
+    }
+
+    @Test
+    fun videoGapScopeIndexesTheEmittedGapsWhenAnEarlierClockGapIsOmitted() {
+        val root = Files.createTempDirectory("replay-gap-index-")
+        val store = CaptureStore(root.resolve("ring"), minFree = 0)
+        val host = System.nanoTime()
+        val bytes = sample()
+        try {
+            store.generation(1); store.status("device_log", StreamState.CAPTURING, null, 1); store.session(VideoPacket.Session(32, 32), 1)
+            anchor(store.clock, 1_000_000_000, host)
+            store.frame(VideoPacket.Frame(0, true, false, config(bytes)), 1)
+            store.frame(VideoPacket.Frame(1_000_000, false, true, bytes), 1, host)
+            for (second in 2L..6L) anchor(store.clock, second * 1_000_000_000, host + (second - 1) * 1_000_000_000)
+            store.frame(VideoPacket.Frame(6_000_000, false, true, bytes), 1, host + 5_000_000_000)
+            val capture = store.capture(ReplaySettings(replaySeconds = 4))!!
+            val clockGap = CaptureGap("clock", 2_500_000_000, 2_600_000_000, "clock outage", 0)
+            val videoGap = CaptureGap("video", 4_000_000_000, 4_100_000_000, "lost", 0)
+            val output = SaveWriter().write(capture.copy(gaps = listOf(clockGap, videoGap)), root, { false }) { publication ->
+                Files.move(publication.partial, publication.complete)
+            }
+            val manifest = JsonParser.parseString(Files.readString(output.directory.resolve("replay.json"))).asJsonObject
+            val gaps = manifest["gaps"].asJsonArray.map { it.asJsonObject }
+            assertEquals(listOf("video"), gaps.map { it["kind"].asString })
+            val scope = manifest["video_gap_scopes"].asJsonArray.single().asJsonObject
+            val indexed = gaps[scope["gap_index"].asInt]
+            assertEquals("video", indexed["kind"].asString)
+            assertEquals(indexed["from_t_ns"], scope["from_t_ns"])
+            assertEquals(indexed["to_t_ns"], scope["to_t_ns"])
             store.release(capture.id)
         } finally {
             store.close()
@@ -681,7 +726,7 @@ class CaptureStoreSaveTest {
             assertFalse(manifest["video_tail"].asJsonObject["new_frame_confirmed"].asBoolean)
             assertTrue(manifest["video_tail"].asJsonObject["display_held"].asBoolean)
             assertEquals("2000000", manifest["parts"].asJsonArray.single().asJsonObject["duration_us"].asString)
-            assertTrue(manifest["parts"].asJsonArray.single().asJsonObject["confirmed_window_end_ns"].isJsonNull)
+            assertTrue(manifest["parts"].asJsonArray.single().asJsonObject["confirmed_t_end_ns"].isJsonNull)
             assertEquals(2, Files.readAllLines(output.directory.resolve("video-frames.jsonl")).size)
             val unknown = capture.copy(endUncertainty = Long.MAX_VALUE)
             assertFalse(unknown.videoTail()!!.displayHeld)
@@ -709,7 +754,7 @@ class CaptureStoreSaveTest {
             val confirmed = JsonParser.parseString(Files.readString(confirmedOutput.directory.resolve("replay.json"))).asJsonObject
             assertTrue(confirmed["video_tail"].isJsonNull)
             assertEquals(1, confirmed["parts"].asJsonArray.size())
-            assertEquals("2000000000", confirmed["parts"].asJsonArray.single().asJsonObject["confirmed_window_end_ns"].asString)
+            assertEquals("2000000000", confirmed["parts"].asJsonArray.single().asJsonObject["confirmed_t_end_ns"].asString)
             NIOUtils.readableChannel(confirmedOutput.directory.resolve("video.mp4").toFile()).use { channel ->
                 assertEquals(2_000_000, MP4Demuxer.createRawMP4Demuxer(channel).videoTrack.nextFrame().duration)
             }
@@ -797,11 +842,11 @@ class CaptureStoreSaveTest {
             assertEquals(1, capture.logs.size)
             val output = SaveWriter().write(capture, root, { false }) { publication -> Files.move(publication.partial, publication.complete) }
             val manifest = JsonParser.parseString(Files.readString(output.directory.resolve("replay.json"))).asJsonObject
-            assertTrue(manifest["window_clock_known"].asBoolean)
-            assertEquals(store.clock.currentEpoch(), manifest["window_clock_epoch"].asInt)
-            assertTrue(manifest["parts"].asJsonArray.single().asJsonObject["window_start_ns"].isJsonNull)
+            assertTrue(manifest["timebase"].asJsonObject["known"].asBoolean)
+            assertEquals(store.clock.segment(), manifest["timebase"].asJsonObject["boot_segment"].asInt)
+            assertTrue(manifest["parts"].asJsonArray.single().asJsonObject["t_start_ns"].isJsonNull)
             for (name in listOf("video-frames.jsonl", "logcat-device.jsonl")) {
-                assertTrue(JsonParser.parseString(Files.readAllLines(output.directory.resolve(name)).single()).asJsonObject["window_ns"].isJsonNull)
+                assertTrue(JsonParser.parseString(Files.readAllLines(output.directory.resolve(name)).single()).asJsonObject["t_ns"].isJsonNull)
             }
             store.release(capture.id)
             store.prune(1, host + 20_000_000_000)
@@ -849,13 +894,13 @@ class CaptureStoreSaveTest {
             // Only the gap's end has an exact place on the new boot; it must not swallow the new boot's frames.
             val part = manifest["parts"].asJsonArray.map { it.asJsonObject }.single { it["generation"].asLong == 2L }
             assertTrue(part["clock_alignment_known"].asBoolean)
-            val firstNew = part["window_start_ns"].asLong
+            val firstNew = part["t_start_ns"].asLong
             val holes = manifest["video_missing_ranges"].asJsonArray.map { it.asJsonObject }
             assertTrue(holes.isNotEmpty())
-            assertTrue(holes.all { it["to_window_ns"].asLong <= firstNew })
+            assertTrue(holes.all { it["to_t_ns"].asLong <= firstNew })
             val frames = Files.readAllLines(output.directory.resolve("video-frames.jsonl")).map { JsonParser.parseString(it).asJsonObject }
-            assertTrue(frames.filter { it["generation"].asLong == 2L }.let { rows -> rows.size == 2 && rows.none { it["window_ns"].isJsonNull } })
-            assertTrue(frames.filter { it["generation"].asLong == 1L }.all { it["window_ns"].isJsonNull })
+            assertTrue(frames.filter { it["generation"].asLong == 2L }.let { rows -> rows.size == 2 && rows.none { it["t_ns"].isJsonNull } })
+            assertTrue(frames.filter { it["generation"].asLong == 1L }.all { it["t_ns"].isJsonNull })
             assertTrue("video" in output.missingKinds)
             store.release(capture.id)
         } finally {
@@ -929,7 +974,7 @@ class CaptureStoreSaveTest {
                 }
                 val manifest = JsonParser.parseString(Files.readString(output.directory.resolve("replay.json"))).asJsonObject
                 val gap = manifest["gaps"].asJsonArray.single { it.asJsonObject["kind"].asString == "app_log" }.asJsonObject
-                assertEquals("2000000000", gap["to_ns"].asString)
+                assertEquals((2_000_000_000 - capture.start).toString(), gap["to_t_ns"].asString)
                 assertFalse(gap["duration_uncertain"].asBoolean)
                 assertEquals(3.0, manifest["coverage"].asJsonObject["app_log"].asJsonObject["availableSeconds"].asDouble)
                 assertEquals(capture.logs.map { it.id }, Files.readAllLines(output.directory.resolve("logcat-app.jsonl"))
@@ -1054,10 +1099,10 @@ class CaptureStoreSaveTest {
             val part = JsonParser.parseString(Files.readString(output.directory.resolve("replay.json"))).asJsonObject["parts"].asJsonArray.single().asJsonObject
             assertTrue(part["clock_alignment_known"].asBoolean)
             assertEquals(2, part["preroll_samples"].asInt)
-            assertEquals("0", part["window_start_ns"].asString)
+            assertEquals("0", part["t_start_ns"].asString)
             val rows = Files.readAllLines(output.directory.resolve("video-frames.jsonl")).map { JsonParser.parseString(it).asJsonObject }
-            assertEquals(listOf("100000", "150000"), rows.filter { it["window_ns"].isJsonNull }.map { it["source_pts_us"].asString })
-            assertTrue(rows.filter { it["window_ns"].isJsonNull }.all { !it["presented"].asBoolean && it["preroll"].asBoolean })
+            assertEquals(listOf("100000", "150000"), rows.filter { it["t_ns"].isJsonNull }.map { it["source_pts_us"].asString })
+            assertTrue(rows.filter { it["t_ns"].isJsonNull }.all { !it["presented"].asBoolean && it["preroll"].asBoolean })
             store.release(frozen.id)
         } finally {
             store.close()
@@ -1278,7 +1323,7 @@ class CaptureStoreSaveTest {
             assertEquals(setOf("state", "requested", "availableSeconds", "reason"), manifest["coverage"].asJsonObject["video"].asJsonObject.keySet())
             assertTrue(manifest["coverage"].asJsonObject["video"].asJsonObject["requested"].asBoolean)
             val gap = manifest["gaps"].asJsonArray.single().asJsonObject
-            assertTrue(gap["from_ns"].asJsonPrimitive.isString && gap["to_ns"].asJsonPrimitive.isString)
+            assertTrue(gap["from_t_ns"].asJsonPrimitive.isString && gap["to_t_ns"].asJsonPrimitive.isString)
             assertTrue(manifest["build"].asJsonObject["source"].asString.matches(Regex("[a-f0-9]{40}")))
             manifest["files_sha256"].asJsonObject.entrySet().forEach { (name, value) -> assertEquals(value.asString, sha256(completed.resolve(name))) }
             val device = Files.readAllLines(completed.resolve("logcat-device.jsonl"))
@@ -1337,7 +1382,7 @@ class CaptureStoreSaveTest {
             val cut = SaveWriter().write(original.copy(start = 50_000_000), root, { false }) { publication -> Files.move(publication.partial, publication.complete) }
             val cutJson = JsonParser.parseString(Files.readString(cut.directory.resolve("replay.json"))).asJsonObject
             val part = cutJson["parts"].asJsonArray.single().asJsonObject
-            assertEquals("0", part["window_start_ns"].asString)
+            assertEquals("0", part["t_start_ns"].asString)
             assertEquals("50000", part["edit_start_us"].asString)
             NIOUtils.readableChannel(cut.directory.resolve("video.mp4").toFile()).use { channel ->
                 val track = MP4Demuxer.createRawMP4Demuxer(channel).videoTrack
@@ -1349,14 +1394,14 @@ class CaptureStoreSaveTest {
             val delayedOutput = SaveWriter().write(delayed, root, { false }) { publication -> Files.move(publication.partial, publication.complete) }
             val delayedPart = JsonParser.parseString(Files.readString(delayedOutput.directory.resolve("replay.json"))).asJsonObject["parts"].asJsonArray.single().asJsonObject
             assertEquals("0", delayedPart["edit_start_us"].asString)
-            assertEquals("100000000", delayedPart["window_start_ns"].asString)
+            assertEquals("100000000", delayedPart["t_start_ns"].asString)
             assertEquals(listOf("video"), delayedOutput.missingKinds)
             val lateFrame = original.video.first().let { it.copy(pts = it.pts + 1_000_000,
                 time = it.time.copy(elapsed = it.time.elapsed!! + 1_000_000_000, sequence = 1_000_000_000)) }
             val late = SaveWriter().write(original.copy(start = 0, end = 1_200_000_000, video = listOf(lateFrame)), root, { false }) { publication -> Files.move(publication.partial, publication.complete) }
             val latePart = JsonParser.parseString(Files.readString(late.directory.resolve("replay.json"))).asJsonObject["parts"].asJsonArray.single().asJsonObject
             assertEquals("0", latePart["edit_start_us"].asString)
-            assertEquals("1000000000", latePart["window_start_ns"].asString)
+            assertEquals("1000000000", latePart["t_start_ns"].asString)
             for (boundary in listOf("session", "clock", "config")) {
                 val second = original.video.last().let { frame -> when (boundary) {
                     "session" -> frame.copy(session = frame.session + 1)
@@ -1367,7 +1412,7 @@ class CaptureStoreSaveTest {
                 val parts = JsonParser.parseString(Files.readString(split.directory.resolve("replay.json"))).asJsonObject["parts"].asJsonArray
                 assertEquals(2, parts.size())
                 assertEquals(parts[1].asJsonObject["media_start_us"], parts[1].asJsonObject["edit_start_us"])
-                assertEquals("350000000", parts[1].asJsonObject["window_start_ns"].asString)
+                assertEquals("350000000", parts[1].asJsonObject["t_start_ns"].asString)
             }
             store.release(original.id)
             anchor(store.clock, 2_050_000_000, host + 1_050_000_000)

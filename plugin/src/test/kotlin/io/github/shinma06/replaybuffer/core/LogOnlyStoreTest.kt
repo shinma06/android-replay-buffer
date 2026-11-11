@@ -129,7 +129,8 @@ class LogOnlyStoreTest {
             assertFailsWith<IllegalStateException> { store.capture(settings.copy(replaySeconds = 1)) }
             val retry = SaveWriter().write(inside, root, { false }) { publication -> Files.move(publication.partial, publication.complete) }
             assertTrue(inside.gaps.inWindow(inside.start, inside.end, inside.endUncertainty, inside.clocks, inside.clockRecoveries).isNotEmpty())
-            assertEquals(inside.end.toString(), JsonParser.parseString(Files.readString(retry.directory.resolve("replay.json"))).asJsonObject["window_end_ns"].asString)
+            assertEquals((inside.end - inside.start).toString(), JsonParser.parseString(Files.readString(retry.directory.resolve("replay.json")))
+                .asJsonObject["timebase"].asJsonObject["window_duration_ns"].asString)
             store.release(inside.id)
             val outside = assertNotNull(store.capture(settings.copy(replaySeconds = 1), host = host + 5_500_000_000))
             assertTrue(outside.logs.isEmpty())
@@ -173,7 +174,7 @@ class LogOnlyStoreTest {
             assertEquals("LOG_ONLY", json["capture_mode"].asString)
             assertFalse(json["coverage"].asJsonObject["video"].asJsonObject["requested"].asBoolean)
             assertTrue(json["video_missing_ranges"].asJsonArray.isEmpty)
-            assertTrue(json["video_clock_gap_scopes"].asJsonArray.isEmpty)
+            assertTrue(json["timebase"].asJsonObject["clock_steps"].asJsonArray.isEmpty)
             assertTrue(json["files"].asJsonObject["video"].isJsonNull)
             assertFalse(json["video_reencoded"].asBoolean)
             assertFalse(Files.exists(output.directory.resolve("video-frames.jsonl")))
