@@ -613,13 +613,13 @@ internal class CrashFixture(
     fun anchor(relative: Long, sourceDelta: Long = 0) {
         val elapsed = 100_000_000_000 + relative + sourceDelta
         assertTrue(store.clock.add("7", listOf(elapsed, elapsed, CRASH_WALL + relative, elapsed),
-            at(relative), at(relative + 1_000_000), CRASH_WALL + relative))
+            at(relative), at(relative + 1_000_000)))
     }
     /** A clock read whose device read width exceeds the 2 ms limit, as reported by the device reader. */
     fun clockMiss(relative: Long) {
         val elapsed = 100_000_000_000 + relative
         assertTrue(!store.clock.add("7", listOf(elapsed, elapsed, CRASH_WALL + relative, elapsed + 3_000_000),
-            at(relative), at(relative + 1_000_000), CRASH_WALL + relative))
+            at(relative), at(relative + 1_000_000)))
         store.clockStatus(false, 1)
     }
     fun refresh(relative: Long) = store.configureAuto(settings, 1, "fixture", true, at(relative))

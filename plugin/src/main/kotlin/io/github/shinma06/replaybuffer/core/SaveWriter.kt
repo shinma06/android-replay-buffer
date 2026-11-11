@@ -194,21 +194,18 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
             val runBoundaries = mutableListOf<Map<String, Any?>>()
             val losses = mutableListOf<String>()
             val videoProofs = mutableMapOf<CaptureGap, Pair<ClockSample, ClockSample>>()
-            val videoScopes = capture.gaps.gapScopes(capture.clocks, capture.clockRecoveries, videoProofs)
-            fun aligned(frame: VideoEntry): Boolean {
-                val sequence = frame.time.sequence ?: return false
-                return capture.windowKnown && frame.time.uncertainty != Long.MAX_VALUE && videoScopes.none { gap ->
-                    gap.stream == "clock" && gap.intersects(sequence, sequence, frame.time.uncertainty)
-                }
-            }
+            val videoScopes = capture.gaps.gapScopes(capture.clocks, capture.clockRecoveries, videoProofs, capture.windowSegment)
+            // A clock-read outage is not a loss: the mapping itself rejects source times across a clock step.
+            fun aligned(frame: VideoEntry): Boolean =
+                frame.time.sequence != null && capture.windowKnown && frame.time.uncertainty != Long.MAX_VALUE
             // A video gap closed by a run's own frame ends at that frame's source time: it cannot interrupt that frame or later ones.
             /** For each capture gap, the index in [frames] of the frame that closed it, or null. */
             fun closedAt(frames: List<VideoEntry>): List<Int?> = firstIndexes(frames.map { it.file to it.offset }, capture.gaps.map { gap ->
                 if (gap.stream == "video") capture.videoCuts[gap]?.after?.let { cut -> cut.file to cut.offset } else null
             })
-            /** Whether a clock/video gap interrupts frames a→b, where b is frame [through] of the run [closed] was built for. */
+            /** Whether a video gap interrupts frames a→b, where b is frame [through] of the run [closed] was built for. */
             fun interrupted(a: VideoEntry, b: VideoEntry, closed: List<Int?>, through: Int): Boolean = videoScopes.withIndex().any { (i, gap) ->
-                (gap.stream == "clock" || gap.stream == "video") && closed[i].let { it == null || it > through } &&
+                gap.stream == "video" && closed[i].let { it == null || it > through } &&
                     gap.intersects(a.time.sequence, b.time.sequence!!, maxOf(a.time.uncertainty, b.time.uncertainty))
             }
             /** Video gaps of one generation between two aligned runs, or null unless every boundary is known. */
@@ -225,7 +222,7 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                     gap.boundaryUncertaintyNs != null && gap.boundaryUncertaintyNs in 0 until Long.MAX_VALUE
                 } }
             }
-            val overlayGapStarts = capture.gaps.filter { it.stream == "video" || it.stream == "clock" }.mapNotNull { it.fromNs }
+            val overlayGapStarts = capture.gaps.filter { it.stream == "video" }.mapNotNull { it.fromNs }
             val movieAnchors = mutableListOf<MovieAnchor>()
             var audioPlan: AudioTrackPlan? = null
             val framesFile = if (selected.isNotEmpty()) file(ReplayFiles.VIDEO_FRAMES) else null
@@ -478,10 +475,7 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                             track.setEdits(edits)
                             val anchorsByEpoch = movieAnchors.groupBy { it.epoch }.mapValues { (_, list) -> list.sortedBy { it.from } }
                             val plan = if (capture.audioState == null) null else planAudio(capture.audio, anchorsByEpoch, movie) { row ->
-                                val sequence = row.time.sequence
-                                sequence != null && capture.windowKnown && row.time.uncertainty != Long.MAX_VALUE && videoScopes.none { gap ->
-                                    gap.stream == "clock" && gap.intersects(sequence, sequence, row.time.uncertainty)
-                                }
+                                row.time.sequence != null && capture.windowKnown && row.time.uncertainty != Long.MAX_VALUE
                             }
                             audioPlan = plan
                             val sound = if (plan == null || plan.samples.isEmpty()) null else MP4MuxerTrack(mux.nextTrackId, MP4TrackType.SOUND).also { sound ->
@@ -533,11 +527,7 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                 val anchors = movieAnchors.groupBy { it.epoch }.mapValues { (_, list) -> list.sortedBy { it.from } }
                 capture.touches.forEach { row ->
                     checkActive()
-                    val point = row.time.sequence?.takeIf { point ->
-                        capture.windowKnown && row.time.uncertainty != Long.MAX_VALUE && videoScopes.none { gap ->
-                            gap.stream == "clock" && gap.intersects(point, point, row.time.uncertainty)
-                        }
-                    }
+                    val point = row.time.sequence?.takeIf { capture.windowKnown && row.time.uncertainty != Long.MAX_VALUE }
                     val movieUs = point?.let { anchors[row.time.epoch]?.movieTime(it) }
                     if (movieUs != null) touchesInMovie++
                     val sample = row.sample
@@ -575,8 +565,8 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                 }
                 videoHoles.clear(); videoHoles.addAll(remainingHoles)
             }
-            val knownLoss = capture.gaps.inWindow(capture.start, capture.end, capture.endUncertainty, capture.clocks, capture.clockRecoveries)
-                .any { it.stream == "video" || it.stream == "clock" }
+            val knownLoss = capture.gaps.inWindow(capture.start, capture.end, capture.endUncertainty, capture.clocks, capture.clockRecoveries, capture.windowSegment)
+                .any { it.stream == "video" || it.stream == "clock" && !it.resolvedClock(capture.clockRecoveries) }
             val videoIncomplete = videoRequested && (parts.isEmpty() || losses.isNotEmpty() || knownLoss || videoHoles.isNotEmpty())
             val files = linkedMapOf("readme" to ReplayFiles.SUMMARY, "record" to ReplayFiles.RECORD,
                 "video" to ReplayFiles.VIDEO.takeIf { parts.isNotEmpty() }, "video_frames" to framesFile?.fileName?.toString(),

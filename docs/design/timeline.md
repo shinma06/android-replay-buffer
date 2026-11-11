@@ -51,16 +51,16 @@ REQUEST、DRAW、commit callback、mirror取得、encoder出力、物理表示�
 - `E = (elapsed_before + elapsed_after) / 2`。`E - mono`と`E - epoch`を別々に保存する。currentTimeMillisの1ms量子化、読取幅、隣接sampleのoffset差を変換の誤差幅へ加える。
 - 同一clock区間では`video_elapsed = video_pts * 1000 + (E - mono)`、`log_elapsed = log_epoch + (E - epoch)`。各sample間でoffsetを線形補間する。同期精度を装うためにhost受信時刻へ置き換えない。
 - sampleの端末測定はhostの送信〜応答受信の間に起こる。現在epochの新しいsource時刻の支持範囲上限は、最も早い測定時点である送信からの進みを含める。応答受信完了を測定時点と同一視して、許容RTT内の応答遅延だけで到着可能なsourceを不明にしない。閉じたepochの探索境界は広げず、未知候補を新epochの正常sampleへ重ねない。鮮度は引き続き受信後5秒、変換誤差20msを維持し（RTT40msはhost時刻からの推定のanchor選択だけに使う）、支持範囲外・epoch/boot境界・曖昧なsourceは不明のまま保持する。支持範囲のhost区間と端末clockの変換誤差を混同せず、生sourceをhost時刻へ置き換えない。
-- `E-mono`の変化（端末sleep）、`E-epoch`の急変（日時変更）、boot変化、PTS逆行を境界としてclock区間を分ける。境界を跨いで補間しない。clock測定の不達（5秒以上の途切れ、測定processの再起動を含む）だけでは境界にしない。途切れの間は時刻を換算できない（鮮度切れ）が、次の正常sampleで同じbootかつmono/Epochのoffsetが読取誤差内で続いていれば同じepochとし、途切れた間の記録は保存時の換算で前後のsampleから変換する。offsetが不連続なら、その時点で境界とする。途切れはclockの不足区間として`replay.json`に残す。取得済みの生PTS・Epoch・arrivalを残し、ambiguousなログには`elapsed_ns: null`、推定範囲、`clock_uncertain`を付ける。日時が戻った場面では同じEpoch値が複数の時点を指し得るため、ログ到着順・generationを含めても一意にならないものを無理に割り当てない。
+- `E-mono`の変化（端末sleep）、`E-epoch`の急変（日時変更）、boot変化、PTS逆行を境界としてclock区間を分ける。境界を跨いで補間しない。clock測定の不達（5秒以上の途切れ、測定processの再起動を含む）だけでは境界にしない。途切れの間は時刻を換算できない（鮮度切れ）が、次の正常sampleで同じbootかつmono/Epochのoffsetが読取誤差内で続いていれば同じepochとし、途切れた間の記録は保存時の換算で前後のsampleから変換する。offsetが不連続なら、その時点で境界とする。途切れはclockの不足区間として`replay.json`とUIに残す。復帰の測定で同じepochと確かめられた不足区間は欠落として扱わない。動画の連続を切らず、区間内のframe・ログ・タップ・音声は前後のsampleで変換し、保存の不足の種類にも数えない。開いたままの区間と、復帰時に境界となった区間は、これまでどおり全streamの時計対応の不足とする。取得済みの生PTS・Epoch・arrivalを残し、ambiguousなログには`elapsed_ns: null`、推定範囲、`clock_uncertain`を付ける。日時が戻った場面では同じEpoch値が複数の時点を指し得るため、ログ到着順・generationを含めても一意にならないものを無理に割り当てない。
 - 相関不明でも取得を捨てない。正常な側は継続し、UI/成果物は「時刻対応を確認できない区間」を示す。未対応をSYNC-01合格に数えない。受信遅延でT以前のデータが保存確定後に届いたら、後の保存だけへ含める。前のimmutable保存対象は書き換えず、保存時点のwatermark/遅延疑いを記録する。
 
-`sequence_time_ns = device_elapsed_ns - initial_elapsed_ns`が同一bootの軸。`sequence_id`は有効化開始から無効化/project closeまで固定し、再接続・取得process再起動・設定適用・rotationで変えない。generationとclock epochだけ増やす。端末再起動ではelapsedが戻るため新しいboot epochを作る。同じsequenceに履歴を残すが、boot間は時刻が厳密につながると主張しない。
+`sequence_time_ns = device_elapsed_ns - initial_elapsed_ns`が同一bootの軸。`sequence_id`は有効化開始から無効化/project closeまで固定し、再接続・取得process再起動・設定適用・rotationで変えない。generationとclock epochだけ増やす。端末再起動ではelapsedが戻るため、新しいboot epochとboot区間（segment）を作る。最初の測定の読取幅が2msを超えていても、boot IDの変化だけで境界とする。同じsequenceに履歴を残すが、boot間は時刻が厳密につながると主張しない。
 
-boot跨ぎでは新旧epoch間のoffsetを、最後/最初のhost時計sampleから推定し、推定幅を保存する。host sleepや日時変更で継続性を確認できない場合はepoch間の対応をunknownとし、旧bootのrecordを新bootの正確な時刻へ混ぜない。リング全体はリセットせず、旧record/clock/gap履歴とpinを保つ。pruneは推定幅全体が現在窓より前と判定できるrecordだけを落とし、判断不能なrecordはバイト上限内で保持し保存時にも時刻不明として提示する。保持上限によるlossを隠さない。boot間のgapはhost日時差の参考値と`duration_uncertain`を記録し、確定の0秒gapへ変換しない。新epochのsequence座標にはこのoffsetを加え、対応不明なepochを跨ぐ`window_ns`はnullとする。初期版の対応保証にはこの非致命性Caseを含める。
+各bootの端末BOOTTIMEが、そのbootの正確な時間軸になる。新しいbootは最初の正常sampleから自分の軸で時計対応ありとなり、host時計による橋渡しを必要としない（host日時は使わない）。sequence座標上の新bootの位置は、旧bootの最後のsampleの受信から新bootの最初のsampleの送信までのhost `nanoTime`差だけ後ろに置く。この差は2回の端末測定の間の実時間の下限なので、bootの順序と、保守的な側の窓外判定にだけ使い、eventの時刻にはしない（`bridge_uncertainty_ns`は最初のbootが0、以降は位置が参考値であることを示す最大値）。窓のbootと違うbootのrecordは`elapsed_ns`を保ったまま、窓のboot上の時刻は不明（`window_ns: null`、誤差は最大値）とし、新bootの正確な時刻へ混ぜない。gapの範囲を有限にするclock sampleも窓のbootのものだけを使う。リング全体はリセットせず、旧record/clock/gap履歴とpinを保つ。pruneは下限の位置でも現在窓より前と判定できるrecordを落とす。保持上限によるlossを隠さない。再起動を跨ぐgapはhost時刻差の参考値と`duration_uncertain`（境界の誤差は最大値）を記録し、確定の0秒gapへ変換しない。初期版の対応保証にはこの非致命性Caseを含める。
 
 ## 保存窓・取得の中断
 
-ログの保存集合は固定clockで時刻を再評価してから選ぶ。再評価済みsequenceの誤差と保存窓の誤差を合算し、範囲全体が窓外と証明できる行だけを除外する。境界へ接する行、時刻/boot bridge/保存窓が不明な行、整数範囲のため外側と証明できない行は保持する。受信時のretainedAtとapp帰属は書き換えず、app不明を一律falseへ変えない。除外した窓外行を現在窓のapp不足の根拠に混ぜず、正常なapp 0行と本当の未確定/実gap/lossを区別する。固定対象の集合・clock・N・帰属は後続取得や再試行で再評価しない。
+ログの保存集合は固定clockで時刻を再評価してから選ぶ。再評価済みsequenceの誤差と保存窓の誤差を合算し、範囲全体が窓外と証明できる行だけを除外する。境界へ接する行、時刻/保存窓が不明な行、窓と別のbootの行、整数範囲のため外側と証明できない行は保持する。受信時のretainedAtとapp帰属は書き換えず、app不明を一律falseへ変えない。除外した窓外行を現在窓のapp不足の根拠に混ぜず、正常なapp 0行と本当の未確定/実gap/lossを区別する。固定対象の集合・clock・N・帰属は後続取得や再試行で再評価しない。
 
 保存要求を受けた瞬間に`T / N / sequence_id / clock epoch / generation / per-stream watermark / app selection`を凍結する。選択する論理窓は **`[max(sequence開始, T-N), T]`**。cut後の`window_time_ns = elapsed_ns - window_start_ns`は動画と両ログで共通、gapも含めて進む。取得できたN秒を集めるために開始を過去へ広げない。開始20秒ならその20秒を保存する。
 
@@ -78,7 +78,7 @@ boot跨ぎでは新旧epoch間のoffsetを、最後/最初のhost時計sampleか
 
 gapはstream毎に`kind / from / to / reason / boundary_uncertainty / generation`を保存する。ログの無出力だけではgapと判定しない。正常なreaderでもAndroid log bufferのoverflow、binary framing失敗、捨てた件数/不明件数を別のlossとして記録する。正常streamの終了/復旧境界は最後の正常watermarkと再開anchorで表し、その間を収録成功として埋めない。
 
-表示用StreamSnapshot.gapsも現在の論理窓に交差し得るimmutableコピーを返す。clock gapは全stream、device_log gapはapp_logにも関連付ける。Storeの表示、Coreの保存warning、Writerの不足判定は共通の`inWindow`で判定し、有効なclock sampleから保守的な外側境界を導ける履歴だけを窓外と証明できる。取得中断は両境界と取得世代の根拠を必要とし、open/null・未解決のclock bridge・overflow等から有限の範囲を作らない。境界または現在窓の時計対応が不明なら窓外と断定せず保持し、完全切断時は凍結した窓の不確実性を使う。例外として、記録は受信より前に生成されるため、現在窓の時計対応が不明でも、PCでの受信時刻が保存要求の時刻から設定秒と時計の進み方の差の余裕（250ms）を引いた時刻より前の記録は窓外と扱い、保存と保持から外す。時刻不明の記録も、後の有効なclock sampleが窓より前を示すなら窓外とする。
+表示用StreamSnapshot.gapsも現在の論理窓に交差し得るimmutableコピーを返す。clock gapは全stream、device_log gapはapp_logにも関連付ける。Storeの表示、Coreの保存warning、Writerの不足判定は共通の`inWindow`で判定し、有効なclock sampleから保守的な外側境界を導ける履歴だけを窓外と証明できる。取得中断は両境界と取得世代の根拠を必要とし、open/null・窓と別のbootのclock sample・overflow等から有限の範囲を作らない。境界または現在窓の時計対応が不明なら窓外と断定せず保持し、完全切断時は凍結した窓の不確実性を使う。例外として、記録は受信より前に生成されるため、現在窓の時計対応が不明でも、PCでの受信時刻が保存要求の時刻から設定秒と時計の進み方の差の余裕（250ms）を引いた時刻より前の記録は窓外と扱い、保存と保持から外す。時刻不明の記録も、後の有効なclock sampleが窓より前を示すなら窓外とする。
 
 範囲判定用の`gapScopes`は元履歴とは別であり、元gapのnull/MAXや実duration不明を確定値へ書き換えない。保存物の`gaps`とREADMEには窓外と確認できた取得履歴も保全するため、履歴の存在だけでその保存のwarningを再計算しない。SaveSnapshotの端末・app選択・窓内app履歴・判定用clockは固定保存対象から生成し、後続sample・現在設定・再試行先によって変えない。概要にUID/PIDを出さず、範囲不明はnullのまま示す。
 

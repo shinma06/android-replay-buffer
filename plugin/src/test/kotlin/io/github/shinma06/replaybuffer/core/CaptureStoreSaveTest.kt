@@ -344,12 +344,11 @@ class CaptureStoreSaveTest {
 
     @Test
     fun recoveryScopeKeepsUnknownAndOverflowBoundariesUnbounded() {
-        val before = ClockSample(0, "1", 2_000_000_000, 2_000_000_000, 0, 2_000_000_000, 0, 0, 0, -1_000_000_000, 0)
+        val before = ClockSample(0, "1", 2_000_000_000, 2_000_000_000, 0, 2_000_000_000, 0, 0, -1_000_000_000)
         val recovery = before.copy(before = 4_000_000_000, after = 4_000_000_000, mono = 4_000_000_000)
         val gap = CaptureGap("clock", 1_000_000_000, 3_000_009_083, "failure", Long.MAX_VALUE)
         val clocks = listOf(before, recovery)
-        for (unproven in listOf(recovery.copy(sequenceOffset = null), recovery.copy(bridgeError = Long.MAX_VALUE),
-                recovery.copy(bridgeError = 20_000_001), recovery.copy(sequenceOffset = Long.MAX_VALUE),
+        for (unproven in listOf(recovery.copy(segment = 1), recovery.copy(sequenceOffset = Long.MAX_VALUE),
                 recovery.copy(received = 100_000_000))) {
             assertEquals(null, listOf(gap).gapScopes(clocks, mapOf(gap to unproven)).single().toNs)
         }
@@ -425,7 +424,8 @@ class CaptureStoreSaveTest {
             assertEquals(1, parts.size())
             assertEquals("video.mp4", parts.single().asJsonObject["file"].asString)
             assertTrue(parts.single().asJsonObject["duration_us"].asLong > 400001)
-            assertEquals(listOf("video"), output.missingKinds) // Unknown clock information remains visible.
+            // A clock step stays visible; an outage the recovery read proved continuous is no loss.
+            assertEquals(if (processFailure) listOf("video") else emptyList(), output.missingKinds)
             assertEquals(Long.MAX_VALUE.toString(), manifest["gaps"].asJsonArray.single().asJsonObject["boundary_uncertainty_ns"].asString)
             assertTrue(manifest["gaps"].asJsonArray.single().asJsonObject["duration_uncertain"].asBoolean)
             val scope = manifest["video_clock_gap_scopes"].asJsonArray.single().asJsonObject
@@ -433,7 +433,7 @@ class CaptureStoreSaveTest {
             assertTrue(scope["from_ns"].asString.toLong() <= gap.fromNs)
             assertTrue(scope["to_ns"].asString.toLong() >= gap.toNs)
             assertTrue(scope["boundary_uncertainty_ns"].asString.toLong() > 0)
-            assertFalse(manifest["video_missing_ranges"].asJsonArray.isEmpty)
+            assertEquals(!processFailure, manifest["video_missing_ranges"].asJsonArray.isEmpty)
             val frames = Files.readAllLines(output.directory.resolve("video-frames.jsonl")).map { JsonParser.parseString(it).asJsonObject }
             assertEquals(capture.video.map { it.pts.toString() }, frames.filter { it["presented"].asBoolean }.map { it["source_pts_us"].asString })
             assertEquals(6, frames.count { it["presented"].asBoolean })
@@ -638,7 +638,9 @@ class CaptureStoreSaveTest {
             )) {
                 val broken = SaveWriter().write(capture.copy(gaps = listOf(gap)), root, { false }) { publication -> Files.move(publication.partial, publication.complete) }
                 val brokenManifest = JsonParser.parseString(Files.readString(broken.directory.resolve("replay.json"))).asJsonObject
-                assertFalse(brokenManifest["video_missing_ranges"].asJsonArray.isEmpty)
+                // Real video loss cuts the run; a clock measurement outage keeps the frames but stays visible as missing.
+                assertEquals(gap.stream == "clock", brokenManifest["video_missing_ranges"].asJsonArray.isEmpty)
+                assertTrue("video" in broken.missingKinds)
             }
             store.release(capture.id)
         } finally {
@@ -749,7 +751,7 @@ class CaptureStoreSaveTest {
             val pinnedFile = pin.video.single().file
             val hash = sha256(pinnedFile)
             store.clock.add("2", listOf(100_000_000, 100_000_000, 1_700_000_020_000_000_000, 100_000_000),
-                host + 20_000_000_000, host + 20_000_000_000, 100_000_000_000)
+                host + 20_000_000_000, host + 20_000_000_000)
             store.generation(2); store.session(VideoPacket.Session(32, 32), 2)
             store.frame(VideoPacket.Frame(0, true, false, config(bytes)), 2)
             for (n in 1..20) {
@@ -767,7 +769,7 @@ class CaptureStoreSaveTest {
     }
 
     @Test
-    fun unknownBootBridgeRetainsOldRecordsAndExportsUnknownWindowCoordinates() {
+    fun rebootKeepsTheNewBootKnownAndExportsOldBootRowsWithoutWindowCoordinates() {
         val root = Files.createTempDirectory("replay-unknown-boot-fixture-")
         val store = CaptureStore(root.resolve("ring"), minFree = 0)
         val host = System.nanoTime()
@@ -781,23 +783,28 @@ class CaptureStoreSaveTest {
             store.status("video", StreamState.RECOVERING, "prior known gap", 1)
             store.status("video", StreamState.CAPTURING, null, 1)
             store.clock.add("2", listOf(100_000_000, 100_000_000, 1_700_000_020_000_000_000, 100_000_000),
-                host + 20_000_000_000, host + 20_000_000_000, 100_000_000_000)
-            store.prune(1)
-            val capture = store.capture(ReplaySettings(replaySeconds = 1))!!
-            assertFalse(capture.windowKnown)
+                host + 20_000_000_000, host + 20_000_000_000)
+            // Host nanoTime only gives a lower bound on the reboot distance: 30 s still reaches the old boot.
+            val capture = store.capture(ReplaySettings(replaySeconds = 30))!!
+            assertTrue(capture.windowKnown)
             assertTrue(capture.gaps.any { it.reason == "prior known gap" })
             assertTrue(capture.states.getValue("video").gaps.any { it.reason == "prior known gap" })
-            assertTrue(store.streams(1).getValue("video").gaps.any { it.reason == "prior known gap" })
+            assertTrue(store.streams(30).getValue("video").gaps.any { it.reason == "prior known gap" })
+            assertTrue(store.streams(1).getValue("video").gaps.none { it.reason == "prior known gap" })
             assertEquals(1, capture.video.size)
             assertEquals(1, capture.logs.size)
             val output = SaveWriter().write(capture, root, { false }) { publication -> Files.move(publication.partial, publication.complete) }
             val manifest = JsonParser.parseString(Files.readString(output.directory.resolve("replay.json"))).asJsonObject
-            assertFalse(manifest["window_clock_known"].asBoolean)
+            assertTrue(manifest["window_clock_known"].asBoolean)
             assertEquals(store.clock.currentEpoch(), manifest["window_clock_epoch"].asInt)
             assertTrue(manifest["parts"].asJsonArray.single().asJsonObject["window_start_ns"].isJsonNull)
             for (name in listOf("video-frames.jsonl", "logcat-device.jsonl")) {
                 assertTrue(JsonParser.parseString(Files.readAllLines(output.directory.resolve(name)).single()).asJsonObject["window_ns"].isJsonNull)
             }
+            store.release(capture.id)
+            store.prune(1, host + 20_000_000_000)
+            // The lower bound already proves the old boot is outside a 1 s window on the new boot.
+            assertTrue(store.streams(1).getValue("video").gaps.none { it.reason == "prior known gap" })
         } finally {
             store.close()
             Files.walk(root).use { paths -> paths.sorted(java.util.Comparator.reverseOrder()).forEach { Files.deleteIfExists(it) } }
@@ -886,7 +893,7 @@ class CaptureStoreSaveTest {
     }
 
     @Test
-    fun appRecoveryNeedsCurrentCertainClockAndUnknownBootBridgeStaysOpen() {
+    fun appRecoveryNeedsCurrentCertainClockAndRebootGapIsApproximate() {
         for (unknownBoot in listOf(false, true)) {
             val root = Files.createTempDirectory("replay-app-clock-recovery-")
             val store = CaptureStore(root.resolve("ring"), minFree = 0)
@@ -909,16 +916,20 @@ class CaptureStoreSaveTest {
                 assertNull(gap().toNs)
                 if (unknownBoot) {
                     store.clock.add("2", listOf(100_000_000, 100_000_000, 1_700_000_020_000_000_000, 100_000_000),
-                        host + 2_000_000_000, host + 2_000_000_000, 100_000_000_000)
+                        host + 2_000_000_000, host + 2_000_000_000)
                 } else anchor(store.clock, 3_000_000_000, host + 2_000_000_000)
                 store.clockStatus(true, 2)
                 assertNull(gap().toNs) // The resolved target still belongs to the previous clock epoch.
                 store.app("com.example.app", 10001, setOf(12), 2, true)
                 if (unknownBoot) {
-                    assertNull(gap().toNs)
-                    assertEquals(Long.MAX_VALUE, store.clock.endUncertainty())
-                    assertTrue(store.streams().getValue("app_log").reason!!.contains("時計"))
-                } else assertEquals(2_000_000_000, gap().toNs)
+                    // The new boot recovers on its own segment; the gap only has an approximate host-time duration.
+                    assertTrue(gap().toNs != null)
+                    assertEquals(Long.MAX_VALUE, gap().boundaryUncertaintyNs)
+                    assertEquals(StreamState.CAPTURING, store.streams().getValue("app_log").state)
+                } else {
+                    assertEquals(2_000_000_000, gap().toNs)
+                    assertTrue(gap().boundaryUncertaintyNs!! < Long.MAX_VALUE)
+                }
             } finally { store.close(); root.toFile().deleteRecursively() }
         }
     }
@@ -950,12 +961,13 @@ class CaptureStoreSaveTest {
             store.freeze()
             val fixedEnd = store.end()
             store.clock.add("2", listOf(100_000_000, 100_000_000, 1_700_000_020_000_000_000, 100_000_000),
-                host + 20_000_000_000, host + 20_000_000_000, 100_000_000_000)
-            assertEquals(Long.MAX_VALUE, store.clock.endUncertainty())
+                host + 20_000_000_000, host + 20_000_000_000)
+            assertTrue(store.clock.endUncertainty(host + 20_000_000_000) < 20_000_000) // The new boot is its own exact segment.
             assertEquals(fixedEnd, store.end())
-            assertTrue(store.streams(1).values.all { it.gaps.isEmpty() }) // Frozen known window is not replaced by the new unknown clock.
+            assertTrue(store.streams(1).values.all { it.gaps.isEmpty() }) // Frozen known window is not replaced by the new boot.
             store.resume()
-            assertEquals(2, store.streams(1).getValue("app_log").gaps.size)
+            // Host nanoTime places boot 1 at least 19 s before boot 2, so its gaps leave the 1 s window.
+            assertTrue(store.streams(1).values.all { it.gaps.isEmpty() })
             assertEquals(2, appGaps.size)
         } finally { store.close(); Files.delete(root) }
     }

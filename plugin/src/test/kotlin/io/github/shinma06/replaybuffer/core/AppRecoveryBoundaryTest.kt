@@ -182,38 +182,34 @@ class AppRecoveryBoundaryTest {
     }
 
     @Test
-    fun bootChangeRequiresNewTargetAndUnknownBridgeCannotRecover() {
-        for (knownBridge in listOf(true, false)) {
-            CaptureStore(root.resolve("boot-$knownBridge"), minFree = 0).use { store ->
-                val host = System.nanoTime() + 1_000_000_000
-                store.generation(1)
-                assertTrue(store.clock.add("1", listOf(1_000_000_000, 1_000_000_000,
-                    1_700_000_001_000_000_000, 1_000_000_000), host, host, 100_000_000_000))
-                store.status("device_log", StreamState.CAPTURING, null, 1)
-                target(store, 1)
-                interrupt(store)
-                target(store, 2)
-                store.status("device_log", StreamState.CAPTURING, null, 2)
-                assertTrue(store.clock.add("2", listOf(100_000_000, 100_000_000,
-                    1_700_000_008_000_000_000, 100_000_000), host + 7_000_000_000, host + 7_000_000_000,
-                    if (knownBridge) 107_000_000_000 else 200_000_000_000))
-                store.clockStatus(true, 2)
-                assertNull(appGap(store).toNs)
-                store.app("com.example.app", null, emptySet(), 2)
-                target(store, 1) // A stopped owner's positive result cannot replace unresolved current target.
-                store.clockStatus(true, 2)
-                assertNull(appGap(store).toNs)
-                assertEquals(StreamState.UNAVAILABLE, store.streams().getValue("app_log").state)
-                target(store, 2)
-                if (knownBridge) {
-                    assertEquals(7_000_000_000, appGap(store).toNs)
-                    assertEquals(StreamState.CAPTURING, store.streams().getValue("app_log").state)
-                } else {
-                    assertNull(appGap(store).toNs)
-                    assertEquals(StreamState.RECOVERING, store.streams().getValue("app_log").state)
-                    assertEquals(Long.MAX_VALUE, store.clock.endUncertainty())
-                }
-            }
+    fun bootChangeRequiresNewTargetAndRecoversOnTheNewBootSegment() {
+        CaptureStore(root.resolve("boot"), minFree = 0).use { store ->
+            val host = System.nanoTime() + 1_000_000_000
+            store.generation(1)
+            assertTrue(store.clock.add("1", listOf(1_000_000_000, 1_000_000_000,
+                1_700_000_001_000_000_000, 1_000_000_000), host, host))
+            store.status("device_log", StreamState.CAPTURING, null, 1)
+            target(store, 1)
+            interrupt(store)
+            target(store, 2)
+            store.status("device_log", StreamState.CAPTURING, null, 2)
+            assertTrue(store.clock.add("2", listOf(100_000_000, 100_000_000,
+                1_700_000_008_000_000_000, 100_000_000), host + 7_000_000_000, host + 7_000_000_000))
+            store.clockStatus(true, 2)
+            assertNull(appGap(store).toNs)
+            store.app("com.example.app", null, emptySet(), 2)
+            target(store, 1) // A stopped owner's positive result cannot replace unresolved current target.
+            store.clockStatus(true, 2)
+            assertNull(appGap(store).toNs)
+            assertEquals(StreamState.UNAVAILABLE, store.streams().getValue("app_log").state)
+            target(store, 2)
+            // The new boot is its own exact segment; no host-clock bridge is needed to recover.
+            val closed = appGap(store)
+            assertEquals(7_000_000_000, closed.toNs)
+            assertEquals(StreamState.CAPTURING, store.streams().getValue("app_log").state)
+            assertTrue(store.clock.endUncertainty(host + 7_000_000_000) < 20_000_000)
+            // A gap across the reboot only has an approximate host-time duration.
+            assertEquals(Long.MAX_VALUE, closed.boundaryUncertaintyNs)
         }
     }
 
