@@ -49,8 +49,19 @@ class InjectedTouchTest {
         }
     }
 
-    private fun entry(mono: Long, action: TouchAction, x: Int, y: Int, device: String = "/dev/input/event2", rotation: Int? = 0) =
-        TouchEntry(TouchSample(mono, device, 0, action, x, y), 1, MappedTime(mono, 0, 0), mono, 1080, 2400, rotation)
+    private fun entry(mono: Long, action: TouchAction, x: Int, y: Int, device: String = "/dev/input/event2", rotation: Int? = 0,
+                      generation: Long = 1) =
+        TouchEntry(TouchSample(mono, device, 0, action, x, y), generation, MappedTime(mono, 0, 0), mono, 1080, 2400, rotation)
+
+    @Test fun `a finger held down across a reconnect is not drawn on the next generation's frames`() {
+        // Generation 1 disconnected while the finger was down, so its last row is a DOWN with no UP.
+        val overlay = TapOverlay(listOf(entry(1_000_000_000, TouchAction.DOWN, 540, 1200, generation = 1),
+            entry(3_000_000_000, TouchAction.DOWN, 1079, 2399, generation = 2), entry(3_050_000_000, TouchAction.UP, 1079, 2399, generation = 2)))
+        assertEquals(listOf(OverlayDot(270, 600)), overlay.dots(2_000_000_000, 540, 1200, generation = 1))
+        assertEquals(emptyList(), overlay.dots(2_000_000_000, 540, 1200, generation = 2))
+        assertEquals(listOf(OverlayDot(539, 1199)), overlay.dots(3_010_000_000, 540, 1200, generation = 2))
+        assertEquals(emptyList(), overlay.dots(4_000_000_000, 540, 1200, generation = 2))
+    }
 
     @Test fun `overlay modes choose which taps the saved video draws`() {
         val physical = entry(1_000, TouchAction.DOWN, 10, 10)

@@ -359,9 +359,10 @@ internal class DeviceCapture @JvmOverloads constructor(
      */
     private fun injectedTouches() {
         val sdk = runCatching { adb.command("-s", serial, "shell", "getprop", "ro.build.version.sdk").trim().toIntOrNull() }.getOrNull()
-        if (sdk == null || sdk < INJECTED_TOUCH_MIN_SDK) {
-            status("touch_injected", StreamState.UNAVAILABLE,
-                if (sdk == null) "Androidのversionを確認できません" else "Android 13未満は注入された入力を記録できません（InputDispatcherにログがありません）")
+        // An unread version may be a transient adb error: retry through the recovery loop instead of giving up.
+        checkNotNull(sdk) { "Androidのversionを確認できません" }
+        if (sdk < INJECTED_TOUCH_MIN_SDK) {
+            status("touch_injected", StreamState.UNAVAILABLE, "Android 13未満は注入された入力を記録できません（InputDispatcherにログがありません）")
             while (pause(1000)) { /* Unsupported OS: physical taps are still read by getevent. */ }
             return
         }

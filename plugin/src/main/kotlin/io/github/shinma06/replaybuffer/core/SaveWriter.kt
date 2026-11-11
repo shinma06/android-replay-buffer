@@ -359,7 +359,8 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                                     }
                                     val codecStarted = System.nanoTime()
                                     val dots = tapOverlay?.let { tap -> frame.time.sequence?.takeIf { aligned(frame) }?.let { start ->
-                                        tap.dots(start, sourceSize.width, sourceSize.height, samples.getOrNull(n + 1)?.time?.sequence ?: capture.end)
+                                        tap.dots(start, sourceSize.width, sourceSize.height, samples.getOrNull(n + 1)?.time?.sequence ?: capture.end,
+                                            frame.generation)
                                     } }.orEmpty()
                                     val encoded = try { normalizer?.encode(bytes, dots) } catch (e: Exception) {
                                         throw IllegalStateException("動画packetの復号・サイズ変換に失敗しました", e)

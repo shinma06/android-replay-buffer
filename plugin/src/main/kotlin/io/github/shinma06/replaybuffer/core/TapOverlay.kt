@@ -15,7 +15,8 @@ internal fun overlayTouches(mode: TapDisplay, dots: TouchDots?, rows: List<Touch
 /**
  * Pointer positions over window time (sequence ns). A pointer is drawn while down and for [holdNs] after it lifts. A frame
  * shown until `until` also draws a pointer that first touches during that time, because a still screen produces no new
- * frame for a tap. Rows without a certain time are left out.
+ * frame for a tap. A frame only draws taps of its own capture generation: a finger still down when the device
+ * disconnected has no UP, and must not stay on the video after the reconnect. Rows without a certain time are left out.
  */
 internal class TapOverlay(rows: List<TouchEntry>, private val holdNs: Long = 100_000_000) {
     private val tracks = rows.filter { it.time.sequence != null && it.time.uncertainty != Long.MAX_VALUE }
@@ -27,7 +28,8 @@ internal class TapOverlay(rows: List<TouchEntry>, private val holdNs: Long = 100
         track.any { val t = it.time.sequence!!; t <= to && t >= from - holdNs }
     }
 
-    fun dots(sequence: Long, frameWidth: Int, frameHeight: Int, until: Long = sequence): List<OverlayDot> = tracks.mapNotNull { track ->
+    fun dots(sequence: Long, frameWidth: Int, frameHeight: Int, until: Long = sequence, generation: Long? = null): List<OverlayDot> = tracks.mapNotNull { track ->
+        if (generation != null && track.first().generation != generation) return@mapNotNull null
         var low = 0
         var high = track.size - 1
         var found = -1
