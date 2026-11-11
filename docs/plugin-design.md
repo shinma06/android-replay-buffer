@@ -6,13 +6,36 @@
 
 冒頭の固定リンクは設計採用時の出典です。改訂後の時刻・保存窓・出力形式は[現行の同期設計](design/timeline.md)、UIは[現行のIDE UI設計](design/ide-ui.md)、実装と受入の状態は[Case台帳](verification/README.md)を照合します。末尾の初期Case表や当時の未実施記述を、現在の一律pending・実行済みPASSへ読み替えません。
 
+## 保存物の構成
+
+保存1件は1件の不具合の再現記録（replay）です。手動保存・クラッシュ時の自動保存・ログのみ保存・ログ専用モードの保存は、どれも同じ`SaveWriter`で次の構成になります。旧形式（`session.json` / `README.txt`）のフォルダは移行も削除もしません。
+
+フォルダ名は`replay-<yyyyMMdd-HHmmss>-<manual|crash>[-logs]-<ID>`です（例: `replay-20261111-140312-manual-a1b2c3d4`）。日時は保存を始めたローカル時刻、`crash`はクラッシュ時の自動保存、`-logs`は動画を含まない保存（ログのみ保存・ログ専用モード）、IDは保存試行ごとの8桁の16進数です。使う文字は`[a-z0-9-]`だけで、Linux・macOS・Windowsで同じ名前になり、同じ種類の中ではローカル時刻順に並びます。作成中は`.<フォルダ名>.partial`で、既存のフォルダを上書きしません。同じ記録の再試行は`save_id`が同じで、フォルダ名のIDは別になります。
+
+| ファイル | 内容 | 作る条件 |
+|---|---|---|
+| `README.md` | 人とAIが最初に読む要約。見出しは「概要」「ファイル」「記録の状態」「クラッシュ」（クラッシュ時だけ）「動画とログの照合方法」「注意」の固定構成で、値は`replay.json`と同じ事実から書きます | 常に |
+| `replay.json` | 機械向けの記録（`schema` 4）。取得状態・時計・gap・アプリ履歴・各ファイルのSHA-256 | 常に |
+| `video.mp4` | 画面の動画（MP4 1本） | 動画がある保存 |
+| `video-frames.jsonl` | 動画の各frameの時刻索引（1行1frame） | 動画がある保存 |
+| `video-source.h264` | 再エンコード前の元映像（H.264 Annex B） | サイズ変更を含み再エンコードした保存 |
+| `logcat-device.jsonl` | 端末全体のログ（1行1レコード） | 常に（0行もある） |
+| `logcat-app.jsonl` | 対象アプリのログ | 常に（0行もある） |
+| `touches.jsonl` | タップの座標と時刻 | 動画を要求した保存 |
+
+`replay.json`のschema 4では、schema 3の内容に次を加えました。`folder_name`、`trigger`（`manual` / `crash`）、`created_at`（UTC）と`created_at_local`（時差付きのローカル時刻）、`files`（`readme / record / video / video_frames / video_source / logcat_device / logcat_app / touches`。値はファイル名、作らなかったものはnull）、`counts`（`device_log_rows / app_log_rows / video_frames / touches / touches_in_movie`）。schema 3の`video_file` / `touch_file` / `video_source_file`は`files`へまとめました。各ログ・frame・タップの行の形式は変えていません。
+
+スクショは保存フォルダを作らず、`screenshot-<yyyyMMdd-HHmmss>-<ID>.png`の1枚です（日時・IDの形式は保存フォルダと同じ）。
+
+MCPの`save_replay`と`get_status`の`last_save`は、完成したフォルダの`directory`に加えて`README.md`のパスを`summary_path`で返します。CLIの`save`のstdoutは従来どおり完成したフォルダのパスだけです。
+
 ## タップ位置の記録と表示（Trail #22）
 
 動画＋ログの取得中は、タップ座標と時刻を自動で記録します（専用の設定はありません）。ログ専用では記録せず、`touches.jsonl`も作りません。端末へは`adb shell getevent -lp`で`ABS_MT_SLOT`と`ABS_MT_POSITION_X/Y`を持つmulti-touch入力device（protocol B）と軸範囲を、`wm size`で画面px（Override sizeを優先）を取得し、`getevent -lt`の各SYN_REPORTでslotごとの`down / move / up`を作ります。座標は軸範囲から画面pxへ換算した、画面の自然な向きの値です（回転は適用しません）。取得中の`wm size`のOverride変更やemulatorの画面サイズ変更に追従するため、前回の読み取りから1秒以上たって入力が届いたときに`wm size`を読み直し、以後のsampleを新しいサイズで換算します（読み取りに失敗したときは直前のサイズのまま）。各行の`display_width / display_height`は、その行を換算したサイズです。入力が続いている間にサイズが変わった場合は、最大1秒は古いサイズで換算されることがあります。protocol Aやmulti-touch軸のない入力deviceは対象外で、その場合は動画取得を止めずに状態を`UNAVAILABLE`として保存します。
 
 時刻はkernelの入力時刻（`getevent -lt`の端末CLOCK_MONOTONIC）を正本とし、動画PTSと同じ`CaptureClock`の時計対応でsequenceへ写します。host受信時刻で置き換えません。保存窓・固定・pruneの規則は両ログと同じで、保存対象の固定後に新しいclock sampleで再解釈しません。保持件数の上限（200,000件）を超えた古いsampleは`dropped_count`へ数えます。
 
-`touches.jsonl`は1行1sampleで、`clock_epoch / generation / device_mono_ns / elapsed_ns / window_ns / uncertainty_ns / movie_us / action / pointer / x / y / display_width / display_height / input_device`を持ちます。`movie_us`は保存MP4で、その時刻に表示中のframe（`frames.jsonl`の`movie_pts_us〜movie_end_us`）上の位置です。表示区間外、時計対応が不確定、clock gapに重なる行はnullで、同期済みと扱いません。`session.json`は`touch_file`と`touches`（`state / reason / count / in_movie_count / dropped_count / show_touches / show_touches_state / time_source / coordinate_space / gaps`）を持ちます。`show_touches`は設定値で、`show_touches_state`は実際の状態（`applied`＝点を表示、`already_on`＝端末で既にON（設定OFFでも端末の値を読み、開発者向けオプションなどで`1`なら`already_on`。点は動画に映ります）、`failed`＝端末設定を変更できず点なし、`off`＝設定OFF、null＝未確定）です。保持数の上限（200,000件）を超えた古い行は捨て、捨てた範囲が保存窓に重なる場合は`gaps`に記録します。端末の入力bufferがあふれた（`SYN_DROPPED`）ときは、そのdeviceで押されていたpointerをすべてdrop時刻の`up`で終え、次のSYN_REPORTまでの入力を捨てます。evdevは変化した軸だけを送るので、各slotの最後のX/Yは消さずに残し、現在のslotとそのX/Yは`getevent -lp`の現在値で読み直します。そのあと、新しい`ABS_MT_TRACKING_ID`が届くまでは指の同一性が分からないため、そのslotからは行を作りません。drop時刻から、最初に新しい`ABS_MT_TRACKING_ID`（0以上。dropをまたいだ指を離す`-1`は含めません）を含むSYN_REPORTまで（端末の入力時刻を時計対応で写した範囲）を`gaps`に記録し、再同期する前に読み取りが止まった場合は止まった時刻で閉じます。保存時点でまだ再同期していなければ、gapの終わりはnull（保存窓の終わりまで不明）です。evdevは読み始めたreaderにも現在値を送り直さないため、readerを開始するたび（取得開始・再接続後の再開）にも、取得前に読む`getevent -lp`の現在値（現在のslotとそのX/Y）でslotと座標を初期化し、最初のタップで変化しなかった軸やslotの指定を補います。ほかのslotには初期値がなく、最初のタップでX/Yの両方が届くまで行を作りません。制約として、dropをまたいで押されたままの指は、離して押し直すまで記録されません。`getevent -lp`の値はdrop時点より少し後の状態なので、その間にslotが変わるとpointer番号や座標がずれることがあります。読み直せるのは現在のslotのX/Yだけで、ほかのslotはdrop前の最後の値を使います。reader開始時の値も`getevent -lt`の開始より少し前の状態です。`dropped_count`は取得開始からの累計です。schema番号は3のままの追加fieldです。
+`touches.jsonl`は1行1sampleで、`clock_epoch / generation / device_mono_ns / elapsed_ns / window_ns / uncertainty_ns / movie_us / action / pointer / x / y / display_width / display_height / input_device`を持ちます。`movie_us`は保存MP4で、その時刻に表示中のframe（`video-frames.jsonl`の`movie_pts_us〜movie_end_us`）上の位置です。表示区間外、時計対応が不確定、clock gapに重なる行はnullで、同期済みと扱いません。`replay.json`は`files.touches`と`touches`（`state / reason / count / in_movie_count / dropped_count / show_touches / show_touches_state / time_source / coordinate_space / gaps`）を持ちます。`show_touches`は設定値で、`show_touches_state`は実際の状態（`applied`＝点を表示、`already_on`＝端末で既にON（設定OFFでも端末の値を読み、開発者向けオプションなどで`1`なら`already_on`。点は動画に映ります）、`failed`＝端末設定を変更できず点なし、`off`＝設定OFF、null＝未確定）です。保持数の上限（200,000件）を超えた古い行は捨て、捨てた範囲が保存窓に重なる場合は`gaps`に記録します。端末の入力bufferがあふれた（`SYN_DROPPED`）ときは、そのdeviceで押されていたpointerをすべてdrop時刻の`up`で終え、次のSYN_REPORTまでの入力を捨てます。evdevは変化した軸だけを送るので、各slotの最後のX/Yは消さずに残し、現在のslotとそのX/Yは`getevent -lp`の現在値で読み直します。そのあと、新しい`ABS_MT_TRACKING_ID`が届くまでは指の同一性が分からないため、そのslotからは行を作りません。drop時刻から、最初に新しい`ABS_MT_TRACKING_ID`（0以上。dropをまたいだ指を離す`-1`は含めません）を含むSYN_REPORTまで（端末の入力時刻を時計対応で写した範囲）を`gaps`に記録し、再同期する前に読み取りが止まった場合は止まった時刻で閉じます。保存時点でまだ再同期していなければ、gapの終わりはnull（保存窓の終わりまで不明）です。evdevは読み始めたreaderにも現在値を送り直さないため、readerを開始するたび（取得開始・再接続後の再開）にも、取得前に読む`getevent -lp`の現在値（現在のslotとそのX/Y）でslotと座標を初期化し、最初のタップで変化しなかった軸やslotの指定を補います。ほかのslotには初期値がなく、最初のタップでX/Yの両方が届くまで行を作りません。制約として、dropをまたいで押されたままの指は、離して押し直すまで記録されません。`getevent -lp`の値はdrop時点より少し後の状態なので、その間にslotが変わるとpointer番号や座標がずれることがあります。読み直せるのは現在のslotのX/Yだけで、ほかのslotはdrop前の最後の値を使います。reader開始時の値も`getevent -lt`の開始より少し前の状態です。`dropped_count`は取得開始からの累計です。schema 3で追加したfieldです。
 
 動画上の点表示は設定「取得中は端末画面にタップ位置を表示する」（既定OFF）で切り替えます。ONでは取得開始時に端末の`settings get system show_touches`を記録し、`1`でなければ取得中だけ`1`にして、取得終了（OFF・切断による世代終了・project close）時に元の値へ戻します（未設定だった場合は削除）。取得OFFかつ反映完了後だけ変更できます。切断中で戻せなかった元の値はproject内で端末serialごとに保持し、同じ端末の次の取得では端末の現在値（自分が設定した`1`）を元の値と取り違えずに、その取得の終了時に戻します。IDE異常終了やproject closeまで端末が戻らなかった場合は、端末側の設定が残ることがあります。点は端末の画面描画として動画に焼き込まれ、`touches.jsonl`の記録とは独立です。
 
@@ -24,7 +47,7 @@
 
 軽量は文字の細部、短い変化、滑らかさと圧縮品質を優先しない選択です。scrcpy [v5.0.1の公式例](https://github.com/Genymobile/scrcpy/blob/a60891aea193d92e7e5c3942700eca63f9d19a5f/doc/video.md)の各値を組み合わせた初期候補であり、最適な組合せ・CPU/RAM/電力の削減率を測定したものではありません。長辺・fpsは上限、bitrateはencoderへの指定値で、実解像度・実fps・実bitrateとは区別します。H.264・B-frameなし・IDR interval指定1秒・既存encoder選択を維持します。[serverのdownsize_on_error](https://github.com/Genymobile/scrcpy/blob/a60891aea193d92e7e5c3942700eca63f9d19a5f/server/src/main/java/com/genymobile/scrcpy/Options.java)はfalseを明示し、encode失敗で黙って解像度を下げず、既存の取得中断・復旧/gap表示へ返します。
 
-保存時は受理したimmutable settingsの品質を固定し、`session.json.settings.video`の既存形式を値に合わせて出力、追加の`video_request`へquality/max_size/max_fps/video_bit_rate/downsize_on_errorを記録します。これらは要求値で、実際の寸法・PTS・内容は既存のparts/frame/config記録を使います。LOG_ONLYの両動画設定はnullです。設定の現在値で失敗pin/既存保存物を付け替えません。品質の選択自体では時計・窓・ログ・欠落表示・pin/再試行・保存失敗保全を変更しません。性能の完了条件は[現行方針](verification/performance.md)です。
+保存時は受理したimmutable settingsの品質を固定し、`replay.json`の`settings.video`の既存形式を値に合わせて出力、追加の`video_request`へquality/max_size/max_fps/video_bit_rate/downsize_on_errorを記録します。これらは要求値で、実際の寸法・PTS・内容は既存のparts/frame/config記録を使います。LOG_ONLYの両動画設定はnullです。設定の現在値で失敗pin/既存保存物を付け替えません。品質の選択自体では時計・窓・ログ・欠落表示・pin/再試行・保存失敗保全を変更しません。性能の完了条件は[現行方針](verification/performance.md)です。
 
 ## 保存失敗とデータ保全
 
@@ -44,7 +67,7 @@
 
 保存処理は同時に1件です。処理中は保存ボタンを「保存中」にし、重複要求を起動しません。取得は継続します。成功後はすぐ次を保存でき、保存区間の重複を許容します。動画＋ログモードで全種類0件なら、空の成功フォルダを作らず「保存できるデータがありません」と表示します。1種類でもあれば、取得できた内容を保存します。ログ専用は例外として、必要readerが正常headerを確認し、同じ取得世代の有効な時計・現在epochの対象アプリ・正の取得窓が揃った場合だけ両0行のmetadata保存を受理します。取得開始前のtailはreader確認にのみ使い、保存行にはしません。未開始、reader障害、不明時計、対象未確定、完全切断中の両0行は新規保存不可です。正常0行のcoverage秒数は0のままで、窓・clock/app履歴・gapを別に保存します。再試行は受理時のモードと同じ固定対象を使います。
 
-ログ専用は動画経路と動画ringを開始せず、MP4と動画sourceを生成しません。`session.json` schema 3に`capture_mode`、`settings.video_requested`、`coverage.*.requested`を加え、動画stateを`NOT_REQUESTED`とします。`frames.jsonl`は0行、動画欠落範囲・動画clock scope・partsは空、video file/tailはnullです。共有clockのgapは両ログの不足へ反映し、意図した動画なしをmissingKindsへ加えません。従来schema 2までの保存物を変更せず、通常モードの動画欠落・保存失敗は従来どおりです。
+ログ専用は動画経路と動画ringを開始せず、MP4と動画sourceを生成しません。`replay.json`（schema 3で追加）に`capture_mode`、`settings.video_requested`、`coverage.*.requested`を加え、動画stateを`NOT_REQUESTED`とします。`video-frames.jsonl`は作らず、動画欠落範囲・動画clock scope・partsは空、video file/tailはnullです。共有clockのgapは両ログの不足へ反映し、意図した動画なしをmissingKindsへ加えません。従来schema 2までの保存物を変更せず、通常モードの動画欠落・保存失敗は従来どおりです。
 
 ### 成功・一部取得・書込み失敗
 

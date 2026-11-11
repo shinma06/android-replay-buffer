@@ -48,6 +48,8 @@ class ReplayMcpServerTest {
         ), temporary.resolve("project")) { _, _, _, request -> requests += request; CliResponse(0, "/saved") }
         assertEquals(listOf(CliCommand.SAVE_LOGS, CliCommand.SAVE), requests.map { it.command })
         assertEquals("/saved", (responses[BigDecimal("1")]!!.result()["structuredContent"] as Map<*, *>)["directory"])
+        assertEquals(java.nio.file.Path.of("/saved").resolve("README.md").toString(),
+            (responses[BigDecimal("1")]!!.result()["structuredContent"] as Map<*, *>)["summary_path"])
         assertEquals(true, responses[BigDecimal("3")]!!.result()["isError"])
         val save = ((responses["list"]!!.result()["tools"]) as List<*>).map { it as Map<*, *> }.single { it["name"] == "save_replay" }
         val properties = (save["inputSchema"] as Map<*, *>)["properties"] as Map<*, *>
