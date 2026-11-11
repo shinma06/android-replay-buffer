@@ -139,8 +139,8 @@ internal class ReplayProjectCapture(
             val applied = engine.snapshot().settings
             val requested = store.settings()
             if (value && (applied.captureMode != requested.captureMode || applied.videoQuality != requested.videoQuality ||
-                    applied.showTouches != requested.showTouches))
-                ReplayOperation(false, "取得モード・動画品質・タップ位置表示を反映できていません。設定を確認してから取得をONにしてください。")
+                    applied.showTouches != requested.showTouches || applied.recordAudio != requested.recordAudio))
+                ReplayOperation(false, "取得モード・動画品質・タップ位置表示・音声の録音を反映できていません。設定を確認してから取得をONにしてください。")
             else engine.setEnabled(value).await()
         }
         return operation.whenComplete { result, _ ->
@@ -309,6 +309,7 @@ internal fun ReplaySettings.toCoreSettings(environment: AndroidReplayEnvironment
     captureMode = captureMode,
     videoQuality = videoQuality,
     showTouches = showTouches,
+    recordAudio = recordAudio,
     autoSaveOnCrash = autoSaveOnCrash,
     application = if (appSelection == AppSelectionMode.MANUAL) {
         ApplicationTarget(manualPackage, ApplicationMode.MANUAL)

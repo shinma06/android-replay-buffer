@@ -57,6 +57,7 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable {
     private var videoQuality: JComboBox<VideoQuality>? = null
     private var autoSave: JBCheckBox? = null
     private var showTouches: JBCheckBox? = null
+    private var recordAudio: JBCheckBox? = null
     private var manualPackage: JBTextField? = null
     private var destinationStatus: JBTextArea? = null
     private var uiLifetime: Disposable? = null
@@ -137,6 +138,7 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable {
             addActionListener {
                 videoQuality?.isEnabled = selectedItem == CaptureMode.VIDEO_AND_LOGS
                 showTouches?.isEnabled = selectedItem == CaptureMode.VIDEO_AND_LOGS
+                recordAudio?.isEnabled = selectedItem == CaptureMode.VIDEO_AND_LOGS
             }
             accessibleContext.accessibleName = "取得モード"
             accessibleContext.accessibleDescription = "取得をOFFにしてから変更してください。ログ専用は動画を取得・保存しません。"
@@ -148,6 +150,10 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable {
         showTouches = JBCheckBox("取得中は端末画面にタップ位置を表示する（動画に映ります）").apply {
             accessibleContext.accessibleName = "タップ位置の表示"
             toolTipText = "既定OFF。取得中だけ端末のshow_touchesをONにし、取得終了時に元の値へ戻します。取得OFFで変更します。"
+        }
+        recordAudio = JBCheckBox("動画に端末の再生音を録音する（Android 13以上）").apply {
+            accessibleContext.accessibleName = "端末の再生音の録音"
+            toolTipText = "既定OFF。取得できない端末・失敗時は動画だけを記録し、理由をsession.jsonのcoverage.audioへ書きます。録音を禁止したアプリの音は入りません。取得OFFで変更します。"
         }
         autoSave = JBCheckBox("クラッシュ報告で自動保存する").apply {
             accessibleContext.accessibleName = "クラッシュ報告の自動保存"
@@ -173,6 +179,7 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable {
             .addComponent(showTouches!!)
             .addComponent(wrappingLabel("動画を取得している間は、タップ座標と時刻を自動で記録し、保存時にtouches.jsonlへ動画と同期して書き出します。" +
                 "上のチェックをONにすると、端末の「タップを表示」を取得中だけONにして点を動画に映し、取得終了時に元の値へ戻します。取得OFFで変更してください。", "タップ位置の説明"))
+            .addComponent(recordAudio!!)
             .addLabeledComponent("保持時間（1〜900秒）:", retention!!)
             .addComponent(autoSave!!)
             .addComponent(wrappingLabel("対象アプリの標準Java/Kotlinクラッシュ報告が対象です。native/ANRは対応外です。" +
@@ -274,6 +281,7 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable {
         captureMode = captureMode?.selectedItem as? CaptureMode ?: CaptureMode.VIDEO_AND_LOGS,
         autoSaveOnCrash = autoSave?.isSelected == true,
         showTouches = showTouches?.isSelected == true,
+        recordAudio = recordAudio?.isSelected == true,
         screenshotUsesLogcatDestination = screenshotLogcat?.isSelected != false,
         screenshotDirectory = screenshotDirectory?.text.orEmpty(),
         videoQuality = videoQuality?.selectedItem as? VideoQuality ?: VideoQuality.STANDARD,
@@ -293,9 +301,9 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable {
         settings.validationError(checked, screenshotChecked)?.let { throw ConfigurationException(it) }
         val service = replayService
         if ((settings.captureMode != store().settings().captureMode || settings.videoQuality != store().settings().videoQuality ||
-            settings.showTouches != store().settings().showTouches) &&
+            settings.showTouches != store().settings().showTouches || settings.recordAudio != store().settings().recordAudio) &&
             (store().enabled || service?.captureView?.snapshot?.enabled == true || service?.resolving == true || (service?.captureView?.pending ?: 0) > 0))
-            throw ConfigurationException("取得をOFFにし、設定・操作の反映が終わってから取得モード・動画品質・タップ位置表示を変更してください。")
+            throw ConfigurationException("取得をOFFにし、設定・操作の反映が終わってから取得モード・動画品質・タップ位置表示・音声の録音を変更してください。")
         try { store().apply(settings, checked, screenshotChecked) } catch (failure: IllegalArgumentException) {
             throw ConfigurationException(failure.message.orEmpty())
         }
@@ -316,6 +324,8 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable {
         autoSave?.isSelected = settings.autoSaveOnCrash
         showTouches?.isSelected = settings.showTouches
         showTouches?.isEnabled = settings.captureMode.videoRequested
+        recordAudio?.isSelected = settings.recordAudio
+        recordAudio?.isEnabled = settings.captureMode.videoRequested
         manualPackage?.text = settings.manualPackage
         manualPackage?.isEnabled = settings.appSelection == AppSelectionMode.MANUAL
         checkDestination()
@@ -346,6 +356,7 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable {
         videoQuality = null
         autoSave = null
         showTouches = null
+        recordAudio = null
         manualPackage = null
     }
 

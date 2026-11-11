@@ -32,6 +32,7 @@ internal class DeviceCapture @JvmOverloads constructor(
     private val videoQuality: VideoQuality = VideoQuality.STANDARD,
     private val showTouches: Boolean = false,
     private val touchRestore: ShowTouchesRestore = ShowTouchesRestore(),
+    private val recordAudio: Boolean = false,
 ) : AutoCloseable {
     private val serial = serialArgument(serial)
     private val adb = OwnedAdb(adbPath)
@@ -54,11 +55,14 @@ internal class DeviceCapture @JvmOverloads constructor(
     var cleanupPending: Boolean = false
         private set
     @Volatile private var application = application
+    /** Set once audio cannot be captured in this generation; later video servers then run without audio. */
+    @Volatile private var audioStopped: String? = null
 
     fun start() {
         launch("clock", ::clock)
         if (store.captureMode.videoRequested) launch("video", ::video)
         if (store.captureMode.videoRequested) launch("touch", ::touches)
+        if (!store.captureMode.videoRequested || !recordAudio) audioStopped = ""
         launch("device_log-main") {
             if (!partitionLogs.isDone) {
                 val partition = probeLogLid()
@@ -144,16 +148,33 @@ internal class DeviceCapture @JvmOverloads constructor(
         }
         // Tokens are fixed, enum-owned integers or generated hex; never interpolate user shell text.
         // Reject encoder errors instead of silently retrying at a lower resolution.
+        if (audioStopped == null) {
+            val sdk = runCatching { adb.command("-s", serial, "shell", "getprop", "ro.build.version.sdk").trim().toInt() }.getOrNull()
+            if (sdk != null && sdk < 33) stopAudio("端末のAndroidが13未満のため再生音を取得できません（動画のみ記録しています）")
+        }
+        val audio = audioStopped == null
+        // Playback capture keeps the device audible (audio_dup) and honours each app's capture policy.
+        val audioArguments = if (audio) "audio=true audio_source=playback audio_dup=true audio_codec=aac audio_bit_rate=128000 " else "audio=false "
         val server = adb.start("-s", serial, "shell", "CLASSPATH=$serverFile app_process / --nice-name=$serverName com.genymobile.scrcpy.Server 5.0.1 " +
-            "scid=$scid tunnel_forward=true audio=false control=false video_codec=h264 send_device_meta=false " +
+            "scid=$scid tunnel_forward=true ${audioArguments}control=false video_codec=h264 send_device_meta=false " +
             "send_frame_meta=true send_stream_meta=true max_size=${videoQuality.maxSize} max_fps=${videoQuality.maxFps} " +
             "video_bit_rate=${videoQuality.bitRate} downsize_on_error=false " +
             "video_codec_options=max-bframes:int=0,i-frame-interval:int=1")
         var socket: Socket? = null
         var monitor: VideoReadMonitor? = null
+        var audioSocket: Socket? = null
+        var audioReader: Thread? = null
+        val videoEnded = AtomicBoolean()
         try {
             socket = connectVideo(port.toInt(), server, stopping, sockets)
             socket.soTimeout = 0
+            if (audio) {
+                // The server accepts the audio socket right after the video one; scrcpy sends the dummy byte only on the first.
+                audioSocket = Socket().also { sockets.add(it) }
+                audioSocket.connect(InetSocketAddress(InetAddress.getLoopbackAddress(), port.toInt()), 5000)
+                val connected = audioSocket
+                audioReader = thread(name = "replay-audio", isDaemon = true) { readAudioStream(connected, videoEnded) }
+            }
             monitor = VideoReadMonitor(socket, server, timer)
             val input = DataInputStream(socket.getInputStream())
             require(input.readInt() == 0x68323634) { "固定H.264以外のcodecです" }
@@ -167,12 +188,42 @@ internal class DeviceCapture @JvmOverloads constructor(
                 if (ready) monitor.received(true) else monitor.awaitFirstFrame()
             }
         } finally {
+            videoEnded.set(true)
             monitor?.close()
             socket?.close()
             socket?.let { sockets.remove(it) }
+            audioSocket?.close()
+            audioSocket?.let { sockets.remove(it) }
+            audioReader?.let { runCatching { it.join(2000) } }
             adb.stop(server)
             runCatching { removeOwnedForwards(adb, serial, mapOf(port to "localabstract:scrcpy_$scid")) }.onSuccess { ports.remove(port) }
         }
+    }
+
+    private fun readAudioStream(socket: Socket, videoEnded: AtomicBoolean) {
+        store.audioSession(generation)
+        try {
+            val input = DataInputStream(socket.getInputStream())
+            when (input.readInt()) {
+                AUDIO_CODEC_AAC -> {}
+                AUDIO_DISABLED -> { stopAudio("端末が再生音の取得を許可しませんでした（動画のみ記録しています）"); return }
+                AUDIO_ERROR -> { stopAudio("音声の設定に失敗しました（動画のみ記録しています）"); return }
+                else -> { stopAudio("未知の音声codecです（動画のみ記録しています）"); return }
+            }
+            while (!stopping.get()) {
+                val packet = readAudio(input)
+                store.audio(packet, generation)
+            }
+        } catch (failure: Exception) {
+            // Only a failure seen while video still runs is the audio's own; otherwise the video recovery restarts both.
+            if (!stopping.get() && !videoEnded.get()) stopAudio("音声の取得が中断しました（以降は動画のみ記録しています）")
+            else if (!stopping.get()) store.audioStatus(StreamState.RECOVERING, "動画とともに音声の取得を復旧しています", generation)
+        }
+    }
+
+    private fun stopAudio(reason: String) {
+        audioStopped = reason
+        store.audioStatus(StreamState.UNAVAILABLE, reason, generation)
     }
 
     @Synchronized

@@ -76,7 +76,7 @@ Android開発のIT（テスト）のエビデンス採取と、日常の動作�
 | ID | 要件 |
 | --- | --- |
 | VIDEO-01 | 初期版の画質は固定。解像度・フレームレートなどの具体値は、文字の読みやすさと負荷を実機で検証して決める。画質変更機能の実装時期・優先度は未定。 |
-| VIDEO-02 | 初期版は音声を録音しない。音声は後続TODO。 |
+| VIDEO-02 | 設定「動画に端末の再生音を録音する」（既定OFF）で、動画モードの取得中だけ端末の再生音をMP4へ入れる（Trail #34）。取得できない場合は動画だけを記録し、理由を`session.json`の`coverage.audio`に残す。ログ専用では録音しない。 |
 | VIDEO-03 | タップ位置の表示は後続TODO。初期版の必須機能に含めない。 |
 | VIDEO-04 | 録画中の回転への適切な追従は後続TODO。ただし初期版でも、回転だけでクラッシュ・保存済みデータ破損・復旧不能となる実装にしない。取得が途切れたらBUF-06に従い自動復旧する。 |
 
@@ -113,7 +113,7 @@ Android開発のIT（テスト）のエビデンス採取と、日常の動作�
 | [保存ショートカットキー #17](https://github.com/shinma06/android-replay-buffer/issues/17) | **優先度 中**。Android Studioのキーマップから保存操作を呼べるようにする。 |
 | [複数端末 #18](https://github.com/shinma06/android-replay-buffer/issues/18) | **優先度 低**。複数接続時の選択・同時取得・保存単位はこの段階で検討。初期版に選択UIや全台取得を要求しない。 |
 | [保存後のメモ・テストケースID #19](https://github.com/shinma06/android-replay-buffer/issues/19) | TODO、優先度未定。任意で追記する。保存前の必須入力にはしない。 |
-| [音声録音 #20](https://github.com/shinma06/android-replay-buffer/issues/20) | TODO、優先度未定。対象音声や取得方法は未決。 |
+| [音声録音 #20](https://github.com/shinma06/android-replay-buffer/issues/20) | Trail #34で実装。対象は端末の再生音（Android 13以上のplayback capture）。マイク音・録音を禁止したアプリの音は対象外。 |
 | [タップ位置の表示 #21](https://github.com/shinma06/android-replay-buffer/issues/21) | TODO、優先度未定。**表示の有効/無効トグル必須**。同じ操作の「表示あり／なし」の両動画を保存できる方法も検討する。 |
 | [録画中の回転への追従 #22](https://github.com/shinma06/android-replay-buffer/issues/22) | TODO、優先度未定。初期版の非致命性・自動復旧要件とは分けて扱う。 |
 

@@ -32,6 +32,7 @@ stopは対象projectの取得だけをOFFにし、未保存バッファ/失敗pi
 saveのexit0/stdoutは完成フォルダです。受付だけでは成功になりません。
 screenshotはGUIと同じPNGを保存し、パスだけをstdoutへ返します。
 settingsはMCPのget_settings、settings setはupdate_settingsと同じ項目名・検証です。
+record_audio=trueで動画に端末の再生音（Android 13以上）を録音します。既定はfalseで、取得OFFで変更します。
 mcpは標準入出力のMCPサーバーです。IDE本体は起動しません。
 失敗や結果不明はexit1/stderr、引数・設定値の不正はexit2です。通信断を自動retryしません。
 

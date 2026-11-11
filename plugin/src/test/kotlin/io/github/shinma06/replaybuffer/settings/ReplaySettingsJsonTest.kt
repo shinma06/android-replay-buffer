@@ -25,11 +25,13 @@ class ReplaySettingsJsonTest {
             patchSettings(current, """{"replay_seconds":30,"capture_mode":"LOG_ONLY"}"""))
         assertEquals(current.copy(showTouches = true), patchSettings(current, """{"show_touches":true}"""))
         assertEquals(true, JsonParser.parseString(settingsJson(current.copy(showTouches = true), false)).asJsonObject["show_touches"].asBoolean)
+        assertEquals(current.copy(recordAudio = true), patchSettings(current, """{"record_audio":true}"""))
+        assertEquals(false, JsonParser.parseString(settingsJson(current, false)).asJsonObject["record_audio"].asBoolean)
     }
 
     @Test fun `unknown duplicate mistyped and empty patches are rejected`() {
         for (text in listOf("{}", """{"enabled":true}""", """{"replay_seconds":"30"}""", """{"replay_seconds":1.5}""",
-            """{"replay_seconds":1,"replay_seconds":2}""", """{"capture_mode":"VIDEO"}""", """{"auto_save_on_crash":"true"}""", """{"show_touches":1}""",
+            """{"replay_seconds":1,"replay_seconds":2}""", """{"capture_mode":"VIDEO"}""", """{"auto_save_on_crash":"true"}""", """{"show_touches":1}""", """{"record_audio":"true"}""",
             """{"output_directory":null}""", "[]", """{"replay_seconds":1} {}""", "{")) {
             assertFailsWith<IllegalArgumentException>(text) { patchSettings(ReplaySettings(), text) }
         }
