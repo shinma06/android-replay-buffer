@@ -64,6 +64,18 @@ class ReplayCoreWireTest {
     private fun ownedPids(dir: Path): List<String> =
         Files.list(dir).use { files -> files.map { it.fileName.toString() }.toList() }
 
+    /**
+     * Fails while a fixture adb started by this JVM still runs. Windows hands a finished process's PID to the next
+     * process at once, so a live process with that PID whose parent is not this JVM is a later, unrelated process.
+     */
+    private fun assertOwnedPidsEnded(dir: Path) {
+        val self = ProcessHandle.current().pid()
+        ownedPids(dir).forEach { pid ->
+            val live = ProcessHandle.of(pid.toLong()).filter { it.isAlive && it.parent().map { p -> p.pid() == self }.orElse(false) }
+            assertFalse(live.isPresent, "fixture adb $pid is still running: ${live.map { it.info() }.orElse(null)}")
+        }
+    }
+
     /** Log reader launches in start order, as `<buffer> <pid>`. */
     private fun logLaunches(root: Path): List<String> {
         val dir = root.resolve("log-launches")
@@ -437,7 +449,7 @@ elif len(a)>3 and a[3]=='ps':
                 assertTrue(Files.readString(root.resolve("video-launches.txt")).contains("max_size=1024 max_fps=15 video_bit_rate=2000000 downsize_on_error=false"))
                 assertTrue(core.setEnabled(false).get(15, TimeUnit.SECONDS).accepted)
                 core.closeAsync().get(15, TimeUnit.SECONDS)
-                ownedPids(pids).forEach { pid -> assertFalse(ProcessHandle.of(pid.toLong()).map { it.isAlive }.orElse(false)) }
+                assertOwnedPidsEnded(pids)
                 return
             }
             if (logMode == "cancel") {
@@ -449,7 +461,7 @@ elif len(a)>3 and a[3]=='ps':
                 assertTrue(System.nanoTime() - started < 5_500_000_000)
                 core.closeAsync().get(10, TimeUnit.SECONDS)
                 assertTrue(logLaunches(root).isEmpty())
-                ownedPids(pids).forEach { pid -> assertFalse(ProcessHandle.of(pid.toLong()).map { it.isAlive }.orElse(false)) }
+                assertOwnedPidsEnded(pids)
                 return
             }
             if (discardInitialPFrame) {
@@ -502,8 +514,11 @@ elif len(a)>3 and a[3]=='ps':
                     val quietGaps = core.snapshot().deviceLog.gaps
                     Files.createFile(root.resolve("quiet-all"))
                     Thread.sleep(1200)
-                    assertEquals(StreamState.CAPTURING, core.snapshot().deviceLog.state)
-                    assertEquals(quietGaps, core.snapshot().deviceLog.gaps)
+                    val quiet = core.snapshot().deviceLog
+                    assertEquals(StreamState.CAPTURING, quiet.state)
+                    // The live window may drop earlier gaps or show a clock-read outage on a slow runner; a quiet
+                    // buffer must only add no log gap of its own.
+                    assertEquals(emptyList(), quiet.gaps.filter { it.stream == "device_log" && it !in quietGaps })
                     Files.delete(root.resolve("quiet-all"))
                     Files.createFile(root.resolve("fail-all"))
                     awaitState("all-only-failure") { it.deviceLog.state == StreamState.RECOVERING }
@@ -569,7 +584,7 @@ elif len(a)>3 and a[3]=='ps':
                 else assertEquals(0, launches.count { it == "main" })
                 assertTrue(core.setEnabled(false).get(10, TimeUnit.SECONDS).accepted)
                 core.closeAsync().get(10, TimeUnit.SECONDS)
-                ownedPids(pids).forEach { pid -> assertFalse(ProcessHandle.of(pid.toLong()).map { it.isAlive }.orElse(false)) }
+                assertOwnedPidsEnded(pids)
                 return
             }
             if (discardInitialPFrame) {
@@ -584,15 +599,17 @@ elif len(a)>3 and a[3]=='ps':
                 awaitState("changed-config-recovered") { readyConnections.get() == 3 && it.video.state == StreamState.CAPTURING }
                 assertTrue(core.setEnabled(false).get(15, TimeUnit.SECONDS).accepted)
                 core.closeAsync().get(15, TimeUnit.SECONDS)
-                ownedPids(pids).forEach { pid -> assertFalse(ProcessHandle.of(pid.toLong()).map { it.isAlive }.orElse(false)) }
+                assertOwnedPidsEnded(pids)
                 return
             }
             Thread.sleep(1300) // Remove the initial unresolved-app interval from the one-second window.
             pauseVideo.set(true)
             Thread.sleep(11_000)
+            val idle = core.snapshot().video
             assertEquals(1, readyConnections.get())
-            assertEquals(StreamState.CAPTURING, core.snapshot().video.state)
-            assertTrue(core.snapshot().video.gaps.isEmpty())
+            assertEquals(StreamState.CAPTURING, idle.state)
+            // A clock-read outage on a slow runner is not a video interruption; normal idle must open no video gap.
+            assertEquals(emptyList(), idle.gaps.filter { it.stream == "video" })
             assertTrue(core.applySettings(core.snapshot().settings.copy(saveDirectory = root)).get().accepted)
             repeat(2) {
                 assertTrue(core.save().get().accepted)
@@ -730,7 +747,7 @@ elif len(a)>3 and a[3]=='ps':
             core.closeAsync().get(15, TimeUnit.SECONDS)
             completed?.let { assertEquals(savedHash, sha256(it.resolve("replay.json"))) }
             assertEquals(0, Files.list(root.resolve("workspace")).use { it.count() })
-            ownedPids(pids).forEach { pid -> assertFalse(ProcessHandle.of(pid.toLong()).map { it.isAlive }.orElse(false)) }
+            assertOwnedPidsEnded(pids)
         } finally {
             core.closeAsync().get(15, TimeUnit.SECONDS)
             stop.set(true); pauseVideo.set(false); resumeVideo.countDown(); server.close(); clockServer.close(); sockets.forEach { runCatching { it.close() } }
