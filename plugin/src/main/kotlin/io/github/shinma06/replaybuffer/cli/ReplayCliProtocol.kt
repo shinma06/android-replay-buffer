@@ -10,7 +10,7 @@ import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
 
 /** [SETTINGS] reads and [CONFIGURE] updates the GUI settings; [CONFIGURE] carries a JSON object in [CliRequest.configText]. */
-internal enum class CliCommand { START, STOP, SAVE, STATUS, SCREENSHOT, SETTINGS, CONFIGURE }
+internal enum class CliCommand { START, STOP, SAVE, SAVE_LOGS, STATUS, SCREENSHOT, SETTINGS, CONFIGURE }
 
 internal data class CliRequest(val command: CliCommand, val configText: String? = null)
 

@@ -34,6 +34,7 @@ CLIは導入先StudioのJBRとKotlin runtimeで動きます（IDE本体は起動
 
 ```text
 replay [--project PATH] start|stop|save|status|screenshot
+replay [--project PATH] save --logs-only
 replay [--project PATH] settings
 replay [--project PATH] settings set KEY=VALUE...
 replay [--project PATH] mcp
@@ -44,6 +45,7 @@ replay [--project PATH] mcp
 | `start` | 取得をONにし、開始を確認して終了します。取得はIDEが続けます。 | `started` | `start_capture` |
 | `stop` | 対象projectの取得だけをOFFにします。未保存バッファは破棄します。保存済み成果物・IDE・他projectは変更しません。 | `stopped` | `stop_capture` |
 | `save` | GUIの保存と同じ処理で保存し、完成を待ちます。取得OFFなら取得を開始します。記録の蓄積前は保存できません。 | 完成したフォルダのパスだけ | `save_replay` |
+| `save --logs-only` | Logcatツールバーの「直前N秒のログを保存」と同じ処理です。端末ログ・アプリログ・`session.json`だけを保存し、MP4は作りません。動画の取得中でも取得は止めず、`session.json`の`coverage.video.state`を`EXCLUDED`（意図的な除外。未要求の`NOT_REQUESTED`や取得失敗とは別）、`save_request`に`content: LOGS_ONLY`と要求元`origin`を記録します。取得OFFなら`save`と同じく取得を開始します。 | 完成したフォルダのパスだけ | `save_replay`（`logs_only: true`） |
 | `status` | 設定を変えずに取得状態を返します。 | 状態JSON | `get_status` |
 | `screenshot` | GUIと同じスクリーンショットを保存します。 | PNGのパスだけ | `take_screenshot` |
 | `settings` | 現在の設定とON/OFFを返します。 | 設定JSON | `get_settings` |
