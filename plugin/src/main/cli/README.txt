@@ -11,6 +11,7 @@ replay --help
 replay --project /absolute/project/path start
 replay --project /absolute/project/path stop
 replay --project /absolute/project/path save
+replay --project /absolute/project/path save --logs-only
 replay --project /absolute/project/path status
 replay --project /absolute/project/path screenshot
 replay --project /absolute/project/path settings
@@ -31,6 +32,8 @@ startは取得をONにして終了します。IDEを終了すると取得も終�
 stopは対象projectの取得だけをOFFにし、未保存バッファ/失敗pinを破棄します。
 保存済み成果物・保全partial・IDE・他projectは削除/終了しません。
 saveのexit0/stdoutは完成フォルダです。受付だけでは成功になりません。
+save --logs-onlyはLogcatツールバーのボタンと同じく、ログとsession.jsonだけを保存します（MP4なし）。
+動画の取得中でも取得は止めず、session.jsonのcoverage.videoをEXCLUDEDとして記録します。
 screenshotはGUIと同じPNGを保存し、パスだけをstdoutへ返します。
 settingsはMCPのget_settings、settings setはupdate_settingsと同じ項目名・検証です。
 複数の端末を接続したときはstatusのdevices[].serialから1台をdevice=<serial>で選びます（空は自動）。

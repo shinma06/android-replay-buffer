@@ -48,6 +48,17 @@ enum class CaptureMode {
     val streams: List<String> get() = if (videoRequested) listOf("video", "device_log", "app_log") else listOf("device_log", "app_log")
 }
 
+/** What one save writes. LOGS_ONLY leaves video acquisition running and records the exclusion in session.json. */
+enum class SaveContent { ALL, LOGS_ONLY }
+
+/** Where a save was requested; recorded in session.json. CLI also covers MCP, which reaches the IDE through the CLI endpoint. */
+enum class SaveOrigin { TOOL_WINDOW, RUNNING_DEVICES, LOGCAT_TOOLBAR, CLI, CRASH_AUTOSAVE }
+
+data class SaveRequest(val content: SaveContent = SaveContent.ALL, val origin: SaveOrigin = SaveOrigin.TOOL_WINDOW) {
+    /** Video acquired for this capture mode but intentionally left out of this save. */
+    fun excludesVideo(mode: CaptureMode): Boolean = mode.videoRequested && content == SaveContent.LOGS_ONLY
+}
+
 /** Requested scrcpy limits, not effective dimensions/fps/bitrate or a measured load guarantee. */
 enum class VideoQuality(val maxSize: Int, val maxFps: Int, val bitRate: Int, private val label: String) {
     STANDARD(1920, 30, 8_000_000, "標準"),
@@ -160,7 +171,7 @@ data class VideoTailSnapshot(
  * directory may be only the intended destination until COMPLETED; retainedPath is best-effort failure evidence.
  * missingKinds includes unconfirmed recording, so a completed folder need not imply complete acquisition.
  */
-data class SaveSnapshot(
+data class SaveSnapshot @JvmOverloads constructor(
     val phase: SavePhase = SavePhase.IDLE,
     val requestId: String? = null,
     val sequenceId: String? = null,
@@ -178,10 +189,11 @@ data class SaveSnapshot(
     val attempt: Long = 0,
     val autoEventId: String? = null,
     val retainedPath: Path? = null,
+    val content: SaveContent = SaveContent.ALL,
 )
 
 /** Callbacks run on replay-control, never EDT. Consumers must dispatch to EDT and reject stale revisions. */
-data class ReplaySnapshot(
+data class ReplaySnapshot @JvmOverloads constructor(
     val revision: Long,
     val generation: Long,
     val enabled: Boolean,
@@ -205,7 +217,14 @@ data class ReplaySnapshot(
     val lastSave: SaveSnapshot? = null,
     /** Devices from the last `adb devices -l` poll while capture is ON; empty while OFF, which never runs adb. */
     val devices: List<ReplayDevice> = emptyList(),
-)
+    /** Availability of a logs-only save, which may differ from [canSave] while video is captured. */
+    val canSaveLogs: Boolean = false,
+    val saveLogsDisabledReason: String? = null,
+) {
+    fun canSave(content: SaveContent): Boolean = if (content == SaveContent.LOGS_ONLY) canSaveLogs else canSave
+    fun saveDisabledReason(content: SaveContent): String? =
+        if (content == SaveContent.LOGS_ONLY) saveLogsDisabledReason else saveDisabledReason
+}
 
 /** accepted admits the operation; saveResult, when supplied, settles that attempt independently of later UI state. */
 data class ReplayOperation(

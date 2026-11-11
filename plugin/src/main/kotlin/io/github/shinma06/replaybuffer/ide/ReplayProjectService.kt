@@ -39,6 +39,9 @@ import io.github.shinma06.replaybuffer.core.MULTIPLE_DEVICES_REASON
 import io.github.shinma06.replaybuffer.core.ReplayOperation
 import io.github.shinma06.replaybuffer.core.ReplaySnapshot
 import io.github.shinma06.replaybuffer.core.SavePhase
+import io.github.shinma06.replaybuffer.core.SaveContent
+import io.github.shinma06.replaybuffer.core.SaveOrigin
+import io.github.shinma06.replaybuffer.core.SaveRequest
 import io.github.shinma06.replaybuffer.core.SaveSnapshot
 import io.github.shinma06.replaybuffer.core.SavedScreenshot
 import io.github.shinma06.replaybuffer.core.ScreenshotSaveFailure
@@ -189,9 +192,9 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
     }
 
     @Synchronized
-    internal fun save(): CompletableFuture<ReplayOperation> {
+    internal fun save(request: SaveRequest = SaveRequest()): CompletableFuture<ReplayOperation> {
         if (!alive) return rejected("projectは終了しています。")
-        return if (resolving || capture.view.pending > 0) rejected("設定・操作を反映中です。完了後に保存してください。") else capture.save()
+        return if (resolving || capture.view.pending > 0) rejected("設定・操作を反映中です。完了後に保存してください。") else capture.save(request)
     }
 
     internal val screenshotDisabledReason: String?
@@ -391,7 +394,7 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
                         "phase" to last.phase.name, "request_id" to last.requestId, "attempt" to last.attempt,
                         "directory" to last.directory?.takeIf { last.phase == SavePhase.COMPLETED }?.toString(),
                         "retained_path" to last.retainedPath?.toString(),
-                        "error" to last.error, "missing_kinds" to last.missingKinds,
+                        "error" to last.error, "missing_kinds" to last.missingKinds, "content" to last.content.name,
                     ) },
                     "reason" to (view.message ?: view.initializationError ?: snapshot?.saveDisabledReason),
                 )))
@@ -414,18 +417,20 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
                 }
                 return CliResponse(0, saved.file.toString())
             }
-            if (request.command == CliCommand.SAVE && capture.view.snapshot?.enabled != true) {
+            val saving = request.command == CliCommand.SAVE || request.command == CliCommand.SAVE_LOGS
+            if (saving && capture.view.snapshot?.enabled != true) {
                 val enabled = await(setEnabled(true))
                 if (!enabled.accepted) return CliResponse(1, error = enabled.reason.orEmpty())
             }
             val operation = await(when (request.command) {
-                CliCommand.SAVE -> save()
+                CliCommand.SAVE -> save(SaveRequest(origin = SaveOrigin.CLI))
+                CliCommand.SAVE_LOGS -> save(SaveRequest(SaveContent.LOGS_ONLY, SaveOrigin.CLI))
                 CliCommand.START -> setEnabled(true)
                 CliCommand.STOP -> setEnabled(false)
                 CliCommand.STATUS, CliCommand.SCREENSHOT, CliCommand.SETTINGS, CliCommand.CONFIGURE -> error("already handled")
             })
             if (!operation.accepted) return CliResponse(1, error = operation.reason.orEmpty())
-            if (request.command != CliCommand.SAVE) return CliResponse(0,
+            if (!saving) return CliResponse(0,
                 if (request.command == CliCommand.STOP) "stopped" else "started")
             requestId = operation.requestId
             return cliSaveResponse(operation.requestId, checkNotNull(operation.saveResult), deadline)
@@ -456,9 +461,11 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
             val group = NotificationGroupManager.getInstance().getNotificationGroup("Android Replay Buffer")
             val notification = if (save.phase == SavePhase.COMPLETED && save.directory != null) {
                 val missing = save.missingKinds.map(::streamName).joinToString("、")
+                val logsOnly = save.content == SaveContent.LOGS_ONLY
                 group.createNotification(
-                    if (missing.isEmpty()) "保存しました" else "保存しました（記録の不足・未確認があります）",
-                    if (missing.isEmpty()) "直前の記録を完成フォルダへ保存しました。" else "記録の不足・未確認: $missing",
+                    (if (logsOnly) "ログを保存しました" else "保存しました") + if (missing.isEmpty()) "" else "（記録の不足・未確認があります）",
+                    if (missing.isNotEmpty()) "記録の不足・未確認: $missing"
+                    else if (logsOnly) "直前のログを完成フォルダへ保存しました（動画は含めていません）。" else "直前の記録を完成フォルダへ保存しました。",
                     if (missing.isEmpty()) NotificationType.INFORMATION else NotificationType.WARNING,
                 ).addAction(NotificationAction.create("フォルダを開く") { _, event ->
                     if (alive) openDirectory(save.directory) else event.expire()

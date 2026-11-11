@@ -43,6 +43,7 @@ internal fun settingsAssignments(words: List<String>): String {
 internal fun parseCliArguments(arguments: List<String>): CliArguments {
     var command: CliCommand? = null
     var mcp = false
+    var logsOnly = false
     var project: Path? = null
     val assignments = mutableListOf<String>()
     var index = 0
@@ -54,6 +55,10 @@ internal fun parseCliArguments(arguments: List<String>): CliArguments {
                 val text = if (value == "--project") arguments.getOrNull(index++) else value.substringAfter('=')
                 require(!text.isNullOrEmpty()) { "--projectには開いているprojectのパスを指定してください。" }
                 project = Path.of(text)
+            }
+            value == "--logs-only" -> {
+                require(!logsOnly) { "--logs-onlyは1回だけ指定してください。" }
+                logsOnly = true
             }
             command == CliCommand.SETTINGS && value == "set" -> command = CliCommand.CONFIGURE
             command == CliCommand.CONFIGURE -> assignments += value
@@ -71,14 +76,17 @@ internal fun parseCliArguments(arguments: List<String>): CliArguments {
             }
         }
     }
+    require(!logsOnly || (!mcp && command == CliCommand.SAVE)) { "--logs-onlyはsaveだけに指定できます。" }
     if (mcp) return CliArguments(null, project)
     val selected = requireNotNull(command) { "start/stop/save/status/screenshot/settings/mcpを指定してください。" }
+        .let { if (logsOnly) CliCommand.SAVE_LOGS else it }
     return CliArguments(selected, project, if (selected == CliCommand.CONFIGURE) settingsAssignments(assignments) else null)
 }
 
 /** Distribution entrypoint for an already running IDE; never starts the IDE or a separate capture process. */
 object ReplayCli {
     private const val HELP = """Usage: replay [--project PATH] start|stop|save|status|screenshot
+       replay [--project PATH] save --logs-only
        replay [--project PATH] settings
        replay [--project PATH] settings set KEY=VALUE...
        replay [--project PATH] mcp
@@ -88,6 +96,8 @@ start: 取得をONにして終了します。取得はIDEが続けます。
 stop: 対象projectの取得をOFFにします。未保存の記録は破棄します。
 save: GUIと同じ保存を実行し、完成フォルダだけをstdoutへ返します。OFFなら取得を開始します。
       記録の蓄積前は保存できません。GUIの状態を確認して再実行してください。
+save --logs-only: Logcatツールバーのボタンと同じく、端末ログ・アプリログ・session.jsonだけを保存します。
+      動画の取得中でもMP4は作らず、動画の取得は止めません（session.jsonのcoverage.videoはEXCLUDED）。
 status: 設定を変えずに状態をJSONで表示します。取得ON中は接続中の端末一覧（devices）と取得対象（device_serial）も返します。
 screenshot: GUIと同じスクリーンショットを保存し、PNGのパスだけをstdoutへ返します。
 settings: 現在の設定をMCPのget_settingsと同じJSONでstdoutへ返します。
