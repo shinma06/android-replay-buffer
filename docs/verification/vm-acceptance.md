@@ -37,7 +37,7 @@
 | Running Devices | 上部の「取得ON/OFF」「直前N秒を保存」「スクリーンショット」 | ToolWindowと同じ結果になる |
 | Logcat | 動画＋ログで取得中に、Logcatヘッダー（または右クリック）の「直前N秒のログを保存」 | 完成フォルダ`replay-<日時>-manual-logs-<ID>`に両ログと`replay.json`・`README.md`があり、`video.mp4`・`video-frames.jsonl`がない。`coverage.video.state`が`EXCLUDED`、`save_request.origin`が`LOGCAT_TOOLBAR`。保存後も動画の取得が続く（続けて通常保存するとMP4ができる） |
 | タップ位置 | 取得中に `adb shell input tap` | 保存した `touches.jsonl` にその座標が入る。「タップを表示」ONなら動画に点が写る |
-| クラッシュ時の自動保存 | 設定ONで取得中に `adb shell am crash <対象package>` | 保存フォルダ`replay-<日時>-crash-<ID>`が1つ増え、`replay.json` の `trigger` が `crash`、`auto_trigger.kind` が `platform_reported_uncaught_exception`。別アプリのクラッシュでは増えない。続けて試す場合は30秒以上空け、`am force-stop <対象package>` してから起動し直す（Android 9ではクラッシュのダイアログが落ちたprocessを残し、次の`am crash`が報告を出さない）。報告と同じ時刻に時計の不足区間があると「報告の時計対応を確認できません」で保存しないのは仕様 |
+| クラッシュ時の自動保存 | 設定ONで取得中に `adb shell am crash <対象package>` | 保存フォルダ`replay-<日時>-crash-<ID>`が1つ増え、`replay.json` の `trigger` が `crash`、`auto_trigger.kind` が `platform_reported_uncaught_exception`。別アプリのクラッシュでは増えない。続けて試す場合は30秒以上空け、`am force-stop <対象package>` してから起動し直す（Android 9ではクラッシュのダイアログが落ちたprocessを残し、次の`am crash`が報告を出さない）。報告と同じ時刻に5秒以内の時計の不足区間があっても、回復後に保存される（`replay.json`に時計の不足区間が残る）。5秒を超える途切れや時計の境界をまたぐ場合だけ「報告の時計対応を確認できません」で保存しない |
 | 設定（CLI） | `bin/replay --project <dir> settings`、`settings set replay_seconds=<n>` | 値が設定画面と一致し、変更が反映される |
 | MCP | `bin/replay --project <dir> mcp` に `initialize` と `tools/list` を送る | 保存・スクリーンショット・設定・ON/OFFのtoolが返る |
 
