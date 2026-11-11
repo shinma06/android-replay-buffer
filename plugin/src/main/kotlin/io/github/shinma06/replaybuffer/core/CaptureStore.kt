@@ -52,6 +52,7 @@ internal data class FrozenCapture(
     val touchDropped: Long = 0,
     /** Whether the visible dots were on during this generation; null before the touch reader decided. */
     val touchDots: TouchDots? = null,
+    val request: SaveRequest = SaveRequest(),
 ) {
     val empty: Boolean get() = video.isEmpty() && logs.isEmpty()
     val windowKnown: Boolean get() = endUncertainty != Long.MAX_VALUE
@@ -554,9 +555,12 @@ internal class CaptureStore(
 
     /** Null/no admissible content or AutoSaveRejected creates no new pin; an existing pin rejects another capture. */
     @Synchronized
-    fun capture(settings: ReplaySettings, trigger: CrashPair? = null, host: Long = System.nanoTime()): FrozenCapture? = synchronized(clock) {
+    fun capture(settings: ReplaySettings, trigger: CrashPair? = null, host: Long = System.nanoTime(),
+                request: SaveRequest = SaveRequest()): FrozenCapture? = synchronized(clock) {
         check(pinned == null) { "保存対象は既に固定されています" }
         require(settings.captureMode == captureMode) { "取得中のモードと保存設定が一致しません" }
+        // A logs-only save neither reads nor pins video, so the running video ring keeps rotating untouched.
+        val withVideo = captureMode.videoRequested && !request.excludesVideo(captureMode)
         val end = fixedEnd ?: clock.now(host) ?: latest() ?: return null
         val uncertainty = fixedUncertainty ?: clock.endUncertainty(host)
         val known = uncertainty != Long.MAX_VALUE
@@ -583,12 +587,12 @@ internal class CaptureStore(
             } catch (_: ArithmeticException) { true } // Overflow cannot prove that the record is outside.
         }
         val rows = logs.map { row -> row.copy(time = logTime(row.source.wall, row.host)) }.filter { insideWindow(it.time, it.host) }
-        val touchRows = if (!captureMode.videoRequested) emptyList() else {
+        val touchRows = if (!withVideo) emptyList() else {
             val touchTime = clock.monoMapper()
             touches.map { row -> row.copy(time = touchTime(row.sample.monoNs, row.host, row.time.epoch)) }
                 .filter { insideWindow(it.time, it.host) }
         }
-        val all = if (captureMode.videoRequested) video.toList() else emptyList()
+        val all = if (withVideo) video.toList() else emptyList()
         val files = mutableSetOf<Path>()
         all.forEachIndexed { index, entry ->
             val unknownTime = entry.time.sequence == null || entry.time.uncertainty == Long.MAX_VALUE
@@ -605,12 +609,12 @@ internal class CaptureStore(
             frame.copy(time = clock.video(frame.pts, frame.host, frame.time.epoch))
         }
         var value = FrozenCapture(UUID.randomUUID().toString(), sequence, generation, start, end,
-            settings.replaySeconds, frames.toList(), rows.toList(), gaps.toList(), clock.snapshot(), apps.toList(), settings,
+            settings.replaySeconds, frames.toList(), rows.toList(), gaps.filter { withVideo || it.stream != "video" }, clock.snapshot(), apps.toList(), settings,
             streams(settings.replaySeconds, end), endUncertainty = uncertainty, windowClockEpoch = fixedEpoch ?: clock.currentEpoch(),
             clockRecoveries = clockRecoveries.toMap(), videoCuts = videoCuts.toMap(), hostStart = hostStart,
-            touches = touchRows, touchState = touchState.takeIf { captureMode.videoRequested }, touchGaps = touchGaps.toList() +
+            touches = touchRows, touchState = touchState.takeIf { withVideo }, touchGaps = if (!withVideo) emptyList() else touchGaps.toList() +
                 listOfNotNull(touchEvictedThrough?.takeIf { it >= start }?.let { TouchGap(null, it.takeIf { it != Long.MAX_VALUE }, "保持上限を超えた古いタップ位置を破棄しました") }),
-            touchDropped = touchDropped, touchDots = touchDots.takeIf { captureMode.videoRequested })
+            touchDropped = if (withVideo) touchDropped else 0, touchDots = touchDots.takeIf { withVideo }, request = request)
         if (trigger != null) {
             autosave.admissionProblem(trigger, host)?.let { throw AutoSaveRejected(it) }
             if (fixedEnd != null || !clock.certain(host)) throw AutoSaveRejected(AutoSaveReason.NOT_SAVED_CLOCK_UNKNOWN)
