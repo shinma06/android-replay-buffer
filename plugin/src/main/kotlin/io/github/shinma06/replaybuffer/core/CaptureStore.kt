@@ -336,8 +336,10 @@ internal class CaptureStore(
     fun clockStatus(healthy: Boolean, owner: Long) {
         if (closed || owner != generation) return
         if (!healthy && gaps.none { it.stream == "clock" && it.toNs == null }) {
+            // The outage belongs to the clock region of its last normal read, not to a newer epoch a rejected read opened.
             val anchor = clock.snapshot().lastOrNull { it.valid }
-            addGap("clock", anchor?.let { it.elapsed + it.sequenceOffset }, null, "時計測定が不達または正常条件を満たしません")
+            addGap("clock", anchor?.let { it.elapsed + it.sequenceOffset }, null, "時計測定が不達または正常条件を満たしません",
+                epoch = anchor?.epoch)
         } else if (healthy) {
             val gap = gaps.lastOrNull { it.stream == "clock" && it.toNs == null }
             if (gap != null) synchronized(clock) {
@@ -894,7 +896,7 @@ internal class CaptureStore(
     private fun removeGapProofs(gap: CaptureGap) { clockRecoveries.remove(gap); videoCuts.remove(gap) }
 
     private fun addGap(stream: String, from: Long?, to: Long?, reason: String, boundary: MappedTime? = null,
-                       lostVideo: VideoEntry? = null) {
+                       lostVideo: VideoEntry? = null, epoch: Int? = null) {
         // Source interruption survives gap coalescing. Evicting an old packet does not interrupt live capture.
         if (stream == "video" && lostVideo == null) decodeRun = Math.incrementExact(decodeRun)
         val previous = gaps.peekLast()
@@ -906,7 +908,7 @@ internal class CaptureStore(
         val uncertainty = boundary?.uncertainty ?: anchor?.let { if (System.nanoTime() - it.received > 5_000_000_000) Long.MAX_VALUE else
             it.readError + (it.received - it.sent) / 2 }
         val gap = CaptureGap(stream, from, to, reason, if (boundary != null || clock.certain()) uncertainty else Long.MAX_VALUE,
-            generation, boundary?.epoch ?: clock.currentEpoch())
+            generation, boundary?.epoch ?: epoch ?: clock.currentEpoch())
         gaps += gap
         if (stream == "video") {
             // A retention hole occupies the deleted packet's bytes, not the current source tail.
@@ -934,7 +936,9 @@ internal class CaptureStore(
             val deleted = Files.deleteIfExists(file)
             ownedFiles.remove(file)
             candidates.remove()
-            videoCuts.entries.removeIf { (_, cut) -> cut.before?.file == file || cut.after?.file == file }
+            // The frame that closed a gap still proves where its run resumes after the frame before the gap is gone.
+            videoCuts.entries.removeIf { (_, cut) -> cut.after?.file == file }
+            videoCuts.replaceAll { _, cut -> if (cut.before?.file == file) cut.copy(before = null) else cut }
             if (deleted) removed(file)
         }
     }
@@ -970,11 +974,12 @@ internal class CaptureStore(
 }
 
 /**
- * A closed clock-read outage whose recovery read proved the same clock region: rows inside it map by the surrounding
+ * A closed clock-read outage whose recovery read proved the same clock region (an epoch never spans boots, so the
+ * opening read's epoch also fixes its boot): rows inside it map by the surrounding
  * reads, so it is no loss. An open outage or one ending at a clock step stays a loss of clock alignment.
  */
 internal fun CaptureGap.resolvedClock(recoveries: Map<CaptureGap, ClockSample>): Boolean =
-    stream == "clock" && toNs != null && clockEpoch != null && recoveries[this]?.epoch == clockEpoch
+    stream == "clock" && fromNs != null && toNs != null && clockEpoch != null && recoveries[this]?.epoch == clockEpoch
 
 /** The boot segment of the fixed window; rows and clock reads of other boots have no exact place on it. */
 internal val FrozenCapture.windowSegment: Int?
@@ -1028,14 +1033,18 @@ internal fun List<CaptureGap>.gapScopes(
         // Acquisition loss needs both observed boundaries; clocks do not make an open/unknown-owner loss finite.
         if (acquisition && (gap.generation <= 0 || gap.fromNs == null || gap.toNs == null || gap.fromNs > gap.toNs)) return@map gap
         val candidates = if (acquisition) acquisitionAnchors else anchors
-        // Widen to observed normal samples, never treat nominal from/to as zero-error boundaries.
-        val before = gap.fromNs?.let { from -> boundarySample(candidates, from, after = false) }
         val after = gap.toNs?.let { to ->
             // Status closes after receiving its sample; preserve nominal closure and that sample's error.
             recoveries[gap]?.takeIf { gap.stream == "clock" }?.let { sample -> anchor(sample)?.let {
                 Triple(maxOf(to, it.first), it.second, sample)
             } } ?: boundarySample(candidates, to, after = true)
         }
+        // A gap opened on another boot has no start on this boot's axis: unbounded before, exact where it closed here.
+        val opened = gap.clockEpoch?.let { epoch -> clocks.lastOrNull { it.epoch == epoch }?.segment }
+        if (reference != null && opened != null && opened != reference)
+            return@map after?.let { gap.copy(fromNs = null, toNs = it.first, boundaryUncertaintyNs = it.second) } ?: gap
+        // Widen to observed normal samples, never treat nominal from/to as zero-error boundaries.
+        val before = gap.fromNs?.let { from -> boundarySample(candidates, from, after = false) }
         if (acquisition && (before == null || after == null) ||
             before == null && after == null || before != null && after != null && before.first > after.first) gap
         else {

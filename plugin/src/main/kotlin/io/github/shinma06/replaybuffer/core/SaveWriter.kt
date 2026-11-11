@@ -110,19 +110,28 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
             }
             val latest = latestSequence(capture.clocks)
             val nextHost = IdentityHashMap<VideoEntry, Long>().apply { all.zipWithNext { a, b -> put(a, b.host) } }
+            fun timed(frame: VideoEntry) = frame.time.sequence != null && frame.time.uncertainty != Long.MAX_VALUE
+            // Per run, the index of the next frame with a known time: source PTS rises within a run, so it ends every earlier one.
+            val nextTimed = IdentityHashMap<List<VideoEntry>, IntArray>()
+            fun nextTimed(group: List<VideoEntry>, n: Int): VideoEntry? = nextTimed.getOrPut(group) {
+                IntArray(group.size).also { next ->
+                    var at = -1
+                    for (i in group.indices.reversed()) { next[i] = at; if (timed(group[i])) at = i }
+                }
+            }[n].takeIf { it >= 0 }?.let(group::get)
             fun visible(group: List<VideoEntry>, n: Int): Boolean {
                 val frame = group[n]
                 val sequence = frame.time.sequence
                 // Without a clock mapping, a frame is on screen until the next one is received.
                 if (!capture.windowKnown) return capture.hostStart == null || (nextHost[frame] ?: Long.MAX_VALUE) >= capture.hostStart
-                if (sequence == null || frame.time.uncertainty == Long.MAX_VALUE) {
-                    // Hidden only when the next frame, which ends this one's display, provably starts before the window.
+                if (sequence == null || !timed(frame)) {
+                    // Hidden only when a later frame of the run, which ends this one's display, provably starts before the window.
                     val next = group.getOrNull(n + 1) ?: return true
-                    val nextAt = next.time.sequence
-                    val nextLatest = if (nextAt != null && next.time.uncertainty != Long.MAX_VALUE) try {
-                        Math.addExact(nextAt, next.time.uncertainty)
-                    } catch (_: ArithmeticException) { null } else latest(next.host)
-                    return nextLatest?.let { it < capture.start - capture.endUncertainty } != true
+                    val before = { at: Long? -> at?.let { it < capture.start - capture.endUncertainty } == true }
+                    val timedLatest = nextTimed(group, n)?.let { later ->
+                        try { Math.addExact(later.time.sequence!!, later.time.uncertainty) } catch (_: ArithmeticException) { null }
+                    }
+                    return !before(timedLatest) && (timed(next) || !before(latest(next.host)))
                 }
                 val duration = group.getOrNull(n + 1)?.let { Math.subtractExact(it.pts, frame.pts) }
                 val end = duration?.let { Math.addExact(sequence, Math.multiplyExact(it, 1000)) }

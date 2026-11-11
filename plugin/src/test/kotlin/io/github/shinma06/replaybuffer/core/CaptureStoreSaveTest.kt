@@ -17,6 +17,8 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
+import kotlin.test.assertNotNull
+import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
 
 class CaptureStoreSaveTest {
@@ -812,6 +814,57 @@ class CaptureStoreSaveTest {
     }
 
     @Test
+    fun videoAfterARebootGapStaysAlignedOnTheNewBootAndOnlyTheGapIsMissing() {
+        val root = Files.createTempDirectory("replay-reboot-video-")
+        val store = CaptureStore(root.resolve("ring"), minFree = 0)
+        val host = System.nanoTime()
+        val bytes = sample()
+        try {
+            store.generation(1); store.status("device_log", StreamState.CAPTURING, null, 1); store.session(VideoPacket.Session(32, 32), 1)
+            anchor(store.clock, 1_000_000_000, host)
+            store.frame(VideoPacket.Frame(0, true, false, config(bytes)), 1)
+            store.frame(VideoPacket.Frame(1_000_000, false, true, bytes), 1, host)
+            store.status("video", StreamState.RECOVERING, "reboot", 1)
+            for (elapsed in listOf(100_000_000L, 400_000_000L)) store.clock.add("2",
+                listOf(elapsed, elapsed, 1_700_000_020_000_000_000 + elapsed, elapsed), host + 19_900_000_000 + elapsed, host + 19_900_000_000 + elapsed)
+            store.generation(2); store.status("device_log", StreamState.CAPTURING, null, 2); store.session(VideoPacket.Session(32, 32), 2)
+            store.frame(VideoPacket.Frame(0, true, false, config(bytes)), 2)
+            store.frame(VideoPacket.Frame(200_000, false, true, bytes), 2, host + 20_300_000_000)
+            store.frame(VideoPacket.Frame(300_000, false, true, bytes), 2, host + 20_300_000_000)
+            val reboot = store.streams(30).getValue("video").gaps.single { it.reason == "reboot" }
+            assertEquals(Long.MAX_VALUE, reboot.boundaryUncertaintyNs)
+            val capture = store.capture(ReplaySettings(replaySeconds = 30))!!
+            assertTrue(capture.windowKnown)
+            val scope = capture.gaps.gapScopes(capture.clocks, capture.clockRecoveries, reference = capture.windowSegment)[capture.gaps.indexOf(reboot)]
+            assertNull(scope.fromNs)
+            // Widened only to the next normal read of the new boot, like a gap on one boot.
+            assertEquals(capture.clocks.last().elapsed + capture.clocks.last().sequenceOffset, scope.toNs)
+            assertTrue(scope.toNs!! >= reboot.toNs!!)
+            val margin = scope.boundaryUncertaintyNs!!
+            assertTrue(margin < 20_000_000)
+            assertFalse(scope.intersects(scope.toNs + margin + 1, scope.toNs + margin + 2))
+            val output = SaveWriter().write(capture, root, { false }) { publication -> Files.move(publication.partial, publication.complete) }
+            val manifest = JsonParser.parseString(Files.readString(output.directory.resolve("replay.json"))).asJsonObject
+            assertTrue(manifest["gaps"].asJsonArray.map { it.asJsonObject }.single { it["reason"].asString == "reboot" }["duration_uncertain"].asBoolean)
+            // Only the gap's end has an exact place on the new boot; it must not swallow the new boot's frames.
+            val part = manifest["parts"].asJsonArray.map { it.asJsonObject }.single { it["generation"].asLong == 2L }
+            assertTrue(part["clock_alignment_known"].asBoolean)
+            val firstNew = part["window_start_ns"].asLong
+            val holes = manifest["video_missing_ranges"].asJsonArray.map { it.asJsonObject }
+            assertTrue(holes.isNotEmpty())
+            assertTrue(holes.all { it["to_window_ns"].asLong <= firstNew })
+            val frames = Files.readAllLines(output.directory.resolve("video-frames.jsonl")).map { JsonParser.parseString(it).asJsonObject }
+            assertTrue(frames.filter { it["generation"].asLong == 2L }.let { rows -> rows.size == 2 && rows.none { it["window_ns"].isJsonNull } })
+            assertTrue(frames.filter { it["generation"].asLong == 1L }.all { it["window_ns"].isJsonNull })
+            assertTrue("video" in output.missingKinds)
+            store.release(capture.id)
+        } finally {
+            store.close()
+            Files.walk(root).use { paths -> paths.sorted(java.util.Comparator.reverseOrder()).forEach { Files.deleteIfExists(it) } }
+        }
+    }
+
+    @Test
     fun recoveredAppGapClosesOnlyAfterTargetAndRequiredReadersAndKeepsFrozenSave() {
         for (appFirst in listOf(false, true)) {
             val root = Files.createTempDirectory("replay-app-recovery-")
@@ -972,6 +1025,46 @@ class CaptureStoreSaveTest {
         } finally { store.close(); Files.delete(root) }
     }
 
+    @Test
+    fun framesReceivedBeforeTheNewBootsFirstClockReadAreHiddenPrerollWhenALaterFrameIsBeforeTheWindow() {
+        val root = Files.createTempDirectory("replay-reboot-preroll-")
+        val store = CaptureStore(root.resolve("ring"), minFree = 0)
+        val host = System.nanoTime()
+        val bytes = sample()
+        try {
+            store.generation(1); store.status("device_log", StreamState.CAPTURING, null, 1)
+            anchor(store.clock, 1_000_000_000, host)
+            store.generation(2); store.status("device_log", StreamState.CAPTURING, null, 2); store.session(VideoPacket.Session(32, 32), 2)
+            // Received after the reboot but before the new boot's first clock read: no time, and no host bound either.
+            store.frame(VideoPacket.Frame(0, true, false, config(bytes)), 2)
+            store.frame(VideoPacket.Frame(100_000, false, true, bytes), 2, host + 20_000_000_000)
+            store.frame(VideoPacket.Frame(150_000, false, false, bytes), 2, host + 20_050_000_000)
+            for (elapsed in listOf(200_000_000L, 300_000_000L, 400_000_000L, 500_000_000L))
+                store.clock.add("2", listOf(elapsed, elapsed, 1_700_000_020_000_000_000 + elapsed, elapsed),
+                    host + 19_900_000_000 + elapsed, host + 19_900_000_000 + elapsed)
+            for ((pts, received) in listOf(250_000L to 20_300_000_000L, 350_000L to 20_400_000_000L, 450_000L to 20_450_000_000L))
+                store.frame(VideoPacket.Frame(pts, false, false, bytes), 2, host + received)
+            val frozen = store.capture(ReplaySettings(replaySeconds = 30), host = host + 20_450_000_000)!!
+            val timed = frozen.video.filter { it.time.sequence != null }
+            assertEquals(listOf(250_000L, 350_000L, 450_000L), timed.map { it.pts })
+            assertTrue(frozen.video.filter { it.pts < 200_000 }.all { it.time.sequence == null })
+            // The window starts after the first timed frame, so the earlier untimed frames end before it.
+            val capture = frozen.copy(start = timed.first().time.sequence!! + 50_000_000)
+            val output = SaveWriter().write(capture, root, { false }) { publication -> Files.move(publication.partial, publication.complete) }
+            val part = JsonParser.parseString(Files.readString(output.directory.resolve("replay.json"))).asJsonObject["parts"].asJsonArray.single().asJsonObject
+            assertTrue(part["clock_alignment_known"].asBoolean)
+            assertEquals(2, part["preroll_samples"].asInt)
+            assertEquals("0", part["window_start_ns"].asString)
+            val rows = Files.readAllLines(output.directory.resolve("video-frames.jsonl")).map { JsonParser.parseString(it).asJsonObject }
+            assertEquals(listOf("100000", "150000"), rows.filter { it["window_ns"].isJsonNull }.map { it["source_pts_us"].asString })
+            assertTrue(rows.filter { it["window_ns"].isJsonNull }.all { !it["presented"].asBoolean && it["preroll"].asBoolean })
+            store.release(frozen.id)
+        } finally {
+            store.close()
+            Files.walk(root).use { paths -> paths.sorted(java.util.Comparator.reverseOrder()).forEach { Files.deleteIfExists(it) } }
+        }
+    }
+
     private fun sample(): ByteArray {
         val picture = Picture.create(32, 32, ColorSpace.YUV420J).apply { fill(15) }
         val data = H264Encoder.createH264Encoder().encodeIDRFrame(picture, ByteBuffer.allocate(65536))
@@ -1059,6 +1152,89 @@ class CaptureStoreSaveTest {
             assertEquals(!keyAfterGap, next.video.any { it.pts == 5_000_000L }, next.video.map { it.pts }.toString())
             store.release(next.id)
         } finally { store.close(); root.toFile().deleteRecursively() }
+    }
+
+    @Test
+    fun clockOutageOpenedByARebootsRejectedFirstReadIsNotResolvedByTheNewBootsRecovery() {
+        val root = Files.createTempDirectory("replay-reboot-clock-")
+        val store = CaptureStore(root.resolve("ring"), minFree = 0)
+        val host = System.nanoTime()
+        try {
+            store.generation(1); store.status("device_log", StreamState.CAPTURING, null, 1)
+            anchor(store.clock, 1_000_000_000, host)
+            anchor(store.clock, 2_000_000_000, host + 1_000_000_000)
+            // A row before the reboot opens the window on the old boot, so the outage lies inside it.
+            assertNotNull(store.log(DeviceLog(1_700_000_001_500_000_000, 12, 12, 10001, 0, 4, "Fixture", "before-reboot",
+                byteArrayOf(1)), 1, host + 500_000_000))
+            val oldEpoch = store.clock.currentEpoch()
+            // The new boot's first read is wider than 2 ms: add() opens the new epoch, then the outage opens at the old boot's last read.
+            val healthy = store.clock.add("2", listOf(100_000_000, 100_000_000, 1_700_000_010_000_000_000, 103_000_000),
+                host + 3_000_000_000, host + 3_000_100_000)
+            assertFalse(healthy)
+            assertTrue(store.clock.currentEpoch() > oldEpoch)
+            store.clockStatus(healthy, 1)
+            for (elapsed in listOf(200_000_000L, 300_000_000L)) {
+                assertTrue(store.clock.add("2", listOf(elapsed, elapsed, 1_700_000_010_000_000_000 + elapsed, elapsed),
+                    host + 2_900_000_000 + elapsed, host + 2_900_000_000 + elapsed))
+                store.clockStatus(true, 1)
+            }
+            store.log(DeviceLog(1_700_000_010_300_000_000, 12, 12, 10001, 0, 4, "Fixture", "after-reboot", byteArrayOf(1)),
+                1, host + 3_200_000_000)
+            val capture = store.capture(ReplaySettings(replaySeconds = 30), host = host + 3_300_000_000)!!
+            val gap = capture.gaps.single { it.stream == "clock" }
+            assertEquals(oldEpoch, gap.clockEpoch)
+            assertNotNull(gap.toNs)
+            assertNotEquals(gap.clockEpoch, capture.clockRecoveries[gap]?.epoch)
+            assertFalse(gap.resolvedClock(capture.clockRecoveries))
+            // Without the fix the gap took the new epoch, so the new boot's recovery read hid the warning.
+            assertTrue(capture.gaps.inWindow(capture.start, capture.end, capture.endUncertainty, capture.clocks,
+                capture.clockRecoveries, capture.windowSegment).contains(gap))
+            assertTrue("device_log" in capture.missingKinds())
+            store.release(capture.id)
+        } finally {
+            store.close()
+            Files.walk(root).use { paths -> paths.sorted(java.util.Comparator.reverseOrder()).forEach { Files.deleteIfExists(it) } }
+        }
+    }
+
+    @Test
+    fun aRebootSpanningVideoGapStaysClosedByTheNewBootsFrameAfterTheOldBootsFilesArePruned() {
+        val root = Files.createTempDirectory("replay-reboot-video-cut-")
+        val store = CaptureStore(root.resolve("ring"), minFree = 0)
+        val host = System.nanoTime()
+        val bytes = sample()
+        try {
+            store.generation(1); store.status("device_log", StreamState.CAPTURING, null, 1); store.session(VideoPacket.Session(32, 32), 1)
+            anchor(store.clock, 1_000_000_000, host)
+            store.frame(VideoPacket.Frame(0, true, false, config(bytes)), 1)
+            store.frame(VideoPacket.Frame(1_000_000, false, true, bytes), 1, host)
+            store.status("video", StreamState.RECOVERING, "端末との取得接続が中断しています", 1)
+            store.generation(2); store.status("device_log", StreamState.CAPTURING, null, 2); store.session(VideoPacket.Session(32, 32), 2)
+            fun read(elapsed: Long) = assertTrue(store.clock.add("2", listOf(elapsed, elapsed, 1_700_000_020_000_000_000 + elapsed, elapsed),
+                host + 19_900_000_000 + elapsed, host + 19_900_000_000 + elapsed))
+            read(100_000_000); read(200_000_000)
+            store.frame(VideoPacket.Frame(0, true, false, config(bytes)), 2)
+            // The new boot's first frame closes the gap at its own source time, before the next clock read.
+            for ((pts, received) in listOf(250_000L to 20_160_000_000L, 350_000L to 20_260_000_000L, 450_000L to 20_360_000_000L)) {
+                store.frame(VideoPacket.Frame(pts, false, pts == 250_000L, bytes), 2, host + received)
+                if (pts == 250_000L) read(400_000_000)
+            }
+            read(500_000_000)
+            store.prune(1, host + 20_400_000_000)
+            val capture = store.capture(ReplaySettings(replaySeconds = 1), host = host + 20_400_000_000)!!
+            assertEquals(listOf(2L), capture.video.map { it.generation }.distinct())
+            val gap = capture.gaps.single { it.stream == "video" }
+            assertNotNull(capture.videoCuts[gap]?.after)
+            // The window starts before the read after the closing frame, so only the cut proves that frame continues the run.
+            assertTrue(capture.start < capture.video.first { it.pts == 250_000L }.time.sequence!!)
+            val output = SaveWriter().write(capture, root, { false }) { publication -> Files.move(publication.partial, publication.complete) }
+            val part = JsonParser.parseString(Files.readString(output.directory.resolve("replay.json"))).asJsonObject["parts"].asJsonArray.single().asJsonObject
+            assertTrue(part["clock_alignment_known"].asBoolean)
+            store.release(capture.id)
+        } finally {
+            store.close()
+            Files.walk(root).use { paths -> paths.sorted(java.util.Comparator.reverseOrder()).forEach { Files.deleteIfExists(it) } }
+        }
     }
 
     private fun anchor(clock: CaptureClock, elapsed: Long, host: Long) {
