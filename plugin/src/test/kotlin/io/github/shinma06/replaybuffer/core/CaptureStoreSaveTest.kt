@@ -663,6 +663,40 @@ class CaptureStoreSaveTest {
     }
 
     @Test
+    fun videoGapScopeIndexesTheEmittedGapsWhenAnEarlierClockGapIsOmitted() {
+        val root = Files.createTempDirectory("replay-gap-index-")
+        val store = CaptureStore(root.resolve("ring"), minFree = 0)
+        val host = System.nanoTime()
+        val bytes = sample()
+        try {
+            store.generation(1); store.status("device_log", StreamState.CAPTURING, null, 1); store.session(VideoPacket.Session(32, 32), 1)
+            anchor(store.clock, 1_000_000_000, host)
+            store.frame(VideoPacket.Frame(0, true, false, config(bytes)), 1)
+            store.frame(VideoPacket.Frame(1_000_000, false, true, bytes), 1, host)
+            for (second in 2L..6L) anchor(store.clock, second * 1_000_000_000, host + (second - 1) * 1_000_000_000)
+            store.frame(VideoPacket.Frame(6_000_000, false, true, bytes), 1, host + 5_000_000_000)
+            val capture = store.capture(ReplaySettings(replaySeconds = 4))!!
+            val clockGap = CaptureGap("clock", 2_500_000_000, 2_600_000_000, "clock outage", 0)
+            val videoGap = CaptureGap("video", 4_000_000_000, 4_100_000_000, "lost", 0)
+            val output = SaveWriter().write(capture.copy(gaps = listOf(clockGap, videoGap)), root, { false }) { publication ->
+                Files.move(publication.partial, publication.complete)
+            }
+            val manifest = JsonParser.parseString(Files.readString(output.directory.resolve("replay.json"))).asJsonObject
+            val gaps = manifest["gaps"].asJsonArray.map { it.asJsonObject }
+            assertEquals(listOf("video"), gaps.map { it["kind"].asString })
+            val scope = manifest["video_gap_scopes"].asJsonArray.single().asJsonObject
+            val indexed = gaps[scope["gap_index"].asInt]
+            assertEquals("video", indexed["kind"].asString)
+            assertEquals(indexed["from_t_ns"], scope["from_t_ns"])
+            assertEquals(indexed["to_t_ns"], scope["to_t_ns"])
+            store.release(capture.id)
+        } finally {
+            store.close()
+            Files.walk(root).use { paths -> paths.sorted(java.util.Comparator.reverseOrder()).forEach { Files.deleteIfExists(it) } }
+        }
+    }
+
+    @Test
     fun noNewFrameWithinTheWindowRetainsTheLastFrameAndItsDecodeGopWithinByteLimits() {
         val root = Files.createTempDirectory("replay-static-cut-")
         val bytes = sample()

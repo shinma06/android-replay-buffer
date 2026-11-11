@@ -204,6 +204,8 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
             val losses = mutableListOf<String>()
             val videoProofs = mutableMapOf<CaptureGap, Pair<ClockSample, ClockSample>>()
             val windowSegment = capture.windowSegment
+            // Clock-read outages are described by timebase.clock_steps, so the emitted gaps and their indexes omit them.
+            val emittedGaps = capture.gaps.indices.filter { capture.gaps[it].stream != "clock" }
             val videoScopes = capture.gaps.gapScopes(capture.clocks, capture.clockRecoveries, videoProofs, windowSegment)
             val epochSegments = capture.clocks.associate { it.epoch to it.segment }
             fun segmentOf(epoch: Int?): Int? = epoch?.let(epochSegments::get)
@@ -759,8 +761,7 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                     mapOf("state" to "EXCLUDED", "requested" to false, "excluded" to true, "availableSeconds" to 0.0,
                         "reason" to "ログのみの保存として音声を意図的に除外しました（音声の取得は継続しています）")
                     else audioCoverage(capture, audioPlan)),
-                // Clock-read outages are described by timebase.clock_steps, not as a lost stream.
-                "gaps" to capture.gaps.filter { it.stream != "clock" }.map { gap -> mapOf("kind" to gap.stream,
+                "gaps" to emittedGaps.map { capture.gaps[it] }.map { gap -> mapOf("kind" to gap.stream,
                     "from_t_ns" to windowT(gap.fromNs), "to_t_ns" to windowT(gap.toNs), "reason" to gap.reason,
                     "generation" to gap.generation, "boot_segment" to segmentOf(gap.clockEpoch),
                     "boundary_uncertainty_ns" to gap.boundaryUncertaintyNs?.toString(),
@@ -791,7 +792,7 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                 "parts" to parts, "video_run_boundaries" to runBoundaries, "video_missing_ranges" to videoHoles,
                 "video_gap_scopes" to capture.gaps.mapIndexedNotNull { i, gap ->
                     if (gap.stream != "video") null else videoScopes[i].let { scope -> mapOf(
-                        "gap_index" to i, "generation" to gap.generation, "boot_segment" to segmentOf(gap.clockEpoch),
+                        "gap_index" to emittedGaps.indexOf(i), "generation" to gap.generation, "boot_segment" to segmentOf(gap.clockEpoch),
                         "from_t_ns" to windowT(scope.fromNs), "to_t_ns" to windowT(scope.toNs),
                         "boundary_uncertainty_ns" to scope.boundaryUncertaintyNs?.toString(),
                         "derived_from_valid_samples" to (scope !== gap),
