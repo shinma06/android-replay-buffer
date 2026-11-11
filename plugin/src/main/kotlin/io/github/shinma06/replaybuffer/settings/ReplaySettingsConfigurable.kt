@@ -3,11 +3,15 @@ package io.github.shinma06.replaybuffer.settings
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.text.input.TextFieldState
 import androidx.compose.foundation.text.input.setTextAndPlaceCursorAtEnd
 import androidx.compose.runtime.Composable
@@ -23,6 +27,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.intellij.ide.plugins.cl.PluginAwareClassLoader
 import com.intellij.openapi.Disposable
@@ -349,32 +354,47 @@ private fun Hint(text: String) {
 
 @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
-private fun WithTooltip(tooltip: String, content: @Composable () -> Unit) {
-    Tooltip(tooltip = { Text(tooltip) }, content = content)
+private fun WithTooltip(tooltip: String, modifier: Modifier = Modifier, content: @Composable () -> Unit) {
+    Tooltip(tooltip = { Text(tooltip) }, modifier = modifier, content = content)
 }
 
+/**
+ * A settings row: a fixed label, then content laid out left to right. Content without [flexibleWidth] keeps its own
+ * width, so buttons stay reachable when the Settings page is narrower than the fields' preferred widths.
+ */
 @Composable
-private fun Labeled(label: String, content: @Composable () -> Unit) {
-    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text(label, modifier = Modifier.width(140.dp))
+internal fun FormRow(label: @Composable (Modifier) -> Unit, content: @Composable RowScope.() -> Unit) {
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        label(Modifier.width(LABEL_WIDTH))
         content()
     }
 }
 
+/** Takes the width left after the row's other items, up to [max]. */
+internal fun RowScope.flexibleWidth(max: Dp): Modifier = Modifier.weight(1f, fill = false).widthIn(max = max).fillMaxWidth()
+
+internal val LABEL_WIDTH = 140.dp
+internal val PATH_FIELD_WIDTH = 360.dp
+private val CHOICE_FIELD_WIDTH = 280.dp
+
 @Composable
-private fun FolderField(
+private fun Labeled(label: String, content: @Composable RowScope.() -> Unit) {
+    FormRow({ Text(label, modifier = it) }, content)
+}
+
+@Composable
+private fun RowScope.FolderField(
     state: TextFieldState,
     name: String,
     enabled: Boolean,
     choose: (TextFieldState) -> Unit,
 ) {
-    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-        TextField(state, modifier = Modifier.width(360.dp).semantics { contentDescription = name }, enabled = enabled)
-        OutlinedButton({ choose(state) }, enabled = enabled,
-            modifier = Modifier.semantics { contentDescription = "${name}を選ぶ" }) { Text("参照…") }
-    }
+    TextField(state, modifier = flexibleWidth(PATH_FIELD_WIDTH).semantics { contentDescription = name }, enabled = enabled)
+    OutlinedButton({ choose(state) }, enabled = enabled,
+        modifier = Modifier.semantics { contentDescription = "${name}を選ぶ" }) { Text("参照…") }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun SettingsContent(form: SettingsForm, edited: () -> Unit, choose: (TextFieldState) -> Unit) {
     LaunchedEffect(form) {
@@ -393,16 +413,16 @@ internal fun SettingsContent(form: SettingsForm, edited: () -> Unit, choose: (Te
                 Text("秒（1〜900）")
             }
             Labeled("対象アプリ:") {
-                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                FlowRow(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     AppSelectionMode.entries.forEach { mode ->
                         RadioButtonRow(mode.toString(), form.appSelection == mode, { form.appSelection = mode })
                     }
                 }
             }
             Labeled("package名:") {
-                WithTooltip(PACKAGE_GUIDANCE) {
+                WithTooltip(PACKAGE_GUIDANCE, flexibleWidth(CHOICE_FIELD_WIDTH)) {
                     TextField(form.manualPackage, enabled = controls.manualPackageEnabled,
-                        modifier = Modifier.width(280.dp).semantics { contentDescription = "対象アプリのpackage名" })
+                        modifier = Modifier.fillMaxWidth().semantics { contentDescription = "対象アプリのpackage名" })
                 }
             }
             Hint(form.applicationStatus)
@@ -411,17 +431,17 @@ internal fun SettingsContent(form: SettingsForm, edited: () -> Unit, choose: (Te
             GroupHeader("記録する内容", modifier = Modifier.semantics { heading() })
             controls.recordingNotice?.let { Text(it, color = JewelTheme.globalColors.text.warning) }
             Labeled("取得モード:") {
-                WithTooltip(CAPTURE_MODE_TOOLTIP) {
+                WithTooltip(CAPTURE_MODE_TOOLTIP, flexibleWidth(CHOICE_FIELD_WIDTH)) {
                     val modes = CaptureMode.entries
                     ListComboBox(modes.map(::captureModeDescription), modes.indexOf(form.captureMode), { form.captureMode = modes[it] },
-                        modifier = Modifier.width(280.dp).semantics { contentDescription = "取得モード" }, enabled = controls.recordingEnabled)
+                        modifier = Modifier.fillMaxWidth().semantics { contentDescription = "取得モード" }, enabled = controls.recordingEnabled)
                 }
             }
             Labeled("動画品質:") {
-                WithTooltip(VIDEO_QUALITY_TOOLTIP) {
+                WithTooltip(VIDEO_QUALITY_TOOLTIP, flexibleWidth(CHOICE_FIELD_WIDTH)) {
                     val qualities = VideoQuality.entries
                     ListComboBox(qualities.map(VideoQuality::toString), qualities.indexOf(form.videoQuality), { form.videoQuality = qualities[it] },
-                        modifier = Modifier.width(280.dp).semantics { contentDescription = "動画品質" }, enabled = controls.videoOptionsEnabled)
+                        modifier = Modifier.fillMaxWidth().semantics { contentDescription = "動画品質" }, enabled = controls.videoOptionsEnabled)
                 }
             }
             WithTooltip(SHOW_TOUCHES_TOOLTIP) {
@@ -432,7 +452,7 @@ internal fun SettingsContent(form: SettingsForm, edited: () -> Unit, choose: (Te
             // 3. Screenshot destination.
             GroupHeader("スクリーンショットの保存先", modifier = Modifier.semantics { heading() })
             WithTooltip(SCREENSHOT_LOGCAT_TOOLTIP) {
-                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     RadioButtonRow("Logcatのスクショ保存先に合わせる", form.screenshotUsesLogcat, { form.screenshotUsesLogcat = true },
                         modifier = Modifier.semantics { contentDescription = "スクリーンショットをLogcatのスクショ保存先へ保存" })
                     RadioButtonRow("手動で指定", !form.screenshotUsesLogcat, { form.screenshotUsesLogcat = false })
@@ -461,7 +481,7 @@ internal fun SettingsContent(form: SettingsForm, edited: () -> Unit, choose: (Te
                 Hint(CLI_GUIDANCE)
                 Labeled("CLIの場所:") {
                     val launcher = remember { TextFieldState(form.launcher ?: "CLIの場所を確認できません") }
-                    TextField(launcher, readOnly = true, modifier = Modifier.width(360.dp).semantics { contentDescription = "CLIの場所" })
+                    TextField(launcher, readOnly = true, modifier = flexibleWidth(PATH_FIELD_WIDTH).semantics { contentDescription = "CLIの場所" })
                     OutlinedButton({ form.launcher?.let { CopyPasteManager.getInstance().setContents(StringSelection(it)) } },
                         enabled = form.launcher != null, modifier = Modifier.semantics { contentDescription = "CLIの場所をコピー" }) { Text("コピー") }
                 }
