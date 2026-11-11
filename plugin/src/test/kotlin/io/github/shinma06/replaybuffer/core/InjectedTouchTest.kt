@@ -53,6 +53,23 @@ class InjectedTouchTest {
                       generation: Long = 1) =
         TouchEntry(TouchSample(mono, device, 0, action, x, y), generation, MappedTime(mono, 0, 0), mono, 1080, 2400, rotation)
 
+    @Test fun `a still frame draws every tap the same pointer makes while it is shown`() {
+        val taps = listOf(540 to 1200, 0 to 0, 1079 to 2399).flatMapIndexed { i, (x, y) ->
+            val down = 1_000_000_000L + i * 500_000_000L
+            listOf(entry(down, TouchAction.DOWN, x, y), entry(down + 50_000_000, TouchAction.UP, x, y))
+        }
+        val overlay = TapOverlay(taps)
+        assertEquals(listOf(OverlayDot(270, 600), OverlayDot(0, 0), OverlayDot(539, 1199)), overlay.dots(0, 540, 1200, until = 3_000_000_000))
+        // The pointer down at frame start is drawn together with the later taps at other positions.
+        assertEquals(listOf(OverlayDot(270, 600), OverlayDot(0, 0), OverlayDot(539, 1199)),
+            overlay.dots(1_010_000_000, 540, 1200, until = 3_000_000_000))
+        assertEquals(listOf(OverlayDot(0, 0)), overlay.dots(1_400_000_000, 540, 1200, until = 1_600_000_000))
+        val many = TapOverlay((0 until 40).flatMap { i ->
+            listOf(entry(1_000_000_000L + i * 10_000_000L, TouchAction.DOWN, i * 20, 100), entry(1_000_000_000L + i * 10_000_000L + 1, TouchAction.UP, i * 20, 100))
+        })
+        assertEquals(16, many.dots(0, 1080, 2400, until = 2_000_000_000).size)
+    }
+
     @Test fun `a pointer whose UP was lost in a reader gap is not drawn from the gap on`() {
         val physical = entry(1_000_000_000, TouchAction.DOWN, 540, 1200)
         val injected = entry(1_000_000_000, TouchAction.DOWN, 1079, 2399, INJECTED_INPUT_DEVICE)

@@ -15,7 +15,7 @@ internal fun overlayTouches(mode: TapDisplay, dots: TouchDots?, rows: List<Touch
 /**
  * Pointer positions over window time (sequence ns). A pointer is drawn while down and for [holdNs] after it lifts. A frame
  * shown until `until` also draws a pointer that first touches during that time, because a still screen produces no new
- * frame for a tap. A frame only draws taps of its own capture generation: a finger still down when the device
+ * frame for a tap; every tap that starts in that time is drawn, up to [MAX_FRAME_TAPS] per pointer. A frame only draws taps of its own capture generation: a finger still down when the device
  * disconnected has no UP, and must not stay on the video after the reconnect. Likewise a reader gap ([gaps] for getevent,
  * [injectedGaps] for the injected-input reader) that starts after a pointer's last row may have lost its UP, so the
  * pointer is not drawn from that gap on. Rows without a certain time are left out.
@@ -35,8 +35,8 @@ internal class TapOverlay(
         track.any { val t = it.time.sequence!!; t <= to && t >= from - holdNs }
     }
 
-    fun dots(sequence: Long, frameWidth: Int, frameHeight: Int, until: Long = sequence, generation: Long? = null): List<OverlayDot> = tracks.mapNotNull { track ->
-        if (generation != null && track.first().generation != generation) return@mapNotNull null
+    fun dots(sequence: Long, frameWidth: Int, frameHeight: Int, until: Long = sequence, generation: Long? = null): List<OverlayDot> = tracks.map { track ->
+        if (generation != null && track.first().generation != generation) return@map emptyList()
         var low = 0
         var high = track.size - 1
         var found = -1
@@ -46,13 +46,19 @@ internal class TapOverlay(
         }
         val current = track.getOrNull(found)?.takeIf { it.sample.action != TouchAction.UP || sequence - it.time.sequence!! <= holdNs }
             ?.takeUnless { lost(it, sequence) }
-        val row = current ?: track.getOrNull(found + 1)?.takeIf { it.time.sequence!! < until } ?: return@mapNotNull null
-        project(row, frameWidth, frameHeight)
-    }
+        val later = track.subList(found + 1, track.size).takeWhile { it.time.sequence!! < until }
+        val taps = later.filter { it.sample.action == TouchAction.DOWN }
+        val rows = listOfNotNull(current) + taps.ifEmpty { listOfNotNull(later.firstOrNull().takeIf { current == null }) }
+        rows.take(MAX_FRAME_TAPS).mapNotNull { project(it, frameWidth, frameHeight) }
+    }.flatten().distinct()
 
     /** Whether reading stopped after [row] and by [sequence]; a gap with an unknown start cannot be ordered after it. */
     private fun lost(row: TouchEntry, sequence: Long): Boolean = (if (row.sample.injected) injectedGaps else gaps).any { gap ->
         gap.from != null && gap.from > row.time.sequence!! && gap.from <= sequence
+    }
+
+    private companion object {
+        const val MAX_FRAME_TAPS = 16
     }
 
     private fun project(row: TouchEntry, frameWidth: Int, frameHeight: Int): OverlayDot? {
