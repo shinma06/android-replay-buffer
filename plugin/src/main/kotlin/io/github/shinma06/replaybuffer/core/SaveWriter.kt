@@ -93,7 +93,8 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
             val parent = folder.toRealPath()
             require(Files.isDirectory(parent) && Files.isWritable(parent)) { "保存先に書き込めません" }
             require(capture.video.size <= ReplaySettings.MAX_VIDEO_PACKETS)
-            val videoRequested = capture.settings.captureMode.videoRequested
+            val videoExcluded = capture.request.excludesVideo(capture.settings.captureMode)
+            val videoRequested = capture.settings.captureMode.videoRequested && !videoExcluded
             require(videoRequested || capture.video.isEmpty()) { "ログ専用の保存に動画packetがあります" }
             val tail = capture.videoTail()
             val all = capture.video
@@ -509,7 +510,11 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                 appendLine("Android Replay Buffer / 保存対象 ${capture.id}")
                 appendLine("論理窓: ${(capture.end - capture.start) / 1e9}秒（設定${capture.seconds}秒）、sequence ${capture.sequence}")
                 appendLine("動画${if (parts.isEmpty()) 0 else 1}本（再生区間${parts.size}件） / 全体ログ${capture.logs.size}行 / アプリログ${capture.logs.count { it.app == true }}行")
-                appendLine("取得モード: ${if (videoRequested) "動画＋ログ" else "ログ専用（動画は意図的に未要求）"}")
+                appendLine("取得モード: ${when {
+                    videoExcluded -> "動画＋ログ。この保存はログのみ（動画は意図的に除外し、動画の取得は継続。session.jsonのcoverage.videoはEXCLUDED）"
+                    videoRequested -> "動画＋ログ"
+                    else -> "ログ専用（動画は意図的に未要求）"
+                }}")
                 if (videoRequested) {
                     appendLine("動画がある保存は1本のMP4です。動画がない保存にはMP4はありません。取得状態・理由はsession.jsonのcoverage.videoを確認してください。動画がある場合は、表示秒に対応するframes.jsonlのmovie_pts_us〜movie_end_usとsource/window情報を使い、両ログと照合してください。session.jsonのpartsは同じファイル内の再生区間です。")
                     appendLine("タップ位置: touches.jsonlに${capture.touches.size}件（うち動画に重なる${touchesInMovie}件）。動画の取得中は自動で記録します。時刻は端末の入力時刻（getevent、CLOCK_MONOTONIC）で、動画PTSと同じ時計対応によりwindow_nsへ写し、表示中の動画位置をmovie_usに記録します。movie_usがnullの行は動画の表示区間外または時刻を確定できない行です。座標は画面の自然な向きのpx（display_width×display_height）です。screen_x/screen_yは回転後の画面（動画に写る向き）のpxで、display_rotationは端末の回転（0〜3、90度単位）、不明ならnullです。回転は最大1秒遅れで読み直し、動画のサイズ変更時はすぐ読み直します。")
@@ -573,6 +578,7 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                 .any { it.stream == "video" || it.stream == "clock" }
             val videoIncomplete = videoRequested && (parts.isEmpty() || losses.isNotEmpty() || knownLoss || videoHoles.isNotEmpty())
             manifest = mapOf("schema" to 3, "capture_mode" to capture.settings.captureMode, "complete" to true, "save_id" to capture.id,
+                "save_request" to mapOf("content" to capture.request.content, "origin" to capture.request.origin, "video_excluded" to videoExcluded),
                 "auto_trigger" to capture.autoTrigger?.facts,
                 "sequence_id" to capture.sequence, "generation" to capture.generation, "device" to capture.device,
                 "window_clock_epoch" to capture.windowClockEpoch,
@@ -583,7 +589,7 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                 "build" to CaptureResources.identity().filterKeys { it in setOf("source", "dirty", "version") },
                 "plugin_id" to "io.github.shinma06.android-replay-buffer",
                 "dependencies" to CaptureResources.identity(), "settings" to mapOf("replay_seconds" to capture.seconds,
-                    "capture_mode" to capture.settings.captureMode, "video_requested" to videoRequested,
+                    "capture_mode" to capture.settings.captureMode, "video_requested" to capture.settings.captureMode.videoRequested,
                     "video_byte_limit" to ReplaySettings.VIDEO_BYTES, "log_byte_limit" to ReplaySettings.LOG_BYTES,
                     "min_free_bytes" to ReplaySettings.MIN_FREE_BYTES,
                     "max_video_packets" to ReplaySettings.MAX_VIDEO_PACKETS, "max_config_packet_bytes" to ReplaySettings.MAX_CONFIG_PACKET_BYTES,
@@ -601,7 +607,9 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                     capture.touches.map { it.time.epoch } +
                     capture.gaps.mapNotNull { it.clockEpoch }).distinct().map { id -> mapOf("id" to id,
                     "has_valid_sample" to capture.clocks.any { it.epoch == id && it.valid }) }, "application_history" to capture.apps.map { appJson(it) },
-                "coverage" to capture.states.mapValues { (_, state) -> mapOf("state" to state.state,
+                "coverage" to capture.states.mapValues { (kind, state) -> if (videoExcluded && kind == "video") mapOf("state" to "EXCLUDED",
+                    "requested" to false, "excluded" to true, "capture_state" to state.state, "availableSeconds" to 0.0,
+                    "reason" to "ログのみの保存として動画を意図的に除外しました（動画の取得は継続しています）") else mapOf("state" to state.state,
                     "requested" to (state.state != StreamState.NOT_REQUESTED),
                     "availableSeconds" to state.availableSeconds, "reason" to state.reason) },
                 "gaps" to capture.gaps.map { gap -> mapOf("kind" to gap.stream,

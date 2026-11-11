@@ -156,6 +156,19 @@ Rabbit SDKの`android.jar`内`META-INF/logcat.xml`に登録されたID `Logcat`�
 
 Android StudioのRunning Devices上部のtoolbarに、取得のON/OFF・`直前N秒を保存`・`スクリーンショット` を追加する。外部プラグイン向けの公開action group `StreamingToolbarSecondary`（Layout Inspectorも使う枠）へ `add-to-group` で登録し、Running DevicesのSwing treeやfactoryには触れない。各actionはToolWindowと同じ `ReplayProjectService` の操作を呼び、有効・無効と理由もToolWindowと同じ規則で示す。結果はToolWindowと同じ通知で示す。表示中の端末と録画対象の端末が違っても、操作の対象は録画対象の端末のままとする。OSによる違いはない。
 
+
+## Logcatのログ専用保存（Trail #37）
+
+Android StudioのLogcat ToolWindowから `直前N秒のログを保存` を実行できる。動画＋ログで取得中でも、この操作は端末ログ・アプリログ・`session.json`（とREADME・frames.jsonl等の通常の付帯ファイル）だけを保存し、MP4・touches.jsonlは作らない。動画の取得は止めず、設定・取得モードも変えない。保存要求はログだけを固定し、動画packetを読まず・pinもしないため、動画のringはそのまま回り続ける。
+
+`session.json` は意図的な除外を未要求・取得失敗と区別して記録する。`coverage.video.state` は `EXCLUDED`（`requested: false`、`excluded: true`、保存時の実際の取得状態 `capture_state`）、`save_request` に `content`（`ALL` / `LOGS_ONLY`）、要求元 `origin`（`TOOL_WINDOW` / `RUNNING_DEVICES` / `LOGCAT_TOOLBAR` / `CLI` / `CRASH_AUTOSAVE`、MCPはCLIの接続を使うため `CLI`）、`video_excluded` を書く。`capture_mode` は取得モード（`VIDEO_AND_LOGS`）のままとする。ログ専用モードでの保存は従来どおり `NOT_REQUESTED` で、`EXCLUDED` にはしない。ログ専用モードと同じく、両ログの取得が正常・時計が確定・対象アプリが確定していれば、ログが1行もない区間も空のログとして保存できる。動画の取得中でまだ動画もログも届いていなくても、ログ保存の区間はこの条件が揃った時点から始まる。保存できるかどうかは保存内容ごと（通常保存・ログのみ保存）に判定し、ログのみの操作（Logcatのボタン、`replay save --logs-only`、MCPの `logs_only`）はログのみ保存の判定で有効になる（通常保存は従来どおり、動画もログもない区間を保存しない）。不足表示（`missingKinds`）は除外した動画を数えない。通知は「ログを保存しました」と動画を含めないことを示す。
+
+配置: Studio 2026.2.2.8 の `android.jar` 内 `META-INF/logcat.xml` と `LogcatMainPanel` を確認した。Logcat本体のtoolbar（place `LogcatMainPanel`）は `createToolbarActions()` がコード内で組む固定の `DefaultActionGroup` で、外部pluginが追加できる公開groupはない。`Logcat.LogcatActions` はkeymap拡張用でtoolbarに出ない。そこで内部構造（Swing tree・reflection）には触れず、公開の方法を2つ使う。
+
+- actionを `plugin.xml` に登録し、Logcatが3rd party向けと明記した公開group `Logcat.PopupActions`（右クリックメニュー）へ `add-to-group` する。
+- 公開API `ToolWindow.setTitleActions` で、同じactionをLogcat ToolWindowのヘッダーtoolbarにアイコンとして出す。登録はproject listener（`ToolWindowManagerListener.toolWindowsRegistered`）で行う。Logcatのfactory（`SplittingTabsToolWindowFactory`）はtab actionsだけを使い、title actionsは使わない。
+
+有効・無効と理由、通知はToolWindowの保存・Running Devicesの保存と同じ `ReplayProjectService` の規則を使う。CLI `replay save --logs-only`・MCP `save_replay` の `logs_only: true` も同じ保存処理を呼ぶ（GUI・CLI・MCPで同じ結果）。OSによる違いはない。
 ## 実装のAPI境界
 
 UIには取得エンジンの実装、LogcatのSwingツリー、タイムライン変換を持たせない。新たな汎用interface群やDBを先に作らず、projectの取得所有者に表示snapshotと明示操作をまとめる。PMのコア契約へ接続する最小の値と操作は次のとおり。型名・API名は実装担当間で確定するための案であり、新たな公開SDKを要求するものではない。
