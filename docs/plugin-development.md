@@ -24,7 +24,7 @@ Android Studio SDKは2026-10-29に公式情報を照合したRabbit 2へ固定�
 
 設定の保存は`SerializablePersistentStateComponent`のimmutable stateとatomic更新を使い、旧XMLキー・値を明示bindingで保持します。保存先の確認はIDEが注入するservice scopeが所有し、画面の破棄・再入力で取消します。UI反映は[UI専用dispatcher](https://github.com/JetBrains/intellij-community/blob/06e208526c9db65ce95892b546c0c226d39e950f/platform/core-api/src/com/intellij/openapi/application/coroutines.kt#L459)とlaunch時のmodalityを使い、filesystem読取りはIOへ分離します。
 
-Logcatの内部APIへ進むruntime gateは、旧Rabbit 1の`AI-262.9437.185.2621.16467767`と新Rabbit 2の`AI-262.10968.63.2622.16730706`だけを許可します。隣接buildや別productは許可せず、標準Logcatを閉じる経路は維持します。旧版の固定観察は旧identityのまま保持し、新版の実接続・stream/描画を保証する証拠には転記しません。
+Logcatの内部APIへ進むruntime gateは、確認済みリリースとIntelliJ baseline・Android系列が一致する`AI-` build（旧Rabbit 1 `AI-262.9437.185.2621.*`、新Rabbit 2 `AI-262.10968.63.2622.*`。例: Rabbit 2 Patch 1 `AI-262.10968.63.2622.16840690`）を許可します。別系列・別productは許可せず、そのbuildや実行時にSDKの型・methodを解決できない場合は対象端末を選ばずに標準Logcatを開閉するだけにします（[IDE UI設計](design/ide-ui.md)）。旧版の固定観察は旧identityのまま保持し、新版の実接続・stream/描画を保証する証拠には転記しません。
 
 ## ビルド
 

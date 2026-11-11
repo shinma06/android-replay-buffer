@@ -10,9 +10,11 @@ import java.nio.file.InvalidPathException
 import java.nio.file.Path
 import java.util.Base64
 import java.util.concurrent.ArrayBlockingQueue
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Stdio MCP server (newline-delimited JSON-RPC 2.0) over the CLI's per-request IDE connection.
@@ -28,6 +30,7 @@ internal class ReplayMcpServer(
     private val directory: Path,
     private val build: () -> String,
     private val send: (Path, Path?, String, CliRequest) -> CliResponse = ReplayCli::exchange,
+    private val callLimitMs: Long = ReplayCliProtocol.RESULT_TIMEOUT_MS + 10_000L,
 ) {
     private class RpcError(val code: Int, message: String) : Exception(message)
 
@@ -43,6 +46,31 @@ internal class ReplayMcpServer(
     private val lock = Any()
     @Volatile private var protocolVersion = LATEST_VERSION
     private var buildIdentity: String? = null
+    /** One accepted request (or batch); it either runs once or is rejected once, never both. */
+    private inner class Call(private val tools: Int, private val reject: (String) -> Unit, private val task: () -> Unit) : Runnable {
+        private val state = AtomicInteger(PENDING)
+        @Volatile private var started = 0L
+
+        override fun run() {
+            started = System.nanoTime()
+            if (!state.compareAndSet(PENDING, RUNNING)) return
+            try { task() } catch (failure: Exception) { log.print("MCPの応答を作成できません。\n") } finally {
+                state.set(DONE)
+                accepted.remove(this)
+            }
+        }
+
+        fun overdue(now: Long) = state.get() == RUNNING && now - started > TimeUnit.MILLISECONDS.toNanos(callLimitMs) * tools
+
+        fun cancel(message: String) {
+            if (state.compareAndSet(PENDING, CANCELLED)) {
+                accepted.remove(this)
+                reject(message)
+            }
+        }
+    }
+
+    private val accepted = ConcurrentHashMap.newKeySet<Call>()
     private val workers = ThreadPoolExecutor(MAX_CONCURRENT_CALLS, MAX_CONCURRENT_CALLS, 10, TimeUnit.SECONDS,
         ArrayBlockingQueue(MAX_QUEUED_CALLS)) { task -> Thread(task, "replay-mcp-call").apply { isDaemon = true } }
 
@@ -99,11 +127,25 @@ internal class ReplayMcpServer(
         } catch (failure: java.io.IOException) {
             log.print("MCPの入力を読めません。終了します。\n")
         } finally {
-            workers.shutdown()
-            // Admitted mutations keep their IDE-side outcome; wait for them instead of abandoning the connection.
-            workers.awaitTermination(ReplayCliProtocol.RESULT_TIMEOUT_MS + 10_000L, TimeUnit.MILLISECONDS)
+            finishAccepted()
         }
         return 0
+    }
+
+    /**
+     * Every accepted request runs and answers before the server exits; each one is bounded by its own timeout from its start.
+     * Only if a running request overruns that bound are the not-yet-started ones answered with an error instead, so no
+     * accepted request is left without a definite result.
+     */
+    private fun finishAccepted() {
+        workers.shutdown()
+        while (!workers.awaitTermination(DRAIN_POLL_MS, TimeUnit.MILLISECONDS)) {
+            val now = System.nanoTime()
+            if (accepted.none { it.overdue(now) }) continue
+            log.print("応答しない操作があるため、開始前の要求を実行せずに終了します。\n")
+            accepted.toList().forEach { it.cancel(NOT_STARTED) }
+            return
+        }
     }
 
     private fun readLine(): String? {
@@ -132,26 +174,30 @@ internal class ReplayMcpServer(
         }
         if (message is List<*>) {
             if (message.isEmpty()) { write(error(null, -32600, "空のbatchです。")); return }
-            submit(onRejected = {
-                message.mapNotNull { request -> (request as? Map<*, *>)?.takeIf { "id" in it }?.let { busy(it["id"]) } }
+            val tools = message.count { (it as? Map<*, *>)?.get("method") == "tools/call" }.coerceAtLeast(1)
+            submit(tools, onRejected = { text ->
+                message.mapNotNull { request -> (request as? Map<*, *>)?.takeIf { "id" in it }?.let { busy(it["id"], text) } }
                     .takeIf { it.isNotEmpty() }?.let(::write)
             }) { message.mapNotNull { dispatch(it) }.takeIf { it.isNotEmpty() }?.let(::write) }
             return
         }
         val obj = message as? Map<*, *>
-        if (obj?.get("method") == "tools/call" && "id" in obj) submit(onRejected = { write(busy(obj["id"])) }) {
+        if (obj?.get("method") == "tools/call" && "id" in obj) submit(1, onRejected = { text -> write(busy(obj["id"], text)) }) {
             dispatch(obj)?.let(::write)
         } else dispatch(message)?.let(::write)
     }
 
-    private fun busy(id: Any?) = error(id, -32000, "同時に実行できる操作の上限です。完了後に再実行してください。")
+    private fun busy(id: Any?, message: String) = error(id, -32000, message)
 
-    private fun submit(onRejected: () -> Unit = {}, task: () -> Unit) {
+    private fun submit(tools: Int, onRejected: (String) -> Unit, task: () -> Unit) {
+        val call = Call(tools, onRejected, task)
+        accepted.add(call)
         try {
-            workers.execute {
-                try { task() } catch (failure: Exception) { log.print("MCPの応答を作成できません。\n") }
-            }
-        } catch (_: RejectedExecutionException) { onRejected() }
+            workers.execute(call)
+        } catch (_: RejectedExecutionException) {
+            accepted.remove(call)
+            onRejected(BUSY)
+        }
     }
 
     /** Returns the response, or null for a notification. */
@@ -307,6 +353,13 @@ internal class ReplayMcpServer(
         private const val MAX_MESSAGE_BYTES = 1024 * 1024
         private const val MAX_IMAGE_BYTES = 10L * 1024 * 1024
         private const val OVERSIZED = "\u0000oversized"
+        private const val DRAIN_POLL_MS = 100L
+        private const val PENDING = 0
+        private const val RUNNING = 1
+        private const val DONE = 2
+        private const val CANCELLED = 3
+        private const val BUSY = "同時に実行できる操作の上限です。完了後に再実行してください。"
+        private const val NOT_STARTED = "MCPサーバーを終了するため、この要求は実行していません。必要なら再実行してください。"
         private val readOnly = mapOf("readOnlyHint" to true, "destructiveHint" to false, "idempotentHint" to true, "openWorldHint" to false)
         private val projectOnly = mapOf("project" to mapOf("type" to "string",
             "description" to "Absolute path of the open project. Optional when the server was started with --project or exactly one project is open."))
