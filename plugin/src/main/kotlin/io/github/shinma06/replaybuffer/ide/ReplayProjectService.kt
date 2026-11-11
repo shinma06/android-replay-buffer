@@ -64,6 +64,7 @@ import java.awt.Desktop
 import java.awt.datatransfer.StringSelection
 import java.nio.file.Files
 import java.nio.file.Path
+import java.time.LocalTime
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ExecutionException
 import java.util.concurrent.TimeUnit
@@ -84,6 +85,9 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
     private var screenshotRevision = -1L
     private var screenshotSettings: ReplaySettings? = null
     @Volatile internal var screenshotBusy = false
+        private set
+    /** The newest request from any entry point (ToolWindow, Running Devices, CLI), so every view shows the same result. */
+    @Volatile internal var latestScreenshot: CompletableFuture<ScreenshotOutcome>? = null
         private set
     @Volatile var resolving = true
         private set
@@ -221,9 +225,12 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
     @Synchronized
     internal fun screenshot(): CompletableFuture<SavedScreenshot> {
         val result = CompletableFuture<SavedScreenshot>()
+        latestScreenshot = result.handle { saved, failure -> ScreenshotOutcome(LocalTime.now(), saved, failure) }
         fun failed(reason: String): CompletableFuture<SavedScreenshot> {
             screenshotError(reason)
-            return result.apply { completeExceptionally(ScreenshotSaveFailure(reason)) }
+            result.completeExceptionally(ScreenshotSaveFailure(reason))
+            publishChanged()
+            return result
         }
         // Capture publishes under a different lock; validate and execute against this one snapshot.
         val snapshot = capture.view.snapshot
@@ -545,3 +552,6 @@ class ReplayProjectActivity : ProjectActivity, DumbAware {
         project.getService(ReplayProjectService::class.java).refresh()
     }
 }
+
+/** A finished screenshot request with the time it finished. */
+internal class ScreenshotOutcome(val time: LocalTime, val saved: SavedScreenshot?, val failure: Throwable?)

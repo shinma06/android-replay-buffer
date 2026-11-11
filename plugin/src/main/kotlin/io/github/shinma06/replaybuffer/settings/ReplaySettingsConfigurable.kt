@@ -1,24 +1,48 @@
 package io.github.shinma06.replaybuffer.settings
 
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.text.input.TextFieldState
+import androidx.compose.foundation.text.input.setTextAndPlaceCursorAtEnd
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.dp
 import com.intellij.ide.plugins.cl.PluginAwareClassLoader
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.ModalityState
 import com.intellij.openapi.application.UI
 import com.intellij.openapi.application.asContextElement
+import com.intellij.openapi.fileChooser.FileChooser
 import com.intellij.openapi.fileChooser.FileChooserDescriptorFactory
 import com.intellij.openapi.ide.CopyPasteManager
 import com.intellij.openapi.options.Configurable
 import com.intellij.openapi.options.ConfigurationException
 import com.intellij.openapi.project.Project
-import com.intellij.openapi.ui.TextFieldWithBrowseButton
 import com.intellij.openapi.util.Disposer
-import com.intellij.ui.DocumentAdapter
-import com.intellij.ui.TitledSeparator
-import com.intellij.ui.components.JBCheckBox
-import com.intellij.ui.components.JBTextArea
-import com.intellij.ui.components.JBTextField
-import com.intellij.util.ui.FormBuilder
+import com.intellij.openapi.vfs.LocalFileSystem
 import io.github.shinma06.replaybuffer.cli.ReplayCliRegistry
 import io.github.shinma06.replaybuffer.core.CaptureMode
 import io.github.shinma06.replaybuffer.core.TapDisplay
@@ -26,69 +50,144 @@ import io.github.shinma06.replaybuffer.core.VideoQuality
 import io.github.shinma06.replaybuffer.ide.LogcatScreenshotSettings
 import io.github.shinma06.replaybuffer.ide.ReplayProjectService
 import io.github.shinma06.replaybuffer.ui.captureModeDescription
-import io.github.shinma06.replaybuffer.ui.wrappingLabel
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.awt.BorderLayout
+import org.jetbrains.jewel.bridge.JewelComposePanel
+import org.jetbrains.jewel.foundation.theme.JewelTheme
+import org.jetbrains.jewel.ui.component.CheckboxRow
+import org.jetbrains.jewel.ui.component.GroupHeader
+import org.jetbrains.jewel.ui.component.ListComboBox
+import org.jetbrains.jewel.ui.component.OutlinedButton
+import org.jetbrains.jewel.ui.component.RadioButtonRow
+import org.jetbrains.jewel.ui.component.Text
+import org.jetbrains.jewel.ui.component.TextField
+import org.jetbrains.jewel.ui.component.Tooltip
+import org.jetbrains.jewel.ui.component.VerticallyScrollableContainer
 import java.awt.datatransfer.StringSelection
-import javax.swing.JButton
-import javax.swing.JComboBox
 import javax.swing.JComponent
-import javax.swing.JLabel
-import javax.swing.JPanel
-import javax.swing.event.DocumentEvent
 
-/** Owns an EDT form draft; only Apply persists it, and async checks are bound to form identity and revision. */
-class ReplaySettingsConfigurable(private val project: Project) : Configurable {
-    private var panel: JPanel? = null
-    private var retention: JBTextField? = null
-    private var destination: TextFieldWithBrowseButton? = null
-    private var screenshotLogcat: JBCheckBox? = null
-    private var screenshotDirectory: TextFieldWithBrowseButton? = null
-    private var screenshotStatus: JBTextArea? = null
+internal const val PACKAGE_GUIDANCE = "255文字以内。英字で始まる2つ以上の部分をピリオドで区切ります。" +
+    "各部分には半角英数字と「_」を使えます（例: com.example.app）。"
+internal const val APPLY_GUIDANCE = "編集内容は「適用」または「OK」で反映します。キャンセルでは変更しません。" +
+    "取得のON/OFFはToolWindowですぐ反映します。"
+internal const val RECORDING_LOCKED = "取得をOFFにすると変更できます"
+internal const val CAPTURE_MODE_TOOLTIP = "取得をOFFにしてから変更してください。ログ専用は動画を取得・保存しません。"
+internal const val VIDEO_QUALITY_TOOLTIP = "長辺・fpsは上限、Mbpsは指定bitrateです。取得OFFで変更してください。" +
+    "軽量は細かい文字・短い変化・滑らかさを捉えにくくなります。負荷の低下は環境に依存します。" +
+    "ログ専用では動画品質を使いません。"
+internal const val TAP_DISPLAY_TOOLTIP = "既定は表示しない（記録のみ）。動画を取得している間は、タップ座標と時刻を自動で記録し、保存時にtouches.jsonlへ動画と同期して書き出します。" +
+    "「保存する動画にだけ描画する」は端末を変えずに保存時に点を描き、動画を再エンコードします（保存時間が延びます）。" +
+    "「端末画面にも表示する」は端末の「タップを表示」を取得中だけONにし、取得終了時に元の値へ戻します。ミラーリング等の端末が描けないタップは保存時に描画します。" +
+    "ミラーリングからのタップはAndroid 13以上で記録します。取得OFFで変更してください。"
+internal const val AUTO_SAVE_SCOPE = "対象アプリの標準Java/Kotlinクラッシュ報告が対象です。native/ANRは対応外です。"
+internal const val AUTO_SAVE_TOOLTIP = "既定OFF。適用後の報告が対象です。" +
+    "8回受付または検出上限で停止します。再開はこの設定をOFFで適用してから、ONで再び適用してください。"
+internal const val SCREENSHOT_LOGCAT_TOOLTIP = "Logcatの画面撮影設定に追従します。手動では専用の保存先を指定できます。動画・ログと同じフォルダも使えます。"
+internal const val CLI_GUIDANCE = "導入済みプラグインのbinにあるreplayで、この画面と同じ設定・取得・保存を操作できます。" +
+    "MCPはreplay mcpです。プラグイン更新後も同じ場所を使えます。"
+
+/** Which settings controls accept input; pure so the rules are testable without a UI. */
+internal data class SettingsControls(
+    val manualPackageEnabled: Boolean,
+    val recordingEnabled: Boolean,
+    val videoOptionsEnabled: Boolean,
+    val screenshotDirectoryEnabled: Boolean,
+    /** Shown once under 記録する内容, only while capture blocks changing it. */
+    val recordingNotice: String?,
+)
+
+internal fun settingsControls(
+    appSelection: AppSelectionMode,
+    captureMode: CaptureMode,
+    screenshotUsesLogcat: Boolean,
+    captureActive: Boolean,
+): SettingsControls = SettingsControls(
+    manualPackageEnabled = appSelection == AppSelectionMode.MANUAL,
+    recordingEnabled = !captureActive,
+    videoOptionsEnabled = !captureActive && captureMode.videoRequested,
+    screenshotDirectoryEnabled = !screenshotUsesLogcat,
+    recordingNotice = RECORDING_LOCKED.takeIf { captureActive },
+)
+
+/** The EDT draft edited by the form; only [ReplaySettingsConfigurable.apply] persists it. */
+internal class SettingsForm(val launcher: String?) {
+    val retention = TextFieldState()
+    val destination = TextFieldState()
+    val manualPackage = TextFieldState()
+    val screenshotDirectory = TextFieldState()
+    var appSelection by mutableStateOf(AppSelectionMode.AUTOMATIC)
+    var captureMode by mutableStateOf(CaptureMode.VIDEO_AND_LOGS)
+    var videoQuality by mutableStateOf(VideoQuality.STANDARD)
+    var autoSave by mutableStateOf(false)
+    var tapDisplay by mutableStateOf(TapDisplay.OFF)
+    var screenshotUsesLogcat by mutableStateOf(true)
+    var destinationStatus by mutableStateOf("")
+    var screenshotStatus by mutableStateOf("")
+    var applicationStatus by mutableStateOf("")
+    var captureActive by mutableStateOf(false)
+    /** Last text sent to a destination check, so programmatic resets do not start a second check. */
+    var checkedDestination: String? = null
+    var checkedScreenshotDirectory: String? = null
+
+    val controls: SettingsControls get() = settingsControls(appSelection, captureMode, screenshotUsesLogcat, captureActive)
+
+    fun draft(): ReplaySettings = ReplaySettings(
+        retentionSeconds = retention.text.toString().toIntOrNull() ?: 0,
+        destination = destination.text.toString(),
+        appSelection = appSelection,
+        manualPackage = manualPackage.text.toString(),
+        captureMode = captureMode,
+        autoSaveOnCrash = autoSave,
+        tapDisplay = tapDisplay,
+        screenshotUsesLogcatDestination = screenshotUsesLogcat,
+        screenshotDirectory = screenshotDirectory.text.toString(),
+        videoQuality = videoQuality,
+    )
+
+    fun load(settings: ReplaySettings) {
+        retention.setTextAndPlaceCursorAtEnd(settings.retentionSeconds.toString())
+        destination.setTextAndPlaceCursorAtEnd(settings.destination)
+        screenshotUsesLogcat = settings.screenshotUsesLogcatDestination
+        screenshotDirectory.setTextAndPlaceCursorAtEnd(settings.screenshotDirectory)
+        appSelection = settings.appSelection
+        captureMode = settings.captureMode
+        videoQuality = settings.videoQuality
+        autoSave = settings.autoSaveOnCrash
+        tapDisplay = settings.tapDisplay
+        manualPackage.setTextAndPlaceCursorAtEnd(settings.manualPackage)
+    }
+}
+
+/**
+ * Owns an EDT form draft; only Apply persists it, and async checks are bound to form identity and revision.
+ * [Configurable.NoScroll]: the Compose content scrolls itself, and a Settings scroll pane around a Compose panel
+ * asks it for an unbounded preferred size that Compose cannot measure.
+ */
+class ReplaySettingsConfigurable(private val project: Project) : Configurable, Configurable.NoScroll {
+    private var form: SettingsForm? = null
     private var screenshotValidation: DestinationValidation? = null
     private var screenshotValidationJob: Job? = null
     private var screenshotRevision = 0L
-    private var mode: JComboBox<AppSelectionMode>? = null
-    private var captureMode: JComboBox<CaptureMode>? = null
-    private var videoQuality: JComboBox<VideoQuality>? = null
-    private var autoSave: JBCheckBox? = null
-    private var tapDisplay: JComboBox<TapDisplay>? = null
-    private var manualPackage: JBTextField? = null
-    private var destinationStatus: JBTextArea? = null
     private var uiLifetime: Disposable? = null
     private var validationJob: Job? = null
     private var destinationValidation: DestinationValidation? = null
     private var destinationRevision = 0L
     private var replayService: ReplayProjectService? = null
-    private var applicationStatus: JBTextArea? = null
 
     override fun getDisplayName(): String = "Android Replay Buffer"
 
-    private fun cliLauncherRow(): JComponent {
-        val pluginDirectory = (javaClass.classLoader as? PluginAwareClassLoader)?.pluginDescriptor?.pluginPath
-        val launcher = pluginDirectory?.let { ReplayCliRegistry.launcher(it).toString() }
-        val field = JBTextField(launcher ?: "CLIの場所を確認できません").apply {
-            isEditable = false
-            accessibleContext.accessibleName = "CLIの場所"
-        }
-        val copy = JButton("コピー").apply {
-            isEnabled = launcher != null
-            accessibleContext.accessibleName = "CLIの場所をコピー"
-            addActionListener { launcher?.let { CopyPasteManager.getInstance().setContents(StringSelection(it)) } }
-        }
-        return JPanel(BorderLayout()).apply { add(field, BorderLayout.CENTER); add(copy, BorderLayout.EAST) }
-    }
-
-    override fun createComponent(): JComponent {
+    /** Creates the draft and its subscriptions without any Swing or Compose component. */
+    internal fun createForm(): SettingsForm {
         replayService = project.getService(ReplayProjectService::class.java)
-        applicationStatus = wrappingLabel(name = "対象アプリの解決結果")
+        val pluginDirectory = (javaClass.classLoader as? PluginAwareClassLoader)?.pluginDescriptor?.pluginPath
+        val created = SettingsForm(pluginDirectory?.let { ReplayCliRegistry.launcher(it).toString() })
         val lifetime = Disposer.newDisposable("Replay Buffer settings UI")
         uiLifetime = lifetime
+        form = created
         Disposer.register(replayService ?: project, lifetime)
         Disposer.register(lifetime) { validationJob?.cancel(); screenshotValidationJob?.cancel() }
         project.messageBus.connect(lifetime).subscribe(ReplayProjectService.ENVIRONMENT_CHANGED, Runnable {
@@ -96,125 +195,58 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable {
                 if (uiLifetime === lifetime && !project.isDisposed) renderApplication()
             }, ModalityState.any())
         })
-        destinationStatus = wrappingLabel(name = "保存先の確認結果")
-        retention = JBTextField().apply { accessibleContext.accessibleName = "保持時間（1〜900秒）" }
-        destination = TextFieldWithBrowseButton().apply {
-            addBrowseFolderListener(project, FileChooserDescriptorFactory.createSingleFolderDescriptor())
-            accessibleContext.accessibleName = "保存先フォルダ"
-            textField.accessibleContext.accessibleName = accessibleContext.accessibleName
-            textField.document.addDocumentListener(object : DocumentAdapter() {
-                override fun textChanged(event: DocumentEvent) = checkDestination()
-            })
-        }
-        screenshotStatus = wrappingLabel(name = "スクリーンショット保存先の確認結果")
-        screenshotDirectory = TextFieldWithBrowseButton().apply {
-            addBrowseFolderListener(project, FileChooserDescriptorFactory.createSingleFolderDescriptor())
-            accessibleContext.accessibleName = "スクリーンショットの手動保存先"
-            textField.accessibleContext.accessibleName = accessibleContext.accessibleName
-            textField.document.addDocumentListener(object : DocumentAdapter() {
-                override fun textChanged(event: DocumentEvent) = checkScreenshotDestination()
-            })
-        }
-        screenshotLogcat = JBCheckBox("Logcatのスクショ保存先と同じ場所に保存する", true).apply {
-            accessibleContext.accessibleName = "スクリーンショットをLogcatのスクショ保存先へ保存"
-            toolTipText = "Logcatの画面撮影設定に追従します。OFFでは手動指定できます。動画・ログと同じフォルダも使えます。"
-            addActionListener { checkScreenshotDestination() }
-        }
-        val packageGuidance = "255文字以内。英字で始まる2つ以上の部分をピリオドで区切ります。" +
-            "各部分には半角英数字と「_」を使えます（例: com.example.app）。"
-        manualPackage = JBTextField().apply {
-            accessibleContext.accessibleName = "対象アプリのpackage名"
-            accessibleContext.accessibleDescription = packageGuidance
-        }
-        mode = JComboBox(AppSelectionMode.entries.toTypedArray()).apply {
-            accessibleContext.accessibleName = "対象アプリの選択方法"
-            addActionListener { manualPackage?.isEnabled = selectedItem == AppSelectionMode.MANUAL }
-        }
-        videoQuality = JComboBox(VideoQuality.entries.toTypedArray()).apply {
-            accessibleContext.accessibleName = "動画品質"
-            accessibleContext.accessibleDescription = "長辺・fpsは上限、Mbpsは指定bitrateです。取得OFFで変更します。ログ専用では使いません。"
-        }
-        captureMode = JComboBox(CaptureMode.entries.toTypedArray()).apply {
-            addActionListener {
-                videoQuality?.isEnabled = selectedItem == CaptureMode.VIDEO_AND_LOGS
-                tapDisplay?.isEnabled = selectedItem == CaptureMode.VIDEO_AND_LOGS
-            }
-            accessibleContext.accessibleName = "取得モード"
-            accessibleContext.accessibleDescription = "取得をOFFにしてから変更してください。ログ専用は動画を取得・保存しません。"
-            renderer = object : javax.swing.DefaultListCellRenderer() {
-                override fun getListCellRendererComponent(list: javax.swing.JList<*>?, value: Any?, index: Int, selected: Boolean, focus: Boolean): java.awt.Component =
-                    super.getListCellRendererComponent(list, (value as? CaptureMode)?.let(::captureModeDescription), index, selected, focus)
-            }
-        }
-        tapDisplay = JComboBox(TapDisplay.entries.toTypedArray()).apply {
-            accessibleContext.accessibleName = "タップ位置の表示"
-            accessibleContext.accessibleDescription = "既定は表示しない。保存する動画にだけ描画する場合は保存時に動画を再エンコードします。端末画面にも表示する場合は取得中だけ端末のshow_touchesをONにし、終了時に元の値へ戻します。取得OFFで変更します。"
-        }
-        autoSave = JBCheckBox("クラッシュ報告で自動保存する").apply {
-            accessibleContext.accessibleName = "クラッシュ報告の自動保存"
-            toolTipText = "既定OFF。適用後の報告が対象です。native/ANRは対応外。8回受付または検出上限で停止します。再開は自動保存をOFFで適用してからONで適用してください。"
-        }
-        val destinationLabel = JLabel("保存先フォルダ:").apply { labelFor = destination!!.textField }
-        val screenshotDirectoryLabel = JLabel("手動の保存先フォルダ:").apply { labelFor = screenshotDirectory!!.textField }
-        panel = FormBuilder.createFormBuilder()
-            .addComponent(wrappingLabel("編集内容は「適用」または「OK」で反映します。キャンセルでは変更しません。" +
-                "取得のON/OFFはToolWindowですぐ反映します。", "設定の適用方法"))
-            .addComponent(TitledSeparator("対象アプリ"))
-            .addLabeledComponent("選択方法:", mode!!)
-            .addLabeledComponent("package名:", manualPackage!!)
-            .addComponent(wrappingLabel(packageGuidance, "package名の入力条件"))
-            .addComponent(applicationStatus!!)
-            .addComponent(TitledSeparator("取得する記録"))
-            .addLabeledComponent("取得モード:", captureMode!!)
-            .addComponent(wrappingLabel("取得モードは取得OFFで変更してください。ログ専用は動画を取得・保存しません。"))
-            .addLabeledComponent("動画品質:", videoQuality!!)
-            .addComponent(wrappingLabel("長辺・fpsは上限、Mbpsは指定bitrateです。取得OFFで変更してください。" +
-                "軽量は細かい文字・短い変化・滑らかさを捉えにくくなります。負荷の低下は環境に依存します。" +
-                "ログ専用では動画品質を使いません。", "動画品質の説明"))
-            .addLabeledComponent("タップ位置の表示:", tapDisplay!!)
-            .addComponent(wrappingLabel("動画を取得している間は、端末でのタップとミラーリング（Running Devices等）からのタップの座標・時刻を自動で記録し、" +
-                "保存時にtouches.jsonlへ動画と同期して書き出します。ミラーリングからのタップはAndroid 13以上で記録します。" +
-                "「保存する動画にだけ描画する」は端末画面を変えず、保存時に動画を再エンコードして点を描きます（保存に時間がかかります）。" +
-                "「端末画面にも表示する」は端末の「タップを表示」を取得中だけONにし、終了時に元の値へ戻します。端末が描けないミラーリングのタップは保存時に動画へ描きます。" +
-                "取得OFFで変更してください。", "タップ位置の説明"))
-            .addLabeledComponent("保持時間（1〜900秒）:", retention!!)
-            .addComponent(autoSave!!)
-            .addComponent(wrappingLabel("対象アプリの標準Java/Kotlinクラッシュ報告が対象です。native/ANRは対応外です。" +
-                "8回受付または検出上限で停止します。再開はこの設定をOFFで適用してから、ONで再び適用してください。", "クラッシュ自動保存の対応範囲"))
-            .addComponent(TitledSeparator("動画・ログの保存先"))
-            .addLabeledComponent(destinationLabel, destination!!)
-            .addComponent(destinationStatus!!)
-            .addComponent(TitledSeparator("スクリーンショットの保存先"))
-            .addComponent(screenshotLogcat!!)
-            .addLabeledComponent(screenshotDirectoryLabel, screenshotDirectory!!)
-            .addComponent(screenshotStatus!!)
-            .addComponent(TitledSeparator("ターミナル・エージェントから操作"))
-            .addComponent(wrappingLabel("導入済みプラグインのbinにあるreplayで、この画面と同じ設定・取得・保存を操作できます。" +
-                "MCPはreplay mcpです。プラグイン更新後も同じ場所を使えます。"))
-            .addLabeledComponent("CLIの場所:", cliLauncherRow())
-            .addComponentFillVertically(JPanel(), 0)
-            .panel
         checkDestination()
         checkScreenshotDestination()
         renderApplication()
-        return panel!!
+        return created
+    }
+
+    override fun createComponent(): JComponent {
+        val created = createForm()
+        return JewelComposePanel { SettingsContent(created, ::onFormEdited, ::chooseFolder) }
+    }
+
+    private fun onFormEdited() {
+        val current = form ?: return
+        if (current.destination.text.toString() != current.checkedDestination) checkDestination()
+        val screenshotKey = "${current.screenshotUsesLogcat}:${current.screenshotDirectory.text}"
+        if (screenshotKey != current.checkedScreenshotDirectory) checkScreenshotDestination()
+    }
+
+    private fun chooseFolder(target: TextFieldState) {
+        val current = target.text.toString().takeIf { it.isNotEmpty() }?.let { LocalFileSystem.getInstance().findFileByPath(it) }
+        FileChooser.chooseFile(FileChooserDescriptorFactory.createSingleFolderDescriptor(), project, current) { selected ->
+            if (form != null) {
+                target.setTextAndPlaceCursorAtEnd(selected.toNioPath().toString())
+                onFormEdited()
+            }
+        }
     }
 
     private fun renderApplication() {
-        val application = replayService?.environment?.application
-        applicationStatus?.text = "対象の解決結果: ${application?.packageName ?: application?.reason ?: "確認中…"}" +
+        val current = form ?: return
+        val service = replayService
+        val application = service?.environment?.application
+        current.applicationStatus = "対象の解決結果: ${application?.packageName ?: application?.reason ?: "確認中…"}" +
             (application?.configurationName?.let { "（Run: $it）" } ?: "")
+        current.captureActive = captureActive()
+    }
+
+    private fun captureActive(): Boolean {
+        val service = replayService
+        return store().enabled || service?.captureView?.snapshot?.enabled == true || service?.resolving == true || (service?.captureView?.pending ?: 0) > 0
     }
 
     private fun checkDestination() {
-        val field = destination ?: return
+        val current = form ?: return
         val lifetime = uiLifetime ?: return
-        val value = field.text
+        val value = current.destination.text.toString()
+        current.checkedDestination = value
         val revision = ++destinationRevision
         validationJob?.cancel()
         validationJob = null
         destinationValidation = null
-        destinationStatus?.text = if (value.isEmpty()) {
+        current.destinationStatus = if (value.isEmpty()) {
             "保存先が未指定でも取得できます。保存する前にフォルダを指定してください。"
         } else {
             "保存先を確認中…"
@@ -226,16 +258,16 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable {
         validationJob = replayService?.scope?.checkDestination(value) { result ->
             if (uiLifetime === lifetime && !project.isDisposed && revision == destinationRevision) {
                 destinationValidation = result
-                destinationStatus?.text = result.error ?: " "
+                current.destinationStatus = result.error.orEmpty()
             }
         }
     }
 
     private fun checkScreenshotDestination() {
-        val field = screenshotDirectory ?: return
+        val current = form ?: return
         val lifetime = uiLifetime ?: return
-        val followsLogcat = screenshotLogcat?.isSelected != false
-        field.isEnabled = !followsLogcat
+        val followsLogcat = current.screenshotUsesLogcat
+        current.checkedScreenshotDirectory = "$followsLogcat:${current.screenshotDirectory.text}"
         val revision = ++screenshotRevision
         screenshotValidationJob?.cancel()
         screenshotValidationJob = null
@@ -244,15 +276,15 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable {
             try { LogcatScreenshotSettings.saveLocation() } catch (cancelled: com.intellij.openapi.progress.ProcessCanceledException) {
                 throw cancelled
             } catch (_: RuntimeException) {
-                screenshotStatus?.text = LOGCAT_DESTINATION_UNAVAILABLE
+                current.screenshotStatus = LOGCAT_DESTINATION_UNAVAILABLE
                 return
             } catch (_: LinkageError) {
-                screenshotStatus?.text = LOGCAT_DESTINATION_UNAVAILABLE
+                current.screenshotStatus = LOGCAT_DESTINATION_UNAVAILABLE
                 return
             }
         } else null
-        val value = location ?: field.text
-        screenshotStatus?.text = if (!followsLogcat && value.isEmpty()) "スクリーンショット専用の保存先を指定してください。" else "保存先を確認中…"
+        val value = location ?: current.screenshotDirectory.text.toString()
+        current.screenshotStatus = if (!followsLogcat && value.isEmpty()) "スクリーンショット専用の保存先を指定してください。" else "保存先を確認中…"
         if (!followsLogcat && value.isEmpty()) {
             screenshotValidation = validateDestination(value)
             return
@@ -262,7 +294,7 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable {
         }) { result ->
             if (uiLifetime === lifetime && !project.isDisposed && revision == screenshotRevision) {
                 screenshotValidation = result
-                screenshotStatus?.text = if (followsLogcat) {
+                current.screenshotStatus = if (followsLogcat) {
                     "Logcatのスクショ保存先: ${result.destination}。" +
                         (result.error ?: "保存時の最新設定を使い、直下へPNG1枚を保存します。IDE設定の初期値はデスクトップです。")
                 } else result.error ?: "専用フォルダ直下にPNG画像1枚を保存します。"
@@ -270,23 +302,12 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable {
         }
     }
 
-    private fun draft(): ReplaySettings = ReplaySettings(
-        retentionSeconds = retention?.text?.toIntOrNull() ?: 0,
-        destination = destination?.text.orEmpty(),
-        appSelection = mode?.selectedItem as? AppSelectionMode ?: AppSelectionMode.AUTOMATIC,
-        manualPackage = manualPackage?.text.orEmpty(),
-        captureMode = captureMode?.selectedItem as? CaptureMode ?: CaptureMode.VIDEO_AND_LOGS,
-        autoSaveOnCrash = autoSave?.isSelected == true,
-        tapDisplay = tapDisplay?.selectedItem as? TapDisplay ?: TapDisplay.OFF,
-        screenshotUsesLogcatDestination = screenshotLogcat?.isSelected != false,
-        screenshotDirectory = screenshotDirectory?.text.orEmpty(),
-        videoQuality = videoQuality?.selectedItem as? VideoQuality ?: VideoQuality.STANDARD,
-    )
+    private fun draft(): ReplaySettings = form?.draft() ?: ReplaySettings()
 
-    override fun isModified(): Boolean = panel != null && draft() != store().settings()
+    override fun isModified(): Boolean = form != null && draft() != store().settings()
 
     override fun apply() {
-        if (panel == null || project.isDisposed || !isModified()) return
+        if (form == null || project.isDisposed || !isModified()) return
         val settings = draft()
         val checked = destinationValidation?.takeIf { it.destination == settings.destination }
             ?: throw ConfigurationException("保存先を確認中です。確認が終わってから適用してください。")
@@ -307,21 +328,9 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable {
     }
 
     override fun reset() {
-        if (panel == null || project.isDisposed) return
-        val settings = store().settings()
-        retention?.text = settings.retentionSeconds.toString()
-        destination?.text = settings.destination
-        screenshotLogcat?.isSelected = settings.screenshotUsesLogcatDestination
-        screenshotDirectory?.text = settings.screenshotDirectory
-        mode?.selectedItem = settings.appSelection
-        captureMode?.selectedItem = settings.captureMode
-        videoQuality?.selectedItem = settings.videoQuality
-        videoQuality?.isEnabled = settings.captureMode.videoRequested
-        autoSave?.isSelected = settings.autoSaveOnCrash
-        tapDisplay?.selectedItem = settings.tapDisplay
-        tapDisplay?.isEnabled = settings.captureMode.videoRequested
-        manualPackage?.text = settings.manualPackage
-        manualPackage?.isEnabled = settings.appSelection == AppSelectionMode.MANUAL
+        val current = form ?: return
+        if (project.isDisposed) return
+        current.load(store().settings())
         checkDestination()
         checkScreenshotDestination()
         renderApplication()
@@ -334,26 +343,158 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable {
         destinationValidation = null
         screenshotValidation = null
         screenshotValidationJob = null
-        screenshotStatus = null
-        destinationStatus = null
-        applicationStatus = null
         replayService = null
-        destination?.dispose()
-        screenshotDirectory?.dispose()
-        panel = null
-        retention = null
-        destination = null
-        screenshotDirectory = null
-        screenshotLogcat = null
-        mode = null
-        captureMode = null
-        videoQuality = null
-        autoSave = null
-        tapDisplay = null
-        manualPackage = null
+        form = null
     }
 
     private fun store(): ReplaySettingsStore = project.getService(ReplaySettingsStore::class.java)
+}
+
+@Composable
+private fun Hint(text: String) {
+    if (text.isNotBlank()) Text(text, color = JewelTheme.globalColors.text.info)
+}
+
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+@Composable
+private fun WithTooltip(tooltip: String, modifier: Modifier = Modifier, content: @Composable () -> Unit) {
+    Tooltip(tooltip = { Text(tooltip) }, modifier = modifier, content = content)
+}
+
+/**
+ * A settings row: a fixed label, then content laid out left to right. Content without [flexibleWidth] keeps its own
+ * width, so buttons stay reachable when the Settings page is narrower than the fields' preferred widths.
+ */
+@Composable
+internal fun FormRow(label: @Composable (Modifier) -> Unit, content: @Composable RowScope.() -> Unit) {
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        label(Modifier.width(LABEL_WIDTH))
+        content()
+    }
+}
+
+/** Takes the width left after the row's other items, up to [max]. */
+internal fun RowScope.flexibleWidth(max: Dp): Modifier = Modifier.weight(1f, fill = false).widthIn(max = max).fillMaxWidth()
+
+internal val LABEL_WIDTH = 140.dp
+internal val PATH_FIELD_WIDTH = 360.dp
+private val CHOICE_FIELD_WIDTH = 280.dp
+
+@Composable
+private fun Labeled(label: String, content: @Composable RowScope.() -> Unit) {
+    FormRow({ Text(label, modifier = it) }, content)
+}
+
+@Composable
+private fun RowScope.FolderField(
+    state: TextFieldState,
+    name: String,
+    enabled: Boolean,
+    choose: (TextFieldState) -> Unit,
+) {
+    TextField(state, modifier = flexibleWidth(PATH_FIELD_WIDTH).semantics { contentDescription = name }, enabled = enabled)
+    OutlinedButton({ choose(state) }, enabled = enabled,
+        modifier = Modifier.semantics { contentDescription = "${name}を選ぶ" }) { Text("参照…") }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+internal fun SettingsContent(form: SettingsForm, edited: () -> Unit, choose: (TextFieldState) -> Unit) {
+    LaunchedEffect(form) {
+        snapshotFlow { Triple(form.destination.text.toString(), form.screenshotDirectory.text.toString(), form.screenshotUsesLogcat) }
+            .collect { edited() }
+    }
+    val controls = form.controls
+    VerticallyScrollableContainer(modifier = Modifier.fillMaxSize()) {
+        Column(Modifier.fillMaxWidth().padding(end = 12.dp, bottom = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            // 1. Basics, set once.
+            GroupHeader("基本", modifier = Modifier.semantics { heading() })
+            Labeled("動画・ログの保存先:") { FolderField(form.destination, "保存先フォルダ", true, choose) }
+            Hint(form.destinationStatus)
+            Labeled("保持時間:") {
+                TextField(form.retention, modifier = Modifier.width(80.dp).semantics { contentDescription = "保持時間（1〜900秒）" })
+                Text("秒（1〜900）")
+            }
+            Labeled("対象アプリ:") {
+                FlowRow(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    AppSelectionMode.entries.forEach { mode ->
+                        RadioButtonRow(mode.toString(), form.appSelection == mode, { form.appSelection = mode })
+                    }
+                }
+            }
+            Labeled("package名:") {
+                WithTooltip(PACKAGE_GUIDANCE, flexibleWidth(CHOICE_FIELD_WIDTH)) {
+                    TextField(form.manualPackage, enabled = controls.manualPackageEnabled,
+                        modifier = Modifier.fillMaxWidth().semantics { contentDescription = "対象アプリのpackage名" })
+                }
+            }
+            Hint(form.applicationStatus)
+
+            // 2. What is recorded; locked while capture runs.
+            GroupHeader("記録する内容", modifier = Modifier.semantics { heading() })
+            controls.recordingNotice?.let { Text(it, color = JewelTheme.globalColors.text.warning) }
+            Labeled("取得モード:") {
+                WithTooltip(CAPTURE_MODE_TOOLTIP, flexibleWidth(CHOICE_FIELD_WIDTH)) {
+                    val modes = CaptureMode.entries
+                    ListComboBox(modes.map(::captureModeDescription), modes.indexOf(form.captureMode), { form.captureMode = modes[it] },
+                        modifier = Modifier.fillMaxWidth().semantics { contentDescription = "取得モード" }, enabled = controls.recordingEnabled)
+                }
+            }
+            Labeled("動画品質:") {
+                WithTooltip(VIDEO_QUALITY_TOOLTIP, flexibleWidth(CHOICE_FIELD_WIDTH)) {
+                    val qualities = VideoQuality.entries
+                    ListComboBox(qualities.map(VideoQuality::toString), qualities.indexOf(form.videoQuality), { form.videoQuality = qualities[it] },
+                        modifier = Modifier.fillMaxWidth().semantics { contentDescription = "動画品質" }, enabled = controls.videoOptionsEnabled)
+                }
+            }
+            Labeled("タップ位置の表示:") {
+                WithTooltip(TAP_DISPLAY_TOOLTIP, flexibleWidth(CHOICE_FIELD_WIDTH)) {
+                    val displays = TapDisplay.entries
+                    ListComboBox(displays.map(TapDisplay::toString), displays.indexOf(form.tapDisplay), { form.tapDisplay = displays[it] },
+                        modifier = Modifier.fillMaxWidth().semantics { contentDescription = "タップ位置の表示" }, enabled = controls.videoOptionsEnabled)
+                }
+            }
+
+            // 3. Screenshot destination.
+            GroupHeader("スクリーンショットの保存先", modifier = Modifier.semantics { heading() })
+            WithTooltip(SCREENSHOT_LOGCAT_TOOLTIP) {
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    RadioButtonRow("Logcatのスクショ保存先に合わせる", form.screenshotUsesLogcat, { form.screenshotUsesLogcat = true },
+                        modifier = Modifier.semantics { contentDescription = "スクリーンショットをLogcatのスクショ保存先へ保存" })
+                    RadioButtonRow("手動で指定", !form.screenshotUsesLogcat, { form.screenshotUsesLogcat = false })
+                }
+            }
+            if (controls.screenshotDirectoryEnabled) {
+                Labeled("手動の保存先フォルダ:") {
+                    FolderField(form.screenshotDirectory, "スクリーンショットの手動保存先", true, choose)
+                }
+            }
+            Hint(form.screenshotStatus)
+
+            // 4. Crash auto-save.
+            GroupHeader("クラッシュ時の自動保存", modifier = Modifier.semantics { heading() })
+            WithTooltip(AUTO_SAVE_TOOLTIP) {
+                CheckboxRow("クラッシュ報告で自動保存する", form.autoSave, { form.autoSave = it },
+                    modifier = Modifier.semantics { contentDescription = "クラッシュ報告の自動保存" })
+            }
+            Hint(AUTO_SAVE_SCOPE)
+
+            // 5. Terminal and agents, collapsed.
+            var cliExpanded by remember { mutableStateOf(false) }
+            Text((if (cliExpanded) "▼ " else "▶ ") + "ターミナル・エージェントから操作",
+                modifier = Modifier.clickable { cliExpanded = !cliExpanded }.semantics { heading() }, fontWeight = FontWeight.Bold)
+            if (cliExpanded) {
+                Hint(CLI_GUIDANCE)
+                Labeled("CLIの場所:") {
+                    val launcher = remember { TextFieldState(form.launcher ?: "CLIの場所を確認できません") }
+                    TextField(launcher, readOnly = true, modifier = flexibleWidth(PATH_FIELD_WIDTH).semantics { contentDescription = "CLIの場所" })
+                    OutlinedButton({ form.launcher?.let { CopyPasteManager.getInstance().setContents(StringSelection(it)) } },
+                        enabled = form.launcher != null, modifier = Modifier.semantics { contentDescription = "CLIの場所をコピー" }) { Text("コピー") }
+                }
+            }
+            Hint(APPLY_GUIDANCE)
+        }
+    }
 }
 
 internal const val LOGCAT_DESTINATION_UNAVAILABLE = "Logcatのスクショ保存先を取得できません。Android Studioの画面撮影設定を確認するか、手動の保存先を指定してください。"
