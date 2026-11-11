@@ -59,7 +59,7 @@ class AppRecoveryBoundaryTest {
         }
         val manifest = JsonParser.parseString(Files.readString(saved.directory.resolve("replay.json"))).asJsonObject
         val exported = manifest["gaps"].asJsonArray.single { it.asJsonObject["kind"].asString == "app_log" }.asJsonObject
-        assertEquals(gap.toNs.toString(), exported["to_ns"].asString)
+        assertEquals((gap.toNs!! - capture.start).toString(), exported["to_t_ns"].asString)
         assertEquals("17000000", exported["boundary_uncertainty_ns"].asString)
         assertFalse(exported["duration_uncertain"].asBoolean)
         assertEquals(capture.states.getValue("app_log").availableSeconds,
@@ -136,7 +136,7 @@ class AppRecoveryBoundaryTest {
         assertFalse(unassigned in ids("logcat-app.jsonl"))
         val manifest = JsonParser.parseString(Files.readString(saved.directory.resolve("replay.json"))).asJsonObject
         val gap = manifest["gaps"].asJsonArray.single { it.asJsonObject["kind"].asString == "app_log" }.asJsonObject
-        assertEquals("7000000000", gap["to_ns"].asString)
+        assertEquals((7_000_000_000 - capture.start).toString(), gap["to_t_ns"].asString)
         assertEquals(capture.states.getValue("app_log").availableSeconds,
             manifest["coverage"].asJsonObject["app_log"].asJsonObject["availableSeconds"].asDouble)
         assertEquals(original, pinned.gaps.single { it.stream == "app_log" })

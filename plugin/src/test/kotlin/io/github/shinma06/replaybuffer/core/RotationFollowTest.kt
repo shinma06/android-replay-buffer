@@ -79,7 +79,7 @@ class RotationFollowTest {
             // One movie timeline: movie time and window time differ by the same constant before and after the rotation.
             val rows = Files.readAllLines(output.directory.resolve("video-frames.jsonl")).map { JsonParser.parseString(it).asJsonObject }
                 .filter { it["presented"].asBoolean }
-            val shifts = rows.map { it["movie_pts_us"].asLong - it["display_window_start_ns"].asLong / 1000 }
+            val shifts = rows.map { it["movie_pts_us"].asLong - it["display_t_ns"].asLong / 1000 }
             assertTrue(shifts.max() - shifts.min() <= 2, shifts.toString())
             // The last portrait image is held until the rotation gap starts, then the movie shows the gap until the new frame.
             val held = rows.last { it["output_width"].asInt == 32 && it["source_rect"].asJsonObject["width"].asInt == 16 }

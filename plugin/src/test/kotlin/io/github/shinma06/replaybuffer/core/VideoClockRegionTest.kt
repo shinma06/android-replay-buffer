@@ -153,23 +153,22 @@ class VideoClockRegionTest {
             val part = parts.single().asJsonObject
             assertTrue(part["clock_alignment_known"].asBoolean)
             assertTrue(part["duration_us"].asLong >= 2_000_001)
-            for (key in listOf("window_start_ns", "window_end_ns", "confirmed_window_end_ns")) assertFalse(part[key].isJsonNull)
+            for (key in listOf("t_start_ns", "t_end_ns", "confirmed_t_end_ns")) assertFalse(part[key].isJsonNull)
             assertEquals(emptyList(), output.missingKinds)
-            assertEquals(Long.MAX_VALUE.toString(), manifest["gaps"].asJsonArray.single().asJsonObject["boundary_uncertainty_ns"].asString)
-            assertTrue(manifest["gaps"].asJsonArray.single().asJsonObject["duration_uncertain"].asBoolean)
+            assertTrue(manifest["gaps"].asJsonArray.isEmpty, "A resolved clock outage is not a stream gap")
+            assertTrue(manifest["timebase"].asJsonObject["clock_steps"].asJsonArray.isEmpty)
             assertTrue(manifest["video_missing_ranges"].asJsonArray.isEmpty)
             val rows = Files.readAllLines(output.directory.resolve("video-frames.jsonl")).map { JsonParser.parseString(it).asJsonObject }
             assertEquals(frames.map { it.pts }, rows.filter { it["presented"].asBoolean }.map { it["source_pts_us"].asLong })
-            assertTrue(rows.all { it["clock_alignment_known"].asBoolean && !it["window_ns"].isJsonNull })
-            assertTrue(rows.all { it["window_ns"] == it["mapped_window_ns"] })
-            assertTrue(rows.all { it["uncertainty_ns"].asLong == 1_000_000L })
+            assertTrue(rows.all { it["clock_alignment_known"].asBoolean && !it["t_ns"].isJsonNull })
+            assertTrue(rows.all { it["t_uncertainty_ns"].asLong == 1_000_000L })
             val deviceLog = Files.readAllLines(output.directory.resolve("logcat-device.jsonl"))
             val appLog = Files.readAllLines(output.directory.resolve("logcat-app.jsonl"))
             assertEquals(2, deviceLog.size)
             assertEquals(listOf(deviceLog.first()), appLog)
             val unknownRow = JsonParser.parseString(deviceLog.last()).asJsonObject
-            assertTrue(unknownRow["window_ns"].isJsonNull && unknownRow["app_membership"].isJsonNull)
-            assertEquals(Long.MAX_VALUE.toString(), unknownRow["uncertainty_ns"].asString)
+            assertTrue(unknownRow["t_ns"].isJsonNull && unknownRow["app_membership"].isJsonNull)
+            assertEquals(Long.MAX_VALUE.toString(), unknownRow["t_uncertainty_ns"].asString)
             parts.forEach { part ->
                 val name = part.asJsonObject["file"].asString
                 NIOUtils.readableChannel(output.directory.resolve(name).toFile()).use { channel ->

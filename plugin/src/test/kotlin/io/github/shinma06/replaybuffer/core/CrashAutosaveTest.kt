@@ -210,12 +210,12 @@ class CrashAutosaveTest {
                     assertEquals(10_019_000_000, capture.end)
                     for ((key, source, expected) in listOf(Triple("java_evidence", 4, 10_002_700_000L), Triple("platform_evidence", 2, 10_003_600_000L))) {
                         val evidence = facts[key] as Map<*, *>
-                        assertEquals(expected.toString(), evidence["frozen_sequence_ns"])
-                        assertEquals("2000000", evidence["uncertainty_ns"])
+                        assertEquals((expected - capture.start).toString(), evidence["frozen_t_ns"])
+                        assertEquals("2000000", evidence["t_uncertainty_ns"])
                         assertEquals(expected, capture.logs.single { it.source.lid == source }.time.sequence)
                     }
                     f.anchor(10_020_000_000, sourceDelta = -1_000_000)
-                    assertEquals("10003600000", (facts["platform_evidence"] as Map<*, *>)["frozen_sequence_ns"])
+                    assertEquals((10_003_600_000 - capture.start).toString(), (facts["platform_evidence"] as Map<*, *>)["frozen_t_ns"])
                 }
             }
         }
@@ -504,7 +504,7 @@ class CrashAutosaveTest {
                 val pair = f.store.autosave.drain(f.at(10_012_200_000)).single()
                 val capture = assertNotNull(f.store.capture(f.settings, pair, f.at(10_012_200_000)))
                 val facts = capture.autoTrigger!!.facts
-                assertEquals("10003636364", (facts["platform_evidence"] as Map<*, *>)["frozen_sequence_ns"]) // Unshifted: 10004000000.
+                assertEquals((10_003_636_364 - capture.start).toString(), (facts["platform_evidence"] as Map<*, *>)["frozen_t_ns"]) // Unshifted: 10004000000.
                 assertTrue(capture.gaps.any { it.stream == "clock" && it.toNs != null })
                 assertEquals(0, f.store.autosave.snapshot().notSavedCount)
             }

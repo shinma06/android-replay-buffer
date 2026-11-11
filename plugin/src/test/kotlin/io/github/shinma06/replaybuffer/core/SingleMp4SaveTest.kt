@@ -54,7 +54,7 @@ class SingleMp4SaveTest {
         assertEquals(listOf(0L, 100_000L, 350_000L, 350_001L, 560_001L, 850_001L, 850_002L, 950_002L, 1_250_002L),
             rows.map { it["media_pts_us"].asLong })
         assertEquals(3, rows.count { it["source_duration_us"].isJsonNull })
-        assertTrue(rows.all { it["presented"].asBoolean && it["window_ns"].isJsonNull })
+        assertTrue(rows.all { it["presented"].asBoolean && it["t_ns"].isJsonNull })
         val boundaries = record["video_run_boundaries"].asJsonArray
         assertTrue(boundaries.all { it.asJsonObject["actual_gap_duration_us"].isJsonNull && it.asJsonObject["authored_gap_duration_us"].asLong == 0L })
         assertPackets(output, original, pixels, expectedEntries = 2)
@@ -134,7 +134,7 @@ class SingleMp4SaveTest {
         val saved = Files.readAllBytes(output.directory.resolve("video-source.h264"))
         val rows = rows(output)
         assertEquals(140, rows.size)
-        assertTrue(rows.all { it["window_ns"].isJsonNull && it["uncertainty_ns"].asLong == Long.MAX_VALUE })
+        assertTrue(rows.all { it["t_ns"].isJsonNull && it["t_uncertainty_ns"].asLong == Long.MAX_VALUE })
         assertEquals(capture.video.map { it.pts }, rows.map { it["source_pts_us"].asLong })
         rows.forEachIndexed { n, row ->
             assertContentEquals(original[n], saved.copyOfRange(row["source_offset"].asInt, row["source_offset"].asInt + row["source_size"].asInt))
@@ -596,7 +596,7 @@ class SingleMp4SaveTest {
         val visible = Files.readAllLines(output.directory.resolve("video-frames.jsonl"))
             .map { JsonParser.parseString(it).asJsonObject }.filter { it["presented"].asBoolean }
         assertEquals(listOf(1_000_000L, 1_100_000L, 1_350_000L), visible.map { it["source_pts_us"].asLong })
-        assertTrue(visible.all { it["window_ns"].isJsonNull && it["uncertainty_ns"].asLong == Long.MAX_VALUE })
+        assertTrue(visible.all { it["t_ns"].isJsonNull && it["t_uncertainty_ns"].asLong == Long.MAX_VALUE })
         assertEquals(350_001L, visible.sumOf { it["display_duration_us"].asLong })
     }
 

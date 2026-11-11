@@ -203,7 +203,15 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
             val runBoundaries = mutableListOf<Map<String, Any?>>()
             val losses = mutableListOf<String>()
             val videoProofs = mutableMapOf<CaptureGap, Pair<ClockSample, ClockSample>>()
-            val videoScopes = capture.gaps.gapScopes(capture.clocks, capture.clockRecoveries, videoProofs, capture.windowSegment)
+            val windowSegment = capture.windowSegment
+            val videoScopes = capture.gaps.gapScopes(capture.clocks, capture.clockRecoveries, videoProofs, windowSegment)
+            val epochSegments = capture.clocks.associate { it.epoch to it.segment }
+            fun segmentOf(epoch: Int?): Int? = epoch?.let(epochSegments::get)
+            /** Saved times are ns from the window start on the window's boot; another boot's value is only approximate. */
+            fun windowT(sequence: Long?): String? = sequence?.let { (it - capture.start).toString() }
+            fun sampleJson(c: ClockSample) = clockJson(c, capture.start, windowSegment)
+            // A recovered clock-read outage proved continuity and is no loss; only unresolved ones stay in the history.
+            val historyGaps = capture.gaps.filterNot { it.stream == "clock" && it.resolvedClock(capture.clockRecoveries) }
             // A clock-read outage is not a loss: the mapping itself rejects source times across a clock step.
             fun aligned(frame: VideoEntry): Boolean =
                 frame.time.sequence != null && capture.windowKnown && frame.time.uncertainty != Long.MAX_VALUE
@@ -443,16 +451,15 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                                         "display_duration_us" to duration.toString(), "media_pts_us" to media.toString(),
                                         "movie_pts_us" to moviePts?.toString(), "movie_end_us" to moviePts?.let { Math.addExact(it, displayEnd - displayStart).toString() },
                                         "source_display_start_us" to if (presented) Math.addExact(frame.pts, sourceDisplayOffset).toString() else null,
-                                        "elapsed_ns" to frame.time.elapsed?.toString(), "clock_epoch" to frame.time.epoch,
-                                        "window_ns" to sequence?.takeIf { known }?.let { (it - capture.start).toString() },
-                                        "display_window_start_ns" to displayWindowStart?.toString(),
-                                        "confirmed_window_end_ns" to confirmedEnd?.let { (it - capture.start).toString() },
-                                        "mapped_window_ns" to sequence?.takeIf { capture.windowKnown }?.let { (it - capture.start).toString() },
+                                        "elapsed_ns" to frame.time.elapsed?.toString(), "boot_segment" to segmentOf(frame.time.epoch),
+                                        "t_ns" to sequence?.takeIf { known }?.let { (it - capture.start).toString() },
+                                        "display_t_ns" to displayWindowStart?.toString(),
+                                        "confirmed_t_end_ns" to confirmedEnd?.let { (it - capture.start).toString() },
                                         "clock_alignment_known" to known,
                                         "presentation_pts_us" to (moviePts ?: movieStart).toString(),
                                         "presented" to presented, "preroll" to (!presented && localMedia < startUs),
                                         "terminal_authoring_tick" to (sourceDurations[n] == null && duration == 1L),
-                                        "uncertainty_ns" to frame.time.uncertainty.toString())))
+                                        "t_uncertainty_ns" to frame.time.uncertainty.toString())))
                                     index.newLine()
                                     frameRows++
                                     media = Math.addExact(media, duration)
@@ -466,18 +473,16 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                                     val b = displayed[k]
                                     a.time.epoch == b.time.epoch && !interrupted(a, b, closed, visibleIndex - keyIndex + k - 1)
                                 }
-                                parts += mapOf("file" to videoName, "segment_index" to runIndex,
-                                    "clock_epoch" to samples.map { it.time.epoch }.distinct().singleOrNull(),
-                                    "clock_epochs" to samples.map { it.time.epoch }.distinct(), "generation" to first.generation,
+                                parts += mapOf("file" to videoName, "segment_index" to runIndex, "generation" to first.generation,
                                     "decode_run" to first.decodeRun.toString(), "source_pts_origin_us" to origin.toString(),
                                     "movie_start_us" to movieStart.toString(), "movie_end_us" to movie.toString(),
                                     "media_start_us" to runMedia.toString(), "edit_start_us" to Math.addExact(runMedia, startUs).toString(),
                                     "duration_us" to segmentDuration.toString(), "clock_alignment_known" to alignmentKnown,
-                                    "window_start_ns" to visibleStart?.takeIf { alignmentKnown }?.let { (it - capture.start).toString() },
-                                    "window_end_ns" to last.time.sequence?.takeIf { alignmentKnown }?.let {
+                                    "t_start_ns" to visibleStart?.takeIf { alignmentKnown }?.let { (it - capture.start).toString() },
+                                    "t_end_ns" to last.time.sequence?.takeIf { alignmentKnown }?.let {
                                         Math.addExact(it - capture.start, Math.multiplyExact(originalEnd - (last.pts - origin), 1000)).toString()
                                     },
-                                    "confirmed_window_end_ns" to last.time.sequence?.takeIf { alignmentKnown && visibleStart != null && it > visibleStart }?.let { (it - capture.start).toString() },
+                                    "confirmed_t_end_ns" to last.time.sequence?.takeIf { alignmentKnown && visibleStart != null && it > visibleStart }?.let { (it - capture.start).toString() },
                                     "media_timeline_clipped" to clipped, "preroll_samples" to (visibleIndex - keyIndex))
                                 previousLast = last
                             }
@@ -518,10 +523,10 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                     capture.logs.forEach { row ->
                         checkActive()
                         val source = row.source
-                        val record = gson.toJson(mapOf("record_id" to row.id, "clock_epoch" to row.time.epoch,
+                        val record = gson.toJson(mapOf("record_id" to row.id, "boot_segment" to segmentOf(row.time.epoch),
                             "generation" to row.generation, "epoch_ns" to source.wall.toString(),
-                            "elapsed_ns" to row.time.elapsed?.toString(), "window_ns" to row.time.sequence?.takeIf { capture.windowKnown }?.let { (it - capture.start).toString() },
-                            "uncertainty_ns" to row.time.uncertainty.toString(), "uid" to source.uid, "pid" to source.pid,
+                            "elapsed_ns" to row.time.elapsed?.toString(), "t_ns" to row.time.sequence?.takeIf { capture.windowKnown }?.let { (it - capture.start).toString() },
+                            "t_uncertainty_ns" to row.time.uncertainty.toString(), "uid" to source.uid, "pid" to source.pid,
                             "tid" to source.tid, "lid" to source.lid, "priority" to source.priority, "tag" to source.tag,
                             "message" to source.message, "app_membership" to row.app,
                             "decode_status" to source.decodeStatus, "payload_base64" to Base64.getEncoder().encodeToString(source.raw)))
@@ -541,9 +546,9 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                     if (movieUs != null) touchesInMovie++
                     val sample = row.sample
                     val screen = row.rotation?.let { screenPoint(sample.x, sample.y, row.width, row.height, it) }
-                    out.write(gson.toJson(mapOf("clock_epoch" to row.time.epoch, "generation" to row.generation,
+                    out.write(gson.toJson(mapOf("boot_segment" to segmentOf(row.time.epoch), "generation" to row.generation,
                         "device_mono_ns" to sample.monoNs.toString(), "elapsed_ns" to row.time.elapsed?.toString(),
-                        "window_ns" to point?.let { (it - capture.start).toString() }, "uncertainty_ns" to row.time.uncertainty.toString(),
+                        "t_ns" to point?.let { (it - capture.start).toString() }, "t_uncertainty_ns" to row.time.uncertainty.toString(),
                         "movie_us" to movieUs?.toString(), "action" to sample.action.wire, "pointer" to sample.pointer,
                         "x" to sample.x, "y" to sample.y, "display_width" to row.width, "display_height" to row.height,
                         "display_rotation" to row.rotation, "screen_x" to screen?.first, "screen_y" to screen?.second,
@@ -556,20 +561,20 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
             val windowLength = capture.end - capture.start
             val knownParts = frameCoverage.sortedBy { it.first }
             knownParts.forEach { (from, to) ->
-                if (from > coveredUntil + 1_000_000) videoHoles += mapOf("from_window_ns" to coveredUntil.toString(), "to_window_ns" to from.toString())
+                if (from > coveredUntil + 1_000_000) videoHoles += mapOf("from_t_ns" to coveredUntil.toString(), "to_t_ns" to from.toString())
                 coveredUntil = maxOf(coveredUntil, to)
             }
-            if (videoRequested && coveredUntil + 1_000_000 < windowLength) videoHoles += mapOf("from_window_ns" to coveredUntil.toString(), "to_window_ns" to windowLength.toString())
+            if (videoRequested && coveredUntil + 1_000_000 < windowLength) videoHoles += mapOf("from_t_ns" to coveredUntil.toString(), "to_t_ns" to windowLength.toString())
             // Only a displayed tail can cover a hole without confirming a newly received image.
             if (tail?.displayHeld == true && tail.fromNs != null && tail.toNs != null) {
                 val from = tail.fromNs - capture.start
                 val to = tail.toNs - capture.start
                 val remainingHoles = videoHoles.flatMap { hole ->
-                    val a = hole.getValue("from_window_ns").toLong()
-                    val b = hole.getValue("to_window_ns").toLong()
+                    val a = hole.getValue("from_t_ns").toLong()
+                    val b = hole.getValue("to_t_ns").toLong()
                     if (b <= from || a >= to) listOf(hole) else buildList {
-                        if (a < from) add(mapOf("from_window_ns" to a.toString(), "to_window_ns" to from.toString()))
-                        if (b > to) add(mapOf("from_window_ns" to to.toString(), "to_window_ns" to b.toString()))
+                        if (a < from) add(mapOf("from_t_ns" to a.toString(), "to_t_ns" to from.toString()))
+                        if (b > to) add(mapOf("from_t_ns" to to.toString(), "to_t_ns" to b.toString()))
                     }
                 }
                 videoHoles.clear(); videoHoles.addAll(remainingHoles)
@@ -643,18 +648,18 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                 capture.states.forEach { (kind, state) -> row(kind, state.state, state.availableSeconds, state.reason) }
                 if (parts.isNotEmpty()) {
                     appendLine()
-                    row("再生区間", "動画µs", "時計対応確認", "窓開始ns", "窓終了ns", "preroll")
+                    row("再生区間", "動画µs", "時計対応確認", "開始（窓からのns）", "終了（窓からのns）", "preroll")
                     appendLine("|---|---|---|---|---|---|")
                     parts.forEach { row("${it["file"]} 区間${it["segment_index"]}", "${it["movie_start_us"]}〜${it["movie_end_us"]}",
-                        it["clock_alignment_known"], it["window_start_ns"], it["window_end_ns"], it["preroll_samples"]) }
+                        it["clock_alignment_known"], it["t_start_ns"], it["t_end_ns"], it["preroll_samples"]) }
                 }
-                if (capture.gaps.isNotEmpty()) {
+                if (historyGaps.isNotEmpty()) {
                     appendLine()
                     appendLine("取得履歴です。保存窓の外と確認できた履歴も保全しています。保存時の警告は保存窓内又は重なり未確認の記録が対象です。")
                     appendLine()
-                    row("記録", "開始ns", "終了ns", "理由")
+                    row("記録", "開始（窓からのns）", "終了（窓からのns）", "理由")
                     appendLine("|---|---|---|---|")
-                    capture.gaps.forEach { row(it.stream, it.fromNs, it.toNs, it.reason) }
+                    historyGaps.forEach { row(it.stream, windowT(it.fromNs), windowT(it.toNs), it.reason) }
                 }
                 if (losses.isNotEmpty()) {
                     appendLine()
@@ -701,7 +706,7 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                             TouchDots.OFF -> "動画に点は映っていません"
                             null -> "点を表示できたか確認できていません"
                         })
-                    appendLine("- frameのclock_alignment_known=falseでは時計対応が不明です。window_ns=null、mapped_window_nsは不確実性を含む変換値で、同期確定やcoverageには使えません。区間開始に動画全体の表示秒を足す方法では照合できません。")
+                    appendLine("- frameのclock_alignment_known=falseでは時計対応が不明で、t_ns=nullです。区間開始に動画全体の表示秒を足す方法では照合できません。")
                     if (rawPath != null) appendLine("- ${if (tapOverlay != null) "タップの描画" else "サイズ変更"}を含むため固定canvasへ再エンコードしています。拡縮・切捨てはせず、余白を追加しています。元AnnexB config/全packetは${ReplayFiles.VIDEO_SOURCE}へ保存し${ReplayFiles.VIDEO_FRAMES}のoffset/size/hashで照合できます。色未指定は不明のままで、色一致の証明ではありません。")
                     appendLine("- video_missing_rangesは映像欠落又は時計対応未確認の範囲です。既知の取得gapは空白として表示し、不明gapの実durationはnullのまま、MP4上の表示間隔と区別しています。")
                     appendLine("- 次sampleのない末尾はsource_duration_us=nullです。MP4の最小1tickは表示のための値で、観測した画像の継続時間や取得coverageではありません。")
@@ -709,7 +714,7 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                 } else {
                     appendLine("- 動画の取得・保存は要求していません。MP4・時刻索引・動画sourceはありません。動画未要求は取得失敗や欠落ではありません。")
                 }
-                appendLine("- ログの各行のwindow_nsは保存範囲の先頭からの時刻です。動画がある場合は${ReplayFiles.VIDEO_FRAMES}のwindow_nsと同じ時計です。")
+                appendLine("- ログ・タップ・frameの各行のt_nsは、保存範囲の先頭からの端末BOOTTIME上の時刻で、すべて同じ時計です。誤差はt_uncertainty_nsです。窓と別のbootの行はt_ns=nullで、元の時刻とboot_segmentだけを持ちます。時刻の基準はreplay.jsonのtimebaseにあります。")
                 appendLine()
                 appendLine("## 注意")
                 appendLine()
@@ -726,10 +731,8 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                 "save_request" to mapOf("content" to capture.request.content, "origin" to capture.request.origin, "video_excluded" to videoExcluded),
                 "auto_trigger" to capture.autoTrigger?.facts,
                 "sequence_id" to capture.sequence, "generation" to capture.generation, "device" to capture.device,
-                "window_clock_epoch" to capture.windowClockEpoch,
-                "window_clock_known" to capture.windowKnown,
+                "timebase" to timebase(capture, windowSegment, videoScopes, ::sampleJson),
                 "application_at_save" to capture.settings.application,
-                "window_start_ns" to capture.start.toString(), "window_end_ns" to capture.end.toString(),
                 "replay_seconds" to capture.seconds, "created_at" to createdAt.toInstant().toString(), "created_at_local" to createdAt.toOffsetDateTime().toString(),
                 "build" to CaptureResources.identity().filterKeys { it in setOf("source", "dirty", "version") },
                 "plugin_id" to "io.github.shinma06.android-replay-buffer",
@@ -747,12 +750,7 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                         mapOf("quality" to it, "max_size" to it.maxSize, "max_fps" to it.maxFps,
                             "video_bit_rate" to it.bitRate, "downsize_on_error" to false)
                     }.takeIf { videoRequested }),
-                "window_end_uncertainty_ns" to capture.endUncertainty.toString(),
-                "clock_samples" to capture.clocks.map { clockJson(it) },
-                "clock_epochs" to (capture.clocks.map { it.epoch } + capture.video.map { it.time.epoch } + capture.logs.map { it.time.epoch } +
-                    capture.touches.map { it.time.epoch } +
-                    capture.gaps.mapNotNull { it.clockEpoch }).distinct().map { id -> mapOf("id" to id,
-                    "has_valid_sample" to capture.clocks.any { it.epoch == id && it.valid }) }, "application_history" to capture.apps.map { appJson(it) },
+                "application_history" to capture.apps.map { appJson(it, segmentOf(it.epoch)) },
                 "coverage" to capture.states.mapValues { (kind, state) -> if (videoExcluded && kind == "video") mapOf("state" to "EXCLUDED",
                     "requested" to false, "excluded" to true, "capture_state" to state.state, "availableSeconds" to 0.0,
                     "reason" to "ログのみの保存として動画を意図的に除外しました（動画の取得は継続しています）") else mapOf("state" to state.state,
@@ -761,9 +759,10 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                     mapOf("state" to "EXCLUDED", "requested" to false, "excluded" to true, "availableSeconds" to 0.0,
                         "reason" to "ログのみの保存として音声を意図的に除外しました（音声の取得は継続しています）")
                     else audioCoverage(capture, audioPlan)),
-                "gaps" to capture.gaps.map { gap -> mapOf("kind" to gap.stream,
-                    "from_ns" to gap.fromNs?.toString(), "to_ns" to gap.toNs?.toString(), "reason" to gap.reason,
-                    "time_axis" to "sequence_ns", "generation" to gap.generation, "clock_epoch" to gap.clockEpoch,
+                // Clock-read outages are described by timebase.clock_steps, not as a lost stream.
+                "gaps" to capture.gaps.filter { it.stream != "clock" }.map { gap -> mapOf("kind" to gap.stream,
+                    "from_t_ns" to windowT(gap.fromNs), "to_t_ns" to windowT(gap.toNs), "reason" to gap.reason,
+                    "generation" to gap.generation, "boot_segment" to segmentOf(gap.clockEpoch),
                     "boundary_uncertainty_ns" to gap.boundaryUncertaintyNs?.toString(),
                     "duration_uncertain" to (gap.fromNs == null || gap.toNs == null || gap.boundaryUncertaintyNs == null || gap.boundaryUncertaintyNs == Long.MAX_VALUE)) },
                 "loss" to losses, "logcat_overflow_count" to null,
@@ -776,11 +775,11 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                     "injected" to capture.injectedTouchState?.let { injected -> mapOf("state" to injected.state, "reason" to injected.reason,
                         "count" to capture.touches.count { it.sample.injected },
                         "gaps" to capture.injectedTouchGaps.filter { (it.to == null || it.to >= capture.start) && (it.from == null || it.from <= capture.end) }
-                            .map { mapOf("from_ns" to it.from?.toString(), "to_ns" to it.to?.toString(), "reason" to it.reason, "time_axis" to "sequence_ns") },
+                            .map { mapOf("from_t_ns" to windowT(it.from), "to_t_ns" to windowT(it.to), "reason" to it.reason) },
                         "time_source" to "InputDispatcher injectInputEvent log eventTime (device CLOCK_MONOTONIC, ms resolution)") },
                     "coordinate_space" to "display_px_natural_orientation", "screen_coordinate_space" to "display_px_current_rotation",
                     "gaps" to capture.touchGaps.filter { (it.to == null || it.to >= capture.start) && (it.from == null || it.from <= capture.end) }
-                        .map { mapOf("from_ns" to it.from?.toString(), "to_ns" to it.to?.toString(), "reason" to it.reason, "time_axis" to "sequence_ns") }) },
+                        .map { mapOf("from_t_ns" to windowT(it.from), "to_t_ns" to windowT(it.to), "reason" to it.reason) }) },
                 "audio_track" to audioPlan?.takeIf { it.samples.isNotEmpty() }?.let { plan -> mapOf("file" to ReplayFiles.VIDEO, "codec" to "AAC-LC",
                     "sample_rate" to plan.sampleRate, "channels" to plan.channels, "source" to "Android playback capture (scrcpy audio_source=playback)",
                     "time_source" to "AudioRecord timestamp (device CLOCK_MONOTONIC), mapped like video PTS onto the movie timeline",
@@ -790,26 +789,19 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                 "video_canvas" to normalizer?.let { mapOf("width" to it.width, "height" to it.height, "colour_known" to it.colourKnown) },
                 "video_movie_duration_us" to parts.lastOrNull()?.get("movie_end_us"),
                 "parts" to parts, "video_run_boundaries" to runBoundaries, "video_missing_ranges" to videoHoles,
-                "video_clock_gap_scopes" to capture.gaps.mapIndexedNotNull { i, gap ->
-                    if (!videoRequested || gap.stream != "clock") null else videoScopes[i].let { scope -> mapOf(
-                        "gap_index" to i, "from_ns" to scope.fromNs?.toString(), "to_ns" to scope.toNs?.toString(),
-                        "boundary_uncertainty_ns" to scope.boundaryUncertaintyNs?.toString(),
-                        "derived_from_valid_samples" to (scope !== gap),
-                        "recovery_sample" to capture.clockRecoveries[gap]?.let(::clockJson)) }
-                },
                 "video_gap_scopes" to capture.gaps.mapIndexedNotNull { i, gap ->
                     if (gap.stream != "video") null else videoScopes[i].let { scope -> mapOf(
-                        "gap_index" to i, "generation" to gap.generation, "clock_epoch" to gap.clockEpoch,
-                        "from_ns" to scope.fromNs?.toString(), "to_ns" to scope.toNs?.toString(),
+                        "gap_index" to i, "generation" to gap.generation, "boot_segment" to segmentOf(gap.clockEpoch),
+                        "from_t_ns" to windowT(scope.fromNs), "to_t_ns" to windowT(scope.toNs),
                         "boundary_uncertainty_ns" to scope.boundaryUncertaintyNs?.toString(),
                         "derived_from_valid_samples" to (scope !== gap),
-                        "before_sample" to videoProofs[gap]?.first?.let(::clockJson),
-                        "after_sample" to videoProofs[gap]?.second?.let(::clockJson)) }
+                        "before_sample" to videoProofs[gap]?.first?.let { sampleJson(it) },
+                        "after_sample" to videoProofs[gap]?.second?.let { sampleJson(it) }) }
                 },
-                "video_tail" to tail?.let { mapOf("from_ns" to it.fromNs?.toString(), "to_ns" to it.toNs?.toString(),
-                    "source_pts_us" to it.sourcePtsUs.toString(), "source_sequence_ns" to it.sourceSequenceNs?.toString(),
-                    "clock_epoch" to it.clockEpoch, "generation" to it.generation, "display_held" to it.displayHeld,
-                    "time_axis" to "sequence_ns", "new_frame_confirmed" to false) }, "files_sha256" to hashes)
+                "video_tail" to tail?.let { mapOf("from_t_ns" to windowT(it.fromNs), "to_t_ns" to windowT(it.toNs),
+                    "source_pts_us" to it.sourcePtsUs.toString(), "source_t_ns" to windowT(it.sourceSequenceNs),
+                    "boot_segment" to segmentOf(it.clockEpoch), "generation" to it.generation, "display_held" to it.displayHeld,
+                    "new_frame_confirmed" to false) }, "files_sha256" to hashes)
             writer(file(ReplayFiles.RECORD)).use { it.write(gson.toJson(manifest)) }
             own.forEach { (path, output) -> checkActive(); checkOwned(path); output.channel().use { ch -> ch.force(true) }; checkActive() }
             checkSpace()
@@ -865,16 +857,59 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
         return result.array()
     }
 
-    private fun clockJson(c: ClockSample): Map<String, Any?> = mapOf("epoch" to c.epoch, "boot" to c.boot,
+    /** Only the window's boot has exact `t_ns`; another boot keeps its own BOOTTIME reads and no window position. */
+    private fun clockJson(c: ClockSample, start: Long, windowSegment: Int?): Map<String, Any?> = mapOf(
+        "boot_segment" to c.segment, "boot" to c.boot,
         "elapsed_before_ns" to c.before.toString(), "mono_ns" to c.mono.toString(), "epoch_ns" to c.wall.toString(),
         "elapsed_after_ns" to c.after.toString(), "host_sent_ns" to c.sent.toString(), "host_received_ns" to c.received.toString(),
-        "read_uncertainty_ns" to c.readError.toString(), "sequence_offset_ns" to c.sequenceOffset?.toString(),
-        "bridge_uncertainty_ns" to c.bridgeError.toString(), "valid" to c.valid,
-        "host_anchored" to c.hostAnchored)
+        "t_ns" to if (c.segment == windowSegment) (c.elapsed + c.sequenceOffset - start).toString() else null,
+        "read_uncertainty_ns" to c.readError.toString(), "valid" to c.valid, "host_anchored" to c.hostAnchored)
 
-    private fun appJson(a: AppPeriod): Map<String, Any?> = mapOf("package" to a.packageName, "uid" to a.uid,
+    /**
+     * The saved time axis: device BOOTTIME of the window's boot, as ns from the window start. Boot segments and the
+     * regions where source times cannot be converted (clock steps, reboots, unresolved read outages) explain null `t_ns`.
+     */
+    private fun timebase(capture: FrozenCapture, windowSegment: Int?, scopes: List<CaptureGap>,
+                         clockJson: (ClockSample) -> Map<String, Any?>): Map<String, Any?> {
+        fun t(sequence: Long?): String? = sequence?.let { (it - capture.start).toString() }
+        val anchor = capture.clocks.lastOrNull { it.segment == windowSegment }
+        val steps = mutableListOf<Pair<Long?, Map<String, Any?>>>()
+        capture.clocks.filter { it.valid }.zipWithNext().filter { (a, b) -> a.epoch != b.epoch }.forEach { (a, b) ->
+            val reboot = a.segment != b.segment
+            val from = a.elapsed + a.sequenceOffset
+            steps += from to mapOf("kind" to if (reboot) "reboot" else "clock_step", "from_t_ns" to t(from),
+                "to_t_ns" to t(b.elapsed + b.sequenceOffset),
+                "boundary_uncertainty_ns" to if (reboot) Long.MAX_VALUE.toString() else maxOf(a.readError, b.readError).toString(),
+                "duration_uncertain" to (reboot || a.segment != windowSegment),
+                "before_sample" to clockJson(a), "after_sample" to clockJson(b))
+        }
+        capture.gaps.forEachIndexed { i, gap ->
+            if (gap.stream != "clock" || gap.resolvedClock(capture.clockRecoveries)) return@forEachIndexed
+            val scope = scopes[i]
+            steps += scope.fromNs to mapOf("kind" to "unmeasured", "from_t_ns" to t(scope.fromNs), "to_t_ns" to t(scope.toNs),
+                "reason" to gap.reason, "boundary_uncertainty_ns" to scope.boundaryUncertaintyNs?.toString(),
+                "duration_uncertain" to (scope.fromNs == null || scope.toNs == null || scope.boundaryUncertaintyNs == null ||
+                    scope.boundaryUncertaintyNs == Long.MAX_VALUE),
+                "derived_from_valid_samples" to (scope !== gap),
+                "recovery_sample" to capture.clockRecoveries[gap]?.let(clockJson))
+        }
+        return mapOf("domain" to "device_boottime", "t_origin" to "window_start", "known" to capture.windowKnown,
+            "boot_segment" to windowSegment, "boot" to anchor?.boot,
+            "window_start_elapsed_ns" to anchor?.takeIf { capture.windowKnown }?.let { (capture.start - it.sequenceOffset).toString() },
+            "window_duration_ns" to (capture.end - capture.start).toString(),
+            "window_end_uncertainty_ns" to capture.endUncertainty.toString(),
+            "boot_segments" to capture.clocks.groupBy { it.segment }.map { (segment, samples) -> mapOf(
+                "boot_segment" to segment, "boot" to samples.first().boot,
+                "placement" to if (segment == windowSegment) "exact" else "approximate",
+                "first_sample_t_ns" to t(samples.first().elapsed + samples.first().sequenceOffset),
+                "last_sample_t_ns" to t(samples.last().elapsed + samples.last().sequenceOffset)) },
+            "clock_steps" to steps.sortedWith(compareBy(nullsFirst()) { it.first }).map { it.second },
+            "samples" to capture.clocks.map(clockJson))
+    }
+
+    private fun appJson(a: AppPeriod, segment: Int?): Map<String, Any?> = mapOf("package" to a.packageName, "uid" to a.uid,
         "pids" to a.pids, "uid_exclusive" to a.uidExclusive, "from_elapsed_ns" to a.from?.toString(), "to_elapsed_ns" to a.to?.toString(),
-        "to_elapsed_unknown" to a.endUnknown, "clock_epoch" to a.epoch)
+        "to_elapsed_unknown" to a.endUnknown, "boot_segment" to segment)
 }
 
 /** Playback proof is captured at acquisition; clock quality never authorizes source adjacency. */
