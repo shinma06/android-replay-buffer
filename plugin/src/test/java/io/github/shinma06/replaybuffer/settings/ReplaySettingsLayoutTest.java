@@ -46,6 +46,7 @@ class ReplaySettingsLayoutTest {
                     var saved = new ReplaySettingsState(false, 180, destination, AppSelectionMode.AUTOMATIC, "", CaptureMode.VIDEO_AND_LOGS, false, true, "", VideoQuality.STANDARD);
                     store.loadState(saved);
                     var configurable = new ReplaySettingsConfigurable(project);
+                    assertTrue(configurable instanceof com.intellij.openapi.options.Configurable.NoScroll);
                     try {
                         var form = SettingsFormTestSupport.createForm(configurable);
                         configurable.reset();

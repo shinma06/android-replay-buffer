@@ -154,8 +154,12 @@ internal class SettingsForm(val launcher: String?) {
     }
 }
 
-/** Owns an EDT form draft; only Apply persists it, and async checks are bound to form identity and revision. */
-class ReplaySettingsConfigurable(private val project: Project) : Configurable {
+/**
+ * Owns an EDT form draft; only Apply persists it, and async checks are bound to form identity and revision.
+ * [Configurable.NoScroll]: the Compose content scrolls itself, and a Settings scroll pane around a Compose panel
+ * asks it for an unbounded preferred size that Compose cannot measure.
+ */
+class ReplaySettingsConfigurable(private val project: Project) : Configurable, Configurable.NoScroll {
     private var form: SettingsForm? = null
     private var screenshotValidation: DestinationValidation? = null
     private var screenshotValidationJob: Job? = null
