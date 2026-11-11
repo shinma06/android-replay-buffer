@@ -24,10 +24,13 @@
 | 項目 | 確認方法 | 合格の条件 |
 |---|---|---|
 | 読み込み | `idea.log` | `Loaded custom plugins` に配布ZIPの版が出る |
-| ToolWindow | Find Actionで「Android Replay Buffer」を開く | 状態と操作ボタンが日本語で表示される |
+| ToolWindow | Find Actionで「Android Replay Buffer」を開く | 1行目に `記号 取得状態 · 端末 · package` と右端の「取得」、その下に「直前N秒を保存」「スクリーンショット」「Logcatを開く」、畳んだ「詳細」、「設定…」が日本語で表示される（配置は[GUIの情報設計](../design/ui-ux.md)） |
+| 取得ON/OFF | ToolWindow右上の「取得」を切り替える | 見出しの記号・色・文字が取得中と無効で変わる。保存できない間だけ、ボタンの下に理由が1行出る |
+| Logcat | 「Logcatを開く」「Logcatを閉じる」 | IDE標準のLogcatが開閉し、ボタン名が次の操作に変わる |
+| 設定 | 「設定…」から開き、値を変えて「適用」と「キャンセル」 | 基本・記録する内容・スクリーンショットの保存先・クラッシュ時の自動保存の順に並ぶ。適用で反映し、キャンセルでは変わらない |
 | 取得ON・端末 | `bin/replay --project <dir> daemon` のあと `status` | `capture_state` が `CAPTURING`、`device_serial` がエミュレータ |
 | 保存（CLI） | `bin/replay --project <dir> save` | 終了コード0。出力フォルダにMP4・`logcat-device.jsonl`・`logcat-app.jsonl`・`session.json`・`README.txt` |
-| 保存（GUI） | ToolWindowの「直前180秒を保存」 | 新しい保存フォルダが同じ構成でできる |
+| 保存（GUI） | ToolWindowの「直前180秒を保存」 | 新しい保存フォルダが同じ構成でできる。直近の結果に `保存しました <時刻>` と「フォルダを開く」が出る |
 | 動画 | `ffprobe` | H.264で、長さが0より大きい |
 | スクリーンショット | ToolWindowの「スクリーンショット」 | 保存先にPNGができる |
 

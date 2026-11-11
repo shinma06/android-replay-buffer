@@ -36,6 +36,9 @@ internal class LogcatToolWindowButton(
     /** A selection on a window shown first failed; keep its reason while that window stays visible. */
     private var shownFailure = false
 
+    /** A failed selection is kept in the tooltip; the ToolWindow shows it under the button too. */
+    internal val failed: Boolean get() = failure != null
+
     init {
         addActionListener {
             if (pending != null) {

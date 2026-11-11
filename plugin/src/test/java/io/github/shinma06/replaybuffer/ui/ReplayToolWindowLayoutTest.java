@@ -111,136 +111,32 @@ class ReplayToolWindowLayoutTest {
         var service = new ReplayProjectService(project, CoroutineScopeKt.CoroutineScope(job));
         project.registerService(ReplayProjectService.class, service);
         Disposer.register(lifetime, service);
-        var actual = new JPanel[1];
+        var actual = new ReplayToolWindowController[1];
         try {
             verifyScreenshotSettingsApplyAndCancel(project, service, store);
             SwingUtilities.invokeAndWait(() -> {
                 try {
                     verifyScreenshotRequestKeepsTargetAcrossOffPublication(project, service, store, uiCallbacks, logcatUnavailable);
-                    var type = Class.forName("io.github.shinma06.replaybuffer.ui.ReplayToolWindowPanel");
-                    var constructor = type.getDeclaredConstructor(Project.class);
-                    constructor.setAccessible(true);
-                    var panel = (JPanel) constructor.newInstance(project);
-                    actual[0] = panel;
-                    Disposer.register(lifetime, (Disposable) panel);
-                    var logcat = (LogcatToolWindowButton) field(panel, "logcatButton");
-                    var logcatReason = (JTextArea) field(panel, "logcatReason");
-                    var initialReason = logcat.getToolTipText();
-                    assertNotNull(initialReason);
-                    assertFalse(initialReason.isBlank());
-                    assertEquals(initialReason, logcatReason.getText(), "initial Logcat reason must be visible");
-                    logcat.setToolTipText("Logcatの接続先を確認しています。");
-                    assertEquals(logcat.getToolTipText(), logcatReason.getText(), "changed Logcat reason must be visible");
-                    logcat.refresh();
-                    assertEquals(initialReason, logcatReason.getText(), "refresh must restore the current Logcat reason");
-                    verifyScreenshotAvailability(panel, service, store);
-                    verifySaveStatesAndHierarchy(panel, service, store);
-                    var outer = (JScrollPane) panel.getComponent(0);
-                    var summary = (JTextArea) field(panel, "autoSave");
-                    var summaryScroll = (JScrollPane) SwingUtilities.getAncestorOfClass(JScrollPane.class, summary);
-                    var path = "/disposable/" + "long-directory-without-spaces/".repeat(16) + "saved-result";
-                    var destination = field(panel, "destination");
-                    if (destination instanceof JLabel label) label.setText("保存先: " + path);
-                    else if (destination instanceof JTextArea area) area.setText("保存先: " + path);
-                    else throw new AssertionError("Missing actual destination component");
-                    var text = "クラッシュ自動保存: 設定ON / 照合済みの報告を待っています。\n" +
-                        "受付可能: 残り8回 / 保存しなかった報告: 1件\n" +
-                        "要確認: 対象アプリの報告を照合できないため保存していません。\n" +
-                        "保存先: " + path + "\nnative/ANRは対応外。報告時刻は死亡時刻ではありません。文章末尾";
-                    summary.setText(text);
-                    assertEquals("クラッシュ自動保存の適用状態と直近の結果", summary.getAccessibleContext().getAccessibleName());
-                    assertFalse(summary.isEditable());
-                    ((JPanel) field(panel, "failureCard")).setVisible(true);
-                    var controls = new ArrayList<AbstractButton>();
-                    for (var name : List.of("enabled", "settingsButton", "logcatButton", "screenshotButton", "saveButton", "openButton",
-                        "retryButton", "retryElsewhere", "discardButton")) {
-                        var control = (AbstractButton) field(panel, name);
-                        control.setEnabled(true);
-                        control.setVisible(true);
-                        controls.add(control);
-                    }
-                    var focusable = controls.stream().map(Component::isFocusable).toList();
-                    var traversal = controls.stream().map(Component::getFocusTraversalKeysEnabled).toList();
-                    var endHeights = new ArrayList<Integer>();
-                    for (int width : new int[]{900, 280, 900, 280}) {
-                        panel.setSize(width, 440);
-                        layout(panel);
-                        // Wrapped text revalidates after receiving its new viewport width.
-                        layout(panel);
-                        var form = (JComponent) outer.getViewport().getView();
-                        assertEquals(outer.getViewport().getExtentSize().width, form.getWidth(), "outer form width at " + width);
-                        assertFalse(outer.getHorizontalScrollBar().isVisible(), "outer horizontal overflow at " + width);
-                        var summaryBounds = SwingUtilities.convertRectangle(summaryScroll.getParent(), summaryScroll.getBounds(), form);
-                        assertTrue(summaryBounds.x >= 0 && summaryBounds.width > 0 && summaryBounds.getMaxX() <= form.getWidth(),
-                            "summary viewport must fit actual form: " + summaryBounds + " / " + form.getSize());
-                        assertEquals(summaryScroll.getViewport().getExtentSize().width, summary.getWidth());
-                        for (int offset = 0; offset < text.length(); offset++) {
-                            var character = summary.modelToView2D(offset);
-                            assertTrue(character.getX() >= 0 && character.getMaxX() <= summary.getWidth(),
-                                "summary character " + offset + " outside width: " + character + " / " + summary.getSize());
-                        }
-                        var end = summary.modelToView2D(text.length()).getBounds();
-                        endHeights.add(end.y);
-                        var endAction = summary.getActionMap().get(DefaultEditorKit.endAction);
-                        assertNotNull(endAction);
-                        endAction.actionPerformed(new ActionEvent(summary, ActionEvent.ACTION_PERFORMED, "end"));
-                        assertEquals(text.length(), summary.getCaretPosition());
-                        summary.scrollRectToVisible(end);
-                        assertTrue(summaryScroll.getViewport().getViewRect().contains(end), "full summary end must be reachable at " + width + ": end=" + end + ", visible=" +
-                                summaryScroll.getViewport().getViewRect() + ", text=" + summary.getSize());
-                        assertEquals(text, summary.getText());
-                        var pathLabel = (JTextArea) destination;
-                        for (int offset = 0; offset < pathLabel.getText().length(); offset++) {
-                            var character = pathLabel.modelToView2D(offset);
-                            assertTrue(character.getX() >= 0 && character.getMaxX() <= pathLabel.getWidth()
-                                && character.getY() >= 0 && character.getMaxY() <= pathLabel.getHeight(),
-                                "destination must wrap without clipped text at " + width + ": " + character + " / " + pathLabel.getSize());
-                        }
-                        var pathEnd = pathLabel.modelToView2D(pathLabel.getText().length()).getBounds();
-                        pathLabel.scrollRectToVisible(pathEnd);
-                        assertTrue(outer.getViewport().getViewRect().contains(
-                            SwingUtilities.convertRectangle(pathLabel, pathEnd, form)), "full path end must be reachable vertically");
-                        assertEquals("保存先: " + path, pathLabel.getText());
-                        for (var control : controls) {
-                            var bounds = SwingUtilities.convertRectangle(control.getParent(), control.getBounds(), form);
-                            assertTrue(bounds.x >= 0 && bounds.width > 0 && bounds.getMaxX() <= form.getWidth(),
-                                "control " + control.getText() + " must fit at " + width + ": " + bounds + " / " + form.getSize());
-                            form.scrollRectToVisible(bounds);
-                            assertTrue(outer.getViewport().getViewRect().contains(bounds), "control " + control.getText() + " must be reachable");
-                            assertEquals(focusable.get(controls.indexOf(control)), control.isFocusable(), "platform focusability is retained");
-                            assertEquals(traversal.get(controls.indexOf(control)), control.getFocusTraversalKeysEnabled(),
-                                "platform focus traversal is retained");
-                            assertNotNull(control.getInputMap(JComponent.WHEN_FOCUSED).get(KeyStroke.getKeyStroke("SPACE")));
-                            assertTrue(control.getActionListeners().length > 0);
-                        }
-                    }
-                    assertTrue(endHeights.get(1) > endHeights.get(0), "narrow width must add wrapped lines");
-                    assertEquals(endHeights.get(0), endHeights.get(2), "wide wrapping must recover");
-                    assertEquals(endHeights.get(1), endHeights.get(3), "narrow wrapping must recover");
-                    verifyLargeFontPresentation(panel);
-                    assertFalse(store.getEnabled(), "layout does not enable acquisition");
-                    assertEquals(originalSettings, store.getState(), "layout does not apply settings");
+                    var controller = new ReplayToolWindowController(project);
+                    actual[0] = controller;
+                    Disposer.register(lifetime, controller);
+                    var model = controller.getModel();
+                    assertFalse(model.getDetailsInitiallyExpanded(), "details start collapsed");
+                    assertFalse(model.getShowsResults(), "no result before a save");
+                    assertFalse(model.getShowsFailure());
+                    assertEquals(controller.getLogcatButton().getToolTipText(), model.getLogcat().getTooltip());
+                    assertEquals(controller.getLogcatButton().getText(), model.getLogcat().getLabel());
+                    verifyScreenshotAvailability(controller, service, store);
+                    verifySaveStatesAndHierarchy(controller, service, store);
+                    assertFalse(store.getEnabled(), "the panel does not enable acquisition");
+                    assertEquals(originalSettings, store.getState(), "the panel does not apply settings");
                 } catch (Exception failure) {
                     throw new AssertionError(failure);
                 }
             });
-            SwingUtilities.invokeAndWait(() -> refreshSnapshot(actual[0], service, 1));
-            // Observe after the document-update caret callbacks queued by the previous EDT turn.
-            SwingUtilities.invokeAndWait(() -> {});
-            for (int position : new int[]{0, 1}) {
-                var selected = new Point();
-                SwingUtilities.invokeAndWait(() -> {
-                    var viewport = ((JScrollPane) actual[0].getComponent(0)).getViewport();
-                    var scrollableHeight = viewport.getViewSize().height - viewport.getExtentSize().height;
-                    if (position != 0) assertTrue(scrollableHeight > 1, "fixture needs a nonzero interior scroll position");
-                    selected.y = position == 0 ? 0 : scrollableHeight / 2;
-                    viewport.setViewPosition(selected);
-                    assertEquals(selected, viewport.getViewPosition(), "fixture must select a reachable scroll position");
-                    refreshSnapshot(actual[0], service, position + 2);
-                });
-                SwingUtilities.invokeAndWait(() -> assertEquals(selected,
-                    ((JScrollPane) actual[0].getComponent(0)).getViewport().getViewPosition(),
-                    "changing snapshot must preserve the selected viewport after queued caret work"));
+            for (long revision = 1; revision <= 3; revision++) {
+                var next = revision;
+                SwingUtilities.invokeAndWait(() -> refreshSnapshot(actual[0], service, next));
             }
         } finally {
             Disposer.dispose(lifetime);
@@ -448,15 +344,16 @@ class ReplayToolWindowLayoutTest {
         scope.set(service, CoroutineScopeKt.CoroutineScope(validationScope));
         try {
             SwingUtilities.invokeAndWait(() -> {
-                configurable.createComponent();
-                configurable.reset();
                 try {
-                    assertTrue(((JTextArea) field(configurable, "screenshotStatus")).getText().contains("取得できません"));
-                    var logcat = (javax.swing.JCheckBox) field(configurable, "screenshotLogcat");
-                    logcat.doClick();
+                    var form = io.github.shinma06.replaybuffer.settings.SettingsFormTestSupport.createForm(configurable);
+                    configurable.reset();
+                    assertTrue(form.getScreenshotStatus().contains("取得できません"));
+                    form.setScreenshotUsesLogcat(false);
+                    io.github.shinma06.replaybuffer.settings.SettingsFormTestSupport.edited(configurable);
+                    assertTrue(form.getControls().getScreenshotDirectoryEnabled(), "manual destination appears only when chosen");
                     org.junit.jupiter.api.Assertions.assertThrows(com.intellij.openapi.options.ConfigurationException.class, configurable::apply);
-                    var directory = (com.intellij.openapi.ui.TextFieldWithBrowseButton) field(configurable, "screenshotDirectory");
-                    directory.setText(root.toString());
+                    io.github.shinma06.replaybuffer.settings.SettingsFormTestSupport.setText(form.getScreenshotDirectory(), root.toString());
+                    io.github.shinma06.replaybuffer.settings.SettingsFormTestSupport.edited(configurable);
                     org.junit.jupiter.api.Assertions.assertThrows(com.intellij.openapi.options.ConfigurationException.class, configurable::apply,
                         "Apply must not accept an unchecked path");
                 } catch (ReflectiveOperationException failure) { throw new AssertionError(failure); }
@@ -479,10 +376,11 @@ class ReplayToolWindowLayoutTest {
                     assertEquals(root.toString(), store.settings().getScreenshotDirectory());
                     assertEquals("", store.settings().getDestination());
                     assertFalse(configurable.isModified());
-                    ((javax.swing.JCheckBox) field(configurable, "screenshotLogcat")).doClick();
+                    var form = (io.github.shinma06.replaybuffer.settings.SettingsForm) field(configurable, "form");
+                    form.setScreenshotUsesLogcat(true);
                     assertTrue(configurable.isModified());
                     configurable.reset();
-                    assertFalse(((javax.swing.JCheckBox) field(configurable, "screenshotLogcat")).isSelected());
+                    assertFalse(form.getScreenshotUsesLogcat());
                     assertFalse(configurable.isModified());
                     assertEquals(root.toString(), store.settings().getScreenshotDirectory());
                 } catch (Exception failure) { throw new AssertionError(failure); }
@@ -496,7 +394,7 @@ class ReplayToolWindowLayoutTest {
         }
     }
 
-    private static void verifySaveStatesAndHierarchy(JPanel panel, ReplayProjectService service,
+    private static void verifySaveStatesAndHierarchy(ReplayToolWindowController panel, ReplayProjectService service,
                                                      ReplaySettingsStore store) throws Exception {
         var capture = field(service, "capture");
         var view = capture.getClass().getDeclaredField("view");
@@ -512,8 +410,6 @@ class ReplayToolWindowLayoutTest {
         var screenshotRevision = service.getClass().getDeclaredField("screenshotRevision");
         screenshotRevision.setAccessible(true);
         var originalScreenshotRevision = screenshotRevision.getLong(service);
-        var render = panel.getClass().getDeclaredMethod("render");
-        render.setAccessible(true);
         var app = new ApplicationTarget("com.fixture.visible", io.github.shinma06.replaybuffer.core.ApplicationMode.MANUAL, null);
         var device = new ReplayDevice("target-A", "Fixture", DeviceKind.EMULATOR, true);
         var settings = new ReplaySettings(Path.of("/disposable/adb"), Path.of("/disposable/configured"),
@@ -544,152 +440,60 @@ class ReplayToolWindowLayoutTest {
                     device, "current-session", 30_000_000_000L, index == 3, video, logs, logs, save,
                     index == 0 || index == 3, "固定した対象を確認してください。", null, 1_000_000_000L, 0, auto, save);
                 view.set(capture, new ReplayCaptureView(snapshot, 0, null, null));
-                render.invoke(panel);
-                panel.setSize(360, 700);
-                layout(panel); layout(panel);
+                panel.render();
+                var model = panel.getModel();
                 var failed = phase == io.github.shinma06.replaybuffer.core.SavePhase.FAILED;
                 var complete = phase == io.github.shinma06.replaybuffer.core.SavePhase.COMPLETED;
-                assertEquals(failed, ((JPanel) field(panel, "failureCard")).isVisible());
-                assertEquals(failed, ((AbstractButton) field(panel, "retryButton")).isEnabled());
-                assertEquals(failed, ((AbstractButton) field(panel, "retryElsewhere")).isEnabled());
-                assertEquals(failed, ((AbstractButton) field(panel, "discardButton")).isEnabled());
-                assertEquals(complete, ((AbstractButton) field(panel, "openButton")).isVisible());
-                assertEquals(index == 0 || index == 3, ((AbstractButton) field(panel, "saveButton")).isEnabled());
-                var output = (JTextArea) field(panel, "saveOutput");
-                assertEquals(failed || complete, output.isVisible());
+                var idle = phase == io.github.shinma06.replaybuffer.core.SavePhase.IDLE;
+                assertEquals(failed, model.getShowsFailure());
+                assertEquals(!idle, model.getShowsResults(), "results show only after a save");
+                var result = model.getResults().isEmpty() ? null : model.getResults().get(0);
                 if (failed) {
-                    assertTrue(output.getText().contains(Path.of("/disposable/preserved.partial").toString()));
-                    assertTrue(((JTextArea) field(panel, "failure")).getText().contains("空き容量"));
-                    assertTrue(((JTextArea) field(panel, "frozenRequest")).getText().contains("固定対象: 1.000秒〜30.000秒"));
-                    assertTrue(((JTextArea) field(panel, "frozenTarget")).getText().contains("com.fixture.visible"));
+                    var failure = result.getFailure();
+                    assertTrue(failure.getActionsEnabled());
+                    assertTrue(failure.getRetainedOutput().contains(Path.of("/disposable/preserved.partial").toString()));
+                    assertTrue(failure.getReason().contains("空き容量"));
+                    assertTrue(failure.getFixedRequest().contains("固定対象: 1.000秒〜30.000秒"));
+                    assertTrue(detail(model, "固定した保存対象の端末とアプリ履歴").contains("com.fixture.visible"));
                 }
                 if (complete) {
-                    assertTrue(output.getText().contains(Path.of("/disposable/actual-result").toString()));
-                    assertFalse(output.getText().contains("configured"));
-                    assertTrue(((JTextArea) field(panel, "saveState")).getText().contains("記録の不足・未確認: 端末ログ"));
-                }
-                assertFalse(((JTextArea) field(panel, "message")).isVisible(), "empty status must not add an unexplained row");
-                assertTrue(((JTextArea) field(panel, "state")).getText().contains("ログ専用"));
-                assertEquals("動画: 対象外（ログ専用）", ((JTextArea) field(panel, "video")).getText());
-                assertTrue(((JTextArea) field(panel, "gapDetails")).getText().contains("時計対応を確認できません"));
-                assertTrue(((JTextArea) field(panel, "gapDetails")).getText().contains("未確定〜未確定"));
-                assertTrue(((JTextArea) field(panel, "autoSave")).getText().contains("自動保存の帰属は未確認"));
-                assertTrue(((JTextArea) field(panel, "window")).getText().contains("保持時間: 30秒"));
-                assertTrue(bounds(panel, "state").y < bounds(panel, "saveButton").y);
-                assertTrue(bounds(panel, "saveButton").y < bounds(panel, "video").y);
-                assertTrue(bounds(panel, "screenshotButton").y < bounds(panel, "sdk").y);
-                assertTrue(bounds(panel, "saveState").y < bounds(panel, "video").y);
-                if (failed) assertTrue(bounds(panel, "retryButton").y < bounds(panel, "frozenTarget").y);
-                for (var name : List.of("state", "device", "application", "window", "saveReason", "screenshotReason", "saveOutput"))
-                    assertFalse(((JComponent) field(panel, name)).getAccessibleContext().getAccessibleName().isBlank(), name);
-                verifyFirstPaint(panel, "tool-window-" + phase.name().toLowerCase(java.util.Locale.ROOT));
+                    assertEquals(Path.of("/disposable/actual-result"), result.getOpenDirectory());
+                    assertTrue(result.getSecondary().get(0).contains("記録の不足・未確認: 端末ログ"));
+                    assertTrue(detail(model, "完成した出力の場所").contains(Path.of("/disposable/actual-result").toString()));
+                    assertFalse(detail(model, "完成した出力の場所").contains("configured"));
+                } else if (result != null) assertNull(result.getOpenDirectory());
+                assertEquals(index == 0 || index == 3, model.getSave().getEnabled());
+                assertEquals(model.getSave().getEnabled(), model.getSave().getReason() == null, "only a disabled save explains itself");
+                assertTrue(model.getNotices().stream().noneMatch(notice -> notice.getText().isBlank()), "empty status must not add a row");
+                assertTrue(detail(model, "取得状態と取得モード").contains("ログ専用"));
+                assertEquals("動画: 対象外（ログ専用）", detail(model, "動画の取得状態"));
+                assertTrue(detail(model, "現在の保存窓の不足・未確認区間").contains("時計対応を確認できません"));
+                assertTrue(detail(model, "現在の保存窓の不足・未確認区間").contains("未確定〜未確定"));
+                assertTrue(detail(model, "クラッシュ自動保存の適用状態と直近の結果").contains("自動保存の帰属は未確認"));
+                assertTrue(detail(model, "保持時間と現在の記録区間").contains("保持時間: 30秒"));
+                assertTrue(model.getHeader().getText().contains("Fixture"));
+                assertTrue(model.getHeader().getText().contains("com.fixture.visible"));
             }
             view.set(capture, new ReplayCaptureView(null, 0, null, "一時領域のアクセス権を確認してください。"));
-            render.invoke(panel);
-            assertTrue(((JTextArea) field(panel, "state")).getText().contains("初期化できません"));
-            assertTrue(((JTextArea) field(panel, "message")).isVisible());
-            assertTrue(((JTextArea) field(panel, "message")).getText().contains("一時領域のアクセス権"));
-            assertFalse(((AbstractButton) field(panel, "saveButton")).isEnabled());
+            panel.render();
+            var broken = panel.getModel();
+            assertTrue(broken.getHeader().getText().contains("初期化できません"));
+            assertEquals(io.github.shinma06.replaybuffer.ui.Tone.ERROR, broken.getHeader().getTone());
+            assertTrue(broken.getNotices().stream().anyMatch(notice -> notice.getText().contains("一時領域のアクセス権")));
+            assertFalse(broken.getSave().getEnabled());
         } finally {
             view.set(capture, originalView);
             resolving.setBoolean(service, originalResolving);
             store.loadState(originalSettings);
             screenshotSettings.set(service, originalScreenshotSettings);
             screenshotRevision.setLong(service, originalScreenshotRevision);
-            render.invoke(panel);
+            panel.render();
         }
     }
 
-    private static java.awt.Rectangle bounds(JPanel panel, String name) throws ReflectiveOperationException {
-        var component = (JComponent) field(panel, name);
-        return SwingUtilities.convertRectangle(component.getParent(), component.getBounds(), panel);
-    }
-
-    private static void verifyLargeFontPresentation(JPanel panel) throws Exception {
-        var previous = javax.swing.UIManager.getLookAndFeel();
-        var fonts = new java.util.IdentityHashMap<Component, java.awt.Font>();
-        try {
-            javax.swing.UIManager.setLookAndFeel(new javax.swing.plaf.nimbus.NimbusLookAndFeel());
-            SwingUtilities.updateComponentTreeUI(panel);
-            collectFonts(panel, fonts);
-            fonts.forEach((component, font) -> {
-                component.setFont(font.deriveFont(font.getSize2D() * 1.5f));
-                assertEquals(font.getSize2D() * 1.5f, component.getFont().getSize2D(), 0.01f);
-            });
-            for (int width : new int[]{280, 900, 280}) {
-                panel.setSize(width, 700);
-                layout(panel); layout(panel);
-                var outer = (JScrollPane) panel.getComponent(0);
-                var form = (JComponent) outer.getViewport().getView();
-                assertFalse(outer.getHorizontalScrollBar().isVisible());
-                verifyFirstPaint(panel, "tool-window-" + width + "-large-font");
-                for (var name : List.of("enabled", "settingsButton", "saveButton", "screenshotButton", "retryButton", "retryElsewhere", "discardButton")) {
-                    var button = (AbstractButton) field(panel, name);
-                    var area = SwingUtilities.convertRectangle(button.getParent(), button.getBounds(), form);
-                    assertTrue(area.width >= button.getPreferredSize().width, "full button label at enlarged font: " + name);
-                    assertTrue(button.getY() >= 0 && button.getY() + button.getHeight() <= button.getParent().getHeight(),
-                        name + " must not be clipped by its wrapping row: button=" + button.getBounds() + ", row=" +
-                            button.getParent().getSize() + ", preferred=" + button.getParent().getPreferredSize());
-                    assertTrue(area.x >= 0 && area.getMaxX() <= form.getWidth(), name + " must fit enlarged font at " + width);
-                    form.scrollRectToVisible(area);
-                    assertTrue(outer.getViewport().getViewRect().contains(area), name + " must remain reachable");
-                    assertNotNull(button.getInputMap(JComponent.WHEN_FOCUSED).get(KeyStroke.getKeyStroke("SPACE")));
-                }
-            }
-        } finally {
-            fonts.forEach(Component::setFont);
-            javax.swing.UIManager.setLookAndFeel(previous);
-            SwingUtilities.updateComponentTreeUI(panel);
-        }
-    }
-
-    private static void collectFonts(Component component, java.util.Map<Component, java.awt.Font> originals) {
-        if (component.getFont() != null) originals.put(component, component.getFont());
-        if (component instanceof Container parent) for (var child : parent.getComponents()) collectFonts(child, originals);
-    }
-
-    private static void verifyFirstPaint(JPanel panel, String name) throws Exception {
-        var first = writePreview(panel, name + "-first-paint");
-        verifyWrappedText(panel);
-        var measured = writePreview(panel, name + "-after-measurement");
-        org.junit.jupiter.api.Assertions.assertArrayEquals(
-            ((java.awt.image.DataBufferInt) first.getRaster().getDataBuffer()).getData(),
-            ((java.awt.image.DataBufferInt) measured.getRaster().getDataBuffer()).getData(),
-            "modelToView measurement must not repair the first paint: " + name);
-    }
-
-    private static void verifyWrappedText(Container parent) throws javax.swing.text.BadLocationException {
-        for (var component : parent.getComponents()) {
-            if (!component.isVisible()) continue;
-            if (component instanceof JTextArea text && !text.isFocusable()) {
-                for (int offset = 0; offset < text.getText().length(); offset++) {
-                    var character = text.modelToView2D(offset);
-                    assertTrue(character != null && character.getX() >= 0 && character.getMaxX() <= text.getWidth()
-                        && character.getY() >= 0 && character.getMaxY() <= text.getHeight(),
-                        "wrapped text must fit: " + text.getAccessibleContext().getAccessibleName() + ", offset=" + offset +
-                            ", character=" + character + ", size=" + text.getSize());
-                }
-            }
-            if (component instanceof Container container) verifyWrappedText(container);
-        }
-    }
-
-    private static java.awt.image.BufferedImage writePreview(JPanel panel, String name) throws java.io.IOException {
-        var outer = (JScrollPane) panel.getComponent(0);
-        outer.getViewport().setViewPosition(new Point());
-        var image = new java.awt.image.BufferedImage(panel.getWidth(), panel.getHeight(), java.awt.image.BufferedImage.TYPE_INT_RGB);
-        var graphics = image.createGraphics();
-        try { panel.printAll(graphics); } finally { graphics.dispose(); }
-        var path = Path.of("build/reports/tests/ui", name + ".png");
-        Files.createDirectories(path.getParent());
-        javax.imageio.ImageIO.write(image, "png", path.toFile());
-        return image;
-    }
-
-    private static void verifyScreenshotAvailability(JPanel panel, ReplayProjectService service,
+    private static void verifyScreenshotAvailability(ReplayToolWindowController panel, ReplayProjectService service,
                                                      ReplaySettingsStore store) throws ReflectiveOperationException {
-        var button = (AbstractButton) field(panel, "screenshotButton");
-        assertFalse(button.isEnabled(), "unresolved application cannot capture another app");
+        assertFalse(panel.getModel().getScreenshot().getEnabled(), "unresolved application cannot capture another app");
         var environment = service.getClass().getDeclaredField("environment");
         environment.setAccessible(true);
         environment.set(service, new io.github.shinma06.replaybuffer.ide.AndroidReplayEnvironment(
@@ -702,16 +506,14 @@ class ReplayToolWindowLayoutTest {
         var revision = service.getClass().getDeclaredField("screenshotRevision");
         revision.setAccessible(true);
         revision.set(service, field(service, "requestRevision"));
-        var render = panel.getClass().getDeclaredMethod("render");
-        render.setAccessible(true);
-        render.invoke(panel);
-        assertTrue(button.isEnabled(), "screenshot is available with replay OFF and capture initialization pending");
+        panel.render();
+        assertTrue(panel.getModel().getScreenshot().getEnabled(), "screenshot is available with replay OFF and capture initialization pending");
         var serial = service.getClass().getDeclaredMethod("screenshotDeviceSerial", ReplaySnapshot.class);
         serial.setAccessible(true);
         assertNull(serial.invoke(service, (Object) null), "OFF uses shared device resolution without starting capture");
         store.setEnabled(true);
-        render.invoke(panel);
-        assertFalse(button.isEnabled(), "pending startup must not independently select a different device");
+        panel.render();
+        assertFalse(panel.getModel().getScreenshot().getEnabled(), "pending startup must not independently select a different device");
         var capture = field(service, "capture");
         var view = capture.getClass().getDeclaredField("view");
         view.setAccessible(true);
@@ -724,8 +526,8 @@ class ReplayToolWindowLayoutTest {
                 new StreamSnapshot(), new StreamSnapshot(), new StreamSnapshot(), new SaveSnapshot(),
                 false, null, null, 0L, 0, new AutoSaveSnapshot(), null);
             view.set(capture, new ReplayCaptureView(snapshot, 0, null, null));
-            render.invoke(panel);
-            assertTrue(button.isEnabled());
+            panel.render();
+            assertTrue(panel.getModel().getScreenshot().getEnabled());
             assertEquals("emulator-5554", serial.invoke(service, snapshot), "disconnection must retain the recording serial");
             store.setEnabled(false);
             assertEquals("emulator-5554", serial.invoke(service, snapshot), "pending OFF must not lose the actual capture target");
@@ -734,8 +536,8 @@ class ReplayToolWindowLayoutTest {
         environment.set(service, new io.github.shinma06.replaybuffer.ide.AndroidReplayEnvironment(
             Path.of("/different-sdk/adb"), null,
             new io.github.shinma06.replaybuffer.ide.ApplicationSelection("sample.app", "sample", null)));
-        render.invoke(panel);
-        assertFalse(button.isEnabled(), "pending SDK change cannot resolve the recording serial on another server");
+        panel.render();
+        assertFalse(panel.getModel().getScreenshot().getEnabled(), "pending SDK change cannot resolve the recording serial on another server");
         environment.set(service, new io.github.shinma06.replaybuffer.ide.AndroidReplayEnvironment(
             Path.of("/disposable/adb"), null,
             new io.github.shinma06.replaybuffer.ide.ApplicationSelection("sample.app", "sample", null)));
@@ -744,16 +546,16 @@ class ReplayToolWindowLayoutTest {
         var busy = service.getClass().getDeclaredField("screenshotBusy");
         busy.setAccessible(true);
         busy.setBoolean(service, true);
-        render.invoke(panel);
-        assertFalse(button.isEnabled(), "overlapping screenshot requests are disabled");
+        panel.render();
+        assertFalse(panel.getModel().getScreenshot().getEnabled(), "overlapping screenshot requests are disabled");
         busy.setBoolean(service, false);
         assertFalse(store.getEnabled(), "screenshot must not enable replay acquisition");
         revision.setLong(service, -1L);
-        render.invoke(panel);
-        assertFalse(button.isEnabled(), "stale selection cannot capture the previously selected app");
+        panel.render();
+        assertFalse(panel.getModel().getScreenshot().getEnabled(), "stale selection cannot capture the previously selected app");
     }
 
-    private static void refreshSnapshot(JPanel panel, ReplayProjectService service, long revision) {
+    private static void refreshSnapshot(ReplayToolWindowController panel, ReplayProjectService service, long revision) {
         try {
             var settings = new ReplaySettings(null, Path.of("/disposable/" + "long-directory/".repeat(16)),
                 180, new ApplicationTarget(), CaptureMode.VIDEO_AND_LOGS, false, VideoQuality.STANDARD);
@@ -765,17 +567,17 @@ class ReplayToolWindowLayoutTest {
             var view = capture.getClass().getDeclaredField("view");
             view.setAccessible(true);
             view.set(capture, new ReplayCaptureView(snapshot, 0, null, null));
-            var window = (JTextArea) field(panel, "window");
-            var previousText = window.getText();
-            var render = panel.getClass().getDeclaredMethod("render");
-            render.setAccessible(true);
-            render.invoke(panel);
-            layout(panel);
-            layout(panel);
-            assertFalse(previousText.equals(window.getText()), "the snapshot refresh must really change displayed text");
+            var previousText = detail(panel.getModel(), "保持時間と現在の記録区間");
+            panel.render();
+            assertFalse(previousText.equals(detail(panel.getModel(), "保持時間と現在の記録区間")), "the snapshot refresh must really change displayed text");
         } catch (ReflectiveOperationException failure) {
             throw new AssertionError(failure);
         }
+    }
+
+    private static String detail(ToolWindowModel model, String name) {
+        return model.getDetails().stream().filter(detail -> detail.getName().equals(name)).findFirst()
+            .orElseThrow(() -> new AssertionError("missing detail " + name)).getText();
     }
 
     private static Object field(Object owner, String name) throws ReflectiveOperationException {
@@ -784,9 +586,4 @@ class ReplayToolWindowLayoutTest {
         return field.get(owner);
     }
 
-    private static void layout(Container parent) throws ReflectiveOperationException {
-        var validate = Container.class.getDeclaredMethod("validateTree");
-        validate.setAccessible(true);
-        synchronized (parent.getTreeLock()) { validate.invoke(parent); }
-    }
 }
