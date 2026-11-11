@@ -55,7 +55,8 @@ class ReplayCliTest {
         assertEquals(60, patchSettings(current, cli).retentionSeconds)
         for ((word, message) in listOf("replay_seconds=abc" to "replay_secondsは整数で指定してください。",
             "replay_seconds=99999999999" to "replay_secondsは整数で指定してください。",
-            "show_touches=yes" to "show_touchesはtrue/falseで指定してください。")) {
+            "show_touches=yes" to "show_touchesはtrue/falseで指定してください。",
+            "record_audio=yes" to "record_audioはtrue/falseで指定してください。")) {
             val text = checkNotNull(parseCliArguments(listOf("settings", "set", word)).settings)
             assertEquals(message, assertFailsWith<IllegalArgumentException> { patchSettings(current, text) }.message)
         }
@@ -250,6 +251,8 @@ class ReplayCliTest {
             release.countDown()
             server.close()
             client.join(5000)
+            // The registry file is removed by the server's own shutdown; Windows cannot delete the folder while it is open.
+            server.termination.get(5, TimeUnit.SECONDS)
         }
     }
 

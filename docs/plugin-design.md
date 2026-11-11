@@ -41,6 +41,12 @@ MCPの`save_replay`と`get_status`の`last_save`は、完成したフォルダ�
 
 エミュレータでの確認には実際のevdev入力が必要です。`adb shell input tap`や`adb emu finger`はevdevを通らないため記録されません。VMではstandalone emulator windowへの`xdotool`のclickで実イベントを作れます。
 
+## 端末の再生音（Trail #34）
+
+設定「動画に端末の再生音を録音する（Android 13以上）」（既定OFF、CLI/MCPの`record_audio`）がONのとき、動画＋ログの取得中だけ端末の再生音を同じ`video.mp4`のAAC trackへ入れます。ログ専用では値を保持したまま録音しません。変更は取得OFFで反映が終わってから行います。時刻・配置の規則は[同期設計](design/timeline.md#端末の再生音trail-34)に従います。
+
+`replay.json`は`coverage.audio`（`state / requested / availableSeconds / reason / note`）、`settings.record_audio / audio_requested`、音声がMP4にあるときの`audio_track`（`codec / sample_rate / channels / segments`）を持ちます。音声が取得できない・保存範囲にない場合も保存は成功し、動画の`missingKinds`にも数えません。音声PTSは同梱の改変`AudioRecordReader`で各bufferの先頭frameの時刻にします。emulatorでは残りのAAC encoder遅延により音が表示より約0.1秒遅れます（[同期設計](design/timeline.md#端末の再生音trail-34)）。
+
 ## 動画品質の選択（#282）
 
 設定画面の動画品質は、標準（長辺最大1920px・最大30fps・指定8Mbps、従来の既定値）と軽量（長辺最大1024px・最大15fps・指定2Mbps）です。未指定の旧XMLは標準で読み、既存の保持時間・保存先・アプリ・スクショ等の値と旧CLI importを維持します。品質は取得OFFかつ設定/操作反映後に変更し、Apply/OKだけで保存します。LOG_ONLYでは選択欄を無効にし、値を保持したまま動画を開始しません。

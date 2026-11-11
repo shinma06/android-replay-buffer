@@ -6,6 +6,11 @@ https://github.com/Genymobile/scrcpy/tree/a60891aea193d92e7e5c3942700eca63f9d19a
 Official release: https://github.com/Genymobile/scrcpy/releases/tag/v5.0.1
 Server SHA-256: 764eb6f79811d5211fe9df341120882ba9994c7a61b897d7bf3fb662e53bc536
 License: scrcpy-LICENSE.txt (same fixed source revision).
+Modified file: com.genymobile.scrcpy.audio.AudioRecordReader, modified from the same source revision
+(plugin/src/scrcpy/java). It sets each audio buffer's PTS from AudioRecord.getTimestamp() (framePosition, nanoTime)
+to the time of the buffer's first frame. replay-scrcpy-audio.jar holds it as classes.dex plus the official server's
+entries unchanged (its classes.dex renamed classes2.dex) and is used only when audio is recorded. The official server
+JAR is shipped unmodified and hash-checked; the combined JAR's hash is identity audio_patch.
 
 JCodec 0.2.5, JCodec Project / BSD 2-Clause License.
 https://repo.maven.apache.org/maven2/org/jcodec/jcodec/0.2.5/

@@ -92,6 +92,70 @@ class RotationFollowTest {
     }
 
     @Test
+    fun `playback audio stays on the video timeline across a rotation cut`() {
+        val root = Files.createTempDirectory("replay-rotation-audio-")
+        val store = CaptureStore(root.resolve("ring"), minFree = 0, audioRequested = true)
+        val base = System.nanoTime() - 1_500_000_000
+        fun anchor(elapsed: Long, host: Long) =
+            store.clock.add("1", listOf(elapsed, elapsed, 1_700_000_000_000_000_000 + elapsed, elapsed), host, host)
+        val aacUs = 21_333L
+        try {
+            store.generation(1)
+            for (t in 0L..1_500_000_000L step 100_000_000L) anchor(10_000_000_000 + t, base + t)
+            store.audioSession(1)
+            store.audio(AudioPacket(0, true, byteArrayOf(0x11, 0x90.toByte())), 1)
+            val portrait = H264Encoder.createH264Encoder().apply { setKeyInterval(100) }
+            store.session(VideoPacket.Session(16, 32), 1)
+            for (n in 0..9) {
+                val (bytes, config) = encode(portrait, 16, 32, 20 + n)
+                if (n == 0) store.frame(VideoPacket.Frame(0, true, false, config), 1)
+                val pts = 10_100_000L + n * 100_000L
+                assertTrue(store.frame(VideoPacket.Frame(pts, false, n == 0, bytes), 1, base + (pts * 1000 - 10_000_000_000)))
+            }
+            val offset = store.clock.video(10_000_000, System.nanoTime()).sequence!! - 10_000_000_000
+            store.session(VideoPacket.Session(32, 16), 1)
+            val switched = assertNotNull(store.clock.now())
+            // Audio before the rotation stops one AAC unit short of the cut, so each run's audio starts exactly at its first frame.
+            var pts = 10_100_000L
+            while (pts + 2 * aacUs < (switched - offset) / 1000) {
+                store.audio(AudioPacket(pts, false, byteArrayOf(1)), 1, base + (pts * 1000 - 10_000_000_000)); pts += aacUs
+            }
+            val firstPts = (switched + 20_000_000 - offset) / 1000
+            Thread.sleep(80)
+            val landscape = H264Encoder.createH264Encoder().apply { setKeyInterval(100) }
+            for (n in 0..3) {
+                val (bytes, config) = encode(landscape, 32, 16, 120 + n)
+                if (n == 0) store.frame(VideoPacket.Frame(0, true, false, config), 1)
+                assertTrue(store.frame(VideoPacket.Frame(firstPts + n * 10_000L, false, n == 0, bytes), 1))
+            }
+            for (n in 0 until 2) store.audio(AudioPacket(firstPts + n * aacUs, false, byteArrayOf(1)), 1)
+            Thread.sleep(50)
+            val now = System.nanoTime()
+            anchor(10_000_000_000 + (now - base), now)
+            val capture = store.capture(ReplaySettings(replaySeconds = 180, recordAudio = true), host = now)!!
+            val output = SaveWriter().write(capture, root, { false }) { publication -> Files.move(publication.partial, publication.complete) }
+            val manifest = JsonParser.parseString(Files.readString(output.directory.resolve("replay.json"))).asJsonObject
+            assertTrue(manifest["video_reencoded"].asBoolean)
+            val rows = Files.readAllLines(output.directory.resolve("video-frames.jsonl")).map { JsonParser.parseString(it).asJsonObject }
+                .filter { it["presented"].asBoolean }
+            val segments = manifest.getAsJsonObject("audio_track").getAsJsonArray("segments").map { it.asJsonObject }
+            assertEquals(2, segments.size, segments.toString())
+            // Each run's audio begins at the movie time of its first frame: the same mapping on both sides of the cut.
+            assertEquals(rows.first()["movie_pts_us"].asLong, segments.first()["movie_start_us"].asLong, segments.toString())
+            val rotated = rows.first { it["source_rect"].asJsonObject["width"].asInt == 32 }
+            assertEquals(rotated["movie_pts_us"].asLong, segments.last()["movie_start_us"].asLong, segments.toString())
+            val held = rows.last { it["source_rect"].asJsonObject["width"].asInt == 16 }
+            val portraitEnd = segments.first().let { it["movie_start_us"].asLong + it["duration_us"].asLong }
+            assertTrue(portraitEnd <= held["movie_end_us"].asLong, "$segments $held")
+            assertEquals("CAPTURING", manifest.getAsJsonObject("coverage").getAsJsonObject("audio")["state"].asString)
+            store.release(capture.id)
+        } finally {
+            store.close()
+            Files.walk(root).use { paths -> paths.sorted(java.util.Comparator.reverseOrder()).forEach { Files.deleteIfExists(it) } }
+        }
+    }
+
+    @Test
     fun `cut lookup finds each closing frame once in one pass over the run`() {
         class Key(val id: Int) {
             override fun equals(other: Any?) = other is Key && other.id == id

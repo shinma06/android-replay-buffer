@@ -89,7 +89,7 @@ Android 8.1以前は対象外で、動作を確認しない。Android 9での確
 | ID | 要件 |
 | --- | --- |
 | VIDEO-01 | 初期版の画質は固定。解像度・フレームレートなどの具体値は、文字の読みやすさと負荷を実機で検証して決める。画質変更機能の実装時期・優先度は未定。 |
-| VIDEO-02 | 初期版は音声を録音しない。音声は後続TODO。 |
+| VIDEO-02 | 設定「動画に端末の再生音を録音する」（既定OFF）で、動画モードの取得中だけ端末の再生音をMP4へ入れる（Trail #34）。取得できない場合は動画だけを記録し、理由を`replay.json`の`coverage.audio`に残す。ログ専用では録音しない。 |
 | VIDEO-03 | タップ位置の表示は後続TODO。初期版の必須機能に含めない。 |
 | VIDEO-04 | 録画中に縦横を回転しても取得を止めず、同じ録画sequenceのまま続ける。回転で画面サイズが変わった前後は同じ1件のMP4に別のmedia区間として保存し、寸法が混在する保存は共通canvasへ変換して再生できるようにする。回転の前後とも時計対応が確認できる範囲では動画↔ログ・タップの時刻対応を保ち、回転中に新しい映像がない範囲だけをvideo gapにする。`touches.jsonl`の座標は自然な向きのまま保ち、回転後の画面座標も併記する。回転だけでクラッシュ・保存済みデータ破損・復旧不能となる実装にせず、取得が途切れたらBUF-06に従い自動復旧する。 |
 
@@ -126,7 +126,7 @@ Android 8.1以前は対象外で、動作を確認しない。Android 9での確
 | [保存ショートカットキー #17](https://github.com/shinma06/android-replay-buffer/issues/17) | **優先度 中**。Android Studioのキーマップから保存操作を呼べるようにする。 |
 | [複数端末 #18](https://github.com/shinma06/android-replay-buffer/issues/18) | 取得対象1台の選択はENV-01/02で対応済み（GUIの「取得する端末」は2台以上の接続時だけ表示、CLI `settings set device=<serial>`・`status`の`devices`、MCP `update_settings`の`device`・`get_status`の`devices`）。複数台の同時取得とその保存単位は対象外。 |
 | [保存後のメモ・テストケースID #19](https://github.com/shinma06/android-replay-buffer/issues/19) | TODO、優先度未定。任意で追記する。保存前の必須入力にはしない。 |
-| [音声録音 #20](https://github.com/shinma06/android-replay-buffer/issues/20) | TODO、優先度未定。対象音声や取得方法は未決。 |
+| [音声録音 #20](https://github.com/shinma06/android-replay-buffer/issues/20) | Trail #34で実装。対象は端末の再生音（Android 13以上のplayback capture）。マイク音・録音を禁止したアプリの音は対象外。 |
 | [タップ位置の表示 #21](https://github.com/shinma06/android-replay-buffer/issues/21) | TODO、優先度未定。**表示の有効/無効トグル必須**。同じ操作の「表示あり／なし」の両動画を保存できる方法も検討する。 |
 | [録画中の回転への追従 #22](https://github.com/shinma06/android-replay-buffer/issues/22) | 対応済み（VIDEO-04）。回転前後は共通canvasへの変換で1件のMP4にまとめる。 |
 

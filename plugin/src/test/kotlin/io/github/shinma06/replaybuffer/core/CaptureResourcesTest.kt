@@ -39,6 +39,19 @@ class CaptureResourcesTest {
         try {
             CaptureResources(root).use { resources ->
                 assertEquals(CaptureResources.SERVER_HASH, sha256(resources.server))
+                assertEquals(CaptureResources.identity().getValue("audio_patch"), sha256(resources.audioPatch))
+                JarFile(resources.audioPatch.toFile()).use { jar ->
+                    JarFile(resources.server.toFile()).use { official ->
+                        val names = jar.entries().toList().filterNot { it.isDirectory }.map { it.name }.filterNot { it.startsWith("META-INF/") }.toSet()
+                        assertEquals(official.entries().toList().filterNot { it.isDirectory }.map { it.name }.filterNot { it.startsWith("META-INF/") }.toSet() + "classes2.dex", names)
+                        // The official server classes are carried byte-for-byte, only renamed so the patch dex loads first.
+                        assertTrue(official.getInputStream(official.getJarEntry("classes.dex")).readAllBytes()
+                            .contentEquals(jar.getInputStream(jar.getJarEntry("classes2.dex")).readAllBytes()))
+                    }
+                    val symbols = jar.getInputStream(jar.getJarEntry("classes.dex")).readAllBytes().toString(Charsets.ISO_8859_1)
+                    assertTrue(symbols.contains("Lcom/genymobile/scrcpy/audio/AudioRecordReader;"))
+                    assertTrue(symbols.contains("framePosition"))
+                }
                 assertEquals(CaptureResources.identity().getValue("clock"), sha256(resources.clock))
                 JarFile(resources.clock.toFile()).use { jar ->
                     val dex = jar.getInputStream(jar.getJarEntry("classes.dex")).readAllBytes()

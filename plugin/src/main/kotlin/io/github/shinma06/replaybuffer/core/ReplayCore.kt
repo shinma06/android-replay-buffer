@@ -105,7 +105,7 @@ class ReplayCore internal constructor(
         try {
             resources = CaptureResources(root, ownership::created).also { if (settings.captureMode.videoRequested) it.server }
             store = CaptureStore(root.resolve("ring"), created = ownership::created, removed = ownership::removed,
-                captureMode = settings.captureMode, autosave = autosave)
+                captureMode = settings.captureMode, autosave = autosave, audioRequested = settings.recordAudio)
         } catch (e: Exception) {
             try {
                 resources?.close(); resources = null
@@ -128,8 +128,8 @@ class ReplayCore internal constructor(
     fun applySettings(value: ReplaySettings): CompletableFuture<ReplayOperation> = operation {
         val applied = value.validate()
         if (enabled && (applied.captureMode != settings.captureMode || applied.videoQuality != settings.videoQuality ||
-                applied.showTouches != settings.showTouches))
-            return@operation ReplayOperation(false, "取得モード・動画品質・タップ位置表示は取得をOFFにしてから変更してください")
+                applied.showTouches != settings.showTouches || applied.recordAudio != settings.recordAudio))
+            return@operation ReplayOperation(false, "取得モード・動画品質・タップ位置表示・音声の録音は取得をOFFにしてから変更してください")
         val chosen = applied.deviceSerial
         // An explicit choice replaces the current target only by restarting capture; never mix two devices in one buffer.
         val switching = enabled && chosen != null && device?.let { it.serial != chosen } == true
@@ -325,7 +325,7 @@ class ReplayCore internal constructor(
             configureAuto()
             backendStarted = System.nanoTime()
             backend = DeviceCapture(settings.adbPath!!, device!!.serial, resources!!, data, generation, settings.application, settings.videoQuality,
-                settings.showTouches, touchRestore).also { it.start() }
+                settings.showTouches, touchRestore, settings.recordAudio).also { it.start() }
         }
         val data = store!!
         if (data.clock.snapshot().lastOrNull()?.received?.let { it >= backendStarted } == true) data.resume()
