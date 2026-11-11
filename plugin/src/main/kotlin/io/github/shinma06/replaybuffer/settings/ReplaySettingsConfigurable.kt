@@ -83,6 +83,8 @@ internal const val TAP_DISPLAY_TOOLTIP = "既定は表示しない（記録の�
     "「保存する動画にだけ描画する」は端末を変えずに保存時に点を描き、動画を再エンコードします（保存時間が延びます）。" +
     "「端末画面にも表示する」は端末の「タップを表示」を取得中だけONにし、取得終了時に元の値へ戻します。ミラーリング等の端末が描けないタップは保存時に描画します。" +
     "ミラーリングからのタップはAndroid 13以上で記録します。取得OFFで変更してください。"
+internal const val RECORD_AUDIO_TOOLTIP = "既定OFF。取得できない端末・失敗時は動画だけを記録し、理由をreplay.jsonのcoverage.audioへ書きます。" +
+    "録音を禁止したアプリの音は入りません。取得OFFで変更します。"
 internal const val AUTO_SAVE_SCOPE = "対象アプリの標準Java/Kotlinクラッシュ報告が対象です。native/ANRは対応外です。"
 internal const val AUTO_SAVE_TOOLTIP = "既定OFF。適用後の報告が対象です。" +
     "8回受付または検出上限で停止します。再開はこの設定をOFFで適用してから、ONで再び適用してください。"
@@ -124,6 +126,7 @@ internal class SettingsForm(val launcher: String?) {
     var videoQuality by mutableStateOf(VideoQuality.STANDARD)
     var autoSave by mutableStateOf(false)
     var tapDisplay by mutableStateOf(TapDisplay.OFF)
+    var recordAudio by mutableStateOf(false)
     var screenshotUsesLogcat by mutableStateOf(true)
     var destinationStatus by mutableStateOf("")
     var screenshotStatus by mutableStateOf("")
@@ -143,6 +146,7 @@ internal class SettingsForm(val launcher: String?) {
         captureMode = captureMode,
         autoSaveOnCrash = autoSave,
         tapDisplay = tapDisplay,
+        recordAudio = recordAudio,
         screenshotUsesLogcatDestination = screenshotUsesLogcat,
         screenshotDirectory = screenshotDirectory.text.toString(),
         videoQuality = videoQuality,
@@ -158,6 +162,7 @@ internal class SettingsForm(val launcher: String?) {
         videoQuality = settings.videoQuality
         autoSave = settings.autoSaveOnCrash
         tapDisplay = settings.tapDisplay
+        recordAudio = settings.recordAudio
         manualPackage.setTextAndPlaceCursorAtEnd(settings.manualPackage)
     }
 }
@@ -319,9 +324,9 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable, C
         settings.validationError(checked, screenshotChecked)?.let { throw ConfigurationException(it) }
         val service = replayService
         if ((settings.captureMode != store().settings().captureMode || settings.videoQuality != store().settings().videoQuality ||
-            settings.tapDisplay != store().settings().tapDisplay) &&
+            settings.tapDisplay != store().settings().tapDisplay || settings.recordAudio != store().settings().recordAudio) &&
             (store().enabled || service?.captureView?.snapshot?.enabled == true || service?.resolving == true || (service?.captureView?.pending ?: 0) > 0))
-            throw ConfigurationException("取得をOFFにし、設定・操作の反映が終わってから取得モード・動画品質・タップ位置表示を変更してください。")
+            throw ConfigurationException("取得をOFFにし、設定・操作の反映が終わってから取得モード・動画品質・タップ位置表示・音声の録音を変更してください。")
         try { store().apply(settings, checked, screenshotChecked) } catch (failure: IllegalArgumentException) {
             throw ConfigurationException(failure.message.orEmpty())
         }
@@ -454,6 +459,10 @@ internal fun SettingsContent(form: SettingsForm, edited: () -> Unit, choose: (Te
                     ListComboBox(displays.map(TapDisplay::toString), displays.indexOf(form.tapDisplay), { form.tapDisplay = displays[it] },
                         modifier = Modifier.fillMaxWidth().semantics { contentDescription = "タップ位置の表示" }, enabled = controls.videoOptionsEnabled)
                 }
+            }
+            WithTooltip(RECORD_AUDIO_TOOLTIP) {
+                CheckboxRow("動画に端末の再生音を録音する（Android 13以上）", form.recordAudio, { form.recordAudio = it },
+                    enabled = controls.videoOptionsEnabled, modifier = Modifier.semantics { contentDescription = "端末の再生音の録音" })
             }
 
             // 3. Screenshot destination.

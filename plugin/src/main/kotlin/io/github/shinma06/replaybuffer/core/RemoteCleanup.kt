@@ -46,7 +46,8 @@ internal data class RemoteCleanup(
             pids().forEach { pid -> if (pid in pids()) command("-s", serial, "shell", "kill", "-TERM", pid.toString()) }
             check(pids().isEmpty()) { "所有端末processの終了が未確認です" }
             removeOwnedForwards(adb, serial, forwards, cancelled, pendingEndpoints)
-            command("-s", serial, "shell", "rm", "-f", "/data/local/tmp/replay-$token-server.jar", "/data/local/tmp/replay-$token-clock.jar")
+            command("-s", serial, "shell", "rm", "-f", "/data/local/tmp/replay-$token-server.jar", "/data/local/tmp/replay-$token-clock.jar",
+                "/data/local/tmp/replay-$token-audio.jar")
         }
         true
     }.getOrDefault(false)

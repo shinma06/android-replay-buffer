@@ -26,10 +26,14 @@ internal fun sha256(path: Path): String {
 internal class CaptureResources(private val directory: Path, private val created: (Path) -> Unit = {}) : AutoCloseable {
     private val serverResource = lazy { extract("scrcpy-server-v5.0.1", SERVER_HASH) }
     val server: Path get() = serverResource.value
+    private val audioPatchResource = lazy { extract("replay-scrcpy-audio.jar", identity().getValue("audio_patch")) }
+    /** Official server entries plus a first-loaded AudioRecordReader replacement, used only when audio is captured. */
+    val audioPatch: Path get() = audioPatchResource.value
     val clock: Path = extract("replay-clock.jar", identity().getValue("clock"))
 
     override fun close() {
         if (serverResource.isInitialized()) Files.deleteIfExists(server)
+        if (audioPatchResource.isInitialized()) Files.deleteIfExists(audioPatch)
         Files.deleteIfExists(clock)
     }
 

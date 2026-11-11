@@ -391,6 +391,8 @@ internal class ReplayMcpServer(
                     "(mirroring/injected input) into the MP4. Change only while capture is OFF."),
             "show_touches" to mapOf("type" to "boolean",
                 "description" to "Legacy alias: true sets tap_display DEVICE, false turns DEVICE into OFF. May be combined with tap_display only when they agree."),
+            "record_audio" to mapOf("type" to "boolean",
+                "description" to "Record the device playback audio into the video (VIDEO_AND_LOGS only, Android 13+, apps may opt out; coverage.audio in replay.json tells why it is missing). Change only while capture is OFF."),
             "device" to mapOf("type" to "string",
                 "description" to "Serial of the capture target from get_status `devices[].serial`; empty selects the only connected device automatically. " +
                     "With several devices and none chosen, capture waits (capture_state MULTIPLE_DEVICES). A chosen device that disconnects is waited for; " +

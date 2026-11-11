@@ -39,6 +39,7 @@
 | タップ位置（端末） | 取得中にevdev入力（API 36は`adb emu event send EV_ABS:ABS_MT_TRACKING_ID:9 EV_ABS:ABS_MT_POSITION_X:<x> EV_ABS:ABS_MT_POSITION_Y:<y> EV_SYN:0:0`、離すのは`ABS_MT_TRACKING_ID:-1`） | `touches.jsonl`に`source=touchscreen`の行が入る。`tap_display=DEVICE`なら端末の点が動画に写る |
 | タップ位置（ミラーリング・注入） | 取得中に `adb shell input tap`（Running Devicesのミラーリングと同じInputManager注入）。Android 13以上 | `touches.jsonl`に`source=injected`の行がその座標で入る。Android 9では`touches.injected.state`が`UNAVAILABLE`。`tap_display=VIDEO` / `DEVICE`なら保存した`video.mp4`の該当時刻に点が描かれ、`touches.video_overlay`が`true`。`VIDEO`・`OFF`では端末の`show_touches`を変えない |
 | クラッシュ時の自動保存 | 設定ONで取得中に `adb shell am crash <対象package>` | 保存フォルダ`replay-<日時>-crash-<ID>`が1つ増え、`replay.json` の `trigger` が `crash`、`auto_trigger.kind` が `platform_reported_uncaught_exception`。別アプリのクラッシュでは増えない。続けて試す場合は30秒以上空け、`am force-stop <対象package>` してから起動し直す（Android 9ではクラッシュのダイアログが落ちたprocessを残し、次の`am crash`が報告を出さない）。報告と同じ時刻に5秒以内の時計の不足区間があっても、回復後に保存される（`replay.json`に時計の不足区間が残る）。5秒を超える途切れや時計の境界をまたぐ場合だけ「報告の時計対応を確認できません」で保存しない |
+| 端末の再生音 | `settings set record_audio=true`で取得し、1秒ごとに画面の白表示とbeepを同時に出すアプリを動かして保存 | `ffprobe`でAAC trackがあり、`replay.json`の`coverage.audio`が`CAPTURING`。白表示からbeep開始までの差を記録する（emulatorの測定値は中央値約0.1秒）。`record_audio=false`ではAAC trackがなく`coverage.audio.requested=false` |
 | 設定（CLI） | `bin/replay --project <dir> settings`、`settings set replay_seconds=<n>` | 値が設定画面と一致し、変更が反映される |
 | MCP | `bin/replay --project <dir> mcp` に `initialize` と `tools/list` を送る | 保存・スクリーンショット・設定・ON/OFFのtoolが返る |
 

@@ -24,7 +24,7 @@ CLI原型の保全に関する記述は、この設計当時の変更範囲で�
 
 adbは対象projectの設定済みAndroid SDKの`platform-tools/adb`（Windowsでは`adb.exe`）を解決する。SDK/adbが見つからない場合は設定済みSDKの確認を案内し、PATH検索やHomebrew導入へ流さない。adb serverはIDE等と共有するため`kill-server`は禁止。forward port、device上のDEX/JAR名、serverのscidは所有する取得generation固有とし、他のscrcpy/録画/forwardを停止・削除しない。shell文字列にpackage/serial/pathを無検証で連結しない。端末packetは信頼しない外部入力として読み、video packet上限16MiB、log entry上限5KiBを初期上限にする。整数overflow、unknown flags、header長、payload長、EOF途中、nonce不一致を検証し、巨大alloc/無限待ちを防ぐ。上限を超えたstreamだけを失敗へ移し、正常streamを巻き添えにしない。EDTで接続/read/muxを行わず、取消しと所有processの実終了を別に確認する。無効化後に遅れてできたprocess/socketはそのgenerationの責任で閉じ、古いcallbackを新generation/破棄後のUIへ反映しない。
 
-serverは`audio=false control=false video_codec=h264 send_frame_meta=true send_stream_meta=true`。`raw_stream=true`はPTSを失うため禁止。scidとforwardのdummy/device metadataも固定5.0.1仕様に従う。session packetでサイズ/configが変わったら同じMP4内の独立復号区間を開始する。B-frameなしを`video_codec_options=max-bframes:int=0`で要求し、実際のPTSが非単調なら動画側を不適合として復旧し、ログは継続する。最長辺1920、30fps上限、8Mbps、I-frame間隔1秒を**試験開始値**とする。VIDEO-01の可読性/負荷合格後に実装Issueで固定し、端末encoderが指定を無視した場合も観測値を記録する。実機・Emulatorの対応OS/APIを、この設計だけで保証しない。
+serverは音声OFFでは`audio=false`、音声ON（Android 13以上）では`audio=true audio_source=playback audio_dup=true audio_codec=aac audio_bit_rate=128000`、共通で`control=false video_codec=h264 send_frame_meta=true send_stream_meta=true`。`raw_stream=true`はPTSを失うため禁止。scidとforwardのdummy/device metadataも固定5.0.1仕様に従う。session packetでサイズ/configが変わったら同じMP4内の独立復号区間を開始する。B-frameなしを`video_codec_options=max-bframes:int=0`で要求し、実際のPTSが非単調なら動画側を不適合として復旧し、ログは継続する。最長辺1920、30fps上限、8Mbps、I-frame間隔1秒を**試験開始値**とする。VIDEO-01の可読性/負荷合格後に実装Issueで固定し、端末encoderが指定を無視した場合も観測値を記録する。実機・Emulatorの対応OS/APIを、この設計だけで保証しない。
 
 ## 時計の契約
 
@@ -130,6 +130,20 @@ clock scopesと復旧/両側anchorは同期確度の説明に使い、source隣�
 ## タップ位置の時刻（Trail #22）
 
 タップ位置は動画の取得中だけ記録する第3のsource streamです。正本は`getevent -lt`が出力するkernel入力時刻で、API 36 emulatorで確認した端末CLOCK_MONOTONIC（動画PTS・時計測定のmonoと同じ時計）として、動画PTSと同じ時計対応（`CaptureClock.mono`）でsequenceへ写します。host受信時刻は時計対応の補助（stale判定・不確かさ）にだけ使い、時刻の代わりにしません。ミラーリング等の注入タップ（Android 13以上）はInputDispatcherのlogの`eventTime`（同じ端末CLOCK_MONOTONIC、ms精度）を正本として同じ対応で写し、logcatの受信時刻では置き換えません。範囲外・曖昧な対応はnullのまま残します。kernelが入力を捨てた区間（`SYN_DROPPED`から、新しい`ABS_MT_TRACKING_ID`で再同期するまで）も、端末の入力時刻を同じ対応で写したgapとして残します。保存窓への採否は両ログと同じ`CaptureStore.capture`の規則（窓端からの距離が両方の不確かさ以内なら含める）で、固定後は再解釈しません。保存時は表示中のframeの`movie_pts_us`と`window_ns`差から`movie_us`を求め、frameが表示されていない時刻・不確定な時刻はnullとします。出力の詳細は[保存設計](../plugin-design.md#タップ位置の記録と表示trail-22)に従います。
+
+## 端末の再生音（Trail #34）
+
+設定「動画に端末の再生音を録音する」（既定OFF）がONで動画を取得するときだけ、同じscrcpy serverで音声も取得します。新しい端末側プログラムは追加しません。音源は`audio_source=playback`（Android 13以上のAudioPlaybackCapture）で、`audio_dup=true`により端末からも音が出たままです。`audio_source=output`（REMOTE_SUBMIX、Android 11以上）は取得中に端末の音を止めるため採用しません。録音を禁止したアプリ（`allowAudioPlaybackCapture=false`や使用目的による制限）の音は端末側で除かれ、無音になります。この除外はhostからは判別できないため、`coverage.audio.note`に常に明記します。
+
+音声は動画socketの次に接続する2本目のsocketで受け、AAC-LC（AudioSpecificConfig付き）packetを保持します。各packetのPTSはAudioRecordの`TIMEBASE_MONOTONIC`時刻（端末CLOCK_MONOTONIC、動画PTSと同じ時計）なので、動画PTSと同じ`CaptureClock.video`でsequenceへ写します。host受信時刻は時刻の代わりにしません。保持はログと同じ時間窓・byte上限（32MiB）で、保存窓への採否は`CaptureStore.capture`の共通規則です。
+
+保存時は、各AAC packetの時刻に表示中のframeの`movie_pts_us`（`MovieAnchor`）から映画上の位置を求め、同じMP4の2本目のtrackへ書きます。名目間隔（1024 sample）から20ms以内で続くpacketは1つのedit、より大きいずれ・動画の表示がない時刻・server sessionの切替では空editを挟んで区切ります。動画の表示がない時刻と時計不明の時刻の音は入れません。各editは`replay.json`の`audio_track.segments`に記録します。
+
+音声PTSの補正: scrcpy 5.0.1の`AudioRecordReader`は、各読取bufferのPTSに`AudioRecord.getTimestamp`の`nanoTime`（その時点で最後に取得したframeの時刻）をそのまま使い、bufferの先頭が何frame前かを差し引きません。そこで同じsource revisionから改変した`AudioRecordReader`だけ（`plugin/src/scrcpy/java`）をD8でdex化し、`replay-scrcpy-audio.jar`として使います。PTSは`nanoTime - (framePosition - そのbufferの先頭frame番号) / 48000`で、端末APIが返す時刻と位置の組だけから求めます。scrcpyの`CleanUp`はCLASSPATHの先頭だけで`app_process`を再起動するため、このJARは改変classを`classes.dex`、公式serverの各entryをbyte単位でそのまま（`classes.dex`は`classes2.dex`へ改名）入れた1つのJARです。公式serverのJARは改変せずhash照合し、合成JARのhashは`identity.properties`の`audio_patch`に記録します。音声OFFでは公式JARだけを使います。
+
+測定（API 36 emulator `arb36`のみ、実機は未測定）: 1秒ごとに画面の白表示とbeepを同時に開始するアプリで30回測りました。補正前はMP4上でbeepが表示より中央値約290ms遅れました。補正後の取得PTSはtickの中央値53ms後で、端末が報告するスピーカー出力（75ms後）より前になり、取得側の遅れは解消しました。残りはMP4上のbeepが取得PTSより中央値112ms（91〜131ms）遅いことで、AAC encoderの遅延（priming）と考えられます。scrcpyの音声streamはencoder遅延を送らず、測った112msはAAC-LCの標準的なpriming（1024〜2048 sample、21〜43ms）だけでは説明できないため、hostでは補正しません。補正後のMP4上のbeepは表示より中央値97ms（61〜128ms）遅れます。
+
+取得できない場合は動画だけを続けます。Android 13未満（`ro.build.version.sdk`で確認）、serverが音声を無効にした（端末が許可しない）、音声設定の失敗、音声用serverの準備（抽出・端末へのpush）の失敗は、その世代の残りを音声なしで取得し、`coverage.audio`を`state=UNAVAILABLE`と理由で保存します。取得途中で音声streamが終わった場合は固定せず、`coverage.audio`を`state=RECOVERING`と理由にして動画だけを続け、次に動画serverを起動し直すときに音声も再び要求します。serverの終了では音声と動画のsocketがどちらの順で閉じても同じ扱いです。音声用serverを準備できないときは公式serverで動画だけを開始します。動画が途切れる直前の音声は、その表示区間の終わりで切り、動画のない範囲へはみ出させません。音声設定OFF・ログ専用では`coverage.audio.requested=false`です。
 
 ## 許容精度と受取人の確認
 

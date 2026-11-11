@@ -24,6 +24,7 @@ internal fun settingsJson(settings: ReplaySettings, enabled: Boolean): String = 
     "tap_display" to settings.tapDisplay.name,
     // Legacy alias of tap_display == DEVICE, kept for existing scripts.
     "show_touches" to (settings.tapDisplay == TapDisplay.DEVICE),
+    "record_audio" to settings.recordAudio,
     "device" to settings.deviceSerial,
 ))
 
@@ -72,6 +73,7 @@ internal fun patchSettings(current: ReplaySettings, text: String): ReplaySetting
                 "screenshot_directory" -> settings.copy(screenshotDirectory = text())
                 "tap_display" -> settings.also { chosenTapDisplay = choice(TapDisplay.entries.toTypedArray()) }
                 "show_touches" -> settings.also { legacyShowTouches = flag() }
+                "record_audio" -> settings.copy(recordAudio = flag())
                 "device" -> settings.copy(deviceSerial = text())
                 else -> throw IllegalArgumentException("変更できない設定項目です: $key")
             }

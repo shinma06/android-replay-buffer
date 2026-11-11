@@ -39,6 +39,7 @@ settingsはMCPのget_settings、settings setはupdate_settingsと同じ項目名
 タップ位置の表示はtap_display=OFF（記録のみ、既定）/VIDEO（保存する動画にだけ描画、保存時に再エンコード）/
 DEVICE（取得中だけ端末のshow_touchesをONにして端末画面にも表示）です。取得OFFで変更します。
 ミラーリング（Running Devices等）やadb inputのタップはAndroid 13以上で記録します（12以前は非対応）。
+record_audio=trueで動画に端末の再生音（Android 13以上）を録音します。既定はfalseで、取得OFFで変更します。
 複数の端末を接続したときはstatusのdevices[].serialから1台をdevice=<serial>で選びます（空は自動）。
 未選択で2台以上なら取得せず選択を待ち、選んだ端末の切断中も別の端末へは切り替えません。
 mcpは標準入出力のMCPサーバーです。IDE本体は起動しません。
