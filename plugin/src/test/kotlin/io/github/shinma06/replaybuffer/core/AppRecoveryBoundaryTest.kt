@@ -102,7 +102,7 @@ class AppRecoveryBoundaryTest {
         val pinned = store.capture(ReplaySettings())!!
         target(store, 2) // DeviceCapture's app poll resolves against the last old-epoch anchor.
         store.status("device_log", StreamState.CAPTURING, null, 2)
-        sample(store, host, 8) // The real clock.add -> clockStatus callback starts a new epoch after >5 seconds.
+        sample(store, host, 8) // The device slept during the outage, so the real clock.add starts a new epoch.
         store.clockStatus(true, 2)
         store.resume() // ReplayCore's next control poll releases T, but cannot register a target period.
         assertEquals(1, store.clock.currentEpoch())
@@ -246,7 +246,8 @@ class AppRecoveryBoundaryTest {
     private fun sample(store: CaptureStore, host: Long, second: Long, readWidth: Long = 0, roundTrip: Long = 0) {
         val elapsed = second * 1_000_000_000
         val received = host + (second - 1) * 1_000_000_000
-        assertTrue(store.clock.add("1", listOf(elapsed - readWidth / 2, elapsed,
+        val mono = if (second >= 8) elapsed - 1_000_000_000 else elapsed // A 1 s device sleep before the 8 s read.
+        assertTrue(store.clock.add("1", listOf(elapsed - readWidth / 2, mono,
             1_700_000_000_000_000_000 + elapsed, elapsed + readWidth / 2), received - roundTrip, received))
     }
 }

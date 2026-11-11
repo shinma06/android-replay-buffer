@@ -1024,7 +1024,8 @@ class CaptureStoreSaveTest {
             store.session(VideoPacket.Session(32, 32), 1)
             store.frame(VideoPacket.Frame(0, true, false, config(bytes)), 1)
             for (second in 1L..40L) {
-                // No clock reads between 4 and 9 seconds: the next read starts a new clock epoch.
+                // No clock reads between 4 and 9 seconds, and the next read shows a discontinuity: a new clock epoch.
+                if (second == 10L) store.clock.boundary()
                 if (second !in 4L..9L) anchor(store.clock, second * 1_000_000_000, at(second))
                 if (!sparse || second !in 6L..19L)
                     assertTrue(store.frame(VideoPacket.Frame(second * 1_000_000, false, second == 1L || second == 5L || keyAfterGap && second == 20L, bytes), 1, at(second)))
@@ -1262,6 +1263,7 @@ class CaptureStoreSaveTest {
             store.frame(VideoPacket.Frame(1_000_000, false, true, bytes), 1, host)
             store.freeze()
             val frozen = store.end()
+            store.clock.boundary() // The read after the disconnect shows a source-clock discontinuity.
             anchor(store.clock, 11_000_000_000, host + 10_000_000_000)
             store.prune(1)
             assertEquals(frozen, store.end())

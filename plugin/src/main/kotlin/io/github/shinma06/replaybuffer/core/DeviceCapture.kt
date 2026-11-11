@@ -118,7 +118,7 @@ internal class DeviceCapture @JvmOverloads constructor(
                 if (kind != "clock") status(kind, StreamState.RECOVERING, "取得を復旧しています")
                 val attempt = System.nanoTime()
                 runCatching(operation).onFailure {
-                    if (!stopping.get() && kind == "clock") { store.clock.boundary(); store.clockStatus(false, generation) }
+                    if (!stopping.get() && kind == "clock") store.clockStatus(false, generation)
                     if (!stopping.get() && kind != "clock") status(kind, StreamState.RECOVERING,
                         if (kind == "video") "動画取得が中断しました（PTS/config/容量/接続を確認してください）"
                         else if (kind == "touch") "タップ位置の取得が中断しました（getevent/接続を確認してください）" else "全体ログ取得が中断しました（header/接続を確認してください）")

@@ -46,8 +46,8 @@ internal class CaptureClock {
             (boot != measured.boot || elapsed < measured.elapsed ||
                 abs(elapsed - mono - measured.monoOffset) > measured.readError + (after - before) / 2 + 1_000_000 ||
                 abs(elapsed - wall - measured.wallOffset) > measured.readError + (after - before) / 2 + 1_000_000)
-        val missingAnchor = good && normal != null && normal.epoch == epoch && sent - normal.received > 5_000_000_000
-        if (sourceBreak || missingAnchor) boundary(normal?.received ?: sent)
+        // A measurement outage alone is no boundary: the next good read decides continuity from the device offsets.
+        if (sourceBreak) boundary(normal?.received ?: sent)
         val hostDelta = last?.let { sent - it.received }
         val bridgeKnown = last != null && last.sequenceOffset != null && hostDelta != null && hostDelta >= 0 &&
             abs(hostWall - last.hostWall - (received - last.received)) <= 100_000_000

@@ -30,7 +30,8 @@ class ApplicationHistoryBoundaryTest {
                     second >= 11 -> host + (second - 5) * 1_000_000_000
                     else -> host
                 }
-                assertTrue(store.clock.add("same-boot", listOf(elapsed, elapsed, WALL + elapsed, elapsed), received, received))
+                val mono = if (second >= 11) elapsed - 1_000_000_000 else elapsed // A device sleep starts a new epoch.
+                assertTrue(store.clock.add("same-boot", listOf(elapsed, mono, WALL + elapsed, elapsed), received, received))
             }
             fun target(uid: Long?) = store.app("com.fixture.app", uid, if (uid == null) emptySet() else setOf(12), 1, uid != null)
             fun row(second: Long, uid: Long) = store.log(DeviceLog(WALL + second * 1_000_000_000,
