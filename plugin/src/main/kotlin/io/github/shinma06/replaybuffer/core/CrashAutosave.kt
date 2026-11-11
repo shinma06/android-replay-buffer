@@ -2,7 +2,7 @@ package io.github.shinma06.replaybuffer.core
 
 internal data class CrashBarrier(
     val device: String, val boot: String, val generation: Long, val epoch: Int,
-    val host: Long, val wall: Long,
+    val host: Long, val wall: Long, val amCrashFields: Int? = null,
 )
 
 internal data class CrashObservation(
@@ -90,7 +90,7 @@ internal class CrashAutosave {
         // Definite other reporters cannot spend target capacity, even when their payload claims the target.
         if (source.lid == 2 && (source.uid != null && source.uid != 1000L ||
                 reporter?.fresh(row.host, row.generation) == true && source.pid != reporter.pid)) return
-        val header = crashHeader(source) ?: return
+        val header = crashHeader(source, arm.amCrashFields) ?: return
         if (header.process != null && !selectedProcess(header.process, selected)) return
         if (header.java && selectedUid != null && source.uid != null && source.uid != selectedUid) return
         if (header.process == null && (!header.java || period?.packageName != selected ||

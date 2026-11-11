@@ -324,7 +324,7 @@ elif len(a)>3 and a[3]=='ps':
                 assertEquals(AutoSaveReason.SAVED, done.autoSave.lastOutcome?.reason)
                 assertEquals(7, done.autoSave.admissionsRemaining)
                 assertEquals(1, done.lastSave?.attempt)
-                val manifest = JsonParser.parseString(Files.readString(done.lastSave!!.directory!!.resolve("session.json"))).asJsonObject
+                val manifest = JsonParser.parseString(Files.readString(done.lastSave!!.directory!!.resolve("replay.json"))).asJsonObject
                 assertEquals("com.fixture.app", manifest["auto_trigger"].asJsonObject["target_identity"].asJsonObject["package"].asString)
                 assertEquals(500, manifest["auto_trigger"].asJsonObject["reporter_poll"].asJsonObject["pid"].asInt)
                 assertEquals("LOG_ONLY", manifest["capture_mode"].asString)
@@ -377,7 +377,7 @@ elif len(a)>3 and a[3]=='ps':
                 assertEquals(CaptureMode.LOG_ONLY, completed.save.captureMode)
                 assertTrue(completed.save.missingKinds.isEmpty())
                 val folder = completed.save.directory!!
-                val json = JsonParser.parseString(Files.readString(folder.resolve("session.json"))).asJsonObject
+                val json = JsonParser.parseString(Files.readString(folder.resolve("replay.json"))).asJsonObject
                 val request = json["settings"].asJsonObject["video_request"]
                 if (captureMode.videoRequested) {
                     assertEquals("H.264 / ${videoQuality.maxSize} / ${videoQuality.maxFps}fps / ${videoQuality.bitRate / 1_000_000}Mbps / no B-frame",
@@ -394,9 +394,10 @@ elif len(a)>3 and a[3]=='ps':
                 assertTrue(json["video_clock_gap_scopes"].asJsonArray.isEmpty)
                 assertTrue(json["window_clock_known"].asBoolean)
                 assertTrue(json["clock_samples"].asJsonArray.any { it.asJsonObject["valid"].asBoolean })
-                for (name in listOf("frames.jsonl", "logcat-device.jsonl", "logcat-app.jsonl")) assertEquals(0L, Files.size(folder.resolve(name)))
+                assertFalse(Files.exists(folder.resolve("video-frames.jsonl")))
+                for (name in listOf("logcat-device.jsonl", "logcat-app.jsonl")) assertEquals(0L, Files.size(folder.resolve(name)))
                 Files.list(folder).use { files -> assertTrue(files.noneMatch { it.fileName.toString().endsWith(".mp4") }) }
-                val savedHash = sha256(folder.resolve("session.json"))
+                val savedHash = sha256(folder.resolve("replay.json"))
                 assertTrue(core.applySettings(core.snapshot().settings.copy(saveDirectory = root)).get().accepted)
                 assertTrue(core.save().get().accepted)
                 awaitState("second-quiet-save") { it.save.phase == SavePhase.COMPLETED && it.save.requestId != accepted.requestId }
@@ -417,6 +418,7 @@ elif len(a)>3 and a[3]=='ps':
                 val partial = awaitState("partial-log-only-save") { it.save.phase == SavePhase.COMPLETED && it.save.requestId == partialRequest.requestId }
                 assertTrue("device_log" in partial.save.missingKinds)
                 assertFalse("video" in partial.save.missingKinds)
+                assertTrue(Files.readString(partial.save.directory!!.resolve("README.md")).contains("| 記録の不足・未確認 | 全体ログ"))
                 val rows = Files.readAllLines(partial.save.directory!!.resolve("logcat-device.jsonl")).map { JsonParser.parseString(it).asJsonObject }
                 val appRows = Files.readAllLines(partial.save.directory.resolve("logcat-app.jsonl")).map { JsonParser.parseString(it).asJsonObject }
                 assertTrue(rows.isNotEmpty() && appRows.isNotEmpty())
@@ -424,7 +426,7 @@ elif len(a)>3 and a[3]=='ps':
                 assertEquals(setOf(0, 1, 3), rows.filter { !it["tag"].isJsonNull && it["tag"].asString == "Partition" }.map { it["lid"].asInt }.toSet())
                 assertTrue(rows.none { !it["message"].isJsonNull && it["message"].asString == "old tail" })
                 assertTrue(core.setEnabled(false).get(15, TimeUnit.SECONDS).accepted)
-                assertEquals(savedHash, sha256(folder.resolve("session.json")))
+                assertEquals(savedHash, sha256(folder.resolve("replay.json")))
                 assertEquals(0L, Files.list(root.resolve("workspace")).use { it.count() })
                 // A later explicit OFF/change/ON starts the ordinary video path with a new sequence.
                 Files.delete(root.resolve("fail-all"))
@@ -603,7 +605,7 @@ elif len(a)>3 and a[3]=='ps':
                 val tail = normal.save.videoTail!!
                 assertTrue(tail.displayHeld)
                 assertTrue(tail.toNs!! > tail.fromNs!!)
-                val manifest = JsonParser.parseString(Files.readString(normal.save.directory!!.resolve("session.json"))).asJsonObject
+                val manifest = JsonParser.parseString(Files.readString(normal.save.directory!!.resolve("replay.json"))).asJsonObject
                 assertTrue(manifest["complete"].asBoolean)
                 assertFalse(manifest["video_tail"].asJsonObject["new_frame_confirmed"].asBoolean)
                 pauseVideo.set(false)
@@ -676,7 +678,7 @@ elif len(a)>3 and a[3]=='ps':
             assertEquals(fixed.applicationHistory, done.save.applicationHistory)
             assertEquals(fixed.videoTail, done.save.videoTail)
             val folder = done.save.directory!!
-            val json = JsonParser.parseString(Files.readString(folder.resolve("session.json"))).asJsonObject
+            val json = JsonParser.parseString(Files.readString(folder.resolve("replay.json"))).asJsonObject
             val request = json["settings"].asJsonObject["video_request"]
             if (captureMode.videoRequested) {
                 assertEquals("H.264 / ${videoQuality.maxSize} / ${videoQuality.maxFps}fps / ${videoQuality.bitRate / 1_000_000}Mbps / no B-frame",
@@ -690,12 +692,12 @@ elif len(a)>3 and a[3]=='ps':
             assertEquals(operation.requestId, json["save_id"].asString)
             assertEquals(1, json["replay_seconds"].asInt)
             assertTrue(json["clock_samples"].asJsonArray.any { it.asJsonObject["valid"].asBoolean })
-            val frames = Files.readAllLines(folder.resolve("frames.jsonl")).map { JsonParser.parseString(it).asJsonObject }
+            val frames = Files.readAllLines(folder.resolve("video-frames.jsonl")).map { JsonParser.parseString(it).asJsonObject }
             assertTrue(frames.isNotEmpty())
             assertTrue(frames.all { !it["elapsed_ns"].isJsonNull && !it["window_ns"].isJsonNull })
             val parts = json["parts"].asJsonArray
             assertTrue(parts.size() > 0)
-            assertEquals(setOf("video-001.mp4"), parts.map { it.asJsonObject["file"].asString }.toSet())
+            assertEquals(setOf("video.mp4"), parts.map { it.asJsonObject["file"].asString }.toSet())
             Files.list(folder).use { paths -> assertEquals(1L, paths.filter { it.fileName.toString().endsWith(".mp4") }.count()) }
             parts.forEach { part ->
                 val item = part.asJsonObject
@@ -706,20 +708,20 @@ elif len(a)>3 and a[3]=='ps':
                 assertTrue(Files.size(folder.resolve(item["file"].asString)) > 0)
             }
             completed = folder
-            savedHash = sha256(folder.resolve("session.json"))
+            savedHash = sha256(folder.resolve("replay.json"))
             assertTrue(core.applySettings(core.snapshot().settings.copy(saveDirectory = root)).get().accepted)
             assertTrue(core.save().get().accepted)
             val fresh = awaitState("recovered-window-save") { it.save.phase == SavePhase.COMPLETED && it.save.requestId != operation.requestId }
-            val freshJson = JsonParser.parseString(Files.readString(fresh.save.directory!!.resolve("session.json"))).asJsonObject
+            val freshJson = JsonParser.parseString(Files.readString(fresh.save.directory!!.resolve("replay.json"))).asJsonObject
             val appGap = freshJson["gaps"].asJsonArray.single {
                 it.asJsonObject["kind"].asString == "app_log" && it.asJsonObject["reason"].asString == "端末との取得接続が中断しています"
             }.asJsonObject
             assertFalse(appGap["to_ns"].isJsonNull)
             assertEquals("CAPTURING", freshJson["coverage"].asJsonObject["app_log"].asJsonObject["state"].asString)
-            assertEquals(savedHash, sha256(folder.resolve("session.json")))
+            assertEquals(savedHash, sha256(folder.resolve("replay.json")))
             assertTrue(core.setEnabled(false).get(15, TimeUnit.SECONDS).accepted)
             core.closeAsync().get(15, TimeUnit.SECONDS)
-            completed?.let { assertEquals(savedHash, sha256(it.resolve("session.json"))) }
+            completed?.let { assertEquals(savedHash, sha256(it.resolve("replay.json"))) }
             assertEquals(0, Files.list(root.resolve("workspace")).use { it.count() })
             ownedPids(pids).forEach { pid -> assertFalse(ProcessHandle.of(pid.toLong()).map { it.isAlive }.orElse(false)) }
         } finally {

@@ -123,6 +123,7 @@ internal class CaptureStore(
     private val unusedCandidates = mutableSetOf<Path>()
     private var reporter: ReporterPoll? = null
     private var autoDevice: String? = null
+    private var amCrashFields: Int? = null
     private var autoTarget: String? = null
 
     init {
@@ -137,6 +138,7 @@ internal class CaptureStore(
     fun generation(value: Long) {
         autosave.refresh(null)
         reporter = null
+        amCrashFields = null
         decodeRun = Math.incrementExact(decodeRun)
         generation = value
         generationClockSample = clock.snapshot().lastOrNull()
@@ -151,9 +153,9 @@ internal class CaptureStore(
 
     /** Touch samples exist only while video is requested; their time comes from the device input clock. */
     @Synchronized
-    fun touch(sample: TouchSample, width: Int, height: Int, owner: Long, host: Long = System.nanoTime()) {
+    fun touch(sample: TouchSample, width: Int, height: Int, owner: Long, host: Long = System.nanoTime(), rotation: Int? = null) {
         if (closed || owner != generation || !captureMode.videoRequested) return
-        touches += TouchEntry(sample, owner, clock.mono(sample.monoNs, host), host, width, height)
+        touches += TouchEntry(sample, owner, clock.mono(sample.monoNs, host), host, width, height, rotation)
         while (touches.size > MAX_TOUCH_SAMPLES) {
             val evicted = touches.removeFirst().time
             touchDropped++
@@ -251,7 +253,11 @@ internal class CaptureStore(
             }
             val index = gaps.lastOrNull { it.stream == kind && it.toNs == null }
             if (index != null) {
-                val closedGap = index.copy(toNs = clock.now(), boundaryUncertaintyNs = if (kind == "app_log")
+                // The frame that ends a video gap was captured at its own source time, before it arrived.
+                val shown = received?.time?.takeIf { kind == "video" && it.uncertainty != Long.MAX_VALUE && it.epoch == clock.currentEpoch() }?.sequence
+                val now = clock.now()
+                val end = shown?.let { at -> maxOf(index.fromNs ?: at, now?.let { minOf(it, at) } ?: at) } ?: now
+                val closedGap = index.copy(toNs = end, boundaryUncertaintyNs = if (kind == "app_log")
                     maxOf(index.boundaryUncertaintyNs ?: Long.MAX_VALUE, clock.endUncertainty()) else index.boundaryUncertaintyNs)
                 gaps.remove(index); gaps.add(closedGap)
                 val cut = videoCuts.remove(index)
@@ -265,6 +271,12 @@ internal class CaptureStore(
             status("app_log", StreamState.CAPTURING, null, owner)
         if (started == null && logWindowReady()) started = clock.now()
         if (logsStarted == null && logWindowReady(true)) logsStarted = clock.now()
+    }
+
+    /** Device API level from `ro.build.version.sdk`, which fixes the am_crash layout; null when unreadable. */
+    @Synchronized
+    fun deviceSdk(sdk: Int?, owner: Long) {
+        if (!closed && owner == generation) amCrashFields = amCrashFields(sdk)
     }
 
     @Synchronized
@@ -408,7 +420,7 @@ internal class CaptureStore(
             clock.certain(host) && host >= anchor.received
         val boundary = if (ready) try {
             CrashBarrier(device, anchor.boot, generation, clock.currentEpoch(), host,
-                Math.addExact(anchor.wall, host - anchor.received))
+                Math.addExact(anchor.wall, host - anchor.received), amCrashFields)
         } catch (_: ArithmeticException) { null } else null
         autosave.refresh(boundary)
     }

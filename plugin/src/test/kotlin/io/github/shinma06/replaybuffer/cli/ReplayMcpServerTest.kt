@@ -45,9 +45,16 @@ class ReplayMcpServerTest {
             call(1, "save_replay", """{"logs_only":true}"""),
             call(2, "save_replay"),
             call(3, "save_replay", """{"logs_only":"yes"}"""),
-        ), temporary.resolve("project")) { _, _, _, request -> requests += request; CliResponse(0, "/saved") }
-        assertEquals(listOf(CliCommand.SAVE_LOGS, CliCommand.SAVE), requests.map { it.command })
-        assertEquals("/saved", (responses[BigDecimal("1")]!!.result()["structuredContent"] as Map<*, *>)["directory"])
+        ), temporary.resolve("project")) { _, _, _, request ->
+            synchronized(requests) { requests += request }
+            CliResponse(0, if (request.command == CliCommand.SAVE_LOGS) "/saved-logs" else "/saved")
+        }
+        // Tool calls run concurrently (docs/mcp.md), so each request is matched to its JSON-RPC id, not to arrival order.
+        assertEquals(listOf(CliCommand.SAVE, CliCommand.SAVE_LOGS), requests.map { it.command }.sorted())
+        val logsOnly = responses[BigDecimal("1")]!!.result()["structuredContent"] as Map<*, *>
+        assertEquals("/saved-logs", logsOnly["directory"])
+        assertEquals(Path.of("/saved-logs").resolve("README.md").toString(), logsOnly["summary_path"])
+        assertEquals("/saved", (responses[BigDecimal("2")]!!.result()["structuredContent"] as Map<*, *>)["directory"])
         assertEquals(true, responses[BigDecimal("3")]!!.result()["isError"])
         val save = ((responses["list"]!!.result()["tools"]) as List<*>).map { it as Map<*, *> }.single { it["name"] == "save_replay" }
         val properties = (save["inputSchema"] as Map<*, *>)["properties"] as Map<*, *>

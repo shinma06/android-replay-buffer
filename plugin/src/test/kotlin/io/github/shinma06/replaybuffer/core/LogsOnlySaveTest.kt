@@ -53,7 +53,7 @@ class LogsOnlySaveTest {
             assertFalse(Files.exists(folder.resolve("touches.jsonl")))
             assertTrue(Files.readAllLines(folder.resolve("logcat-device.jsonl")).isNotEmpty())
             assertTrue(Files.readAllLines(folder.resolve("logcat-app.jsonl")).isNotEmpty())
-            val json = JsonParser.parseString(Files.readString(folder.resolve("session.json"))).asJsonObject
+            val json = JsonParser.parseString(Files.readString(folder.resolve("replay.json"))).asJsonObject
             assertEquals("VIDEO_AND_LOGS", json["capture_mode"].asString)
             val saveRequest = json["save_request"].asJsonObject
             assertEquals("LOGS_ONLY", saveRequest["content"].asString)
@@ -64,8 +64,8 @@ class LogsOnlySaveTest {
             assertTrue(video["excluded"].asBoolean)
             assertFalse(video["requested"].asBoolean)
             assertEquals("CAPTURING", video["capture_state"].asString)
-            assertTrue(json["video_file"].isJsonNull)
-            assertTrue(Files.readString(folder.resolve("README.txt")).contains("動画は意図的に除外"))
+            assertTrue(json["files"].asJsonObject["video"].isJsonNull)
+            assertTrue(Files.readString(folder.resolve("README.md")).contains("動画は意図的に除外"))
             store.release(logs.id)
             frameAndLog(store, host, 6, bytes)
             val full = assertNotNull(store.capture(ReplaySettings()))
@@ -96,7 +96,7 @@ class LogsOnlySaveTest {
             val output = SaveWriter().write(quiet, root, { false }) { Files.move(it.partial, it.complete) }
             Files.list(output.directory).use { files -> assertTrue(files.noneMatch { it.fileName.toString().endsWith(".mp4") }) }
             assertEquals(0L, Files.size(output.directory.resolve("logcat-device.jsonl")))
-            val json = JsonParser.parseString(Files.readString(output.directory.resolve("session.json"))).asJsonObject
+            val json = JsonParser.parseString(Files.readString(output.directory.resolve("replay.json"))).asJsonObject
             assertEquals("EXCLUDED", json["coverage"].asJsonObject["video"].asJsonObject["state"].asString)
             assertEquals("CAPTURING", json["coverage"].asJsonObject["device_log"].asJsonObject["state"].asString)
             store.release(quiet.id)
@@ -171,7 +171,7 @@ class LogsOnlySaveTest {
             val directory = assertNotNull(saved.directory)
             Files.list(directory).use { files -> assertTrue(files.noneMatch { it.fileName.toString().endsWith(".mp4") }) }
             assertEquals(0L, Files.size(directory.resolve("logcat-device.jsonl")))
-            val json = JsonParser.parseString(Files.readString(directory.resolve("session.json"))).asJsonObject
+            val json = JsonParser.parseString(Files.readString(directory.resolve("replay.json"))).asJsonObject
             assertEquals("VIDEO_AND_LOGS", json["capture_mode"].asString)
             assertEquals("LOGCAT_TOOLBAR", json["save_request"].asJsonObject["origin"].asString)
             assertEquals("EXCLUDED", json["coverage"].asJsonObject["video"].asJsonObject["state"].asString)

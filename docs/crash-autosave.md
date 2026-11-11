@@ -4,7 +4,7 @@
 
 ## 検出と受付
 
-単一のcrash bufferレコードにあるERROR/AndroidRuntimeの標準 `FATAL EXCEPTION` / `Process: …, PID: …` と、events bufferのtyped `am_crash`（30039、9フィールド、recoverable=0）を相互確認します。kernelのPID/UID、選択packageの排他的UIDと当時の帰属期間、process名、現在の取得世代・時計epochを照合します。platform報告は既存のps pollで確認したUID1000の一意なsystem_server PIDからに限定し、poll開始から受信まで2秒以内・poll完了済みを要求します。PID/userの先頭2整数は、独立に確認した値と一致する順序を採用します。
+単一のcrash bufferレコードにあるERROR/AndroidRuntimeの標準 `FATAL EXCEPTION` / `Process: …, PID: …` と、events bufferのtyped `am_crash`（30039。Android 14以降は9フィールドでrecoverable=0、Android 9〜13は回復可能なcrashがなくRecoverableのない8フィールド。どちらの形式かは取得開始時の`ro.build.version.sdk`で決め、APIが不明なら9フィールドだけを受ける）を相互確認します。kernelのPID/UID、選択packageの排他的UIDと当時の帰属期間、process名、現在の取得世代・時計epochを照合します。platform報告は既存のps pollで確認したUID1000の一意なsystem_server PIDからに限定し、poll開始から受信まで2秒以内・poll完了済みを要求します。PID/userの先頭2整数は、独立に確認した値と一致する順序を採用します。
 
 必須の型・長さ・終端・identityは厳密に確認します。不要な例外文・stack・file名はopaqueなbytesとして扱い、Modified-UTF-8等を含んでも必須部分が有効なら照合できます。保存する元record ID、payload、decode statusは変更しません。platform行は端末全体ログに残し、アプリの行と偽りません。形式や帰属が不明なら保存せず理由を残します。native crashとANRは初期対応外です。通常ERROR、handled exception、正常終了、単独の偽装ヘッダーでは保存しません。
 
@@ -21,6 +21,10 @@
 これらは設計上限で、性能実測や出力総容量の保証ではありません。保存済み・失敗試行の出力は累積し、自動削除しません。
 
 取得OFF中は設定だけを保持します。適用・対象変更・再接続・時計境界では古い未受付観測を無効化し、新しい適用境界以降の報告を使います。対象変更や一時的な再接続だけで重複履歴・回数上限を消しません。自動保存のみOFFにしても受付済み保存は完了できます。
+
+受付前に時計が不確か（直近の測定が不正、または5秒以上届かない）になった時点で、未受付の観測は「報告の時計対応を確認できません」（`NOT_SAVED_CLOCK_UNKNOWN`）として捨てます。時計が戻るまで観測を持ち越して後から受付けることはしません。adbの1往復が40msを超えた測定は不正で、その前後約2秒は時計の不足区間になります。クラッシュ時の端末の負荷がこの区間と重なると、正しい報告でも保存しません。API 28エミュレータ（Devin VM、Studioと同時に起動）では、往復時間の中央値が約2.7ms、最大が約69msでした。4件のクラッシュのうち1件が、報告と同じ時刻の不正な測定によりこの理由で保存されませんでした。この結果は警告としてToolWindowの「直近」「要確認」に出ます。
+
+Android 9では、クラッシュのダイアログを閉じるまで落ちたprocessが残ります。このとき`am start`で同じprocessに戻ってから`am crash`しても、`FATAL EXCEPTION`も`am_crash`も出ないため、検出の対象になりません（保存しなかった報告の件数も増えません）。
 
 ## 固定保存と結果
 

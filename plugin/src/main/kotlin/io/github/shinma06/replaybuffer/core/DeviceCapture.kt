@@ -37,6 +37,8 @@ internal class DeviceCapture @JvmOverloads constructor(
     private val adb = OwnedAdb(adbPath)
     private val stopping = AtomicBoolean()
     private var touchesApplied = false
+    /** The touch reader's display watch, re-read after the video stream reports a new screen size (rotation). */
+    @Volatile private var displayWatch: DisplaySizeWatch? = null
     private val timer = captureWatchdog()
     private val workers = mutableListOf<Thread>()
     private val sockets = ConcurrentHashMap.newKeySet<Socket>()
@@ -161,7 +163,7 @@ internal class DeviceCapture @JvmOverloads constructor(
                 val packet = readVideo(input, monitor::started)
                 monitor.received(false) // Packet read completed; storage readiness is a separate condition.
                 val ready = when (packet) {
-                    is VideoPacket.Session -> { store.session(packet, generation); false }
+                    is VideoPacket.Session -> { displayWatch?.invalidate(); store.session(packet, generation); false }
                     is VideoPacket.Frame -> store.frame(packet, generation)
                 }
                 if (ready) monitor.received(true) else monitor.awaitFirstFrame()
@@ -251,6 +253,8 @@ internal class DeviceCapture @JvmOverloads constructor(
     private fun clock() {
         val boot = adb.command("-s", serial, "shell", "settings", "get", "global", "boot_count").trim()
         require(Regex("[0-9]{1,12}").matches(boot)) { "boot時計を識別できません（API24以上が必要です）" }
+        store.deviceSdk(runCatching { adb.command("-s", serial, "shell", "getprop", "ro.build.version.sdk").trim().toIntOrNull() }
+            .getOrNull(), generation)
         adb.command("-s", serial, "push", resources.clock.toString(), clockFile)
         val process = adb.start("-s", serial, "shell", "CLASSPATH=$clockFile app_process / --nice-name=$clockName io.github.shinma06.replaybuffer.clock.ClockProbe")
         try {
@@ -283,10 +287,11 @@ internal class DeviceCapture @JvmOverloads constructor(
             while (pause(1000)) { /* No multi-touch device: keep video capture unaffected. */ }
             return
         }
-        val readDisplay = { parseDisplaySize(adb.command("-s", serial, "shell", "wm", "size")) }
+        val readDisplay = { parseDisplayGeometry(adb.command("-s", serial, "shell", "wm size; dumpsys input | grep Viewport || true")) }
         val display = DisplaySizeWatch(checkNotNull(readDisplay()) { "画面サイズを取得できません" }, readDisplay)
+        displayWatch = display
         var received = System.nanoTime()
-        val parser = TouchParser(axes, display.size.first, display.size.second, object : TouchSync {
+        val parser = TouchParser(axes, display.geometry.width, display.geometry.height, object : TouchSync {
             override fun lost(device: String, fromNs: Long) = store.touchLost(device, fromNs, generation, received)
             override fun current(device: String): TouchCurrent? = runCatching {
                 parseTouchCurrent(adb.command("-s", serial, "shell", "getevent", "-lp", device))[device]
@@ -294,15 +299,18 @@ internal class DeviceCapture @JvmOverloads constructor(
             override fun resynced(device: String, toNs: Long) = store.touchResynced(device, toNs, generation, received)
         }, parseTouchCurrent(devices))
         check(!stopping.get())
-        val process = adb.start("-s", serial, "shell", "getevent", "-lt", *listOfNotNull(axes.keys.singleOrNull()).toTypedArray())
+        val sdk = runCatching { adb.command("-s", serial, "shell", "getprop", "ro.build.version.sdk").trim().toIntOrNull() }.getOrNull()
+        val process = adb.start("-s", serial, "shell", *geteventShell(sdk).toTypedArray(), "getevent", "-lt",
+            *listOfNotNull(axes.keys.singleOrNull()).toTypedArray())
         try {
             status("touch", StreamState.CAPTURING, null)
             val input = process.inputStream.buffered()
             while (!stopping.get()) {
                 val line = readTouchLine(input) ?: error("getevent出力が終了しました")
                 received = System.nanoTime()
-                display.current(received).let { (width, height) -> parser.resize(width, height) }
-                parser.feed(line).forEach { store.touch(it, parser.width, parser.height, generation, received) }
+                val geometry = display.current(received)
+                parser.resize(geometry.width, geometry.height)
+                parser.feed(line).forEach { store.touch(it, parser.width, parser.height, generation, received, geometry.rotation) }
             }
         } finally { adb.stop(process) }
     }

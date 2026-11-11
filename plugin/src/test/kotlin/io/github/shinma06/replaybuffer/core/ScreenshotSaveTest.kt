@@ -142,7 +142,7 @@ class ScreenshotSaveTest {
             assertContentEquals(Files.readAllBytes(root.resolve("image.png")), Files.readAllBytes(saved.file))
             assertEquals(destination, saved.file.parent)
             assertEquals("usb123", saved.serial)
-            assertTrue(Regex("screenshot-[0-9]{8}-[0-9]{6}-[0-9]{3}-[0-9a-f-]{36}\\.png").matches(saved.file.fileName.toString()))
+            assertTrue(Regex("screenshot-[0-9]{8}-[0-9]{6}-[0-9a-f]{8}\\.png").matches(saved.file.fileName.toString()))
             assertEquals(setOf("keep", saved.file.fileName.toString()), Files.list(destination).use { it.map { path -> path.fileName.toString() }.toList().toSet() })
             assertEquals(TestPermissions.mode("rw-------"), TestPermissions.get(saved.file))
             assertEquals(listOf("devices -l", "-s usb123 shell dumpsys display",
