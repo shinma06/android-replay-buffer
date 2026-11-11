@@ -4,15 +4,14 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.runtime.Composable
@@ -27,6 +26,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ApplicationInfo
@@ -265,6 +265,15 @@ private fun WithTooltip(tooltip: String, content: @Composable () -> Unit) {
     if (tooltip.isBlank()) content() else Tooltip(tooltip = { Text(tooltip) }, content = content)
 }
 
+/** The headline takes only the width left after the capture switch, so the switch is never squeezed out. */
+@Composable
+internal fun StatusHeaderRow(heading: @Composable () -> Unit, toggle: @Composable () -> Unit) {
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.weight(1f)) { heading() }
+        toggle()
+    }
+}
+
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun ReplayToolWindowContent(controller: ReplayToolWindowController) {
@@ -272,18 +281,23 @@ internal fun ReplayToolWindowContent(controller: ReplayToolWindowController) {
     VerticallyScrollableContainer(modifier = Modifier.fillMaxSize()) {
         Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             // 1. Status headline with the capture switch at the end.
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                WithTooltip(model.header.tooltip) {
-                    Text("${model.header.symbol} ${model.header.text}",
-                        modifier = Modifier.semantics { heading(); contentDescription = "取得状態: ${model.header.text}" },
-                        color = toneColor(model.header.tone), fontWeight = FontWeight.Bold)
-                }
-                Spacer(Modifier.weight(1f).width(8.dp))
-                WithTooltip(model.toggle.tooltip) {
-                    CheckboxRow("取得", model.toggle.selected, { controller.setEnabled(it) }, enabled = model.toggle.enabled,
-                        modifier = Modifier.semantics { contentDescription = "取得を有効にする" })
-                }
-            }
+            StatusHeaderRow(
+                heading = {
+                    // A long device or package name is cut on screen; the tooltip and description keep it whole.
+                    WithTooltip(listOf(model.header.text, model.header.tooltip).filter { it.isNotBlank() }.joinToString("\n")) {
+                        Text("${model.header.symbol} ${model.header.text}",
+                            modifier = Modifier.semantics { heading(); contentDescription = "取得状態: ${model.header.text}" },
+                            color = toneColor(model.header.tone), fontWeight = FontWeight.Bold,
+                            maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
+                },
+                toggle = {
+                    WithTooltip(model.toggle.tooltip) {
+                        CheckboxRow("取得", model.toggle.selected, { controller.setEnabled(it) }, enabled = model.toggle.enabled,
+                            modifier = Modifier.semantics { contentDescription = "取得を有効にする" })
+                    }
+                },
+            )
             // 2. Main commands; only a disabled command explains itself.
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
