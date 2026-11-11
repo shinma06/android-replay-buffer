@@ -513,7 +513,7 @@ class CrashAutosaveTest {
 
     @Test
     fun clockGapOutlastingTheReceiptWindowOrChangingEpochRejectsHeldReports() {
-        for (condition in listOf("refresh", "drain", "recovered-epoch", "uncertain-epoch")) {
+        for (condition in listOf("refresh", "drain", "late-recovery", "recovered-epoch", "uncertain-epoch")) {
             CrashFixture(Files.createDirectory(root.resolve(condition))).use { f ->
                 f.standard()
                 f.clockMiss(10_007_000_000)
@@ -521,6 +521,15 @@ class CrashAutosaveTest {
                 when (condition) {
                     "refresh" -> f.refresh(15_007_200_000)
                     "drain" -> assertTrue(f.store.autosave.drain(f.at(15_007_200_000)).isEmpty())
+                    "late-recovery" -> {
+                        // Same-epoch recovery seen by no refresh or drain until after the 5 s hold.
+                        val epoch = f.store.clock.currentEpoch()
+                        f.anchor(12_000_000_000)
+                        f.clockMiss(13_000_000_000)
+                        f.anchor(15_500_000_000)
+                        f.refresh(15_501_100_000)
+                        assertEquals(epoch, f.store.clock.currentEpoch())
+                    }
                     "recovered-epoch" -> { f.store.clock.boundary(); f.anchor(10_009_000_000); f.refresh(10_010_100_000) }
                     "uncertain-epoch" -> { f.store.clock.boundary(); f.refresh(10_008_000_000) }
                 }

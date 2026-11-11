@@ -76,6 +76,10 @@ internal class CrashAutosave {
             val since = heldSince ?: host.also { heldSince = it }
             if (host < since || host - since <= CRASH_RECEIPT_NS) return // An earlier receipt is inside the hold.
         }
+        // A recovery first observed after the hold deadline (e.g. between control ticks) cannot revive expired reports.
+        val held = heldSince
+        if (old != null && value != null && held != null && host != null && host > held && host - held > CRASH_RECEIPT_NS)
+            invalidate(AutoSaveReason.NOT_SAVED_CLOCK_UNKNOWN)
         if (old != null && (value == null || old.generation != value.generation || old.device != value.device ||
                 old.boot != value.boot || old.epoch != value.epoch)) {
             invalidate(if (value != null && old.generation != value.generation) AutoSaveReason.NOT_SAVED_STALE_OWNER
