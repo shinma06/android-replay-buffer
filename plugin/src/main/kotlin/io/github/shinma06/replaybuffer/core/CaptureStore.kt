@@ -498,6 +498,10 @@ internal class CaptureStore(
             if (uid == null) "対象アプリを解決できません" else null, owner)
     }
 
+    /** The reporter poll that a platform crash report received now would be judged against. */
+    @Synchronized
+    fun reporterPoll(): ReporterPoll? = reporter
+
     @Synchronized
     fun reporter(value: ReporterPoll) {
         if (!closed && value.generation == generation) reporter = value

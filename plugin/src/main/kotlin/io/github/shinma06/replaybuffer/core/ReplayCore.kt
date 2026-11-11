@@ -76,6 +76,9 @@ class ReplayCore internal constructor(
 
     fun snapshot(): ReplaySnapshot = current.copy(lastSave = saveAttempt?.let { it.result ?: it.initial }, autoSave = autosave.snapshot())
 
+    /** The live capture's recorded reporter poll, read on the control thread that owns the store. */
+    internal fun reporterPoll(): ReporterPoll? = control.submit<ReporterPoll?> { store?.reporterPoll() }.get()
+
     /** Delivers asynchronously; close removes the listener, but a callback from an in-flight publish may still run. */
     fun subscribe(listener: (ReplaySnapshot) -> Unit): AutoCloseable {
         if (closed.get()) return AutoCloseable { }

@@ -64,13 +64,6 @@ class ReplayCoreWireTest {
     private fun ownedPids(dir: Path): List<String> =
         Files.list(dir).use { files -> files.map { it.fileName.toString() }.toList() }
 
-    /** Completed `ps -A -o PID,UID,NAME` reporter polls in completion order. */
-    private fun psPolls(root: Path): List<String> {
-        val dir = root.resolve("ps-polls")
-        if (!Files.isDirectory(dir)) return emptyList()
-        return Files.list(dir).use { files -> files.map { it.fileName.toString() }.toList() }.sorted()
-    }
-
     /** Log reader launches in start order, as `<buffer> <pid>`. */
     private fun logLaunches(root: Path): List<String> {
         val dir = root.resolve("log-launches")
@@ -280,8 +273,6 @@ elif len(a)>3 and a[3]=='cmd':
     print('package:com.fixture.app uid:10001')
 elif len(a)>3 and a[3]=='ps':
     print('PID UID NAME\n12 10001 com.fixture.app\n500 1000 system_server' if a[-1]=='PID,UID,NAME' else 'PID ARGS',flush=True)
-    if a[-1]=='PID,UID,NAME':
-        polls=root/'ps-polls'; polls.mkdir(exist_ok=True); (polls/f'{time.time_ns():020d}-{os.getpid()}').touch()
 """)
                 val core = ReplayCore(ReplaySettings(fake, root.resolve("missing"), if (captureMode.videoRequested) 1 else 30,
             ApplicationTarget(), captureMode, videoQuality = videoQuality), root.resolve("workspace"))
@@ -293,7 +284,7 @@ elif len(a)>3 and a[3]=='ps':
                 Thread.sleep(25)
             }
             val state = core.snapshot()
-            error("fixture deadline ($phase): ${state.captureState}/${state.save.phase}/frozen=${state.frozen}/video=${state.video}/deviceLog=${state.deviceLog}/appLog=${state.appLog}/error=${state.error}")
+            error("fixture deadline ($phase): ${state.captureState}/${state.save.phase}/frozen=${state.frozen}/video=${state.video}/deviceLog=${state.deviceLog}/appLog=${state.appLog}/error=${state.error}/autoSave=${state.autoSave}/lastSave=${state.lastSave}")
         }
         // The probe stores each sample before it sends the next nonce, so a second later request proves a stored later sample.
         fun awaitLaterClockSample(phase: String) {
@@ -311,10 +302,15 @@ elif len(a)>3 and a[3]=='ps':
                 assertTrue(core.updateApplication(ApplicationTarget("com.fixture.app")).get().accepted)
                 assertTrue(core.applySettings(core.snapshot().settings.copy(saveDirectory = root, autoSaveOnCrash = true)).get().accepted)
                 awaitState("auto-armed") { it.autoSave.state == AutoSaveState.ARMED && it.captureState == CaptureState.CAPTURING }
-                // A platform report is corroborated only by a reporter poll started at most 2 s before it. Report right
-                // after a poll completes, not at an arbitrary point of a poll cycle that a slow runner stretches past 2 s.
-                val polls = psPolls(root).size
-                awaitState("reporter-poll-completed") { psPolls(root).size > polls }
+                // A platform report is corroborated only by the poll the host has recorded, started at most 2 s before the
+                // report arrives. The fake ps marks itself done before its process exits and the host records the poll,
+                // so wait for the host's record of a new poll and report right after it.
+                val previous = core.reporterPoll()
+                val recorded = System.nanoTime() + FIXTURE_GUARD_NS
+                while (core.reporterPoll().let { it == null || it == previous || it.pid != 500 }) {
+                    check(System.nanoTime() < recorded) { "fixture deadline (reporter-poll-recorded): ${core.reporterPoll()}" }
+                    Thread.sleep(5)
+                }
                 val wall = fakeWall()
                 val sources = listOf(javaCrash(process = "com.fixture.app", pid = 12, uid = 10001, wall = wall),
                     platformCrash(process = "com.fixture.app", first = 12, wall = wall + 1_000_000))
