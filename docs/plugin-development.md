@@ -16,7 +16,7 @@
 | Gradle Wrapper | 9.8.1、distribution SHA-256固定 |
 | JVM test | JUnit BOM 6.1.3。JupiterとPlatform launcherを同じBOMで解決 |
 | 時計DEXのbuild入力 | R8/D8 9.5.26、Android SDK API 37.2 revision 1。DEX min API 24 |
-| 開発版 / 正式候補 | 既定は `0.2.0-dev.<source SHA>`。未commit差分には `-dirty`。正式候補はcleanなsourceで `-PpluginVersion=0.2.0` |
+| 開発版 / 正式候補 | 既定は `<devBaseVersion>-dev.<source SHA>`（`plugin/gradle.properties`、[リリースの規則](release.md)）。未commit差分には `-dirty`。正式候補はcleanなsourceで `-PpluginVersion=X.Y.Z` |
 
 Android Studio SDKは2026-10-29に公式情報を照合したRabbit 2へ固定します。SDK更新に伴うbuild・実ロード・機能受入は[#391](https://github.com/shinma06/android-replay-buffer/issues/391)で別々に確認し、pin更新やWindows JARの静的ABI一致をMacでの互換性PASSにしません。その他のstackは2026-10-17時点の公式stableを維持します。[Android Studio一覧](https://plugins.jetbrains.com/docs/intellij/android-studio-releases-list.html)と対象IDEのproduct-info、[Kotlin 2.4.21](https://github.com/JetBrains/kotlin/releases/tag/v2.4.21)、[Gradle 9.8.1](https://docs.gradle.org/9.8.1/release-notes.html)、[JUnit 6.1.3](https://github.com/junit-team/junit-framework/releases/tag/r6.1.3)を照合しました。[Kotlinの公式互換表](https://kotlinlang.org/docs/gradle-configure-project.html)の完全対応範囲はGradle 9.7.0までなので、9.8.1は本projectの実build/testsで適合を確認します。GradleはJava 27をサポートし、プラグインのJVM/API targetはIDEが使う25に限定します。[Platform pluginのtask convention](https://github.com/JetBrains/intellij-platform-gradle-plugin/blob/2.19.0/src/main/kotlin/org/jetbrains/intellij/platform/gradle/plugins/KotlinJvmToolchainConventions.kt)がtoolchain値を使うため、Kotlinコンパイルtaskにもtarget 25を明示しています。
 
@@ -54,7 +54,7 @@ plugin/gradlew -p plugin --no-daemon check buildPlugin verifyPluginStructure
 正式候補はcleanなcommitから次のように一度buildし、そのZIPのSHA-256を固定して受入・main昇格・公開へ渡します。`pluginVersion`は接頭辞・接尾辞・先頭ゼロのない `major.minor.patch` だけを受け付け、dirtyな正式候補は拒否します。`identity.properties`の`source/dirty/version`とPlugin descriptorの版は同じbuild値です。版はidentity生成taskの入力にも含めるため、同じsourceで版を変更しても古いidentityを再利用しません。公開処理での版書換え・再buildは行いません。計画上の「第2版」と配布版番号の管理は別です。
 
 ```bash
-plugin/gradlew -p plugin --no-daemon -PpluginVersion=0.2.0 check buildPlugin verifyPluginStructure
+plugin/gradlew -p plugin --no-daemon -PpluginVersion=X.Y.Z check buildPlugin verifyPluginStructure
 ```
 
 ZIPは `plugin/build/distributions/` に出ます。同じJARを使う`bin/replay`（Windowsは`replay.cmd`）と案内を同梱します。[CLI](cli.md)を参照してください。CIの `test` でも同じ変更影響判定から実行し、ZIPを14日保持のActions artifactとして保存します。これは検証用でありMarketplace/Release公開ではありません。長期保存する候補は保持期限内に取得し、SHA-256とsourceを記録してください。
