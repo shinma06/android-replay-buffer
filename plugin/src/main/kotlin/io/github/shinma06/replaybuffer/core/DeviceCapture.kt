@@ -296,7 +296,9 @@ internal class DeviceCapture @JvmOverloads constructor(
             override fun resynced(device: String, toNs: Long) = store.touchResynced(device, toNs, generation, received)
         }, parseTouchCurrent(devices))
         check(!stopping.get())
-        val process = adb.start("-s", serial, "shell", "getevent", "-lt", *listOfNotNull(axes.keys.singleOrNull()).toTypedArray())
+        val sdk = runCatching { adb.command("-s", serial, "shell", "getprop", "ro.build.version.sdk").trim().toIntOrNull() }.getOrNull()
+        val process = adb.start("-s", serial, "shell", *geteventShell(sdk).toTypedArray(), "getevent", "-lt",
+            *listOfNotNull(axes.keys.singleOrNull()).toTypedArray())
         try {
             status("touch", StreamState.CAPTURING, null)
             val input = process.inputStream.buffered()

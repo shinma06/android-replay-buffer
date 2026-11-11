@@ -75,6 +75,12 @@ internal fun parseTouchDevices(output: String): Map<String, TouchAxes> {
     return result
 }
 
+/**
+ * `adb shell` options for the getevent reader. Android 9 and earlier getevent block-buffers stdout on a pipe (Android 10
+ * added `setbuf(stdout, NULL)`), holding taps until about 4 KiB accumulate; a remote pty makes it flush every line.
+ */
+internal fun geteventShell(sdk: Int?): List<String> = if (sdk != null && sdk in 1..28) listOf("-tt") else emptyList()
+
 /** Current slot and its raw MT position, as `getevent -lp` reports them now (the `value` of each axis). */
 internal data class TouchCurrent(val slot: Int?, val x: Int?, val y: Int?)
 

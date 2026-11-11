@@ -4,6 +4,13 @@ import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Test
 
 class TouchEventsTest {
+    @Test
+    fun onlyAndroid9AndEarlierReadGeteventThroughAPty() {
+        // Android 9's getevent buffers a pipe; Android 10+ and an unknown API level keep the plain pipe.
+        assertEquals(listOf(listOf("-tt"), listOf("-tt"), emptyList(), emptyList(), emptyList(), emptyList()),
+            listOf(24, 28, 29, 36, null, 0).map(::geteventShell))
+    }
+
     private val devices = """
         add device 1: /dev/input/event1
           name:     "AT Translated Set 2 keyboard"

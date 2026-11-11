@@ -29,7 +29,7 @@ Android開発のIT（テスト）のエビデンス採取と、日常の動作�
 | 時計測定 | 同梱DEX（D8 `--min-api 24`）、`settings get global boot_count` | 9（DEX・boot_countは7.0） | 対応 |
 | 端末/アプリlogcat | `logcat -B -T 1`（main・system・crash・events）、`cmd package list packages -U`、`ps -A -o PID,UID,NAME` | 9（`ps -A`は8.0） | 対応 |
 | スクショ | `dumpsys display`、`screencap -p -d <id>` | 9 | 対応。Android 9以前の`mDisplayId=0`形式を読む（[実装境界](design/ide-ui.md#第2版の独立スクリーンショット325)） |
-| タップ位置・タップを表示 | `getevent -lp` / `-lt`（protocol Bのmulti-touch）、`settings put system show_touches` | 9 | 対応。protocol Bのタッチパネルがない端末は`touch`が`UNAVAILABLE`（「タッチパネルの入力deviceが見つかりません」） |
+| タップ位置・タップを表示 | `getevent -lp` / `-lt`（protocol Bのmulti-touch）、`settings put system show_touches` | 9 | 対応。Android 9以前のgeteventはpipeへの出力をためるため（Android 10で即時出力に変更）、端末のAPIが28以下ならpty経由（`adb shell -tt`）で読む。protocol Bのタッチパネルがない端末は`touch`が`UNAVAILABLE`（「タッチパネルの入力deviceが見つかりません」） |
 | クラッシュ時の自動保存 | crash bufferの`FATAL EXCEPTION`とevents bufferの`am_crash` | 9 | 対応。Android 9〜13の`am_crash`は8フィールド、14以降はRecoverableを加えた9フィールドで、端末のAPIで形式を選ぶ（[自動保存](crash-autosave.md)） |
 | 音声 | 再生音のcapture | 13（API 33） | 非対応（別Trailで扱う） |
 
