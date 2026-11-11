@@ -406,6 +406,24 @@ class LocalCaptureOwnershipTest {
     }
 
     @Test
+    fun interruptedRegistrationIsPersistedAndKeepsTheOwnershipUsable() {
+        val ownership = LocalCaptureOwnership.create(namespace("interrupted"))
+        val descriptor = LocalCaptureOwnership::class.java.getDeclaredField("descriptor").apply { isAccessible = true }.get(ownership) as Path
+        try {
+            // Stopping capture interrupts the video worker, which may be registering a GOP at that moment.
+            Thread.currentThread().interrupt()
+            try { ownership.created(Files.writeString(ownership.root.resolve("replay-clock.jar"), "clock")) }
+            finally { assertTrue(Thread.interrupted()) }
+            ownership.created(Files.writeString(ownership.root.resolve("scrcpy-server-v5.0.1"), "server"))
+            assertEquals(setOf(".", "replay-clock.jar", "scrcpy-server-v5.0.1"), entries(descriptor).keys)
+        } finally {
+            Files.deleteIfExists(ownership.root.resolve("replay-clock.jar"))
+            Files.deleteIfExists(ownership.root.resolve("scrcpy-server-v5.0.1"))
+            ownership.removeRoot(); ownership.close()
+        }
+    }
+
+    @Test
     fun failedUnlinkPreservesPayloadAndDoesNotNotifyOwnershipUntilDeletionSucceeds() {
         val ownership = LocalCaptureOwnership.create(namespace("unlink-failure"))
         val deleted = mutableListOf<Path>()

@@ -15,6 +15,9 @@ import java.nio.file.attribute.BasicFileAttributes
 import java.time.Instant
 import java.util.ArrayDeque
 import java.util.UUID
+import java.util.concurrent.Callable
+import java.util.concurrent.ExecutionException
+import java.util.concurrent.Executors
 import java.util.zip.CRC32
 
 /**
@@ -38,11 +41,18 @@ internal class LocalCaptureOwnership private constructor(
     private val freeSlots = ArrayDeque<Int>()
     private var slots = 0
     private var failed = false
+    // Capture workers are interrupted on stop, and an interrupt during their IO would close this shared channel.
+    private val writer = Executors.newSingleThreadExecutor { Thread(it, "replay-local-ownership").apply { isDaemon = true } }
 
     init {
-        persist(0, encodeRecord(mapOf("schema" to 2, "token" to root.fileName.toString().removePrefix("replay-"),
-            "pid" to process.pid(), "started" to started.toString(), "namespace" to namespaceIdentity,
-            "descriptor" to descriptorIdentity), HEADER_BYTES))
+        try {
+            persist(0, encodeRecord(mapOf("schema" to 2, "token" to root.fileName.toString().removePrefix("replay-"),
+                "pid" to process.pid(), "started" to started.toString(), "namespace" to namespaceIdentity,
+                "descriptor" to descriptorIdentity), HEADER_BYTES))
+        } catch (failure: Exception) {
+            writer.shutdown()
+            throw failure
+        }
     }
 
     @Synchronized
@@ -73,14 +83,36 @@ internal class LocalCaptureOwnership private constructor(
     private fun persist(offset: Long, bytes: ByteArray) {
         try {
             val expectedSize = if (offset == 0L) 0L else HEADER_BYTES.toLong() + slots.toLong() * SLOT_BYTES
-            require(channel.size() == expectedSize)
-            channel.position(offset)
-            val buffer = ByteBuffer.wrap(bytes)
-            while (buffer.hasRemaining()) check(channel.write(buffer) > 0)
-            channel.force(true)
+            onWriter {
+                require(channel.size() == expectedSize)
+                channel.position(offset)
+                val buffer = ByteBuffer.wrap(bytes)
+                while (buffer.hasRemaining()) check(channel.write(buffer) > 0)
+                channel.force(true)
+            }
         } catch (failure: Exception) {
             failed = true // Do not write around an incomplete slot; preserve ambiguity until normal cleanup.
             throw failure
+        }
+    }
+
+    /** Runs [task] on [writer] and waits for it; the caller's interrupt is kept for after the wait. */
+    private fun onWriter(task: () -> Unit) {
+        val result = writer.submit(Callable(task))
+        var interrupted = false
+        try {
+            while (true) {
+                try {
+                    result.get()
+                    return
+                } catch (_: InterruptedException) {
+                    interrupted = true
+                } catch (failure: ExecutionException) {
+                    throw failure.cause ?: failure
+                }
+            }
+        } finally {
+            if (interrupted) Thread.currentThread().interrupt()
         }
     }
 
@@ -102,7 +134,7 @@ internal class LocalCaptureOwnership private constructor(
                 Files.delete(descriptor)
             }
         } finally {
-            try { if (lock.isValid) lock.release() } finally { channel.close() }
+            try { if (lock.isValid) lock.release() } finally { try { channel.close() } finally { writer.shutdown() } }
         }
     }
 
