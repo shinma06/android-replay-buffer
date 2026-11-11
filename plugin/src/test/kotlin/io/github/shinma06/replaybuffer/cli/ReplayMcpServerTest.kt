@@ -6,7 +6,9 @@ import java.math.BigDecimal
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.Base64
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
@@ -95,6 +97,50 @@ class ReplayMcpServerTest {
         assertEquals(BigDecimal("-32700"), (responses[null]!!["error"] as Map<*, *>)["code"])
         assertFalse(requests.any { it.command == CliCommand.START }, "Invalid arguments must not dispatch")
         assertEquals(5, requests.size)
+    }
+
+    private fun queuedSession(count: Int, callLimitMs: Long, send: (Path, Path?, String, CliRequest) -> CliResponse): List<Map<*, *>> {
+        val output = ByteArrayOutputStream()
+        val input = (1..count).joinToString("\n", postfix = "\n") { call(it, "save_replay") }.toByteArray(Charsets.UTF_8).inputStream()
+        val code = ReplayMcpServer(input, output, PrintStream(ByteArrayOutputStream()), temporary, temporary.resolve("registry"),
+            { "build" }, send, callLimitMs).run()
+        assertEquals(0, code)
+        return output.toString(Charsets.UTF_8).lines().filter(String::isNotEmpty).map { McpJson.parse(it) as Map<*, *> }
+    }
+
+    @Test fun `stdin EOF waits for every queued call and answers each one exactly once`() {
+        val sent = AtomicInteger()
+        // 4 running + 16 queued calls take 5 rounds, longer than one call's limit but within each call's own limit.
+        val responses = queuedSession(20, callLimitMs = 1_500) { _, _, _, _ ->
+            Thread.sleep(500)
+            CliResponse(0, output = "/saved/${sent.incrementAndGet()}")
+        }
+        assertEquals(20, sent.get())
+        assertEquals((1..20).toList(), responses.map { (it["id"] as BigDecimal).toInt() }.sorted())
+        responses.forEach { assertEquals(false, it.result()["isError"]) }
+    }
+
+    @Test fun `a call overrunning its own limit makes EOF answer the unstarted calls without running them`() {
+        val sent = AtomicInteger()
+        val release = CountDownLatch(1)
+        try {
+            val responses = queuedSession(10, callLimitMs = 300) { _, _, _, _ ->
+                sent.incrementAndGet()
+                release.await()
+                CliResponse(0, output = "/saved")
+            }
+            assertEquals(4, sent.get())
+            assertEquals((5..10).toList(), responses.map { (it["id"] as BigDecimal).toInt() }.sorted())
+            responses.forEach {
+                val error = it["error"] as Map<*, *>
+                assertEquals(BigDecimal(-32000), error["code"])
+                assertTrue((error["message"] as String).contains("実行していません"))
+            }
+        } finally {
+            release.countDown()
+        }
+        Thread.sleep(300)
+        assertEquals(4, sent.get())
     }
 
     @Test fun `older protocol omits structured content and unknown versions negotiate the latest`() {
