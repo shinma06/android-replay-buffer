@@ -2,8 +2,10 @@ package io.github.shinma06.replaybuffer.core
 
 import com.google.gson.GsonBuilder
 import org.jcodec.codecs.h264.H264Utils
+import org.jcodec.codecs.mpeg4.mp4.EsdsBox
 import org.jcodec.common.model.Packet
 import org.jcodec.containers.mp4.MP4TrackType
+import org.jcodec.containers.mp4.boxes.AudioSampleEntry
 import org.jcodec.containers.mp4.boxes.Edit
 import org.jcodec.containers.mp4.boxes.SampleEntry
 import org.jcodec.containers.mp4.muxer.MP4MuxerTrack
@@ -215,6 +217,7 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                 } }
             }
             val movieAnchors = mutableListOf<MovieAnchor>()
+            var audioPlan: AudioTrackPlan? = null
             val framesFile = if (selected.isNotEmpty()) file(ReplayFiles.VIDEO_FRAMES) else null
             val rawPath = if (normalizer != null) file(ReplayFiles.VIDEO_SOURCE) else null
             var frameRows = 0
@@ -457,10 +460,32 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                                 previousLast = last
                             }
                             track.setEdits(edits)
+                            val anchorsByEpoch = movieAnchors.groupBy { it.epoch }.mapValues { (_, list) -> list.sortedBy { it.from } }
+                            val plan = if (capture.audioState == null) null else planAudio(capture.audio, anchorsByEpoch, movie) { row ->
+                                val sequence = row.time.sequence
+                                sequence != null && capture.windowKnown && row.time.uncertainty != Long.MAX_VALUE && videoScopes.none { gap ->
+                                    gap.stream == "clock" && gap.intersects(sequence, sequence, row.time.uncertainty)
+                                }
+                            }
+                            audioPlan = plan
+                            val sound = if (plan == null || plan.samples.isEmpty()) null else MP4MuxerTrack(mux.nextTrackId, MP4TrackType.SOUND).also { sound ->
+                                mux.addTrack(sound)
+                                val entry = AudioSampleEntry.compressedAudioSampleEntry("mp4a", 1, 16, plan.channels, plan.sampleRate, 0, 0, 0)
+                                entry.add(EsdsBox.createEsdsBox(ByteBuffer.wrap(plan.config), 0x40, 0, 128_000, 128_000, sound.trackId))
+                                sound.addSampleEntry(entry)
+                                plan.samples.forEachIndexed { i, row ->
+                                    checkActive()
+                                    sound.addFrameInternal(Packet.createPacket(ByteBuffer.wrap(row.bytes), i * AAC_FRAME_SAMPLES, plan.sampleRate,
+                                        AAC_FRAME_SAMPLES, i.toLong(), Packet.FrameType.KEY, null), 1)
+                                }
+                                sound.setEdits(plan.edits)
+                            }
                             val movieBox = mux.finalizeHeader()
                             require(movieBox.timescale == 1_000_000) { "動画movie timescaleが不正です" }
                             require(edits.fold(0L) { sum, edit -> Math.addExact(sum, edit.duration) } == movie)
-                            movieBox.tracks.single().setDuration(movie)
+                            movieBox.tracks.forEach { trak ->
+                                trak.setDuration(if (sound != null && trak.trackHeader.trackId == sound.trackId) plan!!.durationUs else movie)
+                            }
                             movieBox.setDuration(movie)
                             mux.storeHeader(movieBox)
                         }
@@ -573,6 +598,8 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                     ?: capture.apps.mapNotNull { it.packageName }.distinct().joinToString().ifEmpty { null } ?: "未確定")
                 row("保存範囲", "直前${capture.seconds}秒の設定に対し${(capture.end - capture.start) / 1e9}秒")
                 row("動画", if (parts.isEmpty()) "なし" else "1本（再生区間${parts.size}件、frame ${frameRows}件）")
+                if (capture.audioState != null) row("端末の再生音", if (audioPlan?.samples?.isNotEmpty() == true) "MP4に収録（AAC）"
+                    else "なし（${ReplayFiles.RECORD}のcoverage.audioを確認）")
                 row("全体ログ", "${counts["device_log_rows"]}行")
                 row("アプリログ", "${counts["app_log_rows"]}行")
                 row("タップ", if (touchFile == null) "記録なし" else "${capture.touches.size}件（うち動画に重なる${touchesInMovie}件）")
@@ -636,6 +663,9 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                 if (videoRequested) {
                     appendLine("- 動画がある保存は1本のMP4です。動画がない保存にはMP4と${ReplayFiles.VIDEO_FRAMES}はありません。取得状態・理由は${ReplayFiles.RECORD}のcoverage.videoを確認してください。")
                     appendLine("- 動画の表示秒に対応する${ReplayFiles.VIDEO_FRAMES}のmovie_pts_us〜movie_end_usとsource/window情報を使い、両ログと照合してください。${ReplayFiles.RECORD}のpartsは同じファイル内の再生区間です。")
+                    if (capture.audioState != null) appendLine(if (audioPlan?.samples?.isNotEmpty() == true)
+                        "- MP4には端末の再生音（AAC）も入っています。音声は動画と同じ端末時計で対応づけ、動画のない範囲には入れていません。音声encoderの遅延分だけ音が遅れることがあります（emulatorで約0.1秒）。録音を禁止したアプリの音は無音です。取得状態・理由は${ReplayFiles.RECORD}のcoverage.audioとaudio_trackを確認してください。"
+                        else "- 音声の録音を設定していましたが、MP4に音声はありません。理由は${ReplayFiles.RECORD}のcoverage.audioを確認してください。")
                     appendLine("- タップは動画の取得中に自動で記録します。時刻は端末の入力時刻（getevent、CLOCK_MONOTONIC）で、動画PTSと同じ時計対応によりwindow_nsへ写し、表示中の動画位置をmovie_usに記録します。movie_usがnullの行は動画の表示区間外または時刻を確定できない行です。座標は画面の自然な向きのpx（display_width×display_height）です。screen_x/screen_yは回転後の画面（動画に写る向き）のpxで、display_rotationは端末の回転（0〜3、90度単位）、不明ならnullです。回転は最大1秒遅れで読み直し、動画のサイズ変更時はすぐ読み直します。")
                     appendLine("- タップ位置の表示（show_touches）: 設定${if (capture.settings.showTouches) "ON（取得中だけ端末設定を変更し、終了時に元へ戻します）" else "OFF"}、" +
                         when (capture.touchDots) {
@@ -679,6 +709,7 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                 "plugin_id" to "io.github.shinma06.android-replay-buffer",
                 "dependencies" to CaptureResources.identity(), "settings" to mapOf("replay_seconds" to capture.seconds,
                     "capture_mode" to capture.settings.captureMode, "video_requested" to capture.settings.captureMode.videoRequested,
+                    "record_audio" to capture.settings.recordAudio, "audio_requested" to (capture.audioState != null),
                     "video_byte_limit" to ReplaySettings.VIDEO_BYTES, "log_byte_limit" to ReplaySettings.LOG_BYTES,
                     "min_free_bytes" to ReplaySettings.MIN_FREE_BYTES,
                     "max_video_packets" to ReplaySettings.MAX_VIDEO_PACKETS, "max_config_packet_bytes" to ReplaySettings.MAX_CONFIG_PACKET_BYTES,
@@ -700,7 +731,10 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                     "requested" to false, "excluded" to true, "capture_state" to state.state, "availableSeconds" to 0.0,
                     "reason" to "ログのみの保存として動画を意図的に除外しました（動画の取得は継続しています）") else mapOf("state" to state.state,
                     "requested" to (state.state != StreamState.NOT_REQUESTED),
-                    "availableSeconds" to state.availableSeconds, "reason" to state.reason) },
+                    "availableSeconds" to state.availableSeconds, "reason" to state.reason) } + ("audio" to if (videoExcluded && capture.settings.recordAudio)
+                    mapOf("state" to "EXCLUDED", "requested" to false, "excluded" to true, "availableSeconds" to 0.0,
+                        "reason" to "ログのみの保存として音声を意図的に除外しました（音声の取得は継続しています）")
+                    else audioCoverage(capture, audioPlan)),
                 "gaps" to capture.gaps.map { gap -> mapOf("kind" to gap.stream,
                     "from_ns" to gap.fromNs?.toString(), "to_ns" to gap.toNs?.toString(), "reason" to gap.reason,
                     "time_axis" to "sequence_ns", "generation" to gap.generation, "clock_epoch" to gap.clockEpoch,
@@ -715,6 +749,11 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                     "coordinate_space" to "display_px_natural_orientation", "screen_coordinate_space" to "display_px_current_rotation",
                     "gaps" to capture.touchGaps.filter { (it.to == null || it.to >= capture.start) && (it.from == null || it.from <= capture.end) }
                         .map { mapOf("from_ns" to it.from?.toString(), "to_ns" to it.to?.toString(), "reason" to it.reason, "time_axis" to "sequence_ns") }) },
+                "audio_track" to audioPlan?.takeIf { it.samples.isNotEmpty() }?.let { plan -> mapOf("file" to ReplayFiles.VIDEO, "codec" to "AAC-LC",
+                    "sample_rate" to plan.sampleRate, "channels" to plan.channels, "source" to "Android playback capture (scrcpy audio_source=playback)",
+                    "time_source" to "AudioRecord timestamp (device CLOCK_MONOTONIC), mapped like video PTS onto the movie timeline",
+                    "segments" to plan.segments.map { mapOf("movie_start_us" to it.movieStartUs.toString(), "duration_us" to it.durationUs.toString(),
+                        "media_start_samples" to it.mediaStart.toString(), "samples" to it.count) }) },
                 "video_reencoded" to (normalizer != null),
                 "video_canvas" to normalizer?.let { mapOf("width" to it.width, "height" to it.height, "colour_known" to it.colourKnown) },
                 "video_movie_duration_us" to parts.lastOrNull()?.get("movie_end_us"),
@@ -839,4 +878,128 @@ internal fun List<MovieAnchor>.movieTime(point: Long): Long? {
     val anchor = getOrNull(found) ?: return null
     val offset = (point - anchor.from) / 1000
     return if (offset <= anchor.durationUs) anchor.movieUs + offset else null
+}
+
+internal const val AAC_FRAME_SAMPLES = 1024L
+private const val AUDIO_JOIN_TOLERANCE_US = 20_000L
+private const val SPAN_JOIN_TOLERANCE_US = 1_000L
+private val AAC_RATES = intArrayOf(96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350)
+
+internal class AudioSegment(val movieStartUs: Long, val mediaStart: Long, val count: Int, val durationUs: Long)
+
+/** AAC units placed on the saved movie timeline; [edits] use movie µs for durations and samples for media time. */
+internal class AudioTrackPlan(val sampleRate: Int, val channels: Int, val config: ByteArray, val samples: List<AudioEntry>,
+                              val segments: List<AudioSegment>, val edits: List<Edit>) {
+    val durationUs: Long get() = segments.lastOrNull()?.let { it.movieStartUs + it.durationUs } ?: 0
+    val seconds: Double get() = segments.sumOf { it.durationUs } / 1e6
+}
+
+/** AAC-LC AudioSpecificConfig (object type, sample rate, channels) or null when it is not a plain mono/stereo AAC-LC config. */
+internal fun aacConfig(config: ByteArray): Pair<Int, Int>? {
+    if (config.size < 2) return null
+    val b0 = config[0].toInt() and 0xff
+    val b1 = config[1].toInt() and 0xff
+    val rate = AAC_RATES.getOrNull(((b0 and 7) shl 1) or (b1 ushr 7)) ?: return null
+    val channels = (b1 ushr 3) and 0xf
+    return if (b0 ushr 3 == 2 && channels in 1..2) rate to channels else null
+}
+
+/**
+ * Places each AAC unit at the movie time of the video frame shown at its device time ([movieTime]); units that no
+ * presented frame covers are left out, so audio never runs over video holes. Consecutive units within 20 ms of
+ * their nominal cadence share one edit; a larger drift, gap or server session starts a new edit. An edit never
+ * crosses or runs past the end of its contiguous displayed span ([displayedSpans]), so the last unit before a
+ * video hole is cut at the hole.
+ */
+internal fun planAudio(audio: List<AudioEntry>, anchors: Map<Int, List<MovieAnchor>>, movieUs: Long,
+                       aligned: (AudioEntry) -> Boolean): AudioTrackPlan? {
+    val config = audio.firstOrNull()?.config ?: return null
+    val (rate, channels) = aacConfig(config) ?: return null
+    fun span(count: Int) = Math.round(count * AAC_FRAME_SAMPLES * 1_000_000.0 / rate)
+    val chosen = mutableListOf<AudioEntry>()
+    val segments = mutableListOf<AudioSegment>()
+    var cursor = 0L
+    var start = 0L
+    var media = 0L
+    var count = 0
+    var session = -1L
+    val spans = displayedSpans(anchors)
+    var spanEnd = 0L
+    fun close() {
+        if (count == 0) return
+        val duration = minOf(span(count), movieUs - start, spanEnd - start)
+        segments += AudioSegment(start, media, count, duration)
+        cursor = start + duration
+        count = 0
+    }
+    for (row in audio) {
+        val point = row.time.sequence
+        val at = if (row.config.contentEquals(config) && point != null && aligned(row)) anchors[row.time.epoch]?.movieTime(point) else null
+        val end = at?.let { spans.endOf(it) }
+        if (at == null || end == null || at >= movieUs) { close(); continue }
+        if (count > 0 && row.session == session && end == spanEnd &&
+            kotlin.math.abs(at - (start + span(count))) <= AUDIO_JOIN_TOLERANCE_US) {
+            chosen += row; count++; continue
+        }
+        close()
+        val begin = maxOf(at, cursor)
+        if (begin - at > AUDIO_JOIN_TOLERANCE_US || begin >= movieUs || begin >= end) continue
+        start = begin; media = chosen.size * AAC_FRAME_SAMPLES; count = 1; session = row.session; spanEnd = end
+        chosen += row
+    }
+    close()
+    val edits = mutableListOf<Edit>()
+    var movie = 0L
+    segments.forEach { segment ->
+        if (segment.movieStartUs > movie) edits += Edit(segment.movieStartUs - movie, -1, 1f)
+        edits += Edit(segment.durationUs, segment.mediaStart, 1f)
+        movie = segment.movieStartUs + segment.durationUs
+    }
+    return AudioTrackPlan(rate, channels, config, chosen, segments, edits)
+}
+
+/**
+ * Movie intervals `[start, end]` shown without a break: adjacent anchors of one clock epoch join only when they
+ * continue in both movie time and device time, so a video hole the movie skips still ends a span.
+ */
+internal fun displayedSpans(anchors: Map<Int, List<MovieAnchor>>): List<LongArray> {
+    val spans = mutableListOf<LongArray>()
+    var previous: MovieAnchor? = null
+    anchors.values.flatten().sortedBy { it.movieUs }.forEach { anchor ->
+        val last = previous
+        val end = anchor.movieUs + anchor.durationUs
+        if (last != null && last.epoch == anchor.epoch &&
+            kotlin.math.abs(anchor.movieUs - (last.movieUs + last.durationUs)) <= SPAN_JOIN_TOLERANCE_US &&
+            kotlin.math.abs((anchor.from - last.from) / 1000 - last.durationUs) <= SPAN_JOIN_TOLERANCE_US)
+            spans.last()[1] = maxOf(spans.last()[1], end)
+        else spans += longArrayOf(anchor.movieUs, end)
+        previous = anchor
+    }
+    return spans
+}
+
+/** End of the span holding movie time [at], or null; [this] is sorted by start. */
+private fun List<LongArray>.endOf(at: Long): Long? {
+    var low = 0
+    var high = size - 1
+    var found = -1
+    while (low <= high) {
+        val mid = (low + high) ushr 1
+        if (this[mid][0] <= at) { found = mid; low = mid + 1 } else high = mid - 1
+    }
+    return getOrNull(found)?.get(1)?.takeIf { at <= it }
+}
+
+internal fun audioCoverage(capture: FrozenCapture, plan: AudioTrackPlan?): Map<String, Any?> {
+    val state = capture.audioState ?: return mapOf("state" to StreamState.NOT_REQUESTED, "requested" to false,
+        "availableSeconds" to 0.0, "reason" to null)
+    val seconds = plan?.seconds ?: 0.0
+    val reason = state.reason ?: when {
+        capture.video.isEmpty() -> "動画がないため音声を保存していません"
+        capture.audio.isNotEmpty() && plan == null -> "未対応の音声形式のため保存していません"
+        seconds == 0.0 -> "保存範囲に動画と対応づけられる音声がありません"
+        else -> null
+    }
+    return mapOf("state" to state.state, "requested" to true, "availableSeconds" to seconds, "reason" to reason,
+        "note" to "端末の再生音（Android 13以上のplayback capture）です。録音を禁止したアプリやマイク音は含まれません。")
 }

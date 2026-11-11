@@ -34,6 +34,23 @@ internal fun readVideo(input: DataInputStream, started: () -> Unit = {}): VideoP
         flags and (1L shl 61) != 0L, bytes)
 }
 
+/** One scrcpy audio packet; [pts] is device CLOCK_MONOTONIC µs like video PTS, so both share the same clock mapping. */
+internal class AudioPacket(val pts: Long, val config: Boolean, val bytes: ByteArray)
+
+/** scrcpy audio stream codec ids: AAC, or disabled (0, e.g. unsupported/refused) and error (1) before any packet. */
+internal const val AUDIO_CODEC_AAC = 0x00616163
+internal const val AUDIO_DISABLED = 0
+internal const val AUDIO_ERROR = 1
+
+internal fun readAudio(input: DataInputStream): AudioPacket {
+    val flags = input.readLong()
+    val length = input.readInt()
+    require(length in 1..64 * 1024) { "音声packet長が上限外です" }
+    val bytes = ByteArray(length)
+    input.readFully(bytes)
+    return AudioPacket(flags and ((1L shl 61) - 1), flags and (1L shl 62) != 0L, bytes)
+}
+
 /**
  * Wall time is epoch nanoseconds; raw is the payload, not the binary header. Decoded text can be lossy.
  *

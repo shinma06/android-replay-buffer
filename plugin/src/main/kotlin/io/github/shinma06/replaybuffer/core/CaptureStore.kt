@@ -19,6 +19,11 @@ internal data class VideoEntry(
 internal data class VideoSourcePosition(
     val file: Path, val offset: Long, val generation: Long, val session: Long, val host: Long,
 )
+/** One AAC access unit; [config] is the AudioSpecificConfig of its server session, [time] maps [pts] like video. */
+internal class AudioEntry(val pts: Long, val bytes: ByteArray, val config: ByteArray, val time: MappedTime,
+                          val generation: Long, val session: Long, val host: Long) {
+    fun mapped(time: MappedTime) = AudioEntry(pts, bytes, config, time, generation, session, host)
+}
 internal data class VideoCut(val before: VideoSourcePosition?, val after: VideoSourcePosition? = null)
 internal data class LogEntry(
     val id: String, val source: DeviceLog, val generation: Long, val time: MappedTime,
@@ -52,6 +57,9 @@ internal data class FrozenCapture(
     val touchDropped: Long = 0,
     /** Whether the visible dots were on during this generation; null before the touch reader decided. */
     val touchDots: TouchDots? = null,
+    val audio: List<AudioEntry> = emptyList(),
+    /** Audio state at freeze; null when audio was not requested (setting OFF or LOG_ONLY) or the save excludes video. */
+    val audioState: StreamSnapshot? = null,
     val request: SaveRequest = SaveRequest(),
 ) {
     val empty: Boolean get() = video.isEmpty() && logs.isEmpty()
@@ -74,7 +82,15 @@ internal class CaptureStore(
     private val removed: (Path) -> Unit = {},
     val captureMode: CaptureMode = CaptureMode.VIDEO_AND_LOGS,
     val autosave: CrashAutosave = CrashAutosave(),
+    audioRequested: Boolean = false,
 ) : AutoCloseable {
+    private val audioRequested = audioRequested && captureMode.videoRequested
+    private val audio = ArrayDeque<AudioEntry>()
+    private var audioBytes = 0L
+    private var audioConfig: ByteArray? = null
+    private var audioSession = 0L
+    private var audioPrevious = -1L
+    private var audioState = StreamSnapshot(StreamState.WAITING)
     val sequence: String = UUID.randomUUID().toString()
     private val video by lazy { ArrayDeque<VideoEntry>() }
     private val logs = ArrayDeque<LogEntry>()
@@ -149,6 +165,11 @@ internal class CaptureStore(
         states.replaceAll { kind, _ -> StreamSnapshot(if (kind == "video" && !captureMode.videoRequested) StreamState.NOT_REQUESTED else StreamState.RECOVERING) }
         if (captureMode.videoRequested) setTouchState(StreamState.RECOVERING, "取得を復旧しています")
         touchDots = null
+        if (audioRequested) {
+            if (audioState.state == StreamState.CAPTURING) addGap("audio", clock.now(), null, "端末の接続が切り替わりました")
+            audioState = StreamSnapshot(StreamState.WAITING)
+            audioConfig = null
+        }
     }
 
     /** Touch samples exist only while video is requested; their time comes from the device input clock. */
@@ -295,6 +316,56 @@ internal class CaptureStore(
             }
         }
         if (healthy && appResolved) status("app_log", StreamState.CAPTURING, null, owner)
+    }
+
+    /** A new server attempt starts a fresh AAC stream whose config packet comes first. */
+    @Synchronized
+    fun audioSession(owner: Long) {
+        if (closed || owner != generation || !audioRequested) return
+        audioSession++
+        audioConfig = null
+        audioPrevious = -1
+        setAudioState(StreamState.RECOVERING, "音声の取得を準備しています")
+    }
+
+    @Synchronized
+    fun audioStatus(state: StreamState, reason: String?, owner: Long) {
+        if (closed || owner != generation || !audioRequested) return
+        setAudioState(state, reason)
+    }
+
+    @Synchronized
+    fun audio(packet: AudioPacket, owner: Long, host: Long = System.nanoTime()) {
+        if (closed || owner != generation || !audioRequested) return
+        if (packet.config) { audioConfig = packet.bytes.copyOf(); return }
+        val config = checkNotNull(audioConfig) { "音声configがありません" }
+        if (packet.pts <= audioPrevious) return // A non-monotonic AAC unit cannot be placed on the video timeline.
+        audioPrevious = packet.pts
+        audio += AudioEntry(packet.pts, packet.bytes, config, clock.video(packet.pts, host), generation, audioSession, host)
+        audioBytes += packet.bytes.size + 128
+        while (audioBytes > logLimit && audio.isNotEmpty()) audioBytes -= audio.removeFirst().bytes.size + 128
+        if (audioState.state != StreamState.CAPTURING) setAudioState(StreamState.CAPTURING, null)
+    }
+
+    private fun setAudioState(state: StreamState, reason: String?) {
+        if (audioState.state == StreamState.UNAVAILABLE && state != StreamState.UNAVAILABLE) return
+        if (audioState.state == StreamState.CAPTURING && state != StreamState.CAPTURING)
+            addGap("audio", clock.now(), null, reason ?: "音声の取得が中断しました")
+        if (audioState.state != StreamState.CAPTURING && state == StreamState.CAPTURING) {
+            gaps.lastOrNull { it.stream == "audio" && it.toNs == null }?.let { open ->
+                gaps.remove(open); gaps.add(open.copy(toNs = clock.now()))
+            }
+        }
+        audioState = StreamSnapshot(state, reason = reason)
+    }
+
+    private fun pruneAudio(expired: (MappedTime, Long, Long) -> Boolean) {
+        audio.removeIf { row ->
+            val retained = row.time.sequence ?: row.host
+            val gone = expired(row.time, retained, row.host)
+            if (gone) audioBytes -= row.bytes.size + 128
+            gone
+        }
     }
 
     @Synchronized
@@ -526,6 +597,7 @@ internal class CaptureStore(
                 repeat((minOf(firstInside, all.lastIndex) downTo 0).firstOrNull { all[it].key } ?: 0) { removeVideo() }
             }
             pruneLogs { _, _, host -> host < cutoff }
+            pruneAudio { _, _, host -> host < cutoff }
             touches.removeIf { it.host < cutoff }
             enforceVideoLimit()
             deleteUnused()
@@ -552,6 +624,7 @@ internal class CaptureStore(
             }
         }
         pruneLogs(expiredBefore(cutoff, latest))
+        pruneAudio(expiredBefore(cutoff, latest))
         touches.removeIf { row ->
             val point = row.time.sequence
             point != null && row.time.uncertainty != Long.MAX_VALUE && point < cutoff - row.time.uncertainty
@@ -625,6 +698,8 @@ internal class CaptureStore(
             touches.map { row -> row.copy(time = touchTime(row.sample.monoNs, row.host, row.time.epoch)) }
                 .filter { insideWindow(it.time, it.host) }
         }
+        val audioRows = if (!audioRequested || !withVideo) emptyList() else
+            audio.map { it.mapped(clock.video(it.pts, it.host, it.time.epoch)) }.filter { insideWindow(it.time, it.host) }
         val all = if (withVideo) video.toList() else emptyList()
         val files = mutableSetOf<Path>()
         all.forEachIndexed { index, entry ->
@@ -647,7 +722,8 @@ internal class CaptureStore(
             clockRecoveries = clockRecoveries.toMap(), videoCuts = videoCuts.toMap(), hostStart = hostStart,
             touches = touchRows, touchState = touchState.takeIf { withVideo }, touchGaps = if (!withVideo) emptyList() else touchGaps.toList() +
                 listOfNotNull(touchEvictedThrough?.takeIf { it >= start }?.let { TouchGap(null, it.takeIf { it != Long.MAX_VALUE }, "保持上限を超えた古いタップ位置を破棄しました") }),
-            touchDropped = if (withVideo) touchDropped else 0, touchDots = touchDots.takeIf { withVideo }, request = request)
+            touchDropped = if (withVideo) touchDropped else 0, touchDots = touchDots.takeIf { withVideo }, request = request,
+            audio = audioRows, audioState = audioState.takeIf { audioRequested && withVideo })
         if (trigger != null) {
             autosave.admissionProblem(trigger, host)?.let { throw AutoSaveRejected(it) }
             if (fixedEnd != null || !clock.certain(host)) throw AutoSaveRejected(AutoSaveReason.NOT_SAVED_CLOCK_UNKNOWN)

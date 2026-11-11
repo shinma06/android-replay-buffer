@@ -311,7 +311,7 @@ j.close();
 Path fake=TestExecutables.python(r.resolve("fake-adb"),"import sys,pathlib\nr=pathlib.Path(__file__).parent;a=sys.argv[1:];p=r/'mappings'\nif a==['devices','-l']: print('List of devices attached')\nelif a==['forward','--list']: print(p.read_text() if p.exists() else '',end='')\nelif a[:3]==['-s','fixture-1','push']: pass\nelif a[:4]==['-s','fixture-1','forward','tcp:0']:\n lines=p.read_text().splitlines() if p.exists() else []; lines.append('fixture-1 tcp:'+str(20000+len(lines))+' '+a[4]);p.write_text('\\n'.join(lines)+'\\n');sys.exit(1)\nelse: sys.exit(1)\n");
 
   CaptureResources resources=(CaptureResources)ctor(CaptureResources.class,4,Files.createDirectory(r.resolve("resources")),null,2,null);
-CaptureStore store=(CaptureStore)ctor(CaptureStore.class,11,r.resolve("ring"),null,0L,0L,0L,null,null,null,null,510,null);
+CaptureStore store=(CaptureStore)ctor(CaptureStore.class,12,r.resolve("ring"),null,0L,0L,0L,null,null,null,null,false,1022,null);
 ApplicationTarget app=(ApplicationTarget)ctor(ApplicationTarget.class,5,null,null,null,7,null);
 DeviceCapture cap=new DeviceCapture(fake,"fixture-1",resources,store,1,app, VideoQuality.STANDARD);
 ReplaySettings settings=new ReplaySettings(fake,null,60,app,CaptureMode.VIDEO_AND_LOGS,false, VideoQuality.STANDARD);

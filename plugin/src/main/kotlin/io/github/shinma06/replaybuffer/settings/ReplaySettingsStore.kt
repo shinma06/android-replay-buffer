@@ -40,6 +40,7 @@ data class ReplaySettings @JvmOverloads constructor(
     val screenshotDirectory: String = "",
     val videoQuality: VideoQuality = VideoQuality.STANDARD,
     val showTouches: Boolean = false,
+    val recordAudio: Boolean = false,
     /** Serial of the chosen capture target; empty follows the only connected device and asks when several are connected. */
     val deviceSerial: String = "",
 ) {
@@ -132,6 +133,8 @@ data class ReplaySettingsState @JvmOverloads constructor(
     @JvmField val videoQuality: VideoQuality = VideoQuality.STANDARD,
     @field:OptionTag("showTouches")
     @JvmField val showTouches: Boolean = false,
+    @field:OptionTag("recordAudio")
+    @JvmField val recordAudio: Boolean = false,
     @field:OptionTag("deviceSerial")
     @JvmField val deviceSerial: String = "",
 )
@@ -149,7 +152,7 @@ class ReplaySettingsStore : SerializablePersistentStateComponent<ReplaySettingsS
         val snapshot = state
         return ReplaySettings(snapshot.retentionSeconds, snapshot.destination, snapshot.appSelection, snapshot.manualPackage,
             snapshot.captureMode, snapshot.autoSaveOnCrash, snapshot.screenshotUsesLogcatDestination, snapshot.screenshotDirectory, snapshot.videoQuality,
-            snapshot.showTouches, snapshot.deviceSerial)
+            snapshot.showTouches, snapshot.recordAudio, snapshot.deviceSerial)
     }
 
     fun setEnabled(value: Boolean) {
@@ -170,8 +173,8 @@ class ReplaySettingsStore : SerializablePersistentStateComponent<ReplaySettingsS
         require(error == null) { error.orEmpty() }
         updateState {
             require(!it.enabled || settings.captureMode == it.captureMode && settings.videoQuality == it.videoQuality &&
-                settings.showTouches == it.showTouches) {
-                "取得モード・動画品質・タップ位置表示は取得をOFFにしてから変更してください。"
+                settings.showTouches == it.showTouches && settings.recordAudio == it.recordAudio) {
+                "取得モード・動画品質・タップ位置表示・音声の録音は取得をOFFにしてから変更してください。"
             }
             it.copy(
                 retentionSeconds = settings.retentionSeconds,
@@ -181,6 +184,7 @@ class ReplaySettingsStore : SerializablePersistentStateComponent<ReplaySettingsS
                 captureMode = settings.captureMode,
                 videoQuality = settings.videoQuality,
                 showTouches = settings.showTouches,
+                recordAudio = settings.recordAudio,
                 autoSaveOnCrash = settings.autoSaveOnCrash,
                 screenshotUsesLogcatDestination = settings.screenshotUsesLogcatDestination,
                 screenshotDirectory = settings.screenshotDirectory,
