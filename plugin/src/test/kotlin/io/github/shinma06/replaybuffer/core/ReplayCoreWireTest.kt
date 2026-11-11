@@ -627,7 +627,9 @@ elif len(a)>3 and a[3]=='ps':
             assertEquals(StreamState.CAPTURING, multiple.video.state)
             Files.writeString(devices, "List of devices attached\nfixture-1 device model:Fixture\n")
             videoSockets.last().close()
-            awaitState("video-interrupted") { it.video.state != StreamState.CAPTURING }
+            val interruption = awaitState("video-interrupted") { snapshot ->
+                snapshot.video.state != StreamState.CAPTURING && snapshot.video.gaps.any { it.stream == "video" && it.toNs == null }
+            }.video.gaps.last { it.stream == "video" && it.toNs == null }
             resumeVideo.countDown()
             // The published snapshot trails the store by up to a one-second poll; request the one-second window as soon
             // as the recovered connection delivers frames so the interruption is inside it on any runner speed.
@@ -640,7 +642,6 @@ elif len(a)>3 and a[3]=='ps':
             assertEquals("fixture-1", fixed.device?.serial)
             assertEquals("com.fixture.app", fixed.application?.packageName)
             assertTrue(fixed.applicationHistory.any { it.packageName == "com.fixture.app" && it.resolved })
-            assertTrue(failed.video.gaps.isNotEmpty())
             assertTrue("video" in fixed.missingKinds)
             assertEquals(StreamState.CAPTURING, failed.video.state)
             assertFalse(core.save().get().accepted)
@@ -652,6 +653,11 @@ elif len(a)>3 and a[3]=='ps':
             assertEquals(fixed.applicationHistory, core.snapshot().save.applicationHistory)
             assertEquals(fixed.videoTail, core.snapshot().save.videoTail)
             assertTrue(core.applySettings(core.snapshot().settings.copy(replaySeconds = 30)).get().accepted)
+            // The live one-second window moves past the recovered interruption by the next poll on a slow runner; the fixed
+            // request owns it via missingKinds, and the live 30-second window still shows it.
+            assertTrue(awaitState("interruption-in-live-window") { it.settings.replaySeconds == 30 }.video.gaps.any {
+                it.stream == "video" && it.fromNs == interruption.fromNs && it.toNs != null
+            })
             assertTrue(core.updateApplication(ApplicationTarget("com.fixture.app")).get().accepted)
             awaitState("target-restored-before-disconnect") { it.appLog.state == StreamState.CAPTURING }
             Files.writeString(devices, "List of devices attached\n")
