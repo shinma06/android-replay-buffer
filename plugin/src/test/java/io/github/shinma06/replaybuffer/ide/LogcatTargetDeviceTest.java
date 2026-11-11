@@ -16,6 +16,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import javax.swing.JComboBox;
 import javax.swing.DefaultComboBoxModel;
 import javax.swing.SwingUtilities;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -23,6 +24,13 @@ class LogcatTargetDeviceTest {
     private static DeviceItem device(String serial, boolean online) {
         return new DeviceItem(Device.Companion.createPhysical(new DeviceId("fixture", false, serial), serial, online,
             "17", new AndroidVersion(37), "same", "same", DeviceType.HANDHELD));
+    }
+
+    /** One-time JVM setup is not a request's budget: font initialization runs on the first combo layout. */
+    @BeforeAll
+    static void initializeSwingAndStudioClassesBeforeAnyDeadline() throws Exception {
+        Class.forName(LogcatTargetDevice.class.getName());
+        SwingUtilities.invokeAndWait(() -> new JComboBox<DeviceComboItem>(new DeviceComboItem[]{device("warm", true)}).getPreferredSize());
     }
 
     @Test
