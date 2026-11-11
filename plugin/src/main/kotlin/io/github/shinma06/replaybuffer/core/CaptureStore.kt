@@ -620,7 +620,7 @@ internal class CaptureStore(
             if (fixedEnd != null || !clock.certain(host)) throw AutoSaveRejected(AutoSaveReason.NOT_SAVED_CLOCK_UNKNOWN)
             value = value.copy(autoTrigger = frozenAutoTrigger(trigger, value, logTime, host))
         }
-        if (value.empty && (trigger != null || !(logWindowReady() && start < end))) return null
+        if (value.empty && (trigger != null || !(logWindowReady(!withVideo) && start < end))) return null
         pinned = value
         pinnedFiles = value.video.map { it.file }.toSet()
         return value
@@ -674,9 +674,12 @@ internal class CaptureStore(
     fun hasData(): Boolean = (captureMode.videoRequested && video.isNotEmpty()) || logs.isNotEmpty() ||
         (logWindowReady() && started?.let { it < (end() ?: it) } == true)
 
-    /** A validated reader, current clock and target prove a quiet window, never row-span coverage. */
-    private fun logWindowReady(): Boolean = synchronized(clock) {
-        captureMode == CaptureMode.LOG_ONLY && !closed && fixedEnd == null &&
+    /**
+     * A validated reader, current clock and target prove a quiet window, never row-span coverage.
+     * Only a save without video (LOG_ONLY mode or a logs-only request) may consist of a quiet log window.
+     */
+    private fun logWindowReady(logsOnly: Boolean = !captureMode.videoRequested): Boolean = synchronized(clock) {
+        logsOnly && !closed && fixedEnd == null &&
             clock.snapshot().lastOrNull() !== generationClockSample && clock.certain() &&
             gaps.none { it.stream == "clock" && it.toNs == null } &&
             listOf("device_log", "app_log").all { states.getValue(it).let { state ->

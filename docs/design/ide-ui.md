@@ -161,7 +161,7 @@ Android StudioのRunning Devices上部のtoolbarに、取得のON/OFF・`直前N
 
 Android StudioのLogcat ToolWindowから `直前N秒のログを保存` を実行できる。動画＋ログで取得中でも、この操作は端末ログ・アプリログ・`session.json`（とREADME・frames.jsonl等の通常の付帯ファイル）だけを保存し、MP4・touches.jsonlは作らない。動画の取得は止めず、設定・取得モードも変えない。保存要求はログだけを固定し、動画packetを読まず・pinもしないため、動画のringはそのまま回り続ける。
 
-`session.json` は意図的な除外を未要求・取得失敗と区別して記録する。`coverage.video.state` は `EXCLUDED`（`requested: false`、`excluded: true`、保存時の実際の取得状態 `capture_state`）、`save_request` に `content`（`ALL` / `LOGS_ONLY`）、要求元 `origin`（`TOOL_WINDOW` / `RUNNING_DEVICES` / `LOGCAT_TOOLBAR` / `CLI` / `CRASH_AUTOSAVE`、MCPはCLIの接続を使うため `CLI`）、`video_excluded` を書く。`capture_mode` は取得モード（`VIDEO_AND_LOGS`）のままとする。ログ専用モードでの保存は従来どおり `NOT_REQUESTED` で、`EXCLUDED` にはしない。不足表示（`missingKinds`）は除外した動画を数えない。通知は「ログを保存しました」と動画を含めないことを示す。
+`session.json` は意図的な除外を未要求・取得失敗と区別して記録する。`coverage.video.state` は `EXCLUDED`（`requested: false`、`excluded: true`、保存時の実際の取得状態 `capture_state`）、`save_request` に `content`（`ALL` / `LOGS_ONLY`）、要求元 `origin`（`TOOL_WINDOW` / `RUNNING_DEVICES` / `LOGCAT_TOOLBAR` / `CLI` / `CRASH_AUTOSAVE`、MCPはCLIの接続を使うため `CLI`）、`video_excluded` を書く。`capture_mode` は取得モード（`VIDEO_AND_LOGS`）のままとする。ログ専用モードでの保存は従来どおり `NOT_REQUESTED` で、`EXCLUDED` にはしない。ログ専用モードと同じく、両ログの取得が正常・時計が確定・対象アプリが確定していれば、ログが1行もない区間も空のログとして保存できる（通常保存は従来どおり、動画もログもない区間を保存しない）。不足表示（`missingKinds`）は除外した動画を数えない。通知は「ログを保存しました」と動画を含めないことを示す。
 
 配置: Studio 2026.2.2.8 の `android.jar` 内 `META-INF/logcat.xml` と `LogcatMainPanel` を確認した。Logcat本体のtoolbar（place `LogcatMainPanel`）は `createToolbarActions()` がコード内で組む固定の `DefaultActionGroup` で、外部pluginが追加できる公開groupはない。`Logcat.LogcatActions` はkeymap拡張用でtoolbarに出ない。そこで内部構造（Swing tree・reflection）には触れず、公開の方法を2つ使う。
 
