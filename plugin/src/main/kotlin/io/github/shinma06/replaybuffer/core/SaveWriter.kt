@@ -520,7 +520,7 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                 if (videoRequested) {
                     appendLine("動画がある保存は1本のMP4です。動画がない保存にはMP4はありません。取得状態・理由はsession.jsonのcoverage.videoを確認してください。動画がある場合は、表示秒に対応するframes.jsonlのmovie_pts_us〜movie_end_usとsource/window情報を使い、両ログと照合してください。session.jsonのpartsは同じファイル内の再生区間です。")
                     if (capture.audioState != null) appendLine(if (audioPlan?.samples?.isNotEmpty() == true)
-                        "MP4には端末の再生音（AAC）も入っています。音声は動画と同じ端末時計で対応づけ、動画のない範囲には入れていません。端末の音声取得の滞留分だけ音が遅れることがあります（emulatorで約0.3秒）。録音を禁止したアプリの音は無音です。取得状態・理由はsession.jsonのcoverage.audioとaudio_trackを確認してください。"
+                        "MP4には端末の再生音（AAC）も入っています。音声は動画と同じ端末時計で対応づけ、動画のない範囲には入れていません。音声encoderの遅延分だけ音が遅れることがあります（emulatorで約0.1秒）。録音を禁止したアプリの音は無音です。取得状態・理由はsession.jsonのcoverage.audioとaudio_trackを確認してください。"
                         else "音声の録音を設定していましたが、MP4に音声はありません。理由はsession.jsonのcoverage.audioを確認してください。")
                     appendLine("タップ位置: touches.jsonlに${capture.touches.size}件（うち動画に重なる${touchesInMovie}件）。動画の取得中は自動で記録します。時刻は端末の入力時刻（getevent、CLOCK_MONOTONIC）で、動画PTSと同じ時計対応によりwindow_nsへ写し、表示中の動画位置をmovie_usに記録します。movie_usがnullの行は動画の表示区間外または時刻を確定できない行です。座標は画面の自然な向きのpx（display_width×display_height）です。")
                     appendLine("タップ位置の表示（show_touches）: 設定${if (capture.settings.showTouches) "ON（取得中だけ端末設定を変更し、終了時に元へ戻します）" else "OFF"}、" +

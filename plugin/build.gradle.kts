@@ -171,16 +171,59 @@ val clockJar = tasks.register<Jar>("clockJar") {
     isPreserveFileTimestamps = false
     isReproducibleFileOrder = true
 }
+// One replacement class prepended to the official scrcpy server's CLASSPATH; the server JAR itself stays unmodified.
+val compileAudioPatch = tasks.register<JavaCompile>("compileAudioPatch") {
+    source = fileTree("src/scrcpy/java") { include("**/*.java") }
+    dependsOn(verifyCaptureInputs)
+    classpath = clockLibrary
+    destinationDirectory.set(layout.buildDirectory.dir("scrcpy-audio/classes"))
+}
+val audioPatchClasses = tasks.register<Jar>("audioPatchClasses") {
+    dependsOn(compileAudioPatch)
+    from(compileAudioPatch.flatMap { it.destinationDirectory })
+    archiveFileName.set("scrcpy-audio-classes.jar")
+    destinationDirectory.set(layout.buildDirectory.dir("scrcpy-audio"))
+    isPreserveFileTimestamps = false
+    isReproducibleFileOrder = true
+}
+val dexAudioPatch = tasks.register<JavaExec>("dexAudioPatch") {
+    dependsOn(audioPatchClasses, verifyCaptureInputs)
+    classpath = clockCompiler
+    inputs.files(clockLibrary)
+    inputs.file(audioPatchClasses.flatMap { it.archiveFile })
+    outputs.dir(layout.buildDirectory.dir("scrcpy-audio/dex"))
+    mainClass.set("com.android.tools.r8.D8")
+    doFirst {
+        val output = layout.buildDirectory.dir("scrcpy-audio/dex").get().asFile
+        output.mkdirs()
+        args("--release", "--min-api", "24", "--lib", clockLibrary.singleFile.absolutePath,
+            "--output", output.absolutePath, audioPatchClasses.get().archiveFile.get().asFile.absolutePath)
+    }
+}
+// scrcpy's CleanUp re-runs app_process with only the first CLASSPATH entry, so ship one JAR: the patch as classes.dex
+// (loaded first) and the verified official server entries unchanged, its classes.dex renamed to classes2.dex.
+val audioPatchJar = tasks.register<Jar>("audioPatchJar") {
+    dependsOn(dexAudioPatch, verifyCaptureInputs)
+    from(layout.buildDirectory.dir("scrcpy-audio/dex"))
+    from(zipTree("src/main/resources/replay/deps/scrcpy-server-v5.0.1")) {
+        exclude("META-INF/MANIFEST.MF")
+        rename("classes.dex", "classes2.dex")
+    }
+    archiveFileName.set("replay-scrcpy-audio.jar")
+    destinationDirectory.set(layout.buildDirectory.dir("clock/resource/replay/deps"))
+    isPreserveFileTimestamps = false
+    isReproducibleFileOrder = true
+}
 tasks.processResources {
-    dependsOn(clockJar)
+    dependsOn(clockJar, audioPatchJar)
     from(layout.buildDirectory.dir("clock/resource"))
 }
 
 val captureIdentity = tasks.register("captureIdentity") {
-    dependsOn(clockJar)
+    dependsOn(clockJar, audioPatchJar)
     val runtime = configurations.named("runtimeClasspath")
     val artifactVersion = project.version.toString()
-    inputs.files(clockJar.flatMap { it.archiveFile }, clockCompiler, clockLibrary, runtime)
+    inputs.files(clockJar.flatMap { it.archiveFile }, audioPatchJar.flatMap { it.archiveFile }, clockCompiler, clockLibrary, runtime)
     inputs.file("src/main/resources/replay/deps/scrcpy-server-v5.0.1")
     inputs.property("sourceCommit", sourceCommit)
     inputs.property("sourceDirty", sourceDirty)
@@ -190,7 +233,7 @@ val captureIdentity = tasks.register("captureIdentity") {
     doLast {
         val jcodec = runtime.get().files.single { it.name == "jcodec-0.2.5.jar" }
         val server = file("src/main/resources/replay/deps/scrcpy-server-v5.0.1")
-        output.get().asFile.writeText("source=$sourceCommit\ndirty=$sourceDirty\nversion=$artifactVersion\nserver=${hash(server)}\nclock=${hash(clockJar.get().archiveFile.get().asFile)}\njcodec=${hash(jcodec)}\nr8=${hash(clockCompiler.singleFile)}\nandroid_api=${hash(clockLibrary.singleFile)}\n")
+        output.get().asFile.writeText("source=$sourceCommit\ndirty=$sourceDirty\nversion=$artifactVersion\nserver=${hash(server)}\nclock=${hash(clockJar.get().archiveFile.get().asFile)}\naudio_patch=${hash(audioPatchJar.get().archiveFile.get().asFile)}\njcodec=${hash(jcodec)}\nr8=${hash(clockCompiler.singleFile)}\nandroid_api=${hash(clockLibrary.singleFile)}\n")
     }
 }
 tasks.processResources { dependsOn(captureIdentity) }

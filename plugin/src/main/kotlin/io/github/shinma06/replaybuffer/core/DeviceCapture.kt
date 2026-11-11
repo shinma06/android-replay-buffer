@@ -49,6 +49,7 @@ internal class DeviceCapture @JvmOverloads constructor(
     private val logStates = mutableMapOf("main" to StreamSnapshot(StreamState.RECOVERING),
         "all" to StreamSnapshot(StreamState.RECOVERING))
     private val serverFile = "/data/local/tmp/replay-$token-server.jar"
+    private val audioPatchFile = "/data/local/tmp/replay-$token-audio.jar"
     private val clockFile = "/data/local/tmp/replay-$token-clock.jar"
     private val serverName = "replay-$token-video"
     private val clockName = "replay-$token-clock"
@@ -153,9 +154,12 @@ internal class DeviceCapture @JvmOverloads constructor(
             if (sdk != null && sdk < 33) stopAudio("端末のAndroidが13未満のため再生音を取得できません（動画のみ記録しています）")
         }
         val audio = audioStopped == null
+        if (audio) adb.command("-s", serial, "push", resources.audioPatch.toString(), audioPatchFile)
+        // The official server plus a classes.dex that replaces only scrcpy's AudioRecordReader (PTS of each buffer's first frame).
+        val classpath = if (audio) audioPatchFile else serverFile
         // Playback capture keeps the device audible (audio_dup) and honours each app's capture policy.
         val audioArguments = if (audio) "audio=true audio_source=playback audio_dup=true audio_codec=aac audio_bit_rate=128000 " else "audio=false "
-        val server = adb.start("-s", serial, "shell", "CLASSPATH=$serverFile app_process / --nice-name=$serverName com.genymobile.scrcpy.Server 5.0.1 " +
+        val server = adb.start("-s", serial, "shell", "CLASSPATH=$classpath app_process / --nice-name=$serverName com.genymobile.scrcpy.Server 5.0.1 " +
             "scid=$scid tunnel_forward=true ${audioArguments}control=false video_codec=h264 send_device_meta=false " +
             "send_frame_meta=true send_stream_meta=true max_size=${videoQuality.maxSize} max_fps=${videoQuality.maxFps} " +
             "video_bit_rate=${videoQuality.bitRate} downsize_on_error=false " +
