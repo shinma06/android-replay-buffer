@@ -148,7 +148,10 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                 require(sps.isNotEmpty()) { "動画SPSがありません" }
                 H264Utils.getPicSize(boundedSps(sps.first()))
             }
-            val normalizer = if (sizes.distinct().size > 1) {
+            val overlay = TapOverlay(overlayTouches(capture.settings.tapDisplay, capture.touchDots, capture.heldTouches + capture.touches), capture.touchGaps, capture.injectedTouchGaps)
+                .takeIf { videoRequested && it.within(capture.start, capture.end) }
+            var overlaySkipped: String? = null
+            val normalizer = if (sizes.distinct().size > 1 || sizes.isNotEmpty() && overlay != null) {
                 var minimumSourceDuration: Long? = null
                 selected.forEachIndexed { run, group ->
                     for (index in ranges[run]) {
@@ -158,8 +161,14 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                         }
                     }
                 }
-                MixedVideoNormalizer(sourceConfigs, minimumSourceDuration)
+                try { MixedVideoNormalizer(sourceConfigs, minimumSourceDuration) } catch (e: IllegalArgumentException) {
+                    // Only the tap drawing needs this re-encode: keep the original video rather than fail the save.
+                    if (sizes.distinct().size > 1) throw e
+                    overlaySkipped = e.message
+                    null
+                }
             } else null
+            val tapOverlay = overlay?.takeIf { normalizer != null }
             if (normalizer != null) {
                 normalizationStarted = System.nanoTime()
                 normalizationCpuStarted = if (cpu.isCurrentThreadCpuTimeSupported) cpu.currentThreadCpuTime else 0
@@ -216,6 +225,7 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                     gap.boundaryUncertaintyNs != null && gap.boundaryUncertaintyNs in 0 until Long.MAX_VALUE
                 } }
             }
+            val overlayGapStarts = capture.gaps.filter { it.stream == "video" || it.stream == "clock" }.mapNotNull { it.fromNs }
             val movieAnchors = mutableListOf<MovieAnchor>()
             var audioPlan: AudioTrackPlan? = null
             val framesFile = if (selected.isNotEmpty()) file(ReplayFiles.VIDEO_FRAMES) else null
@@ -352,7 +362,19 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                                         checkActive()
                                     }
                                     val codecStarted = System.nanoTime()
-                                    val encoded = try { normalizer?.encode(bytes) } catch (e: Exception) {
+                                    val known = aligned(frame)
+                                    val sequence = frame.time.sequence
+                                    val next = samples.getOrNull(n + 1)
+                                    val confirmedEnd = if (known && next != null && aligned(next) && next.time.epoch == frame.time.epoch &&
+                                        next.time.sequence!! > sequence!! && !interrupted(frame, next, closed, n))
+                                        minOf(capture.end, next.time.sequence) else null
+                                    val dots = tapOverlay?.let { tap -> sequence?.takeIf { known }?.let { start ->
+                                        val shownUs = if (n == samples.lastIndex) originalEnd - (frame.pts - origin) else sourceDurations[n] ?: terminal
+                                        val heldEnd = minOf(capture.end, Math.addExact(start, Math.multiplyExact(maxOf(0, shownUs), 1000)))
+                                        tap.dots(start, sourceSize.width, sourceSize.height, frameShownUntil(start, confirmedEnd, heldEnd, overlayGapStarts),
+                                            frame.generation)
+                                    } }.orEmpty()
+                                    val encoded = try { normalizer?.encode(bytes, dots) } catch (e: Exception) {
                                         throw IllegalStateException("動画packetの復号・サイズ変換に失敗しました", e)
                                     }
                                     checkActive()
@@ -391,12 +413,6 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                                     val displayEnd = minOf(Math.addExact(localMedia, duration), endUs)
                                     val sourceDisplayOffset = if (clipped) maxOf(0, originalStart - (frame.pts - origin)) else displayStart - localMedia
                                     val moviePts = if (presented) Math.addExact(movieStart, displayStart - startUs) else null
-                                    val known = aligned(frame)
-                                    val sequence = frame.time.sequence
-                                    val next = samples.getOrNull(n + 1)
-                                    val confirmedEnd = if (known && next != null && aligned(next) && next.time.epoch == frame.time.epoch &&
-                                        next.time.sequence!! > sequence!! && !interrupted(frame, next, closed, n))
-                                        minOf(capture.end, next.time.sequence) else null
                                     val displayWindowStart = sequence?.takeIf { known && presented }?.let {
                                         Math.addExact(it, Math.multiplyExact(sourceDisplayOffset, 1000)) - capture.start
                                     }
@@ -532,7 +548,7 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                         "movie_us" to movieUs?.toString(), "action" to sample.action.wire, "pointer" to sample.pointer,
                         "x" to sample.x, "y" to sample.y, "display_width" to row.width, "display_height" to row.height,
                         "display_rotation" to row.rotation, "screen_x" to screen?.first, "screen_y" to screen?.second,
-                        "input_device" to sample.device)))
+                        "input_device" to sample.device, "source" to if (sample.injected) "injected" else "touchscreen")))
                     out.newLine()
                 }
             }
@@ -667,7 +683,18 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                         "- MP4には端末の再生音（AAC）も入っています。音声は動画と同じ端末時計で対応づけ、動画のない範囲には入れていません。音声encoderの遅延分だけ音が遅れることがあります（emulatorで約0.1秒）。録音を禁止したアプリの音は無音です。取得状態・理由は${ReplayFiles.RECORD}のcoverage.audioとaudio_trackを確認してください。"
                         else "- 音声の録音を設定していましたが、MP4に音声はありません。理由は${ReplayFiles.RECORD}のcoverage.audioを確認してください。")
                     appendLine("- タップは動画の取得中に自動で記録します。時刻は端末の入力時刻（getevent、CLOCK_MONOTONIC）で、動画PTSと同じ時計対応によりwindow_nsへ写し、表示中の動画位置をmovie_usに記録します。movie_usがnullの行は動画の表示区間外または時刻を確定できない行です。座標は画面の自然な向きのpx（display_width×display_height）です。screen_x/screen_yは回転後の画面（動画に写る向き）のpxで、display_rotationは端末の回転（0〜3、90度単位）、不明ならnullです。回転は最大1秒遅れで読み直し、動画のサイズ変更時はすぐ読み直します。")
-                    appendLine("- タップ位置の表示（show_touches）: 設定${if (capture.settings.showTouches) "ON（取得中だけ端末設定を変更し、終了時に元へ戻します）" else "OFF"}、" +
+                    appendLine("- ミラーリング（Running Devices等）やadb inputなど端末外から注入されたタップは、Android 13以上でInputDispatcherのログ（eventTime、CLOCK_MONOTONIC、ms精度）から記録し、touches.jsonlのsourceをinjectedとします。" +
+                        "この取得では${when (capture.injectedTouchState?.state) {
+                            StreamState.CAPTURING -> "記録中でした"
+                            StreamState.UNAVAILABLE -> "記録できません（${capture.injectedTouchState?.reason ?: "非対応"}）"
+                            else -> "記録を確認できていません（${capture.injectedTouchState?.reason ?: "状態不明"}）"
+                        }}。")
+                    appendLine("- タップ位置の表示: 設定「${capture.settings.tapDisplay}」。" + when (capture.settings.tapDisplay) {
+                        TapDisplay.OFF -> "動画にはタップを描画していません。"
+                        TapDisplay.VIDEO -> if (tapOverlay != null) "touches.jsonlから保存時に点を描画し、動画を再エンコードしました（端末設定は変更していません）。" else (overlaySkipped?.let { "元動画のframe間隔が再エンコードの上限を超えるため描画せず、元の動画のまま保存しました（$it）。" } ?: "表示区間にタップがないため描画していません。")
+                        TapDisplay.DEVICE -> if (tapOverlay != null) "端末が表示できないタップ（ミラーリング等）を保存時に動画へ描画し、再エンコードしました。" else (overlaySkipped?.let { "端末が表示できないタップは、元動画のframe間隔が再エンコードの上限を超えるため描画していません（$it）。" } ?: "保存時の描画はしていません。")
+                    })
+                    appendLine("- 端末のタップ表示（show_touches）: 設定${if (capture.settings.showTouches) "ON（取得中だけ端末設定を変更し、終了時に元へ戻します）" else "OFF"}、" +
                         when (capture.touchDots) {
                             TouchDots.APPLIED -> "この取得では端末に点を表示しました"
                             TouchDots.ALREADY_ON -> "端末で既にONのため動画に点が映っています（端末設定は変更していません）"
@@ -676,7 +703,7 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                             null -> "点を表示できたか確認できていません"
                         })
                     appendLine("- frameのclock_alignment_known=falseでは時計対応が不明です。window_ns=null、mapped_window_nsは不確実性を含む変換値で、同期確定やcoverageには使えません。区間開始に動画全体の表示秒を足す方法では照合できません。")
-                    if (rawPath != null) appendLine("- サイズ変更を含むため固定canvasへ再エンコードしています。拡縮・切捨てはせず、余白を追加しています。元AnnexB config/全packetは${ReplayFiles.VIDEO_SOURCE}へ保存し${ReplayFiles.VIDEO_FRAMES}のoffset/size/hashで照合できます。色未指定は不明のままで、色一致の証明ではありません。")
+                    if (rawPath != null) appendLine("- ${if (tapOverlay != null) "タップの描画" else "サイズ変更"}を含むため固定canvasへ再エンコードしています。拡縮・切捨てはせず、余白を追加しています。元AnnexB config/全packetは${ReplayFiles.VIDEO_SOURCE}へ保存し${ReplayFiles.VIDEO_FRAMES}のoffset/size/hashで照合できます。色未指定は不明のままで、色一致の証明ではありません。")
                     appendLine("- video_missing_rangesは映像欠落又は時計対応未確認の範囲です。既知の取得gapは空白として表示し、不明gapの実durationはnullのまま、MP4上の表示間隔と区別しています。")
                     appendLine("- 次sampleのない末尾はsource_duration_us=nullです。MP4の最小1tickは表示のための値で、観測した画像の継続時間や取得coverageではありません。")
                     appendLine("- MP4内部には論理窓の前のdecoder preroll画像を含むことがあります。edit listで表示範囲を指定しています。標準playerの互換性は製品QAで別途確認します。")
@@ -745,7 +772,13 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                     "device_log_record_id" to capture.logs.lastOrNull()?.id, "app_log_record_id" to capture.logs.lastOrNull { it.app == true }?.id),
                 "touches" to capture.touchState?.let { state -> mapOf("state" to state.state, "reason" to state.reason,
                     "count" to capture.touches.size, "in_movie_count" to touchesInMovie, "dropped_count" to capture.touchDropped,
+                    "tap_display" to capture.settings.tapDisplay.wire, "video_overlay" to (tapOverlay != null), "video_overlay_skipped" to overlaySkipped,
                     "show_touches" to capture.settings.showTouches, "show_touches_state" to capture.touchDots?.wire, "time_source" to "getevent -lt (device CLOCK_MONOTONIC)",
+                    "injected" to capture.injectedTouchState?.let { injected -> mapOf("state" to injected.state, "reason" to injected.reason,
+                        "count" to capture.touches.count { it.sample.injected },
+                        "gaps" to capture.injectedTouchGaps.filter { (it.to == null || it.to >= capture.start) && (it.from == null || it.from <= capture.end) }
+                            .map { mapOf("from_ns" to it.from?.toString(), "to_ns" to it.to?.toString(), "reason" to it.reason, "time_axis" to "sequence_ns") },
+                        "time_source" to "InputDispatcher injectInputEvent log eventTime (device CLOCK_MONOTONIC, ms resolution)") },
                     "coordinate_space" to "display_px_natural_orientation", "screen_coordinate_space" to "display_px_current_rotation",
                     "gaps" to capture.touchGaps.filter { (it.to == null || it.to >= capture.start) && (it.from == null || it.from <= capture.end) }
                         .map { mapOf("from_ns" to it.from?.toString(), "to_ns" to it.to?.toString(), "reason" to it.reason, "time_axis" to "sequence_ns") }) },

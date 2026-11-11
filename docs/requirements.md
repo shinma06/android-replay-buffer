@@ -29,7 +29,8 @@ Android開発のIT（テスト）のエビデンス採取と、日常の動作�
 | 時計測定 | 同梱DEX（D8 `--min-api 24`）、`settings get global boot_count` | 9（DEX・boot_countは7.0） | 対応 |
 | 端末/アプリlogcat | `logcat -B -T 1`（main・system・crash・events）、`cmd package list packages -U`、`ps -A -o PID,UID,NAME` | 9（`ps -A`は8.0） | 対応 |
 | スクショ | `dumpsys display`、`screencap -p -d <id>` | 9 | 対応。Android 9以前の`mDisplayId=0`形式を読む（[実装境界](design/ide-ui.md#第2版の独立スクリーンショット325)） |
-| タップ位置・タップを表示 | `getevent -lp` / `-lt`（protocol Bのmulti-touch）、`settings put system show_touches` | 9 | 対応。Android 9以前のgeteventはpipeへの出力をためるため（Android 10で即時出力に変更）、端末のAPIが28以下ならpty経由（`adb shell -tt`）で読む。protocol Bのタッチパネルがない端末は`touch`が`UNAVAILABLE`（「タッチパネルの入力deviceが見つかりません」） |
+| タップ位置・タップを表示 | `getevent -lp` / `-lt`（protocol Bのmulti-touch）、`settings put system show_touches`、保存時の動画への描画（JCodec） | 9 | 対応。Android 9以前のgeteventはpipeへの出力をためるため（Android 10で即時出力に変更）、端末のAPIが28以下ならpty経由（`adb shell -tt`）で読む。protocol Bのタッチパネルがない端末は`touch`が`UNAVAILABLE`（「タッチパネルの入力deviceが見つかりません」） |
+| ミラーリング等の注入タップ | `setprop log.tag.InputDispatcherInboundEvent DEBUG`、`logcat -s InputDispatcher:I`の`injectInputEvent:` | 13 | Android 13以上で対応。Android 12以前は非対応（InputDispatcherが注入eventをlogに出さず、shellに`MONITOR_INPUT`権限もない）。`touches.injected.state`を`UNAVAILABLE`とし、端末のタップは記録する |
 | クラッシュ時の自動保存 | crash bufferの`FATAL EXCEPTION`とevents bufferの`am_crash` | 9 | 対応。Android 9〜13の`am_crash`は8フィールド、14以降はRecoverableを加えた9フィールドで、端末のAPIで形式を選ぶ（[自動保存](crash-autosave.md)） |
 | 音声 | 再生音のcapture | 13（API 33） | 非対応（別Trailで扱う） |
 
@@ -90,7 +91,8 @@ Android 8.1以前は対象外で、動作を確認しない。Android 9での確
 | --- | --- |
 | VIDEO-01 | 初期版の画質は固定。解像度・フレームレートなどの具体値は、文字の読みやすさと負荷を実機で検証して決める。画質変更機能の実装時期・優先度は未定。 |
 | VIDEO-02 | 設定「動画に端末の再生音を録音する」（既定OFF）で、動画モードの取得中だけ端末の再生音をMP4へ入れる（Trail #34）。取得できない場合は動画だけを記録し、理由を`replay.json`の`coverage.audio`に残す。ログ専用では録音しない。 |
-| VIDEO-03 | タップ位置の表示は後続TODO。初期版の必須機能に含めない。 |
+| VIDEO-03 | タップ位置の表示は「表示しない（記録のみ、既定）」「保存する動画にだけ描画する（保存時に再エンコード、端末設定は変えない）」「端末画面にも表示する（取得中だけ`show_touches`、元の値へ戻す）」の3択とし、GUI・CLI・MCPで同じ意味にする（2026年11月の本人要望「動画にだけタップを記録するオプションと実画面にも表示するオプションが欲しい」）。 |
+| VIDEO-04 | ミラーリング（Running Devices等）・scrcpy・`adb shell input`で注入されたタップも、端末のタップと同じ`touches.jsonl`・時計対応で記録する（本人要望「ミラーリングにも同様にする」）。Android 13以上で対応し、Android 12以前は端末に注入eventの記録手段がない（InputDispatcherのlogがなく、shellに`MONITOR_INPUT`権限もない）ため非対応として理由を保存する。 |
 | VIDEO-04 | 録画中に縦横を回転しても取得を止めず、同じ録画sequenceのまま続ける。回転で画面サイズが変わった前後は同じ1件のMP4に別のmedia区間として保存し、寸法が混在する保存は共通canvasへ変換して再生できるようにする。回転の前後とも時計対応が確認できる範囲では動画↔ログ・タップの時刻対応を保ち、回転中に新しい映像がない範囲だけをvideo gapにする。`touches.jsonl`の座標は自然な向きのまま保ち、回転後の画面座標も併記する。回転だけでクラッシュ・保存済みデータ破損・復旧不能となる実装にせず、取得が途切れたらBUF-06に従い自動復旧する。 |
 
 ## 実装時に具体化する受入例
