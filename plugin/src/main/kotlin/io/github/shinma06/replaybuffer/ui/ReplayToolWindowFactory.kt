@@ -1,5 +1,35 @@
 package io.github.shinma06.replaybuffer.ui
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ApplicationInfo
 import com.intellij.openapi.application.ApplicationManager
@@ -8,80 +38,84 @@ import com.intellij.openapi.fileChooser.FileChooserDescriptorFactory
 import com.intellij.openapi.options.ShowSettingsUtil
 import com.intellij.openapi.project.DumbAware
 import com.intellij.openapi.project.Project
-import com.intellij.openapi.roots.ui.componentsList.components.ScrollablePanel
 import com.intellij.openapi.ui.Messages
 import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.wm.ToolWindow
 import com.intellij.openapi.wm.ToolWindowFactory
 import com.intellij.openapi.wm.ToolWindowManager
 import com.intellij.openapi.wm.ex.ToolWindowManagerListener
-import com.intellij.ui.TitledSeparator
-import com.intellij.openapi.ui.ComboBox
-import com.intellij.ui.components.JBCheckBox
-import com.intellij.ui.components.JBLabel
-import com.intellij.ui.components.JBScrollPane
-import com.intellij.ui.components.JBTextArea
-import com.intellij.ui.content.ContentFactory
-import com.intellij.util.ui.FormBuilder
-import com.intellij.util.ui.JBUI
-import com.intellij.util.ui.WrapLayout
+import com.intellij.ui.JBColor
 import io.github.shinma06.replaybuffer.core.ApplicationMode
-import io.github.shinma06.replaybuffer.core.CaptureState
+import io.github.shinma06.replaybuffer.core.CaptureMode
 import io.github.shinma06.replaybuffer.core.DeviceKind
-import io.github.shinma06.replaybuffer.core.MULTIPLE_DEVICES_REASON
+import io.github.shinma06.replaybuffer.core.CaptureState
 import io.github.shinma06.replaybuffer.core.ReplayDevice
 import io.github.shinma06.replaybuffer.core.ReplaySnapshot
 import io.github.shinma06.replaybuffer.core.SavePhase
 import io.github.shinma06.replaybuffer.core.SaveSnapshot
 import io.github.shinma06.replaybuffer.core.StreamSnapshot
-import io.github.shinma06.replaybuffer.core.CaptureMode
 import io.github.shinma06.replaybuffer.core.StreamState
-import io.github.shinma06.replaybuffer.ide.ReplayProjectService
 import io.github.shinma06.replaybuffer.ide.LogcatTargetDevice
+import io.github.shinma06.replaybuffer.ide.ReplayProjectService
 import io.github.shinma06.replaybuffer.ide.streamName
 import io.github.shinma06.replaybuffer.settings.ReplaySettingsConfigurable
 import io.github.shinma06.replaybuffer.settings.ReplaySettingsStore
+import org.jetbrains.jewel.bridge.JewelComposePanel
+import org.jetbrains.jewel.bridge.toComposeColor
+import org.jetbrains.jewel.foundation.theme.JewelTheme
+import org.jetbrains.jewel.ui.component.CheckboxRow
+import org.jetbrains.jewel.ui.component.DefaultButton
+import org.jetbrains.jewel.ui.component.Link
+import org.jetbrains.jewel.ui.component.ListComboBox
+import org.jetbrains.jewel.ui.component.OutlinedButton
+import org.jetbrains.jewel.ui.component.Text
+import org.jetbrains.jewel.ui.component.Tooltip
+import org.jetbrains.jewel.ui.component.VerticallyScrollableContainer
 import java.awt.BorderLayout
-import java.awt.Dimension
-import java.awt.FlowLayout
+import java.nio.file.Path
+import java.time.LocalTime
+import java.time.format.DateTimeFormatter
 import java.util.Locale
 import java.util.concurrent.CompletableFuture
-import javax.swing.DefaultComboBoxModel
-import javax.swing.JButton
+import java.util.concurrent.CompletionException
 import javax.swing.JComponent
 import javax.swing.JPanel
 import javax.swing.SwingUtilities
-import javax.swing.text.DefaultCaret
-import javax.swing.text.View
 import kotlin.math.ceil
 
 class ReplayToolWindowFactory : ToolWindowFactory, DumbAware {
     override fun createToolWindowContent(project: Project, toolWindow: ToolWindow) {
-        val panel = ReplayToolWindowPanel(project)
-        val content = ContentFactory.getInstance().createContent(panel, "", false)
-        Disposer.register(content, panel)
-        content.setPreferredFocusableComponent(if (panel.enabled.isEnabled) panel.enabled else panel.settingsButton)
+        val controller = ReplayToolWindowController(project)
+        val panel = JPanel(BorderLayout()).apply {
+            add(JewelComposePanel { ReplayToolWindowContent(controller) }, BorderLayout.CENTER)
+        }
+        val content = ContentFactoryHolder.create(panel)
+        Disposer.register(content, controller)
         toolWindow.contentManager.addContent(content)
     }
 }
 
-/** Content-owned view only; disposing the panel unsubscribes through its bus lifetime, not the project core. */
-private class ReplayToolWindowPanel(private val project: Project) : JPanel(BorderLayout()), Disposable {
+private object ContentFactoryHolder {
+    fun create(component: JComponent) = com.intellij.ui.content.ContentFactory.getInstance().createContent(component, "", false)
+}
+
+private val TIME: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm:ss", Locale.ROOT)
+
+/** Owns the service subscriptions and commands; the composable only renders [model]. */
+internal class ReplayToolWindowController(private val project: Project) : Disposable {
     private val service = project.getService(ReplayProjectService::class.java)
     private val store = project.getService(ReplaySettingsStore::class.java)
     private val toolWindowManager = project.getService(ToolWindowManager::class.java)
     private var disposed = false
     private var shownSave: SaveSnapshot? = null
-    val enabled = JBCheckBox("取得を有効にする").apply {
-        toolTipText = "ON/OFFはすぐ反映します。OFFにすると未保存の記録と再試行待ちの対象を破棄します。"
-        addActionListener { if (alive) service.setEnabled(isSelected) }
-    }
-    val settingsButton = JButton("設定…").apply {
-        toolTipText = "取得OFFでも編集できます。変更は設定画面の「適用」または「OK」で反映します。"
-        addActionListener { if (alive) ShowSettingsUtil.getInstance().showSettingsDialog(project, ReplaySettingsConfigurable::class.java) }
-    }
-    private val logcatReason = wrappingLabel(name = "Logcatの対象端末と操作条件")
-    private val logcatButton = LogcatToolWindowButton({ alive }, { service.captureView.snapshot?.device }, { window, serial, active, deadlineNs ->
+    private var savedKey: Pair<String?, Long>? = null
+    private var savedAt: String? = null
+    private var screenshotResult: ScreenshotResult? = null
+    private var trackedScreenshot: CompletableFuture<*>? = null
+    private val alive: Boolean get() = !disposed && !project.isDisposed
+
+    /** Logic-only holder: its click and refresh behaviour stays the tested Swing implementation; it is never shown. */
+    val logcatButton = LogcatToolWindowButton({ alive }, { service.captureView.snapshot?.device }, { window, serial, active, deadlineNs ->
         // Guard before loading the version-bound Java bridge; close remains available on other IDE builds.
         val reason = logcatTargetBuildReason(ApplicationInfo.getInstance().build.asString())
         if (reason != null) CompletableFuture.completedFuture(reason)
@@ -90,88 +124,20 @@ private class ReplayToolWindowPanel(private val project: Project) : JPanel(Borde
         logcatTargetBuildReason(ApplicationInfo.getInstance().build.asString()) == null && LogcatTargetDevice.needsTab(window)
     }) {
         toolWindowManager?.getToolWindow("Logcat")
-    }.apply {
-        addPropertyChangeListener(JComponent.TOOL_TIP_TEXT_KEY) { logcatReason.text = toolTipText }
     }
-    private val screenshotButton = JButton("スクリーンショット").apply {
-        accessibleContext.accessibleName = "現在画面のスクリーンショットを保存"
-        addActionListener { if (alive) service.screenshot() }
-    }
-    private val screenshotReason = wrappingLabel(name = "スクリーンショットの対象・保存先と操作条件")
-    private val device = wrappingLabel(name = "取得対象の端末")
-    private var renderingDevices = false
-    private val deviceChoice = ComboBox<DeviceChoice>().apply {
-        accessibleContext.accessibleName = "取得する端末"
-        toolTipText = "複数の端末が接続されているときだけ表示します。選んだ端末はserialで記憶し、切断中も別の端末へは切り替えません。「自動で選ぶ」で記憶を消します（取得中の端末はそのまま続けます）。"
-        addActionListener { if (alive && !renderingDevices) (selectedItem as? DeviceChoice)?.serial?.let(::chooseDevice) }
-    }
-    private val deviceChooser = row(JBLabel("取得する端末:"), deviceChoice)
-    private val application = wrappingLabel(name = "取得対象のアプリ")
-    private val sdk = wrappingLabel(name = "Android SDKの接続情報")
-    private val state = wrappingLabel(name = "取得状態と取得モード")
-    private val video = wrappingLabel(name = "動画の取得状態")
-    private val deviceLog = wrappingLabel(name = "端末ログの取得状態")
-    private val appLog = wrappingLabel(name = "アプリログの取得状態")
-    private val window = wrappingLabel(name = "保持時間と現在の記録区間")
-    private val sequence = wrappingLabel(name = "記録セッション")
-    private val destination = wrappingLabel(name = "動画・ログの保存先")
-    private val message = wrappingLabel(name = "設定・操作の結果と取得エラー")
-    private val cleanup = wrappingLabel(name = "端末処理の片付け待ち")
-    private val saveState = wrappingLabel(name = "直前保存の結果")
-    private val saveOutput = wrappingLabel(name = "完成または保全した出力の場所")
-    private val autoSave = readOnlyDetails("クラッシュ自動保存の適用状態と直近の結果", 3)
-    private val videoTail = wrappingLabel(name = "保存対象の動画末尾の確認状態")
-    private val saveReason = wrappingLabel(name = "直前保存の操作条件")
-    private val failure = wrappingLabel(name = "保存失敗の理由")
-    private val frozenRequest = wrappingLabel(name = "再試行する固定保存区間と不足・未確認")
-    private val frozenTarget = readOnlyDetails("固定した保存対象の端末とアプリ履歴", 4)
-    private val gapDetails = readOnlyDetails("現在の保存窓の不足・未確認区間", 4)
-    private val gapScroll = JBScrollPane(gapDetails)
-    private val saveButton = JButton().apply { addActionListener { if (alive) service.save() } }
-    private val openButton = JButton("フォルダを開く").apply {
-        addActionListener { if (alive) shownSave?.takeIf { it.phase == SavePhase.COMPLETED }?.directory?.let(service::openDirectory) }
-    }
-    private val retryButton = JButton("同じ対象を再試行").apply {
-        addActionListener { if (alive) failedId()?.let(service::retry) }
-    }
-    private val retryElsewhere = JButton("別の保存先で再試行…").apply {
-        addActionListener { if (alive) failedId()?.let(::chooseRetryDirectory) }
-    }
-    private val discardButton = JButton("未保存の対象を破棄").apply {
-        addActionListener { if (alive) failedId()?.let(service::discard) }
-    }
-    private val failureCard: JPanel
-    private val alive: Boolean get() = !disposed && !project.isDisposed
+
+    var model by mutableStateOf(toolWindowModel(input()))
+        private set
+
+    /** Bumped when a device choice is refused, so the chooser drops the refused pick even if the model is unchanged. */
+    var deviceChoiceResets by mutableIntStateOf(0)
+        private set
 
     init {
         Disposer.register(this, logcatButton)
-        failureCard = FormBuilder.createFormBuilder()
-            .addComponent(failure)
-            .addComponent(frozenRequest)
-            .addComponent(wrappingLabel("再試行はこの固定した区間を使います。破棄しても取得は続きます。"))
-            .addComponent(row(retryButton, retryElsewhere, discardButton))
-            .addComponent(JBScrollPane(frozenTarget))
-            .addComponent(wrappingLabel("取得OFFまたはproject終了で、この未保存の対象を破棄します。"))
-            .panel
-        val form = FormBuilder.createFormBuilder()
-            .addComponent(row(enabled, settingsButton, logcatButton))
-            .addComponent(logcatReason)
-            .addComponent(wrappingLabel("ON/OFFはすぐ反映します。OFFで未保存の記録と再試行待ちの対象を破棄します。"))
-            .addComponent(state).addComponent(message).addComponent(device).addComponent(deviceChooser).addComponent(application).addComponent(window)
-            .addComponent(row(saveButton, screenshotButton))
-            .addComponent(saveReason).addComponent(screenshotReason)
-            .addComponent(TitledSeparator("保存結果"))
-            .addComponent(saveState).addComponent(videoTail).addComponent(saveOutput).addComponent(openButton)
-            .addComponent(failureCard)
-            .addComponent(TitledSeparator("記録の状態"))
-            .addComponent(video).addComponent(deviceLog).addComponent(appLog).addComponent(gapScroll)
-            .addComponent(TitledSeparator("保存先・自動保存"))
-            .addComponent(destination).addComponent(JBScrollPane(autoSave))
-            .addComponent(TitledSeparator("接続情報"))
-            .addComponent(sdk).addComponent(sequence).addComponent(cleanup)
-            .addComponentFillVertically(JPanel(), 0).panel.apply { border = JBUI.Borders.empty(8) }
-        val content = ScrollablePanel(BorderLayout()).apply { add(form, BorderLayout.CENTER) }
-        add(JBScrollPane(content).apply { border = null }, BorderLayout.CENTER)
+        logcatButton.addPropertyChangeListener { event ->
+            if (event.propertyName in setOf("text", "enabled", JComponent.TOOL_TIP_TEXT_KEY) && alive) publish()
+        }
         val refresh = Runnable {
             if (alive) ToolWindowManager.getInstance(project).invokeLater { if (alive) render() }
         }
@@ -196,24 +162,104 @@ private class ReplayToolWindowPanel(private val project: Project) : JPanel(Borde
 
             override fun toolWindowUnregistered(id: String, toolWindow: ToolWindow) = refreshLogcat.run()
         })
+        // The first save already on screen predates this panel, so its time is unknown.
+        savedKey = service.captureView.snapshot?.save?.saveKey()
         render()
     }
 
-    private fun failedId(): String? = shownSave?.takeIf { it.phase == SavePhase.FAILED }?.requestId
+    private fun SaveSnapshot.saveKey(): Pair<String?, Long>? = takeIf { it.phase == SavePhase.COMPLETED }?.let { it.requestId to it.attempt }
 
-    private fun chooseDevice(serial: String) {
-        // Same `device` setting path as CLI/MCP; destination validation touches the file system, so stay off EDT.
+    private fun input(): ToolWindowInput {
+        val view = service.captureView
+        val snapshot = view.snapshot
+        snapshot?.save?.saveKey()?.let { key ->
+            if (key != savedKey) { savedKey = key; savedAt = LocalTime.now().format(TIME) }
+        }
+        return ToolWindowInput(
+            snapshot = snapshot,
+            message = view.message,
+            initializationError = view.initializationError,
+            busy = service.resolving || view.pending > 0,
+            enabled = store.enabled,
+            settings = store.settings(),
+            adb = service.environment?.adb,
+            adbReason = service.environment?.adbReason,
+            screenshotPackage = service.environment?.application?.packageName,
+            screenshotDisabledReason = service.screenshotDisabledReason,
+            screenshotBusy = service.screenshotBusy,
+            logcat = LogcatState(logcatButton.text.orEmpty(), logcatButton.isEnabled, logcatButton.toolTipText.orEmpty(), logcatButton.failed),
+            savedAt = savedAt.takeIf { snapshot?.save?.phase == SavePhase.COMPLETED },
+            screenshot = screenshotResult,
+        )
+    }
+
+    fun render() {
+        trackScreenshot()
+        logcatButton.refresh()
+        publish()
+    }
+
+    private fun publish() {
+        shownSave = service.captureView.snapshot?.save
+        model = toolWindowModel(input())
+    }
+
+    fun setEnabled(enabled: Boolean) { if (alive) service.setEnabled(enabled) }
+
+    fun save() { if (alive) service.save() }
+
+    fun screenshot() {
+        if (!alive) return
+        service.screenshot()
+        render()
+    }
+
+    /** Shows the newest screenshot result whichever entry point started it. */
+    private fun trackScreenshot() {
+        val latest = service.latestScreenshot ?: return
+        if (latest === trackedScreenshot) return
+        trackedScreenshot = latest
+        latest.thenAccept { outcome ->
+            val time = outcome.time.format(TIME)
+            val saved = outcome.saved
+            val result = if (saved != null) ScreenshotResult.Saved(time, saved.file) else {
+                val cause = (outcome.failure as? CompletionException)?.cause ?: outcome.failure
+                ScreenshotResult.Failed(time, cause?.message ?: "スクリーンショットを保存できませんでした。")
+            }
+            SwingUtilities.invokeLater { if (alive && trackedScreenshot === latest) { screenshotResult = result; render() } }
+        }
+    }
+
+    /** Same `device` setting path as CLI/MCP; destination validation touches the file system, so stay off EDT. */
+    fun chooseDevice(serial: String) {
+        if (!alive) return
         ApplicationManager.getApplication().executeOnPooledThread {
             val reason = try {
                 service.selectDevice(serial).get().takeUnless { it.accepted }?.let { it.reason ?: "端末を切り替えられませんでした。" }
             } catch (e: Exception) { (e.cause ?: e).message ?: "端末を切り替えられませんでした。" }
             if (reason != null) SwingUtilities.invokeLater {
-                if (alive) { Messages.showErrorDialog(project, reason, "取得する端末を選べません"); render() }
+                if (alive) { deviceChoiceResets++; Messages.showErrorDialog(project, reason, "取得する端末を選べません"); render() }
             }
         }
     }
 
-    private fun chooseRetryDirectory(id: String) {
+    fun toggleLogcat() { if (alive && logcatButton.isEnabled) logcatButton.doClick(0) }
+
+    fun openSettings() {
+        if (alive) ShowSettingsUtil.getInstance().showSettingsDialog(project, ReplaySettingsConfigurable::class.java)
+    }
+
+    fun openDirectory(directory: Path) { if (alive) service.openDirectory(directory) }
+
+    private fun failedId(): String? = shownSave?.takeIf { it.phase == SavePhase.FAILED }?.requestId
+
+    fun retry() { if (alive) failedId()?.let(service::retry) }
+
+    fun discard() { if (alive) failedId()?.let(service::discard) }
+
+    fun retryElsewhere() {
+        val id = if (alive) failedId() else null
+        id ?: return
         FileChooser.chooseFile(FileChooserDescriptorFactory.createSingleFolderDescriptor(), project, null) { selected ->
             if (!alive) return@chooseFile
             val path = selected.toNioPath()
@@ -224,151 +270,163 @@ private class ReplayToolWindowPanel(private val project: Project) : JPanel(Borde
         }
     }
 
-    private fun render() {
-        logcatButton.refresh()
-        val view = service.captureView
-        val snapshot = view.snapshot
-        val busy = service.resolving || view.pending > 0
-        val screenshotDisabled = service.screenshotDisabledReason
-        screenshotButton.isEnabled = screenshotDisabled == null
-        screenshotButton.text = if (service.screenshotBusy) "スクショを保存中…" else "スクリーンショット"
-        screenshotButton.toolTipText = screenshotDisabled ?: "録画対象の端末の今の画面全体を保存します。取得OFFでは接続済みの1台から保存します。"
-        // The status message already asks to choose a device; do not repeat it under the screenshot button.
-        val repeatsChoice = snapshot?.captureState == CaptureState.MULTIPLE_DEVICES && screenshotDisabled?.startsWith(MULTIPLE_DEVICES_REASON) == true
-        screenshotReason.isVisible = !repeatsChoice
-        screenshotReason.text = if (repeatsChoice) " " else screenshotDisabled ?: "スクショ対象: ${service.environment?.application?.packageName} / 保存先: ${if (store.settings().screenshotUsesLogcatDestination) "Logcatのスクショ保存先（保存時の最新設定）" else store.settings().screenshotDirectory}\n" +
-            "撮影中は画面を切り替えないでください。通知・キーボードも写り、保護領域は空白になる場合があります。"
-        enabled.isSelected = store.enabled
-        enabled.isEnabled = store.enabled || !busy
-        device.text = snapshot?.device?.let {
-            "端末: ${it.name}（${if (it.kind == DeviceKind.EMULATOR) "Emulator" else "実機"}・${if (it.connected) "接続済み" else "切断中"}）"
-        } ?: if (snapshot?.captureState == CaptureState.MULTIPLE_DEVICES) "端末: 未選択（${snapshot.devices.size}台接続中）" else "端末: 未接続"
-        val choices = deviceChoices(snapshot)
-        deviceChooser.isVisible = choices.isNotEmpty()
-        renderingDevices = true
-        try {
-            val model = deviceChoice.model
-            if ((0 until model.size).map(model::getElementAt) != choices) deviceChoice.model = DefaultComboBoxModel(choices.toTypedArray())
-            if (choices.isNotEmpty()) deviceChoice.selectedIndex = 0
-        } finally { renderingDevices = false }
-        val app = snapshot?.settings?.application
-        application.text = "アプリ: ${app?.packageName ?: app?.unresolvedReason ?: "確認中…"}（${if (app?.mode == ApplicationMode.MANUAL) "手動" else "自動"}）"
-        sdk.text = "Android SDK: ${service.environment?.adb ?: service.environment?.adbReason ?: "確認中…"}"
-        state.text = snapshot?.captureDescription() ?: if (view.initializationError != null) "取得を初期化できません" else "取得を初期化中…"
-        state.text += " / 取得モード: ${captureModeDescription(snapshot?.settings?.captureMode ?: store.settings().captureMode)}"
-        if (snapshot != null && snapshot.settings.captureMode != store.settings().captureMode)
-            state.text += "（設定の反映待ち: ${captureModeDescription(store.settings().captureMode)}）"
-        video.text = streamDescription("動画", snapshot?.video)
-        if ((snapshot?.settings?.captureMode ?: store.settings().captureMode).videoRequested) {
-            video.text += " / 指定品質: ${snapshot?.settings?.videoQuality ?: store.settings().videoQuality}"
-            if (snapshot != null && snapshot.settings.videoQuality != store.settings().videoQuality)
-                video.text += "（品質設定の反映待ち）"
-        }
-        deviceLog.text = streamDescription("端末ログ", snapshot?.deviceLog)
-        appLog.text = streamDescription("アプリログ", snapshot?.appLog)
-        val seconds = snapshot?.settings?.replaySeconds ?: store.settings().retentionSeconds
-        window.text = "保持時間: ${seconds}秒 / 記録区間: ${recordTime(snapshot?.windowStartNs)}〜${recordTime(snapshot?.windowEndNs)}" +
-            if (snapshot?.frozen == true) "（切断前で固定・無効化まで保持）" else "（現在の窓）"
-        sequence.text = "記録セッション: ${snapshot?.sequenceId ?: "未開始"}"
-        destination.text = "保存先: ${snapshot?.settings?.saveDirectory ?: "未指定（設定で指定してください）"}"
-        val autoText = autoSaveDescription(snapshot) + if (snapshot != null &&
-            snapshot.settings.autoSaveOnCrash != store.settings().autoSaveOnCrash) "\n自動保存設定の反映待ち" else ""
-        if (autoSave.text != autoText) autoSave.text = autoText
-        message.text = if (busy) "設定・操作を反映中…（新規保存は完了まで待ってください）" else view.message ?: view.initializationError ?: snapshot?.error ?: " "
-        message.isVisible = message.text.isNotBlank()
-        cleanup.text = cleanupDescription(snapshot?.cleanupPendingCount ?: 0)
-        cleanup.isVisible = cleanup.text.isNotEmpty()
-        saveButton.text = "直前${seconds}秒を保存"
-        saveButton.isEnabled = !busy && snapshot?.canSave == true
-        saveReason.text = if (busy) "設定・操作を反映中です。" else snapshot?.saveDisabledReason ?: " "
-        saveReason.isVisible = saveReason.text.isNotBlank()
-        saveButton.toolTipText = saveReason.text
-        shownSave = snapshot?.save
-        val saved = snapshot?.save
-        saveState.text = saveDescription(saved)
-        saveOutput.text = when (saved?.phase) {
-            SavePhase.COMPLETED -> saved.directory?.let { "保存したフォルダ: $it" }.orEmpty()
-            SavePhase.FAILED -> saved.retainedPath?.let { "保全した出力: $it" }.orEmpty()
-            else -> ""
-        }
-        saveOutput.isVisible = saveOutput.text.isNotEmpty()
-        videoTail.text = videoTailDescription(saved)
-        videoTail.isVisible = videoTail.text.isNotEmpty()
-        openButton.isVisible = saved?.phase == SavePhase.COMPLETED && saved.directory != null
-        failureCard.isVisible = saved?.phase == SavePhase.FAILED
-        failure.text = "保存失敗の理由: ${saved?.error ?: "保存先を確認してください。"}"
-        frozenRequest.text = "固定対象: ${recordTime(saved?.windowStartNs)}〜${recordTime(saved?.windowEndNs)} / ${saved?.replaySeconds ?: seconds}秒" +
-            " / セッション: ${saved?.sequenceId ?: "未確定"}" +
-            " / 記録の不足・未確認: ${saved?.missingKinds?.map(::streamName)?.joinToString("、")?.ifEmpty { "なし" } ?: "なし"}"
-        val targetText = frozenTargetDescription(saved)
-        if (frozenTarget.text != targetText) frozenTarget.text = targetText
-        val gapText = currentGapDescription(snapshot)
-        if (gapDetails.text != gapText) gapDetails.text = gapText
-        gapScroll.isVisible = gapDetails.text.isNotEmpty()
-        retryButton.isEnabled = !busy && saved?.phase == SavePhase.FAILED
-        retryElsewhere.isEnabled = retryButton.isEnabled
-        discardButton.isEnabled = retryButton.isEnabled
-        revalidate()
-        repaint()
-    }
-
     override fun dispose() { disposed = true }
 }
 
-private fun row(vararg components: java.awt.Component): JPanel = object : JPanel(WrapLayout(FlowLayout.LEFT).apply {
-    hgap = JBUI.scale(4)
-    vgap = JBUI.scale(2)
-}) {
-    override fun getPreferredSize(): Dimension {
-        // The form asks for height before assigning the row its new width after a resize.
-        parent?.let { container ->
-            val available = container.width - container.insets.left - container.insets.right
-            if (available > 0) setSize(available, height)
-        }
-        return super.getPreferredSize()
-    }
+private val OK_COLOR = JBColor(java.awt.Color(0x1F7A33), java.awt.Color(0x5FB865))
+private val PENDING_COLOR = JBColor(java.awt.Color(0x3574F0), java.awt.Color(0x548AF7))
+private val WARNING_COLOR = JBColor(java.awt.Color(0xA36200), java.awt.Color(0xE0A03D))
+private val ERROR_COLOR = JBColor(java.awt.Color(0xC62828), java.awt.Color(0xF06A6A))
 
-    override fun getMinimumSize(): Dimension = preferredSize
-}.apply {
-    components.forEach(::add)
+@Composable
+private fun toneColor(tone: Tone): Color = when (tone) {
+    Tone.OK -> OK_COLOR.toComposeColor()
+    Tone.PENDING -> PENDING_COLOR.toComposeColor()
+    Tone.WARNING -> WARNING_COLOR.toComposeColor()
+    Tone.ERROR -> ERROR_COLOR.toComposeColor()
+    Tone.OFF -> JewelTheme.globalColors.text.info
 }
 
-internal fun wrappingLabel(text: String = "", name: String = text): JBTextArea = object : JBTextArea(text) {
-    override fun updateUI() {
-        super.updateUI()
-        (caret as DefaultCaret).updatePolicy = DefaultCaret.NEVER_UPDATE
-        font = javax.swing.UIManager.getFont("Label.font")
-    }
-
-    override fun getPreferredSize(): Dimension {
-        val size = super.getPreferredSize().apply { width = 0 }
-        val container = parent ?: return size
-        val textUi = getUI()
-        val view = textUi.getRootView(this)
-        // Match the existing settings guidance sizing, including insets and caret space.
-        val reservedWidth = textUi.getPreferredSize(this).width - view.getPreferredSpan(View.X_AXIS).toInt()
-        val contentWidth = container.width - container.insets.left - container.insets.right - reservedWidth
-        if (contentWidth > 0) {
-            view.setSize(contentWidth.toFloat(), Float.MAX_VALUE)
-            size.height = ceil(view.getPreferredSpan(View.Y_AXIS).toDouble()).toInt() + insets.top + insets.bottom
-        }
-        return size
-    }
-}.apply {
-    isEditable = false
-    isFocusable = false
-    isOpaque = false
-    lineWrap = true
-    wrapStyleWord = true
-    accessibleContext.accessibleName = name
+@Composable
+private fun Hint(text: String, modifier: Modifier = Modifier) {
+    Text(text, modifier = modifier, color = JewelTheme.globalColors.text.info)
 }
 
-private fun readOnlyDetails(name: String, visibleRows: Int): JBTextArea = JBTextArea(visibleRows, 30).apply {
-    isEditable = false
-    lineWrap = true
-    wrapStyleWord = true
-    font = javax.swing.UIManager.getFont("Label.font")
-    accessibleContext.accessibleName = name
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+@Composable
+private fun WithTooltip(tooltip: String, content: @Composable () -> Unit) {
+    if (tooltip.isBlank()) content() else Tooltip(tooltip = { Text(tooltip) }, content = content)
+}
+
+/** The headline takes only the width left after the capture switch, so the switch is never squeezed out. */
+@Composable
+internal fun StatusHeaderRow(heading: @Composable () -> Unit, toggle: @Composable () -> Unit) {
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.weight(1f)) { heading() }
+        toggle()
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+internal fun ReplayToolWindowContent(controller: ReplayToolWindowController) {
+    val model = controller.model
+    VerticallyScrollableContainer(modifier = Modifier.fillMaxSize()) {
+        Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            // 1. Status headline with the capture switch at the end.
+            StatusHeaderRow(
+                heading = {
+                    // A long device or package name is cut on screen; the tooltip and description keep it whole.
+                    WithTooltip(listOf(model.header.text, model.header.tooltip).filter { it.isNotBlank() }.joinToString("\n")) {
+                        Text("${model.header.symbol} ${model.header.text}",
+                            modifier = Modifier.semantics { heading(); contentDescription = "取得状態: ${model.header.text}" },
+                            color = toneColor(model.header.tone), fontWeight = FontWeight.Bold,
+                            maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
+                },
+                toggle = {
+                    WithTooltip(model.toggle.tooltip) {
+                        CheckboxRow("取得", model.toggle.selected, { controller.setEnabled(it) }, enabled = model.toggle.enabled,
+                            modifier = Modifier.semantics { contentDescription = "取得を有効にする" })
+                    }
+                },
+            )
+            // 2. Main commands; only a disabled command explains itself.
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    WithTooltip(model.save.tooltip) {
+                        DefaultButton({ controller.save() }, enabled = model.save.enabled,
+                            modifier = Modifier.semantics { contentDescription = model.save.label }) { Text(model.save.label) }
+                    }
+                    WithTooltip(model.screenshot.tooltip) {
+                        OutlinedButton({ controller.screenshot() }, enabled = model.screenshot.enabled,
+                            modifier = Modifier.semantics { contentDescription = "現在画面のスクリーンショットを保存" }) { Text(model.screenshot.label) }
+                    }
+                    WithTooltip(model.logcat.tooltip) {
+                        OutlinedButton({ controller.toggleLogcat() }, enabled = model.logcat.enabled,
+                            modifier = Modifier.semantics { contentDescription = model.logcat.label }) { Text(model.logcat.label) }
+                    }
+                }
+                model.save.reason?.let { Hint("保存: $it") }
+                model.screenshot.reason?.let { Hint("スクリーンショット: $it") }
+                model.logcat.reason?.let { Hint("Logcat: $it") }
+            }
+            // 3. Recent results, only after a save or screenshot.
+            model.results.forEach { RecentResultView(it, controller) }
+            // 4. Notices, only while something needs attention.
+            model.notices.forEach { notice ->
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(toneSymbol(notice.tone), color = toneColor(notice.tone))
+                    Column(Modifier.weight(1f)) {
+                        Text(notice.text)
+                        if (notice.action == NoticeAction.OPEN_SETTINGS) Link("設定を開く", { controller.openSettings() })
+                    }
+                }
+            }
+            // Device chooser, only while two or more devices are in play; the current target stays first.
+            if (model.devices.isNotEmpty()) Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("取得する端末:")
+                WithTooltip(DEVICE_CHOICE_TOOLTIP) {
+                    key(model.devices, controller.deviceChoiceResets) {
+                        ListComboBox(model.devices.map { it.label }, 0, { index -> model.devices[index].serial?.let(controller::chooseDevice) },
+                            modifier = Modifier.semantics { contentDescription = "取得する端末" })
+                    }
+                }
+            }
+            // 5. Details, collapsed until asked for.
+            var expanded by remember { mutableStateOf(model.detailsInitiallyExpanded) }
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text((if (expanded) "▼ " else "▶ ") + "詳細",
+                    modifier = Modifier.clickable { expanded = !expanded }
+                        .semantics { contentDescription = if (expanded) "詳細を閉じる" else "詳細を開く" },
+                    fontWeight = FontWeight.Bold)
+                if (expanded) SelectionContainer {
+                    Column(Modifier.padding(start = 12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        model.details.forEach { Text(it.text, modifier = Modifier.semantics { contentDescription = it.name }) }
+                    }
+                }
+            }
+            // 6. Settings.
+            WithTooltip(SETTINGS_TOOLTIP) { Link("設定…", { controller.openSettings() }) }
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun RecentResultView(result: RecentResult, controller: ReplayToolWindowController) {
+    val failure = result.failure
+    val frame = if (failure != null) Modifier.fillMaxWidth()
+        .border(1.dp, toneColor(Tone.ERROR), RoundedCornerShape(4.dp))
+        .background(toneColor(Tone.ERROR).copy(alpha = 0.06f), RoundedCornerShape(4.dp))
+        .padding(8.dp) else Modifier.fillMaxWidth()
+    Column(frame, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.Center) {
+            Text("${toneSymbol(result.tone)} ${result.text}", color = toneColor(result.tone),
+                fontWeight = if (failure != null) FontWeight.Bold else null)
+            result.openDirectory?.let { directory ->
+                WithTooltip(directory.toString()) { Link("フォルダを開く", { controller.openDirectory(directory) }) }
+            }
+        }
+        result.secondary.forEach { Hint(it) }
+        if (failure != null) {
+            Text(failure.reason)
+            Hint(failure.fixedRequest)
+            failure.retainedOutput?.let { Hint(it) }
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                WithTooltip(RETRY_TOOLTIP) {
+                    DefaultButton({ controller.retry() }, enabled = failure.actionsEnabled) { Text("同じ対象を再試行") }
+                }
+                WithTooltip(RETRY_TOOLTIP) {
+                    OutlinedButton({ controller.retryElsewhere() }, enabled = failure.actionsEnabled) { Text("別の保存先で再試行…") }
+                }
+                WithTooltip(RETRY_TOOLTIP) {
+                    OutlinedButton({ controller.discard() }, enabled = failure.actionsEnabled) { Text("未保存の対象を破棄") }
+                }
+            }
+            Hint(DISCARD_WARNING)
+        }
+    }
 }
 
 internal fun ReplaySnapshot.captureDescription(): String = when (captureState) {
@@ -406,6 +464,8 @@ internal fun deviceChoices(snapshot: ReplaySnapshot?): List<DeviceChoice> {
 
 /** Clears the saved serial like CLI/MCP `device=""`; a running capture keeps its current device. */
 internal const val AUTOMATIC_DEVICE_CHOICE = "自動で選ぶ"
+internal const val DEVICE_CHOICE_TOOLTIP = "複数の端末が接続されているときだけ表示します。選んだ端末はserialで記憶し、切断中も別の端末へは切り替えません。" +
+    "「自動で選ぶ」で記憶を消します（取得中の端末はそのまま続けます）。"
 
 internal fun streamDescription(label: String, stream: StreamSnapshot?): String {
     if (stream == null) return "$label: 確認中…"

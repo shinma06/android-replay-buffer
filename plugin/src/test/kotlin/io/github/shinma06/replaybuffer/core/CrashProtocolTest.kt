@@ -29,6 +29,25 @@ class CrashProtocolTest {
     }
 
     @Test
+    fun eightFieldEventsAreCompleteOnlyWhereThePlatformDefinesEightFields() {
+        assertEquals(listOf(null, null, 8, 8, 8, 9, 9), listOf(null, 0, 24, 28, 33, 34, 36).map(::amCrashFields))
+        // Android 9-13 log User, PID, Process Name, Flags, Exception, Message, File, Line without Recoverable.
+        val legacy = platformCrash(fields = 8)
+        assertEquals("com.example.target", assertNotNull(crashHeader(legacy, 8)).process)
+        assertNull(crashHeader(legacy, 8)?.problem)
+        assertEquals(AutoSaveReason.UNSUPPORTED_NATIVE, crashHeader(platformCrash(exception = "Native crash", fields = 8), 8)?.problem)
+        // Without a known API level, or on Android 14+, a missing Recoverable is never inferred as fatal.
+        assertEquals(AutoSaveReason.UNKNOWN_FORMAT, crashHeader(legacy)?.problem)
+        assertEquals(AutoSaveReason.UNKNOWN_FORMAT, crashHeader(legacy, 9)?.problem)
+        assertEquals("com.example.target", crashHeader(legacy, 9)?.process)
+        // A nine-field event cannot come from an eight-field platform.
+        assertEquals(AutoSaveReason.UNKNOWN_FORMAT, crashHeader(platformCrash(), 8)?.problem)
+        assertNull(crashHeader(platformCrash(), 9)?.problem)
+        val truncated = eventBytes(fields = 8).let { it.copyOf(it.size - 1) }
+        assertEquals(AutoSaveReason.UNKNOWN_FORMAT, crashHeader(wireLog(truncated, 2, 500, 1000), 8)?.problem)
+    }
+
+    @Test
     fun irrelevantErrorsStacksEventsAndWrongTagsDoNotBecomeCandidates() {
         for (message in listOf("ERROR", "handled exception\n at x.y(z:1)", "Process: com.example.target, PID: 4242")) {
             assertNull(crashHeader(javaCrash(message = message)))
@@ -112,19 +131,21 @@ internal fun javaCrash(process: String = "com.example.target", pid: Int = 4242, 
 internal fun platformCrash(process: String = "com.example.target", first: Int = 4242, second: Int = 0,
                            pid: Int = 500, uid: Long? = 1000, wall: Long = CRASH_WALL + 10_004_000_000,
                            exception: String = "java.lang.RuntimeException", recoverable: Int = 0,
-                           opaque: ByteArray = byteArrayOf(), eventTag: Int = 30039): DeviceLog =
-    wireLog(eventBytes(process, first, second, exception, recoverable, opaque, eventTag), 2, pid, uid, wall)
+                           opaque: ByteArray = byteArrayOf(), eventTag: Int = 30039, fields: Int = 9): DeviceLog =
+    wireLog(eventBytes(process, first, second, exception, recoverable, opaque, eventTag, fields = fields), 2, pid, uid, wall)
 
 internal fun eventBytes(process: String = "com.example.target", first: Int = 4242, second: Int = 0,
                         exception: String = "java.lang.RuntimeException", recoverable: Int = 0,
-                        opaque: ByteArray = byteArrayOf(), eventTag: Int = 30039, opaqueTypeField: Int? = null): ByteArray {
+                        opaque: ByteArray = byteArrayOf(), eventTag: Int = 30039, opaqueTypeField: Int? = null,
+                        fields: Int = 9): ByteArray {
     val out = ByteArrayOutputStream()
     fun int(value: Int) { out.write(ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(value).array()) }
     fun integer(value: Int) { out.write(0); int(value) }
     fun string(value: ByteArray, field: Int) { out.write(if (opaqueTypeField == field) 0 else 2); int(value.size); out.write(value) }
-    int(eventTag); out.write(3); out.write(9)
+    int(eventTag); out.write(3); out.write(fields)
     integer(first); integer(second); string(process.toByteArray(), 2); integer(0)
     string(exception.toByteArray(), 4); string("synthetic".toByteArray() + opaque, 5)
-    string("Main".toByteArray() + opaque + ".kt".toByteArray(), 6); integer(42); integer(recoverable)
+    string("Main".toByteArray() + opaque + ".kt".toByteArray(), 6); integer(42)
+    if (fields == 9) integer(recoverable)
     return out.toByteArray()
 }

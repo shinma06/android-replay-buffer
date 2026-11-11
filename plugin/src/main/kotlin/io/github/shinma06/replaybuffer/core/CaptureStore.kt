@@ -123,6 +123,7 @@ internal class CaptureStore(
     private val unusedCandidates = mutableSetOf<Path>()
     private var reporter: ReporterPoll? = null
     private var autoDevice: String? = null
+    private var amCrashFields: Int? = null
     private var autoTarget: String? = null
 
     init {
@@ -137,6 +138,7 @@ internal class CaptureStore(
     fun generation(value: Long) {
         autosave.refresh(null)
         reporter = null
+        amCrashFields = null
         decodeRun = Math.incrementExact(decodeRun)
         generation = value
         generationClockSample = clock.snapshot().lastOrNull()
@@ -269,6 +271,12 @@ internal class CaptureStore(
             status("app_log", StreamState.CAPTURING, null, owner)
         if (started == null && logWindowReady()) started = clock.now()
         if (logsStarted == null && logWindowReady(true)) logsStarted = clock.now()
+    }
+
+    /** Device API level from `ro.build.version.sdk`, which fixes the am_crash layout; null when unreadable. */
+    @Synchronized
+    fun deviceSdk(sdk: Int?, owner: Long) {
+        if (!closed && owner == generation) amCrashFields = amCrashFields(sdk)
     }
 
     @Synchronized
@@ -412,7 +420,7 @@ internal class CaptureStore(
             clock.certain(host) && host >= anchor.received
         val boundary = if (ready) try {
             CrashBarrier(device, anchor.boot, generation, clock.currentEpoch(), host,
-                Math.addExact(anchor.wall, host - anchor.received))
+                Math.addExact(anchor.wall, host - anchor.received), amCrashFields)
         } catch (_: ArithmeticException) { null } else null
         autosave.refresh(boundary)
     }
