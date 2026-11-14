@@ -18,7 +18,12 @@ import com.intellij.openapi.application.PathManager
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.ide.CopyPasteManager
+import com.intellij.openapi.fileEditor.FileEditorManager
+import com.intellij.openapi.progress.EmptyProgressIndicator
 import com.intellij.openapi.progress.ProcessCanceledException
+import com.intellij.openapi.progress.ProgressIndicator
+import com.intellij.openapi.progress.ProgressManager
+import com.intellij.openapi.progress.Task
 import com.intellij.openapi.project.DumbAware
 import com.intellij.openapi.project.DumbService
 import com.intellij.openapi.project.Project
@@ -26,6 +31,7 @@ import com.intellij.openapi.roots.ModuleRootEvent
 import com.intellij.openapi.roots.ModuleRootListener
 import com.intellij.openapi.startup.ProjectActivity
 import com.intellij.openapi.util.text.StringUtil
+import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.wm.ToolWindowManager
 import com.intellij.util.messages.Topic
 import io.github.shinma06.replaybuffer.cli.CliCommand
@@ -44,6 +50,7 @@ import io.github.shinma06.replaybuffer.core.SavePhase
 import io.github.shinma06.replaybuffer.core.SaveContent
 import io.github.shinma06.replaybuffer.core.ReplayFrameExport
 import io.github.shinma06.replaybuffer.core.ReplayTrim
+import io.github.shinma06.replaybuffer.core.SaveCancelled
 import io.github.shinma06.replaybuffer.core.SaveOrigin
 import io.github.shinma06.replaybuffer.core.SaveRequest
 import io.github.shinma06.replaybuffer.core.SaveSnapshot
@@ -524,7 +531,13 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
                     if (missing.isEmpty()) NotificationType.INFORMATION else NotificationType.WARNING,
                 ).addAction(NotificationAction.create("フォルダを開く") { _, event ->
                     if (alive) openDirectory(save.directory) else event.expire()
-                }).addAction(copyPathAction(save.directory))
+                }).let { notification ->
+                    if (!logsOnly && "video" !in save.missingKinds)
+                        notification.addAction(NotificationAction.create("動画を開く") { _, event ->
+                            if (alive) openReplayVideo(save.directory) else event.expire()
+                        })
+                    notification
+                }.addAction(copyPathAction(save.directory))
             } else {
                 group.createNotification("保存に失敗しました", StringUtil.escapeXmlEntities(save.error ?: "保存対象を再試行または破棄できます。"), NotificationType.ERROR)
                     .addAction(NotificationAction.create("保存対象を確認する") { _, event ->
@@ -533,6 +546,98 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
             }
             showNotification(notification)
         }
+    }
+
+    /** Opens a completed save's video in the replay player editor (notification/ToolWindow/chooser entry). */
+    internal fun openReplayVideo(folder: Path) {
+        if (!alive) return
+        scope.launch(Dispatchers.IO) {
+            val video = folder.resolve(ReplayFiles.VIDEO)
+            val reason = when {
+                !Files.isRegularFile(folder.resolve(ReplayFiles.RECORD)) -> "完成した保存フォルダを選んでください（replay.jsonがありません）。"
+                !Files.isRegularFile(video) -> "保存フォルダに動画がありません。"
+                else -> null
+            }
+            val virtual = if (reason == null) LocalFileSystem.getInstance().refreshAndFindFileByNioFile(video) else null
+            val failed = reason ?: if (virtual == null) "動画ファイルをIDEで見つけられません。" else null
+            if (failed != null) {
+                onUi {
+                    showNotification(NotificationGroupManager.getInstance().getNotificationGroup("Android Replay Buffer")
+                        .createNotification("動画を開けません", failed, NotificationType.WARNING).addAction(copyPathAction(folder)))
+                }
+                return@launch
+            }
+            onUi { FileEditorManager.getInstance(project).openFile(checkNotNull(virtual), true) }
+        }
+    }
+
+    /** Saves the frame displayed at [atUs] of [folder] to the screenshot destination; GUI entry of [ReplayFrameExport]. */
+    internal fun exportReplayFrame(folder: Path, atUs: Long): CompletableFuture<Path> {
+        val done = CompletableFuture<Path>()
+        if (!alive) { done.completeExceptionally(IllegalStateException("projectが終了しています。")); return done }
+        ProgressManager.getInstance().runProcessWithProgressAsynchronously(object : Task.Backgroundable(project, "静止画を保存しています", false) {
+            override fun run(indicator: ProgressIndicator) {
+                indicator.isIndeterminate = true
+                try { done.complete(ReplayFrameExport.export(folder, atUs, frameDestination())) }
+                catch (failure: Throwable) { done.completeExceptionally(failure) }
+            }
+        }, EmptyProgressIndicator())
+        done.thenAccept { file -> onUi { notifyFrameSaved(file) } }
+            .exceptionally { failure ->
+                onUi { notifyOperationFailed("静止画を保存できませんでした", failure) }; null
+            }
+        return done
+    }
+
+    /** Trims [folder] to [fromUs, toUs) in a cancellable background task; GUI entry of [ReplayTrim]. */
+    internal fun trimReplay(folder: Path, fromUs: Long, toUs: Long): CompletableFuture<Path?> {
+        val done = CompletableFuture<Path?>()
+        if (!alive) { done.completeExceptionally(IllegalStateException("projectが終了しています。")); return done }
+        ProgressManager.getInstance().runProcessWithProgressAsynchronously(object : Task.Backgroundable(project, "動画を切り取っています", true) {
+            override fun run(indicator: ProgressIndicator) {
+                indicator.isIndeterminate = true
+                try { done.complete(ReplayTrim().trim(folder, fromUs, toUs, { indicator.isCanceled }, { it.publish() })) }
+                catch (_: SaveCancelled) { done.complete(null) }
+                catch (failure: Throwable) { done.completeExceptionally(failure) }
+            }
+        }, EmptyProgressIndicator())
+        done.thenAccept { output ->
+            folder.parent?.let { LocalFileSystem.getInstance().refreshAndFindFileByNioFile(it) }?.refresh(false, true)
+            if (output != null) onUi { notifyTrimmed(output) }
+        }.exceptionally { failure ->
+            onUi { notifyOperationFailed("切り取った動画を保存できませんでした", failure) }; null
+        }
+        return done
+    }
+
+    private fun notifyTrimmed(output: Path) {
+        showNotification(NotificationGroupManager.getInstance().getNotificationGroup("Android Replay Buffer")
+            .createNotification("切り取った動画を保存しました", "元の保存フォルダはそのまま残しています。", NotificationType.INFORMATION)
+            .addAction(NotificationAction.create("フォルダを開く") { _, event ->
+                if (alive) openDirectory(output) else event.expire()
+            })
+            .addAction(NotificationAction.create("動画を開く") { _, event ->
+                if (alive) openReplayVideo(output) else event.expire()
+            })
+            .addAction(copyPathAction(output)))
+    }
+
+    private fun notifyFrameSaved(file: Path) {
+        showNotification(NotificationGroupManager.getInstance().getNotificationGroup("Android Replay Buffer")
+            .createNotification("静止画を保存しました", "保存したファイル: ${StringUtil.escapeXmlEntities(file.toString())}", NotificationType.INFORMATION)
+            .addAction(NotificationAction.create("フォルダを開く") { _, event ->
+                if (alive) file.parent?.let(::openDirectory) else event.expire()
+            })
+            .addAction(copyPathAction(file)))
+    }
+
+    private fun notifyOperationFailed(title: String, failure: Throwable) {
+        val cause = (failure as? java.util.concurrent.CompletionException)?.cause ?: failure
+        val retained = (cause as? SaveCancelled)?.partial?.let { "\n未完成の出力は保全します: $it" }
+            ?: (cause as? ScreenshotSaveFailure)?.retained?.let { "\n未完成の出力は保全します: $it" }.orEmpty()
+        showNotification(NotificationGroupManager.getInstance().getNotificationGroup("Android Replay Buffer")
+            .createNotification(title, StringUtil.escapeXmlEntities(
+                (cause.message ?: "保存先・空き容量・アクセス権を確認してください。") + retained), NotificationType.ERROR))
     }
 
     internal fun openDirectory(directory: Path) {

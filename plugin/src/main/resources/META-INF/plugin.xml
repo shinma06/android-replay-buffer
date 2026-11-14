@@ -25,6 +25,7 @@
                              id="io.github.shinma06.replaybuffer.settings"
                              displayName="Android Replay Buffer"
                              instance="io.github.shinma06.replaybuffer.settings.ReplaySettingsConfigurable"/>
+        <fileEditorProvider implementation="io.github.shinma06.replaybuffer.ui.ReplayPlayerEditorProvider"/>
         <postStartupActivity implementation="io.github.shinma06.replaybuffer.ide.ReplayProjectActivity"/>
     </extensions>
     <projectListeners>

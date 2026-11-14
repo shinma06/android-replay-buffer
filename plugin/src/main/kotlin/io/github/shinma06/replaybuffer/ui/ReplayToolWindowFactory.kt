@@ -251,6 +251,15 @@ internal class ReplayToolWindowController(private val project: Project) : Dispos
 
     fun openDirectory(directory: Path) { if (alive) service.openDirectory(directory) }
 
+    fun openVideo(directory: Path) { if (alive) service.openReplayVideo(directory) }
+
+    fun openSavedVideo() {
+        if (!alive) return
+        FileChooser.chooseFile(FileChooserDescriptorFactory.createSingleFolderDescriptor(), project, null) { selected ->
+            if (alive) service.openReplayVideo(selected.toNioPath())
+        }
+    }
+
     private fun failedId(): String? = shownSave?.takeIf { it.phase == SavePhase.FAILED }?.requestId
 
     fun retry() { if (alive) failedId()?.let(service::retry) }
@@ -386,8 +395,13 @@ internal fun ReplayToolWindowContent(controller: ReplayToolWindowController) {
                     }
                 }
             }
-            // 6. Settings.
-            WithTooltip(SETTINGS_TOOLTIP) { Link("設定…", { controller.openSettings() }) }
+            // 6. Settings and opening an already saved video.
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                WithTooltip(SETTINGS_TOOLTIP) { Link("設定…", { controller.openSettings() }) }
+                WithTooltip("完成した保存フォルダを選ぶと、その動画をプレイヤーで開きます") {
+                    Link("保存した動画を開く…", { controller.openSavedVideo() })
+                }
+            }
         }
     }
 }
@@ -406,6 +420,11 @@ private fun RecentResultView(result: RecentResult, controller: ReplayToolWindowC
                 fontWeight = if (failure != null) FontWeight.Bold else null)
             result.openDirectory?.let { directory ->
                 WithTooltip(directory.toString()) { Link("フォルダを開く", { controller.openDirectory(directory) }) }
+            }
+            result.openVideo?.let { directory ->
+                WithTooltip("保存した動画をプレイヤーで開きます\n$directory") {
+                    Link("動画を開く", { controller.openVideo(directory) })
+                }
             }
         }
         result.secondary.forEach { Hint(it) }
