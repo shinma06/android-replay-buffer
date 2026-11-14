@@ -77,6 +77,11 @@ class ReplayMcpServerTest {
             call(5, "start_capture", """{"unknown":1}"""),
             call(6, "stop_capture"),
             call(9, "stop_capture", """{"project":null}"""),
+            call(10, "trim_replay", """{"folder":"/saved","from_seconds":0.5,"to_seconds":2}"""),
+            call(11, "export_frame", """{"folder":"/saved","at_seconds":1.25}"""),
+            call(12, "export_frame", """{"folder":"/saved","at_seconds":1,"include_image":false}"""),
+            call(13, "trim_replay", """{"folder":"/saved","from_seconds":2,"to_seconds":1}"""),
+            call(14, "export_frame", """{"folder":"/saved","at_seconds":"x"}"""),
             """{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"missing"}}""",
             """{"jsonrpc":"2.0","id":8,"method":"resources/list"}""",
             "{not json",
@@ -89,6 +94,8 @@ class ReplayMcpServerTest {
                 CliCommand.SCREENSHOT -> CliResponse(0, png.toString())
                 CliCommand.CONFIGURE -> CliResponse(0, """{"replay_seconds":30}""")
                 CliCommand.STOP -> CliResponse(0, "stopped")
+                CliCommand.TRIM -> CliResponse(0, "/saved-trim")
+                CliCommand.FRAME -> CliResponse(0, png.toString())
                 else -> error("unexpected ${request.command}")
             }
         }
@@ -97,7 +104,7 @@ class ReplayMcpServerTest {
         assertEquals("android-replay-buffer", (init["serverInfo"] as Map<*, *>)["name"])
         val names = ((responses["list"]!!.result()["tools"]) as List<*>).map { (it as Map<*, *>)["name"] }
         assertEquals(listOf("list_projects", "get_status", "start_capture", "stop_capture", "save_replay", "take_screenshot",
-            "get_settings", "update_settings"), names)
+            "trim_replay", "export_frame", "get_settings", "update_settings"), names)
         assertEquals(emptyMap<Any, Any>(), responses["p"]!!.result())
         val status = responses[BigDecimal("1")]!!.result()
         assertEquals(false, status["isError"])
@@ -119,8 +126,24 @@ class ReplayMcpServerTest {
         assertEquals(BigDecimal("-32601"), (responses[BigDecimal("8")]!!["error"] as Map<*, *>)["code"])
         assertTrue(responses[BigDecimal("9")]!!.text().contains("exit code 2"))
         assertEquals(BigDecimal("-32700"), (responses[null]!!["error"] as Map<*, *>)["code"])
+        val trim = responses[BigDecimal("10")]!!.result()
+        assertEquals(false, trim["isError"])
+        assertEquals("/saved-trim", (trim["structuredContent"] as Map<*, *>)["directory"])
+        assertEquals(Path.of("/saved-trim").resolve("README.md").toString(), (trim["structuredContent"] as Map<*, *>)["summary_path"])
+        assertEquals("""{"folder":"/saved","from_us":500000,"to_us":2000000}""",
+            requests.single { it.command == CliCommand.TRIM }.configText)
+        val frame = responses[BigDecimal("11")]!!.result()
+        assertEquals("image/png", ((frame["content"] as List<*>)[1] as Map<*, *>)["mimeType"])
+        assertEquals(png.toString(), (frame["structuredContent"] as Map<*, *>)["path"])
+        assertEquals(listOf("""{"folder":"/saved","at_us":1000000}""", """{"folder":"/saved","at_us":1250000}"""),
+            requests.filter { it.command == CliCommand.FRAME }.mapNotNull { it.configText }.sorted())
+        val frameNoImage = responses[BigDecimal("12")]!!.result()
+        assertEquals(1, (frameNoImage["content"] as List<*>).size)
+        assertEquals(png.toString(), (frameNoImage["structuredContent"] as Map<*, *>)["path"])
+        assertEquals(true, responses[BigDecimal("13")]!!.result()["isError"])
+        assertEquals(true, responses[BigDecimal("14")]!!.result()["isError"])
         assertFalse(requests.any { it.command == CliCommand.START }, "Invalid arguments must not dispatch")
-        assertEquals(5, requests.size)
+        assertEquals(8, requests.size)
     }
 
     private fun queuedSession(count: Int, callLimitMs: Long, send: (Path, Path?, String, CliRequest) -> CliResponse): List<Map<*, *>> {

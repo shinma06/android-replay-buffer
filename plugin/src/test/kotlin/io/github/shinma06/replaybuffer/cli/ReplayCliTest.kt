@@ -34,12 +34,24 @@ class ReplayCliTest {
         assertEquals(CliArguments(CliCommand.SAVE_LOGS, Path.of("p")), parseCliArguments(listOf("--logs-only", "--project", "p", "save")))
         assertEquals(CliArguments(CliCommand.CONFIGURE, Path.of("p"), """{"replay_seconds":60,"auto_save_on_crash":true,"output_directory":"/a b=c"}"""),
             parseCliArguments(listOf("settings", "set", "replay_seconds=60", "--project", "p", "auto_save_on_crash=true", "output_directory=/a b=c")))
+        assertEquals(CliArguments(CliCommand.TRIM, Path.of("p"), """{"folder":"/a b","from_us":1500000,"to_us":2700000}"""),
+            parseCliArguments(listOf("trim", "/a b", "--from", "1.5", "--to=2.7", "--project", "p")))
+        assertEquals(CliArguments(CliCommand.TRIM, null, """{"folder":"f","from_us":0,"to_us":1000000}"""),
+            parseCliArguments(listOf("trim", "f", "--from=0", "--to", "1")))
+        assertEquals(CliArguments(CliCommand.FRAME, null, """{"folder":"f","at_us":123456}"""),
+            parseCliArguments(listOf("frame", "f", "--at", "0.123456")))
         for (args in listOf(emptyList(), listOf("daemon"), listOf("save", "stop"), listOf("--project"), listOf("--config", "x", "save"),
             listOf("start", "--foreground"), listOf("--daemon"), listOf("--project", "x", "--project", "y", "save"), listOf("--project", "", "stop"),
             listOf("mcp", "status"), listOf("status", "mcp"), listOf("--logs-only"), listOf("status", "--logs-only"), listOf("mcp", "--logs-only"),
             listOf("save", "--logs-only", "--logs-only"), listOf("settings", "--logs-only"), listOf("status", "set"), listOf("settings", "get"), listOf("settings", "set"),
             listOf("settings", "set", "replay_seconds"), listOf("settings", "set", "=60"), listOf("settings", "set", "a=1", "a=2"),
-            listOf("settings", "set", "output_directory=" + "a".repeat(ReplayCliProtocol.MAX_CONFIG_BYTES)))) {
+            listOf("settings", "set", "output_directory=" + "a".repeat(ReplayCliProtocol.MAX_CONFIG_BYTES)),
+            listOf("trim"), listOf("trim", "f"), listOf("trim", "f", "--from", "1"), listOf("trim", "f", "--from", "1", "--to", "1"),
+            listOf("trim", "f", "--from", "2", "--to", "1"), listOf("trim", "f", "--at", "1", "--from", "0", "--to", "1"),
+            listOf("trim", "f", "--from", "-1", "--to", "1"), listOf("trim", "f", "--from", "0.0000001", "--to", "1"),
+            listOf("trim", "f", "--from", "abc", "--to", "1"), listOf("trim", "f", "g", "--from", "0", "--to", "1"),
+            listOf("trim", "f", "--from", "0", "--from", "1", "--to", "2"), listOf("frame"), listOf("frame", "f"),
+            listOf("frame", "f", "--at", "-1"), listOf("frame", "f", "--at", "abc"), listOf("frame", "f", "--from", "0", "--at", "1"))) {
             assertFailsWith<IllegalArgumentException>(args.toString()) { parseCliArguments(args) }
         }
     }

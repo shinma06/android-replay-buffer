@@ -40,11 +40,29 @@ internal fun settingsAssignments(words: List<String>): String {
     }
 }
 
+/** Seconds as a decimal string to whole microseconds; fractions below 1 µs are rejected. */
+internal fun secondsToUs(text: String, flag: String): Long {
+    val seconds = text.toBigDecimalOrNull()
+    require(seconds != null && seconds.signum() >= 0 && seconds < BigDecimal("1e13")) { "${flag}には0以上の秒を指定してください。" }
+    return try { seconds.movePointRight(6).toBigIntegerExact().longValueExact() }
+    catch (_: ArithmeticException) { throw IllegalArgumentException("${flag}にはマイクロ秒精度までの秒を指定してください。") }
+}
+
+private fun optionValue(arguments: List<String>, index: Int, value: String, name: String): Pair<String, Int> {
+    val text = if (value == name) arguments.getOrNull(index) else value.substringAfter('=')
+    require(!text.isNullOrEmpty()) { "${name}には秒を指定してください。" }
+    return text to (if (value == name) index + 1 else index)
+}
+
 internal fun parseCliArguments(arguments: List<String>): CliArguments {
     var command: CliCommand? = null
     var mcp = false
     var logsOnly = false
     var project: Path? = null
+    var folder: String? = null
+    var fromUs: Long? = null
+    var toUs: Long? = null
+    var atUs: Long? = null
     val assignments = mutableListOf<String>()
     var index = 0
     while (index < arguments.size) {
@@ -60,6 +78,22 @@ internal fun parseCliArguments(arguments: List<String>): CliArguments {
                 require(!logsOnly) { "--logs-onlyは1回だけ指定してください。" }
                 logsOnly = true
             }
+            command == CliCommand.TRIM && (value == "--from" || value.startsWith("--from=")) -> {
+                require(fromUs == null) { "--fromは1回だけ指定してください。" }
+                fromUs = optionValue(arguments, index, value, "--from").let { (text, next) -> index = next; secondsToUs(text, "--from") }
+            }
+            command == CliCommand.TRIM && (value == "--to" || value.startsWith("--to=")) -> {
+                require(toUs == null) { "--toは1回だけ指定してください。" }
+                toUs = optionValue(arguments, index, value, "--to").let { (text, next) -> index = next; secondsToUs(text, "--to") }
+            }
+            command == CliCommand.FRAME && (value == "--at" || value.startsWith("--at=")) -> {
+                require(atUs == null) { "--atは1回だけ指定してください。" }
+                atUs = optionValue(arguments, index, value, "--at").let { (text, next) -> index = next; secondsToUs(text, "--at") }
+            }
+            (command == CliCommand.TRIM || command == CliCommand.FRAME) && !value.startsWith("--") -> {
+                require(folder == null) { "保存フォルダは1つだけ指定してください。" }
+                folder = value
+            }
             command == CliCommand.SETTINGS && value == "set" -> command = CliCommand.CONFIGURE
             command == CliCommand.CONFIGURE -> assignments += value
             else -> {
@@ -71,6 +105,8 @@ internal fun parseCliArguments(arguments: List<String>): CliArguments {
                     "status" -> CliCommand.STATUS
                     "screenshot" -> CliCommand.SCREENSHOT
                     "settings" -> CliCommand.SETTINGS
+                    "trim" -> CliCommand.TRIM
+                    "frame" -> CliCommand.FRAME
                     else -> throw IllegalArgumentException("不明な操作・optionです。replay --helpを確認してください。")
                 }
             }
@@ -78,15 +114,32 @@ internal fun parseCliArguments(arguments: List<String>): CliArguments {
     }
     require(!logsOnly || (!mcp && command == CliCommand.SAVE)) { "--logs-onlyはsaveだけに指定できます。" }
     if (mcp) return CliArguments(null, project)
-    val selected = requireNotNull(command) { "start/stop/save/status/screenshot/settings/mcpを指定してください。" }
+    val selected = requireNotNull(command) { "start/stop/save/status/screenshot/settings/trim/frame/mcpを指定してください。" }
         .let { if (logsOnly) CliCommand.SAVE_LOGS else it }
-    return CliArguments(selected, project, if (selected == CliCommand.CONFIGURE) settingsAssignments(assignments) else null)
+    val payload = when (selected) {
+        CliCommand.CONFIGURE -> settingsAssignments(assignments)
+        CliCommand.TRIM -> {
+            require(folder != null && fromUs != null && toUs != null) {
+                "trimには保存フォルダと--from・--to（秒）を指定してください。"
+            }
+            require(fromUs < toUs) { "--fromは--toより前の秒を指定してください。" }
+            McpJson.write(linkedMapOf("folder" to folder, "from_us" to fromUs, "to_us" to toUs))
+        }
+        CliCommand.FRAME -> {
+            require(folder != null && atUs != null) { "frameには保存フォルダと--at（秒）を指定してください。" }
+            McpJson.write(linkedMapOf("folder" to folder, "at_us" to atUs))
+        }
+        else -> null
+    }
+    return CliArguments(selected, project, payload)
 }
 
 /** Distribution entrypoint for an already running IDE; never starts the IDE or a separate capture process. */
 object ReplayCli {
     private const val HELP = """Usage: replay [--project PATH] start|stop|save|status|screenshot
        replay [--project PATH] save --logs-only
+       replay [--project PATH] trim <保存フォルダ> --from <秒> --to <秒>
+       replay [--project PATH] frame <保存フォルダ> --at <秒>
        replay [--project PATH] settings
        replay [--project PATH] settings set KEY=VALUE...
        replay [--project PATH] mcp
@@ -100,6 +153,10 @@ save --logs-only: Logcatツールバーのボタンと同じく、端末ログ�
       動画の取得中でもMP4は作らず、動画の取得は止めません（replay.jsonのcoverage.videoはEXCLUDED）。
 status: 設定を変えずに状態をJSONで表示します。取得ON中は接続中の端末一覧（devices）と取得対象（device_serial）も返します。
 screenshot: GUIと同じスクリーンショットを保存し、PNGのパスだけをstdoutへ返します。
+trim: 保存済みリプレイの前後を動画内時刻（秒）で切り取り、元を残したまま別フォルダへ保存します。
+      成功時は新しいフォルダのパスだけをstdoutへ返します。
+frame: 保存済みリプレイの指定秒に表示されていた画面を元解像度のPNGで保存します。
+      成功時はPNGのパスだけをstdoutへ返します。保存先はスクリーンショットと同じ設定です。
 settings: 現在の設定をMCPのget_settingsと同じJSONでstdoutへ返します。
 settings set: 指定項目だけをMCPのupdate_settingsと同じ項目名・検証で変更し、変更後の設定JSONを返します。
       例: replay settings set replay_seconds=60 auto_save_on_crash=true

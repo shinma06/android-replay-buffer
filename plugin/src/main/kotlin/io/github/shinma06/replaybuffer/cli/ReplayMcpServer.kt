@@ -113,6 +113,29 @@ internal class ReplayMcpServer(
             mapOf("readOnlyHint" to false, "destructiveHint" to false, "idempotentHint" to false, "openWorldHint" to false)) { args ->
             screenshot(args)
         },
+        Tool("trim_replay", "Trim a completed saved replay folder to a movie-time range (same as the IDE player and `replay trim`), " +
+            "keeping the source folder untouched. Returns the new folder in `directory` and its README.md in `summary_path`. " +
+            "If the outcome is unknown (timeout or disconnect), do not retry automatically; check the folder first.",
+            projectOnly + mapOf(
+                "folder" to mapOf("type" to "string", "description" to "Path of a completed saved replay folder (the `directory` from save_replay)."),
+                "from_seconds" to mapOf("type" to "number", "description" to "First movie time to keep, in seconds."),
+                "to_seconds" to mapOf("type" to "number", "description" to "End movie time to keep, in seconds."),
+            ),
+            mapOf("readOnlyHint" to false, "destructiveHint" to false, "idempotentHint" to false, "openWorldHint" to false)) { args ->
+            trimReplay(args)
+        },
+        Tool("export_frame", "Save the frame shown at a movie time of a completed saved replay as a PNG of the source resolution " +
+            "(same as the IDE player and `replay frame`), into the configured screenshot folder, and return its `path`. " +
+            "With `include_image` (default true) the PNG is also returned as image content.",
+            projectOnly + mapOf(
+                "folder" to mapOf("type" to "string", "description" to "Path of a completed saved replay folder (the `directory` from save_replay or trim_replay)."),
+                "at_seconds" to mapOf("type" to "number", "description" to "Movie time to export, in seconds."),
+                "include_image" to mapOf("type" to "boolean", "default" to true,
+                    "description" to "Also return the saved PNG as MCP image content (omitted above 10 MiB)."),
+            ),
+            mapOf("readOnlyHint" to false, "destructiveHint" to false, "idempotentHint" to false, "openWorldHint" to false)) { args ->
+            frame(args)
+        },
         Tool("get_settings", "Read the project's Android Replay Buffer settings as JSON (the same values as the settings page). " +
             "An empty `output_directory` means no save folder is set (capture only).",
             projectOnly, readOnly) { args -> command(args, CliCommand.SETTINGS) },
@@ -289,11 +312,47 @@ internal class ReplayMcpServer(
         val parsed = runCatching { McpJson.parse(response.output) }.getOrNull() as? Map<*, *>
         val structured: Map<String, Any?> = when {
             parsed != null -> parsed.entries.associate { (key, value) -> key as String to value }
-            command == CliCommand.SAVE || command == CliCommand.SAVE_LOGS -> linkedMapOf("directory" to response.output,
+            command == CliCommand.SAVE || command == CliCommand.SAVE_LOGS || command == CliCommand.TRIM ->
+                linkedMapOf("directory" to response.output,
                 "summary_path" to Path.of(response.output).resolve(ReplayFiles.SUMMARY).toString())
             else -> linkedMapOf("result" to response.output)
         }.let { if (response.error.isEmpty()) it else it + ("message" to response.error) }
         return result(listOf(response.output, response.error).filter(String::isNotEmpty).joinToString("\n"), structured)
+    }
+
+    private fun folderArg(args: Map<String, Any?>): String {
+        val value = args["folder"]
+        require(value is String && value.isNotEmpty()) { "folderには保存フォルダのパスを指定してください。" }
+        return value
+    }
+
+    private fun secondsArg(args: Map<String, Any?>, name: String): Long {
+        val seconds = args[name] as? BigDecimal ?: throw IllegalArgumentException("${name}には0以上の秒を指定してください。")
+        require(seconds.signum() >= 0 && seconds < BigDecimal("1e13")) { "${name}には0以上の秒を指定してください。" }
+        return try { seconds.movePointRight(6).toBigIntegerExact().longValueExact() }
+        catch (_: ArithmeticException) { throw IllegalArgumentException("${name}にはマイクロ秒精度までの秒を指定してください。") }
+    }
+
+    private fun trimReplay(args: Map<String, Any?>): Map<String, Any?> {
+        val folder = folderArg(args)
+        val fromUs = secondsArg(args, "from_seconds")
+        val toUs = secondsArg(args, "to_seconds")
+        require(fromUs < toUs) { "from_secondsはto_secondsより前を指定してください。" }
+        return command(args, CliCommand.TRIM,
+            McpJson.write(linkedMapOf("folder" to folder, "from_us" to fromUs, "to_us" to toUs)))
+    }
+
+    private fun pathResult(path: String, include: Boolean): Map<String, Any?> {
+        val structured = linkedMapOf<String, Any?>("path" to path)
+        val content = mutableListOf<Map<String, Any?>>(mapOf("type" to "text", "text" to path))
+        if (include) {
+            val image = runCatching {
+                if (Files.size(Path.of(path)) <= MAX_IMAGE_BYTES) Files.readAllBytes(Path.of(path)) else null
+            }.getOrNull()
+            if (image != null) content += linkedMapOf("type" to "image", "data" to Base64.getEncoder().encodeToString(image), "mimeType" to "image/png")
+            else content += mapOf("type" to "text", "text" to "画像は10 MiBを超えるか読めないため添付していません。保存したファイルを確認してください。")
+        }
+        return result(content, structured)
     }
 
     private fun screenshot(args: Map<String, Any?>): Map<String, Any?> {
@@ -301,17 +360,17 @@ internal class ReplayMcpServer(
         require(include is Boolean) { "include_imageはtrue/falseで指定してください。" }
         val response = exchange(args, CliCommand.SCREENSHOT)
         if (response.code != 0) return failed(response.code, response.error)
-        val path = Path.of(response.output)
-        val structured = linkedMapOf<String, Any?>("path" to response.output)
-        val content = mutableListOf<Map<String, Any?>>(mapOf("type" to "text", "text" to response.output))
-        if (include) {
-            val image = runCatching {
-                if (Files.size(path) <= MAX_IMAGE_BYTES) Files.readAllBytes(path) else null
-            }.getOrNull()
-            if (image != null) content += linkedMapOf("type" to "image", "data" to Base64.getEncoder().encodeToString(image), "mimeType" to "image/png")
-            else content += mapOf("type" to "text", "text" to "画像は10 MiBを超えるか読めないため添付していません。保存したファイルを確認してください。")
-        }
-        return result(content, structured)
+        return pathResult(response.output, include)
+    }
+
+    private fun frame(args: Map<String, Any?>): Map<String, Any?> {
+        val include = args["include_image"] ?: true
+        require(include is Boolean) { "include_imageはtrue/falseで指定してください。" }
+        val folder = folderArg(args)
+        val atUs = secondsArg(args, "at_seconds")
+        val response = exchange(args, CliCommand.FRAME, McpJson.write(linkedMapOf("folder" to folder, "at_us" to atUs)))
+        if (response.code != 0) return failed(response.code, response.error)
+        return pathResult(response.output, include)
     }
 
     private fun configure(args: Map<String, Any?>): Map<String, Any?> {

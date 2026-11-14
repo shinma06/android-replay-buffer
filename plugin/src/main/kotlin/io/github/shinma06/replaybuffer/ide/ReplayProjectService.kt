@@ -31,6 +31,7 @@ import com.intellij.util.messages.Topic
 import io.github.shinma06.replaybuffer.cli.CliCommand
 import io.github.shinma06.replaybuffer.cli.CliRequest
 import io.github.shinma06.replaybuffer.cli.CliResponse
+import io.github.shinma06.replaybuffer.cli.McpJson
 import io.github.shinma06.replaybuffer.cli.ReplayCliRegistry
 import io.github.shinma06.replaybuffer.cli.ReplayCliServer
 import io.github.shinma06.replaybuffer.cli.cliSaveResponse
@@ -41,6 +42,8 @@ import io.github.shinma06.replaybuffer.core.ReplaySnapshot
 import io.github.shinma06.replaybuffer.core.ReplayFiles
 import io.github.shinma06.replaybuffer.core.SavePhase
 import io.github.shinma06.replaybuffer.core.SaveContent
+import io.github.shinma06.replaybuffer.core.ReplayFrameExport
+import io.github.shinma06.replaybuffer.core.ReplayTrim
 import io.github.shinma06.replaybuffer.core.SaveOrigin
 import io.github.shinma06.replaybuffer.core.SaveRequest
 import io.github.shinma06.replaybuffer.core.SaveSnapshot
@@ -426,6 +429,25 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
                 }
                 return CliResponse(0, saved.file.toString())
             }
+            if (request.command == CliCommand.TRIM || request.command == CliCommand.FRAME) {
+                @Suppress("UNCHECKED_CAST")
+                val arguments = try { McpJson.parse(request.configText.orEmpty()) as? Map<String, Any?> }
+                catch (_: Exception) { null }
+                fun rangeUs(name: String): Long = when (val value = arguments?.get(name)) {
+                    is java.math.BigDecimal -> value.longValueExact()
+                    else -> throw IllegalArgumentException("切り取り範囲・時刻の指定を確認してください。")
+                }
+                val folderText = arguments?.get("folder") as? String
+                    ?: throw IllegalArgumentException("保存フォルダを指定してください。")
+                val folder = runCatching { Path.of(folderText) }
+                    .getOrElse { throw IllegalArgumentException("保存フォルダのパスを確認してください。") }
+                val source = if (folder.isAbsolute) folder else Path.of(
+                    projectBasePath ?: throw IllegalArgumentException("相対パスではなく絶対パスで保存フォルダを指定してください。")).resolve(folder)
+                val output = if (request.command == CliCommand.TRIM)
+                    ReplayTrim().trim(source, rangeUs("from_us"), rangeUs("to_us"), { false }, { it.publish() })
+                else ReplayFrameExport.export(source, rangeUs("at_us"), frameDestination())
+                return CliResponse(0, output.toString())
+            }
             val saving = request.command == CliCommand.SAVE || request.command == CliCommand.SAVE_LOGS
             if (saving && capture.view.snapshot?.enabled != true) {
                 val enabled = await(setEnabled(true))
@@ -436,7 +458,8 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
                 CliCommand.SAVE_LOGS -> save(SaveRequest(SaveContent.LOGS_ONLY, SaveOrigin.CLI))
                 CliCommand.START -> setEnabled(true)
                 CliCommand.STOP -> setEnabled(false)
-                CliCommand.STATUS, CliCommand.SCREENSHOT, CliCommand.SETTINGS, CliCommand.CONFIGURE -> error("already handled")
+                CliCommand.STATUS, CliCommand.SCREENSHOT, CliCommand.SETTINGS, CliCommand.CONFIGURE,
+                CliCommand.TRIM, CliCommand.FRAME -> error("already handled")
             })
             if (!operation.accepted) return CliResponse(1, error = operation.reason.orEmpty())
             if (!saving) return CliResponse(0,
@@ -459,6 +482,29 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
     // Synchronous bus delivery can originate off EDT; UI subscribers must dispatch and recheck disposal.
     private fun publishChanged() {
         if (alive) project.messageBus.syncPublisher(ENVIRONMENT_CHANGED).run()
+    }
+
+    /** The configured screenshot folder, shared by the frame export (CLI/MCP) and the player. */
+    private fun frameDestination(): Path {
+        val settings = project.getService(ReplaySettingsStore::class.java).settings()
+        if (!settings.screenshotUsesLogcatDestination) {
+            require(settings.screenshotDirectory.isNotEmpty()) { "設定でスクリーンショットの保存先を指定してください。" }
+            return Path.of(settings.screenshotDirectory)
+        }
+        val location = try { LogcatScreenshotSettings.saveLocation() } catch (cancelled: ProcessCanceledException) {
+            throw cancelled
+        } catch (_: RuntimeException) {
+            throw IllegalStateException(LOGCAT_DESTINATION_UNAVAILABLE)
+        } catch (_: LinkageError) {
+            throw IllegalStateException(LOGCAT_DESTINATION_UNAVAILABLE)
+        }
+        return try { LogcatScreenshotSettings.resolveDirectory(project, location) } catch (cancelled: ProcessCanceledException) {
+            throw cancelled
+        } catch (_: RuntimeException) {
+            throw IllegalStateException(LOGCAT_DESTINATION_UNAVAILABLE)
+        } catch (_: LinkageError) {
+            throw IllegalStateException(LOGCAT_DESTINATION_UNAVAILABLE)
+        }
     }
 
     // Use the completed attempt's warnings, not the moving live window; suppress obsolete failure actions.
