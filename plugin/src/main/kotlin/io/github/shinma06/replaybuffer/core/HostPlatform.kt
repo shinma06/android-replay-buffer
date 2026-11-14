@@ -1,5 +1,9 @@
 package io.github.shinma06.replaybuffer.core
 
+import io.github.shinma06.replaybuffer.menubar.AwtTraySurface
+import io.github.shinma06.replaybuffer.menubar.NoTraySurface
+import io.github.shinma06.replaybuffer.menubar.TraySurface
+
 /**
  * The single place that detects the host OS. OS-specific behaviour lives only in the implementations chosen here,
  * so everything above them runs the same code on Linux, macOS and Windows.
@@ -23,4 +27,12 @@ internal object HostPlatform {
     val saveHandles: SaveHandles get() = supportedSaveHandles ?: error("この環境は保存出力の実体確認に対応していません")
 
     val privateFiles: OwnerOnlyFiles = if (windows) WindowsPrivateFiles else PosixPrivateFiles
+
+    /** The tray display destination, a sibling facade kept separate from the file-saving implementations. */
+    fun traySurface(): TraySurface = when {
+        windows -> AwtTraySurface()
+        name == "Mac OS X" -> AwtTraySurface(templateImages = true)
+        name == "Linux" -> AwtTraySurface()
+        else -> NoTraySurface("このOSではメニューバー（通知領域・トレイ）アイコンを表示できません。")
+    }
 }
