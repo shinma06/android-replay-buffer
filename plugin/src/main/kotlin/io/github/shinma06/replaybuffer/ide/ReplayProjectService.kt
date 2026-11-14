@@ -47,6 +47,7 @@ import io.github.shinma06.replaybuffer.core.SaveSnapshot
 import io.github.shinma06.replaybuffer.core.SavedScreenshot
 import io.github.shinma06.replaybuffer.core.ScreenshotSaveFailure
 import io.github.shinma06.replaybuffer.core.saveScreenshot
+import io.github.shinma06.replaybuffer.menubar.ReplayMenuBarService
 import io.github.shinma06.replaybuffer.settings.LOGCAT_DESTINATION_UNAVAILABLE
 import io.github.shinma06.replaybuffer.settings.ReplaySettings
 import io.github.shinma06.replaybuffer.settings.ReplaySettingsStore
@@ -565,6 +566,7 @@ internal fun streamName(kind: String): String = when (kind) {
 
 class ReplayProjectActivity : ProjectActivity, DumbAware {
     override suspend fun execute(project: Project) {
+        ApplicationManager.getApplication().getService(ReplayMenuBarService::class.java).projectOpened(project)
         project.getService(ReplayProjectService::class.java).refresh()
     }
 }

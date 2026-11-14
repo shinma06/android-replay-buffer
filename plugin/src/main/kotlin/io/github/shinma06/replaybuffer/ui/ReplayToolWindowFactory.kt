@@ -58,6 +58,7 @@ import io.github.shinma06.replaybuffer.core.StreamState
 import io.github.shinma06.replaybuffer.ide.LogcatTargetDevice
 import io.github.shinma06.replaybuffer.ide.ReplayProjectService
 import io.github.shinma06.replaybuffer.ide.streamName
+import io.github.shinma06.replaybuffer.menubar.ReplayMenuBarStore
 import io.github.shinma06.replaybuffer.settings.ReplaySettingsConfigurable
 import io.github.shinma06.replaybuffer.settings.ReplaySettingsStore
 import org.jetbrains.jewel.bridge.JewelComposePanel
@@ -144,6 +145,7 @@ internal class ReplayToolWindowController(private val project: Project) : Dispos
         val connection = project.messageBus.connect(this)
         connection.subscribe(ReplayProjectService.ENVIRONMENT_CHANGED, refresh)
         connection.subscribe(ReplaySettingsStore.CHANGED, refresh)
+        ApplicationManager.getApplication().messageBus.connect(this).subscribe(ReplayMenuBarStore.CHANGED, refresh)
         val refreshLogcat = Runnable {
             if (alive) toolWindowManager?.invokeLater { if (alive) logcatButton.refresh() }
         }
@@ -190,6 +192,7 @@ internal class ReplayToolWindowController(private val project: Project) : Dispos
             logcat = LogcatState(logcatButton.text.orEmpty(), logcatButton.isEnabled, logcatButton.toolTipText.orEmpty(), logcatButton.failed),
             savedAt = savedAt.takeIf { snapshot?.save?.phase == SavePhase.COMPLETED },
             screenshot = screenshotResult,
+            menuBarEnabled = ApplicationManager.getApplication().getService(ReplayMenuBarStore::class.java).showInMenuBar,
         )
     }
 
@@ -387,6 +390,7 @@ internal fun ReplayToolWindowContent(controller: ReplayToolWindowController) {
                 }
             }
             // 6. Settings.
+            if (model.menuBarGuidance) Hint("IDEを前面に出さずに操作したいときは、設定で「メニューバーに表示する」をONにしてください。")
             WithTooltip(SETTINGS_TOOLTIP) { Link("設定…", { controller.openSettings() }) }
         }
     }
