@@ -57,7 +57,7 @@ enum class CaptureMode {
 enum class SaveContent { ALL, LOGS_ONLY }
 
 /** Where a save was requested; recorded in replay.json. CLI also covers MCP, which reaches the IDE through the CLI endpoint. */
-enum class SaveOrigin { TOOL_WINDOW, RUNNING_DEVICES, LOGCAT_TOOLBAR, CLI, CRASH_AUTOSAVE }
+enum class SaveOrigin { TOOL_WINDOW, RUNNING_DEVICES, LOGCAT_TOOLBAR, CLI, CRASH_AUTOSAVE, MENU_BAR }
 
 data class SaveRequest(val content: SaveContent = SaveContent.ALL, val origin: SaveOrigin = SaveOrigin.TOOL_WINDOW) {
     /** Video acquired for this capture mode but intentionally left out of this save. */
