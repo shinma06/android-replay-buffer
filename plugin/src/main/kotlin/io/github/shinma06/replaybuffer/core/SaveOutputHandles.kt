@@ -154,9 +154,11 @@ internal class SaveOutputFile private constructor(private val descriptor: Long) 
     val isClosed get() = closed
     val key = handles.key(descriptor, false)
 
-    fun channel(): FileChannel {
+    fun channel(): FileChannel = channel(setOf(READ, WRITE))
+
+    fun channel(options: Set<OpenOption>): FileChannel {
         check(!closed)
-        return handles.channel(descriptor, setOf(READ, WRITE))
+        return handles.channel(descriptor, options)
     }
 
     fun requirePrivate() = handles.requirePrivate(descriptor, false)

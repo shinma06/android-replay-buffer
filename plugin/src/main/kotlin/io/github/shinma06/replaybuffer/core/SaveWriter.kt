@@ -11,7 +11,6 @@ import org.jcodec.containers.mp4.boxes.SampleEntry
 import org.jcodec.containers.mp4.muxer.MP4MuxerTrack
 import org.jcodec.containers.mp4.muxer.MP4Muxer
 import java.nio.ByteBuffer
-import java.nio.channels.Channels
 import java.nio.channels.FileChannel
 import java.nio.file.Files
 import java.nio.file.LinkOption.NOFOLLOW_LINKS
@@ -47,39 +46,12 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
      */
     fun write(capture: FrozenCapture, folder: Path, cancelled: () -> Boolean,
               publish: (SavePublication) -> Unit): SaveOutput {
-        var partial: Path? = null
-        var complete: Path? = null
-        var parentHandle: SaveOutputDirectory? = null
-        var staging: SaveOutputDirectory? = null
-        var acquired = false
+        var staging: SaveStaging? = null
         var manifest: Map<String, Any?>? = null
-        val own = linkedMapOf<Path, SaveOutputFile>()
-        fun directoryAt(directory: Path?): Boolean = directory?.let {
-            runCatching {
-                SaveOutputDirectory.open(directory.parent).use { it.key == parentHandle!!.key } &&
-                    parentHandle!!.openChild(directory.fileName.toString()).use { it.key == staging!!.key }
-            }.getOrDefault(false)
-        } ?: false
-        fun ownsDirectory(directory: Path?) = acquired && directoryAt(directory)
-        fun checkOwned(path: Path) {
-            check(ownsDirectory(path.parent)) { "未完成フォルダーの所有を確認できません" }
-            staging!!.verifyFile(path.fileName.toString(), own.getValue(partial!!.resolve(path.fileName)))
-        }
-        fun checkEntries() = staging!!.requireEntries(own.mapKeys { it.key.fileName.toString() })
-        fun createFile(path: Path): FileChannel {
-            check(directoryAt(partial)) { "未完成フォルダーの所有を確認できません" }
-            if (own.isEmpty()) staging!!.requireEntries(emptyMap())
-            val output = staging!!.createFile(path.fileName.toString())
-            own[path] = output
-            staging!!.verifyFile(path.fileName.toString(), output)
-            if (!acquired) {
-                checkEntries()
-                check(directoryAt(partial)) { "未完成フォルダーの所有を確認できません" }
-                acquired = true
-            }
-            return output.channel()
-        }
-        fun writer(path: Path) = Channels.newWriter(createFile(path), Charsets.UTF_8).buffered()
+        fun checkOwned(path: Path) = staging!!.checkOwned(path)
+        fun checkEntries() = staging!!.checkEntries()
+        fun createFile(path: Path) = staging!!.createFile(path)
+        fun writer(path: Path) = staging!!.writer(path)
         var normalizationStarted: Long? = null
         var normalizationCpuStarted = 0L
         val cpu = java.lang.management.ManagementFactory.getThreadMXBean()
@@ -193,11 +165,8 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
             val createdAt = ZonedDateTime.now()
             val crash = capture.autoTrigger != null || capture.request.origin == SaveOrigin.CRASH_AUTOSAVE
             val name = replayFolderName(createdAt, crash, !videoRequested)
-            parentHandle = SaveOutputDirectory.open(parent)
-            partial = parent.resolve(".$name.partial")
-            staging = parentHandle.createDirectory(partial.fileName.toString())
-            complete = parent.resolve(name)
-            fun file(name: String): Path = partial.resolve(name)
+            staging = SaveStaging.create(parent, name)
+            fun file(name: String): Path = staging!!.file(name)
             val parts = mutableListOf<Map<String, Any?>>()
             val frameCoverage = mutableListOf<Pair<Long, Long>>()
             val runBoundaries = mutableListOf<Map<String, Any?>>()
@@ -726,7 +695,7 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
             }) }
             checkActive()
             checkSpace()
-            val hashes = own.entries.associate { (path, output) -> checkActive(); checkOwned(path); path.fileName.toString() to output.hash() }
+            val hashes = staging!!.hashes(::checkActive)
             checkActive()
             manifest = mapOf("schema" to ReplayFiles.SCHEMA, "capture_mode" to capture.settings.captureMode, "complete" to true, "save_id" to capture.id,
                 "folder_name" to name, "trigger" to if (crash) "crash" else "manual", "files" to files, "counts" to counts,
@@ -804,24 +773,22 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                     "boot_segment" to segmentOf(it.clockRegion), "generation" to it.generation, "display_held" to it.displayHeld,
                     "new_frame_confirmed" to false) }, "files_sha256" to hashes)
             writer(file(ReplayFiles.RECORD)).use { it.write(gson.toJson(manifest)) }
-            own.forEach { (path, output) -> checkActive(); checkOwned(path); output.channel().use { ch -> ch.force(true) }; checkActive() }
+            staging!!.forceEach(::checkActive)
             checkSpace()
             checkActive()
-            own.keys.forEach(::checkOwned)
+            staging!!.outputs.forEach(::checkOwned)
             checkEntries()
             // Verification needs only their identities, so close them where open files block renaming their directory.
-            if (!SaveOutputDirectory.renamesWithOpenFiles) own.values.forEach(SaveOutputFile::close)
-            publish(SavePublication(partial, complete, parentHandle, staging) { checkEntries() })
-            own.keys.forEach { checkOwned(complete.resolve(it.fileName)) }
+            staging!!.closeForRename()
+            publish(staging!!.publication())
+            staging!!.outputs.forEach { checkOwned(staging!!.complete.resolve(it.fileName)) }
             checkEntries()
-            return SaveOutput(complete, if (videoIncomplete) listOf("video") else emptyList())
+            return SaveOutput(staging!!.complete, if (videoIncomplete) listOf("video") else emptyList())
         } catch (e: Throwable) {
             if (e !is Exception && e !is LinkageError) throw e
             // No path-based deletion: ownership checks cannot make a subsequent unlink conditional on identity.
-            manifest?.let { value -> own[partial?.resolve(ReplayFiles.RECORD)]?.let { held -> runCatching {
-                val output = if (!held.isClosed) held else staging!!.openFile(ReplayFiles.RECORD).also { reopened ->
-                    if (reopened.key != held.key) { reopened.close(); error("保存出力の実体が変更されています") }
-                }
+            manifest?.let { value -> staging?.output(staging!!.file(ReplayFiles.RECORD))?.let { held -> runCatching {
+                val output = staging!!.reopenOutput(staging!!.file(ReplayFiles.RECORD))
                 try { output.channel().use { channel ->
                     channel.position(0)
                     channel.truncate(0)
@@ -830,16 +797,14 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                     channel.force(true)
                 } } finally { if (output !== held) output.close() }
             } } }
-            val retained = listOfNotNull(partial, complete).firstOrNull(::ownsDirectory)
+            val retained = staging?.let { listOf(it.partial, it.complete).firstOrNull(it::ownsDirectory) }
             val location = retained?.let { "。未完成の出力を保全しています: $it" } ?: ""
             if (e is SaveCancelled) throw SaveCancelled(retained, e)
             val reason = if (e is IllegalArgumentException || e is IllegalStateException) e.message ?: "保存できません"
                 else "保存に失敗しました（保存先・空き容量・アクセス権を確認してください）"
             throw SaveFailure(retained, reason + location, e)
         } finally {
-            own.values.forEach { it.close() }
             staging?.close()
-            parentHandle?.close()
         }
     }
 
