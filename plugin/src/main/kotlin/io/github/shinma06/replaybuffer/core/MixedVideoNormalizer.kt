@@ -136,7 +136,7 @@ internal class MixedVideoNormalizer(private val configs: List<ByteArray>, minimu
         }.apply { setKeyInterval(30) }
     }
 
-    fun encode(bytes: ByteArray, dots: List<OverlayDot> = emptyList()): ByteBuffer {
+    private fun decode(bytes: ByteArray): Picture {
         val nals = H264Utils.splitFrame(ByteBuffer.wrap(bytes))
         var slices = 0
         nals.forEach { nal ->
@@ -158,7 +158,14 @@ internal class MixedVideoNormalizer(private val configs: List<ByteArray>, minimu
             }
         }
         require(slices > 0) { "変換元packetに映像sliceがありません" }
-        val decoded = decoder.decodeFrame(ByteBuffer.wrap(bytes.copyOf()), planes).cloneCropped()
+        return decoder.decodeFrame(ByteBuffer.wrap(bytes.copyOf()), planes).cloneCropped()
+    }
+
+    /** Advances the decoder through one packet without encoding, for frames that only build reference state. */
+    fun decodeOnly(bytes: ByteArray): Picture = decode(bytes)
+
+    fun encode(bytes: ByteArray, dots: List<OverlayDot> = emptyList()): ByteBuffer {
+        val decoded = decode(bytes)
         val size = H264Utils.getPicSize(source)
         require(decoded.width == size.width && decoded.height == size.height && decoded.data.size == 3) { "復号frameの寸法・planeが一致しません" }
         canvas.fill(0)
