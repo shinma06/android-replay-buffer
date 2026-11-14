@@ -43,7 +43,8 @@ internal object ReplayFrameExport {
             rows[it]["output_key"]?.takeIf { k -> k.isJsonPrimitive }?.asBoolean == true &&
                 rows[it]["segment_index"]?.asInt == rows[targetIndex]["segment_index"].asInt
         } ?: throw IllegalArgumentException("表示frameの参照IDRがありません")
-        saved.channel(ReplayFiles.VIDEO).use { channel ->
+        saved.openFile(ReplayFiles.VIDEO).use { file ->
+            file.channel(java.util.EnumSet.of(java.nio.file.StandardOpenOption.READ)).use { channel ->
             val demuxer = MP4Demuxer.createRawMP4Demuxer(org.jcodec.common.io.FileChannelWrapper(channel))
             val track = demuxer.videoTrack as org.jcodec.containers.mp4.demuxer.AbstractMP4DemuxerTrack
             val avcs = track.sampleEntries.map { entry ->
@@ -80,6 +81,7 @@ internal object ReplayFrameExport {
             val colorModel = ComponentColorModel(java.awt.color.ColorSpace.getInstance(java.awt.color.ColorSpace.CS_sRGB),
                 false, false, java.awt.Transparency.OPAQUE, java.awt.image.DataBuffer.TYPE_BYTE)
             return Frame(BufferedImage(colorModel, raster, false, null), rows[targetIndex])
+            }
         }
     }
 

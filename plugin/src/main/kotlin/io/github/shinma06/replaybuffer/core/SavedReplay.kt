@@ -16,6 +16,7 @@ internal class SavedReplay private constructor(
 ) : AutoCloseable {
 
     val name: String get() = directory.fileName.toString()
+    private val gson = Gson()
     private val openFiles = mutableListOf<SaveOutputFile>()
 
     fun exists(name: String): Boolean = handle.entries().contains(name)
@@ -39,6 +40,33 @@ internal class SavedReplay private constructor(
 
     fun lines(name: String): List<String> = text(name).let { text ->
         if (text.isEmpty()) emptyList() else text.removeSuffix("\n").split('\n')
+    }
+
+    /** Movie-time presentation model for the player: displayed spans, gaps, touches, clock. */
+    fun timeline(): ReplayTimeline {
+        val spans = frames.mapNotNull { row ->
+            val pts = row["movie_pts_us"]?.takeIf { it.isJsonPrimitive }?.asString?.toLongOrNull()
+            val end = row["movie_end_us"]?.takeIf { it.isJsonPrimitive }?.asString?.toLongOrNull()
+            if (pts != null && end != null && row["presented"]?.asBoolean == true) ReplayTimeline.Span(pts, end) else null
+        }.sortedBy { it.startUs }
+        val duration = manifest["parts"]?.takeIf { it.isJsonArray }?.asJsonArray?.lastOrNull()?.asJsonObject
+            ?.get("movie_end_us")?.takeIf { it.isJsonPrimitive }?.asString?.toLongOrNull()
+            ?: spans.lastOrNull()?.endUs ?: 0L
+        val gaps = buildList {
+            var covered = 0L
+            spans.forEach { span ->
+                if (span.startUs > covered) add(ReplayTimeline.Span(covered, span.startUs))
+                covered = maxOf(covered, span.endUs)
+            }
+            if (covered < duration) add(ReplayTimeline.Span(covered, duration))
+        }
+        val taps = if (exists(ReplayFiles.TOUCHES)) lines(ReplayFiles.TOUCHES).mapNotNull { line ->
+            runCatching { gson.fromJson(line, JsonObject::class.java)["movie_us"] }
+                .getOrNull()?.takeIf { it.isJsonPrimitive }?.asString?.toLongOrNull()
+        } else emptyList()
+        val known = manifest["timebase"]?.takeIf { it.isJsonObject }?.asJsonObject?.get("known")
+            ?.takeIf { it.isJsonPrimitive }?.asBoolean ?: false
+        return ReplayTimeline(duration, spans, gaps, taps, known)
     }
 
     override fun close() {

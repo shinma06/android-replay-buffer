@@ -171,6 +171,35 @@ class ReplayTrimTest {
         assertEquals(1, manifest(dir)["video_run_boundaries"].asJsonArray.size())
     }
 
+    /** The player's movie-time model: displayed spans, gap zones, taps and the clock flag. */
+    @Test
+    fun timelineMapsSpansGapsTapsAndClockFlag() = withRuns(
+        listOf(listOf(0, 100_000, 350_000), listOf(200_000, 410_000, 700_000)),
+    ) { root, _, capture, _, _ ->
+        val video = capture.video.mapIndexed { n, frame ->
+            val sequence = if (n < 3) frame.pts * 1000 else 5_000_000_000 + (frame.pts - 200_000) * 1000
+            frame.copy(time = MappedTime(sequence, 0, 0, sequence))
+        }
+        val gap = CaptureGap("video", 2_000_000_000, 4_000_000_000, "disconnect", 0, 1, 0)
+        val output = write(capture.copy(video = video, start = 0, end = 6_000_000_000, endUncertainty = 0,
+            gaps = listOf(gap), states = emptyMap()), root)
+        SavedReplay.open(output.directory).use { saved ->
+            val timeline = saved.timeline()
+            val movieEnd = manifest(output.directory)["parts"].asJsonArray.last().asJsonObject["movie_end_us"].asString.toLong()
+            assertEquals(movieEnd, timeline.durationUs)
+            assertEquals(rows(output.directory).count { it["presented"].asBoolean }, timeline.spans.size)
+            assertEquals(0L, timeline.spans.first().startUs)
+            // The capture gap stays an uncovered movie interval between the two runs' spans.
+            assertEquals(1, timeline.gaps.size)
+            val hole = timeline.gaps.single()
+            assertTrue(timeline.spans.none { it.startUs < hole.endUs && it.endUs > hole.startUs })
+            assertEquals(-1, timeline.spanAt((hole.startUs + hole.endUs) / 2))
+            assertTrue(timeline.spanAt(0) >= 0)
+            assertTrue(timeline.taps.isEmpty())
+            assertTrue(timeline.clockKnown)
+        }
+    }
+
     /** Normalized save: the sidecar is regenerated for kept samples only. */
     @Test
     fun rawSidecarIsRegeneratedForKeptSamples() = withRuns(
