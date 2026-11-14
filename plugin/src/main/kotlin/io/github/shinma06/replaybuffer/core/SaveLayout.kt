@@ -31,3 +31,9 @@ internal fun replayFolderName(at: ZonedDateTime, crash: Boolean, logsOnly: Boole
 
 /** `screenshot-<local yyyyMMdd-HHmmss>-<id>.png`, the same time and ID format as saved replay folders. */
 internal fun screenshotFileName(at: ZonedDateTime, id: String = nameId()): String = "screenshot-${at.format(NAME_TIME)}-$id.png"
+
+/** `replay-<local yyyyMMdd-HHmmss>-trim-<id>` beside the source save; `[a-z0-9-]` on every OS. */
+internal fun trimFolderName(at: ZonedDateTime, id: String = nameId()): String = "replay-${at.format(NAME_TIME)}-trim-$id"
+
+/** `frame-<local yyyyMMdd-HHmmss>-<id>.png`: a seek-position still, distinct from `screenshot-` files. */
+internal fun frameFileName(at: ZonedDateTime, id: String = nameId()): String = "frame-${at.format(NAME_TIME)}-$id.png"
