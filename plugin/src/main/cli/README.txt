@@ -14,6 +14,8 @@ replay --project /absolute/project/path save
 replay --project /absolute/project/path save --logs-only
 replay --project /absolute/project/path status
 replay --project /absolute/project/path screenshot
+replay --project /absolute/project/path trim /path/to/replay-XXXX --from 10 --to 25.5
+replay --project /absolute/project/path frame /path/to/replay-XXXX --at 12.3
 replay --project /absolute/project/path settings
 replay --project /absolute/project/path settings set replay_seconds=60 auto_save_on_crash=true
 replay --project /absolute/project/path settings set device=emulator-5556
@@ -35,6 +37,9 @@ saveのexit0/stdoutは完成フォルダです。受付だけでは成功にな�
 save --logs-onlyはLogcatツールバーのボタンと同じく、ログとreplay.json・README.mdだけを保存します（MP4なし）。
 動画の取得中でも取得は止めず、replay.jsonのcoverage.videoをEXCLUDEDとして記録します。
 screenshotはGUIと同じPNGを保存し、パスだけをstdoutへ返します。
+trimは完成した保存フォルダの動画を動画内時刻（秒）で切り取り、元を残したまま同じ親フォルダへ
+replay-XXXX-trim-IDを作り、新フォルダのパスだけをstdoutへ返します。
+frameは指定秒に表示されていた1コマをスクショ先へframe-XXXX-ID.pngで保存し、パスだけを返します。
 settingsはMCPのget_settings、settings setはupdate_settingsと同じ項目名・検証です。
 タップ位置の表示はtap_display=OFF（記録のみ、既定）/VIDEO（保存する動画にだけ描画、保存時に再エンコード）/
 DEVICE（取得中だけ端末のshow_touchesをONにして端末画面にも表示）です。取得OFFで変更します。

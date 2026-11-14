@@ -35,6 +35,8 @@ CLIは導入先StudioのJBRとKotlin runtimeで動きます（IDE本体は起動
 ```text
 replay [--project PATH] start|stop|save|status|screenshot
 replay [--project PATH] save --logs-only
+replay [--project PATH] trim <保存フォルダ> --from <秒> --to <秒>
+replay [--project PATH] frame <保存フォルダ> --at <秒>
 replay [--project PATH] settings
 replay [--project PATH] settings set KEY=VALUE...
 replay [--project PATH] mcp
@@ -48,6 +50,8 @@ replay [--project PATH] mcp
 | `save --logs-only` | Logcatツールバーの「直前N秒のログを保存」と同じ処理です。端末ログ・アプリログ・`replay.json`・`README.md`だけを保存し、MP4は作りません。動画の取得中でも取得は止めず、`replay.json`の`coverage.video.state`を`EXCLUDED`（意図的な除外。未要求の`NOT_REQUESTED`や取得失敗とは別）、`save_request`に`content: LOGS_ONLY`と要求元`origin`を記録します。取得OFFなら`save`と同じく取得を開始します。 | 完成したフォルダのパスだけ | `save_replay`（`logs_only: true`） |
 | `status` | 設定を変えずに取得状態を返します。 | 状態JSON | `get_status` |
 | `screenshot` | GUIと同じスクリーンショットを保存します。 | PNGのパスだけ | `take_screenshot` |
+| `trim <保存フォルダ> --from <秒> --to <秒>` | 完成した保存フォルダの動画を、プレイヤーの「切り取って保存」と同じ処理で動画内時刻の範囲に切り取ります。元フォルダはそのまま残し、同じ親フォルダへ新しいフォルダ`replay-<yyyyMMdd-HHmmss>-trim-<ID>`を作ります。 | 新しいフォルダのパスだけ | `trim_replay` |
+| `frame <保存フォルダ> --at <秒>` | 完成した保存フォルダの指定秒に表示されていた1コマを、プレイヤーの「この画面をPNG保存」と同じ処理で元解像度のPNGにします。保存先・上書きしない規則はスクリーンショットと同じで、名前は`frame-<yyyyMMdd-HHmmss>-<ID>.png`です。 | PNGのパスだけ | `export_frame` |
 | `settings` | 現在の設定とON/OFFを返します。 | 設定JSON | `get_settings` |
 | `settings set KEY=VALUE...` | 指定した項目だけを変更します。 | 変更後の設定JSON | `update_settings` |
 | `mcp` | 標準入出力のMCPサーバーとして動きます。[MCPサーバー](mcp.md)を参照してください。 | MCPの応答 | — |
@@ -55,6 +59,22 @@ replay [--project PATH] mcp
 `--project`は開いているprojectのフォルダです。省略できるのは接続先が1つだけのときです。接続先が複数ある場合は、現在の作業フォルダや前面windowから推測せず失敗します。同じprojectを複数のIDEで開いている場合も、対象を一意にしてから実行します。
 
 `save`の警告（記録の不足など）や失敗理由はstderrに出します。stdoutには成功時の結果だけを出します。完成したフォルダの構成は[保存物の構成](plugin-design.md#保存物の構成)のとおりで、最初に読む要約は`README.md`です。
+
+### 保存済み動画の切り取りと静止画
+
+`trim`と`frame`は、完成した保存フォルダ（schema 4、`video.mp4`と`video-frames.jsonl`があるもの）を対象にします。未完成・改ざん・schema違いのフォルダやログだけの保存は拒否します（終了コード2または1）。元フォルダは読むだけで、削除・置換しません。開始前に`files_sha256`を照合し、保存時から変更されたファイルがあれば失敗します。
+
+```bash
+# 動画の先頭から10.0〜25.5秒（表示上の位置）だけを残した別フォルダを作る
+replay trim replay-20261111-140312-manual-a1b2c3d4 --from 10 --to 25.5
+# 動画内12.3秒に表示されていた画面をPNGで保存する
+replay frame replay-20261111-140312-manual-a1b2c3d4 --at 12.3
+```
+
+- `<秒>`は動画内時刻（プレイヤーの先頭を0とする表示位置）で、小数はマイクロ秒精度まで受け付けます。コマ送り位置ではなく表示区間に含まれる時刻なら指定できます。
+- `trim`は開始・終了の直前・直後に表示されていたコマを端にして、範囲のログ・タップ・（あれば）音声・`video-source.h264`も同じ規則で切り詰めます。開始コマがI-frameでなければ先頭のGOPだけ再エンコードするため、開始点より前の画像は出ません。出力フォルダの`replay.json`には任意field`trim`（元フォルダ名・指定範囲など）が入ります。失敗・中止では完成フォルダを残しません。
+- `frame`のPNGはスクリーンショットと同じ保存先で、`tEXt`に時刻メタデータ（`arb:movie_us`など）を持ちます。
+- フォルダは絶対パスのほか、対象projectを基点とした相対パスでも指定できます。
 
 ### 設定の読み書き
 

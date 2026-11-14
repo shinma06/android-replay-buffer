@@ -46,6 +46,8 @@ Devin: 設定のMCP Marketplaceで「Add your own」からstdioサーバーを�
 | `stop_capture` | 取得をOFFにします。未保存バッファは破棄します。保存済み成果物・IDE・他projectは変更しません。 | `stop` |
 | `save_replay` | 保存し、完成したフォルダのパス（`directory`）と、最初に読む要約`README.md`のパス（`summary_path`）を返します。`logs_only: true`（既定false）ではLogcatツールバーのボタンと同じくログと`replay.json`・`README.md`だけを保存し（MP4なし、`coverage.video.state`は`EXCLUDED`）、動画の取得は止めません。 | `save` / `save --logs-only` |
 | `take_screenshot` | GUIのスクリーンショットと同じ処理で、録画対象端末の今の画面をPNG保存し（対象アプリが前面である必要はありません）、パスを返します。`include_image`（既定true）で画像も返します（10 MiBまで）。 | `screenshot` |
+| `trim_replay` | 完成した保存フォルダの動画を、プレイヤーの「切り取って保存」と同じ処理で動画内時刻の範囲に切り取ります。`folder`（保存フォルダのパス）・`from_seconds`・`to_seconds`（秒、マイクロ秒精度まで）を指定します。元フォルダは残し、同じ親フォルダへ`replay-<日時>-trim-<ID>`を作り、その`directory`と`summary_path`を返します。 | `trim` |
+| `export_frame` | 完成した保存フォルダの`at_seconds`（秒、マイクロ秒精度まで）に表示されていた1コマを、プレイヤーの「この画面をPNG保存」と同じ処理で元解像度のPNGにします。保存先はスクリーンショットと同じで、`frame-<日時>-<ID>.png`の`path`を返します。`include_image`（既定true）で画像も返します（10 MiBまで）。 | `frame` |
 | `get_settings` | 設定とON/OFF状態をJSONで返します。 | `settings` |
 | `update_settings` | 指定した設定だけを変更し、変更後の設定を返します。 | `settings set KEY=VALUE...` |
 
@@ -57,7 +59,7 @@ Devin: 設定のMCP Marketplaceで「Add your own」からstdioサーバーを�
 
 ## 結果と失敗
 
-成功時は`content`のtextに結果を返します。protocol `2025-06-18`以降では、JSONの結果（`get_status` / `get_settings` / `update_settings` / `list_projects`）とパス（`save_replay`の`directory`と`summary_path`、`take_screenshot`の`path`）を`structuredContent`にも入れます。
+成功時は`content`のtextに結果を返します。protocol `2025-06-18`以降では、JSONの結果（`get_status` / `get_settings` / `update_settings` / `list_projects`）とパス（`save_replay`・`trim_replay`の`directory`と`summary_path`、`take_screenshot`・`export_frame`の`path`）を`structuredContent`にも入れます。
 
 失敗はtool結果の`isError: true`で返し、textの末尾にCLIと同じ終了コードを付けます。
 
