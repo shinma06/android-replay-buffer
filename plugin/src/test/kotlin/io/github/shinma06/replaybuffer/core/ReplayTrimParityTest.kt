@@ -1,6 +1,10 @@
 package io.github.shinma06.replaybuffer.core
 
 import com.google.gson.JsonParser
+import org.jcodec.common.io.NIOUtils
+import org.jcodec.containers.mp4.MP4Packet
+import org.jcodec.containers.mp4.demuxer.AbstractMP4DemuxerTrack
+import org.jcodec.containers.mp4.demuxer.MP4Demuxer
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 import java.nio.ByteBuffer
@@ -8,6 +12,7 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.security.MessageDigest
 import java.time.ZonedDateTime
+import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
@@ -43,10 +48,18 @@ class ReplayTrimParityTest {
     fun trimAndPngMatchTheSameByteDigestsOnEveryOs() {
         val source = fixture()
         val before = names.associateWith { hash(Files.readAllBytes(source.resolve(it))) }
+        val sourceAudio = audioPackets(source, listOf(
+            PlaybackAudioSegment(0, 640_000, 0, 30),
+            PlaybackAudioSegment(1_100_001, 1_066_666, 30 * 1024, 50),
+        ), 1.706666)
         val at = ZonedDateTime.parse("2024-01-02T03:04:05Z")
         val trimmed = ReplayTrim().trim(source, 200_001, 1_900_001, { false },
             { Files.move(it.partial, it.complete) }, at, "deadbeef")
         SavedReplay.open(trimmed).use { assertTrue(it.manifest["complete"].asBoolean) }
+        assertEquals(sourceAudio.subList(9, 30) + sourceAudio.subList(30, 68), audioPackets(trimmed, listOf(
+            PlaybackAudioSegment(0, 440_000, 384, 21),
+            PlaybackAudioSegment(900_001, 800_000, 21 * 1024, 38),
+        ), 1.24))
         val bytes = names.associateWith { Files.readAllBytes(trimmed.resolve(it)) }.toMutableMap()
         val videoHash = hash(bytes.getValue("video.mp4"))
         bytes["video.mp4"] = withoutMp4Dates(bytes.getValue("video.mp4"))
@@ -62,10 +75,68 @@ class ReplayTrimParityTest {
             .replace(videoHash, hash(bytes.getValue("video.mp4"))).toByteArray(Charsets.UTF_8)
         val png = ReplayFrameExport.export(trimmed, 0, root, at, "deadbeef")
         bytes["frame.png"] = Files.readAllBytes(png)
+        val trimmedBefore = names.associateWith { hash(Files.readAllBytes(trimmed.resolve(it))) }
+        val retrimmed = ReplayTrim().trim(trimmed, 100_001, 1_500_001, { false },
+            { Files.move(it.partial, it.complete) }, at, "cafebabe")
+        assertEquals(sourceAudio.subList(14, 30) + sourceAudio.subList(30, 59), audioPackets(retrimmed, listOf(
+            PlaybackAudioSegment(0, 340_000, 64, 16),
+            PlaybackAudioSegment(800_001, 600_000, 16 * 1024, 29),
+        ), 0.94))
+        bytes["retrim-video.mp4"] = withoutMp4Dates(Files.readAllBytes(retrimmed.resolve("video.mp4")))
+        val retrimmedRecord = JsonParser.parseString(Files.readString(retrimmed.resolve("replay.json"))).asJsonObject
+        bytes["retrim-audio.json"] = retrimmedRecord["audio_track"].toString().toByteArray(Charsets.UTF_8)
         val actual = bytes.toSortedMap().entries.joinToString("\n", postfix = "\n") { (name, data) -> "$name ${hash(data)}" }
         val expected = resource("output.sha256").bufferedReader().use { it.readText() }
         assertEquals(expected, actual)
         assertEquals(before, names.associateWith { hash(Files.readAllBytes(source.resolve(it))) })
+        assertEquals(trimmedBefore, names.associateWith { hash(Files.readAllBytes(trimmed.resolve(it))) })
+    }
+
+    private fun audioPackets(dir: Path, expected: List<PlaybackAudioSegment>, availableSeconds: Double): List<String> {
+        SavedReplay.open(dir).use { saved ->
+            assertTrue(saved.manifest["complete"].asBoolean)
+            val info = saved.manifest["audio_track"].asJsonObject
+            assertEquals("video.mp4", info["file"].asString)
+            assertEquals("AAC-LC", info["codec"].asString)
+            assertEquals(48_000, info["sample_rate"].asInt)
+            assertEquals(1, info["channels"].asInt)
+            val coverage = saved.manifest["coverage"].asJsonObject["audio"].asJsonObject
+            assertEquals("CAPTURING", coverage["state"].asString)
+            assertTrue(coverage["requested"].asBoolean)
+            assertTrue(coverage["reason"].isJsonNull)
+            assertEquals(availableSeconds, coverage["availableSeconds"].asDouble, 1e-9)
+            assertNotNull(ReplayAudioTrack.open(saved)).use { audio ->
+                assertContentEquals(byteArrayOf(0x11, 0x88.toByte()), audio.config)
+                assertEquals(48_000, audio.sampleRate)
+                assertEquals(1, audio.channels)
+                assertEquals(expected, audio.segments)
+                assertEquals(listOf(AudioChunk.Silence(22_080)), audio.schedule(0).filterIsInstance<AudioChunk.Silence>())
+            }
+        }
+        return NIOUtils.readableChannel(dir.resolve("video.mp4").toFile()).use { input ->
+            MP4Demuxer.createRawMP4Demuxer(input).use { demux ->
+                assertEquals(1, demux.videoTracks.size)
+                val audio = demux.audioTracks.single() as AbstractMP4DemuxerTrack
+                val (first, second) = expected
+                assertEquals(listOf(first.durationUs to first.mediaStart,
+                    (second.movieStartUs - first.durationUs) to -1L,
+                    second.durationUs to second.mediaStart), audio.edits.map { it.duration to it.mediaTime })
+                assertTrue(audio.edits.all { it.rate == 1f })
+                val decoder = AacPcmDecoder(byteArrayOf(0x11, 0x88.toByte()))
+                val packets = mutableListOf<String>()
+                while (true) {
+                    val packet = audio.nextFrame() as? MP4Packet ?: break
+                    assertEquals(48_000, packet.timescale)
+                    assertEquals(packets.size * 1024L, packet.mediaPts)
+                    assertEquals(1024L, packet.duration)
+                    val data = ByteArray(packet.data.remaining()).also { packet.data.duplicate().get(it) }
+                    assertEquals(2048, decoder.decode(data).size)
+                    packets += hash(data)
+                }
+                assertEquals(expected.sumOf { it.samples }, packets.size)
+                packets
+            }
+        }
     }
 
     private fun resource(name: String) = assertNotNull(javaClass.getResourceAsStream("/replay-trim-parity/$name"))
