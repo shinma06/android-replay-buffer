@@ -218,6 +218,24 @@ class TrimEditorModelTest {
     }
 
     @Test
+    fun narrowRangesUseRenderedHandlesAndDragWithoutJumping() {
+        val geometry = StripGeometry(1000f, 900_000_000)
+        for (start in listOf(0L, 450_000_000L, 899_800_000L)) {
+            val state = trimAt(0).copy(inUs = start, outUs = start + 100_000)
+            val range = geometry.handleRange(state, 12f)
+            assertTrue(range.start >= 0 && range.endInclusive <= 1000f)
+            assertEquals(Grip.IN, geometry.hitTest(state, range.start + 6f, 12f, 6f))
+            assertEquals(Grip.OUT, geometry.hitTest(state, range.endInclusive - 6f, 12f, 6f))
+            for (grip in listOf(Grip.IN, Grip.OUT)) {
+                val pressed = if (grip == Grip.IN) range.start + 6f else range.endInclusive - 6f
+                val origin = if (grip == Grip.IN) state.inUs else state.outUs
+                assertEquals(origin, geometry.dragUs(state, grip, pressed, pressed))
+                assertEquals((origin - 9_000_000).coerceAtLeast(0), geometry.dragUs(state, grip, pressed, pressed - 10f))
+            }
+        }
+    }
+
+    @Test
     fun thumbnailsCoverTheWholeMovieAndAreReused() {
         assertEquals(4, thumbnailCount(100f, 27f))
         val slots = thumbnailSlots(rules.grid, 2_000_000, 4)

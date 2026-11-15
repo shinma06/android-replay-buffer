@@ -63,11 +63,11 @@ internal object ReplayFrameExport {
                 throw IllegalStateException("表示frameの復号に対応できません", e)
             }
             var picture: Picture? = null
-            var index = 0
+            require(track.gotoFrame(gopStart.toLong())) { "参照IDRへシークできません" }
+            var index = gopStart
             while (index <= targetIndex) {
                 checkActive()
                 val packet = track.nextFrame() ?: break
-                if (index < gopStart) { index++; continue }
                 require(rows[index]["sample_entry"].asInt == entry) { "表示frameのsample構成が読めません" }
                 picture = try { normalizer.decodeOnly(movSampleToAnnexB(packet.data, avcs[entry - 1])) }
                 catch (e: Exception) { throw IllegalStateException("表示frameの復号に失敗しました", e) }

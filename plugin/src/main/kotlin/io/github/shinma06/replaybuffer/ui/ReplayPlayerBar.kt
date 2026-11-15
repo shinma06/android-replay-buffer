@@ -202,14 +202,15 @@ private fun Filmstrip(bar: PlayerBarModel, palette: PlayerPalette, actions: Play
                 awaitEachGesture {
                     val down = awaitFirstDown()
                     val geometry = StripGeometry(this.size.width.toFloat(), duration)
-                    val grip = geometry.hitTest(current.editor, down.position.x, handlePx, slopPx)
-                    actions.press(grip, geometry.us(down.position.x))
+                    val pressedEditor = current.editor
+                    val grip = geometry.hitTest(pressedEditor, down.position.x, handlePx, slopPx)
+                    actions.press(grip, geometry.dragUs(pressedEditor, grip, down.position.x, down.position.x))
                     down.consume()
                     while (true) {
                         val event = awaitPointerEvent()
                         val change = event.changes.firstOrNull() ?: break
                         if (!change.pressed) break
-                        actions.dragTo(geometry.us(change.position.x))
+                        actions.dragTo(geometry.dragUs(pressedEditor, grip, down.position.x, change.position.x))
                         change.consume()
                     }
                     actions.release()
@@ -295,8 +296,9 @@ private fun DrawScope.drawStrip(bar: PlayerBarModel, palette: PlayerPalette, han
     }
     val editor = bar.editor
     if (editor.mode == PlayerMode.TRIM) {
-        val left = geometry.x(editor.inUs)
-        val right = geometry.x(editor.outUs).coerceAtLeast(left + 2 * handlePx)
+        val range = geometry.handleRange(editor, handlePx)
+        val left = range.start
+        val right = range.endInclusive
         drawRect(palette.dimOutside, Offset(0f, 0f), Size(left, height))
         drawRect(palette.dimOutside, Offset(right, 0f), Size(width - right, height))
         val border = 3.dp.toPx()

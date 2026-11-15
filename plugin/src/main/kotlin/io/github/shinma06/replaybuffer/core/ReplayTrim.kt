@@ -116,9 +116,9 @@ internal class ReplayTrim(private val availableSpace: (Path) -> Long = { Files.g
                 val endUs = endFrame.movieEnd!!
                 val originTns = startFrame.displayTns ?: startFrame.tNs
                 val lastDisplayTns = endFrame.displayTns ?: endFrame.tNs
-                val endTns = listOfNotNull(
-                    lastDisplayTns?.let { Math.addExact(it, Math.multiplyExact(endFrame.displayDuration, 1000)) },
-                    endFrame.confirmedEndTns).maxOrNull()
+                val endTns = lastDisplayTns?.let {
+                    Math.addExact(it, Math.multiplyExact(endFrame.movieEnd!! - endFrame.moviePts!!, 1000))
+                } ?: endFrame.confirmedEndTns
                 data class KeptPart(val part: JsonObject, val index: Int, val a: Long, val b: Long)
                 val kept = parts.mapIndexedNotNull { index, part ->
                     val a = maxOf(startUs, part.requiredLongText("movie_start_us"))
@@ -127,16 +127,16 @@ internal class ReplayTrim(private val availableSpace: (Path) -> Long = { Files.g
                 }
                 require(kept.isNotEmpty()) { "切り取り範囲に表示frameがありません" }
                 val byPart = frames.groupBy { it.part }
-                val keptParts = kept.map { keptPart ->
+                val keptParts = kept.mapIndexed { keptIndex, keptPart ->
                     val partRows = byPart[keptPart.index] ?: throw IllegalArgumentException("動画partにframe記録がありません")
                     val fullStart = keptPart.a == keptPart.part.requiredLongText("movie_start_us")
                     val fullEnd = keptPart.b == keptPart.part.requiredLongText("movie_end_us")
-                    val firstOut = if (fullStart) 0 else partRows.indexOfFirst { it.index == startFrame.index }
+                    val firstOut = if (fullStart && keptIndex != 0) 0 else partRows.indexOfFirst { it.index == startFrame.index }
                     val lastOut = if (fullEnd) partRows.lastIndex else partRows.indexOfFirst { it.index == endFrame.index }
                     require(firstOut >= 0 && lastOut >= firstOut) { "切り取り位置のframeを特定できません" }
                     Triple(partRows, firstOut, lastOut)
                 }
-                val headReencode = kept.zip(keptParts).any { (keptPart, plan) -> keptPart.a != keptPart.part.requiredLongText("movie_start_us") }
+                val headReencode = keptParts.any { (_, firstOut, _) -> firstOut > 0 }
                 checkActive()
                 // Rough estimate before staging; exact checkSpace continues while writing.
                 val estimate = Math.addExact(Files.size(source.resolve(ReplayFiles.VIDEO)) / 2 + 16 * 1024 * 1024,
@@ -186,6 +186,10 @@ internal class ReplayTrim(private val availableSpace: (Path) -> Long = { Files.g
                                         checkActive()
                                         val (partRows, firstOut, lastOut) = keptParts[keptIndex]
                                         val fullStart = firstOut == 0 && keptPart.a == keptPart.part.requiredLongText("movie_start_us")
+                                        val editOffset = keptPart.part.requiredLongText("edit_start_us") +
+                                            (keptPart.a - keptPart.part.requiredLongText("movie_start_us")) -
+                                            partRows[firstOut].row.requiredLongText("media_pts_us")
+                                        require(editOffset >= 0) { "表示frameのmedia位置が読めません" }
                                         // Packets before this part's first emitted sample are skipped.
                                         while (packetIndex < partRows.first().index) {
                                             require(videoTrack.nextFrame() != null) { "動画sampleが足りません" }
@@ -207,8 +211,15 @@ internal class ReplayTrim(private val availableSpace: (Path) -> Long = { Files.g
                                         } else null
                                         if (normalizer != null) didReencode = true
                                         val gapUs = prevKept?.let { keptPart.part.requiredLongText("movie_start_us") - it.part.requiredLongText("movie_end_us") }
-                                        if (prevKept != null) newBoundaries += mapOf("before_segment" to keptIndex - 1, "after_segment" to keptIndex,
-                                            "actual_gap_duration_us" to gapUs?.toString(), "authored_gap_duration_us" to gapUs?.toString())
+                                        if (prevKept != null) {
+                                            val original = saved.manifest["video_run_boundaries"]?.asJsonArray?.firstOrNull {
+                                                it.asJsonObject["before_segment"]?.asInt == prevKept!!.index &&
+                                                    it.asJsonObject["after_segment"]?.asInt == keptPart.index
+                                            }?.asJsonObject
+                                            newBoundaries += mapOf("before_segment" to keptIndex - 1, "after_segment" to keptIndex,
+                                                "actual_gap_duration_us" to original?.text("actual_gap_duration_us"),
+                                                "authored_gap_duration_us" to gapUs?.toString())
+                                        }
                                         if (gapUs != null && gapUs > 0) { edits += Edit(gapUs, -1, 1f); movie = Math.addExact(movie, gapUs) }
                                         val movieStart = movie
                                         val runMedia = media
@@ -283,11 +294,8 @@ internal class ReplayTrim(private val availableSpace: (Path) -> Long = { Files.g
                                             media = Math.addExact(media, row.displayDuration)
                                             sampleIndex++
                                         }
-                                        // No B-frames: a sample displays at its media pts, so the first emitted
-                                        // sample's new media pts is the new edit start for a partial part.
-                                        val editMedia = if (fullStart) Math.addExact(runMedia,
-                                            Math.subtractExact(keptPart.part.requiredLongText("edit_start_us"), keptPart.part.requiredLongText("media_start_us")))
-                                            else runMedia
+                                        // A source edit may start inside the first retained sample.
+                                        val editMedia = Math.addExact(runMedia, editOffset)
                                         val duration = Math.subtractExact(keptPart.b, keptPart.a)
                                         edits += Edit(duration, editMedia, 1f)
                                         movie = Math.addExact(movie, duration)
@@ -481,7 +489,8 @@ internal class ReplayTrim(private val availableSpace: (Path) -> Long = { Files.g
         return Triple(newSegments, sound, cursor)
     }
 
-    private data class LogCounts(val device: Int, val app: Int, val lastDeviceId: String?, val lastAppId: String?)
+    private data class LogCounts(val device: Int, val app: Int, val lastDeviceId: String?, val lastAppId: String?,
+                                 val times: Map<String, LongRange>)
     private data class TouchCounts(val count: Int, val inMovie: Int)
 
     private fun inTnsRange(line: JsonObject, originTns: Long?, endTns: Long?): Boolean {
@@ -490,7 +499,7 @@ internal class ReplayTrim(private val availableSpace: (Path) -> Long = { Files.g
         val margin = if (uncertainty == Long.MAX_VALUE) Long.MAX_VALUE else maxOf(0L, uncertainty)
         fun addSat(base: Long): Long = if (margin == Long.MAX_VALUE) Long.MAX_VALUE else try { Math.addExact(base, margin) } catch (e: ArithmeticException) { Long.MAX_VALUE }
         fun subSat(base: Long): Long = if (margin == Long.MAX_VALUE) Long.MIN_VALUE else try { Math.subtractExact(base, margin) } catch (e: ArithmeticException) { Long.MIN_VALUE }
-        return (originTns == null || addSat(t) > originTns) && (endTns == null || subSat(t) < endTns)
+        return (originTns == null || addSat(t) >= originTns) && (endTns == null || subSat(t) <= endTns)
     }
 
     private fun writeLogs(saved: SavedReplay, file: (String) -> Path, originTns: Long?, endTns: Long?,
@@ -499,6 +508,12 @@ internal class ReplayTrim(private val availableSpace: (Path) -> Long = { Files.g
         var app = 0
         var lastDevice: String? = null
         var lastApp: String? = null
+        val times = mutableMapOf<String, LongRange>()
+        fun recordTime(kind: String, row: JsonObject) {
+            val t = row.longText("t_ns") ?: return
+            val span = times[kind]
+            times[kind] = minOf(span?.first ?: t, t)..maxOf(span?.last ?: t, t)
+        }
         val deviceOut = staging.writer(file(ReplayFiles.LOGCAT_DEVICE))
         val appOut = staging.writer(file(ReplayFiles.LOGCAT_APP))
         deviceOut.use { deviceWriter -> appOut.use { appWriter ->
@@ -511,11 +526,15 @@ internal class ReplayTrim(private val availableSpace: (Path) -> Long = { Files.g
                 checkSpace(text.length * 2L)
                 deviceWriter.write(text); deviceWriter.write("\n")
                 device++
+                recordTime("device_log", row)
                 lastDevice = row.text("record_id") ?: lastDevice
-                if (row["app_membership"]?.takeIf { it.isJsonPrimitive }?.asBoolean == true) { appWriter.write(text); appWriter.write("\n"); app++; lastApp = row.text("record_id") ?: lastApp }
+                if (row["app_membership"]?.takeIf { it.isJsonPrimitive }?.asBoolean == true) {
+                    appWriter.write(text); appWriter.write("\n"); app++; lastApp = row.text("record_id") ?: lastApp
+                    recordTime("app_log", row)
+                }
             }
         } }
-        return LogCounts(device, app, lastDevice, lastApp)
+        return LogCounts(device, app, lastDevice, lastApp, times)
     }
 
     private fun writeTouches(saved: SavedReplay, file: (String) -> Path, originTns: Long?, endTns: Long?,
@@ -646,6 +665,21 @@ internal class ReplayTrim(private val availableSpace: (Path) -> Long = { Files.g
             }
         }
         out["coverage"]?.takeIf { it.isJsonObject }?.asJsonObject?.let { coverage ->
+            val durationNs = if (originTns != null && endTns != null) endTns - originTns else (endUs - startUs) * 1000
+            val videoTimes = outputRows.mapNotNull { shift(it.text("t_ns"), originTns)?.toLong() }
+            val spans = logCounts.times + ("video" to (videoTimes.minOrNull()?.let { it..videoTimes.max() }))
+            for (kind in listOf("video", "device_log", "app_log")) {
+                val stream = coverage[kind]?.takeIf { it.isJsonObject }?.asJsonObject ?: continue
+                val span = spans[kind]
+                val observed = span?.let { (minOf(it.last, durationNs) - maxOf(it.first, 0L)).coerceAtLeast(0) } ?: 0L
+                val missing = out["gaps"]?.asJsonArray?.sumOf { element ->
+                    val gap = element.asJsonObject
+                    val from = gap.longText("from_t_ns")
+                    if (gap.text("stream") != kind || from == null) 0L
+                    else (minOf(gap.longText("to_t_ns") ?: durationNs, durationNs) - maxOf(from, 0L)).coerceAtLeast(0)
+                } ?: 0L
+                stream.addProperty("availableSeconds", (observed - missing).coerceAtLeast(0) / 1e9)
+            }
             coverage["audio"]?.takeIf { it.isJsonObject }?.asJsonObject?.let { audioMap ->
                 val seconds = audio?.fold(0.0) { sum, s -> sum + s.getValue("duration_us").toString().toLong() / 1e6 } ?: 0.0
                 audioMap.addProperty("availableSeconds", seconds)
@@ -676,7 +710,7 @@ internal class ReplayTrim(private val availableSpace: (Path) -> Long = { Files.g
             "method" to "leading_gop_reencode",
             "source_save_id" to saved.manifest["save_id"]?.asString,
             "source_folder_name" to saved.name,
-            "source_replay_sha256" to saved.manifest["files_sha256"]?.asJsonObject?.get(ReplayFiles.RECORD)?.asString,
+            "source_replay_sha256" to saved.openFile(ReplayFiles.RECORD).use { it.hash() },
             "source_video_sha256" to saved.manifest["files_sha256"]?.asJsonObject?.get(ReplayFiles.VIDEO)?.asString,
             "from_movie_us" to fromUs.toString(), "to_movie_us" to toUs.toString(),
             "from_t_ns" to originTns?.toString(), "to_t_ns" to endTns?.toString(),

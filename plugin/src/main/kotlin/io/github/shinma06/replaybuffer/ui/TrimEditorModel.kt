@@ -301,14 +301,27 @@ internal class StripGeometry(val widthPx: Float, val durationUs: Long) {
 
     fun us(x: Float): Long = if (widthPx <= 0f) 0 else (x.coerceIn(0f, widthPx).toDouble() / widthPx * durationUs).toLong()
 
+    fun handleRange(state: TrimEditor, handlePx: Float): ClosedFloatingPointRange<Float> {
+        val minimum = (2 * handlePx).coerceIn(0f, widthPx.coerceAtLeast(0f))
+        val left = x(state.inUs).coerceAtMost(widthPx - minimum)
+        return left..x(state.outUs).coerceAtLeast(left + minimum).coerceAtMost(widthPx)
+    }
+
+    fun dragUs(state: TrimEditor, grip: Grip, pressedX: Float, currentX: Float): Long {
+        if (grip == Grip.PLAYHEAD || widthPx <= 0f) return us(currentX)
+        val origin = if (grip == Grip.IN) state.inUs else state.outUs
+        return (origin + (currentX - pressedX).toDouble() / widthPx * durationUs).toLong().coerceIn(0, durationUs)
+    }
+
     /**
      * What a press at [x] takes. Handles sit inside the frame edges ([handlePx] wide) and win over the
      * playhead; anywhere else grabs the playhead and jumps it there.
      */
     fun hitTest(state: TrimEditor, x: Float, handlePx: Float, slopPx: Float): Grip {
         if (state.mode != PlayerMode.TRIM) return Grip.PLAYHEAD
-        val left = x(state.inUs)
-        val right = x(state.outUs)
+        val range = handleRange(state, handlePx)
+        val left = range.start
+        val right = range.endInclusive
         val onIn = x >= left - slopPx && x <= left + handlePx + slopPx
         val onOut = x >= right - handlePx - slopPx && x <= right + slopPx
         return when {

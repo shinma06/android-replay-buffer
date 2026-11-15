@@ -149,6 +149,9 @@ class ReplayInitializationCliTest {
                     assertTrue(Files.isRegularFile(output.resolve("replay.json")))
                     assertTrue(Files.isRegularFile(source.resolve("replay.json")))
                 }
+                assertTrue(cli("trim", 1, source.toString(), "--from", "0", "--to", "999").contains("切り取り範囲"))
+                Files.writeString(source.resolve("touches.jsonl"), "broken", java.nio.file.StandardOpenOption.APPEND)
+                assertTrue(cli("trim", 1, source.toString(), "--from", "0", "--to", "1").contains("変更されています: touches.jsonl"))
                 server.close()
                 server.termination.get(5, TimeUnit.SECONDS)
             }

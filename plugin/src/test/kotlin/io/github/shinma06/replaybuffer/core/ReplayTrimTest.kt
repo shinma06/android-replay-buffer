@@ -127,6 +127,51 @@ class ReplayTrimTest {
         assertEquals(to.toString(), trim["to_movie_us"].asString)
         assertEquals(true, trim["reencoded_leading_gop"].asBoolean)
         assertEquals(output.directory.fileName.toString(), trim["source_folder_name"].asString)
+        assertEquals(sha(Files.readAllBytes(output.directory.resolve("replay.json"))), trim["source_replay_sha256"].asString)
+    }
+
+    @Test
+    fun fullStartDropsHiddenPrerollAndKeepsTheClippedDisplayDuration() = withRuns(
+        listOf(List(16) { it * 100_000L }),
+    ) { root, _, capture, _, pixels ->
+        val video = capture.video.map { frame ->
+            val t = frame.pts * 1000
+            frame.copy(time = MappedTime(t, 0, 0, t))
+        }
+        val source = write(capture.copy(video = video, start = 150_000_000, end = 950_000_000,
+            endUncertainty = 0, states = capture.states.mapValues { (_, value) -> value.copy(availableSeconds = 180.0) }), root)
+        val sourceRows = rows(source.directory)
+        assertFalse(sourceRows.first()["presented"].asBoolean)
+        assertEquals("50000", sourceRows.first { it["presented"].asBoolean }["movie_end_us"].asString)
+        val before = hashes(source.directory)
+        val dir = trim(source.directory, 0, 50_000)
+        assertEquals(1, rows(dir).size)
+        assertEquals(1, packets(dir).size)
+        assertEquals("100000", rows(dir).single()["source_pts_us"].asString)
+        assertTrue(meanSquareError(decodeAll(dir).single()[0], pixels[1][0]) < 4.0)
+        assertEquals(50_000L, edits(dir).single().duration)
+        assertEquals(50_000L, edits(dir).single().mediaTime)
+        val record = manifest(dir)
+        assertEquals("50000000", record["timebase"].asJsonObject["window_duration_ns"].asString)
+        assertEquals("50000000", record["trim"].asJsonObject["to_t_ns"].asString)
+        assertTrue(record["coverage"].asJsonObject["video"].asJsonObject["availableSeconds"].asDouble <= 0.05)
+        val repeated = trim(dir, 0, 50_000)
+        assertEquals(50_000L, edits(repeated).single().mediaTime)
+        assertEquals("50000000", manifest(repeated)["timebase"].asJsonObject["window_duration_ns"].asString)
+        assertEquals(before, hashes(source.directory))
+    }
+
+    @Test
+    fun videoCoverageUsesTheRebasedDeviceTimeline() = withRuns(listOf(List(16) { it * 100_000L })) { root, _, capture, _, _ ->
+        val video = capture.video.map { frame ->
+            val t = 10_000_000_000 + frame.pts * 1000
+            frame.copy(time = MappedTime(t, 0, 0, t))
+        }
+        val source = write(capture.copy(video = video, start = 0, end = 12_000_000_000, endUncertainty = 0,
+            states = capture.states.mapValues { (_, value) -> value.copy(availableSeconds = 180.0) }), root)
+        val sourceRows = rows(source.directory)
+        val dir = trim(source.directory, sourceRows[5]["movie_pts_us"].asString.toLong(), sourceRows[9]["movie_end_us"].asString.toLong())
+        assertEquals(0.4, manifest(dir)["coverage"].asJsonObject["video"].asJsonObject["availableSeconds"].asDouble, 1e-9)
     }
 
     @Test
@@ -288,6 +333,7 @@ class ReplayTrimTest {
                 "Fixture", "row $n", byteArrayOf(n.toByte())), 1, host + n * 100_000_000)
             store.touchStatus(StreamState.CAPTURING, null, 1)
             store.touch(TouchSample(1_050_000_000, "/dev/input/event2", 0, TouchAction.DOWN, 10, 20), 32, 32, 1, host + 50_000_000)
+            store.touch(TouchSample(1_300_000_000, "/dev/input/event2", 0, TouchAction.MOVE, 10, 20), 32, 32, 1, host + 300_000_000)
             store.touch(TouchSample(1_550_000_000, "/dev/input/event2", 0, TouchAction.UP, 10, 20), 32, 32, 1, host + 550_000_000)
             sample(store, host, 2)
             val capture = store.capture(ReplaySettings(), null, host + 1_000_000_000)!!
@@ -300,19 +346,24 @@ class ReplayTrimTest {
             val logs = Files.readAllLines(dir.resolve("logcat-device.jsonl"))
                 .map { JsonParser.parseString(it).asJsonObject }
             assertTrue(logs.isNotEmpty())
+            assertTrue(logs.any { it["t_ns"].asString == "0" })
             val srcLogs = Files.readAllLines(output.directory.resolve("logcat-device.jsonl")).size
             assertTrue(logs.size < srcLogs)
             val touches = Files.readAllLines(dir.resolve("touches.jsonl")).map { JsonParser.parseString(it).asJsonObject }
             val srcTouches = Files.readAllLines(output.directory.resolve("touches.jsonl"))
                 .map { JsonParser.parseString(it).asJsonObject }.associateBy { it["device_mono_ns"].asString }
-            assertEquals(1, touches.size) // The earlier touch is provably before the trim range.
-            val touch = touches.single()
+            assertEquals(2, touches.size) // The earlier touch is provably before the trim range.
+            assertTrue(touches.any { it["t_ns"].asString == "0" })
+            val touch = touches.single { it["t_ns"].asString != "0" }
             assertEquals(srcTouches.getValue(touch["device_mono_ns"].asString)["t_ns"].asString.toLong() - originTns,
                 touch["t_ns"].asString.toLong())
             val srcMovieUs = srcTouches.getValue(touch["device_mono_ns"].asString)["movie_us"].asString.toLong()
             assertEquals(srcMovieUs - from, touch["movie_us"].asString.toLong())
             val manifest = manifest(dir)
             assertTrue(manifest["parts"].asJsonArray[0].asJsonObject["t_start_ns"].asString == "0")
+            val available = manifest["coverage"].asJsonObject["device_log"].asJsonObject["availableSeconds"].asDouble
+            assertTrue(available in 0.0..0.5)
+            assertTrue(available < manifest(output.directory)["coverage"].asJsonObject["device_log"].asJsonObject["availableSeconds"].asDouble)
         } finally {
             store.close()
             Files.walk(root).use { files -> files.sorted(Comparator.reverseOrder()).forEach(Files::deleteIfExists) }
