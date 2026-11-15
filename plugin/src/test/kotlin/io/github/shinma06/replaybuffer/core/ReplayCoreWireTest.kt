@@ -7,6 +7,7 @@ import org.jcodec.codecs.h264.H264Utils
 import org.jcodec.common.model.ColorSpace
 import org.jcodec.common.model.Picture
 import java.io.DataOutputStream
+import java.math.BigInteger
 import java.net.InetAddress
 import java.net.ServerSocket
 import java.nio.ByteBuffer
@@ -20,6 +21,8 @@ import kotlin.concurrent.thread
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
+import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
 /**
@@ -34,6 +37,89 @@ class ReplayCoreWireTest {
     @Test
     fun failedRequestRetriesItsOriginalWindowWhileAcquisitionReconfigurationAndReconnectContinue() {
         runWireFixture(false, videoQuality = VideoQuality.LIGHTWEIGHT)
+    }
+
+    @Test
+    fun aRetainedVideoGapInsideTheFrozenWindowIsMissing() {
+        val gap = CaptureGap("video", 1_000_000_000, 1_500_000_000, "fixture interruption", 1_000_000, 1)
+        val capture = gapCapture(gap, 1_000_000_000, 2_000_000_000)
+        assertTrue(overlapsWindow(gap, capture))
+        assertEquals(listOf("video"), capture.missingKinds())
+        val edge = capture.copy(start = 1_502_000_000, end = 2_502_000_000)
+        assertTrue(overlapsWindow(gap, edge))
+        assertEquals(listOf("video"), edge.missingKinds())
+        val openGap = gap.copy(toNs = null)
+        val open = edge.copy(gaps = listOf(openGap))
+        assertTrue(overlapsWindow(openGap, open))
+        assertEquals(listOf("video"), open.missingKinds())
+    }
+
+    @Test
+    fun aRetainedVideoGapOutsideTheFrozenWindowIsNotMissing() {
+        val gap = CaptureGap("video", 1_000_000_000, 1_500_000_000, "fixture interruption", 1_000_000, 1)
+        val capture = gapCapture(gap, 1_502_000_001, 2_502_000_001)
+        assertEquals(listOf(gap), capture.gaps)
+        assertFalse(overlapsWindow(gap, capture))
+        assertEquals(emptyList(), capture.missingKinds())
+    }
+
+    @Test
+    fun anUncertainVideoGapUsesOnlyItsFrozenClockBounds() {
+        val clocks = listOf(900_000_000L, 1_600_000_000L).map { at ->
+            ClockSample(0, "fixture", at, at, at, at, at, at, 0)
+        }
+        for (error in listOf(null, Long.MAX_VALUE)) {
+            val gap = CaptureGap("video", 1_000_000_000, 1_500_000_000, "fixture interruption", error, 1)
+            val inside = gapCapture(gap, 1_550_000_000, 2_550_000_000).copy(clocks = clocks)
+            assertTrue(overlapsWindow(gap, inside))
+            assertEquals(listOf("video"), inside.missingKinds())
+            val outside = inside.copy(start = 1_602_000_001, end = 2_602_000_001)
+            assertEquals(listOf(gap), outside.gaps)
+            assertFalse(overlapsWindow(gap, outside))
+            assertEquals(emptyList(), outside.missingKinds())
+            val unsupported = outside.copy(clocks = emptyList())
+            assertTrue(overlapsWindow(gap, unsupported))
+            assertEquals(listOf("video"), unsupported.missingKinds())
+        }
+    }
+
+    private fun gapCapture(gap: CaptureGap, start: Long, end: Long) = FrozenCapture(
+        "fixture", "sequence", 1, start, end, 1, emptyList(), emptyList(), listOf(gap), emptyList(), emptyList(),
+        ReplaySettings(), mapOf("video" to StreamSnapshot(StreamState.CAPTURING)), endUncertainty = 1_000_000,
+    )
+
+    // Single-boot fixture oracle: derive supported bounds from raw reads, not production gap/overlap helpers.
+    private fun overlapsWindow(gap: CaptureGap, capture: FrozenCapture): Boolean {
+        if (capture.endUncertainty == Long.MAX_VALUE) return true
+        var from = gap.fromNs?.toBigInteger()
+        var to = gap.toNs?.toBigInteger()
+        var error = gap.boundaryUncertaintyNs?.takeUnless { it == Long.MAX_VALUE }?.coerceAtLeast(0)?.toBigInteger()
+        if (error == null) {
+            if (gap.stream == "video" && (gap.generation <= 0 || from == null || to == null || from > to)) return true
+            assertTrue(capture.clocks.all { it.segment == 0 })
+            fun anchor(sample: ClockSample): Pair<BigInteger, BigInteger>? {
+                val measured = sample.after - sample.before
+                val roundTrip = sample.received - sample.sent
+                if (sample.segment != 0 || sample.before < 0 || measured !in 0..2_000_000 || roundTrip !in 0..40_000_000) return null
+                return (sample.before.toBigInteger() + (measured / 2).toBigInteger() + sample.segmentOffset.toBigInteger()) to
+                    (measured / 2 + 1_000_000 + roundTrip / 2).toBigInteger()
+            }
+            val anchors = capture.clocks.mapNotNull(::anchor)
+            val before = from?.let { bound -> anchors.filter { it.first <= bound }.maxByOrNull { it.first } }
+            val after = to?.let { bound ->
+                capture.clockRecoveries[gap]?.takeIf { gap.stream == "clock" }?.let(::anchor)?.let {
+                    maxOf(bound, it.first) to it.second
+                } ?: anchors.filter { it.first >= bound }.minByOrNull { it.first }
+            }
+            if (gap.stream == "video" && (before == null || after == null) ||
+                before == null && after == null || before != null && after != null && before.first > after.first) return true
+            from = before?.first
+            to = after?.first
+            error = maxOf(before?.second ?: BigInteger.ZERO, after?.second ?: BigInteger.ZERO)
+        }
+        val margin = error + capture.endUncertainty.coerceAtLeast(0).toBigInteger()
+        return (from == null || from <= capture.end.toBigInteger() + margin) &&
+            (to == null || to >= capture.start.toBigInteger() - margin)
     }
 
     @Test
@@ -268,6 +354,10 @@ elif len(a)>2 and a[2]=='logcat':
                 emit(3,label,wall,pid=99,header=24,tag='Partition')
             (root/(buffer+'-'+label+'.sent')).touch()
         seen=len(lines)
+        eof=root/('eof-'+buffer)
+        if eof.exists():
+            eof.unlink()
+            sys.exit(0)
         time.sleep(.1)
 elif len(a)>3 and 'ClockProbe' in a[3]:
     print('REPLAY_CLOCK_1',flush=True)
@@ -286,8 +376,13 @@ elif len(a)>3 and a[3]=='cmd':
 elif len(a)>3 and a[3]=='ps':
     print('PID UID NAME\n12 10001 com.fixture.app\n500 1000 system_server' if a[-1]=='PID,UID,NAME' else 'PID ARGS',flush=True)
 """)
-                val core = ReplayCore(ReplaySettings(fake, root.resolve("missing"), if (captureMode.videoRequested) 1 else 30,
-            ApplicationTarget(), captureMode, videoQuality = videoQuality), root.resolve("workspace"))
+        val writes = CopyOnWriteArrayList<FrozenCapture>()
+        val core = ReplayCore(ReplaySettings(fake, root.resolve("missing"), if (captureMode.videoRequested) 1 else 30,
+            ApplicationTarget(), captureMode, videoQuality = videoQuality), root.resolve("workspace"), root.resolve("workspace"),
+            { capture, directory, cancelled, publish ->
+                writes += capture
+                SaveWriter().write(capture, directory, cancelled, publish)
+            })
         fun awaitState(phase: String, predicate: (ReplaySnapshot) -> Boolean): ReplaySnapshot {
             val deadline = System.nanoTime() + FIXTURE_GUARD_NS
             while (System.nanoTime() < deadline) {
@@ -482,6 +577,14 @@ elif len(a)>3 and a[3]=='ps':
             if (logMode != null) {
                 assertTrue(core.applySettings(core.snapshot().settings.copy(replaySeconds = 30, saveDirectory = root)).get().accepted)
                 val readers = mutableMapOf<String, Long>()
+                val failures = mutableListOf<CaptureGap>()
+                fun logFailure(phase: String): ReplaySnapshot = awaitState(phase) {
+                    it.deviceLog.state == StreamState.RECOVERING && it.deviceLog.gaps.any { gap ->
+                        gap.stream == "device_log" && gap.toNs == null
+                    }
+                }.also { state ->
+                    failures += state.deviceLog.gaps.last { it.stream == "device_log" && it.toNs == null }
+                }
                 fun ready(buffer: String, previousPid: Long? = null): Long {
                     val deadline = System.nanoTime() + FIXTURE_GUARD_NS
                     while (System.nanoTime() < deadline) {
@@ -521,7 +624,7 @@ elif len(a)>3 and a[3]=='ps':
                     assertEquals(emptyList(), quiet.gaps.filter { it.stream == "device_log" && it !in quietGaps })
                     Files.delete(root.resolve("quiet-all"))
                     Files.createFile(root.resolve("fail-all"))
-                    awaitState("all-only-failure") { it.deviceLog.state == StreamState.RECOVERING }
+                    logFailure("all-only-failure")
                     emit("partial")
                     val partial = core.snapshot()
                     assertEquals(StreamState.RECOVERING, partial.deviceLog.state)
@@ -530,7 +633,7 @@ elif len(a)>3 and a[3]=='ps':
                     awaitState("all-recovered") { it.deviceLog.state == StreamState.CAPTURING }
                     ready("all", readers.getValue("all"))
                     Files.createFile(root.resolve("wrong-header-all"))
-                    awaitState("all-header-contradiction") { it.deviceLog.state == StreamState.RECOVERING }
+                    logFailure("all-header-contradiction")
                     emit("header-partial")
                     assertEquals(StreamState.RECOVERING, core.snapshot().deviceLog.state)
                     Files.delete(root.resolve("wrong-header-all"))
@@ -538,7 +641,7 @@ elif len(a)>3 and a[3]=='ps':
                     ready("all", readers.getValue("all"))
                     assertEquals(1, logLaunches(root).count { it.startsWith("main ") })
                     Files.createFile(root.resolve("fail-main"))
-                    awaitState("main-only-failure") { it.deviceLog.state == StreamState.RECOVERING }
+                    logFailure("main-only-failure")
                     emit("main-partial", "all")
                     assertEquals(StreamState.RECOVERING, core.snapshot().deviceLog.state)
                     Files.delete(root.resolve("fail-main"))
@@ -547,6 +650,22 @@ elif len(a)>3 and a[3]=='ps':
                     if (logReaderStartupDelayMillis > 0) assertTrue(Files.exists(root.resolve("reader-delay-applied")))
                     emit("recovered")
                     sent("all", "recovered")
+                }
+                val beforeEof = core.snapshot().deviceLog.gaps
+                val originalGaps = failures.map { failure ->
+                    beforeEof.single { it.toNs != null && it == failure.copy(toNs = it.toNs) }
+                }
+                assertEquals(if (logMode == "partition") 3 else 0, originalGaps.distinct().size)
+                val launchesBeforeEof = readers.keys.associateWith { buffer ->
+                    logLaunches(root).count { it.startsWith("$buffer ") }
+                }
+                readers.keys.forEach { Files.createFile(root.resolve("eof-$it")) }
+                // A replacement starts only after the old reader processed every flushed record and reached EOF.
+                // Count launch markers, not distinct PIDs: Windows can immediately reuse a finished process's PID.
+                awaitState("partition-records-drained") {
+                    launchesBeforeEof.all { (buffer, count) ->
+                        logLaunches(root).count { it.startsWith("$buffer ") } > count
+                    }
                 }
                 // A subsequent supported clock sample maps all returned fixture records.
                 awaitLaterClockSample("clock-after-partition-records")
@@ -566,7 +685,7 @@ elif len(a)>3 and a[3]=='ps':
                         label == "main-partial" -> listOf(1, 3)
                         else -> listOf(0, 1, 3)
                     }
-                    assertEquals(lids, actual.map { it["lid"].asInt }.sorted())
+                    assertEquals(lids, actual.map { it["lid"].asInt }.sorted(), "mode=$logMode label=$label")
                     assertEquals(actual.size, actual.map { it["record_id"].asString }.toSet().size)
                     actual.forEach { row ->
                         val id = row["record_id"].asString
@@ -579,6 +698,20 @@ elif len(a)>3 and a[3]=='ps':
                 val binary = deviceRows.filter { it["lid"].asInt == 2 }
                 assertEquals(if (logMode == "legacy") 0 else if (logMode == "partition") 3 else 1, binary.size)
                 assertTrue(binary.all { it["decode_status"].asString == "binary" && !it["app_membership"].asBoolean })
+                val manifest = JsonParser.parseString(Files.readString(saved.save.directory.resolve("replay.json"))).asJsonObject
+                val savedGaps = manifest["gaps"].asJsonArray.map { it.asJsonObject }
+                val start = assertNotNull(saved.save.windowStartNs)
+                originalGaps.forEach { gap ->
+                    val matches = savedGaps.filter {
+                        it["kind"].asString == gap.stream && it["reason"].asString == gap.reason &&
+                            it["generation"].asLong == gap.generation &&
+                            it["from_t_ns"].takeUnless { it.isJsonNull }?.asString == gap.fromNs?.let { (it - start).toString() }
+                    }
+                    assertEquals(1, matches.size, "元の部分失敗gap: $gap")
+                    val actual = matches.single()
+                    assertEquals(gap.toNs?.let { (it - start).toString() }, actual["to_t_ns"].takeUnless { it.isJsonNull }?.asString)
+                    assertEquals(gap.boundaryUncertaintyNs?.toString(), actual["boundary_uncertainty_ns"].takeUnless { it.isJsonNull }?.asString)
+                }
                 val launches = logLaunches(root).map { it.substringBefore(' ') }
                 if (logMode == "partition") assertTrue(launches.count { it == "main" } >= 2)
                 else assertEquals(0, launches.count { it == "main" })
@@ -644,8 +777,7 @@ elif len(a)>3 and a[3]=='ps':
                 snapshot.video.state != StreamState.CAPTURING && snapshot.video.gaps.any { it.stream == "video" && it.toNs == null }
             }.video.gaps.last { it.stream == "video" && it.toNs == null }
             resumeVideo.countDown()
-            // The published snapshot trails the store by up to a one-second poll; request the one-second window as soon
-            // as the recovered connection delivers frames so the interruption is inside it on any runner speed.
+            // Sending frames does not freeze the one-second window; the request may run after this gap has aged out.
             assertTrue(recoveredFramesSent.await(FIXTURE_GUARD_SECONDS, TimeUnit.SECONDS))
             val operation = core.save().get(10, TimeUnit.SECONDS)
             assertTrue(operation.accepted)
@@ -655,7 +787,25 @@ elif len(a)>3 and a[3]=='ps':
             assertEquals("fixture-1", fixed.device?.serial)
             assertEquals("com.fixture.app", fixed.application?.packageName)
             assertTrue(fixed.applicationHistory.any { it.packageName == "com.fixture.app" && it.resolved })
-            assertTrue("video" in fixed.missingKinds)
+            val original = writes.single { it.id == operation.requestId }
+            val originalStart = original.start
+            val originalEnd = original.end
+            val originalFrames = original.video.toList()
+            val originalGaps = original.gaps.toList()
+            val originalApps = original.apps.toList()
+            val savedGap = originalGaps.single { it.stream == "video" && it.fromNs == interruption.fromNs }
+            assertEquals(interruption.copy(toNs = savedGap.toNs), savedGap)
+            assertEquals(originalStart, fixed.windowStartNs)
+            assertEquals(originalEnd, fixed.windowEndNs)
+            assertTrue(originalFrames.isNotEmpty())
+            val videoState = original.states.getValue("video")
+            val videoGaps = originalGaps.filter { gap -> gap.stream == "video" || gap.stream == "clock" &&
+                !(gap.fromNs != null && gap.toNs != null && gap.clockRegion != null &&
+                    original.clockRecoveries[gap]?.region == gap.clockRegion) }
+            val expectedVideoMissing = videoGaps.any { overlapsWindow(it, original) } ||
+                videoState.state != StreamState.CAPTURING || videoState.reason != null
+            assertEquals(expectedVideoMissing, "video" in fixed.missingKinds,
+                "window=[$originalStart,$originalEnd], gap=$savedGap, uncertainty=${original.endUncertainty}")
             assertEquals(StreamState.CAPTURING, failed.video.state)
             assertFalse(core.save().get().accepted)
             assertFalse(core.retry("stale-id").get().accepted)
@@ -666,8 +816,7 @@ elif len(a)>3 and a[3]=='ps':
             assertEquals(fixed.applicationHistory, core.snapshot().save.applicationHistory)
             assertEquals(fixed.videoTail, core.snapshot().save.videoTail)
             assertTrue(core.applySettings(core.snapshot().settings.copy(replaySeconds = 30)).get().accepted)
-            // The live one-second window moves past the recovered interruption by the next poll on a slow runner; the fixed
-            // request owns it via missingKinds, and the live 30-second window still shows it.
+            // The fixed request retains the gap history even when it is outside its one-second warning window.
             assertTrue(awaitState("interruption-in-live-window") { it.settings.replaySeconds == 30 }.video.gaps.any {
                 it.stream == "video" && it.fromNs == interruption.fromNs && it.toNs != null
             })
@@ -696,7 +845,16 @@ elif len(a)>3 and a[3]=='ps':
             var completed: java.nio.file.Path? = null
             var savedHash: String? = null
             val done = awaitState("save-completed") { it.save.phase == SavePhase.COMPLETED }
+            val retried = writes.filter { it.id == operation.requestId }.also { assertEquals(2, it.size) }.last()
+            assertSame(original, retried)
+            assertEquals(originalStart, retried.start)
+            assertEquals(originalEnd, retried.end)
+            assertEquals(originalFrames, retried.video)
+            assertEquals(originalGaps, retried.gaps)
+            assertEquals(originalApps, retried.apps)
+            assertEquals(fixed.windowStartNs, done.save.windowStartNs)
             assertEquals(fixed.windowEndNs, done.save.windowEndNs)
+            assertEquals(fixed.missingKinds, done.save.missingKinds)
             assertEquals(fixed.device, done.save.device)
             assertEquals(fixed.application, done.save.application)
             assertEquals(fixed.applicationHistory, done.save.applicationHistory)
