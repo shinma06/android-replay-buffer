@@ -486,6 +486,7 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
                         if (alive) ToolWindowManager.getInstance(project).getToolWindow("Android Replay Buffer")?.show() else event.expire()
                     })
             }
+            notifyBackgroundSave(save, notification, project)
             showNotification(notification)
         }
     }
