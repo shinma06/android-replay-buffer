@@ -645,12 +645,8 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
     }
 
     private fun notifyOperationFailed(title: String, failure: Throwable) {
-        val cause = (failure as? java.util.concurrent.CompletionException)?.cause ?: failure
-        val retained = (cause as? SaveCancelled)?.partial?.let { "\n未完成の出力は保全します: $it" }
-            ?: (cause as? ScreenshotSaveFailure)?.retained?.let { "\n未完成の出力は保全します: $it" }.orEmpty()
         showNotification(NotificationGroupManager.getInstance().getNotificationGroup("Android Replay Buffer")
-            .createNotification(title, StringUtil.escapeXmlEntities(
-                (cause.message ?: "保存先・空き容量・アクセス権を確認してください。") + retained), NotificationType.ERROR))
+            .createNotification(title, operationFailureContent(failure), NotificationType.ERROR))
     }
 
     internal fun openDirectory(directory: Path) {
@@ -718,6 +714,14 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
     companion object {
         val ENVIRONMENT_CHANGED: Topic<Runnable> = Topic.create("Android Replay Buffer environment changed", Runnable::class.java)
     }
+}
+
+internal fun operationFailureContent(failure: Throwable): String {
+    val cause = (failure as? java.util.concurrent.CompletionException)?.cause ?: failure
+    val retained = (cause as? SaveCancelled)?.partial?.let { "\n未完成の出力は保全します: $it" }
+        ?: (cause as? SaveFailure)?.partial?.let { "\n未完成の出力は保全します: $it" }
+        ?: (cause as? ScreenshotSaveFailure)?.retained?.let { "\n未完成の出力は保全します: $it" }.orEmpty()
+    return StringUtil.escapeXmlEntities((cause.message ?: "保存先・空き容量・アクセス権を確認してください。") + retained)
 }
 
 internal fun streamName(kind: String): String = when (kind) {
