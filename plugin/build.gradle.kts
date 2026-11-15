@@ -55,18 +55,21 @@ val verifyJcodecInput = tasks.register("verifyJcodecInput") {
     }
 }
 val compileJcodecCompat = tasks.register<JavaCompile>("compileJcodecCompat") {
+    dependsOn(verifyJcodecInput)
     source = fileTree("src/jcodecCompat/java") { include("**/*.java") }
-    classpath = files()
+    classpath = jcodecUpstream
     destinationDirectory.set(layout.buildDirectory.dir("jcodec-compat/classes"))
 }
-// Keep one copy of each class: tests and the shipped plugin use the same repaired JAAD table.
+// Keep one copy of each class: tests and the shipped plugin use the same JAAD repairs.
 val jcodecPlayback = tasks.register<Jar>("jcodecPlayback") {
     dependsOn(verifyJcodecInput, compileJcodecCompat)
     from(provider { zipTree(jcodecUpstream.singleFile) }) {
-        exclude("net/sourceforge/jaad/aac/syntax/IQTable.class", "META-INF/MANIFEST.MF")
+        exclude("net/sourceforge/jaad/aac/syntax/IQTable.class",
+            "net/sourceforge/jaad/aac/syntax/ICStream.class", "META-INF/MANIFEST.MF")
     }
     from(compileJcodecCompat.flatMap { it.destinationDirectory })
-    manifest.attributes("Implementation-Title" to "JCodec (JAAD IQTable repair)", "Implementation-Version" to "0.2.5")
+    from("src/jcodecCompat/LICENSE-JCodec") { into("META-INF") }
+    manifest.attributes("Implementation-Title" to "JCodec (JAAD IQTable/PNS repairs)", "Implementation-Version" to "0.2.5")
     archiveFileName.set("jcodec-0.2.5.jar")
     destinationDirectory.set(layout.buildDirectory.dir("jcodec-compat"))
 }

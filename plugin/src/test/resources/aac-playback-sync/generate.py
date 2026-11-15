@@ -18,3 +18,13 @@ subprocess.run([
     "-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart",
     str(Path(__file__).with_name("stereo-44100.m4a")),
 ], input=pcm, check=True)
+
+rate = 48000
+pcm = b"".join(struct.pack("<h", round(16000 * math.sin(2 * math.pi * 1000 * i / rate)))
+               if i % rate < rate // 10 else b"\0\0" for i in range(8 * rate))
+subprocess.run([
+    "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+    "-f", "s16le", "-ar", str(rate), "-ac", "1", "-i", "pipe:0",
+    "-c:a", "aac", "-b:a", "96k", "-aac_pns", "0", "-movflags", "+faststart",
+    str(Path(__file__).with_name("mono-no-pns.m4a")),
+], input=pcm, check=True)

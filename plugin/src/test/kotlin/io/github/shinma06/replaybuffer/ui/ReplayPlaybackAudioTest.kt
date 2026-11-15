@@ -73,8 +73,10 @@ class ReplayPlaybackAudioTest {
 
     @Test
     fun seekInsideAPacketAndAnAudioGapUsePcmFramesNotContainerChannels() {
-        val output = play(fixture(gap = true), fromUs = 1_025_000)
-        val reference = decodedPcm("/aac-lc-escape/beeps.m4a")
+        // Different decode histories produce different valid PNS noise; keep this byte comparison deterministic.
+        val resource = "/aac-playback-sync/mono-no-pns.m4a"
+        val output = play(fixture(resource = resource, gap = true), fromUs = 1_025_000)
+        val reference = decodedPcm(resource)
         val seekSample = 1024 + 1_025_000L * 48_000 / 1_000_000
         val firstEnd = 1024 + 3 * 48_000
         val secondEnd = firstEnd + 4_500_000L * 48_000 / 1_000_000
@@ -82,8 +84,8 @@ class ReplayPlaybackAudioTest {
             reference.copyOfRange(firstEnd * 2, secondEnd.toInt() * 2)
         assertContentEquals(expected, output.pcm)
         val onsets = onsets(output)
-        assertEquals(6, onsets.size, onsets.toString())
-        for ((actual, expected) in onsets.zip(listOf(.975, 2.475, 3.475, 4.475, 5.475, 6.475)))
+        assertEquals(7, onsets.size, onsets.toString())
+        for ((actual, expected) in onsets.zip(listOf(0.0, .975, 2.475, 3.475, 4.475, 5.475, 6.475)))
             assertTrue(abs(actual - expected) < .015, onsets.toString())
         val pcm = output.pcm
         assertTrue(pcm.copyOfRange(94_800 * 2, 118_800 * 2).all { it == 0.toByte() })
