@@ -124,6 +124,21 @@ internal data class PlayerState(
 
 private class PlayerClosed : RuntimeException()
 
+internal class ReplayPlaybackFrames<T : Any>(private val publish: (() -> Unit) -> Unit) {
+    private var current: AtomicReference<T?>? = null
+
+    fun session(consume: (T) -> Unit): (T) -> Unit {
+        val pending = AtomicReference<T?>().also { current = it }
+        return { frame ->
+            if (pending.getAndSet(frame) == null) publish {
+                pending.getAndSet(null)?.let(consume)
+            }
+        }
+    }
+
+    fun clear() { current?.set(null); current = null }
+}
+
 /** Owns the opened replay, the coalescing preview decoder, thumbnails, playback and trim/PNG tasks. */
 internal class ReplayPlayerController(
     project: Project,
@@ -143,7 +158,7 @@ internal class ReplayPlayerController(
     @Volatile private var saved: SavedReplay? = null
     private var rules: TrimRules? = null
     private var playback: ReplayPlaybackSession? = null
-    private val playedFrame = AtomicReference<Pair<Long, ImageBitmap?>?>()
+    private val playedFrames = ReplayPlaybackFrames<Pair<Long, ImageBitmap?>>(::publish)
     private var taskCancel: AtomicBoolean? = null
     private val thumbnails = ThumbnailCache<ImageBitmap>()
     private val thumbnailGeneration = AtomicInteger()
@@ -318,20 +333,17 @@ internal class ReplayPlayerController(
         if (state.error != null || state.editor.drag != null) return
         val (from, until) = current.playRange(state.editor) ?: return
         lateinit var session: ReplayPlaybackSession
-        fun showFrame(us: Long, bitmap: ImageBitmap?) {
-            if (playedFrame.getAndSet(us to bitmap) == null) publish {
-                val (position, image) = playedFrame.getAndSet(null) ?: return@publish
-                if (playback === session && state.playing)
-                    state = state.copy(image = image, imageUs = position, editor = current.played(state.editor, position))
-            }
+        val showFrame = playedFrames.session { (position, image) ->
+            if (playback === session && state.playing)
+                state = state.copy(image = image, imageUs = position, editor = current.played(state.editor, position))
         }
         session = ReplayPlaybackSession(folder, from, until,
             onFrame = { frame ->
-                showFrame(frame.startUs, frame.image.toComposeImageBitmap())
+                showFrame(frame.startUs to frame.image.toComposeImageBitmap())
             },
             onFinished = { failure -> publish { if (playback === session) { stopPlayback(); failure?.let { state = state.copy(message = it) } } } },
             onAudioUnavailable = { reason -> publish { if (playback === session) state = state.copy(audioNote = reason) } },
-            onGap = { us -> showFrame(us, null) })
+            onGap = { us -> showFrame(us to null) })
         playback = session
         state = state.copy(playing = true, audioNote = null, message = null)
         session.start()
@@ -341,7 +353,7 @@ internal class ReplayPlayerController(
         val session = playback ?: return
         playback = null
         session.stop()
-        playedFrame.set(null)
+        playedFrames.clear()
         state = state.copy(playing = false)
         showEditor()
     }
