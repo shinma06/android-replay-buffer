@@ -1,6 +1,9 @@
 package io.github.shinma06.replaybuffer.menubar
 
 import io.github.shinma06.replaybuffer.core.ApplicationTarget
+import io.github.shinma06.replaybuffer.core.AutoSaveReason
+import io.github.shinma06.replaybuffer.core.AutoSaveSnapshot
+import io.github.shinma06.replaybuffer.core.AutoSaveState
 import io.github.shinma06.replaybuffer.core.CaptureMode
 import io.github.shinma06.replaybuffer.core.CaptureState
 import io.github.shinma06.replaybuffer.core.DeviceKind
@@ -187,6 +190,30 @@ class MenuBarModelTest {
 
         val cleanup = menuBarModel(listOf(input(snapshot(cleanup = 2))))
         assertTrue(item(cleanup, "前回の端末処理の片付け待ち").label.contains("2件"))
+    }
+
+    @Test
+    fun `suspended crash autosave offers its reason and project IDE without changing manual controls`() {
+        val prefix = "クラッシュ自動保存は停止中です"
+        listOf(AutoSaveReason.LIMIT_REACHED.description, AutoSaveReason.DETECTOR_OVERFLOW.description, null).forEach { reason ->
+            val snapshot = snapshot().copy(autoSave = AutoSaveSnapshot(AutoSaveState.SUSPENDED, reason))
+            val menu = menuBarModel(listOf(input(snapshot)))
+            val attention = item(menu, prefix)
+            assertEquals(prefix + reason?.let { ": $it" }.orEmpty() + " — Android Studioで確認…", attention.label)
+            assertTrue(attention.enabled)
+            assertEquals(MenuBarCommand.SHOW_IDE, attention.command)
+            assertEquals("id-MyApp", attention.projectId)
+            val ops = FakeOps()
+            attention.run(ops)
+            assertEquals(listOf("showToolWindow"), ops.calls)
+            assertTrue(item(menu, "直前").enabled)
+            assertTrue(item(menu, "取得する").checked)
+            assertEquals(MenuBarIcon.CAPTURING, menu.icon)
+        }
+        listOf(AutoSaveState.OFF, AutoSaveState.WAITING, AutoSaveState.ARMED).forEach { state ->
+            val snapshot = snapshot().copy(autoSave = AutoSaveSnapshot(state, "正常な状態の説明"))
+            assertFalse(items(menuBarModel(listOf(input(snapshot))).entries).any { it.label.startsWith(prefix) })
+        }
     }
 
     @Test

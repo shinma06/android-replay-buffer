@@ -1,5 +1,6 @@
 package io.github.shinma06.replaybuffer.menubar
 
+import io.github.shinma06.replaybuffer.core.AutoSaveState
 import io.github.shinma06.replaybuffer.core.CaptureState
 import io.github.shinma06.replaybuffer.core.ReplaySnapshot
 import io.github.shinma06.replaybuffer.core.SaveOrigin
@@ -150,6 +151,11 @@ private fun attentionItems(input: MenuProjectInput): List<MenuItemModel> = build
     val message = if (input.busy) BUSY_REASON else input.message ?: input.initializationError ?: snapshot?.error
     if (!message.isNullOrBlank()) add(MenuItemModel("$message — Android Studioで確認…",
         enabled = true, command = MenuBarCommand.SHOW_IDE, projectId = input.projectId))
+    snapshot?.autoSave?.takeIf { it.state == AutoSaveState.SUSPENDED }?.let { autoSave ->
+        val reason = autoSave.reason?.takeIf { it.isNotBlank() }?.let { ": $it" }.orEmpty()
+        add(MenuItemModel("クラッシュ自動保存は停止中です$reason — Android Studioで確認…",
+            enabled = true, command = MenuBarCommand.SHOW_IDE, projectId = input.projectId))
+    }
     val app = snapshot?.settings?.application
     if (snapshot?.enabled == true && app?.packageName == null && !app?.unresolvedReason.isNullOrBlank())
         add(MenuItemModel("アプリ: ${app.unresolvedReason} — 設定を開く…",
