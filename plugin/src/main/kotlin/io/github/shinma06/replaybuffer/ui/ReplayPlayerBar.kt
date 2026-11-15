@@ -312,6 +312,7 @@ private fun DrawScope.drawStrip(bar: PlayerBarModel, palette: PlayerPalette, han
         handle(left)
         handle(right - handlePx)
     }
+    if (!rules.playheadVisible(editor)) return
     val x = geometry.x(editor.playheadUs)
     drawLine(palette.barBackground.copy(alpha = 1f), Offset(x, -3.dp.toPx()), Offset(x, height + 3.dp.toPx()), strokeWidth = 4.dp.toPx())
     drawLine(palette.content, Offset(x, -3.dp.toPx()), Offset(x, height + 3.dp.toPx()), strokeWidth = 2.dp.toPx())

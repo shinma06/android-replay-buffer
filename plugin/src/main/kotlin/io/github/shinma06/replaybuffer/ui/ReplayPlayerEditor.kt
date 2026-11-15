@@ -345,6 +345,7 @@ internal class ReplayPlayerController(
     fun exportPng() {
         val current = rules ?: return
         if (disposed || state.busy() || state.error != null || current.grid.indexAt(state.editor.playheadUs) < 0) return
+        if (state.editor.mode == PlayerMode.TRIM && !current.playheadVisible(state.editor)) return
         stopPlayback()
         val cancel = AtomicBoolean()
         taskCancel = cancel
@@ -489,7 +490,7 @@ internal fun ReplayPlayerContent(controller: ReplayPlayerController) {
             actions = controller,
             modifier = Modifier.fillMaxWidth().weight(1f),
         ) { spec, modifier, onClick ->
-            if (spec.primary) DefaultButton(onClick, enabled = spec.enabled, modifier = modifier) { Text(spec.label, maxLines = 1, softWrap = false) }
+            if (spec.accent) DefaultButton(onClick, enabled = spec.enabled, modifier = modifier) { Text(spec.label, maxLines = 1, softWrap = false) }
             else OutlinedButton(onClick, enabled = spec.enabled, modifier = modifier) { Text(spec.label, maxLines = 1, softWrap = false) }
         }
     }

@@ -149,6 +149,51 @@ class TrimEditorModelTest {
     }
 
     @Test
+    fun pngInTrimModeWaitsUntilThePlayheadIsPlaced() {
+        fun png(state: TrimEditor) = playerButtons(rules, state, idle).single { it.id == PlayerButton.SAVE_FRAME }
+        // View mode keeps its behaviour: playhead shown, PNG usable in the neutral style.
+        val view = rules.initial().copy(playheadUs = 300_000)
+        assertTrue(rules.playheadVisible(view))
+        assertTrue(png(view).enabled); assertFalse(png(view).accent)
+        // Entering trim mode hides the playhead and disables PNG (neutral) with a reason.
+        val entered = rules.enterTrim(view)
+        assertFalse(rules.playheadVisible(entered))
+        assertFalse(png(entered).enabled); assertFalse(png(entered).accent)
+        assertEquals("再生位置を動かすと、その位置をPNG保存できます", png(entered).reason)
+        assertEquals("範囲が動画全体のままです", statusLine(null, playerButtons(rules, entered, idle))) // the main action's reason comes first
+        // Handle drags do not place the playhead, even when they pull it back inside the range.
+        val narrowed = rules.endDrag(rules.beginDrag(entered, Grip.IN, 500_000))
+        assertEquals(500_000, narrowed.playheadUs)
+        assertFalse(rules.playheadVisible(narrowed))
+        assertEquals("再生位置を動かすと、その位置をPNG保存できます", statusLine(null, playerButtons(rules, narrowed, idle)))
+        // Taking the playhead shows it at once (with its bubble) and enables PNG in blue.
+        val holding = rules.beginDrag(narrowed, Grip.PLAYHEAD, 700_000)
+        assertTrue(rules.playheadVisible(holding))
+        assertNotNull(rules.bubble(holding))
+        val placed = rules.endDrag(holding)
+        assertTrue(rules.playheadVisible(placed))
+        assertTrue(png(placed).enabled); assertTrue(png(placed).accent); assertFalse(png(placed).primary)
+        // Esc during that first playhead drag puts it back to hidden.
+        assertFalse(rules.playheadVisible(rules.cancel(holding).first))
+        // Arrow keys and playback place it too.
+        assertTrue(rules.playheadVisible(rules.step(narrowed, 1)))
+        assertTrue(rules.playheadVisible(rules.played(narrowed, 600_000)))
+        // Once placed, a later handle drag that pulls it inside keeps it visible.
+        val pulled = rules.endDrag(rules.beginDrag(placed, Grip.IN, 800_000))
+        assertEquals(800_000, pulled.playheadUs)
+        assertTrue(rules.playheadVisible(pulled))
+        // While a task runs the button is disabled and neutral; the line stays as it was.
+        val running = rules.taskStarted(placed, TaskKind.TRIM)
+        assertFalse(png(running).enabled); assertFalse(png(running).accent)
+        assertTrue(rules.playheadVisible(running))
+        assertTrue(rules.playheadVisible(rules.taskFinished(rules.cancel(running).first, TaskKind.TRIM, TaskOutcome.CANCELLED)))
+        // Cancel returns to view mode (always visible); re-entering starts hidden again.
+        val back = rules.cancel(placed).first
+        assertTrue(rules.playheadVisible(back))
+        assertFalse(rules.playheadVisible(rules.enterTrim(back)))
+    }
+
+    @Test
     fun buttonLayoutFollowsEditorWidth() {
         assertEquals(ControlLayout.STACKED, controlLayout(640f))
         assertEquals(ControlLayout.ROW, controlLayout(639f))

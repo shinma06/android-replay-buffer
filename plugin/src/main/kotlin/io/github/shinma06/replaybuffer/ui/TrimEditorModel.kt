@@ -17,7 +17,7 @@ internal enum class TaskKind { TRIM, FRAME }
 internal enum class TaskOutcome { SUCCESS, CANCELLED, FAILED }
 
 /** Values captured when a grip was taken, restored by Esc while still dragging (CANCEL-03). */
-internal data class TrimDrag(val grip: Grip, val inUs: Long, val outUs: Long, val playheadUs: Long)
+internal data class TrimDrag(val grip: Grip, val inUs: Long, val outUs: Long, val playheadUs: Long, val playheadPlaced: Boolean)
 
 /** UI state of the trim player. All transitions live in [TrimRules]; files are never touched here. */
 internal data class TrimEditor(
@@ -28,6 +28,8 @@ internal data class TrimEditor(
     /** Playhead when trim mode was entered; Cancel returns here (CANCEL-01). */
     val entryPlayheadUs: Long = 0,
     val drag: TrimDrag? = null,
+    /** Trim mode only: the user has positioned the playhead since entering (3.1 PNG rule). */
+    val playheadPlaced: Boolean = false,
     val task: TaskKind? = null,
     val cancelling: Boolean = false,
 )
@@ -115,7 +117,8 @@ internal class TrimRules(val grid: FrameGrid, val durationUs: Long) {
 
     fun enterTrim(state: TrimEditor): TrimEditor {
         if (state.mode == PlayerMode.TRIM || grid.isEmpty || state.task != null) return state
-        val entered = state.copy(mode = PlayerMode.TRIM, inUs = fullInUs, outUs = fullOutUs, entryPlayheadUs = state.playheadUs)
+        val entered = state.copy(mode = PlayerMode.TRIM, inUs = fullInUs, outUs = fullOutUs, entryPlayheadUs = state.playheadUs,
+            playheadPlaced = false)
         return entered.copy(playheadUs = clampPlayhead(entered, state.playheadUs))
     }
 
@@ -136,7 +139,8 @@ internal class TrimRules(val grid: FrameGrid, val durationUs: Long) {
     fun beginDrag(state: TrimEditor, grip: Grip, us: Long): TrimEditor {
         if (grid.isEmpty || state.drag != null) return state
         if (grip != Grip.PLAYHEAD && (state.mode != PlayerMode.TRIM || state.task != null)) return state
-        val taken = state.copy(drag = TrimDrag(grip, state.inUs, state.outUs, state.playheadUs))
+        val taken = state.copy(drag = TrimDrag(grip, state.inUs, state.outUs, state.playheadUs, state.playheadPlaced),
+            playheadPlaced = state.playheadPlaced || grip == Grip.PLAYHEAD)
         return dragTo(taken, us)
     }
 
@@ -160,7 +164,7 @@ internal class TrimRules(val grid: FrameGrid, val durationUs: Long) {
     /** Esc while dragging: restore the values from before the grab and drop the grip (CANCEL-03). */
     fun cancelDrag(state: TrimEditor): TrimEditor {
         val drag = state.drag ?: return state
-        return state.copy(inUs = drag.inUs, outUs = drag.outUs, playheadUs = drag.playheadUs, drag = null)
+        return state.copy(inUs = drag.inUs, outUs = drag.outUs, playheadUs = drag.playheadUs, playheadPlaced = drag.playheadPlaced, drag = null)
     }
 
     /** The Cancel / 中止 button and Esc (3.2). */
@@ -178,15 +182,22 @@ internal class TrimRules(val grid: FrameGrid, val durationUs: Long) {
         val current = grid.nearestIndex(state.playheadUs)
         var index = (current + delta).coerceIn(0, grid.spans.lastIndex)
         if (state.mode == PlayerMode.TRIM) index = index.coerceIn(inIndex(state), outIndex(state))
-        return state.copy(playheadUs = grid.spans[index].startUs)
+        return state.copy(playheadUs = grid.spans[index].startUs, playheadPlaced = true)
     }
 
     /** Keyboard/click seek outside a drag. */
     fun seek(state: TrimEditor, us: Long): TrimEditor =
-        if (state.drag != null) state else state.copy(playheadUs = clampPlayhead(state, us))
+        if (state.drag != null) state else state.copy(playheadUs = clampPlayhead(state, us), playheadPlaced = true)
 
     /** A frame published by real-time playback. */
-    fun played(state: TrimEditor, us: Long): TrimEditor = if (state.drag != null) state else state.copy(playheadUs = us)
+    fun played(state: TrimEditor, us: Long): TrimEditor = if (state.drag != null) state else state.copy(playheadUs = us, playheadPlaced = true)
+
+    /**
+     * Whether the playhead line is drawn: always in view mode; in trim mode only after the user has
+     * positioned it (drag/click on the strip, arrow keys, playback), as in QuickTime.
+     */
+    fun playheadVisible(state: TrimEditor): Boolean =
+        state.mode == PlayerMode.VIEW || state.playheadPlaced || state.drag?.grip == Grip.PLAYHEAD
 
     /** Where playback starts and must stop: from the playhead (or the range start at the end) to Out / the end. */
     fun playRange(state: TrimEditor): Pair<Long, Long>? {
@@ -229,8 +240,10 @@ internal data class ButtonSpec(
     val label: String,
     val primary: Boolean,
     val enabled: Boolean,
-    /** Shown in the status line / tooltip while disabled. */
+    /** Shown in the status line while disabled. */
     val reason: String? = null,
+    /** Drawn in the blue accent (primary) style without being the main action. */
+    val accent: Boolean = primary,
 )
 
 /** Inputs besides [TrimEditor] that decide button availability. */
@@ -249,9 +262,12 @@ internal fun playerButtons(rules: TrimRules, state: TrimEditor, availability: Pl
         availability.error != null -> blocked
         state.task != null -> "保存中です"
         availability.playheadInGap -> "この位置に表示frameがありません（欠落）"
+        state.mode == PlayerMode.TRIM && !rules.playheadVisible(state) -> "再生位置を動かすと、その位置をPNG保存できます"
         else -> null
     }
-    val saveFrame = ButtonSpec(PlayerButton.SAVE_FRAME, "この位置をPNG保存", false, frameReason == null, frameReason)
+    // In trim mode the button turns blue once the user has placed the playhead (and it is usable).
+    val saveFrame = ButtonSpec(PlayerButton.SAVE_FRAME, "この位置をPNG保存", false, frameReason == null, frameReason,
+        accent = state.mode == PlayerMode.TRIM && frameReason == null)
     if (state.mode == PlayerMode.VIEW) {
         return listOf(ButtonSpec(PlayerButton.ENTER_TRIM, "トリム…", true, blocked == null, blocked), saveFrame)
     }
