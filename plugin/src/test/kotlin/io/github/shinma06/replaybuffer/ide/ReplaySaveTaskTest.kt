@@ -38,9 +38,13 @@ import java.nio.file.LinkOption.NOFOLLOW_LINKS
 import java.nio.file.Path
 import java.security.MessageDigest
 import java.util.concurrent.CompletableFuture
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.ExecutionException
+import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
@@ -67,11 +71,15 @@ class ReplaySaveTaskTest {
         }
     }
 
-    private fun withQueue(onNotification: (Notification) -> Unit = {}, test: (Queue, MockProject) -> Unit) {
+    private fun withQueue(
+        onNotification: (Notification) -> Unit = {},
+        uiWait: (Runnable, ModalityState) -> Unit = { runnable, _ -> runnable.run() },
+        test: (Queue, MockProject) -> Unit,
+    ) {
         val lifetime = Disposer.newDisposable()
         val app = object : MockApplication(lifetime) {
             override fun invokeLater(runnable: Runnable, state: ModalityState) {}
-            override fun invokeAndWait(runnable: Runnable, modalityState: ModalityState) { runnable.run() }
+            override fun invokeAndWait(runnable: Runnable, modalityState: ModalityState) { uiWait(runnable, modalityState) }
         }
         ApplicationManager.setApplication(app, lifetime)
         app.registerService(CoroutineScope::class.java, app.getCoroutineScope())
@@ -242,6 +250,125 @@ class ReplaySaveTaskTest {
         files.toList().associate { it.fileName.toString() to Files.readAllBytes(it) }
     }
 
+    private fun unknownClockSource(parent: Path = root): Path {
+        val source = source(parent)
+        val index = source.resolve("video-frames.jsonl")
+        Files.writeString(index, Files.readAllLines(index).joinToString("\n", postfix = "\n") { line ->
+            JsonParser.parseString(line).asJsonObject.apply {
+                addProperty("clock_alignment_known", false)
+                for (key in listOf("t_ns", "display_t_ns", "display_t_end_ns", "confirmed_t_end_ns")) add(key, JsonNull.INSTANCE)
+            }.toString()
+        })
+        val record = JsonParser.parseString(Files.readString(source.resolve("replay.json"))).asJsonObject
+        record["files_sha256"].asJsonObject.addProperty("video-frames.jsonl",
+            MessageDigest.getInstance("SHA-256").digest(Files.readAllBytes(index)).joinToString("") { "%02x".format(it) })
+        Files.writeString(source.resolve("replay.json"), record.toString())
+        return source
+    }
+
+    private class PendingNotification {
+        val entered = CountDownLatch(1)
+        val released = CountDownLatch(1)
+        val runnable = AtomicReference<Runnable>()
+
+        // Model LaterInvocator's cancellable wait and release of the queued notification on cancellation.
+        fun invokeAndWait(action: Runnable, modality: ModalityState) {
+            assertSame(ModalityState.nonModal(), modality)
+            runnable.set(action)
+            entered.countDown()
+            try {
+                while (!released.await(10, TimeUnit.MILLISECONDS)) ProgressManager.checkCanceled()
+                dispatch()
+            } finally { runnable.set(null) }
+        }
+
+        fun dispatch() { runnable.getAndSet(null)?.run() }
+    }
+
+    @Test
+    fun tokenCancellationWhileWarningIsQueuedCompletesFutureAndTask() = pendingWarning("token")
+
+    @Test
+    fun serviceDisposalWhileWarningIsQueuedCompletesFutureAndTask() = pendingWarning("service")
+
+    @Test
+    fun indicatorCancellationWhileWarningIsQueuedCompletesFutureAndTask() = pendingWarning("indicator")
+
+    @Test
+    fun projectDisposalWhileWarningIsQueuedCompletesFutureAndTask() = pendingWarning("project")
+
+    @Test
+    fun deferredWarningStillPrecedesTrimStaging() = pendingWarning("none")
+
+    private fun pendingWarning(reason: String) {
+        val pending = PendingNotification()
+        val notices = AtomicInteger()
+        lateinit var source: Path
+        withService(notify = { notification ->
+            assertEquals(NotificationType.WARNING, notification.type)
+            assertTrue(notification.content.contains("時計対応が不明"))
+            assertEquals(listOf(source), Files.list(root).use { it.toList() })
+            notices.incrementAndGet()
+        }, uiWait = pending::invokeAndWait) { queue, service ->
+            source = unknownClockSource()
+            val before = snapshot(source)
+            val cancel = AtomicBoolean()
+            val indicator = EmptyProgressIndicator()
+            val done = service.trimReplay(source, 1, 500_000, cancel)
+            val task = queue.task
+            // The real GUI progress window is a child of the project and cancels on disposal.
+            Disposer.register(task.project!!, Disposable { indicator.cancel() })
+            val executor = Executors.newSingleThreadExecutor()
+            val running = executor.submit {
+                queue.runProcess({
+                    task.run(indicator)
+                    assertSame(indicator, queue.progressIndicator)
+                }, indicator)
+                assertNull(queue.progressIndicator)
+            }
+            try {
+                assertTrue(pending.entered.await(5, TimeUnit.SECONDS))
+                assertTrue(indicator.isRunning)
+                assertFalse(done.isDone)
+                assertEquals(0, notices.get())
+                assertEquals(listOf(source), Files.list(root).use { it.toList() })
+                when (reason) {
+                    "token" -> cancel.set(true)
+                    "service" -> { service.dispose(); assertFalse(task.project!!.isDisposed) }
+                    "indicator" -> indicator.cancel()
+                    "project" -> Disposer.dispose(task.project!!)
+                    "none" -> pending.released.countDown()
+                    else -> error(reason)
+                }
+                val result = done.get(5, TimeUnit.SECONDS)
+                running.get(5, TimeUnit.SECONDS)
+                assertFalse(indicator.isRunning)
+                assertNull(pending.runnable.get())
+                if (reason == "none") {
+                    assertFalse(indicator.isCanceled)
+                    assertNotNull(result.output)
+                    assertEquals(1, notices.get())
+                    assertEquals(setOf(source, result.output), Files.list(root).use { it.toList().toSet() })
+                } else {
+                    assertEquals(1L, pending.released.count)
+                    assertTrue(indicator.isCanceled)
+                    assertEquals(ReplayProjectService.TrimRun(null), result)
+                    queue.finishCancelled()
+                    assertEquals(result, done.get(5, TimeUnit.SECONDS))
+                    pending.dispatch()
+                    assertEquals(0, notices.get())
+                    assertEquals(listOf(source), Files.list(root).use { it.toList() })
+                }
+                assertUnchanged(source, before)
+            } finally {
+                indicator.cancel()
+                pending.released.countDown()
+                executor.shutdown()
+                assertTrue(executor.awaitTermination(5, TimeUnit.SECONDS))
+            }
+        }
+    }
+
     @Test
     fun unknownClockNotificationPrecedesStagingAndPreservesCancellationAndSourceChangeGuards() {
         for (reason in listOf("none", "token", "indicator", "project", "source-change")) {
@@ -267,18 +394,7 @@ class ReplaySaveTaskTest {
                 }
             }) { queue, service ->
                 indicator = EmptyProgressIndicator()
-                source = source(parent)
-                val index = source.resolve("video-frames.jsonl")
-                Files.writeString(index, Files.readAllLines(index).joinToString("\n", postfix = "\n") { line ->
-                    JsonParser.parseString(line).asJsonObject.apply {
-                        addProperty("clock_alignment_known", false)
-                        for (key in listOf("t_ns", "display_t_ns", "display_t_end_ns", "confirmed_t_end_ns")) add(key, JsonNull.INSTANCE)
-                    }.toString()
-                })
-                val record = JsonParser.parseString(Files.readString(source.resolve("replay.json"))).asJsonObject
-                record["files_sha256"].asJsonObject.addProperty("video-frames.jsonl",
-                    MessageDigest.getInstance("SHA-256").digest(Files.readAllBytes(index)).joinToString("") { "%02x".format(it) })
-                Files.writeString(source.resolve("replay.json"), record.toString())
+                source = unknownClockSource(parent)
                 val before = snapshot(source)
                 val done = service.trimReplay(source, 1, 500_000, cancel)
                 taskProject = queue.task.project!!
@@ -366,7 +482,11 @@ class ReplaySaveTaskTest {
         assertUnchanged(source, before)
     }
 
-    private fun withService(notify: (Notification) -> Unit = {}, test: (Queue, ReplayProjectService) -> Unit) = withQueue(notify) { queue, project ->
+    private fun withService(
+        notify: (Notification) -> Unit = {},
+        uiWait: (Runnable, ModalityState) -> Unit = { runnable, _ -> runnable.run() },
+        test: (Queue, ReplayProjectService) -> Unit,
+    ) = withQueue(notify, uiWait) { queue, project ->
         project.registerService(ReplaySettingsStore::class.java, ReplaySettingsStore().apply {
             loadState(ReplaySettingsState(screenshotUsesLogcatDestination = false, screenshotDirectory = root.toString()))
         })
