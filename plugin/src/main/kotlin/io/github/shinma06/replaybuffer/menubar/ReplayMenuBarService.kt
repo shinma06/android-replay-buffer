@@ -32,6 +32,8 @@ import javax.swing.SwingUtilities
 private val RESULT_TIME: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm:ss", Locale.ROOT)
 private const val TOOL_WINDOW_ID = "Android Replay Buffer"
 
+internal fun restoredWindowState(state: Int): Int = state and JFrame.ICONIFIED.inv()
+
 internal fun interface MenuBarAvailabilityListener {
     fun changed(reason: String?)
 }
@@ -172,7 +174,6 @@ private class ProjectMenu(
         }
     }
 
-    override val captureEnabled: Boolean get() = settings.enabled
     override fun setEnabled(value: Boolean) { if (alive) service.setEnabled(value) }
     override fun save(request: SaveRequest) { if (alive) service.save(request) }
     override fun screenshot() { if (alive) service.screenshot() }
@@ -181,7 +182,7 @@ private class ProjectMenu(
     override fun showToolWindow() {
         if (!alive) return
         WindowManager.getInstance().getFrame(project)?.let { frame ->
-            if (frame.extendedState == JFrame.ICONIFIED) frame.extendedState = JFrame.NORMAL
+            frame.extendedState = restoredWindowState(frame.extendedState)
             frame.isVisible = true
             frame.toFront()
         }

@@ -8,6 +8,7 @@ import java.awt.MenuItem
 import java.awt.PopupMenu
 import java.awt.SystemTray
 import java.awt.TrayIcon
+import java.awt.event.ItemEvent
 
 /**
  * The shared AWT destination: macOS menu bar, Windows notification area and Linux tray all come through the same
@@ -68,7 +69,7 @@ private fun Menu.fill(entries: List<MenuEntry>, dispatch: MenuDispatch) {
                 val item = if (model.command == MenuBarCommand.TOGGLE_CAPTURE) CheckboxMenuItem(model.label, model.checked)
                     else MenuItem(model.label)
                 item.isEnabled = model.enabled
-                if (item is CheckboxMenuItem) item.addItemListener { dispatch.dispatch(model) }
+                if (item is CheckboxMenuItem) item.addItemListener { dispatch.dispatch(model.copy(checked = it.stateChange == ItemEvent.SELECTED)) }
                 else if (model.command != null) item.addActionListener { dispatch.dispatch(model) }
                 add(item)
             }

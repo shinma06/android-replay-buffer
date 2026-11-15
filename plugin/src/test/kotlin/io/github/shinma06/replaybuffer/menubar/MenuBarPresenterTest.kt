@@ -148,7 +148,7 @@ class MenuBarPresenterTest {
         override fun close() { closed = true }
     }
 
-    private class FakeOps(override var captureEnabled: Boolean = true) : MenuBarOperations {
+    private class FakeOps(var captureEnabled: Boolean = true) : MenuBarOperations {
         var savedRequest: SaveRequest? = null
         override fun setEnabled(value: Boolean) { captureEnabled = value }
         override fun save(request: SaveRequest) { savedRequest = request }

@@ -28,7 +28,6 @@ internal enum class MenuBarCommand { SAVE, SCREENSHOT, TOGGLE_CAPTURE, OPEN_DIRE
 
 /** What one project's menu entries may call; implemented over ReplayProjectService, so the menu adds no capture path. */
 internal interface MenuBarOperations {
-    val captureEnabled: Boolean
     fun setEnabled(value: Boolean)
     fun save(request: SaveRequest)
     fun screenshot()
@@ -50,7 +49,7 @@ internal data class MenuItemModel(
         when (command) {
             MenuBarCommand.SAVE -> ops.save(SaveRequest(origin = SaveOrigin.MENU_BAR))
             MenuBarCommand.SCREENSHOT -> ops.screenshot()
-            MenuBarCommand.TOGGLE_CAPTURE -> ops.setEnabled(!ops.captureEnabled)
+            MenuBarCommand.TOGGLE_CAPTURE -> ops.setEnabled(checked)
             MenuBarCommand.OPEN_DIRECTORY -> directory?.let(ops::openDirectory)
             MenuBarCommand.SHOW_IDE -> ops.showToolWindow()
             MenuBarCommand.OPEN_SETTINGS -> ops.openSettings()

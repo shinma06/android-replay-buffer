@@ -23,6 +23,7 @@ import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import javax.swing.JFrame
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 import javax.swing.SwingUtilities
@@ -35,6 +36,14 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
 class ReplayMenuBarServiceThreadingTest {
+    @Test
+    fun `restoring an iconified IDE preserves its maximized state`() {
+        listOf(JFrame.NORMAL, JFrame.MAXIMIZED_HORIZ, JFrame.MAXIMIZED_VERT, JFrame.MAXIMIZED_BOTH).forEach { state ->
+            assertEquals(state, restoredWindowState(state or JFrame.ICONIFIED))
+            assertEquals(state, restoredWindowState(state))
+        }
+    }
+
     @Test
     fun `project subscriptions end on project untracking or service unload`() {
         listOf(false, true).forEach { unload ->

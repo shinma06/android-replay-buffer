@@ -242,10 +242,10 @@ class MenuBarModelTest {
         assertEquals(listOf("save", "screenshot"), ops.calls)
 
         val on = FakeOps(captureEnabled = true)
-        item(menuBarModel(listOf(input(snapshot()))), "取得する").run(on)
+        item(menuBarModel(listOf(input(snapshot()))), "取得する").copy(checked = false).run(on)
         assertFalse(on.captureEnabled, "ONの項目はOFFへ切り替える")
         val off = FakeOps(captureEnabled = false)
-        item(menuBarModel(listOf(input(snapshot(CaptureState.DISABLED)))), "取得する").run(off)
+        item(menuBarModel(listOf(input(snapshot(CaptureState.DISABLED)))), "取得する").copy(checked = true).run(off)
         assertTrue(off.captureEnabled)
 
         item(menuBarModel(listOf(input(snapshot()))), "Android Studioで表示").run(ops)
@@ -257,7 +257,19 @@ class MenuBarModelTest {
         assertEquals(directory, ops.opened)
     }
 
-    private class FakeOps(override var captureEnabled: Boolean = true) : MenuBarOperations {
+    @Test
+    fun `capture selection is applied even if another entry point already changed capture`() {
+        val toggle = item(menuBarModel(listOf(input(snapshot()))), "取得する")
+        listOf(false, true).forEach { current ->
+            listOf(false, true).forEach { selected ->
+                val ops = FakeOps(captureEnabled = current)
+                toggle.copy(checked = selected).run(ops)
+                assertEquals(selected, ops.captureEnabled)
+            }
+        }
+    }
+
+    private class FakeOps(var captureEnabled: Boolean = true) : MenuBarOperations {
         val calls = mutableListOf<String>()
         var savedRequest: SaveRequest? = null
         var opened: Path? = null

@@ -57,6 +57,6 @@ object AwtTrayMenuEventFixture {
         }
         val saveItem = popup.getItem(1)
         processEvent.invoke(saveItem, ActionEvent(saveItem, ActionEvent.ACTION_PERFORMED, saveItem.actionCommand))
-        check(events == listOf(toggle, toggle, save)) { "Unexpected menu dispatch: $events" }
+        check(events == listOf(toggle.copy(checked = true), toggle.copy(checked = false), save)) { "Unexpected menu dispatch: $events" }
     }
 }
