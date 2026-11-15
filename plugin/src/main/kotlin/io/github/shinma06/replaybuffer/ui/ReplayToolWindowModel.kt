@@ -218,7 +218,7 @@ private fun saveResult(saved: SaveSnapshot?, busy: Boolean, seconds: Int, savedA
         listOfNotNull(saved.missingKinds.takeIf { it.isNotEmpty() }
             ?.let { "記録の不足・未確認: ${it.map(::streamName).joinToString("、")}" }),
         saved.directory,
-        saved.directory?.takeIf { saved.content != SaveContent.LOGS_ONLY && "video" !in saved.missingKinds },
+        saved.directory?.takeIf { saved.captureMode.videoRequested && saved.content != SaveContent.LOGS_ONLY && "video" !in saved.missingKinds },
     )
     SavePhase.FAILED -> RecentResult(Tone.ERROR, saveDescription(saved), failure = SaveFailure(
         reason = "保存失敗の理由: ${saved.error ?: "保存先を確認してください。"}",

@@ -32,6 +32,10 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
 import org.junit.jupiter.api.io.TempDir
 import java.io.IOException
+import io.github.shinma06.replaybuffer.core.CaptureMode
+import io.github.shinma06.replaybuffer.core.SaveContent
+import io.github.shinma06.replaybuffer.core.SavePhase
+import io.github.shinma06.replaybuffer.core.SaveSnapshot
 import java.lang.reflect.Proxy
 import java.nio.file.Files
 import java.nio.file.LinkOption.NOFOLLOW_LINKS
@@ -74,11 +78,12 @@ class ReplaySaveTaskTest {
     private fun withQueue(
         onNotification: (Notification) -> Unit = {},
         uiWait: (Runnable, ModalityState) -> Unit = { runnable, _ -> runnable.run() },
+        uiLater: Boolean = false,
         test: (Queue, MockProject) -> Unit,
     ) {
         val lifetime = Disposer.newDisposable()
         val app = object : MockApplication(lifetime) {
-            override fun invokeLater(runnable: Runnable, state: ModalityState) {}
+            override fun invokeLater(runnable: Runnable, state: ModalityState) { if (uiLater) runnable.run() }
             override fun invokeAndWait(runnable: Runnable, modalityState: ModalityState) { uiWait(runnable, modalityState) }
         }
         ApplicationManager.setApplication(app, lifetime)
@@ -482,11 +487,36 @@ class ReplaySaveTaskTest {
         assertUnchanged(source, before)
     }
 
+    @Test
+    fun logsOnlySaveNotificationDoesNotInventVideoWhenCurrentSettingsChange() = assertSavedVideoAction(CaptureMode.LOG_ONLY)
+
+    @Test
+    fun videoSaveNotificationKeepsVideoWhenCurrentSettingsChange() = assertSavedVideoAction(CaptureMode.VIDEO_AND_LOGS)
+
+    private fun assertSavedVideoAction(savedMode: CaptureMode) {
+        val notifications = mutableListOf<Notification>()
+        withService(notify = notifications::add, uiLater = true) { _, service ->
+            val saved = SaveSnapshot(SavePhase.COMPLETED, "request", directory = root,
+                captureMode = savedMode, content = SaveContent.ALL)
+            val project = service.javaClass.getDeclaredField("project").apply { isAccessible = true }.get(service) as Project
+            val store = project.getService(ReplaySettingsStore::class.java)
+            val notify = service.javaClass.getDeclaredMethod("notifySave", SaveSnapshot::class.java).apply { isAccessible = true }
+            for (currentMode in CaptureMode.entries) {
+                store.loadState(store.state.copy(captureMode = currentMode))
+                notify.invoke(service, saved)
+                val actions = notifications.last().actions.map { it.templatePresentation.text }
+                assertEquals(savedMode.videoRequested, "動画を開く" in actions)
+                assertTrue("フォルダを開く" in actions)
+            }
+        }
+    }
+
     private fun withService(
         notify: (Notification) -> Unit = {},
         uiWait: (Runnable, ModalityState) -> Unit = { runnable, _ -> runnable.run() },
+        uiLater: Boolean = false,
         test: (Queue, ReplayProjectService) -> Unit,
-    ) = withQueue(notify, uiWait) { queue, project ->
+    ) = withQueue(notify, uiWait, uiLater) { queue, project ->
         project.registerService(ReplaySettingsStore::class.java, ReplaySettingsStore().apply {
             loadState(ReplaySettingsState(screenshotUsesLogcatDestination = false, screenshotDirectory = root.toString()))
         })

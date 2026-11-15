@@ -9,6 +9,7 @@ import io.github.shinma06.replaybuffer.core.ReplaySettings
 import io.github.shinma06.replaybuffer.core.ReplaySnapshot
 import io.github.shinma06.replaybuffer.core.SavePhase
 import io.github.shinma06.replaybuffer.core.SaveSnapshot
+import io.github.shinma06.replaybuffer.core.SaveContent
 import io.github.shinma06.replaybuffer.settings.AppSelectionMode
 import io.github.shinma06.replaybuffer.settings.settingsControls
 import java.nio.file.Path
@@ -124,6 +125,24 @@ class ReplayToolWindowModelTest {
         assertTrue(failure.actionsEnabled)
         assertTrue(model.details.any { it.name == "固定した保存対象の端末とアプリ履歴" })
         assertFalse(toolWindowModel(input(capturing(save = failed), busy = true)).results.single().failure!!.actionsEnabled)
+    }
+
+    @Test
+    fun `video action follows saved capture mode even after current settings change`() {
+        for (savedMode in CaptureMode.entries) {
+            val saved = SaveSnapshot(SavePhase.COMPLETED, "request", directory = directory,
+                captureMode = savedMode, content = SaveContent.ALL)
+            for (currentMode in CaptureMode.entries) {
+                val model = toolWindowModel(input(capturing(save = saved, mode = currentMode),
+                    stored = StoredSettings(captureMode = currentMode)))
+                assertEquals(directory.takeIf { savedMode.videoRequested }, model.results.single().openVideo)
+                assertEquals(directory, model.results.single().openDirectory)
+            }
+        }
+        for (saved in listOf(
+            SaveSnapshot(SavePhase.COMPLETED, "request", directory = directory, content = SaveContent.LOGS_ONLY),
+            SaveSnapshot(SavePhase.COMPLETED, "request", directory = directory, missingKinds = listOf("video")),
+        )) assertNull(toolWindowModel(input(capturing(save = saved))).results.single().openVideo)
     }
 
     @Test
