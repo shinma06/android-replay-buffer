@@ -27,7 +27,9 @@ import org.junit.jupiter.api.io.TempDir
 import java.io.IOException
 import java.lang.reflect.Proxy
 import java.nio.file.Files
+import java.nio.file.LinkOption.NOFOLLOW_LINKS
 import java.nio.file.Path
+import java.security.MessageDigest
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ExecutionException
 import java.util.concurrent.TimeUnit
@@ -190,6 +192,17 @@ class ReplaySaveTaskTest {
     fun projectDisposalDuringTrimCompletesFutureAndRetainsPartial() = cancelRunningTrim("project")
 
     @Test
+    fun listingAliasesRetainTheSameTrimPartialForEveryCancellation() {
+        for (reason in listOf("indicator", "token", "project")) {
+            val parent = Files.createDirectory(root.resolve("parent-$reason"))
+            val alias = parent.resolve(".")
+            assertTrue(Files.isSameFile(parent, alias))
+            assertFalse(parent == alias)
+            cancelRunningTrim(reason, parent, alias)
+        }
+    }
+
+    @Test
     fun indicatorCancellationDuringPngDecodeCompletesFutureWithoutOutput() = cancelRunningPng("indicator")
 
     @Test
@@ -198,9 +211,9 @@ class ReplaySaveTaskTest {
     @Test
     fun projectDisposalDuringPngDecodeCompletesFutureWithoutOutput() = cancelRunningPng("project")
 
-    private fun source(): Path {
+    private fun source(parent: Path = root): Path {
         val name = "replay-20240101-000000-manual-feedface"
-        val source = Files.createDirectory(root.resolve(name))
+        val source = Files.createDirectory(parent.resolve(name))
         val names = listOf("README.md", "replay.json", "video.mp4", "video-source.h264", "video-frames.jsonl",
             "logcat-device.jsonl", "logcat-app.jsonl", "touches.jsonl")
         for (file in names) assertNotNull(javaClass.getResourceAsStream("/replay-trim-parity/$name/$file")).use {
@@ -216,7 +229,12 @@ class ReplaySaveTaskTest {
     private fun assertUnchanged(source: Path, before: Map<String, ByteArray>) {
         val after = snapshot(source)
         assertEquals(before.keys, after.keys)
-        for ((file, bytes) in before) assertContentEquals(bytes, after[file], file)
+        val sha256 = MessageDigest.getInstance("SHA-256")
+        for ((file, bytes) in before) {
+            val current = assertNotNull(after[file], file)
+            assertContentEquals(bytes, current, file)
+            assertContentEquals(sha256.digest(bytes), sha256.digest(current), "$file SHA-256")
+        }
     }
 
     private fun cancellationIndicator(queue: Queue, cancel: AtomicBoolean, reason: String, ready: () -> Boolean): ProgressIndicator {
@@ -247,22 +265,27 @@ class ReplaySaveTaskTest {
         assertUnchanged(source, before)
     }
 
-    private fun cancelRunningTrim(reason: String) = withService { queue, service ->
-        val source = source()
+    private fun cancelRunningTrim(reason: String, parent: Path = root, observedParent: Path = parent) = withService { queue, service ->
+        val source = source(parent)
         val before = snapshot(source)
         val cancel = AtomicBoolean()
         val done = service.trimReplay(source, 1, 500_000, cancel)
         queue.task.run(cancellationIndicator(queue, cancel, reason) {
-            Files.list(root).use { files -> files.anyMatch { it.fileName.toString().endsWith(".partial") } }
+            Files.list(observedParent).use { files -> files.anyMatch { it.fileName.toString().endsWith(".partial") } }
         })
         val result = done.get(10, TimeUnit.SECONDS)
         val retained = assertNotNull(result.retainedPartial)
         queue.finishCancelled()
         assertEquals(result, done.get(5, TimeUnit.SECONDS))
         assertNull(result.output)
-        assertTrue(Files.isDirectory(retained))
+        assertTrue(Files.isDirectory(retained, NOFOLLOW_LINKS))
         assertTrue(retained.fileName.toString().endsWith(".partial"))
-        assertEquals(listOf(source, retained).toSet(), Files.list(root).use { it.toList().toSet() })
+        assertTrue(Files.isSameFile(parent, retained.parent))
+        assertFalse(Files.isSameFile(source, retained))
+        val siblings = Files.list(observedParent).use { it.toList() }
+        assertEquals(2, siblings.size)
+        assertEquals(1, siblings.count { Files.isSameFile(source, it) })
+        assertEquals(1, siblings.count { Files.isSameFile(retained, it) })
         assertUnchanged(source, before)
     }
 
