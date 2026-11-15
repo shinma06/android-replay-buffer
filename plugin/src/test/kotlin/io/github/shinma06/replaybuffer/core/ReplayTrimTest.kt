@@ -39,6 +39,37 @@ class ReplayTrimTest {
     private fun hashes(dir: Path) = Files.list(dir).use { it.toList().associate { p -> p.fileName.toString() to sha(Files.readAllBytes(p)) } }
     private fun sha(bytes: ByteArray) = java.security.MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
 
+    private fun fileBytes(dir: Path) = Files.list(dir).use { files ->
+        files.toList().associate { it.fileName.toString() to Files.readAllBytes(it) }
+    }
+
+    private fun assertUnchanged(dir: Path, before: Map<String, ByteArray>) {
+        val after = fileBytes(dir)
+        assertEquals(before.keys, after.keys)
+        before.forEach { (name, bytes) -> assertContentEquals(bytes, after[name], name) }
+        assertEquals(before.mapValues { sha(it.value) }, hashes(dir))
+    }
+
+    private fun pngText(file: Path): Map<String, String> {
+        val bytes = Files.readAllBytes(file)
+        validateScreenshotPng(bytes)
+        val buffer = ByteBuffer.wrap(bytes).apply { position(8) }
+        val text = linkedMapOf<String, String>()
+        while (buffer.hasRemaining()) {
+            val size = buffer.int
+            val type = ByteArray(4).also { buffer.get(it) }
+            val data = ByteArray(size).also { buffer.get(it) }
+            buffer.int
+            if (String(type, Charsets.US_ASCII) == "tEXt") {
+                val separator = data.indexOf(0.toByte())
+                assertTrue(separator > 0)
+                val key = String(data, 0, separator, Charsets.ISO_8859_1)
+                assertNull(text.put(key, String(data, separator + 1, data.size - separator - 1, Charsets.ISO_8859_1)), key)
+            }
+        }
+        return text
+    }
+
     private fun packets(dir: Path): List<MP4Packet> {
         NIOUtils.readableChannel(dir.resolve("video.mp4").toFile()).use { input ->
             MP4Demuxer.createRawMP4Demuxer(input).use { demux ->
@@ -437,6 +468,12 @@ class ReplayTrimTest {
             assertEquals(Files.readAllLines(output.directory.resolve("logcat-device.jsonl")),
                 Files.readAllLines(dir.resolve("logcat-device.jsonl")))
             assertFalse(manifest(dir)["timebase"].asJsonObject["known"].asBoolean)
+            val trimmedBefore = fileBytes(dir)
+            val png = ReplayFrameExport.export(dir, 1, Files.createDirectory(root.resolve("unknown-shots")))
+            val metadata = pngText(png)
+            assertEquals(manifest(dir)["save_id"].asString, metadata["arb:source_save_id"])
+            assertFalse("arb:t_ns" in metadata || "arb:display_t_ns" in metadata)
+            assertUnchanged(dir, trimmedBefore)
             assertEquals(before, hashes(output.directory))
         } finally {
             store.close()
@@ -682,6 +719,74 @@ class ReplayTrimTest {
         Files.write(output.directory.resolve("video.mp4"), bytes)
         val dir = trim(output.directory, 0, end)
         assertEquals(end, manifest(dir)["video_movie_duration_us"].asString.toLong())
+    }
+
+    @Test
+    fun frameExportRetainsManifestIdAfterSourceFolderRename() = withRuns(listOf(List(10) { it * 100_000L })) { root, _, capture, _, _ ->
+        val video = capture.video.map { it.copy(time = MappedTime(it.pts * 1000, 0, 0)) }
+        val output = write(capture.copy(video = video, start = 0, end = 1_000_000_000, endUncertainty = 0), root)
+        val source = Files.move(output.directory, output.directory.resolveSibling("renamed-source"))
+        val record = manifest(source)
+        assertTrue(source.fileName.toString() != record["folder_name"].asString)
+        val before = fileBytes(source)
+        assertEquals(setOf("README.md", "replay.json", "video.mp4", "touches.jsonl",
+            "video-frames.jsonl", "logcat-device.jsonl", "logcat-app.jsonl"), before.keys)
+        val row = rows(source)[4]
+        val at = row["movie_pts_us"].asLong + 1
+        val file = ReplayFrameExport.export(source, at, Files.createDirectory(root.resolve("renamed-shots")))
+        val text = pngText(file)
+        assertEquals(record["save_id"].asString, text["arb:source_save_id"])
+        assertEquals(source.fileName.toString(), text["arb:source_folder"])
+        assertEquals(at.toString(), text["arb:movie_us"])
+        assertEquals(row["movie_pts_us"].asString, text["arb:frame_movie_us"])
+        assertTrue(row["t_ns"].isJsonPrimitive && row["display_t_ns"].isJsonPrimitive)
+        assertEquals(row["t_ns"].asString, text["arb:t_ns"])
+        assertEquals(row["display_t_ns"].asString, text["arb:display_t_ns"])
+        val image = javax.imageio.ImageIO.read(file.toFile())
+        assertEquals(32, image.width); assertEquals(32, image.height)
+        assertUnchanged(source, before)
+    }
+
+    @Test
+    fun frameExportOfTrimUsesImmediateSaveIdAndRebasedFrameTimes() = withRuns(listOf(List(12) { it * 100_000L })) { root, _, capture, _, _ ->
+        val video = capture.video.map { it.copy(time = MappedTime(it.pts * 1000, 0, 0)) }
+        val source = write(capture.copy(video = video, start = 0, end = 1_200_000_000, endUncertainty = 0), root).directory
+        val sourceBefore = fileBytes(source)
+        val sourceRows = rows(source)
+        val trimmed = trim(source, sourceRows[3]["movie_pts_us"].asLong + 1, sourceRows[8]["movie_end_us"].asLong)
+        val record = manifest(trimmed)
+        val parentId = manifest(source)["save_id"].asString
+        assertTrue(parentId != record["save_id"].asString)
+        assertEquals(parentId, record["trim"].asJsonObject["source_save_id"].asString)
+        val before = fileBytes(trimmed)
+        val row = rows(trimmed)[2]
+        assertTrue(row["movie_pts_us"].asString != sourceRows[5]["movie_pts_us"].asString)
+        val at = row["movie_pts_us"].asLong + 1
+        val file = ReplayFrameExport.export(trimmed, at, Files.createDirectory(root.resolve("trimmed-shots")))
+        val text = pngText(file)
+        assertEquals(record["save_id"].asString, text["arb:source_save_id"])
+        assertEquals(trimmed.fileName.toString(), text["arb:source_folder"])
+        assertEquals(at.toString(), text["arb:movie_us"])
+        assertEquals(row["movie_pts_us"].asString, text["arb:frame_movie_us"])
+        assertEquals(row["t_ns"].asString, text["arb:t_ns"])
+        assertUnchanged(trimmed, before)
+        assertUnchanged(source, sourceBefore)
+    }
+
+    @Test
+    fun frameExportRejectsMissingOrInvalidSaveIdBeforeCreatingOutput() = withRuns(listOf(List(10) { it * 100_000L })) { root, _, capture, _, _ ->
+        val source = write(capture, root).directory
+        val record = manifest(source)
+        val destination = Files.createDirectory(root.resolve("invalid-id-shots"))
+        for (value in listOf(null, "null", "123", "true", "{}", "[]", "\"\"", "\"   \"", "\"bad\\u0000id\"", "\"bad\\nID\"", "\"\\ud83d\\ude00\"")) {
+            if (value == null) record.remove("save_id") else record.add("save_id", JsonParser.parseString(value))
+            Files.writeString(source.resolve("replay.json"), record.toString())
+            val before = fileBytes(source)
+            val failure = assertFailsWith<IllegalArgumentException>(value.orEmpty()) { ReplayFrameExport.export(source, 1, destination) }
+            assertTrue(failure.message.orEmpty().contains("save_id"))
+            assertTrue(Files.list(destination).use { it.findAny().isEmpty })
+            assertUnchanged(source, before)
+        }
     }
 
     @Test

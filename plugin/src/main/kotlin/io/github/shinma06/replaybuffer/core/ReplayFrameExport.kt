@@ -98,8 +98,11 @@ internal object ReplayFrameExport {
         return BufferedImage(colorModel, raster, false, null)
     }
 
-    /** Encoded PNG bytes with tEXt time metadata inserted before IEND. */
-    fun pngBytes(image: BufferedImage, movieUs: Long, row: com.google.gson.JsonObject, source: String): ByteArray {
+    /** Encoded PNG bytes with tEXt time and source metadata inserted before IEND. */
+    fun pngBytes(image: BufferedImage, movieUs: Long, row: com.google.gson.JsonObject, source: String, sourceSaveId: String): ByteArray {
+        require(sourceSaveId.isNotBlank() && sourceSaveId.all { it.code in 0x20..0xFF && !it.isISOControl() }) {
+            "保存記録のsave_idが不正です"
+        }
         val png = ByteArrayOutputStream().also { check(ImageIO.write(image, "png", it)) { "PNGを作成できません" } }.toByteArray()
         require(png.size > 12 && png.takeLast(8).toByteArray().contentEquals(
             byteArrayOf(0x49, 0x45, 0x4e, 0x44, 0xae.toByte(), 0x42, 0x60, 0x82.toByte()))) { "PNGの末尾が不正です" }
@@ -119,6 +122,7 @@ internal object ReplayFrameExport {
         row["display_t_ns"]?.takeIf { it.isJsonPrimitive }?.asString?.let { text("arb:display_t_ns", it) }
         row["movie_pts_us"]?.takeIf { it.isJsonPrimitive }?.asString?.let { text("arb:frame_movie_us", it) }
         text("arb:source_folder", source)
+        text("arb:source_save_id", sourceSaveId)
         out.write(png, png.size - 12, 12)
         return out.toByteArray()
     }
@@ -132,8 +136,10 @@ internal object ReplayFrameExport {
                checkActive: () -> Unit = {}): Path {
         require(destination.isAbsolute) { "設定で保存先の絶対パスを指定してください。" }
         val bytes = SavedReplay.open(folder).use { saved ->
+            val sourceSaveId = saved.manifest["save_id"]?.takeIf { it.isJsonPrimitive }?.asJsonPrimitive
+                ?.takeIf { it.isString }?.asString ?: throw IllegalArgumentException("保存記録のsave_idが読めません")
             val frame = decodeAt(saved, atUs, checkActive)
-            pngBytes(frame.image, atUs, frame.row, saved.name)
+            pngBytes(frame.image, atUs, frame.row, saved.name, sourceSaveId)
         }
         validateScreenshotPng(bytes)
         val root = try { destination.toRealPath() } catch (_: Exception) {
