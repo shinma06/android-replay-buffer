@@ -544,7 +544,7 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
                 ).addAction(NotificationAction.create("フォルダを開く") { _, event ->
                     if (alive) openDirectory(save.directory) else event.expire()
                 }).let { notification ->
-                    if (!logsOnly && "video" !in save.missingKinds)
+                    if (save.captureMode.videoRequested && !logsOnly && "video" !in save.missingKinds)
                         notification.addAction(NotificationAction.create("動画を開く") { _, event ->
                             if (alive) openReplayVideo(save.directory) else event.expire()
                         })
