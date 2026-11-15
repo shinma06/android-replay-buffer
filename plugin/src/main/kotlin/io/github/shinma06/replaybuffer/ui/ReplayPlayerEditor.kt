@@ -227,12 +227,18 @@ internal class ReplayPlayerController(
                     val bitmap = frame.image.toComposeImageBitmap()
                     val aspect = frame.image.width.toFloat() / frame.image.height
                     synchronized(decodeLock) { if (pendingUs == target) pendingUs = null }
-                    publish { if (!state.playing) state = state.copy(image = bitmap, imageUs = target, aspect = aspect) }
+                    publish {
+                        if (!state.playing && rules?.displayUs(state.editor) == target)
+                            state = state.copy(image = bitmap, imageUs = target, aspect = aspect)
+                    }
                 } catch (_: PlayerClosed) {
                     return
                 } catch (failure: Throwable) {
                     synchronized(decodeLock) { if (pendingUs == target) pendingUs = null }
-                    publish { state = state.copy(message = failure.message ?: "この位置のframeを復号できません。") }
+                    publish {
+                        if (!state.playing && rules?.displayUs(state.editor) == target)
+                            state = state.copy(message = failure.message ?: "この位置のframeを復号できません。")
+                    }
                 }
             }
         } finally {
