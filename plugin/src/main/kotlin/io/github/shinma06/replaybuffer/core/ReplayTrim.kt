@@ -73,9 +73,62 @@ private class StoredFrame(val row: JsonObject, val index: Int) {
 internal class ReplayTrim(private val availableSpace: (Path) -> Long = { Files.getFileStore(it).usableSpace }) {
     private val gson = GsonBuilder().serializeNulls().disableHtmlEscaping().create()
 
+    data class Preflight(val fingerprint: String, val startUs: Long, val endUs: Long, val clockUnknown: Boolean) {
+        val warning: String? get() = if (clockUnknown) "選択範囲に時計対応が不明なframeがあります。ログは除外を断定できない行を残します。" else null
+    }
+
+    private data class Selection(val frames: List<StoredFrame>, val parts: List<JsonObject>,
+                                 val start: StoredFrame, val end: StoredFrame) {
+        val startUs get() = start.moviePts!!
+        val endUs get() = end.movieEnd!!
+    }
+
+    private fun select(saved: SavedReplay, fromUs: Long, toUs: Long): Selection {
+        val frames = saved.frames.mapIndexed { index, row -> StoredFrame(row, index).also { frame ->
+            require(row["sample_index"]?.asLong == index.toLong() && (frame.moviePts != null) == (frame.movieEnd != null) &&
+                (frame.moviePts == null || frame.movieEnd!! > frame.moviePts!!) &&
+                row.has("output_key") && row.has("presented") && row.has("sample_entry") &&
+                row.has("media_pts_us") && row.has("display_duration_us") && row.has("source_pts_us") &&
+                row.has("presentation_pts_us") && row.has("t_ns") && row.has("reencoded")) { "動画のframe記録が読めません" }
+        } }
+        val parts = (saved.manifest["parts"]?.takeIf { it.isJsonArray }?.asJsonArray
+            ?: throw IllegalArgumentException("replay.jsonのpartsを読めません")).mapIndexed { index, element ->
+            element.asJsonObject.also { part ->
+                require(part["file"]?.asString == ReplayFiles.VIDEO && part["segment_index"]?.asInt == index) { "動画partの構成が読めません" }
+            }
+        }
+        require(parts.isNotEmpty()) { "動画partがありません" }
+        val duration = parts.last().requiredLongText("movie_end_us")
+        require(fromUs in 0 until duration && toUs in 0..duration && fromUs < toUs) {
+            "切り取り範囲が動画の長さ（${"%.3f".format(duration / 1e6)}秒）の外か空です"
+        }
+        val presented = frames.filter { it.presented && it.moviePts != null }
+        val start = presented.firstOrNull { it.movieEnd!! > fromUs }
+            ?: throw IllegalArgumentException("開始位置に表示frameがありません")
+        val end = presented.lastOrNull { it.moviePts!! < toUs }
+            ?: throw IllegalArgumentException("終了位置に表示frameがありません")
+        require(start.index <= end.index && start.moviePts!! < end.movieEnd!!) { "切り取り範囲に表示frameがありません" }
+        return Selection(frames, parts, start, end)
+    }
+
+    private fun fingerprint(saved: SavedReplay, fromUs: Long, toUs: Long): String =
+        java.security.MessageDigest.getInstance("SHA-256").digest("${saved.recordSha256}:$fromUs:$toUs".toByteArray(Charsets.UTF_8))
+            .joinToString("") { "%02x".format(it) }
+
+    fun preflight(source: Path, fromUs: Long, toUs: Long): Preflight = try { SavedReplay.open(source).use { saved ->
+        val selection = select(saved, fromUs, toUs)
+        val unknown = selection.frames.any { frame ->
+            frame.presented && frame.moviePts != null && frame.moviePts!! < selection.endUs && frame.movieEnd!! > selection.startUs &&
+                frame.row["clock_alignment_known"]?.asBoolean != true
+        }
+        Preflight(fingerprint(saved, fromUs, toUs), selection.startUs, selection.endUs, unknown)
+    } } catch (failure: Exception) {
+        throw SaveFailure(null, failure.message ?: "切り取り範囲を確認できません", failure)
+    }
+
     fun trim(source: Path, fromUs: Long, toUs: Long, cancelled: () -> Boolean,
              publish: (SavePublication) -> Unit,
-             createdAt: ZonedDateTime = ZonedDateTime.now(), id: String = nameId()): Path {
+             createdAt: ZonedDateTime = ZonedDateTime.now(), id: String = nameId(), expectedFingerprint: String? = null): Path {
         var staging: SaveStaging? = null
         var manifestWritten = false
         fun checkActive() {
@@ -84,34 +137,10 @@ internal class ReplayTrim(private val availableSpace: (Path) -> Long = { Files.g
         try {
             checkActive()
             SavedReplay.open(source).use { saved ->
-                val frames = saved.frames.mapIndexed { index, row -> StoredFrame(row, index).also { frame ->
-                    require(row["sample_index"]?.asLong == index.toLong() && (frame.moviePts != null) == (frame.movieEnd != null) &&
-                        (frame.moviePts == null || frame.movieEnd!! > frame.moviePts!!) &&
-                        row.has("output_key") && row.has("presented") && row.has("sample_entry") &&
-                        row.has("media_pts_us") && row.has("display_duration_us") && row.has("source_pts_us") &&
-                        row.has("presentation_pts_us") && row.has("t_ns") && row.has("reencoded")) { "動画のframe記録が読めません" }
-                } }
-                val parts = (saved.manifest["parts"]?.takeIf { it.isJsonArray }?.asJsonArray
-                    ?: throw IllegalArgumentException("replay.jsonのpartsを読めません"))
-                    .mapIndexed { index, element ->
-                        val part = element.asJsonObject
-                        require(part["file"]?.asString == ReplayFiles.VIDEO &&
-                            part["segment_index"]?.asInt == index) { "動画partの構成が読めません" }
-                        part
-                    }
-                require(parts.isNotEmpty()) { "動画partがありません" }
-                val movieDuration = parts.last().requiredLongText("movie_end_us")
-                require(fromUs in 0 until movieDuration && toUs in 0..movieDuration && fromUs < toUs) {
-                    "切り取り範囲が動画の長さ（${"%.3f".format(movieDuration / 1e6)}秒）の外か空です"
+                require(expectedFingerprint == null || expectedFingerprint == fingerprint(saved, fromUs, toUs)) {
+                    "事前確認後に保存フォルダまたは切り取り範囲が変更されています。もう一度範囲を確認してください。"
                 }
-                val presented = frames.filter { it.presented && it.moviePts != null }
-                val startFrame = presented.firstOrNull { it.movieEnd!! > fromUs }
-                    ?: throw IllegalArgumentException("開始位置に表示frameがありません")
-                val endFrame = presented.lastOrNull { it.moviePts!! < toUs }
-                    ?: throw IllegalArgumentException("終了位置に表示frameがありません")
-                require(startFrame.index <= endFrame.index && startFrame.moviePts!! < endFrame.movieEnd!!) {
-                    "切り取り範囲に表示frameがありません"
-                }
+                val (frames, parts, startFrame, endFrame) = select(saved, fromUs, toUs)
                 val startUs = startFrame.moviePts!!
                 val endUs = endFrame.movieEnd!!
                 val originTns = startFrame.displayTns ?: startFrame.tNs

@@ -155,6 +155,8 @@ status: 設定を変えずに状態をJSONで表示します。取得ON中は接
 screenshot: GUIと同じスクリーンショットを保存し、PNGのパスだけをstdoutへ返します。
 trim: 保存済みリプレイの前後を動画内時刻（秒）で切り取り、元を残したまま別フォルダへ保存します。
       成功時は新しいフォルダのパスだけをstdoutへ返します。
+      残る表示frameの時計対応が不明なら作成前にstderrへ警告し、不確かな時刻のログを残します。
+      事前確認後に元の記録が変われば作成前に拒否します（自動再試行なし）。GUIも同じ判定です。
 frame: 保存済みリプレイの指定秒に表示されていた画面を元解像度のPNGで保存します。
       成功時はPNGのパスだけをstdoutへ返します。保存先はスクリーンショットと同じ設定です。
 settings: 現在の設定をMCPのget_settingsと同じJSONでstdoutへ返します。
@@ -168,6 +170,7 @@ settings set: 指定項目だけをMCPのupdate_settingsと同じ項目名・検
       device: 取得する端末のserial（statusのdevices[].serial）。空（device=）なら1台だけ接続時に自動選択します。
               複数接続で未選択のときは取得せず選択を待ちます。選んだ端末が切断されても別の端末へは切り替えません。
 mcp: 標準入出力のMCPサーバーとして動き、エージェントへ同じ操作を提供します。
+      trim_replayの事前警告は標準loggingで送り、logging/setLevelに従います（client側の表示保証なし）。
 --project: 開いているprojectのフォルダ。省略時は接続先が1つだけ必要です。
 CLIはIDEに導入済みのプラグインのbinにあり、場所は設定画面からコピーできます。
 終了コード: 0=完了、1=操作・接続失敗/結果不明、2=引数・設定値の不正。
@@ -199,10 +202,32 @@ CLIはIDEに導入済みのプラグインのbinにあり、場所は設定画�
                 ?: "CLI接続先を確認できません。IDE/project、パスとアクセス権を確認してください。")
             return 1
         }
-        val response = exchange(directory, parsed.project, identity, CliRequest(parsed.command, parsed.settings))
+        val send = { request: CliRequest -> exchange(directory, parsed.project, identity, request) }
+        val response = if (parsed.command == CliCommand.TRIM) trim(checkNotNull(parsed.settings), send) { warning ->
+            error.line(warning)
+            check(!error.checkError()) { "切り取り前の警告を出力できませんでした。操作していません。" }
+        } else send(CliRequest(parsed.command, parsed.settings))
         if (response.output.isNotEmpty()) output.line(response.output)
         if (response.error.isNotEmpty()) error.line(response.error)
         return response.code
+    }
+
+    internal fun trim(payload: String, send: (CliRequest) -> CliResponse, warn: (String) -> Unit): CliResponse {
+        val response = send(CliRequest(CliCommand.TRIM_PREFLIGHT, payload))
+        if (response.code != 0) return response
+        return try {
+            val plan = McpJson.parse(response.output) as? Map<*, *> ?: error("切り取りの事前確認応答が不正です。")
+            val fingerprint = plan["fingerprint"] as? String ?: error("切り取りの事前確認応答が不正です。")
+            require(fingerprint.isNotEmpty()) { "切り取りの事前確認応答が不正です。" }
+            val warning = plan["warning"]
+            require(warning == null || warning is String) { "切り取りの事前確認応答が不正です。" }
+            if (warning is String) warn(warning)
+            @Suppress("UNCHECKED_CAST")
+            val arguments = McpJson.parse(payload) as Map<String, Any?>
+            send(CliRequest(CliCommand.TRIM, McpJson.write(arguments + ("fingerprint" to fingerprint))))
+        } catch (_: Exception) {
+            CliResponse(1, error = "切り取りの事前確認・警告を確認できませんでした。自動再試行しません。")
+        }
     }
 
     /** Sends one request to the selected project's IDE; never retries once the request may have reached it. */

@@ -436,7 +436,7 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
                 }
                 return CliResponse(0, saved.file.toString())
             }
-            if (request.command == CliCommand.TRIM || request.command == CliCommand.FRAME) {
+            if (request.command == CliCommand.TRIM || request.command == CliCommand.FRAME || request.command == CliCommand.TRIM_PREFLIGHT) {
                 @Suppress("UNCHECKED_CAST")
                 val arguments = try { McpJson.parse(request.configText.orEmpty()) as? Map<String, Any?> }
                 catch (_: Exception) { null }
@@ -450,8 +450,15 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
                     .getOrElse { throw IllegalArgumentException("保存フォルダのパスを確認してください。") }
                 val source = (if (folder.isAbsolute) folder else Path.of(
                     projectBasePath ?: throw IllegalArgumentException("相対パスではなく絶対パスで保存フォルダを指定してください。")).resolve(folder)).normalize()
+                if (request.command == CliCommand.TRIM_PREFLIGHT) {
+                    val plan = ReplayTrim().preflight(source, rangeUs("from_us"), rangeUs("to_us"))
+                    return CliResponse(0, McpJson.write(linkedMapOf("fingerprint" to plan.fingerprint,
+                        "from_us" to plan.startUs, "to_us" to plan.endUs, "warning" to plan.warning)))
+                }
                 val output = if (request.command == CliCommand.TRIM)
-                    ReplayTrim().trim(source, rangeUs("from_us"), rangeUs("to_us"), { false }, { it.publish() })
+                    ReplayTrim().trim(source, rangeUs("from_us"), rangeUs("to_us"), { !alive }, { it.publish() },
+                        expectedFingerprint = arguments.get("fingerprint") as? String
+                            ?: throw IllegalArgumentException("切り取りの事前確認がありません。もう一度実行してください。"))
                 else ReplayFrameExport.export(source, rangeUs("at_us"), frameDestination())
                 return CliResponse(0, output.toString())
             }
@@ -466,7 +473,7 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
                 CliCommand.START -> setEnabled(true)
                 CliCommand.STOP -> setEnabled(false)
                 CliCommand.STATUS, CliCommand.SCREENSHOT, CliCommand.SETTINGS, CliCommand.CONFIGURE,
-                CliCommand.TRIM, CliCommand.FRAME -> error("already handled")
+                CliCommand.TRIM, CliCommand.FRAME, CliCommand.TRIM_PREFLIGHT -> error("already handled")
             })
             if (!operation.accepted) return CliResponse(1, error = operation.reason.orEmpty())
             if (!saving) return CliResponse(0,
@@ -602,7 +609,25 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
         val done = CompletableFuture<TrimRun>()
         if (!alive) { done.completeExceptionally(IllegalStateException("projectが終了しています。")); return done }
         queueReplaySave(project, "動画を切り取っています", done, TrimRun(null)) { indicator ->
-            try { TrimRun(ReplayTrim().trim(folder, fromUs, toUs, { !alive || indicator.isCanceled || cancel.get() }, { it.publish() })) }
+            val cancelled = { !alive || indicator.isCanceled || cancel.get() }
+            try {
+                if (cancelled()) throw SaveCancelled(null)
+                val trim = ReplayTrim()
+                val plan = trim.preflight(folder, fromUs, toUs)
+                if (cancelled()) throw SaveCancelled(null)
+                plan.warning?.let { warning ->
+                    try {
+                        ApplicationManager.getApplication().invokeAndWait({
+                            if (!cancelled()) showNotification(NotificationGroupManager.getInstance().getNotificationGroup("Android Replay Buffer")
+                                .createNotification("切り取り範囲の時計対応が不明です", warning, NotificationType.WARNING))
+                        }, ModalityState.nonModal())
+                    } catch (failure: Exception) {
+                        if (cancelled()) throw SaveCancelled(null)
+                        throw failure
+                    }
+                }
+                TrimRun(trim.trim(folder, fromUs, toUs, cancelled, { it.publish() }, expectedFingerprint = plan.fingerprint))
+            }
             catch (cancelled: SaveCancelled) { TrimRun(null, cancelled.partial) }
         }
         done.thenAccept { run ->

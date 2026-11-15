@@ -46,6 +46,7 @@ internal class ReplayMcpServer(
     private val input = input.buffered()
     private val lock = Any()
     @Volatile private var protocolVersion = LATEST_VERSION
+    @Volatile private var logLevel = "warning"
     private var buildIdentity: String? = null
     /** One accepted request (or batch); it either runs once or is rejected once, never both. */
     private inner class Call(private val tools: Int, private val reject: (String) -> Unit, private val task: () -> Unit) : Runnable {
@@ -259,12 +260,18 @@ internal class ReplayMcpServer(
             protocolVersion = if (requested in SUPPORTED_VERSIONS) requested!! else LATEST_VERSION
             linkedMapOf(
                 "protocolVersion" to protocolVersion,
-                "capabilities" to mapOf("tools" to mapOf("listChanged" to false)),
+                "capabilities" to mapOf("tools" to mapOf("listChanged" to false), "logging" to emptyMap<String, Any>()),
                 "serverInfo" to linkedMapOf("name" to "android-replay-buffer", "title" to "Android Replay Buffer", "version" to pluginVersion()),
                 "instructions" to INSTRUCTIONS,
             )
         }
         "ping" -> emptyMap()
+        "logging/setLevel" -> {
+            val level = params["level"] as? String
+            if (level !in LOG_LEVELS) throw RpcError(-32602, "levelにはMCPのログlevelを指定してください。")
+            logLevel = level!!
+            emptyMap()
+        }
         "tools/list" -> mapOf("tools" to tools.values.map { tool ->
             linkedMapOf(
                 "name" to tool.name,
@@ -303,7 +310,15 @@ internal class ReplayMcpServer(
         val identity = try { currentBuild() } catch (failure: Exception) {
             return CliResponse(1, error = (failure as? IllegalArgumentException)?.message ?: "配布物のCLIを利用してください。")
         }
-        return send(directory, project, identity, CliRequest(command, payload))
+        return if (command == CliCommand.TRIM) ReplayCli.trim(checkNotNull(payload),
+            { request -> send(directory, project, identity, request) }, ::warnTrim)
+        else send(directory, project, identity, CliRequest(command, payload))
+    }
+
+    private fun warnTrim(message: String) {
+        if (LOG_LEVELS.indexOf(logLevel) > LOG_LEVELS.indexOf("warning")) return
+        write(linkedMapOf("jsonrpc" to "2.0", "method" to "notifications/message",
+            "params" to linkedMapOf("level" to "warning", "logger" to "replay.trim", "data" to message)))
     }
 
     private fun command(args: Map<String, Any?>, command: CliCommand, payload: String? = null): Map<String, Any?> {
@@ -415,6 +430,7 @@ internal class ReplayMcpServer(
 
     companion object {
         const val LATEST_VERSION = "2025-11-25"
+        private val LOG_LEVELS = listOf("debug", "info", "notice", "warning", "error", "critical", "alert", "emergency")
         val SUPPORTED_VERSIONS = setOf("2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05")
         private const val MAX_CONCURRENT_CALLS = 4
         private const val MAX_QUEUED_CALLS = 16

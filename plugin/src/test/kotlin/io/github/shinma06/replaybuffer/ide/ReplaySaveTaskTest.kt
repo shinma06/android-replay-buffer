@@ -1,11 +1,18 @@
 package io.github.shinma06.replaybuffer.ide
 
 import com.android.tools.idea.gradle.project.sync.GradleSyncState
+import com.google.gson.JsonNull
+import com.google.gson.JsonParser
 import com.intellij.mock.MockApplication
 import com.intellij.mock.MockProject
 import com.intellij.notification.NotificationDisplayType
 import com.intellij.notification.NotificationGroup
 import com.intellij.notification.NotificationGroupManager
+import com.intellij.notification.Notification
+import com.intellij.notification.NotificationType
+import com.intellij.notification.Notifications
+import com.intellij.notification.NotificationsManager
+import com.intellij.openapi.project.Project
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.ModalityState
@@ -60,14 +67,20 @@ class ReplaySaveTaskTest {
         }
     }
 
-    private fun withQueue(test: (Queue, MockProject) -> Unit) {
+    private fun withQueue(onNotification: (Notification) -> Unit = {}, test: (Queue, MockProject) -> Unit) {
         val lifetime = Disposer.newDisposable()
         val app = object : MockApplication(lifetime) {
             override fun invokeLater(runnable: Runnable, state: ModalityState) {}
+            override fun invokeAndWait(runnable: Runnable, modalityState: ModalityState) { runnable.run() }
         }
         ApplicationManager.setApplication(app, lifetime)
         app.registerService(CoroutineScope::class.java, app.getCoroutineScope())
         app.registerService(ClientSessionsManager::class.java, ClientSessionsManager<ClientSession>(app.getCoroutineScope()))
+        app.registerService(NotificationsManager::class.java, object : NotificationsManager() {
+            override fun showNotification(notification: Notification, project: Project?) {}
+            override fun expire(notification: Notification) {}
+            override fun <T : Notification> getNotificationsOfType(klass: Class<T>, project: Project?): Array<T> = error("not queried")
+        })
         app.registerService(NotificationGroupManager::class.java, object : NotificationGroupManager {
             override fun getNotificationGroup(groupId: String) =
                 NotificationGroup.create(groupId, NotificationDisplayType.NONE, false, null, null, PluginId.getId("com.intellij"))
@@ -78,6 +91,9 @@ class ReplaySaveTaskTest {
         val queue = Queue()
         app.registerService(ProgressManager::class.java, queue)
         val project = MockProject(null, lifetime)
+        project.messageBus.connect(lifetime).subscribe(Notifications.TOPIC, object : Notifications {
+            override fun notify(notification: Notification) { onNotification(notification) }
+        })
         try { test(queue, project) }
         finally { queue.dispose(); Disposer.dispose(lifetime) }
     }
@@ -226,6 +242,67 @@ class ReplaySaveTaskTest {
         files.toList().associate { it.fileName.toString() to Files.readAllBytes(it) }
     }
 
+    @Test
+    fun unknownClockNotificationPrecedesStagingAndPreservesCancellationAndSourceChangeGuards() {
+        for (reason in listOf("none", "token", "indicator", "project", "source-change")) {
+            val parent = Files.createDirectory(root.resolve(reason))
+            val cancel = AtomicBoolean()
+            lateinit var indicator: EmptyProgressIndicator
+            var warnings = 0
+            lateinit var source: Path
+            lateinit var taskProject: com.intellij.openapi.project.Project
+            withService(notify = { notification ->
+                warnings++
+                assertEquals(NotificationType.WARNING, notification.type)
+                assertTrue(notification.content.contains("時計対応が不明"))
+                assertEquals(listOf(source), Files.list(parent).use { it.toList() })
+                when (reason) {
+                    "token" -> cancel.set(true)
+                    "indicator" -> indicator.cancel()
+                    "project" -> Disposer.dispose(taskProject)
+                    "source-change" -> Files.writeString(source.resolve("replay.json"),
+                        JsonParser.parseString(Files.readString(source.resolve("replay.json"))).asJsonObject.apply {
+                            addProperty("created_at", "2024-02-01T00:00:00Z")
+                        }.toString())
+                }
+            }) { queue, service ->
+                indicator = EmptyProgressIndicator()
+                source = source(parent)
+                val index = source.resolve("video-frames.jsonl")
+                Files.writeString(index, Files.readAllLines(index).joinToString("\n", postfix = "\n") { line ->
+                    JsonParser.parseString(line).asJsonObject.apply {
+                        addProperty("clock_alignment_known", false)
+                        for (key in listOf("t_ns", "display_t_ns", "display_t_end_ns", "confirmed_t_end_ns")) add(key, JsonNull.INSTANCE)
+                    }.toString()
+                })
+                val record = JsonParser.parseString(Files.readString(source.resolve("replay.json"))).asJsonObject
+                record["files_sha256"].asJsonObject.addProperty("video-frames.jsonl",
+                    MessageDigest.getInstance("SHA-256").digest(Files.readAllBytes(index)).joinToString("") { "%02x".format(it) })
+                Files.writeString(source.resolve("replay.json"), record.toString())
+                val before = snapshot(source)
+                val done = service.trimReplay(source, 1, 500_000, cancel)
+                taskProject = queue.task.project!!
+                queue.task.run(indicator)
+                assertEquals(1, warnings)
+                if (reason == "source-change") {
+                    assertTrue(assertFailsWith<ExecutionException> { done.get(5, TimeUnit.SECONDS) }.cause!!.message!!.contains("事前確認後"))
+                    assertEquals(listOf(source), Files.list(parent).use { it.toList() })
+                    before.filterKeys { it != "replay.json" }.forEach { (name, bytes) ->
+                        assertContentEquals(bytes, Files.readAllBytes(source.resolve(name)), name)
+                    }
+                } else {
+                    val result = done.get(5, TimeUnit.SECONDS)
+                    if (reason == "none") assertNotNull(result.output)
+                    else {
+                        assertEquals(ReplayProjectService.TrimRun(null), result)
+                        assertEquals(listOf(source), Files.list(parent).use { it.toList() })
+                    }
+                    assertUnchanged(source, before)
+                }
+            }
+        }
+    }
+
     private fun assertUnchanged(source: Path, before: Map<String, ByteArray>) {
         val after = snapshot(source)
         assertEquals(before.keys, after.keys)
@@ -289,7 +366,7 @@ class ReplaySaveTaskTest {
         assertUnchanged(source, before)
     }
 
-    private fun withService(test: (Queue, ReplayProjectService) -> Unit) = withQueue { queue, project ->
+    private fun withService(notify: (Notification) -> Unit = {}, test: (Queue, ReplayProjectService) -> Unit) = withQueue(notify) { queue, project ->
         project.registerService(ReplaySettingsStore::class.java, ReplaySettingsStore().apply {
             loadState(ReplaySettingsState(screenshotUsesLogcatDestination = false, screenshotDirectory = root.toString()))
         })

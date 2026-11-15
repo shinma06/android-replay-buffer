@@ -23,7 +23,56 @@ import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 
 class ReplayCliTest {
+    @Test fun `trim flushes its preflight warning before execution`() {
+        val registry = temporary.resolve("preflight-registry")
+        val project = Files.createDirectory(temporary.resolve("preflight-project"))
+        val output = ByteArrayOutputStream()
+        val error = ByteArrayOutputStream()
+        val requests = mutableListOf<String>()
+        var warnedBeforeExecution = false
+        ReplayCliServer(registry, project, "build") { request ->
+            requests += request.command.name
+            if (request.command.name == "TRIM_PREFLIGHT")
+                CliResponse(0, """{"fingerprint":"snapshot","warning":"時計対応が不明です。"}""")
+            else {
+                warnedBeforeExecution = error.toString(Charsets.UTF_8) == "時計対応が不明です。\n"
+                CliResponse(0, "/saved-trim")
+            }
+        }.use { server ->
+            assertEquals(0, ReplayCli.run(listOf("trim", "/saved", "--from", "0", "--to", "1"),
+                PrintStream(output), PrintStream(java.io.BufferedOutputStream(error)), registry, { "build" }))
+            server.close()
+            server.termination.get(5, TimeUnit.SECONDS)
+        }
+        assertEquals(listOf("TRIM_PREFLIGHT", "TRIM"), requests)
+        assertTrue(warnedBeforeExecution)
+        assertEquals("/saved-trim\n", output.toString(Charsets.UTF_8))
+    }
+
     @TempDir lateinit var temporary: Path
+
+    @Test fun `known trim stays silent and invalid preflight or failed warning never executes`() {
+        val payload = """{"folder":"/saved","from_us":0,"to_us":1000000}"""
+        val calls = mutableListOf<CliCommand>()
+        val known = ReplayCli.trim(payload, { request ->
+            calls += request.command
+            if (request.command == CliCommand.TRIM_PREFLIGHT) CliResponse(0, """{"fingerprint":"snapshot","warning":null}""")
+            else {
+                assertEquals("snapshot", (McpJson.parse(request.configText!!) as Map<*, *>)["fingerprint"])
+                CliResponse(0, "/saved-trim")
+            }
+        }, { error("known selection must not warn") })
+        assertEquals(CliResponse(0, "/saved-trim"), known)
+        assertEquals(listOf(CliCommand.TRIM_PREFLIGHT, CliCommand.TRIM), calls)
+        for (plan in listOf(CliResponse(1, error = "changed"), CliResponse(0, "{}"),
+            CliResponse(0, """{"fingerprint":"snapshot","warning":"unknown"}"""))) {
+            calls.clear()
+            val rejected = ReplayCli.trim(payload, { calls += it.command; plan }, { throw java.io.IOException("flush failed") })
+            assertEquals(1, rejected.code)
+            assertTrue(rejected.output.isEmpty())
+            assertEquals(listOf(CliCommand.TRIM_PREFLIGHT), calls)
+        }
+    }
 
     @Test fun `commands and quoted path arguments retain a single target`() {
         for (command in listOf("start", "stop", "save", "status", "screenshot", "settings")) {

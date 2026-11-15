@@ -22,6 +22,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class ReplayTrimTest {
@@ -342,6 +343,63 @@ class ReplayTrimTest {
         }
     }
 
+    @Test
+    fun preflightUsesSnappedDisplayedFramesRatherThanTheWholePartFlag() = withRuns(listOf(List(12) { it * 100_000L })) { root, _, capture, _, _ ->
+        val video = capture.video.mapIndexed { index, frame -> frame.copy(time =
+            if (index == 5) MappedTime(null, 0, Long.MAX_VALUE, null) else MappedTime(frame.pts * 1000, 0, 0)) }
+        val source = write(capture.copy(video = video, start = 0, end = 1_200_000_000, endUncertainty = 0), root).directory
+        assertFalse(manifest(source)["parts"].asJsonArray.single().asJsonObject["clock_alignment_known"].asBoolean)
+        val before = hashes(source)
+        val siblings = Files.list(root).use { it.toList().toSet() }
+        val trim = ReplayTrim()
+        for ((from, to) in listOf(300_001L to 499_999L, 600_000L to 700_000L)) {
+            val plan = trim.preflight(source, from, to)
+            assertFalse(plan.clockUnknown)
+            assertNull(plan.warning)
+        }
+        val unknown = trim.preflight(source, 500_001, 599_999)
+        assertEquals(500_000L, unknown.startUs)
+        assertEquals(600_000L, unknown.endUs)
+        assertTrue(unknown.clockUnknown)
+        assertNotNull(unknown.warning)
+        assertTrue(trim.preflight(source, 499_999, 500_001).clockUnknown)
+        assertEquals(before, hashes(source))
+        assertEquals(siblings, Files.list(root).use { it.toList().toSet() })
+        val output = trim.trim(source, 500_001, 599_999, { false }, { Files.move(it.partial, it.complete) },
+            expectedFingerprint = unknown.fingerprint)
+        assertTrue(rows(output).all { !it["clock_alignment_known"].asBoolean && it["t_ns"].isJsonNull })
+        assertEquals(before, hashes(source))
+    }
+
+    @Test
+    fun preflightIgnoresUnknownDecodePrerollThatIsNotDisplayed() = withRuns(listOf(List(12) { it * 100_000L })) { root, _, capture, _, _ ->
+        val video = capture.video.mapIndexed { index, frame -> frame.copy(time =
+            if (index == 0) MappedTime(null, 0, Long.MAX_VALUE, null) else MappedTime(frame.pts * 1000, 0, 0)) }
+        val source = write(capture.copy(video = video, start = 300_000_000, end = 1_200_000_000, endUncertainty = 0), root).directory
+        assertTrue(rows(source).any { !it["presented"].asBoolean && !it["clock_alignment_known"].asBoolean })
+        assertFalse(ReplayTrim().preflight(source, 1, 99_999).clockUnknown)
+    }
+
+    @Test
+    fun preflightFingerprintRejectsChangedSourceAndRangeBeforeStaging() = withRuns(listOf(List(12) { it * 100_000L })) { root, _, capture, _, _ ->
+        val source = write(capture, root).directory
+        val trim = ReplayTrim()
+        val plan = trim.preflight(source, 100_001, 500_000)
+        fun rejected(from: Long, to: Long) {
+            val siblings = Files.list(root).use { it.toList().toSet() }
+            val failure = assertFailsWith<SaveFailure> {
+                trim.trim(source, from, to, { false }, { error("stale preflight must not publish") }, expectedFingerprint = plan.fingerprint)
+            }
+            assertTrue(failure.message.orEmpty().contains("事前確認後"))
+            assertEquals(siblings, Files.list(root).use { it.toList().toSet() })
+        }
+        rejected(200_000, 500_000)
+        val record = manifest(source).apply { addProperty("created_at", "2024-02-01T00:00:00Z") }
+        Files.writeString(source.resolve("replay.json"), record.toString())
+        rejected(100_001, 500_000)
+        assertTrue(plan.fingerprint != trim.preflight(source, 100_001, 500_000).fingerprint)
+    }
+
     /** Unknown-clock save: every t_ns stays null and unmapped rows are never dropped. */
     @Test
     fun unknownClockKeepsNullTimesAndEveryLogRow() {
@@ -367,12 +425,19 @@ class ReplayTrimTest {
                 "Fixture", "row $n", byteArrayOf(n.toByte())), 1)
             val output = write(store.capture(ReplaySettings())!!, root)
             val srcRows = rows(output.directory)
-            val dir = trim(output.directory, srcRows[3]["movie_pts_us"].asString.toLong(), srcRows[6]["movie_end_us"].asString.toLong())
+            val before = hashes(output.directory)
+            val trim = ReplayTrim()
+            val from = srcRows[3]["movie_pts_us"].asLong
+            val to = srcRows[6]["movie_end_us"].asLong
+            val plan = trim.preflight(output.directory, from, to)
+            assertTrue(plan.clockUnknown)
+            val dir = trim.trim(output.directory, from, to, { false }, { Files.move(it.partial, it.complete) }, expectedFingerprint = plan.fingerprint)
             assertTrue(rows(dir).all { it["t_ns"].isJsonNull && it["display_t_ns"].isJsonNull })
             assertEquals(4, rows(dir).size)
             assertEquals(Files.readAllLines(output.directory.resolve("logcat-device.jsonl")),
                 Files.readAllLines(dir.resolve("logcat-device.jsonl")))
             assertFalse(manifest(dir)["timebase"].asJsonObject["known"].asBoolean)
+            assertEquals(before, hashes(output.directory))
         } finally {
             store.close()
             Files.walk(root).use { files -> files.sorted(Comparator.reverseOrder()).forEach(Files::deleteIfExists) }
