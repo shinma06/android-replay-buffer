@@ -179,6 +179,60 @@ class LogsOnlySaveTest {
         } finally { core.closeAsync().get(15, TimeUnit.SECONDS) }
     }
 
+    @Test
+    fun logsOnlySaveOmitsMediaGapsButTheFollowingFullSaveKeepsThem() = checkExcludedMediaGaps(false)
+
+    @Test
+    fun logsOnlySaveStillReportsClockAndLogShortages() = checkExcludedMediaGaps(true)
+
+    private fun checkExcludedMediaGaps(logFailure: Boolean) {
+        CaptureStore(root.resolve("ring"), minFree = 0, audioRequested = true).use { store ->
+            val bytes = sample()
+            val host = System.nanoTime()
+            val settings = ReplaySettings(recordAudio = true)
+            store.generation(1)
+            store.session(VideoPacket.Session(32, 32), 1)
+            store.frame(VideoPacket.Frame(0, true, false, config(bytes)), 1)
+            store.status("device_log", StreamState.CAPTURING, null, 1)
+            frameAndLog(store, host, 1, bytes, log = false)
+            store.app("com.fixture.app", 10001, setOf(12), 1, true)
+            for (second in 2L..4L) frameAndLog(store, host, second, bytes)
+            store.audioStatus(StreamState.CAPTURING, null, 1)
+            store.audioStatus(StreamState.RECOVERING, "fixture audio interruption", 1)
+            store.status("video", StreamState.RECOVERING, "fixture video interruption", 1)
+            if (logFailure) {
+                store.status("device_log", StreamState.RECOVERING, "fixture log interruption", 1)
+                store.clockStatus(false, 1)
+            }
+            val captureHost = host + 3_000_000_000
+            val request = SaveRequest(SaveContent.LOGS_ONLY, SaveOrigin.LOGCAT_TOOLBAR)
+            val logs = assertNotNull(store.capture(settings, host = captureHost, request = request))
+            assertTrue(logs.video.isEmpty())
+            assertTrue(logs.audio.isEmpty())
+            assertNull(logs.audioState)
+            assertTrue(logs.gaps.none { it.stream == "audio" || it.stream == "video" })
+            assertFalse("audio" in logs.missingKinds())
+            assertFalse("video" in logs.missingKinds())
+            if (logFailure) {
+                assertTrue(logs.gaps.any { it.stream == "clock" })
+                assertTrue(logs.gaps.any { it.stream == "device_log" })
+                assertTrue("device_log" in logs.missingKinds())
+                assertTrue("app_log" in logs.missingKinds())
+            } else assertTrue(logs.missingKinds().isEmpty())
+            val output = SaveWriter().write(logs, root, { false }) { Files.move(it.partial, it.complete) }
+            val summary = Files.readAllLines(output.directory.resolve("README.md")).single { it.contains("記録の不足・未確認") }
+            assertEquals(!logFailure, summary.contains("なし"))
+            store.release(logs.id)
+            val full = assertNotNull(store.capture(settings, host = captureHost))
+            assertTrue(full.video.isNotEmpty())
+            assertTrue(full.gaps.any { it.stream == "audio" })
+            assertTrue(full.gaps.any { it.stream == "video" })
+            assertTrue("audio" in full.missingKinds())
+            assertTrue("video" in full.missingKinds())
+            store.release(full.id)
+        }
+    }
+
     private fun frameAndLog(store: CaptureStore, host: Long, second: Long, bytes: ByteArray, log: Boolean = true) {
         val elapsed = second * 1_000_000_000
         val received = host + (second - 1) * 1_000_000_000
