@@ -460,6 +460,29 @@ class ReplayTrimTest {
         }
     }
 
+    @Test
+    fun playbackSessionShowsFramesInRealTimeAndStopsAtTheEnd() = withRuns(listOf(List(16) { it * 100_000L })) { root, _, capture, _, _ ->
+        val output = write(capture, root)
+        val srcRows = rows(output.directory)
+        val from = srcRows[5]["movie_pts_us"].asString.toLong()
+        val until = srcRows[12]["movie_pts_us"].asString.toLong()
+        val shown = java.util.Collections.synchronizedList(mutableListOf<Int>())
+        val finished = java.util.concurrent.CompletableFuture<String?>()
+        val audio = java.util.concurrent.atomic.AtomicReference<String?>()
+        val started = System.nanoTime()
+        val session = io.github.shinma06.replaybuffer.ui.ReplayPlaybackSession(output.directory, from, until,
+            onFrame = { shown += it.index }, onFinished = { finished.complete(it) }, onAudioUnavailable = { audio.set(it) })
+        session.start()
+        assertEquals(null, finished.get(10, java.util.concurrent.TimeUnit.SECONDS))
+        val elapsedMs = (System.nanoTime() - started) / 1_000_000
+        assertTrue(elapsedMs >= (until - from) / 1000 * 8 / 10, "played too fast: $elapsedMs ms")
+        assertEquals(5, shown.first())
+        assertTrue(shown.zipWithNext().all { (a, b) -> b > a }) // forward only, late frames may be skipped
+        assertTrue(shown.last() in 9..11) // stops before Out
+        assertEquals(null, audio.get()) // a save without audio plays video only, silently
+        session.stop()
+    }
+
     private fun sample(store: CaptureStore, host: Long, second: Long) {
         val elapsed = second * 1_000_000_000
         val received = host + (second - 1) * 1_000_000_000

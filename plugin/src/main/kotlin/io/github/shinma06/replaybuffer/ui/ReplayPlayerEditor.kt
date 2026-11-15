@@ -1,37 +1,36 @@
 package io.github.shinma06.replaybuffer.ui
 
-import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.Image
-import androidx.compose.foundation.background
-import androidx.compose.foundation.gestures.detectDragGestures
-import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.PathEffect
-import androidx.compose.ui.graphics.drawscope.clipRect
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.toComposeImageBitmap
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isAltPressed
+import androidx.compose.ui.input.key.isCtrlPressed
+import androidx.compose.ui.input.key.isMetaPressed
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.fileEditor.FileEditor
@@ -45,6 +44,7 @@ import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.util.UserDataHolderBase
 import com.intellij.openapi.vfs.VirtualFile
 import io.github.shinma06.replaybuffer.core.ReplayFiles
+import io.github.shinma06.replaybuffer.core.ReplayFrameCursor
 import io.github.shinma06.replaybuffer.core.ReplayFrameExport
 import io.github.shinma06.replaybuffer.core.ReplayTimeline
 import io.github.shinma06.replaybuffer.core.SavedReplay
@@ -55,16 +55,16 @@ import org.jetbrains.jewel.ui.component.DefaultButton
 import org.jetbrains.jewel.ui.component.OutlinedButton
 import org.jetbrains.jewel.ui.component.Text
 import java.awt.BorderLayout
-import java.awt.event.KeyAdapter
-import java.awt.event.KeyEvent
+import java.awt.RenderingHints
 import java.awt.image.BufferedImage
 import java.beans.PropertyChangeListener
 import java.nio.file.Path
-import java.util.Locale
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 import javax.swing.JPanel
 import javax.swing.SwingUtilities
-import javax.swing.Timer
 
 /** Opens a completed save's video.mp4 in the replay player instead of a default editor. */
 internal class ReplayPlayerEditorProvider : FileEditorProvider, DumbAware {
@@ -78,30 +78,19 @@ internal class ReplayPlayerEditorProvider : FileEditorProvider, DumbAware {
     override fun getPolicy(): FileEditorPolicy = FileEditorPolicy.PLACE_BEFORE_DEFAULT_EDITOR
 }
 
-/** Minimal saved-replay player: seek, frame step, In/Out marks, PNG export and trim-to-save. */
+/** Saved-replay player with QuickTime-style trim (requirements video-trim.md 3.1 / 3.2). */
 internal class ReplayPlayerEditor(project: Project, private val file: VirtualFile) : UserDataHolderBase(), FileEditor {
     private val controller = ReplayPlayerController(project,
         checkNotNull(file.parent).toNioPath().toAbsolutePath().normalize())
 
     private val component = JPanel(BorderLayout()).apply {
         add(JewelComposePanel { ReplayPlayerContent(controller) }, BorderLayout.CENTER)
-        isFocusable = true
-        addKeyListener(object : KeyAdapter() {
-            override fun keyPressed(event: KeyEvent) {
-                when (event.keyChar.lowercaseChar()) {
-                    'i' -> controller.markIn()
-                    'o' -> controller.markOut()
-                    else -> return
-                }
-                event.consume()
-            }
-        })
     }
 
     init { Disposer.register(this, controller) }
 
     override fun getComponent() = component
-    override fun getPreferredFocusedComponent() = component
+    override fun getPreferredFocusedComponent() = component.getComponent(0) as? javax.swing.JComponent ?: component
     override fun getName() = "動画プレイヤー"
     override fun setState(state: FileEditorState) {}
     override fun isModified() = false
@@ -117,34 +106,44 @@ internal data class PlayerState(
     val loading: Boolean = true,
     val error: String? = null,
     val durationUs: Long = 0,
-    val positionUs: Long = 0,
-    val image: BufferedImage? = null,
-    val decoding: Boolean = false,
-    val inUs: Long = 0,
-    val outUs: Long = 0,
+    val image: ImageBitmap? = null,
+    /** Movie time of the frame in [image]. */
+    val imageUs: Long = -1,
+    val aspect: Float = 9f / 16f,
     val playing: Boolean = false,
-    val busy: Boolean = false,
     val message: String? = null,
+    val audioNote: String? = null,
     val timeline: ReplayTimeline? = null,
+    val editor: TrimEditor = TrimEditor(),
+    val thumbnailVersion: Int = 0,
 )
 
 private class PlayerClosed : RuntimeException()
 
-/** Owns the opened replay, the coalescing decode worker, playback and the trim/PNG requests. */
+/** Owns the opened replay, the coalescing preview decoder, thumbnails, playback and trim/PNG tasks. */
 internal class ReplayPlayerController(
     project: Project,
     internal val folder: Path,
-) : Disposable {
+) : Disposable, PlayerBarActions {
     private val service = project.getService(ReplayProjectService::class.java)
     private val executor = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "arb-replay-player").apply { isDaemon = true }
+    }
+    private val thumbnailExecutor = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "arb-replay-thumbnails").apply { isDaemon = true; priority = Thread.MIN_PRIORITY }
     }
     private val decodeLock = Any()
     private var pendingUs: Long? = null
     private var decodeBusy = false
     @Volatile private var disposed = false
     @Volatile private var saved: SavedReplay? = null
-    private var playTimer: Timer? = null
+    private var rules: TrimRules? = null
+    private var playback: ReplayPlaybackSession? = null
+    private val playedFrame = AtomicReference<Pair<Long, ImageBitmap>?>()
+    private var taskCancel: AtomicBoolean? = null
+    private val thumbnails = ThumbnailCache<ImageBitmap>()
+    private val thumbnailGeneration = AtomicInteger()
+    private var thumbnailSlots: List<Long?> = emptyList()
 
     var state by mutableStateOf(PlayerState())
         private set
@@ -158,10 +157,12 @@ internal class ReplayPlayerController(
                 val timeline = opened.timeline()
                 saved = opened
                 publish {
-                    state = state.copy(loading = false, durationUs = timeline.durationUs,
-                        outUs = timeline.durationUs, timeline = timeline)
+                    val created = TrimRules(FrameGrid(timeline.spans), timeline.durationUs)
+                    rules = created
+                    state = state.copy(loading = false, durationUs = timeline.durationUs, timeline = timeline,
+                        editor = created.initial())
+                    showEditor()
                 }
-                requestDecode(0)
             } catch (failure: Throwable) {
                 publish { state = state.copy(loading = false, error = failure.message ?: "保存フォルダを開けません。") }
             }
@@ -173,12 +174,26 @@ internal class ReplayPlayerController(
         else SwingUtilities.invokeLater { if (!disposed) action() }
     }
 
+    /** Applies an editor transition and decodes the frame it wants on screen when that changed. */
+    private fun edit(transform: (TrimRules, TrimEditor) -> TrimEditor) {
+        val current = rules ?: return
+        if (disposed) return
+        state = state.copy(editor = transform(current, state.editor))
+        showEditor()
+    }
+
+    private fun showEditor() {
+        val current = rules ?: return
+        if (state.playing) return
+        val us = current.displayUs(state.editor)
+        if (us != state.imageUs && current.grid.indexAt(us) >= 0) requestDecode(us)
+    }
+
     private fun requestDecode(us: Long) {
         val run = synchronized(decodeLock) {
             pendingUs = us
             if (!decodeBusy) { decodeBusy = true; true } else false
         }
-        publish { state = state.copy(decoding = true) }
         if (run) executor.execute(::drainDecode)
     }
 
@@ -190,218 +205,292 @@ internal class ReplayPlayerController(
                 val replay = saved ?: break
                 try {
                     val frame = ReplayFrameExport.decodeAt(replay, target) { if (disposed) throw PlayerClosed() }
-                    val done = synchronized(decodeLock) { if (pendingUs == target) { pendingUs = null; true } else false }
-                    publish { state = state.copy(image = frame.image, positionUs = target, decoding = !done) }
+                    val bitmap = frame.image.toComposeImageBitmap()
+                    val aspect = frame.image.width.toFloat() / frame.image.height
+                    synchronized(decodeLock) { if (pendingUs == target) pendingUs = null }
+                    publish { if (!state.playing) state = state.copy(image = bitmap, imageUs = target, aspect = aspect) }
                 } catch (_: PlayerClosed) {
                     return
                 } catch (failure: Throwable) {
-                    val done = synchronized(decodeLock) { if (pendingUs == target) { pendingUs = null; true } else false }
-                    publish {
-                        state = state.copy(decoding = !done,
-                            message = failure.message ?: "この位置のframeを復号できません。")
-                    }
+                    synchronized(decodeLock) { if (pendingUs == target) pendingUs = null }
+                    publish { state = state.copy(message = failure.message ?: "この位置のframeを復号できません。") }
                 }
             }
         } finally {
             val rerun = synchronized(decodeLock) { decodeBusy = false; pendingUs != null }
-            if (rerun) requestDecode(synchronized(decodeLock) { pendingUs!! })
+            if (rerun) synchronized(decodeLock) { pendingUs }?.let(::requestDecode)
         }
     }
 
-    fun seek(us: Long) {
-        if (disposed || state.durationUs <= 0) return
-        val target = us.coerceIn(0, state.durationUs - 1)
-        state = state.copy(positionUs = target)
-        requestDecode(target)
+    // --- Filmstrip -------------------------------------------------------------------------
+
+    override fun stripResized(widthPx: Float, thumbWidthPx: Float) {
+        val current = rules ?: return
+        val slots = thumbnailSlots(current.grid, current.durationUs, thumbnailCount(widthPx, thumbWidthPx))
+        if (slots == thumbnailSlots) return
+        thumbnailSlots = slots
+        val wanted = thumbnails.missing(slots)
+        if (wanted.isEmpty()) return
+        val generation = thumbnailGeneration.incrementAndGet()
+        thumbnailExecutor.execute { buildThumbnails(wanted, generation) }
     }
 
-    fun step(delta: Int) {
-        val timeline = state.timeline ?: return
-        if (timeline.spans.isEmpty()) return
-        val current = timeline.spanAt(state.positionUs)
-        val index = when {
-            current >= 0 -> timeline.neighbour(current, delta)
-            delta > 0 -> timeline.spans.indexOfFirst { it.startUs > state.positionUs }.takeIf { it >= 0 } ?: return
-            else -> timeline.spans.indexOfLast { it.endUs <= state.positionUs }.takeIf { it >= 0 } ?: return
+    /** Decodes [wanted] frame starts in order with one forward cursor; stops when superseded. */
+    private fun buildThumbnails(wanted: List<Long>, generation: Int) {
+        fun active() { if (disposed || thumbnailGeneration.get() != generation) throw PlayerClosed() }
+        try {
+            SavedReplay.open(folder).use { replay ->
+                ReplayFrameCursor(replay).use { cursor ->
+                    var last: ReplayFrameCursor.Decoded? = null
+                    var sinceRepaint = 0
+                    wanted.forEach { target ->
+                        active()
+                        if (thumbnails[target] != null) return@forEach
+                        var frame = last
+                        var steps = 0
+                        while (frame != null && frame.startUs < target && steps < 90) { frame = cursor.next(::active); steps++ }
+                        if (frame == null || frame.startUs != target) frame = cursor.seek(target, ::active)
+                        last = frame
+                        thumbnails.put(target, scaledThumbnail(frame.image, THUMBNAIL_HEIGHT_PX).toComposeImageBitmap())
+                        if (++sinceRepaint >= 4) { sinceRepaint = 0; publish { state = state.copy(thumbnailVersion = state.thumbnailVersion + 1) } }
+                    }
+                }
+            }
+        } catch (_: PlayerClosed) {
+        } catch (_: Throwable) {
+            // Thumbnails are decoration; a frame that cannot decode stays an empty slot.
+        } finally {
+            publish { state = state.copy(thumbnailVersion = state.thumbnailVersion + 1) }
         }
-        seek(timeline.spans[index].startUs)
     }
 
-    fun togglePlay() {
+    fun thumbnail(startUs: Long): ImageBitmap? = thumbnails[startUs]
+
+    // --- Pointer and keys ------------------------------------------------------------------
+
+    override fun press(grip: Grip, us: Long) {
+        if (state.playing) stopPlayback()
+        edit { r, s -> r.beginDrag(s, grip, us) }
+    }
+
+    override fun dragTo(us: Long) = edit { r, s -> r.dragTo(s, us) }
+
+    override fun release() = edit { r, s -> r.endDrag(s) }
+
+    fun step(delta: Int) { if (state.playing) stopPlayback(); edit { r, s -> r.step(s, delta) } }
+
+    fun markIn() { if (!state.busy()) edit { r, s -> r.markIn(s) } }
+
+    fun markOut() { if (!state.busy()) edit { r, s -> r.markOut(s) } }
+
+    /** `キャンセル` / `中止` / Esc (3.2). */
+    fun cancel() {
+        val current = rules ?: return
+        val (next, effect) = current.cancel(state.editor)
+        state = state.copy(editor = next, message = if (effect == CancelEffect.ABORT_TASK) null else state.message)
+        when (effect) {
+            CancelEffect.ABORT_TASK -> taskCancel?.set(true)
+            CancelEffect.STOP_PLAYBACK -> { stopPlayback(); state = state.copy(message = null) }
+            CancelEffect.NONE -> {}
+        }
+        showEditor()
+    }
+
+    override fun button(id: PlayerButton) {
+        when (id) {
+            PlayerButton.ENTER_TRIM -> { stopPlayback(); edit { r, s -> r.enterTrim(s) }; state = state.copy(message = null) }
+            PlayerButton.TRIM -> trim()
+            PlayerButton.SAVE_FRAME -> exportPng()
+            PlayerButton.CANCEL -> cancel()
+        }
+    }
+
+    // --- Playback --------------------------------------------------------------------------
+
+    override fun togglePlay() {
         if (disposed) return
-        if (state.playing) {
-            playTimer?.stop(); playTimer = null
-            state = state.copy(playing = false)
-            return
-        }
-        if (state.durationUs <= 0 || state.error != null) return
-        val timer = Timer(100) {
-            val next = state.timeline?.spans?.firstOrNull { it.startUs > state.positionUs }?.startUs
-            if (next == null) togglePlay() else seek(next)
-        }
-        playTimer = timer
-        timer.start()
-        state = state.copy(playing = true)
+        if (state.playing) { stopPlayback(); return }
+        val current = rules ?: return
+        if (state.error != null || state.editor.drag != null) return
+        val (from, until) = current.playRange(state.editor) ?: return
+        lateinit var session: ReplayPlaybackSession
+        session = ReplayPlaybackSession(folder, from, until,
+            onFrame = { frame ->
+                // Keep only the newest frame; one EDT hop at a time.
+                if (playedFrame.getAndSet(frame.startUs to frame.image.toComposeImageBitmap()) == null) publish {
+                    val (us, bitmap) = playedFrame.getAndSet(null) ?: return@publish
+                    if (state.playing) state = state.copy(image = bitmap, imageUs = us, editor = current.played(state.editor, us))
+                }
+            },
+            onFinished = { failure -> publish { if (playback === session) { stopPlayback(); failure?.let { state = state.copy(message = it) } } } },
+            onAudioUnavailable = { reason -> publish { if (playback === session) state = state.copy(audioNote = reason) } })
+        playback = session
+        state = state.copy(playing = true, audioNote = null, message = null)
+        session.start()
     }
 
-    fun markIn() {
-        if (disposed || state.error != null) return
-        val mark = state.positionUs.coerceIn(0, state.durationUs)
-        state = state.copy(inUs = mark, outUs = if (state.outUs <= mark) state.durationUs else state.outUs)
+    private fun stopPlayback() {
+        val session = playback ?: return
+        playback = null
+        session.stop()
+        playedFrame.set(null)
+        state = state.copy(playing = false)
+        showEditor()
     }
 
-    fun markOut() {
-        if (disposed || state.error != null) return
-        val mark = state.positionUs.coerceIn(0, state.durationUs)
-        state = state.copy(outUs = mark, inUs = if (state.inUs >= mark) 0 else state.inUs)
-    }
+    // --- Tasks -----------------------------------------------------------------------------
+
+    private fun PlayerState.busy() = editor.task != null
 
     fun exportPng() {
-        if (disposed || state.busy || state.error != null) return
-        state = state.copy(busy = true, message = null)
-        service.exportReplayFrame(folder, state.positionUs).whenComplete { file, failure ->
+        val current = rules ?: return
+        if (disposed || state.busy() || state.error != null || current.grid.indexAt(state.editor.playheadUs) < 0) return
+        stopPlayback()
+        val cancel = AtomicBoolean()
+        taskCancel = cancel
+        edit { r, s -> r.taskStarted(s, TaskKind.FRAME) }
+        state = state.copy(message = null)
+        service.exportReplayFrame(folder, state.editor.playheadUs, cancel).whenComplete { file, failure ->
             publish {
-                state = state.copy(busy = false,
-                    message = if (failure == null) "静止画を保存しました: $file"
-                    else (failure.cause ?: failure).message ?: "静止画を保存できませんでした。")
-            }
-        }
-    }
-
-    fun trim() {
-        if (disposed || state.busy || state.error != null || state.inUs >= state.outUs) return
-        state = state.copy(busy = true, message = null)
-        service.trimReplay(folder, state.inUs, state.outUs).whenComplete { output, failure ->
-            publish {
-                state = state.copy(busy = false,
-                    message = when {
-                        failure != null -> (failure.cause ?: failure).message ?: "切り取りを完了できませんでした。"
-                        output == null -> "切り取りを中止しました。未完成の出力は保全します。"
-                        else -> "切り取った動画を保存しました: $output"
+                val outcome = when { failure != null -> TaskOutcome.FAILED; file == null -> TaskOutcome.CANCELLED; else -> TaskOutcome.SUCCESS }
+                taskCancel = null
+                state = state.copy(editor = current.taskFinished(state.editor, TaskKind.FRAME, outcome),
+                    message = when (outcome) {
+                        TaskOutcome.SUCCESS -> "静止画を保存しました: $file"
+                        TaskOutcome.CANCELLED -> "静止画の保存を中止しました。"
+                        TaskOutcome.FAILED -> (failure.cause ?: failure).message ?: "静止画を保存できませんでした。"
                     })
             }
         }
     }
 
+    fun trim() {
+        val current = rules ?: return
+        val editor = state.editor
+        if (disposed || state.busy() || state.error != null || editor.mode != PlayerMode.TRIM || current.rangeUnchanged(editor)) return
+        stopPlayback()
+        val cancel = AtomicBoolean()
+        taskCancel = cancel
+        edit { r, s -> r.taskStarted(s, TaskKind.TRIM) }
+        state = state.copy(message = null)
+        service.trimReplay(folder, editor.inUs, editor.outUs, cancel).whenComplete { run, failure ->
+            publish {
+                val outcome = when { failure != null -> TaskOutcome.FAILED; run.output == null -> TaskOutcome.CANCELLED; else -> TaskOutcome.SUCCESS }
+                taskCancel = null
+                state = state.copy(editor = current.taskFinished(state.editor, TaskKind.TRIM, outcome),
+                    message = when (outcome) {
+                        TaskOutcome.SUCCESS -> "切り取った動画を保存しました: ${run.output}"
+                        TaskOutcome.CANCELLED -> "切り取りを中止しました。完成フォルダは作っていません。" +
+                            (run.retainedPartial?.let { " 未完成の出力は保全します: $it" } ?: "")
+                        TaskOutcome.FAILED -> (failure.cause ?: failure).message ?: "切り取りを完了できませんでした。"
+                    })
+                showEditor()
+            }
+        }
+    }
+
+    /** The bar's derived view of the current state. */
+    fun barModel(): PlayerBarModel {
+        val current = rules
+        val editor = state.editor
+        val availability = PlayerAvailability(state.loading, state.error,
+            current?.grid?.indexAt(editor.playheadUs)?.let { it < 0 } ?: false)
+        val buttons = if (current == null) listOf(
+            ButtonSpec(PlayerButton.ENTER_TRIM, "トリム…", true, false, availability.error?.let { "この保存は切り取れません: $it" } ?: "読み込み中です"),
+            ButtonSpec(PlayerButton.SAVE_FRAME, "この位置をPNG保存", false, false))
+        else playerButtons(current, editor, availability)
+        return PlayerBarModel(editor, current, state.timeline, buttons, statusLine(state.message ?: state.audioNote, buttons),
+            state.playing, current != null && state.error == null && editor.drag == null, ::thumbnail, state.thumbnailVersion, state.aspect)
+    }
+
     override fun dispose() {
         disposed = true
-        playTimer?.stop()
+        playback?.stop()
+        thumbnailGeneration.incrementAndGet()
+        thumbnailExecutor.shutdownNow()
         executor.execute { runCatching { saved?.close() } }
         executor.shutdown()
     }
 }
 
-internal fun playerTime(us: Long): String = String.format(Locale.ROOT, "%d:%06.3f", us / 60_000_000, us % 60_000_000 / 1e6)
+private const val THUMBNAIL_HEIGHT_PX = 96
 
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-internal fun ReplayPlayerContent(controller: ReplayPlayerController) {
-    val state = controller.state
-    val timeline = state.timeline
-    Column(Modifier.fillMaxSize().padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text(controller.folderName, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
-            state.error?.let { Text(it, color = Color(0xFFF06A6A)) }
+/** Downscaled copy for the filmstrip (two device pixels per dp of the 48dp strip). */
+internal fun scaledThumbnail(image: BufferedImage, heightPx: Int): BufferedImage {
+    val height = minOf(heightPx, image.height).coerceAtLeast(1)
+    val width = (image.width.toLong() * height / image.height).toInt().coerceAtLeast(1)
+    return BufferedImage(width, height, BufferedImage.TYPE_INT_RGB).also { out ->
+        val graphics = out.createGraphics()
+        try {
+            graphics.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR)
+            graphics.drawImage(image, 0, 0, width, height, null)
+        } finally {
+            graphics.dispose()
         }
-        Box(Modifier.fillMaxWidth().weight(1f).background(Color.Black), contentAlignment = Alignment.Center) {
-            when {
-                state.image != null -> Image(state.image.toComposeImageBitmap(), "動画の表示frame",
-                    modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Fit)
-                state.loading -> Text("読み込み中…", color = Color.White)
-                else -> Text("表示するframeがありません", color = Color.White)
-            }
-            if (state.decoding) Text("復号中…", color = Color(0xFF35AAF0),
-                modifier = Modifier.align(Alignment.TopEnd).padding(4.dp))
-        }
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text("位置 ${playerTime(state.positionUs)} / ${playerTime(state.durationUs)}")
-            if (timeline?.clockKnown == false) Text("時刻不明", color = Color(0xFFE0A03D))
-            if (timeline != null && timeline.spanAt(state.positionUs) < 0 && state.error == null)
-                Text("欠落", color = Color(0xFFF06A6A))
-        }
-        SeekBar(state) { controller.seek(it) }
-        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            val idle = !state.busy && state.error == null && !state.loading
-            OutlinedButton({ controller.step(-1) }, enabled = idle,
-                modifier = Modifier.semantics { contentDescription = "1コマ戻る" }) { Text("1コマ戻る") }
-            OutlinedButton({ controller.togglePlay() }, enabled = idle,
-                modifier = Modifier.semantics { contentDescription = if (state.playing) "停止" else "再生" }) {
-                Text(if (state.playing) "停止" else "再生")
-            }
-            OutlinedButton({ controller.step(1) }, enabled = idle,
-                modifier = Modifier.semantics { contentDescription = "1コマ進む" }) { Text("1コマ進む") }
-            OutlinedButton({ controller.markIn() }, enabled = idle,
-                modifier = Modifier.semantics { contentDescription = "ここを開始にする" }) { Text("ここを開始にする（I）") }
-            OutlinedButton({ controller.markOut() }, enabled = idle,
-                modifier = Modifier.semantics { contentDescription = "ここを終了にする" }) { Text("ここを終了にする（O）") }
-            OutlinedButton({ controller.exportPng() }, enabled = idle && !state.decoding,
-                modifier = Modifier.semantics { contentDescription = "この画面をPNG保存" }) { Text("この画面をPNG保存") }
-        }
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text("${playerTime(state.inUs)}〜${playerTime(state.outUs)}（${"%.3f".format(Locale.ROOT, (state.outUs - state.inUs) / 1e6)}秒）を残す",
-                modifier = Modifier.weight(1f))
-            val trimEnabled = !state.busy && state.error == null && !state.loading && state.inUs < state.outUs
-            DefaultButton({ controller.trim() }, enabled = trimEnabled,
-                modifier = Modifier.semantics { contentDescription = "切り取って保存" }) {
-                Text(if (state.busy) "保存中…" else "切り取って保存")
-            }
-        }
-        state.message?.let { Text(it, color = JewelTheme.globalColors.text.info) }
-        if (state.busy) Text("保存を実行中です。中止は実行中タスクから行えます。", color = JewelTheme.globalColors.text.info)
     }
 }
 
 @Composable
-private fun SeekBar(state: PlayerState, onSeek: (Long) -> Unit) {
-    val duration = state.durationUs.coerceAtLeast(1L)
-    val gaps = state.timeline?.gaps.orEmpty()
-    val taps = state.timeline?.taps.orEmpty()
-    val clockKnown = state.timeline?.clockKnown != false
-    Canvas(Modifier.fillMaxWidth().height(26.dp)
-        .semantics { contentDescription = "シークバー" }
-        .pointerInput(duration) { detectTapGestures { onSeek((it.x / size.width * duration).toLong()) } }
-        .pointerInput(duration) {
-            detectDragGestures { change, _ ->
-                onSeek((change.position.x / size.width * duration).toLong()); change.consume()
+internal fun jewelPlayerPalette(): PlayerPalette {
+    val colors = JewelTheme.globalColors
+    val dark = JewelTheme.isDark
+    val panel = colors.panelBackground
+    return PlayerPalette(
+        videoBackground = panel,
+        barBackground = panel.copy(alpha = 0.9f),
+        barBorder = colors.borders.normal,
+        content = JewelTheme.contentColor,
+        accent = colors.outlines.focused,
+        onAccent = panel,
+        dimOutside = panel.copy(alpha = if (dark) 0.55f else 0.5f),
+        emptyThumb = JewelTheme.contentColor.copy(alpha = 0.08f),
+        gap = colors.text.error.copy(alpha = 0.6f),
+        unknownClock = colors.text.warning,
+        tap = colors.text.info,
+        textStyle = JewelTheme.defaultTextStyle,
+    )
+}
+
+@Composable
+internal fun ReplayPlayerContent(controller: ReplayPlayerController) {
+    val state = controller.state
+    val focus = remember { FocusRequester() }
+    LaunchedEffect(Unit) { runCatching { focus.requestFocus() } }
+    Column(Modifier.fillMaxSize()
+        .focusRequester(focus).focusable()
+        .pointerInput(Unit) {
+            awaitPointerEventScope {
+                while (true) { if (awaitPointerEvent().type == PointerEventType.Press) runCatching { focus.requestFocus() } }
             }
         }
-    ) {
-        val width = size.width
-        fun x(us: Long) = (us.toDouble() / duration * width).toFloat().coerceIn(0f, width)
-        val centerY = size.height / 2f
-        if (clockKnown) {
-            drawLine(Color(0xFF6E6E6E), Offset(0f, centerY), Offset(width, centerY), strokeWidth = 4f)
-        } else {
-            drawLine(Color(0xFF6E6E6E), Offset(0f, centerY), Offset(width, centerY), strokeWidth = 4f,
-                pathEffect = PathEffect.dashPathEffect(floatArrayOf(8f, 6f)))
-        }
-        gaps.forEach { gap ->
-            val left = x(gap.startUs)
-            val right = x(gap.endUs).coerceAtLeast(left + 2f)
-            drawRect(Color(0x66C62828), Offset(left, centerY - 8f), Size(right - left, 16f))
-            clipRect(left, centerY - 8f, right, centerY + 8f) {
-                var stripe = -16f
-                while (stripe < right - left + 16f) {
-                    drawLine(Color(0xAAC62828), Offset(left + stripe, centerY + 8f),
-                        Offset(left + stripe + 16f, centerY - 8f), strokeWidth = 1.5f)
-                    stripe += 6f
-                }
+        .onPreviewKeyEvent { event ->
+            if (event.type != KeyEventType.KeyDown || event.isCtrlPressed || event.isMetaPressed || event.isAltPressed) return@onPreviewKeyEvent false
+            when (event.key) {
+                Key.I -> controller.markIn()
+                Key.O -> controller.markOut()
+                Key.DirectionLeft -> controller.step(-1)
+                Key.DirectionRight -> controller.step(1)
+                Key.Spacebar -> controller.togglePlay()
+                Key.Escape -> controller.cancel()
+                else -> return@onPreviewKeyEvent false
             }
+            true
+        }) {
+        Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically) {
+            Text(controller.folderName, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+            state.error?.let { Text(it, color = JewelTheme.globalColors.text.error) }
         }
-        taps.forEach { tap ->
-            drawLine(Color(0xFF35AAF0), Offset(x(tap), centerY - 7f), Offset(x(tap), centerY + 7f), strokeWidth = 1.5f)
+        PlayerSurface(
+            image = state.image,
+            placeholder = when { state.loading -> "読み込み中…"; state.image == null -> "表示するframeがありません"; else -> null },
+            palette = jewelPlayerPalette(),
+            bar = controller.barModel(),
+            actions = controller,
+            modifier = Modifier.fillMaxWidth().weight(1f),
+        ) { spec, modifier, onClick ->
+            if (spec.primary) DefaultButton(onClick, enabled = spec.enabled, modifier = modifier) { Text(spec.label, maxLines = 1, softWrap = false) }
+            else OutlinedButton(onClick, enabled = spec.enabled, modifier = modifier) { Text(spec.label, maxLines = 1, softWrap = false) }
         }
-        fun flag(us: Long, color: Color) {
-            val flagX = x(us)
-            drawLine(color, Offset(flagX, centerY - 11f), Offset(flagX, centerY + 11f), strokeWidth = 2f)
-            drawPath(androidx.compose.ui.graphics.Path().apply {
-                moveTo(flagX, centerY - 11f); lineTo(flagX + 8f, centerY - 7f); lineTo(flagX, centerY - 3f); close()
-            }, color)
-        }
-        flag(state.inUs, Color(0xFF1F7A33))
-        flag(state.outUs, Color(0xFFA36200))
-        val thumb = Offset(x(state.positionUs), centerY)
-        drawCircle(Color.White, 6.5f, thumb)
-        drawCircle(Color(0xFF3574F0), 5f, thumb)
     }
 }

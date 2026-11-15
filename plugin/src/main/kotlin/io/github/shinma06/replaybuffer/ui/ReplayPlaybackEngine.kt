@@ -1,0 +1,176 @@
+package io.github.shinma06.replaybuffer.ui
+
+import io.github.shinma06.replaybuffer.core.AacPcmDecoder
+import io.github.shinma06.replaybuffer.core.AudioChunk
+import io.github.shinma06.replaybuffer.core.ReplayAudioTrack
+import io.github.shinma06.replaybuffer.core.ReplayFrameCursor
+import io.github.shinma06.replaybuffer.core.SavedReplay
+import java.nio.file.Path
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import javax.sound.sampled.AudioFormat
+import javax.sound.sampled.AudioSystem
+import javax.sound.sampled.SourceDataLine
+
+/**
+ * Real-time playback of a saved replay from [fromUs] until [untilUs] (3.1 再生). One thread decodes
+ * video forward with [ReplayFrameCursor]; another decodes AAC with JAAD and plays it on a Java Sound
+ * line, whose position is the master clock. Without audio (none saved, no output device, decode
+ * failure) a monotonic clock drives video only and [onAudioUnavailable] is told once.
+ * Callbacks run on the worker threads; the caller hops to EDT.
+ */
+internal class ReplayPlaybackSession(
+    private val folder: Path,
+    private val fromUs: Long,
+    private val untilUs: Long,
+    private val onFrame: (ReplayFrameCursor.Decoded) -> Unit,
+    private val onFinished: (failure: String?) -> Unit,
+    private val onAudioUnavailable: (reason: String) -> Unit,
+) {
+    private val stopped = AtomicBoolean()
+    private val audioReady = CountDownLatch(1)
+    @Volatile private var line: SourceDataLine? = null
+    @Volatile private var baseNanos = System.nanoTime()
+    @Volatile private var baseUs = fromUs
+    private val threads = mutableListOf<Thread>()
+
+    private fun nowUs(): Long = baseUs + (line?.microsecondPosition ?: ((System.nanoTime() - baseNanos) / 1000))
+
+    /** Switches to the monotonic clock without a jump when the audio line goes away mid-play. */
+    private fun dropLine() {
+        val current = nowUs()
+        baseNanos = System.nanoTime()
+        baseUs = current
+        line = null
+    }
+
+    private fun check() { if (stopped.get()) throw InterruptedException() }
+
+    fun start() {
+        threads += Thread(::runVideo, "arb-replay-play-video").apply { isDaemon = true }
+        threads += Thread(::runAudio, "arb-replay-play-audio").apply { isDaemon = true; priority = Thread.MAX_PRIORITY - 1 }
+        threads.forEach(Thread::start)
+    }
+
+    fun stop() {
+        if (!stopped.compareAndSet(false, true)) return
+        threads.forEach(Thread::interrupt)
+        line?.let { runCatching { it.stop(); it.flush() } }
+    }
+
+    private fun runVideo() {
+        try {
+            SavedReplay.open(folder).use { saved ->
+                ReplayFrameCursor(saved).use { cursor ->
+                    val first = cursor.seek(fromUs, ::check)
+                    onFrame(first)
+                    audioReady.await(1, TimeUnit.SECONDS)
+                    if (line == null) { baseNanos = System.nanoTime(); baseUs = first.startUs }
+                    var last = first
+                    while (true) {
+                        check()
+                        val frame = cursor.next(::check) ?: break
+                        if (frame.startUs >= untilUs) break
+                        waitUntil(frame.startUs)
+                        last = frame
+                        // Late frames still decode (they are references) but are not shown.
+                        if (nowUs() < frame.endUs) onFrame(frame)
+                    }
+                    waitUntil(minOf(untilUs, last.endUs))
+                }
+            }
+            if (!stopped.get()) onFinished(null)
+        } catch (_: InterruptedException) {
+        } catch (failure: Throwable) {
+            if (!stopped.get()) onFinished(failure.message ?: "再生を続けられません。")
+        } finally {
+            stop()
+        }
+    }
+
+    private fun waitUntil(us: Long) {
+        while (true) {
+            check()
+            val remaining = us - nowUs()
+            if (remaining <= 0) return
+            Thread.sleep(minOf(remaining / 1000 + 1, 20))
+        }
+    }
+
+    private fun runAudio() {
+        var opened: SourceDataLine? = null
+        try {
+            SavedReplay.open(folder).use { saved ->
+                val track = ReplayAudioTrack.open(saved)
+                if (track == null) { audioReady.countDown(); return }
+                track.use {
+                    val decoder = AacPcmDecoder(track.config)
+                    val channels = track.channels.coerceAtLeast(1)
+                    val format = AudioFormat(track.sampleRate.toFloat(), 16, channels, true, false)
+                    val frameBytes = 2 * channels
+                    val output = try {
+                        AudioSystem.getSourceDataLine(format).apply { open(format, track.sampleRate / 4 * frameBytes) }
+                    } catch (failure: Exception) {
+                        onAudioUnavailable("音声を出力できないため、音声なしで再生しています。")
+                        audioReady.countDown(); return
+                    }
+                    opened = output
+                    output.start()
+                    baseUs = fromUs
+                    line = output
+                    audioReady.countDown()
+                    val limit = ((untilUs - fromUs) * track.sampleRate / 1_000_000L).coerceAtLeast(0)
+                    var written = 0L
+                    fun write(pcm: ByteArray, offsetSamples: Long, samples: Long) {
+                        val count = minOf(samples, limit - written)
+                        if (count <= 0) return
+                        output.write(pcm, (offsetSamples * frameBytes).toInt(), (count * frameBytes).toInt())
+                        written += count
+                    }
+                    val silence = ByteArray(1024 * frameBytes)
+                    for (chunk in track.schedule(fromUs)) {
+                        check()
+                        if (written >= limit) break
+                        when (chunk) {
+                            is AudioChunk.Silence -> {
+                                var left = chunk.samples
+                                while (left > 0 && written < limit) { check(); val n = minOf(left, 1024L); write(silence, 0, n); left -= n }
+                            }
+                            is AudioChunk.Packets -> {
+                                // One preceding packet primes the decoder's overlap so the first kept samples are clean.
+                                if (chunk.first > 0) { track.goTo(chunk.first - 1); track.packet()?.let { runCatching { decoder.decode(it) } } }
+                                else track.goTo(chunk.first)
+                                var skip = chunk.skipSamples
+                                var keep = chunk.keepSamples
+                                repeat(chunk.count) {
+                                    check()
+                                    val pcm = decoder.decode(track.packet() ?: return@repeat)
+                                    val samples = pcm.size / frameBytes.toLong()
+                                    val from = minOf(skip, samples)
+                                    val n = minOf(samples - from, keep)
+                                    write(pcm, from, n)
+                                    skip -= from; keep -= n
+                                }
+                            }
+                        }
+                    }
+                    // Keep the clock running to the end when the audio stops before the video.
+                    while (written < limit) { check(); write(silence, 0, minOf(1024L, limit - written)) }
+                    output.drain()
+                }
+            }
+        } catch (_: InterruptedException) {
+        } catch (failure: Throwable) {
+            if (!stopped.get()) {
+                if (line != null) dropLine()
+                onAudioUnavailable("音声を再生できないため、音声なしで再生しています。")
+            }
+        } finally {
+            audioReady.countDown()
+            if (stopped.get() || line == null) opened?.let { runCatching { it.close() } }
+            else { val current = opened; dropLine(); current?.let { runCatching { it.close() } } }
+        }
+    }
+
+}

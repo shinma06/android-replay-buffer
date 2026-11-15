@@ -78,6 +78,7 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.time.LocalTime
 import java.util.concurrent.CompletableFuture
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.ExecutionException
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
@@ -572,38 +573,46 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
     }
 
     /** Saves the frame displayed at [atUs] of [folder] to the screenshot destination; GUI entry of [ReplayFrameExport]. */
-    internal fun exportReplayFrame(folder: Path, atUs: Long): CompletableFuture<Path> {
-        val done = CompletableFuture<Path>()
+    internal fun exportReplayFrame(folder: Path, atUs: Long, cancel: AtomicBoolean = AtomicBoolean()): CompletableFuture<Path?> {
+        val done = CompletableFuture<Path?>()
         if (!alive) { done.completeExceptionally(IllegalStateException("projectが終了しています。")); return done }
-        ProgressManager.getInstance().runProcessWithProgressAsynchronously(object : Task.Backgroundable(project, "静止画を保存しています", false) {
+        ProgressManager.getInstance().runProcessWithProgressAsynchronously(object : Task.Backgroundable(project, "静止画を保存しています", true) {
             override fun run(indicator: ProgressIndicator) {
                 indicator.isIndeterminate = true
-                try { done.complete(ReplayFrameExport.export(folder, atUs, frameDestination())) }
+                try {
+                    done.complete(ReplayFrameExport.export(folder, atUs, frameDestination(), checkActive = {
+                        if (indicator.isCanceled || cancel.get()) throw SaveCancelled(null)
+                    }))
+                }
+                catch (_: SaveCancelled) { done.complete(null) }
                 catch (failure: Throwable) { done.completeExceptionally(failure) }
             }
         }, EmptyProgressIndicator())
-        done.thenAccept { file -> onUi { notifyFrameSaved(file) } }
+        done.thenAccept { file -> if (file != null) onUi { notifyFrameSaved(file) } }
             .exceptionally { failure ->
                 onUi { notifyOperationFailed("静止画を保存できませんでした", failure) }; null
             }
         return done
     }
 
+    /** Result of a GUI trim: the new folder, or null with the retained `.partial` (if any) when cancelled. */
+    internal data class TrimRun(val output: Path?, val retainedPartial: Path? = null)
+
     /** Trims [folder] to [fromUs, toUs) in a cancellable background task; GUI entry of [ReplayTrim]. */
-    internal fun trimReplay(folder: Path, fromUs: Long, toUs: Long): CompletableFuture<Path?> {
-        val done = CompletableFuture<Path?>()
+    internal fun trimReplay(folder: Path, fromUs: Long, toUs: Long, cancel: AtomicBoolean = AtomicBoolean()): CompletableFuture<TrimRun> {
+        val done = CompletableFuture<TrimRun>()
         if (!alive) { done.completeExceptionally(IllegalStateException("projectが終了しています。")); return done }
         ProgressManager.getInstance().runProcessWithProgressAsynchronously(object : Task.Backgroundable(project, "動画を切り取っています", true) {
             override fun run(indicator: ProgressIndicator) {
                 indicator.isIndeterminate = true
-                try { done.complete(ReplayTrim().trim(folder, fromUs, toUs, { indicator.isCanceled }, { it.publish() })) }
-                catch (_: SaveCancelled) { done.complete(null) }
+                try { done.complete(TrimRun(ReplayTrim().trim(folder, fromUs, toUs, { indicator.isCanceled || cancel.get() }, { it.publish() }))) }
+                catch (cancelled: SaveCancelled) { done.complete(TrimRun(null, cancelled.partial)) }
                 catch (failure: Throwable) { done.completeExceptionally(failure) }
             }
         }, EmptyProgressIndicator())
-        done.thenAccept { output ->
+        done.thenAccept { run ->
             folder.parent?.let { LocalFileSystem.getInstance().refreshAndFindFileByNioFile(it) }?.refresh(false, true)
-            if (output != null) onUi { notifyTrimmed(output) }
+            run.output?.let { output -> onUi { notifyTrimmed(output) } }
         }.exceptionally { failure ->
             onUi { notifyOperationFailed("切り取った動画を保存できませんでした", failure) }; null
         }
