@@ -298,9 +298,9 @@ internal class ReplayPlayerController(
 
     fun step(delta: Int) { if (state.playing) stopPlayback(); edit { r, s -> r.step(s, delta) } }
 
-    fun markIn() { if (!state.busy()) edit { r, s -> r.markIn(s) } }
+    fun markIn() { if (!state.busy()) { stopPlayback(); edit { r, s -> r.markIn(s) } } }
 
-    fun markOut() { if (!state.busy()) edit { r, s -> r.markOut(s) } }
+    fun markOut() { if (!state.busy()) { stopPlayback(); edit { r, s -> r.markOut(s) } } }
 
     /** `キャンセル` / `中止` / Esc (3.2). */
     fun cancel() {
