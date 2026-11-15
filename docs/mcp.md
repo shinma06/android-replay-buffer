@@ -53,7 +53,7 @@ Devin: 設定のMCP Marketplaceで「Add your own」からstdioサーバーを�
 
 全toolに任意の`project`（開いているprojectの絶対パス）があります。それ以外の未知の引数は拒否します。
 
-`export_frame`のPNGはGUI／CLIと同じく、`tEXt`に`arb:source_save_id`（読み出した`replay.json`の`save_id`）・`arb:source_folder`（現在のフォルダ名）・`arb:movie_us`（指定した動画内時刻）・`arb:frame_movie_us`（表示frameの開始位置）を記録します。`arb:t_ns`・`arb:display_t_ns`は既知の場合だけです。改名しても元IDを保持し、trim派生フォルダからはそのフォルダ自身のID・frame時刻を記録します。`save_id`が欠落・不正ならPNG作成前に拒否し、パスなどからIDを補いません。tool引数・`path`・画像の返却形式は変わりません。
+`export_frame`のPNGはGUI／CLIと同じく、テキストmetadataに`arb:source_save_id`（読み出した`replay.json`の`save_id`）・`arb:source_folder`（現在のフォルダ名）・`arb:movie_us`（指定した動画内時刻）・`arb:frame_movie_us`（表示frameの開始位置）を記録します。`arb:t_ns`・`arb:display_t_ns`は既知の場合だけです。改名しても元IDを保持し、trim派生フォルダからはそのフォルダ自身のID・frame時刻を記録します。`save_id`が欠落・不正ならPNG作成前に拒否し、パスなどからIDを補いません。Latin-1で表せる値は従来と同じ`tEXt` bytes、それ以外の日本語・emoji等のフォルダ名は非圧縮UTF-8の`iTXt`で保持します（キーは共通、言語タグ・翻訳キーワードは空）。tool引数・`path`・画像の返却形式は変わりません。
 
 `trim_replay`はGUI／CLIと同じread-only事前確認で実際に残る表示frameを調べます。時計対応が不明なframeを含む場合、出力作成の要求前に`notifications/message`（`level: "warning"`、`logger: "replay.trim"`）を送信・flushします。成功結果の`directory`・`summary_path`は変わりません。不確かな時刻のログは保守的に残し、事前確認後に元の記録が変われば作成前に拒否します（自動再試行なし）。
 

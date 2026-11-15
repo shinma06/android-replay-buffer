@@ -98,7 +98,7 @@ internal object ReplayFrameExport {
         return BufferedImage(colorModel, raster, false, null)
     }
 
-    /** Encoded PNG bytes with tEXt time and source metadata inserted before IEND. */
+    /** Encoded PNG bytes with text metadata inserted before IEND. */
     fun pngBytes(image: BufferedImage, movieUs: Long, row: com.google.gson.JsonObject, source: String, sourceSaveId: String): ByteArray {
         require(sourceSaveId.isNotBlank() && sourceSaveId.all { it.code in 0x20..0xFF && !it.isISOControl() }) {
             "保存記録のsave_idが不正です"
@@ -109,12 +109,15 @@ internal object ReplayFrameExport {
         val out = ByteArrayOutputStream()
         out.write(png, 0, png.size - 12)
         fun text(keyword: String, value: String) {
-            val data = "$keyword\u0000$value".toByteArray(Charsets.ISO_8859_1)
+            val latin1 = value.all { it.code <= 0xFF }
+            val type = (if (latin1) "tEXt" else "iTXt").toByteArray(Charsets.US_ASCII)
+            val data = if (latin1) "$keyword\u0000$value".toByteArray(Charsets.ISO_8859_1)
+                else "$keyword\u0000\u0000\u0000\u0000\u0000$value".toByteArray(Charsets.UTF_8)
             val chunk = ByteBuffer.allocate(12 + data.size)
             chunk.putInt(data.size)
-            chunk.put("tEXt".toByteArray(Charsets.US_ASCII))
+            chunk.put(type)
             chunk.put(data)
-            chunk.putInt(CRC32().apply { update("tEXt".toByteArray(Charsets.US_ASCII)); update(data) }.value.toInt())
+            chunk.putInt(CRC32().apply { update(type); update(data) }.value.toInt())
             out.write(chunk.array())
         }
         text("arb:movie_us", movieUs.toString())
