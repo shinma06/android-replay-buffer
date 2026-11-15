@@ -21,6 +21,7 @@ import kotlin.concurrent.thread
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
@@ -375,6 +376,10 @@ elif len(a)>2 and a[2]=='logcat':
                 emit(3,label,wall,pid=99,header=24,tag='Partition')
             (root/(buffer+'-'+label+'.sent')).touch()
         seen=len(lines)
+        eof=root/('eof-'+buffer)
+        if eof.exists():
+            eof.unlink()
+            sys.exit(0)
         time.sleep(.1)
 elif len(a)>3 and 'ClockProbe' in a[3]:
     print('REPLAY_CLOCK_1',flush=True)
@@ -594,6 +599,14 @@ elif len(a)>3 and a[3]=='ps':
             if (logMode != null) {
                 assertTrue(core.applySettings(core.snapshot().settings.copy(replaySeconds = 30, saveDirectory = root)).get().accepted)
                 val readers = mutableMapOf<String, Long>()
+                val failures = mutableListOf<CaptureGap>()
+                fun logFailure(phase: String): ReplaySnapshot = awaitState(phase) {
+                    it.deviceLog.state == StreamState.RECOVERING && it.deviceLog.gaps.any { gap ->
+                        gap.stream == "device_log" && gap.toNs == null
+                    }
+                }.also { state ->
+                    failures += state.deviceLog.gaps.last { it.stream == "device_log" && it.toNs == null }
+                }
                 fun ready(buffer: String, previousPid: Long? = null): Long {
                     val deadline = System.nanoTime() + FIXTURE_GUARD_NS
                     while (System.nanoTime() < deadline) {
@@ -633,7 +646,7 @@ elif len(a)>3 and a[3]=='ps':
                     assertEquals(emptyList(), quiet.gaps.filter { it.stream == "device_log" && it !in quietGaps })
                     Files.delete(root.resolve("quiet-all"))
                     Files.createFile(root.resolve("fail-all"))
-                    awaitState("all-only-failure") { it.deviceLog.state == StreamState.RECOVERING }
+                    logFailure("all-only-failure")
                     emit("partial")
                     val partial = core.snapshot()
                     assertEquals(StreamState.RECOVERING, partial.deviceLog.state)
@@ -642,7 +655,7 @@ elif len(a)>3 and a[3]=='ps':
                     awaitState("all-recovered") { it.deviceLog.state == StreamState.CAPTURING }
                     ready("all", readers.getValue("all"))
                     Files.createFile(root.resolve("wrong-header-all"))
-                    awaitState("all-header-contradiction") { it.deviceLog.state == StreamState.RECOVERING }
+                    logFailure("all-header-contradiction")
                     emit("header-partial")
                     assertEquals(StreamState.RECOVERING, core.snapshot().deviceLog.state)
                     Files.delete(root.resolve("wrong-header-all"))
@@ -650,7 +663,7 @@ elif len(a)>3 and a[3]=='ps':
                     ready("all", readers.getValue("all"))
                     assertEquals(1, logLaunches(root).count { it.startsWith("main ") })
                     Files.createFile(root.resolve("fail-main"))
-                    awaitState("main-only-failure") { it.deviceLog.state == StreamState.RECOVERING }
+                    logFailure("main-only-failure")
                     emit("main-partial", "all")
                     assertEquals(StreamState.RECOVERING, core.snapshot().deviceLog.state)
                     Files.delete(root.resolve("fail-main"))
@@ -659,6 +672,22 @@ elif len(a)>3 and a[3]=='ps':
                     if (logReaderStartupDelayMillis > 0) assertTrue(Files.exists(root.resolve("reader-delay-applied")))
                     emit("recovered")
                     sent("all", "recovered")
+                }
+                val beforeEof = core.snapshot().deviceLog.gaps
+                val originalGaps = failures.map { failure ->
+                    beforeEof.single { it.toNs != null && it == failure.copy(toNs = it.toNs) }
+                }
+                assertEquals(if (logMode == "partition") 3 else 0, originalGaps.distinct().size)
+                val launchesBeforeEof = readers.keys.associateWith { buffer ->
+                    logLaunches(root).count { it.startsWith("$buffer ") }
+                }
+                readers.keys.forEach { Files.createFile(root.resolve("eof-$it")) }
+                // A replacement starts only after the old reader processed every flushed record and reached EOF.
+                // Count launch markers, not distinct PIDs: Windows can immediately reuse a finished process's PID.
+                awaitState("partition-records-drained") {
+                    launchesBeforeEof.all { (buffer, count) ->
+                        logLaunches(root).count { it.startsWith("$buffer ") } > count
+                    }
                 }
                 // A subsequent supported clock sample maps all returned fixture records.
                 awaitLaterClockSample("clock-after-partition-records")
@@ -678,7 +707,7 @@ elif len(a)>3 and a[3]=='ps':
                         label == "main-partial" -> listOf(1, 3)
                         else -> listOf(0, 1, 3)
                     }
-                    assertEquals(lids, actual.map { it["lid"].asInt }.sorted())
+                    assertEquals(lids, actual.map { it["lid"].asInt }.sorted(), "mode=$logMode label=$label")
                     assertEquals(actual.size, actual.map { it["record_id"].asString }.toSet().size)
                     actual.forEach { row ->
                         val id = row["record_id"].asString
@@ -691,6 +720,20 @@ elif len(a)>3 and a[3]=='ps':
                 val binary = deviceRows.filter { it["lid"].asInt == 2 }
                 assertEquals(if (logMode == "legacy") 0 else if (logMode == "partition") 3 else 1, binary.size)
                 assertTrue(binary.all { it["decode_status"].asString == "binary" && !it["app_membership"].asBoolean })
+                val manifest = JsonParser.parseString(Files.readString(saved.save.directory.resolve("replay.json"))).asJsonObject
+                val savedGaps = manifest["gaps"].asJsonArray.map { it.asJsonObject }
+                val start = assertNotNull(saved.save.windowStartNs)
+                originalGaps.forEach { gap ->
+                    val matches = savedGaps.filter {
+                        it["kind"].asString == gap.stream && it["reason"].asString == gap.reason &&
+                            it["generation"].asLong == gap.generation &&
+                            it["from_t_ns"].takeUnless { it.isJsonNull }?.asString == gap.fromNs?.let { (it - start).toString() }
+                    }
+                    assertEquals(1, matches.size, "元の部分失敗gap: $gap")
+                    val actual = matches.single()
+                    assertEquals(gap.toNs?.let { (it - start).toString() }, actual["to_t_ns"].takeUnless { it.isJsonNull }?.asString)
+                    assertEquals(gap.boundaryUncertaintyNs?.toString(), actual["boundary_uncertainty_ns"].takeUnless { it.isJsonNull }?.asString)
+                }
                 val launches = logLaunches(root).map { it.substringBefore(' ') }
                 if (logMode == "partition") assertTrue(launches.count { it == "main" } >= 2)
                 else assertEquals(0, launches.count { it == "main" })
