@@ -10,6 +10,8 @@ import com.intellij.openapi.project.ProjectManager
 import com.intellij.openapi.project.ProjectManagerListener
 import com.intellij.openapi.wm.ToolWindowManager
 import com.intellij.openapi.wm.WindowManager
+import com.intellij.util.messages.MessageBusConnection
+import com.intellij.util.messages.Topic
 import io.github.shinma06.replaybuffer.core.HostPlatform
 import io.github.shinma06.replaybuffer.core.SavePhase
 import io.github.shinma06.replaybuffer.core.SaveRequest
@@ -29,6 +31,10 @@ import javax.swing.SwingUtilities
 
 private val RESULT_TIME: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm:ss", Locale.ROOT)
 private const val TOOL_WINDOW_ID = "Android Replay Buffer"
+
+internal fun interface MenuBarAvailabilityListener {
+    fun changed(reason: String?)
+}
 
 /**
  * Application-level owner of the tray icon: it aggregates every open project, rebuilds the shared menu on the EDT,
@@ -64,17 +70,17 @@ class ReplayMenuBarService : Disposable {
     private fun track(project: Project) = onEdt {
         if (disposed || project.isDisposed || projects.containsKey(project)) return@onEdt
         val refresh = Runnable { refresh() }
-        project.messageBus.connect(project).apply {
+        val connection = project.messageBus.connect(this).apply {
             subscribe(ReplayProjectService.ENVIRONMENT_CHANGED, refresh)
             subscribe(ReplaySettingsStore.CHANGED, refresh)
         }
-        projects[project] = ProjectMenu(project, ::refresh)
+        projects[project] = ProjectMenu(project, ::refresh, connection)
         refresh()
     }
 
     private fun untrack(project: Project) = onEdt {
         if (disposed) return@onEdt
-        projects.remove(project)
+        projects.remove(project)?.close()
         refresh()
     }
 
@@ -91,11 +97,13 @@ class ReplayMenuBarService : Disposable {
         presenter.update(store.showInMenuBar, inputs) { item ->
             projects.values.firstOrNull { it.projectId == item.projectId }?.let(item::run)
         }
+        ApplicationManager.getApplication().messageBus.syncPublisher(AVAILABILITY_CHANGED).changed(availabilityReason())
     }
 
     override fun dispose() {
         disposed = true
         onEdt {
+            projects.values.forEach { it.close() }
             projects.clear()
             presenter.close()
         }
@@ -103,6 +111,11 @@ class ReplayMenuBarService : Disposable {
 
     private fun onEdt(action: () -> Unit) {
         if (SwingUtilities.isEventDispatchThread()) action() else SwingUtilities.invokeLater(action)
+    }
+
+    companion object {
+        internal val AVAILABILITY_CHANGED: Topic<MenuBarAvailabilityListener> =
+            Topic.create("Android Replay Buffer menu bar availability changed", MenuBarAvailabilityListener::class.java)
     }
 }
 
@@ -112,7 +125,8 @@ class ReplayMenuBarService : Disposable {
 private class ProjectMenu(
     private val project: Project,
     private val changed: () -> Unit,
-) : MenuBarOperations {
+    private val connection: MessageBusConnection,
+) : MenuBarOperations, AutoCloseable {
     private val service = project.getService(ReplayProjectService::class.java)
     private val settings = project.getService(ReplaySettingsStore::class.java)
     private var savedKey: Pair<String?, Long>? = null
@@ -122,6 +136,8 @@ private class ProjectMenu(
 
     val projectId: String get() = project.basePath ?: project.name
     val alive: Boolean get() = !project.isDisposed
+
+    override fun close() = connection.disconnect()
 
     fun input(): MenuProjectInput {
         val view = service.captureView

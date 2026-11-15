@@ -44,6 +44,7 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.vfs.LocalFileSystem
 import io.github.shinma06.replaybuffer.cli.ReplayCliRegistry
+import io.github.shinma06.replaybuffer.menubar.MenuBarAvailabilityListener
 import io.github.shinma06.replaybuffer.core.CaptureMode
 import io.github.shinma06.replaybuffer.core.TapDisplay
 import io.github.shinma06.replaybuffer.core.VideoQuality
@@ -205,6 +206,12 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable, C
         project.messageBus.connect(lifetime).subscribe(ReplayProjectService.ENVIRONMENT_CHANGED, Runnable {
             ApplicationManager.getApplication().invokeLater({
                 if (uiLifetime === lifetime && !project.isDisposed) renderApplication()
+            }, ModalityState.any())
+        })
+        val application = ApplicationManager.getApplication()
+        application.messageBus.connect(lifetime).subscribe(ReplayMenuBarService.AVAILABILITY_CHANGED, MenuBarAvailabilityListener { reason ->
+            application.invokeLater({
+                if (uiLifetime === lifetime && !project.isDisposed) created.menuBarReason = reason
             }, ModalityState.any())
         })
         checkDestination()
