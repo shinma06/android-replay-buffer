@@ -76,6 +76,8 @@ replay frame replay-20261111-140312-manual-a1b2c3d4 --at 12.3
 - `frame`のPNGはスクリーンショットと同じ保存先で、テキストmetadataに`arb:source_save_id`（読み出した`replay.json`の`save_id`）・`arb:source_folder`（現在のフォルダ名）・`arb:movie_us`（指定した動画内時刻）・`arb:frame_movie_us`（表示frameの開始位置）を持ちます。`arb:t_ns`・`arb:display_t_ns`は既知の場合だけ記録します。フォルダを改名しても元IDは変えず、trim派生フォルダではそのフォルダ自身のID・frame時刻を使います。`save_id`が欠落・不正（文字列でない・空白だけ・制御文字を含む・PNGのtEXtに保持できない文字を含む）ならPNG作成前に拒否し、パスなどからIDを補いません。GUI／MCPも同じ処理です。Latin-1で表せる値は従来と同じ`tEXt` bytes、それ以外の日本語・emoji等のフォルダ名は非圧縮UTF-8の`iTXt`で保持します（キーは共通、CLI引数・成功stdout・exit codeは不変）。[PNG公式仕様](https://www.w3.org/TR/png-3/#11iTXt)に従い、`iTXt`の言語タグ・翻訳キーワードは空です。
 - フォルダは絶対パスのほか、対象projectを基点とした相対パスでも指定できます。
 
+`frame`の保存失敗は終了コード1で、具体的な理由と、保全した出力がある場合はそのパスをstderrへ返します。失敗stdoutは空です。MCPの`export_frame`も同じ理由・保全先を既存のエラー結果で返します。
+
 `trim`は実際に残るframe境界へ範囲を合わせて事前確認します。時計対応が不明な表示frameを含む場合は、出力作成前に警告をstderrへ出してから処理し、不確かな時刻のログは保守的に残します。成功stdoutは従来どおり新フォルダのパスだけです。事前確認後に元の記録が変わった場合は出力作成前に拒否し、自動再試行しません。GUIも同じ判定で処理前に通知します。
 
 ### 設定の読み書き

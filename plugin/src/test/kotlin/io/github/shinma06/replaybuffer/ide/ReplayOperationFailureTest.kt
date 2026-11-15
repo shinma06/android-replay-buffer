@@ -14,6 +14,16 @@ class ReplayOperationFailureTest {
     private val escaped = retained.toString().replace("&", "&amp;")
 
     @Test
+    fun screenshotCliFailureKeepsTheReasonAndRetainedPathWithoutChangingResponseShape() {
+        val response = screenshotCliFailure(ScreenshotSaveFailure("静止画の保存に失敗しました。", retained))
+        assertEquals(1, response.code)
+        assertEquals("", response.output)
+        assertEquals("静止画の保存に失敗しました。\n保全した出力: $retained", response.error)
+        assertEquals("失敗", screenshotCliFailure(ScreenshotSaveFailure("失敗")).error)
+        assertEquals("スクリーンショットを保存できません。", screenshotCliFailure(null).error)
+    }
+
+    @Test
     fun trimFailureIncludesTheRetainedPathWithHtmlEscaping() {
         val cause = SaveFailure(retained, "容量不足 <full> & 書込失敗")
         for (failure in listOf(cause, CompletionException(cause))) {

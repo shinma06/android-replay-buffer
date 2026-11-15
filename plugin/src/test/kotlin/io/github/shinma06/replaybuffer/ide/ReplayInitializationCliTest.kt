@@ -18,6 +18,8 @@ import io.github.shinma06.replaybuffer.cli.CliRequest
 import io.github.shinma06.replaybuffer.cli.CliResponse
 import io.github.shinma06.replaybuffer.cli.ReplayCli
 import io.github.shinma06.replaybuffer.cli.ReplayCliServer
+import io.github.shinma06.replaybuffer.cli.ReplayMcpServer
+import io.github.shinma06.replaybuffer.cli.McpJson
 import io.github.shinma06.replaybuffer.core.CaptureMode
 import io.github.shinma06.replaybuffer.settings.ReplaySettingsState
 import io.github.shinma06.replaybuffer.settings.ReplaySettingsStore
@@ -97,6 +99,7 @@ class ReplayInitializationCliTest {
                     val code = ReplayCli.run(listOf("--project", projectPath.toString(), command) + arguments,
                         PrintStream(output), PrintStream(error), registry) { "build" }
                     assertEquals(expected, code, error.toString())
+                    if (expected != 0) assertEquals("", output.toString(), "failure stdout is empty")
                     return (if (expected == 0) output else error).toString().trim()
                 }
                 fun status() = JsonParser.parseString(cli("status", 0)).asJsonObject
@@ -150,6 +153,28 @@ class ReplayInitializationCliTest {
                     assertTrue(Files.isRegularFile(source.resolve("replay.json")))
                 }
                 assertTrue(cli("trim", 1, source.toString(), "--from", "0", "--to", "999").contains("切り取り範囲"))
+                val beforeFrame = Files.list(source).use { paths -> paths.toList().associate { it.fileName.toString() to Files.readAllBytes(it).toList() } }
+                val frameDestination = Files.createDirectory(projectPath.resolve("frames"))
+                store.loadState(store.state.copy(screenshotUsesLogcatDestination = false, screenshotDirectory = frameDestination.toString()))
+                Files.delete(frameDestination)
+                val frameFailure = cli("frame", 1, source.toString(), "--at", "0.2")
+                assertEquals("保存先フォルダを確認できません。設定の保存先・アクセス権を確認してください。", frameFailure)
+                val mcpOutput = ByteArrayOutputStream()
+                val messages = listOf(
+                    """{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}""",
+                    McpJson.write(mapOf("jsonrpc" to "2.0", "id" to 1, "method" to "tools/call", "params" to mapOf(
+                        "name" to "export_frame", "arguments" to mapOf("folder" to source.toString(), "at_seconds" to 0.2)))),
+                )
+                assertEquals(0, ReplayMcpServer(messages.joinToString("\n", postfix = "\n").byteInputStream(), mcpOutput,
+                    PrintStream(ByteArrayOutputStream()), projectPath, registry, { "build" }).run())
+                val frameResult = mcpOutput.toString(Charsets.UTF_8).lineSequence().filter(String::isNotEmpty)
+                    .map { JsonParser.parseString(it).asJsonObject }.single { it["id"]?.asInt == 1 }["result"].asJsonObject
+                assertTrue(frameResult["isError"].asBoolean)
+                val failureText = frameResult["content"].asJsonArray.single().asJsonObject["text"].asString
+                assertEquals("$frameFailure\n(exit code 1)", failureText)
+                assertTrue(failureText.contains("(exit code 1)"), failureText)
+                assertFalse(frameResult.has("structuredContent"))
+                assertEquals(beforeFrame, Files.list(source).use { paths -> paths.toList().associate { it.fileName.toString() to Files.readAllBytes(it).toList() } })
                 Files.writeString(source.resolve("touches.jsonl"), "broken", java.nio.file.StandardOpenOption.APPEND)
                 assertTrue(cli("trim", 1, source.toString(), "--from", "0", "--to", "1").contains("変更されています: touches.jsonl"))
                 server.close()

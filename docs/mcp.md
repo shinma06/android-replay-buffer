@@ -69,6 +69,8 @@ Devin: 設定のMCP Marketplaceで「Add your own」からstdioサーバーを�
 
 失敗はtool結果の`isError: true`で返し、textの末尾にCLIと同じ終了コードを付けます。
 
+`export_frame`の保存失敗は、CLIの`frame`と同じ具体的な理由と、保全した出力がある場合はそのパスを返します（`exit code 1`）。成功時の`path`や画像・公開結果形式は変更しません。
+
 - `exit code 2`: 引数・設定の誤り。内容を直して再実行できます。
 - `exit code 1`: 操作の失敗または結果不明。保存は自動retryせず、`get_status`と保存先を確認してから判断してください。
 

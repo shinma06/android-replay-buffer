@@ -432,9 +432,7 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
                 val saved = try {
                     screenshot().get((deadline - System.nanoTime()).coerceAtLeast(1), TimeUnit.NANOSECONDS)
                 } catch (failure: ExecutionException) {
-                    val cause = failure.cause
-                    return CliResponse(1, error = listOfNotNull(cause?.message ?: "スクリーンショットを保存できません。",
-                        (cause as? ScreenshotSaveFailure)?.retained?.let { "保全した出力: $it" }).joinToString("\n"))
+                    return screenshotCliFailure(failure.cause)
                 }
                 return CliResponse(0, saved.file.toString())
             }
@@ -484,6 +482,8 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
             return cliSaveResponse(operation.requestId, checkNotNull(operation.saveResult), deadline)
         } catch (_: TimeoutException) {
             return CliResponse(1, error = "操作結果の待機が時間切れになりました${requestId?.let { "（request: $it）" }.orEmpty()}。GUIの状態・保存結果を確認してください。自動再試行はしません。")
+        } catch (failure: ScreenshotSaveFailure) {
+            return screenshotCliFailure(failure)
         } catch (failure: SaveFailure) {
             return CliResponse(1, error = listOfNotNull(failure.message ?: "切り取った動画を保存できません。",
                 failure.partial?.let { "保全した出力: $it" }).joinToString("\n"))
@@ -771,6 +771,11 @@ internal fun <T> queueReplaySave(project: Project, title: String, done: Completa
         done.completeExceptionally(failure)
     }
 }
+
+internal fun screenshotCliFailure(cause: Throwable?): CliResponse = CliResponse(1, error = listOfNotNull(
+    cause?.message ?: "スクリーンショットを保存できません。",
+    (cause as? ScreenshotSaveFailure)?.retained?.let { "保全した出力: $it" },
+).joinToString("\n"))
 
 internal fun operationFailureContent(failure: Throwable): String {
     val cause = (failure as? java.util.concurrent.CompletionException)?.cause ?: failure

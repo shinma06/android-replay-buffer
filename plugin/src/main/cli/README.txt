@@ -44,6 +44,7 @@ GUIも同じ事前確認で通知します。元の記録が事前確認後に�
 MCPのtrim_replayは作成要求前に標準loggingのwarning通知を送ります（既存引数・結果形式は不変）。
 logging/setLevelでerror以上を指定すると抑制され、クライアント側の表示・追加フィルタまでは保証しません。
 frameは指定秒に表示されていた1コマをスクショ先へframe-XXXX-ID.pngで保存し、パスだけを返します。
+保存失敗は終了コード1で、理由と保全した出力がある場合はそのパスをstderrへ返します。失敗stdoutは空です。
 PNGのテキストmetadataにarb:source_save_id（直に読み出したreplay.jsonのsave_id）とarb:source_folder（現在のフォルダ名）、
 arb:movie_us（指定した動画内時刻）・arb:frame_movie_us（表示frameの開始位置）を記録します。
 Latin-1で表せる値は従来のtEXt、それ以外の日本語・emoji等のフォルダ名は非圧縮UTF-8のiTXtで保持します（キーは共通）。
