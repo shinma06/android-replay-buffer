@@ -194,6 +194,7 @@ internal fun projectEntries(input: MenuProjectInput): List<MenuEntry> = buildLis
 internal fun menuBarModel(projects: List<MenuProjectInput>): MenuBarMenu {
     val statuses = projects.map(::projectStatus)
     val icon = statuses.minOf { it.icon }
+    val nameCounts = projects.groupingBy { it.name }.eachCount()
     val entries = buildList {
         if (projects.size == 1) {
             val input = projects.single()
@@ -204,7 +205,8 @@ internal fun menuBarModel(projects: List<MenuProjectInput>): MenuBarMenu {
             add(MenuEntry.Separator)
             projects.forEach { input ->
                 val status = projectStatus(input)
-                add(MenuEntry.Submenu("${input.name} ${status.icon.symbol} ${status.icon.shortLabel}", projectEntries(input)))
+                val name = if (nameCounts.getValue(input.name) > 1) "${input.name} — ${input.projectId}" else input.name
+                add(MenuEntry.Submenu("$name ${status.icon.symbol} ${status.icon.shortLabel}", projectEntries(input)))
             }
         }
     }

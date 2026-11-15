@@ -241,6 +241,39 @@ class MenuBarModelTest {
     }
 
     @Test
+    fun `same named projects show their locations without changing command targets`() {
+        listOf(
+            "/work/一/MyApp" to "/work/二/MyApp",
+            """C:\work\一\MyApp""" to """D:\work\二\MyApp""",
+        ).forEach { (firstId, secondId) ->
+            val inputs = listOf(
+                input(snapshot()).copy(projectId = firstId),
+                input(snapshot()).copy(projectId = secondId),
+                input(snapshot(), name = "Other").copy(projectId = "/work/Other"),
+            )
+            val submenus = menuBarModel(inputs).entries.filterIsInstance<MenuEntry.Submenu>()
+            assertEquals(listOf(
+                "MyApp — $firstId ● 取得中", "MyApp — $secondId ● 取得中", "Other ● 取得中",
+            ), submenus.map { it.title })
+            submenus.zip(inputs).forEach { (submenu, input) ->
+                assertTrue(items(submenu.entries).filter { it.command != null }.all { it.projectId == input.projectId })
+            }
+        }
+    }
+
+    @Test
+    fun `unique project names keep their existing titles after a namesake closes`() {
+        val first = input(snapshot()).copy(projectId = "/work/一/MyApp")
+        val other = input(snapshot(), name = "Other").copy(projectId = "/work/Other")
+        val duplicate = menuBarModel(listOf(first, first.copy(projectId = "/work/二/MyApp"), other))
+        assertEquals("MyApp — /work/一/MyApp ● 取得中", duplicate.entries.filterIsInstance<MenuEntry.Submenu>().first().title)
+        val submenus = menuBarModel(listOf(first, other)).entries.filterIsInstance<MenuEntry.Submenu>()
+        assertEquals(listOf("MyApp ● 取得中", "Other ● 取得中"), submenus.map { it.title })
+        val single = menuBarModel(listOf(first))
+        assertEquals("Android Replay Buffer — MyApp", items(single.entries).first().label)
+    }
+
+    @Test
     fun `menu commands only reach the existing operations`() {
         val ops = FakeOps()
         item(menuBarModel(listOf(input(snapshot()))), "直前").run(ops)

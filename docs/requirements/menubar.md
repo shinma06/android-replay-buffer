@@ -176,7 +176,7 @@ AppleはメニューバーにはPopoverより通常のメニューを推奨し�
 | Android Studioが閉じている | アイコンを出さない | 操作できる対象がない |
 | 開いているprojectがない（Welcome画面だけ） | アイコンを出さない（または「projectを開いてください」だけ）。どちらにするかは実装時に統一 | Running Devicesのボタンも「projectを開いてください。」と出す（`ui/RunningDevicesActions.kt`） |
 | projectが1つ | 2.6のメニューをそのまま出す | 対象は1つで迷いがない |
-| 同じIDEでprojectが複数（windowが複数） | projectごとのサブメニュー（`MyApp ● 取得中 ▸`）を並べ、中に同じ操作を置く。アイコンは最も優先の高い状態 | CLIは前面のwindowから推測しない（`docs/cli.md`）。メニューでも前面windowや「最後に触ったproject」で推測せず、利用者がproject名を見て選ぶ。MCPの`list_projects`と同じ考え方（確定D7） |
+| 同じIDEでprojectが複数（windowが複数） | projectごとのサブメニュー（`MyApp ● 取得中 ▸`）を並べ、中に同じ操作を置く。同名のprojectだけは保存場所も併記して区別する。アイコンは最も優先の高い状態 | CLIは前面のwindowから推測しない（`docs/cli.md`）。メニューでも前面windowや「最後に触ったproject」で推測せず、利用者がproject名を見て選ぶ。MCPの`list_projects`と同じ考え方（確定D7） |
 | 別のIDEプロセス（正式版とPreviewなど）で別のprojectを開いている | IDEプロセスごとにアイコンが出る。各アイコンは自分のIDEのprojectだけを操作する | Java標準の`SystemTray`はアプリ（プロセス）ごとに1つ（[SystemTray](https://docs.oracle.com/en/java/javase/25/docs/api/java.desktop/java/awt/SystemTray.html)）。ほかのプロセスのprojectを操作するにはBが必要 |
 | 同じprojectを複数のIDEで開いている | 各IDEのアイコンは自分のIDEのprojectを操作する。取得は各IDEで独立なので、それぞれの状態を出す | CLIはこの状態を「対象が複数」として拒否する（`cli/ReplayCliEndpoint.kt` の `select`）。メニューはIDEの中にあるので対象は一意。ただし2つのアイコンが同じproject名になるので、見出しにIDE名を添える |
 
