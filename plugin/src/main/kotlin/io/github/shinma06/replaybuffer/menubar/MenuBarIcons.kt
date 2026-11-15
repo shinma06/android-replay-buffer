@@ -14,18 +14,20 @@ import kotlin.math.sin
 private const val ICON_SIZE = 64
 private const val CENTER = ICON_SIZE / 2f
 
-/**
- * Template-style glyphs drawn only from solid ink: on macOS they can be recolored as template images, and the white
- * halo keeps every shape readable on both light and dark backgrounds when the template treatment is not applied.
- */
-internal fun menuBarIconImage(icon: MenuBarIcon): BufferedImage {
+internal fun menuBarIconImage(icon: MenuBarIcon): BufferedImage = drawIcon(icon, halo = true)
+
+internal fun menuBarTemplateIconImage(icon: MenuBarIcon): BufferedImage = drawIcon(icon, halo = false)
+
+private fun drawIcon(icon: MenuBarIcon, halo: Boolean): BufferedImage {
     val image = BufferedImage(ICON_SIZE, ICON_SIZE, BufferedImage.TYPE_INT_ARGB)
     val g = image.createGraphics()
     g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
     val ink = iconShape(icon)
-    g.color = Color.WHITE
-    g.stroke = BasicStroke(6f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND)
-    g.draw(ink)
+    if (halo) {
+        g.color = Color.WHITE
+        g.stroke = BasicStroke(6f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND)
+        g.draw(ink)
+    }
     g.color = Color.BLACK
     g.fill(ink)
     g.dispose()

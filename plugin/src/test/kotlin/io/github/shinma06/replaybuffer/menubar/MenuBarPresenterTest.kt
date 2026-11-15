@@ -22,6 +22,22 @@ import org.junit.jupiter.api.Test
 
 class MenuBarPresenterTest {
     @Test
+    fun `template icons use only ink alpha and never include the opaque fallback halo`() {
+        val masks = MenuBarIcon.entries.map { icon ->
+            val template = menuBarTemplateIconImage(icon)
+            val fallback = menuBarIconImage(icon)
+            val pixels = (0 until template.height).flatMap { y -> (0 until template.width).map { x -> template.getRGB(x, y) } }
+            assertTrue(pixels.any { it ushr 24 != 0 })
+            assertTrue(pixels.all { it and 0xFFFFFF == 0 }, "Templates must not merge opaque white halo into the glyph")
+            assertTrue((0 until template.height).any { y -> (0 until template.width).any { x ->
+                fallback.getRGB(x, y) ushr 24 > template.getRGB(x, y) ushr 24
+            } })
+            pixels.map { it ushr 24 }
+        }
+        assertEquals(MenuBarIcon.entries.size, masks.distinct().size)
+    }
+
+    @Test
     fun `an unchanged presentation leaves the native menu intact and uses the latest dispatcher`() {
         val surface = FakeSurface()
         val presenter = MenuBarPresenter(surface)

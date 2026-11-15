@@ -12,17 +12,13 @@ import java.awt.event.ItemEvent
 
 /**
  * The shared AWT destination: macOS menu bar, Windows notification area and Linux tray all come through the same
- * java.awt.SystemTray API. [templateImages] asks JBR to treat the icon as a macOS template image; it is set before the
- * first TrayIcon so JBR can pick it up, and the drawn glyphs stay readable on either theme when it is ignored.
+ * java.awt.SystemTray API. Template images are used only when enabled before this surface is created; otherwise
+ * the halo-backed image stays readable without relying on a late change to a JBR startup property.
  */
 internal class AwtTraySurface(templateImages: Boolean = false) : TraySurface {
     private var tray: SystemTray? = null
     private var icon: TrayIcon? = null
-
-    init {
-        if (templateImages && System.getProperty("apple.awt.enableTemplateImages") == null)
-            System.setProperty("apple.awt.enableTemplateImages", "true")
-    }
+    private val useTemplateImages = templateImages && java.lang.Boolean.getBoolean("apple.awt.enableTemplateImages")
 
     override fun unavailableReason(): String? = when {
         GraphicsEnvironment.isHeadless() -> "画面のない環境では、メニューバー（通知領域・トレイ）アイコンを表示できません。"
@@ -33,13 +29,14 @@ internal class AwtTraySurface(templateImages: Boolean = false) : TraySurface {
     override fun show(image: Image, tooltip: String, menu: MenuBarMenu, dispatch: MenuDispatch): String? {
         unavailableReason()?.let { return it }
         return try {
+            val rendered = if (useTemplateImages) menuBarTemplateIconImage(menu.icon) else image
             val systemTray = tray ?: SystemTray.getSystemTray().also { tray = it }
-            val current = icon ?: TrayIcon(image, tooltip).also { created ->
+            val current = icon ?: TrayIcon(rendered, tooltip).also { created ->
                 created.isImageAutoSize = true
                 systemTray.add(created)
                 icon = created
             }
-            current.setImage(image)
+            current.setImage(rendered)
             current.toolTip = tooltip
             current.popupMenu = menu.toPopupMenu(dispatch)
             null
