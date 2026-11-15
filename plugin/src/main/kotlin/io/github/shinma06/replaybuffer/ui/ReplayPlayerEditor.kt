@@ -3,6 +3,7 @@ package io.github.shinma06.replaybuffer.ui
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -32,6 +33,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.DpSize
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.fileEditor.FileEditor
 import com.intellij.openapi.fileEditor.FileEditorLocation
@@ -43,7 +45,6 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.util.UserDataHolderBase
 import com.intellij.openapi.vfs.VirtualFile
-import io.github.shinma06.replaybuffer.core.ReplayFiles
 import io.github.shinma06.replaybuffer.core.ReplayFrameCursor
 import io.github.shinma06.replaybuffer.core.ReplayFrameExport
 import io.github.shinma06.replaybuffer.core.ReplayTimeline
@@ -54,6 +55,10 @@ import org.jetbrains.jewel.foundation.theme.JewelTheme
 import org.jetbrains.jewel.ui.component.DefaultButton
 import org.jetbrains.jewel.ui.component.OutlinedButton
 import org.jetbrains.jewel.ui.component.Text
+import org.jetbrains.jewel.ui.component.styling.ButtonMetrics
+import org.jetbrains.jewel.ui.component.styling.ButtonStyle
+import org.jetbrains.jewel.ui.theme.defaultButtonStyle
+import org.jetbrains.jewel.ui.theme.outlinedButtonStyle
 import java.awt.BorderLayout
 import java.awt.RenderingHints
 import java.awt.image.BufferedImage
@@ -68,8 +73,7 @@ import javax.swing.SwingUtilities
 
 /** Opens a completed save's video.mp4 in the replay player instead of a default editor. */
 internal class ReplayPlayerEditorProvider : FileEditorProvider, DumbAware {
-    override fun accept(project: Project, file: VirtualFile): Boolean = file.name == ReplayFiles.VIDEO &&
-        file.parent?.let { it.findChild(ReplayFiles.RECORD) != null && it.findChild(ReplayFiles.VIDEO_FRAMES) != null } == true
+    override fun accept(project: Project, file: VirtualFile): Boolean = isReplayVideo(file)
 
     override fun createEditor(project: Project, file: VirtualFile): FileEditor = ReplayPlayerEditor(project, file)
 
@@ -493,9 +497,22 @@ internal fun ReplayPlayerContent(controller: ReplayPlayerController) {
             bar = controller.barModel(),
             actions = controller,
             modifier = Modifier.fillMaxWidth().weight(1f),
-        ) { spec, modifier, onClick ->
-            if (spec.accent) DefaultButton(onClick, enabled = spec.enabled, modifier = modifier) { Text(spec.label, maxLines = 1, softWrap = false) }
-            else OutlinedButton(onClick, enabled = spec.enabled, modifier = modifier) { Text(spec.label, maxLines = 1, softWrap = false) }
+        ) { spec, modifier, compact, onClick ->
+            val normal = if (spec.accent) JewelTheme.defaultButtonStyle else JewelTheme.outlinedButtonStyle
+            val style = if (compact) remember(normal) {
+                ButtonStyle(normal.colors, compactPlayerButtonMetrics(normal.metrics), normal.focusOutlineAlignment)
+            } else normal
+            if (spec.accent) DefaultButton(onClick, enabled = spec.enabled, modifier = modifier, style = style) { Text(spec.label, maxLines = 1, softWrap = false) }
+            else OutlinedButton(onClick, enabled = spec.enabled, modifier = modifier, style = style) { Text(spec.label, maxLines = 1, softWrap = false) }
         }
     }
 }
+
+internal fun compactPlayerButtonMetrics(metrics: ButtonMetrics) = ButtonMetrics(
+    cornerSize = metrics.cornerSize,
+    padding = PaddingValues(start = 4.dp, top = metrics.padding.calculateTopPadding(),
+        end = 4.dp, bottom = metrics.padding.calculateBottomPadding()),
+    minSize = DpSize(40.dp, metrics.minSize.height),
+    borderWidth = metrics.borderWidth,
+    focusOutlineExpand = metrics.focusOutlineExpand,
+)

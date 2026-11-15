@@ -33,6 +33,7 @@ import androidx.compose.ui.unit.dp
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ApplicationInfo
 import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.application.ModalityState
 import com.intellij.openapi.fileChooser.FileChooser
 import com.intellij.openapi.fileChooser.FileChooserDescriptorFactory
 import com.intellij.openapi.options.ShowSettingsUtil
@@ -254,9 +255,10 @@ internal class ReplayToolWindowController(private val project: Project) : Dispos
     fun openVideo(directory: Path) { if (alive) service.openReplayVideo(directory) }
 
     fun openSavedVideo() {
-        if (!alive) return
-        FileChooser.chooseFile(FileChooserDescriptorFactory.createSingleFolderDescriptor(), project, null) { selected ->
-            if (alive) service.openReplayVideo(selected.toNioPath())
+        replayUiAction(project, { alive }) {
+            FileChooser.chooseFile(FileChooserDescriptorFactory.createSingleFolderDescriptor(), project, null) { selected ->
+                if (alive) service.openReplayVideo(selected.toNioPath())
+            }
         }
     }
 
@@ -269,17 +271,25 @@ internal class ReplayToolWindowController(private val project: Project) : Dispos
     fun retryElsewhere() {
         val id = if (alive) failedId() else null
         id ?: return
-        FileChooser.chooseFile(FileChooserDescriptorFactory.createSingleFolderDescriptor(), project, null) { selected ->
-            if (!alive) return@chooseFile
-            val path = selected.toNioPath()
-            val answer = Messages.showYesNoDialog(project,
-                "この保存先で、固定した保存対象を再試行します。\n$path\n\n通常設定の保存先は変更しません。",
-                "保存先を変更して再試行", "適用して再試行", "キャンセル", Messages.getQuestionIcon())
-            if (alive && answer == Messages.YES) service.retryAtDirectory(id, path)
+        replayUiAction(project, { alive }) {
+            FileChooser.chooseFile(FileChooserDescriptorFactory.createSingleFolderDescriptor(), project, null) { selected ->
+                if (!alive) return@chooseFile
+                val path = selected.toNioPath()
+                val answer = Messages.showYesNoDialog(project,
+                    "この保存先で、固定した保存対象を再試行します。\n$path\n\n通常設定の保存先は変更しません。",
+                    "保存先を変更して再試行", "適用して再試行", "キャンセル", Messages.getQuestionIcon())
+                if (alive && answer == Messages.YES) service.retryAtDirectory(id, path)
+            }
         }
     }
 
     override fun dispose() { disposed = true }
+}
+
+internal fun replayUiAction(project: Project, alive: () -> Boolean, action: () -> Unit) {
+    ApplicationManager.getApplication().invokeLater({
+        if (alive() && !project.isDisposed) action()
+    }, ModalityState.nonModal())
 }
 
 private val OK_COLOR = JBColor(java.awt.Color(0x1F7A33), java.awt.Color(0x5FB865))

@@ -116,7 +116,7 @@ internal fun PlayerSurface(
     bar: PlayerBarModel,
     actions: PlayerBarActions,
     modifier: Modifier = Modifier,
-    buttonContent: @Composable (ButtonSpec, Modifier, () -> Unit) -> Unit,
+    buttonContent: @Composable (ButtonSpec, Modifier, Boolean, () -> Unit) -> Unit,
 ) {
     BoxWithConstraints(modifier.background(palette.videoBackground)) {
         val layout = controlLayout(maxWidth.value)
@@ -141,7 +141,7 @@ internal fun PlayerSurface(
                     Spacer(Modifier.width(12.dp))
                     Column(Modifier.width(IntrinsicSize.Max), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         bar.buttons.forEach { spec ->
-                            buttonContent(spec, Modifier.fillMaxWidth().semantics { contentDescription = spec.label }) { actions.button(spec.id) }
+                            buttonContent(spec, Modifier.fillMaxWidth().semantics { contentDescription = spec.label }, false) { actions.button(spec.id) }
                         }
                     }
                 }
@@ -149,7 +149,7 @@ internal fun PlayerSurface(
             if (layout == ControlLayout.ROW) {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End)) {
                     rowOrder(bar.buttons).forEach { spec ->
-                        buttonContent(spec, Modifier.semantics { contentDescription = spec.label }) { actions.button(spec.id) }
+                        buttonContent(spec, Modifier.semantics { contentDescription = spec.label }, true) { actions.button(spec.id) }
                     }
                 }
             }
