@@ -91,10 +91,10 @@ class ReplayInitializationCliTest {
         try {
             assertEquals(!unsafe, capture.applySettings(store.settings(), environment, 0).get(15, TimeUnit.SECONDS).accepted)
             ReplayCliServer(registry, projectPath, "build") { handler.invoke(service, it) as CliResponse }.use { server ->
-                fun cli(command: String, expected: Int): String {
+                fun cli(command: String, expected: Int, vararg arguments: String): String {
                     val output = ByteArrayOutputStream()
                     val error = ByteArrayOutputStream()
-                    val code = ReplayCli.run(listOf("--project", projectPath.toString(), command),
+                    val code = ReplayCli.run(listOf("--project", projectPath.toString(), command) + arguments,
                         PrintStream(output), PrintStream(error), registry) { "build" }
                     assertEquals(expected, code, error.toString())
                     return (if (expected == 0) output else error).toString().trim()
@@ -138,6 +138,17 @@ class ReplayInitializationCliTest {
                 assertTrue(settingsCli(2, "set", "unknown=1").contains("unknown"))
                 assertTrue(settingsCli(2, "set", "replay_seconds=901").isNotEmpty())
                 assertEquals(83, JsonParser.parseString(settingsCli(0)).asJsonObject["replay_seconds"].asInt)
+                val fixture = "replay-20240101-000000-manual-feedface"
+                val source = Files.createDirectory(projectPath.resolve(fixture))
+                for (name in listOf("README.md", "replay.json", "video.mp4", "video-source.h264", "video-frames.jsonl",
+                    "logcat-device.jsonl", "logcat-app.jsonl", "touches.jsonl")) {
+                    javaClass.getResourceAsStream("/replay-trim-parity/$fixture/$name")!!.use { Files.copy(it, source.resolve(name)) }
+                }
+                for (folder in listOf("./$fixture", "../project/$fixture", source.resolve(".").toString())) {
+                    val output = Path.of(cli("trim", 0, folder, "--from", "0.200001", "--to", "1.900001"))
+                    assertTrue(Files.isRegularFile(output.resolve("replay.json")))
+                    assertTrue(Files.isRegularFile(source.resolve("replay.json")))
+                }
                 server.close()
                 server.termination.get(5, TimeUnit.SECONDS)
             }

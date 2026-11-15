@@ -139,7 +139,7 @@ internal class ReplayPlayerController(
     @Volatile private var saved: SavedReplay? = null
     private var rules: TrimRules? = null
     private var playback: ReplayPlaybackSession? = null
-    private val playedFrame = AtomicReference<Pair<Long, ImageBitmap>?>()
+    private val playedFrame = AtomicReference<Pair<Long, ImageBitmap?>?>()
     private var taskCancel: AtomicBoolean? = null
     private val thumbnails = ThumbnailCache<ImageBitmap>()
     private val thumbnailGeneration = AtomicInteger()
@@ -314,16 +314,20 @@ internal class ReplayPlayerController(
         if (state.error != null || state.editor.drag != null) return
         val (from, until) = current.playRange(state.editor) ?: return
         lateinit var session: ReplayPlaybackSession
+        fun showFrame(us: Long, bitmap: ImageBitmap?) {
+            if (playedFrame.getAndSet(us to bitmap) == null) publish {
+                val (position, image) = playedFrame.getAndSet(null) ?: return@publish
+                if (playback === session && state.playing)
+                    state = state.copy(image = image, imageUs = position, editor = current.played(state.editor, position))
+            }
+        }
         session = ReplayPlaybackSession(folder, from, until,
             onFrame = { frame ->
-                // Keep only the newest frame; one EDT hop at a time.
-                if (playedFrame.getAndSet(frame.startUs to frame.image.toComposeImageBitmap()) == null) publish {
-                    val (us, bitmap) = playedFrame.getAndSet(null) ?: return@publish
-                    if (state.playing) state = state.copy(image = bitmap, imageUs = us, editor = current.played(state.editor, us))
-                }
+                showFrame(frame.startUs, frame.image.toComposeImageBitmap())
             },
             onFinished = { failure -> publish { if (playback === session) { stopPlayback(); failure?.let { state = state.copy(message = it) } } } },
-            onAudioUnavailable = { reason -> publish { if (playback === session) state = state.copy(audioNote = reason) } })
+            onAudioUnavailable = { reason -> publish { if (playback === session) state = state.copy(audioNote = reason) } },
+            onGap = { us -> showFrame(us, null) })
         playback = session
         state = state.copy(playing = true, audioNote = null, message = null)
         session.start()

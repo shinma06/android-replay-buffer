@@ -491,6 +491,28 @@ class ReplayTrimTest {
     }
 
     @Test
+    fun playbackReportsKnownGapsInsteadOfHoldingTheLastImage() = withRuns(
+        listOf(listOf(1_000_000, 1_100_000, 1_350_000), listOf(200_000, 410_000, 700_000)),
+    ) { root, _, capture, _, _ ->
+        val video = capture.video.mapIndexed { n, frame ->
+            val point = if (n < 3) (frame.pts - 1_000_000) * 1000 else 5_000_000_000 + (frame.pts - 200_000) * 1000
+            frame.copy(time = MappedTime(point, 0, 0, point))
+        }
+        val output = write(capture.copy(video = video, start = 0, end = 6_000_000_000, endUncertainty = 0,
+            gaps = listOf(CaptureGap("video", 2_000_000_000, 4_000_000_000, "disconnect", 0, 1, 0)), states = emptyMap()), root)
+        for (from in listOf(1_900_000L, 2_100_000L)) {
+            val gap = java.util.concurrent.CompletableFuture<Long>()
+            val session = io.github.shinma06.replaybuffer.ui.ReplayPlaybackSession(output.directory, from, 4_100_000,
+                onFrame = {}, onGap = { gap.complete(it) }, onFinished = { failure ->
+                    gap.completeExceptionally(AssertionError(failure ?: "欠落が通知されませんでした"))
+                }, onAudioUnavailable = {})
+            session.start()
+            try { assertTrue(gap.get(10, java.util.concurrent.TimeUnit.SECONDS) in maxOf(from, 2_000_000)..3_999_999) }
+            finally { session.stop() }
+        }
+    }
+
+    @Test
     fun playbackSessionShowsFramesInRealTimeAndStopsAtTheEnd() = withRuns(listOf(List(16) { it * 100_000L })) { root, _, capture, _, _ ->
         val output = write(capture, root)
         val srcRows = rows(output.directory)

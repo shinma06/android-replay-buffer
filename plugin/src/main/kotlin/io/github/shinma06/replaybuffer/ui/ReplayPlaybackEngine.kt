@@ -27,6 +27,7 @@ internal class ReplayPlaybackSession(
     private val onFrame: (ReplayFrameCursor.Decoded) -> Unit,
     private val onFinished: (failure: String?) -> Unit,
     private val onAudioUnavailable: (reason: String) -> Unit,
+    private val onGap: (movieUs: Long) -> Unit = {},
 ) {
     private val stopped = AtomicBoolean()
     private val audioReady = CountDownLatch(1)
@@ -63,21 +64,22 @@ internal class ReplayPlaybackSession(
         try {
             SavedReplay.open(folder).use { saved ->
                 ReplayFrameCursor(saved).use { cursor ->
-                    val first = cursor.seek(fromUs, ::check)
-                    onFrame(first)
+                    val span = saved.timeline().spans.firstOrNull { it.endUs > fromUs && it.startUs < untilUs }
+                    var frame = span?.let { cursor.seek(maxOf(fromUs, it.startUs), ::check) }
                     audioReady.await(1, TimeUnit.SECONDS)
-                    if (line == null) { baseNanos = System.nanoTime(); baseUs = first.startUs }
-                    var last = first
-                    while (true) {
+                    if (line == null) { baseNanos = System.nanoTime(); baseUs = fromUs }
+                    var coveredUntil = fromUs
+                    while (frame != null && frame.startUs < untilUs) {
                         check()
-                        val frame = cursor.next(::check) ?: break
-                        if (frame.startUs >= untilUs) break
+                        if (frame.startUs > coveredUntil) waitGap(coveredUntil, minOf(frame.startUs, untilUs))
                         waitUntil(frame.startUs)
-                        last = frame
                         // Late frames still decode (they are references) but are not shown.
                         if (nowUs() < frame.endUs) onFrame(frame)
+                        coveredUntil = frame.endUs
+                        if (coveredUntil >= untilUs) break
+                        frame = cursor.next(::check)
                     }
-                    waitUntil(minOf(untilUs, last.endUs))
+                    if (coveredUntil < untilUs) waitGap(coveredUntil, untilUs) else waitUntil(untilUs)
                 }
             }
             if (!stopped.get()) onFinished(null)
@@ -86,6 +88,15 @@ internal class ReplayPlaybackSession(
             if (!stopped.get()) onFinished(failure.message ?: "再生を続けられません。")
         } finally {
             stop()
+        }
+    }
+
+    private fun waitGap(from: Long, until: Long) {
+        waitUntil(from)
+        while (nowUs() < until) {
+            check()
+            onGap(nowUs().coerceIn(from, until - 1))
+            Thread.sleep(20)
         }
     }
 

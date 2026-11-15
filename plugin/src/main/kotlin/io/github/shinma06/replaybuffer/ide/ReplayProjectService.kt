@@ -449,8 +449,8 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
                     ?: throw IllegalArgumentException("保存フォルダを指定してください。")
                 val folder = runCatching { Path.of(folderText) }
                     .getOrElse { throw IllegalArgumentException("保存フォルダのパスを確認してください。") }
-                val source = if (folder.isAbsolute) folder else Path.of(
-                    projectBasePath ?: throw IllegalArgumentException("相対パスではなく絶対パスで保存フォルダを指定してください。")).resolve(folder)
+                val source = (if (folder.isAbsolute) folder else Path.of(
+                    projectBasePath ?: throw IllegalArgumentException("相対パスではなく絶対パスで保存フォルダを指定してください。")).resolve(folder)).normalize()
                 val output = if (request.command == CliCommand.TRIM)
                     ReplayTrim().trim(source, rangeUs("from_us"), rangeUs("to_us"), { false }, { it.publish() })
                 else ReplayFrameExport.export(source, rangeUs("at_us"), frameDestination())
