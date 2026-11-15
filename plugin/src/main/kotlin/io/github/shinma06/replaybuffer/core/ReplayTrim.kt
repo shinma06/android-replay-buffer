@@ -318,7 +318,7 @@ internal class ReplayTrim(private val availableSpace: (Path) -> Long = { Files.g
                                     while (videoTrack.nextFrame() != null) { /* consume trailing samples */ }
                                     check(outputRows.size == sampleIndex.toInt()) { "出力frame数が一致しません" }
                                     track.setEdits(edits)
-                                    val audio = muxAudio(saved, demuxer, mux, startUs, endUs, ::checkActive)
+                                    val audio = muxAudio(saved, demuxer, mux, startUs, endUs, ::checkActive, ::checkSpace)
                                     val movieBox = mux.finalizeHeader()
                                     require(movieBox.timescale == 1_000_000) { "動画movie timescaleが不正です" }
                                     check(edits.fold(0L) { sum, edit -> Math.addExact(sum, edit.duration) } == movie &&
@@ -429,7 +429,8 @@ internal class ReplayTrim(private val availableSpace: (Path) -> Long = { Files.g
     }
 
     private fun muxAudio(saved: SavedReplay, demuxer: MP4Demuxer, mux: MP4Muxer,
-                       startUs: Long, endUs: Long, checkActive: () -> Unit): Triple<List<Map<String, Any?>>, MP4MuxerTrack, Long>? {
+                       startUs: Long, endUs: Long, checkActive: () -> Unit,
+                       checkSpace: (Long) -> Unit): Triple<List<Map<String, Any?>>, MP4MuxerTrack, Long>? {
         val trackInfo = saved.manifest["audio_track"]?.takeIf { it.isJsonObject }?.asJsonObject ?: return null
         val segments = trackInfo["segments"]?.takeIf { it.isJsonArray }?.asJsonArray
             ?.map { it.asJsonObject } ?: return null
@@ -479,6 +480,7 @@ internal class ReplayTrim(private val availableSpace: (Path) -> Long = { Files.g
                 "media_start_samples" to mediaStart.toString(), "samples" to run.end - run.first)
             for (i in run.first until run.end) {
                 checkActive()
+                checkSpace(packets[i].data.remaining().toLong())
                 sound.addFrameInternal(Packet.createPacket(packets[i].data, written * 1024L, sampleRate,
                     AAC_FRAME_SAMPLES, written, Packet.FrameType.KEY, null), 1)
                 written++

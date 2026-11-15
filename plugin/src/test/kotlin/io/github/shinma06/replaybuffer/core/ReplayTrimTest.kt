@@ -376,7 +376,10 @@ class ReplayTrimTest {
     @Test
     fun audioGapsSurviveTrimmingEvenWhenPacketNumbersAreConsecutive() = checkAudioTrim(true)
 
-    private fun checkAudioTrim(withGap: Boolean) {
+    @Test
+    fun audioWritingStopsBeforeItUsesTheReservedSpace() = checkAudioTrim(false, checkAudioSpace = true)
+
+    private fun checkAudioTrim(withGap: Boolean, checkAudioSpace: Boolean = false) {
         val root = Files.createTempDirectory("replay-trim-audio-")
         val store = CaptureStore(root.resolve("ring"), minFree = 0, audioRequested = true)
         try {
@@ -416,6 +419,32 @@ class ReplayTrimTest {
             assertTrue(segments.size() > 0)
             assertTrue(segments.all { it.asJsonObject["movie_start_us"].asString.toLong() >= 0 })
             val keptSamples = segments.sumOf { it.asJsonObject["samples"].asInt }
+            if (checkAudioSpace) {
+                val videoEnd = packets(dir).maxOf { it.fileOff + it.data.remaining() }
+                val audioPacketBytes = 2L
+                var insufficientAt: Long? = null
+                val before = hashes(output.directory)
+                val failure = assertFailsWith<SaveFailure> {
+                    trim(output.directory, from, to, space = {
+                        val partialVideo = Files.list(root).use { folders ->
+                            folders.filter { it != output.directory && it != dir }
+                                .map { it.resolve("video.mp4") }.filter { Files.isRegularFile(it) }.findFirst().orElse(null)
+                        }
+                        val bytes = partialVideo?.let(Files::size) ?: 0
+                        if (bytes > videoEnd) {
+                            if (insufficientAt == null) insufficientAt = bytes
+                            ReplaySettings.MIN_FREE_BYTES
+                        } else Long.MAX_VALUE
+                    })
+                }
+                assertNotNull(insufficientAt)
+                assertTrue(insufficientAt <= videoEnd + audioPacketBytes,
+                    "容量下限の確認前に音声をまとめて書き込んだ: $insufficientAt > ${videoEnd + audioPacketBytes}")
+                val partial = assertNotNull(failure.partial)
+                assertTrue(Files.isDirectory(partial))
+                assertTrue(Files.size(partial.resolve("video.mp4")) <= videoEnd + audioPacketBytes)
+                assertEquals(before, hashes(output.directory))
+            }
             NIOUtils.readableChannel(dir.resolve("video.mp4").toFile()).use { channel ->
                 MP4Demuxer.createRawMP4Demuxer(channel).use { demuxer ->
                     val audio = demuxer.audioTracks.single() as AbstractMP4DemuxerTrack
