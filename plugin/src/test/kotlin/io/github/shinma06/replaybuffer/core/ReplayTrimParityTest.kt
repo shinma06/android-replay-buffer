@@ -55,6 +55,18 @@ class ReplayTrimParityTest {
         val at = ZonedDateTime.parse("2024-01-02T03:04:05Z")
         val trimmed = ReplayTrim().trim(source, 200_001, 1_900_001, { false },
             { Files.move(it.partial, it.complete) }, at, "deadbeef")
+        val originalRows = Files.readAllLines(source.resolve("video-frames.jsonl")).map { JsonParser.parseString(it).asJsonObject }
+        val trimmedRows = Files.readAllLines(trimmed.resolve("video-frames.jsonl")).map { JsonParser.parseString(it).asJsonObject }
+        val originalFirst = originalRows[2]
+        val trimmedFirst = trimmedRows.first()
+        assertEquals(originalFirst["source_sha256"], trimmedFirst["source_sha256"])
+        fun packet(folder: Path, row: com.google.gson.JsonObject): ByteArray {
+            val bytes = Files.readAllBytes(folder.resolve("video-source.h264"))
+            val start = row["source_offset"].asString.toInt()
+            return bytes.copyOfRange(start, start + row["source_size"].asInt)
+        }
+        assertContentEquals(packet(source, originalFirst), packet(trimmed, trimmedFirst))
+        assertEquals(JsonParser.parseString("""{"x":0,"y":16,"width":64,"height":32,"padding_left":0,"padding_top":16,"padding_right":0,"padding_bottom":16}"""), trimmedFirst["source_rect"])
         SavedReplay.open(trimmed).use { assertTrue(it.manifest["complete"].asBoolean) }
         assertEquals(sourceAudio.subList(9, 30) + sourceAudio.subList(30, 68), audioPackets(trimmed, listOf(
             PlaybackAudioSegment(0, 440_000, 384, 21),
