@@ -417,7 +417,7 @@ internal class ReplayTrim(private val availableSpace: (Path) -> Long = { Files.g
         out.addProperty("display_t_ns", shift(row.row.text("display_t_ns"), originTns))
         out.addProperty("confirmed_t_end_ns", shift(row.row.text("confirmed_t_end_ns"), originTns))
         index.write(gson.toJson(out))
-        index.newLine()
+        index.write("\n")
     }
 
     private fun muxAudio(saved: SavedReplay, demuxer: MP4Demuxer, mux: MP4Muxer,
@@ -510,10 +510,10 @@ internal class ReplayTrim(private val availableSpace: (Path) -> Long = { Files.g
                 row.addProperty("t_ns", shift(row.text("t_ns"), originTns))
                 val text = gson.toJson(row)
                 checkSpace(text.length * 2L)
-                deviceWriter.write(text); deviceWriter.newLine()
+                deviceWriter.write(text); deviceWriter.write("\n")
                 device++
                 lastDevice = row.text("record_id") ?: lastDevice
-                if (row["app_membership"]?.takeIf { it.isJsonPrimitive }?.asBoolean == true) { appWriter.write(text); appWriter.newLine(); app++; lastApp = row.text("record_id") ?: lastApp }
+                if (row["app_membership"]?.takeIf { it.isJsonPrimitive }?.asBoolean == true) { appWriter.write(text); appWriter.write("\n"); app++; lastApp = row.text("record_id") ?: lastApp }
             }
         } }
         return LogCounts(device, app, lastDevice, lastApp)
@@ -536,7 +536,7 @@ internal class ReplayTrim(private val availableSpace: (Path) -> Long = { Files.g
                 if (movieUs != null && movieUs in startUs until endUs) inMovie++
                 val text = gson.toJson(row)
                 checkSpace(text.length * 2L)
-                out.write(text); out.newLine()
+                out.write(text); out.write("\n")
                 count++
             }
         }
