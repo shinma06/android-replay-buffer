@@ -164,7 +164,9 @@ internal class AacPcmDecoder(audioSpecificConfig: ByteArray) {
 
     fun decode(packet: ByteArray): ByteArray {
         decoder.decodeFrame(packet, buffer)
-        require(buffer.bitsPerSample == 16) { "音声の形式に対応できません" }
+        require(buffer.bitsPerSample == 16 && buffer.sampleRate == sampleRate && buffer.channels == channels) {
+            "音声の形式に対応できません"
+        }
         return buffer.data.copyOf()
     }
 }

@@ -28,6 +28,7 @@ internal class ReplayPlaybackSession(
     private val onFinished: (failure: String?) -> Unit,
     private val onAudioUnavailable: (reason: String) -> Unit,
     private val onGap: (movieUs: Long) -> Unit = {},
+    private val audioOutput: (AudioFormat) -> SourceDataLine = AudioSystem::getSourceDataLine,
 ) {
     private val stopped = AtomicBoolean()
     private val audioReady = CountDownLatch(1)
@@ -117,11 +118,13 @@ internal class ReplayPlaybackSession(
                 if (track == null) { audioReady.countDown(); return }
                 track.use {
                     val decoder = AacPcmDecoder(track.config)
-                    val channels = track.channels.coerceAtLeast(1)
-                    val format = AudioFormat(track.sampleRate.toFloat(), 16, channels, true, false)
+                    val sampleRate = decoder.sampleRate
+                    val channels = decoder.channels
+                    require(sampleRate == track.sampleRate && sampleRate > 0 && channels > 0) { "音声の形式と時刻記録が一致しません" }
+                    val format = AudioFormat(sampleRate.toFloat(), 16, channels, true, false)
                     val frameBytes = 2 * channels
                     val output = try {
-                        AudioSystem.getSourceDataLine(format).apply { open(format, track.sampleRate / 4 * frameBytes) }
+                        audioOutput(format).apply { open(format, sampleRate / 4 * frameBytes) }
                     } catch (failure: Exception) {
                         onAudioUnavailable("音声を出力できないため、音声なしで再生しています。")
                         audioReady.countDown(); return
@@ -131,7 +134,7 @@ internal class ReplayPlaybackSession(
                     baseUs = fromUs
                     line = output
                     audioReady.countDown()
-                    val limit = ((untilUs - fromUs) * track.sampleRate / 1_000_000L).coerceAtLeast(0)
+                    val limit = ((untilUs - fromUs) * sampleRate / 1_000_000L).coerceAtLeast(0)
                     var written = 0L
                     fun write(pcm: ByteArray, offsetSamples: Long, samples: Long) {
                         val count = minOf(samples, limit - written)
