@@ -54,6 +54,7 @@ import io.github.shinma06.replaybuffer.settings.ReplaySettingsStore
 import io.github.shinma06.replaybuffer.settings.patchSettings
 import io.github.shinma06.replaybuffer.settings.settingsJson
 import io.github.shinma06.replaybuffer.settings.validateDestination
+import io.github.shinma06.replaybuffer.ui.LogcatTitleActionService
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
@@ -567,6 +568,7 @@ internal fun streamName(kind: String): String = when (kind) {
 
 class ReplayProjectActivity : ProjectActivity, DumbAware {
     override suspend fun execute(project: Project) {
+        project.getService(LogcatTitleActionService::class.java)
         ApplicationManager.getApplication().getService(ReplayMenuBarService::class.java).projectOpened(project)
         project.getService(ReplayProjectService::class.java).refresh()
     }
