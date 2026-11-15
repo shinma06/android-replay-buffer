@@ -13,6 +13,7 @@ internal class SavedReplay private constructor(
     private val handle: SaveOutputDirectory,
     val manifest: JsonObject,
     val frames: List<JsonObject>,
+    val recordSha256: String,
 ) : AutoCloseable {
 
     val name: String get() = directory.fileName.toString()
@@ -130,7 +131,9 @@ internal class SavedReplay private constructor(
                     }
                 }
                 require(frames.isNotEmpty()) { "動画のframe記録がありません" }
-                return SavedReplay(directory, handle, manifest, frames)
+                val recordHash = java.security.MessageDigest.getInstance("SHA-256").digest(record.toByteArray(Charsets.UTF_8))
+                    .joinToString("") { "%02x".format(it) }
+                return SavedReplay(directory, handle, manifest, frames, recordHash)
             } catch (e: Throwable) {
                 handle.close()
                 throw e

@@ -39,6 +39,10 @@ save --logs-onlyはLogcatツールバーのボタンと同じく、ログとrepl
 screenshotはGUIと同じPNGを保存し、パスだけをstdoutへ返します。
 trimは完成した保存フォルダの動画を動画内時刻（秒）で切り取り、元を残したまま同じ親フォルダへ
 replay-XXXX-trim-IDを作り、新フォルダのパスだけをstdoutへ返します。
+trimは残る表示frameの時計対応が不明なら、出力作成前にstderrへ警告し、不確かな時刻のログを保守的に残します。
+GUIも同じ事前確認で通知します。元の記録が事前確認後に変われば作成前に拒否し、自動再試行しません。
+MCPのtrim_replayは作成要求前に標準loggingのwarning通知を送ります（既存引数・結果形式は不変）。
+logging/setLevelでerror以上を指定すると抑制され、クライアント側の表示・追加フィルタまでは保証しません。
 frameは指定秒に表示されていた1コマをスクショ先へframe-XXXX-ID.pngで保存し、パスだけを返します。
 settingsはMCPのget_settings、settings setはupdate_settingsと同じ項目名・検証です。
 タップ位置の表示はtap_display=OFF（記録のみ、既定）/VIDEO（保存する動画にだけ描画、保存時に再エンコード）/

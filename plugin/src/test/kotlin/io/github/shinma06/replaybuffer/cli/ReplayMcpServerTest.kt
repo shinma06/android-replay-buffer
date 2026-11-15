@@ -17,7 +17,54 @@ import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 
 class ReplayMcpServerTest {
+    @Test fun `trim logs before execution and honors the negotiated logging level`() {
+        val levels = listOf("debug", "info", "notice", "warning", "error", "critical", "alert", "emergency")
+        for (level in listOf<String?>(null) + levels) {
+            val output = ByteArrayOutputStream()
+            val requests = mutableListOf<String>()
+            var notificationBeforeExecution = false
+            val lines = listOfNotNull(initialize,
+                level?.let { """{"jsonrpc":"2.0","id":"level","method":"logging/setLevel","params":{"level":"$it"}}""" },
+                call(1, "trim_replay", """{"folder":"/saved","from_seconds":0,"to_seconds":1}"""))
+            ReplayMcpServer(lines.joinToString("\n", postfix = "\n").byteInputStream(), java.io.BufferedOutputStream(output),
+                PrintStream(ByteArrayOutputStream()), null, temporary, { "build" }, { _, _, _, request ->
+                    requests += request.command.name
+                    if (request.command.name == "TRIM_PREFLIGHT")
+                        CliResponse(0, """{"fingerprint":"snapshot","warning":"時計対応が不明です。"}""")
+                    else {
+                        notificationBeforeExecution = output.toString(Charsets.UTF_8).contains("notifications/message")
+                        CliResponse(0, "/saved-trim")
+                    }
+                }).run()
+            val messages = output.toString(Charsets.UTF_8).lineSequence().filter(String::isNotEmpty)
+                .map { McpJson.parse(it) as Map<*, *> }.toList()
+            val capabilities = messages.first().result()["capabilities"] as Map<*, *>
+            assertTrue("logging" in capabilities)
+            assertEquals(listOf("TRIM_PREFLIGHT", "TRIM"), requests)
+            val enabled = level == null || levels.indexOf(level) <= levels.indexOf("warning")
+            assertEquals(enabled, notificationBeforeExecution)
+            assertEquals(if (enabled) 1 else 0, messages.count { it["method"] == "notifications/message" })
+            if (level != null) assertEquals(emptyMap<String, Any>(), messages.single { it["id"] == "level" }.result())
+            messages.singleOrNull { it["method"] == "notifications/message" }?.let { message ->
+                val params = message["params"] as Map<*, *>
+                assertEquals("warning", params["level"])
+                assertEquals("replay.trim", params["logger"])
+                assertEquals("時計対応が不明です。", params["data"])
+            }
+            val result = messages.single { it["id"] == BigDecimal.ONE }.result()
+            assertEquals(false, result["isError"])
+            assertEquals(mapOf("directory" to "/saved-trim", "summary_path" to Path.of("/saved-trim").resolve("README.md").toString()), result["structuredContent"])
+        }
+    }
+
     @TempDir lateinit var temporary: Path
+
+    @Test fun `logging rejects invalid levels without dispatching an operation`() {
+        val responses = session(listOf(initialize) + listOf("\"verbose\"", "null", "1").mapIndexed { index, level ->
+            """{"jsonrpc":"2.0","id":${index + 1},"method":"logging/setLevel","params":{"level":$level}}"""
+        }) { _, _, _, _ -> error("logging must not execute an IDE operation") }
+        for (id in 1..3) assertEquals(BigDecimal("-32602"), (responses[BigDecimal(id)]!!["error"] as Map<*, *>)["code"])
+    }
 
     private fun session(lines: List<String>, defaultProject: Path? = null, registry: Path = temporary.resolve("registry"),
         send: (Path, Path?, String, CliRequest) -> CliResponse): Map<Any?, Map<*, *>> {
@@ -95,6 +142,7 @@ class ReplayMcpServerTest {
                 CliCommand.CONFIGURE -> CliResponse(0, """{"replay_seconds":30}""")
                 CliCommand.STOP -> CliResponse(0, "stopped")
                 CliCommand.TRIM -> CliResponse(0, "/saved-trim")
+                CliCommand.TRIM_PREFLIGHT -> CliResponse(0, """{"fingerprint":"snapshot","warning":null}""")
                 CliCommand.FRAME -> CliResponse(0, png.toString())
                 else -> error("unexpected ${request.command}")
             }
@@ -130,7 +178,7 @@ class ReplayMcpServerTest {
         assertEquals(false, trim["isError"])
         assertEquals("/saved-trim", (trim["structuredContent"] as Map<*, *>)["directory"])
         assertEquals(Path.of("/saved-trim").resolve("README.md").toString(), (trim["structuredContent"] as Map<*, *>)["summary_path"])
-        assertEquals("""{"folder":"/saved","from_us":500000,"to_us":2000000}""",
+        assertEquals("""{"folder":"/saved","from_us":500000,"to_us":2000000,"fingerprint":"snapshot"}""",
             requests.single { it.command == CliCommand.TRIM }.configText)
         val frame = responses[BigDecimal("11")]!!.result()
         assertEquals("image/png", ((frame["content"] as List<*>)[1] as Map<*, *>)["mimeType"])
@@ -143,7 +191,7 @@ class ReplayMcpServerTest {
         assertEquals(true, responses[BigDecimal("13")]!!.result()["isError"])
         assertEquals(true, responses[BigDecimal("14")]!!.result()["isError"])
         assertFalse(requests.any { it.command == CliCommand.START }, "Invalid arguments must not dispatch")
-        assertEquals(8, requests.size)
+        assertEquals(9, requests.size)
     }
 
     private fun queuedSession(count: Int, callLimitMs: Long, send: (Path, Path?, String, CliRequest) -> CliResponse): List<Map<*, *>> {
