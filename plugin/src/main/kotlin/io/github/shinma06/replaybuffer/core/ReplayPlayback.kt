@@ -119,7 +119,7 @@ internal sealed class AudioChunk {
     data class Packets(val first: Int, val count: Int, val skipSamples: Long, val keepSamples: Long) : AudioChunk()
 }
 
-/** One `audio_track.segments` entry: [samples] AAC packets from media sample [mediaStart] at [movieStartUs]. */
+/** [samples] AAC packets covering [mediaStart] (which may be inside the first packet) at [movieStartUs]. */
 internal data class PlaybackAudioSegment(val movieStartUs: Long, val durationUs: Long, val mediaStart: Long, val samples: Int)
 
 /**
@@ -137,8 +137,11 @@ internal fun audioSchedule(segments: List<PlaybackAudioSegment>, sampleRate: Int
             out += AudioChunk.Silence(samplesOf(segment.movieStartUs - cursorUs))
             cursorUs = segment.movieStartUs
         }
-        val skip = samplesOf(cursorUs - segment.movieStartUs)
-        val keep = (samplesOf(segmentEnd - segment.movieStartUs) - skip).coerceAtMost(segment.samples * AAC_PACKET_SAMPLES - skip)
+        val leading = segment.mediaStart % AAC_PACKET_SAMPLES
+        val elapsed = samplesOf(cursorUs - segment.movieStartUs)
+        val skip = leading + elapsed
+        val keep = (samplesOf(segmentEnd - segment.movieStartUs) - elapsed)
+            .coerceAtMost(segment.samples * AAC_PACKET_SAMPLES - skip)
         if (keep <= 0) return@forEach
         val firstPacket = (skip / AAC_PACKET_SAMPLES).toInt()
         val lastPacket = ((skip + keep - 1) / AAC_PACKET_SAMPLES).toInt()

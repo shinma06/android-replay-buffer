@@ -320,7 +320,12 @@ class ReplayTrimTest {
     }
 
     @Test
-    fun audioSegmentsAreClippedToTheKeptRange() {
+    fun audioSegmentsAreClippedToTheKeptRange() = checkAudioTrim(false)
+
+    @Test
+    fun audioGapsSurviveTrimmingEvenWhenPacketNumbersAreConsecutive() = checkAudioTrim(true)
+
+    private fun checkAudioTrim(withGap: Boolean) {
         val root = Files.createTempDirectory("replay-trim-audio-")
         val store = CaptureStore(root.resolve("ring"), minFree = 0, audioRequested = true)
         try {
@@ -343,7 +348,10 @@ class ReplayTrimTest {
             store.audioSession(1)
             store.audio(AudioPacket(0, true, byteArrayOf(0x11, 0x90.toByte())), 1)
             val unit = 1024 * 1_000_000L / 48_000
-            for (i in 0 until 40) store.audio(AudioPacket(1_000_000 + i * unit, false, byteArrayOf(0x21, i.toByte())), 1, host + i * unit * 1000)
+            for (i in 0 until 40) {
+                if (withGap && i in 27..32) continue
+                store.audio(AudioPacket(1_000_000 + i * unit, false, byteArrayOf(0x21, i.toByte())), 1, host + i * unit * 1000)
+            }
             sample(store, host, 2)
             val capture = store.capture(ReplaySettings(recordAudio = true), null, host + 1_000_000_000)!!
             val output = write(capture, root)
@@ -359,10 +367,32 @@ class ReplayTrimTest {
             val keptSamples = segments.sumOf { it.asJsonObject["samples"].asInt }
             NIOUtils.readableChannel(dir.resolve("video.mp4").toFile()).use { channel ->
                 MP4Demuxer.createRawMP4Demuxer(channel).use { demuxer ->
-                    assertEquals(keptSamples, (demuxer.audioTracks.single() as AbstractMP4DemuxerTrack).meta.totalFrames)
+                    val audio = demuxer.audioTracks.single() as AbstractMP4DemuxerTrack
+                    assertEquals(keptSamples, audio.meta.totalFrames)
+                    assertEquals(segments.map { it.asJsonObject.let { row ->
+                        row["duration_us"].asString.toLong() to row["media_start_samples"].asString.toLong()
+                    } }, audio.edits.filter { it.mediaTime >= 0 }.map { it.duration to it.mediaTime })
+                    assertEquals(withGap, audio.edits.any { it.mediaTime == -1L })
                 }
             }
             assertEquals("0", segments[0].asJsonObject["movie_start_us"].asString)
+            assertEquals(448L, segments[0].asJsonObject["media_start_samples"].asString.toLong())
+            val expected = manifest(output.directory)["audio_track"].asJsonObject["segments"].asJsonArray.mapNotNull {
+                val segment = it.asJsonObject
+                val begin = segment["movie_start_us"].asString.toLong()
+                val end = begin + segment["duration_us"].asString.toLong()
+                if (end <= from || begin >= to) null else (maxOf(begin, from) - from) to (minOf(end, to) - maxOf(begin, from))
+            }
+            assertEquals(if (withGap) 2 else 1, expected.size)
+            assertEquals(expected, segments.map { it.asJsonObject.let { row ->
+                row["movie_start_us"].asString.toLong() to row["duration_us"].asString.toLong()
+            } })
+            SavedReplay.open(dir).use { saved -> ReplayAudioTrack.open(saved)!!.use { audio ->
+                assertEquals(448L, (audio.schedule(0).first() as AudioChunk.Packets).skipSamples)
+                assertEquals(withGap, audio.schedule(0).any { it is AudioChunk.Silence })
+            } }
+            val again = trim(dir, 0, to - from)
+            assertEquals(segments, manifest(again)["audio_track"].asJsonObject["segments"])
         } finally {
             store.close()
             Files.walk(root).use { files -> files.sorted(Comparator.reverseOrder()).forEach(Files::deleteIfExists) }

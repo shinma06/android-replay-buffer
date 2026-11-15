@@ -26,6 +26,13 @@ class ReplayPlaybackTest {
     }
 
     @Test
+    fun audioScheduleHonoursAnEditStartingInsideAnAacPacket() {
+        val segment = PlaybackAudioSegment(0, 30_000, 2 * 1024 + 480, 2)
+        assertEquals(listOf(AudioChunk.Packets(2, 2, 480, 1440)), audioSchedule(listOf(segment), 48_000, 0))
+        assertEquals(listOf(AudioChunk.Packets(3, 1, 416, 480)), audioSchedule(listOf(segment), 48_000, 20_000))
+    }
+
+    @Test
     fun bundledJaadDecodesAacLcToPcm() {
         // 0.1 s of a 440 Hz sine, mono 48 kHz AAC-LC (AudioSpecificConfig + raw access units).
         val config = hex("1188")
