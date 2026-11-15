@@ -159,6 +159,8 @@ trim: 保存済みリプレイの前後を動画内時刻（秒）で切り取�
       事前確認後に元の記録が変われば作成前に拒否します（自動再試行なし）。GUIも同じ判定です。
 frame: 保存済みリプレイの指定秒に表示されていた画面を元解像度のPNGで保存します。
       成功時はPNGのパスだけをstdoutへ返します。保存先はスクリーンショットと同じ設定です。
+      PNGのtEXtに元のsave_id（arb:source_save_id）・現在のフォルダ名・動画内時刻を記録します。
+      t_nsは既知の場合だけ記録します。元のsave_idが欠落・不正なら作成しません。
 settings: 現在の設定をMCPのget_settingsと同じJSONでstdoutへ返します。
 settings set: 指定項目だけをMCPのupdate_settingsと同じ項目名・検証で変更し、変更後の設定JSONを返します。
       例: replay settings set replay_seconds=60 auto_save_on_crash=true

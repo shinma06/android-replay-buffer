@@ -69,12 +69,12 @@ class ReplayTrimParityTest {
         assertEquals("0", boundary["authored_gap_duration_us"].asString)
         assertEquals(hash(Files.readAllBytes(source.resolve("replay.json"))),
             record["trim"].asJsonObject["source_replay_sha256"].asString)
-        // Only the generated ID and hashes derived from MP4 creation/modification dates may differ.
+        // Only generated IDs and hashes derived from MP4 creation/modification dates may differ.
         bytes["replay.json"] = bytes.getValue("replay.json").toString(Charsets.UTF_8)
             .replace(record["save_id"].asString, "generated-id")
             .replace(videoHash, hash(bytes.getValue("video.mp4"))).toByteArray(Charsets.UTF_8)
         val png = ReplayFrameExport.export(trimmed, 0, root, at, "deadbeef")
-        bytes["frame.png"] = Files.readAllBytes(png)
+        bytes["frame.png"] = withoutGeneratedPngId(Files.readAllBytes(png), record["save_id"].asString)
         val trimmedBefore = names.associateWith { hash(Files.readAllBytes(trimmed.resolve(it))) }
         val retrimmed = ReplayTrim().trim(trimmed, 100_001, 1_500_001, { false },
             { Files.move(it.partial, it.complete) }, at, "cafebabe")
@@ -143,6 +143,31 @@ class ReplayTrimParityTest {
 
     private fun hash(bytes: ByteArray) = MessageDigest.getInstance("SHA-256").digest(bytes)
         .joinToString("") { "%02x".format(it) }
+
+    private fun withoutGeneratedPngId(input: ByteArray, saveId: String): ByteArray {
+        val buffer = ByteBuffer.wrap(input).apply { position(8) }
+        var normalized: ByteArray? = null
+        while (buffer.hasRemaining()) {
+            val offset = buffer.position()
+            val size = buffer.int
+            val type = ByteArray(4).also { buffer.get(it) }
+            val data = ByteArray(size).also { buffer.get(it) }
+            val crc = buffer.int
+            if (String(type, Charsets.US_ASCII) == "tEXt" &&
+                String(data, Charsets.ISO_8859_1).startsWith("arb:source_save_id\u0000")) {
+                assertEquals(null, normalized)
+                assertEquals("arb:source_save_id\u0000$saveId", String(data, Charsets.ISO_8859_1))
+                assertEquals(java.util.zip.CRC32().apply { update(type); update(data) }.value.toInt(), crc)
+                assertEquals("02df0c6fe5b29f841f515a8a7cb34d216de1e4d13e30afb1dce896d11df9cf9d",
+                    hash(input.copyOfRange(0, offset) + input.copyOfRange(buffer.position(), input.size)))
+                val stable = "arb:source_save_id\u0000generated-id".toByteArray(Charsets.ISO_8859_1)
+                val chunk = ByteBuffer.allocate(12 + stable.size).putInt(stable.size).put(type).put(stable)
+                    .putInt(java.util.zip.CRC32().apply { update(type); update(stable) }.value.toInt()).array()
+                normalized = input.copyOfRange(0, offset) + chunk + input.copyOfRange(buffer.position(), input.size)
+            }
+        }
+        return assertNotNull(normalized)
+    }
 
     private fun withoutMp4Dates(input: ByteArray): ByteArray = input.copyOf().also { bytes ->
         val data = ByteBuffer.wrap(bytes)
