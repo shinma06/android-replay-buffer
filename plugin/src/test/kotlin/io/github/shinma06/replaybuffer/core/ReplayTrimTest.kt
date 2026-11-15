@@ -451,7 +451,11 @@ class ReplayTrimTest {
     @Test
     fun audioWritingStopsBeforeItUsesTheReservedSpace() = checkAudioTrim(false, checkAudioSpace = true)
 
-    private fun checkAudioTrim(withGap: Boolean, checkAudioSpace: Boolean = false) {
+    @Test
+    fun audioSpaceGuardIgnoresCompletedReplaysThroughAnAliasedParent() =
+        checkAudioTrim(false, checkAudioSpace = true, aliasedSpaceParent = true)
+
+    private fun checkAudioTrim(withGap: Boolean, checkAudioSpace: Boolean = false, aliasedSpaceParent: Boolean = false) {
         val root = Files.createTempDirectory("replay-trim-audio-")
         val store = CaptureStore(root.resolve("ring"), minFree = 0, audioRequested = true)
         try {
@@ -500,8 +504,8 @@ class ReplayTrimTest {
                 val before = hashes(output.directory)
                 val failure = assertFailsWith<SaveFailure> {
                     trim(output.directory, from, to, space = {
-                        val partialVideo = Files.list(root).use { folders ->
-                            folders.filter { it != output.directory && it != dir }
+                        val partialVideo = Files.list(if (aliasedSpaceParent) root.resolve(".") else root).use { folders ->
+                            folders.filter { !Files.isSameFile(it, output.directory) && !Files.isSameFile(it, dir) }
                                 .map { it.resolve("video.mp4") }.filter { Files.isRegularFile(it) }.findFirst().orElse(null)
                         }
                         val bytes = partialVideo?.let(Files::size) ?: 0
@@ -518,6 +522,10 @@ class ReplayTrimTest {
                 assertTrue(Files.isDirectory(partial))
                 assertTrue(Files.size(partial.resolve("video.mp4")) <= videoEnd + audioPacketBytes)
                 assertEquals(before, hashes(output.directory))
+                val expectedFolders = setOf(root.resolve("ring"), output.directory, dir, partial).map { it.toRealPath() }.toSet()
+                val actualFolders = Files.list(root).use { folders -> folders.map { it.toRealPath() }.toList() }
+                assertEquals(expectedFolders.size, actualFolders.size)
+                assertEquals(expectedFolders, actualFolders.toSet())
             }
             NIOUtils.readableChannel(dir.resolve("video.mp4").toFile()).use { channel ->
                 MP4Demuxer.createRawMP4Demuxer(channel).use { demuxer ->
