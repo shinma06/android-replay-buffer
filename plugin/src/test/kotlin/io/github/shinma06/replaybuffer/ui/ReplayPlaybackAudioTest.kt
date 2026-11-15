@@ -104,6 +104,219 @@ class ReplayPlaybackAudioTest {
     }
 
     @Test
+    fun initialVideoPreparationHoldsAudioAndClockAtTheSeekOrigin() {
+        val folder = fixture(videoDurationUs = 2_050_000)
+        val before = files(folder)
+        val prepare = Gate()
+        val frame = Gate()
+        val write = Gate()
+        val audioCheckpoint = CountDownLatch(1)
+        val audioWaitCalls = AtomicInteger()
+        val nanos = AtomicLong()
+        val callbacks = ConcurrentLinkedQueue<String>()
+        val from = 2_025_000L
+        val output = Output().apply { beforeWrite = { audioCheckpoint.countDown(); write.block() } }
+        lateinit var videoWorker: Thread
+        val session = ReplayPlaybackSession(folder, from, 8_000_000,
+            { assertTrue(from in it.startUs until it.endUs); frame.block() },
+            { callbacks.add("finished: $it") }, callbacks::add,
+            audioOutput = { output.line }, nanoTime = nanos::get,
+            awaitAudio = { audioWaitCalls.incrementAndGet(); await(it); true },
+            prepareVideo = { videoWorker = Thread.currentThread(); prepare.block(); it() },
+            awaitVideo = { ready ->
+                audioCheckpoint.countDown()
+                ready.await()
+            })
+        try {
+            session.start()
+            await(prepare.entered); await(audioCheckpoint)
+            nanos.addAndGet(5_000_000_000)
+            output.position.set(300_000)
+            assertEquals(from, session.nowUs(), "clock advanced before the first video frame was ready")
+            assertEquals(0, output.starts.get())
+            assertEquals(0, output.writes.get())
+            assertEquals(0, audioWaitCalls.get())
+            assertTrue(callbacks.isEmpty(), callbacks.toString())
+            output.position.set(0)
+            prepare.release.countDown()
+            await(frame.entered); await(write.entered)
+            assertEquals(from, session.nowUs())
+            assertEquals(1, output.starts.get())
+            assertEquals(1, audioWaitCalls.get())
+            output.position.set(125_000)
+            assertEquals(from + 125_000, session.nowUs())
+            assertTrue(callbacks.isEmpty(), callbacks.toString())
+        } finally {
+            session.stop(); prepare.release.countDown(); frame.release.countDown(); write.release.countDown()
+            await(output.closed); join(videoWorker)
+        }
+        assertFilesUnchanged(folder, before)
+    }
+
+    @Test
+    fun stopWhilePreparingVideoClosesTheWaitingAudioWithoutStartingIt() {
+        val folder = fixture()
+        val before = files(folder)
+        val prepare = Gate()
+        val audioWaiting = CountDownLatch(1)
+        val audioExited = CountDownLatch(1)
+        val callbacks = ConcurrentLinkedQueue<String>()
+        val output = Output()
+        lateinit var videoWorker: Thread
+        val session = ReplayPlaybackSession(folder, 2_025_000, 8_000_000,
+            { callbacks.add("frame") }, { callbacks.add("finished") }, callbacks::add,
+            audioOutput = { output.line }, prepareVideo = {
+                videoWorker = Thread.currentThread()
+                prepare.block()
+                it()
+            }, awaitVideo = { ready ->
+                audioWaiting.countDown()
+                try { ready.await() } finally { audioExited.countDown() }
+            })
+        try {
+            session.start()
+            await(prepare.entered); await(audioWaiting)
+            session.stop(); session.stop()
+            await(audioExited); await(output.closed)
+            assertEquals(0, output.starts.get())
+            assertEquals(0, output.writes.get())
+            assertEquals(1, output.closes.get())
+        } finally {
+            session.stop(); prepare.release.countDown()
+            join(videoWorker)
+        }
+        assertTrue(callbacks.isEmpty(), callbacks.toString())
+        assertEquals(2_025_000L, session.nowUs())
+        assertFilesUnchanged(folder, before)
+    }
+
+    @Test
+    fun cancelledOrFailedVideoPreparationReleasesTheWaitingAudio() {
+        for (cancel in listOf(false, true)) {
+            val folder = fixture()
+            val before = files(folder)
+            val prepare = Gate()
+            val audioWaiting = CountDownLatch(1)
+            val callbacks = ConcurrentLinkedQueue<String>()
+            val output = Output()
+            lateinit var videoWorker: Thread
+            val session = ReplayPlaybackSession(folder, 0, 8_000_000,
+                { callbacks.add("frame") }, { callbacks.add("finished: $it") }, callbacks::add,
+                audioOutput = { output.line }, prepareVideo = {
+                    videoWorker = Thread.currentThread()
+                    prepare.block()
+                    if (cancel) throw InterruptedException() else error("synthetic video preparation failure")
+                }, awaitVideo = { ready -> audioWaiting.countDown(); ready.await() })
+            try {
+                session.start()
+                await(prepare.entered); await(audioWaiting)
+                prepare.release.countDown()
+                await(output.closed); join(videoWorker)
+                assertEquals(0, output.starts.get())
+                assertEquals(0, output.writes.get())
+                assertEquals(1, output.closes.get())
+                assertEquals(if (cancel) emptyList() else listOf("finished: synthetic video preparation failure"), callbacks.toList())
+            } finally {
+                session.stop(); prepare.release.countDown()
+                join(videoWorker)
+            }
+            assertFilesUnchanged(folder, before)
+        }
+    }
+
+    @Test
+    fun preparedFramesOrVideoGapsFinishWithOrWithoutAudio() {
+        for (audio in listOf(false, true)) for (gap in listOf(false, true)) {
+            val folder = fixture(audio = audio, presented = !gap)
+            val before = files(folder)
+            val prepare = Gate()
+            val display = Gate()
+            val write = Gate()
+            val finished = CountDownLatch(1)
+            val callbacks = ConcurrentLinkedQueue<String>()
+            val shown = ConcurrentLinkedQueue<String>()
+            val nanos = AtomicLong()
+            val output = Output().apply { beforeWrite = write::block }
+            val from = 1_000_000L
+            val until = from + 50_000
+            lateinit var videoWorker: Thread
+            val session = ReplayPlaybackSession(folder, from, until,
+                { shown.add("frame"); display.block() },
+                { failure -> callbacks.add("finished: $failure"); finished.countDown() }, callbacks::add,
+                onGap = { us -> assertTrue(us in from until until); shown.add("gap"); display.block() },
+                audioOutput = { output.line }, nanoTime = nanos::get,
+                awaitAudio = { await(it); true },
+                prepareVideo = { videoWorker = Thread.currentThread(); prepare.block(); it() })
+            try {
+                session.start()
+                await(prepare.entered)
+                nanos.addAndGet(5_000_000_000)
+                assertEquals(from, session.nowUs())
+                prepare.release.countDown()
+                await(display.entered)
+                if (audio) await(write.entered)
+                assertEquals(listOf(if (gap) "gap" else "frame"), shown.toList())
+                assertEquals(from, session.nowUs())
+                assertEquals(if (audio) 1 else 0, output.starts.get())
+                nanos.addAndGet(50_000_000)
+                output.position.set(50_000)
+                display.release.countDown(); write.release.countDown()
+                await(finished); join(videoWorker)
+                if (audio) await(output.closed)
+                assertEquals(listOf("finished: null"), callbacks.toList())
+            } finally {
+                session.stop(); prepare.release.countDown(); display.release.countDown(); write.release.countDown()
+                join(videoWorker)
+            }
+            assertFilesUnchanged(folder, before)
+        }
+    }
+
+    @Test
+    fun stoppedPreparationCannotStartAudioOrPublishIntoAReplacementSession() {
+        val folder = fixture()
+        val before = files(folder)
+        val prepare = Gate()
+        val audioWaiting = CountDownLatch(1)
+        val oldCallbacks = ConcurrentLinkedQueue<String>()
+        val oldOutput = Output()
+        lateinit var oldWorker: Thread
+        val old = ReplayPlaybackSession(folder, 1_000_000, 8_000_000,
+            { oldCallbacks.add("frame") }, { oldCallbacks.add("finished") }, oldCallbacks::add,
+            audioOutput = { oldOutput.line },
+            prepareVideo = { oldWorker = Thread.currentThread(); prepare.block(); it() },
+            awaitVideo = { ready -> audioWaiting.countDown(); ready.await() })
+        val frame = Gate()
+        val write = Gate()
+        val newCallbacks = ConcurrentLinkedQueue<String>()
+        val newOutput = Output().apply { beforeWrite = write::block }
+        lateinit var newWorker: Thread
+        val next = ReplayPlaybackSession(folder, 4_025_000, 8_000_000,
+            { newWorker = Thread.currentThread(); frame.block() }, { newCallbacks.add("finished") }, newCallbacks::add,
+            audioOutput = { newOutput.line }, awaitAudio = { await(it); true })
+        try {
+            old.start()
+            await(prepare.entered); await(audioWaiting)
+            old.stop(); await(oldOutput.closed)
+            next.start()
+            await(frame.entered); await(write.entered)
+            prepare.release.countDown(); join(oldWorker)
+            assertTrue(oldCallbacks.isEmpty(), oldCallbacks.toString())
+            assertTrue(newCallbacks.isEmpty(), newCallbacks.toString())
+            assertEquals(0, oldOutput.starts.get())
+            assertEquals(0, oldOutput.writes.get())
+            assertEquals(1, newOutput.starts.get())
+            assertEquals(4_025_000L, next.nowUs())
+        } finally {
+            old.stop(); next.stop()
+            prepare.release.countDown(); frame.release.countDown(); write.release.countDown()
+            join(oldWorker)
+        }
+        join(newWorker); await(newOutput.closed)
+        assertFilesUnchanged(folder, before)
+    }
+
+    @Test
     fun outputReturningAfterTheAudioDeadlineCannotRewindOrStart() {
         val nanos = AtomicLong()
         val factoryEntered = CountDownLatch(1)
@@ -347,6 +560,11 @@ class ReplayPlaybackAudioTest {
         assertTrue(latch.await(10, TimeUnit.SECONDS), "playback latch did not complete")
     }
 
+    private fun join(worker: Thread) {
+        worker.join(10_000)
+        assertTrue(!worker.isAlive, "playback worker did not finish")
+    }
+
     private fun play(folder: Path, fromUs: Long = 0): Output {
         val output = Output()
         val finished = CountDownLatch(1)
@@ -406,6 +624,20 @@ class ReplayPlaybackAudioTest {
         } as SourceDataLine
     }
 
+    private fun files(folder: Path): Map<String, ByteArray> = Files.list(folder).use { paths ->
+        paths.toList().associate { it.fileName.toString() to Files.readAllBytes(it) }
+    }
+
+    private fun assertFilesUnchanged(folder: Path, before: Map<String, ByteArray>) {
+        val after = files(folder)
+        assertEquals(before.keys, after.keys)
+        for ((name, bytes) in before) {
+            assertContentEquals(bytes, after.getValue(name), name)
+            assertContentEquals(MessageDigest.getInstance("SHA-256").digest(bytes),
+                MessageDigest.getInstance("SHA-256").digest(after.getValue(name)), name)
+        }
+    }
+
     private fun onsets(output: Output): List<Double> {
         val pcm = output.pcm
         val frames = pcm.size / output.format.frameSize
@@ -445,7 +677,8 @@ class ReplayPlaybackAudioTest {
         }
 
     private fun fixture(resource: String = "/aac-lc-escape/beeps.m4a", rate: Int = 48_000,
-                        mediaStart: Long = 1024, gap: Boolean = false): Path {
+                        mediaStart: Long = 1024, gap: Boolean = false, audio: Boolean = true, presented: Boolean = true,
+                        videoDurationUs: Long = 8_000_000): Path {
         val folder = Files.createTempDirectory(root, "replay-")
         val videoRoot = "/replay-trim-parity/replay-20240101-000000-manual-feedface"
         val sourceVideo = Path.of(javaClass.getResource("$videoRoot/video.mp4")!!.toURI())
@@ -458,7 +691,7 @@ class ReplayPlaybackAudioTest {
                     val video = mux.addTrack(MP4MuxerTrack(mux.nextTrackId, MP4TrackType.VIDEO))
                     video.addSampleEntry(videoSource.sampleEntries.first())
                     video.addFrameInternal(Packet.createPacket(videoSource.nextFrame().data, 0, 1_000_000,
-                        8_000_000, 0, Packet.FrameType.KEY, null), 1)
+                        videoDurationUs, 0, Packet.FrameType.KEY, null), 1)
                     val audioSource = MP4Demuxer.createRawMP4Demuxer(audioInput).audioTracks.single() as AbstractMP4DemuxerTrack
                     val audio = mux.addTrack(MP4MuxerTrack(mux.nextTrackId, MP4TrackType.SOUND))
                     audio.addSampleEntry(audioSource.sampleEntries.single())
@@ -476,7 +709,8 @@ class ReplayPlaybackAudioTest {
         val row = javaClass.getResource("$videoRoot/video-frames.jsonl")!!.readText().lineSequence().first()
             .let { JsonParser.parseString(it).asJsonObject }
         row.addProperty("movie_pts_us", "0")
-        row.addProperty("movie_end_us", "8000000")
+        row.addProperty("movie_end_us", videoDurationUs.toString())
+        row.addProperty("presented", presented)
         Files.writeString(folder.resolve("video-frames.jsonl"), "$row\n")
         fun segment(start: Long, duration: Long, media: Long): String {
             val packets = (media % 1024 + duration * rate / 1_000_000 + 1023) / 1024
@@ -486,11 +720,11 @@ class ReplayPlaybackAudioTest {
             else listOf(segment(0, 8_000_000, mediaStart))
         fun sha(name: String) = MessageDigest.getInstance("SHA-256").digest(Files.readAllBytes(folder.resolve(name)))
             .joinToString("") { "%02x".format(it) }
+        val audioTrack = if (audio) """, "audio_track":{"sample_rate":$rate,"segments":[${segments.joinToString(",")}]}""" else ""
         Files.writeString(folder.resolve("replay.json"), """{
             "schema":4,"complete":true,"files":{"video":"video.mp4","video_frames":"video-frames.jsonl"},
             "parts":[{"movie_end_us":"8000000"}],
-            "files_sha256":{"video.mp4":"${sha("video.mp4")}","video-frames.jsonl":"${sha("video-frames.jsonl")}"},
-            "audio_track":{"sample_rate":$rate,"segments":[${segments.joinToString(",")}]}
+            "files_sha256":{"video.mp4":"${sha("video.mp4")}","video-frames.jsonl":"${sha("video-frames.jsonl")}"}$audioTrack
         }""")
         return folder
     }

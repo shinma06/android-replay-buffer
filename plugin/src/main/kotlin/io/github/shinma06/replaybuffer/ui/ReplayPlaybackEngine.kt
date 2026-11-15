@@ -18,6 +18,7 @@ import javax.sound.sampled.SourceDataLine
  * video forward with [ReplayFrameCursor]; another decodes AAC with JAAD and plays it on a Java Sound
  * line, whose position is the master clock. Without audio (none saved, no output device, decode
  * failure) a monotonic clock drives video only and [onAudioUnavailable] is told once.
+ * Audio starts after the initial video frame or gap has been prepared.
  * Callbacks run on the worker threads; the caller hops to EDT.
  */
 internal class ReplayPlaybackSession(
@@ -31,10 +32,13 @@ internal class ReplayPlaybackSession(
     private val audioOutput: (AudioFormat) -> SourceDataLine = AudioSystem::getSourceDataLine,
     private val nanoTime: () -> Long = System::nanoTime,
     private val awaitAudio: (CountDownLatch) -> Boolean = { it.await(1, TimeUnit.SECONDS) },
+    private val prepareVideo: (() -> ReplayFrameCursor.Decoded?) -> ReplayFrameCursor.Decoded? = { it() },
+    private val awaitVideo: (CountDownLatch) -> Unit = { it.await() },
 ) {
     private val stopped = AtomicBoolean()
     private val audioNotified = AtomicBoolean()
     private val audioReady = CountDownLatch(1)
+    private val videoReady = CountDownLatch(1)
     private enum class Clock { PENDING, STARTING_AUDIO, AUDIO, MONOTONIC, STOPPED }
     private val clockLock = Any()
     private var clock = Clock.PENDING
@@ -117,7 +121,9 @@ internal class ReplayPlaybackSession(
             SavedReplay.open(folder).use { saved ->
                 ReplayFrameCursor(saved).use { cursor ->
                     val span = saved.timeline().spans.firstOrNull { it.endUs > fromUs && it.startUs < untilUs }
-                    var frame = span?.let { cursor.seek(maxOf(fromUs, it.startUs), ::check) }
+                    var frame = prepareVideo { span?.let { cursor.seek(maxOf(fromUs, it.startUs), ::check) } }
+                    check()
+                    videoReady.countDown()
                     val ready = awaitAudio(audioReady)
                     if (useMonotonicClock() && !ready) audioUnavailable()
                     var coveredUntil = fromUs
@@ -179,6 +185,8 @@ internal class ReplayPlaybackSession(
                     check()
                     if (!canOpenAudio()) { audioUnavailable(); return }
                     output.open(format, sampleRate / 4 * frameBytes)
+                    check()
+                    awaitVideo(videoReady)
                     check()
                     if (!beginAudio()) { audioUnavailable(); return }
                     output.start()
