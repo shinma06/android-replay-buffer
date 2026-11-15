@@ -21,7 +21,9 @@ import com.intellij.openapi.ide.CopyPasteManager
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.progress.ProcessCanceledException
 import com.intellij.openapi.progress.ProgressIndicator
+import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.progress.Task
+import com.intellij.openapi.progress.WrappedProgressIndicator
 import com.intellij.openapi.project.DumbAware
 import com.intellij.openapi.project.DumbService
 import com.intellij.openapi.project.Project
@@ -617,10 +619,20 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
                 if (cancelled()) throw SaveCancelled(null)
                 plan.warning?.let { warning ->
                     try {
-                        ApplicationManager.getApplication().invokeAndWait({
-                            if (!cancelled()) showNotification(NotificationGroupManager.getInstance().getNotificationGroup("Android Replay Buffer")
-                                .createNotification("切り取り範囲の時計対応が不明です", warning, NotificationType.WARNING))
-                        }, ModalityState.nonModal())
+                        // The SDK polls non-standard indicators even while the non-modal UI runnable is pending.
+                        val waiting = object : ProgressIndicator by indicator, WrappedProgressIndicator {
+                            override fun getOriginalProgressIndicator() = indicator
+                            override fun checkCanceled() {
+                                if (cancelled()) indicator.cancel()
+                                indicator.checkCanceled()
+                            }
+                        }
+                        ProgressManager.getInstance().executeProcessUnderProgress({
+                            ApplicationManager.getApplication().invokeAndWait({
+                                if (!cancelled()) showNotification(NotificationGroupManager.getInstance().getNotificationGroup("Android Replay Buffer")
+                                    .createNotification("切り取り範囲の時計対応が不明です", warning, NotificationType.WARNING))
+                            }, ModalityState.nonModal())
+                        }, waiting)
                     } catch (failure: Exception) {
                         if (cancelled()) throw SaveCancelled(null)
                         throw failure
