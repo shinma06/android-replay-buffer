@@ -122,12 +122,13 @@ class LogcatTitleActionsTest {
     }
 
     @Test
-    fun `an action already in the header is not adopted as this binding's property`() {
+    fun `the own action already copied into the header is adopted for cleanup`() {
         Fixture().use { f ->
             f.header!!.add(f.save)
             f.drain()
             Disposer.dispose(f.owner)
-            assertEquals(listOf(f.save), f.children())
+            assertTrue(f.children().isEmpty())
+            assertEquals(1, f.toolbar().resets)
         }
     }
 
@@ -375,6 +376,99 @@ class LogcatTitleActionsTest {
         }
     }
 
+    @Test
+    fun `an existing own action is tracked without moving it and removed on close or unload`() {
+        listOf(false, true).forEach { closeProject ->
+            Fixture().use { f ->
+                val before = action("before")
+                val after = action("after")
+                f.header!!.addAll(before, f.save, after)
+                f.drain()
+                f.binding.refresh()
+                f.drain()
+                assertEquals(listOf(before, f.save, after), f.children())
+                val toolbar = f.toolbar()
+                toolbar.visible = f.children()
+                toolbar.pending = f.children()
+                val replacement = action("same ID new instance")
+                f.manager.registerAction(LOGCAT_SAVE_LOGS_ACTION_ID, replacement)
+                f.header!!.add(replacement)
+                val lookups = f.manager.lookups
+                if (closeProject) f.projectOpen.set(false)
+                Disposer.dispose(f.owner)
+                assertEquals(lookups, f.manager.lookups)
+                assertEquals(listOf(before, after, replacement), f.children())
+                assertEquals(1, toolbar.resets)
+                assertTrue(toolbar.visible.isEmpty())
+                assertEquals(f.children(), toolbar.pending)
+                assertTrue(toolbar.container.containerListeners.isEmpty())
+            }
+        }
+    }
+
+    @Test
+    fun `a split child inheriting the own action is tracked and detached synchronously`() {
+        Fixture().use { f ->
+            f.drain()
+            val before = action("child before")
+            val after = action("child after")
+            val child = DefaultActionGroup().apply { addAll(before, f.save, after) }
+            lateinit var splitter: JPanel
+            SwingUtilities.invokeAndWait { splitter = f.split(f.header!!, child) }
+            f.drain()
+            f.binding.refresh()
+            f.drain()
+            assertEquals(listOf(before, f.save, after), f.children(child))
+            val toolbar = f.toolbar(child)
+            toolbar.visible = f.children(child)
+            toolbar.pending = f.children(child)
+            SwingUtilities.invokeAndWait { splitter.remove(toolbar.container) }
+            assertEquals(listOf(before, after), f.children(child))
+            assertEquals(1, toolbar.resets)
+            assertTrue(toolbar.visible.isEmpty())
+            assertEquals(f.children(child), toolbar.pending)
+            assertTrue(toolbar.container.containerListeners.isEmpty())
+            f.drain()
+            SwingUtilities.invokeAndWait { splitter.add(toolbar.container) }
+            f.drain()
+            assertEquals(listOf(f.save, before, after), f.children(child))
+            Disposer.dispose(f.owner)
+            assertEquals(listOf(before, after), f.children(child))
+            assertEquals(2, toolbar.resets)
+        }
+    }
+
+    @Test
+    fun `headers sharing an action group each clear their toolbar caches on close or unload`() {
+        listOf(false, true).forEach { closeProject ->
+            Fixture().use { f ->
+                val foreign = action("foreign")
+                f.header!!.add(foreign)
+                f.drain()
+                val root = f.toolbar()
+                val child = f.newToolbar(f.header!!)
+                SwingUtilities.invokeAndWait { root.container.add(child.container) }
+                f.drain()
+                f.binding.refresh()
+                f.drain()
+                assertEquals(listOf(f.save, foreign), f.children())
+                listOf(root, child).forEach {
+                    it.visible = f.children()
+                    it.pending = f.children()
+                }
+                if (closeProject) f.projectOpen.set(false)
+                Disposer.dispose(f.owner)
+                assertEquals(listOf(foreign), f.children())
+                listOf(root, child).forEach {
+                    assertEquals(1, it.resets)
+                    assertTrue(it.visible.isEmpty())
+                    assertEquals(listOf(foreign), it.pending)
+                    assertTrue(it.container.containerListeners.isEmpty())
+                }
+            }
+        }
+    }
+
     private class Fixture : AutoCloseable {
         val lifetime = Disposer.newDisposable("Logcat title actions test")
         val owner = Disposer.newDisposable("plugin project service")
@@ -383,7 +477,7 @@ class LogcatTitleActionsTest {
         val callbacks = ConcurrentLinkedQueue<Runnable>()
         var header: DefaultActionGroup? = DefaultActionGroup()
         var onFindGroup: (() -> Unit)? = null
-        private val toolbars = IdentityHashMap<DefaultActionGroup, TestToolbar>()
+        private val toolbars = mutableListOf<TestToolbar>()
         val save = action("save logs")
         val binding: LogcatTitleActionBinding
 
@@ -401,7 +495,7 @@ class LogcatTitleActionsTest {
                     onFindGroup?.invoke()
                     buildList {
                         fun visit(component: Component) {
-                            toolbars.values.firstOrNull { it.container === component }?.let { add(it.target) }
+                            toolbars.firstOrNull { it.container === component }?.let { add(it.target) }
                             if (component is Container) component.components.forEach(::visit)
                         }
                         header?.let { visit(toolbar(it).container) }
@@ -416,7 +510,10 @@ class LogcatTitleActionsTest {
 
         fun children(group: DefaultActionGroup = header!!): List<AnAction> = group.getChildren(manager).toList()
 
-        fun toolbar(group: DefaultActionGroup = header!!): TestToolbar = toolbars.getOrPut(group) { TestToolbar(group) }
+        fun toolbar(group: DefaultActionGroup = header!!): TestToolbar =
+            toolbars.firstOrNull { it.target.group === group } ?: newToolbar(group)
+
+        fun newToolbar(group: DefaultActionGroup): TestToolbar = TestToolbar(group).also(toolbars::add)
 
         fun split(parent: DefaultActionGroup, vararg children: DefaultActionGroup): JPanel = JPanel().also { splitter ->
             children.forEach { splitter.add(toolbar(it).container) }

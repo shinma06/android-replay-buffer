@@ -143,10 +143,12 @@ internal class LogcatTitleActionBinding(
             if (old != null && old.first.group === target.group && old.first.toolbar === target.toolbar &&
                 old.second === currentAction && target.group.containsInstance(currentAction)) continue
             detach(target.container)
-            if (currentAction != null && !target.group.containsInstance(currentAction)) {
-                target.group.add(currentAction, Constraints.FIRST)
+            if (currentAction != null) {
                 installed[target.container] = target to currentAction
-                target.toolbar.updateActionsAsync()
+                if (!target.group.containsInstance(currentAction)) {
+                    target.group.add(currentAction, Constraints.FIRST)
+                    target.toolbar.updateActionsAsync()
+                }
             }
         }
     }
