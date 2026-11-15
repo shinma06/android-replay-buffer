@@ -380,8 +380,8 @@ class ReplayTrimTest {
         assertFailsWith<SaveFailure> {
             trim(output.directory, 0, end, space = { 0 })
         }
-        Files.list(root).use { paths ->
-            assertFalse(paths.anyMatch { it.fileName.toString().startsWith("replay-") && it != output.directory })
+        Files.list(root.resolve(".")).use { paths ->
+            assertFalse(paths.anyMatch { it.fileName.toString().startsWith("replay-") && !Files.isSameFile(it, output.directory) })
         }
         // A successful trim still works afterwards and the original stays readable.
         val dir = trim(output.directory, 0, rows(output.directory).last()["movie_end_us"].asString.toLong())
