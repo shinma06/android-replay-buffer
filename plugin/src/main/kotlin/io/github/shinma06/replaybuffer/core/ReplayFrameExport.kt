@@ -7,6 +7,7 @@ import org.jcodec.common.model.Picture
 import org.jcodec.containers.mp4.boxes.VideoSampleEntry
 import org.jcodec.containers.mp4.demuxer.MP4Demuxer
 import org.jcodec.scale.Yuv420jToRgb
+import org.jcodec.scale.Yuv420pToRgb
 import java.awt.image.BufferedImage
 import java.awt.image.ComponentColorModel
 import java.awt.image.DataBufferByte
@@ -79,10 +80,14 @@ internal object ReplayFrameExport {
         }
     }
 
-    /** sRGB image of a decoded YUV420J picture at its own pixel size. */
+    /** RGB image of a decoded YUV420 picture whose colour label carries the SPS range. */
     fun rgbImage(decoded: Picture): BufferedImage {
         val rgb = Picture.create(decoded.width, decoded.height, ColorSpace.RGB)
-        Yuv420jToRgb().transform(decoded, rgb)
+        when (decoded.color) {
+            ColorSpace.YUV420 -> Yuv420pToRgb().transform(decoded, rgb)
+            ColorSpace.YUV420J -> Yuv420jToRgb().transform(decoded, rgb)
+            else -> throw IllegalArgumentException("復号frameの色形式が非対応です")
+        }
         val pixels = rgb.getPlaneData(0)
         for (i in pixels.indices) pixels[i] = (pixels[i].toInt() + 128).toByte()
         val raster = Raster.createInterleavedRaster(
