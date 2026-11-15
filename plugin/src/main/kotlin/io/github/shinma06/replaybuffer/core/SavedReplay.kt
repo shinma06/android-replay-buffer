@@ -79,12 +79,13 @@ internal class SavedReplay private constructor(
 
         /** Opens a completed schema-4 video save; throws IllegalArgument/IllegalState with the Japanese reason. */
         fun open(path: Path): SavedReplay {
-            require(path.isAbsolute && path == path.normalize()) { "保存フォルダのパスを確認してください" }
+            require(path.isAbsolute && path == path.normalize() && path.parent != null) { "保存フォルダのパスを確認してください" }
             require(!path.fileName.toString().startsWith(".") && !path.fileName.toString().endsWith(".partial")) {
                 "未完成フォルダは切り取れません"
             }
             require(Files.isDirectory(path)) { "保存フォルダがありません: $path" }
-            val handle = SaveOutputDirectory.open(path)
+            val directory = path.parent.toRealPath().resolve(path.fileName)
+            val handle = SaveOutputDirectory.open(directory)
             try {
                 val entries = handle.entries()
                 require(ReplayFiles.RECORD in entries) { "replay.jsonのないフォルダは切り取れません" }
@@ -129,7 +130,7 @@ internal class SavedReplay private constructor(
                     }
                 }
                 require(frames.isNotEmpty()) { "動画のframe記録がありません" }
-                return SavedReplay(path, handle, manifest, frames)
+                return SavedReplay(directory, handle, manifest, frames)
             } catch (e: Throwable) {
                 handle.close()
                 throw e

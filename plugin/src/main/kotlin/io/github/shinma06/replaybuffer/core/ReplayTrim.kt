@@ -139,10 +139,10 @@ internal class ReplayTrim(private val availableSpace: (Path) -> Long = { Files.g
                 val headReencode = keptParts.any { (_, firstOut, _) -> firstOut > 0 }
                 checkActive()
                 // Rough estimate before staging; exact checkSpace continues while writing.
-                val estimate = Math.addExact(Files.size(source.resolve(ReplayFiles.VIDEO)) / 2 + 16 * 1024 * 1024,
+                val estimate = Math.addExact(Files.size(saved.directory.resolve(ReplayFiles.VIDEO)) / 2 + 16 * 1024 * 1024,
                     saved.entries().filter { it.endsWith(".jsonl") || it.endsWith(".h264") || it.endsWith(".md") }
-                        .fold(0L) { total, name -> Math.addExact(total, Files.size(source.resolve(name))) })
-                val parent = source.parent.toRealPath()
+                        .fold(0L) { total, name -> Math.addExact(total, Files.size(saved.directory.resolve(name))) })
+                val parent = saved.directory.parent
                 fun checkSpace(bytes: Long = 0) {
                     check(availableSpace(parent) >= Math.addExact(bytes, ReplaySettings.MIN_FREE_BYTES)) { "保存先の空き容量が不足しています" }
                 }

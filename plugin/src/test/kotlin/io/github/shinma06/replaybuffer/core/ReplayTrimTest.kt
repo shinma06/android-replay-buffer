@@ -470,6 +470,22 @@ class ReplayTrimTest {
     }
 
     @Test
+    fun parentAliasesWorkWithoutFollowingTheReplayFolderOrFiles() = withRuns(listOf(List(8) { it * 100_000L })) { root, _, capture, _, _ ->
+        val output = write(capture, root)
+        val alias = Files.createSymbolicLink(root.resolve("linked-parent"), root).resolve(output.directory.fileName)
+        SavedReplay.open(alias).use { assertEquals(output.directory, it.directory) }
+        val end = rows(output.directory).last()["movie_end_us"].asString.toLong()
+        assertTrue(Files.isRegularFile(trim(alias, 0, end).resolve("replay.json")))
+        assertTrue(Files.isRegularFile(ReplayFrameExport.export(alias, 0, root)))
+        val linkedReplay = Files.createSymbolicLink(root.resolve("linked-replay"), output.directory)
+        assertFailsWith<Exception> { SavedReplay.open(linkedReplay) }
+        val video = output.directory.resolve("video.mp4")
+        val outside = Files.move(video, root.resolve("outside.mp4"))
+        Files.createSymbolicLink(video, outside)
+        assertFailsWith<Exception> { SavedReplay.open(alias) }
+    }
+
+    @Test
     fun invalidInputsFailWithJapaneseReasons() = withRuns(listOf(List(8) { it * 100_000L })) { root, _, capture, _, _ ->
         val output = write(capture, root)
         val srcRows = rows(output.directory)
