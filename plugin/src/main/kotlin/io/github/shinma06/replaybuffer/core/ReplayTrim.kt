@@ -675,7 +675,7 @@ internal class ReplayTrim(private val availableSpace: (Path) -> Long = { Files.g
                 val missing = out["gaps"]?.asJsonArray?.sumOf { element ->
                     val gap = element.asJsonObject
                     val from = gap.longText("from_t_ns")
-                    if (gap.text("stream") != kind || from == null) 0L
+                    if (gap.text("kind") != kind || from == null) 0L
                     else (minOf(gap.longText("to_t_ns") ?: durationNs, durationNs) - maxOf(from, 0L)).coerceAtLeast(0)
                 } ?: 0L
                 stream.addProperty("availableSeconds", (observed - missing).coerceAtLeast(0) / 1e9)

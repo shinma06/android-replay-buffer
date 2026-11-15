@@ -175,6 +175,78 @@ class ReplayTrimTest {
     }
 
     @Test
+    fun schemaFourKindGapsReduceOnlyTheirStreamCoverage() {
+        for (kind in listOf("video", "device_log", "app_log")) checkGapCoverage(kind,
+            listOf(1_600_000_000L to 1_800_000_000L), listOf(200_000_000L to 400_000_000L), 0.2)
+    }
+
+    @Test
+    fun gapsOutsideOrTouchingTheKeptRangeDoNotReduceCoverage() {
+        for (kind in listOf("video", "device_log", "app_log")) checkGapCoverage(kind,
+            listOf(1_100_000_000L to 1_400_000_000L, 2_200_000_000L to 2_400_000_000L), emptyList(), 0.0)
+    }
+
+    @Test
+    fun gapsCrossingTheKeptBoundariesAreClippedBeforeSubtractingCoverage() {
+        for (kind in listOf("video", "device_log", "app_log")) checkGapCoverage(kind,
+            listOf(1_200_000_000L to 1_500_000_000L, 2_100_000_000L to 2_400_000_000L),
+            listOf(0L to 100_000_000L, 700_000_000L to 800_000_000L), 0.2)
+    }
+
+    @Test
+    fun openEndedGapCoverageStopsAtTheKeptWindowEnd() {
+        for (kind in listOf("video", "device_log", "app_log")) checkGapCoverage(kind,
+            listOf(1_900_000_000L to null), listOf(500_000_000L to null), 0.3)
+    }
+
+    private fun checkGapCoverage(kind: String, ranges: List<Pair<Long?, Long?>>, kept: List<Pair<Long?, Long?>>, missing: Double) =
+        withRuns(listOf(List(16) { it * 100_000L })) { root, _, capture, _, _ ->
+            val video = capture.video.map { frame ->
+                val t = 1_000_000_000L + frame.pts * 1000
+                frame.copy(time = MappedTime(t, 0, 0, t))
+            }
+            val logs = video.mapIndexed { n, frame ->
+                LogEntry("$n", DeviceLog(1_700_000_000_000_000_000L + n * 100_000_000L, 12, 12, 10001, 0, 4,
+                    "Fixture", "row $n", byteArrayOf(n.toByte())), frame.generation, frame.time, frame.retainedAt, true, frame.host)
+            }
+            val gaps = ranges.map { (from, to) -> CaptureGap(kind, from, to, "fixture gap", 0, 1, 0) } + listOf(
+                CaptureGap("audio", 1_500_000_000L, 2_100_000_000L, "audio unavailable", 0, 1, 0),
+                CaptureGap("clock", 1_500_000_000L, 1_600_000_000L, "clock unavailable", 0, 1, 0))
+            val kinds = listOf("video", "device_log", "app_log")
+            val source = write(capture.copy(video = video, logs = logs, start = 0, end = 3_000_000_000L,
+                endUncertainty = 0, gaps = gaps, states = kinds.associateWith { StreamSnapshot(StreamState.CAPTURING, 1.5) }), root)
+            val sourceRecord = manifest(source.directory)
+            assertEquals(4, sourceRecord["schema"].asInt)
+            val sourceGaps = sourceRecord["gaps"].asJsonArray.map { it.asJsonObject }
+            assertEquals(ranges.size, sourceGaps.count { it["kind"].asString == kind })
+            assertTrue(sourceGaps.all { it.has("kind") && !it.has("stream") })
+            val before = hashes(source.directory)
+            val sourceRows = rows(source.directory)
+            val dir = trim(source.directory, sourceRows[4]["movie_pts_us"].asString.toLong(), sourceRows[11]["movie_end_us"].asString.toLong())
+            val record = manifest(dir)
+            assertEquals("800000000", record["timebase"].asJsonObject["window_duration_ns"].asString)
+            for (stream in kinds) assertEquals((if (stream == "video") 0.7 else 0.8) - if (stream == kind) missing else 0.0,
+                record["coverage"].asJsonObject[stream].asJsonObject["availableSeconds"].asDouble, 1e-9, "$kind / $stream")
+            val keptGaps = record["gaps"].asJsonArray.map { it.asJsonObject }.filter { it["kind"].asString == kind }
+            assertEquals(kept, keptGaps.map { gap ->
+                gap["from_t_ns"].takeUnless { it.isJsonNull }?.asString?.toLong() to
+                    gap["to_t_ns"].takeUnless { it.isJsonNull }?.asString?.toLong()
+            })
+            val clock = record["timebase"].asJsonObject["clock_steps"].asJsonArray.single().asJsonObject
+            assertEquals("unmeasured", clock["kind"].asString)
+            assertEquals("100000000", clock["from_t_ns"].asString)
+            assertEquals("200000000", clock["to_t_ns"].asString)
+            assertEquals(sourceRecord["timebase"].asJsonObject["known"], record["timebase"].asJsonObject["known"])
+            assertEquals(0.0, record["coverage"].asJsonObject["audio"].asJsonObject["availableSeconds"].asDouble)
+            val trimmedBefore = hashes(dir)
+            val again = manifest(trim(dir, 0, 800_000))
+            assertEquals(record["coverage"], again["coverage"])
+            assertEquals(record["gaps"], again["gaps"])
+            assertEquals(before, hashes(source.directory))
+            assertEquals(trimmedBefore, hashes(dir))
+        }
+
+    @Test
     fun startOnAnIdrStillProducesAReadableTrimmedPart() = withRuns(listOf(List(16) { it * 100_000L })) { root, _, capture, _, _ ->
         val output = write(capture, root)
         val srcRows = rows(output.directory)
@@ -414,6 +486,8 @@ class ReplayTrimTest {
             val track = manifest(dir)["audio_track"].asJsonObject
             val segments = track["segments"].asJsonArray
             assertTrue(segments.size() > 0)
+            assertEquals(segments.sumOf { it.asJsonObject["duration_us"].asString.toLong() } / 1e6,
+                manifest(dir)["coverage"].asJsonObject["audio"].asJsonObject["availableSeconds"].asDouble, 1e-9)
             assertTrue(segments.all { it.asJsonObject["movie_start_us"].asString.toLong() >= 0 })
             val keptSamples = segments.sumOf { it.asJsonObject["samples"].asInt }
             NIOUtils.readableChannel(dir.resolve("video.mp4").toFile()).use { channel ->
@@ -444,6 +518,7 @@ class ReplayTrimTest {
             } }
             val again = trim(dir, 0, to - from)
             assertEquals(segments, manifest(again)["audio_track"].asJsonObject["segments"])
+            assertEquals(manifest(dir)["coverage"].asJsonObject["audio"], manifest(again)["coverage"].asJsonObject["audio"])
         } finally {
             store.close()
             Files.walk(root).use { files -> files.sorted(Comparator.reverseOrder()).forEach(Files::deleteIfExists) }
