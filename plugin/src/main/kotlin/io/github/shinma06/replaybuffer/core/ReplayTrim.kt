@@ -43,6 +43,48 @@ private fun JsonObject.longText(name: String): Long? = text(name)?.toLong()
 private fun JsonObject.requiredLongText(name: String): Long =
     longText(name) ?: throw IllegalArgumentException("frame記録の${name}がありません")
 
+internal fun readTrimSource(channel: FileChannel, offset: Long, size: Long, checkActive: () -> Unit): ByteBuffer {
+    require(offset >= 0 && size in 0..Int.MAX_VALUE.toLong()) { "元映像packetの位置・サイズが不正です" }
+    val data = ByteBuffer.allocate(size.toInt())
+    var position = offset
+    while (data.hasRemaining()) {
+        checkActive()
+        val count = channel.read(data, position)
+        if (count <= 0) throw java.io.IOException("元映像packetを最後まで読み込めません。保存元のサイズ・状態を確認してください。")
+        position = Math.addExact(position, count.toLong())
+    }
+    checkActive()
+    return data.flip()
+}
+
+internal fun trimSourceRectangle(row: JsonObject, placement: Map<String, Int>, width: Int, height: Int): JsonObject {
+    val prior = row["source_rect"]?.takeUnless { it.isJsonNull }?.asJsonObject
+    if (prior == null) {
+        require(row["reencoded"]?.asBoolean != true) { "正規化済みframeの元画像の配置情報がありません" }
+        return JsonObject().apply { placement.forEach { (key, value) -> addProperty(key, value) } }
+    }
+    require(row["output_width"]?.asInt == placement.getValue("width") &&
+        row["output_height"]?.asInt == placement.getValue("height")) { "元画像のcanvasと動画の寸法が一致しません" }
+    val x = prior["x"].asInt
+    val y = prior["y"].asInt
+    val w = prior["width"].asInt
+    val h = prior["height"].asInt
+    require(x >= 0 && y >= 0 && w > 0 && h > 0 &&
+        x.toLong() + w <= placement.getValue("width") && y.toLong() + h <= placement.getValue("height")) {
+        "元画像の配置がcanvasの範囲外です"
+    }
+    val left = Math.addExact(x, placement.getValue("x"))
+    val top = Math.addExact(y, placement.getValue("y"))
+    return prior.deepCopy().apply {
+        addProperty("x", left)
+        addProperty("y", top)
+        addProperty("padding_left", left)
+        addProperty("padding_top", top)
+        addProperty("padding_right", width - left - w)
+        addProperty("padding_bottom", height - top - h)
+    }
+}
+
 /** One stored video-frames.jsonl row plus its file-order index. */
 private class StoredFrame(val row: JsonObject, val index: Int) {
     val part get() = row["segment_index"].asInt
@@ -260,9 +302,7 @@ internal class ReplayTrim(private val availableSpace: (Path) -> Long = { Files.g
                                             val first = partRows[firstOut]
                                             val size = first.configSize?.toInt() ?: 0
                                             if (size > 0) {
-                                                val data = ByteBuffer.allocate(size)
-                                                sourceChannel!!.read(data, first.configOffset!!)
-                                                data.flip()
+                                                val data = readTrimSource(sourceChannel!!, first.configOffset!!, size.toLong(), ::checkActive)
                                                 while (data.hasRemaining()) { checkActive(); raw.write(data) }
                                             }
                                         }
@@ -302,7 +342,7 @@ internal class ReplayTrim(private val availableSpace: (Path) -> Long = { Files.g
                                                 track.addFrameInternal(Packet.createPacket(data, media, 1_000_000, row.displayDuration,
                                                     sampleIndex, if (outputKey) Packet.FrameType.KEY else Packet.FrameType.INTER, null), entries.size)
                                                 writeRow(index, row, raw, sourceChannel, keptIndex, sampleIndex,
-                                                    entries.size, outputKey, true, normalizer, startUs, originTns, media, configOffset, ::checkSpace)
+                                                    entries.size, outputKey, true, normalizer, startUs, originTns, media, configOffset, ::checkSpace, ::checkActive)
                                                 outputRows += row.row
                                             } else {
                                                 val entry = entryMap.getOrPut(row.sampleEntry) {
@@ -317,7 +357,7 @@ internal class ReplayTrim(private val availableSpace: (Path) -> Long = { Files.g
                                                 track.addFrameInternal(Packet.createPacket(packet.data, media, 1_000_000, row.displayDuration,
                                                     sampleIndex, packet.frameType, null), entry)
                                                 writeRow(index, row, raw, sourceChannel, keptIndex, sampleIndex,
-                                                    entry, outputKey, false, null, startUs, originTns, media, configOffset, ::checkSpace)
+                                                    entry, outputKey, false, null, startUs, originTns, media, configOffset, ::checkSpace, ::checkActive)
                                                 outputRows += row.row
                                             }
                                             media = Math.addExact(media, row.displayDuration)
@@ -422,7 +462,8 @@ internal class ReplayTrim(private val availableSpace: (Path) -> Long = { Files.g
     private fun writeRow(index: java.io.BufferedWriter, row: StoredFrame,
                          raw: FileChannel?, sourceChannel: FileChannel?, partIndex: Int, sampleIndex: Long,
                          entry: Int, outputKey: Boolean, reencoded: Boolean, normalizer: MixedVideoNormalizer?,
-                         startUs: Long, originTns: Long?, media: Long, configOffset: Long?, checkSpace: (Long) -> Unit) {
+                         startUs: Long, originTns: Long?, media: Long, configOffset: Long?, checkSpace: (Long) -> Unit,
+                         checkActive: () -> Unit) {
         val out = row.row.deepCopy()
         out.addProperty("segment_index", partIndex)
         out.addProperty("sample_index", sampleIndex)
@@ -430,7 +471,7 @@ internal class ReplayTrim(private val availableSpace: (Path) -> Long = { Files.g
         out.addProperty("output_key", outputKey)
         out.addProperty("reencoded", reencoded || row.row["reencoded"].asBoolean)
         if (reencoded) {
-            out.add("source_rect", gson.toJsonTree(normalizer!!.rectangle()))
+            out.add("source_rect", trimSourceRectangle(row.row, normalizer!!.rectangle(), normalizer.width, normalizer.height))
             out.addProperty("output_width", normalizer.width)
             out.addProperty("output_height", normalizer.height)
             out.addProperty("source_colour_known", normalizer.colourKnown)
@@ -439,10 +480,8 @@ internal class ReplayTrim(private val availableSpace: (Path) -> Long = { Files.g
             checkSpace(row.sourceSize ?: 0)
             val offset = raw.position()
             val size = row.sourceSize!!
-            val data = ByteBuffer.allocate(size.toInt())
-            sourceChannel!!.read(data, row.sourceOffset!!)
-            data.flip()
-            while (data.hasRemaining()) raw.write(data)
+            val data = readTrimSource(sourceChannel!!, row.sourceOffset!!, size, checkActive)
+            while (data.hasRemaining()) { checkActive(); raw.write(data) }
             out.addProperty("source_offset", offset.toString())
             out.addProperty("source_config_offset", configOffset?.toString())
         }
