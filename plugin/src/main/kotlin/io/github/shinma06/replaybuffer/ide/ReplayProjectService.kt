@@ -642,12 +642,16 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
             }
             catch (cancelled: SaveCancelled) { TrimRun(null, cancelled.partial) }
         }
-        done.thenAccept { run ->
-            folder.parent?.let { LocalFileSystem.getInstance().refreshAndFindFileByNioFile(it) }?.refresh(false, true)
-            run.output?.let { output -> onUi { notifyTrimmed(output) } }
-        }.exceptionally { failure ->
-            onUi { notifyOperationFailed("切り取った動画を保存できませんでした", failure) }; null
-        }
+        observeTrimSave(done,
+            { folder.parent?.let { LocalFileSystem.getInstance().refreshAndFindFileByNioFile(it) }?.refresh(false, true) },
+            { output -> onUi { notifyTrimmed(output) } },
+            { failure -> onUi { notifyOperationFailed("切り取った動画を保存できませんでした", failure) } })
+            .exceptionally { failure ->
+                val cause = (failure as? java.util.concurrent.CompletionException)?.cause ?: failure
+                if (cause !is ProcessCanceledException && cause !is java.util.concurrent.CancellationException) {
+                    Logger.getInstance(ReplayProjectService::class.java).debug("保存結果のIDEへの反映を完了できませんでした。", cause)
+                }
+            }
         return done
     }
 
@@ -741,6 +745,19 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
 
     companion object {
         val ENVIRONMENT_CHANGED: Topic<Runnable> = Topic.create("Android Replay Buffer environment changed", Runnable::class.java)
+    }
+}
+
+internal fun observeTrimSave(
+    done: CompletableFuture<ReplayProjectService.TrimRun>,
+    refresh: () -> Unit,
+    saved: (Path) -> Unit,
+    failed: (Throwable) -> Unit,
+): CompletableFuture<Unit> = done.handle { run, failure ->
+    if (failure != null) failed(failure)
+    else {
+        run.output?.let(saved)
+        refresh()
     }
 }
 

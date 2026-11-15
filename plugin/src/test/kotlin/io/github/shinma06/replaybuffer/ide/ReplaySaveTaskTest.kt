@@ -36,6 +36,7 @@ import io.github.shinma06.replaybuffer.core.CaptureMode
 import io.github.shinma06.replaybuffer.core.SaveContent
 import io.github.shinma06.replaybuffer.core.SavePhase
 import io.github.shinma06.replaybuffer.core.SaveSnapshot
+import io.github.shinma06.replaybuffer.core.SaveFailure
 import java.lang.reflect.Proxy
 import java.nio.file.Files
 import java.nio.file.LinkOption.NOFOLLOW_LINKS
@@ -497,6 +498,55 @@ class ReplaySaveTaskTest {
         assertEquals(1, siblings.count { Files.isSameFile(source, it) })
         assertEquals(1, siblings.count { Files.isSameFile(retained, it) })
         assertUnchanged(source, before)
+    }
+
+    @Test
+    fun cancelledTrimDoesNotReportRefreshCancellationAsSaveFailure() = assertTrimCompletionAfterRefreshFailure(
+        ReplayProjectService.TrimRun(null, root.resolve("kept.partial")), ProcessCanceledException())
+
+    @Test
+    fun completedTrimKeepsSuccessWhenRefreshFailsAndCancellationArrivesLate() = assertTrimCompletionAfterRefreshFailure(
+        ReplayProjectService.TrimRun(root.resolve("complete")), IOException("refresh failed"))
+
+    private fun assertTrimCompletionAfterRefreshFailure(result: ReplayProjectService.TrimRun, refreshFailure: Throwable) {
+        for (immediate in listOf(false, true)) {
+            val done = CompletableFuture<ReplayProjectService.TrimRun>()
+            val saved = mutableListOf<Path>()
+            val failures = mutableListOf<Throwable>()
+            var refreshes = 0
+            if (immediate) done.complete(result)
+            val observed = observeTrimSave(done, { refreshes++; throw refreshFailure }, saved::add, failures::add)
+            if (!immediate) done.complete(result)
+            assertSame(result, done.get(5, TimeUnit.SECONDS))
+            assertEquals(1, refreshes)
+            assertTrue(failures.isEmpty(), failures.toString())
+            assertEquals(listOfNotNull(result.output), saved)
+            assertSame(refreshFailure, assertFailsWith<ExecutionException> { observed.get(5, TimeUnit.SECONDS) }.cause)
+            assertFalse(done.complete(ReplayProjectService.TrimRun(null)))
+            assertFalse(done.completeExceptionally(IOException("late failure")))
+            assertSame(result, done.get(5, TimeUnit.SECONDS))
+        }
+    }
+
+    @Test
+    fun failedTrimStillReportsTheOperationFailureOnce() {
+        for (immediate in listOf(false, true)) {
+            val done = CompletableFuture<ReplayProjectService.TrimRun>()
+            val failure = SaveFailure(root.resolve("failed.partial"), "save failed", IOException("disk failure"))
+            val failures = mutableListOf<Throwable>()
+            if (immediate) done.completeExceptionally(failure)
+            val observed = observeTrimSave(done, { error("Failed operation must not refresh") },
+                { error("Failed operation must not report success") }, failures::add)
+            if (!immediate) done.completeExceptionally(failure)
+            observed.get(5, TimeUnit.SECONDS)
+            val reported = failures.single()
+            assertSame(failure, (reported as? java.util.concurrent.CompletionException)?.cause ?: reported)
+            assertTrue(operationFailureContent(reported).contains(
+                com.intellij.openapi.util.text.StringUtil.escapeXmlEntities(failure.partial.toString())))
+            assertSame(failure, assertFailsWith<ExecutionException> { done.get(5, TimeUnit.SECONDS) }.cause)
+            assertFalse(done.complete(ReplayProjectService.TrimRun(null)))
+            assertEquals(1, failures.size)
+        }
     }
 
     @Test
