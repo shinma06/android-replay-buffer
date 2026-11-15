@@ -21,6 +21,60 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
 class MenuBarPresenterTest {
+    @Test
+    fun `an unchanged presentation leaves the native menu intact and uses the latest dispatcher`() {
+        val surface = FakeSurface()
+        val presenter = MenuBarPresenter(surface)
+        val oldEvents = mutableListOf<MenuItemModel>()
+        val newEvents = mutableListOf<MenuItemModel>()
+        presenter.update(true, listOf(input()), MenuDispatch(oldEvents::add))
+        val original = surface.lastMenu
+        repeat(5) { presenter.update(true, listOf(input()), MenuDispatch(newEvents::add)) }
+        assertEquals(1, surface.shows, "Snapshot refreshes must not replace an unchanged native popup or image")
+        assertTrue(original === surface.lastMenu)
+        val save = flatten(surface.lastMenu!!).single { it.command == MenuBarCommand.SAVE }
+        surface.lastDispatch!!.dispatch(save)
+        assertTrue(oldEvents.isEmpty())
+        assertEquals(listOf(save), newEvents)
+        presenter.update(true, listOf(input().copy(enabled = false)), MenuDispatch(newEvents::add))
+        assertEquals(2, surface.shows, "A changed menu must still be rendered")
+    }
+
+    @Test
+    fun `failed registration is retried and hiding invalidates the presentation cache`() {
+        val surface = FakeSurface(failure = "登録失敗")
+        val presenter = MenuBarPresenter(surface)
+        repeat(2) { presenter.update(true, listOf(input()), MenuDispatch {}) }
+        assertEquals(2, surface.shows)
+        surface.failure = null
+        presenter.update(true, listOf(input()), MenuDispatch {})
+        assertEquals(3, surface.shows)
+        presenter.update(false, listOf(input()), MenuDispatch {})
+        presenter.update(true, listOf(input()), MenuDispatch {})
+        assertEquals(4, surface.shows)
+        presenter.update(true, emptyList(), MenuDispatch {})
+        val delivered = mutableListOf<MenuItemModel>()
+        presenter.update(true, listOf(input()), MenuDispatch(delivered::add))
+        assertEquals(5, surface.shows)
+        val staleDispatch = surface.lastDispatch!!
+        presenter.close()
+        assertFalse(presenter.shown)
+        staleDispatch.dispatch(flatten(surface.lastMenu!!).first { it.command == MenuBarCommand.SAVE })
+        assertTrue(delivered.isEmpty(), "An event from the removed icon must not reach project operations")
+    }
+
+    @Test
+    fun `a rejected capture change resynchronizes the native checkbox even when the model is unchanged`() {
+        val surface = FakeSurface()
+        val presenter = MenuBarPresenter(surface)
+        presenter.update(true, listOf(input()), MenuDispatch {})
+        val toggle = flatten(surface.lastMenu!!).single { it.command == MenuBarCommand.TOGGLE_CAPTURE }
+        surface.lastDispatch!!.dispatch(toggle.copy(checked = !toggle.checked))
+        presenter.update(true, listOf(input()), MenuDispatch {})
+        assertEquals(2, surface.shows, "A checkbox mutates before dispatch, so a rejected change must restore it")
+        assertEquals(toggle.checked, flatten(surface.lastMenu!!).single { it.command == MenuBarCommand.TOGGLE_CAPTURE }.checked)
+    }
+
     private fun input(name: String = "MyApp") = MenuProjectInput(
         "id-$name", name,
         ReplaySnapshot(1, 1, true, CaptureState.CAPTURING,
@@ -131,7 +185,7 @@ class MenuBarPresenterTest {
 
     private fun stubImage(): Image = java.awt.image.BufferedImage(4, 4, java.awt.image.BufferedImage.TYPE_INT_ARGB)
 
-    private class FakeSurface(val unavailable: String? = null, val failure: String? = null) : TraySurface {
+    private class FakeSurface(val unavailable: String? = null, var failure: String? = null) : TraySurface {
         var shows = 0
         var hideCalls = 0
         var closed = false
