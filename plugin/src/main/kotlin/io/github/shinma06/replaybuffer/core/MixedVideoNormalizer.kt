@@ -78,6 +78,7 @@ internal class MixedVideoNormalizer(private val configs: List<ByteArray>, minimu
     val levelIdc = mixedVideoLevel(width, height, minimumSourceDurationUs)
     private val maxMbps = if (levelIdc == 51) 983_040L else 2_073_600L
     val colourKnown = sources.all { colour(it.vuiParams).last() == true }
+    // JCodec's encoder requires this label even for limited samples; the output SPS carries the actual range.
     private val canvas = Picture.create(width, height, ColorSpace.YUV420J)
     private val encoded = ByteBuffer.allocate(width * height * 3)
     private lateinit var decoder: H264Decoder
@@ -158,7 +159,11 @@ internal class MixedVideoNormalizer(private val configs: List<ByteArray>, minimu
             }
         }
         require(slices > 0) { "変換元packetに映像sliceがありません" }
-        return decoder.decodeFrame(ByteBuffer.wrap(bytes.copyOf()), planes).cloneCropped()
+        val decoded = decoder.decodeFrame(ByteBuffer.wrap(bytes.copyOf()), planes).cloneCropped()
+        // JCodec 0.2.5 labels every decoded H.264 frame YUV420, including full-range VUI.
+        val fullRange = source.vuiParams?.let { it.videoSignalTypePresentFlag && it.videoFullRangeFlag } == true
+        return Picture.createPicture(decoded.width, decoded.height, decoded.data,
+            if (fullRange) ColorSpace.YUV420J else ColorSpace.YUV420)
     }
 
     /** Advances the decoder through one packet without encoding, for frames that only build reference state. */
