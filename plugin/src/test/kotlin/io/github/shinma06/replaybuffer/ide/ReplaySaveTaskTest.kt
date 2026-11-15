@@ -305,14 +305,26 @@ class ReplaySaveTaskTest {
     @Test
     fun deferredWarningStillPrecedesTrimStaging() = pendingWarning("none")
 
-    private fun pendingWarning(reason: String) {
+    @Test
+    fun deferredWarningStillPrecedesTrimStagingWithAliasedListing() = pendingWarning("none", root.resolve("."))
+
+    private fun pendingWarning(reason: String, listing: Path = root) {
+        fun assertEntries(vararg expected: Path) {
+            val remaining = Files.list(listing).use { it.toList().toMutableList() }
+            assertEquals(expected.size, remaining.size)
+            expected.forEach { path ->
+                val index = remaining.indexOfFirst { Files.isSameFile(path, it) }
+                assertTrue(index >= 0, "$path not found in $remaining")
+                remaining.removeAt(index)
+            }
+        }
         val pending = PendingNotification()
         val notices = AtomicInteger()
         lateinit var source: Path
         withService(notify = { notification ->
             assertEquals(NotificationType.WARNING, notification.type)
             assertTrue(notification.content.contains("時計対応が不明"))
-            assertEquals(listOf(source), Files.list(root).use { it.toList() })
+            assertEntries(source)
             notices.incrementAndGet()
         }, uiWait = pending::invokeAndWait) { queue, service ->
             source = unknownClockSource()
@@ -336,7 +348,7 @@ class ReplaySaveTaskTest {
                 assertTrue(indicator.isRunning)
                 assertFalse(done.isDone)
                 assertEquals(0, notices.get())
-                assertEquals(listOf(source), Files.list(root).use { it.toList() })
+                assertEntries(source)
                 when (reason) {
                     "token" -> cancel.set(true)
                     "service" -> { service.dispose(); assertFalse(task.project!!.isDisposed) }
@@ -351,9 +363,9 @@ class ReplaySaveTaskTest {
                 assertNull(pending.runnable.get())
                 if (reason == "none") {
                     assertFalse(indicator.isCanceled)
-                    assertNotNull(result.output)
+                    val output = assertNotNull(result.output)
                     assertEquals(1, notices.get())
-                    assertEquals(setOf(source, result.output), Files.list(root).use { it.toList().toSet() })
+                    assertEntries(source, output)
                 } else {
                     assertEquals(1L, pending.released.count)
                     assertTrue(indicator.isCanceled)
@@ -362,7 +374,7 @@ class ReplaySaveTaskTest {
                     assertEquals(result, done.get(5, TimeUnit.SECONDS))
                     pending.dispatch()
                     assertEquals(0, notices.get())
-                    assertEquals(listOf(source), Files.list(root).use { it.toList() })
+                    assertEntries(source)
                 }
                 assertUnchanged(source, before)
             } finally {
