@@ -1,0 +1,15 @@
+<idea-plugin>
+  <id>privateacceptance.windows.ownerless.menu.prototype</id>
+  <name>Windows Ownerless Menu Prototype — dummy only</name>
+  <version>1.0-prototype</version>
+  <vendor>Private acceptance</vendor>
+  <description>Windows専用独立診断。製品A/Bなし、全操作dummy。</description>
+  <idea-version since-build="262" until-build="262.*"/>
+  <depends>com.intellij.modules.platform</depends>
+  <actions>
+    <action id="privateacceptance.windowsmenu.Start" class="privateacceptance.windowsmenu.StartAction"
+            text="Windows独自menu試作を開始" description="製品なし・dummyのみ">
+      <add-to-group group-id="ToolsMenu" anchor="last"/>
+    </action>
+  </actions>
+</idea-plugin>
