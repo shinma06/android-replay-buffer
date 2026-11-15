@@ -83,8 +83,10 @@ internal object ReplayFrameExport {
     fun rgbImage(decoded: Picture): BufferedImage {
         val rgb = Picture.create(decoded.width, decoded.height, ColorSpace.RGB)
         Yuv420jToRgb().transform(decoded, rgb)
+        val pixels = rgb.getPlaneData(0)
+        for (i in pixels.indices) pixels[i] = (pixels[i].toInt() + 128).toByte()
         val raster = Raster.createInterleavedRaster(
-            DataBufferByte(rgb.getPlaneData(0), decoded.width * decoded.height * 3),
+            DataBufferByte(pixels, decoded.width * decoded.height * 3),
             decoded.width, decoded.height, decoded.width * 3, 3, intArrayOf(0, 1, 2), null)
         val colorModel = ComponentColorModel(java.awt.color.ColorSpace.getInstance(java.awt.color.ColorSpace.CS_sRGB),
             false, false, java.awt.Transparency.OPAQUE, java.awt.image.DataBuffer.TYPE_BYTE)
