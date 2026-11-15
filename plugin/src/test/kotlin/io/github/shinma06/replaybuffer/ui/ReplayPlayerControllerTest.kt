@@ -39,6 +39,32 @@ class ReplayPlayerControllerTest {
     }
 
     @Test
+    fun viewPngCancelButtonAndEscapeUseTheExistingTokenOnlyOnce() = withController { controller ->
+        val token = controller.javaClass.getDeclaredField("taskCancel").apply { isAccessible = true }
+        val edit = controller.javaClass.getDeclaredMethod("edit", Function2::class.java).apply { isAccessible = true }
+        SwingUtilities.invokeAndWait {
+            val before = controller.state.editor
+            for (buttonFirst in listOf(true, false)) {
+                val start: (TrimRules, TrimEditor) -> TrimEditor = { rules, _ -> rules.taskStarted(before, TaskKind.FRAME) }
+                edit.invoke(controller, start)
+                val cancel = AtomicBoolean()
+                token.set(controller, cancel)
+                if (buttonFirst) controller.button(PlayerButton.CANCEL) else controller.cancel()
+                assertTrue(cancel.get())
+                assertEquals(before.copy(task = TaskKind.FRAME, cancelling = true), controller.state.editor)
+                val button = controller.barModel().buttons.single { it.id == PlayerButton.CANCEL }
+                assertEquals("中止しています…", button.label)
+                assertFalse(button.enabled)
+                // Reset the probe so a second abort request would be observable.
+                cancel.set(false)
+                controller.button(PlayerButton.CANCEL)
+                controller.cancel()
+                assertFalse(cancel.get())
+            }
+        }
+    }
+
+    @Test
     fun returningToTheShownFrameRejectsAnObsoleteSeekResult() = withController { controller ->
         val worker = controller.javaClass.getDeclaredField("executor").apply { isAccessible = true }.get(controller) as ExecutorService
         val held = CountDownLatch(1)
