@@ -50,24 +50,55 @@ class ReplayTrimTest {
         assertEquals(before.mapValues { sha(it.value) }, hashes(dir))
     }
 
-    private fun pngText(file: Path): Map<String, String> {
+    private data class PngChunk(val type: String, val data: ByteArray, val bytes: ByteArray)
+
+    private fun pngChunks(file: Path): List<PngChunk> {
         val bytes = Files.readAllBytes(file)
         validateScreenshotPng(bytes)
         val buffer = ByteBuffer.wrap(bytes).apply { position(8) }
-        val text = linkedMapOf<String, String>()
+        val chunks = mutableListOf<PngChunk>()
         while (buffer.hasRemaining()) {
+            val start = buffer.position()
             val size = buffer.int
             val type = ByteArray(4).also { buffer.get(it) }
             val data = ByteArray(size).also { buffer.get(it) }
-            buffer.int
-            if (String(type, Charsets.US_ASCII) == "tEXt") {
-                val separator = data.indexOf(0.toByte())
-                assertTrue(separator > 0)
-                val key = String(data, 0, separator, Charsets.ISO_8859_1)
-                assertNull(text.put(key, String(data, separator + 1, data.size - separator - 1, Charsets.ISO_8859_1)), key)
-            }
+            assertEquals(java.util.zip.CRC32().apply { update(type); update(data) }.value.toInt(), buffer.int)
+            chunks += PngChunk(String(type, Charsets.US_ASCII), data, bytes.copyOfRange(start, buffer.position()))
+        }
+        return chunks
+    }
+
+    private fun pngText(file: Path): Map<String, String> {
+        val text = linkedMapOf<String, String>()
+        for ((type, data) in pngChunks(file)) {
+            if (type !in listOf("tEXt", "iTXt")) continue
+            val separator = data.indexOf(0.toByte())
+            assertTrue(separator > 0)
+            val key = String(data, 0, separator, Charsets.ISO_8859_1)
+            val offset = if (type == "iTXt") {
+                assertContentEquals(ByteArray(4), data.copyOfRange(separator + 1, separator + 5))
+                separator + 5
+            } else separator + 1
+            val charset = if (type == "iTXt") Charsets.UTF_8 else Charsets.ISO_8859_1
+            assertNull(text.put(key, String(data, offset, data.size - offset, charset)), key)
         }
         return text
+    }
+
+    private fun imageIoText(file: Path, type: String, key: String): String {
+        javax.imageio.ImageIO.createImageInputStream(file.toFile()).use { input ->
+            val reader = javax.imageio.ImageIO.getImageReaders(input).next()
+            try {
+                reader.input = input
+                val tree = reader.getImageMetadata(0).getAsTree("javax_imageio_png_1.0") as org.w3c.dom.Element
+                val entries = tree.getElementsByTagName("${type}Entry")
+                val entry = (0 until entries.length).map { entries.item(it) as org.w3c.dom.Element }
+                    .single { it.getAttribute("keyword") == key }
+                return entry.getAttribute(if (type == "iTXt") "text" else "value")
+            } finally {
+                reader.dispose()
+            }
+        }
     }
 
     private fun packets(dir: Path): List<MP4Packet> {
@@ -745,6 +776,54 @@ class ReplayTrimTest {
         val image = javax.imageio.ImageIO.read(file.toFile())
         assertEquals(32, image.width); assertEquals(32, image.height)
         assertUnchanged(source, before)
+    }
+
+    @Test
+    fun frameExportPreservesJapaneseFolderNamesWithItxt() = checkFolderMetadata(listOf("記録_日本語"), "iTXt")
+
+    @Test
+    fun frameExportPreservesEmojiFolderNamesWithItxt() = checkFolderMetadata(listOf("capture-😀-🚀", "café_日本語😀"), "iTXt")
+
+    @Test
+    fun frameExportPreservesLatin1FolderTextBytes() = checkFolderMetadata(listOf("ASCII-source", "réplay-café-Àÿ"), "tEXt")
+
+    private fun checkFolderMetadata(names: List<String>, type: String) = withRuns(listOf(List(10) { it * 100_000L })) { root, _, capture, _, _ ->
+        for (known in listOf(false, true)) {
+            val video = capture.video.map { it.copy(time = MappedTime(it.pts * 1000, 0, 0)) }
+            val parent = Files.createDirectory(root.resolve("saves-$known"))
+            var source = write(if (known) capture.copy(video = video, start = 0, end = 1_000_000_000, endUncertainty = 0) else capture, parent).directory
+            val before = fileBytes(source)
+            assertEquals(7, before.size)
+            val row = rows(source)[4]
+            val at = row["movie_pts_us"].asLong + 1
+            val destination = Files.createDirectory(root.resolve("folder-shots-$known"))
+            val baseline = ReplayFrameExport.export(source, at, destination)
+            val baselineText = pngText(baseline)
+            assertEquals(known, "arb:t_ns" in baselineText)
+            assertEquals(known, "arb:display_t_ns" in baselineText)
+            val prefix = "arb:source_folder\u0000"
+            fun folderChunk(chunk: PngChunk) = chunk.type in listOf("tEXt", "iTXt") && String(chunk.data, Charsets.ISO_8859_1).startsWith(prefix)
+            val unchanged = pngChunks(baseline).filterNot(::folderChunk)
+            for (name in names) {
+                source = Files.move(source, source.resolveSibling(name))
+                val png = ReplayFrameExport.export(source, at, destination)
+                val chunks = pngChunks(png)
+                val folder = chunks.single(::folderChunk)
+                val text = pngText(png)
+                assertEquals(name, text["arb:source_folder"])
+                assertEquals(type, folder.type)
+                assertEquals(name, imageIoText(png, type, "arb:source_folder"))
+                assertEquals(baselineText + ("arb:source_folder" to name), text)
+                assertEquals(if (type == "iTXt") 1 else 0, chunks.count { it.type == "iTXt" })
+                val expected = if (type == "iTXt") prefix.toByteArray(Charsets.ISO_8859_1) + ByteArray(4) + name.toByteArray(Charsets.UTF_8)
+                    else (prefix + name).toByteArray(Charsets.ISO_8859_1)
+                assertContentEquals(expected, folder.data)
+                val other = chunks.filterNot(::folderChunk)
+                assertEquals(unchanged.size, other.size)
+                unchanged.zip(other).forEach { (a, b) -> assertContentEquals(a.bytes, b.bytes) }
+                assertUnchanged(source, before)
+            }
+        }
     }
 
     @Test
