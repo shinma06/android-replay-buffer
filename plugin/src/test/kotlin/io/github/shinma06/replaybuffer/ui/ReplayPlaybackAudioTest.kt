@@ -22,6 +22,8 @@ import java.security.MessageDigest
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 import javax.sound.sampled.AudioFormat
 import javax.sound.sampled.SourceDataLine
 import kotlin.math.abs
@@ -99,6 +101,250 @@ class ReplayPlaybackAudioTest {
         onsets.zipWithNext().forEach { (a, b) -> assertTrue(abs(b - a - 1.0) < .015, onsets.toString()) }
     }
 
+    @Test
+    fun outputReturningAfterTheAudioDeadlineCannotRewindOrStart() {
+        val nanos = AtomicLong()
+        val factoryEntered = CountDownLatch(1)
+        val releaseFactory = CountDownLatch(1)
+        val videoRunning = CountDownLatch(1)
+        val releaseVideo = CountDownLatch(1)
+        val releaseWrite = CountDownLatch(1)
+        val output = Output().apply { beforeWrite = { releaseWrite.await() } }
+        val notices = ConcurrentLinkedQueue<String>()
+        val from = 2_025_000L
+        val session = ReplayPlaybackSession(fixture(), from, 8_000_000,
+            { videoRunning.countDown(); releaseVideo.await() }, {}, notices::add,
+            audioOutput = { factoryEntered.countDown(); releaseFactory.await(); output.line },
+            nanoTime = nanos::get,
+            awaitAudio = { await(factoryEntered); false })
+        try {
+            session.start()
+            await(videoRunning)
+            nanos.addAndGet(300_000_000)
+            val before = session.nowUs()
+            assertEquals(from + 300_000, before)
+            releaseFactory.countDown()
+            await(output.settled)
+            assertTrue(session.nowUs() >= before, "late audio rewound the running video clock")
+            assertEquals(0, output.starts.get())
+            assertEquals(0, output.writes.get())
+            assertEquals(1, notices.size)
+        } finally {
+            session.stop()
+            releaseFactory.countDown(); releaseVideo.countDown(); releaseWrite.countDown()
+            await(output.closed)
+        }
+    }
+
+    @Test
+    fun openOrStartAlreadyInFlightCannotBeAdoptedAfterTheDeadline() {
+        for (stage in listOf("open", "start")) {
+            val init = Gate()
+            val video = Gate()
+            val nanos = AtomicLong()
+            val notices = ConcurrentLinkedQueue<String>()
+            val output = Output().apply {
+                if (stage == "open") beforeOpen = init::block else beforeStart = init::block
+            }
+            val session = ReplayPlaybackSession(fixture(), 2_025_000, 8_000_000,
+                { video.block() }, {}, notices::add, audioOutput = { output.line },
+                nanoTime = nanos::get, awaitAudio = { await(init.entered); false })
+            try {
+                session.start()
+                await(video.entered)
+                nanos.addAndGet(300_000_000)
+                val before = session.nowUs()
+                init.release.countDown()
+                await(output.closed)
+                assertEquals(before, session.nowUs(), stage)
+                assertEquals(if (stage == "start") 1 else 0, output.starts.get(), stage)
+                assertEquals(0, output.writes.get(), stage)
+                assertEquals(1, output.closes.get(), stage)
+                assertEquals(1, notices.size, stage)
+            } finally {
+                session.stop(); init.release.countDown(); video.release.countDown()
+                await(output.closed)
+            }
+        }
+    }
+
+    @Test
+    fun audioWinningAtTheDeadlineKeepsTheSeekOriginAndAudioClock() {
+        for (from in listOf(0L, 2_025_000L)) {
+            val write = Gate()
+            val video = Gate()
+            val nanos = AtomicLong()
+            val notices = ConcurrentLinkedQueue<String>()
+            val output = Output().apply { beforeWrite = write::block }
+            val session = ReplayPlaybackSession(fixture(), from, 8_000_000,
+                { video.block() }, {}, notices::add, audioOutput = { output.line },
+                nanoTime = nanos::get, awaitAudio = { await(write.entered); false })
+            try {
+                session.start()
+                await(video.entered)
+                nanos.addAndGet(300_000_000)
+                assertEquals(from, session.nowUs())
+                output.position.set(250_000)
+                assertEquals(from + 250_000, session.nowUs())
+                assertEquals(1, output.starts.get())
+                assertTrue(notices.isEmpty(), notices.toString())
+            } finally {
+                session.stop(); write.release.countDown(); video.release.countDown()
+                await(output.closed)
+            }
+        }
+    }
+
+    @Test
+    fun stopDuringFactoryOpenOrStartClosesLateOutputWithoutRevivingPlayback() {
+        for (stage in listOf("factory", "open", "start")) {
+            val init = Gate()
+            val waitingVideo = CountDownLatch(1)
+            val videoExited = CountDownLatch(1)
+            val callbacks = ConcurrentLinkedQueue<String>()
+            val output = Output().apply {
+                if (stage == "open") beforeOpen = init::block
+                if (stage == "start") beforeStart = init::block
+            }
+            val session = ReplayPlaybackSession(fixture(), 2_025_000, 8_000_000,
+                { callbacks.add("frame") }, { callbacks.add("finished") }, { callbacks.add("audio") },
+                audioOutput = { if (stage == "factory") init.block(); output.line },
+                awaitAudio = {
+                    waitingVideo.countDown()
+                    try { CountDownLatch(1).await(); false } finally { videoExited.countDown() }
+                })
+            try {
+                session.start()
+                await(init.entered); await(waitingVideo)
+                session.stop()
+                await(videoExited)
+                init.release.countDown()
+                await(output.closed)
+                assertEquals(if (stage == "start") 1 else 0, output.starts.get(), stage)
+                assertEquals(0, output.writes.get(), stage)
+                assertEquals(1, output.closes.get(), stage)
+                assertTrue(callbacks.isEmpty(), "$stage: $callbacks")
+            } finally {
+                session.stop(); init.release.countDown()
+                await(output.closed)
+            }
+        }
+    }
+
+    @Test
+    fun audioFailureFallsBackContinuouslyAndNotifiesOnce() {
+        for (stage in listOf("write", "drain")) {
+            val failure = Gate()
+            val video = Gate()
+            val nanos = AtomicLong()
+            val notices = ConcurrentLinkedQueue<String>()
+            val output = Output().apply {
+                position.set(350_000)
+                val fail = { failure.block(); error("synthetic $stage failure") }
+                if (stage == "write") beforeWrite = fail else beforeDrain = fail
+                beforeClose = { position.set(0) }
+            }
+            val session = ReplayPlaybackSession(fixture(), 2_025_000, 8_000_000,
+                { video.block() }, {}, notices::add, audioOutput = { output.line },
+                nanoTime = nanos::get, awaitAudio = { await(failure.entered); true })
+            try {
+                session.start()
+                await(video.entered)
+                val before = session.nowUs()
+                assertEquals(2_375_000L, before)
+                failure.release.countDown()
+                await(output.closed)
+                assertEquals(before, session.nowUs(), stage)
+                nanos.addAndGet(150_000_000)
+                assertEquals(before + 150_000, session.nowUs(), stage)
+                assertEquals(1, notices.size, stage)
+                assertEquals(1, output.closes.get(), stage)
+            } finally {
+                session.stop(); failure.release.countDown(); video.release.countDown()
+                await(output.closed)
+            }
+        }
+    }
+
+    @Test
+    fun failedOpenOrStartClosesTheCandidateAndUsesMonotonicTimeOnce() {
+        for (stage in listOf("open", "start")) {
+            val video = Gate()
+            val nanos = AtomicLong()
+            val notices = ConcurrentLinkedQueue<String>()
+            val output = Output().apply {
+                val fail = { error("synthetic $stage failure") }
+                if (stage == "open") beforeOpen = fail else beforeStart = fail
+            }
+            val session = ReplayPlaybackSession(fixture(), 2_025_000, 8_000_000,
+                { video.block() }, {}, notices::add, audioOutput = { output.line },
+                nanoTime = nanos::get, awaitAudio = { await(it); true })
+            try {
+                session.start()
+                await(video.entered); await(output.closed)
+                assertEquals(2_025_000L, session.nowUs(), stage)
+                nanos.addAndGet(150_000_000)
+                assertEquals(2_175_000L, session.nowUs(), stage)
+                assertEquals(0, output.writes.get(), stage)
+                assertEquals(1, output.closes.get(), stage)
+                assertEquals(1, notices.size, stage)
+            } finally {
+                session.stop(); video.release.countDown()
+                await(output.closed)
+            }
+        }
+    }
+
+    @Test
+    fun stopUnblocksWriteOrDrainAndClosesWithoutAnAudioWarning() {
+        for (stage in listOf("write", "drain")) {
+            val io = Gate()
+            val video = Gate()
+            val notices = ConcurrentLinkedQueue<String>()
+            val output = Output().apply {
+                if (stage == "write") beforeWrite = io::block else beforeDrain = io::block
+                beforeStop = { io.release.countDown() }
+            }
+            val session = ReplayPlaybackSession(fixture(), 0, 8_000_000,
+                { video.block() }, {}, notices::add, audioOutput = { output.line },
+                awaitAudio = { await(io.entered); true })
+            try {
+                session.start()
+                await(video.entered)
+                session.stop()
+                await(output.closed)
+                assertEquals(1, output.closes.get(), stage)
+                assertEquals(if (stage == "drain") 1 else 0, output.drains.get(), stage)
+                assertTrue(notices.isEmpty(), "$stage: $notices")
+            } finally {
+                session.stop(); io.release.countDown(); video.release.countDown()
+                await(output.closed)
+            }
+        }
+    }
+
+    private class Gate {
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+
+        fun block() {
+            entered.countDown()
+            var interrupted = false
+            try {
+                while (true) {
+                    try {
+                        check(release.await(10, TimeUnit.SECONDS)) { "gate was not released" }
+                        return
+                    } catch (_: InterruptedException) { interrupted = true }
+                }
+            } finally { if (interrupted) Thread.currentThread().interrupt() }
+        }
+    }
+
+    private fun await(latch: CountDownLatch) {
+        assertTrue(latch.await(10, TimeUnit.SECONDS), "playback latch did not complete")
+    }
+
     private fun play(folder: Path, fromUs: Long = 0): Output {
         val output = Output()
         val finished = CountDownLatch(1)
@@ -120,21 +366,39 @@ class ReplayPlaybackAudioTest {
         private val bytes = ByteArrayOutputStream()
         val pcm: ByteArray get() = bytes.toByteArray()
         val closed = CountDownLatch(1)
+        val settled = CountDownLatch(1)
+        val starts = AtomicInteger()
+        val writes = AtomicInteger()
+        val closes = AtomicInteger()
+        val drains = AtomicInteger()
+        val position = AtomicLong(-1)
+        var beforeOpen: () -> Unit = {}
+        var beforeStart: () -> Unit = {}
+        var beforeWrite: () -> Unit = {}
+        var beforeDrain: () -> Unit = {}
+        var beforeClose: () -> Unit = {}
+        var beforeStop: () -> Unit = {}
         @Volatile private var drained = false
         val line = Proxy.newProxyInstance(SourceDataLine::class.java.classLoader, arrayOf(SourceDataLine::class.java)) { _, method, args ->
             when (method.name) {
-                "open" -> { format = args[0] as AudioFormat; null }
-                "start", "stop", "flush" -> null
+                "open" -> { format = args[0] as AudioFormat; beforeOpen(); null }
+                "start" -> { starts.incrementAndGet(); beforeStart(); null }
+                "stop" -> { beforeStop(); null }
+                "flush" -> null
                 "write" -> {
+                    writes.incrementAndGet()
+                    settled.countDown()
+                    beforeWrite()
                     val count = args[2] as Int
                     assertEquals(0, (args[1] as Int) % format.frameSize)
                     assertEquals(0, count % format.frameSize)
                     bytes.write(args[0] as ByteArray, args[1] as Int, count)
                     count
                 }
-                "getMicrosecondPosition" -> if (drained) (bytes.size() / format.frameSize * 1_000_000L / format.sampleRate.toInt()) else 0L
-                "drain" -> { drained = true; null }
-                "close" -> { closed.countDown(); null }
+                "getMicrosecondPosition" -> position.get().takeIf { it >= 0 } ?:
+                    if (drained) (bytes.size() / format.frameSize * 1_000_000L / format.sampleRate.toInt()) else 0L
+                "drain" -> { drains.incrementAndGet(); beforeDrain(); drained = true; null }
+                "close" -> { closes.incrementAndGet(); beforeClose(); settled.countDown(); closed.countDown(); null }
                 else -> error("Unexpected audio line call: ${method.name}")
             }
         } as SourceDataLine
