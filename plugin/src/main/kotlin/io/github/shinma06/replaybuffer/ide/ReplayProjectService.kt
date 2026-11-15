@@ -19,10 +19,8 @@ import com.intellij.openapi.components.Service
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.ide.CopyPasteManager
 import com.intellij.openapi.fileEditor.FileEditorManager
-import com.intellij.openapi.progress.EmptyProgressIndicator
 import com.intellij.openapi.progress.ProcessCanceledException
 import com.intellij.openapi.progress.ProgressIndicator
-import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.progress.Task
 import com.intellij.openapi.project.DumbAware
 import com.intellij.openapi.project.DumbService
@@ -580,18 +578,15 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
     internal fun exportReplayFrame(folder: Path, atUs: Long, cancel: AtomicBoolean = AtomicBoolean()): CompletableFuture<Path?> {
         val done = CompletableFuture<Path?>()
         if (!alive) { done.completeExceptionally(IllegalStateException("projectが終了しています。")); return done }
-        ProgressManager.getInstance().runProcessWithProgressAsynchronously(object : Task.Backgroundable(project, "静止画を保存しています", true) {
-            override fun run(indicator: ProgressIndicator) {
-                indicator.isIndeterminate = true
-                try {
-                    done.complete(ReplayFrameExport.export(folder, atUs, frameDestination(), checkActive = {
-                        if (indicator.isCanceled || cancel.get()) throw SaveCancelled(null)
-                    }))
-                }
-                catch (_: SaveCancelled) { done.complete(null) }
-                catch (failure: Throwable) { done.completeExceptionally(failure) }
+        queueReplaySave(project, "静止画を保存しています", done, null) { indicator ->
+            fun checkActive() {
+                if (!alive || indicator.isCanceled || cancel.get()) throw SaveCancelled(null)
             }
-        }, EmptyProgressIndicator())
+            try {
+                checkActive()
+                ReplayFrameExport.export(folder, atUs, frameDestination(), checkActive = ::checkActive)
+            } catch (_: SaveCancelled) { null }
+        }
         done.thenAccept { file -> if (file != null) onUi { notifyFrameSaved(file) } }
             .exceptionally { failure ->
                 onUi { notifyOperationFailed("静止画を保存できませんでした", failure) }; null
@@ -606,14 +601,10 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
     internal fun trimReplay(folder: Path, fromUs: Long, toUs: Long, cancel: AtomicBoolean = AtomicBoolean()): CompletableFuture<TrimRun> {
         val done = CompletableFuture<TrimRun>()
         if (!alive) { done.completeExceptionally(IllegalStateException("projectが終了しています。")); return done }
-        ProgressManager.getInstance().runProcessWithProgressAsynchronously(object : Task.Backgroundable(project, "動画を切り取っています", true) {
-            override fun run(indicator: ProgressIndicator) {
-                indicator.isIndeterminate = true
-                try { done.complete(TrimRun(ReplayTrim().trim(folder, fromUs, toUs, { indicator.isCanceled || cancel.get() }, { it.publish() }))) }
-                catch (cancelled: SaveCancelled) { done.complete(TrimRun(null, cancelled.partial)) }
-                catch (failure: Throwable) { done.completeExceptionally(failure) }
-            }
-        }, EmptyProgressIndicator())
+        queueReplaySave(project, "動画を切り取っています", done, TrimRun(null)) { indicator ->
+            try { TrimRun(ReplayTrim().trim(folder, fromUs, toUs, { !alive || indicator.isCanceled || cancel.get() }, { it.publish() })) }
+            catch (cancelled: SaveCancelled) { TrimRun(null, cancelled.partial) }
+        }
         done.thenAccept { run ->
             folder.parent?.let { LocalFileSystem.getInstance().refreshAndFindFileByNioFile(it) }?.refresh(false, true)
             run.output?.let { output -> onUi { notifyTrimmed(output) } }
@@ -713,6 +704,34 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
 
     companion object {
         val ENVIRONMENT_CHANGED: Topic<Runnable> = Topic.create("Android Replay Buffer environment changed", Runnable::class.java)
+    }
+}
+
+internal fun <T> queueReplaySave(project: Project, title: String, done: CompletableFuture<T>, cancelled: T,
+                                 action: (ProgressIndicator) -> T) {
+    val task = object : Task.Backgroundable(project, title, true) {
+        override fun run(indicator: ProgressIndicator) {
+            try {
+                indicator.isIndeterminate = true
+                done.complete(action(indicator))
+            } catch (failure: ProcessCanceledException) {
+                done.complete(cancelled)
+                throw failure
+            } catch (failure: Throwable) {
+                done.completeExceptionally(failure)
+            }
+        }
+
+        override fun onCancel() { done.complete(cancelled) }
+        override fun onThrowable(error: Throwable) { done.completeExceptionally(error) }
+    }
+    try {
+        task.setCancelText("中止").queue()
+    } catch (failure: ProcessCanceledException) {
+        done.complete(cancelled)
+        throw failure
+    } catch (failure: Throwable) {
+        done.completeExceptionally(failure)
     }
 }
 

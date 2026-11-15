@@ -11,6 +11,7 @@ import java.nio.file.Path
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import javax.swing.SwingUtilities
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -27,6 +28,15 @@ class ReplayPlayerControllerTest {
 
     @Test
     fun markingInPausesBeforeChangingThePlaybackRange() = markWhilePlaying(out = false)
+
+    @Test
+    fun closingTheTabLeavesTheBackgroundSaveTokenUncancelled() {
+        val cancel = AtomicBoolean()
+        withController { controller ->
+            controller.javaClass.getDeclaredField("taskCancel").apply { isAccessible = true }.set(controller, cancel)
+        }
+        assertFalse(cancel.get())
+    }
 
     @Test
     fun returningToTheShownFrameRejectsAnObsoleteSeekResult() = withController { controller ->
