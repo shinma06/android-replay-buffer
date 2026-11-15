@@ -766,7 +766,7 @@ internal class CaptureStore(
             frame.copy(time = clock.video(frame.pts, frame.host, frame.time.region, reference))
         }
         var value = FrozenCapture(UUID.randomUUID().toString(), sequence, generation, start, end,
-            settings.replaySeconds, frames.toList(), rows.toList(), gaps.filter { withVideo || it.stream != "video" }, clock.snapshot(), apps.toList(), settings,
+            settings.replaySeconds, frames.toList(), rows.toList(), gaps.filter { withVideo || (it.stream != "video" && it.stream != "audio") }, clock.snapshot(), apps.toList(), settings,
             streams(settings.replaySeconds, end), endUncertainty = uncertainty, windowClockRegion = fixedRegion ?: clock.currentRegion(),
             clockRecoveries = clockRecoveries.toMap(), videoCuts = videoCuts.toMap(), hostStart = hostStart,
             touches = touchRows, heldTouches = heldTouches, touchState = touchState.takeIf { withVideo },
