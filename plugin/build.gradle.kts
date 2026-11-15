@@ -45,6 +45,32 @@ repositories {
     intellijPlatform { defaultRepositories() }
 }
 
+val jcodecUpstream = configurations.create("jcodecUpstream")
+dependencies { add(jcodecUpstream.name, "org.jcodec:jcodec:0.2.5") }
+val verifyJcodecInput = tasks.register("verifyJcodecInput") {
+    inputs.files(jcodecUpstream)
+    doLast {
+        verifyCaptureInput("jcodec-0.2.5.jar", jcodecUpstream.singleFile,
+            "890329dad124e8b739c1d6602a59a53c8a474daddff265c2561e21c498496c81")
+    }
+}
+val compileJcodecCompat = tasks.register<JavaCompile>("compileJcodecCompat") {
+    source = fileTree("src/jcodecCompat/java") { include("**/*.java") }
+    classpath = files()
+    destinationDirectory.set(layout.buildDirectory.dir("jcodec-compat/classes"))
+}
+// Keep one copy of each class: tests and the shipped plugin use the same repaired JAAD table.
+val jcodecPlayback = tasks.register<Jar>("jcodecPlayback") {
+    dependsOn(verifyJcodecInput, compileJcodecCompat)
+    from(provider { zipTree(jcodecUpstream.singleFile) }) {
+        exclude("net/sourceforge/jaad/aac/syntax/IQTable.class", "META-INF/MANIFEST.MF")
+    }
+    from(compileJcodecCompat.flatMap { it.destinationDirectory })
+    manifest.attributes("Implementation-Title" to "JCodec (JAAD IQTable repair)", "Implementation-Version" to "0.2.5")
+    archiveFileName.set("jcodec-0.2.5.jar")
+    destinationDirectory.set(layout.buildDirectory.dir("jcodec-compat"))
+}
+
 dependencies {
     intellijPlatform {
         if (providers.gradleProperty("useLocalPlatform").orNull == "true") {
@@ -57,7 +83,7 @@ dependencies {
         @Suppress("UnstableApiUsage")
         composeUI()
     }
-    implementation("org.jcodec:jcodec:0.2.5")
+    implementation(files(jcodecPlayback))
     testImplementation(kotlin("test-junit5"))
     testImplementation(platform("org.junit:junit-bom:6.1.3"))
     testImplementation("org.junit.jupiter:junit-jupiter")
@@ -126,12 +152,11 @@ dependencies {
     add(clockCompiler.name, "com.android.tools:r8:9.5.26")
 }
 val verifyCaptureInputs = tasks.register("verifyCaptureInputs") {
+    dependsOn(verifyJcodecInput)
     val runtime = configurations.named("runtimeClasspath")
     inputs.files(clockCompiler, clockLibrary, runtime)
     inputs.file("src/main/resources/replay/deps/scrcpy-server-v5.0.1")
     doLast {
-        val jcodec = runtime.get().files.single { it.name == "jcodec-0.2.5.jar" }
-        verifyCaptureInput("jcodec-0.2.5.jar", jcodec, "890329dad124e8b739c1d6602a59a53c8a474daddff265c2561e21c498496c81")
         verifyCaptureInput("r8-9.5.26.jar", clockCompiler.singleFile, "3502f087388ce95bbf5254555927f09385dc2636873964d0bd53f3eaf4fb49ad")
         verifyCaptureInput("android-37.2/android.jar", clockLibrary.singleFile, "1db2419dbd45457f83b90ef8a7ef41e118174782c9a5c2185b55899df022767f")
         val server = file("src/main/resources/replay/deps/scrcpy-server-v5.0.1")
@@ -227,7 +252,7 @@ val captureIdentity = tasks.register("captureIdentity") {
     dependsOn(clockJar, audioPatchJar)
     val runtime = configurations.named("runtimeClasspath")
     val artifactVersion = project.version.toString()
-    inputs.files(clockJar.flatMap { it.archiveFile }, audioPatchJar.flatMap { it.archiveFile }, clockCompiler, clockLibrary, runtime)
+    inputs.files(clockJar.flatMap { it.archiveFile }, audioPatchJar.flatMap { it.archiveFile }, clockCompiler, clockLibrary, runtime, jcodecUpstream)
     inputs.file("src/main/resources/replay/deps/scrcpy-server-v5.0.1")
     inputs.property("sourceCommit", sourceCommit)
     inputs.property("sourceDirty", sourceDirty)
@@ -237,7 +262,7 @@ val captureIdentity = tasks.register("captureIdentity") {
     doLast {
         val jcodec = runtime.get().files.single { it.name == "jcodec-0.2.5.jar" }
         val server = file("src/main/resources/replay/deps/scrcpy-server-v5.0.1")
-        output.get().asFile.writeText("source=$sourceCommit\ndirty=$sourceDirty\nversion=$artifactVersion\nserver=${hash(server)}\nclock=${hash(clockJar.get().archiveFile.get().asFile)}\naudio_patch=${hash(audioPatchJar.get().archiveFile.get().asFile)}\njcodec=${hash(jcodec)}\nr8=${hash(clockCompiler.singleFile)}\nandroid_api=${hash(clockLibrary.singleFile)}\n")
+        output.get().asFile.writeText("source=$sourceCommit\ndirty=$sourceDirty\nversion=$artifactVersion\nserver=${hash(server)}\nclock=${hash(clockJar.get().archiveFile.get().asFile)}\naudio_patch=${hash(audioPatchJar.get().archiveFile.get().asFile)}\njcodec=${hash(jcodec)}\njcodec_upstream=${hash(jcodecUpstream.singleFile)}\nr8=${hash(clockCompiler.singleFile)}\nandroid_api=${hash(clockLibrary.singleFile)}\n")
     }
 }
 tasks.processResources { dependsOn(captureIdentity) }
@@ -277,5 +302,6 @@ tasks.test {
     doFirst {
         systemProperty("replay.cli.archive", tasks.buildPlugin.get().archiveFile.get().asFile.absolutePath)
         systemProperty("replay.cli.platform", tasks.prepareSandbox.get().platformPath.toString())
+        systemProperty("replay.jcodec.upstream", jcodecUpstream.singleFile.absolutePath)
     }
 }
