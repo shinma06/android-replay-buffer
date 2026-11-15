@@ -1,5 +1,6 @@
 package io.github.shinma06.replaybuffer.menubar
 
+import com.intellij.ide.IdeEventQueue
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.ModalityState
@@ -19,6 +20,7 @@ import io.github.shinma06.replaybuffer.ide.ReplayProjectService
 import io.github.shinma06.replaybuffer.settings.ReplaySettingsConfigurable
 import io.github.shinma06.replaybuffer.settings.ReplaySettingsStore
 import io.github.shinma06.replaybuffer.ui.ScreenshotResult
+import java.awt.Toolkit
 import java.nio.file.Path
 import java.time.LocalTime
 import java.time.format.DateTimeFormatter
@@ -44,9 +46,11 @@ internal fun interface MenuBarAvailabilityListener {
  */
 @Service(Service.Level.APP)
 class ReplayMenuBarService : Disposable {
-    private val presenter = MenuBarPresenter(HostPlatform.traySurface())
+    private val surface = HostPlatform.traySurface()
+    private val presenter = MenuBarPresenter(surface)
     /** EDT-confined, including registration, command lookup and disposal. */
     private val projects = LinkedHashMap<Project, ProjectMenu>()
+    private var trayEventsRegistered = false
     private val queued = AtomicBoolean(false)
     @Volatile private var disposed = false
 
@@ -96,8 +100,18 @@ class ReplayMenuBarService : Disposable {
 
     private fun render() {
         val inputs = projects.values.filter { it.alive }.map { it.input() }
-        presenter.update(store.showInMenuBar, inputs) { item ->
-            projects.values.firstOrNull { it.projectId == item.projectId }?.let(item::run)
+        val requested = store.showInMenuBar
+        if (!trayEventsRegistered && requested && inputs.isNotEmpty() && surface.unavailableReason() == null) {
+            val toolkit = Toolkit.getDefaultToolkit()
+            val ownsTraySource = surface::ownsEventSource
+            IdeEventQueue.getInstance().addPostEventListener({ event ->
+                if (!disposed) retargetTrayInvocation(event, ownsTraySource, toolkit)
+                false
+            }, this)
+            trayEventsRegistered = true
+        }
+        presenter.update(requested, inputs) { item ->
+            if (!disposed) projects.values.firstOrNull { it.projectId == item.projectId }?.let(item::run)
         }
         ApplicationManager.getApplication().messageBus.syncPublisher(AVAILABILITY_CHANGED).changed(availabilityReason())
     }

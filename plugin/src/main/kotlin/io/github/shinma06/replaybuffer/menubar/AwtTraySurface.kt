@@ -1,5 +1,6 @@
 package io.github.shinma06.replaybuffer.menubar
 
+import java.awt.AWTEvent
 import java.awt.CheckboxMenuItem
 import java.awt.GraphicsEnvironment
 import java.awt.Image
@@ -9,6 +10,7 @@ import java.awt.PopupMenu
 import java.awt.SystemTray
 import java.awt.TrayIcon
 import java.awt.event.ItemEvent
+import java.awt.event.InvocationEvent
 
 /**
  * The shared AWT destination: macOS menu bar, Windows notification area and Linux tray all come through the same
@@ -17,7 +19,7 @@ import java.awt.event.ItemEvent
  */
 internal class AwtTraySurface(templateImages: Boolean = false) : TraySurface {
     private var tray: SystemTray? = null
-    private var icon: TrayIcon? = null
+    @Volatile private var icon: TrayIcon? = null
     private val useTemplateImages = templateImages && java.lang.Boolean.getBoolean("apple.awt.enableTemplateImages")
 
     override fun unavailableReason(): String? = when {
@@ -41,17 +43,25 @@ internal class AwtTraySurface(templateImages: Boolean = false) : TraySurface {
             current.popupMenu = menu.toPopupMenu(dispatch)
             null
         } catch (_: Exception) {
-            icon = null
+            runCatching { hide() }
             "OSのトレイへメニューバーアイコンを登録できませんでした。"
         }
     }
 
     override fun hide() {
-        icon?.let { tray?.remove(it) }
+        val previous = icon
         icon = null
+        previous?.let { tray?.remove(it) }
     }
 
+    override fun ownsEventSource(source: Any): Boolean = source === icon
+
     override fun close() = hide()
+}
+
+internal fun retargetTrayInvocation(event: AWTEvent, ownsSource: (Any) -> Boolean, target: Any) {
+    // IdeEventQueue drops TrayIcon-sourced invocations; retain the original event and its priority.
+    if (event is InvocationEvent && event.source?.let(ownsSource) == true) event.source = target
 }
 
 internal fun MenuBarMenu.toPopupMenu(dispatch: MenuDispatch): PopupMenu = PopupMenu().also { it.fill(entries, dispatch) }

@@ -21,6 +21,8 @@ internal interface TraySurface : AutoCloseable {
 
     fun hide()
 
+    fun ownsEventSource(source: Any): Boolean = false
+
     override fun close()
 }
 
