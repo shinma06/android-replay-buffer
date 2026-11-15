@@ -38,6 +38,9 @@ MP4のedit listとmanifestの一致、音声coverage、同梱JAADでの復号を
 再トリムの音声以外のside dataはgolden比較の追加対象ではありません。
 
 生成IDとMP4の作成・更新日時（およびその日時由来のMP4ハッシュ）以外は除外しません。
+PNGの`arb:source_save_id`は直のmanifest IDとの一致とchunk CRCを検証してから、
+manifestと同じ`generated-id`へ正規化しCRCだけ再計算します。新IDのchunkだけを除いた
+PNGが従来のhashと一致することも確認し、画像や既存metadataは正規化しません。
 改行、JSONの項目順、PNGの圧縮結果も比較対象です。入力のハッシュも検証し、
 切り取り後に元ファイルが変わっていないことを確認します。
 このfixtureは単一音声形式・合成波形に限り、実端末音声や実時間の音ずれの受入ではありません。

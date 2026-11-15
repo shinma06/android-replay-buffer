@@ -44,6 +44,10 @@ GUIも同じ事前確認で通知します。元の記録が事前確認後に�
 MCPのtrim_replayは作成要求前に標準loggingのwarning通知を送ります（既存引数・結果形式は不変）。
 logging/setLevelでerror以上を指定すると抑制され、クライアント側の表示・追加フィルタまでは保証しません。
 frameは指定秒に表示されていた1コマをスクショ先へframe-XXXX-ID.pngで保存し、パスだけを返します。
+PNGのtEXtにarb:source_save_id（直に読み出したreplay.jsonのsave_id）とarb:source_folder（現在のフォルダ名）、
+arb:movie_us（指定した動画内時刻）・arb:frame_movie_us（表示frameの開始位置）を記録します。
+arb:t_ns・arb:display_t_nsは既知の場合だけ記録し、改名してもsave_idは変えません。
+trim派生フォルダではそのフォルダのsave_id・frame時刻を使います。IDが欠落・不正ならPNGを作成しません。
 settingsはMCPのget_settings、settings setはupdate_settingsと同じ項目名・検証です。
 タップ位置の表示はtap_display=OFF（記録のみ、既定）/VIDEO（保存する動画にだけ描画、保存時に再エンコード）/
 DEVICE（取得中だけ端末のshow_touchesをONにして端末画面にも表示）です。取得OFFで変更します。

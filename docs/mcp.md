@@ -53,6 +53,8 @@ Devin: 設定のMCP Marketplaceで「Add your own」からstdioサーバーを�
 
 全toolに任意の`project`（開いているprojectの絶対パス）があります。それ以外の未知の引数は拒否します。
 
+`export_frame`のPNGはGUI／CLIと同じく、`tEXt`に`arb:source_save_id`（読み出した`replay.json`の`save_id`）・`arb:source_folder`（現在のフォルダ名）・`arb:movie_us`（指定した動画内時刻）・`arb:frame_movie_us`（表示frameの開始位置）を記録します。`arb:t_ns`・`arb:display_t_ns`は既知の場合だけです。改名しても元IDを保持し、trim派生フォルダからはそのフォルダ自身のID・frame時刻を記録します。`save_id`が欠落・不正ならPNG作成前に拒否し、パスなどからIDを補いません。tool引数・`path`・画像の返却形式は変わりません。
+
 `trim_replay`はGUI／CLIと同じread-only事前確認で実際に残る表示frameを調べます。時計対応が不明なframeを含む場合、出力作成の要求前に`notifications/message`（`level: "warning"`、`logger: "replay.trim"`）を送信・flushします。成功結果の`directory`・`summary_path`は変わりません。不確かな時刻のログは保守的に残し、事前確認後に元の記録が変われば作成前に拒否します（自動再試行なし）。
 
 サーバーは`logging: {}` capabilityと`logging/setLevel`に対応します。既定の最小levelは`warning`で、`debug`・`info`・`notice`・`warning`・`error`・`critical`・`alert`・`emergency`を受け付けます。`error`以上を指定した場合、切り取り前のwarningも抑制されます。これは[MCP標準logging](https://modelcontextprotocol.io/specification/2025-06-18/server/utilities/logging)に従うもので、クライアント側の表示・追加フィルタまでは保証しません。stdioのstdoutにはJSON-RPCだけを出し、通常CLIでは警告をstderrへ出します。
