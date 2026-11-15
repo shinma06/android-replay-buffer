@@ -434,6 +434,32 @@ class ReplayTrimTest {
         assertFailsWith<Exception> { ReplayFrameExport.export(output.directory, 999_999_999_999, destination) }
     }
 
+    @Test
+    fun frameCursorPlaysForwardWithTheSamePixelsAsDecodeAt() = withRuns(listOf(List(20) { it * 100_000L })) { root, _, capture, _, _ ->
+        val output = write(capture, root)
+        val srcRows = rows(output.directory)
+        SavedReplay.open(output.directory).use { saved ->
+            fun pixels(image: java.awt.image.BufferedImage) = IntArray(image.width * image.height).also { image.getRGB(0, 0, image.width, image.height, it, 0, image.width) }
+            ReplayFrameCursor(saved).use { cursor ->
+                // Seek lands mid-GOP (frame 10 in GOP 8..15) and then plays forward to the end.
+                val start = srcRows[10]["movie_pts_us"].asString.toLong()
+                var frame: ReplayFrameCursor.Decoded? = cursor.seek(start + 1)
+                var index = 10
+                while (frame != null) {
+                    assertEquals(index, frame.index)
+                    assertEquals(srcRows[index]["movie_pts_us"].asString.toLong(), frame.startUs)
+                    val expected = ReplayFrameExport.decodeAt(saved, frame.startUs).image
+                    assertContentEquals(pixels(expected), pixels(frame.image))
+                    frame = cursor.next()
+                    index++
+                }
+                assertEquals(20, index)
+                // Seeking backwards restarts from that frame's IDR.
+                assertEquals(3, cursor.seek(srcRows[3]["movie_pts_us"].asString.toLong()).index)
+            }
+        }
+    }
+
     private fun sample(store: CaptureStore, host: Long, second: Long) {
         val elapsed = second * 1_000_000_000
         val received = host + (second - 1) * 1_000_000_000

@@ -21,7 +21,8 @@ import javax.imageio.ImageIO
 /**
  * Decodes the displayed frame at a movie position of a completed schema-4 save and writes it beside
  * screenshots as `frame-<time>-<id>.png` with tEXt time metadata. The source folder is read-only;
- * the image never overwrites an existing file. Runs outside EDT.
+ * the image never overwrites an existing file. Runs outside EDT. [export]'s checkActive may abort only
+ * while decoding, before any output exists.
  */
 internal object ReplayFrameExport {
 
@@ -73,16 +74,21 @@ internal object ReplayFrameExport {
                 index++
             }
             val decoded = picture ?: throw IllegalArgumentException("指定時刻のframeを復号できません")
-            val rgb = Picture.create(decoded.width, decoded.height, ColorSpace.RGB)
-            Yuv420jToRgb().transform(decoded, rgb)
-            val raster = Raster.createInterleavedRaster(
-                DataBufferByte(rgb.getPlaneData(0), decoded.width * decoded.height * 3),
-                decoded.width, decoded.height, decoded.width * 3, 3, intArrayOf(0, 1, 2), null)
-            val colorModel = ComponentColorModel(java.awt.color.ColorSpace.getInstance(java.awt.color.ColorSpace.CS_sRGB),
-                false, false, java.awt.Transparency.OPAQUE, java.awt.image.DataBuffer.TYPE_BYTE)
-            return Frame(BufferedImage(colorModel, raster, false, null), rows[targetIndex])
+            return Frame(rgbImage(decoded), rows[targetIndex])
             }
         }
+    }
+
+    /** sRGB image of a decoded YUV420J picture at its own pixel size. */
+    fun rgbImage(decoded: Picture): BufferedImage {
+        val rgb = Picture.create(decoded.width, decoded.height, ColorSpace.RGB)
+        Yuv420jToRgb().transform(decoded, rgb)
+        val raster = Raster.createInterleavedRaster(
+            DataBufferByte(rgb.getPlaneData(0), decoded.width * decoded.height * 3),
+            decoded.width, decoded.height, decoded.width * 3, 3, intArrayOf(0, 1, 2), null)
+        val colorModel = ComponentColorModel(java.awt.color.ColorSpace.getInstance(java.awt.color.ColorSpace.CS_sRGB),
+            false, false, java.awt.Transparency.OPAQUE, java.awt.image.DataBuffer.TYPE_BYTE)
+        return BufferedImage(colorModel, raster, false, null)
     }
 
     /** Encoded PNG bytes with tEXt time metadata inserted before IEND. */
@@ -115,10 +121,11 @@ internal object ReplayFrameExport {
      * Follows the screenshot save model: exclusive `.partial` output, ownership checks, no overwrite.
      */
     fun export(folder: Path, atUs: Long, destination: Path,
-               createdAt: ZonedDateTime = ZonedDateTime.now(), id: String = nameId()): Path {
+               createdAt: ZonedDateTime = ZonedDateTime.now(), id: String = nameId(),
+               checkActive: () -> Unit = {}): Path {
         require(destination.isAbsolute) { "設定で保存先の絶対パスを指定してください。" }
         val bytes = SavedReplay.open(folder).use { saved ->
-            val frame = decodeAt(saved, atUs)
+            val frame = decodeAt(saved, atUs, checkActive)
             pngBytes(frame.image, atUs, frame.row, saved.name)
         }
         validateScreenshotPng(bytes)
