@@ -56,7 +56,7 @@ internal class AwtTraySurface(templateImages: Boolean = false) : TraySurface {
     override fun close() = hide()
 }
 
-private fun MenuBarMenu.toPopupMenu(dispatch: MenuDispatch): PopupMenu = PopupMenu().also { it.fill(entries, dispatch) }
+internal fun MenuBarMenu.toPopupMenu(dispatch: MenuDispatch): PopupMenu = PopupMenu().also { it.fill(entries, dispatch) }
 
 private fun Menu.fill(entries: List<MenuEntry>, dispatch: MenuDispatch) {
     entries.forEach { entry ->
@@ -68,7 +68,8 @@ private fun Menu.fill(entries: List<MenuEntry>, dispatch: MenuDispatch) {
                 val item = if (model.command == MenuBarCommand.TOGGLE_CAPTURE) CheckboxMenuItem(model.label, model.checked)
                     else MenuItem(model.label)
                 item.isEnabled = model.enabled
-                if (model.command != null) item.addActionListener { dispatch.dispatch(model) }
+                if (item is CheckboxMenuItem) item.addItemListener { dispatch.dispatch(model) }
+                else if (model.command != null) item.addActionListener { dispatch.dispatch(model) }
                 add(item)
             }
         }
