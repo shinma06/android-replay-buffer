@@ -46,7 +46,8 @@ class ReplayPlayerButtonsLayoutTest {
         val rules = TrimRules(FrameGrid(listOf(ReplayTimeline.Span(0, 1_000_000))), 1_000_000)
         val trim = rules.enterTrim(rules.initial())
         val running = rules.taskStarted(trim, TaskKind.TRIM)
-        val states = listOf(rules.initial(), trim, running, rules.cancel(running).first)
+        val png = rules.taskStarted(rules.initial(), TaskKind.FRAME)
+        val states = listOf(rules.initial(), trim, running, rules.cancel(running).first, png, rules.cancel(png).first)
         val metrics = compactPlayerButtonMetrics(normal)
         for (scale in listOf(1f, 2f)) for (state in states) {
             val boxes = mutableListOf<Rect>()

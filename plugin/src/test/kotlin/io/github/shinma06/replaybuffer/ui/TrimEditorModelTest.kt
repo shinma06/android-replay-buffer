@@ -149,6 +149,46 @@ class TrimEditorModelTest {
     }
 
     @Test
+    fun viewPngTaskOffersAnEnabledCancelButton() {
+        val running = rules.taskStarted(rules.initial(), TaskKind.FRAME)
+        val buttons = playerButtons(rules, running, idle)
+        assertEquals(listOf(PlayerButton.ENTER_TRIM, PlayerButton.SAVE_FRAME, PlayerButton.CANCEL), buttons.map { it.id })
+        assertEquals(listOf(false, false, true), buttons.map { it.enabled })
+        assertEquals("中止", buttons.last().label)
+        assertFalse(buttons.last().primary)
+    }
+
+    @Test
+    fun viewPngCancellationStaysVisibleDisabledAndRequestsOnlyOnce() {
+        val running = rules.taskStarted(rules.initial(), TaskKind.FRAME)
+        val (cancelling, effect) = rules.cancel(running)
+        assertEquals(CancelEffect.ABORT_TASK, effect)
+        assertEquals(cancelling to CancelEffect.NONE, rules.cancel(cancelling))
+        val buttons = playerButtons(rules, cancelling, idle)
+        assertEquals(listOf(PlayerButton.ENTER_TRIM, PlayerButton.SAVE_FRAME, PlayerButton.CANCEL), buttons.map { it.id })
+        assertEquals("中止しています…", buttons.last().label)
+        assertEquals("中止しています…", buttons.last().reason)
+        assertTrue(buttons.none { it.enabled })
+    }
+
+    @Test
+    fun pngCompletionKeepsModeRangeAndPlayheadForEveryOutcomeIncludingLateCancellation() {
+        for (mode in PlayerMode.entries) for (outcome in TaskOutcome.entries) for (cancel in listOf(false, true)) {
+            val before = rules.initial().copy(mode = mode, inUs = 300_000, outUs = 900_000, playheadUs = 500_000,
+                entryPlayheadUs = 700_000, playheadPlaced = true)
+            val running = rules.taskStarted(before, TaskKind.FRAME)
+            val pending = if (cancel) rules.cancel(running).first else running
+            val finished = rules.taskFinished(pending, TaskKind.FRAME, outcome)
+            assertEquals(before, finished, "$mode / $outcome / cancelling=$cancel")
+            val buttons = playerButtons(rules, finished, idle)
+            if (mode == PlayerMode.VIEW) {
+                assertEquals(listOf(PlayerButton.ENTER_TRIM, PlayerButton.SAVE_FRAME), buttons.map { it.id })
+                assertTrue(buttons.all { it.enabled })
+            } else assertEquals("キャンセル", buttons.last().label)
+        }
+    }
+
+    @Test
     fun pngInTrimModeWaitsUntilThePlayheadIsPlaced() {
         fun png(state: TrimEditor) = playerButtons(rules, state, idle).single { it.id == PlayerButton.SAVE_FRAME }
         // View mode keeps its behaviour: playhead shown, PNG usable in the neutral style.

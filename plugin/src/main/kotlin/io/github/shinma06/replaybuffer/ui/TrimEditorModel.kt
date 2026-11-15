@@ -268,16 +268,17 @@ internal fun playerButtons(rules: TrimRules, state: TrimEditor, availability: Pl
     // In trim mode the button turns blue once the user has placed the playhead (and it is usable).
     val saveFrame = ButtonSpec(PlayerButton.SAVE_FRAME, "この位置をPNG保存", false, frameReason == null, frameReason,
         accent = state.mode == PlayerMode.TRIM && frameReason == null)
-    if (state.mode == PlayerMode.VIEW) {
-        return listOf(ButtonSpec(PlayerButton.ENTER_TRIM, "トリム…", true, blocked == null, blocked), saveFrame)
-    }
-    val trimReason = blocked ?: if (rules.rangeUnchanged(state)) "範囲が動画全体のままです" else null
-    val trimLabel = if (state.task == TaskKind.TRIM) "保存中…" else "トリミング"
     val cancel = when {
         state.task != null && state.cancelling -> ButtonSpec(PlayerButton.CANCEL, "中止しています…", false, false, "中止しています…")
         state.task != null -> ButtonSpec(PlayerButton.CANCEL, "中止", false, true)
         else -> ButtonSpec(PlayerButton.CANCEL, "キャンセル", false, true)
     }
+    if (state.mode == PlayerMode.VIEW) {
+        return listOfNotNull(ButtonSpec(PlayerButton.ENTER_TRIM, "トリム…", true, blocked == null, blocked), saveFrame,
+            cancel.takeIf { state.task != null })
+    }
+    val trimReason = blocked ?: if (rules.rangeUnchanged(state)) "範囲が動画全体のままです" else null
+    val trimLabel = if (state.task == TaskKind.TRIM) "保存中…" else "トリミング"
     return listOf(ButtonSpec(PlayerButton.TRIM, trimLabel, true, trimReason == null, trimReason), saveFrame, cancel)
 }
 
