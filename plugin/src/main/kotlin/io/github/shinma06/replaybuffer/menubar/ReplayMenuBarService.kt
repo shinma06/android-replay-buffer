@@ -23,6 +23,7 @@ import java.time.format.DateTimeFormatter
 import java.util.Locale
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CompletionException
+import java.util.concurrent.atomic.AtomicBoolean
 import javax.swing.JFrame
 import javax.swing.SwingUtilities
 
@@ -36,8 +37,9 @@ private const val TOOL_WINDOW_ID = "Android Replay Buffer"
 @Service(Service.Level.APP)
 class ReplayMenuBarService : Disposable {
     private val presenter = MenuBarPresenter(HostPlatform.traySurface())
+    /** EDT-confined, including registration, command lookup and disposal. */
     private val projects = LinkedHashMap<Project, ProjectMenu>()
-    private var queued = false
+    private val queued = AtomicBoolean(false)
     @Volatile private var disposed = false
 
     init {
@@ -59,8 +61,8 @@ class ReplayMenuBarService : Disposable {
 
     fun projectOpened(project: Project) = track(project)
 
-    private fun track(project: Project) {
-        if (disposed || project.isDisposed || projects.containsKey(project)) return
+    private fun track(project: Project) = onEdt {
+        if (disposed || project.isDisposed || projects.containsKey(project)) return@onEdt
         val refresh = Runnable { refresh() }
         project.messageBus.connect(project).apply {
             subscribe(ReplayProjectService.ENVIRONMENT_CHANGED, refresh)
@@ -70,16 +72,16 @@ class ReplayMenuBarService : Disposable {
         refresh()
     }
 
-    private fun untrack(project: Project) {
+    private fun untrack(project: Project) = onEdt {
+        if (disposed) return@onEdt
         projects.remove(project)
         refresh()
     }
 
     fun refresh() {
-        if (disposed || queued) return
-        queued = true
+        if (disposed || !queued.compareAndSet(false, true)) return
         ApplicationManager.getApplication().invokeLater({
-            queued = false
+            queued.set(false)
             if (!disposed) render()
         }, ModalityState.any())
     }
@@ -93,8 +95,14 @@ class ReplayMenuBarService : Disposable {
 
     override fun dispose() {
         disposed = true
-        projects.clear()
-        presenter.close()
+        onEdt {
+            projects.clear()
+            presenter.close()
+        }
+    }
+
+    private fun onEdt(action: () -> Unit) {
+        if (SwingUtilities.isEventDispatchThread()) action() else SwingUtilities.invokeLater(action)
     }
 }
 
