@@ -29,22 +29,69 @@ internal class ReplayPlaybackSession(
     private val onAudioUnavailable: (reason: String) -> Unit,
     private val onGap: (movieUs: Long) -> Unit = {},
     private val audioOutput: (AudioFormat) -> SourceDataLine = AudioSystem::getSourceDataLine,
+    private val nanoTime: () -> Long = System::nanoTime,
+    private val awaitAudio: (CountDownLatch) -> Boolean = { it.await(1, TimeUnit.SECONDS) },
 ) {
     private val stopped = AtomicBoolean()
+    private val audioNotified = AtomicBoolean()
     private val audioReady = CountDownLatch(1)
-    @Volatile private var line: SourceDataLine? = null
-    @Volatile private var baseNanos = System.nanoTime()
-    @Volatile private var baseUs = fromUs
+    private enum class Clock { PENDING, STARTING_AUDIO, AUDIO, MONOTONIC, STOPPED }
+    private val clockLock = Any()
+    private var clock = Clock.PENDING
+    private var line: SourceDataLine? = null
+    private var baseNanos = 0L
+    private var baseUs = fromUs
+    private var lastUs = fromUs
     private val threads = mutableListOf<Thread>()
 
-    private fun nowUs(): Long = baseUs + (line?.microsecondPosition ?: ((System.nanoTime() - baseNanos) / 1000))
+    internal fun nowUs(): Long = synchronized(clockLock) {
+        lastUs = maxOf(lastUs, when (clock) {
+            Clock.AUDIO -> baseUs + line!!.microsecondPosition
+            Clock.MONOTONIC -> baseUs + (nanoTime() - baseNanos) / 1000
+            else -> lastUs
+        })
+        lastUs
+    }
+
+    private fun useMonotonicClock(): Boolean = synchronized(clockLock) {
+        if (clock != Clock.PENDING && clock != Clock.STARTING_AUDIO) return@synchronized false
+        baseUs = fromUs
+        baseNanos = nanoTime()
+        clock = Clock.MONOTONIC
+        true
+    }
+
+    private fun beginAudio(): Boolean = synchronized(clockLock) {
+        if (stopped.get() || clock != Clock.PENDING) return@synchronized false
+        clock = Clock.STARTING_AUDIO
+        true
+    }
+
+    private fun adoptAudio(output: SourceDataLine): Boolean = synchronized(clockLock) {
+        if (stopped.get() || clock != Clock.STARTING_AUDIO) return@synchronized false
+        line = output
+        baseUs = fromUs
+        clock = Clock.AUDIO
+        true
+    }
+
+    private fun canOpenAudio(): Boolean = synchronized(clockLock) {
+        !stopped.get() && clock == Clock.PENDING
+    }
 
     /** Switches to the monotonic clock without a jump when the audio line goes away mid-play. */
-    private fun dropLine() {
-        val current = nowUs()
-        baseNanos = System.nanoTime()
-        baseUs = current
-        line = null
+    private fun dropLine(output: SourceDataLine?) = synchronized(clockLock) {
+        if (clock == Clock.AUDIO && line === output) {
+            baseUs = runCatching { nowUs() }.getOrDefault(lastUs)
+            baseNanos = nanoTime()
+            line = null
+            clock = Clock.MONOTONIC
+        }
+    }
+
+    private fun audioUnavailable() {
+        if (!stopped.get() && audioNotified.compareAndSet(false, true))
+            onAudioUnavailable("音声を再生できないため、音声なしで再生しています。")
     }
 
     private fun check() { if (stopped.get()) throw InterruptedException() }
@@ -58,7 +105,11 @@ internal class ReplayPlaybackSession(
     fun stop() {
         if (!stopped.compareAndSet(false, true)) return
         threads.forEach(Thread::interrupt)
-        line?.let { runCatching { it.stop(); it.flush() } }
+        val output = synchronized(clockLock) {
+            clock = Clock.STOPPED
+            line.also { line = null }
+        }
+        output?.let { runCatching { it.stop() }; runCatching { it.flush() } }
     }
 
     private fun runVideo() {
@@ -67,8 +118,8 @@ internal class ReplayPlaybackSession(
                 ReplayFrameCursor(saved).use { cursor ->
                     val span = saved.timeline().spans.firstOrNull { it.endUs > fromUs && it.startUs < untilUs }
                     var frame = span?.let { cursor.seek(maxOf(fromUs, it.startUs), ::check) }
-                    audioReady.await(1, TimeUnit.SECONDS)
-                    if (line == null) { baseNanos = System.nanoTime(); baseUs = fromUs }
+                    val ready = awaitAudio(audioReady)
+                    if (useMonotonicClock() && !ready) audioUnavailable()
                     var coveredUntil = fromUs
                     while (frame != null && frame.startUs < untilUs) {
                         check()
@@ -123,23 +174,26 @@ internal class ReplayPlaybackSession(
                     require(sampleRate == track.sampleRate && sampleRate > 0 && channels > 0) { "音声の形式と時刻記録が一致しません" }
                     val format = AudioFormat(sampleRate.toFloat(), 16, channels, true, false)
                     val frameBytes = 2 * channels
-                    val output = try {
-                        audioOutput(format).apply { open(format, sampleRate / 4 * frameBytes) }
-                    } catch (failure: Exception) {
-                        onAudioUnavailable("音声を出力できないため、音声なしで再生しています。")
-                        audioReady.countDown(); return
-                    }
+                    val output = audioOutput(format)
                     opened = output
+                    check()
+                    if (!canOpenAudio()) { audioUnavailable(); return }
+                    output.open(format, sampleRate / 4 * frameBytes)
+                    check()
+                    if (!beginAudio()) { audioUnavailable(); return }
                     output.start()
-                    baseUs = fromUs
-                    line = output
+                    check()
+                    // Native start may have been in flight when video committed its fallback.
+                    if (!adoptAudio(output)) { audioUnavailable(); return }
                     audioReady.countDown()
                     val limit = ((untilUs - fromUs) * sampleRate / 1_000_000L).coerceAtLeast(0)
                     var written = 0L
                     fun write(pcm: ByteArray, offsetSamples: Long, samples: Long) {
                         val count = minOf(samples, limit - written)
                         if (count <= 0) return
+                        check()
                         output.write(pcm, (offsetSamples * frameBytes).toInt(), (count * frameBytes).toInt())
+                        check()
                         written += count
                     }
                     val silence = ByteArray(1024 * frameBytes)
@@ -171,19 +225,20 @@ internal class ReplayPlaybackSession(
                     }
                     // Keep the clock running to the end when the audio stops before the video.
                     while (written < limit) { check(); write(silence, 0, minOf(1024L, limit - written)) }
+                    check()
                     output.drain()
                 }
             }
         } catch (_: InterruptedException) {
         } catch (failure: Throwable) {
             if (!stopped.get()) {
-                if (line != null) dropLine()
-                onAudioUnavailable("音声を再生できないため、音声なしで再生しています。")
+                dropLine(opened)
+                audioUnavailable()
             }
         } finally {
+            dropLine(opened)
+            opened?.let { runCatching { it.close() } }
             audioReady.countDown()
-            if (stopped.get() || line == null) opened?.let { runCatching { it.close() } }
-            else { val current = opened; dropLine(); current?.let { runCatching { it.close() } } }
         }
     }
 
