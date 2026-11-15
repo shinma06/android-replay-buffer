@@ -88,7 +88,8 @@ internal data class ProjectStatus(val icon: MenuBarIcon, val text: String)
 /** The state shown by the icon shape and repeated as text at the top of the menu (docs/requirements/menubar.md §2.5). */
 internal fun projectStatus(input: MenuProjectInput): ProjectStatus {
     val snapshot = input.snapshot ?: return ProjectStatus(
-        MenuBarIcon.WAITING, if (input.initializationError != null) "取得を初期化できません" else "確認中…")
+        if (input.initializationError != null) MenuBarIcon.ATTENTION else MenuBarIcon.WAITING,
+        if (input.initializationError != null) "取得を初期化できません" else "確認中…")
     return when {
         snapshot.save.phase == SavePhase.FAILED -> ProjectStatus(MenuBarIcon.FAILED, "保存に失敗しました（未解決）")
         snapshot.save.phase == SavePhase.WRITING || input.screenshotBusy -> ProjectStatus(MenuBarIcon.SAVING, "保存中…")

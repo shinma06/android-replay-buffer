@@ -25,6 +25,14 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
 class MenuBarModelTest {
+    @Test
+    fun `initialization failure needs attention rather than a device connection`() {
+        val failed = input(snapshot()).copy(snapshot = null, initializationError = "IDE設定領域へ書き込めません")
+        assertEquals(MenuBarIcon.ATTENTION, projectStatus(failed).icon)
+        assertEquals(MenuBarIcon.ATTENTION, menuBarModel(listOf(failed)).icon)
+        assertEquals(MenuBarIcon.WAITING, projectStatus(failed.copy(initializationError = null)).icon)
+    }
+
     private val device = ReplayDevice("emulator-5554", "Pixel 9", DeviceKind.EMULATOR, true)
     private val app = ApplicationTarget("com.example.app")
     private val directory = Path.of("/disposable/out")
