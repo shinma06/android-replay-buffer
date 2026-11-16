@@ -8,8 +8,11 @@ import org.jcodec.common.model.Packet
 import org.jcodec.containers.mp4.MP4TrackType
 import org.jcodec.containers.mp4.boxes.AudioSampleEntry
 import org.jcodec.containers.mp4.boxes.Edit
+import org.jcodec.containers.mp4.boxes.NodeBox
 import org.jcodec.containers.mp4.boxes.SampleEntry
+import org.jcodec.containers.mp4.boxes.SampleSizesBox
 import org.jcodec.containers.mp4.boxes.VideoSampleEntry
+import org.jcodec.containers.mp4.demuxer.AbstractMP4DemuxerTrack
 import org.jcodec.containers.mp4.demuxer.MP4Demuxer
 import org.jcodec.containers.mp4.muxer.MP4Muxer
 import org.jcodec.containers.mp4.muxer.MP4MuxerTrack
@@ -128,6 +131,29 @@ internal class ReplayTrim(
         val endUs get() = end.movieEnd!!
     }
 
+    private class VideoRun(val rows: List<StoredFrame>, val first: Int, val last: Int, val fullStart: Boolean) {
+        val gopStart = if (fullStart) 0 else (first downTo 0).firstOrNull { rows[it].outputKey }
+            ?: throw IllegalArgumentException("開始frameの参照IDRがありません")
+        val reencodeEnd = if (fullStart) first else
+            ((first + 1)..last).firstOrNull { rows[it].outputKey } ?: (last + 1)
+    }
+
+    private class PacketSizes(track: AbstractMP4DemuxerTrack) {
+        private val box = NodeBox.findFirstPath(track.box, SampleSizesBox::class.java, arrayOf("mdia", "minf", "stbl", "stsz"))
+            ?: throw IllegalArgumentException("sampleのサイズ表がありません")
+        val count get() = box.count
+        operator fun get(index: Int): Long {
+            require(index in 0 until count) { "sampleのサイズ範囲が不正です" }
+            return (if (box.defaultSize == 0) box.sizes[index] else box.defaultSize).toLong().also {
+                require(it >= 0) { "sampleのサイズが不正です" }
+            }
+        }
+    }
+
+    private data class AudioRun(val movieStart: Long, val duration: Long, val first: Int, val end: Int, val skip: Long, val preroll: Int)
+    private data class AudioPlan(val track: AbstractMP4DemuxerTrack, val entry: AudioSampleEntry,
+                                 val sampleRate: Int, val runs: List<AudioRun>, val sizes: PacketSizes)
+
     private fun select(saved: SavedReplay, fromUs: Long, toUs: Long): Selection {
         val frames = saved.frames.mapIndexed { index, row -> StoredFrame(row, index).also { frame ->
             require(row["sample_index"]?.asLong == index.toLong() && (frame.moviePts != null) == (frame.movieEnd != null) &&
@@ -208,21 +234,15 @@ internal class ReplayTrim(
                     val firstOut = if (fullStart && keptIndex != 0) 0 else partRows.indexOfFirst { it.index == startFrame.index }
                     val lastOut = if (fullEnd) partRows.lastIndex else partRows.indexOfFirst { it.index == endFrame.index }
                     require(firstOut >= 0 && lastOut >= firstOut) { "切り取り位置のframeを特定できません" }
-                    Triple(partRows, firstOut, lastOut)
+                    VideoRun(partRows, firstOut, lastOut,
+                        firstOut == 0 && keptPart.a == keptPart.part.requiredLongText("movie_start_us"))
                 }
-                val headReencode = keptParts.any { (_, firstOut, _) -> firstOut > 0 }
                 checkActive()
-                // Rough estimate before staging; exact checkSpace continues while writing.
-                val estimate = Math.addExact(Files.size(saved.directory.resolve(ReplayFiles.VIDEO)) / 2 + 16 * 1024 * 1024,
-                    saved.entries().filter { it.endsWith(".jsonl") || it.endsWith(".h264") || it.endsWith(".md") }
-                        .fold(0L) { total, name -> Math.addExact(total, Files.size(saved.directory.resolve(name))) })
                 val parent = saved.directory.parent
                 fun checkSpace(bytes: Long = 0) {
                     check(availableSpace(parent) >= Math.addExact(bytes, ReplaySettings.MIN_FREE_BYTES)) { "保存先の空き容量が不足しています" }
                 }
-                checkSpace(estimate)
                 val name = trimFolderName(createdAt, id)
-                staging = SaveStaging.create(parent, name)
                 fun file(fileName: String): Path = staging!!.file(fileName)
                 val outputRows = mutableListOf<JsonObject>()
                 var didReencode = false
@@ -239,6 +259,13 @@ internal class ReplayTrim(
                         }
                     }
                     val annexBConfigs = avcs.map(::annexBConfig)
+                    val audioPlan = planAudio(saved, demuxer, startUs, endUs, ::checkActive)
+                    val estimate = estimateOutput(saved, videoTrack, keptParts, annexBConfigs, audioPlan,
+                        startUs, endUs, originTns, endTns, ::checkActive)
+                    checkActive()
+                    checkSpace(estimate)
+                    checkActive()
+                    staging = SaveStaging.create(parent, name)
                     fun annexB(data: ByteBuffer, entry: Int): ByteArray = movSampleToAnnexB(data, avcs[entry - 1])
                     val sourceChannel = if (saved.exists(ReplayFiles.VIDEO_SOURCE)) saved.channel(ReplayFiles.VIDEO_SOURCE) else null
                     try {
@@ -258,18 +285,18 @@ internal class ReplayTrim(
                                     var packetIndex = 0
                                     kept.forEachIndexed { keptIndex, keptPart ->
                                         checkActive()
-                                        val (partRows, firstOut, lastOut) = keptParts[keptIndex]
-                                        val fullStart = firstOut == 0 && keptPart.a == keptPart.part.requiredLongText("movie_start_us")
+                                        val run = keptParts[keptIndex]
+                                        val partRows = run.rows
+                                        val firstOut = run.first
+                                        val lastOut = run.last
+                                        val fullStart = run.fullStart
                                         val editOffset = keptPart.part.requiredLongText("edit_start_us") +
                                             (keptPart.a - keptPart.part.requiredLongText("movie_start_us")) -
                                             partRows[firstOut].row.requiredLongText("media_pts_us")
                                         require(editOffset >= 0) { "表示frameのmedia位置が読めません" }
                                         val partial = !fullStart
-                                        val gopStart = if (partial) (firstOut downTo 0).firstOrNull { partRows[it].outputKey }
-                                            ?: throw IllegalArgumentException("開始frameの参照IDRがありません") else 0
-                                        val reencodeEnd = if (partial) {
-                                            ((firstOut + 1)..lastOut).firstOrNull { partRows[it].outputKey } ?: (lastOut + 1)
-                                        } else firstOut
+                                        val gopStart = run.gopStart
+                                        val reencodeEnd = run.reencodeEnd
                                         val normalizer = if (partial) {
                                             val config = annexBConfigs[partRows[firstOut].sampleEntry - 1]
                                             val minimum = partRows.subList(firstOut, reencodeEnd).mapNotNull { it.sourceDuration }.minOrNull()
@@ -394,7 +421,7 @@ internal class ReplayTrim(
                                     }
                                     check(outputRows.size == sampleIndex.toInt()) { "出力frame数が一致しません" }
                                     track.setEdits(edits)
-                                    val audio = muxAudio(saved, demuxer, mux, startUs, endUs, ::checkActive, ::checkSpace)
+                                    val audio = muxAudio(audioPlan, mux, ::checkActive, ::checkSpace)
                                     val movieBox = mux.finalizeHeader()
                                     require(movieBox.timescale == 1_000_000) { "動画movie timescaleが不正です" }
                                     check(edits.fold(0L) { sum, edit -> Math.addExact(sum, edit.duration) } == movie &&
@@ -416,9 +443,9 @@ internal class ReplayTrim(
                 checkActive()
                 val logCounts = writeLogs(saved, ::file, originTns, endTns, staging!!, ::checkSpace, ::checkActive)
                 val touchCounts = writeTouches(saved, ::file, originTns, endTns, startUs, endUs, staging!!, ::checkSpace, ::checkActive)
-                staging!!.writer(file(ReplayFiles.SUMMARY)).use {
-                    it.write(readme(saved, name, createdAt, startUs, endUs, fromUs, toUs, outputRows.size, audioSegments, logCounts, touchCounts))
-                }
+                val summary = readme(saved, name, createdAt, startUs, endUs, fromUs, toUs, outputRows.size, audioSegments, logCounts, touchCounts)
+                checkSpace(utf8Bytes(summary))
+                staging!!.writer(file(ReplayFiles.SUMMARY)).use { it.write(summary) }
                 checkActive()
                 checkSpace()
                 val hashes = staging!!.hashes(::checkActive)
@@ -426,7 +453,9 @@ internal class ReplayTrim(
                 val manifest = transformedManifest(saved, name, createdAt, startUs, endUs, fromUs, toUs,
                     originTns, endTns, newParts, newBoundaries, didReencode, audioSegments, outputRows, logCounts,
                     touchCounts, hashes)
-                staging!!.writer(file(ReplayFiles.RECORD)).use { it.write(gson.toJson(manifest)) }
+                val record = gson.toJson(manifest)
+                checkSpace(utf8Bytes(record))
+                staging!!.writer(file(ReplayFiles.RECORD)).use { it.write(record) }
                 manifestWritten = true
                 staging!!.forceEach(::checkActive)
                 checkSpace()
@@ -462,6 +491,86 @@ internal class ReplayTrim(
     }
 
     private var audioSegments: List<Map<String, Any?>>? = null
+
+    private fun utf8Bytes(text: String): Long = text.toByteArray(Charsets.UTF_8).size.toLong()
+
+    private fun estimateOutput(saved: SavedReplay, video: AbstractMP4DemuxerTrack, runs: List<VideoRun>,
+                               configs: List<ByteArray>, audio: AudioPlan?, startUs: Long, endUs: Long,
+                               originTns: Long?, endTns: Long?, checkActive: () -> Unit): Long {
+        // Fixed MP4 boxes, README, hashes and added manifest fields; sample tables are counted below.
+        var bytes = 16 * 1024L
+        fun add(value: Long) {
+            require(value >= 0) { "出力サイズが不正です" }
+            bytes = Math.addExact(bytes, value)
+        }
+        fun sample(size: Long) { add(size); add(128) }
+        fun jsonGrowth(element: com.google.gson.JsonElement) {
+            checkActive()
+            // Rewritten numbers/nulls and added range keys, without dropping unknown source fields.
+            add(if (element.isJsonObject || element.isJsonArray) 128 else 32)
+            if (element.isJsonObject) element.asJsonObject.entrySet().forEach { jsonGrowth(it.value) }
+            if (element.isJsonArray) element.asJsonArray.forEach(::jsonGrowth)
+        }
+        add(utf8Bytes(gson.toJson(saved.manifest)))
+        jsonGrowth(saved.manifest)
+        val sizes = PacketSizes(video)
+        val entries = mutableSetOf<Int>()
+        val raw = saved.exists(ReplayFiles.VIDEO_SOURCE)
+        for (run in runs) {
+            checkActive()
+            add(2048) // Per-part manifest fields, edits and a run boundary.
+            val encodedBound = if (run.fullStart) 0L else {
+                val config = configs[run.rows[run.first].sampleEntry - 1]
+                val size = H264Utils.getPicSize(boundedSps(H264Utils.getRawSPS(ByteBuffer.wrap(config)).first()))
+                val width = Math.multiplyExact(Math.ceilDiv(size.width, 16), 16)
+                val height = Math.multiplyExact(Math.ceilDiv(size.height, 16), 16)
+                // MixedVideoNormalizer's width * height * 3 buffer; allow MOV NAL prefixes and avcC.
+                Math.multiplyExact(Math.multiplyExact(width.toLong(), height.toLong()), 6L).also { add(it) }
+            }
+            if (raw) add(run.rows[run.first].configSize ?: 0)
+            for (n in run.first..run.last) {
+                checkActive()
+                val row = run.rows[n]
+                if (!run.fullStart && n < run.reencodeEnd) sample(encodedBound) else {
+                    sample(sizes[row.index])
+                    if (entries.add(row.sampleEntry)) {
+                        add(Math.addExact(Math.multiplyExact(video.sampleEntries[row.sampleEntry - 1].estimateSize().toLong(), 2), 256))
+                    }
+                }
+                // Existing JSON plus bounded numeric/rectangle additions from writeRow.
+                add(Math.addExact(utf8Bytes(gson.toJson(row.row)), 2048))
+                if (raw && row.hasSource) add(row.sourceSize ?: throw IllegalArgumentException("元映像packetのサイズがありません"))
+            }
+        }
+        if (audio != null) {
+            add(Math.addExact(Math.multiplyExact(audio.entry.estimateSize().toLong(), 2), 256))
+            for (run in audio.runs) {
+                checkActive()
+                add(512)
+                for (n in run.first - run.preroll until run.end) { checkActive(); sample(audio.sizes[n]) }
+            }
+        }
+        var lastDeviceId: String? = null
+        var lastAppId: String? = null
+        saved.forEachLine(ReplayFiles.LOGCAT_DEVICE) { line ->
+            checkActive()
+            val row = trimmedRow(gson.fromJson(line, JsonObject::class.java), originTns, endTns) ?: return@forEachLine
+            val copies = if (row["app_membership"]?.takeIf { it.isJsonPrimitive }?.asBoolean == true) 2L else 1L
+            add(Math.multiplyExact(Math.addExact(utf8Bytes(gson.toJson(row)), 1), copies))
+            lastDeviceId = row.text("record_id") ?: lastDeviceId
+            if (copies == 2L) lastAppId = row.text("record_id") ?: lastAppId
+        }
+        add(utf8Bytes(gson.toJson(lastDeviceId)))
+        add(utf8Bytes(gson.toJson(lastAppId)))
+        if (saved.exists(ReplayFiles.TOUCHES)) saved.forEachLine(ReplayFiles.TOUCHES) { line ->
+            checkActive()
+            val row = trimmedRow(gson.fromJson(line, JsonObject::class.java), originTns, endTns, startUs until endUs)
+                ?: return@forEachLine
+            add(Math.addExact(utf8Bytes(gson.toJson(row)), 1))
+        }
+        checkActive()
+        return bytes
+    }
 
     private fun shift(value: String?, origin: Long?): String? =
         if (value == null || origin == null) null else Math.subtractExact(value.toLong(), origin).toString()
@@ -503,13 +612,13 @@ internal class ReplayTrim(
             out.addProperty("clock_alignment_known", false)
             out.addProperty("t_uncertainty_ns", Long.MAX_VALUE.toString())
         }
-        index.write(gson.toJson(out))
+        val text = gson.toJson(out)
+        checkSpace(Math.addExact(utf8Bytes(text), 1))
+        index.write(text)
         index.write("\n")
     }
 
-    private fun muxAudio(saved: SavedReplay, demuxer: MP4Demuxer, mux: MP4Muxer,
-                       startUs: Long, endUs: Long, checkActive: () -> Unit,
-                       checkSpace: (Long) -> Unit): Triple<List<Map<String, Any?>>, MP4MuxerTrack, Long>? {
+    private fun planAudio(saved: SavedReplay, demuxer: MP4Demuxer, startUs: Long, endUs: Long, checkActive: () -> Unit): AudioPlan? {
         val trackInfo = saved.manifest["audio_track"]?.takeIf { it.isJsonObject }?.asJsonObject ?: return null
         val segments = trackInfo["segments"]?.takeIf { it.isJsonArray }?.asJsonArray
             ?.map { it.asJsonObject } ?: return null
@@ -519,17 +628,15 @@ internal class ReplayTrim(
         val entry = audioTrack.sampleEntries.filterIsInstance<AudioSampleEntry>().firstOrNull()
             ?: throw IllegalArgumentException("音声sample entryが見つかりません")
         data class AudioSegment(val movieStart: Long, val duration: Long, val mediaStart: Long, val count: Int)
-        val plan = segments.map { AudioSegment(it.requiredLongText("movie_start_us"), it.requiredLongText("duration_us"),
-            it.requiredLongText("media_start_samples"), it["samples"].asInt) }
-        val packets = mutableListOf<Packet>()
-        while (true) {
+        val plan = segments.map {
             checkActive()
-            val packet = audioTrack.nextFrame() ?: break
-            packets += packet
+            AudioSegment(it.requiredLongText("movie_start_us"), it.requiredLongText("duration_us"),
+                it.requiredLongText("media_start_samples"), it["samples"].asInt)
         }
-        data class AudioRun(val movieStart: Long, val duration: Long, val first: Int, val end: Int, val skip: Long, val preroll: Int)
+        val sizes = PacketSizes(audioTrack)
         var referencedEnd = 0L
         val runs = plan.mapNotNull { segment ->
+            checkActive()
             // Unreferenced media before a segment may be a previous trim's hidden prefix.
             val prefixStart = minOf(segment.mediaStart / AAC_FRAME_SAMPLES, referencedEnd)
             if (segment.count > 0) referencedEnd = maxOf(referencedEnd, segment.mediaStart / AAC_FRAME_SAMPLES + segment.count)
@@ -544,19 +651,30 @@ internal class ReplayTrim(
             if (mediaFrom >= mediaEnd) return@mapNotNull null
             val first = Math.toIntExact(mediaFrom / AAC_FRAME_SAMPLES)
             val end = Math.toIntExact(Math.ceilDiv(mediaEnd, AAC_FRAME_SAMPLES))
-            require(first >= 0 && end <= packets.size) { "音声segmentのsample範囲が不正です" }
+            require(first >= 0 && end <= sizes.count) { "音声segmentのsample範囲が不正です" }
             AudioRun(from - startUs, to - from, first, end, mediaFrom % AAC_FRAME_SAMPLES,
                 if (first > prefixStart) 1 else 0)
         }
-        if (runs.isEmpty()) return null
+        return if (runs.isEmpty()) null else AudioPlan(audioTrack, entry, sampleRate, runs, sizes)
+    }
+
+    private fun muxAudio(plan: AudioPlan?, mux: MP4Muxer, checkActive: () -> Unit,
+                         checkSpace: (Long) -> Unit): Triple<List<Map<String, Any?>>, MP4MuxerTrack, Long>? {
+        if (plan == null) return null
+        val packets = mutableListOf<Packet>()
+        while (true) {
+            checkActive()
+            val packet = plan.track.nextFrame() ?: break
+            packets += packet
+        }
         val sound = MP4MuxerTrack(mux.nextTrackId, MP4TrackType.SOUND)
         mux.addTrack(sound)
-        sound.addSampleEntry(entry) // Reuses the source esds as stored.
+        sound.addSampleEntry(plan.entry) // Reuses the source esds as stored.
         val edits = mutableListOf<Edit>()
         val newSegments = mutableListOf<Map<String, Any?>>()
         var cursor = 0L
         var written = 0L
-        runs.forEach { run ->
+        plan.runs.forEach { run ->
             if (run.movieStart > cursor) edits += Edit(run.movieStart - cursor, -1, 1f)
             val mediaStart = Math.addExact((written + run.preroll) * AAC_FRAME_SAMPLES, run.skip)
             edits += Edit(run.duration, mediaStart, 1f)
@@ -565,7 +683,7 @@ internal class ReplayTrim(
             for (i in run.first - run.preroll until run.end) {
                 checkActive()
                 checkSpace(packets[i].data.remaining().toLong())
-                sound.addFrameInternal(Packet.createPacket(packets[i].data, written * 1024L, sampleRate,
+                sound.addFrameInternal(Packet.createPacket(packets[i].data, written * 1024L, plan.sampleRate,
                     AAC_FRAME_SAMPLES, written, Packet.FrameType.KEY, null), 1)
                 written++
             }
@@ -593,6 +711,16 @@ internal class ReplayTrim(
         return (originTns == null || addSat(t) >= originTns) && (endTns == null || subSat(t) <= endTns)
     }
 
+    private fun trimmedRow(row: JsonObject, originTns: Long?, endTns: Long?, movie: LongRange? = null): JsonObject? {
+        if (!inTnsRange(row, originTns, endTns)) return null
+        row.addProperty("t_ns", shift(row.text("t_ns"), originTns))
+        if (originTns == null) row.addProperty("t_uncertainty_ns", Long.MAX_VALUE.toString())
+        if (movie != null) {
+            row.addProperty("movie_us", row.longText("movie_us")?.takeIf { it in movie }?.let { Math.subtractExact(it, movie.first).toString() })
+        }
+        return row
+    }
+
     private fun writeLogs(saved: SavedReplay, file: (String) -> Path, originTns: Long?, endTns: Long?,
                           staging: SaveStaging, checkSpace: (Long) -> Unit, checkActive: () -> Unit): LogCounts {
         var device = 0
@@ -612,18 +740,16 @@ internal class ReplayTrim(
         deviceOut.use { deviceWriter -> appOut.use { appWriter ->
             saved.forEachLine(ReplayFiles.LOGCAT_DEVICE) { line ->
                 checkActive()
-                val row = gson.fromJson(line, JsonObject::class.java)
-                if (!inTnsRange(row, originTns, endTns)) return@forEachLine
-                row.addProperty("t_ns", shift(row.text("t_ns"), originTns))
-                if (originTns == null) row.addProperty("t_uncertainty_ns", Long.MAX_VALUE.toString())
+                val row = trimmedRow(gson.fromJson(line, JsonObject::class.java), originTns, endTns) ?: return@forEachLine
                 row.text("record_id")?.takeIf { it in evidenceIds }?.let { evidenceTimes[it] = row.longText("t_ns") }
                 val text = gson.toJson(row)
-                checkSpace(text.length * 2L)
+                val appMember = row["app_membership"]?.takeIf { it.isJsonPrimitive }?.asBoolean == true
+                checkSpace(Math.multiplyExact(Math.addExact(utf8Bytes(text), 1), if (appMember) 2L else 1L))
                 deviceWriter.write(text); deviceWriter.write("\n")
                 device++
                 recordTime("device_log", row)
                 lastDevice = row.text("record_id") ?: lastDevice
-                if (row["app_membership"]?.takeIf { it.isJsonPrimitive }?.asBoolean == true) {
+                if (appMember) {
                     appWriter.write(text); appWriter.write("\n"); app++; lastApp = row.text("record_id") ?: lastApp
                     recordTime("app_log", row)
                 }
@@ -642,15 +768,11 @@ internal class ReplayTrim(
         staging.writer(file(ReplayFiles.TOUCHES)).use { out ->
             saved.forEachLine(ReplayFiles.TOUCHES) { line ->
                 checkActive()
-                val row = gson.fromJson(line, JsonObject::class.java)
-                if (!inTnsRange(row, originTns, endTns)) return@forEachLine
-                row.addProperty("t_ns", shift(row.text("t_ns"), originTns))
-                if (originTns == null) row.addProperty("t_uncertainty_ns", Long.MAX_VALUE.toString())
-                val movieUs = row.longText("movie_us")
-                row.addProperty("movie_us", movieUs?.takeIf { it in startUs until endUs }?.let { Math.subtractExact(it, startUs).toString() })
-                if (movieUs != null && movieUs in startUs until endUs) inMovie++
+                val row = trimmedRow(gson.fromJson(line, JsonObject::class.java), originTns, endTns, startUs until endUs)
+                    ?: return@forEachLine
+                if (row.longText("movie_us") != null) inMovie++
                 val text = gson.toJson(row)
-                checkSpace(text.length * 2L)
+                checkSpace(Math.addExact(utf8Bytes(text), 1))
                 out.write(text); out.write("\n")
                 count++
                 if (row.text("source") == "injected") injected++
