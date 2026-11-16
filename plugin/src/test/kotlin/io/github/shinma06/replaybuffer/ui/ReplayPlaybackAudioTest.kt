@@ -16,6 +16,7 @@ import org.jcodec.containers.mp4.muxer.MP4MuxerTrack
 import org.junit.jupiter.api.io.TempDir
 import java.io.ByteArrayOutputStream
 import java.lang.reflect.Proxy
+import java.nio.ByteBuffer
 import java.nio.file.Files
 import java.nio.file.Path
 import java.security.MessageDigest
@@ -538,6 +539,63 @@ class ReplayPlaybackAudioTest {
         }
     }
 
+    @Test
+    fun outputFactoryFailureKeepsItsCategory() = assertAudioFailureCategory("factory")
+
+    @Test
+    fun outputOpenFailureKeepsItsCategory() = assertAudioFailureCategory("open")
+
+    @Test
+    fun outputStartFailureKeepsItsCategory() = assertAudioFailureCategory("start")
+
+    @Test
+    fun outputWriteFailureKeepsItsCategory() = assertAudioFailureCategory("write")
+
+    @Test
+    fun outputDrainFailureKeepsItsCategory() = assertAudioFailureCategory("drain")
+
+    @Test
+    fun corruptAacKeepsTheDecodeFailureCategory() = assertAudioFailureCategory("decode")
+
+    private fun assertAudioFailureCategory(stage: String) {
+        val folder = fixture(mediaStart = 0, corruptAudio = stage == "decode")
+        val before = files(folder)
+        val output = Output().apply {
+            val fail = { throw IllegalArgumentException("synthetic decode failure") }
+            when (stage) {
+                "open" -> beforeOpen = fail
+                "start" -> beforeStart = fail
+                "write" -> beforeWrite = fail
+                "drain" -> beforeDrain = fail
+            }
+        }
+        val video = Gate()
+        val notified = CountDownLatch(1)
+        val notices = ConcurrentLinkedQueue<String>()
+        val session = ReplayPlaybackSession(folder, 0, 8_000_000, { video.block() }, {},
+            { notices += it; notified.countDown() }, audioOutput = {
+                if (stage == "factory") throw IllegalArgumentException("synthetic decode failure")
+                output.line
+            }, nanoTime = { 0L }, awaitAudio = { await(it); true })
+        try {
+            session.start()
+            await(notified)
+            if (stage != "factory") await(output.closed)
+            await(video.entered)
+            val reason = if (stage == "decode") "音声を再生できないため、音声なしで再生しています。"
+                else "音声を出力できないため、音声なしで再生しています。"
+            assertEquals(listOf(reason), notices.toList(), stage)
+            assertEquals(if (stage == "factory") 0 else 1, output.closes.get(), stage)
+            if (stage == "decode") {
+                assertEquals(1, output.starts.get())
+                assertEquals(0, output.writes.get())
+            }
+        } finally {
+            session.stop(); video.release.countDown()
+        }
+        assertFilesUnchanged(folder, before)
+    }
+
     private class Gate {
         val entered = CountDownLatch(1)
         val release = CountDownLatch(1)
@@ -678,7 +736,7 @@ class ReplayPlaybackAudioTest {
 
     private fun fixture(resource: String = "/aac-lc-escape/beeps.m4a", rate: Int = 48_000,
                         mediaStart: Long = 1024, gap: Boolean = false, audio: Boolean = true, presented: Boolean = true,
-                        videoDurationUs: Long = 8_000_000): Path {
+                        videoDurationUs: Long = 8_000_000, corruptAudio: Boolean = false): Path {
         val folder = Files.createTempDirectory(root, "replay-")
         val videoRoot = "/replay-trim-parity/replay-20240101-000000-manual-feedface"
         val sourceVideo = Path.of(javaClass.getResource("$videoRoot/video.mp4")!!.toURI())
@@ -698,7 +756,7 @@ class ReplayPlaybackAudioTest {
                     var index = 0L
                     while (true) {
                         val packet = audioSource.nextFrame() ?: break
-                        audio.addFrameInternal(Packet.createPacket(packet.data, index * 1024, rate,
+                        audio.addFrameInternal(Packet.createPacket(if (corruptAudio) ByteBuffer.wrap(byteArrayOf(0)) else packet.data, index * 1024, rate,
                             1024, index, Packet.FrameType.KEY, null), 1)
                         index++
                     }

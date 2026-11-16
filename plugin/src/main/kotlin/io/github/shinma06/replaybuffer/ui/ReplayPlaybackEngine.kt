@@ -94,9 +94,20 @@ internal class ReplayPlaybackSession(
         }
     }
 
-    private fun audioUnavailable() {
+    private class AudioOutputFailure(cause: Throwable) : RuntimeException(cause)
+
+    private inline fun <T> outputCall(call: () -> T): T = try {
+        call()
+    } catch (interrupted: InterruptedException) {
+        throw interrupted
+    } catch (failure: Throwable) {
+        throw AudioOutputFailure(failure)
+    }
+
+    private fun audioUnavailable(failure: Throwable? = null) {
         if (!stopped.get() && audioNotified.compareAndSet(false, true))
-            onAudioUnavailable("音声を再生できないため、音声なしで再生しています。")
+            onAudioUnavailable(if (failure is AudioOutputFailure) "音声を出力できないため、音声なしで再生しています。"
+                else "音声を再生できないため、音声なしで再生しています。")
     }
 
     private fun check() { if (stopped.get()) throw InterruptedException() }
@@ -182,16 +193,16 @@ internal class ReplayPlaybackSession(
                     require(sampleRate == track.sampleRate && sampleRate > 0 && channels > 0) { "音声の形式と時刻記録が一致しません" }
                     val format = AudioFormat(sampleRate.toFloat(), 16, channels, true, false)
                     val frameBytes = 2 * channels
-                    val output = audioOutput(format)
+                    val output = outputCall { audioOutput(format) }
                     opened = output
                     check()
                     if (!canOpenAudio()) { audioUnavailable(); return }
-                    output.open(format, sampleRate / 4 * frameBytes)
+                    outputCall { output.open(format, sampleRate / 4 * frameBytes) }
                     check()
                     awaitVideo(videoReady)
                     check()
                     if (!beginAudio()) { audioUnavailable(); return }
-                    output.start()
+                    outputCall { output.start() }
                     check()
                     // Native start may have been in flight when video committed its fallback.
                     if (!adoptAudio(output)) { audioUnavailable(); return }
@@ -202,7 +213,7 @@ internal class ReplayPlaybackSession(
                         val count = minOf(samples, limit - written)
                         if (count <= 0) return
                         check()
-                        output.write(pcm, (offsetSamples * frameBytes).toInt(), (count * frameBytes).toInt())
+                        outputCall { output.write(pcm, (offsetSamples * frameBytes).toInt(), (count * frameBytes).toInt()) }
                         check()
                         written += count
                     }
@@ -236,14 +247,14 @@ internal class ReplayPlaybackSession(
                     // Keep the clock running to the end when the audio stops before the video.
                     while (written < limit) { check(); write(silence, 0, minOf(1024L, limit - written)) }
                     check()
-                    output.drain()
+                    outputCall { output.drain() }
                 }
             }
         } catch (_: InterruptedException) {
         } catch (failure: Throwable) {
             if (!stopped.get()) {
                 dropLine(opened)
-                audioUnavailable()
+                audioUnavailable(failure)
             }
         } finally {
             dropLine(opened)
