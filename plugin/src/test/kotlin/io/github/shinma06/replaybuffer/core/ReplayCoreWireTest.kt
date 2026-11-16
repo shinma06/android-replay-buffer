@@ -147,6 +147,28 @@ class ReplayCoreWireTest {
         runWireFixture(false, "partition", captureMode = CaptureMode.LOG_ONLY, autoCrash = true)
     }
 
+    @Test
+    fun automaticSaveWaitRequiresBothCompletionAndTheMatchingOutcome() {
+        val accepted = ReplaySnapshot(0, 0, true, CaptureState.CAPTURING, ReplaySettings(), 0,
+            lastSave = SaveSnapshot(SavePhase.WRITING, requestId = "save-1"),
+            autoSave = AutoSaveSnapshot(lastOutcome = AutoSaveOutcome("event-1", true, AutoSaveReason.ACCEPTED_WRITING, "save-1")))
+        val written = accepted.copy(lastSave = accepted.lastSave!!.copy(phase = SavePhase.COMPLETED))
+        val saved = accepted.autoSave.copy(lastOutcome = accepted.autoSave.lastOutcome!!.copy(reason = AutoSaveReason.SAVED))
+        assertFalse(automaticSaveCompleted(accepted))
+        assertFalse(automaticSaveCompleted(written))
+        assertFalse(automaticSaveCompleted(accepted.copy(autoSave = saved)))
+        assertFalse(automaticSaveCompleted(written.copy(autoSave = saved.copy(
+            lastOutcome = saved.lastOutcome!!.copy(requestId = "another-save")))))
+        assertTrue(automaticSaveCompleted(written.copy(autoSave = saved)))
+    }
+
+    private fun automaticSaveCompleted(state: ReplaySnapshot): Boolean {
+        val saved = state.lastSave ?: return false
+        val outcome = state.autoSave.lastOutcome ?: return false
+        return saved.phase == SavePhase.COMPLETED && outcome.reason == AutoSaveReason.SAVED &&
+            saved.requestId != null && outcome.requestId == saved.requestId
+    }
+
     private fun ownedPids(dir: Path): List<String> =
         Files.list(dir).use { files -> files.map { it.fileName.toString() }.toList() }
 
@@ -425,7 +447,7 @@ elif len(a)>3 and a[3]=='ps':
                     "${it.lid} ${it.pid} ${it.uid} ${it.wall} ${java.util.HexFormat.of().formatHex(it.raw)}"
                 })
                 Files.move(root.resolve("crash-wire.tmp"), root.resolve("crash-wire.txt"))
-                val done = awaitState("auto-save-completed") { it.lastSave?.phase == SavePhase.COMPLETED }
+                val done = awaitState("auto-save-completed", ::automaticSaveCompleted)
                 assertEquals(AutoSaveReason.SAVED, done.autoSave.lastOutcome?.reason)
                 assertEquals(7, done.autoSave.admissionsRemaining)
                 assertEquals(1, done.lastSave?.attempt)
