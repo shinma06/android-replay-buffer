@@ -34,11 +34,11 @@ import javax.swing.WindowConstants
 import javax.swing.border.EmptyBorder
 
 /** Only the actual menus are windows. No IDE frame or auxiliary owner participates. */
-internal class WindowsTraySurface : TraySurface {
+internal class WindowsTraySurface(private val diagnostics: WindowsTrayDiagnostics = WindowsTrayDiagnostics()) : TraySurface {
     private var tray: SystemTray? = null
     @Volatile private var icon: TrayIcon? = null
     @Volatile private var popupGesture: WindowsPopupGesture? = null
-    private val state = WindowsMenuState()
+    private val state = WindowsMenuState(diagnostics::rejected)
     private var root: MenuWindow? = null
     private var menuFailure: String? = null
 
@@ -51,14 +51,14 @@ internal class WindowsTraySurface : TraySurface {
 
     override fun show(image: Image, tooltip: String, menu: MenuBarMenu, dispatch: MenuDispatch): String? {
         unavailableReason()?.let { return it }
-        return try {
+        return diagnostics.guard(WindowsTrayOperation.SHOW, action = {
             val systemTray = tray ?: SystemTray.getSystemTray().also { tray = it }
             val current = icon ?: TrayIcon(image, tooltip).also { created ->
                 created.isImageAutoSize = true
                 val gesture = WindowsPopupGesture { event ->
                     val revision = state.revision
                     val point = event.locationOnScreen
-                    SwingUtilities.invokeLater { if (icon === created) open(revision, point) }
+                    SwingUtilities.invokeLater { diagnostics.openIfCurrent(icon === created) { open(revision, point) } }
                 }
                 created.addMouseListener(gesture)
                 systemTray.add(created)
@@ -69,10 +69,10 @@ internal class WindowsTraySurface : TraySurface {
             current.toolTip = tooltip
             if (state.update(menu, dispatch)) disposeMenus()
             null
-        } catch (_: Exception) {
+        }, onFailure = {
             runCatching { hide() }
             "OSのトレイへメニューバーアイコンを登録できませんでした。"
-        }
+        })
     }
 
     override fun ownsEventSource(source: Any): Boolean = source === icon
@@ -109,10 +109,10 @@ internal class WindowsTraySurface : TraySurface {
     }
 
     private fun guarded(action: () -> Unit) {
-        try { action() } catch (_: Exception) {
+        diagnostics.guard(WindowsTrayOperation.GUARDED, action, onFailure = {
             runCatching { hide() }
             menuFailure = "通知領域のメニューを表示できませんでした。設定から表示を切り替えて再試行してください。"
-        }
+        })
     }
 
     private fun dismiss() { state.dismiss(); disposeMenus() }
@@ -310,7 +310,7 @@ internal class WindowsMenuInput(private val state: WindowsMenuState, private val
 }
 
 /** Mutated on the EDT. The posting thread may read revision before queuing the existing menu-open callback. */
-internal class WindowsMenuState {
+internal class WindowsMenuState(private val rejected: (WindowsTrayOpenRejection) -> Unit = {}) {
     @Volatile var revision: Long = 0
         private set
     var closed: Boolean = false
@@ -329,7 +329,14 @@ internal class WindowsMenuState {
     }
 
     fun open(expectedRevision: Long): WindowsMenuSession? {
-        if (closed || expectedRevision != revision || active != null) return null
+        val reason = when {
+            closed -> WindowsTrayOpenRejection.CLOSED
+            expectedRevision != revision -> WindowsTrayOpenRejection.REVISION_CHANGED
+            active != null -> WindowsTrayOpenRejection.ALREADY_ACTIVE
+            menu == null -> WindowsTrayOpenRejection.NO_MENU
+            else -> null
+        }
+        if (reason != null) { rejected(reason); return null }
         return menu?.let { WindowsMenuSession(++revision, it).also { session -> active = session } }
     }
 
