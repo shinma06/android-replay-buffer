@@ -3,6 +3,7 @@ package io.github.shinma06.replaybuffer.core
 import io.github.shinma06.replaybuffer.menubar.AwtTraySurface
 import io.github.shinma06.replaybuffer.menubar.NoTraySurface
 import io.github.shinma06.replaybuffer.menubar.TraySurface
+import io.github.shinma06.replaybuffer.menubar.WindowsTraySurface
 
 /**
  * The single place that detects the host OS. OS-specific behaviour lives only in the implementations chosen here,
@@ -30,7 +31,7 @@ internal object HostPlatform {
 
     /** The tray display destination, a sibling facade kept separate from the file-saving implementations. */
     fun traySurface(): TraySurface = when {
-        windows -> AwtTraySurface()
+        windows -> WindowsTraySurface()
         name == "Mac OS X" -> AwtTraySurface(templateImages = true)
         name == "Linux" -> AwtTraySurface()
         else -> NoTraySurface("このOSではメニューバー（通知領域・トレイ）アイコンを表示できません。")
