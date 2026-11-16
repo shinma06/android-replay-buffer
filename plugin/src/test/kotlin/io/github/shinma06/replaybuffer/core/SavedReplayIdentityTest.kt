@@ -16,6 +16,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFails
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
+import kotlin.test.assertIs
 import kotlin.test.assertNotSame
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
@@ -69,7 +70,11 @@ class SavedReplayIdentityTest {
             names.forEach { name ->
                 assertFailsWith<IllegalStateException>(name) { saved.openFile(name).use {} }
                 assertFailsWith<IllegalStateException>(name) { saved.channel(name).use {} }
-                assertFailsWith<IllegalStateException>(name) { saved.forEachLine(name) { error("replacement read") } }
+                var consumed = false
+                val failure = runCatching { saved.forEachLine(name) { consumed = true } }.exceptionOrNull()
+                assertFalse(consumed, "$name: replacement consumer must not run")
+                val rejected = assertIs<IllegalStateException>(failure, name)
+                assertTrue(rejected.message.orEmpty().contains("保存元の実体が変更されています"), name)
             }
             assertSame(replaced, dir)
         }
