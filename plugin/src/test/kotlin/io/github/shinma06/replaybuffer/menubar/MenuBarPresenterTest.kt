@@ -151,7 +151,7 @@ class MenuBarPresenterTest {
             device = ReplayDevice("emulator-5554", "Pixel 9", DeviceKind.EMULATOR, true), canSave = true),
         message = null, initializationError = null, busy = false, enabled = true,
         settings = ReplaySettings(retentionSeconds = 30),
-        screenshotDisabledReason = null, screenshotBusy = false, savedAt = null, screenshot = null)
+        screenshotDisabledReason = null, screenshotBusy = false, savedAt = null, screenshot = null, location = "/work/$name")
 
     @Test
     fun `a usable surface shows the built menu and routes its commands`() {

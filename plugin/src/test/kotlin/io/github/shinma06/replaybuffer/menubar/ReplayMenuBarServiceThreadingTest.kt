@@ -202,6 +202,24 @@ class ReplayMenuBarServiceThreadingTest {
     }
 
     @Test
+    fun `same named project headings keep their paths rather than exposing routing tokens`() {
+        listOf(
+            "/work/一/same" to "/work/二/same",
+            """C:\work\same""" to """D:\work\same""",
+            null to null,
+        ).forEach { (firstPath, secondPath) ->
+            Fixture().use { fixture ->
+                val surface = fixture.enableMenu()
+                fixture.track(fixture.project("same", firstPath), fixture.project("same", secondPath))
+                fixture.drainRefreshes()
+                val headings = surface.menu!!.entries.filterIsInstance<MenuEntry.Submenu>().map { it.title }
+                val status = "${MenuBarIcon.WAITING.symbol} ${MenuBarIcon.WAITING.shortLabel}"
+                assertEquals(listOf("same — ${firstPath ?: "same"} $status", "same — ${secondPath ?: "same"} $status"), headings)
+            }
+        }
+    }
+
+    @Test
     fun `an untracked project item cannot target a newly tracked project at the same path`() {
         listOf(false, true).forEach { sameProject ->
             Fixture().use { fixture ->

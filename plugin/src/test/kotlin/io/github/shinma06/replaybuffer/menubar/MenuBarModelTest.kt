@@ -64,7 +64,7 @@ class MenuBarModelTest {
         savedAt: String? = null,
         screenshot: ScreenshotResult? = null,
     ) = MenuProjectInput("id-$name", name, snapshot, message, initializationError, busy, enabled, stored,
-        screenshotReason, screenshotBusy, savedAt, screenshot)
+        screenshotReason, screenshotBusy, savedAt, screenshot, location = "/work/$name")
 
     private fun items(entries: List<MenuEntry>): List<MenuItemModel> = entries.flatMap {
         when (it) {
@@ -245,15 +245,15 @@ class MenuBarModelTest {
         listOf(
             "/work/一/MyApp" to "/work/二/MyApp",
             """C:\work\一\MyApp""" to """D:\work\二\MyApp""",
-        ).forEach { (firstId, secondId) ->
+        ).forEach { (firstPath, secondPath) ->
             val inputs = listOf(
-                input(snapshot()).copy(projectId = firstId),
-                input(snapshot()).copy(projectId = secondId),
-                input(snapshot(), name = "Other").copy(projectId = "/work/Other"),
+                input(snapshot()).copy(projectId = "first-token", location = firstPath),
+                input(snapshot()).copy(projectId = "second-token", location = secondPath),
+                input(snapshot(), name = "Other").copy(projectId = "other-token"),
             )
             val submenus = menuBarModel(inputs).entries.filterIsInstance<MenuEntry.Submenu>()
             assertEquals(listOf(
-                "MyApp — $firstId ● 取得中", "MyApp — $secondId ● 取得中", "Other ● 取得中",
+                "MyApp — $firstPath ● 取得中", "MyApp — $secondPath ● 取得中", "Other ● 取得中",
             ), submenus.map { it.title })
             submenus.zip(inputs).forEach { (submenu, input) ->
                 assertTrue(items(submenu.entries).filter { it.command != null }.all { it.projectId == input.projectId })
@@ -263,9 +263,9 @@ class MenuBarModelTest {
 
     @Test
     fun `unique project names keep their existing titles after a namesake closes`() {
-        val first = input(snapshot()).copy(projectId = "/work/一/MyApp")
-        val other = input(snapshot(), name = "Other").copy(projectId = "/work/Other")
-        val duplicate = menuBarModel(listOf(first, first.copy(projectId = "/work/二/MyApp"), other))
+        val first = input(snapshot()).copy(projectId = "first-token", location = "/work/一/MyApp")
+        val other = input(snapshot(), name = "Other").copy(projectId = "other-token")
+        val duplicate = menuBarModel(listOf(first, first.copy(projectId = "second-token", location = "/work/二/MyApp"), other))
         assertEquals("MyApp — /work/一/MyApp ● 取得中", duplicate.entries.filterIsInstance<MenuEntry.Submenu>().first().title)
         val submenus = menuBarModel(listOf(first, other)).entries.filterIsInstance<MenuEntry.Submenu>()
         assertEquals(listOf("MyApp ● 取得中", "Other ● 取得中"), submenus.map { it.title })

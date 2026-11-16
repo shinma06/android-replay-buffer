@@ -81,6 +81,7 @@ internal data class MenuProjectInput(
     val screenshotBusy: Boolean,
     val savedAt: String?,
     val screenshot: ScreenshotResult?,
+    val location: String,
 )
 
 internal data class ProjectStatus(val icon: MenuBarIcon, val text: String)
@@ -205,7 +206,7 @@ internal fun menuBarModel(projects: List<MenuProjectInput>): MenuBarMenu {
             add(MenuEntry.Separator)
             projects.forEach { input ->
                 val status = projectStatus(input)
-                val name = if (nameCounts.getValue(input.name) > 1) "${input.name} — ${input.projectId}" else input.name
+                val name = if (nameCounts.getValue(input.name) > 1) "${input.name} — ${input.location}" else input.name
                 add(MenuEntry.Submenu("$name ${status.icon.symbol} ${status.icon.shortLabel}", projectEntries(input)))
             }
         }

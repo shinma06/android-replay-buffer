@@ -169,6 +169,7 @@ private class ProjectMenu(
             screenshotDisabledReason = service.screenshotDisabledReason, screenshotBusy = service.screenshotBusy,
             savedAt = savedAt.takeIf { snapshot?.save?.phase == SavePhase.COMPLETED },
             screenshot = screenshotResult,
+            location = project.basePath ?: project.name,
         )
     }
 
