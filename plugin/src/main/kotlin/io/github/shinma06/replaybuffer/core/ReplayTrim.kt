@@ -576,8 +576,13 @@ internal class ReplayTrim(
     }
 
     private data class LogCounts(val device: Int, val app: Int, val lastDeviceId: String?, val lastAppId: String?,
-                                 val times: Map<String, LongRange>)
+                                 val times: Map<String, LongRange>, val evidenceTimes: Map<String, Long?>)
     private data class TouchCounts(val count: Int, val inMovie: Int, val injected: Int)
+
+    private fun triggerEvidence(record: JsonObject): List<JsonObject> {
+        val trigger = record["auto_trigger"]?.takeIf { it.isJsonObject }?.asJsonObject ?: return emptyList()
+        return listOf("java_evidence", "platform_evidence").mapNotNull { trigger[it]?.takeIf { row -> row.isJsonObject }?.asJsonObject }
+    }
 
     private fun inTnsRange(line: JsonObject, originTns: Long?, endTns: Long?): Boolean {
         val t = line.longText("t_ns") ?: return true
@@ -595,6 +600,8 @@ internal class ReplayTrim(
         var lastDevice: String? = null
         var lastApp: String? = null
         val times = mutableMapOf<String, LongRange>()
+        val evidenceIds = triggerEvidence(saved.manifest).mapNotNull { it.text("record_id") }.toSet()
+        val evidenceTimes = mutableMapOf<String, Long?>()
         fun recordTime(kind: String, row: JsonObject) {
             val t = row.longText("t_ns") ?: return
             val span = times[kind]
@@ -609,6 +616,7 @@ internal class ReplayTrim(
                 if (!inTnsRange(row, originTns, endTns)) return@forEachLine
                 row.addProperty("t_ns", shift(row.text("t_ns"), originTns))
                 if (originTns == null) row.addProperty("t_uncertainty_ns", Long.MAX_VALUE.toString())
+                row.text("record_id")?.takeIf { it in evidenceIds }?.let { evidenceTimes[it] = row.longText("t_ns") }
                 val text = gson.toJson(row)
                 checkSpace(text.length * 2L)
                 deviceWriter.write(text); deviceWriter.write("\n")
@@ -621,7 +629,7 @@ internal class ReplayTrim(
                 }
             }
         } }
-        return LogCounts(device, app, lastDevice, lastApp, times)
+        return LogCounts(device, app, lastDevice, lastApp, times, evidenceTimes)
     }
 
     private fun writeTouches(saved: SavedReplay, file: (String) -> Path, originTns: Long?, endTns: Long?,
@@ -672,6 +680,19 @@ internal class ReplayTrim(
                                     outputRows: List<JsonObject>, logCounts: LogCounts, touchCounts: TouchCounts?,
                                     hashes: Map<String, String>): JsonObject {
         val out = saved.manifest.deepCopy()
+        out["auto_trigger"]?.takeIf { it.isJsonObject }?.asJsonObject?.let { trigger ->
+            for (name in listOf("arming_t_ns", "desired_pre_report_start_t_ns", "desired_pre_report_end_t_ns")) {
+                if (trigger.has(name)) trigger.addProperty(name, shift(trigger.text(name), originTns))
+            }
+            for (evidence in triggerEvidence(out)) {
+                val id = evidence.text("record_id")
+                val present = id != null && logCounts.evidenceTimes.containsKey(id)
+                evidence.addProperty("in_output", present)
+                evidence.addProperty("frozen_t_ns", if (present) logCounts.evidenceTimes[id]?.toString()
+                    else shift(evidence.text("frozen_t_ns"), originTns))
+                if (originTns == null) evidence.addProperty("t_uncertainty_ns", Long.MAX_VALUE.toString())
+            }
+        }
         out.addProperty("save_id", nameId())
         out.addProperty("folder_name", name)
         out.addProperty("created_at", createdAt.toInstant().toString())
