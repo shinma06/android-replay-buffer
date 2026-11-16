@@ -272,6 +272,8 @@ class ReplayTrimVideoReadTest {
 
     @Test
     fun copyHeadRejectsAKeyFlagWhoseNalIsNotAnIdr() {
+        // Exercise directory identity without relying on the host's temporary-path spelling.
+        root = root.resolve(".")
         val source = fixture()
         val selected = samples(source)[8]
         assertTrue(selected.idr)
@@ -308,7 +310,9 @@ class ReplayTrimVideoReadTest {
         assertFalse(published)
         assertEquals(before, hashes(source))
         Files.list(root).use { folders ->
-            assertEquals(listOf(source), folders.filter { Files.isDirectory(it) && it.fileName.toString().startsWith("replay-") }.toList())
+            val remaining = folders.filter { Files.isDirectory(it) && it.fileName.toString().startsWith("replay-") }.toList()
+            assertEquals(1, remaining.size)
+            assertTrue(Files.isSameFile(source, remaining.single()))
         }
     }
 
