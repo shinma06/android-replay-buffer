@@ -30,7 +30,7 @@ internal class ReplayFrameCursor(private val saved: SavedReplay) : AutoCloseable
 
     private val rows = saved.frames
     private val file = saved.openFile(ReplayFiles.VIDEO)
-    private val channel: FileChannel = file.channel(EnumSet.of(StandardOpenOption.READ))
+    private val channel: FileChannel
     private val track: AbstractMP4DemuxerTrack
     private val avcs: List<AvcCBox>
     private var nextIndex = 0
@@ -38,6 +38,8 @@ internal class ReplayFrameCursor(private val saved: SavedReplay) : AutoCloseable
     private var runEntry = -1
 
     init {
+        channel = try { file.channel(EnumSet.of(StandardOpenOption.READ)) }
+        catch (failure: Throwable) { file.close(); throw failure }
         try {
             val demuxer = MP4Demuxer.createRawMP4Demuxer(FileChannelWrapper(channel))
             track = demuxer.videoTrack as AbstractMP4DemuxerTrack
@@ -206,7 +208,8 @@ internal class ReplayAudioTrack private constructor(
                     it.longText("media_start_samples") ?: return null, it["samples"]?.asInt ?: return null)
             } ?: return null
             val file = saved.openFile(ReplayFiles.VIDEO)
-            val channel = file.channel(EnumSet.of(StandardOpenOption.READ))
+            val channel = try { file.channel(EnumSet.of(StandardOpenOption.READ)) }
+            catch (failure: Throwable) { file.close(); throw failure }
             try {
                 val demuxer = MP4Demuxer.createRawMP4Demuxer(FileChannelWrapper(channel))
                 val track = demuxer.audioTracks.firstOrNull() as? AbstractMP4DemuxerTrack

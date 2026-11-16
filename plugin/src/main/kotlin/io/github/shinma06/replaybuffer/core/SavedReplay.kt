@@ -13,6 +13,7 @@ import java.nio.file.StandardOpenOption.READ
 internal class SavedReplay private constructor(
     val directory: Path,
     private val handle: SaveOutputDirectory,
+    private val pins: Map<String, SaveOutputFile>,
     val manifest: JsonObject,
     val frames: List<JsonObject>,
     val recordSha256: String,
@@ -21,18 +22,31 @@ internal class SavedReplay private constructor(
     val name: String get() = directory.fileName.toString()
     private val gson = Gson()
     private val openFiles = mutableListOf<SaveOutputFile>()
+    private var closed = false
 
     fun exists(name: String): Boolean = handle.entries().contains(name)
 
     fun entries(): Set<String> = handle.entries()
 
-    fun openFile(name: String): SaveOutputFile = handle.openFile(name)
+    /** Compare the reader itself with a still-live pin; never check one open and read another. */
+    @Synchronized
+    fun openFile(name: String): SaveOutputFile {
+        check(!closed)
+        val pin = pins[name] ?: error("保存元の実体を確認できません: $name")
+        val reader = handle.openFile(name)
+        try {
+            check(reader.key == pin.key) { "保存元の実体が変更されています: $name" }
+            openFiles.removeAll { it.isClosed }
+            openFiles += reader
+            return reader
+        } catch (failure: Throwable) { reader.close(); throw failure }
+    }
 
     /** The descriptor stays owned by this SavedReplay and is released on [close]. */
     fun channel(name: String): FileChannel {
-        val file = handle.openFile(name)
-        openFiles += file
-        return file.channel(setOf(READ))
+        val file = openFile(name)
+        try { return file.channel(setOf(READ)) }
+        catch (failure: Throwable) { file.close(); throw failure }
     }
 
     fun text(name: String): String = channel(name).use { channel ->
@@ -45,7 +59,7 @@ internal class SavedReplay private constructor(
 
     /** The reader and its file are closed before this call returns or throws. */
     fun forEachLine(name: String, consume: (String) -> Unit) {
-        handle.openFile(name).use { output ->
+        openFile(name).use { output ->
             output.channel(setOf(READ)).use { channel -> readReplayLines(channel, consume) }
         }
     }
@@ -79,16 +93,22 @@ internal class SavedReplay private constructor(
         return ReplayTimeline(duration, spans, gaps, taps, known)
     }
 
+    @Synchronized
     override fun close() {
-        openFiles.forEach(SaveOutputFile::close)
-        handle.close()
+        if (closed) return
+        closed = true
+        try { openFiles.forEach(SaveOutputFile::close) }
+        finally {
+            try { pins.values.forEach(SaveOutputFile::close) }
+            finally { handle.close() }
+        }
     }
 
     companion object {
         private val gson = Gson()
 
         /** Opens a completed schema-4 video save; throws IllegalArgument/IllegalState with the Japanese reason. */
-        fun open(path: Path): SavedReplay {
+        fun open(path: Path, afterHash: (String, SaveOutputFile) -> Unit = { _, _ -> }): SavedReplay {
             require(path.isAbsolute && path == path.normalize() && path.parent != null) { "保存フォルダのパスを確認してください" }
             require(!path.fileName.toString().startsWith(".") && !path.fileName.toString().endsWith(".partial")) {
                 "未完成フォルダは切り取れません"
@@ -96,17 +116,17 @@ internal class SavedReplay private constructor(
             require(Files.isDirectory(path)) { "保存フォルダがありません: $path" }
             val directory = path.parent.toRealPath().resolve(path.fileName)
             val handle = SaveOutputDirectory.open(directory)
+            val pins = linkedMapOf<String, SaveOutputFile>()
+            fun pin(name: String) = pins.getOrPut(name) { handle.openFile(name) }
             try {
                 val entries = handle.entries()
                 require(ReplayFiles.RECORD in entries) { "replay.jsonのないフォルダは切り取れません" }
-                val record = handle.openFile(ReplayFiles.RECORD).use { output ->
-                    output.channel(setOf(READ)).use { channel ->
+                val record = pin(ReplayFiles.RECORD).channel(setOf(READ)).use { channel ->
                         require(channel.size() <= 64L * 1024 * 1024) { "replay.jsonが大きすぎます" }
                         val buffer = java.nio.ByteBuffer.allocate(channel.size().toInt())
                         while (buffer.hasRemaining()) check(channel.read(buffer) > 0)
                         buffer.flip()
                         Charsets.UTF_8.decode(buffer).toString()
-                    }
                 }
                 val manifest = try {
                     gson.fromJson(record, JsonObject::class.java)
@@ -124,11 +144,19 @@ internal class SavedReplay private constructor(
                 require(ReplayFiles.VIDEO in entries && ReplayFiles.VIDEO_FRAMES in entries) { "動画ファイルが見つかりません" }
                 val hashes = manifest["files_sha256"]?.takeIf { it.isJsonObject }?.asJsonObject
                     ?: throw IllegalArgumentException("replay.jsonのfiles_sha256を読めません")
+                // Select every readable input now, including legacy targets without a listed hash.
+                // Those targets gain an identity pin, not a new content-validation policy.
+                (hashes.keySet() + listOf(ReplayFiles.VIDEO, ReplayFiles.VIDEO_FRAMES, ReplayFiles.VIDEO_SOURCE,
+                    ReplayFiles.LOGCAT_DEVICE, ReplayFiles.LOGCAT_APP, ReplayFiles.TOUCHES).filter { it in entries })
+                    .forEach { pin(it) }
                 hashes.entrySet().forEach { (name, expected) ->
-                    val actual = handle.openFile(name).use { it.hash() }
+                    val output = pins.getValue(name)
+                    val actual = output.hash()
                     require(actual == expected.asString) { "保存時からファイルが変更されています: $name" }
+                    afterHash(name, output)
                 }
                 val frames = handle.openFile(ReplayFiles.VIDEO_FRAMES).use { output ->
+                    check(output.key == pins.getValue(ReplayFiles.VIDEO_FRAMES).key) { "保存元の実体が変更されています: ${ReplayFiles.VIDEO_FRAMES}" }
                     output.channel(setOf(READ)).use { channel ->
                         require(channel.size() <= Int.MAX_VALUE) { "時刻索引が大きすぎます" }
                         buildList {
@@ -141,9 +169,10 @@ internal class SavedReplay private constructor(
                 require(frames.isNotEmpty()) { "動画のframe記録がありません" }
                 val recordHash = java.security.MessageDigest.getInstance("SHA-256").digest(record.toByteArray(Charsets.UTF_8))
                     .joinToString("") { "%02x".format(it) }
-                return SavedReplay(directory, handle, manifest, frames, recordHash)
+                return SavedReplay(directory, handle, pins, manifest, frames, recordHash)
             } catch (e: Throwable) {
-                handle.close()
+                try { pins.values.forEach(SaveOutputFile::close) }
+                finally { handle.close() }
                 throw e
             }
         }

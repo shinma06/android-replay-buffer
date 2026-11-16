@@ -173,7 +173,8 @@ internal class ReplayPlayerController(
         executor.execute {
             try {
                 val opened = SavedReplay.open(folder)
-                val timeline = opened.timeline()
+                val timeline = try { opened.timeline() }
+                catch (failure: Throwable) { opened.close(); throw failure }
                 saved = opened
                 publish {
                     val created = TrimRules(FrameGrid(timeline.spans), timeline.durationUs)
