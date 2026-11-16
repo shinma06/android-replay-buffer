@@ -669,7 +669,7 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                 }
                 if (tail != null) {
                     appendLine()
-                    appendLine("- 動画末尾: ${tail.fromNs}〜${tail.toNs}nsは新frame未確認。前の画像の表示保持=${tail.displayHeld}。再生時間は確認済み取得時間とは異なります。")
+                    appendLine("- 動画末尾（窓からのns）: ${windowT(tail.fromNs)}〜${windowT(tail.toNs)} は新frame未確認。前の画像の表示保持=${tail.displayHeld}。再生時間は確認済み取得時間とは異なります。")
                 }
                 capture.autoTrigger?.let { trigger ->
                     appendLine()
