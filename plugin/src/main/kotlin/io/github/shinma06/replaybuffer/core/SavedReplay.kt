@@ -130,6 +130,7 @@ internal class SavedReplay private constructor(
                 }
                 val frames = handle.openFile(ReplayFiles.VIDEO_FRAMES).use { output ->
                     output.channel(setOf(READ)).use { channel ->
+                        require(channel.size() <= Int.MAX_VALUE) { "時刻索引が大きすぎます" }
                         buildList {
                             readReplayLines(channel) { line ->
                                 if (line.isNotEmpty()) add(gson.fromJson(line, JsonObject::class.java))
