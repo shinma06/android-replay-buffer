@@ -9,6 +9,7 @@ import com.intellij.openapi.options.ShowSettingsUtil
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.project.ProjectManager
 import com.intellij.openapi.project.ProjectManagerListener
+import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.wm.ToolWindowManager
 import com.intellij.openapi.wm.WindowManager
 import com.intellij.util.messages.MessageBusConnection
@@ -36,6 +37,19 @@ private val RESULT_TIME: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm:
 private const val TOOL_WINDOW_ID = "Android Replay Buffer"
 
 internal fun restoredWindowState(state: Int): Int = state and JFrame.ICONIFIED.inv()
+
+internal fun registerMenuBarPostEventListener(parent: Disposable, acquire: (Disposable) -> Unit): Boolean {
+    // The SDK adds the hook before registering its cleanup. Keep its owner private until acquisition completes.
+    val owner = Disposer.newDisposable("Replay menu bar post-event listener")
+    var attached = false
+    try {
+        acquire(owner)
+        attached = Disposer.tryRegister(parent, owner)
+        return attached
+    } finally {
+        if (!attached) Disposer.dispose(owner)
+    }
+}
 
 internal fun interface MenuBarAvailabilityListener {
     fun changed(reason: String?)
@@ -104,10 +118,11 @@ class ReplayMenuBarService : Disposable {
         val requested = store.showInMenuBar
         if (!trayEventsRegistered && requested && inputs.isNotEmpty() && surface.unavailableReason() == null) {
             val toolkit = Toolkit.getDefaultToolkit()
-            IdeEventQueue.getInstance().addPostEventListener({ event ->
-                !disposed && surface.interceptPostedEvent(event, toolkit)
-            }, this)
-            trayEventsRegistered = true
+            trayEventsRegistered = registerMenuBarPostEventListener(this) { owner ->
+                IdeEventQueue.getInstance().addPostEventListener({ event ->
+                    !disposed && surface.interceptPostedEvent(event, toolkit)
+                }, owner)
+            }
         }
         presenter.update(requested, inputs) { item ->
             if (!disposed) projects.values.firstOrNull { it.projectId == item.projectId }?.let(item::run)
