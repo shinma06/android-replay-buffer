@@ -68,9 +68,9 @@ class ReplayTrimParityTest {
         assertContentEquals(packet(source, originalFirst), packet(trimmed, trimmedFirst))
         assertEquals(JsonParser.parseString("""{"x":0,"y":16,"width":64,"height":32,"padding_left":0,"padding_top":16,"padding_right":0,"padding_bottom":16}"""), trimmedFirst["source_rect"])
         SavedReplay.open(trimmed).use { assertTrue(it.manifest["complete"].asBoolean) }
-        assertEquals(sourceAudio.subList(9, 30) + sourceAudio.subList(30, 68), audioPackets(trimmed, listOf(
-            PlaybackAudioSegment(0, 440_000, 384, 21),
-            PlaybackAudioSegment(900_001, 800_000, 21 * 1024, 38),
+        assertEquals(sourceAudio.subList(8, 30) + sourceAudio.subList(30, 68), audioPackets(trimmed, listOf(
+            PlaybackAudioSegment(0, 440_000, 1024 + 384, 21),
+            PlaybackAudioSegment(900_001, 800_000, 22 * 1024, 38),
         ), 1.24))
         val bytes = names.associateWith { Files.readAllBytes(trimmed.resolve(it)) }.toMutableMap()
         val videoHash = hash(bytes.getValue("video.mp4"))
@@ -90,9 +90,9 @@ class ReplayTrimParityTest {
         val trimmedBefore = names.associateWith { hash(Files.readAllBytes(trimmed.resolve(it))) }
         val retrimmed = ReplayTrim().trim(trimmed, 100_001, 1_500_001, { false },
             { Files.move(it.partial, it.complete) }, at, "cafebabe")
-        assertEquals(sourceAudio.subList(14, 30) + sourceAudio.subList(30, 59), audioPackets(retrimmed, listOf(
-            PlaybackAudioSegment(0, 340_000, 64, 16),
-            PlaybackAudioSegment(800_001, 600_000, 16 * 1024, 29),
+        assertEquals(sourceAudio.subList(13, 30) + sourceAudio.subList(30, 59), audioPackets(retrimmed, listOf(
+            PlaybackAudioSegment(0, 340_000, 1024 + 64, 16),
+            PlaybackAudioSegment(800_001, 600_000, 17 * 1024, 29),
         ), 0.94))
         bytes["retrim-video.mp4"] = withoutMp4Dates(Files.readAllBytes(retrimmed.resolve("video.mp4")))
         val retrimmedRecord = JsonParser.parseString(Files.readString(retrimmed.resolve("replay.json"))).asJsonObject
@@ -145,7 +145,7 @@ class ReplayTrimParityTest {
                     assertEquals(2048, decoder.decode(data).size)
                     packets += hash(data)
                 }
-                assertEquals(expected.sumOf { it.samples }, packets.size)
+                assertEquals(expected.maxOf { it.mediaStart / 1024 + it.samples }.toInt(), packets.size)
                 packets
             }
         }

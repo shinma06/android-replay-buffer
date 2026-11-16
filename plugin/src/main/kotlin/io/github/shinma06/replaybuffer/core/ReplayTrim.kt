@@ -516,8 +516,12 @@ internal class ReplayTrim(private val availableSpace: (Path) -> Long = { Files.g
             val packet = audioTrack.nextFrame() ?: break
             packets += packet
         }
-        data class AudioRun(val movieStart: Long, val duration: Long, val first: Int, val end: Int, val skip: Long)
+        data class AudioRun(val movieStart: Long, val duration: Long, val first: Int, val end: Int, val skip: Long, val preroll: Int)
+        var referencedEnd = 0L
         val runs = plan.mapNotNull { segment ->
+            // Unreferenced media before a segment may be a previous trim's hidden prefix.
+            val prefixStart = minOf(segment.mediaStart / AAC_FRAME_SAMPLES, referencedEnd)
+            if (segment.count > 0) referencedEnd = maxOf(referencedEnd, segment.mediaStart / AAC_FRAME_SAMPLES + segment.count)
             val from = maxOf(startUs, segment.movieStart)
             val to = minOf(endUs, Math.addExact(segment.movieStart, segment.duration))
             if (from >= to || segment.count <= 0) return@mapNotNull null
@@ -530,7 +534,8 @@ internal class ReplayTrim(private val availableSpace: (Path) -> Long = { Files.g
             val first = Math.toIntExact(mediaFrom / AAC_FRAME_SAMPLES)
             val end = Math.toIntExact(Math.ceilDiv(mediaEnd, AAC_FRAME_SAMPLES))
             require(first >= 0 && end <= packets.size) { "音声segmentのsample範囲が不正です" }
-            AudioRun(from - startUs, to - from, first, end, mediaFrom % AAC_FRAME_SAMPLES)
+            AudioRun(from - startUs, to - from, first, end, mediaFrom % AAC_FRAME_SAMPLES,
+                if (first > prefixStart) 1 else 0)
         }
         if (runs.isEmpty()) return null
         val sound = MP4MuxerTrack(mux.nextTrackId, MP4TrackType.SOUND)
@@ -542,11 +547,11 @@ internal class ReplayTrim(private val availableSpace: (Path) -> Long = { Files.g
         var written = 0L
         runs.forEach { run ->
             if (run.movieStart > cursor) edits += Edit(run.movieStart - cursor, -1, 1f)
-            val mediaStart = Math.addExact(written * AAC_FRAME_SAMPLES, run.skip)
+            val mediaStart = Math.addExact((written + run.preroll) * AAC_FRAME_SAMPLES, run.skip)
             edits += Edit(run.duration, mediaStart, 1f)
             newSegments += mapOf("movie_start_us" to run.movieStart.toString(), "duration_us" to run.duration.toString(),
                 "media_start_samples" to mediaStart.toString(), "samples" to run.end - run.first)
-            for (i in run.first until run.end) {
+            for (i in run.first - run.preroll until run.end) {
                 checkActive()
                 checkSpace(packets[i].data.remaining().toLong())
                 sound.addFrameInternal(Packet.createPacket(packets[i].data, written * 1024L, sampleRate,

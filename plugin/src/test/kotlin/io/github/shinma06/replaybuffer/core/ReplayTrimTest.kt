@@ -663,7 +663,7 @@ class ReplayTrimTest {
             NIOUtils.readableChannel(dir.resolve("video.mp4").toFile()).use { channel ->
                 MP4Demuxer.createRawMP4Demuxer(channel).use { demuxer ->
                     val audio = demuxer.audioTracks.single() as AbstractMP4DemuxerTrack
-                    assertEquals(keptSamples, audio.meta.totalFrames)
+                    assertEquals(keptSamples + 1, audio.meta.totalFrames)
                     assertEquals(segments.map { it.asJsonObject.let { row ->
                         row["duration_us"].asString.toLong() to row["media_start_samples"].asString.toLong()
                     } }, audio.edits.filter { it.mediaTime >= 0 }.map { it.duration to it.mediaTime })
@@ -671,7 +671,7 @@ class ReplayTrimTest {
                 }
             }
             assertEquals("0", segments[0].asJsonObject["movie_start_us"].asString)
-            assertEquals(448L, segments[0].asJsonObject["media_start_samples"].asString.toLong())
+            assertEquals(1024L + 448, segments[0].asJsonObject["media_start_samples"].asString.toLong())
             val expected = manifest(output.directory)["audio_track"].asJsonObject["segments"].asJsonArray.mapNotNull {
                 val segment = it.asJsonObject
                 val begin = segment["movie_start_us"].asString.toLong()

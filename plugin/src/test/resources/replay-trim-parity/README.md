@@ -37,6 +37,31 @@ Linux `test` とmacOS / Windows `os-parity` で同じ比較が行われます。
 MP4のedit listとmanifestの一致、音声coverage、同梱JAADでの復号を確認します。
 再トリムの音声以外のside dataはgolden比較の追加対象ではありません。
 
+AAC overlap維持のため、trimは提示segmentの途中で切るときに直前1packetを
+コピーし、editと`media_start_samples`で隠します。既に隠れprefixを持つ出力の再trimでは
+そのpacketを再利用します。`samples`は提示に必要なpacket数の
+ままで、隠れprefixは含みません。この入力のtrimは元packet 8〜29と30〜67、再trimは
+13〜29と30〜58を格納します。最初の提示開始はそれぞれ1408 / 1088sample、後半segmentの
+開始は22528 / 17408sampleです。後半segment先頭には前segment由来のprerollを足しません。
+元packetのbyte比較とedit/manifest検査を維持し、この構造差から派生するMP4/JSONの
+4個のgolden hashだけを更新しています。映像、PNG、ログ、タップ、入力fixtureは不変です。
+
+`ReplayTrimAudioPrerollTest`は既存`aac-playback-sync/mono-no-pns.m4a`の先頭30 / 50packetを
+独立segmentとしてremuxし、同じ合成IDRを切り取り境界に配置します。preflightの実際の
+frame境界が要求範囲と一致することを検査してから、segment先頭からの連続PCMをoracleに
+packet内部・packet境界・seek・segment先頭・隠れprefixの再trimをbyte比較します。
+保存packetの直接復号＋edit適用と、fake Java Sound出力による実player経路の両方を検査します。
+PNSの乱数履歴はこの厳密比較に混ぜず、既存のPNS/escape復号テストはそのまま残します。
+
+既知の制約: schema 4の提示segmentはAAC sessionの識別を保存しません。現playerは
+別segmentの直前packetもwarm-upするため、独立encoderのsegment先頭はcold decodeと
+一致しないことがあります。今回はplayer・その境界動作を変更せず、この差を非skipの
+characterization testで第1packetに局在する既知制約として記録します。gapをまたぐtrim／
+再trimでは元playerのPCMを維持することを比較し、独立segmentのresetを直したとは扱いません。
+同じAAC streamを2msの映像holeで分けた対照は連続PCM・元player・trim・再trimが一致する
+ことを確認します。提示segmentをdecoder resetと見なす案はこの対照を壊すため不採用です。
+AAC session／decode-run情報の後方互換設計は別タスクであり、この変更へ混ぜません。
+
 生成IDとMP4の作成・更新日時（およびその日時由来のMP4ハッシュ）以外は除外しません。
 PNGの`arb:source_save_id`は直のmanifest IDとの一致とchunk CRCを検証してから、
 manifestと同じ`generated-id`へ正規化しCRCだけ再計算します。新IDのchunkだけを除いた
