@@ -17,6 +17,9 @@ import com.intellij.openapi.wm.ToolWindowManager
 import com.intellij.openapi.wm.ex.ToolWindowEx
 import com.intellij.openapi.wm.ex.ToolWindowManagerListener
 import com.intellij.toolWindow.InternalDecoratorImpl
+import com.intellij.ui.content.ContentManager
+import com.intellij.ui.content.ContentManagerEvent
+import com.intellij.ui.content.ContentManagerListener
 import java.awt.Component
 import java.awt.Container
 import java.awt.event.ContainerAdapter
@@ -33,14 +36,28 @@ class LogcatTitleActions(private val project: Project) : ToolWindowManagerListen
         if (LOGCAT_TOOL_WINDOW_ID in ids && !project.isDisposed)
             project.getService(LogcatTitleActionService::class.java).refresh()
     }
+
+    override fun toolWindowShown(toolWindow: ToolWindow) {
+        if (toolWindow.id == LOGCAT_TOOL_WINDOW_ID && !project.isDisposed)
+            project.getService(LogcatTitleActionService::class.java).refresh()
+    }
 }
 
 @Service(Service.Level.PROJECT)
 internal class LogcatTitleActionService(project: Project) : Disposable {
     private val toolWindows = ToolWindowManager.getInstance(project)
+    private var observedContentManager: ContentManager? = null
+    private val contentListener = object : ContentManagerListener {
+        override fun contentAdded(event: ContentManagerEvent) = refresh()
+        override fun contentRemoved(event: ContentManagerEvent) = refresh()
+    }
     private val binding = LogcatTitleActionBinding(
         alive = { !project.isDisposed },
-        targets = { logcatHeaderTargets(toolWindows.getToolWindow(LOGCAT_TOOL_WINDOW_ID)) },
+        targets = {
+            val window = toolWindows.getToolWindow(LOGCAT_TOOL_WINDOW_ID)
+            observeContentManager(window?.takeUnless { it.isDisposed }?.contentManagerIfCreated)
+            logcatHeaderTargets(window)
+        },
         action = { ActionManager.getInstance().getAction(LOGCAT_SAVE_LOGS_ACTION_ID) },
         later = toolWindows::invokeLater,
     )
@@ -52,7 +69,17 @@ internal class LogcatTitleActionService(project: Project) : Disposable {
 
     fun refresh() = binding.refresh()
 
-    override fun dispose() {}
+    private fun observeContentManager(manager: ContentManager?) {
+        if (observedContentManager === manager) return
+        observedContentManager?.removeContentManagerListener(contentListener)
+        observedContentManager = manager
+        manager?.addContentManagerListener(contentListener)
+    }
+
+    override fun dispose() {
+        val cleanup = Runnable { observeContentManager(null) }
+        if (SwingUtilities.isEventDispatchThread()) cleanup.run() else SwingUtilities.invokeAndWait(cleanup)
+    }
 }
 
 // Verified with AS AI-262.10968.63.2622.16730706: InternalDecoratorImpl is @ApiStatus.Internal; reset is an impl API too.
@@ -61,6 +88,7 @@ internal fun logcatHeaderTargets(window: ToolWindow?): List<LogcatTitleActionTar
     if (window == null || window.isDisposed) return emptyList()
     return try {
         val extended = window as? ToolWindowEx ?: return emptyList()
+        if (window.contentManagerIfCreated == null) return emptyList()
         // The decorator getter itself does not initialize the content manager.
         extended.component
         val root = extended.decorator as? InternalDecoratorImpl ?: return emptyList()

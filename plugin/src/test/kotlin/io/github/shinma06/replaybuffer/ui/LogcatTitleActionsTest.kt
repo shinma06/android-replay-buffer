@@ -24,9 +24,14 @@ import com.intellij.openapi.wm.ToolWindowBalloonShowOptions
 import com.intellij.openapi.wm.ToolWindowManager
 import com.intellij.openapi.wm.ex.ToolWindowEx
 import com.intellij.openapi.ui.popup.Balloon
+import com.intellij.ui.content.Content
+import com.intellij.ui.content.ContentManager
+import com.intellij.ui.content.ContentManagerEvent
+import com.intellij.ui.content.ContentManagerListener
 import java.awt.Component
 import java.awt.Container
 import java.awt.event.ContainerEvent
+import java.awt.event.ContainerAdapter
 import java.awt.event.InputEvent
 import java.lang.reflect.Proxy
 import java.util.IdentityHashMap
@@ -238,10 +243,14 @@ class LogcatTitleActionsTest {
 
     @Test
     fun `unsupported missing or disposed SDK decorators never replace other title actions`() {
-        fun window(api: Class<out ToolWindow>, disposed: Boolean = false, initialize: () -> Unit = {}, decorator: () -> Any? = { null }): ToolWindow =
+        val manager = Proxy.newProxyInstance(ContentManager::class.java.classLoader, arrayOf(ContentManager::class.java)) { _, _, _ ->
+            error("Only the non-lazy ToolWindow accessor may be used")
+        } as ContentManager
+        fun window(api: Class<out ToolWindow>, disposed: Boolean = false, created: Boolean = true, initialize: () -> Unit = {}, decorator: () -> Any? = { null }): ToolWindow =
             Proxy.newProxyInstance(api.classLoader, arrayOf(api)) { _, method, _ ->
                 when (method.name) {
                     "isDisposed" -> disposed
+                    "getContentManagerIfCreated" -> if (created) manager else null
                     "getComponent" -> { initialize(); JPanel() }
                     "getDecorator" -> decorator()
                     else -> error("Unsupported SDK must not call ${method.name}")
@@ -251,6 +260,8 @@ class LogcatTitleActionsTest {
         assertTrue(logcatHeaderTargets(window(ToolWindow::class.java)).isEmpty())
         assertTrue(logcatHeaderTargets(window(ToolWindowEx::class.java)).isEmpty())
         assertTrue(logcatHeaderTargets(window(ToolWindowEx::class.java, disposed = true) { error("Disposed decorator accessed") }).isEmpty())
+        assertTrue(logcatHeaderTargets(window(ToolWindowEx::class.java, created = false,
+            initialize = { error("Uncreated UI must not be initialized") }) { error("Uncreated decorator accessed") }).isEmpty())
         assertTrue(logcatHeaderTargets(window(ToolWindowEx::class.java) { throw NoSuchMethodError("SDK boundary changed") }).isEmpty())
         var initialized = false
         assertTrue(logcatHeaderTargets(window(ToolWindowEx::class.java, initialize = { initialized = true }) {
@@ -258,6 +269,150 @@ class LogcatTitleActionsTest {
             null
         }).isEmpty())
         assertTrue(initialized)
+    }
+
+    @Test
+    fun `uncreated service refresh and early shown never initialize UI or add pending listeners`() {
+        ServiceFixture(false).use { f ->
+            f.observer.toolWindowsRegistered(listOf("unrelated"), f.toolWindows)
+            repeat(3) { f.registered(); f.shown() }
+            assertEquals(1, f.callbacks.size)
+            f.drain()
+            assertFalse(f.created)
+            assertEquals(0, f.componentReads)
+            assertEquals(0, f.decoratorReads)
+            assertEquals(0, f.manager.adds)
+            assertEquals(0, f.pendingListeners)
+            assertEquals(listOf(f.manager.foreign), f.manager.listeners)
+        }
+    }
+
+    @Test
+    fun `shown schedules the real service after an uncreated startup without new registration`() {
+        ServiceFixture(false).use { f ->
+            f.drain()
+            assertEquals(0, f.componentReads)
+            f.created = true
+            repeat(3) { f.shown() }
+            assertEquals(1, f.callbacks.size)
+            f.drain()
+            assertEquals(1, f.componentReads)
+            assertEquals(1, f.decoratorReads)
+            assertEquals(1, f.manager.adds)
+            assertEquals(0, f.pendingListeners)
+        }
+    }
+
+    @Test
+    fun `existing manager events coalesce and replacement removes only the owned listener`() {
+        ServiceFixture(true).use { f ->
+            f.drain()
+            val old = f.manager
+            assertEquals(1, old.adds)
+            assertEquals(2, old.listeners.size)
+            old.added(); old.removed()
+            assertEquals(1, f.callbacks.size)
+            f.drain()
+            assertEquals(1, old.adds)
+            f.manager = ManagerSpy()
+            f.service.refresh(); f.drain()
+            assertEquals(listOf(old.foreign), old.listeners)
+            assertEquals(1, old.removes)
+            assertEquals(1, f.manager.adds)
+            assertEquals(2, f.manager.listeners.size)
+            assertEquals(0, f.pendingListeners)
+        }
+    }
+
+    @Test
+    fun `service disposal expires startup and later observer callbacks without touching UI`() {
+        listOf(false, true).forEach { created ->
+            ServiceFixture(created).use { f ->
+                Disposer.dispose(f.service)
+                assertFalse(f.project.isDisposed)
+                val queued = f.callbacks.size
+                f.registered(); f.shown(); f.service.refresh()
+                assertEquals(queued, f.callbacks.size)
+                f.drain()
+                assertEquals(0, f.componentReads)
+                assertEquals(0, f.decoratorReads)
+                assertEquals(0, f.manager.adds)
+            }
+        }
+    }
+
+    @Test
+    fun `off EDT service disposal releases manager ownership before returning and stale callbacks expire`() {
+        ServiceFixture(true).use { f ->
+            f.drain()
+            val manager = f.manager
+            val saved = manager.listeners.filter { it !== manager.foreign }
+            assertEquals(1, saved.size)
+            val event = manager.event()
+            f.service.refresh()
+            val reads = f.componentReads
+            assertFalse(SwingUtilities.isEventDispatchThread())
+            Disposer.dispose(f.service)
+            assertEquals(listOf(manager.foreign), manager.listeners)
+            assertEquals(1, manager.removes)
+            val queued = f.callbacks.size
+            saved.forEach { it.contentAdded(event); it.contentRemoved(event) }
+            f.registered(); f.shown(); f.service.refresh()
+            assertEquals(queued, f.callbacks.size)
+            f.drain()
+            assertEquals(reads, f.componentReads)
+            Disposer.dispose(f.service)
+            assertEquals(1, manager.removes)
+        }
+    }
+
+    @Test
+    fun `disposed and missing windows release the created manager without eager lookups`() {
+        ServiceFixture(true).use { f ->
+            f.drain()
+            assertEquals(1, f.manager.adds)
+            val reads = f.componentReads
+            f.windowDisposed = true
+            f.service.refresh(); f.drain()
+            assertEquals(reads, f.componentReads)
+            assertEquals(listOf(f.manager.foreign), f.manager.listeners)
+            assertEquals(1, f.manager.removes)
+            f.windowDisposed = false
+            f.toolWindows.window = null
+            f.service.refresh(); f.drain()
+            assertEquals(reads, f.componentReads)
+            assertEquals(1, f.manager.removes)
+        }
+    }
+
+    @Test
+    fun `late root has one action and disposal preserves foreign container listeners with queued work`() {
+        Fixture().use { f ->
+            f.header = null
+            f.drain()
+            val foreign = action("foreign root action")
+            f.header = DefaultActionGroup().apply { add(foreign) }
+            f.binding.refresh(); f.drain()
+            assertEquals(listOf(f.save, foreign), f.children())
+            val toolbar = f.toolbar()
+            val foreignListener = object : ContainerAdapter() {}
+            toolbar.container.addContainerListener(foreignListener)
+            val saved = toolbar.container.containerListeners.toList()
+            toolbar.visible = f.children()
+            f.binding.refresh(); f.drain()
+            assertEquals(listOf(f.save, foreign), f.children())
+            f.binding.refresh()
+            Disposer.dispose(f.owner)
+            assertEquals(listOf(foreignListener), toolbar.container.containerListeners.toList())
+            assertEquals(listOf(foreign), f.children())
+            assertTrue(toolbar.visible.isEmpty())
+            assertEquals(1, toolbar.resets)
+            val queued = f.callbacks.size
+            saved.forEach { it.componentAdded(ContainerEvent(toolbar.container, ContainerEvent.COMPONENT_ADDED, JPanel())) }
+            assertEquals(queued, f.callbacks.size)
+            f.drain()
+            assertEquals(listOf(foreign), f.children())
+        }
     }
 
     @Test
@@ -469,6 +624,79 @@ class LogcatTitleActionsTest {
         }
     }
 
+    private class ManagerSpy {
+        val foreign = object : ContentManagerListener {}
+        val listeners = mutableListOf<ContentManagerListener>(foreign)
+        var adds = 0
+        var removes = 0
+        val value = Proxy.newProxyInstance(ContentManager::class.java.classLoader, arrayOf(ContentManager::class.java)) { _, method, args ->
+            check(SwingUtilities.isEventDispatchThread())
+            when (method.name) {
+                "addContentManagerListener" -> {
+                    val listener = args!![0] as ContentManagerListener
+                    check(listeners.none { it === listener })
+                    listeners.add(listener); adds++; null
+                }
+                "removeContentManagerListener" -> {
+                    val listener = args!![0] as ContentManagerListener
+                    check(listeners.removeAll { it === listener })
+                    removes++; null
+                }
+                else -> error("Unexpected ContentManager call: ${method.name}")
+            }
+        } as ContentManager
+
+        fun event(): ContentManagerEvent {
+            val content = Proxy.newProxyInstance(Content::class.java.classLoader, arrayOf(Content::class.java)) { _, _, _ ->
+                error("Event content must not be inspected")
+            } as Content
+            return ContentManagerEvent(value, content, 0)
+        }
+
+        fun added() = SwingUtilities.invokeAndWait { val event = event(); listeners.toList().forEach { it.contentAdded(event) } }
+        fun removed() = SwingUtilities.invokeAndWait { val event = event(); listeners.toList().forEach { it.contentRemoved(event) } }
+    }
+
+    private class ServiceFixture(initiallyCreated: Boolean) : AutoCloseable {
+        private val environment = Fixture().also { it.header = null; it.drain() }
+        val callbacks = environment.callbacks
+        val project = MockProject(null, environment.lifetime)
+        val toolWindows = TestToolWindowManager(callbacks)
+        var manager = ManagerSpy()
+        var created = initiallyCreated
+        var windowDisposed = false
+        var componentReads = 0
+        var decoratorReads = 0
+        var pendingListeners = 0
+        private val component = JPanel()
+        val window = Proxy.newProxyInstance(ToolWindowEx::class.java.classLoader, arrayOf(ToolWindowEx::class.java)) { _, method, _ ->
+            when (method.name) {
+                "getId" -> LOGCAT_TOOL_WINDOW_ID
+                "isDisposed" -> windowDisposed
+                "getContentManagerIfCreated" -> { check(SwingUtilities.isEventDispatchThread()); if (created) manager.value else null }
+                "getComponent" -> { check(SwingUtilities.isEventDispatchThread()); componentReads++; created = true; component }
+                "getDecorator" -> { decoratorReads++; null }
+                "addContentManagerListener" -> { pendingListeners++; error("Pending listeners are forbidden") }
+                else -> error("Unexpected ToolWindow call: ${method.name}")
+            }
+        } as ToolWindowEx
+        val service: LogcatTitleActionService
+        val observer = LogcatTitleActions(project)
+
+        init {
+            toolWindows.window = window
+            project.registerService(ToolWindowManager::class.java, toolWindows)
+            service = LogcatTitleActionService(project)
+            project.registerService(LogcatTitleActionService::class.java, service)
+            Disposer.register(environment.lifetime, service)
+        }
+
+        fun registered() = observer.toolWindowsRegistered(listOf(LOGCAT_TOOL_WINDOW_ID), toolWindows)
+        fun shown() = observer.toolWindowShown(window)
+        fun drain() = environment.drain()
+        override fun close() = environment.close()
+    }
+
     private class Fixture : AutoCloseable {
         val lifetime = Disposer.newDisposable("Logcat title actions test")
         val owner = Disposer.newDisposable("plugin project service")
@@ -573,6 +801,7 @@ class LogcatTitleActionsTest {
     }
 
     private class TestToolWindowManager(private val callbacks: ConcurrentLinkedQueue<Runnable>) : ToolWindowManager() {
+        var window: ToolWindow? = null
         override val focusManager: IdeFocusManager get() = error("Unexpected focus lookup")
         override val isEditorComponentActive: Boolean = false
         override val toolWindowIds: Array<String> = emptyArray()
@@ -583,7 +812,7 @@ class LogcatTitleActionsTest {
         override fun registerToolWindow(task: RegisterToolWindowTask): ToolWindow = error("Unexpected registration")
         override fun unregisterToolWindow(id: String) = error("Unexpected unregistration")
         override fun activateEditorComponent() = error("Unexpected activation")
-        override fun getToolWindow(id: String?): ToolWindow? = null
+        override fun getToolWindow(id: String?): ToolWindow? = if (id == LOGCAT_TOOL_WINDOW_ID) window else null
         override fun invokeLater(runnable: Runnable) { callbacks.add(runnable) }
         override fun notifyByBalloon(options: ToolWindowBalloonShowOptions) = error("Unexpected balloon")
         override fun getToolWindowBalloon(id: String): Balloon? = null
