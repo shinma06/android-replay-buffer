@@ -5,6 +5,9 @@ import com.intellij.mock.MockApplication
 import com.intellij.mock.MockProject
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.util.Disposer
+import io.github.shinma06.replaybuffer.core.ReplayFiles
+import io.github.shinma06.replaybuffer.core.SaveOutputFile
+import io.github.shinma06.replaybuffer.core.SavedReplay
 import org.junit.jupiter.api.io.TempDir
 import java.nio.file.Files
 import java.nio.file.Path
@@ -18,6 +21,7 @@ import java.util.concurrent.atomic.AtomicReference
 import javax.swing.SwingUtilities
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
@@ -25,6 +29,67 @@ import kotlin.test.assertTrue
 
 class ReplayPlayerControllerTest {
     @TempDir lateinit var root: Path
+
+    @Test
+    fun timelineFailureBeforeTransferClosesTheReplayPinsChildAndParent() {
+        val folder = replayFolder()
+        fun bytes() = Files.list(folder).use { paths ->
+            paths.toList().associate { it.fileName.toString() to Files.readAllBytes(it).toList() }
+        }
+        val before = bytes()
+        val lifetime = Disposer.newDisposable()
+        ApplicationManager.setApplication(MockApplication(lifetime), lifetime)
+        val project = MockProject(null, lifetime)
+        val opened = AtomicReference<SavedReplay>()
+        val controller = ReplayPlayerController(project, folder, openReplay = { path ->
+            SavedReplay.open(path).also { replay ->
+                opened.set(replay)
+                // Fail the real timeline() after factory success, without changing the source files.
+                replay.manifest.add("parts", com.google.gson.JsonArray().apply { add("timeline-boundary") })
+            }
+        })
+        fun drain(controller: ReplayPlayerController) {
+            val worker = controller.javaClass.getDeclaredField("executor").apply { isAccessible = true }
+                .get(controller) as ExecutorService
+            worker.submit {}.get(30, TimeUnit.SECONDS)
+            SwingUtilities.invokeAndWait {}
+        }
+        try {
+            drain(controller)
+            val replay = assertNotNull(opened.get())
+            @Suppress("UNCHECKED_CAST")
+            val pins = SavedReplay::class.java.getDeclaredField("pins").apply { isAccessible = true }
+                .get(replay) as Map<String, SaveOutputFile>
+            assertTrue(ReplayFiles.RECORD in pins)
+            assertTrue(pins.size > 1)
+            assertTrue(pins.values.all { it.isClosed }, "pins must close before controller.dispose")
+            assertFailsWith<IllegalStateException> { replay.entries() } // Input child closed.
+            assertFailsWith<IllegalStateException> { replay.parent.entries() }
+            SwingUtilities.invokeAndWait {
+                assertFalse(controller.state.loading)
+                assertTrue(assertNotNull(controller.state.error).contains("timeline-boundary"))
+                assertNull(controller.state.timeline)
+                assertNull(controller.javaClass.getDeclaredField("saved").apply { isAccessible = true }.get(controller))
+            }
+            assertEquals(before, bytes())
+            val next = ReplayPlayerController(project, folder)
+            try {
+                drain(next)
+                drain(next) // Drain the preview queued by the initial EDT publish.
+                SwingUtilities.invokeAndWait {
+                    assertFalse(next.state.loading)
+                    assertNull(next.state.error)
+                    assertNotNull(next.state.timeline)
+                    assertNotNull(next.state.image)
+                }
+            } finally { SwingUtilities.invokeAndWait { next.dispose() } }
+            assertEquals(before, bytes())
+        } finally {
+            SwingUtilities.invokeAndWait { controller.dispose() }
+            opened.get()?.close() // Also release the intentionally leaking old-red variant.
+            Disposer.dispose(lifetime)
+        }
+    }
 
     @Test
     fun markingOutPausesBeforeChangingThePlaybackRange() = markWhilePlaying(out = true)
@@ -369,7 +434,7 @@ class ReplayPlayerControllerTest {
         }
     }
 
-    private fun withController(gap: Boolean = false, test: (ReplayPlayerController) -> Unit) {
+    private fun replayFolder(gap: Boolean = false): Path {
         val folder = Files.createDirectory(root.resolve("replay-20240101-000000-manual-feedface"))
         for (name in listOf("README.md", "replay.json", "video.mp4", "video-source.h264", "video-frames.jsonl",
             "logcat-device.jsonl", "logcat-app.jsonl", "touches.jsonl")) {
@@ -394,6 +459,11 @@ class ReplayPlayerControllerTest {
             record.getAsJsonObject("files_sha256").addProperty("video-frames.jsonl", hash)
         }
         Files.writeString(manifest, record.toString())
+        return folder
+    }
+
+    private fun withController(gap: Boolean = false, test: (ReplayPlayerController) -> Unit) {
+        val folder = replayFolder(gap)
         val lifetime = Disposer.newDisposable()
         ApplicationManager.setApplication(MockApplication(lifetime), lifetime)
         val controller = ReplayPlayerController(MockProject(null, lifetime), folder)

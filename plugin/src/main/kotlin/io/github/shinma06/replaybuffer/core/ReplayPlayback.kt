@@ -25,7 +25,10 @@ private fun JsonObject.longText(name: String): Long? =
  * [seek] decodes from the GOP start like [ReplayFrameExport.decodeAt] (same pixels), then [next]
  * continues packet by packet instead of re-decoding the GOP for every frame. Read-only; outside EDT.
  */
-internal class ReplayFrameCursor(private val saved: SavedReplay) : AutoCloseable {
+internal class ReplayFrameCursor(
+    private val saved: SavedReplay,
+    openChannel: (SaveOutputFile) -> FileChannel = { it.channel(EnumSet.of(StandardOpenOption.READ)) },
+) : AutoCloseable {
     class Decoded(val image: BufferedImage, val startUs: Long, val endUs: Long, val index: Int)
 
     private val rows = saved.frames
@@ -38,7 +41,7 @@ internal class ReplayFrameCursor(private val saved: SavedReplay) : AutoCloseable
     private var runEntry = -1
 
     init {
-        channel = try { file.channel(EnumSet.of(StandardOpenOption.READ)) }
+        channel = try { openChannel(file) }
         catch (failure: Throwable) { file.close(); throw failure }
         try {
             val demuxer = MP4Demuxer.createRawMP4Demuxer(FileChannelWrapper(channel))
@@ -200,7 +203,8 @@ internal class ReplayAudioTrack private constructor(
     }
 
     companion object {
-        fun open(saved: SavedReplay): ReplayAudioTrack? {
+        fun open(saved: SavedReplay,
+                 openChannel: (SaveOutputFile) -> FileChannel = { it.channel(EnumSet.of(StandardOpenOption.READ)) }): ReplayAudioTrack? {
             val info = saved.manifest["audio_track"]?.takeIf { it.isJsonObject }?.asJsonObject ?: return null
             val sampleRate = info["sample_rate"]?.takeIf { it.isJsonPrimitive }?.asInt ?: return null
             val segments = info["segments"]?.takeIf { it.isJsonArray }?.asJsonArray?.map { it.asJsonObject }?.map {
@@ -208,7 +212,7 @@ internal class ReplayAudioTrack private constructor(
                     it.longText("media_start_samples") ?: return null, it["samples"]?.asInt ?: return null)
             } ?: return null
             val file = saved.openFile(ReplayFiles.VIDEO)
-            val channel = try { file.channel(EnumSet.of(StandardOpenOption.READ)) }
+            val channel = try { openChannel(file) }
             catch (failure: Throwable) { file.close(); throw failure }
             try {
                 val demuxer = MP4Demuxer.createRawMP4Demuxer(FileChannelWrapper(channel))

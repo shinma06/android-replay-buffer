@@ -143,6 +143,7 @@ internal class ReplayPlaybackFrames<T : Any>(private val publish: (() -> Unit) -
 internal class ReplayPlayerController(
     project: Project,
     internal val folder: Path,
+    openReplay: (Path) -> SavedReplay = { SavedReplay.open(it) },
 ) : Disposable, PlayerBarActions {
     private val service = project.getService(ReplayProjectService::class.java)
     private val executor = Executors.newSingleThreadExecutor { runnable ->
@@ -172,7 +173,7 @@ internal class ReplayPlayerController(
     init {
         executor.execute {
             try {
-                val opened = SavedReplay.open(folder)
+                val opened = openReplay(folder)
                 val timeline = try { opened.timeline() }
                 catch (failure: Throwable) { opened.close(); throw failure }
                 saved = opened

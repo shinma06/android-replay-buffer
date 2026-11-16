@@ -3,6 +3,7 @@ package io.github.shinma06.replaybuffer.core
 import com.google.gson.Gson
 import com.google.gson.JsonObject
 import org.junit.jupiter.api.io.TempDir
+import java.io.IOException
 import java.nio.ByteBuffer
 import java.nio.channels.FileChannel
 import java.nio.file.Files
@@ -15,6 +16,8 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFails
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
+import kotlin.test.assertNotSame
+import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
 class SavedReplayIdentityTest {
@@ -145,7 +148,7 @@ class SavedReplayIdentityTest {
         assertTrue(pins.isNotEmpty()); assertTrue(pins.all { it.isClosed })
     }
 
-    @Test fun failedPlaybackInitializationReleasesItsFreshFile() {
+    @Test fun failedPlaybackParserInitializationReleasesItsFreshFile() {
         val dir = fixture()
         SavedReplay.open(dir).use { saved ->
             assertFails { ReplayFrameCursor(saved).close() }
@@ -159,5 +162,41 @@ class SavedReplayIdentityTest {
             assertTrue(readers.all { it.isClosed })
             assertFalse(saved.lines(ReplayFiles.LOGCAT_DEVICE).isEmpty())
         }
+    }
+
+    @Test fun frameChannelAcquisitionFailureClosesItsFreshFile() = channelAcquisitionFailure(audio = false)
+
+    @Test fun audioChannelAcquisitionFailureClosesItsFreshFile() = channelAcquisitionFailure(audio = true)
+
+    private fun channelAcquisitionFailure(audio: Boolean) {
+        val dir = fixture()
+        val before = snapshot(dir)
+        val pins = linkedMapOf<String, SaveOutputFile>()
+        SavedReplay.open(dir) { name, pin -> pins[name] = pin }.use { saved ->
+            if (audio) saved.manifest.add("audio_track", JsonObject().apply {
+                addProperty("sample_rate", 48000); add("segments", com.google.gson.JsonArray())
+            })
+            val failure = IOException("channel acquisition boundary")
+            lateinit var fresh: SaveOutputFile
+            var calls = 0
+            val acquire: (SaveOutputFile) -> FileChannel = { file ->
+                fresh = file; calls++
+                assertFalse(file.isClosed)
+                throw failure
+            }
+            val thrown = assertFailsWith<IOException> {
+                if (audio) ReplayAudioTrack.open(saved, acquire)?.close()
+                else ReplayFrameCursor(saved, acquire).close()
+            }
+            assertSame(failure, thrown) // The channel acquisition itself threw; no parser was reached.
+            assertEquals(1, calls)
+            assertNotSame(pins.getValue(ReplayFiles.VIDEO), fresh)
+            assertEquals(pins.getValue(ReplayFiles.VIDEO).key, fresh.key)
+            assertTrue(fresh.isClosed, "fresh file must close before SavedReplay.close")
+            assertTrue(pins.values.all { !it.isClosed })
+            assertEquals("0123456789", saved.text(ReplayFiles.VIDEO))
+            assertSame(before, dir)
+        }
+        assertTrue(pins.values.all { it.isClosed })
     }
 }
