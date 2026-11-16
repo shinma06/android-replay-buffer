@@ -34,6 +34,7 @@ internal class ReplayPlaybackSession(
     private val awaitAudio: (CountDownLatch) -> Boolean = { it.await(1, TimeUnit.SECONDS) },
     private val prepareVideo: (() -> ReplayFrameCursor.Decoded?) -> ReplayFrameCursor.Decoded? = { it() },
     private val awaitVideo: (CountDownLatch) -> Unit = { it.await() },
+    private val nextVideo: (() -> ReplayFrameCursor.Decoded?) -> ReplayFrameCursor.Decoded? = { it() },
 ) {
     private val stopped = AtomicBoolean()
     private val audioNotified = AtomicBoolean()
@@ -129,13 +130,14 @@ internal class ReplayPlaybackSession(
                     var coveredUntil = fromUs
                     while (frame != null && frame.startUs < untilUs) {
                         check()
+                        if (nowUs() >= untilUs) break
                         if (frame.startUs > coveredUntil) waitGap(coveredUntil, minOf(frame.startUs, untilUs))
                         waitUntil(frame.startUs)
                         // Late frames still decode (they are references) but are not shown.
                         if (nowUs() < frame.endUs) onFrame(frame)
                         coveredUntil = frame.endUs
-                        if (coveredUntil >= untilUs) break
-                        frame = cursor.next(::check)
+                        if (coveredUntil >= untilUs || nowUs() >= untilUs) break
+                        frame = nextVideo { cursor.next(::check) }
                     }
                     if (coveredUntil < untilUs) waitGap(coveredUntil, untilUs) else waitUntil(untilUs)
                 }
