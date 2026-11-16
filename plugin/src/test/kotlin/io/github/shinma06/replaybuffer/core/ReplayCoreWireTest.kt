@@ -32,6 +32,40 @@ import kotlin.test.assertTrue
 private const val FIXTURE_GUARD_SECONDS = 120L
 private val FIXTURE_GUARD_NS = TimeUnit.SECONDS.toNanos(FIXTURE_GUARD_SECONDS)
 
+private fun partitionLids(mode: String, label: String): List<Int> = when {
+    mode == "legacy" || label in listOf("partial", "header-partial") -> listOf(0)
+    label == "main-partial" -> listOf(1, 3)
+    else -> listOf(0, 1, 3)
+}
+
+/** Window oracle from the acceptance ledger and fixed clock evidence; never reads capture.logs or JSONL output. */
+private fun expectedPartitionWindow(accepted: Collection<LogEntry>, capture: FrozenCapture): List<LogEntry> {
+    val clock = CaptureClock()
+    capture.clocks.forEach { sample ->
+        clock.add(sample.boot, listOf(sample.before, sample.mono, sample.wall, sample.after), sample.sent, sample.received)
+    }
+    val map = clock.logMapper(clock.segment(capture.windowClockRegion ?: clock.currentRegion()))
+    val latest = clock.latestSequence()
+    val start = capture.start.toBigInteger()
+    val end = capture.end.toBigInteger()
+    return accepted.filter { row ->
+        val time = map(row.source.wall, row.host)
+        when {
+            capture.endUncertainty == Long.MAX_VALUE -> capture.hostStart?.let { row.host >= it } ?: true
+            capture.endUncertainty < 0 || time.uncertainty < 0 -> true
+            time.sequence == null || time.uncertainty == Long.MAX_VALUE -> {
+                // An unsupported source time stays unless a prior clock anchor already proves it too old.
+                latest(row.host)?.toBigInteger()?.let { it >= start - capture.endUncertainty.toBigInteger() } ?: true
+            }
+            else -> {
+                val point = time.sequence.toBigInteger()
+                val margin = time.uncertainty.toBigInteger() + capture.endUncertainty.toBigInteger()
+                margin > Long.MAX_VALUE.toBigInteger() || point + margin >= start && point - margin <= end
+            }
+        }
+    }
+}
+
 /** Synthetic SDK client and wire bytes only. Never invokes installed adb, an IDE or a device. */
 class ReplayCoreWireTest {
     @Test
@@ -135,6 +169,59 @@ class ReplayCoreWireTest {
     @Test
     fun recoveredLogReaderWaitsForInitializationBeforeReceivingEvents() {
         runWireFixture(false, "partition", logReaderStartupDelayMillis = 2000)
+    }
+
+    @Test
+    fun acceptedPartitionIdsAreIndependentOfTheLaterRollingSaveWindow() {
+        val root = Files.createTempDirectory("replay-partition-window-")
+        val second = 1_000_000_000L
+        val wall = 1_700_000_000_000_000_000L
+        val host = System.nanoTime()
+        try {
+            CaptureStore(root.resolve("ring"), minFree = 0, captureMode = CaptureMode.LOG_ONLY).use { store ->
+                store.generation(1)
+                fun sample(at: Long) {
+                    assertTrue(store.clock.add("1", listOf(at, at, wall + at, at), host + at, host + at))
+                    store.clockStatus(true, 1)
+                }
+                sample(0)
+                store.status("device_log", StreamState.CAPTURING, null, 1)
+                store.app("com.fixture.app", 10001, setOf(12), 1, true)
+                val accepted = mutableListOf<LogEntry>()
+                fun phase(at: Long, label: String): List<String> {
+                    sample(at)
+                    return partitionLids("partition", label).map { lid ->
+                        val raw = "\u0004Partition\u0000$label\u0000".toByteArray()
+                        val source = DeviceLog(wall + at, if (lid == 3) 99 else 12, 12,
+                            if (lid == 3) null else 10001, lid, 4, "Partition", label, raw)
+                        assertNotNull(store.log(source, 1, host + at)).also { id ->
+                            accepted += LogEntry(id, source, 1, store.clock.log(source.wall, host + at), at,
+                                if (lid == 3) null else true, host + at)
+                        }
+                    }
+                }
+                val first = phase(3 * second, "first")
+                val recovered = phase(40 * second, "recovered")
+                sample(50 * second)
+                val settings = ReplaySettings(replaySeconds = 30, captureMode = CaptureMode.LOG_ONLY)
+                val frozen = assertNotNull(store.capture(settings, host = host + 50 * second))
+                assertEquals(20 * second, frozen.start)
+                assertEquals(50 * second, frozen.end)
+                assertEquals(3, first.toSet().size)
+                assertEquals(recovered, frozen.logs.map { it.id })
+                assertTrue(frozen.logs.none { it.id in first })
+                assertEquals(listOf(0, 1, 3), frozen.logs.map { it.source.lid })
+                // Even an incorrectly empty admission must not turn the expected set into an empty success.
+                assertEquals(recovered, expectedPartitionWindow(accepted, frozen.copy(logs = emptyList())).map { it.id })
+                val output = SaveWriter().write(frozen, root, { false }) { Files.move(it.partial, it.complete) }
+                val rows = Files.readAllLines(output.directory.resolve("logcat-device.jsonl"))
+                    .map { JsonParser.parseString(it).asJsonObject }
+                assertEquals(recovered, rows.map { it["record_id"].asString })
+                assertEquals(listOf(0, 1, 3), rows.map { it["lid"].asInt })
+                assertTrue(rows.all { it["message"].asString == "recovered" })
+                store.release(frozen.id)
+            }
+        } finally { root.toFile().deleteRecursively() }
     }
 
     @Test
@@ -600,6 +687,29 @@ elif len(a)>3 and a[3]=='ps':
                 assertTrue(core.applySettings(core.snapshot().settings.copy(replaySeconds = 30, saveDirectory = root)).get().accepted)
                 val readers = mutableMapOf<String, Long>()
                 val failures = mutableListOf<CaptureGap>()
+                // Inspect acceptance while each phase is live, before the rolling ring can expire its rows.
+                // Like DeviceLogTailTest, keep this observation entirely in the test instead of adding a core API.
+                val storeField = ReplayCore::class.java.getDeclaredField("store").apply { isAccessible = true }
+                val store = storeField.get(core) as CaptureStore
+                val logsField = CaptureStore::class.java.getDeclaredField("logs").apply { isAccessible = true }
+                val accepted = linkedMapOf<String, LogEntry>()
+                fun rememberRows(): List<LogEntry> = synchronized(store) {
+                    @Suppress("UNCHECKED_CAST")
+                    (logsField.get(store) as Collection<LogEntry>).toList().also { rows ->
+                        rows.forEach { accepted[it.id] = it }
+                    }
+                }
+                fun acceptedPhase(label: String) {
+                    val lids = partitionLids(logMode, label)
+                    var rows = emptyList<LogEntry>()
+                    awaitState("$label-accepted") {
+                        rows = rememberRows().filter { it.source.tag == "Partition" && it.source.message == label }
+                        rows.size >= lids.size
+                    }
+                    assertEquals(lids, rows.map { it.source.lid }.sorted(), "mode=$logMode label=$label")
+                    assertEquals(rows.size, rows.map { it.id }.toSet().size)
+                    rows.forEach { assertEquals(if (it.source.lid == 3) null else true, it.app) }
+                }
                 fun logFailure(phase: String): ReplaySnapshot = awaitState(phase) {
                     it.deviceLog.state == StreamState.RECOVERING && it.deviceLog.gaps.any { gap ->
                         gap.stream == "device_log" && gap.toNs == null
@@ -635,6 +745,7 @@ elif len(a)>3 and a[3]=='ps':
                 ready("all")
                 emit("first")
                 sent("all", "first")
+                acceptedPhase("first")
                 if (logMode == "partition") {
                     val quietGaps = core.snapshot().deviceLog.gaps
                     Files.createFile(root.resolve("quiet-all"))
@@ -648,6 +759,7 @@ elif len(a)>3 and a[3]=='ps':
                     Files.createFile(root.resolve("fail-all"))
                     logFailure("all-only-failure")
                     emit("partial")
+                    acceptedPhase("partial")
                     val partial = core.snapshot()
                     assertEquals(StreamState.RECOVERING, partial.deviceLog.state)
                     assertTrue(partial.deviceLog.gaps.any { it.toNs == null })
@@ -657,6 +769,7 @@ elif len(a)>3 and a[3]=='ps':
                     Files.createFile(root.resolve("wrong-header-all"))
                     logFailure("all-header-contradiction")
                     emit("header-partial")
+                    acceptedPhase("header-partial")
                     assertEquals(StreamState.RECOVERING, core.snapshot().deviceLog.state)
                     Files.delete(root.resolve("wrong-header-all"))
                     awaitState("all-header-recovered") { it.deviceLog.state == StreamState.CAPTURING }
@@ -665,6 +778,7 @@ elif len(a)>3 and a[3]=='ps':
                     Files.createFile(root.resolve("fail-main"))
                     logFailure("main-only-failure")
                     emit("main-partial", "all")
+                    acceptedPhase("main-partial")
                     assertEquals(StreamState.RECOVERING, core.snapshot().deviceLog.state)
                     Files.delete(root.resolve("fail-main"))
                     awaitState("main-recovered") { it.deviceLog.state == StreamState.CAPTURING }
@@ -672,6 +786,7 @@ elif len(a)>3 and a[3]=='ps':
                     if (logReaderStartupDelayMillis > 0) assertTrue(Files.exists(root.resolve("reader-delay-applied")))
                     emit("recovered")
                     sent("all", "recovered")
+                    acceptedPhase("recovered")
                 }
                 val beforeEof = core.snapshot().deviceLog.gaps
                 val originalGaps = failures.map { failure ->
@@ -689,24 +804,35 @@ elif len(a)>3 and a[3]=='ps':
                         logLaunches(root).count { it.startsWith("$buffer ") } > count
                     }
                 }
+                rememberRows()
+                val labels = if (logMode == "partition") listOf("first", "partial", "header-partial", "main-partial", "recovered") else listOf("first")
+                labels.forEach { label ->
+                    val rows = accepted.values.filter { it.source.tag == "Partition" && it.source.message == label }
+                    assertEquals(partitionLids(logMode, label), rows.map { it.source.lid }.sorted(), "accepted mode=$logMode label=$label")
+                }
+                val binary = accepted.values.filter { it.source.lid == 2 }
+                assertEquals(if (logMode == "legacy") 0 else if (logMode == "partition") 3 else 1, binary.size)
+                assertTrue(binary.all { it.source.decodeStatus == "binary" && it.app == false })
                 // A subsequent supported clock sample maps all returned fixture records.
                 awaitLaterClockSample("clock-after-partition-records")
                 assertTrue(core.save().get().accepted)
                 val saved = awaitState("partition-save") { it.save.phase == SavePhase.COMPLETED }
+                val frozen = writes.last()
+                val expected = expectedPartitionWindow(accepted.values.filter { it.source.tag == "Partition" || it.source.lid == 2 }, frozen)
                 val deviceRows = Files.readAllLines(saved.save.directory!!.resolve("logcat-device.jsonl"))
                     .map { JsonParser.parseString(it).asJsonObject }
+                // A slow runner may legitimately put earlier phases outside the 30 s window. The writer must
+                // serialize exactly this admitted window, not every row ever accepted by the readers.
+                assertEquals(frozen.logs.map { it.id }.sorted(), deviceRows.map { it["record_id"].asString }.sorted())
                 val rows = deviceRows.filter { !it["tag"].isJsonNull && it["tag"].asString == "Partition" }
                 val appRows = Files.readAllLines(saved.save.directory.resolve("logcat-app.jsonl"))
                     .map { JsonParser.parseString(it).asJsonObject }
-                    .filter { !it["tag"].isJsonNull && it["tag"].asString == "Partition" }
-                val labels = if (logMode == "partition") listOf("first", "partial", "header-partial", "main-partial", "recovered") else listOf("first")
+                assertEquals(frozen.logs.filter { it.app == true }.map { it.id }.sorted(), appRows.map { it["record_id"].asString }.sorted())
                 labels.forEach { label ->
                     val actual = rows.filter { it["message"].asString == label }
-                    val lids = when {
-                        logMode == "legacy" || label in listOf("partial", "header-partial") -> listOf(0)
-                        label == "main-partial" -> listOf(1, 3)
-                        else -> listOf(0, 1, 3)
-                    }
+                    val admitted = expected.filter { it.source.tag == "Partition" && it.source.message == label }
+                    assertEquals(admitted.map { it.id }.sorted(), actual.map { it["record_id"].asString }.sorted(), "window mode=$logMode label=$label")
+                    val lids = admitted.map { it.source.lid }.sorted()
                     assertEquals(lids, actual.map { it["lid"].asInt }.sorted(), "mode=$logMode label=$label")
                     assertEquals(actual.size, actual.map { it["record_id"].asString }.toSet().size)
                     actual.forEach { row ->
@@ -717,9 +843,9 @@ elif len(a)>3 and a[3]=='ps':
                         } else assertEquals(1, appRows.count { it["record_id"].asString == id })
                     }
                 }
-                val binary = deviceRows.filter { it["lid"].asInt == 2 }
-                assertEquals(if (logMode == "legacy") 0 else if (logMode == "partition") 3 else 1, binary.size)
-                assertTrue(binary.all { it["decode_status"].asString == "binary" && !it["app_membership"].asBoolean })
+                val savedBinary = deviceRows.filter { it["lid"].asInt == 2 }
+                assertEquals(expected.filter { it.source.lid == 2 }.map { it.id }.sorted(), savedBinary.map { it["record_id"].asString }.sorted())
+                assertTrue(savedBinary.all { it["decode_status"].asString == "binary" && !it["app_membership"].asBoolean })
                 val manifest = JsonParser.parseString(Files.readString(saved.save.directory.resolve("replay.json"))).asJsonObject
                 val savedGaps = manifest["gaps"].asJsonArray.map { it.asJsonObject }
                 val start = assertNotNull(saved.save.windowStartNs)
