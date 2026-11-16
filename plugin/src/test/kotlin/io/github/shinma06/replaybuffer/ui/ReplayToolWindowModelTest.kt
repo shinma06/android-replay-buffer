@@ -12,6 +12,7 @@ import io.github.shinma06.replaybuffer.core.SaveSnapshot
 import io.github.shinma06.replaybuffer.core.SaveContent
 import io.github.shinma06.replaybuffer.settings.AppSelectionMode
 import io.github.shinma06.replaybuffer.settings.settingsControls
+import io.github.shinma06.replaybuffer.ide.savedVideoDirectory
 import java.nio.file.Files
 import java.nio.file.Path
 import org.junit.jupiter.api.Assertions.assertEquals
@@ -46,6 +47,7 @@ class ReplayToolWindowModelTest {
         snapshot = snapshot, message = message, initializationError = null, busy = busy, enabled = snapshot?.enabled == true,
         settings = stored, adb = Path.of("/sdk/adb"), adbReason = null, screenshotPackage = "com.example.app",
         screenshotDisabledReason = null, screenshotBusy = false,
+        savedVideoDirectory = snapshot?.save?.let(::savedVideoDirectory),
     )
 
     @Test

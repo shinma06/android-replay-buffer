@@ -191,6 +191,7 @@ internal class ReplayToolWindowController(private val project: Project) : Dispos
             logcat = LogcatState(logcatButton.text.orEmpty(), logcatButton.isEnabled, logcatButton.toolTipText.orEmpty(), logcatButton.failed),
             savedAt = savedAt.takeIf { snapshot?.save?.phase == SavePhase.COMPLETED },
             screenshot = screenshotResult,
+            savedVideoDirectory = view.savedVideoDirectory,
         )
     }
 

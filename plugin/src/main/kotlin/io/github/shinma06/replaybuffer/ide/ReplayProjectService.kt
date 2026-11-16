@@ -528,6 +528,7 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
 
     // Use the completed attempt's warnings, not the moving live window; suppress obsolete failure actions.
     private fun notifySave(save: SaveSnapshot) {
+        val videoDirectory = savedVideoDirectory(save)
         onUi {
             if (save.phase == SavePhase.FAILED &&
                 (capture.view.snapshot?.save?.requestId != save.requestId || capture.view.snapshot?.save?.attempt != save.attempt ||
@@ -544,7 +545,7 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
                 ).addAction(NotificationAction.create("フォルダを開く") { _, event ->
                     if (alive) openDirectory(save.directory) else event.expire()
                 }).let { notification ->
-                    if (savedVideoDirectory(save) != null)
+                    if (videoDirectory != null)
                         notification.addAction(NotificationAction.create("動画を開く") { _, event ->
                             if (alive) openReplayVideo(save.directory) else event.expire()
                         })

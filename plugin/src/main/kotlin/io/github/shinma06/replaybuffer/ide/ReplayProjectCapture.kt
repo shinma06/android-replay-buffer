@@ -27,11 +27,12 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.util.concurrent.CompletableFuture
 
-internal data class ReplayCaptureView(
+internal data class ReplayCaptureView @JvmOverloads constructor(
     val snapshot: ReplaySnapshot? = null,
     val pending: Int = 0,
     val message: String? = null,
     val initializationError: String? = null,
+    val savedVideoDirectory: Path? = null,
 )
 
 /**
@@ -245,13 +246,15 @@ internal class ReplayProjectCapture(
 
     // A retried request has a new attempt; notify once for that attempt's terminal transition, not each refresh.
     internal fun acceptSnapshot(next: ReplaySnapshot) {
+        val before = view
+        val videoDirectory = if (before.snapshot?.save == next.save) before.savedVideoDirectory else savedVideoDirectory(next.save)
         val terminal = synchronized(this) {
             val previous = view.snapshot
             if (closed || previous != null && next.revision <= previous.revision) return
             val message = view.message.takeUnless {
                 it == SAVE_IN_PROGRESS_REASON && next.save.phase != SavePhase.WRITING
             }
-            view = view.copy(snapshot = next, message = message)
+            view = view.copy(snapshot = next, message = message, savedVideoDirectory = videoDirectory)
             next.save.takeIf {
                 it.phase in setOf(SavePhase.COMPLETED, SavePhase.FAILED) &&
                     (previous?.save?.requestId != it.requestId || previous?.save?.attempt != it.attempt || previous?.save?.phase != it.phase)
