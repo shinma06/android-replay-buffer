@@ -266,8 +266,7 @@ public final class WindowsMenuPrototype implements Disposable {
             move(1);
         }
         void bind(String key, Runnable action) {
-            list.getInputMap(JComponent.WHEN_FOCUSED).put(KeyStroke.getKeyStroke(key), key);
-            list.getActionMap().put(key,new AbstractAction() {
+            MenuKeyBindings.bind(list,key,new AbstractAction() {
                 @Override public void actionPerformed(ActionEvent e) { record("KEY " + key); action.run(); }
             });
         }

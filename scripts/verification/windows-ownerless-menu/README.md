@@ -21,7 +21,11 @@ python .\control_server.py --state "$RUN\state.json" --port 8767
 ```
 
 TEST_RUNも新規private領域を指定する。testは同じ固定SDK/JBRで実row生成とdummy toggleをheadless実行し、
-両projectのON/OFF往復・再生成時のroot／submenu／checkboxの一致を検査する。Window生成・reflection・追加test依存はない。
+両projectのON/OFF往復・再生成時のroot／submenu／checkboxの一致を検査する。
+binding unitはroot／子menuそれぞれのRight／Left／Up／Down／Enter／Esc／Spaceのcallback配送を検査する。
+通常のSwing key lookupと、固定SDKが矢印を先に処理してJList標準ActionMap名を直接呼ぶ経路を分けて検査する。
+後者が独自InputMapを迂回するため、同じcomponent内の標準action名も同じmenu Actionへ結ぶ。
+Window生成・reflection・追加test依存はなく、unitは実windowの開閉やIMEを検証するものではない。
 これはGUIのfocus／描画／実高DPIや製品同等性の合格を代用しない。
 
 初回Studioのtrust等を通常UIで処理し、Tools→「Windows独自menu試作を開始」。

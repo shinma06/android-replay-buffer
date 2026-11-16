@@ -32,9 +32,10 @@ def main():
         classes.mkdir()
         sources=sorted((HERE/"src").rglob("*.java"))+sorted((HERE/"tests").rglob("*.java"))
         subprocess.run([str(jbr/"bin/javac.exe"),"-encoding","UTF-8","-cp",str(studio/"lib/*"),"-d",str(classes),*[str(s) for s in sources]],check=True)
-        subprocess.run([str(jbr/"bin/java.exe"),"-Djava.awt.headless=true","-Dprototype.trace="+str(run/"test-private.log"),
-            "-Dprototype.state="+str(run/"test-state.json"),"-cp",str(classes)+os.pathsep+str(studio/"lib/*"),
-            "privateacceptance.windowsmenu.MenuStateTest"],check=True)
+        for test in ["MenuKeyBindingsTest", "MenuStateTest"]:
+            subprocess.run([str(jbr/"bin/java.exe"),"-Djava.awt.headless=true","-Dprototype.trace="+str(run/"test-private.log"),
+                "-Dprototype.state="+str(run/"test-state.json"),"-cp",str(classes)+os.pathsep+str(studio/"lib/*"),
+                "privateacceptance.windowsmenu."+test],check=True)
         return
     if a.command=="build":
         classes=run/"classes"
