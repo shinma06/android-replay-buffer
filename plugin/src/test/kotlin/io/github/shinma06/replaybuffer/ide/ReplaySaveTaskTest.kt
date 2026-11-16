@@ -555,11 +555,40 @@ class ReplaySaveTaskTest {
     @Test
     fun videoSaveNotificationKeepsVideoWhenCurrentSettingsChange() = assertSavedVideoAction(CaptureMode.VIDEO_AND_LOGS)
 
-    private fun assertSavedVideoAction(savedMode: CaptureMode) {
+    @Test
+    fun partialVideoNotificationKeepsVideoAndWarnings() = assertSavedVideoAction(CaptureMode.VIDEO_AND_LOGS,
+        missing = listOf("video", "clock"))
+
+    @Test
+    fun partialLogsOnlyCaptureNotificationDoesNotInventVideo() = assertSavedVideoAction(CaptureMode.LOG_ONLY,
+        missing = listOf("video", "clock"))
+
+    @Test
+    fun logsOnlyContentNotificationDoesNotExposeExistingVideo() = assertSavedVideoAction(CaptureMode.VIDEO_AND_LOGS,
+        content = SaveContent.LOGS_ONLY, missing = listOf("video", "clock"))
+
+    @Test
+    fun absentVideoNotificationDoesNotOfferVideoEvenWithoutWarning() = assertSavedVideoAction(CaptureMode.VIDEO_AND_LOGS,
+        videoPresent = false)
+
+    @Test
+    fun absentPartialVideoNotificationDoesNotOfferVideo() = assertSavedVideoAction(CaptureMode.VIDEO_AND_LOGS,
+        missing = listOf("video"), videoPresent = false)
+
+    @Test
+    fun directoryNamedVideoDoesNotOfferVideo() = assertSavedVideoAction(CaptureMode.VIDEO_AND_LOGS,
+        videoPresent = false, videoDirectory = true)
+
+    private fun assertSavedVideoAction(savedMode: CaptureMode, content: SaveContent = SaveContent.ALL,
+                                       missing: List<String> = emptyList(), videoPresent: Boolean = true,
+                                       videoDirectory: Boolean = false) {
+        val source = source()
+        if (!videoPresent) Files.delete(source.resolve("video.mp4"))
+        if (videoDirectory) Files.createDirectory(source.resolve("video.mp4"))
         val notifications = mutableListOf<Notification>()
         withService(notify = notifications::add, uiLater = true) { _, service ->
-            val saved = SaveSnapshot(SavePhase.COMPLETED, "request", directory = root,
-                captureMode = savedMode, content = SaveContent.ALL)
+            val saved = SaveSnapshot(SavePhase.COMPLETED, "request", directory = source,
+                captureMode = savedMode, content = content, missingKinds = missing)
             val project = service.javaClass.getDeclaredField("project").apply { isAccessible = true }.get(service) as Project
             val store = project.getService(ReplaySettingsStore::class.java)
             val notify = service.javaClass.getDeclaredMethod("notifySave", SaveSnapshot::class.java).apply { isAccessible = true }
@@ -567,8 +596,11 @@ class ReplaySaveTaskTest {
                 store.loadState(store.state.copy(captureMode = currentMode))
                 notify.invoke(service, saved)
                 val actions = notifications.last().actions.map { it.templatePresentation.text }
-                assertEquals(savedMode.videoRequested, "動画を開く" in actions)
+                assertEquals(savedMode.videoRequested && content == SaveContent.ALL && videoPresent, "動画を開く" in actions)
                 assertTrue("フォルダを開く" in actions)
+                assertTrue("パスをコピー" in actions)
+                assertEquals(if (missing.isEmpty()) NotificationType.INFORMATION else NotificationType.WARNING, notifications.last().type)
+                if (missing.isNotEmpty()) assertEquals("記録の不足・未確認: ${missing.map(::streamName).joinToString("、")}", notifications.last().content)
             }
         }
     }

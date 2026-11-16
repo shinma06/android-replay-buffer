@@ -528,6 +528,7 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
 
     // Use the completed attempt's warnings, not the moving live window; suppress obsolete failure actions.
     private fun notifySave(save: SaveSnapshot) {
+        val videoDirectory = savedVideoDirectory(save)
         onUi {
             if (save.phase == SavePhase.FAILED &&
                 (capture.view.snapshot?.save?.requestId != save.requestId || capture.view.snapshot?.save?.attempt != save.attempt ||
@@ -544,7 +545,7 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
                 ).addAction(NotificationAction.create("フォルダを開く") { _, event ->
                     if (alive) openDirectory(save.directory) else event.expire()
                 }).let { notification ->
-                    if (save.captureMode.videoRequested && !logsOnly && "video" !in save.missingKinds)
+                    if (videoDirectory != null)
                         notification.addAction(NotificationAction.create("動画を開く") { _, event ->
                             if (alive) openReplayVideo(save.directory) else event.expire()
                         })
@@ -816,6 +817,12 @@ internal fun operationFailureContent(failure: Throwable): String {
         ?: (cause as? SaveFailure)?.partial?.let { "\n未完成の出力は保全します: $it" }
         ?: (cause as? ScreenshotSaveFailure)?.retained?.let { "\n未完成の出力は保全します: $it" }.orEmpty()
     return StringUtil.escapeXmlEntities((cause.message ?: "保存先・空き容量・アクセス権を確認してください。") + retained)
+}
+
+// missingKinds describes coverage too; it does not establish whether a movie was saved.
+internal fun savedVideoDirectory(save: SaveSnapshot): Path? = save.directory?.takeIf {
+    save.phase == SavePhase.COMPLETED && save.captureMode.videoRequested && save.content != SaveContent.LOGS_ONLY &&
+        Files.isRegularFile(it.resolve(ReplayFiles.VIDEO))
 }
 
 internal fun streamName(kind: String): String = when (kind) {
