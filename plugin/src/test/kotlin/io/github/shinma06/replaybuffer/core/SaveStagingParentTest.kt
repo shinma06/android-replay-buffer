@@ -14,8 +14,8 @@ class SaveStagingParentTest {
     @TempDir lateinit var root: Path
 
     @Test fun aDifferentHeldParentIsRejectedBeforeCreatingAnything() {
-        val first = Files.createDirectory(root.resolve("first"))
-        val other = Files.createDirectory(root.resolve("other"))
+        val first = Files.createDirectory(root.toRealPath().resolve("first"))
+        val other = Files.createDirectory(root.toRealPath().resolve("other"))
         SaveOutputDirectory.open(first).use { held ->
             assertFails { SaveStaging.create(other, "output", held).close() }
             assertEquals(emptySet(), held.entries())
