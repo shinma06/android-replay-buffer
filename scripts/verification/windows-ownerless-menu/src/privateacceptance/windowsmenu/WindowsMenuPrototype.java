@@ -79,12 +79,7 @@ public final class WindowsMenuPrototype implements Disposable {
         if (stopped) return;
         if (root != null) { record("ALREADY_OPEN ignored"); return; }
         Point p = MouseInfo.getPointerInfo().getLocation();
-        root = new MenuWindow(null, -1, List.of(
-            Row.info("Android Replay Buffer — 独立診断 / dummy"),
-            Row.separator(),
-            Row.submenu("日本語 Project ● 取得中", 0),
-            Row.submenu("Project ASCII ○ 取得OFF", 1)
-        ));
+        root = new MenuWindow(null, -1, rootRows());
         root.showAt(p.x - root.getWidth() + 20, p.y - root.getHeight() - 18);
         shows++;
         record("OPEN realTray=true rootOwnerNull=" + (root.getOwner() == null)
@@ -94,16 +89,29 @@ public final class WindowsMenuPrototype implements Disposable {
         publish();
     }
 
-    private List<Row> projectRows(int index) {
+    List<Row> rootRows() {
         return List.of(
-            Row.info(checked[index] ? "● 取得中（合成状態・dummy）" : "○ 取得OFF（dummy）"),
+            Row.info("Android Replay Buffer — 独立診断 / dummy"),
+            Row.separator(),
+            Row.submenu("日本語 Project " + captureStatus(0), 0),
+            Row.submenu("Project ASCII " + captureStatus(1), 1)
+        );
+    }
+
+    private String captureStatus(int index) {
+        return checked[index] ? "● 取得中" : "○ 取得OFF";
+    }
+
+    List<Row> projectRows(int index) {
+        return List.of(
+            Row.info(captureStatus(index) + (checked[index] ? "（合成状態・dummy）" : "（dummy）")),
             Row.separator(),
             Row.command("直前180秒を保存", "SAVE", true, index),
             Row.command("スクリーンショット — 診断でdisabled", "SCREENSHOT", false, index),
             Row.separator(),
             Row.command("保存しました 12:34 — フォルダを開く", "OPEN_DIRECTORY", true, index),
             Row.separator(),
-            Row.toggle("取得する（OFFで未保存の記録を破棄）", index),
+            Row.toggle("取得する（OFFで未保存の記録を破棄）", checked[index], index),
             Row.separator(),
             Row.command("Android Studioで表示", "SHOW_IDE", true, index),
             Row.command("設定…", "OPEN_SETTINGS", true, index)
@@ -115,7 +123,7 @@ public final class WindowsMenuPrototype implements Disposable {
         return false;
     }
 
-    private void command(Row row) {
+    void command(Row row) {
         if (!row.enabled || row.command == null) return;
         if (row.command.equals("TOGGLE_CAPTURE")) checked[row.project] = !checked[row.project];
         callbacks++;
@@ -173,18 +181,22 @@ public final class WindowsMenuPrototype implements Disposable {
 
     @Override public void dispose() { stopSession(); }
 
-    private static final class Row {
+    static final class Row {
         final String label, command;
-        final boolean enabled, separator, toggle;
+        final boolean enabled, separator, toggle, checked;
         final int project;
         private Row(String label, String command, boolean enabled, boolean separator, boolean toggle, int project) {
+            this(label, command, enabled, separator, toggle, project, false);
+        }
+        private Row(String label, String command, boolean enabled, boolean separator, boolean toggle, int project, boolean checked) {
             this.label=label; this.command=command; this.enabled=enabled; this.separator=separator; this.toggle=toggle; this.project=project;
+            this.checked=checked;
         }
         static Row info(String s) { return new Row(s,null,false,false,false,-1); }
         static Row separator() { return new Row("",null,false,true,false,-1); }
         static Row submenu(String s,int p) { return new Row(s,null,true,false,false,p); }
         static Row command(String s,String c,boolean e,int p) { return new Row(s,c,e,false,false,p); }
-        static Row toggle(String s,int p) { return new Row(s,"TOGGLE_CAPTURE",true,false,true,p); }
+        static Row toggle(String s,boolean checked,int p) { return new Row(s,"TOGGLE_CAPTURE",true,false,true,p,checked); }
         boolean submenu() { return enabled && command == null; }
         @Override public String toString() { return label; }
     }
@@ -334,7 +346,7 @@ public final class WindowsMenuPrototype implements Disposable {
             if(row.separator) { g.setColor(new Color(0x505761)); g.drawLine(6,y,getWidth()-6,y); }
             if(row.toggle) {
                 g.drawRect(8,y-6,12,12);
-                if(checked[row.project]) { g.setStroke(new BasicStroke(2)); g.drawLine(10,y,14,y+4); g.drawLine(14,y+4,19,y-4); }
+                if(row.checked) { g.setStroke(new BasicStroke(2)); g.drawLine(10,y,14,y+4); g.drawLine(14,y+4,19,y-4); }
             }
             if(row.submenu()) { int x=getWidth()-12; g.fillPolygon(new int[]{x-4,x+1,x-4},new int[]{y-5,y,y+5},3); }
             g.dispose();

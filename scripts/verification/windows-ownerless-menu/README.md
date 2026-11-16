@@ -14,10 +14,15 @@ Windows、既存Python 3、指定Studioの同梱javac/java。追加依存・down
 RUNは新規private領域を用い、Windows所有者限定ACLは実行者が先に確保する。
 
 ```powershell
+python .\prototype.py test --studio "$STUDIO" --jbr "$JBR" --run "$TEST_RUN"
 python .\prototype.py build --studio "$STUDIO" --jbr "$JBR" --run "$RUN"
 python .\prototype.py launch --studio "$STUDIO" --jbr "$JBR" --run "$RUN"
 python .\control_server.py --state "$RUN\state.json" --port 8767
 ```
+
+TEST_RUNも新規private領域を指定する。testは同じ固定SDK/JBRで実row生成とdummy toggleをheadless実行し、
+両projectのON/OFF往復・再生成時のroot／submenu／checkboxの一致を検査する。Window生成・reflection・追加test依存はない。
+これはGUIのfocus／描画／実高DPIや製品同等性の合格を代用しない。
 
 初回Studioのtrust等を通常UIで処理し、Tools→「Windows独自menu試作を開始」。
 Chromeで `http://127.0.0.1:8767/` を開き最大化。IDEを背面に保ち、実trayのWをダブルクリック。

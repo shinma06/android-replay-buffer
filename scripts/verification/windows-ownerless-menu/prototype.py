@@ -6,7 +6,7 @@ def sha(p): return hashlib.sha256(p.read_bytes()).hexdigest()
 
 def main():
     p=argparse.ArgumentParser()
-    p.add_argument("command",choices=["build","launch"])
+    p.add_argument("command",choices=["build","launch","test"])
     p.add_argument("--studio",required=True,type=pathlib.Path)
     p.add_argument("--jbr",type=pathlib.Path,help="Defaults to the given Studio's bundled jbr")
     p.add_argument("--run",required=True,type=pathlib.Path,help="New private output/profile directory")
@@ -26,6 +26,16 @@ def main():
         "intellij.platform.ide.core.jar":"e9c187e429593a350c530c597cd3e756e186f325f3f5d5b015eccf379425f46c",
         "jbr/lib/modules":"5e6d316ecdb0ee7abec4b69433f1a6f51fd706be2a142b263fd675a284a5a6c5"}
     if sdk_hashes!=expected: raise SystemExit("Fixed input hashes differ")
+    if a.command=="test":
+        classes=run/"test-classes"
+        if classes.exists(): raise SystemExit("Do not overwrite existing test output")
+        classes.mkdir()
+        sources=sorted((HERE/"src").rglob("*.java"))+sorted((HERE/"tests").rglob("*.java"))
+        subprocess.run([str(jbr/"bin/javac.exe"),"-encoding","UTF-8","-cp",str(studio/"lib/*"),"-d",str(classes),*[str(s) for s in sources]],check=True)
+        subprocess.run([str(jbr/"bin/java.exe"),"-Djava.awt.headless=true","-Dprototype.trace="+str(run/"test-private.log"),
+            "-Dprototype.state="+str(run/"test-state.json"),"-cp",str(classes)+os.pathsep+str(studio/"lib/*"),
+            "privateacceptance.windowsmenu.MenuStateTest"],check=True)
+        return
     if a.command=="build":
         classes=run/"classes"
         if classes.exists(): raise SystemExit("Do not overwrite an existing build")
