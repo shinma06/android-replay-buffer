@@ -259,7 +259,7 @@ private fun MenuEntry.selectable(): Boolean = when (this) {
     MenuEntry.Separator -> false
 }
 
-private class MenuCell : DefaultListCellRenderer() {
+internal class MenuCell : DefaultListCellRenderer() {
     private var entry: MenuEntry = MenuEntry.Separator
 
     init { putClientProperty("html.disable", true) }
@@ -276,8 +276,10 @@ private class MenuCell : DefaultListCellRenderer() {
         border = EmptyBorder(if (entry == MenuEntry.Separator) 0 else 4, unit + 12, 4, unit + 6)
         if (!entry.selectable()) foreground = UIManager.getColor("Label.disabledForeground") ?: foreground
         val toggle = (entry as? MenuEntry.Item)?.item?.takeIf { it.command == MenuBarCommand.TOGGLE_CAPTURE }
-        accessibleContext.accessibleName = text
-        accessibleContext.accessibleDescription = toggle?.let { if (it.checked) "チェックあり" else "チェックなし" }
+        // JLabel initializes this context lazily; do not read the inherited protected field directly.
+        val context = getAccessibleContext()
+        context.accessibleName = text
+        context.accessibleDescription = toggle?.let { if (it.checked) "チェックあり" else "チェックなし" }
         toolTipText = text
         return this
     }
