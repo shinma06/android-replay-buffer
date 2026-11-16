@@ -79,6 +79,21 @@ internal class FrameGrid(spans: List<ReplayTimeline.Span>) {
         } ?: -1
     }
 
+    /** In an interior gap, the first step selects the adjacent frame in that direction. */
+    fun stepIndex(us: Long, delta: Int): Int {
+        if (isEmpty) return -1
+        var current = indexAt(us)
+        if (current < 0) {
+            val next = spans.indexOfFirst { it.startUs > us }
+            current = when {
+                next > 0 && delta > 0 -> next - 1
+                next > 0 && delta < 0 -> next
+                else -> nearestIndex(us) // Keep before-first, terminal and zero-delta behaviour.
+            }
+        }
+        return (current + delta).coerceIn(0, spans.lastIndex)
+    }
+
     /** Span whose start boundary is closest to [us]. */
     fun nearestStartIndex(us: Long): Int = spans.indices.minByOrNull { abs(spans[it].startUs - us) } ?: -1
 
@@ -179,8 +194,7 @@ internal class TrimRules(val grid: FrameGrid, val durationUs: Long) {
 
     fun step(state: TrimEditor, delta: Int): TrimEditor {
         if (grid.isEmpty || state.drag != null) return state
-        val current = grid.nearestIndex(state.playheadUs)
-        var index = (current + delta).coerceIn(0, grid.spans.lastIndex)
+        var index = grid.stepIndex(state.playheadUs, delta)
         if (state.mode == PlayerMode.TRIM) index = index.coerceIn(inIndex(state), outIndex(state))
         return state.copy(playheadUs = grid.spans[index].startUs, playheadPlaced = true)
     }
