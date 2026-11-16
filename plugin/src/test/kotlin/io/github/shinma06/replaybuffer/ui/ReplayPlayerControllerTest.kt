@@ -85,6 +85,101 @@ class ReplayPlayerControllerTest {
     }
 
     @Test
+    fun pngButtonWaitsForTheSeekPreview() = pendingPreview(handle = false, direct = false)
+
+    @Test
+    fun directPngExportWaitsForTheSeekPreview() = pendingPreview(handle = false, direct = true)
+
+    @Test
+    fun pngButtonWaitsForTheReleasedHandlePreview() = pendingPreview(handle = true, direct = false)
+
+    @Test
+    fun directPngExportWaitsForTheReleasedHandlePreview() = pendingPreview(handle = true, direct = true)
+
+    private fun pendingPreview(handle: Boolean, direct: Boolean) = withController { controller ->
+        if (handle) {
+            SwingUtilities.invokeAndWait {
+                controller.button(PlayerButton.ENTER_TRIM)
+                controller.step(3)
+                controller.press(Grip.OUT, controller.state.timeline!!.spans[8].endUs)
+            }
+            awaitPreview(controller)
+        }
+        withPreviewBlocked(controller) {
+            val shownUs = controller.state.imageUs
+            if (handle) controller.release() else controller.step(3)
+            assertNotNull(controller.state.image)
+            assertEquals(shownUs, controller.state.imageUs)
+            assertTrue(controller.state.editor.playheadUs != shownUs)
+            if (direct) {
+                controller.exportPng()
+                assertNull(controller.state.editor.task)
+            } else assertFalse(controller.barModel().buttons.single { it.id == PlayerButton.SAVE_FRAME }.enabled)
+        }
+        SwingUtilities.invokeAndWait {
+            assertEquals(controller.state.editor.playheadUs, controller.state.imageUs)
+            assertTrue(controller.barModel().buttons.single { it.id == PlayerButton.SAVE_FRAME }.enabled)
+        }
+    }
+
+    @Test
+    fun pngRequiresAnImageAfterSeekingOutOfAGap() = withController(gap = true) { controller ->
+        pauseAtGap(controller)
+        withPreviewBlocked(controller) {
+            assertNull(controller.state.image)
+            assertEquals("この位置に表示frameがありません（欠落）",
+                controller.barModel().buttons.single { it.id == PlayerButton.SAVE_FRAME }.reason)
+            controller.exportPng()
+            assertNull(controller.state.editor.task)
+            controller.step(1)
+            assertNull(controller.state.image)
+            assertFalse(controller.barModel().buttons.single { it.id == PlayerButton.SAVE_FRAME }.enabled)
+            controller.exportPng()
+            assertNull(controller.state.editor.task)
+        }
+    }
+
+    @Test
+    fun naturalCompletionKeepsPngEnabledForTheSameFinalFrame() = withController { controller ->
+        // The fixture ends with a 1 us terminal tick; use the last held frame as trim Out.
+        val last = controller.state.timeline!!.spans.last { it.endUs - it.startUs > 1 }
+        editController(controller) { rules, state ->
+            rules.played(rules.enterTrim(state).copy(outUs = last.endUs), last.startUs)
+        }
+        awaitPreview(controller)
+        withPreviewBlocked(controller) {
+            editController(controller) { rules, state -> rules.playbackFinished(state, last.endUs, failed = false) }
+            assertEquals(last.startUs, controller.state.imageUs)
+            assertEquals(last.endUs - 1, controller.state.editor.playheadUs)
+            assertTrue(controller.state.imageUs != controller.state.editor.playheadUs)
+            assertTrue(controller.barModel().buttons.single { it.id == PlayerButton.SAVE_FRAME }.enabled)
+        }
+    }
+
+    private fun editController(controller: ReplayPlayerController, transform: (TrimRules, TrimEditor) -> TrimEditor) {
+        val edit = controller.javaClass.getDeclaredMethod("edit", Function2::class.java).apply { isAccessible = true }
+        if (SwingUtilities.isEventDispatchThread()) edit.invoke(controller, transform)
+        else SwingUtilities.invokeAndWait { edit.invoke(controller, transform) }
+    }
+
+    private fun awaitPreview(controller: ReplayPlayerController) {
+        val worker = controller.javaClass.getDeclaredField("executor").apply { isAccessible = true }.get(controller) as ExecutorService
+        worker.submit {}.get(30, TimeUnit.SECONDS)
+        SwingUtilities.invokeAndWait {}
+    }
+
+    private fun withPreviewBlocked(controller: ReplayPlayerController, action: () -> Unit) {
+        val worker = controller.javaClass.getDeclaredField("executor").apply { isAccessible = true }.get(controller) as ExecutorService
+        val held = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        worker.execute { held.countDown(); release.await() }
+        assertTrue(held.await(30, TimeUnit.SECONDS))
+        try { SwingUtilities.invokeAndWait(action) }
+        finally { release.countDown() }
+        awaitPreview(controller)
+    }
+
+    @Test
     fun cancellingTrimBackToAVideoGapClearsTheOtherTimesImage() = withController(gap = true) { controller ->
         val gapUs = pauseAtGap(controller)
         SwingUtilities.invokeAndWait { controller.button(PlayerButton.ENTER_TRIM) }

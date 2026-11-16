@@ -269,7 +269,8 @@ internal data class ButtonSpec(
 )
 
 /** Inputs besides [TrimEditor] that decide button availability. */
-internal data class PlayerAvailability(val loading: Boolean, val error: String?, val playheadInGap: Boolean)
+internal data class PlayerAvailability(val loading: Boolean, val error: String?, val playheadInGap: Boolean,
+    val previewReady: Boolean)
 
 /** Button column, top to bottom (stacked layout), per 3.1. */
 internal fun playerButtons(rules: TrimRules, state: TrimEditor, availability: PlayerAvailability): List<ButtonSpec> {
@@ -285,6 +286,7 @@ internal fun playerButtons(rules: TrimRules, state: TrimEditor, availability: Pl
         state.task != null -> "保存中です"
         availability.playheadInGap -> "この位置に表示frameがありません（欠落）"
         state.mode == PlayerMode.TRIM && !rules.playheadVisible(state) -> "再生位置を動かすと、その位置をPNG保存できます"
+        !availability.previewReady -> "この位置の映像を準備しています"
         else -> null
     }
     // In trim mode the button turns blue once the user has placed the playhead (and it is usable).

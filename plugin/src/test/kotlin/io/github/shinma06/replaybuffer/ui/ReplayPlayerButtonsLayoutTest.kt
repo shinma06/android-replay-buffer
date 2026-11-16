@@ -52,7 +52,7 @@ class ReplayPlayerButtonsLayoutTest {
         for (scale in listOf(1f, 2f)) for (state in states) {
             val boxes = mutableListOf<Rect>()
             val overflows = mutableListOf<Boolean>()
-            val buttons = rowOrder(playerButtons(rules, state, PlayerAvailability(false, null, false)))
+            val buttons = rowOrder(playerButtons(rules, state, PlayerAvailability(false, null, false, previewReady = true)))
             val scene = ImageComposeScene((360 * scale).toInt(), (60 * scale).toInt(), Density(scale)) {
                 Row(Modifier.width(360.dp).padding(horizontal = 22.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     buttons.forEach { button ->

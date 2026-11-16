@@ -377,8 +377,8 @@ internal class ReplayPlayerController(
 
     fun exportPng() {
         val current = rules ?: return
-        if (disposed || state.busy() || state.error != null || current.grid.indexAt(state.editor.playheadUs) < 0) return
-        if (state.editor.mode == PlayerMode.TRIM && !current.playheadVisible(state.editor)) return
+        if (disposed || !playerButtons(current, state.editor, availability(current))
+                .single { it.id == PlayerButton.SAVE_FRAME }.enabled) return
         stopPlayback()
         val cancel = AtomicBoolean()
         taskCancel = cancel
@@ -423,12 +423,19 @@ internal class ReplayPlayerController(
         }
     }
 
+    private fun availability(current: TrimRules?): PlayerAvailability {
+        val playheadFrame = current?.grid?.indexAt(state.editor.playheadUs) ?: -1
+        // Playback completion uses end-1; a displayed image may be stamped with the frame start.
+        val previewReady = state.image != null && playheadFrame >= 0 &&
+            current?.grid?.indexAt(state.imageUs) == playheadFrame
+        return PlayerAvailability(state.loading, state.error, playheadFrame < 0, previewReady)
+    }
+
     /** The bar's derived view of the current state. */
     fun barModel(): PlayerBarModel {
         val current = rules
         val editor = state.editor
-        val availability = PlayerAvailability(state.loading, state.error,
-            current?.grid?.indexAt(editor.playheadUs)?.let { it < 0 } ?: false)
+        val availability = availability(current)
         val buttons = if (current == null) listOf(
             ButtonSpec(PlayerButton.ENTER_TRIM, "トリム…", true, false, availability.error?.let { "この保存は切り取れません: $it" } ?: "読み込み中です"),
             ButtonSpec(PlayerButton.SAVE_FRAME, "この位置をPNG保存", false, false))

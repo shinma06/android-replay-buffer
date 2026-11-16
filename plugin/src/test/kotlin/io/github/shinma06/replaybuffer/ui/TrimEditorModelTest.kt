@@ -13,7 +13,7 @@ class TrimEditorModelTest {
     private val spans = (0 until 10).map { ReplayTimeline.Span(it * 100_000L, (it + 1) * 100_000L) } +
         (0 until 5).map { ReplayTimeline.Span(1_500_000L + it * 100_000L, 1_600_000L + it * 100_000L) }
     private val rules = TrimRules(FrameGrid(spans), 2_000_000L)
-    private val idle = PlayerAvailability(loading = false, error = null, playheadInGap = false)
+    private val idle = PlayerAvailability(loading = false, error = null, playheadInGap = false, previewReady = true)
 
     private fun trimAt(playheadUs: Long) = rules.enterTrim(rules.initial().copy(playheadUs = playheadUs))
 
@@ -236,6 +236,11 @@ class TrimEditorModelTest {
         assertEquals("保存しました", statusLine("保存しました", gap))
         assertEquals("読み込み中です", playerButtons(rules, edited, idle.copy(loading = true))[0].reason)
         assertNull(statusLine(null, view))
+        val pending = playerButtons(rules, edited, idle.copy(previewReady = false))
+        assertTrue(pending[0].enabled)
+        assertFalse(pending[1].enabled)
+        assertFalse(pending[1].accent)
+        assertEquals("この位置の映像を準備しています", statusLine(null, pending))
     }
 
     @Test
