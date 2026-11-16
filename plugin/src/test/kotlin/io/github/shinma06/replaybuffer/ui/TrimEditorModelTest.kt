@@ -151,6 +151,67 @@ class TrimEditorModelTest {
     }
 
     @Test
+    fun seekingOrPausingOnALongFinalFrameDoesNotRewind() {
+        val spans = listOf(ReplayTimeline.Span(0, 500_000), ReplayTimeline.Span(500_000, 1_000_000),
+            ReplayTimeline.Span(1_000_000, 60_000_000))
+        for (mode in PlayerMode.entries) {
+            val movie = if (mode == PlayerMode.TRIM) spans + ReplayTimeline.Span(60_000_000, 61_000_000) else spans
+            val current = TrimRules(FrameGrid(movie), movie.last().endUs)
+            val state = current.initial().copy(mode = mode, inUs = 500_000, outUs = 60_000_000)
+            val sought = current.seek(state, 30_000_000)
+            assertEquals(1_000_000L to 60_000_000L, current.playRange(sought), "$mode seek")
+            assertEquals(1_000_000L to 60_000_000L,
+                current.playRange(current.played(state, 1_000_000)), "$mode pause")
+            val finished = current.playbackFinished(sought, 60_000_000, failed = false)
+            val start = if (mode == PlayerMode.TRIM) 500_000L else 0L
+            assertEquals(start to 60_000_000L, current.playRange(finished), "$mode completed")
+            assertEquals(1_000_000L to 60_000_000L,
+                current.playRange(current.seek(finished, 30_000_000)), "$mode seek after completion")
+        }
+    }
+
+    @Test
+    fun aOneMicrosecondFinalFrameCanBeSoughtBeforeAndAfterCompletion() {
+        val current = TrimRules(FrameGrid(listOf(ReplayTimeline.Span(0, 1_000_000),
+            ReplayTimeline.Span(1_000_000, 1_000_001))), 1_000_001)
+        val sought = current.seek(current.initial(), 1_000_000)
+        val finished = current.playbackFinished(sought, 1_000_001, failed = false)
+        assertEquals(1_000_000L to 1_000_001L, current.playRange(sought))
+        assertEquals(0L to 1_000_001L, current.playRange(finished))
+        assertEquals(1_000_000L to 1_000_001L, current.playRange(current.seek(finished, 1_000_000)))
+        assertEquals(1_000_000L to 1_000_001L, current.playRange(current.step(finished, 0)))
+        assertEquals(1_000_000L to 1_000_001L,
+            current.playRange(current.endDrag(current.beginDrag(finished, Grip.PLAYHEAD, 1_000_000))))
+    }
+
+    @Test
+    fun cancellingDragOrTrimRestoresWhetherPlaybackHadCompleted() {
+        val current = TrimRules(FrameGrid(listOf(ReplayTimeline.Span(0, 500_000),
+            ReplayTimeline.Span(500_000, 1_000_000), ReplayTimeline.Span(1_000_000, 60_000_000))), 60_000_000)
+        val completed = current.playbackFinished(current.initial(), 60_000_000, failed = false)
+        val dragging = current.beginDrag(completed, Grip.PLAYHEAD, 500_000)
+        assertEquals(500_000L to 60_000_000L, current.playRange(dragging))
+        assertEquals(completed, current.cancelDrag(dragging))
+        val trim = current.seek(current.enterTrim(completed), 500_000)
+        assertEquals(0L to 60_000_000L, current.playRange(current.cancel(trim).first))
+        val view = current.seek(current.initial(), 500_000)
+        val endedTrim = current.playbackFinished(current.enterTrim(view), 60_000_000, failed = false)
+        assertEquals(500_000L to 60_000_000L, current.playRange(current.cancel(endedTrim).first))
+    }
+
+    @Test
+    fun completingAShorterTrimDoesNotMarkTheWholeMovieCompleted() {
+        val current = TrimRules(FrameGrid(listOf(ReplayTimeline.Span(0, 500_000),
+            ReplayTimeline.Span(500_000, 1_000_000), ReplayTimeline.Span(1_000_000, 60_000_000))), 60_000_000)
+        val trim = current.markOut(current.seek(current.enterTrim(current.initial()), 500_000))
+        val finished = current.playbackFinished(trim, 1_000_000, failed = false)
+        assertEquals(0L to 1_000_000L, current.playRange(finished))
+        val saved = current.taskFinished(current.taskStarted(finished, TaskKind.TRIM), TaskKind.TRIM, TaskOutcome.SUCCESS)
+        assertEquals(999_999L to 60_000_000L, current.playRange(saved))
+        assertEquals(500_000L to 60_000_000L, current.playRange(current.step(finished.copy(mode = PlayerMode.VIEW), 0)))
+    }
+
+    @Test
     fun buttonsLabelsAvailabilityAndReasons() {
         val view = playerButtons(rules, rules.initial(), idle)
         assertEquals(listOf("トリム…", "この位置をPNG保存"), view.map { it.label })

@@ -17,7 +17,8 @@ internal enum class TaskKind { TRIM, FRAME }
 internal enum class TaskOutcome { SUCCESS, CANCELLED, FAILED }
 
 /** Values captured when a grip was taken, restored by Esc while still dragging (CANCEL-03). */
-internal data class TrimDrag(val grip: Grip, val inUs: Long, val outUs: Long, val playheadUs: Long, val playheadPlaced: Boolean)
+internal data class TrimDrag(val grip: Grip, val inUs: Long, val outUs: Long, val playheadUs: Long, val playheadPlaced: Boolean,
+    val completedUntilUs: Long?)
 
 /** UI state of the trim player. All transitions live in [TrimRules]; files are never touched here. */
 internal data class TrimEditor(
@@ -32,6 +33,9 @@ internal data class TrimEditor(
     val playheadPlaced: Boolean = false,
     val task: TaskKind? = null,
     val cancelling: Boolean = false,
+    /** Natural completion is distinct from seeking to the last (possibly long-held) frame. */
+    val completedUntilUs: Long? = null,
+    val entryCompletedUntilUs: Long? = null,
 )
 
 /** Effect the controller must run after [TrimRules.cancel]. */
@@ -133,7 +137,7 @@ internal class TrimRules(val grid: FrameGrid, val durationUs: Long) {
     fun enterTrim(state: TrimEditor): TrimEditor {
         if (state.mode == PlayerMode.TRIM || grid.isEmpty || state.task != null) return state
         val entered = state.copy(mode = PlayerMode.TRIM, inUs = fullInUs, outUs = fullOutUs, entryPlayheadUs = state.playheadUs,
-            playheadPlaced = false)
+            playheadPlaced = false, entryCompletedUntilUs = state.completedUntilUs)
         return entered.copy(playheadUs = clampPlayhead(entered, state.playheadUs))
     }
 
@@ -154,7 +158,7 @@ internal class TrimRules(val grid: FrameGrid, val durationUs: Long) {
     fun beginDrag(state: TrimEditor, grip: Grip, us: Long): TrimEditor {
         if (grid.isEmpty || state.drag != null) return state
         if (grip != Grip.PLAYHEAD && (state.mode != PlayerMode.TRIM || state.task != null)) return state
-        val taken = state.copy(drag = TrimDrag(grip, state.inUs, state.outUs, state.playheadUs, state.playheadPlaced),
+        val taken = state.copy(drag = TrimDrag(grip, state.inUs, state.outUs, state.playheadUs, state.playheadPlaced, state.completedUntilUs),
             playheadPlaced = state.playheadPlaced || grip == Grip.PLAYHEAD)
         return dragTo(taken, us)
     }
@@ -165,7 +169,7 @@ internal class TrimRules(val grid: FrameGrid, val durationUs: Long) {
         return when (drag.grip) {
             Grip.IN -> state.copy(inUs = grid.spans[grid.nearestStartIndex(us).coerceAtMost(outIndex(state))].startUs)
             Grip.OUT -> state.copy(outUs = grid.spans[grid.nearestEndIndex(us).coerceAtLeast(inIndex(state))].endUs)
-            Grip.PLAYHEAD -> state.copy(playheadUs = clampPlayhead(state, us))
+            Grip.PLAYHEAD -> state.copy(playheadUs = clampPlayhead(state, us), completedUntilUs = null)
         }
     }
 
@@ -179,7 +183,8 @@ internal class TrimRules(val grid: FrameGrid, val durationUs: Long) {
     /** Esc while dragging: restore the values from before the grab and drop the grip (CANCEL-03). */
     fun cancelDrag(state: TrimEditor): TrimEditor {
         val drag = state.drag ?: return state
-        return state.copy(inUs = drag.inUs, outUs = drag.outUs, playheadUs = drag.playheadUs, playheadPlaced = drag.playheadPlaced, drag = null)
+        return state.copy(inUs = drag.inUs, outUs = drag.outUs, playheadUs = drag.playheadUs, playheadPlaced = drag.playheadPlaced,
+            completedUntilUs = drag.completedUntilUs, drag = null)
     }
 
     /** The Cancel / 中止 button and Esc (3.2). */
@@ -188,7 +193,7 @@ internal class TrimRules(val grid: FrameGrid, val durationUs: Long) {
         state.task != null && state.cancelling -> state to CancelEffect.NONE
         state.task != null -> state.copy(cancelling = true) to CancelEffect.ABORT_TASK
         state.mode == PlayerMode.TRIM -> state.copy(mode = PlayerMode.VIEW, inUs = fullInUs, outUs = fullOutUs,
-            playheadUs = state.entryPlayheadUs) to CancelEffect.STOP_PLAYBACK
+            playheadUs = state.entryPlayheadUs, completedUntilUs = state.entryCompletedUntilUs) to CancelEffect.STOP_PLAYBACK
         else -> state to CancelEffect.NONE
     }
 
@@ -196,18 +201,19 @@ internal class TrimRules(val grid: FrameGrid, val durationUs: Long) {
         if (grid.isEmpty || state.drag != null) return state
         var index = grid.stepIndex(state.playheadUs, delta)
         if (state.mode == PlayerMode.TRIM) index = index.coerceIn(inIndex(state), outIndex(state))
-        return state.copy(playheadUs = grid.spans[index].startUs, playheadPlaced = true)
+        return state.copy(playheadUs = grid.spans[index].startUs, playheadPlaced = true, completedUntilUs = null)
     }
 
     /** Keyboard/click seek outside a drag. */
     fun seek(state: TrimEditor, us: Long): TrimEditor =
-        if (state.drag != null) state else state.copy(playheadUs = clampPlayhead(state, us), playheadPlaced = true)
+        if (state.drag != null) state else state.copy(playheadUs = clampPlayhead(state, us), playheadPlaced = true, completedUntilUs = null)
 
     /** A frame published by real-time playback. */
-    fun played(state: TrimEditor, us: Long): TrimEditor = if (state.drag != null) state else state.copy(playheadUs = us, playheadPlaced = true)
+    fun played(state: TrimEditor, us: Long): TrimEditor = if (state.drag != null) state else
+        state.copy(playheadUs = us, playheadPlaced = true, completedUntilUs = null)
 
     fun playbackFinished(state: TrimEditor, untilUs: Long, failed: Boolean): TrimEditor =
-        if (failed) state else played(state, untilUs - 1)
+        if (failed || state.drag != null) state else played(state, untilUs - 1).copy(completedUntilUs = untilUs)
 
     /**
      * Whether the playhead line is drawn: always in view mode; in trim mode only after the user has
@@ -220,8 +226,7 @@ internal class TrimRules(val grid: FrameGrid, val durationUs: Long) {
     fun playRange(state: TrimEditor): Pair<Long, Long>? {
         if (grid.isEmpty) return null
         val (from, until) = if (state.mode == PlayerMode.TRIM) state.inUs to state.outUs else fullInUs to fullOutUs
-        val lastStart = grid.spans[if (state.mode == PlayerMode.TRIM) outIndex(state) else grid.spans.lastIndex].startUs
-        return (if (state.playheadUs >= lastStart || state.playheadUs < from) from else state.playheadUs) to until
+        return (if (state.completedUntilUs == until || state.playheadUs < from || state.playheadUs >= until) from else state.playheadUs) to until
     }
 
     fun taskStarted(state: TrimEditor, kind: TaskKind): TrimEditor = state.copy(task = kind, cancelling = false)
