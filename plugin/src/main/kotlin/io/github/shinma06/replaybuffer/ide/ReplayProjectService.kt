@@ -47,12 +47,14 @@ import io.github.shinma06.replaybuffer.core.SaveSnapshot
 import io.github.shinma06.replaybuffer.core.SavedScreenshot
 import io.github.shinma06.replaybuffer.core.ScreenshotSaveFailure
 import io.github.shinma06.replaybuffer.core.saveScreenshot
+import io.github.shinma06.replaybuffer.menubar.ReplayMenuBarService
 import io.github.shinma06.replaybuffer.settings.LOGCAT_DESTINATION_UNAVAILABLE
 import io.github.shinma06.replaybuffer.settings.ReplaySettings
 import io.github.shinma06.replaybuffer.settings.ReplaySettingsStore
 import io.github.shinma06.replaybuffer.settings.patchSettings
 import io.github.shinma06.replaybuffer.settings.settingsJson
 import io.github.shinma06.replaybuffer.settings.validateDestination
+import io.github.shinma06.replaybuffer.ui.LogcatTitleActionService
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
@@ -485,6 +487,7 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
                         if (alive) ToolWindowManager.getInstance(project).getToolWindow("Android Replay Buffer")?.show() else event.expire()
                     })
             }
+            notifyBackgroundSave(save, notification, project)
             showNotification(notification)
         }
     }
@@ -565,6 +568,8 @@ internal fun streamName(kind: String): String = when (kind) {
 
 class ReplayProjectActivity : ProjectActivity, DumbAware {
     override suspend fun execute(project: Project) {
+        project.getService(LogcatTitleActionService::class.java)
+        ApplicationManager.getApplication().getService(ReplayMenuBarService::class.java).projectOpened(project)
         project.getService(ReplayProjectService::class.java).refresh()
     }
 }

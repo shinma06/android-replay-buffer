@@ -36,6 +36,8 @@ internal data class ToolWindowInput(
     val logcat: LogcatState = LogcatState("Logcatを開く", true, "", false),
     val savedAt: String? = null,
     val screenshot: ScreenshotResult? = null,
+    /** The IDE-wide menu bar setting; the panel guides to it only while it stays OFF. */
+    val menuBarEnabled: Boolean = false,
 )
 
 internal data class LogcatState(val label: String, val enabled: Boolean, val tooltip: String, val failed: Boolean)
@@ -79,6 +81,8 @@ internal data class ToolWindowModel(
     val details: List<Detail>,
     /** Capture-target chooser entries; empty (hidden) while fewer than two devices are in play. */
     val devices: List<DeviceChoice> = emptyList(),
+    /** One guidance line shown while the IDE-wide menu bar setting stays OFF. */
+    val menuBarGuidance: Boolean = false,
 ) {
     val showsResults: Boolean get() = results.isNotEmpty()
     val showsFailure: Boolean get() = results.any { it.failure != null }
@@ -203,6 +207,7 @@ internal fun toolWindowModel(input: ToolWindowInput): ToolWindowModel {
         notices = notices,
         details = details,
         devices = deviceChoices(snapshot),
+        menuBarGuidance = !input.menuBarEnabled,
     )
 }
 
@@ -227,9 +232,10 @@ private fun saveResult(saved: SaveSnapshot?, busy: Boolean, seconds: Int, savedA
     ))
 }
 
-private fun pendingSettings(input: ToolWindowInput): String? {
-    val applied = input.snapshot?.settings ?: return null
-    val stored = input.settings
+private fun pendingSettings(input: ToolWindowInput): String? = pendingSettingsDescription(input.snapshot?.settings, input.settings)
+
+internal fun pendingSettingsDescription(applied: io.github.shinma06.replaybuffer.core.ReplaySettings?, stored: ReplaySettings): String? {
+    applied ?: return null
     val pending = buildList {
         if (applied.captureMode != stored.captureMode) add("取得モード: ${captureModeDescription(stored.captureMode)}")
         if (stored.captureMode.videoRequested && applied.videoQuality != stored.videoQuality) add("動画品質")

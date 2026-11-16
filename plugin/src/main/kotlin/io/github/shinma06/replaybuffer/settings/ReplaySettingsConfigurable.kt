@@ -44,11 +44,14 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.vfs.LocalFileSystem
 import io.github.shinma06.replaybuffer.cli.ReplayCliRegistry
+import io.github.shinma06.replaybuffer.menubar.MenuBarAvailabilityListener
 import io.github.shinma06.replaybuffer.core.CaptureMode
 import io.github.shinma06.replaybuffer.core.TapDisplay
 import io.github.shinma06.replaybuffer.core.VideoQuality
 import io.github.shinma06.replaybuffer.ide.LogcatScreenshotSettings
 import io.github.shinma06.replaybuffer.ide.ReplayProjectService
+import io.github.shinma06.replaybuffer.menubar.ReplayMenuBarService
+import io.github.shinma06.replaybuffer.menubar.ReplayMenuBarStore
 import io.github.shinma06.replaybuffer.ui.captureModeDescription
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -91,6 +94,9 @@ internal const val AUTO_SAVE_TOOLTIP = "既定OFF。適用後の報告が対象�
 internal const val SCREENSHOT_LOGCAT_TOOLTIP = "Logcatの画面撮影設定に追従します。手動では専用の保存先を指定できます。動画・ログと同じフォルダも使えます。"
 internal const val CLI_GUIDANCE = "導入済みプラグインのbinにあるreplayで、この画面と同じ設定・取得・保存を操作できます。" +
     "MCPはreplay mcpです。プラグイン更新後も同じ場所を使えます。"
+internal const val MENUBAR_TOOLTIP = "IDE全体の設定です。ONにするとAndroid Studioの起動中だけ、macOSのメニューバー（Windowsは通知領域、Linuxはトレイ）にアイコンを表示し、" +
+    "IDEを前面に出さずに直前の記録の保存・スクリーンショット・取得ON/OFF・状態確認を操作できます。同じ操作はToolWindow・Running Devicesにもあります。"
+internal const val MENUBAR_GUIDANCE = "既定はOFFです。OSによってはアイコンが「隠れているアイコン」側に入ることがあります。表示先がない環境ではアイコンは出ず、その理由をここに表示します。"
 
 /** Which settings controls accept input; pure so the rules are testable without a UI. */
 internal data class SettingsControls(
@@ -132,6 +138,8 @@ internal class SettingsForm(val launcher: String?) {
     var screenshotStatus by mutableStateOf("")
     var applicationStatus by mutableStateOf("")
     var captureActive by mutableStateOf(false)
+    var menuBar by mutableStateOf(false)
+    var menuBarReason by mutableStateOf<String?>(null)
     /** Last text sent to a destination check, so programmatic resets do not start a second check. */
     var checkedDestination: String? = null
     var checkedScreenshotDirectory: String? = null
@@ -200,9 +208,17 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable, C
                 if (uiLifetime === lifetime && !project.isDisposed) renderApplication()
             }, ModalityState.any())
         })
+        val application = ApplicationManager.getApplication()
+        application.messageBus.connect(lifetime).subscribe(ReplayMenuBarService.AVAILABILITY_CHANGED, MenuBarAvailabilityListener { reason ->
+            application.invokeLater({
+                if (uiLifetime === lifetime && !project.isDisposed) created.menuBarReason = reason
+            }, ModalityState.any())
+        })
         checkDestination()
         checkScreenshotDestination()
         renderApplication()
+        created.menuBar = menuBarStore().showInMenuBar
+        created.menuBarReason = menuBarService().availabilityReason()
         return created
     }
 
@@ -310,11 +326,21 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable, C
     /** The capture target is chosen in the ToolWindow/CLI/MCP, so the form keeps whatever is stored now. */
     private fun draft(): ReplaySettings = (form?.draft() ?: ReplaySettings()).copy(deviceSerial = store().settings().deviceSerial)
 
-    override fun isModified(): Boolean = form != null && draft() != store().settings()
+    override fun isModified(): Boolean {
+        val current = form ?: return false
+        return draft() != store().settings() || current.menuBar != menuBarStore().showInMenuBar
+    }
 
     override fun apply() {
-        if (form == null || project.isDisposed || !isModified()) return
+        val current = form
+        if (current == null || project.isDisposed || !isModified()) return
+        // The IDE-wide flag is independent of this page's project settings and their validation.
+        if (current.menuBar != menuBarStore().showInMenuBar) {
+            menuBarStore().showInMenuBar = current.menuBar
+            ApplicationManager.getApplication().messageBus.syncPublisher(ReplayMenuBarStore.CHANGED).run()
+        }
         val settings = draft()
+        if (settings == store().settings()) return
         val checked = destinationValidation?.takeIf { it.destination == settings.destination }
             ?: throw ConfigurationException("保存先を確認中です。確認が終わってから適用してください。")
         val screenshotChecked = if (settings.screenshotUsesLogcatDestination) DestinationValidation("", null) else {
@@ -337,6 +363,8 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable, C
         val current = form ?: return
         if (project.isDisposed) return
         current.load(store().settings())
+        current.menuBar = menuBarStore().showInMenuBar
+        current.menuBarReason = menuBarService().availabilityReason()
         checkDestination()
         checkScreenshotDestination()
         renderApplication()
@@ -354,6 +382,10 @@ class ReplaySettingsConfigurable(private val project: Project) : Configurable, C
     }
 
     private fun store(): ReplaySettingsStore = project.getService(ReplaySettingsStore::class.java)
+
+    private fun menuBarStore(): ReplayMenuBarStore = ApplicationManager.getApplication().getService(ReplayMenuBarStore::class.java)
+
+    private fun menuBarService(): ReplayMenuBarService = ApplicationManager.getApplication().getService(ReplayMenuBarService::class.java)
 }
 
 @Composable
@@ -489,7 +521,16 @@ internal fun SettingsContent(form: SettingsForm, edited: () -> Unit, choose: (Te
             }
             Hint(AUTO_SAVE_SCOPE)
 
-            // 5. Terminal and agents, collapsed.
+            // 5. Menu bar icon; an IDE-wide setting applied with this page's Apply.
+            GroupHeader("メニューバー（Windows通知領域・Linuxトレイ）", modifier = Modifier.semantics { heading() })
+            WithTooltip(MENUBAR_TOOLTIP) {
+                CheckboxRow("メニューバーに表示する", form.menuBar, { form.menuBar = it },
+                    modifier = Modifier.semantics { contentDescription = "メニューバーに表示する" })
+            }
+            Hint(MENUBAR_GUIDANCE)
+            form.menuBarReason?.let { Hint(it) }
+
+            // 6. Terminal and agents, collapsed.
             var cliExpanded by remember { mutableStateOf(false) }
             Text((if (cliExpanded) "▼ " else "▶ ") + "ターミナル・エージェントから操作",
                 modifier = Modifier.clickable { cliExpanded = !cliExpanded }.semantics { heading() }, fontWeight = FontWeight.Bold)

@@ -1110,6 +1110,68 @@ class CaptureStoreSaveTest {
         }
     }
 
+    @Test
+    fun readmeTailUsesTheSameWindowOriginAndExactNanosecondsAsJson() = withReadmeTailFixture { capture, root ->
+        assertReadmeTail(capture, root, "1234566877", "2000000333", true)
+    }
+
+    @Test
+    fun readmeTailPreservesKnownTimesWhenTheImageIsNotHeld() = withReadmeTailFixture { capture, root ->
+        val unheld = capture.copy(states = capture.states + ("video" to StreamSnapshot(StreamState.RECOVERING)))
+        assertReadmeTail(unheld, root, "1234566877", "2000000333", false)
+    }
+
+    @Test
+    fun readmeTailPreservesUnknownTimesWithoutInventingWindowCoordinates() = withReadmeTailFixture { capture, root ->
+        assertReadmeTail(capture.copy(endUncertainty = Long.MAX_VALUE), root, null, null, false)
+    }
+
+    @Test
+    fun readmeOmitsTheTailWhenTheFinalFrameReachesTheWindowEnd() = withReadmeTailFixture { capture, root ->
+        val confirmed = capture.copy(end = capture.video.last().time.sequence!!)
+        val output = SaveWriter().write(confirmed, root, { false }) { Files.move(it.partial, it.complete) }
+        val manifest = JsonParser.parseString(Files.readString(output.directory.resolve("replay.json"))).asJsonObject
+        assertTrue(manifest["video_tail"].isJsonNull)
+        assertFalse(Files.readString(output.directory.resolve("README.md")).contains("動画末尾"))
+    }
+
+    private fun withReadmeTailFixture(check: (FrozenCapture, Path) -> Unit) {
+        val root = Files.createTempDirectory("replay-readme-tail-")
+        val store = CaptureStore(root.resolve("ring"), minFree = 0)
+        val host = System.nanoTime() + 60_000_000_000
+        val bytes = sample()
+        try {
+            store.generation(1); store.session(VideoPacket.Session(32, 32), 1)
+            anchor(store.clock, 1_000_000_000, host)
+            store.frame(VideoPacket.Frame(0, true, false, config(bytes)), 1)
+            store.frame(VideoPacket.Frame(1_000_000, false, true, bytes), 1, host)
+            for (second in 2L..8L) anchor(store.clock, second * 1_000_000_000, host + (second - 1) * 1_000_000_000)
+            store.frame(VideoPacket.Frame(7_234_567, false, true, bytes), 1, host + 6_234_567_000)
+            val capture = store.capture(ReplaySettings(replaySeconds = 3))!!
+            check(capture.copy(start = 5_000_000_123, end = 7_000_000_456), root)
+            store.release(capture.id)
+        } finally { store.close(); root.toFile().deleteRecursively() }
+    }
+
+    private fun assertReadmeTail(capture: FrozenCapture, root: Path, from: String?, to: String?, held: Boolean) {
+        val output = SaveWriter().write(capture, root, { false }) { Files.move(it.partial, it.complete) }
+        val manifest = JsonParser.parseString(Files.readString(output.directory.resolve("replay.json"))).asJsonObject
+        val tail = manifest["video_tail"].asJsonObject
+        val expected = JsonParser.parseString("""{
+            "from_t_ns": ${from?.let { "\"$it\"" }}, "to_t_ns": ${to?.let { "\"$it\"" }},
+            "source_pts_us": "7234567", "source_t_ns": ${from?.let { "\"$it\"" }},
+            "boot_segment": 0, "generation": 1, "display_held": $held, "new_frame_confirmed": false
+        }""").asJsonObject
+        assertEquals(expected, tail)
+        assertEquals("window_start", manifest["timebase"].asJsonObject["t_origin"].asString)
+        assertEquals(capture.windowKnown, manifest["timebase"].asJsonObject["known"].asBoolean)
+        val summary = Files.readString(output.directory.resolve("README.md"))
+        assertEquals(
+            "- 動画末尾（窓からのns）: $from〜$to は新frame未確認。前の画像の表示保持=$held。再生時間は確認済み取得時間とは異なります。",
+            summary.lineSequence().single { it.startsWith("- 動画末尾") },
+        )
+    }
+
     private fun sample(): ByteArray {
         val picture = Picture.create(32, 32, ColorSpace.YUV420J).apply { fill(15) }
         val data = H264Encoder.createH264Encoder().encodeIDRFrame(picture, ByteBuffer.allocate(65536))
