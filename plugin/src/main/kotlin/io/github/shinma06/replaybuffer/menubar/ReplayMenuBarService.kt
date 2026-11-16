@@ -25,6 +25,7 @@ import java.nio.file.Path
 import java.time.LocalTime
 import java.time.format.DateTimeFormatter
 import java.util.Locale
+import java.util.UUID
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CompletionException
 import java.util.concurrent.atomic.AtomicBoolean
@@ -148,7 +149,7 @@ private class ProjectMenu(
     private var trackedScreenshot: CompletableFuture<*>? = null
     private var screenshotResult: ScreenshotResult? = null
 
-    val projectId: String get() = project.basePath ?: project.name
+    val projectId: String = UUID.randomUUID().toString()
     val alive: Boolean get() = !project.isDisposed
 
     override fun close() = connection.disconnect()
