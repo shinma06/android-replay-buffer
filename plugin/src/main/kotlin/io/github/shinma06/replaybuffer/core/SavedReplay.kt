@@ -2,7 +2,9 @@ package io.github.shinma06.replaybuffer.core
 
 import com.google.gson.Gson
 import com.google.gson.JsonObject
+import java.nio.channels.Channels
 import java.nio.channels.FileChannel
+import java.nio.channels.ReadableByteChannel
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardOpenOption.READ
@@ -39,8 +41,13 @@ internal class SavedReplay private constructor(
         String(buffer.array(), Charsets.UTF_8)
     }
 
-    fun lines(name: String): List<String> = text(name).let { text ->
-        if (text.isEmpty()) emptyList() else text.removeSuffix("\n").split('\n')
+    fun lines(name: String): List<String> = buildList { forEachLine(name) { add(it) } }
+
+    /** The reader and its file are closed before this call returns or throws. */
+    fun forEachLine(name: String, consume: (String) -> Unit) {
+        handle.openFile(name).use { output ->
+            output.channel(setOf(READ)).use { channel -> readReplayLines(channel, consume) }
+        }
     }
 
     /** Movie-time presentation model for the player: displayed spans, gaps, touches, clock. */
@@ -61,10 +68,12 @@ internal class SavedReplay private constructor(
             }
             if (covered < duration) add(ReplayTimeline.Span(covered, duration))
         }
-        val taps = if (exists(ReplayFiles.TOUCHES)) lines(ReplayFiles.TOUCHES).mapNotNull { line ->
-            runCatching { gson.fromJson(line, JsonObject::class.java)["movie_us"] }
-                .getOrNull()?.takeIf { it.isJsonPrimitive }?.asString?.toLongOrNull()
-        } else emptyList()
+        val taps = buildList {
+            if (exists(ReplayFiles.TOUCHES)) forEachLine(ReplayFiles.TOUCHES) { line ->
+                runCatching { gson.fromJson(line, JsonObject::class.java)["movie_us"] }
+                    .getOrNull()?.takeIf { it.isJsonPrimitive }?.asString?.toLongOrNull()?.let { add(it) }
+            }
+        }
         val known = manifest["timebase"]?.takeIf { it.isJsonObject }?.asJsonObject?.get("known")
             ?.takeIf { it.isJsonPrimitive }?.asBoolean ?: false
         return ReplayTimeline(duration, spans, gaps, taps, known)
@@ -121,13 +130,11 @@ internal class SavedReplay private constructor(
                 }
                 val frames = handle.openFile(ReplayFiles.VIDEO_FRAMES).use { output ->
                     output.channel(setOf(READ)).use { channel ->
-                        val buffer = java.nio.ByteBuffer.allocate(channel.size().toInt().also {
-                            require(it.toLong() == channel.size()) { "時刻索引が大きすぎます" }
-                        })
-                        while (buffer.hasRemaining()) check(channel.read(buffer) > 0)
-                        String(buffer.array(), Charsets.UTF_8).removeSuffix("\n").split('\n')
-                            .filter(String::isNotEmpty)
-                            .map { gson.fromJson(it, JsonObject::class.java) }
+                        buildList {
+                            readReplayLines(channel) { line ->
+                                if (line.isNotEmpty()) add(gson.fromJson(line, JsonObject::class.java))
+                            }
+                        }
                     }
                 }
                 require(frames.isNotEmpty()) { "動画のframe記録がありません" }
@@ -139,5 +146,11 @@ internal class SavedReplay private constructor(
                 throw e
             }
         }
+    }
+}
+
+internal fun readReplayLines(channel: ReadableByteChannel, consume: (String) -> Unit) {
+    Channels.newInputStream(channel).bufferedReader(Charsets.UTF_8).use { reader ->
+        reader.lineSequence().forEach(consume)
     }
 }

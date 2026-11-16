@@ -596,10 +596,10 @@ internal class ReplayTrim(private val availableSpace: (Path) -> Long = { Files.g
         val deviceOut = staging.writer(file(ReplayFiles.LOGCAT_DEVICE))
         val appOut = staging.writer(file(ReplayFiles.LOGCAT_APP))
         deviceOut.use { deviceWriter -> appOut.use { appWriter ->
-            saved.lines(ReplayFiles.LOGCAT_DEVICE).forEach { line ->
+            saved.forEachLine(ReplayFiles.LOGCAT_DEVICE) { line ->
                 checkActive()
                 val row = gson.fromJson(line, JsonObject::class.java)
-                if (!inTnsRange(row, originTns, endTns)) return@forEach
+                if (!inTnsRange(row, originTns, endTns)) return@forEachLine
                 row.addProperty("t_ns", shift(row.text("t_ns"), originTns))
                 if (originTns == null) row.addProperty("t_uncertainty_ns", Long.MAX_VALUE.toString())
                 val text = gson.toJson(row)
@@ -625,10 +625,10 @@ internal class ReplayTrim(private val availableSpace: (Path) -> Long = { Files.g
         var inMovie = 0
         var injected = 0
         staging.writer(file(ReplayFiles.TOUCHES)).use { out ->
-            saved.lines(ReplayFiles.TOUCHES).forEach { line ->
+            saved.forEachLine(ReplayFiles.TOUCHES) { line ->
                 checkActive()
                 val row = gson.fromJson(line, JsonObject::class.java)
-                if (!inTnsRange(row, originTns, endTns)) return@forEach
+                if (!inTnsRange(row, originTns, endTns)) return@forEachLine
                 row.addProperty("t_ns", shift(row.text("t_ns"), originTns))
                 if (originTns == null) row.addProperty("t_uncertainty_ns", Long.MAX_VALUE.toString())
                 val movieUs = row.longText("movie_us")
