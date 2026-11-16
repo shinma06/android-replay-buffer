@@ -33,6 +33,87 @@ class MenuBarModelTest {
         assertEquals(MenuBarIcon.WAITING, projectStatus(failed.copy(initializationError = null)).icon)
     }
 
+    @Test
+    fun `capture off screenshot saving takes priority without a snapshot`() {
+        val input = captureOffScreenshotInput(screenshotBusy = true)
+        assertStatusPresentation(input, ProjectStatus(MenuBarIcon.SAVING, "保存中…"))
+        val screenshot = item(menuBarModel(listOf(input)), "スクショを保存中…")
+        assertFalse(screenshot.enabled)
+        assertEquals(MenuBarCommand.SCREENSHOT, screenshot.command)
+    }
+
+    @Test
+    fun `capture off screenshot saving takes priority over initialization failure`() {
+        val input = captureOffScreenshotInput(initializationError = "IDE設定領域へ書き込めません", screenshotBusy = true)
+        assertStatusPresentation(input, ProjectStatus(MenuBarIcon.SAVING, "保存中…"))
+        val attention = item(menuBarModel(listOf(input)), "IDE設定領域へ書き込めません")
+        assertTrue(attention.enabled)
+        assertEquals(MenuBarCommand.SHOW_IDE, attention.command)
+    }
+
+    @Test
+    fun `capture off without a screenshot keeps the null snapshot status`() {
+        listOf(null, "IDE設定領域へ書き込めません").forEach { error ->
+            val input = captureOffScreenshotInput(initializationError = error)
+            val expected = if (error == null) ProjectStatus(MenuBarIcon.WAITING, "確認中…")
+                else ProjectStatus(MenuBarIcon.ATTENTION, "取得を初期化できません")
+            assertStatusPresentation(input, expected)
+            assertTrue(item(menuBarModel(listOf(input)), "スクリーンショット").enabled)
+        }
+    }
+
+    @Test
+    fun `unresolved save failure outranks screenshot saving across projects`() {
+        val failed = input(snapshot(save = SaveSnapshot(SavePhase.FAILED)), screenshotBusy = true)
+        assertStatusPresentation(failed, ProjectStatus(MenuBarIcon.FAILED, "保存に失敗しました（未解決）"))
+        val saving = captureOffScreenshotInput(screenshotBusy = true).copy(projectId = "id-Shot", name = "Shot")
+        listOf(listOf(failed, saving), listOf(saving, failed)).forEach { inputs ->
+            val menu = menuBarModel(inputs)
+            assertEquals(MenuBarIcon.FAILED, menu.icon)
+            assertEquals("Android Replay Buffer", menu.tooltip)
+            assertEquals(listOf("▲ 保存に失敗しました（未解決）", "▼ 保存中…").toSet(),
+                menu.entries.filterIsInstance<MenuEntry.Submenu>().map { items(it.entries).first().label }.toSet())
+        }
+    }
+
+    @Test
+    fun `screenshot saving keeps priority over every ordinary capture state but not save failure`() {
+        CaptureState.entries.forEach { state ->
+            SavePhase.entries.forEach { phase ->
+                val expected = if (phase == SavePhase.FAILED) ProjectStatus(MenuBarIcon.FAILED, "保存に失敗しました（未解決）")
+                    else ProjectStatus(MenuBarIcon.SAVING, "保存中…")
+                assertStatusPresentation(input(snapshot(state, SaveSnapshot(phase)), screenshotBusy = true), expected)
+            }
+        }
+    }
+
+    private fun captureOffScreenshotInput(initializationError: String? = null, screenshotBusy: Boolean = false) = input(
+        null, initializationError = initializationError, enabled = false,
+        stored = ReplaySettings(screenshotUsesLogcatDestination = false, screenshotDirectory = directory.toString(),
+            deviceSerial = device.serial),
+        screenshotReason = "スクリーンショットを保存中です。".takeIf { screenshotBusy }, screenshotBusy = screenshotBusy,
+    )
+
+    private fun assertStatusPresentation(input: MenuProjectInput, expected: ProjectStatus) {
+        assertEquals(expected, projectStatus(input))
+        val single = menuBarModel(listOf(input))
+        assertEquals(expected.icon, single.icon)
+        assertEquals("${expected.icon.symbol} ${expected.text}", items(single.entries)[1].label)
+        assertFalse(items(single.entries)[1].enabled)
+        assertEquals("Android Replay Buffer — ${expected.text}", single.tooltip)
+        val other = input(snapshot(), name = "Other")
+        listOf(listOf(input, other), listOf(other, input)).forEach { inputs ->
+            val menu = menuBarModel(inputs)
+            assertEquals(expected.icon, menu.icon)
+            assertEquals("Android Replay Buffer", menu.tooltip)
+            assertEquals("Android Replay Buffer", items(menu.entries).first().label)
+            val submenu = menu.entries.filterIsInstance<MenuEntry.Submenu>().single { it.title.startsWith(input.name) }
+            assertEquals("${input.name} ${expected.icon.symbol} ${expected.icon.shortLabel}", submenu.title)
+            assertEquals("${expected.icon.symbol} ${expected.text}", items(submenu.entries).first().label)
+            assertFalse(items(submenu.entries).first().enabled)
+        }
+    }
+
     private val device = ReplayDevice("emulator-5554", "Pixel 9", DeviceKind.EMULATOR, true)
     private val app = ApplicationTarget("com.example.app")
     private val directory = Path.of("/disposable/out")
