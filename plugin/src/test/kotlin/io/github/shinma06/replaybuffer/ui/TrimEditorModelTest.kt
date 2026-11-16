@@ -122,6 +122,35 @@ class TrimEditorModelTest {
     }
 
     @Test
+    fun naturalCompletionRewindsNextPlayEvenWhenTheTerminalTickWasNotShown() {
+        val current = TrimRules(FrameGrid(listOf(
+            ReplayTimeline.Span(0, 900_000), ReplayTimeline.Span(900_000, 1_000_000),
+            ReplayTimeline.Span(1_000_000, 1_000_001)
+        )), 1_000_001)
+        val playing = current.played(current.initial(), 900_000)
+        assertEquals(900_000L to 1_000_001L, current.playRange(playing))
+
+        val finished = current.playbackFinished(playing, 1_000_001, failed = false)
+
+        assertEquals(1_000_000, finished.playheadUs)
+        assertEquals(0L to 1_000_001L, current.playRange(finished))
+        assertTrue(current.grid.indexAt(finished.playheadUs) >= 0)
+    }
+
+    @Test
+    fun naturalCompletionRewindsNextPlayToTheSelectedRange() {
+        val playing = trimAt(500_000).copy(inUs = 300_000, outUs = 900_000)
+
+        val finished = rules.playbackFinished(playing, 900_000, failed = false)
+
+        assertEquals(899_999, finished.playheadUs)
+        assertEquals(300_000L to 900_000L, rules.playRange(finished))
+        assertEquals(PlayerMode.TRIM, finished.mode)
+        assertEquals(8, rules.grid.indexAt(finished.playheadUs))
+        assertEquals(playing, rules.playbackFinished(playing, 900_000, failed = true))
+    }
+
+    @Test
     fun buttonsLabelsAvailabilityAndReasons() {
         val view = playerButtons(rules, rules.initial(), idle)
         assertEquals(listOf("トリム…", "この位置をPNG保存"), view.map { it.label })

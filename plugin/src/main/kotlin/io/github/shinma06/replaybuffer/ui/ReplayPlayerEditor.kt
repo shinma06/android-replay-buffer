@@ -347,7 +347,11 @@ internal class ReplayPlayerController(
             onFrame = { frame ->
                 showFrame(frame.startUs to frame.image.toComposeImageBitmap())
             },
-            onFinished = { failure -> publish { if (playback === session) { stopPlayback(); failure?.let { state = state.copy(message = it) } } } },
+            onFinished = { failure -> publish { if (playback === session) {
+                state = state.copy(editor = current.playbackFinished(state.editor, until, failure != null))
+                stopPlayback()
+                failure?.let { state = state.copy(message = it) }
+            } } },
             onAudioUnavailable = { reason -> publish { if (playback === session) state = state.copy(audioNote = reason) } },
             onGap = { us -> showFrame(us to null) })
         playback = session

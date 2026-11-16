@@ -192,6 +192,9 @@ internal class TrimRules(val grid: FrameGrid, val durationUs: Long) {
     /** A frame published by real-time playback. */
     fun played(state: TrimEditor, us: Long): TrimEditor = if (state.drag != null) state else state.copy(playheadUs = us, playheadPlaced = true)
 
+    fun playbackFinished(state: TrimEditor, untilUs: Long, failed: Boolean): TrimEditor =
+        if (failed) state else played(state, untilUs - 1)
+
     /**
      * Whether the playhead line is drawn: always in view mode; in trim mode only after the user has
      * positioned it (drag/click on the strip, arrow keys, playback), as in QuickTime.
