@@ -16,10 +16,7 @@ internal class MenuBarPresenter(
         private set
     private var visibleMenu: MenuBarMenu? = null
     private var latestDispatch: MenuDispatch? = null
-    private val forwardDispatch = MenuDispatch {
-        if (it.command == MenuBarCommand.TOGGLE_CAPTURE) visibleMenu = null
-        latestDispatch?.dispatch(it)
-    }
+    private var presentation: Any? = null
 
     /** The reason the settings page can show: a missing destination first, then the last failed registration. */
     fun unavailableReason(): String? = surface.unavailableReason() ?: lastReason
@@ -38,6 +35,13 @@ internal class MenuBarPresenter(
         latestDispatch = dispatch
         val menu = menuBarModel(inputs)
         if (shown && visibleMenu == menu) return
+        val current = Any().also { presentation = it }
+        val forwardDispatch = MenuDispatch {
+            if (presentation === current) {
+                if (it.command == MenuBarCommand.TOGGLE_CAPTURE) visibleMenu = null
+                latestDispatch?.dispatch(it)
+            }
+        }
         val reason = surface.show(iconFor(menu.icon), menu.tooltip, menu, forwardDispatch)
         shown = reason == null
         lastReason = reason
@@ -45,6 +49,7 @@ internal class MenuBarPresenter(
     }
 
     private fun hide() {
+        presentation = null
         shown = false
         visibleMenu = null
         latestDispatch = null
