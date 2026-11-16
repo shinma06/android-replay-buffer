@@ -18,6 +18,7 @@ import com.intellij.util.messages.MessageBusConnection
 import io.github.shinma06.replaybuffer.ide.ReplayProjectService
 import io.github.shinma06.replaybuffer.settings.ReplaySettingsStore
 import io.github.shinma06.replaybuffer.settings.ReplaySettingsConfigurable
+import java.awt.Image
 import java.lang.reflect.Proxy
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentLinkedQueue
@@ -169,9 +170,109 @@ class ReplayMenuBarServiceThreadingTest {
         }
     }
 
-    private class ProbeProject(private val label: String, lifetime: Disposable) : MockProject(null, lifetime) {
+    @Test
+    fun `projects with the same path or name dispatch only to the selected project`() {
+        listOf("/shared/project", null).forEach { path ->
+            Fixture().use { fixture ->
+                val first = fixture.project("same", path)
+                val second = fixture.project("same", path)
+                val firstSettings = first.getService(ReplaySettingsStore::class.java)
+                val secondSettings = second.getService(ReplaySettingsStore::class.java)
+                firstSettings.setEnabled(true)
+                secondSettings.setEnabled(true)
+                val surface = fixture.enableMenu()
+                fixture.track(first, second)
+                fixture.drainRefreshes()
+                val toggles = surface.toggles()
+                assertEquals(2, toggles.size)
+                SwingUtilities.invokeAndWait {
+                    surface.dispatch!!.dispatch(toggles[1].copy(checked = false))
+                    assertTrue(firstSettings.enabled, "Selecting the second project must not operate on the first")
+                    assertFalse(secondSettings.enabled)
+                    surface.dispatch!!.dispatch(toggles[0].copy(checked = false))
+                    assertFalse(firstSettings.enabled)
+                }
+                val ids = toggles.map { it.projectId }
+                assertEquals(2, ids.toSet().size)
+                fixture.service.refresh()
+                fixture.drainRefreshes()
+                assertEquals(ids, surface.toggles().map { it.projectId }, "IDs must be stable while tracked")
+            }
+        }
+    }
+
+    @Test
+    fun `same named project headings keep their paths rather than exposing routing tokens`() {
+        listOf(
+            "/work/一/same" to "/work/二/same",
+            """C:\work\same""" to """D:\work\same""",
+            null to null,
+        ).forEach { (firstPath, secondPath) ->
+            Fixture().use { fixture ->
+                val surface = fixture.enableMenu()
+                fixture.track(fixture.project("same", firstPath), fixture.project("same", secondPath))
+                fixture.drainRefreshes()
+                val headings = surface.menu!!.entries.filterIsInstance<MenuEntry.Submenu>().map { it.title }
+                val status = "${MenuBarIcon.WAITING.symbol} ${MenuBarIcon.WAITING.shortLabel}"
+                assertEquals(listOf("same — ${firstPath ?: "same"} $status", "same — ${secondPath ?: "same"} $status"), headings)
+            }
+        }
+    }
+
+    @Test
+    fun `an untracked project item cannot target a newly tracked project at the same path`() {
+        listOf(false, true).forEach { sameProject ->
+            Fixture().use { fixture ->
+                val old = fixture.project("same", "/shared/project")
+                val surface = fixture.enableMenu()
+                fixture.track(old)
+                fixture.drainRefreshes()
+                val stale = surface.toggles().single().copy(checked = false)
+                val reopened = if (sameProject) old else fixture.project("same", "/shared/project")
+                val settings = reopened.getService(ReplaySettingsStore::class.java)
+                settings.setEnabled(true)
+                SwingUtilities.invokeAndWait {
+                    fixture.application.messageBus.syncPublisher(ProjectManager.TOPIC).projectClosing(old)
+                    fixture.service.projectOpened(reopened)
+                }
+                fixture.drainRefreshes()
+                val current = surface.toggles().single()
+                SwingUtilities.invokeAndWait {
+                    // Use the current callback to test routing independently of presentation invalidation.
+                    surface.dispatch!!.dispatch(stale)
+                    assertTrue(settings.enabled, "An old tracking ID must not operate on the reopened project")
+                    surface.dispatch!!.dispatch(current.copy(checked = false))
+                    assertFalse(settings.enabled)
+                }
+                assertTrue(stale.projectId != current.projectId)
+            }
+        }
+    }
+
+    private class RecordingSurface : TraySurface {
+        var menu: MenuBarMenu? = null
+        var dispatch: MenuDispatch? = null
+        override fun unavailableReason(): String? = null
+        override fun show(image: Image, tooltip: String, menu: MenuBarMenu, dispatch: MenuDispatch): String? {
+            this.menu = menu
+            this.dispatch = dispatch
+            return null
+        }
+        override fun hide() {}
+        override fun close() {}
+        fun toggles(): List<MenuItemModel> = menu!!.entries.flatMap { entry ->
+            when (entry) {
+                is MenuEntry.Item -> listOf(entry)
+                is MenuEntry.Submenu -> entry.entries.filterIsInstance<MenuEntry.Item>()
+                is MenuEntry.Separator -> emptyList()
+            }
+        }.map { it.item }.filter { it.command == MenuBarCommand.TOGGLE_CAPTURE }
+    }
+
+    private class ProbeProject(private val label: String, private val path: String?, lifetime: Disposable) : MockProject(null, lifetime) {
         @Volatile var disposedRead: Runnable? = null
         override fun getName(): String = label
+        override fun getBasePath(): String? = path
         override fun isDisposed(): Boolean {
             disposedRead?.run()
             return super.isDisposed()
@@ -203,8 +304,19 @@ class ReplayMenuBarServiceThreadingTest {
             Disposer.register(lifetime, service)
         }
 
-        fun project(name: String): ProbeProject {
-            val project = ProbeProject(name, lifetime)
+        fun enableMenu(): RecordingSurface {
+            val surface = RecordingSurface()
+            ReplayMenuBarService::class.java.getDeclaredField("presenter").apply { isAccessible = true }
+                .set(service, MenuBarPresenter(surface))
+            // Routing tests use no SDK hook or native tray.
+            ReplayMenuBarService::class.java.getDeclaredField("trayEventsRegistered").apply { isAccessible = true }
+                .setBoolean(service, true)
+            checkNotNull(application.getService(ReplayMenuBarStore::class.java)).showInMenuBar = true
+            return surface
+        }
+
+        fun project(name: String, path: String? = null): ProbeProject {
+            val project = ProbeProject(name, path, lifetime)
             project.registerService(ReplaySettingsStore::class.java, ReplaySettingsStore())
             project.registerService(GradleSyncState::class.java, Proxy.newProxyInstance(
                 GradleSyncState::class.java.classLoader, arrayOf(GradleSyncState::class.java),

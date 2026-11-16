@@ -91,6 +91,59 @@ class MenuBarPresenterTest {
         assertEquals(toggle.checked, flatten(surface.lastMenu!!).single { it.command == MenuBarCommand.TOGGLE_CAPTURE }.checked)
     }
 
+    @Test
+    fun `callbacks from a hidden presentation cannot reach a later presentation`() {
+        listOf("off", "empty", "unavailable", "close").forEach { hidden ->
+            val surface = FakeSurface()
+            val presenter = MenuBarPresenter(surface)
+            val delivered = mutableListOf<MenuItemModel>()
+            presenter.update(true, listOf(input()), MenuDispatch(delivered::add))
+            val oldDispatch = surface.lastDispatch!!
+            val oldItems = flatten(surface.lastMenu!!).filter { it.command != null }
+            when (hidden) {
+                "off" -> presenter.update(false, listOf(input()), MenuDispatch(delivered::add))
+                "empty" -> presenter.update(true, emptyList(), MenuDispatch(delivered::add))
+                "unavailable" -> {
+                    surface.unavailable = "利用不可"
+                    presenter.update(true, listOf(input()), MenuDispatch(delivered::add))
+                    surface.unavailable = null
+                }
+                "close" -> presenter.close()
+            }
+            presenter.update(true, listOf(input()), MenuDispatch(delivered::add))
+            val shows = surface.shows
+            oldItems.forEach(oldDispatch::dispatch)
+            assertTrue(delivered.isEmpty(), hidden)
+            presenter.update(true, listOf(input()), MenuDispatch(delivered::add))
+            assertEquals(shows, surface.shows, "A stale toggle must not invalidate the current cache: $hidden")
+            val save = flatten(surface.lastMenu!!).single { it.command == MenuBarCommand.SAVE }
+            surface.lastDispatch!!.dispatch(save)
+            assertEquals(listOf(save), delivered, hidden)
+            presenter.close()
+        }
+    }
+
+    @Test
+    fun `replaced and failed presentations cannot dispatch into their successors`() {
+        val surface = FakeSurface()
+        val presenter = MenuBarPresenter(surface)
+        val delivered = mutableListOf<MenuItemModel>()
+        presenter.update(true, listOf(input()), MenuDispatch(delivered::add))
+        val replaced = surface.lastDispatch!!
+        val oldSave = flatten(surface.lastMenu!!).single { it.command == MenuBarCommand.SAVE }
+        surface.failure = "登録失敗"
+        presenter.update(true, listOf(input("Other")), MenuDispatch(delivered::add))
+        val failed = surface.lastDispatch!!
+        surface.failure = null
+        presenter.update(true, listOf(input()), MenuDispatch(delivered::add))
+        replaced.dispatch(oldSave)
+        failed.dispatch(oldSave)
+        assertTrue(delivered.isEmpty())
+        surface.lastDispatch!!.dispatch(oldSave)
+        assertEquals(listOf(oldSave), delivered)
+        presenter.close()
+    }
+
     private fun input(name: String = "MyApp") = MenuProjectInput(
         "id-$name", name,
         ReplaySnapshot(1, 1, true, CaptureState.CAPTURING,
@@ -98,7 +151,7 @@ class MenuBarPresenterTest {
             device = ReplayDevice("emulator-5554", "Pixel 9", DeviceKind.EMULATOR, true), canSave = true),
         message = null, initializationError = null, busy = false, enabled = true,
         settings = ReplaySettings(retentionSeconds = 30),
-        screenshotDisabledReason = null, screenshotBusy = false, savedAt = null, screenshot = null)
+        screenshotDisabledReason = null, screenshotBusy = false, savedAt = null, screenshot = null, location = "/work/$name")
 
     @Test
     fun `a usable surface shows the built menu and routes its commands`() {
@@ -201,7 +254,7 @@ class MenuBarPresenterTest {
 
     private fun stubImage(): Image = java.awt.image.BufferedImage(4, 4, java.awt.image.BufferedImage.TYPE_INT_ARGB)
 
-    private class FakeSurface(val unavailable: String? = null, var failure: String? = null) : TraySurface {
+    private class FakeSurface(var unavailable: String? = null, var failure: String? = null) : TraySurface {
         var shows = 0
         var hideCalls = 0
         var closed = false
