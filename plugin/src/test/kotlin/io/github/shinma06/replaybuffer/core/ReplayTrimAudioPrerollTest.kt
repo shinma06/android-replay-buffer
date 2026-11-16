@@ -4,7 +4,10 @@ import com.google.gson.Gson
 import com.google.gson.JsonParser
 import io.github.shinma06.replaybuffer.ui.ReplayPlaybackSession
 import org.jcodec.codecs.mpeg4.mp4.EsdsBox
+import org.jcodec.common.SeekableDemuxerTrack
+import org.jcodec.common.io.FileChannelWrapper
 import org.jcodec.common.io.NIOUtils
+import org.jcodec.common.io.SeekableByteChannel
 import org.jcodec.common.model.Packet
 import org.jcodec.containers.mp4.MP4Packet
 import org.jcodec.containers.mp4.MP4TrackType
@@ -18,6 +21,7 @@ import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 import java.io.ByteArrayOutputStream
 import java.lang.reflect.Proxy
+import java.nio.ByteBuffer
 import java.nio.file.Files
 import java.nio.file.Path
 import java.security.MessageDigest
@@ -30,6 +34,8 @@ import javax.sound.sampled.SourceDataLine
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertFailsWith
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 class ReplayTrimAudioPrerollTest {
@@ -38,6 +44,191 @@ class ReplayTrimAudioPrerollTest {
     private val gapStart = 1_100_001L
     private val sourceSegments = listOf(PlaybackAudioSegment(0, 640_000, 0, 30),
         PlaybackAudioSegment(gapStart, 1_066_666, 30 * 1024, 50))
+
+    private data class Sample(val index: Long, val offset: Long, val bytes: Int)
+
+    private fun samples(source: Path): List<Sample> = NIOUtils.readableChannel(source.resolve("video.mp4").toFile()).use { input ->
+        val track = MP4Demuxer.createRawMP4Demuxer(input).audioTracks.single()
+        buildList {
+            while (true) {
+                val packet = track.nextFrame() as? MP4Packet ?: break
+                add(Sample(packet.frameNo, packet.fileOff, packet.data.remaining()))
+            }
+        }
+    }
+
+    /** Observes only trim's demuxer payload reads, excluding source hash validation and oracle setup. */
+    private class Reads(private val samples: List<Sample>, private val afterRead: (Long) -> Unit = {}) {
+        val frames = mutableListOf<Long>()
+        val sizes = mutableListOf<Int>()
+        var bytes = 0L
+        var nextCalls = 0
+        val seeks = mutableListOf<Long>()
+
+        fun channel(input: SeekableByteChannel): SeekableByteChannel = object : SeekableByteChannel by input {
+            private var active: Sample? = null
+            override fun read(dst: ByteBuffer): Int {
+                samples.firstOrNull { it.offset == input.position() && it.bytes == dst.remaining() }?.let {
+                    active = it
+                    frames += it.index
+                    sizes += it.bytes
+                }
+                val n = input.read(dst)
+                active?.let { sample ->
+                    if (n > 0) bytes += n
+                    if (input.position() == sample.offset + sample.bytes) {
+                        active = null
+                        afterRead(sample.index)
+                    }
+                }
+                return n
+            }
+        }
+
+        fun track(input: SeekableDemuxerTrack): SeekableDemuxerTrack = object : SeekableDemuxerTrack by input {
+            override fun gotoFrame(frameNo: Long): Boolean {
+                seeks += frameNo
+                return input.gotoFrame(frameNo)
+            }
+            override fun nextFrame(): Packet? {
+                nextCalls++
+                return input.nextFrame()
+            }
+        }
+
+        fun assertPackets(expected: List<Int>) {
+            println("AAC trim payload: indices=$frames bytes=$bytes nextFrameCalls=$nextCalls seeks=$seeks")
+            assertEquals(expected.map(Int::toLong), frames)
+            assertEquals(expected.map { samples[it].bytes }, sizes)
+            assertEquals(expected.sumOf { samples[it].bytes.toLong() }, bytes)
+            assertEquals(expected.size, nextCalls, "no discarded packets or EOF lookahead")
+        }
+    }
+
+    private fun fileHashes(source: Path): Map<String, String> = Files.list(source).use { files ->
+        files.toList().associate { it.fileName.toString() to hash(Files.readAllBytes(it)) }
+    }
+
+    @Test
+    fun audioReadsOnlyTheSelectedPacketsAndOneRequiredPreroll() {
+        val source = fixture()
+        val before = fileHashes(source)
+        val samples = samples(source)
+        val original = audio(source)
+        assertEquals(80, samples.size)
+        for ((from, until, expected) in listOf(
+            Triple(50_000L, 300_000L, (1 until 15).toList()),
+            Triple(192_000L, 500_000L, (8 until 24).toList()),
+            Triple(gapStart, gapStart + 400_000, (30 until 49).toList()),
+            Triple(1_900_001L, 2_000_000L, (66 until 73).toList()),
+        )) {
+            val reads = Reads(samples)
+            val output = ReplayTrim(mp4Input = { reads.channel(FileChannelWrapper(it)) }, audioInput = reads::track)
+                .trim(source, from, until, { false }, { Files.move(it.partial, it.complete) })
+            reads.assertPackets(expected)
+            assertEquals(listOf(expected.first().toLong()), reads.seeks)
+            assertEquals(expected.map { hash(original.packets[it]) }, audio(output).packets.map(::hash))
+            assertEquals(before, fileHashes(source))
+        }
+    }
+
+    @Test
+    fun retrimReadsOnlyTheHiddenPrefixAndSelectedPackets() {
+        val original = fixture()
+        val originalBefore = fileHashes(original)
+        val source = trim(original, 50_000, 300_000)
+        val before = fileHashes(source)
+        val reads = Reads(samples(source))
+        val output = ReplayTrim(mp4Input = { reads.channel(FileChannelWrapper(it)) }, audioInput = reads::track)
+            .trim(source, 0, 150_000, { false }, { Files.move(it.partial, it.complete) })
+        reads.assertPackets((0 until 9).toList())
+        structure(source, output, (0 until 9).toList(), listOf(PlaybackAudioSegment(0, 150_000, 1376, 8)))
+        assertContentEquals(oracle(original, 50_000, 200_000), play(output, 150_000))
+        assertEquals(before, fileHashes(source))
+        assertEquals(originalBefore, fileHashes(original))
+    }
+
+    @Test
+    fun gapOnlySelectionDoesNotReadAudioPayload() {
+        val source = fixture()
+        val before = fileHashes(source)
+        val reads = Reads(samples(source))
+        val output = ReplayTrim(mp4Input = { reads.channel(FileChannelWrapper(it)) }, audioInput = reads::track)
+            .trim(source, 800_000, gapStart, { false }, { Files.move(it.partial, it.complete) })
+        reads.assertPackets(emptyList())
+        assertTrue(reads.seeks.isEmpty())
+        SavedReplay.open(output).use { assertTrue(it.manifest["audio_track"].isJsonNull) }
+        assertEquals(before, fileHashes(source))
+    }
+
+    @Test
+    fun separateRunsKeepRepeatedPacketsAndBackwardSeeksInTheirOriginalOrder() {
+        val source = fixture()
+        // Keep the existing packet media; only exercise segment maps the list-based reader already accepts.
+        val segments = listOf(PlaybackAudioSegment(0, 200_000, 10 * 1024 + 100, 10),
+            PlaybackAudioSegment(300_000, 100_000, 8 * 1024 + 200, 5))
+        val manifest = JsonParser.parseString(Files.readString(source.resolve("replay.json"))).asJsonObject
+        manifest["audio_track"].asJsonObject.add("segments", Gson().toJsonTree(segments.map { mapOf(
+            "movie_start_us" to it.movieStartUs.toString(), "duration_us" to it.durationUs.toString(),
+            "media_start_samples" to it.mediaStart.toString(), "samples" to it.samples) }))
+        Files.writeString(source.resolve("replay.json"), manifest.toString())
+        val before = fileHashes(source)
+        val reads = Reads(samples(source))
+        val output = ReplayTrim(mp4Input = { reads.channel(FileChannelWrapper(it)) }, audioInput = reads::track)
+            .trim(source, 0, 500_000, { false }, { Files.move(it.partial, it.complete) })
+        val expected = (9 until 20).toList() + (8 until 13).toList()
+        structure(source, output, expected, listOf(PlaybackAudioSegment(0, 200_000, 1124, 10),
+            PlaybackAudioSegment(300_000, 100_000, 11 * 1024 + 200, 5)))
+        reads.assertPackets(expected)
+        assertEquals(listOf(9L, 8L), reads.seeks)
+        assertEquals(before, fileHashes(source))
+    }
+
+    @Test
+    fun cancellationAfterTheFirstOrLastRequiredPacketDoesNotReadAnotherOrPublish() {
+        for (stop in listOf(1L, 14L)) {
+            val source = fixture()
+            val before = fileHashes(source)
+            val cancel = AtomicBoolean()
+            val reads = Reads(samples(source)) { if (it == stop) cancel.set(true) }
+            var published = false
+            val failure = assertFailsWith<SaveCancelled> {
+                ReplayTrim(mp4Input = { reads.channel(FileChannelWrapper(it)) }, audioInput = reads::track)
+                    .trim(source, 50_000, 300_000, cancel::get, { published = true; it.publish() })
+            }
+            assertFalse(published)
+            assertTrue(Files.isDirectory(assertNotNull(failure.partial)))
+            reads.assertPackets((1..stop.toInt()).toList())
+            assertEquals(before, fileHashes(source))
+        }
+    }
+
+    @Test fun audioSeekFailureNeverPublishes() = audioFailure("seek")
+    @Test fun audioEofInsideTheRequiredRangeNeverPublishes() = audioFailure("eof")
+    @Test fun unexpectedAudioPacketIndexNeverPublishes() = audioFailure("index")
+
+    private fun audioFailure(mode: String) {
+        val source = fixture()
+        val before = fileHashes(source)
+        var published = false
+        var reads = 0
+        val failure = assertFailsWith<SaveFailure> {
+            ReplayTrim(audioInput = { input -> object : SeekableDemuxerTrack by input {
+                override fun gotoFrame(frameNo: Long): Boolean = if (mode == "seek") false else input.gotoFrame(frameNo)
+                override fun nextFrame(): Packet? {
+                    reads++
+                    if (mode == "eof" && input.curFrame == 14L) return null
+                    val packet = input.nextFrame() ?: return null
+                    return if (mode == "index") Packet.createPacket(packet.data, packet.pts, packet.timescale,
+                        packet.duration, packet.frameNo + 1, packet.frameType, null) else packet
+                }
+            } }).trim(source, 50_000, 300_000, { false }, { published = true; it.publish() })
+        }
+        assertFalse(published)
+        assertEquals(when (mode) { "seek" -> 0; "eof" -> 14; else -> 1 }, reads)
+        assertTrue(Files.isDirectory(assertNotNull(failure.partial)))
+        assertEquals(before, fileHashes(source))
+    }
 
     @Test
     fun trimInsideAnAacPacketPreservesTheSourcePcm() {
@@ -168,6 +359,7 @@ class ReplayTrimAudioPrerollTest {
         val original = audio(source)
         val actual = audio(output)
         assertContentEquals(original.config, actual.config)
+        assertContentEquals(original.entry, actual.entry)
         assertEquals(expectedPackets.map { hash(original.packets[it]) }, actual.packets.map(::hash))
         SavedReplay.open(output).use { saved ->
             assertEquals(4, saved.manifest["schema"].asInt)
@@ -191,21 +383,26 @@ class ReplayTrimAudioPrerollTest {
         return trim.trim(source, from, until, { false }, { Files.move(it.partial, it.complete) })
     }
 
-    private data class Audio(val config: ByteArray, val packets: List<ByteArray>, val edits: List<Pair<Long, Long>>)
+    private data class Audio(val config: ByteArray, val packets: List<ByteArray>, val edits: List<Pair<Long, Long>>, val entry: ByteArray)
 
     private fun audio(folder: Path): Audio = NIOUtils.readableChannel(folder.resolve("video.mp4").toFile()).use { input ->
         MP4Demuxer.createRawMP4Demuxer(input).use { demux ->
             val track = demux.audioTracks.single() as AbstractMP4DemuxerTrack
             val config = NIOUtils.toArray(NodeBox.findFirst(track.sampleEntries.single(), EsdsBox::class.java,
                 EsdsBox.fourcc()).streamInfo)
+            val entry = ByteBuffer.allocate(track.sampleEntries.single().estimateSize())
+            track.sampleEntries.single().write(entry)
+            entry.flip()
             val packets = mutableListOf<ByteArray>()
             while (true) {
                 val packet = track.nextFrame() as? MP4Packet ?: break
                 assertEquals(packets.size * 1024L, packet.mediaPts)
                 assertEquals(1024L, packet.duration)
+                assertEquals(rate, packet.timescale)
+                assertEquals(Packet.FrameType.KEY, packet.frameType)
                 packets += NIOUtils.toArray(packet.data)
             }
-            Audio(config, packets, track.edits.orEmpty().map { it.duration to it.mediaTime })
+            Audio(config, packets, track.edits.orEmpty().map { it.duration to it.mediaTime }, NIOUtils.toArray(entry))
         }
     }
 
