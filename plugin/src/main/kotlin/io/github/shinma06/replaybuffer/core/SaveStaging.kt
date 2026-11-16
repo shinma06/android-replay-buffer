@@ -15,6 +15,7 @@ internal class SaveStaging private constructor(
     val complete: Path,
     private val parent: SaveOutputDirectory,
     private val staging: SaveOutputDirectory,
+    private val ownsParent: Boolean = true,
 ) : AutoCloseable {
     private var acquired = false
     private val own = linkedMapOf<Path, SaveOutputFile>()
@@ -91,12 +92,22 @@ internal class SaveStaging private constructor(
     override fun close() {
         if (closed) return
         closed = true
-        own.values.forEach { it.close() }
-        staging.close()
-        parent.close()
+        try { own.values.forEach { it.close() } }
+        finally {
+            try { staging.close() }
+            finally { if (ownsParent) parent.close() }
+        }
     }
 
     companion object {
+        /** The caller keeps [heldParent] alive through publication, failure handling and [close]. */
+        fun create(parent: Path, name: String, heldParent: SaveOutputDirectory): SaveStaging {
+            check(SaveOutputDirectory.open(parent).use { it.key == heldParent.key }) { "保存先の実体が変更されています" }
+            val partial = parent.resolve(".$name.partial")
+            return SaveStaging(partial, parent.resolve(name), heldParent,
+                heldParent.createDirectory(partial.fileName.toString()), ownsParent = false)
+        }
+
         fun create(parent: Path, name: String): SaveStaging {
             val handle = SaveOutputDirectory.open(parent)
             try {

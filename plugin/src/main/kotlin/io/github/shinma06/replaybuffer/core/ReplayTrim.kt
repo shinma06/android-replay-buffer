@@ -204,13 +204,15 @@ internal class ReplayTrim(
              publish: (SavePublication) -> Unit,
              createdAt: ZonedDateTime = ZonedDateTime.now(), id: String = nameId(), expectedFingerprint: String? = null): Path {
         var staging: SaveStaging? = null
+        var input: SavedReplay? = null
         var manifestWritten = false
         fun checkActive() {
             if (cancelled() || Thread.currentThread().isInterrupted) throw SaveCancelled(null)
         }
         try {
             checkActive()
-            SavedReplay.open(source).use { saved ->
+            // The input also owns staging's borrowed parent; keep it through the catch below.
+            SavedReplay.open(source).also { input = it }.let { saved ->
                 require(expectedFingerprint == null || expectedFingerprint == fingerprint(saved, fromUs, toUs)) {
                     "事前確認後に保存フォルダまたは切り取り範囲が変更されています。もう一度範囲を確認してください。"
                 }
@@ -268,7 +270,7 @@ internal class ReplayTrim(
                     checkActive()
                     checkSpace(estimate)
                     checkActive()
-                    staging = SaveStaging.create(parent, name)
+                    staging = SaveStaging.create(parent, name, saved.parent)
                     fun annexB(data: ByteBuffer, entry: Int): ByteArray = movSampleToAnnexB(data, avcs[entry - 1])
                     val sourceChannel = if (saved.exists(ReplayFiles.VIDEO_SOURCE)) saved.channel(ReplayFiles.VIDEO_SOURCE) else null
                     try {
@@ -490,7 +492,7 @@ internal class ReplayTrim(
                 else -> throw SaveFailure(retained, e.message ?: "切り取った動画の保存に失敗しました", e)
             }
         } finally {
-            staging?.close()
+            try { staging?.close() } finally { input?.close() }
         }
     }
 

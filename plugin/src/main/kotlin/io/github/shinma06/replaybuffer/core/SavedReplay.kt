@@ -13,6 +13,8 @@ import java.nio.file.StandardOpenOption.READ
 internal class SavedReplay private constructor(
     val directory: Path,
     private val handle: SaveOutputDirectory,
+    /** Owned from before the input child opens until staging/failure handling has finished. */
+    val parent: SaveOutputDirectory,
     private val pins: Map<String, SaveOutputFile>,
     val manifest: JsonObject,
     val frames: List<JsonObject>,
@@ -100,7 +102,7 @@ internal class SavedReplay private constructor(
         try { openFiles.forEach(SaveOutputFile::close) }
         finally {
             try { pins.values.forEach(SaveOutputFile::close) }
-            finally { handle.close() }
+            finally { try { handle.close() } finally { parent.close() } }
         }
     }
 
@@ -115,18 +117,20 @@ internal class SavedReplay private constructor(
             }
             require(Files.isDirectory(path)) { "保存フォルダがありません: $path" }
             val directory = path.parent.toRealPath().resolve(path.fileName)
-            val handle = SaveOutputDirectory.open(directory)
+            val parent = SaveOutputDirectory.open(directory.parent)
+            val handle = try { parent.openChild(directory.fileName.toString()) }
+            catch (failure: Throwable) { parent.close(); throw failure }
             val pins = linkedMapOf<String, SaveOutputFile>()
             fun pin(name: String) = pins.getOrPut(name) { handle.openFile(name) }
             try {
                 val entries = handle.entries()
                 require(ReplayFiles.RECORD in entries) { "replay.jsonのないフォルダは切り取れません" }
                 val record = pin(ReplayFiles.RECORD).channel(setOf(READ)).use { channel ->
-                        require(channel.size() <= 64L * 1024 * 1024) { "replay.jsonが大きすぎます" }
-                        val buffer = java.nio.ByteBuffer.allocate(channel.size().toInt())
-                        while (buffer.hasRemaining()) check(channel.read(buffer) > 0)
-                        buffer.flip()
-                        Charsets.UTF_8.decode(buffer).toString()
+                    require(channel.size() <= 64L * 1024 * 1024) { "replay.jsonが大きすぎます" }
+                    val buffer = java.nio.ByteBuffer.allocate(channel.size().toInt())
+                    while (buffer.hasRemaining()) check(channel.read(buffer) > 0)
+                    buffer.flip()
+                    Charsets.UTF_8.decode(buffer).toString()
                 }
                 val manifest = try {
                     gson.fromJson(record, JsonObject::class.java)
@@ -169,10 +173,10 @@ internal class SavedReplay private constructor(
                 require(frames.isNotEmpty()) { "動画のframe記録がありません" }
                 val recordHash = java.security.MessageDigest.getInstance("SHA-256").digest(record.toByteArray(Charsets.UTF_8))
                     .joinToString("") { "%02x".format(it) }
-                return SavedReplay(directory, handle, pins, manifest, frames, recordHash)
+                return SavedReplay(directory, handle, parent, pins, manifest, frames, recordHash)
             } catch (e: Throwable) {
                 try { pins.values.forEach(SaveOutputFile::close) }
-                finally { handle.close() }
+                finally { try { handle.close() } finally { parent.close() } }
                 throw e
             }
         }

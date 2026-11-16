@@ -150,6 +150,94 @@ class ReplayTrimTest {
         }
     }
 
+    @Test
+    fun replacingTheParentWithTheInputCannotWriteIntoTheInput() = withRuns(listOf(List(8) { it * 100_000L })) { root, _, capture, _, _ ->
+        val parent = Files.createDirectory(root.resolve("parent"))
+        val source = write(capture, parent).directory
+        val before = fileBytes(source)
+        val moved = root.resolve("held-parent")
+        var interleaved = false
+        var refused = false
+        var parentMoved = false
+        var published = false
+        val result = runCatching {
+            ReplayTrim(availableSpace = {
+                if (!interleaved) {
+                    interleaved = true
+                    try { Files.move(parent, moved); parentMoved = true }
+                    catch (failure: java.nio.file.FileSystemException) {
+                        // Observe an actual OS denial; do not relax sharing or skip the test.
+                        refused = true
+                        assertTrue(Files.isDirectory(source))
+                    }
+                    if (!refused) try { Files.move(moved.resolve(source.fileName), parent) }
+                    catch (failure: java.nio.file.FileSystemException) { refused = true }
+                }
+                Long.MAX_VALUE
+            }).trim(source, 0, 700_000, { false }, { published = true; it.publish() })
+        }
+        assertTrue(interleaved)
+        println("parentInterleave: parentMoved=$parentMoved, osRefused=$refused")
+        if (refused) {
+            if (parentMoved) {
+                assertTrue(result.exceptionOrNull() is SaveFailure)
+                assertFalse(published)
+                assertUnchanged(moved.resolve(source.fileName), before)
+            } else {
+                result.getOrThrow()
+                assertTrue(published)
+                assertUnchanged(source, before)
+            }
+        } else {
+            assertEquals(before.keys, Files.list(parent).use { paths -> paths.map { it.fileName.toString() }.toList().toSet() })
+            assertUnchanged(parent, before)
+            assertTrue(result.exceptionOrNull() is SaveFailure)
+            assertFalse(published)
+            assertEquals(emptyList(), Files.list(moved).use { it.toList() })
+        }
+    }
+
+    @Test
+    fun aLateInputReplacementFailsBeforePublication() = withRuns(listOf(List(8) { it * 100_000L })) { root, _, capture, _, _ ->
+        val source = write(capture, root).directory
+        var replaced: Map<String, ByteArray>? = null
+        var published = false
+        val failure = assertFailsWith<SaveFailure> {
+            ReplayTrim(availableSpace = {
+                if (replaced == null) {
+                    Files.move(source.resolve(ReplayFiles.LOGCAT_DEVICE), source.resolve("held-log"))
+                    Files.writeString(source.resolve(ReplayFiles.LOGCAT_DEVICE), "different\n")
+                    replaced = fileBytes(source)
+                }
+                Long.MAX_VALUE
+            }).trim(source, 0, 700_000, { false }, { published = true; it.publish() })
+        }
+        assertTrue(failure.message!!.contains("保存元の実体"))
+        assertFalse(published)
+        assertUnchanged(source, assertNotNull(replaced))
+        Files.list(root).use { paths ->
+            assertFalse(paths.anyMatch { it.fileName.toString().startsWith("replay-") && !Files.isSameFile(it, source) })
+        }
+    }
+
+    @Test
+    fun publicationFailureRetainsTheBorrowedParentUntilTheCatchFinishes() = withRuns(listOf(List(8) { it * 100_000L })) { root, _, capture, _, _ ->
+        val source = write(capture, root).directory
+        val before = fileBytes(source)
+        var complete: Path? = null
+        val failure = assertFailsWith<SaveFailure> {
+            ReplayTrim().trim(source, 0, 700_000, { false }, {
+                it.publish()
+                complete = it.complete
+                throw java.io.IOException("after publication")
+            })
+        }
+        assertEquals(assertNotNull(complete), failure.partial)
+        assertFalse(manifest(complete)["complete"].asBoolean)
+        assertUnchanged(source, before)
+        SavedReplay.open(source).close()
+    }
+
     /** Gapless one-run save: key interval 8 so every eighth sample starts a GOP. */
     @Test
     fun midGopStartReencodesTheLeadingGopAndCopiesLaterPackets() = withRuns(listOf(List(24) { it * 100_000L })) { root, _, capture, original, pixels ->
