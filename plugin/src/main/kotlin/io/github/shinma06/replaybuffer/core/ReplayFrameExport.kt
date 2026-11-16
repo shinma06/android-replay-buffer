@@ -22,8 +22,8 @@ import javax.imageio.ImageIO
 /**
  * Decodes the displayed frame at a movie position of a completed schema-4 save and writes it beside
  * screenshots as `frame-<time>-<id>.png` with tEXt time metadata. The source folder is read-only;
- * the image never overwrites an existing file. Runs outside EDT. [export]'s checkActive may abort only
- * while decoding, before any output exists.
+ * the image never overwrites an existing file. Runs outside EDT. [export]'s checkActive may abort until
+ * output creation; after that the short PNG write completes without cancellation polls.
  */
 internal object ReplayFrameExport {
 
@@ -136,25 +136,64 @@ internal object ReplayFrameExport {
      */
     fun export(folder: Path, atUs: Long, destination: Path,
                createdAt: ZonedDateTime = ZonedDateTime.now(), id: String = nameId(),
+               checkActive: () -> Unit = {}): Path = export(folder, atUs, destination, createdAt, id, Io(), checkActive)
+
+    /** Per-export dependencies let tests stop at encoding/open/create boundaries without timing or global hooks. */
+    internal class Io(
+        val encode: (Frame, Long, String, String) -> ByteArray = { frame, at, source, saveId ->
+            pngBytes(frame.image, at, frame.row, source, saveId)
+        },
+        val openDirectory: (Path) -> SaveOutputDirectory = SaveOutputDirectory::open,
+        val createFile: (SaveOutputDirectory, String) -> SaveOutputFile = { parent, name -> parent.createFile(name) },
+    )
+
+    internal fun export(folder: Path, atUs: Long, destination: Path,
+               createdAt: ZonedDateTime = ZonedDateTime.now(), id: String = nameId(), io: Io,
                checkActive: () -> Unit = {}): Path {
         require(destination.isAbsolute) { "設定で保存先の絶対パスを指定してください。" }
-        val bytes = SavedReplay.open(folder).use { saved ->
+        val (source, sourceKey, bytes) = SavedReplay.open(folder).use { saved ->
+            val source = saved.directory.toRealPath()
+            val sourceKey = SaveOutputDirectory.open(source).use { original ->
+                saved.openFile(ReplayFiles.RECORD).use { original.verifyFile(ReplayFiles.RECORD, it) }
+                original.key
+            }
             val sourceSaveId = saved.manifest["save_id"]?.takeIf { it.isJsonPrimitive }?.asJsonPrimitive
                 ?.takeIf { it.isString }?.asString ?: throw IllegalArgumentException("保存記録のsave_idが読めません")
             val frame = decodeAt(saved, atUs, checkActive)
-            pngBytes(frame.image, atUs, frame.row, saved.name, sourceSaveId)
+            checkActive()
+            Triple(source, sourceKey, io.encode(frame, atUs, saved.name, sourceSaveId))
         }
+        checkActive()
         validateScreenshotPng(bytes)
         val root = try { destination.toRealPath() } catch (_: Exception) {
             throw ScreenshotSaveFailure("保存先フォルダを確認できません。設定の保存先・アクセス権を確認してください。")
         }
+        require(!root.startsWith(source)) { "静止画の保存先に元フォルダやその配下は指定できません。" }
         val name = frameFileName(createdAt, id)
         val partial = root.resolve(".${name.removeSuffix(".png")}.partial")
         val complete = root.resolve(name)
         var retained: Path? = null
-        try {
-            SaveOutputDirectory.open(root).use { parent ->
-                parent.createFile(partial.fileName.toString()).use { output ->
+        val parent = try { io.openDirectory(root) } catch (_: Exception) {
+            throw ScreenshotSaveFailure("静止画の保存を完了できません。保存先・空き容量・アクセス権を確認してください。未完成の出力は保全します。")
+        }
+        parent.use {
+            // Real paths reject ordinary aliases; identities also reject a source moved since decoding.
+            val containsSource = try {
+                generateSequence(root) { it.parent }.any { ancestor ->
+                    SaveOutputDirectory.open(ancestor).use { current ->
+                        if (ancestor == root) check(current.key == parent.key) { "保存先が変更されています。" }
+                        current.key == sourceKey
+                    }
+                }
+            } catch (_: Exception) {
+                throw ScreenshotSaveFailure("保存先フォルダを確認できません。設定の保存先・アクセス権を確認してください。")
+            }
+            require(!containsSource) { "静止画の保存先に元フォルダやその配下は指定できません。" }
+            // Cancellation still creates nothing here. Once the partial is created, finish the short write.
+            // Keep the callback outside the I/O catch so cancellation retains its original type.
+            checkActive()
+            try {
+                io.createFile(parent, partial.fileName.toString()).use { output ->
                     retained = partial
                     output.requirePrivate()
                     output.channel().use { channel ->
@@ -186,9 +225,9 @@ internal object ReplayFrameExport {
                     }
                     return complete
                 }
+            } catch (_: Exception) {
+                throw ScreenshotSaveFailure("静止画の保存を完了できません。保存先・空き容量・アクセス権を確認してください。未完成の出力は保全します。", retained)
             }
-        } catch (_: Exception) {
-            throw ScreenshotSaveFailure("静止画の保存を完了できません。保存先・空き容量・アクセス権を確認してください。未完成の出力は保全します。", retained)
         }
     }
 }
