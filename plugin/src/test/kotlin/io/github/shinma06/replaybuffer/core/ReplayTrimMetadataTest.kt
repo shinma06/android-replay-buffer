@@ -291,4 +291,38 @@ class ReplayTrimMetadataTest {
         assertUnchanged(source, before)
         assertUnchanged(output, outputBefore)
     }
+
+    @Test
+    fun partConfirmedEndIsDerivedOnlyFromRetainedFramesAndSurvivesRetrim() {
+        val source = source()
+        val before = bytes(source)
+        val output = trim(source)
+        assertEquals("500000000", manifest(output)["parts"].asJsonArray.single().asJsonObject["confirmed_t_end_ns"].asString)
+        val outputBefore = bytes(output)
+        val repeated = trim(output, 0, 300_000)
+        assertEquals("300000000", manifest(repeated)["parts"].asJsonArray.single().asJsonObject["confirmed_t_end_ns"].asString)
+        assertUnchanged(source, before)
+        assertUnchanged(output, outputBefore)
+    }
+
+    @Test
+    fun partConfirmedEndDoesNotBorrowConfirmationFromUnretainedUnknownSuccessors() {
+        val source = source(setOf(8, 9))
+        val before = bytes(source)
+        val output = trim(source)
+        assertEquals("400000000", manifest(output)["parts"].asJsonArray.single().asJsonObject["confirmed_t_end_ns"].asString)
+        assertTrue(rows(output, ReplayFiles.VIDEO_FRAMES).last()["confirmed_t_end_ns"].isJsonNull)
+        assertUnchanged(source, before)
+    }
+
+    @Test
+    fun partWithoutAnyRetainedConfirmedIntervalHasNullConfirmedEnd() {
+        val source = source()
+        val before = bytes(source)
+        val last = rows(source, ReplayFiles.VIDEO_FRAMES).last { it["presented"].asBoolean }
+        val output = trim(source, last["movie_pts_us"].asString.toLong(), last["movie_end_us"].asString.toLong())
+        assertTrue(rows(output, ReplayFiles.VIDEO_FRAMES).all { it["confirmed_t_end_ns"].isJsonNull })
+        assertTrue(manifest(output)["parts"].asJsonArray.single().asJsonObject["confirmed_t_end_ns"].isJsonNull)
+        assertUnchanged(source, before)
+    }
 }

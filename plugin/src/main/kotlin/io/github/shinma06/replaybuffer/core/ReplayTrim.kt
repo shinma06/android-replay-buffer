@@ -368,6 +368,14 @@ internal class ReplayTrim(private val availableSpace: (Path) -> Long = { Files.g
                                         val duration = Math.subtractExact(keptPart.b, keptPart.a)
                                         edits += Edit(duration, editMedia, 1f)
                                         movie = Math.addExact(movie, duration)
+                                        val partEndTns = if (keptPart.b == keptPart.part.requiredLongText("movie_end_us"))
+                                            keptPart.part.longText("t_end_ns") else endTns
+                                        val confirmedEndTns = partRows.subList(firstOut, lastOut + 1).asSequence()
+                                            .filter { it.presented }.mapNotNull { row ->
+                                                val start = row.displayTns ?: row.tNs
+                                                row.confirmedEndTns?.let { end -> partEndTns?.let { minOf(end, it) } ?: end }
+                                                    ?.takeIf { start != null && it > start }
+                                            }.maxOrNull()
                                         newParts += mapOf("file" to ReplayFiles.VIDEO, "segment_index" to keptIndex,
                                             "generation" to keptPart.part["generation"], "decode_run" to keptPart.part["decode_run"],
                                             "source_pts_origin_us" to keptPart.part["source_pts_origin_us"],
@@ -379,7 +387,7 @@ internal class ReplayTrim(private val availableSpace: (Path) -> Long = { Files.g
                                                 else originTns?.let { "0" },
                                             "t_end_ns" to if (keptPart.b == keptPart.part.requiredLongText("movie_end_us"))
                                                 shift(keptPart.part.text("t_end_ns"), originTns) else shift(endTns?.toString(), originTns),
-                                            "confirmed_t_end_ns" to shift(keptPart.part.text("confirmed_t_end_ns"), originTns),
+                                            "confirmed_t_end_ns" to shift(confirmedEndTns?.toString(), originTns),
                                             "media_timeline_clipped" to keptPart.part["media_timeline_clipped"],
                                             "preroll_samples" to if (fullStart) keptPart.part["preroll_samples"] else 0)
                                         prevKept = keptPart
