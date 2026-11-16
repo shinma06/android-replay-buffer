@@ -112,7 +112,10 @@ private class StoredFrame(val row: JsonObject, val index: Int) {
  * manifest/JSONL/log/touch side data on the rebased movie and t axes. The source folder is read-only.
  * Runs outside EDT; mirrors SaveWriter's staging, ownership, space and cancellation discipline.
  */
-internal class ReplayTrim(private val availableSpace: (Path) -> Long = { Files.getFileStore(it).usableSpace }) {
+internal class ReplayTrim(
+    private val availableSpace: (Path) -> Long = { Files.getFileStore(it).usableSpace },
+    private val mp4Input: (FileChannel) -> org.jcodec.common.io.SeekableByteChannel = { org.jcodec.common.io.FileChannelWrapper(it) },
+) {
     private val gson = GsonBuilder().serializeNulls().disableHtmlEscaping().create()
 
     data class Preflight(val fingerprint: String, val startUs: Long, val endUs: Long, val clockUnknown: Boolean) {
@@ -227,7 +230,7 @@ internal class ReplayTrim(private val availableSpace: (Path) -> Long = { Files.g
                 val newBoundaries = mutableListOf<Map<String, Any?>>()
                 var sampleIndex = 0L
                 saved.channel(ReplayFiles.VIDEO).use { videoChannel ->
-                    val demuxer = MP4Demuxer.createRawMP4Demuxer(org.jcodec.common.io.FileChannelWrapper(videoChannel))
+                    val demuxer = MP4Demuxer.createRawMP4Demuxer(mp4Input(videoChannel))
                     val videoTrack = demuxer.videoTrack
                     val sampleEntries = (videoTrack as org.jcodec.containers.mp4.demuxer.AbstractMP4DemuxerTrack).sampleEntries.toList()
                     val avcs = sampleEntries.map { entry ->
@@ -261,11 +264,6 @@ internal class ReplayTrim(private val availableSpace: (Path) -> Long = { Files.g
                                             (keptPart.a - keptPart.part.requiredLongText("movie_start_us")) -
                                             partRows[firstOut].row.requiredLongText("media_pts_us")
                                         require(editOffset >= 0) { "表示frameのmedia位置が読めません" }
-                                        // Packets before this part's first emitted sample are skipped.
-                                        while (packetIndex < partRows.first().index) {
-                                            require(videoTrack.nextFrame() != null) { "動画sampleが足りません" }
-                                            packetIndex++
-                                        }
                                         val partial = !fullStart
                                         val gopStart = if (partial) (firstOut downTo 0).firstOrNull { partRows[it].outputKey }
                                             ?: throw IllegalArgumentException("開始frameの参照IDRがありません") else 0
@@ -309,13 +307,15 @@ internal class ReplayTrim(private val availableSpace: (Path) -> Long = { Files.g
                                         for (n in gopStart..lastOut) {
                                             checkActive()
                                             val row = partRows[n]
-                                            while (packetIndex < row.index) {
-                                                require(videoTrack.nextFrame() != null) { "動画sampleが足りません" }
-                                                packetIndex++
+                                            if (packetIndex != row.index) {
+                                                require(videoTrack.gotoFrame(row.index.toLong())) { "動画sampleが足りません" }
+                                                packetIndex = row.index
                                             }
+                                            checkActive()
                                             val packet = videoTrack.nextFrame()
                                                 ?: throw IllegalArgumentException("動画sampleが足りません")
                                             packetIndex++
+                                            checkActive()
                                             check(packet.frameNo == row.index.toLong()) { "動画sampleの順序がframe記録と一致しません" }
                                             if (n < firstOut) {
                                                 require(normalizer != null) { "開始IDRの位置が不正です" }
@@ -392,7 +392,6 @@ internal class ReplayTrim(private val availableSpace: (Path) -> Long = { Files.g
                                             "preroll_samples" to if (fullStart) keptPart.part["preroll_samples"] else 0)
                                         prevKept = keptPart
                                     }
-                                    while (videoTrack.nextFrame() != null) { /* consume trailing samples */ }
                                     check(outputRows.size == sampleIndex.toInt()) { "出力frame数が一致しません" }
                                     track.setEdits(edits)
                                     val audio = muxAudio(saved, demuxer, mux, startUs, endUs, ::checkActive, ::checkSpace)
