@@ -118,6 +118,7 @@ private class StoredFrame(val row: JsonObject, val index: Int) {
 internal class ReplayTrim(
     private val availableSpace: (Path) -> Long = { Files.getFileStore(it).usableSpace },
     private val mp4Input: (FileChannel) -> org.jcodec.common.io.SeekableByteChannel = { org.jcodec.common.io.FileChannelWrapper(it) },
+    private val audioInput: (org.jcodec.common.SeekableDemuxerTrack) -> org.jcodec.common.SeekableDemuxerTrack = { it },
 ) {
     private val gson = GsonBuilder().serializeNulls().disableHtmlEscaping().create()
 
@@ -664,12 +665,7 @@ internal class ReplayTrim(
     private fun muxAudio(plan: AudioPlan?, mux: MP4Muxer, checkActive: () -> Unit,
                          checkSpace: (Long) -> Unit): Triple<List<Map<String, Any?>>, MP4MuxerTrack, Long>? {
         if (plan == null) return null
-        val packets = mutableListOf<Packet>()
-        while (true) {
-            checkActive()
-            val packet = plan.track.nextFrame() ?: break
-            packets += packet
-        }
+        val input = audioInput(plan.track)
         val sound = MP4MuxerTrack(mux.nextTrackId, MP4TrackType.SOUND)
         mux.addTrack(sound)
         sound.addSampleEntry(plan.entry) // Reuses the source esds as stored.
@@ -678,6 +674,8 @@ internal class ReplayTrim(
         var cursor = 0L
         var written = 0L
         plan.runs.forEach { run ->
+            checkActive()
+            check(input.gotoFrame((run.first - run.preroll).toLong())) { "音声の位置へ移動できません" }
             if (run.movieStart > cursor) edits += Edit(run.movieStart - cursor, -1, 1f)
             val mediaStart = Math.addExact((written + run.preroll) * AAC_FRAME_SAMPLES, run.skip)
             edits += Edit(run.duration, mediaStart, 1f)
@@ -685,8 +683,11 @@ internal class ReplayTrim(
                 "media_start_samples" to mediaStart.toString(), "samples" to run.end - run.first)
             for (i in run.first - run.preroll until run.end) {
                 checkActive()
-                checkSpace(packets[i].data.remaining().toLong())
-                sound.addFrameInternal(Packet.createPacket(packets[i].data, written * 1024L, plan.sampleRate,
+                val packet = input.nextFrame() ?: throw IllegalArgumentException("音声packetが不足しています")
+                checkActive()
+                check(packet.frameNo == i.toLong()) { "音声packetの位置が一致しません" }
+                checkSpace(packet.data.remaining().toLong())
+                sound.addFrameInternal(Packet.createPacket(packet.data, written * 1024L, plan.sampleRate,
                     AAC_FRAME_SAMPLES, written, Packet.FrameType.KEY, null), 1)
                 written++
             }
