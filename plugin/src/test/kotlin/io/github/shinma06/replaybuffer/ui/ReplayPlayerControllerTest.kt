@@ -13,6 +13,8 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
 import javax.swing.SwingUtilities
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -155,6 +157,130 @@ class ReplayPlayerControllerTest {
             assertTrue(controller.barModel().buttons.single { it.id == PlayerButton.SAVE_FRAME }.enabled)
         }
     }
+
+    @Test
+    fun pausingAHeldFrameResumesFromThePlaybackClock() = pauseWithinFrame(trim = false)
+
+    @Test
+    fun pausingTheFinalHeldFrameResumesInsideThatFrame() = pauseWithinFrame(trim = true)
+
+    @Test
+    fun pausingAnExpiredClockStaysInsideTheRange() = pauseWithinFrame(trim = true, overrun = true)
+
+    private fun pauseWithinFrame(trim: Boolean, overrun: Boolean = false) = withController { controller ->
+        val frame = if (trim) controller.state.timeline!!.spans.last { it.endUs - it.startUs > 1 }
+            else controller.state.timeline!!.spans[3]
+        editController(controller) { rules, state ->
+            val range = if (trim) rules.enterTrim(state).copy(outUs = frame.endUs) else state
+            rules.played(range, frame.startUs)
+        }
+        awaitPreview(controller)
+        val until = if (trim) frame.endUs else controller.state.timeline!!.spans.last().endUs
+        val clockUs = if (overrun) until + 50_000 else frame.startUs + (frame.endUs - frame.startUs) / 2
+        val expected = minOf(clockUs, until - 1)
+        withClockedPlayback(controller, frame.startUs, until, clockUs) {
+            withPreviewBlocked(controller) {
+                controller.togglePlay()
+                assertFalse(controller.state.playing)
+                assertEquals(expected, controller.state.editor.playheadUs)
+                assertNull(controller.state.editor.completedUntilUs)
+                assertEquals(frame.startUs, controller.state.imageUs)
+                assertTrue(controller.barModel().buttons.single { it.id == PlayerButton.SAVE_FRAME }.enabled)
+                controller.togglePlay()
+                assertTrue(controller.state.playing)
+                assertEquals(expected, sessionPosition(playback(controller), "fromUs"))
+                assertEquals(until, sessionPosition(playback(controller), "untilUs"))
+                controller.togglePlay()
+            }
+        }
+    }
+
+    @Test
+    fun naturalViewCompletionKeepsItsMarkerAndRestartsAtTheBeginning() = finishPlayback(trim = false)
+
+    @Test
+    fun naturalTrimCompletionKeepsItsMarkerAndRestartsAtIn() = finishPlayback(trim = true)
+
+    private fun finishPlayback(trim: Boolean) = withController { controller ->
+        editController(controller) { rules, state ->
+            if (trim) rules.played(rules.enterTrim(state).copy(inUs = 300_000, outUs = 900_000), 500_000)
+            else rules.played(state, 500_000)
+        }
+        withPreviewBlocked(controller) {
+            controller.togglePlay()
+            val session = playback(controller)
+            val until = sessionPosition(session, "untilUs")
+            session.stop()
+            @Suppress("UNCHECKED_CAST")
+            val finished = session.javaClass.getDeclaredField("onFinished").apply { isAccessible = true }
+                .get(session) as (String?) -> Unit
+            finished(null)
+            assertFalse(controller.state.playing)
+            assertEquals(until - 1, controller.state.editor.playheadUs)
+            assertEquals(until, controller.state.editor.completedUntilUs)
+            controller.togglePlay()
+            val restarted = playback(controller)
+            assertEquals(if (trim) 300_000L else 0L, sessionPosition(restarted, "fromUs"))
+            // A callback queued by the old session must not finish or rewind its replacement.
+            val before = controller.state.editor
+            finished(null)
+            assertEquals(before, controller.state.editor)
+            assertTrue(controller.state.playing)
+            assertTrue(playback(controller) === restarted)
+            controller.togglePlay()
+        }
+    }
+
+    @Test
+    fun cancellingTrimWhilePlayingRestoresEntryInsteadOfThePlaybackClock() = withController { controller ->
+        editController(controller) { rules, state ->
+            rules.played(rules.enterTrim(rules.played(state, 100_000)), 300_000)
+        }
+        withClockedPlayback(controller, 300_000, controller.state.editor.outUs, 650_000) {
+            SwingUtilities.invokeAndWait {
+                controller.cancel()
+                assertFalse(controller.state.playing)
+                assertEquals(PlayerMode.VIEW, controller.state.editor.mode)
+                assertEquals(100_000, controller.state.editor.playheadUs)
+            }
+        }
+    }
+
+    /** A real session clock, held in onFrame so time advances only through the injected nanoTime. */
+    private fun withClockedPlayback(controller: ReplayPlayerController, from: Long, until: Long, clockUs: Long,
+        action: () -> Unit) {
+        val nanos = AtomicLong()
+        val shown = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val worker = AtomicReference<Thread>()
+        val session = ReplayPlaybackSession(controller.folder, from, until,
+            onFrame = { worker.set(Thread.currentThread()); shown.countDown(); release.await() },
+            onFinished = { error("Held playback unexpectedly finished: $it") },
+            onAudioUnavailable = { error(it) }, nanoTime = nanos::get,
+            awaitAudio = { assertTrue(it.await(30, TimeUnit.SECONDS)); true })
+        try {
+            session.start()
+            assertTrue(shown.await(30, TimeUnit.SECONDS))
+            nanos.set((clockUs - from) * 1000)
+            assertEquals(clockUs, session.nowUs())
+            SwingUtilities.invokeAndWait {
+                controller.javaClass.getDeclaredField("playback").apply { isAccessible = true }.set(controller, session)
+                controller.javaClass.getDeclaredMethod("setState", PlayerState::class.java).apply { isAccessible = true }
+                    .invoke(controller, controller.state.copy(playing = true))
+            }
+            action()
+        } finally {
+            session.stop()
+            release.countDown()
+            worker.get()?.let { it.join(30_000); assertFalse(it.isAlive) }
+        }
+    }
+
+    private fun playback(controller: ReplayPlayerController): ReplayPlaybackSession =
+        controller.javaClass.getDeclaredField("playback").apply { isAccessible = true }.get(controller) as ReplayPlaybackSession
+
+    private fun sessionPosition(session: ReplayPlaybackSession, field: String): Long =
+        session.javaClass.getDeclaredField(field).apply { isAccessible = true }.getLong(session)
 
     private fun editController(controller: ReplayPlayerController, transform: (TrimRules, TrimEditor) -> TrimEditor) {
         val edit = controller.javaClass.getDeclaredMethod("edit", Function2::class.java).apply { isAccessible = true }

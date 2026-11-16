@@ -337,7 +337,17 @@ internal class ReplayPlayerController(
 
     override fun togglePlay() {
         if (disposed) return
-        if (state.playing) { stopPlayback(); return }
+        if (state.playing) {
+            // Frame callbacks contain frame starts; pause must retain the clock within a held frame.
+            val session = playback
+            val current = rules
+            // The natural-finish callback may still be queued when the clock reaches the end.
+            val until = current?.playRange(state.editor)?.second
+            if (session != null && current != null && until != null)
+                state = state.copy(editor = current.played(state.editor, session.nowUs().coerceAtMost(until - 1)))
+            stopPlayback()
+            return
+        }
         val current = rules ?: return
         if (state.error != null || state.editor.drag != null) return
         val (from, until) = current.playRange(state.editor) ?: return
