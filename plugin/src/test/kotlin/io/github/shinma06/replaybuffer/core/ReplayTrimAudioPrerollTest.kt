@@ -42,10 +42,15 @@ class ReplayTrimAudioPrerollTest {
     @Test
     fun trimInsideAnAacPacketPreservesTheSourcePcm() {
         val source = fixture()
+        val before = Files.list(source).use { files -> files.filter { Files.isRegularFile(it) }
+            .toList().associate { it.fileName.toString() to hash(Files.readAllBytes(it)) } }
         val output = trim(source, 50_000, 300_000)
+        SavedReplay.open(output).use { assertFalse(it.manifest["trim"].asJsonObject["reencoded_leading_gop"].asBoolean) }
         assertContentEquals(oracle(source, 50_000, 300_000), play(output, 250_000))
         assertContentEquals(oracle(source, 60_000, 300_000), play(output, 240_000, fromUs = 10_000))
         assertContentEquals(oracle(source, 90_000, 300_000), play(output, 210_000, fromUs = 40_000))
+        assertEquals(before, Files.list(source).use { files -> files.filter { Files.isRegularFile(it) }
+            .toList().associate { it.fileName.toString() to hash(Files.readAllBytes(it)) } })
     }
 
     @Test
@@ -80,6 +85,7 @@ class ReplayTrimAudioPrerollTest {
     fun copiedPacketAndEditHideExactlyOnePrerollWithoutChangingTheAudibleCount() {
         val source = fixture()
         val output = trim(source, 50_000, 300_000)
+        SavedReplay.open(output).use { assertFalse(it.manifest["trim"].asJsonObject["reencoded_leading_gop"].asBoolean) }
         structure(source, output, (1 until 15).toList(), listOf(PlaybackAudioSegment(0, 250_000, 1376, 13)))
         val stored = audio(output)
         val decoder = AacPcmDecoder(stored.config)

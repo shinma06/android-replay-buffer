@@ -196,6 +196,21 @@ class ReplayTrimSpaceTest {
     }
 
     @Test
+    fun laterIdrsUseTheCopyBudgetWithoutLeadingGopBuffers() {
+        val source = fixture(640, 360)
+        val before = hashes(source)
+        for (from in listOf(800_000L, 1_600_000L)) {
+            val output = trim(source, from, from + 500_000, mib)
+            SavedReplay.open(output).use { saved ->
+                assertFalse(saved.manifest["trim"].asJsonObject["reencoded_leading_gop"].asBoolean)
+                assertEquals(5, saved.frames.size)
+                assertTrue(saved.frames.all { !it["reencoded"].asBoolean })
+            }
+        }
+        assertEquals(before, hashes(source))
+    }
+
+    @Test
     fun cancellationAfterTheEstimateDoesNotCreateStaging() {
         val source = fixture()
         val before = hashes(source)

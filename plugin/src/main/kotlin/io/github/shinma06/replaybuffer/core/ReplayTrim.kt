@@ -132,9 +132,11 @@ internal class ReplayTrim(
     }
 
     private class VideoRun(val rows: List<StoredFrame>, val first: Int, val last: Int, val fullStart: Boolean) {
+        // A later IDR is already independently decodable; fullStart still owns timing/preroll.
+        val needsLeadingReencode = !fullStart && !rows[first].outputKey
         val gopStart = if (fullStart) 0 else (first downTo 0).firstOrNull { rows[it].outputKey }
             ?: throw IllegalArgumentException("開始frameの参照IDRがありません")
-        val reencodeEnd = if (fullStart) first else
+        val reencodeEnd = if (!needsLeadingReencode) first else
             ((first + 1)..last).firstOrNull { rows[it].outputKey } ?: (last + 1)
     }
 
@@ -294,10 +296,9 @@ internal class ReplayTrim(
                                             (keptPart.a - keptPart.part.requiredLongText("movie_start_us")) -
                                             partRows[firstOut].row.requiredLongText("media_pts_us")
                                         require(editOffset >= 0) { "表示frameのmedia位置が読めません" }
-                                        val partial = !fullStart
                                         val gopStart = run.gopStart
                                         val reencodeEnd = run.reencodeEnd
-                                        val normalizer = if (partial) {
+                                        val normalizer = if (run.needsLeadingReencode) {
                                             val config = annexBConfigs[partRows[firstOut].sampleEntry - 1]
                                             val minimum = partRows.subList(firstOut, reencodeEnd).mapNotNull { it.sourceDuration }.minOrNull()
                                             try { MixedVideoNormalizer(listOf(config), minimum).apply { startRun(config) } }
@@ -380,6 +381,8 @@ internal class ReplayTrim(
                                                 }
                                                 val outputKey = packet.frameType == Packet.FrameType.KEY
                                                 check(outputKey == row.outputKey) { "動画sampleのkeyframeがframe記録と一致しません" }
+                                                if (!fullStart && n == firstOut) require(H264Utils.isByteBufferIDRSlice(
+                                                    ByteBuffer.wrap(annexB(packet.data, row.sampleEntry)))) { "切り取り先頭のcopy sampleがIDRではありません" }
                                                 checkSpace(packet.data.remaining().toLong())
                                                 track.addFrameInternal(Packet.createPacket(packet.data, media, 1_000_000, row.displayDuration,
                                                     sampleIndex, packet.frameType, null), entry)
@@ -519,7 +522,7 @@ internal class ReplayTrim(
         for (run in runs) {
             checkActive()
             add(2048) // Per-part manifest fields, edits and a run boundary.
-            val encodedBound = if (run.fullStart) 0L else {
+            val encodedBound = if (!run.needsLeadingReencode) 0L else {
                 val config = configs[run.rows[run.first].sampleEntry - 1]
                 val size = H264Utils.getPicSize(boundedSps(H264Utils.getRawSPS(ByteBuffer.wrap(config)).first()))
                 val width = Math.multiplyExact(Math.ceilDiv(size.width, 16), 16)
@@ -531,7 +534,7 @@ internal class ReplayTrim(
             for (n in run.first..run.last) {
                 checkActive()
                 val row = run.rows[n]
-                if (!run.fullStart && n < run.reencodeEnd) sample(encodedBound) else {
+                if (run.needsLeadingReencode && n < run.reencodeEnd) sample(encodedBound) else {
                     sample(sizes[row.index])
                     if (entries.add(row.sampleEntry)) {
                         add(Math.addExact(Math.multiplyExact(video.sampleEntries[row.sampleEntry - 1].estimateSize().toLong(), 2), 256))
