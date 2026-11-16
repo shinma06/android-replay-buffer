@@ -374,7 +374,7 @@ internal class ReplayTrim(private val availableSpace: (Path) -> Long = { Files.g
                                             "movie_start_us" to (keptPart.a - startUs).toString(), "movie_end_us" to (keptPart.b - startUs).toString(),
                                             "media_start_us" to runMedia.toString(), "edit_start_us" to editMedia.toString(),
                                             "duration_us" to duration.toString(),
-                                            "clock_alignment_known" to keptPart.part["clock_alignment_known"],
+                                            "clock_alignment_known" to (originTns != null && keptPart.part["clock_alignment_known"]?.asBoolean == true),
                                             "t_start_ns" to if (fullStart) shift(keptPart.part.text("t_start_ns"), originTns)
                                                 else originTns?.let { "0" },
                                             "t_end_ns" to if (keptPart.b == keptPart.part.requiredLongText("movie_end_us"))
@@ -457,7 +457,7 @@ internal class ReplayTrim(private val availableSpace: (Path) -> Long = { Files.g
     private var audioSegments: List<Map<String, Any?>>? = null
 
     private fun shift(value: String?, origin: Long?): String? =
-        if (value == null || origin == null) value else Math.subtractExact(value.toLong(), origin).toString()
+        if (value == null || origin == null) null else Math.subtractExact(value.toLong(), origin).toString()
 
     private fun writeRow(index: java.io.BufferedWriter, row: StoredFrame,
                          raw: FileChannel?, sourceChannel: FileChannel?, partIndex: Int, sampleIndex: Long,
@@ -492,6 +492,10 @@ internal class ReplayTrim(private val availableSpace: (Path) -> Long = { Files.g
         out.addProperty("t_ns", shift(row.row.text("t_ns"), originTns))
         out.addProperty("display_t_ns", shift(row.row.text("display_t_ns"), originTns))
         out.addProperty("confirmed_t_end_ns", shift(row.row.text("confirmed_t_end_ns"), originTns))
+        if (originTns == null) {
+            out.addProperty("clock_alignment_known", false)
+            out.addProperty("t_uncertainty_ns", Long.MAX_VALUE.toString())
+        }
         index.write(gson.toJson(out))
         index.write("\n")
     }
@@ -566,7 +570,7 @@ internal class ReplayTrim(private val availableSpace: (Path) -> Long = { Files.g
 
     private data class LogCounts(val device: Int, val app: Int, val lastDeviceId: String?, val lastAppId: String?,
                                  val times: Map<String, LongRange>)
-    private data class TouchCounts(val count: Int, val inMovie: Int)
+    private data class TouchCounts(val count: Int, val inMovie: Int, val injected: Int)
 
     private fun inTnsRange(line: JsonObject, originTns: Long?, endTns: Long?): Boolean {
         val t = line.longText("t_ns") ?: return true
@@ -597,6 +601,7 @@ internal class ReplayTrim(private val availableSpace: (Path) -> Long = { Files.g
                 val row = gson.fromJson(line, JsonObject::class.java)
                 if (!inTnsRange(row, originTns, endTns)) return@forEach
                 row.addProperty("t_ns", shift(row.text("t_ns"), originTns))
+                if (originTns == null) row.addProperty("t_uncertainty_ns", Long.MAX_VALUE.toString())
                 val text = gson.toJson(row)
                 checkSpace(text.length * 2L)
                 deviceWriter.write(text); deviceWriter.write("\n")
@@ -618,12 +623,14 @@ internal class ReplayTrim(private val availableSpace: (Path) -> Long = { Files.g
         if (!saved.exists(ReplayFiles.TOUCHES)) return null
         var count = 0
         var inMovie = 0
+        var injected = 0
         staging.writer(file(ReplayFiles.TOUCHES)).use { out ->
             saved.lines(ReplayFiles.TOUCHES).forEach { line ->
                 checkActive()
                 val row = gson.fromJson(line, JsonObject::class.java)
                 if (!inTnsRange(row, originTns, endTns)) return@forEach
                 row.addProperty("t_ns", shift(row.text("t_ns"), originTns))
+                if (originTns == null) row.addProperty("t_uncertainty_ns", Long.MAX_VALUE.toString())
                 val movieUs = row.longText("movie_us")
                 row.addProperty("movie_us", movieUs?.takeIf { it in startUs until endUs }?.let { Math.subtractExact(it, startUs).toString() })
                 if (movieUs != null && movieUs in startUs until endUs) inMovie++
@@ -631,9 +638,10 @@ internal class ReplayTrim(private val availableSpace: (Path) -> Long = { Files.g
                 checkSpace(text.length * 2L)
                 out.write(text); out.write("\n")
                 count++
+                if (row.text("source") == "injected") injected++
             }
         }
-        return TouchCounts(count, inMovie)
+        return TouchCounts(count, inMovie, injected)
     }
 
     private fun clipRanges(list: List<JsonObject>, originTns: Long?, endTns: Long?): List<JsonObject> =
@@ -643,8 +651,9 @@ internal class ReplayTrim(private val availableSpace: (Path) -> Long = { Files.g
             if (to != null && originTns != null && to <= originTns) return@mapNotNull null
             if (from != null && endTns != null && from >= endTns) return@mapNotNull null
             entry.deepCopy().apply {
-                addProperty("from_t_ns", from?.let { maxOf(0L, Math.subtractExact(it, originTns ?: 0L)).toString() } ?: from?.toString())
-                addProperty("to_t_ns", to?.let { Math.subtractExact(it, originTns ?: 0L).let { shifted -> endTns?.let { e -> minOf(shifted, e - (originTns ?: 0L)) } ?: shifted }.toString() } ?: to?.toString())
+                addProperty("from_t_ns", shift(from?.toString(), originTns)?.toLong()?.coerceAtLeast(0L)?.toString())
+                addProperty("to_t_ns", shift(to?.let { endTns?.let { end -> minOf(it, end) } ?: it }?.toString(), originTns))
+                if (originTns == null && has("duration_uncertain")) addProperty("duration_uncertain", true)
             }
         }
 
@@ -685,6 +694,11 @@ internal class ReplayTrim(private val availableSpace: (Path) -> Long = { Files.g
                 parent.add(name, gson.toJsonTree(transform(rows)))
             }
         }
+        fun shiftSamples(row: JsonObject) {
+            for (name in listOf("before_sample", "after_sample", "recovery_sample")) {
+                (row[name] as? JsonObject)?.let { it.addProperty("t_ns", shift(it.text("t_ns"), originTns)) }
+            }
+        }
         val keptGapIndexes = (out["gaps"]?.takeIf { it.isJsonArray }?.asJsonArray?.map { it.asJsonObject } ?: emptyList())
             .indices.filter { i ->
                 val g = (out["gaps"]?.takeIf { it.isJsonArray }?.asJsonArray?.map { it.asJsonObject } ?: emptyList())[i]
@@ -698,19 +712,21 @@ internal class ReplayTrim(private val availableSpace: (Path) -> Long = { Files.g
             clipRanges(rows, originTns, endTns).mapNotNull { row ->
                 val oldIndex = row["gap_index"]?.asInt ?: return@mapNotNull null
                 row.addProperty("gap_index", indexMap[oldIndex] ?: return@mapNotNull null)
+                shiftSamples(row)
                 row
             }
         }
         out["video_tail"]?.takeIf { it.isJsonObject }?.asJsonObject?.let { tail ->
-            val from = tail.longText("from_t_ns"); val to = tail.longText("to_t_ns")
-            val keptTail = !(to != null && originTns != null && to <= originTns) && !(from != null && endTns != null && from >= endTns)
-            if (!keptTail) out.add("video_tail", null) else out.add("video_tail", tail.deepCopy().apply {
-                addProperty("from_t_ns", from?.let { maxOf(0L, Math.subtractExact(it, originTns ?: 0L)).toString() } ?: from?.toString())
-                addProperty("to_t_ns", to?.let { Math.subtractExact(it, originTns ?: 0L).let { s -> endTns?.let { e -> minOf(s, e - (originTns ?: 0L)) } ?: s }.toString() } ?: to?.toString())
+            out.add("video_tail", clipRanges(listOf(tail), originTns, endTns).singleOrNull()?.apply {
                 addProperty("source_t_ns", shift(tail.text("source_t_ns"), originTns))
             })
         }
         out["timebase"]?.takeIf { it.isJsonObject }?.asJsonObject?.let { timebase ->
+            if (originTns == null) {
+                timebase.addProperty("known", false)
+                timebase.addProperty("window_start_elapsed_ns", null as String?)
+            }
+            if (originTns == null || endTns == null) timebase.addProperty("window_end_uncertainty_ns", Long.MAX_VALUE.toString())
             originTns?.let { origin ->
                 timebase["window_start_elapsed_ns"]?.takeIf { it.isJsonPrimitive }?.let {
                     timebase.addProperty("window_start_elapsed_ns", Math.addExact(it.asString.toLong(), origin).toString())
@@ -729,13 +745,7 @@ internal class ReplayTrim(private val availableSpace: (Path) -> Long = { Files.g
             }
             timebase["clock_steps"]?.takeIf { it.isJsonArray }?.asJsonArray?.map { it.asJsonObject }?.let { steps ->
                 val clipped = clipRanges(steps, originTns, endTns)
-                clipped.forEach { step ->
-                    listOf("before_sample", "after_sample", "recovery_sample").forEach { sampleName ->
-                        (step[sampleName] as? JsonObject)?.let { s ->
-                            s.addProperty("t_ns", shift(s.text("t_ns"), originTns))
-                        }
-                    }
-                }
+                clipped.forEach(::shiftSamples)
                 timebase.add("clock_steps", gson.toJsonTree(clipped))
             }
         }
@@ -776,6 +786,7 @@ internal class ReplayTrim(private val availableSpace: (Path) -> Long = { Files.g
                 touches.add("gaps", gson.toJsonTree(clipRanges(rows, originTns, endTns)))
             }
             touches["injected"]?.takeIf { it.isJsonObject }?.asJsonObject?.let { injected ->
+                touchCounts?.let { injected.addProperty("count", it.injected) }
                 injected["gaps"]?.takeIf { it.isJsonArray }?.asJsonArray?.map { it.asJsonObject }?.let { rows ->
                     injected.add("gaps", gson.toJsonTree(clipRanges(rows, originTns, endTns)))
                 }
