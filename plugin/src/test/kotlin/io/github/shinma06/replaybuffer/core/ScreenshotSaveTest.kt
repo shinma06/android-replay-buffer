@@ -329,7 +329,8 @@ elif command==('exec-out screencap -p' if mode in ('unknown-display','display-fa
  if mode=='capture-fails': sys.exit(1)
  (root/'phase').write_text('after')
  if mode=='wait':
-  (root/'pid').write_text(str(os.getpid()))
+  (root/'pid.tmp').write_text(str(os.getpid()))
+  (root/'pid.tmp').replace(root/'pid')
   time.sleep(30)
  sys.stdout.buffer.write(b'broken' if mode=='broken' else (root/'image.png').read_bytes())
 elif command!='devices -l': sys.exit(2)
