@@ -8,6 +8,7 @@ import com.intellij.openapi.util.Disposer
 import org.junit.jupiter.api.io.TempDir
 import java.nio.file.Files
 import java.nio.file.Path
+import java.security.MessageDigest
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.TimeUnit
@@ -83,6 +84,51 @@ class ReplayPlayerControllerTest {
         }
     }
 
+    @Test
+    fun cancellingTrimBackToAVideoGapClearsTheOtherTimesImage() = withController(gap = true) { controller ->
+        val gapUs = pauseAtGap(controller)
+        SwingUtilities.invokeAndWait { controller.button(PlayerButton.ENTER_TRIM) }
+        val worker = controller.javaClass.getDeclaredField("executor").apply { isAccessible = true }.get(controller) as ExecutorService
+        worker.submit {}.get(30, TimeUnit.SECONDS)
+        SwingUtilities.invokeAndWait {
+            assertNotNull(controller.state.image)
+            controller.cancel()
+            assertEquals(gapUs, controller.state.editor.playheadUs)
+            assertNull(controller.state.image)
+            assertEquals(-1L, controller.state.imageUs)
+        }
+    }
+
+    @Test
+    fun aPendingTrimPreviewCannotRestoreAnImageAfterReturningToAGap() = withController(gap = true) { controller ->
+        val gapUs = pauseAtGap(controller)
+        val worker = controller.javaClass.getDeclaredField("executor").apply { isAccessible = true }.get(controller) as ExecutorService
+        val held = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        worker.execute { held.countDown(); release.await() }
+        assertTrue(held.await(30, TimeUnit.SECONDS))
+        try {
+            SwingUtilities.invokeAndWait {
+                controller.button(PlayerButton.ENTER_TRIM)
+                controller.cancel()
+            }
+        } finally { release.countDown() }
+        worker.submit {}.get(30, TimeUnit.SECONDS)
+        SwingUtilities.invokeAndWait {
+            assertEquals(gapUs, controller.state.editor.playheadUs)
+            assertNull(controller.state.image)
+            assertEquals(-1L, controller.state.imageUs)
+        }
+    }
+
+    private fun pauseAtGap(controller: ReplayPlayerController): Long {
+        val gapUs = controller.state.timeline!!.spans.zipWithNext().first { (a, b) -> a.endUs < b.startUs }.first.endUs
+        val edit = controller.javaClass.getDeclaredMethod("edit", Function2::class.java).apply { isAccessible = true }
+        val pause: (TrimRules, TrimEditor) -> TrimEditor = { rules, state -> rules.played(state, gapUs) }
+        SwingUtilities.invokeAndWait { edit.invoke(controller, pause) }
+        return gapUs
+    }
+
     private fun markWhilePlaying(out: Boolean) = withController { controller ->
         SwingUtilities.invokeAndWait {
             controller.step(3)
@@ -102,7 +148,7 @@ class ReplayPlayerControllerTest {
         }
     }
 
-    private fun withController(test: (ReplayPlayerController) -> Unit) {
+    private fun withController(gap: Boolean = false, test: (ReplayPlayerController) -> Unit) {
         val folder = Files.createDirectory(root.resolve("replay-20240101-000000-manual-feedface"))
         for (name in listOf("README.md", "replay.json", "video.mp4", "video-source.h264", "video-frames.jsonl",
             "logcat-device.jsonl", "logcat-app.jsonl", "touches.jsonl")) {
@@ -113,6 +159,19 @@ class ReplayPlayerControllerTest {
         val manifest = folder.resolve("replay.json")
         val record = JsonParser.parseString(Files.readString(manifest)).asJsonObject
         record.remove("audio_track")
+        if (gap) {
+            val frames = folder.resolve("video-frames.jsonl")
+            val rows = Files.readAllLines(frames).map { JsonParser.parseString(it).asJsonObject }
+            rows[rows.size / 2].apply {
+                addProperty("presented", false)
+                addProperty("preroll", true)
+                add("movie_pts_us", com.google.gson.JsonNull.INSTANCE)
+                add("movie_end_us", com.google.gson.JsonNull.INSTANCE)
+            }
+            Files.writeString(frames, rows.joinToString("\n", postfix = "\n"))
+            val hash = MessageDigest.getInstance("SHA-256").digest(Files.readAllBytes(frames)).joinToString("") { "%02x".format(it) }
+            record.getAsJsonObject("files_sha256").addProperty("video-frames.jsonl", hash)
+        }
         Files.writeString(manifest, record.toString())
         val lifetime = Disposer.newDisposable()
         ApplicationManager.setApplication(MockApplication(lifetime), lifetime)

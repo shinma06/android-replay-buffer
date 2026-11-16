@@ -205,7 +205,10 @@ internal class ReplayPlayerController(
         val current = rules ?: return
         if (state.playing) return
         val us = current.displayUs(state.editor)
-        if (us != state.imageUs && current.grid.indexAt(us) >= 0) requestDecode(us)
+        if (current.grid.indexAt(us) < 0) {
+            synchronized(decodeLock) { pendingUs = null }
+            state = state.copy(image = null, imageUs = -1)
+        } else if (us != state.imageUs) requestDecode(us)
     }
 
     private fun requestDecode(us: Long) {
