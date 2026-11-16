@@ -169,6 +169,11 @@ internal class MixedVideoNormalizer(private val configs: List<ByteArray>, minimu
     /** Advances the decoder through one packet without encoding, for frames that only build reference state. */
     fun decodeOnly(bytes: ByteArray): Picture = decode(bytes)
 
+    data class DisplayFrame(val picture: Picture, val matrixCoefficients: Int?)
+
+    fun decodeForDisplay(bytes: ByteArray): DisplayFrame = DisplayFrame(decode(bytes), source.vuiParams
+        ?.takeIf { it.videoSignalTypePresentFlag && it.colourDescriptionPresentFlag }?.matrixCoefficients)
+
     fun encode(bytes: ByteArray, dots: List<OverlayDot> = emptyList()): ByteBuffer {
         val decoded = decode(bytes)
         val size = H264Utils.getPicSize(source)

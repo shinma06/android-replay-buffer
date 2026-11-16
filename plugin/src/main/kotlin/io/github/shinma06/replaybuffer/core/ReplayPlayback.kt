@@ -100,7 +100,7 @@ internal class ReplayFrameCursor(private val saved: SavedReplay) : AutoCloseable
         }
         val decoder = normalizer ?: throw IllegalStateException("参照IDRより前から復号しようとしました")
         require(entry == runEntry) { "表示frameのsample構成が読めません" }
-        val picture = try { decoder.decodeOnly(movSampleToAnnexB(packet.data, avcs[entry - 1])) }
+        val picture = try { decoder.decodeForDisplay(movSampleToAnnexB(packet.data, avcs[entry - 1])) }
             catch (e: Exception) { throw IllegalStateException("表示frameの復号に失敗しました", e) }
         val (start, end) = span(index) ?: return null
         return Decoded(ReplayFrameExport.rgbImage(picture), start, end, index)

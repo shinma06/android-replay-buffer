@@ -1,4 +1,4 @@
-# H.264 rangeの既知色 fixture
+# H.264 range・行列の既知色 fixture
 
 実録画・画面・ログを含まない純合成です。256×32、10fps、12frameで、各32pixel幅の
 黒・白・灰64・灰128・灰192・赤・緑・青を並べています。入力はRGB24の
@@ -37,3 +37,22 @@ FFmpegによる先頭frameの独立参照復号（各色中央、RGB）は次の
 既存trim-parity fixtureのSPSは元から明示full rangeです。映像・AAC・既存goldenは変更せず、
 そのrangeも専用テストで固定しています。これはrangeとBT.601変換の回帰であり、HDR・他のmatrixや
 色域・transferのカラーマネジメント、IDE描画、実機の受入、3OS byte一致の代替ではありません。
+
+## 明示BT.709の追加回帰
+
+`python3 generate.py --bt709-only` は既存3本を書き換えず、同じRGB入力から
+`bt709-limited.h264` / `bt709-full.h264` だけを生成します。4:2:0化の行列とSPSの
+primaries / transfer / matrixはBT.709 (1)です。FFmpeg独立参照の各色中央は次の通りです。
+
+| range | 黒 | 白 | 灰64 | 灰128 | 灰192 | 赤 | 緑 | 青 |
+|---|---|---|---|---|---|---|---|---|
+| bt709-limited | 0,0,0 | 255,255,255 | 64,64,64 | 128,128,128 | 192,192,192 | 254,0,0 | 0,254,0 | 0,0,254 |
+| bt709-full | 0,0,0 | 255,255,255 | 64,64,64 | 128,128,128 | 192,192,192 | 254,0,0 | 0,254,0 | 0,0,253 |
+
+追加テストは、PNG・preview・再生cursorの既知RGB（各channel±3）、両range、
+別playerとseekの交互実行、原本hash不変を検査します。直接YUVの回帰は浮動小数の独立式
+（Kr=0.2126、Kb=0.0722）で入力を作り、整数変換のclippingも照合します。
+BT.601・未指定・その他matrixの従来経路は既存変換とのbyte一致を検査し、
+その他matrixの色が正しいという保証へは読み替えません。
+これは表示用RGBの行列回帰であり、YUV再encode・packet・SPSや既存goldenは変更しません。
+HDR・色域・transfer・包括色管理・IDE表示・実機の色精度は引き続き保証外です。

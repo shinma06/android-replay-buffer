@@ -63,14 +63,14 @@ internal object ReplayFrameExport {
             } catch (e: IllegalArgumentException) {
                 throw IllegalStateException("表示frameの復号に対応できません", e)
             }
-            var picture: Picture? = null
+            var picture: MixedVideoNormalizer.DisplayFrame? = null
             require(track.gotoFrame(gopStart.toLong())) { "参照IDRへシークできません" }
             var index = gopStart
             while (index <= targetIndex) {
                 checkActive()
                 val packet = track.nextFrame() ?: break
                 require(rows[index]["sample_entry"].asInt == entry) { "表示frameのsample構成が読めません" }
-                picture = try { normalizer.decodeOnly(movSampleToAnnexB(packet.data, avcs[entry - 1])) }
+                picture = try { normalizer.decodeForDisplay(movSampleToAnnexB(packet.data, avcs[entry - 1])) }
                 catch (e: Exception) { throw IllegalStateException("表示frameの復号に失敗しました", e) }
                 index++
             }
@@ -80,12 +80,16 @@ internal object ReplayFrameExport {
         }
     }
 
-    /** RGB image of a decoded YUV420 picture whose colour label carries the SPS range. */
-    fun rgbImage(decoded: Picture): BufferedImage {
+    /** RGB image using the decoded frame's SPS range and explicit BT.709 matrix, or legacy coefficients. */
+    fun rgbImage(frame: MixedVideoNormalizer.DisplayFrame): BufferedImage {
+        val decoded = frame.picture
         val rgb = Picture.create(decoded.width, decoded.height, ColorSpace.RGB)
         when (decoded.color) {
-            ColorSpace.YUV420 -> Yuv420pToRgb().transform(decoded, rgb)
-            ColorSpace.YUV420J -> Yuv420jToRgb().transform(decoded, rgb)
+            ColorSpace.YUV420, ColorSpace.YUV420J -> when {
+                frame.matrixCoefficients == 1 -> bt709ToRgb(decoded, rgb)
+                decoded.color == ColorSpace.YUV420 -> Yuv420pToRgb().transform(decoded, rgb)
+                else -> Yuv420jToRgb().transform(decoded, rgb)
+            }
             else -> throw IllegalArgumentException("復号frameの色形式が非対応です")
         }
         val pixels = rgb.getPlaneData(0)
@@ -96,6 +100,35 @@ internal object ReplayFrameExport {
         val colorModel = ComponentColorModel(java.awt.color.ColorSpace.getInstance(java.awt.color.ColorSpace.CS_sRGB),
             false, false, java.awt.Transparency.OPAQUE, java.awt.image.DataBuffer.TYPE_BYTE)
         return BufferedImage(colorModel, raster, false, null)
+    }
+
+    private fun bt709ToRgb(decoded: Picture, rgb: Picture) {
+        // BT.709 Kr=0.2126, Kb=0.0722; 14-bit fixed-point coefficients with half-up rounding.
+        val full = decoded.color == ColorSpace.YUV420J
+        val yScale = if (full) 16384 else 19077
+        val yOffset = if (full) 128 else 112
+        val redCr = if (full) 25802 else 29372
+        val greenCb = if (full) 3069 else 3494
+        val greenCr = if (full) 7670 else 8731
+        val blueCb = if (full) 30402 else 34610
+        val luma = decoded.getPlaneData(0)
+        val cb = decoded.getPlaneData(1)
+        val cr = decoded.getPlaneData(2)
+        val pixels = rgb.getPlaneData(0)
+        for (y in 0 until decoded.height) for (x in 0 until decoded.width step 2) {
+            val chroma = (y shr 1) * (decoded.width shr 1) + (x shr 1)
+            val red = redCr * cr[chroma].toInt()
+            val green = -greenCb * cb[chroma].toInt() - greenCr * cr[chroma].toInt()
+            val blue = blueCb * cb[chroma].toInt()
+            for (dx in 0..1) {
+                val sample = y * decoded.width + x + dx
+                val level = (luma[sample].toInt() + yOffset) * yScale + 8192
+                val offset = sample * 3
+                pixels[offset] = (((level + red) shr 14).coerceIn(0, 255) - 128).toByte()
+                pixels[offset + 1] = (((level + green) shr 14).coerceIn(0, 255) - 128).toByte()
+                pixels[offset + 2] = (((level + blue) shr 14).coerceIn(0, 255) - 128).toByte()
+            }
+        }
     }
 
     /** Encoded PNG bytes with text metadata inserted before IEND. */

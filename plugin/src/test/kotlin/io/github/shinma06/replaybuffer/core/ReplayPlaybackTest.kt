@@ -13,7 +13,7 @@ class ReplayPlaybackTest {
         for (gray in listOf(0, 64, 128, 192, 255)) {
             val picture = Picture.create(2, 2, ColorSpace.YUV420J)
             picture.getPlaneData(0).fill((gray - 128).toByte())
-            val image = ReplayFrameExport.rgbImage(picture)
+            val image = ReplayFrameExport.rgbImage(MixedVideoNormalizer.DisplayFrame(picture, null))
             for (y in 0 until 2) for (x in 0 until 2)
                 assertEquals(gray * 0x010101, image.getRGB(x, y) and 0xffffff, "gray=$gray")
         }
