@@ -138,7 +138,7 @@ internal class WindowsTraySurface(private val diagnostics: WindowsTrayDiagnostic
         entries: List<MenuEntry>,
         gc: GraphicsConfiguration,
     ) : JDialog(parentMenu as Window?, "Android Replay Buffer", Dialog.ModalityType.MODELESS, gc) {
-        val list = JList(entries.toTypedArray())
+        val list = WindowsMenuList(entries)
         private var child: MenuWindow? = null
         private val input = WindowsMenuInput(state, session)
 
@@ -257,6 +257,11 @@ private fun MenuEntry.selectable(): Boolean = when (this) {
     is MenuEntry.Item -> item.enabled && item.command != null
     is MenuEntry.Submenu -> true
     MenuEntry.Separator -> false
+}
+
+internal class WindowsMenuList(entries: List<MenuEntry>) : JList<MenuEntry>(entries.toTypedArray()) {
+    // Keep renderer cells inside the viewport so Swing can clip long labels.
+    override fun getScrollableTracksViewportWidth() = true
 }
 
 internal class MenuCell : DefaultListCellRenderer() {
