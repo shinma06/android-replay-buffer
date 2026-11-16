@@ -5,6 +5,8 @@ import io.github.shinma06.replaybuffer.core.SaveFailure
 import io.github.shinma06.replaybuffer.core.ScreenshotSaveFailure
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertTrue
+import org.junit.jupiter.api.Assertions.assertSame
+import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Test
 import java.nio.file.Path
 import java.util.concurrent.CompletionException
@@ -12,6 +14,55 @@ import java.util.concurrent.CompletionException
 class ReplayOperationFailureTest {
     private val retained = Path.of(".trim A & B.partial")
     private val escaped = retained.toString().replace("&", "&amp;")
+
+    @Test
+    fun frameCliReportsOnlyKnownDestinationAndDecodeReasons() {
+        for (reason in listOf(io.github.shinma06.replaybuffer.settings.LOGCAT_DESTINATION_UNAVAILABLE,
+            "表示frameの復号に対応できません", "表示frameの復号に失敗しました")) {
+            val response = frameCliResponse { throw IllegalStateException(reason, IllegalArgumentException("decoder")) }
+            assertEquals(1, response.code)
+            assertEquals("", response.output)
+            assertEquals(reason, response.error)
+        }
+        val output = Path.of("frame.png")
+        val response = frameCliResponse { output }
+        assertEquals(0, response.code)
+        assertEquals(output.toString(), response.output)
+        assertEquals("", response.error)
+    }
+
+    @Test
+    fun frameCliLeavesUnknownFailuresAndScreenshotRetentionForTheExistingHandler() {
+        for (failure in listOf(IllegalStateException("unknown"), IllegalStateException(),
+            ScreenshotSaveFailure("失敗", retained), CompletionException(IllegalStateException("表示frameの復号に失敗しました")))) {
+            assertSame(failure, assertThrows(Exception::class.java) { frameCliResponse { throw failure } })
+        }
+    }
+
+    @Test
+    fun frameCliDoesNotTranslateCancellationInterruptionOrTimeoutEvenWhenWrapped() {
+        for (failure in listOf(SaveCancelled(retained), java.util.concurrent.CancellationException("表示frameの復号に失敗しました"),
+            com.intellij.openapi.progress.ProcessCanceledException(), InterruptedException(), java.io.InterruptedIOException(),
+            java.nio.channels.ClosedByInterruptException(), java.util.concurrent.TimeoutException())) {
+            val wrapped = IllegalStateException("表示frameの復号に失敗しました", CompletionException(failure))
+            for (cause in listOf(failure, wrapped)) {
+                assertSame(cause, assertThrows(Exception::class.java) { frameCliResponse { throw cause } })
+            }
+        }
+    }
+
+    @Test
+    fun frameCliKeepsInterruptedAndCyclicFailuresOnTheExistingPath() {
+        val failure = IllegalStateException("表示frameの復号に失敗しました")
+        Thread.currentThread().interrupt()
+        try {
+            assertSame(failure, assertThrows(IllegalStateException::class.java) { frameCliResponse { throw failure } })
+            assertTrue(Thread.currentThread().isInterrupted)
+        } finally { Thread.interrupted() }
+        val nested = IllegalStateException("nested", failure)
+        failure.initCause(nested)
+        assertSame(failure, assertThrows(IllegalStateException::class.java) { frameCliResponse { throw failure } })
+    }
 
     @Test
     fun screenshotCliFailureKeepsTheReasonAndRetainedPathWithoutChangingResponseShape() {

@@ -459,7 +459,7 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
                     ReplayTrim().trim(source, rangeUs("from_us"), rangeUs("to_us"), { !alive }, { it.publish() },
                         expectedFingerprint = arguments.get("fingerprint") as? String
                             ?: throw IllegalArgumentException("切り取りの事前確認がありません。もう一度実行してください。"))
-                else ReplayFrameExport.export(source, rangeUs("at_us"), frameDestination())
+                else return frameCliResponse { ReplayFrameExport.export(source, rangeUs("at_us"), frameDestination()) }
                 return CliResponse(0, output.toString())
             }
             val saving = request.command == CliCommand.SAVE || request.command == CliCommand.SAVE_LOGS
@@ -787,6 +787,22 @@ internal fun <T> queueReplaySave(project: Project, title: String, done: Completa
     } catch (failure: Throwable) {
         done.completeExceptionally(failure)
     }
+}
+
+internal fun frameCliResponse(export: () -> Path): CliResponse = try {
+    CliResponse(0, export().toString())
+} catch (failure: IllegalStateException) {
+    if (Thread.currentThread().isInterrupted || failure.message !in setOf(LOGCAT_DESTINATION_UNAVAILABLE,
+            "表示frameの復号に対応できません", "表示frameの復号に失敗しました")) throw failure
+    val seen = java.util.Collections.newSetFromMap(java.util.IdentityHashMap<Throwable, Boolean>())
+    var cause: Throwable? = failure
+    while (cause != null) {
+        if (!seen.add(cause) || cause is CancellationException || cause is ProcessCanceledException ||
+            cause is InterruptedException || cause is java.io.InterruptedIOException ||
+            cause is java.nio.channels.ClosedByInterruptException || cause is TimeoutException) throw failure
+        cause = cause.cause
+    }
+    screenshotCliFailure(failure)
 }
 
 internal fun screenshotCliFailure(cause: Throwable?): CliResponse = CliResponse(1, error = listOfNotNull(

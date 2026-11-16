@@ -23,6 +23,7 @@ import io.github.shinma06.replaybuffer.cli.McpJson
 import io.github.shinma06.replaybuffer.core.CaptureMode
 import io.github.shinma06.replaybuffer.settings.ReplaySettingsState
 import io.github.shinma06.replaybuffer.settings.ReplaySettingsStore
+import io.github.shinma06.replaybuffer.settings.LOGCAT_DESTINATION_UNAVAILABLE
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -39,6 +40,7 @@ import kotlin.test.assertTrue
 import org.junit.jupiter.params.ParameterizedTest
 import org.junit.jupiter.params.provider.ValueSource
 import org.junit.jupiter.api.io.TempDir
+import org.junit.jupiter.api.Assertions.assertAll
 
 class ReplayInitializationCliTest {
     @TempDir lateinit var temporary: Path
@@ -175,6 +177,21 @@ class ReplayInitializationCliTest {
                 assertTrue(failureText.contains("(exit code 1)"), failureText)
                 assertFalse(frameResult.has("structuredContent"))
                 assertEquals(beforeFrame, Files.list(source).use { paths -> paths.toList().associate { it.fileName.toString() to Files.readAllBytes(it).toList() } })
+                store.loadState(store.state.copy(screenshotUsesLogcatDestination = true))
+                val logcatFailure = cli("frame", 1, source.toString(), "--at", "0.2")
+                mcpOutput.reset()
+                assertEquals(0, ReplayMcpServer(messages.joinToString("\n", postfix = "\n").byteInputStream(), mcpOutput,
+                    PrintStream(ByteArrayOutputStream()), projectPath, registry, { "build" }).run())
+                val logcatResult = mcpOutput.toString(Charsets.UTF_8).lineSequence().filter(String::isNotEmpty)
+                    .map { JsonParser.parseString(it).asJsonObject }.single { it["id"]?.asInt == 1 }["result"].asJsonObject
+                assertTrue(logcatResult["isError"].asBoolean)
+                assertFalse(logcatResult.has("structuredContent"))
+                val logcatText = logcatResult["content"].asJsonArray.single().asJsonObject["text"].asString
+                assertEquals(beforeFrame, Files.list(source).use { paths -> paths.toList().associate { it.fileName.toString() to Files.readAllBytes(it).toList() } })
+                assertFalse(Files.exists(frameDestination), "failure creates no output directory or partial")
+                assertAll("Logcat destination failures keep the GUI reason",
+                    { assertEquals(LOGCAT_DESTINATION_UNAVAILABLE, logcatFailure) },
+                    { assertEquals("$LOGCAT_DESTINATION_UNAVAILABLE\n(exit code 1)", logcatText) })
                 Files.writeString(source.resolve("touches.jsonl"), "broken", java.nio.file.StandardOpenOption.APPEND)
                 assertTrue(cli("trim", 1, source.toString(), "--from", "0", "--to", "1").contains("変更されています: touches.jsonl"))
                 server.close()
