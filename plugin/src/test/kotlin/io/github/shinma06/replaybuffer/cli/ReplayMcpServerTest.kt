@@ -9,6 +9,7 @@ import java.util.Base64
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
@@ -236,6 +237,132 @@ class ReplayMcpServerTest {
         }
         Thread.sleep(300)
         assertEquals(4, sent.get())
+    }
+
+    @Test fun `EOF drains trim preflight and execution within each CLI request limit`() {
+        val responses = controlledTrimEof()
+        assertEquals((1..10).toList(), responses.map { (it["id"] as BigDecimal).toInt() }.sorted())
+        responses.forEach { assertEquals(false, it.result()["isError"]) }
+        responses.filter { (it["id"] as BigDecimal).toInt() <= 4 }.forEach {
+            assertEquals("/saved-trim", (it.result()["structuredContent"] as Map<*, *>)["directory"])
+        }
+    }
+
+    @Test fun `EOF still rejects queued calls if trim preflight exceeds its own limit`() {
+        assertTrimStageOverrun(CliCommand.TRIM_PREFLIGHT)
+    }
+
+    @Test fun `EOF still rejects queued calls if trim execution exceeds its own limit`() {
+        assertTrimStageOverrun(CliCommand.TRIM)
+    }
+
+    private fun assertTrimStageOverrun(stage: CliCommand) {
+        val responses = controlledTrimEof(stage)
+        assertEquals((5..10).toList(), responses.map { (it["id"] as BigDecimal).toInt() }.sorted())
+        responses.forEach {
+            val error = it["error"] as Map<*, *>
+            assertEquals(BigDecimal(-32000), error["code"])
+            assertTrue((error["message"] as String).contains("実行していません"))
+        }
+    }
+
+    @Test fun `EOF drains a batch that outlasts one guard while every CLI request stays in time`() {
+        val clock = AtomicLong()
+        val sent = AtomicInteger()
+        val checks = AtomicInteger()
+        val release = CountDownLatch(1)
+        val completed = CountDownLatch(1)
+        val inputThread = Thread.currentThread()
+        val output = ByteArrayOutputStream()
+        val batch = (1..4).joinToString(",", prefix = "[", postfix = "]\n") { call(it, "get_status") }
+        try {
+            ReplayMcpServer(batch.byteInputStream(), output, PrintStream(ByteArrayOutputStream()), temporary, temporary,
+                { "build" }, send = { _, _, _, _ ->
+                    val index = sent.incrementAndGet()
+                    clock.set(TimeUnit.SECONDS.toNanos(119L * index))
+                    if (index == 4) try {
+                        check(release.await(10, TimeUnit.SECONDS))
+                    } finally { completed.countDown() }
+                    CliResponse(0, "{}")
+                }, nanoTime = {
+                    clock.get().also { now ->
+                        if (Thread.currentThread() == inputThread && now == TimeUnit.SECONDS.toNanos(476) &&
+                            checks.incrementAndGet() == 2) release.countDown()
+                    }
+                }).run()
+            val responses = McpJson.parse(output.toString(Charsets.UTF_8).trim()) as List<*>
+            assertEquals((1..4).map { BigDecimal(it) }, responses.map { (it as Map<*, *>)["id"] })
+            responses.forEach { assertEquals(false, (it as Map<*, *>).result()["isError"]) }
+            assertEquals(4, sent.get())
+        } finally {
+            release.countDown()
+            assertTrue(completed.await(10, TimeUnit.SECONDS))
+        }
+    }
+
+    /** Four controlled in-flight trims hold the workers while six status requests wait behind EOF. */
+    private fun controlledTrimEof(stalled: CliCommand? = null): List<Map<*, *>> {
+        val clock = AtomicLong()
+        val preflights = CountDownLatch(4)
+        val executions = CountDownLatch(4)
+        val release = CountDownLatch(1)
+        val completed = CountDownLatch(4)
+        val drainChecks = AtomicInteger()
+        val preflightCount = AtomicInteger()
+        val executionCount = AtomicInteger()
+        val statusCount = AtomicInteger()
+        val inputThread = Thread.currentThread()
+        val output = ByteArrayOutputStream()
+        val lines = (1..10).map { id ->
+            if (id <= 4) call(id, "trim_replay", """{"folder":"/saved","from_seconds":0,"to_seconds":1}""")
+            else call(id, "get_status")
+        }
+        val responses = try {
+            ReplayMcpServer(lines.joinToString("\n", postfix = "\n").byteInputStream(), output,
+                PrintStream(ByteArrayOutputStream()), temporary, temporary.resolve("registry"), { "build" },
+                send = { _, _, _, request ->
+                    when (request.command) {
+                        CliCommand.TRIM_PREFLIGHT -> {
+                            preflightCount.incrementAndGet()
+                            preflights.countDown()
+                            check(preflights.await(10, TimeUnit.SECONDS))
+                            if (stalled == CliCommand.TRIM_PREFLIGHT) try {
+                                clock.set(TimeUnit.SECONDS.toNanos(141))
+                                check(release.await(10, TimeUnit.SECONDS))
+                                CliResponse(1, error = "preflight transport timeout")
+                            } finally { completed.countDown() }
+                            else {
+                                clock.set(TimeUnit.SECONDS.toNanos(119))
+                                CliResponse(0, """{"fingerprint":"snapshot"}""")
+                            }
+                        }
+                        CliCommand.TRIM -> try {
+                            executionCount.incrementAndGet()
+                            executions.countDown()
+                            check(executions.await(10, TimeUnit.SECONDS))
+                            // Both IDE stages take 119s (<120s); their sum exceeds the old 140s EOF guard.
+                            clock.set(TimeUnit.SECONDS.toNanos(if (stalled == CliCommand.TRIM) 260 else 238))
+                            check(release.await(10, TimeUnit.SECONDS))
+                            CliResponse(0, "/saved-trim")
+                        } finally { completed.countDown() }
+                        CliCommand.STATUS -> { statusCount.incrementAndGet(); CliResponse(0, "{}") }
+                        else -> error("unexpected request: ${request.command}")
+                    }
+                }, nanoTime = {
+                    clock.get().also { now ->
+                        if (stalled == null && Thread.currentThread() == inputThread && now == TimeUnit.SECONDS.toNanos(238) &&
+                            drainChecks.incrementAndGet() == 2) release.countDown()
+                    }
+                }).run()
+            output.toString(Charsets.UTF_8).lines().filter(String::isNotEmpty).map { McpJson.parse(it) as Map<*, *> }
+        } finally {
+            release.countDown()
+            assertTrue(completed.await(10, TimeUnit.SECONDS))
+        }
+        assertEquals(4, preflightCount.get())
+        assertEquals(if (stalled == CliCommand.TRIM_PREFLIGHT) 0 else 4, executionCount.get())
+        assertEquals(if (stalled == null) 6 else 0, statusCount.get())
+        return responses
     }
 
     @Test fun `older protocol omits structured content and unknown versions negotiate the latest`() {

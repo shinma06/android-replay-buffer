@@ -20,7 +20,8 @@ import java.util.concurrent.atomic.AtomicInteger
 /**
  * Stdio MCP server (newline-delimited JSON-RPC 2.0) over the CLI's per-request IDE connection.
  *
- * Each tool call is one [CliRequest] with the same contract, exit codes and no-retry rule as the terminal commands.
+ * Tools use the terminal commands' [CliRequest] contract, exit codes and no-retry rule. Trim sends a read-only preflight
+ * followed by execution, each on its own CLI connection and result deadline.
  * Only protocol messages reach [output]; diagnostics go to [log].
  */
 internal class ReplayMcpServer(
@@ -32,6 +33,7 @@ internal class ReplayMcpServer(
     private val build: () -> String,
     private val send: (Path, Path?, String, CliRequest) -> CliResponse = ReplayCli::exchange,
     private val callLimitMs: Long = ReplayCliProtocol.RESULT_TIMEOUT_MS + 10_000L,
+    private val nanoTime: () -> Long = System::nanoTime,
 ) {
     private class RpcError(val code: Int, message: String) : Exception(message)
 
@@ -48,21 +50,26 @@ internal class ReplayMcpServer(
     @Volatile private var protocolVersion = LATEST_VERSION
     @Volatile private var logLevel = "warning"
     private var buildIdentity: String? = null
+    private val currentCall = ThreadLocal<Call>()
     /** One accepted request (or batch); it either runs once or is rejected once, never both. */
-    private inner class Call(private val tools: Int, private val reject: (String) -> Unit, private val task: () -> Unit) : Runnable {
+    private inner class Call(private val reject: (String) -> Unit, private val task: () -> Unit) : Runnable {
         private val state = AtomicInteger(PENDING)
-        @Volatile private var started = 0L
+        @Volatile private var stageStarted = 0L
 
         override fun run() {
-            started = System.nanoTime()
+            beginStage()
             if (!state.compareAndSet(PENDING, RUNNING)) return
+            currentCall.set(this)
             try { task() } catch (failure: Exception) { log.print("MCPの応答を作成できません。\n") } finally {
+                currentCall.remove()
                 state.set(DONE)
                 accepted.remove(this)
             }
         }
 
-        fun overdue(now: Long) = state.get() == RUNNING && now - started > TimeUnit.MILLISECONDS.toNanos(callLimitMs) * tools
+        fun beginStage() { stageStarted = nanoTime() }
+
+        fun overdue(now: Long) = state.get() == RUNNING && now - stageStarted > TimeUnit.MILLISECONDS.toNanos(callLimitMs)
 
         fun cancel(message: String) {
             if (state.compareAndSet(PENDING, CANCELLED)) {
@@ -165,14 +172,14 @@ internal class ReplayMcpServer(
     }
 
     /**
-     * Every accepted request runs and answers before the server exits; each one is bounded by its own timeout from its start.
-     * Only if a running request overruns that bound are the not-yet-started ones answered with an error instead, so no
-     * accepted request is left without a definite result.
+     * Drain accepted work through each CLI stage's existing deadline, not a shared budget for preflight + execution.
+     * A stalled stage still trips the same guard; future stages (including other tools in a batch) cannot lend it time.
+     * Only then are not-yet-started requests rejected rather than executed.
      */
     private fun finishAccepted() {
         workers.shutdown()
         while (!workers.awaitTermination(DRAIN_POLL_MS, TimeUnit.MILLISECONDS)) {
-            val now = System.nanoTime()
+            val now = nanoTime()
             if (accepted.none { it.overdue(now) }) continue
             log.print("応答しない操作があるため、開始前の要求を実行せずに終了します。\n")
             accepted.toList().forEach { it.cancel(NOT_STARTED) }
@@ -206,23 +213,22 @@ internal class ReplayMcpServer(
         }
         if (message is List<*>) {
             if (message.isEmpty()) { write(error(null, -32600, "空のbatchです。")); return }
-            val tools = message.count { (it as? Map<*, *>)?.get("method") == "tools/call" }.coerceAtLeast(1)
-            submit(tools, onRejected = { text ->
+            submit(onRejected = { text ->
                 message.mapNotNull { request -> (request as? Map<*, *>)?.takeIf { "id" in it }?.let { busy(it["id"], text) } }
                     .takeIf { it.isNotEmpty() }?.let(::write)
             }) { message.mapNotNull { dispatch(it) }.takeIf { it.isNotEmpty() }?.let(::write) }
             return
         }
         val obj = message as? Map<*, *>
-        if (obj?.get("method") == "tools/call" && "id" in obj) submit(1, onRejected = { text -> write(busy(obj["id"], text)) }) {
+        if (obj?.get("method") == "tools/call" && "id" in obj) submit(onRejected = { text -> write(busy(obj["id"], text)) }) {
             dispatch(obj)?.let(::write)
         } else dispatch(message)?.let(::write)
     }
 
     private fun busy(id: Any?, message: String) = error(id, -32000, message)
 
-    private fun submit(tools: Int, onRejected: (String) -> Unit, task: () -> Unit) {
-        val call = Call(tools, onRejected, task)
+    private fun submit(onRejected: (String) -> Unit, task: () -> Unit) {
+        val call = Call(onRejected, task)
         accepted.add(call)
         try {
             workers.execute(call)
@@ -234,6 +240,7 @@ internal class ReplayMcpServer(
 
     /** Returns the response, or null for a notification. */
     private fun dispatch(message: Any?): Map<String, Any?>? {
+        currentCall.get()?.beginStage()
         val obj = message as? Map<*, *> ?: return error(null, -32600, "JSON-RPCのrequestはobjectです。")
         val hasId = "id" in obj
         val id = obj["id"]
@@ -310,9 +317,12 @@ internal class ReplayMcpServer(
         val identity = try { currentBuild() } catch (failure: Exception) {
             return CliResponse(1, error = (failure as? IllegalArgumentException)?.message ?: "配布物のCLIを利用してください。")
         }
-        return if (command == CliCommand.TRIM) ReplayCli.trim(checkNotNull(payload),
-            { request -> send(directory, project, identity, request) }, ::warnTrim)
-        else send(directory, project, identity, CliRequest(command, payload))
+        val sendRequest: (CliRequest) -> CliResponse = { request ->
+            currentCall.get()?.beginStage()
+            send(directory, project, identity, request)
+        }
+        return if (command == CliCommand.TRIM) ReplayCli.trim(checkNotNull(payload), sendRequest, ::warnTrim)
+        else sendRequest(CliRequest(command, payload))
     }
 
     private fun warnTrim(message: String) {
