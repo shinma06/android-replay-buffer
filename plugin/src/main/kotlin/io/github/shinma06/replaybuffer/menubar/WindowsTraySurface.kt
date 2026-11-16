@@ -1,5 +1,6 @@
 package io.github.shinma06.replaybuffer.menubar
 
+import java.awt.AWTEvent
 import java.awt.Component
 import java.awt.Dialog
 import java.awt.Graphics
@@ -36,6 +37,7 @@ import javax.swing.border.EmptyBorder
 internal class WindowsTraySurface : TraySurface {
     private var tray: SystemTray? = null
     @Volatile private var icon: TrayIcon? = null
+    @Volatile private var popupGesture: WindowsPopupGesture? = null
     private val state = WindowsMenuState()
     private var root: MenuWindow? = null
     private var menuFailure: String? = null
@@ -53,12 +55,14 @@ internal class WindowsTraySurface : TraySurface {
             val systemTray = tray ?: SystemTray.getSystemTray().also { tray = it }
             val current = icon ?: TrayIcon(image, tooltip).also { created ->
                 created.isImageAutoSize = true
-                created.addMouseListener(WindowsPopupGesture { event ->
+                val gesture = WindowsPopupGesture { event ->
                     val revision = state.revision
                     val point = event.locationOnScreen
                     SwingUtilities.invokeLater { if (icon === created) open(revision, point) }
-                })
+                }
+                created.addMouseListener(gesture)
                 systemTray.add(created)
+                popupGesture = gesture
                 icon = created
             }
             current.image = image
@@ -73,11 +77,19 @@ internal class WindowsTraySurface : TraySurface {
 
     override fun ownsEventSource(source: Any): Boolean = source === icon
 
+    override fun interceptPostedEvent(event: AWTEvent, target: Any): Boolean {
+        val current = icon
+        val gesture = popupGesture
+        if (current != null && gesture?.dispatchPosted(event) { it === current && ownsEventSource(it) } == true) return true
+        return super.interceptPostedEvent(event, target)
+    }
+
     override fun hide() {
         state.hide()
         menuFailure = null
         val previous = icon
         icon = null
+        popupGesture = null
         try { disposeMenus() } finally { previous?.let { tray?.remove(it) } }
     }
 
@@ -297,9 +309,9 @@ internal class WindowsMenuInput(private val state: WindowsMenuState, private val
     fun close() { closed = true }
 }
 
-/** EDT-confined lifetime state, independent of native peers for regression tests. */
+/** Mutated on the EDT. The posting thread may read revision before queuing the existing menu-open callback. */
 internal class WindowsMenuState {
-    var revision: Long = 0
+    @Volatile var revision: Long = 0
         private set
     var closed: Boolean = false
         private set
@@ -341,7 +353,21 @@ internal class WindowsMenuState {
 /** Platforms may flag press, release, or both; one physical popup gesture opens once. */
 internal class WindowsPopupGesture(private val open: (MouseEvent) -> Unit) : MouseAdapter() {
     private var openedOnPress = false
-    override fun mousePressed(e: MouseEvent) { openedOnPress = e.isPopupTrigger; if (openedOnPress) open(e) }
+
+    /** The IDE drops TrayIcon MouseEvents. Consume only our ordinary right click, without reposting it. */
+    fun dispatchPosted(event: AWTEvent, ownsSource: (Any) -> Boolean): Boolean {
+        if (event !is MouseEvent || event.button != MouseEvent.BUTTON3 || event.source?.let(ownsSource) != true) return false
+        when (event.id) {
+            MouseEvent.MOUSE_PRESSED -> mousePressed(event)
+            MouseEvent.MOUSE_RELEASED -> mouseReleased(event)
+            else -> return false
+        }
+        return true
+    }
+
+    // Post-event hooks run on the posting thread, not necessarily the EDT. Opening already queues UI work.
+    @Synchronized override fun mousePressed(e: MouseEvent) { openedOnPress = e.isPopupTrigger; if (openedOnPress) open(e) }
+    @Synchronized
     override fun mouseReleased(e: MouseEvent) {
         if (e.isPopupTrigger && !openedOnPress) open(e)
         openedOnPress = false

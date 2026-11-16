@@ -1,5 +1,6 @@
 package io.github.shinma06.replaybuffer.menubar
 
+import java.awt.AWTEvent
 import java.awt.Image
 
 /** Fires when a menu row is activated; the receiver resolves the project and runs the operation. */
@@ -22,6 +23,12 @@ internal interface TraySurface : AutoCloseable {
     fun hide()
 
     fun ownsEventSource(source: Any): Boolean = false
+
+    /** True consumes the original event before the IDE queues it. AWT surfaces only retarget invocations. */
+    fun interceptPostedEvent(event: AWTEvent, target: Any): Boolean {
+        retargetTrayInvocation(event, ::ownsEventSource, target)
+        return false
+    }
 
     override fun close()
 }

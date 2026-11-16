@@ -103,10 +103,8 @@ class ReplayMenuBarService : Disposable {
         val requested = store.showInMenuBar
         if (!trayEventsRegistered && requested && inputs.isNotEmpty() && surface.unavailableReason() == null) {
             val toolkit = Toolkit.getDefaultToolkit()
-            val ownsTraySource = surface::ownsEventSource
             IdeEventQueue.getInstance().addPostEventListener({ event ->
-                if (!disposed) retargetTrayInvocation(event, ownsTraySource, toolkit)
-                false
+                !disposed && surface.interceptPostedEvent(event, toolkit)
             }, this)
             trayEventsRegistered = true
         }

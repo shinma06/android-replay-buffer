@@ -1,14 +1,26 @@
 package io.github.shinma06.replaybuffer.menubar
 
 import java.awt.AWTEvent
+import java.awt.Image
 import java.awt.event.ActionEvent
 import java.awt.event.InvocationEvent
+import java.awt.event.MouseEvent
+import javax.swing.JPanel
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertSame
 import org.junit.jupiter.api.Test
 
 class TrayInvocationEventsTest {
+    // AwtTraySurface inherits this default policy for both template and non-template icons.
+    private fun surface(owns: (Any) -> Boolean) = object : TraySurface {
+        override fun unavailableReason(): String? = null
+        override fun show(image: Image, tooltip: String, menu: MenuBarMenu, dispatch: MenuDispatch): String? = null
+        override fun hide() {}
+        override fun close() {}
+        override fun ownsEventSource(source: Any): Boolean = owns(source)
+    }
+
     @Test
     fun `owned invocations keep their identity class id and runnable`() {
         val icon = Any()
@@ -19,7 +31,7 @@ class TrayInvocationEventsTest {
         val type = event.javaClass
         val id = event.id
         val whenPosted = event.`when`
-        retargetTrayInvocation(event, { it === icon }, target)
+        assertFalse(surface { it === icon }.interceptPostedEvent(event, target))
         assertSame(identity, event)
         assertSame(type, event.javaClass)
         assertSame(target, event.source)
@@ -39,10 +51,11 @@ class TrayInvocationEventsTest {
             InvocationEvent(foreign, Runnable {}),
             InvocationEvent(foreign, Runnable {}).apply { source = null },
             ActionEvent(icon, ActionEvent.ACTION_PERFORMED, "open"),
+            MouseEvent(JPanel(), MouseEvent.MOUSE_RELEASED, 1L, 0, 10, 10, 1, true, MouseEvent.BUTTON3).apply { source = icon },
             object : AWTEvent(icon, 42) {},
         ).forEach { event ->
             val before = event.source
-            retargetTrayInvocation(event, { it === icon }, Any())
+            assertFalse(surface { it === icon }.interceptPostedEvent(event, Any()))
             assertSame(before, event.source)
         }
     }
@@ -55,14 +68,15 @@ class TrayInvocationEventsTest {
         var owner: Any? = current
         val owns: (Any) -> Boolean = { it === owner }
         val stale = InvocationEvent(old, Runnable {})
-        retargetTrayInvocation(stale, owns, target)
+        val surface = surface(owns)
+        assertFalse(surface.interceptPostedEvent(stale, target))
         assertSame(old, stale.source)
         val active = InvocationEvent(current, Runnable {})
-        retargetTrayInvocation(active, owns, target)
+        assertFalse(surface.interceptPostedEvent(active, target))
         assertSame(target, active.source)
         owner = null
         val hidden = InvocationEvent(current, Runnable {})
-        retargetTrayInvocation(hidden, owns, target)
+        assertFalse(surface.interceptPostedEvent(hidden, target))
         assertSame(current, hidden.source)
     }
 }
