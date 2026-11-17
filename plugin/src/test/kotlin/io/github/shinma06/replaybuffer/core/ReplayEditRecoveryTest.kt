@@ -687,6 +687,76 @@ class ReplayEditRecoveryTest {
         assertEquals(original, bytes(folder))
     }
 
+    @Test fun disposedControllerWaitsForRetiredAndCurrentPlaybackBeforeAllowingRelocation() = playbackCleanup(false)
+    @Test fun retiredPlaybackCleanupTimeoutRetainsDespiteLaterSuccessfulCleanup() = playbackCleanup(true)
+
+    private fun playbackCleanup(timeout: Boolean) {
+        val (folder, save) = source()
+        val original = bytes(folder)
+        val origin = assertNotNull(ReplayEditOrigin.capture(save))
+        val entered = List(2) { CountDownLatch(1) }
+        val release = List(2) { CountDownLatch(1) }
+        val decoders = java.util.concurrent.atomic.AtomicInteger()
+        val lifetime = Disposer.newDisposable()
+        ApplicationManager.setApplication(MockApplication(lifetime), lifetime)
+        lateinit var controller: ReplayPlayerController
+        var created = false
+        lateinit var retired: io.github.shinma06.replaybuffer.ui.ReplayPlaybackSession
+        lateinit var current: io.github.shinma06.replaybuffer.ui.ReplayPlaybackSession
+        fun playback() = controller.javaClass.getDeclaredField("playback").apply { isAccessible = true }
+            .get(controller) as io.github.shinma06.replaybuffer.ui.ReplayPlaybackSession
+        try {
+            SwingUtilities.invokeAndWait {
+                controller = ReplayPlayerController(MockProject(null, lifetime), folder, decoderFactory = { replay, cache ->
+                    val index = decoders.getAndIncrement() - 1 // The first decoder belongs to the preview.
+                    if (index in entered.indices) {
+                        entered[index].countDown() // Real worker is already inside its own SavedReplay lease.
+                        while (release[index].count != 0L) {
+                            try { release[index].await() } catch (_: InterruptedException) { /* Hold native cleanup deliberately. */ }
+                        }
+                    }
+                    io.github.shinma06.replaybuffer.core.ReplayFrameCursor(replay, cache = cache)
+                })
+                created = true
+            }
+            val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30)
+            while (true) {
+                var ready = false
+                SwingUtilities.invokeAndWait { assertNull(controller.state.error); ready = !controller.state.loading && controller.state.image != null }
+                if (ready) break
+                check(System.nanoTime() < deadline)
+                Thread.sleep(10)
+            }
+            SwingUtilities.invokeAndWait { controller.togglePlay(); retired = playback() }
+            assertTrue(entered[0].await(30, TimeUnit.SECONDS))
+            SwingUtilities.invokeAndWait {
+                controller.togglePlay() // Pause clears the old session before its source lease is released.
+                controller.togglePlay()
+                current = playback()
+            }
+            assertTrue(entered[1].await(30, TimeUnit.SECONDS))
+            SwingUtilities.invokeAndWait { controller.dispose() }
+            assertFalse(controller.resourcesClosed.isDone)
+            release[1].countDown()
+            assertTrue(current.resourcesClosed.get(30, TimeUnit.SECONDS))
+            assertFalse(controller.resourcesClosed.isDone)
+            assertFailsWith<IllegalStateException> { origin.relocate() }
+            if (timeout) assertFalse(controller.resourcesClosed.get(40, TimeUnit.SECONDS))
+            release[0].countDown()
+            assertTrue(retired.resourcesClosed.get(30, TimeUnit.SECONDS))
+            assertEquals(!timeout, controller.resourcesClosed.get(30, TimeUnit.SECONDS))
+            assertEquals(original, bytes(folder))
+            if (!timeout) assertEquals(folder, restoreReplayRecovery(origin.relocate()))
+        } finally {
+            release.forEach(CountDownLatch::countDown)
+            if (created) {
+                SwingUtilities.invokeAndWait { controller.dispose() }
+                controller.resourcesClosed.get(40, TimeUnit.SECONDS)
+            }
+            Disposer.dispose(lifetime)
+        }
+    }
+
     private fun concurrentRestore(failFirst: Boolean) {
         val (folder, save) = source()
         val original = bytes(folder)

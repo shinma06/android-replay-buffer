@@ -2,6 +2,7 @@ package io.github.shinma06.replaybuffer.ui
 
 import io.github.shinma06.replaybuffer.core.CaptureStore
 import io.github.shinma06.replaybuffer.core.ReplayFrameCursor
+import io.github.shinma06.replaybuffer.core.ReplayVideoDecoder
 import io.github.shinma06.replaybuffer.core.ReplaySettings
 import io.github.shinma06.replaybuffer.core.SaveWriter
 import io.github.shinma06.replaybuffer.core.VideoPacket
@@ -116,6 +117,52 @@ class ReplayPlaybackVideoTest {
         }
     }
 
+    @Test fun sourceOpenFailureCompletesBothWorkersConservatively() {
+        val session = ReplayPlaybackSession(root.resolve("missing-replay"), 0, 1, {}, {}, {})
+        try {
+            session.start()
+            assertFalse(session.resourcesClosed.get(10, TimeUnit.SECONDS))
+        } finally { session.stop() }
+    }
+
+    @Test fun callbackFailureStillFinishesBothWorkersButReportsUncertainCompletion() {
+        val failed = CountDownLatch(1)
+        val session = ReplayPlaybackSession(fixture(), 0, 0, {}, {
+            Thread.currentThread().uncaughtExceptionHandler = Thread.UncaughtExceptionHandler { _, _ -> failed.countDown() }
+            error("Injected finished callback failure")
+        }, {}, awaitAudio = { it.await(10, TimeUnit.SECONDS) })
+        try {
+            session.start()
+            assertFalse(session.resourcesClosed.get(10, TimeUnit.SECONDS))
+            assertTrue(failed.await(10, TimeUnit.SECONDS))
+        } finally { session.stop() }
+    }
+
+    @Test fun decoderCloseFailureIsNotHiddenByCancellationOrFinally() = interruptedChannel(true)
+    @Test fun stoppedNioReadCancellationWithoutCloseFailureFinishesSuccessfully() = interruptedChannel(false)
+
+    private fun interruptedChannel(closeFails: Boolean) {
+        val entered = CountDownLatch(1)
+        val session = ReplayPlaybackSession(fixture(), 0, 800_000, {}, {}, {}, decoderFactory = { saved ->
+            val real = ReplayFrameCursor(saved)
+            object : ReplayVideoDecoder by real {
+                override fun seekForPlayback(atUs: Long, checkActive: () -> Unit): ReplayFrameCursor.Decoded {
+                    entered.countDown()
+                    try { CountDownLatch(1).await() }
+                    catch (_: InterruptedException) { throw java.nio.channels.ClosedByInterruptException() }
+                    error("Unexpected continuation")
+                }
+                override fun close() { real.close(); if (closeFails) error("Injected decoder close failure") }
+            }
+        })
+        try {
+            session.start()
+            assertTrue(entered.await(10, TimeUnit.SECONDS))
+            session.stop()
+            assertEquals(!closeFails, session.resourcesClosed.get(10, TimeUnit.SECONDS))
+        } finally { session.stop() }
+    }
+
     private inner class Playback(
         private val fromUs: Long = 0,
         val untilUs: Long = 800_000,
@@ -151,6 +198,7 @@ class ReplayPlaybackVideoTest {
 
         private fun join() {
             worker.get()?.let { it.join(10_000); assertFalse(it.isAlive, "video worker still running") }
+            assertTrue(session.resourcesClosed.get(10, TimeUnit.SECONDS))
         }
 
         override fun close() { session.stop(); join() }

@@ -31,6 +31,7 @@ import kotlin.math.abs
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class ReplayPlaybackAudioTest {
@@ -614,6 +615,35 @@ class ReplayPlaybackAudioTest {
         }
     }
 
+    @Test fun audioCallbackFailureCompletesAfterBothWorkerFinallyPaths() {
+        val failed = CountDownLatch(1)
+        val session = ReplayPlaybackSession(fixture(), 0, 8_000_000, {}, {}, {
+            Thread.currentThread().uncaughtExceptionHandler = Thread.UncaughtExceptionHandler { _, _ -> failed.countDown() }
+            error("Injected audio callback failure")
+        }, audioOutput = { error("Injected output factory failure") })
+        try {
+            session.start()
+            assertTrue(failed.await(10, TimeUnit.SECONDS))
+            session.stop()
+            assertFalse(session.resourcesClosed.get(10, TimeUnit.SECONDS))
+        } finally { session.stop() }
+    }
+
+    @Test fun nativeAudioCloseFailureReportsUncertainCompletion() {
+        val writing = CountDownLatch(1)
+        val output = Output().apply {
+            beforeWrite = { writing.countDown(); CountDownLatch(1).await() }
+            beforeClose = { error("Injected native close failure") }
+        }
+        val session = ReplayPlaybackSession(fixture(), 0, 8_000_000, {}, {}, {}, audioOutput = { output.line })
+        try {
+            session.start()
+            assertTrue(writing.await(10, TimeUnit.SECONDS))
+            session.stop()
+            assertFalse(session.resourcesClosed.get(10, TimeUnit.SECONDS))
+        } finally { session.stop() }
+    }
+
     private fun await(latch: CountDownLatch) {
         assertTrue(latch.await(10, TimeUnit.SECONDS), "playback latch did not complete")
     }
@@ -636,7 +666,7 @@ class ReplayPlaybackAudioTest {
             assertTrue(output.closed.await(10, TimeUnit.SECONDS), "audio line was not closed")
             assertTrue(failures.isEmpty(), failures.toString())
             return output
-        } finally { session.stop() }
+        } finally { session.stop(); assertTrue(session.resourcesClosed.get(10, TimeUnit.SECONDS)) }
     }
 
     private class Output {

@@ -180,6 +180,8 @@ internal class ReplayPlayerController(
     @Volatile private var saved: SavedReplay? = null
     private var rules: TrimRules? = null
     private var playback: ReplayPlaybackSession? = null
+    private val playbackClosures = java.util.concurrent.ConcurrentHashMap.newKeySet<java.util.concurrent.CompletableFuture<Boolean>>()
+    private val playbackCleanupFailed = AtomicBoolean()
     private val playedFrames = ReplayPlaybackFrames<Pair<Long, ImageBitmap?>>(::publish)
     private var taskCancel: AtomicBoolean? = null
     private val thumbnails = ThumbnailCache<ImageBitmap>(maxBytes = 16L * 1024 * 1024) { it.width.toLong() * it.height * 4 }
@@ -444,6 +446,12 @@ internal class ReplayPlayerController(
             onGap = { us -> showFrame(us to null) },
             decoderFactory = { decoderFactory(it, frameCache) })
         playback = session
+        val closed = session.resourcesClosed
+        playbackClosures.add(closed)
+        closed.whenComplete { clean, failure ->
+            if (clean != true || failure != null) playbackCleanupFailed.set(true)
+            playbackClosures.remove(closed)
+        }
         state = state.copy(playing = true, audioNote = null, message = null)
         session.start()
     }
@@ -540,14 +548,20 @@ internal class ReplayPlayerController(
         disposed = true
         previewGeneration++
         playback?.stop()
+        // Retired sessions can still own SavedReplay leases while stop/decoder/native audio unwinds.
+        val stoppedSessions = playbackClosures.toTypedArray()
         thumbnailGeneration.incrementAndGet()
         thumbnailExecutor.shutdownNow()
         executor.execute {
             val thumbnailsClosed = runCatching { thumbnailExecutor.awaitTermination(30, java.util.concurrent.TimeUnit.SECONDS) }.getOrDefault(false)
+            val playbackClosed = runCatching {
+                java.util.concurrent.CompletableFuture.allOf(*stoppedSessions).get(30, java.util.concurrent.TimeUnit.SECONDS)
+                stoppedSessions.all { it.getNow(false) } && !playbackCleanupFailed.get()
+            }.getOrDefault(false)
             val decoderClosed = runCatching { decoder?.close() }.isSuccess
             frameCache.clear()
             val replayClosed = runCatching { saved?.close() }.isSuccess
-            resourcesClosed.complete(thumbnailsClosed && decoderClosed && replayClosed)
+            resourcesClosed.complete(thumbnailsClosed && playbackClosed && decoderClosed && replayClosed)
         }
         executor.shutdown()
     }

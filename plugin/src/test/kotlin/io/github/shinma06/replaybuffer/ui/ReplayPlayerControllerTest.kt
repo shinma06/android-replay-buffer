@@ -74,6 +74,30 @@ class ReplayPlayerControllerTest {
         assertEquals(original, files())
     }
 
+    @Test fun completedFailedPlaybackRemainsConservativeAfterTheSessionIsRetired() {
+        val initial = AtomicBoolean(true)
+        val entered = CountDownLatch(1)
+        withController(decoderFactory = { replay, cache ->
+            val real = ReplayFrameCursor(replay, cache = cache)
+            if (initial.getAndSet(false)) real else object : ReplayVideoDecoder by real {
+                override fun seekForPlayback(atUs: Long, checkActive: () -> Unit): ReplayFrameCursor.Decoded {
+                    entered.countDown()
+                    CountDownLatch(1).await()
+                    error("Unexpected continuation")
+                }
+                override fun close() { real.close(); error("Injected retired decoder close failure") }
+            }
+        }) { controller ->
+            SwingUtilities.invokeAndWait { controller.togglePlay() }
+            val session = playback(controller)
+            assertTrue(entered.await(30, TimeUnit.SECONDS))
+            SwingUtilities.invokeAndWait { controller.togglePlay() }
+            assertFalse(session.resourcesClosed.get(30, TimeUnit.SECONDS))
+            SwingUtilities.invokeAndWait { controller.dispose() }
+            assertFalse(controller.resourcesClosed.get(30, TimeUnit.SECONDS))
+        }
+    }
+
     @Test fun initialPngWaitsForTheGenuineFirstPreviewThenNeedsNoTrimEdits() {
         val entered = CountDownLatch(1)
         val release = CountDownLatch(1)
