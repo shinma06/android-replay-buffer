@@ -145,7 +145,7 @@ T4aのfixtureと読み手をこの形で先に揃え、T4bの書き手は同じ�
 <a id="e3-position-bounds"></a>
 ## E3 到着基準の証明と一般の誤差範囲を区別する
 
-対象: finding `01M7MA54TD38XG1QW6X6SH4DBJ`。実装仕様書6.6(5)(e)（670行）の「どの行も`t_latest`はWを超えない」を撤回し、以下に置き換える。関連する4.4の321行の証明は下の前提がある場合に限定する。6.9(5)(c)（888行）の最終行等級だけから`arrival ⇒ t_earliest == null`とする検査も、下限が実際に無い場合の検査に読み替える。方針書4.4(5)（218行）の「窓外にはみ出す行と誤差幅も切り詰めない」は保持する。
+対象: finding `01M7MA54TD38XG1QW6X6SH4DBJ`。実装仕様書6.6(5)(e)（670行）の「どの行も`t_latest`はWを超えない」を撤回し、以下に置き換える。関連する4.4の321行の証明は下の前提がある場合に限定する。**6.9(5)(c)（888行）・方針書4.8（319行）の、最終`time_grade=arrival`の全行で`t_earliest_ns=null`とする保存規約は変更しない。** オーナー回答7章の2「到着基準の行は t_earliest_ns を null」に従う。方針書4.4(5)（218行）の窓外の誤差を切り詰めない規則と、この下限を主張しない保存規約を両立させる。
 
 ### 反例と一般規則
 
@@ -153,9 +153,21 @@ T4aのfixtureと読み手をこの形で先に揃え、T4bの書き手は同じ�
 
 最終行等級は`worst(記録の等級, 終点の等級)`であり、**最終行等級がarrivalであることだけでは証明の前提にならない**。記録がmeasured／estimatedで有限の幅を持ち、終点がarrivalとなる混合ケースも含むためである。同じ軸で`t = W`、`T_S_lo = dの点`、`d_hi = dの点 + 1ms`、`T_S_hi`なしを与える式の試験では、最終行等級がarrivalでも`t_latest = W + 1ms`、`t_earliest = null`になる。
 
-混合ケースも、同じAnchorIdなら原本320行の上下限の引き算、別AnchorIdなら4.2のその区間の錨からHを経由する変換で範囲を求める。例えば別錨のmeasured記録をHへ写した範囲が`[S−1ms,S+1ms]`、点がSなら、t範囲は`[W−1ms,W+1ms]`、点はWである。終点の等級から最終行等級がarrivalとなっても、既に得た有限下限をnullに上書きしたり、上限をWに切ったりしない。これは誤差のある測定範囲を記録したもので、発生が受信より後だったと断定するものではない。E1のestimated候補の因果関係による除外と、measured記録の誤差幅の保存を混同しない。
+混合ケースも、同じAnchorIdなら原本320行の上下限の引き算、別AnchorIdなら4.2のその区間の錨からHを経由する変換で**内部の位置範囲**を求める。例えば別錨のmeasured記録をHへ写した範囲が`[S−1ms,S+1ms]`、点がSなら、内部のt範囲は`[W−1ms,W+1ms]`、点はWである。終点の等級から最終行等級がarrivalとなる場合も、この有限下限を内部で知り得る。しかし保存行は`time_grade=arrival`、`t_ns=W`、`t_earliest_ns=null`、`t_latest_ns=W+1ms`とする。有限な内部下限を保存しないことは出力範囲を`(−∞,W+1ms]`へ保守的に広げる規約であり、データの可能な位置を狭めない。内部でも有限下限を知り得ないという主張ではなく、nullを0で埋めない。上限をWに切らない。これは誤差範囲であり、発生が受信より後だったと断定するものでもない。E1のestimated候補の因果関係による除外と、measured記録の誤差幅の保存を混同しない。
 
-全等級について、**有限の点が宣言した範囲内**にあることを検査する。片側の限界が無い場合だけ対応する端をnullとし、最終等級だけで範囲を広げたり狭めたりしない。measuredの点・誤差とI6、MP4の表示範囲を`[0,W]`に切る規則、coverage区間を`[0,W)`に切る規則は変更しない。位置範囲の保存と表示・長さの切り取りは別の操作である。
+値の対応は次のとおりとする。`lo`・`hi`が不明ならその端はnullであり、JSONのnsの表記は原本どおりとする。
+
+```text
+内部の位置 = (lo, point, hi)                    // 同じ錨／別錨の変換結果
+最終行等級 = worst(記録の等級, 終点の等級)
+t_ns = point
+t_earliest_ns = (最終行等級 == arrival) ? null : lo
+t_latest_ns = hi
+```
+
+この保存規約はE1のestimated記録が終点との組合せで最終arrivalになる場合にも適用する。候補列挙・内部範囲を変えず、下限の出力だけをnullにする。所属判定には内部区間に原本4.2・6.6の規則を適用し、保存されたnullから「内部にも有限下限が無かった」と逆推定しない。読み手が保存物からその内部下限を推測復元することもない。
+
+全等級について、**有限の点が内部範囲および宣言した出力範囲の中にあること**を検査する。最終arrivalは下限を常にnullとし、点・上限は内部の値を保持する。ほかの等級は内部の上下限をそのまま出す。measuredの点・誤差とI6、MP4の表示範囲を`[0,W]`に切る規則、coverage区間を`[0,W)`に切る規則は変更しない。内部の所属判定、下限を主張しない保存規約、表示・長さの切り取りは別の操作である。
 
 ### 上限を証明できる前提
 
@@ -169,7 +181,7 @@ T4aのfixtureと読み手をこの形で先に揃え、T4bの書き手は同じ�
 
 ### 後続Trailと試験
 
-- T2: 670行(e)を「上の前提を持つarrival構成で`t == t_latest ≤ W`。一般の行では点が範囲内」に置換する。`measuredAtEndKeepsLatestBeyondWindow`（±1msずつ、W+2ms）、`mixedArrivalGradeDoesNotImplyLatestWithinWindow`（記録measured/estimatedの両方）、`otherAnchorUsesHostBounds`、`rawArrivalBoundRequiresSameSourceAndFloor`を追加する。
-- 境界は整数nsで検査する。生時刻arrivalは`h_i = S`／`S−1ns`、ρ=0／500ppm、同じ系のfloorへの自己の寄与を保持した場合の等号を含める。一般範囲は`t_latest = W`／`W+1ns`／`W+2ms`、`t_earliest = 0`／`−1ns`、点と両端の等号、片側nullを含める。原本の所属判定（上限0は窓内、−1nsは窓外、下限Wは窓内、W+1nsは窓外）も保持する。
-- T4a: 窓外にはみ出す誤差と混合arrivalのfixtureを読み、その値・nullを保持する。最終等級だけから上下限を作り直さない。
-- T4b: JSONLへ範囲をそのまま保存し、trimでは点と有限な上下限からaを引く。もとの範囲の外側へのはみ出しは、新しい窓でも切り詰めない。MP4・coverageの窓内切り取りとは分けて試験する。
+- T2: 670行(e)を「上の前提を持つarrival構成で`t == t_latest ≤ W`。一般の行では点が内部・出力範囲内」に置換する。`measuredAtEndKeepsLatestBeyondWindow`（±1msずつ、W+2ms）、`mixedArrivalGradeDoesNotImplyLatestWithinWindow`（記録measured/estimatedの両方）、`otherAnchorUsesHostBounds`、`rawArrivalBoundRequiresSameSourceAndFloor`を追加する。`arrivalHasNullEarliest`は維持し、`everyFinalArrivalSerializesNullEarliest`で記録／終点の等級全9組、同じ錨／別錨、内部下限が有限／不明の場合を検査する。最終arrivalなら例外なく出力下限はnullであり、内部の有限下限・点・上限は変わらない。
+- 境界は整数nsで検査する。生時刻arrivalは`h_i = S`／`S−1ns`、ρ=0／500ppm、同じ系のfloorへの自己の寄与を保持した場合の等号を含める。一般範囲は`t_latest = W`／`W+1ns`／`W+2ms`、内部下限0／−1ns、点と両端の等号、片側nullを含める。原本の内部区間による所属判定（上限0は窓内、−1nsは窓外、下限Wは窓内、W+1nsは窓外）も保持する。内部下限がW+1nsの最終arrival行を窓外と判定しても、出力下限を数値へ変更しない。
+- T4a: 窓外にはみ出す誤差と混合arrivalのfixtureを読む。measuredのW+2ms、最終arrivalのW+1msの上限を保持し、arrivalのfixtureは内部で有限下限を知り得るケースも含めて必ず`t_earliest_ns=null`とする。読み手はそのnullを保持し、0や推測値を入れない。
+- T4b: JSONLは上の保存規約に従い、最終arrivalの全行で`t_earliest_ns=null`を検査する。trimでは点と有限な上下限からaを引き、arrivalのnull下限はそのまま保持する。窓外への上限のはみ出しや、ほかの等級の有限下限は新しい窓でも切り詰めない。内部所属判定と保存の区別、直接保存・読み取り・繰り返しtrimでのarrival下限nullの維持を試験する。MP4・coverageの窓内切り取りとは分ける。
