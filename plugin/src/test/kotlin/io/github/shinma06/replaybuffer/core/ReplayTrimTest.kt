@@ -1,5 +1,6 @@
 package io.github.shinma06.replaybuffer.core
 
+import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import org.jcodec.codecs.h264.H264Decoder
 import org.jcodec.codecs.h264.H264Encoder
@@ -599,6 +600,200 @@ class ReplayTrimTest {
             Files.walk(root).use { files -> files.sorted(Comparator.reverseOrder()).forEach(Files::deleteIfExists) }
         }
     }
+
+    private fun FrozenCapture.withTimedRows(times: List<Pair<Long?, Long>>): FrozenCapture {
+        val mapped = times.map { (t, u) -> MappedTime(t, 0, u, t) }
+        return copy(
+            logs = mapped.mapIndexed { i, time ->
+                LogEntry("row-$i", DeviceLog(i.toLong(), 1, 1, 1, 0, 4, "tag", "row-$i", byteArrayOf(i.toByte())),
+                    generation, time, 0, true, 0)
+            },
+            touches = mapped.mapIndexed { i, time ->
+                TouchEntry(TouchSample(i.toLong(), "touchscreen", i, TouchAction.DOWN, 1, 1),
+                    generation, time, 0, 64, 64)
+            },
+        )
+    }
+
+    private fun rowInRange(t: Long?, uncertainty: Long?, start: Long? = 1000, end: Long? = 2000,
+                           startUncertainty: Long? = 20, endUncertainty: Long? = 30): Boolean =
+        ReplayTrim().inTnsRange(JsonObject().apply {
+            addProperty("t_ns", t?.toString())
+            addProperty("t_uncertainty_ns", uncertainty?.toString())
+        }, start, end, startUncertainty, endUncertainty)
+
+    @Test
+    fun rowRangeCombinesOnlyTheRelevantBoundaryErrorAndIncludesEquality() {
+        assertFalse(rowInRange(969, 10))
+        assertTrue(rowInRange(970, 10))
+        assertTrue(rowInRange(985, 10))
+        assertTrue(rowInRange(1500, 0))
+        assertTrue(rowInRange(2040, 10))
+        assertFalse(rowInRange(2041, 10))
+        assertFalse(rowInRange(969, 10, endUncertainty = null))
+        assertFalse(rowInRange(2041, 10, startUncertainty = null))
+        assertTrue(rowInRange(1000, 0, startUncertainty = 0, endUncertainty = 0))
+        assertTrue(rowInRange(2000, 0, startUncertainty = 0, endUncertainty = 0))
+    }
+
+    @Test
+    fun rowRangeKeepsNullMaxAndNegativeUncertaintiesUnknown() {
+        assertTrue(rowInRange(null, 0))
+        for (unknown in listOf(null, -1L, Long.MAX_VALUE)) {
+            assertTrue(rowInRange(0, unknown))
+            assertTrue(rowInRange(3000, unknown))
+            assertTrue(rowInRange(0, 0, startUncertainty = unknown))
+            assertTrue(rowInRange(3000, 0, endUncertainty = unknown))
+        }
+        assertTrue(rowInRange(0, 0, start = null))
+        assertTrue(rowInRange(3000, 0, end = null))
+        val missing = JsonObject().apply { addProperty("t_ns", "0") }
+        assertTrue(ReplayTrim().inTnsRange(missing, 1000, 2000, 0, 0))
+        missing.remove("t_ns")
+        assertTrue(ReplayTrim().inTnsRange(missing, 1000, 2000, 0, 0))
+    }
+
+    @Test
+    fun rowRangeCannotProveExclusionWhenDistanceOrCombinedErrorOverflows() {
+        assertTrue(rowInRange(Long.MIN_VALUE, 0, start = 1, end = null, startUncertainty = 0))
+        assertTrue(rowInRange(Long.MAX_VALUE, 0, start = null, end = -2, endUncertainty = 0))
+        assertTrue(rowInRange(0, Long.MAX_VALUE - 1))
+        assertTrue(rowInRange(3000, Long.MAX_VALUE - 1))
+        assertTrue(rowInRange(Long.MIN_VALUE, 0, start = Long.MIN_VALUE, end = null, startUncertainty = 0))
+        assertTrue(rowInRange(Long.MAX_VALUE, 0, start = null, end = Long.MAX_VALUE, endUncertainty = 0))
+    }
+
+    @Test
+    fun rowBoundariesUseOriginalFrameErrorsWithoutAccumulatingOnRetrim() =
+        withRuns(listOf(List(16) { it * 100_000L })) { root, _, capture, _, _ ->
+            val video = capture.video.mapIndexed { i, frame ->
+                val t = 600_000_000 + frame.pts * 1000
+                frame.copy(time = MappedTime(t, 0, if (i == 4 || i == 9) 20_000_000 else 0, t))
+            }
+            val times = listOf(978_999_999L, 979_000_000L, 985_000_000L, 1_250_000_000L,
+                1_515_000_000L, 1_521_000_000L, 1_521_000_001L)
+            val source = write(capture.copy(video = video, start = 0, end = 3_000_000_000, endUncertainty = 0)
+                .withTimedRows(times.map { it to 1_000_000L }), root).directory
+            val original = hashes(source)
+            val sourceFrames = rows(source)
+            assertEquals("1000000000", sourceFrames[4]["display_t_ns"].asString)
+            assertEquals("0", sourceFrames[8]["t_uncertainty_ns"].asString)
+            assertEquals(sourceFrames[9]["t_ns"], sourceFrames[8]["confirmed_t_end_ns"])
+            val dir = trim(source, sourceFrames[4]["movie_pts_us"].asString.toLong(), sourceFrames[8]["movie_end_us"].asString.toLong())
+            val repeated = trim(dir, 0, 500_000)
+            assertEquals("0", manifest(dir)["timebase"].asJsonObject["window_end_uncertainty_ns"].asString)
+            assertEquals("500000000", rows(dir).last()["confirmed_t_end_ns"].asString)
+            assertFalse(rows(dir).any { it["t_ns"].asString == "500000000" })
+            for (file in listOf("logcat-device.jsonl", "logcat-app.jsonl", "touches.jsonl")) {
+                val before = Files.readAllLines(source.resolve(file)).map { JsonParser.parseString(it).asJsonObject }
+                val kept = Files.readAllLines(dir.resolve(file)).map { JsonParser.parseString(it).asJsonObject }
+                val again = Files.readAllLines(repeated.resolve(file)).map { JsonParser.parseString(it).asJsonObject }
+                assertEquals(times.subList(1, 6).map { (it - 1_000_000_000).toString() }, kept.map { it["t_ns"].asString }, file)
+                assertEquals(kept, again, file)
+                kept.zip(before.subList(1, 6)).forEach { (row, originalRow) ->
+                    assertEquals(originalRow["t_uncertainty_ns"], row["t_uncertainty_ns"], file)
+                    assertEquals(originalRow.keySet(), row.keySet(), file)
+                }
+            }
+            val errors = sourceFrames.subList(4, 9).map { it["t_uncertainty_ns"] }
+            assertEquals(errors, rows(dir).map { it["t_uncertainty_ns"] })
+            assertEquals(errors, rows(repeated).map { it["t_uncertainty_ns"] })
+            assertEquals(4, manifest(repeated)["schema"].asInt)
+            assertEquals(original, hashes(source))
+        }
+
+    @Test
+    fun terminalAuthoringEndDoesNotBorrowTheFiniteFrameStartError() =
+        withRuns(listOf(listOf(0L, 500_000L))) { root, _, capture, _, _ ->
+            val video = capture.video.map { frame ->
+                val t = 1_000_000_000 + frame.pts * 1000
+                frame.copy(time = MappedTime(t, 0, 0, t))
+            }
+            val source = write(capture.copy(video = video, start = 0, end = 2_000_000_000, endUncertainty = 0,
+                states = capture.states.mapValues { (_, value) -> value.copy(state = StreamState.UNAVAILABLE) })
+                .withTimedRows(listOf(1_800_000_000L to 0L)), root).directory
+            val end = rows(source).last()
+            assertEquals("0", end["t_uncertainty_ns"].asString)
+            assertTrue(end["confirmed_t_end_ns"].isJsonNull)
+            assertTrue(end["terminal_authoring_tick"].asBoolean)
+            val dir = trim(source, rows(source).first()["movie_pts_us"].asString.toLong(), end["movie_end_us"].asString.toLong())
+            for (file in listOf("logcat-device.jsonl", "logcat-app.jsonl", "touches.jsonl")) {
+                val lines = Files.readAllLines(dir.resolve(file))
+                assertEquals(1, lines.size, file)
+                val row = JsonParser.parseString(lines.single()).asJsonObject
+                assertEquals("800000000", row["t_ns"].asString, file)
+                assertEquals("0", row["t_uncertainty_ns"].asString, file)
+            }
+        }
+
+    @Test
+    fun unknownRowTimesAndErrorsArePreservedAcrossRetrim() =
+        withRuns(listOf(List(16) { it * 100_000L })) { root, _, capture, _, _ ->
+            val video = capture.video.map { frame ->
+                val t = 600_000_000 + frame.pts * 1000
+                frame.copy(time = MappedTime(t, 0, 0, t))
+            }
+            val times = listOf(null to Long.MAX_VALUE, 985_000_000L to -1L,
+                985_000_000L to Long.MAX_VALUE, 1_800_000_000L to Long.MAX_VALUE)
+            val source = write(capture.copy(video = video, start = 0, end = 3_000_000_000, endUncertainty = 0)
+                .withTimedRows(times), root).directory
+            val frames = rows(source)
+            val dir = trim(source, frames[4]["movie_pts_us"].asString.toLong(), frames[8]["movie_end_us"].asString.toLong())
+            val repeated = trim(dir, 0, 500_000)
+            for (file in listOf("logcat-device.jsonl", "logcat-app.jsonl", "touches.jsonl")) {
+                val before = Files.readAllLines(source.resolve(file)).map { JsonParser.parseString(it).asJsonObject }
+                val kept = Files.readAllLines(dir.resolve(file)).map { JsonParser.parseString(it).asJsonObject }
+                val again = Files.readAllLines(repeated.resolve(file)).map { JsonParser.parseString(it).asJsonObject }
+                assertEquals(times.size, kept.size, file)
+                assertEquals(before.map { it["t_uncertainty_ns"] }, kept.map { it["t_uncertainty_ns"] }, file)
+                assertEquals(before.map { it["t_ns"].isJsonNull }, kept.map { it["t_ns"].isJsonNull }, file)
+                assertEquals(kept, again, file)
+            }
+        }
+
+    @Test
+    fun unconfirmedDisplayEndDoesNotBorrowTheNextSampleError() =
+        withRuns(listOf(List(16) { it * 100_000L })) { root, _, capture, _, _ ->
+            val video = capture.video.map { frame ->
+                val t = 600_000_000 + frame.pts * 1000
+                frame.copy(time = MappedTime(t, 0, 0, t))
+            }
+            val gap = CaptureGap("video", 1_410_000_000, 1_490_000_000, "fixture", 0, capture.generation, 0)
+            val source = write(capture.copy(video = video, start = 0, end = 3_000_000_000,
+                endUncertainty = 0, gaps = listOf(gap)).withTimedRows(listOf(1_515_000_000L to 0L)), root).directory
+            val frames = rows(source)
+            assertTrue(frames[8]["confirmed_t_end_ns"].isJsonNull)
+            assertFalse(frames[8]["terminal_authoring_tick"].asBoolean)
+            assertEquals("1500000000", frames[9]["t_ns"].asString)
+            val dir = trim(source, frames[4]["movie_pts_us"].asString.toLong(), frames[8]["movie_end_us"].asString.toLong())
+            for (file in listOf("logcat-device.jsonl", "logcat-app.jsonl", "touches.jsonl")) {
+                val lines = Files.readAllLines(dir.resolve(file))
+                assertEquals(1, lines.size, file)
+                assertEquals("515000000", JsonParser.parseString(lines.single()).asJsonObject["t_ns"].asString, file)
+            }
+        }
+
+    @Test
+    fun clippedDisplayStartDoesNotBorrowTheEarlierFrameError() =
+        withRuns(listOf(listOf(0L, 100_000L, 200_000L))) { root, _, capture, _, _ ->
+            val video = capture.video.map { frame ->
+                val t = frame.pts * 1000
+                frame.copy(time = MappedTime(t, 0, 0, t))
+            }
+            val source = write(capture.copy(video = video, start = 150_000_000, end = 250_000_000,
+                endUncertainty = 20).withTimedRows(listOf(149_999_985L to 0L)), root).directory
+            val first = rows(source).first { it["presented"].asBoolean }
+            assertEquals("-50000000", first["t_ns"].asString)
+            assertEquals("0", first["display_t_ns"].asString)
+            val dir = trim(source, first["movie_pts_us"].asString.toLong(), first["movie_end_us"].asString.toLong())
+            for (file in listOf("logcat-device.jsonl", "logcat-app.jsonl", "touches.jsonl")) {
+                val lines = Files.readAllLines(dir.resolve(file))
+                assertEquals(1, lines.size, file)
+                val row = JsonParser.parseString(lines.single()).asJsonObject
+                assertEquals("-15", row["t_ns"].asString, file)
+                assertEquals("0", row["t_uncertainty_ns"].asString, file)
+            }
+        }
 
     @Test
     fun trimmedLogsAndTouchesAreFilteredByMappedTime() {

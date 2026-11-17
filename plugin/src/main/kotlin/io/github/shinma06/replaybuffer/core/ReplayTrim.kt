@@ -157,6 +157,22 @@ internal class ReplayTrim(
     private data class AudioPlan(val track: AbstractMP4DemuxerTrack, val entry: AudioSampleEntry,
                                  val sampleRate: Int, val runs: List<AudioRun>, val sizes: PacketSizes)
 
+    private data class RowWindow(val start: Long?, val end: Long?, val startUncertainty: Long?, val endUncertainty: Long?)
+
+    private fun rowWindow(frames: List<StoredFrame>, start: StoredFrame, end: StoredFrame,
+                          originTns: Long?, endTns: Long?): RowWindow {
+        val startUncertainty = start.row.longText("t_uncertainty_ns").takeIf {
+            start.row["clock_alignment_known"]?.asBoolean == true && originTns == start.tNs
+        }
+        val next = frames.getOrNull(end.index + 1)
+        val endUncertainty = next?.row?.longText("t_uncertainty_ns").takeIf {
+            endTns != null && end.confirmedEndTns == endTns && next?.tNs == endTns && next.part == end.part &&
+                end.row["clock_alignment_known"]?.asBoolean == true && next.row["clock_alignment_known"]?.asBoolean == true &&
+                end.row["terminal_authoring_tick"]?.asBoolean != true
+        }
+        return RowWindow(originTns, endTns, startUncertainty, endUncertainty)
+    }
+
     private fun select(saved: SavedReplay, fromUs: Long, toUs: Long): Selection {
         val frames = saved.frames.mapIndexed { index, row -> StoredFrame(row, index).also { frame ->
             require(row["sample_index"]?.asLong == index.toLong() && (frame.moviePts != null) == (frame.movieEnd != null) &&
@@ -224,6 +240,7 @@ internal class ReplayTrim(
                 val endTns = lastDisplayTns?.let {
                     Math.addExact(it, Math.multiplyExact(endFrame.movieEnd!! - endFrame.moviePts!!, 1000))
                 } ?: endFrame.confirmedEndTns
+                val rowWindow = rowWindow(frames, startFrame, endFrame, originTns, endTns)
                 data class KeptPart(val part: JsonObject, val index: Int, val a: Long, val b: Long)
                 val kept = parts.mapIndexedNotNull { index, part ->
                     val a = maxOf(startUs, part.requiredLongText("movie_start_us"))
@@ -266,7 +283,7 @@ internal class ReplayTrim(
                     val annexBConfigs = avcs.map(::annexBConfig)
                     val audioPlan = planAudio(saved, demuxer, startUs, endUs, ::checkActive)
                     val estimate = estimateOutput(saved, videoTrack, keptParts, annexBConfigs, audioPlan,
-                        startUs, endUs, originTns, endTns, ::checkActive)
+                        startUs, endUs, rowWindow, ::checkActive)
                     checkActive()
                     checkSpace(estimate)
                     checkActive()
@@ -447,8 +464,8 @@ internal class ReplayTrim(
                     }
                 }
                 checkActive()
-                val logCounts = writeLogs(saved, ::file, originTns, endTns, staging!!, ::checkSpace, ::checkActive)
-                val touchCounts = writeTouches(saved, ::file, originTns, endTns, startUs, endUs, staging!!, ::checkSpace, ::checkActive)
+                val logCounts = writeLogs(saved, ::file, rowWindow, staging!!, ::checkSpace, ::checkActive)
+                val touchCounts = writeTouches(saved, ::file, rowWindow, startUs, endUs, staging!!, ::checkSpace, ::checkActive)
                 val summary = readme(saved, name, createdAt, startUs, endUs, fromUs, toUs, outputRows.size, audioSegments, logCounts, touchCounts)
                 checkSpace(utf8Bytes(summary))
                 staging!!.writer(file(ReplayFiles.SUMMARY)).use { it.write(summary) }
@@ -502,7 +519,7 @@ internal class ReplayTrim(
 
     private fun estimateOutput(saved: SavedReplay, video: AbstractMP4DemuxerTrack, runs: List<VideoRun>,
                                configs: List<ByteArray>, audio: AudioPlan?, startUs: Long, endUs: Long,
-                               originTns: Long?, endTns: Long?, checkActive: () -> Unit): Long {
+                               rowWindow: RowWindow, checkActive: () -> Unit): Long {
         // Fixed MP4 boxes, README, hashes and added manifest fields; sample tables are counted below.
         var bytes = 16 * 1024L
         fun add(value: Long) {
@@ -560,7 +577,7 @@ internal class ReplayTrim(
         var lastAppId: String? = null
         saved.forEachLine(ReplayFiles.LOGCAT_DEVICE) { line ->
             checkActive()
-            val row = trimmedRow(gson.fromJson(line, JsonObject::class.java), originTns, endTns) ?: return@forEachLine
+            val row = trimmedRow(gson.fromJson(line, JsonObject::class.java), rowWindow) ?: return@forEachLine
             val copies = if (row["app_membership"]?.takeIf { it.isJsonPrimitive }?.asBoolean == true) 2L else 1L
             add(Math.multiplyExact(Math.addExact(utf8Bytes(gson.toJson(row)), 1), copies))
             lastDeviceId = row.text("record_id") ?: lastDeviceId
@@ -570,7 +587,7 @@ internal class ReplayTrim(
         add(utf8Bytes(gson.toJson(lastAppId)))
         if (saved.exists(ReplayFiles.TOUCHES)) saved.forEachLine(ReplayFiles.TOUCHES) { line ->
             checkActive()
-            val row = trimmedRow(gson.fromJson(line, JsonObject::class.java), originTns, endTns, startUs until endUs)
+            val row = trimmedRow(gson.fromJson(line, JsonObject::class.java), rowWindow, startUs until endUs)
                 ?: return@forEachLine
             add(Math.addExact(utf8Bytes(gson.toJson(row)), 1))
         }
@@ -708,26 +725,33 @@ internal class ReplayTrim(
         return listOf("java_evidence", "platform_evidence").mapNotNull { trigger[it]?.takeIf { row -> row.isJsonObject }?.asJsonObject }
     }
 
-    private fun inTnsRange(line: JsonObject, originTns: Long?, endTns: Long?): Boolean {
+    internal fun inTnsRange(line: JsonObject, originTns: Long?, endTns: Long?,
+                            originUncertainty: Long?, endUncertainty: Long?): Boolean {
         val t = line.longText("t_ns") ?: return true
-        val uncertainty = line.longText("t_uncertainty_ns") ?: Long.MAX_VALUE
-        val margin = if (uncertainty == Long.MAX_VALUE) Long.MAX_VALUE else maxOf(0L, uncertainty)
-        fun addSat(base: Long): Long = if (margin == Long.MAX_VALUE) Long.MAX_VALUE else try { Math.addExact(base, margin) } catch (e: ArithmeticException) { Long.MAX_VALUE }
-        fun subSat(base: Long): Long = if (margin == Long.MAX_VALUE) Long.MIN_VALUE else try { Math.subtractExact(base, margin) } catch (e: ArithmeticException) { Long.MIN_VALUE }
-        return (originTns == null || addSat(t) >= originTns) && (endTns == null || subSat(t) <= endTns)
+        val uncertainty = line.longText("t_uncertainty_ns") ?: return true
+        if (uncertainty < 0 || uncertainty == Long.MAX_VALUE) return true
+        fun outside(boundary: Long?, boundaryUncertainty: Long?, before: Boolean): Boolean {
+            if (boundary == null || boundaryUncertainty == null || boundaryUncertainty < 0 || boundaryUncertainty == Long.MAX_VALUE) return false
+            return try {
+                val margin = Math.addExact(uncertainty, boundaryUncertainty)
+                val distance = if (before) Math.subtractExact(boundary, t) else Math.subtractExact(t, boundary)
+                distance > margin
+            } catch (_: ArithmeticException) { false }
+        }
+        return !outside(originTns, originUncertainty, true) && !outside(endTns, endUncertainty, false)
     }
 
-    private fun trimmedRow(row: JsonObject, originTns: Long?, endTns: Long?, movie: LongRange? = null): JsonObject? {
-        if (!inTnsRange(row, originTns, endTns)) return null
-        row.addProperty("t_ns", shift(row.text("t_ns"), originTns))
-        if (originTns == null) row.addProperty("t_uncertainty_ns", Long.MAX_VALUE.toString())
+    private fun trimmedRow(row: JsonObject, window: RowWindow, movie: LongRange? = null): JsonObject? {
+        if (!inTnsRange(row, window.start, window.end, window.startUncertainty, window.endUncertainty)) return null
+        row.addProperty("t_ns", shift(row.text("t_ns"), window.start))
+        if (window.start == null) row.addProperty("t_uncertainty_ns", Long.MAX_VALUE.toString())
         if (movie != null) {
             row.addProperty("movie_us", row.longText("movie_us")?.takeIf { it in movie }?.let { Math.subtractExact(it, movie.first).toString() })
         }
         return row
     }
 
-    private fun writeLogs(saved: SavedReplay, file: (String) -> Path, originTns: Long?, endTns: Long?,
+    private fun writeLogs(saved: SavedReplay, file: (String) -> Path, rowWindow: RowWindow,
                           staging: SaveStaging, checkSpace: (Long) -> Unit, checkActive: () -> Unit): LogCounts {
         var device = 0
         var app = 0
@@ -746,7 +770,7 @@ internal class ReplayTrim(
         deviceOut.use { deviceWriter -> appOut.use { appWriter ->
             saved.forEachLine(ReplayFiles.LOGCAT_DEVICE) { line ->
                 checkActive()
-                val row = trimmedRow(gson.fromJson(line, JsonObject::class.java), originTns, endTns) ?: return@forEachLine
+                val row = trimmedRow(gson.fromJson(line, JsonObject::class.java), rowWindow) ?: return@forEachLine
                 row.text("record_id")?.takeIf { it in evidenceIds }?.let { evidenceTimes[it] = row.longText("t_ns") }
                 val text = gson.toJson(row)
                 val appMember = row["app_membership"]?.takeIf { it.isJsonPrimitive }?.asBoolean == true
@@ -764,7 +788,7 @@ internal class ReplayTrim(
         return LogCounts(device, app, lastDevice, lastApp, times, evidenceTimes)
     }
 
-    private fun writeTouches(saved: SavedReplay, file: (String) -> Path, originTns: Long?, endTns: Long?,
+    private fun writeTouches(saved: SavedReplay, file: (String) -> Path, rowWindow: RowWindow,
                              startUs: Long, endUs: Long, staging: SaveStaging,
                              checkSpace: (Long) -> Unit, checkActive: () -> Unit): TouchCounts? {
         if (!saved.exists(ReplayFiles.TOUCHES)) return null
@@ -774,7 +798,7 @@ internal class ReplayTrim(
         staging.writer(file(ReplayFiles.TOUCHES)).use { out ->
             saved.forEachLine(ReplayFiles.TOUCHES) { line ->
                 checkActive()
-                val row = trimmedRow(gson.fromJson(line, JsonObject::class.java), originTns, endTns, startUs until endUs)
+                val row = trimmedRow(gson.fromJson(line, JsonObject::class.java), rowWindow, startUs until endUs)
                     ?: return@forEachLine
                 if (row.longText("movie_us") != null) inMovie++
                 val text = gson.toJson(row)
