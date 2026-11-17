@@ -30,15 +30,7 @@ internal interface SaveHandles {
     fun entries(directory: Long): Set<String>
     fun channel(handle: Long, options: Set<OpenOption>): FileChannel
     /** Nonblocking exclusive owner lock, released before closing this file descriptor. */
-    fun tryOwnerLock(handle: Long): AutoCloseable? {
-        val channel = channel(handle, setOf(READ, WRITE))
-        try {
-            val lock = try { PrivateFiles.tryOwnerLock(channel) }
-                catch (_: java.nio.channels.OverlappingFileLockException) { null }
-            if (lock == null) { channel.close(); return null }
-            return AutoCloseable { try { lock.close() } finally { channel.close() } }
-        } catch (failure: Throwable) { channel.close(); throw failure }
-    }
+    fun tryOwnerLock(handle: Long): AutoCloseable?
     fun requirePrivate(handle: Long, directory: Boolean)
     fun close(handle: Long)
     /** Rejects a single name that the OS would reinterpret; the portable rules are checked by the caller. */

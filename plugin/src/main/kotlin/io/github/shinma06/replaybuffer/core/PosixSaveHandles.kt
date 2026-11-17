@@ -17,6 +17,7 @@ internal interface SaveFileDescriptors : Library {
     fun mkdirat(parent: Int, name: String, mode: Int): Int
     fun unlinkat(parent: Int, name: String, flags: Int): Int
     fun fsync(descriptor: Int): Int
+    fun flock(descriptor: Int, operation: Int): Int
     fun close(descriptor: Int): Int
     fun geteuid(): Int
     fun fdopendir(descriptor: Int): Pointer?
@@ -34,6 +35,19 @@ internal interface ExclusiveRename : Library {
 
 /** Linux and macOS save handles: libc descriptors via JNA, with each platform's flags and 64-bit struct layouts. */
 internal class PosixSaveHandles(private val darwin: Boolean) : SaveHandles {
+    override fun tryOwnerLock(handle: Long): AutoCloseable? {
+        // flock is tied to this open descriptor, unlike process-scoped fcntl/FileChannel locks:
+        // verifyFile opens/closes a different descriptor and must not release the owner lock.
+        if (descriptors.flock(handle.toInt(), 2 or 4) != 0) { // LOCK_EX | LOCK_NB on Linux and Darwin
+            val error = Native.getLastError()
+            if (error == if (darwin) 35 else 11) return null // EWOULDBLOCK
+            throw IOException("cacheの排他を確認できません（error=$error）")
+        }
+        return AutoCloseable {
+            if (descriptors.flock(handle.toInt(), 8) != 0) // LOCK_UN
+                throw IOException("cacheの排他を終了できません（error=${Native.getLastError()}）")
+        }
+    }
     private val arm = System.getProperty("os.arch") in listOf("aarch64", "arm64")
     private val descriptors by lazy {
         check(Native.POINTER_SIZE == 8 && System.getProperty("os.arch") in listOf("aarch64", "arm64", "amd64", "x86_64")) {

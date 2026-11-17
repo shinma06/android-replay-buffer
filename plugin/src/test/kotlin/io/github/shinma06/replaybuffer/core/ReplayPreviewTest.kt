@@ -46,6 +46,15 @@ class ReplayPreviewTest {
         cache.clear(); assertEquals(0L, cache.sizeBytes())
     }
 
+    @Test fun resizedThumbnailStripKeepsItsVisibleCacheHitsWhileMissingSlotsArrive() {
+        val cache = io.github.shinma06.replaybuffer.ui.ThumbnailCache<String>(3, 6) { it.length.toLong() }
+        for (key in 1L..3L) cache.put(key, "ok")
+        assertEquals(listOf(4L), cache.missing(listOf(1L, 2L, 4L)))
+        cache.put(4, "ok")
+        assertTrue(cache.missing(listOf(1L, 2L, 4L)).isEmpty())
+        assertNull(cache[3])
+    }
+
     @Test fun diskCacheRoundTripsPrivatelyBoundsSizeAndRejectsTruncation() {
         val cache = ReplayThumbnailDiskCache(root, maxBytes = 1024)
         val image = BufferedImage(8, 4, BufferedImage.TYPE_INT_RGB)
@@ -68,7 +77,12 @@ class ReplayPreviewTest {
         SaveOutputDirectory.open(root).use { dir ->
             dir.createFile("cache.lock").use { first ->
                 val owner = assertNotNull(first.tryOwnerLock())
-                owner.use { dir.openFile("cache.lock").use { second -> assertNull(second.tryOwnerLock()) } }
+                owner.use {
+                    repeat(2) {
+                        dir.verifyFile("cache.lock", first)
+                        dir.openFile("cache.lock").use { second -> assertNull(second.tryOwnerLock()) }
+                    }
+                }
                 dir.openFile("cache.lock").use { second ->
                     assertEquals(first.key, second.key)
                     assertNotNull(second.tryOwnerLock()).close()

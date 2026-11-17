@@ -369,9 +369,9 @@ internal fun thumbnailSlots(grid: FrameGrid, durationUs: Long, count: Int): List
 }
 
 /** Thumbnails by frame start, kept for the open save so a new strip width reuses decoded frames (AC-20). */
-internal class ThumbnailCache<T>(private val maxEntries: Int = 256, private val maxBytes: Long = Long.MAX_VALUE,
+internal class ThumbnailCache<T>(private val maxEntries: Int = 400, private val maxBytes: Long = Long.MAX_VALUE,
     private val weight: (T) -> Long = { 1L }) {
-    private val images = LinkedHashMap<Long, T>()
+    private val images = LinkedHashMap<Long, T>(16, .75f, true)
     private var bytes = 0L
 
     operator fun get(startUs: Long): T? = synchronized(images) { images[startUs] }
@@ -387,7 +387,8 @@ internal class ThumbnailCache<T>(private val maxEntries: Int = 256, private val 
 
     /** Frame starts of [slots] not decoded yet, ascending and without duplicates. */
     fun missing(slots: List<Long?>): List<Long> = synchronized(images) {
-        slots.filterNotNull().distinct().filterNot(images::containsKey).sorted()
+        // Touch visible entries before adding missing ones, so a resize evicts the old strip first.
+        slots.filterNotNull().distinct().filter { images[it] == null }.sorted()
     }
 
     val size: Int get() = synchronized(images) { images.size }
