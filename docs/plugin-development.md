@@ -61,22 +61,20 @@ ZIPは `plugin/build/distributions/` に出ます。同じJARを使う`bin/repla
 
 ## IDEでロード確認する
 
-[GUI leaseと共有状態の手順](https://github.com/shinma06/android-replay-buffer/blob/legacy-ops-develop/docs/operations.md)を守り、別作業のAndroid Studio・ADB・daemonを操作しないでください。通常利用しているIDEへの上書きインストールより、Gradleの開発用sandboxと使い捨てfixtureを使います。
+別作業のAndroid Studio・ADB・daemonを操作しないでください。通常利用しているIDEへの上書きインストールより、Gradleの開発用sandboxと使い捨てfixtureを使います。
 
 ```bash
-# GUI lease取得・固定buildとfixtureの確認後に実行
+# 対象buildと専用fixtureを確認して実行
 plugin/gradlew -p plugin runIde
 ```
 
 `runIde`はsandboxを準備してIDEを起動します。自動起動は行いません。原型CLIの起動やUSB端末への接続もありません。
 
-配布ZIPを受入する場合は、cleanな固定commitから一度 `buildPlugin` した同じZIPを、[公式ターミナル配置手順](https://github.com/shinma06/android-replay-buffer/blob/legacy-ops-develop/docs/operations.md#固定plugin-zipのターミナル導入)で専用profileへ導入します。固定ZIP/source/hash、全3JARと実IDE process/PID/profile/version、Tools → Android Replay Bufferについて/action、取得OFFと通常再起動を照合します。Settings GUIは自製品設定の表示/入力/Apply/Cancel/検証/アクセシビリティ/寿命に使います。再buildした別ZIPや `-dirty` 版を同じ候補の証拠へ流用しません。
-
-[Case JSON](verification/changes/issue-3.json)のIDEロード・情報表示・IDE再起動を確認し、観察者・日時・ロード版・ZIP hashを記録します。Plugin VerifierによるAPI互換性検査やこのGUI受入は、ZIP構造検査と別です。基盤のCaseも初期版と同じ固定ZIPへ対応づけ、未実施項目は[QA #7](https://github.com/shinma06/android-replay-buffer/issues/7)と[初期版QA](https://github.com/shinma06/android-replay-buffer/issues/27)で追跡します。
+配布ZIPを確認する場合は専用profileへ導入し、対象commit・ZIPのSHA-256・実際にロードされた版をPR本文へ記録します。確認結果と未検証項目は[検証方針](verification/README.md)に従います。Plugin VerifierによるAPI互換性検査や実IDEでの確認は、ZIP構造検査とは別です。`main` 昇格にはCI ZIPによる[VM受入](verification/vm-acceptance.md)を行います。
 
 ## 初期版候補の利用手順
 
-この手順は取得コア（[#31](https://github.com/shinma06/android-replay-buffer/issues/31)）とIDE接続（[#32](https://github.com/shinma06/android-replay-buffer/issues/32)）を含む固定ZIPの受入対象です。旧い情報表示だけの基盤版では取得・保存を行えません。機能の実装、API互換性、IDEでのロード、録画・保存の受入はそれぞれ別に確認します。実行結果は[初期版QA](https://github.com/shinma06/android-replay-buffer/issues/27)を正本とし、未実施の版を利用可能と扱いません。
+取得コアとIDE接続を含むプラグインの利用手順です。機能の実装、API互換性、IDEでのロード、録画・保存の確認結果は区別して記録します。
 
 1. **版を確認する**: 配布された固定ZIPを導入し、PluginsとTools → Android Replay Bufferについての版が受入対象に一致することを確認します。Android開発用projectと、そのprojectで設定したAndroid SDKを使います。録画用のscrcpy、ffmpeg、PythonやPATH設定を追加する手順はありません。
 2. **設定する**: Settings → Tools → Android Replay Buffer、またはAndroid Replay Buffer ToolWindowの設定から、保存先と保持時間を指定します。標準は180秒、設定範囲は1〜900秒です。保存先には作成済みフォルダの絶対パスを指定します。未作成フォルダやファイルは理由を表示して拒否し、旧設定を維持します。保存先が未指定でも取得でき、保存前に指定します。対象アプリは選択中のAndroid Run configurationから自動取得するか、package名を手動指定します。編集した値は「適用」または「OK」で反映します。取得が無効でも設定できます。
