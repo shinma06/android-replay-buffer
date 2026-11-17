@@ -311,7 +311,17 @@ private fun DrawScope.drawStrip(bar: PlayerBarModel, palette: PlayerPalette, han
         handle(left)
         handle(right - handlePx)
     }
-    val x = geometry.x(editor.playheadUs)
-    drawLine(palette.barBackground.copy(alpha = 1f), Offset(x, -3.dp.toPx()), Offset(x, height + 3.dp.toPx()), strokeWidth = 4.dp.toPx())
-    drawLine(palette.content, Offset(x, -3.dp.toPx()), Offset(x, height + 3.dp.toPx()), strokeWidth = 2.dp.toPx())
+    drawPlayerPlayhead(geometry.x(editor.playheadUs), palette.content, palette.barBackground)
+}
+
+internal fun DrawScope.drawPlayerPlayhead(x: Float, foreground: Color, outline: Color) {
+    val ink = foreground.copy(alpha = 1f)
+    val edge = outline.copy(alpha = 1f)
+    val from = Offset(x, -3.dp.toPx())
+    val to = Offset(x, size.height + 3.dp.toPx())
+    drawLine(edge, from, to, strokeWidth = 8.dp.toPx())
+    drawLine(ink, from, to, strokeWidth = 4.dp.toPx())
+    val centre = Offset(x, 8.dp.toPx())
+    drawCircle(edge, radius = 8.dp.toPx(), center = centre)
+    drawCircle(ink, radius = 5.dp.toPx(), center = centre)
 }
