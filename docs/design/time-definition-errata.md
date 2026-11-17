@@ -360,3 +360,28 @@ T2で`retentionEvictionKeepsReceiptRun`、`retentionLossStillSubtractsMissing`�
 反例: `readNano − sentNano = 3_000_000_001`nsでタイマーが遅れ、まだ`WAITING`でも結果は`LATE`。逆に読み取りが3秒ちょうどで、行の処理までに期限経過の通知が見えても`ROUND_TRIP`。R1/R3に使ってよい列はこの規則の`ROUND_TRIP`だけで、R4、D11、起動時のheader期限と生存監視は維持する。
 
 T3aの`ClockLateReplyTest`に`replyBeforeDeadlineIgnoresTimeoutFlag`、`replyAfterDeadlineIsLateBeforeTimerFires`、`deadlineRaceRecordsOnlyOneTimeoutForItsNonce`、`deadlineUsesReadNanoAndKeepsActualHostWidth`を追加する。締切前1ns・等号・後1nsを両方のflag、読取から解析までの遅延、古いnonceの通知、締切時計のwrap、Hだけが乖離する場合、無応答中の自走行・終了と組み合わせる。R1/R3の往復列と補助列を検査し、D11の比較を維持する。
+
+## 既存契約の読み合わせ
+
+以下は原本とE1〜E9を併読するときの検査対象と試験入力を明確にするもので、保存形式、合否条件、実施するTrailはそれぞれの既存契約に従う。
+
+### 除外ストリームのcoverage（T4a）
+
+原本6.8(4)（788行）の和の検査は、3区分を数値で計上するストリームに適用する。`EXCLUDED`は原本6.9(4)(c)（873行）とE2が定める未計上の形を使う。読み手はその状態と3区分がnullであることを検査し、nullを0秒に換算しない。T4aの固定入力には、正規の`EXCLUDED`音声を含む保存物が開ける例と、計上対象の3区分の和が`window_ns`に一致しない`schema5-bad-sum`が拒否される例を置く。
+
+### 保存する時刻の半幅（T4b）
+
+原本6.9(3)（820行）の半幅式は、6.9(4)(c)（865〜870行）の保存例とE3に従い、非測定行の**保存する両端が有限**な場合に使う。`t_uncertainty_ns = (t_latest_ns − t_earliest_ns) / 2`。片端でも未知ならnullであり、最終arrival行では有限の上限があっても下限はnullなので半幅もnullとなる。例えば保存範囲が`[8,12]`nsなら半幅2ns、`[8,8]`nsなら0ns、`[null,12]`・`[8,null]`・`[null,null]`ならnullを検査する。時刻の点・両端・包含、measuredの既存の誤差値には元の規則を適用する。
+
+### schema 4互換試験の固定入力（T4a・T4b）
+
+原本6.8(5)(a)・(7)（790、794〜796行）と6.9(8)(d)（901行）の互換回帰には、schema 4の固定保存物と切替前の期待値を使う。`ReplayTrimSchema4FrozenTest`はT1の固定テストと同じ入力条件・期待値を使い、schema 4を開けること、トリム後もschema 4であることと旧式のcoverageを検査する。固定保存物は試験資源またはschema 4に固定したfixture生成で用意し、既定schemaに切り替わる`SaveWriter`でテスト実行時に作らない。現行の書き手を通す試験は、そのTrailの書き手と出力を検査する。T1のベースラインは今回の読み合わせの追加では編集しない。
+
+### 保存物と操作結果の検査（T5）
+
+原本6.10(4)(5)（925、928、930行）のA10・A13では、保存物の`replay.json`とMP4だけで検査できる項目と、操作結果を記録して照合する項目を区別する。
+
+- A10は時計が確定／不明の状態で自動保存を各3回試み、試行ごとに時計状態と実際の保存の有無を対応づける。確定時は保存、不明時は不保存を検査する。保存フォルダの一覧だけでは、不保存が試行された結果かどうかを判定できない。
+- A13はU6が「出す」の場合、同じ保存に対するGUI・CLI・MCPそれぞれの秒数を取得し、3面が同じ値であることを検査する。1つの保存物に記録された値だけでは各面の結果を確認できない。
+
+集計では保存物から求めた判定と、これらの観測結果に基づく判定を区別する。公開するのは必要最小限の合格・不合格・未実施と必要な理由に限り、録画・ログ本文や生の診断を含めない。
