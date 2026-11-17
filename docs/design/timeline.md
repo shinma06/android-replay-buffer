@@ -97,7 +97,7 @@ gapはstream毎に`kind / from / to / reason / boundary_uncertainty / generation
 
 端末側cleanupが再接続待ちになる場合、停止済みreader/clientのUUID・serial・exact forward endpointをcaller指定のstable private cleanupDirectoryへ記録する。session workspaceを探索せず、未知/破損/未来schema/生存file-lock ownerを保全する。新CoreはOFFでも同directoryの保留をローカルで読み戻して表示する。検証済みrecordのlock取得後だけ引継ぎ、解決済みSDKと所有pendingがある場合に限り、OFFのまま有界・取消可能なcleanupを再試行する。取得backend/時計/logcat/recordingは開始せず、pendingなし・破損/未来/lockedのみの初回OFFはADB照会もしない。旧serial自身が接続したときに二重psのowned名確認・forward serial/port/endpoint再照合を行う。port再利用・別device・共有ADBには作用せず、成功recordだけ削除する。IDE callerはsession tempとstable directoryの寿命を分ける。旧tempに残った未参照markerは所有者による既知資源管理へ残し、host-wide探索で移行しない。
 
-#11のPM案（1件のimmutable保存対象、失敗時に同じ対象を再試行/保存先変更/破棄、解決前の新規保存を止め取得は継続、無効化/project closeで未保存破棄）と整合する。pinはraw GOP/log/clock metadataへの所有参照で、pruneがpinを削除しない。snapshotは各raw chunkのbyte長/完全packet数とclock変換版をwatermarkとして固定する。進行中chunkに追記してもsnapshotは固定長より後を読まず、pin中の既存bytesは上書きしない。保存後のclock再校正も固定対象を書き換えない。保存中もwriterは新packet/GOPへ進む。保存対象は失敗しても新しいTへ差し替えない。容量・pin寿命は#11の決定を実装担当が適用し、録画streamを無制限にpinしない。
+[保存設計](../plugin-design.md)の契約（1件のimmutable保存対象、失敗時に同じ対象を再試行/保存先変更/破棄、解決前の新規保存を止め取得は継続、無効化/project closeで未保存破棄）と整合する。pinはraw GOP/log/clock metadataへの所有参照で、pruneがpinを削除しない。snapshotは各raw chunkのbyte長/完全packet数とclock変換版をwatermarkとして固定する。進行中chunkに追記してもsnapshotは固定長より後を読まず、pin中の既存bytesは上書きしない。保存後のclock再校正も固定対象を書き換えない。保存中もwriterは新packet/GOPへ進む。保存対象は失敗しても新しいTへ差し替えない。容量・pin寿命は#11の決定を実装担当が適用し、録画streamを無制限にpinしない。
 
 ## 切出しと保存形式
 
