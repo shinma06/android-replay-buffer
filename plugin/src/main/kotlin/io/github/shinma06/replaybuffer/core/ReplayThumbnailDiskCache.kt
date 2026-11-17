@@ -18,7 +18,7 @@ internal class ReplayThumbnailDiskCache(private val parentPath: Path, private va
         .digest("$source:$atUs:96:awt-bilinear-bgra-v1".toByteArray(Charsets.UTF_8))
         .joinToString("") { "%02x".format(it) } + ".thumb"
 
-    private fun <T> directory(action: (SaveOutputDirectory) -> T): T = SaveOutputDirectory.open(parentPath).use { parent ->
+    private fun <T> directory(action: (SaveOutputDirectory) -> T): T = SaveOutputDirectory.open(parentPath.toRealPath()).use { parent ->
         val name = "arb-preview-v1"
         val child = runCatching { parent.createDirectory(name) }.getOrElse { parent.openChild(name) }
         child.use { dir ->
@@ -26,10 +26,8 @@ internal class ReplayThumbnailDiskCache(private val parentPath: Path, private va
             val guard = runCatching { dir.createFile("cache.lock") }.getOrElse { dir.openFile("cache.lock") }
             guard.use { file ->
                 file.requirePrivate()
-                file.channel().use { channel ->
-                    val owner = PrivateFiles.tryOwnerLock(channel) ?: error("サムネイルcacheは使用中です")
-                    owner.use { dir.verifyFile("cache.lock", file); action(dir) }
-                }
+                val owner = file.tryOwnerLock() ?: error("サムネイルcacheは使用中です")
+                owner.use { dir.verifyFile("cache.lock", file); action(dir) }
             }
         }
     }

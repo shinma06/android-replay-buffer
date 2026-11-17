@@ -257,7 +257,7 @@ internal class ReplayPlayerController(
                     active()
                     val bitmap = frame.image.previewBitmap()
                     val aspect = frame.image.width.toFloat() / frame.image.height
-                    synchronized(decodeLock) { if (pendingUs == target) pendingUs = null }
+                    synchronized(decodeLock) { if (pendingUs == target && previewGeneration == generation) pendingUs = null }
                     publish {
                         val wanted = rules?.displayUs(state.editor)?.let { exact ->
                             if (state.editor.drag != null) previewKeyframeUs(replay, exact) else exact
@@ -272,9 +272,11 @@ internal class ReplayPlayerController(
                 } catch (_: PlayerClosed) {
                     return
                 } catch (failure: Throwable) {
-                    synchronized(decodeLock) { if (pendingUs == target) pendingUs = null }
+                    // A failed decoder may have consumed a partial packet; never reuse that reference state.
+                    runCatching { decoder?.close() }; decoder = null
+                    synchronized(decodeLock) { if (pendingUs == target && previewGeneration == generation) pendingUs = null }
                     publish {
-                        if (!state.playing && rules?.displayUs(state.editor) == target)
+                        if (!state.playing && rules?.displayUs(state.editor) == target && previewGeneration == generation)
                             state = state.copy(message = failure.message ?: "この位置のframeを復号できません。")
                     }
                 }
@@ -298,8 +300,8 @@ internal class ReplayPlayerController(
         if (slots == thumbnailSlots) return
         thumbnailSlots = slots
         val wanted = thumbnails.missing(slots)
-        if (wanted.isEmpty()) return
         val generation = thumbnailGeneration.incrementAndGet()
+        if (wanted.isEmpty()) return
         // Two independent IDR streams at most; no executor queue growing with resize events.
         (thumbnailExecutor as java.util.concurrent.ThreadPoolExecutor).queue.clear()
         wanted.chunked((wanted.size + 1) / 2).forEach { chunk ->
@@ -317,7 +319,8 @@ internal class ReplayPlayerController(
             } while (true)
         }
         try {
-            SavedReplay.open(folder).use { replay ->
+            active()
+            SavedReplay.open(folder) { _, _ -> active() }.use { replay ->
                 active()
                 val source = replay.openFile(io.github.shinma06.replaybuffer.core.ReplayFiles.VIDEO).use { "${replay.recordSha256}:${it.key}" }
                 decoderFactory(replay, ReplayFrameCache(0)).use { cursor ->

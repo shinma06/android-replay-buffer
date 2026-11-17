@@ -40,6 +40,7 @@ internal class ReplayFrameCursor(
     private var nextIndex = 0
     private var normalizer: MixedVideoNormalizer? = null
     private var runEntry = -1
+    private var closed = false
     private val cacheSource = "${saved.recordSha256}:${file.key}:full-bgra-v1"
 
     init {
@@ -68,6 +69,7 @@ internal class ReplayFrameCursor(
 
     /** Decodes from the reference IDR up to the frame displayed at [atUs] and returns it. */
     override fun seek(atUs: Long, checkActive: () -> Unit): Decoded {
+        check(!closed) { "表示デコーダは終了しています" }
         checkActive()
         // Recheck live identity pins even when no MP4 read is needed for a cache hit.
         saved.openFile(ReplayFiles.VIDEO).close()
@@ -96,9 +98,12 @@ internal class ReplayFrameCursor(
 
     /** The next frame with a movie span after the last decoded one, or null at the end of the movie. */
     override fun next(checkActive: () -> Unit): Decoded? {
+        check(!closed) { "表示デコーダは終了しています" }
         if (normalizer == null && nextIndex <= rows.lastIndex) {
-            val at = span(nextIndex)?.first
+            val at = (nextIndex..rows.lastIndex).firstNotNullOfOrNull { span(it)?.first }
             if (at != null) return seek(at, checkActive)
+            nextIndex = rows.size
+            return null
         }
         while (nextIndex <= rows.lastIndex) {
             checkActive()
@@ -135,6 +140,8 @@ internal class ReplayFrameCursor(
     }
 
     override fun close() {
+        if (closed) return
+        closed = true
         runCatching { channel.close() }
         runCatching { file.close() }
     }

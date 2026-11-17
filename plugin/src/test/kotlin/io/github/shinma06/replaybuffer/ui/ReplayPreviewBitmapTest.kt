@@ -23,8 +23,15 @@ class ReplayPreviewBitmapTest {
         for (color in listOf(ColorSpace.YUV420, ColorSpace.YUV420J)) for (matrix in listOf(null, 1)) {
             val p = Picture.create(66, 34, color).apply { data.forEach { random.nextBytes(it) } }
             val frame = MixedVideoNormalizer.DisplayFrame(p, matrix)
-            val old = ReplayFrameExport.rgbImage(frame).toComposeImageBitmap().asSkiaBitmap()
-            val packed = ReplayPreviewImage.convert(frame).previewBitmap().asSkiaBitmap()
+            val original = ReplayFrameExport.rgbImage(frame)
+            val preview = ReplayPreviewImage.convert(frame)
+            for (height in listOf(11, 17, 34)) {
+                val a = scaledThumbnail(original, height); val b = scaledThumbnail(preview, height)
+                assertContentEquals(a.getRGB(0, 0, a.width, a.height, null, 0, a.width),
+                    b.getRGB(0, 0, b.width, b.height, null, 0, b.width))
+            }
+            val old = original.toComposeImageBitmap().asSkiaBitmap()
+            val packed = preview.previewBitmap().asSkiaBitmap()
             for ((w, h) in listOf(66 to 34, 17 to 9, 101 to 53)) {
                 assertContentEquals(render(old, w, h), render(packed, w, h), "$color / $matrix / ${w}x$h")
             }

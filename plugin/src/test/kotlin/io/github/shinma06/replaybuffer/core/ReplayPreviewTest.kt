@@ -64,6 +64,19 @@ class ReplayPreviewTest {
         assertTrue(Files.list(folder).use { paths -> paths.filter { it.toString().endsWith(".thumb") }.mapToLong { Files.size(it) }.sum() } <= 1024)
     }
 
+    @Test fun thumbnailOwnerLockExcludesAnotherReaderAndReleasesWithoutDeletingItsIdentity() {
+        SaveOutputDirectory.open(root).use { dir ->
+            dir.createFile("cache.lock").use { first ->
+                val owner = assertNotNull(first.tryOwnerLock())
+                owner.use { dir.openFile("cache.lock").use { second -> assertNull(second.tryOwnerLock()) } }
+                dir.openFile("cache.lock").use { second ->
+                    assertEquals(first.key, second.key)
+                    assertNotNull(second.tryOwnerLock()).close()
+                }
+            }
+        }
+    }
+
     @Test fun cursorCacheNeighborsForwardRecoveryCancellationAndSourceReplacementPreserveExactPixels() {
         val folder = fixture()
         SavedReplay.open(folder).use { saved ->
@@ -101,6 +114,29 @@ class ReplayPreviewTest {
             row(50, false, 1), row(60, true, 1), row(70, false, 1, 2)))
         assertNull(index.at(10)); assertNull(index.at(45)); assertNull(index.at(50)); assertNull(index.at(70))
         assertEquals(20L, index.at(35)); assertEquals(60L, index.at(69))
+    }
+
+    @Test fun cachedSeekFollowedByUnpresentedRowsRepositionsTheDecoderBeforeNext() {
+        SavedReplay.open(fixture()).use { saved ->
+            val before = saved.frames[3]["movie_pts_us"].asLong
+            val after = saved.frames[5]["movie_pts_us"].asLong
+            saved.frames[4].apply {
+                add("movie_pts_us", com.google.gson.JsonNull.INSTANCE)
+                add("movie_end_us", com.google.gson.JsonNull.INSTANCE)
+            }
+            val cursor = ReplayFrameCursor(saved)
+            cursor.use {
+                cursor.seek(before)
+                cursor.seek(after)
+                cursor.seek(before) // Cache hit: the MP4 cursor is deliberately elsewhere.
+                val next = assertNotNull(cursor.next())
+                assertEquals(after, next.startUs)
+                val reference = ReplayFrameExport.decodeAt(saved, after).image
+                assertContentEquals(reference.getRGB(0, 0, reference.width, reference.height, null, 0, reference.width),
+                    next.image.getRGB(0, 0, reference.width, reference.height, null, 0, reference.width))
+            }
+            assertFailsWith<IllegalStateException> { cursor.seek(before) }
+        }
     }
 
     private fun fixture(): Path {
