@@ -165,9 +165,9 @@ t_earliest_ns = (最終行等級 == arrival) ? null : lo
 t_latest_ns = hi
 ```
 
-この保存規約はE1のestimated記録が終点との組合せで最終arrivalになる場合にも適用する。候補列挙・内部範囲を変えず、下限の出力だけをnullにする。所属判定には内部区間に原本4.2・6.6の規則を適用し、保存されたnullから「内部にも有限下限が無かった」と逆推定しない。読み手が保存物からその内部下限を推測復元することもない。
+この保存規約はE1のestimated記録が終点との組合せで最終arrivalになる場合にも適用する。候補列挙を変えず、下限の宣言・出力をnullにする。所属・保存／trimの選択は、宣言・保存済みの行範囲を使う原本T2／T4bの契約のままとする。計算上知り得る有限下限は数学的説明のために区別するものであり、追加の所属判定・trim選択には使わない。原本6.6の独立した受信H cutoff（`受信H < S − W − slack`、`slack = ceil(ρ × W)`）もそのまま適用する。保存されたnullから「内部にも有限下限が無かった」と逆推定せず、読み手がその下限を推測復元することもない。新しい保存項目や選択条件は追加しない。
 
-全等級について、**有限の点が内部範囲および宣言した出力範囲の中にあること**を検査する。最終arrivalは下限を常にnullとし、点・上限は内部の値を保持する。ほかの等級は内部の上下限をそのまま出す。measuredの点・誤差とI6、MP4の表示範囲を`[0,W]`に切る規則、coverage区間を`[0,W)`に切る規則は変更しない。内部の所属判定、下限を主張しない保存規約、表示・長さの切り取りは別の操作である。
+全等級について、**有限の点が計算上の範囲および宣言した出力範囲の中にあること**を検査する。最終arrivalは下限を常にnullとし、点・上限は計算上の値を保持する。ほかの等級は計算上の上下限をそのまま出す。measuredの点・誤差とI6、MP4の表示範囲を`[0,W]`に切る規則、coverage区間を`[0,W)`に切る規則は変更しない。下限を主張しない宣言・保存規約と、表示・長さの切り取りは別の操作である。
 
 ### 上限を証明できる前提
 
@@ -182,6 +182,6 @@ t_latest_ns = hi
 ### 後続Trailと試験
 
 - T2: 670行(e)を「上の前提を持つarrival構成で`t == t_latest ≤ W`。一般の行では点が内部・出力範囲内」に置換する。`measuredAtEndKeepsLatestBeyondWindow`（±1msずつ、W+2ms）、`mixedArrivalGradeDoesNotImplyLatestWithinWindow`（記録measured/estimatedの両方）、`otherAnchorUsesHostBounds`、`rawArrivalBoundRequiresSameSourceAndFloor`を追加する。`arrivalHasNullEarliest`は維持し、`everyFinalArrivalSerializesNullEarliest`で記録／終点の等級全9組、同じ錨／別錨、内部下限が有限／不明の場合を検査する。最終arrivalなら例外なく出力下限はnullであり、内部の有限下限・点・上限は変わらない。
-- 境界は整数nsで検査する。生時刻arrivalは`h_i = S`／`S−1ns`、ρ=0／500ppm、同じ系のfloorへの自己の寄与を保持した場合の等号を含める。一般範囲は`t_latest = W`／`W+1ns`／`W+2ms`、内部下限0／−1ns、点と両端の等号、片側nullを含める。原本の内部区間による所属判定（上限0は窓内、−1nsは窓外、下限Wは窓内、W+1nsは窓外）も保持する。内部下限がW+1nsの最終arrival行を窓外と判定しても、出力下限を数値へ変更しない。
+- 境界は整数nsで検査する。生時刻arrivalは`h_i = S`／`S−1ns`、ρ=0／500ppm、同じ系のfloorへの自己の寄与を保持した場合の等号を含める。一般範囲は`t_latest = W`／`W+1ns`／`W+2ms`、計算上の下限0／−1ns、点と両端の等号、片側nullを含める。原本の宣言範囲による所属判定（上限0は窓内、−1nsは窓外、有限な宣言下限Wは窓内、W+1nsは窓外）も保持する。計算上の下限がW+1nsでも、最終arrivalでは宣言下限がnullなので、その有限値を追加の窓外除外に使わない。独立した受信H cutoffのちょうど／1ns前は原本どおり別に検査する。
 - T4a: 窓外にはみ出す誤差と混合arrivalのfixtureを読む。measuredのW+2ms、最終arrivalのW+1msの上限を保持し、arrivalのfixtureは内部で有限下限を知り得るケースも含めて必ず`t_earliest_ns=null`とする。読み手はそのnullを保持し、0や推測値を入れない。
-- T4b: JSONLは上の保存規約に従い、最終arrivalの全行で`t_earliest_ns=null`を検査する。trimでは点と有限な上下限からaを引き、arrivalのnull下限はそのまま保持する。窓外への上限のはみ出しや、ほかの等級の有限下限は新しい窓でも切り詰めない。内部所属判定と保存の区別、直接保存・読み取り・繰り返しtrimでのarrival下限nullの維持を試験する。MP4・coverageの窓内切り取りとは分ける。
+- T4b: JSONLは上の保存規約に従い、最終arrivalの全行で`t_earliest_ns=null`を検査する。trimでは点と有限な上下限からaを引き、arrivalのnull下限はそのまま保持する。窓外への上限のはみ出しや、ほかの等級の有限下限は新しい窓でも切り詰めない。原本の宣言・保存範囲による選択を維持し、内部の有限下限を追加の除外条件にしないこと、直接保存・読み取り・繰り返しtrimでのarrival下限nullの維持を試験する。MP4・coverageの窓内切り取りとは分ける。
