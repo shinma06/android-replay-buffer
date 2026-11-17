@@ -4,6 +4,9 @@ import com.google.gson.Gson
 import com.google.gson.JsonObject
 import io.github.shinma06.replaybuffer.ui.ReplayEditClosePolicy
 import io.github.shinma06.replaybuffer.ui.confirmedReplayDiscard
+import io.github.shinma06.replaybuffer.ui.explicitReplayCloseAction
+import com.intellij.openapi.actionSystem.ActionPlaces
+import com.intellij.openapi.actionSystem.IdeActions
 import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.test.Test
@@ -74,6 +77,14 @@ class ReplayEditRecoveryTest {
         var active = true
         assertFalse(confirmedReplayDiscard(true, { active }) { active = false; true })
         assertTrue(confirmedReplayDiscard(true, { true }) { true })
+    }
+
+    @Test fun unknownProgrammaticAndReplacementClosesAreNotUserCloseIntent() {
+        assertTrue(explicitReplayCloseAction(null, ActionPlaces.EDITOR_TAB, true))
+        assertTrue(explicitReplayCloseAction(IdeActions.ACTION_CLOSE_EDITOR, ActionPlaces.KEYBOARD_SHORTCUT, true))
+        assertFalse(explicitReplayCloseAction(IdeActions.ACTION_CLOSE_EDITOR, ActionPlaces.UNKNOWN, false))
+        assertFalse(explicitReplayCloseAction("OpenFile", ActionPlaces.MAIN_MENU, true))
+        assertFalse(explicitReplayCloseAction(null, ActionPlaces.UNKNOWN, true))
     }
 
     @Test fun recoveryLeavesInternalAndExternalPngsAndSurvivesRestart() {
