@@ -4,7 +4,7 @@
 
 [固定develop原設計](https://github.com/shinma06/android-replay-buffer/blob/4d278e65dec0c55e71d584ff24c7f6fa407586cb/docs/plugin-design.md)を管理側へ接続し、保存attempt保全を#201、取得モードと正常0行の保存条件を#274で改訂します。#284の既定OFFの[クラッシュ報告による自動保存](crash-autosave.md)は同じ単一pin/writerへ接続します。製品のmain promotionや受入完了を意味しません。
 
-冒頭の固定リンクは設計採用時の出典です。改訂後の時刻・保存窓・出力形式は[現行の同期設計](design/timeline.md)、UIは[現行のIDE UI設計](design/ide-ui.md)、実装と受入の状態は[Case台帳](verification/README.md)を照合します。末尾の初期Case表や当時の未実施記述を、現在の一律pending・実行済みPASSへ読み替えません。
+冒頭の固定リンクは設計採用時の出典です。改訂後の時刻・保存窓・出力形式は[現行の同期設計](design/timeline.md)、UIは[現行のIDE UI設計](design/ide-ui.md)を参照します。確認と統合は[検証方針](verification/README.md)に従い、末尾の初期Case表は確認する場面の例として扱います。
 
 ## 保存物の構成
 
@@ -67,7 +67,7 @@ Android Studio Running Devicesのミラーリング（実機）、scrcpy、`adb 
 
 軽量は文字の細部、短い変化、滑らかさと圧縮品質を優先しない選択です。scrcpy [v5.0.1の公式例](https://github.com/Genymobile/scrcpy/blob/a60891aea193d92e7e5c3942700eca63f9d19a5f/doc/video.md)の各値を組み合わせた初期候補であり、最適な組合せ・CPU/RAM/電力の削減率を測定したものではありません。長辺・fpsは上限、bitrateはencoderへの指定値で、実解像度・実fps・実bitrateとは区別します。H.264・B-frameなし・IDR interval指定1秒・既存encoder選択を維持します。[serverのdownsize_on_error](https://github.com/Genymobile/scrcpy/blob/a60891aea193d92e7e5c3942700eca63f9d19a5f/server/src/main/java/com/genymobile/scrcpy/Options.java)はfalseを明示し、encode失敗で黙って解像度を下げず、既存の取得中断・復旧/gap表示へ返します。
 
-保存時は受理したimmutable settingsの品質を固定し、`replay.json`の`settings.video`の既存形式を値に合わせて出力、追加の`video_request`へquality/max_size/max_fps/video_bit_rate/downsize_on_errorを記録します。これらは要求値で、実際の寸法・PTS・内容は既存のparts/frame/config記録を使います。LOG_ONLYの両動画設定はnullです。設定の現在値で失敗pin/既存保存物を付け替えません。品質の選択自体では時計・窓・ログ・欠落表示・pin/再試行・保存失敗保全を変更しません。性能の完了条件は[現行方針](verification/performance.md)です。
+保存時は受理したimmutable settingsの品質を固定し、`replay.json`の`settings.video`の既存形式を値に合わせて出力、追加の`video_request`へquality/max_size/max_fps/video_bit_rate/downsize_on_errorを記録します。これらは要求値で、実際の寸法・PTS・内容は既存のparts/frame/config記録を使います。LOG_ONLYの両動画設定はnullです。設定の現在値で失敗pin/既存保存物を付け替えません。品質の選択自体では時計・窓・ログ・欠落表示・pin/再試行・保存失敗保全を変更しません。性能の確認結果と未測定の範囲は[検証方針](verification/README.md)に従って記録します。
 
 ## 保存失敗とデータ保全
 
@@ -116,9 +116,9 @@ Android Studio Running Devicesのミラーリング（実機）、scrcpy、`adb 
 
 設定編集は下書きです。適用時だけ取得条件を変更します。保存先だけの変更では取得を再起動しません。保持時間の変更は新しい時間窓へ更新し、固定した保存対象を変更しません。録画の再起動が必要な適用でもシーケンスと既存の窓内データを保持し、停止区間を記録します。対象アプリ切替の区間表現と自動選択の優先規則は[同期設計](design/timeline.md)・[IDE UI設計](design/ide-ui.md)に従います。
 
-### 実装で確認する受入Case
+### 動作確認の例
 
-ここは試験計画であり、pass記録ではありません。#14 のCaseへ対応づけ、固定ZIPで実機・Emulatorの観察を記録します。
+ここは試験計画であり、実行済みの記録ではありません。実機・Emulatorでの観察結果と未検証項目は、[検証方針](verification/README.md)に従って記録します。
 
 | Case | 操作 | 期待値 |
 | --- | --- | --- |

@@ -51,6 +51,6 @@ Android 9では、クラッシュのダイアログを閉じるまで落ちたpr
 - FILEと寿命: 上の2保存の全行/元payload/ID/時刻/帰属・triggerと全frame/窓/gap/hashを検査し、既存の完全性保証を保ちます。設定Apply/再openとOFF又は保存競合は、決定的検査後に残る実接続上の不足を1つに限定して同じfixtureで確認します。QA #298の同じbuild/条件の観察と対応づけられますが、別buildのPASSを転記しません。
 - 長時間・負荷: 16件/64KiB/256件/8回の決定的上限検査は、RSS・全出力・実端末負荷の実測ではありません。#224/QA #298の担当が同じ候補で既存の有限計画へ自動保存ON/OFFと成功/失敗出力の集計を組み込み、時間・入力量・回数・容量停止条件を実行前に固定します。この割当では実測しません。
 
-[4つの受入Case](verification/changes/issue-284.json)は未実施を保持します。#206の元FAIL/unknown、QA #65、#224/#282/#283と#280の版全体/main反映条件は変更しません。#103は将来のProjectService→ProjectCapture→Coreの利用者として既存のpending/resolving/closedと設定を保持し、この変更でCLI原型やCLI実装順は変えません。
+確認と統合は[検証方針](verification/README.md)に従い、観察できないIDE・端末の挙動は未検証の理由を記録します。#103は将来のProjectService→ProjectCapture→Coreの利用者として既存のpending/resolving/closedと設定を保持し、この変更でCLI原型やCLI実装順は変えません。
 
 上の#103の順序・CLI原型に関する記述は#284実装当時の範囲です。現在の同梱CLIと明示移行・復旧は[CLI契約](cli.md)を参照し、この文書の固定出典・元受入を新しい実行結果へ読み替えません。

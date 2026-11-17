@@ -1,6 +1,6 @@
 # 保存後の切り取りと、シーク位置の静止画（要件）
 
-状態: **要件確定**。2026-11-17 に、全入口を切り取りと PNG 保存ができる編集画面へ統一する仕様に改訂した（[3.1](#31-編集画面)・[3.2](#32-キャンセルと中止)・AC-13〜AC-21）。切り取り・静止画の中核（TRIM-T / TRIM-M / FRAME / SAFE / CLI / MCP）は変えていない。`develop`（`5af6ac26c91b98b664b054427b106b4094000e38`、schema 4）の現行コードに基づく。判断は本文書で確定する。実装は利用者承認後。
+状態: **要件確定**。2026-11-17 に、全入口を切り取りと PNG 保存ができる編集画面へ統一する仕様に改訂した（[3.1](#31-編集画面)・[3.2](#32-キャンセルと中止)・AC-13〜AC-22）。切り取り・静止画の中核（TRIM-T / TRIM-M / FRAME / SAFE / CLI / MCP）は変えていない。`develop`（`5af6ac26c91b98b664b054427b106b4094000e38`、schema 4）の現行コードに基づく。判断は本文書で確定する。確認と統合は[検証方針](../verification/README.md)に従う。
 
 この文書は Trail [#19](https://entire.com/gh/shinma06/-/trails/19)（Issue [#16](https://github.com/shinma06/android-replay-buffer/issues/16)）の要件正本である。2026-11-11 の先行案（`2bfa9b7e`、schema 3 / `session.json` / `video-001.mp4` / 「音声はない」）は現行コードと合わないため、本文書で置き換える。
 
@@ -295,8 +295,8 @@ PNG 保存は表示コマとプレビューの一致を検証する。読み込�
 
 ## 7. 実装時の注意
 
-- 本文書は枝 `devin/1794359900-video-trim`（Trail #19）の要件正本。実装は承認後。`origin` への push、PR、`entire trail` の書き込み・checkpoint push、Devin Cloud への連絡はしない（この箱の依頼制約）。
+- 本文書はTrail #19の要件正本。作業手順は[AGENTS.md](../../AGENTS.md)に従う。
 - 追加依存は原則禁止（JCodec と既存ハンドルで足りる）。
 - ユーザー向け文言は日本語。エージェント向けコメントは増やさない。
 - 固定行番号のソースリンクは置かない（ファイルと記号で示す）。
-- 本箱に JDK 27 がある場合は `/workspace/devin-cli-arb/toolchain/jdk-27` と `ANDROID_HOME=/home/box/Android/Sdk`（`android-37.2` r01 導入済み）を使って `python3 scripts/workflow/plugin_check.py --tests-only` または対象テストを実行する。
+- JDK 27とAndroid platform `android-37.2` を使って `python3 scripts/workflow/plugin_check.py --tests-only` または対象テストを実行する。
