@@ -135,7 +135,7 @@ internal class ReplayPlaybackSession(
             SavedReplay.open(folder).use { saved ->
                 decoderFactory(saved).use { cursor ->
                     val span = saved.timeline().spans.firstOrNull { it.endUs > fromUs && it.startUs < untilUs }
-                    var frame = prepareVideo { span?.let { cursor.seek(maxOf(fromUs, it.startUs), ::check) } }
+                    var frame = prepareVideo { span?.let { cursor.seekForPlayback(maxOf(fromUs, it.startUs), ::check) } }
                     check()
                     videoReady.countDown()
                     val ready = awaitAudio(audioReady)

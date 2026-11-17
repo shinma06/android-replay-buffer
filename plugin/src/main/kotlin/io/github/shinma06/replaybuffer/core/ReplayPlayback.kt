@@ -68,7 +68,11 @@ internal class ReplayFrameCursor(
     private fun isKey(index: Int) = rows[index]["output_key"]?.takeIf { it.isJsonPrimitive }?.asBoolean == true
 
     /** Decodes from the reference IDR up to the frame displayed at [atUs] and returns it. */
-    override fun seek(atUs: Long, checkActive: () -> Unit): Decoded {
+    override fun seek(atUs: Long, checkActive: () -> Unit): Decoded = seek(atUs, checkActive, useCached = true)
+
+    override fun seekForPlayback(atUs: Long, checkActive: () -> Unit): Decoded = seek(atUs, checkActive, useCached = false)
+
+    private fun seek(atUs: Long, checkActive: () -> Unit, useCached: Boolean): Decoded {
         check(!closed) { "表示デコーダは終了しています" }
         checkActive()
         // Recheck live identity pins even when no MP4 read is needed for a cache hit.
@@ -77,7 +81,7 @@ internal class ReplayFrameCursor(
         saved.openFile(ReplayFiles.VIDEO_FRAMES).close()
         val target = rows.indices.firstOrNull { i -> span(i)?.let { atUs in it.first until it.second } == true }
             ?: throw IllegalArgumentException("指定時刻に表示されるframeがありません")
-        cache.get(cacheSource, target)?.let {
+        if (useCached) cache.get(cacheSource, target)?.let {
             nextIndex = target + 1; normalizer = null
             return it
         }

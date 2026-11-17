@@ -12,6 +12,8 @@ import java.awt.image.Raster
 /** Player-only decoder boundary. Exact PNG and trim continue to use the export path. */
 internal interface ReplayVideoDecoder : AutoCloseable {
     fun seek(atUs: Long, checkActive: () -> Unit = {}): ReplayFrameCursor.Decoded
+    /** Prepare reference state before the playback clock starts, even when the preview is cached. */
+    fun seekForPlayback(atUs: Long, checkActive: () -> Unit = {}): ReplayFrameCursor.Decoded = seek(atUs, checkActive)
     fun next(checkActive: () -> Unit = {}): ReplayFrameCursor.Decoded?
 }
 

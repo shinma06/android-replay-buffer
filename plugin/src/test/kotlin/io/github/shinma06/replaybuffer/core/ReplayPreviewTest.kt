@@ -119,6 +119,21 @@ class ReplayPreviewTest {
         }
     }
 
+    @Test fun playbackPreparesReferenceStateBeforeClockInsteadOfDeferringGopReplayUntilCacheMiss() {
+        SavedReplay.open(fixture()).use { saved ->
+            val shared = ReplayFrameCache()
+            val at = saved.frames[5]["movie_pts_us"].asLong
+            ReplayFrameCursor(saved, cache = shared).use { it.seek(at) }
+            ReplayFrameCursor(saved, cache = shared).use { playback ->
+                assertEquals(at, playback.seekForPlayback(at).startUs)
+                var checks = 0
+                val next = assertNotNull(playback.next { checks++ })
+                assertEquals(saved.frames[6]["movie_pts_us"].asLong, next.startUs)
+                assertEquals(1, checks, "next must decode only its packet after playback preparation")
+            }
+        }
+    }
+
     @Test fun keyframeIndexDoesNotCrossGapsSegmentsEntriesOrUnpresentedPreroll() {
         fun row(start: Long?, key: Boolean, segment: Int = 0, entry: Int = 1) = com.google.gson.JsonObject().apply {
             addProperty("movie_pts_us", start?.toString()); addProperty("movie_end_us", start?.plus(10)?.toString())
