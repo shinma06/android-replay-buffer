@@ -67,6 +67,7 @@ internal class ReplayEditOrigin private constructor(
                             checkActive()
                             recovery.flush()
                             source.flush()
+                            checkActive()
                         } catch (failure: Exception) {
                             var restored = true
                             moved.asReversed().forEach { name -> if (runCatching { recovery.moveFile(name, source, name) }.isFailure) restored = false }
@@ -77,14 +78,8 @@ internal class ReplayEditOrigin private constructor(
                             throw ReplayRecoveryFailure("本体の移動を完了できませんでした。元の場所と保管場所を確認してください。", recoveryPath, failure)
                         }
                     }
-                    // Only an empty directory may be removed, and only with its original identity.
-                    pins.values.forEach { it.close() }
-                    if (source.entries() == setOf(RECOVERY_ORIGIN)) {
-                        source.openFile(RECOVERY_ORIGIN).use { source.deleteFile(RECOVERY_ORIGIN, it) }
-                        source.close()
-                        parent.openChild(folder.fileName.toString()).use { check(it.key == folderKey) }
-                        runCatching { parent.deleteEmptyDirectory(folder.fileName.toString()) }
-                    }
+                    // Keep the durable nonce even without PNGs. Removing it before a fallible rmdir
+                    // would strand a markerless directory after a crash or cleanup failure.
                     return recoveryPath
                 } finally { pins.values.forEach { it.close() } }
             }
@@ -124,10 +119,13 @@ private val REPLAY_PAYLOAD = setOf(ReplayFiles.SUMMARY, ReplayFiles.RECORD, Repl
 internal const val RECOVERY_RECORD = "recovery.json"
 internal const val RECOVERY_ORIGIN = ".replay-recovery-origin"
 private data class RecoveryReceipt(val originalName: String, val originalKey: String, val nonce: String, val hashes: Map<String, String>)
+private const val RESTORE_KEY = ".replay-restore-key"
+private const val RESTORE_STAGE = ".replay-restore-target"
 internal class ReplayRecoveryFailure(message: String, val recovery: Path, cause: Throwable) : Exception(message, cause)
 
 /** Restart-safe restoration; paths in receipts are single names, never arbitrary destinations. */
-internal fun restoreReplayRecovery(path: Path): Path {
+internal fun restoreReplayRecovery(path: Path, checkActive: () -> Unit = {}, afterMove: (Int) -> Unit = {}, beforeFlush: () -> Unit = {}): Path {
+    checkActive()
     val folder = path.toAbsolutePath().normalize()
     check(PrivateFiles.isOwnedWithoutSharedWrite(folder.parent)) { "復元先の所有を確認できません。" }
     SaveOutputDirectory.open(folder.parent).use { parent ->
@@ -156,15 +154,16 @@ internal fun restoreReplayRecovery(path: Path): Path {
                         file.requirePrivate(); check(file.hash() == hash) { "保管内容が変更されています。復元しません。" }
                     }
                 }
-                check(pins.isNotEmpty()) { "この保管場所に未復元の本体はありません。" }
                 val existed = receipt.originalName in parent.entries()
                 check(existed || pins.keys == receipt.hashes.keys) { "本体の一部を確認できません。保管場所に残します。" }
-                val original = if (existed) parent.openChild(receipt.originalName)
-                    else parent.createDirectory(receipt.originalName)
+                if (!existed) prepareRestoreDestination(parent, recovery, receipt)
+                val expectedKey = if (RESTORE_KEY in recovery.entries()) recovery.readText(RESTORE_KEY) else receipt.originalKey
+                require(Regex("\\(-?[0-9]+, -?[0-9]+\\)").matches(expectedKey))
+                val original = parent.openChild(receipt.originalName)
                 original.use { source ->
                     source.requirePrivate()
-                    check(!existed || source.key.toString() == receipt.originalKey) { "元の場所が別のフォルダに置き換わっています。復元しません。" }
-                    check(!existed || RECOVERY_ORIGIN in source.entries() && source.readText(RECOVERY_ORIGIN) == receipt.nonce) { "元の場所の由来を確認できません。復元しません。" }
+                    check(source.key.toString() == expectedKey) { "元の場所が別のフォルダに置き換わっています。復元しません。" }
+                    check(RECOVERY_ORIGIN in source.entries() && source.readText(RECOVERY_ORIGIN) == receipt.nonce) { "元の場所の由来を確認できません。復元しません。" }
                     check((source.entries() + pins.keys).containsAll(receipt.hashes.keys)) { "本体の一部を確認できません。復元しません。" }
                     // A reused source path is never merged with replay data or unknown content.
                     for (name in source.entries()) {
@@ -178,12 +177,17 @@ internal fun restoreReplayRecovery(path: Path): Path {
                     val moved = mutableListOf<String>()
                     try {
                         pins.forEach { (name, pin) ->
+                            checkActive()
                             recovery.verifyFile(name, pin)
                             recovery.moveFile(name, source, name); moved += name
                             source.verifyFile(name, pin)
+                            afterMove(moved.size)
                         }
                         receipt.hashes.forEach { (name, hash) -> source.openFile(name).use { check(it.hash() == hash) { "復元中に内容が変更されました。" } } }
+                        checkActive()
+                        beforeFlush()
                         source.flush(); recovery.flush()
+                        checkActive()
                     } catch (failure: Exception) {
                         moved.asReversed().forEach { name -> runCatching { source.moveFile(name, recovery, name) } }
                         throw ReplayRecoveryFailure("復元を完了できませんでした。保管場所と元の場所を確認してください。", folder, failure)
@@ -194,6 +198,33 @@ internal fun restoreReplayRecovery(path: Path): Path {
             } finally { pins.values.forEach { it.close() } }
         }
     }
+}
+
+/** Publish a closed, marked directory only after its identity is durable beside the receipt. */
+private fun prepareRestoreDestination(parent: SaveOutputDirectory, recovery: SaveOutputDirectory, receipt: RecoveryReceipt) {
+    val key = if (RESTORE_KEY in recovery.entries()) recovery.readText(RESTORE_KEY) else {
+        val stage = if (RESTORE_STAGE in recovery.entries()) recovery.openChild(RESTORE_STAGE) else recovery.createDirectory(RESTORE_STAGE).also {
+            try { it.writeText(RECOVERY_ORIGIN, receipt.nonce); it.flush() } catch (failure: Throwable) { it.close(); throw failure }
+        }
+        val createdKey = stage.use {
+            it.requirePrivate()
+            check(it.entries() == setOf(RECOVERY_ORIGIN) && it.readText(RECOVERY_ORIGIN) == receipt.nonce)
+            it.key.toString()
+        }
+        val temporary = ".restore-key-${UUID.randomUUID()}.part"
+        recovery.writeText(temporary, createdKey)
+        recovery.moveFile(temporary, recovery, RESTORE_KEY)
+        recovery.flush()
+        createdKey
+    }
+    require(Regex("\\(-?[0-9]+, -?[0-9]+\\)").matches(key))
+    recovery.openChild(RESTORE_STAGE).use {
+        it.requirePrivate()
+        check(it.key.toString() == key && it.entries() == setOf(RECOVERY_ORIGIN) && it.readText(RECOVERY_ORIGIN) == receipt.nonce)
+    }
+    // All handles inside the staged directory are closed, including on Windows.
+    recovery.moveFile(RESTORE_STAGE, parent, receipt.originalName)
+    parent.flush(); recovery.flush()
 }
 
 private fun SaveOutputDirectory.writeText(name: String, text: String) = createFile(name).use { file ->

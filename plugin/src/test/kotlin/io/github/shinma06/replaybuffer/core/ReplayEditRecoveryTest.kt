@@ -4,10 +4,13 @@ import com.google.gson.Gson
 import com.google.gson.JsonObject
 import io.github.shinma06.replaybuffer.ui.ReplayEditClosePolicy
 import io.github.shinma06.replaybuffer.ui.ReplayEditCloseLifecycle
+import io.github.shinma06.replaybuffer.ui.ReplayEditCloseWork
+import io.github.shinma06.replaybuffer.ui.withSingleReplayOwner
 import com.intellij.openapi.extensions.PluginId
 import io.github.shinma06.replaybuffer.ui.confirmedReplayDiscard
 import java.nio.file.Files
 import java.nio.file.Path
+import java.util.concurrent.CompletableFuture
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -36,6 +39,11 @@ class ReplayEditRecoveryTest {
     private fun bytes(folder: Path) = Files.list(folder).use { files -> files.filter { Files.isRegularFile(it) && it.fileName.toString() != RECOVERY_ORIGIN }.toList()
         .associate { it.fileName.toString() to Files.readAllBytes(it).toList() } }
     private fun png(path: Path) { Files.write(path, byteArrayOf(1, 2, 3)); PrivateFiles.restrict(path, false) }
+    private fun absentOriginal(folder: Path) {
+        assertTrue(bytes(folder).isEmpty())
+        Files.delete(folder.resolve(RECOVERY_ORIGIN))
+        Files.delete(folder)
+    }
 
     @Test fun explicitOriginAndHealthyIdleCloseAreRequiredAndLifecycleAlwaysRetains() {
         val (_, save) = source()
@@ -113,7 +121,7 @@ class ReplayEditRecoveryTest {
     @Test fun reusedOriginalFolderIsNeverOverwritten() {
         val (folder, save) = source()
         val recovery = assertNotNull(ReplayEditOrigin.capture(save)).relocate()
-        assertFalse(Files.exists(folder))
+        Files.move(folder, root.resolve("previous-origin"))
         PrivateFiles.createDirectory(folder)
         png(folder.resolve("new.png"))
         val retained = bytes(recovery)
@@ -126,6 +134,7 @@ class ReplayEditRecoveryTest {
         val (folder, save) = source()
         val original = bytes(folder)
         val recovery = assertNotNull(ReplayEditOrigin.capture(save)).relocate()
+        absentOriginal(folder) // Simulates a receipt from the version that removed empty originals.
         assertFalse(Files.exists(folder))
         assertEquals(folder, restoreReplayRecovery(recovery))
         assertEquals(original, bytes(folder))
@@ -149,6 +158,7 @@ class ReplayEditRecoveryTest {
     @Test fun untrustedReceiptCannotChooseArbitraryTargetsOrPayloads() {
         val (folder, save) = source()
         val recovery = assertNotNull(ReplayEditOrigin.capture(save)).relocate()
+        absentOriginal(folder)
         val receiptPath = recovery.resolve(RECOVERY_RECORD)
         val receipt = Files.readString(receiptPath)
         val retained = bytes(recovery) - RECOVERY_RECORD
@@ -237,5 +247,107 @@ class ReplayEditRecoveryTest {
         PrivateFiles.createDirectory(folder.resolve("not-a-file.png"))
         assertFailsWith<Exception> { origin.relocate() }
         assertEquals(original, bytes(folder))
+    }
+
+    @Test fun emptyDirectoryCleanupFailureCannotRemoveRestoreProvenance() {
+        val (folder, save) = source()
+        val original = bytes(folder)
+        val recovery = assertNotNull(ReplayEditOrigin.capture(save)).relocate()
+        // Even an external/failed rmdir cannot strand a markerless original: no eager cleanup.
+        SaveOutputDirectory.open(root).use { parent -> assertFailsWith<Exception> { parent.deleteEmptyDirectory(name) } }
+        assertTrue(Files.isRegularFile(folder.resolve(RECOVERY_ORIGIN)))
+        assertEquals(folder, restoreReplayRecovery(recovery))
+        assertEquals(original, bytes(folder))
+    }
+
+    private fun retryAbsentRestore(interrupt: (Path, Int) -> Unit = { _, _ -> }, flushFailure: Boolean = false) {
+        val (folder, save) = source()
+        val original = bytes(folder)
+        val recovery = assertNotNull(ReplayEditOrigin.capture(save)).relocate()
+        absentOriginal(folder)
+        var moves = 0
+        var flushReached = false
+        assertFailsWith<Throwable> {
+            restoreReplayRecovery(recovery, afterMove = { moves++; interrupt(recovery, it) }, beforeFlush = { flushReached = true; if (flushFailure) error("Injected flush failure") })
+        }
+        assertTrue(if (flushFailure) flushReached else moves > 0)
+        // A fresh call knows neither the originating token nor the previous restore's handles/key.
+        assertEquals(folder, restoreReplayRecovery(recovery))
+        assertEquals(original, bytes(folder))
+        SavedReplay.open(folder).use { assertEquals(save.requestId, it.manifest["save_id"].asString) }
+    }
+
+    @Test fun failedMoveToRecreatedOriginalCanRetryAfterRestart() = retryAbsentRestore({ _, _ -> error("Injected move failure") })
+    @Test fun failedFlushOfRecreatedOriginalCanRetryAfterRestart() = retryAbsentRestore(flushFailure = true)
+    @Test fun interruptedPartialRestoreCanRetryAfterRestart() = retryAbsentRestore({ _, count -> if (count == 1) throw AssertionError("Process interrupted") })
+    @Test fun interruptedFullyMovedRestoreCanRetryAfterRestart() = retryAbsentRestore({ recovery, _ ->
+        val receipt = Gson().fromJson(Files.readString(recovery.resolve(RECOVERY_RECORD)), JsonObject::class.java)
+        if (receipt["hashes"].asJsonObject.keySet().none { Files.exists(recovery.resolve(it)) }) throw AssertionError("Process interrupted")
+    })
+
+    @Test fun cancelledRestoreToRecreatedOriginalCanRetryAfterRestart() {
+        val (folder, save) = source()
+        val original = bytes(folder)
+        val recovery = assertNotNull(ReplayEditOrigin.capture(save)).relocate()
+        absentOriginal(folder)
+        var active = true
+        assertFailsWith<ReplayRecoveryFailure> {
+            restoreReplayRecovery(recovery, checkActive = { check(active) }, afterMove = { active = false })
+        }
+        assertEquals(folder, restoreReplayRecovery(recovery))
+        assertEquals(original, bytes(folder))
+    }
+
+    @Test fun reopenedFileCancelsExtractedDecisionWhileDecoderCleanupWaits() {
+        val (folder, save) = source()
+        val original = bytes(folder)
+        val origin = assertNotNull(ReplayEditOrigin.capture(save))
+        val pending = ReplayEditCloseWork<Path>()
+        val ticket = pending.begin(folder)
+        val closed = CompletableFuture<Boolean>()
+        var moved = false
+        ticket.afterResourcesClosed(closed, { true }) { valid ->
+            origin.relocate(checkActive = { check(valid()) }); moved = true
+        }
+        pending.clear(folder) // beforeFileOpened / ordinary reopen after fileClosed extracted it.
+        closed.complete(true)
+        assertFalse(moved)
+        assertEquals(original, bytes(folder))
+    }
+
+    @Test fun reopenedFileCancelsQueuedAndMidMoveWorkAndRetainsBody() {
+        val (folder, save) = source()
+        val original = bytes(folder)
+        val origin = assertNotNull(ReplayEditOrigin.capture(save))
+        val pending = ReplayEditCloseWork<Path>()
+        for (midMove in listOf(false, true)) {
+            val ticket = pending.begin(folder)
+            var queued: (() -> Unit)? = null
+            ticket.afterResourcesClosed(CompletableFuture.completedFuture(true), { true }) { valid ->
+                queued = { origin.relocate(checkActive = { check(valid()) }, afterMove = { if (midMove) pending.clear(folder) }) }
+            }
+            if (!midMove) pending.clear(folder)
+            assertFailsWith<Exception> { assertNotNull(queued).invoke() }
+            assertEquals(original, bytes(folder))
+        }
+    }
+
+    @Test fun ambiguousProjectsRetainBothAndNeverPromptForAnotherProjectsOrdinaryEditor() {
+        val (_, save) = source()
+        val policies = mapOf("A" to ReplayEditClosePolicy(), "B" to ReplayEditClosePolicy())
+        var prompts = 0
+        val confirm: (String) -> Unit = { if (policies.getValue(it).eligible(true, false, false)) prompts++ }
+        val retain = { policies.values.forEach { it.origin = null } }
+        for (owners in listOf(listOf("A", "B"), emptyList(), null)) {
+            policies.getValue("A").origin = assertNotNull(ReplayEditOrigin.capture(save))
+            withSingleReplayOwner(owners, confirm, retain)
+            assertEquals(0, prompts)
+            assertFalse(policies.getValue("A").eligible(true, false, false))
+        }
+        withSingleReplayOwner(listOf("B"), confirm, retain)
+        assertEquals(0, prompts)
+        policies.getValue("A").origin = assertNotNull(ReplayEditOrigin.capture(save))
+        withSingleReplayOwner(listOf("A"), confirm, retain)
+        assertEquals(1, prompts)
     }
 }

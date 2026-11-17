@@ -616,10 +616,11 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
     }
 
     internal fun confirmReplayClose(file: com.intellij.openapi.vfs.VirtualFile) { editClose.confirmClose(file) }
+    internal fun clearReplayClose(file: com.intellij.openapi.vfs.VirtualFile) { editClose.clear(file) }
 
-    internal fun relocateEditedReplay(origin: ReplayEditOrigin, active: () -> Boolean) {
-        if (!alive || !active()) return
-        scope.launch(Dispatchers.IO) {
+    internal fun relocateEditedReplay(origin: ReplayEditOrigin, active: () -> Boolean): kotlinx.coroutines.Job? {
+        if (!alive || !active()) return null
+        return scope.launch(Dispatchers.IO) {
             try {
                 val recovery = origin.relocate(checkActive = { check(alive && active()) { "終了中のため本体を残します。" } })
                 onUi { showNotification(Notification("Android Replay Buffer", "リプレイ本体を復元可能な場所へ移しました",

@@ -21,6 +21,8 @@ import com.intellij.openapi.project.ProjectManagerListener
 import com.intellij.openapi.ui.Messages
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapi.vfs.VirtualFilePreCloseCheck
+import java.util.concurrent.CompletionStage
+import java.util.concurrent.ConcurrentHashMap
 import io.github.shinma06.replaybuffer.core.ReplayEditOrigin
 import io.github.shinma06.replaybuffer.ide.ReplayProjectService
 
@@ -42,12 +44,42 @@ internal class ReplayEditCloseLifecycle {
     }
 }
 
+/** Remains cancellable after fileClosed extracts the decision, through cleanup and relocation. */
+internal class ReplayEditCloseWork<K> {
+    class Ticket {
+        @Volatile private var cancelled = false
+        fun cancel() { cancelled = true }
+        fun afterResourcesClosed(resources: CompletionStage<Boolean>, active: () -> Boolean, finished: () -> Unit = {}, relocate: (() -> Boolean) -> Unit) {
+            val valid = { !cancelled && active() }
+            resources.whenComplete { closed, failure ->
+                if (failure == null && closed == true && valid()) relocate(valid) else finished()
+            }
+        }
+    }
+    private val pending = ConcurrentHashMap<K, Ticket>()
+    fun begin(file: K) = Ticket().also { pending.put(file, it)?.cancel() }
+    fun clear(file: K) { pending.remove(file)?.cancel() }
+    fun finished(file: K, ticket: Ticket) { pending.remove(file, ticket) }
+    fun dispose() { pending.values.forEach { it.cancel() }; pending.clear() }
+}
+
+internal fun <T> withSingleReplayOwner(owners: List<T>?, confirm: (T) -> Unit, retain: () -> Unit) {
+    val owner = owners?.singleOrNull()
+    if (owner == null) retain() else confirm(owner)
+}
+
+private fun withReplayFileOwner(file: VirtualFile, confirm: (Project) -> Unit) {
+    val projects = ProjectManager.getInstance().openProjects.filterNot { it.isDisposed }
+    val owners = runCatching { projects.filter { it.getServiceIfCreated(FileEditorManager::class.java)?.isFileOpen(file) == true } }.getOrNull()
+    withSingleReplayOwner(owners, confirm) {
+        projects.forEach { runCatching { it.getServiceIfCreated(ReplayProjectService::class.java)?.clearReplayClose(file) } }
+    }
+}
+
 /** The SDK calls this on checked closes (tab X / Close Editor), before beforeFileClosed. */
 internal class ReplayVideoPreCloseCheck : VirtualFilePreCloseCheck {
     override fun canCloseFile(file: VirtualFile): Boolean {
-        ProjectManager.getInstance().openProjects.filterNot { it.isDisposed }.forEach {
-            runCatching { it.getServiceIfCreated(ReplayProjectService::class.java)?.confirmReplayClose(file) }
-        }
+        withReplayFileOwner(file) { runCatching { it.getServiceIfCreated(ReplayProjectService::class.java)?.confirmReplayClose(file) } }
         return true
     }
 }
@@ -57,7 +89,8 @@ internal class ReplayEditCloseManager(private val project: Project, private val 
     private val lifecycle = ReplayEditCloseLifecycle()
     val closing get() = lifecycle.closing
     private val editors = mutableMapOf<VirtualFile, ReplayPlayerEditor>()
-    private val confirmed = mutableMapOf<VirtualFile, Pair<ReplayPlayerEditor, ReplayEditOrigin>>()
+    private val confirmed = mutableMapOf<VirtualFile, Triple<ReplayPlayerEditor, ReplayEditOrigin, ReplayEditCloseWork.Ticket>>()
+    private val pending = ReplayEditCloseWork<VirtualFile>()
     private val actions = mutableListOf<Pair<AnActionEvent, Boolean>>()
     private var revision = 0L
 
@@ -70,15 +103,17 @@ internal class ReplayEditCloseManager(private val project: Project, private val 
                 // Only its live user action may use this fallback; tab eviction/replacement must retain.
                 if (actions.lastOrNull()?.second == true) confirmClose(file)
                 editors.remove(file)?.controller?.closePolicy?.origin = null
-                if (!active()) confirmed.remove(file)
+                if (!active()) clear(file)
             }
         })
         connection.subscribe(FileEditorManagerListener.FILE_EDITOR_MANAGER, object : FileEditorManagerListener {
             override fun fileClosed(source: FileEditorManager, file: VirtualFile) {
-                val (editor, origin) = confirmed.remove(file) ?: return
-                if (!active() || source.isFileOpen(file)) return
-                editor.controller.resourcesClosed.thenAccept { closed ->
-                    if (closed && active()) service.relocateEditedReplay(origin) { active() }
+                val (editor, origin, ticket) = confirmed.remove(file) ?: return
+                if (!active() || source.isFileOpen(file)) { clear(file); return }
+                ticket.afterResourcesClosed(editor.controller.resourcesClosed, { active() }, { pending.finished(file, ticket) }) { valid ->
+                    val job = service.relocateEditedReplay(origin, valid)
+                    if (job == null) pending.finished(file, ticket)
+                    else job.invokeOnCompletion { pending.finished(file, ticket) }
                 }
             }
         })
@@ -109,6 +144,9 @@ internal class ReplayEditCloseManager(private val project: Project, private val 
 
     private fun active() = !closing && !project.isDisposed && project.isOpen && !ApplicationManager.getApplication().isDisposeInProgress
     fun confirmClose(file: VirtualFile) {
+        var owner: Project? = null
+        withReplayFileOwner(file) { owner = it }
+        if (owner !== project) { clear(file); return }
         val editor = editors[file] ?: return
         val controller = editor.controller
         val origin = controller.closePolicy.origin
@@ -126,16 +164,16 @@ internal class ReplayEditCloseManager(private val project: Project, private val 
         if (controller.closePolicy.trimExported || controller.closePolicy.ambiguousOutput ||
             latest.loading || latest.error != null || latest.image == null || latest.editor.task != null ||
             FileEditorManager.getInstance(project).getAllEditors(file).singleOrNull() !== editor || controller.resourcesClosed.isDone) return
-        val decision = editor to origin
+        val decision = Triple(editor, origin, pending.begin(file))
         confirmed[file] = decision
         // Another pre-close checker may veto. The selected SDK closes synchronously; an unused decision expires.
-        ApplicationManager.getApplication().invokeLater { if (confirmed[file] === decision) confirmed.remove(file) }
+        ApplicationManager.getApplication().invokeLater { if (confirmed[file] === decision) clear(file) }
     }
     fun attach(file: VirtualFile, editor: ReplayPlayerEditor, origin: ReplayEditOrigin?) {
         clear(file)
         editor.controller.closePolicy.origin = origin
         if (origin != null && active()) editors[file] = editor
     }
-    fun clear(file: VirtualFile) { revision++; editors.remove(file)?.controller?.closePolicy?.origin = null; confirmed.remove(file) }
-    override fun dispose() { lifecycle.closing = true; editors.values.forEach { it.controller.closePolicy.origin = null }; editors.clear(); confirmed.clear() }
+    fun clear(file: VirtualFile) { revision++; pending.clear(file); editors.remove(file)?.controller?.closePolicy?.origin = null; confirmed.remove(file) }
+    override fun dispose() { lifecycle.closing = true; pending.dispose(); editors.values.forEach { it.controller.closePolicy.origin = null }; editors.clear(); confirmed.clear() }
 }
