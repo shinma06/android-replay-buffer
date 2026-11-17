@@ -70,9 +70,26 @@ seq = D + その候補のsegmentOffset
 - **保存終点と同じAnchorId**: `F_A`のD射影にそのbootのsegmentOffsetを加え、`[d_lo, d_hi]`を作る。`T_S`も同じseq原点であることを確認して、`t_lo = W − T_S_hi + d_lo`、`t_hi = W − T_S_lo + d_hi`とする。`T_S_hi`が無ければ`t_lo = null`。同一の組から得たDとHの相関は、この包絡で失ってよい（範囲が広がるだけである）。
 - **異なるAnchorId**（同bootの段差・休止を含む）: `F_A`のH射影`[h_lo, h_hi]`を用いて、`[t_lo, t_hi] = [W − S + h_lo, W − S + h_hi]`。ここには終点の別錨のθやsegmentOffsetを足さない。旧bootのseqを新bootの`T_S`から直接引かない。
 - 同じAnchorIdでも、終点が別の生時刻系のままで共通のseq原点を保証できなければ、数値を直接引かず、その候補のH射影による上の変換を使う。AnchorIdの一致だけで時刻系の一致を代用しない。
-- 最終的な位置範囲は、全候補のt範囲の**包絡**`[min(t_lo), max(t_hi)]`とする。どれかの下限／上限が無ければその端はnull。候補間の交差は取らない。このestimated記録の点`t_ns`は、有限な包絡なら`lo + floor((hi − lo)/2)`、下限なしなら有限な`hi`、上限なしなら有限な`lo`、両端なしなら0とする。これは候補を一意に識別したという意味ではない。点は必ず宣言した範囲内とする。measured記録の点・誤差は原本どおりであり、この代表点の選び直しの対象外である。
+- 真値の包含範囲`C_i`は、全候補のt範囲の**包絡**`[min(t_lo), max(t_hi)]`とする。どれかの下限／上限が無ければその端はnull。候補間の交差は取らない。包含範囲と名目上の配置は分け、各行の中点・有限端・0を個別に代表点にする旧規則は撤回する。点と最終的に宣言する範囲は次による。measured記録の点・誤差は原本どおりであり、この選び直しの対象外である。
 
 反例でDとHの中心の差を0、S=114秒、W=30秒とすれば、候補の中心位置は16秒と26秒であり、最終範囲は両方を含む。異なるbootのsegmentOffsetが数千秒違っても、各候補を正しい錨でHへ戻してからtに置くので、その差を遅延や誤差幅として足さない。
+
+### 包含とは別に、固定原点から端末時刻の差で点を置く
+
+有効サンプルがH=D=MONOTONIC=100秒の1件だけ、ρ=0、受信H=S=106秒、W=6秒とする。読取幅0・錨θ=0が連続するモデルで、PTS=103秒と104秒のframeはともにサンプルから5秒超後に受信したestimatedである。source→発生Hの独立した保証が無ければ、両行のD射影は`[0,106秒]`、`C_i=[−100秒,6秒]`となる。個別の中点はともに−47秒で、1秒の端末内間隔を失う。包含範囲を狭めてこれを直してはならない。
+
+以下は**記録自身がestimatedの行の名目配置**だけに適用する。記録自身がmeasuredなら、終点との組で最終等級がarrivalとなっても、既存の点・誤差を変更しない（I6）。記録自身がarrivalの既存の生時刻構成も変更しない。
+
+1. 保存要求Sの状態を凍結した時点で、ストリームの取得世代・boot・sourceDomain・連続した生時刻の区間を識別した`LayoutSegment`を作る。原点は窓との所属判定より前に、その区間について凍結した有効サンプルから1回だけ選び、`(referenceCandidateId, v_ref, u_ref)`を保持する。これは計算用の内部状態であり、新しい保存フィールドは要求しない。`v_ref`はその参照サンプルの生時刻。`u`は`u=t+S−W`という**名目配置用の座標**であり、真の発生Hという保証は持たない。
+2. 参照候補は、当該区間の候補元の中から`(受信H, 送信H, 安定したsample識別子, 候補識別子)`の昇順で先頭を選ぶ。候補識別子はboot・AnchorId・sourceDomainを含み、凍結内で全順序を持つものとする。行ごとの近いサンプル、行の受信順、窓内に残った先頭行で選び直さない。参照候補と終点が同じAnchorIdかつ共通のseq系なら、`seq_ref=参照sampleのelapsed+そのsegmentOffset`、`u_ref=S−T_S.point+seq_ref`。差を取る前に両者の共通seq原点を確認する。別AnchorIdまたは共通seqを保証できない場合は、その参照サンプル自身の送信H・受信Hによる読取区間の名目中点`u_ref=sentH+floor((receivedH−sentH)/2)`を使う。別bootのDや他候補のθをここへ加えない。この中点はその読取区間の代表であって、各frameの真の発生Hを確定しない。
+3. 同じLayoutSegmentの各行iについて、整数nsで`p_i=W−S+u_ref+(v_i−v_ref)`を計算し、`t_ns=p_i`とする。したがって同じ区間の2行では、正負のどちらも`p_j−p_i=v_j−v_i`となる。端末時刻の差を名目尺に使う規則であり、D−sourceやsource−Hの新しい速度上限を主張するものではない。SやWを使って各行を個別にclampしたり、中点へ戻したりしない。上の反例では共通seqの参照から`u_ref=100秒`となり、PTS=103秒／104秒の点は3秒／4秒である。両端未知でも1行ずつ0へ戻さず、同じ固定原点を使う。
+4. 包含包絡`C_i=[c_lo,c_hi]`を保ったまま、点も含む**計算上の位置範囲**`R_i=hull(C_i ∪ {p_i})`を作る。有限な端は`r_lo=min(c_lo,p_i)`、`r_hi=max(c_hi,p_i)`、未知の端は未知のままにする。p_iがC_iの外ならR_iを外側に広げ、点を内側へ動かさない。E3の「計算上の範囲」はこのR_iを指す。宣言・保存はR_iにE3を適用し、最終arrivalの下限は必ずnull、ほかの端はR_iを保持する。全点が保存範囲に入り、C_iを狭めず、真値包含も失わない。例えば同じ反例でPTS=210秒も同時受信したなら名目点110秒を置き、上限を6秒から110秒へ広げる。この広がりは名目配置と包含の違いを示すもので、110秒を真の発生位置と証明したことにはならない。
+5. 複数の候補・錨があっても、C_iは全候補を各々の原点で変換して包絡したものを残す。連続した同じsource区間に属することを確認できる行は、錨が変わっても同じ名目参照を使う。名目参照の選択は真の候補を選別したことではなく、行ごとに候補を切り替えて端末内間隔を変えてはならない。boot・sourceDomainが異なる場合、既知のsourceの段差・PTSのreset・ストリーム再開始では区間を分け、参照を接続しない。どの区間かを特定できない行は、否定できない候補集合を保持し、その集合と取得世代をキーとする別の名目区間で1つの参照を固定する。区間をまたぐ差を確かな経過時間と呼ばない。未観測段差についての原本の限界は残す。
+6. R_iの拡大・名目点をθ、Dの換算範囲、floorやF_Aへ戻し、新しい時計の証拠にしない。所属・trim選択は**最終的な宣言／保存範囲**を使い、C_iだけや内部有限下限で追加除外しない。E5のhiも拡大後の宣言上限である。先行除外のBが元のC_iだけを包んでいる場合は、名目点も包む`max(B,p_i)`へ広げるか、その最適化を省く。これによりE5の証明付き除外は選択を変えない。
+
+参照候補の送信Hがnullの場合は、ソートでは既知の送信Hより後に置く。共通seqの式を使えず、読取の有限なH区間も無い自走サンプルでは、`u_ref=receivedH`を名目原点にだけ使う。これはsource時刻とHの対応の保証ではない。送信Hを捏造して往復測定に見せたり、包含範囲を狭めたりしない。未知の包含端は4のとおり未知のまま保つ。
+
+凍結後の新測定・窓の再選択で同じ保存物の参照を更新しない。trimでは既存の点と有限端からaを引き、nullは保持する。参照サンプルや名目原点を選び直さない。直接のtrimと入れ子のtrimは同じ点・範囲・間隔を得る。MP4はこの点の並びを使用して表示部分だけを`[0,W]`に切り、負の点は既存のpreroll／起点内容、Wを超える点は窓後として扱う。各点を0やWへ移して元の行の位置を書き換えたり、窓外の再生時間を作ったりしない。多倍長の差・加算で計算し、必要な有限点を保存型で表現できない場合は原本0.6の停止・報告とし、wrap・各点別の飽和で間隔を変えない。
 
 **変更しない限界**: サンプルでまだ観測していない端末時計の段差に対して、真値包含を保証するものではない（原本324行）。ρの仮定と測定済み対応に基づく範囲である。凍結後の新測定で、候補・位置・等級を変更しない。
 
@@ -82,6 +99,7 @@ seq = D + その候補のsegmentOffset
 - T4a: T2と同じ計算規則に従う候補の広いt範囲を持つfixtureを読み、点と範囲を変更せず保持する。読み手がoffsetを選び直さない。
 - T2の追加回帰: `delayedEventUsesFeasibleEventTime`（±500ppmの両符号、上の旧式の除外を再現）、`unknownSourceRateDoesNotInventFiniteConversionError`、`eventAtSampleAndReceiptBoundaries`（同時・直前／直後1ns、遅延0／90秒以上、x=受信H／+1ns）、`unboundedCandidateIsNotDropped`、`allKnownBootRegionSourceCandidatesSurvive`。各断面の真値包含、射影の外向き丸め、候補自身の錨、包絡内の有限点、measured/I6不変を検査する。
 - T4b: T2の凍結した点・範囲・等級を保存する。推定位置を再計算して狭めず、trimでは各位置・有限な範囲の両端を同じ量だけ移す。
+- T2の代表点試験: `estimatedBatchKeepsSourceSpacing`（100秒の単一sample、同時受信106秒、PTS103秒／104秒で3秒／4秒、旧中点は両方−47秒）、`estimatedLayoutUsesFrozenSegmentOrigin`、`nominalPointWidensDeclaredRangeWithoutNarrowingCandidates`、`unknownBoundsDoNotCollapseNominalSpacing`、`multipleAnchorsKeepCandidateHullAndOneLayoutOrigin`、`sourceStepStartsSeparateLayoutSegment`、`layoutOverflowStopsInsteadOfClamping`。`estimatedPointIsInsideHull`はR_iと最終宣言範囲への点の包含を検査し、C_iへの個別clampの試験にはしない。正負のPTS差・±1ns、有限端と点の等号／±1ns、片側／両側未知、複数候補の順序、異なるsegmentOffset、同じsourceの錨変更、bootとsourceの段差、最終arrivalのnull下限、measured/I6不変を含める。T4a/T4bは`trimKeepsFrozenLayoutAndNullBounds`・`mp4ClipsDisplayWithoutRetimingRows`で、読取不変・入れ子trimの点／範囲同値・端末間隔とMP4の上限を検査する。
 
 <a id="e2-graded-coverage"></a>
 ## E2 確認済みの小区間に等級を保存する
