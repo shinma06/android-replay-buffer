@@ -581,11 +581,7 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
         if (!alive) return
         scope.launch(Dispatchers.IO) {
             if (Files.isRegularFile(folder.resolve(RECOVERY_RECORD))) {
-                onUi {
-                    if (com.intellij.openapi.ui.Messages.showDialog(project, "退避したリプレイ本体を元の場所に復元しますか？同名の内容は上書きしません。",
-                            "リプレイ本体の復元", arrayOf("復元する", "キャンセル"), 1, com.intellij.openapi.ui.Messages.getQuestionIcon()) == 0)
-                        restoreEditedReplay(folder)
-                }
+                restoreEditedReplay(folder)
                 return@launch
             }
             val video = folder.resolve(ReplayFiles.VIDEO)
@@ -641,10 +637,17 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
 
     private fun restoreEditedReplay(recovery: Path) {
         if (!alive) return
-        scope.launch(Dispatchers.IO) {
-            try { val restored = restoreReplayRecovery(recovery); if (alive) openReplayVideo(restored) }
-            catch (failure: Exception) { onUi { showNotification(Notification("Android Replay Buffer", "本体を復元できませんでした",
-                StringUtil.escapeXmlEntities("上書きせず保管場所に残しています: $recovery"), NotificationType.WARNING)) } }
+        onUi {
+            val confirmed = runCatching {
+                com.intellij.openapi.ui.Messages.showDialog(project, "退避したリプレイ本体を元の場所に復元しますか？同名の内容は上書きしません。",
+                    "リプレイ本体の復元", arrayOf("復元する", "キャンセル"), 1, com.intellij.openapi.ui.Messages.getQuestionIcon()) == 0
+            }.getOrDefault(false)
+            if (!alive || !confirmed) return@onUi
+            scope.launch(Dispatchers.IO) {
+                try { val restored = restoreReplayRecovery(recovery); if (alive) openReplayVideo(restored) }
+                catch (failure: Exception) { onUi { showNotification(Notification("Android Replay Buffer", "本体を復元できませんでした",
+                    StringUtil.escapeXmlEntities("上書きせず保管場所に残しています: $recovery"), NotificationType.WARNING)) } }
+            }
         }
     }
 

@@ -3,6 +3,8 @@ package io.github.shinma06.replaybuffer.core
 import com.google.gson.Gson
 import com.google.gson.JsonObject
 import io.github.shinma06.replaybuffer.ui.ReplayEditClosePolicy
+import io.github.shinma06.replaybuffer.ui.ReplayEditCloseLifecycle
+import com.intellij.openapi.extensions.PluginId
 import io.github.shinma06.replaybuffer.ui.confirmedReplayDiscard
 import java.nio.file.Files
 import java.nio.file.Path
@@ -64,6 +66,18 @@ class ReplayEditRecoveryTest {
             assertNull(ReplayEditOrigin.capture(rejected))
         Files.writeString(folder.resolve(ReplayFiles.RECORD), Files.readString(folder.resolve(ReplayFiles.RECORD)).replace("\"manual\"", "\"crash\""))
         assertNull(ReplayEditOrigin.capture(save))
+    }
+
+    @Test fun unrelatedPluginUnloadDoesNotDisableLaterSaveAndEditCloses() {
+        val (_, save) = source()
+        val lifecycle = ReplayEditCloseLifecycle()
+        lifecycle.beforePluginUnload(PluginId.getId("unrelated.plugin"))
+        val policy = ReplayEditClosePolicy().also { it.origin = assertNotNull(ReplayEditOrigin.capture(save)) }
+        assertTrue(policy.eligible(true, false, lifecycle.closing))
+        lifecycle.beforePluginUnload(PluginId.getId("io.github.shinma06.android-replay-buffer"))
+        assertFalse(policy.eligible(true, false, lifecycle.closing))
+        lifecycle.beforePluginUnload(PluginId.getId("unrelated.plugin"))
+        assertTrue(lifecycle.closing)
     }
 
     @Test fun defaultKeepPromptFailureAndLifecycleChangesNeverConfirmDiscard() {

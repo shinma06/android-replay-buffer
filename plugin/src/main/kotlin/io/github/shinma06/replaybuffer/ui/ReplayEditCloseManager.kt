@@ -4,6 +4,7 @@ import com.intellij.ide.AppLifecycleListener
 import com.intellij.ide.plugins.DynamicPluginListener
 import com.intellij.ide.plugins.IdeaPluginDescriptor
 import com.intellij.openapi.Disposable
+import com.intellij.openapi.extensions.PluginId
 import com.intellij.openapi.actionSystem.ActionManager
 import com.intellij.openapi.actionSystem.ActionUiKind
 import com.intellij.openapi.actionSystem.AnAction
@@ -34,6 +35,13 @@ internal class ReplayEditClosePolicy {
 internal fun confirmedReplayDiscard(eligible: Boolean, active: () -> Boolean, ask: () -> Boolean): Boolean =
     eligible && active() && runCatching { ask() && active() }.getOrDefault(false)
 
+internal class ReplayEditCloseLifecycle {
+    @Volatile var closing = false
+    fun beforePluginUnload(id: PluginId) {
+        if (id.idString == "io.github.shinma06.android-replay-buffer") closing = true
+    }
+}
+
 /** The SDK calls this on checked closes (tab X / Close Editor), before beforeFileClosed. */
 internal class ReplayVideoPreCloseCheck : VirtualFilePreCloseCheck {
     override fun canCloseFile(file: VirtualFile): Boolean {
@@ -46,8 +54,8 @@ internal class ReplayVideoPreCloseCheck : VirtualFilePreCloseCheck {
 
 /** The file-close events, rather than dispose(), own this optional user decision. */
 internal class ReplayEditCloseManager(private val project: Project, private val service: ReplayProjectService) : Disposable {
-    @Volatile var closing = false
-        private set
+    private val lifecycle = ReplayEditCloseLifecycle()
+    val closing get() = lifecycle.closing
     private val editors = mutableMapOf<VirtualFile, ReplayPlayerEditor>()
     private val confirmed = mutableMapOf<VirtualFile, Pair<ReplayPlayerEditor, ReplayEditOrigin>>()
     private val actions = mutableListOf<Pair<AnActionEvent, Boolean>>()
@@ -87,15 +95,15 @@ internal class ReplayEditCloseManager(private val project: Project, private val 
             }
         })
         app.subscribe(ProjectManager.TOPIC, object : ProjectManagerListener {
-            override fun projectClosingBeforeSave(project: Project) { if (project === this@ReplayEditCloseManager.project) closing = true }
-            override fun projectClosing(project: Project) { if (project === this@ReplayEditCloseManager.project) closing = true }
+            override fun projectClosingBeforeSave(project: Project) { if (project === this@ReplayEditCloseManager.project) lifecycle.closing = true }
+            override fun projectClosing(project: Project) { if (project === this@ReplayEditCloseManager.project) lifecycle.closing = true }
         })
         app.subscribe(AppLifecycleListener.TOPIC, object : AppLifecycleListener {
-            override fun appClosing() { closing = true }
-            override fun beforeAppWillBeClosed(isRestart: Boolean) { closing = true }
+            override fun appClosing() { lifecycle.closing = true }
+            override fun beforeAppWillBeClosed(isRestart: Boolean) { lifecycle.closing = true }
         })
         app.subscribe(DynamicPluginListener.TOPIC, object : DynamicPluginListener {
-            override fun beforePluginUnload(pluginDescriptor: IdeaPluginDescriptor, isUpdate: Boolean) { closing = true }
+            override fun beforePluginUnload(pluginDescriptor: IdeaPluginDescriptor, isUpdate: Boolean) { lifecycle.beforePluginUnload(pluginDescriptor.pluginId) }
         })
     }
 
@@ -129,5 +137,5 @@ internal class ReplayEditCloseManager(private val project: Project, private val 
         if (origin != null && active()) editors[file] = editor
     }
     fun clear(file: VirtualFile) { revision++; editors.remove(file)?.controller?.closePolicy?.origin = null; confirmed.remove(file) }
-    override fun dispose() { closing = true; editors.values.forEach { it.controller.closePolicy.origin = null }; editors.clear(); confirmed.clear() }
+    override fun dispose() { lifecycle.closing = true; editors.values.forEach { it.controller.closePolicy.origin = null }; editors.clear(); confirmed.clear() }
 }
