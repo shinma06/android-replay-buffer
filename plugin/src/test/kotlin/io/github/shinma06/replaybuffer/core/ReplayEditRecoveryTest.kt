@@ -13,10 +13,12 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.io.TempDir
 
 class ReplayEditRecoveryTest {
     @TempDir lateinit var root: Path
+    @BeforeEach fun canonicalFixtureParent() { root = root.toRealPath() }
     private val name = "replay-20240101-000000-manual-feedface"
     private fun source(): Pair<Path, SaveSnapshot> {
         val folder = root.resolve(name)
