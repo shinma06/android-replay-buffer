@@ -70,6 +70,7 @@ internal class ReplayEditCloseWork<K> {
         }
     }
     private val pending = ConcurrentHashMap<K, Ticket>()
+    fun contains(file: K) = pending.containsKey(file)
     fun begin(file: K): Ticket {
         val ticket = Ticket()
         while (true) {
@@ -95,7 +96,9 @@ internal class ReplayEditCloseWork<K> {
 // invalidates work when the opening project has no ReplayProjectService/close manager.
 internal val replayEditPendingCloses = ReplayEditCloseWork<Path>()
 private fun replayVideoPath(file: VirtualFile) = file.toNioPath().toAbsolutePath().normalize()
-internal fun replayVideoOpening(file: VirtualFile) { replayEditPendingCloses.clear(replayVideoPath(file)) }
+private fun replayVideoPathOrNull(file: VirtualFile) = runCatching { replayVideoPath(file) }.getOrNull()
+internal fun replayVideoOpening(file: VirtualFile) { replayVideoPathOrNull(file)?.let(replayEditPendingCloses::clear) }
+internal fun hasPendingReplayVideo(file: VirtualFile) = replayVideoPathOrNull(file)?.let(replayEditPendingCloses::contains) == true
 internal fun replayVideoOpenRequested(folder: Path, open: () -> Unit): CompletionStage<Void> =
     replayEditPendingCloses.cancelAndAwait(folder.resolve(ReplayFiles.VIDEO).toAbsolutePath().normalize()).thenRun(open)
 
@@ -214,6 +217,6 @@ internal class ReplayEditCloseManager(private val project: Project, private val 
         editor.controller.closePolicy.origin = origin
         if (origin != null && active()) editors[file] = editor
     }
-    fun clear(file: VirtualFile) { revision++; pending.clear(replayVideoPath(file)); editors.remove(file)?.controller?.closePolicy?.origin = null; confirmed.remove(file) }
+    fun clear(file: VirtualFile) { revision++; replayVideoOpening(file); editors.remove(file)?.controller?.closePolicy?.origin = null; confirmed.remove(file) }
     override fun dispose() { lifecycle.closing = true; pending.dispose(); editors.values.forEach { it.controller.closePolicy.origin = null }; editors.clear(); confirmed.clear() }
 }

@@ -192,22 +192,29 @@ internal class ReplayPlayerController(
     val folderName: String get() = folder.fileName?.toString() ?: folder.toString()
 
     init {
-        executor.execute {
-            try {
-                val opened = openReplay(folder)
-                val timeline = try { opened.previewKeyframes.at(0); opened.timeline() }
-                catch (failure: Throwable) { opened.close(); throw failure }
-                saved = opened
-                publish {
-                    val created = TrimRules(FrameGrid(timeline.spans), timeline.durationUs)
-                    rules = created
-                    state = state.copy(loading = false, durationUs = timeline.durationUs, timeline = timeline,
-                        editor = created.initial())
-                    showEditor()
-                }
-            } catch (failure: Throwable) {
-                publish { state = state.copy(loading = false, error = failure.message ?: "保存フォルダを開けません。") }
+        replayVideoOpenRequested(folder) {
+            if (!disposed) executor.execute { loadReplay(openReplay) }
+        }.exceptionally { failure ->
+            publish { state = state.copy(loading = false, error = failure.message ?: "保存フォルダを開けません。") }
+            null
+        }
+    }
+
+    private fun loadReplay(openReplay: (Path) -> SavedReplay) {
+        try {
+            val opened = openReplay(folder)
+            val timeline = try { opened.previewKeyframes.at(0); opened.timeline() }
+            catch (failure: Throwable) { opened.close(); throw failure }
+            saved = opened
+            publish {
+                val created = TrimRules(FrameGrid(timeline.spans), timeline.durationUs)
+                rules = created
+                state = state.copy(loading = false, durationUs = timeline.durationUs, timeline = timeline,
+                    editor = created.initial())
+                showEditor()
             }
+        } catch (failure: Throwable) {
+            publish { state = state.copy(loading = false, error = failure.message ?: "保存フォルダを開けません。") }
         }
     }
 

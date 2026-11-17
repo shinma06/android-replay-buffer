@@ -1,5 +1,7 @@
 package io.github.shinma06.replaybuffer.ide
 
+import io.github.shinma06.replaybuffer.core.ReplayFiles
+
 import com.android.tools.idea.gradle.project.sync.GradleSyncState
 import com.google.gson.JsonNull
 import com.google.gson.JsonParser
@@ -632,13 +634,28 @@ class ReplaySaveTaskTest {
             click(secondAction)
             click(firstAction)
             assertEquals(listOf(other, folder), opened)
+            val key = folder.resolve(ReplayFiles.VIDEO).toAbsolutePath().normalize()
+            val ticket = io.github.shinma06.replaybuffer.ui.replayEditPendingCloses.begin(key)
+            ticket.afterResourcesClosed(CompletableFuture.completedFuture(true), { true }) { valid ->
+                val parked = root.resolve("video-in-flight")
+                Files.move(folder.resolve(ReplayFiles.VIDEO), parked)
+                try {
+                    click(firstAction) // Real notification helper must cancel before testing video existence.
+                    assertEquals(listOf(other, folder), opened)
+                    assertFalse(valid())
+                } finally {
+                    Files.move(parked, folder.resolve(ReplayFiles.VIDEO))
+                    io.github.shinma06.replaybuffer.ui.replayEditPendingCloses.finished(key, ticket)
+                }
+            }
+            assertEquals(listOf(other, folder, folder), opened)
             Files.delete(folder.resolve("video.mp4"))
             click(firstAction)
-            assertEquals(listOf(other, folder), opened)
+            assertEquals(listOf(other, folder, folder), opened)
             alive = false
             click(secondAction)
             assertTrue(notifications.last().isExpired)
-            assertEquals(listOf(other, folder), opened)
+            assertEquals(listOf(other, folder, folder), opened)
         }
     }
 

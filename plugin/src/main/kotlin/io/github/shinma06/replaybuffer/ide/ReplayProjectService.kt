@@ -902,7 +902,9 @@ internal fun savedVideoEditAction(save: SaveSnapshot, alive: () -> Boolean, open
     val folder = savedVideoDirectory(save) ?: return null
     return NotificationAction.create("編集") { _, notification ->
         if (!alive()) notification.expire()
-        else if (savedVideoDirectory(save) == folder) open(folder)
+        else io.github.shinma06.replaybuffer.ui.replayVideoOpenRequested(folder) {
+            if (alive() && savedVideoDirectory(save) == folder) open(folder)
+        }
     }
 }
 
@@ -915,20 +917,23 @@ internal fun observeSaveForTrim(
 ): CompletableFuture<Void> = operation.thenCompose { result ->
     val completion = result.saveResult
     if (!result.accepted || result.requestId == null || completion == null) CompletableFuture.completedFuture(null)
-    else completion.thenAccept { save ->
-        if (alive() && save.requestId == result.requestId) {
-            savedVideoDirectory(save)?.takeIf { Files.isRegularFile(it.resolve(ReplayFiles.RECORD)) }?.let {
-                if (openSaved == null) open(it) else openSaved(save)
+    else completion.thenCompose { save ->
+        val folder = completedVideoDirectory(save)
+        if (alive() && save.requestId == result.requestId && folder != null) {
+            io.github.shinma06.replaybuffer.ui.replayVideoOpenRequested(folder) {
+                if (alive() && savedVideoDirectory(save) == folder && Files.isRegularFile(folder.resolve(ReplayFiles.RECORD))) {
+                    if (openSaved == null) open(folder) else openSaved(save)
+                }
             }
-        }
+        } else CompletableFuture.completedFuture(null)
     }.toCompletableFuture()
 }
 
 // missingKinds describes coverage too; it does not establish whether a movie was saved.
-internal fun savedVideoDirectory(save: SaveSnapshot): Path? = save.directory?.takeIf {
-    save.phase == SavePhase.COMPLETED && save.captureMode.videoRequested && save.content != SaveContent.LOGS_ONLY &&
-        Files.isRegularFile(it.resolve(ReplayFiles.VIDEO))
+private fun completedVideoDirectory(save: SaveSnapshot): Path? = save.directory?.takeIf {
+    save.phase == SavePhase.COMPLETED && save.captureMode.videoRequested && save.content != SaveContent.LOGS_ONLY
 }
+internal fun savedVideoDirectory(save: SaveSnapshot): Path? = completedVideoDirectory(save)?.takeIf { Files.isRegularFile(it.resolve(ReplayFiles.VIDEO)) }
 
 internal fun streamName(kind: String): String = when (kind) {
     "video" -> "動画"

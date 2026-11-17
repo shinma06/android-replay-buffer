@@ -9,6 +9,15 @@ import io.github.shinma06.replaybuffer.ui.withSingleReplayOwner
 import io.github.shinma06.replaybuffer.ui.replayEditPendingCloses
 import io.github.shinma06.replaybuffer.ui.replayVideoOpening
 import io.github.shinma06.replaybuffer.ui.replayVideoOpenRequested
+import io.github.shinma06.replaybuffer.ui.ReplayPlayerController
+import io.github.shinma06.replaybuffer.ui.ReplayPlayerEditorProvider
+import com.intellij.mock.MockApplication
+import com.intellij.mock.MockProject
+import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.util.Disposer
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import javax.swing.SwingUtilities
 import com.intellij.testFramework.LightVirtualFile
 import com.intellij.openapi.extensions.PluginId
 import io.github.shinma06.replaybuffer.ui.confirmedReplayDiscard
@@ -509,5 +518,80 @@ class ReplayEditRecoveryTest {
         assertTrue(unrelatedOpened)
         assertEquals(original, bytes(folder))
         assertEquals(original, bytes(other))
+    }
+
+    @Test fun nonNativeFileOpeningDoesNotThrowOrCancelUnrelatedReplayWork() {
+        val (folder, _) = source()
+        val key = folder.resolve(ReplayFiles.VIDEO)
+        val ticket = replayEditPendingCloses.begin(key)
+        val unsupported = object : LightVirtualFile("JarEntry.kt") {
+            override fun toNioPath(): Path = throw UnsupportedOperationException("No native path")
+        }
+        replayVideoOpening(unsupported)
+        var ran = false
+        ticket.afterResourcesClosed(CompletableFuture.completedFuture(true), { true }) {
+            ran = true
+            replayEditPendingCloses.finished(key, ticket)
+        }
+        assertTrue(ran)
+    }
+
+    @Test fun providerControllerDefersRealLoadUntilRollbackEvenWhenOnlyReadmeIsAbsent() {
+        val (folder, _) = source()
+        val original = bytes(folder)
+        val key = folder.resolve(ReplayFiles.VIDEO)
+        val file = object : LightVirtualFile("video.mp4") { override fun toNioPath() = key }
+        val lifetime = Disposer.newDisposable()
+        ApplicationManager.setApplication(MockApplication(lifetime), lifetime)
+        val loaded = CountDownLatch(1)
+        var controller: ReplayPlayerController? = null
+        var failure: Throwable? = null
+        val ticket = replayEditPendingCloses.begin(key)
+        try {
+            ticket.afterResourcesClosed(CompletableFuture.completedFuture(true), { true }) { valid ->
+                try {
+                    val readme = folder.resolve(ReplayFiles.SUMMARY)
+                    val parked = root.resolve("readme-in-flight")
+                    Files.move(readme, parked)
+                    try {
+                            assertFalse(Files.exists(folder.resolve(ReplayFiles.SUMMARY)))
+                            assertTrue(listOf(ReplayFiles.RECORD, ReplayFiles.VIDEO, ReplayFiles.VIDEO_FRAMES).all { Files.exists(folder.resolve(it)) })
+                            assertTrue(ReplayPlayerEditorProvider().accept(MockProject(null, lifetime), file))
+                            replayVideoOpening(file) // The real provider hook precedes construction.
+                            SwingUtilities.invokeAndWait {
+                                controller = ReplayPlayerController(MockProject(null, lifetime), folder, openReplay = {
+                                    assertEquals(original, bytes(it))
+                                    SavedReplay.open(it).also { loaded.countDown() }
+                                })
+                                assertTrue(assertNotNull(controller).state.loading)
+                                assertNull(assertNotNull(controller).state.error)
+                            }
+                            assertEquals(1L, loaded.count)
+                            check(!valid())
+                    } finally { Files.move(parked, readme) }
+                } catch (caught: Throwable) { failure = caught }
+                finally { replayEditPendingCloses.finished(key, ticket) }
+            }
+            assertNull(failure)
+            assertTrue(loaded.await(30, TimeUnit.SECONDS))
+            val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30)
+            while (true) {
+                var ready = false
+                SwingUtilities.invokeAndWait {
+                    val current = assertNotNull(controller)
+                    assertNull(current.state.error)
+                    ready = !current.state.loading && current.state.image != null
+                }
+                if (ready) break
+                check(System.nanoTime() < deadline) { "Replay did not load after rollback" }
+                Thread.sleep(10)
+            }
+            assertEquals(original, bytes(folder))
+        } finally {
+            SwingUtilities.invokeAndWait { controller?.dispose() }
+            controller?.resourcesClosed?.get(30, TimeUnit.SECONDS)
+            Disposer.dispose(lifetime)
+            replayEditPendingCloses.clear(key)
+        }
     }
 }
