@@ -74,7 +74,8 @@ class ReplayPreviewTest {
     }
 
     @Test fun thumbnailOwnerLockExcludesAnotherReaderAndReleasesWithoutDeletingItsIdentity() {
-        SaveOutputDirectory.open(root).use { dir ->
+        // Match the cache caller: TempDir may contain Darwin's /var -> /private/var symlink.
+        SaveOutputDirectory.open(root.toRealPath()).use { dir ->
             dir.createFile("cache.lock").use { first ->
                 val owner = assertNotNull(first.tryOwnerLock())
                 owner.use {
