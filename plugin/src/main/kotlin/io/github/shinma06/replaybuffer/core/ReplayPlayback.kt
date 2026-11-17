@@ -28,7 +28,8 @@ private fun JsonObject.longText(name: String): Long? =
 internal class ReplayFrameCursor(
     private val saved: SavedReplay,
     openChannel: (SaveOutputFile) -> FileChannel = { it.channel(EnumSet.of(StandardOpenOption.READ)) },
-) : AutoCloseable {
+    private val cache: ReplayFrameCache = ReplayFrameCache(),
+) : ReplayVideoDecoder {
     class Decoded(val image: BufferedImage, val startUs: Long, val endUs: Long, val index: Int)
 
     private val rows = saved.frames
@@ -39,6 +40,7 @@ internal class ReplayFrameCursor(
     private var nextIndex = 0
     private var normalizer: MixedVideoNormalizer? = null
     private var runEntry = -1
+    private val cacheSource = "${saved.recordSha256}:${file.key}:full-bgra-v1"
 
     init {
         channel = try { openChannel(file) }
@@ -65,22 +67,39 @@ internal class ReplayFrameCursor(
     private fun isKey(index: Int) = rows[index]["output_key"]?.takeIf { it.isJsonPrimitive }?.asBoolean == true
 
     /** Decodes from the reference IDR up to the frame displayed at [atUs] and returns it. */
-    fun seek(atUs: Long, checkActive: () -> Unit = {}): Decoded {
+    override fun seek(atUs: Long, checkActive: () -> Unit): Decoded {
+        checkActive()
+        // Recheck live identity pins even when no MP4 read is needed for a cache hit.
+        saved.openFile(ReplayFiles.VIDEO).close()
+        saved.openFile(ReplayFiles.RECORD).close()
+        saved.openFile(ReplayFiles.VIDEO_FRAMES).close()
         val target = rows.indices.firstOrNull { i -> span(i)?.let { atUs in it.first until it.second } == true }
             ?: throw IllegalArgumentException("指定時刻に表示されるframeがありません")
+        cache.get(cacheSource, target)?.let {
+            nextIndex = target + 1; normalizer = null
+            return it
+        }
         val gopStart = (target downTo 0).firstOrNull {
             isKey(it) && rows[it]["segment_index"]?.asInt == rows[target]["segment_index"].asInt
         } ?: throw IllegalArgumentException("表示frameの参照IDRがありません")
-        check(track.gotoFrame(gopStart.toLong())) { "動画の位置へ移動できません" }
-        nextIndex = gopStart
-        normalizer = null
+        if (normalizer == null || nextIndex !in gopStart..target) {
+            check(track.gotoFrame(gopStart.toLong())) { "動画の位置へ移動できません" }
+            nextIndex = gopStart
+            normalizer = null
+        }
         var last: Decoded? = null
-        while (nextIndex <= target) { checkActive(); last = decodeNext() }
+        // Keep the two preceding frames, without RGB allocations for the rest of the GOP.
+        while (nextIndex <= target) { checkActive(); last = decodeNext(nextIndex >= target - 2) }
+        checkActive()
         return last ?: throw IllegalArgumentException("指定時刻のframeを復号できません")
     }
 
     /** The next frame with a movie span after the last decoded one, or null at the end of the movie. */
-    fun next(checkActive: () -> Unit = {}): Decoded? {
+    override fun next(checkActive: () -> Unit): Decoded? {
+        if (normalizer == null && nextIndex <= rows.lastIndex) {
+            val at = span(nextIndex)?.first
+            if (at != null) return seek(at, checkActive)
+        }
         while (nextIndex <= rows.lastIndex) {
             checkActive()
             val decoded = decodeNext() ?: continue
@@ -89,7 +108,7 @@ internal class ReplayFrameCursor(
         return null
     }
 
-    private fun decodeNext(): Decoded? {
+    private fun decodeNext(display: Boolean = true): Decoded? {
         val index = nextIndex
         val packet = track.nextFrame() ?: throw IllegalStateException("動画のsampleが足りません")
         nextIndex = index + 1
@@ -105,10 +124,14 @@ internal class ReplayFrameCursor(
         }
         val decoder = normalizer ?: throw IllegalStateException("参照IDRより前から復号しようとしました")
         require(entry == runEntry) { "表示frameのsample構成が読めません" }
-        val picture = try { decoder.decodeForDisplay(movSampleToAnnexB(packet.data, avcs[entry - 1])) }
+        val picture = try {
+            val bytes = movSampleToAnnexB(packet.data, avcs[entry - 1])
+            if (display) decoder.decodeForDisplay(bytes) else { decoder.decodeOnly(bytes); null }
+        }
             catch (e: Exception) { throw IllegalStateException("表示frameの復号に失敗しました", e) }
+        if (picture == null) return null
         val (start, end) = span(index) ?: return null
-        return Decoded(ReplayFrameExport.rgbImage(picture), start, end, index)
+        return Decoded(ReplayPreviewImage.convert(picture), start, end, index).also { cache.put(cacheSource, it) }
     }
 
     override fun close() {
