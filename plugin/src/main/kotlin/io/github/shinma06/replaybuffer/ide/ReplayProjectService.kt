@@ -619,6 +619,8 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
         }
     }
 
+    internal fun confirmReplayClose(file: com.intellij.openapi.vfs.VirtualFile) { editClose.confirmClose(file) }
+
     internal fun relocateEditedReplay(origin: ReplayEditOrigin, active: () -> Boolean) {
         if (!alive || !active()) return
         scope.launch(Dispatchers.IO) {
