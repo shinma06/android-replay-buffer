@@ -131,6 +131,105 @@ class ReplayEditRecoveryTest {
         assertTrue(Files.exists(inside) && Files.exists(outside))
     }
 
+    @Test fun readFailureBeforeOrDuringPromptRetainsIndependentlyOfClearedOrigin() {
+        val (_, save) = source()
+        for (before in listOf(false, true)) {
+            val policy = ReplayEditClosePolicy().also { it.origin = assertNotNull(ReplayEditOrigin.capture(save)) }
+            if (before) policy.recordSourceReadFailure()
+            var asked = false
+            val eligible = policy.eligible(true, false, false)
+            policy.origin = null // Same clear as confirmClose before presenting the dialog.
+            assertFalse(confirmedReplayDiscard(eligible, { !policy.mustRetainSource }) {
+                asked = true
+                policy.recordSourceReadFailure()
+                true
+            })
+            assertEquals(!before, asked)
+            assertTrue(policy.mustRetainSource)
+        }
+    }
+
+    @Test fun lateReadFailureCancelsQueuedOrMovingConfirmedWorkAndPreservesAllPayloads() {
+        val (folder, save) = source()
+        val original = bytes(folder)
+        val origin = assertNotNull(ReplayEditOrigin.capture(save))
+        val pending = ReplayEditCloseWork<Path>()
+        for (midMove in listOf(false, true)) {
+            val policy = ReplayEditClosePolicy().also { it.origin = origin }
+            assertTrue(policy.eligible(true, false, false))
+            policy.origin = null
+            val ticket = pending.begin(folder)
+            var queued: (() -> Unit)? = null
+            ticket.afterResourcesClosed(CompletableFuture.completedFuture(true), { !policy.mustRetainSource }) { valid ->
+                queued = { origin.relocate(checkActive = { check(valid()) }, afterMove = { if (midMove) policy.recordSourceReadFailure() }) }
+            }
+            if (!midMove) policy.recordSourceReadFailure()
+            try { assertFailsWith<Exception> { assertNotNull(queued).invoke() } }
+            finally { pending.finished(folder, ticket) }
+            assertEquals(original, bytes(folder))
+        }
+    }
+
+    @Test fun previewFailureAfterConfirmedCloseRetainsEvenWithSuccessfulResourceCleanupAndNoOrigin() {
+        val (folder, save) = source()
+        val original = bytes(folder)
+        val origin = assertNotNull(ReplayEditOrigin.capture(save))
+        val fail = java.util.concurrent.atomic.AtomicBoolean()
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val lifetime = Disposer.newDisposable()
+        ApplicationManager.setApplication(MockApplication(lifetime), lifetime)
+        lateinit var controller: ReplayPlayerController
+        try {
+            SwingUtilities.invokeAndWait {
+                controller = ReplayPlayerController(MockProject(null, lifetime), folder, decoderFactory = { replay, cache ->
+                    val real = ReplayFrameCursor(replay, cache = cache)
+                    object : ReplayVideoDecoder by real {
+                        override fun seek(atUs: Long, checkActive: () -> Unit): ReplayFrameCursor.Decoded {
+                            if (fail.get()) {
+                                entered.countDown()
+                                check(release.await(30, TimeUnit.SECONDS))
+                                error("Injected late preview source failure")
+                            }
+                            return real.seek(atUs, checkActive)
+                        }
+                    }
+                })
+            }
+            val worker = controller.javaClass.getDeclaredField("executor").apply { isAccessible = true }.get(controller) as java.util.concurrent.ExecutorService
+            repeat(2) { worker.submit {}.get(30, TimeUnit.SECONDS); SwingUtilities.invokeAndWait {} }
+            val policy = controller.closePolicy
+            SwingUtilities.invokeAndWait {
+                assertNotNull(controller.state.image)
+                policy.origin = origin
+                assertTrue(confirmedReplayDiscard(policy.eligible(true, false, false), { !policy.mustRetainSource }) { true })
+                policy.origin = null
+                fail.set(true)
+                controller.step(1)
+            }
+            assertTrue(entered.await(30, TimeUnit.SECONDS))
+            val pending = ReplayEditCloseWork<Path>()
+            val ticket = pending.begin(folder)
+            var relocated = false
+            ticket.afterResourcesClosed(controller.resourcesClosed, { !policy.mustRetainSource }, { pending.finished(folder, ticket) }) { valid ->
+                try { origin.relocate(checkActive = { check(valid()) }); relocated = true }
+                finally { pending.finished(folder, ticket) }
+            }
+            SwingUtilities.invokeAndWait { controller.dispose() }
+            assertFalse(controller.resourcesClosed.isDone)
+            release.countDown()
+            assertTrue(controller.resourcesClosed.get(30, TimeUnit.SECONDS))
+            ticket.completion.get(30, TimeUnit.SECONDS)
+            assertTrue(policy.mustRetainSource)
+            assertFalse(relocated)
+            assertEquals(original, bytes(folder))
+        } finally {
+            release.countDown()
+            runCatching { controller }.getOrNull()?.let { opened -> SwingUtilities.invokeAndWait { opened.dispose() } }
+            Disposer.dispose(lifetime)
+        }
+    }
+
     @Test fun reusedOriginalFolderIsNeverOverwritten() {
         val (folder, save) = source()
         val recovery = assertNotNull(ReplayEditOrigin.capture(save)).relocate()

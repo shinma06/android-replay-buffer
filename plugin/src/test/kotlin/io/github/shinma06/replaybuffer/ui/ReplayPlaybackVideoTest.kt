@@ -87,7 +87,7 @@ class ReplayPlaybackVideoTest {
     @Test
     fun aDecodeFailureIsStillAFailureEvenIfItsClockHasReachedTheEnd() {
         for (expires in listOf(false, true)) {
-            Playback().use { play ->
+            Playback(expectedClosed = false).use { play ->
                 play.afterNext = {
                     if (expires) play.moveTo(play.untilUs)
                     error("decode failure")
@@ -168,6 +168,7 @@ class ReplayPlaybackVideoTest {
         val untilUs: Long = 800_000,
         private val clock: AtomicLong = AtomicLong(),
         nanoTime: () -> Long = clock::get,
+        private val expectedClosed: Boolean = true,
     ) : AutoCloseable {
         val decoded = mutableListOf<Int>()
         val shown = mutableListOf<Int>()
@@ -198,7 +199,7 @@ class ReplayPlaybackVideoTest {
 
         private fun join() {
             worker.get()?.let { it.join(10_000); assertFalse(it.isAlive, "video worker still running") }
-            assertTrue(session.resourcesClosed.get(10, TimeUnit.SECONDS))
+            assertEquals(expectedClosed, session.resourcesClosed.get(10, TimeUnit.SECONDS))
         }
 
         override fun close() { session.stop(); join() }

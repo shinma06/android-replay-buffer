@@ -82,10 +82,10 @@ class ReplayPlayerControllerTest {
             if (initial.getAndSet(false)) real else object : ReplayVideoDecoder by real {
                 override fun seekForPlayback(atUs: Long, checkActive: () -> Unit): ReplayFrameCursor.Decoded {
                     entered.countDown()
-                    CountDownLatch(1).await()
+                    try { CountDownLatch(1).await() }
+                    catch (_: InterruptedException) { error("Injected late retired decode failure") }
                     error("Unexpected continuation")
                 }
-                override fun close() { real.close(); error("Injected retired decoder close failure") }
             }
         }) { controller ->
             SwingUtilities.invokeAndWait { controller.togglePlay() }
@@ -93,8 +93,100 @@ class ReplayPlayerControllerTest {
             assertTrue(entered.await(30, TimeUnit.SECONDS))
             SwingUtilities.invokeAndWait { controller.togglePlay() }
             assertFalse(session.resourcesClosed.get(30, TimeUnit.SECONDS))
+            assertTrue(controller.closePolicy.mustRetainSource)
             SwingUtilities.invokeAndWait { controller.dispose() }
             assertFalse(controller.resourcesClosed.get(30, TimeUnit.SECONDS))
+        }
+    }
+
+    @Test fun failedSeekRetainsBeforeEdtPublicationAndAfterGoodPreviewAndMessageRecovery() {
+        val fail = AtomicBoolean()
+        val entered = CountDownLatch(1)
+        val releaseDecode = CountDownLatch(1)
+        withController(decoderFactory = { replay, cache ->
+            val real = ReplayFrameCursor(replay, cache = cache)
+            object : ReplayVideoDecoder by real {
+                override fun seek(atUs: Long, checkActive: () -> Unit): ReplayFrameCursor.Decoded {
+                    if (fail.get()) {
+                        entered.countDown()
+                        check(releaseDecode.await(30, TimeUnit.SECONDS))
+                        error("Injected seek source failure")
+                    }
+                    return real.seek(atUs, checkActive)
+                }
+            }
+        }) { controller ->
+            drain(controller)
+            val oldImage = controller.state.image
+            val oldUs = controller.state.imageUs
+            fail.set(true)
+            SwingUtilities.invokeAndWait { controller.step(2) }
+            assertTrue(entered.await(30, TimeUnit.SECONDS))
+            val edtBlocked = CountDownLatch(1)
+            val releaseEdt = CountDownLatch(1)
+            SwingUtilities.invokeLater { edtBlocked.countDown(); check(releaseEdt.await(30, TimeUnit.SECONDS)) }
+            try {
+                assertTrue(edtBlocked.await(30, TimeUnit.SECONDS))
+                releaseDecode.countDown()
+                (controller.javaClass.getDeclaredField("executor").apply { isAccessible = true }.get(controller) as ExecutorService)
+                    .submit {}.get(30, TimeUnit.SECONDS)
+                assertTrue(controller.closePolicy.mustRetainSource) // Worker writes before queued message can run.
+                assertNull(controller.state.message)
+            } finally { releaseDecode.countDown(); releaseEdt.countDown() }
+            drain(controller)
+            SwingUtilities.invokeAndWait {
+                assertNull(controller.state.error)
+                assertEquals(oldImage, controller.state.image)
+                assertEquals(oldUs, controller.state.imageUs)
+                assertEquals("Injected seek source failure", controller.state.message)
+                assertFalse(controller.barModel().buttons.single { it.id == PlayerButton.SAVE_FRAME }.enabled)
+                fail.set(false)
+                controller.step(1)
+            }
+            awaitPreview(controller)
+            SwingUtilities.invokeAndWait { controller.togglePlay(); controller.togglePlay() } // Clears transient message.
+            awaitPreview(controller)
+            SwingUtilities.invokeAndWait {
+                assertNull(controller.state.error)
+                assertNull(controller.state.message)
+                assertTrue(controller.barModel().buttons.single { it.id == PlayerButton.SAVE_FRAME }.enabled)
+                assertTrue(controller.closePolicy.mustRetainSource)
+            }
+        }
+    }
+
+    @Test fun ordinaryPlaybackDecodeFailureRetainsWithoutTurningTheEditorFatal() = withController(decoderFactory = { replay, cache ->
+        val real = ReplayFrameCursor(replay, cache = cache)
+        object : ReplayVideoDecoder by real {
+            override fun seekForPlayback(atUs: Long, checkActive: () -> Unit): ReplayFrameCursor.Decoded = error("Injected playback decode failure")
+        }
+    }) { controller ->
+        lateinit var session: ReplayPlaybackSession
+        SwingUtilities.invokeAndWait { controller.togglePlay(); session = playback(controller) }
+        assertFalse(session.resourcesClosed.get(30, TimeUnit.SECONDS))
+        SwingUtilities.invokeAndWait {
+            assertNull(controller.state.error)
+            assertEquals("Injected playback decode failure", controller.state.message)
+            assertTrue(controller.closePolicy.mustRetainSource)
+        }
+    }
+
+    @Test fun thumbnailSourceFailureRetainsEvenThoughTheSlotIsOptional() = thumbnailSource(true)
+    @Test fun normalThumbnailGenerationDoesNotMakeHealthySourceUncertain() = thumbnailSource(false)
+
+    private fun thumbnailSource(fail: Boolean) = withController(decoderFactory = { replay, cache ->
+        if (Thread.currentThread().name == "arb-replay-thumbnails" && fail) error("Injected thumbnail source failure")
+        ReplayFrameCursor(replay, cache = cache)
+    }) { controller ->
+        drain(controller)
+        SwingUtilities.invokeAndWait { controller.stripResized(640f, 96f) }
+        val thumbnails = controller.javaClass.getDeclaredField("thumbnailExecutor").apply { isAccessible = true }.get(controller) as ExecutorService
+        thumbnails.shutdown()
+        assertTrue(thumbnails.awaitTermination(30, TimeUnit.SECONDS))
+        SwingUtilities.invokeAndWait {
+            assertNull(controller.state.error)
+            assertEquals(fail, controller.closePolicy.mustRetainSource)
+            assertTrue(controller.barModel().buttons.single { it.id == PlayerButton.SAVE_FRAME }.enabled)
         }
     }
 

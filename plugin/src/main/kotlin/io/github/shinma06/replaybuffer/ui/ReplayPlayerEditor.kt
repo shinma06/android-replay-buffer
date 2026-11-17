@@ -197,6 +197,7 @@ internal class ReplayPlayerController(
         replayVideoOpenRequested(folder) {
             if (!disposed) executor.execute { loadReplay(openReplay) }
         }.exceptionally { failure ->
+            recordReadFailure(failure)
             publish { state = state.copy(loading = false, error = failure.message ?: "保存フォルダを開けません。") }
             null
         }
@@ -217,8 +218,15 @@ internal class ReplayPlayerController(
                 showEditor()
             }
         } catch (failure: Throwable) {
+            recordReadFailure(failure)
             publish { state = state.copy(loading = false, error = failure.message ?: "保存フォルダを開けません。") }
         }
+    }
+
+    private fun recordReadFailure(failure: Throwable) {
+        val cancelled = failure is PreviewSuperseded || failure is PlayerClosed ||
+            failure is InterruptedException || failure is java.nio.channels.ClosedByInterruptException
+        if (!cancelled || failure.suppressed.isNotEmpty()) closePolicy.recordSourceReadFailure()
     }
 
     private fun publish(action: () -> Unit) {
@@ -284,11 +292,14 @@ internal class ReplayPlayerController(
                     }
                     // Cache the two following positions after publishing. New input cancels at packet boundaries.
                     if (!scrubbing) repeat(2) { active(); cursor.next(::active) }
-                } catch (_: PreviewSuperseded) {
+                } catch (failure: PreviewSuperseded) {
+                    recordReadFailure(failure)
                     // A cancelled GOP is never published; the newest exact request goes next.
-                } catch (_: PlayerClosed) {
+                } catch (failure: PlayerClosed) {
+                    recordReadFailure(failure)
                     return
                 } catch (failure: Throwable) {
+                    recordReadFailure(failure) // Before EDT publication, including after disposal.
                     // A failed decoder may have consumed a partial packet; never reuse that reference state.
                     runCatching { decoder?.close() }; decoder = null
                     synchronized(decodeLock) { if (pendingUs == target && previewGeneration == generation) pendingUs = null }
@@ -345,11 +356,11 @@ internal class ReplayPlayerController(
                     wanted.forEach { target ->
                         active()
                         if (thumbnails[target] != null) return@forEach
-                        val image = diskThumbnails.read(source, target) ?: run {
+                        val image = runCatching { diskThumbnails.read(source, target) }.getOrNull() ?: run {
                             check(previewKeyframeUs(replay, target) == target)
                             val frame = cursor.seek(target, ::active)
                             active()
-                            scaledThumbnail(frame.image, THUMBNAIL_HEIGHT_PX).also { diskThumbnails.write(source, target, it) }
+                            scaledThumbnail(frame.image, THUMBNAIL_HEIGHT_PX).also { runCatching { diskThumbnails.write(source, target, it) } }
                         }
                         active()
                         thumbnails.put(target, image.previewBitmap())
@@ -357,8 +368,8 @@ internal class ReplayPlayerController(
                     }
                 }
             }
-        } catch (_: PlayerClosed) {
-        } catch (_: Throwable) {
+        } catch (failure: Throwable) {
+            recordReadFailure(failure)
             // Thumbnails are decoration; a frame that cannot decode stays an empty slot.
         } finally {
             publish { state = state.copy(thumbnailVersion = state.thumbnailVersion + 1) }
@@ -444,7 +455,8 @@ internal class ReplayPlayerController(
             } } },
             onAudioUnavailable = { reason -> publish { if (playback === session) state = state.copy(audioNote = reason) } },
             onGap = { us -> showFrame(us to null) },
-            decoderFactory = { decoderFactory(it, frameCache) })
+            decoderFactory = { decoderFactory(it, frameCache) },
+            onSourceFailure = closePolicy::recordSourceReadFailure)
         playback = session
         val closed = session.resourcesClosed
         playbackClosures.add(closed)

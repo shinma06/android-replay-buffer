@@ -33,8 +33,12 @@ internal class ReplayEditClosePolicy {
     var origin: ReplayEditOrigin? = null
     @Volatile var trimExported = false
     @Volatile var ambiguousOutput = false
+    @Volatile private var sourceReadFailed = false
+    fun recordSourceReadFailure() { sourceReadFailed = true }
+    // Independent of the ephemeral origin, which is cleared before the dialog/actual close.
+    val mustRetainSource get() = trimExported || ambiguousOutput || sourceReadFailed
     fun eligible(healthy: Boolean, busy: Boolean, closing: Boolean) =
-        origin != null && healthy && !busy && !closing && !trimExported && !ambiguousOutput
+        origin != null && healthy && !busy && !closing && !mustRetainSource
 }
 
 internal fun confirmedReplayDiscard(eligible: Boolean, active: () -> Boolean, ask: () -> Boolean): Boolean =
@@ -150,7 +154,7 @@ internal class ReplayEditCloseManager(private val project: Project, private val 
                 val (editor, origin, ticket) = confirmed.remove(file) ?: return
                 if (!active() || source.isFileOpen(file)) { clear(file); return }
                 val key = replayVideoPath(file)
-                ticket.afterResourcesClosed(editor.controller.resourcesClosed, { active() }, { pending.finished(key, ticket) }) { valid ->
+                ticket.afterResourcesClosed(editor.controller.resourcesClosed, { active() && !editor.controller.closePolicy.mustRetainSource }, { pending.finished(key, ticket) }) { valid ->
                     val job = service.relocateEditedReplay(origin, valid)
                     if (job == null) pending.finished(key, ticket)
                     else job.invokeOnCompletion { pending.finished(key, ticket) }
@@ -195,7 +199,7 @@ internal class ReplayEditCloseManager(private val project: Project, private val 
             state.editor.task != null, !active()) && FileEditorManager.getInstance(project).getAllEditors(file).size == 1
         clear(file)
         val decisionRevision = revision
-        if (origin == null || !confirmedReplayDiscard(eligible, { active() && revision == decisionRevision }) {
+        if (origin == null || !confirmedReplayDiscard(eligible, { active() && revision == decisionRevision && !controller.closePolicy.mustRetainSource }) {
                 Messages.showDialog(project,
                     "リプレイ本体も残しますか？\nPNGは保存先に残します。「残さない」は本体を復元可能な保管場所へ移します。自動削除はしません。",
                     "リプレイ本体の扱い", arrayOf("残す", "残さない（復元可能な場所へ移す）"), 0, Messages.getQuestionIcon()) == 1
@@ -204,7 +208,7 @@ internal class ReplayEditCloseManager(private val project: Project, private val 
         withReplayFileOwner(file) { owner = it }
         if (owner !== project) return
         val latest = controller.state
-        if (controller.closePolicy.trimExported || controller.closePolicy.ambiguousOutput ||
+        if (controller.closePolicy.mustRetainSource ||
             latest.loading || latest.error != null || latest.image == null || latest.editor.task != null ||
             FileEditorManager.getInstance(project).getAllEditors(file).singleOrNull() !== editor || controller.resourcesClosed.isDone) return
         val decision = Triple(editor, origin, pending.begin(replayVideoPath(file)))

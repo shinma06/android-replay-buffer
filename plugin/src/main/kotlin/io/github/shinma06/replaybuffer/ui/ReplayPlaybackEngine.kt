@@ -40,6 +40,7 @@ internal class ReplayPlaybackSession(
     private val awaitVideo: (CountDownLatch) -> Unit = { it.await() },
     private val nextVideo: (() -> ReplayFrameCursor.Decoded?) -> ReplayFrameCursor.Decoded? = { it() },
     private val decoderFactory: (SavedReplay) -> ReplayVideoDecoder = { ReplayFrameCursor(it) },
+    private val onSourceFailure: () -> Unit = {},
 ) {
     private val stopped = AtomicBoolean()
     private val started = AtomicBoolean()
@@ -126,6 +127,14 @@ internal class ReplayPlaybackSession(
         if (workersRemaining.decrementAndGet() == 0) resourcesClosed.complete(!cleanupFailed.get())
     }
 
+    private fun sourceFailed(failure: Throwable) {
+        val cancelled = failure is InterruptedException || stopped.get() && failure is ClosedByInterruptException
+        if (!cancelled || failure.suppressed.isNotEmpty()) {
+            cleanupFailed.set(true)
+            playbackCallback(onSourceFailure) // Also after stop, before any EDT-only completion callback.
+        }
+    }
+
     private fun closeResource(resource: AutoCloseable) {
         try { resource.close() } catch (failure: Throwable) { cleanupFailed.set(true); throw failure }
     }
@@ -202,6 +211,7 @@ internal class ReplayPlaybackSession(
             }
             if (!stopped.get()) playbackCallback { onFinished(null) }
         } catch (failure: Throwable) {
+            sourceFailed(failure)
             if (failure.suppressed.isNotEmpty()) cleanupFailed.set(true)
             if (failure !is InterruptedException && !stopped.get()) playbackCallback { onFinished(failure.message ?: "再生を続けられません。") }
         } finally {
@@ -298,6 +308,7 @@ internal class ReplayPlaybackSession(
                 }
             }
         } catch (failure: Throwable) {
+            if (failure !is AudioOutputFailure) sourceFailed(failure)
             if (failure.suppressed.isNotEmpty()) cleanupFailed.set(true)
             if (failure !is InterruptedException && !stopped.get()) {
                 dropLine(opened)

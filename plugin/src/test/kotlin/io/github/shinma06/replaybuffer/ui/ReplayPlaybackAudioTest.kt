@@ -559,6 +559,7 @@ class ReplayPlaybackAudioTest {
     fun corruptAacKeepsTheDecodeFailureCategory() = assertAudioFailureCategory("decode")
 
     private fun assertAudioFailureCategory(stage: String) {
+        val sourceFailed = java.util.concurrent.atomic.AtomicBoolean()
         val folder = fixture(mediaStart = 0, corruptAudio = stage == "decode")
         val before = files(folder)
         val output = Output().apply {
@@ -577,7 +578,7 @@ class ReplayPlaybackAudioTest {
             { notices += it; notified.countDown() }, audioOutput = {
                 if (stage == "factory") throw IllegalArgumentException("synthetic decode failure")
                 output.line
-            }, nanoTime = { 0L }, awaitAudio = { await(it); true })
+            }, nanoTime = { 0L }, awaitAudio = { await(it); true }, onSourceFailure = { sourceFailed.set(true) })
         try {
             session.start()
             await(notified)
@@ -586,6 +587,7 @@ class ReplayPlaybackAudioTest {
             val reason = if (stage == "decode") "音声を再生できないため、音声なしで再生しています。"
                 else "音声を出力できないため、音声なしで再生しています。"
             assertEquals(listOf(reason), notices.toList(), stage)
+            assertEquals(stage == "decode", sourceFailed.get(), stage)
             assertEquals(if (stage == "factory") 0 else 1, output.closes.get(), stage)
             if (stage == "decode") {
                 assertEquals(1, output.starts.get())
@@ -594,6 +596,7 @@ class ReplayPlaybackAudioTest {
         } finally {
             session.stop(); video.release.countDown()
         }
+        assertEquals(stage != "decode", session.resourcesClosed.get(10, TimeUnit.SECONDS), stage)
         assertFilesUnchanged(folder, before)
     }
 
