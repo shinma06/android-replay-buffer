@@ -5,6 +5,7 @@ import io.github.shinma06.replaybuffer.core.AudioChunk
 import io.github.shinma06.replaybuffer.core.ReplayAudioTrack
 import io.github.shinma06.replaybuffer.core.ReplayFrameCursor
 import io.github.shinma06.replaybuffer.core.SavedReplay
+import io.github.shinma06.replaybuffer.core.ReplayVideoDecoder
 import java.nio.file.Path
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -35,6 +36,7 @@ internal class ReplayPlaybackSession(
     private val prepareVideo: (() -> ReplayFrameCursor.Decoded?) -> ReplayFrameCursor.Decoded? = { it() },
     private val awaitVideo: (CountDownLatch) -> Unit = { it.await() },
     private val nextVideo: (() -> ReplayFrameCursor.Decoded?) -> ReplayFrameCursor.Decoded? = { it() },
+    private val decoderFactory: (SavedReplay) -> ReplayVideoDecoder = { ReplayFrameCursor(it) },
 ) {
     private val stopped = AtomicBoolean()
     private val audioNotified = AtomicBoolean()
@@ -131,9 +133,9 @@ internal class ReplayPlaybackSession(
     private fun runVideo() {
         try {
             SavedReplay.open(folder).use { saved ->
-                ReplayFrameCursor(saved).use { cursor ->
+                decoderFactory(saved).use { cursor ->
                     val span = saved.timeline().spans.firstOrNull { it.endUs > fromUs && it.startUs < untilUs }
-                    var frame = prepareVideo { span?.let { cursor.seek(maxOf(fromUs, it.startUs), ::check) } }
+                    var frame = prepareVideo { span?.let { cursor.seekForPlayback(maxOf(fromUs, it.startUs), ::check) } }
                     check()
                     videoReady.countDown()
                     val ready = awaitAudio(audioReady)

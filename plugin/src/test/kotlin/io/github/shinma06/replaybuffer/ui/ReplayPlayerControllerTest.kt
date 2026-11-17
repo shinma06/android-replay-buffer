@@ -6,6 +6,10 @@ import com.intellij.mock.MockProject
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.util.Disposer
 import io.github.shinma06.replaybuffer.core.ReplayFiles
+import io.github.shinma06.replaybuffer.core.ReplayFrameCache
+import io.github.shinma06.replaybuffer.core.ReplayFrameCursor
+import io.github.shinma06.replaybuffer.core.ReplayVideoDecoder
+import io.github.shinma06.replaybuffer.core.previewKeyframeUs
 import io.github.shinma06.replaybuffer.core.SaveOutputFile
 import io.github.shinma06.replaybuffer.core.SavedReplay
 import org.junit.jupiter.api.io.TempDir
@@ -29,6 +33,79 @@ import kotlin.test.assertTrue
 
 class ReplayPlayerControllerTest {
     @TempDir lateinit var root: Path
+
+    @Test fun scrubbingShowsOnlyIdrAndReleaseRequestsTheExactFrame() {
+        val requests = java.util.Collections.synchronizedList(mutableListOf<Long>())
+        val keys = java.util.Collections.synchronizedSet(mutableSetOf<Long>())
+        withController(decoderFactory = { replay, cache ->
+            replay.frames.filter { it["output_key"]?.asBoolean == true }.forEach {
+                it["movie_pts_us"]?.takeIf { it.isJsonPrimitive }?.asLong?.let(keys::add)
+            }
+            val real = ReplayFrameCursor(replay, cache = cache)
+            object : ReplayVideoDecoder {
+                override fun seek(atUs: Long, checkActive: () -> Unit): ReplayFrameCursor.Decoded {
+                    requests += atUs; return real.seek(atUs, checkActive)
+                }
+                override fun next(checkActive: () -> Unit) = real.next(checkActive)
+                override fun close() = real.close()
+            }
+        }) { controller ->
+            drain(controller)
+            requests.clear()
+            var exact = 0L
+            SwingUtilities.invokeAndWait {
+                exact = controller.state.timeline!!.spans.map { it.startUs }.first { it !in keys }
+                controller.press(Grip.PLAYHEAD, exact)
+            }
+            drain(controller)
+            assertTrue(requests.all { it in keys })
+            SwingUtilities.invokeAndWait {
+                assertTrue(controller.state.imageUs in keys || controller.state.image == null)
+                controller.release()
+            }
+            drain(controller)
+            assertTrue(exact in requests)
+            SwingUtilities.invokeAndWait { assertEquals(exact, controller.state.imageUs) }
+        }
+    }
+
+    @Test fun staleSeekYieldsToTheNewestExactPositionAndCannotPublishAfterIt() {
+        val entered = CountDownLatch(1)
+        val allowCheck = CountDownLatch(1)
+        val cancelled = AtomicBoolean()
+        val block = AtomicBoolean()
+        withController(decoderFactory = { replay, cache ->
+            val real = ReplayFrameCursor(replay, cache = cache)
+            object : ReplayVideoDecoder {
+                override fun seek(atUs: Long, checkActive: () -> Unit): ReplayFrameCursor.Decoded {
+                    if (block.compareAndSet(true, false)) {
+                        entered.countDown(); assertTrue(allowCheck.await(10, TimeUnit.SECONDS))
+                        try { checkActive() } catch (failure: RuntimeException) { cancelled.set(true); throw failure }
+                    }
+                    return real.seek(atUs, checkActive)
+                }
+                override fun next(checkActive: () -> Unit) = real.next(checkActive)
+                override fun close() = real.close()
+            }
+        }) { controller ->
+            drain(controller); block.set(true)
+            try {
+                SwingUtilities.invokeAndWait { controller.step(2) }
+                assertTrue(entered.await(10, TimeUnit.SECONDS))
+                SwingUtilities.invokeAndWait { controller.step(3) }
+                allowCheck.countDown()
+                drain(controller)
+                assertTrue(cancelled.get())
+                SwingUtilities.invokeAndWait { assertEquals(controller.state.editor.playheadUs, controller.state.imageUs) }
+            } finally { allowCheck.countDown() }
+        }
+    }
+
+    private fun drain(controller: ReplayPlayerController) {
+        val worker = controller.javaClass.getDeclaredField("executor").apply { isAccessible = true }.get(controller) as ExecutorService
+        worker.submit {}.get(30, TimeUnit.SECONDS)
+        SwingUtilities.invokeAndWait {}
+    }
 
     @Test
     fun timelineFailureBeforeTransferClosesTheReplayPinsChildAndParent() {
@@ -462,11 +539,14 @@ class ReplayPlayerControllerTest {
         return folder
     }
 
-    private fun withController(gap: Boolean = false, test: (ReplayPlayerController) -> Unit) {
+    private fun withController(gap: Boolean = false,
+        decoderFactory: ((SavedReplay, ReplayFrameCache) -> ReplayVideoDecoder)? = null,
+        test: (ReplayPlayerController) -> Unit) {
         val folder = replayFolder(gap)
         val lifetime = Disposer.newDisposable()
         ApplicationManager.setApplication(MockApplication(lifetime), lifetime)
-        val controller = ReplayPlayerController(MockProject(null, lifetime), folder)
+        val controller = if (decoderFactory == null) ReplayPlayerController(MockProject(null, lifetime), folder)
+            else ReplayPlayerController(MockProject(null, lifetime), folder, decoderFactory = decoderFactory)
         try {
             SwingUtilities.invokeAndWait {}
             val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30)

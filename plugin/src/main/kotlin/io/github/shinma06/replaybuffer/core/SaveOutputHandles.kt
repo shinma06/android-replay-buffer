@@ -29,6 +29,8 @@ internal interface SaveHandles {
     fun flush(directory: Long)
     fun entries(directory: Long): Set<String>
     fun channel(handle: Long, options: Set<OpenOption>): FileChannel
+    /** Nonblocking exclusive owner lock, released before closing this file descriptor. */
+    fun tryOwnerLock(handle: Long): AutoCloseable?
     fun requirePrivate(handle: Long, directory: Boolean)
     fun close(handle: Long)
     /** Rejects a single name that the OS would reinterpret; the portable rules are checked by the caller. */
@@ -162,6 +164,8 @@ internal class SaveOutputFile private constructor(private val descriptor: Long) 
     }
 
     fun requirePrivate() = handles.requirePrivate(descriptor, false)
+
+    fun tryOwnerLock(): AutoCloseable? { check(!closed); return handles.tryOwnerLock(descriptor) }
 
     fun hash(): String {
         check(!closed)
