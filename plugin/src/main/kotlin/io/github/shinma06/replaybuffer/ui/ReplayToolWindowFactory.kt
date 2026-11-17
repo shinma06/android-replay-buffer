@@ -41,6 +41,8 @@ import com.intellij.openapi.project.DumbAware
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.Messages
 import com.intellij.openapi.util.Disposer
+import com.intellij.openapi.vfs.LocalFileSystem
+import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapi.wm.ToolWindow
 import com.intellij.openapi.wm.ToolWindowFactory
 import com.intellij.openapi.wm.ToolWindowManager
@@ -73,6 +75,7 @@ import org.jetbrains.jewel.ui.component.Text
 import org.jetbrains.jewel.ui.component.Tooltip
 import org.jetbrains.jewel.ui.component.VerticallyScrollableContainer
 import java.awt.BorderLayout
+import java.nio.file.InvalidPathException
 import java.nio.file.Path
 import java.time.LocalTime
 import java.time.format.DateTimeFormatter
@@ -258,9 +261,16 @@ internal class ReplayToolWindowController(private val project: Project) : Dispos
     fun openVideo(directory: Path) { if (alive) service.openReplayVideo(directory) }
 
     fun openSavedVideo() {
-        replayUiAction(project, { alive }) {
-            FileChooser.chooseFile(FileChooserDescriptorFactory.createSingleFolderDescriptor(), project, null) { selected ->
-                if (alive) service.openReplayVideo(selected.toNioPath())
+        if (!alive) return
+        val destination = store.settings().destination
+        ApplicationManager.getApplication().executeOnPooledThread {
+            val initial = savedVideoChooserDirectory(destination) {
+                LocalFileSystem.getInstance().refreshAndFindFileByNioFile(it)
+            }
+            replayUiAction(project, { alive }) {
+                FileChooser.chooseFile(FileChooserDescriptorFactory.createSingleFolderDescriptor(), project, initial) { selected ->
+                    if (alive) service.openReplayVideo(selected.toNioPath())
+                }
             }
         }
     }
@@ -293,6 +303,15 @@ internal fun replayUiAction(project: Project, alive: () -> Boolean, action: () -
     ApplicationManager.getApplication().invokeLater({
         if (alive() && !project.isDisposed) action()
     }, ModalityState.nonModal())
+}
+
+internal fun savedVideoChooserDirectory(destination: String, find: (Path) -> VirtualFile?): VirtualFile? = try {
+    destination.takeIf(String::isNotEmpty)?.let(Path::of)?.takeIf(Path::isAbsolute)
+        ?.let(find)?.takeIf { it.isValid && it.isDirectory }
+} catch (_: InvalidPathException) {
+    null
+} catch (_: SecurityException) {
+    null
 }
 
 private val OK_COLOR = JBColor(java.awt.Color(0x1F7A33), java.awt.Color(0x5FB865))
