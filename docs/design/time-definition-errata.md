@@ -3,7 +3,7 @@
 <a id="scope"></a>
 ## 適用範囲と優先順位
 
-本書は、承認済み原本を保持して、E1〜E6の6点だけを訂正する規範文書である。後続の子セッションは、原本に定めた着手前の文書に加えて本書も読む。該当する式・型・試験・保存例については、**本書を原本とtimelineの転載より優先する**。ほかの事項、別途提示されたオーナー判断、各Trailの順序と関門は変更しない。
+本書は、承認済み原本を保持して、E1〜E9の9点だけを訂正する規範文書である。後続の子セッションは、原本に定めた着手前の文書に加えて本書も読む。該当する式・型・試験・保存例については、**本書を原本とtimelineの転載より優先する**。ほかの事項、別途提示されたオーナー判断、各Trailの順序と関門は変更しない。
 
 | 固定原本 | SHA-256 |
 | --- | --- |
@@ -313,3 +313,50 @@ T4aは保存済みの広い範囲をそのまま読む。新しい保存フィ�
 
 - T3b-1: `fallbackCarriesElapsedFromSuccessfulPair`（上の101秒）、`fallbackUsesSuccessfulAfterNano`（例: n0=50秒、h=100秒、n1=50.002秒、nf=51秒なら100.998秒）、`partialReadFailureKeepsPreviousRef`、`repeatedFallbackDoesNotRebase`、`firstReadFailureUsesZeroOffset`、`concurrentReadsPublishOneMonotoneState`、`clampKeepsPublishedLastAndFallbackAwakeEqual`、`nanoWrapUsesElapsedDifference`を追加する。成功／失敗の呼出順、Hとnanoの異なる原点、同値／1ns進行、逆行した無効なnative値、整数限界を含む。
 - T3b-2／T0-a: 成功区間の割込み、失敗中のnanoの停止、native→退避でAの原点だけが変わる場合に、偽の休止を発火せず`includesSuspend=false`を保持することを検査する。退避の実休止込みの正確さはPASSとしない。T4bの保存印と凍結の規則は原本どおり。T1ではnative実装・テストを変更しない。
+
+<a id="e7-acquisition-start-host"></a>
+## E7 時計の確定を待たず取得開始Hを記録する
+
+対象: finding `01M7MH9RY5PJTHD69FCVWZAKC6`。実装仕様書4.2（258〜259行）・6.6(3)（642行）の開始Hを既存の`started`・`logsStarted`と同時設定する規則を置き換える。方針書4.2（170〜172行）のWとSの定義を維持する。
+
+### 開始と選択
+
+- `startedHost`は、この取得ストアが有効な取得元から最初の動画frameまたは端末全体ログ行を受け入れたとき、その行の受信Hで設定する。正しい取得元の識別と受け入れ条件は従来どおり。受け入れた行の`sequence`・等級・時計の確かさや、直後の保持上限による破棄は設定条件にしない。音声・タップ・時計問い合わせだけでは設定しない。
+- `logsStartedHost`は、必要な端末全体ログの読み手がそろって取得中であることを最初に確認した通知のHで設定する。どの読み手が必要かは分割の有無を含め取得側の集約状態で決める。時計、アプリログの時刻付き対象確認、出力対象となる行の有無を待たない。これは窓の起点であり、静かな窓の保存受付やアプリログの取得開始・確認済みcoverageを証明するものではない。
+- いずれもT3b-2で導入した同一のH系を使い、生成済みのストアを開いた時や接続試行を始めた時には設定しない。有効な世代の通知・受信だけを採用し、ストア内の同期下で最初の値を一度だけ確定する。同じストアを保つ再接続・時計復旧・凍結解除では上書きせず、新しいストアでは未設定から始める。
+- 動画を含む保存では`startedHost`、動画を含まない保存では設定済みの`startedHost`と`logsStartedHost`のうち早い値を採る。候補が未設定なら取得開始を証明できない。S、現在のHや最新レコードを代入して窓を作らない。選んだ値がある場合は`W = min(N × 1_000_000_000, S − 取得開始のH)`を使う。Sと開始Hが同じ、またはSのほうが前なら`W ≤ 0`であり保存不可。凍結中のSは`fixedHost`とする。ストリームごとの開始が遅い場合の欠落は4.5で別に扱う。
+
+### 反例・後続Trail
+
+N=30秒、最初の受け入れがH=100秒で、その後すべてarrival、S=110秒ならW=10秒。時計がH=112秒で確定してもS=115秒のWは15秒であり、復旧からの3秒にはならない。動画も保存対象ログ行もなく、ログの読み手がH=99秒で取得中になった場合、ログのみの窓の起点にも99秒を使える。既存の保存受付条件は独立に検査する。
+
+原点差は比較可能な両窓の起点から求める。旧窓の起点を`oldStart`とすると、同じseqを使える測定行について`originShiftNs = (T_S − W) − oldStart`であり、新位置は旧位置からこの値を引いたものになる。例えばN=30秒、H=D、開始H=100秒、時計確定後の最初の旧`started`=125秒、S=`T_S`=130秒では、新しいW=30秒、旧窓長=5秒、原点差は−25秒となる。新しいWが満杯でも旧窓が短いときは、原本6.9(5)(a)（886行）の原点差上限に抵触し得る。上限やU5を本節で変更しない。この入力に当たる場合は同6.9(11)の停止条件に従い、T4bの本採用前に両起点と差を報告する。上限に合わせるため開始Hを付け替えない。
+
+T2では影で計算し、T4bで採用する。既存の`started`・`logsStarted`、schema 4保存と自動保存の受付、I6・測定行間隔は維持する。現行の受付が保存を返さない入力でも、開始HとWの計算は影の単体試験で検査できる。T2の`shortCapture`に加え、`allArrivalWindowStartsAtFirstAcceptedReceipt`、`clockRecoveryKeepsHostStart`、`quietLogReaderStartDoesNotWaitForClock`、`hostStartSelectionMatchesSaveContents`、`freezeAndReconnectKeepHostStart`、`hostFullLegacyShortReportsOriginShift`を検査する。未設定、Sとの差0／1ns、窓の設定長ちょうど、無効世代からの通知、新しいストアへの切り替えも含める。
+
+<a id="e8-retention-and-source-runs"></a>
+## E8 保持破棄で取得の接続番号を進めない
+
+対象: finding `01M7MKVXFAKR4EMEB7EQJY4DFH`。実装仕様書4.5（358〜359行）・6.6(3)（642〜643行）の接続番号と保持から外した受信の扱いを訂正する。方針書4.7（296〜305行）の「同じ連続取得」を`Receipt.run`で表す。
+
+- 接続番号はストリームごとに持つ。取得の中断（接続が切れた、取得元が停止・交代して継続性を失った等）を観測したときに、境界の後の受信へ新しい番号を割り当てる。同じ中断の追加通知・gapの更新・併合で二重に進めない。異なる実中断がgapの一覧で併合されても、受信が持つ境界は保持する。別のストリーム、`"clock"`のgap、接続継続中のPC休止は、それだけで番号を進めない。PC休止は原本どおり全ストリームの欠落として確認済み区間から引く。
+- 保持期間による`prune`と、byte／packet／config等の上限で受信済みデータを捨てる処理は、取得の中断と区別する。例えば`enforceVideoLimit`が`addGap(lostVideo=entry)`を呼ぶ場合やログのbyte上限処理では番号を進めない。理由文字列や`addGap`の呼出回数から推定せず、発生箇所で中断と保持破棄を区別する。保持された受信と、原本の「最後に保持から外した受信」には受信時点の番号を保持し、排出時の番号を付け直さない。
+- 保持破棄による検出済みの欠落は、原本4.5の規則で破棄されたデータの区間をMに入れる。破棄を実行した時刻を現在の取得の切れ目にしない。通常の窓外`prune`は、その処理だけで窓内の欠落を新設しない。先に同一runの受信の位置でC0を作り、欠落Mを引き、E2で等級付き区間にする。保持破棄の記録や、欠落の長さを削るために接続番号を使わない。
+
+反例: W=10秒、位置2、4、6、8秒の動画受信が同じ取得元から続き、各受信時に古いframeの保持上限による破棄が起きる。全`addGap`で番号を進めると各runに受信1件だけが残り、C0が空になる。番号を保てばC0は`[2,8秒)`。検出された欠落が`[3,4秒)`なら確認済みは`[2,3秒)`と`[4,8秒)`の計5秒。対して4秒と6秒の受信の間に実中断があれば、C0は`[2,4秒)`と`[6,8秒)`で、4〜6秒を前後の受信でつながない。
+
+T2で`retentionEvictionKeepsReceiptRun`、`retentionLossStillSubtractsMissing`、`evictedReceiptKeepsOriginalRun`、`sourceBreakSplitsRunEvenWhenGapsCoalesce`を検査し、T4bの保存とtrimでI1〜I4、等級と欠落境界の保持を検査する。動画とログ、他ストリームの継続、重複通知、PC休止、窓外の保持境界の受信を含める。既存の`decodeRun`とschema 4の保持・gap表現は変更しない。
+
+<a id="e9-reply-deadline-clock"></a>
+## E9 応答を読み取った時点と保存した締切を比較する
+
+対象: finding `01M7MKVYQ7QHBQRE0BTR0EHJFS`。実装仕様書6.7(4)（705〜706、712、727〜735行）の応答の分類・状態遷移と幅の注釈を訂正する。締切と生存監視の役割・値（714〜724行）は維持する。
+
+1. 送信時にnonce、往復式用の`sentH`、締切時計`System.nanoTime()`の送信値`sentNano`と締切`deadlineNano = sentNano + 3_000_000_000`を1つの未応答状態に保存する。読み手は完全な1行を読んだ直後に`readNano`と`receivedH`を採取し、解析やタイマー処理待ちの後に取り直さない。
+2. 有効で一致するnonceの応答は、保存した同じ締切時計で`readNano ≤ deadlineNano`なら`ROUND_TRIP`、`readNano > deadlineNano`なら`LATE`。差`readNano − sentNano`と3秒を比較する等、`2^63`ns未満の比較可能な経過時間として扱い、wrapする絶対値の大小で比べない。3秒ちょうどは`ROUND_TRIP`。同じ比較は`WAITING`と`OVERDUE`のどちらでも成り立つ。nonceなしは従来どおり`FREE_RUN`、未知nonce・不正形式は従来の異常経路。
+3. タイマーは未応答のnonceに紐付けた期限経過の通知だけを渡す。期限ちょうどまたはそれより前の通知で期限経過を確定しない。読み手は未応答状態を管理し、`OVERDUE`は未応答の管理にだけ使う。古いnonceの通知を次の問い合わせに適用しない。期限を過ぎたnonceでは`probe_fail(timeout_3s)`を1回記録する。完了済みの読取が処理待ちの可能性がある間、タイマー通知だけで失敗を不可逆に公表せず、読み手が読取時刻と照合する。未応答のまま締切後の行を処理するか期限後に終了する場合にも通知を照合し、締切後の一致応答ならタイマー未実行でも`probe_fail`を先に確定して`probe_late`を記録する。期限内に読んだ一致応答には`probe_fail`を残さない。
+4. 終了や一致応答までは新しいnonceを送らない。3秒の期限でhelperを止めない。生存監視は引き続き独立に動かす。往復の幅とR4の上下限には実際の`sentH`・`receivedH`を渡す。分類の3秒は締切時計で測るため、異なるHと締切時計の原点・進み方・読取順を根拠に、Hの幅が必ず3秒超と仮定したり3秒へ置換したりしない。
+
+反例: `readNano − sentNano = 3_000_000_001`nsでタイマーが遅れ、まだ`WAITING`でも結果は`LATE`。逆に読み取りが3秒ちょうどで、行の処理までに期限経過の通知が見えても`ROUND_TRIP`。R1/R3に使ってよい列はこの規則の`ROUND_TRIP`だけで、R4、D11、起動時のheader期限と生存監視は維持する。
+
+T3aの`ClockLateReplyTest`に`replyBeforeDeadlineIgnoresTimeoutFlag`、`replyAfterDeadlineIsLateBeforeTimerFires`、`deadlineRaceRecordsOnlyOneTimeoutForItsNonce`、`deadlineUsesReadNanoAndKeepsActualHostWidth`を追加する。締切前1ns・等号・後1nsを両方のflag、読取から解析までの遅延、古いnonceの通知、締切時計のwrap、Hだけが乖離する場合、無応答中の自走行・終了と組み合わせる。R1/R3の往復列と補助列を検査し、D11の比較を維持する。
