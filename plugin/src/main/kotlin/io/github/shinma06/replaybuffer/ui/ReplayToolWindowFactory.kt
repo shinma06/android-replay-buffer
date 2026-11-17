@@ -33,6 +33,7 @@ import androidx.compose.ui.unit.dp
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ApplicationInfo
 import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.application.ModalityState
 import com.intellij.openapi.fileChooser.FileChooser
 import com.intellij.openapi.fileChooser.FileChooserDescriptorFactory
 import com.intellij.openapi.options.ShowSettingsUtil
@@ -190,6 +191,7 @@ internal class ReplayToolWindowController(private val project: Project) : Dispos
             logcat = LogcatState(logcatButton.text.orEmpty(), logcatButton.isEnabled, logcatButton.toolTipText.orEmpty(), logcatButton.failed),
             savedAt = savedAt.takeIf { snapshot?.save?.phase == SavePhase.COMPLETED },
             screenshot = screenshotResult,
+            savedVideoDirectory = view.savedVideoDirectory,
         )
     }
 
@@ -251,6 +253,16 @@ internal class ReplayToolWindowController(private val project: Project) : Dispos
 
     fun openDirectory(directory: Path) { if (alive) service.openDirectory(directory) }
 
+    fun openVideo(directory: Path) { if (alive) service.openReplayVideo(directory) }
+
+    fun openSavedVideo() {
+        replayUiAction(project, { alive }) {
+            FileChooser.chooseFile(FileChooserDescriptorFactory.createSingleFolderDescriptor(), project, null) { selected ->
+                if (alive) service.openReplayVideo(selected.toNioPath())
+            }
+        }
+    }
+
     private fun failedId(): String? = shownSave?.takeIf { it.phase == SavePhase.FAILED }?.requestId
 
     fun retry() { if (alive) failedId()?.let(service::retry) }
@@ -260,17 +272,25 @@ internal class ReplayToolWindowController(private val project: Project) : Dispos
     fun retryElsewhere() {
         val id = if (alive) failedId() else null
         id ?: return
-        FileChooser.chooseFile(FileChooserDescriptorFactory.createSingleFolderDescriptor(), project, null) { selected ->
-            if (!alive) return@chooseFile
-            val path = selected.toNioPath()
-            val answer = Messages.showYesNoDialog(project,
-                "この保存先で、固定した保存対象を再試行します。\n$path\n\n通常設定の保存先は変更しません。",
-                "保存先を変更して再試行", "適用して再試行", "キャンセル", Messages.getQuestionIcon())
-            if (alive && answer == Messages.YES) service.retryAtDirectory(id, path)
+        replayUiAction(project, { alive }) {
+            FileChooser.chooseFile(FileChooserDescriptorFactory.createSingleFolderDescriptor(), project, null) { selected ->
+                if (!alive) return@chooseFile
+                val path = selected.toNioPath()
+                val answer = Messages.showYesNoDialog(project,
+                    "この保存先で、固定した保存対象を再試行します。\n$path\n\n通常設定の保存先は変更しません。",
+                    "保存先を変更して再試行", "適用して再試行", "キャンセル", Messages.getQuestionIcon())
+                if (alive && answer == Messages.YES) service.retryAtDirectory(id, path)
+            }
         }
     }
 
     override fun dispose() { disposed = true }
+}
+
+internal fun replayUiAction(project: Project, alive: () -> Boolean, action: () -> Unit) {
+    ApplicationManager.getApplication().invokeLater({
+        if (alive() && !project.isDisposed) action()
+    }, ModalityState.nonModal())
 }
 
 private val OK_COLOR = JBColor(java.awt.Color(0x1F7A33), java.awt.Color(0x5FB865))
@@ -386,8 +406,13 @@ internal fun ReplayToolWindowContent(controller: ReplayToolWindowController) {
                     }
                 }
             }
-            // 6. Settings.
-            WithTooltip(SETTINGS_TOOLTIP) { Link("設定…", { controller.openSettings() }) }
+            // 6. Settings and opening an already saved video.
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                WithTooltip(SETTINGS_TOOLTIP) { Link("設定…", { controller.openSettings() }) }
+                WithTooltip("完成した保存フォルダを選ぶと、その動画をプレイヤーで開きます") {
+                    Link("保存した動画を開く…", { controller.openSavedVideo() })
+                }
+            }
         }
     }
 }
@@ -406,6 +431,11 @@ private fun RecentResultView(result: RecentResult, controller: ReplayToolWindowC
                 fontWeight = if (failure != null) FontWeight.Bold else null)
             result.openDirectory?.let { directory ->
                 WithTooltip(directory.toString()) { Link("フォルダを開く", { controller.openDirectory(directory) }) }
+            }
+            result.openVideo?.let { directory ->
+                WithTooltip("保存した動画をプレイヤーで開きます\n$directory") {
+                    Link("動画を開く", { controller.openVideo(directory) })
+                }
             }
         }
         result.secondary.forEach { Hint(it) }

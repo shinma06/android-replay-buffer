@@ -20,7 +20,8 @@ import java.util.concurrent.atomic.AtomicInteger
 /**
  * Stdio MCP server (newline-delimited JSON-RPC 2.0) over the CLI's per-request IDE connection.
  *
- * Each tool call is one [CliRequest] with the same contract, exit codes and no-retry rule as the terminal commands.
+ * Tools use the terminal commands' [CliRequest] contract, exit codes and no-retry rule. Trim sends a read-only preflight
+ * followed by execution, each on its own CLI connection and result deadline.
  * Only protocol messages reach [output]; diagnostics go to [log].
  */
 internal class ReplayMcpServer(
@@ -32,6 +33,7 @@ internal class ReplayMcpServer(
     private val build: () -> String,
     private val send: (Path, Path?, String, CliRequest) -> CliResponse = ReplayCli::exchange,
     private val callLimitMs: Long = ReplayCliProtocol.RESULT_TIMEOUT_MS + 10_000L,
+    private val nanoTime: () -> Long = System::nanoTime,
 ) {
     private class RpcError(val code: Int, message: String) : Exception(message)
 
@@ -46,22 +48,28 @@ internal class ReplayMcpServer(
     private val input = input.buffered()
     private val lock = Any()
     @Volatile private var protocolVersion = LATEST_VERSION
+    @Volatile private var logLevel = "warning"
     private var buildIdentity: String? = null
+    private val currentCall = ThreadLocal<Call>()
     /** One accepted request (or batch); it either runs once or is rejected once, never both. */
-    private inner class Call(private val tools: Int, private val reject: (String) -> Unit, private val task: () -> Unit) : Runnable {
+    private inner class Call(private val reject: (String) -> Unit, private val task: () -> Unit) : Runnable {
         private val state = AtomicInteger(PENDING)
-        @Volatile private var started = 0L
+        @Volatile private var stageStarted = 0L
 
         override fun run() {
-            started = System.nanoTime()
+            beginStage()
             if (!state.compareAndSet(PENDING, RUNNING)) return
+            currentCall.set(this)
             try { task() } catch (failure: Exception) { log.print("MCPの応答を作成できません。\n") } finally {
+                currentCall.remove()
                 state.set(DONE)
                 accepted.remove(this)
             }
         }
 
-        fun overdue(now: Long) = state.get() == RUNNING && now - started > TimeUnit.MILLISECONDS.toNanos(callLimitMs) * tools
+        fun beginStage() { stageStarted = nanoTime() }
+
+        fun overdue(now: Long) = state.get() == RUNNING && now - stageStarted > TimeUnit.MILLISECONDS.toNanos(callLimitMs)
 
         fun cancel(message: String) {
             if (state.compareAndSet(PENDING, CANCELLED)) {
@@ -113,6 +121,29 @@ internal class ReplayMcpServer(
             mapOf("readOnlyHint" to false, "destructiveHint" to false, "idempotentHint" to false, "openWorldHint" to false)) { args ->
             screenshot(args)
         },
+        Tool("trim_replay", "Trim a completed saved replay folder to a movie-time range (same as the IDE player and `replay trim`), " +
+            "keeping the source folder untouched. Returns the new folder in `directory` and its README.md in `summary_path`. " +
+            "If the outcome is unknown (timeout or disconnect), do not retry automatically; check the folder first.",
+            projectOnly + mapOf(
+                "folder" to mapOf("type" to "string", "description" to "Path of a completed saved replay folder (the `directory` from save_replay)."),
+                "from_seconds" to mapOf("type" to "number", "description" to "First movie time to keep, in seconds."),
+                "to_seconds" to mapOf("type" to "number", "description" to "End movie time to keep, in seconds."),
+            ),
+            mapOf("readOnlyHint" to false, "destructiveHint" to false, "idempotentHint" to false, "openWorldHint" to false)) { args ->
+            trimReplay(args)
+        },
+        Tool("export_frame", "Save the frame shown at a movie time of a completed saved replay as a PNG of the source resolution " +
+            "(same as the IDE player and `replay frame`), into the configured screenshot folder, and return its `path`. " +
+            "With `include_image` (default true) the PNG is also returned as image content.",
+            projectOnly + mapOf(
+                "folder" to mapOf("type" to "string", "description" to "Path of a completed saved replay folder (the `directory` from save_replay or trim_replay)."),
+                "at_seconds" to mapOf("type" to "number", "description" to "Movie time to export, in seconds."),
+                "include_image" to mapOf("type" to "boolean", "default" to true,
+                    "description" to "Also return the saved PNG as MCP image content (omitted above 10 MiB)."),
+            ),
+            mapOf("readOnlyHint" to false, "destructiveHint" to false, "idempotentHint" to false, "openWorldHint" to false)) { args ->
+            frame(args)
+        },
         Tool("get_settings", "Read the project's Android Replay Buffer settings as JSON (the same values as the settings page). " +
             "An empty `output_directory` means no save folder is set (capture only).",
             projectOnly, readOnly) { args -> command(args, CliCommand.SETTINGS) },
@@ -141,14 +172,14 @@ internal class ReplayMcpServer(
     }
 
     /**
-     * Every accepted request runs and answers before the server exits; each one is bounded by its own timeout from its start.
-     * Only if a running request overruns that bound are the not-yet-started ones answered with an error instead, so no
-     * accepted request is left without a definite result.
+     * Drain accepted work through each CLI stage's existing deadline, not a shared budget for preflight + execution.
+     * A stalled stage still trips the same guard; future stages (including other tools in a batch) cannot lend it time.
+     * Only then are not-yet-started requests rejected rather than executed.
      */
     private fun finishAccepted() {
         workers.shutdown()
         while (!workers.awaitTermination(DRAIN_POLL_MS, TimeUnit.MILLISECONDS)) {
-            val now = System.nanoTime()
+            val now = nanoTime()
             if (accepted.none { it.overdue(now) }) continue
             log.print("応答しない操作があるため、開始前の要求を実行せずに終了します。\n")
             accepted.toList().forEach { it.cancel(NOT_STARTED) }
@@ -182,23 +213,22 @@ internal class ReplayMcpServer(
         }
         if (message is List<*>) {
             if (message.isEmpty()) { write(error(null, -32600, "空のbatchです。")); return }
-            val tools = message.count { (it as? Map<*, *>)?.get("method") == "tools/call" }.coerceAtLeast(1)
-            submit(tools, onRejected = { text ->
+            submit(onRejected = { text ->
                 message.mapNotNull { request -> (request as? Map<*, *>)?.takeIf { "id" in it }?.let { busy(it["id"], text) } }
                     .takeIf { it.isNotEmpty() }?.let(::write)
             }) { message.mapNotNull { dispatch(it) }.takeIf { it.isNotEmpty() }?.let(::write) }
             return
         }
         val obj = message as? Map<*, *>
-        if (obj?.get("method") == "tools/call" && "id" in obj) submit(1, onRejected = { text -> write(busy(obj["id"], text)) }) {
+        if (obj?.get("method") == "tools/call" && "id" in obj) submit(onRejected = { text -> write(busy(obj["id"], text)) }) {
             dispatch(obj)?.let(::write)
         } else dispatch(message)?.let(::write)
     }
 
     private fun busy(id: Any?, message: String) = error(id, -32000, message)
 
-    private fun submit(tools: Int, onRejected: (String) -> Unit, task: () -> Unit) {
-        val call = Call(tools, onRejected, task)
+    private fun submit(onRejected: (String) -> Unit, task: () -> Unit) {
+        val call = Call(onRejected, task)
         accepted.add(call)
         try {
             workers.execute(call)
@@ -210,6 +240,7 @@ internal class ReplayMcpServer(
 
     /** Returns the response, or null for a notification. */
     private fun dispatch(message: Any?): Map<String, Any?>? {
+        currentCall.get()?.beginStage()
         val obj = message as? Map<*, *> ?: return error(null, -32600, "JSON-RPCのrequestはobjectです。")
         val hasId = "id" in obj
         val id = obj["id"]
@@ -236,12 +267,18 @@ internal class ReplayMcpServer(
             protocolVersion = if (requested in SUPPORTED_VERSIONS) requested!! else LATEST_VERSION
             linkedMapOf(
                 "protocolVersion" to protocolVersion,
-                "capabilities" to mapOf("tools" to mapOf("listChanged" to false)),
+                "capabilities" to mapOf("tools" to mapOf("listChanged" to false), "logging" to emptyMap<String, Any>()),
                 "serverInfo" to linkedMapOf("name" to "android-replay-buffer", "title" to "Android Replay Buffer", "version" to pluginVersion()),
                 "instructions" to INSTRUCTIONS,
             )
         }
         "ping" -> emptyMap()
+        "logging/setLevel" -> {
+            val level = params["level"] as? String
+            if (level !in LOG_LEVELS) throw RpcError(-32602, "levelにはMCPのログlevelを指定してください。")
+            logLevel = level!!
+            emptyMap()
+        }
         "tools/list" -> mapOf("tools" to tools.values.map { tool ->
             linkedMapOf(
                 "name" to tool.name,
@@ -280,7 +317,18 @@ internal class ReplayMcpServer(
         val identity = try { currentBuild() } catch (failure: Exception) {
             return CliResponse(1, error = (failure as? IllegalArgumentException)?.message ?: "配布物のCLIを利用してください。")
         }
-        return send(directory, project, identity, CliRequest(command, payload))
+        val sendRequest: (CliRequest) -> CliResponse = { request ->
+            currentCall.get()?.beginStage()
+            send(directory, project, identity, request)
+        }
+        return if (command == CliCommand.TRIM) ReplayCli.trim(checkNotNull(payload), sendRequest, ::warnTrim)
+        else sendRequest(CliRequest(command, payload))
+    }
+
+    private fun warnTrim(message: String) {
+        if (LOG_LEVELS.indexOf(logLevel) > LOG_LEVELS.indexOf("warning")) return
+        write(linkedMapOf("jsonrpc" to "2.0", "method" to "notifications/message",
+            "params" to linkedMapOf("level" to "warning", "logger" to "replay.trim", "data" to message)))
     }
 
     private fun command(args: Map<String, Any?>, command: CliCommand, payload: String? = null): Map<String, Any?> {
@@ -289,11 +337,47 @@ internal class ReplayMcpServer(
         val parsed = runCatching { McpJson.parse(response.output) }.getOrNull() as? Map<*, *>
         val structured: Map<String, Any?> = when {
             parsed != null -> parsed.entries.associate { (key, value) -> key as String to value }
-            command == CliCommand.SAVE || command == CliCommand.SAVE_LOGS -> linkedMapOf("directory" to response.output,
+            command == CliCommand.SAVE || command == CliCommand.SAVE_LOGS || command == CliCommand.TRIM ->
+                linkedMapOf("directory" to response.output,
                 "summary_path" to Path.of(response.output).resolve(ReplayFiles.SUMMARY).toString())
             else -> linkedMapOf("result" to response.output)
         }.let { if (response.error.isEmpty()) it else it + ("message" to response.error) }
         return result(listOf(response.output, response.error).filter(String::isNotEmpty).joinToString("\n"), structured)
+    }
+
+    private fun folderArg(args: Map<String, Any?>): String {
+        val value = args["folder"]
+        require(value is String && value.isNotEmpty()) { "folderには保存フォルダのパスを指定してください。" }
+        return value
+    }
+
+    private fun secondsArg(args: Map<String, Any?>, name: String): Long {
+        val seconds = args[name] as? BigDecimal ?: throw IllegalArgumentException("${name}には0以上の秒を指定してください。")
+        require(seconds.signum() >= 0 && seconds < BigDecimal("1e13")) { "${name}には0以上の秒を指定してください。" }
+        return try { seconds.movePointRight(6).toBigIntegerExact().longValueExact() }
+        catch (_: ArithmeticException) { throw IllegalArgumentException("${name}にはマイクロ秒精度までの秒を指定してください。") }
+    }
+
+    private fun trimReplay(args: Map<String, Any?>): Map<String, Any?> {
+        val folder = folderArg(args)
+        val fromUs = secondsArg(args, "from_seconds")
+        val toUs = secondsArg(args, "to_seconds")
+        require(fromUs < toUs) { "from_secondsはto_secondsより前を指定してください。" }
+        return command(args, CliCommand.TRIM,
+            McpJson.write(linkedMapOf("folder" to folder, "from_us" to fromUs, "to_us" to toUs)))
+    }
+
+    private fun pathResult(path: String, include: Boolean): Map<String, Any?> {
+        val structured = linkedMapOf<String, Any?>("path" to path)
+        val content = mutableListOf<Map<String, Any?>>(mapOf("type" to "text", "text" to path))
+        if (include) {
+            val image = runCatching {
+                if (Files.size(Path.of(path)) <= MAX_IMAGE_BYTES) Files.readAllBytes(Path.of(path)) else null
+            }.getOrNull()
+            if (image != null) content += linkedMapOf("type" to "image", "data" to Base64.getEncoder().encodeToString(image), "mimeType" to "image/png")
+            else content += mapOf("type" to "text", "text" to "画像は10 MiBを超えるか読めないため添付していません。保存したファイルを確認してください。")
+        }
+        return result(content, structured)
     }
 
     private fun screenshot(args: Map<String, Any?>): Map<String, Any?> {
@@ -301,17 +385,17 @@ internal class ReplayMcpServer(
         require(include is Boolean) { "include_imageはtrue/falseで指定してください。" }
         val response = exchange(args, CliCommand.SCREENSHOT)
         if (response.code != 0) return failed(response.code, response.error)
-        val path = Path.of(response.output)
-        val structured = linkedMapOf<String, Any?>("path" to response.output)
-        val content = mutableListOf<Map<String, Any?>>(mapOf("type" to "text", "text" to response.output))
-        if (include) {
-            val image = runCatching {
-                if (Files.size(path) <= MAX_IMAGE_BYTES) Files.readAllBytes(path) else null
-            }.getOrNull()
-            if (image != null) content += linkedMapOf("type" to "image", "data" to Base64.getEncoder().encodeToString(image), "mimeType" to "image/png")
-            else content += mapOf("type" to "text", "text" to "画像は10 MiBを超えるか読めないため添付していません。保存したファイルを確認してください。")
-        }
-        return result(content, structured)
+        return pathResult(response.output, include)
+    }
+
+    private fun frame(args: Map<String, Any?>): Map<String, Any?> {
+        val include = args["include_image"] ?: true
+        require(include is Boolean) { "include_imageはtrue/falseで指定してください。" }
+        val folder = folderArg(args)
+        val atUs = secondsArg(args, "at_seconds")
+        val response = exchange(args, CliCommand.FRAME, McpJson.write(linkedMapOf("folder" to folder, "at_us" to atUs)))
+        if (response.code != 0) return failed(response.code, response.error)
+        return pathResult(response.output, include)
     }
 
     private fun configure(args: Map<String, Any?>): Map<String, Any?> {
@@ -356,6 +440,7 @@ internal class ReplayMcpServer(
 
     companion object {
         const val LATEST_VERSION = "2025-11-25"
+        private val LOG_LEVELS = listOf("debug", "info", "notice", "warning", "error", "critical", "alert", "emergency")
         val SUPPORTED_VERSIONS = setOf("2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05")
         private const val MAX_CONCURRENT_CALLS = 4
         private const val MAX_QUEUED_CALLS = 16

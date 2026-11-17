@@ -18,9 +18,12 @@ import io.github.shinma06.replaybuffer.cli.CliRequest
 import io.github.shinma06.replaybuffer.cli.CliResponse
 import io.github.shinma06.replaybuffer.cli.ReplayCli
 import io.github.shinma06.replaybuffer.cli.ReplayCliServer
+import io.github.shinma06.replaybuffer.cli.ReplayMcpServer
+import io.github.shinma06.replaybuffer.cli.McpJson
 import io.github.shinma06.replaybuffer.core.CaptureMode
 import io.github.shinma06.replaybuffer.settings.ReplaySettingsState
 import io.github.shinma06.replaybuffer.settings.ReplaySettingsStore
+import io.github.shinma06.replaybuffer.settings.LOGCAT_DESTINATION_UNAVAILABLE
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -37,6 +40,7 @@ import kotlin.test.assertTrue
 import org.junit.jupiter.params.ParameterizedTest
 import org.junit.jupiter.params.provider.ValueSource
 import org.junit.jupiter.api.io.TempDir
+import org.junit.jupiter.api.Assertions.assertAll
 
 class ReplayInitializationCliTest {
     @TempDir lateinit var temporary: Path
@@ -91,12 +95,13 @@ class ReplayInitializationCliTest {
         try {
             assertEquals(!unsafe, capture.applySettings(store.settings(), environment, 0).get(15, TimeUnit.SECONDS).accepted)
             ReplayCliServer(registry, projectPath, "build") { handler.invoke(service, it) as CliResponse }.use { server ->
-                fun cli(command: String, expected: Int): String {
+                fun cli(command: String, expected: Int, vararg arguments: String): String {
                     val output = ByteArrayOutputStream()
                     val error = ByteArrayOutputStream()
-                    val code = ReplayCli.run(listOf("--project", projectPath.toString(), command),
+                    val code = ReplayCli.run(listOf("--project", projectPath.toString(), command) + arguments,
                         PrintStream(output), PrintStream(error), registry) { "build" }
                     assertEquals(expected, code, error.toString())
+                    if (expected != 0) assertEquals("", output.toString(), "failure stdout is empty")
                     return (if (expected == 0) output else error).toString().trim()
                 }
                 fun status() = JsonParser.parseString(cli("status", 0)).asJsonObject
@@ -138,6 +143,57 @@ class ReplayInitializationCliTest {
                 assertTrue(settingsCli(2, "set", "unknown=1").contains("unknown"))
                 assertTrue(settingsCli(2, "set", "replay_seconds=901").isNotEmpty())
                 assertEquals(83, JsonParser.parseString(settingsCli(0)).asJsonObject["replay_seconds"].asInt)
+                val fixture = "replay-20240101-000000-manual-feedface"
+                val source = Files.createDirectory(projectPath.resolve(fixture))
+                for (name in listOf("README.md", "replay.json", "video.mp4", "video-source.h264", "video-frames.jsonl",
+                    "logcat-device.jsonl", "logcat-app.jsonl", "touches.jsonl")) {
+                    javaClass.getResourceAsStream("/replay-trim-parity/$fixture/$name")!!.use { Files.copy(it, source.resolve(name)) }
+                }
+                for (folder in listOf("./$fixture", "../project/$fixture", source.resolve(".").toString())) {
+                    val output = Path.of(cli("trim", 0, folder, "--from", "0.200001", "--to", "1.900001"))
+                    assertTrue(Files.isRegularFile(output.resolve("replay.json")))
+                    assertTrue(Files.isRegularFile(source.resolve("replay.json")))
+                }
+                assertTrue(cli("trim", 1, source.toString(), "--from", "0", "--to", "999").contains("切り取り範囲"))
+                val beforeFrame = Files.list(source).use { paths -> paths.toList().associate { it.fileName.toString() to Files.readAllBytes(it).toList() } }
+                val frameDestination = Files.createDirectory(projectPath.resolve("frames"))
+                store.loadState(store.state.copy(screenshotUsesLogcatDestination = false, screenshotDirectory = frameDestination.toString()))
+                Files.delete(frameDestination)
+                val frameFailure = cli("frame", 1, source.toString(), "--at", "0.2")
+                assertEquals("保存先フォルダを確認できません。設定の保存先・アクセス権を確認してください。", frameFailure)
+                val mcpOutput = ByteArrayOutputStream()
+                val messages = listOf(
+                    """{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}""",
+                    McpJson.write(mapOf("jsonrpc" to "2.0", "id" to 1, "method" to "tools/call", "params" to mapOf(
+                        "name" to "export_frame", "arguments" to mapOf("folder" to source.toString(), "at_seconds" to 0.2)))),
+                )
+                assertEquals(0, ReplayMcpServer(messages.joinToString("\n", postfix = "\n").byteInputStream(), mcpOutput,
+                    PrintStream(ByteArrayOutputStream()), projectPath, registry, { "build" }).run())
+                val frameResult = mcpOutput.toString(Charsets.UTF_8).lineSequence().filter(String::isNotEmpty)
+                    .map { JsonParser.parseString(it).asJsonObject }.single { it["id"]?.asInt == 1 }["result"].asJsonObject
+                assertTrue(frameResult["isError"].asBoolean)
+                val failureText = frameResult["content"].asJsonArray.single().asJsonObject["text"].asString
+                assertEquals("$frameFailure\n(exit code 1)", failureText)
+                assertTrue(failureText.contains("(exit code 1)"), failureText)
+                assertFalse(frameResult.has("structuredContent"))
+                assertEquals(beforeFrame, Files.list(source).use { paths -> paths.toList().associate { it.fileName.toString() to Files.readAllBytes(it).toList() } })
+                store.loadState(store.state.copy(screenshotUsesLogcatDestination = true))
+                val logcatFailure = cli("frame", 1, source.toString(), "--at", "0.2")
+                mcpOutput.reset()
+                assertEquals(0, ReplayMcpServer(messages.joinToString("\n", postfix = "\n").byteInputStream(), mcpOutput,
+                    PrintStream(ByteArrayOutputStream()), projectPath, registry, { "build" }).run())
+                val logcatResult = mcpOutput.toString(Charsets.UTF_8).lineSequence().filter(String::isNotEmpty)
+                    .map { JsonParser.parseString(it).asJsonObject }.single { it["id"]?.asInt == 1 }["result"].asJsonObject
+                assertTrue(logcatResult["isError"].asBoolean)
+                assertFalse(logcatResult.has("structuredContent"))
+                val logcatText = logcatResult["content"].asJsonArray.single().asJsonObject["text"].asString
+                assertEquals(beforeFrame, Files.list(source).use { paths -> paths.toList().associate { it.fileName.toString() to Files.readAllBytes(it).toList() } })
+                assertFalse(Files.exists(frameDestination), "failure creates no output directory or partial")
+                assertAll("Logcat destination failures keep the GUI reason",
+                    { assertEquals(LOGCAT_DESTINATION_UNAVAILABLE, logcatFailure) },
+                    { assertEquals("$LOGCAT_DESTINATION_UNAVAILABLE\n(exit code 1)", logcatText) })
+                Files.writeString(source.resolve("touches.jsonl"), "broken", java.nio.file.StandardOpenOption.APPEND)
+                assertTrue(cli("trim", 1, source.toString(), "--from", "0", "--to", "1").contains("変更されています: touches.jsonl"))
                 server.close()
                 server.termination.get(5, TimeUnit.SECONDS)
             }

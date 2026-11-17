@@ -14,6 +14,8 @@ replay --project /absolute/project/path save
 replay --project /absolute/project/path save --logs-only
 replay --project /absolute/project/path status
 replay --project /absolute/project/path screenshot
+replay --project /absolute/project/path trim /path/to/replay-XXXX --from 10 --to 25.5
+replay --project /absolute/project/path frame /path/to/replay-XXXX --at 12.3
 replay --project /absolute/project/path settings
 replay --project /absolute/project/path settings set replay_seconds=60 auto_save_on_crash=true
 replay --project /absolute/project/path settings set device=emulator-5556
@@ -35,6 +37,20 @@ saveのexit0/stdoutは完成フォルダです。受付だけでは成功にな�
 save --logs-onlyはLogcatツールバーのボタンと同じく、ログとreplay.json・README.mdだけを保存します（MP4なし）。
 動画の取得中でも取得は止めず、replay.jsonのcoverage.videoをEXCLUDEDとして記録します。
 screenshotはGUIと同じPNGを保存し、パスだけをstdoutへ返します。
+trimは完成した保存フォルダの動画を動画内時刻（秒）で切り取り、元を残したまま同じ親フォルダへ
+replay-XXXX-trim-IDを作り、新フォルダのパスだけをstdoutへ返します。
+trimは残る表示frameの時計対応が不明なら、出力作成前にstderrへ警告し、不確かな時刻のログを保守的に残します。
+GUIも同じ事前確認で通知します。元の記録が事前確認後に変われば作成前に拒否し、自動再試行しません。
+MCPのtrim_replayは作成要求前に標準loggingのwarning通知を送ります（既存引数・結果形式は不変）。
+logging/setLevelでerror以上を指定すると抑制され、クライアント側の表示・追加フィルタまでは保証しません。
+frameは指定秒に表示されていた1コマをスクショ先へframe-XXXX-ID.pngで保存し、パスだけを返します。
+保存失敗は終了コード1で、理由と保全した出力がある場合はそのパスをstderrへ返します。失敗stdoutは空です。
+Logcatの保存先を取得できない場合や対応できないframeの復号失敗も、GUIと同じ具体的な理由を返します。
+PNGのテキストmetadataにarb:source_save_id（直に読み出したreplay.jsonのsave_id）とarb:source_folder（現在のフォルダ名）、
+arb:movie_us（指定した動画内時刻）・arb:frame_movie_us（表示frameの開始位置）を記録します。
+Latin-1で表せる値は従来のtEXt、それ以外の日本語・emoji等のフォルダ名は非圧縮UTF-8のiTXtで保持します（キーは共通）。
+arb:t_ns・arb:display_t_nsは既知の場合だけ記録し、改名してもsave_idは変えません。
+trim派生フォルダではそのフォルダのsave_id・frame時刻を使います。IDが欠落・不正ならPNGを作成しません。
 settingsはMCPのget_settings、settings setはupdate_settingsと同じ項目名・検証です。
 タップ位置の表示はtap_display=OFF（記録のみ、既定）/VIDEO（保存する動画にだけ描画、保存時に再エンコード）/
 DEVICE（取得中だけ端末のshow_touchesをONにして端末画面にも表示）です。取得OFFで変更します。

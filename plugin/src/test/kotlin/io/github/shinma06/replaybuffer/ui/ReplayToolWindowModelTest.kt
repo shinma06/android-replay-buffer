@@ -9,8 +9,11 @@ import io.github.shinma06.replaybuffer.core.ReplaySettings
 import io.github.shinma06.replaybuffer.core.ReplaySnapshot
 import io.github.shinma06.replaybuffer.core.SavePhase
 import io.github.shinma06.replaybuffer.core.SaveSnapshot
+import io.github.shinma06.replaybuffer.core.SaveContent
 import io.github.shinma06.replaybuffer.settings.AppSelectionMode
 import io.github.shinma06.replaybuffer.settings.settingsControls
+import io.github.shinma06.replaybuffer.ide.savedVideoDirectory
+import java.nio.file.Files
 import java.nio.file.Path
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
@@ -18,12 +21,13 @@ import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.io.TempDir
 import io.github.shinma06.replaybuffer.settings.ReplaySettings as StoredSettings
 
 class ReplayToolWindowModelTest {
     private val device = ReplayDevice("emulator-5554", "Pixel 9", DeviceKind.EMULATOR, true)
     private val app = ApplicationTarget("com.example.app")
-    private val directory = Path.of("/disposable/out")
+    @TempDir lateinit var directory: Path
 
     private fun capturing(
         state: CaptureState = CaptureState.CAPTURING,
@@ -43,6 +47,7 @@ class ReplayToolWindowModelTest {
         snapshot = snapshot, message = message, initializationError = null, busy = busy, enabled = snapshot?.enabled == true,
         settings = stored, adb = Path.of("/sdk/adb"), adbReason = null, screenshotPackage = "com.example.app",
         screenshotDisabledReason = null, screenshotBusy = false,
+        savedVideoDirectory = snapshot?.save?.let(::savedVideoDirectory),
     )
 
     @Test
@@ -124,6 +129,59 @@ class ReplayToolWindowModelTest {
         assertTrue(failure.actionsEnabled)
         assertTrue(model.details.any { it.name == "固定した保存対象の端末とアプリ履歴" })
         assertFalse(toolWindowModel(input(capturing(save = failed), busy = true)).results.single().failure!!.actionsEnabled)
+    }
+
+    @Test
+    fun `video action follows saved capture mode even after current settings change`() {
+        copyVideo()
+        for (savedMode in CaptureMode.entries) {
+            val saved = SaveSnapshot(SavePhase.COMPLETED, "request", directory = directory,
+                captureMode = savedMode, content = SaveContent.ALL)
+            for (currentMode in CaptureMode.entries) {
+                val model = toolWindowModel(input(capturing(save = saved, mode = currentMode),
+                    stored = StoredSettings(captureMode = currentMode)))
+                assertEquals(directory.takeIf { savedMode.videoRequested }, model.results.single().openVideo)
+                assertEquals(directory, model.results.single().openDirectory)
+            }
+        }
+        val logsOnly = SaveSnapshot(SavePhase.COMPLETED, "request", directory = directory, content = SaveContent.LOGS_ONLY)
+        assertNull(toolWindowModel(input(capturing(save = logsOnly))).results.single().openVideo)
+    }
+
+    @Test
+    fun `partial video keeps its action and warnings without overriding saved mode or content`() {
+        copyVideo()
+        for (savedMode in CaptureMode.entries) for (content in SaveContent.entries) for (currentMode in CaptureMode.entries) {
+            val saved = SaveSnapshot(SavePhase.COMPLETED, "request", directory = directory,
+                captureMode = savedMode, content = content, missingKinds = listOf("video", "clock"))
+            val result = toolWindowModel(input(capturing(save = saved, mode = currentMode),
+                stored = StoredSettings(captureMode = currentMode))).results.single()
+            assertEquals(directory.takeIf { savedMode.videoRequested && content == SaveContent.ALL }, result.openVideo)
+            assertEquals(directory, result.openDirectory)
+            assertEquals(Tone.WARNING, result.tone)
+            assertEquals(listOf("記録の不足・未確認: 動画、記録"), result.secondary)
+        }
+    }
+
+    @Test
+    fun `absent or non-file video has no action even without a coverage warning`() {
+        for (missing in listOf(emptyList(), listOf("video"))) {
+            val saved = SaveSnapshot(SavePhase.COMPLETED, "request", directory = directory, missingKinds = missing)
+            assertNull(toolWindowModel(input(capturing(save = saved))).results.single().openVideo)
+            Files.createDirectory(directory.resolve("video.mp4"))
+            assertNull(toolWindowModel(input(capturing(save = saved))).results.single().openVideo)
+            Files.delete(directory.resolve("video.mp4"))
+        }
+        copyVideo()
+        Files.delete(directory.resolve("video.mp4"))
+        val saved = SaveSnapshot(SavePhase.COMPLETED, "request", directory = directory)
+        assertNull(toolWindowModel(input(capturing(save = saved))).results.single().openVideo)
+    }
+
+    private fun copyVideo() {
+        javaClass.getResourceAsStream("/replay-trim-parity/replay-20240101-000000-manual-feedface/video.mp4")!!.use {
+            Files.copy(it, directory.resolve("video.mp4"))
+        }
     }
 
     @Test

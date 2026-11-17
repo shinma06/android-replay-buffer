@@ -8,6 +8,7 @@ import io.github.shinma06.replaybuffer.core.CaptureState
 import io.github.shinma06.replaybuffer.core.RemoteCleanup
 import io.github.shinma06.replaybuffer.core.RemoteCleanupJournal
 import io.github.shinma06.replaybuffer.core.SavePhase
+import io.github.shinma06.replaybuffer.core.SaveContent
 import io.github.shinma06.replaybuffer.core.SaveSnapshot
 import io.github.shinma06.replaybuffer.settings.AppSelectionMode
 import io.github.shinma06.replaybuffer.settings.ReplaySettings
@@ -482,6 +483,41 @@ else: sys.exit(1)
             assertEquals(60, capture.view.snapshot!!.settings.replaySeconds)
             assertEquals(directory, capture.view.snapshot!!.settings.saveDirectory)
             assertEquals(0, capture.view.pending)
+        } finally {
+            capture.close()
+            capture.termination.get(15, TimeUnit.SECONDS)
+            scope.cancel()
+        }
+    }
+
+    @Test
+    fun `completed save resolves video availability for the view without losing coverage or saved mode`() {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val capture = ReplayProjectCapture(scope, ReplaySettingsStore(), {}, {})
+        try {
+            assertTrue(capture.applySettings(ReplaySettings(), unresolved, 0).get(15, TimeUnit.SECONDS).accepted)
+            val video = directory.resolve("video.mp4")
+            javaClass.getResourceAsStream("/replay-trim-parity/replay-20240101-000000-manual-feedface/video.mp4")!!.use {
+                Files.copy(it, video)
+            }
+            val base = capture.view.snapshot!!
+            var revision = base.revision + 100
+            for (mode in CaptureMode.entries) for (content in SaveContent.entries) {
+                val save = SaveSnapshot(SavePhase.COMPLETED, "request-${revision}", directory = directory,
+                    missingKinds = listOf("video", "clock"), captureMode = mode, content = content)
+                val next = base.copy(revision = revision++, save = save)
+                capture.acceptSnapshot(next)
+                assertEquals(directory.takeIf { mode.videoRequested && content == SaveContent.ALL }, capture.view.savedVideoDirectory)
+                assertEquals(save, capture.view.snapshot!!.save)
+                capture.acceptSnapshot(base)
+                assertEquals(next, capture.view.snapshot)
+            }
+            Files.delete(video)
+            val absent = base.copy(revision = revision++, save = SaveSnapshot(SavePhase.COMPLETED, "absent", directory = directory))
+            capture.acceptSnapshot(absent)
+            assertNull(capture.view.savedVideoDirectory)
+            capture.acceptSnapshot(absent.copy(revision = revision, save = absent.save.copy(phase = SavePhase.WRITING)))
+            assertNull(capture.view.savedVideoDirectory)
         } finally {
             capture.close()
             capture.termination.get(15, TimeUnit.SECONDS)

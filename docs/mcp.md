@@ -46,10 +46,18 @@ Devin: 設定のMCP Marketplaceで「Add your own」からstdioサーバーを�
 | `stop_capture` | 取得をOFFにします。未保存バッファは破棄します。保存済み成果物・IDE・他projectは変更しません。 | `stop` |
 | `save_replay` | 保存し、完成したフォルダのパス（`directory`）と、最初に読む要約`README.md`のパス（`summary_path`）を返します。`logs_only: true`（既定false）ではLogcatツールバーのボタンと同じくログと`replay.json`・`README.md`だけを保存し（MP4なし、`coverage.video.state`は`EXCLUDED`）、動画の取得は止めません。 | `save` / `save --logs-only` |
 | `take_screenshot` | GUIのスクリーンショットと同じ処理で、録画対象端末の今の画面をPNG保存し（対象アプリが前面である必要はありません）、パスを返します。`include_image`（既定true）で画像も返します（10 MiBまで）。 | `screenshot` |
+| `trim_replay` | 完成した保存フォルダの動画を、プレイヤーの「切り取って保存」と同じ処理で動画内時刻の範囲に切り取ります。`folder`（保存フォルダのパス）・`from_seconds`・`to_seconds`（秒、マイクロ秒精度まで）を指定します。元フォルダは残し、同じ親フォルダへ`replay-<日時>-trim-<ID>`を作り、その`directory`と`summary_path`を返します。 | `trim` |
+| `export_frame` | 完成した保存フォルダの`at_seconds`（秒、マイクロ秒精度まで）に表示されていた1コマを、プレイヤーの「この画面をPNG保存」と同じ処理で元解像度のPNGにします。保存先はスクリーンショットと同じで、`frame-<日時>-<ID>.png`の`path`を返します。`include_image`（既定true）で画像も返します（10 MiBまで）。 | `frame` |
 | `get_settings` | 設定とON/OFF状態をJSONで返します。 | `settings` |
 | `update_settings` | 指定した設定だけを変更し、変更後の設定を返します。 | `settings set KEY=VALUE...` |
 
 全toolに任意の`project`（開いているprojectの絶対パス）があります。それ以外の未知の引数は拒否します。
+
+`export_frame`のPNGはGUI／CLIと同じく、テキストmetadataに`arb:source_save_id`（読み出した`replay.json`の`save_id`）・`arb:source_folder`（現在のフォルダ名）・`arb:movie_us`（指定した動画内時刻）・`arb:frame_movie_us`（表示frameの開始位置）を記録します。`arb:t_ns`・`arb:display_t_ns`は既知の場合だけです。改名しても元IDを保持し、trim派生フォルダからはそのフォルダ自身のID・frame時刻を記録します。`save_id`が欠落・不正ならPNG作成前に拒否し、パスなどからIDを補いません。Latin-1で表せる値は従来と同じ`tEXt` bytes、それ以外の日本語・emoji等のフォルダ名は非圧縮UTF-8の`iTXt`で保持します（キーは共通、言語タグ・翻訳キーワードは空）。tool引数・`path`・画像の返却形式は変わりません。
+
+`trim_replay`はGUI／CLIと同じread-only事前確認で実際に残る表示frameを調べます。時計対応が不明なframeを含む場合、出力作成の要求前に`notifications/message`（`level: "warning"`、`logger: "replay.trim"`）を送信・flushします。成功結果の`directory`・`summary_path`は変わりません。不確かな時刻のログは保守的に残し、事前確認後に元の記録が変われば作成前に拒否します（自動再試行なし）。
+
+サーバーは`logging: {}` capabilityと`logging/setLevel`に対応します。既定の最小levelは`warning`で、`debug`・`info`・`notice`・`warning`・`error`・`critical`・`alert`・`emergency`を受け付けます。`error`以上を指定した場合、切り取り前のwarningも抑制されます。これは[MCP標準logging](https://modelcontextprotocol.io/specification/2025-06-18/server/utilities/logging)に従うもので、クライアント側の表示・追加フィルタまでは保証しません。stdioのstdoutにはJSON-RPCだけを出し、通常CLIでは警告をstderrへ出します。
 
 `update_settings`の項目は`get_settings`と同じ名前です: `replay_seconds`（1〜900）、`output_directory`、`app_selection`（`AUTOMATIC` / `MANUAL`）、`manual_package`、`capture_mode`（`VIDEO_AND_LOGS` / `LOG_ONLY`）、`video_quality`（`STANDARD` / `LIGHTWEIGHT`）、`auto_save_on_crash`、`screenshot_uses_logcat_destination`、`screenshot_directory`、`tap_display`（`OFF`＝記録のみ・既定、`VIDEO`＝保存する動画にだけ保存時に点を描画（端末設定は変えず、動画を再エンコード）、`DEVICE`＝取得中だけ端末の`show_touches`をONにして端末画面にも表示し、端末が描けないミラーリング等のタップは保存時に動画へ描画）、`record_audio`（動画に端末の再生音を録音する。既定`false`、Android 13以上、`VIDEO_AND_LOGS`だけ）、`device`（取得する端末のserial。空はGUIの「自動で選ぶ」と同じく自動選択）。旧項目`show_touches`（真偽値）も受け付け、`true`は`DEVICE`、`false`は`DEVICE`を`OFF`にします（`get_settings`にも併記。`tap_display`と同時に指定する場合は矛盾しない値のみ）。意味は[CLI](cli.md#設定)と同じです。設定画面の「適用」と同じ検証をし、保存先フォルダは事前に作成が必要です。取得モード・動画品質・`tap_display`・`record_audio`は取得OFFで反映が終わってから変更します。取得のON/OFFは`start_capture` / `stop_capture`で行います。
 
@@ -57,9 +65,12 @@ Devin: 設定のMCP Marketplaceで「Add your own」からstdioサーバーを�
 
 ## 結果と失敗
 
-成功時は`content`のtextに結果を返します。protocol `2025-06-18`以降では、JSONの結果（`get_status` / `get_settings` / `update_settings` / `list_projects`）とパス（`save_replay`の`directory`と`summary_path`、`take_screenshot`の`path`）を`structuredContent`にも入れます。
+成功時は`content`のtextに結果を返します。protocol `2025-06-18`以降では、JSONの結果（`get_status` / `get_settings` / `update_settings` / `list_projects`）とパス（`save_replay`・`trim_replay`の`directory`と`summary_path`、`take_screenshot`・`export_frame`の`path`）を`structuredContent`にも入れます。
 
 失敗はtool結果の`isError: true`で返し、textの末尾にCLIと同じ終了コードを付けます。
+
+`export_frame`の保存失敗は、CLIの`frame`と同じ具体的な理由と、保全した出力がある場合はそのパスを返します（`exit code 1`）。成功時の`path`や画像・公開結果形式は変更しません。
+Logcatの保存先を取得できない場合や対応できないframeの復号失敗も、GUIと同じ具体的な理由を返します。
 
 - `exit code 2`: 引数・設定の誤り。内容を直して再実行できます。
 - `exit code 1`: 操作の失敗または結果不明。保存は自動retryせず、`get_status`と保存先を確認してから判断してください。

@@ -40,11 +40,29 @@ internal fun settingsAssignments(words: List<String>): String {
     }
 }
 
+/** Seconds as a decimal string to whole microseconds; fractions below 1 µs are rejected. */
+internal fun secondsToUs(text: String, flag: String): Long {
+    val seconds = text.toBigDecimalOrNull()
+    require(seconds != null && seconds.signum() >= 0 && seconds < BigDecimal("1e13")) { "${flag}には0以上の秒を指定してください。" }
+    return try { seconds.movePointRight(6).toBigIntegerExact().longValueExact() }
+    catch (_: ArithmeticException) { throw IllegalArgumentException("${flag}にはマイクロ秒精度までの秒を指定してください。") }
+}
+
+private fun optionValue(arguments: List<String>, index: Int, value: String, name: String): Pair<String, Int> {
+    val text = if (value == name) arguments.getOrNull(index) else value.substringAfter('=')
+    require(!text.isNullOrEmpty()) { "${name}には秒を指定してください。" }
+    return text to (if (value == name) index + 1 else index)
+}
+
 internal fun parseCliArguments(arguments: List<String>): CliArguments {
     var command: CliCommand? = null
     var mcp = false
     var logsOnly = false
     var project: Path? = null
+    var folder: String? = null
+    var fromUs: Long? = null
+    var toUs: Long? = null
+    var atUs: Long? = null
     val assignments = mutableListOf<String>()
     var index = 0
     while (index < arguments.size) {
@@ -60,6 +78,22 @@ internal fun parseCliArguments(arguments: List<String>): CliArguments {
                 require(!logsOnly) { "--logs-onlyは1回だけ指定してください。" }
                 logsOnly = true
             }
+            command == CliCommand.TRIM && (value == "--from" || value.startsWith("--from=")) -> {
+                require(fromUs == null) { "--fromは1回だけ指定してください。" }
+                fromUs = optionValue(arguments, index, value, "--from").let { (text, next) -> index = next; secondsToUs(text, "--from") }
+            }
+            command == CliCommand.TRIM && (value == "--to" || value.startsWith("--to=")) -> {
+                require(toUs == null) { "--toは1回だけ指定してください。" }
+                toUs = optionValue(arguments, index, value, "--to").let { (text, next) -> index = next; secondsToUs(text, "--to") }
+            }
+            command == CliCommand.FRAME && (value == "--at" || value.startsWith("--at=")) -> {
+                require(atUs == null) { "--atは1回だけ指定してください。" }
+                atUs = optionValue(arguments, index, value, "--at").let { (text, next) -> index = next; secondsToUs(text, "--at") }
+            }
+            (command == CliCommand.TRIM || command == CliCommand.FRAME) && !value.startsWith("--") -> {
+                require(folder == null) { "保存フォルダは1つだけ指定してください。" }
+                folder = value
+            }
             command == CliCommand.SETTINGS && value == "set" -> command = CliCommand.CONFIGURE
             command == CliCommand.CONFIGURE -> assignments += value
             else -> {
@@ -71,6 +105,8 @@ internal fun parseCliArguments(arguments: List<String>): CliArguments {
                     "status" -> CliCommand.STATUS
                     "screenshot" -> CliCommand.SCREENSHOT
                     "settings" -> CliCommand.SETTINGS
+                    "trim" -> CliCommand.TRIM
+                    "frame" -> CliCommand.FRAME
                     else -> throw IllegalArgumentException("不明な操作・optionです。replay --helpを確認してください。")
                 }
             }
@@ -78,15 +114,32 @@ internal fun parseCliArguments(arguments: List<String>): CliArguments {
     }
     require(!logsOnly || (!mcp && command == CliCommand.SAVE)) { "--logs-onlyはsaveだけに指定できます。" }
     if (mcp) return CliArguments(null, project)
-    val selected = requireNotNull(command) { "start/stop/save/status/screenshot/settings/mcpを指定してください。" }
+    val selected = requireNotNull(command) { "start/stop/save/status/screenshot/settings/trim/frame/mcpを指定してください。" }
         .let { if (logsOnly) CliCommand.SAVE_LOGS else it }
-    return CliArguments(selected, project, if (selected == CliCommand.CONFIGURE) settingsAssignments(assignments) else null)
+    val payload = when (selected) {
+        CliCommand.CONFIGURE -> settingsAssignments(assignments)
+        CliCommand.TRIM -> {
+            require(folder != null && fromUs != null && toUs != null) {
+                "trimには保存フォルダと--from・--to（秒）を指定してください。"
+            }
+            require(fromUs < toUs) { "--fromは--toより前の秒を指定してください。" }
+            McpJson.write(linkedMapOf("folder" to folder, "from_us" to fromUs, "to_us" to toUs))
+        }
+        CliCommand.FRAME -> {
+            require(folder != null && atUs != null) { "frameには保存フォルダと--at（秒）を指定してください。" }
+            McpJson.write(linkedMapOf("folder" to folder, "at_us" to atUs))
+        }
+        else -> null
+    }
+    return CliArguments(selected, project, payload)
 }
 
 /** Distribution entrypoint for an already running IDE; never starts the IDE or a separate capture process. */
 object ReplayCli {
     private const val HELP = """Usage: replay [--project PATH] start|stop|save|status|screenshot
        replay [--project PATH] save --logs-only
+       replay [--project PATH] trim <保存フォルダ> --from <秒> --to <秒>
+       replay [--project PATH] frame <保存フォルダ> --at <秒>
        replay [--project PATH] settings
        replay [--project PATH] settings set KEY=VALUE...
        replay [--project PATH] mcp
@@ -100,6 +153,17 @@ save --logs-only: Logcatツールバーのボタンと同じく、端末ログ�
       動画の取得中でもMP4は作らず、動画の取得は止めません（replay.jsonのcoverage.videoはEXCLUDED）。
 status: 設定を変えずに状態をJSONで表示します。取得ON中は接続中の端末一覧（devices）と取得対象（device_serial）も返します。
 screenshot: GUIと同じスクリーンショットを保存し、PNGのパスだけをstdoutへ返します。
+trim: 保存済みリプレイの前後を動画内時刻（秒）で切り取り、元を残したまま別フォルダへ保存します。
+      成功時は新しいフォルダのパスだけをstdoutへ返します。
+      残る表示frameの時計対応が不明なら作成前にstderrへ警告し、不確かな時刻のログを残します。
+      事前確認後に元の記録が変われば作成前に拒否します（自動再試行なし）。GUIも同じ判定です。
+frame: 保存済みリプレイの指定秒に表示されていた画面を元解像度のPNGで保存します。
+      成功時はPNGのパスだけをstdoutへ返します。保存先はスクリーンショットと同じ設定です。
+      保存失敗は終了コード1で、理由と保全した出力がある場合はそのパスをstderrへ返します。
+      Logcatの保存先を取得できない場合や対応できないframeの復号失敗も、GUIと同じ具体的な理由を返します。
+      PNGのテキストmetadataに元のsave_id（arb:source_save_id）・現在のフォルダ名・動画内時刻を記録します。
+      Latin-1で表せる値は従来のtEXt、それ以外はUTF-8のiTXtで保持します（キーは共通）。
+      t_nsは既知の場合だけ記録します。元のsave_idが欠落・不正なら作成しません。
 settings: 現在の設定をMCPのget_settingsと同じJSONでstdoutへ返します。
 settings set: 指定項目だけをMCPのupdate_settingsと同じ項目名・検証で変更し、変更後の設定JSONを返します。
       例: replay settings set replay_seconds=60 auto_save_on_crash=true
@@ -111,6 +175,7 @@ settings set: 指定項目だけをMCPのupdate_settingsと同じ項目名・検
       device: 取得する端末のserial（statusのdevices[].serial）。空（device=）なら1台だけ接続時に自動選択します。
               複数接続で未選択のときは取得せず選択を待ちます。選んだ端末が切断されても別の端末へは切り替えません。
 mcp: 標準入出力のMCPサーバーとして動き、エージェントへ同じ操作を提供します。
+      trim_replayの事前警告は標準loggingで送り、logging/setLevelに従います（client側の表示保証なし）。
 --project: 開いているprojectのフォルダ。省略時は接続先が1つだけ必要です。
 CLIはIDEに導入済みのプラグインのbinにあり、場所は設定画面からコピーできます。
 終了コード: 0=完了、1=操作・接続失敗/結果不明、2=引数・設定値の不正。
@@ -142,10 +207,32 @@ CLIはIDEに導入済みのプラグインのbinにあり、場所は設定画�
                 ?: "CLI接続先を確認できません。IDE/project、パスとアクセス権を確認してください。")
             return 1
         }
-        val response = exchange(directory, parsed.project, identity, CliRequest(parsed.command, parsed.settings))
+        val send = { request: CliRequest -> exchange(directory, parsed.project, identity, request) }
+        val response = if (parsed.command == CliCommand.TRIM) trim(checkNotNull(parsed.settings), send) { warning ->
+            error.line(warning)
+            check(!error.checkError()) { "切り取り前の警告を出力できませんでした。操作していません。" }
+        } else send(CliRequest(parsed.command, parsed.settings))
         if (response.output.isNotEmpty()) output.line(response.output)
         if (response.error.isNotEmpty()) error.line(response.error)
         return response.code
+    }
+
+    internal fun trim(payload: String, send: (CliRequest) -> CliResponse, warn: (String) -> Unit): CliResponse {
+        val response = send(CliRequest(CliCommand.TRIM_PREFLIGHT, payload))
+        if (response.code != 0) return response
+        return try {
+            val plan = McpJson.parse(response.output) as? Map<*, *> ?: error("切り取りの事前確認応答が不正です。")
+            val fingerprint = plan["fingerprint"] as? String ?: error("切り取りの事前確認応答が不正です。")
+            require(fingerprint.isNotEmpty()) { "切り取りの事前確認応答が不正です。" }
+            val warning = plan["warning"]
+            require(warning == null || warning is String) { "切り取りの事前確認応答が不正です。" }
+            if (warning is String) warn(warning)
+            @Suppress("UNCHECKED_CAST")
+            val arguments = McpJson.parse(payload) as Map<String, Any?>
+            send(CliRequest(CliCommand.TRIM, McpJson.write(arguments + ("fingerprint" to fingerprint))))
+        } catch (_: Exception) {
+            CliResponse(1, error = "切り取りの事前確認・警告を確認できませんでした。自動再試行しません。")
+        }
     }
 
     /** Sends one request to the selected project's IDE; never retries once the request may have reached it. */

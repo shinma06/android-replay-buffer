@@ -25,7 +25,9 @@
 
 `replay.json`のschema 4では、schema 3の内容に次を加えました。`folder_name`、`trigger`（`manual` / `crash`）、`created_at`（UTC）と`created_at_local`（時差付きのローカル時刻）、`files`（`readme / record / video / video_frames / video_source / logcat_device / logcat_app / touches`。値はファイル名、作らなかったものはnull）、`counts`（`device_log_rows / app_log_rows / video_frames / touches / touches_in_movie`）。schema 3の`video_file` / `touch_file` / `video_source_file`は`files`へまとめました。時刻は端末BOOTTIME上の保存窓の先頭からの`t_ns`にそろえ、基準を`timebase`にまとめました。各行の`window_ns`は`t_ns`、`uncertainty_ns`は`t_uncertainty_ns`に改め、`clock_epoch`の代わりに`boot_segment`を持ちます（`mapped_window_ns`は廃止）。partなどの範囲も`t_start_ns / t_end_ns`のように`*_t_ns`で表します。`window_clock_epoch` / `window_clock_known` / `window_start_ns` / `window_end_ns` / `clock_samples` / `clock_epochs` / `video_clock_gap_scopes`は`timebase`へ移し、時計の測定の途切れは`gaps`ではなく`timebase.clock_steps`に記録します。詳細は[時間軸の設計](design/timeline.md#replayjsonの時刻の表し方schema-4)にあります。
 
-スクショは保存フォルダを作らず、`screenshot-<yyyyMMdd-HHmmss>-<ID>.png`の1枚です（日時・IDの形式は保存フォルダと同じ）。
+スクショは保存フォルダを作らず、`screenshot-<yyyyMMdd-HHmmss>-<ID>.png`の1枚です（日時・IDの形式は保存フォルダと同じ）。保存クリップの1コマを静止画にする際もフォルダは作らず、同じ保存先へ`frame-<yyyyMMdd-HHmmss>-<ID>.png`で保存します。
+
+完成した保存フォルダは、プレイヤー（エディタタブ）・CLI `replay trim`・MCP `trim_replay`で動画内時刻の範囲に切り取れます。切り取りは元フォルダを変更せず、同じ親フォルダへ`replay-<yyyyMMdd-HHmmss>-trim-<ID>`を作ります（`.partial`経由・上書きなし・既存の公開規則と同じ）。出力は同じschema 4の構成を持ち、`replay.json`に任意field`trim`（`source_folder_name`・指定・適用した動画内時刻の範囲・`reencoded_leading_gop`など）を加えます。動画は開始コマが含まれる先頭GOPだけ再エンコードし、以降のpacketは元のまま複写します。`video-frames.jsonl`・ログ・タップ・音声・`video-source.h264`は同じ採否規則で切り詰め、movie時刻と`t_ns`は切り取った範囲へ付け替え、`files_sha256`は再計算します。要件は[保存後の切り取りとシーク位置の静止画](requirements/video-trim.md)にあります。
 
 MCPの`save_replay`と`get_status`の`last_save`は、完成したフォルダの`directory`に加えて`README.md`のパスを`summary_path`で返します。CLIの`save`のstdoutは従来どおり完成したフォルダのパスだけです。
 

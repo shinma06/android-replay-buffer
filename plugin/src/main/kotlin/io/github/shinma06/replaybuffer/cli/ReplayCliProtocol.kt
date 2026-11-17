@@ -9,8 +9,8 @@ import java.security.SecureRandom
 import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
 
-/** [SETTINGS] reads and [CONFIGURE] updates the GUI settings; [CONFIGURE] carries a JSON object in [CliRequest.configText]. */
-internal enum class CliCommand { START, STOP, SAVE, SAVE_LOGS, STATUS, SCREENSHOT, SETTINGS, CONFIGURE }
+/** [SETTINGS] reads and [CONFIGURE] updates the GUI settings; [CONFIGURE], [TRIM] and [FRAME] carry a JSON object in [CliRequest.configText]. */
+internal enum class CliCommand { START, STOP, SAVE, SAVE_LOGS, STATUS, SCREENSHOT, SETTINGS, CONFIGURE, TRIM, FRAME, TRIM_PREFLIGHT }
 
 internal data class CliRequest(val command: CliCommand, val configText: String? = null)
 
@@ -82,7 +82,9 @@ internal object ReplayCliProtocol {
     fun readRequest(input: DataInputStream): CliRequest {
         val command = CliCommand.valueOf(readText(input, 16))
         val config = if (input.readBoolean()) readText(input, MAX_CONFIG_BYTES) else null
-        require((command == CliCommand.CONFIGURE) == (config != null)) { "設定の変更内容はsettings setだけで送れます。" }
+        require((command == CliCommand.CONFIGURE || command == CliCommand.TRIM || command == CliCommand.FRAME || command == CliCommand.TRIM_PREFLIGHT) == (config != null)) {
+            "入力内容は設定・切り取り・静止画の操作だけで送れます。"
+        }
         return CliRequest(command, config)
     }
 

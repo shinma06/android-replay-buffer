@@ -18,7 +18,12 @@ import com.intellij.openapi.application.PathManager
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.ide.CopyPasteManager
+import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.progress.ProcessCanceledException
+import com.intellij.openapi.progress.ProgressIndicator
+import com.intellij.openapi.progress.ProgressManager
+import com.intellij.openapi.progress.Task
+import com.intellij.openapi.progress.WrappedProgressIndicator
 import com.intellij.openapi.project.DumbAware
 import com.intellij.openapi.project.DumbService
 import com.intellij.openapi.project.Project
@@ -26,11 +31,13 @@ import com.intellij.openapi.roots.ModuleRootEvent
 import com.intellij.openapi.roots.ModuleRootListener
 import com.intellij.openapi.startup.ProjectActivity
 import com.intellij.openapi.util.text.StringUtil
+import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.wm.ToolWindowManager
 import com.intellij.util.messages.Topic
 import io.github.shinma06.replaybuffer.cli.CliCommand
 import io.github.shinma06.replaybuffer.cli.CliRequest
 import io.github.shinma06.replaybuffer.cli.CliResponse
+import io.github.shinma06.replaybuffer.cli.McpJson
 import io.github.shinma06.replaybuffer.cli.ReplayCliRegistry
 import io.github.shinma06.replaybuffer.cli.ReplayCliServer
 import io.github.shinma06.replaybuffer.cli.cliSaveResponse
@@ -41,11 +48,15 @@ import io.github.shinma06.replaybuffer.core.ReplaySnapshot
 import io.github.shinma06.replaybuffer.core.ReplayFiles
 import io.github.shinma06.replaybuffer.core.SavePhase
 import io.github.shinma06.replaybuffer.core.SaveContent
+import io.github.shinma06.replaybuffer.core.ReplayFrameExport
+import io.github.shinma06.replaybuffer.core.ReplayTrim
+import io.github.shinma06.replaybuffer.core.SaveCancelled
 import io.github.shinma06.replaybuffer.core.SaveOrigin
 import io.github.shinma06.replaybuffer.core.SaveRequest
 import io.github.shinma06.replaybuffer.core.SaveSnapshot
 import io.github.shinma06.replaybuffer.core.SavedScreenshot
 import io.github.shinma06.replaybuffer.core.ScreenshotSaveFailure
+import io.github.shinma06.replaybuffer.core.SaveFailure
 import io.github.shinma06.replaybuffer.core.saveScreenshot
 import io.github.shinma06.replaybuffer.settings.LOGCAT_DESTINATION_UNAVAILABLE
 import io.github.shinma06.replaybuffer.settings.ReplaySettings
@@ -68,6 +79,7 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.time.LocalTime
 import java.util.concurrent.CompletableFuture
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.ExecutionException
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
@@ -420,11 +432,35 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
                 val saved = try {
                     screenshot().get((deadline - System.nanoTime()).coerceAtLeast(1), TimeUnit.NANOSECONDS)
                 } catch (failure: ExecutionException) {
-                    val cause = failure.cause
-                    return CliResponse(1, error = listOfNotNull(cause?.message ?: "スクリーンショットを保存できません。",
-                        (cause as? ScreenshotSaveFailure)?.retained?.let { "保全した出力: $it" }).joinToString("\n"))
+                    return screenshotCliFailure(failure.cause)
                 }
                 return CliResponse(0, saved.file.toString())
+            }
+            if (request.command == CliCommand.TRIM || request.command == CliCommand.FRAME || request.command == CliCommand.TRIM_PREFLIGHT) {
+                @Suppress("UNCHECKED_CAST")
+                val arguments = try { McpJson.parse(request.configText.orEmpty()) as? Map<String, Any?> }
+                catch (_: Exception) { null }
+                fun rangeUs(name: String): Long = when (val value = arguments?.get(name)) {
+                    is java.math.BigDecimal -> value.longValueExact()
+                    else -> throw IllegalArgumentException("切り取り範囲・時刻の指定を確認してください。")
+                }
+                val folderText = arguments?.get("folder") as? String
+                    ?: throw IllegalArgumentException("保存フォルダを指定してください。")
+                val folder = runCatching { Path.of(folderText) }
+                    .getOrElse { throw IllegalArgumentException("保存フォルダのパスを確認してください。") }
+                val source = (if (folder.isAbsolute) folder else Path.of(
+                    projectBasePath ?: throw IllegalArgumentException("相対パスではなく絶対パスで保存フォルダを指定してください。")).resolve(folder)).normalize()
+                if (request.command == CliCommand.TRIM_PREFLIGHT) {
+                    val plan = ReplayTrim().preflight(source, rangeUs("from_us"), rangeUs("to_us"))
+                    return CliResponse(0, McpJson.write(linkedMapOf("fingerprint" to plan.fingerprint,
+                        "from_us" to plan.startUs, "to_us" to plan.endUs, "warning" to plan.warning)))
+                }
+                val output = if (request.command == CliCommand.TRIM)
+                    ReplayTrim().trim(source, rangeUs("from_us"), rangeUs("to_us"), { !alive }, { it.publish() },
+                        expectedFingerprint = arguments.get("fingerprint") as? String
+                            ?: throw IllegalArgumentException("切り取りの事前確認がありません。もう一度実行してください。"))
+                else return frameCliResponse { ReplayFrameExport.export(source, rangeUs("at_us"), frameDestination()) }
+                return CliResponse(0, output.toString())
             }
             val saving = request.command == CliCommand.SAVE || request.command == CliCommand.SAVE_LOGS
             if (saving && capture.view.snapshot?.enabled != true) {
@@ -436,7 +472,8 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
                 CliCommand.SAVE_LOGS -> save(SaveRequest(SaveContent.LOGS_ONLY, SaveOrigin.CLI))
                 CliCommand.START -> setEnabled(true)
                 CliCommand.STOP -> setEnabled(false)
-                CliCommand.STATUS, CliCommand.SCREENSHOT, CliCommand.SETTINGS, CliCommand.CONFIGURE -> error("already handled")
+                CliCommand.STATUS, CliCommand.SCREENSHOT, CliCommand.SETTINGS, CliCommand.CONFIGURE,
+                CliCommand.TRIM, CliCommand.FRAME, CliCommand.TRIM_PREFLIGHT -> error("already handled")
             })
             if (!operation.accepted) return CliResponse(1, error = operation.reason.orEmpty())
             if (!saving) return CliResponse(0,
@@ -445,6 +482,11 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
             return cliSaveResponse(operation.requestId, checkNotNull(operation.saveResult), deadline)
         } catch (_: TimeoutException) {
             return CliResponse(1, error = "操作結果の待機が時間切れになりました${requestId?.let { "（request: $it）" }.orEmpty()}。GUIの状態・保存結果を確認してください。自動再試行はしません。")
+        } catch (failure: ScreenshotSaveFailure) {
+            return screenshotCliFailure(failure)
+        } catch (failure: SaveFailure) {
+            return CliResponse(1, error = listOfNotNull(failure.message ?: "切り取った動画を保存できません。",
+                failure.partial?.let { "保全した出力: $it" }).joinToString("\n"))
         } catch (failure: IllegalArgumentException) {
             return CliResponse(2, error = failure.message ?: "入力内容を確認してください。")
         } catch (_: Exception) {
@@ -461,8 +503,32 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
         if (alive) project.messageBus.syncPublisher(ENVIRONMENT_CHANGED).run()
     }
 
+    /** The configured screenshot folder, shared by the frame export (CLI/MCP) and the player. */
+    private fun frameDestination(): Path {
+        val settings = project.getService(ReplaySettingsStore::class.java).settings()
+        if (!settings.screenshotUsesLogcatDestination) {
+            require(settings.screenshotDirectory.isNotEmpty()) { "設定でスクリーンショットの保存先を指定してください。" }
+            return Path.of(settings.screenshotDirectory)
+        }
+        val location = try { LogcatScreenshotSettings.saveLocation() } catch (cancelled: ProcessCanceledException) {
+            throw cancelled
+        } catch (_: RuntimeException) {
+            throw IllegalStateException(LOGCAT_DESTINATION_UNAVAILABLE)
+        } catch (_: LinkageError) {
+            throw IllegalStateException(LOGCAT_DESTINATION_UNAVAILABLE)
+        }
+        return try { LogcatScreenshotSettings.resolveDirectory(project, location) } catch (cancelled: ProcessCanceledException) {
+            throw cancelled
+        } catch (_: RuntimeException) {
+            throw IllegalStateException(LOGCAT_DESTINATION_UNAVAILABLE)
+        } catch (_: LinkageError) {
+            throw IllegalStateException(LOGCAT_DESTINATION_UNAVAILABLE)
+        }
+    }
+
     // Use the completed attempt's warnings, not the moving live window; suppress obsolete failure actions.
     private fun notifySave(save: SaveSnapshot) {
+        val videoDirectory = savedVideoDirectory(save)
         onUi {
             if (save.phase == SavePhase.FAILED &&
                 (capture.view.snapshot?.save?.requestId != save.requestId || capture.view.snapshot?.save?.attempt != save.attempt ||
@@ -478,7 +544,13 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
                     if (missing.isEmpty()) NotificationType.INFORMATION else NotificationType.WARNING,
                 ).addAction(NotificationAction.create("フォルダを開く") { _, event ->
                     if (alive) openDirectory(save.directory) else event.expire()
-                }).addAction(copyPathAction(save.directory))
+                }).let { notification ->
+                    if (videoDirectory != null)
+                        notification.addAction(NotificationAction.create("動画を開く") { _, event ->
+                            if (alive) openReplayVideo(save.directory) else event.expire()
+                        })
+                    notification
+                }.addAction(copyPathAction(save.directory))
             } else {
                 group.createNotification("保存に失敗しました", StringUtil.escapeXmlEntities(save.error ?: "保存対象を再試行または破棄できます。"), NotificationType.ERROR)
                     .addAction(NotificationAction.create("保存対象を確認する") { _, event ->
@@ -487,6 +559,127 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
             }
             showNotification(notification)
         }
+    }
+
+    /** Opens a completed save's video in the replay player editor (notification/ToolWindow/chooser entry). */
+    internal fun openReplayVideo(folder: Path) {
+        if (!alive) return
+        scope.launch(Dispatchers.IO) {
+            val video = folder.resolve(ReplayFiles.VIDEO)
+            val reason = when {
+                !Files.isRegularFile(folder.resolve(ReplayFiles.RECORD)) -> "完成した保存フォルダを選んでください（replay.jsonがありません）。"
+                !Files.isRegularFile(video) -> "保存フォルダに動画がありません。"
+                else -> null
+            }
+            val virtual = if (reason == null) LocalFileSystem.getInstance().refreshAndFindFileByNioFile(video) else null
+            val failed = reason ?: if (virtual == null) "動画ファイルをIDEで見つけられません。" else null
+            if (failed != null) {
+                onUi {
+                    showNotification(NotificationGroupManager.getInstance().getNotificationGroup("Android Replay Buffer")
+                        .createNotification("動画を開けません", failed, NotificationType.WARNING).addAction(copyPathAction(folder)))
+                }
+                return@launch
+            }
+            onUi { FileEditorManager.getInstance(project).openFile(checkNotNull(virtual), true) }
+        }
+    }
+
+    /** Saves the frame displayed at [atUs] of [folder] to the screenshot destination; GUI entry of [ReplayFrameExport]. */
+    internal fun exportReplayFrame(folder: Path, atUs: Long, cancel: AtomicBoolean = AtomicBoolean()): CompletableFuture<Path?> {
+        val done = CompletableFuture<Path?>()
+        if (!alive) { done.completeExceptionally(IllegalStateException("projectが終了しています。")); return done }
+        queueReplaySave(project, "静止画を保存しています", done, null) { indicator ->
+            fun checkActive() {
+                if (!alive || indicator.isCanceled || cancel.get()) throw SaveCancelled(null)
+            }
+            try {
+                checkActive()
+                ReplayFrameExport.export(folder, atUs, frameDestination(), checkActive = ::checkActive)
+            } catch (_: SaveCancelled) { null }
+        }
+        done.thenAccept { file -> if (file != null) onUi { notifyFrameSaved(file) } }
+            .exceptionally { failure ->
+                onUi { notifyOperationFailed("静止画を保存できませんでした", failure) }; null
+            }
+        return done
+    }
+
+    /** Result of a GUI trim: the new folder, or null with the retained `.partial` (if any) when cancelled. */
+    internal data class TrimRun(val output: Path?, val retainedPartial: Path? = null)
+
+    /** Trims [folder] to [fromUs, toUs) in a cancellable background task; GUI entry of [ReplayTrim]. */
+    internal fun trimReplay(folder: Path, fromUs: Long, toUs: Long, cancel: AtomicBoolean = AtomicBoolean()): CompletableFuture<TrimRun> {
+        val done = CompletableFuture<TrimRun>()
+        if (!alive) { done.completeExceptionally(IllegalStateException("projectが終了しています。")); return done }
+        queueReplaySave(project, "動画を切り取っています", done, TrimRun(null)) { indicator ->
+            val cancelled = { !alive || indicator.isCanceled || cancel.get() }
+            try {
+                if (cancelled()) throw SaveCancelled(null)
+                val trim = ReplayTrim()
+                val plan = trim.preflight(folder, fromUs, toUs)
+                if (cancelled()) throw SaveCancelled(null)
+                plan.warning?.let { warning ->
+                    try {
+                        // The SDK polls non-standard indicators even while the non-modal UI runnable is pending.
+                        val waiting = object : ProgressIndicator by indicator, WrappedProgressIndicator {
+                            override fun getOriginalProgressIndicator() = indicator
+                            override fun checkCanceled() {
+                                if (cancelled()) indicator.cancel()
+                                indicator.checkCanceled()
+                            }
+                        }
+                        ProgressManager.getInstance().executeProcessUnderProgress({
+                            ApplicationManager.getApplication().invokeAndWait({
+                                if (!cancelled()) showNotification(NotificationGroupManager.getInstance().getNotificationGroup("Android Replay Buffer")
+                                    .createNotification("切り取り範囲の時計対応が不明です", warning, NotificationType.WARNING))
+                            }, ModalityState.nonModal())
+                        }, waiting)
+                    } catch (failure: Exception) {
+                        if (cancelled()) throw SaveCancelled(null)
+                        throw failure
+                    }
+                }
+                TrimRun(trim.trim(folder, fromUs, toUs, cancelled, { it.publish() }, expectedFingerprint = plan.fingerprint))
+            }
+            catch (cancelled: SaveCancelled) { TrimRun(null, cancelled.partial) }
+        }
+        observeTrimSave(done,
+            { folder.parent?.let { LocalFileSystem.getInstance().refreshAndFindFileByNioFile(it) }?.refresh(false, true) },
+            { output -> onUi { notifyTrimmed(output) } },
+            { failure -> onUi { notifyOperationFailed("切り取った動画を保存できませんでした", failure) } })
+            .exceptionally { failure ->
+                val cause = (failure as? java.util.concurrent.CompletionException)?.cause ?: failure
+                if (cause !is ProcessCanceledException && cause !is java.util.concurrent.CancellationException) {
+                    Logger.getInstance(ReplayProjectService::class.java).debug("保存結果のIDEへの反映を完了できませんでした。", cause)
+                }
+            }
+        return done
+    }
+
+    private fun notifyTrimmed(output: Path) {
+        showNotification(NotificationGroupManager.getInstance().getNotificationGroup("Android Replay Buffer")
+            .createNotification("切り取った動画を保存しました", "元の保存フォルダはそのまま残しています。", NotificationType.INFORMATION)
+            .addAction(NotificationAction.create("フォルダを開く") { _, event ->
+                if (alive) openDirectory(output) else event.expire()
+            })
+            .addAction(NotificationAction.create("動画を開く") { _, event ->
+                if (alive) openReplayVideo(output) else event.expire()
+            })
+            .addAction(copyPathAction(output)))
+    }
+
+    private fun notifyFrameSaved(file: Path) {
+        showNotification(NotificationGroupManager.getInstance().getNotificationGroup("Android Replay Buffer")
+            .createNotification("静止画を保存しました", "保存したファイル: ${StringUtil.escapeXmlEntities(file.toString())}", NotificationType.INFORMATION)
+            .addAction(NotificationAction.create("フォルダを開く") { _, event ->
+                if (alive) file.parent?.let(::openDirectory) else event.expire()
+            })
+            .addAction(copyPathAction(file)))
+    }
+
+    private fun notifyOperationFailed(title: String, failure: Throwable) {
+        showNotification(NotificationGroupManager.getInstance().getNotificationGroup("Android Replay Buffer")
+            .createNotification(title, operationFailureContent(failure), NotificationType.ERROR))
     }
 
     internal fun openDirectory(directory: Path) {
@@ -554,6 +747,82 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
     companion object {
         val ENVIRONMENT_CHANGED: Topic<Runnable> = Topic.create("Android Replay Buffer environment changed", Runnable::class.java)
     }
+}
+
+internal fun observeTrimSave(
+    done: CompletableFuture<ReplayProjectService.TrimRun>,
+    refresh: () -> Unit,
+    saved: (Path) -> Unit,
+    failed: (Throwable) -> Unit,
+): CompletableFuture<Unit> = done.handle { run, failure ->
+    if (failure != null) failed(failure)
+    else {
+        run.output?.let(saved)
+        refresh()
+    }
+}
+
+internal fun <T> queueReplaySave(project: Project, title: String, done: CompletableFuture<T>, cancelled: T,
+                                 action: (ProgressIndicator) -> T) {
+    val task = object : Task.Backgroundable(project, title, true) {
+        override fun run(indicator: ProgressIndicator) {
+            try {
+                indicator.isIndeterminate = true
+                done.complete(action(indicator))
+            } catch (failure: ProcessCanceledException) {
+                done.complete(cancelled)
+                throw failure
+            } catch (failure: Throwable) {
+                done.completeExceptionally(failure)
+            }
+        }
+
+        override fun onCancel() { done.complete(cancelled) }
+        override fun onThrowable(error: Throwable) { done.completeExceptionally(error) }
+    }
+    try {
+        task.setCancelText("中止").queue()
+    } catch (failure: ProcessCanceledException) {
+        done.complete(cancelled)
+        throw failure
+    } catch (failure: Throwable) {
+        done.completeExceptionally(failure)
+    }
+}
+
+internal fun frameCliResponse(export: () -> Path): CliResponse = try {
+    CliResponse(0, export().toString())
+} catch (failure: IllegalStateException) {
+    if (Thread.currentThread().isInterrupted || failure.message !in setOf(LOGCAT_DESTINATION_UNAVAILABLE,
+            "表示frameの復号に対応できません", "表示frameの復号に失敗しました")) throw failure
+    val seen = java.util.Collections.newSetFromMap(java.util.IdentityHashMap<Throwable, Boolean>())
+    var cause: Throwable? = failure
+    while (cause != null) {
+        if (!seen.add(cause) || cause is CancellationException || cause is ProcessCanceledException ||
+            cause is InterruptedException || cause is java.io.InterruptedIOException ||
+            cause is java.nio.channels.ClosedByInterruptException || cause is TimeoutException) throw failure
+        cause = cause.cause
+    }
+    screenshotCliFailure(failure)
+}
+
+internal fun screenshotCliFailure(cause: Throwable?): CliResponse = CliResponse(1, error = listOfNotNull(
+    cause?.message ?: "スクリーンショットを保存できません。",
+    (cause as? ScreenshotSaveFailure)?.retained?.let { "保全した出力: $it" },
+).joinToString("\n"))
+
+internal fun operationFailureContent(failure: Throwable): String {
+    val cause = (failure as? java.util.concurrent.CompletionException)?.cause ?: failure
+    val retained = (cause as? SaveCancelled)?.partial?.let { "\n未完成の出力は保全します: $it" }
+        ?: (cause as? SaveFailure)?.partial?.let { "\n未完成の出力は保全します: $it" }
+        ?: (cause as? ScreenshotSaveFailure)?.retained?.let { "\n未完成の出力は保全します: $it" }.orEmpty()
+    return StringUtil.escapeXmlEntities((cause.message ?: "保存先・空き容量・アクセス権を確認してください。") + retained)
+}
+
+// missingKinds describes coverage too; it does not establish whether a movie was saved.
+internal fun savedVideoDirectory(save: SaveSnapshot): Path? = save.directory?.takeIf {
+    save.phase == SavePhase.COMPLETED && save.captureMode.videoRequested && save.content != SaveContent.LOGS_ONLY &&
+        Files.isRegularFile(it.resolve(ReplayFiles.VIDEO))
 }
 
 internal fun streamName(kind: String): String = when (kind) {

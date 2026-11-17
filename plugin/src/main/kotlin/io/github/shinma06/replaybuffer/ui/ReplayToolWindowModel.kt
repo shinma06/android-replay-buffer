@@ -36,6 +36,7 @@ internal data class ToolWindowInput(
     val logcat: LogcatState = LogcatState("Logcatを開く", true, "", false),
     val savedAt: String? = null,
     val screenshot: ScreenshotResult? = null,
+    val savedVideoDirectory: Path? = null,
 )
 
 internal data class LogcatState(val label: String, val enabled: Boolean, val tooltip: String, val failed: Boolean)
@@ -59,6 +60,7 @@ internal data class RecentResult(
     val text: String,
     val secondary: List<String> = emptyList(),
     val openDirectory: Path? = null,
+    val openVideo: Path? = null,
     val failure: SaveFailure? = null,
 )
 
@@ -142,7 +144,7 @@ internal fun toolWindowModel(input: ToolWindowInput): ToolWindowModel {
 
     val saved = snapshot?.save
     val results = buildList {
-        saveResult(saved, input.busy, seconds, input.savedAt)?.let(::add)
+        saveResult(saved, input.busy, seconds, input.savedAt, input.savedVideoDirectory)?.let(::add)
         when (val shot = input.screenshot) {
             is ScreenshotResult.Saved -> add(RecentResult(Tone.OK, "スクリーンショットを保存しました ${shot.time}",
                 listOf("保存したファイル: ${shot.file}"), shot.file.parent))
@@ -206,7 +208,7 @@ internal fun toolWindowModel(input: ToolWindowInput): ToolWindowModel {
     )
 }
 
-private fun saveResult(saved: SaveSnapshot?, busy: Boolean, seconds: Int, savedAt: String?): RecentResult? = when (saved?.phase) {
+private fun saveResult(saved: SaveSnapshot?, busy: Boolean, seconds: Int, savedAt: String?, videoDirectory: Path?): RecentResult? = when (saved?.phase) {
     null, SavePhase.IDLE -> null
     SavePhase.WRITING -> RecentResult(Tone.PENDING, saveDescription(saved))
     SavePhase.CANCELLED -> RecentResult(Tone.WARNING, saveDescription(saved))
@@ -216,6 +218,7 @@ private fun saveResult(saved: SaveSnapshot?, busy: Boolean, seconds: Int, savedA
         listOfNotNull(saved.missingKinds.takeIf { it.isNotEmpty() }
             ?.let { "記録の不足・未確認: ${it.map(::streamName).joinToString("、")}" }),
         saved.directory,
+        videoDirectory,
     )
     SavePhase.FAILED -> RecentResult(Tone.ERROR, saveDescription(saved), failure = SaveFailure(
         reason = "保存失敗の理由: ${saved.error ?: "保存先を確認してください。"}",
