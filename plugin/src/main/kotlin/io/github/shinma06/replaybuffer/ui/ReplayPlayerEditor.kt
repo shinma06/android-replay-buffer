@@ -201,6 +201,7 @@ internal class ReplayPlayerController(
     }
 
     private fun loadReplay(openReplay: (Path) -> SavedReplay) {
+        if (disposed) return
         try {
             val opened = openReplay(folder)
             val timeline = try { opened.previewKeyframes.at(0); opened.timeline() }

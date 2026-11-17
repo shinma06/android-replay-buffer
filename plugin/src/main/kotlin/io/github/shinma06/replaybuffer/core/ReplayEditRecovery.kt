@@ -125,6 +125,7 @@ internal const val RECOVERY_ORIGIN = ".replay-recovery-origin"
 private data class RecoveryReceipt(val originalName: String, val originalKey: String, val nonce: String, val hashes: Map<String, String>)
 private const val RESTORE_KEY = ".replay-restore-key"
 private const val RESTORE_STAGE = ".replay-restore-target"
+private const val RESTORE_LOCK = ".replay-restore.lock"
 private data class RestoreDestination(val key: String, val stage: String)
 internal class ReplayRecoveryFailure(message: String, val recovery: Path, cause: Throwable) : Exception(message, cause)
 
@@ -137,6 +138,7 @@ internal fun restoreReplayRecovery(path: Path, checkActive: () -> Unit = {}, aft
     SaveOutputDirectory.open(folder.parent).use { parent ->
         parent.openChild(folder.fileName.toString()).use { recovery ->
             recovery.requirePrivate()
+            recovery.withRestoreLock {
             val receipt = recovery.openFile(RECOVERY_RECORD).use { file ->
                 file.requirePrivate()
                 file.channel(setOf(READ)).use { channel ->
@@ -203,7 +205,19 @@ internal fun restoreReplayRecovery(path: Path, checkActive: () -> Unit = {}, aft
                 }
                 return folder.parent.resolve(receipt.originalName)
             } finally { pins.values.forEach { it.close() } }
+            }
         }
+    }
+}
+
+/** One cooperating restorer per recovery, across projects and processes; the anchor is never removed. */
+private inline fun <T> SaveOutputDirectory.withRestoreLock(action: () -> T): T {
+    val guard = runCatching { createFile(RESTORE_LOCK) }.getOrElse { openFile(RESTORE_LOCK) }
+    guard.use { file ->
+        file.requirePrivate()
+        file.channel(setOf(READ)).use { check(it.size() == 0L) { "復元の排他情報を確認できません。" } }
+        val owner = file.tryOwnerLock() ?: error("この保管場所は復元中です。完了後にもう一度お試しください。")
+        owner.use { verifyFile(RESTORE_LOCK, file); return action() }
     }
 }
 

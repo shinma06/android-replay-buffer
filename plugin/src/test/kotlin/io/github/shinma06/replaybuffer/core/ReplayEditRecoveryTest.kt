@@ -49,7 +49,7 @@ class ReplayEditRecoveryTest {
         val manifest = Gson().fromJson(Files.readString(folder.resolve(ReplayFiles.RECORD)), JsonObject::class.java)
         return folder to SaveSnapshot(SavePhase.COMPLETED, manifest["save_id"].asString, directory = folder)
     }
-    private fun bytes(folder: Path) = Files.list(folder).use { files -> files.filter { Files.isRegularFile(it) && it.fileName.toString() != RECOVERY_ORIGIN }.toList()
+    private fun bytes(folder: Path) = Files.list(folder).use { files -> files.filter { Files.isRegularFile(it) && it.fileName.toString() !in setOf(RECOVERY_ORIGIN, ".replay-restore.lock") }.toList()
         .associate { it.fileName.toString() to Files.readAllBytes(it).toList() } }
     private fun png(path: Path) { Files.write(path, byteArrayOf(1, 2, 3)); PrivateFiles.restrict(path, false) }
     private fun absentOriginal(folder: Path) {
@@ -536,7 +536,52 @@ class ReplayEditRecoveryTest {
         assertTrue(ran)
     }
 
-    @Test fun providerControllerDefersRealLoadUntilRollbackEvenWhenOnlyReadmeIsAbsent() {
+    @Test fun providerControllerDefersRealLoadUntilRollbackEvenWhenOnlyReadmeIsAbsent() = providerLoadAfterRollback(false)
+
+    @Test fun disposingProviderControllerWhileRollbackIsPendingNeverLoadsAfterResourcesClose() = providerLoadAfterRollback(true)
+
+    @Test fun concurrentRestoreCannotSplitPayloadOrRemoveAnotherRestorersNonce() = concurrentRestore(false)
+    @Test fun concurrentRestoreKeepsFailedFirstRestoreRetryable() = concurrentRestore(true)
+
+    private fun concurrentRestore(failFirst: Boolean) {
+        val (folder, save) = source()
+        val original = bytes(folder)
+        val recovery = assertNotNull(ReplayEditOrigin.capture(save)).relocate()
+        val moved = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val workers = java.util.concurrent.Executors.newFixedThreadPool(2)
+        try {
+            val first = workers.submit<Path> {
+                restoreReplayRecovery(recovery, afterMove = { count ->
+                    if (count == 1) {
+                        moved.countDown()
+                        check(release.await(30, TimeUnit.SECONDS))
+                        if (failFirst) error("Injected first restore failure")
+                    }
+                })
+            }
+            assertTrue(moved.await(30, TimeUnit.SECONDS))
+            val second = workers.submit {
+                assertFailsWith<IllegalStateException> { restoreReplayRecovery(recovery, afterMove = { error("Second restore moved a payload") }) }
+            }
+            second.get(30, TimeUnit.SECONDS)
+            assertTrue(Files.exists(folder.resolve(RECOVERY_ORIGIN)))
+            release.countDown()
+            if (failFirst) {
+                assertFailsWith<java.util.concurrent.ExecutionException> { first.get(30, TimeUnit.SECONDS) }
+                assertTrue(Files.exists(folder.resolve(RECOVERY_ORIGIN)))
+                assertEquals(folder, restoreReplayRecovery(recovery))
+            } else assertEquals(folder, first.get(30, TimeUnit.SECONDS))
+            assertEquals(original, bytes(folder))
+            assertFalse(Files.exists(folder.resolve(RECOVERY_ORIGIN)))
+        } finally {
+            release.countDown()
+            workers.shutdownNow()
+            assertTrue(workers.awaitTermination(30, TimeUnit.SECONDS))
+        }
+    }
+
+    private fun providerLoadAfterRollback(disposeBeforeRollback: Boolean) {
         val (folder, _) = source()
         val original = bytes(folder)
         val key = folder.resolve(ReplayFiles.VIDEO)
@@ -565,7 +610,9 @@ class ReplayEditRecoveryTest {
                                 })
                                 assertTrue(assertNotNull(controller).state.loading)
                                 assertNull(assertNotNull(controller).state.error)
+                                if (disposeBeforeRollback) assertNotNull(controller).dispose()
                             }
+                            if (disposeBeforeRollback) assertTrue(assertNotNull(controller).resourcesClosed.get(30, TimeUnit.SECONDS))
                             assertEquals(1L, loaded.count)
                             check(!valid())
                     } finally { Files.move(parked, readme) }
@@ -573,6 +620,11 @@ class ReplayEditRecoveryTest {
                 finally { replayEditPendingCloses.finished(key, ticket) }
             }
             assertNull(failure)
+            if (disposeBeforeRollback) {
+                assertEquals(1L, loaded.count)
+                assertEquals(original, bytes(folder))
+                return
+            }
             assertTrue(loaded.await(30, TimeUnit.SECONDS))
             val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30)
             while (true) {
