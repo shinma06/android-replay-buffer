@@ -6,6 +6,9 @@ import io.github.shinma06.replaybuffer.ui.ReplayEditClosePolicy
 import io.github.shinma06.replaybuffer.ui.ReplayEditCloseLifecycle
 import io.github.shinma06.replaybuffer.ui.ReplayEditCloseWork
 import io.github.shinma06.replaybuffer.ui.withSingleReplayOwner
+import io.github.shinma06.replaybuffer.ui.replayEditPendingCloses
+import io.github.shinma06.replaybuffer.ui.replayVideoOpening
+import com.intellij.testFramework.LightVirtualFile
 import com.intellij.openapi.extensions.PluginId
 import io.github.shinma06.replaybuffer.ui.confirmedReplayDiscard
 import java.nio.file.Files
@@ -349,5 +352,113 @@ class ReplayEditRecoveryTest {
         policies.getValue("A").origin = assertNotNull(ReplayEditOrigin.capture(save))
         withSingleReplayOwner(listOf("A"), confirm, retain)
         assertEquals(1, prompts)
+    }
+
+    @Test fun anotherProjectsProviderCancelsPendingAndMovingTicketsWithoutACloseManager() {
+        val (folder, save) = source()
+        val original = bytes(folder)
+        val origin = assertNotNull(ReplayEditOrigin.capture(save))
+        val file = LightVirtualFile("video.mp4")
+        try {
+            for (midMove in listOf(false, true)) {
+                // A has closed and extracted its decision. B has no project service/manager.
+                val ticket = replayEditPendingCloses.begin(file)
+                val resources = CompletableFuture<Boolean>()
+                var relocated = false
+                var providerOpened = false
+                ticket.afterResourcesClosed(resources, { true }) { valid ->
+                    origin.relocate(checkActive = { check(valid()) }, afterMove = { providerOpened = true; replayVideoOpening(file) })
+                    relocated = true
+                }
+                if (midMove) {
+                    // Provider creation in B during A's first file move invalidates A's ticket.
+                    resources.complete(true)
+                    // CompletionStage captures the relocation's rollback exception.
+                    assertTrue(providerOpened)
+                } else {
+                    replayVideoOpening(file) // The provider's first operation, before any controller.
+                    resources.complete(true)
+                }
+                assertFalse(relocated)
+                assertEquals(original, bytes(folder))
+            }
+        } finally { replayEditPendingCloses.clear(file) }
+    }
+
+    @Test fun parentDurabilityBarrierPrecedesEveryPayloadMoveAndFailureRetainsSource() {
+        val (folder, save) = source()
+        val original = bytes(folder)
+        var moved = false
+        var parentFlushed = false
+        assertFailsWith<java.io.IOException> {
+            assertNotNull(ReplayEditOrigin.capture(save)).relocate(afterMove = { moved = true }, flushParent = { parent ->
+                parentFlushed = true
+                assertEquals(original, bytes(folder))
+                val recovery = parent.entries().single { it.startsWith("replay-recovery-") }
+                assertTrue(Files.isRegularFile(root.resolve(recovery).resolve(RECOVERY_RECORD)))
+                throw java.io.IOException("Injected parent fsync failure")
+            })
+        }
+        assertTrue(parentFlushed)
+        assertFalse(moved)
+        assertEquals(original, bytes(folder))
+        assertNull(ReplayEditOrigin.capture(save)) // Retained recovery metadata never grants a fresh origin.
+    }
+
+    private fun retryUninitializedStage(initialize: (SaveOutputDirectory, String) -> Unit) {
+        val (folder, save) = source()
+        val original = bytes(folder)
+        val recovery = assertNotNull(ReplayEditOrigin.capture(save)).relocate()
+        absentOriginal(folder)
+        var initialized = false
+        assertFailsWith<java.io.IOException> {
+            restoreReplayRecovery(recovery, initializeStage = { stage, nonce -> initialized = true; initialize(stage, nonce) })
+        }
+        assertTrue(initialized)
+        assertFalse(Files.exists(folder))
+        val abandoned = Files.list(recovery).use { it.filter { child -> Files.isDirectory(child) }.toList().single() }
+        // A failed stage may acquire unknown content. Never adopt, overwrite, or delete it.
+        png(abandoned.resolve("unknown.txt"))
+        val retained = bytes(abandoned)
+        assertEquals(folder, restoreReplayRecovery(recovery))
+        assertEquals(original, bytes(folder))
+        assertEquals(retained, bytes(abandoned))
+    }
+
+    @Test fun failedFirstNonceCreateUsesFreshStageOnRestart() = retryUninitializedStage { _, _ -> throw java.io.IOException("Injected marker create failure") }
+    @Test fun partialNonceWriteUsesFreshStageOnRestart() = retryUninitializedStage { stage, nonce ->
+        stage.createFile(RECOVERY_ORIGIN).use { file -> file.channel().use { it.write(java.nio.ByteBuffer.wrap(nonce.take(4).toByteArray())) } }
+        throw java.io.IOException("Injected partial marker write/force failure")
+    }
+    @Test fun nonceFlushFailureUsesFreshStageOnRestart() = retryUninitializedStage { stage, nonce ->
+        stage.createFile(RECOVERY_ORIGIN).use { file -> file.channel().use { it.write(java.nio.ByteBuffer.wrap(nonce.toByteArray())); it.force(true) } }
+        throw java.io.IOException("Injected marker directory flush failure")
+    }
+
+    @Test fun recreatedDestinationLedgerCannotSupplyArbitraryNamesOrChangedIdentity() {
+        val (folder, save) = source()
+        val original = bytes(folder)
+        val recovery = assertNotNull(ReplayEditOrigin.capture(save)).relocate()
+        absentOriginal(folder)
+        assertFailsWith<ReplayRecoveryFailure> { restoreReplayRecovery(recovery, afterMove = { error("Injected failure") }) }
+        val record = recovery.resolve(".replay-restore-key")
+        val json = Files.readString(record)
+        val retained = bytes(recovery) - record.fileName.toString()
+        val mutations: List<(JsonObject) -> Unit> = listOf(
+            { it.addProperty("stage", "../outside") },
+            { it.addProperty("stage", root.resolve("outside").toString()) },
+            { it.addProperty("key", "(0, 0)") },
+        )
+        for (mutate in mutations) {
+            val changed = Gson().fromJson(json, JsonObject::class.java).also(mutate)
+            Files.writeString(record, Gson().toJson(changed))
+            assertFailsWith<Exception> { restoreReplayRecovery(recovery) }
+            assertFalse(Files.exists(root.resolve("outside")))
+            assertTrue(bytes(folder).isEmpty())
+            assertEquals(retained, bytes(recovery) - record.fileName.toString())
+        }
+        Files.writeString(record, json)
+        assertEquals(folder, restoreReplayRecovery(recovery))
+        assertEquals(original, bytes(folder))
     }
 }

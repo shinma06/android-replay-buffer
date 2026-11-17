@@ -15,7 +15,7 @@ internal class ReplayEditOrigin private constructor(
     private val files: Map<String, Pair<Pair<Long, Long>, String>>,
 ) {
     @Synchronized
-    fun relocate(checkActive: () -> Unit = {}, afterMove: (Int) -> Unit = {}): Path {
+    fun relocate(checkActive: () -> Unit = {}, afterMove: (Int) -> Unit = {}, flushParent: (SaveOutputDirectory) -> Unit = { it.flush() }): Path {
         checkActive()
         check(PrivateFiles.isOwnedWithoutSharedWrite(folder.parent)) { "保存先の所有を確認できません。本体は残します。" }
         SaveOutputDirectory.open(folder.parent).use { parent ->
@@ -53,6 +53,8 @@ internal class ReplayEditOrigin private constructor(
                         source.writeText(RECOVERY_ORIGIN, nonce)
                         recovery.flush()
                         source.flush()
+                        // Persist the new recovery entry, not only its child contents, before removing source names.
+                        flushParent(parent)
                         val moved = mutableListOf<String>()
                         try {
                             for ((name, pin) in pins) {
@@ -72,8 +74,10 @@ internal class ReplayEditOrigin private constructor(
                             var restored = true
                             moved.asReversed().forEach { name -> if (runCatching { recovery.moveFile(name, source, name) }.isFailure) restored = false }
                             if (restored) runCatching {
+                                source.flush(); recovery.flush()
                                 check(source.readText(RECOVERY_ORIGIN) == nonce)
                                 source.openFile(RECOVERY_ORIGIN).use { source.deleteFile(RECOVERY_ORIGIN, it) }
+                                source.flush()
                             }
                             throw ReplayRecoveryFailure("本体の移動を完了できませんでした。元の場所と保管場所を確認してください。", recoveryPath, failure)
                         }
@@ -121,10 +125,12 @@ internal const val RECOVERY_ORIGIN = ".replay-recovery-origin"
 private data class RecoveryReceipt(val originalName: String, val originalKey: String, val nonce: String, val hashes: Map<String, String>)
 private const val RESTORE_KEY = ".replay-restore-key"
 private const val RESTORE_STAGE = ".replay-restore-target"
+private data class RestoreDestination(val key: String, val stage: String)
 internal class ReplayRecoveryFailure(message: String, val recovery: Path, cause: Throwable) : Exception(message, cause)
 
 /** Restart-safe restoration; paths in receipts are single names, never arbitrary destinations. */
-internal fun restoreReplayRecovery(path: Path, checkActive: () -> Unit = {}, afterMove: (Int) -> Unit = {}, beforeFlush: () -> Unit = {}): Path {
+internal fun restoreReplayRecovery(path: Path, checkActive: () -> Unit = {}, afterMove: (Int) -> Unit = {}, beforeFlush: () -> Unit = {},
+    initializeStage: (SaveOutputDirectory, String) -> Unit = { stage, nonce -> stage.writeText(RECOVERY_ORIGIN, nonce); stage.flush() }): Path {
     checkActive()
     val folder = path.toAbsolutePath().normalize()
     check(PrivateFiles.isOwnedWithoutSharedWrite(folder.parent)) { "復元先の所有を確認できません。" }
@@ -156,8 +162,8 @@ internal fun restoreReplayRecovery(path: Path, checkActive: () -> Unit = {}, aft
                 }
                 val existed = receipt.originalName in parent.entries()
                 check(existed || pins.keys == receipt.hashes.keys) { "本体の一部を確認できません。保管場所に残します。" }
-                if (!existed) prepareRestoreDestination(parent, recovery, receipt)
-                val expectedKey = if (RESTORE_KEY in recovery.entries()) recovery.readText(RESTORE_KEY) else receipt.originalKey
+                if (!existed) prepareRestoreDestination(parent, recovery, receipt, initializeStage)
+                val expectedKey = if (RESTORE_KEY in recovery.entries()) recovery.restoreDestination().key else receipt.originalKey
                 require(Regex("\\(-?[0-9]+, -?[0-9]+\\)").matches(expectedKey))
                 val original = parent.openChild(receipt.originalName)
                 original.use { source ->
@@ -190,6 +196,7 @@ internal fun restoreReplayRecovery(path: Path, checkActive: () -> Unit = {}, aft
                         checkActive()
                     } catch (failure: Exception) {
                         moved.asReversed().forEach { name -> runCatching { source.moveFile(name, recovery, name) } }
+                        runCatching { source.flush(); recovery.flush() }
                         throw ReplayRecoveryFailure("復元を完了できませんでした。保管場所と元の場所を確認してください。", folder, failure)
                     }
                     if (RECOVERY_ORIGIN in source.entries()) source.openFile(RECOVERY_ORIGIN).use { source.deleteFile(RECOVERY_ORIGIN, it) }
@@ -201,30 +208,41 @@ internal fun restoreReplayRecovery(path: Path, checkActive: () -> Unit = {}, aft
 }
 
 /** Publish a closed, marked directory only after its identity is durable beside the receipt. */
-private fun prepareRestoreDestination(parent: SaveOutputDirectory, recovery: SaveOutputDirectory, receipt: RecoveryReceipt) {
-    val key = if (RESTORE_KEY in recovery.entries()) recovery.readText(RESTORE_KEY) else {
-        val stage = if (RESTORE_STAGE in recovery.entries()) recovery.openChild(RESTORE_STAGE) else recovery.createDirectory(RESTORE_STAGE).also {
-            try { it.writeText(RECOVERY_ORIGIN, receipt.nonce); it.flush() } catch (failure: Throwable) { it.close(); throw failure }
-        }
-        val createdKey = stage.use {
+private fun prepareRestoreDestination(parent: SaveOutputDirectory, recovery: SaveOutputDirectory, receipt: RecoveryReceipt,
+    initializeStage: (SaveOutputDirectory, String) -> Unit) {
+    val destination = if (RESTORE_KEY in recovery.entries()) recovery.restoreDestination() else {
+        // An unpublished partial stage is untrusted. Retain it and initialize a fresh exclusive name.
+        val stageName = "$RESTORE_STAGE-${UUID.randomUUID()}"
+        val created = recovery.createDirectory(stageName).use {
+            initializeStage(it, receipt.nonce)
             it.requirePrivate()
             check(it.entries() == setOf(RECOVERY_ORIGIN) && it.readText(RECOVERY_ORIGIN) == receipt.nonce)
-            it.key.toString()
+            RestoreDestination(it.key.toString(), stageName)
         }
         val temporary = ".restore-key-${UUID.randomUUID()}.part"
-        recovery.writeText(temporary, createdKey)
+        recovery.writeText(temporary, Gson().toJson(created))
         recovery.moveFile(temporary, recovery, RESTORE_KEY)
         recovery.flush()
-        createdKey
+        created
     }
-    require(Regex("\\(-?[0-9]+, -?[0-9]+\\)").matches(key))
-    recovery.openChild(RESTORE_STAGE).use {
+    recovery.openChild(destination.stage).use {
         it.requirePrivate()
-        check(it.key.toString() == key && it.entries() == setOf(RECOVERY_ORIGIN) && it.readText(RECOVERY_ORIGIN) == receipt.nonce)
+        check(it.key.toString() == destination.key && it.entries() == setOf(RECOVERY_ORIGIN) && it.readText(RECOVERY_ORIGIN) == receipt.nonce)
     }
     // All handles inside the staged directory are closed, including on Windows.
-    recovery.moveFile(RESTORE_STAGE, parent, receipt.originalName)
+    recovery.moveFile(destination.stage, parent, receipt.originalName)
     parent.flush(); recovery.flush()
+}
+
+private fun SaveOutputDirectory.restoreDestination(): RestoreDestination {
+    val text = readText(RESTORE_KEY)
+    // Accept the earlier candidate's fixed-stage record; newly initialized stages always use UUIDs.
+    val destination = if (text.startsWith("(")) RestoreDestination(text, RESTORE_STAGE)
+        else Gson().fromJson(text, RestoreDestination::class.java)
+    require(Regex("\\(-?[0-9]+, -?[0-9]+\\)").matches(destination.key))
+    require(destination.stage == RESTORE_STAGE || destination.stage.startsWith("$RESTORE_STAGE-") &&
+        runCatching { UUID.fromString(destination.stage.removePrefix("$RESTORE_STAGE-")).toString() == destination.stage.removePrefix("$RESTORE_STAGE-") }.getOrDefault(false))
+    return destination
 }
 
 private fun SaveOutputDirectory.writeText(name: String, text: String) = createFile(name).use { file ->

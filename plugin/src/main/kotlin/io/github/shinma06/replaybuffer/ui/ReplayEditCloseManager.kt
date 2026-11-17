@@ -63,6 +63,11 @@ internal class ReplayEditCloseWork<K> {
     fun dispose() { pending.values.forEach { it.cancel() }; pending.clear() }
 }
 
+// VirtualFile is shared across projects. Provider entry must invalidate pending work even
+// when the newly opening project has never created a ReplayProjectService/close manager.
+internal val replayEditPendingCloses = ReplayEditCloseWork<VirtualFile>()
+internal fun replayVideoOpening(file: VirtualFile) { replayEditPendingCloses.clear(file) }
+
 internal fun <T> withSingleReplayOwner(owners: List<T>?, confirm: (T) -> Unit, retain: () -> Unit) {
     val owner = owners?.singleOrNull()
     if (owner == null) retain() else confirm(owner)
@@ -90,7 +95,7 @@ internal class ReplayEditCloseManager(private val project: Project, private val 
     val closing get() = lifecycle.closing
     private val editors = mutableMapOf<VirtualFile, ReplayPlayerEditor>()
     private val confirmed = mutableMapOf<VirtualFile, Triple<ReplayPlayerEditor, ReplayEditOrigin, ReplayEditCloseWork.Ticket>>()
-    private val pending = ReplayEditCloseWork<VirtualFile>()
+    private val pending = replayEditPendingCloses
     private val actions = mutableListOf<Pair<AnActionEvent, Boolean>>()
     private var revision = 0L
 
@@ -160,6 +165,9 @@ internal class ReplayEditCloseManager(private val project: Project, private val 
                     "リプレイ本体も残しますか？\nPNGは保存先に残します。「残さない」は本体を復元可能な保管場所へ移します。自動削除はしません。",
                     "リプレイ本体の扱い", arrayOf("残す", "残さない（復元可能な場所へ移す）"), 0, Messages.getQuestionIcon()) == 1
             }) return
+        owner = null
+        withReplayFileOwner(file) { owner = it }
+        if (owner !== project) return
         val latest = controller.state
         if (controller.closePolicy.trimExported || controller.closePolicy.ambiguousOutput ||
             latest.loading || latest.error != null || latest.image == null || latest.editor.task != null ||

@@ -82,7 +82,10 @@ internal const val REPLAY_PLAYER_EDITOR_ID = "android-replay-buffer-player"
 internal class ReplayPlayerEditorProvider : FileEditorProvider, DumbAware {
     override fun accept(project: Project, file: VirtualFile): Boolean = isReplayVideo(file)
 
-    override fun createEditor(project: Project, file: VirtualFile): FileEditor = ReplayPlayerEditor(project, file)
+    override fun createEditor(project: Project, file: VirtualFile): FileEditor {
+        replayVideoOpening(file)
+        return ReplayPlayerEditor(project, file)
+    }
 
     override fun getEditorTypeId(): String = REPLAY_PLAYER_EDITOR_ID
 
