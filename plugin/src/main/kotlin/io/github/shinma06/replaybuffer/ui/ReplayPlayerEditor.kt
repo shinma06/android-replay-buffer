@@ -76,13 +76,15 @@ import java.util.concurrent.atomic.AtomicReference
 import javax.swing.JPanel
 import javax.swing.SwingUtilities
 
+internal const val REPLAY_PLAYER_EDITOR_ID = "android-replay-buffer-player"
+
 /** Opens a completed save's video.mp4 in the replay player instead of a default editor. */
 internal class ReplayPlayerEditorProvider : FileEditorProvider, DumbAware {
     override fun accept(project: Project, file: VirtualFile): Boolean = isReplayVideo(file)
 
     override fun createEditor(project: Project, file: VirtualFile): FileEditor = ReplayPlayerEditor(project, file)
 
-    override fun getEditorTypeId(): String = "android-replay-buffer-player"
+    override fun getEditorTypeId(): String = REPLAY_PLAYER_EDITOR_ID
 
     override fun getPolicy(): FileEditorPolicy = FileEditorPolicy.PLACE_BEFORE_DEFAULT_EDITOR
 }
@@ -97,6 +99,8 @@ internal class ReplayPlayerEditor(project: Project, private val file: VirtualFil
     }
 
     init { Disposer.register(this, controller) }
+
+    internal fun enterTrim() = controller.enterTrim()
 
     override fun getComponent() = component
     override fun getPreferredFocusedComponent() = component.getComponent(0) as? javax.swing.JComponent ?: component
@@ -172,6 +176,7 @@ internal class ReplayPlayerController(
     @Volatile private var disposed = false
     @Volatile private var saved: SavedReplay? = null
     private var rules: TrimRules? = null
+    private var trimOnLoad = false
     private var playback: ReplayPlaybackSession? = null
     private val playedFrames = ReplayPlaybackFrames<Pair<Long, ImageBitmap?>>(::publish)
     private var taskCancel: AtomicBoolean? = null
@@ -195,7 +200,7 @@ internal class ReplayPlayerController(
                     val created = TrimRules(FrameGrid(timeline.spans), timeline.durationUs)
                     rules = created
                     state = state.copy(loading = false, durationUs = timeline.durationUs, timeline = timeline,
-                        editor = created.initial())
+                        editor = created.initial().let { if (trimOnLoad) created.enterTrim(it) else it })
                     showEditor()
                 }
             } catch (failure: Throwable) {
@@ -382,11 +387,20 @@ internal class ReplayPlayerController(
 
     override fun button(id: PlayerButton) {
         when (id) {
-            PlayerButton.ENTER_TRIM -> { stopPlayback(); edit { r, s -> r.enterTrim(s) }; state = state.copy(message = null) }
+            PlayerButton.ENTER_TRIM -> enterTrim()
             PlayerButton.TRIM -> trim()
             PlayerButton.SAVE_FRAME -> exportPng()
             PlayerButton.CANCEL -> cancel()
         }
+    }
+
+    /** Save-and-trim may request editing before asynchronous validation/decoding has finished. */
+    fun enterTrim() {
+        if (disposed || state.error != null || state.busy()) return
+        if (state.loading) { trimOnLoad = true; return }
+        stopPlayback()
+        edit { r, s -> r.enterTrim(s) }
+        state = state.copy(message = null)
     }
 
     // --- Playback --------------------------------------------------------------------------

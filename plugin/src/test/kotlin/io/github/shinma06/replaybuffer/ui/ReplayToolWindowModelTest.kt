@@ -51,6 +51,22 @@ class ReplayToolWindowModelTest {
     )
 
     @Test
+    fun `save and trim preserves ordinary save and requires video capture`() {
+        val normal = toolWindowModel(input(capturing()))
+        assertEquals("保存してトリム", normal.saveAndTrim.label)
+        assertTrue(normal.saveAndTrim.enabled)
+        assertEquals("直前30秒を保存", normal.save.label)
+        val logs = toolWindowModel(input(capturing(mode = CaptureMode.LOG_ONLY)))
+        assertTrue(logs.save.enabled)
+        assertFalse(logs.saveAndTrim.enabled)
+        assertNotNull(logs.saveAndTrim.reason)
+        for (state in listOf(input(null), input(capturing(state = CaptureState.DISABLED)),
+            input(capturing(), busy = true), input(capturing().copy(canSave = false)))) {
+            assertFalse(toolWindowModel(state).saveAndTrim.enabled)
+        }
+    }
+
+    @Test
     fun `normal capture is one header line with commands and nothing else expanded`() {
         val model = toolWindowModel(input(capturing()))
         assertEquals(Tone.OK, model.header.tone)

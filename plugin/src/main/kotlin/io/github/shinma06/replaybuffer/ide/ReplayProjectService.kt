@@ -64,6 +64,8 @@ import io.github.shinma06.replaybuffer.settings.ReplaySettingsStore
 import io.github.shinma06.replaybuffer.settings.patchSettings
 import io.github.shinma06.replaybuffer.settings.settingsJson
 import io.github.shinma06.replaybuffer.settings.validateDestination
+import io.github.shinma06.replaybuffer.ui.ReplayPlayerEditor
+import io.github.shinma06.replaybuffer.ui.REPLAY_PLAYER_EDITOR_ID
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
@@ -213,6 +215,9 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
         if (!alive) return rejected("projectは終了しています。")
         return if (resolving || capture.view.pending > 0) rejected("設定・操作を反映中です。完了後に保存してください。") else capture.save(request)
     }
+
+    /** The ordinary save, followed only for this attempt by an editable player. */
+    internal fun saveAndTrim() = observeSaveForTrim(save(), { alive }) { openReplayVideo(it, trim = true) }
 
     internal val screenshotDisabledReason: String?
         @Synchronized get() = screenshotDisabledReason(capture.view.snapshot)
@@ -562,7 +567,7 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
     }
 
     /** Opens a completed save's video in the replay player editor (notification/ToolWindow/chooser entry). */
-    internal fun openReplayVideo(folder: Path) {
+    internal fun openReplayVideo(folder: Path, trim: Boolean = false) {
         if (!alive) return
         scope.launch(Dispatchers.IO) {
             val video = folder.resolve(ReplayFiles.VIDEO)
@@ -580,7 +585,15 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
                 }
                 return@launch
             }
-            onUi { FileEditorManager.getInstance(project).openFile(checkNotNull(virtual), true) }
+            onUi {
+                val manager = FileEditorManager.getInstance(project)
+                val videoFile = checkNotNull(virtual)
+                val editors = manager.openFile(videoFile, true)
+                if (trim) editors.filterIsInstance<ReplayPlayerEditor>().firstOrNull()?.let { editor ->
+                    editor.enterTrim()
+                    manager.setSelectedEditor(videoFile, REPLAY_PLAYER_EDITOR_ID)
+                }
+            }
         }
     }
 
@@ -823,6 +836,21 @@ internal fun operationFailureContent(failure: Throwable): String {
 internal fun savedVideoDirectory(save: SaveSnapshot): Path? = save.directory?.takeIf {
     save.phase == SavePhase.COMPLETED && save.captureMode.videoRequested && save.content != SaveContent.LOGS_ONLY &&
         Files.isRegularFile(it.resolve(ReplayFiles.VIDEO))
+}
+
+/** Observe the attempt's own result, never the moving latest-save snapshot or a later retry. */
+internal fun observeSaveForTrim(
+    operation: CompletableFuture<ReplayOperation>,
+    alive: () -> Boolean,
+    open: (Path) -> Unit,
+): CompletableFuture<Void> = operation.thenCompose { result ->
+    val completion = result.saveResult
+    if (!result.accepted || result.requestId == null || completion == null) CompletableFuture.completedFuture(null)
+    else completion.thenAccept { save ->
+        if (alive() && save.requestId == result.requestId) {
+            savedVideoDirectory(save)?.takeIf { Files.isRegularFile(it.resolve(ReplayFiles.RECORD)) }?.let(open)
+        }
+    }.toCompletableFuture()
 }
 
 internal fun streamName(kind: String): String = when (kind) {

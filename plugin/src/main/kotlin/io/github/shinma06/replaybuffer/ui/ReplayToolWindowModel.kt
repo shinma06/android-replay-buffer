@@ -74,6 +74,7 @@ internal data class ToolWindowModel(
     val header: Header,
     val toggle: Toggle,
     val save: Command,
+    val saveAndTrim: Command,
     val screenshot: Command,
     val logcat: Command,
     val results: List<RecentResult>,
@@ -133,6 +134,10 @@ internal fun toolWindowModel(input: ToolWindowInput): ToolWindowModel {
     val saveEnabled = !input.busy && snapshot?.canSave == true
     val save = Command("直前${seconds}秒を保存", saveEnabled, saveReason.orEmpty(),
         saveReason?.takeIf { !saveEnabled && it.isNotBlank() })
+    val videoRequested = (snapshot?.settings?.captureMode ?: settings.captureMode).videoRequested
+    val trimReason = if (!videoRequested) "動画とログの取得モードで利用できます。" else saveReason
+    val saveAndTrim = Command("保存してトリム", saveEnabled && videoRequested,
+        trimReason ?: "直前${seconds}秒を通常どおり保存し、保存した動画の編集画面を開きます。", trimReason)
     // The notice already asks to choose a device; do not repeat it under the screenshot button.
     val repeatsChoice = snapshot?.captureState == CaptureState.MULTIPLE_DEVICES &&
         input.screenshotDisabledReason?.startsWith(MULTIPLE_DEVICES_REASON) == true
@@ -199,6 +204,7 @@ internal fun toolWindowModel(input: ToolWindowInput): ToolWindowModel {
         header = header,
         toggle = Toggle(input.enabled, input.enabled || !input.busy, TOGGLE_TOOLTIP),
         save = save,
+        saveAndTrim = saveAndTrim,
         screenshot = screenshot,
         logcat = logcat,
         results = results,

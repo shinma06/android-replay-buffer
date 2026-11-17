@@ -34,6 +34,58 @@ import kotlin.test.assertTrue
 class ReplayPlayerControllerTest {
     @TempDir lateinit var root: Path
 
+    @Test fun ordinaryOpenStillStartsInViewMode() = withController { controller ->
+        assertEquals(PlayerMode.VIEW, controller.state.editor.mode)
+        assertFalse(controller.state.playing)
+    }
+
+    @Test fun saveAndTrimStartsWithEditableFullRangeWithoutASecondToggle() = withController(startInTrim = true) { controller ->
+        assertEquals(PlayerMode.TRIM, controller.state.editor.mode)
+        assertFalse(controller.state.playing)
+        val rules = controller.barModel().rules!!
+        assertEquals(rules.fullInUs, controller.state.editor.inUs)
+        assertEquals(rules.fullOutUs, controller.state.editor.outUs)
+        SwingUtilities.invokeAndWait { controller.markIn(); controller.step(2); controller.markOut() }
+        assertFalse(rules.rangeUnchanged(controller.state.editor))
+        assertTrue(controller.barModel().buttons.single { it.id == PlayerButton.TRIM }.enabled)
+        SwingUtilities.invokeAndWait { controller.cancel() }
+        assertEquals(PlayerMode.VIEW, controller.state.editor.mode)
+        // Cancel exits editing; the initial request must not force subsequent state back to TRIM.
+        awaitPreview(controller)
+        assertEquals(PlayerMode.VIEW, controller.state.editor.mode)
+    }
+
+    @Test fun trimRequestCannotBypassValidationOrPublishAfterDisposal() {
+        val folder = replayFolder()
+        val validManifest = Files.readString(folder.resolve(ReplayFiles.RECORD))
+        for (dispose in listOf(false, true)) {
+            Files.writeString(folder.resolve(ReplayFiles.RECORD), if (dispose) validManifest else "{}")
+            val lifetime = Disposer.newDisposable()
+            ApplicationManager.setApplication(MockApplication(lifetime), lifetime)
+            lateinit var controller: ReplayPlayerController
+            try {
+                SwingUtilities.invokeAndWait {
+                    controller = ReplayPlayerController(MockProject(null, lifetime), folder)
+                    controller.enterTrim()
+                    if (dispose) controller.dispose()
+                }
+                val worker = controller.javaClass.getDeclaredField("executor").apply { isAccessible = true }.get(controller) as ExecutorService
+                if (dispose) assertTrue(worker.awaitTermination(30, TimeUnit.SECONDS))
+                else worker.submit {}.get(30, TimeUnit.SECONDS)
+                SwingUtilities.invokeAndWait {
+                    assertEquals(PlayerMode.VIEW, controller.state.editor.mode)
+                    if (dispose) assertTrue(controller.state.loading)
+                    else assertNotNull(controller.state.error)
+                    controller.enterTrim()
+                    assertEquals(PlayerMode.VIEW, controller.state.editor.mode)
+                }
+            } finally {
+                if (!dispose) SwingUtilities.invokeAndWait { controller.dispose() }
+                Disposer.dispose(lifetime)
+            }
+        }
+    }
+
     @Test fun scrubbingShowsOnlyIdrAndReleaseRequestsTheExactFrame() {
         val requests = java.util.Collections.synchronizedList(mutableListOf<Long>())
         val keys = java.util.Collections.synchronizedSet(mutableSetOf<Long>())
@@ -539,14 +591,21 @@ class ReplayPlayerControllerTest {
         return folder
     }
 
-    private fun withController(gap: Boolean = false,
+    private fun withController(gap: Boolean = false, startInTrim: Boolean = false,
         decoderFactory: ((SavedReplay, ReplayFrameCache) -> ReplayVideoDecoder)? = null,
         test: (ReplayPlayerController) -> Unit) {
         val folder = replayFolder(gap)
         val lifetime = Disposer.newDisposable()
         ApplicationManager.setApplication(MockApplication(lifetime), lifetime)
-        val controller = if (decoderFactory == null) ReplayPlayerController(MockProject(null, lifetime), folder)
-            else ReplayPlayerController(MockProject(null, lifetime), folder, decoderFactory = decoderFactory)
+        lateinit var controller: ReplayPlayerController
+        SwingUtilities.invokeAndWait {
+            controller = if (decoderFactory == null) ReplayPlayerController(MockProject(null, lifetime), folder)
+                else ReplayPlayerController(MockProject(null, lifetime), folder, decoderFactory = decoderFactory)
+            if (startInTrim) {
+                assertTrue(controller.state.loading)
+                controller.enterTrim()
+            }
+        }
         try {
             SwingUtilities.invokeAndWait {}
             val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30)
