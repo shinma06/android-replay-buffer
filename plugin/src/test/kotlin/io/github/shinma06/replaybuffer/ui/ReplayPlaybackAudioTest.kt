@@ -1,5 +1,8 @@
 package io.github.shinma06.replaybuffer.ui
 
+import io.github.shinma06.replaybuffer.core.SavedReplay
+import io.github.shinma06.replaybuffer.core.ReplayAudioTrack
+
 import com.google.gson.JsonParser
 import net.sourceforge.jaad.aac.Decoder
 import net.sourceforge.jaad.aac.SampleBuffer
@@ -31,6 +34,7 @@ import kotlin.math.abs
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class ReplayPlaybackAudioTest {
@@ -557,7 +561,31 @@ class ReplayPlaybackAudioTest {
     @Test
     fun corruptAacKeepsTheDecodeFailureCategory() = assertAudioFailureCategory("decode")
 
+    @Test fun corruptOverlapPrimerRetainsSourceWhileKeptAudioStillPlays() {
+        val sourceFailed = java.util.concurrent.atomic.AtomicBoolean()
+        val folder = fixture(mediaStart = 0, corruptPacket = 6L)
+        val output = Output()
+        val video = Gate()
+        val notices = ConcurrentLinkedQueue<String>()
+        SavedReplay.open(folder).use { replay -> ReplayAudioTrack.open(replay)!!.use { track ->
+            assertEquals(7, track.schedule(150_000).filterIsInstance<io.github.shinma06.replaybuffer.core.AudioChunk.Packets>().first().first)
+        } }
+        val session = ReplayPlaybackSession(folder, 150_000, 250_000, { video.block() }, {}, notices::add,
+            audioOutput = { output.line }, awaitAudio = { await(it); true },
+            onSourceFailure = { sourceFailed.set(true) })
+        try {
+            session.start()
+            await(output.closed)
+            await(video.entered)
+            assertTrue(output.writes.get() > 0) // Only the unused overlap packet is corrupt; kept audio decodes.
+            assertTrue(notices.isEmpty(), notices.toString())
+            assertTrue(sourceFailed.get())
+        } finally { session.stop(); video.release.countDown() }
+        assertFalse(session.resourcesClosed.get(10, TimeUnit.SECONDS))
+    }
+
     private fun assertAudioFailureCategory(stage: String) {
+        val sourceFailed = java.util.concurrent.atomic.AtomicBoolean()
         val folder = fixture(mediaStart = 0, corruptAudio = stage == "decode")
         val before = files(folder)
         val output = Output().apply {
@@ -576,7 +604,7 @@ class ReplayPlaybackAudioTest {
             { notices += it; notified.countDown() }, audioOutput = {
                 if (stage == "factory") throw IllegalArgumentException("synthetic decode failure")
                 output.line
-            }, nanoTime = { 0L }, awaitAudio = { await(it); true })
+            }, nanoTime = { 0L }, awaitAudio = { await(it); true }, onSourceFailure = { sourceFailed.set(true) })
         try {
             session.start()
             await(notified)
@@ -585,6 +613,7 @@ class ReplayPlaybackAudioTest {
             val reason = if (stage == "decode") "音声を再生できないため、音声なしで再生しています。"
                 else "音声を出力できないため、音声なしで再生しています。"
             assertEquals(listOf(reason), notices.toList(), stage)
+            assertEquals(stage == "decode", sourceFailed.get(), stage)
             assertEquals(if (stage == "factory") 0 else 1, output.closes.get(), stage)
             if (stage == "decode") {
                 assertEquals(1, output.starts.get())
@@ -593,6 +622,7 @@ class ReplayPlaybackAudioTest {
         } finally {
             session.stop(); video.release.countDown()
         }
+        assertEquals(stage != "decode", session.resourcesClosed.get(10, TimeUnit.SECONDS), stage)
         assertFilesUnchanged(folder, before)
     }
 
@@ -612,6 +642,35 @@ class ReplayPlaybackAudioTest {
                 }
             } finally { if (interrupted) Thread.currentThread().interrupt() }
         }
+    }
+
+    @Test fun audioCallbackFailureCompletesAfterBothWorkerFinallyPaths() {
+        val failed = CountDownLatch(1)
+        val session = ReplayPlaybackSession(fixture(), 0, 8_000_000, {}, {}, {
+            Thread.currentThread().uncaughtExceptionHandler = Thread.UncaughtExceptionHandler { _, _ -> failed.countDown() }
+            error("Injected audio callback failure")
+        }, audioOutput = { error("Injected output factory failure") })
+        try {
+            session.start()
+            assertTrue(failed.await(10, TimeUnit.SECONDS))
+            session.stop()
+            assertFalse(session.resourcesClosed.get(10, TimeUnit.SECONDS))
+        } finally { session.stop() }
+    }
+
+    @Test fun nativeAudioCloseFailureReportsUncertainCompletion() {
+        val writing = CountDownLatch(1)
+        val output = Output().apply {
+            beforeWrite = { writing.countDown(); CountDownLatch(1).await() }
+            beforeClose = { error("Injected native close failure") }
+        }
+        val session = ReplayPlaybackSession(fixture(), 0, 8_000_000, {}, {}, {}, audioOutput = { output.line })
+        try {
+            session.start()
+            assertTrue(writing.await(10, TimeUnit.SECONDS))
+            session.stop()
+            assertFalse(session.resourcesClosed.get(10, TimeUnit.SECONDS))
+        } finally { session.stop() }
     }
 
     private fun await(latch: CountDownLatch) {
@@ -636,7 +695,7 @@ class ReplayPlaybackAudioTest {
             assertTrue(output.closed.await(10, TimeUnit.SECONDS), "audio line was not closed")
             assertTrue(failures.isEmpty(), failures.toString())
             return output
-        } finally { session.stop() }
+        } finally { session.stop(); assertTrue(session.resourcesClosed.get(10, TimeUnit.SECONDS)) }
     }
 
     private class Output {
@@ -736,7 +795,7 @@ class ReplayPlaybackAudioTest {
 
     private fun fixture(resource: String = "/aac-lc-escape/beeps.m4a", rate: Int = 48_000,
                         mediaStart: Long = 1024, gap: Boolean = false, audio: Boolean = true, presented: Boolean = true,
-                        videoDurationUs: Long = 8_000_000, corruptAudio: Boolean = false): Path {
+                        videoDurationUs: Long = 8_000_000, corruptAudio: Boolean = false, corruptPacket: Long? = null): Path {
         val folder = Files.createTempDirectory(root, "replay-")
         val videoRoot = "/replay-trim-parity/replay-20240101-000000-manual-feedface"
         val sourceVideo = Path.of(javaClass.getResource("$videoRoot/video.mp4")!!.toURI())
@@ -756,7 +815,7 @@ class ReplayPlaybackAudioTest {
                     var index = 0L
                     while (true) {
                         val packet = audioSource.nextFrame() ?: break
-                        audio.addFrameInternal(Packet.createPacket(if (corruptAudio) ByteBuffer.wrap(byteArrayOf(0)) else packet.data, index * 1024, rate,
+                        audio.addFrameInternal(Packet.createPacket(if (corruptAudio || index == corruptPacket) ByteBuffer.wrap(byteArrayOf(0)) else packet.data, index * 1024, rate,
                             1024, index, Packet.FrameType.KEY, null), 1)
                         index++
                     }

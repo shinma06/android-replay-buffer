@@ -7,9 +7,12 @@ import io.github.shinma06.replaybuffer.core.ReplayFrameCursor
 import io.github.shinma06.replaybuffer.core.SavedReplay
 import io.github.shinma06.replaybuffer.core.ReplayVideoDecoder
 import java.nio.file.Path
+import java.nio.channels.ClosedByInterruptException
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import javax.sound.sampled.AudioFormat
 import javax.sound.sampled.AudioSystem
 import javax.sound.sampled.SourceDataLine
@@ -37,8 +40,14 @@ internal class ReplayPlaybackSession(
     private val awaitVideo: (CountDownLatch) -> Unit = { it.await() },
     private val nextVideo: (() -> ReplayFrameCursor.Decoded?) -> ReplayFrameCursor.Decoded? = { it() },
     private val decoderFactory: (SavedReplay) -> ReplayVideoDecoder = { ReplayFrameCursor(it) },
+    private val onSourceFailure: () -> Unit = {},
 ) {
     private val stopped = AtomicBoolean()
+    private val started = AtomicBoolean()
+    private val workersRemaining = AtomicInteger(2)
+    private val cleanupFailed = AtomicBoolean()
+    /** Completes only after both workers' source, decoder and audio cleanup; stop never waits. */
+    val resourcesClosed = CompletableFuture<Boolean>()
     private val audioNotified = AtomicBoolean()
     private val audioReady = CountDownLatch(1)
     private val videoReady = CountDownLatch(1)
@@ -108,16 +117,61 @@ internal class ReplayPlaybackSession(
 
     private fun audioUnavailable(failure: Throwable? = null) {
         if (!stopped.get() && audioNotified.compareAndSet(false, true))
-            onAudioUnavailable(if (failure is AudioOutputFailure) "音声を出力できないため、音声なしで再生しています。"
-                else "音声を再生できないため、音声なしで再生しています。")
+            playbackCallback { onAudioUnavailable(if (failure is AudioOutputFailure) "音声を出力できないため、音声なしで再生しています。"
+                else "音声を再生できないため、音声なしで再生しています。") }
     }
 
     private fun check() { if (stopped.get()) throw InterruptedException() }
 
+    private fun workerClosed() {
+        if (workersRemaining.decrementAndGet() == 0) resourcesClosed.complete(!cleanupFailed.get())
+    }
+
+    private fun sourceFailed(failure: Throwable) {
+        val cancelled = failure is InterruptedException || stopped.get() && failure is ClosedByInterruptException
+        if (!cancelled || failure.suppressed.isNotEmpty()) {
+            cleanupFailed.set(true)
+            playbackCallback(onSourceFailure) // Also after stop, before any EDT-only completion callback.
+        }
+    }
+
+    private fun closeResource(resource: AutoCloseable) {
+        try { resource.close() } catch (failure: Throwable) { cleanupFailed.set(true); throw failure }
+    }
+
+    /** Distinguish uncertain cleanup from an ordinary playback/decoder failure. */
+    private inline fun <T : AutoCloseable, R> T.usePlayback(action: (T) -> R): R =
+        AutoCloseable { closeResource(this) }.use { action(this) }
+
+    private inline fun playbackCallback(action: () -> Unit) {
+        try { action() }
+        catch (failure: Throwable) {
+            val cancelled = failure is InterruptedException || stopped.get() && failure is ClosedByInterruptException
+            if (!cancelled || failure.suppressed.isNotEmpty()) cleanupFailed.set(true)
+            throw failure
+        }
+    }
+
+    private fun openSource(): SavedReplay = try { SavedReplay.open(folder) }
+    catch (failure: Throwable) {
+        // A failed open owns its own cleanup; only ordinary interruption can confirm cancellation here.
+        val cancelled = failure is InterruptedException || stopped.get() && failure is ClosedByInterruptException
+        if (!cancelled || failure.suppressed.isNotEmpty()) cleanupFailed.set(true)
+        throw failure
+    }
+
     fun start() {
-        threads += Thread(::runVideo, "arb-replay-play-video").apply { isDaemon = true }
-        threads += Thread(::runAudio, "arb-replay-play-audio").apply { isDaemon = true; priority = Thread.MAX_PRIORITY - 1 }
-        threads.forEach(Thread::start)
+        check(started.compareAndSet(false, true))
+        var remaining = 2
+        try {
+            threads += Thread(::runVideo, "arb-replay-play-video").apply { isDaemon = true }
+            threads += Thread(::runAudio, "arb-replay-play-audio").apply { isDaemon = true; priority = Thread.MAX_PRIORITY - 1 }
+            threads.forEach { it.start(); remaining-- }
+        } catch (failure: Throwable) {
+            cleanupFailed.set(true)
+            try { stop() } finally { repeat(remaining) { workerClosed() } }
+            throw failure
+        }
     }
 
     fun stop() {
@@ -132,8 +186,8 @@ internal class ReplayPlaybackSession(
 
     private fun runVideo() {
         try {
-            SavedReplay.open(folder).use { saved ->
-                decoderFactory(saved).use { cursor ->
+            openSource().usePlayback { saved ->
+                decoderFactory(saved).usePlayback { cursor ->
                     val span = saved.timeline().spans.firstOrNull { it.endUs > fromUs && it.startUs < untilUs }
                     var frame = prepareVideo { span?.let { cursor.seekForPlayback(maxOf(fromUs, it.startUs), ::check) } }
                     check()
@@ -147,7 +201,7 @@ internal class ReplayPlaybackSession(
                         if (frame.startUs > coveredUntil) waitGap(coveredUntil, minOf(frame.startUs, untilUs))
                         waitUntil(frame.startUs)
                         // Late frames still decode (they are references) but are not shown.
-                        if (nowUs() < frame.endUs) onFrame(frame)
+                        if (nowUs() < frame.endUs) playbackCallback { onFrame(frame) }
                         coveredUntil = frame.endUs
                         if (coveredUntil >= untilUs || nowUs() >= untilUs) break
                         frame = nextVideo { cursor.next(::check) }
@@ -155,12 +209,13 @@ internal class ReplayPlaybackSession(
                     if (coveredUntil < untilUs) waitGap(coveredUntil, untilUs) else waitUntil(untilUs)
                 }
             }
-            if (!stopped.get()) onFinished(null)
-        } catch (_: InterruptedException) {
+            if (!stopped.get()) playbackCallback { onFinished(null) }
         } catch (failure: Throwable) {
-            if (!stopped.get()) onFinished(failure.message ?: "再生を続けられません。")
+            sourceFailed(failure)
+            if (failure.suppressed.isNotEmpty()) cleanupFailed.set(true)
+            if (failure !is InterruptedException && !stopped.get()) playbackCallback { onFinished(failure.message ?: "再生を続けられません。") }
         } finally {
-            stop()
+            try { stop() } finally { workerClosed() }
         }
     }
 
@@ -168,7 +223,7 @@ internal class ReplayPlaybackSession(
         waitUntil(from)
         while (nowUs() < until) {
             check()
-            onGap(nowUs().coerceIn(from, until - 1))
+            playbackCallback { onGap(nowUs().coerceIn(from, until - 1)) }
             Thread.sleep(20)
         }
     }
@@ -185,10 +240,10 @@ internal class ReplayPlaybackSession(
     private fun runAudio() {
         var opened: SourceDataLine? = null
         try {
-            SavedReplay.open(folder).use { saved ->
+            openSource().usePlayback { saved ->
                 val track = ReplayAudioTrack.open(saved)
                 if (track == null) { audioReady.countDown(); return }
-                track.use {
+                track.usePlayback {
                     val decoder = AacPcmDecoder(track.config)
                     val sampleRate = decoder.sampleRate
                     val channels = decoder.channels
@@ -230,7 +285,7 @@ internal class ReplayPlaybackSession(
                             }
                             is AudioChunk.Packets -> {
                                 // One preceding packet primes the decoder's overlap so the first kept samples are clean.
-                                if (chunk.first > 0) { track.goTo(chunk.first - 1); track.packet()?.let { runCatching { decoder.decode(it) } } }
+                                if (chunk.first > 0) { track.goTo(chunk.first - 1); track.packet()?.let { runCatching { decoder.decode(it) }.onFailure(::sourceFailed) } }
                                 else track.goTo(chunk.first)
                                 var skip = chunk.skipSamples
                                 var keep = chunk.keepSamples
@@ -252,16 +307,20 @@ internal class ReplayPlaybackSession(
                     outputCall { output.drain() }
                 }
             }
-        } catch (_: InterruptedException) {
         } catch (failure: Throwable) {
-            if (!stopped.get()) {
+            if (failure !is AudioOutputFailure) sourceFailed(failure)
+            if (failure.suppressed.isNotEmpty()) cleanupFailed.set(true)
+            if (failure !is InterruptedException && !stopped.get()) {
                 dropLine(opened)
                 audioUnavailable(failure)
             }
         } finally {
-            dropLine(opened)
-            opened?.let { runCatching { it.close() } }
-            audioReady.countDown()
+            try {
+                try { dropLine(opened) } finally { opened?.let { runCatching { closeResource(it) } } }
+            } finally {
+                audioReady.countDown()
+                workerClosed()
+            }
         }
     }
 

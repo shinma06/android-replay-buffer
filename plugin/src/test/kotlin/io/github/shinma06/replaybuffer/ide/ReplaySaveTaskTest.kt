@@ -1,5 +1,7 @@
 package io.github.shinma06.replaybuffer.ide
 
+import io.github.shinma06.replaybuffer.core.ReplayFiles
+
 import com.android.tools.idea.gradle.project.sync.GradleSyncState
 import com.google.gson.JsonNull
 import com.google.gson.JsonParser
@@ -9,6 +11,18 @@ import com.intellij.notification.NotificationDisplayType
 import com.intellij.notification.NotificationGroup
 import com.intellij.notification.NotificationGroupManager
 import com.intellij.notification.Notification
+import com.intellij.notification.NotificationAction
+import com.intellij.openapi.actionSystem.ActionGroup
+import com.intellij.openapi.actionSystem.ActionManager
+import com.intellij.openapi.actionSystem.ActionPopupMenu
+import com.intellij.openapi.actionSystem.ActionToolbar
+import com.intellij.openapi.actionSystem.ActionUiKind
+import com.intellij.openapi.actionSystem.AnAction
+import com.intellij.openapi.actionSystem.AnActionEvent
+import com.intellij.openapi.actionSystem.DataContext
+import com.intellij.openapi.actionSystem.KeyboardShortcut
+import com.intellij.openapi.actionSystem.TimerListener
+import com.intellij.openapi.util.ActionCallback
 import com.intellij.notification.NotificationType
 import com.intellij.notification.Notifications
 import com.intellij.notification.NotificationsManager
@@ -579,6 +593,85 @@ class ReplaySaveTaskTest {
     fun directoryNamedVideoDoesNotOfferVideo() = assertSavedVideoAction(CaptureMode.VIDEO_AND_LOGS,
         videoPresent = false, videoDirectory = true)
 
+    @Test
+    fun editNotificationKeepsItsOwnSaveAndRechecksRemovalAndDisposal() {
+        val folder = source()
+        val other = source(root.resolve("another-save").also { Files.createDirectory(it) })
+        val first = SaveSnapshot(SavePhase.COMPLETED, "first", directory = folder)
+        val second = first.copy(requestId = "second", directory = other)
+        val opened = mutableListOf<Path>()
+        var alive = true
+        withService(uiLater = true) { _, _ ->
+            (ApplicationManager.getApplication() as MockApplication).registerService(ActionManager::class.java, object : ActionManager() {
+                override fun createActionPopupMenu(place: String, group: ActionGroup): ActionPopupMenu = error("Not used")
+                override fun createActionToolbar(place: String, group: ActionGroup, horizontal: Boolean): ActionToolbar = error("Not used")
+                override fun getAction(id: String): AnAction? = null
+                override fun getId(action: AnAction): String? = null
+                override fun registerAction(id: String, action: AnAction) = Unit
+                override fun registerAction(id: String, action: AnAction, pluginId: PluginId?) = Unit
+                override fun unregisterAction(id: String) = Unit
+                override fun replaceAction(id: String, action: AnAction) = Unit
+                override fun getActionIds(prefix: String) = emptyArray<String>()
+                override fun getActionIdList(prefix: String) = emptyList<String>()
+                override fun isGroup(id: String) = false
+                override fun getActionOrStub(id: String): AnAction? = null
+                override fun addTimerListener(listener: TimerListener) = Unit
+                override fun removeTimerListener(listener: TimerListener) = Unit
+                override fun tryToExecute(action: AnAction, event: java.awt.event.InputEvent?, context: java.awt.Component?, place: String?, now: Boolean) = ActionCallback.REJECTED
+                override fun getKeyboardShortcut(id: String): KeyboardShortcut? = null
+            })
+            val notifications = mutableListOf<Notification>()
+            // The same helper creates the real action installed by notifySave.
+            val firstAction = assertNotNull(savedVideoEditAction(first, { alive }, opened::add))
+            val secondAction = assertNotNull(savedVideoEditAction(second, { alive }, opened::add))
+            fun click(action: NotificationAction) {
+                val notification = Notification("Android Replay Buffer", "保存しました", "", NotificationType.INFORMATION)
+                notifications += notification
+                action.actionPerformed(AnActionEvent.createEvent(action, DataContext.EMPTY_CONTEXT, null, "test", ActionUiKind.NONE, null), notification)
+            }
+            assertEquals("編集", firstAction.templatePresentation.text)
+            assertTrue(opened.isEmpty(), "Saving/creating a notification must never open the editor")
+            click(secondAction)
+            click(firstAction)
+            assertEquals(listOf(other, folder), opened)
+            val key = folder.resolve(ReplayFiles.VIDEO).toAbsolutePath().normalize()
+            val ticket = io.github.shinma06.replaybuffer.ui.replayEditPendingCloses.begin(key)
+            ticket.afterResourcesClosed(CompletableFuture.completedFuture(true), { true }) { valid ->
+                val parked = root.resolve("video-in-flight")
+                Files.move(folder.resolve(ReplayFiles.VIDEO), parked)
+                try {
+                    click(firstAction) // Real notification helper must cancel before testing video existence.
+                    assertEquals(listOf(other, folder), opened)
+                    assertFalse(valid())
+                } finally {
+                    Files.move(parked, folder.resolve(ReplayFiles.VIDEO))
+                    io.github.shinma06.replaybuffer.ui.replayEditPendingCloses.finished(key, ticket)
+                }
+            }
+            assertEquals(listOf(other, folder, folder), opened)
+            Files.delete(folder.resolve("video.mp4"))
+            click(firstAction)
+            assertEquals(listOf(other, folder, folder), opened)
+            alive = false
+            click(secondAction)
+            assertTrue(notifications.last().isExpired)
+            assertEquals(listOf(other, folder, folder), opened)
+        }
+    }
+
+    @Test
+    fun incompleteCancelledFailedAndVideoLessSavesHaveNoEditAction() {
+        val folder = source()
+        val saved = SaveSnapshot(SavePhase.COMPLETED, "request", directory = folder)
+        withService { _, _ ->
+            val rejected = SavePhase.entries.filter { it != SavePhase.COMPLETED }.map { saved.copy(phase = it) } + listOf(
+                saved.copy(directory = null), saved.copy(captureMode = CaptureMode.LOG_ONLY), saved.copy(content = SaveContent.LOGS_ONLY))
+            for (snapshot in rejected) assertNull(savedVideoEditAction(snapshot, { true }) { error("Must not open") })
+            Files.delete(folder.resolve("video.mp4"))
+            assertNull(savedVideoEditAction(saved, { true }) { error("Must not open") })
+        }
+    }
+
     private fun assertSavedVideoAction(savedMode: CaptureMode, content: SaveContent = SaveContent.ALL,
                                        missing: List<String> = emptyList(), videoPresent: Boolean = true,
                                        videoDirectory: Boolean = false) {
@@ -597,6 +690,7 @@ class ReplaySaveTaskTest {
                 notify.invoke(service, saved)
                 val actions = notifications.last().actions.map { it.templatePresentation.text }
                 assertEquals(savedMode.videoRequested && content == SaveContent.ALL && videoPresent, "動画を開く" in actions)
+                assertEquals(savedMode.videoRequested && content == SaveContent.ALL && videoPresent, "編集" in actions)
                 assertTrue("フォルダを開く" in actions)
                 assertTrue("パスをコピー" in actions)
                 assertEquals(if (missing.isEmpty()) NotificationType.INFORMATION else NotificationType.WARNING, notifications.last().type)

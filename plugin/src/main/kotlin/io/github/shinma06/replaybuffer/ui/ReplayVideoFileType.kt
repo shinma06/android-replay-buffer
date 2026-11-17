@@ -8,10 +8,10 @@ import io.github.shinma06.replaybuffer.core.ReplayFiles
 import javax.swing.Icon
 
 internal fun isReplayVideo(file: VirtualFile): Boolean = !file.isDirectory && file.name == ReplayFiles.VIDEO &&
-    file.parent?.let { parent ->
+    (hasPendingReplayVideo(file) || file.parent?.let { parent ->
         parent.findChild(ReplayFiles.RECORD)?.isDirectory == false &&
             parent.findChild(ReplayFiles.VIDEO_FRAMES)?.isDirectory == false
-    } == true
+    } == true)
 
 internal object ReplayVideoFileType : FileType {
     override fun getName() = "AndroidReplayBufferVideo"

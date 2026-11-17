@@ -5,7 +5,6 @@ import org.junit.jupiter.api.Test
 import org.junit.jupiter.params.ParameterizedTest
 import org.junit.jupiter.params.provider.CsvSource
 import kotlin.test.assertEquals
-import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class FrameStepTest {
@@ -32,14 +31,11 @@ class FrameStepTest {
         "2999999, -1, 1000000", "2999999, 1, 3000000",
     )
     fun eitherDirectionSelectsTheAdjacentFrameEverywhereInsideAGap(us: Long, delta: Int, expected: Long) {
-        for (mode in PlayerMode.entries) {
-            val initial = if (mode == PlayerMode.TRIM) gapped.enterTrim(gapped.initial()) else gapped.initial()
-            val paused = gapped.played(initial, us)
-            assertEquals(-1, gapped.grid.indexAt(us))
-            val stepped = gapped.step(paused, delta)
-            assertEquals(paused.copy(playheadUs = expected, playheadPlaced = true), stepped, "$mode at $us, delta $delta")
-            assertTrue(gapped.grid.indexAt(stepped.playheadUs) >= 0)
-        }
+        val paused = gapped.played(gapped.initial(), us)
+        assertEquals(-1, gapped.grid.indexAt(us))
+        val stepped = gapped.step(paused, delta)
+        assertEquals(paused.copy(playheadUs = expected), stepped, "at $us, delta $delta")
+        assertTrue(gapped.grid.indexAt(stepped.playheadUs) >= 0)
     }
 
     @ParameterizedTest
@@ -81,8 +77,8 @@ class FrameStepTest {
             val paused = gapped.played(state, us)
             val previous = gapped.step(paused, -1)
             val next = gapped.step(paused, 1)
-            assertEquals(state.copy(playheadUs = 1_000_000, playheadPlaced = true), previous)
-            assertEquals(state.copy(playheadUs = 3_000_000, playheadPlaced = true), next)
+            assertEquals(state.copy(playheadUs = 1_000_000), previous)
+            assertEquals(state.copy(playheadUs = 3_000_000), next)
             assertEquals(previous, gapped.step(previous, -1))
             assertEquals(next, gapped.step(next, 1))
         }
@@ -103,8 +99,7 @@ class FrameStepTest {
         for (us in listOf(0L, 500_000L, 799_999L, 800_000L)) for (delta in listOf(-1, 1)) {
             assertEquals(500_000L, single.step(single.played(single.initial(), us), delta).playheadUs)
         }
-        val drag = gapped.beginDrag(gapped.enterTrim(gapped.initial()), Grip.IN, 0)
-        assertFalse(drag.playheadPlaced)
+        val drag = gapped.beginDrag(gapped.initial(), Grip.IN, 0)
         for (delta in listOf(-1, 1)) assertEquals(drag, gapped.step(drag, delta))
     }
 }

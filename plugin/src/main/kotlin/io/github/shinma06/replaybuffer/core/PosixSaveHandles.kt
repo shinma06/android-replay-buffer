@@ -35,10 +35,10 @@ internal interface ExclusiveRename : Library {
 
 /** Linux and macOS save handles: libc descriptors via JNA, with each platform's flags and 64-bit struct layouts. */
 internal class PosixSaveHandles(private val darwin: Boolean) : SaveHandles {
-    override fun tryOwnerLock(handle: Long): AutoCloseable? {
+    override fun tryOwnerLock(handle: Long, shared: Boolean, position: Long): AutoCloseable? {
         // flock is tied to this open descriptor, unlike process-scoped fcntl/FileChannel locks:
         // verifyFile opens/closes a different descriptor and must not release the owner lock.
-        if (descriptors.flock(handle.toInt(), 2 or 4) != 0) { // LOCK_EX | LOCK_NB on Linux and Darwin
+        if (descriptors.flock(handle.toInt(), (if (shared) 1 else 2) or 4) != 0) { // LOCK_SH/EX | LOCK_NB
             val error = Native.getLastError()
             if (error == if (darwin) 35 else 11) return null // EWOULDBLOCK
             throw IOException("cacheの排他を確認できません（error=$error）")

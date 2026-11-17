@@ -210,6 +210,8 @@ internal class ReplayToolWindowController(private val project: Project) : Dispos
 
     fun save() { if (alive) service.save() }
 
+    fun saveAndTrim() { if (alive) service.saveAndTrim() }
+
     fun screenshot() {
         if (!alive) return
         service.screenshot()
@@ -357,6 +359,10 @@ internal fun ReplayToolWindowContent(controller: ReplayToolWindowController) {
                     WithTooltip(model.save.tooltip) {
                         DefaultButton({ controller.save() }, enabled = model.save.enabled,
                             modifier = Modifier.semantics { contentDescription = model.save.label }) { Text(model.save.label) }
+                    }
+                    WithTooltip(model.saveAndTrim.tooltip) {
+                        OutlinedButton({ controller.saveAndTrim() }, enabled = model.saveAndTrim.enabled,
+                            modifier = Modifier.semantics { contentDescription = model.saveAndTrim.label }) { Text(model.saveAndTrim.label) }
                     }
                     WithTooltip(model.screenshot.tooltip) {
                         OutlinedButton({ controller.screenshot() }, enabled = model.screenshot.enabled,

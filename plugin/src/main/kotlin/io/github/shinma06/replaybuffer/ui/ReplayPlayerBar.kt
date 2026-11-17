@@ -188,10 +188,7 @@ private fun Filmstrip(bar: PlayerBarModel, palette: PlayerPalette, actions: Play
     val current by rememberUpdatedState(bar)
     val thumbAspect = bar.aspect
     val editor = bar.editor
-    val description = when (editor.mode) {
-        PlayerMode.TRIM -> "フィルムストリップ。残す範囲 ${bubbleTime(editor.inUs)}〜${bubbleTime(editor.outUs)}、再生位置 ${bubbleTime(editor.playheadUs)}"
-        PlayerMode.VIEW -> "フィルムストリップ。再生位置 ${bubbleTime(editor.playheadUs)}"
-    }
+    val description = "フィルムストリップ。残す範囲 ${bubbleTime(editor.inUs)}〜${bubbleTime(editor.outUs)}、再生位置 ${bubbleTime(editor.playheadUs)}"
     BoxWithConstraints(modifier.height(STRIP_HEIGHT)) {
         val widthPx = constraints.maxWidth.toFloat()
         val loaded = bar.rules != null
@@ -295,7 +292,7 @@ private fun DrawScope.drawStrip(bar: PlayerBarModel, palette: PlayerPalette, han
         }
     }
     val editor = bar.editor
-    if (editor.mode == PlayerMode.TRIM) {
+    run {
         val range = geometry.handleRange(editor, handlePx)
         val left = range.start
         val right = range.endInclusive
@@ -314,7 +311,6 @@ private fun DrawScope.drawStrip(bar: PlayerBarModel, palette: PlayerPalette, han
         handle(left)
         handle(right - handlePx)
     }
-    if (!rules.playheadVisible(editor)) return
     val x = geometry.x(editor.playheadUs)
     drawLine(palette.barBackground.copy(alpha = 1f), Offset(x, -3.dp.toPx()), Offset(x, height + 3.dp.toPx()), strokeWidth = 4.dp.toPx())
     drawLine(palette.content, Offset(x, -3.dp.toPx()), Offset(x, height + 3.dp.toPx()), strokeWidth = 2.dp.toPx())

@@ -100,10 +100,13 @@ internal object WindowsSaveHandles : SaveHandles {
 
     override val renamesDirectoryWithOpenFiles = false
 
-    override fun tryOwnerLock(handle: Long): AutoCloseable? {
-        // OVERLAPPED: two ULONG_PTRs, two DWORD offsets, one HANDLE. All-zero offset locks byte zero.
-        val overlapped = Memory((Native.POINTER_SIZE * 3 + 8).toLong()).apply { clear() }
-        if (!win32.LockFileEx(Pointer(handle), 3, 0, 1, 0, overlapped)) { // EXCLUSIVE | FAIL_IMMEDIATELY
+    override fun tryOwnerLock(handle: Long, shared: Boolean, position: Long): AutoCloseable? {
+        // OVERLAPPED: two ULONG_PTRs, two DWORD offsets, one HANDLE. Owner callers keep byte zero.
+        val overlapped = Memory((Native.POINTER_SIZE * 3 + 8).toLong()).apply {
+            clear(); setInt((Native.POINTER_SIZE * 2).toLong(), position.toInt())
+            setInt((Native.POINTER_SIZE * 2 + 4).toLong(), (position ushr 32).toInt())
+        }
+        if (!win32.LockFileEx(Pointer(handle), if (shared) 1 else 3, 0, 1, 0, overlapped)) { // FAIL_IMMEDIATELY | optional EXCLUSIVE
             val error = Native.getLastError()
             overlapped.close()
             if (error == 33) return null // ERROR_LOCK_VIOLATION
