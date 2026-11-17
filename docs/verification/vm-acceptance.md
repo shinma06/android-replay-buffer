@@ -1,6 +1,6 @@
 # VMでのIDE・エミュレータ受入
 
-`develop` → `main` のリリース前に、Devin VM上のAndroid StudioとAndroid Emulatorで、配布ZIPが実際に動くことを確かめます。人の実機確認は不要です。テストの合格はこの受入の代わりになりません。
+`develop` → `main` のリリース前に、Devin VM上のAndroid StudioとAndroid Emulatorで、配布ZIPが実際に動くことを確かめます。人の実機確認は不要です。通常の `develop` 統合や `early` 更新には実施せず、[検証方針](README.md)に従います。テストの合格はリリース時のこの確認の代わりになりません。
 
 ## 対象
 

@@ -1,6 +1,6 @@
 # リリースの規則
 
-`main` は安定版、`develop` は最新版です。完成したTrailは `develop` へどんどんマージし、`develop` の最新は `early` プレリリースで使えます。`main` へは、受入を通った `develop` だけを入れます。
+`main` は安定版、`develop` は最新版です。完成したTrailは [検証方針](verification/README.md) に従い、CIの `test` / `os-parity` が通れば `develop` へ統合します。`develop` の最新は `early` プレリリースで使えます。`main` 昇格時のみ、以下のVM受入を実施します。
 
 ## 版番号
 
