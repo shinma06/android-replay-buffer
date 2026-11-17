@@ -51,11 +51,14 @@ class ReplayToolWindowModelTest {
     )
 
     @Test
-    fun `save and trim preserves ordinary save and requires video capture`() {
+    fun `save and edit preserves ordinary save and requires video capture`() {
         val normal = toolWindowModel(input(capturing()))
-        assertEquals("保存してトリム", normal.saveAndTrim.label)
+        assertEquals("直前30秒を保存して編集", normal.saveAndTrim.label)
         assertTrue(normal.saveAndTrim.enabled)
+        assertEquals("保存後に開き、切り取りや好きなコマの画像保存ができます。", normal.saveAndTrim.tooltip)
         assertEquals("直前30秒を保存", normal.save.label)
+        val longer = capturing().let { it.copy(settings = it.settings.copy(replaySeconds = 60)) }
+        assertEquals("直前60秒を保存して編集", toolWindowModel(input(longer)).saveAndTrim.label)
         val logs = toolWindowModel(input(capturing(mode = CaptureMode.LOG_ONLY)))
         assertTrue(logs.save.enabled)
         assertFalse(logs.saveAndTrim.enabled)

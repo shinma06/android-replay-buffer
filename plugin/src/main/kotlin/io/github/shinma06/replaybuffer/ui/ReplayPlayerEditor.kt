@@ -100,11 +100,9 @@ internal class ReplayPlayerEditor(project: Project, private val file: VirtualFil
 
     init { Disposer.register(this, controller) }
 
-    internal fun enterTrim() = controller.enterTrim()
-
     override fun getComponent() = component
     override fun getPreferredFocusedComponent() = component.getComponent(0) as? javax.swing.JComponent ?: component
-    override fun getName() = "動画プレイヤー"
+    override fun getName() = "動画の編集"
     override fun setState(state: FileEditorState) {}
     override fun isModified() = false
     override fun isValid() = true
@@ -176,7 +174,6 @@ internal class ReplayPlayerController(
     @Volatile private var disposed = false
     @Volatile private var saved: SavedReplay? = null
     private var rules: TrimRules? = null
-    private var trimOnLoad = false
     private var playback: ReplayPlaybackSession? = null
     private val playedFrames = ReplayPlaybackFrames<Pair<Long, ImageBitmap?>>(::publish)
     private var taskCancel: AtomicBoolean? = null
@@ -200,7 +197,7 @@ internal class ReplayPlayerController(
                     val created = TrimRules(FrameGrid(timeline.spans), timeline.durationUs)
                     rules = created
                     state = state.copy(loading = false, durationUs = timeline.durationUs, timeline = timeline,
-                        editor = created.initial().let { if (trimOnLoad) created.enterTrim(it) else it })
+                        editor = created.initial())
                     showEditor()
                 }
             } catch (failure: Throwable) {
@@ -374,7 +371,10 @@ internal class ReplayPlayerController(
 
     /** `キャンセル` / `中止` / Esc (3.2). */
     fun cancel() {
+        if (disposed) return
         val current = rules ?: return
+        // Resetting a playing range retains the real playback clock, as pausing does.
+        if (state.editor.drag == null && !state.busy() && !current.rangeUnchanged(state.editor) && state.playing) togglePlay()
         val (next, effect) = current.cancel(state.editor)
         state = state.copy(editor = next, message = if (effect == CancelEffect.ABORT_TASK) null else state.message)
         when (effect) {
@@ -387,20 +387,10 @@ internal class ReplayPlayerController(
 
     override fun button(id: PlayerButton) {
         when (id) {
-            PlayerButton.ENTER_TRIM -> enterTrim()
             PlayerButton.TRIM -> trim()
             PlayerButton.SAVE_FRAME -> exportPng()
             PlayerButton.CANCEL -> cancel()
         }
-    }
-
-    /** Save-and-trim may request editing before asynchronous validation/decoding has finished. */
-    fun enterTrim() {
-        if (disposed || state.error != null || state.busy()) return
-        if (state.loading) { trimOnLoad = true; return }
-        stopPlayback()
-        edit { r, s -> r.enterTrim(s) }
-        state = state.copy(message = null)
     }
 
     // --- Playback --------------------------------------------------------------------------
@@ -485,7 +475,7 @@ internal class ReplayPlayerController(
     fun trim() {
         val current = rules ?: return
         val editor = state.editor
-        if (disposed || state.busy() || state.error != null || editor.mode != PlayerMode.TRIM || current.rangeUnchanged(editor)) return
+        if (disposed || state.busy() || state.error != null || current.rangeUnchanged(editor)) return
         stopPlayback()
         val cancel = AtomicBoolean()
         taskCancel = cancel
@@ -521,8 +511,9 @@ internal class ReplayPlayerController(
         val editor = state.editor
         val availability = availability(current)
         val buttons = if (current == null) listOf(
-            ButtonSpec(PlayerButton.ENTER_TRIM, "トリム…", true, false, availability.error?.let { "この保存は切り取れません: $it" } ?: "読み込み中です"),
-            ButtonSpec(PlayerButton.SAVE_FRAME, "この位置をPNG保存", false, false))
+            ButtonSpec(PlayerButton.TRIM, "トリミング", true, false, availability.error?.let { "この保存は切り取れません: $it" } ?: "読み込み中です"),
+            ButtonSpec(PlayerButton.SAVE_FRAME, "この位置をPNG保存", false, false),
+            ButtonSpec(PlayerButton.CANCEL, "キャンセル", false, false))
         else playerButtons(current, editor, availability)
         return PlayerBarModel(editor, current, state.timeline, buttons, statusLine(state.message ?: state.audioNote, buttons),
             state.playing, current != null && state.error == null && editor.drag == null, ::thumbnail, state.thumbnailVersion, state.aspect)

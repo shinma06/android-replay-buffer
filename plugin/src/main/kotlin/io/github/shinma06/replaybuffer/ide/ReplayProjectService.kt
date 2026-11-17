@@ -64,7 +64,6 @@ import io.github.shinma06.replaybuffer.settings.ReplaySettingsStore
 import io.github.shinma06.replaybuffer.settings.patchSettings
 import io.github.shinma06.replaybuffer.settings.settingsJson
 import io.github.shinma06.replaybuffer.settings.validateDestination
-import io.github.shinma06.replaybuffer.ui.ReplayPlayerEditor
 import io.github.shinma06.replaybuffer.ui.REPLAY_PLAYER_EDITOR_ID
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -216,8 +215,8 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
         return if (resolving || capture.view.pending > 0) rejected("設定・操作を反映中です。完了後に保存してください。") else capture.save(request)
     }
 
-    /** The ordinary save, followed only for this attempt by an editable player. */
-    internal fun saveAndTrim() = observeSaveForTrim(save(), { alive }) { openReplayVideo(it, trim = true) }
+    /** Open only this accepted save's completed video; ordinary save never opens a player. */
+    internal fun saveAndTrim() = observeSaveForTrim(save(), { alive }, ::openReplayVideo)
 
     internal val screenshotDisabledReason: String?
         @Synchronized get() = screenshotDisabledReason(capture.view.snapshot)
@@ -550,10 +549,12 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
                 ).addAction(NotificationAction.create("フォルダを開く") { _, event ->
                     if (alive) openDirectory(save.directory) else event.expire()
                 }).let { notification ->
-                    if (videoDirectory != null)
+                    if (videoDirectory != null) {
                         notification.addAction(NotificationAction.create("動画を開く") { _, event ->
-                            if (alive) openReplayVideo(save.directory) else event.expire()
+                            if (alive) openReplayVideo(videoDirectory) else event.expire()
                         })
+                        savedVideoEditAction(save, { alive }, ::openReplayVideo)?.let(notification::addAction)
+                    }
                     notification
                 }.addAction(copyPathAction(save.directory))
             } else {
@@ -567,13 +568,14 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
     }
 
     /** Opens a completed save's video in the replay player editor (notification/ToolWindow/chooser entry). */
-    internal fun openReplayVideo(folder: Path, trim: Boolean = false) {
+    internal fun openReplayVideo(folder: Path) {
         if (!alive) return
         scope.launch(Dispatchers.IO) {
             val video = folder.resolve(ReplayFiles.VIDEO)
             val reason = when {
                 !Files.isRegularFile(folder.resolve(ReplayFiles.RECORD)) -> "完成した保存フォルダを選んでください（replay.jsonがありません）。"
                 !Files.isRegularFile(video) -> "保存フォルダに動画がありません。"
+                !Files.isRegularFile(folder.resolve(ReplayFiles.VIDEO_FRAMES)) -> "保存フォルダに動画のコマ情報がありません。"
                 else -> null
             }
             val virtual = if (reason == null) LocalFileSystem.getInstance().refreshAndFindFileByNioFile(video) else null
@@ -588,11 +590,8 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
             onUi {
                 val manager = FileEditorManager.getInstance(project)
                 val videoFile = checkNotNull(virtual)
-                val editors = manager.openFile(videoFile, true)
-                if (trim) editors.filterIsInstance<ReplayPlayerEditor>().firstOrNull()?.let { editor ->
-                    editor.enterTrim()
-                    manager.setSelectedEditor(videoFile, REPLAY_PLAYER_EDITOR_ID)
-                }
+                manager.openFile(videoFile, true)
+                manager.setSelectedEditor(videoFile, REPLAY_PLAYER_EDITOR_ID)
             }
         }
     }
@@ -676,6 +675,9 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
                 if (alive) openDirectory(output) else event.expire()
             })
             .addAction(NotificationAction.create("動画を開く") { _, event ->
+                if (alive) openReplayVideo(output) else event.expire()
+            })
+            .addAction(NotificationAction.create("編集") { _, event ->
                 if (alive) openReplayVideo(output) else event.expire()
             })
             .addAction(copyPathAction(output)))
@@ -832,10 +834,13 @@ internal fun operationFailureContent(failure: Throwable): String {
     return StringUtil.escapeXmlEntities((cause.message ?: "保存先・空き容量・アクセス権を確認してください。") + retained)
 }
 
-// missingKinds describes coverage too; it does not establish whether a movie was saved.
-internal fun savedVideoDirectory(save: SaveSnapshot): Path? = save.directory?.takeIf {
-    save.phase == SavePhase.COMPLETED && save.captureMode.videoRequested && save.content != SaveContent.LOGS_ONLY &&
-        Files.isRegularFile(it.resolve(ReplayFiles.VIDEO))
+/** The notification captures its own save, and rechecks it when clicked after later saves. */
+internal fun savedVideoEditAction(save: SaveSnapshot, alive: () -> Boolean, open: (Path) -> Unit): NotificationAction? {
+    val folder = savedVideoDirectory(save) ?: return null
+    return NotificationAction.create("編集") { _, notification ->
+        if (!alive()) notification.expire()
+        else if (savedVideoDirectory(save) == folder) open(folder)
+    }
 }
 
 /** Observe the attempt's own result, never the moving latest-save snapshot or a later retry. */
@@ -851,6 +856,12 @@ internal fun observeSaveForTrim(
             savedVideoDirectory(save)?.takeIf { Files.isRegularFile(it.resolve(ReplayFiles.RECORD)) }?.let(open)
         }
     }.toCompletableFuture()
+}
+
+// missingKinds describes coverage too; it does not establish whether a movie was saved.
+internal fun savedVideoDirectory(save: SaveSnapshot): Path? = save.directory?.takeIf {
+    save.phase == SavePhase.COMPLETED && save.captureMode.videoRequested && save.content != SaveContent.LOGS_ONLY &&
+        Files.isRegularFile(it.resolve(ReplayFiles.VIDEO))
 }
 
 internal fun streamName(kind: String): String = when (kind) {
