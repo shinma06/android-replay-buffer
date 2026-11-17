@@ -22,6 +22,7 @@ internal class SavedReplay private constructor(
 ) : AutoCloseable {
 
     val name: String get() = directory.fileName.toString()
+    internal val directoryKey get() = handle.key
     internal val previewKeyframes by lazy { ReplayPreviewIndex(frames) }
     private val gson = Gson()
     private val openFiles = mutableListOf<SaveOutputFile>()

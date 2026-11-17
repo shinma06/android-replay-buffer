@@ -91,7 +91,7 @@ internal class ReplayPlayerEditorProvider : FileEditorProvider, DumbAware {
 
 /** Saved-replay player with QuickTime-style trim (requirements video-trim.md 3.1 / 3.2). */
 internal class ReplayPlayerEditor(project: Project, private val file: VirtualFile) : UserDataHolderBase(), FileEditor {
-    private val controller = ReplayPlayerController(project,
+    internal val controller = ReplayPlayerController(project,
         checkNotNull(file.parent).toNioPath().toAbsolutePath().normalize())
 
     private val component = JPanel(BorderLayout()).apply {
@@ -154,6 +154,8 @@ internal class ReplayPlayerController(
     openReplay: (Path) -> SavedReplay = { SavedReplay.open(it) },
     private val decoderFactory: (SavedReplay, ReplayFrameCache) -> ReplayVideoDecoder = { replay, cache -> ReplayFrameCursor(replay, cache = cache) },
 ) : Disposable, PlayerBarActions {
+    internal val closePolicy = ReplayEditClosePolicy()
+    internal val resourcesClosed = java.util.concurrent.CompletableFuture<Boolean>()
     private val service = project.getService(ReplayProjectService::class.java)
     private val executor = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "arb-replay-player").apply { isDaemon = true }
@@ -459,6 +461,7 @@ internal class ReplayPlayerController(
         edit { r, s -> r.taskStarted(s, TaskKind.FRAME) }
         state = state.copy(message = null)
         service.exportReplayFrame(folder, state.editor.playheadUs, cancel).whenComplete { file, failure ->
+            if (failure != null) closePolicy.ambiguousOutput = true
             publish {
                 val outcome = when { failure != null -> TaskOutcome.FAILED; file == null -> TaskOutcome.CANCELLED; else -> TaskOutcome.SUCCESS }
                 taskCancel = null
@@ -482,6 +485,8 @@ internal class ReplayPlayerController(
         edit { r, s -> r.taskStarted(s, TaskKind.TRIM) }
         state = state.copy(message = null)
         service.trimReplay(folder, editor.inUs, editor.outUs, cancel).whenComplete { run, failure ->
+            if (failure != null) closePolicy.ambiguousOutput = true
+            if (run?.output != null) closePolicy.trimExported = true
             publish {
                 val outcome = when { failure != null -> TaskOutcome.FAILED; run.output == null -> TaskOutcome.CANCELLED; else -> TaskOutcome.SUCCESS }
                 taskCancel = null
@@ -520,12 +525,19 @@ internal class ReplayPlayerController(
     }
 
     override fun dispose() {
+        if (disposed) return
         disposed = true
         previewGeneration++
         playback?.stop()
         thumbnailGeneration.incrementAndGet()
         thumbnailExecutor.shutdownNow()
-        executor.execute { runCatching { decoder?.close() }; frameCache.clear(); runCatching { saved?.close() } }
+        executor.execute {
+            val thumbnailsClosed = runCatching { thumbnailExecutor.awaitTermination(30, java.util.concurrent.TimeUnit.SECONDS) }.getOrDefault(false)
+            val decoderClosed = runCatching { decoder?.close() }.isSuccess
+            frameCache.clear()
+            val replayClosed = runCatching { saved?.close() }.isSuccess
+            resourcesClosed.complete(thumbnailsClosed && decoderClosed && replayClosed)
+        }
         executor.shutdown()
     }
 }

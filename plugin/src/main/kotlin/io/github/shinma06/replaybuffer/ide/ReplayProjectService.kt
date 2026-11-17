@@ -65,6 +65,12 @@ import io.github.shinma06.replaybuffer.settings.patchSettings
 import io.github.shinma06.replaybuffer.settings.settingsJson
 import io.github.shinma06.replaybuffer.settings.validateDestination
 import io.github.shinma06.replaybuffer.ui.REPLAY_PLAYER_EDITOR_ID
+import io.github.shinma06.replaybuffer.ui.ReplayPlayerEditor
+import io.github.shinma06.replaybuffer.ui.ReplayEditCloseManager
+import io.github.shinma06.replaybuffer.core.ReplayEditOrigin
+import io.github.shinma06.replaybuffer.core.ReplayRecoveryFailure
+import io.github.shinma06.replaybuffer.core.RECOVERY_RECORD
+import io.github.shinma06.replaybuffer.core.restoreReplayRecovery
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
@@ -113,6 +119,7 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
     }
     internal val captureView: ReplayCaptureView get() = capture.view
     private val alive: Boolean get() = !disposed && !project.isDisposed
+    private val editClose by lazy { ReplayEditCloseManager(project, this).also { com.intellij.openapi.util.Disposer.register(this, it) } }
 
     init {
         val connection = project.messageBus.connect(this)
@@ -216,7 +223,9 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
     }
 
     /** Open only this accepted save's completed video; ordinary save never opens a player. */
-    internal fun saveAndTrim() = observeSaveForTrim(save(), { alive }, ::openReplayVideo)
+    internal fun saveAndTrim() = observeSaveForTrim(save(), { alive }, { openReplayVideo(it) }) { completed ->
+        openReplayVideo(checkNotNull(completed.directory), completed)
+    }
 
     internal val screenshotDisabledReason: String?
         @Synchronized get() = screenshotDisabledReason(capture.view.snapshot)
@@ -553,7 +562,7 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
                         notification.addAction(NotificationAction.create("動画を開く") { _, event ->
                             if (alive) openReplayVideo(videoDirectory) else event.expire()
                         })
-                        savedVideoEditAction(save, { alive }, ::openReplayVideo)?.let(notification::addAction)
+                        savedVideoEditAction(save, { alive }) { openReplayVideo(it) }?.let(notification::addAction)
                     }
                     notification
                 }.addAction(copyPathAction(save.directory))
@@ -568,9 +577,17 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
     }
 
     /** Opens a completed save's video in the replay player editor (notification/ToolWindow/chooser entry). */
-    internal fun openReplayVideo(folder: Path) {
+    internal fun openReplayVideo(folder: Path, saveAndEdit: SaveSnapshot? = null) {
         if (!alive) return
         scope.launch(Dispatchers.IO) {
+            if (Files.isRegularFile(folder.resolve(RECOVERY_RECORD))) {
+                onUi {
+                    if (com.intellij.openapi.ui.Messages.showDialog(project, "退避したリプレイ本体を元の場所に復元しますか？同名の内容は上書きしません。",
+                            "リプレイ本体の復元", arrayOf("復元する", "キャンセル"), 1, com.intellij.openapi.ui.Messages.getQuestionIcon()) == 0)
+                        restoreEditedReplay(folder)
+                }
+                return@launch
+            }
             val video = folder.resolve(ReplayFiles.VIDEO)
             val reason = when {
                 !Files.isRegularFile(folder.resolve(ReplayFiles.RECORD)) -> "完成した保存フォルダを選んでください（replay.jsonがありません）。"
@@ -579,6 +596,7 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
                 else -> null
             }
             val virtual = if (reason == null) LocalFileSystem.getInstance().refreshAndFindFileByNioFile(video) else null
+            val origin = if (reason == null && saveAndEdit != null) ReplayEditOrigin.capture(saveAndEdit) else null
             val failed = reason ?: if (virtual == null) "動画ファイルをIDEで見つけられません。" else null
             if (failed != null) {
                 onUi {
@@ -590,9 +608,41 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
             onUi {
                 val manager = FileEditorManager.getInstance(project)
                 val videoFile = checkNotNull(virtual)
-                manager.openFile(videoFile, true)
+                val alreadyOpen = manager.isFileOpen(videoFile)
+                editClose.clear(videoFile)
+                val editors = manager.openFile(videoFile, true)
+                editors.filterIsInstance<ReplayPlayerEditor>().singleOrNull()?.let { editor ->
+                    editClose.attach(videoFile, editor, origin.takeUnless { alreadyOpen })
+                }
                 manager.setSelectedEditor(videoFile, REPLAY_PLAYER_EDITOR_ID)
             }
+        }
+    }
+
+    internal fun relocateEditedReplay(origin: ReplayEditOrigin, active: () -> Boolean) {
+        if (!alive || !active()) return
+        scope.launch(Dispatchers.IO) {
+            try {
+                val recovery = origin.relocate(checkActive = { check(alive && active()) { "終了中のため本体を残します。" } })
+                onUi { showNotification(Notification("Android Replay Buffer", "リプレイ本体を復元可能な場所へ移しました",
+                    "PNGは元の保存先に残しています。自動削除はしません。保管場所: ${StringUtil.escapeXmlEntities(recovery.toString())}", NotificationType.INFORMATION)
+                    .addAction(NotificationAction.create("元に戻す") { _, _ -> restoreEditedReplay(recovery) })
+                    .addAction(NotificationAction.create("保管場所を開く") { _, _ -> if (alive) openDirectory(recovery) })) }
+            } catch (failure: Exception) {
+                val retained = (failure as? ReplayRecoveryFailure)?.recovery
+                onUi { showNotification(Notification("Android Replay Buffer", "リプレイ本体の移動を完了できませんでした",
+                    StringUtil.escapeXmlEntities("元の場所を確認してください。" + (retained?.let { " 保管場所: $it" } ?: " 本体は残します。")), NotificationType.WARNING)
+                    .let { notification -> if (retained != null) notification.addAction(NotificationAction.create("保管場所を開く") { _, _ -> if (alive) openDirectory(retained) }) else notification }) }
+            }
+        }
+    }
+
+    private fun restoreEditedReplay(recovery: Path) {
+        if (!alive) return
+        scope.launch(Dispatchers.IO) {
+            try { val restored = restoreReplayRecovery(recovery); if (alive) openReplayVideo(restored) }
+            catch (failure: Exception) { onUi { showNotification(Notification("Android Replay Buffer", "本体を復元できませんでした",
+                StringUtil.escapeXmlEntities("上書きせず保管場所に残しています: $recovery"), NotificationType.WARNING)) } }
         }
     }
 
@@ -848,12 +898,15 @@ internal fun observeSaveForTrim(
     operation: CompletableFuture<ReplayOperation>,
     alive: () -> Boolean,
     open: (Path) -> Unit,
+    openSaved: ((SaveSnapshot) -> Unit)? = null,
 ): CompletableFuture<Void> = operation.thenCompose { result ->
     val completion = result.saveResult
     if (!result.accepted || result.requestId == null || completion == null) CompletableFuture.completedFuture(null)
     else completion.thenAccept { save ->
         if (alive() && save.requestId == result.requestId) {
-            savedVideoDirectory(save)?.takeIf { Files.isRegularFile(it.resolve(ReplayFiles.RECORD)) }?.let(open)
+            savedVideoDirectory(save)?.takeIf { Files.isRegularFile(it.resolve(ReplayFiles.RECORD)) }?.let {
+                if (openSaved == null) open(it) else openSaved(save)
+            }
         }
     }.toCompletableFuture()
 }
