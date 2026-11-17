@@ -23,9 +23,15 @@ internal class ReplayEditOrigin private constructor(
             parent.openChild(folder.fileName.toString()).use { source ->
                 check(source.key == folderKey) { "保存フォルダが変更されています。本体は残します。" }
                 val pins = linkedMapOf<String, SaveOutputFile>()
+                var sourceLease: AutoCloseable? = null
                 try {
                     check(source.entries().containsAll(files.keys)) { "保存内容が変更されています。本体は残します。" }
                     source.requirePrivate()
+                    val record = source.openFile(ReplayFiles.RECORD).also { pins[ReplayFiles.RECORD] = it }
+                    record.requirePrivate()
+                    check(record.key == files.getValue(ReplayFiles.RECORD).first) { "保存内容が変更されています。本体は残します。" }
+                    sourceLease = checkNotNull(record.tryReplayLease(shared = false)) { "本体は使用中です。移動せず残します。" }
+                    source.verifyFile(ReplayFiles.RECORD, record)
                     // Unknown content is never moved; PNGs remain at precisely their existing paths.
                     for (name in source.entries()) {
                         source.openFile(name).use { file ->
@@ -34,14 +40,14 @@ internal class ReplayEditOrigin private constructor(
                         }
                     }
                     files.forEach { (name, identity) ->
-                        val pin = source.openFile(name)
-                        pins[name] = pin
+                        val pin = pins.getOrPut(name) { source.openFile(name) }
                         check(pin.key == identity.first && pin.hash() == identity.second) { "保存内容が変更されています。本体は残します。" }
                     }
                     checkActive()
                     val recoveryName = "replay-recovery-${UUID.randomUUID()}"
                     val recoveryPath = folder.parent.resolve(recoveryName)
                     parent.createDirectory(recoveryName).use { recovery ->
+                        recovery.withRecoveryLock {
                         val nonce = UUID.randomUUID().toString()
                         val receipt = RecoveryReceipt(folder.fileName.toString(), folderKey.toString(), nonce, files.mapValues { it.value.second })
                         recovery.writeText(RECOVERY_RECORD, Gson().toJson(receipt))
@@ -81,11 +87,14 @@ internal class ReplayEditOrigin private constructor(
                             }
                             throw ReplayRecoveryFailure("本体の移動を完了できませんでした。元の場所と保管場所を確認してください。", recoveryPath, failure)
                         }
+                        }
                     }
                     // Keep the durable nonce even without PNGs. Removing it before a fallible rmdir
                     // would strand a markerless directory after a crash or cleanup failure.
                     return recoveryPath
-                } finally { pins.values.forEach { it.close() } }
+                } finally {
+                    try { sourceLease?.close() } finally { pins.values.forEach { it.close() } }
+                }
             }
         }
     }
@@ -138,7 +147,7 @@ internal fun restoreReplayRecovery(path: Path, checkActive: () -> Unit = {}, aft
     SaveOutputDirectory.open(folder.parent).use { parent ->
         parent.openChild(folder.fileName.toString()).use { recovery ->
             recovery.requirePrivate()
-            recovery.withRestoreLock {
+            recovery.withRecoveryLock {
             val receipt = recovery.openFile(RECOVERY_RECORD).use { file ->
                 file.requirePrivate()
                 file.channel(setOf(READ)).use { channel ->
@@ -155,6 +164,8 @@ internal fun restoreReplayRecovery(path: Path, checkActive: () -> Unit = {}, aft
             require(receipt.hashes.keys.containsAll(setOf(ReplayFiles.RECORD, ReplayFiles.VIDEO, ReplayFiles.VIDEO_FRAMES)))
             require(receipt.hashes.keys.all { it in REPLAY_PAYLOAD } && receipt.hashes.values.all { Regex("[0-9a-f]{64}").matches(it) })
             val pins = linkedMapOf<String, SaveOutputFile>()
+            var sourceRecord: SaveOutputFile? = null
+            var sourceLease: AutoCloseable? = null
             try {
                 receipt.hashes.forEach { (name, hash) ->
                     if (name in recovery.entries()) {
@@ -169,6 +180,12 @@ internal fun restoreReplayRecovery(path: Path, checkActive: () -> Unit = {}, aft
                 require(Regex("\\(-?[0-9]+, -?[0-9]+\\)").matches(expectedKey))
                 val original = parent.openChild(receipt.originalName)
                 original.use { source ->
+                    // Use the actual manifest pin, wherever the interrupted move left it, never a fresh identity after moving.
+                    val record = pins[ReplayFiles.RECORD] ?: source.openFile(ReplayFiles.RECORD).also { sourceRecord = it }
+                    record.requirePrivate()
+                    sourceLease = checkNotNull(record.tryReplayLease(shared = false)) { "本体は使用中です。復元せず保管場所に残します。" }
+                    (if (ReplayFiles.RECORD in pins) recovery else source).verifyFile(ReplayFiles.RECORD, record)
+                    check(record.hash() == receipt.hashes.getValue(ReplayFiles.RECORD)) { "保存内容が変更されています。復元しません。" }
                     source.requirePrivate()
                     check(source.key.toString() == expectedKey) { "元の場所が別のフォルダに置き換わっています。復元しません。" }
                     check(RECOVERY_ORIGIN in source.entries() && source.readText(RECOVERY_ORIGIN) == receipt.nonce) { "元の場所の由来を確認できません。復元しません。" }
@@ -204,19 +221,22 @@ internal fun restoreReplayRecovery(path: Path, checkActive: () -> Unit = {}, aft
                     if (RECOVERY_ORIGIN in source.entries()) source.openFile(RECOVERY_ORIGIN).use { source.deleteFile(RECOVERY_ORIGIN, it) }
                 }
                 return folder.parent.resolve(receipt.originalName)
-            } finally { pins.values.forEach { it.close() } }
+            } finally {
+                try { sourceLease?.close() }
+                finally { try { sourceRecord?.close() } finally { pins.values.forEach { it.close() } } }
+            }
             }
         }
     }
 }
 
-/** One cooperating restorer per recovery, across projects and processes; the anchor is never removed. */
-private inline fun <T> SaveOutputDirectory.withRestoreLock(action: () -> T): T {
+/** One cooperating producer/restorer per recovery, across projects and processes; never remove the anchor. */
+private inline fun <T> SaveOutputDirectory.withRecoveryLock(action: () -> T): T {
     val guard = runCatching { createFile(RESTORE_LOCK) }.getOrElse { openFile(RESTORE_LOCK) }
     guard.use { file ->
         file.requirePrivate()
         file.channel(setOf(READ)).use { check(it.size() == 0L) { "復元の排他情報を確認できません。" } }
-        val owner = file.tryOwnerLock() ?: error("この保管場所は復元中です。完了後にもう一度お試しください。")
+        val owner = file.tryOwnerLock() ?: error("この保管場所は移動・復元中です。完了後にもう一度お試しください。")
         owner.use { verifyFile(RESTORE_LOCK, file); return action() }
     }
 }

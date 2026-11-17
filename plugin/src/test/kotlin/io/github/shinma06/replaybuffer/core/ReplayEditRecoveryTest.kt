@@ -543,6 +543,150 @@ class ReplayEditRecoveryTest {
     @Test fun concurrentRestoreCannotSplitPayloadOrRemoveAnotherRestorersNonce() = concurrentRestore(false)
     @Test fun concurrentRestoreKeepsFailedFirstRestoreRetryable() = concurrentRestore(true)
 
+    @Test fun sharedReadersKeepSourceImmutableUntilLastReaderCloses() {
+        val (folder, save) = source()
+        val original = bytes(folder)
+        val origin = assertNotNull(ReplayEditOrigin.capture(save))
+        val first = SavedReplay.open(folder)
+        val second = SavedReplay.open(folder)
+        try {
+            assertFailsWith<IllegalStateException> { origin.relocate() }
+            first.close()
+            assertFailsWith<IllegalStateException> { origin.relocate() }
+            assertEquals(original, bytes(folder))
+            assertEquals(original.keys, Files.list(folder).use { it.map { path -> path.fileName.toString() }.toList().toSet() })
+        } finally { first.close(); second.close() }
+        val recovery = origin.relocate()
+        assertEquals(folder, restoreReplayRecovery(recovery))
+        assertEquals(original, bytes(folder))
+    }
+
+    @Test fun failedReaderLoadReleasesLeaseBeforeItsDescriptorCloses() {
+        val (folder, save) = source()
+        val origin = assertNotNull(ReplayEditOrigin.capture(save))
+        val failure = assertFailsWith<IllegalStateException> {
+            SavedReplay.open(folder) { _, _ -> error("Injected reader validation failure") }
+        }
+        assertEquals("Injected reader validation failure", failure.message)
+        assertEquals(folder, restoreReplayRecovery(origin.relocate()))
+    }
+
+    @Test fun realTrimReaderPreventsRelocationUntilSourceAndLateLogsAreFinished() {
+        val (folder, save) = source()
+        val original = bytes(folder)
+        val origin = assertNotNull(ReplayEditOrigin.capture(save))
+        val duration = SavedReplay.open(folder).use { it.timeline().durationUs }
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val worker = java.util.concurrent.Executors.newSingleThreadExecutor()
+        try {
+            val export = worker.submit<Path> {
+                ReplayTrim(mp4Input = { channel ->
+                    entered.countDown()
+                    check(release.await(30, TimeUnit.SECONDS))
+                    org.jcodec.common.io.FileChannelWrapper(channel)
+                }).trim(folder, 0, duration, { false }, { it.publish() }, id = "leaseexport")
+            }
+            assertTrue(entered.await(30, TimeUnit.SECONDS))
+            SavedReplay.open(folder).use { assertEquals(original.getValue(ReplayFiles.RECORD), it.text(ReplayFiles.RECORD).toByteArray().toList()) }
+            assertFailsWith<IllegalStateException> { origin.relocate() }
+            assertEquals(original, bytes(folder))
+            release.countDown()
+            val output = export.get(30, TimeUnit.SECONDS)
+            assertTrue(Files.isRegularFile(output.resolve(ReplayFiles.LOGCAT_DEVICE)))
+            SavedReplay.open(output).use { assertTrue(it.frames.isNotEmpty()) }
+            assertEquals(original, bytes(folder))
+            assertEquals(folder, restoreReplayRecovery(origin.relocate()))
+        } finally {
+            release.countDown(); worker.shutdownNow()
+            assertTrue(worker.awaitTermination(30, TimeUnit.SECONDS))
+        }
+    }
+
+    @Test fun restoreRefusesWhileRelocationIsPublishingAndWorksAfterCompletion() = restoreDuringRelocation(false)
+    @Test fun restoreRefusesWhileCancelledRelocationRollsBack() = restoreDuringRelocation(true)
+
+    private fun restoreDuringRelocation(cancel: Boolean) {
+        val (folder, save) = source()
+        val original = bytes(folder)
+        val origin = assertNotNull(ReplayEditOrigin.capture(save))
+        val moved = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val worker = java.util.concurrent.Executors.newSingleThreadExecutor()
+        try {
+            val relocation = worker.submit<Path> {
+                origin.relocate(afterMove = { count ->
+                    if (count == 1) {
+                        moved.countDown()
+                        check(release.await(30, TimeUnit.SECONDS))
+                        if (cancel) throw SaveCancelled(null)
+                    }
+                })
+            }
+            assertTrue(moved.await(30, TimeUnit.SECONDS))
+            val recovery = Files.list(root).use { it.filter { path -> path.fileName.toString().startsWith("replay-recovery-") }.toList().single() }
+            assertFailsWith<IllegalStateException> { restoreReplayRecovery(recovery) }
+            assertTrue(Files.exists(folder.resolve(RECOVERY_ORIGIN)))
+            release.countDown()
+            if (cancel) assertFailsWith<java.util.concurrent.ExecutionException> { relocation.get(30, TimeUnit.SECONDS) }
+            else assertEquals(folder, restoreReplayRecovery(relocation.get(30, TimeUnit.SECONDS)))
+            assertEquals(original, bytes(folder))
+            SavedReplay.open(folder).use { assertTrue(it.frames.isNotEmpty()) }
+        } finally {
+            release.countDown(); worker.shutdownNow()
+            assertTrue(worker.awaitTermination(30, TimeUnit.SECONDS))
+        }
+    }
+
+    @Test fun restoreExcludesNewReadersAfterAllPayloadsAreVisibleUntilCommit() = readerDuringRestore(false)
+    @Test fun restoreRollbackCannotRemovePayloadFromNewlyOpenedReader() = readerDuringRestore(true)
+
+    private fun readerDuringRestore(fail: Boolean) {
+        val (folder, save) = source()
+        val original = bytes(folder)
+        val recovery = assertNotNull(ReplayEditOrigin.capture(save)).relocate()
+        val visible = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val worker = java.util.concurrent.Executors.newSingleThreadExecutor()
+        try {
+            val restoring = worker.submit<Path> {
+                restoreReplayRecovery(recovery, beforeFlush = {
+                    visible.countDown()
+                    check(release.await(30, TimeUnit.SECONDS))
+                    if (fail) throw SaveCancelled(null)
+                })
+            }
+            assertTrue(visible.await(30, TimeUnit.SECONDS))
+            assertEquals(original, bytes(folder))
+            assertFailsWith<IllegalStateException> { SavedReplay.open(folder).close() }
+            release.countDown()
+            if (fail) {
+                assertFailsWith<java.util.concurrent.ExecutionException> { restoring.get(30, TimeUnit.SECONDS) }
+                assertEquals(folder, restoreReplayRecovery(recovery))
+            } else assertEquals(folder, restoring.get(30, TimeUnit.SECONDS))
+            SavedReplay.open(folder).use { assertTrue(it.frames.isNotEmpty()) }
+            assertEquals(original, bytes(folder))
+        } finally {
+            release.countDown(); worker.shutdownNow()
+            assertTrue(worker.awaitTermination(30, TimeUnit.SECONDS))
+        }
+    }
+
+    @Test fun restoreUsesSameManifestLeaseWhenRecordIsAlreadyInOriginal() {
+        val (folder, save) = source()
+        val original = bytes(folder)
+        val recovery = assertNotNull(ReplayEditOrigin.capture(save)).relocate()
+        original.keys.forEach { Files.move(recovery.resolve(it), folder.resolve(it)) }
+        SavedReplay.open(folder).use {
+            assertFailsWith<IllegalStateException> { restoreReplayRecovery(recovery) }
+            assertTrue(Files.exists(folder.resolve(RECOVERY_ORIGIN)))
+            assertEquals(original, bytes(folder))
+        }
+        assertEquals(folder, restoreReplayRecovery(recovery))
+        assertFalse(Files.exists(folder.resolve(RECOVERY_ORIGIN)))
+        assertEquals(original, bytes(folder))
+    }
+
     private fun concurrentRestore(failFirst: Boolean) {
         val (folder, save) = source()
         val original = bytes(folder)
