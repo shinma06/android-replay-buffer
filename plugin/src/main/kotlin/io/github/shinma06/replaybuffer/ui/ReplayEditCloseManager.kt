@@ -22,8 +22,11 @@ import com.intellij.openapi.ui.Messages
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapi.vfs.VirtualFilePreCloseCheck
 import java.util.concurrent.CompletionStage
+import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
+import java.nio.file.Path
 import io.github.shinma06.replaybuffer.core.ReplayEditOrigin
+import io.github.shinma06.replaybuffer.core.ReplayFiles
 import io.github.shinma06.replaybuffer.ide.ReplayProjectService
 
 internal class ReplayEditClosePolicy {
@@ -48,25 +51,53 @@ internal class ReplayEditCloseLifecycle {
 internal class ReplayEditCloseWork<K> {
     class Ticket {
         @Volatile private var cancelled = false
-        fun cancel() { cancelled = true }
+        private var started = false
+        val completion = CompletableFuture<Unit>()
+        @Synchronized fun cancel() {
+            cancelled = true
+            if (!started) completion.complete(Unit)
+        }
+        @Synchronized private fun start(active: () -> Boolean): Boolean {
+            if (cancelled || completion.isDone || !active()) return false
+            started = true
+            return true
+        }
         fun afterResourcesClosed(resources: CompletionStage<Boolean>, active: () -> Boolean, finished: () -> Unit = {}, relocate: (() -> Boolean) -> Unit) {
             val valid = { !cancelled && active() }
             resources.whenComplete { closed, failure ->
-                if (failure == null && closed == true && valid()) relocate(valid) else finished()
+                if (failure == null && closed == true && start(active)) relocate(valid) else finished()
             }
         }
     }
     private val pending = ConcurrentHashMap<K, Ticket>()
-    fun begin(file: K) = Ticket().also { pending.put(file, it)?.cancel() }
-    fun clear(file: K) { pending.remove(file)?.cancel() }
-    fun finished(file: K, ticket: Ticket) { pending.remove(file, ticket) }
-    fun dispose() { pending.values.forEach { it.cancel() }; pending.clear() }
+    fun begin(file: K): Ticket {
+        val ticket = Ticket()
+        while (true) {
+            val previous = pending.putIfAbsent(file, ticket) ?: return ticket
+            previous.cancel()
+            // Never hide a running rollback from a subsequent open request.
+            if (!previous.completion.isDone) { ticket.cancel(); return ticket }
+            if (pending.replace(file, previous, ticket)) return ticket
+        }
+    }
+    fun cancelAndAwait(file: K): CompletableFuture<Unit> {
+        val ticket = pending[file] ?: return CompletableFuture.completedFuture(Unit)
+        ticket.cancel()
+        if (ticket.completion.isDone) pending.remove(file, ticket)
+        return ticket.completion
+    }
+    fun clear(file: K) { cancelAndAwait(file) }
+    fun finished(file: K, ticket: Ticket) { pending.remove(file, ticket); ticket.completion.complete(Unit) }
+    fun dispose() { pending.keys.forEach { clear(it) } }
 }
 
-// VirtualFile is shared across projects. Provider entry must invalidate pending work even
-// when the newly opening project has never created a ReplayProjectService/close manager.
-internal val replayEditPendingCloses = ReplayEditCloseWork<VirtualFile>()
-internal fun replayVideoOpening(file: VirtualFile) { replayEditPendingCloses.clear(file) }
+// Paths remain available while a moved payload has no VirtualFile. Provider entry also
+// invalidates work when the opening project has no ReplayProjectService/close manager.
+internal val replayEditPendingCloses = ReplayEditCloseWork<Path>()
+private fun replayVideoPath(file: VirtualFile) = file.toNioPath().toAbsolutePath().normalize()
+internal fun replayVideoOpening(file: VirtualFile) { replayEditPendingCloses.clear(replayVideoPath(file)) }
+internal fun replayVideoOpenRequested(folder: Path, open: () -> Unit): CompletionStage<Void> =
+    replayEditPendingCloses.cancelAndAwait(folder.resolve(ReplayFiles.VIDEO).toAbsolutePath().normalize()).thenRun(open)
 
 internal fun <T> withSingleReplayOwner(owners: List<T>?, confirm: (T) -> Unit, retain: () -> Unit) {
     val owner = owners?.singleOrNull()
@@ -115,10 +146,11 @@ internal class ReplayEditCloseManager(private val project: Project, private val 
             override fun fileClosed(source: FileEditorManager, file: VirtualFile) {
                 val (editor, origin, ticket) = confirmed.remove(file) ?: return
                 if (!active() || source.isFileOpen(file)) { clear(file); return }
-                ticket.afterResourcesClosed(editor.controller.resourcesClosed, { active() }, { pending.finished(file, ticket) }) { valid ->
+                val key = replayVideoPath(file)
+                ticket.afterResourcesClosed(editor.controller.resourcesClosed, { active() }, { pending.finished(key, ticket) }) { valid ->
                     val job = service.relocateEditedReplay(origin, valid)
-                    if (job == null) pending.finished(file, ticket)
-                    else job.invokeOnCompletion { pending.finished(file, ticket) }
+                    if (job == null) pending.finished(key, ticket)
+                    else job.invokeOnCompletion { pending.finished(key, ticket) }
                 }
             }
         })
@@ -172,7 +204,7 @@ internal class ReplayEditCloseManager(private val project: Project, private val 
         if (controller.closePolicy.trimExported || controller.closePolicy.ambiguousOutput ||
             latest.loading || latest.error != null || latest.image == null || latest.editor.task != null ||
             FileEditorManager.getInstance(project).getAllEditors(file).singleOrNull() !== editor || controller.resourcesClosed.isDone) return
-        val decision = Triple(editor, origin, pending.begin(file))
+        val decision = Triple(editor, origin, pending.begin(replayVideoPath(file)))
         confirmed[file] = decision
         // Another pre-close checker may veto. The selected SDK closes synchronously; an unused decision expires.
         ApplicationManager.getApplication().invokeLater { if (confirmed[file] === decision) clear(file) }
@@ -182,6 +214,6 @@ internal class ReplayEditCloseManager(private val project: Project, private val 
         editor.controller.closePolicy.origin = origin
         if (origin != null && active()) editors[file] = editor
     }
-    fun clear(file: VirtualFile) { revision++; pending.clear(file); editors.remove(file)?.controller?.closePolicy?.origin = null; confirmed.remove(file) }
+    fun clear(file: VirtualFile) { revision++; pending.clear(replayVideoPath(file)); editors.remove(file)?.controller?.closePolicy?.origin = null; confirmed.remove(file) }
     override fun dispose() { lifecycle.closing = true; pending.dispose(); editors.values.forEach { it.controller.closePolicy.origin = null }; editors.clear(); confirmed.clear() }
 }

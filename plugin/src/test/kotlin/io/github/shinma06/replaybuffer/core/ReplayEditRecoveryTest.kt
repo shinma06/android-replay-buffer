@@ -8,6 +8,7 @@ import io.github.shinma06.replaybuffer.ui.ReplayEditCloseWork
 import io.github.shinma06.replaybuffer.ui.withSingleReplayOwner
 import io.github.shinma06.replaybuffer.ui.replayEditPendingCloses
 import io.github.shinma06.replaybuffer.ui.replayVideoOpening
+import io.github.shinma06.replaybuffer.ui.replayVideoOpenRequested
 import com.intellij.testFramework.LightVirtualFile
 import com.intellij.openapi.extensions.PluginId
 import io.github.shinma06.replaybuffer.ui.confirmedReplayDiscard
@@ -331,6 +332,7 @@ class ReplayEditRecoveryTest {
             }
             if (!midMove) pending.clear(folder)
             assertFailsWith<Exception> { assertNotNull(queued).invoke() }
+            pending.finished(folder, ticket)
             assertEquals(original, bytes(folder))
         }
     }
@@ -358,17 +360,20 @@ class ReplayEditRecoveryTest {
         val (folder, save) = source()
         val original = bytes(folder)
         val origin = assertNotNull(ReplayEditOrigin.capture(save))
-        val file = LightVirtualFile("video.mp4")
+        val key = folder.resolve(ReplayFiles.VIDEO)
+        val file = object : LightVirtualFile("video.mp4") { override fun toNioPath() = key }
         try {
             for (midMove in listOf(false, true)) {
                 // A has closed and extracted its decision. B has no project service/manager.
-                val ticket = replayEditPendingCloses.begin(file)
+                val ticket = replayEditPendingCloses.begin(key)
                 val resources = CompletableFuture<Boolean>()
                 var relocated = false
                 var providerOpened = false
                 ticket.afterResourcesClosed(resources, { true }) { valid ->
-                    origin.relocate(checkActive = { check(valid()) }, afterMove = { providerOpened = true; replayVideoOpening(file) })
-                    relocated = true
+                    try {
+                        origin.relocate(checkActive = { check(valid()) }, afterMove = { providerOpened = true; replayVideoOpening(file) })
+                        relocated = true
+                    } finally { replayEditPendingCloses.finished(key, ticket) }
                 }
                 if (midMove) {
                     // Provider creation in B during A's first file move invalidates A's ticket.
@@ -382,7 +387,7 @@ class ReplayEditRecoveryTest {
                 assertFalse(relocated)
                 assertEquals(original, bytes(folder))
             }
-        } finally { replayEditPendingCloses.clear(file) }
+        } finally { replayEditPendingCloses.clear(key) }
     }
 
     @Test fun parentDurabilityBarrierPrecedesEveryPayloadMoveAndFailureRetainsSource() {
@@ -460,5 +465,49 @@ class ReplayEditRecoveryTest {
         Files.writeString(record, json)
         assertEquals(folder, restoreReplayRecovery(recovery))
         assertEquals(original, bytes(folder))
+    }
+
+    @Test fun openRequestCancelsByPathBeforeValidationAndWaitsForAllMovedPayloadToReturn() {
+        val (folder, save) = source()
+        val original = bytes(folder)
+        val otherParent = root.resolve("other-parent"); PrivateFiles.createDirectory(otherParent)
+        val other = otherParent.resolve(name); PrivateFiles.createDirectory(other)
+        original.forEach { (name, data) -> Files.write(other.resolve(name), data.toByteArray()); PrivateFiles.restrict(other.resolve(name), false) }
+        val origin = assertNotNull(ReplayEditOrigin.capture(save))
+        val key = folder.resolve(ReplayFiles.VIDEO)
+        val ticket = replayEditPendingCloses.begin(key)
+        val requests = mutableListOf<java.util.concurrent.CompletionStage<Void>>()
+        var validated = 0
+        var unrelatedOpened = false
+        var workerFailure: Throwable? = null
+        ticket.afterResourcesClosed(CompletableFuture.completedFuture(true), { true }) { valid ->
+            try {
+                origin.relocate(checkActive = { check(valid()) }, afterMove = {
+                    if (requests.isEmpty() && listOf(ReplayFiles.RECORD, ReplayFiles.VIDEO, ReplayFiles.VIDEO_FRAMES).any { !Files.exists(folder.resolve(it)) }) {
+                        repeat(2) {
+                            // This is the actual request-side gateway, requiring neither VFS lookup nor payload existence.
+                            requests += replayVideoOpenRequested(folder.resolve(".")) {
+                                assertEquals(original, bytes(folder))
+                                SavedReplay.open(folder).use { assertEquals(save.requestId, it.manifest["save_id"].asString) }
+                                validated++
+                            }
+                        }
+                        assertTrue(requests.none { it.toCompletableFuture().isDone })
+                        replayVideoOpenRequested(other) {
+                            SavedReplay.open(other).use { unrelatedOpened = true }
+                        }.toCompletableFuture().join()
+                        assertTrue(unrelatedOpened)
+                    }
+                })
+            } catch (failure: Throwable) { workerFailure = failure }
+            finally { replayEditPendingCloses.finished(key, ticket) }
+        }
+        assertTrue(workerFailure is ReplayRecoveryFailure)
+        assertEquals(2, requests.size)
+        requests.forEach { it.toCompletableFuture().join() }
+        assertEquals(2, validated)
+        assertTrue(unrelatedOpened)
+        assertEquals(original, bytes(folder))
+        assertEquals(original, bytes(other))
     }
 }

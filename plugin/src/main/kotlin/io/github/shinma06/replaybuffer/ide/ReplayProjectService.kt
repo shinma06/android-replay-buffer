@@ -579,6 +579,13 @@ class ReplayProjectService(private val project: Project, internal val scope: Cor
     /** Opens a completed save's video in the replay player editor (notification/ToolWindow/chooser entry). */
     internal fun openReplayVideo(folder: Path, saveAndEdit: SaveSnapshot? = null) {
         if (!alive) return
+        io.github.shinma06.replaybuffer.ui.replayVideoOpenRequested(folder) {
+            openReplayVideoWhenReady(folder, saveAndEdit)
+        }
+    }
+
+    private fun openReplayVideoWhenReady(folder: Path, saveAndEdit: SaveSnapshot?) {
+        if (!alive) return
         scope.launch(Dispatchers.IO) {
             if (Files.isRegularFile(folder.resolve(RECOVERY_RECORD))) {
                 restoreEditedReplay(folder)
