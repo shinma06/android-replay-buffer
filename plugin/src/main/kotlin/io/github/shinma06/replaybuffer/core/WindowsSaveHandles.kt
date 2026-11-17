@@ -63,6 +63,8 @@ internal object StudioJna {
 }
 
 private interface Win32Files : Library {
+    fun LockFileEx(handle: Pointer, flags: Int, reserved: Int, lengthLow: Int, lengthHigh: Int, overlapped: Memory): Boolean
+    fun UnlockFileEx(handle: Pointer, reserved: Int, lengthLow: Int, lengthHigh: Int, overlapped: Memory): Boolean
     fun CreateFileW(name: WString, access: Int, share: Int, security: Pointer?, disposition: Int, flags: Int, template: Pointer?): Pointer
     fun GetFileInformationByHandle(handle: Pointer, information: Memory): Boolean
     fun GetFileInformationByHandleEx(handle: Pointer, informationClass: Int, buffer: Memory, size: Int): Boolean
@@ -97,6 +99,26 @@ internal object WindowsSaveHandles : SaveHandles {
     private const val RENAME_REPLACE_POSIX = 0x3 // FILE_RENAME_REPLACE_IF_EXISTS | FILE_RENAME_POSIX_SEMANTICS
 
     override val renamesDirectoryWithOpenFiles = false
+
+    override fun tryOwnerLock(handle: Long, shared: Boolean, position: Long): AutoCloseable? {
+        // OVERLAPPED: two ULONG_PTRs, two DWORD offsets, one HANDLE. Owner callers keep byte zero.
+        val overlapped = Memory((Native.POINTER_SIZE * 3 + 8).toLong()).apply {
+            clear(); setInt((Native.POINTER_SIZE * 2).toLong(), position.toInt())
+            setInt((Native.POINTER_SIZE * 2 + 4).toLong(), (position ushr 32).toInt())
+        }
+        if (!win32.LockFileEx(Pointer(handle), if (shared) 1 else 3, 0, 1, 0, overlapped)) { // FAIL_IMMEDIATELY | optional EXCLUSIVE
+            val error = Native.getLastError()
+            overlapped.close()
+            if (error == 33) return null // ERROR_LOCK_VIOLATION
+            throw IOException("cacheの排他を確認できません（error=$error）")
+        }
+        return AutoCloseable {
+            try {
+                if (!win32.UnlockFileEx(Pointer(handle), 0, 1, 0, overlapped))
+                    throw IOException("cacheの排他を終了できません（error=${Native.getLastError()}）")
+            } finally { overlapped.close() }
+        }
+    }
 
     init { StudioJna.ensure() }
 

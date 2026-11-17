@@ -43,8 +43,8 @@ class ReplayPlayerButtonsLayoutTest {
 
     @Test
     fun allLabelsFitInANarrowRowIncludingCancellationInProgress() {
-        val rules = TrimRules(FrameGrid(listOf(ReplayTimeline.Span(0, 1_000_000))), 1_000_000)
-        val trim = rules.enterTrim(rules.initial())
+        val rules = TrimRules(FrameGrid(listOf(ReplayTimeline.Span(0, 1_000_000), ReplayTimeline.Span(1_000_000, 2_000_000))), 2_000_000)
+        val trim = rules.markIn(rules.seek(rules.initial(), 1_000_000))
         val running = rules.taskStarted(trim, TaskKind.TRIM)
         val png = rules.taskStarted(rules.initial(), TaskKind.FRAME)
         val states = listOf(rules.initial(), trim, running, rules.cancel(running).first, png, rules.cancel(png).first)

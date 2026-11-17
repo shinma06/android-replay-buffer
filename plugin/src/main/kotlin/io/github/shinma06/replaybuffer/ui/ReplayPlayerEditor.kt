@@ -35,6 +35,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.DpSize
 import com.intellij.openapi.Disposable
+import com.intellij.openapi.application.PathManager
 import com.intellij.openapi.fileEditor.FileEditor
 import com.intellij.openapi.fileEditor.FileEditorLocation
 import com.intellij.openapi.fileEditor.FileEditorPolicy
@@ -47,6 +48,10 @@ import com.intellij.openapi.util.UserDataHolderBase
 import com.intellij.openapi.vfs.VirtualFile
 import io.github.shinma06.replaybuffer.core.ReplayFrameCursor
 import io.github.shinma06.replaybuffer.core.ReplayFrameExport
+import io.github.shinma06.replaybuffer.core.ReplayFrameCache
+import io.github.shinma06.replaybuffer.core.ReplayVideoDecoder
+import io.github.shinma06.replaybuffer.core.ReplayThumbnailDiskCache
+import io.github.shinma06.replaybuffer.core.previewKeyframeUs
 import io.github.shinma06.replaybuffer.core.ReplayTimeline
 import io.github.shinma06.replaybuffer.core.SavedReplay
 import io.github.shinma06.replaybuffer.ide.ReplayProjectService
@@ -71,20 +76,25 @@ import java.util.concurrent.atomic.AtomicReference
 import javax.swing.JPanel
 import javax.swing.SwingUtilities
 
+internal const val REPLAY_PLAYER_EDITOR_ID = "android-replay-buffer-player"
+
 /** Opens a completed save's video.mp4 in the replay player instead of a default editor. */
 internal class ReplayPlayerEditorProvider : FileEditorProvider, DumbAware {
     override fun accept(project: Project, file: VirtualFile): Boolean = isReplayVideo(file)
 
-    override fun createEditor(project: Project, file: VirtualFile): FileEditor = ReplayPlayerEditor(project, file)
+    override fun createEditor(project: Project, file: VirtualFile): FileEditor {
+        replayVideoOpening(file)
+        return ReplayPlayerEditor(project, file)
+    }
 
-    override fun getEditorTypeId(): String = "android-replay-buffer-player"
+    override fun getEditorTypeId(): String = REPLAY_PLAYER_EDITOR_ID
 
     override fun getPolicy(): FileEditorPolicy = FileEditorPolicy.PLACE_BEFORE_DEFAULT_EDITOR
 }
 
 /** Saved-replay player with QuickTime-style trim (requirements video-trim.md 3.1 / 3.2). */
 internal class ReplayPlayerEditor(project: Project, private val file: VirtualFile) : UserDataHolderBase(), FileEditor {
-    private val controller = ReplayPlayerController(project,
+    internal val controller = ReplayPlayerController(project,
         checkNotNull(file.parent).toNioPath().toAbsolutePath().normalize())
 
     private val component = JPanel(BorderLayout()).apply {
@@ -95,7 +105,7 @@ internal class ReplayPlayerEditor(project: Project, private val file: VirtualFil
 
     override fun getComponent() = component
     override fun getPreferredFocusedComponent() = component.getComponent(0) as? javax.swing.JComponent ?: component
-    override fun getName() = "動画プレイヤー"
+    override fun getName() = "動画の編集"
     override fun setState(state: FileEditorState) {}
     override fun isModified() = false
     override fun isValid() = true
@@ -123,6 +133,7 @@ internal data class PlayerState(
 )
 
 private class PlayerClosed : RuntimeException()
+private class PreviewSuperseded : RuntimeException()
 
 internal class ReplayPlaybackFrames<T : Any>(private val publish: (() -> Unit) -> Unit) {
     private var current: AtomicReference<T?>? = null
@@ -144,24 +155,36 @@ internal class ReplayPlayerController(
     project: Project,
     internal val folder: Path,
     openReplay: (Path) -> SavedReplay = { SavedReplay.open(it) },
+    private val decoderFactory: (SavedReplay, ReplayFrameCache) -> ReplayVideoDecoder = { replay, cache -> ReplayFrameCursor(replay, cache = cache) },
 ) : Disposable, PlayerBarActions {
+    internal val closePolicy = ReplayEditClosePolicy()
+    internal val resourcesClosed = java.util.concurrent.CompletableFuture<Boolean>()
     private val service = project.getService(ReplayProjectService::class.java)
     private val executor = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "arb-replay-player").apply { isDaemon = true }
     }
-    private val thumbnailExecutor = Executors.newSingleThreadExecutor { runnable ->
+    private val thumbnailExecutor = Executors.newFixedThreadPool(2) { runnable ->
         Thread(runnable, "arb-replay-thumbnails").apply { isDaemon = true; priority = Thread.MIN_PRIORITY }
     }
     private val decodeLock = Any()
     private var pendingUs: Long? = null
     private var decodeBusy = false
+    @Volatile private var previewGeneration = 0L
+    @Volatile private var foregroundWork = false
+    @Volatile private var playbackActive = false
+    @Volatile private var scrubbing = false
+    private val frameCache = ReplayFrameCache()
+    private var decoder: ReplayVideoDecoder? = null // Confined to executor.
+    private val diskThumbnails by lazy { ReplayThumbnailDiskCache(Path.of(PathManager.getSystemPath()).toAbsolutePath().normalize()) }
     @Volatile private var disposed = false
     @Volatile private var saved: SavedReplay? = null
     private var rules: TrimRules? = null
     private var playback: ReplayPlaybackSession? = null
+    private val playbackClosures = java.util.concurrent.ConcurrentHashMap.newKeySet<java.util.concurrent.CompletableFuture<Boolean>>()
+    private val playbackCleanupFailed = AtomicBoolean()
     private val playedFrames = ReplayPlaybackFrames<Pair<Long, ImageBitmap?>>(::publish)
     private var taskCancel: AtomicBoolean? = null
-    private val thumbnails = ThumbnailCache<ImageBitmap>()
+    private val thumbnails = ThumbnailCache<ImageBitmap>(maxBytes = 16L * 1024 * 1024) { it.width.toLong() * it.height * 4 }
     private val thumbnailGeneration = AtomicInteger()
     private var thumbnailSlots: List<Long?> = emptyList()
 
@@ -171,23 +194,39 @@ internal class ReplayPlayerController(
     val folderName: String get() = folder.fileName?.toString() ?: folder.toString()
 
     init {
-        executor.execute {
-            try {
-                val opened = openReplay(folder)
-                val timeline = try { opened.timeline() }
-                catch (failure: Throwable) { opened.close(); throw failure }
-                saved = opened
-                publish {
-                    val created = TrimRules(FrameGrid(timeline.spans), timeline.durationUs)
-                    rules = created
-                    state = state.copy(loading = false, durationUs = timeline.durationUs, timeline = timeline,
-                        editor = created.initial())
-                    showEditor()
-                }
-            } catch (failure: Throwable) {
-                publish { state = state.copy(loading = false, error = failure.message ?: "保存フォルダを開けません。") }
-            }
+        replayVideoOpenRequested(folder) {
+            if (!disposed) executor.execute { loadReplay(openReplay) }
+        }.exceptionally { failure ->
+            recordReadFailure(failure)
+            publish { state = state.copy(loading = false, error = failure.message ?: "保存フォルダを開けません。") }
+            null
         }
+    }
+
+    private fun loadReplay(openReplay: (Path) -> SavedReplay) {
+        if (disposed) return
+        try {
+            val opened = openReplay(folder)
+            val timeline = try { opened.previewKeyframes.at(0); opened.timeline() }
+            catch (failure: Throwable) { opened.close(); throw failure }
+            saved = opened
+            publish {
+                val created = TrimRules(FrameGrid(timeline.spans), timeline.durationUs)
+                rules = created
+                state = state.copy(loading = false, durationUs = timeline.durationUs, timeline = timeline,
+                    editor = created.initial())
+                showEditor()
+            }
+        } catch (failure: Throwable) {
+            recordReadFailure(failure)
+            publish { state = state.copy(loading = false, error = failure.message ?: "保存フォルダを開けません。") }
+        }
+    }
+
+    private fun recordReadFailure(failure: Throwable) {
+        val cancelled = failure is PreviewSuperseded || failure is PlayerClosed ||
+            failure is InterruptedException || failure is java.nio.channels.ClosedByInterruptException
+        if (!cancelled || failure.suppressed.isNotEmpty()) closePolicy.recordSourceReadFailure()
     }
 
     private fun publish(action: () -> Unit) {
@@ -206,16 +245,21 @@ internal class ReplayPlayerController(
     private fun showEditor() {
         val current = rules ?: return
         if (state.playing) return
-        val us = current.displayUs(state.editor)
-        if (current.grid.indexAt(us) < 0) {
-            synchronized(decodeLock) { pendingUs = null }
+        val exactUs = current.displayUs(state.editor)
+        scrubbing = state.editor.drag != null
+        val us = if (state.editor.drag != null) saved?.let { previewKeyframeUs(it, exactUs) } else exactUs
+        if (us == null || current.grid.indexAt(us) < 0) {
+            synchronized(decodeLock) { pendingUs = null; previewGeneration++ }
             state = state.copy(image = null, imageUs = -1)
         } else if (us != state.imageUs) requestDecode(us)
+        else synchronized(decodeLock) { pendingUs = null; previewGeneration++ }
     }
 
     private fun requestDecode(us: Long) {
         val run = synchronized(decodeLock) {
             pendingUs = us
+            previewGeneration++
+            foregroundWork = true
             if (!decodeBusy) { decodeBusy = true; true } else false
         }
         if (run) executor.execute(::drainDecode)
@@ -225,30 +269,52 @@ internal class ReplayPlayerController(
     private fun drainDecode() {
         try {
             while (!disposed) {
-                val target = synchronized(decodeLock) { pendingUs } ?: break
+                val (target, generation) = synchronized(decodeLock) { pendingUs?.let { it to previewGeneration } } ?: break
                 val replay = saved ?: break
+                fun active() {
+                    if (disposed) throw PlayerClosed()
+                    if (previewGeneration != generation || playbackActive) throw PreviewSuperseded()
+                }
                 try {
-                    val frame = ReplayFrameExport.decodeAt(replay, target) { if (disposed) throw PlayerClosed() }
-                    val bitmap = frame.image.toComposeImageBitmap()
+                    active()
+                    val cursor = decoder ?: decoderFactory(replay, frameCache).also { decoder = it }
+                    val frame = cursor.seek(target, ::active)
+                    active()
+                    val bitmap = frame.image.previewBitmap()
                     val aspect = frame.image.width.toFloat() / frame.image.height
-                    synchronized(decodeLock) { if (pendingUs == target) pendingUs = null }
+                    synchronized(decodeLock) { if (pendingUs == target && previewGeneration == generation) pendingUs = null }
                     publish {
-                        if (!state.playing && rules?.displayUs(state.editor) == target)
+                        val wanted = rules?.displayUs(state.editor)?.let { exact ->
+                            if (state.editor.drag != null) previewKeyframeUs(replay, exact) else exact
+                        }
+                        if (!state.playing && wanted == target && previewGeneration == generation)
                             state = state.copy(image = bitmap, imageUs = target, aspect = aspect)
                     }
-                } catch (_: PlayerClosed) {
+                    // Cache the two following positions after publishing. New input cancels at packet boundaries.
+                    if (!scrubbing) repeat(2) { active(); cursor.next(::active) }
+                } catch (failure: PreviewSuperseded) {
+                    recordReadFailure(failure)
+                    // A cancelled GOP is never published; the newest exact request goes next.
+                } catch (failure: PlayerClosed) {
+                    recordReadFailure(failure)
                     return
                 } catch (failure: Throwable) {
-                    synchronized(decodeLock) { if (pendingUs == target) pendingUs = null }
+                    recordReadFailure(failure) // Before EDT publication, including after disposal.
+                    // A failed decoder may have consumed a partial packet; never reuse that reference state.
+                    runCatching { decoder?.close() }.onFailure { closePolicy.recordSourceReadFailure() }; decoder = null
+                    synchronized(decodeLock) { if (pendingUs == target && previewGeneration == generation) pendingUs = null }
                     publish {
-                        if (!state.playing && rules?.displayUs(state.editor) == target)
+                        if (!state.playing && rules?.displayUs(state.editor) == target && previewGeneration == generation)
                             state = state.copy(message = failure.message ?: "この位置のframeを復号できません。")
                     }
                 }
             }
         } finally {
-            val rerun = synchronized(decodeLock) { decodeBusy = false; pendingUs != null }
-            if (rerun) synchronized(decodeLock) { pendingUs }?.let(::requestDecode)
+            synchronized(decodeLock) {
+                decodeBusy = !disposed && pendingUs != null
+                foregroundWork = decodeBusy
+                if (decodeBusy) executor.execute(::drainDecode)
+            }
         }
     }
 
@@ -256,45 +322,61 @@ internal class ReplayPlayerController(
 
     override fun stripResized(widthPx: Float, thumbWidthPx: Float) {
         val current = rules ?: return
+        val replay = saved ?: return
         val slots = thumbnailSlots(current.grid, current.durationUs, thumbnailCount(widthPx, thumbWidthPx))
+            .map { it?.let { at -> previewKeyframeUs(replay, at) } }
         if (slots == thumbnailSlots) return
         thumbnailSlots = slots
         val wanted = thumbnails.missing(slots)
-        if (wanted.isEmpty()) return
         val generation = thumbnailGeneration.incrementAndGet()
-        thumbnailExecutor.execute { buildThumbnails(wanted, generation) }
+        if (wanted.isEmpty()) return
+        // Two independent IDR streams at most; no executor queue growing with resize events.
+        (thumbnailExecutor as java.util.concurrent.ThreadPoolExecutor).queue.clear()
+        wanted.chunked((wanted.size + 1) / 2).forEach { chunk ->
+            thumbnailExecutor.execute { buildThumbnails(chunk, generation) }
+        }
     }
 
-    /** Decodes [wanted] frame starts in order with one forward cursor; stops when superseded. */
+    /** Independent keyframes only. Workers yield entirely while playback or interactive seeking runs. */
     private fun buildThumbnails(wanted: List<Long>, generation: Int) {
-        fun active() { if (disposed || thumbnailGeneration.get() != generation) throw PlayerClosed() }
+        fun active() {
+            do {
+                if (disposed || thumbnailGeneration.get() != generation || Thread.currentThread().isInterrupted) throw PlayerClosed()
+                if (!foregroundWork && !playbackActive) break
+                Thread.sleep(20)
+            } while (true)
+        }
         try {
-            SavedReplay.open(folder).use { replay ->
-                ReplayFrameCursor(replay).use { cursor ->
-                    var last: ReplayFrameCursor.Decoded? = null
+            active()
+            SavedReplay.open(folder) { _, _ -> active() }.use { replay ->
+                active()
+                val source = replay.openFile(io.github.shinma06.replaybuffer.core.ReplayFiles.VIDEO).use { "${replay.recordSha256}:${it.key}" }
+                decoderFactory(replay, ReplayFrameCache(0)).use { cursor ->
                     var sinceRepaint = 0
                     wanted.forEach { target ->
                         active()
                         if (thumbnails[target] != null) return@forEach
-                        var frame = last
-                        var steps = 0
-                        while (frame != null && frame.startUs < target && steps < 90) { frame = cursor.next(::active); steps++ }
-                        if (frame == null || frame.startUs != target) frame = cursor.seek(target, ::active)
-                        last = frame
-                        thumbnails.put(target, scaledThumbnail(frame.image, THUMBNAIL_HEIGHT_PX).toComposeImageBitmap())
+                        val image = runCatching { diskThumbnails.read(source, target) }.getOrNull() ?: run {
+                            check(previewKeyframeUs(replay, target) == target)
+                            val frame = cursor.seek(target, ::active)
+                            active()
+                            scaledThumbnail(frame.image, THUMBNAIL_HEIGHT_PX).also { runCatching { diskThumbnails.write(source, target, it) } }
+                        }
+                        active()
+                        thumbnails.put(target, image.previewBitmap())
                         if (++sinceRepaint >= 4) { sinceRepaint = 0; publish { state = state.copy(thumbnailVersion = state.thumbnailVersion + 1) } }
                     }
                 }
             }
-        } catch (_: PlayerClosed) {
-        } catch (_: Throwable) {
+        } catch (failure: Throwable) {
+            recordReadFailure(failure)
             // Thumbnails are decoration; a frame that cannot decode stays an empty slot.
         } finally {
             publish { state = state.copy(thumbnailVersion = state.thumbnailVersion + 1) }
         }
     }
 
-    fun thumbnail(startUs: Long): ImageBitmap? = thumbnails[startUs]
+    fun thumbnail(startUs: Long): ImageBitmap? = saved?.let { previewKeyframeUs(it, startUs) }?.let { thumbnails[it] }
 
     // --- Pointer and keys ------------------------------------------------------------------
 
@@ -315,7 +397,10 @@ internal class ReplayPlayerController(
 
     /** `キャンセル` / `中止` / Esc (3.2). */
     fun cancel() {
+        if (disposed) return
         val current = rules ?: return
+        // Resetting a playing range retains the real playback clock, as pausing does.
+        if (state.editor.drag == null && !state.busy() && !current.rangeUnchanged(state.editor) && state.playing) togglePlay()
         val (next, effect) = current.cancel(state.editor)
         state = state.copy(editor = next, message = if (effect == CancelEffect.ABORT_TASK) null else state.message)
         when (effect) {
@@ -328,7 +413,6 @@ internal class ReplayPlayerController(
 
     override fun button(id: PlayerButton) {
         when (id) {
-            PlayerButton.ENTER_TRIM -> { stopPlayback(); edit { r, s -> r.enterTrim(s) }; state = state.copy(message = null) }
             PlayerButton.TRIM -> trim()
             PlayerButton.SAVE_FRAME -> exportPng()
             PlayerButton.CANCEL -> cancel()
@@ -353,6 +437,8 @@ internal class ReplayPlayerController(
         val current = rules ?: return
         if (state.error != null || state.editor.drag != null) return
         val (from, until) = current.playRange(state.editor) ?: return
+        synchronized(decodeLock) { pendingUs = null; previewGeneration++ }
+        playbackActive = true
         lateinit var session: ReplayPlaybackSession
         val showFrame = playedFrames.session { (position, image) ->
             if (playback === session && state.playing)
@@ -360,7 +446,7 @@ internal class ReplayPlayerController(
         }
         session = ReplayPlaybackSession(folder, from, until,
             onFrame = { frame ->
-                showFrame(frame.startUs to frame.image.toComposeImageBitmap())
+                showFrame(frame.startUs to frame.image.previewBitmap())
             },
             onFinished = { failure -> publish { if (playback === session) {
                 state = state.copy(editor = current.playbackFinished(state.editor, until, failure != null))
@@ -368,8 +454,16 @@ internal class ReplayPlayerController(
                 failure?.let { state = state.copy(message = it) }
             } } },
             onAudioUnavailable = { reason -> publish { if (playback === session) state = state.copy(audioNote = reason) } },
-            onGap = { us -> showFrame(us to null) })
+            onGap = { us -> showFrame(us to null) },
+            decoderFactory = { decoderFactory(it, frameCache) },
+            onSourceFailure = closePolicy::recordSourceReadFailure)
         playback = session
+        val closed = session.resourcesClosed
+        playbackClosures.add(closed)
+        closed.whenComplete { clean, failure ->
+            if (clean != true || failure != null) playbackCleanupFailed.set(true)
+            playbackClosures.remove(closed)
+        }
         state = state.copy(playing = true, audioNote = null, message = null)
         session.start()
     }
@@ -377,6 +471,7 @@ internal class ReplayPlayerController(
     private fun stopPlayback() {
         val session = playback ?: return
         playback = null
+        playbackActive = false
         session.stop()
         playedFrames.clear()
         state = state.copy(playing = false)
@@ -397,6 +492,7 @@ internal class ReplayPlayerController(
         edit { r, s -> r.taskStarted(s, TaskKind.FRAME) }
         state = state.copy(message = null)
         service.exportReplayFrame(folder, state.editor.playheadUs, cancel).whenComplete { file, failure ->
+            if (failure != null) closePolicy.ambiguousOutput = true
             publish {
                 val outcome = when { failure != null -> TaskOutcome.FAILED; file == null -> TaskOutcome.CANCELLED; else -> TaskOutcome.SUCCESS }
                 taskCancel = null
@@ -413,13 +509,15 @@ internal class ReplayPlayerController(
     fun trim() {
         val current = rules ?: return
         val editor = state.editor
-        if (disposed || state.busy() || state.error != null || editor.mode != PlayerMode.TRIM || current.rangeUnchanged(editor)) return
+        if (disposed || state.busy() || state.error != null || current.rangeUnchanged(editor)) return
         stopPlayback()
         val cancel = AtomicBoolean()
         taskCancel = cancel
         edit { r, s -> r.taskStarted(s, TaskKind.TRIM) }
         state = state.copy(message = null)
         service.trimReplay(folder, editor.inUs, editor.outUs, cancel).whenComplete { run, failure ->
+            if (failure != null) closePolicy.ambiguousOutput = true
+            if (run?.output != null) closePolicy.trimExported = true
             publish {
                 val outcome = when { failure != null -> TaskOutcome.FAILED; run.output == null -> TaskOutcome.CANCELLED; else -> TaskOutcome.SUCCESS }
                 taskCancel = null
@@ -449,19 +547,34 @@ internal class ReplayPlayerController(
         val editor = state.editor
         val availability = availability(current)
         val buttons = if (current == null) listOf(
-            ButtonSpec(PlayerButton.ENTER_TRIM, "トリム…", true, false, availability.error?.let { "この保存は切り取れません: $it" } ?: "読み込み中です"),
-            ButtonSpec(PlayerButton.SAVE_FRAME, "この位置をPNG保存", false, false))
+            ButtonSpec(PlayerButton.TRIM, "トリミング", true, false, availability.error?.let { "この保存は切り取れません: $it" } ?: "読み込み中です"),
+            ButtonSpec(PlayerButton.SAVE_FRAME, "この位置をPNG保存", false, false),
+            ButtonSpec(PlayerButton.CANCEL, "キャンセル", false, false))
         else playerButtons(current, editor, availability)
         return PlayerBarModel(editor, current, state.timeline, buttons, statusLine(state.message ?: state.audioNote, buttons),
             state.playing, current != null && state.error == null && editor.drag == null, ::thumbnail, state.thumbnailVersion, state.aspect)
     }
 
     override fun dispose() {
+        if (disposed) return
         disposed = true
+        previewGeneration++
         playback?.stop()
+        // Retired sessions can still own SavedReplay leases while stop/decoder/native audio unwinds.
+        val stoppedSessions = playbackClosures.toTypedArray()
         thumbnailGeneration.incrementAndGet()
         thumbnailExecutor.shutdownNow()
-        executor.execute { runCatching { saved?.close() } }
+        executor.execute {
+            val thumbnailsClosed = runCatching { thumbnailExecutor.awaitTermination(30, java.util.concurrent.TimeUnit.SECONDS) }.getOrDefault(false)
+            val playbackClosed = runCatching {
+                java.util.concurrent.CompletableFuture.allOf(*stoppedSessions).get(30, java.util.concurrent.TimeUnit.SECONDS)
+                stoppedSessions.all { it.getNow(false) } && !playbackCleanupFailed.get()
+            }.getOrDefault(false)
+            val decoderClosed = runCatching { decoder?.close() }.isSuccess
+            frameCache.clear()
+            val replayClosed = runCatching { saved?.close() }.isSuccess
+            resourcesClosed.complete(thumbnailsClosed && playbackClosed && decoderClosed && replayClosed)
+        }
         executor.shutdown()
     }
 }

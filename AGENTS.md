@@ -31,6 +31,8 @@ Passing tests does not mean IDE/device acceptance; say which was verified.
 
 ## Rules
 
+- 旧運用（Omil、PM、受入ゲート、lease、handoff 等）の記述は根拠にしない。
+- Follow `docs/verification/README.md`: CI `test` / `os-parity` permit develop integration; record unobservable VM/device checks as unverified with reasons, not blockers. Only main promotion requires VM acceptance.
 - `docs/cli.md` is the CLI contract. Any CLI change updates `docs/cli.md`, `replay --help`, `plugin/src/main/cli/README.txt` and `docs/mcp.md` together, and GUI, CLI and MCP behaviour stays identical.
 - Do not publish recordings, logcat, raw diagnostics or credentials.
 - Behaviour must be identical on Linux, macOS and Windows. OS-specific code lives only in the per-OS implementations (`PosixSaveHandles` / `WindowsSaveHandles`, `PosixPrivateFiles` / `WindowsPrivateFiles`) chosen by the single OS-detection point `core/HostPlatform.kt`; callers never branch on the OS. Every change must pass the CI `test` and `os-parity` (macOS, Windows) jobs. Tests must not skip by OS unless they exercise a truly OS-only facility.

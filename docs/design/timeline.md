@@ -8,7 +8,7 @@
 
 CLI原型の保全に関する記述は、この設計当時の変更範囲です。第2版の同梱CLI・明示移行・復旧は[CLI契約](../cli.md)に従い、本設計の取得・保存・UI保証は保持します。
 
-当時の試作・未実施・CLI原型に関する記録は履歴です。現行buildと実装の入口は[project facts](../project.md)、現在の実行済み/未達・延期は[Case台帳](../verification/README.md)を参照し、本設計の改訂だけで観察を追加・変更しません。
+当時の試作・未実施・CLI原型に関する記録は履歴です。現行buildと実装の入口は[プロジェクト情報](../project.md)、確認と統合は[検証方針](../verification/README.md)を参照します。
 
 ## 採用する方式
 
@@ -101,7 +101,7 @@ gapはstream毎に`kind / from / to / reason / boundary_uncertainty / generation
 
 端末側cleanupが再接続待ちになる場合、停止済みreader/clientのUUID・serial・exact forward endpointをcaller指定のstable private cleanupDirectoryへ記録する。session workspaceを探索せず、未知/破損/未来schema/生存file-lock ownerを保全する。新CoreはOFFでも同directoryの保留をローカルで読み戻して表示する。検証済みrecordのlock取得後だけ引継ぎ、解決済みSDKと所有pendingがある場合に限り、OFFのまま有界・取消可能なcleanupを再試行する。取得backend/時計/logcat/recordingは開始せず、pendingなし・破損/未来/lockedのみの初回OFFはADB照会もしない。旧serial自身が接続したときに二重psのowned名確認・forward serial/port/endpoint再照合を行う。port再利用・別device・共有ADBには作用せず、成功recordだけ削除する。IDE callerはsession tempとstable directoryの寿命を分ける。旧tempに残った未参照markerは所有者による既知資源管理へ残し、host-wide探索で移行しない。
 
-#11のPM案（1件のimmutable保存対象、失敗時に同じ対象を再試行/保存先変更/破棄、解決前の新規保存を止め取得は継続、無効化/project closeで未保存破棄）と整合する。pinはraw GOP/log/clock metadataへの所有参照で、pruneがpinを削除しない。snapshotは各raw chunkのbyte長/完全packet数とclock変換版をwatermarkとして固定する。進行中chunkに追記してもsnapshotは固定長より後を読まず、pin中の既存bytesは上書きしない。保存後のclock再校正も固定対象を書き換えない。保存中もwriterは新packet/GOPへ進む。保存対象は失敗しても新しいTへ差し替えない。容量・pin寿命は#11の決定を実装担当が適用し、録画streamを無制限にpinしない。
+[保存設計](../plugin-design.md)の契約（1件のimmutable保存対象、失敗時に同じ対象を再試行/保存先変更/破棄、解決前の新規保存を止め取得は継続、無効化/project closeで未保存破棄）と整合する。pinはraw GOP/log/clock metadataへの所有参照で、pruneがpinを削除しない。snapshotは各raw chunkのbyte長/完全packet数とclock変換版をwatermarkとして固定する。進行中chunkに追記してもsnapshotは固定長より後を読まず、pin中の既存bytesは上書きしない。保存後のclock再校正も固定対象を書き換えない。保存中もwriterは新packet/GOPへ進む。保存対象は失敗しても新しいTへ差し替えない。容量・pin寿命は#11の決定を実装担当が適用し、録画streamを無制限にpinしない。
 
 ## 切出しと保存形式
 
@@ -164,11 +164,11 @@ edit listで各区間のdecoder-only prefixを隠す。有限の元VIDEO gapと�
 
 ## 許容精度と受取人の確認
 
-現在の保証は[本人要件の明確化 #299](https://github.com/shinma06/android-replay-buffer/issues/299)と[有効受入](../verification/responsibility.md)に従う。元PTS・両ログの内容/順序/帰属と支持されたclock変換、実時間窓・索引・欠落説明を検証する。端末内clock変換の見積誤差 **≤ 20ms**、読取幅 **≤ 2ms**、sample鮮度 **≤ 5秒**を維持する。RTT **≤ 40ms**は、hostの時刻から端末の時刻を推定するanchorの条件で、端末内clock変換の可否には使わない。支持された対応でのcut境界は1観測frame間隔＋時計誤差以内、mux/indexの丸め誤差は **≤ 1ms**。これらを画像取得/物理表示を含む総合精度に読み替えず、unknownの境界に適用しない。
+現在の保証は[本人要件の明確化 #299](https://github.com/shinma06/android-replay-buffer/issues/299)と[製品要件](../requirements.md)に従う。元PTS・両ログの内容/順序/帰属と支持されたclock変換、実時間窓・索引・欠落説明を検証する。端末内clock変換の見積誤差 **≤ 20ms**、読取幅 **≤ 2ms**、sample鮮度 **≤ 5秒**を維持する。RTT **≤ 40ms**は、hostの時刻から端末の時刻を推定するanchorの条件で、端末内clock変換の可否には使わない。支持された対応でのcut境界は1観測frame間隔＋時計誤差以内、mux/indexの丸め誤差は **≤ 1ms**。これらを画像取得/物理表示を含む総合精度に読み替えず、unknownの境界に適用しない。
 
-旧受入目標の画像/log対応 **p95 ≤ 100ms、最大 ≤ 250ms、中央値drift ≤ 50ms**と当時の30分等の方法は履歴として保持する。streamが独立に提供しない画像時刻の数値精度を、現在のAgent段階・後続実装・性能baselineの一律gateにしない。代替許容値を発明せず、元REQUEST/DRAWのFAIL・未校正・原因未帰属を保持する。FRAME_COMMIT等の良い位相や補正値へ判定を付け替えない。
+旧目標の画像/log対応 **p95 ≤ 100ms、最大 ≤ 250ms、中央値drift ≤ 50ms**と当時の30分等の方法は履歴であり、記録は[旧運用の保管先](../legacy-ops/README.md)から参照できる。streamが独立に提供しない画像取得/物理表示時刻の数値精度は一律の確認条件にしない。代替許容値を発明せず、未校正・原因未帰属は明示する。REQUEST/DRAWからFRAME_COMMIT等の異なる位相や補正値へ判定を付け替えない。
 
-既知入力回帰による変換/長時間履歴/時計境界と、固定native成果の全frame・両log・実画像ID/順序/窓の対応を確認する。失敗/時計急変・欠落/unknownは全件残し、対応を推定できない区間を同期済みとしない。gapは`missing`、held tailは新frame取得ではない。現行保証に必要な事実が足りなければpending、具体的な誤変換・誤帰属・黙示的欠落・破損・虚偽の時刻/保存成功があれば影響する受入を止める。要件改訂を新しい実測PASSにしない。
+既知入力回帰による変換/長時間履歴/時計境界と、固定native成果の全frame・両log・実画像ID/順序/窓の対応を確認する。失敗/時計急変・欠落/unknownは全件残し、対応を推定できない区間を同期済みとしない。gapは`missing`、held tailは新frame取得ではない。観察できない項目は未検証の理由を記録し、具体的な誤変換・誤帰属・黙示的欠落・破損・虚偽の時刻/保存成功は不具合として修正する。
 
 受取人は追加ツールなしで次を行う。
 
@@ -185,7 +185,7 @@ edit listで各区間のdecoder-only prefixを隠す。有限の元VIDEO gapと�
 
 実装担当が同じ試作を再現する最小手順は、固定JARをhash照合しJBR25で`MP4Muxer.createMP4MuxerToChannel`→`addVideoTrack(H264, 32×32 YUV420J)`→`H264Encoder.encodeIDRFrame`→上記3つの`Packet.createPacket`（全てtimescale=1e6）→`finish`→`MP4Demuxer.createRawMP4Demuxer`の順。editなしで全PTS/durationをassertし、edit付きではTrakBoxのEdit値をassertする。異なるtimescaleを混ぜた動作、B-frameは未確認・初期版契約外。現実の画面取得でこれを置き換えない。
 
-実装Caseは[issue-13.json](../verification/changes/issue-13.json)に全てpendingで残す。実機は利用者が用意できず受入を保留しており、未実施のまま保持する。実機の再開は利用者による端末準備とPMの割当後とし、この保留を理由にEmulator受入の準備や[#31のコア実装](https://github.com/shinma06/android-replay-buffer/issues/31)を止めない。Emulator/受取人側も現段階では未実施であり、実機のpassを代替しない。設計変更自体はGUIを要しないが、方式採用の製品受入には実機/Emulatorで必要なためGUI requiredとして追跡する。PMは#14/#31の実装と[#27のQA](https://github.com/shinma06/android-replay-buffer/issues/27)へCaseと環境ごとの状態を双方向で引継ぎ、独立レビュー/固定候補promotionを調整する。検証待ちを理由にCLI原型を変更しない。
+実機・Emulator・受取人側の環境で観察できない項目は、[検証方針](../verification/README.md)に従って未検証の理由を記録する。合成入力での試作結果を、端末での観察結果に置き換えない。
 
 ## 混在サイズの変換範囲と負荷
 

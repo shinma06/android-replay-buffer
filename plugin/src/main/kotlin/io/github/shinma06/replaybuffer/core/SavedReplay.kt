@@ -9,6 +9,10 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardOpenOption.READ
 
+/** Same manifest identity across renames; an out-of-content byte avoids mandatory data locks. */
+internal fun SaveOutputFile.tryReplayLease(shared: Boolean): AutoCloseable? =
+    tryOwnerLock(shared = shared, position = Long.MAX_VALUE - 1)
+
 /** A completed schema-4 saved replay folder opened read-only through the save handles. */
 internal class SavedReplay private constructor(
     val directory: Path,
@@ -16,12 +20,15 @@ internal class SavedReplay private constructor(
     /** Owned from before the input child opens until staging/failure handling has finished. */
     val parent: SaveOutputDirectory,
     private val pins: Map<String, SaveOutputFile>,
+    private val sourceLease: AutoCloseable,
     val manifest: JsonObject,
     val frames: List<JsonObject>,
     val recordSha256: String,
 ) : AutoCloseable {
 
     val name: String get() = directory.fileName.toString()
+    internal val directoryKey get() = handle.key
+    internal val previewKeyframes by lazy { ReplayPreviewIndex(frames) }
     private val gson = Gson()
     private val openFiles = mutableListOf<SaveOutputFile>()
     private var closed = false
@@ -101,8 +108,11 @@ internal class SavedReplay private constructor(
         closed = true
         try { openFiles.forEach(SaveOutputFile::close) }
         finally {
-            try { pins.values.forEach(SaveOutputFile::close) }
-            finally { try { handle.close() } finally { parent.close() } }
+            try { sourceLease.close() }
+            finally {
+                try { pins.values.forEach(SaveOutputFile::close) }
+                finally { try { handle.close() } finally { parent.close() } }
+            }
         }
     }
 
@@ -121,11 +131,15 @@ internal class SavedReplay private constructor(
             val handle = try { parent.openChild(directory.fileName.toString()) }
             catch (failure: Throwable) { parent.close(); throw failure }
             val pins = linkedMapOf<String, SaveOutputFile>()
+            var sourceLease: AutoCloseable? = null
             fun pin(name: String) = pins.getOrPut(name) { handle.openFile(name) }
             try {
                 val entries = handle.entries()
                 require(ReplayFiles.RECORD in entries) { "replay.jsonのないフォルダは切り取れません" }
-                val record = pin(ReplayFiles.RECORD).channel(setOf(READ)).use { channel ->
+                val recordPin = pin(ReplayFiles.RECORD)
+                sourceLease = checkNotNull(recordPin.tryReplayLease(shared = true)) { "本体を移動・復元中です。完了後にもう一度お試しください。" }
+                handle.verifyFile(ReplayFiles.RECORD, recordPin)
+                val record = recordPin.channel(setOf(READ)).use { channel ->
                     require(channel.size() <= 64L * 1024 * 1024) { "replay.jsonが大きすぎます" }
                     val buffer = java.nio.ByteBuffer.allocate(channel.size().toInt())
                     while (buffer.hasRemaining()) check(channel.read(buffer) > 0)
@@ -173,10 +187,12 @@ internal class SavedReplay private constructor(
                 require(frames.isNotEmpty()) { "動画のframe記録がありません" }
                 val recordHash = java.security.MessageDigest.getInstance("SHA-256").digest(record.toByteArray(Charsets.UTF_8))
                     .joinToString("") { "%02x".format(it) }
-                return SavedReplay(directory, handle, parent, pins, manifest, frames, recordHash)
+                return SavedReplay(directory, handle, parent, pins, sourceLease, manifest, frames, recordHash)
             } catch (e: Throwable) {
-                try { pins.values.forEach(SaveOutputFile::close) }
-                finally { try { handle.close() } finally { parent.close() } }
+                try { sourceLease?.close() } finally {
+                    try { pins.values.forEach(SaveOutputFile::close) }
+                    finally { try { handle.close() } finally { parent.close() } }
+                }
                 throw e
             }
         }

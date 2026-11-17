@@ -29,6 +29,7 @@
                   implementationClass="io.github.shinma06.replaybuffer.ui.ReplayVideoFileType" fieldName="INSTANCE"/>
         <fileTypeDetector implementation="io.github.shinma06.replaybuffer.ui.ReplayVideoFileTypeDetector"/>
         <fileEditorProvider implementation="io.github.shinma06.replaybuffer.ui.ReplayPlayerEditorProvider"/>
+        <virtualFilePreCloseCheck implementation="io.github.shinma06.replaybuffer.ui.ReplayVideoPreCloseCheck"/>
         <postStartupActivity implementation="io.github.shinma06.replaybuffer.ide.ReplayProjectActivity"/>
     </extensions>
     <projectListeners>

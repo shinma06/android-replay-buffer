@@ -6,6 +6,10 @@ import com.intellij.mock.MockProject
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.util.Disposer
 import io.github.shinma06.replaybuffer.core.ReplayFiles
+import io.github.shinma06.replaybuffer.core.ReplayFrameCache
+import io.github.shinma06.replaybuffer.core.ReplayFrameCursor
+import io.github.shinma06.replaybuffer.core.ReplayVideoDecoder
+import io.github.shinma06.replaybuffer.core.previewKeyframeUs
 import io.github.shinma06.replaybuffer.core.SaveOutputFile
 import io.github.shinma06.replaybuffer.core.SavedReplay
 import org.junit.jupiter.api.io.TempDir
@@ -29,6 +33,321 @@ import kotlin.test.assertTrue
 
 class ReplayPlayerControllerTest {
     @TempDir lateinit var root: Path
+
+    @Test fun everyLoadStartsWithEditableFullRangeAndCancelKeepsEditing() = withController { controller ->
+        assertFalse(controller.state.playing)
+        val rules = controller.barModel().rules!!
+        assertEquals(rules.fullInUs, controller.state.editor.inUs)
+        assertEquals(rules.fullOutUs, controller.state.editor.outUs)
+        assertEquals(listOf(PlayerButton.TRIM, PlayerButton.SAVE_FRAME, PlayerButton.CANCEL), controller.barModel().buttons.map { it.id })
+        assertFalse(controller.barModel().buttons.last().enabled)
+        assertTrue(controller.barModel().buttons.single { it.id == PlayerButton.SAVE_FRAME }.enabled)
+        SwingUtilities.invokeAndWait { controller.markIn(); controller.step(2); controller.markOut() }
+        awaitPreview(controller)
+        assertFalse(rules.rangeUnchanged(controller.state.editor))
+        assertTrue(controller.barModel().buttons.single { it.id == PlayerButton.TRIM }.enabled)
+        assertTrue(controller.barModel().buttons.single { it.id == PlayerButton.SAVE_FRAME }.enabled)
+        val position = controller.state.editor.playheadUs
+        SwingUtilities.invokeAndWait { controller.cancel() }
+        awaitPreview(controller)
+        assertTrue(rules.rangeUnchanged(controller.state.editor))
+        assertEquals(position, controller.state.editor.playheadUs)
+        assertFalse(controller.barModel().buttons.last().enabled)
+        assertTrue(controller.barModel().buttons.single { it.id == PlayerButton.SAVE_FRAME }.enabled)
+        SwingUtilities.invokeAndWait { controller.markIn() }
+        assertFalse(rules.rangeUnchanged(controller.state.editor))
+    }
+
+    @Test fun openingAndClosingAnUntouchedFullRangeNeverExports() {
+        var original = emptyMap<String, List<Byte>>()
+        fun files() = Files.walk(root).use { paths -> paths.filter(Files::isRegularFile).toList()
+            .associate { root.relativize(it).toString() to Files.readAllBytes(it).toList() } }
+        withController { controller ->
+            original = files()
+            SwingUtilities.invokeAndWait {
+                controller.button(PlayerButton.TRIM) // Disabled at full range, including direct dispatch.
+                controller.cancel()
+                assertNull(controller.state.editor.task)
+                assertTrue(controller.barModel().rules!!.rangeUnchanged(controller.state.editor))
+            }
+        }
+        assertEquals(original, files())
+    }
+
+    @Test fun completedFailedPlaybackRemainsConservativeAfterTheSessionIsRetired() {
+        val initial = AtomicBoolean(true)
+        val entered = CountDownLatch(1)
+        withController(decoderFactory = { replay, cache ->
+            val real = ReplayFrameCursor(replay, cache = cache)
+            if (initial.getAndSet(false)) real else object : ReplayVideoDecoder by real {
+                override fun seekForPlayback(atUs: Long, checkActive: () -> Unit): ReplayFrameCursor.Decoded {
+                    entered.countDown()
+                    try { CountDownLatch(1).await() }
+                    catch (_: InterruptedException) { error("Injected late retired decode failure") }
+                    error("Unexpected continuation")
+                }
+            }
+        }) { controller ->
+            SwingUtilities.invokeAndWait { controller.togglePlay() }
+            val session = playback(controller)
+            assertTrue(entered.await(30, TimeUnit.SECONDS))
+            SwingUtilities.invokeAndWait { controller.togglePlay() }
+            assertFalse(session.resourcesClosed.get(30, TimeUnit.SECONDS))
+            assertTrue(controller.closePolicy.mustRetainSource)
+            SwingUtilities.invokeAndWait { controller.dispose() }
+            assertFalse(controller.resourcesClosed.get(30, TimeUnit.SECONDS))
+        }
+    }
+
+    @Test fun failedSeekRetainsBeforeEdtPublicationAndAfterGoodPreviewAndMessageRecovery() {
+        val fail = AtomicBoolean()
+        val entered = CountDownLatch(1)
+        val releaseDecode = CountDownLatch(1)
+        withController(decoderFactory = { replay, cache ->
+            val real = ReplayFrameCursor(replay, cache = cache)
+            object : ReplayVideoDecoder by real {
+                override fun seek(atUs: Long, checkActive: () -> Unit): ReplayFrameCursor.Decoded {
+                    if (fail.get()) {
+                        entered.countDown()
+                        check(releaseDecode.await(30, TimeUnit.SECONDS))
+                        error("Injected seek source failure")
+                    }
+                    return real.seek(atUs, checkActive)
+                }
+            }
+        }) { controller ->
+            drain(controller)
+            val oldImage = controller.state.image
+            val oldUs = controller.state.imageUs
+            fail.set(true)
+            SwingUtilities.invokeAndWait { controller.step(2) }
+            assertTrue(entered.await(30, TimeUnit.SECONDS))
+            val edtBlocked = CountDownLatch(1)
+            val releaseEdt = CountDownLatch(1)
+            SwingUtilities.invokeLater { edtBlocked.countDown(); check(releaseEdt.await(30, TimeUnit.SECONDS)) }
+            try {
+                assertTrue(edtBlocked.await(30, TimeUnit.SECONDS))
+                releaseDecode.countDown()
+                (controller.javaClass.getDeclaredField("executor").apply { isAccessible = true }.get(controller) as ExecutorService)
+                    .submit {}.get(30, TimeUnit.SECONDS)
+                assertTrue(controller.closePolicy.mustRetainSource) // Worker writes before queued message can run.
+                assertNull(controller.state.message)
+            } finally { releaseDecode.countDown(); releaseEdt.countDown() }
+            drain(controller)
+            SwingUtilities.invokeAndWait {
+                assertNull(controller.state.error)
+                assertEquals(oldImage, controller.state.image)
+                assertEquals(oldUs, controller.state.imageUs)
+                assertEquals("Injected seek source failure", controller.state.message)
+                assertFalse(controller.barModel().buttons.single { it.id == PlayerButton.SAVE_FRAME }.enabled)
+                fail.set(false)
+                controller.step(1)
+            }
+            awaitPreview(controller)
+            SwingUtilities.invokeAndWait { controller.togglePlay(); controller.togglePlay() } // Clears transient message.
+            awaitPreview(controller)
+            SwingUtilities.invokeAndWait {
+                assertNull(controller.state.error)
+                assertNull(controller.state.message)
+                assertTrue(controller.barModel().buttons.single { it.id == PlayerButton.SAVE_FRAME }.enabled)
+                assertTrue(controller.closePolicy.mustRetainSource)
+            }
+        }
+    }
+
+    @Test fun ordinaryPlaybackDecodeFailureRetainsWithoutTurningTheEditorFatal() = withController(decoderFactory = { replay, cache ->
+        val real = ReplayFrameCursor(replay, cache = cache)
+        object : ReplayVideoDecoder by real {
+            override fun seekForPlayback(atUs: Long, checkActive: () -> Unit): ReplayFrameCursor.Decoded = error("Injected playback decode failure")
+        }
+    }) { controller ->
+        lateinit var session: ReplayPlaybackSession
+        SwingUtilities.invokeAndWait { controller.togglePlay(); session = playback(controller) }
+        assertFalse(session.resourcesClosed.get(30, TimeUnit.SECONDS))
+        SwingUtilities.invokeAndWait {
+            assertNull(controller.state.error)
+            assertEquals("Injected playback decode failure", controller.state.message)
+            assertTrue(controller.closePolicy.mustRetainSource)
+        }
+    }
+
+    @Test fun thumbnailSourceFailureRetainsEvenThoughTheSlotIsOptional() = thumbnailSource(true)
+    @Test fun normalThumbnailGenerationDoesNotMakeHealthySourceUncertain() = thumbnailSource(false)
+
+    @Test fun interruptedPreviewWithoutCloseFailureRemainsHealthy() = interruptedPreview(false)
+    @Test fun interruptedPreviewCannotHideDecoderCloseFailure() = interruptedPreview(true)
+
+    private fun interruptedPreview(closeFails: Boolean) {
+        val cancel = AtomicBoolean()
+        withController(decoderFactory = { replay, cache ->
+            val real = ReplayFrameCursor(replay, cache = cache)
+            object : ReplayVideoDecoder by real {
+                override fun seek(atUs: Long, checkActive: () -> Unit): ReplayFrameCursor.Decoded {
+                    if (cancel.get()) throw java.nio.channels.ClosedByInterruptException()
+                    return real.seek(atUs, checkActive)
+                }
+                override fun close() {
+                    real.close()
+                    if (cancel.get() && closeFails) error("Injected preview close failure")
+                }
+            }
+        }) { controller ->
+            drain(controller)
+            cancel.set(true)
+            SwingUtilities.invokeAndWait { controller.step(1) }
+            drain(controller)
+            assertEquals(closeFails, controller.closePolicy.mustRetainSource)
+            assertNull(controller.state.error)
+        }
+    }
+
+    private fun thumbnailSource(fail: Boolean) = withController(decoderFactory = { replay, cache ->
+        if (Thread.currentThread().name == "arb-replay-thumbnails" && fail) error("Injected thumbnail source failure")
+        ReplayFrameCursor(replay, cache = cache)
+    }) { controller ->
+        drain(controller)
+        SwingUtilities.invokeAndWait { controller.stripResized(640f, 96f) }
+        val thumbnails = controller.javaClass.getDeclaredField("thumbnailExecutor").apply { isAccessible = true }.get(controller) as ExecutorService
+        thumbnails.shutdown()
+        assertTrue(thumbnails.awaitTermination(30, TimeUnit.SECONDS))
+        SwingUtilities.invokeAndWait {
+            assertNull(controller.state.error)
+            assertEquals(fail, controller.closePolicy.mustRetainSource)
+            assertTrue(controller.barModel().buttons.single { it.id == PlayerButton.SAVE_FRAME }.enabled)
+        }
+    }
+
+    @Test fun initialPngWaitsForTheGenuineFirstPreviewThenNeedsNoTrimEdits() {
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        withController(decoderFactory = { replay, cache ->
+            val real = ReplayFrameCursor(replay, cache = cache)
+            object : ReplayVideoDecoder {
+                override fun seek(atUs: Long, checkActive: () -> Unit): ReplayFrameCursor.Decoded {
+                    entered.countDown()
+                    assertTrue(release.await(30, TimeUnit.SECONDS))
+                    return real.seek(atUs, checkActive)
+                }
+                override fun next(checkActive: () -> Unit) = real.next(checkActive)
+                override fun close() = real.close()
+            }
+        }, beforePreview = { controller ->
+            try {
+                assertTrue(entered.await(30, TimeUnit.SECONDS))
+                SwingUtilities.invokeAndWait {
+                    assertNull(controller.state.image)
+                    assertFalse(controller.barModel().buttons.single { it.id == PlayerButton.SAVE_FRAME }.enabled)
+                    controller.exportPng()
+                    assertNull(controller.state.editor.task)
+                }
+            } finally { release.countDown() }
+        }) { controller ->
+            assertTrue(controller.barModel().rules!!.rangeUnchanged(controller.state.editor))
+            assertTrue(controller.barModel().buttons.single { it.id == PlayerButton.SAVE_FRAME }.enabled)
+            assertEquals(controller.state.editor.playheadUs, controller.state.imageUs)
+        }
+    }
+
+    @Test fun directLoadCannotBypassValidationOrPublishAfterDisposal() {
+        val folder = replayFolder()
+        val validManifest = Files.readString(folder.resolve(ReplayFiles.RECORD))
+        for (dispose in listOf(false, true)) {
+            Files.writeString(folder.resolve(ReplayFiles.RECORD), if (dispose) validManifest else "{}")
+            val lifetime = Disposer.newDisposable()
+            ApplicationManager.setApplication(MockApplication(lifetime), lifetime)
+            lateinit var controller: ReplayPlayerController
+            try {
+                SwingUtilities.invokeAndWait {
+                    controller = ReplayPlayerController(MockProject(null, lifetime), folder)
+                    if (dispose) controller.dispose()
+                }
+                val worker = controller.javaClass.getDeclaredField("executor").apply { isAccessible = true }.get(controller) as ExecutorService
+                if (dispose) assertTrue(worker.awaitTermination(30, TimeUnit.SECONDS))
+                else worker.submit {}.get(30, TimeUnit.SECONDS)
+                SwingUtilities.invokeAndWait {
+                    if (dispose) assertTrue(controller.state.loading)
+                    else assertNotNull(controller.state.error)
+                    assertTrue(controller.barModel().buttons.none { it.enabled })
+                }
+            } finally {
+                if (!dispose) SwingUtilities.invokeAndWait { controller.dispose() }
+                Disposer.dispose(lifetime)
+            }
+        }
+    }
+
+    @Test fun scrubbingShowsOnlyIdrAndReleaseRequestsTheExactFrame() {
+        val requests = java.util.Collections.synchronizedList(mutableListOf<Long>())
+        val keys = java.util.Collections.synchronizedSet(mutableSetOf<Long>())
+        withController(decoderFactory = { replay, cache ->
+            replay.frames.filter { it["output_key"]?.asBoolean == true }.forEach {
+                it["movie_pts_us"]?.takeIf { it.isJsonPrimitive }?.asLong?.let(keys::add)
+            }
+            val real = ReplayFrameCursor(replay, cache = cache)
+            object : ReplayVideoDecoder {
+                override fun seek(atUs: Long, checkActive: () -> Unit): ReplayFrameCursor.Decoded {
+                    requests += atUs; return real.seek(atUs, checkActive)
+                }
+                override fun next(checkActive: () -> Unit) = real.next(checkActive)
+                override fun close() = real.close()
+            }
+        }) { controller ->
+            drain(controller)
+            requests.clear()
+            var exact = 0L
+            SwingUtilities.invokeAndWait {
+                exact = controller.state.timeline!!.spans.map { it.startUs }.first { it !in keys }
+                controller.press(Grip.PLAYHEAD, exact)
+            }
+            drain(controller)
+            assertTrue(requests.all { it in keys })
+            SwingUtilities.invokeAndWait {
+                assertTrue(controller.state.imageUs in keys || controller.state.image == null)
+                controller.release()
+            }
+            drain(controller)
+            assertTrue(exact in requests)
+            SwingUtilities.invokeAndWait { assertEquals(exact, controller.state.imageUs) }
+        }
+    }
+
+    @Test fun staleSeekYieldsToTheNewestExactPositionAndCannotPublishAfterIt() {
+        val entered = CountDownLatch(1)
+        val allowCheck = CountDownLatch(1)
+        val cancelled = AtomicBoolean()
+        val block = AtomicBoolean()
+        withController(decoderFactory = { replay, cache ->
+            val real = ReplayFrameCursor(replay, cache = cache)
+            object : ReplayVideoDecoder {
+                override fun seek(atUs: Long, checkActive: () -> Unit): ReplayFrameCursor.Decoded {
+                    if (block.compareAndSet(true, false)) {
+                        entered.countDown(); assertTrue(allowCheck.await(10, TimeUnit.SECONDS))
+                        try { checkActive() } catch (failure: RuntimeException) { cancelled.set(true); throw failure }
+                    }
+                    return real.seek(atUs, checkActive)
+                }
+                override fun next(checkActive: () -> Unit) = real.next(checkActive)
+                override fun close() = real.close()
+            }
+        }) { controller ->
+            drain(controller); block.set(true)
+            try {
+                SwingUtilities.invokeAndWait { controller.step(2) }
+                assertTrue(entered.await(10, TimeUnit.SECONDS))
+                SwingUtilities.invokeAndWait { controller.step(3) }
+                allowCheck.countDown()
+                drain(controller)
+                assertTrue(cancelled.get())
+                SwingUtilities.invokeAndWait { assertEquals(controller.state.editor.playheadUs, controller.state.imageUs) }
+            } finally { allowCheck.countDown() }
+        }
+    }
+
+    private fun drain(controller: ReplayPlayerController) {
+        val worker = controller.javaClass.getDeclaredField("executor").apply { isAccessible = true }.get(controller) as ExecutorService
+        worker.submit {}.get(30, TimeUnit.SECONDS)
+        SwingUtilities.invokeAndWait {}
+    }
 
     @Test
     fun timelineFailureBeforeTransferClosesTheReplayPinsChildAndParent() {
@@ -107,7 +426,7 @@ class ReplayPlayerControllerTest {
     }
 
     @Test
-    fun viewPngCancelButtonAndEscapeUseTheExistingTokenOnlyOnce() = withController { controller ->
+    fun fullRangePngCancelButtonAndEscapeUseTheExistingTokenOnlyOnce() = withController { controller ->
         val token = controller.javaClass.getDeclaredField("taskCancel").apply { isAccessible = true }
         val edit = controller.javaClass.getDeclaredMethod("edit", Function2::class.java).apply { isAccessible = true }
         SwingUtilities.invokeAndWait {
@@ -166,7 +485,6 @@ class ReplayPlayerControllerTest {
     private fun pendingPreview(handle: Boolean, direct: Boolean) = withController { controller ->
         if (handle) {
             SwingUtilities.invokeAndWait {
-                controller.button(PlayerButton.ENTER_TRIM)
                 controller.step(3)
                 controller.press(Grip.OUT, controller.state.timeline!!.spans[8].endUs)
             }
@@ -211,7 +529,7 @@ class ReplayPlayerControllerTest {
         // The fixture ends with a 1 us terminal tick; use the last held frame as trim Out.
         val last = controller.state.timeline!!.spans.last { it.endUs - it.startUs > 1 }
         editController(controller) { rules, state ->
-            rules.played(rules.enterTrim(state).copy(outUs = last.endUs), last.startUs)
+            rules.played(state.copy(outUs = last.endUs), last.startUs)
         }
         awaitPreview(controller)
         withPreviewBlocked(controller) {
@@ -236,7 +554,7 @@ class ReplayPlayerControllerTest {
         val frame = if (trim) controller.state.timeline!!.spans.last { it.endUs - it.startUs > 1 }
             else controller.state.timeline!!.spans[3]
         editController(controller) { rules, state ->
-            val range = if (trim) rules.enterTrim(state).copy(outUs = frame.endUs) else state
+            val range = if (trim) state.copy(outUs = frame.endUs) else state
             rules.played(range, frame.startUs)
         }
         awaitPreview(controller)
@@ -261,14 +579,14 @@ class ReplayPlayerControllerTest {
     }
 
     @Test
-    fun naturalViewCompletionKeepsItsMarkerAndRestartsAtTheBeginning() = finishPlayback(trim = false)
+    fun naturalFullRangeCompletionKeepsItsMarkerAndRestartsAtTheBeginning() = finishPlayback(trim = false)
 
     @Test
     fun naturalTrimCompletionKeepsItsMarkerAndRestartsAtIn() = finishPlayback(trim = true)
 
     private fun finishPlayback(trim: Boolean) = withController { controller ->
         editController(controller) { rules, state ->
-            if (trim) rules.played(rules.enterTrim(state).copy(inUs = 300_000, outUs = 900_000), 500_000)
+            if (trim) rules.played(state.copy(inUs = 300_000, outUs = 900_000), 500_000)
             else rules.played(state, 500_000)
         }
         withPreviewBlocked(controller) {
@@ -297,16 +615,16 @@ class ReplayPlayerControllerTest {
     }
 
     @Test
-    fun cancellingTrimWhilePlayingRestoresEntryInsteadOfThePlaybackClock() = withController { controller ->
+    fun cancellingSelectionWhilePlayingKeepsThePlaybackClockAndResetsRange() = withController { controller ->
         editController(controller) { rules, state ->
-            rules.played(rules.enterTrim(rules.played(state, 100_000)), 300_000)
+            rules.played(state.copy(inUs = 200_000, outUs = 900_000), 300_000)
         }
         withClockedPlayback(controller, 300_000, controller.state.editor.outUs, 650_000) {
             SwingUtilities.invokeAndWait {
                 controller.cancel()
                 assertFalse(controller.state.playing)
-                assertEquals(PlayerMode.VIEW, controller.state.editor.mode)
-                assertEquals(100_000, controller.state.editor.playheadUs)
+                assertEquals(650_000, controller.state.editor.playheadUs)
+                assertTrue(controller.barModel().rules!!.rangeUnchanged(controller.state.editor))
             }
         }
     }
@@ -371,13 +689,12 @@ class ReplayPlayerControllerTest {
     }
 
     @Test
-    fun cancellingTrimBackToAVideoGapClearsTheOtherTimesImage() = withController(gap = true) { controller ->
+    fun resettingSelectionKeepsAVideoGapEmpty() = withController(gap = true) { controller ->
         val gapUs = pauseAtGap(controller)
-        SwingUtilities.invokeAndWait { controller.button(PlayerButton.ENTER_TRIM) }
         val worker = controller.javaClass.getDeclaredField("executor").apply { isAccessible = true }.get(controller) as ExecutorService
         worker.submit {}.get(30, TimeUnit.SECONDS)
         SwingUtilities.invokeAndWait {
-            assertNotNull(controller.state.image)
+            assertNull(controller.state.image)
             controller.cancel()
             assertEquals(gapUs, controller.state.editor.playheadUs)
             assertNull(controller.state.image)
@@ -386,8 +703,8 @@ class ReplayPlayerControllerTest {
     }
 
     @Test
-    fun aPendingTrimPreviewCannotRestoreAnImageAfterReturningToAGap() = withController(gap = true) { controller ->
-        val gapUs = pauseAtGap(controller)
+    fun aPendingPreviewCannotRestoreAnImageAfterResettingSelectionAtAGap() = withController(gap = true) { controller ->
+        val gapUs = controller.state.timeline!!.spans.zipWithNext().first { (a, b) -> a.endUs < b.startUs }.first.endUs
         val worker = controller.javaClass.getDeclaredField("executor").apply { isAccessible = true }.get(controller) as ExecutorService
         val held = CountDownLatch(1)
         val release = CountDownLatch(1)
@@ -395,7 +712,8 @@ class ReplayPlayerControllerTest {
         assertTrue(held.await(30, TimeUnit.SECONDS))
         try {
             SwingUtilities.invokeAndWait {
-                controller.button(PlayerButton.ENTER_TRIM)
+                controller.step(3)
+                pauseAtGap(controller)
                 controller.cancel()
             }
         } finally { release.countDown() }
@@ -410,8 +728,9 @@ class ReplayPlayerControllerTest {
     private fun pauseAtGap(controller: ReplayPlayerController): Long {
         val gapUs = controller.state.timeline!!.spans.zipWithNext().first { (a, b) -> a.endUs < b.startUs }.first.endUs
         val edit = controller.javaClass.getDeclaredMethod("edit", Function2::class.java).apply { isAccessible = true }
-        val pause: (TrimRules, TrimEditor) -> TrimEditor = { rules, state -> rules.played(state, gapUs) }
-        SwingUtilities.invokeAndWait { edit.invoke(controller, pause) }
+        val pause: (TrimRules, TrimEditor) -> TrimEditor = { rules, state -> rules.played(state.copy(inUs = 100_000), gapUs) }
+        if (SwingUtilities.isEventDispatchThread()) edit.invoke(controller, pause)
+        else SwingUtilities.invokeAndWait { edit.invoke(controller, pause) }
         return gapUs
     }
 
@@ -424,7 +743,6 @@ class ReplayPlayerControllerTest {
             assertTrue(controller.state.playing)
             if (out) controller.markOut() else controller.markIn()
             assertFalse(controller.state.playing)
-            assertEquals(PlayerMode.TRIM, controller.state.editor.mode)
             assertEquals(position, controller.state.editor.playheadUs)
             if (out) assertEquals(lastFrame.endUs, controller.state.editor.outUs)
             else assertEquals(position, controller.state.editor.inUs)
@@ -462,12 +780,20 @@ class ReplayPlayerControllerTest {
         return folder
     }
 
-    private fun withController(gap: Boolean = false, test: (ReplayPlayerController) -> Unit) {
+    private fun withController(gap: Boolean = false,
+        decoderFactory: ((SavedReplay, ReplayFrameCache) -> ReplayVideoDecoder)? = null,
+        beforePreview: (ReplayPlayerController) -> Unit = {},
+        test: (ReplayPlayerController) -> Unit) {
         val folder = replayFolder(gap)
         val lifetime = Disposer.newDisposable()
         ApplicationManager.setApplication(MockApplication(lifetime), lifetime)
-        val controller = ReplayPlayerController(MockProject(null, lifetime), folder)
+        lateinit var controller: ReplayPlayerController
+        SwingUtilities.invokeAndWait {
+            controller = if (decoderFactory == null) ReplayPlayerController(MockProject(null, lifetime), folder)
+                else ReplayPlayerController(MockProject(null, lifetime), folder, decoderFactory = decoderFactory)
+        }
         try {
+            beforePreview(controller)
             SwingUtilities.invokeAndWait {}
             val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30)
             while (true) {

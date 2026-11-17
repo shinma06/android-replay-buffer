@@ -37,6 +37,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.ClipOp
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Path
@@ -188,10 +189,7 @@ private fun Filmstrip(bar: PlayerBarModel, palette: PlayerPalette, actions: Play
     val current by rememberUpdatedState(bar)
     val thumbAspect = bar.aspect
     val editor = bar.editor
-    val description = when (editor.mode) {
-        PlayerMode.TRIM -> "フィルムストリップ。残す範囲 ${bubbleTime(editor.inUs)}〜${bubbleTime(editor.outUs)}、再生位置 ${bubbleTime(editor.playheadUs)}"
-        PlayerMode.VIEW -> "フィルムストリップ。再生位置 ${bubbleTime(editor.playheadUs)}"
-    }
+    val description = "フィルムストリップ。残す範囲 ${bubbleTime(editor.inUs)}〜${bubbleTime(editor.outUs)}、再生位置 ${bubbleTime(editor.playheadUs)}"
     BoxWithConstraints(modifier.height(STRIP_HEIGHT)) {
         val widthPx = constraints.maxWidth.toFloat()
         val loaded = bar.rules != null
@@ -295,8 +293,8 @@ private fun DrawScope.drawStrip(bar: PlayerBarModel, palette: PlayerPalette, han
         }
     }
     val editor = bar.editor
-    if (editor.mode == PlayerMode.TRIM) {
-        val range = geometry.handleRange(editor, handlePx)
+    val range = geometry.handleRange(editor, handlePx)
+    run {
         val left = range.start
         val right = range.endInclusive
         drawRect(palette.dimOutside, Offset(0f, 0f), Size(left, height))
@@ -314,8 +312,28 @@ private fun DrawScope.drawStrip(bar: PlayerBarModel, palette: PlayerPalette, han
         handle(left)
         handle(right - handlePx)
     }
-    if (!rules.playheadVisible(editor)) return
-    val x = geometry.x(editor.playheadUs)
-    drawLine(palette.barBackground.copy(alpha = 1f), Offset(x, -3.dp.toPx()), Offset(x, height + 3.dp.toPx()), strokeWidth = 4.dp.toPx())
-    drawLine(palette.content, Offset(x, -3.dp.toPx()), Offset(x, height + 3.dp.toPx()), strokeWidth = 2.dp.toPx())
+    drawPlayerPlayhead(geometry.x(editor.playheadUs), palette.content, palette.barBackground, range, handlePx)
+}
+
+internal fun DrawScope.drawPlayerPlayhead(x: Float, foreground: Color, outline: Color,
+    range: ClosedFloatingPointRange<Float>, handlePx: Float) {
+    val ink = foreground.copy(alpha = 1f)
+    val edge = outline.copy(alpha = 1f)
+    val inGrip = range.start + handlePx / 2
+    val outGrip = range.endInclusive - handlePx / 2
+    val pad = 3.dp.toPx()
+    val top = size.height * 0.35f - 1.dp.toPx()
+    val bottom = size.height * 0.65f + 1.dp.toPx()
+    // Keep the handle grips visible where they win pointer input.
+    clipRect {
+        clipRect(inGrip - pad, top, inGrip + pad, bottom, ClipOp.Difference) {
+            clipRect(outGrip - pad, top, outGrip + pad, bottom, ClipOp.Difference) {
+                drawLine(edge, Offset(x, 0f), Offset(x, size.height), strokeWidth = 8.dp.toPx())
+                drawLine(ink, Offset(x, 0f), Offset(x, size.height), strokeWidth = 4.dp.toPx())
+                val centre = Offset(x, 8.dp.toPx())
+                drawCircle(edge, radius = 8.dp.toPx(), center = centre)
+                drawCircle(ink, radius = 5.dp.toPx(), center = centre)
+            }
+        }
+    }
 }
