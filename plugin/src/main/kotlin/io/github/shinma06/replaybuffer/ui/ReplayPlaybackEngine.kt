@@ -285,7 +285,7 @@ internal class ReplayPlaybackSession(
                             }
                             is AudioChunk.Packets -> {
                                 // One preceding packet primes the decoder's overlap so the first kept samples are clean.
-                                if (chunk.first > 0) { track.goTo(chunk.first - 1); track.packet()?.let { runCatching { decoder.decode(it) } } }
+                                if (chunk.first > 0) { track.goTo(chunk.first - 1); track.packet()?.let { runCatching { decoder.decode(it) }.onFailure(::sourceFailed) } }
                                 else track.goTo(chunk.first)
                                 var skip = chunk.skipSamples
                                 var keep = chunk.keepSamples

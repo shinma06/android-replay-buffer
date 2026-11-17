@@ -1,5 +1,8 @@
 package io.github.shinma06.replaybuffer.ui
 
+import io.github.shinma06.replaybuffer.core.SavedReplay
+import io.github.shinma06.replaybuffer.core.ReplayAudioTrack
+
 import com.google.gson.JsonParser
 import net.sourceforge.jaad.aac.Decoder
 import net.sourceforge.jaad.aac.SampleBuffer
@@ -558,6 +561,29 @@ class ReplayPlaybackAudioTest {
     @Test
     fun corruptAacKeepsTheDecodeFailureCategory() = assertAudioFailureCategory("decode")
 
+    @Test fun corruptOverlapPrimerRetainsSourceWhileKeptAudioStillPlays() {
+        val sourceFailed = java.util.concurrent.atomic.AtomicBoolean()
+        val folder = fixture(mediaStart = 0, corruptPacket = 6L)
+        val output = Output()
+        val video = Gate()
+        val notices = ConcurrentLinkedQueue<String>()
+        SavedReplay.open(folder).use { replay -> ReplayAudioTrack.open(replay)!!.use { track ->
+            assertEquals(7, track.schedule(150_000).filterIsInstance<io.github.shinma06.replaybuffer.core.AudioChunk.Packets>().first().first)
+        } }
+        val session = ReplayPlaybackSession(folder, 150_000, 250_000, { video.block() }, {}, notices::add,
+            audioOutput = { output.line }, awaitAudio = { await(it); true },
+            onSourceFailure = { sourceFailed.set(true) })
+        try {
+            session.start()
+            await(output.closed)
+            await(video.entered)
+            assertTrue(output.writes.get() > 0) // Only the unused overlap packet is corrupt; kept audio decodes.
+            assertTrue(notices.isEmpty(), notices.toString())
+            assertTrue(sourceFailed.get())
+        } finally { session.stop(); video.release.countDown() }
+        assertFalse(session.resourcesClosed.get(10, TimeUnit.SECONDS))
+    }
+
     private fun assertAudioFailureCategory(stage: String) {
         val sourceFailed = java.util.concurrent.atomic.AtomicBoolean()
         val folder = fixture(mediaStart = 0, corruptAudio = stage == "decode")
@@ -769,7 +795,7 @@ class ReplayPlaybackAudioTest {
 
     private fun fixture(resource: String = "/aac-lc-escape/beeps.m4a", rate: Int = 48_000,
                         mediaStart: Long = 1024, gap: Boolean = false, audio: Boolean = true, presented: Boolean = true,
-                        videoDurationUs: Long = 8_000_000, corruptAudio: Boolean = false): Path {
+                        videoDurationUs: Long = 8_000_000, corruptAudio: Boolean = false, corruptPacket: Long? = null): Path {
         val folder = Files.createTempDirectory(root, "replay-")
         val videoRoot = "/replay-trim-parity/replay-20240101-000000-manual-feedface"
         val sourceVideo = Path.of(javaClass.getResource("$videoRoot/video.mp4")!!.toURI())
@@ -789,7 +815,7 @@ class ReplayPlaybackAudioTest {
                     var index = 0L
                     while (true) {
                         val packet = audioSource.nextFrame() ?: break
-                        audio.addFrameInternal(Packet.createPacket(if (corruptAudio) ByteBuffer.wrap(byteArrayOf(0)) else packet.data, index * 1024, rate,
+                        audio.addFrameInternal(Packet.createPacket(if (corruptAudio || index == corruptPacket) ByteBuffer.wrap(byteArrayOf(0)) else packet.data, index * 1024, rate,
                             1024, index, Packet.FrameType.KEY, null), 1)
                         index++
                     }

@@ -174,6 +174,33 @@ class ReplayPlayerControllerTest {
     @Test fun thumbnailSourceFailureRetainsEvenThoughTheSlotIsOptional() = thumbnailSource(true)
     @Test fun normalThumbnailGenerationDoesNotMakeHealthySourceUncertain() = thumbnailSource(false)
 
+    @Test fun interruptedPreviewWithoutCloseFailureRemainsHealthy() = interruptedPreview(false)
+    @Test fun interruptedPreviewCannotHideDecoderCloseFailure() = interruptedPreview(true)
+
+    private fun interruptedPreview(closeFails: Boolean) {
+        val cancel = AtomicBoolean()
+        withController(decoderFactory = { replay, cache ->
+            val real = ReplayFrameCursor(replay, cache = cache)
+            object : ReplayVideoDecoder by real {
+                override fun seek(atUs: Long, checkActive: () -> Unit): ReplayFrameCursor.Decoded {
+                    if (cancel.get()) throw java.nio.channels.ClosedByInterruptException()
+                    return real.seek(atUs, checkActive)
+                }
+                override fun close() {
+                    real.close()
+                    if (cancel.get() && closeFails) error("Injected preview close failure")
+                }
+            }
+        }) { controller ->
+            drain(controller)
+            cancel.set(true)
+            SwingUtilities.invokeAndWait { controller.step(1) }
+            drain(controller)
+            assertEquals(closeFails, controller.closePolicy.mustRetainSource)
+            assertNull(controller.state.error)
+        }
+    }
+
     private fun thumbnailSource(fail: Boolean) = withController(decoderFactory = { replay, cache ->
         if (Thread.currentThread().name == "arb-replay-thumbnails" && fail) error("Injected thumbnail source failure")
         ReplayFrameCursor(replay, cache = cache)

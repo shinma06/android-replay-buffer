@@ -301,7 +301,7 @@ internal class ReplayPlayerController(
                 } catch (failure: Throwable) {
                     recordReadFailure(failure) // Before EDT publication, including after disposal.
                     // A failed decoder may have consumed a partial packet; never reuse that reference state.
-                    runCatching { decoder?.close() }; decoder = null
+                    runCatching { decoder?.close() }.onFailure { closePolicy.recordSourceReadFailure() }; decoder = null
                     synchronized(decodeLock) { if (pendingUs == target && previewGeneration == generation) pendingUs = null }
                     publish {
                         if (!state.playing && rules?.displayUs(state.editor) == target && previewGeneration == generation)
