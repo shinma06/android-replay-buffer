@@ -1,5 +1,6 @@
 package io.github.shinma06.replaybuffer.ui
 
+import androidx.compose.ui.graphics.Color
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
@@ -42,5 +43,48 @@ class ScrollableColumnVisibilityTest {
         ScrollbarActivity.entries.forEach { activity ->
             assertTrue(isScrollbarVisible(ScrollbarVisibilityPolicy.AlwaysVisible, false, activity))
         }
+    }
+
+    @Test
+    fun alwaysVisibleUsesOpaqueIdleColorWhenNormalBackgroundIsTransparent() {
+        val thumbBackground = Color.Transparent
+        val thumbOpaqueBackground = Color(0xFF777777)
+        val thumbBackgroundActive = Color(0xFFAAAAAA)
+
+        val colors = scrollbarThumbColorPair(
+            ScrollbarVisibilityPolicy.AlwaysVisible,
+            false,
+            thumbOpaqueBackground,
+            thumbBackgroundActive,
+        )
+
+        assertEquals(thumbOpaqueBackground, colors.idle)
+        assertEquals(thumbBackgroundActive, colors.hover)
+        assertFalse(colors.idle == thumbBackground)
+        assertFalse(colors.idle == colors.hover)
+    }
+
+    @Test
+    fun whenScrollingKeepsActiveAndHiddenColorSelectionUnchanged() {
+        val thumbOpaqueBackground = Color(0xFF777777)
+        val thumbBackgroundActive = Color(0xFFAAAAAA)
+
+        val visible = scrollbarThumbColorPair(
+            ScrollbarVisibilityPolicy.WhenScrolling,
+            true,
+            thumbOpaqueBackground,
+            thumbBackgroundActive,
+        )
+        val hidden = scrollbarThumbColorPair(
+            ScrollbarVisibilityPolicy.WhenScrolling,
+            false,
+            thumbOpaqueBackground,
+            thumbBackgroundActive,
+        )
+
+        assertEquals(thumbBackgroundActive, visible.idle)
+        assertEquals(Color.Transparent, hidden.idle)
+        assertEquals(thumbBackgroundActive, visible.hover)
+        assertEquals(thumbBackgroundActive, hidden.hover)
     }
 }

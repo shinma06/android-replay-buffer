@@ -20,6 +20,7 @@ class ScrollableContainerCompatibilityTest {
     private static final String FOUNDATION_ADAPTER_DESCRIPTOR =
             "(Landroidx/compose/foundation/ScrollState;Landroidx/compose/runtime/Composer;I)"
                     + "Landroidx/compose/foundation/v2/ScrollbarAdapter;";
+    private static final String JEWEL_OPAQUE_THUMB_GETTER = "getThumbOpaqueBackground-0d7_KjU";
 
     @Test
     void scrollableViewsUseTheSharedScrollbarAndDoNotLinkTheVersionBoundContainer() throws IOException {
@@ -49,6 +50,7 @@ class ScrollableContainerCompatibilityTest {
         assertTrue(scrollableColumn.contains("ScrollbarVisibility$AlwaysVisible"));
         assertTrue(scrollableColumn.contains("getLingerDuration-UwyO8pc"));
         assertTrue(scrollableColumn.contains("getThumbColorAnimationDuration-UwyO8pc"));
+        assertTrue(scrollableColumn.contains(JEWEL_OPAQUE_THUMB_GETTER));
     }
 
     @Test
@@ -60,7 +62,7 @@ class ScrollableContainerCompatibilityTest {
         assertTrue(source.contains("rememberScrollbarAdapter(scrollState)"));
         assertTrue(source.contains("Modifier.align(Alignment.CenterEnd).fillMaxHeight()"));
         assertTrue(source.contains("reverseLayout = false"));
-        assertTrue(source.contains("colors.thumbBackground"));
+        assertTrue(source.contains("colors.thumbOpaqueBackground"));
         assertTrue(source.contains("colors.thumbBackgroundActive"));
         assertTrue(source.contains("lingerDuration.inWholeMilliseconds"));
         assertTrue(source.contains("thumbColorAnimationDuration.inWholeMilliseconds"));

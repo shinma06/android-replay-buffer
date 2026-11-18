@@ -59,6 +59,25 @@ internal fun isScrollbarVisible(
     isScrollInProgress ||
     activity != ScrollbarActivity.Hidden
 
+internal data class ScrollbarThumbColorPair(
+    val idle: Color,
+    val hover: Color,
+)
+
+internal fun scrollbarThumbColorPair(
+    policy: ScrollbarVisibilityPolicy,
+    scrollbarVisible: Boolean,
+    thumbOpaqueBackground: Color,
+    thumbBackgroundActive: Color,
+): ScrollbarThumbColorPair = ScrollbarThumbColorPair(
+    idle = when {
+        policy == ScrollbarVisibilityPolicy.AlwaysVisible -> thumbOpaqueBackground
+        scrollbarVisible -> thumbBackgroundActive
+        else -> Color.Transparent
+    },
+    hover = thumbBackgroundActive,
+)
+
 @Composable
 internal fun ScrollableColumn(
     modifier: Modifier = Modifier,
@@ -91,20 +110,20 @@ internal fun ScrollableColumn(
 
     val scrollbarVisible = isScrollbarVisible(visibilityPolicy, isScrollInProgress, scrollbarActivity)
     val scrollbarStyle = remember(jewelScrollbarStyle, visibilityPolicy, scrollbarVisible) {
-        val thumbBackground = jewelScrollbarStyle.colors.thumbBackground
         val thumbBackgroundActive = jewelScrollbarStyle.colors.thumbBackgroundActive
-        val visibleThumbColor = when {
-            visibilityPolicy == ScrollbarVisibilityPolicy.AlwaysVisible && thumbBackground.alpha > 0f -> thumbBackground
-            scrollbarVisible -> thumbBackgroundActive
-            else -> Color.Transparent
-        }
+        val thumbColors = scrollbarThumbColorPair(
+            visibilityPolicy,
+            scrollbarVisible,
+            jewelScrollbarStyle.colors.thumbOpaqueBackground,
+            thumbBackgroundActive,
+        )
         defaultScrollbarStyle().copy(
             minimalHeight = jewelScrollbarStyle.metrics.minThumbLength,
             thickness = jewelVisibility.trackThickness,
             shape = RoundedCornerShape(jewelScrollbarStyle.metrics.thumbCornerSize),
             hoverDurationMillis = jewelVisibility.thumbColorAnimationDuration.inWholeMilliseconds.toInt(),
-            unhoverColor = visibleThumbColor,
-            hoverColor = thumbBackgroundActive,
+            unhoverColor = thumbColors.idle,
+            hoverColor = thumbColors.hover,
         )
     }
     val interactionSource = remember { MutableInteractionSource() }
