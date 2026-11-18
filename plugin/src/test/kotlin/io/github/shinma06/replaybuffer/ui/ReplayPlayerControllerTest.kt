@@ -1,5 +1,6 @@
 package io.github.shinma06.replaybuffer.ui
 
+import androidx.compose.runtime.MutableState
 import com.google.gson.JsonParser
 import com.intellij.mock.MockApplication
 import com.intellij.mock.MockProject
@@ -8,6 +9,7 @@ import com.intellij.openapi.util.Disposer
 import io.github.shinma06.replaybuffer.core.ReplayFiles
 import io.github.shinma06.replaybuffer.core.ReplayFrameCache
 import io.github.shinma06.replaybuffer.core.ReplayFrameCursor
+import io.github.shinma06.replaybuffer.core.ReplayFrameExport
 import io.github.shinma06.replaybuffer.core.ReplayVideoDecoder
 import io.github.shinma06.replaybuffer.core.previewKeyframeUs
 import io.github.shinma06.replaybuffer.core.SaveOutputFile
@@ -24,6 +26,7 @@ import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import javax.swing.SwingUtilities
 import kotlin.test.Test
+import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
@@ -138,17 +141,23 @@ class ReplayPlayerControllerTest {
                 assertNull(controller.state.error)
                 assertEquals(oldImage, controller.state.image)
                 assertEquals(oldUs, controller.state.imageUs)
-                assertEquals("Injected seek source failure", controller.state.message)
+                assertNull(controller.state.message)
+                assertEquals("Injected seek source failure", controller.state.previewError)
+                assertEquals("Injected seek source failure", controller.barModel().status)
                 assertFalse(controller.barModel().buttons.single { it.id == PlayerButton.SAVE_FRAME }.enabled)
+                controller.exportPng()
+                assertNull(controller.state.editor.task)
                 fail.set(false)
                 controller.step(1)
+                assertTrue(controller.state.previewPending)
+                assertNull(controller.state.previewError)
             }
-            awaitPreview(controller)
-            SwingUtilities.invokeAndWait { controller.togglePlay(); controller.togglePlay() } // Clears transient message.
             awaitPreview(controller)
             SwingUtilities.invokeAndWait {
                 assertNull(controller.state.error)
                 assertNull(controller.state.message)
+                assertNull(controller.state.previewError)
+                assertFalse(controller.state.previewPending)
                 assertTrue(controller.barModel().buttons.single { it.id == PlayerButton.SAVE_FRAME }.enabled)
                 assertTrue(controller.closePolicy.mustRetainSource)
             }
@@ -236,6 +245,9 @@ class ReplayPlayerControllerTest {
                 assertTrue(entered.await(30, TimeUnit.SECONDS))
                 SwingUtilities.invokeAndWait {
                     assertNull(controller.state.image)
+                    assertTrue(controller.state.previewPending)
+                    assertEquals("この位置の映像を準備しています", controller.placeholder())
+                    assertEquals("この位置の映像を準備しています", controller.barModel().status)
                     assertFalse(controller.barModel().buttons.single { it.id == PlayerButton.SAVE_FRAME }.enabled)
                     controller.exportPng()
                     assertNull(controller.state.editor.task)
@@ -245,6 +257,8 @@ class ReplayPlayerControllerTest {
             assertTrue(controller.barModel().rules!!.rangeUnchanged(controller.state.editor))
             assertTrue(controller.barModel().buttons.single { it.id == PlayerButton.SAVE_FRAME }.enabled)
             assertEquals(controller.state.editor.playheadUs, controller.state.imageUs)
+            assertFalse(controller.state.previewPending)
+            assertNull(controller.placeholder())
         }
     }
 
@@ -276,9 +290,10 @@ class ReplayPlayerControllerTest {
         }
     }
 
-    @Test fun scrubbingShowsOnlyIdrAndReleaseRequestsTheExactFrame() {
+    @Test fun scrubbingRequestsTheExactDisplayedFrameAndReleaseKeepsItsPixels() {
         val requests = java.util.Collections.synchronizedList(mutableListOf<Long>())
         val keys = java.util.Collections.synchronizedSet(mutableSetOf<Long>())
+        val decoded = java.util.Collections.synchronizedMap(mutableMapOf<Long, ReplayFrameCursor.Decoded>())
         withController(decoderFactory = { replay, cache ->
             replay.frames.filter { it["output_key"]?.asBoolean == true }.forEach {
                 it["movie_pts_us"]?.takeIf { it.isJsonPrimitive }?.asLong?.let(keys::add)
@@ -286,7 +301,8 @@ class ReplayPlayerControllerTest {
             val real = ReplayFrameCursor(replay, cache = cache)
             object : ReplayVideoDecoder {
                 override fun seek(atUs: Long, checkActive: () -> Unit): ReplayFrameCursor.Decoded {
-                    requests += atUs; return real.seek(atUs, checkActive)
+                    requests += atUs
+                    return real.seek(atUs, checkActive).also { decoded[atUs] = it }
                 }
                 override fun next(checkActive: () -> Unit) = real.next(checkActive)
                 override fun close() = real.close()
@@ -297,17 +313,89 @@ class ReplayPlayerControllerTest {
             var exact = 0L
             SwingUtilities.invokeAndWait {
                 exact = controller.state.timeline!!.spans.map { it.startUs }.first { it !in keys }
-                controller.press(Grip.PLAYHEAD, exact)
+                controller.press(Grip.PLAYHEAD, controller.state.editor.playheadUs)
+                controller.dragTo(exact)
             }
             drain(controller)
-            assertTrue(requests.all { it in keys })
+            assertEquals(listOf(exact), requests.toList())
+            assertFalse(exact in keys)
             SwingUtilities.invokeAndWait {
-                assertTrue(controller.state.imageUs in keys || controller.state.image == null)
+                assertNotNull(controller.state.editor.drag)
+                assertEquals(exact, controller.state.imageUs)
                 controller.release()
             }
             drain(controller)
-            assertTrue(exact in requests)
-            SwingUtilities.invokeAndWait { assertEquals(exact, controller.state.imageUs) }
+            assertEquals(listOf(exact), requests.toList())
+            SavedReplay.open(Files.list(root).use { it.findFirst().orElseThrow() }).use { saved ->
+                val expected = ReplayFrameExport.decodeAt(saved, exact).image
+                val actual = assertNotNull(decoded[exact]).image
+                assertContentEquals(expected.getRGB(0, 0, expected.width, expected.height, null, 0, expected.width),
+                    actual.getRGB(0, 0, actual.width, actual.height, null, 0, actual.width))
+            }
+        }
+    }
+
+    @Test fun repeatedPointerMovesWithinTheSameFrameDoNotCancelItsDecode() {
+        val target = AtomicLong(-1L)
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val cancelled = AtomicBoolean()
+        val requests = java.util.Collections.synchronizedList(mutableListOf<Long>())
+        withController(decoderFactory = { replay, cache ->
+            val real = ReplayFrameCursor(replay, cache = cache)
+            object : ReplayVideoDecoder {
+                override fun seek(atUs: Long, checkActive: () -> Unit): ReplayFrameCursor.Decoded {
+                    requests += atUs
+                    if (atUs == target.get()) {
+                        entered.countDown()
+                        assertTrue(release.await(30, TimeUnit.SECONDS))
+                        try { checkActive() } catch (failure: RuntimeException) { cancelled.set(true); throw failure }
+                    }
+                    return real.seek(atUs, checkActive)
+                }
+                override fun next(checkActive: () -> Unit) = real.next(checkActive)
+                override fun close() = real.close()
+            }
+        }) { controller ->
+            drain(controller)
+            requests.clear()
+            val span = controller.state.timeline!!.spans[3]
+            target.set(span.startUs)
+            try {
+                SwingUtilities.invokeAndWait { controller.press(Grip.PLAYHEAD, span.startUs) }
+                assertTrue(entered.await(10, TimeUnit.SECONDS))
+                SwingUtilities.invokeAndWait {
+                    controller.dragTo(span.startUs + 1)
+                    controller.dragTo(span.endUs - 1)
+                    controller.release()
+                }
+                release.countDown()
+                drain(controller)
+                assertEquals(listOf(span.startUs), requests.toList())
+                assertFalse(cancelled.get())
+                SwingUtilities.invokeAndWait { assertEquals(span.startUs, controller.state.imageUs) }
+            } finally { release.countDown() }
+        }
+    }
+
+    @Test fun newPreviewTargetsClearOnlyPreviewErrorsAndPreserveTaskNotices() = withController { controller ->
+        val notice = "静止画を保存しました: fixture.png"
+        val delegate = controller.javaClass.getDeclaredField("state\$delegate").apply { isAccessible = true }
+            .get(controller) as MutableState<PlayerState>
+        SwingUtilities.invokeAndWait {
+            delegate.value = controller.state.copy(message = notice, previewError = "古い復号エラー")
+            controller.step(1)
+            assertEquals(notice, controller.state.message)
+            assertNull(controller.state.previewError)
+            assertTrue(controller.state.previewPending)
+            assertEquals("この位置の映像を準備しています", controller.barModel().status)
+        }
+        awaitPreview(controller)
+        SwingUtilities.invokeAndWait {
+            assertEquals(notice, controller.state.message)
+            assertNull(controller.state.previewError)
+            assertFalse(controller.state.previewPending)
+            assertEquals(notice, controller.barModel().status)
         }
     }
 
@@ -331,14 +419,23 @@ class ReplayPlayerControllerTest {
             }
         }) { controller ->
             drain(controller); block.set(true)
+            val first = controller.state.timeline!!.spans[3].startUs
+            val newest = controller.state.timeline!!.spans[6].startUs
             try {
-                SwingUtilities.invokeAndWait { controller.step(2) }
+                SwingUtilities.invokeAndWait { controller.press(Grip.PLAYHEAD, first) }
                 assertTrue(entered.await(10, TimeUnit.SECONDS))
-                SwingUtilities.invokeAndWait { controller.step(3) }
+                SwingUtilities.invokeAndWait {
+                    controller.dragTo(newest)
+                    controller.release()
+                }
                 allowCheck.countDown()
                 drain(controller)
                 assertTrue(cancelled.get())
-                SwingUtilities.invokeAndWait { assertEquals(controller.state.editor.playheadUs, controller.state.imageUs) }
+                SwingUtilities.invokeAndWait {
+                    assertEquals(newest, controller.state.editor.playheadUs)
+                    assertEquals(newest, controller.state.imageUs)
+                    assertNull(controller.state.previewError)
+                }
             } finally { allowCheck.countDown() }
         }
     }
@@ -512,16 +609,65 @@ class ReplayPlayerControllerTest {
         pauseAtGap(controller)
         withPreviewBlocked(controller) {
             assertNull(controller.state.image)
+            assertEquals("この位置に表示frameがありません（欠落）", controller.placeholder())
+            assertEquals("この位置に表示frameがありません（欠落）", controller.barModel().status)
             assertEquals("この位置に表示frameがありません（欠落）",
                 controller.barModel().buttons.single { it.id == PlayerButton.SAVE_FRAME }.reason)
             controller.exportPng()
             assertNull(controller.state.editor.task)
             controller.step(1)
             assertNull(controller.state.image)
+            assertTrue(controller.state.previewPending)
+            assertEquals("この位置の映像を準備しています", controller.placeholder())
             assertFalse(controller.barModel().buttons.single { it.id == PlayerButton.SAVE_FRAME }.enabled)
             controller.exportPng()
             assertNull(controller.state.editor.task)
         }
+        SwingUtilities.invokeAndWait {
+            assertFalse(controller.state.previewPending)
+            assertEquals(controller.state.editor.playheadUs, controller.state.imageUs)
+            assertNull(controller.placeholder())
+        }
+    }
+
+    @Test
+    fun validHandlePreviewsOverrideAPlayheadGapWhilePendingAndAfterDecode() = withController(gap = true) { controller ->
+        val gapUs = controller.state.timeline!!.spans.zipWithNext().first { (a, b) -> a.endUs < b.startUs }.first.endUs
+        fun verify(grip: Grip) {
+            pauseAtGap(controller)
+            awaitPreview(controller)
+            var targetUs = -1L
+            withPreviewBlocked(controller) {
+                val edgeUs = if (grip == Grip.IN) controller.state.editor.inUs else controller.state.editor.outUs
+                controller.press(grip, edgeUs)
+                targetUs = controller.barModel().rules!!.displayUs(controller.state.editor)
+                assertEquals(gapUs, controller.state.editor.playheadUs)
+                assertTrue(controller.barModel().rules!!.grid.indexAt(targetUs) >= 0)
+                assertTrue(controller.state.previewPending)
+                assertEquals("この位置の映像を準備しています", controller.placeholder())
+                assertEquals("この位置の映像を準備しています", controller.barModel().status)
+                val saveFrame = controller.barModel().buttons.single { it.id == PlayerButton.SAVE_FRAME }
+                assertFalse(saveFrame.enabled)
+                assertEquals("この位置に表示frameがありません（欠落）", saveFrame.reason)
+                controller.exportPng()
+                assertNull(controller.state.editor.task)
+                assertFalse(controller.barModel().status == "この位置に表示frameがありません（欠落）")
+            }
+            SwingUtilities.invokeAndWait {
+                assertFalse(controller.state.previewPending)
+                assertEquals(targetUs, controller.state.imageUs)
+                assertNull(controller.placeholder())
+                val saveFrame = controller.barModel().buttons.single { it.id == PlayerButton.SAVE_FRAME }
+                assertFalse(saveFrame.enabled)
+                assertEquals("この位置に表示frameがありません（欠落）", saveFrame.reason)
+                controller.exportPng()
+                assertNull(controller.state.editor.task)
+            }
+            SwingUtilities.invokeAndWait { controller.release() }
+            awaitPreview(controller)
+        }
+        verify(Grip.IN)
+        verify(Grip.OUT)
     }
 
     @Test

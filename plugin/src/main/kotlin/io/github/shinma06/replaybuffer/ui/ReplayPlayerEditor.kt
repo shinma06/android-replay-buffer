@@ -124,13 +124,17 @@ internal data class PlayerState(
     /** Movie time of the frame in [image]. */
     val imageUs: Long = -1,
     val aspect: Float = 9f / 16f,
+    val previewTargetUs: Long? = null,
+    val previewError: String? = null,
     val playing: Boolean = false,
     val message: String? = null,
     val audioNote: String? = null,
     val timeline: ReplayTimeline? = null,
     val editor: TrimEditor = TrimEditor(),
     val thumbnailVersion: Int = 0,
-)
+) {
+    val previewPending: Boolean get() = previewTargetUs != null
+}
 
 private class PlayerClosed : RuntimeException()
 private class PreviewSuperseded : RuntimeException()
@@ -168,6 +172,8 @@ internal class ReplayPlayerController(
     }
     private val decodeLock = Any()
     private var pendingUs: Long? = null
+    private var inFlightUs: Long? = null
+    private var inFlightGeneration: Long? = null
     private var decodeBusy = false
     @Volatile private var previewGeneration = 0L
     @Volatile private var foregroundWork = false
@@ -247,29 +253,56 @@ internal class ReplayPlayerController(
         if (state.playing) return
         val exactUs = current.displayUs(state.editor)
         scrubbing = state.editor.drag != null
-        val us = if (state.editor.drag != null) saved?.let { previewKeyframeUs(it, exactUs) } else exactUs
-        if (us == null || current.grid.indexAt(us) < 0) {
-            synchronized(decodeLock) { pendingUs = null; previewGeneration++ }
-            state = state.copy(image = null, imageUs = -1)
-        } else if (us != state.imageUs) requestDecode(us)
-        else synchronized(decodeLock) { pendingUs = null; previewGeneration++ }
+        if (current.grid.indexAt(exactUs) < 0) {
+            invalidatePreview()
+            state = state.copy(image = null, imageUs = -1, previewTargetUs = null, previewError = null)
+        } else if (state.image != null && exactUs == state.imageUs) {
+            invalidatePreview()
+            state = state.copy(previewTargetUs = null, previewError = null)
+        } else requestDecode(exactUs)
     }
 
     private fun requestDecode(us: Long) {
         val run = synchronized(decodeLock) {
+            if (pendingUs == us || (inFlightUs == us && inFlightGeneration == previewGeneration)) return
             pendingUs = us
             previewGeneration++
             foregroundWork = true
             if (!decodeBusy) { decodeBusy = true; true } else false
         }
+        state = state.copy(previewTargetUs = us, previewError = null)
         if (run) executor.execute(::drainDecode)
+    }
+
+    private fun invalidatePreview() {
+        synchronized(decodeLock) {
+            val hasWork = pendingUs != null || inFlightUs != null || decodeBusy
+            pendingUs = null
+            if (hasWork) previewGeneration++
+        }
+    }
+
+    private fun clearInFlight(us: Long, generation: Long) {
+        synchronized(decodeLock) {
+            if (inFlightUs == us && inFlightGeneration == generation) {
+                inFlightUs = null
+                inFlightGeneration = null
+            }
+        }
     }
 
     /** Decodes only the newest requested position; stale requests are skipped, not queued. */
     private fun drainDecode() {
         try {
             while (!disposed) {
-                val (target, generation) = synchronized(decodeLock) { pendingUs?.let { it to previewGeneration } } ?: break
+                val request = synchronized(decodeLock) {
+                    val target = pendingUs ?: return@synchronized null
+                    pendingUs = null
+                    inFlightUs = target
+                    inFlightGeneration = previewGeneration
+                    target to previewGeneration
+                } ?: break
+                val (target, generation) = request
                 val replay = saved ?: break
                 fun active() {
                     if (disposed) throw PlayerClosed()
@@ -282,30 +315,35 @@ internal class ReplayPlayerController(
                     active()
                     val bitmap = frame.image.previewBitmap()
                     val aspect = frame.image.width.toFloat() / frame.image.height
-                    synchronized(decodeLock) { if (pendingUs == target && previewGeneration == generation) pendingUs = null }
                     publish {
-                        val wanted = rules?.displayUs(state.editor)?.let { exact ->
-                            if (state.editor.drag != null) previewKeyframeUs(replay, exact) else exact
+                        if (!state.playing && rules?.displayUs(state.editor) == target &&
+                            state.previewTargetUs == target && previewGeneration == generation) {
+                            state = state.copy(image = bitmap, imageUs = target, aspect = aspect,
+                                previewTargetUs = null, previewError = null)
                         }
-                        if (!state.playing && wanted == target && previewGeneration == generation)
-                            state = state.copy(image = bitmap, imageUs = target, aspect = aspect)
+                        clearInFlight(target, generation)
                     }
                     // Cache the two following positions after publishing. New input cancels at packet boundaries.
                     if (!scrubbing) repeat(2) { active(); cursor.next(::active) }
                 } catch (failure: PreviewSuperseded) {
                     recordReadFailure(failure)
+                    clearInFlight(target, generation)
                     // A cancelled GOP is never published; the newest exact request goes next.
                 } catch (failure: PlayerClosed) {
                     recordReadFailure(failure)
+                    clearInFlight(target, generation)
                     return
                 } catch (failure: Throwable) {
                     recordReadFailure(failure) // Before EDT publication, including after disposal.
                     // A failed decoder may have consumed a partial packet; never reuse that reference state.
                     runCatching { decoder?.close() }.onFailure { closePolicy.recordSourceReadFailure() }; decoder = null
-                    synchronized(decodeLock) { if (pendingUs == target && previewGeneration == generation) pendingUs = null }
                     publish {
-                        if (!state.playing && rules?.displayUs(state.editor) == target && previewGeneration == generation)
-                            state = state.copy(message = failure.message ?: "この位置のframeを復号できません。")
+                        if (!state.playing && rules?.displayUs(state.editor) == target &&
+                            state.previewTargetUs == target && previewGeneration == generation) {
+                            state = state.copy(previewTargetUs = null,
+                                previewError = failure.message ?: "この位置のframeを復号できません。")
+                        }
+                        clearInFlight(target, generation)
                     }
                 }
             }
@@ -437,7 +475,7 @@ internal class ReplayPlayerController(
         val current = rules ?: return
         if (state.error != null || state.editor.drag != null) return
         val (from, until) = current.playRange(state.editor) ?: return
-        synchronized(decodeLock) { pendingUs = null; previewGeneration++ }
+        invalidatePreview()
         playbackActive = true
         lateinit var session: ReplayPlaybackSession
         val showFrame = playedFrames.session { (position, image) ->
@@ -464,7 +502,7 @@ internal class ReplayPlayerController(
             if (clean != true || failure != null) playbackCleanupFailed.set(true)
             playbackClosures.remove(closed)
         }
-        state = state.copy(playing = true, audioNote = null, message = null)
+        state = state.copy(playing = true, audioNote = null, message = null, previewTargetUs = null, previewError = null)
         session.start()
     }
 
@@ -551,8 +589,31 @@ internal class ReplayPlayerController(
             ButtonSpec(PlayerButton.SAVE_FRAME, "この位置をPNG保存", false, false),
             ButtonSpec(PlayerButton.CANCEL, "キャンセル", false, false))
         else playerButtons(current, editor, availability)
-        return PlayerBarModel(editor, current, state.timeline, buttons, statusLine(state.message ?: state.audioNote, buttons),
+        val handlePreviewInGap = current != null &&
+            (editor.drag?.grip == Grip.IN || editor.drag?.grip == Grip.OUT) &&
+            current.grid.indexAt(current.displayUs(editor)) >= 0 && current.grid.indexAt(editor.playheadUs) < 0
+        val statusButtons = if (handlePreviewInGap) buttons.filterNot { it.id == PlayerButton.SAVE_FRAME } else buttons
+        return PlayerBarModel(editor, current, state.timeline, buttons,
+            statusLine(previewStatus() ?: state.message ?: state.audioNote, statusButtons),
             state.playing, current != null && state.error == null && editor.drag == null, ::thumbnail, state.thumbnailVersion, state.aspect)
+    }
+
+    private fun previewStatus(): String? {
+        if (state.loading) return "読み込み中です"
+        val current = rules ?: return null
+        if (current.grid.indexAt(current.displayUs(state.editor)) < 0) return "この位置に表示frameがありません（欠落）"
+        if (state.previewPending) return "この位置の映像を準備しています"
+        return state.previewError
+    }
+
+    fun placeholder(): String? {
+        if (state.loading) return "読み込み中…"
+        val current = rules ?: return state.error
+        if (current.grid.indexAt(current.displayUs(state.editor)) < 0)
+            return "この位置に表示frameがありません（欠落）"
+        if (state.previewPending) return "この位置の映像を準備しています"
+        if (state.image == null) return state.previewError ?: "この位置の映像を準備しています"
+        return null
     }
 
     override fun dispose() {
@@ -649,7 +710,7 @@ internal fun ReplayPlayerContent(controller: ReplayPlayerController) {
         }
         PlayerSurface(
             image = state.image,
-            placeholder = when { state.loading -> "読み込み中…"; state.image == null -> "表示するframeがありません"; else -> null },
+            placeholder = controller.placeholder(),
             palette = jewelPlayerPalette(),
             bar = controller.barModel(),
             actions = controller,

@@ -32,7 +32,41 @@ internal class ReplayFrameCursor(
 ) : ReplayVideoDecoder {
     class Decoded(val image: BufferedImage, val startUs: Long, val endUs: Long, val index: Int)
 
+    private data class FrameRow(
+        val startUs: Long?,
+        val endUs: Long?,
+        val outputKey: Boolean,
+        val segmentIndex: Int?,
+        val sampleEntry: Int?,
+        val sourceDurationUs: Long?,
+    )
+    private data class DisplayRow(val startUs: Long, val endUs: Long, val rowIndex: Int)
+    private data class GopKey(val segmentIndex: Int?, val sampleEntry: Int?)
+
     private val rows = saved.frames
+    private val frameRows = rows.map { row ->
+        FrameRow(row.longText("movie_pts_us"), row.longText("movie_end_us"),
+            runCatching { row["output_key"]?.takeIf { it.isJsonPrimitive }?.asBoolean == true }.getOrDefault(false),
+            runCatching { row["segment_index"]?.takeIf { it.isJsonPrimitive }?.asInt }.getOrNull(),
+            runCatching { row["sample_entry"]?.takeIf { it.isJsonPrimitive }?.asInt }.getOrNull(),
+            row.longText("source_duration_us"))
+    }
+    private val displayRows = frameRows.mapIndexedNotNull { index, row ->
+        val start = row.startUs
+        val end = row.endUs
+        if (start != null && end != null) DisplayRow(start, end, index) else null
+    }.sortedWith(compareBy<DisplayRow> { it.startUs }.thenByDescending { it.rowIndex })
+    private val displayStarts = LongArray(displayRows.size) { displayRows[it].startUs }
+    private val keyRowsByGop = frameRows.indices.filter { frameRows[it].outputKey }
+        .groupBy { GopKey(frameRows[it].segmentIndex, frameRows[it].sampleEntry) }
+        .mapValues { (_, indices) -> indices.toIntArray() }
+    private val nextDisplayRow = IntArray(frameRows.size).also { nextRows ->
+        var next = -1
+        for (index in frameRows.indices.reversed()) {
+            if (frameRows[index].startUs != null && frameRows[index].endUs != null) next = index
+            nextRows[index] = next
+        }
+    }
     private val file = saved.openFile(ReplayFiles.VIDEO)
     private val channel: FileChannel
     private val track: AbstractMP4DemuxerTrack
@@ -59,13 +93,17 @@ internal class ReplayFrameCursor(
         }
     }
 
-    private fun span(index: Int): Pair<Long, Long>? {
-        val pts = rows[index].longText("movie_pts_us") ?: return null
-        val end = rows[index].longText("movie_end_us") ?: return null
-        return pts to end
+    private fun targetIndex(atUs: Long): Int? {
+        val position = upperBound(displayStarts, atUs) - 1
+        if (position < 0) return null
+        return displayRows[position].takeIf { atUs < it.endUs }?.rowIndex
     }
 
-    private fun isKey(index: Int) = rows[index]["output_key"]?.takeIf { it.isJsonPrimitive }?.asBoolean == true
+    private fun gopStart(target: Int): Int? {
+        val row = frameRows[target]
+        val indices = keyRowsByGop[GopKey(row.segmentIndex, row.sampleEntry)] ?: return null
+        return indices.getOrNull(upperBound(indices, target) - 1)
+    }
 
     /** Decodes from the reference IDR up to the frame displayed at [atUs] and returns it. */
     override fun seek(atUs: Long, checkActive: () -> Unit): Decoded = seek(atUs, checkActive, useCached = true)
@@ -79,15 +117,13 @@ internal class ReplayFrameCursor(
         saved.openFile(ReplayFiles.VIDEO).close()
         saved.openFile(ReplayFiles.RECORD).close()
         saved.openFile(ReplayFiles.VIDEO_FRAMES).close()
-        val target = rows.indices.firstOrNull { i -> span(i)?.let { atUs in it.first until it.second } == true }
+        val target = targetIndex(atUs)
             ?: throw IllegalArgumentException("指定時刻に表示されるframeがありません")
         if (useCached) cache.get(cacheSource, target)?.let {
             nextIndex = target + 1; normalizer = null
             return it
         }
-        val gopStart = (target downTo 0).firstOrNull {
-            isKey(it) && rows[it]["segment_index"]?.asInt == rows[target]["segment_index"].asInt
-        } ?: throw IllegalArgumentException("表示frameの参照IDRがありません")
+        val gopStart = gopStart(target) ?: throw IllegalArgumentException("表示frameの参照IDRがありません")
         if (normalizer == null || nextIndex !in gopStart..target) {
             check(track.gotoFrame(gopStart.toLong())) { "動画の位置へ移動できません" }
             nextIndex = gopStart
@@ -104,7 +140,8 @@ internal class ReplayFrameCursor(
     override fun next(checkActive: () -> Unit): Decoded? {
         check(!closed) { "表示デコーダは終了しています" }
         if (normalizer == null && nextIndex <= rows.lastIndex) {
-            val at = (nextIndex..rows.lastIndex).firstNotNullOfOrNull { span(it)?.first }
+            val row = nextDisplayRow[nextIndex]
+            val at = row.takeIf { it >= 0 }?.let { frameRows[it].startUs }
             if (at != null) return seek(at, checkActive)
             nextIndex = rows.size
             return null
@@ -121,11 +158,12 @@ internal class ReplayFrameCursor(
         val index = nextIndex
         val packet = track.nextFrame() ?: throw IllegalStateException("動画のsampleが足りません")
         nextIndex = index + 1
-        val entry = rows[index]["sample_entry"]?.asInt ?: throw IllegalArgumentException("frame記録を読めません")
-        if (isKey(index)) {
+        val row = frameRows[index]
+        val entry = row.sampleEntry ?: throw IllegalArgumentException("frame記録を読めません")
+        if (row.outputKey) {
             val config = annexBConfig(avcs[entry - 1])
             normalizer = try {
-                MixedVideoNormalizer(listOf(config), rows[index].longText("source_duration_us")).apply { startRun(config) }
+                MixedVideoNormalizer(listOf(config), row.sourceDurationUs).apply { startRun(config) }
             } catch (e: IllegalArgumentException) {
                 throw IllegalStateException("表示frameの復号に対応できません", e)
             }
@@ -139,8 +177,29 @@ internal class ReplayFrameCursor(
         }
             catch (e: Exception) { throw IllegalStateException("表示frameの復号に失敗しました", e) }
         if (picture == null) return null
-        val (start, end) = span(index) ?: return null
+        val start = row.startUs ?: return null
+        val end = row.endUs ?: return null
         return Decoded(ReplayPreviewImage.convert(picture), start, end, index).also { cache.put(cacheSource, it) }
+    }
+
+    private fun upperBound(values: LongArray, target: Long): Int {
+        var low = 0
+        var high = values.size
+        while (low < high) {
+            val mid = (low + high) ushr 1
+            if (values[mid] <= target) low = mid + 1 else high = mid
+        }
+        return low
+    }
+
+    private fun upperBound(values: IntArray, target: Int): Int {
+        var low = 0
+        var high = values.size
+        while (low < high) {
+            val mid = (low + high) ushr 1
+            if (values[mid] <= target) low = mid + 1 else high = mid
+        }
+        return low
     }
 
     override fun close() {

@@ -120,6 +120,54 @@ class ReplayPreviewTest {
         }
     }
 
+    @Test fun cursorDecodesAnUnpresentedPrerollIdrForTheExactDisplayedFrame() {
+        SavedReplay.open(fixture()).use { saved ->
+            val target = saved.frames[1]["movie_pts_us"].asString.toLong()
+            saved.frames[0].apply {
+                add("movie_pts_us", com.google.gson.JsonNull.INSTANCE)
+                add("movie_end_us", com.google.gson.JsonNull.INSTANCE)
+                addProperty("presented", false)
+                addProperty("preroll", true)
+            }
+            ReplayFrameCursor(saved).use { cursor ->
+                val actual = cursor.seek(target)
+                assertEquals(1, actual.index)
+                val expected = ReplayFrameExport.decodeAt(saved, target).image
+                assertContentEquals(expected.getRGB(0, 0, expected.width, expected.height, null, 0, expected.width),
+                    actual.image.getRGB(0, 0, actual.image.width, actual.image.height, null, 0, actual.image.width))
+            }
+        }
+    }
+
+    @Test fun cursorIndexesRejectGapsAndGopsAcrossSegmentOrSampleEntryChanges() {
+        SavedReplay.open(fixture()).use { saved ->
+            val missing = saved.frames[4]
+            val gapUs = missing["movie_pts_us"].asString.toLong()
+            val originalStart = missing["movie_pts_us"]
+            val originalEnd = missing["movie_end_us"]
+            missing.add("movie_pts_us", com.google.gson.JsonNull.INSTANCE)
+            missing.add("movie_end_us", com.google.gson.JsonNull.INSTANCE)
+            ReplayFrameCursor(saved).use { cursor ->
+                assertFailsWith<IllegalArgumentException> { cursor.seek(gapUs) }
+                val nextUs = saved.frames[5]["movie_pts_us"].asString.toLong()
+                assertEquals(5, cursor.seek(nextUs).index)
+            }
+            missing.add("movie_pts_us", originalStart)
+            missing.add("movie_end_us", originalEnd)
+            for (field in listOf("segment_index", "sample_entry")) {
+                val targetIndex = 5
+                val row = saved.frames[targetIndex]
+                val target = row["movie_pts_us"].asString.toLong()
+                val original = row[field]
+                row.addProperty(field, original.asInt + 1)
+                ReplayFrameCursor(saved).use { cursor ->
+                    assertFailsWith<IllegalArgumentException> { cursor.seek(target) }
+                }
+                row.add(field, original)
+            }
+        }
+    }
+
     @Test fun playbackPreparesReferenceStateBeforeClockInsteadOfDeferringGopReplayUntilCacheMiss() {
         SavedReplay.open(fixture()).use { saved ->
             val shared = ReplayFrameCache()
