@@ -76,6 +76,7 @@ internal class ReplayFrameCursor(
     private var logicalNextIndex = 0
     private var physicalNextIndex = 0
     private var physicalGopStart: Int? = null
+    private var sourcePinsNeedRecheck = false
     private var normalizer: MixedVideoNormalizer? = null
     private var runEntry = -1
     private var closed = false
@@ -113,6 +114,12 @@ internal class ReplayFrameCursor(
         normalizer != null && physicalGopStart == gopStart &&
             physicalNextIndex in gopStart..target && runEntry == frameRows[target].sampleEntry
 
+    private fun verifySourcePins() {
+        saved.openFile(ReplayFiles.VIDEO).close()
+        saved.openFile(ReplayFiles.RECORD).close()
+        saved.openFile(ReplayFiles.VIDEO_FRAMES).close()
+    }
+
     /** Decodes from the reference IDR up to the frame displayed at [atUs] and returns it. */
     override fun seek(atUs: Long, checkActive: () -> Unit): Decoded = seek(atUs, checkActive, useCached = true)
 
@@ -122,13 +129,12 @@ internal class ReplayFrameCursor(
         check(!closed) { "表示デコーダは終了しています" }
         checkActive()
         // Recheck live identity pins even when no MP4 read is needed for a cache hit.
-        saved.openFile(ReplayFiles.VIDEO).close()
-        saved.openFile(ReplayFiles.RECORD).close()
-        saved.openFile(ReplayFiles.VIDEO_FRAMES).close()
+        verifySourcePins()
         val target = targetIndex(atUs)
             ?: throw IllegalArgumentException("指定時刻に表示されるframeがありません")
         if (useCached) cache.get(cacheSource, target)?.let {
             logicalNextIndex = target + 1
+            sourcePinsNeedRecheck = true
             return it
         }
         val gopStart = gopStart(target) ?: throw IllegalArgumentException("表示frameの参照IDRがありません")
@@ -146,6 +152,7 @@ internal class ReplayFrameCursor(
         checkActive()
         val decoded = last ?: throw IllegalArgumentException("指定時刻のframeを復号できません")
         logicalNextIndex = target + 1
+        sourcePinsNeedRecheck = false
         return decoded
     }
 
@@ -162,6 +169,7 @@ internal class ReplayFrameCursor(
             ?: throw IllegalStateException("次の表示frameの時刻がありません")
         val keyframe = gopStart(target)
         if (keyframe != null && canResume(target, keyframe)) {
+            if (sourcePinsNeedRecheck) verifySourcePins()
             var last: Decoded? = null
             while (physicalNextIndex <= target) {
                 checkActive()
@@ -170,6 +178,7 @@ internal class ReplayFrameCursor(
             checkActive()
             val decoded = last ?: throw IllegalArgumentException("次の表示frameを復号できません")
             logicalNextIndex = target + 1
+            sourcePinsNeedRecheck = false
             return decoded
         }
         return seek(atUs, checkActive)

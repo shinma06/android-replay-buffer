@@ -120,6 +120,24 @@ class ReplayPreviewTest {
         }
     }
 
+    @Test fun nextAfterCachedSameFrameSeekRejectsReplacedSourcePins() {
+        for (sourceName in listOf(ReplayFiles.VIDEO, ReplayFiles.RECORD, ReplayFiles.VIDEO_FRAMES)) {
+            val folder = fixture("source-pin-${sourceName.replace('.', '-')}")
+            SavedReplay.open(folder).use { saved ->
+                val atUs = saved.frames[5]["movie_pts_us"].asString.toLong()
+                ReplayFrameCursor(saved).use { cursor ->
+                    assertEquals(5, cursor.seek(atUs).index)
+                    assertEquals(5, cursor.seek(atUs).index)
+                    val source = folder.resolve(sourceName)
+                    val moved = folder.resolve("original-$sourceName")
+                    Files.move(source, moved)
+                    Files.copy(moved, source)
+                    assertFailsWith<IllegalStateException> { cursor.next() }
+                }
+            }
+        }
+    }
+
     @Test fun cachedBackwardSeekKeepsNextOutputPositionSeparateFromPhysicalDecoder() {
         SavedReplay.open(fixture()).use { saved ->
             val starts = saved.frames.map { it["movie_pts_us"].asString.toLong() }
@@ -276,12 +294,12 @@ class ReplayPreviewTest {
         }
     }
 
-    private fun fixture(): Path {
-        val name = "replay-20240101-000000-manual-feedface"
-        val folder = Files.createDirectory(root.resolve(name))
+    private fun fixture(folderName: String = "replay-20240101-000000-manual-feedface"): Path {
+        val resourceName = "replay-20240101-000000-manual-feedface"
+        val folder = Files.createDirectory(root.resolve(folderName))
         for (file in listOf("README.md", "replay.json", "video.mp4", "video-source.h264", "video-frames.jsonl",
             "logcat-device.jsonl", "logcat-app.jsonl", "touches.jsonl")) {
-            javaClass.getResourceAsStream("/replay-trim-parity/$name/$file")!!.use { Files.copy(it, folder.resolve(file)) }
+            javaClass.getResourceAsStream("/replay-trim-parity/$resourceName/$file")!!.use { Files.copy(it, folder.resolve(file)) }
         }
         return folder
     }
