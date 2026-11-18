@@ -13,11 +13,51 @@ import androidx.compose.foundation.rememberScrollbarAdapter
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collectLatest
 import org.jetbrains.jewel.foundation.theme.JewelTheme
+import org.jetbrains.jewel.ui.component.styling.ScrollbarVisibility
 import org.jetbrains.jewel.ui.theme.scrollbarStyle
+
+internal enum class ScrollbarVisibilityPolicy {
+    AlwaysVisible,
+    WhenScrolling,
+}
+
+internal enum class ScrollbarActivity {
+    Hidden,
+    Scrolling,
+    Lingering,
+}
+
+internal fun scrollbarActivityAfterScrollChange(
+    activity: ScrollbarActivity,
+    isScrollInProgress: Boolean,
+): ScrollbarActivity = when {
+    isScrollInProgress -> ScrollbarActivity.Scrolling
+    activity == ScrollbarActivity.Scrolling -> ScrollbarActivity.Lingering
+    else -> activity
+}
+
+internal fun scrollbarActivityAfterLinger(activity: ScrollbarActivity): ScrollbarActivity =
+    if (activity == ScrollbarActivity.Lingering) ScrollbarActivity.Hidden else activity
+
+internal fun isScrollbarVisible(
+    policy: ScrollbarVisibilityPolicy,
+    isScrollInProgress: Boolean,
+    activity: ScrollbarActivity,
+): Boolean = policy == ScrollbarVisibilityPolicy.AlwaysVisible ||
+    isScrollInProgress ||
+    activity != ScrollbarActivity.Hidden
 
 @Composable
 internal fun ScrollableColumn(
@@ -27,14 +67,44 @@ internal fun ScrollableColumn(
     val scrollState = rememberScrollState()
     val adapter = rememberScrollbarAdapter(scrollState)
     val jewelScrollbarStyle = JewelTheme.scrollbarStyle
-    val scrollbarStyle = remember(jewelScrollbarStyle) {
+    val jewelVisibility = jewelScrollbarStyle.scrollbarVisibility
+    val visibilityPolicy = if (jewelVisibility is ScrollbarVisibility.AlwaysVisible) {
+        ScrollbarVisibilityPolicy.AlwaysVisible
+    } else {
+        ScrollbarVisibilityPolicy.WhenScrolling
+    }
+    val lingerMillis = jewelVisibility.lingerDuration.inWholeMilliseconds
+    var scrollbarActivity by remember(visibilityPolicy) { mutableStateOf(ScrollbarActivity.Hidden) }
+    val isScrollInProgress = scrollState.isScrollInProgress
+
+    LaunchedEffect(scrollState, visibilityPolicy, lingerMillis) {
+        if (visibilityPolicy == ScrollbarVisibilityPolicy.WhenScrolling) {
+            snapshotFlow { scrollState.isScrollInProgress }.collectLatest { scrolling ->
+                scrollbarActivity = scrollbarActivityAfterScrollChange(scrollbarActivity, scrolling)
+                if (!scrolling && scrollbarActivity == ScrollbarActivity.Lingering) {
+                    delay(lingerMillis)
+                    scrollbarActivity = scrollbarActivityAfterLinger(scrollbarActivity)
+                }
+            }
+        }
+    }
+
+    val scrollbarVisible = isScrollbarVisible(visibilityPolicy, isScrollInProgress, scrollbarActivity)
+    val scrollbarStyle = remember(jewelScrollbarStyle, visibilityPolicy, scrollbarVisible) {
+        val thumbBackground = jewelScrollbarStyle.colors.thumbBackground
+        val thumbBackgroundActive = jewelScrollbarStyle.colors.thumbBackgroundActive
+        val visibleThumbColor = when {
+            visibilityPolicy == ScrollbarVisibilityPolicy.AlwaysVisible && thumbBackground.alpha > 0f -> thumbBackground
+            scrollbarVisible -> thumbBackgroundActive
+            else -> Color.Transparent
+        }
         defaultScrollbarStyle().copy(
             minimalHeight = jewelScrollbarStyle.metrics.minThumbLength,
-            thickness = jewelScrollbarStyle.scrollbarVisibility.trackThickness,
+            thickness = jewelVisibility.trackThickness,
             shape = RoundedCornerShape(jewelScrollbarStyle.metrics.thumbCornerSize),
-            hoverDurationMillis = jewelScrollbarStyle.scrollbarVisibility.lingerDuration.inWholeMilliseconds.toInt(),
-            unhoverColor = jewelScrollbarStyle.colors.thumbBackground,
-            hoverColor = jewelScrollbarStyle.colors.thumbBackgroundActive,
+            hoverDurationMillis = jewelVisibility.thumbColorAnimationDuration.inWholeMilliseconds.toInt(),
+            unhoverColor = visibleThumbColor,
+            hoverColor = thumbBackgroundActive,
         )
     }
     val interactionSource = remember { MutableInteractionSource() }

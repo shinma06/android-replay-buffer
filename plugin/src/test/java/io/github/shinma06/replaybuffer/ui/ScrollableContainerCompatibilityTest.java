@@ -46,6 +46,9 @@ class ScrollableContainerCompatibilityTest {
         assertTrue(scrollableColumn.contains("rememberScrollbarAdapter2"));
         assertTrue(scrollableColumn.contains("androidx/compose/foundation/v2/ScrollbarAdapter"));
         assertTrue(scrollableColumn.contains(FOUNDATION_ADAPTER_DESCRIPTOR));
+        assertTrue(scrollableColumn.contains("ScrollbarVisibility$AlwaysVisible"));
+        assertTrue(scrollableColumn.contains("getLingerDuration-UwyO8pc"));
+        assertTrue(scrollableColumn.contains("getThumbColorAnimationDuration-UwyO8pc"));
     }
 
     @Test
@@ -60,6 +63,7 @@ class ScrollableContainerCompatibilityTest {
         assertTrue(source.contains("colors.thumbBackground"));
         assertTrue(source.contains("colors.thumbBackgroundActive"));
         assertTrue(source.contains("lingerDuration.inWholeMilliseconds"));
+        assertTrue(source.contains("thumbColorAnimationDuration.inWholeMilliseconds"));
     }
 
     private static String classFileText(Class<?> type) throws IOException {
