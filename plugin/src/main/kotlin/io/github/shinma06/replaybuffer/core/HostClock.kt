@@ -10,7 +10,10 @@ internal interface HostClock {
     fun read(): HostReading
 }
 
-/** The half-open interval between reads that bracket a possible suspend. */
+/**
+ * The half-open interval between reads that bracket a possible suspend.
+ * A delay between reading awake and H can also increase the observed gap.
+ */
 internal data class HostSuspend(val fromH: Long, val toH: Long, val asleepNs: Long)
 
 internal class HostTime(private val clock: HostClock, private val thresholdNs: Long = 100_000_000) {

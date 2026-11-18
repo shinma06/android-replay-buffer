@@ -25,6 +25,21 @@ class HostTimeTest {
     }
 
     @Test
+    fun wallClockStepsDoNotAffectElapsedClocks() {
+        val first = clock.read()
+        assertEquals(first.h, time.now())
+        clock.wallTimeMs += 3_600_000
+        clock.advance(101)
+        assertEquals(first.h + 101, time.now())
+        assertEquals(first.awake + 101, clock.read().awake)
+        clock.wallTimeMs -= 7_200_000
+        clock.advance(101)
+        assertEquals(first.h + 202, time.now())
+        assertEquals(first.awake + 202, clock.read().awake)
+        assertTrue(events.isEmpty())
+    }
+
+    @Test
     fun suspendDetectedWhenGapGrowsBeyondThreshold() {
         time.now()
         clock.suspendFor(101)
@@ -74,6 +89,17 @@ class HostTimeTest {
         clock.suspendFor(101)
         val to = time.now()
         assertEquals(listOf(HostSuspend(from, to, 101)), events)
+    }
+
+    @Test
+    fun delayBetweenNativeReadsAlsoProducesSuspendCandidate() {
+        val defaultTime = HostTime(clock).apply { onSuspend = { events.add(it) } }
+        val from = defaultTime.now()
+        clock.advance(10_000_000)
+        // No actual suspend: awake is sampled before a scheduler delay and H after it.
+        clock.h += 150_000_000
+        val to = defaultTime.now()
+        assertEquals(listOf(HostSuspend(from, to, 150_000_000)), events)
     }
 
     @Test

@@ -8,6 +8,7 @@ internal class FakeHostClock(
     var awake: Long = 500_000_000_000,
     var includesSuspend: Boolean = true,
 ) : HostClock {
+    var wallTimeMs: Long = 1_700_000_000_000
     override val method = "fake"
     override fun read() = HostReading(h, awake, includesSuspend)
 
