@@ -10,6 +10,7 @@ import io.github.shinma06.replaybuffer.core.ReplayFiles
 import io.github.shinma06.replaybuffer.core.ReplayFrameCache
 import io.github.shinma06.replaybuffer.core.ReplayFrameCursor
 import io.github.shinma06.replaybuffer.core.ReplayFrameExport
+import io.github.shinma06.replaybuffer.core.ReplayTimeline
 import io.github.shinma06.replaybuffer.core.ReplayVideoDecoder
 import io.github.shinma06.replaybuffer.core.previewKeyframeUs
 import io.github.shinma06.replaybuffer.core.SaveOutputFile
@@ -668,6 +669,42 @@ class ReplayPlayerControllerTest {
         }
         verify(Grip.IN)
         verify(Grip.OUT)
+    }
+
+    @Test
+    fun validHandlePreviewStatusClearsAfterDecodeAndReleaseRestoresPlayheadPreview() = withController { controller ->
+        val spans = controller.state.timeline!!.spans
+        fun verify(grip: Grip, edge: ReplayTimeline.Span) {
+            val playheadUs = controller.state.editor.playheadUs
+            var targetUs = -1L
+            withPreviewBlocked(controller) {
+                controller.press(grip, if (grip == Grip.IN) edge.startUs else edge.endUs)
+                targetUs = controller.barModel().rules!!.displayUs(controller.state.editor)
+                assertEquals(playheadUs, controller.state.editor.playheadUs)
+                assertTrue(targetUs != playheadUs)
+                assertTrue(controller.barModel().rules!!.grid.indexAt(targetUs) >= 0)
+                assertTrue(controller.state.previewPending)
+                assertEquals("この位置の映像を準備しています", controller.barModel().status)
+            }
+            assertFalse(controller.state.previewPending)
+            assertEquals(targetUs, controller.state.imageUs)
+            assertNull(controller.placeholder())
+            assertNull(controller.barModel().status)
+            val saveFrame = controller.barModel().buttons.single { it.id == PlayerButton.SAVE_FRAME }
+            assertFalse(saveFrame.enabled)
+            assertEquals("この位置の映像を準備しています", saveFrame.reason)
+            SwingUtilities.invokeAndWait {
+                controller.exportPng()
+                assertNull(controller.state.editor.task)
+            }
+            SwingUtilities.invokeAndWait { controller.release() }
+            awaitPreview(controller)
+            assertEquals(controller.state.editor.playheadUs, controller.state.imageUs)
+            assertTrue(controller.barModel().buttons.single { it.id == PlayerButton.SAVE_FRAME }.enabled)
+        }
+        awaitPreview(controller)
+        verify(Grip.IN, spans[3])
+        verify(Grip.OUT, spans[7])
     }
 
     @Test

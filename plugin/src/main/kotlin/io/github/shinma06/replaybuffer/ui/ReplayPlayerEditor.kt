@@ -589,10 +589,10 @@ internal class ReplayPlayerController(
             ButtonSpec(PlayerButton.SAVE_FRAME, "この位置をPNG保存", false, false),
             ButtonSpec(PlayerButton.CANCEL, "キャンセル", false, false))
         else playerButtons(current, editor, availability)
-        val handlePreviewInGap = current != null &&
+        val handlePreviewDiffersFromPlayhead = current != null &&
             (editor.drag?.grip == Grip.IN || editor.drag?.grip == Grip.OUT) &&
-            current.grid.indexAt(current.displayUs(editor)) >= 0 && current.grid.indexAt(editor.playheadUs) < 0
-        val statusButtons = if (handlePreviewInGap) buttons.filterNot { it.id == PlayerButton.SAVE_FRAME } else buttons
+            current.grid.indexAt(current.displayUs(editor)) >= 0 && current.displayUs(editor) != editor.playheadUs
+        val statusButtons = if (handlePreviewDiffersFromPlayhead) buttons.filterNot { it.id == PlayerButton.SAVE_FRAME } else buttons
         return PlayerBarModel(editor, current, state.timeline, buttons,
             statusLine(previewStatus() ?: state.message ?: state.audioNote, statusButtons),
             state.playing, current != null && state.error == null && editor.drag == null, ::thumbnail, state.thumbnailVersion, state.aspect)
