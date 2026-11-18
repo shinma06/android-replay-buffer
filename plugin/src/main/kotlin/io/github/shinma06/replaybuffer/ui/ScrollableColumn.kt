@@ -1,28 +1,22 @@
 package io.github.shinma06.replaybuffer.ui
 
-import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.VerticalScrollbar
+import androidx.compose.foundation.defaultScrollbarStyle
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.rememberScrollbarAdapter
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.input.pointer.PointerEventType
-import androidx.compose.ui.input.pointer.pointerInput
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
 import org.jetbrains.jewel.foundation.theme.JewelTheme
-import org.jetbrains.jewel.ui.component.VerticalScrollbar
 import org.jetbrains.jewel.ui.theme.scrollbarStyle
 
 @Composable
@@ -31,33 +25,28 @@ internal fun ScrollableColumn(
     content: @Composable ColumnScope.() -> Unit,
 ) {
     val scrollState = rememberScrollState()
-    val scrollbarStyle = JewelTheme.scrollbarStyle
-    var keepVisible by remember { mutableStateOf(false) }
-    val scope = rememberCoroutineScope()
+    val adapter = rememberScrollbarAdapter(scrollState)
+    val jewelScrollbarStyle = JewelTheme.scrollbarStyle
+    val scrollbarStyle = remember(jewelScrollbarStyle) {
+        defaultScrollbarStyle().copy(
+            minimalHeight = jewelScrollbarStyle.metrics.minThumbLength,
+            thickness = jewelScrollbarStyle.scrollbarVisibility.trackThickness,
+            shape = RoundedCornerShape(jewelScrollbarStyle.metrics.thumbCornerSize),
+            hoverDurationMillis = jewelScrollbarStyle.scrollbarVisibility.lingerDuration.inWholeMilliseconds.toInt(),
+            unhoverColor = jewelScrollbarStyle.colors.thumbBackground,
+            hoverColor = jewelScrollbarStyle.colors.thumbBackgroundActive,
+        )
+    }
+    val interactionSource = remember { MutableInteractionSource() }
 
-    Box(
-        modifier.pointerInput(scope, scrollbarStyle.scrollbarVisibility.lingerDuration) {
-            var delayJob: Job? = null
-            awaitEachGesture {
-                val event = awaitPointerEvent()
-                if (event.type == PointerEventType.Move) {
-                    delayJob?.cancel()
-                    keepVisible = true
-                    delayJob = scope.launch {
-                        delay(scrollbarStyle.scrollbarVisibility.lingerDuration)
-                        keepVisible = false
-                    }
-                }
-            }
-        },
-    ) {
+    Box(modifier) {
         Column(Modifier.fillMaxSize().verticalScroll(scrollState), content = content)
         VerticalScrollbar(
-            scrollState = scrollState,
+            adapter = adapter,
             modifier = Modifier.align(Alignment.CenterEnd).fillMaxHeight(),
-            enabled = true,
+            reverseLayout = false,
             style = scrollbarStyle,
-            keepVisible = keepVisible,
+            interactionSource = interactionSource,
         )
     }
 }

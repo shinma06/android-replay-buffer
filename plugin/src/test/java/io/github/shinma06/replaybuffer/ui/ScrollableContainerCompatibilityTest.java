@@ -12,6 +12,15 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class ScrollableContainerCompatibilityTest {
+    private static final String FOUNDATION_SCROLLBAR_DESCRIPTOR =
+            "(Landroidx/compose/foundation/v2/ScrollbarAdapter;Landroidx/compose/ui/Modifier;Z"
+                    + "Landroidx/compose/foundation/ScrollbarStyle;"
+                    + "Landroidx/compose/foundation/interaction/MutableInteractionSource;"
+                    + "Landroidx/compose/runtime/Composer;II)V";
+    private static final String FOUNDATION_ADAPTER_DESCRIPTOR =
+            "(Landroidx/compose/foundation/ScrollState;Landroidx/compose/runtime/Composer;I)"
+                    + "Landroidx/compose/foundation/v2/ScrollbarAdapter;";
+
     @Test
     void scrollableViewsUseTheSharedScrollbarAndDoNotLinkTheVersionBoundContainer() throws IOException {
         String toolWindow = classFileText(ReplayToolWindowFactoryKt.class);
@@ -20,11 +29,23 @@ class ScrollableContainerCompatibilityTest {
 
         assertTrue(toolWindow.contains("ScrollableColumn"));
         assertTrue(settings.contains("ScrollableColumn"));
-        assertTrue(scrollableColumn.contains("VerticalScrollbar"));
         assertTrue(scrollableColumn.contains("verticalScroll"));
         assertFalse(toolWindow.contains("VerticallyScrollableContainer"));
         assertFalse(settings.contains("VerticallyScrollableContainer"));
         assertFalse(scrollableColumn.contains("VerticallyScrollableContainer"));
+        assertFalse(scrollableColumn.contains("org/jetbrains/jewel/ui/component/ScrollbarKt"));
+    }
+
+    @Test
+    void compiledScrollbarReferencesRabbitOneCompatibleFoundationDescriptors() throws IOException {
+        String scrollableColumn = classFileText(ScrollableColumnKt.class);
+
+        assertTrue(scrollableColumn.contains("androidx/compose/foundation/Scrollbar_desktopKt"));
+        assertTrue(scrollableColumn.contains("VerticalScrollbar"));
+        assertTrue(scrollableColumn.contains(FOUNDATION_SCROLLBAR_DESCRIPTOR));
+        assertTrue(scrollableColumn.contains("rememberScrollbarAdapter2"));
+        assertTrue(scrollableColumn.contains("androidx/compose/foundation/v2/ScrollbarAdapter"));
+        assertTrue(scrollableColumn.contains(FOUNDATION_ADAPTER_DESCRIPTOR));
     }
 
     @Test
@@ -33,10 +54,12 @@ class ScrollableContainerCompatibilityTest {
 
         assertTrue(source.contains("val scrollState = rememberScrollState()"));
         assertTrue(source.contains("verticalScroll(scrollState)"));
-        assertTrue(source.contains("scrollState = scrollState"));
+        assertTrue(source.contains("rememberScrollbarAdapter(scrollState)"));
         assertTrue(source.contains("Modifier.align(Alignment.CenterEnd).fillMaxHeight()"));
-        assertTrue(source.contains("enabled = true"));
-        assertTrue(source.contains("keepVisible = keepVisible"));
+        assertTrue(source.contains("reverseLayout = false"));
+        assertTrue(source.contains("colors.thumbBackground"));
+        assertTrue(source.contains("colors.thumbBackgroundActive"));
+        assertTrue(source.contains("lingerDuration.inWholeMilliseconds"));
     }
 
     private static String classFileText(Class<?> type) throws IOException {
