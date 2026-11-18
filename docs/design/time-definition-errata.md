@@ -376,7 +376,9 @@ T3aの`ClockLateReplyTest`に`replyBeforeDeadlineIgnoresTimeoutFlag`、`replyAft
 
 原本6.8(4)の文言変更の時期と6.9(3)（827行）の一律のヘルプ文言は、次の説明に置き換える。[運用規則](../../AGENTS.md)に従い、schema 5のPNG出力を有効にするT4aの同じコミットで`docs/cli.md`、`replay --help`、同梱CLI README、`docs/mcp.md`を更新する。T4aでは`frame`／`export_frame`はschema 4・5、`trim`／`trim_replay`はschema 4のみを受け付ける。schema 4の`arb:t_ns`は従来どおり既知の場合だけ、schema 5の`arb:time_grade`は出力フレームの`arb:t_ns`の等級とし、推定・到着基準の位置を測定済みとは説明しない。`arb:display_t_ns`は別の項目で、どちらのschemaも既存の規則どおり表示時刻が得られない場合は省く。
 
-T4aで、固定入力のschema 4のPNGが従来と同じバイト列になることを確かめる。schema 5は3等級の固定入力で、対象フレームの時刻・等級とPNGの`arb:t_ns`・`arb:time_grade`が一致し、表示時刻が得られない場合は`arb:display_t_ns`がないことを、GUI・CLI・MCPの各出力で確かめる。T4bでもPNGのschema別の説明を維持し、schema 5のトリムを有効にするコミットで上の4面の入力条件を更新する（原本6.9(8)(e)）。6.9(12)の作業分割はこの同時更新に従う。U6は3区分の秒数の公開だけに適用し、PNG・トリムの説明の同期には適用しない。
+T4aで、固定入力のschema 4のPNGが従来と同じバイト列になることを確かめる。schema 5の3等級の固定入力は、GUI・CLI・MCPの各出力を対象フレームの期待値と照合する。`arb:t_ns`・`arb:time_grade`がそれぞれ一致し、`arb:display_t_ns`は表示時刻がなければ出ず、`t_ns`と異なる表示時刻があればその値が出ることを確かめる。
+
+T4bでもPNGのschema別の説明を維持し、schema 5のトリムを有効にするコミットで上の4面の入力条件を更新する（原本6.9(8)(e)）。6.9(12)の作業分割はこの同時更新に従う。U6は3区分の秒数の公開だけに適用し、PNG・トリムの説明の同期には適用しない。
 
 ### 保存する時刻の半幅（T4b）
 
