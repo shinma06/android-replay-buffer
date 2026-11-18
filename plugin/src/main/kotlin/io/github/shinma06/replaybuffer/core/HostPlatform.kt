@@ -23,4 +23,11 @@ internal object HostPlatform {
     val saveHandles: SaveHandles get() = supportedSaveHandles ?: error("この環境は保存出力の実体確認に対応していません")
 
     val privateFiles: OwnerOnlyFiles = if (windows) WindowsPrivateFiles else PosixPrivateFiles
+
+    val hostClock: HostClock = when {
+        windows -> GuardedHostClock(WindowsHostClock)
+        name == "Mac OS X" -> GuardedHostClock(PosixHostClock(darwin = true))
+        name == "Linux" -> GuardedHostClock(PosixHostClock(darwin = false))
+        else -> NanoTimeHostClock
+    }
 }
