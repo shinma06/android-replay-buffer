@@ -373,7 +373,9 @@ T3aの`ClockLateReplyTest`に`replyBeforeDeadlineIgnoresTimeoutFlag`、`replyAft
 
 原本6.8(4)（789行）どおり、T4aでschema 5を読み、推定・到着基準の位置をPNGに使う場合は`arb:time_grade`を併記する。書き手の切替やschema 5のトリム対応はT4bのままとする。schema 4のPNG出力と既存の互換条件は変えない。
 
-原本の「文言の変更はT4b」は書き手切替に伴う説明に適用する。読み手から書き出せるようになるschema 5のPNGについては、[運用規則](../../AGENTS.md)に従い、その出力を有効にするT4aの同じコミットで`docs/cli.md`、`replay --help`、同梱CLI README、`docs/mcp.md`を更新する。「既知の場合だけ」は従来のschema 4の説明と区別し、schema 5の推定・到着基準の位置を測定済みと説明しない。固定入力のschema 4のPNGは従来と同じバイト列になり、schema 5の推定・到着基準のPNGはGUI・CLI・MCPで同じ位置と等級を出すことを確かめる。
+原本6.8(4)の文言変更の時期と6.9(3)（827行）の一律のヘルプ文言は、次の説明に置き換える。[運用規則](../../AGENTS.md)に従い、schema 5のPNG出力を有効にするT4aの同じコミットで`docs/cli.md`、`replay --help`、同梱CLI README、`docs/mcp.md`を更新する。T4aでは`frame`／`export_frame`はschema 4・5、`trim`／`trim_replay`はschema 4のみを受け付ける。「既知の場合だけ」はschema 4の説明として残し、schema 5の推定・到着基準の位置は等級と併記し、測定済みとは説明しない。
+
+T4bでは書き手およびトリムの対応の説明を更新するが、PNGのschema別の説明は維持する。固定入力のschema 4のPNGは従来と同じバイト列になり、schema 5の推定・到着基準のPNGはGUI・CLI・MCPで同じ位置と等級を出すことを確かめる。
 
 ### 保存する時刻の半幅（T4b）
 
