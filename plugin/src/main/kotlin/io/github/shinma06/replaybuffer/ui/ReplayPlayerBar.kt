@@ -37,7 +37,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.ClipOp
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Path
@@ -312,28 +311,14 @@ private fun DrawScope.drawStrip(bar: PlayerBarModel, palette: PlayerPalette, han
         handle(left)
         handle(right - handlePx)
     }
-    drawPlayerPlayhead(geometry.x(editor.playheadUs), palette.content, palette.barBackground, range, handlePx)
+    drawPlayerPlayhead(geometry.x(editor.playheadUs), palette.content, palette.barBackground)
 }
 
-internal fun DrawScope.drawPlayerPlayhead(x: Float, foreground: Color, outline: Color,
-    range: ClosedFloatingPointRange<Float>, handlePx: Float) {
-    val ink = foreground.copy(alpha = 1f)
-    val edge = outline.copy(alpha = 1f)
-    val inGrip = range.start + handlePx / 2
-    val outGrip = range.endInclusive - handlePx / 2
-    val pad = 3.dp.toPx()
-    val top = size.height * 0.35f - 1.dp.toPx()
-    val bottom = size.height * 0.65f + 1.dp.toPx()
-    // Keep the handle grips visible where they win pointer input.
+internal fun DrawScope.drawPlayerPlayhead(x: Float, foreground: Color, outline: Color) {
     clipRect {
-        clipRect(inGrip - pad, top, inGrip + pad, bottom, ClipOp.Difference) {
-            clipRect(outGrip - pad, top, outGrip + pad, bottom, ClipOp.Difference) {
-                drawLine(edge, Offset(x, 0f), Offset(x, size.height), strokeWidth = 8.dp.toPx())
-                drawLine(ink, Offset(x, 0f), Offset(x, size.height), strokeWidth = 4.dp.toPx())
-                val centre = Offset(x, 8.dp.toPx())
-                drawCircle(edge, radius = 8.dp.toPx(), center = centre)
-                drawCircle(ink, radius = 5.dp.toPx(), center = centre)
-            }
-        }
+        val start = Offset(x, -3.dp.toPx())
+        val end = Offset(x, size.height + 3.dp.toPx())
+        drawLine(outline.copy(alpha = 1f), start, end, strokeWidth = 5.6.dp.toPx())
+        drawLine(foreground, start, end, strokeWidth = 2.8.dp.toPx())
     }
 }
