@@ -372,7 +372,7 @@ T3aの`ClockLateReplyTest`に`replyBeforeDeadlineIgnoresTimeoutFlag`、`replyAft
 <a id="png-contract-publication"></a>
 ### PNGの時刻メタデータの説明（T4a・T4b）
 
-原本6.8(4)（789行）どおり、T4aでschema 5を読み、推定・到着基準の位置を使う。方針書4.8（325行）どおり、schema 5のPNGは時刻と等級を併記する。測定行の「現行どおり」は位置の扱いを指し、schema 5のPNGには`arb:time_grade=measured`を付ける。書き手の切替やschema 5のトリム対応はT4bのままとする。schema 4のPNG出力と既存の互換条件は変えない。
+原本6.8(4)（789行）どおり、T4aでschema 5を読み、推定・到着基準の位置を使う。方針書4.8（325行）どおり、測定・推定・到着基準の3等級ではschema 5のPNGに時刻と等級を併記する。測定行の「現行どおり」は位置の扱いを指し、schema 5のPNGには`arb:time_grade=measured`を付ける。未知の等級を読み手が不明として扱う既存条件は維持し、その場合のPNGでの表現（等級キーの省略か、不明値の記録か）は本追補で決めない。書き手の切替やschema 5のトリム対応はT4bのままとする。schema 4のPNG出力と既存の互換条件は変えない。
 
 原本6.8(4)の文言変更の時期と6.9(3)（827行）の一律のヘルプ文言は、次の説明に置き換える。[運用規則](../../AGENTS.md)に従い、schema 5のPNG出力を有効にするT4aの同じコミットで`docs/cli.md`、`replay --help`、同梱CLI README、`docs/mcp.md`を更新する。T4aでは`frame`／`export_frame`はschema 4・5、`trim`／`trim_replay`はschema 4のみを受け付ける。schema 4の`arb:t_ns`は従来どおり既知の場合だけ、schema 5の`arb:time_grade`は出力フレームの`arb:t_ns`の等級とし、推定・到着基準の位置を測定済みとは説明しない。`arb:display_t_ns`は別の項目で、どちらのschemaも既存の規則どおり表示時刻が得られない場合は省く。
 
