@@ -73,7 +73,6 @@ import org.jetbrains.jewel.ui.component.ListComboBox
 import org.jetbrains.jewel.ui.component.OutlinedButton
 import org.jetbrains.jewel.ui.component.Text
 import org.jetbrains.jewel.ui.component.Tooltip
-import org.jetbrains.jewel.ui.component.VerticallyScrollableContainer
 import java.awt.BorderLayout
 import java.nio.file.InvalidPathException
 import java.nio.file.Path
@@ -352,7 +351,7 @@ internal fun StatusHeaderRow(heading: @Composable () -> Unit, toggle: @Composabl
 @Composable
 internal fun ReplayToolWindowContent(controller: ReplayToolWindowController) {
     val model = controller.model
-    VerticallyScrollableContainer(modifier = Modifier.fillMaxSize()) {
+    ScrollableColumn(modifier = Modifier.fillMaxSize()) {
         Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             // 1. Status headline with the capture switch at the end.
             StatusHeaderRow(

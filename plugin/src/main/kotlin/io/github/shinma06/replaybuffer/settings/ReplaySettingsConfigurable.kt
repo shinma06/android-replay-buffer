@@ -49,6 +49,7 @@ import io.github.shinma06.replaybuffer.core.TapDisplay
 import io.github.shinma06.replaybuffer.core.VideoQuality
 import io.github.shinma06.replaybuffer.ide.LogcatScreenshotSettings
 import io.github.shinma06.replaybuffer.ide.ReplayProjectService
+import io.github.shinma06.replaybuffer.ui.ScrollableColumn
 import io.github.shinma06.replaybuffer.ui.captureModeDescription
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -66,7 +67,6 @@ import org.jetbrains.jewel.ui.component.RadioButtonRow
 import org.jetbrains.jewel.ui.component.Text
 import org.jetbrains.jewel.ui.component.TextField
 import org.jetbrains.jewel.ui.component.Tooltip
-import org.jetbrains.jewel.ui.component.VerticallyScrollableContainer
 import java.awt.datatransfer.StringSelection
 import javax.swing.JComponent
 
@@ -411,7 +411,7 @@ internal fun SettingsContent(form: SettingsForm, edited: () -> Unit, choose: (Te
             .collect { edited() }
     }
     val controls = form.controls
-    VerticallyScrollableContainer(modifier = Modifier.fillMaxSize()) {
+    ScrollableColumn(modifier = Modifier.fillMaxSize()) {
         Column(Modifier.fillMaxWidth().padding(end = 12.dp, bottom = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             // 1. Basics, set once.
             GroupHeader("基本", modifier = Modifier.semantics { heading() })
