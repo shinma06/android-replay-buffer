@@ -29,6 +29,8 @@ internal class ReplayFrameCursor(
     private val saved: SavedReplay,
     openChannel: (SaveOutputFile) -> FileChannel = { it.channel(EnumSet.of(StandardOpenOption.READ)) },
     private val cache: ReplayFrameCache = ReplayFrameCache(),
+    private val packetReadObserver: ((Int) -> Unit)? = null,
+    private val gopRestartObserver: ((Int) -> Unit)? = null,
 ) : ReplayVideoDecoder {
     class Decoded(val image: BufferedImage, val startUs: Long, val endUs: Long, val index: Int)
 
@@ -71,7 +73,9 @@ internal class ReplayFrameCursor(
     private val channel: FileChannel
     private val track: AbstractMP4DemuxerTrack
     private val avcs: List<AvcCBox>
-    private var nextIndex = 0
+    private var logicalNextIndex = 0
+    private var physicalNextIndex = 0
+    private var physicalGopStart: Int? = null
     private var normalizer: MixedVideoNormalizer? = null
     private var runEntry = -1
     private var closed = false
@@ -105,6 +109,10 @@ internal class ReplayFrameCursor(
         return indices.getOrNull(upperBound(indices, target) - 1)
     }
 
+    private fun canResume(target: Int, gopStart: Int): Boolean =
+        normalizer != null && physicalGopStart == gopStart &&
+            physicalNextIndex in gopStart..target && runEntry == frameRows[target].sampleEntry
+
     /** Decodes from the reference IDR up to the frame displayed at [atUs] and returns it. */
     override fun seek(atUs: Long, checkActive: () -> Unit): Decoded = seek(atUs, checkActive, useCached = true)
 
@@ -120,47 +128,64 @@ internal class ReplayFrameCursor(
         val target = targetIndex(atUs)
             ?: throw IllegalArgumentException("指定時刻に表示されるframeがありません")
         if (useCached) cache.get(cacheSource, target)?.let {
-            nextIndex = target + 1; normalizer = null
+            logicalNextIndex = target + 1
             return it
         }
         val gopStart = gopStart(target) ?: throw IllegalArgumentException("表示frameの参照IDRがありません")
-        if (normalizer == null || nextIndex !in gopStart..target) {
-            check(track.gotoFrame(gopStart.toLong())) { "動画の位置へ移動できません" }
-            nextIndex = gopStart
+        if (!canResume(target, gopStart)) {
             normalizer = null
+            physicalGopStart = null
+            runEntry = -1
+            check(track.gotoFrame(gopStart.toLong())) { "動画の位置へ移動できません" }
+            physicalNextIndex = gopStart
+            gopRestartObserver?.invoke(gopStart)
         }
         var last: Decoded? = null
         // Keep the two preceding frames, without RGB allocations for the rest of the GOP.
-        while (nextIndex <= target) { checkActive(); last = decodeNext(nextIndex >= target - 2) }
+        while (physicalNextIndex <= target) { checkActive(); last = decodeNext(physicalNextIndex >= target - 2) }
         checkActive()
-        return last ?: throw IllegalArgumentException("指定時刻のframeを復号できません")
+        val decoded = last ?: throw IllegalArgumentException("指定時刻のframeを復号できません")
+        logicalNextIndex = target + 1
+        return decoded
     }
 
-    /** The next frame with a movie span after the last decoded one, or null at the end of the movie. */
+    /** The next frame with a movie span after the last returned one, or null at the end of the movie. */
     override fun next(checkActive: () -> Unit): Decoded? {
         check(!closed) { "表示デコーダは終了しています" }
-        if (normalizer == null && nextIndex <= rows.lastIndex) {
-            val row = nextDisplayRow[nextIndex]
-            val at = row.takeIf { it >= 0 }?.let { frameRows[it].startUs }
-            if (at != null) return seek(at, checkActive)
-            nextIndex = rows.size
+        if (logicalNextIndex >= rows.size) return null
+        val target = nextDisplayRow[logicalNextIndex]
+        if (target < 0) {
+            logicalNextIndex = rows.size
             return null
         }
-        while (nextIndex <= rows.lastIndex) {
+        val atUs = frameRows[target].startUs
+            ?: throw IllegalStateException("次の表示frameの時刻がありません")
+        val keyframe = gopStart(target)
+        if (keyframe != null && canResume(target, keyframe)) {
+            var last: Decoded? = null
+            while (physicalNextIndex <= target) {
+                checkActive()
+                last = decodeNext(physicalNextIndex >= target - 2)
+            }
             checkActive()
-            val decoded = decodeNext() ?: continue
+            val decoded = last ?: throw IllegalArgumentException("次の表示frameを復号できません")
+            logicalNextIndex = target + 1
             return decoded
         }
-        return null
+        return seek(atUs, checkActive)
     }
 
     private fun decodeNext(display: Boolean = true): Decoded? {
-        val index = nextIndex
+        val index = physicalNextIndex
         val packet = track.nextFrame() ?: throw IllegalStateException("動画のsampleが足りません")
-        nextIndex = index + 1
+        physicalNextIndex = index + 1
+        packetReadObserver?.invoke(index)
         val row = frameRows[index]
         val entry = row.sampleEntry ?: throw IllegalArgumentException("frame記録を読めません")
         if (row.outputKey) {
+            normalizer = null
+            physicalGopStart = null
+            runEntry = -1
             val config = annexBConfig(avcs[entry - 1])
             normalizer = try {
                 MixedVideoNormalizer(listOf(config), row.sourceDurationUs).apply { startRun(config) }
@@ -168,6 +193,7 @@ internal class ReplayFrameCursor(
                 throw IllegalStateException("表示frameの復号に対応できません", e)
             }
             runEntry = entry
+            physicalGopStart = index
         }
         val decoder = normalizer ?: throw IllegalStateException("参照IDRより前から復号しようとしました")
         require(entry == runEntry) { "表示frameのsample構成が読めません" }
@@ -175,7 +201,12 @@ internal class ReplayFrameCursor(
             val bytes = movSampleToAnnexB(packet.data, avcs[entry - 1])
             if (display) decoder.decodeForDisplay(bytes) else { decoder.decodeOnly(bytes); null }
         }
-            catch (e: Exception) { throw IllegalStateException("表示frameの復号に失敗しました", e) }
+            catch (e: Exception) {
+                normalizer = null
+                physicalGopStart = null
+                runEntry = -1
+                throw IllegalStateException("表示frameの復号に失敗しました", e)
+            }
         if (picture == null) return null
         val start = row.startUs ?: return null
         val end = row.endUs ?: return null

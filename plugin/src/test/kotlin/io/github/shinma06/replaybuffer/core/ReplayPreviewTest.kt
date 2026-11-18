@@ -120,6 +120,21 @@ class ReplayPreviewTest {
         }
     }
 
+    @Test fun cachedBackwardSeekKeepsNextOutputPositionSeparateFromPhysicalDecoder() {
+        SavedReplay.open(fixture()).use { saved ->
+            val starts = saved.frames.map { it["movie_pts_us"].asString.toLong() }
+            ReplayFrameCursor(saved).use { cursor ->
+                assertEquals(8, cursor.seek(starts[8]).index)
+                assertEquals(6, cursor.seek(starts[6]).index)
+                val next = assertNotNull(cursor.next())
+                assertEquals(7, next.index)
+                val expected = ReplayFrameExport.decodeAt(saved, starts[7]).image
+                assertContentEquals(expected.getRGB(0, 0, expected.width, expected.height, null, 0, expected.width),
+                    next.image.getRGB(0, 0, next.image.width, next.image.height, null, 0, next.image.width))
+            }
+        }
+    }
+
     @Test fun cursorDecodesAnUnpresentedPrerollIdrForTheExactDisplayedFrame() {
         SavedReplay.open(fixture()).use { saved ->
             val target = saved.frames[1]["movie_pts_us"].asString.toLong()
@@ -173,12 +188,51 @@ class ReplayPreviewTest {
             val shared = ReplayFrameCache()
             val at = saved.frames[5]["movie_pts_us"].asLong
             ReplayFrameCursor(saved, cache = shared).use { it.seek(at) }
-            ReplayFrameCursor(saved, cache = shared).use { playback ->
+            val packets = mutableListOf<Int>()
+            ReplayFrameCursor(saved, cache = shared, packetReadObserver = { packets += it }).use { playback ->
                 assertEquals(at, playback.seekForPlayback(at).startUs)
-                var checks = 0
-                val next = assertNotNull(playback.next { checks++ })
+                assertEquals((0..5).toList(), packets)
+                val next = assertNotNull(playback.next())
                 assertEquals(saved.frames[6]["movie_pts_us"].asLong, next.startUs)
-                assertEquals(1, checks, "next must decode only its packet after playback preparation")
+                assertEquals((0..6).toList(), packets)
+            }
+        }
+    }
+
+    @Test fun nextAcrossCachedBackwardSeekRestartsAtSegmentAndSampleEntryBoundary() {
+        SavedReplay.open(fixture()).use { saved ->
+            val beforeUs = saved.frames[11]["movie_pts_us"].asString.toLong()
+            val boundaryUs = saved.frames[12]["movie_pts_us"].asString.toLong()
+            val nextUs = saved.frames[13]["movie_pts_us"].asString.toLong()
+            assertEquals(0, saved.frames[11]["segment_index"].asInt)
+            assertEquals(1, saved.frames[11]["sample_entry"].asInt)
+            assertEquals(1, saved.frames[12]["segment_index"].asInt)
+            assertEquals(2, saved.frames[12]["sample_entry"].asInt)
+
+            val packets = mutableListOf<Int>()
+            val restarts = mutableListOf<Int>()
+            ReplayFrameCursor(saved, packetReadObserver = { packets += it },
+                gopRestartObserver = { restarts += it }).use { cursor ->
+                assertEquals(11, cursor.seek(beforeUs).index)
+                packets.clear()
+                restarts.clear()
+                assertEquals(11, cursor.seek(beforeUs).index)
+
+                val boundary = assertNotNull(cursor.next())
+                assertEquals(12, boundary.index)
+                assertEquals(listOf(12), packets)
+                assertEquals(listOf(12), restarts)
+                val expectedBoundary = ReplayFrameExport.decodeAt(saved, boundaryUs).image
+                assertContentEquals(expectedBoundary.getRGB(0, 0, expectedBoundary.width, expectedBoundary.height, null, 0, expectedBoundary.width),
+                    boundary.image.getRGB(0, 0, boundary.image.width, boundary.image.height, null, 0, boundary.image.width))
+
+                val next = assertNotNull(cursor.next())
+                assertEquals(13, next.index)
+                assertEquals(listOf(12, 13), packets)
+                assertEquals(listOf(12), restarts)
+                val expectedNext = ReplayFrameExport.decodeAt(saved, nextUs).image
+                assertContentEquals(expectedNext.getRGB(0, 0, expectedNext.width, expectedNext.height, null, 0, expectedNext.width),
+                    next.image.getRGB(0, 0, next.image.width, next.image.height, null, 0, next.image.width))
             }
         }
     }
@@ -212,6 +266,11 @@ class ReplayPreviewTest {
                 val reference = ReplayFrameExport.decodeAt(saved, after).image
                 assertContentEquals(reference.getRGB(0, 0, reference.width, reference.height, null, 0, reference.width),
                     next.image.getRGB(0, 0, reference.width, reference.height, null, 0, reference.width))
+
+                val lastUs = saved.frames.last()["movie_pts_us"].asString.toLong()
+                assertEquals(saved.frames.lastIndex, cursor.seek(lastUs).index)
+                assertNull(cursor.next())
+                assertNull(cursor.next())
             }
             assertFailsWith<IllegalStateException> { cursor.seek(before) }
         }
