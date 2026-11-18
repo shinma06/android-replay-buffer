@@ -369,6 +369,12 @@ T3aの`ClockLateReplyTest`に`replyBeforeDeadlineIgnoresTimeoutFlag`、`replyAft
 
 原本6.8(4)（788行）の和の検査は、3区分を数値で計上するストリームに適用する。`EXCLUDED`は原本6.9(4)(c)（873行）とE2が定める未計上の形を使う。読み手はその状態と3区分がnullであることを検査し、nullを0秒に換算しない。T4aの固定入力には、正規の`EXCLUDED`音声を含む保存物が開ける例と、計上対象の3区分の和が`window_ns`に一致しない`schema5-bad-sum`が拒否される例を置く。
 
+### PNGの時刻メタデータの説明（T4a・T4b）
+
+原本6.8(4)（789行）どおり、T4aでschema 5を読み、推定・到着基準の位置をPNGに使う場合は`arb:time_grade`を併記する。書き手の切替やschema 5のトリム対応はT4bのままとする。schema 4のPNG出力と既存の互換条件は変えない。
+
+原本の「文言の変更はT4b」は書き手切替に伴う説明に適用する。読み手から書き出せるようになるschema 5のPNGについては、[運用規則](../../AGENTS.md)に従い、その出力を有効にするT4aの同じコミットで`docs/cli.md`、`replay --help`、同梱CLI README、`docs/mcp.md`を更新する。「既知の場合だけ」は従来のschema 4の説明と区別し、schema 5の推定・到着基準の位置を測定済みと説明しない。固定入力のschema 4のPNGは従来と同じバイト列になり、schema 5の推定・到着基準のPNGはGUI・CLI・MCPで同じ位置と等級を出すことを確かめる。
+
 ### 保存する時刻の半幅（T4b）
 
 原本6.9(3)（820行）の半幅式は、6.9(4)(c)（865〜870行）の保存例とE3に従い、非測定行の**保存する両端が有限**な場合に使う。`t_uncertainty_ns = (t_latest_ns − t_earliest_ns) / 2`。片端でも未知ならnullであり、最終arrival行では有限の上限があっても下限はnullなので半幅もnullとなる。例えば保存範囲が`[8,12]`nsなら半幅2ns、`[8,8]`nsなら0ns、`[null,12]`・`[8,null]`・`[null,null]`ならnullを検査する。時刻の点・両端・包含、measuredの既存の誤差値には元の規則を適用する。
