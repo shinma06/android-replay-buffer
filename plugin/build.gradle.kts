@@ -102,6 +102,12 @@ tasks.test {
         exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
         showStackTraces = false
     }
+    addTestOutputListener { descriptor, event ->
+        if (descriptor.className == "io.github.shinma06.replaybuffer.core.HostPlatformClockTest" &&
+            event.message.startsWith("HOST_CLOCK ")) {
+            logger.lifecycle(event.message.trimEnd())
+        }
+    }
 }
 
 kotlin {
