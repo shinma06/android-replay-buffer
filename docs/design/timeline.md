@@ -156,6 +156,8 @@ edit listで各区間のdecoder-only prefixを隠す。有限の元VIDEO gapと�
 
 保存時は、各AAC packetの時刻に表示中のframeの`movie_pts_us`（`MovieAnchor`）から映画上の位置を求め、同じMP4の2本目のtrackへ書きます。名目間隔（1024 sample）から20ms以内で続くpacketは1つのedit、より大きいずれ・動画の表示がない時刻・server sessionの切替では空editを挟んで区切ります。動画の表示がない時刻と時計不明の時刻の音は入れません。各editは`replay.json`の`audio_track.segments`に記録します。
 
+（以下はTrail 62で承認された仕様のみで、現行実装では未実装・未検証です。）schema 4の任意の音声境界metadataは、既存の`audio_track.segments`とは別に扱います。保持されたAAC packet範囲、session内の元sequence、実際に存在するdecoder preroll packetを記録し、その範囲をMP4のSHA-256へ結び付けます。metadataの欠落、packetのpruning、または証拠不足はunknownのままにし、取得側で観測した証拠なしに境界やencoderの継続・再起動を推定しません。`segments`、一致するencoder config、video/clock gapだけではその証拠になりません。旧trimのoffsetは異なるMP4には適用できません。将来の新仕様でretrimする場合は実際にコピーしたpacketから範囲を再計算し、存在しないpacketを参照しません。
+
 音声PTSの補正: scrcpy 5.0.1の`AudioRecordReader`は、各読取bufferのPTSに`AudioRecord.getTimestamp`の`nanoTime`（その時点で最後に取得したframeの時刻）をそのまま使い、bufferの先頭が何frame前かを差し引きません。そこで同じsource revisionから改変した`AudioRecordReader`だけ（`plugin/src/scrcpy/java`）をD8でdex化し、`replay-scrcpy-audio.jar`として使います。PTSは`nanoTime - (framePosition - そのbufferの先頭frame番号) / 48000`で、端末APIが返す時刻と位置の組だけから求めます。scrcpyの`CleanUp`はCLASSPATHの先頭だけで`app_process`を再起動するため、このJARは改変classを`classes.dex`、公式serverの各entryをbyte単位でそのまま（`classes.dex`は`classes2.dex`へ改名）入れた1つのJARです。公式serverのJARは改変せずhash照合し、合成JARのhashは`identity.properties`の`audio_patch`に記録します。音声OFFでは公式JARだけを使います。
 
 測定（API 36 emulator `arb36`のみ、実機は未測定）: 1秒ごとに画面の白表示とbeepを同時に開始するアプリで30回測りました。補正前はMP4上でbeepが表示より中央値約290ms遅れました。補正後の取得PTSはtickの中央値53ms後で、端末が報告するスピーカー出力（75ms後）より前になり、取得側の遅れは解消しました。残りはMP4上のbeepが取得PTSより中央値112ms（91〜131ms）遅いことで、AAC encoderの遅延（priming）と考えられます。scrcpyの音声streamはencoder遅延を送らず、測った112msはAAC-LCの標準的なpriming（1024〜2048 sample、21〜43ms）だけでは説明できないため、hostでは補正しません。補正後のMP4上のbeepは表示より中央値97ms（61〜128ms）遅れます。

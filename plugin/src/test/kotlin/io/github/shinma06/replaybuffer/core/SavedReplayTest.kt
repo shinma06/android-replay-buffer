@@ -51,6 +51,40 @@ class SavedReplayTest {
     }
 
     @Test
+    fun schemaFourReaderPreservesLegacyAudioAndAnOpaqueTestOnlyOptionalField() {
+        val directory = Files.createTempDirectory("saved-audio-compat-")
+        try {
+            Files.write(directory.resolve(ReplayFiles.VIDEO), byteArrayOf())
+            Files.writeString(directory.resolve(ReplayFiles.VIDEO_FRAMES), "{}\n")
+            val audioTrack = Gson().fromJson("""{"file":"video.mp4","codec":"AAC-LC","sample_rate":48000,"channels":1,"source":"Android playback capture (scrcpy audio_source=playback)","time_source":"AudioRecord timestamp","segments":[{"movie_start_us":"0","duration_us":"21333","media_start_samples":"0","samples":1}]}""", JsonObject::class.java)
+            val testOnlyOpaqueOptionalField = JsonObject().apply {
+                addProperty("test_only_opaque_payload", "synthetic-marker")
+            }
+            val testOnlyOpaqueOptionalFieldName = "test_only_optional_audio_boundary_extension"
+            val record = JsonObject().apply {
+                addProperty("schema", 4)
+                addProperty("complete", true)
+                add("files", JsonObject().apply {
+                    addProperty("video", ReplayFiles.VIDEO)
+                    addProperty("video_frames", ReplayFiles.VIDEO_FRAMES)
+                })
+                add("files_sha256", JsonObject())
+                add("audio_track", audioTrack)
+                add(testOnlyOpaqueOptionalFieldName, testOnlyOpaqueOptionalField)
+            }
+            Files.writeString(directory.resolve(ReplayFiles.RECORD), Gson().toJson(record))
+
+            SavedReplay.open(directory).use { saved ->
+                assertEquals(record, saved.manifest)
+                assertEquals(audioTrack["segments"], saved.manifest["audio_track"].asJsonObject["segments"])
+                assertEquals(testOnlyOpaqueOptionalField, saved.manifest[testOnlyOpaqueOptionalFieldName].asJsonObject)
+            }
+        } finally {
+            directory.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
     fun largeJsonlCanBeConsumedInASmallHeap() {
         val directory = Files.createTempDirectory("saved-reader-").toRealPath()
         try {
