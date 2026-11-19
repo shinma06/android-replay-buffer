@@ -4,13 +4,16 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.defaultMinSize
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CornerSize
 import androidx.compose.foundation.text.BasicText
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.ImageComposeScene
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.text.TextStyle
@@ -67,6 +70,49 @@ class ReplayPlayerButtonsLayoutTest {
             assertEquals(buttons.size, overflows.size)
             assertFalse(overflows.any { it }, "all button labels must fit: $state at density $scale")
             assertTrue(boxes.all { it.left >= 0 && it.right <= 360 * scale })
+        }
+    }
+
+    @Test
+    fun preparationStatusDoesNotMoveThePlaybackControls() {
+        for (density in listOf(Density(1f), Density(1.75f), Density(1.75f, 1.5f))) {
+            val (withoutStatus, withStatus) = renderPlaybackButton(density)
+
+            assertTrue(withoutStatus.height > 0f)
+            assertEquals(withoutStatus, withStatus,
+                "preparation status moved controls at density=${density.density}, fontScale=${density.fontScale}")
+        }
+    }
+
+    private fun renderPlaybackButton(density: Density): Pair<Rect, Rect> {
+        var button = Rect.Zero
+        val status = mutableStateOf<String?>(null)
+        val palette = PlayerPalette(Color.Black, Color.Black, Color.Gray, Color.White, Color.Blue, Color.White,
+            Color.Gray, Color.Gray, Color.Gray, Color.Gray, Color.Gray, TextStyle(fontSize = 13.sp))
+        val actions = object : PlayerBarActions {
+            override fun togglePlay() = Unit
+            override fun press(grip: Grip, us: Long) = Unit
+            override fun dragTo(us: Long) = Unit
+            override fun release() = Unit
+            override fun button(id: PlayerButton) = Unit
+            override fun stripResized(widthPx: Float, thumbWidthPx: Float) = Unit
+        }
+        val scene = ImageComposeScene((500 * density.density).toInt(), (300 * density.density).toInt(), density) {
+            val bar = PlayerBarModel(TrimEditor(), null, null,
+                listOf(ButtonSpec(PlayerButton.CANCEL, "キャンセル", false, false)), status.value,
+                playing = false, playEnabled = false, thumbnail = { null }, thumbnailVersion = 0, aspect = 9f / 16f)
+            PlayerSurface(null, null, palette, bar, actions, Modifier.width(500.dp).height(300.dp)) { spec, modifier, _, _ ->
+                BasicText(spec.label, modifier.onGloballyPositioned { button = it.boundsInRoot() })
+            }
+        }
+        try {
+            scene.render()
+            val withoutStatus = button
+            status.value = "この位置の映像を準備しています"
+            scene.render()
+            return withoutStatus to button
+        } finally {
+            scene.close()
         }
     }
 }

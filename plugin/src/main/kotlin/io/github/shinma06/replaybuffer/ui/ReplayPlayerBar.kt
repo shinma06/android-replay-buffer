@@ -49,6 +49,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.invisibleToUser
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextOverflow
@@ -153,10 +154,11 @@ internal fun PlayerSurface(
                     }
                 }
             }
-            bar.status?.let {
-                BasicText(it, style = palette.textStyle.copy(color = palette.content.copy(alpha = 0.8f), fontSize = 12.sp),
-                    maxLines = 1, overflow = TextOverflow.Ellipsis)
-            }
+            val status = bar.status
+            BasicText(status ?: "この位置の映像を準備しています",
+                Modifier.then(if (status == null) Modifier.semantics { invisibleToUser() } else Modifier),
+                style = palette.textStyle.copy(color = palette.content.copy(alpha = if (status == null) 0f else 0.8f), fontSize = 12.sp),
+                maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
     }
 }
