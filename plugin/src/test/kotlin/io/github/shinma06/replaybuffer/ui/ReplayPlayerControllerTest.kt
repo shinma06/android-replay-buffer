@@ -1,18 +1,30 @@
 package io.github.shinma06.replaybuffer.ui
 
+import androidx.compose.runtime.MutableState
 import com.google.gson.JsonParser
 import com.intellij.mock.MockApplication
 import com.intellij.mock.MockProject
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.util.Disposer
+import io.github.shinma06.replaybuffer.core.CaptureStore
 import io.github.shinma06.replaybuffer.core.ReplayFiles
 import io.github.shinma06.replaybuffer.core.ReplayFrameCache
 import io.github.shinma06.replaybuffer.core.ReplayFrameCursor
+import io.github.shinma06.replaybuffer.core.ReplayFrameExport
+import io.github.shinma06.replaybuffer.core.ReplayTimeline
 import io.github.shinma06.replaybuffer.core.ReplayVideoDecoder
+import io.github.shinma06.replaybuffer.core.ReplaySettings
 import io.github.shinma06.replaybuffer.core.previewKeyframeUs
 import io.github.shinma06.replaybuffer.core.SaveOutputFile
 import io.github.shinma06.replaybuffer.core.SavedReplay
+import io.github.shinma06.replaybuffer.core.SaveWriter
+import io.github.shinma06.replaybuffer.core.VideoPacket
+import org.jcodec.codecs.h264.H264Encoder
+import org.jcodec.codecs.h264.H264Utils
+import org.jcodec.common.model.ColorSpace
+import org.jcodec.common.model.Picture
 import org.junit.jupiter.api.io.TempDir
+import java.nio.ByteBuffer
 import java.nio.file.Files
 import java.nio.file.Path
 import java.security.MessageDigest
@@ -20,10 +32,12 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import javax.swing.SwingUtilities
 import kotlin.test.Test
+import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
@@ -138,17 +152,23 @@ class ReplayPlayerControllerTest {
                 assertNull(controller.state.error)
                 assertEquals(oldImage, controller.state.image)
                 assertEquals(oldUs, controller.state.imageUs)
-                assertEquals("Injected seek source failure", controller.state.message)
+                assertNull(controller.state.message)
+                assertEquals("Injected seek source failure", controller.state.previewError)
+                assertEquals("Injected seek source failure", controller.barModel().status)
                 assertFalse(controller.barModel().buttons.single { it.id == PlayerButton.SAVE_FRAME }.enabled)
+                controller.exportPng()
+                assertNull(controller.state.editor.task)
                 fail.set(false)
                 controller.step(1)
+                assertTrue(controller.state.previewPending)
+                assertNull(controller.state.previewError)
             }
-            awaitPreview(controller)
-            SwingUtilities.invokeAndWait { controller.togglePlay(); controller.togglePlay() } // Clears transient message.
             awaitPreview(controller)
             SwingUtilities.invokeAndWait {
                 assertNull(controller.state.error)
                 assertNull(controller.state.message)
+                assertNull(controller.state.previewError)
+                assertFalse(controller.state.previewPending)
                 assertTrue(controller.barModel().buttons.single { it.id == PlayerButton.SAVE_FRAME }.enabled)
                 assertTrue(controller.closePolicy.mustRetainSource)
             }
@@ -236,6 +256,9 @@ class ReplayPlayerControllerTest {
                 assertTrue(entered.await(30, TimeUnit.SECONDS))
                 SwingUtilities.invokeAndWait {
                     assertNull(controller.state.image)
+                    assertTrue(controller.state.previewPending)
+                    assertEquals("この位置の映像を準備しています", controller.placeholder())
+                    assertEquals("この位置の映像を準備しています", controller.barModel().status)
                     assertFalse(controller.barModel().buttons.single { it.id == PlayerButton.SAVE_FRAME }.enabled)
                     controller.exportPng()
                     assertNull(controller.state.editor.task)
@@ -245,6 +268,8 @@ class ReplayPlayerControllerTest {
             assertTrue(controller.barModel().rules!!.rangeUnchanged(controller.state.editor))
             assertTrue(controller.barModel().buttons.single { it.id == PlayerButton.SAVE_FRAME }.enabled)
             assertEquals(controller.state.editor.playheadUs, controller.state.imageUs)
+            assertFalse(controller.state.previewPending)
+            assertNull(controller.placeholder())
         }
     }
 
@@ -276,9 +301,10 @@ class ReplayPlayerControllerTest {
         }
     }
 
-    @Test fun scrubbingShowsOnlyIdrAndReleaseRequestsTheExactFrame() {
+    @Test fun scrubbingRequestsTheExactDisplayedFrameAndReleaseKeepsItsPixels() {
         val requests = java.util.Collections.synchronizedList(mutableListOf<Long>())
         val keys = java.util.Collections.synchronizedSet(mutableSetOf<Long>())
+        val decoded = java.util.Collections.synchronizedMap(mutableMapOf<Long, ReplayFrameCursor.Decoded>())
         withController(decoderFactory = { replay, cache ->
             replay.frames.filter { it["output_key"]?.asBoolean == true }.forEach {
                 it["movie_pts_us"]?.takeIf { it.isJsonPrimitive }?.asLong?.let(keys::add)
@@ -286,7 +312,8 @@ class ReplayPlayerControllerTest {
             val real = ReplayFrameCursor(replay, cache = cache)
             object : ReplayVideoDecoder {
                 override fun seek(atUs: Long, checkActive: () -> Unit): ReplayFrameCursor.Decoded {
-                    requests += atUs; return real.seek(atUs, checkActive)
+                    requests += atUs
+                    return real.seek(atUs, checkActive).also { decoded[atUs] = it }
                 }
                 override fun next(checkActive: () -> Unit) = real.next(checkActive)
                 override fun close() = real.close()
@@ -297,17 +324,240 @@ class ReplayPlayerControllerTest {
             var exact = 0L
             SwingUtilities.invokeAndWait {
                 exact = controller.state.timeline!!.spans.map { it.startUs }.first { it !in keys }
-                controller.press(Grip.PLAYHEAD, exact)
+                controller.press(Grip.PLAYHEAD, controller.state.editor.playheadUs)
+                controller.dragTo(exact)
             }
             drain(controller)
-            assertTrue(requests.all { it in keys })
+            assertEquals(listOf(exact), requests.toList())
+            assertFalse(exact in keys)
             SwingUtilities.invokeAndWait {
-                assertTrue(controller.state.imageUs in keys || controller.state.image == null)
+                assertNotNull(controller.state.editor.drag)
+                assertEquals(exact, controller.state.imageUs)
                 controller.release()
             }
             drain(controller)
-            assertTrue(exact in requests)
-            SwingUtilities.invokeAndWait { assertEquals(exact, controller.state.imageUs) }
+            assertEquals(listOf(exact), requests.toList())
+            SavedReplay.open(Files.list(root).use { it.findFirst().orElseThrow() }).use { saved ->
+                val expected = ReplayFrameExport.decodeAt(saved, exact).image
+                val actual = assertNotNull(decoded[exact]).image
+                assertContentEquals(expected.getRGB(0, 0, expected.width, expected.height, null, 0, expected.width),
+                    actual.getRGB(0, 0, actual.width, actual.height, null, 0, actual.width))
+            }
+        }
+    }
+
+    @Test fun heldLongGopPreview183PublishesBeforeThePointerIsReleased() {
+        val entered = CountDownLatch(1)
+        val allowTarget = CountDownLatch(1)
+        val targetCalls = AtomicInteger()
+        val decodedTarget = AtomicReference<ReplayFrameCursor.Decoded?>()
+        val sourceFolder = longGopReplayFolder()
+        try {
+            withController(sourceFolder = sourceFolder, decoderFactory = { replay, cache ->
+                val targetUs = replay.frames[183]["movie_pts_us"].asString.toLong()
+                val real = ReplayFrameCursor(replay, cache = cache)
+                object : ReplayVideoDecoder {
+                    override fun seek(atUs: Long, checkActive: () -> Unit): ReplayFrameCursor.Decoded {
+                        if (atUs == targetUs) {
+                            targetCalls.incrementAndGet()
+                            entered.countDown()
+                            assertTrue(allowTarget.await(30, TimeUnit.SECONDS))
+                        }
+                        return real.seek(atUs, checkActive).also { if (atUs == targetUs) decodedTarget.set(it) }
+                    }
+                    override fun next(checkActive: () -> Unit) = real.next(checkActive)
+                    override fun close() = real.close()
+                }
+            }) { controller ->
+                val spans = controller.state.timeline!!.spans
+                val startUs = spans[96].startUs
+                val targetUs = spans[183].startUs
+                SwingUtilities.invokeAndWait {
+                    controller.press(Grip.PLAYHEAD, startUs)
+                    controller.release()
+                }
+                awaitPreview(controller)
+                assertEquals(startUs, controller.state.imageUs)
+
+                try {
+                    SwingUtilities.invokeAndWait {
+                        controller.press(Grip.PLAYHEAD, startUs)
+                        controller.dragTo(targetUs)
+                        controller.dragTo(targetUs)
+                    }
+                    assertTrue(entered.await(30, TimeUnit.SECONDS))
+                    SwingUtilities.invokeAndWait {
+                        assertNotNull(controller.state.editor.drag)
+                        assertEquals(startUs, controller.state.imageUs)
+                        assertTrue(controller.state.previewPending)
+                        assertEquals("この位置の映像を準備しています", controller.barModel().status)
+                    }
+                    allowTarget.countDown()
+                    awaitPreview(controller)
+                    SwingUtilities.invokeAndWait {
+                        assertNotNull(controller.state.editor.drag)
+                        assertEquals(targetUs, controller.state.imageUs)
+                        assertFalse(controller.state.previewPending)
+                        assertNull(controller.placeholder())
+                    }
+                    assertEquals(1, targetCalls.get())
+                    assertEquals(183, assertNotNull(decodedTarget.get()).index)
+                    SavedReplay.open(controller.folder).use { saved ->
+                        assertEquals(listOf(0, 96, 192), saved.frames.mapIndexedNotNull { index, row ->
+                            index.takeIf { row["output_key"].asBoolean }
+                        })
+                        val expected = ReplayFrameExport.decodeAt(saved, targetUs).image
+                        val actual = assertNotNull(decodedTarget.get()).image
+                        assertContentEquals(expected.getRGB(0, 0, expected.width, expected.height, null, 0, expected.width),
+                            actual.getRGB(0, 0, actual.width, actual.height, null, 0, actual.width))
+                    }
+                    SwingUtilities.invokeAndWait { controller.release() }
+                    awaitPreview(controller)
+                    assertEquals(1, targetCalls.get())
+                } finally { allowTarget.countDown() }
+            }
+        } finally { allowTarget.countDown() }
+    }
+
+    @Test fun cached183ThenNearbyForwardSeeksReuseThePhysicalDecoderAndLogicalNext() {
+        val sourceFolder = longGopReplayFolder()
+        SavedReplay.open(sourceFolder).use { saved ->
+            fun at(index: Int) = saved.frames[index]["movie_pts_us"].asString.toLong()
+            fun assertExact(actual: ReplayFrameCursor.Decoded) {
+                val expected = ReplayFrameExport.decodeAt(saved, actual.startUs).image
+                assertContentEquals(expected.getRGB(0, 0, expected.width, expected.height, null, 0, expected.width),
+                    actual.image.getRGB(0, 0, actual.image.width, actual.image.height, null, 0, actual.image.width))
+            }
+
+            val packets = mutableListOf<Int>()
+            val restarts = mutableListOf<Int>()
+            ReplayFrameCursor(saved, packetReadObserver = { packets += it },
+                gopRestartObserver = { restarts += it }).use { cursor ->
+                assertEquals(96, cursor.seek(at(96)).index)
+                assertEquals(listOf(96), packets)
+                assertEquals(listOf(96), restarts)
+                assertEquals(183, cursor.seek(at(183)).index)
+                assertEquals((96..183).toList(), packets)
+                assertEquals(listOf(96), restarts)
+                assertExact(cursor.seek(at(183)))
+
+                packets.clear()
+                restarts.clear()
+                for (target in 184..186) {
+                    val packetsBeforeHit = packets.size
+                    assertEquals(183, cursor.seek(at(183)).index)
+                    assertEquals(packetsBeforeHit, packets.size, "cached frame 183 must not read another packet")
+                    val packetCount = packets.size
+                    val decoded = cursor.seek(at(target))
+                    assertEquals(target, decoded.index)
+                    assertEquals(1, packets.size - packetCount, "frame $target should require one packet")
+                    assertEquals(target, packets.last())
+                    assertTrue(restarts.isEmpty(), "same-GOP forward seek must not restart the GOP")
+                    assertExact(decoded)
+                }
+                assertEquals(listOf(184, 185, 186), packets)
+
+                assertEquals(183, cursor.seek(at(183)).index)
+                val afterBackwardCacheHit = assertNotNull(cursor.next())
+                assertEquals(184, afterBackwardCacheHit.index)
+                assertExact(afterBackwardCacheHit)
+                assertEquals(listOf(184, 185, 186), packets)
+            }
+        }
+    }
+
+    @Test fun cancelledLongGopSeekResumesWithoutRepeatingDecodedPackets() {
+        val sourceFolder = longGopReplayFolder()
+        SavedReplay.open(sourceFolder).use { saved ->
+            val fromUs = saved.frames[96]["movie_pts_us"].asString.toLong()
+            val targetUs = saved.frames[183]["movie_pts_us"].asString.toLong()
+            val packets = mutableListOf<Int>()
+            val restarts = mutableListOf<Int>()
+            ReplayFrameCursor(saved, packetReadObserver = { packets += it },
+                gopRestartObserver = { restarts += it }).use { cursor ->
+                assertEquals(96, cursor.seek(fromUs).index)
+                packets.clear()
+                restarts.clear()
+                assertFailsWith<InterruptedException> {
+                    cursor.seek(targetUs) {
+                        if (packets.lastOrNull() == 116) throw InterruptedException("superseded")
+                    }
+                }
+                assertEquals((97..116).toList(), packets)
+                assertTrue(restarts.isEmpty())
+
+                val resumed = cursor.seek(targetUs)
+                assertEquals(183, resumed.index)
+                assertEquals((97..183).toList(), packets)
+                assertTrue(restarts.isEmpty())
+                val expected = ReplayFrameExport.decodeAt(saved, targetUs).image
+                assertContentEquals(expected.getRGB(0, 0, expected.width, expected.height, null, 0, expected.width),
+                    resumed.image.getRGB(0, 0, resumed.image.width, resumed.image.height, null, 0, resumed.image.width))
+            }
+        }
+    }
+
+    @Test fun repeatedPointerMovesWithinTheSameFrameDoNotCancelItsDecode() {
+        val target = AtomicLong(-1L)
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val cancelled = AtomicBoolean()
+        val requests = java.util.Collections.synchronizedList(mutableListOf<Long>())
+        withController(decoderFactory = { replay, cache ->
+            val real = ReplayFrameCursor(replay, cache = cache)
+            object : ReplayVideoDecoder {
+                override fun seek(atUs: Long, checkActive: () -> Unit): ReplayFrameCursor.Decoded {
+                    requests += atUs
+                    if (atUs == target.get()) {
+                        entered.countDown()
+                        assertTrue(release.await(30, TimeUnit.SECONDS))
+                        try { checkActive() } catch (failure: RuntimeException) { cancelled.set(true); throw failure }
+                    }
+                    return real.seek(atUs, checkActive)
+                }
+                override fun next(checkActive: () -> Unit) = real.next(checkActive)
+                override fun close() = real.close()
+            }
+        }) { controller ->
+            drain(controller)
+            requests.clear()
+            val span = controller.state.timeline!!.spans[3]
+            target.set(span.startUs)
+            try {
+                SwingUtilities.invokeAndWait { controller.press(Grip.PLAYHEAD, span.startUs) }
+                assertTrue(entered.await(10, TimeUnit.SECONDS))
+                SwingUtilities.invokeAndWait {
+                    controller.dragTo(span.startUs + 1)
+                    controller.dragTo(span.endUs - 1)
+                    controller.release()
+                }
+                release.countDown()
+                drain(controller)
+                assertEquals(listOf(span.startUs), requests.toList())
+                assertFalse(cancelled.get())
+                SwingUtilities.invokeAndWait { assertEquals(span.startUs, controller.state.imageUs) }
+            } finally { release.countDown() }
+        }
+    }
+
+    @Test fun newPreviewTargetsClearOnlyPreviewErrorsAndPreserveTaskNotices() = withController { controller ->
+        val notice = "静止画を保存しました: fixture.png"
+        val delegate = controller.javaClass.getDeclaredField("state\$delegate").apply { isAccessible = true }
+            .get(controller) as MutableState<PlayerState>
+        SwingUtilities.invokeAndWait {
+            delegate.value = controller.state.copy(message = notice, previewError = "古い復号エラー")
+            controller.step(1)
+            assertEquals(notice, controller.state.message)
+            assertNull(controller.state.previewError)
+            assertTrue(controller.state.previewPending)
+            assertEquals("この位置の映像を準備しています", controller.barModel().status)
+        }
+        awaitPreview(controller)
+        SwingUtilities.invokeAndWait {
+            assertEquals(notice, controller.state.message)
+            assertNull(controller.state.previewError)
+            assertFalse(controller.state.previewPending)
+            assertEquals(notice, controller.barModel().status)
         }
     }
 
@@ -331,14 +581,23 @@ class ReplayPlayerControllerTest {
             }
         }) { controller ->
             drain(controller); block.set(true)
+            val first = controller.state.timeline!!.spans[3].startUs
+            val newest = controller.state.timeline!!.spans[6].startUs
             try {
-                SwingUtilities.invokeAndWait { controller.step(2) }
+                SwingUtilities.invokeAndWait { controller.press(Grip.PLAYHEAD, first) }
                 assertTrue(entered.await(10, TimeUnit.SECONDS))
-                SwingUtilities.invokeAndWait { controller.step(3) }
+                SwingUtilities.invokeAndWait {
+                    controller.dragTo(newest)
+                    controller.release()
+                }
                 allowCheck.countDown()
                 drain(controller)
                 assertTrue(cancelled.get())
-                SwingUtilities.invokeAndWait { assertEquals(controller.state.editor.playheadUs, controller.state.imageUs) }
+                SwingUtilities.invokeAndWait {
+                    assertEquals(newest, controller.state.editor.playheadUs)
+                    assertEquals(newest, controller.state.imageUs)
+                    assertNull(controller.state.previewError)
+                }
             } finally { allowCheck.countDown() }
         }
     }
@@ -512,16 +771,101 @@ class ReplayPlayerControllerTest {
         pauseAtGap(controller)
         withPreviewBlocked(controller) {
             assertNull(controller.state.image)
+            assertEquals("この位置に表示frameがありません（欠落）", controller.placeholder())
+            assertEquals("この位置に表示frameがありません（欠落）", controller.barModel().status)
             assertEquals("この位置に表示frameがありません（欠落）",
                 controller.barModel().buttons.single { it.id == PlayerButton.SAVE_FRAME }.reason)
             controller.exportPng()
             assertNull(controller.state.editor.task)
             controller.step(1)
             assertNull(controller.state.image)
+            assertTrue(controller.state.previewPending)
+            assertEquals("この位置の映像を準備しています", controller.placeholder())
             assertFalse(controller.barModel().buttons.single { it.id == PlayerButton.SAVE_FRAME }.enabled)
             controller.exportPng()
             assertNull(controller.state.editor.task)
         }
+        SwingUtilities.invokeAndWait {
+            assertFalse(controller.state.previewPending)
+            assertEquals(controller.state.editor.playheadUs, controller.state.imageUs)
+            assertNull(controller.placeholder())
+        }
+    }
+
+    @Test
+    fun validHandlePreviewsOverrideAPlayheadGapWhilePendingAndAfterDecode() = withController(gap = true) { controller ->
+        val gapUs = controller.state.timeline!!.spans.zipWithNext().first { (a, b) -> a.endUs < b.startUs }.first.endUs
+        fun verify(grip: Grip) {
+            pauseAtGap(controller)
+            awaitPreview(controller)
+            var targetUs = -1L
+            withPreviewBlocked(controller) {
+                val edgeUs = if (grip == Grip.IN) controller.state.editor.inUs else controller.state.editor.outUs
+                controller.press(grip, edgeUs)
+                targetUs = controller.barModel().rules!!.displayUs(controller.state.editor)
+                assertEquals(gapUs, controller.state.editor.playheadUs)
+                assertTrue(controller.barModel().rules!!.grid.indexAt(targetUs) >= 0)
+                assertTrue(controller.state.previewPending)
+                assertEquals("この位置の映像を準備しています", controller.placeholder())
+                assertEquals("この位置の映像を準備しています", controller.barModel().status)
+                val saveFrame = controller.barModel().buttons.single { it.id == PlayerButton.SAVE_FRAME }
+                assertFalse(saveFrame.enabled)
+                assertEquals("この位置に表示frameがありません（欠落）", saveFrame.reason)
+                controller.exportPng()
+                assertNull(controller.state.editor.task)
+                assertFalse(controller.barModel().status == "この位置に表示frameがありません（欠落）")
+            }
+            SwingUtilities.invokeAndWait {
+                assertFalse(controller.state.previewPending)
+                assertEquals(targetUs, controller.state.imageUs)
+                assertNull(controller.placeholder())
+                val saveFrame = controller.barModel().buttons.single { it.id == PlayerButton.SAVE_FRAME }
+                assertFalse(saveFrame.enabled)
+                assertEquals("この位置に表示frameがありません（欠落）", saveFrame.reason)
+                controller.exportPng()
+                assertNull(controller.state.editor.task)
+            }
+            SwingUtilities.invokeAndWait { controller.release() }
+            awaitPreview(controller)
+        }
+        verify(Grip.IN)
+        verify(Grip.OUT)
+    }
+
+    @Test
+    fun validHandlePreviewStatusClearsAfterDecodeAndReleaseRestoresPlayheadPreview() = withController { controller ->
+        val spans = controller.state.timeline!!.spans
+        fun verify(grip: Grip, edge: ReplayTimeline.Span) {
+            val playheadUs = controller.state.editor.playheadUs
+            var targetUs = -1L
+            withPreviewBlocked(controller) {
+                controller.press(grip, if (grip == Grip.IN) edge.startUs else edge.endUs)
+                targetUs = controller.barModel().rules!!.displayUs(controller.state.editor)
+                assertEquals(playheadUs, controller.state.editor.playheadUs)
+                assertTrue(targetUs != playheadUs)
+                assertTrue(controller.barModel().rules!!.grid.indexAt(targetUs) >= 0)
+                assertTrue(controller.state.previewPending)
+                assertEquals("この位置の映像を準備しています", controller.barModel().status)
+            }
+            assertFalse(controller.state.previewPending)
+            assertEquals(targetUs, controller.state.imageUs)
+            assertNull(controller.placeholder())
+            assertNull(controller.barModel().status)
+            val saveFrame = controller.barModel().buttons.single { it.id == PlayerButton.SAVE_FRAME }
+            assertFalse(saveFrame.enabled)
+            assertEquals("この位置の映像を準備しています", saveFrame.reason)
+            SwingUtilities.invokeAndWait {
+                controller.exportPng()
+                assertNull(controller.state.editor.task)
+            }
+            SwingUtilities.invokeAndWait { controller.release() }
+            awaitPreview(controller)
+            assertEquals(controller.state.editor.playheadUs, controller.state.imageUs)
+            assertTrue(controller.barModel().buttons.single { it.id == PlayerButton.SAVE_FRAME }.enabled)
+        }
+        awaitPreview(controller)
+        verify(Grip.IN, spans[3])
+        verify(Grip.OUT, spans[7])
     }
 
     @Test
@@ -780,11 +1124,35 @@ class ReplayPlayerControllerTest {
         return folder
     }
 
+    private fun longGopReplayFolder(): Path {
+        val generation = 1L
+        CaptureStore(root.resolve("long-gop-ring"), minFree = 0).use { store ->
+            store.generation(generation)
+            store.session(VideoPacket.Session(32, 32), generation)
+            val encoder = H264Encoder.createH264Encoder().apply { setKeyInterval(96) }
+            repeat(288) { index ->
+                val encoded = encoder.encodeFrame(Picture.create(32, 32, ColorSpace.YUV420J).apply { fill(20 + index % 200) },
+                    ByteBuffer.allocate(32 * 32 * 6)).data
+                val bytes = ByteArray(encoded.remaining()).also(encoded::get)
+                if (index == 0) {
+                    val config = H264Utils.splitFrame(ByteBuffer.wrap(bytes))
+                        .filter { it.get(0).toInt() and 31 in setOf(7, 8) }
+                        .fold(byteArrayOf()) { all, nal -> all + byteArrayOf(0, 0, 0, 1) + ByteArray(nal.remaining()).also(nal::get) }
+                    store.frame(VideoPacket.Frame(0, true, false, config), generation)
+                }
+                assertTrue(store.frame(VideoPacket.Frame(index * 41_667L, false, index % 96 == 0, bytes), generation))
+            }
+            val capture = store.capture(ReplaySettings())!!
+            return SaveWriter().write(capture, root, { false }, { Files.move(it.partial, it.complete) }).directory
+        }
+    }
+
     private fun withController(gap: Boolean = false,
         decoderFactory: ((SavedReplay, ReplayFrameCache) -> ReplayVideoDecoder)? = null,
         beforePreview: (ReplayPlayerController) -> Unit = {},
+        sourceFolder: Path? = null,
         test: (ReplayPlayerController) -> Unit) {
-        val folder = replayFolder(gap)
+        val folder = sourceFolder ?: replayFolder(gap)
         val lifetime = Disposer.newDisposable()
         ApplicationManager.setApplication(MockApplication(lifetime), lifetime)
         lateinit var controller: ReplayPlayerController

@@ -63,6 +63,43 @@ class TrimEditorModelTest {
     }
 
     @Test
+    fun indexedFrameLookupsPreserveHalfOpenGapAndTieSemantics() {
+        val grid = FrameGrid(listOf(ReplayTimeline.Span(0, 4), ReplayTimeline.Span(11, 15),
+            ReplayTimeline.Span(20, 24)))
+        assertEquals(-1, grid.indexAt(4))
+        assertEquals(1, grid.indexAt(11))
+        assertEquals(0, grid.nearestIndex(7)) // Equidistant from the previous last instant and next start.
+        assertEquals(1, grid.stepIndex(7, 1))
+        assertEquals(0, grid.stepIndex(7, -1))
+        assertEquals(0, grid.stepIndex(7, 0))
+        val before = FrameGrid(listOf(ReplayTimeline.Span(10, 14), ReplayTimeline.Span(20, 24)))
+        assertEquals(0, before.stepIndex(0, -2))
+        assertEquals(0, before.stepIndex(0, -1))
+        assertEquals(0, before.stepIndex(0, 0))
+        assertEquals(1, before.stepIndex(0, 1))
+        assertEquals(1, before.stepIndex(0, 2))
+        val after = FrameGrid(listOf(ReplayTimeline.Span(10, 14), ReplayTimeline.Span(20, 24)))
+        assertEquals(0, after.stepIndex(30, -2))
+        assertEquals(0, after.stepIndex(30, -1))
+        assertEquals(1, after.stepIndex(30, 0))
+        assertEquals(1, after.stepIndex(30, 1))
+        assertEquals(1, after.stepIndex(30, 2))
+        val boundaries = FrameGrid(listOf(ReplayTimeline.Span(0, 4), ReplayTimeline.Span(10, 14),
+            ReplayTimeline.Span(20, 24)))
+        assertEquals(0, boundaries.nearestStartIndex(5))
+        assertEquals(0, boundaries.nearestEndIndex(9))
+        assertEquals(1, boundaries.indexStartingAt(10))
+        assertEquals(1, boundaries.indexEndingAt(14))
+
+        val duplicateBoundaries = FrameGrid(listOf(ReplayTimeline.Span(0, 10),
+            ReplayTimeline.Span(0, 10), ReplayTimeline.Span(20, 30)))
+        assertEquals(0, duplicateBoundaries.nearestStartIndex(0))
+        assertEquals(0, duplicateBoundaries.nearestEndIndex(10))
+        assertEquals(0, duplicateBoundaries.indexStartingAt(0))
+        assertEquals(1, duplicateBoundaries.indexEndingAt(10))
+    }
+
+    @Test
     fun timeBubbleOnlyWhileSomethingIsHeld() {
         val trim = trimAt(0)
         assertNull(rules.bubble(trim))

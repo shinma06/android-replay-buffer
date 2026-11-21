@@ -46,6 +46,25 @@ internal fun bubbleTime(us: Long): String {
 /** Presented frame spans in movie order, used to snap every position to a frame boundary (TRIM-M01). */
 internal class FrameGrid(spans: List<ReplayTimeline.Span>) {
     val spans: List<ReplayTimeline.Span> = spans.sortedBy { it.startUs }
+    private val starts = LongArray(this.spans.size) { this.spans[it].startUs }
+    private val startBoundaries = this.spans.indices.fold(mutableListOf<Pair<Long, Int>>()) { values, index ->
+        val startUs = this.spans[index].startUs
+        if (values.lastOrNull()?.first != startUs) values += startUs to index
+        values
+    }
+    private val startBoundaryTimes = LongArray(startBoundaries.size) { startBoundaries[it].first }
+    private val startBoundarySpans = IntArray(startBoundaries.size) { startBoundaries[it].second }
+    private val endBoundaries = this.spans.indices.sortedWith(
+        compareBy<Int> { this.spans[it].endUs }.thenBy { it }).fold(mutableListOf<Pair<Long, Int>>()) { values, index ->
+        val endUs = this.spans[index].endUs
+        if (values.lastOrNull()?.first != endUs) values += endUs to index
+        values
+    }
+    private val endBoundaryTimes = LongArray(endBoundaries.size) { endBoundaries[it].first }
+    private val endBoundarySpans = IntArray(endBoundaries.size) { endBoundaries[it].second }
+    private val lastIndexByEnd = HashMap<Long, Int>().apply {
+        this@FrameGrid.spans.forEachIndexed { index, span -> put(span.endUs, index) }
+    }
 
     val isEmpty: Boolean get() = spans.isEmpty()
 
@@ -68,10 +87,14 @@ internal class FrameGrid(spans: List<ReplayTimeline.Span>) {
     /** The span shown at [us], or the nearest one when [us] is in a gap. */
     fun nearestIndex(us: Long): Int {
         indexAt(us).takeIf { it >= 0 }?.let { return it }
-        return spans.indices.minByOrNull { i ->
-            val span = spans[i]
-            if (us < span.startUs) span.startUs - us else us - span.endUs + 1
-        } ?: -1
+        if (isEmpty) return -1
+        val next = lowerBound(starts, us)
+        if (next == 0) return 0
+        if (next == spans.size) return spans.lastIndex
+        val previous = next - 1
+        val beforeDistance = us - spans[previous].endUs + 1
+        val afterDistance = spans[next].startUs - us
+        return if (beforeDistance <= afterDistance) previous else next
     }
 
     /** In an interior gap, the first step selects the adjacent frame in that direction. */
@@ -79,10 +102,10 @@ internal class FrameGrid(spans: List<ReplayTimeline.Span>) {
         if (isEmpty) return -1
         var current = indexAt(us)
         if (current < 0) {
-            val next = spans.indexOfFirst { it.startUs > us }
+            val next = upperBound(starts, us)
             current = when {
-                next > 0 && delta > 0 -> next - 1
-                next > 0 && delta < 0 -> next
+                next in 1 until spans.size && delta > 0 -> next - 1
+                next in 1 until spans.size && delta < 0 -> next
                 else -> nearestIndex(us) // Keep before-first, terminal and zero-delta behaviour.
             }
         }
@@ -90,16 +113,47 @@ internal class FrameGrid(spans: List<ReplayTimeline.Span>) {
     }
 
     /** Span whose start boundary is closest to [us]. */
-    fun nearestStartIndex(us: Long): Int = spans.indices.minByOrNull { abs(spans[it].startUs - us) } ?: -1
+    fun nearestStartIndex(us: Long): Int = nearestBoundary(startBoundaryTimes, startBoundarySpans, us)
 
     /** Span whose end boundary is closest to [us]. */
-    fun nearestEndIndex(us: Long): Int = spans.indices.minByOrNull { abs(spans[it].endUs - us) } ?: -1
+    fun nearestEndIndex(us: Long): Int = nearestBoundary(endBoundaryTimes, endBoundarySpans, us)
 
     /** Index of the span that starts at [startUs] (an In boundary). */
-    fun indexStartingAt(startUs: Long): Int = spans.indexOfFirst { it.startUs == startUs }
+    fun indexStartingAt(startUs: Long): Int = lowerBound(starts, startUs).takeIf { it < starts.size && starts[it] == startUs } ?: -1
 
     /** Index of the span that ends at [endUs] (an Out boundary). */
-    fun indexEndingAt(endUs: Long): Int = spans.indexOfLast { it.endUs == endUs }
+    fun indexEndingAt(endUs: Long): Int = lastIndexByEnd[endUs] ?: -1
+
+    private fun nearestBoundary(times: LongArray, indices: IntArray, us: Long): Int {
+        if (times.isEmpty()) return -1
+        val next = lowerBound(times, us)
+        if (next == 0) return indices[0]
+        if (next == times.size) return indices.last()
+        val before = next - 1
+        val beforeDistance = us - times[before]
+        val afterDistance = times[next] - us
+        return if (beforeDistance <= afterDistance) indices[before] else indices[next]
+    }
+
+    private fun lowerBound(values: LongArray, target: Long): Int {
+        var low = 0
+        var high = values.size
+        while (low < high) {
+            val mid = (low + high) ushr 1
+            if (values[mid] < target) low = mid + 1 else high = mid
+        }
+        return low
+    }
+
+    private fun upperBound(values: LongArray, target: Long): Int {
+        var low = 0
+        var high = values.size
+        while (low < high) {
+            val mid = (low + high) ushr 1
+            if (values[mid] <= target) low = mid + 1 else high = mid
+        }
+        return low
+    }
 }
 
 /**
