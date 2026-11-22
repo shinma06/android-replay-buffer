@@ -4,6 +4,7 @@ import com.google.gson.JsonParser
 import org.jcodec.codecs.h264.H264Encoder
 import org.jcodec.codecs.h264.H264Utils
 import org.jcodec.common.io.NIOUtils
+import org.jcodec.common.SeekableDemuxerTrack
 import org.jcodec.common.model.ColorSpace
 import org.jcodec.common.model.Picture
 import org.jcodec.containers.mp4.demuxer.MP4Demuxer
@@ -14,6 +15,7 @@ import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -131,7 +133,11 @@ class AudioCaptureTest {
             store.audioSession(1)
             store.audio(AudioPacket(0, true, config), 1)
             val unit = 1024 * 1_000_000L / 48_000
-            for (i in 0 until 40) store.audio(AudioPacket(1_000_000 + i * unit, false, byteArrayOf(0x21, i.toByte())), 1, host + i * unit * 1000)
+            for (i in 0 until 40) {
+                val packet = AudioPacket(1_000_000 + i * unit, false, byteArrayOf(0x21, i.toByte()))
+                store.audio(packet, 1, host + i * unit * 1000)
+                if (i == 3) store.audio(packet, 1, host + i * unit * 1000) // Discarded duplicate still has a receive ordinal.
+            }
             sample(store, host, 2)
             val pinned = assertNotNull(store.capture(ReplaySettings(recordAudio = true), null, host + 1_000_000_000))
             assertEquals(StreamState.CAPTURING, pinned.audioState?.state)
@@ -146,19 +152,79 @@ class AudioCaptureTest {
             val track = json["audio_track"].asJsonObject
             assertEquals(48_000, track["sample_rate"].asInt)
             val segment = track["segments"].asJsonArray.single().asJsonObject
+            val record = track[AudioDecodeEvidence.KEY].asJsonObject
+            assertEquals("unknown", record["encoder_boundary"].asString)
+            val digest = json["files_sha256"].asJsonObject["video.mp4"].asString
+            assertEquals(digest, record["video_sha256"].asString)
+            val count = segment["samples"].asInt
+            val evidence = assertNotNull(AudioDecodeEvidence.read(record, digest, count) {})
+            assertEquals(listOf(0 to 4, 4 to count), record["ranges"].asJsonArray.map {
+                it.asJsonObject.let { range -> range["packet_start"].asInt to range["packet_end"].asInt }
+            })
+            assertEquals((0 until count).map { AudioReceipt(1, 1, it.toLong() + if (it >= 4) 1 else 0) },
+                (0 until count).map(evidence::receiptAt))
             val firstFrame = JsonParser.parseString(Files.readAllLines(output.directory.resolve("video-frames.jsonl")).first()).asJsonObject
             // Audio and the first presented frame share the same device instant, so they start together on the movie timeline.
             assertEquals(firstFrame["movie_pts_us"].asString, segment["movie_start_us"].asString)
             NIOUtils.readableChannel(output.directory.resolve("video.mp4").toFile()).use { channel ->
                 val demuxer = MP4Demuxer.createMP4Demuxer(channel)
                 assertEquals(1, demuxer.videoTracks.size)
-                val audio = demuxer.audioTracks.single()
+                val audio = demuxer.audioTracks.single() as SeekableDemuxerTrack
                 assertEquals(segment["samples"].asInt, audio.meta.totalFrames)
                 val first = audio.nextFrame()
                 val data = ByteArray(first.data.remaining()).also { first.data.get(it) } // The demuxer prepends an ADTS header.
                 assertContentEquals(byteArrayOf(0x21, 0), data.copyOfRange(data.size - 2, data.size))
+                for (i in listOf(3L, 4L, (count - 1).toLong())) {
+                    assertTrue(audio.gotoFrame(i))
+                    val packet = audio.nextFrame()
+                    assertEquals(i, packet.frameNo)
+                    assertEquals(i.toByte(), packet.data.get(packet.data.limit() - 1))
+                }
             }
             assertTrue(Files.readString(output.directory.resolve("README.md")).contains("端末の再生音"))
+            store.release(pinned.id)
+        }
+    }
+
+    @Test
+    fun frozenCaptureKeepsReceiveOrdinalsAfterRingPruningAndRestartsOnlyOnNewReceiverSession() {
+        CaptureStore(root.resolve("pruned"), logLimit = 3 * 129, minFree = 0, audioRequested = true).use { store ->
+            val host = System.nanoTime()
+            store.generation(1)
+            sample(store, host, 1)
+            store.log(DeviceLog(1_700_000_001_000_000_000, 12, 12, 10001, 0, 4, "Fixture", "row", byteArrayOf(1)), 1, host)
+            store.audioSession(1)
+            store.audio(AudioPacket(0, true, config), 1)
+            for (i in 0L..2L) store.audio(AudioPacket(1_000_000 + i * 21_333, false, byteArrayOf(1)), 1, host)
+            store.generation(2)
+            store.audioSession(2)
+            store.audio(AudioPacket(0, true, config), 2)
+            store.audio(AudioPacket(1_100_000, false, byteArrayOf(1)), 2, host)
+            sample(store, host, 2)
+            val pinned = assertNotNull(store.capture(ReplaySettings(recordAudio = true), null, host + 1_000_000_000))
+            assertEquals(listOf(AudioReceipt(1, 1, 1), AudioReceipt(1, 1, 2), AudioReceipt(2, 2, 0)),
+                pinned.audio.map { AudioReceipt(it.generation, it.session, it.receivedOrdinal) })
+            store.release(pinned.id)
+        }
+    }
+
+    @Test
+    fun repeatedConfigWithinAReceiverSessionLeavesAnOrdinalGap() {
+        CaptureStore(root.resolve("reconfig"), minFree = 0, audioRequested = true).use { store ->
+            val host = System.nanoTime()
+            store.generation(1)
+            sample(store, host, 1)
+            store.log(DeviceLog(1_700_000_001_000_000_000, 12, 12, 10001, 0, 4, "Fixture", "row", byteArrayOf(1)), 1, host)
+            store.audioSession(1)
+            store.audio(AudioPacket(0, true, config), 1)
+            store.audio(AudioPacket(1_000_000, false, byteArrayOf(1)), 1, host)
+            store.audio(AudioPacket(0, true, config), 1)
+            store.audio(AudioPacket(1_021_333, false, byteArrayOf(1)), 1, host)
+            sample(store, host, 2)
+            val pinned = assertNotNull(store.capture(ReplaySettings(recordAudio = true), null, host + 1_000_000_000))
+            val receipts = pinned.audio.map { AudioReceipt(it.generation, it.session, it.receivedOrdinal) }
+            assertEquals(listOf(AudioReceipt(1, 1, 0), AudioReceipt(1, 1, 2)), receipts)
+            assertFalse(receipts[1].follows(receipts[0]))
             store.release(pinned.id)
         }
     }

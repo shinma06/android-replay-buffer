@@ -59,7 +59,7 @@ Android Studio Running Devicesのミラーリング（実機）、scrcpy、`adb 
 
 設定「動画に端末の再生音を録音する（Android 13以上）」（既定OFF、CLI/MCPの`record_audio`）がONのとき、動画＋ログの取得中だけ端末の再生音を同じ`video.mp4`のAAC trackへ入れます。ログ専用では値を保持したまま録音しません。変更は取得OFFで反映が終わってから行います。時刻・配置の規則は[同期設計](design/timeline.md#端末の再生音trail-34)に従います。
 
-`replay.json`は`coverage.audio`（`state / requested / availableSeconds / reason / note`）、`settings.record_audio / audio_requested`、音声がMP4にあるときの`audio_track`（`codec / sample_rate / channels / segments`）を持ちます。音声が取得できない・保存範囲にない場合も保存は成功し、動画の`missingKinds`にも数えません。音声PTSは同梱の改変`AudioRecordReader`で各bufferの先頭frameの時刻にします。emulatorでは残りのAAC encoder遅延により音が表示より約0.1秒遅れます（[同期設計](design/timeline.md#端末の再生音trail-34)）。
+`replay.json`は`coverage.audio`（`state / requested / availableSeconds / reason / note`）、`settings.record_audio / audio_requested`、音声がMP4にあるときの`audio_track`（`codec / sample_rate / channels / segments`、任意の`decode_runs`）を持ちます。`decode_runs`は受信順にもとづく復号の根拠で、詳細は[同期設計](design/timeline.md#端末の再生音trail-34)に従います。音声が取得できない・保存範囲にない場合も保存は成功し、動画の`missingKinds`にも数えません。音声PTSは同梱の改変`AudioRecordReader`で各bufferの先頭frameの時刻にします。emulatorでは残りのAAC encoder遅延により音が表示より約0.1秒遅れます（[同期設計](design/timeline.md#端末の再生音trail-34)）。
 
 ## 動画品質の選択（#282）
 

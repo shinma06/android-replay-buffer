@@ -36,6 +36,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class ReplayTrimAudioPrerollTest {
@@ -134,18 +135,66 @@ class ReplayTrimAudioPrerollTest {
 
     @Test
     fun retrimReadsOnlyTheHiddenPrefixAndSelectedPackets() {
-        val original = fixture()
+        val original = fixture(withEvidence = true)
         val originalBefore = fileHashes(original)
         val source = trim(original, 50_000, 300_000)
+        assertEvidence(source, (1L until 15L).map { AudioReceipt(1, 1, it) }, listOf(0))
         val before = fileHashes(source)
         val reads = Reads(samples(source))
         val output = ReplayTrim(mp4Input = { reads.channel(FileChannelWrapper(it)) }, audioInput = reads::track)
             .trim(source, 0, 150_000, { false }, { Files.move(it.partial, it.complete) })
         reads.assertPackets((0 until 9).toList())
         structure(source, output, (0 until 9).toList(), listOf(PlaybackAudioSegment(0, 150_000, 1376, 8)))
+        assertEvidence(output, (1L until 10L).map { AudioReceipt(1, 1, it) }, listOf(0))
         assertContentEquals(oracle(original, 50_000, 200_000), play(output, 150_000))
         assertEquals(before, fileHashes(source))
         assertEquals(originalBefore, fileHashes(original))
+    }
+
+    @Test
+    fun legacyStaleOrInvalidEvidenceDoesNotBecomeNewEvidence() {
+        val legacy = fixture()
+        val legacyTrim = trim(legacy, 50_000, 300_000)
+        val packets = (1 until 15).toList()
+        val segments = listOf(PlaybackAudioSegment(0, 250_000, 1376, 13))
+        assertEvidence(legacyTrim, null)
+        for (mode in listOf("stale", "type", "outside", "overlap", "unverified")) {
+            val source = fixture(withEvidence = true)
+            val file = source.resolve("replay.json")
+            val record = JsonParser.parseString(Files.readString(file)).asJsonObject
+            val evidence = record["audio_track"].asJsonObject[AudioDecodeEvidence.KEY].asJsonObject
+            val ranges = evidence["ranges"].asJsonArray
+            val first = ranges[0].asJsonObject
+            when (mode) {
+                "stale" -> evidence.addProperty("video_sha256", hash(byteArrayOf(1)))
+                "type" -> first.addProperty("receive_session", 1)
+                "outside" -> ranges[1].asJsonObject.addProperty("packet_end", 81)
+                "overlap" -> first.addProperty("packet_end", 31)
+                "unverified" -> record["files_sha256"].asJsonObject.remove("video.mp4")
+            }
+            Files.writeString(file, record.toString())
+            val output = trim(source, 50_000, 300_000)
+            assertEvidence(output, null)
+            structure(source, output, packets, segments)
+        }
+    }
+
+    @Test
+    fun copiedPresentationPrefixIsNotSameRunPrerollWhenReceivedOrdinalsHaveAGap() {
+        val source = fixture(withEvidence = true)
+        val file = source.resolve("replay.json")
+        val manifest = JsonParser.parseString(Files.readString(file)).asJsonObject
+        val evidence = AudioDecodeEvidence()
+        for (i in 0 until 80) {
+            evidence.add(i, AudioReceipt(1, 1, 10L + i + if (i >= 2) 1 else 0))
+        }
+        manifest["audio_track"].asJsonObject.add(AudioDecodeEvidence.KEY, Gson().toJsonTree(
+            evidence.manifest(manifest["files_sha256"].asJsonObject["video.mp4"].asString)))
+        Files.writeString(file, manifest.toString())
+        val output = trim(source, 50_000, 300_000)
+        val packets = (1 until 15).toList()
+        assertEvidence(output, packets.map { AudioReceipt(1, 1, 10L + it + if (it >= 2) 1 else 0) })
+        structure(source, output, packets, listOf(PlaybackAudioSegment(0, 250_000, 1376, 13)))
     }
 
     @Test
@@ -259,7 +308,7 @@ class ReplayTrimAudioPrerollTest {
     @Test
     fun consecutivePacketsAcrossATwoMillisecondVideoHoleKeepTheirOverlap() {
         val source = fixture(listOf(PlaybackAudioSegment(0, 40_000, 0, 2),
-            PlaybackAudioSegment(40_666, 100_000, 2 * 1024, 5)), independent = false)
+            PlaybackAudioSegment(40_666, 100_000, 2 * 1024, 5)), independent = false, withEvidence = true)
         val stored = audio(source)
         val decoder = AacPcmDecoder(stored.config)
         val pcm = ByteArrayOutputStream().apply { stored.packets.forEach { write(decoder.decode(it)) } }.toByteArray()
@@ -268,6 +317,7 @@ class ReplayTrimAudioPrerollTest {
         val output = trim(source, 0, 300_000)
         assertContentEquals(play(source, 300_000), play(output, 300_000))
         val again = trim(output, 0, 300_000)
+        assertEvidence(again, (0L until 7L).map { AudioReceipt(1, 1, it) })
         assertEquals(stored.packets.map(::hash), audio(again).packets.map(::hash))
         assertContentEquals(play(source, 300_000), play(again, 300_000))
     }
@@ -303,7 +353,7 @@ class ReplayTrimAudioPrerollTest {
 
     @Test
     fun sourceStartsAndLeadingGapsDoNotInventPrerollFromAnotherSegment() {
-        val source = fixture()
+        val source = fixture(withEvidence = true)
         for (from in listOf(0L, gapStart, gapStart + 10_000, 800_000L)) {
             val until = if (from == 0L) 400_000L else gapStart + 400_000
             val output = trim(source, from, until)
@@ -312,6 +362,7 @@ class ReplayTrimAudioPrerollTest {
             val first = if (from == 0L) 0 else 30
             structure(source, output, (first until first + 19).toList(),
                 listOf(PlaybackAudioSegment(leading, until - from - leading, media, 19)))
+            assertEvidence(output, (0L until 19L).map { AudioReceipt(1, if (first == 0) 1 else 2, it) })
             assertContentEquals(oracle(source, from, until), play(output, until - from))
         }
         val middle = trim(source, gapStart + 50_000, gapStart + 400_000)
@@ -460,7 +511,24 @@ class ReplayTrimAudioPrerollTest {
         } finally { session.stop() }
     }
 
-    private fun fixture(segments: List<PlaybackAudioSegment> = sourceSegments, independent: Boolean = true): Path {
+    private fun assertEvidence(folder: Path, expected: List<AudioReceipt>?, preroll: List<Int> = emptyList()) {
+        SavedReplay.open(folder).use { saved ->
+            val element = saved.manifest["audio_track"].asJsonObject[AudioDecodeEvidence.KEY]
+            if (expected == null) {
+                assertNull(element)
+            } else {
+                assertEquals(hash(Files.readAllBytes(folder.resolve("video.mp4"))), element.asJsonObject["video_sha256"].asString)
+                assertEquals("unknown", element.asJsonObject["encoder_boundary"].asString)
+                val evidence = assertNotNull(AudioDecodeEvidence.read(element, saved.verifiedVideoSha256, expected.size) {})
+                assertEquals(expected, expected.indices.map(evidence::receiptAt))
+                assertEquals(preroll, element.asJsonObject["ranges"].asJsonArray.map { it.asJsonObject }
+                    .filter { it["leading_preroll"].asBoolean }.map { it["packet_start"].asInt })
+            }
+        }
+    }
+
+    private fun fixture(segments: List<PlaybackAudioSegment> = sourceSegments, independent: Boolean = true,
+                        withEvidence: Boolean = false): Path {
         val folder = Files.createTempDirectory(root, "source-")
         val resource = "/replay-trim-parity/replay-20240101-000000-manual-feedface"
         val names = listOf("README.md", "replay.json", "video-frames.jsonl", "video-source.h264",
@@ -529,6 +597,17 @@ class ReplayTrimAudioPrerollTest {
         manifest["video_run_boundaries"].asJsonArray.remove(0)
         val hashes = manifest["files_sha256"].asJsonObject
         for (name in listOf("video.mp4", "video-frames.jsonl")) hashes.addProperty(name, hash(Files.readAllBytes(folder.resolve(name))))
+        if (withEvidence) {
+            val evidence = AudioDecodeEvidence()
+            var index = 0
+            for ((segmentIndex, segment) in segments.withIndex()) repeat(segment.samples) { ordinal ->
+                val receipt = if (independent) AudioReceipt(1, segmentIndex.toLong() + 1, ordinal.toLong())
+                    else AudioReceipt(1, 1, index.toLong())
+                evidence.add(index++, receipt)
+            }
+            manifest["audio_track"].asJsonObject.add(AudioDecodeEvidence.KEY,
+                Gson().toJsonTree(evidence.manifest(hashes["video.mp4"].asString)))
+        }
         Files.writeString(folder.resolve("replay.json"), manifest.toString())
         return folder
     }
