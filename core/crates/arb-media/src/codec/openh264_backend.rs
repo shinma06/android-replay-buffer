@@ -14,8 +14,8 @@ use openh264::formats::{YUVSlices, YUVSource as _};
 
 use crate::codec::{
     DecodedFrame, EncodeParams, EncodedGop, EncodedSample, PixelFormat, RgbImage,
-    VideoCodecBackend, convert_from_yuv420p, fit_thumbnail_dimensions, split_yuv420p_planes,
-    yuv420p_to_thumb_rgb24,
+    VideoCodecBackend, convert_from_yuv420p, copy_plane_rows, fit_thumbnail_dimensions,
+    split_yuv420p_planes, yuv420p_to_thumb_rgb24,
 };
 use crate::error::MediaError;
 use crate::mp4::{
@@ -71,6 +71,7 @@ impl OpenH264Backend {
                 .map_err(|_| MediaError::Codec("frame width exceeds usize".to_owned()))?;
             let height = usize::try_from(frame.height)
                 .map_err(|_| MediaError::Codec("frame height exceeds usize".to_owned()))?;
+            require_even_encode_dims(width, height)?;
             let planes = split_yuv420p_planes(&frame.data, width, height)?;
 
             let force_idr = idx % interval == 0;
@@ -113,6 +114,17 @@ impl OpenH264Backend {
     }
 }
 
+/// `OpenH264` encodes only even 4:2:0 picture sizes (its `YUVSlices` asserts on odd ones);
+/// refuse cleanly instead of panicking.
+fn require_even_encode_dims(width: usize, height: usize) -> Result<(), MediaError> {
+    if !width.is_multiple_of(2) || !height.is_multiple_of(2) || width == 0 || height == 0 {
+        return Err(MediaError::UnsupportedFeature(format!(
+            "openh264 cannot encode odd/zero picture dimensions {width}x{height}"
+        )));
+    }
+    Ok(())
+}
+
 fn make_decoder(flush: Flush) -> Result<Decoder, MediaError> {
     let cfg = DecoderConfig::new().flush_after_decode(flush);
     Decoder::with_api_config(OpenH264API::from_source(), cfg)
@@ -143,22 +155,18 @@ fn pack_decoded_yuv420p(yuv: &DecodedYUV<'_>) -> Result<(u32, u32, Vec<u8>), Med
     let u_src = yuv.u();
     let v_src = yuv.v();
     let y_len = w.saturating_mul(h);
-    let cw = w / 2;
-    let ch = h / 2;
+    // ceil(w/2) x ceil(h/2) chroma for odd (cropped) dimensions; short source planes are
+    // padded instead of panicking (R2 S3).
+    let cw = w.div_ceil(2);
+    let ch = h.div_ceil(2);
     let uv_len = cw.saturating_mul(ch);
     let mut data = vec![0u8; y_len + uv_len * 2];
 
-    for row in 0..h {
-        data[row * w..(row + 1) * w].copy_from_slice(&y_src[row * ys..row * ys + w]);
-    }
+    copy_plane_rows(&mut data[..y_len], y_src, ys, w, h, 16);
     let u_off = y_len;
     let v_off = y_len + uv_len;
-    for row in 0..ch {
-        data[u_off + row * cw..u_off + (row + 1) * cw]
-            .copy_from_slice(&u_src[row * us..row * us + cw]);
-        data[v_off + row * cw..v_off + (row + 1) * cw]
-            .copy_from_slice(&v_src[row * vs..row * vs + cw]);
-    }
+    copy_plane_rows(&mut data[u_off..v_off], u_src, us, cw, ch, 128);
+    copy_plane_rows(&mut data[v_off..], v_src, vs, cw, ch, 128);
 
     let w_u32 = u32::try_from(w)
         .map_err(|_| MediaError::Codec("decoded width overflows u32".to_owned()))?;
@@ -314,7 +322,7 @@ impl VideoCodecBackend for OpenH264Backend {
         frame_index: u64,
         output_format: PixelFormat,
     ) -> Result<DecodedFrame, MediaError> {
-        let (gop_start, _) = track.gop_bounds(frame_index)?;
+        let gop_start = track.decodable_gop_start(frame_index)?;
         let frames = decode_range_yuv420p(track, gop_start, frame_index)?;
         let target = frames
             .into_iter()
@@ -339,9 +347,7 @@ impl VideoCodecBackend for OpenH264Backend {
         gop_id: u64,
         output_format: PixelFormat,
     ) -> Result<Vec<DecodedFrame>, MediaError> {
-        let (gop_start, gop_end) = track.gop_range(gop_id).ok_or_else(|| {
-            MediaError::InvalidArgument(format!("gop_id {gop_id} does not exist in track"))
-        })?;
+        let (gop_start, gop_end) = track.decodable_gop_range(gop_id)?;
         let raw_frames = decode_range_yuv420p(track, gop_start, gop_end)?;
         let expected_len = usize::try_from(gop_end - gop_start + 1).unwrap_or(0);
         if raw_frames.len() != expected_len {
@@ -438,7 +444,7 @@ impl VideoCodecBackend for OpenH264Backend {
             });
         }
 
-        let (gop_start, _) = track.gop_bounds(start_frame)?;
+        let gop_start = track.decodable_gop_start(start_frame)?;
         let end_inclusive = end_frame_exclusive - 1;
         let decoded = decode_range_yuv420p(track, gop_start, end_inclusive)?;
         let decoded_frames = u64::try_from(decoded.len()).unwrap_or(0);
@@ -459,6 +465,7 @@ impl VideoCodecBackend for OpenH264Backend {
                 .map_err(|_| MediaError::Codec("frame width exceeds usize".to_owned()))?;
             let height = usize::try_from(frame.height)
                 .map_err(|_| MediaError::Codec("frame height exceeds usize".to_owned()))?;
+            require_even_encode_dims(width, height)?;
             let planes = split_yuv420p_planes(&frame.yuv420p, width, height)?;
 
             if frame_idx == start_frame {

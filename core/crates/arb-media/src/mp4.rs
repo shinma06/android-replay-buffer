@@ -8,12 +8,13 @@
 //!   and **strictly zero `edts`/`elst` boxes**.
 
 use std::fs::File;
-use std::io::{self, BufWriter, Read, Seek, SeekFrom, Write};
-use std::path::Path;
+use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
 use crate::error::MediaError;
+use crate::output::{Publish, write_atomically};
 
 /// Nanoseconds per second used for tick-to-nanosecond conversion.
 const NANOS_PER_SEC: i128 = 1_000_000_000;
@@ -23,6 +24,33 @@ const VISUAL_SAMPLE_ENTRY_HEADER_LEN: usize = 78;
 
 /// Maximum MP4 `moov` box size accepted into memory (256 MiB safety cap).
 const MAX_MOOV_BOX_BYTES: u64 = 256 * 1024 * 1024;
+
+/// Sanity cap on the number of samples in one track (10 M ≈ 92 h at 30 fps).
+///
+/// Bounds every allocation driven by untrusted sample-table counts (`stts`/`ctts` expansion,
+/// constant-size `stsz`) so a crafted few-hundred-byte `moov` can never request tens of GB
+/// and abort the process (R2 S8).
+pub const MAX_TRACK_SAMPLES: usize = 10_000_000;
+
+/// Validates that a full box declaring `count` entries of `entry_size` bytes after a
+/// `header_len`-byte prefix actually contains them, before anything is allocated.
+fn checked_entry_count(
+    body: &[u8],
+    count: u32,
+    header_len: usize,
+    entry_size: usize,
+    what: &str,
+) -> Result<usize, MediaError> {
+    let count = usize::try_from(count)
+        .map_err(|_| MediaError::InvalidContainer(format!("{what} entry count overflow")))?;
+    let available = body.len().saturating_sub(header_len) / entry_size;
+    if count > available {
+        return Err(MediaError::InvalidContainer(format!(
+            "{what} declares {count} entries but the box only holds {available}"
+        )));
+    }
+    Ok(count)
+}
 
 /// Controls whether SPS/PPS parameter sets are prepended during AVCC-to-Annex B conversion.
 #[non_exhaustive]
@@ -80,6 +108,7 @@ pub struct AvccConfig {
 #[derive(Debug)]
 pub struct Mp4VideoTrack {
     file: File,
+    path: PathBuf,
     file_len: u64,
     width: u16,
     height: u16,
@@ -100,7 +129,8 @@ impl Mp4VideoTrack {
     /// if required ISO-BMFF boxes (`moov`, `trak`, `stsd`/`avcC`, `stts`, `stsz`, `stsc`, `stco`/`co64`)
     /// are missing or malformed.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, MediaError> {
-        let mut file = File::open(path)?;
+        let path = path.as_ref().to_path_buf();
+        let mut file = File::open(&path)?;
         let file_len = file.metadata()?.len();
 
         let mut moov_data: Option<Vec<u8>> = None;
@@ -156,6 +186,7 @@ impl Mp4VideoTrack {
 
         Ok(Self {
             file,
+            path,
             file_len,
             width: parsed.width,
             height: parsed.height,
@@ -166,6 +197,11 @@ impl Mp4VideoTrack {
             keyframes: parsed.keyframes,
             has_b_frames: parsed.has_b_frames,
         })
+    }
+
+    /// Returns the path this track was opened from.
+    pub fn path(&self) -> &Path {
+        &self.path
     }
 
     /// Returns the total MP4 file length in bytes.
@@ -267,6 +303,67 @@ impl Mp4VideoTrack {
             }
         };
         Ok(bounds)
+    }
+
+    /// Rejects tracks with B-frame reordering for frame-index addressed operations.
+    ///
+    /// Decoders disagree on whether `frame_index` means decode or presentation order when
+    /// frames are reordered (`VideoToolbox` vs `OpenH264`), so every frame-addressed entry point
+    /// (`decode_frame`, `decode_gop`, PNG export, GOP cache, trim) refuses them identically on
+    /// every OS instead of returning a different "exact" frame per platform.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MediaError::UnsupportedFeature`] when [`Self::has_b_frames`] is `true`.
+    pub fn require_no_b_frames(&self, operation: &str) -> Result<(), MediaError> {
+        if self.has_b_frames {
+            return Err(MediaError::UnsupportedFeature(format!(
+                "{operation}: input track contains B-frame (ctts) reordering; frame-index \
+                 addressing is only defined for streams without reordering"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Returns the GOP start for `frame_index`, guaranteeing it is a real sync sample that a
+    /// decoder can start from and that the track has no B-frame reordering.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MediaError::FrameOutOfRange`] for an invalid index, or
+    /// [`MediaError::UnsupportedFeature`] for B-frame tracks or when `frame_index` precedes
+    /// the first sync sample (no IDR to decode from).
+    pub fn decodable_gop_start(&self, frame_index: u64) -> Result<u64, MediaError> {
+        self.require_no_b_frames("decode")?;
+        let (gop_start, _) = self.gop_bounds(frame_index)?;
+        self.require_sync_sample(gop_start, frame_index)?;
+        Ok(gop_start)
+    }
+
+    /// Returns the inclusive frame range of `gop_id`, guaranteeing it starts on a sync sample
+    /// and that the track has no B-frame reordering.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MediaError::InvalidArgument`] if `gop_id` does not exist, or
+    /// [`MediaError::UnsupportedFeature`] for B-frame tracks or a GOP without a leading IDR.
+    pub fn decodable_gop_range(&self, gop_id: u64) -> Result<(u64, u64), MediaError> {
+        self.require_no_b_frames("decode_gop")?;
+        let (start, end) = self.gop_range(gop_id).ok_or_else(|| {
+            MediaError::InvalidArgument(format!("gop_id {gop_id} does not exist in track"))
+        })?;
+        self.require_sync_sample(start, start)?;
+        Ok((start, end))
+    }
+
+    fn require_sync_sample(&self, gop_start: u64, requested: u64) -> Result<(), MediaError> {
+        if !self.frame(gop_start)?.is_keyframe {
+            return Err(MediaError::UnsupportedFeature(format!(
+                "frame {requested} precedes the first sync sample (stss); there is no IDR \
+                 to decode from, refusing to emit an undecodable head"
+            )));
+        }
+        Ok(())
     }
 
     /// Returns the inclusive `(start_frame_index, end_frame_index)` for `gop_id`, if present.
@@ -452,27 +549,31 @@ fn parse_mdhd(mdhd: &[u8]) -> Result<(u32, u64), MediaError> {
     Ok((timescale, duration_ticks))
 }
 
-fn parse_stts(stts: &[u8]) -> Result<Vec<u32>, MediaError> {
-    let entry_count = usize::try_from(read_u32_be(stts, 4)?)
-        .map_err(|_| MediaError::InvalidContainer("stts entry count overflow".to_owned()))?;
-    let mut durations = Vec::new();
+/// Parses `stts`, expanding at most `max_samples` per-sample durations (the `stsz` count).
+fn parse_stts(stts: &[u8], max_samples: usize) -> Result<Vec<u32>, MediaError> {
+    let entry_count = checked_entry_count(stts, read_u32_be(stts, 4)?, 8, 8, "stts")?;
+    let mut durations = Vec::with_capacity(max_samples.min(entry_count.max(1)));
     for i in 0..entry_count {
         let off = 8 + i * 8;
         let count = usize::try_from(read_u32_be(stts, off)?)
             .map_err(|_| MediaError::InvalidContainer("stts sample count overflow".to_owned()))?;
         let delta = read_u32_be(stts, off + 4)?;
-        durations.extend(std::iter::repeat_n(delta, count));
+        let take = count.min(max_samples.saturating_sub(durations.len()));
+        durations.extend(std::iter::repeat_n(delta, take));
+        if durations.len() >= max_samples {
+            break;
+        }
     }
     Ok(durations)
 }
 
-fn parse_ctts(ctts_box: &[u8]) -> Result<Vec<i64>, MediaError> {
+/// Parses `ctts`, expanding at most `max_samples` per-sample offsets (the `stsz` count).
+fn parse_ctts(ctts_box: &[u8], max_samples: usize) -> Result<Vec<i64>, MediaError> {
     let version = *ctts_box
         .first()
         .ok_or_else(|| MediaError::InvalidContainer("empty ctts box".to_owned()))?;
-    let entry_count = usize::try_from(read_u32_be(ctts_box, 4)?)
-        .map_err(|_| MediaError::InvalidContainer("ctts entry count overflow".to_owned()))?;
-    let mut offsets = Vec::new();
+    let entry_count = checked_entry_count(ctts_box, read_u32_be(ctts_box, 4)?, 8, 8, "ctts")?;
+    let mut offsets = Vec::with_capacity(max_samples.min(entry_count.max(1)));
     for i in 0..entry_count {
         let off = 8 + i * 8;
         let count = usize::try_from(read_u32_be(ctts_box, off)?)
@@ -482,15 +583,35 @@ fn parse_ctts(ctts_box: &[u8]) -> Result<Vec<i64>, MediaError> {
         } else {
             i64::from(read_i32_be(ctts_box, off + 4)?)
         };
-        offsets.extend(std::iter::repeat_n(comp_offset, count));
+        let take = count.min(max_samples.saturating_sub(offsets.len()));
+        offsets.extend(std::iter::repeat_n(comp_offset, take));
+        if offsets.len() >= max_samples {
+            break;
+        }
     }
     Ok(offsets)
 }
 
-fn parse_stsz(stsz: &[u8]) -> Result<Vec<u32>, MediaError> {
+fn parse_stsz(stsz: &[u8], file_len: u64) -> Result<Vec<u32>, MediaError> {
     let default_size = read_u32_be(stsz, 4)?;
-    let sample_count = usize::try_from(read_u32_be(stsz, 8)?)
-        .map_err(|_| MediaError::InvalidContainer("stsz sample count overflow".to_owned()))?;
+    let raw_count = read_u32_be(stsz, 8)?;
+    let sample_count = if default_size == 0 {
+        checked_entry_count(stsz, raw_count, 12, 4, "stsz")?
+    } else {
+        // Constant-size samples must all fit inside the file.
+        if u64::from(raw_count).saturating_mul(u64::from(default_size)) > file_len {
+            return Err(MediaError::InvalidContainer(format!(
+                "stsz declares {raw_count} samples of {default_size} bytes, larger than the file"
+            )));
+        }
+        usize::try_from(raw_count)
+            .map_err(|_| MediaError::InvalidContainer("stsz sample count overflow".to_owned()))?
+    };
+    if sample_count > MAX_TRACK_SAMPLES {
+        return Err(MediaError::InvalidContainer(format!(
+            "stsz sample count {sample_count} exceeds the {MAX_TRACK_SAMPLES} sample limit"
+        )));
+    }
     if default_size != 0 {
         return Ok(vec![default_size; sample_count]);
     }
@@ -502,8 +623,7 @@ fn parse_stsz(stsz: &[u8]) -> Result<Vec<u32>, MediaError> {
 }
 
 fn parse_stsc(stsc: &[u8]) -> Result<Vec<(usize, usize)>, MediaError> {
-    let count = usize::try_from(read_u32_be(stsc, 4)?)
-        .map_err(|_| MediaError::InvalidContainer("stsc entry count overflow".to_owned()))?;
+    let count = checked_entry_count(stsc, read_u32_be(stsc, 4)?, 8, 12, "stsc")?;
     let mut entries = Vec::with_capacity(count);
     for i in 0..count {
         let off = 8 + i * 12;
@@ -524,16 +644,14 @@ fn parse_stsc(stsc: &[u8]) -> Result<Vec<(usize, usize)>, MediaError> {
 
 fn parse_chunk_offsets(stbl: &[u8]) -> Result<Vec<u64>, MediaError> {
     if let Some(stco) = find_box(stbl, *b"stco")? {
-        let count = usize::try_from(read_u32_be(stco, 4)?)
-            .map_err(|_| MediaError::InvalidContainer("stco entry count overflow".to_owned()))?;
+        let count = checked_entry_count(stco, read_u32_be(stco, 4)?, 8, 4, "stco")?;
         let mut offsets = Vec::with_capacity(count);
         for i in 0..count {
             offsets.push(u64::from(read_u32_be(stco, 8 + i * 4)?));
         }
         Ok(offsets)
     } else if let Some(co64) = find_box(stbl, *b"co64")? {
-        let count = usize::try_from(read_u32_be(co64, 4)?)
-            .map_err(|_| MediaError::InvalidContainer("co64 entry count overflow".to_owned()))?;
+        let count = checked_entry_count(co64, read_u32_be(co64, 4)?, 8, 8, "co64")?;
         let mut offsets = Vec::with_capacity(count);
         for i in 0..count {
             offsets.push(read_u64_be(co64, 8 + i * 8)?);
@@ -553,8 +671,7 @@ fn parse_sync_samples(
     let mut is_key = vec![false; sample_count];
     let mut keyframes = Vec::new();
     if let Some(stss) = find_box(stbl, *b"stss")? {
-        let count = usize::try_from(read_u32_be(stss, 4)?)
-            .map_err(|_| MediaError::InvalidContainer("stss entry count overflow".to_owned()))?;
+        let count = checked_entry_count(stss, read_u32_be(stss, 4)?, 8, 4, "stss")?;
         for i in 0..count {
             let sample_1 = usize::try_from(read_u32_be(stss, 8 + i * 4)?).map_err(|_| {
                 MediaError::InvalidContainer("stss sample index overflow".to_owned())
@@ -612,19 +729,20 @@ fn parse_trak(trak: &[u8], file_len: u64) -> Result<Option<ParsedTrack>, MediaEr
         .ok_or_else(|| MediaError::InvalidContainer("missing stsd box".to_owned()))?;
     let (width, height, avcc) = parse_stsd(sample_desc_box)?;
 
-    let time_to_sample_box = find_box(stbl, *b"stts")?
-        .ok_or_else(|| MediaError::InvalidContainer("missing stts box".to_owned()))?;
-    let durations = parse_stts(time_to_sample_box)?;
-
-    let ctts_offsets = match find_box(stbl, *b"ctts")? {
-        Some(ctts) => Some(parse_ctts(ctts)?),
-        None => None,
-    };
-
+    // `stsz` first: its (bounded) sample count caps every other table's expansion.
     let sample_size_box = find_box(stbl, *b"stsz")?
         .ok_or_else(|| MediaError::InvalidContainer("missing stsz box".to_owned()))?;
-    let sizes = parse_stsz(sample_size_box)?;
+    let sizes = parse_stsz(sample_size_box, file_len)?;
     let sample_count = sizes.len();
+
+    let time_to_sample_box = find_box(stbl, *b"stts")?
+        .ok_or_else(|| MediaError::InvalidContainer("missing stts box".to_owned()))?;
+    let durations = parse_stts(time_to_sample_box, sample_count)?;
+
+    let ctts_offsets = match find_box(stbl, *b"ctts")? {
+        Some(ctts) => Some(parse_ctts(ctts, sample_count)?),
+        None => None,
+    };
 
     let sample_to_chunk_box = find_box(stbl, *b"stsc")?
         .ok_or_else(|| MediaError::InvalidContainer("missing stsc box".to_owned()))?;
@@ -1095,37 +1213,272 @@ pub fn write_single_stsd_avc1_mp4(
         ));
     }
 
-    let mut flat_samples: Vec<MuxSample> = Vec::new();
+    // Every emitted sample uses 4-byte NAL lengths (R2 S5): segment heads / keyframes get
+    // in-band SPS/PPS (re-emitted with 4-byte lengths), other samples are normalised only
+    // when their segment's `avcC` declares a different length size (borrowed otherwise, so
+    // no second copy of the payload is made — R2 S7).
+    let mut flat: Vec<std::borrow::Cow<'_, [u8]>> = Vec::new();
+    let mut metas: Vec<SampleMeta> = Vec::new();
     for seg in &non_empty {
+        let cfg = parse_avcc(&seg.avcc_payload)?;
+        require_supported_nal_length_size(cfg.nal_length_size)?;
         for (idx, sample) in seg.samples.iter().enumerate() {
-            let data = if idx == 0 || sample.is_keyframe {
-                prepend_avcc_sps_pps_inband(&seg.avcc_payload, &sample.data)?
+            let data: std::borrow::Cow<'_, [u8]> = if idx == 0 || sample.is_keyframe {
+                prepend_param_sets_4byte(&cfg, &sample.data)?.into()
+            } else if cfg.nal_length_size == 4 {
+                sample.data.as_slice().into()
             } else {
-                sample.data.clone()
+                normalize_avcc_nal_lengths(&sample.data, cfg.nal_length_size)?.into()
             };
-            flat_samples.push(MuxSample {
-                data,
+            metas.push(SampleMeta {
+                size: sample_size_u32(data.len())?,
                 duration_ticks: sample.duration_ticks,
                 is_keyframe: sample.is_keyframe,
             });
+            flat.push(data);
         }
     }
 
-    // Use the last (stream-copied remainder, or sole) segment's avcC as the single `avc1` entry.
-    let primary_avcc = non_empty
-        .last()
-        .ok_or_else(|| MediaError::InvalidArgument("no non-empty segments".to_owned()))?
-        .avcc_payload
-        .clone();
+    // Use the last (stream-copied remainder, or sole) segment's avcC as the single `avc1` entry,
+    // declaring the 4-byte NAL length every sample now uses.
+    let primary_avcc = avcc_with_4byte_lengths(
+        &non_empty
+            .last()
+            .ok_or_else(|| MediaError::InvalidArgument("no non-empty segments".to_owned()))?
+            .avcc_payload,
+    );
 
-    write_single_entry_avc1_mp4(
+    write_faststart_avc1_mp4(
         path.as_ref(),
-        width,
-        height,
-        timescale,
-        &primary_avcc,
-        &flat_samples,
+        Publish::Replace,
+        &Avc1TrackHeader {
+            width,
+            height,
+            timescale,
+            avcc_payload: &primary_avcc,
+        },
+        &metas,
+        |idx, buf| {
+            buf.clear();
+            buf.extend_from_slice(&flat[idx]);
+            Ok(())
+        },
     )
+}
+
+/// Rejects `avcC` NAL length sizes that ISO/IEC 14496-15 does not allow (`3`) or that are
+/// out of range.
+fn require_supported_nal_length_size(nal_length_size: usize) -> Result<(), MediaError> {
+    if matches!(nal_length_size, 1 | 2 | 4) {
+        Ok(())
+    } else {
+        Err(MediaError::UnsupportedFeature(format!(
+            "unsupported avcC NAL length size {nal_length_size} (expected 1, 2 or 4)"
+        )))
+    }
+}
+
+/// Re-emits every NAL unit of an AVCC `sample` with 4-byte length prefixes.
+///
+/// # Errors
+///
+/// Returns [`MediaError::InvalidContainer`] if the sample is not a well-formed sequence of
+/// `nal_length_size`-prefixed NAL units.
+pub fn normalize_avcc_nal_lengths(
+    sample: &[u8],
+    nal_length_size: usize,
+) -> Result<Vec<u8>, MediaError> {
+    require_supported_nal_length_size(nal_length_size)?;
+    let mut out = Vec::with_capacity(sample.len() + 16);
+    let mut pos = 0usize;
+    while pos < sample.len() {
+        let prefix = sample.get(pos..pos + nal_length_size).ok_or_else(|| {
+            MediaError::InvalidContainer("AVCC sample has a truncated NAL length prefix".to_owned())
+        })?;
+        let nal_len = prefix
+            .iter()
+            .fold(0usize, |acc, &byte| (acc << 8) | usize::from(byte));
+        pos += nal_length_size;
+        let nal = pos
+            .checked_add(nal_len)
+            .and_then(|end| sample.get(pos..end))
+            .ok_or_else(|| {
+                MediaError::InvalidContainer("AVCC NAL unit exceeds the sample".to_owned())
+            })?;
+        if !nal.is_empty() {
+            let len = u32::try_from(nal.len()).map_err(|_| {
+                MediaError::InvalidContainer("NAL unit exceeds u32::MAX".to_owned())
+            })?;
+            out.extend_from_slice(&len.to_be_bytes());
+            out.extend_from_slice(nal);
+        }
+        pos += nal_len;
+    }
+    Ok(out)
+}
+
+/// Returns a copy of `avcc` whose `lengthSizeMinusOne` is 3 (4-byte NAL lengths).
+fn avcc_with_4byte_lengths(avcc: &[u8]) -> Vec<u8> {
+    let mut out = avcc.to_vec();
+    if let Some(byte) = out.get_mut(4) {
+        *byte |= 0x03;
+    }
+    out
+}
+
+/// [`prepend_avcc_sps_pps_inband`] with an already parsed `avcC` (output is 4-byte lengths).
+fn prepend_param_sets_4byte(cfg: &AvccConfig, sample: &[u8]) -> Result<Vec<u8>, MediaError> {
+    let (_, _, stripped) = extract_inband_param_sets_and_strip(sample, cfg.nal_length_size);
+    let mut out = Vec::with_capacity(stripped.len() + 128);
+    for ps in cfg.sps.iter().chain(&cfg.pps) {
+        let len_u32 = u32::try_from(ps.len()).map_err(|_| {
+            MediaError::InvalidContainer("parameter set length exceeds u32::MAX".to_owned())
+        })?;
+        out.extend_from_slice(&len_u32.to_be_bytes());
+        out.extend_from_slice(ps);
+    }
+    out.extend_from_slice(&stripped);
+    Ok(out)
+}
+
+/// Writes a frame-accurate trim: the optional re-encoded `head` segment (held in memory; at
+/// most one GOP) followed by `track` samples `copy_range` (inclusive) **streamed from the
+/// source file** with one reused buffer, so a long remainder is never held in RAM (R2 S7).
+///
+/// Copied samples are normalised exactly like [`write_single_stsd_avc1_mp4`]: the first copied
+/// sample and every keyframe get the track's SPS/PPS in-band, and every sample uses 4-byte
+/// NAL lengths (R2 S5). The output is published crash-safely without replacing an existing
+/// file (R2 S6).
+pub(crate) fn write_trim_mp4(
+    path: &Path,
+    track: &Mp4VideoTrack,
+    head: Option<&MuxSegment>,
+    copy_range: Option<(u64, u64)>,
+) -> Result<u64, MediaError> {
+    let cfg = track.avcc();
+    require_supported_nal_length_size(cfg.nal_length_size)?;
+
+    let mut head_data: Vec<Vec<u8>> = Vec::new();
+    let mut metas: Vec<SampleMeta> = Vec::new();
+    if let Some(seg) = head.filter(|s| !s.samples.is_empty()) {
+        let head_cfg = parse_avcc(&seg.avcc_payload)?;
+        require_supported_nal_length_size(head_cfg.nal_length_size)?;
+        for (idx, sample) in seg.samples.iter().enumerate() {
+            let data = if idx == 0 || sample.is_keyframe {
+                prepend_param_sets_4byte(&head_cfg, &sample.data)?
+            } else {
+                normalize_avcc_nal_lengths(&sample.data, head_cfg.nal_length_size)?
+            };
+            metas.push(SampleMeta {
+                size: sample_size_u32(data.len())?,
+                duration_ticks: sample.duration_ticks,
+                is_keyframe: sample.is_keyframe,
+            });
+            head_data.push(data);
+        }
+    }
+
+    // Pass 1 (sizes only): samples copied verbatim need no read at all.
+    let mut buf = Vec::new();
+    let mut scratch = Vec::new();
+    let copy_frames: Vec<u64> = copy_range.map_or_else(Vec::new, |(a, b)| (a..=b).collect());
+    for (pos, &idx) in copy_frames.iter().enumerate() {
+        let info = *track.frame(idx)?;
+        let size = if pos == 0 || info.is_keyframe || cfg.nal_length_size != 4 {
+            track.read_sample_into(idx, &mut buf)?;
+            let transform = if pos == 0 || info.is_keyframe {
+                CopyTransform::WithParamSets
+            } else {
+                CopyTransform::NormalizeOnly
+            };
+            transform_copied_sample(cfg, &buf, transform, &mut scratch)?;
+            scratch.len()
+        } else {
+            usize::try_from(info.size).map_err(|_| {
+                MediaError::InvalidContainer("sample size exceeds address space".to_owned())
+            })?
+        };
+        metas.push(SampleMeta {
+            size: sample_size_u32(size)?,
+            duration_ticks: info.duration_ticks,
+            is_keyframe: info.is_keyframe,
+        });
+    }
+    if metas.is_empty() {
+        return Err(MediaError::InvalidArgument(
+            "cannot mux empty sample sequence".to_owned(),
+        ));
+    }
+
+    let primary_avcc = if copy_frames.is_empty() {
+        avcc_with_4byte_lengths(head.map_or(&[][..], |h| h.avcc_payload.as_slice()))
+    } else {
+        avcc_with_4byte_lengths(&cfg.raw_avcc)
+    };
+    let head_len = head_data.len();
+    let mut written = 0u64;
+    write_faststart_avc1_mp4(
+        path,
+        Publish::NoReplace,
+        &Avc1TrackHeader {
+            width: track.width(),
+            height: track.height(),
+            timescale: track.timescale(),
+            avcc_payload: &primary_avcc,
+        },
+        &metas,
+        |idx, out| {
+            out.clear();
+            if let Some(data) = head_data.get(idx) {
+                out.extend_from_slice(data);
+                return Ok(());
+            }
+            let pos = idx - head_len;
+            let frame_idx = copy_frames[pos];
+            let is_key = track.frame(frame_idx)?.is_keyframe;
+            track.read_sample_into(frame_idx, &mut buf)?;
+            if pos == 0 || is_key || cfg.nal_length_size != 4 {
+                let transform = if pos == 0 || is_key {
+                    CopyTransform::WithParamSets
+                } else {
+                    CopyTransform::NormalizeOnly
+                };
+                transform_copied_sample(cfg, &buf, transform, out)?;
+            } else {
+                out.extend_from_slice(&buf);
+            }
+            written += 1;
+            Ok(())
+        },
+    )?;
+    Ok(written)
+}
+
+/// How a stream-copied sample is rewritten for the spliced output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CopyTransform {
+    /// Segment head or keyframe: in-band SPS/PPS + 4-byte NAL lengths.
+    WithParamSets,
+    /// Other samples: 4-byte NAL lengths only.
+    NormalizeOnly,
+}
+
+fn transform_copied_sample(
+    cfg: &AvccConfig,
+    sample: &[u8],
+    transform: CopyTransform,
+    out: &mut Vec<u8>,
+) -> Result<(), MediaError> {
+    out.clear();
+    match transform {
+        CopyTransform::WithParamSets => {
+            out.extend_from_slice(&prepend_param_sets_4byte(cfg, sample)?);
+        }
+        CopyTransform::NormalizeOnly => {
+            out.extend_from_slice(&normalize_avcc_nal_lengths(sample, cfg.nal_length_size)?);
+        }
+    }
+    Ok(())
 }
 
 /// Raw Annex B H.264 access unit captured from a device or synthetic generator.
@@ -1237,6 +1590,28 @@ pub fn mux_raw_h264_to_mp4(
         keyframe_count,
         timescale,
     })
+}
+
+/// Size/timing of one muxed sample; the payload itself is produced on demand while writing.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct SampleMeta {
+    pub(crate) size: u32,
+    pub(crate) duration_ticks: u32,
+    pub(crate) is_keyframe: bool,
+}
+
+/// Converts an in-memory sample length into the `stsz` `u32` size.
+pub(crate) fn sample_size_u32(len: usize) -> Result<u32, MediaError> {
+    u32::try_from(len)
+        .map_err(|_| MediaError::InvalidContainer("sample length exceeds u32::MAX".to_owned()))
+}
+
+/// Track-level parameters of the single `avc1` sample entry.
+pub(crate) struct Avc1TrackHeader<'a> {
+    pub(crate) width: u16,
+    pub(crate) height: u16,
+    pub(crate) timescale: u32,
+    pub(crate) avcc_payload: &'a [u8],
 }
 
 #[derive(Clone, Copy)]
@@ -1373,7 +1748,7 @@ fn build_stbl(
     width: u16,
     height: u16,
     avcc_payload: &[u8],
-    samples: &[MuxSample],
+    samples: &[SampleMeta],
     mdat_payload_offset: u64,
     offset_mode: ChunkOffsetMode,
 ) -> Result<Vec<u8>, MediaError> {
@@ -1440,10 +1815,7 @@ fn build_stbl(
     size_table_payload.extend_from_slice(&0u32.to_be_bytes()); // variable sample sizes
     size_table_payload.extend_from_slice(&sample_count_u32.to_be_bytes());
     for sm in samples {
-        let len_u32 = u32::try_from(sm.data.len()).map_err(|_| {
-            MediaError::InvalidContainer("sample length exceeds u32::MAX".to_owned())
-        })?;
-        size_table_payload.extend_from_slice(&len_u32.to_be_bytes());
+        size_table_payload.extend_from_slice(&sm.size.to_be_bytes());
     }
     let size_table_box = full_box_wrap(*b"stsz", 0, 0, &size_table_payload)?;
 
@@ -1477,14 +1849,17 @@ fn build_stbl(
 }
 
 fn build_moov(
-    width: u16,
-    height: u16,
-    timescale: u32,
-    avcc_payload: &[u8],
-    samples: &[MuxSample],
+    track: &Avc1TrackHeader<'_>,
+    samples: &[SampleMeta],
     mdat_payload_offset: u64,
     offset_mode: ChunkOffsetMode,
 ) -> Result<Vec<u8>, MediaError> {
+    let Avc1TrackHeader {
+        width,
+        height,
+        timescale,
+        avcc_payload,
+    } = *track;
     let total_duration: u64 = samples.iter().map(|sm| u64::from(sm.duration_ticks)).sum();
 
     let movie_header = build_mvhd(timescale, total_duration)?;
@@ -1532,21 +1907,23 @@ fn build_moov(
     let mut trak_p = Vec::new();
     trak_p.extend_from_slice(&track_header);
     trak_p.extend_from_slice(&mdia);
-    let trak = box_wrap(*b"trak", &trak_p)?;
+    let trak_box = box_wrap(*b"trak", &trak_p)?;
 
     let mut moov_p = Vec::new();
     moov_p.extend_from_slice(&movie_header);
-    moov_p.extend_from_slice(&trak);
+    moov_p.extend_from_slice(&trak_box);
     box_wrap(*b"moov", &moov_p)
 }
 
-fn write_single_entry_avc1_mp4(
+/// Writes a faststart (`ftyp` + `moov` + `mdat`) MP4 whose sample sizes are known up front
+/// (`samples`); `fill(i, buf)` produces sample `i`'s exact bytes on demand (one reused buffer).
+/// The file is written crash-safely via [`write_atomically`].
+pub(crate) fn write_faststart_avc1_mp4(
     path: &Path,
-    width: u16,
-    height: u16,
-    timescale: u32,
-    avcc_payload: &[u8],
-    samples: &[MuxSample],
+    mode: Publish,
+    track: &Avc1TrackHeader<'_>,
+    samples: &[SampleMeta],
+    mut fill: impl FnMut(usize, &mut Vec<u8>) -> Result<(), MediaError>,
 ) -> Result<(), MediaError> {
     let mut ftyp_payload = Vec::with_capacity(24);
     ftyp_payload.extend_from_slice(b"isom");
@@ -1556,24 +1933,13 @@ fn write_single_entry_avc1_mp4(
 
     let total_mdat_payload: u64 = samples
         .iter()
-        .try_fold(0u64, |acc, sm| {
-            let len = u64::try_from(sm.data.len()).ok()?;
-            acc.checked_add(len)
-        })
+        .try_fold(0u64, |acc, sm| acc.checked_add(u64::from(sm.size)))
         .ok_or_else(|| MediaError::InvalidContainer("mdat payload size overflow".to_owned()))?;
 
     let use_large_mdat = total_mdat_payload.saturating_add(8) > u64::from(u32::MAX);
     let mdat_header_len = if use_large_mdat { 16u64 } else { 8u64 };
 
-    let moov_probe = build_moov(
-        width,
-        height,
-        timescale,
-        avcc_payload,
-        samples,
-        0,
-        ChunkOffsetMode::Stco32,
-    )?;
+    let moov_probe = build_moov(track, samples, 0, ChunkOffsetMode::Stco32)?;
     let ftyp_len_u64 = u64::try_from(ftyp.len()).unwrap_or(0);
     let probe_offset = ftyp_len_u64
         .saturating_add(u64::try_from(moov_probe.len()).unwrap_or(0))
@@ -1585,49 +1951,44 @@ fn write_single_entry_avc1_mp4(
     };
 
     let moov_pass1 = match offset_mode {
-        ChunkOffsetMode::Co64 => build_moov(
-            width,
-            height,
-            timescale,
-            avcc_payload,
-            samples,
-            0,
-            ChunkOffsetMode::Co64,
-        )?,
+        ChunkOffsetMode::Co64 => build_moov(track, samples, 0, ChunkOffsetMode::Co64)?,
         ChunkOffsetMode::Stco32 => moov_probe,
     };
     let mdat_payload_offset = ftyp_len_u64
         .saturating_add(u64::try_from(moov_pass1.len()).unwrap_or(0))
         .saturating_add(mdat_header_len);
-    let moov = build_moov(
-        width,
-        height,
-        timescale,
-        avcc_payload,
-        samples,
-        mdat_payload_offset,
-        offset_mode,
-    )?;
+    let moov = build_moov(track, samples, mdat_payload_offset, offset_mode)?;
 
-    let file = File::create(path)?;
-    let mut writer = BufWriter::with_capacity(1 << 20, file);
-    writer.write_all(&ftyp)?;
-    writer.write_all(&moov)?;
-    if use_large_mdat {
-        let mdat_total = total_mdat_payload.saturating_add(16);
-        writer.write_all(&1u32.to_be_bytes())?;
-        writer.write_all(b"mdat")?;
-        writer.write_all(&mdat_total.to_be_bytes())?;
-    } else {
-        let mdat_total = u32::try_from(total_mdat_payload.saturating_add(8))
-            .map_err(|_| MediaError::InvalidContainer("mdat 32-bit size overflow".to_owned()))?;
-        writer.write_all(&mdat_total.to_be_bytes())?;
-        writer.write_all(b"mdat")?;
-    }
-    for sm in samples {
-        writer.write_all(&sm.data)?;
-    }
-    writer.flush()?;
+    write_atomically(path, mode, |writer| {
+        writer.write_all(&ftyp)?;
+        writer.write_all(&moov)?;
+        if use_large_mdat {
+            let mdat_total = total_mdat_payload.saturating_add(16);
+            writer.write_all(&1u32.to_be_bytes())?;
+            writer.write_all(b"mdat")?;
+            writer.write_all(&mdat_total.to_be_bytes())?;
+        } else {
+            let mdat_total = u32::try_from(total_mdat_payload.saturating_add(8)).map_err(|_| {
+                MediaError::InvalidContainer("mdat 32-bit size overflow".to_owned())
+            })?;
+            writer.write_all(&mdat_total.to_be_bytes())?;
+            writer.write_all(b"mdat")?;
+        }
+        let mut buf = Vec::new();
+        for (idx, meta) in samples.iter().enumerate() {
+            fill(idx, &mut buf)?;
+            if u64::try_from(buf.len()).ok() != Some(u64::from(meta.size)) {
+                return Err(MediaError::InvalidContainer(format!(
+                    "sample {idx} produced {} bytes but {} were indexed",
+                    buf.len(),
+                    meta.size
+                )));
+            }
+            writer.write_all(&buf)?;
+        }
+        writer.flush()?;
+        Ok(())
+    })?;
     Ok(())
 }
 

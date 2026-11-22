@@ -12,10 +12,14 @@
 pub mod codec;
 pub mod error;
 pub mod mp4;
+mod output;
 pub mod playback;
 pub mod trim;
 
 pub use crate::error::MediaError;
+
+#[cfg(test)]
+mod r2_regression_tests;
 
 /// Returns the crate identifier alongside the underlying domain schema version.
 pub const fn crate_info() -> (&'static str, u32) {
