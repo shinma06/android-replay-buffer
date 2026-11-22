@@ -754,7 +754,15 @@ internal class SaveWriter(private val availableSpace: (Path) -> Long = { Files.g
                     "sample_rate" to plan.sampleRate, "channels" to plan.channels, "source" to "Android playback capture (scrcpy audio_source=playback)",
                     "time_source" to "AudioRecord timestamp (device CLOCK_MONOTONIC), mapped like video PTS onto the movie timeline",
                     "segments" to plan.segments.map { mapOf("movie_start_us" to it.movieStartUs.toString(), "duration_us" to it.durationUs.toString(),
-                        "media_start_samples" to it.mediaStart.toString(), "samples" to it.count) }) },
+                        "media_start_samples" to it.mediaStart.toString(), "samples" to it.count) }).toMutableMap().apply {
+                    val evidence = AudioDecodeEvidence()
+                    plan.samples.forEachIndexed { index, row ->
+                        checkActive()
+                        if (row.session > 0 && row.receivedOrdinal >= 0)
+                            evidence.add(index, AudioReceipt(row.generation, row.session, row.receivedOrdinal))
+                    }
+                    evidence.manifest(hashes[ReplayFiles.VIDEO])?.let { put(AudioDecodeEvidence.KEY, it) }
+                } },
                 "video_reencoded" to (normalizer != null),
                 "video_canvas" to normalizer?.let { mapOf("width" to it.width, "height" to it.height, "colour_known" to it.colourKnown) },
                 "video_movie_duration_us" to parts.lastOrNull()?.get("movie_end_us"),

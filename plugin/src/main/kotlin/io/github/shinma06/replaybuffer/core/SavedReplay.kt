@@ -24,6 +24,7 @@ internal class SavedReplay private constructor(
     val manifest: JsonObject,
     val frames: List<JsonObject>,
     val recordSha256: String,
+    val verifiedVideoSha256: String?,
 ) : AutoCloseable {
 
     val name: String get() = directory.fileName.toString()
@@ -167,10 +168,12 @@ internal class SavedReplay private constructor(
                 (hashes.keySet() + listOf(ReplayFiles.VIDEO, ReplayFiles.VIDEO_FRAMES, ReplayFiles.VIDEO_SOURCE,
                     ReplayFiles.LOGCAT_DEVICE, ReplayFiles.LOGCAT_APP, ReplayFiles.TOUCHES).filter { it in entries })
                     .forEach { pin(it) }
+                var verifiedVideoSha256: String? = null
                 hashes.entrySet().forEach { (name, expected) ->
                     val output = pins.getValue(name)
                     val actual = output.hash()
                     require(actual == expected.asString) { "保存時からファイルが変更されています: $name" }
+                    if (name == ReplayFiles.VIDEO) verifiedVideoSha256 = actual
                     afterHash(name, output)
                 }
                 val frames = handle.openFile(ReplayFiles.VIDEO_FRAMES).use { output ->
@@ -187,7 +190,7 @@ internal class SavedReplay private constructor(
                 require(frames.isNotEmpty()) { "動画のframe記録がありません" }
                 val recordHash = java.security.MessageDigest.getInstance("SHA-256").digest(record.toByteArray(Charsets.UTF_8))
                     .joinToString("") { "%02x".format(it) }
-                return SavedReplay(directory, handle, parent, pins, sourceLease, manifest, frames, recordHash)
+                return SavedReplay(directory, handle, parent, pins, sourceLease, manifest, frames, recordHash, verifiedVideoSha256)
             } catch (e: Throwable) {
                 try { sourceLease?.close() } finally {
                     try { pins.values.forEach(SaveOutputFile::close) }

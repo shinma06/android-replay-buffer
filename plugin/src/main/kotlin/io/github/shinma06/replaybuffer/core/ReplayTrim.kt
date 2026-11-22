@@ -155,7 +155,10 @@ internal class ReplayTrim(
 
     private data class AudioRun(val movieStart: Long, val duration: Long, val first: Int, val end: Int, val skip: Long, val preroll: Int)
     private data class AudioPlan(val track: AbstractMP4DemuxerTrack, val entry: AudioSampleEntry,
-                                 val sampleRate: Int, val runs: List<AudioRun>, val sizes: PacketSizes)
+                                 val sampleRate: Int, val runs: List<AudioRun>, val sizes: PacketSizes,
+                                 val evidence: AudioDecodeEvidence?)
+    private data class MuxedAudio(val segments: List<Map<String, Any?>>, val track: MP4MuxerTrack, val duration: Long,
+                                  val evidence: AudioDecodeEvidence)
 
     private data class RowWindow(val start: Long?, val end: Long?, val startUncertainty: Long?, val endUncertainty: Long?)
 
@@ -270,6 +273,7 @@ internal class ReplayTrim(
                 var didReencode = false
                 val newParts = mutableListOf<Map<String, Any?>>()
                 val newBoundaries = mutableListOf<Map<String, Any?>>()
+                var muxedAudio: MuxedAudio? = null
                 var sampleIndex = 0L
                 saved.channel(ReplayFiles.VIDEO).use { videoChannel ->
                     val demuxer = MP4Demuxer.createRawMP4Demuxer(mp4Input(videoChannel))
@@ -450,12 +454,12 @@ internal class ReplayTrim(
                                     check(edits.fold(0L) { sum, edit -> Math.addExact(sum, edit.duration) } == movie &&
                                         movie == Math.subtractExact(endUs, startUs)) { "movie時間が一致しません" }
                                     movieBox.tracks.forEach { trak ->
-                                        trak.setDuration(if (audio != null && trak.trackHeader.trackId == audio.second.trackId) audio.third else movie)
+                                        trak.setDuration(if (audio != null && trak.trackHeader.trackId == audio.track.trackId) audio.duration else movie)
                                     }
                                     movieBox.setDuration(movie)
                                     mux.storeHeader(movieBox)
                                     index.flush()
-                                    audioSegments = audio?.first
+                                    muxedAudio = audio
                                 }
                             }
                         }
@@ -466,7 +470,7 @@ internal class ReplayTrim(
                 checkActive()
                 val logCounts = writeLogs(saved, ::file, rowWindow, staging!!, ::checkSpace, ::checkActive)
                 val touchCounts = writeTouches(saved, ::file, rowWindow, startUs, endUs, staging!!, ::checkSpace, ::checkActive)
-                val summary = readme(saved, name, createdAt, startUs, endUs, fromUs, toUs, outputRows.size, audioSegments, logCounts, touchCounts)
+                val summary = readme(saved, name, createdAt, startUs, endUs, fromUs, toUs, outputRows.size, muxedAudio?.segments, logCounts, touchCounts)
                 checkSpace(utf8Bytes(summary))
                 staging!!.writer(file(ReplayFiles.SUMMARY)).use { it.write(summary) }
                 checkActive()
@@ -474,7 +478,7 @@ internal class ReplayTrim(
                 val hashes = staging!!.hashes(::checkActive)
                 checkActive()
                 val manifest = transformedManifest(saved, name, createdAt, startUs, endUs, fromUs, toUs,
-                    originTns, endTns, newParts, newBoundaries, didReencode, audioSegments, outputRows, logCounts,
+                    originTns, endTns, newParts, newBoundaries, didReencode, muxedAudio, outputRows, logCounts,
                     touchCounts, hashes)
                 val record = gson.toJson(manifest)
                 checkSpace(utf8Bytes(record))
@@ -512,8 +516,6 @@ internal class ReplayTrim(
             try { staging?.close() } finally { input?.close() }
         }
     }
-
-    private var audioSegments: List<Map<String, Any?>>? = null
 
     private fun utf8Bytes(text: String): Long = text.toByteArray(Charsets.UTF_8).size.toLong()
 
@@ -570,7 +572,11 @@ internal class ReplayTrim(
             for (run in audio.runs) {
                 checkActive()
                 add(512)
-                for (n in run.first - run.preroll until run.end) { checkActive(); sample(audio.sizes[n]) }
+                for (n in run.first - run.preroll until run.end) {
+                    checkActive()
+                    sample(audio.sizes[n])
+                    if (audio.evidence?.receiptAt(n) != null) add(256) // One range per packet in the worst case.
+                }
             }
         }
         var lastDeviceId: String? = null
@@ -678,11 +684,13 @@ internal class ReplayTrim(
             AudioRun(from - startUs, to - from, first, end, mediaFrom % AAC_FRAME_SAMPLES,
                 if (first > prefixStart) 1 else 0)
         }
-        return if (runs.isEmpty()) null else AudioPlan(audioTrack, entry, sampleRate, runs, sizes)
+        if (runs.isEmpty()) return null
+        val evidence = AudioDecodeEvidence.read(trackInfo[AudioDecodeEvidence.KEY], saved.verifiedVideoSha256, sizes.count, checkActive)
+        return AudioPlan(audioTrack, entry, sampleRate, runs, sizes, evidence)
     }
 
     private fun muxAudio(plan: AudioPlan?, mux: MP4Muxer, checkActive: () -> Unit,
-                         checkSpace: (Long) -> Unit): Triple<List<Map<String, Any?>>, MP4MuxerTrack, Long>? {
+                         checkSpace: (Long) -> Unit): MuxedAudio? {
         if (plan == null) return null
         val input = audioInput(plan.track)
         val sound = MP4MuxerTrack(mux.nextTrackId, MP4TrackType.SOUND)
@@ -690,6 +698,7 @@ internal class ReplayTrim(
         sound.addSampleEntry(plan.entry) // Reuses the source esds as stored.
         val edits = mutableListOf<Edit>()
         val newSegments = mutableListOf<Map<String, Any?>>()
+        val evidence = AudioDecodeEvidence()
         var cursor = 0L
         var written = 0L
         plan.runs.forEach { run ->
@@ -708,12 +717,16 @@ internal class ReplayTrim(
                 checkSpace(packet.data.remaining().toLong())
                 sound.addFrameInternal(Packet.createPacket(packet.data, written * 1024L, plan.sampleRate,
                     AAC_FRAME_SAMPLES, written, Packet.FrameType.KEY, null), 1)
+                plan.evidence?.receiptAt(i)?.let { receipt ->
+                    val leadingPreroll = i < run.first && plan.evidence.receiptAt(run.first)?.follows(receipt) == true
+                    evidence.add(Math.toIntExact(written), receipt, leadingPreroll)
+                }
                 written++
             }
             cursor = Math.addExact(run.movieStart, run.duration)
         }
         sound.setEdits(edits)
-        return Triple(newSegments, sound, cursor)
+        return MuxedAudio(newSegments, sound, cursor, evidence)
     }
 
     private data class LogCounts(val device: Int, val app: Int, val lastDeviceId: String?, val lastAppId: String?,
@@ -828,10 +841,11 @@ internal class ReplayTrim(
                                     startUs: Long, endUs: Long, fromUs: Long, toUs: Long,
                                     originTns: Long?, endTns: Long?,
                                     newParts: List<Map<String, Any?>>, newBoundaries: List<Map<String, Any?>>,
-                                    didReencode: Boolean, audio: List<Map<String, Any?>>?,
+                                    didReencode: Boolean, muxedAudio: MuxedAudio?,
                                     outputRows: List<JsonObject>, logCounts: LogCounts, touchCounts: TouchCounts?,
                                     hashes: Map<String, String>): JsonObject {
         val out = saved.manifest.deepCopy()
+        val audio = muxedAudio?.segments
         out["auto_trigger"]?.takeIf { it.isJsonObject }?.asJsonObject?.let { trigger ->
             for (name in listOf("arming_t_ns", "desired_pre_report_start_t_ns", "desired_pre_report_end_t_ns")) {
                 if (trigger.has(name)) trigger.addProperty(name, shift(trigger.text(name), originTns))
@@ -954,7 +968,11 @@ internal class ReplayTrim(
             }
         }
         val audioTrack = saved.manifest["audio_track"]?.takeIf { it.isJsonObject }?.asJsonObject
-        out.add("audio_track", if (audio == null) null else audioTrack?.deepCopy()?.apply { add("segments", gson.toJsonTree(audio)) })
+        out.add("audio_track", if (audio == null) null else audioTrack?.deepCopy()?.apply {
+            add("segments", gson.toJsonTree(audio))
+            remove(AudioDecodeEvidence.KEY)
+            muxedAudio.evidence.manifest(hashes[ReplayFiles.VIDEO])?.let { add(AudioDecodeEvidence.KEY, gson.toJsonTree(it)) }
+        })
         out["watermarks"]?.takeIf { it.isJsonObject }?.asJsonObject?.let { watermarks ->
             watermarks.addProperty("video_pts_us", outputRows.lastOrNull()?.text("source_pts_us"))
             watermarks.addProperty("device_log_record_id", logCounts.lastDeviceId)

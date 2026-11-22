@@ -21,8 +21,8 @@ internal data class VideoSourcePosition(
 )
 /** One AAC access unit; [config] is the AudioSpecificConfig of its server session, [time] maps [pts] like video. */
 internal class AudioEntry(val pts: Long, val bytes: ByteArray, val config: ByteArray, val time: MappedTime,
-                          val generation: Long, val session: Long, val host: Long) {
-    fun mapped(time: MappedTime) = AudioEntry(pts, bytes, config, time, generation, session, host)
+                          val generation: Long, val session: Long, val host: Long, val receivedOrdinal: Long = -1) {
+    fun mapped(time: MappedTime) = AudioEntry(pts, bytes, config, time, generation, session, host, receivedOrdinal)
 }
 internal data class VideoCut(val before: VideoSourcePosition?, val after: VideoSourcePosition? = null)
 internal data class LogEntry(
@@ -95,6 +95,7 @@ internal class CaptureStore(
     private var audioBytes = 0L
     private var audioConfig: ByteArray? = null
     private var audioSession = 0L
+    private var audioReceivedOrdinal = 0L
     private var audioPrevious = -1L
     private var audioState = StreamSnapshot(StreamState.WAITING)
     val sequence: String = UUID.randomUUID().toString()
@@ -357,6 +358,7 @@ internal class CaptureStore(
     fun audioSession(owner: Long) {
         if (closed || owner != generation || !audioRequested) return
         audioSession++
+        audioReceivedOrdinal = 0L
         audioConfig = null
         audioPrevious = -1
         setAudioState(StreamState.RECOVERING, "音声の取得を準備しています")
@@ -372,10 +374,13 @@ internal class CaptureStore(
     fun audio(packet: AudioPacket, owner: Long, host: Long = System.nanoTime()) {
         if (closed || owner != generation || !audioRequested) return
         if (packet.config) { audioConfig = packet.bytes.copyOf(); return }
+        // Count received AUs even when local selection discards them. The sender does not report its ordinal.
+        val receivedOrdinal = audioReceivedOrdinal++
         val config = checkNotNull(audioConfig) { "音声configがありません" }
         if (packet.pts <= audioPrevious) return // A non-monotonic AAC unit cannot be placed on the video timeline.
         audioPrevious = packet.pts
-        audio += AudioEntry(packet.pts, packet.bytes, config, clock.video(packet.pts, host), generation, audioSession, host)
+        audio += AudioEntry(packet.pts, packet.bytes, config, clock.video(packet.pts, host), generation, audioSession, host,
+            receivedOrdinal)
         audioBytes += packet.bytes.size + 128
         while (audioBytes > logLimit && audio.isNotEmpty()) audioBytes -= audio.removeFirst().bytes.size + 128
         if (audioState.state != StreamState.CAPTURING) setAudioState(StreamState.CAPTURING, null)
