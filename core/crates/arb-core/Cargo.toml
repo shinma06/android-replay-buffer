@@ -1,0 +1,9 @@
+[package]
+name = "arb-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Pure domain model for ARB v2 (dual-layer time, 3-valued selection, WORM bundle schemas, state machines)."
+
+[lints]
+workspace = true

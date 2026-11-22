@@ -1,0 +1,57 @@
+# ARB v2 lightweight 3-type traceability schema for sara
+item_types:
+  - id: requirement
+    display_name: Requirement
+    prefix: REQ
+    id_format: "{prefix}-{seq:02}"
+    parent_types: []
+    fields: []
+    allowed_targets: []
+
+  - id: spec
+    display_name: Specification
+    prefix: SPEC
+    id_format: "{prefix}-{seq:02}"
+    parent_types:
+      - requirement
+    fields: []
+    allowed_targets:
+      - relation: satisfies
+        targets:
+          - requirement
+
+  - id: verification
+    display_name: Verification
+    prefix: VER
+    id_format: "{prefix}-{seq:02}"
+    parent_types:
+      - spec
+      - requirement
+    fields: []
+    allowed_targets:
+      - relation: verifies
+        targets:
+          - spec
+          - requirement
+
+relations:
+  - id: satisfies
+    display_name: Satisfies
+    inverse: is_satisfied_by
+    direction: upstream
+    primary: true
+  - id: is_satisfied_by
+    display_name: Is satisfied by
+    inverse: satisfies
+    direction: downstream
+    primary: false
+  - id: verifies
+    display_name: Verifies
+    inverse: is_verified_by
+    direction: upstream
+    primary: true
+  - id: is_verified_by
+    display_name: Is verified by
+    inverse: verifies
+    direction: downstream
+    primary: false
