@@ -73,6 +73,12 @@ public final class InputWorker {
                 pb.redirectErrorStream(true);
                 proc = pb.start();
                 activeProcess = proc;
+                // stop() may have run between pb.start() and the assignment above, in which case
+                // it saw activeProcess == null and could not destroy this child.
+                if (!running.get()) {
+                    emitState(Protocol.STATE_STOPPED, "shutdown");
+                    return;
+                }
 
                 emitState(Protocol.STATE_RUNNING,
                         (recoveredNext ? "restarted:" : "started:") + "devices=" + touchDevices.size());
@@ -89,7 +95,7 @@ public final class InputWorker {
                             continue;
                         }
                         int flags = recoveredNext ? Protocol.FLAG_RECOVERED : Protocol.FLAG_NONE;
-                        if (line.trim().length() > 256) {
+                        if (PayloadCodec.exceedsUtf8Bytes(line.trim(), GeteventParser.MAX_RAW_LINE_UTF8_BYTES)) {
                             flags |= Protocol.FLAG_TRUNCATED;
                         }
                         recoveredNext = false;
@@ -155,7 +161,8 @@ public final class InputWorker {
             writer.writeFrame(
                     Protocol.STREAM_INPUT,
                     Protocol.MSG_STREAM_STATE,
-                    Protocol.FLAG_URGENT,
+                    Protocol.FLAG_URGENT
+                            | (PayloadCodec.wouldTruncateStr16(reason) ? Protocol.FLAG_TRUNCATED : Protocol.FLAG_NONE),
                     PayloadCodec.encodeStreamState(st));
         } catch (IOException ignored) {
         }

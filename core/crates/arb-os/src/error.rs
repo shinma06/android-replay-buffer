@@ -109,4 +109,27 @@ pub enum OsError {
         #[source]
         source: io::Error,
     },
+
+    /// An operation is not supported on the current host platform.
+    #[error("unsupported OS operation `{operation}`: {reason}")]
+    Unsupported {
+        /// Short operation identifier.
+        operation: &'static str,
+        /// Explanation of why the operation is unsupported.
+        reason: String,
+    },
+
+    /// An atomic commit succeeded on disk, publishing `path`, but syncing the
+    /// parent directory failed afterwards.
+    ///
+    /// Callers must treat the WORM bundle at `path` as already published and
+    /// must not retry the commit under the same path.
+    #[error("committed `{path}` successfully, but parent directory fsync failed: {source}")]
+    CommittedParentSyncFailed {
+        /// Final published destination path that already exists on disk.
+        path: PathBuf,
+        /// Underlying parent directory fsync error.
+        #[source]
+        source: io::Error,
+    },
 }

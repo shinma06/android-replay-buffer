@@ -196,7 +196,7 @@ Emitted immediately whenever a worker enters `Starting`, `Running`, `Stopped`, `
 
 ### 3.6 `0x10 LogRecord` (Stream 1, Agent → Host)
 
-Emitted per binary `logger_entry` read from `logcat -b all -B -T 1`.
+Emitted per binary `logger_entry` read from `logcat -b all -B -T 1`. After a `logcat` respawn the companion resumes with `-T '<sec>.<nsec>'` of the last emitted entry and drops the already-sent boundary entry (matched by timestamp + pid/tid/lid/priority/payload); `-T 1` is used only when nothing has been emitted yet. A `LogOverflowStats(OverflowDetected)` gap is emitted only for real loss (no resume timestamp, or the boundary entry was already evicted from the ring).
 
 | Order | Type | Field | Description |
 | ---: | --- | --- | --- |
@@ -270,7 +270,10 @@ When the host sends `Shutdown`, the companion stops all child workers (`logcat`,
 
 - **Stream 0 (Control/Beacon)** runs its own scheduled heartbeat loop and command reader loop. It MUST NEVER block on Stream 1 (`logcat`) or Stream 2 (`getevent`) process I/O.
 - **Stream 1 (Logcat)** and **Stream 2 (Input)** each run in dedicated daemon threads with full `try / catch (Throwable)` boundaries.
-- Outbound frame writes are serialized through a single synchronized `FrameWriter` writing atomic complete frames (20-byte header + payload in one buffer) so interleaved frames from Streams 0, 1, and 2 can never tear or corrupt framing.
+- Outbound frames are enqueued into per-stream bounded queues and written by one dedicated writer thread as atomic complete frames (20-byte header + payload in one buffer), so interleaved frames from Streams 0, 1, and 2 can never tear or corrupt framing. The writer always drains Stream 0 first, so `Heartbeat`/`Pong`/`Shutdown` never wait behind Stream 1/2 bursts.
+- When the Stream 1 queue is full, non-urgent Stream 1 frames are dropped instead of blocking, and a `LogOverflowStats(completeness=OverflowDetected, detail="writer_queue_overflow:dropped=N")` frame is queued on Stream 1 as soon as there is room. Urgent Stream 1 frames and Stream 2 frames apply back-pressure only to their own producer thread.
+- A transport write failure (e.g. broken pipe in `--stdio` mode, which writes to the raw stdout file descriptor rather than `System.out`) makes every later write throw, so the heartbeat loop shuts the session down immediately.
+- String fields (`str16`) are truncated only on UTF-8 code point boundaries; a frame whose string field was truncated carries `FLAG_TRUNCATED`.
 - If a child process (`logcat` or `getevent`) crashes, is killed (`SIGKILL`), or throws an I/O error:
   1. The owning worker immediately transitions to `Error` (emitting `StreamState`),
   2. Transitions to `Restarting` with bounded exponential backoff (`500 ms → 1000 ms → 2000 ms`, capped at `5000 ms`),

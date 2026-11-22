@@ -194,16 +194,27 @@ impl AtomicStagingDir {
     ///
     /// Writes and `fsync`s the `.committed` marker file, `fsync`s the staging
     /// directory, renames it to the final destination without ever overwriting
-    /// an existing path (retrying transient lock errors on Windows), and
-    /// `fsync`s the parent directory.
+    /// an existing path (retrying transient lock errors on Windows), marks the
+    /// staging directory committed immediately after rename, and `fsync`s the
+    /// parent directory.
     ///
     /// # Errors
     ///
-    /// Returns [`OsError::AlreadyExists`] if the destination already exists, or
-    /// [`OsError::Fs`] / [`OsError::Io`] if writing the marker, renaming, or
-    /// syncing fails. On error, the staging directory is cleaned up when `self`
-    /// is dropped.
+    /// Returns [`OsError::AlreadyExists`] if the destination already exists,
+    /// [`OsError::CommittedParentSyncFailed`] if the bundle was published to
+    /// `final_path` successfully but syncing the parent directory failed
+    /// afterwards (callers must treat the bundle as published), or
+    /// [`OsError::Fs`] / [`OsError::Io`] if writing the marker, staging sync,
+    /// or renaming fails. On pre-publish errors, the staging directory is
+    /// cleaned up when `self` is dropped.
     pub fn commit(mut self) -> Result<PathBuf, OsError> {
+        self.commit_with_parent_sync(fsync_dir)
+    }
+
+    fn commit_with_parent_sync<F>(&mut self, sync_parent: F) -> Result<PathBuf, OsError>
+    where
+        F: FnOnce(&Path) -> Result<(), OsError>,
+    {
         self.write_file_synced(COMMIT_MARKER_FILE, b"committed\n")?;
         fsync_dir(&self.staging_path)?;
 
@@ -225,11 +236,24 @@ impl AtomicStagingDir {
         )
         .map_err(|err| map_rename_error(err, final_path))?;
 
-        if let Some(parent) = self.final_path.parent() {
-            fsync_dir(parent)?;
+        // Mark committed immediately once the rename publishes the WORM bundle
+        // so Drop never treats an already-published bundle as uncommitted if
+        // syncing the parent directory fails.
+        self.committed = true;
+
+        if let Some(parent) = self.final_path.parent()
+            && let Err(err) = sync_parent(parent)
+        {
+            let source = match err {
+                OsError::Fs { source, .. } | OsError::Io { source, .. } => source,
+                other => io::Error::other(other.to_string()),
+            };
+            return Err(OsError::CommittedParentSyncFailed {
+                path: self.final_path.clone(),
+                source,
+            });
         }
 
-        self.committed = true;
         Ok(self.final_path.clone())
     }
 
@@ -510,7 +534,37 @@ mod imp {
         Err(err)
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "linux")]
+    pub(super) fn rename_no_replace(from: &Path, to: &Path) -> io::Result<()> {
+        let c_from = CString::new(from.as_os_str().as_bytes())
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "interior NUL in source"))?;
+        let c_to = CString::new(to.as_os_str().as_bytes())
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "interior NUL in target"))?;
+        // SAFETY: `c_from` and `c_to` are valid NUL-terminated C strings, and
+        // `AT_FDCWD` instructs `renameat2` to resolve relative paths from cwd.
+        let rc = unsafe {
+            libc::renameat2(
+                libc::AT_FDCWD,
+                c_from.as_ptr(),
+                libc::AT_FDCWD,
+                c_to.as_ptr(),
+                libc::RENAME_NOREPLACE,
+            )
+        };
+        if rc == 0 {
+            return Ok(());
+        }
+        let err = io::Error::last_os_error();
+        if matches!(err.raw_os_error(), Some(libc::ENOSYS | libc::EINVAL)) {
+            return fallback_rename_no_replace(from, to);
+        }
+        if matches!(err.raw_os_error(), Some(libc::EEXIST | libc::ENOTEMPTY)) {
+            return Err(io::Error::new(io::ErrorKind::AlreadyExists, err));
+        }
+        Err(err)
+    }
+
+    #[cfg(all(unix, not(target_os = "macos"), not(target_os = "linux")))]
     pub(super) fn rename_no_replace(from: &Path, to: &Path) -> io::Result<()> {
         fallback_rename_no_replace(from, to)
     }
@@ -590,12 +644,12 @@ mod imp {
     use std::path::Path;
 
     use windows_sys::Win32::Foundation::{
-        CloseHandle, ERROR_ACCESS_DENIED, ERROR_LOCK_VIOLATION, ERROR_SHARING_VIOLATION,
-        GetLastError, STILL_ACTIVE,
+        CloseHandle, ERROR_ACCESS_DENIED, ERROR_ALREADY_EXISTS, ERROR_FILE_EXISTS,
+        ERROR_LOCK_VIOLATION, ERROR_SHARING_VIOLATION, GetLastError, STILL_ACTIVE,
     };
     use windows_sys::Win32::Storage::FileSystem::{
         GetDiskFreeSpaceExW, LOCKFILE_EXCLUSIVE_LOCK, LOCKFILE_FAIL_IMMEDIATELY, LockFileEx,
-        UnlockFileEx,
+        MoveFileExW, UnlockFileEx,
     };
     use windows_sys::Win32::System::IO::OVERLAPPED;
     use windows_sys::Win32::System::Threading::{
@@ -652,20 +706,35 @@ mod imp {
     }
 
     pub(super) fn rename_no_replace(from: &Path, to: &Path) -> io::Result<()> {
-        match fs::symlink_metadata(to) {
-            Ok(_) => {
-                return Err(io::Error::new(
-                    io::ErrorKind::AlreadyExists,
-                    "destination path already exists",
-                ));
-            }
-            Err(err) if err.kind() == io::ErrorKind::NotFound => {}
-            Err(err) => return Err(err),
+        let wide_from = encode_wide(from.as_os_str());
+        let wide_to = encode_wide(to.as_os_str());
+        // SAFETY: `wide_from` and `wide_to` are valid NUL-terminated UTF-16
+        // paths; flags=0 explicitly omits `MOVEFILE_REPLACE_EXISTING` so
+        // Windows atomically refuses to overwrite an existing destination.
+        let ok = unsafe { MoveFileExW(wide_from.as_ptr(), wide_to.as_ptr(), 0) };
+        if ok != 0 {
+            return Ok(());
         }
-        fs::rename(from, to)
+        let err = io::Error::last_os_error();
+        // SAFETY: `GetLastError` reads the calling thread's last-error slot.
+        let code = unsafe { GetLastError() };
+        if code == ERROR_ALREADY_EXISTS || code == ERROR_FILE_EXISTS {
+            return Err(io::Error::new(io::ErrorKind::AlreadyExists, err));
+        }
+        // On Windows, renaming a directory onto an existing destination
+        // directory without MOVEFILE_REPLACE_EXISTING often reports
+        // ERROR_ACCESS_DENIED; disambiguate before transient retry treats it as
+        // a lock conflict.
+        if code == ERROR_ACCESS_DENIED && fs::symlink_metadata(to).is_ok() {
+            return Err(io::Error::new(io::ErrorKind::AlreadyExists, err));
+        }
+        Err(err)
     }
 
     pub(super) fn is_transient_rename_error(err: &io::Error) -> bool {
+        if err.kind() == io::ErrorKind::AlreadyExists {
+            return false;
+        }
         let Some(raw) = err.raw_os_error() else {
             return false;
         };
@@ -1041,6 +1110,52 @@ mod tests {
         assert!(
             !is_pid_alive(child_pid),
             "reaped child PID {child_pid} must report dead"
+        );
+    }
+
+    #[test]
+    fn commit_marks_committed_before_parent_fsync_and_preserves_published_bundle() {
+        let tmp = TestTempDir::new("parent-fsync-fail");
+        let final_path = tmp.path.join("bundle-published");
+
+        let mut staging =
+            AtomicStagingDir::create(&final_path, "job-sync-fail").expect("create staging dir");
+        staging
+            .write_file_synced("manifest.json", br#"{"schema_version":2}"#)
+            .expect("write staged manifest");
+
+        let err = staging
+            .commit_with_parent_sync(|parent| {
+                Err(OsError::Fs {
+                    operation: "fsync_dir",
+                    path: parent.to_path_buf(),
+                    source: io::Error::other("simulated parent fsync I/O failure"),
+                })
+            })
+            .expect_err("parent fsync failure must surface distinct error");
+
+        assert!(
+            matches!(
+                err,
+                OsError::CommittedParentSyncFailed { ref path, .. } if path == &final_path
+            ),
+            "expected CommittedParentSyncFailed with final_path, got {err:?}"
+        );
+        assert!(
+            staging.committed,
+            "committed flag must already be true before parent fsync runs"
+        );
+
+        // Dropping `staging` after parent-fsync error must NOT delete the published bundle.
+        drop(staging);
+        assert!(
+            final_path.join(COMMIT_MARKER_FILE).is_file(),
+            "published bundle commit marker must remain intact on disk"
+        );
+        assert_eq!(
+            fs::read(final_path.join("manifest.json")).expect("read published manifest"),
+            br#"{"schema_version":2}"#,
+            "published bundle contents must remain intact after parent fsync error"
         );
     }
 }

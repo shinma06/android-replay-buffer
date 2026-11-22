@@ -277,14 +277,83 @@ mod imp {
     }
 
     pub(super) fn ipc_endpoint(runtime_dir: &Path) -> PathBuf {
-        // Stable 64-bit FNV-1a hash of the runtime directory gives deterministic
-        // per-user and per-hermetic-test Windows Named Pipe isolation.
+        // Stable 64-bit FNV-1a hash of the current user SID (when available) +
+        // runtime directory gives per-user and per-hermetic-test Windows Named
+        // Pipe isolation, mitigating local pipe squatting across user accounts.
         let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+        if let Some(sid_bytes) = current_user_sid_bytes() {
+            for byte in sid_bytes {
+                hash ^= u64::from(byte);
+                hash = hash.wrapping_mul(0x0100_0000_01b3);
+            }
+            hash ^= u64::from(b'|');
+            hash = hash.wrapping_mul(0x0100_0000_01b3);
+        }
         for byte in runtime_dir.to_string_lossy().as_bytes() {
             hash ^= u64::from(*byte);
             hash = hash.wrapping_mul(0x0100_0000_01b3);
         }
         PathBuf::from(format!(r"\\.\pipe\arb-daemon-{hash:016x}"))
+    }
+
+    fn current_user_sid_bytes() -> Option<Vec<u8>> {
+        use std::ptr;
+
+        use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+        use windows_sys::Win32::Security::{
+            GetLengthSid, GetTokenInformation, TOKEN_QUERY, TOKEN_USER, TokenUser,
+        };
+        use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+        // SAFETY: `GetCurrentProcess` returns a pseudo-handle that does not need closing.
+        let proc_handle = unsafe { GetCurrentProcess() };
+        let mut token: HANDLE = ptr::null_mut();
+        // SAFETY: `proc_handle` is the current process handle and `token` is stack storage.
+        let ok = unsafe { OpenProcessToken(proc_handle, TOKEN_QUERY, &raw mut token) };
+        if ok == 0 || token.is_null() {
+            return None;
+        }
+
+        let mut needed: u32 = 0;
+        // SAFETY: Querying required buffer length with a null output buffer is documented Win32 usage.
+        let _ =
+            unsafe { GetTokenInformation(token, TokenUser, ptr::null_mut(), 0, &raw mut needed) };
+        let buf_len = usize::try_from(needed).ok()?;
+        if buf_len < std::mem::size_of::<TOKEN_USER>() {
+            // SAFETY: `token` was opened by `OpenProcessToken` and is closed once.
+            let _ = unsafe { CloseHandle(token) };
+            return None;
+        }
+
+        let mut buf = vec![0_u8; buf_len];
+        // SAFETY: `buf` is writable for `needed` bytes and `token` is valid.
+        let ok = unsafe {
+            GetTokenInformation(
+                token,
+                TokenUser,
+                buf.as_mut_ptr().cast(),
+                needed,
+                &raw mut needed,
+            )
+        };
+        // SAFETY: `token` was opened by `OpenProcessToken` and is closed once.
+        let _ = unsafe { CloseHandle(token) };
+        if ok == 0 {
+            return None;
+        }
+
+        // SAFETY: `GetTokenInformation(TokenUser)` initialized a `TOKEN_USER` prefix in `buf`.
+        let token_user = unsafe { ptr::read_unaligned(buf.as_ptr().cast::<TOKEN_USER>()) };
+        let sid_ptr = token_user.User.Sid;
+        if sid_ptr.is_null() {
+            return None;
+        }
+        // SAFETY: `sid_ptr` points to a valid SID inside `buf`.
+        let sid_len_u32 = unsafe { GetLengthSid(sid_ptr) };
+        let sid_len = usize::try_from(sid_len_u32).ok()?;
+        // SAFETY: `sid_ptr` points to `sid_len` readable bytes inside `buf`.
+        let sid_slice = unsafe { std::slice::from_raw_parts(sid_ptr.cast::<u8>(), sid_len) };
+        Some(sid_slice.to_vec())
     }
 }
 

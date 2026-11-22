@@ -12,6 +12,8 @@ import java.util.regex.Pattern;
  * event lines (converting common Linux evdev type/code symbols to numeric codes).
  */
 public final class GeteventParser {
+    /** PROTOCOL.md section 3.8: {@code raw_line} is capped at 256 UTF-8 bytes (never mid-codepoint). */
+    public static final int MAX_RAW_LINE_UTF8_BYTES = 256;
     private static final Pattern ADD_DEVICE_PATTERN = Pattern.compile("^add device \\d+:\\s*(/dev/input/\\S+)");
     // Matches both multi-device lines: "[  123.456789] /dev/input/event2: EV_ABS  ABS_MT_POSITION_X  00000123"
     // and single-device lines:         "[  123.456789] EV_ABS  ABS_MT_POSITION_X  00000123"
@@ -132,7 +134,7 @@ public final class GeteventParser {
         int evCode = parseCode(m.group(5), EV_CODES);
         int evValue = parseEventValue(m.group(6));
 
-        String cappedRaw = trimmed.length() > 256 ? trimmed.substring(0, 256) : trimmed;
+        String cappedRaw = PayloadCodec.truncateUtf8(trimmed, MAX_RAW_LINE_UTF8_BYTES);
         return new PayloadCodec.TouchEvent(
                 readBoottimeNs, sec, usec, evType, evCode, evValue, devicePath, cappedRaw);
     }

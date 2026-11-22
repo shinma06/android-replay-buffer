@@ -52,8 +52,11 @@ public final class StreamHealthTracker {
             return;
         }
         active[streamId] = true;
-        emittedSeq[streamId] = seq & 0xFFFFFFFFL;
-        if (ptsNs > 0) {
+        long masked = seq & 0xFFFFFFFFL;
+        if (masked != 0L && masked > emittedSeq[streamId]) {
+            emittedSeq[streamId] = masked;
+        }
+        if (ptsNs > 0 && ptsNs > lastPtsNs[streamId]) {
             lastPtsNs[streamId] = ptsNs;
         }
     }

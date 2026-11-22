@@ -457,8 +457,68 @@ public final class PayloadCodec {
 
     // ---------------- Helpers ----------------
 
+    public static final int MAX_STR16_BYTES = 65535;
+
     private static String nonNull(String s) {
         return s != null ? s : "";
+    }
+
+    /**
+     * Truncates {@code s} to at most {@code maxUtf8Bytes} UTF-8 bytes without ever
+     * splitting a multi-byte UTF-8 codepoint.
+     */
+    public static byte[] truncateUtf8Bytes(String s, int maxUtf8Bytes) {
+        byte[] bytes = nonNull(s).getBytes(StandardCharsets.UTF_8);
+        if (maxUtf8Bytes <= 0) {
+            return new byte[0];
+        }
+        if (bytes.length <= maxUtf8Bytes) {
+            return bytes;
+        }
+        int len = maxUtf8Bytes;
+        // Back up across any UTF-8 continuation bytes (10xxxxxx) and the leading byte
+        // of the codepoint that straddles `maxUtf8Bytes`.
+        while (len > 0 && (bytes[len] & 0xC0) == 0x80) {
+            len--;
+        }
+        byte[] out = new byte[len];
+        System.arraycopy(bytes, 0, out, 0, len);
+        return out;
+    }
+
+    /**
+     * Returns {@code s} truncated strictly on a UTF-8 codepoint boundary to at most
+     * {@code maxUtf8Bytes} encoded UTF-8 bytes.
+     */
+    public static String truncateUtf8(String s, int maxUtf8Bytes) {
+        String safe = nonNull(s);
+        byte[] bytes = safe.getBytes(StandardCharsets.UTF_8);
+        if (bytes.length <= maxUtf8Bytes) {
+            return safe;
+        }
+        return new String(truncateUtf8Bytes(safe, maxUtf8Bytes), StandardCharsets.UTF_8);
+    }
+
+    /**
+     * Returns {@code true} if {@code s} exceeds {@code maxUtf8Bytes} when encoded as UTF-8.
+     */
+    public static boolean exceedsUtf8Bytes(String s, int maxUtf8Bytes) {
+        return nonNull(s).getBytes(StandardCharsets.UTF_8).length > maxUtf8Bytes;
+    }
+
+    /**
+     * Returns {@code true} if any of the given strings would be truncated by {@code putStr16}.
+     */
+    public static boolean wouldTruncateStr16(String... values) {
+        if (values == null) {
+            return false;
+        }
+        for (String v : values) {
+            if (exceedsUtf8Bytes(v, MAX_STR16_BYTES)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static final class Writer {
@@ -497,10 +557,9 @@ public final class PayloadCodec {
         }
 
         void putStr16(String s) {
-            byte[] bytes = nonNull(s).getBytes(StandardCharsets.UTF_8);
-            int len = Math.min(bytes.length, 65535);
-            putU16(len);
-            out.write(bytes, 0, len);
+            byte[] bytes = truncateUtf8Bytes(s, MAX_STR16_BYTES);
+            putU16(bytes.length);
+            out.write(bytes, 0, bytes.length);
         }
 
         byte[] toByteArray() {
