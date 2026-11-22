@@ -85,20 +85,64 @@ impl LocalIpcStream {
         &self.endpoint
     }
 
-    /// Sets an optional read timeout on the stream where supported by the OS.
+    /// Creates a new independently owned handle to the same underlying local
+    /// IPC connection so callers can read and write on separate threads across
+    /// all supported operating systems.
+    ///
+    /// On Unix this calls `UnixStream::try_clone`; on Windows this duplicates
+    /// the Named Pipe handle via `DuplicateHandle`.
     ///
     /// # Errors
     ///
-    /// Returns [`OsError::Ipc`] if configuring the timeout fails.
+    /// Returns [`OsError::Ipc`] if duplicating the underlying OS socket or
+    /// pipe handle fails.
+    pub fn try_clone(&self) -> Result<Self, OsError> {
+        let inner = self.inner.try_clone(&self.endpoint)?;
+        Ok(Self {
+            inner,
+            endpoint: self.endpoint.clone(),
+        })
+    }
+
+    /// Waits for the peer to read all buffered outbound bytes before closing.
+    ///
+    /// On Windows this invokes `FlushFileBuffers` explicitly (unlike
+    /// [`Write::flush`], which is a non-blocking no-op to avoid bidirectional
+    /// JSON-RPC deadlocks). On Unix this delegates to `UnixStream::flush`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OsError::Ipc`] if draining the transport fails.
+    pub fn drain(&mut self) -> Result<(), OsError> {
+        self.inner.drain(&self.endpoint)
+    }
+
+    /// Sets an optional read timeout on the stream where supported by the OS.
+    ///
+    /// On Windows synchronous Named Pipes, setting a finite (`Some(_)`)
+    /// timeout is unsupported and returns [`OsError::Unsupported`] rather than
+    /// silently ignoring the timeout.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OsError::Unsupported`] if the host OS does not support
+    /// per-call read timeouts on this transport, or [`OsError::Ipc`] if
+    /// configuring the timeout fails.
     pub fn set_read_timeout(&self, timeout: Option<Duration>) -> Result<(), OsError> {
         self.inner.set_read_timeout(timeout, &self.endpoint)
     }
 
     /// Sets an optional write timeout on the stream where supported by the OS.
     ///
+    /// On Windows synchronous Named Pipes, setting a finite (`Some(_)`)
+    /// timeout is unsupported and returns [`OsError::Unsupported`] rather than
+    /// silently ignoring the timeout.
+    ///
     /// # Errors
     ///
-    /// Returns [`OsError::Ipc`] if configuring the timeout fails.
+    /// Returns [`OsError::Unsupported`] if the host OS does not support
+    /// per-call write timeouts on this transport, or [`OsError::Ipc`] if
+    /// configuring the timeout fails.
     pub fn set_write_timeout(&self, timeout: Option<Duration>) -> Result<(), OsError> {
         self.inner.set_write_timeout(timeout, &self.endpoint)
     }
@@ -216,6 +260,7 @@ pub fn read_frame_line(
         if line_bytes.len().saturating_add(available.len()) > max_line_bytes {
             let len = available.len();
             reader.consume(len);
+            discard_until_newline(reader)?;
             return Err(OsError::FrameTooLarge {
                 max_bytes: max_line_bytes,
             });
@@ -232,6 +277,32 @@ pub fn read_frame_line(
 
     let text = String::from_utf8(line_bytes).map_err(|source| OsError::InvalidUtf8 { source })?;
     Ok(Some(text))
+}
+
+/// Discards all remaining bytes of an oversized line through the next `\n` (or
+/// EOF) so trailing bytes can never be parsed as a subsequent JSON-RPC frame.
+fn discard_until_newline(reader: &mut impl BufRead) -> Result<(), OsError> {
+    loop {
+        let available = match reader.fill_buf() {
+            Ok(buf) => buf,
+            Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
+            Err(source) => {
+                return Err(OsError::Io {
+                    operation: "drain_oversized_frame_line",
+                    source,
+                });
+            }
+        };
+        if available.is_empty() {
+            return Ok(());
+        }
+        if let Some(newline_idx) = available.iter().position(|&b| b == b'\n') {
+            reader.consume(newline_idx + 1);
+            return Ok(());
+        }
+        let len = available.len();
+        reader.consume(len);
+    }
 }
 
 #[cfg(unix)]
@@ -387,6 +458,23 @@ mod imp {
             Ok(Self { stream })
         }
 
+        pub(super) fn try_clone(&self, endpoint: &Path) -> Result<Self, OsError> {
+            let stream = self.stream.try_clone().map_err(|source| OsError::Ipc {
+                operation: "try_clone",
+                endpoint: endpoint.display().to_string(),
+                source,
+            })?;
+            Ok(Self { stream })
+        }
+
+        pub(super) fn drain(&mut self, endpoint: &Path) -> Result<(), OsError> {
+            self.stream.flush().map_err(|source| OsError::Ipc {
+                operation: "drain",
+                endpoint: endpoint.display().to_string(),
+                source,
+            })
+        }
+
         pub(super) fn set_read_timeout(
             &self,
             timeout: Option<Duration>,
@@ -431,26 +519,38 @@ mod imp {
 
 #[cfg(target_os = "windows")]
 mod imp {
-    use std::ffi::OsStr;
+    use std::ffi::{OsStr, c_void};
     use std::io;
+    use std::mem::size_of;
     use std::os::windows::ffi::OsStrExt;
     use std::path::Path;
     use std::ptr;
-    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
     use windows_sys::Win32::Foundation::{
-        CloseHandle, ERROR_BROKEN_PIPE, ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED, GENERIC_READ,
-        GENERIC_WRITE, GetLastError, HANDLE, INVALID_HANDLE_VALUE,
+        CloseHandle, DUPLICATE_SAME_ACCESS, DuplicateHandle, ERROR_BROKEN_PIPE, ERROR_PIPE_BUSY,
+        ERROR_PIPE_CONNECTED, GENERIC_ALL, GENERIC_READ, GENERIC_WRITE, GetLastError, HANDLE,
+        INVALID_HANDLE_VALUE,
+    };
+    use windows_sys::Win32::Security::{
+        ACCESS_ALLOWED_ACE, ACL, ACL_REVISION, AddAccessAllowedAce, EqualSid, GetLengthSid,
+        GetTokenInformation, InitializeAcl, InitializeSecurityDescriptor, PSID,
+        SECURITY_ATTRIBUTES, SECURITY_DESCRIPTOR, SetSecurityDescriptorDacl, TOKEN_QUERY,
+        TOKEN_USER, TokenUser,
     };
     use windows_sys::Win32::Storage::FileSystem::{
         CreateFileW, FILE_FLAG_FIRST_PIPE_INSTANCE, FlushFileBuffers, OPEN_EXISTING,
-        PIPE_ACCESS_DUPLEX, ReadFile, WriteFile,
+        PIPE_ACCESS_DUPLEX, ReadFile, SECURITY_IDENTIFICATION, SECURITY_SQOS_PRESENT, WriteFile,
     };
     use windows_sys::Win32::System::Pipes::{
-        ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, PIPE_READMODE_BYTE,
-        PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
-        WaitNamedPipeW,
+        ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, GetNamedPipeServerProcessId,
+        PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES,
+        PIPE_WAIT, WaitNamedPipeW,
+    };
+    use windows_sys::Win32::System::Threading::{
+        GetCurrentProcess, OpenProcess, OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION,
     };
 
     use crate::error::OsError;
@@ -459,11 +559,15 @@ mod imp {
     const PIPE_BUFFER_BYTES: u32 = 64 * 1024;
     const PIPE_CONNECT_WAIT_MS: u32 = 2_000;
     const PIPE_CONNECT_RETRIES: usize = 3;
+    const SECURITY_DESCRIPTOR_REVISION_1: u32 = 1;
 
     #[derive(Debug)]
     struct OwnedPipeHandle {
         raw: HANDLE,
-        is_server_instance: bool,
+        /// Shared reference count across `try_clone()`d handles of a server
+        /// pipe instance so `DisconnectNamedPipe` runs only when the final
+        /// clone drops. `None` for client handles.
+        server_refs: Option<Arc<AtomicUsize>>,
     }
 
     // SAFETY: Windows pipe `HANDLE`s are kernel object handles that are not tied
@@ -472,13 +576,176 @@ mod imp {
 
     impl Drop for OwnedPipeHandle {
         fn drop(&mut self) {
-            if self.is_server_instance {
-                // SAFETY: `self.raw` is a valid server-side named pipe handle.
+            if let Some(refs) = &self.server_refs
+                && refs.fetch_sub(1, Ordering::AcqRel) == 1
+            {
+                // SAFETY: `self.raw` is the last live handle to a server-side
+                // named pipe instance.
                 let _ = unsafe { DisconnectNamedPipe(self.raw) };
             }
             // SAFETY: `self.raw` is a valid owned Windows handle closed exactly once.
             let _ = unsafe { CloseHandle(self.raw) };
         }
+    }
+
+    struct OwnedTokenBuf {
+        _buf: Vec<u8>,
+        sid: PSID,
+    }
+
+    fn query_process_user_sid(proc_handle: HANDLE) -> io::Result<OwnedTokenBuf> {
+        let mut token: HANDLE = ptr::null_mut();
+        // SAFETY: `proc_handle` is a valid process handle and `token` is writable stack storage.
+        let ok = unsafe { OpenProcessToken(proc_handle, TOKEN_QUERY, &raw mut token) };
+        if ok == 0 || token.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+
+        let mut needed: u32 = 0;
+        // SAFETY: Passing a null output buffer queries the required byte size.
+        let _ =
+            unsafe { GetTokenInformation(token, TokenUser, ptr::null_mut(), 0, &raw mut needed) };
+        let buf_len = usize::try_from(needed).unwrap_or(0);
+        if buf_len < size_of::<TOKEN_USER>() {
+            // SAFETY: `token` was opened by `OpenProcessToken` and is closed once.
+            let _ = unsafe { CloseHandle(token) };
+            return Err(io::Error::other(
+                "GetTokenInformation returned invalid length",
+            ));
+        }
+
+        let mut buf = vec![0_u8; buf_len];
+        // SAFETY: `buf` is writable for `needed` bytes and `token` is valid.
+        let ok = unsafe {
+            GetTokenInformation(
+                token,
+                TokenUser,
+                buf.as_mut_ptr().cast::<c_void>(),
+                needed,
+                &raw mut needed,
+            )
+        };
+        // SAFETY: `token` was opened by `OpenProcessToken` and is closed once.
+        let _ = unsafe { CloseHandle(token) };
+        if ok == 0 {
+            return Err(io::Error::last_os_error());
+        }
+
+        // SAFETY: `GetTokenInformation(TokenUser)` initialized a `TOKEN_USER` prefix in `buf`.
+        let token_user = unsafe { ptr::read_unaligned(buf.as_ptr().cast::<TOKEN_USER>()) };
+        let sid = token_user.User.Sid;
+        if sid.is_null() {
+            return Err(io::Error::other("process token contained null user SID"));
+        }
+        Ok(OwnedTokenBuf { _buf: buf, sid })
+    }
+
+    fn query_current_user_sid() -> io::Result<OwnedTokenBuf> {
+        // SAFETY: `GetCurrentProcess` returns a pseudo-handle that does not need closing.
+        let current = unsafe { GetCurrentProcess() };
+        query_process_user_sid(current)
+    }
+
+    struct OwnerOnlySecurity {
+        _token: OwnedTokenBuf,
+        _acl_storage: Vec<u64>,
+        descriptor: SECURITY_DESCRIPTOR,
+    }
+
+    impl OwnerOnlySecurity {
+        fn build() -> io::Result<Self> {
+            let token = query_current_user_sid()?;
+            // SAFETY: `token.sid` points to a valid SID owned by `token._buf`.
+            let sid_len_u32 = unsafe { GetLengthSid(token.sid) };
+            let sid_len = usize::try_from(sid_len_u32)
+                .map_err(|_| io::Error::other("SID length overflowed usize"))?;
+            let acl_bytes = size_of::<ACL>()
+                .saturating_add(size_of::<ACCESS_ALLOWED_ACE>())
+                .saturating_add(sid_len);
+            let acl_words = acl_bytes.div_ceil(size_of::<u64>());
+            let mut acl_storage = vec![0_u64; acl_words];
+            let acl_len_u32 = u32::try_from(acl_words.saturating_mul(size_of::<u64>()))
+                .map_err(|_| io::Error::other("ACL size overflowed u32"))?;
+            let acl_ptr = acl_storage.as_mut_ptr().cast::<ACL>();
+
+            // SAFETY: `acl_ptr` is 8-byte aligned and points to `acl_len_u32` writable bytes.
+            let init_acl_ok = unsafe { InitializeAcl(acl_ptr, acl_len_u32, ACL_REVISION) };
+            if init_acl_ok == 0 {
+                return Err(io::Error::last_os_error());
+            }
+
+            // SAFETY: `acl_ptr` is an initialized ACL large enough for one ACE carrying `token.sid`.
+            let add_ace_ok =
+                unsafe { AddAccessAllowedAce(acl_ptr, ACL_REVISION, GENERIC_ALL, token.sid) };
+            if add_ace_ok == 0 {
+                return Err(io::Error::last_os_error());
+            }
+
+            // SAFETY: `SECURITY_DESCRIPTOR` is a C POD struct initialized below before use.
+            let mut descriptor: SECURITY_DESCRIPTOR = unsafe { std::mem::zeroed() };
+            let sd_ptr = (&raw mut descriptor).cast::<c_void>();
+            // SAFETY: `sd_ptr` points to writable `SECURITY_DESCRIPTOR` storage.
+            let init_sd_ok =
+                unsafe { InitializeSecurityDescriptor(sd_ptr, SECURITY_DESCRIPTOR_REVISION_1) };
+            if init_sd_ok == 0 {
+                return Err(io::Error::last_os_error());
+            }
+
+            // SAFETY: `sd_ptr` is an initialized security descriptor and `acl_ptr`
+            // remains valid as long as `_acl_storage` is alive.
+            let set_dacl_ok = unsafe { SetSecurityDescriptorDacl(sd_ptr, 1, acl_ptr, 0) };
+            if set_dacl_ok == 0 {
+                return Err(io::Error::last_os_error());
+            }
+
+            Ok(Self {
+                _token: token,
+                _acl_storage: acl_storage,
+                descriptor,
+            })
+        }
+
+        fn attributes(&mut self) -> SECURITY_ATTRIBUTES {
+            let n_length = u32::try_from(size_of::<SECURITY_ATTRIBUTES>()).unwrap_or(0);
+            SECURITY_ATTRIBUTES {
+                nLength: n_length,
+                lpSecurityDescriptor: (&raw mut self.descriptor).cast::<c_void>(),
+                bInheritHandle: 0,
+            }
+        }
+    }
+
+    fn verify_pipe_server_owned_by_current_user(pipe: HANDLE) -> io::Result<()> {
+        let mut pipe_owner_pid: u32 = 0;
+        // SAFETY: `pipe` is a connected client pipe handle and `pipe_owner_pid` is stack storage.
+        let ok = unsafe { GetNamedPipeServerProcessId(pipe, &raw mut pipe_owner_pid) };
+        if ok == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: Opening server process with limited query rights is safe for any PID.
+        let server_proc =
+            unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pipe_owner_pid) };
+        if server_proc.is_null() {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "cannot verify named pipe server owner process",
+            ));
+        }
+        let owner_lookup = query_process_user_sid(server_proc);
+        // SAFETY: `server_proc` was opened by `OpenProcess` and is closed exactly once.
+        let _ = unsafe { CloseHandle(server_proc) };
+        let server_sid = owner_lookup?;
+        let client_sid = query_current_user_sid()?;
+        // SAFETY: Both `client_sid.sid` and `server_sid.sid` are valid SID pointers
+        // backed by their live `OwnedTokenBuf` allocations.
+        let same_owner = unsafe { EqualSid(client_sid.sid, server_sid.sid) };
+        if same_owner == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "named pipe server belongs to a different user account",
+            ));
+        }
+        Ok(())
     }
 
     fn encode_pipe_name(path: &Path) -> Result<Vec<u16>, OsError> {
@@ -516,8 +783,11 @@ mod imp {
         };
         let pipe_mode =
             PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS;
-        // SAFETY: `wide_name` is a NUL-terminated UTF-16 string and `ptr::null()`
-        // uses the calling user's default security descriptor.
+        let mut security = OwnerOnlySecurity::build()?;
+        let sa = security.attributes();
+        // SAFETY: `wide_name` is a NUL-terminated UTF-16 string and `&raw const sa`
+        // points to a valid `SECURITY_ATTRIBUTES` backed by `security` for the
+        // duration of `CreateNamedPipeW`.
         let raw = unsafe {
             CreateNamedPipeW(
                 wide_name.as_ptr(),
@@ -527,7 +797,7 @@ mod imp {
                 PIPE_BUFFER_BYTES,
                 PIPE_BUFFER_BYTES,
                 0,
-                ptr::null(),
+                &raw const sa,
             )
         };
         if raw == INVALID_HANDLE_VALUE {
@@ -535,7 +805,7 @@ mod imp {
         }
         Ok(OwnedPipeHandle {
             raw,
-            is_server_instance: true,
+            server_refs: Some(Arc::new(AtomicUsize::new(1))),
         })
     }
 
@@ -619,7 +889,9 @@ mod imp {
         pub(super) fn connect(path: &Path) -> Result<Self, OsError> {
             let wide_name = encode_pipe_name(path)?;
             for attempt in 0..=PIPE_CONNECT_RETRIES {
-                // SAFETY: `wide_name` is a NUL-terminated UTF-16 pipe name.
+                // SAFETY: `wide_name` is a NUL-terminated UTF-16 pipe name;
+                // `SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION` prevents
+                // server-side impersonation of the client.
                 let raw = unsafe {
                     CreateFileW(
                         wide_name.as_ptr(),
@@ -627,17 +899,23 @@ mod imp {
                         0,
                         ptr::null(),
                         OPEN_EXISTING,
-                        0,
+                        SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION,
                         ptr::null_mut(),
                     )
                 };
                 if raw != INVALID_HANDLE_VALUE {
-                    return Ok(Self {
-                        handle: OwnedPipeHandle {
-                            raw,
-                            is_server_instance: false,
-                        },
-                    });
+                    let handle = OwnedPipeHandle {
+                        raw,
+                        server_refs: None,
+                    };
+                    verify_pipe_server_owned_by_current_user(handle.raw).map_err(|source| {
+                        OsError::Ipc {
+                            operation: "verify_pipe_server_owner",
+                            endpoint: path.display().to_string(),
+                            source,
+                        }
+                    })?;
+                    return Ok(Self { handle });
                 }
 
                 // SAFETY: `GetLastError` reads the calling thread's last-error slot.
@@ -662,19 +940,91 @@ mod imp {
             })
         }
 
-        pub(super) fn set_read_timeout(
-            &self,
-            _timeout: Option<Duration>,
-            _endpoint: &Path,
-        ) -> Result<(), OsError> {
+        pub(super) fn try_clone(&self, endpoint: &Path) -> Result<Self, OsError> {
+            // SAFETY: `GetCurrentProcess` returns a pseudo-handle valid for this process.
+            let current = unsafe { GetCurrentProcess() };
+            let mut duplicated: HANDLE = ptr::null_mut();
+            // SAFETY: `self.handle.raw` is a valid open pipe handle and `duplicated`
+            // is writable stack storage receiving the newly owned handle.
+            let ok = unsafe {
+                DuplicateHandle(
+                    current,
+                    self.handle.raw,
+                    current,
+                    &raw mut duplicated,
+                    0,
+                    0,
+                    DUPLICATE_SAME_ACCESS,
+                )
+            };
+            if ok == 0 || duplicated.is_null() {
+                return Err(OsError::Ipc {
+                    operation: "DuplicateHandle",
+                    endpoint: endpoint.display().to_string(),
+                    source: io::Error::last_os_error(),
+                });
+            }
+            let server_refs = self.handle.server_refs.as_ref().map(|refs| {
+                refs.fetch_add(1, Ordering::Relaxed);
+                Arc::clone(refs)
+            });
+            Ok(Self {
+                handle: OwnedPipeHandle {
+                    raw: duplicated,
+                    server_refs,
+                },
+            })
+        }
+
+        pub(super) fn drain(&mut self, endpoint: &Path) -> Result<(), OsError> {
+            // SAFETY: `self.handle.raw` is a valid open pipe handle.
+            let ok = unsafe { FlushFileBuffers(self.handle.raw) };
+            if ok == 0 {
+                return Err(OsError::Ipc {
+                    operation: "FlushFileBuffers",
+                    endpoint: endpoint.display().to_string(),
+                    source: io::Error::last_os_error(),
+                });
+            }
             Ok(())
         }
 
-        pub(super) fn set_write_timeout(
+        #[expect(
+            clippy::unused_self,
+            reason = "signature mirrors the Unix implementation selected by cfg"
+        )]
+        pub(super) fn set_read_timeout(
             &self,
-            _timeout: Option<Duration>,
+            timeout: Option<Duration>,
             _endpoint: &Path,
         ) -> Result<(), OsError> {
+            if timeout.is_some() {
+                return Err(OsError::Unsupported {
+                    operation: "set_read_timeout",
+                    reason: "Windows synchronous Named Pipes do not support per-call read timeouts"
+                        .to_owned(),
+                });
+            }
+            Ok(())
+        }
+
+        #[expect(
+            clippy::unused_self,
+            reason = "signature mirrors the Unix implementation selected by cfg"
+        )]
+        pub(super) fn set_write_timeout(
+            &self,
+            timeout: Option<Duration>,
+            _endpoint: &Path,
+        ) -> Result<(), OsError> {
+            if timeout.is_some() {
+                return Err(OsError::Unsupported {
+                    operation: "set_write_timeout",
+                    reason:
+                        "Windows synchronous Named Pipes do not support per-call write timeouts"
+                            .to_owned(),
+                });
+            }
             Ok(())
         }
 
@@ -725,12 +1075,16 @@ mod imp {
                 .map_err(|_| io::Error::other("WriteFile byte count overflowed usize"))
         }
 
+        #[expect(
+            clippy::unused_self,
+            clippy::unnecessary_wraps,
+            reason = "signature mirrors `Write::flush`, which is fallible on other transports"
+        )]
         pub(super) fn flush(&mut self) -> io::Result<()> {
-            // SAFETY: `self.handle.raw` is a valid open pipe handle.
-            let ok = unsafe { FlushFileBuffers(self.handle.raw) };
-            if ok == 0 {
-                return Err(io::Error::last_os_error());
-            }
+            // Named pipe writes already enter the kernel pipe buffer. Calling
+            // `FlushFileBuffers` here would block until the peer reads every
+            // byte, deadlocking bidirectional JSON-RPC traffic; use `drain()`
+            // explicitly when waiting for peer consumption before close.
             Ok(())
         }
     }
@@ -774,6 +1128,13 @@ mod tests {
 
     #[test]
     fn uds_round_trip_multi_message_ndjson_and_permissions() {
+        #[cfg_attr(
+            windows,
+            expect(
+                unused_variables,
+                reason = "Windows uses a named pipe, not a socket file"
+            )
+        )]
         let tmp = TestIpcDir::new("rt");
         #[cfg(unix)]
         let sock_path = tmp.path.join("run").join("arbd.sock");
@@ -968,5 +1329,97 @@ mod tests {
             b"keep me",
             "regular file contents must be untouched"
         );
+    }
+
+    #[test]
+    fn oversized_line_drains_through_newline_so_tail_is_never_parsed_as_frame() {
+        // Use a tiny BufReader capacity (8 bytes) so the oversized line spans
+        // multiple internal buffer refills before reaching '\n'.
+        let wire = b"aaaaaaaaaaaaaaaaaaaaaaaa{\"injected\":true}\n{\"valid\":1}\n";
+        let mut reader = BufReader::with_capacity(8, Cursor::new(wire));
+
+        let err = read_frame_line(&mut reader, 12)
+            .expect_err("oversized frame must return FrameTooLarge");
+        assert!(
+            matches!(err, OsError::FrameTooLarge { max_bytes: 12 }),
+            "expected FrameTooLarge(12), got {err:?}"
+        );
+
+        let next = read_frame_line(&mut reader, 64)
+            .expect("next valid frame after drained oversized line must decode")
+            .expect("expected valid frame");
+        assert_eq!(
+            next, r#"{"valid":1}"#,
+            "trailing bytes of oversized line must be drained and never parsed as a new frame"
+        );
+        assert_eq!(
+            read_frame_line(&mut reader, 64).expect("clean EOF after valid frame"),
+            None,
+            "stream must be at EOF after valid frame"
+        );
+    }
+
+    #[test]
+    fn stream_try_clone_supports_concurrent_split_reader_and_writer() {
+        #[cfg_attr(
+            windows,
+            expect(
+                unused_variables,
+                reason = "Windows uses a named pipe, not a socket file"
+            )
+        )]
+        let tmp = TestIpcDir::new("clone");
+        #[cfg(unix)]
+        let sock_path = tmp.path.join("run").join("clone.sock");
+        #[cfg(windows)]
+        let sock_path = PathBuf::from(format!(
+            r"\\.\pipe\arb-os-ipc-clone-{}-{}",
+            std::process::id(),
+            IPC_SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+
+        let listener = LocalIpcListener::bind(&sock_path).expect("bind clone test listener");
+        let server = thread::spawn(move || {
+            let stream = listener.accept().expect("accept client");
+            let mut writer = stream.try_clone().expect("server try_clone must succeed");
+            let mut reader = BufReader::new(stream);
+
+            let line = read_frame_line(&mut reader, DEFAULT_MAX_IPC_LINE_BYTES)
+                .expect("server read line")
+                .expect("expected client request");
+            write_frame_line(
+                &mut writer,
+                &format!(r#"{{"pong":{line}}}"#),
+                DEFAULT_MAX_IPC_LINE_BYTES,
+            )
+            .expect("server write reply via cloned handle");
+            writer.drain().expect("server drain must succeed");
+        });
+
+        let client = LocalIpcStream::connect(&sock_path).expect("connect clone test client");
+        let mut client_writer = client.try_clone().expect("client try_clone must succeed");
+        let mut client_reader = BufReader::new(client);
+
+        let writer_thread = thread::spawn(move || {
+            write_frame_line(
+                &mut client_writer,
+                r#"{"ping":42}"#,
+                DEFAULT_MAX_IPC_LINE_BYTES,
+            )
+            .expect("client write via cloned handle");
+        });
+
+        let reply = read_frame_line(&mut client_reader, DEFAULT_MAX_IPC_LINE_BYTES)
+            .expect("client read reply")
+            .expect("expected reply from server");
+        assert_eq!(
+            reply, r#"{"pong":{"ping":42}}"#,
+            "cloned stream reader/writer round-trip mismatch"
+        );
+
+        writer_thread
+            .join()
+            .expect("client writer thread must not panic");
+        server.join().expect("server thread must not panic");
     }
 }

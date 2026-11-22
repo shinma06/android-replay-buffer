@@ -31,6 +31,7 @@ const HEADER_REGION_BYTES: usize = RING_HEADER_BYTES + SHM_SLOT_COUNT * SLOT_HEA
 const FLAG_IS_APPROXIMATE: u32 = 1 << 0;
 const NO_PUBLISHED_SLOT: u32 = u32::MAX;
 const MAX_SEQLOCK_RETRIES: usize = 64;
+static TMP_SHM_SEQ: AtomicU64 = AtomicU64::new(1);
 
 /// Pixel memory layout of frames carried through the shared-memory ring.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -231,39 +232,52 @@ impl ShmFrameRingWriter {
         })?;
 
         let path = path.as_ref().to_path_buf();
-        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
-            fs::create_dir_all(parent).map_err(|source| OsError::Fs {
+        let file_name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .filter(|n| !n.is_empty())
+            .ok_or_else(|| OsError::InvalidArgument {
+                name: "path",
+                reason: format!(
+                    "SHM ring path `{}` must have a valid file name",
+                    path.display()
+                ),
+            })?
+            .to_owned();
+        let parent = match path.parent() {
+            Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
+            _ => PathBuf::from("."),
+        };
+        if parent != Path::new(".") {
+            fs::create_dir_all(&parent).map_err(|source| OsError::Fs {
                 operation: "create_shm_parent_dir",
-                path: parent.to_path_buf(),
+                path: parent.clone(),
                 source,
             })?;
         }
 
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(&path)
-            .map_err(|source| OsError::Fs {
-                operation: "create_shm_file",
-                path: path.clone(),
-                source,
-            })?;
+        // Never truncate an existing SHM ring file in place: attached readers
+        // would fault with SIGBUS on Unix or fail creation with
+        // ERROR_USER_MAPPED_FILE on Windows. Instead, create a fresh sibling
+        // file with O_EXCL (and atomic 0600 permissions on Unix), initialize
+        // its header, and publish it into `path`.
+        let seq = TMP_SHM_SEQ.fetch_add(1, Ordering::Relaxed);
+        let tmp_path = parent.join(format!(".{file_name}.tmp.{}.{seq}", std::process::id()));
+        let mut cleanup = TempFileGuard::new(tmp_path.clone());
 
-        set_owner_only_file_permissions(&path)?;
+        let file = create_exclusive_owner_only_file(&tmp_path)?;
 
         file.set_len(total_size_u64).map_err(|source| OsError::Fs {
             operation: "resize_shm_file",
-            path: path.clone(),
+            path: tmp_path.clone(),
             source,
         })?;
 
-        // SAFETY: `file` is freshly created and sized to `total_size`; we
-        // initialize the ring header before publishing any slot to readers.
+        // SAFETY: `file` is freshly created via O_EXCL and sized to `total_size`;
+        // we initialize the ring header before publishing the file at `path`.
         let mut mmap = unsafe { MmapMut::map_mut(&file) }.map_err(|source| OsError::Fs {
             operation: "mmap_shm_writer",
-            path: path.clone(),
+            path: tmp_path.clone(),
             source,
         })?;
 
@@ -274,6 +288,9 @@ impl ShmFrameRingWriter {
         }
 
         init_ring_headers(&mut mmap, slot_capacity)?;
+
+        publish_shm_file(&tmp_path, &path, &parent, &file_name)?;
+        cleanup.disarm();
 
         Ok(Self {
             path,
@@ -768,21 +785,118 @@ const fn align_up(value: usize, align: usize) -> Option<usize> {
     }
 }
 
-#[cfg(unix)]
-fn set_owner_only_file_permissions(path: &Path) -> Result<(), OsError> {
-    use std::fs::Permissions;
-    use std::os::unix::fs::PermissionsExt;
+struct TempFileGuard {
+    path: PathBuf,
+    armed: bool,
+}
 
-    fs::set_permissions(path, Permissions::from_mode(0o600)).map_err(|source| OsError::Fs {
-        operation: "chmod_shm_0600",
-        path: path.to_path_buf(),
+impl TempFileGuard {
+    const fn new(path: PathBuf) -> Self {
+        Self { path, armed: true }
+    }
+
+    const fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for TempFileGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = fs::remove_file(&self.path);
+        }
+    }
+}
+
+#[cfg(unix)]
+fn create_exclusive_owner_only_file(path: &Path) -> Result<File, OsError> {
+    use std::os::unix::fs::OpenOptionsExt;
+
+    OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)
+        .map_err(|source| OsError::Fs {
+            operation: "create_shm_file",
+            path: path.to_path_buf(),
+            source,
+        })
+}
+
+#[cfg(not(unix))]
+fn create_exclusive_owner_only_file(path: &Path) -> Result<File, OsError> {
+    OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(|source| OsError::Fs {
+            operation: "create_shm_file",
+            path: path.to_path_buf(),
+            source,
+        })
+}
+
+#[cfg(unix)]
+fn publish_shm_file(
+    tmp_path: &Path,
+    final_path: &Path,
+    _parent: &Path,
+    _file_name: &str,
+) -> Result<(), OsError> {
+    // POSIX rename atomically swaps the directory entry; existing readers keep
+    // their mapped old inode intact without ever encountering SIGBUS.
+    fs::rename(tmp_path, final_path).map_err(|source| OsError::Fs {
+        operation: "publish_shm_file",
+        path: final_path.to_path_buf(),
         source,
     })
 }
 
 #[cfg(not(unix))]
-fn set_owner_only_file_permissions(_path: &Path) -> Result<(), OsError> {
-    Ok(())
+fn publish_shm_file(
+    tmp_path: &Path,
+    final_path: &Path,
+    parent: &Path,
+    file_name: &str,
+) -> Result<(), OsError> {
+    // Best-effort sweep of previously retired mappings whose readers have closed.
+    let retired_prefix = format!(".{file_name}.retired.");
+    if let Ok(entries) = fs::read_dir(parent) {
+        for entry in entries.flatten() {
+            if entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| name.starts_with(&retired_prefix))
+            {
+                let _ = fs::remove_file(entry.path());
+            }
+        }
+    }
+
+    if fs::symlink_metadata(final_path).is_ok() {
+        // On Windows, replacing a file with an active memory-mapped reader fails
+        // with ERROR_USER_MAPPED_FILE, whereas moving it aside succeeds when
+        // opened with FILE_SHARE_DELETE (Rust std::fs::File default), leaving
+        // the reader's view valid until it drops.
+        let seq = TMP_SHM_SEQ.fetch_add(1, Ordering::Relaxed);
+        let retired = parent.join(format!(".{file_name}.retired.{}.{seq}", std::process::id()));
+        fs::rename(final_path, &retired).map_err(|source| OsError::Fs {
+            operation: "retire_existing_shm_file",
+            path: final_path.to_path_buf(),
+            source,
+        })?;
+        // Best-effort removal: succeeds immediately if no reader still maps it.
+        let _ = fs::remove_file(&retired);
+    }
+
+    fs::rename(tmp_path, final_path).map_err(|source| OsError::Fs {
+        operation: "publish_shm_file",
+        path: final_path.to_path_buf(),
+        source,
+    })
 }
 
 #[cfg(test)]
@@ -1042,5 +1156,109 @@ mod tests {
             matches!(err, OsError::InvalidArgument { .. }),
             "expected InvalidArgument for oversized payload, got {err:?}"
         );
+    }
+
+    #[test]
+    fn recreate_ring_at_same_path_never_invalidates_existing_mapped_reader() {
+        let tmp = TestShmDir::new("recreate-no-sigbus");
+        let shm_path = tmp.path.join("viewport-recreate.shm");
+
+        // 1. Create initial ring with 64 KiB slot capacity and publish frame 1.
+        let old_cap = 64 * 1024;
+        let mut writer1 =
+            ShmFrameRingWriter::create(&shm_path, old_cap).expect("create initial SHM ring");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let mode = fs::metadata(&shm_path)
+                .expect("stat created SHM file")
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(
+                mode, 0o600,
+                "SHM ring file must be created with owner-only 0600 permissions, got {mode:#o}"
+            );
+        }
+
+        let old_pixels = vec![0xAA_u8; old_cap];
+        writer1
+            .publish(
+                FrameDescriptor {
+                    frame_index: 10,
+                    is_approximate: false,
+                    width: 128,
+                    height: 128,
+                    stride: 512,
+                    pixel_format: PixelFormat::Bgra8,
+                    boottime_ns: 1_000_000,
+                },
+                &old_pixels,
+            )
+            .expect("publish frame on initial ring");
+
+        let reader1 = ShmFrameRingReader::open(&shm_path).expect("open reader on initial ring");
+        let mut buf1 = Vec::new();
+        let meta1 = reader1
+            .read_latest(&mut buf1)
+            .expect("initial read must succeed")
+            .expect("initial frame must be present");
+        assert_eq!(meta1.frame_index, 10, "initial frame_index mismatch");
+        assert_eq!(buf1, old_pixels, "initial pixels mismatch");
+
+        // 2. While `reader1` is still mapped, re-create the ring at the exact
+        //    same path with a MUCH SMALLER slot capacity (which would truncate
+        //    and SIGBUS `reader1` if opened in place).
+        drop(writer1);
+        let new_cap = 256;
+        let mut writer2 = ShmFrameRingWriter::create(&shm_path, new_cap)
+            .expect("re-creating SHM ring at same path while reader1 is mapped must succeed");
+        let new_pixels = vec![0xBB_u8; new_cap];
+        writer2
+            .publish(
+                FrameDescriptor {
+                    frame_index: 99,
+                    is_approximate: true,
+                    width: 8,
+                    height: 8,
+                    stride: 32,
+                    pixel_format: PixelFormat::Bgra8,
+                    boottime_ns: 2_000_000,
+                },
+                &new_pixels,
+            )
+            .expect("publish frame on replacement ring");
+
+        // 3. Touching the full 64 KiB mapping on `reader1` must NOT SIGBUS and
+        //    must still read the old ring's intact frame.
+        let mut buf1_again = Vec::new();
+        let meta1_again = reader1
+            .read_latest(&mut buf1_again)
+            .expect("reading old mapped reader after ring replacement must succeed")
+            .expect("old frame must remain intact");
+        assert_eq!(
+            meta1_again.frame_index, 10,
+            "old reader must keep seeing old ring frame_index"
+        );
+        assert_eq!(
+            buf1_again, old_pixels,
+            "old reader mapping must remain intact without SIGBUS"
+        );
+
+        // 4. A freshly opened reader observes the new ring and new slot capacity.
+        let reader2 = ShmFrameRingReader::open(&shm_path).expect("open reader on replacement ring");
+        assert_eq!(
+            reader2.slot_capacity(),
+            new_cap,
+            "new reader must see new ring slot_capacity"
+        );
+        let mut buf2 = Vec::new();
+        let meta2 = reader2
+            .read_latest(&mut buf2)
+            .expect("new reader read_latest must succeed")
+            .expect("new frame must be present");
+        assert_eq!(meta2.frame_index, 99, "new reader frame_index mismatch");
+        assert_eq!(buf2, new_pixels, "new reader pixels mismatch");
     }
 }

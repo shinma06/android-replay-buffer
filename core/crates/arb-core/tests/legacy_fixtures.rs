@@ -136,16 +136,30 @@ fn parses_real_repo_schema4_fixture_jsonl_streams_read_only() {
         Some(5_000_000_000),
         "frame 12 t_ns must be 5_000_000_000"
     );
+    // Fixture replay.json has `window_start_elapsed_ns: null`, so projecting
+    // without an origin must degrade honestly to Unanchored (never putting
+    // window-relative `t_ns` directly into `DeviceBoottime`).
     assert!(
         matches!(
             frames[0].to_time_alignment("legacy-boot", 0),
+            TimeAlignment::Unanchored {
+                reason: UncertaintyReason::LegacySentinelUnknown,
+                ..
+            }
+        ),
+        "schema 4 frame without window_start_elapsed_ns origin must project to Unanchored"
+    );
+    // When an explicit DeviceBoottime origin is supplied, `t_ns` is rebased accurately.
+    assert!(
+        matches!(
+            frames[12].to_time_alignment_with_origin("legacy-boot", Some(100_000_000_000), 0),
             TimeAlignment::Anchored {
-                boottime_ns: 0,
+                boottime_ns: 105_000_000_000,
                 half_width_ns: 0,
                 ..
             }
         ),
-        "aligned schema 4 frame must project to Anchored"
+        "aligned schema 4 frame with origin must rebase t_ns onto window_start_elapsed_ns"
     );
 
     let device_logs_text = fs::read_to_string(dir.join("logcat-device.jsonl"))

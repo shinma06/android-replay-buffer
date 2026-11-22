@@ -313,6 +313,16 @@ pub trait AlignedRecord {
 
     /// Estimated serialized payload size in bytes used for `max_unanchored_bytes` enforcement.
     fn estimated_bytes(&self) -> usize;
+
+    /// Exact sequential video frame index, when this record is a video frame.
+    ///
+    /// When present and selecting against [`WindowSpec::FrameRange`], frame
+    /// membership is decided strictly by `frame_index ∈ [in_frame_index, out_frame_index]`
+    /// within the window's `boot_id` so timestamp half-widths never leak neighbor
+    /// `in - 1` or `out + 1` frames into the trimmed output.
+    fn frame_index(&self) -> Option<u64> {
+        None
+    }
 }
 
 /// Generic record wrapper carrying an arbitrary payload alongside alignment and byte size.
@@ -353,6 +363,10 @@ impl AlignedRecord for FrameRecord {
 
     fn estimated_bytes(&self) -> usize {
         usize::try_from(self.mp4_sample_size).unwrap_or(usize::MAX)
+    }
+
+    fn frame_index(&self) -> Option<u64> {
+        Some(self.frame_index)
     }
 }
 
@@ -447,6 +461,42 @@ pub fn classify_alignment(alignment: &TimeAlignment, window: &WindowSpec) -> Mem
     }
 }
 
+/// Classifies a single [`AlignedRecord`] against `window`.
+///
+/// For video frame records (`record.frame_index().is_some()`) evaluated against
+/// [`WindowSpec::FrameRange`], same-boot frames are selected strictly by
+/// `frame_index ∈ [in_frame_index, out_frame_index]` so timestamp half-width
+/// overlap never leaks neighbor `in - 1` or `out + 1` frames into a trim. All
+/// other streams and window kinds use [`classify_alignment`].
+pub fn classify_record<T: AlignedRecord>(record: &T, window: &WindowSpec) -> Membership {
+    if let (
+        WindowSpec::FrameRange {
+            boot_id: w_boot,
+            in_frame_index,
+            out_frame_index,
+            ..
+        },
+        Some(frame_index),
+    ) = (window, record.frame_index())
+    {
+        match record.time_alignment() {
+            TimeAlignment::Anchored { boot_id, .. } | TimeAlignment::Bounded { boot_id, .. } => {
+                if boot_id != w_boot {
+                    return Membership::UncertainTime(UncertainPlacement::UnanchoredProximity);
+                }
+                if frame_index >= *in_frame_index && frame_index <= *out_frame_index {
+                    return Membership::InRange;
+                }
+                return Membership::OutOfRange;
+            }
+            TimeAlignment::Unanchored { .. } => {
+                return Membership::UncertainTime(UncertainPlacement::UnanchoredProximity);
+            }
+        }
+    }
+    classify_alignment(record.time_alignment(), window)
+}
+
 fn try_quarantine<T: AlignedRecord>(
     record: T,
     unanchored: &mut Vec<T>,
@@ -486,7 +536,7 @@ pub fn select_records<T: AlignedRecord>(
     let mut excluded_count: usize = 0;
 
     for record in records {
-        match classify_alignment(record.time_alignment(), window) {
+        match classify_record(&record, window) {
             Membership::InRange => main.push(record),
             Membership::OutOfRange => {
                 excluded_count = excluded_count.saturating_add(1);
@@ -528,32 +578,95 @@ pub fn select_records<T: AlignedRecord>(
 /// Applies the exact same selection engine to a trim operation while carrying
 /// forward existing `source_unanchored` records transparently.
 ///
-/// Existing `source_unanchored` records are never promoted into `main` and
-/// never silently dropped as `OutOfRange`; they are carried forward into the
-/// trimmed bundle's `unanchored` sidecar under `policy` caps.
+/// Existing `source_unanchored` records are quarantined FIRST before any
+/// newly-uncertain records from `source_main` consume quarantine caps, are
+/// never promoted into `main`, and are never silently dropped as `OutOfRange`.
 pub fn select_for_trim<T: AlignedRecord>(
     source_main: impl IntoIterator<Item = T>,
     source_unanchored: impl IntoIterator<Item = T>,
     frame_window: &WindowSpec,
     policy: &SelectionPolicy,
 ) -> SelectedPartition<T> {
-    let mut partition = select_records(source_main, frame_window, policy);
-    let mut unanchored_bytes: usize = partition
-        .unanchored
-        .iter()
-        .fold(0usize, |acc, rec| acc.saturating_add(rec.estimated_bytes()));
+    select_for_trim_with_truncated(source_main, source_unanchored, 0, frame_window, policy)
+}
 
+/// Variant of [`select_for_trim`] that also propagates the source bundle's
+/// prior `source_unanchored_truncated_count` into the trimmed partition.
+///
+/// Existing `source_unanchored` records are quarantined FIRST before newly
+/// uncertain records from `source_main` consume `policy` caps.
+pub fn select_for_trim_with_truncated<T: AlignedRecord>(
+    source_main: impl IntoIterator<Item = T>,
+    source_unanchored: impl IntoIterator<Item = T>,
+    source_unanchored_truncated_count: usize,
+    frame_window: &WindowSpec,
+    policy: &SelectionPolicy,
+) -> SelectedPartition<T> {
+    let ingest_min = i128::from(frame_window.ingest_start_cont_ns())
+        .min(i128::from(frame_window.ingest_end_cont_ns()));
+    let ingest_max = i128::from(frame_window.ingest_start_cont_ns())
+        .max(i128::from(frame_window.ingest_end_cont_ns()));
+    let margin = i128::from(policy.unanchored_ingest_margin_ns);
+    let prox_lo = ingest_min - margin;
+    let prox_hi = ingest_max + margin;
+
+    let mut main = Vec::new();
+    let mut unanchored = Vec::new();
+    let mut unanchored_bytes: usize = 0;
+    let mut unanchored_truncated_count: usize = source_unanchored_truncated_count;
+    let mut excluded_count: usize = 0;
+
+    // 1. Carry forward existing source unanchored sidecar records FIRST so
+    //    newly-uncertain records cannot evict them under quarantine caps.
     for record in source_unanchored {
         try_quarantine(
             record,
-            &mut partition.unanchored,
+            &mut unanchored,
             &mut unanchored_bytes,
-            &mut partition.unanchored_truncated_count,
+            &mut unanchored_truncated_count,
             policy,
         );
     }
 
-    partition
+    // 2. Partition `source_main` using the exact same classifier as save.
+    for record in source_main {
+        match classify_record(&record, frame_window) {
+            Membership::InRange => main.push(record),
+            Membership::OutOfRange => {
+                excluded_count = excluded_count.saturating_add(1);
+            }
+            Membership::UncertainTime(UncertainPlacement::PartialOverlap) => {
+                try_quarantine(
+                    record,
+                    &mut unanchored,
+                    &mut unanchored_bytes,
+                    &mut unanchored_truncated_count,
+                    policy,
+                );
+            }
+            Membership::UncertainTime(UncertainPlacement::UnanchoredProximity) => {
+                let ingest = i128::from(record.pc_ingest_cont_ns());
+                if ingest >= prox_lo && ingest <= prox_hi {
+                    try_quarantine(
+                        record,
+                        &mut unanchored,
+                        &mut unanchored_bytes,
+                        &mut unanchored_truncated_count,
+                        policy,
+                    );
+                } else {
+                    excluded_count = excluded_count.saturating_add(1);
+                }
+            }
+        }
+    }
+
+    SelectedPartition {
+        main,
+        unanchored,
+        unanchored_truncated_count,
+        excluded_count,
+    }
 }
 
 /// Outcome of evaluating boundary drain completion for a single active stream.
@@ -829,6 +942,118 @@ mod tests {
             evaluate_stream_drain(100, None, 500, &policy),
             DrainOutcome::TimedOutTailIncomplete,
             "reaching drain_timeout_ms marks tail incomplete"
+        );
+    }
+
+    #[test]
+    fn regression_frame_range_selects_frames_strictly_by_frame_index_ignoring_half_width_leak() {
+        use crate::bundle::FrameRecord;
+
+        // 5 frames spaced 33 ms apart, each with ±40 ms half_width_ns (> 33 ms period!).
+        // Timestamp-only classification would leak frame 0 (in - 1) and frame 4 (out + 1)
+        // into a trim of [1, 3].
+        let frames: Vec<FrameRecord> = (0_u64..5)
+            .map(|idx| {
+                let bt =
+                    100_000_000_000_i64 + i64::try_from(idx).expect("idx fits i64") * 33_000_000;
+                FrameRecord {
+                    frame_index: idx,
+                    boot_id: "boot-1".into(),
+                    pts_device_mono_ns: bt,
+                    pc_ingest_cont_ns: bt,
+                    alignment: TimeAlignment::Anchored {
+                        boot_id: "boot-1".into(),
+                        boottime_ns: bt,
+                        half_width_ns: 40_000_000,
+                        semantics: TimestampSemantics::VideoEncoderInputEstimate,
+                    },
+                    is_keyframe: idx == 0,
+                    gop_id: 0,
+                    mp4_sample_offset: idx * 1024,
+                    mp4_sample_size: 1024,
+                }
+            })
+            .collect();
+
+        let window =
+            WindowSpec::from_frame_indices(&frames, 1, 3).expect("valid trim range [1, 3]");
+        let trimmed = select_for_trim(frames, Vec::new(), &window, &SelectionPolicy::default());
+        let selected_indices: Vec<u64> = trimmed.main.iter().map(|f| f.frame_index).collect();
+        assert_eq!(
+            selected_indices,
+            vec![1, 2, 3],
+            "FrameRange must select FrameRecords strictly by frame_index ∈ [1, 3] without leaking neighbor frames"
+        );
+        assert_eq!(
+            trimmed.excluded_count, 2,
+            "neighbor frames 0 and 4 must be excluded"
+        );
+    }
+
+    #[test]
+    fn regression_trim_quarantines_source_unanchored_first_and_propagates_truncated_count() {
+        let window = WindowSpec::FrameRange {
+            boot_id: "boot-1".into(),
+            in_frame_index: 10,
+            out_frame_index: 20,
+            start_boottime_ns: 110_000_000_000,
+            end_boottime_ns: 120_000_000_000,
+            ingest_start_cont_ns: 1_110_000_000_000,
+            ingest_end_cont_ns: 1_120_000_000_000,
+        };
+        let policy = SelectionPolicy {
+            unanchored_ingest_margin_ns: 2_000_000_000,
+            max_unanchored_records: 2,
+            max_unanchored_bytes: 1024,
+            drain_timeout_ms: 500,
+        };
+
+        // 3 newly-uncertain (PartialOverlap) records in source_main.
+        let source_main: Vec<TimestampedRecord<&str>> = ["new-1", "new-2", "new-3"]
+            .into_iter()
+            .map(|label| TimestampedRecord {
+                payload: label,
+                alignment: TimeAlignment::Bounded {
+                    boot_id: "boot-1".into(),
+                    min_boottime_ns: 105_000_000_000,
+                    max_boottime_ns: 112_000_000_000,
+                    reason: UncertaintyReason::DeviceWallJumpSpanned,
+                },
+                pc_ingest_cont_ns: 1_112_000_000_000,
+                estimated_bytes: 64,
+            })
+            .collect();
+
+        // 2 pre-existing source unanchored sidecar records (must NOT be evicted by new-1..new-3).
+        let source_unanchored: Vec<TimestampedRecord<&str>> = ["src-a", "src-b"]
+            .into_iter()
+            .map(|label| TimestampedRecord {
+                payload: label,
+                alignment: TimeAlignment::Unanchored {
+                    pc_ingest_cont_ns: 1_100_000_000_000,
+                    reason: UncertaintyReason::NoClockAnchor,
+                },
+                pc_ingest_cont_ns: 1_100_000_000_000,
+                estimated_bytes: 64,
+            })
+            .collect();
+
+        let trimmed = super::select_for_trim_with_truncated(
+            source_main,
+            source_unanchored,
+            7,
+            &window,
+            &policy,
+        );
+        let kept: Vec<&str> = trimmed.unanchored.iter().map(|r| r.payload).collect();
+        assert_eq!(
+            kept,
+            vec!["src-a", "src-b"],
+            "existing source_unanchored records must be quarantined before newly-uncertain records consume caps"
+        );
+        assert_eq!(
+            trimmed.unanchored_truncated_count, 10,
+            "source bundle's prior unanchored_truncated_count (7) must be propagated plus 3 newly truncated"
         );
     }
 }

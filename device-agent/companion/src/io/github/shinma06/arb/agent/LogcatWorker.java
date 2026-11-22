@@ -11,7 +11,8 @@ import java.util.concurrent.atomic.AtomicLong;
 /**
  * Fault-isolated Stream 1 (Logcat) worker.
  *
- * <p>Spawns {@code logcat -b all -B -T 1}, stamps every binary {@code logger_entry} with
+ * <p>Spawns {@code logcat -b all -B -T 1} (respawns resume with {@code -T <sec>.<nsec>} of the
+ * last emitted entry, de-duplicating the boundary), stamps every binary {@code logger_entry} with
  * {@code device_read_boottime_ns}, periodically probes {@code logcat -b all -S} (every 5s),
  * and restarts cleanly with bounded backoff on any subprocess crash/kill without affecting
  * Stream 0 (Beacon) or Stream 2 (Input).
@@ -63,6 +64,7 @@ public final class LogcatWorker {
 
     private void runReaderLoop() {
         LoggerEntryParser parser = new LoggerEntryParser();
+        LoggerEntryParser.ResumeTracker resume = new LoggerEntryParser.ResumeTracker();
         long backoffMs = INITIAL_BACKOFF_MS;
         boolean recoveredNext = false;
 
@@ -70,8 +72,19 @@ public final class LogcatWorker {
             Process proc = null;
             try {
                 emitState(Protocol.STATE_STARTING, recoveredNext ? "respawning" : "starting");
-                proc = new ProcessBuilder("logcat", "-b", "all", "-B", "-T", "1").start();
+                // Resume from the last emitted (sec, nsec) so a respawn neither replays the
+                // previous last line nor silently skips lines written while logcat was down.
+                // `-T 1` is used only when nothing has been emitted yet.
+                resume.beginResume();
+                String tArg = resume.nextTArgument();
+                proc = new ProcessBuilder("logcat", "-b", "all", "-B", "-T", tArg).start();
                 activeProcess = proc;
+                // stop() may have run between start() and the assignment above, in which case
+                // it saw activeProcess == null and could not destroy this child.
+                if (!running.get()) {
+                    emitState(Protocol.STATE_STOPPED, "shutdown");
+                    return;
+                }
 
                 emitState(Protocol.STATE_RUNNING, recoveredNext ? "restarted" : "started");
                 backoffMs = INITIAL_BACKOFF_MS;
@@ -79,6 +92,14 @@ public final class LogcatWorker {
                 BufferedInputStream bin = new BufferedInputStream(proc.getInputStream(), 16384);
                 PayloadCodec.LogRecord rec;
                 while (running.get() && (rec = parser.readNext(bin, clock)) != null) {
+                    LoggerEntryParser.ResumeTracker.Decision decision = resume.evaluate(rec);
+                    if (decision == LoggerEntryParser.ResumeTracker.Decision.SKIP_DUPLICATE) {
+                        continue;
+                    }
+                    if (decision == LoggerEntryParser.ResumeTracker.Decision.EMIT_WITH_GAP) {
+                        // The boundary entry was evicted from the ring before respawn: real loss.
+                        emitOverflowGap("resume_boundary_evicted:T=" + tArg);
+                    }
                     int flags = recoveredNext ? Protocol.FLAG_RECOVERED : Protocol.FLAG_NONE;
                     recoveredNext = false;
                     long seq = writer.writeFrame(
@@ -86,8 +107,10 @@ public final class LogcatWorker {
                             Protocol.MSG_LOG_RECORD,
                             flags,
                             PayloadCodec.encodeLogRecord(rec));
-                    totalRecordsEmitted.incrementAndGet();
-                    health.recordEmit(Protocol.STREAM_LOGCAT, seq, rec.deviceReadBoottimeNs);
+                    if (seq != 0L) {
+                        totalRecordsEmitted.incrementAndGet();
+                        health.recordEmit(Protocol.STREAM_LOGCAT, seq, rec.deviceReadBoottimeNs);
+                    }
                 }
 
                 if (!running.get()) {
@@ -98,7 +121,7 @@ public final class LogcatWorker {
                 int exitCode = waitExitQuietly(proc);
                 String reason = "process_exit:" + exitCode;
                 emitState(Protocol.STATE_ERROR, reason);
-                emitOverflowGap(reason);
+                emitGapIfUnresumable(resume, reason);
             } catch (IOException ioe) {
                 if (!running.get()) {
                     emitState(Protocol.STATE_STOPPED, "shutdown");
@@ -106,14 +129,14 @@ public final class LogcatWorker {
                 }
                 String reason = "io_error:" + safe(ioe.getMessage());
                 emitState(Protocol.STATE_ERROR, reason);
-                emitOverflowGap(reason);
+                emitGapIfUnresumable(resume, reason);
             } catch (Throwable t) {
                 if (!running.get()) {
                     return;
                 }
                 String reason = "error:" + t.getClass().getSimpleName() + ":" + safe(t.getMessage());
                 emitState(Protocol.STATE_ERROR, reason);
-                emitOverflowGap(reason);
+                emitGapIfUnresumable(resume, reason);
             } finally {
                 if (proc != null) {
                     proc.destroy();
@@ -197,6 +220,17 @@ public final class LogcatWorker {
         return snap;
     }
 
+    /**
+     * Without a resume timestamp the respawn falls back to {@code -T 1}, so lines written while
+     * logcat was down are lost: report the gap. With a timestamp the respawn resumes exactly and
+     * a gap is only reported if the boundary entry turns out to be evicted.
+     */
+    private void emitGapIfUnresumable(LoggerEntryParser.ResumeTracker resume, String reason) {
+        if (!resume.hasTimestamp()) {
+            emitOverflowGap(reason);
+        }
+    }
+
     private void emitOverflowGap(String reason) {
         try {
             PayloadCodec.LogOverflowStats gap = new PayloadCodec.LogOverflowStats(
@@ -209,7 +243,7 @@ public final class LogcatWorker {
             long seq = writer.writeFrame(
                     Protocol.STREAM_LOGCAT,
                     Protocol.MSG_LOG_OVERFLOW_STATS,
-                    Protocol.FLAG_URGENT,
+                    Protocol.FLAG_URGENT | truncatedFlag(gap.detail),
                     PayloadCodec.encodeLogOverflowStats(gap));
             health.recordEmit(Protocol.STREAM_LOGCAT, seq, gap.boottimeNs);
         } catch (IOException ignored) {
@@ -226,10 +260,14 @@ public final class LogcatWorker {
             writer.writeFrame(
                     Protocol.STREAM_LOGCAT,
                     Protocol.MSG_STREAM_STATE,
-                    Protocol.FLAG_URGENT,
+                    Protocol.FLAG_URGENT | truncatedFlag(reason),
                     PayloadCodec.encodeStreamState(st));
         } catch (IOException ignored) {
         }
+    }
+
+    private static int truncatedFlag(String str16Value) {
+        return PayloadCodec.wouldTruncateStr16(str16Value) ? Protocol.FLAG_TRUNCATED : Protocol.FLAG_NONE;
     }
 
     private static int waitExitQuietly(Process p) {

@@ -234,6 +234,9 @@ pub enum UncertaintyReason {
     PartialWindowOverlap,
     /// Legacy bundle used an explicit unknown-time sentinel (`Long.MAX_VALUE` or `null`).
     LegacySentinelUnknown,
+    /// Monotonic timestamp fell outside bracketing clock triples and cannot be
+    /// safely extrapolated across potential undetected device sleep.
+    UnbracketedMonotonicExtrapolation,
 }
 
 /// Derived alignment of a raw observation onto the `DeviceBoottime` reference axis.
@@ -740,7 +743,23 @@ impl ClockTimeline {
             }
         }
 
-        // Extrapolate from the nearest triple in the same boot epoch only if fresh.
+        // At an exact single-triple sample (no adjacent bracket exists),
+        // `boottime_ns` and `monotonic_ns` were sampled simultaneously.
+        if epoch.triples.len() == 1 && epoch.triples[0].monotonic_ns == monotonic_ns {
+            return TimeAlignment::Anchored {
+                boot_id: boot_id.to_owned(),
+                boottime_ns: epoch.triples[0].boottime_ns,
+                half_width_ns: 0,
+                semantics,
+            };
+        }
+
+        // Outside the bracketing triples (before the first triple or after the
+        // last triple), NEVER extrapolate with `half_width_ns: 0`: an
+        // undetected device deep sleep could have shifted `boottime - monotonic`
+        // by an unknown amount. Degrade honestly to `Bounded` using only what is
+        // provable: `boottime - monotonic` is the accumulated suspend time, so it
+        // is `>= 0` and never decreases within a boot.
         let nearest = epoch.triples.iter().min_by_key(|triple| {
             (i128::from(triple.monotonic_ns) - i128::from(monotonic_ns)).unsigned_abs()
         });
@@ -760,17 +779,46 @@ impl ClockTimeline {
             };
         }
 
-        let mapped = i128::from(monotonic_ns) + anchor.sleep_offset_ns();
-        match i64::try_from(mapped) {
-            Ok(boottime_ns) => TimeAlignment::Anchored {
-                boot_id: boot_id.to_owned(),
-                boottime_ns,
-                half_width_ns: 0,
-                semantics,
-            },
-            Err(_) => TimeAlignment::Unanchored {
+        Self::bound_unbracketed_monotonic(epoch, boot_id, monotonic_ns, pc_ingest_cont_ns)
+    }
+
+    /// Provable `Bounded` placement for a monotonic timestamp outside every
+    /// bracketing triple pair of `epoch`.
+    fn bound_unbracketed_monotonic(
+        epoch: &BootEpochState,
+        boot_id: &str,
+        monotonic_ns: i64,
+        pc_ingest_cont_ns: i64,
+    ) -> TimeAlignment {
+        let mono = i128::from(monotonic_ns);
+        let (lo, hi) = match (epoch.triples.first(), epoch.triples.last()) {
+            // After the last triple: at least the last observed suspend offset,
+            // with no provable upper bound until the next triple arrives.
+            (_, Some(last)) if monotonic_ns >= last.monotonic_ns => {
+                (mono + last.sleep_offset_ns(), i128::from(i64::MAX))
+            }
+            // Before the first triple: suspend offset was between 0 and the
+            // first observed offset.
+            (Some(first), _) => (mono, mono + first.sleep_offset_ns()),
+            _ => {
+                return TimeAlignment::Unanchored {
+                    pc_ingest_cont_ns,
+                    reason: UncertaintyReason::NoClockAnchor,
+                };
+            }
+        };
+        match (i64::try_from(lo), i64::try_from(hi)) {
+            (Ok(min_boottime_ns), Ok(max_boottime_ns)) if min_boottime_ns <= max_boottime_ns => {
+                TimeAlignment::Bounded {
+                    boot_id: boot_id.to_owned(),
+                    min_boottime_ns,
+                    max_boottime_ns,
+                    reason: UncertaintyReason::UnbracketedMonotonicExtrapolation,
+                }
+            }
+            _ => TimeAlignment::Unanchored {
                 pc_ingest_cont_ns,
-                reason: UncertaintyReason::NoClockAnchor,
+                reason: UncertaintyReason::UnbracketedMonotonicExtrapolation,
             },
         }
     }
@@ -818,6 +866,8 @@ impl ClockTimeline {
         }
 
         // Check if `device_read_boottime_ns` lies inside an interval where a wall jump happened.
+        // Do NOT invent `before.boottime_ns` as a lower bound: a delayed logcat line
+        // could have been written arbitrarily earlier (e.g., logd buffering or replay).
         if let Some(read_bt) = device_read_boottime_ns {
             for &jump_idx in &epoch.wall_jump_indices {
                 let before = &epoch.triples[jump_idx];
@@ -825,7 +875,7 @@ impl ClockTimeline {
                 if read_bt >= before.boottime_ns && read_bt <= after.boottime_ns {
                     return TimeAlignment::Bounded {
                         boot_id: boot_id.to_owned(),
-                        min_boottime_ns: before.boottime_ns.min(read_bt),
+                        min_boottime_ns: i64::MIN,
                         max_boottime_ns: read_bt,
                         reason: UncertaintyReason::DeviceWallJumpSpanned,
                     };
@@ -862,11 +912,67 @@ impl ClockTimeline {
 
         Self::degrade_ambiguous_logcat(
             boot_id,
-            epoch,
             &candidates,
             device_read_boottime_ns,
             pc_ingest_cont_ns,
         )
+    }
+
+    /// Maps `header_epoch_ns` within a wall-stable slice of triples using the
+    /// bracketing pair (when bracketed) or the nearest triple in wall time,
+    /// returning `(mapped_boottime_ns, local_half_width_ns, min_distance_ns)`.
+    fn map_wall_in_stable_segment(
+        segment: &[DeviceClockTriple],
+        header_epoch_ns: i64,
+    ) -> Option<(i64, u64, u128)> {
+        if segment.is_empty() {
+            return None;
+        }
+
+        let header = i128::from(header_epoch_ns);
+
+        // Prefer an adjacent triple pair that brackets `header_epoch_ns`.
+        for pair in segment.windows(2) {
+            let before = &pair[0];
+            let after = &pair[1];
+            let wall_lo = before.realtime_ns.min(after.realtime_ns);
+            let wall_hi = before.realtime_ns.max(after.realtime_ns);
+            if wall_lo <= header_epoch_ns && header_epoch_ns <= wall_hi {
+                let bt_a = header - before.wall_offset_ns();
+                let bt_b = header - after.wall_offset_ns();
+                let boot_min = bt_a.min(bt_b);
+                let boot_max = bt_a.max(bt_b);
+                let span = boot_max - boot_min;
+                let mid = boot_min + span / 2;
+                let hw_i128 = (span + 1) / 2;
+                let mapped_bt = i64::try_from(mid).ok()?;
+                let half_width_ns = u64::try_from(hw_i128).unwrap_or(u64::MAX);
+                let dist_before = (i128::from(before.boottime_ns) - mid).unsigned_abs();
+                let dist_after = (i128::from(after.boottime_ns) - mid).unsigned_abs();
+                return Some((mapped_bt, half_width_ns, dist_before.min(dist_after)));
+            }
+        }
+
+        // Outside the segment's bracket: use the nearest triple in wall time
+        // and its local neighbor drift (never the entire boot's cumulative slew).
+        let (nearest_idx, nearest) = segment
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, triple)| (i128::from(triple.realtime_ns) - header).unsigned_abs())?;
+        let nearest_offset = nearest.wall_offset_ns();
+        let mapped_i128 = header - nearest_offset;
+        let mapped_bt = i64::try_from(mapped_i128).ok()?;
+
+        let mut local_drift: u128 = 0;
+        if let Some(prev) = nearest_idx.checked_sub(1).and_then(|i| segment.get(i)) {
+            local_drift = local_drift.max((prev.wall_offset_ns() - nearest_offset).unsigned_abs());
+        }
+        if let Some(next) = segment.get(nearest_idx + 1) {
+            local_drift = local_drift.max((next.wall_offset_ns() - nearest_offset).unsigned_abs());
+        }
+        let half_width_ns = u64::try_from(local_drift).unwrap_or(u64::MAX);
+        let min_distance = (i128::from(nearest.boottime_ns) - mapped_i128).unsigned_abs();
+        Some((mapped_bt, half_width_ns, min_distance))
     }
 
     fn collect_wall_segment_candidates(
@@ -894,11 +1000,11 @@ impl ClockTimeline {
                 continue;
             };
 
-            let wall_offset = first.wall_offset_ns();
-            let cand_i128 = i128::from(header_epoch_ns) - wall_offset;
-            let Ok(cand_bt) = i64::try_from(cand_i128) else {
+            let Some((cand_bt, hw, _)) = Self::map_wall_in_stable_segment(segment, header_epoch_ns)
+            else {
                 continue;
             };
+            let cand_i128 = i128::from(cand_bt);
 
             let seg_min_bt =
                 i128::from(first.boottime_ns) - i128::from(self.config.max_anchor_age_ns);
@@ -909,12 +1015,6 @@ impl ClockTimeline {
                 .is_none_or(|read_bt| cand_i128 <= i128::from(read_bt) + tolerance);
 
             if within_segment && respects_read_ceiling {
-                let max_drift = segment
-                    .iter()
-                    .map(|t| (t.wall_offset_ns() - wall_offset).unsigned_abs())
-                    .max()
-                    .unwrap_or(0);
-                let hw = u64::try_from(max_drift).unwrap_or(u64::MAX);
                 candidates.push((cand_bt, hw));
             }
         }
@@ -923,27 +1023,25 @@ impl ClockTimeline {
 
     fn degrade_ambiguous_logcat(
         boot_id: &str,
-        epoch: &BootEpochState,
         candidates: &[(i64, u64)],
         device_read_boottime_ns: Option<i64>,
         pc_ingest_cont_ns: i64,
     ) -> TimeAlignment {
         if let Some(read_bt) = device_read_boottime_ns {
-            let min_from_candidates = candidates
-                .iter()
-                .map(|(bt, _)| *bt)
-                .filter(|&bt| bt <= read_bt)
-                .min();
-            let min_from_triples = epoch
-                .triples
-                .iter()
-                .map(|t| t.boottime_ns)
-                .filter(|&bt| bt <= read_bt)
-                .min();
-            let min_bt = min_from_candidates
-                .or(min_from_triples)
-                .unwrap_or(read_bt)
-                .min(read_bt);
+            // Only use a finite lower bound when the matching wall segments
+            // themselves produced multiple valid candidates; never invent
+            // `min_from_triples` or `read_bt` as a lower bound because delayed
+            // logcat entries can predate the earliest observed triple.
+            let min_bt = if candidates.len() >= 2 {
+                candidates
+                    .iter()
+                    .map(|(bt, _)| *bt)
+                    .filter(|&bt| bt <= read_bt)
+                    .min()
+                    .unwrap_or(i64::MIN)
+            } else {
+                i64::MIN
+            };
 
             return TimeAlignment::Bounded {
                 boot_id: boot_id.to_owned(),
@@ -982,42 +1080,23 @@ impl ClockTimeline {
         pc_ingest_cont_ns: i64,
         tolerance: i128,
     ) -> TimeAlignment {
-        let Some(reference) = epoch.triples.first() else {
+        let Some((mapped_bt, half_width_ns, min_distance)) =
+            Self::map_wall_in_stable_segment(&epoch.triples, header_epoch_ns)
+        else {
             return TimeAlignment::Unanchored {
                 pc_ingest_cont_ns,
                 reason: UncertaintyReason::NoClockAnchor,
             };
         };
+        let mapped_i128 = i128::from(mapped_bt);
 
-        let wall_offset = reference.wall_offset_ns();
-        let mapped_i128 = i128::from(header_epoch_ns) - wall_offset;
-        let Ok(mapped_bt) = i64::try_from(mapped_i128) else {
-            return TimeAlignment::Unanchored {
-                pc_ingest_cont_ns,
-                reason: UncertaintyReason::NoClockAnchor,
-            };
-        };
-
-        // Ensure the mapped time is near at least one known triple (anchor freshness).
-        let min_distance = epoch
-            .triples
-            .iter()
-            .map(|t| (i128::from(t.boottime_ns) - mapped_i128).unsigned_abs())
-            .min()
-            .unwrap_or(u128::MAX);
-
+        // Enforce anchor freshness relative to the nearest/bracketing triple.
         if min_distance > u128::from(self.config.max_anchor_age_ns) {
             if let Some(read_bt) = device_read_boottime_ns {
-                let min_bt = epoch
-                    .triples
-                    .iter()
-                    .map(|t| t.boottime_ns)
-                    .filter(|&bt| bt <= read_bt)
-                    .min()
-                    .unwrap_or(read_bt);
+                // Unknown lower bound: delayed logs can predate the earliest triple.
                 return TimeAlignment::Bounded {
                     boot_id: boot_id.to_owned(),
-                    min_boottime_ns: min_bt,
+                    min_boottime_ns: i64::MIN,
                     max_boottime_ns: read_bt,
                     reason: UncertaintyReason::ClockSyncStale,
                 };
@@ -1032,28 +1111,14 @@ impl ClockTimeline {
         if let Some(read_bt) = device_read_boottime_ns
             && mapped_i128 > i128::from(read_bt) + tolerance
         {
-            let min_bt = epoch
-                .triples
-                .iter()
-                .map(|t| t.boottime_ns)
-                .filter(|&bt| bt <= read_bt)
-                .min()
-                .unwrap_or(read_bt);
+            // Unknown lower bound: we only know the log happened at or before `read_bt`.
             return TimeAlignment::Bounded {
                 boot_id: boot_id.to_owned(),
-                min_boottime_ns: min_bt,
+                min_boottime_ns: i64::MIN,
                 max_boottime_ns: read_bt,
                 reason: UncertaintyReason::DeviceWallJumpSpanned,
             };
         }
-
-        let max_drift = epoch
-            .triples
-            .iter()
-            .map(|t| (t.wall_offset_ns() - wall_offset).unsigned_abs())
-            .max()
-            .unwrap_or(0);
-        let half_width_ns = u64::try_from(max_drift).unwrap_or(u64::MAX);
 
         TimeAlignment::Anchored {
             boot_id: boot_id.to_owned(),
@@ -1374,6 +1439,253 @@ mod tests {
             e3.iter()
                 .any(|ev| ev.kind == DiscontinuityKind::ClockSyncStale),
             "anchor age > 10s must emit ClockSyncStale"
+        );
+    }
+
+    #[test]
+    fn regression_unbracketed_monotonic_never_claims_anchored_half_width_zero() {
+        let mut timeline = ClockTimeline::default();
+        let _ = timeline.ingest_device_triple(
+            DeviceClockTriple {
+                boot_id: "boot-extrap".into(),
+                boottime_ns: 10_000_000_000,
+                monotonic_ns: 10_000_000_000,
+                realtime_ns: 1_700_000_010_000_000_000,
+            },
+            10_000_000_000,
+        );
+        let _ = timeline.ingest_device_triple(
+            DeviceClockTriple {
+                boot_id: "boot-extrap".into(),
+                boottime_ns: 12_000_000_000,
+                monotonic_ns: 12_000_000_000,
+                realtime_ns: 1_700_000_012_000_000_000,
+            },
+            12_000_000_000,
+        );
+
+        // Bracketed event stays Anchored.
+        assert_eq!(
+            timeline.map_device_monotonic(
+                "boot-extrap",
+                11_000_000_000,
+                TimestampSemantics::VideoEncoderInputEstimate,
+                11_000_000_000,
+            ),
+            TimeAlignment::Anchored {
+                boot_id: "boot-extrap".into(),
+                boottime_ns: 11_000_000_000,
+                half_width_ns: 0,
+                semantics: TimestampSemantics::VideoEncoderInputEstimate,
+            },
+            "bracketed monotonic timestamp must remain Anchored"
+        );
+
+        // Post-last-triple event (e.g. after undetected device sleep!) MUST NOT claim Anchored/half_width_ns: 0.
+        let after_last = timeline.map_device_monotonic(
+            "boot-extrap",
+            13_000_000_000,
+            TimestampSemantics::VideoEncoderInputEstimate,
+            25_000_000_000,
+        );
+        assert_eq!(
+            after_last,
+            TimeAlignment::Bounded {
+                boot_id: "boot-extrap".into(),
+                min_boottime_ns: 13_000_000_000,
+                max_boottime_ns: i64::MAX,
+                reason: UncertaintyReason::UnbracketedMonotonicExtrapolation,
+            },
+            "post-last-triple monotonic event must degrade to Bounded [mono + last offset, unknown], never Anchored with half_width_ns: 0"
+        );
+        // A post-wake frame (device slept 30 s after the last triple) must not be
+        // excluded from a window that contains its true boottime.
+        let post_wake_window = crate::selection::WindowSpec::FrameRange {
+            boot_id: "boot-extrap".into(),
+            in_frame_index: 0,
+            out_frame_index: 0,
+            start_boottime_ns: 40_000_000_000,
+            end_boottime_ns: 50_000_000_000,
+            ingest_start_cont_ns: 40_000_000_000,
+            ingest_end_cont_ns: 50_000_000_000,
+        };
+        assert_ne!(
+            crate::selection::classify_alignment(&after_last, &post_wake_window),
+            crate::selection::Membership::OutOfRange,
+            "post-last-triple event must stay a candidate for windows after an undetected sleep"
+        );
+
+        // Pre-first-triple event also degrades honestly.
+        let before_first = timeline.map_device_monotonic(
+            "boot-extrap",
+            9_500_000_000,
+            TimestampSemantics::InputEventTime,
+            9_500_000_000,
+        );
+        assert_eq!(
+            before_first,
+            TimeAlignment::Bounded {
+                boot_id: "boot-extrap".into(),
+                min_boottime_ns: 9_500_000_000,
+                max_boottime_ns: 9_500_000_000,
+                reason: UncertaintyReason::UnbracketedMonotonicExtrapolation,
+            },
+            "pre-first-triple monotonic event (zero observed suspend) is bounded by [mono, mono + first offset]"
+        );
+        assert!(
+            !matches!(
+                timeline.map_device_monotonic(
+                    "boot-extrap",
+                    13_000_000_000,
+                    TimestampSemantics::InputEventTime,
+                    0
+                ),
+                TimeAlignment::Anchored { .. }
+            ),
+            "no post-last-triple event may claim Anchored"
+        );
+    }
+
+    #[test]
+    fn regression_exact_single_triple_monotonic_stays_anchored() {
+        let mut single = ClockTimeline::default();
+        let _ = single.ingest_device_triple(
+            DeviceClockTriple {
+                boot_id: "boot-one".into(),
+                boottime_ns: 50_000_000_000,
+                monotonic_ns: 40_000_000_000,
+                realtime_ns: 1_700_000_050_000_000_000,
+            },
+            50_000_000_000,
+        );
+        assert_eq!(
+            single.map_device_monotonic(
+                "boot-one",
+                40_000_000_000,
+                TimestampSemantics::InputEventTime,
+                50_000_000_000,
+            ),
+            TimeAlignment::Anchored {
+                boot_id: "boot-one".into(),
+                boottime_ns: 50_000_000_000,
+                half_width_ns: 0,
+                semantics: TimestampSemantics::InputEventTime,
+            },
+            "exact triple monotonic match must be Anchored"
+        );
+    }
+
+    #[test]
+    fn regression_logcat_wall_jump_and_stale_never_invent_false_lower_bound() {
+        let mut timeline = ClockTimeline::default();
+        let wall_base = 1_700_000_000_000_000_000_i64;
+        let _ = timeline.ingest_device_triple(
+            DeviceClockTriple {
+                boot_id: "boot-lb".into(),
+                boottime_ns: 100_000_000_000,
+                monotonic_ns: 100_000_000_000,
+                realtime_ns: wall_base + 100_000_000_000,
+            },
+            100_000_000_000,
+        );
+        let _ = timeline.ingest_device_triple(
+            DeviceClockTriple {
+                boot_id: "boot-lb".into(),
+                boottime_ns: 105_000_000_000,
+                monotonic_ns: 105_000_000_000,
+                realtime_ns: wall_base + 115_000_000_000, // +10s forward wall jump
+            },
+            105_000_000_000,
+        );
+
+        // Log read inside the jump interval could have been written long before 100s.
+        let during_jump = timeline.map_logcat_wall(
+            "boot-lb",
+            wall_base + 50_000_000_000,
+            Some(102_000_000_000),
+            102_000_000_000,
+        );
+        assert_eq!(
+            during_jump,
+            TimeAlignment::Bounded {
+                boot_id: "boot-lb".into(),
+                min_boottime_ns: i64::MIN,
+                max_boottime_ns: 102_000_000_000,
+                reason: UncertaintyReason::DeviceWallJumpSpanned,
+            },
+            "log read inside wall jump must not claim before.boottime_ns as lower bound"
+        );
+
+        // Stale logcat in a stable epoch must also use unknown lower bound (i64::MIN).
+        let mut stable = ClockTimeline::default();
+        let _ = stable.ingest_device_triple(
+            DeviceClockTriple {
+                boot_id: "boot-stale".into(),
+                boottime_ns: 100_000_000_000,
+                monotonic_ns: 100_000_000_000,
+                realtime_ns: wall_base + 100_000_000_000,
+            },
+            100_000_000_000,
+        );
+        let stale_log = stable.map_logcat_wall(
+            "boot-stale",
+            wall_base + 20_000_000_000, // 80s before triple (> 10s max_anchor_age_ns)
+            Some(101_000_000_000),
+            101_000_000_000,
+        );
+        assert_eq!(
+            stale_log,
+            TimeAlignment::Bounded {
+                boot_id: "boot-stale".into(),
+                min_boottime_ns: i64::MIN,
+                max_boottime_ns: 101_000_000_000,
+                reason: UncertaintyReason::ClockSyncStale,
+            },
+            "stale logcat must not invent first triple as lower bound"
+        );
+    }
+
+    #[test]
+    fn regression_stable_epoch_logcat_uses_local_bracketing_offset_not_first_triple() {
+        let mut timeline = ClockTimeline::default();
+        let wall_base = 1_700_000_000_000_000_000_i64;
+        // Simulate gradual NTP slew: +20 ms per 5s interval (below 50 ms jump threshold),
+        // accumulating +100 ms over 5 intervals.
+        for step in 0_i64..=5 {
+            let bt = (10 + step * 5) * 1_000_000_000;
+            let slew = step * 20_000_000;
+            let events = timeline.ingest_device_triple(
+                DeviceClockTriple {
+                    boot_id: "boot-slew".into(),
+                    boottime_ns: bt,
+                    monotonic_ns: bt,
+                    realtime_ns: wall_base + bt + slew,
+                },
+                bt,
+            );
+            assert!(
+                events.is_empty(),
+                "gradual 20ms NTP slew must not emit wall jump"
+            );
+        }
+
+        // At step 4 (bt=30s, slew=+80ms) and step 5 (bt=35s, slew=+100ms),
+        // a log written at true bt=32.5s has wall = wall_base + 32.5s + 90ms.
+        let aligned = timeline.map_logcat_wall(
+            "boot-slew",
+            wall_base + 32_500_000_000 + 90_000_000,
+            Some(33_000_000_000),
+            33_000_000_000,
+        );
+        assert_eq!(
+            aligned,
+            TimeAlignment::Anchored {
+                boot_id: "boot-slew".into(),
+                boottime_ns: 32_500_000_000,
+                half_width_ns: 10_000_000,
+                semantics: TimestampSemantics::LogcatHeaderWall,
+            },
+            "stable logcat must use local bracketing triples (+10ms local half-width, exact center) rather than first triple (+100ms drift)"
         );
     }
 }

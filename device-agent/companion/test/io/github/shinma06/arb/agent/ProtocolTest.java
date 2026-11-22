@@ -5,6 +5,9 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.nio.charset.CharacterCodingException;
+import java.nio.charset.CharsetDecoder;
+import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.Collections;
@@ -33,6 +36,12 @@ public final class ProtocolTest {
         testLoggerEntry20_24_28ByteHeaders();
         testLogcatStatsParserApi37Format();
         testGeteventParserDiscoveryAndLines();
+        testStr16TruncatesOnUtf8CodepointBoundary();
+        testGeteventRawLineCappedAt256Utf8Bytes();
+        testFrameWriterStream0PriorityAndStream1OverflowNeverBlocks();
+        testFrameWriterSurfacesTransportFailure();
+        testLogcatResumeTrackerDedupsBoundaryAndDetectsEviction();
+        testStreamHealthEmittedSeqNeverMovesBackwards();
         System.out.println("ProtocolTest: ALL " + passed + " TESTS PASSED");
     }
 
@@ -85,16 +94,25 @@ public final class ProtocolTest {
         assertEq(1L, w.writeFrame(Protocol.STREAM_LOGCAT, Protocol.MSG_LOG_RECORD, 0, new byte[1]), "stream 1 seq 1");
         assertEq(2L, w.writeFrame(Protocol.STREAM_CONTROL, Protocol.MSG_HEARTBEAT, 0, new byte[2]), "stream 0 seq 2");
         assertEq(2L, w.writeFrame(Protocol.STREAM_LOGCAT, Protocol.MSG_LOG_RECORD, 0, new byte[3]), "stream 1 seq 2");
+        try {
+            assertTrue(w.awaitDrained(5000L), "writer drains all queued frames");
+        } catch (InterruptedException ie) {
+            throw new IOException(ie);
+        }
 
         ByteArrayInputStream bais = new ByteArrayInputStream(baos.toByteArray());
         WireFrame f1 = WireFrame.readFrom(bais);
         WireFrame f2 = WireFrame.readFrom(bais);
         WireFrame f3 = WireFrame.readFrom(bais);
         WireFrame f4 = WireFrame.readFrom(bais);
-        assertEq(1L, f1.seq, "f1 seq");
-        assertEq(1L, f2.seq, "f2 seq");
-        assertEq(2L, f3.seq, "f3 seq");
-        assertEq(2L, f4.seq, "f4 seq");
+        // The writer may reorder across streams (Stream 0 has priority) but never within a stream.
+        long[] lastSeq = new long[8];
+        for (WireFrame f : new WireFrame[] {f1, f2, f3, f4}) {
+            assertEq(lastSeq[f.streamId] + 1, f.seq, "per-stream seq in order for stream " + f.streamId);
+            lastSeq[f.streamId] = f.seq;
+        }
+        assertEq(2L, lastSeq[Protocol.STREAM_CONTROL], "stream 0 frames written");
+        assertEq(2L, lastSeq[Protocol.STREAM_LOGCAT], "stream 1 frames written");
         assertTrue(WireFrame.readFrom(bais) == null, "clean EOF returns null");
         passed++;
     }
@@ -349,6 +367,250 @@ public final class ProtocolTest {
         assertTrue(syn != null, "single-device SYN_REPORT");
         assertEq(0x0000, syn.evType, "EV_SYN");
         assertEq(0x0000, syn.evCode, "SYN_REPORT");
+        passed++;
+    }
+
+    private static void assertStrictUtf8(byte[] bytes, String msg) {
+        CharsetDecoder dec = StandardCharsets.UTF_8.newDecoder()
+                .onMalformedInput(CodingErrorAction.REPORT)
+                .onUnmappableCharacter(CodingErrorAction.REPORT);
+        try {
+            dec.decode(ByteBuffer.wrap(bytes));
+        } catch (CharacterCodingException e) {
+            throw new AssertionError("Assertion failed: " + msg + " (" + e + ")");
+        }
+    }
+
+    private static String repeat(String unit, int count) {
+        StringBuilder sb = new StringBuilder(unit.length() * count);
+        for (int i = 0; i < count; i++) {
+            sb.append(unit);
+        }
+        return sb.toString();
+    }
+
+    private static void testStr16TruncatesOnUtf8CodepointBoundary() throws IOException {
+        // "あ" = 3 UTF-8 bytes, "😀" = 4 UTF-8 bytes (surrogate pair in UTF-16).
+        byte[] cut = PayloadCodec.truncateUtf8Bytes("aあ😀", 6);
+        assertEq(4, cut.length, "6-byte cap must back off to the end of 'aあ' (4 bytes), never split 😀");
+        assertEq("aあ", new String(cut, StandardCharsets.UTF_8), "truncated text");
+        assertEq("ab", PayloadCodec.truncateUtf8("ab", 10), "short string untouched");
+
+        // 1 ASCII byte + 3-byte codepoints: a naive cut at 65,535 bytes would split a codepoint.
+        String huge = "a" + repeat("あ", 30000); // 90,001 bytes
+        assertTrue(PayloadCodec.wouldTruncateStr16(huge), "huge reason would be truncated");
+        assertTrue(!PayloadCodec.wouldTruncateStr16("ok", null), "short values are not truncated");
+        PayloadCodec.StreamState st = new PayloadCodec.StreamState(
+                Protocol.STREAM_LOGCAT, Protocol.STATE_ERROR, 1, 5L, 7L, huge);
+        byte[] enc = PayloadCodec.encodeStreamState(st);
+        ByteBuffer b = ByteBuffer.wrap(enc).order(ByteOrder.LITTLE_ENDIAN);
+        b.position(1 + 1 + 2 + 8 + 4);
+        int len = b.getShort() & 0xFFFF;
+        assertEq(65_533, len, "str16 length backs off to the last whole 3-byte codepoint");
+        byte[] str = new byte[len];
+        b.get(str);
+        assertStrictUtf8(str, "truncated str16 must stay valid UTF-8 for strict host decoders");
+        PayloadCodec.StreamState out = PayloadCodec.decodeStreamState(enc);
+        assertEq(21_845, out.reason.length(), "decoded truncated reason codepoints");
+        passed++;
+    }
+
+    private static void testGeteventRawLineCappedAt256Utf8Bytes() {
+        Set<String> devices = Collections.singleton("/dev/input/event1");
+        String line = "[    45.678901] /dev/input/event1: EV_ABS       ABS_MT_POSITION_X    00000123 "
+                + repeat("é", 200); // 2-byte codepoints push the line past 256 UTF-8 bytes
+        assertTrue(PayloadCodec.exceedsUtf8Bytes(line.trim(), GeteventParser.MAX_RAW_LINE_UTF8_BYTES),
+                "test line exceeds 256 UTF-8 bytes");
+        PayloadCodec.TouchEvent ev = GeteventParser.parseEventLine(line, null, devices, 1L);
+        assertTrue(ev != null, "line parses");
+        byte[] raw = ev.rawLine.getBytes(StandardCharsets.UTF_8);
+        assertTrue(raw.length <= 256, "raw_line capped at 256 UTF-8 bytes (was " + raw.length + ")");
+        assertTrue(raw.length >= 255, "raw_line keeps as much as fits");
+        assertStrictUtf8(raw, "raw_line never splits a codepoint");
+        passed++;
+    }
+
+    /** OutputStream that blocks every write until {@link #open()} is called. */
+    private static final class GatedOutputStream extends java.io.OutputStream {
+        private final ByteArrayOutputStream sink = new ByteArrayOutputStream();
+        private final java.util.concurrent.CountDownLatch gate = new java.util.concurrent.CountDownLatch(1);
+        private final java.util.concurrent.CountDownLatch firstWriteEntered = new java.util.concurrent.CountDownLatch(1);
+
+        @Override
+        public void write(int b) throws IOException {
+            write(new byte[] {(byte) b}, 0, 1);
+        }
+
+        @Override
+        public void write(byte[] b, int off, int len) throws IOException {
+            firstWriteEntered.countDown();
+            try {
+                gate.await();
+            } catch (InterruptedException ie) {
+                throw new IOException(ie);
+            }
+            synchronized (sink) {
+                sink.write(b, off, len);
+            }
+        }
+
+        void open() {
+            gate.countDown();
+        }
+
+        byte[] bytes() {
+            synchronized (sink) {
+                return sink.toByteArray();
+            }
+        }
+    }
+
+    private static final class FixedClock implements ClockSource {
+        @Override
+        public long boottimeNs() {
+            return 4242L;
+        }
+
+        @Override
+        public long monotonicNs() {
+            return 4000L;
+        }
+
+        @Override
+        public long realtimeNs() {
+            return 1_700_000_000_000_000_000L;
+        }
+    }
+
+    private static void testFrameWriterStream0PriorityAndStream1OverflowNeverBlocks() throws Exception {
+        GatedOutputStream gated = new GatedOutputStream();
+        WireFrame.FrameWriter w = new WireFrame.FrameWriter(gated, new FixedClock(), 8, 4);
+
+        // Host back-pressure: the writer thread is stuck inside the first (Stream 1) write.
+        assertEq(1L, w.writeFrame(Protocol.STREAM_LOGCAT, Protocol.MSG_LOG_RECORD, 0, new byte[] {1}), "log 1 seq");
+        assertTrue(gated.firstWriteEntered.await(5, java.util.concurrent.TimeUnit.SECONDS), "writer thread entered write");
+
+        // Fill the Stream 1 queue (capacity 4), then burst: excess frames are dropped without blocking.
+        long start = System.nanoTime();
+        int accepted = 0;
+        int dropped = 0;
+        for (int i = 0; i < 50; i++) {
+            long seq = w.writeFrame(Protocol.STREAM_LOGCAT, Protocol.MSG_LOG_RECORD, 0, new byte[] {2});
+            if (seq == 0L) {
+                dropped++;
+            } else {
+                accepted++;
+            }
+        }
+        assertEq(4, accepted, "Stream 1 queue accepts exactly its capacity");
+        assertEq(46, dropped, "Stream 1 overflow drops (seq 0) instead of blocking");
+        assertEq(46L, w.droppedLogFrames(), "dropped counter");
+
+        // Stream 0 Heartbeat/Pong never block behind the full Stream 1 queue.
+        long hbSeq = w.writeFrame(Protocol.STREAM_CONTROL, Protocol.MSG_HEARTBEAT, 0, new byte[] {9});
+        long pongSeq = w.writeFrame(Protocol.STREAM_CONTROL, Protocol.MSG_PONG, Protocol.FLAG_URGENT, new byte[] {8});
+        long elapsedMs = (System.nanoTime() - start) / 1_000_000L;
+        assertEq(1L, hbSeq, "heartbeat seq");
+        assertEq(2L, pongSeq, "pong seq");
+        assertTrue(elapsedMs < 2000L, "producers never blocked on a stuck transport (" + elapsedMs + " ms)");
+
+        gated.open();
+        assertTrue(w.awaitDrained(5000L), "writer drains after back-pressure clears");
+
+        ByteArrayInputStream in = new ByteArrayInputStream(gated.bytes());
+        java.util.List<WireFrame> frames = new java.util.ArrayList<>();
+        WireFrame f;
+        while ((f = WireFrame.readFrom(in)) != null) {
+            frames.add(f);
+        }
+        // 1 in-flight log + 2 control + 4 queued logs + 1 overflow notice.
+        assertEq(8, frames.size(), "total frames written");
+        assertEq(Protocol.STREAM_LOGCAT, frames.get(0).streamId, "in-flight log frame first");
+        assertEq(Protocol.MSG_HEARTBEAT, frames.get(1).msgType, "heartbeat jumps ahead of queued logs");
+        assertEq(Protocol.MSG_PONG, frames.get(2).msgType, "pong jumps ahead of queued logs");
+        WireFrame notice = null;
+        long prevSeq = 1L;
+        for (int i = 3; i < frames.size(); i++) {
+            WireFrame lf = frames.get(i);
+            assertEq(Protocol.STREAM_LOGCAT, lf.streamId, "remaining frames are Stream 1");
+            assertEq(prevSeq + 1, lf.seq, "Stream 1 seq stays contiguous (dropped frames consume no seq)");
+            prevSeq = lf.seq;
+            if (lf.msgType == Protocol.MSG_LOG_OVERFLOW_STATS) {
+                notice = lf;
+            }
+        }
+        assertTrue(notice != null, "overflow notice emitted on Stream 1");
+        PayloadCodec.LogOverflowStats st = PayloadCodec.decodeLogOverflowStats(notice.payload);
+        assertEq(Protocol.COMPLETENESS_OVERFLOW_DETECTED, st.completeness, "notice completeness");
+        assertEq("writer_queue_overflow:dropped=46", st.detail, "notice detail");
+        assertEq(4242L, st.boottimeNs, "notice stamped with device boottime");
+        w.closeQuietly();
+        passed++;
+    }
+
+    private static void testFrameWriterSurfacesTransportFailure() throws Exception {
+        java.io.OutputStream broken = new java.io.OutputStream() {
+            @Override
+            public void write(int b) throws IOException {
+                throw new IOException("Broken pipe");
+            }
+
+            @Override
+            public void write(byte[] b, int off, int len) throws IOException {
+                throw new IOException("Broken pipe");
+            }
+        };
+        WireFrame.FrameWriter w = new WireFrame.FrameWriter(broken);
+        w.writeFrame(Protocol.STREAM_CONTROL, Protocol.MSG_HEARTBEAT, 0, new byte[1]);
+        assertTrue(!w.awaitDrained(5000L), "awaitDrained reports failure");
+        boolean threw = false;
+        try {
+            w.writeFrame(Protocol.STREAM_CONTROL, Protocol.MSG_HEARTBEAT, 0, new byte[1]);
+        } catch (IOException expected) {
+            threw = true;
+        }
+        assertTrue(threw, "writes after a broken pipe throw IOException so heartbeat stops the session");
+        passed++;
+    }
+
+    private static PayloadCodec.LogRecord logAt(long sec, long nsec, int pid, String msg) {
+        return new PayloadCodec.LogRecord(
+                0L, sec, nsec, pid, pid, 0L, 1000L, 28, 4, 0, msg.getBytes(StandardCharsets.UTF_8));
+    }
+
+    private static void testLogcatResumeTrackerDedupsBoundaryAndDetectsEviction() {
+        LoggerEntryParser.ResumeTracker t = new LoggerEntryParser.ResumeTracker();
+        assertEq("1", t.nextTArgument(), "initial spawn uses -T 1");
+        t.beginResume();
+        LoggerEntryParser.ResumeTracker.Decision emit = LoggerEntryParser.ResumeTracker.Decision.EMIT;
+        LoggerEntryParser.ResumeTracker.Decision skip = LoggerEntryParser.ResumeTracker.Decision.SKIP_DUPLICATE;
+        LoggerEntryParser.ResumeTracker.Decision gap = LoggerEntryParser.ResumeTracker.Decision.EMIT_WITH_GAP;
+        assertTrue(t.evaluate(logAt(100, 5, 1, "a")) == emit, "first line emitted");
+        assertTrue(t.evaluate(logAt(100, 7, 1, "b")) == emit, "second line emitted");
+        assertTrue(t.evaluate(logAt(100, 7, 2, "c")) == emit, "same-ns distinct line emitted");
+        assertEq("100.000000007", t.nextTArgument(), "respawn uses -T <sec>.<9-digit nsec>");
+
+        // Respawn: logcat -T replays entries at the boundary timestamp; already-sent ones are skipped.
+        t.beginResume();
+        assertTrue(t.evaluate(logAt(100, 5, 1, "a")) == skip, "older replayed line skipped");
+        assertTrue(t.evaluate(logAt(100, 7, 1, "b")) == skip, "boundary duplicate skipped");
+        assertTrue(t.evaluate(logAt(100, 7, 2, "c")) == skip, "second boundary duplicate skipped");
+        assertTrue(t.evaluate(logAt(100, 7, 3, "d")) == emit, "unsent line at boundary ns emitted");
+        assertTrue(t.evaluate(logAt(101, 0, 1, "e")) == emit, "lines after boundary emitted without gap");
+
+        // Respawn where the boundary entry was already evicted from the ring buffer: real loss.
+        t.beginResume();
+        assertTrue(t.evaluate(logAt(150, 0, 1, "f")) == gap, "evicted boundary reports gap");
+        assertTrue(t.evaluate(logAt(150, 1, 1, "g")) == emit, "subsequent lines emitted normally");
+        passed++;
+    }
+
+    private static void testStreamHealthEmittedSeqNeverMovesBackwards() {
+        StreamHealthTracker h = new StreamHealthTracker();
+        h.recordEmit(Protocol.STREAM_LOGCAT, 5L, 100L);
+        h.recordEmit(Protocol.STREAM_LOGCAT, 3L, 50L); // out-of-order thread
+        h.recordEmit(Protocol.STREAM_LOGCAT, 0L, 200L); // dropped frame (seq 0)
+        assertEq(5L, h.getEmittedSeq(Protocol.STREAM_LOGCAT), "emitted_seq monotonic and ignores dropped frames");
         passed++;
     }
 

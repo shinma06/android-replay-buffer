@@ -196,13 +196,12 @@ mod imp {
 
 #[cfg(target_os = "windows")]
 mod imp {
-    use std::io;
     use std::mem::MaybeUninit;
 
     use windows_sys::Win32::Foundation::FILETIME;
     use windows_sys::Win32::System::SystemInformation::GetSystemTimePreciseAsFileTime;
     use windows_sys::Win32::System::WindowsProgramming::{
-        QueryInterruptTime, QueryUnbiasedInterruptTime,
+        QueryInterruptTimePrecise, QueryUnbiasedInterruptTimePrecise,
     };
 
     use crate::clock::HostClockSample;
@@ -222,24 +221,18 @@ mod imp {
 
     fn read_unbiased_interrupt_time_ns() -> Result<i64, OsError> {
         let mut ticks: u64 = 0;
-        // SAFETY: `&mut ticks` is a valid, properly aligned pointer to a `u64`
-        // out-parameter for `QueryUnbiasedInterruptTime`.
-        let ok = unsafe { QueryUnbiasedInterruptTime(&raw mut ticks) };
-        if ok == 0 {
-            return Err(OsError::ClockRead {
-                clock: "QueryUnbiasedInterruptTime",
-                source: io::Error::last_os_error(),
-            });
-        }
-        ticks_100ns_to_i64(ticks, "QueryUnbiasedInterruptTime")
+        // SAFETY: `&raw mut ticks` is a valid, properly aligned pointer to a
+        // `u64` out-parameter for `QueryUnbiasedInterruptTimePrecise`.
+        unsafe { QueryUnbiasedInterruptTimePrecise(&raw mut ticks) };
+        ticks_100ns_to_i64(ticks, "QueryUnbiasedInterruptTimePrecise")
     }
 
     fn read_interrupt_time_ns() -> Result<i64, OsError> {
         let mut ticks: u64 = 0;
-        // SAFETY: `&mut ticks` is a valid, properly aligned pointer to a `u64`
-        // out-parameter for `QueryInterruptTime`.
-        unsafe { QueryInterruptTime(&raw mut ticks) };
-        ticks_100ns_to_i64(ticks, "QueryInterruptTime")
+        // SAFETY: `&raw mut ticks` is a valid, properly aligned pointer to a
+        // `u64` out-parameter for `QueryInterruptTimePrecise`.
+        unsafe { QueryInterruptTimePrecise(&raw mut ticks) };
+        ticks_100ns_to_i64(ticks, "QueryInterruptTimePrecise")
     }
 
     fn read_wall_epoch_ns() -> Result<i64, OsError> {

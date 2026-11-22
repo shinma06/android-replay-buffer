@@ -118,6 +118,26 @@ pub struct LegacyTimebase {
     pub window_end_uncertainty: LegacyUncertainty,
 }
 
+impl LegacyTimebase {
+    /// Returns the absolute `DeviceBoottime` origin (`window_start_elapsed_ns`)
+    /// when this timebase is known and on the `device_boottime` domain.
+    ///
+    /// Returns `None` when the origin is missing, `!window_known`, or the
+    /// manifest uses a non-boottime domain such as Schema 3 `sequence_ns`, so
+    /// callers never place window-relative or sequence-relative offsets into
+    /// `DeviceBoottime`.
+    #[must_use]
+    pub fn device_boottime_origin_ns(&self) -> Option<i64> {
+        if !self.window_known {
+            return None;
+        }
+        if self.domain.as_deref() != Some("device_boottime") {
+            return None;
+        }
+        self.window_start_ns
+    }
+}
+
 /// Video playback segment metadata projected from legacy `parts`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LegacyVideoPart {
@@ -246,11 +266,26 @@ pub struct LegacyFrameRow {
 }
 
 impl LegacyFrameRow {
-    /// Projects this legacy frame row onto the v2 [`TimeAlignment`] model.
-    pub fn to_time_alignment(&self, boot_id: &str, pc_ingest_cont_ns: i64) -> TimeAlignment {
+    /// Projects this legacy frame row onto the v2 [`TimeAlignment`] model by
+    /// rebasing window-relative `t_ns` onto `window_start_elapsed_ns`.
+    ///
+    /// Never places window-relative `t_ns` directly into `DeviceBoottime`:
+    /// if `window_start_elapsed_ns` is `None` (missing/unknown or Schema 3
+    /// `sequence_ns`) or `origin.checked_add(t_ns)` overflows, this degrades
+    /// honestly to [`TimeAlignment::Unanchored`].
+    pub fn to_time_alignment_with_origin(
+        &self,
+        boot_id: &str,
+        window_start_elapsed_ns: Option<i64>,
+        pc_ingest_cont_ns: i64,
+    ) -> TimeAlignment {
         if self.clock_alignment == LegacyClockAlignment::Known
-            && let (Some(boottime_ns), Some(half_width_ns)) =
-                (self.t_ns, self.uncertainty.known_ns())
+            && let (Some(origin), Some(t_ns), Some(half_width_ns)) = (
+                window_start_elapsed_ns,
+                self.t_ns,
+                self.uncertainty.known_ns(),
+            )
+            && let Some(boottime_ns) = origin.checked_add(t_ns)
         {
             return TimeAlignment::Anchored {
                 boot_id: boot_id.to_owned(),
@@ -263,6 +298,18 @@ impl LegacyFrameRow {
             pc_ingest_cont_ns,
             reason: UncertaintyReason::LegacySentinelUnknown,
         }
+    }
+
+    /// Projects this legacy frame row onto [`TimeAlignment`] without a known
+    /// `window_start_elapsed_ns` origin.
+    ///
+    /// Because legacy `t_ns` / `window_ns` is window-relative rather than an
+    /// absolute `DeviceBoottime`, calling this without an origin always emits
+    /// [`TimeAlignment::Unanchored`]. Prefer
+    /// [`Self::to_time_alignment_with_origin`] with
+    /// [`LegacyTimebase::device_boottime_origin_ns`].
+    pub fn to_time_alignment(&self, boot_id: &str, pc_ingest_cont_ns: i64) -> TimeAlignment {
+        self.to_time_alignment_with_origin(boot_id, None, pc_ingest_cont_ns)
     }
 }
 
@@ -300,9 +347,24 @@ pub struct LegacyLogRow {
 }
 
 impl LegacyLogRow {
-    /// Projects this legacy log row onto the v2 [`TimeAlignment`] model.
-    pub fn to_time_alignment(&self, boot_id: &str, pc_ingest_cont_ns: i64) -> TimeAlignment {
-        if let (Some(boottime_ns), Some(half_width_ns)) = (self.t_ns, self.uncertainty.known_ns()) {
+    /// Projects this legacy log row onto the v2 [`TimeAlignment`] model by
+    /// rebasing window-relative `t_ns` onto `window_start_elapsed_ns`.
+    ///
+    /// Never places window-relative `t_ns` directly into `DeviceBoottime`:
+    /// if `window_start_elapsed_ns` is `None` or `origin.checked_add(t_ns)`
+    /// overflows, this degrades honestly to [`TimeAlignment::Unanchored`].
+    pub fn to_time_alignment_with_origin(
+        &self,
+        boot_id: &str,
+        window_start_elapsed_ns: Option<i64>,
+        pc_ingest_cont_ns: i64,
+    ) -> TimeAlignment {
+        if let (Some(origin), Some(t_ns), Some(half_width_ns)) = (
+            window_start_elapsed_ns,
+            self.t_ns,
+            self.uncertainty.known_ns(),
+        ) && let Some(boottime_ns) = origin.checked_add(t_ns)
+        {
             return TimeAlignment::Anchored {
                 boot_id: boot_id.to_owned(),
                 boottime_ns,
@@ -314,6 +376,15 @@ impl LegacyLogRow {
             pc_ingest_cont_ns,
             reason: UncertaintyReason::LegacySentinelUnknown,
         }
+    }
+
+    /// Projects this legacy log row onto [`TimeAlignment`] without a known
+    /// `window_start_elapsed_ns` origin (always degrades to
+    /// [`TimeAlignment::Unanchored`]). Prefer
+    /// [`Self::to_time_alignment_with_origin`] with
+    /// [`LegacyTimebase::device_boottime_origin_ns`].
+    pub fn to_time_alignment(&self, boot_id: &str, pc_ingest_cont_ns: i64) -> TimeAlignment {
+        self.to_time_alignment_with_origin(boot_id, None, pc_ingest_cont_ns)
     }
 }
 
@@ -351,9 +422,24 @@ pub struct LegacyTouchRow {
 }
 
 impl LegacyTouchRow {
-    /// Projects this legacy touch row onto the v2 [`TimeAlignment`] model.
-    pub fn to_time_alignment(&self, boot_id: &str, pc_ingest_cont_ns: i64) -> TimeAlignment {
-        if let (Some(boottime_ns), Some(half_width_ns)) = (self.t_ns, self.uncertainty.known_ns()) {
+    /// Projects this legacy touch row onto the v2 [`TimeAlignment`] model by
+    /// rebasing window-relative `t_ns` onto `window_start_elapsed_ns`.
+    ///
+    /// Never places window-relative `t_ns` directly into `DeviceBoottime`:
+    /// if `window_start_elapsed_ns` is `None` or `origin.checked_add(t_ns)`
+    /// overflows, this degrades honestly to [`TimeAlignment::Unanchored`].
+    pub fn to_time_alignment_with_origin(
+        &self,
+        boot_id: &str,
+        window_start_elapsed_ns: Option<i64>,
+        pc_ingest_cont_ns: i64,
+    ) -> TimeAlignment {
+        if let (Some(origin), Some(t_ns), Some(half_width_ns)) = (
+            window_start_elapsed_ns,
+            self.t_ns,
+            self.uncertainty.known_ns(),
+        ) && let Some(boottime_ns) = origin.checked_add(t_ns)
+        {
             return TimeAlignment::Anchored {
                 boot_id: boot_id.to_owned(),
                 boottime_ns,
@@ -365,6 +451,15 @@ impl LegacyTouchRow {
             pc_ingest_cont_ns,
             reason: UncertaintyReason::LegacySentinelUnknown,
         }
+    }
+
+    /// Projects this legacy touch row onto [`TimeAlignment`] without a known
+    /// `window_start_elapsed_ns` origin (always degrades to
+    /// [`TimeAlignment::Unanchored`]). Prefer
+    /// [`Self::to_time_alignment_with_origin`] with
+    /// [`LegacyTimebase::device_boottime_origin_ns`].
+    pub fn to_time_alignment(&self, boot_id: &str, pc_ingest_cont_ns: i64) -> TimeAlignment {
+        self.to_time_alignment_with_origin(boot_id, None, pc_ingest_cont_ns)
     }
 }
 
@@ -1474,6 +1569,124 @@ mod tests {
             touches[0].uncertainty,
             LegacyUncertainty::Missing,
             "null touch uncertainty must decode as Missing"
+        );
+    }
+
+    #[test]
+    fn regression_schema4_rebases_t_ns_onto_origin_and_missing_origin_degrades_to_unanchored() {
+        let manifest_with_origin = r#"{
+            "schema": 4,
+            "complete": true,
+            "save_id": "s4-origin",
+            "timebase": {
+                "domain": "device_boottime",
+                "known": true,
+                "window_start_elapsed_ns": "500000000000",
+                "window_duration_ns": "30000000000",
+                "window_end_uncertainty_ns": "0"
+            }
+        }"#;
+        let meta = parse_schema4_manifest(manifest_with_origin)
+            .expect("schema 4 manifest with origin must parse");
+        let origin = meta.timebase.device_boottime_origin_ns();
+        assert_eq!(
+            origin,
+            Some(500_000_000_000),
+            "device_boottime_origin_ns must return window_start_elapsed_ns"
+        );
+
+        let frames = super::parse_schema4_frames_jsonl(
+            r#"{"part":"video.mp4","segment_index":0,"sample_index":0,"t_ns":"1250000000","t_uncertainty_ns":"1000","clock_alignment_known":true,"presented":true}"#,
+        )
+        .expect("schema 4 frame must parse");
+        assert_eq!(
+            frames[0].to_time_alignment_with_origin("boot-4", origin, 999),
+            TimeAlignment::Anchored {
+                boot_id: "boot-4".into(),
+                boottime_ns: 501_250_000_000,
+                half_width_ns: 1_000,
+                semantics: crate::time::TimestampSemantics::VideoEncoderInputEstimate,
+            },
+            "frame t_ns must be rebased onto window_start_elapsed_ns"
+        );
+        // Without origin, never place window-relative t_ns into DeviceBoottime.
+        assert_eq!(
+            frames[0].to_time_alignment_with_origin("boot-4", None, 999),
+            TimeAlignment::Unanchored {
+                pc_ingest_cont_ns: 999,
+                reason: UncertaintyReason::LegacySentinelUnknown,
+            },
+            "missing origin must degrade frame to Unanchored"
+        );
+        assert_eq!(
+            frames[0].to_time_alignment("boot-4", 999),
+            TimeAlignment::Unanchored {
+                pc_ingest_cont_ns: 999,
+                reason: UncertaintyReason::LegacySentinelUnknown,
+            },
+            "to_time_alignment without origin must degrade to Unanchored"
+        );
+    }
+
+    #[test]
+    fn regression_schema4_logs_and_touches_rebase_onto_origin() {
+        let origin = Some(500_000_000_000_i64);
+
+        let logs = parse_schema4_logs_jsonl(
+            r#"{"t_ns":"2500000000","t_uncertainty_ns":"5000","message":"hi"}"#,
+        )
+        .expect("schema 4 log must parse");
+        assert_eq!(
+            logs[0].to_time_alignment_with_origin("boot-4", origin, 888),
+            TimeAlignment::Anchored {
+                boot_id: "boot-4".into(),
+                boottime_ns: 502_500_000_000,
+                half_width_ns: 5_000,
+                semantics: crate::time::TimestampSemantics::LogcatHeaderWall,
+            },
+            "log t_ns must be rebased onto window_start_elapsed_ns"
+        );
+        assert_eq!(
+            logs[0].to_time_alignment_with_origin("boot-4", None, 888),
+            TimeAlignment::Unanchored {
+                pc_ingest_cont_ns: 888,
+                reason: UncertaintyReason::LegacySentinelUnknown,
+            },
+            "missing origin must degrade log to Unanchored"
+        );
+
+        let touches = parse_schema4_touches_jsonl(
+            r#"{"t_ns":"750000000","t_uncertainty_ns":"2000","action":"DOWN"}"#,
+        )
+        .expect("schema 4 touch must parse");
+        assert_eq!(
+            touches[0].to_time_alignment_with_origin("boot-4", origin, 777),
+            TimeAlignment::Anchored {
+                boot_id: "boot-4".into(),
+                boottime_ns: 500_750_000_000,
+                half_width_ns: 2_000,
+                semantics: crate::time::TimestampSemantics::InputEventTime,
+            },
+            "touch t_ns must be rebased onto window_start_elapsed_ns"
+        );
+        assert_eq!(
+            touches[0].to_time_alignment_with_origin("boot-4", Some(i64::MAX), 777),
+            TimeAlignment::Unanchored {
+                pc_ingest_cont_ns: 777,
+                reason: UncertaintyReason::LegacySentinelUnknown,
+            },
+            "checked_add overflow must degrade to Unanchored"
+        );
+
+        // Schema 3 uses `sequence_ns`, so `device_boottime_origin_ns()` must return None.
+        let s3_meta = parse_schema3_session(
+            r#"{"schema":3,"save_id":"s3-seq","window_clock_known":true,"window_start_ns":"1000","window_end_ns":"5000"}"#,
+        )
+        .expect("schema 3 session must parse");
+        assert_eq!(
+            s3_meta.timebase.device_boottime_origin_ns(),
+            None,
+            "schema 3 sequence_ns domain must not be treated as a DeviceBoottime origin"
         );
     }
 }

@@ -2,6 +2,9 @@ package io.github.shinma06.arb.agent;
 
 import android.net.LocalServerSocket;
 import android.net.LocalSocket;
+import java.io.FileDescriptor;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -69,8 +72,10 @@ public final class CompanionMain {
             InputStream in;
             OutputStream out;
             if (useStdio) {
-                in = System.in;
-                out = System.out;
+                // Raw stdio streams: `System.out` is a PrintStream that swallows IOException,
+                // so a dead host (broken pipe) would never be noticed by the heartbeat loop.
+                in = new FileInputStream(FileDescriptor.in);
+                out = new FileOutputStream(FileDescriptor.out);
             } else {
                 serverSocket = new LocalServerSocket(socketName);
                 // Signal readiness to host launcher before blocking in accept().
@@ -107,7 +112,7 @@ public final class CompanionMain {
             boolean enableInput) throws Exception {
         ClockSource clock = new AndroidClock();
         StreamHealthTracker health = new StreamHealthTracker();
-        WireFrame.FrameWriter writer = new WireFrame.FrameWriter(out);
+        WireFrame.FrameWriter writer = new WireFrame.FrameWriter(out, clock);
         PayloadCodec.Hello hello = DeviceInfo.collectHello(heartbeatMs);
 
         AtomicBoolean stopping = new AtomicBoolean(false);

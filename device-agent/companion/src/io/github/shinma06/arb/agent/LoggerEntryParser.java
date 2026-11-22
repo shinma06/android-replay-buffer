@@ -1,10 +1,13 @@
 package io.github.shinma06.arb.agent;
 
-import java.io.EOFException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Locale;
 
 /**
  * Streaming parser for Android {@code logcat -B} binary {@code logger_entry} records.
@@ -95,5 +98,149 @@ public final class LoggerEntryParser {
     public static boolean isBinaryEventBuffer(long lid) {
         // 2 = LOG_ID_EVENTS, 5 = LOG_ID_STATS, 6 = LOG_ID_SECURITY
         return lid == 2L || lid == 5L || lid == 6L;
+    }
+
+    /**
+     * Tracks the last emitted logcat entry timestamp {@code (sec, nsec)} and
+     * boundary entry fingerprints so a respawned {@code logcat -T '<sec>.<nsec>'}
+     * resumes seamlessly without duplicating the boundary line or silently
+     * hiding a ring-buffer eviction gap.
+     */
+    public static final class ResumeTracker {
+        public enum Decision {
+            /** Emit record normally. */
+            EMIT,
+            /** Skip record because it predates or duplicates the saved resume boundary. */
+            SKIP_DUPLICATE,
+            /** Emit record, and signal an overflow gap because the boundary entry was evicted. */
+            EMIT_WITH_GAP
+        }
+
+        private static final class EntryFingerprint {
+            final int pid;
+            final int tid;
+            final long lid;
+            final int priority;
+            final byte[] payload;
+
+            EntryFingerprint(PayloadCodec.LogRecord rec) {
+                this.pid = rec.pid;
+                this.tid = rec.tid;
+                this.lid = rec.lid;
+                this.priority = rec.priority;
+                this.payload = rec.payload;
+            }
+
+            boolean matches(PayloadCodec.LogRecord rec) {
+                return this.pid == rec.pid
+                        && this.tid == rec.tid
+                        && this.lid == rec.lid
+                        && this.priority == rec.priority
+                        && Arrays.equals(this.payload, rec.payload);
+            }
+        }
+
+        private boolean hasTimestamp;
+        private long lastSec;
+        private long lastNsec;
+        private final List<EntryFingerprint> lastFingerprints = new ArrayList<>();
+
+        private boolean resuming;
+        private long resumeSec;
+        private long resumeNsec;
+        private boolean boundaryObserved;
+        private final List<EntryFingerprint> resumeFingerprints = new ArrayList<>();
+
+        public boolean hasTimestamp() {
+            return hasTimestamp;
+        }
+
+        /**
+         * Returns the {@code -T} argument for launching {@code logcat}:
+         * {@code "<sec>.<9-digit-nsec>"} when a previous timestamp exists, or
+         * {@code "1"} on initial startup.
+         */
+        public String nextTArgument() {
+            if (!hasTimestamp) {
+                return "1";
+            }
+            return String.format(Locale.US, "%d.%09d", lastSec, lastNsec);
+        }
+
+        /**
+         * Arms boundary deduplication before starting a respawned {@code logcat}
+         * process with {@link #nextTArgument()}.
+         */
+        public void beginResume() {
+            if (!hasTimestamp) {
+                resuming = false;
+                return;
+            }
+            resuming = true;
+            resumeSec = lastSec;
+            resumeNsec = lastNsec;
+            boundaryObserved = false;
+            resumeFingerprints.clear();
+            resumeFingerprints.addAll(lastFingerprints);
+        }
+
+        /**
+         * Evaluates an incoming {@link PayloadCodec.LogRecord}, updating the last
+         * emitted watermark when the record should be emitted.
+         */
+        public Decision evaluate(PayloadCodec.LogRecord rec) {
+            if (resuming) {
+                int cmp = compareTs(rec.logSec, rec.logNsec, resumeSec, resumeNsec);
+                if (cmp < 0) {
+                    return Decision.SKIP_DUPLICATE;
+                }
+                if (cmp == 0) {
+                    for (EntryFingerprint fp : resumeFingerprints) {
+                        if (fp.matches(rec)) {
+                            boundaryObserved = true;
+                            return Decision.SKIP_DUPLICATE;
+                        }
+                    }
+                    // Distinct entry sharing the exact boundary nanosecond.
+                    boundaryObserved = true;
+                    recordWatermark(rec);
+                    return Decision.EMIT;
+                }
+                // Strictly past the resume timestamp.
+                resuming = false;
+                boolean gapDetected = !boundaryObserved;
+                resumeFingerprints.clear();
+                recordWatermark(rec);
+                return gapDetected ? Decision.EMIT_WITH_GAP : Decision.EMIT;
+            }
+
+            recordWatermark(rec);
+            return Decision.EMIT;
+        }
+
+        private void recordWatermark(PayloadCodec.LogRecord rec) {
+            if (!hasTimestamp) {
+                hasTimestamp = true;
+                lastSec = rec.logSec;
+                lastNsec = rec.logNsec;
+                lastFingerprints.clear();
+                lastFingerprints.add(new EntryFingerprint(rec));
+                return;
+            }
+            int cmp = compareTs(rec.logSec, rec.logNsec, lastSec, lastNsec);
+            if (cmp > 0) {
+                lastSec = rec.logSec;
+                lastNsec = rec.logNsec;
+                lastFingerprints.clear();
+                lastFingerprints.add(new EntryFingerprint(rec));
+            } else if (cmp == 0 && lastFingerprints.size() < 64) {
+                lastFingerprints.add(new EntryFingerprint(rec));
+            }
+        }
+
+        private static int compareTs(long secA, long nsecA, long secB, long nsecB) {
+            int c = Long.compare(secA, secB);
+            return (c != 0) ? c : Long.compare(nsecA, nsecB);
+        }
     }
 }
