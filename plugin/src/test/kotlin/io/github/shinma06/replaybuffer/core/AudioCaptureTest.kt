@@ -15,6 +15,7 @@ import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -203,6 +204,27 @@ class AudioCaptureTest {
             val pinned = assertNotNull(store.capture(ReplaySettings(recordAudio = true), null, host + 1_000_000_000))
             assertEquals(listOf(AudioReceipt(1, 1, 1), AudioReceipt(1, 1, 2), AudioReceipt(2, 2, 0)),
                 pinned.audio.map { AudioReceipt(it.generation, it.session, it.receivedOrdinal) })
+            store.release(pinned.id)
+        }
+    }
+
+    @Test
+    fun repeatedConfigWithinAReceiverSessionLeavesAnOrdinalGap() {
+        CaptureStore(root.resolve("reconfig"), minFree = 0, audioRequested = true).use { store ->
+            val host = System.nanoTime()
+            store.generation(1)
+            sample(store, host, 1)
+            store.log(DeviceLog(1_700_000_001_000_000_000, 12, 12, 10001, 0, 4, "Fixture", "row", byteArrayOf(1)), 1, host)
+            store.audioSession(1)
+            store.audio(AudioPacket(0, true, config), 1)
+            store.audio(AudioPacket(1_000_000, false, byteArrayOf(1)), 1, host)
+            store.audio(AudioPacket(0, true, config), 1)
+            store.audio(AudioPacket(1_021_333, false, byteArrayOf(1)), 1, host)
+            sample(store, host, 2)
+            val pinned = assertNotNull(store.capture(ReplaySettings(recordAudio = true), null, host + 1_000_000_000))
+            val receipts = pinned.audio.map { AudioReceipt(it.generation, it.session, it.receivedOrdinal) }
+            assertEquals(listOf(AudioReceipt(1, 1, 0), AudioReceipt(1, 1, 2)), receipts)
+            assertFalse(receipts[1].follows(receipts[0]))
             store.release(pinned.id)
         }
     }

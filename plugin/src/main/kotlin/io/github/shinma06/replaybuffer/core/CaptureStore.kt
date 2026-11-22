@@ -373,7 +373,10 @@ internal class CaptureStore(
     @Synchronized
     fun audio(packet: AudioPacket, owner: Long, host: Long = System.nanoTime()) {
         if (closed || owner != generation || !audioRequested) return
-        if (packet.config) { audioConfig = packet.bytes.copyOf(); return }
+        if (packet.config) {
+            if (audioConfig != null) audioReceivedOrdinal++ // A repeated config splits ranges even if its bytes match.
+            audioConfig = packet.bytes.copyOf(); return
+        }
         // Count received AUs even when local selection discards them. The sender does not report its ordinal.
         val receivedOrdinal = audioReceivedOrdinal++
         val config = checkNotNull(audioConfig) { "音声configがありません" }

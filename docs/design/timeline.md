@@ -156,7 +156,7 @@ edit listで各区間のdecoder-only prefixを隠す。有限の元VIDEO gapと�
 
 保存時は、各AAC packetの時刻に表示中のframeの`movie_pts_us`（`MovieAnchor`）から映画上の位置を求め、同じMP4の2本目のtrackへ書きます。名目間隔（1024 sample）から20ms以内で続くpacketは1つのedit、より大きいずれ・動画の表示がない時刻・server sessionの切替では空editを挟んで区切ります。動画の表示がない時刻と時計不明の時刻の音は入れません。各editは`replay.json`の`audio_track.segments`に記録します。
 
-schema 4の任意項目 `audio_track.decode_runs` は、既存の提示区間 `audio_track.segments` とは別の保存根拠です。`video_sha256` は現MP4のSHA-256、`ranges` の `packet_start`／`packet_end` はMP4音声トラック上の0始まり半開区間です。各範囲は取得時の `generation`、`receive_session`、`first_received_ordinal` を持ちます。番号は `ordinal_source=host_receive` で、設定パケットは数えず、受信後に除外したAUも数えます。エンコーダの元番号ではなく、受信番号が0でも先頭は証明できないため、`encoder_boundary=unknown` とします。同じ受信セッションでも剪定・除外などで番号が飛べば範囲をつなぎません。`segments`、一致するencoder config、video/clock gapだけでは連続・再起動を推定しません。
+schema 4の任意項目 `audio_track.decode_runs` は、既存の提示区間 `audio_track.segments` とは別の保存根拠です。`video_sha256` は現MP4のSHA-256、`ranges` の `packet_start`／`packet_end` はMP4音声トラック上の0始まり半開区間です。各範囲は取得時の `generation`、`receive_session`、`first_received_ordinal` を持ちます。番号は `ordinal_source=host_receive` で、設定パケットは数えず、受信後に除外したAUも数えます。同じ受信セッションの途中で設定パケットが届いた場合は、内容が同じでも番号を1つ空けて範囲を切ります。エンコーダの元番号ではなく、受信番号が0でも先頭は証明できないため、`encoder_boundary=unknown` とします。同じ受信セッションでも剪定・除外などで番号が飛べば範囲をつなぎません。`segments`、一致するencoder config、video/clock gapだけでは連続・再起動を推定しません。
 
 trim／retrimでは、実際にコピーしたAUだけで範囲とSHA-256を再構成します。`leading_preroll=true` は、範囲の最初の1 AUが既存のtrimで復号用にコピーされ、直後の提示AUと受信セッション・連番が一致したことを示します。エンコーダの継続や復号結果を保証するものではありません。旧保存・任意項目の欠落や不正・MP4との不一致では、その項目を使わず、境界は不明です。既存のファイル検証、音声選択、提示edit、再生・表示は変更しません。
 
