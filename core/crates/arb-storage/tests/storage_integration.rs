@@ -1,0 +1,1415 @@
+//! Integration and fault-injection tests for `arb-storage` (Zones 1, 2, and 3).
+
+use std::collections::BTreeMap;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::thread;
+use std::time::SystemTime;
+
+use arb_core::bundle::{
+    DeviceInfo, EpochSpan, FrameRecord, InputStreamMeta, LogCompleteness, LogRecord,
+    LogcatStreamMeta, Provenance, RecordBucket, RequestedWindow, StreamStatus, StreamsSummary,
+    TapRecord, UnanchoredSummary, VideoStreamMeta,
+};
+use arb_core::legacy::{LegacySaveKind, LegacySchemaVersion};
+use arb_core::state::{BundleLifecycleState, RingBudgetPolicy, SaveJobState};
+use arb_core::time::{
+    DeviceClockTriple, DiscontinuityEvent, DiscontinuityKind, PcSyncProbe, TimeAlignment,
+    TimestampSemantics, UncertaintyReason,
+};
+use arb_os::OsError;
+use arb_os::fs::{DiskSpaceInfo, is_pid_alive};
+use arb_storage::StorageError;
+use arb_storage::bundle_io::{
+    BundleFormat, BundleReader, ClockAnchorRecord, LegacyBundleReader, MediaPayload, TimeRange,
+    V2BundleDraft, V2BundleReader, V2BundleWriter, open_bundle,
+};
+use arb_storage::catalog::{
+    Catalog, CatalogFormatVersion, EditSession, LeaseHolderKind, NewBundleEntry,
+};
+use arb_storage::ring::{DiskSpaceProvider, RingChunkKind, RingStore};
+use tempfile::TempDir;
+
+#[derive(Debug, Clone)]
+struct FakeDiskProvider {
+    available: Arc<AtomicU64>,
+    total: u64,
+}
+
+impl FakeDiskProvider {
+    fn new(available: u64, total: u64) -> Self {
+        Self {
+            available: Arc::new(AtomicU64::new(available)),
+            total,
+        }
+    }
+
+    fn set_available(&self, bytes: u64) {
+        self.available.store(bytes, Ordering::SeqCst);
+    }
+}
+
+impl DiskSpaceProvider for FakeDiskProvider {
+    fn disk_space(&self, _path: &Path) -> Result<DiskSpaceInfo, OsError> {
+        Ok(DiskSpaceInfo {
+            available_bytes: self.available.load(Ordering::SeqCst),
+            total_bytes: self.total,
+        })
+    }
+}
+
+fn sample_frames() -> Vec<FrameRecord> {
+    vec![
+        FrameRecord {
+            frame_index: 0,
+            boot_id: "boot-alpha".to_owned(),
+            pts_device_mono_ns: 1_000_000,
+            pc_ingest_cont_ns: 10_000_000,
+            alignment: TimeAlignment::Anchored {
+                boot_id: "boot-alpha".to_owned(),
+                boottime_ns: 2_000_000,
+                half_width_ns: 1_000,
+                semantics: TimestampSemantics::VideoEncoderInputEstimate,
+            },
+            is_keyframe: true,
+            gop_id: 0,
+            mp4_sample_offset: 0,
+            mp4_sample_size: 256,
+        },
+        FrameRecord {
+            frame_index: 1,
+            boot_id: "boot-alpha".to_owned(),
+            pts_device_mono_ns: 1_033_333,
+            pc_ingest_cont_ns: 10_033_333,
+            alignment: TimeAlignment::Anchored {
+                boot_id: "boot-alpha".to_owned(),
+                boottime_ns: 2_033_333,
+                half_width_ns: 1_000,
+                semantics: TimestampSemantics::VideoEncoderInputEstimate,
+            },
+            is_keyframe: false,
+            gop_id: 0,
+            mp4_sample_offset: 256,
+            mp4_sample_size: 128,
+        },
+    ]
+}
+
+fn sample_logs() -> Vec<LogRecord> {
+    vec![
+        LogRecord {
+            seq: 0,
+            boot_id: Some("boot-alpha".to_owned()),
+            header_epoch_ns: Some(1_700_000_000_000_000),
+            device_read_boottime_ns: Some(2_010_000),
+            pc_ingest_cont_ns: 10_010_000,
+            alignment: TimeAlignment::Anchored {
+                boot_id: "boot-alpha".to_owned(),
+                boottime_ns: 2_010_000,
+                half_width_ns: 500,
+                semantics: TimestampSemantics::LogcatHeaderWall,
+            },
+            bucket: RecordBucket::Main,
+            level: Some("I".to_owned()),
+            tag: Some("Activity".to_owned()),
+            pid: Some(1001),
+            tid: Some(1002),
+            message: "main timeline log".to_owned(),
+        },
+        LogRecord {
+            seq: 1,
+            boot_id: None,
+            header_epoch_ns: None,
+            device_read_boottime_ns: None,
+            pc_ingest_cont_ns: 10_050_000,
+            alignment: TimeAlignment::Unanchored {
+                pc_ingest_cont_ns: 10_050_000,
+                reason: UncertaintyReason::NoClockAnchor,
+            },
+            bucket: RecordBucket::Unanchored,
+            level: Some("W".to_owned()),
+            tag: Some("Sidecar".to_owned()),
+            pid: Some(2001),
+            tid: Some(2002),
+            message: "quarantined unanchored log".to_owned(),
+        },
+    ]
+}
+
+fn build_draft(bundle_id: &str, video_bytes: Vec<u8>) -> V2BundleDraft {
+    V2BundleDraft {
+        bundle_id: bundle_id.to_owned(),
+        created_at_utc: "2026-11-22T12:00:00Z".to_owned(),
+        provenance: Provenance::Original,
+        device: DeviceInfo {
+            serial: "emulator-5554".to_owned(),
+            model: "Pixel 9".to_owned(),
+            api_level: 35,
+            is_emulator: true,
+        },
+        requested_window: RequestedWindow::RealElapsedSec {
+            duration_sec: 30,
+            trigger_pc_wall_utc: "2026-11-22T12:00:00Z".to_owned(),
+        },
+        epochs: vec![EpochSpan {
+            boot_id: "boot-alpha".to_owned(),
+            start_boottime_ns: 1_000_000,
+            end_boottime_ns: 31_000_000,
+        }],
+        streams: StreamsSummary {
+            video: Some(VideoStreamMeta {
+                status: StreamStatus::Present,
+                frame_count: 2,
+                tail_may_be_incomplete: false,
+                semantics: TimestampSemantics::VideoEncoderInputEstimate,
+            }),
+            audio: None,
+            logcat: Some(LogcatStreamMeta {
+                status: StreamStatus::Present,
+                completeness: LogCompleteness::Unverified,
+                overflow_events: 0,
+                tail_may_be_incomplete: false,
+            }),
+            input: Some(InputStreamMeta {
+                status: StreamStatus::Present,
+                tail_may_be_incomplete: false,
+            }),
+        },
+        unanchored_summary: UnanchoredSummary {
+            included_count: 1,
+            truncated_count: 0,
+        },
+        video_mp4: Some(MediaPayload::Bytes(video_bytes)),
+        audio_m4a: None,
+        frames: sample_frames(),
+        discontinuities: vec![DiscontinuityEvent {
+            kind: DiscontinuityKind::DeviceSleep,
+            stream: None,
+            boot_id: Some("boot-alpha".to_owned()),
+            start_boottime_ns: Some(3_000_000),
+            end_boottime_ns: Some(5_000_000),
+            pc_cont_start_ns: 11_000_000,
+            pc_cont_end_ns: Some(13_000_000),
+            delta_ns: Some(2_000_000),
+            detail: Some("simulated device sleep".to_owned()),
+        }],
+        logs: sample_logs(),
+        taps: vec![TapRecord {
+            seq: 0,
+            boot_id: Some("boot-alpha".to_owned()),
+            event_mono_ns: Some(1_015_000),
+            pc_ingest_cont_ns: 10_015_000,
+            alignment: TimeAlignment::Anchored {
+                boot_id: "boot-alpha".to_owned(),
+                boottime_ns: 2_015_000,
+                half_width_ns: 250,
+                semantics: TimestampSemantics::InputEventTime,
+            },
+            bucket: RecordBucket::Main,
+            action: "DOWN".to_owned(),
+            x: Some(420.0),
+            y: Some(810.5),
+            pointer_id: Some(0),
+        }],
+        clock_anchors: vec![
+            ClockAnchorRecord::DeviceTriple(DeviceClockTriple {
+                boot_id: "boot-alpha".to_owned(),
+                boottime_ns: 2_000_000,
+                monotonic_ns: 1_000_000,
+                realtime_ns: 1_700_000_000_000_000,
+            }),
+            ClockAnchorRecord::PcSyncProbe(PcSyncProbe {
+                boot_id: "boot-alpha".to_owned(),
+                pc_send_cont_ns: 10_000_000,
+                pc_send_active_ns: 9_000_000,
+                dev_boottime_ns: 2_000_000,
+                dev_monotonic_ns: 1_000_000,
+                pc_recv_cont_ns: 10_002_000,
+                pc_recv_active_ns: 9_002_000,
+            }),
+        ],
+    }
+}
+
+fn spawn_and_reap_dead_pid() -> u32 {
+    #[cfg(unix)]
+    let mut child = Command::new("/usr/bin/true")
+        .spawn()
+        .or_else(|_| Command::new("true").spawn())
+        .expect("spawning short-lived child process must succeed");
+    #[cfg(windows)]
+    let mut child = Command::new("cmd")
+        .args(["/C", "exit", "0"])
+        .spawn()
+        .expect("spawning short-lived child process must succeed");
+
+    let pid = child.id();
+    let status = child.wait().expect("waiting for child exit must succeed");
+    assert!(status.success(), "child process must exit cleanly");
+    assert!(
+        !is_pid_alive(pid),
+        "reaped child PID {pid} must report not alive"
+    );
+    pid
+}
+
+fn snapshot_directory_readonly(dir: &Path) -> BTreeMap<String, (u64, SystemTime)> {
+    let mut map = BTreeMap::new();
+    let dir_meta = fs::metadata(dir).expect("directory metadata must be readable");
+    map.insert(
+        ".".to_owned(),
+        (
+            dir_meta.len(),
+            dir_meta.modified().expect("dir mtime must be readable"),
+        ),
+    );
+    for entry in fs::read_dir(dir).expect("read_dir must succeed") {
+        let entry = entry.expect("dir entry must succeed");
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let meta = entry.metadata().expect("entry metadata must succeed");
+        map.insert(
+            name,
+            (
+                meta.len(),
+                meta.modified().expect("file mtime must be readable"),
+            ),
+        );
+    }
+    map
+}
+
+fn repo_schema4_fixture_dir() -> PathBuf {
+    // CARGO_MANIFEST_DIR = <repo>/core/crates/arb-storage
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("..")
+        .join("plugin")
+        .join("src")
+        .join("test")
+        .join("resources")
+        .join("replay-trim-parity")
+        .join("replay-20240101-000000-manual-feedface")
+}
+
+// ===========================================================================
+// Test 1: Two-phase Save failure recovery (pin survival + retarget)
+// ===========================================================================
+
+fn churn_ring_and_assert_evictions(ring: &mut RingStore<FakeDiskProvider>) {
+    let mut total_evicted = 0_usize;
+    for i in 0..8_u32 {
+        let (_desc, evicted) = ring
+            .write_closed_chunk(
+                format!("chunk-churn-{i}"),
+                RingChunkKind::Video,
+                10_000 + i64::from(i) * 1_000,
+                500_000,
+                &[0xAB_u8; 96],
+            )
+            .expect("churn chunk writes must succeed by evicting unpinned chunks");
+        total_evicted += evicted.len();
+    }
+    assert!(
+        total_evicted >= 4,
+        "ring churn must have evicted multiple unpinned chunks, got {total_evicted}"
+    );
+}
+
+fn setup_failed_save_job(
+    ring: &mut RingStore<FakeDiskProvider>,
+    catalog: &Catalog,
+    tmp_root: &Path,
+    pinned_video: &[u8],
+    pinned_log: &[u8],
+) -> Vec<String> {
+    ring.write_closed_chunk(
+        "chunk-pin-v1",
+        RingChunkKind::Video,
+        1_000,
+        1_000_000,
+        pinned_video,
+    )
+    .expect("writing chunk-pin-v1 must succeed");
+    ring.write_closed_chunk(
+        "chunk-pin-l1",
+        RingChunkKind::Logcat,
+        2_000,
+        1_000_000,
+        pinned_log,
+    )
+    .expect("writing chunk-pin-l1 must succeed");
+
+    let blocking_file = tmp_root.join("not-a-directory");
+    fs::write(&blocking_file, b"blocker").expect("creating blocking file must succeed");
+    let bad_dest = blocking_file.join("bundle-failed");
+
+    let pinned_ids = vec!["chunk-pin-v1".to_owned(), "chunk-pin-l1".to_owned()];
+    ring.pin_chunks(
+        "save-job-42",
+        &bad_dest,
+        pinned_ids.clone(),
+        "2026-11-22T12:00:00Z",
+    )
+    .expect("Phase-1 pin journal write must succeed");
+    catalog
+        .create_pinned_job(
+            "save-job-42",
+            &bad_dest,
+            &pinned_ids,
+            "2026-11-22T12:00:00Z",
+        )
+        .expect("catalog create_pinned_job must succeed");
+    catalog
+        .mark_draining("save-job-42", "2026-11-22T12:00:01Z")
+        .expect("mark_draining must succeed");
+    catalog
+        .mark_materializing("save-job-42", "2026-11-22T12:00:02Z")
+        .expect("mark_materializing must succeed");
+
+    let draft = build_draft("bundle-retargeted-42", pinned_video.to_vec());
+    let fail_err = V2BundleWriter::write(&bad_dest, "save-job-42", &draft)
+        .expect_err("writing under a non-directory path must fail");
+    assert!(
+        !bad_dest.exists(),
+        "failed write must never create final destination"
+    );
+    assert!(
+        !tmp_root.join(".staging-save-job-42").exists(),
+        "failed write must leave no staging directory behind"
+    );
+
+    let failed = catalog
+        .mark_failed_retryable("save-job-42", &fail_err.to_string(), "2026-11-22T12:00:03Z")
+        .expect("mark_failed_retryable must succeed");
+    assert_eq!(
+        failed.job.state,
+        SaveJobState::FailedRetryable,
+        "must be FailedRetryable"
+    );
+    assert_eq!(
+        failed.job.pinned_chunk_ids, pinned_ids,
+        "pins must stay intact"
+    );
+    pinned_ids
+}
+
+#[test]
+fn fault_two_phase_save_failure_preserves_pins_and_succeeds_after_retarget() {
+    let tmp = TempDir::new().expect("temp dir must be created");
+    let data_dir = tmp.path().join("data");
+    let managed_root = data_dir.join("bundles");
+    let catalog = Catalog::open(data_dir.join("catalog.sqlite"), &managed_root)
+        .expect("catalog open must succeed");
+
+    let disk = FakeDiskProvider::new(100_000_000, 200_000_000);
+    let policy = RingBudgetPolicy {
+        max_ring_bytes: 512,
+        max_ring_duration_ns: 60_000_000_000,
+        min_free_disk_bytes: 1_000_000,
+    };
+    let mut ring = RingStore::open_with_disk_provider(&data_dir, policy, disk)
+        .expect("ring store open must succeed");
+
+    let pinned_video = b"PINNED_VIDEO_PAYLOAD_BYTES_0123456789".repeat(3);
+    let pinned_log = b"PINNED_LOG_PAYLOAD_BYTES_ABCDEF".repeat(2);
+    let _pinned_ids =
+        setup_failed_save_job(&mut ring, &catalog, tmp.path(), &pinned_video, &pinned_log);
+
+    churn_ring_and_assert_evictions(&mut ring);
+    assert_eq!(
+        ring.read_chunk("chunk-pin-v1")
+            .expect("pinned video chunk must survive eviction"),
+        pinned_video,
+        "pinned video chunk must remain intact"
+    );
+    assert_eq!(
+        ring.read_chunk("chunk-pin-l1")
+            .expect("pinned log chunk must survive eviction"),
+        pinned_log,
+        "pinned log chunk must remain intact"
+    );
+
+    let good_dest = managed_root.join("bundle-retargeted-42");
+    let retargeted = catalog
+        .retarget_job("save-job-42", &good_dest, "2026-11-22T12:01:00Z")
+        .expect("retarget_job must succeed");
+    assert_eq!(
+        retargeted.job.state,
+        SaveJobState::Materializing,
+        "must enter Materializing"
+    );
+    ring.pin_journal()
+        .update_destination("save-job-42", &good_dest)
+        .expect("pin journal destination update must succeed");
+
+    let recovered_bytes = ring
+        .read_chunk("chunk-pin-v1")
+        .expect("pinned chunk must remain readable at retarget time");
+    let manifest = V2BundleWriter::write(
+        &good_dest,
+        "save-job-42",
+        &build_draft("bundle-retargeted-42", recovered_bytes.clone()),
+    )
+    .expect("retargeted v2 bundle write must succeed");
+    assert_eq!(
+        manifest.bundle_id, "bundle-retargeted-42",
+        "manifest bundle_id must match"
+    );
+
+    let completed = catalog
+        .complete_job("save-job-42", "2026-11-22T12:01:05Z")
+        .expect("complete_job must succeed");
+    assert_eq!(
+        completed.job.state,
+        SaveJobState::Completed,
+        "job must be Completed"
+    );
+    assert!(
+        !completed.job.has_pinned_chunks(),
+        "completed job must clear pins"
+    );
+    assert!(
+        ring.unpin_job("save-job-42")
+            .expect("unpin_job must succeed"),
+        "pin journal removed"
+    );
+
+    let reader = V2BundleReader::open(&good_dest).expect("retargeted bundle must open read-only");
+    reader
+        .verify_integrity()
+        .expect("retargeted bundle must pass SHA-256 verification");
+    let actual_video =
+        fs::read(reader.video_path().expect("video.mp4 must exist")).expect("read video.mp4");
+    assert_eq!(
+        actual_video, recovered_bytes,
+        "video.mp4 must match pinned chunk payload"
+    );
+}
+
+// ===========================================================================
+// Test 2: Concurrent edit / trash / restore / GC safety (+ external/legacy guard)
+// ===========================================================================
+
+fn register_v2_bundle(catalog: &Catalog, bundle_id: &str, dir: &Path, job_id: &str, data: &[u8]) {
+    V2BundleWriter::write(dir, job_id, &build_draft(bundle_id, data.to_vec()))
+        .expect("v2 bundle write must succeed");
+    catalog
+        .register_bundle(&NewBundleEntry {
+            bundle_id: bundle_id.to_owned(),
+            path: dir.to_path_buf(),
+            format_version: CatalogFormatVersion::V2,
+            parent_bundle_id: None,
+            created_at_utc: "2026-11-22T12:00:00Z".to_owned(),
+        })
+        .expect("register_bundle must succeed");
+}
+
+fn assert_edit_session_and_leased_trash(catalog: &Catalog, managed_dir: &Path) -> String {
+    let edit = EditSession {
+        session_id: "edit-1".to_owned(),
+        bundle_id: "bundle-managed-1".to_owned(),
+        in_frame_index: Some(0),
+        out_frame_index: Some(1),
+        playhead_frame_index: Some(1),
+        av_offset_override_ms: Some(-95),
+        updated_at_utc: "2026-11-22T12:00:10Z".to_owned(),
+    };
+    catalog
+        .upsert_edit_session(&edit)
+        .expect("upsert_edit_session must succeed");
+    assert_eq!(
+        catalog
+            .get_edit_session("edit-1")
+            .expect("get_edit_session must succeed"),
+        Some(edit),
+        "edit session must persist outside immutable bundle"
+    );
+
+    let lease_id = catalog
+        .acquire_lease(
+            "bundle-managed-1",
+            LeaseHolderKind::IdeViewer,
+            std::process::id(),
+            "2026-11-22T12:01:00Z",
+        )
+        .expect("acquire viewer lease must succeed");
+
+    let trashed = catalog
+        .trash_bundle("bundle-managed-1", "2026-11-22T12:02:00Z")
+        .expect("trash_bundle must succeed");
+    assert_eq!(
+        trashed.state,
+        BundleLifecycleState::Trashed,
+        "bundle must be Trashed"
+    );
+    V2BundleReader::open(managed_dir)
+        .expect("trashed bundle must remain readable while leased")
+        .verify_integrity()
+        .expect("trashed bundle files must stay untouched");
+    lease_id
+}
+
+#[test]
+fn fault_concurrent_edit_trash_restore_and_lease_guarded_gc_safety() {
+    let tmp = TempDir::new().expect("temp dir must be created");
+    let managed_root = tmp.path().join("managed-bundles");
+    let external_root = tmp.path().join("external-bundles");
+    fs::create_dir_all(&external_root).expect("external root must be created");
+    let catalog = Catalog::open(tmp.path().join("catalog.sqlite"), &managed_root)
+        .expect("catalog open must succeed");
+
+    let managed_dir = managed_root.join("bundle-managed-1");
+    let external_dir = external_root.join("bundle-external-1");
+    register_v2_bundle(
+        &catalog,
+        "bundle-managed-1",
+        &managed_dir,
+        "job-m1",
+        b"managed-video",
+    );
+    register_v2_bundle(
+        &catalog,
+        "bundle-external-1",
+        &external_dir,
+        "job-e1",
+        b"external-video",
+    );
+
+    let lease_id = assert_edit_session_and_leased_trash(&catalog, &managed_dir);
+    catalog
+        .trash_bundle("bundle-external-1", "2026-11-22T12:02:00Z")
+        .expect("trash external bundle must succeed");
+
+    let gc1 = catalog
+        .gc_trashed_bundles("2026-11-22T13:00:00Z")
+        .expect("gc_trashed_bundles must succeed");
+    assert!(
+        gc1.purged_bundle_ids.is_empty(),
+        "leased and unmanaged bundles must not be purged"
+    );
+    assert_eq!(
+        gc1.skipped_leased_bundle_ids,
+        vec!["bundle-managed-1".to_owned()],
+        "leased skipped"
+    );
+    assert_eq!(
+        gc1.skipped_unmanaged_or_legacy_bundle_ids,
+        vec!["bundle-external-1".to_owned()],
+        "unmanaged external bundle skipped"
+    );
+    assert!(
+        managed_dir.is_dir() && external_dir.is_dir(),
+        "both dirs must stay on disk"
+    );
+
+    let restored = catalog
+        .restore_bundle("bundle-managed-1")
+        .expect("restore must succeed");
+    assert_eq!(
+        restored.state,
+        BundleLifecycleState::Active,
+        "must restore to Active"
+    );
+    assert!(
+        restored.trashed_at_utc.is_none(),
+        "trashed_at_utc must be cleared"
+    );
+
+    catalog
+        .trash_bundle("bundle-managed-1", "2026-11-22T12:05:00Z")
+        .expect("re-trash must succeed");
+    assert!(
+        catalog
+            .release_lease(&lease_id)
+            .expect("release_lease must succeed"),
+        "lease released"
+    );
+
+    let gc2 = catalog
+        .gc_trashed_bundles("2026-11-22T13:00:00Z")
+        .expect("gc after release must succeed");
+    assert_eq!(
+        gc2.purged_bundle_ids,
+        vec!["bundle-managed-1".to_owned()],
+        "managed purged"
+    );
+    assert!(
+        !managed_dir.exists(),
+        "purged managed dir must be deleted from disk"
+    );
+    assert!(
+        catalog
+            .bundle("bundle-managed-1")
+            .expect("query bundle")
+            .is_none(),
+        "row removed"
+    );
+    assert!(
+        external_dir.is_dir(),
+        "external unmanaged bundle must NEVER be deleted"
+    );
+}
+
+// ===========================================================================
+// Test 3: Orphan lease & crash recovery
+// ===========================================================================
+
+fn seed_interrupted_jobs(
+    catalog: &Catalog,
+    managed_root: &Path,
+) -> Vec<(&'static str, Vec<String>)> {
+    let pins_a = vec!["c-a1".to_owned(), "c-a2".to_owned()];
+    let pins_b = vec!["c-b1".to_owned()];
+    let pins_c = vec!["c-c1".to_owned()];
+    catalog
+        .create_pinned_job(
+            "job-interrupted-pinned",
+            managed_root.join("out-a"),
+            &pins_a,
+            "2026-11-22T12:02:00Z",
+        )
+        .expect("creating pinned job must succeed");
+    catalog
+        .create_pinned_job(
+            "job-interrupted-draining",
+            managed_root.join("out-b"),
+            &pins_b,
+            "2026-11-22T12:02:01Z",
+        )
+        .expect("creating draining job must succeed");
+    catalog
+        .mark_draining("job-interrupted-draining", "2026-11-22T12:02:02Z")
+        .expect("marking draining must succeed");
+    catalog
+        .create_pinned_job(
+            "job-interrupted-materializing",
+            managed_root.join("out-c"),
+            &pins_c,
+            "2026-11-22T12:02:03Z",
+        )
+        .expect("creating materializing job must succeed");
+    catalog
+        .mark_draining("job-interrupted-materializing", "2026-11-22T12:02:04Z")
+        .expect("marking draining must succeed");
+    catalog
+        .mark_materializing("job-interrupted-materializing", "2026-11-22T12:02:05Z")
+        .expect("marking materializing must succeed");
+    vec![
+        ("job-interrupted-pinned", pins_a),
+        ("job-interrupted-draining", pins_b),
+        ("job-interrupted-materializing", pins_c),
+    ]
+}
+
+#[test]
+fn fault_orphan_lease_staging_and_interrupted_jobs_recover_on_startup() {
+    let tmp = TempDir::new().expect("temp dir must be created");
+    let managed_root = tmp.path().join("bundles");
+    let catalog = Catalog::open(tmp.path().join("catalog.sqlite"), &managed_root)
+        .expect("catalog open must succeed");
+
+    let good_bundle = managed_root.join("bundle-survives");
+    register_v2_bundle(
+        &catalog,
+        "bundle-survives",
+        &good_bundle,
+        "job-good",
+        b"keep-me",
+    );
+
+    let orphan_staging = managed_root.join(".staging-crash");
+    fs::create_dir_all(&orphan_staging).expect("creating orphan staging dir must succeed");
+    fs::write(orphan_staging.join("partial.bin"), b"half-written")
+        .expect("writing orphan staging file must succeed");
+
+    let dead_pid = spawn_and_reap_dead_pid();
+    let dead_lease_id = catalog
+        .acquire_lease(
+            "bundle-survives",
+            LeaseHolderKind::IdeViewer,
+            dead_pid,
+            "2026-11-22T12:01:00Z",
+        )
+        .expect("inserting dead-PID lease must succeed");
+    let live_lease_id = catalog
+        .acquire_lease(
+            "bundle-survives",
+            LeaseHolderKind::Cli,
+            std::process::id(),
+            "2026-11-22T12:01:05Z",
+        )
+        .expect("inserting live-PID lease must succeed");
+
+    let expected_jobs = seed_interrupted_jobs(&catalog, &managed_root);
+
+    let report = catalog
+        .recover_on_startup("2026-11-22T12:10:00Z")
+        .expect("recover_on_startup must succeed");
+
+    assert_eq!(
+        report.removed_staging_dirs.len(),
+        1,
+        "orphan .staging-crash must be removed"
+    );
+    assert!(
+        !orphan_staging.exists(),
+        ".staging-crash must no longer exist on disk"
+    );
+    assert!(
+        good_bundle.is_dir(),
+        "committed bundle must remain untouched"
+    );
+    assert_eq!(
+        report.reaped_lease_ids,
+        vec![dead_lease_id],
+        "dead-PID lease must be reaped"
+    );
+
+    let remaining_leases = catalog
+        .active_leases_for_bundle("bundle-survives")
+        .expect("active_leases_for_bundle must succeed");
+    assert_eq!(
+        remaining_leases.len(),
+        1,
+        "live-PID lease must survive recovery"
+    );
+    assert_eq!(
+        remaining_leases[0].lease_id, live_lease_id,
+        "surviving lease must be live PID"
+    );
+    assert_eq!(
+        report.recovered_job_ids.len(),
+        3,
+        "all 3 interrupted jobs must recover"
+    );
+
+    for (job_id, expected_pins) in expected_jobs {
+        let job = catalog
+            .save_job(job_id)
+            .expect("save_job query must succeed")
+            .expect("recovered job must exist");
+        assert_eq!(
+            job.job.state,
+            SaveJobState::FailedRetryable,
+            "{job_id} -> FailedRetryable"
+        );
+        assert_eq!(
+            job.job.pinned_chunk_ids, expected_pins,
+            "{job_id} must preserve pins"
+        );
+    }
+}
+
+// ===========================================================================
+// Test 4: Disk pressure protection
+// ===========================================================================
+
+#[test]
+fn fault_disk_pressure_stops_new_ring_writes_while_protecting_pins_and_saved_bundles() {
+    let tmp = TempDir::new().expect("temp dir must be created");
+    let data_dir = tmp.path().join("data");
+    let bundle_dir = data_dir.join("bundles").join("saved-bundle-1");
+
+    // Existing committed v2 bundle on disk.
+    let saved_draft = build_draft("saved-bundle-1", b"precious-saved-video".to_vec());
+    V2BundleWriter::write(&bundle_dir, "job-saved-1", &saved_draft)
+        .expect("initial saved bundle write must succeed");
+
+    // Live ring store with 3 GiB safety floor and deterministic disk provider.
+    let disk = FakeDiskProvider::new(10 * 1024 * 1024 * 1024, 50 * 1024 * 1024 * 1024);
+    let policy = RingBudgetPolicy::default();
+    let mut ring = RingStore::open_with_disk_provider(&data_dir, policy, disk.clone())
+        .expect("ring store open must succeed");
+
+    let pinned_bytes = b"PINNED_RING_DATA_NEVER_EVICT".to_vec();
+    let unpinned_bytes = b"UNPINNED_RING_DATA_ALSO_PRESERVED_ON_PRESSURE".to_vec();
+    ring.write_closed_chunk("pin-1", RingChunkKind::Video, 100, 1_000, &pinned_bytes)
+        .expect("writing pin-1 must succeed");
+    ring.write_closed_chunk(
+        "unpin-1",
+        RingChunkKind::ClockMetadata,
+        200,
+        1_000,
+        &unpinned_bytes,
+    )
+    .expect("writing unpin-1 must succeed");
+    ring.pin_chunks(
+        "job-active-pin",
+        data_dir.join("bundles").join("future-bundle"),
+        vec!["pin-1".to_owned()],
+        "2026-11-22T12:00:00Z",
+    )
+    .expect("pinning pin-1 must succeed");
+
+    // Drop available disk space below 3 GiB floor (2 GiB available).
+    disk.set_available(2 * 1024 * 1024 * 1024);
+
+    let err = ring
+        .write_closed_chunk(
+            "rejected-chunk",
+            RingChunkKind::Video,
+            300,
+            1_000,
+            b"new-capture-bytes",
+        )
+        .expect_err("disk space below min_free_disk_bytes must stop capture");
+    match err {
+        StorageError::StoragePressureStop {
+            host_free_bytes,
+            min_free_disk_bytes,
+            pinned_bytes: reported_pinned,
+            event,
+        } => {
+            assert_eq!(
+                host_free_bytes,
+                2 * 1024 * 1024 * 1024,
+                "reported free bytes must match simulated value"
+            );
+            assert_eq!(
+                min_free_disk_bytes, policy.min_free_disk_bytes,
+                "reported floor must match policy"
+            );
+            assert_eq!(
+                reported_pinned,
+                u64::try_from(pinned_bytes.len()).expect("len fits u64"),
+                "reported pinned bytes must match pinned chunk"
+            );
+            assert_eq!(
+                event.kind,
+                DiscontinuityKind::StoragePressureStop,
+                "discontinuity event must be StoragePressureStop"
+            );
+        }
+        other => panic!("expected StoragePressureStop, got {other:?}"),
+    }
+
+    assert!(
+        ring.chunk_path("rejected-chunk").is_none(),
+        "rejected chunk must never be written to disk"
+    );
+    assert_eq!(
+        ring.read_chunk("pin-1")
+            .expect("pinned chunk must remain intact under disk pressure"),
+        pinned_bytes,
+        "pinned chunk bytes must remain 100% intact"
+    );
+    assert_eq!(
+        ring.read_chunk("unpin-1")
+            .expect("unpinned chunk must not be evicted on storage pressure stop"),
+        unpinned_bytes,
+        "existing chunk bytes must remain intact"
+    );
+
+    let reader = V2BundleReader::open(&bundle_dir)
+        .expect("existing saved bundle must remain readable under disk pressure");
+    reader
+        .verify_integrity()
+        .expect("existing saved bundle SHA-256 must remain 100% intact");
+}
+
+// ===========================================================================
+// Test 5: Multi-reader concurrency (4 threads, zero errors, zero write locks)
+// ===========================================================================
+
+#[test]
+fn concurrent_four_thread_v2_bundle_readers_succeed_with_zero_write_locks() {
+    let tmp = TempDir::new().expect("temp dir must be created");
+    let bundle_dir = tmp.path().join("bundle-concurrent");
+    let draft = build_draft("bundle-concurrent", b"concurrent-mp4-stream".to_vec());
+    V2BundleWriter::write(&bundle_dir, "job-conc", &draft)
+        .expect("writing concurrent test bundle must succeed");
+
+    let shared_reader =
+        Arc::new(V2BundleReader::open(&bundle_dir).expect("initial v2 open must succeed"));
+    let mut handles = Vec::new();
+
+    for worker_idx in 0..4_u32 {
+        let dir = bundle_dir.clone();
+        let shared = Arc::clone(&shared_reader);
+        handles.push(thread::spawn(move || {
+            let local_reader =
+                V2BundleReader::open(&dir).expect("per-thread V2BundleReader::open must succeed");
+            for _iter in 0..10_u32 {
+                local_reader
+                    .verify_integrity()
+                    .expect("per-thread integrity check must pass");
+                assert_eq!(
+                    local_reader
+                        .frames()
+                        .expect("per-thread frames query must succeed")
+                        .len(),
+                    2,
+                    "worker {worker_idx} must observe 2 frames"
+                );
+                assert_eq!(
+                    shared
+                        .query_logs(Some(RecordBucket::Main), TimeRange::all(), None)
+                        .expect("shared main log query must succeed")
+                        .len(),
+                    1,
+                    "worker {worker_idx} must observe 1 main log"
+                );
+                assert_eq!(
+                    shared
+                        .query_logs(Some(RecordBucket::Unanchored), TimeRange::all(), None)
+                        .expect("shared unanchored log query must succeed")
+                        .len(),
+                    1,
+                    "worker {worker_idx} must observe 1 unanchored log"
+                );
+                assert_eq!(
+                    local_reader
+                        .query_taps(None, TimeRange::all(), Some(10))
+                        .expect("taps query must succeed")
+                        .len(),
+                    1,
+                    "worker {worker_idx} must observe 1 tap"
+                );
+                assert_eq!(
+                    local_reader
+                        .discontinuities()
+                        .expect("discontinuities query must succeed")
+                        .len(),
+                    1,
+                    "worker {worker_idx} must observe 1 discontinuity"
+                );
+                assert_eq!(
+                    local_reader
+                        .clock_anchors()
+                        .expect("clock_anchors query must succeed")
+                        .len(),
+                    2,
+                    "worker {worker_idx} must observe 2 clock anchors"
+                );
+            }
+        }));
+    }
+
+    for handle in handles {
+        handle
+            .join()
+            .expect("concurrent reader thread must not panic");
+    }
+
+    // Verify no SQLite -wal or -shm sidecars were ever created inside the immutable bundle!
+    assert!(
+        !bundle_dir.join("timeline.sqlite-wal").exists()
+            && !bundle_dir.join("timeline.sqlite-shm").exists(),
+        "read-only v2 bundle must never gain -wal or -shm sidecar files"
+    );
+}
+
+// ===========================================================================
+// Test 6: Legacy Read-Only Compatibility (real Schema 4, synthetic Schema 3, log-only Schema 4)
+// ===========================================================================
+
+#[test]
+fn legacy_reader_opens_real_schema4_fixture_strictly_read_only() {
+    let fixture_dir = repo_schema4_fixture_dir();
+    assert!(
+        fixture_dir.is_dir(),
+        "real schema 4 fixture must exist at {}",
+        fixture_dir.display()
+    );
+
+    let before = snapshot_directory_readonly(&fixture_dir);
+
+    let reader = LegacyBundleReader::open(&fixture_dir)
+        .expect("LegacyBundleReader must open real schema 4 fixture");
+    reader
+        .verify_integrity()
+        .expect("real schema 4 fixture must pass read-only SHA-256 verification");
+
+    assert!(reader.is_legacy(), "must report is_legacy() == true");
+    assert_eq!(
+        reader.manifest_summary().format,
+        BundleFormat::LegacySchema4,
+        "format must be LegacySchema4"
+    );
+    assert_eq!(
+        reader.manifest_summary().bundle_id,
+        "fixture-source",
+        "bundle_id must match fixture save_id"
+    );
+    assert_eq!(
+        reader.video_path(),
+        Some(fixture_dir.join("video.mp4")),
+        "video_path must point to video.mp4"
+    );
+    assert!(reader.audio_path().is_none(), "legacy has no audio.m4a");
+
+    let frames = reader.frames().expect("frames must decode");
+    assert_eq!(frames.len(), 24, "real fixture has 24 video frames");
+    assert!(frames[0].is_keyframe, "frame 0 must be keyframe");
+
+    let discontinuities = reader
+        .discontinuities()
+        .expect("discontinuities must decode");
+    assert_eq!(
+        discontinuities.len(),
+        1,
+        "two-part fixture must report 1 gap discontinuity between segments"
+    );
+
+    let all_logs = reader
+        .query_logs(None, TimeRange::all(), None)
+        .expect("all logs query must succeed");
+    assert_eq!(all_logs.len(), 5, "real fixture has 5 device log rows");
+    let main_logs = reader
+        .query_logs(Some(RecordBucket::Main), TimeRange::all(), None)
+        .expect("main logs query must succeed");
+    assert_eq!(main_logs.len(), 4, "4 device logs have anchored t_ns");
+    let unanchored_logs = reader
+        .query_logs(Some(RecordBucket::Unanchored), TimeRange::all(), None)
+        .expect("unanchored logs query must succeed");
+    assert_eq!(
+        unanchored_logs.len(),
+        1,
+        "1 device log with null t_ns must be in unanchored bucket"
+    );
+    assert_eq!(
+        reader.app_logs().len(),
+        3,
+        "real fixture has 3 app-filtered log rows"
+    );
+
+    let taps = reader
+        .query_taps(None, TimeRange::all(), None)
+        .expect("taps query must succeed");
+    assert_eq!(taps.len(), 2, "real fixture has 2 touch rows");
+    assert_eq!(taps[0].action, "DOWN", "first touch must be DOWN");
+    assert_eq!(
+        taps[0].bucket,
+        RecordBucket::Main,
+        "aligned touch must be in Main bucket"
+    );
+    assert_eq!(taps[1].action, "UP", "second touch must be UP");
+    assert_eq!(
+        taps[1].bucket,
+        RecordBucket::Unanchored,
+        "null-t_ns touch must be in Unanchored bucket"
+    );
+
+    // Also verify unified open_bundle() auto-detection works cleanly.
+    let boxed = open_bundle(&fixture_dir).expect("open_bundle must auto-detect schema 4");
+    assert!(boxed.is_legacy(), "boxed reader must report legacy");
+
+    let after = snapshot_directory_readonly(&fixture_dir);
+    assert_eq!(
+        before, after,
+        "real schema 4 fixture directory and files must remain 100% untouched"
+    );
+}
+
+#[test]
+fn legacy_reader_opens_synthetic_schema3_strictly_read_only() {
+    let tmp = TempDir::new().expect("temp dir must be created");
+    let s3_dir = tmp.path().join("replay-2026-11-10T02-49-18Z-uuid");
+    fs::create_dir_all(&s3_dir).expect("create schema 3 dir must succeed");
+    fs::write(s3_dir.join("video-001.mp4"), b"synthetic-s3-mp4")
+        .expect("write video-001.mp4 must succeed");
+    fs::write(
+        s3_dir.join("session.json"),
+        r#"{
+            "schema": 3, "complete": true, "save_id": "s3-compat-01",
+            "capture_mode": "VIDEO_AND_LOGS", "created_at": "2026-11-10T02:49:18Z",
+            "replay_seconds": 30, "window_clock_known": true,
+            "window_start_ns": "1000000000", "window_end_ns": "31000000000",
+            "window_end_uncertainty_ns": "5000", "video_movie_duration_us": "2000000",
+            "parts": [{"file": "video-001.mp4", "segment_index": 0, "generation": 1,
+                "movie_start_us": "0", "movie_end_us": "2000000", "duration_us": "2000000",
+                "window_start_ns": "0", "window_end_ns": "2000000000",
+                "clock_alignment_known": true, "preroll_samples": 0}],
+            "files_sha256": {}
+        }"#,
+    )
+    .expect("write session.json must succeed");
+    fs::write(
+        s3_dir.join("frames.jsonl"),
+        concat!(
+            r#"{"part":"video-001.mp4","segment_index":0,"sample_index":0,"source_key":true,"output_key":true,"source_pts_us":"0","movie_pts_us":"0","movie_end_us":"100000","window_ns":"0","uncertainty_ns":"1000","clock_alignment_known":true,"presented":true,"preroll":false,"clock_epoch":1}"#,
+            "\n",
+            r#"{"part":"video-001.mp4","segment_index":0,"sample_index":1,"source_key":false,"output_key":false,"source_pts_us":"100000","movie_pts_us":"100000","movie_end_us":"200000","window_ns":"100000000","uncertainty_ns":"1000","clock_alignment_known":true,"presented":true,"preroll":false,"clock_epoch":1}"#,
+            "\n"
+        ),
+    )
+    .expect("write frames.jsonl must succeed");
+    fs::write(
+        s3_dir.join("logcat-device.jsonl"),
+        concat!(
+            r#"{"record_id":"1","clock_epoch":1,"epoch_ns":"1700000000000000000","elapsed_ns":"1000500000","window_ns":"500000","uncertainty_ns":"1000","pid":42,"tid":43,"priority":4,"tag":"App","message":"s3 anchored log"}"#,
+            "\n",
+            r#"{"record_id":"2","clock_epoch":2,"window_ns":null,"uncertainty_ns":"9223372036854775807","priority":6,"tag":"App","message":"s3 sentinel log"}"#,
+            "\n"
+        ),
+    )
+    .expect("write logcat-device.jsonl must succeed");
+
+    let s3_before = snapshot_directory_readonly(&s3_dir);
+    let s3_reader =
+        LegacyBundleReader::open(&s3_dir).expect("LegacyBundleReader must open schema 3 fixture");
+    assert_eq!(
+        s3_reader.legacy_metadata().schema,
+        LegacySchemaVersion::Schema3,
+        "must be Schema3"
+    );
+    assert_eq!(
+        s3_reader.manifest_summary().format,
+        BundleFormat::LegacySchema3,
+        "LegacySchema3"
+    );
+    assert_eq!(
+        s3_reader.video_path(),
+        Some(s3_dir.join("video-001.mp4")),
+        "video-001.mp4"
+    );
+    assert_eq!(
+        s3_reader.frames().expect("s3 frames").len(),
+        2,
+        "must decode 2 frames"
+    );
+    let s3_logs = s3_reader
+        .query_logs(None, TimeRange::all(), None)
+        .expect("s3 logs");
+    assert_eq!(s3_logs.len(), 2, "schema 3 must decode 2 log rows");
+    assert_eq!(
+        s3_logs[0].level.as_deref(),
+        Some("I"),
+        "priority 4 maps to I"
+    );
+    assert_eq!(
+        s3_logs[1].bucket,
+        RecordBucket::Unanchored,
+        "sentinel maps to Unanchored"
+    );
+    assert_eq!(
+        s3_before,
+        snapshot_directory_readonly(&s3_dir),
+        "schema 3 dir untouched"
+    );
+}
+
+#[test]
+fn legacy_reader_opens_synthetic_log_only_schema4_strictly_read_only() {
+    let tmp = TempDir::new().expect("temp dir must be created");
+    let logs_only_dir = tmp
+        .path()
+        .join("replay-20261122-120000-manual-logs-deadbeef");
+    fs::create_dir_all(&logs_only_dir).expect("create log-only dir must succeed");
+    fs::write(
+        logs_only_dir.join("replay.json"),
+        r#"{
+            "schema": 4, "capture_mode": "LOGS_ONLY", "complete": true,
+            "save_id": "s4-logs-only-01",
+            "folder_name": "replay-20261122-120000-manual-logs-deadbeef",
+            "trigger": "manual",
+            "files": {"readme": "README.md", "record": "replay.json", "video": null,
+                "video_frames": null, "video_source": null,
+                "logcat_device": "logcat-device.jsonl", "logcat_app": null, "touches": null},
+            "counts": {"device_log_rows": 2, "app_log_rows": 0, "video_frames": 0},
+            "save_request": {"content": "LOGS_ONLY", "origin": "CLI", "video_excluded": true},
+            "coverage": {"video": {"state": "EXCLUDED"}},
+            "timebase": {"domain": "device_boottime", "known": true,
+                "window_duration_ns": "10000000000", "window_end_uncertainty_ns": "0"},
+            "parts": [], "files_sha256": {}
+        }"#,
+    )
+    .expect("write log-only replay.json must succeed");
+    fs::write(
+        logs_only_dir.join("logcat-device.jsonl"),
+        concat!(
+            r#"{"record_id":"10","t_ns":"100000","t_uncertainty_ns":"0","priority":5,"tag":"Sync","message":"log only entry 1"}"#,
+            "\n",
+            r#"{"record_id":"11","t_ns":"200000","t_uncertainty_ns":"0","priority":6,"tag":"Sync","message":"log only entry 2"}"#,
+            "\n"
+        ),
+    )
+    .expect("write log-only logcat-device.jsonl must succeed");
+
+    let lo_before = snapshot_directory_readonly(&logs_only_dir);
+    let lo_reader = LegacyBundleReader::open(&logs_only_dir)
+        .expect("LegacyBundleReader must open log-only schema 4 fixture");
+    assert_eq!(
+        lo_reader.legacy_metadata().save_kind,
+        LegacySaveKind::LogsOnly,
+        "LogsOnly"
+    );
+    assert!(
+        lo_reader.video_path().is_none(),
+        "log-only save must have no video_path"
+    );
+    assert!(
+        lo_reader.frames().expect("log-only frames").is_empty(),
+        "0 frames"
+    );
+    let lo_logs = lo_reader
+        .query_logs(
+            Some(RecordBucket::Main),
+            TimeRange::between(150_000, 250_000),
+            None,
+        )
+        .expect("ranged log query must succeed");
+    assert_eq!(
+        lo_logs.len(),
+        1,
+        "range [150_000, 250_000] must match 1 entry"
+    );
+    assert_eq!(
+        lo_logs[0].message, "log only entry 2",
+        "must return entry 2"
+    );
+    assert_eq!(
+        lo_before,
+        snapshot_directory_readonly(&logs_only_dir),
+        "dir untouched"
+    );
+}
+
+#[test]
+fn fault_mid_staging_failure_cleans_staging_and_ring_reopen_preserves_pins_and_duration_eviction() {
+    let tmp = TempDir::new().expect("temp dir must be created");
+    let data_dir = tmp.path().join("data");
+    let managed_root = data_dir.join("bundles");
+
+    // 1. Mid-staging I/O error (missing source media file) cleans up .staging-<id> cleanly.
+    let mut bad_draft = build_draft("bundle-mid-fail", Vec::new());
+    bad_draft.video_mp4 = Some(MediaPayload::File(tmp.path().join("does-not-exist.mp4")));
+    let final_dir = managed_root.join("bundle-mid-fail");
+    let err = V2BundleWriter::write(&final_dir, "mid-fail-job", &bad_draft)
+        .expect_err("missing media source file must fail mid-staging");
+    assert!(
+        matches!(err, StorageError::Io { .. }),
+        "expected StorageError::Io on missing media file, got {err:?}"
+    );
+    assert!(
+        !final_dir.exists(),
+        "failed mid-staging write must never create final bundle dir"
+    );
+    assert!(
+        !managed_root.join(".staging-mid-fail-job").exists(),
+        "failed mid-staging write must clean up .staging directory automatically"
+    );
+
+    // 2. RingStore reopen reloads closed chunks and durable PinJournal; duration budget evicts old unpinned chunks.
+    let disk = FakeDiskProvider::new(100_000_000, 200_000_000);
+    let policy = RingBudgetPolicy {
+        max_ring_bytes: 100_000,
+        max_ring_duration_ns: 2_000_000,
+        min_free_disk_bytes: 1_000_000,
+    };
+    {
+        let mut ring = RingStore::open_with_disk_provider(&data_dir, policy, disk.clone())
+            .expect("ring open 1 must succeed");
+        ring.write_closed_chunk("c-pin", RingChunkKind::Video, 100, 1_500_000, b"pinned")
+            .expect("write c-pin must succeed");
+        ring.write_closed_chunk("c-old", RingChunkKind::Audio, 200, 1_500_000, b"old-audio")
+            .expect("write c-old must succeed");
+        ring.pin_chunks(
+            "job-persist",
+            managed_root.join("out"),
+            vec!["c-pin".to_owned()],
+            "2026-11-22T12:00:00Z",
+        )
+        .expect("pinning c-pin must succeed");
+    }
+
+    let mut reopened = RingStore::open_with_disk_provider(&data_dir, policy, disk)
+        .expect("ring reopen must succeed");
+    assert!(
+        reopened
+            .pinned_chunk_ids()
+            .expect("pinned_chunk_ids must succeed")
+            .contains("c-pin"),
+        "reopened ring store must retain durable pin for c-pin"
+    );
+    let (_desc, evicted) = reopened
+        .write_closed_chunk("c-new", RingChunkKind::Input, 300, 1_000_000, b"new-input")
+        .expect("duration-exceeding write must evict old unpinned chunk");
+    assert_eq!(
+        evicted,
+        vec!["c-old".to_owned()],
+        "duration budget must evict unpinned c-old while preserving pinned c-pin"
+    );
+    assert_eq!(
+        reopened
+            .read_chunk("c-pin")
+            .expect("pinned c-pin must survive restart and duration eviction"),
+        b"pinned",
+        "c-pin bytes must stay intact"
+    );
+}
+
+#[test]
+fn catalog_gc_protects_legacy_ro_and_active_job_targets_and_supports_retry_job() {
+    let tmp = TempDir::new().expect("temp dir must be created");
+    let managed_root = tmp.path().join("bundles");
+    let catalog = Catalog::open(tmp.path().join("catalog.sqlite"), &managed_root)
+        .expect("catalog open must succeed");
+
+    let legacy_dir = managed_root.join("legacy-inside-root");
+    fs::create_dir_all(&legacy_dir).expect("create legacy dir must succeed");
+    catalog
+        .register_bundle(&NewBundleEntry {
+            bundle_id: "legacy-1".to_owned(),
+            path: legacy_dir.clone(),
+            format_version: CatalogFormatVersion::LegacyRo,
+            parent_bundle_id: None,
+            created_at_utc: "2026-11-22T12:00:00Z".to_owned(),
+        })
+        .expect("register legacy bundle must succeed");
+    catalog
+        .trash_bundle("legacy-1", "2026-11-22T12:01:00Z")
+        .expect("trash legacy bundle must succeed");
+
+    let job_target = managed_root.join("bundle-job-locked");
+    register_v2_bundle(&catalog, "bundle-job-locked", &job_target, "job-init", b"v");
+    catalog
+        .trash_bundle("bundle-job-locked", "2026-11-22T12:01:00Z")
+        .expect("trash bundle-job-locked must succeed");
+
+    let pins = vec!["c1".to_owned()];
+    catalog
+        .create_pinned_job("job-retry-1", &job_target, &pins, "2026-11-22T12:02:00Z")
+        .expect("create_pinned_job must succeed");
+    catalog
+        .mark_failed_retryable("job-retry-1", "transient error", "2026-11-22T12:02:05Z")
+        .expect("mark_failed_retryable must succeed");
+    let retried = catalog
+        .retry_job("job-retry-1", "2026-11-22T12:02:10Z")
+        .expect("retry_job must succeed");
+    assert_eq!(
+        retried.job.state,
+        SaveJobState::Materializing,
+        "retry_job must transition FailedRetryable -> Materializing"
+    );
+    assert_eq!(
+        retried.job.pinned_chunk_ids, pins,
+        "retry_job must preserve pinned chunks"
+    );
+
+    let gc = catalog
+        .gc_trashed_bundles("2026-11-22T13:00:00Z")
+        .expect("gc_trashed_bundles must succeed");
+    assert!(
+        gc.purged_bundle_ids.is_empty(),
+        "neither legacy_ro nor active-job-targeted bundle may be purged"
+    );
+    assert_eq!(
+        gc.skipped_unmanaged_or_legacy_bundle_ids,
+        vec!["legacy-1".to_owned()],
+        "legacy_ro bundle must never be deleted by GC even inside managed root"
+    );
+    assert_eq!(
+        gc.skipped_active_job_bundle_ids,
+        vec!["bundle-job-locked".to_owned()],
+        "bundle referenced by active save job must be skipped by GC"
+    );
+    assert!(
+        legacy_dir.is_dir() && job_target.is_dir(),
+        "both protected directories must remain untouched on disk"
+    );
+}

@@ -8,6 +8,14 @@ description = "Three-zone storage engine for ARB v2 (live ring chunks, WORM v2 +
 [dependencies]
 arb-core.workspace = true
 arb-os.workspace = true
+rusqlite = { version = "0.35", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+thiserror = "2"
+
+[dev-dependencies]
+tempfile = "3"
 
 [lints]
 workspace = true
