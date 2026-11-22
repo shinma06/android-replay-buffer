@@ -350,12 +350,16 @@ impl V2BundleWriter {
     /// `final_dir`.
     ///
     /// On any error before commit succeeds, the staging directory is cleaned up
-    /// automatically and `final_dir` is never left partially written.
+    /// automatically and `final_dir` is never left partially written. If the
+    /// atomic rename succeeds on disk and only the post-commit parent directory
+    /// `fsync` fails, `Err(StorageError::Os(OsError::CommittedParentSyncFailed { .. }))`
+    /// is returned while preserving the published WORM bundle untouched.
     ///
     /// # Errors
     ///
     /// Returns [`StorageError`] on staging creation failure, I/O error, `SQLite`
-    /// write error, manifest validation error, or atomic commit failure.
+    /// write error, manifest validation error, or atomic commit failure (including
+    /// `OsError::CommittedParentSyncFailed` when the bundle is already published).
     pub fn write(
         final_dir: impl AsRef<Path>,
         job_id: &str,
@@ -840,9 +844,15 @@ impl LegacyBundleReader {
             });
         };
 
-        let frames = load_legacy_frames(&root_dir, &metadata)?;
-        let device_logs = load_legacy_logs(&root_dir, metadata.files.logcat_device.as_deref())?;
-        let app_logs = load_legacy_logs(&root_dir, metadata.files.logcat_app.as_deref())?;
+        let origin_ns = metadata.timebase.device_boottime_origin_ns();
+        let frames = load_legacy_frames(&root_dir, &metadata, origin_ns)?;
+        let device_logs = load_legacy_logs(
+            &root_dir,
+            metadata.files.logcat_device.as_deref(),
+            origin_ns,
+        )?;
+        let app_logs =
+            load_legacy_logs(&root_dir, metadata.files.logcat_app.as_deref(), origin_ns)?;
         let has_device_log_file = metadata
             .files
             .logcat_device
@@ -853,7 +863,7 @@ impl LegacyBundleReader {
         } else {
             app_logs.clone()
         };
-        let taps = load_legacy_taps(&root_dir, metadata.files.touches.as_deref())?;
+        let taps = load_legacy_taps(&root_dir, metadata.files.touches.as_deref(), origin_ns)?;
         let discontinuities = derive_legacy_discontinuities(&metadata);
 
         let unanchored_count = count_unanchored(&frames, &logs, &taps);
@@ -1663,6 +1673,7 @@ fn decode_tap_row(raw: RawTapSqlRow) -> Result<TapRecord, StorageError> {
 fn load_legacy_frames(
     root_dir: &Path,
     meta: &LegacyBundleMetadata,
+    origin_ns: Option<i64>,
 ) -> Result<Vec<FrameRecord>, StorageError> {
     let Some(frames_file) = meta.files.video_frames.as_deref() else {
         return Ok(Vec::new());
@@ -1695,7 +1706,7 @@ fn load_legacy_frames(
             .boot_segment
             .clone()
             .unwrap_or_else(|| DEFAULT_LEGACY_BOOT_ID.to_owned());
-        let alignment = row.to_time_alignment(&boot_id, 0);
+        let alignment = row.to_time_alignment_with_origin(&boot_id, origin_ns, 0);
         let pts_device_mono_ns = row
             .source_pts_us
             .or(row.media_pts_us)
@@ -1720,6 +1731,7 @@ fn load_legacy_frames(
 fn load_legacy_logs(
     root_dir: &Path,
     rel_file: Option<&str>,
+    origin_ns: Option<i64>,
 ) -> Result<Vec<LogRecord>, StorageError> {
     let Some(file_name) = rel_file else {
         return Ok(Vec::new());
@@ -1738,7 +1750,7 @@ fn load_legacy_logs(
             .boot_segment
             .clone()
             .unwrap_or_else(|| DEFAULT_LEGACY_BOOT_ID.to_owned());
-        let alignment = row.to_time_alignment(&boot_id, 0);
+        let alignment = row.to_time_alignment_with_origin(&boot_id, origin_ns, 0);
         let bucket = match alignment {
             TimeAlignment::Unanchored { .. } => RecordBucket::Unanchored,
             _ => RecordBucket::Main,
@@ -1764,6 +1776,7 @@ fn load_legacy_logs(
 fn load_legacy_taps(
     root_dir: &Path,
     rel_file: Option<&str>,
+    origin_ns: Option<i64>,
 ) -> Result<Vec<TapRecord>, StorageError> {
     let Some(file_name) = rel_file else {
         return Ok(Vec::new());
@@ -1782,7 +1795,7 @@ fn load_legacy_taps(
             .boot_segment
             .clone()
             .unwrap_or_else(|| DEFAULT_LEGACY_BOOT_ID.to_owned());
-        let alignment = row.to_time_alignment(&boot_id, 0);
+        let alignment = row.to_time_alignment_with_origin(&boot_id, origin_ns, 0);
         let bucket = match alignment {
             TimeAlignment::Unanchored { .. } => RecordBucket::Unanchored,
             _ => RecordBucket::Main,
@@ -1804,6 +1817,7 @@ fn load_legacy_taps(
 }
 
 fn derive_legacy_discontinuities(meta: &LegacyBundleMetadata) -> Vec<DiscontinuityEvent> {
+    let origin_ns = meta.timebase.device_boottime_origin_ns();
     let mut events = Vec::new();
     for pair in meta.parts.windows(2) {
         let prev = &pair[0];
@@ -1815,8 +1829,8 @@ fn derive_legacy_discontinuities(meta: &LegacyBundleMetadata) -> Vec<Discontinui
                 kind: DiscontinuityKind::StreamGap,
                 stream: Some(StreamKind::Video),
                 boot_id: Some(DEFAULT_LEGACY_BOOT_ID.to_owned()),
-                start_boottime_ns: Some(prev_end),
-                end_boottime_ns: Some(next_start),
+                start_boottime_ns: origin_ns.and_then(|o| o.checked_add(prev_end)),
+                end_boottime_ns: origin_ns.and_then(|o| o.checked_add(next_start)),
                 pc_cont_start_ns: prev_end,
                 pc_cont_end_ns: Some(next_start),
                 delta_ns: i64::try_from(i128::from(next_start) - i128::from(prev_end)).ok(),
@@ -1895,7 +1909,7 @@ fn build_legacy_summary(
 
     let mut epochs = Vec::new();
     if let (Some(start), Some(dur)) = (
-        meta.timebase.window_start_ns.or(Some(0)),
+        meta.timebase.device_boottime_origin_ns(),
         meta.timebase.window_duration_ns,
     ) && dur >= 0
     {

@@ -1,7 +1,7 @@
 //! Error types for the ARB v2 three-zone storage layer.
 
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use arb_core::bundle::ValidationError;
 use arb_core::legacy::LegacyParseError;
@@ -154,5 +154,18 @@ impl StorageError {
     /// Constructs a [`StorageError::Json`] with operation context.
     pub(crate) const fn json(operation: &'static str, source: serde_json::Error) -> Self {
         Self::Json { operation, source }
+    }
+
+    /// Returns the published WORM bundle path if an atomic commit succeeded on
+    /// disk and only the post-commit parent-directory `fsync` failed.
+    ///
+    /// Callers must treat the bundle at this path as already published and must
+    /// never delete it or retry committing into the same destination path.
+    #[must_use]
+    pub fn committed_bundle_path_on_parent_sync_error(&self) -> Option<&Path> {
+        match self {
+            Self::Os(OsError::CommittedParentSyncFailed { path, .. }) => Some(path.as_path()),
+            _ => None,
+        }
     }
 }

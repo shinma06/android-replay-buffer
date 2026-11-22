@@ -557,3 +557,70 @@ fn delayed_arrival_burst_integrates_with_arb_core_selection_to_reject_50s_late_p
         "zero unanchored truncations expected"
     );
 }
+
+#[test]
+fn golden_protocol_md_r1_truncated_flag_utf8_and_writer_queue_overflow() {
+    // 1. PROTOCOL.md R1 contract: str16 truncated on a valid UTF-8 code point boundary
+    //    carries FrameFlags::TRUNCATED (0x02) on the enclosing 20-byte frame header.
+    let truncated_state = WireMessage::StreamState(StreamStatePayload {
+        target_stream_id: StreamId::Input,
+        state: StreamLifecycleState::Error,
+        restart_count: 1,
+        boottime_ns: 987_654_321,
+        emitted_seq: 42,
+        reason: "入力エラー:日本語境界テスト".into(),
+    });
+    let encoded_frame = truncated_state
+        .to_frame(StreamId::Input, FrameFlags::TRUNCATED, 99)
+        .expect("build truncated StreamState frame")
+        .encode()
+        .expect("encode truncated frame");
+
+    let parsed_frame =
+        WireFrame::read_from(&mut Cursor::new(&encoded_frame), DEFAULT_MAX_PAYLOAD_LEN)
+            .expect("read truncated frame")
+            .expect("frame must be present");
+    assert!(
+        parsed_frame.header.flags.is_truncated(),
+        "FLAG_TRUNCATED (0x02) must survive wire round-trip"
+    );
+    assert_eq!(
+        parsed_frame.header.flags.bits(),
+        0x02,
+        "FLAG_TRUNCATED bit value must equal 0x02"
+    );
+    assert_eq!(
+        WireMessage::decode_frame(&parsed_frame).expect("decode UTF-8 StreamState"),
+        truncated_state,
+        "UTF-8 codepoint-boundary truncated str16 must round-trip losslessly"
+    );
+
+    // 2. PROTOCOL.md R1 contract: Stream 1 queue overflow emits
+    //    LogOverflowStats(OverflowDetected, detail="writer_queue_overflow:dropped=N").
+    let overflow = LogOverflowStatsPayload {
+        boottime_ns: 1_234_567_890,
+        completeness: WireLogCompleteness::OverflowDetected,
+        buffers_count: 0,
+        pruned_delta: 17,
+        pruned_cumulative: 17,
+        detail: "writer_queue_overflow:dropped=17".into(),
+    };
+    let overflow_frame = WireMessage::LogOverflowStats(overflow.clone())
+        .to_frame(StreamId::Logcat, FrameFlags::URGENT, 100)
+        .expect("build overflow frame")
+        .encode()
+        .expect("encode overflow frame");
+    let decoded_overflow_frame =
+        WireFrame::read_from(&mut Cursor::new(&overflow_frame), DEFAULT_MAX_PAYLOAD_LEN)
+            .expect("read overflow frame")
+            .expect("overflow frame must be present");
+    assert!(
+        decoded_overflow_frame.header.flags.is_urgent(),
+        "urgent overflow notification must preserve FLAG_URGENT"
+    );
+    assert_eq!(
+        WireMessage::decode_frame(&decoded_overflow_frame).expect("decode overflow stats"),
+        WireMessage::LogOverflowStats(overflow),
+        "writer_queue_overflow LogOverflowStats must round-trip bit-for-bit"
+    );
+}

@@ -1007,6 +1007,51 @@ fn concurrent_four_thread_v2_bundle_readers_succeed_with_zero_write_locks() {
 // Test 6: Legacy Read-Only Compatibility (real Schema 4, synthetic Schema 3, log-only Schema 4)
 // ===========================================================================
 
+fn assert_real_schema4_unanchored_streams(reader: &LegacyBundleReader) {
+    let all_logs = reader
+        .query_logs(None, TimeRange::all(), None)
+        .expect("all logs query must succeed");
+    assert_eq!(all_logs.len(), 5, "real fixture has 5 device log rows");
+    let main_logs = reader
+        .query_logs(Some(RecordBucket::Main), TimeRange::all(), None)
+        .expect("main logs query must succeed");
+    assert_eq!(
+        main_logs.len(),
+        0,
+        "without window_start_elapsed_ns origin, no device logs may claim Anchored boottime"
+    );
+    let unanchored_logs = reader
+        .query_logs(Some(RecordBucket::Unanchored), TimeRange::all(), None)
+        .expect("unanchored logs query must succeed");
+    assert_eq!(
+        unanchored_logs.len(),
+        5,
+        "all 5 device logs must degrade honestly to Unanchored when origin is null"
+    );
+    assert_eq!(
+        reader.app_logs().len(),
+        3,
+        "real fixture has 3 app-filtered log rows"
+    );
+
+    let taps = reader
+        .query_taps(None, TimeRange::all(), None)
+        .expect("taps query must succeed");
+    assert_eq!(taps.len(), 2, "real fixture has 2 touch rows");
+    assert_eq!(taps[0].action, "DOWN", "first touch must be DOWN");
+    assert_eq!(
+        taps[0].bucket,
+        RecordBucket::Unanchored,
+        "touch without window_start_elapsed_ns origin must degrade to Unanchored"
+    );
+    assert_eq!(taps[1].action, "UP", "second touch must be UP");
+    assert_eq!(
+        taps[1].bucket,
+        RecordBucket::Unanchored,
+        "null-t_ns touch must be in Unanchored bucket"
+    );
+}
+
 #[test]
 fn legacy_reader_opens_real_schema4_fixture_strictly_read_only() {
     let fixture_dir = repo_schema4_fixture_dir();
@@ -1045,6 +1090,23 @@ fn legacy_reader_opens_real_schema4_fixture_strictly_read_only() {
     let frames = reader.frames().expect("frames must decode");
     assert_eq!(frames.len(), 24, "real fixture has 24 video frames");
     assert!(frames[0].is_keyframe, "frame 0 must be keyframe");
+    // Real repo fixture has `window_start_elapsed_ns: null`, so LegacyBundleReader
+    // must degrade window-relative `t_ns` honestly to Unanchored rather than placing
+    // window-relative offsets directly into DeviceBoottime.
+    assert!(
+        reader
+            .legacy_metadata()
+            .timebase
+            .device_boottime_origin_ns()
+            .is_none(),
+        "real repo fixture has null window_start_elapsed_ns"
+    );
+    assert!(
+        frames
+            .iter()
+            .all(|f| matches!(f.alignment, TimeAlignment::Unanchored { .. })),
+        "frames without a DeviceBoottime origin must degrade honestly to Unanchored"
+    );
 
     let discontinuities = reader
         .discontinuities()
@@ -1054,45 +1116,13 @@ fn legacy_reader_opens_real_schema4_fixture_strictly_read_only() {
         1,
         "two-part fixture must report 1 gap discontinuity between segments"
     );
-
-    let all_logs = reader
-        .query_logs(None, TimeRange::all(), None)
-        .expect("all logs query must succeed");
-    assert_eq!(all_logs.len(), 5, "real fixture has 5 device log rows");
-    let main_logs = reader
-        .query_logs(Some(RecordBucket::Main), TimeRange::all(), None)
-        .expect("main logs query must succeed");
-    assert_eq!(main_logs.len(), 4, "4 device logs have anchored t_ns");
-    let unanchored_logs = reader
-        .query_logs(Some(RecordBucket::Unanchored), TimeRange::all(), None)
-        .expect("unanchored logs query must succeed");
-    assert_eq!(
-        unanchored_logs.len(),
-        1,
-        "1 device log with null t_ns must be in unanchored bucket"
-    );
-    assert_eq!(
-        reader.app_logs().len(),
-        3,
-        "real fixture has 3 app-filtered log rows"
+    assert!(
+        discontinuities[0].start_boottime_ns.is_none()
+            && discontinuities[0].end_boottime_ns.is_none(),
+        "discontinuity without DeviceBoottime origin must not fabricate boottime bounds"
     );
 
-    let taps = reader
-        .query_taps(None, TimeRange::all(), None)
-        .expect("taps query must succeed");
-    assert_eq!(taps.len(), 2, "real fixture has 2 touch rows");
-    assert_eq!(taps[0].action, "DOWN", "first touch must be DOWN");
-    assert_eq!(
-        taps[0].bucket,
-        RecordBucket::Main,
-        "aligned touch must be in Main bucket"
-    );
-    assert_eq!(taps[1].action, "UP", "second touch must be UP");
-    assert_eq!(
-        taps[1].bucket,
-        RecordBucket::Unanchored,
-        "null-t_ns touch must be in Unanchored bucket"
-    );
+    assert_real_schema4_unanchored_streams(&reader);
 
     // Also verify unified open_bundle() auto-detection works cleanly.
     let boxed = open_bundle(&fixture_dir).expect("open_bundle must auto-detect schema 4");
@@ -1181,6 +1211,19 @@ fn legacy_reader_opens_synthetic_schema3_strictly_read_only() {
         Some("I"),
         "priority 4 maps to I"
     );
+    assert!(
+        s3_reader
+            .legacy_metadata()
+            .timebase
+            .device_boottime_origin_ns()
+            .is_none(),
+        "schema 3 has no device_boottime origin"
+    );
+    assert_eq!(
+        s3_logs[0].bucket,
+        RecordBucket::Unanchored,
+        "schema 3 sequence-relative log degrades honestly to Unanchored"
+    );
     assert_eq!(
         s3_logs[1].bucket,
         RecordBucket::Unanchored,
@@ -1214,6 +1257,7 @@ fn legacy_reader_opens_synthetic_log_only_schema4_strictly_read_only() {
             "save_request": {"content": "LOGS_ONLY", "origin": "CLI", "video_excluded": true},
             "coverage": {"video": {"state": "EXCLUDED"}},
             "timebase": {"domain": "device_boottime", "known": true,
+                "window_start_elapsed_ns": "1000000000",
                 "window_duration_ns": "10000000000", "window_end_uncertainty_ns": "0"},
             "parts": [], "files_sha256": {}
         }"#,
@@ -1238,6 +1282,14 @@ fn legacy_reader_opens_synthetic_log_only_schema4_strictly_read_only() {
         LegacySaveKind::LogsOnly,
         "LogsOnly"
     );
+    assert_eq!(
+        lo_reader
+            .legacy_metadata()
+            .timebase
+            .device_boottime_origin_ns(),
+        Some(1_000_000_000),
+        "schema 4 with window_start_elapsed_ns must expose exact DeviceBoottime origin"
+    );
     assert!(
         lo_reader.video_path().is_none(),
         "log-only save must have no video_path"
@@ -1249,23 +1301,56 @@ fn legacy_reader_opens_synthetic_log_only_schema4_strictly_read_only() {
     let lo_logs = lo_reader
         .query_logs(
             Some(RecordBucket::Main),
-            TimeRange::between(150_000, 250_000),
+            TimeRange::between(1_000_150_000, 1_000_250_000),
             None,
         )
         .expect("ranged log query must succeed");
     assert_eq!(
         lo_logs.len(),
         1,
-        "range [150_000, 250_000] must match 1 entry"
+        "rebased range [1_000_150_000, 1_000_250_000] must match 1 entry"
     );
     assert_eq!(
         lo_logs[0].message, "log only entry 2",
         "must return entry 2"
     );
+    assert!(
+        matches!(
+            lo_logs[0].alignment,
+            TimeAlignment::Anchored {
+                boottime_ns: 1_000_200_000,
+                half_width_ns: 0,
+                ..
+            }
+        ),
+        "log entry 2 must rebase onto origin + t_ns = 1_000_200_000"
+    );
     assert_eq!(
         lo_before,
         snapshot_directory_readonly(&logs_only_dir),
         "dir untouched"
+    );
+}
+
+#[test]
+fn storage_error_exposes_published_bundle_path_on_committed_parent_sync_failure() {
+    let published = PathBuf::from("/tmp/example-published-worm-bundle");
+    let err = StorageError::Os(OsError::CommittedParentSyncFailed {
+        path: published.clone(),
+        source: std::io::Error::other("simulated parent dir fsync failure"),
+    });
+    assert_eq!(
+        err.committed_bundle_path_on_parent_sync_error(),
+        Some(published.as_path()),
+        "CommittedParentSyncFailed must surface the published WORM bundle path"
+    );
+    let other = StorageError::NotFound {
+        entity: "bundle",
+        id: "missing".to_owned(),
+    };
+    assert!(
+        other.committed_bundle_path_on_parent_sync_error().is_none(),
+        "non-commit errors must return None"
     );
 }
 
