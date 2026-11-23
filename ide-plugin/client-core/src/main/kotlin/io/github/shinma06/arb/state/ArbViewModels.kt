@@ -635,8 +635,15 @@ data class TimelineViewerState(
     private fun epochRangeForFrame(frameIndex: Long): EpochFrameRange? =
         summary.epochFrameRanges.firstOrNull { frameIndex in it.startFrameIndex..it.endFrameIndex }
 
-    private fun epochOrderIndex(bootId: String?): Int {
-        if (bootId == null) return Int.MAX_VALUE
+    private fun epochOrderIndex(bootId: String?, boottimeNs: Long? = null): Int {
+        if (bootId == null) {
+            // Without a boot id fall back to the unique epoch containing the row's boottime, or
+            // epoch 0 for single-epoch bundles, so such rows keep their time order.
+            if (summary.epochFrameRanges.size <= 1) return summary.epochFrameRanges.firstOrNull()?.epochIndex ?: 0
+            if (boottimeNs == null) return Int.MAX_VALUE
+            val containing = summary.epochFrameRanges.filter { boottimeNs in it.startBoottimeNs..it.endBoottimeNs }
+            return containing.singleOrNull()?.epochIndex ?: Int.MAX_VALUE
+        }
         summary.epochFrameRanges.firstOrNull { it.bootId == bootId }?.let { return it.epochIndex }
         val idx = summary.epochs.indexOfFirst { it.bootId == bootId }
         return if (idx >= 0) idx else Int.MAX_VALUE
@@ -846,7 +853,7 @@ data class TimelineViewerState(
             val frame = bt?.let { boottimeNsToFrameIndex(it, entry.bootId) }
             val relMs = bt?.let { boottimeToRelativeMs(it, entry.bootId) }
             allRows.add(
-                epochOrderIndex(entry.bootId) to SyncedEventRow(
+                epochOrderIndex(entry.bootId, bt) to SyncedEventRow(
                     kind = SyncedEventKind.TAP,
                     seq = entry.tap.seq,
                     boottimeNs = bt,
@@ -871,7 +878,7 @@ data class TimelineViewerState(
             val frame = crash.frameIndexHint ?: bt?.let { boottimeNsToFrameIndex(it, crashBootId) }
             val relMs = bt?.let { boottimeToRelativeMs(it, crashBootId) }
             allRows.add(
-                epochOrderIndex(crashBootId) to SyncedEventRow(
+                epochOrderIndex(crashBootId, bt) to SyncedEventRow(
                     kind = SyncedEventKind.CRASH,
                     seq = crash.sourceLogSeq,
                     boottimeNs = bt,
@@ -894,7 +901,7 @@ data class TimelineViewerState(
             val frame = span.startFrameIndex ?: boottimeNsToFrameIndex(span.startNs, spanBootId)
             val relMs = boottimeToRelativeMs(span.startNs, spanBootId)
             allRows.add(
-                epochOrderIndex(spanBootId) to SyncedEventRow(
+                epochOrderIndex(spanBootId, span.startNs) to SyncedEventRow(
                     kind = SyncedEventKind.SCREEN_TRANSITION,
                     seq = -1_000L - idx.toLong(),
                     boottimeNs = span.startNs,
@@ -934,7 +941,7 @@ data class TimelineViewerState(
                 null
             }
             allRows.add(
-                epochOrderIndex(logBootId) to SyncedEventRow(
+                epochOrderIndex(logBootId, bt) to SyncedEventRow(
                     kind = SyncedEventKind.LOG,
                     seq = log.seq,
                     boottimeNs = bt,

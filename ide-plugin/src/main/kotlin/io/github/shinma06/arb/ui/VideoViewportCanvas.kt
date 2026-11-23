@@ -152,6 +152,9 @@ class VideoViewportCanvas : JPanel(BorderLayout()) {
         val frameH = (currentMeta?.height ?: videoH).coerceAtLeast(1)
 
         for (tap in activeTaps) {
+            // Same rule as the arbd/MCP mapping: a coordinate beyond the display (e.g. a raw evdev
+            // range) or an orientation mismatch is not drawn instead of being pinned to the edge.
+            if (isTapUnmappable(tap.x, tap.y, frameW, frameH, displayWidth, displayHeight)) continue
             val (cx, cy) = mapTapToCanvasPoint(
                 tapX = tap.x,
                 tapY = tap.y,
@@ -222,6 +225,22 @@ class VideoViewportCanvas : JPanel(BorderLayout()) {
     }
 
     companion object {
+        internal fun isTapUnmappable(
+            tapX: Double,
+            tapY: Double,
+            videoW: Int,
+            videoH: Int,
+            displayW: Int?,
+            displayH: Int?,
+        ): Boolean {
+            val dw = displayW?.takeIf { it > 0 } ?: return false
+            val dh = displayH?.takeIf { it > 0 } ?: return false
+            val isNormalized = tapX in 0.0..1.0 && tapY in 0.0..1.0
+            if (isNormalized) return false
+            if (videoW != videoH && dw != dh && (dw < dh) != (videoW < videoH)) return true
+            return tapX > dw || tapY > dh
+        }
+
         /**
          * Maps a recorded tap coordinate onto canvas pixels inside [drawRect].
          *
