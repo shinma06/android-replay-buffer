@@ -48,7 +48,7 @@ use arb_os::paths::ArbPaths;
 use arb_os::shm::ShmFrameRingReader;
 use arb_storage::bundle_io::V2BundleReader;
 use arb_storage::ring::{DiskSpaceProvider, PinJournal, PinJournalRecord};
-use arbd::capture::SharedDiskSpaceProvider;
+use arbd::capture::{FaultInjection, SharedDiskSpaceProvider};
 use arbd::{DaemonConfig, DaemonServer};
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -106,6 +106,33 @@ impl TestIpcClient {
             "RPC `{method}` returned unexpected error: {resp}"
         );
         resp.get("result").cloned().unwrap_or(Value::Null)
+    }
+
+    /// Calls `method` expecting a JSON-RPC error; returns `(code, message)`.
+    fn call_err(&mut self, method: &str, params: &Value) -> (i64, String) {
+        let id = self.next_id;
+        self.next_id += 1;
+        let line = serde_json::to_string(&json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": method,
+            "params": params,
+        }))
+        .expect("serialize RPC request");
+        write_frame_line(&mut self.writer, &line, DEFAULT_MAX_IPC_LINE_BYTES)
+            .expect("write RPC frame");
+        self.writer.drain().expect("drain RPC frame");
+        let raw = read_frame_line(&mut self.reader, DEFAULT_MAX_IPC_LINE_BYTES)
+            .expect("read RPC frame")
+            .expect("expected RPC response line");
+        let resp: Value = serde_json::from_str(&raw).expect("parse RPC response");
+        let err = resp
+            .get("error")
+            .unwrap_or_else(|| panic!("RPC `{method}` unexpectedly succeeded: {resp}"));
+        (
+            err["code"].as_i64().expect("error code"),
+            err["message"].as_str().unwrap_or_default().to_owned(),
+        )
     }
 }
 
@@ -1575,5 +1602,718 @@ fn assert_stream_kind_matches_expected_audio_variant() {
         serde_json::to_value(DiscontinuityKind::StoragePressureStop).expect("serialize"),
         json!("storage_pressure_stop"),
         "DiscontinuityKind::StoragePressureStop JSON tag must be snake_case"
+    );
+}
+
+#[test]
+fn r3_m1_parent_sync_failure_publishes_and_catalogs_with_warning() {
+    let tmp = TempDir::new().expect("tempdir");
+    let faults = Arc::new(FaultInjection::default());
+    let server = DaemonServer::start(
+        DaemonConfig::new(isolated_paths(&tmp)).with_fault_injection(Arc::clone(&faults)),
+    )
+    .expect("start arbd");
+
+    let mut source = build_barcode_mock_source("boot-r3-m1a", 60, WallClockMode::Steady);
+    server
+        .ingest_device_source(&mut source)
+        .expect("ingest source");
+
+    let mut client = TestIpcClient::connect(server.endpoint());
+
+    // 1. Inject `CommittedParentSyncFailed` on `save.trigger` (R3 M1).
+    faults.fail_parent_sync_once.store(true, Ordering::Release);
+    let saved = client.call("save.trigger", &json!({ "duration_sec": 30 }));
+    assert_eq!(
+        saved["job"]["state"], "completed",
+        "CommittedParentSyncFailed must still complete the save job: {saved}"
+    );
+    let bundle_id = saved["bundle_id"]
+        .as_str()
+        .expect("committed bundle_id must be returned")
+        .to_owned();
+    let bundle_path = PathBuf::from(saved["bundle_path"].as_str().expect("bundle_path"));
+    assert!(
+        saved["warning"]
+            .as_str()
+            .is_some_and(|w| w.contains("parent directory")),
+        "warning must surface the parent-sync failure: {saved}"
+    );
+    V2BundleReader::open(&bundle_path)
+        .expect("published bundle must open")
+        .verify_integrity()
+        .expect("published bundle integrity must verify");
+    let bundles = client.call("bundle.list", &json!({}));
+    assert!(
+        bundles["bundles"]
+            .as_array()
+            .expect("bundles")
+            .iter()
+            .any(|b| b["bundle_id"] == bundle_id),
+        "published bundle must be cataloged and never orphaned"
+    );
+
+    // 2. Inject `CommittedParentSyncFailed` on `export.trim` (R3 S8a).
+    faults.fail_parent_sync_once.store(true, Ordering::Release);
+    let trimmed = client.call(
+        "export.trim",
+        &json!({
+            "bundle_id_or_path": bundle_id,
+            "in_frame_index": 5,
+            "out_frame_index": 35,
+        }),
+    );
+    let trim_id = trimmed["bundle_id"]
+        .as_str()
+        .expect("trimmed bundle_id")
+        .to_owned();
+    assert!(
+        trimmed["warning"]
+            .as_str()
+            .is_some_and(|w| w.contains("parent directory")),
+        "trim must surface parent-sync warning without failing: {trimmed}"
+    );
+    let bundles_after = client.call("bundle.list", &json!({}));
+    assert!(
+        bundles_after["bundles"]
+            .as_array()
+            .expect("bundles")
+            .iter()
+            .any(|b| b["bundle_id"] == trim_id),
+        "trimmed bundle must be cataloged"
+    );
+
+    server.shutdown();
+}
+
+#[test]
+fn r3_m1_crash_and_catalog_error_after_register_retry_idempotently() {
+    let tmp = TempDir::new().expect("tempdir");
+    let paths = isolated_paths(&tmp);
+    let faults = Arc::new(FaultInjection::default());
+    let server = DaemonServer::start(
+        DaemonConfig::new(paths.clone()).with_fault_injection(Arc::clone(&faults)),
+    )
+    .expect("start arbd");
+
+    let mut source = build_barcode_mock_source("boot-r3-m1b", 30, WallClockMode::Steady);
+    server
+        .ingest_device_source(&mut source)
+        .expect("ingest source");
+
+    let mut client = TestIpcClient::connect(server.endpoint());
+
+    // (a) Catalog `complete_job` failure after `register_bundle`: job must move to
+    // `FailedRetryable` (NEVER stranded in `Materializing`), and `save.retry` must succeed
+    // idempotently via `register_bundle_idempotent`.
+    faults.fail_complete_job_once.store(true, Ordering::Release);
+    let failed = client.call("save.trigger", &json!({ "duration_sec": 30 }));
+    assert_eq!(
+        failed["job"]["state"], "failed_retryable",
+        "post-commit catalog failure must transition to FailedRetryable, not leave Materializing: {failed}"
+    );
+    let job_a = failed["job"]["job_id"].as_str().expect("job_a").to_owned();
+    let retried_a = client.call("save.retry", &json!({ "job_id": job_a }));
+    assert_eq!(
+        retried_a["job"]["state"], "completed",
+        "idempotent retry after post-register failure must complete: {retried_a}"
+    );
+    V2BundleReader::open(Path::new(
+        retried_a["bundle_path"].as_str().expect("bundle_path"),
+    ))
+    .expect("open retried bundle")
+    .verify_integrity()
+    .expect("verify retried bundle");
+
+    // (b) Simulated crash between `register_bundle` and `complete_job`: daemon restarts,
+    // startup recovery moves the interrupted `Materializing` job to `FailedRetryable`, and
+    // `save.retry` completes idempotently without PK conflict.
+    faults
+        .crash_after_register_once
+        .store(true, Ordering::Release);
+    let (_code, msg) = client.call_err("save.trigger", &json!({ "duration_sec": 30 }));
+    assert!(
+        msg.contains("injected crash"),
+        "expected injected crash error, got `{msg}`"
+    );
+    drop(client);
+    server.shutdown();
+
+    let restarted = DaemonServer::start(DaemonConfig::new(paths)).expect("restart arbd");
+    let mut client2 = TestIpcClient::connect(restarted.endpoint());
+    let status = client2.call("system.status", &json!({}));
+    assert_eq!(
+        status["recovery"]["recovered_jobs"], 1,
+        "startup recovery must transition interrupted Materializing job to FailedRetryable: {status}"
+    );
+    let jobs = client2.call("save.list_jobs", &json!({}));
+    let recovered_job_id = jobs["jobs"]
+        .as_array()
+        .expect("jobs array")
+        .iter()
+        .find(|j| j["state"] == "failed_retryable")
+        .and_then(|j| j["job_id"].as_str())
+        .expect("recovered failed_retryable job")
+        .to_owned();
+    let retried_b = client2.call("save.retry", &json!({ "job_id": recovered_job_id }));
+    assert_eq!(
+        retried_b["job"]["state"], "completed",
+        "idempotent retry after crash-between-register-and-complete must succeed: {retried_b}"
+    );
+    assert!(
+        retried_b["job"]["pinned_chunk_ids"]
+            .as_array()
+            .expect("pins")
+            .is_empty(),
+        "completed retry must release its pins"
+    );
+    restarted.shutdown();
+}
+
+fn build_chunked_heartbeat_source(
+    boot_id: &str,
+    base_dev: i64,
+    sec_range: std::ops::Range<i64>,
+) -> MockDeviceSource {
+    let mut b = FaultScenarioBuilder::new("mock-r3-m2");
+    if sec_range.start == 0 {
+        b = b.push(FaultStep::Hello {
+            pc_cont_ns: 0,
+            payload: make_hello(boot_id),
+        });
+    }
+    for sec in sec_range {
+        let pc = sec * SEC_NS;
+        let dev = base_dev + pc;
+        b = b
+            .push(FaultStep::LogRecord {
+                pc_cont_ns: pc,
+                flags: FrameFlags::NONE,
+                payload: make_text_log(
+                    dev,
+                    u32::try_from(1_730_000_000 + sec).expect("wall sec"),
+                    0,
+                    "Ring",
+                    &format!("log-sec-{sec}"),
+                ),
+            })
+            .push(FaultStep::Heartbeat {
+                pc_cont_ns: pc + 900 * MS_NS,
+                payload: HeartbeatPayload {
+                    boottime_ns: dev + 900 * MS_NS,
+                    monotonic_ns: dev + 900 * MS_NS,
+                    realtime_ns: BASE_WALL_NS + pc + 900 * MS_NS,
+                    streams: all_streams_running(
+                        dev + 900 * MS_NS,
+                        u32::try_from(sec + 1).expect("seq"),
+                    ),
+                },
+            });
+    }
+    b.build()
+}
+
+#[test]
+fn r3_m2_selective_window_pinning_leaves_older_chunks_evictable() {
+    let tmp = TempDir::new().expect("tempdir");
+    // Cap ring duration to 60s so pushing new chunks past 60s forces eviction of unpinned chunks.
+    let policy = RingBudgetPolicy {
+        max_ring_bytes: 64 * 1024 * 1024,
+        max_ring_duration_ns: 60_000_000_000,
+        min_free_disk_bytes: 0,
+    };
+    let server =
+        DaemonServer::start(DaemonConfig::new(isolated_paths(&tmp)).with_ring_policy(policy))
+            .expect("start arbd");
+
+    let base_dev = 1_000 * SEC_NS;
+    let mut source = build_chunked_heartbeat_source("boot-r3-m2", base_dev, 0..50);
+    server
+        .ingest_device_source(&mut source)
+        .expect("ingest 50s");
+
+    let mut client = TestIpcClient::connect(server.endpoint());
+    let total_chunks = client.call("system.status", &json!({}))["ring_chunk_count"]
+        .as_u64()
+        .expect("ring_chunk_count");
+    assert!(
+        total_chunks >= 45,
+        "expected >= 45 ring chunks across 50s, got {total_chunks}"
+    );
+
+    // Trigger a 10s save to an unwritable file so the job stays `FailedRetryable` holding pins.
+    let blocked_file = tmp.path().join("blocked-m2");
+    fs::write(&blocked_file, b"file").expect("create blocking file");
+    let failed = client.call(
+        "save.trigger",
+        &json!({ "duration_sec": 10, "dest_dir": blocked_file }),
+    );
+    assert_eq!(
+        failed["job"]["state"], "failed_retryable",
+        "blocked save must be FailedRetryable"
+    );
+    let job_id = failed["job"]["job_id"].as_str().expect("job_id").to_owned();
+    let pinned_count = u64::try_from(
+        failed["job"]["pinned_chunk_ids"]
+            .as_array()
+            .expect("pinned_chunk_ids")
+            .len(),
+    )
+    .expect("fits u64");
+    assert!(
+        pinned_count > 0 && pinned_count < total_chunks / 2,
+        "selective pinning must pin only the ~10s window (+margin/anchor), not the whole ring: pinned={pinned_count}, total={total_chunks}"
+    );
+
+    // Push 35 more seconds (t = 50..85s): total span exceeds the 60s ring budget, so older
+    // unpinned chunks MUST be evicted while the FailedRetryable job's pins remain protected!
+    let mut source2 = build_chunked_heartbeat_source("boot-r3-m2", base_dev, 50..85);
+    server
+        .ingest_device_source(&mut source2)
+        .expect("ingest more chunks while pins held");
+
+    let during = client.call("system.status", &json!({}));
+    assert_eq!(
+        during["capture"]["storage_pressure_stopped"], false,
+        "unpinned chunks must evict cleanly without triggering RingFullPinned"
+    );
+    assert!(
+        during["ring_chunk_count"].as_u64().expect("chunks") < total_chunks + 35,
+        "older unpinned chunks must have been evicted"
+    );
+
+    let recovered = client.call(
+        "save.retarget",
+        &json!({ "job_id": job_id, "dest_dir": tmp.path().join("m2-retargeted") }),
+    );
+    assert_eq!(
+        recovered["job"]["state"], "completed",
+        "pinned window chunks must remain intact for save.retarget: {recovered}"
+    );
+    server.shutdown();
+}
+
+#[test]
+fn r3_m7_client_disconnect_closes_viewports_cap_and_startup_shm_sweep() {
+    let tmp = TempDir::new().expect("tempdir");
+    let paths = isolated_paths(&tmp);
+    fs::create_dir_all(paths.shm_dir()).expect("create shm dir");
+    let stale_shm = paths.shm_dir().join("vp-crashed-previous.shm");
+    fs::write(&stale_shm, b"stale shm bytes").expect("write stale shm");
+
+    let server = DaemonServer::start(DaemonConfig::new(paths)).expect("start arbd");
+    assert!(
+        !stale_shm.exists(),
+        "DaemonServer::start must sweep stale *.shm files after acquiring the instance lock"
+    );
+
+    let mut source = build_barcode_mock_source("boot-r3-m7", 30, WallClockMode::Steady);
+    server.ingest_device_source(&mut source).expect("ingest");
+
+    let mut admin = TestIpcClient::connect(server.endpoint());
+    let saved = admin.call("save.trigger", &json!({ "duration_sec": 30 }));
+    let bundle_id = saved["bundle_id"].as_str().expect("bundle_id").to_owned();
+
+    // 1. Open a viewport on a separate client and drop the socket without `media.close_viewport`.
+    let leaked_shm = {
+        let mut transient = TestIpcClient::connect(server.endpoint());
+        let vp = transient.call(
+            "media.open_viewport",
+            &json!({ "bundle_id_or_path": bundle_id }),
+        );
+        let shm_path = PathBuf::from(vp["shm_path"].as_str().expect("shm_path"));
+        assert!(
+            shm_path.is_file(),
+            "SHM file must exist while client is connected"
+        );
+        assert_eq!(
+            admin.call("system.status", &json!({}))["active_viewports"],
+            1,
+            "active_viewports must be 1"
+        );
+        shm_path
+    };
+
+    // Wait briefly for the daemon thread to observe EOF and close the client's viewports.
+    let mut cleaned = false;
+    for _ in 0..40 {
+        let count = admin.call("system.status", &json!({}))["active_viewports"]
+            .as_u64()
+            .unwrap_or(99);
+        if count == 0 && !leaked_shm.exists() {
+            cleaned = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    assert!(
+        cleaned,
+        "disconnecting client must automatically close its SHM viewport and remove {}",
+        leaked_shm.display()
+    );
+
+    // 2. Enforce global `MAX_VIEWPORTS` cap (returning Conflict on the 9th viewport).
+    let mut open_ids = Vec::new();
+    for _ in 0..arbd::protocol::MAX_VIEWPORTS {
+        let vp = admin.call(
+            "media.open_viewport",
+            &json!({ "bundle_id_or_path": bundle_id }),
+        );
+        open_ids.push(vp["viewport_id"].as_str().expect("vp_id").to_owned());
+    }
+    let (code, msg) = admin.call_err(
+        "media.open_viewport",
+        &json!({ "bundle_id_or_path": bundle_id }),
+    );
+    assert_eq!(
+        code,
+        i64::from(arbd::error::RPC_ERR_CONFLICT),
+        "exceeding MAX_VIEWPORTS must return Conflict ({msg})"
+    );
+    for id in open_ids {
+        let _ = admin.call("media.close_viewport", &json!({ "viewport_id": id }));
+    }
+
+    server.shutdown();
+}
+
+#[test]
+fn r3_m8_s7_daemon_rejects_relative_and_forbidden_paths_and_bundle_png_mutation() {
+    let tmp = TempDir::new().expect("tempdir");
+    let paths = isolated_paths(&tmp);
+    let server = DaemonServer::start(DaemonConfig::new(paths.clone())).expect("start arbd");
+
+    let mut source = build_barcode_mock_source("boot-r3-m8", 30, WallClockMode::Steady);
+    server.ingest_device_source(&mut source).expect("ingest");
+
+    let mut client = TestIpcClient::connect(server.endpoint());
+    let saved = client.call("save.trigger", &json!({ "duration_sec": 30 }));
+    let bundle_id = saved["bundle_id"].as_str().expect("bundle_id").to_owned();
+    let bundle_path = PathBuf::from(saved["bundle_path"].as_str().expect("bundle_path"));
+    let bundle_before = snapshot_directory(&bundle_path);
+
+    let invalid = i64::from(arbd::error::RPC_ERR_INVALID_PARAMS);
+
+    // M8: relative paths must be rejected by arbd with InvalidParams.
+    let (code, _) = client.call_err(
+        "save.trigger",
+        &json!({ "duration_sec": 30, "dest_dir": "rel/dir" }),
+    );
+    assert_eq!(code, invalid, "relative save dest_dir must be rejected");
+
+    let (code, _) = client.call_err(
+        "export.png",
+        &json!({ "bundle_id_or_path": bundle_id, "frame_index": 0, "output_path": "rel.png" }),
+    );
+    assert_eq!(
+        code, invalid,
+        "relative export.png output_path must be rejected"
+    );
+
+    let (code, _) = client.call_err(
+        "timeline.summary",
+        &json!({ "bundle_id_or_path": "./relative-bundle" }),
+    );
+    assert_eq!(code, invalid, "relative bundle_id_or_path must be rejected");
+
+    let (code, _) = client.call_err(
+        "capture.start",
+        &json!({ "companion_jar": "relative/arb-companion.dex.jar" }),
+    );
+    assert_eq!(code, invalid, "relative companion_jar must be rejected");
+
+    // C3: destinations inside ring/, cache_dir, or an existing bundle must be rejected.
+    let (code, _) = client.call_err(
+        "save.trigger",
+        &json!({ "duration_sec": 30, "dest_dir": paths.data_dir.join("ring").join("bad") }),
+    );
+    assert_eq!(code, invalid, "dest_dir inside ring/ must be rejected");
+
+    let (code, _) = client.call_err(
+        "save.trigger",
+        &json!({ "duration_sec": 30, "dest_dir": paths.cache_dir.join("bad") }),
+    );
+    assert_eq!(code, invalid, "dest_dir inside cache_dir must be rejected");
+
+    let (code, _) = client.call_err(
+        "save.trigger",
+        &json!({ "duration_sec": 30, "dest_dir": bundle_path.join("nested") }),
+    );
+    assert_eq!(
+        code, invalid,
+        "dest_dir inside existing bundle must be rejected"
+    );
+
+    // S7: export.png into a WORM bundle (including nested subdir) must be rejected BEFORE
+    // `create_dir_all`, leaving the bundle completely untouched.
+    let nested_png = bundle_path.join("forbidden-subdir").join("frame0.png");
+    let (code, _) = client.call_err(
+        "export.png",
+        &json!({
+            "bundle_id_or_path": bundle_id,
+            "frame_index": 0,
+            "output_path": nested_png,
+        }),
+    );
+    assert_eq!(
+        code, invalid,
+        "export.png inside WORM bundle must be rejected"
+    );
+    assert!(
+        !bundle_path.join("forbidden-subdir").exists(),
+        "validation must run before create_dir_all so no directory is created inside the bundle"
+    );
+    assert_eq!(
+        snapshot_directory(&bundle_path),
+        bundle_before,
+        "WORM bundle must remain 100% unmodified"
+    );
+
+    server.shutdown();
+}
+
+#[test]
+fn r3_s1_s2_disconnected_save_tail_flag_and_unanchored_video_recorded() {
+    let tmp = TempDir::new().expect("tempdir");
+    let server = DaemonServer::start(DaemonConfig::new(isolated_paths(&tmp))).expect("start arbd");
+
+    let boot_id = "boot-r3-s1s2";
+    let base_dev = 500 * SEC_NS;
+    let mut source = FaultScenarioBuilder::new("mock-s1s2")
+        // Send video frames BEFORE any heartbeat so they have NoClockAnchor (unanchored, R3 S2).
+        .push(FaultStep::Hello {
+            pc_cont_ns: 0,
+            payload: make_hello(boot_id),
+        })
+        .push(FaultStep::VideoFrame {
+            pc_cont_ns: 100 * MS_NS,
+            packet: VideoPacket {
+                kind: VideoPacketKind::Keyframe,
+                pts_us: 100_000,
+                data: vec![0, 0, 0, 1, 0x65, 0x01],
+            },
+        })
+        .push(FaultStep::VideoFrame {
+            pc_cont_ns: 133 * MS_NS,
+            packet: VideoPacket {
+                kind: VideoPacketKind::DeltaFrame,
+                pts_us: 133_000,
+                data: vec![0, 0, 0, 1, 0x41, 0x02],
+            },
+        })
+        .push(FaultStep::Heartbeat {
+            pc_cont_ns: SEC_NS,
+            payload: HeartbeatPayload {
+                boottime_ns: base_dev + SEC_NS,
+                monotonic_ns: base_dev + SEC_NS,
+                realtime_ns: BASE_WALL_NS + SEC_NS,
+                streams: all_streams_running(base_dev + SEC_NS, 1),
+            },
+        })
+        .push(FaultStep::Disconnect {
+            pc_cont_ns: 2 * SEC_NS,
+            reason: "cable_pulled".to_owned(),
+        })
+        .build();
+    server.ingest_device_source(&mut source).expect("ingest");
+
+    let mut client = TestIpcClient::connect(server.endpoint());
+    // R3 S1: capture is active (`begin_session`) but disconnected (`Disconnect` ingested) ->
+    // `save.trigger` must mark `tail_may_be_incomplete == true`.
+    let saved = client.call("save.trigger", &json!({ "duration_sec": 30 }));
+    assert_eq!(saved["job"]["state"], "completed", "save must complete");
+    assert_eq!(
+        saved["tail_may_be_incomplete"], true,
+        "active-but-disconnected capture must report tail_may_be_incomplete=true (S1): {saved}"
+    );
+    let bundle_id = saved["bundle_id"].as_str().expect("bundle_id").to_owned();
+
+    // R3 S2: the 2 unanchored video frames must not disappear silently — both a video
+    // `StreamGap` discontinuity and `unanchored_summary.truncated_count` must record them.
+    let discs = client.call(
+        "timeline.discontinuities",
+        &json!({ "bundle_id_or_path": bundle_id }),
+    );
+    assert!(
+        discs["discontinuities"]
+            .as_array()
+            .expect("discs")
+            .iter()
+            .any(|d| {
+                d["kind"] == "stream_gap"
+                    && d["stream"] == "video"
+                    && d["detail"]
+                        .as_str()
+                        .is_some_and(|s| s.contains("2 unanchored video frames"))
+            }),
+        "excluded unanchored video frames must be recorded as a video StreamGap (S2): {discs}"
+    );
+    assert!(
+        saved["unanchored_summary"]["truncated_count"]
+            .as_u64()
+            .unwrap_or(0)
+            >= 2,
+        "unanchored_summary.truncated_count must reflect excluded unanchored video frames: {saved}"
+    );
+
+    server.shutdown();
+}
+
+fn build_disconnected_biglog_source(boot_id: &str) -> MockDeviceSource {
+    let backend = OpenH264Backend::new();
+    let yuv: Vec<DecodedFrame> = (0..60_u64).map(synthesize_barcode_yuv420p_frame).collect();
+    let encoded = backend
+        .encode_yuv420p_sequence(
+            &yuv,
+            GOP_SIZE,
+            FRAME_DURATION_NS,
+            EncodeParams {
+                bitrate_bps: 4_000_000,
+                max_fps: 30,
+            },
+        )
+        .expect("encode");
+    let base_dev = 200 * SEC_NS;
+    let mut b =
+        push_initial_session_steps(FaultScenarioBuilder::new("mock-r3-s6"), boot_id, base_dev);
+    for (idx, pkt) in encoded.into_iter().enumerate() {
+        let elapsed = i64::try_from(idx).expect("idx") * FRAME_DURATION_NS;
+        let pc = 10 * MS_NS + elapsed;
+        let dev = base_dev + elapsed;
+        b = b.push(FaultStep::VideoFrame {
+            pc_cont_ns: pc,
+            packet: VideoPacket {
+                kind: if pkt.is_keyframe {
+                    VideoPacketKind::Keyframe
+                } else {
+                    VideoPacketKind::DeltaFrame
+                },
+                pts_us: u64::try_from(dev / 1_000).expect("pts"),
+                data: pkt.annex_b,
+            },
+        });
+    }
+    let big_msg = "X".repeat(60_000);
+    for i in 0..85_i64 {
+        b = b.push(FaultStep::LogRecord {
+            pc_cont_ns: 20 * MS_NS + i * MS_NS,
+            flags: FrameFlags::NONE,
+            payload: make_text_log(
+                base_dev + 20 * MS_NS + i * MS_NS,
+                1_730_000_000,
+                u32::try_from(i * 1_000).expect("subsec"),
+                "BigLog",
+                &big_msg,
+            ),
+        });
+    }
+    let end_pc = 3 * SEC_NS;
+    b.push(FaultStep::Heartbeat {
+        pc_cont_ns: end_pc,
+        payload: HeartbeatPayload {
+            boottime_ns: base_dev + end_pc,
+            monotonic_ns: base_dev + end_pc,
+            realtime_ns: BASE_WALL_NS + end_pc,
+            streams: all_streams_running(base_dev + end_pc, 99),
+        },
+    })
+    .push(FaultStep::Disconnect {
+        pc_cont_ns: end_pc + 10 * MS_NS,
+        reason: "tail_disconnect".to_owned(),
+    })
+    .build()
+}
+
+#[test]
+fn r3_s6_s8c_s10_s11_leases_trim_tail_oversized_response_and_shutdown_gate() {
+    let tmp = TempDir::new().expect("tempdir");
+    let server = DaemonServer::start(DaemonConfig::new(isolated_paths(&tmp))).expect("start arbd");
+
+    let mut source = build_disconnected_biglog_source("boot-r3-s6");
+    server.ingest_device_source(&mut source).expect("ingest");
+
+    let mut client = TestIpcClient::connect(server.endpoint());
+    let saved = client.call("save.trigger", &json!({ "duration_sec": 30 }));
+    assert_eq!(
+        saved["tail_may_be_incomplete"], true,
+        "source must have incomplete tail"
+    );
+    let bundle_id = saved["bundle_id"].as_str().expect("bundle_id").to_owned();
+
+    // S6: `bundle.open` must reject omitted `holder_pid` and dead `holder_pid`.
+    let invalid = i64::from(arbd::error::RPC_ERR_INVALID_PARAMS);
+    let (code, _) = client.call_err("bundle.open", &json!({ "bundle_id_or_path": bundle_id }));
+    assert_eq!(
+        code, invalid,
+        "bundle.open without holder_pid must be rejected"
+    );
+    let (code, _) = client.call_err(
+        "bundle.open",
+        &json!({ "bundle_id_or_path": bundle_id, "holder_pid": u32::MAX - 7 }),
+    );
+    assert_eq!(
+        code, invalid,
+        "bundle.open with dead holder_pid must be rejected"
+    );
+
+    // S8c: trim including the last frame (59) inherits `tail_may_be_incomplete == true`;
+    // trim ending earlier (40) has `tail_may_be_incomplete == false`.
+    let trim_tail = client.call(
+        "export.trim",
+        &json!({ "bundle_id_or_path": bundle_id, "in_frame_index": 10, "out_frame_index": 59 }),
+    );
+    let tail_summary = client.call(
+        "timeline.summary",
+        &json!({ "bundle_id_or_path": trim_tail["bundle_id"].as_str().expect("id") }),
+    );
+    assert_eq!(
+        tail_summary["streams"]["video"]["tail_may_be_incomplete"], true,
+        "trim including source's incomplete tail must propagate tail_may_be_incomplete=true (S8c)"
+    );
+
+    let trim_mid = client.call(
+        "export.trim",
+        &json!({ "bundle_id_or_path": bundle_id, "in_frame_index": 10, "out_frame_index": 40 }),
+    );
+    let mid_summary = client.call(
+        "timeline.summary",
+        &json!({ "bundle_id_or_path": trim_mid["bundle_id"].as_str().expect("id") }),
+    );
+    assert_eq!(
+        mid_summary["streams"]["video"]["tail_may_be_incomplete"], false,
+        "trim excluding source's last frame must have tail_may_be_incomplete=false (S8c)"
+    );
+
+    // S10: response exceeding 4 MiB must return structured RPC_ERR_RESPONSE_TOO_LARGE (-32010)
+    // WITHOUT dropping the IPC connection!
+    let (code, msg) = client.call_err(
+        "timeline.query_logs",
+        &json!({ "bundle_id_or_path": bundle_id }),
+    );
+    assert_eq!(
+        code,
+        i64::from(arbd::error::RPC_ERR_RESPONSE_TOO_LARGE),
+        "oversized response must return -32010 instead of dropping socket ({msg})"
+    );
+    let small = client.call(
+        "timeline.query_logs",
+        &json!({ "bundle_id_or_path": bundle_id, "limit": 2 }),
+    );
+    assert_eq!(
+        small["logs"].as_array().expect("logs").len(),
+        2,
+        "connection must remain healthy after oversized response error"
+    );
+
+    // S11: once shutdown is triggered, idle client connections exit promptly so shutdown completes.
+    let shutdown_handle = server.shutdown_handle();
+    let mut idle_client = TestIpcClient::connect(server.endpoint());
+    let _ = idle_client.call("system.hello", &json!({}));
+    shutdown_handle.trigger();
+    let started = std::time::Instant::now();
+    server.shutdown();
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(2),
+        "shutdown must complete promptly even with idle client connections open"
     );
 }

@@ -29,6 +29,8 @@ pub const RPC_ERR_STORAGE: i32 = -32_003;
 pub const RPC_ERR_MEDIA: i32 = -32_004;
 /// Application error code: ADB or device capture failure.
 pub const RPC_ERR_ADB: i32 = -32_005;
+/// Application error code: the serialized response exceeds the IPC frame limit.
+pub const RPC_ERR_RESPONSE_TOO_LARGE: i32 = -32_010;
 
 /// Errors returned by [`crate::DaemonServer`] and internal daemon subsystems.
 #[non_exhaustive]
