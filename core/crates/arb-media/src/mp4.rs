@@ -1276,7 +1276,7 @@ pub fn write_single_stsd_avc1_mp4(
 
 /// Rejects `avcC` NAL length sizes that ISO/IEC 14496-15 does not allow (`3`) or that are
 /// out of range.
-fn require_supported_nal_length_size(nal_length_size: usize) -> Result<(), MediaError> {
+pub(crate) fn require_supported_nal_length_size(nal_length_size: usize) -> Result<(), MediaError> {
     if matches!(nal_length_size, 1 | 2 | 4) {
         Ok(())
     } else {
@@ -1326,7 +1326,7 @@ pub fn normalize_avcc_nal_lengths(
 }
 
 /// Returns a copy of `avcc` whose `lengthSizeMinusOne` is 3 (4-byte NAL lengths).
-fn avcc_with_4byte_lengths(avcc: &[u8]) -> Vec<u8> {
+pub(crate) fn avcc_with_4byte_lengths(avcc: &[u8]) -> Vec<u8> {
     let mut out = avcc.to_vec();
     if let Some(byte) = out.get_mut(4) {
         *byte |= 0x03;
@@ -1335,7 +1335,10 @@ fn avcc_with_4byte_lengths(avcc: &[u8]) -> Vec<u8> {
 }
 
 /// [`prepend_avcc_sps_pps_inband`] with an already parsed `avcC` (output is 4-byte lengths).
-fn prepend_param_sets_4byte(cfg: &AvccConfig, sample: &[u8]) -> Result<Vec<u8>, MediaError> {
+pub(crate) fn prepend_param_sets_4byte(
+    cfg: &AvccConfig,
+    sample: &[u8],
+) -> Result<Vec<u8>, MediaError> {
     let (_, _, stripped) = extract_inband_param_sets_and_strip(sample, cfg.nal_length_size);
     let mut out = Vec::with_capacity(stripped.len() + 128);
     for ps in cfg.sps.iter().chain(&cfg.pps) {
@@ -1657,7 +1660,11 @@ pub(crate) fn full_box_wrap(
     Ok(out)
 }
 
-fn build_avc1_entry(width: u16, height: u16, avcc_payload: &[u8]) -> Result<Vec<u8>, MediaError> {
+pub(crate) fn build_avc1_entry(
+    width: u16,
+    height: u16,
+    avcc_payload: &[u8],
+) -> Result<Vec<u8>, MediaError> {
     let mut body = Vec::with_capacity(VISUAL_SAMPLE_ENTRY_HEADER_LEN + 8 + avcc_payload.len());
     body.extend_from_slice(&[0u8; 6]); // reserved
     body.extend_from_slice(&1u16.to_be_bytes()); // data_reference_index = 1
@@ -1677,6 +1684,15 @@ fn build_avc1_entry(width: u16, height: u16, avcc_payload: &[u8]) -> Result<Vec<
 }
 
 pub(crate) fn build_mvhd(timescale: u32, total_duration: u64) -> Result<Vec<u8>, MediaError> {
+    build_mvhd_with_next_track_id(timescale, total_duration, 2)
+}
+
+/// [`build_mvhd`] with an explicit `next_track_ID` (3 for a two-track `share.mp4`).
+pub(crate) fn build_mvhd_with_next_track_id(
+    timescale: u32,
+    total_duration: u64,
+    next_track_id: u32,
+) -> Result<Vec<u8>, MediaError> {
     let mut payload = Vec::with_capacity(112);
     let version = if let Ok(dur32) = u32::try_from(total_duration) {
         payload.extend_from_slice(&0u32.to_be_bytes()); // creation_time
@@ -1698,7 +1714,7 @@ pub(crate) fn build_mvhd(timescale: u32, total_duration: u64) -> Result<Vec<u8>,
         payload.extend_from_slice(&v.to_be_bytes());
     }
     payload.extend_from_slice(&[0u8; 24]); // pre_defined
-    payload.extend_from_slice(&2u32.to_be_bytes()); // next_track_ID
+    payload.extend_from_slice(&next_track_id.to_be_bytes()); // next_track_ID
     full_box_wrap(*b"mvhd", version, 0, &payload)
 }
 
