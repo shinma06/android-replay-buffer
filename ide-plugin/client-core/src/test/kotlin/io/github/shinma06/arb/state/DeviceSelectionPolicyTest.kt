@@ -171,7 +171,7 @@ class DeviceSelectionPolicyTest {
     }
 
     @Test
-    fun t6cProtocolJsonRoundtripsCaptureModeAppLogsConfigPatchAndHelloBuildId() {
+    fun t6cProtocolJsonRoundtripsCaptureModeAppLogsConfigPatchAndHelloBuildId(@TempDir tmp: Path) {
         val helloJson = """
             {
               "protocol_version": 1,
@@ -233,11 +233,12 @@ class DeviceSelectionPolicyTest {
         assertEquals(42L, appLog.lineCount)
         assertEquals(1L, appLog.crashCount)
 
-        // Settings draft validates & diffs T-6C fields cleanly.
+        // Settings draft validates & diffs T-6C fields cleanly (using a native absolute path across all OSes).
+        val nativeShotsDir = tmp.resolve("shots").toAbsolutePath().toString()
         val draft = ArbSettingsDraft.fromConfig(ArbConfig()).copy(
             captureMode = CaptureMode.LOGS_ONLY,
             deviceSerial = "adb-R3CN1234-AbCdEf._adb-tls-connect._tcp",
-            screenshotDirOverride = "/tmp/shots",
+            screenshotDirOverride = nativeShotsDir,
         )
         assertNull(draft.validateDaemonFields())
         assertTrue(draft.isDaemonModifiedAgainst(ArbConfig()))
