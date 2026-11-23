@@ -227,7 +227,23 @@ fn read_binary_string(raw: &[u8], cursor: &mut usize) -> Option<String> {
     let len = usize::try_from(u32::from_le_bytes(len_bytes)).ok()?;
     let slice = raw.get(*cursor..cursor.checked_add(len)?)?;
     *cursor += len;
-    String::from_utf8(slice.to_vec()).ok()
+    // Lossy, like `decode_binary_android_event`: liblog truncates long strings mid-character,
+    // and live detection must agree with the text stored in the bundle.
+    Some(String::from_utf8_lossy(slice).into_owned())
+}
+
+/// Like [`parse_am_crash_text`] but only accepts records whose logcat tag is `am_crash` /
+/// `30039` (the events buffer), never an arbitrary app message that merely starts with
+/// `am_crash:`, so an app cannot spoof crash markers or trigger auto-saves.
+#[must_use]
+pub fn parse_am_crash_text_for_event_tag(
+    tag: Option<&str>,
+    message: &str,
+) -> Option<ParsedAmCrash> {
+    if !matches!(tag.map(str::trim), Some("am_crash" | "30039")) {
+        return None;
+    }
+    parse_am_crash_text(tag, message)
 }
 
 /// Parses a textual `am_crash` logcat record (both 8-field API 28-33 and 9-field API 34+
@@ -345,7 +361,11 @@ pub fn extract_crash_markers(logs: &[LogRecord], frames: &[FrameRecord]) -> Vec<
     let mut fatal_fallbacks: Vec<CrashMarker> = Vec::new();
 
     for (idx, log) in logs.iter().enumerate() {
-        if let Some(parsed) = parse_am_crash_text(log.tag.as_deref(), &log.message) {
+        // Quarantined (unanchored) logs have no trustworthy time: never pin them to frames.
+        if log.bucket != RecordBucket::Main {
+            continue;
+        }
+        if let Some(parsed) = parse_am_crash_text_for_event_tag(log.tag.as_deref(), &log.message) {
             if parsed.is_fatal() {
                 let boottime_ns = log_boottime_hint(log);
                 let frame_index_hint = boottime_ns.and_then(|bt| nearest_frame_index(frames, bt));
@@ -540,6 +560,9 @@ pub struct CrashAutoSaveEval {
 #[derive(Debug, Clone, Default)]
 pub struct CrashAutoSaveGate {
     last_trigger_ns: Option<i64>,
+    /// Value of `last_trigger_ns` before the most recent `Trigger`, so a failed save can be
+    /// rolled back with [`Self::abort_last_trigger`].
+    previous_trigger_ns: Option<i64>,
 }
 
 impl CrashAutoSaveGate {
@@ -548,6 +571,7 @@ impl CrashAutoSaveGate {
     pub const fn new() -> Self {
         Self {
             last_trigger_ns: None,
+            previous_trigger_ns: None,
         }
     }
 
@@ -574,8 +598,15 @@ impl CrashAutoSaveGate {
         {
             return CrashAutoSaveDecision::SuppressedCooldown;
         }
+        self.previous_trigger_ns = self.last_trigger_ns;
         self.last_trigger_ns = Some(eval.now_ns);
         CrashAutoSaveDecision::Trigger
+    }
+
+    /// Rolls back the most recent [`CrashAutoSaveDecision::Trigger`] because its save produced
+    /// no bundle, so a failed attempt does not suppress the next crash for a whole cooldown.
+    pub const fn abort_last_trigger(&mut self) {
+        self.last_trigger_ns = self.previous_trigger_ns;
     }
 
     /// Returns the monotonic nanosecond timestamp of the last triggered auto-save, if any.
@@ -1443,5 +1474,98 @@ mod tests {
             super::frame_span_for_range(&frames, 0, 2 * SEC),
             (Some(0), Some(0))
         );
+    }
+
+    #[test]
+    fn crash_gate_abort_rolls_back_a_failed_trigger() {
+        let mut gate = CrashAutoSaveGate::new();
+        let eval = |now_ns| CrashAutoSaveEval {
+            enabled: true,
+            storage_pressure_active: false,
+            cooldown_secs: 15,
+            now_ns,
+        };
+        assert_eq!(
+            gate.evaluate(eval(100 * SEC)),
+            CrashAutoSaveDecision::Trigger
+        );
+        gate.abort_last_trigger();
+        assert_eq!(
+            gate.last_trigger_ns(),
+            None,
+            "failed first save leaves gate open"
+        );
+        assert_eq!(
+            gate.evaluate(eval(101 * SEC)),
+            CrashAutoSaveDecision::Trigger
+        );
+        assert_eq!(
+            gate.evaluate(eval(110 * SEC)),
+            CrashAutoSaveDecision::SuppressedCooldown
+        );
+        // A later failed trigger restores the earlier successful timestamp, not `None`.
+        assert_eq!(
+            gate.evaluate(eval(120 * SEC)),
+            CrashAutoSaveDecision::Trigger
+        );
+        gate.abort_last_trigger();
+        assert_eq!(gate.last_trigger_ns(), Some(101 * SEC));
+    }
+
+    #[test]
+    fn app_messages_cannot_spoof_am_crash_and_unanchored_logs_make_no_markers() {
+        let body =
+            "[0,12345,com.example.app,8929190,java.lang.NullPointerException,boom,Main.kt,42]";
+        assert!(
+            super::parse_am_crash_text_for_event_tag(Some("AppTag"), &format!("am_crash: {body}"))
+                .is_none(),
+            "arbitrary tag with am_crash: prefix must not be accepted"
+        );
+        assert!(
+            super::parse_am_crash_text_for_event_tag(Some("am_crash"), body).is_some(),
+            "events-buffer tag accepted"
+        );
+
+        let spoof = make_log(1, SEC, "AppTag", 99, &format!("am_crash: {body}"));
+        assert!(
+            extract_crash_markers(&[spoof], &[]).is_empty(),
+            "spoofed record yields no marker"
+        );
+
+        let mut unanchored = make_log(2, SEC, "am_crash", 1000, body);
+        unanchored.bucket = RecordBucket::Unanchored;
+        assert!(
+            extract_crash_markers(&[unanchored], &[make_frame(0, SEC)]).is_empty(),
+            "quarantined logs must never become frame-pinned markers"
+        );
+        let anchored = make_log(3, SEC, "am_crash", 1000, body);
+        assert_eq!(
+            extract_crash_markers(&[anchored], &[make_frame(0, SEC)]).len(),
+            1
+        );
+    }
+
+    #[test]
+    fn binary_am_crash_survives_truncated_utf8_in_message() {
+        let mut raw = encode_binary_am_crash(&BinaryAmCrashFixture {
+            user: 0,
+            pid: 7,
+            process: "com.example.app",
+            flags: 0,
+            exception: "java.lang.RuntimeException",
+            message: "ab",
+            file: "A.kt",
+            line: 1,
+            recoverable: None,
+        });
+        // Corrupt the 2-byte message into a lone UTF-8 lead byte pair (truncated character).
+        let pos = raw
+            .windows(2)
+            .position(|w| w == b"ab")
+            .expect("message bytes");
+        raw[pos] = 0xE3;
+        raw[pos + 1] = 0x81;
+        let parsed = parse_am_crash_binary(&raw).expect("lossy decode must still parse");
+        assert!(parsed.message.contains('\u{FFFD}'), "replacement char used");
     }
 }

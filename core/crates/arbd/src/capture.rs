@@ -32,7 +32,8 @@ use arb_adb::mock::{CaptureEvent, NormalizedTouchEvent, TouchAction};
 use arb_adb::scrcpy::VideoPacketKind;
 use arb_adb::wire::{LogRecordPayload, StreamId, StreamLifecycleState, TouchEventPayload};
 use arb_core::analytics::{
-    ParsedAmCrash, decode_binary_android_event, parse_am_crash_binary, parse_am_crash_text,
+    ParsedAmCrash, decode_binary_android_event, parse_am_crash_binary,
+    parse_am_crash_text_for_event_tag,
 };
 use arb_core::bundle::{
     AudioStreamMeta, AvOffsetStatus, BundleKind, DeviceInfo, EpochSpan, FrameRecord,
@@ -2636,7 +2637,7 @@ fn detect_live_fatal_am_crash(payload: &LogRecordPayload) -> Option<ParsedAmCras
         parse_am_crash_binary(&payload.payload)?
     } else {
         let (tag, msg) = payload.parse_text_tag_and_message()?;
-        parse_am_crash_text(Some(tag.as_str()), &msg)?
+        parse_am_crash_text_for_event_tag(Some(tag.as_str()), &msg)?
     };
     parsed.is_fatal().then_some(parsed)
 }

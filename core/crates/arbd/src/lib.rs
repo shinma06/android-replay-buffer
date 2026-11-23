@@ -38,6 +38,7 @@ use arb_os::ipc::{
     DEFAULT_MAX_IPC_LINE_BYTES, FrameLineReader, LocalIpcListener, LocalIpcStream, write_frame_line,
 };
 use arb_os::paths::ArbPaths;
+use arb_storage::StorageError;
 use arb_storage::bundle_io::{TimeRange, open_bundle};
 use arb_storage::catalog::{
     BundleEntry, Catalog, CatalogFormatVersion, EditSession, LeaseHolderKind, NewBundleEntry,
@@ -324,6 +325,15 @@ impl DaemonState {
         if !path.is_absolute() {
             return Err(DaemonError::InvalidParams(format!(
                 "{what} must be an absolute path (got `{}`); arbd does not resolve paths against its own working directory",
+                path.display()
+            )));
+        }
+        if path
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+        {
+            return Err(DaemonError::InvalidParams(format!(
+                "{what} `{}` must not contain `..` segments",
                 path.display()
             )));
         }
@@ -1201,7 +1211,7 @@ impl DaemonServer {
         let disk_provider = config.disk_provider.clone();
         let (user_config, config_load_warning) = match config_store.load_or_default() {
             Ok(cfg) => (cfg, None),
-            Err(err) => {
+            Err(err @ (StorageError::Json { .. } | StorageError::ConfigValidation(_))) => {
                 // A hand-edited / newer-version / corrupt config.json must not keep arbd (and
                 // therefore the IDE) from starting: set the file aside, run on defaults and
                 // surface the problem through `system.status`.
@@ -1216,6 +1226,16 @@ impl DaemonServer {
                     ),
                 };
                 (ArbConfig::default(), Some(warning))
+            }
+            Err(err) => {
+                // Transient I/O trouble (permissions, sharing violation): never move a possibly
+                // valid config away. Run on defaults for this session and keep the file as is.
+                (
+                    ArbConfig::default(),
+                    Some(format!(
+                        "config.json could not be read ({err}); defaults are in use and the file was left untouched"
+                    )),
+                )
             }
         };
         let effective_ring_policy = if config.ring_policy_overridden {
@@ -1512,6 +1532,7 @@ fn handle_crash_autosave_notice(state: &Arc<DaemonState>, notice: CrashAutoSaveN
         .lock()
         .unwrap_or_else(PoisonError::into_inner);
     status.in_flight = false;
+    let saved = matches!(&save_res, Ok(outcome) if outcome.bundle_id.is_some());
     match save_res {
         Ok(outcome) => {
             status.last_job_id = Some(outcome.job.job_id);
@@ -1521,6 +1542,15 @@ fn handle_crash_autosave_notice(state: &Arc<DaemonState>, notice: CrashAutoSaveN
         Err(err) => {
             status.last_error = Some(err.to_string());
         }
+    }
+    drop(status);
+    if !saved {
+        // No bundle was produced: do not let this failed attempt debounce the next crash.
+        state
+            .crash_autosave_gate
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .abort_last_trigger();
     }
 }
 

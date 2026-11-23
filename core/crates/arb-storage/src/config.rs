@@ -85,9 +85,17 @@ impl ConfigStore {
     pub fn quarantine_invalid(&self, stamp: &str) -> Result<PathBuf, StorageError> {
         let clean: String = stamp.chars().filter(char::is_ascii_alphanumeric).collect();
         let source = self.path();
-        let target = self
+        // Never replace an earlier quarantined file (POSIX `rename` would silently overwrite).
+        let mut target = self
             .data_dir
             .join(format!("{CONFIG_FILE_NAME}.invalid-{clean}"));
+        let mut suffix = 1_u32;
+        while fs::symlink_metadata(&target).is_ok() {
+            target = self
+                .data_dir
+                .join(format!("{CONFIG_FILE_NAME}.invalid-{clean}-{suffix}"));
+            suffix = suffix.saturating_add(1);
+        }
         fs::rename(&source, &target)
             .map_err(|err| StorageError::io("quarantine_config_json", &source, err))?;
         Ok(target)

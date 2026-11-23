@@ -119,12 +119,18 @@ fn run_adb_screencap(
     let stdout_pipe = child.stdout.take();
     let stderr_pipe = child.stderr.take();
 
-    let stdout_handle = stdout_pipe.map(|pipe| {
+    let stdout_handle = stdout_pipe.map(|mut pipe| {
         thread::spawn(move || -> io::Result<Vec<u8>> {
-            let mut limited =
-                pipe.take(u64::try_from(MAX_SCREENSHOT_BYTES + 1).unwrap_or(u64::MAX));
+            let mut limited = pipe
+                .by_ref()
+                .take(u64::try_from(MAX_SCREENSHOT_BYTES + 1).unwrap_or(u64::MAX));
             let mut buf = Vec::new();
             limited.read_to_end(&mut buf)?;
+            // Keep draining (and discarding) so an oversized screencap never blocks adb on a
+            // full pipe; the caller reports the size-limit error right after the child exits.
+            if buf.len() > MAX_SCREENSHOT_BYTES {
+                let _ = io::copy(&mut pipe, &mut io::sink());
+            }
             Ok(buf)
         })
     });

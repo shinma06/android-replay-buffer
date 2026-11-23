@@ -929,6 +929,29 @@ fn t1_review_screenshot_cannot_overwrite_arbd_state_files_in_data_dir() {
         "config.json must be untouched"
     );
 
+    // `..` segments must not smuggle a path out of `screenshots/` into state files.
+    let traversal = paths
+        .data_dir
+        .join("screenshots")
+        .join("nope")
+        .join("..")
+        .join("..")
+        .join("catalog.sqlite");
+    let (code, msg) = client.call_err(
+        "save.screenshot",
+        &json!({ "output_path": traversal, "overwrite": true }),
+    );
+    assert_eq!(code, -32_602, "`..` traversal must be rejected: {msg}");
+    assert!(
+        !paths.data_dir.join("screenshots").join("nope").exists(),
+        "rejected request must not create directories"
+    );
+    let (code, _) = client.call_err(
+        "save.logs",
+        &json!({ "dest_dir": paths.data_dir.join("screenshots").join("..").join("ring") }),
+    );
+    assert_eq!(code, -32_602, "`..` in dest_dir rejected");
+
     // The dedicated screenshots directory inside data_dir stays allowed.
     let ok = client.call(
         "save.screenshot",
