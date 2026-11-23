@@ -42,6 +42,10 @@ use arb_core::time::{
     StreamKind, TimeAlignment, TimestampSemantics,
 };
 use arb_media::MediaError;
+use arb_media::audio::{
+    AacMuxInput, AacPacket, build_aac_lc_audio_specific_config, mux_aac_to_m4a,
+    parse_audio_specific_config,
+};
 use arb_media::mp4::{Mp4VideoTrack, RawH264Packet, mux_raw_h264_to_mp4};
 use arb_os::OsError;
 use arb_os::clock::sample_host_clock;
@@ -1517,7 +1521,8 @@ struct ReplayCollector {
     video_height: u16,
     video_config: Option<Vec<u8>>,
     raw_video: Vec<RawCapturedVideo>,
-    audio_frames_count: usize,
+    audio_config: Option<Vec<u8>>,
+    raw_audio: Vec<RawCapturedAudio>,
     audio_unavailable: bool,
     audio_gap: bool,
     raw_logs: Vec<RawCapturedLog>,
@@ -1535,6 +1540,13 @@ struct RawCapturedVideo {
     pc_ingest_cont_ns: i64,
     is_keyframe: bool,
     annex_b: Vec<u8>,
+}
+
+struct RawCapturedAudio {
+    boot_id: String,
+    pts_us: u64,
+    pc_ingest_cont_ns: i64,
+    data: Vec<u8>,
 }
 
 struct RawCapturedLog {
@@ -1565,6 +1577,12 @@ struct SelectedVideo {
     unanchored_excluded: usize,
 }
 
+/// Audio packets selected for the main timeline plus the uncertain packets left out (R3 S2).
+struct SelectedAudio {
+    main: Vec<AacPacket>,
+    unanchored_excluded: usize,
+}
+
 impl ReplayCollector {
     fn new(params: &SaveJobMaterializeParams) -> Self {
         Self {
@@ -1574,7 +1592,8 @@ impl ReplayCollector {
             video_height: params.video_height,
             video_config: params.fallback_video_config.clone(),
             raw_video: Vec::new(),
-            audio_frames_count: 0,
+            audio_config: None,
+            raw_audio: Vec::new(),
             audio_unavailable: false,
             audio_gap: false,
             raw_logs: Vec::new(),
@@ -1647,7 +1666,21 @@ impl ReplayCollector {
                     });
                 }
             }
-            CaptureEvent::AudioFrame { .. } => self.audio_frames_count += 1,
+            CaptureEvent::AudioConfig { packet, .. } => {
+                self.audio_config = Some(packet.data);
+            }
+            CaptureEvent::AudioFrame {
+                pc_cont_ns,
+                boot_id,
+                packet,
+            } => {
+                self.raw_audio.push(RawCapturedAudio {
+                    boot_id,
+                    pts_us: packet.pts_us,
+                    pc_ingest_cont_ns: pc_cont_ns,
+                    data: packet.data,
+                });
+            }
             CaptureEvent::AudioUnavailable { .. } => self.audio_unavailable = true,
             other => self.ingest_non_media_event(other),
         }
@@ -1782,6 +1815,48 @@ impl ReplayCollector {
         }
     }
 
+    fn select_audio(
+        timeline: &ClockTimeline,
+        raw_audio: Vec<RawCapturedAudio>,
+        params: &SaveJobMaterializeParams,
+    ) -> SelectedAudio {
+        let aligned: Vec<AlignedAudioItem> = raw_audio
+            .into_iter()
+            .map(|raw| {
+                let pts_mono_ns = raw
+                    .pts_us
+                    .checked_mul(1_000)
+                    .and_then(|ns| i64::try_from(ns).ok())
+                    .unwrap_or(0);
+                let alignment = timeline.map_device_monotonic(
+                    &raw.boot_id,
+                    pts_mono_ns,
+                    TimestampSemantics::AudioCapturePtsUncalibrated,
+                    raw.pc_ingest_cont_ns,
+                );
+                AlignedAudioItem {
+                    packet: AacPacket {
+                        pts_us: i64::try_from(raw.pts_us).unwrap_or(i64::MAX),
+                        data: raw.data,
+                    },
+                    alignment,
+                    pc_ingest_cont_ns: raw.pc_ingest_cont_ns,
+                }
+            })
+            .collect();
+        let part = select_records(aligned, &params.window, &params.policy);
+        // R3 S2 applied to audio: packets with uncertain time cannot be muxed into the
+        // timeline-indexed `audio.m4a`, but they are counted, never lost silently.
+        let unanchored_excluded = part
+            .unanchored
+            .len()
+            .saturating_add(part.unanchored_truncated_count);
+        SelectedAudio {
+            main: part.main.into_iter().map(|a| a.packet).collect(),
+            unanchored_excluded,
+        }
+    }
+
     fn select_logs(
         timeline: &ClockTimeline,
         raw_logs: Vec<RawCapturedLog>,
@@ -1900,23 +1975,25 @@ impl ReplayCollector {
         params: &SaveJobMaterializeParams,
         data_dir: &Path,
     ) -> Result<V2BundleDraft, DaemonError> {
+        let audio_continuity = self.audio_continuity();
         let selected_video = Self::select_video(&self.timeline, self.raw_video, params);
+        let selected_audio = Self::select_audio(&self.timeline, self.raw_audio, params);
         let mut discontinuities = self.discontinuities;
-        if selected_video.unanchored_excluded > 0 {
-            discontinuities.push(DiscontinuityEvent {
-                kind: DiscontinuityKind::StreamGap,
-                stream: Some(StreamKind::Video),
-                boot_id: Some(params.window.boot_id().to_owned()),
-                start_boottime_ns: None,
-                end_boottime_ns: None,
-                pc_cont_start_ns: params.window.ingest_start_cont_ns(),
-                pc_cont_end_ns: Some(params.window.ingest_end_cont_ns()),
-                delta_ns: None,
-                detail: Some(format!(
-                    "{} unanchored video frames (uncertain time or other boot_id) excluded from the main track",
-                    selected_video.unanchored_excluded
-                )),
-            });
+        for (kind, label, excluded) in [
+            (
+                StreamKind::Video,
+                "video frames",
+                selected_video.unanchored_excluded,
+            ),
+            (
+                StreamKind::Audio,
+                "audio packets",
+                selected_audio.unanchored_excluded,
+            ),
+        ] {
+            if excluded > 0 {
+                push_unanchored_exclusion_gap(&mut discontinuities, kind, params, excluded, label);
+            }
         }
         let (video_mp4, final_frames, video_status) = mux_selected_video(
             job_id,
@@ -1925,6 +2002,13 @@ impl ReplayCollector {
             self.video_height,
             self.video_config.as_deref(),
             selected_video.main,
+        )?;
+        let (audio_m4a, audio_status) = mux_selected_audio(
+            job_id,
+            data_dir,
+            self.audio_config.as_deref(),
+            audio_continuity,
+            selected_audio.main,
         )?;
         let (final_logs, unanchored_logs, trunc_logs) =
             Self::select_logs(&self.timeline, self.raw_logs, params);
@@ -1946,7 +2030,7 @@ impl ReplayCollector {
         let streams = build_streams_summary(&StreamSummaryCounts {
             frame_count,
             video_status,
-            audio_frames_count: self.audio_frames_count,
+            audio_status,
             logs_count: final_logs.len(),
             log_completeness: self.log_completeness,
             log_overflow_events: self.log_overflow_events,
@@ -1986,7 +2070,7 @@ impl ReplayCollector {
             streams,
             unanchored_summary,
             video_mp4,
-            audio_m4a: None,
+            audio_m4a,
             frames: final_frames,
             discontinuities,
             logs: final_logs,
@@ -1999,7 +2083,7 @@ impl ReplayCollector {
 struct StreamSummaryCounts {
     frame_count: u64,
     video_status: StreamStatus,
-    audio_frames_count: usize,
+    audio_status: StreamStatus,
     logs_count: usize,
     log_completeness: LogCompleteness,
     log_overflow_events: u64,
@@ -2021,15 +2105,11 @@ fn build_streams_summary(counts: &StreamSummaryCounts) -> StreamsSummary {
             semantics: TimestampSemantics::VideoEncoderInputEstimate,
         }),
         audio: Some(AudioStreamMeta {
-            status: if counts.audio_frames_count == 0 {
-                StreamStatus::Absent
-            } else {
-                // `arbd` does not mux AAC frames into `audio.m4a` yet (no audio muxer in
-                // `arb-media`), and `V2BundleReader::verify_integrity` (R2 S15) requires
-                // `audio.m4a` whenever audio is `Present`. Frames that were captured but not
-                // persisted are therefore reported honestly as `Partial`, never `Present`.
-                StreamStatus::Partial
-            },
+            // Computed by `mux_selected_audio`: `Present` only when `audio.m4a` was
+            // actually written (required by `verify_integrity`, R2 S15), `Partial` when
+            // the file exists but the stream had gaps/outages or when captured packets
+            // could not be persisted, `Absent` when no packets were selected.
+            status: counts.audio_status,
             av_offset_status: AvOffsetStatus::Uncalibrated,
             av_offset_ms: 0,
             tail_may_be_incomplete,
@@ -2073,6 +2153,26 @@ impl arb_core::selection::AlignedRecord for AlignedVideoItem {
 
     fn estimated_bytes(&self) -> usize {
         self.annex_b.len()
+    }
+}
+
+struct AlignedAudioItem {
+    packet: AacPacket,
+    alignment: TimeAlignment,
+    pc_ingest_cont_ns: i64,
+}
+
+impl arb_core::selection::AlignedRecord for AlignedAudioItem {
+    fn time_alignment(&self) -> &TimeAlignment {
+        &self.alignment
+    }
+
+    fn pc_ingest_cont_ns(&self) -> i64 {
+        self.pc_ingest_cont_ns
+    }
+
+    fn estimated_bytes(&self) -> usize {
+        self.packet.data.len()
     }
 }
 
@@ -2164,6 +2264,114 @@ fn mux_selected_video(
                 frames.push(rec);
             }
             Ok((None, frames, StreamStatus::Partial))
+        }
+        Err(other) => Err(other.into()),
+    }
+}
+
+/// Default `AudioSpecificConfig` used when the `scrcpy` audio tunnel delivered AAC-LC frames
+/// without a preceding `AudioConfig` packet (48 kHz stereo, per scrcpy's encoder default).
+fn default_audio_specific_config() -> Vec<u8> {
+    build_aac_lc_audio_specific_config(48_000, 2)
+        .map_or_else(|_| vec![0x11, 0x90], |asc| asc.to_vec())
+}
+
+/// Whether the audio stream stayed continuous through the saved window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AudioContinuity {
+    /// No gap, error, stop, or `AudioUnavailable` was observed during the window.
+    Continuous,
+    /// A stream gap, error, stop or `AudioUnavailable` was observed: a muxed file is still
+    /// persisted but the status must degrade to `Partial` (never `Present`).
+    Degraded,
+}
+
+impl ReplayCollector {
+    /// `Degraded` when either an audio stream gap or an explicit `AudioUnavailable` was seen.
+    fn audio_continuity(&self) -> AudioContinuity {
+        if self.audio_gap || self.audio_unavailable {
+            AudioContinuity::Degraded
+        } else {
+            AudioContinuity::Continuous
+        }
+    }
+}
+
+/// Records a `StreamGap` discontinuity for records quarantined out of the main track
+/// (uncertain time or other `boot_id`), so exclusions are never silent (R3 S2).
+fn push_unanchored_exclusion_gap(
+    discontinuities: &mut Vec<DiscontinuityEvent>,
+    stream: StreamKind,
+    params: &SaveJobMaterializeParams,
+    excluded: usize,
+    item_label: &str,
+) {
+    discontinuities.push(DiscontinuityEvent {
+        kind: DiscontinuityKind::StreamGap,
+        stream: Some(stream),
+        boot_id: Some(params.window.boot_id().to_owned()),
+        start_boottime_ns: None,
+        end_boottime_ns: None,
+        pc_cont_start_ns: params.window.ingest_start_cont_ns(),
+        pc_cont_end_ns: Some(params.window.ingest_end_cont_ns()),
+        delta_ns: None,
+        detail: Some(format!(
+            "{excluded} unanchored {item_label} (uncertain time or other boot_id) excluded from the main track"
+        )),
+    });
+}
+
+/// Muxes the selected AAC-LC packets into a temporary `audio.m4a` and returns its payload
+/// plus the honest stream status.
+///
+/// `continuity == Degraded` means the audio stream reported a gap, error, stop or an
+/// explicit `AudioUnavailable` during the window: the file is still persisted, but the
+/// status is downgraded to `Partial` (never `Present`). Malformed or non-AAC-LC payloads
+/// fall back to file-less `Partial` (mirroring the video `InvalidContainer` fallback);
+/// every I/O or unexpected mux failure is propagated so Phase 2 ends in `FailedRetryable`
+/// with the pins kept (R3 M3).
+fn mux_selected_audio(
+    job_id: &str,
+    data_dir: &Path,
+    audio_config: Option<&[u8]>,
+    continuity: AudioContinuity,
+    selected: Vec<AacPacket>,
+) -> Result<(Option<MediaPayload>, StreamStatus), DaemonError> {
+    if selected.is_empty() {
+        return Ok((None, StreamStatus::Absent));
+    }
+
+    // Prefer the captured `AudioSpecificConfig` when it parses; otherwise fall back to the
+    // scrcpy default so raw AAC-LC frames are still persisted (never silently dropped).
+    let asc_bytes = match audio_config {
+        Some(bytes) if parse_audio_specific_config(bytes).is_ok() => bytes.to_vec(),
+        _ => default_audio_specific_config(),
+    };
+    let asc = parse_audio_specific_config(&asc_bytes).map_err(|err| {
+        DaemonError::Internal(format!("chosen AudioSpecificConfig rejected: {err}"))
+    })?;
+
+    let tmp_dir = data_dir.join("tmp");
+    fs::create_dir_all(&tmp_dir)?;
+    let tmp_m4a = tmp_dir.join(format!("mux-{job_id}.m4a"));
+    let _tmp_guard = TempFileGuard(tmp_m4a.clone());
+
+    let input = AacMuxInput {
+        audio_specific_config: asc_bytes,
+        sample_rate_hz: asc.sample_rate_hz,
+        channels: asc.channel_count,
+        packets: selected,
+    };
+    match mux_aac_to_m4a(&tmp_m4a, &input) {
+        Ok(_report) => {
+            let status = match continuity {
+                AudioContinuity::Degraded => StreamStatus::Partial,
+                AudioContinuity::Continuous => StreamStatus::Present,
+            };
+            Ok((Some(MediaPayload::Bytes(fs::read(&tmp_m4a)?)), status))
+        }
+        Err(MediaError::InvalidContainer(_) | MediaError::UnsupportedFeature(_)) => {
+            Ok((None, StreamStatus::Partial))
         }
         Err(other) => Err(other.into()),
     }

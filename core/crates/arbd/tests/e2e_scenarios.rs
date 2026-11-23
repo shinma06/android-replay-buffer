@@ -37,6 +37,7 @@ use arb_adb::wire::{
 };
 use arb_core::state::{RingBudgetPolicy, SaveJobState};
 use arb_core::time::{DiscontinuityKind, PcSyncProbe, StreamKind};
+use arb_media::Mp4AudioTrack;
 use arb_media::codec::{
     DecodedFrame, EncodeParams, OpenH264Backend, PixelFormat, VideoCodecBackend,
 };
@@ -2316,4 +2317,105 @@ fn r3_s6_s8c_s10_s11_leases_trim_tail_oversized_response_and_shutdown_gate() {
         started.elapsed() < std::time::Duration::from_secs(2),
         "shutdown must complete promptly even with idle client connections open"
     );
+}
+
+#[test]
+fn w11_audio_m4a_muxed_trimmed_and_sha256_verified() {
+    let tmp = TempDir::new().expect("tempdir");
+    let server = DaemonServer::start(DaemonConfig::new(isolated_paths(&tmp))).expect("start arbd");
+
+    let mut source = build_barcode_mock_source("boot-w11", 90, WallClockMode::Steady);
+    server
+        .ingest_device_source(&mut source)
+        .expect("ingest audio source");
+
+    let mut client = TestIpcClient::connect(server.endpoint());
+    let saved = client.call("save.trigger", &json!({ "duration_sec": 30 }));
+    assert_eq!(saved["job"]["state"], "completed", "save must complete");
+    let bundle_id = saved["bundle_id"].as_str().expect("bundle_id").to_owned();
+    let bundle_path = PathBuf::from(saved["bundle_path"].as_str().expect("bundle_path"));
+
+    // W11: `audio.m4a` must be written, listed in `manifest.files` and SHA-256 verified.
+    let m4a_path = bundle_path.join("audio.m4a");
+    assert!(m4a_path.is_file(), "saved bundle must contain audio.m4a");
+    let reader = V2BundleReader::open(&bundle_path).expect("open saved bundle");
+    assert!(
+        reader
+            .manifest()
+            .files
+            .iter()
+            .any(|f| f.path == "audio.m4a"),
+        "audio.m4a must be listed in manifest.files"
+    );
+    reader
+        .verify_integrity()
+        .expect("saved audio.m4a SHA-256 integrity must verify");
+
+    let summary = client.call(
+        "timeline.summary",
+        &json!({ "bundle_id_or_path": bundle_id }),
+    );
+    assert_eq!(
+        summary["streams"]["audio"]["status"], "present",
+        "gap-free AAC-LC capture must report audio.status == present"
+    );
+    assert_eq!(
+        summary["audio_path"].as_str(),
+        m4a_path.to_str(),
+        "timeline.summary must expose the audio.m4a path"
+    );
+
+    let track = Mp4AudioTrack::open(&m4a_path).expect("open audio.m4a track");
+    assert_eq!(track.sample_rate_hz(), 48_000, "ASC must be 48 kHz");
+    assert_eq!(track.channels(), 2, "ASC must be stereo");
+    assert_eq!(
+        track.packet_count(),
+        9,
+        "all 9 audio packets (idx % 10) in the window must be muxed"
+    );
+
+    // Trimming the bundle must produce a trimmed `audio.m4a` covering the same range.
+    let trimmed = client.call(
+        "export.trim",
+        &json!({
+            "bundle_id_or_path": bundle_id,
+            "in_frame_index": 17,
+            "out_frame_index": 49,
+        }),
+    );
+    let trimmed_dir = PathBuf::from(trimmed["bundle_path"].as_str().expect("trimmed path"));
+    let trimmed_m4a = trimmed_dir.join("audio.m4a");
+    assert!(
+        trimmed_m4a.is_file(),
+        "trimmed bundle must contain audio.m4a"
+    );
+    let trimmed_reader = V2BundleReader::open(&trimmed_dir).expect("open trimmed bundle");
+    trimmed_reader
+        .verify_integrity()
+        .expect("trimmed audio.m4a SHA-256 integrity must verify");
+
+    let trimmed_track = Mp4AudioTrack::open(&trimmed_m4a).expect("open trimmed audio.m4a");
+    assert!(
+        trimmed_track.packet_count() >= 1 && trimmed_track.packet_count() < track.packet_count(),
+        "trimmed audio must hold a strict in-window subset of packets"
+    );
+    assert_eq!(
+        trimmed_track
+            .packet(0)
+            .expect("first trimmed packet")
+            .pts_ns,
+        0,
+        "trimmed audio.m4a must be rebased to pts 0"
+    );
+
+    let trimmed_summary = client.call(
+        "timeline.summary",
+        &json!({ "bundle_id_or_path": trimmed["bundle_id"].as_str().expect("trimmed id") }),
+    );
+    assert_eq!(
+        trimmed_summary["streams"]["audio"]["status"], "present",
+        "trimmed audio.m4a must keep audio.status == present"
+    );
+
+    server.shutdown();
 }

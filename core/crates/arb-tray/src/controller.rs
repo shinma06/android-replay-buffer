@@ -55,7 +55,7 @@ impl BundleFormatBadge {
 ///
 /// Precedence when multiple conditions hold simultaneously (most to least urgent):
 /// `DaemonOffline` > `StoragePressure` > `Disconnected` > `SaveAttentionNeeded` > `Capturing` >
-/// `Idle`. [`derive_badge`] implements and [`crate::controller::tests`] exercises this order.
+/// `Idle`. `derive_badge` implements and the module unit tests exercise this order.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

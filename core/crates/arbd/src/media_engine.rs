@@ -11,6 +11,8 @@ use arb_core::bundle::{
 };
 use arb_core::selection::{SelectionPolicy, WindowSpec, select_for_trim_with_truncated};
 use arb_core::time::{DiscontinuityEvent, TimeAlignment, TimestampSemantics, UncertaintyReason};
+use arb_media::MediaError;
+use arb_media::audio::trim_audio_m4a;
 use arb_media::codec::{PixelFormat as MediaPixelFormat, VideoCodecBackend, default_codec_backend};
 use arb_media::mp4::Mp4VideoTrack;
 use arb_media::playback::{
@@ -523,6 +525,10 @@ pub fn export_trim(
         ctx.backend,
     )?;
 
+    // W11: cut the source `audio.m4a` (if any) to the trimmed video's time range.
+    let (trimmed_audio, _tmp_audio_guard) =
+        trim_source_audio(reader.as_ref(), &video_path, params, &tmp_dir, &trim_job_id)?.unzip();
+
     let trimmed_track = Mp4VideoTrack::open(&tmp_trimmed_mp4)?;
     let trimmed_frames =
         build_trimmed_frame_records(&trimmed_track, &source_frames, &frame_window, params);
@@ -562,9 +568,11 @@ pub fn export_trim(
         TrimmedVideo {
             output_frame_count: trim_report.output_frame_count,
             tail_may_be_incomplete,
+            includes_source_tail,
             tmp_mp4: tmp_trimmed_mp4,
             frames: trimmed_frames,
         },
+        trimmed_audio,
         unanchored_summary,
         trimmed_discs,
         trimmed_logs,
@@ -632,8 +640,55 @@ fn commit_trimmed_bundle(
 struct TrimmedVideo {
     output_frame_count: u64,
     tail_may_be_incomplete: bool,
+    /// `true` when `out_frame_index` reaches the source's last frame (the trimmed streams
+    /// inherit the source's incomplete tail, R3 S8c).
+    includes_source_tail: bool,
     tmp_mp4: PathBuf,
     frames: Vec<FrameRecord>,
+}
+
+/// Trimmed `audio.m4a` payload for [`build_trimmed_bundle_draft`].
+struct TrimmedAudio {
+    tmp_m4a: PathBuf,
+}
+
+/// Cuts the source bundle's `audio.m4a` (when it has one) to the trimmed video's time range
+/// and returns the staged payload alongside the guard that removes the temp file on drop.
+///
+/// Both `video.mp4` and `audio.m4a` are muxed rebased to `pts = 0` at capture start, so the
+/// source video frame pts range maps directly onto the source audio timeline. Returns
+/// `Ok(None)` when the source has no audio file or no AAC access unit intersects the range;
+/// all other errors propagate so a corrupt source audio track can never silently produce a
+/// bundle that claims trimmed audio (R3 M3).
+fn trim_source_audio(
+    reader: &dyn BundleReader,
+    video_path: &Path,
+    params: &ExportTrimParams,
+    tmp_dir: &Path,
+    trim_job_id: &str,
+) -> Result<Option<(TrimmedAudio, FileCleanupGuard)>, DaemonError> {
+    let Some(src_m4a) = reader.audio_path() else {
+        return Ok(None);
+    };
+    let src_track = Mp4VideoTrack::open(video_path)?;
+    let start_ns = src_track.frame(params.in_frame_index)?.pts_ns.max(0);
+    let out_frame = src_track.frame(params.out_frame_index)?;
+    let end_ns = out_frame
+        .pts_ns
+        .saturating_add(i64::try_from(out_frame.duration_ns).unwrap_or(i64::MAX))
+        .max(start_ns.saturating_add(1));
+
+    let tmp_m4a = tmp_dir.join(format!("{trim_job_id}.m4a"));
+    match trim_audio_m4a(&src_m4a, &tmp_m4a, start_ns, end_ns) {
+        Ok(_report) => Ok(Some((
+            TrimmedAudio {
+                tmp_m4a: tmp_m4a.clone(),
+            },
+            FileCleanupGuard(tmp_m4a),
+        ))),
+        Err(MediaError::InvalidArgument(_)) => Ok(None),
+        Err(err) => Err(err.into()),
+    }
 }
 
 #[expect(
@@ -648,6 +703,7 @@ fn build_trimmed_bundle_draft(
     frame_window: &WindowSpec,
     params: &ExportTrimParams,
     video: TrimmedVideo,
+    trimmed_audio: Option<TrimmedAudio>,
     unanchored_summary: UnanchoredSummary,
     trimmed_discs: Vec<DiscontinuityEvent>,
     trimmed_logs: Vec<arb_core::bundle::LogRecord>,
@@ -684,12 +740,18 @@ fn build_trimmed_bundle_draft(
                 tail_may_be_incomplete: video.tail_may_be_incomplete,
                 semantics: TimestampSemantics::VideoEncoderInputEstimate,
             }),
-            // The trimmed bundle carries no `audio.m4a` (audio is not cut), and
-            // `verify_integrity` requires the file for a `Present` audio stream, so a
-            // `Present` source is downgraded to `Partial`.
             audio: summary.streams.audio.clone().map(|mut audio| {
-                if audio.status == StreamStatus::Present {
-                    audio.status = StreamStatus::Partial;
+                if trimmed_audio.is_some() {
+                    // A trimmed `audio.m4a` was written: a `Present` source stays `Present`
+                    // (the file satisfies `verify_integrity`, R2 S15), a `Partial` source
+                    // stays `Partial`. The incomplete-tail flag only survives when the trim
+                    // still reaches the source's last frame (R3 S8c, applied to audio).
+                    audio.tail_may_be_incomplete =
+                        video.includes_source_tail && audio.tail_may_be_incomplete;
+                } else {
+                    // No AAC access unit intersects the trimmed video range.
+                    audio.status = StreamStatus::Absent;
+                    audio.tail_may_be_incomplete = false;
                 }
                 audio
             }),
@@ -698,7 +760,7 @@ fn build_trimmed_bundle_draft(
         },
         unanchored_summary,
         video_mp4: Some(MediaPayload::File(video.tmp_mp4)),
-        audio_m4a: None,
+        audio_m4a: trimmed_audio.map(|a| MediaPayload::File(a.tmp_m4a)),
         frames: video.frames,
         discontinuities: trimmed_discs,
         logs: trimmed_logs,
