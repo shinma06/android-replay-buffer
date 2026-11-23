@@ -287,21 +287,41 @@ class ArbT6dUiGlueAuditTest {
 
             controller.selectDeviceByIndex(2)
             awaitTrue { transport.methods().contains("config.update") }
-            val updatesAfterPin = transport.calls.count { it.method == "config.update" }
             assertEquals("R3CN1234567", controller.selectedDeviceSerial)
             assertNull(controller.captureState.autoSelectedSerial, "explicit choice must not be treated as auto-selected")
             val update = transport.calls.first { it.method == "config.update" }
             assertEquals("R3CN1234567", update.params.get("device_serial").asString)
 
-            // Re-choosing the sole auto-selected device never creates a pin.
-            val single = CaptureBarReducer.fromStatus(CaptureBarState(), status(), devices = listOf(online("emulator-5554")))
+        } finally {
+            controller.dispose()
+            rpc.close()
+            service.dispose()
+        }
+    }
+
+    @Test
+    fun reselectingSoleAutoSelectedDeviceNeverCreatesPin() {
+        val devices = listOf(online("emulator-5554"))
+        // The stub serves the same single device, so any background refresh recomputes the same state.
+        val transport = RecordingTransport(defaultResponder(devices = devices))
+        val (service, rpc) = stubDaemon(transport)
+        val controller = ArbToolWindowController(
+            project = null,
+            daemonService = service,
+            onOpenBundle = { _, _, _ -> },
+            pollIntervalMs = 0L,
+            screenshotDirResolver = { null },
+        )
+        try {
+            val single = CaptureBarReducer.fromStatus(CaptureBarState(), status(), devices = devices)
             assertEquals("emulator-5554", single.autoSelectedSerial)
             controller.applyStateForTest(capture = single)
             controller.selectDeviceByIndex(0)
-            Thread.sleep(100L)
+            Thread.sleep(150L)
             SwingUtilities.invokeAndWait {}
-            assertEquals(updatesAfterPin, transport.calls.count { it.method == "config.update" })
+            assertFalse(transport.methods().contains("config.update"), "auto-selected device must not be pinned")
             assertEquals("emulator-5554", controller.captureState.autoSelectedSerial)
+            assertEquals("emulator-5554", controller.selectedDeviceSerial)
         } finally {
             controller.dispose()
             rpc.close()
@@ -375,24 +395,31 @@ class ArbT6dUiGlueAuditTest {
             awaitTrue { !controller.captureModeBusy }
             assertFalse(transport.methods().contains("capture.stop"))
             assertFalse(transport.methods().contains("capture.start"))
+        } finally {
+            controller.dispose()
+            rpc.close()
+            service.dispose()
+        }
 
+        // Chip assertions on a controller with no background work queued (no refresh races).
+        val (quiet, quietService) = offlineController()
+        try {
             val logsOnly = CaptureBarReducer.fromStatus(
                 CaptureBarState(),
                 status(active = true, serial = "PIXEL-A", mode = CaptureMode.LOGS_ONLY),
                 devices = listOf(online("PIXEL-A")),
                 config = ArbConfig(captureMode = CaptureMode.LOGS_ONLY),
             )
-            controller.applyStateForTest(capture = logsOnly)
-            assertTrue(controller.isLogsOnlyMode)
-            assertEquals(ArbToolWindowController.LOGS_ONLY_CHIP_TEXT, controller.captureModeChipText)
-            assertEquals("ログのみ常時", controller.captureModeChipText)
-            assertEquals("REC (ログのみ)", controller.captureState.statusBadgeText)
+            quiet.applyStateForTest(capture = logsOnly)
+            assertTrue(quiet.isLogsOnlyMode)
+            assertEquals(ArbToolWindowController.LOGS_ONLY_CHIP_TEXT, quiet.captureModeChipText)
+            assertEquals("ログのみ常時", quiet.captureModeChipText)
+            assertEquals("REC (ログのみ)", quiet.captureState.statusBadgeText)
             assertEquals("映像＋ログ", ArbToolWindowController.captureModeLabel(CaptureMode.VIDEO_AND_LOGS))
             assertEquals("ログのみ", ArbToolWindowController.captureModeLabel(CaptureMode.LOGS_ONLY))
         } finally {
-            controller.dispose()
-            rpc.close()
-            service.dispose()
+            quiet.dispose()
+            quietService.dispose()
         }
     }
 

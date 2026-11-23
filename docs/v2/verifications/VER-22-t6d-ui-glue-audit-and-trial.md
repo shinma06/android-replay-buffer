@@ -76,8 +76,8 @@ verifies:
 
 ## 4. ローカル品質ゲート
 
-- `(cd ide-plugin && ./gradlew test buildPlugin --no-daemon)`: **ide-plugin 34 passed / client-core 81 passed、0 failed**
-  - 新規 `ArbT6dUiGlueAuditTest` 16 件: 0 / 1 / 複数端末、固定端末の切断待ち、明示選択の永続化と自動選択の再選択、録画中 / 待機中のモード切替、`output_dir` 結線と解決、アプリ別フィルタ（陳腐化した応答の破棄、Legacy / 空のとき非表示）、Settings の 3 項目保持、破棄時の割り込みなし、メールボックス合流、キー一意化、テーマ Tone、About ビルド ID、ソース走査
+- `(cd ide-plugin && ./gradlew test buildPlugin --no-daemon)`: **ide-plugin 35 passed / client-core 81 passed、0 failed**
+  - 新規 `ArbT6dUiGlueAuditTest` 17 件: 0 / 1 / 複数端末、固定端末の切断待ち、明示選択の永続化と自動選択の再選択、録画中 / 待機中のモード切替、`output_dir` 結線と解決、アプリ別フィルタ（陳腐化した応答の破棄、Legacy / 空のとき非表示）、Settings の 3 項目保持、破棄時の割り込みなし、メールボックス合流、キー一意化、テーマ Tone、About ビルド ID、ソース走査
   - client-core 新規 3 件: `build_id` 解析、固定タイムスタンプ ZIP でのサイズ差検知、1 セッション 1 回のループガード
 - `./core/scripts/verify.sh`: 6/6 PASS（fmt / clippy `-D warnings` 警告 0 件 / `cargo test` **354 passed, 0 failed, 3 ignored** / license **GPL・AGPL 0 件** / `sara check --strict`（本書 `VER-22` を含む）/ REQ → SPEC 14/14）
 
