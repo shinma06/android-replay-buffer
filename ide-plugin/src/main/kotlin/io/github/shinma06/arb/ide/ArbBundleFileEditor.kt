@@ -522,10 +522,13 @@ class ArbBundleFileEditor(
         format: StudioExportFormat,
     ) {
         val current = state ?: return
-        val shouldTrashOriginal = trashOriginalRequested && !current.isLegacy
         val isFullRange = current.frameCount > 0L &&
             inFrameIndex <= 0L &&
             outFrameIndex >= current.frameCount - 1L
+        // A full-range share.mp4 produces no WORM trimmed bundle, so trashing the original would
+        // leave only a lossy MP4 behind: never trash in that case.
+        val shouldTrashOriginal = trashOriginalRequested && !current.isLegacy &&
+            !(format == StudioExportFormat.SHARE_MP4 && isFullRange)
 
         worker.submit {
             try {

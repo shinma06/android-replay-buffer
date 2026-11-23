@@ -623,11 +623,8 @@ fn build_recent_bundles_section(state: &TrayViewState) -> TrayMenuItem {
     // `bundle.list` returns oldest-first (`created_at_utc ASC`); reverse to newest-first while
     // keeping explicit UTC ordering deterministic when timestamps are present.
     active.reverse();
-    active.sort_by(|a, b| {
-        b.created_at_utc
-            .cmp(&a.created_at_utc)
-            .then_with(|| b.bundle_id.cmp(&a.bundle_id))
-    });
+    // Stable sort: equal (or missing) timestamps keep the newest-first list order from `reverse`.
+    active.sort_by(|a, b| b.created_at_utc.cmp(&a.created_at_utc));
     let children: Vec<TrayMenuItem> = active
         .into_iter()
         .take(RECENT_BUNDLES_LIMIT)

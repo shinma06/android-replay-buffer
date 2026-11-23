@@ -34,7 +34,7 @@ private fun notifyArb(
         .createNotification("Android Replay Buffer (v2)", content, type)
     if (!revealPath.isNullOrBlank()) {
         notification.addAction(
-            NotificationAction.createSimple("Finder で表示") {
+            NotificationAction.createSimple("フォルダを表示") {
                 runCatching { RevealFileAction.openFile(Path.of(revealPath)) }
             },
         )

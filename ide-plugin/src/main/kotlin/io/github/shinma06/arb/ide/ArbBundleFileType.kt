@@ -153,7 +153,6 @@ object ArbBundleDetector {
                 ?: obj.get("schema_version")?.takeIf { it.isJsonPrimitive }?.asIntOrNull()
             val hasArbMarker = obj.has("capture_mode") ||
                 obj.has("replay_seconds") ||
-                obj.has("video") ||
                 obj.has("save_id") ||
                 obj.get("plugin_id")?.takeIf { it.isJsonPrimitive }?.asString == "io.github.shinma06.android-replay-buffer"
             return (schema == 3 || schema == 4) && hasArbMarker
