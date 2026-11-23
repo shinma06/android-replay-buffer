@@ -117,30 +117,28 @@ impl LocalIpcStream {
         self.inner.drain(&self.endpoint)
     }
 
-    /// Sets an optional read timeout on the stream where supported by the OS.
+    /// Sets an optional read timeout on the stream.
     ///
     /// Supported on Unix sockets and on Windows Named Pipes (enforced per call
-    /// via `CancelIoEx` on the overlapped pipe object).
+    /// via overlapped I/O and `CancelIoEx`).
     ///
     /// # Errors
     ///
-    /// Returns [`OsError::Unsupported`] if the host OS does not support
-    /// per-call read timeouts on this transport, or [`OsError::Ipc`] if
-    /// configuring the timeout fails.
+    /// Returns [`OsError::Ipc`] if `timeout` is `Some(Duration::ZERO)`
+    /// (`InvalidInput`) or if configuring the timeout fails.
     pub fn set_read_timeout(&self, timeout: Option<Duration>) -> Result<(), OsError> {
         self.inner.set_read_timeout(timeout, &self.endpoint)
     }
 
-    /// Sets an optional write timeout on the stream where supported by the OS.
+    /// Sets an optional write timeout on the stream.
     ///
     /// Supported on Unix sockets and on Windows Named Pipes (enforced per call
-    /// via `CancelIoEx` on the overlapped pipe object).
+    /// via overlapped I/O and `CancelIoEx`).
     ///
     /// # Errors
     ///
-    /// Returns [`OsError::Unsupported`] if the host OS does not support
-    /// per-call write timeouts on this transport, or [`OsError::Ipc`] if
-    /// configuring the timeout fails.
+    /// Returns [`OsError::Ipc`] if `timeout` is `Some(Duration::ZERO)`
+    /// (`InvalidInput`) or if configuring the timeout fails.
     pub fn set_write_timeout(&self, timeout: Option<Duration>) -> Result<(), OsError> {
         self.inner.set_write_timeout(timeout, &self.endpoint)
     }
@@ -205,8 +203,131 @@ pub fn write_frame_line(
     })
 }
 
+/// Stateful newline-delimited UTF-8 frame reader that preserves partial frame
+/// bytes (and oversized-line discard state) across transient `TimedOut` /
+/// `WouldBlock` read interruptions.
+#[derive(Debug, Default)]
+pub struct FrameLineReader {
+    buf: Vec<u8>,
+    discarding_oversized: bool,
+}
+
+impl FrameLineReader {
+    /// Creates an empty frame reader with no buffered partial line.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            buf: Vec::new(),
+            discarding_oversized: false,
+        }
+    }
+
+    /// Reads the next newline-delimited UTF-8 frame without buffering more than
+    /// `max_line_bytes` bytes.
+    ///
+    /// If the underlying reader returns `TimedOut` or `WouldBlock` mid-frame,
+    /// any bytes already read remain buffered inside `self` so the caller can
+    /// retry after checking shutdown flags without losing frame data.
+    ///
+    /// Returns `Ok(None)` when the peer closes the stream cleanly before any
+    /// bytes of a new line arrive. Trailing `\n` and optional `\r` are stripped.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OsError::FrameTooLarge`] if a line exceeds `max_line_bytes`
+    /// before its terminating `\n`, [`OsError::InvalidUtf8`] if the line is not
+    /// valid UTF-8, or [`OsError::Io`] on underlying read errors (including
+    /// `TimedOut` / `WouldBlock`).
+    pub fn read_line(
+        &mut self,
+        reader: &mut impl BufRead,
+        max_line_bytes: usize,
+    ) -> Result<Option<String>, OsError> {
+        loop {
+            let available = match reader.fill_buf() {
+                Ok(buf) => buf,
+                Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
+                Err(source) => {
+                    let operation = if self.discarding_oversized {
+                        "drain_oversized_frame_line"
+                    } else {
+                        "read_frame_line"
+                    };
+                    return Err(OsError::Io { operation, source });
+                }
+            };
+
+            if self.discarding_oversized {
+                if available.is_empty() {
+                    self.discarding_oversized = false;
+                    return Err(OsError::FrameTooLarge {
+                        max_bytes: max_line_bytes,
+                    });
+                }
+                if let Some(newline_idx) = available.iter().position(|&b| b == b'\n') {
+                    reader.consume(newline_idx + 1);
+                    self.discarding_oversized = false;
+                    return Err(OsError::FrameTooLarge {
+                        max_bytes: max_line_bytes,
+                    });
+                }
+                let len = available.len();
+                reader.consume(len);
+                continue;
+            }
+
+            if available.is_empty() {
+                if self.buf.is_empty() {
+                    return Ok(None);
+                }
+                break;
+            }
+
+            if let Some(newline_idx) = available.iter().position(|&b| b == b'\n') {
+                let chunk = &available[..newline_idx];
+                if self.buf.len().saturating_add(chunk.len()) > max_line_bytes {
+                    // Consume through newline to keep framing state bounded if caller recovers.
+                    reader.consume(newline_idx + 1);
+                    self.buf.clear();
+                    return Err(OsError::FrameTooLarge {
+                        max_bytes: max_line_bytes,
+                    });
+                }
+                self.buf.extend_from_slice(chunk);
+                reader.consume(newline_idx + 1);
+                break;
+            }
+
+            if self.buf.len().saturating_add(available.len()) > max_line_bytes {
+                let len = available.len();
+                reader.consume(len);
+                self.buf.clear();
+                self.discarding_oversized = true;
+                continue;
+            }
+
+            let len = available.len();
+            self.buf.extend_from_slice(available);
+            reader.consume(len);
+        }
+
+        let mut line_bytes = std::mem::take(&mut self.buf);
+        if line_bytes.last() == Some(&b'\r') {
+            line_bytes.pop();
+        }
+
+        let text =
+            String::from_utf8(line_bytes).map_err(|source| OsError::InvalidUtf8 { source })?;
+        Ok(Some(text))
+    }
+}
+
 /// Reads a single newline-delimited UTF-8 frame without allocating more than
 /// `max_line_bytes` bytes.
+///
+/// For connections that poll with read timeouts and retry on `TimedOut` /
+/// `WouldBlock`, use [`FrameLineReader`] so partial lines are preserved across
+/// timeouts.
 ///
 /// Returns `Ok(None)` when the peer closes the stream cleanly before any bytes
 /// of a new line arrive. Trailing `\n` and optional `\r` are stripped.
@@ -220,87 +341,7 @@ pub fn read_frame_line(
     reader: &mut impl BufRead,
     max_line_bytes: usize,
 ) -> Result<Option<String>, OsError> {
-    let mut line_bytes = Vec::new();
-    loop {
-        let available = match reader.fill_buf() {
-            Ok(buf) => buf,
-            Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
-            Err(source) => {
-                return Err(OsError::Io {
-                    operation: "read_frame_line",
-                    source,
-                });
-            }
-        };
-
-        if available.is_empty() {
-            if line_bytes.is_empty() {
-                return Ok(None);
-            }
-            break;
-        }
-
-        if let Some(newline_idx) = available.iter().position(|&b| b == b'\n') {
-            let chunk = &available[..newline_idx];
-            if line_bytes.len().saturating_add(chunk.len()) > max_line_bytes {
-                // Consume through newline to keep framing state bounded if caller recovers.
-                let to_consume = newline_idx + 1;
-                reader.consume(to_consume);
-                return Err(OsError::FrameTooLarge {
-                    max_bytes: max_line_bytes,
-                });
-            }
-            line_bytes.extend_from_slice(chunk);
-            reader.consume(newline_idx + 1);
-            break;
-        }
-
-        if line_bytes.len().saturating_add(available.len()) > max_line_bytes {
-            let len = available.len();
-            reader.consume(len);
-            discard_until_newline(reader)?;
-            return Err(OsError::FrameTooLarge {
-                max_bytes: max_line_bytes,
-            });
-        }
-
-        let len = available.len();
-        line_bytes.extend_from_slice(available);
-        reader.consume(len);
-    }
-
-    if line_bytes.last() == Some(&b'\r') {
-        line_bytes.pop();
-    }
-
-    let text = String::from_utf8(line_bytes).map_err(|source| OsError::InvalidUtf8 { source })?;
-    Ok(Some(text))
-}
-
-/// Discards all remaining bytes of an oversized line through the next `\n` (or
-/// EOF) so trailing bytes can never be parsed as a subsequent JSON-RPC frame.
-fn discard_until_newline(reader: &mut impl BufRead) -> Result<(), OsError> {
-    loop {
-        let available = match reader.fill_buf() {
-            Ok(buf) => buf,
-            Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
-            Err(source) => {
-                return Err(OsError::Io {
-                    operation: "drain_oversized_frame_line",
-                    source,
-                });
-            }
-        };
-        if available.is_empty() {
-            return Ok(());
-        }
-        if let Some(newline_idx) = available.iter().position(|&b| b == b'\n') {
-            reader.consume(newline_idx + 1);
-            return Ok(());
-        }
-        let len = available.len();
-        reader.consume(len);
-    }
+    FrameLineReader::new().read_line(reader, max_line_bytes)
 }
 
 #[cfg(unix)]
@@ -529,16 +570,16 @@ mod imp {
 
     use windows_sys::Win32::Foundation::{
         CloseHandle, DUPLICATE_SAME_ACCESS, DuplicateHandle, ERROR_BROKEN_PIPE,
-        ERROR_INSUFFICIENT_BUFFER, ERROR_IO_PENDING, ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED,
-        GENERIC_ALL, GENERIC_READ, GENERIC_WRITE, GetLastError, HANDLE, INVALID_HANDLE_VALUE,
-        WAIT_OBJECT_0, WAIT_TIMEOUT,
+        ERROR_INSUFFICIENT_BUFFER, ERROR_IO_PENDING, ERROR_OPERATION_ABORTED, ERROR_PIPE_BUSY,
+        ERROR_PIPE_CONNECTED, GENERIC_ALL, GENERIC_READ, GENERIC_WRITE, GetLastError, HANDLE,
+        INVALID_HANDLE_VALUE, WAIT_OBJECT_0, WAIT_TIMEOUT,
     };
     use windows_sys::Win32::Security::{
         ACCESS_ALLOWED_ACE, ACL, ACL_REVISION, AddAccessAllowedAce, EqualSid,
         GetKernelObjectSecurity, GetLengthSid, GetSecurityDescriptorOwner, GetTokenInformation,
         InitializeAcl, InitializeSecurityDescriptor, OWNER_SECURITY_INFORMATION, PSID,
-        SECURITY_ATTRIBUTES, SECURITY_DESCRIPTOR, SetSecurityDescriptorDacl, TOKEN_QUERY,
-        TOKEN_USER, TokenUser,
+        SECURITY_ATTRIBUTES, SECURITY_DESCRIPTOR, SetSecurityDescriptorDacl,
+        SetSecurityDescriptorOwner, TOKEN_QUERY, TOKEN_USER, TokenUser,
     };
     use windows_sys::Win32::Storage::FileSystem::{
         CreateFileW, FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED, FlushFileBuffers,
@@ -663,14 +704,35 @@ mod imp {
                     // SAFETY: `CancelIoEx` cancels only the IRP tied to this
                     // `overlapped`.
                     let _ = unsafe { CancelIoEx(raw, &raw mut self.overlapped) };
-                    // SAFETY: reaping the cancelled IRP keeps `overlapped` and
-                    // `transferred` valid until kernel completion.
+                    // SAFETY: reaping the IRP with `bWait = 1` keeps `overlapped`,
+                    // `buf`, and `transferred` valid until kernel completion.
+                    let ok = unsafe {
+                        GetOverlappedResult(raw, &raw mut self.overlapped, transferred, 1)
+                    };
+                    if ok != 0 {
+                        // The I/O completed between WAIT_TIMEOUT and CancelIoEx;
+                        // report the completed transfer instead of dropping bytes
+                        // or falsely claiming a write timed out.
+                        return Ok(CallOutcome::Completed);
+                    }
+                    let err = io::Error::last_os_error();
+                    if err.raw_os_error() == Some(ERROR_OPERATION_ABORTED.cast_signed()) {
+                        return Ok(CallOutcome::TimedOut);
+                    }
+                    Err(err)
+                }
+                _ => {
+                    let wait_err = io::Error::last_os_error();
+                    // SAFETY: the IRP may still be pending; cancel it first so the
+                    // blocking reap below does not hang indefinitely.
+                    let _ = unsafe { CancelIoEx(raw, &raw mut self.overlapped) };
+                    // SAFETY: reaping with `bWait = 1` keeps `overlapped`, `buf`,
+                    // and `transferred` valid until the kernel completes the IRP.
                     let _ = unsafe {
                         GetOverlappedResult(raw, &raw mut self.overlapped, transferred, 1)
                     };
-                    Ok(CallOutcome::TimedOut)
+                    Err(wait_err)
                 }
-                _ => Err(io::Error::last_os_error()),
             }
         }
     }
@@ -681,12 +743,23 @@ mod imp {
         TimedOut,
     }
 
-    /// Converts an optional deadline to milliseconds (`NO_TIMEOUT_MS` when unset,
-    /// saturated at `u32::MAX - 1` so the sentinel stays reserved).
-    fn timeout_millis(timeout: Option<Duration>) -> u32 {
+    /// Converts an optional deadline to milliseconds (`NO_TIMEOUT_MS` when unset),
+    /// rejecting `Some(Duration::ZERO)` like Unix and rounding sub-millisecond
+    /// durations up so finite waits never collapse to 0 ms or collide with
+    /// `NO_TIMEOUT_MS`.
+    fn timeout_millis(timeout: Option<Duration>) -> io::Result<u32> {
         match timeout {
-            None => NO_TIMEOUT_MS,
-            Some(d) => u32::try_from(d.as_millis()).unwrap_or(u32::MAX - 1),
+            None => Ok(NO_TIMEOUT_MS),
+            Some(d) if d.is_zero() => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "cannot set a 0 duration timeout",
+            )),
+            Some(d) => {
+                let ms = d.as_nanos().div_ceil(1_000_000);
+                Ok(u32::try_from(ms)
+                    .unwrap_or(u32::MAX - 1)
+                    .clamp(1, u32::MAX - 1))
+            }
         }
     }
 
@@ -800,6 +873,17 @@ mod imp {
             // remains valid as long as `_acl_storage` is alive.
             let set_dacl_ok = unsafe { SetSecurityDescriptorDacl(sd_ptr, 1, acl_ptr, 0) };
             if set_dacl_ok == 0 {
+                return Err(io::Error::last_os_error());
+            }
+
+            // Explicitly assign the server's `TokenUser` SID as the pipe owner:
+            // an elevated admin token otherwise defaults new object owners to
+            // `BUILTIN\Administrators`, which would cause non-elevated clients
+            // of the same user account to fail `EqualSid` ownership verification.
+            // SAFETY: `sd_ptr` is an initialized security descriptor and `token.sid`
+            // remains valid as long as `_token` is alive.
+            let set_owner_ok = unsafe { SetSecurityDescriptorOwner(sd_ptr, token.sid, 0) };
+            if set_owner_ok == 0 {
                 return Err(io::Error::last_os_error());
             }
 
@@ -1177,34 +1261,34 @@ mod imp {
             Ok(())
         }
 
-        #[expect(
-            clippy::unnecessary_wraps,
-            reason = "signature mirrors the Unix implementation selected by cfg"
-        )]
         pub(super) fn set_read_timeout(
             &self,
             timeout: Option<Duration>,
-            _endpoint: &Path,
+            endpoint: &Path,
         ) -> Result<(), OsError> {
+            let ms = timeout_millis(timeout).map_err(|source| OsError::Ipc {
+                operation: "set_read_timeout",
+                endpoint: endpoint.display().to_string(),
+                source,
+            })?;
             // The pipe file object is overlapped, so a blocked `ReadFile` can be
             // cancelled per call via `CancelIoEx` — the deadline is enforced by
             // `OverlappedCall::wait` inside `read`.
-            self.read_timeout_ms
-                .store(timeout_millis(timeout), Ordering::Release);
+            self.read_timeout_ms.store(ms, Ordering::Release);
             Ok(())
         }
 
-        #[expect(
-            clippy::unnecessary_wraps,
-            reason = "signature mirrors the Unix implementation selected by cfg"
-        )]
         pub(super) fn set_write_timeout(
             &self,
             timeout: Option<Duration>,
-            _endpoint: &Path,
+            endpoint: &Path,
         ) -> Result<(), OsError> {
-            self.write_timeout_ms
-                .store(timeout_millis(timeout), Ordering::Release);
+            let ms = timeout_millis(timeout).map_err(|source| OsError::Ipc {
+                operation: "set_write_timeout",
+                endpoint: endpoint.display().to_string(),
+                source,
+            })?;
+            self.write_timeout_ms.store(ms, Ordering::Release);
             Ok(())
         }
 
@@ -1640,5 +1724,142 @@ mod tests {
             .join()
             .expect("client writer thread must not panic");
         server.join().expect("server thread must not panic");
+    }
+
+    #[test]
+    fn frame_line_reader_preserves_partial_frame_and_oversized_discard_across_timeouts() {
+        use std::collections::VecDeque;
+        use std::io::{self, Read};
+
+        struct ChunkedTimeoutReader {
+            steps: VecDeque<io::Result<&'static [u8]>>,
+        }
+
+        impl Read for ChunkedTimeoutReader {
+            fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+                match self.steps.pop_front() {
+                    Some(Ok(chunk)) => {
+                        let n = chunk.len().min(buf.len());
+                        buf[..n].copy_from_slice(&chunk[..n]);
+                        if n < chunk.len() {
+                            self.steps.push_front(Ok(&chunk[n..]));
+                        }
+                        Ok(n)
+                    }
+                    Some(Err(err)) => Err(err),
+                    None => Ok(0),
+                }
+            }
+        }
+
+        let source = ChunkedTimeoutReader {
+            steps: VecDeque::from([
+                Ok(&b"{\"id\":1,"[..]),
+                Err(io::Error::new(io::ErrorKind::TimedOut, "poll tick")),
+                Ok(&b"\"ok\":true}\n"[..]),
+                Ok(&b"0123456789abcdef"[..]),
+                Err(io::Error::new(io::ErrorKind::TimedOut, "mid-discard")),
+                Ok(&b"tail\n{\"after\":2}\n"[..]),
+            ]),
+        };
+        let mut reader = BufReader::with_capacity(8, source);
+        let mut frame_reader = super::FrameLineReader::new();
+
+        // First call reads partial bytes then surfaces TimedOut without dropping them.
+        let err = frame_reader
+            .read_line(&mut reader, 64)
+            .expect_err("expected TimedOut on partial frame");
+        assert!(
+            matches!(err, OsError::Io { ref source, .. } if source.kind() == io::ErrorKind::TimedOut),
+            "expected TimedOut, got {err:?}"
+        );
+
+        // Retry completes the exact frame with zero byte loss.
+        let line = frame_reader
+            .read_line(&mut reader, 64)
+            .expect("retry after timeout must finish partial frame")
+            .expect("expected complete frame");
+        assert_eq!(line, r#"{"id":1,"ok":true}"#);
+
+        // Oversized line interrupted by TimedOut mid-discard preserves discard mode.
+        let discard_timeout = frame_reader
+            .read_line(&mut reader, 12)
+            .expect_err("expected TimedOut during oversized discard");
+        assert!(
+            matches!(discard_timeout, OsError::Io { ref source, .. } if source.kind() == io::ErrorKind::TimedOut),
+            "expected TimedOut during discard, got {discard_timeout:?}"
+        );
+
+        let too_large = frame_reader
+            .read_line(&mut reader, 12)
+            .expect_err("expected FrameTooLarge once oversized newline arrives");
+        assert!(
+            matches!(too_large, OsError::FrameTooLarge { max_bytes: 12 }),
+            "expected FrameTooLarge(12), got {too_large:?}"
+        );
+
+        let after = frame_reader
+            .read_line(&mut reader, 64)
+            .expect("subsequent valid frame must decode cleanly")
+            .expect("expected subsequent frame");
+        assert_eq!(after, r#"{"after":2}"#);
+    }
+
+    #[test]
+    fn stream_timeouts_reject_zero_and_accept_sub_millisecond_durations() {
+        use std::io::ErrorKind;
+        use std::time::Duration;
+
+        #[cfg_attr(
+            windows,
+            expect(
+                unused_variables,
+                reason = "Windows uses a named pipe, not a socket file"
+            )
+        )]
+        let tmp = TestIpcDir::new("timeout-validation");
+        #[cfg(unix)]
+        let sock_path = tmp.path.join("run").join("timeout-validation.sock");
+        #[cfg(windows)]
+        let sock_path = PathBuf::from(format!(
+            r"\\.\pipe\arb-os-ipc-timeout-{}-{}",
+            std::process::id(),
+            IPC_SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+
+        let listener = LocalIpcListener::bind(&sock_path).expect("bind timeout test listener");
+        let server = thread::spawn(move || listener.accept().expect("accept client"));
+
+        let client = LocalIpcStream::connect(&sock_path).expect("connect timeout test client");
+        let _server_stream = server.join().expect("server thread must not panic");
+
+        let zero_read = client
+            .set_read_timeout(Some(Duration::ZERO))
+            .expect_err("zero read timeout must be rejected");
+        assert!(
+            matches!(zero_read, OsError::Ipc { ref source, .. } if source.kind() == ErrorKind::InvalidInput),
+            "expected InvalidInput for zero read timeout, got {zero_read:?}"
+        );
+
+        let zero_write = client
+            .set_write_timeout(Some(Duration::ZERO))
+            .expect_err("zero write timeout must be rejected");
+        assert!(
+            matches!(zero_write, OsError::Ipc { ref source, .. } if source.kind() == ErrorKind::InvalidInput),
+            "expected InvalidInput for zero write timeout, got {zero_write:?}"
+        );
+
+        client
+            .set_read_timeout(Some(Duration::from_micros(500)))
+            .expect("sub-millisecond non-zero read timeout must succeed");
+        client
+            .set_write_timeout(Some(Duration::from_micros(500)))
+            .expect("sub-millisecond non-zero write timeout must succeed");
+        client
+            .set_read_timeout(None)
+            .expect("clearing read timeout must succeed");
+        client
+            .set_write_timeout(None)
+            .expect("clearing write timeout must succeed");
     }
 }

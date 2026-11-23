@@ -13,6 +13,9 @@ ANDROID_SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-$HOME/Library/Android/sdk}}"
 ADB="${ANDROID_SDK}/platform-tools/adb"
 EMULATOR="${ANDROID_SDK}/emulator/emulator"
 FFPROBE="$(command -v ffprobe || true)"
+FFMPEG="$(command -v ffmpeg || true)"
+ENABLE_AUDIO="${ARB_E2E_ENABLE_AUDIO:-1}"
+PLAYER_MATRIX_SCRIPT="${REPO_ROOT}/core/scripts/devin_verify_player_matrix.py"
 
 for bin in "${ADB}" "${EMULATOR}" python3 cargo; do
     if ! command -v "${bin}" >/dev/null 2>&1 && [[ ! -x "${bin}" ]]; then
@@ -49,6 +52,7 @@ SCRCPY_JAR="${REPO_ROOT}/device-agent/build/replay-scrcpy-audio.dex.jar"
 
 EMU_PID=""
 EMU_SERIAL=""
+AUDIO_PLAY_PID=""
 CLEANED_UP=0
 
 run_cli() {
@@ -70,6 +74,9 @@ cleanup() {
     echo ""
     echo "==> [Cleanup] Stopping arbd, shutting down script-launched emulator, cleaning temp files..."
 
+    if [[ -n "${AUDIO_PLAY_PID}" ]]; then
+        kill "${AUDIO_PLAY_PID}" 2>/dev/null || true
+    fi
     if [[ -x "${ARB_CLI_BIN}" ]]; then
         run_cli capture stop >/dev/null 2>&1 || true
         run_cli daemon stop >/dev/null 2>&1 || true
@@ -98,7 +105,7 @@ cleanup() {
     # R3 M9: NEVER kill arbitrary pre-existing emulators — only act on the specific
     # EMU_SERIAL and EMU_PID started by this script.
     if [[ -n "${EMU_SERIAL}" ]]; then
-        "${ADB}" -s "${EMU_SERIAL}" shell 'rm -f /data/local/tmp/arb-* /data/local/tmp/replay-scrcpy-*' >/dev/null 2>&1 || true
+        "${ADB}" -s "${EMU_SERIAL}" shell 'pkill -f arb-e2e-tone.wav 2>/dev/null || true; rm -f /data/local/tmp/arb-* /data/local/tmp/replay-scrcpy-*' >/dev/null 2>&1 || true
         "${ADB}" -s "${EMU_SERIAL}" forward --remove-all >/dev/null 2>&1 || true
         "${ADB}" -s "${EMU_SERIAL}" emu kill >/dev/null 2>&1 || true
     fi
@@ -182,10 +189,14 @@ if [[ -n "${EXISTING_DEVICES}" ]]; then
     exit 1
 fi
 
+EMU_AUDIO_ARGS=()
+if [[ "${ENABLE_AUDIO}" == "0" ]]; then
+    EMU_AUDIO_ARGS=(-no-audio)
+fi
 "${EMULATOR}" \
     -avd "${AVD_NAME}" \
     -no-window \
-    -no-audio \
+    ${EMU_AUDIO_ARGS[@]+"${EMU_AUDIO_ARGS[@]}"} \
     -gpu host \
     -no-boot-anim \
     -no-snapshot-save \
@@ -237,18 +248,34 @@ found = any(d.get("serial") == serial and d.get("state") == "device" for d in da
 assert found, f"expected {serial} in device.list: {data}"
 PY
 
-echo "==> [5/9] Starting live capture and driving ~8s of real UI/log/input activity..."
+echo "==> [5/9] Starting live capture (audio=${ENABLE_AUDIO}) and driving ~8s of real UI/audio/log/input activity..."
+CAPTURE_AUDIO_ARGS=()
+if [[ "${ENABLE_AUDIO}" == "0" ]]; then
+    CAPTURE_AUDIO_ARGS=(--no-audio)
+elif [[ -n "${FFMPEG}" ]]; then
+    # Synthesize a real 12s 440Hz stereo 48kHz WAV and play it via Android's built-in
+    # stagefright AudioTrack client so scrcpy-server playback duplication captures live AAC-LC.
+    "${FFMPEG}" -y -v error -f lavfi -i "sine=frequency=440:sample_rate=48000:duration=12" \
+        -ac 2 -c:a pcm_s16le "${WORK_DIR}/arb-e2e-tone.wav"
+    "${ADB}" -s "${EMU_SERIAL}" push "${WORK_DIR}/arb-e2e-tone.wav" /data/local/tmp/arb-e2e-tone.wav >/dev/null
+    "${ADB}" -s "${EMU_SERIAL}" shell cmd media_session volume --stream 3 --set 10 >/dev/null 2>&1 || true
+fi
+
 START_JSON="$(run_cli --json capture start \
     --serial "${EMU_SERIAL}" \
     --companion-jar "${COMPANION_JAR}" \
     --scrcpy-jar "${SCRCPY_JAR}" \
-    --no-audio \
+    ${CAPTURE_AUDIO_ARGS[@]+"${CAPTURE_AUDIO_ARGS[@]}"} \
     --max-size 1024 \
     --max-fps 30)"
 echo "    capture.start: ${START_JSON}"
 
-# Wait until companion + video handshake complete and frames start flowing.
+# Wait until companion + video/audio handshakes complete and frames start flowing.
 sleep 2
+if [[ "${ENABLE_AUDIO}" != "0" ]] && [[ -n "${FFMPEG}" ]]; then
+    "${ADB}" -s "${EMU_SERIAL}" shell '/system_ext/bin/stagefright -a -o /data/local/tmp/arb-e2e-tone.wav' >/dev/null 2>&1 &
+    AUDIO_PLAY_PID=$!
+fi
 "${ADB}" -s "${EMU_SERIAL}" shell am start -a android.settings.SETTINGS >/dev/null 2>&1 || true
 for step in 1 2 3 4 5 6; do
     "${ADB}" -s "${EMU_SERIAL}" shell log -t ARB_E2E "live-e2e-marker-${step}" >/dev/null 2>&1 || true
@@ -328,7 +355,11 @@ EXPECTED_TRIM_FRAMES=$((OUT_FRAME - IN_FRAME + 1))
 echo "    live ARB_E2E logcat markers captured: ${MARKER_COUNT}"
 echo "    mid-GOP trim range: [${IN_FRAME}..=${OUT_FRAME}] (expected ${EXPECTED_TRIM_FRAMES} frames)"
 
+TRIM_START_NS="$(python3 -c 'import time; print(time.monotonic_ns())')"
 TRIM_JSON="$(run_cli --json trim "${BUNDLE_ID}" --in-frame "${IN_FRAME}" --out-frame "${OUT_FRAME}" --dest "${OUT_DIR}")"
+TRIM_END_NS="$(python3 -c 'import time; print(time.monotonic_ns())')"
+TRIM_ELAPSED_MS="$(python3 -c "print(f'{(${TRIM_END_NS}-${TRIM_START_NS})/1e6:.1f}')")"
+echo "    trim_elapsed_ms: ${TRIM_ELAPSED_MS} ms (range [${IN_FRAME}..=${OUT_FRAME}], ${EXPECTED_TRIM_FRAMES} frames)"
 echo "    trim: ${TRIM_JSON}"
 TRIMMED_PATH="$(python3 - "${TRIM_JSON}" "${EXPECTED_TRIM_FRAMES}" <<'PY'
 import json, sys
@@ -341,6 +372,32 @@ assert rep["elst_box_count"] == 0, d
 print(d["bundle_path"])
 PY
 )"
+
+if [[ "${ENABLE_AUDIO}" != "0" ]] && [[ -n "${FFMPEG}" ]]; then
+    python3 - "${BUNDLE_PATH}" "${TRIMMED_PATH}" <<'PY'
+import json, pathlib, sys
+for label, p in [("saved", pathlib.Path(sys.argv[1])), ("trimmed", pathlib.Path(sys.argv[2]))]:
+    m = json.loads((p / "manifest.json").read_text())
+    aud = m["streams"]["audio"]
+    m4a = p / "audio.m4a"
+    assert m4a.is_file() and m4a.stat().st_size > 0, f"{label} bundle missing audio.m4a: {aud}"
+    assert aud["status"] == "present", f"{label} audio status expected present: {aud}"
+    print(f"    {label} audio check PASSED: bytes={m4a.stat().st_size}, av_offset_ms={aud['av_offset_ms']}, audio_lead_in_offset_ns={aud['audio_lead_in_offset_ns']}")
+PY
+fi
+
+if [[ -n "${FFMPEG}" ]] && [[ -f "${PLAYER_MATRIX_SCRIPT}" ]]; then
+    echo "    Running devin_verify_player_matrix.py on SAVED bundle (${FRAME_COUNT} frames)..."
+    python3 "${PLAYER_MATRIX_SCRIPT}" \
+        --mp4 "${BUNDLE_PATH}/video.mp4" \
+        --expected-frames "${FRAME_COUNT}" \
+        --out-dir "${OUT_DIR}/player-matrix-saved"
+    echo "    Running devin_verify_player_matrix.py on TRIMMED bundle (${EXPECTED_TRIM_FRAMES} frames)..."
+    python3 "${PLAYER_MATRIX_SCRIPT}" \
+        --mp4 "${TRIMMED_PATH}/video.mp4" \
+        --expected-frames "${EXPECTED_TRIM_FRAMES}" \
+        --out-dir "${OUT_DIR}/player-matrix-trimmed"
+fi
 
 TRIMMED_MP4="${TRIMMED_PATH}/video.mp4"
 FFPROBE_JSON="$("${FFPROBE}" -v error -select_streams v:0 -count_frames -show_entries stream=codec_name,width,height,nb_frames,nb_read_frames -show_format -of json "${TRIMMED_MP4}")"

@@ -31,7 +31,7 @@ use arb_core::state::RingBudgetPolicy;
 use arb_media::codec::default_codec_backend;
 use arb_os::fs::{SingleInstanceLock, is_pid_alive};
 use arb_os::ipc::{
-    DEFAULT_MAX_IPC_LINE_BYTES, LocalIpcListener, LocalIpcStream, read_frame_line, write_frame_line,
+    DEFAULT_MAX_IPC_LINE_BYTES, FrameLineReader, LocalIpcListener, LocalIpcStream, write_frame_line,
 };
 use arb_os::paths::ArbPaths;
 use arb_storage::bundle_io::{TimeRange, open_bundle};
@@ -1204,13 +1204,15 @@ fn encode_response(response: &RpcResponse) -> Option<String> {
 }
 
 fn handle_client_connection(stream: LocalIpcStream, state: &Arc<DaemonState>) {
-    // Best-effort read timeout (supported on Unix; `Unsupported` on Windows Named Pipes is
-    // harmlessly ignored) so idle client threads wake and exit promptly during shutdown (S11).
+    // Poll read timeout (supported on both Unix sockets and overlapped Windows Named Pipes)
+    // so idle client threads wake and exit promptly during shutdown (S11). `FrameLineReader`
+    // preserves partial frame bytes across poll timeouts so split frames are never lost.
     let _ = stream.set_read_timeout(Some(CLIENT_READ_POLL_TIMEOUT));
     let Ok(mut writer) = stream.try_clone() else {
         return;
     };
     let mut reader = BufReader::new(stream);
+    let mut frame_reader = FrameLineReader::new();
     // R3 M7: viewports opened over this connection are closed when it ends.
     let mut owned_viewports: Vec<String> = Vec::new();
 
@@ -1218,7 +1220,7 @@ fn handle_client_connection(stream: LocalIpcStream, state: &Arc<DaemonState>) {
         if state.is_shutting_down() {
             break;
         }
-        let line = match read_frame_line(&mut reader, DEFAULT_MAX_IPC_LINE_BYTES) {
+        let line = match frame_reader.read_line(&mut reader, DEFAULT_MAX_IPC_LINE_BYTES) {
             Ok(Some(l)) => l,
             Ok(None) => break,
             Err(arb_os::OsError::Io { source, .. })

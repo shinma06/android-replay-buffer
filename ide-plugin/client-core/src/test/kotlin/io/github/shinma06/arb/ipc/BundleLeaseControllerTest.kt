@@ -58,4 +58,54 @@ class BundleLeaseControllerTest {
         Thread.sleep(60)
         assertEquals(renewalsAtClose, renewCalls.get(), "no heartbeats should fire after tab close")
     }
+
+    @Test
+    fun closeWaitsForInFlightHeartbeatBeforeReleasingLease() {
+        val renewStarted = CountDownLatch(1)
+        val releaseRenew = CountDownLatch(1)
+        val events = mutableListOf<String>()
+        val renewCalls = AtomicInteger(0)
+
+        val controller = BundleLeaseController(
+            leaseId = "lease-inflight",
+            renewAction = {
+                renewCalls.incrementAndGet()
+                synchronized(events) { events.add("renew_start") }
+                renewStarted.countDown()
+                assertTrue(releaseRenew.await(5, TimeUnit.SECONDS), "test must unblock renew")
+                synchronized(events) { events.add("renew_end") }
+            },
+            closeLeaseAction = {
+                synchronized(events) { events.add("close_lease") }
+            },
+            closeViewportAction = {
+                synchronized(events) { events.add("close_viewport") }
+            },
+            heartbeatInterval = Duration.ofMillis(10),
+        )
+
+        assertTrue(renewStarted.await(5, TimeUnit.SECONDS), "first heartbeat must enter renewAction")
+        val closeThread = Thread { controller.close() }.apply { start() }
+        // Give close() time to block on the in-flight heartbeat, then verify it has not closed yet.
+        Thread.sleep(40)
+        synchronized(events) {
+            assertEquals(listOf("renew_start"), events, "close() must not release lease while renew is in flight")
+        }
+
+        releaseRenew.countDown()
+        closeThread.join(5_000)
+        assertTrue(!closeThread.isAlive, "close() must finish once in-flight heartbeat completes")
+
+        synchronized(events) {
+            assertEquals(
+                listOf("renew_start", "renew_end", "close_viewport", "close_lease"),
+                events,
+                "close must serialize after the in-flight heartbeat and run viewport before lease",
+            )
+        }
+
+        val renewalsAtClose = renewCalls.get()
+        Thread.sleep(60)
+        assertEquals(renewalsAtClose, renewCalls.get(), "no additional heartbeats may fire after close")
+    }
 }

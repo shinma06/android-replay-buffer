@@ -218,12 +218,48 @@ def verify_mp4(path: Path, expected_frames: int, outdir: Path):
     pkts = pk.get("packets", [])
     checks.append(check("0 negative PTS/DTS", not negative_ts(pkts), f"{len(negative_ts(pkts))} negative"))
     checks.append(check("first packet is keyframe", bool(pkts) and "K" in pkts[0].get("flags", ""), pkts[0].get("flags") if pkts else "none"))
-    # frame 0 / last PNG via ffmpeg (decoder reference)
+    # Full-stream ffmpeg decode verifying 0 decode errors across every frame.
+    # `-fps_mode vfr` preserves the track's native 90kHz timebase on VFR Android screen
+    # captures so ffmpeg's `null` muxer does not quantize adjacent VFR frames onto the same tick.
+    rc_full, _, e_full = run(["ffmpeg", "-v", "error", "-i", path, "-fps_mode", "vfr", "-f", "null", "-"])
+    checks.append(check("ffmpeg full-stream decode (0 errors)", rc_full == 0 and not e_full.strip(), e_full[-200:]))
+    # frame 0 / last PNG via ffmpeg (decoder reference).
+    # For the last frame we seek to the final keyframe and use `-update 1` rather than
+    # `-vf select=eq(n,last)`: when a mid-GOP trimmed MP4 splices a re-encoded head GOP onto
+    # a stream-copied tail GOP whose VUI color tags differ, ffmpeg reconfigures its filter
+    # graph at the splice boundary and resets `select`'s `n` counter back to 0.
     f0, fl = outdir / "frame-0.png", outdir / "frame-last.png"
-    rc0, _, e0 = run(["ffmpeg", "-y", "-v", "error", "-i", path, "-vf", "select=eq(n\\,0)", "-vframes", "1", f0])
-    rcl, _, el = run(["ffmpeg", "-y", "-v", "error", "-i", path, "-vf", f"select=eq(n\\,{expected_frames-1})", "-vframes", "1", fl])
+    rc0, _, e0 = run(["ffmpeg", "-y", "-v", "error", "-i", path, "-fps_mode", "vfr", "-vframes", "1", f0])
+    last_kf_pts = 0.0
+    for pkt in pkts:
+        if "K" in pkt.get("flags", ""):
+            last_kf_pts = max(0.0, safe_float(pkt.get("pts_time"), last_kf_pts))
+    seek_sec = max(0.0, last_kf_pts - 0.001)
+    rcl, _, el = run([
+        "ffmpeg", "-y", "-v", "error", "-ss", f"{seek_sec:.6f}", "-i", path,
+        "-fps_mode", "vfr", "-update", "1", fl,
+    ])
     checks.append(check("ffmpeg decode frame 0 -> PNG", rc0 == 0 and f0.exists() and f0.stat().st_size > 0, e0[-200:]))
     checks.append(check(f"ffmpeg decode frame {expected_frames-1} -> PNG", rcl == 0 and fl.exists() and fl.stat().st_size > 0, el[-200:]))
+    return checks
+
+
+def verify_audio_m4a(path: Path):
+    """Verify a companion AAC-LC `audio.m4a` track (faststart, 0 edts/elst, ffprobe/ffmpeg 0 errors)."""
+    checks = []
+    data = path.read_bytes()
+    boxes = parse_boxes(data)
+    checks.append(check("audio.m4a faststart moov-before-mdat", faststart(boxes), [b[0] for b in boxes]))
+    checks.append(check("audio.m4a 0 edts", find_box_recursive(data, "edts") == 0, find_box_recursive(data, "edts")))
+    checks.append(check("audio.m4a 0 elst", find_box_recursive(data, "elst") == 0, find_box_recursive(data, "elst")))
+    info = ffprobe_json(path, "-select_streams", "a:0", "-count_packets",
+                        "-show_entries", "stream=codec_name,profile,sample_rate,channels,nb_read_packets")
+    s = (info.get("streams") or [{}])[0]
+    checks.append(check("audio.m4a codec aac", s.get("codec_name") == "aac", f"{s.get('codec_name')} ({s.get('profile')})"))
+    nb_pkts = int(safe_float(s.get("nb_read_packets"), -1))
+    checks.append(check("audio.m4a packets > 0", nb_pkts > 0, f"{nb_pkts} packets, {s.get('sample_rate')}Hz {s.get('channels')}ch"))
+    rc, _, err = run(["ffmpeg", "-v", "error", "-i", path, "-f", "null", "-"])
+    checks.append(check("audio.m4a ffmpeg decode (0 errors)", rc == 0 and not err.strip(), err[-200:]))
     return checks
 
 
@@ -365,6 +401,9 @@ def main():
     else:
         ap.error("one of --self-test, --generate-fixture, --mp4, --bundle is required")
     checks = verify_mp4(mp4, a.expected_frames, outdir)
+    audio_m4a = mp4.with_name("audio.m4a")
+    if audio_m4a.is_file():
+        checks.extend(verify_audio_m4a(audio_m4a))
     players = probe_players(mp4, outdir)
     ok = all(c["pass"] for c in checks) and not any(p["status"] == "FAIL" for p in players)
     report = {"host": f"{platform.system()} {platform.release()} {platform.machine()}", "input": str(mp4),

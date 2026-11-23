@@ -25,8 +25,14 @@ class BundleLeaseController(
 ) : Closeable {
     private val closed = AtomicBoolean(false)
     private val renewCount = AtomicInteger(0)
+    private val lifecycleLock = Any()
+    @Volatile
+    private var heartbeatThread: Thread? = null
     private val scheduler: ScheduledExecutorService = Executors.newSingleThreadScheduledExecutor { runnable ->
-        Thread(runnable, "arb-lease-heartbeat-$leaseId").apply { isDaemon = true }
+        Thread(runnable, "arb-lease-heartbeat-$leaseId").apply {
+            isDaemon = true
+            heartbeatThread = this
+        }
     }
     private val heartbeatTask: ScheduledFuture<*>
 
@@ -34,7 +40,10 @@ class BundleLeaseController(
         val periodMs = heartbeatInterval.toMillis().coerceAtLeast(10L)
         heartbeatTask = scheduler.scheduleAtFixedRate(
             {
-                if (!closed.get()) {
+                synchronized(lifecycleLock) {
+                    if (closed.get()) {
+                        return@scheduleAtFixedRate
+                    }
                     try {
                         renewAction(leaseId)
                         renewCount.incrementAndGet()
@@ -60,13 +69,25 @@ class BundleLeaseController(
             return
         }
         heartbeatTask.cancel(false)
-        scheduler.shutdownNow()
-        try {
-            closeViewportAction?.invoke()
-        } catch (_: Throwable) {
-            // Best effort: always proceed to release the bundle lease even if viewport close fails.
+        scheduler.shutdown()
+        // Serialize teardown against any heartbeat already inside renewAction so
+        // bundle.lease_renew never runs concurrently with or after bundle.close.
+        synchronized(lifecycleLock) {
+            try {
+                closeViewportAction?.invoke()
+            } catch (_: Throwable) {
+                // Best effort: always proceed to release the bundle lease even if viewport close fails.
+            }
+            closeLeaseAction(leaseId)
         }
-        closeLeaseAction(leaseId)
+        scheduler.shutdownNow()
+        if (Thread.currentThread() !== heartbeatThread) {
+            try {
+                scheduler.awaitTermination(1, TimeUnit.SECONDS)
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+            }
+        }
     }
 
     companion object {

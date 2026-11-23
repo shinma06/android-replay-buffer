@@ -526,6 +526,7 @@ pub struct CapturePipeline {
     latest_heartbeat_boottime_ns: Option<i64>,
     latest_heartbeat_pc_cont_ns: Option<i64>,
     latest_pc_cont_ns: Option<i64>,
+    last_chunk_created_cont_ns: Option<i64>,
     last_discontinuities: Vec<DiscontinuityEvent>,
     pressure_discontinuities: Vec<DiscontinuityEvent>,
     chunk_contents: BTreeMap<String, ChunkContent>,
@@ -544,6 +545,7 @@ impl CapturePipeline {
     ) -> Result<Self, DaemonError> {
         let data_dir = data_dir.as_ref().to_path_buf();
         let ring = RingStore::open_with_disk_provider(&data_dir, policy, disk_provider)?;
+        let last_chunk_created_cont_ns = ring.chunks().last().map(|c| c.created_cont_ns);
         Ok(Self {
             data_dir,
             ring,
@@ -576,6 +578,7 @@ impl CapturePipeline {
             latest_heartbeat_boottime_ns: None,
             latest_heartbeat_pc_cont_ns: None,
             latest_pc_cont_ns: None,
+            last_chunk_created_cont_ns,
             last_discontinuities: Vec::new(),
             pressure_discontinuities: Vec::new(),
             chunk_contents: BTreeMap::new(),
@@ -860,11 +863,20 @@ impl CapturePipeline {
         let events = std::mem::take(&mut self.pending_events);
         self.pending_bytes = 0;
 
-        let created_cont_ns = events
+        let raw_created_cont_ns = events
             .first()
             .and_then(capture_event_pc_cont_ns)
             .or(self.latest_pc_cont_ns)
             .unwrap_or(0);
+        // Keep chunk `created_cont_ns` strictly increasing across flushes: concurrent
+        // companion/video/audio reader threads sample `pc_cont_ns` before taking the
+        // pipeline lock, so an earlier timestamp from another stream could otherwise
+        // land first in the next chunk and cause `RingStore::chunks()` to replay chunks
+        // — and H.264 frames — out of order.
+        let created_cont_ns = match self.last_chunk_created_cont_ns {
+            Some(prev) => raw_created_cont_ns.max(prev.saturating_add(1)),
+            None => raw_created_cont_ns,
+        };
         let end_cont_ns = events
             .iter()
             .filter_map(capture_event_pc_cont_ns)
@@ -886,6 +898,7 @@ impl CapturePipeline {
             &payload,
         ) {
             Ok((_desc, evicted)) => {
+                self.last_chunk_created_cont_ns = Some(created_cont_ns);
                 for id in evicted {
                     self.chunk_contents.remove(&id);
                 }
@@ -2832,6 +2845,56 @@ mod tests {
         assert_eq!(
             after_dest, before_dest,
             "pin journal destination must remain unchanged when catalog validation fails"
+        );
+    }
+
+    #[test]
+    fn ring_chunks_preserve_fifo_order_when_concurrent_stream_timestamps_interleave() {
+        let tmp = TempDir::new().expect("tempdir");
+        let mut pipeline = CapturePipeline::open(
+            tmp.path(),
+            RingBudgetPolicy::default(),
+            SharedDiskSpaceProvider::new(Arc::new(PlentyOfDisk)),
+        )
+        .expect("open pipeline");
+        let _ = pipeline.begin_session("serial-fifo");
+
+        // Chunk 1 starts with a slightly later pre-lock pc_cont_ns and carries VideoFrame A.
+        pipeline
+            .ingest_event(video_event(2_000_000_000, vec![0, 0, 0, 1, 0x65, 0xAA]))
+            .expect("ingest frame A");
+        pipeline.flush_pending_chunk().expect("flush chunk 1");
+
+        // Chunk 2 starts with an earlier pre-lock pc_cont_ns (as can happen when an audio/log
+        // reader thread sampled pc_cont_ns before waiting on the pipeline lock) and carries VideoFrame B.
+        pipeline
+            .ingest_event(video_event(1_950_000_000, vec![0, 0, 0, 1, 0x41, 0xBB]))
+            .expect("ingest frame B");
+        pipeline.flush_pending_chunk().expect("flush chunk 2");
+
+        let chunks = pipeline.ring_store().chunks();
+        assert_eq!(chunks.len(), 2, "expected two ring chunks");
+        assert!(
+            chunks[0].created_cont_ns < chunks[1].created_cont_ns,
+            "chunk created_cont_ns must stay strictly monotonic: {chunks:?}"
+        );
+
+        let mut replayed_markers = Vec::new();
+        for desc in &chunks {
+            let bytes = pipeline
+                .ring_store()
+                .read_chunk(&desc.chunk_id)
+                .expect("read chunk");
+            for ev in decode_ring_chunk(&bytes).expect("decode chunk") {
+                if let CaptureEvent::VideoFrame { packet, .. } = ev {
+                    replayed_markers.push(*packet.data.last().expect("marker byte"));
+                }
+            }
+        }
+        assert_eq!(
+            replayed_markers,
+            vec![0xAA, 0xBB],
+            "video frames must replay in exact FIFO capture order"
         );
     }
 }

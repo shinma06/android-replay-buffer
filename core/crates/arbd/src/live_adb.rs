@@ -37,8 +37,8 @@ use arb_adb::adb::{
 };
 use arb_adb::mock::CaptureEvent;
 use arb_adb::scrcpy::{
-    AudioCaptureMode, AudioPacketKind, AudioTunnelReader, AudioTunnelStatus, ScrcpyError,
-    ScrcpyLaunchOptions, VideoRecord, VideoTunnelReader,
+    AudioCaptureMode, AudioPacketKind, AudioTunnelReader, AudioTunnelStatus, SCRCPY_DUMMY_BYTE,
+    ScrcpyError, ScrcpyLaunchOptions, VideoRecord, VideoTunnelReader,
 };
 use arb_adb::wire::{
     DEFAULT_MAX_PAYLOAD_LEN, FrameFlags, HeartbeatPayload, HelloPayload, PingPayload, ShutdownCode,
@@ -907,31 +907,41 @@ fn launch_scrcpy_streams(
         .spawn()?;
     guard.scrcpy_child = Some(scrcpy_child);
 
+    let audio_socket_mode = if expect_audio_socket {
+        AudioSocketMode::Enabled
+    } else {
+        AudioSocketMode::Disabled
+    };
     let global_stop = Arc::clone(&ctx.global_stop);
-    let (video_reader, video_shutdown_handle) =
-        connect_scrcpy_video_with_retry(scrcpy_port, Duration::from_secs(8), &global_stop)?;
-    media_sockets.push(video_shutdown_handle);
+    let ScrcpyTunnels {
+        video_reader,
+        video_shutdown,
+        audio_stream,
+        audio_connect_error,
+    } = connect_scrcpy_tunnels(
+        scrcpy_port,
+        audio_socket_mode,
+        Duration::from_secs(8),
+        &global_stop,
+    )?;
+    media_sockets.push(video_shutdown);
     let v_ctx = ctx.clone_for_thread();
     let v_boot = boot_id.to_owned();
     media_threads.push(thread::spawn(move || {
         run_video_reader_loop(video_reader, &v_boot, &v_ctx);
     }));
 
-    if expect_audio_socket {
-        match connect_tcp_with_retry(scrcpy_port, Duration::from_secs(3), &global_stop) {
-            Ok(audio_sock) => {
-                let _ = audio_sock.set_read_timeout(Some(Duration::from_millis(500)));
-                if let Ok(audio_shutdown) = audio_sock.try_clone() {
-                    media_sockets.push(audio_shutdown);
-                }
-                let a_ctx = ctx.clone_for_thread();
-                let a_boot = boot_id.to_owned();
-                media_threads.push(thread::spawn(move || {
-                    run_audio_reader_loop(audio_sock, &a_boot, &a_ctx);
-                }));
-            }
-            Err(err) => ctx.report_lost(StreamId::Audio, format!("audio connect failed: {err}")),
+    if let Some(audio_sock) = audio_stream {
+        if let Ok(audio_shutdown) = audio_sock.try_clone() {
+            media_sockets.push(audio_shutdown);
         }
+        let a_ctx = ctx.clone_for_thread();
+        let a_boot = boot_id.to_owned();
+        media_threads.push(thread::spawn(move || {
+            run_audio_reader_loop(audio_sock, &a_boot, &a_ctx);
+        }));
+    } else if let Some(err) = audio_connect_error {
+        ctx.report_lost(StreamId::Audio, format!("audio connect failed: {err}"));
     }
 
     Ok((media_threads, media_sockets))
@@ -1166,8 +1176,17 @@ fn run_video_reader_loop(
 }
 
 fn run_audio_reader_loop(stream: TcpStream, boot_id: &str, ctx: &MediaThreadCtx) {
+    // Allow sufficient time for device-side AudioRecord + AAC MediaCodec initialization
+    // before reading the 4-byte audio codec ID, then switch to short poll timeouts.
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+    let timeout_ctl = stream.try_clone().ok();
     let mut reader = match AudioTunnelReader::handshake(stream) {
-        Ok(r) => r,
+        Ok(r) => {
+            if let Some(sock) = timeout_ctl {
+                let _ = sock.set_read_timeout(Some(Duration::from_millis(500)));
+            }
+            r
+        }
         Err(ScrcpyError::AudioDisabled) => {
             ctx.sink.push(CaptureEvent::AudioUnavailable {
                 pc_cont_ns: sample_cont_ns(),
@@ -1304,11 +1323,62 @@ fn connect_tcp_with_retry(
     }
 }
 
-fn connect_scrcpy_video_with_retry(
+#[derive(Clone, Copy)]
+enum AudioSocketMode {
+    Enabled,
+    Disabled,
+}
+
+struct ScrcpyTunnels {
+    video_reader: VideoTunnelReader<TcpStream>,
+    video_shutdown: TcpStream,
+    audio_stream: Option<TcpStream>,
+    audio_connect_error: Option<DaemonError>,
+}
+
+/// Connects to `scrcpy-server-v5.0.1` (`tunnel_forward=true`, `control=false`).
+///
+/// Protocol order: `scrcpy-server` accepts socket 1 (video), writes a single `0x00` dummy byte,
+/// and when `audio=true` blocks in `LocalServerSocket.accept()` waiting for socket 2 (audio)
+/// **before** initializing encoders or writing the 4-byte `"h264"` / `"\0aac"` codec IDs.
+/// Connecting the audio socket immediately after receiving the dummy byte prevents a deadlock.
+fn connect_scrcpy_tunnels(
+    port: u16,
+    audio_mode: AudioSocketMode,
+    timeout: Duration,
+    stop_flag: &Arc<AtomicBool>,
+) -> Result<ScrcpyTunnels, DaemonError> {
+    let (video_sock, video_shutdown) =
+        connect_scrcpy_video_dummy_with_retry(port, timeout, stop_flag)?;
+
+    let (audio_stream, audio_connect_error) = match audio_mode {
+        AudioSocketMode::Enabled => {
+            match connect_tcp_with_retry(port, Duration::from_secs(3), stop_flag) {
+                Ok(sock) => (Some(sock), None),
+                Err(err) => (None, Some(err)),
+            }
+        }
+        AudioSocketMode::Disabled => (None, None),
+    };
+
+    let _ = video_sock.set_read_timeout(Some(Duration::from_secs(5)));
+    let video_reader = VideoTunnelReader::handshake_without_dummy(video_sock)
+        .map_err(|err| DaemonError::CaptureSource(err.into()))?;
+    let _ = video_shutdown.set_read_timeout(Some(Duration::from_millis(300)));
+
+    Ok(ScrcpyTunnels {
+        video_reader,
+        video_shutdown,
+        audio_stream,
+        audio_connect_error,
+    })
+}
+
+fn connect_scrcpy_video_dummy_with_retry(
     port: u16,
     timeout: Duration,
     stop_flag: &Arc<AtomicBool>,
-) -> Result<(VideoTunnelReader<TcpStream>, TcpStream), DaemonError> {
+) -> Result<(TcpStream, TcpStream), DaemonError> {
     let deadline = Instant::now() + timeout;
     let addr = format!("127.0.0.1:{port}");
     loop {
@@ -1318,17 +1388,24 @@ fn connect_scrcpy_video_with_retry(
             ));
         }
         match TcpStream::connect(&addr) {
-            Ok(stream) => {
+            Ok(mut stream) => {
                 let _ = stream.set_read_timeout(Some(Duration::from_secs(3)));
-                let shutdown_handle = stream.try_clone()?;
-                match VideoTunnelReader::handshake(stream) {
-                    Ok(reader) => {
-                        let _ = shutdown_handle.set_read_timeout(Some(Duration::from_millis(300)));
-                        return Ok((reader, shutdown_handle));
+                let mut dummy = [0u8; 1];
+                match stream.read_exact(&mut dummy) {
+                    Ok(()) if dummy[0] == SCRCPY_DUMMY_BYTE => {
+                        let shutdown_handle = stream.try_clone()?;
+                        return Ok((stream, shutdown_handle));
+                    }
+                    Ok(()) => {
+                        let err = ScrcpyError::InvalidDummyByte { found: dummy[0] };
+                        if Instant::now() >= deadline {
+                            return Err(DaemonError::CaptureSource(err.into()));
+                        }
+                        thread::sleep(Duration::from_millis(120));
                     }
                     Err(err) => {
                         if Instant::now() >= deadline {
-                            return Err(DaemonError::CaptureSource(err.into()));
+                            return Err(DaemonError::Io(err));
                         }
                         thread::sleep(Duration::from_millis(120));
                     }
@@ -1740,5 +1817,52 @@ mod tests {
             "capture.stop must not wait for the 8 s handshake timeout"
         );
         kill_child(slot.take());
+    }
+
+    #[test]
+    fn scrcpy_dual_socket_handshake_opens_audio_before_reading_video_codec_id() {
+        use std::io::Write;
+        use std::net::TcpListener;
+        use std::sync::Arc;
+        use std::thread;
+
+        use arb_adb::scrcpy::{AudioTunnelReader, CODEC_ID_AAC, CODEC_ID_H264, SCRCPY_DUMMY_BYTE};
+
+        use super::{AudioSocketMode, connect_scrcpy_tunnels};
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock scrcpy listener");
+        let port = listener.local_addr().expect("local addr").port();
+
+        // Mirrors scrcpy-server-v5.0.1 DesktopConnection.open(video=true, audio=true, control=false):
+        // accept(video) -> send 0x00 dummy byte -> accept(audio) -> send "h264" and "\0aac".
+        let server = thread::spawn(move || {
+            let (mut video, _) = listener.accept().expect("accept video socket");
+            video.write_all(&[SCRCPY_DUMMY_BYTE]).expect("write dummy");
+            video.flush().expect("flush dummy");
+
+            let (mut audio, _) = listener.accept().expect("accept audio socket");
+            video
+                .write_all(&CODEC_ID_H264.to_be_bytes())
+                .expect("write h264 codec id");
+            audio
+                .write_all(&CODEC_ID_AAC.to_be_bytes())
+                .expect("write aac codec id");
+        });
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let tunnels = connect_scrcpy_tunnels(
+            port,
+            AudioSocketMode::Enabled,
+            Duration::from_secs(5),
+            &stop,
+        )
+        .expect("dual-socket scrcpy handshake must not deadlock");
+        assert_eq!(tunnels.video_reader.codec_id(), CODEC_ID_H264);
+        assert!(tunnels.audio_connect_error.is_none());
+        let audio_sock = tunnels.audio_stream.expect("audio socket must connect");
+        let audio_reader =
+            AudioTunnelReader::handshake(audio_sock).expect("audio handshake must read AAC");
+        assert_eq!(audio_reader.codec_id(), CODEC_ID_AAC);
+        server.join().expect("mock scrcpy server must exit cleanly");
     }
 }
