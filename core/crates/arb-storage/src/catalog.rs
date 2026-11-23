@@ -23,6 +23,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 
 use crate::error::StorageError;
+use crate::ring::{PinJournal, PinJournalRecord};
 
 static LEASE_SEQ: AtomicU64 = AtomicU64::new(1);
 
@@ -230,9 +231,42 @@ pub struct GcReport {
     pub skipped_active_job_bundle_ids: Vec<String>,
     /// Trashed bundle IDs skipped because they are legacy or outside `managed_bundles_root`.
     pub skipped_unmanaged_or_legacy_bundle_ids: Vec<String>,
-    /// Trashed bundle IDs skipped because `trashed_at_utc > cutoff_utc`.
+    /// Trashed bundle IDs skipped because `trashed_at_utc > cutoff_utc` (or its timestamp
+    /// could not be parsed, the safe direction).
     pub skipped_in_grace_bundle_ids: Vec<String>,
+    /// Bundles whose purge failed this run (e.g. a Windows sharing violation from an AV
+    /// scanner). They stay `Purging` and are retried by the next GC run.
+    pub failed: Vec<GcFailure>,
 }
+
+/// One bundle whose physical purge failed during [`Catalog::gc_trashed_bundles`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GcFailure {
+    /// Bundle identifier left in `Purging` for retry.
+    pub bundle_id: String,
+    /// Human-readable failure description.
+    pub error: String,
+}
+
+/// Summary returned by [`Catalog::reconcile_pins`].
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct PinReconcileReport {
+    /// Pin journals released because their job is `Completed`, `Discarded`, or unknown to the
+    /// catalog (crash between `complete_job`/`discard_job` and `unpin_job`).
+    pub released_job_ids: Vec<String>,
+    /// Active/retryable catalog jobs whose journal was missing; the journal was re-created
+    /// from the catalog's pinned chunk IDs so surviving chunks cannot be evicted before the
+    /// job is retried, retargeted or discarded.
+    pub repinned_job_ids: Vec<String>,
+}
+
+/// Pin journal state per catalog job, as seen by [`Catalog::reconcile_pins`].
+const ACTIVE_JOB_STATES: [SaveJobState; 4] = [
+    SaveJobState::Pinned,
+    SaveJobState::Draining,
+    SaveJobState::Materializing,
+    SaveJobState::FailedRetryable,
+];
 
 /// Summary report returned by [`Catalog::recover_on_startup`].
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -566,90 +600,208 @@ impl Catalog {
     /// 5. `format_version == CatalogFormatVersion::V2` and `path` is strictly inside
     ///    `managed_bundles_root` (legacy or external paths are NEVER deleted).
     ///
+    /// Bundles left in `Purging` (by an earlier failed run or a crash) are retried first.
+    /// A failure on one bundle is recorded in [`GcReport::failed`] and the run continues.
+    /// Timestamps are compared numerically (ISO-8601 with `Z` or `±HH:MM` offsets and
+    /// optional fractional seconds), never as strings.
+    ///
     /// # Errors
     ///
-    /// Returns [`StorageError::Sqlite`] or [`StorageError::Io`] if database updates
-    /// or directory removal fails.
+    /// Returns [`StorageError::InvalidArgument`] if `now_utc` is not an ISO-8601 timestamp, or
+    /// [`StorageError::Sqlite`] if the candidate lists cannot be read.
     pub fn gc_trashed_bundles(&self, now_utc: &str) -> Result<GcReport, StorageError> {
+        let now_ns =
+            parse_utc_timestamp_ns(now_utc).ok_or_else(|| StorageError::InvalidArgument {
+                name: "now_utc",
+                reason: format!("`{now_utc}` is not an ISO-8601 UTC timestamp"),
+            })?;
         let mut report = GcReport::default();
-        let candidates = self.list_bundles(Some(BundleLifecycleState::Trashed))?;
 
-        for bundle in candidates {
-            if let Some(trashed_at) = bundle.trashed_at_utc.as_deref()
-                && trashed_at > now_utc
-            {
+        for bundle in self.list_bundles(Some(BundleLifecycleState::Purging))? {
+            if !self.is_purgeable_location(&bundle) {
+                report
+                    .skipped_unmanaged_or_legacy_bundle_ids
+                    .push(bundle.bundle_id);
+                continue;
+            }
+            match self.finish_purge(&bundle) {
+                Ok(()) => report.purged_bundle_ids.push(bundle.bundle_id),
+                Err(err) => report.failed.push(GcFailure {
+                    bundle_id: bundle.bundle_id,
+                    error: err.to_string(),
+                }),
+            }
+        }
+
+        for bundle in self.list_bundles(Some(BundleLifecycleState::Trashed))? {
+            let in_grace = bundle
+                .trashed_at_utc
+                .as_deref()
+                .is_some_and(|t| parse_utc_timestamp_ns(t).is_none_or(|t_ns| t_ns > now_ns));
+            if in_grace {
                 report.skipped_in_grace_bundle_ids.push(bundle.bundle_id);
                 continue;
             }
 
-            if bundle.format_version == CatalogFormatVersion::LegacyRo
-                || !is_strictly_inside_managed_root(&bundle.path, &self.managed_bundles_root)
-            {
+            if !self.is_purgeable_location(&bundle) {
                 report
                     .skipped_unmanaged_or_legacy_bundle_ids
                     .push(bundle.bundle_id);
                 continue;
             }
 
-            let can_purge = {
-                let mut conn = self.lock_conn();
-                let tx = conn
-                    .transaction()
-                    .map_err(|source| StorageError::sqlite("begin_gc_tx", source))?;
-
-                let Some(current) = fetch_bundle(&tx, &bundle.bundle_id)? else {
-                    continue;
-                };
-                if current.state != BundleLifecycleState::Trashed {
-                    continue;
-                }
-
-                let active_leases = count_active_leases(&tx, &bundle.bundle_id)?;
-                if active_leases > 0 {
-                    report.skipped_leased_bundle_ids.push(bundle.bundle_id);
-                    continue;
-                }
-
-                let active_jobs = count_active_jobs_for_path(&tx, &bundle.path)?;
-                if active_jobs > 0 {
+            let outcome = self.try_mark_purging(&bundle).and_then(|gate| match gate {
+                PurgeGate::Marked => self.finish_purge(&bundle).map(|()| gate),
+                other => Ok(other),
+            });
+            match outcome {
+                Ok(PurgeGate::Marked) => report.purged_bundle_ids.push(bundle.bundle_id),
+                Ok(PurgeGate::Leased) => report.skipped_leased_bundle_ids.push(bundle.bundle_id),
+                Ok(PurgeGate::ActiveJobs) => {
                     report.skipped_active_job_bundle_ids.push(bundle.bundle_id);
-                    continue;
                 }
-
-                let purging = current.state.begin_purge(active_leases, active_jobs)?;
-                tx.execute(
-                    "UPDATE bundles SET state = ?1 WHERE bundle_id = ?2",
-                    params![bundle_state_to_str(purging), bundle.bundle_id],
-                )
-                .map_err(|source| StorageError::sqlite("mark_bundle_purging", source))?;
-                tx.commit()
-                    .map_err(|source| StorageError::sqlite("commit_gc_mark", source))?;
-                true
-            };
-
-            if can_purge {
-                remove_dir_if_exists(&bundle.path)?;
-                let mut conn = self.lock_conn();
-                let tx = conn
-                    .transaction()
-                    .map_err(|source| StorageError::sqlite("begin_gc_delete_tx", source))?;
-                tx.execute(
-                    "DELETE FROM edit_sessions WHERE bundle_id = ?1",
-                    params![bundle.bundle_id],
-                )
-                .map_err(|source| StorageError::sqlite("delete_bundle_edit_sessions", source))?;
-                tx.execute(
-                    "DELETE FROM bundles WHERE bundle_id = ?1",
-                    params![bundle.bundle_id],
-                )
-                .map_err(|source| StorageError::sqlite("delete_purged_bundle", source))?;
-                tx.commit()
-                    .map_err(|source| StorageError::sqlite("commit_gc_delete_tx", source))?;
-                report.purged_bundle_ids.push(bundle.bundle_id);
+                Ok(PurgeGate::Gone) => {}
+                Err(err) => report.failed.push(GcFailure {
+                    bundle_id: bundle.bundle_id,
+                    error: err.to_string(),
+                }),
             }
         }
 
         Ok(report)
+    }
+
+    fn is_purgeable_location(&self, bundle: &BundleEntry) -> bool {
+        bundle.format_version == CatalogFormatVersion::V2
+            && is_strictly_inside_managed_root(&bundle.path, &self.managed_bundles_root)
+    }
+
+    /// Atomically re-checks a `Trashed` bundle (state, leases, active jobs) and marks it
+    /// `Purging` under the connection mutex.
+    fn try_mark_purging(&self, bundle: &BundleEntry) -> Result<PurgeGate, StorageError> {
+        let mut conn = self.lock_conn();
+        let tx = conn
+            .transaction()
+            .map_err(|source| StorageError::sqlite("begin_gc_tx", source))?;
+
+        let Some(current) = fetch_bundle(&tx, &bundle.bundle_id)? else {
+            return Ok(PurgeGate::Gone);
+        };
+        if current.state != BundleLifecycleState::Trashed {
+            return Ok(PurgeGate::Gone);
+        }
+        let active_leases = count_active_leases(&tx, &bundle.bundle_id)?;
+        if active_leases > 0 {
+            return Ok(PurgeGate::Leased);
+        }
+        let active_jobs = count_active_jobs_for_path(&tx, &bundle.path)?;
+        if active_jobs > 0 {
+            return Ok(PurgeGate::ActiveJobs);
+        }
+
+        let purging = current.state.begin_purge(active_leases, active_jobs)?;
+        tx.execute(
+            "UPDATE bundles SET state = ?1 WHERE bundle_id = ?2",
+            params![bundle_state_to_str(purging), bundle.bundle_id],
+        )
+        .map_err(|source| StorageError::sqlite("mark_bundle_purging", source))?;
+        tx.commit()
+            .map_err(|source| StorageError::sqlite("commit_gc_mark", source))?;
+        Ok(PurgeGate::Marked)
+    }
+
+    /// Physically removes a `Purging` bundle directory, then deletes its catalog rows.
+    fn finish_purge(&self, bundle: &BundleEntry) -> Result<(), StorageError> {
+        remove_dir_if_exists(&bundle.path)?;
+        let mut conn = self.lock_conn();
+        let tx = conn
+            .transaction()
+            .map_err(|source| StorageError::sqlite("begin_gc_delete_tx", source))?;
+        tx.execute(
+            "DELETE FROM edit_sessions WHERE bundle_id = ?1",
+            params![bundle.bundle_id],
+        )
+        .map_err(|source| StorageError::sqlite("delete_bundle_edit_sessions", source))?;
+        tx.execute(
+            "DELETE FROM bundles WHERE bundle_id = ?1",
+            params![bundle.bundle_id],
+        )
+        .map_err(|source| StorageError::sqlite("delete_purged_bundle", source))?;
+        tx.commit()
+            .map_err(|source| StorageError::sqlite("commit_gc_delete_tx", source))
+    }
+
+    /// Reconciles durable pin journals (`save_jobs/<job>.json`) with the catalog's
+    /// `save_jobs` rows so pins can never leak forever (R2 S13). Call it during startup
+    /// recovery, after [`Self::recover_on_startup`] (see [`Self::recover_on_startup_with_pins`]):
+    ///
+    /// - a journal whose job is `Completed`, `Discarded`, or unknown to the catalog is
+    ///   unpinned (crash between `complete_job`/`discard_job` and `unpin_job`);
+    /// - an active or retryable job (`Pinned`/`Draining`/`Materializing`/`FailedRetryable`)
+    ///   whose journal is missing gets it re-created from the catalog's pinned chunk IDs, so
+    ///   the ring cannot evict chunks a retry still needs. IDs of chunks that no longer exist
+    ///   are harmless in a journal (they protect nothing); the retry then either finds the
+    ///   already committed bundle or fails retryably.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError::Sqlite`], [`StorageError::Io`] or [`StorageError::Json`] if the
+    /// catalog or a journal cannot be read or written.
+    pub fn reconcile_pins(
+        &self,
+        journal: &PinJournal,
+        now_utc: &str,
+    ) -> Result<PinReconcileReport, StorageError> {
+        let mut report = PinReconcileReport::default();
+        let jobs: std::collections::BTreeMap<String, CatalogSaveJob> = self
+            .list_save_jobs()?
+            .into_iter()
+            .map(|j| (j.job.job_id.clone(), j))
+            .collect();
+        let journals = journal.list_all()?;
+        let journaled: std::collections::BTreeSet<String> =
+            journals.iter().map(|r| r.job_id.clone()).collect();
+
+        for record in &journals {
+            let releasable = jobs
+                .get(&record.job_id)
+                .is_none_or(|job| job.job.state.is_terminal());
+            if releasable && journal.unpin(&record.job_id)? {
+                report.released_job_ids.push(record.job_id.clone());
+            }
+        }
+
+        for (job_id, job) in &jobs {
+            if !ACTIVE_JOB_STATES.contains(&job.job.state)
+                || journaled.contains(job_id)
+                || job.job.pinned_chunk_ids.is_empty()
+            {
+                continue;
+            }
+            journal.pin(&PinJournalRecord {
+                job_id: job_id.clone(),
+                destination_path: PathBuf::from(&job.job.destination_path),
+                pinned_chunk_ids: job.job.pinned_chunk_ids.clone(),
+                created_at_utc: now_utc.to_owned(),
+            })?;
+            report.repinned_job_ids.push(job_id.clone());
+        }
+        Ok(report)
+    }
+
+    /// [`Self::recover_on_startup`] followed by [`Self::reconcile_pins`].
+    ///
+    /// # Errors
+    ///
+    /// Returns any error from either step.
+    pub fn recover_on_startup_with_pins(
+        &self,
+        now_utc: &str,
+        journal: &PinJournal,
+    ) -> Result<(RecoveryReport, PinReconcileReport), StorageError> {
+        let recovery = self.recover_on_startup(now_utc)?;
+        let pins = self.reconcile_pins(journal, now_utc)?;
+        Ok((recovery, pins))
     }
 
     /// Creates a new save job in `Pinned` state with its Phase-1 pinned chunk IDs.
@@ -858,8 +1010,7 @@ impl Catalog {
     pub fn recover_on_startup(&self, now_utc: &str) -> Result<RecoveryReport, StorageError> {
         let removed_staging_dirs = self.cleanup_orphan_staging_dirs()?;
         let recovered = self.recover_catalog_rows(now_utc)?;
-        let completed_purging_bundle_ids =
-            self.finish_purging_bundles(recovered.purging_bundles)?;
+        let completed_purging_bundle_ids = self.finish_purging_bundles(recovered.purging_bundles);
 
         Ok(RecoveryReport {
             removed_staging_dirs,
@@ -974,36 +1125,16 @@ impl Catalog {
         })
     }
 
-    fn finish_purging_bundles(
-        &self,
-        purging_bundles: Vec<BundleEntry>,
-    ) -> Result<Vec<String>, StorageError> {
+    fn finish_purging_bundles(&self, purging_bundles: Vec<BundleEntry>) -> Vec<String> {
         let mut completed = Vec::new();
         for bundle in purging_bundles {
-            if bundle.format_version == CatalogFormatVersion::V2
-                && is_strictly_inside_managed_root(&bundle.path, &self.managed_bundles_root)
-            {
-                remove_dir_if_exists(&bundle.path)?;
-                let mut conn = self.lock_conn();
-                let tx = conn
-                    .transaction()
-                    .map_err(|source| StorageError::sqlite("begin_purge_finish_tx", source))?;
-                tx.execute(
-                    "DELETE FROM edit_sessions WHERE bundle_id = ?1",
-                    params![bundle.bundle_id],
-                )
-                .map_err(|source| StorageError::sqlite("delete_purging_edit_sessions", source))?;
-                tx.execute(
-                    "DELETE FROM bundles WHERE bundle_id = ?1",
-                    params![bundle.bundle_id],
-                )
-                .map_err(|source| StorageError::sqlite("delete_purging_bundle", source))?;
-                tx.commit()
-                    .map_err(|source| StorageError::sqlite("commit_purge_finish_tx", source))?;
+            // A bundle that cannot be removed right now (e.g. locked by another process)
+            // stays `Purging`; `gc_trashed_bundles` retries it and reports the failure.
+            if self.is_purgeable_location(&bundle) && self.finish_purge(&bundle).is_ok() {
                 completed.push(bundle.bundle_id);
             }
         }
-        Ok(completed)
+        completed
     }
 
     /// Inserts or updates a non-destructive [`EditSession`] outside the immutable bundle.
@@ -1133,6 +1264,87 @@ impl Catalog {
 // ---------------------------------------------------------------------------
 // Internal SQL & Path Safety Helpers
 // ---------------------------------------------------------------------------
+
+/// Outcome of the transactional eligibility check in `try_mark_purging`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PurgeGate {
+    Marked,
+    Leased,
+    ActiveJobs,
+    Gone,
+}
+
+/// Parses an ISO-8601 timestamp (`YYYY-MM-DD[T ]HH:MM:SS[.fraction](Z|±HH:MM|±HHMM)`; no
+/// offset means UTC) into Unix nanoseconds, so catalog timestamps compare numerically.
+pub fn parse_utc_timestamp_ns(value: &str) -> Option<i128> {
+    let b = value.trim().as_bytes();
+    let num = |range: std::ops::Range<usize>| -> Option<i64> {
+        let digits = b.get(range)?;
+        if digits.is_empty() || !digits.iter().all(u8::is_ascii_digit) {
+            return None;
+        }
+        std::str::from_utf8(digits).ok()?.parse().ok()
+    };
+    if b.len() < 19
+        || b[4] != b'-'
+        || b[7] != b'-'
+        || !matches!(b[10], b'T' | b't' | b' ')
+        || b[13] != b':'
+        || b[16] != b':'
+    {
+        return None;
+    }
+    let (year, month, day) = (num(0..4)?, num(5..7)?, num(8..10)?);
+    let (hour, minute, second) = (num(11..13)?, num(14..16)?, num(17..19)?);
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) || hour > 23 || minute > 59 {
+        return None;
+    }
+    if second > 60 {
+        return None;
+    }
+    let mut pos = 19;
+    let mut frac_ns: i128 = 0;
+    if b.get(pos) == Some(&b'.') {
+        pos += 1;
+        let start = pos;
+        while b.get(pos).is_some_and(u8::is_ascii_digit) {
+            pos += 1;
+        }
+        let digits = &b[start..pos];
+        if digits.is_empty() {
+            return None;
+        }
+        for (i, d) in digits.iter().take(9).enumerate() {
+            let place = 8 - u32::try_from(i).ok()?;
+            frac_ns += i128::from(d - b'0') * 10i128.pow(place);
+        }
+    }
+    let offset_secs: i64 = match b.get(pos) {
+        None => 0,
+        Some(b'Z' | b'z') if pos + 1 == b.len() => 0,
+        Some(&sign @ (b'+' | b'-')) => {
+            let rest = &b[pos + 1..];
+            let (oh, om) = match rest.len() {
+                5 if rest[2] == b':' => (num(pos + 1..pos + 3)?, num(pos + 4..pos + 6)?),
+                4 => (num(pos + 1..pos + 3)?, num(pos + 3..pos + 5)?),
+                _ => return None,
+            };
+            let secs = oh * 3_600 + om * 60;
+            if sign == b'+' { secs } else { -secs }
+        }
+        Some(_) => return None,
+    };
+    // Days from civil (proleptic Gregorian), Howard Hinnant's algorithm.
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let mp = (month + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    let secs = days * 86_400 + hour * 3_600 + minute * 60 + second - offset_secs;
+    Some(i128::from(secs) * 1_000_000_000 + frac_ns)
+}
 
 struct CatalogRowRecovery {
     reaped_lease_ids: Vec<String>,

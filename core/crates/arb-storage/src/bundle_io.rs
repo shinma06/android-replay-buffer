@@ -30,13 +30,14 @@ use arb_core::time::{
     DeviceClockTriple, DiscontinuityEvent, DiscontinuityKind, PcSyncProbe, StreamKind,
     TimeAlignment, TimestampSemantics, UncertaintyReason,
 };
+use arb_os::OsError;
 use arb_os::fs::{AtomicStagingDir, fsync_file};
 use rusqlite::{Connection, OpenFlags, params};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::error::StorageError;
-use crate::ring::hex_lower;
+use crate::ring::{hex_lower, validate_simple_id};
 
 /// File name of the v2 bundle manifest.
 pub const MANIFEST_V2_FILE: &str = "manifest.json";
@@ -355,17 +356,35 @@ impl V2BundleWriter {
     /// `fsync` fails, `Err(StorageError::Os(OsError::CommittedParentSyncFailed { .. }))`
     /// is returned while preserving the published WORM bundle untouched.
     ///
+    /// Idempotent retry (R2 S14): a stale `.staging-<job_id>` sibling left by a crash is
+    /// removed first, and when `final_dir` already exists and holds a committed bundle with
+    /// the same `bundle_id` that passes [`V2BundleReader::verify_integrity`] (a crash after
+    /// the commit rename but before the catalog was updated), its manifest is returned
+    /// instead of failing forever with `AlreadyExists`.
+    ///
     /// # Errors
     ///
     /// Returns [`StorageError`] on staging creation failure, I/O error, `SQLite`
     /// write error, manifest validation error, or atomic commit failure (including
     /// `OsError::CommittedParentSyncFailed` when the bundle is already published).
+    /// `OsError::AlreadyExists` is returned only when `final_dir` holds something other than
+    /// an intact bundle with `draft.bundle_id`.
     pub fn write(
         final_dir: impl AsRef<Path>,
         job_id: &str,
         draft: &V2BundleDraft,
     ) -> Result<ManifestV2, StorageError> {
-        let staging = AtomicStagingDir::create(final_dir, job_id)?;
+        let final_dir = final_dir.as_ref();
+        validate_simple_id("job_id", job_id)?;
+        remove_stale_staging_sibling(final_dir, job_id)?;
+        let staging = match AtomicStagingDir::create(final_dir, job_id) {
+            Ok(staging) => staging,
+            Err(OsError::AlreadyExists { path }) => {
+                return existing_committed_manifest(final_dir, &draft.bundle_id)
+                    .ok_or(StorageError::Os(OsError::AlreadyExists { path }));
+            }
+            Err(err) => return Err(err.into()),
+        };
         let mut files = Vec::new();
 
         if let Some(video) = &draft.video_mp4 {
@@ -406,6 +425,34 @@ impl V2BundleWriter {
         staging.commit()?;
         Ok(manifest)
     }
+}
+
+/// Removes `<parent>/.staging-<job_id>` left behind by a crashed earlier attempt (managed
+/// roots are swept by `Catalog::recover_on_startup`; external destinations are not).
+fn remove_stale_staging_sibling(final_dir: &Path, job_id: &str) -> Result<(), StorageError> {
+    let Some(parent) = final_dir.parent().filter(|p| !p.as_os_str().is_empty()) else {
+        return Ok(());
+    };
+    let stale = parent.join(format!(".staging-{job_id}"));
+    match fs::symlink_metadata(&stale) {
+        Ok(meta) if meta.is_dir() => fs::remove_dir_all(&stale)
+            .map_err(|source| StorageError::io("remove_stale_staging_dir", &stale, source)),
+        Ok(_) => fs::remove_file(&stale)
+            .map_err(|source| StorageError::io("remove_stale_staging_entry", &stale, source)),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(source) => Err(StorageError::io("stat_stale_staging_dir", &stale, source)),
+    }
+}
+
+/// Returns the manifest of an already committed, intact bundle with `bundle_id` at
+/// `final_dir`, if that is what is there.
+fn existing_committed_manifest(final_dir: &Path, bundle_id: &str) -> Option<ManifestV2> {
+    let reader = V2BundleReader::open(final_dir).ok()?;
+    if reader.manifest().bundle_id != bundle_id {
+        return None;
+    }
+    reader.verify_integrity().ok()?;
+    Some(reader.manifest().clone())
 }
 
 /// Strictly read-only reader for committed WORM v2 bundles.
@@ -486,14 +533,49 @@ impl V2BundleReader {
         &self.manifest
     }
 
+    /// Returns `true` when `rel_path` is covered by `manifest.files` (and thus by
+    /// [`Self::verify_integrity`]).
+    fn manifest_lists(&self, rel_path: &str) -> bool {
+        self.manifest.files.iter().any(|f| f.path == rel_path)
+    }
+
     /// Verifies that every file listed in `manifest.files` exists, matches its
-    /// declared byte length, and matches its lowercase 64-hex SHA-256 digest.
+    /// declared byte length, and matches its lowercase 64-hex SHA-256 digest, and that the
+    /// manifest covers every file the reader serves (R2 S15): `timeline.sqlite` always,
+    /// `video.mp4` when `streams.video.status == Present`, and `audio.m4a` when
+    /// `streams.audio.status == Present`.
     ///
     /// # Errors
     ///
-    /// Returns [`StorageError::IntegrityMismatch`] if any file is missing,
-    /// resized, or corrupted, or [`StorageError::Io`] on unreadable files.
+    /// Returns [`StorageError::IntegrityMismatch`] if a required file is not listed, or any
+    /// listed file is missing, resized, or corrupted, or [`StorageError::Io`] on unreadable
+    /// files.
     pub fn verify_integrity(&self) -> Result<(), StorageError> {
+        let streams = &self.manifest.streams;
+        let mut required = vec![TIMELINE_DB_FILE];
+        if streams
+            .video
+            .as_ref()
+            .is_some_and(|v| v.status == StreamStatus::Present)
+        {
+            required.push(VIDEO_MP4_FILE);
+        }
+        if streams
+            .audio
+            .as_ref()
+            .is_some_and(|a| a.status == StreamStatus::Present)
+        {
+            required.push(AUDIO_M4A_FILE);
+        }
+        for rel in required {
+            if !self.manifest_lists(rel) {
+                return Err(StorageError::IntegrityMismatch {
+                    path: rel.to_owned(),
+                    reason: "required bundle file is not listed in manifest.files".to_owned(),
+                });
+            }
+        }
+
         for entry in &self.manifest.files {
             let file_path = self.root_dir.join(&entry.path);
             if !file_path.is_file() {
@@ -784,11 +866,18 @@ impl BundleReader for V2BundleReader {
     }
 
     fn video_path(&self) -> Option<PathBuf> {
+        // Never serve a media file the manifest (and thus integrity checks) does not cover.
+        if !self.manifest_lists(VIDEO_MP4_FILE) {
+            return None;
+        }
         let path = self.root_dir.join(VIDEO_MP4_FILE);
         path.is_file().then_some(path)
     }
 
     fn audio_path(&self) -> Option<PathBuf> {
+        if !self.manifest_lists(AUDIO_M4A_FILE) {
+            return None;
+        }
         let path = self.root_dir.join(AUDIO_M4A_FILE);
         path.is_file().then_some(path)
     }
@@ -844,6 +933,8 @@ impl LegacyBundleReader {
             });
         };
 
+        validate_legacy_manifest_paths(&root_dir, &metadata)?;
+
         let origin_ns = metadata.timebase.device_boottime_origin_ns();
         let frames = load_legacy_frames(&root_dir, &metadata, origin_ns)?;
         let device_logs = load_legacy_logs(
@@ -857,7 +948,8 @@ impl LegacyBundleReader {
             .files
             .logcat_device
             .as_deref()
-            .is_some_and(|rel| root_dir.join(rel).is_file());
+            .and_then(|rel| legacy_file_path(&root_dir, rel).ok())
+            .is_some_and(|path| path.is_file());
         let logs = if !device_logs.is_empty() || has_device_log_file {
             device_logs
         } else {
@@ -907,7 +999,7 @@ impl LegacyBundleReader {
     /// SHA-256 digest differs, or [`StorageError::Io`] on unreadable files.
     pub fn verify_integrity(&self) -> Result<(), StorageError> {
         for (rel_path, expected_sha) in &self.metadata.files_sha256 {
-            let file_path = self.root_dir.join(rel_path);
+            let file_path = legacy_file_path(&self.root_dir, rel_path)?;
             if !file_path.is_file() {
                 return Err(StorageError::IntegrityMismatch {
                     path: rel_path.clone(),
@@ -996,7 +1088,7 @@ impl BundleReader for LegacyBundleReader {
             return None;
         }
         let video_name = self.metadata.files.video.as_deref()?;
-        let path = self.root_dir.join(video_name);
+        let path = legacy_file_path(&self.root_dir, video_name).ok()?;
         path.is_file().then_some(path)
     }
 
@@ -1670,6 +1762,65 @@ fn decode_tap_row(raw: RawTapSqlRow) -> Result<TapRecord, StorageError> {
 // Legacy Read-Only Projection Helpers
 // ---------------------------------------------------------------------------
 
+/// Lexical rule for every file name taken from an untrusted legacy manifest (R2 S16):
+/// a single non-empty path segment inside the bundle folder (legacy layouts are flat), so
+/// no `..`/`.`, no `/` or `\`, no drive prefix or NTFS stream (`:`), and no NUL.
+fn is_safe_legacy_file_name(name: &str) -> bool {
+    !name.is_empty() && name != "." && name != ".." && !name.contains(['/', '\\', ':', '\0'])
+}
+
+/// Resolves a legacy manifest file name to a path confined to `root_dir`: the name must be
+/// lexically safe and, when it exists, must canonicalise (through symlinks) inside the
+/// canonical bundle root.
+fn legacy_file_path(root_dir: &Path, name: &str) -> Result<PathBuf, StorageError> {
+    let reject = |reason: String| StorageError::InvalidBundle {
+        path: root_dir.to_path_buf(),
+        reason,
+    };
+    if !is_safe_legacy_file_name(name) {
+        return Err(reject(format!(
+            "legacy manifest file name `{name}` escapes the bundle folder"
+        )));
+    }
+    let path = root_dir.join(name);
+    if let Ok(canonical) = fs::canonicalize(&path) {
+        let canonical_root = fs::canonicalize(root_dir)
+            .map_err(|source| StorageError::io("canonicalize_legacy_root", root_dir, source))?;
+        if !canonical.starts_with(&canonical_root) {
+            return Err(reject(format!(
+                "legacy manifest file `{name}` resolves outside the bundle folder"
+            )));
+        }
+    }
+    Ok(path)
+}
+
+/// Validates every file name referenced by a legacy `replay.json` / `session.json` before
+/// anything is read, hashed, or handed to the media pipeline.
+fn validate_legacy_manifest_paths(
+    root_dir: &Path,
+    meta: &LegacyBundleMetadata,
+) -> Result<(), StorageError> {
+    let files = &meta.files;
+    let named = [
+        Some(files.manifest.as_str()),
+        files.readme.as_deref(),
+        files.video.as_deref(),
+        files.video_frames.as_deref(),
+        files.video_source.as_deref(),
+        files.logcat_device.as_deref(),
+        files.logcat_app.as_deref(),
+        files.touches.as_deref(),
+    ];
+    for name in named.into_iter().flatten() {
+        legacy_file_path(root_dir, name)?;
+    }
+    for name in meta.files_sha256.keys() {
+        legacy_file_path(root_dir, name)?;
+    }
+    Ok(())
+}
+
 fn load_legacy_frames(
     root_dir: &Path,
     meta: &LegacyBundleMetadata,
@@ -1678,7 +1829,7 @@ fn load_legacy_frames(
     let Some(frames_file) = meta.files.video_frames.as_deref() else {
         return Ok(Vec::new());
     };
-    let path = root_dir.join(frames_file);
+    let path = legacy_file_path(root_dir, frames_file)?;
     let text = match fs::read_to_string(&path) {
         Ok(s) => s,
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -1736,7 +1887,7 @@ fn load_legacy_logs(
     let Some(file_name) = rel_file else {
         return Ok(Vec::new());
     };
-    let path = root_dir.join(file_name);
+    let path = legacy_file_path(root_dir, file_name)?;
     let text = match fs::read_to_string(&path) {
         Ok(s) => s,
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -1781,7 +1932,7 @@ fn load_legacy_taps(
     let Some(file_name) = rel_file else {
         return Ok(Vec::new());
     };
-    let path = root_dir.join(file_name);
+    let path = legacy_file_path(root_dir, file_name)?;
     let text = match fs::read_to_string(&path) {
         Ok(s) => s,
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),

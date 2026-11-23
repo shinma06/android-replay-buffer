@@ -1498,3 +1498,368 @@ fn catalog_gc_protects_legacy_ro_and_active_job_targets_and_supports_retry_job()
         "both protected directories must remain untouched on disk"
     );
 }
+
+// ===========================================================================
+// R2 review regressions (S13, S14, S15, S16, S19)
+// ===========================================================================
+
+type JsonEdit = Box<dyn Fn(&mut serde_json::Value)>;
+
+fn copy_dir(src: &Path, dst: &Path) {
+    fs::create_dir_all(dst).expect("create copy dir");
+    for entry in fs::read_dir(src).expect("read fixture dir") {
+        let entry = entry.expect("fixture entry");
+        if entry.file_type().expect("file type").is_file() {
+            fs::copy(entry.path(), dst.join(entry.file_name())).expect("copy fixture file");
+        }
+    }
+}
+
+fn edit_json(path: &Path, edit: impl FnOnce(&mut serde_json::Value)) {
+    let mut value: serde_json::Value =
+        serde_json::from_slice(&fs::read(path).expect("read json")).expect("parse json");
+    edit(&mut value);
+    fs::write(
+        path,
+        serde_json::to_vec_pretty(&value).expect("serialize json"),
+    )
+    .expect("write json");
+}
+
+#[test]
+fn r2_s13_pin_journals_and_catalog_jobs_are_reconciled_on_startup() {
+    let tmp = TempDir::new().expect("temp dir must be created");
+    let data_dir = tmp.path().join("data");
+    let disk = FakeDiskProvider::new(50 * 1024 * 1024 * 1024, 100 * 1024 * 1024 * 1024);
+    let ring = {
+        let mut ring =
+            RingStore::open_with_disk_provider(&data_dir, RingBudgetPolicy::default(), disk)
+                .expect("ring open");
+        for (i, id) in ["ca", "cb", "cc", "cd"].iter().enumerate() {
+            let t = i64::try_from(i).expect("index");
+            ring.write_closed_chunk(*id, RingChunkKind::Video, t, 1, id.as_bytes())
+                .expect("chunk write");
+        }
+        ring
+    };
+    let catalog = Catalog::open(data_dir.join("catalog.sqlite"), data_dir.join("bundles"))
+        .expect("catalog open");
+    let now = "2026-11-23T00:00:00Z";
+    let dest = |name: &str| data_dir.join("bundles").join(name);
+
+    // A: completed in the catalog, but the crash hit before unpin_job -> leaked journal.
+    catalog
+        .create_pinned_job("job-a", dest("a"), &["ca".to_owned()], now)
+        .expect("create a");
+    ring.pin_chunks("job-a", dest("a"), vec!["ca".to_owned()], now)
+        .expect("pin a");
+    catalog.mark_draining("job-a", now).expect("drain a");
+    catalog.mark_materializing("job-a", now).expect("mat a");
+    catalog.complete_job("job-a", now).expect("complete a");
+    // B: journal whose job the catalog never recorded.
+    ring.pin_chunks("job-b", dest("b"), vec!["cb".to_owned()], now)
+        .expect("pin b");
+    // C: materializing in the catalog, journal already removed before the crash.
+    catalog
+        .create_pinned_job("job-c", dest("c"), &["cc".to_owned()], now)
+        .expect("create c");
+    catalog.mark_draining("job-c", now).expect("drain c");
+    catalog.mark_materializing("job-c", now).expect("mat c");
+    // D: healthy active job with its journal.
+    catalog
+        .create_pinned_job("job-d", dest("d"), &["cd".to_owned()], now)
+        .expect("create d");
+    ring.pin_chunks("job-d", dest("d"), vec!["cd".to_owned()], now)
+        .expect("pin d");
+
+    let (recovery, pins) = catalog
+        .recover_on_startup_with_pins(now, ring.pin_journal())
+        .expect("startup recovery");
+    assert!(
+        recovery.recovered_job_ids.contains(&"job-c".to_owned()),
+        "interrupted job C becomes FailedRetryable"
+    );
+    assert_eq!(
+        pins.released_job_ids,
+        vec!["job-a".to_owned(), "job-b".to_owned()],
+        "journals of completed/unknown jobs are released"
+    );
+    assert_eq!(
+        pins.repinned_job_ids,
+        vec!["job-c".to_owned()],
+        "retryable job missing its journal is re-pinned"
+    );
+    let pinned = ring.pinned_chunk_ids().expect("pinned ids");
+    assert_eq!(
+        pinned.into_iter().collect::<Vec<_>>(),
+        vec!["cc".to_owned(), "cd".to_owned()],
+        "exactly the chunks of live jobs stay pinned"
+    );
+
+    // Idempotent: a second reconciliation changes nothing.
+    let again = catalog
+        .reconcile_pins(ring.pin_journal(), now)
+        .expect("second reconcile");
+    assert!(
+        again.released_job_ids.is_empty() && again.repinned_job_ids.is_empty(),
+        "reconciliation is idempotent"
+    );
+}
+
+#[test]
+fn r2_s14_retry_after_post_rename_crash_is_idempotent_and_stale_staging_is_removed() {
+    let tmp = TempDir::new().expect("temp dir must be created");
+    let external = tmp.path().join("external");
+    let final_dir = external.join("bundle-x");
+    let draft = build_draft("bundle-x", b"video-x".to_vec());
+
+    let first = V2BundleWriter::write(&final_dir, "job-x", &draft).expect("first write");
+    // Crash after the commit rename: the retry must succeed with the same manifest.
+    let retried = V2BundleWriter::write(&final_dir, "job-x", &draft)
+        .expect("retry of an already committed bundle is idempotent");
+    assert_eq!(
+        retried, first,
+        "idempotent retry returns the committed manifest"
+    );
+
+    let other = build_draft("bundle-other", b"video-x".to_vec());
+    assert!(
+        matches!(
+            V2BundleWriter::write(&final_dir, "job-o", &other),
+            Err(StorageError::Os(OsError::AlreadyExists { .. }))
+        ),
+        "a different bundle at final_dir is never adopted"
+    );
+    fs::write(final_dir.join("video.mp4"), b"tampered").expect("tamper");
+    assert!(
+        matches!(
+            V2BundleWriter::write(&final_dir, "job-x", &draft),
+            Err(StorageError::Os(OsError::AlreadyExists { .. }))
+        ),
+        "a damaged bundle is never adopted"
+    );
+
+    // Stale `.staging-<job>` under an external destination (not swept by recovery).
+    let stale = external.join(".staging-job-y");
+    fs::create_dir_all(&stale).expect("stale staging");
+    fs::write(stale.join("partial.bin"), b"half").expect("stale file");
+    V2BundleWriter::write(
+        external.join("bundle-y"),
+        "job-y",
+        &build_draft("bundle-y", b"video-y".to_vec()),
+    )
+    .expect("write succeeds despite a stale staging dir");
+    assert!(!stale.exists(), "stale staging dir removed");
+}
+
+#[test]
+fn r2_s15_v2_integrity_requires_timeline_and_present_media_in_manifest() {
+    let tmp = TempDir::new().expect("temp dir must be created");
+    let make = |name: &str, drop_file: &str| {
+        let dir = tmp.path().join(name);
+        V2BundleWriter::write(
+            &dir,
+            &format!("job-{name}"),
+            &build_draft(name, b"v".to_vec()),
+        )
+        .expect("write");
+        edit_json(&dir.join("manifest.json"), |m| {
+            m["files"]
+                .as_array_mut()
+                .expect("files array")
+                .retain(|f| f["path"] != drop_file);
+        });
+        V2BundleReader::open(&dir).expect("manifest still schema-valid")
+    };
+
+    let no_timeline = make("b-no-timeline", "timeline.sqlite");
+    assert!(
+        matches!(
+            no_timeline.verify_integrity(),
+            Err(StorageError::IntegrityMismatch { ref path, .. }) if path == "timeline.sqlite"
+        ),
+        "timeline.sqlite must be listed"
+    );
+
+    let no_video = make("b-no-video", "video.mp4");
+    assert!(
+        matches!(
+            no_video.verify_integrity(),
+            Err(StorageError::IntegrityMismatch { ref path, .. }) if path == "video.mp4"
+        ),
+        "video.mp4 must be listed when the video stream is Present"
+    );
+    assert!(
+        no_video.video_path().is_none(),
+        "an unlisted (unverified) video.mp4 is never served"
+    );
+    assert!(
+        no_video.audio_path().is_none(),
+        "an unlisted audio.m4a is never served"
+    );
+
+    let intact_dir = tmp.path().join("b-intact");
+    V2BundleWriter::write(
+        &intact_dir,
+        "job-intact",
+        &build_draft("b-intact", b"v".to_vec()),
+    )
+    .expect("write intact");
+    let intact = V2BundleReader::open(&intact_dir).expect("open intact");
+    intact.verify_integrity().expect("intact bundle verifies");
+    assert!(intact.video_path().is_some(), "listed video is served");
+}
+
+#[test]
+fn r2_s16_legacy_manifest_paths_cannot_escape_the_bundle_folder() {
+    let tmp = TempDir::new().expect("temp dir must be created");
+    fs::write(tmp.path().join("secret.jsonl"), b"{\"secret\":true}\n").expect("secret");
+    let cases: [(&str, JsonEdit); 5] = [
+        (
+            "logcat-traversal",
+            Box::new(|m| m["files"]["logcat_device"] = "../secret.jsonl".into()),
+        ),
+        (
+            "deep-traversal",
+            Box::new(|m| m["files"]["touches"] = "../../secret.jsonl".into()),
+        ),
+        (
+            "absolute-video",
+            Box::new(|m| m["files"]["video"] = "/etc/passwd".into()),
+        ),
+        (
+            "drive-prefix",
+            Box::new(|m| m["files"]["video_frames"] = "C:evil.jsonl".into()),
+        ),
+        (
+            "sha-key-traversal",
+            Box::new(|m| {
+                m["files_sha256"]["../secret.jsonl"] =
+                    "0000000000000000000000000000000000000000000000000000000000000000".into();
+            }),
+        ),
+    ];
+    for (name, edit) in cases {
+        let dir = tmp.path().join("bundles").join(name);
+        copy_dir(&repo_schema4_fixture_dir(), &dir);
+        edit_json(&dir.join("replay.json"), |m| edit(m));
+        let result = LegacyBundleReader::open(&dir);
+        assert!(
+            matches!(result, Err(StorageError::InvalidBundle { .. })),
+            "{name}: escaping legacy path must be rejected, got {:?}",
+            result.map(|_| ())
+        );
+    }
+
+    let ok_dir = tmp.path().join("bundles").join("intact");
+    copy_dir(&repo_schema4_fixture_dir(), &ok_dir);
+    let reader = LegacyBundleReader::open(&ok_dir).expect("untouched legacy folder opens");
+    reader.verify_integrity().expect("legacy integrity");
+    assert!(
+        reader.video_path().is_some_and(|p| p.starts_with(&ok_dir)),
+        "video path stays inside the bundle"
+    );
+}
+
+#[test]
+fn r2_s19_gc_survives_failures_retries_purging_and_compares_time_numerically() {
+    use arb_storage::catalog::parse_utc_timestamp_ns;
+
+    let z = parse_utc_timestamp_ns("2026-11-22T12:00:00Z").expect("z");
+    assert_eq!(
+        parse_utc_timestamp_ns("2026-11-22T12:00:00.5Z"),
+        Some(z + 500_000_000),
+        "fractional seconds"
+    );
+    assert_eq!(
+        parse_utc_timestamp_ns("2026-11-22T21:00:00+09:00"),
+        Some(z),
+        "offsets normalise to UTC"
+    );
+    assert_eq!(
+        parse_utc_timestamp_ns("1970-01-01T00:00:00Z"),
+        Some(0),
+        "epoch"
+    );
+    assert!(
+        parse_utc_timestamp_ns("not-a-time").is_none(),
+        "garbage rejected"
+    );
+
+    let tmp = TempDir::new().expect("temp dir must be created");
+    let managed = tmp.path().join("bundles");
+    let catalog = Catalog::open(tmp.path().join("catalog.sqlite"), &managed).expect("catalog");
+
+    // grace: "…00.5Z" sorts BEFORE "…00Z" as a string but is later in time.
+    register_v2_bundle(&catalog, "b-grace", &managed.join("b-grace"), "j1", b"g");
+    catalog
+        .trash_bundle("b-grace", "2026-11-22T12:00:00.5Z")
+        .expect("trash");
+    // offset: 21:00+09:00 == 12:00Z, older than now.
+    register_v2_bundle(&catalog, "b-offset", &managed.join("b-offset"), "j2", b"o");
+    catalog
+        .trash_bundle("b-offset", "2026-11-22T21:00:00+09:00")
+        .expect("trash");
+    // failing: its path is a regular file, so directory removal fails on every OS.
+    let failing_path = managed.join("b-fail");
+    fs::write(&failing_path, b"not a directory").expect("file in place of bundle dir");
+    catalog
+        .register_bundle(&NewBundleEntry {
+            bundle_id: "b-fail".to_owned(),
+            path: failing_path.clone(),
+            format_version: CatalogFormatVersion::V2,
+            parent_bundle_id: None,
+            created_at_utc: "2026-11-22T11:00:00Z".to_owned(),
+        })
+        .expect("register failing bundle");
+    catalog
+        .trash_bundle("b-fail", "2026-11-22T11:00:00Z")
+        .expect("trash");
+
+    let report = catalog
+        .gc_trashed_bundles("2026-11-22T12:00:00.25Z")
+        .expect("gc run must not abort on one failure");
+    assert_eq!(
+        report.skipped_in_grace_bundle_ids,
+        vec!["b-grace".to_owned()],
+        "later fractional timestamp is still in grace"
+    );
+    assert_eq!(
+        report.purged_bundle_ids,
+        vec!["b-offset".to_owned()],
+        "offset timestamp compared numerically and purged; run continued past the failure"
+    );
+    assert_eq!(report.failed.len(), 1, "one failure recorded");
+    assert_eq!(report.failed[0].bundle_id, "b-fail", "failed bundle id");
+    assert_eq!(
+        catalog
+            .bundle("b-fail")
+            .expect("query")
+            .expect("row kept")
+            .state,
+        BundleLifecycleState::Purging,
+        "failed bundle stays Purging for retry"
+    );
+
+    // The obstruction disappears: the next GC retries the Purging row.
+    fs::remove_file(&failing_path).expect("unblock");
+    let retry = catalog
+        .gc_trashed_bundles("2026-11-22T12:00:01Z")
+        .expect("second gc");
+    assert!(
+        retry.purged_bundle_ids.contains(&"b-fail".to_owned()),
+        "Purging rows are retried by GC"
+    );
+    assert!(
+        retry.purged_bundle_ids.contains(&"b-grace".to_owned()),
+        "grace expired"
+    );
+    assert!(retry.failed.is_empty(), "no failures left");
+    assert!(
+        matches!(
+            catalog.gc_trashed_bundles("yesterday"),
+            Err(StorageError::InvalidArgument { .. })
+        ),
+        "unparsable now_utc is rejected"
+    );
+}
