@@ -1,41 +1,51 @@
 package io.github.shinma06.arb.ui
 
-import io.github.shinma06.arb.model.LogRecord
-import io.github.shinma06.arb.model.TimeAlignment
-import io.github.shinma06.arb.state.LEGACY_READ_ONLY_BADGE_TEXT
-import io.github.shinma06.arb.state.ProvenanceFormatter
+import com.intellij.icons.AllIcons
+import com.intellij.ui.JBSplitter
+import com.intellij.util.ui.JBUI
+import io.github.shinma06.arb.playback.AudioState
+import io.github.shinma06.arb.playback.PlaybackMode
+import io.github.shinma06.arb.playback.PlaybackSpeed
+import io.github.shinma06.arb.playback.PlaybackState
+import io.github.shinma06.arb.state.ArbFormatters
+import io.github.shinma06.arb.state.ExportCompletionInfo
+import io.github.shinma06.arb.state.HonestySeverity
+import io.github.shinma06.arb.state.SourceJumpTarget
+import io.github.shinma06.arb.state.Tier2HonestyChip
 import io.github.shinma06.arb.state.TimelineViewerReducer
 import io.github.shinma06.arb.state.TimelineViewerState
-import io.github.shinma06.arb.state.UNANCHORED_TAB_TITLE
 import java.awt.BorderLayout
-import java.awt.Color
+import java.awt.Dimension
 import java.awt.FlowLayout
-import java.awt.Font
+import java.awt.Toolkit
+import java.awt.datatransfer.StringSelection
+import java.awt.event.ActionEvent
+import java.awt.event.KeyEvent
 import java.awt.image.BufferedImage
 import java.nio.file.Path
+import javax.swing.AbstractAction
 import javax.swing.BorderFactory
-import javax.swing.BoxLayout
 import javax.swing.JButton
+import javax.swing.JComponent
 import javax.swing.JFileChooser
 import javax.swing.JLabel
 import javax.swing.JPanel
-import javax.swing.JScrollPane
-import javax.swing.JSlider
-import javax.swing.JSpinner
-import javax.swing.JSplitPane
 import javax.swing.JTabbedPane
-import javax.swing.JTable
-import javax.swing.SpinnerNumberModel
-import javax.swing.table.DefaultTableModel
+import javax.swing.KeyStroke
 
 /**
- * Main bundle timeline & video viewer panel:
- * - SHM video viewport with mandatory approximate-preview badge
- * - Filmstrip keyframe bar & scrubber (`scrub` on drag -> `seek_frame` on settle)
- * - Exact integer frame In/Out trim handles, `-1` / `+1` step buttons, Trim & Export PNG
- * - Discontinuity overlay bar
- * - Honest Provenance & Uncertainty panel
- * - Separate tabs for synchronized Main logs vs `"時刻不明の記録 (Unanchored)"` with truncation warning
+ * Redesigned Integrated Viewer & Trim Studio (Android Studio IntUI native, zero emoji):
+ * - Single seamless studio (no separate View vs Trim modes)
+ * - Tier 1 Top Action Bar (40px): bundle title + muted device/time + conditional Tier-2 honesty chips
+ *   (click opens `詳細` tab) + `PNG 保存` / `Finder` / primary CTA `選択範囲を書き出し ({dur}s)`
+ * - Inline Export Completion Bar (`[Finder で表示]` `[パスをコピー]` `[新しいタブで開く]`)
+ * - Resizable horizontal `JBSplitter`:
+ *   - Left (~58%): High-DPI SHM `VideoViewportCanvas` (+ tap ripple overlay + approximate pill) +
+ *     minimal transport bar wired to `PlaybackController` & `AudioSyncPlayer`
+ *   - Right (~42%): `EventLogStreamPanel` (`操作＆ログ` / `時刻不明 (N)` / `詳細`, trim-range dimming,
+ *     `0..300ms` tap-to-log correlation, hover `[In]`/`[Out]` snap, PSI source jump)
+ * - Bottom Full-Width `MultiTrackTimelineDock` (filmstrip + dual handles + screen spans + markers +
+ *   deterministic presets + non-destructive Trash-Original toggle)
  */
 class TimelineViewerPanel(
     private val onScrub: (frameIndex: Long) -> Unit,
@@ -43,137 +53,228 @@ class TimelineViewerPanel(
     private val onTrimExport: (inFrameIndex: Long, outFrameIndex: Long) -> Unit,
     private val onPngExport: (frameIndex: Long, outputPath: Path) -> Unit,
     private val onRangeChanged: (inFrameIndex: Long, outFrameIndex: Long, playhead: Long) -> Unit = { _, _, _ -> },
-) : JPanel(BorderLayout(6, 6)) {
+    private val onPlayPauseToggle: () -> Unit = {},
+    private val onStepFrame: (delta: Int) -> Unit = {},
+    private val onSpeedChange: (PlaybackSpeed) -> Unit = {},
+    private val onMuteToggle: () -> Unit = {},
+    private val onSelectTapRange: () -> Unit = {},
+    private val onSelectAroundCrash: () -> Unit = {},
+    private val onResetFullRange: () -> Unit = {},
+    private val onTrashOriginalToggled: (enabled: Boolean) -> Unit = {},
+    private val onRevealInFinder: (path: String) -> Unit = {},
+    private val onOpenExportedBundle: (bundleIdOrPath: String, title: String) -> Unit = { _, _ -> },
+    private val onSourceJump: (SourceJumpTarget) -> Unit = {},
+) : JPanel(BorderLayout()) {
     val videoCanvas = VideoViewportCanvas()
-    val discontinuityBar = DiscontinuityTimelineBar()
 
-    private val headerLabel = JLabel("読み込み中...")
-    private val legacyBadgeLabel = JLabel(LEGACY_READ_ONLY_BADGE_TEXT).apply {
+    val eventLogStreamPanel = EventLogStreamPanel(
+        onSeekToFrame = { frame -> onSeekExact(frame) },
+        onSnapInFrame = { frame -> applyInFrame(frame, notify = true) },
+        onSnapOutFrame = { frame -> applyOutFrame(frame, notify = true) },
+        onSourceJump = onSourceJump,
+    )
+
+    val multiTrackDock: MultiTrackTimelineDock = MultiTrackTimelineDock(
+        onScrub = onScrub,
+        onSeekExact = { frame ->
+            onSeekExact(frame)
+            notifyRangeChanged(playhead = frame)
+        },
+        onInFrameChanged = { frame, settled -> applyInFrame(frame, notify = settled) },
+        onOutFrameChanged = { frame, settled -> applyOutFrame(frame, notify = settled) },
+        onSelectTapRange = onSelectTapRange,
+        onSelectAroundCrash = onSelectAroundCrash,
+        onResetFullRange = onResetFullRange,
+        onTrashOriginalToggled = { enabled ->
+            val s = state ?: return@MultiTrackTimelineDock
+            val next = TimelineViewerReducer.setTrashOriginalAfterExport(s, enabled)
+            state = next
+            multiTrackDock.render(next)
+            onTrashOriginalToggled(next.effectiveTrashOriginalAfterExport)
+        },
+        onSourceJump = onSourceJump,
+    )
+
+    // Backwards-compatible public accessors used by existing & new headless tests
+    val discontinuityBar: DiscontinuityTimelineBar
+        get() = eventLogStreamPanel.discontinuityBar
+
+    val logsTabbedPane: JTabbedPane
+        get() = eventLogStreamPanel.tabbedPane
+
+    // ---- Tier 1 Top Action Bar (single 40px row) ----
+    private val titleLabel = JLabel("読み込み中...").apply {
+        font = ArbTheme.uiFont(12.5f, bold = true)
+        foreground = ArbTheme.primaryText
+    }
+    private val subtitleLabel = JLabel("").apply {
+        font = ArbTheme.monoFont(11f)
+        foreground = ArbTheme.secondaryText
+    }
+    private val honestyChipsPanel = JPanel(FlowLayout(FlowLayout.LEFT, 4, 0)).apply {
+        isOpaque = false
+    }
+    private val pngButton = ArbTheme.styleSecondaryButton(
+        JButton("PNG 保存", AllIcons.Actions.Dump),
+        compact = true,
+    )
+    private val finderButton = ArbTheme.styleSecondaryButton(
+        JButton("Finder", AllIcons.Nodes.Folder),
+        compact = true,
+    )
+    private val exportButton = ArbTheme.stylePrimaryButton(
+        JButton(ArbFormatters.EXPORT_FULL_LABEL, AllIcons.Actions.MenuSaveall),
+    )
+
+    // ---- Inline Export Completion Bar (hidden until export succeeds) ----
+    private val exportToastSummary = JLabel("").apply {
+        font = ArbTheme.uiFont(11.5f, bold = true)
+        foreground = ArbTheme.primaryText
+    }
+    private val toastRevealBtn = ArbTheme.styleSecondaryButton(JButton("Finder で表示", AllIcons.Nodes.Folder), compact = true)
+    private val toastCopyBtn = ArbTheme.styleSecondaryButton(JButton("パスをコピー", AllIcons.Actions.Copy), compact = true)
+    private val toastOpenTabBtn = ArbTheme.styleSecondaryButton(JButton("新しいタブで開く", AllIcons.Actions.Execute), compact = true)
+    private val toastDismissBtn = ArbTheme.styleSecondaryButton(JButton(AllIcons.Actions.Cancel), compact = true)
+    private val exportCompletionBar = JPanel(BorderLayout(8, 0)).apply {
+        background = ArbTheme.successGreenSoft
         isOpaque = true
-        background = Color(0x47, 0x55, 0x69)
-        foreground = Color.WHITE
-        font = font.deriveFont(Font.BOLD)
-        border = BorderFactory.createEmptyBorder(2, 8, 2, 8)
+        border = BorderFactory.createCompoundBorder(
+            BorderFactory.createMatteBorder(0, JBUI.scale(3), 1, 0, ArbTheme.successGreen),
+            JBUI.Borders.empty(5, 10),
+        )
+        add(exportToastSummary, BorderLayout.CENTER)
+        val actions = JPanel(FlowLayout(FlowLayout.RIGHT, 4, 0)).apply {
+            isOpaque = false
+            add(toastRevealBtn)
+            add(toastCopyBtn)
+            add(toastOpenTabBtn)
+            add(toastDismissBtn)
+        }
+        add(actions, BorderLayout.EAST)
         isVisible = false
     }
 
-    private val filmstripBar = JPanel(FlowLayout(FlowLayout.LEFT, 4, 2)).apply {
-        border = BorderFactory.createTitledBorder("キーフレーム・フィルムストリップ")
+    // ---- Minimal Transport Bar (left Video Stage footer) ----
+    private val playPauseButton = ArbTheme.styleSecondaryButton(
+        JButton("再生", AllIcons.Actions.Execute),
+        compact = true,
+    )
+    private val stepBackButton = ArbTheme.styleSecondaryButton(
+        JButton("-1f", AllIcons.Actions.Back),
+        compact = true,
+    )
+    private val stepForwardButton = ArbTheme.styleSecondaryButton(
+        JButton("+1f", AllIcons.Actions.Forward),
+        compact = true,
+    )
+    private val speedButton = ArbTheme.styleSecondaryButton(
+        JButton(PlaybackSpeed.NORMAL.label),
+        compact = true,
+    )
+    private val muteButton = ArbTheme.styleSecondaryButton(
+        JButton("音声"),
+        compact = true,
+    )
+    private val tapOverlayToggleButton = ArbTheme.styleFilterChip(
+        JButton("タップ表示"),
+        active = true,
+    )
+    private val timecodeLabel = JLabel("00:00.00 / 00:00.00 · #0").apply {
+        font = ArbTheme.monoFont(11f, bold = true)
+        foreground = ArbTheme.primaryText
     }
-
-    private val scrubSlider = JSlider(0, 0, 0)
-    private val stepBackButton = JButton("-1 フレーム")
-    private val stepForwardButton = JButton("+1 フレーム")
-    private val inFrameSpinner = JSpinner(SpinnerNumberModel(0, 0, 0, 1))
-    private val outFrameSpinner = JSpinner(SpinnerNumberModel(0, 0, 0, 1))
-    private val setInButton = JButton("現在を In に設定")
-    private val setOutButton = JButton("現在を Out に設定")
-    private val trimButton = JButton("フレーム単位トリム書き出し")
-    private val pngButton = JButton("現在フレームを PNG 書き出し")
-
-    private val provenanceLabel = JLabel("")
-    private val videoSemanticsLabel = JLabel("")
-    private val audioOffsetLabel = JLabel("")
-    private val logcatCompletenessLabel = JLabel("")
-    private val unanchoredSummaryLabel = JLabel("")
-    private val actionStatusLabel = JLabel("")
-
-    private val mainLogsModel = createLogTableModel()
-    private val unanchoredLogsModel = createLogTableModel()
-    private val unanchoredTruncatedBanner = JLabel("").apply {
-        isOpaque = true
-        background = Color(0x9A, 0x34, 0x12)
-        foreground = Color.WHITE
-        border = BorderFactory.createEmptyBorder(4, 8, 4, 8)
+    private val errorStatusLabel = JLabel("").apply {
+        font = ArbTheme.uiFont(11f)
+        foreground = ArbTheme.recRed
         isVisible = false
     }
-    val logsTabbedPane = JTabbedPane()
 
     private var state: TimelineViewerState? = null
-    private var suppressSliderEvents = false
-    private var suppressSpinnerEvents = false
+    private var playbackState: PlaybackState = PlaybackState()
 
     init {
-        val topHeader = JPanel(BorderLayout(8, 4)).apply {
-            border = BorderFactory.createEmptyBorder(4, 8, 4, 8)
-            add(headerLabel, BorderLayout.CENTER)
-            add(legacyBadgeLabel, BorderLayout.EAST)
-        }
+        background = ArbTheme.surfaceBg
+        isOpaque = true
 
-        val transportControls = JPanel(FlowLayout(FlowLayout.LEFT, 6, 4)).apply {
-            add(stepBackButton)
-            add(stepForwardButton)
-            add(JLabel("In フレーム:"))
-            add(inFrameSpinner)
-            add(setInButton)
-            add(JLabel("Out フレーム:"))
-            add(outFrameSpinner)
-            add(setOutButton)
-            add(trimButton)
-            add(pngButton)
-        }
+        // Top 40px Tier-1 Action Bar
+        val topBar = JPanel(BorderLayout(10, 0)).apply {
+            background = ArbTheme.cardBg
+            isOpaque = true
+            preferredSize = Dimension(JBUI.scale(720), JBUI.scale(42))
+            border = ArbTheme.hairlineBottomBorder(5, 10)
 
-        val provenancePanel = JPanel().apply {
-            layout = BoxLayout(this, BoxLayout.Y_AXIS)
-            border = BorderFactory.createTitledBorder("来歴・時刻意味・不確実性 (Provenance & Uncertainty)")
-            add(provenanceLabel)
-            add(videoSemanticsLabel)
-            add(audioOffsetLabel)
-            add(logcatCompletenessLabel)
-            add(unanchoredSummaryLabel)
-        }
-
-        val upperPanel = JPanel(BorderLayout(4, 4)).apply {
-            add(videoCanvas, BorderLayout.CENTER)
-            val controlsStack = JPanel().apply {
-                layout = BoxLayout(this, BoxLayout.Y_AXIS)
-                add(scrubSlider)
-                add(filmstripBar)
-                add(transportControls)
-                add(discontinuityBar)
-                add(provenancePanel)
+            val leftTitle = JPanel(FlowLayout(FlowLayout.LEFT, 8, 2)).apply {
+                isOpaque = false
+                add(titleLabel)
+                add(subtitleLabel)
             }
-            add(controlsStack, BorderLayout.SOUTH)
+            val rightActions = JPanel(FlowLayout(FlowLayout.RIGHT, 6, 0)).apply {
+                isOpaque = false
+                add(pngButton)
+                add(finderButton)
+                add(exportButton)
+            }
+            add(leftTitle, BorderLayout.WEST)
+            add(honestyChipsPanel, BorderLayout.CENTER)
+            add(rightActions, BorderLayout.EAST)
         }
 
-        val mainLogsPanel = JPanel(BorderLayout()).apply {
-            add(JScrollPane(JTable(mainLogsModel)), BorderLayout.CENTER)
-        }
-        val unanchoredLogsPanel = JPanel(BorderLayout()).apply {
-            add(unanchoredTruncatedBanner, BorderLayout.NORTH)
-            add(JScrollPane(JTable(unanchoredLogsModel)), BorderLayout.CENTER)
-        }
-
-        logsTabbedPane.addTab("主タイムライン (Main)", mainLogsPanel)
-        logsTabbedPane.addTab(UNANCHORED_TAB_TITLE, unanchoredLogsPanel)
-
-        val splitPane = JSplitPane(JSplitPane.VERTICAL_SPLIT, upperPanel, logsTabbedPane).apply {
-            resizeWeight = 0.65
+        val northStack = JPanel(BorderLayout()).apply {
+            isOpaque = false
+            add(topBar, BorderLayout.NORTH)
+            add(exportCompletionBar, BorderLayout.CENTER)
+            add(errorStatusLabel, BorderLayout.SOUTH)
         }
 
-        add(topHeader, BorderLayout.NORTH)
-        add(splitPane, BorderLayout.CENTER)
-        add(actionStatusLabel, BorderLayout.SOUTH)
+        // Left Video Stage + Minimal Transport Bar
+        val transportBar = JPanel(BorderLayout(8, 0)).apply {
+            background = ArbTheme.cardBg
+            isOpaque = true
+            border = ArbTheme.hairlineTopBorder(5, 8)
 
-        wireListeners()
+            val controls = JPanel(FlowLayout(FlowLayout.LEFT, 4, 0)).apply {
+                isOpaque = false
+                add(playPauseButton)
+                add(stepBackButton)
+                add(stepForwardButton)
+                add(speedButton)
+                add(muteButton)
+                add(tapOverlayToggleButton)
+            }
+            add(controls, BorderLayout.WEST)
+            add(timecodeLabel, BorderLayout.EAST)
+        }
+
+        val videoStagePanel = JPanel(BorderLayout()).apply {
+            background = ArbTheme.stageBg
+            isOpaque = true
+            add(videoCanvas, BorderLayout.CENTER)
+            add(transportBar, BorderLayout.SOUTH)
+        }
+
+        // Resizable horizontal JBSplitter (58% video stage / 42% synchronized event & log stream)
+        val mainSplitter = JBSplitter(false, 0.58f).apply {
+            firstComponent = videoStagePanel
+            secondComponent = eventLogStreamPanel
+            dividerWidth = JBUI.scale(4)
+        }
+
+        add(northStack, BorderLayout.NORTH)
+        add(mainSplitter, BorderLayout.CENTER)
+        add(multiTrackDock, BorderLayout.SOUTH)
+
+        wireButtons()
+        wireKeyboardShortcuts()
     }
 
-    private fun wireListeners() {
-        scrubSlider.addChangeListener {
-            if (suppressSliderEvents) return@addChangeListener
-            val target = scrubSlider.value.toLong()
-            if (scrubSlider.valueIsAdjusting) {
-                onScrub(target)
-            } else {
-                onSeekExact(target)
-                notifyRangeChanged(playhead = target)
-            }
-        }
+    private fun wireButtons() {
+        playPauseButton.addActionListener { onPlayPauseToggle() }
 
         stepBackButton.addActionListener {
             val s = state ?: return@addActionListener
             val next = TimelineViewerReducer.stepFrame(s, -1L)
             state = next
+            onStepFrame(-1)
             onSeekExact(next.currentFrameIndex)
             notifyRangeChanged(playhead = next.currentFrameIndex)
         }
@@ -182,45 +283,37 @@ class TimelineViewerPanel(
             val s = state ?: return@addActionListener
             val next = TimelineViewerReducer.stepFrame(s, +1L)
             state = next
+            onStepFrame(+1)
             onSeekExact(next.currentFrameIndex)
             notifyRangeChanged(playhead = next.currentFrameIndex)
         }
 
-        setInButton.addActionListener {
+        speedButton.addActionListener {
+            val nextSpeed = when (playbackState.speed) {
+                PlaybackSpeed.HALF -> PlaybackSpeed.NORMAL
+                PlaybackSpeed.NORMAL -> PlaybackSpeed.DOUBLE
+                PlaybackSpeed.DOUBLE -> PlaybackSpeed.HALF
+            }
+            playbackState = playbackState.copy(speed = nextSpeed)
+            speedButton.text = nextSpeed.label
+            onSpeedChange(nextSpeed)
+        }
+
+        muteButton.addActionListener { onMuteToggle() }
+
+        tapOverlayToggleButton.addActionListener {
             val s = state ?: return@addActionListener
-            val next = TimelineViewerReducer.setInFrame(s, s.currentFrameIndex)
+            val next = s.copy(showTapOverlay = !s.showTapOverlay)
             state = next
-            syncRangeSpinners(next)
-            notifyRangeChanged()
+            ArbTheme.styleFilterChip(tapOverlayToggleButton, active = next.showTapOverlay)
+            videoCanvas.setTapOverlay(next.activeTapsAtFrame(), next.showTapOverlay)
         }
 
-        setOutButton.addActionListener {
-            val s = state ?: return@addActionListener
-            val next = TimelineViewerReducer.setOutFrame(s, s.currentFrameIndex)
-            state = next
-            syncRangeSpinners(next)
-            notifyRangeChanged()
+        finderButton.addActionListener {
+            state?.path?.let(onRevealInFinder)
         }
 
-        inFrameSpinner.addChangeListener {
-            if (suppressSpinnerEvents) return@addChangeListener
-            val s = state ?: return@addChangeListener
-            val next = TimelineViewerReducer.setInFrame(s, (inFrameSpinner.value as Number).toLong())
-            state = next
-            syncRangeSpinners(next)
-            notifyRangeChanged()
-        }
-
-        outFrameSpinner.addChangeListener {
-            if (suppressSpinnerEvents) return@addChangeListener
-            val s = state ?: return@addChangeListener
-            val next = TimelineViewerReducer.setOutFrame(s, (outFrameSpinner.value as Number).toLong())
-            state = next
-            syncRangeSpinners(next)
-            notifyRangeChanged()
-        }
-
-        trimButton.addActionListener {
+        exportButton.addActionListener {
             val s = state ?: return@addActionListener
             onTrimExport(s.inFrameIndex, s.outFrameIndex)
         }
@@ -235,126 +328,198 @@ class TimelineViewerPanel(
                 onPngExport(s.currentFrameIndex, chooser.selectedFile.toPath())
             }
         }
+
+        toastRevealBtn.addActionListener {
+            state?.exportCompletion?.outputPath?.let(onRevealInFinder)
+        }
+        toastCopyBtn.addActionListener {
+            val path = state?.exportCompletion?.outputPath ?: return@addActionListener
+            runCatching {
+                Toolkit.getDefaultToolkit().systemClipboard.setContents(StringSelection(path), null)
+            }
+        }
+        toastOpenTabBtn.addActionListener {
+            val info = state?.exportCompletion ?: return@addActionListener
+            val id = info.bundleId ?: info.outputPath
+            onOpenExportedBundle(id, info.bundleId ?: Path.of(info.outputPath).fileName.toString())
+        }
+        toastDismissBtn.addActionListener {
+            exportCompletionBar.isVisible = false
+            state = state?.copy(exportCompletion = null)
+        }
+    }
+
+    private fun wireKeyboardShortcuts() {
+        val inputMap = getInputMap(JComponent.WHEN_ANCESTOR_OF_FOCUSED_COMPONENT)
+        val actionMap = actionMap
+
+        fun bind(keyStroke: KeyStroke, name: String, block: () -> Unit) {
+            inputMap.put(keyStroke, name)
+            actionMap.put(
+                name,
+                object : AbstractAction() {
+                    override fun actionPerformed(e: ActionEvent?) = block()
+                },
+            )
+        }
+
+        bind(KeyStroke.getKeyStroke(KeyEvent.VK_SPACE, 0), "arb.playPause") { onPlayPauseToggle() }
+        bind(KeyStroke.getKeyStroke(KeyEvent.VK_LEFT, 0), "arb.stepBack") { stepBackButton.doClick() }
+        bind(KeyStroke.getKeyStroke(KeyEvent.VK_RIGHT, 0), "arb.stepForward") { stepForwardButton.doClick() }
+        bind(KeyStroke.getKeyStroke(KeyEvent.VK_I, 0), "arb.setIn") {
+            state?.let { applyInFrame(it.currentFrameIndex, notify = true) }
+        }
+        bind(KeyStroke.getKeyStroke(KeyEvent.VK_O, 0), "arb.setOut") {
+            state?.let { applyOutFrame(it.currentFrameIndex, notify = true) }
+        }
+    }
+
+    private fun applyInFrame(frameIndex: Long, notify: Boolean) {
+        val s = state ?: return
+        val next = TimelineViewerReducer.setInFrame(s, frameIndex)
+        state = next
+        renderDerivedViews(next)
+        if (notify) notifyRangeChanged()
+    }
+
+    private fun applyOutFrame(frameIndex: Long, notify: Boolean) {
+        val s = state ?: return
+        val next = TimelineViewerReducer.setOutFrame(s, frameIndex)
+        state = next
+        renderDerivedViews(next)
+        if (notify) notifyRangeChanged()
     }
 
     fun renderState(next: TimelineViewerState, image: BufferedImage?) {
         state = next
-        headerLabel.text = "バンドル: ${next.bundleId} (${next.format.wire}) | フレーム数=${next.frameCount} | Lease=${next.leaseId}"
-        legacyBadgeLabel.isVisible = next.isLegacy
+        errorStatusLabel.isVisible = false
 
-        videoCanvas.updateFrame(next.currentFrameMeta, image)
-        discontinuityBar.render(next.discontinuities)
+        titleLabel.text = next.bundleId
+        val dev = next.summary.device?.let { "${it.model} (API ${it.apiLevel})" } ?: next.format.wire
+        val created = next.summary.createdAtUtc?.replace('T', ' ')?.removeSuffix("Z")?.take(19).orEmpty()
+        subtitleLabel.text = listOf(dev, created).filter { it.isNotBlank() }.joinToString(" · ")
 
-        val maxFrame = (next.frameCount - 1L).coerceAtLeast(0L).toInt()
-        suppressSliderEvents = true
-        scrubSlider.minimum = 0
-        scrubSlider.maximum = maxFrame
-        scrubSlider.value = next.currentFrameIndex.toInt().coerceIn(0, maxFrame)
-        suppressSliderEvents = false
+        renderHonestyChips(next.tier2HonestyChips)
 
-        syncRangeSpinners(next)
-        renderFilmstrip(next)
+        videoCanvas.updateFrame(
+            meta = next.currentFrameMeta,
+            image = image,
+            taps = next.activeTapsAtFrame(),
+            showTaps = next.showTapOverlay,
+        )
+        ArbTheme.styleFilterChip(tapOverlayToggleButton, active = next.showTapOverlay)
 
-        val prov = ProvenanceFormatter.format(next.summary)
-        provenanceLabel.text = prov.provenanceLine
-        videoSemanticsLabel.text = prov.videoSemanticsLine
-        audioOffsetLabel.text = prov.audioOffsetLine
-        logcatCompletenessLabel.text = prov.logcatCompletenessLine
-        unanchoredSummaryLabel.text = prov.unanchoredLine
-
-        populateLogs(mainLogsModel, next.mainLogs)
-        populateLogs(unanchoredLogsModel, next.unanchoredLogs)
-
-        logsTabbedPane.setTitleAt(0, "主タイムライン (Main: ${next.mainLogs.size})")
-        logsTabbedPane.setTitleAt(1, "$UNANCHORED_TAB_TITLE (${next.unanchoredLogs.size})")
-
-        val truncNotice = next.unanchoredTruncatedNotice
-        unanchoredTruncatedBanner.isVisible = truncNotice != null
-        unanchoredTruncatedBanner.text = truncNotice.orEmpty()
-
-        if (next.lastActionMessage != null) {
-            actionStatusLabel.text = next.lastActionMessage
-        }
+        renderDerivedViews(next)
+        renderExportCompletion(next.exportCompletion)
 
         val hasVideo = next.frameCount > 0L
+        playPauseButton.isEnabled = hasVideo
         stepBackButton.isEnabled = hasVideo
         stepForwardButton.isEnabled = hasVideo
-        trimButton.isEnabled = hasVideo
+        speedButton.isEnabled = hasVideo
+        exportButton.isEnabled = hasVideo
         pngButton.isEnabled = hasVideo
     }
 
+    fun renderPlaybackState(pb: PlaybackState) {
+        playbackState = pb
+        val isPlaying = pb.mode == PlaybackMode.PLAYING
+        playPauseButton.text = if (isPlaying) "一時停止" else "再生"
+        playPauseButton.icon = if (isPlaying) AllIcons.Actions.Pause else AllIcons.Actions.Execute
+        speedButton.text = pb.speed.label
+        muteButton.text = when {
+            pb.audioState == AudioState.UNAVAILABLE -> "音声なし"
+            pb.muted || pb.audioState == AudioState.MUTED -> "ミュート"
+            else -> "音声 ON"
+        }
+        muteButton.isEnabled = pb.audioState != AudioState.UNAVAILABLE
+
+        videoCanvas.setApproximatePreview(pb.isApproximate)
+
+        val s = state
+        if (s != null) {
+            val synced = s.copy(
+                currentFrameIndex = pb.currentFrameIndex,
+                inFrameIndex = pb.inFrameIndex,
+                outFrameIndex = pb.outFrameIndex,
+            )
+            state = synced
+            renderDerivedViews(synced)
+        }
+    }
+
     fun showError(message: String) {
-        actionStatusLabel.text = "エラー: $message"
+        errorStatusLabel.text = "エラー: $message"
+        errorStatusLabel.border = JBUI.Borders.empty(4, 10)
+        errorStatusLabel.isVisible = true
     }
 
-    fun mainLogRowCount(): Int = mainLogsModel.rowCount
+    // ---- Testable Inspection Accessors ----
 
-    fun unanchoredLogRowCount(): Int = unanchoredLogsModel.rowCount
+    fun mainLogRowCount(): Int = eventLogStreamPanel.mainLogRowCount()
 
-    fun isUnanchoredTruncatedBannerVisible(): Boolean = unanchoredTruncatedBanner.isVisible
+    fun unanchoredLogRowCount(): Int = eventLogStreamPanel.unanchoredLogRowCount()
 
-    private fun syncRangeSpinners(s: TimelineViewerState) {
-        val maxFrame = (s.frameCount - 1L).coerceAtLeast(0L).toInt()
-        suppressSpinnerEvents = true
-        (inFrameSpinner.model as SpinnerNumberModel).apply {
-            minimum = 0
-            maximum = maxFrame
-            value = s.inFrameIndex.toInt().coerceIn(0, maxFrame)
-        }
-        (outFrameSpinner.model as SpinnerNumberModel).apply {
-            minimum = 0
-            maximum = maxFrame
-            value = s.outFrameIndex.toInt().coerceIn(0, maxFrame)
-        }
-        suppressSpinnerEvents = false
+    fun isUnanchoredTruncatedBannerVisible(): Boolean = eventLogStreamPanel.isUnanchoredTruncatedBannerVisible()
+
+    fun visibleHonestyChipLabels(): List<String> = state?.tier2HonestyChips?.map { it.label }.orEmpty()
+
+    fun exportButtonText(): String = exportButton.text
+
+    fun timecodeDisplayText(): String = timecodeLabel.text
+
+    fun isExportCompletionBarVisible(): Boolean = exportCompletionBar.isVisible
+
+    fun playPauseButtonText(): String = playPauseButton.text
+
+    private fun renderDerivedViews(s: TimelineViewerState) {
+        val curMs = s.frameToRelativeMs(s.currentFrameIndex)
+        val totalMs = s.totalDurationMs
+        timecodeLabel.text = "${ArbFormatters.formatTimecode(curMs)} / ${ArbFormatters.formatTimecode(totalMs)} · #${s.currentFrameIndex}"
+        exportButton.text = s.exportCtaLabel
+        videoCanvas.setTapOverlay(s.activeTapsAtFrame(), s.showTapOverlay)
+        eventLogStreamPanel.render(s)
+        multiTrackDock.render(s)
     }
 
-    private fun renderFilmstrip(s: TimelineViewerState) {
-        filmstripBar.removeAll()
-        if (s.filmstrip.isEmpty()) {
-            filmstripBar.add(JLabel("キーフレームなし"))
-        } else {
-            for (entry in s.filmstrip.take(24)) {
-                val btn = JButton("KF #${entry.frameIndex}").apply {
-                    toolTipText = "pts=${entry.ptsNs / 1_000_000} ms (${entry.width}x${entry.height})"
-                    addActionListener { onSeekExact(entry.frameIndex) }
-                }
-                filmstripBar.add(btn)
+    private fun renderHonestyChips(chips: List<Tier2HonestyChip>) {
+        honestyChipsPanel.removeAll()
+        honestyChipsPanel.isVisible = chips.isNotEmpty()
+        for (chip in chips) {
+            val (bg, fg, borderCol) = when (chip.severity) {
+                HonestySeverity.ERROR -> Triple(ArbTheme.recRedSoft, ArbTheme.recRed, ArbTheme.recRed)
+                HonestySeverity.WARNING -> Triple(ArbTheme.warningAmberSoft, ArbTheme.warningAmber, ArbTheme.warningAmber)
+                HonestySeverity.INFO -> Triple(ArbTheme.elevatedBg, ArbTheme.secondaryText, ArbTheme.hairlineBorder)
             }
+            val btn = JButton(chip.label).apply {
+                isFocusPainted = false
+                isOpaque = true
+                background = bg
+                foreground = fg
+                font = ArbTheme.monoFont(10.5f, bold = true)
+                toolTipText = "${chip.detail}（クリックで詳細タブを表示）"
+                border = BorderFactory.createCompoundBorder(
+                    BorderFactory.createLineBorder(borderCol, 1),
+                    JBUI.Borders.empty(2, 7),
+                )
+                addActionListener { eventLogStreamPanel.selectDetailsTab() }
+            }
+            honestyChipsPanel.add(btn)
         }
-        filmstripBar.revalidate()
-        filmstripBar.repaint()
+        honestyChipsPanel.revalidate()
+        honestyChipsPanel.repaint()
+    }
+
+    private fun renderExportCompletion(info: ExportCompletionInfo?) {
+        exportCompletionBar.isVisible = info != null
+        if (info != null) {
+            exportToastSummary.text = info.summaryText
+            toastOpenTabBtn.isVisible = info.isTrimBundle && !info.bundleId.isNullOrBlank()
+        }
     }
 
     private fun notifyRangeChanged(playhead: Long? = null) {
         val s = state ?: return
         onRangeChanged(s.inFrameIndex, s.outFrameIndex, playhead ?: s.currentFrameIndex)
-    }
-
-    private fun populateLogs(model: DefaultTableModel, records: List<LogRecord>) {
-        model.rowCount = 0
-        for (rec in records) {
-            val timeSummary = when (val a = rec.alignment) {
-                is TimeAlignment.Anchored -> "boottime=${a.boottimeNs / 1_000_000} ms (±${a.halfWidthNs / 1_000_000} ms)"
-                is TimeAlignment.Bounded -> "[${a.minBoottimeNs / 1_000_000}..${a.maxBoottimeNs / 1_000_000}] ms (${a.reason.wire})"
-                is TimeAlignment.Unanchored -> "時刻不明 (${a.reason.wire})"
-            }
-            model.addRow(
-                arrayOf<Any>(
-                    rec.seq,
-                    timeSummary,
-                    rec.level ?: "-",
-                    rec.tag ?: "-",
-                    rec.message,
-                ),
-            )
-        }
-    }
-
-    private fun createLogTableModel(): DefaultTableModel = object : DefaultTableModel(
-        arrayOf("Seq", "時刻 / 確度", "Level", "Tag", "メッセージ"),
-        0,
-    ) {
-        override fun isCellEditable(row: Int, column: Int): Boolean = false
     }
 }

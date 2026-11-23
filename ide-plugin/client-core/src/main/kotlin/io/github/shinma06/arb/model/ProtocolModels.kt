@@ -17,7 +17,14 @@ class ArbdRpcException(
     val method: String? = null,
 ) : RuntimeException(
     if (method != null) "arbd RPC error ($method) [$code]: $message" else "arbd RPC error [$code]: $message",
-)
+) {
+    val isMethodNotFound: Boolean
+        get() = code == RPC_ERR_METHOD_NOT_FOUND
+
+    companion object {
+        const val RPC_ERR_METHOD_NOT_FOUND: Int = -32601
+    }
+}
 
 // ---------------- System ----------------
 
@@ -43,6 +50,7 @@ data class CaptureStatusView(
     val tapRecords: Long,
     val discontinuities: Long,
     val staticHoldEvents: Long,
+    val ringWriteErrors: Long = 0L,
 )
 
 data class RecoverySummaryView(
@@ -52,6 +60,21 @@ data class RecoverySummaryView(
     val completedPurgingBundles: Long = 0,
     val releasedPinJournals: Long = 0,
     val repinnedJobs: Long = 0,
+)
+
+data class CrashAutoSaveStatusView(
+    val enabled: Boolean = false,
+    val cooldownSecs: Int = 15,
+    val detectedCrashes: Long = 0L,
+    val triggeredSaves: Long = 0L,
+    val suppressedCooldown: Long = 0L,
+    val suppressedStoragePressure: Long = 0L,
+    val inFlight: Boolean = false,
+    val lastCrashProcess: String? = null,
+    val lastCrashException: String? = null,
+    val lastJobId: String? = null,
+    val lastBundleId: String? = null,
+    val lastError: String? = null,
 )
 
 data class SystemStatusResponse(
@@ -64,10 +87,75 @@ data class SystemStatusResponse(
     val activeViewports: Long,
     val activeSaveJobs: Long,
     val recovery: RecoverySummaryView,
+    val crashAutosave: CrashAutoSaveStatusView = CrashAutoSaveStatusView(),
+    val configWarning: String? = null,
 )
 
 data class ShutdownResponse(
     val ok: Boolean,
+)
+
+// ---------------- Persisted Config (T-1) ----------------
+
+enum class IdeDefaultSaveAction(val wire: String) {
+    SAVE_AND_OPEN("save_and_open"),
+    SAVE_ONLY("save_only");
+
+    companion object {
+        fun fromWire(value: String): IdeDefaultSaveAction =
+            entries.firstOrNull { it.wire == value }
+                ?: throw IllegalArgumentException("Unknown IdeDefaultSaveAction: $value")
+    }
+}
+
+data class ArbConfig(
+    val configVersion: Int = 1,
+    val saveWindowSecs: Int = DEFAULT_SAVE_WINDOW_SECS,
+    val ringBudgetBytes: Long = DEFAULT_RING_BUDGET_BYTES,
+    val minFreeDiskBytes: Long = DEFAULT_MIN_FREE_DISK_BYTES,
+    val videoMaxSize: Int = DEFAULT_VIDEO_MAX_SIZE,
+    val videoMaxFps: Int = DEFAULT_VIDEO_MAX_FPS,
+    val audioEnabled: Boolean = true,
+    val crashAutosaveEnabled: Boolean = true,
+    val crashAutosaveCooldownSecs: Int = DEFAULT_CRASH_AUTOSAVE_COOLDOWN_SECS,
+    val outputDirOverride: String? = null,
+    val ideDefaultSaveAction: IdeDefaultSaveAction = IdeDefaultSaveAction.SAVE_AND_OPEN,
+) {
+    companion object {
+        const val CONFIG_SCHEMA_VERSION: Int = 1
+        const val DEFAULT_SAVE_WINDOW_SECS: Int = 300
+        const val MIN_SAVE_WINDOW_SECS: Int = 5
+        const val MAX_SAVE_WINDOW_SECS: Int = 600
+        const val DEFAULT_RING_BUDGET_BYTES: Long = 1_610_612_736L
+        const val DEFAULT_MIN_FREE_DISK_BYTES: Long = 3_221_225_472L
+        const val DEFAULT_VIDEO_MAX_SIZE: Int = 1_920
+        const val DEFAULT_VIDEO_MAX_FPS: Int = 30
+        const val DEFAULT_CRASH_AUTOSAVE_COOLDOWN_SECS: Int = 15
+    }
+}
+
+data class ConfigResponse(
+    val config: ArbConfig,
+    val configPath: String,
+)
+
+sealed class OutputDirPatch {
+    data object Unchanged : OutputDirPatch()
+    data object Clear : OutputDirPatch()
+    data class Set(val path: String) : OutputDirPatch()
+}
+
+data class ArbConfigPatch(
+    val saveWindowSecs: Int? = null,
+    val ringBudgetBytes: Long? = null,
+    val minFreeDiskBytes: Long? = null,
+    val videoMaxSize: Int? = null,
+    val videoMaxFps: Int? = null,
+    val audioEnabled: Boolean? = null,
+    val crashAutosaveEnabled: Boolean? = null,
+    val crashAutosaveCooldownSecs: Int? = null,
+    val outputDirOverride: OutputDirPatch = OutputDirPatch.Unchanged,
+    val ideDefaultSaveAction: IdeDefaultSaveAction? = null,
 )
 
 // ---------------- Device & Capture ----------------
@@ -154,16 +242,76 @@ data class SelectionPolicy(
     val drainTimeoutMs: Long = 500L,
 )
 
+enum class SaveMode(val wire: String) {
+    FULL("full"),
+    LOGS_ONLY("logs_only");
+
+    companion object {
+        fun fromWire(value: String): SaveMode =
+            entries.firstOrNull { it.wire == value }
+                ?: throw IllegalArgumentException("Unknown SaveMode: $value")
+    }
+}
+
+enum class SaveTriggerKind(val wire: String) {
+    MANUAL("manual"),
+    CRASH_AUTO_SAVE("crash_auto_save");
+
+    companion object {
+        fun fromWire(value: String): SaveTriggerKind =
+            entries.firstOrNull { it.wire == value }
+                ?: throw IllegalArgumentException("Unknown SaveTriggerKind: $value")
+    }
+}
+
+enum class BundleKind(val wire: String) {
+    FULL("full"),
+    LOGS_ONLY("logs_only");
+
+    companion object {
+        fun fromWire(value: String): BundleKind =
+            entries.firstOrNull { it.wire == value }
+                ?: throw IllegalArgumentException("Unknown BundleKind: $value")
+    }
+}
+
 data class SaveTriggerParams(
     val durationSec: Long? = null,
     val destDir: String? = null,
     val drainTimeoutMs: Long? = null,
     val selectionPolicy: SelectionPolicy? = null,
+    val mode: SaveMode = SaveMode.FULL,
 )
+
+data class SaveLogsParams(
+    val windowSecs: Long? = null,
+    val destDir: String? = null,
+    val drainTimeoutMs: Long? = null,
+    val selectionPolicy: SelectionPolicy? = null,
+)
+
+data class SaveScreenshotParams(
+    val serial: String? = null,
+    val outputPath: String? = null,
+    val overwrite: Boolean = false,
+)
+
+data class ScreenshotResult(
+    val path: String,
+    val width: Int,
+    val height: Int,
+    val sha256: String,
+    val capturedAtUnixMs: Long,
+    val serial: String,
+)
+
+typealias SaveScreenshotResponse = ScreenshotResult
+typealias SaveLogsResult = SaveOutcomeResponse
 
 data class SaveJobView(
     val jobId: String,
     val state: SaveJobState,
+    val trigger: SaveTriggerKind = SaveTriggerKind.MANUAL,
     val destinationPath: String,
     val pinnedChunkIds: List<String>,
     val lastError: String? = null,
@@ -182,6 +330,7 @@ data class SaveOutcomeResponse(
     val bundlePath: String? = null,
     val tailMayBeIncomplete: Boolean,
     val unanchoredSummary: UnanchoredSummary? = null,
+    val warning: String? = null,
 )
 
 data class SaveListJobsResponse(
@@ -491,6 +640,7 @@ data class TimelineSummaryResponse(
     val bundleId: String,
     val path: String,
     val format: BundleFormat,
+    val bundleKind: BundleKind = BundleKind.FULL,
     val isLegacy: Boolean,
     val createdAtUtc: String? = null,
     val provenance: Provenance,
@@ -561,6 +711,35 @@ data class TimelineDiscontinuitiesResponse(
     val discontinuities: List<DiscontinuityEvent>,
 )
 
+data class CrashMarker(
+    val boottimeNs: Long? = null,
+    val frameIndexHint: Long? = null,
+    val processName: String,
+    val packageName: String,
+    val pid: Int? = null,
+    val exceptionClass: String,
+    val message: String,
+    val sourceLogSeq: Long,
+)
+
+data class TimelineCrashesResponse(
+    val crashes: List<CrashMarker> = emptyList(),
+)
+
+data class ScreenSpan(
+    val startNs: Long,
+    val endNs: Long,
+    val startFrameIndex: Long? = null,
+    val endFrameIndex: Long? = null,
+    val packageName: String,
+    val activityName: String,
+    val shortName: String,
+)
+
+data class TimelineScreensResponse(
+    val screens: List<ScreenSpan> = emptyList(),
+)
+
 // ---------------- Edit Session ----------------
 
 data class EditSessionView(
@@ -617,6 +796,39 @@ data class ExportTrimResponse(
     val unanchoredLogCount: Int,
     val mainTapCount: Int,
     val unanchoredTapCount: Int,
+    val warning: String? = null,
+)
+
+// Forward-compatible T-2B RPC models (export.share_mp4 & media.decode_audio_pcm)
+data class ExportShareMp4Params(
+    val bundleIdOrPath: String,
+    val inFrameIndex: Long,
+    val outFrameIndex: Long,
+    val outputPath: String? = null,
+    val holderPid: Long? = null,
+)
+
+data class ExportShareMp4Response(
+    val outputPath: String,
+    val frameCount: Long = 0L,
+    val hasAudio: Boolean = false,
+    val edtsBoxCount: Int = 0,
+    val elstBoxCount: Int = 0,
+    val outputBytes: Long = 0L,
+    val warning: String? = null,
+)
+
+data class MediaDecodeAudioPcmParams(
+    val bundleIdOrPath: String,
+    val outputPath: String? = null,
+)
+
+data class MediaDecodeAudioPcmResponse(
+    val wavPath: String,
+    val sampleRateHz: Int = 48_000,
+    val channels: Int = 2,
+    val durationMs: Long = 0L,
+    val durationNs: Long = 0L,
 )
 
 data class ExportPngParams(

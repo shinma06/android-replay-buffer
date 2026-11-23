@@ -11,11 +11,12 @@
 
     <depends>com.intellij.modules.platform</depends>
     <depends optional="true">org.jetbrains.android</depends>
+    <depends optional="true">com.intellij.modules.java</depends>
 
     <extensions defaultExtensionNs="com.intellij">
         <notificationGroup id="ARB v2" displayType="BALLOON" isLogByDefault="true"/>
         <applicationService serviceImplementation="io.github.shinma06.arb.ide.ArbdDaemonService"/>
-        <toolWindow id="ARB v2"
+        <toolWindow id="ARB"
                     anchor="right"
                     doNotActivateOnStart="true"
                     icon="AllIcons.Actions.Restart"
@@ -28,16 +29,16 @@
             <add-to-group group-id="ToolsMenu" anchor="last"/>
             <action id="io.github.shinma06.arb.QuickSave"
                     class="io.github.shinma06.arb.ide.ArbQuickSaveAction"
-                    text="ARB v2: 直前の記録を保存（30秒）"
-                    description="arbd 経由で直前 30 秒の画面・ログ・入力を WORM バンドルとして保存します"/>
+                    text="ARB: 直前の記録を保存"
+                    description="arbd 経由で設定秒数分の画面・ログ・入力を WORM バンドルとして保存します"/>
             <action id="io.github.shinma06.arb.ToggleCapture"
                     class="io.github.shinma06.arb.ide.ArbToggleCaptureAction"
-                    text="ARB v2: キャプチャ開始 / 停止"
+                    text="ARB: キャプチャ開始 / 停止"
                     description="arbd のライブキャプチャを開始または停止します"/>
             <action id="io.github.shinma06.arb.OpenBundleDir"
                     class="io.github.shinma06.arb.ide.ArbOpenBundleAction"
-                    text="ARB v2: バンドルフォルダを開く..."
-                    description="v2 バンドルまたは旧形式（Schema 3/4）フォルダをビューアで開きます"/>
+                    text="ARB: バンドルフォルダを開く..."
+                    description="v2 バンドルまたは旧形式（Schema 3/4）フォルダを統合スタジオで開きます"/>
         </group>
     </actions>
 </idea-plugin>

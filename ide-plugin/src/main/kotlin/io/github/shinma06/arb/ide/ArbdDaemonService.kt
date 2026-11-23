@@ -87,6 +87,7 @@ class ArbdDaemonService : Disposable {
         internal fun isIdempotentRpc(method: String): Boolean {
             if (method == "system.shutdown") return false
             return method.startsWith("system.") ||
+                method == "config.get" ||
                 method.endsWith(".list") ||
                 method.endsWith(".list_jobs") ||
                 method == "bundle.open" ||

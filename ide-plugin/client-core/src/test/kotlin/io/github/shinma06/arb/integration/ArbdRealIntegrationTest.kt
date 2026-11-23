@@ -3,17 +3,25 @@ package io.github.shinma06.arb.integration
 import io.github.shinma06.arb.ipc.ArbPaths
 import io.github.shinma06.arb.ipc.ArbdProcessManager
 import io.github.shinma06.arb.ipc.BundleLeaseController
+import io.github.shinma06.arb.model.ArbConfig
+import io.github.shinma06.arb.model.ArbConfigPatch
+import io.github.shinma06.arb.model.ArbdRpcException
 import io.github.shinma06.arb.model.BundleFormat
 import io.github.shinma06.arb.model.BundleLifecycleState
 import io.github.shinma06.arb.model.DiscontinuityKind
 import io.github.shinma06.arb.model.EditUpdateSessionParams
 import io.github.shinma06.arb.model.ExportPngParams
+import io.github.shinma06.arb.model.ExportShareMp4Params
 import io.github.shinma06.arb.model.ExportTrimParams
 import io.github.shinma06.arb.model.IPC_PROTOCOL_VERSION
+import io.github.shinma06.arb.model.IdeDefaultSaveAction
 import io.github.shinma06.arb.model.LeaseHolderKind
+import io.github.shinma06.arb.model.OutputDirPatch
 import io.github.shinma06.arb.model.Provenance
 import io.github.shinma06.arb.model.QueryBucket
 import io.github.shinma06.arb.model.RecordBucket
+import io.github.shinma06.arb.model.SaveLogsParams
+import io.github.shinma06.arb.model.SaveScreenshotParams
 import io.github.shinma06.arb.shm.ShmFrameRingReader
 import io.github.shinma06.arb.shm.ShmPixelFormat
 import org.junit.jupiter.api.Test
@@ -492,5 +500,299 @@ class ArbdRealIntegrationTest {
                 }
             }
         }
+    }
+
+    @Test
+    fun t1RpcsConfigCrashesScreensSaveLogsScreenshotAndT2bFallbackAgainstRealArbd(@TempDir tmp: Path) {
+        val root = repoRoot()
+        val legacyFixture = root
+            .resolve("plugin/src/test/resources/replay-trim-parity/replay-20240101-000000-manual-feedface")
+        assertTrue(Files.isDirectory(legacyFixture), "Legacy Schema-4 fixture missing at $legacyFixture")
+
+        val v2BundlePath = tmp.resolve("data").resolve("bundles").resolve("v2-t1-analytics")
+        createAnalyticsV2Bundle(v2BundlePath, "v2-t1-analytics", legacyFixture.resolve("video.mp4"))
+
+        val paths = ArbPaths(
+            dataDir = tmp.resolve("data"),
+            cacheDir = tmp.resolve("cache"),
+            runtimeDir = tmp.resolve("run"),
+        )
+        val manager = ArbdProcessManager(paths = paths, searchRoot = root)
+        val connected = manager.connectOrSpawn(Duration.ofSeconds(10))
+        val proc = connected.spawnedProcess
+        try {
+            connected.client.use { rpc ->
+                // 1. config.get & config.update round-trip (including output_dir_override set & explicit null clear)
+                val initialCfg = rpc.configGet()
+                assertEquals(ArbConfig.DEFAULT_SAVE_WINDOW_SECS, initialCfg.config.saveWindowSecs)
+                assertEquals(IdeDefaultSaveAction.SAVE_AND_OPEN, initialCfg.config.ideDefaultSaveAction)
+                assertTrue(initialCfg.configPath.endsWith("config.json"))
+
+                val overrideDir = tmp.resolve("custom-exports").toAbsolutePath().normalize()
+                val updatedCfg = rpc.configUpdate(
+                    ArbConfigPatch(
+                        saveWindowSecs = 120,
+                        ideDefaultSaveAction = IdeDefaultSaveAction.SAVE_ONLY,
+                        crashAutosaveEnabled = false,
+                        outputDirOverride = OutputDirPatch.Set(overrideDir.toString()),
+                    ),
+                )
+                assertEquals(120, updatedCfg.config.saveWindowSecs)
+                assertEquals(IdeDefaultSaveAction.SAVE_ONLY, updatedCfg.config.ideDefaultSaveAction)
+                assertFalse(updatedCfg.config.crashAutosaveEnabled)
+                assertEquals(overrideDir.toString(), updatedCfg.config.outputDirOverride)
+
+                // Clearing output_dir_override via explicit JSON null
+                val clearedCfg = rpc.configUpdate(ArbConfigPatch(outputDirOverride = OutputDirPatch.Clear))
+                assertEquals(null, clearedCfg.config.outputDirOverride)
+                assertEquals(120, clearedCfg.config.saveWindowSecs)
+
+                // 2. Open analytics bundle -> timeline.crashes & timeline.screens round-trip!
+                val opened = rpc.bundleOpen(
+                    bundleIdOrPath = v2BundlePath.toString(),
+                    holderKind = LeaseHolderKind.IDE_VIEWER,
+                    holderPid = ProcessHandle.current().pid(),
+                )
+                try {
+                    val crashes = rpc.timelineCrashes(opened.bundleId).crashes
+                    assertEquals(1, crashes.size, "Expected 1 am_crash marker")
+                    assertEquals("com.example.shop", crashes[0].packageName)
+                    assertEquals("java.lang.IllegalStateException", crashes[0].exceptionClass)
+                    assertNotNull(crashes[0].frameIndexHint)
+
+                    val screens = rpc.timelineScreens(opened.bundleId).screens
+                    assertEquals(2, screens.size, "Expected 2 contiguous Activity screen spans")
+                    assertEquals("LoginActivity", screens[0].shortName)
+                    assertEquals("CheckoutActivity", screens[1].shortName)
+                    assertEquals("com.example.shop.ui.CheckoutActivity", screens[1].activityName)
+
+                    // 3. Forward-compatible T-2B optional RPCs degrade cleanly when not yet exposed by arbd
+                    val shareFallback = rpc.exportShareMp4OrNull(
+                        ExportShareMp4Params(
+                            bundleIdOrPath = opened.bundleId,
+                            inFrameIndex = 0L,
+                            outFrameIndex = 5L,
+                        ),
+                    )
+                    // Returns null on pre-T-2B daemon (-32601) or a valid response once T-2B lands.
+                    if (shareFallback != null) {
+                        assertTrue(shareFallback.outputPath.isNotBlank())
+                    }
+                    val audioFallback = rpc.mediaDecodeAudioPcmOrNull(opened.bundleId)
+                    if (audioFallback != null) {
+                        assertTrue(audioFallback.wavPath.isNotBlank())
+                    }
+                } finally {
+                    assertTrue(rpc.bundleClose(opened.leaseId).released)
+                }
+
+                // 4. save.logs & save.screenshot wire contract against live arbd
+                // Without an active capture session / connected ADB device, arbd returns a structured RPC error
+                // (never a transport/serialization/protocol failure).
+                val logsErr = runCatching { rpc.saveLogs(SaveLogsParams(windowSecs = 60L)) }.exceptionOrNull()
+                if (logsErr != null) {
+                    assertIs<ArbdRpcException>(logsErr)
+                    assertFalse(logsErr.isMethodNotFound, "save.logs must be registered in arbd")
+                }
+
+                val shotErr = runCatching {
+                    rpc.saveScreenshot(SaveScreenshotParams(serial = "nonexistent-test-serial-000"))
+                }.exceptionOrNull()
+                if (shotErr != null) {
+                    assertIs<ArbdRpcException>(shotErr)
+                    assertFalse(shotErr.isMethodNotFound, "save.screenshot must be registered in arbd")
+                }
+
+                assertTrue(rpc.systemShutdown().ok)
+            }
+        } finally {
+            if (proc != null) {
+                if (!proc.waitFor(5, TimeUnit.SECONDS)) {
+                    proc.destroyForcibly()
+                }
+            }
+        }
+    }
+
+    private fun createAnalyticsV2Bundle(bundleDir: Path, bundleId: String, sourceMp4: Path) {
+        Files.createDirectories(bundleDir)
+        val videoDst = bundleDir.resolve("video.mp4")
+        Files.copy(sourceMp4, videoDst)
+        val dbPath = bundleDir.resolve("timeline.sqlite")
+
+        val pyScript = """
+            import sqlite3, sys
+            db = sqlite3.connect(sys.argv[1])
+            db.executescript('''
+            PRAGMA journal_mode = DELETE;
+            CREATE TABLE frames (
+              frame_index INTEGER PRIMARY KEY,
+              boot_id TEXT NOT NULL,
+              pts_device_mono_ns INTEGER NOT NULL,
+              aligned_boottime_ns INTEGER,
+              half_width_ns INTEGER,
+              certainty TEXT NOT NULL,
+              is_keyframe INTEGER NOT NULL,
+              gop_id INTEGER NOT NULL,
+              mp4_sample_offset INTEGER NOT NULL,
+              mp4_sample_size INTEGER NOT NULL,
+              pc_ingest_cont_ns INTEGER NOT NULL DEFAULT 0,
+              min_boottime_ns INTEGER,
+              max_boottime_ns INTEGER,
+              semantics TEXT,
+              uncertainty_reason TEXT
+            );
+            CREATE TABLE discontinuities (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              kind TEXT NOT NULL,
+              stream TEXT,
+              boot_id TEXT,
+              start_boottime_ns INTEGER,
+              end_boottime_ns INTEGER,
+              pc_cont_start_ns INTEGER NOT NULL,
+              pc_cont_end_ns INTEGER,
+              detail_json TEXT
+            );
+            CREATE TABLE logs (
+              seq INTEGER PRIMARY KEY,
+              boot_id TEXT,
+              header_epoch_ns INTEGER,
+              device_read_boottime_ns INTEGER,
+              pc_ingest_cont_ns INTEGER NOT NULL,
+              aligned_boottime_ns INTEGER,
+              min_boottime_ns INTEGER,
+              max_boottime_ns INTEGER,
+              certainty TEXT NOT NULL,
+              bucket TEXT NOT NULL,
+              level TEXT,
+              tag TEXT,
+              pid INTEGER,
+              tid INTEGER,
+              message TEXT NOT NULL,
+              half_width_ns INTEGER,
+              semantics TEXT,
+              uncertainty_reason TEXT
+            );
+            CREATE TABLE taps (
+              seq INTEGER PRIMARY KEY,
+              boot_id TEXT,
+              event_mono_ns INTEGER,
+              pc_ingest_cont_ns INTEGER NOT NULL,
+              aligned_boottime_ns INTEGER,
+              certainty TEXT NOT NULL,
+              bucket TEXT NOT NULL,
+              action TEXT NOT NULL,
+              x REAL,
+              y REAL,
+              pointer_id INTEGER,
+              half_width_ns INTEGER,
+              min_boottime_ns INTEGER,
+              max_boottime_ns INTEGER,
+              semantics TEXT,
+              uncertainty_reason TEXT
+            );
+            CREATE TABLE clock_anchors (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              kind TEXT NOT NULL,
+              boot_id TEXT NOT NULL,
+              payload_json TEXT NOT NULL
+            );
+            ''')
+            base = 10_000_000_000
+            step = 100_000_000
+            for i in range(24):
+                ts = base + i * step
+                is_kf = 1 if i in (0, 12) else 0
+                gop = 0 if i < 12 else 1
+                db.execute(
+                    'INSERT INTO frames VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                    (i, 'boot-t1', ts, ts, 1_000_000, 'anchored', is_kf, gop, 0, 100, ts, None, None, 'video_encoder_input_estimate', None)
+                )
+            # Screen 1: LoginActivity at frame 1
+            db.execute(
+                'INSERT INTO logs VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                (1, 'boot-t1', 1730000000000000000 + base + step, base + step, base + step, base + step, None, None, 'anchored', 'main', 'I', 'wm_on_resume_called', 2000, 2000, '[123,com.example.shop/.ui.LoginActivity,RESUME_ACTIVITY]', 1_000_000, 'logcat_device_read_boottime', None)
+            )
+            # Screen 2: CheckoutActivity at frame 10
+            db.execute(
+                'INSERT INTO logs VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                (2, 'boot-t1', 1730000000000000000 + base + 10 * step, base + 10 * step, base + 10 * step, base + 10 * step, None, None, 'anchored', 'main', 'I', 'ActivityTaskManager', 1000, 1000, 'Displayed com.example.shop/.ui.CheckoutActivity: +84ms', 1_000_000, 'logcat_device_read_boottime', None)
+            )
+            # Fatal am_crash at frame 16
+            db.execute(
+                'INSERT INTO logs VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                (3, 'boot-t1', 1730000000000000000 + base + 16 * step, base + 16 * step, base + 16 * step, base + 16 * step, None, None, 'anchored', 'main', 'E', 'am_crash', 1000, 1000, '[0,2000,com.example.shop,891234,java.lang.IllegalStateException,Cart empty,CheckoutViewModel.kt,84,0]', 1_000_000, 'logcat_device_read_boottime', None)
+            )
+            db.commit()
+            db.close()
+        """.trimIndent()
+
+        val scriptFile = Files.createTempFile("arb-t1-analytics-seed", ".py")
+        try {
+            Files.writeString(scriptFile, pyScript)
+            val proc = ProcessBuilder("python3", scriptFile.toString(), dbPath.toString())
+                .redirectErrorStream(true)
+                .start()
+            val output = proc.inputStream.bufferedReader().readText()
+            val exitCode = proc.waitFor()
+            assertEquals(0, exitCode, "Failed to create analytics timeline.sqlite: $output")
+        } finally {
+            Files.deleteIfExists(scriptFile)
+        }
+
+        val videoBytes = Files.size(videoDst)
+        val videoSha = sha256Hex(videoDst)
+        val dbBytes = Files.size(dbPath)
+        val dbSha = sha256Hex(dbPath)
+
+        val manifestJson = """
+            {
+              "schema_version": 2,
+              "bundle_id": "$bundleId",
+              "created_at_utc": "2026-11-23T00:00:00Z",
+              "provenance": { "kind": "original" },
+              "device": {
+                "serial": "emulator-5554",
+                "model": "Pixel 9",
+                "api_level": 37,
+                "is_emulator": true
+              },
+              "requested_window": {
+                "kind": "real_elapsed_sec",
+                "duration_sec": 300,
+                "trigger_pc_wall_utc": "2026-11-23T00:00:00Z"
+              },
+              "epochs": [
+                {
+                  "boot_id": "boot-t1",
+                  "start_boottime_ns": 10000000000,
+                  "end_boottime_ns": 12300000000
+                }
+              ],
+              "streams": {
+                "video": {
+                  "status": "present",
+                  "frame_count": 24,
+                  "tail_may_be_incomplete": false,
+                  "semantics": "video_encoder_input_estimate"
+                },
+                "logcat": {
+                  "status": "present",
+                  "completeness": "verified_no_overflow",
+                  "overflow_events": 0,
+                  "tail_may_be_incomplete": false
+                }
+              },
+              "unanchored_summary": {
+                "included_count": 0,
+                "truncated_count": 0
+              },
+              "files": [
+                { "path": "video.mp4", "bytes": $videoBytes, "sha256": "$videoSha" },
+                { "path": "timeline.sqlite", "bytes": $dbBytes, "sha256": "$dbSha" }
+              ]
+            }
+        """.trimIndent()
+        Files.writeString(bundleDir.resolve("manifest.json"), manifestJson)
     }
 }

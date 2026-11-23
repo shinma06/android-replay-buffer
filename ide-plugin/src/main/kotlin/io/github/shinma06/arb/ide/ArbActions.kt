@@ -22,13 +22,16 @@ class ArbQuickSaveAction : AnAction(), DumbAware {
     override fun actionPerformed(e: AnActionEvent) {
         ApplicationManager.getApplication().executeOnPooledThread {
             try {
-                val res = ArbdDaemonService.getInstance().withClient {
-                    it.saveTrigger(SaveTriggerParams(durationSec = 30L))
+                val service = ArbdDaemonService.getInstance()
+                val windowSecs = runCatching { service.withClient { it.configGet().config.saveWindowSecs.toLong() } }
+                    .getOrNull()
+                val res = service.withClient {
+                    it.saveTrigger(SaveTriggerParams(durationSec = windowSecs))
                 }
                 val msg = if (res.bundleId != null) {
-                    "保存完了: ${res.bundleId}"
+                    "直前 ${windowSecs ?: 300}s を保存しました: ${res.bundleId}"
                 } else {
-                    "保存ジョブ状態: ${res.job.state.wire} (${res.job.lastError ?: "詳細は ARB v2 ツールウィンドウを確認"})"
+                    "保存ジョブ状態: ${res.job.state.wire} (${res.job.lastError ?: "詳細は ARB ツールウィンドウを確認"})"
                 }
                 notifyArb(e, msg)
             } catch (t: Throwable) {
