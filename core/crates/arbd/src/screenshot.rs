@@ -265,15 +265,29 @@ fn publish_no_replace(tmp_path: &Path, dest_path: &Path) -> Result<(), DaemonErr
                 dest_path.display()
             )))
         }
-        // Some filesystems (e.g. FAT32/exFAT) do not support hard links; fall back safely.
+        // Some filesystems (e.g. FAT32/exFAT) do not support hard links. Fall back to an
+        // exclusive `create_new` reservation of the destination (atomic: it fails if anything,
+        // including a symlink, already exists) and only then rename the finished temp file over
+        // our own placeholder, so a file created concurrently is never overwritten.
         Err(_) => {
-            if path_exists(dest_path)? {
-                return Err(DaemonError::Conflict(format!(
-                    "screenshot destination `{}` already exists; pass overwrite=true to replace",
-                    dest_path.display()
-                )));
+            match OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(dest_path)
+            {
+                Ok(placeholder) => drop(placeholder),
+                Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
+                    return Err(DaemonError::Conflict(format!(
+                        "screenshot destination `{}` already exists; pass overwrite=true to replace",
+                        dest_path.display()
+                    )));
+                }
+                Err(err) => return Err(err.into()),
             }
-            fs::rename(tmp_path, dest_path)?;
+            if let Err(err) = fs::rename(tmp_path, dest_path) {
+                let _ = fs::remove_file(dest_path);
+                return Err(err.into());
+            }
             Ok(())
         }
     }

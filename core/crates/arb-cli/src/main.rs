@@ -184,14 +184,14 @@ enum CommandSpec {
         max_size: Option<u32>,
         max_fps: Option<u32>,
         video_bit_rate: Option<u32>,
-        audio_enabled: bool,
+        audio_enabled: Option<bool>,
         logcat_enabled: bool,
         input_enabled: bool,
         heartbeat_ms: Option<u32>,
     },
     CaptureStop,
     Save {
-        seconds: u64,
+        seconds: Option<u64>,
         dest: Option<PathBuf>,
         drain_timeout_ms: Option<u64>,
     },
@@ -390,7 +390,8 @@ fn parse_capture_cmd(args: &[String]) -> Result<CommandSpec, CliError> {
             let mut max_size = None;
             let mut max_fps = None;
             let mut video_bit_rate = None;
-            let mut audio_enabled = true;
+            // `None` = defer to the persisted `config.audio_enabled` (GUI/CLI/MCP parity).
+            let mut audio_enabled: Option<bool> = None;
             let mut logcat_enabled = true;
             let mut input_enabled = true;
             let mut heartbeat_ms = None;
@@ -444,7 +445,7 @@ fn parse_capture_cmd(args: &[String]) -> Result<CommandSpec, CliError> {
                         i += 2;
                     }
                     "--no-audio" => {
-                        audio_enabled = false;
+                        audio_enabled = Some(false);
                         i += 1;
                     }
                     "--no-logcat" => {
@@ -483,7 +484,8 @@ fn parse_capture_cmd(args: &[String]) -> Result<CommandSpec, CliError> {
 }
 
 fn parse_save_cmd(args: &[String]) -> Result<CommandSpec, CliError> {
-    let mut seconds = 30_u64;
+    // `None` = defer to the persisted `config.save_window_secs` (GUI/CLI/MCP parity).
+    let mut seconds: Option<u64> = None;
     let mut dest = None;
     let mut drain_timeout_ms = None;
     let mut i = 0_usize;
@@ -491,7 +493,7 @@ fn parse_save_cmd(args: &[String]) -> Result<CommandSpec, CliError> {
     while i < args.len() {
         match args[i].as_str() {
             "--seconds" => {
-                seconds = parse_u64(require_val(args, i, "--seconds")?, "--seconds")?;
+                seconds = Some(parse_u64(require_val(args, i, "--seconds")?, "--seconds")?);
                 i += 2;
             }
             "--dest" => {
@@ -1417,7 +1419,7 @@ COMMANDS:\n  \
   devices\n  \
   capture start [--serial <S>] [--companion-jar <JAR>] [--scrcpy-jar <JAR>] [--max-size <N>] [--max-fps <N>] [--no-audio] [--no-logcat] [--no-input]\n  \
   capture stop\n  \
-  save [--seconds <30>] [--dest <DIR>] [--drain-timeout-ms <500>]\n  \
+  save [--seconds <N, 5..=600; default: config save_window_secs>] [--dest <DIR>] [--drain-timeout-ms <500>]\n  \
   save-logs [--window-secs <N>] [--dest <DIR>] [--drain-timeout-ms <500>]\n  \
   screenshot [--serial <S>] [--out <FILE.png>] [--overwrite]\n  \
   config get | set [--save-window-secs <N>] [--ring-budget-bytes <N>] [--min-free-disk-bytes <N>] [--video-max-size <N>] [--video-max-fps <N>] [--audio-enabled <true|false>] [--crash-autosave-enabled <true|false>] [--crash-autosave-cooldown-secs <N>] [--output-dir-override <DIR|none>] [--ide-default-save-action <save_and_open|save_only>]\n  \
@@ -1544,6 +1546,43 @@ mod tests {
     }
 
     #[test]
+    fn review_cli_defers_audio_and_save_window_to_persisted_config() {
+        let (_, start) = parse_args(&vec_str(&["capture", "start"])).expect("capture start");
+        match start {
+            CommandSpec::CaptureStart { audio_enabled, .. } => {
+                assert_eq!(
+                    audio_enabled, None,
+                    "no flag must defer to config.audio_enabled"
+                );
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        let (_, no_audio) =
+            parse_args(&vec_str(&["capture", "start", "--no-audio"])).expect("--no-audio");
+        match no_audio {
+            CommandSpec::CaptureStart { audio_enabled, .. } => {
+                assert_eq!(audio_enabled, Some(false), "--no-audio forces off");
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        let (_, save) = parse_args(&vec_str(&["save"])).expect("save");
+        match save {
+            CommandSpec::Save { seconds, .. } => {
+                assert_eq!(
+                    seconds, None,
+                    "no --seconds must defer to config.save_window_secs"
+                );
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        let (_, save_n) = parse_args(&vec_str(&["save", "--seconds", "45"])).expect("save 45");
+        match save_n {
+            CommandSpec::Save { seconds, .. } => assert_eq!(seconds, Some(45), "explicit"),
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
     fn r3_m8_absolutizes_relative_cli_paths_and_keeps_bundle_ids() {
         let cwd = std::env::current_dir().expect("cwd");
 
@@ -1552,7 +1591,7 @@ mod tests {
         assert_eq!(
             save_cmd,
             CommandSpec::Save {
-                seconds: 30,
+                seconds: None,
                 dest: Some(cwd.join("rel/out")),
                 drain_timeout_ms: None,
             },

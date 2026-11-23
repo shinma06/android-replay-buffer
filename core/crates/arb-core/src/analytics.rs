@@ -184,7 +184,12 @@ pub fn parse_am_crash_binary(raw: &[u8]) -> Option<ParsedAmCrash> {
     } else {
         false
     };
-    if cursor != raw.len() {
+    // Tolerate a trailing NUL / newline terminator, matching `decode_binary_android_event`
+    // (which ignores trailing bytes), so live detection agrees with the stored bundle text.
+    if raw
+        .get(cursor..)
+        .is_none_or(|tail| tail.iter().any(|b| !matches!(b, 0 | b'\n')))
+    {
         return None;
     }
     let package_name = package_from_process(&process_name);
@@ -561,7 +566,10 @@ impl CrashAutoSaveGate {
             return CrashAutoSaveDecision::SuppressedStoragePressure;
         }
         let cooldown_ns = i64::from(eval.cooldown_secs).saturating_mul(1_000_000_000);
+        // `now_ns < prev` means the event clock restarted (new replayed / mock session with its
+        // own `pc_cont_ns` domain); the stale timestamp must not wedge the gate.
         if let Some(prev) = self.last_trigger_ns
+            && eval.now_ns >= prev
             && eval.now_ns.saturating_sub(prev) < cooldown_ns
         {
             return CrashAutoSaveDecision::SuppressedCooldown;
@@ -921,12 +929,8 @@ fn frame_span_for_range(
     if let (Some(&first), Some(&last)) = (in_range.first(), in_range.last()) {
         return (Some(first), Some(last));
     }
-    let nearest_start = nearest_frame_index(frames, start_ns);
-    let nearest_end = nearest_frame_index(frames, end_ns);
-    match (nearest_start, nearest_end) {
-        (Some(s), Some(e)) => (Some(s.min(e)), Some(s.max(e))),
-        other => other,
-    }
+    // No frame overlaps this span: report none rather than frames of a different screen.
+    (None, None)
 }
 
 #[cfg(test)]
@@ -1369,6 +1373,75 @@ mod tests {
             validate_png_bytes(&truncated),
             Err(PngValidationError::TruncatedStream),
             "truncated PNG must fail"
+        );
+    }
+
+    const SEC: i64 = 1_000_000_000;
+
+    #[test]
+    fn crash_gate_resets_when_event_clock_restarts_in_a_new_session() {
+        let mut gate = CrashAutoSaveGate::new();
+        let eval = |now_ns| CrashAutoSaveEval {
+            enabled: true,
+            storage_pressure_active: false,
+            cooldown_secs: 15,
+            now_ns,
+        };
+        assert_eq!(
+            gate.evaluate(eval(1_000 * SEC)),
+            CrashAutoSaveDecision::Trigger
+        );
+        // New (replayed / mock) session whose `pc_cont_ns` domain restarted at a lower value.
+        assert_eq!(
+            gate.evaluate(eval(5 * SEC)),
+            CrashAutoSaveDecision::Trigger,
+            "a lower timestamp must not wedge the gate"
+        );
+        assert_eq!(
+            gate.evaluate(eval(10 * SEC)),
+            CrashAutoSaveDecision::SuppressedCooldown,
+            "normal debounce still applies within the new session"
+        );
+    }
+
+    #[test]
+    fn binary_am_crash_tolerates_trailing_terminator_but_not_garbage() {
+        let raw = encode_binary_am_crash(&BinaryAmCrashFixture {
+            user: 0,
+            pid: 42,
+            process: "com.example.app",
+            flags: 0,
+            exception: "java.lang.RuntimeException",
+            message: "boom",
+            file: "A.kt",
+            line: 7,
+            recoverable: None,
+        });
+        assert!(parse_am_crash_binary(&raw).is_some(), "baseline parses");
+        let mut with_newline = raw.clone();
+        with_newline.push(b'\n');
+        assert!(
+            parse_am_crash_binary(&with_newline).is_some(),
+            "trailing newline tolerated"
+        );
+        let mut with_garbage = raw;
+        with_garbage.push(0x7f);
+        assert!(
+            parse_am_crash_binary(&with_garbage).is_none(),
+            "garbage still rejected"
+        );
+    }
+
+    #[test]
+    fn frame_span_for_range_reports_none_when_no_frame_is_inside() {
+        let frames = vec![make_frame(0, SEC), make_frame(1, 10 * SEC)];
+        assert_eq!(
+            super::frame_span_for_range(&frames, 3 * SEC, 5 * SEC),
+            (None, None)
+        );
+        assert_eq!(
+            super::frame_span_for_range(&frames, 0, 2 * SEC),
+            (Some(0), Some(0))
         );
     }
 }

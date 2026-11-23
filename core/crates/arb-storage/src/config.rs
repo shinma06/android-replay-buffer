@@ -3,6 +3,8 @@
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use arb_core::config::ArbConfig;
 use arb_os::fs::{fsync_dir, fsync_file};
@@ -13,6 +15,13 @@ use crate::ring::hex_lower;
 
 /// File name of the persisted user configuration inside `data_dir`.
 pub const CONFIG_FILE_NAME: &str = "config.json";
+
+/// Process-wide counter making every temporary config file name unique.
+static CONFIG_TMP_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// Serialises the write + rename section so concurrent savers in one process never race a
+/// rename onto `config.json` (which can fail transiently on Windows).
+static CONFIG_WRITE_LOCK: Mutex<()> = Mutex::new(());
 
 /// Computes the lowercase 64-character hexadecimal SHA-256 digest of `bytes`.
 #[must_use]
@@ -65,6 +74,25 @@ impl ConfigStore {
         Ok(config)
     }
 
+    /// Moves an unreadable / invalid `config.json` aside to
+    /// `config.json.invalid-<stamp>` (never deleting it) and returns the new path.
+    ///
+    /// `stamp` is sanitised to `[0-9A-Za-z]` so it is safe as a file name component on every OS.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError::Io`] if the rename fails.
+    pub fn quarantine_invalid(&self, stamp: &str) -> Result<PathBuf, StorageError> {
+        let clean: String = stamp.chars().filter(char::is_ascii_alphanumeric).collect();
+        let source = self.path();
+        let target = self
+            .data_dir
+            .join(format!("{CONFIG_FILE_NAME}.invalid-{clean}"));
+        fs::rename(&source, &target)
+            .map_err(|err| StorageError::io("quarantine_config_json", &source, err))?;
+        Ok(target)
+    }
+
     /// Validates `config` and persists it atomically to `<data_dir>/config.json`.
     ///
     /// # Errors
@@ -77,17 +105,23 @@ impl ConfigStore {
             .map_err(|source| StorageError::io("create_config_dir", &self.data_dir, source))?;
 
         let final_path = self.path();
-        let temp_path = self
-            .data_dir
-            .join(format!(".{CONFIG_FILE_NAME}.tmp.{}", std::process::id()));
+        // Unique per call (pid + sequence) and opened with `create_new`, so concurrent savers
+        // can never share or truncate one another's temporary file.
+        let seq = CONFIG_TMP_SEQ.fetch_add(1, Ordering::Relaxed);
+        let temp_path = self.data_dir.join(format!(
+            ".{CONFIG_FILE_NAME}.tmp.{}.{seq}",
+            std::process::id()
+        ));
         let payload = serde_json::to_vec_pretty(config)
             .map_err(|source| StorageError::json("serialize_config_json", source))?;
 
+        let _write_guard = CONFIG_WRITE_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let write_result = (|| -> Result<(), StorageError> {
             let mut file = OpenOptions::new()
                 .write(true)
-                .create(true)
-                .truncate(true)
+                .create_new(true)
                 .open(&temp_path)
                 .map_err(|source| StorageError::io("create_config_tmp", &temp_path, source))?;
             file.write_all(&payload)
@@ -159,6 +193,68 @@ mod tests {
             store.load_or_default().expect("existing file intact"),
             custom,
             "failed save must preserve existing config.json"
+        );
+    }
+
+    #[test]
+    fn concurrent_save_atomic_never_corrupts_config_json() {
+        let tmp = TempDir::new().expect("tempdir");
+        let store = ConfigStore::new(tmp.path());
+        let handles: Vec<_> = (0..8_u32)
+            .map(|worker| {
+                let store = store.clone();
+                std::thread::spawn(move || {
+                    for round in 0..25_u32 {
+                        let cfg = ArbConfig {
+                            // Alternate long and short payloads to expose tail corruption.
+                            save_window_secs: 60 + worker * 10 + round % 2,
+                            ide_default_save_action: if round % 2 == 0 {
+                                IdeDefaultSaveAction::SaveOnly
+                            } else {
+                                IdeDefaultSaveAction::default()
+                            },
+                            ..ArbConfig::default()
+                        };
+                        store.save_atomic(&cfg).expect("concurrent save_atomic");
+                        store
+                            .load_or_default()
+                            .expect("config.json must always parse while racing writers");
+                    }
+                })
+            })
+            .collect();
+        for handle in handles {
+            handle.join().expect("writer thread");
+        }
+        store.load_or_default().expect("final config.json is valid");
+        let leftovers: Vec<_> = std::fs::read_dir(tmp.path())
+            .expect("read_dir")
+            .filter_map(Result::ok)
+            .filter(|e| e.file_name().to_string_lossy().contains(".tmp."))
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "no temp files may leak: {leftovers:?}"
+        );
+    }
+
+    #[test]
+    fn quarantine_invalid_moves_file_aside_and_defaults_return() {
+        let tmp = TempDir::new().expect("tempdir");
+        let store = ConfigStore::new(tmp.path());
+        std::fs::write(store.path(), br#"{"config_version": 999}"#).expect("write bad config");
+        assert!(
+            store.load_or_default().is_err(),
+            "newer version must fail to load"
+        );
+        let aside = store
+            .quarantine_invalid("2026-11-23T00:00:00Z")
+            .expect("quarantine");
+        assert!(aside.is_file(), "original bytes preserved at {aside:?}");
+        assert!(!store.path().exists(), "config.json moved away");
+        assert_eq!(
+            store.load_or_default().expect("defaults"),
+            ArbConfig::default()
         );
     }
 

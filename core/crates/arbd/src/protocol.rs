@@ -227,6 +227,9 @@ pub struct SystemStatusResponse {
     /// Live `am_crash` debounced auto-save telemetry.
     #[serde(default)]
     pub crash_autosave: CrashAutoSaveStatusView,
+    /// Set when startup found an invalid `config.json`, set it aside and fell back to defaults.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_warning: Option<String>,
 }
 
 // ---------------- Persisted Config ----------------

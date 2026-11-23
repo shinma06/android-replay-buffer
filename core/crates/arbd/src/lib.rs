@@ -29,7 +29,7 @@ use arb_adb::mock::DeviceEventSource;
 use arb_core::BUNDLE_SCHEMA_VERSION;
 use arb_core::analytics::{CrashAutoSaveDecision, CrashAutoSaveEval, CrashAutoSaveGate};
 use arb_core::bundle::RecordBucket;
-use arb_core::config::{ArbConfig, ArbConfigPatch};
+use arb_core::config::{ArbConfig, ArbConfigPatch, MAX_SAVE_WINDOW_SECS, MIN_SAVE_WINDOW_SECS};
 use arb_core::selection::{DrainOutcome, SelectionPolicy, evaluate_stream_drain};
 use arb_core::state::{RingBudgetPolicy, SaveTriggerKind};
 use arb_media::codec::default_codec_backend;
@@ -44,7 +44,7 @@ use arb_storage::catalog::{
     PinReconcileReport, RecoveryReport,
 };
 use arb_storage::config::ConfigStore;
-use arb_storage::ring::PinJournal;
+use arb_storage::ring::{DiskSpaceProvider, PinJournal};
 use arb_storage::sha256_hex;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
@@ -171,6 +171,13 @@ struct DaemonState {
     pin_reconcile: PinReconcileReport,
     config_store: ConfigStore,
     user_config: Mutex<ArbConfig>,
+    /// Serialises whole `config.update` transactions (read, patch, persist, swap, apply ring
+    /// policy). Lock order: `config_update_lock` -> `user_config` -> `capture`; `user_config`
+    /// itself is only ever held briefly and never across I/O.
+    config_update_lock: Mutex<()>,
+    /// Set when startup had to set an invalid `config.json` aside and fall back to defaults.
+    config_load_warning: Option<String>,
+    disk_provider: SharedDiskSpaceProvider,
     catalog: Catalog,
     capture: Arc<Mutex<CapturePipeline>>,
     live_capture: Mutex<Option<LiveCaptureHandle>>,
@@ -279,6 +286,35 @@ impl DaemonState {
     /// and must not lie inside arbd's private directories (ring, tmp, journals, cache,
     /// runtime), inside any cataloged bundle, inside any directory holding a bundle
     /// `manifest.json`, or inside `also_forbidden` (e.g. the export source bundle).
+    /// `true` when free space on the data volume is already below `min_free_disk_bytes`.
+    ///
+    /// Crash auto-save checks this *before* pinning a window so a crash loop cannot fill the
+    /// disk before the ring's latched `STORAGE_PRESSURE_STOP` ever trips. A failed probe is
+    /// treated as "not below" (fail-open): the ring's own guard remains the backstop and crash
+    /// evidence is worth keeping.
+    fn host_free_below_floor(&self, min_free_disk_bytes: u64) -> bool {
+        self.disk_provider
+            .disk_space(&self.paths.data_dir)
+            .is_ok_and(|info| info.available_bytes < min_free_disk_bytes)
+    }
+
+    /// Rejects a *file* target inside `data_dir` unless it is under `data_dir/screenshots`, so a
+    /// caller can never replace `catalog.sqlite`, `config.json`, locks, journals or bundles
+    /// with arbitrary bytes (`validate_output_location` only guards whole directories).
+    fn reject_data_dir_state_file(&self, path: &Path, what: &str) -> Result<(), DaemonError> {
+        let canon = canonicalize_lenient(path);
+        let data_dir = canonicalize_lenient(&self.paths.data_dir);
+        if canon.starts_with(&data_dir) && !canon.starts_with(data_dir.join("screenshots")) {
+            return Err(DaemonError::InvalidParams(format!(
+                "{what} `{}` is inside arbd's data directory `{}`; only `{}` is allowed there",
+                path.display(),
+                self.paths.data_dir.display(),
+                self.paths.data_dir.join("screenshots").display()
+            )));
+        }
+        Ok(())
+    }
+
     fn validate_output_location(
         &self,
         path: &Path,
@@ -471,6 +507,7 @@ impl DaemonState {
                 repinned_jobs: self.pin_reconcile.repinned_job_ids.len(),
             },
             crash_autosave,
+            config_warning: self.config_load_warning.clone(),
         })?)
     }
 
@@ -484,6 +521,7 @@ impl DaemonState {
 
     fn handle_config_update(&self, params: Value) -> Result<Value, DaemonError> {
         let patch: ArbConfigPatch = parse_params(params)?;
+        let _update_guard = self.lock(&self.config_update_lock, "config update")?;
         let candidate = {
             let current = self.lock(&self.user_config, "user config")?;
             current
@@ -596,6 +634,12 @@ impl DaemonState {
     ) -> Result<SaveOutcomeResponse, DaemonError> {
         let user_cfg = self.lock(&self.user_config, "user config")?.clone();
         let duration_sec = duration_sec.unwrap_or_else(|| u64::from(user_cfg.save_window_secs));
+        let window_range = u64::from(MIN_SAVE_WINDOW_SECS)..=u64::from(MAX_SAVE_WINDOW_SECS);
+        if !window_range.contains(&duration_sec) {
+            return Err(DaemonError::InvalidParams(format!(
+                "save window {duration_sec}s is outside {MIN_SAVE_WINDOW_SECS}..={MAX_SAVE_WINDOW_SECS} seconds"
+            )));
+        }
         let dest_dir = match dest_dir {
             Some(dest) => {
                 self.validate_output_location(&dest, "dest_dir", None)?;
@@ -649,6 +693,7 @@ impl DaemonState {
 
         let dest_path = if let Some(explicit) = parsed.output_path {
             self.validate_output_location(&explicit, "output_path", None)?;
+            self.reject_data_dir_state_file(&explicit, "output_path")?;
             explicit
         } else {
             let base_dir = if let Some(override_dir) = user_cfg.output_dir_override {
@@ -1153,7 +1198,26 @@ impl DaemonServer {
         let _removed_shm = MediaEngine::sweep_stale_shm_files(&config.paths.shm_dir());
 
         let config_store = ConfigStore::new(&config.paths.data_dir);
-        let user_config = config_store.load_or_default()?;
+        let disk_provider = config.disk_provider.clone();
+        let (user_config, config_load_warning) = match config_store.load_or_default() {
+            Ok(cfg) => (cfg, None),
+            Err(err) => {
+                // A hand-edited / newer-version / corrupt config.json must not keep arbd (and
+                // therefore the IDE) from starting: set the file aside, run on defaults and
+                // surface the problem through `system.status`.
+                let aside = config_store.quarantine_invalid(&utc_now_iso8601());
+                let warning = match aside {
+                    Ok(path) => format!(
+                        "invalid config.json ({err}); moved to `{}` and defaults are in use",
+                        path.display()
+                    ),
+                    Err(move_err) => format!(
+                        "invalid config.json ({err}); could not move it aside ({move_err}); defaults are in use"
+                    ),
+                };
+                (ArbConfig::default(), Some(warning))
+            }
+        };
         let effective_ring_policy = if config.ring_policy_overridden {
             config.ring_policy
         } else {
@@ -1196,6 +1260,9 @@ impl DaemonServer {
             pin_reconcile,
             config_store,
             user_config: Mutex::new(user_config),
+            config_update_lock: Mutex::new(()),
+            config_load_warning,
+            disk_provider,
             catalog,
             capture: Arc::new(Mutex::new(capture)),
             live_capture: Mutex::new(None),
@@ -1381,12 +1448,13 @@ fn handle_crash_autosave_notice(state: &Arc<DaemonState>, notice: CrashAutoSaveN
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .clone();
+    let (pipeline_pressure, floor_bytes) = {
+        let cap = state.capture.lock().unwrap_or_else(PoisonError::into_inner);
+        (cap.is_storage_pressure_stopped(), cap.min_free_disk_bytes())
+    };
     let storage_pressure_active = notice.storage_pressure_stopped
-        || state
-            .capture
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .is_storage_pressure_stopped();
+        || pipeline_pressure
+        || state.host_free_below_floor(floor_bytes);
 
     let decision = {
         let mut gate = state

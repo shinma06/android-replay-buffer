@@ -623,6 +623,12 @@ impl CapturePipeline {
         self.ring.set_policy(policy);
     }
 
+    /// Returns the live free-disk safety floor (`min_free_disk_bytes`) of the ring policy.
+    #[must_use]
+    pub const fn min_free_disk_bytes(&self) -> u64 {
+        self.ring.policy().min_free_disk_bytes
+    }
+
     /// Returns the serial of the currently active capture session, if any.
     #[must_use]
     pub fn active_serial(&self) -> Option<String> {

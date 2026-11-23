@@ -840,3 +840,216 @@ fn t1_crash_autosave_suppressed_under_storage_pressure_stop() {
     drop(client_p);
     server_p.shutdown();
 }
+
+#[test]
+fn t1_review_concurrent_config_updates_never_lose_fields_or_corrupt_config_json() {
+    let tmp = TempDir::new().expect("tempdir");
+    let paths = isolated_paths(&tmp);
+    let server = DaemonServer::start(DaemonConfig::new(paths.clone())).expect("start arbd");
+    let endpoint = server.endpoint().to_path_buf();
+
+    let patches = [
+        json!({ "save_window_secs": 111 }),
+        json!({ "video_max_fps": 45 }),
+        json!({ "video_max_size": 1000 }),
+        json!({ "crash_autosave_cooldown_secs": 33 }),
+        json!({ "audio_enabled": false }),
+        json!({ "ide_default_save_action": "save_only" }),
+    ];
+    let handles: Vec<_> = patches
+        .into_iter()
+        .map(|patch| {
+            let endpoint = endpoint.clone();
+            thread::spawn(move || {
+                let mut client = RpcClient::connect(&endpoint);
+                for _ in 0..10 {
+                    let _ = client.call("config.update", &patch);
+                }
+            })
+        })
+        .collect();
+    for handle in handles {
+        handle.join().expect("updater thread");
+    }
+
+    let mut client = RpcClient::connect(&endpoint);
+    let cfg = client.call("config.get", &json!({}))["config"].clone();
+    assert_eq!(cfg["save_window_secs"], 111, "no lost update: window");
+    assert_eq!(cfg["video_max_fps"], 45, "no lost update: fps");
+    assert_eq!(cfg["video_max_size"], 1000, "no lost update: size");
+    assert_eq!(
+        cfg["crash_autosave_cooldown_secs"], 33,
+        "no lost update: cooldown"
+    );
+    assert_eq!(cfg["audio_enabled"], false, "no lost update: audio");
+    assert_eq!(
+        cfg["ide_default_save_action"], "save_only",
+        "no lost update: ide"
+    );
+
+    drop(client);
+    server.shutdown();
+
+    // The persisted file must be intact: a restart loads exactly the merged config.
+    let server2 = DaemonServer::start(DaemonConfig::new(paths)).expect("restart arbd");
+    let mut client2 = RpcClient::connect(server2.endpoint());
+    let reloaded = client2.call("config.get", &json!({}))["config"].clone();
+    assert_eq!(reloaded, cfg, "restart must reload the merged config.json");
+    drop(client2);
+    server2.shutdown();
+}
+
+#[test]
+fn t1_review_screenshot_cannot_overwrite_arbd_state_files_in_data_dir() {
+    let tmp = TempDir::new().expect("tempdir");
+    let paths = isolated_paths(&tmp);
+    let png = build_valid_png(100, 200);
+    let provider = SharedScreenshotProvider::new(Arc::new(MockPngProvider {
+        serial: "emu".to_owned(),
+        png_bytes: png,
+    }));
+    let server =
+        DaemonServer::start(DaemonConfig::new(paths.clone()).with_screenshot_provider(provider))
+            .expect("start arbd");
+    let mut client = RpcClient::connect(server.endpoint());
+    // Make sure config.json exists so a successful overwrite would be observable.
+    let _ = client.call("config.update", &json!({ "video_max_fps": 50 }));
+    let config_before = fs::read(paths.data_dir.join("config.json")).expect("config.json");
+
+    for victim in ["config.json", "catalog.sqlite", "new-file.png"] {
+        let (code, msg) = client.call_err(
+            "save.screenshot",
+            &json!({ "output_path": paths.data_dir.join(victim), "overwrite": true }),
+        );
+        assert_eq!(code, -32_602, "{victim} must be rejected: {msg}");
+    }
+    assert_eq!(
+        fs::read(paths.data_dir.join("config.json")).expect("config.json"),
+        config_before,
+        "config.json must be untouched"
+    );
+
+    // The dedicated screenshots directory inside data_dir stays allowed.
+    let ok = client.call(
+        "save.screenshot",
+        &json!({ "output_path": paths.data_dir.join("screenshots").join("ok.png") }),
+    );
+    assert_eq!(ok["width"], 100, "screenshots/ target allowed");
+
+    drop(client);
+    server.shutdown();
+}
+
+#[test]
+fn t1_review_invalid_config_json_is_set_aside_and_arbd_still_starts() {
+    let tmp = TempDir::new().expect("tempdir");
+    let paths = isolated_paths(&tmp);
+    fs::create_dir_all(&paths.data_dir).expect("data dir");
+    fs::write(
+        paths.data_dir.join("config.json"),
+        br#"{"config_version": 999}"#,
+    )
+    .expect("write newer-version config");
+
+    let server = DaemonServer::start(DaemonConfig::new(paths.clone()))
+        .expect("arbd must start despite an invalid config.json");
+    let mut client = RpcClient::connect(server.endpoint());
+    let status = client.call("system.status", &json!({}));
+    let warning = status["config_warning"]
+        .as_str()
+        .expect("config_warning set");
+    assert!(
+        warning.contains("config.json"),
+        "warning names the file: {warning}"
+    );
+    assert_eq!(
+        client.call("config.get", &json!({}))["config"]["save_window_secs"],
+        300,
+        "defaults in use"
+    );
+    let aside: Vec<_> = fs::read_dir(&paths.data_dir)
+        .expect("read data dir")
+        .filter_map(Result::ok)
+        .filter(|e| {
+            e.file_name()
+                .to_string_lossy()
+                .starts_with("config.json.invalid-")
+        })
+        .collect();
+    assert_eq!(aside.len(), 1, "invalid config preserved exactly once");
+
+    // A subsequent valid update works and the warning remains informational.
+    let _ = client.call("config.update", &json!({ "save_window_secs": 60 }));
+    drop(client);
+    server.shutdown();
+}
+
+#[test]
+fn t1_review_explicit_save_windows_are_range_checked() {
+    let tmp = TempDir::new().expect("tempdir");
+    let server = DaemonServer::start(DaemonConfig::new(isolated_paths(&tmp))).expect("start arbd");
+    let mut client = RpcClient::connect(server.endpoint());
+    for (method, params) in [
+        ("save.trigger", json!({ "duration_sec": 3 })),
+        ("save.trigger", json!({ "duration_sec": 601 })),
+        ("save.logs", json!({ "window_secs": 4 })),
+        ("save.logs", json!({ "window_secs": 100_000 })),
+    ] {
+        let (code, msg) = client.call_err(method, &params);
+        assert_eq!(
+            code, -32_602,
+            "{method} {params} must be InvalidParams: {msg}"
+        );
+    }
+    drop(client);
+    server.shutdown();
+}
+
+#[test]
+fn t1_review_crash_autosave_checks_host_free_space_before_pinning() {
+    let tmp = TempDir::new().expect("tempdir");
+    let paths = isolated_paths(&tmp);
+    let free_bytes = Arc::new(AtomicU64::new(1 << 40));
+    let disk_provider =
+        SharedDiskSpaceProvider::new(Arc::new(ControllableDiskSpace(Arc::clone(&free_bytes))));
+    let server = DaemonServer::start(DaemonConfig::new(paths).with_disk_provider(disk_provider))
+        .expect("start arbd");
+    let mut client = RpcClient::connect(server.endpoint());
+    // Disk becomes full after startup, before any ring write has failed and latched the stop.
+    free_bytes.store(1024, Ordering::Release);
+
+    let mut events = hello_and_heartbeat_events("boot-free", 10 * SEC_NS, 100 * SEC_NS);
+    events.push(binary_am_crash_event(
+        "boot-free",
+        11 * SEC_NS,
+        101 * SEC_NS,
+        5150,
+        "com.example.full",
+        "java.lang.OutOfMemoryError",
+        "disk almost full",
+    ));
+    let mut source = VecEventSource::new("emu-free", events);
+    server
+        .ingest_device_source(&mut source)
+        .expect("ingest crash");
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let status = loop {
+        let st = client.call("system.status", &json!({}));
+        if st["crash_autosave"]["detected_crashes"].as_u64() == Some(1) {
+            break st;
+        }
+        assert!(Instant::now() < deadline, "timed out: {st}");
+        thread::sleep(Duration::from_millis(25));
+    };
+    assert_eq!(
+        status["crash_autosave"]["triggered_saves"], 0,
+        "no save on a full disk"
+    );
+    assert_eq!(
+        status["crash_autosave"]["suppressed_storage_pressure"], 1,
+        "suppressed by the free-space floor"
+    );
+    drop(client);
+    server.shutdown();
+}

@@ -54,6 +54,15 @@ verifies:
   4. `t1_crash_autosave_debounce_and_timeline_crashes_screens`
   5. `t1_crash_autosave_suppressed_under_storage_pressure_stop`
 
+### 2.1 独立レビュー（`entire review`、Trail #98）で検出された 10 件の修正
+
+- 並行 `config.update` の破損・更新ロスト（固定一時ファイル名 → 一意名 + `create_new` + 更新全体の直列化）
+- `save.screenshot` の `output_path` が `data_dir` 配下の状態ファイル（`catalog.sqlite` / `config.json`）を上書きできた問題（`data_dir/screenshots/` のみ許可）
+- CLI `capture start` / `save` が保存済み設定（`audio_enabled` / `save_window_secs`）を無視していた問題（フラグ未指定時は `null` を送りデーモンが設定値を適用）
+- クラッシュ自動保存がホスト空き容量を事前確認しない問題（`min_free_disk_bytes` 未満なら抑止）
+- 低優先: セッション切替時のクールダウン固着、不正 `config.json` での起動不能（退避して既定値で起動し `system.status.config_warning` で通知）、末尾バイト付き `am_crash` バイナリの不検出、`hard_link` 失敗時の競合上書き、明示的な保存窓幅の範囲検証（5..=600 秒）、画面スパンが範囲外フレームを指す問題
+- 各項目に回帰テストを追加（`arb-storage` / `arb-core` / `arb-cli` ユニット + `arbd` 実 IPC E2E 5 件、`t1_review_*`）。
+
 ## 3. 明示的な未検証項目（Unverified）
 
 - **Android 実機／エミュレータ上の実 `adb exec-out screencap -p` および実アプリクラッシュとの結合実行**: 本検証は実 `arbd` IPC サーバ＋決定的モック `ScreenshotProvider`・バイナリ `logcat -B` 相当 `am_crash` / `wm_*` イベントによる自動テストで確認済み。実端末上の実 `screencap`・実クラッシュ自動保存はローカル実機／エミュレータ受入フェーズで検証予定。
