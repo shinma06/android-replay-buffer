@@ -1,9 +1,9 @@
 //! GPL-free `VideoCodecBackend` trait, pixel-format conversion helpers, and platform backends.
 //!
 //! - [`OpenH264Backend`]: Universal cross-OS baseline (`BSD-2-Clause` Cisco `OpenH264`).
-//! - [`VideoToolboxBackend`] (`macOS` only): Direct C FFI to Apple hardware `VideoToolbox`
+//! - `VideoToolboxBackend` (`macOS` only): Direct C FFI to Apple hardware `VideoToolbox`
 //!   (`CoreFoundation` / `CoreVideo` / `CoreMedia` / `VideoToolbox`, zero external crates).
-//! - [`default_codec_backend`]: Picks [`VideoToolboxBackend`] on macOS (falling back to
+//! - [`default_codec_backend`]: Picks `VideoToolboxBackend` on macOS (falling back to
 //!   [`OpenH264Backend`] if hardware initialization fails) and [`OpenH264Backend`] elsewhere.
 
 mod openh264_backend;
@@ -374,7 +374,7 @@ pub trait VideoCodecBackend: Debug + Send + Sync {
 
 /// Selects the default GPL-free [`VideoCodecBackend`] for the current host platform.
 ///
-/// On macOS, selects [`VideoToolboxBackend`] when hardware initialization succeeds, falling back
+/// On macOS, selects `VideoToolboxBackend` when hardware initialization succeeds, falling back
 /// cleanly to [`OpenH264Backend`] otherwise. On Linux and Windows, selects [`OpenH264Backend`].
 pub fn default_codec_backend() -> Box<dyn VideoCodecBackend> {
     #[cfg(target_os = "macos")]

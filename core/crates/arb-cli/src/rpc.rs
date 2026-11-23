@@ -351,6 +351,7 @@ mod tests {
     use arb_os::ipc::{
         DEFAULT_MAX_IPC_LINE_BYTES, LocalIpcListener, read_frame_line, write_frame_line,
     };
+    use arb_os::paths::ArbPaths;
     use serde_json::json;
 
     use super::{
@@ -407,7 +408,12 @@ mod tests {
     #[test]
     fn r3_s16_verify_hello_rejects_protocol_version_mismatch() {
         let dir = TestDir::new("proto");
-        let endpoint = dir.0.join("arbd.sock");
+        let paths = ArbPaths {
+            data_dir: dir.0.join("data"),
+            cache_dir: dir.0.join("cache"),
+            runtime_dir: dir.0.join("run"),
+        };
+        let endpoint = paths.ipc_endpoint();
         let listener = LocalIpcListener::bind(&endpoint).expect("bind mock IPC");
 
         let server = thread::spawn(move || {

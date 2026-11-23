@@ -87,6 +87,30 @@ fn non_empty_env(get_env: &dyn Fn(&str) -> Option<OsString>, key: &str) -> Optio
         .map(PathBuf::from)
 }
 
+/// Deterministic `\\.\pipe\arb-daemon-<fnv1a64>` pipe name for `runtime_dir`, shared
+/// bit-for-bit with the Kotlin `ArbPaths.computeWindowsPipeEndpoint` client. Compiled in
+/// test builds on every OS so cross-client golden-vector tests run on all CI platforms.
+#[cfg(any(windows, test))]
+fn windows_pipe_endpoint(runtime_dir: &std::path::Path, sid_bytes: Option<&[u8]>) -> PathBuf {
+    // Stable 64-bit FNV-1a hash of the current user SID (when available) + runtime
+    // directory gives per-user and per-hermetic-test Windows Named Pipe isolation,
+    // mitigating local pipe squatting across user accounts.
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    if let Some(sid) = sid_bytes.filter(|s| !s.is_empty()) {
+        for byte in sid {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x0100_0000_01b3);
+        }
+        hash ^= u64::from(b'|');
+        hash = hash.wrapping_mul(0x0100_0000_01b3);
+    }
+    for byte in runtime_dir.to_string_lossy().as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0100_0000_01b3);
+    }
+    PathBuf::from(format!(r"\\.\pipe\arb-daemon-{hash:016x}"))
+}
+
 #[cfg(target_os = "macos")]
 mod imp {
     use std::ffi::OsString;
@@ -277,23 +301,7 @@ mod imp {
     }
 
     pub(super) fn ipc_endpoint(runtime_dir: &Path) -> PathBuf {
-        // Stable 64-bit FNV-1a hash of the current user SID (when available) +
-        // runtime directory gives per-user and per-hermetic-test Windows Named
-        // Pipe isolation, mitigating local pipe squatting across user accounts.
-        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-        if let Some(sid_bytes) = current_user_sid_bytes() {
-            for byte in sid_bytes {
-                hash ^= u64::from(byte);
-                hash = hash.wrapping_mul(0x0100_0000_01b3);
-            }
-            hash ^= u64::from(b'|');
-            hash = hash.wrapping_mul(0x0100_0000_01b3);
-        }
-        for byte in runtime_dir.to_string_lossy().as_bytes() {
-            hash ^= u64::from(*byte);
-            hash = hash.wrapping_mul(0x0100_0000_01b3);
-        }
-        PathBuf::from(format!(r"\\.\pipe\arb-daemon-{hash:016x}"))
+        crate::paths::windows_pipe_endpoint(runtime_dir, current_user_sid_bytes().as_deref())
     }
 
     fn current_user_sid_bytes() -> Option<Vec<u8>> {
@@ -487,6 +495,31 @@ mod tests {
                 .to_string_lossy()
                 .starts_with(r"\\.\pipe\arb-daemon-"),
             "Windows ipc_endpoint must use local named pipe prefix"
+        );
+    }
+
+    #[test]
+    fn windows_pipe_endpoint_matches_kotlin_golden_vectors() {
+        use super::windows_pipe_endpoint;
+
+        // Golden vectors shared bit-for-bit with client-core `ArbPathsTest`
+        // (`windowsPipeHashMatchesRustGoldenVectors`).
+        let runtime = PathBuf::from(r"C:\Users\alice\AppData\Local\arb\runtime");
+        assert_eq!(
+            windows_pipe_endpoint(&runtime, None),
+            PathBuf::from(r"\\.\pipe\arb-daemon-7fb9c25d31c01ee3"),
+            "no-SID FNV-1a pipe name must match the Kotlin golden vector"
+        );
+
+        // Binary Win32 SID encoding of S-1-5-21-3623811015-3361044348-30300820-1013.
+        let sid: [u8; 28] = [
+            0x01, 0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x05, 0x15, 0x00, 0x00, 0x00, 0xc7, 0xf7,
+            0xfe, 0xd7, 0x7c, 0x77, 0x55, 0xc8, 0x94, 0x5a, 0xce, 0x01, 0xf5, 0x03, 0x00, 0x00,
+        ];
+        assert_eq!(
+            windows_pipe_endpoint(&runtime, Some(&sid)),
+            PathBuf::from(r"\\.\pipe\arb-daemon-5e550661a2714c87"),
+            "SID-mixed FNV-1a pipe name must match the Kotlin golden vector"
         );
     }
 

@@ -95,6 +95,12 @@ fn bundles_reply() -> Value {
     json!({ "result": { "bundles": [] } })
 }
 
+/// The `system.hello` handshake reply the controller now requires at connect time (S3):
+/// a matching `protocol_version` is mandatory before any poll is attempted.
+fn hello_reply() -> Value {
+    json!({ "result": { "protocol_version": 1 } })
+}
+
 /// Reads one JSON-RPC request line and replies with `reply`, recording the call via `on_call`.
 /// Returns `false` if the peer closed the stream (clean EOF) before sending a request.
 fn handle_one_request(
@@ -139,11 +145,16 @@ fn serve_poll_cycle(
 /// and `save.retry` on the first connection, a simulated socket drop, then a second connection
 /// serving one more poll cycle (with the tracked job now `completed`) to prove reconnection.
 fn run_mock_arbd_server(listener: &LocalIpcListener, call_tx: &mpsc::Sender<ObservedCall>) {
-    // --- Connection 1: one poll cycle, then save.trigger + save.retry, then drop. ---
+    // --- Connection 1: system.hello handshake, one poll cycle, then save.trigger +
+    // save.retry, then drop. ---
     let stream = listener.accept().expect("accept first client connection");
     let mut writer = stream.try_clone().expect("clone server stream for writing");
     let mut reader = BufReader::new(stream);
 
+    assert!(
+        handle_one_request(&mut reader, &mut writer, &hello_reply(), call_tx),
+        "client must send system.hello at connect time"
+    );
     assert!(
         serve_poll_cycle(&mut reader, &mut writer, "failed_retryable", call_tx),
         "client must complete the first poll cycle without disconnecting"
@@ -170,10 +181,15 @@ fn run_mock_arbd_server(listener: &LocalIpcListener, call_tx: &mpsc::Sender<Obse
     drop(reader);
     drop(writer);
 
-    // --- Connection 2: the controller must reconnect and complete another poll cycle. ---
+    // --- Connection 2: the controller must reconnect, re-handshake, and complete
+    // another poll cycle. ---
     let stream = listener.accept().expect("accept reconnecting client");
     let mut writer = stream.try_clone().expect("clone reconnected server stream");
     let mut reader = BufReader::new(stream);
+    assert!(
+        handle_one_request(&mut reader, &mut writer, &hello_reply(), call_tx),
+        "client must re-run system.hello on the reconnected transport"
+    );
     assert!(
         serve_poll_cycle(&mut reader, &mut writer, "completed", call_tx),
         "client must reconnect and complete a second poll cycle"
@@ -306,18 +322,21 @@ fn assert_expected_rpc_call_sequence(observed: &[ObservedCall]) {
     assert_eq!(
         methods,
         vec![
+            "system.hello",
             "system.status",
             "device.list",
             "save.list_jobs",
             "bundle.list",
             "save.trigger",
             "save.retry",
+            "system.hello",
             "system.status",
             "device.list",
             "save.list_jobs",
             "bundle.list",
         ],
-        "RPC call sequence must match the controller's documented poll + dispatch contract"
+        "RPC call sequence must match the controller's documented handshake + poll + \
+         dispatch contract"
     );
     let trigger = observed
         .iter()

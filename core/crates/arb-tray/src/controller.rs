@@ -152,6 +152,14 @@ pub struct TrayViewState {
     pub jobs: Vec<SaveJobSummary>,
     /// Catalog bundle entries returned by `bundle.list`.
     pub bundles: Vec<RecentBundleSummary>,
+    /// Per-section `arbd` application errors from the last poll (`"<method>: <error>"`).
+    ///
+    /// A daemon-reported `Rpc` error on one polled method (e.g. `device.list` failing when
+    /// `adb` is absent) is surfaced here instead of collapsing the whole tray to
+    /// "arbd: offline" — the daemon is still online and the other sections still refreshed.
+    /// Transport-level failures never reach this list: they mark the daemon offline.
+    #[serde(default)]
+    pub section_errors: Vec<String>,
 }
 
 impl TrayViewState {
@@ -168,6 +176,7 @@ impl TrayViewState {
             storage_pressure_stopped: false,
             jobs: Vec::new(),
             bundles: Vec::new(),
+            section_errors: Vec::new(),
         }
     }
 
@@ -202,6 +211,9 @@ impl TrayViewState {
         }
         if self.static_hold_events > 0 {
             let _ = write!(line, " — {} static holds", self.static_hold_events);
+        }
+        for error in &self.section_errors {
+            let _ = write!(line, " — {error}");
         }
         line
     }
@@ -736,6 +748,7 @@ fn build_view_state(
         storage_pressure_stopped,
         jobs,
         bundles,
+        section_errors: Vec::new(),
     }
 }
 
@@ -786,6 +799,8 @@ impl TrayController {
         if self.client.is_none() {
             return TrayViewState::offline();
         }
+        // Only transport-level errors reach the `else` (per-section `Rpc` errors are
+        // collected inside `fetch_state_inner`), so dropping the connection is honest.
         if let Ok(state) = self.fetch_state_inner() {
             state
         } else {
@@ -799,11 +814,19 @@ impl TrayController {
             .client
             .as_mut()
             .expect("fetch_state_inner is only called once self.client is Some");
-        let status = client.call("system.status", json!({}))?;
-        let devices = client.call("device.list", json!({}))?;
-        let jobs = client.call("save.list_jobs", json!({}))?;
-        let bundles = client.call("bundle.list", json!({}))?;
-        Ok(build_view_state(&status, &devices, &jobs, &bundles))
+        let mut section_errors = Vec::new();
+        let status = call_section(client, "system.status", &mut section_errors)?;
+        let devices = call_section(client, "device.list", &mut section_errors)?;
+        let jobs = call_section(client, "save.list_jobs", &mut section_errors)?;
+        let bundles = call_section(client, "bundle.list", &mut section_errors)?;
+        let mut state = build_view_state(
+            &status.unwrap_or_default(),
+            &devices.unwrap_or_default(),
+            &jobs.unwrap_or_default(),
+            &bundles.unwrap_or_default(),
+        );
+        state.section_errors = section_errors;
+        Ok(state)
     }
 
     /// Dispatches an RPC-backed [`TrayMenuEvent`] to `arbd`, reconnecting first if necessary.
@@ -835,10 +858,31 @@ impl TrayController {
             .as_mut()
             .expect("client was just connected above");
         let result = client.call(method, params);
-        if result.is_err() {
+        // An application-level `Rpc` error was answered by a live daemon: keep the
+        // connection. Only transport-level failures drop it (S1).
+        if let Err(err) = &result
+            && err.is_transport()
+        {
             self.client = None;
         }
         result.map(Some)
+    }
+}
+
+/// Runs one polled RPC method, folding application-level `Rpc` errors into `section_errors`
+/// (the daemon answered, so it is still online) and propagating only transport-level errors.
+fn call_section(
+    client: &mut RpcClient,
+    method: &str,
+    section_errors: &mut Vec<String>,
+) -> Result<Option<Value>, RpcClientError> {
+    match client.call(method, json!({})) {
+        Ok(value) => Ok(Some(value)),
+        Err(err @ RpcClientError::Rpc { .. }) => {
+            section_errors.push(format!("{method}: {err}"));
+            Ok(None)
+        }
+        Err(err) => Err(err),
     }
 }
 
@@ -858,6 +902,7 @@ mod tests {
             storage_pressure_stopped: false,
             jobs: Vec::new(),
             bundles: Vec::new(),
+            section_errors: Vec::new(),
         }
     }
 

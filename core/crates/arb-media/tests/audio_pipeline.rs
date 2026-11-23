@@ -331,9 +331,9 @@ fn trim_audio_m4a_refuses_overwrite_input_alias_and_invalid_ranges() {
                 5_000_000_000,
                 6_000_000_000
             ),
-            Err(MediaError::InvalidArgument(_))
+            Err(MediaError::NoAudioInRange { .. })
         ),
-        "out-of-bounds trim range with 0 intersecting packets must be refused"
+        "out-of-bounds trim range with 0 intersecting packets must report NoAudioInRange"
     );
     assert_eq!(
         fs::read(&src_path).expect("re-read source"),

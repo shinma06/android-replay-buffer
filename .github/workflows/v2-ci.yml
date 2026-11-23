@@ -20,8 +20,11 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: v2-ci-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  # R4 S8: 同一ブランチへの push 実行と PR 実行を一元化して重複 CI を防ぐ。
+  # pull_request では head_ref（ブランチ名）、push/dispatch では ref_name（短いブランチ名）
+  # になり、同一ブランチでは同じグループに収束する。
+  group: v2-ci-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: '0'
@@ -106,10 +109,11 @@ jobs:
         id: sara-cache
         with:
           path: ~/.cargo/bin/sara
-          key: sara-cli-${{ runner.os }}-locked-v1
+          # R4 S8: sara-cli は 0.12.3 にピン留めし、バージョンをキャッシュキーへ含める。
+          key: sara-cli-${{ runner.os }}-0.12.3-v1
       - name: Install sara-cli
         if: steps.sara-cache.outputs.cache-hit != 'true'
-        run: cargo install sara-cli --no-default-features --locked
+        run: cargo install sara-cli --version 0.12.3 --no-default-features --locked
       - name: sara check --strict
         run: sara check --strict -c docs/v2/sara.toml
       - name: REQ downstream coverage (14/14)
@@ -200,3 +204,36 @@ jobs:
         env:
           ARB_BIN_DIR: ${{ github.workspace }}/core/target/release
         run: ./gradlew test --no-daemon
+
+  ide-plugin-client-core-windows:
+    name: ide-plugin client-core tests (Windows)
+    # R4 S7/C5: Windows 上で client-core を検証し、Windows 名前付きパイプの FNV-1a
+    # ハッシュ一致・UTF-8 フレーミング・名前付きパイプ IPC テストを windows-latest で通す。
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install nasm
+        run: |
+          choco install nasm --no-progress -y
+          echo "C:\Program Files\NASM" >> "$GITHUB_PATH"
+      - uses: actions/setup-java@v6.1.0
+        with:
+          distribution: temurin
+          java-version: '27'
+      - uses: gradle/actions/setup-gradle@v6.4.0
+      - uses: Swatinem/rust-cache@v2.7.8
+        with:
+          workspaces: core
+      - name: Build arbd for real IPC integration tests
+        run: cargo build --manifest-path core/Cargo.toml --release -p arbd
+      - name: ./gradlew :client-core:test
+        working-directory: ide-plugin
+        env:
+          ARB_DAEMON_BIN: ${{ github.workspace }}/core/target/release/arbd.exe
+        run: ./gradlew :client-core:test --no-daemon

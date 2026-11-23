@@ -63,4 +63,24 @@ class ArbPathsTest {
         assertEquals("""\\.\pipe\arb-daemon-""".length + 16, pipeA.length)
         assertNotEquals(pipeA, pipeB)
     }
+
+    @Test
+    fun windowsPipeHashMatchesRustGoldenVectors() {
+        // Golden vectors shared bit-for-bit with `arb-os/src/paths.rs`
+        // (`windows_pipe_endpoint_matches_kotlin_golden_vectors`).
+        val runtime = """C:\Users\alice\AppData\Local\arb\runtime"""
+        assertEquals(
+            """\\.\pipe\arb-daemon-7fb9c25d31c01ee3""",
+            ArbPaths.computeWindowsPipeEndpoint(runtime, null),
+            "no-SID FNV-1a pipe name must match the Rust golden vector",
+        )
+        val sidBytes =
+            ArbPaths.encodeWindowsSidStringToBytes("S-1-5-21-3623811015-3361044348-30300820-1013")
+        assertNotNull(sidBytes)
+        assertEquals(
+            """\\.\pipe\arb-daemon-5e550661a2714c87""",
+            ArbPaths.computeWindowsPipeEndpoint(runtime, sidBytes),
+            "SID-mixed FNV-1a pipe name must match the Rust golden vector",
+        )
+    }
 }

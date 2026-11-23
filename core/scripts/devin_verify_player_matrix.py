@@ -56,22 +56,34 @@ def parse_boxes(data: bytes):
     return boxes
 
 
-def find_box_recursive(data: bytes, wanted: str, start=0, end=None, depth=0):
-    """Count occurrences of a box type inside known container boxes."""
+def iter_boxes(data: bytes, start=0, end=None, depth=0):
+    """Yield (type, offset, size, header_len) for every box in [start, end), recursing into
+    container boxes. Handles 64-bit extended headers (size == 1) and size == 0 (to end)."""
     end = len(data) if end is None else end
     containers = {"moov", "trak", "mdia", "minf", "stbl", "edts", "udta", "dinf"}
-    n, pos = 0, start
+    pos = start
     while pos + 8 <= end:
         size = int.from_bytes(data[pos:pos + 4], "big")
         typ = data[pos + 4:pos + 8].decode("latin1")
-        if size < 8:
+        hdr = 8
+        if size == 1:
+            if pos + 16 > end:
+                break
+            size = int.from_bytes(data[pos + 8:pos + 16], "big")
+            hdr = 16
+        elif size == 0:
+            size = end - pos
+        if size < hdr:
             break
-        if typ == wanted:
-            n += 1
+        yield typ, pos, size, hdr
         if typ in containers and depth < 8:
-            n += find_box_recursive(data, wanted, pos + 8, min(pos + size, end), depth + 1)
+            yield from iter_boxes(data, pos + hdr, min(pos + size, end), depth + 1)
         pos += size
-    return n
+
+
+def find_box_recursive(data: bytes, wanted: str, start=0, end=None, depth=0):
+    """Count occurrences of a box type inside known container boxes (64-bit-size safe)."""
+    return sum(1 for typ, _p, _s, _h in iter_boxes(data, start, end, depth) if typ == wanted)
 
 
 def faststart(boxes):
@@ -80,11 +92,39 @@ def faststart(boxes):
 
 
 def stsd_avc1_count(data: bytes):
-    return data.count(b"avc1"), data.count(b"avc3")
+    """Count avc1/avc3 *sample entries* declared inside `stsd` boxes.
+
+    Walks the box tree properly instead of raw `data.count(b"avc1")` — byte patterns inside
+    `mdat` can never be miscounted as codec entries (R4 C3)."""
+    avc1 = avc3 = 0
+    for typ, pos, size, hdr in iter_boxes(data):
+        if typ != "stsd":
+            continue
+        # stsd is a FullBox: version/flags (4B) + entry_count (4B) precede the entries.
+        p, limit = pos + hdr + 8, pos + size
+        while p + 8 <= limit:
+            entry_size = int.from_bytes(data[p:p + 4], "big")
+            if entry_size < 8:
+                break
+            entry_type = data[p + 4:p + 8]
+            if entry_type == b"avc1":
+                avc1 += 1
+            elif entry_type == b"avc3":
+                avc3 += 1
+            p += entry_size
+    return avc1, avc3
+
+
+def safe_float(value, default=0.0):
+    """Parse ffprobe numeric fields; `"N/A"`/missing values become `default` (R4 C3)."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def negative_ts(pkt_rows):
-    return [r for r in pkt_rows if any(float(r.get(k, 0) or 0) < 0 for k in ("pts_time", "dts_time"))]
+    return [r for r in pkt_rows if any(safe_float(r.get(k, 0) or 0) < 0 for k in ("pts_time", "dts_time"))]
 
 
 def machine_barcode(n: int, bits: int = 16):
@@ -161,9 +201,10 @@ def verify_mp4(path: Path, expected_frames: int, outdir: Path):
     checks.append(check("single-stsd avc1 (no avc3)", avc1 >= 1 and avc3 == 0, f"avc1={avc1} avc3={avc3}"))
     info = ffprobe_json(path, "-select_streams", "v:0", "-count_frames",
                         "-show_entries", "stream=codec_name,width,height,nb_read_frames,avg_frame_rate")
-    s = info["streams"][0]
-    checks.append(check("codec h264", s["codec_name"] == "h264", s["codec_name"]))
-    checks.append(check(f"exactly {expected_frames} frames", int(s["nb_read_frames"]) == expected_frames, s["nb_read_frames"]))
+    s = (info.get("streams") or [{}])[0]
+    checks.append(check("codec h264", s.get("codec_name") == "h264", s.get("codec_name")))
+    nb_frames = int(safe_float(s.get("nb_read_frames"), -1))
+    checks.append(check(f"exactly {expected_frames} frames", nb_frames == expected_frames, s.get("nb_read_frames")))
     pk = ffprobe_json(path, "-select_streams", "v:0", "-show_entries", "packet=pts_time,dts_time,flags")
     pkts = pk.get("packets", [])
     checks.append(check("0 negative PTS/DTS", not negative_ts(pkts), f"{len(negative_ts(pkts))} negative"))
@@ -222,21 +263,47 @@ def trim_via_cli(args, outdir: Path):
 # ---- self-test -------------------------------------------------------------------
 
 def self_test():
-    assert decode_barcode(machine_barcode(647)) == 647
-    assert machine_barcode(1, 4) == [0, 0, 0, 1]
+    failures = []
+
+    def require(name, cond, detail=""):
+        if not cond:
+            failures.append(f"{name}: {detail}")
+
+    require("barcode roundtrip", decode_barcode(machine_barcode(647)) == 647)
+    require("barcode bits", machine_barcode(1, 4) == [0, 0, 0, 1])
+
     def box(t, payload=b""):
         return (8 + len(payload)).to_bytes(4, "big") + t.encode() + payload
-    good = box("ftyp", b"isom") + box("moov", box("trak", box("mdia", box("minf", box("stbl", box("stsd", b"avc1")))))) + box("mdat", b"x")
-    assert faststart(parse_boxes(good))
-    assert find_box_recursive(good, "edts") == 0
+
+    def box64(t, payload=b""):
+        # 64-bit extended-size box: size field 1, then an 8-byte largesize.
+        return (1).to_bytes(4, "big") + t.encode() + (16 + len(payload)).to_bytes(8, "big") + payload
+
+    stsd_avc1 = box("stsd", b"\x00\x00\x00\x00" + (1).to_bytes(4, "big") + box("avc1", b"\x00" * 78))
+    good = box("ftyp", b"isom") + box("moov", box("trak", box("mdia", box("minf", box("stbl", stsd_avc1))))) + box("mdat", b"x")
+    require("faststart", faststart(parse_boxes(good)))
+    require("no edts", find_box_recursive(good, "edts") == 0)
     bad = box("ftyp") + box("moov", box("trak", box("edts", box("elst")))) + box("mdat")
-    assert find_box_recursive(bad, "edts") == 1 and find_box_recursive(bad, "elst") == 1
-    assert not faststart(parse_boxes(box("ftyp") + box("mdat") + box("moov")))
-    assert stsd_avc1_count(good) == (1, 0)
-    assert negative_ts([{"pts_time": "-0.033", "dts_time": "0"}, {"pts_time": "0", "dts_time": "0"}])
-    assert not negative_ts([{"pts_time": "0", "dts_time": "0"}])
+    require("edts detected", find_box_recursive(bad, "edts") == 1 and find_box_recursive(bad, "elst") == 1)
+    require("not faststart", not faststart(parse_boxes(box("ftyp") + box("mdat") + box("moov"))))
+    require("stsd avc1 walk", stsd_avc1_count(good) == (1, 0), stsd_avc1_count(good))
+    # avc3 sample entry must be rejected (HEVC-in-AVC is disallowed in our bundles).
+    stsd_avc3 = box("stsd", b"\x00\x00\x00\x00" + (1).to_bytes(4, "big") + box("avc3", b"\x00" * 78))
+    with_avc3 = box("ftyp") + box("moov", box("trak", box("mdia", box("minf", box("stbl", stsd_avc3))))) + box("mdat")
+    require("stsd avc3 walk", stsd_avc1_count(with_avc3) == (0, 1), stsd_avc1_count(with_avc3))
+    # avc1 bytes inside mdat payload must NOT be counted (raw data.count bug, R4 C3).
+    false_positive = box("ftyp") + box("moov", box("trak", box("mdia", box("minf", box("stbl", stsd_avc1))))) + box("mdat", b"avc1avc3")
+    require("mdat bytes not counted", stsd_avc1_count(false_positive) == (1, 0), stsd_avc1_count(false_positive))
+    # 64-bit extended-size containers must still be walked (R4 C3).
+    good64 = box("ftyp") + box64("moov", box("trak", box("edts", box("elst")))) + box("mdat")
+    require("64-bit box walk", find_box_recursive(good64, "edts") == 1 and find_box_recursive(good64, "elst") == 1)
+    # ffprobe "N/A" / missing pts fields must not raise (R4 C3).
+    require("negative ts", negative_ts([{"pts_time": "-0.033", "dts_time": "0"}, {"pts_time": "0", "dts_time": "0"}]))
+    require("clean ts", not negative_ts([{"pts_time": "0", "dts_time": "0"}]))
+    require("N/A ts safe", not negative_ts([{"pts_time": "N/A"}, {"dts_time": "N/A"}, {}]))
+    require("safe_float", safe_float("N/A") == 0.0 and safe_float(None, -1) == -1 and safe_float("2.5") == 2.5)
     r = {"host": "h", "input": "i", "pass": True, "checks": [check("a", True, "d")], "players": [{"player": "p", "status": "ok"}]}
-    assert "PASS" in md_report(r)
+    require("md report", "PASS" in md_report(r))
     msg = "helper logic OK"
     if shutil.which("ffmpeg") and shutil.which("ffprobe"):
         with tempfile.TemporaryDirectory() as td:
@@ -245,13 +312,19 @@ def self_test():
             rc, _, err = run(["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", "testsrc2=size=160x90:rate=30:duration=2",
                               "-frames:v", "31", "-c:v", "libx264", "-g", "30", "-bf", "0", "-x264-params", "repeat-headers=1",
                               "-pix_fmt", "yuv420p", "-use_editlist", "0", "-movflags", "+faststart", str(td / "t.mp4")])
-            assert rc == 0, err
-            checks = verify_mp4(td / "t.mp4", 31, td)
-            failed = [c for c in checks if not c["pass"]]
-            assert not failed, failed
-            msg += "; ffmpeg/ffprobe pipeline OK"
+            require("ffmpeg fixture", rc == 0, err[-300:])
+            if rc == 0:
+                failed = [c for c in verify_mp4(td / "t.mp4", 31, td) if not c["pass"]]
+                require("verify_mp4", not failed, failed)
+            if not failures:
+                msg += "; ffmpeg/ffprobe pipeline OK"
     else:
         msg += "; ffmpeg/ffprobe missing -> media pipeline skipped"
+    if failures:
+        print("SELF-TEST FAILED:")
+        for f in failures:
+            print(f"  - {f}")
+        sys.exit(1)
     print("SELF-TEST PASSED:", msg)
 
 

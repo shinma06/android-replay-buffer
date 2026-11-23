@@ -650,16 +650,23 @@ struct TrimmedVideo {
 /// Trimmed `audio.m4a` payload for [`build_trimmed_bundle_draft`].
 struct TrimmedAudio {
     tmp_m4a: PathBuf,
+    /// Lead-in skew of the *trimmed* bundle: `D' = a0_sel + D - video_start_ns`
+    /// (first selected packet's source audio pts + save-time skew − new video origin).
+    lead_in_offset_ns: i64,
 }
 
 /// Cuts the source bundle's `audio.m4a` (when it has one) to the trimmed video's time range
 /// and returns the staged payload alongside the guard that removes the temp file on drop.
 ///
-/// Both `video.mp4` and `audio.m4a` are muxed rebased to `pts = 0` at capture start, so the
-/// source video frame pts range maps directly onto the source audio timeline. Returns
-/// `Ok(None)` when the source has no audio file or no AAC access unit intersects the range;
-/// all other errors propagate so a corrupt source audio track can never silently produce a
-/// bundle that claims trimmed audio (R3 M3).
+/// Both `video.mp4` and `audio.m4a` are muxed rebased to `pts = 0`, but `audio.m4a` pts0 sits
+/// `D = audio_lead_in_offset_ns` later than `video.mp4` pts0 on the shared device clock
+/// (R4 M4): a video-axis window `[start, end]` therefore maps to audio-axis
+/// `[start - D, end - D]`. The window lies entirely before the audio origin when `end <= D`
+/// (clean `Absent`), and its start clamps to `0` when `start < D < end`. Returns `Ok(None)`
+/// when the source has no audio file or no AAC access unit intersects the translated range;
+/// only [`MediaError::NoAudioInRange`] maps to `None` — real `InvalidArgument` bugs and every
+/// other error propagate so a corrupt source audio track can never silently produce a bundle
+/// that claims trimmed audio (R3 M3, R4 S10).
 fn trim_source_audio(
     reader: &dyn BundleReader,
     video_path: &Path,
@@ -670,23 +677,43 @@ fn trim_source_audio(
     let Some(src_m4a) = reader.audio_path() else {
         return Ok(None);
     };
+    // Save-time measured lead-in skew (R4 M4); bundles predating the field carry 0, which
+    // is equivalent to the previous perfectly-aligned-origins assumption.
+    let d_ns = reader
+        .manifest_summary()
+        .streams
+        .audio
+        .as_ref()
+        .map_or(0, |audio| audio.audio_lead_in_offset_ns);
+
     let src_track = Mp4VideoTrack::open(video_path)?;
-    let start_ns = src_track.frame(params.in_frame_index)?.pts_ns.max(0);
+    let video_start_ns = src_track.frame(params.in_frame_index)?.pts_ns.max(0);
     let out_frame = src_track.frame(params.out_frame_index)?;
-    let end_ns = out_frame
+    let video_end_ns = out_frame
         .pts_ns
         .saturating_add(i64::try_from(out_frame.duration_ns).unwrap_or(i64::MAX))
-        .max(start_ns.saturating_add(1));
+        .max(video_start_ns.saturating_add(1));
+
+    // Translate the video-axis window into audio-file coordinates.
+    let start_ns = video_start_ns.saturating_sub(d_ns).max(0);
+    let end_ns = video_end_ns.saturating_sub(d_ns);
+    if end_ns <= start_ns {
+        return Ok(None);
+    }
 
     let tmp_m4a = tmp_dir.join(format!("{trim_job_id}.m4a"));
     match trim_audio_m4a(&src_m4a, &tmp_m4a, start_ns, end_ns) {
-        Ok(_report) => Ok(Some((
+        Ok(report) => Ok(Some((
             TrimmedAudio {
                 tmp_m4a: tmp_m4a.clone(),
+                lead_in_offset_ns: report
+                    .first_selected_pts_ns
+                    .saturating_add(d_ns)
+                    .saturating_sub(video_start_ns),
             },
             FileCleanupGuard(tmp_m4a),
         ))),
-        Err(MediaError::InvalidArgument(_)) => Ok(None),
+        Err(MediaError::NoAudioInRange { .. }) => Ok(None),
         Err(err) => Err(err.into()),
     }
 }
@@ -741,17 +768,22 @@ fn build_trimmed_bundle_draft(
                 semantics: TimestampSemantics::VideoEncoderInputEstimate,
             }),
             audio: summary.streams.audio.clone().map(|mut audio| {
-                if trimmed_audio.is_some() {
+                if let Some(trimmed) = &trimmed_audio {
                     // A trimmed `audio.m4a` was written: a `Present` source stays `Present`
                     // (the file satisfies `verify_integrity`, R2 S15), a `Partial` source
                     // stays `Partial`. The incomplete-tail flag only survives when the trim
                     // still reaches the source's last frame (R3 S8c, applied to audio).
                     audio.tail_may_be_incomplete =
                         video.includes_source_tail && audio.tail_may_be_incomplete;
+                    // R4 M4: record the trimmed bundle's own rebased lead-in skew.
+                    audio.av_offset_ms = trimmed.lead_in_offset_ns / 1_000_000;
+                    audio.audio_lead_in_offset_ns = trimmed.lead_in_offset_ns;
                 } else {
                     // No AAC access unit intersects the trimmed video range.
                     audio.status = StreamStatus::Absent;
                     audio.tail_may_be_incomplete = false;
+                    audio.av_offset_ms = 0;
+                    audio.audio_lead_in_offset_ns = 0;
                 }
                 audio
             }),

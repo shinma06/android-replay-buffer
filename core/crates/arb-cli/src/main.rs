@@ -1205,7 +1205,7 @@ EXIT CODES:\n  \
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     use serde_json::{Value, json};
 
@@ -1218,6 +1218,16 @@ mod tests {
 
     fn vec_str(items: &[&str]) -> Vec<String> {
         items.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    /// Mirrors `absolutize_path` so expectations stay valid on Windows where
+    /// `std::path::absolute("/tmp/...")` resolves to a drive-qualified path.
+    fn abs(raw: &str) -> PathBuf {
+        std::path::absolute(Path::new(raw)).expect("test path must absolutize")
+    }
+
+    fn abs_string(raw: &str) -> String {
+        abs(raw).to_string_lossy().into_owned()
     }
 
     #[test]
@@ -1237,11 +1247,7 @@ mod tests {
             "/tmp/out",
         ]);
         let (opts, cmd) = parse_args(&args).expect("trim args must parse");
-        assert_eq!(
-            opts.data_dir,
-            Some(PathBuf::from("/tmp/d")),
-            "data_dir mismatch"
-        );
+        assert_eq!(opts.data_dir, Some(abs("/tmp/d")), "data_dir mismatch");
         assert_eq!(
             opts.output,
             OutputFormat::Json,
@@ -1258,7 +1264,7 @@ mod tests {
                 target: "bundle-1".to_owned(),
                 in_frame: 17,
                 out_frame: 49,
-                dest: Some(PathBuf::from("/tmp/out")),
+                dest: Some(abs("/tmp/out")),
             },
             "trim command must match"
         );
@@ -1274,7 +1280,7 @@ mod tests {
             retarget.1,
             CommandSpec::JobsRetarget {
                 job_id: "job-42".to_owned(),
-                dest: PathBuf::from("/tmp/new"),
+                dest: abs("/tmp/new"),
             },
             "retarget command must match"
         );
@@ -1291,9 +1297,9 @@ mod tests {
         assert_eq!(
             png.1,
             CommandSpec::Png {
-                target: "/tmp/b1".to_owned(),
+                target: abs_string("/tmp/b1"),
                 frame: 23,
-                out: PathBuf::from("/tmp/f23.png"),
+                out: abs("/tmp/f23.png"),
             },
             "png command must match"
         );

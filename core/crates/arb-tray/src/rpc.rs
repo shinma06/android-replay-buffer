@@ -15,6 +15,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use thiserror::Error;
 
+/// Control-plane IPC protocol version required by this `arb-tray` binary (SPEC-01 §1).
+pub const EXPECTED_IPC_PROTOCOL_VERSION: u32 = 1;
+
 const AUTO_START_TIMEOUT: Duration = Duration::from_secs(5);
 const AUTO_START_POLL: Duration = Duration::from_millis(50);
 
@@ -52,12 +55,32 @@ pub enum RpcClientError {
     /// Server closed the stream before returning a response.
     #[error("arbd closed IPC connection before responding")]
     UnexpectedEof,
+    /// `system.hello` reported a different `protocol_version` than expected.
+    #[error(
+        "arbd protocol_version mismatch: expected {expected}, got {actual:?}; restart arbd or align arb-tray/arbd versions"
+    )]
+    ProtocolVersionMismatch {
+        /// Version expected by `arb-tray`.
+        expected: u32,
+        /// Version reported by `arbd`, if present.
+        actual: Option<u64>,
+    },
     /// Auto-starting `arbd` timed out before `system.hello` succeeded.
     #[error("timed out waiting for auto-started arbd at `{endpoint}`")]
     AutoStartTimeout {
         /// Endpoint path that never became reachable.
         endpoint: PathBuf,
     },
+}
+
+impl RpcClientError {
+    /// `true` when the transport itself is unusable (I/O, EOF, protocol desync, or a
+    /// wrong-protocol daemon) and the connection must be dropped, as opposed to an
+    /// application-level [`RpcClientError::Rpc`] error the daemon answered cleanly.
+    #[must_use]
+    pub const fn is_transport(&self) -> bool {
+        !matches!(self, Self::Rpc { .. })
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -90,15 +113,19 @@ pub struct RpcClient {
 
 impl RpcClient {
     /// Connects to `arbd` at `paths.ipc_endpoint()`, optionally auto-starting the sibling `arbd`
-    /// binary when `auto_start == AutoStartMode::Enabled`.
+    /// binary when `auto_start == AutoStartMode::Enabled`, and verifies `protocol_version`.
     ///
     /// # Errors
     ///
-    /// Returns [`RpcClientError`] if connecting or auto-starting fails.
+    /// Returns [`RpcClientError`] if connecting, auto-starting, or the `system.hello`
+    /// protocol-version handshake fails.
     pub fn connect(paths: &ArbPaths, auto_start: AutoStartMode) -> Result<Self, RpcClientError> {
         let endpoint = paths.ipc_endpoint();
         match Self::connect_endpoint(&endpoint) {
-            Ok(client) => Ok(client),
+            Ok(mut client) => {
+                let _ = client.verify_hello()?;
+                Ok(client)
+            }
             Err(first_err) => {
                 if auto_start == AutoStartMode::Disabled {
                     return Err(first_err);
@@ -123,6 +150,25 @@ impl RpcClient {
             writer,
             next_id: 1,
         })
+    }
+
+    /// Calls `system.hello` and verifies that `protocol_version` matches
+    /// [`EXPECTED_IPC_PROTOCOL_VERSION`] (SPEC-01 §1; mirrors `arb-cli`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RpcClientError::ProtocolVersionMismatch`] if the daemon reports an
+    /// incompatible protocol version, or transport/RPC errors.
+    pub fn verify_hello(&mut self) -> Result<Value, RpcClientError> {
+        let hello = self.call("system.hello", json!({}))?;
+        let actual = hello.get("protocol_version").and_then(Value::as_u64);
+        if actual != Some(u64::from(EXPECTED_IPC_PROTOCOL_VERSION)) {
+            return Err(RpcClientError::ProtocolVersionMismatch {
+                expected: EXPECTED_IPC_PROTOCOL_VERSION,
+                actual,
+            });
+        }
+        Ok(hello)
     }
 
     /// Invokes a JSON-RPC 2.0 method and returns its decoded `result` JSON [`Value`].
@@ -178,7 +224,8 @@ pub fn spawn_daemon_process(paths: &ArbPaths) -> Result<(), RpcClientError> {
     Ok(())
 }
 
-/// Polls `endpoint` until `system.hello` succeeds or `timeout` elapses.
+/// Polls `endpoint` until `system.hello` reports a matching `protocol_version` or `timeout`
+/// elapses.
 ///
 /// # Errors
 ///
@@ -187,7 +234,7 @@ pub fn wait_for_daemon(endpoint: &Path, timeout: Duration) -> Result<RpcClient, 
     let deadline = Instant::now() + timeout;
     loop {
         if let Ok(mut client) = RpcClient::connect_endpoint(endpoint)
-            && client.call("system.hello", json!({})).is_ok()
+            && client.verify_hello().is_ok()
         {
             return Ok(client);
         }

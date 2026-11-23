@@ -102,7 +102,7 @@ data class ArbPaths(
          * Computes `\\.\pipe\arb-daemon-<16-hex-fnv1a>` matching `arb-os/src/paths.rs`.
          */
         fun computeWindowsPipeEndpoint(runtimeDir: String, sidBytes: ByteArray?): String {
-            var hash = -0x340d631b7bdddcdaL // 0xcbf29ce484222325u64
+            var hash = -0x340d631b7bdddcdbL // 0xcbf29ce484222325u64
             val prime = 0x0100000001b3L
             if (sidBytes != null && sidBytes.isNotEmpty()) {
                 for (b in sidBytes) {

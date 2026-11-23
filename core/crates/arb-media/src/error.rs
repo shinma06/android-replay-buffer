@@ -57,4 +57,14 @@ pub enum MediaError {
     /// Invalid cache identifier or caller-supplied configuration parameter.
     #[error("invalid argument: {0}")]
     InvalidArgument(String),
+
+    /// No audio access units intersect the requested time range — an expected, honest
+    /// "stream absent" outcome, distinct from [`MediaError::InvalidArgument`] bugs.
+    #[error("no audio packets intersect requested range [{start_ns}, {end_ns})")]
+    NoAudioInRange {
+        /// Inclusive range start in nanoseconds.
+        start_ns: i64,
+        /// Exclusive range end in nanoseconds.
+        end_ns: i64,
+    },
 }

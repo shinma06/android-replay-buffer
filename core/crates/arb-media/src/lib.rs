@@ -6,7 +6,7 @@
 //! - [`mp4`]: Pure-Rust ISO-BMFF parser, frame/GOP indexer, raw H.264 muxer, and faststart
 //!   single-`stsd` `avc1` + in-band SPS/PPS splice muxer with strictly zero `edts`/`elst` boxes.
 //! - [`codec`]: Trait-abstracted [`codec::VideoCodecBackend`] with universal [`codec::OpenH264Backend`]
-//!   (`BSD-2-Clause`) and macOS hardware [`codec::VideoToolboxBackend`] (direct C FFI, zero crates).
+//!   (`BSD-2-Clause`) and macOS hardware `codec::VideoToolboxBackend` (direct C FFI, zero crates).
 //! - [`trim`]: Frame-accurate integer `frame_index` trim and PNG frame export with `tEXt` metadata.
 //! - [`playback`]: External [`playback::FilmstripCache`], bounded [`playback::GopLruCache`],
 //!   latest-wins [`playback::ScrubController`], and [`playback::PresentationClock`].

@@ -159,6 +159,13 @@ pub struct AudioStreamMeta {
     pub av_offset_status: AvOffsetStatus,
     /// Applied or observed A/V offset in milliseconds.
     pub av_offset_ms: i64,
+    /// Exact measured lead-in skew between the two file timelines in nanoseconds:
+    /// `first_selected_audio_pts_device_mono_ns - first_selected_video_pts_device_mono_ns`
+    /// (`audio.m4a` pts0 sits this many ns later than `video.mp4` pts0 on the shared device
+    /// clock; may be negative). `av_offset_ms` is the millisecond truncation of this value.
+    /// `0` when either stream was absent or the bundle predates this field.
+    #[serde(default)]
+    pub audio_lead_in_offset_ns: i64,
     /// `true` if boundary drain timed out before confirming a post-trigger heartbeat.
     #[serde(default)]
     pub tail_may_be_incomplete: bool,
@@ -598,6 +605,7 @@ mod tests {
                     status: StreamStatus::Partial,
                     av_offset_status: AvOffsetStatus::Uncalibrated,
                     av_offset_ms: 0,
+                    audio_lead_in_offset_ns: 0,
                     tail_may_be_incomplete: false,
                 }),
                 logcat: Some(LogcatStreamMeta {

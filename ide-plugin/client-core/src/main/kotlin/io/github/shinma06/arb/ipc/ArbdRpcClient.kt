@@ -46,7 +46,24 @@ import io.github.shinma06.arb.model.TimelineSummaryResponse
 import io.github.shinma06.arb.model.TimelineTapsResponse
 import java.io.Closeable
 import java.io.IOException
+import java.util.concurrent.Callable
+import java.util.concurrent.ExecutionException
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicLong
+
+/** Default bounded read timeout for a single JSON-RPC response (30 s, R4 S5/C5). */
+const val DEFAULT_READ_TIMEOUT_MS: Long = 30_000L
+
+/**
+ * Transport-level IPC failure tagged with the JSON-RPC `method` that was in flight, so the
+ * reconnect/retry policy can distinguish idempotent reads from mutating calls (R4 S4).
+ */
+class ArbdIoException(
+    val rpcMethod: String,
+    cause: Throwable,
+) : IOException("arbd IPC transport failed for '$rpcMethod': ${cause.message}", cause)
 
 /**
  * Typed NDJSON JSON-RPC 2.0 client covering all `arbd` control-plane methods (`SPEC-03`).
@@ -54,10 +71,14 @@ import java.util.concurrent.atomic.AtomicLong
  */
 class ArbdRpcClient(
     private val transport: LocalIpcTransport,
+    private val readTimeoutMs: Long = DEFAULT_READ_TIMEOUT_MS,
 ) : Closeable {
     private val gson = ProtocolJson.gson
     private val nextId = AtomicLong(1L)
     private val callLock = Any()
+    private val readExecutor = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "arb-ipc-read").apply { isDaemon = true }
+    }
 
     val endpoint: String
         get() = transport.endpoint
@@ -259,10 +280,24 @@ class ArbdRpcClient(
             addProperty("method", method)
             add("params", params)
         }
-        transport.writeLine(gson.toJson(req))
-        val rawLine = transport.readLine()
-            ?: throw IOException("arbd closed IPC connection before responding to '$method'")
+        val rawLine = try {
+            transport.writeLine(gson.toJson(req))
+            readResponseLine()
+                ?: throw IOException("arbd closed IPC connection before responding to '$method'")
+        } catch (e: IOException) {
+            // Tag every transport-level failure with its method so the retry policy can
+            // decide whether replaying it is safe (R4 S4).
+            throw if (e is ArbdIoException) e else ArbdIoException(method, e)
+        }
         val respObj = JsonParser.parseString(rawLine).asJsonObject
+        // R4 C5: reject a response that does not echo this request's id — a desynced or
+        // cross-talking peer must never satisfy the wrong request.
+        val respId = respObj.get("id")
+        if (respId == null || !respId.isJsonPrimitive || !respId.asJsonPrimitive.isNumber ||
+            runCatching { respId.asLong }.getOrDefault(-1L) != id
+        ) {
+            throw IOException("arbd response id mismatch for '$method': expected $id, got $respId")
+        }
         val errorElem = respObj.get("error")
         if (errorElem != null && !errorElem.isJsonNull) {
             val errObj = errorElem.asJsonObject
@@ -273,8 +308,25 @@ class ArbdRpcClient(
         return respObj.get("result") ?: JsonNull.INSTANCE
     }
 
+    /**
+     * Reads one NDJSON response line with a bounded wait (R4 S5/C5). On timeout the transport
+     * is closed — a late response must never desync the framing of the next call.
+     */
+    private fun readResponseLine(): String? = try {
+        readExecutor.submit(Callable { transport.readLine() }).get(readTimeoutMs, TimeUnit.MILLISECONDS)
+    } catch (e: TimeoutException) {
+        runCatching { transport.close() }
+        throw IOException("arbd IPC read timed out after ${readTimeoutMs} ms; transport closed")
+    } catch (e: ExecutionException) {
+        throw e.cause as? IOException ?: IOException("arbd IPC read failed", e.cause)
+    } catch (e: InterruptedException) {
+        Thread.currentThread().interrupt()
+        throw IOException("arbd IPC read interrupted", e)
+    }
+
     override fun close() {
-        transport.close()
+        runCatching { transport.close() }
+        readExecutor.shutdown()
     }
 
     private fun jsonObj(vararg pairs: Pair<String, String>): JsonObject = JsonObject().apply {

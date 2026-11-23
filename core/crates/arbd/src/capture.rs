@@ -1978,6 +1978,7 @@ impl ReplayCollector {
         let audio_continuity = self.audio_continuity();
         let selected_video = Self::select_video(&self.timeline, self.raw_video, params);
         let selected_audio = Self::select_audio(&self.timeline, self.raw_audio, params);
+        let av_lead_in_offset_ns = av_lead_in_offset_ns(&selected_video, &selected_audio);
         let mut discontinuities = self.discontinuities;
         for (kind, label, excluded) in [
             (
@@ -2036,6 +2037,7 @@ impl ReplayCollector {
             log_overflow_events: self.log_overflow_events,
             taps_count: final_taps.len(),
             tail_may_be_incomplete: params.tail_may_be_incomplete,
+            av_lead_in_offset_ns,
         });
 
         let epochs: Vec<EpochSpan> = if self.epochs_map.is_empty() {
@@ -2080,6 +2082,22 @@ impl ReplayCollector {
     }
 }
 
+/// R4 M4: exact lead-in skew `D` between the two rebased file timelines —
+/// `first_selected_audio_pts_device_mono_ns - first_selected_video_pts_device_mono_ns`.
+/// `video.mp4` pts0 = first selected frame's device-mono pts; `audio.m4a` pts0 = first
+/// selected packet's device-mono pts (`AacPacket::pts_us` is microseconds on the same
+/// clock — `select_audio` maps `pts_us * 1000` as device-mono ns). `0` when either stream
+/// selected nothing (no shared origin exists).
+fn av_lead_in_offset_ns(video: &SelectedVideo, audio: &SelectedAudio) -> i64 {
+    match (audio.main.first(), video.main.first()) {
+        (Some(first_audio), Some(first_video)) => first_audio
+            .pts_us
+            .saturating_mul(1_000)
+            .saturating_sub(first_video.record.pts_device_mono_ns),
+        _ => 0,
+    }
+}
+
 struct StreamSummaryCounts {
     frame_count: u64,
     video_status: StreamStatus,
@@ -2089,6 +2107,7 @@ struct StreamSummaryCounts {
     log_overflow_events: u64,
     taps_count: usize,
     tail_may_be_incomplete: bool,
+    av_lead_in_offset_ns: i64,
 }
 
 fn build_streams_summary(counts: &StreamSummaryCounts) -> StreamsSummary {
@@ -2110,8 +2129,13 @@ fn build_streams_summary(counts: &StreamSummaryCounts) -> StreamsSummary {
             // the file exists but the stream had gaps/outages or when captured packets
             // could not be persisted, `Absent` when no packets were selected.
             status: counts.audio_status,
+            // R4 M4: `av_offset_ms` now carries the measured lead-in skew
+            // (`audio_lead_in_offset_ns` keeps the exact nanosecond value for trim).
+            // The status stays `Uncalibrated`: the skew is measured at save time but
+            // pipeline A/V lag is never empirically calibrated.
             av_offset_status: AvOffsetStatus::Uncalibrated,
-            av_offset_ms: 0,
+            av_offset_ms: counts.av_lead_in_offset_ns / 1_000_000,
+            audio_lead_in_offset_ns: counts.av_lead_in_offset_ns,
             tail_may_be_incomplete,
         }),
         logcat: Some(LogcatStreamMeta {

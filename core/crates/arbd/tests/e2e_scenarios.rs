@@ -441,6 +441,17 @@ fn build_barcode_mock_source(
     frame_count: usize,
     wall_mode: WallClockMode,
 ) -> MockDeviceSource {
+    build_barcode_mock_source_audio_lead(boot_id, frame_count, wall_mode, 0)
+}
+
+/// Same as [`build_barcode_mock_source`], but every audio packet's `pts_us` is shifted by
+/// `audio_lead_in_ns` on the shared device-mono clock (R4 M4 lead-in skew `D`).
+fn build_barcode_mock_source_audio_lead(
+    boot_id: &str,
+    frame_count: usize,
+    wall_mode: WallClockMode,
+    audio_lead_in_ns: i64,
+) -> MockDeviceSource {
     let backend = OpenH264Backend::new();
     let yuv_frames: Vec<DecodedFrame> = (0..frame_count)
         .map(|i| synthesize_barcode_yuv420p_frame(u64::try_from(i).expect("i fits u64")))
@@ -469,6 +480,8 @@ fn build_barcode_mock_source(
         let pc_ns = 10 * MS_NS + elapsed_ns;
         let dev_ns = base_dev + elapsed_ns;
         let pts_us = u64::try_from(dev_ns / 1_000).expect("pts_us fits u64");
+        let audio_pts_us =
+            u64::try_from((dev_ns + audio_lead_in_ns) / 1_000).expect("audio pts_us fits u64");
         b = b.push(FaultStep::VideoFrame {
             pc_cont_ns: pc_ns,
             packet: VideoPacket {
@@ -486,7 +499,7 @@ fn build_barcode_mock_source(
                 pc_cont_ns: pc_ns + MS_NS,
                 packet: AudioPacket {
                     kind: AudioPacketKind::Frame,
-                    pts_us,
+                    pts_us: audio_pts_us,
                     data: vec![0x21, 0x10, 0x05, u8::try_from(idx & 0xFF).unwrap_or(0)],
                 },
             });
@@ -2411,6 +2424,114 @@ fn w11_audio_m4a_muxed_trimmed_and_sha256_verified() {
     let trimmed_summary = client.call(
         "timeline.summary",
         &json!({ "bundle_id_or_path": trimmed["bundle_id"].as_str().expect("trimmed id") }),
+    );
+    assert_eq!(
+        trimmed_summary["streams"]["audio"]["status"], "present",
+        "trimmed audio.m4a must keep audio.status == present"
+    );
+
+    server.shutdown();
+}
+
+/// R4 M4 + S10 end-to-end: audio packets report a `+500 ms` lead-in skew `D` on the shared
+/// device clock (audio tunnel opens late). The saved bundle must persist the measured
+/// `av_offset_ms == 500` / exact `audio_lead_in_offset_ns`, and `export.trim` must cut
+/// `audio.m4a` in translated `[video - D]` coordinates so the trimmed file covers exactly
+/// the audio segment aligned to the trimmed video — re-deriving the new bundle's own
+/// lead-in instead of blindly copying `D`.
+#[test]
+fn r4_m4_audio_lead_in_offset_saved_and_trim_aligned() {
+    const LEAD_NS: i64 = 500 * MS_NS;
+
+    let tmp = TempDir::new().expect("tempdir");
+    let server = DaemonServer::start(DaemonConfig::new(isolated_paths(&tmp))).expect("start arbd");
+
+    // 90 video frames (~3 s) with sparse audio packets every 10th frame, each stamped
+    // `video_pts + 500 ms` on the shared device-mono clock → D = +500 ms.
+    let mut source =
+        build_barcode_mock_source_audio_lead("boot-m4", 90, WallClockMode::Steady, LEAD_NS);
+    server
+        .ingest_device_source(&mut source)
+        .expect("ingest lead-in audio source");
+
+    let mut client = TestIpcClient::connect(server.endpoint());
+    let saved = client.call("save.trigger", &json!({ "duration_sec": 30 }));
+    assert_eq!(saved["job"]["state"], "completed", "save must complete");
+    let bundle_id = saved["bundle_id"].as_str().expect("bundle_id").to_owned();
+
+    let summary = client.call(
+        "timeline.summary",
+        &json!({ "bundle_id_or_path": bundle_id }),
+    );
+    assert_eq!(
+        summary["streams"]["audio"]["status"], "present",
+        "audio stream must be present"
+    );
+    assert_eq!(
+        summary["streams"]["audio"]["av_offset_ms"], 500,
+        "saved bundle must persist the measured +500 ms lead-in as av_offset_ms"
+    );
+    assert_eq!(
+        summary["streams"]["audio"]["audio_lead_in_offset_ns"], LEAD_NS,
+        "saved bundle must persist the exact lead-in skew in nanoseconds"
+    );
+    assert_eq!(
+        summary["streams"]["audio"]["av_offset_status"], "uncalibrated",
+        "lead-in is measured at save, but A/V lag stays honestly uncalibrated"
+    );
+
+    // Trim to video frames 17..=49. Audio-axis window = [v_start - D, v_end - D] on the
+    // source `audio.m4a` (pts0 = first audio packet). Mock audio packets sit at source
+    // pts ≈ {0, 333, 667, 1000, 1333, ...} ms, so exactly the 4 packets intersecting
+    // [~67 ms, ~1167 ms) — i.e. pts {0, 333, 667, 1000} ms — must be selected.
+    let trimmed = client.call(
+        "export.trim",
+        &json!({
+            "bundle_id_or_path": bundle_id,
+            "in_frame_index": 17,
+            "out_frame_index": 49,
+        }),
+    );
+    let trimmed_dir = PathBuf::from(trimmed["bundle_path"].as_str().expect("trimmed path"));
+    let trimmed_m4a = trimmed_dir.join("audio.m4a");
+    assert!(
+        trimmed_m4a.is_file(),
+        "trimmed bundle must contain the translated audio segment"
+    );
+    let trimmed_track = Mp4AudioTrack::open(&trimmed_m4a).expect("open trimmed audio.m4a");
+    assert_eq!(
+        trimmed_track.packet_count(),
+        4,
+        "trimmed audio.m4a must cover exactly the aligned segment \
+         (source pts {{0, 333, 667, 1000}} ms intersect [67 ms, 1167 ms))"
+    );
+    assert_eq!(
+        trimmed_track
+            .packet(0)
+            .expect("first trimmed packet")
+            .pts_ns,
+        0,
+        "trimmed audio.m4a must be rebased to pts 0"
+    );
+
+    // The first selected packet straddles the new video origin (its source pts 0 + D
+    // lands ~67 ms before the trimmed video start), so the trimmed bundle's honest
+    // lead-in is a small negative skew — NOT the source's +500 ms.
+    let trimmed_summary = client.call(
+        "timeline.summary",
+        &json!({ "bundle_id_or_path": trimmed["bundle_id"].as_str().expect("trimmed id") }),
+    );
+    let lead_in_ns = trimmed_summary["streams"]["audio"]["audio_lead_in_offset_ns"]
+        .as_i64()
+        .expect("trimmed audio_lead_in_offset_ns");
+    assert!(
+        (-70_000_000..-60_000_000).contains(&lead_in_ns),
+        "trimmed lead-in must be re-derived on the shared clock (~-67 ms), got {lead_in_ns}"
+    );
+    assert_eq!(
+        trimmed_summary["streams"]["audio"]["av_offset_ms"].as_i64(),
+        Some(lead_in_ns / 1_000_000),
+        "av_offset_ms must stay the millisecond truncation of the exact lead-in"
     );
     assert_eq!(
         trimmed_summary["streams"]["audio"]["status"], "present",

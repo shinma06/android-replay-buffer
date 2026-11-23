@@ -1050,6 +1050,10 @@ pub struct AudioTrimReport {
     pub edts_box_count: usize,
     /// Number of `elst` boxes written to the output (always `0`).
     pub elst_box_count: usize,
+    /// Source-track presentation timestamp (nanoseconds) of the first selected access
+    /// unit — needed to re-derive the trimmed file's A/V lead-in offset.
+    #[serde(default)]
+    pub first_selected_pts_ns: i64,
 }
 
 /// Trims `input_m4a` to the AAC-LC access units intersecting `[start_ns, end_ns)` and writes a
@@ -1065,7 +1069,8 @@ pub struct AudioTrimReport {
 ///
 /// Returns:
 /// - [`MediaError::InvalidArgument`] if `output_m4a` resolves to `input_m4a`, `start_ns < 0`,
-///   `end_ns <= start_ns`, or no audio packets intersect `[start_ns, end_ns)`.
+///   or `end_ns <= start_ns`.
+/// - [`MediaError::NoAudioInRange`] if no audio packets intersect `[start_ns, end_ns)`.
 /// - [`MediaError::Io`] (`AlreadyExists`) if `output_m4a` already exists, or on I/O failure.
 /// - [`MediaError::InvalidContainer`] or [`MediaError::UnsupportedFeature`] if `input_m4a`
 ///   is malformed or not an AAC-LC track.
@@ -1104,9 +1109,7 @@ pub fn trim_audio_m4a(
     }
 
     if metas.is_empty() {
-        return Err(MediaError::InvalidArgument(format!(
-            "no audio packets intersect requested range [{start_ns}, {end_ns})"
-        )));
+        return Err(MediaError::NoAudioInRange { start_ns, end_ns });
     }
 
     let total_ticks: u64 = metas
@@ -1136,6 +1139,10 @@ pub fn trim_audio_m4a(
         |idx, buf| track.read_packet_into(selected_indices[idx], buf),
     )?;
 
+    let first_selected_pts_ns = selected_indices
+        .first()
+        .and_then(|idx| track.packets().iter().find(|pkt| pkt.index == *idx))
+        .map_or(0, |pkt| pkt.pts_ns);
     let output_packets = u64::try_from(metas.len()).unwrap_or(0);
     Ok(AudioTrimReport {
         input_packets: track.packet_count(),
@@ -1145,6 +1152,7 @@ pub fn trim_audio_m4a(
         channels: track.channels(),
         edts_box_count: 0,
         elst_box_count: 0,
+        first_selected_pts_ns,
     })
 }
 
