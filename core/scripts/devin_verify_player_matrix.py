@@ -27,7 +27,16 @@ TRIM_IN, TRIM_OUT = 47, 647
 
 
 def run(cmd, timeout=600):
-    p = subprocess.run([str(c) for c in cmd], capture_output=True, text=True, timeout=timeout)
+    # Decode tool output as UTF-8 explicitly: the OS default codepage (cp1252
+    # on Windows CI) raises UnicodeDecodeError on non-ASCII tool output.
+    p = subprocess.run(
+        [str(c) for c in cmd],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=timeout,
+    )
     return p.returncode, p.stdout, p.stderr
 
 

@@ -204,7 +204,16 @@ def main() -> int:
         "--manifest-path",
         str(args.manifest_path),
     ]
-    proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    # `cargo metadata` emits UTF-8 JSON; decoding via the OS default codepage
+    # (cp1252 on Windows CI) raises UnicodeDecodeError and leaves stdout=None.
+    proc = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
     if proc.returncode != 0:
         print(proc.stderr, file=sys.stderr)
         return proc.returncode
