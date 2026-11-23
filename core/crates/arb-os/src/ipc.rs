@@ -119,9 +119,8 @@ impl LocalIpcStream {
 
     /// Sets an optional read timeout on the stream where supported by the OS.
     ///
-    /// On Windows synchronous Named Pipes, setting a finite (`Some(_)`)
-    /// timeout is unsupported and returns [`OsError::Unsupported`] rather than
-    /// silently ignoring the timeout.
+    /// Supported on Unix sockets and on Windows Named Pipes (enforced per call
+    /// via `CancelIoEx` on the overlapped pipe object).
     ///
     /// # Errors
     ///
@@ -134,9 +133,8 @@ impl LocalIpcStream {
 
     /// Sets an optional write timeout on the stream where supported by the OS.
     ///
-    /// On Windows synchronous Named Pipes, setting a finite (`Some(_)`)
-    /// timeout is unsupported and returns [`OsError::Unsupported`] rather than
-    /// silently ignoring the timeout.
+    /// Supported on Unix sockets and on Windows Named Pipes (enforced per call
+    /// via `CancelIoEx` on the overlapped pipe object).
     ///
     /// # Errors
     ///
@@ -525,7 +523,7 @@ mod imp {
     use std::os::windows::ffi::OsStrExt;
     use std::path::Path;
     use std::ptr;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
@@ -533,6 +531,7 @@ mod imp {
         CloseHandle, DUPLICATE_SAME_ACCESS, DuplicateHandle, ERROR_BROKEN_PIPE,
         ERROR_INSUFFICIENT_BUFFER, ERROR_IO_PENDING, ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED,
         GENERIC_ALL, GENERIC_READ, GENERIC_WRITE, GetLastError, HANDLE, INVALID_HANDLE_VALUE,
+        WAIT_OBJECT_0, WAIT_TIMEOUT,
     };
     use windows_sys::Win32::Security::{
         ACCESS_ALLOWED_ACE, ACL, ACL_REVISION, AddAccessAllowedAce, EqualSid,
@@ -546,19 +545,21 @@ mod imp {
         OPEN_EXISTING, PIPE_ACCESS_DUPLEX, ReadFile, SECURITY_IDENTIFICATION,
         SECURITY_SQOS_PRESENT, WriteFile,
     };
-    use windows_sys::Win32::System::IO::{GetOverlappedResult, OVERLAPPED};
+    use windows_sys::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
     use windows_sys::Win32::System::Pipes::{
         ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, PIPE_READMODE_BYTE,
         PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
         WaitNamedPipeW,
     };
     use windows_sys::Win32::System::Threading::{
-        CreateEventW, GetCurrentProcess, OpenProcessToken,
+        CreateEventW, GetCurrentProcess, OpenProcessToken, WaitForSingleObject,
     };
 
     use crate::error::OsError;
 
     const PIPE_PREFIX: &str = r"\\.\pipe\";
+    /// `read_timeout_ms`/`write_timeout_ms` sentinel: block with no deadline.
+    const NO_TIMEOUT_MS: u32 = u32::MAX;
     const PIPE_BUFFER_BYTES: u32 = 64 * 1024;
     const PIPE_CONNECT_WAIT_MS: u32 = 2_000;
     const PIPE_CONNECT_RETRIES: usize = 3;
@@ -624,16 +625,68 @@ mod imp {
         }
 
         /// Waits for a `ERROR_IO_PENDING` IRP to complete, returning the
-        /// transferred byte count or the completion error.
-        fn wait(&mut self, raw: HANDLE, transferred: &mut u32) -> io::Result<()> {
-            // SAFETY: `raw` is a valid pipe file-object handle, `overlapped`
-            // identifies the in-flight IRP, and `transferred` is writable
-            // stack storage. `bWait = 1` blocks until the IRP completes.
-            let ok = unsafe { GetOverlappedResult(raw, &raw mut self.overlapped, transferred, 1) };
-            if ok == 0 {
-                return Err(io::Error::last_os_error());
+        /// transferred byte count, [`CallOutcome::TimedOut`] after
+        /// `timeout_ms`, or the completion error. `u32::MAX` waits forever.
+        fn wait(
+            &mut self,
+            raw: HANDLE,
+            transferred: &mut u32,
+            timeout_ms: u32,
+        ) -> io::Result<CallOutcome> {
+            if timeout_ms == u32::MAX {
+                // SAFETY: `raw` is a valid pipe file-object handle, `overlapped`
+                // identifies the in-flight IRP, and `transferred` is writable
+                // stack storage. `bWait = 1` blocks until the IRP completes.
+                let ok =
+                    unsafe { GetOverlappedResult(raw, &raw mut self.overlapped, transferred, 1) };
+                if ok == 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                return Ok(CallOutcome::Completed);
             }
-            Ok(())
+
+            // SAFETY: `event` is a valid manual-reset event owned by this call.
+            let wait_rc = unsafe { WaitForSingleObject(self.event, timeout_ms) };
+            match wait_rc {
+                WAIT_OBJECT_0 => {
+                    // SAFETY: the IRP already completed; `bWait = 0` only
+                    // harvests its status and byte count.
+                    let ok = unsafe {
+                        GetOverlappedResult(raw, &raw mut self.overlapped, transferred, 0)
+                    };
+                    if ok == 0 {
+                        return Err(io::Error::last_os_error());
+                    }
+                    Ok(CallOutcome::Completed)
+                }
+                WAIT_TIMEOUT => {
+                    // SAFETY: `CancelIoEx` cancels only the IRP tied to this
+                    // `overlapped`.
+                    let _ = unsafe { CancelIoEx(raw, &raw mut self.overlapped) };
+                    // SAFETY: reaping the cancelled IRP keeps `overlapped` and
+                    // `transferred` valid until kernel completion.
+                    let _ = unsafe {
+                        GetOverlappedResult(raw, &raw mut self.overlapped, transferred, 1)
+                    };
+                    Ok(CallOutcome::TimedOut)
+                }
+                _ => Err(io::Error::last_os_error()),
+            }
+        }
+    }
+
+    /// Result of an [`OverlappedCall`] wait.
+    enum CallOutcome {
+        Completed,
+        TimedOut,
+    }
+
+    /// Converts an optional deadline to milliseconds (`NO_TIMEOUT_MS` when unset,
+    /// saturated at `u32::MAX - 1` so the sentinel stays reserved).
+    fn timeout_millis(timeout: Option<Duration>) -> u32 {
+        match timeout {
+            None => NO_TIMEOUT_MS,
+            Some(d) => u32::try_from(d.as_millis()).unwrap_or(u32::MAX - 1),
         }
     }
 
@@ -966,7 +1019,7 @@ mod imp {
                 let code = unsafe { GetLastError() };
                 if code == ERROR_IO_PENDING {
                     // The pipe object is overlapped: wait for a client attach.
-                    call.wait(handle.raw, &mut 0)
+                    call.wait(handle.raw, &mut 0, NO_TIMEOUT_MS)
                         .map_err(|source| OsError::Ipc {
                             operation: "ConnectNamedPipe",
                             endpoint: endpoint.display().to_string(),
@@ -991,13 +1044,27 @@ mod imp {
                 *guard = Some(next_instance);
             }
 
-            Ok(Stream { handle })
+            Ok(Stream::with_no_timeouts(handle))
         }
     }
 
     #[derive(Debug)]
     pub(super) struct Stream {
         handle: OwnedPipeHandle,
+        /// Per-call read deadline in milliseconds (`NO_TIMEOUT_MS` = block).
+        read_timeout_ms: AtomicU32,
+        /// Per-call write deadline in milliseconds (`NO_TIMEOUT_MS` = block).
+        write_timeout_ms: AtomicU32,
+    }
+
+    impl Stream {
+        fn with_no_timeouts(handle: OwnedPipeHandle) -> Self {
+            Self {
+                handle,
+                read_timeout_ms: AtomicU32::new(NO_TIMEOUT_MS),
+                write_timeout_ms: AtomicU32::new(NO_TIMEOUT_MS),
+            }
+        }
     }
 
     impl Stream {
@@ -1032,7 +1099,7 @@ mod imp {
                             source,
                         }
                     })?;
-                    return Ok(Self { handle });
+                    return Ok(Self::with_no_timeouts(handle));
                 }
 
                 // SAFETY: `GetLastError` reads the calling thread's last-error slot.
@@ -1090,6 +1157,10 @@ mod imp {
                     raw: duplicated,
                     server_refs,
                 },
+                // The clone inherits the current deadlines; either handle may
+                // retune its own later via `set_*_timeout`.
+                read_timeout_ms: AtomicU32::new(self.read_timeout_ms.load(Ordering::Relaxed)),
+                write_timeout_ms: AtomicU32::new(self.write_timeout_ms.load(Ordering::Relaxed)),
             })
         }
 
@@ -1107,7 +1178,7 @@ mod imp {
         }
 
         #[expect(
-            clippy::unused_self,
+            clippy::unnecessary_wraps,
             reason = "signature mirrors the Unix implementation selected by cfg"
         )]
         pub(super) fn set_read_timeout(
@@ -1115,18 +1186,16 @@ mod imp {
             timeout: Option<Duration>,
             _endpoint: &Path,
         ) -> Result<(), OsError> {
-            if timeout.is_some() {
-                return Err(OsError::Unsupported {
-                    operation: "set_read_timeout",
-                    reason: "Windows synchronous Named Pipes do not support per-call read timeouts"
-                        .to_owned(),
-                });
-            }
+            // The pipe file object is overlapped, so a blocked `ReadFile` can be
+            // cancelled per call via `CancelIoEx` — the deadline is enforced by
+            // `OverlappedCall::wait` inside `read`.
+            self.read_timeout_ms
+                .store(timeout_millis(timeout), Ordering::Release);
             Ok(())
         }
 
         #[expect(
-            clippy::unused_self,
+            clippy::unnecessary_wraps,
             reason = "signature mirrors the Unix implementation selected by cfg"
         )]
         pub(super) fn set_write_timeout(
@@ -1134,14 +1203,8 @@ mod imp {
             timeout: Option<Duration>,
             _endpoint: &Path,
         ) -> Result<(), OsError> {
-            if timeout.is_some() {
-                return Err(OsError::Unsupported {
-                    operation: "set_write_timeout",
-                    reason:
-                        "Windows synchronous Named Pipes do not support per-call write timeouts"
-                            .to_owned(),
-                });
-            }
+            self.write_timeout_ms
+                .store(timeout_millis(timeout), Ordering::Release);
             Ok(())
         }
 
@@ -1166,7 +1229,14 @@ mod imp {
                 // SAFETY: `GetLastError` reads the calling thread's last-error slot.
                 let code = unsafe { GetLastError() };
                 if code == ERROR_IO_PENDING {
-                    match call.wait(self.handle.raw, &mut bytes_read) {
+                    let timeout = self.read_timeout_ms.load(Ordering::Acquire);
+                    match call.wait(self.handle.raw, &mut bytes_read, timeout) {
+                        Ok(CallOutcome::TimedOut) => {
+                            return Err(io::Error::new(
+                                io::ErrorKind::TimedOut,
+                                "named pipe read timed out",
+                            ));
+                        }
                         // A broken pipe while the IRP was pending is the same
                         // clean-EOF condition `ReadFile` reports inline.
                         Err(source)
@@ -1174,7 +1244,7 @@ mod imp {
                         {
                             return Ok(0);
                         }
-                        result => result?,
+                        result => result.map(|_| ())?,
                     }
                 } else if code == ERROR_BROKEN_PIPE {
                     return Ok(0);
@@ -1206,7 +1276,16 @@ mod imp {
                 // SAFETY: `GetLastError` reads the calling thread's last-error slot.
                 let code = unsafe { GetLastError() };
                 if code == ERROR_IO_PENDING {
-                    call.wait(self.handle.raw, &mut bytes_written)?;
+                    let timeout = self.write_timeout_ms.load(Ordering::Acquire);
+                    match call.wait(self.handle.raw, &mut bytes_written, timeout) {
+                        Ok(CallOutcome::TimedOut) => {
+                            return Err(io::Error::new(
+                                io::ErrorKind::TimedOut,
+                                "named pipe write timed out",
+                            ));
+                        }
+                        result => result.map(|_| ())?,
+                    }
                 } else {
                     return Err(io::Error::last_os_error());
                 }
