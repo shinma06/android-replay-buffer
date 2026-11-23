@@ -1,5 +1,6 @@
 package io.github.shinma06.arb.ui
 
+import io.github.shinma06.arb.ide.ArbdDaemonService
 import io.github.shinma06.arb.ide.SourceJumpResolver
 import io.github.shinma06.arb.model.ArbConfig
 import io.github.shinma06.arb.model.AudioStreamMeta
@@ -51,34 +52,67 @@ import io.github.shinma06.arb.state.TimelineViewerState
 import io.github.shinma06.arb.state.UNANCHORED_TAB_TITLE
 import org.junit.jupiter.api.Test
 import java.awt.image.BufferedImage
+import java.nio.file.Files
+import java.nio.file.Paths
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class ArbUiComponentsTest {
     @Test
-    fun videoViewportCanvasTogglesMandatoryApproximateBadgeAndTapRipples() {
-        val canvas = VideoViewportCanvas()
-        assertFalse(canvas.isApproximateBadgeVisible())
+    fun studioControllerTogglesMandatoryApproximateBadgeAndTapRipples() {
+        val studio = ArbStudioController(
+            onScrub = {},
+            onSeekExact = {},
+            onTrimExport = { _, _ -> },
+            onPngExport = { _, _ -> },
+        )
+        assertFalse(studio.approximatePreviewVisible)
 
         val img = BufferedImage(40, 80, BufferedImage.TYPE_INT_ARGB)
-        canvas.updateFrame(
+        val baseState = TimelineViewerState(
+            bundleId = "b-approx",
+            path = "/tmp/b-approx",
+            format = BundleFormat.V2,
+            isLegacy = false,
+            leaseId = "l-1",
+            summary = TimelineSummaryResponse(
+                bundleId = "b-approx",
+                path = "/tmp/b-approx",
+                format = BundleFormat.V2,
+                isLegacy = false,
+                provenance = Provenance.Original,
+                streams = StreamsSummary(),
+                unanchoredSummary = UnanchoredSummary(0L, 0L),
+                epochs = emptyList(),
+                frameCount = 20,
+                keyframeCount = 2,
+                logMainCount = 0,
+                logUnanchoredCount = 0,
+                tapMainCount = 0,
+                tapUnanchoredCount = 0,
+                discontinuityCount = 0,
+            ),
+            frameCount = 20L,
+        )
+        studio.renderState(baseState, image = img)
+        studio.applyFramePublished(
             ShmFrameMeta(1L, 10L, true, 40, 80, 160, ShmPixelFormat.RGBA8, 100L),
             img,
         )
-        assertTrue(canvas.isApproximateBadgeVisible())
-        assertEquals(APPROXIMATE_PREVIEW_BADGE_TEXT, canvas.approximateBadgeText())
+        assertTrue(studio.approximatePreviewVisible)
+        assertEquals(APPROXIMATE_PREVIEW_BADGE_TEXT, ArbStudioController.APPROXIMATE_BADGE_TEXT)
 
-        canvas.updateFrame(
+        studio.applyFramePublished(
             ShmFrameMeta(2L, 12L, false, 40, 80, 160, ShmPixelFormat.RGBA8, 200L),
             img,
         )
-        assertFalse(canvas.isApproximateBadgeVisible())
+        assertFalse(studio.approximatePreviewVisible)
     }
 
     @Test
-    fun timelineViewerPanelSeparatesMainAndUnanchoredLogsAndShowsTruncatedBanner() {
-        val panel = TimelineViewerPanel(
+    fun studioControllerSeparatesMainAndUnanchoredLogsAndShowsTruncatedBanner() {
+        val studio = ArbStudioController(
             onScrub = {},
             onSeekExact = {},
             onTrimExport = { _, _ -> },
@@ -127,145 +161,130 @@ class ArbUiComponentsTest {
             ),
         )
 
-        panel.renderState(state, image = null)
-        assertTrue(panel.videoCanvas.isApproximateBadgeVisible())
-        assertEquals(2, panel.discontinuityBar.renderedEventCount())
-        assertEquals(2, panel.mainLogRowCount())
-        assertEquals(1, panel.unanchoredLogRowCount())
-        assertTrue(panel.logsTabbedPane.getTitleAt(1).startsWith(UNANCHORED_TAB_TITLE))
-        assertTrue(panel.isUnanchoredTruncatedBannerVisible())
-        assertFalse(panel.multiTrackDock.isSelectTapRangeVisible(), "Tap preset must stay hidden when taps == 0")
-        assertFalse(panel.multiTrackDock.isSelectAroundCrashVisible(), "Crash preset must stay hidden when crashes == 0")
-        assertTrue(panel.multiTrackDock.isTrashOriginalEnabled(), "v2 bundle allows non-destructive trash-original")
-        assertEquals(ArbFormatters.EXPORT_FULL_LABEL, panel.exportButtonText())
+        studio.renderState(state, image = null)
+        assertTrue(studio.approximatePreviewVisible)
+        assertEquals(2, studio.viewerState?.discontinuities?.size)
+        assertEquals(2, studio.mainLogRowCount)
+        assertEquals(1, studio.unanchoredLogRowCount)
+        assertTrue(studio.unanchoredTabLabel.startsWith(UNANCHORED_TAB_TITLE))
+        assertTrue(studio.isUnanchoredTruncatedBannerVisible)
+        assertFalse(studio.isSelectTapRangeVisible, "Tap preset must stay hidden when taps == 0")
+        assertFalse(studio.isSelectAroundCrashVisible, "Crash preset must stay hidden when crashes == 0")
+        assertTrue(studio.isTrashOriginalEnabled, "v2 bundle allows non-destructive trash-original")
+        assertEquals(ArbFormatters.EXPORT_FULL_LABEL, studio.exportButtonLabel)
     }
 
     @Test
-    fun captureBarCockpitDualSaveActionsSecondsNotationAndCatalogFiltersWork() {
-        var saveAndOpenSecs = -1L
-        var saveOnlySecs = -1L
-        var screenshotCalled = false
-        var saveLogsSecs = -1L
-
-        val captureBar = CaptureBarPanel(
-            onStartCapture = {},
-            onStopCapture = {},
-            onSaveNow = {},
-            onRefresh = {},
-            onSaveAndOpen = { saveAndOpenSecs = it },
-            onSaveOnly = { saveOnlySecs = it },
-            onScreenshot = { screenshotCalled = true },
-            onSaveLogs = { saveLogsSecs = it },
+    fun toolWindowControllerCockpitSecondsNotationCatalogFiltersAndGcOnlyInTrashTab() {
+        val service = ArbdDaemonService()
+        val controller = ArbToolWindowController(
+            project = null,
+            daemonService = service,
+            onOpenBundle = { _, _, _ -> },
+            pollIntervalMs = 0L,
         )
-
-        val healthyStatus = SystemStatusResponse(
-            pid = 7L,
-            uptimeMs = 100L,
-            capture = CaptureStatusView(
-                active = true,
-                connected = true,
-                serial = "dev-1",
-                storagePressureStopped = false,
-                videoFrames = 1_350L, // 45s @ 30fps
-                audioFrames = 0L,
-                logRecords = 5L,
-                tapRecords = 0L,
-                discontinuities = 0L,
-                staticHoldEvents = 0L,
-            ),
-            ringChunkCount = 4L,
-            ringTotalBytes = 100L * 1024L * 1024L,
-            ringPinnedChunkCount = 0L,
-            activeViewports = 0L,
-            activeSaveJobs = 0L,
-            recovery = RecoverySummaryView(),
-        )
-
-        // Healthy -> Tier-2 banner container hidden, strict seconds CTA, SaveAndOpen default
-        val stateDefault = CaptureBarReducer.fromStatus(
-            CaptureBarState(),
-            healthyStatus,
-            config = ArbConfig(saveWindowSecs = 300, ideDefaultSaveAction = IdeDefaultSaveAction.SAVE_AND_OPEN),
-        )
-        captureBar.render(stateDefault)
-        assertFalse(captureBar.isBannerContainerVisible(), "Healthy cockpit must hide Tier-2 banner container")
-        assertEquals("REC", captureBar.statusBadgeDisplayText())
-        assertEquals("直前 300s を保存して開く", captureBar.primarySaveButtonText())
-        assertEquals("保存のみ", captureBar.secondarySaveButtonText())
-        assertTrue(captureBar.ringMeterDisplayText().startsWith("45s / 300s"))
-        assertFalse(ArbFormatters.containsEmoji(captureBar.primarySaveButtonText()))
-
-        captureBar.clickPrimarySave()
-        assertEquals(300L, saveAndOpenSecs)
-        captureBar.clickSecondarySave()
-        assertEquals(300L, saveOnlySecs)
-        captureBar.clickScreenshot()
-        assertTrue(screenshotCalled)
-        captureBar.clickSaveLogs()
-        assertEquals(300L, saveLogsSecs)
-
-        // Swapped default action (SaveOnly primary, SaveAndOpen secondary)
-        saveAndOpenSecs = -1L
-        saveOnlySecs = -1L
-        val stateSwapped = CaptureBarReducer.fromStatus(
-            CaptureBarState(),
-            healthyStatus.copy(capture = healthyStatus.capture.copy(active = false, storagePressureStopped = true)),
-            config = ArbConfig(saveWindowSecs = 45, ideDefaultSaveAction = IdeDefaultSaveAction.SAVE_ONLY),
-        )
-        captureBar.render(stateSwapped)
-        assertTrue(captureBar.isBannerContainerVisible())
-        assertEquals(listOf(CaptureBannerKind.STORAGE_PRESSURE_STOP), captureBar.visibleBannerKinds())
-        assertEquals("直前 45s を保存のみ", captureBar.primarySaveButtonText())
-        assertEquals("保存して開く", captureBar.secondarySaveButtonText())
-        captureBar.clickPrimarySave()
-        assertEquals(45L, saveOnlySecs)
-        captureBar.clickSecondarySave()
-        assertEquals(45L, saveAndOpenSecs)
-
-        // FailedSaveRecoveryPanel
-        val recovery = FailedSaveRecoveryPanel({}, { _, _ -> }, {})
-        assertFalse(recovery.isVisible, "Healthy recovery panel must stay hidden")
-        val job = SaveJobView(
-            jobId = "job-err-1",
-            state = SaveJobState.FAILED_RETRYABLE,
-            destinationPath = "/bad/path",
-            pinnedChunkIds = listOf("c1"),
-            lastError = "read-only fs",
-            createdAtUtc = "2026-11-23T00:00:00Z",
-            updatedAtUtc = "2026-11-23T00:00:00Z",
-        )
-        recovery.render(FailedSaveRecoveryReducer.withJobs(FailedSaveRecoveryState(), listOf(job)))
-        assertTrue(recovery.isVisible)
-        assertEquals(1, recovery.displayedRetryableCount())
-
-        // Filterable Library List
-        val catalog = BundleCatalogPanel({}, {}, {}, {})
-        catalog.render(
-            BundleCatalogState.fromEntries(
-                entries = listOf(
-                    BundleEntryView("leg-1", "/old", CatalogFormatVersion.LEGACY_RO, BundleLifecycleState.ACTIVE, null, null, "2024-01-01", 1),
-                    BundleEntryView("v2-trim", "/new-trim", CatalogFormatVersion.V2, BundleLifecycleState.ACTIVE, null, "v2-orig", "2026-11-23", 0),
-                    BundleEntryView("v2-crash", "/new-crash", CatalogFormatVersion.V2, BundleLifecycleState.ACTIVE, null, null, "2026-11-23", 0),
-                    BundleEntryView("v2-trash", "/new-trash", CatalogFormatVersion.V2, BundleLifecycleState.TRASHED, "2026-11-23", null, "2026-11-23", 0),
+        try {
+            val healthyStatus = SystemStatusResponse(
+                pid = 7L,
+                uptimeMs = 100L,
+                capture = CaptureStatusView(
+                    active = true,
+                    connected = true,
+                    serial = "dev-1",
+                    storagePressureStopped = false,
+                    videoFrames = 1_350L,
+                    audioFrames = 0L,
+                    logRecords = 5L,
+                    tapRecords = 0L,
+                    discontinuities = 0L,
+                    staticHoldEvents = 0L,
                 ),
-                crashBundleIds = setOf("v2-crash"),
-            ),
-        )
-        assertEquals(3, catalog.rowCount(), "ALL filter lists active non-trashed bundles")
-        assertEquals(LEGACY_READ_ONLY_BADGE_TEXT, catalog.badgeAtRow(0))
-        assertEquals("v2", catalog.badgeAtRow(1))
+                ringChunkCount = 4L,
+                ringTotalBytes = 100L * 1024L * 1024L,
+                ringPinnedChunkCount = 0L,
+                activeViewports = 0L,
+                activeSaveJobs = 0L,
+                recovery = RecoverySummaryView(),
+            )
 
-        catalog.selectFilter(BundleFilter.TRIMMED)
-        assertEquals(1, catalog.rowCount())
-        assertEquals("v2-trim", catalog.itemAtRow(0).bundleId)
+            val stateDefault = CaptureBarReducer.fromStatus(
+                CaptureBarState(),
+                healthyStatus,
+                config = ArbConfig(saveWindowSecs = 300, ideDefaultSaveAction = IdeDefaultSaveAction.SAVE_AND_OPEN),
+            )
+            controller.applyStateForTest(capture = stateDefault)
+            assertFalse(controller.captureState.hasVisibleBanners, "Healthy cockpit must hide Tier-2 banners")
+            assertEquals("REC", controller.captureState.statusBadgeText)
+            assertEquals("直前 300s を保存して開く", controller.captureState.primarySaveLabel)
+            assertEquals("保存のみ", controller.captureState.secondarySaveLabel)
+            assertTrue(controller.captureState.ringMeterText.startsWith("45s / 300s"))
+            assertFalse(ArbFormatters.containsEmoji(controller.captureState.primarySaveLabel))
 
-        catalog.selectFilter(BundleFilter.CRASH)
-        assertEquals(1, catalog.rowCount())
-        assertEquals("v2-crash", catalog.itemAtRow(0).bundleId)
+            // Swapped default action + storage pressure banner
+            val stateSwapped = CaptureBarReducer.fromStatus(
+                CaptureBarState(),
+                healthyStatus.copy(capture = healthyStatus.capture.copy(active = false, storagePressureStopped = true)),
+                config = ArbConfig(saveWindowSecs = 45, ideDefaultSaveAction = IdeDefaultSaveAction.SAVE_ONLY),
+            )
+            controller.applyStateForTest(capture = stateSwapped)
+            assertTrue(controller.captureState.hasVisibleBanners)
+            assertEquals(listOf(CaptureBannerKind.STORAGE_PRESSURE_STOP), controller.captureState.banners.map { it.kind })
+            assertEquals("直前 45s を保存のみ", controller.captureState.primarySaveLabel)
+            assertEquals("保存して開く", controller.captureState.secondarySaveLabel)
 
-        catalog.selectFilter(BundleFilter.TRASH)
-        assertEquals(1, catalog.rowCount())
-        assertEquals("v2-trash", catalog.itemAtRow(0).bundleId)
+            // Failed save recovery state
+            val job = SaveJobView(
+                jobId = "job-err-1",
+                state = SaveJobState.FAILED_RETRYABLE,
+                destinationPath = "/bad/path",
+                pinnedChunkIds = listOf("c1"),
+                lastError = "read-only fs",
+                createdAtUtc = "2026-11-23T00:00:00Z",
+                updatedAtUtc = "2026-11-23T00:00:00Z",
+            )
+            controller.applyStateForTest(
+                recovery = FailedSaveRecoveryReducer.withJobs(FailedSaveRecoveryState(), listOf(job)),
+            )
+            assertEquals(1, controller.recoveryState.retryableJobs.size)
+
+            // Filterable library list & GC visibility strictly inside TRASH tab
+            controller.applyStateForTest(
+                catalog = BundleCatalogState.fromEntries(
+                    entries = listOf(
+                        BundleEntryView("leg-1", "/old", CatalogFormatVersion.LEGACY_RO, BundleLifecycleState.ACTIVE, null, null, "2024-01-01", 1),
+                        BundleEntryView("v2-trim", "/new-trim", CatalogFormatVersion.V2, BundleLifecycleState.ACTIVE, null, "v2-orig", "2026-11-23", 0),
+                        BundleEntryView("v2-crash", "/new-crash", CatalogFormatVersion.V2, BundleLifecycleState.ACTIVE, null, null, "2026-11-23", 0),
+                        BundleEntryView("v2-trash", "/new-trash", CatalogFormatVersion.V2, BundleLifecycleState.TRASHED, "2026-11-23", null, "2026-11-23", 0),
+                    ),
+                    crashBundleIds = setOf("v2-crash"),
+                ),
+            )
+            assertFalse(controller.showGcAction, "GC action must be hidden on ALL tab")
+            assertEquals(3, controller.displayedBundles.size)
+            assertEquals(LEGACY_READ_ONLY_BADGE_TEXT, controller.displayedBundles[0].formatBadge)
+            assertEquals("v2", controller.displayedBundles[1].formatBadge)
+
+            controller.selectFilter(BundleFilter.TRIMMED)
+            javax.swing.SwingUtilities.invokeAndWait {}
+            assertFalse(controller.showGcAction)
+            assertEquals(1, controller.displayedBundles.size)
+            assertEquals("v2-trim", controller.displayedBundles[0].bundleId)
+
+            controller.selectFilter(BundleFilter.CRASH)
+            javax.swing.SwingUtilities.invokeAndWait {}
+            assertFalse(controller.showGcAction)
+            assertEquals(1, controller.displayedBundles.size)
+            assertEquals("v2-crash", controller.displayedBundles[0].bundleId)
+
+            controller.selectFilter(BundleFilter.TRASH)
+            javax.swing.SwingUtilities.invokeAndWait {}
+            assertTrue(controller.showGcAction, "GC action must appear ONLY inside TRASH tab")
+            assertEquals(1, controller.displayedBundles.size)
+            assertEquals("v2-trash", controller.displayedBundles[0].bundleId)
+        } finally {
+            controller.dispose()
+            service.dispose()
+        }
     }
 
     @Test
@@ -279,7 +298,7 @@ class ArbUiComponentsTest {
             }
         }
 
-        val panel = TimelineViewerPanel(
+        val studio = ArbStudioController(
             onScrub = {},
             onSeekExact = {},
             onTrimExport = { _, _ -> },
@@ -342,31 +361,56 @@ class ArbUiComponentsTest {
             ),
         )
 
-        panel.renderState(state, image = null)
+        studio.renderState(state, image = null)
 
-        assertTrue(panel.visibleHonestyChipLabels().isEmpty(), "Healthy bundle has 0 honesty chips")
-        assertTrue(panel.exportButtonText().startsWith("選択範囲を書き出し ("), "Sub-range CTA shows seconds duration")
-        assertTrue(panel.multiTrackDock.isSelectTapRangeVisible())
-        assertTrue(panel.multiTrackDock.isSelectAroundCrashVisible())
-        assertEquals(1, panel.multiTrackDock.renderedScreenSpanCount())
-        assertEquals(1, panel.multiTrackDock.renderedCrashMarkerCount())
-        assertEquals(1, panel.videoCanvas.renderedTapOverlayCount())
-        assertTrue(panel.isExportCompletionBarVisible())
+        assertTrue(studio.visibleHonestyChipLabels.isEmpty(), "Healthy bundle has 0 honesty chips")
+        assertTrue(studio.exportButtonLabel.startsWith("選択範囲を書き出し ("), "Sub-range CTA shows seconds duration")
+        assertTrue(studio.isSelectTapRangeVisible)
+        assertTrue(studio.isSelectAroundCrashVisible)
+        assertEquals(1, studio.viewerState?.screens?.size)
+        assertEquals(1, studio.viewerState?.crashes?.size)
+        assertEquals(1, studio.activeTapOverlays.size)
+        assertTrue(studio.isExportCompletionBarVisible)
 
-        // Event row [In] / [Out] snap & PSI source jump
-        val rows = panel.eventLogStreamPanel.syncedRows()
+        val rows = studio.syncedRows
         val logRowIdx = rows.indexOfFirst { it.seq == 2L }
         assertTrue(logRowIdx >= 0)
-        panel.eventLogStreamPanel.triggerSnapInAtRow(logRowIdx)
+        studio.triggerSnapInAtRow(logRowIdx)
         assertEquals(rows[logRowIdx].frameIndex, lastRange?.first)
-        panel.eventLogStreamPanel.triggerSourceJumpAtRow(logRowIdx)
+        studio.triggerSourceJumpAtRow(logRowIdx)
         assertEquals(1, jumpedTargets.size)
         assertEquals("Checkout.kt:84", jumpedTargets[0].displayLabel)
 
-        // Legacy RO disables trash-original checkbox
-        panel.renderState(state.copy(isLegacy = true, format = BundleFormat.LEGACY_SCHEMA4), image = null)
-        assertFalse(panel.multiTrackDock.isTrashOriginalEnabled())
-        assertFalse(panel.multiTrackDock.isTrashOriginalSelected())
-        assertTrue(panel.visibleHonestyChipLabels().contains(LEGACY_READ_ONLY_BADGE_TEXT))
+        studio.renderState(state.copy(isLegacy = true, format = BundleFormat.LEGACY_SCHEMA4), image = null)
+        assertFalse(studio.isTrashOriginalEnabled)
+        assertFalse(studio.isTrashOriginalSelected)
+        assertTrue(studio.visibleHonestyChipLabels.contains(LEGACY_READ_ONLY_BADGE_TEXT))
+    }
+
+    @Test
+    fun allComposeUiSourcesContainZeroEmojiAndZeroHardcodedDarkSurfaceHex() {
+        val repoRoot = System.getProperty("arb.repo.root")?.let { Paths.get(it) }
+            ?: Paths.get("").toAbsolutePath().normalize().parent
+        val srcDir = repoRoot.resolve("ide-plugin/src/main")
+        assertTrue(Files.isDirectory(srcDir))
+        Files.walk(srcDir).use { stream ->
+            val files = stream.filter { Files.isRegularFile(it) }.toList()
+            assertTrue(files.isNotEmpty())
+            for (file in files) {
+                val content = Files.readString(file)
+                assertFalse(
+                    ArbFormatters.containsEmoji(content),
+                    "UI source ${file.fileName} must contain zero emoji",
+                )
+                assertFalse(
+                    content.contains("0x1E, 0x1F, 0x22") || content.contains("#1E1F22", ignoreCase = true),
+                    "UI source ${file.fileName} must not hardcode dark surface hex #1E1F22",
+                )
+                assertFalse(
+                    content.contains("LineBorder"),
+                    "UI source ${file.fileName} must not use boxy Swing LineBorder",
+                )
+            }
+        }
     }
 }

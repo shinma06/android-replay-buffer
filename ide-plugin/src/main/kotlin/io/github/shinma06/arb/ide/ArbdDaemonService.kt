@@ -149,6 +149,13 @@ open class ArbdDaemonService internal constructor(
     @Throws(IOException::class)
     open fun launchBundledTray(): Path = processManager.launchBundledTray()
 
+    /** Resolves the bundled `arb-cli` binary path for Settings CLI/MCP copy actions. */
+    open fun resolveBundledCliPath(): Path? =
+        ArbCliMcpPathResolver.resolveCliPath(
+            pluginDir = resolveInstalledPluginPath(),
+            os = processManager.paths.os,
+        )
+
     @Throws(IOException::class)
     open fun <T> withClient(block: (ArbdRpcClient) -> T): T = synchronized(lock) {
         val active = ensureConnectedLocked()

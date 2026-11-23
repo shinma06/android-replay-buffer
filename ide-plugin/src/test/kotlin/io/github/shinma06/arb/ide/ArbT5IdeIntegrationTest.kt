@@ -1,23 +1,33 @@
 package io.github.shinma06.arb.ide
 
+import com.google.gson.JsonParser
 import com.intellij.openapi.options.ConfigurationException
+import io.github.shinma06.arb.ipc.HostOs
+import io.github.shinma06.arb.model.AdbDeviceInfo
+import io.github.shinma06.arb.model.AdbDeviceState
 import io.github.shinma06.arb.model.ArbConfig
+import io.github.shinma06.arb.model.ArbConfigPatch
+import io.github.shinma06.arb.model.ArbdRpcException
 import io.github.shinma06.arb.model.IdeDefaultSaveAction
 import io.github.shinma06.arb.model.OutputDirPatch
 import io.github.shinma06.arb.model.SystemHelloResponse
 import io.github.shinma06.arb.state.ArbFormatters
 import io.github.shinma06.arb.state.ArbSettingsDraft
+import io.github.shinma06.arb.state.CaptureBarState
+import io.github.shinma06.arb.ui.ArbStudioController
+import io.github.shinma06.arb.ui.ArbToolWindowController
 import io.github.shinma06.arb.ui.StudioExportFormat
-import io.github.shinma06.arb.ui.TimelineViewerPanel
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
+import java.time.Instant
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -30,7 +40,6 @@ class ArbT5IdeIntegrationTest {
 
     @Test
     fun fileTypeDetectorRecognizesArbBundlesAndStrictlyIgnoresOrdinaryJson(@TempDir tmp: Path) {
-        // 1. Valid ARB v2 bundle manifest.json with sibling timeline.sqlite
         val v2Dir = Files.createDirectories(tmp.resolve("bundle-v2-valid"))
         Files.writeString(v2Dir.resolve("timeline.sqlite"), "stub")
         val v2Manifest = Files.writeString(
@@ -39,14 +48,12 @@ class ArbT5IdeIntegrationTest {
         )
         assertEquals(ArbBundleDetector.DetectedKind.V2_MANIFEST, ArbBundleDetector.detectPath(v2Manifest))
 
-        // 2. Real repository Legacy Schema-4 fixture replay.json
         val legacyReplay = repoRoot().resolve(
             "plugin/src/test/resources/replay-trim-parity/replay-20240101-000000-manual-feedface/replay.json",
         )
         assertTrue(Files.isRegularFile(legacyReplay), "Legacy Schema-4 fixture must exist")
         assertEquals(ArbBundleDetector.DetectedKind.LEGACY_SCHEMA4_REPLAY, ArbBundleDetector.detectPath(legacyReplay))
 
-        // 3. Valid Legacy Schema-3 session.json with sibling video.mp4
         val s3Dir = Files.createDirectories(tmp.resolve("bundle-s3"))
         Files.writeString(s3Dir.resolve("video.mp4"), "stub")
         val s3Session = Files.writeString(
@@ -55,12 +62,10 @@ class ArbT5IdeIntegrationTest {
         )
         assertEquals(ArbBundleDetector.DetectedKind.LEGACY_SCHEMA3_SESSION, ArbBundleDetector.detectPath(s3Session))
 
-        // 4. Strictly ignore ordinary package.json
         val nodeDir = Files.createDirectories(tmp.resolve("web-app"))
         val pkgJson = Files.writeString(nodeDir.resolve("package.json"), """{"name":"app","version":"1.0.0"}""")
         assertNull(ArbBundleDetector.detectPath(pkgJson), "package.json must never be hijacked")
 
-        // 5. Strictly ignore Web App / Chrome Extension manifest.json (even with sibling files!)
         val pwaDir = Files.createDirectories(tmp.resolve("pwa-app"))
         Files.writeString(pwaDir.resolve("video.mp4"), "promo-video")
         val pwaManifest = Files.writeString(
@@ -69,7 +74,6 @@ class ArbT5IdeIntegrationTest {
         )
         assertNull(ArbBundleDetector.detectPath(pwaManifest), "PWA/Chrome manifest.json must never be hijacked")
 
-        // 6. Strictly ignore standalone manifest.json without sibling ARB files
         val loneDir = Files.createDirectories(tmp.resolve("lone-json"))
         val loneManifest = Files.writeString(
             loneDir.resolve("manifest.json"),
@@ -77,7 +81,6 @@ class ArbT5IdeIntegrationTest {
         )
         assertNull(ArbBundleDetector.detectPath(loneManifest), "manifest.json without sibling bundle files must be ignored")
 
-        // 7. Strictly ignore unrelated session.json / replay.json
         val randomDir = Files.createDirectories(tmp.resolve("random-json"))
         Files.writeString(randomDir.resolve("video.mp4"), "unrelated")
         val randomSession = Files.writeString(randomDir.resolve("session.json"), """{"user":"alice","token":"xyz"}""")
@@ -89,7 +92,6 @@ class ArbT5IdeIntegrationTest {
     @Test
     fun preCloseCheckClosesSilentlyWhenCleanAndRespectsConfirmationWhenDirty() {
         var askCount = 0
-        // Untouched / already exported -> silent close without asking
         assertTrue(
             ArbBundlePreCloseCheck.evaluatePreClose(hasUnexportedTrim = false) {
                 askCount++
@@ -98,7 +100,6 @@ class ArbT5IdeIntegrationTest {
         )
         assertEquals(0, askCount, "clean editor must never prompt on close")
 
-        // Dirty + user confirms close -> returns true
         assertTrue(
             ArbBundlePreCloseCheck.evaluatePreClose(hasUnexportedTrim = true) {
                 askCount++
@@ -107,7 +108,6 @@ class ArbT5IdeIntegrationTest {
         )
         assertEquals(1, askCount)
 
-        // Dirty + user cancels -> returns false (keeps tab open)
         assertFalse(
             ArbBundlePreCloseCheck.evaluatePreClose(hasUnexportedTrim = true) {
                 askCount++
@@ -118,11 +118,15 @@ class ArbT5IdeIntegrationTest {
     }
 
     @Test
-    fun settingsConfigurableRoundTripsDaemonConfigAndHandlesOfflineGracefully(@TempDir tmp: Path) {
+    fun settingsConfigurableRoundTripsDaemonConfigScreenshotInheritanceAndCliMcpCopy(@TempDir tmp: Path) {
         var storedConfig = ArbConfig()
         var storedCustomBinary = ""
-        var lastAppliedPatch: io.github.shinma06.arb.model.ArbConfigPatch? = null
+        var storedScreenshotInherit = true
+        var storedCustomScreenshotDir = ""
+        var lastAppliedPatch: ArbConfigPatch? = null
+        val copiedTexts = mutableListOf<String>()
 
+        val fakeCliPath = tmp.resolve("native/macos-arm64/arb-cli").toAbsolutePath().normalize().toString()
         val configurable = ArbSettingsConfigurable(
             project = null,
             daemonConfigReader = { storedConfig },
@@ -149,17 +153,39 @@ class ArbT5IdeIntegrationTest {
             },
             localBinaryReader = { storedCustomBinary },
             localBinaryWriter = { storedCustomBinary = it },
+            localScreenshotReader = { storedScreenshotInherit to storedCustomScreenshotDir },
+            localScreenshotWriter = { inherit, dir ->
+                storedScreenshotInherit = inherit
+                storedCustomScreenshotDir = dir
+            },
+            cliPathProvider = { fakeCliPath },
+            clipboardWriter = { copiedTexts.add(it) },
         )
 
-        configurable.createComponent()
-        val panel = requireNotNull(configurable.currentPanelForTest())
-        assertFalse(panel.isOfflineBannerVisible())
+        val form = configurable.createFormModel()
+        assertFalse(form.isBannerVisible)
         assertFalse(configurable.isModified())
+        assertTrue(form.screenshotInheritLogcat, "Logcat screenshot inheritance must default to true")
 
+        // 1-Click CLI / MCP copy verification
+        assertTrue(configurable.copyCliPath(form))
+        assertEquals(fakeCliPath, copiedTexts.last())
+        assertTrue(form.copyFeedback.contains("CLI"))
+        assertFalse(ArbFormatters.containsEmoji(form.copyFeedback))
+
+        assertTrue(configurable.copyMcpJson(form))
+        val parsedMcp = JsonParser.parseString(copiedTexts.last()).asJsonObject
+        assertEquals(fakeCliPath, parsedMcp.get("command").asString)
+        assertEquals("mcp", parsedMcp.getAsJsonArray("args").get(0).asString)
+        assertTrue(form.copyFeedback.contains("MCP"))
+        assertFalse(ArbFormatters.containsEmoji(form.copyFeedback))
+
+        // Full config + local screenshot override round-trip
         val outDir = tmp.resolve("saved-bundles").toAbsolutePath().normalize().toString()
         val customArbd = tmp.resolve("custom-arbd").toAbsolutePath().normalize().toString()
-        panel.loadFromDraft(
-            ArbSettingsDraft(
+        val customShotDir = tmp.resolve("screenshots").toAbsolutePath().normalize().toString()
+        form.loadFromDraft(
+            draft = ArbSettingsDraft(
                 saveWindowSecs = 90,
                 ringBudgetBytes = 2L * 1024L * 1024L * 1024L,
                 minFreeDiskBytes = 4L * 1024L * 1024L * 1024L,
@@ -172,6 +198,8 @@ class ArbT5IdeIntegrationTest {
                 ideDefaultSaveAction = IdeDefaultSaveAction.SAVE_ONLY,
                 customArbdBinaryPath = customArbd,
             ),
+            screenshotInheritLogcat = false,
+            customScreenshotDir = customShotDir,
         )
         assertTrue(configurable.isModified())
         configurable.apply()
@@ -186,10 +214,20 @@ class ArbT5IdeIntegrationTest {
         assertEquals(outDir, storedConfig.outputDirOverride)
         assertEquals(IdeDefaultSaveAction.SAVE_ONLY, storedConfig.ideDefaultSaveAction)
         assertEquals(customArbd, storedCustomBinary)
+        assertFalse(storedScreenshotInherit)
+        assertEquals(customShotDir, storedCustomScreenshotDir)
         assertEquals(OutputDirPatch.Set(outDir), lastAppliedPatch?.outputDirOverride)
 
         // Relative custom arbd binary path rejected cleanly
-        panel.loadFromDraft(panel.currentDraft().copy(customArbdBinaryPath = "relative/arbd"))
+        form.loadFromDraft(form.currentDraft().copy(customArbdBinaryPath = "relative/arbd"))
+        assertFailsWith<ConfigurationException> { configurable.apply() }
+
+        // Relative custom screenshot folder rejected cleanly when inheritance is unchecked
+        form.loadFromDraft(
+            draft = form.currentDraft().copy(customArbdBinaryPath = customArbd),
+            screenshotInheritLogcat = false,
+            customScreenshotDir = "relative/shots",
+        )
         assertFailsWith<ConfigurationException> { configurable.apply() }
         configurable.disposeUIResources()
 
@@ -201,13 +239,14 @@ class ArbT5IdeIntegrationTest {
             daemonConfigWriter = { _, _ -> error("must not call daemonConfigWriter when offline") },
             localBinaryReader = { offlineLocalBin },
             localBinaryWriter = { offlineLocalBin = it },
+            cliPathProvider = { fakeCliPath },
         )
-        offlineConfigurable.createComponent()
-        val offlinePanel = requireNotNull(offlineConfigurable.currentPanelForTest())
-        assertTrue(offlinePanel.isOfflineBannerVisible())
-        assertFalse(ArbFormatters.containsEmoji(offlinePanel.offlineBannerText()))
+        val offlineForm = offlineConfigurable.createFormModel()
+        assertTrue(offlineForm.isBannerVisible)
+        assertFalse(offlineForm.isDaemonControlsEnabled)
+        assertFalse(ArbFormatters.containsEmoji(offlineForm.daemonBannerMessage))
 
-        offlinePanel.loadFromDraft(offlinePanel.currentDraft().copy(customArbdBinaryPath = customArbd))
+        offlineForm.loadFromDraft(offlineForm.currentDraft().copy(customArbdBinaryPath = customArbd))
         assertTrue(offlineConfigurable.isModified())
         offlineConfigurable.apply()
         assertEquals(customArbd, offlineLocalBin)
@@ -215,7 +254,79 @@ class ArbT5IdeIntegrationTest {
     }
 
     @Test
-    fun aboutPanelDisplaysVersionsAndZeroGplOssLicenseAttribution() {
+    fun screenshotDestinationResolverInheritsLogcatAndFallsBackSafely(@TempDir tmp: Path) {
+        val logcatDir = tmp.resolve("studio-desktop").toAbsolutePath().normalize()
+        val customDir = tmp.resolve("custom-shots").toAbsolutePath().normalize()
+
+        // 1. Inherit Logcat -> uses resolved Studio directory
+        val inherited = ArbScreenshotDestinationResolver.resolveDirectory(
+            project = null,
+            inheritLogcat = true,
+            customScreenshotDir = "",
+            logcatLocationProvider = { "\$DESKTOP_DIR$" },
+            logcatDirectoryResolver = { _, _ -> logcatDir },
+        )
+        assertTrue(inherited.inheritedFromLogcat)
+        assertEquals(logcatDir, inherited.directory)
+        assertFalse(ArbFormatters.containsEmoji(inherited.statusText))
+
+        val outputFile = ArbScreenshotDestinationResolver.resolveOutputFilePath(
+            project = null,
+            localSettings = ArbLocalSettingsState().apply { screenshotInheritLogcat = true },
+            now = Instant.parse("2026-11-24T01:02:03Z"),
+            logcatLocationProvider = { "\$DESKTOP_DIR$" },
+            logcatDirectoryResolver = { _, _ -> logcatDir },
+        )
+        assertEquals(logcatDir.resolve("arb-screenshot-20261124-010203.png").toString(), outputFile)
+
+        // 2. Inherit Logcat when Studio ABI unavailable -> clean fallback to null (arbd output_dir)
+        val fallback = ArbScreenshotDestinationResolver.resolveDirectory(
+            project = null,
+            inheritLogcat = true,
+            customScreenshotDir = "",
+            logcatLocationProvider = { null },
+        )
+        assertFalse(fallback.inheritedFromLogcat)
+        assertNull(fallback.directory)
+        assertTrue(fallback.statusText.contains("output_dir"))
+
+        // 3. Custom folder override when inheritance unchecked
+        val overridden = ArbScreenshotDestinationResolver.resolveDirectory(
+            project = null,
+            inheritLogcat = false,
+            customScreenshotDir = customDir.toString(),
+        )
+        assertFalse(overridden.inheritedFromLogcat)
+        assertEquals(customDir, overridden.directory)
+
+        // 4. LogcatScreenshotSettings fallback macro expansion never crashes outside Studio
+        val resolvedHomeSub = LogcatScreenshotSettings.resolveDirectoryOrNull(null, "\$USER_HOME$/Pictures")
+        assertNotNull(resolvedHomeSub)
+        assertTrue(resolvedHomeSub.isAbsolute)
+    }
+
+    @Test
+    fun cliMcpPathResolverFindsBundledCliAndEscapesWindowsPathsInJson(@TempDir tmp: Path) {
+        val pluginRoot = Files.createDirectories(tmp.resolve("plugin-root"))
+        val macCli = Files.createDirectories(pluginRoot.resolve("native/macos-arm64")).resolve("arb-cli")
+        Files.writeString(macCli, "#!/bin/sh\n")
+        val resolvedMac = ArbCliMcpPathResolver.resolveCliPath(
+            pluginDir = pluginRoot,
+            os = HostOs.MACOS,
+            arch = "arm64",
+        )
+        assertEquals(macCli.toAbsolutePath().normalize(), resolvedMac)
+
+        val winPath = """C:\Users\dev\AndroidStudio\plugins\arb\native\windows-x86_64\arb-cli.exe"""
+        val winJson = ArbCliMcpPathResolver.formatMcpConfigJson(winPath)
+        val parsed = JsonParser.parseString(winJson).asJsonObject
+        assertEquals(winPath, parsed.get("command").asString)
+        assertEquals(1, parsed.getAsJsonArray("args").size())
+        assertEquals("mcp", parsed.getAsJsonArray("args").get(0).asString)
+    }
+
+    @Test
+    fun aboutInfoDisplaysVersionsAndZeroGplOssLicenseAttribution() {
         val onlineInfo = ArbAboutInfo.fromDaemonService(
             pluginVersion = "2.0.0-SNAPSHOT",
             hello = SystemHelloResponse(
@@ -229,10 +340,9 @@ class ArbT5IdeIntegrationTest {
             ),
             connected = true,
         )
-        val panel = ArbAboutPanel(onlineInfo)
         assertTrue(onlineInfo.daemonStatusSummary.contains("0.2.0"))
         assertTrue(onlineInfo.daemonStatusSummary.contains("4242"))
-        val licenseText = panel.licenseTextArea.text
+        val licenseText = ArbAboutInfo.formatLicenseReport()
         assertTrue(licenseText.contains("MIT"))
         assertTrue(licenseText.contains("Apache-2.0"))
         assertTrue(licenseText.contains("BSD-2-Clause"))
@@ -246,19 +356,19 @@ class ArbT5IdeIntegrationTest {
     }
 
     @Test
-    fun pluginXmlRegistersAllNativeIntegrationPointsWithZeroEmoji() {
+    fun pluginXmlEnablesComposeKeepsRunningDevicesAndRemovesLogcatActionsWithZeroEmoji() {
         val pluginXmlPath = repoRoot().resolve("ide-plugin/src/main/resources/META-INF/plugin.xml")
         assertTrue(Files.isRegularFile(pluginXmlPath))
         val xml = Files.readString(pluginXmlPath)
 
         assertFalse(ArbFormatters.containsEmoji(xml), "plugin.xml must contain zero emoji")
+        assertTrue(xml.contains("<depends>com.intellij.modules.compose</depends>"), "compose dependency required")
         assertTrue(xml.contains("""group-id="StreamingToolbarSecondary""""))
         assertTrue(xml.contains("io.github.shinma06.arb.RunningDevices.ToggleCapture"))
         assertTrue(xml.contains("io.github.shinma06.arb.RunningDevices.Save"))
         assertTrue(xml.contains("io.github.shinma06.arb.RunningDevices.Screenshot"))
-        assertTrue(xml.contains("""group-id="Logcat.PopupActions""""))
-        assertTrue(xml.contains("io.github.shinma06.arb.Logcat.SaveLogs"))
-        assertTrue(xml.contains("io.github.shinma06.arb.ide.ArbLogcatTitleActions"))
+        assertFalse(xml.contains("Logcat.PopupActions"), "Logcat popup action must be removed per owner decision")
+        assertFalse(xml.contains("ArbLogcatTitleActions"), "Logcat title bar listener must be removed per owner decision")
         assertTrue(xml.contains("""id="io.github.shinma06.arb.settings""""))
         assertTrue(xml.contains("""parentId="tools""""))
         assertTrue(xml.contains("io.github.shinma06.arb.ide.ArbBundleFileTypeDetector"))
@@ -266,52 +376,24 @@ class ArbT5IdeIntegrationTest {
         assertTrue(xml.contains("io.github.shinma06.arb.LaunchTray"))
         assertTrue(xml.contains("Android Replay Buffer (v2) について"))
 
-        // Export format selector defaults to SHARE_MP4 and has zero emoji
-        val viewer = TimelineViewerPanel(
+        val studio = ArbStudioController(
             onScrub = {},
             onSeekExact = {},
             onTrimExport = { _, _ -> },
             onPngExport = { _, _ -> },
         )
-        assertEquals(StudioExportFormat.SHARE_MP4, viewer.selectedExportFormat())
-        viewer.selectExportFormat(StudioExportFormat.WORM_BUNDLE_ONLY)
-        assertEquals(StudioExportFormat.WORM_BUNDLE_ONLY, viewer.selectedExportFormat())
+        assertEquals(StudioExportFormat.SHARE_MP4, studio.selectedExportFormat)
+        studio.selectExportFormat(StudioExportFormat.WORM_BUNDLE_ONLY)
+        assertEquals(StudioExportFormat.WORM_BUNDLE_ONLY, studio.selectedExportFormat)
         for (fmt in StudioExportFormat.entries) {
             assertFalse(ArbFormatters.containsEmoji(fmt.label))
         }
     }
 
     @Test
-    fun logcatTitleActionsAppendsNonDestructivelyAndIdempotently() {
-        val builtInA = object : com.intellij.openapi.actionSystem.AnAction("Built-in A") {
-            override fun actionPerformed(e: com.intellij.openapi.actionSystem.AnActionEvent) = Unit
-        }
-        val builtInB = object : com.intellij.openapi.actionSystem.AnAction("Built-in B") {
-            override fun actionPerformed(e: com.intellij.openapi.actionSystem.AnActionEvent) = Unit
-        }
-        val arbSaveLogs = ArbLogcatSaveLogsAction()
-
-        val mergedOnce = ArbLogcatTitleActions.mergeTitleActions(
-            existing = listOf(builtInA, builtInB, com.intellij.openapi.actionSystem.Separator.getInstance()),
-            actionToAppend = arbSaveLogs,
-            actionIdResolver = { null },
-        )
-        assertEquals(listOf(builtInA, builtInB, arbSaveLogs), mergedOnce)
-
-        val mergedTwice = ArbLogcatTitleActions.mergeTitleActions(
-            existing = mergedOnce,
-            actionToAppend = arbSaveLogs,
-            actionIdResolver = { null },
-        )
-        assertEquals(listOf(builtInA, builtInB, arbSaveLogs), mergedTwice, "re-attaching must be idempotent")
-    }
-
-    @Test
-    fun videoViewportCanvasScalesTapsWithDisplaySizeAndFallsBackForLegacyBundles() {
+    fun studioControllerScalesTapsWithDisplaySizeSkipsUnmappableAndFallsBackForLegacyBundles() {
         val drawRect = java.awt.Rectangle(10, 20, 460, 1024)
-        // Downscaled 460x1024 video recorded from a 1080x2400 physical display:
-        // physical center tap (540, 1200) must land at exact canvas center (10 + 230, 20 + 512)!
-        val (scaledX, scaledY) = io.github.shinma06.arb.ui.VideoViewportCanvas.mapTapToCanvasPoint(
+        val (scaledX, scaledY) = ArbStudioController.mapTapToCanvasPoint(
             tapX = 540.0,
             tapY = 1200.0,
             drawRect = drawRect,
@@ -323,8 +405,7 @@ class ArbT5IdeIntegrationTest {
         assertEquals(240, scaledX)
         assertEquals(532, scaledY)
 
-        // Legacy bundle (displayW/displayH absent): falls back cleanly to video dimensions (460x1024)
-        val (legacyX, legacyY) = io.github.shinma06.arb.ui.VideoViewportCanvas.mapTapToCanvasPoint(
+        val (legacyX, legacyY) = ArbStudioController.mapTapToCanvasPoint(
             tapX = 230.0,
             tapY = 512.0,
             drawRect = drawRect,
@@ -335,6 +416,11 @@ class ArbT5IdeIntegrationTest {
         )
         assertEquals(240, legacyX)
         assertEquals(532, legacyY)
+
+        // Orientation mismatch or out-of-bounds raw evdev coordinate must be skipped (never edge-clamped)
+        assertTrue(ArbStudioController.isTapUnmappable(500.0, 500.0, videoW = 1024, videoH = 460, displayW = 1080, displayH = 2400))
+        assertTrue(ArbStudioController.isTapUnmappable(4000.0, 1200.0, videoW = 460, videoH = 1024, displayW = 1080, displayH = 2400))
+        assertFalse(ArbStudioController.isTapUnmappable(540.0, 1200.0, videoW = 460, videoH = 1024, displayW = 1080, displayH = 2400))
     }
 
     @Test
@@ -366,96 +452,41 @@ class ArbT5IdeIntegrationTest {
     }
 
     @Test
-    fun captureBarEmptyDevicePlaceholderAndTopRowAlignmentLayout() {
-        val bar = io.github.shinma06.arb.ui.CaptureBarPanel(
-            onStartCapture = {},
-            onStopCapture = {},
-            onSaveNow = {},
-            onRefresh = {},
+    fun toolWindowControllerEmptyDevicePlaceholderAndManualSelection() {
+        val service = ArbdDaemonService()
+        val controller = ArbToolWindowController(
+            project = null,
+            daemonService = service,
+            onOpenBundle = { _, _, _ -> },
+            pollIntervalMs = 0L,
         )
+        try {
+            // 1. Initial empty state: disabled placeholder, null serial
+            assertFalse(controller.deviceDropdownEnabled, "empty device dropdown must be disabled")
+            assertEquals(listOf(ArbToolWindowController.NO_DEVICES_PLACEHOLDER), controller.deviceDropdownLabels)
+            assertNull(controller.selectedDeviceSerial, "placeholder text must never be returned as serial")
+            assertFalse(ArbFormatters.containsEmoji(ArbToolWindowController.NO_DEVICES_PLACEHOLDER))
 
-        // 1. Initial empty state: disabled placeholder, popup blocked, null serial
-        assertFalse(bar.deviceComboEnabled(), "empty device dropdown must be disabled")
-        assertEquals(io.github.shinma06.arb.ui.CaptureBarPanel.NO_DEVICES_PLACEHOLDER, bar.deviceComboSelectedText())
-        assertEquals(1, bar.deviceComboItemCount())
-        assertTrue(bar.isDevicePopupBlockedForTest(), "empty popup must be blocked")
-        assertNull(bar.selectedDeviceSerialForTest(), "placeholder text must never be returned as serial")
-        assertFalse(ArbFormatters.containsEmoji(bar.deviceComboSelectedText().orEmpty()))
-
-        // 2. Real device connects -> dropdown enables and selects real serial
-        val withDevice = io.github.shinma06.arb.state.CaptureBarState(
-            daemonConnected = true,
-            devices = listOf(
-                io.github.shinma06.arb.model.AdbDeviceInfo(
-                    serial = "emulator-5554",
-                    state = io.github.shinma06.arb.model.AdbDeviceState.Device,
-                ),
-            ),
-            selectedSerial = "emulator-5554",
-        )
-        bar.render(withDevice)
-        assertTrue(bar.deviceComboEnabled())
-        assertFalse(bar.isDevicePopupBlockedForTest())
-        assertEquals("emulator-5554", bar.selectedDeviceSerialForTest())
-
-        // 3. Device disconnects -> reverts cleanly to disabled placeholder
-        bar.render(withDevice.copy(devices = emptyList(), selectedSerial = null))
-        assertFalse(bar.deviceComboEnabled())
-        assertTrue(bar.isDevicePopupBlockedForTest())
-        assertEquals(io.github.shinma06.arb.ui.CaptureBarPanel.NO_DEVICES_PLACEHOLDER, bar.deviceComboSelectedText())
-        assertNull(bar.selectedDeviceSerialForTest())
-
-        // 4. Layout pass at typical ToolWindow width (320px): square gear button, single vertical baseline
-        val (combo, pill, gear) = bar.headerControlsForLayoutTest()
-        val headerRow = requireNotNull(combo.parent)
-        headerRow.setSize(320, 28)
-        headerRow.doLayout()
-
-        assertEquals(gear.height, gear.width, "gear settings button must be a crisp square icon button")
-        assertTrue(gear.width in 24..34, "gear button should be ~28x28px, was ${gear.width}x${gear.height}")
-        assertTrue(combo.width > pill.width * 2, "only device dropdown should stretch horizontally (combo=${combo.width}, pill=${pill.width})")
-
-        val comboMidY = combo.y + combo.height / 2
-        val pillMidY = pill.y + pill.height / 2
-        val gearMidY = gear.y + gear.height / 2
-        assertTrue(kotlin.math.abs(comboMidY - pillMidY) <= 1, "combo/pill vertical centers misaligned: $comboMidY vs $pillMidY")
-        assertTrue(kotlin.math.abs(comboMidY - gearMidY) <= 1, "combo/gear vertical centers misaligned: $comboMidY vs $gearMidY")
-    }
-
-    @Test
-    fun settingsPanelFitsDefaultWidthWithWrappedBannerAndCompactSpinners() {
-        val panel = ArbSettingsPanel()
-        panel.setDaemonStatus(
-            online = false,
-            detailMessage = "古いバージョンの arbd が起動中です（config.get 非対応）。新しい arbd へ再起動してください。",
-            showRestartAction = true,
-        )
-
-        assertTrue(panel.bannerWrapsLines(), "warning banner must wrap text cleanly")
-        assertTrue(panel.isRestartButtonVisible(), "1-click restart button must be visible in banner")
-
-        // Preferred width must fit comfortably inside Android Studio's default Settings pane (~520-560px)
-        val prefW = panel.preferredSize.width
-        assertTrue(prefW <= 540, "Settings panel preferred width ($prefW) must fit default 540px pane without horizontal scroll")
-
-        panel.setSize(520, 580)
-        fun layoutTree(c: java.awt.Container) {
-            c.doLayout()
-            for (child in c.components) {
-                if (child is java.awt.Container) layoutTree(child)
-            }
-        }
-        layoutTree(panel)
-
-        for (spinner in panel.spinnersForLayoutTest()) {
-            assertTrue(
-                spinner.preferredSize.width <= 130,
-                "spinner preferred width must stay compact, was ${spinner.preferredSize.width}",
+            // 2. Real device connects -> dropdown enables and selects real serial
+            val withDevice = CaptureBarState(
+                daemonConnected = true,
+                devices = listOf(AdbDeviceInfo(serial = "emulator-5554", state = AdbDeviceState.Device)),
+                selectedSerial = "emulator-5554",
             )
-            assertTrue(
-                spinner.width <= 130,
-                "spinner laid-out width must not stretch off-screen, was ${spinner.width}",
-            )
+            controller.applyStateForTest(capture = withDevice)
+            assertTrue(controller.deviceDropdownEnabled)
+            assertEquals("emulator-5554", controller.selectedDeviceSerial)
+            assertTrue(controller.startStopEnabled)
+            assertTrue(controller.screenshotEnabled)
+
+            // 3. Device disconnects -> reverts cleanly to disabled placeholder
+            controller.applyStateForTest(capture = withDevice.copy(devices = emptyList(), selectedSerial = null))
+            assertFalse(controller.deviceDropdownEnabled)
+            assertEquals(listOf(ArbToolWindowController.NO_DEVICES_PLACEHOLDER), controller.deviceDropdownLabels)
+            assertNull(controller.selectedDeviceSerial)
+        } finally {
+            controller.dispose()
+            service.dispose()
         }
     }
 
@@ -465,8 +496,8 @@ class ArbT5IdeIntegrationTest {
         var restartCalls = 0
         val upgradedConfig = ArbConfig(saveWindowSecs = 120, videoMaxFps = 60)
 
-        val staleError = io.github.shinma06.arb.model.ArbdRpcException(
-            code = io.github.shinma06.arb.model.ArbdRpcException.RPC_ERR_METHOD_NOT_FOUND,
+        val staleError = ArbdRpcException(
+            code = ArbdRpcException.RPC_ERR_METHOD_NOT_FOUND,
             message = "method not found: config.get",
             method = "config.get",
         )
@@ -491,38 +522,30 @@ class ArbT5IdeIntegrationTest {
             },
         )
 
-        configurable.createComponent()
-        val panel = requireNotNull(configurable.currentPanelForTest())
+        val form = configurable.createFormModel()
+        assertTrue(form.isBannerVisible)
+        assertTrue(form.showRestartAction)
+        assertFalse(form.isDaemonControlsEnabled)
+        assertTrue(form.daemonBannerMessage.contains("古いバージョンの arbd"))
+        assertFalse(form.daemonBannerMessage.contains("接続できません"))
 
-        // Before restart: honest stale-daemon banner + disabled daemon controls + visible 1-click restart button
-        assertTrue(panel.isOfflineBannerVisible())
-        assertTrue(panel.isRestartButtonVisible())
-        assertFalse(panel.isDaemonControlsEnabled())
-        assertTrue(panel.offlineBannerText().contains("古いバージョンの arbd"))
-        assertFalse(panel.offlineBannerText().contains("接続できません"))
-
-        // 1-click restart upgrades daemon and immediately reloads live config
-        panel.clickRestartDaemon()
+        configurable.restartDaemonAndReload()
         assertEquals(1, restartCalls)
-        assertFalse(panel.isOfflineBannerVisible())
-        assertTrue(panel.isDaemonControlsEnabled())
-        assertEquals(120, panel.currentDraft().saveWindowSecs)
-        assertEquals(60, panel.currentDraft().videoMaxFps)
+        assertFalse(form.isBannerVisible)
+        assertTrue(form.isDaemonControlsEnabled)
+        assertEquals(120, form.currentDraft().saveWindowSecs)
+        assertEquals(60, form.currentDraft().videoMaxFps)
         configurable.disposeUIResources()
     }
 
     @Test
     fun backgroundDevicePollingAutoSelectsNewlyBootedEmulatorFromZeroToOne() {
-        val currentDevices = java.util.concurrent.atomic.AtomicReference<List<io.github.shinma06.arb.model.AdbDeviceInfo>>(
-            emptyList(),
-        )
-        // Build a lightweight in-memory mock JSON-RPC transport backed by a pipe/queue so
-        // ArbToolWindowPanel runs its real background poller end-to-end with zero external process!
+        val currentDevices = java.util.concurrent.atomic.AtomicReference<List<AdbDeviceInfo>>(emptyList())
         val stubTransport = object : io.github.shinma06.arb.ipc.LocalIpcTransport {
             override val endpoint: String = "mock://device-poll"
             private val responseQueue = java.util.concurrent.LinkedBlockingQueue<String>()
             override fun writeLine(jsonLine: String) {
-                val obj = com.google.gson.JsonParser.parseString(jsonLine).asJsonObject
+                val obj = JsonParser.parseString(jsonLine).asJsonObject
                 val id = obj.get("id").asLong
                 val method = obj.get("method").asString
                 val resultJson = when (method) {
@@ -548,59 +571,43 @@ class ArbT5IdeIntegrationTest {
             override fun <T> withClient(block: (io.github.shinma06.arb.ipc.ArbdRpcClient) -> T): T = block(rpcClient)
         }
 
-        val toolWindow = io.github.shinma06.arb.ui.ArbToolWindowPanel(
+        val controller = ArbToolWindowController(
+            project = null,
             daemonService = fakeService,
             onOpenBundle = { _, _, _ -> },
             pollIntervalMs = 60L,
         )
         try {
-            // 1. Initially 0 devices -> disabled placeholder shown, online status = "待機中"
             val deadlineEmpty = System.currentTimeMillis() + 3_000L
             while (System.currentTimeMillis() < deadlineEmpty) {
                 javax.swing.SwingUtilities.invokeAndWait {}
-                if (toolWindow.captureBarPanel.statusBadgeDisplayText() == "待機中") break
+                if (controller.captureState.statusBadgeText == "待機中") break
                 Thread.sleep(25L)
             }
-            assertEquals("待機中", toolWindow.captureBarPanel.statusBadgeDisplayText())
-            assertFalse(toolWindow.captureBarPanel.deviceComboEnabled())
-            assertNull(toolWindow.captureBarPanel.selectedDeviceSerialForTest())
+            assertEquals("待機中", controller.captureState.statusBadgeText)
+            assertFalse(controller.deviceDropdownEnabled)
+            assertNull(controller.selectedDeviceSerial)
 
-            // 2. Emulator boots while Tool Window is open -> poller auto-detects & auto-selects it!
-            currentDevices.set(
-                listOf(
-                    io.github.shinma06.arb.model.AdbDeviceInfo(
-                        serial = "emulator-5554",
-                        state = io.github.shinma06.arb.model.AdbDeviceState.Device,
-                    ),
-                ),
-            )
+            currentDevices.set(listOf(AdbDeviceInfo(serial = "emulator-5554", state = AdbDeviceState.Device)))
             val deadlineDetected = System.currentTimeMillis() + 3_000L
             while (System.currentTimeMillis() < deadlineDetected) {
                 javax.swing.SwingUtilities.invokeAndWait {}
-                if (toolWindow.captureBarPanel.selectedDeviceSerialForTest() == "emulator-5554") break
+                if (controller.selectedDeviceSerial == "emulator-5554") break
                 Thread.sleep(25L)
             }
-            assertTrue(toolWindow.captureBarPanel.deviceComboEnabled(), "newly booted emulator must enable dropdown automatically")
-            assertEquals("emulator-5554", toolWindow.captureBarPanel.selectedDeviceSerialForTest())
+            assertTrue(controller.deviceDropdownEnabled, "newly booted emulator must enable dropdown automatically")
+            assertEquals("emulator-5554", controller.selectedDeviceSerial)
 
-            // 3. First emulator disconnects while a second USB device is online -> auto-switches to online device!
-            currentDevices.set(
-                listOf(
-                    io.github.shinma06.arb.model.AdbDeviceInfo(
-                        serial = "PIXEL9-USB-01",
-                        state = io.github.shinma06.arb.model.AdbDeviceState.Device,
-                    ),
-                ),
-            )
+            currentDevices.set(listOf(AdbDeviceInfo(serial = "PIXEL9-USB-01", state = AdbDeviceState.Device)))
             val deadlineSwitched = System.currentTimeMillis() + 3_000L
             while (System.currentTimeMillis() < deadlineSwitched) {
                 javax.swing.SwingUtilities.invokeAndWait {}
-                if (toolWindow.captureBarPanel.selectedDeviceSerialForTest() == "PIXEL9-USB-01") break
+                if (controller.selectedDeviceSerial == "PIXEL9-USB-01") break
                 Thread.sleep(25L)
             }
-            assertEquals("PIXEL9-USB-01", toolWindow.captureBarPanel.selectedDeviceSerialForTest())
+            assertEquals("PIXEL9-USB-01", controller.selectedDeviceSerial)
         } finally {
-            toolWindow.dispose()
+            controller.dispose()
             rpcClient.close()
             fakeService.dispose()
         }
@@ -608,14 +615,12 @@ class ArbT5IdeIntegrationTest {
 
     @Test
     fun physicalUsbUnauthorizedDeviceTransitionsCleanlyToOnlineAndEnablesControls() {
-        val currentDevices = java.util.concurrent.atomic.AtomicReference<List<io.github.shinma06.arb.model.AdbDeviceInfo>>(
-            emptyList(),
-        )
+        val currentDevices = java.util.concurrent.atomic.AtomicReference<List<AdbDeviceInfo>>(emptyList())
         val stubTransport = object : io.github.shinma06.arb.ipc.LocalIpcTransport {
             override val endpoint: String = "mock://usb-unauth"
             private val responseQueue = java.util.concurrent.LinkedBlockingQueue<String>()
             override fun writeLine(jsonLine: String) {
-                val obj = com.google.gson.JsonParser.parseString(jsonLine).asJsonObject
+                val obj = JsonParser.parseString(jsonLine).asJsonObject
                 val id = obj.get("id").asLong
                 val method = obj.get("method").asString
                 val resultJson = when (method) {
@@ -640,55 +645,45 @@ class ArbT5IdeIntegrationTest {
         val fakeService = object : ArbdDaemonService() {
             override fun <T> withClient(block: (io.github.shinma06.arb.ipc.ArbdRpcClient) -> T): T = block(rpcClient)
         }
-        val toolWindow = io.github.shinma06.arb.ui.ArbToolWindowPanel(
+        val controller = ArbToolWindowController(
+            project = null,
             daemonService = fakeService,
             onOpenBundle = { _, _, _ -> },
             pollIntervalMs = 50L,
         )
         try {
-            // Verify clear Japanese labels for unauthorized / offline states (zero emoji!)
-            val unauthDevice = io.github.shinma06.arb.model.AdbDeviceInfo(
-                serial = "39101FDH200042",
-                state = io.github.shinma06.arb.model.AdbDeviceState.Unauthorized,
-            )
-            val offlineDevice = io.github.shinma06.arb.model.AdbDeviceInfo(
-                serial = "192.168.1.50:5555",
-                state = io.github.shinma06.arb.model.AdbDeviceState.Offline,
-            )
-            assertTrue(io.github.shinma06.arb.ui.CaptureBarPanel.formatDeviceLabel(unauthDevice).contains("未承認"))
-            assertTrue(io.github.shinma06.arb.ui.CaptureBarPanel.formatDeviceLabel(offlineDevice).contains("オフライン"))
-            assertFalse(ArbFormatters.containsEmoji(io.github.shinma06.arb.ui.CaptureBarPanel.formatDeviceLabel(unauthDevice)))
-            assertFalse(ArbFormatters.containsEmoji(io.github.shinma06.arb.ui.CaptureBarPanel.formatDeviceLabel(offlineDevice)))
+            val unauthDevice = AdbDeviceInfo(serial = "39101FDH200042", state = AdbDeviceState.Unauthorized)
+            val offlineDevice = AdbDeviceInfo(serial = "192.168.1.50:5555", state = AdbDeviceState.Offline)
+            assertTrue(ArbToolWindowController.formatDeviceLabel(unauthDevice).contains("未承認"))
+            assertTrue(ArbToolWindowController.formatDeviceLabel(offlineDevice).contains("オフライン"))
+            assertFalse(ArbFormatters.containsEmoji(ArbToolWindowController.formatDeviceLabel(unauthDevice)))
+            assertFalse(ArbFormatters.containsEmoji(ArbToolWindowController.formatDeviceLabel(offlineDevice)))
 
-            // 1. Physical USB phone plugged in before tapping "Allow USB debugging" -> unauthorized
             currentDevices.set(listOf(unauthDevice))
             val d1 = System.currentTimeMillis() + 3_000L
             while (System.currentTimeMillis() < d1) {
                 javax.swing.SwingUtilities.invokeAndWait {}
-                if (toolWindow.captureBarPanel.selectedDeviceSerialForTest() == "39101FDH200042") break
+                if (controller.selectedDeviceSerial == "39101FDH200042") break
                 Thread.sleep(25L)
             }
-            assertEquals("39101FDH200042", toolWindow.captureBarPanel.selectedDeviceSerialForTest())
-            assertEquals("未承認", toolWindow.captureBarPanel.statusBadgeDisplayText())
-            assertFalse(toolWindow.captureBarPanel.isStartStopButtonEnabledForTest(), "capture start must stay disabled while unauthorized")
-            assertFalse(toolWindow.captureBarPanel.isScreenshotButtonEnabledForTest(), "screenshot must stay disabled while unauthorized")
+            assertEquals("39101FDH200042", controller.selectedDeviceSerial)
+            assertEquals("未承認", controller.captureState.statusBadgeText)
+            assertFalse(controller.startStopEnabled, "capture start must stay disabled while unauthorized")
+            assertFalse(controller.screenshotEnabled, "screenshot must stay disabled while unauthorized")
 
-            // 2. User approves USB debugging on phone -> transitions unauthorized -> online ("device")!
-            currentDevices.set(
-                listOf(unauthDevice.copy(state = io.github.shinma06.arb.model.AdbDeviceState.Device)),
-            )
+            currentDevices.set(listOf(unauthDevice.copy(state = AdbDeviceState.Device)))
             val d2 = System.currentTimeMillis() + 3_000L
             while (System.currentTimeMillis() < d2) {
                 javax.swing.SwingUtilities.invokeAndWait {}
-                if (toolWindow.captureBarPanel.isStartStopButtonEnabledForTest()) break
+                if (controller.startStopEnabled) break
                 Thread.sleep(25L)
             }
-            assertEquals("39101FDH200042", toolWindow.captureBarPanel.selectedDeviceSerialForTest())
-            assertEquals("待機中", toolWindow.captureBarPanel.statusBadgeDisplayText())
-            assertTrue(toolWindow.captureBarPanel.isStartStopButtonEnabledForTest(), "capture start must auto-enable on online transition")
-            assertTrue(toolWindow.captureBarPanel.isScreenshotButtonEnabledForTest(), "screenshot must auto-enable on online transition")
+            assertEquals("39101FDH200042", controller.selectedDeviceSerial)
+            assertEquals("待機中", controller.captureState.statusBadgeText)
+            assertTrue(controller.startStopEnabled, "capture start must auto-enable on online transition")
+            assertTrue(controller.screenshotEnabled, "screenshot must auto-enable on online transition")
         } finally {
-            toolWindow.dispose()
+            controller.dispose()
             rpcClient.close()
             fakeService.dispose()
         }

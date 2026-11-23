@@ -1,476 +1,217 @@
 package io.github.shinma06.arb.ide
 
-import com.intellij.icons.AllIcons
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.text.input.TextFieldState
+import androidx.compose.foundation.text.input.setTextAndPlaceCursorAtEnd
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.dp
 import com.intellij.openapi.fileChooser.FileChooser
 import com.intellij.openapi.fileChooser.FileChooserDescriptorFactory
+import com.intellij.openapi.ide.CopyPasteManager
 import com.intellij.openapi.options.Configurable
 import com.intellij.openapi.options.ConfigurationException
 import com.intellij.openapi.project.Project
-import com.intellij.openapi.ui.ComboBox
 import com.intellij.openapi.vfs.LocalFileSystem
-import com.intellij.util.ui.JBUI
 import io.github.shinma06.arb.model.ArbConfig
 import io.github.shinma06.arb.model.ArbdRpcException
 import io.github.shinma06.arb.model.IdeDefaultSaveAction
 import io.github.shinma06.arb.state.ArbSettingsDraft
 import io.github.shinma06.arb.state.StorageSizeUnit
 import io.github.shinma06.arb.state.StorageSizeValue
-import io.github.shinma06.arb.ui.ArbTheme
-import java.awt.BorderLayout
-import java.awt.Component
-import java.awt.Dimension
-import java.awt.FlowLayout
-import java.awt.GridBagConstraints
-import java.awt.GridBagLayout
+import io.github.shinma06.arb.ui.ArbJewelPalette
+import io.github.shinma06.arb.ui.ArbScrollableColumn
+import io.github.shinma06.arb.ui.ArbSoftBanner
+import io.github.shinma06.arb.ui.ArbSubtleAction
+import org.jetbrains.jewel.bridge.JewelComposePanel
+import org.jetbrains.jewel.ui.component.CheckboxRow
+import org.jetbrains.jewel.ui.component.GroupHeader
+import org.jetbrains.jewel.ui.component.ListComboBox
+import org.jetbrains.jewel.ui.component.OutlinedButton
+import org.jetbrains.jewel.ui.component.Text
+import org.jetbrains.jewel.ui.component.TextField
+import org.jetbrains.jewel.ui.icons.AllIconsKeys
+import java.awt.Toolkit
+import java.awt.datatransfer.StringSelection
 import java.nio.file.Path
-import javax.swing.BorderFactory
-import javax.swing.JButton
-import javax.swing.JCheckBox
+import java.util.Locale
 import javax.swing.JComponent
-import javax.swing.JLabel
-import javax.swing.JPanel
-import javax.swing.JSpinner
-import javax.swing.JTextArea
-import javax.swing.JTextField
-import javax.swing.SpinnerNumberModel
 
 /**
- * Native IntUI Settings form for `Settings -> Tools -> Android Replay Buffer`.
+ * Pure Kotlin + Compose state holder for `Settings -> Tools -> Android Replay Buffer`.
  *
- * Pure Swing / `JBUI` component so headless JUnit tests can instantiate, edit, validate,
- * and verify `config.get` / `config.update` round-trips without a full IDE frame.
+ * Fully headless-testable without Skiko or a live IDE frame: owns daemon settings draft,
+ * IDE-local overrides (custom `arbd` path, Logcat screenshot destination inheritance + custom
+ * screenshot override), and 1-click CLI / MCP path & JSON copy state.
  */
-class ArbSettingsPanel(
-    private val onBrowseDirectory: (current: String, onSelected: (String) -> Unit) -> Unit = { _, _ -> },
-    private val onBrowseBinary: (current: String, onSelected: (String) -> Unit) -> Unit = { _, _ -> },
-    private val onRestartDaemon: () -> Unit = {},
-) : JPanel(BorderLayout(0, 6)) {
-    private val statusBannerTextArea = JTextArea("").apply {
-        font = ArbTheme.uiFont(11.5f)
-        foreground = ArbTheme.warningAmber
-        isEditable = false
-        isOpaque = false
-        isFocusable = false
-        lineWrap = true
-        wrapStyleWord = false
-        rows = 0
-        columns = 1
-        border = null
-    }
+class ArbSettingsFormModel(
+    val bundledCliPath: String?,
+) {
+    val saveWindowText = TextFieldState(ArbConfig.DEFAULT_SAVE_WINDOW_SECS.toString())
+    val ringBudgetAmountText = TextFieldState("1.5")
+    var ringBudgetUnit by mutableStateOf(StorageSizeUnit.GIB)
 
-    private val restartDaemonButton = ArbTheme.styleSecondaryButton(
-        JButton("arbd を再起動", AllIcons.Actions.Restart),
-        compact = true,
-    ).apply {
-        toolTipText = "古いまたは停止中の arbd を終了し、設定済みの arbd バイナリで再起動します"
-    }
+    val minFreeDiskAmountText = TextFieldState("3.0")
+    var minFreeDiskUnit by mutableStateOf(StorageSizeUnit.GIB)
 
-    private val statusBannerPanel = JPanel(BorderLayout(8, 0)).apply {
-        background = ArbTheme.warningAmberSoft
-        isOpaque = true
-        border = BorderFactory.createCompoundBorder(
-            BorderFactory.createMatteBorder(0, JBUI.scale(3), 0, 0, ArbTheme.warningAmber),
-            BorderFactory.createCompoundBorder(
-                BorderFactory.createLineBorder(ArbTheme.hairlineBorder, 1),
-                JBUI.Borders.empty(6, 10),
-            ),
-        )
-        val iconWrap = JPanel(BorderLayout()).apply {
-            isOpaque = false
-            add(JLabel(AllIcons.General.Warning), BorderLayout.NORTH)
-        }
-        val actionWrap = JPanel(BorderLayout()).apply {
-            isOpaque = false
-            add(restartDaemonButton, BorderLayout.NORTH)
-        }
-        add(iconWrap, BorderLayout.WEST)
-        add(statusBannerTextArea, BorderLayout.CENTER)
-        add(actionWrap, BorderLayout.EAST)
-        isVisible = false
-    }
+    var videoMaxSizeOptions by mutableStateOf(DEFAULT_VIDEO_MAX_SIZES)
+        private set
+    var videoMaxSize by mutableStateOf(ArbConfig.DEFAULT_VIDEO_MAX_SIZE)
 
-    private val saveWindowSpinner = compactSpinner(
-        JSpinner(
-            SpinnerNumberModel(
-                ArbConfig.DEFAULT_SAVE_WINDOW_SECS,
-                ArbConfig.MIN_SAVE_WINDOW_SECS,
-                ArbConfig.MAX_SAVE_WINDOW_SECS,
-                5,
-            ),
-        ),
-        widthPx = 108,
-    )
+    var videoMaxFpsOptions by mutableStateOf(DEFAULT_VIDEO_MAX_FPS)
+        private set
+    var videoMaxFps by mutableStateOf(ArbConfig.DEFAULT_VIDEO_MAX_FPS)
 
-    private val ringBudgetAmountSpinner = compactSpinner(
-        JSpinner(SpinnerNumberModel(1.5, 1.0, 65_536.0, 0.5)),
-        widthPx = 96,
-    )
-    private val ringBudgetUnitCombo = compactCombo(
-        ComboBox(StorageSizeUnit.entries.toTypedArray()).apply {
-            selectedItem = StorageSizeUnit.GIB
-        },
-        widthPx = 76,
-    )
+    var audioEnabled by mutableStateOf(true)
+    var crashAutosaveEnabled by mutableStateOf(true)
+    val crashCooldownText = TextFieldState(ArbConfig.DEFAULT_CRASH_AUTOSAVE_COOLDOWN_SECS.toString())
 
-    private val minFreeDiskAmountSpinner = compactSpinner(
-        JSpinner(SpinnerNumberModel(3.0, 1.0, 1_048_576.0, 0.5)),
-        widthPx = 96,
-    )
-    private val minFreeDiskUnitCombo = compactCombo(
-        ComboBox(StorageSizeUnit.entries.toTypedArray()).apply {
-            selectedItem = StorageSizeUnit.GIB
-        },
-        widthPx = 76,
-    )
+    val outputDirText = TextFieldState("")
+    var ideDefaultSaveAction by mutableStateOf(IdeDefaultSaveAction.SAVE_AND_OPEN)
 
-    private val videoMaxSizeCombo = compactCombo(
-        ComboBox(arrayOf(1024, 1280, 1920, 2560, 3840)).apply {
-            selectedItem = ArbConfig.DEFAULT_VIDEO_MAX_SIZE
-        },
-        widthPx = 108,
-    )
+    // Screenshot destination inheritance (IDE-local, safe reflection + fallback to output_dir)
+    var screenshotInheritLogcat by mutableStateOf(true)
+    val customScreenshotDirText = TextFieldState("")
+    var screenshotStatusText by mutableStateOf("")
 
-    private val videoMaxFpsCombo = compactCombo(
-        ComboBox(arrayOf(15, 30, 60)).apply {
-            selectedItem = ArbConfig.DEFAULT_VIDEO_MAX_FPS
-        },
-        widthPx = 108,
-    )
+    // Local binary path override (IDE-local)
+    val customArbdPathText = TextFieldState("")
 
-    private val audioEnabledCheckBox = JCheckBox("端末の再生音を録音する (API 33+)", true).apply {
-        isOpaque = false
-        font = ArbTheme.uiFont(12f)
-    }
+    // CLI / MCP copy section
+    val cliPathReadOnlyText = TextFieldState(bundledCliPath ?: CLI_PATH_UNAVAILABLE_TEXT)
+    var copyFeedback by mutableStateOf("")
 
-    private val crashAutosaveCheckBox = JCheckBox("アプリクラッシュ (am_crash) 時に自動保存する", true).apply {
-        isOpaque = false
-        font = ArbTheme.uiFont(12f)
-    }
+    // Daemon connectivity / stale-arbd banner
+    var daemonOnline by mutableStateOf(true)
+    var daemonBannerMessage by mutableStateOf("")
+    var showRestartAction by mutableStateOf(false)
 
-    private val crashCooldownSpinner = compactSpinner(
-        JSpinner(
-            SpinnerNumberModel(
-                ArbConfig.DEFAULT_CRASH_AUTOSAVE_COOLDOWN_SECS,
-                ArbConfig.MIN_CRASH_AUTOSAVE_COOLDOWN_SECS,
-                ArbConfig.MAX_CRASH_AUTOSAVE_COOLDOWN_SECS,
-                5,
-            ),
-        ),
-        widthPx = 108,
-    )
+    val isBannerVisible: Boolean
+        get() = !daemonOnline && daemonBannerMessage.isNotBlank()
 
-    private val outputDirField = JTextField(12).apply {
-        toolTipText = "空欄の場合は arbd 既定のデータディレクトリ配下へ保存します"
-        preferredSize = Dimension(JBUI.scale(130), JBUI.scale(28))
-        minimumSize = Dimension(JBUI.scale(64), JBUI.scale(28))
-    }
-    private val outputDirBrowseButton = ArbTheme.styleSecondaryButton(JButton("参照...", AllIcons.Nodes.Folder), compact = true)
-    private val outputDirClearButton = ArbTheme.styleSecondaryButton(JButton("既定"), compact = true).apply {
-        toolTipText = "既定の保存先へ戻す"
-    }
+    val isDaemonControlsEnabled: Boolean
+        get() = daemonOnline
 
-    private val defaultSaveActionCombo = compactCombo(
-        ComboBox(
-            arrayOf(
-                SaveActionItem(IdeDefaultSaveAction.SAVE_AND_OPEN, "保存して開く"),
-                SaveActionItem(IdeDefaultSaveAction.SAVE_ONLY, "保存のみ"),
-            ),
-        ),
-        widthPx = 144,
-    )
-
-    private val customArbdPathField = JTextField(12).apply {
-        toolTipText = "空欄の場合は環境変数・同梱バイナリ・PATH から自動検出します"
-        preferredSize = Dimension(JBUI.scale(130), JBUI.scale(28))
-        minimumSize = Dimension(JBUI.scale(64), JBUI.scale(28))
-    }
-    private val customArbdBrowseButton = ArbTheme.styleSecondaryButton(JButton("参照...", AllIcons.Nodes.Folder), compact = true)
-    private val customArbdClearButton = ArbTheme.styleSecondaryButton(JButton("自動検出"), compact = true).apply {
-        toolTipText = "自動検出に戻す"
-    }
-
-    private val daemonControls: List<JComponent> = listOf(
-        saveWindowSpinner,
-        ringBudgetAmountSpinner,
-        ringBudgetUnitCombo,
-        minFreeDiskAmountSpinner,
-        minFreeDiskUnitCombo,
-        videoMaxSizeCombo,
-        videoMaxFpsCombo,
-        audioEnabledCheckBox,
-        crashAutosaveCheckBox,
-        crashCooldownSpinner,
-        outputDirField,
-        outputDirBrowseButton,
-        outputDirClearButton,
-        defaultSaveActionCombo,
-    )
-
-    init {
-        isOpaque = false
-        border = JBUI.Borders.empty(6, 10)
-
-        val form = JPanel(GridBagLayout()).apply { isOpaque = false }
-        val gbc = GridBagConstraints().apply {
-            anchor = GridBagConstraints.WEST
-            fill = GridBagConstraints.HORIZONTAL
-            insets = JBUI.insets(3, 4)
-        }
-
-        var row = 0
-        fun addSection(title: String) {
-            gbc.gridx = 0
-            gbc.gridy = row++
-            gbc.gridwidth = 2
-            gbc.weightx = 1.0
-            gbc.fill = GridBagConstraints.HORIZONTAL
-            val header = JLabel(title).apply {
-                font = ArbTheme.uiFont(12f, bold = true)
-                foreground = ArbTheme.primaryText
-                border = BorderFactory.createCompoundBorder(
-                    BorderFactory.createMatteBorder(0, 0, 1, 0, ArbTheme.hairlineBorder),
-                    JBUI.Borders.empty(6, 0, 2, 0),
-                )
-            }
-            form.add(header, gbc)
-            gbc.gridwidth = 1
-        }
-
-        fun addRow(labelText: String, field: Component, stretchField: Boolean = true) {
-            gbc.gridx = 0
-            gbc.gridy = row
-            gbc.weightx = 0.0
-            gbc.fill = GridBagConstraints.NONE
-            form.add(
-                JLabel(labelText).apply {
-                    font = ArbTheme.uiFont(11.5f)
-                    foreground = ArbTheme.primaryText
-                },
-                gbc,
-            )
-            gbc.gridx = 1
-            gbc.weightx = 1.0
-            gbc.fill = if (stretchField) GridBagConstraints.HORIZONTAL else GridBagConstraints.NONE
-            form.add(field, gbc)
-            row++
-        }
-
-        fun addFullWidth(comp: Component) {
-            gbc.gridx = 0
-            gbc.gridy = row++
-            gbc.gridwidth = 2
-            gbc.weightx = 1.0
-            gbc.fill = GridBagConstraints.HORIZONTAL
-            form.add(comp, gbc)
-            gbc.gridwidth = 1
-        }
-
-        addSection("録画・リングバッファ設定（arbd 永続設定）")
-        addRow("保持ウィンドウ (秒: 5〜600s):", leftAlignedRow(saveWindowSpinner))
-        addRow("リングバッファ上限:", sizeRow(ringBudgetAmountSpinner, ringBudgetUnitCombo))
-        addRow("最低空き容量フロア:", sizeRow(minFreeDiskAmountSpinner, minFreeDiskUnitCombo))
-        addRow("映像最大長辺 (px):", leftAlignedRow(videoMaxSizeCombo))
-        addRow("映像最大フレームレート (fps):", leftAlignedRow(videoMaxFpsCombo))
-        addFullWidth(audioEnabledCheckBox)
-
-        addSection("保存・クラッシュ自動保存")
-        addRow("IDE の既定保存アクション:", leftAlignedRow(defaultSaveActionCombo))
-        addFullWidth(crashAutosaveCheckBox)
-        addRow("クラッシュ自動保存クールダウン (秒):", leftAlignedRow(crashCooldownSpinner))
-        addRow("保存先フォルダ上書き (任意):", pathRow(outputDirField, outputDirBrowseButton, outputDirClearButton))
-
-        addSection("ローカル実行設定（IDE ローカル保存）")
-        addRow("arbd バイナリパス (任意):", pathRow(customArbdPathField, customArbdBrowseButton, customArbdClearButton))
-
-        // Vertical glue to keep form anchored to top
-        gbc.gridx = 0
-        gbc.gridy = row
-        gbc.gridwidth = 2
-        gbc.weighty = 1.0
-        gbc.fill = GridBagConstraints.BOTH
-        form.add(JPanel().apply { isOpaque = false }, gbc)
-
-        add(statusBannerPanel, BorderLayout.NORTH)
-        add(form, BorderLayout.CENTER)
-
-        restartDaemonButton.addActionListener { onRestartDaemon() }
-        outputDirBrowseButton.addActionListener {
-            onBrowseDirectory(outputDirField.text.trim()) { chosen ->
-                outputDirField.text = chosen
-            }
-        }
-        outputDirClearButton.addActionListener { outputDirField.text = "" }
-        customArbdBrowseButton.addActionListener {
-            onBrowseBinary(customArbdPathField.text.trim()) { chosen ->
-                customArbdPathField.text = chosen
-            }
-        }
-        customArbdClearButton.addActionListener { customArbdPathField.text = "" }
-    }
-
-    private fun compactSpinner(spinner: JSpinner, widthPx: Int): JSpinner = spinner.apply {
-        val h = JBUI.scale(28)
-        val dim = Dimension(JBUI.scale(widthPx), h)
-        preferredSize = dim
-        minimumSize = Dimension(JBUI.scale(76), h)
-        maximumSize = dim
-    }
-
-    private fun <T> compactCombo(combo: ComboBox<T>, widthPx: Int): ComboBox<T> = combo.apply {
-        val h = JBUI.scale(28)
-        val dim = Dimension(JBUI.scale(widthPx), h)
-        preferredSize = dim
-        minimumSize = Dimension(JBUI.scale(68), h)
-        maximumSize = dim
-    }
-
-    private fun leftAlignedRow(comp: Component): JPanel =
-        JPanel(FlowLayout(FlowLayout.LEFT, 0, 0)).apply {
-            isOpaque = false
-            add(comp)
-        }
-
-    private fun sizeRow(spinner: JSpinner, unitCombo: ComboBox<StorageSizeUnit>): JPanel =
-        JPanel(FlowLayout(FlowLayout.LEFT, 0, 0)).apply {
-            isOpaque = false
-            add(spinner)
-            add(javax.swing.Box.createHorizontalStrut(JBUI.scale(6)))
-            add(unitCombo)
-        }
-
-    private fun pathRow(field: JTextField, browse: JButton, clear: JButton): JPanel =
-        JPanel(BorderLayout(4, 0)).apply {
-            isOpaque = false
-            add(field, BorderLayout.CENTER)
-            val buttons = JPanel(FlowLayout(FlowLayout.RIGHT, 4, 0)).apply {
-                isOpaque = false
-                add(browse)
-                add(clear)
-            }
-            add(buttons, BorderLayout.EAST)
-        }
+    val mcpConfigJson: String?
+        get() = bundledCliPath?.takeIf { it.isNotBlank() }?.let(ArbCliMcpPathResolver::formatMcpConfigJson)
 
     fun setDaemonStatus(
         online: Boolean,
         detailMessage: String? = null,
-        showRestartAction: Boolean = !online,
+        showRestart: Boolean = !online,
     ) {
-        for (control in daemonControls) {
-            control.isEnabled = online
-        }
+        daemonOnline = online
         if (!online) {
-            statusBannerTextArea.text = detailMessage
+            daemonBannerMessage = detailMessage
                 ?: "arbd デーモンに接続できません（オフライン）。ローカルの arbd バイナリパス設定を変更するか、arbd を再起動してください。"
-            restartDaemonButton.isVisible = showRestartAction
-            statusBannerPanel.isVisible = true
+            showRestartAction = showRestart
         } else {
-            statusBannerPanel.isVisible = false
+            daemonBannerMessage = ""
+            showRestartAction = false
         }
-        revalidate()
-        repaint()
     }
 
-    fun loadFromDraft(draft: ArbSettingsDraft) {
-        saveWindowSpinner.value = draft.saveWindowSecs.coerceIn(
-            ArbConfig.MIN_SAVE_WINDOW_SECS,
-            ArbConfig.MAX_SAVE_WINDOW_SECS,
+    fun loadFromDraft(
+        draft: ArbSettingsDraft,
+        screenshotInheritLogcat: Boolean = this.screenshotInheritLogcat,
+        customScreenshotDir: String = this.customScreenshotDirText.text.toString(),
+    ) {
+        saveWindowText.setTextAndPlaceCursorAtEnd(
+            draft.saveWindowSecs.coerceIn(
+                ArbConfig.MIN_SAVE_WINDOW_SECS,
+                ArbConfig.MAX_SAVE_WINDOW_SECS,
+            ).toString(),
         )
 
         val ringVal = StorageSizeValue.fromBytes(draft.ringBudgetBytes)
-        ringBudgetAmountSpinner.value = ringVal.amount
-        ringBudgetUnitCombo.selectedItem = ringVal.unit
+        ringBudgetAmountText.setTextAndPlaceCursorAtEnd(formatDecimal(ringVal.amount))
+        ringBudgetUnit = ringVal.unit
 
         val diskVal = StorageSizeValue.fromBytes(draft.minFreeDiskBytes)
-        minFreeDiskAmountSpinner.value = diskVal.amount
-        minFreeDiskUnitCombo.selectedItem = diskVal.unit
+        minFreeDiskAmountText.setTextAndPlaceCursorAtEnd(formatDecimal(diskVal.amount))
+        minFreeDiskUnit = diskVal.unit
 
-        ensureComboContains(videoMaxSizeCombo, draft.videoMaxSize)
-        videoMaxSizeCombo.selectedItem = draft.videoMaxSize
+        videoMaxSizeOptions = (DEFAULT_VIDEO_MAX_SIZES + draft.videoMaxSize).distinct().sorted()
+        videoMaxSize = draft.videoMaxSize
 
-        ensureComboContains(videoMaxFpsCombo, draft.videoMaxFps)
-        videoMaxFpsCombo.selectedItem = draft.videoMaxFps
+        videoMaxFpsOptions = (DEFAULT_VIDEO_MAX_FPS + draft.videoMaxFps).distinct().sorted()
+        videoMaxFps = draft.videoMaxFps
 
-        audioEnabledCheckBox.isSelected = draft.audioEnabled
-        crashAutosaveCheckBox.isSelected = draft.crashAutosaveEnabled
-        crashCooldownSpinner.value = draft.crashAutosaveCooldownSecs.coerceIn(
-            ArbConfig.MIN_CRASH_AUTOSAVE_COOLDOWN_SECS,
-            ArbConfig.MAX_CRASH_AUTOSAVE_COOLDOWN_SECS,
+        audioEnabled = draft.audioEnabled
+        crashAutosaveEnabled = draft.crashAutosaveEnabled
+        crashCooldownText.setTextAndPlaceCursorAtEnd(
+            draft.crashAutosaveCooldownSecs.coerceIn(
+                ArbConfig.MIN_CRASH_AUTOSAVE_COOLDOWN_SECS,
+                ArbConfig.MAX_CRASH_AUTOSAVE_COOLDOWN_SECS,
+            ).toString(),
         )
-        outputDirField.text = draft.outputDirOverride
-        selectSaveAction(draft.ideDefaultSaveAction)
-        customArbdPathField.text = draft.customArbdBinaryPath
+        outputDirText.setTextAndPlaceCursorAtEnd(draft.outputDirOverride)
+        ideDefaultSaveAction = draft.ideDefaultSaveAction
+        customArbdPathText.setTextAndPlaceCursorAtEnd(draft.customArbdBinaryPath)
+        this.screenshotInheritLogcat = screenshotInheritLogcat
+        this.customScreenshotDirText.setTextAndPlaceCursorAtEnd(customScreenshotDir.trim())
     }
 
     fun currentDraft(): ArbSettingsDraft {
-        val ringUnit = (ringBudgetUnitCombo.selectedItem as? StorageSizeUnit) ?: StorageSizeUnit.GIB
-        val diskUnit = (minFreeDiskUnitCombo.selectedItem as? StorageSizeUnit) ?: StorageSizeUnit.GIB
-        val action = (defaultSaveActionCombo.selectedItem as? SaveActionItem)?.action
-            ?: IdeDefaultSaveAction.SAVE_AND_OPEN
+        val windowSecs = saveWindowText.text.toString().trim().toIntOrNull() ?: -1
+        val ringAmount = ringBudgetAmountText.text.toString().trim().toDoubleOrNull() ?: -1.0
+        val diskAmount = minFreeDiskAmountText.text.toString().trim().toDoubleOrNull() ?: -1.0
+        val cooldownSecs = crashCooldownText.text.toString().trim().toIntOrNull() ?: -1
         return ArbSettingsDraft(
-            saveWindowSecs = (saveWindowSpinner.value as Number).toInt(),
-            ringBudgetBytes = StorageSizeValue((ringBudgetAmountSpinner.value as Number).toDouble(), ringUnit).toBytes(),
-            minFreeDiskBytes = StorageSizeValue((minFreeDiskAmountSpinner.value as Number).toDouble(), diskUnit).toBytes(),
-            videoMaxSize = (videoMaxSizeCombo.selectedItem as? Int) ?: ArbConfig.DEFAULT_VIDEO_MAX_SIZE,
-            videoMaxFps = (videoMaxFpsCombo.selectedItem as? Int) ?: ArbConfig.DEFAULT_VIDEO_MAX_FPS,
-            audioEnabled = audioEnabledCheckBox.isSelected,
-            crashAutosaveEnabled = crashAutosaveCheckBox.isSelected,
-            crashAutosaveCooldownSecs = (crashCooldownSpinner.value as Number).toInt(),
-            outputDirOverride = outputDirField.text.trim(),
-            ideDefaultSaveAction = action,
-            customArbdBinaryPath = customArbdPathField.text.trim(),
+            saveWindowSecs = windowSecs,
+            ringBudgetBytes = if (ringAmount > 0.0) StorageSizeValue(ringAmount, ringBudgetUnit).toBytes() else -1L,
+            minFreeDiskBytes = if (diskAmount > 0.0) StorageSizeValue(diskAmount, minFreeDiskUnit).toBytes() else -1L,
+            videoMaxSize = videoMaxSize,
+            videoMaxFps = videoMaxFps,
+            audioEnabled = audioEnabled,
+            crashAutosaveEnabled = crashAutosaveEnabled,
+            crashAutosaveCooldownSecs = cooldownSecs,
+            outputDirOverride = outputDirText.text.toString().trim(),
+            ideDefaultSaveAction = ideDefaultSaveAction,
+            customArbdBinaryPath = customArbdPathText.text.toString().trim(),
         )
     }
 
-    fun isOfflineBannerVisible(): Boolean = statusBannerPanel.isVisible
+    fun currentLocalScreenshotSettings(): Pair<Boolean, String> =
+        screenshotInheritLogcat to customScreenshotDirText.text.toString().trim()
 
-    fun offlineBannerText(): String = statusBannerTextArea.text
+    companion object {
+        val DEFAULT_VIDEO_MAX_SIZES: List<Int> = listOf(1024, 1280, 1920, 2560, 3840)
+        val DEFAULT_VIDEO_MAX_FPS: List<Int> = listOf(15, 30, 60)
+        const val CLI_PATH_UNAVAILABLE_TEXT: String = "arb-cli が見つかりません（プラグイン再インストールまたはビルドが必要）"
 
-    fun isRestartButtonVisible(): Boolean = statusBannerPanel.isVisible && restartDaemonButton.isVisible
-
-    fun clickRestartDaemon() = restartDaemonButton.doClick()
-
-    fun bannerWrapsLines(): Boolean = statusBannerTextArea.lineWrap
-
-    fun spinnersForLayoutTest(): List<JSpinner> = listOf(
-        saveWindowSpinner,
-        ringBudgetAmountSpinner,
-        minFreeDiskAmountSpinner,
-        crashCooldownSpinner,
-    )
-
-    fun isDaemonControlsEnabled(): Boolean = daemonControls.all { it.isEnabled }
-
-    private fun selectSaveAction(action: IdeDefaultSaveAction) {
-        for (i in 0 until defaultSaveActionCombo.itemCount) {
-            val item = defaultSaveActionCombo.getItemAt(i)
-            if (item.action == action) {
-                defaultSaveActionCombo.selectedItem = item
-                return
-            }
-        }
-    }
-
-    private fun ensureComboContains(combo: ComboBox<Int>, value: Int) {
-        val existing = (0 until combo.itemCount).map { combo.getItemAt(it) }
-        if (value !in existing) {
-            combo.removeAllItems()
-            (existing + value).distinct().sorted().forEach { combo.addItem(it) }
-        }
-    }
-
-    private data class SaveActionItem(
-        val action: IdeDefaultSaveAction,
-        val label: String,
-    ) {
-        override fun toString(): String = label
+        private fun formatDecimal(value: Double): String =
+            if (value % 1.0 == 0.0) String.format(Locale.ROOT, "%.0f", value) else String.format(Locale.ROOT, "%.1f", value)
     }
 }
 
 /**
  * Android Studio `Settings -> Tools -> Android Replay Buffer` (`id = io.github.shinma06.arb.settings`).
  *
- * Persists daemon settings via `arbd`'s `config.get` / `config.update`, and persists the optional
- * custom `arbd` binary path override locally via [ArbLocalSettingsState].
+ * Implements [Configurable.NoScroll] so Compose handles its own vertical scrolling cleanly inside
+ * Android Studio's Settings pane without unbounded preferred-size measurement or horizontal scroll.
  */
 class ArbSettingsConfigurable internal constructor(
     private val project: Project?,
@@ -478,11 +219,18 @@ class ArbSettingsConfigurable internal constructor(
     private val daemonConfigWriter: (ArbConfig, ArbSettingsDraft) -> ArbConfig,
     private val localBinaryReader: () -> String,
     private val localBinaryWriter: (String) -> Unit,
+    private val localScreenshotReader: () -> Pair<Boolean, String> = { true to "" },
+    private val localScreenshotWriter: (Boolean, String) -> Unit = { _, _ -> },
+    private val screenshotStatusResolver: (Boolean, String) -> String = { inherit, custom ->
+        ArbScreenshotDestinationResolver.resolveDirectory(project, inherit, custom).statusText
+    },
+    private val cliPathProvider: () -> String? = {
+        runCatching { ArbdDaemonService.getInstance().resolveBundledCliPath()?.toString() }.getOrNull()
+    },
     private val daemonRestarter: () -> Unit = {},
-    // Runs a blocking arbd call. Production wraps it in a modal progress so the EDT keeps pumping
-    // events (no IDE freeze while arbd spawns or another RPC holds the daemon lock); tests run inline.
+    private val clipboardWriter: (String) -> Unit = ::copyTextToClipboard,
     private val blockingRunner: DaemonCallRunner = DaemonCallRunner.Inline,
-) : Configurable {
+) : Configurable, Configurable.NoScroll {
     // Constructor used by IntelliJ Platform `projectConfigurable` extension instantiation.
     constructor(project: Project) : this(
         project = project,
@@ -505,51 +253,75 @@ class ArbSettingsConfigurable internal constructor(
             ArbLocalSettingsState.getInstanceOrNull()?.customArbdBinaryPath = newPath
             runCatching { ArbdDaemonService.getInstance().notifyBinaryPathChanged() }
         },
+        localScreenshotReader = {
+            val st = ArbLocalSettingsState.getInstanceOrNull()
+            (st?.screenshotInheritLogcat ?: true) to st?.customScreenshotDir.orEmpty()
+        },
+        localScreenshotWriter = { inherit, customDir ->
+            ArbLocalSettingsState.getInstanceOrNull()?.let { st ->
+                st.screenshotInheritLogcat = inherit
+                st.customScreenshotDir = customDir
+            }
+        },
         daemonRestarter = {
             ArbdDaemonService.getInstance().restartDaemon()
         },
         blockingRunner = ProgressDaemonCallRunner(project),
     )
 
-    private var panel: ArbSettingsPanel? = null
+    private var form: ArbSettingsFormModel? = null
     private var baselineConfig: ArbConfig = ArbConfig()
     private var baselineCustomBinary: String = ""
+    private var baselineScreenshotInherit: Boolean = true
+    private var baselineCustomScreenshotDir: String = ""
     private var daemonOnline: Boolean = false
 
     override fun getDisplayName(): String = "Android Replay Buffer"
 
-    override fun createComponent(): JComponent {
-        val created = ArbSettingsPanel(
-            onBrowseDirectory = { current, onSelected ->
-                val descriptor = FileChooserDescriptorFactory.createSingleFolderDescriptor().apply {
-                    title = "保存先フォルダを選択"
-                }
-                val initial = current.takeIf { it.isNotBlank() }?.let { LocalFileSystem.getInstance().findFileByPath(it) }
-                FileChooser.chooseFile(descriptor, project, initial) { selected ->
-                    onSelected(selected.toNioPath().toAbsolutePath().normalize().toString())
-                }
-            },
-            onBrowseBinary = { current, onSelected ->
-                val descriptor = FileChooserDescriptorFactory.createSingleFileNoJarsDescriptor().apply {
-                    title = "arbd バイナリを選択"
-                }
-                val initial = current.takeIf { it.isNotBlank() }?.let { LocalFileSystem.getInstance().findFileByPath(it) }
-                FileChooser.chooseFile(descriptor, project, initial) { selected ->
-                    onSelected(selected.toNioPath().toAbsolutePath().normalize().toString())
-                }
-            },
-            onRestartDaemon = {
-                restartDaemonAndReload()
-            },
-        )
-        panel = created
+    /** Creates the pure form model and runs initial load without instantiating Compose/Skiko. */
+    internal fun createFormModel(): ArbSettingsFormModel {
+        val created = ArbSettingsFormModel(bundledCliPath = cliPathProvider())
+        form = created
         reset()
         return created
     }
 
-    private fun restartDaemonAndReload() {
-        val currentPanel = panel ?: return
-        val draftPath = currentPanel.currentDraft().normalizedCustomArbdPath()
+    override fun createComponent(): JComponent {
+        val created = createFormModel()
+        return JewelComposePanel {
+            ArbSettingsContent(
+                form = created,
+                onRestartDaemon = { restartDaemonAndReload() },
+                onBrowseOutputDir = { chooseFolder("保存先フォルダを選択", created.outputDirText) },
+                onBrowseScreenshotDir = {
+                    chooseFolder("スクリーンショット保存先フォルダを選択", created.customScreenshotDirText)
+                    refreshScreenshotStatus(created)
+                },
+                onBrowseBinary = { chooseBinary("arbd バイナリを選択", created.customArbdPathText) },
+                onScreenshotOptionChanged = { refreshScreenshotStatus(created) },
+                onCopyCliPath = { copyCliPath(created) },
+                onCopyMcpJson = { copyMcpJson(created) },
+            )
+        }
+    }
+
+    internal fun copyCliPath(model: ArbSettingsFormModel = requireNotNull(form)): Boolean {
+        val path = model.bundledCliPath?.takeIf { it.isNotBlank() } ?: return false
+        clipboardWriter(path)
+        model.copyFeedback = "CLI パスをコピーしました"
+        return true
+    }
+
+    internal fun copyMcpJson(model: ArbSettingsFormModel = requireNotNull(form)): Boolean {
+        val json = model.mcpConfigJson ?: return false
+        clipboardWriter(json)
+        model.copyFeedback = "MCP 設定 JSON をコピーしました"
+        return true
+    }
+
+    internal fun restartDaemonAndReload() {
+        val currentForm = form ?: return
+        val draftPath = currentForm.currentDraft().normalizedCustomArbdPath()
         if (draftPath.isNotEmpty() && draftPath != baselineCustomBinary) {
             val isAbsolute = runCatching { Path.of(draftPath).isAbsolute }.getOrDefault(false)
             if (isAbsolute) {
@@ -563,32 +335,42 @@ class ArbSettingsConfigurable internal constructor(
         } else {
             daemonOnline = false
             val err = restarted.exceptionOrNull()?.message?.takeIf { it.isNotBlank() } ?: "詳細不明"
-            currentPanel.setDaemonStatus(
+            currentForm.setDaemonStatus(
                 online = false,
                 detailMessage = "arbd の再起動に失敗しました（$err）。ローカルの arbd バイナリパスを確認してください。",
-                showRestartAction = true,
+                showRestart = true,
             )
         }
     }
 
     override fun isModified(): Boolean {
-        val currentPanel = panel ?: return false
-        val draft = currentPanel.currentDraft()
-        val localChanged = draft.normalizedCustomArbdPath() != baselineCustomBinary
+        val currentForm = form ?: return false
+        val draft = currentForm.currentDraft()
+        val (inherit, customShot) = currentForm.currentLocalScreenshotSettings()
+        val localBinaryChanged = draft.normalizedCustomArbdPath() != baselineCustomBinary
+        val localScreenshotChanged = inherit != baselineScreenshotInherit || customShot != baselineCustomScreenshotDir
         val daemonChanged = daemonOnline && draft.isDaemonModifiedAgainst(baselineConfig)
-        return localChanged || daemonChanged
+        return localBinaryChanged || localScreenshotChanged || daemonChanged
     }
 
     @Throws(ConfigurationException::class)
     override fun apply() {
-        val currentPanel = panel ?: return
-        val draft = currentPanel.currentDraft()
+        val currentForm = form ?: return
+        val draft = currentForm.currentDraft()
+        val (inherit, customShot) = currentForm.currentLocalScreenshotSettings()
 
         val newCustomPath = draft.normalizedCustomArbdPath()
         if (newCustomPath.isNotEmpty()) {
             val isAbsolute = runCatching { Path.of(newCustomPath).isAbsolute }.getOrDefault(false)
             if (!isAbsolute) {
                 throw ConfigurationException("arbd バイナリパスには絶対パスを指定してください。")
+            }
+        }
+
+        if (!inherit && customShot.isNotEmpty()) {
+            val isAbsolute = runCatching { Path.of(customShot).isAbsolute }.getOrDefault(false)
+            if (!isAbsolute) {
+                throw ConfigurationException("スクリーンショットの保存先には絶対パスを指定してください。")
             }
         }
 
@@ -609,35 +391,82 @@ class ArbSettingsConfigurable internal constructor(
             baselineCustomBinary = newCustomPath
         }
 
-        currentPanel.loadFromDraft(ArbSettingsDraft.fromConfig(baselineConfig, baselineCustomBinary))
+        if (inherit != baselineScreenshotInherit || customShot != baselineCustomScreenshotDir) {
+            localScreenshotWriter(inherit, customShot)
+            baselineScreenshotInherit = inherit
+            baselineCustomScreenshotDir = customShot
+        }
+
+        currentForm.loadFromDraft(
+            draft = ArbSettingsDraft.fromConfig(baselineConfig, baselineCustomBinary),
+            screenshotInheritLogcat = baselineScreenshotInherit,
+            customScreenshotDir = baselineCustomScreenshotDir,
+        )
+        refreshScreenshotStatus(currentForm)
     }
 
     override fun reset() {
-        val currentPanel = panel ?: return
+        val currentForm = form ?: return
         baselineCustomBinary = localBinaryReader().trim()
+        val (inherit, customShot) = localScreenshotReader()
+        baselineScreenshotInherit = inherit
+        baselineCustomScreenshotDir = customShot.trim()
+
         val loaded = runCatching { blockingRunner.run { daemonConfigReader() } }
         if (loaded.isSuccess) {
             daemonOnline = true
             baselineConfig = loaded.getOrThrow()
-            currentPanel.setDaemonStatus(online = true)
+            currentForm.setDaemonStatus(online = true)
         } else {
             daemonOnline = false
             baselineConfig = ArbConfig()
             val diagnostic = classifyDaemonError(loaded.exceptionOrNull())
-            currentPanel.setDaemonStatus(
+            currentForm.setDaemonStatus(
                 online = false,
                 detailMessage = diagnostic.message,
-                showRestartAction = true,
+                showRestart = true,
             )
         }
-        currentPanel.loadFromDraft(ArbSettingsDraft.fromConfig(baselineConfig, baselineCustomBinary))
+        currentForm.loadFromDraft(
+            draft = ArbSettingsDraft.fromConfig(baselineConfig, baselineCustomBinary),
+            screenshotInheritLogcat = baselineScreenshotInherit,
+            customScreenshotDir = baselineCustomScreenshotDir,
+        )
+        refreshScreenshotStatus(currentForm)
     }
 
     override fun disposeUIResources() {
-        panel = null
+        form = null
     }
 
-    internal fun currentPanelForTest(): ArbSettingsPanel? = panel
+    internal fun currentFormForTest(): ArbSettingsFormModel? = form
+
+    private fun refreshScreenshotStatus(model: ArbSettingsFormModel) {
+        val (inherit, customShot) = model.currentLocalScreenshotSettings()
+        model.screenshotStatusText = screenshotStatusResolver(inherit, customShot)
+    }
+
+    private fun chooseFolder(titleText: String, target: TextFieldState) {
+        val descriptor = FileChooserDescriptorFactory.createSingleFolderDescriptor().apply {
+            title = titleText
+        }
+        val current = target.text.toString().trim()
+        val initial = current.takeIf { it.isNotEmpty() }?.let { LocalFileSystem.getInstance().findFileByPath(it) }
+        FileChooser.chooseFile(descriptor, project, initial) { selected ->
+            target.setTextAndPlaceCursorAtEnd(selected.toNioPath().toAbsolutePath().normalize().toString())
+        }
+    }
+
+    private fun chooseBinary(titleText: String, target: TextFieldState) {
+        val descriptor = FileChooserDescriptorFactory.createSingleFileNoJarsDescriptor().apply {
+            title = titleText
+        }
+        val current = target.text.toString().trim()
+        val initial = current.takeIf { it.isNotEmpty() }?.let { LocalFileSystem.getInstance().findFileByPath(it) }
+        FileChooser.chooseFile(descriptor, project, initial) { selected ->
+            target.setTextAndPlaceCursorAtEnd(selected.toNioPath().toAbsolutePath().normalize().toString())
+        }
+    }
 
     enum class DaemonDiagnosticKind {
         STALE_OR_MISMATCHED,
@@ -684,6 +513,313 @@ class ArbSettingsConfigurable internal constructor(
                 "arbd デーモンに接続できません（オフライン）。ローカルの arbd バイナリパスを設定するか、arbd を再起動してください。"
             }
             return DaemonDiagnostic(kind = DaemonDiagnosticKind.OFFLINE, message = message)
+        }
+    }
+}
+
+private fun copyTextToClipboard(text: String) {
+    runCatching {
+        CopyPasteManager.getInstance().setContents(StringSelection(text))
+    }.onFailure {
+        runCatching {
+            Toolkit.getDefaultToolkit().systemClipboard.setContents(StringSelection(text), null)
+        }
+    }
+}
+
+// ---- Native JetBrains Jewel Compose Settings UI (fits cleanly inside 520px width!) ----
+
+private val SETTINGS_LABEL_WIDTH = 156.dp
+private val SETTINGS_PATH_MAX_WIDTH = 280.dp
+
+@Composable
+private fun SettingsFormRow(
+    label: String,
+    content: @Composable RowScope.() -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Text(
+            text = label,
+            style = ArbJewelPalette.bodyStyle(sizeSp = 12f, color = ArbJewelPalette.primaryText()),
+            modifier = Modifier.width(SETTINGS_LABEL_WIDTH),
+        )
+        content()
+    }
+}
+
+private fun RowScope.settingsFlexWidth(max: Dp): Modifier =
+    Modifier.weight(1f, fill = false).widthIn(max = max).fillMaxWidth()
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+internal fun ArbSettingsContent(
+    form: ArbSettingsFormModel,
+    onRestartDaemon: () -> Unit,
+    onBrowseOutputDir: () -> Unit,
+    onBrowseScreenshotDir: () -> Unit,
+    onBrowseBinary: () -> Unit,
+    onScreenshotOptionChanged: () -> Unit,
+    onCopyCliPath: () -> Unit,
+    onCopyMcpJson: () -> Unit,
+) {
+    LaunchedEffect(form) {
+        snapshotFlow { form.screenshotInheritLogcat to form.customScreenshotDirText.text.toString() }
+            .collect { onScreenshotOptionChanged() }
+    }
+    val daemonEnabled = form.isDaemonControlsEnabled
+    ArbScrollableColumn(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(ArbJewelPalette.panelBackground()),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = 6.dp, end = 16.dp, top = 6.dp, bottom = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            // Wrapped stale-arbd / offline warning banner with 1-click restart
+            if (form.isBannerVisible) {
+                ArbSoftBanner(
+                    background = ArbJewelPalette.warningAmberSoft(),
+                    accent = ArbJewelPalette.warningAmber(),
+                ) {
+                    Text(
+                        text = form.daemonBannerMessage,
+                        style = ArbJewelPalette.bodyStyle(sizeSp = 11.5f, color = ArbJewelPalette.primaryText()),
+                        modifier = Modifier.weight(1f),
+                    )
+                    if (form.showRestartAction) {
+                        OutlinedButton(onClick = onRestartDaemon) {
+                            Text("arbd を再起動", maxLines = 1, softWrap = false)
+                        }
+                    }
+                }
+            }
+
+            // 1. Capture & Ring Buffer
+            GroupHeader("録画・リングバッファ設定（arbd 永続設定）", modifier = Modifier.semantics { heading() })
+            SettingsFormRow("保持ウィンドウ:") {
+                TextField(
+                    state = form.saveWindowText,
+                    enabled = daemonEnabled,
+                    modifier = Modifier.width(88.dp).semantics { contentDescription = "保持ウィンドウ秒数" },
+                )
+                Text("秒 (5〜600s)", style = ArbJewelPalette.bodyStyle(11.5f, color = ArbJewelPalette.mutedText()))
+            }
+            SettingsFormRow("リングバッファ上限:") {
+                TextField(
+                    state = form.ringBudgetAmountText,
+                    enabled = daemonEnabled,
+                    modifier = Modifier.width(88.dp).semantics { contentDescription = "リングバッファ上限数値" },
+                )
+                val units = StorageSizeUnit.entries
+                key(form.ringBudgetUnit) {
+                    ListComboBox(
+                        items = units.map { it.label },
+                        selectedIndex = units.indexOf(form.ringBudgetUnit).coerceAtLeast(0),
+                        onSelectedItemChange = { form.ringBudgetUnit = units[it] },
+                        enabled = daemonEnabled,
+                        modifier = Modifier.width(84.dp),
+                    )
+                }
+            }
+            SettingsFormRow("最低空き容量フロア:") {
+                TextField(
+                    state = form.minFreeDiskAmountText,
+                    enabled = daemonEnabled,
+                    modifier = Modifier.width(88.dp).semantics { contentDescription = "最低空き容量フロア数値" },
+                )
+                val units = StorageSizeUnit.entries
+                key(form.minFreeDiskUnit) {
+                    ListComboBox(
+                        items = units.map { it.label },
+                        selectedIndex = units.indexOf(form.minFreeDiskUnit).coerceAtLeast(0),
+                        onSelectedItemChange = { form.minFreeDiskUnit = units[it] },
+                        enabled = daemonEnabled,
+                        modifier = Modifier.width(84.dp),
+                    )
+                }
+            }
+            SettingsFormRow("映像最大長辺 (px):") {
+                val opts = form.videoMaxSizeOptions
+                key(opts, form.videoMaxSize) {
+                    ListComboBox(
+                        items = opts.map { it.toString() },
+                        selectedIndex = opts.indexOf(form.videoMaxSize).coerceAtLeast(0),
+                        onSelectedItemChange = { form.videoMaxSize = opts[it] },
+                        enabled = daemonEnabled,
+                        modifier = Modifier.width(104.dp),
+                    )
+                }
+            }
+            SettingsFormRow("映像最大 fps:") {
+                val opts = form.videoMaxFpsOptions
+                key(opts, form.videoMaxFps) {
+                    ListComboBox(
+                        items = opts.map { it.toString() },
+                        selectedIndex = opts.indexOf(form.videoMaxFps).coerceAtLeast(0),
+                        onSelectedItemChange = { form.videoMaxFps = opts[it] },
+                        enabled = daemonEnabled,
+                        modifier = Modifier.width(104.dp),
+                    )
+                }
+            }
+            CheckboxRow(
+                text = "端末の再生音を録音する (API 33+)",
+                checked = form.audioEnabled,
+                onCheckedChange = { form.audioEnabled = it },
+                enabled = daemonEnabled,
+            )
+
+            // 2. Save & Crash Auto-Save
+            GroupHeader("保存・クラッシュ自動保存", modifier = Modifier.semantics { heading() })
+            SettingsFormRow("IDE の既定保存アクション:") {
+                val actions = listOf(
+                    IdeDefaultSaveAction.SAVE_AND_OPEN to "保存して開く",
+                    IdeDefaultSaveAction.SAVE_ONLY to "保存のみ",
+                )
+                key(form.ideDefaultSaveAction) {
+                    ListComboBox(
+                        items = actions.map { it.second },
+                        selectedIndex = actions.indexOfFirst { it.first == form.ideDefaultSaveAction }.coerceAtLeast(0),
+                        onSelectedItemChange = { form.ideDefaultSaveAction = actions[it].first },
+                        enabled = daemonEnabled,
+                        modifier = Modifier.width(156.dp),
+                    )
+                }
+            }
+            CheckboxRow(
+                text = "アプリクラッシュ (am_crash) 時に自動保存する",
+                checked = form.crashAutosaveEnabled,
+                onCheckedChange = { form.crashAutosaveEnabled = it },
+                enabled = daemonEnabled,
+            )
+            SettingsFormRow("自動保存クールダウン:") {
+                TextField(
+                    state = form.crashCooldownText,
+                    enabled = daemonEnabled,
+                    modifier = Modifier.width(88.dp),
+                )
+                Text("秒", style = ArbJewelPalette.bodyStyle(11.5f, color = ArbJewelPalette.mutedText()))
+            }
+            SettingsFormRow("保存先フォルダ上書き:") {
+                TextField(
+                    state = form.outputDirText,
+                    enabled = daemonEnabled,
+                    modifier = settingsFlexWidth(SETTINGS_PATH_MAX_WIDTH),
+                )
+                OutlinedButton(onClick = onBrowseOutputDir, enabled = daemonEnabled) {
+                    Text("参照...", maxLines = 1, softWrap = false)
+                }
+                ArbSubtleAction(
+                    label = "既定",
+                    enabled = daemonEnabled,
+                    compact = true,
+                    tooltip = "既定の保存先へ戻す",
+                    onClick = { form.outputDirText.setTextAndPlaceCursorAtEnd("") },
+                )
+            }
+
+            // 3. Screenshot Destination Inheritance (Owner-confirmed T-6B feature!)
+            GroupHeader("スクリーンショット保存先", modifier = Modifier.semantics { heading() })
+            CheckboxRow(
+                text = "Android Studio の Logcat スクリーンショット保存先を継承する",
+                checked = form.screenshotInheritLogcat,
+                onCheckedChange = { checked ->
+                    form.screenshotInheritLogcat = checked
+                    onScreenshotOptionChanged()
+                },
+            )
+            if (!form.screenshotInheritLogcat) {
+                SettingsFormRow("専用保存先フォルダ:") {
+                    TextField(
+                        state = form.customScreenshotDirText,
+                        modifier = settingsFlexWidth(SETTINGS_PATH_MAX_WIDTH),
+                    )
+                    OutlinedButton(onClick = onBrowseScreenshotDir) {
+                        Text("参照...", maxLines = 1, softWrap = false)
+                    }
+                    ArbSubtleAction(
+                        label = "クリア",
+                        compact = true,
+                        onClick = {
+                            form.customScreenshotDirText.setTextAndPlaceCursorAtEnd("")
+                            onScreenshotOptionChanged()
+                        },
+                    )
+                }
+            }
+            if (form.screenshotStatusText.isNotBlank()) {
+                Text(
+                    text = form.screenshotStatusText,
+                    style = ArbJewelPalette.bodyStyle(11f, color = ArbJewelPalette.mutedText()),
+                )
+            }
+
+            // 4. CLI / MCP 1-Click Copy Section (Owner-confirmed T-6B feature!)
+            GroupHeader("CLI / MCP パスをコピー", modifier = Modifier.semantics { heading() })
+            SettingsFormRow("同梱 arb-cli パス:") {
+                TextField(
+                    state = form.cliPathReadOnlyText,
+                    readOnly = true,
+                    modifier = settingsFlexWidth(SETTINGS_PATH_MAX_WIDTH),
+                )
+            }
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+                modifier = Modifier.padding(start = SETTINGS_LABEL_WIDTH + 8.dp),
+            ) {
+                OutlinedButton(
+                    onClick = onCopyCliPath,
+                    enabled = !form.bundledCliPath.isNullOrBlank(),
+                ) {
+                    Text("CLI パスをコピー", maxLines = 1, softWrap = false)
+                }
+                OutlinedButton(
+                    onClick = onCopyMcpJson,
+                    enabled = form.mcpConfigJson != null,
+                ) {
+                    Text("MCP 設定 JSON をコピー", maxLines = 1, softWrap = false)
+                }
+            }
+            if (form.copyFeedback.isNotBlank()) {
+                Text(
+                    text = form.copyFeedback,
+                    style = ArbJewelPalette.bodyStyle(11f, color = ArbJewelPalette.successGreen()),
+                    modifier = Modifier.padding(start = SETTINGS_LABEL_WIDTH + 8.dp),
+                )
+            } else {
+                Text(
+                    text = "MCP 設定 JSON 例: {\"command\": \"<path>/arb-cli\", \"args\": [\"mcp\"]}",
+                    style = ArbJewelPalette.tabularMonoStyle(10.5f, color = ArbJewelPalette.mutedText()),
+                    modifier = Modifier.padding(start = SETTINGS_LABEL_WIDTH + 8.dp),
+                )
+            }
+
+            // 5. Local Execution Override
+            GroupHeader("ローカル実行設定（IDE ローカル保存）", modifier = Modifier.semantics { heading() })
+            SettingsFormRow("arbd バイナリパス (任意):") {
+                TextField(
+                    state = form.customArbdPathText,
+                    modifier = settingsFlexWidth(SETTINGS_PATH_MAX_WIDTH),
+                )
+                OutlinedButton(onClick = onBrowseBinary) {
+                    Text("参照...", maxLines = 1, softWrap = false)
+                }
+                ArbSubtleAction(
+                    label = "自動検出",
+                    iconKey = AllIconsKeys.Actions.Refresh,
+                    compact = true,
+                    tooltip = "自動検出に戻す",
+                    onClick = { form.customArbdPathText.setTextAndPlaceCursorAtEnd("") },
+                )
+            }
         }
     }
 }
