@@ -1,0 +1,43 @@
+<idea-plugin>
+    <id>io.github.shinma06.android-replay-buffer</id>
+    <name>Android Replay Buffer (v2)</name>
+    <vendor url="https://github.com/shinma06/android-replay-buffer">shinma06</vendor>
+    <description><![CDATA[
+        Android Replay Buffer v2 は、ローカル常駐デーモン arbd と IPC / 共有メモリ（SHM）で連携する
+        薄い Android Studio / IntelliJ IDEA プラグインです。
+        直前の画面録画・logcat・タッチ入力の保存、失敗保存のリカバリ（再試行・保存先変更・破棄）、
+        v2 および旧形式（Legacy RO）バンドルの閲覧、フレーム単位トリム・PNG 出力を提供します。
+    ]]></description>
+
+    <depends>com.intellij.modules.platform</depends>
+    <depends optional="true">org.jetbrains.android</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <notificationGroup id="ARB v2" displayType="BALLOON" isLogByDefault="true"/>
+        <applicationService serviceImplementation="io.github.shinma06.arb.ide.ArbdDaemonService"/>
+        <toolWindow id="ARB v2"
+                    anchor="right"
+                    doNotActivateOnStart="true"
+                    icon="AllIcons.Actions.Restart"
+                    factoryClass="io.github.shinma06.arb.ide.ArbToolWindowFactory"/>
+        <fileEditorProvider implementation="io.github.shinma06.arb.ide.ArbBundleFileEditorProvider"/>
+    </extensions>
+
+    <actions>
+        <group id="io.github.shinma06.arb.Actions" text="Android Replay Buffer (v2)" popup="true">
+            <add-to-group group-id="ToolsMenu" anchor="last"/>
+            <action id="io.github.shinma06.arb.QuickSave"
+                    class="io.github.shinma06.arb.ide.ArbQuickSaveAction"
+                    text="ARB v2: 直前の記録を保存（30秒）"
+                    description="arbd 経由で直前 30 秒の画面・ログ・入力を WORM バンドルとして保存します"/>
+            <action id="io.github.shinma06.arb.ToggleCapture"
+                    class="io.github.shinma06.arb.ide.ArbToggleCaptureAction"
+                    text="ARB v2: キャプチャ開始 / 停止"
+                    description="arbd のライブキャプチャを開始または停止します"/>
+            <action id="io.github.shinma06.arb.OpenBundleDir"
+                    class="io.github.shinma06.arb.ide.ArbOpenBundleAction"
+                    text="ARB v2: バンドルフォルダを開く..."
+                    description="v2 バンドルまたは旧形式（Schema 3/4）フォルダをビューアで開きます"/>
+        </group>
+    </actions>
+</idea-plugin>
