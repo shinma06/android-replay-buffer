@@ -505,6 +505,15 @@ class ArbT4StudioModelTest {
         assertTrue(state.boottimeNsToFrameIndex(10_000_000_000L, "boot-1") in 75L..76L)
         // Unknown epoch must return null (zero cross-epoch bleed!)
         assertNull(state.boottimeNsToFrameIndex(105_000_000_000L, "boot-unknown"))
+        // Overlapping epoch ranges without a boot id are ambiguous: never guess into one epoch.
+        val overlapping = state.copy(
+            summary = summary.copy(
+                epochFrameRanges = summary.epochFrameRanges.map {
+                    it.copy(startBoottimeNs = 0L, endBoottimeNs = 200_000_000_000L)
+                },
+            ),
+        )
+        assertNull(overlapping.boottimeNsToFrameIndex(10_000_000_000L))
 
         // Total duration sums both epochs cleanly (10s + 10s = 20s) even though epoch 1 reset boottime!
         assertEquals(20_000L, state.totalDurationMs)

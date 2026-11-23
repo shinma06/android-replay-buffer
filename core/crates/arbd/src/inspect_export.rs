@@ -934,7 +934,7 @@ fn render_inspect_tap_crop(
     display_dims: (Option<u32>, Option<u32>),
 ) -> Result<InspectRenderOutput, DaemonError> {
     let frame_count = track.frame_count();
-    let (display_w, display_h) = display_dims;
+    let (display_w, display_h) = orient_display_dims(display_dims, video_w, video_h);
     let (idx, tx, ty) = if let Some(tap_idx) = params.tap_index {
         let frames = reader.frames()?;
         let main_taps = reader.query_taps(Some(RecordBucket::Main), TimeRange::all(), None)?;
@@ -1027,7 +1027,7 @@ fn build_frame_tap_map(
     video_h: u32,
     display_dims: (Option<u32>, Option<u32>),
 ) -> Result<BTreeMap<u64, (u32, u32)>, DaemonError> {
-    let (display_w, display_h) = display_dims;
+    let (display_w, display_h) = orient_display_dims(display_dims, video_w, video_h);
     let frames = reader.frames()?;
     let main_taps = reader.query_taps(Some(RecordBucket::Main), TimeRange::all(), None)?;
     let mut map = BTreeMap::new();
@@ -1302,12 +1302,34 @@ fn clamp_coord_to_frame(raw: f64, dim: u32) -> u32 {
 /// the coordinate is only trusted when it already lies inside the video frame; a coordinate
 /// beyond the frame proves it is in a larger display space, so `None` is returned instead of
 /// pinning it to the frame edge.
+/// Orients the (natural portrait) display size to the video: when the video is landscape but
+/// the display is portrait (or vice versa) the axes are swapped.
+fn orient_display_dims(
+    display: (Option<u32>, Option<u32>),
+    video_w: u32,
+    video_h: u32,
+) -> (Option<u32>, Option<u32>) {
+    match display {
+        (Some(dw), Some(dh))
+            if video_w != video_h && dw != dh && (dw < dh) != (video_w < video_h) =>
+        {
+            (Some(dh), Some(dw))
+        }
+        other => other,
+    }
+}
+
 fn map_tap_coord_to_frame(raw: f64, display_dim: Option<u32>, video_dim: u32) -> Option<u32> {
     if !raw.is_finite() || raw < 0.0 || video_dim == 0 {
         return None;
     }
     match display_dim.filter(|d| *d > 0) {
         Some(display) => {
+            // A value beyond the display proves the coordinate is in another space (e.g. a raw
+            // evdev axis range), so it is unmapped rather than pinned to the frame edge.
+            if raw > f64::from(display) {
+                return None;
+            }
             let scaled = raw * f64::from(video_dim) / f64::from(display);
             Some(clamp_coord_to_frame(scaled, video_dim))
         }
@@ -1440,7 +1462,7 @@ pub(crate) fn base64_encode(input: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{base64_encode, map_tap_coord_to_frame, prune_cache_dir};
+    use super::{base64_encode, map_tap_coord_to_frame, orient_display_dims, prune_cache_dir};
 
     #[test]
     fn tap_coords_scale_from_display_space_and_refuse_out_of_frame() {
@@ -1452,6 +1474,17 @@ mod tests {
         assert_eq!(map_tap_coord_to_frame(100.0, None, 460), Some(100));
         assert_eq!(map_tap_coord_to_frame(1200.0, None, 1024), None);
         assert_eq!(map_tap_coord_to_frame(f64::NAN, Some(10), 5), None);
+        // Raw evdev values beyond the display are unmapped, never edge-clamped.
+        assert_eq!(map_tap_coord_to_frame(16000.0, Some(1080), 460), None);
+        // Landscape video swaps the natural-portrait display axes.
+        assert_eq!(
+            orient_display_dims((Some(1080), Some(2400)), 2400, 1080),
+            (Some(2400), Some(1080))
+        );
+        assert_eq!(
+            orient_display_dims((Some(1080), Some(2400)), 460, 1024),
+            (Some(1080), Some(2400))
+        );
         assert_eq!(map_tap_coord_to_frame(-1.0, None, 5), None);
     }
 

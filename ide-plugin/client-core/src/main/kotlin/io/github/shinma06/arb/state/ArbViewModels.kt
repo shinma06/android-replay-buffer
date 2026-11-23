@@ -584,9 +584,13 @@ data class TimelineViewerState(
                     ?: return null // Strict per-epoch isolation: never bleed into another boot epoch
                 return interpolateFrameInEpoch(matched, boottimeNs)
             }
-            val containing = summary.epochFrameRanges.firstOrNull {
+            val containingAll = summary.epochFrameRanges.filter {
                 boottimeNs in it.startBoottimeNs..it.endBoottimeNs
             }
+            // Boottime restarts after a reboot, so ranges can overlap: without a boot id an
+            // ambiguous timestamp must not be guessed into one epoch (cross-epoch bleed).
+            if (containingAll.size > 1) return null
+            val containing = containingAll.firstOrNull()
             if (containing != null) {
                 return interpolateFrameInEpoch(containing, boottimeNs)
             }

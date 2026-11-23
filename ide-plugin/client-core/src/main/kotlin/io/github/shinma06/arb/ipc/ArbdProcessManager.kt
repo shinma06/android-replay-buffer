@@ -171,7 +171,10 @@ class ArbdProcessManager(
         val resolvedBinary = resolveDaemonBinary()
         val bundledBinary = resolveBundledBinary(os.daemonExecutableName())
 
-        when (val probe = probeRunningDaemon(endpoint, bundledBinary)) {
+        // Only auto-upgrade when the bundled binary is what a respawn would actually launch;
+        // otherwise a custom/env binary older than the bundled one would loop restart forever.
+        val upgradeTarget = bundledBinary?.takeIf { it == resolvedBinary }
+        when (val probe = probeRunningDaemon(endpoint, upgradeTarget)) {
             is ProbeResult.Healthy -> return probe.connected
             is ProbeResult.Stale -> {
                 val upgradeBin = resolvedBinary
@@ -237,7 +240,7 @@ class ArbdProcessManager(
             // Already stopped or non-responsive; fall through to lockfile check.
         }
 
-        if (existingPid == null) {
+        if (existingPid == null && isEndpointReachable(endpoint)) {
             existingPid = readLockfilePid()
         }
 
@@ -257,7 +260,10 @@ class ArbdProcessManager(
         existingPid?.let { pid ->
             if (pid != ProcessHandle.current().pid()) {
                 ProcessHandle.of(pid).ifPresent { handle ->
-                    runCatching { handle.destroy() }
+                    // Never signal a PID that is not arbd (stale lockfile PID reuse).
+                    if (isArbdProcess(handle)) {
+                        runCatching { handle.destroy() }
+                    }
                 }
             }
         }
@@ -268,6 +274,12 @@ class ArbdProcessManager(
             }
             runCatching { Thread.sleep(POLL_INTERVAL_MS) }
         }
+    }
+
+    private fun isArbdProcess(handle: ProcessHandle): Boolean {
+        val command = handle.info().command().orElse(null) ?: return false
+        val name = runCatching { Paths.get(command).fileName.toString() }.getOrNull() ?: return false
+        return name.removeSuffix(".exe").equals("arbd", ignoreCase = true)
     }
 
     private fun isEndpointReachable(endpoint: String): Boolean = try {
@@ -360,6 +372,8 @@ class ArbdProcessManager(
                     runCatching { client.close() }
                     return ProbeResult.Stale("method not found: config.get")
                 }
+            } catch (_: IOException) {
+                // hello already succeeded: a busy daemon (read timeout) is healthy, not absent.
             }
             // If we have a bundled plugin binary that is strictly newer than the running daemon binary,
             // auto-upgrade transparently so installing a newer plugin ZIP takes effect immediately.
@@ -391,8 +405,11 @@ class ArbdProcessManager(
     }
 
     private fun ensureUnixExecutable(path: Path): Path {
-        if (os != HostOs.WINDOWS && Files.isRegularFile(path) && !Files.isExecutable(path)) {
-            runCatching { path.toFile().setExecutable(true, false) }
+        // Only repair the bundled plugin files; never chmod user-supplied env/Settings paths.
+        val nativeRoot = pluginDir?.toAbsolutePath()?.normalize()
+        val isBundled = nativeRoot != null && path.toAbsolutePath().normalize().startsWith(nativeRoot)
+        if (isBundled && os != HostOs.WINDOWS && Files.isRegularFile(path) && !Files.isExecutable(path)) {
+            runCatching { path.toFile().setExecutable(true, true) }
         }
         return path
     }

@@ -43,6 +43,9 @@ class ArbToolWindowPanel(
         Thread(r, "arb-toolwindow-worker").apply { isDaemon = true }
     }
 
+    private val captureStateLock = Any()
+
+    @Volatile
     private var captureState = CaptureBarState()
     private var recoveryState = FailedSaveRecoveryState()
     private var catalogState = BundleCatalogState()
@@ -94,8 +97,10 @@ class ArbToolWindowPanel(
                         runAsync {
                             val updated = daemonService.withClient { it.configUpdate(patch) }.config
                             daemonService.notifyConfigUpdated(updated)
-                            captureState = CaptureBarReducer.withConfig(captureState, updated)
-                            SwingUtilities.invokeLater { captureBarPanel.render(captureState) }
+                            val applied = synchronized(captureStateLock) {
+                                CaptureBarReducer.withConfig(captureState, updated).also { captureState = it }
+                            }
+                            SwingUtilities.invokeLater { captureBarPanel.render(applied) }
                             notifyBalloon(
                                 "設定を保存しました（保持ウィンドウ: ${ArbFormatters.formatSeconds(updated.saveWindowSecs)}）",
                             )
@@ -181,8 +186,9 @@ class ArbToolWindowPanel(
 
     private val daemonStateListener = object : ArbDaemonStateListener {
         override fun onConfigUpdated(config: ArbConfig) {
-            val next = CaptureBarReducer.withConfig(captureState, config)
-            captureState = next
+            val next = synchronized(captureStateLock) {
+                CaptureBarReducer.withConfig(captureState, config).also { captureState = it }
+            }
             SwingUtilities.invokeLater { captureBarPanel.render(next) }
             runAsync { refreshAll() }
         }
@@ -305,12 +311,14 @@ class ArbToolWindowPanel(
                 if (meta.crashed) crashIds.add(entry.bundleId)
             }
 
-            val nextCapture = CaptureBarReducer.fromStatus(
-                previous = captureState,
-                status = status,
-                devices = devices,
-                config = config,
-            )
+            val nextCapture = synchronized(captureStateLock) {
+                CaptureBarReducer.fromStatus(
+                    previous = captureState,
+                    status = status,
+                    devices = devices,
+                    config = config,
+                ).also { captureState = it }
+            }
             val nextRecovery = FailedSaveRecoveryReducer.withJobs(recoveryState, jobs)
             val nextCatalog = BundleCatalogState.fromEntries(
                 entries = bundles,
@@ -320,7 +328,6 @@ class ArbToolWindowPanel(
                 kindsByBundleId = kinds,
             )
 
-            captureState = nextCapture
             recoveryState = nextRecovery
             catalogState = nextCatalog
 

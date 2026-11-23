@@ -93,31 +93,12 @@ def render_unix_launcher(target_os: str) -> str:
         'export ARB_DAEMON_PATH="${BIN_DIR}/arbd"\n'
         'export PATH="${BIN_DIR}:${PATH}"\n'
         "\n"
-        "# If a stale arbd from a different/older package path is running (or lacks config.get),\n"
-        "# stop it gracefully before starting this package's binaries.\n"
+        "# Stop a running arbd only when it is protocol-incompatible (answers status but lacks\n"
+        "# config.get). A healthy arbd that merely lives elsewhere (e.g. the IDE plugin's bundled\n"
+        "# copy) is never killed, and install paths with spaces are never parsed.\n"
         "ensure_fresh_daemon() {\n"
-        '    local expected_arbd="${BIN_DIR}/arbd"\n'
-        '    local stale_pids=()\n'
-        "    while IFS= read -r line; do\n"
-        '        [[ -z "${line}" ]] && continue\n'
-        '        local pid="${line%% *}"\n'
-        '        local cmd="${line#* }"\n'
-        '        local exe="${cmd%% *}"\n'
-        '        local base="${exe##*/}"\n'
-        '        if [[ "${base}" == "arbd" && "${exe}" != "${expected_arbd}" ]]; then\n'
-        '            stale_pids+=("${pid}")\n'
-        "        fi\n"
-        '    done < <(ps -eo pid=,args= 2>/dev/null | sed -e "s/^ *//" || true)\n'
-        "\n"
-        "    local needs_stop=0\n"
-        '    if (( ${#stale_pids[@]} > 0 )); then\n'
-        "        needs_stop=1\n"
-        '    elif "${BIN_DIR}/arb-cli" status >/dev/null 2>&1 && ! "${BIN_DIR}/arb-cli" config get >/dev/null 2>&1; then\n'
-        "        needs_stop=1\n"
-        "    fi\n"
-        "\n"
-        '    if [[ "${needs_stop}" -eq 1 ]]; then\n'
-        '        echo "[arb] Stopping older arbd instance before launching ${expected_arbd}..." >&2\n'
+        '    if "${BIN_DIR}/arb-cli" status >/dev/null 2>&1 && ! "${BIN_DIR}/arb-cli" config get >/dev/null 2>&1; then\n'
+        '        echo "[arb] Stopping incompatible arbd instance before launching ${BIN_DIR}/arbd..." >&2\n'
         '        "${BIN_DIR}/arb-cli" daemon stop >/dev/null 2>&1 || true\n'
         "        for _ in 1 2 3 4 5 6 7 8 9 10; do\n"
         '            if ! "${BIN_DIR}/arb-cli" status >/dev/null 2>&1; then\n'
@@ -125,12 +106,6 @@ def render_unix_launcher(target_os: str) -> str:
         "            fi\n"
         "            sleep 0.25\n"
         "        done\n"
-        '        for pid in "${stale_pids[@]+"${stale_pids[@]}"}"; do\n'
-        '            if kill -0 "${pid}" 2>/dev/null; then\n'
-        '                kill "${pid}" 2>/dev/null || true\n'
-        "            fi\n"
-        "        done\n"
-        "        sleep 0.2\n"
         "    fi\n"
         "}\n"
         "\n"
@@ -195,36 +170,26 @@ def render_windows_launcher() -> str:
         '$env:PATH = "$BinDir;$env:PATH"\n'
         "\n"
         "function Ensure-FreshDaemon {\n"
-        '    $stale = @()\n'
-        '    foreach ($proc in (Get-Process -Name "arbd" -ErrorAction SilentlyContinue)) {\n'
-        "        $procPath = $null\n"
-        "        try { $procPath = [System.IO.Path]::GetFullPath($proc.Path) } catch {}\n"
-        "        if (-not $procPath -or -not $procPath.Equals($ExpectedArbd, [System.StringComparison]::OrdinalIgnoreCase)) {\n"
-        "            $stale += $proc\n"
-        "        }\n"
-        "    }\n"
-        "    $needsStop = ($stale.Count -gt 0)\n"
-        "    if (-not $needsStop) {\n"
+        "    # Native probes write to stderr on first run; under Windows PowerShell 5.1 that would\n"
+        "    # become a terminating error with Stop, so probe with Continue and use $LASTEXITCODE.\n"
+        "    $prevEap = $ErrorActionPreference\n"
+        '    $ErrorActionPreference = "Continue"\n'
+        "    try {\n"
         "        & $CliExe status 2>$null | Out-Null\n"
         "        if ($LASTEXITCODE -eq 0) {\n"
         "            & $CliExe config get 2>$null | Out-Null\n"
-        "            if ($LASTEXITCODE -ne 0) { $needsStop = $true }\n"
-        "        }\n"
-        "    }\n"
-        "    if ($needsStop) {\n"
-        '        [Console]::Error.WriteLine("[arb] Stopping older arbd instance before launching $ExpectedArbd...")\n'
-        "        try { & $CliExe daemon stop 2>$null | Out-Null } catch {}\n"
-        "        for ($i = 0; $i -lt 10; $i++) {\n"
-        "            & $CliExe status 2>$null | Out-Null\n"
-        "            if ($LASTEXITCODE -ne 0) { break }\n"
-        "            Start-Sleep -Milliseconds 250\n"
-        "        }\n"
-        "        foreach ($proc in $stale) {\n"
-        "            if (-not $proc.HasExited) {\n"
-        "                Stop-Process -Id $proc.Id -ErrorAction SilentlyContinue\n"
+        "            if ($LASTEXITCODE -ne 0) {\n"
+        '                [Console]::Error.WriteLine("[arb] Stopping incompatible arbd instance before launching $ExpectedArbd...")\n'
+        "                & $CliExe daemon stop 2>$null | Out-Null\n"
+        "                for ($i = 0; $i -lt 10; $i++) {\n"
+        "                    & $CliExe status 2>$null | Out-Null\n"
+        "                    if ($LASTEXITCODE -ne 0) { break }\n"
+        "                    Start-Sleep -Milliseconds 250\n"
+        "                }\n"
         "            }\n"
         "        }\n"
-        "        Start-Sleep -Milliseconds 200\n"
+        "    } finally {\n"
+        "        $ErrorActionPreference = $prevEap\n"
         "    }\n"
         "}\n"
         "\n"
@@ -598,6 +563,12 @@ def run_self_test(repo_root: Path) -> int:
                 for line in sums:
                     digest, rel = line.split("  ", 1)
                     assert sha256_bytes(zf.read(rel)) == digest, f"checksum mismatch for {rel}"
+
+        sh_text = render_unix_launcher("linux")
+        ps_text = render_windows_launcher()
+        assert "stale_pids" not in sh_text and "${cmd%% *}" not in sh_text, "launcher must not kill/parse foreign arbd"
+        assert 'ErrorActionPreference = "Continue"' in ps_text, "PS probes must not run under Stop"
+        assert "$stale" not in ps_text, "PS launcher must not kill foreign arbd"
 
         print(
             "package_distribution.py --self-test: OK "
