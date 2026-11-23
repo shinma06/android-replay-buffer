@@ -5,7 +5,7 @@ use std::fs::{self, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::Arc;
+use std::sync::{Arc, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -104,6 +104,9 @@ fn resolve_screenshot_serial(
     }
 }
 
+/// How long to wait for the output readers after `adb` has exited.
+const READER_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
+
 fn run_adb_screencap(
     adb_path: &Path,
     serial: &str,
@@ -119,28 +122,40 @@ fn run_adb_screencap(
     let stdout_pipe = child.stdout.take();
     let stderr_pipe = child.stderr.take();
 
-    let stdout_handle = stdout_pipe.map(|mut pipe| {
-        thread::spawn(move || -> io::Result<Vec<u8>> {
-            let mut limited = pipe
-                .by_ref()
-                .take(u64::try_from(MAX_SCREENSHOT_BYTES + 1).unwrap_or(u64::MAX));
-            let mut buf = Vec::new();
-            limited.read_to_end(&mut buf)?;
-            // Keep draining (and discarding) so an oversized screencap never blocks adb on a
-            // full pipe; the caller reports the size-limit error right after the child exits.
-            if buf.len() > MAX_SCREENSHOT_BYTES {
-                let _ = io::copy(&mut pipe, &mut io::sink());
-            }
-            Ok(buf)
-        })
-    });
-    let stderr_handle = stderr_pipe.map(|mut pipe| {
-        thread::spawn(move || -> Vec<u8> {
+    // Readers report over channels so the final wait is bounded: if `adb` started a server
+    // that inherited the pipe (a known Windows quirk), EOF never arrives and a plain `join`
+    // would hang forever past `timeout`.
+    let (stdout_tx, stdout_rx) = mpsc::channel::<io::Result<Vec<u8>>>();
+    if let Some(mut pipe) = stdout_pipe {
+        thread::spawn(move || {
+            let result = (|| -> io::Result<Vec<u8>> {
+                let mut limited = pipe
+                    .by_ref()
+                    .take(u64::try_from(MAX_SCREENSHOT_BYTES + 1).unwrap_or(u64::MAX));
+                let mut buf = Vec::new();
+                limited.read_to_end(&mut buf)?;
+                // Keep draining (and discarding) so an oversized screencap never blocks adb on
+                // a full pipe; the size-limit error is reported right after the child exits.
+                if buf.len() > MAX_SCREENSHOT_BYTES {
+                    let _ = io::copy(&mut pipe, &mut io::sink());
+                }
+                Ok(buf)
+            })();
+            let _ = stdout_tx.send(result);
+        });
+    } else {
+        let _ = stdout_tx.send(Ok(Vec::new()));
+    }
+    let (stderr_tx, stderr_rx) = mpsc::channel::<Vec<u8>>();
+    if let Some(mut pipe) = stderr_pipe {
+        thread::spawn(move || {
             let mut buf = Vec::new();
             let _ = pipe.read_to_end(&mut buf);
-            buf
-        })
-    });
+            let _ = stderr_tx.send(buf);
+        });
+    } else {
+        let _ = stderr_tx.send(Vec::new());
+    }
 
     let deadline = Instant::now() + timeout;
     let status = loop {
@@ -158,14 +173,11 @@ fn run_adb_screencap(
         thread::sleep(Duration::from_millis(20));
     };
 
-    let stdout_bytes = match stdout_handle {
-        Some(h) => h
-            .join()
-            .map_err(|_| DaemonError::Internal("screencap stdout reader panicked".to_owned()))??,
-        None => Vec::new(),
-    };
-    let stderr_bytes = stderr_handle
-        .and_then(|h| h.join().ok())
+    let stdout_bytes = stdout_rx.recv_timeout(READER_DRAIN_TIMEOUT).map_err(|_| {
+        DaemonError::Internal("adb screencap output did not close after adb exited".to_owned())
+    })??;
+    let stderr_bytes = stderr_rx
+        .recv_timeout(READER_DRAIN_TIMEOUT)
         .unwrap_or_default();
 
     if !status.success() {

@@ -1118,6 +1118,7 @@ impl DaemonState {
         let (path, existing) = self.resolve_bundle_path(&parsed.bundle_id_or_path)?;
         // R3 S7: validate before anything is created; never write into a WORM bundle.
         self.validate_output_location(&parsed.output_path, "output_path", Some(&path))?;
+        self.reject_data_dir_state_file(&parsed.output_path, "output_path")?;
         let source_id = existing.as_ref().map(|e| e.bundle_id.as_str());
         let backend = default_codec_backend();
         let ctx = ExportContext {
@@ -1461,6 +1462,18 @@ impl Drop for DaemonServer {
 fn load_user_config_or_defaults(config_store: &ConfigStore) -> (ArbConfig, Option<String>, bool) {
     match config_store.load_or_default() {
         Ok(cfg) => (cfg, None, false),
+        // A newer arbd's file must survive a downgrade: leave it, run on defaults, block updates.
+        Err(
+            err @ StorageError::ConfigValidation(
+                arb_core::config::ConfigValidationError::UnsupportedVersion { .. },
+            ),
+        ) => (
+            ArbConfig::default(),
+            Some(format!(
+                "config.json was written by a different arbd version ({err}); defaults are in use and the file was left untouched"
+            )),
+            true,
+        ),
         Err(err @ (StorageError::Json { .. } | StorageError::ConfigValidation(_))) => {
             let warning = match config_store.quarantine_invalid(&utc_now_iso8601()) {
                 Ok(path) => format!(
@@ -1488,7 +1501,18 @@ fn run_crash_autosave_worker(state: &Arc<DaemonState>, rx: &Receiver<CrashAutoSa
         if state.is_shutting_down() {
             break;
         }
-        handle_crash_autosave_notice(state, notice);
+        // A panic in one auto-save must not silently kill the worker for the daemon's life.
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            handle_crash_autosave_notice(state, notice);
+        }));
+        if outcome.is_err() {
+            let mut status = state
+                .crash_autosave_status
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            status.in_flight = false;
+            status.last_error = Some("crash auto-save worker panicked; continuing".to_owned());
+        }
     }
 }
 
@@ -1552,6 +1576,14 @@ fn handle_crash_autosave_notice(state: &Arc<DaemonState>, notice: CrashAutoSaveN
         }
     }
 
+    if state.is_shutting_down() {
+        let mut status = state
+            .crash_autosave_status
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        status.in_flight = false;
+        return;
+    }
     let save_res = state.execute_save(
         Some(u64::from(cfg.save_window_secs)),
         None,
@@ -1566,7 +1598,10 @@ fn handle_crash_autosave_notice(state: &Arc<DaemonState>, notice: CrashAutoSaveN
         .lock()
         .unwrap_or_else(PoisonError::into_inner);
     status.in_flight = false;
-    let saved = matches!(&save_res, Ok(outcome) if outcome.bundle_id.is_some());
+    // Roll the debounce back only when the save failed before pinning anything (`Err`). A job
+    // that ended `FailedRetryable` keeps its ring pins, so its cooldown must stay or a failing
+    // destination plus a crash loop would pin a fresh window on every crash.
+    let pre_pin_failure = save_res.is_err();
     match save_res {
         Ok(outcome) => {
             status.last_job_id = Some(outcome.job.job_id);
@@ -1578,8 +1613,8 @@ fn handle_crash_autosave_notice(state: &Arc<DaemonState>, notice: CrashAutoSaveN
         }
     }
     drop(status);
-    if !saved {
-        // No bundle was produced: do not let this failed attempt debounce the next crash.
+    if pre_pin_failure {
+        // Nothing was pinned or saved: do not let this failed attempt debounce the next crash.
         state
             .crash_autosave_gate
             .lock()

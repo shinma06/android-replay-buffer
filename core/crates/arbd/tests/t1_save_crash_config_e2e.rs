@@ -980,11 +980,8 @@ fn t1_review_invalid_config_json_is_set_aside_and_arbd_still_starts() {
     let tmp = TempDir::new().expect("tempdir");
     let paths = isolated_paths(&tmp);
     fs::create_dir_all(&paths.data_dir).expect("data dir");
-    fs::write(
-        paths.data_dir.join("config.json"),
-        br#"{"config_version": 999}"#,
-    )
-    .expect("write newer-version config");
+    fs::write(paths.data_dir.join("config.json"), b"{ this is not json")
+        .expect("write corrupt config");
 
     let server = DaemonServer::start(DaemonConfig::new(paths.clone()))
         .expect("arbd must start despite an invalid config.json");
@@ -1200,6 +1197,35 @@ fn t1_review_app_text_log_cannot_forge_a_crash_and_unreadable_config_blocks_upda
     assert_eq!(
         after["crash_autosave"]["detected_crashes"], 0,
         "an app's text log line must never count as a crash"
+    );
+    drop(client);
+    server.shutdown();
+}
+
+#[test]
+fn t1_review_newer_version_config_json_is_preserved_and_blocks_updates() {
+    let tmp = TempDir::new().expect("tempdir");
+    let paths = isolated_paths(&tmp);
+    fs::create_dir_all(&paths.data_dir).expect("data dir");
+    let newer = br#"{"config_version": 999, "future_field": true}"#;
+    fs::write(paths.data_dir.join("config.json"), newer).expect("write newer config");
+
+    let server = DaemonServer::start(DaemonConfig::new(paths.clone())).expect("start arbd");
+    let mut client = RpcClient::connect(server.endpoint());
+    let status = client.call("system.status", &json!({}));
+    assert!(
+        status["config_warning"].is_string(),
+        "newer-version config reported: {status}"
+    );
+    let (code, _) = client.call_err("config.update", &json!({ "save_window_secs": 60 }));
+    assert_eq!(
+        code, -32_002,
+        "update refused so the newer file is never replaced"
+    );
+    assert_eq!(
+        fs::read(paths.data_dir.join("config.json")).expect("config.json"),
+        newer,
+        "a newer arbd's config.json must survive untouched"
     );
     drop(client);
     server.shutdown();

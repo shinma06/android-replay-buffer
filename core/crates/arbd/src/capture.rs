@@ -2606,6 +2606,19 @@ pub fn save_job_to_view(record: &CatalogSaveJob) -> SaveJobView {
 }
 
 fn decode_log_tag_and_message(payload: &LogRecordPayload) -> (String, String) {
+    let (tag, message) = decode_log_tag_and_message_raw(payload);
+    // The `am_crash` event tag is only authentic from system_server (uid 1000). An app that
+    // writes its own `am_crash` text or `EventLog` record must not be stored under that tag,
+    // or `timeline.crashes` would show forged crashes that live detection refuses.
+    if matches!(tag.as_str(), "am_crash" | "30039")
+        && !matches!(payload.uid, 1000 | arb_adb::wire::UNKNOWN_U32)
+    {
+        return (format!("app:{tag}"), message);
+    }
+    (tag, message)
+}
+
+fn decode_log_tag_and_message_raw(payload: &LogRecordPayload) -> (String, String) {
     if let Some(parsed) = payload.parse_text_tag_and_message() {
         return parsed;
     }
@@ -2768,10 +2781,47 @@ mod tests {
     use tempfile::TempDir;
 
     use super::{
-        AlignedVideoItem, CapturePipeline, SharedDiskSpaceProvider, decode_ring_chunk,
-        encode_ring_chunk, mux_selected_video,
+        AlignedVideoItem, CapturePipeline, SharedDiskSpaceProvider, decode_log_tag_and_message,
+        decode_ring_chunk, detect_live_fatal_am_crash, encode_ring_chunk, mux_selected_video,
     };
     use crate::error::DaemonError;
+
+    fn text_payload(uid: u32, tag: &str, msg: &str) -> arb_adb::wire::LogRecordPayload {
+        let mut bytes = vec![4_u8];
+        bytes.extend_from_slice(tag.as_bytes());
+        bytes.push(0);
+        bytes.extend_from_slice(msg.as_bytes());
+        bytes.push(0);
+        arb_adb::wire::LogRecordPayload {
+            device_read_boottime_ns: 1,
+            log_sec: 1,
+            log_nsec: 0,
+            pid: 1,
+            tid: 1,
+            lid: 0,
+            uid,
+            hdr_size: 28,
+            priority: 4,
+            record_flags: 0,
+            payload: bytes,
+        }
+    }
+
+    #[test]
+    fn app_written_am_crash_records_are_not_stored_or_detected_as_system_crashes() {
+        let body = "[0,1,com.evil,0,java.lang.Error,fake,F.kt,1]";
+        let app = text_payload(10_123, "am_crash", body);
+        assert_eq!(decode_log_tag_and_message(&app).0, "app:am_crash");
+        assert!(
+            detect_live_fatal_am_crash(&app).is_none(),
+            "text never triggers"
+        );
+
+        let system = text_payload(1000, "am_crash", body);
+        assert_eq!(decode_log_tag_and_message(&system).0, "am_crash");
+        let other = text_payload(10_123, "AppTag", "hello");
+        assert_eq!(decode_log_tag_and_message(&other).0, "AppTag");
+    }
 
     #[derive(Debug)]
     struct PlentyOfDisk;
