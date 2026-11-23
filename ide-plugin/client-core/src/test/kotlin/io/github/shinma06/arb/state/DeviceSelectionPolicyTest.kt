@@ -126,7 +126,31 @@ class DeviceSelectionPolicyTest {
         assertEquals("再接続待機中", afterDisconnect.statusBadgeText)
         assertFalse(afterDisconnect.isSelectedDeviceOnline)
 
-        // 3. Active logs_only capture displays REC (ログのみ) and encoder warning banner when present.
+        // 3. Sole idle unauthorized device stays visible with disabled online status, and idle
+        //    auto-selected sole device transitions cleanly when swapped to another sole device.
+        val unauthOnly = CaptureBarReducer.fromStatus(
+            previous = CaptureBarState(),
+            status = idleStatus(),
+            devices = listOf(device("39101FDH200042", AdbDeviceState.Unauthorized)),
+        )
+        assertEquals("39101FDH200042", unauthOnly.selectedSerial)
+        assertFalse(unauthOnly.isSelectedDeviceOnline)
+        assertEquals("未承認", unauthOnly.statusBadgeText)
+
+        val autoSingle = CaptureBarReducer.fromStatus(
+            previous = CaptureBarState(),
+            status = idleStatus(),
+            devices = listOf(device("emulator-5554")),
+        )
+        assertEquals("emulator-5554", autoSingle.selectedSerial)
+        val swappedSingle = CaptureBarReducer.fromStatus(
+            previous = autoSingle,
+            status = idleStatus(),
+            devices = listOf(device("PIXEL9-USB-01")),
+        )
+        assertEquals("PIXEL9-USB-01", swappedSingle.selectedSerial)
+
+        // 4. Active logs_only capture displays REC (ログのみ) and encoder warning banner when present.
         val logsOnlyRec = CaptureBarReducer.fromStatus(
             previous = CaptureBarState(),
             status = idleStatus(

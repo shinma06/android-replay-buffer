@@ -64,6 +64,7 @@ data class CaptureBarState(
     val daemonPid: Long? = null,
     val devices: List<AdbDeviceInfo> = emptyList(),
     val selectedSerial: String? = null,
+    val autoSelectedSerial: String? = null,
     val deviceSelection: DeviceSelectionOutcome = DeviceSelectionOutcome.NoOnlineDevices,
     val capture: CaptureStatusView? = null,
     val config: ArbConfig = ArbConfig(),
@@ -220,18 +221,32 @@ object CaptureBarReducer {
         }
 
         // Strict no-auto-switch policy:
-        // - If a target serial is already bound (explicitly selected, persisted in config, or
-        //   currently capturing), stay bound to it even if it goes offline while other devices are online.
-        // - If no target serial is bound and 2+ devices are online, DO NOT auto-select.
-        val boundSerial = previous.selectedSerial?.takeIf { it.isNotBlank() }
+        // - If a target serial is explicitly bound (manually chosen by the user, persisted in
+        //   `config.deviceSerial`, or actively capturing), stay bound to it even if it goes
+        //   offline while other devices are online.
+        // - If the previous serial was only auto-selected for a sole idle device (never explicitly
+        //   pinned by the user), re-evaluate against the current device list: 1 online device
+        //   auto-selects cleanly; 2+ online devices enter MultipleDevicesNeedSelection (NEVER
+        //   auto-select); 1 unauthorized/offline sole device stays visible in the dropdown with
+        //   actions disabled until it comes online.
+        val explicitSelectedSerial = previous.selectedSerial
+            ?.takeIf { it.isNotBlank() && it != previous.autoSelectedSerial }
+        val boundSerial = explicitSelectedSerial
             ?: config.deviceSerial?.takeIf { it.isNotBlank() }
             ?: status.capture.serial?.takeIf { status.capture.active && it.isNotBlank() }
         val selection = DeviceSelectionPolicy.evaluate(boundSerial, devices)
-        val resolvedSerial = when (selection) {
-            is DeviceSelectionOutcome.Selected -> selection.serial
-            is DeviceSelectionOutcome.WaitingForPreferredDevice -> selection.preferredSerial
-            is DeviceSelectionOutcome.MultipleDevicesNeedSelection -> null
-            DeviceSelectionOutcome.NoOnlineDevices -> boundSerial
+        val (resolvedSerial, nextAutoSelectedSerial) = when (selection) {
+            is DeviceSelectionOutcome.Selected ->
+                selection.serial to if (selection.autoSelected) selection.serial else null
+            is DeviceSelectionOutcome.WaitingForPreferredDevice ->
+                selection.preferredSerial to null
+            is DeviceSelectionOutcome.MultipleDevicesNeedSelection ->
+                null to null
+            DeviceSelectionOutcome.NoOnlineDevices -> when {
+                boundSerial != null -> boundSerial to null
+                devices.size == 1 -> devices.first().serial to devices.first().serial
+                else -> null to null
+            }
         }
         val finalBanners = if (selection is DeviceSelectionOutcome.MultipleDevicesNeedSelection) {
             banners + CaptureBanner(
@@ -248,6 +263,7 @@ object CaptureBarReducer {
             daemonPid = status.pid,
             devices = devices,
             selectedSerial = resolvedSerial,
+            autoSelectedSerial = nextAutoSelectedSerial,
             deviceSelection = selection,
             capture = status.capture,
             config = config,
