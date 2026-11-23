@@ -531,8 +531,8 @@ mod imp {
 
     use windows_sys::Win32::Foundation::{
         CloseHandle, DUPLICATE_SAME_ACCESS, DuplicateHandle, ERROR_BROKEN_PIPE,
-        ERROR_INSUFFICIENT_BUFFER, ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED, GENERIC_ALL,
-        GENERIC_READ, GENERIC_WRITE, GetLastError, HANDLE, INVALID_HANDLE_VALUE,
+        ERROR_INSUFFICIENT_BUFFER, ERROR_IO_PENDING, ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED,
+        GENERIC_ALL, GENERIC_READ, GENERIC_WRITE, GetLastError, HANDLE, INVALID_HANDLE_VALUE,
     };
     use windows_sys::Win32::Security::{
         ACCESS_ALLOWED_ACE, ACL, ACL_REVISION, AddAccessAllowedAce, EqualSid,
@@ -542,15 +542,19 @@ mod imp {
         TOKEN_USER, TokenUser,
     };
     use windows_sys::Win32::Storage::FileSystem::{
-        CreateFileW, FILE_FLAG_FIRST_PIPE_INSTANCE, FlushFileBuffers, OPEN_EXISTING,
-        PIPE_ACCESS_DUPLEX, ReadFile, SECURITY_IDENTIFICATION, SECURITY_SQOS_PRESENT, WriteFile,
+        CreateFileW, FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED, FlushFileBuffers,
+        OPEN_EXISTING, PIPE_ACCESS_DUPLEX, ReadFile, SECURITY_IDENTIFICATION,
+        SECURITY_SQOS_PRESENT, WriteFile,
     };
+    use windows_sys::Win32::System::IO::{GetOverlappedResult, OVERLAPPED};
     use windows_sys::Win32::System::Pipes::{
         ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, PIPE_READMODE_BYTE,
         PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
         WaitNamedPipeW,
     };
-    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+    use windows_sys::Win32::System::Threading::{
+        CreateEventW, GetCurrentProcess, OpenProcessToken,
+    };
 
     use crate::error::OsError;
 
@@ -590,6 +594,55 @@ mod imp {
     struct OwnedTokenBuf {
         _buf: Vec<u8>,
         sid: PSID,
+    }
+
+    /// Per-call overlapped wait state: an `OVERLAPPED` plus a dedicated
+    /// manual-reset event. Pipe file objects are opened `FILE_FLAG_OVERLAPPED`
+    /// so a pending read never serializes a concurrent write issued through a
+    /// `try_clone()`d handle (duplicates share one file object, and the I/O
+    /// manager serializes synchronous IRPs per file object). Each IRP gets its
+    /// own event so independent waits on the same object cannot consume each
+    /// other's completion.
+    struct OverlappedCall {
+        overlapped: OVERLAPPED,
+        event: HANDLE,
+    }
+
+    impl OverlappedCall {
+        fn new() -> io::Result<Self> {
+            // SAFETY: `CreateEventW` with null attributes creates an unnamed
+            // manual-reset event that only this call waits on.
+            let event = unsafe { CreateEventW(ptr::null(), 1, 0, ptr::null()) };
+            if event.is_null() {
+                return Err(io::Error::last_os_error());
+            }
+            // SAFETY: `OVERLAPPED` is a plain C POD struct where all-zero bits
+            // are valid; `hEvent` is then set to the dedicated wait event.
+            let mut overlapped: OVERLAPPED = unsafe { std::mem::zeroed() };
+            overlapped.hEvent = event;
+            Ok(Self { overlapped, event })
+        }
+
+        /// Waits for a `ERROR_IO_PENDING` IRP to complete, returning the
+        /// transferred byte count or the completion error.
+        fn wait(&mut self, raw: HANDLE, transferred: &mut u32) -> io::Result<()> {
+            // SAFETY: `raw` is a valid pipe file-object handle, `overlapped`
+            // identifies the in-flight IRP, and `transferred` is writable
+            // stack storage. `bWait = 1` blocks until the IRP completes.
+            let ok = unsafe { GetOverlappedResult(raw, &raw mut self.overlapped, transferred, 1) };
+            if ok == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        }
+    }
+
+    impl Drop for OverlappedCall {
+        fn drop(&mut self) {
+            // SAFETY: `event` is a valid owned event handle closed exactly once,
+            // and the associated IRP has already completed (or never started).
+            let _ = unsafe { CloseHandle(self.event) };
+        }
     }
 
     fn query_process_user_sid(proc_handle: HANDLE) -> io::Result<OwnedTokenBuf> {
@@ -816,9 +869,18 @@ mod imp {
         wide_name: &[u16],
         mode: PipeInstanceMode,
     ) -> io::Result<OwnedPipeHandle> {
+        // `FILE_FLAG_OVERLAPPED` is required: `LocalIpcStream::try_clone`
+        // duplicates handles onto the same file object, and the I/O manager
+        // serializes *synchronous* IRPs per file object. A pending `ReadFile`
+        // would then block a `WriteFile` on a cloned handle, deadlocking the
+        // documented split-reader/writer usage. Overlapped file objects have
+        // no such serialization; `read`/`write`/`accept` still expose blocking
+        // semantics by waiting on a per-call `OVERLAPPED`.
         let open_mode = match mode {
-            PipeInstanceMode::First => PIPE_ACCESS_DUPLEX | FILE_FLAG_FIRST_PIPE_INSTANCE,
-            PipeInstanceMode::Additional => PIPE_ACCESS_DUPLEX,
+            PipeInstanceMode::First => {
+                PIPE_ACCESS_DUPLEX | FILE_FLAG_FIRST_PIPE_INSTANCE | FILE_FLAG_OVERLAPPED
+            }
+            PipeInstanceMode::Additional => PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED,
         };
         let pipe_mode =
             PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS;
@@ -891,12 +953,26 @@ mod imp {
                 }
             };
 
-            // SAFETY: `handle.raw` is a valid synchronous server-side named pipe handle.
-            let ok = unsafe { ConnectNamedPipe(handle.raw, ptr::null_mut()) };
+            let mut call = OverlappedCall::new().map_err(|source| OsError::Ipc {
+                operation: "create_connect_event",
+                endpoint: endpoint.display().to_string(),
+                source,
+            })?;
+            // SAFETY: `handle.raw` is a valid overlapped server-side pipe handle
+            // and `call.overlapped` identifies this connect IRP.
+            let ok = unsafe { ConnectNamedPipe(handle.raw, &raw mut call.overlapped) };
             if ok == 0 {
                 // SAFETY: `GetLastError` reads the calling thread's last-error slot.
                 let code = unsafe { GetLastError() };
-                if code != ERROR_PIPE_CONNECTED {
+                if code == ERROR_IO_PENDING {
+                    // The pipe object is overlapped: wait for a client attach.
+                    call.wait(handle.raw, &mut 0)
+                        .map_err(|source| OsError::Ipc {
+                            operation: "ConnectNamedPipe",
+                            endpoint: endpoint.display().to_string(),
+                            source,
+                        })?;
+                } else if code != ERROR_PIPE_CONNECTED {
                     return Err(OsError::Ipc {
                         operation: "ConnectNamedPipe",
                         endpoint: endpoint.display().to_string(),
@@ -930,7 +1006,9 @@ mod imp {
             for attempt in 0..=PIPE_CONNECT_RETRIES {
                 // SAFETY: `wide_name` is a NUL-terminated UTF-16 pipe name;
                 // `SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION` prevents
-                // server-side impersonation of the client.
+                // server-side impersonation of the client, and
+                // `FILE_FLAG_OVERLAPPED` keeps concurrent IRPs on cloned
+                // handles unsynchronized (see `create_pipe_instance`).
                 let raw = unsafe {
                     CreateFileW(
                         wide_name.as_ptr(),
@@ -938,7 +1016,7 @@ mod imp {
                         0,
                         ptr::null(),
                         OPEN_EXISTING,
-                        SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION,
+                        SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION | FILE_FLAG_OVERLAPPED,
                         ptr::null_mut(),
                     )
                 };
@@ -1070,24 +1148,39 @@ mod imp {
         pub(super) fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
             let to_read = u32::try_from(buf.len()).unwrap_or(u32::MAX);
             let mut bytes_read: u32 = 0;
-            // SAFETY: `self.handle.raw` is a valid pipe handle, `buf` is
-            // writable for `to_read` bytes, and `bytes_read` is valid stack storage.
+            let mut call = OverlappedCall::new()?;
+            // SAFETY: `self.handle.raw` is a valid overlapped pipe handle, `buf`
+            // is writable for `to_read` bytes, and `bytes_read` plus
+            // `call.overlapped` stay valid until the IRP completes — either
+            // synchronously or via `call.wait` below.
             let ok = unsafe {
                 ReadFile(
                     self.handle.raw,
                     buf.as_mut_ptr(),
                     to_read,
                     &raw mut bytes_read,
-                    ptr::null_mut(),
+                    &raw mut call.overlapped,
                 )
             };
             if ok == 0 {
                 // SAFETY: `GetLastError` reads the calling thread's last-error slot.
                 let code = unsafe { GetLastError() };
-                if code == ERROR_BROKEN_PIPE {
+                if code == ERROR_IO_PENDING {
+                    match call.wait(self.handle.raw, &mut bytes_read) {
+                        // A broken pipe while the IRP was pending is the same
+                        // clean-EOF condition `ReadFile` reports inline.
+                        Err(source)
+                            if source.raw_os_error() == Some(ERROR_BROKEN_PIPE.cast_signed()) =>
+                        {
+                            return Ok(0);
+                        }
+                        result => result?,
+                    }
+                } else if code == ERROR_BROKEN_PIPE {
                     return Ok(0);
+                } else {
+                    return Err(io::Error::last_os_error());
                 }
-                return Err(io::Error::last_os_error());
             }
             usize::try_from(bytes_read)
                 .map_err(|_| io::Error::other("ReadFile byte count overflowed usize"))
@@ -1096,19 +1189,27 @@ mod imp {
         pub(super) fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
             let to_write = u32::try_from(buf.len()).unwrap_or(u32::MAX);
             let mut bytes_written: u32 = 0;
-            // SAFETY: `self.handle.raw` is a valid pipe handle, `buf` is
-            // readable for `to_write` bytes, and `bytes_written` is valid stack storage.
+            let mut call = OverlappedCall::new()?;
+            // SAFETY: `self.handle.raw` is a valid overlapped pipe handle, `buf`
+            // is readable for `to_write` bytes, and `bytes_written` plus
+            // `call.overlapped` stay valid until the IRP completes.
             let ok = unsafe {
                 WriteFile(
                     self.handle.raw,
                     buf.as_ptr(),
                     to_write,
                     &raw mut bytes_written,
-                    ptr::null_mut(),
+                    &raw mut call.overlapped,
                 )
             };
             if ok == 0 {
-                return Err(io::Error::last_os_error());
+                // SAFETY: `GetLastError` reads the calling thread's last-error slot.
+                let code = unsafe { GetLastError() };
+                if code == ERROR_IO_PENDING {
+                    call.wait(self.handle.raw, &mut bytes_written)?;
+                } else {
+                    return Err(io::Error::last_os_error());
+                }
             }
             usize::try_from(bytes_written)
                 .map_err(|_| io::Error::other("WriteFile byte count overflowed usize"))
