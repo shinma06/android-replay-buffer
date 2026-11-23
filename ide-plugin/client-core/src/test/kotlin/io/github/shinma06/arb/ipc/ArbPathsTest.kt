@@ -31,7 +31,13 @@ class ArbPathsTest {
         assertEquals(Paths.get("/Users/tester/Library/Application Support/arb"), resolved.dataDir)
         assertEquals(Paths.get("/Users/tester/Library/Caches/arb"), resolved.cacheDir)
         assertEquals(Paths.get("/Users/tester/Library/Caches/arb"), resolved.runtimeDir)
-        assertEquals("/Users/tester/Library/Caches/arb/arbd.sock", resolved.ipcEndpoint())
+        // Host-normalize the expectation: a Windows JVM resolves simulated Unix paths with
+        // backslash separators even when `os = MACOS`, which is fine — production endpoints
+        // are only ever computed for the real host OS.
+        assertEquals(
+            Paths.get("/Users/tester/Library/Caches/arb/arbd.sock").toString(),
+            resolved.ipcEndpoint(),
+        )
     }
 
     @Test
@@ -46,7 +52,10 @@ class ArbPathsTest {
         assertEquals(Paths.get("/xdg/data/arb"), resolved.dataDir)
         assertEquals(Paths.get("/xdg/cache/arb"), resolved.cacheDir)
         assertEquals(Paths.get("/run/user/1000/arb"), resolved.runtimeDir)
-        assertEquals("/run/user/1000/arb/arbd.sock", resolved.ipcEndpoint())
+        assertEquals(
+            Paths.get("/run/user/1000/arb/arbd.sock").toString(),
+            resolved.ipcEndpoint(),
+        )
     }
 
     @Test

@@ -422,7 +422,7 @@ pub fn run(
     }
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
-        run_polling_loop(ui, command_tx, update_rx)
+        run_polling_loop(ui, &command_tx, &update_rx)
     }
 }
 
@@ -459,8 +459,8 @@ fn run_with_event_loop(
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn run_polling_loop(
     mut ui: TrayUi,
-    command_tx: mpsc::Sender<TrayCommand>,
-    update_rx: mpsc::Receiver<TrayUpdate>,
+    command_tx: &mpsc::Sender<TrayCommand>,
+    update_rx: &mpsc::Receiver<TrayUpdate>,
 ) -> Result<(), String> {
     loop {
         while let Ok(update) = update_rx.try_recv() {
@@ -469,7 +469,7 @@ fn run_polling_loop(
             }
         }
         while let Ok(menu_event) = MenuEvent::receiver().try_recv() {
-            if route_menu_click(&ui, &command_tx, &menu_event.id) {
+            if route_menu_click(&ui, command_tx, &menu_event.id) {
                 return Ok(());
             }
         }

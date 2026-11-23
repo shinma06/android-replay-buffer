@@ -363,13 +363,13 @@ mod tests {
 
     impl TestDir {
         fn new(label: &str) -> Self {
+            // Keep the dir name short: macOS temp dirs sit under a ~50-char /var/folders
+            // prefix, and Unix socket binds fail once the full path exceeds SUN_LEN.
             let nanos = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .map_or(0, |d| d.as_nanos());
-            let dir = std::env::temp_dir().join(format!(
-                "arb-cli-rpc-{label}-{}-{nanos}",
-                std::process::id()
-            ));
+            let dir =
+                std::env::temp_dir().join(format!("arbc-{label}-{}-{nanos:x}", std::process::id()));
             fs::create_dir_all(&dir).expect("create test temp dir");
             Self(dir)
         }

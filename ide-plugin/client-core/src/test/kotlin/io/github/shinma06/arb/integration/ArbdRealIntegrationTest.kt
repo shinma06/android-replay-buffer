@@ -191,12 +191,20 @@ class ArbdRealIntegrationTest {
             db.close()
         """.trimIndent()
 
-        val proc = ProcessBuilder("python3", "-c", pyScript, dbPath.toString())
-            .redirectErrorStream(true)
-            .start()
-        val output = proc.inputStream.bufferedReader().readText()
-        val exitCode = proc.waitFor()
-        assertEquals(0, exitCode, "Failed to create test timeline.sqlite: $output")
+        // Pass the script via a temp file, not `-c`: Windows command-line quoting strips
+        // embedded double quotes from the argument, corrupting the SQL string literals.
+        val scriptFile = Files.createTempFile("arb-bundle-seed", ".py")
+        try {
+            Files.writeString(scriptFile, pyScript)
+            val proc = ProcessBuilder("python3", scriptFile.toString(), dbPath.toString())
+                .redirectErrorStream(true)
+                .start()
+            val output = proc.inputStream.bufferedReader().readText()
+            val exitCode = proc.waitFor()
+            assertEquals(0, exitCode, "Failed to create test timeline.sqlite: $output")
+        } finally {
+            Files.deleteIfExists(scriptFile)
+        }
 
         val videoBytes = Files.size(videoDst)
         val videoSha = sha256Hex(videoDst)
