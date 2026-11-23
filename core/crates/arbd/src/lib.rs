@@ -9,6 +9,7 @@
 
 pub mod capture;
 pub mod error;
+pub mod inspect_export;
 pub mod live_adb;
 pub mod media_engine;
 pub mod protocol;
@@ -65,15 +66,15 @@ use crate::protocol::{
     BundleListParams, BundleListResponse, BundleOpenParams, BundleOpenResponse, BundleRefParams,
     CaptureStartParams, CaptureStartResponse, CaptureStopResponse, ConfigResponse,
     CrashAutoSaveStatusView, DEFAULT_QUERY_LIMIT, DeviceListResponse, EditGetSessionParams,
-    EditSessionView, EditUpdateSessionParams, ExportPngParams, ExportTrimParams,
-    IPC_PROTOCOL_VERSION, JSONRPC_VERSION, LeaseIdParams, MAX_QUERY_LIMIT,
-    MediaCloseViewportParams, MediaFilmstripParams, MediaFrameRequestParams,
-    MediaOpenViewportParams, QueryBucket, RecoverySummaryView, RpcRequest, RpcResponse,
-    SaveJobIdParams, SaveListJobsResponse, SaveLogsParams, SaveMode, SaveOutcomeResponse,
-    SaveRetargetParams, SaveScreenshotParams, SaveScreenshotResponse, SaveTriggerParams,
-    SystemHelloResponse, SystemStatusResponse, TimelineCrashesResponse,
-    TimelineDiscontinuitiesResponse, TimelineLogsResponse, TimelineQueryParams,
-    TimelineScreensResponse, TimelineTapsResponse,
+    EditSessionView, EditUpdateSessionParams, ExportPngParams, ExportShareMp4Params,
+    ExportTrimParams, IPC_PROTOCOL_VERSION, JSONRPC_VERSION, LeaseIdParams, MAX_QUERY_LIMIT,
+    MediaCloseViewportParams, MediaDecodeAudioPcmParams, MediaFilmstripParams,
+    MediaFrameRequestParams, MediaInspectFramesParams, MediaOpenViewportParams, QueryBucket,
+    RecoverySummaryView, RpcRequest, RpcResponse, SaveJobIdParams, SaveListJobsResponse,
+    SaveLogsParams, SaveMode, SaveOutcomeResponse, SaveRetargetParams, SaveScreenshotParams,
+    SaveScreenshotResponse, SaveTriggerParams, SystemHelloResponse, SystemStatusResponse,
+    TimelineCrashesResponse, TimelineDiscontinuitiesResponse, TimelineLogsResponse,
+    TimelineOverviewParams, TimelineQueryParams, TimelineScreensResponse, TimelineTapsResponse,
 };
 use crate::screenshot::{ScreenshotOverwrite, SharedScreenshotProvider, write_screenshot_atomic};
 use crate::time_util::{current_unix_millis, next_id, utc_now_iso8601};
@@ -317,12 +318,15 @@ impl DaemonState {
     fn reject_data_dir_state_file(&self, path: &Path, what: &str) -> Result<(), DaemonError> {
         let canon = canonicalize_lenient(path);
         let data_dir = canonicalize_lenient(&self.paths.data_dir);
-        if canon.starts_with(&data_dir) && !canon.starts_with(data_dir.join("screenshots")) {
+        let allowed_subdir = canon.starts_with(data_dir.join("screenshots"))
+            || canon.starts_with(data_dir.join("exports"));
+        if canon.starts_with(&data_dir) && !allowed_subdir {
             return Err(DaemonError::InvalidParams(format!(
-                "{what} `{}` is inside arbd's data directory `{}`; only `{}` is allowed there",
+                "{what} `{}` is inside arbd's data directory `{}`; only `{}` or `{}` is allowed there",
                 path.display(),
                 self.paths.data_dir.display(),
-                self.paths.data_dir.join("screenshots").display()
+                self.paths.data_dir.join("screenshots").display(),
+                self.paths.data_dir.join("exports").display()
             )));
         }
         Ok(())
@@ -472,6 +476,7 @@ impl DaemonState {
             "bundle.restore" => self.handle_bundle_restore(params),
             "bundle.gc" => self.handle_bundle_gc(params),
             "timeline.summary" => self.handle_timeline_summary(params),
+            "timeline.overview" => self.handle_timeline_overview(params),
             "timeline.query_logs" => self.handle_timeline_query_logs(params),
             "timeline.query_taps" => self.handle_timeline_query_taps(params),
             "timeline.discontinuities" => self.handle_timeline_discontinuities(params),
@@ -481,11 +486,14 @@ impl DaemonState {
             "edit.update_session" => self.handle_edit_update_session(params),
             "export.trim" => self.handle_export_trim(params),
             "export.png" => self.handle_export_png(params),
+            "export.share_mp4" => self.handle_export_share_mp4(params),
             "media.open_viewport" => self.handle_media_open_viewport(params),
             "media.filmstrip" => self.handle_media_filmstrip(params),
             "media.scrub" => self.handle_media_scrub(params),
             "media.seek_frame" => self.handle_media_seek_frame(params),
             "media.close_viewport" => self.handle_media_close_viewport(params),
+            "media.decode_audio_pcm" => self.handle_media_decode_audio_pcm(params),
+            "media.inspect_frames" => self.handle_media_inspect_frames(params),
             other => Err(DaemonError::MethodNotFound(other.to_owned())),
         }
     }
@@ -1023,6 +1031,15 @@ impl DaemonState {
         Ok(serde_json::to_value(summary)?)
     }
 
+    fn handle_timeline_overview(&self, params: Value) -> Result<Value, DaemonError> {
+        let parsed: TimelineOverviewParams = parse_params(params)?;
+        let (path, existing) = self.resolve_bundle_path(&parsed.bundle_id)?;
+        let catalog_id = existing.as_ref().map(|e| e.bundle_id.as_str());
+        let overview =
+            inspect_export::build_timeline_overview(&path, catalog_id, parsed.max_error_logs)?;
+        Ok(serde_json::to_value(overview)?)
+    }
+
     fn handle_timeline_query_logs(&self, params: Value) -> Result<Value, DaemonError> {
         let parsed: TimelineQueryParams = parse_params(params)?;
         let (path, _) = self.resolve_bundle_path(&parsed.bundle_id_or_path)?;
@@ -1032,11 +1049,12 @@ impl DaemonState {
             QueryBucket::Unanchored => Some(RecordBucket::Unanchored),
             QueryBucket::All => None,
         };
-        let range = TimeRange {
-            start_ns: parsed.start_ns,
-            end_ns: parsed.end_ns,
-        };
-        let logs = reader.query_logs(bucket, range, Some(effective_query_limit(parsed.limit)))?;
+        let logs = inspect_export::query_logs_filtered(
+            reader.as_ref(),
+            bucket,
+            &parsed,
+            effective_query_limit(parsed.limit),
+        )?;
         Ok(serde_json::to_value(TimelineLogsResponse { logs })?)
     }
 
@@ -1164,6 +1182,80 @@ impl DaemonState {
             faults: &self.faults,
         };
         let resp = media_engine::export_png(&ctx, &path, source_id, &parsed)?;
+        Ok(serde_json::to_value(resp)?)
+    }
+
+    fn handle_export_share_mp4(&self, params: Value) -> Result<Value, DaemonError> {
+        let parsed: ExportShareMp4Params = parse_params(params)?;
+        let (path, existing) = self.resolve_bundle_path(&parsed.bundle_id)?;
+        let user_cfg = self.lock(&self.user_config, "user config")?.clone();
+
+        let dest_parent = match &parsed.dest_dir {
+            Some(dest) => {
+                self.validate_output_location(dest, "dest_dir", Some(&path))?;
+                dest.clone()
+            }
+            None => self.catalog.managed_bundles_root().to_path_buf(),
+        };
+
+        let share_mp4_path = if let Some(explicit) = &parsed.output_path {
+            self.validate_output_location(explicit, "output_path", Some(&path))?;
+            self.reject_data_dir_state_file(explicit, "output_path")?;
+            explicit.clone()
+        } else {
+            let base_dir = if let Some(override_dir) = user_cfg.output_dir_override {
+                self.validate_output_location(&override_dir, "output_dir_override", Some(&path))?;
+                override_dir
+            } else {
+                self.paths.data_dir.join("exports")
+            };
+            base_dir.join(format!("{}.mp4", next_id("share")))
+        };
+
+        let backend = default_codec_backend();
+        let ctx = ExportContext {
+            catalog: &self.catalog,
+            data_dir: &self.paths.data_dir,
+            backend: backend.as_ref(),
+            faults: &self.faults,
+        };
+        let resp = inspect_export::export_share_mp4(
+            &ctx,
+            &path,
+            existing.as_ref(),
+            &dest_parent,
+            &share_mp4_path,
+            &parsed,
+        )?;
+        Ok(serde_json::to_value(resp)?)
+    }
+
+    fn handle_media_decode_audio_pcm(&self, params: Value) -> Result<Value, DaemonError> {
+        let parsed: MediaDecodeAudioPcmParams = parse_params(params)?;
+        let (path, existing) = self.resolve_bundle_path(&parsed.bundle_id)?;
+        let source_id = existing.as_ref().map(|e| e.bundle_id.as_str());
+        let resp = inspect_export::decode_audio_pcm(
+            &self.catalog,
+            &self.paths.cache_dir,
+            &path,
+            source_id,
+        )?;
+        Ok(serde_json::to_value(resp)?)
+    }
+
+    fn handle_media_inspect_frames(&self, params: Value) -> Result<Value, DaemonError> {
+        let parsed: MediaInspectFramesParams = parse_params(params)?;
+        let (path, existing) = self.resolve_bundle_path(&parsed.bundle_id)?;
+        let source_id = existing.as_ref().map(|e| e.bundle_id.as_str());
+        let backend = default_codec_backend();
+        let ctx = ExportContext {
+            catalog: &self.catalog,
+            data_dir: &self.paths.data_dir,
+            backend: backend.as_ref(),
+            faults: &self.faults,
+        };
+        let resp =
+            inspect_export::inspect_frames(&ctx, &self.paths.cache_dir, &path, source_id, &parsed)?;
         Ok(serde_json::to_value(resp)?)
     }
 

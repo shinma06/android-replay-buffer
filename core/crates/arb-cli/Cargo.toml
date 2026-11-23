@@ -12,5 +12,13 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
 
+[dev-dependencies]
+arb-adb.workspace = true
+arb-media.workspace = true
+arb-storage.workspace = true
+arbd = { path = "../arbd" }
+rusty_aac = { version = "2", default-features = false }
+tempfile = "3"
+
 [lints]
 workspace = true

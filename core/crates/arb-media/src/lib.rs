@@ -16,6 +16,7 @@
 //!   latest-wins [`playback::ScrubController`], and [`playback::PresentationClock`].
 
 pub mod audio;
+pub mod audio_decode;
 pub mod codec;
 pub mod contact_sheet;
 pub mod error;
@@ -31,9 +32,13 @@ pub use crate::audio::{
     Mp4AudioTrack, build_aac_lc_audio_specific_config, build_mp4a_sample_entry, mux_aac_to_m4a,
     parse_audio_specific_config, strip_adts_header, trim_audio_m4a,
 };
+pub use crate::audio_decode::{
+    AudioDecodeReport, WavHeaderInfo, decode_audio_m4a_to_wav, inspect_wav_header,
+};
 pub use crate::contact_sheet::{
     ContactSheetOptions, ContactSheetTile, MAX_CONTACT_SHEET_TILES, TapCropOptions, TapCropResult,
-    render_contact_sheet_png, render_tap_crop_png, select_contact_sheet_indices,
+    render_contact_sheet_png, render_single_frame_png, render_tap_crop_png,
+    select_contact_sheet_indices,
 };
 pub use crate::error::MediaError;
 pub use crate::mux_av::{AvMuxReport, mux_share_mp4};
