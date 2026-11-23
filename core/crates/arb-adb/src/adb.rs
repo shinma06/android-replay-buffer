@@ -133,15 +133,19 @@ pub const fn adb_executable_name() -> &'static str {
 pub fn resolve_adb_binary() -> Result<PathBuf, AdbError> {
     let env_adb = env::var_os(ENV_ARB_ADB_PATH).map(PathBuf::from);
     let path_var = env::var_os("PATH");
-    let android_home = env::var_os("ANDROID_HOME").map(PathBuf::from);
+    let android_home = env::var_os("ANDROID_HOME")
+        .or_else(|| env::var_os("ANDROID_SDK_ROOT"))
+        .map(PathBuf::from);
     let home_dir = env::var_os("HOME")
         .or_else(|| env::var_os("USERPROFILE"))
         .map(PathBuf::from);
-    resolve_adb_binary_with(
+    let local_app_data = env::var_os("LOCALAPPDATA").map(PathBuf::from);
+    resolve_adb_binary_full(
         env_adb.as_deref(),
         path_var.as_deref(),
         android_home.as_deref(),
         home_dir.as_deref(),
+        local_app_data.as_deref(),
     )
 }
 
@@ -156,6 +160,16 @@ pub fn resolve_adb_binary_with(
     path_var: Option<&OsStr>,
     android_home: Option<&Path>,
     home_dir: Option<&Path>,
+) -> Result<PathBuf, AdbError> {
+    resolve_adb_binary_full(env_adb_path, path_var, android_home, home_dir, None)
+}
+
+fn resolve_adb_binary_full(
+    env_adb_path: Option<&Path>,
+    path_var: Option<&OsStr>,
+    android_home: Option<&Path>,
+    home_dir: Option<&Path>,
+    local_app_data: Option<&Path>,
 ) -> Result<PathBuf, AdbError> {
     if let Some(configured) = env_adb_path
         && !configured.as_os_str().is_empty()
@@ -179,12 +193,29 @@ pub fn resolve_adb_binary_with(
         }
     }
 
-    if let Some(sdk) = android_home {
+    if let Some(sdk) = android_home
+        && !sdk.as_os_str().is_empty()
+    {
         let candidate = sdk.join("platform-tools").join(exe_name);
         if candidate.is_file() {
             return Ok(candidate);
         }
-    } else if let Some(home) = home_dir {
+    }
+
+    if let Some(local_app) = local_app_data
+        && !local_app.as_os_str().is_empty()
+    {
+        let win_default = local_app
+            .join("Android")
+            .join("Sdk")
+            .join("platform-tools")
+            .join(exe_name);
+        if win_default.is_file() {
+            return Ok(win_default);
+        }
+    }
+
+    if let Some(home) = home_dir {
         let mac_default = home
             .join("Library")
             .join("Android")
@@ -201,6 +232,16 @@ pub fn resolve_adb_binary_with(
             .join(exe_name);
         if linux_default.is_file() {
             return Ok(linux_default);
+        }
+        let win_home_default = home
+            .join("AppData")
+            .join("Local")
+            .join("Android")
+            .join("Sdk")
+            .join("platform-tools")
+            .join(exe_name);
+        if win_home_default.is_file() {
+            return Ok(win_home_default);
         }
     }
 
@@ -254,6 +295,36 @@ pub struct AdbDeviceInfo {
     pub device: Option<String>,
     /// Optional `transport_id:` metadata token.
     pub transport_id: Option<String>,
+}
+
+/// Parses the stdout of `adb shell wm size` into physical display `(width, height)` pixels.
+///
+/// Prefers `Physical size: WxH`, falling back to `Override size: WxH` if only an override line
+/// is present. Returns `None` when dimensions are absent, malformed, or zero.
+#[must_use]
+pub fn parse_wm_size_output(stdout: &str) -> Option<(u32, u32)> {
+    let mut override_size: Option<(u32, u32)> = None;
+    for raw_line in stdout.lines() {
+        let line = raw_line.trim();
+        if let Some(rest) = line.strip_prefix("Physical size:")
+            && let Some(dims) = parse_wxh_dims(rest.trim())
+        {
+            return Some(dims);
+        }
+        if let Some(rest) = line.strip_prefix("Override size:")
+            && let Some(dims) = parse_wxh_dims(rest.trim())
+        {
+            override_size = Some(dims);
+        }
+    }
+    override_size
+}
+
+fn parse_wxh_dims(token: &str) -> Option<(u32, u32)> {
+    let (w_str, h_str) = token.split_once('x').or_else(|| token.split_once('X'))?;
+    let w = w_str.trim().parse::<u32>().ok()?;
+    let h = h_str.trim().parse::<u32>().ok()?;
+    (w > 0 && h > 0).then_some((w, h))
 }
 
 /// Parses the stdout of `adb devices -l` into structured [`AdbDeviceInfo`] rows.
@@ -593,6 +664,15 @@ impl<R: AdbCommandRunner> AdbClient<R> {
         }
         let out = self.exec(&args)?;
         Ok(out.stdout)
+    }
+
+    /// Best-effort query of the device's physical display size via `adb -s <serial> shell wm size`.
+    ///
+    /// Returns `None` if the command fails or produces unrecognized output.
+    #[must_use]
+    pub fn query_display_size(&self, serial: &str) -> Option<(u32, u32)> {
+        let out = self.shell(serial, &["wm", "size"]).ok()?;
+        parse_wm_size_output(&out)
     }
 
     /// Pushes `arb-companion.dex.jar` and optional `replay-scrcpy-audio.dex.jar`
@@ -2503,6 +2583,53 @@ R5CX123456A            unauthorized usb:1-1 transport_id:2
             5,
             "3 data events + 2 transport-end discontinuities"
         );
+    }
+
+    #[test]
+    fn parse_wm_size_output_prefers_physical_and_handles_overrides() {
+        assert_eq!(
+            super::parse_wm_size_output("Physical size: 1080x2400\r\n"),
+            Some((1080, 2400))
+        );
+        assert_eq!(
+            super::parse_wm_size_output("Physical size: 1080x2400\nOverride size: 720x1600\n"),
+            Some((1080, 2400))
+        );
+        assert_eq!(
+            super::parse_wm_size_output("Override size: 720x1600\n"),
+            Some((720, 1600))
+        );
+        assert_eq!(super::parse_wm_size_output("Physical size: 0x2400\n"), None);
+        assert_eq!(super::parse_wm_size_output(""), None);
+    }
+
+    #[test]
+    fn resolve_adb_falls_back_to_default_sdk_under_minimal_gui_path() {
+        let base =
+            std::env::temp_dir().join(format!("arb-adb-fallback-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let fake_home = base.join("home");
+        let mac_adb = fake_home
+            .join("Library")
+            .join("Android")
+            .join("sdk")
+            .join("platform-tools")
+            .join(super::adb_executable_name());
+        std::fs::create_dir_all(mac_adb.parent().expect("parent")).expect("mkdir");
+        std::fs::write(&mac_adb, b"stub").expect("write adb");
+
+        // Even with minimal PATH=/usr/bin:/bin and a non-existent ANDROID_HOME,
+        // fallback must still locate ~/Library/Android/sdk/platform-tools/adb.
+        let found = super::resolve_adb_binary_full(
+            None,
+            Some(std::ffi::OsStr::new("/usr/bin:/bin")),
+            Some(&base.join("missing-sdk")),
+            Some(&fake_home),
+            None,
+        )
+        .expect("fallback adb discovery");
+        assert_eq!(found, mac_adb);
+        let _ = std::fs::remove_dir_all(&base);
     }
 }
 

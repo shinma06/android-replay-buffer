@@ -364,6 +364,8 @@ fn seed_rich_v2_bundle(
                 frame_count: 30,
                 tail_may_be_incomplete: false,
                 semantics: TimestampSemantics::VideoEncoderInputEstimate,
+                display_width: None,
+                display_height: None,
             }),
             audio: audio_meta,
             logcat: Some(LogcatStreamMeta {
@@ -854,6 +856,194 @@ fn t2b_timeline_overview_inspect_frames_and_query_logs_filters() {
         &PNG_SIGNATURE,
         "valid PNG signature on tap_crop"
     );
+
+    server.shutdown();
+}
+
+#[test]
+fn t6a_bundle_display_size_scales_taps_and_exposes_epoch_frame_ranges() {
+    let tmp = TempDir::new().expect("tempdir");
+    let paths = isolated_paths(&tmp);
+    let server = DaemonServer::start(DaemonConfig::new(paths)).expect("start arbd");
+    let mut rpc = RpcClient::connect(server.endpoint());
+
+    let video_src = tmp.path().join("t6a-scaled-src.mp4");
+    build_real_video_mp4(&video_src, 128, 128, 30);
+    let track = Mp4VideoTrack::open(&video_src).expect("open video track");
+    let bundle_dir = tmp.path().join("ext-bundle-scaled");
+
+    let base_bt = 100_000_000_000_i64;
+    let step = 33_333_333_i64;
+    let mut frame_records = Vec::with_capacity(track.frames().len());
+    for (idx, f) in track.frames().iter().enumerate() {
+        let i = i64::try_from(idx).expect("idx");
+        // Split into 2 epochs across a reboot at frame 15!
+        let (boot_id, bt) = if idx < 15 {
+            ("boot-epoch-0", base_bt + i * step)
+        } else {
+            ("boot-epoch-1", 5_000_000_000_i64 + (i - 15) * step)
+        };
+        frame_records.push(FrameRecord {
+            frame_index: f.frame_index,
+            boot_id: boot_id.to_owned(),
+            pts_device_mono_ns: bt,
+            pc_ingest_cont_ns: 200_000_000_000 + i * step,
+            alignment: TimeAlignment::Anchored {
+                boot_id: boot_id.to_owned(),
+                boottime_ns: bt,
+                half_width_ns: 1_000_000,
+                semantics: TimestampSemantics::VideoEncoderInputEstimate,
+            },
+            is_keyframe: f.is_keyframe,
+            gop_id: f.gop_id,
+            mp4_sample_offset: f.offset,
+            mp4_sample_size: f.size,
+        });
+    }
+
+    // Tap in physical 1080x2400 display coordinates -> center (540, 1200) must map to (64, 64) on 128x128 video!
+    let taps = vec![TapRecord {
+        seq: 1,
+        boot_id: Some("boot-epoch-1".to_owned()),
+        event_mono_ns: Some(5_000_000_000 + 3 * step),
+        pc_ingest_cont_ns: 200_000_000_000 + 18 * step,
+        alignment: TimeAlignment::Anchored {
+            boot_id: "boot-epoch-1".to_owned(),
+            boottime_ns: 5_000_000_000 + 3 * step,
+            half_width_ns: 1_000_000,
+            semantics: TimestampSemantics::InputEventTime,
+        },
+        bucket: RecordBucket::Main,
+        action: "DOWN".to_owned(),
+        x: Some(540.0),
+        y: Some(1200.0),
+        pointer_id: Some(0),
+    }];
+
+    let draft = V2BundleDraft {
+        bundle_kind: BundleKind::Full,
+        bundle_id: "01JT6ASCALETEST00000000001".to_owned(),
+        created_at_utc: "2026-11-23T12:00:00Z".to_owned(),
+        provenance: Provenance::Original,
+        device: DeviceInfo {
+            serial: "emulator-5554".to_owned(),
+            model: "Pixel 9".to_owned(),
+            api_level: 37,
+            is_emulator: true,
+        },
+        requested_window: RequestedWindow::RealElapsedSec {
+            duration_sec: 10,
+            trigger_pc_wall_utc: "2026-11-23T12:00:00Z".to_owned(),
+        },
+        epochs: vec![
+            EpochSpan {
+                boot_id: "boot-epoch-0".to_owned(),
+                start_boottime_ns: base_bt,
+                end_boottime_ns: base_bt + 14 * step,
+            },
+            EpochSpan {
+                boot_id: "boot-epoch-1".to_owned(),
+                start_boottime_ns: 5_000_000_000,
+                end_boottime_ns: 5_000_000_000 + 14 * step,
+            },
+        ],
+        streams: StreamsSummary {
+            video: Some(VideoStreamMeta {
+                status: StreamStatus::Present,
+                frame_count: 30,
+                tail_may_be_incomplete: false,
+                semantics: TimestampSemantics::VideoEncoderInputEstimate,
+                display_width: Some(1080),
+                display_height: Some(2400),
+            }),
+            audio: None,
+            logcat: Some(LogcatStreamMeta {
+                status: StreamStatus::Absent,
+                completeness: LogCompleteness::VerifiedNoOverflow,
+                overflow_events: 0,
+                tail_may_be_incomplete: false,
+            }),
+            input: Some(InputStreamMeta {
+                status: StreamStatus::Present,
+                tail_may_be_incomplete: false,
+            }),
+        },
+        unanchored_summary: UnanchoredSummary {
+            included_count: 0,
+            truncated_count: 0,
+        },
+        video_mp4: Some(MediaPayload::File(video_src)),
+        audio_m4a: None,
+        frames: frame_records,
+        discontinuities: Vec::new(),
+        logs: Vec::new(),
+        taps,
+        clock_anchors: Vec::new(),
+    };
+    V2BundleWriter::write(&bundle_dir, "job-t6a-scale", &draft).expect("write bundle");
+
+    let opened = rpc.call(
+        "bundle.open",
+        &json!({
+            "bundle_id_or_path": bundle_dir,
+            "holder_kind": "cli",
+            "holder_pid": std::process::id()
+        }),
+    );
+    let bid = opened["bundle_id"].as_str().expect("bundle_id").to_owned();
+    assert_eq!(opened["summary"]["streams"]["video"]["display_width"], 1080);
+    assert_eq!(
+        opened["summary"]["streams"]["video"]["display_height"],
+        2400
+    );
+    let ranges = opened["summary"]["epoch_frame_ranges"]
+        .as_array()
+        .expect("epoch_frame_ranges");
+    assert_eq!(ranges.len(), 2, "two reboot epochs expected");
+    assert_eq!(ranges[0]["boot_id"], "boot-epoch-0");
+    assert_eq!(ranges[0]["start_frame_index"], 0);
+    assert_eq!(ranges[0]["end_frame_index"], 14);
+    assert_eq!(ranges[1]["boot_id"], "boot-epoch-1");
+    assert_eq!(ranges[1]["start_frame_index"], 15);
+    assert_eq!(ranges[1]["end_frame_index"], 29);
+
+    let overview = rpc.call("timeline.overview", &json!({ "bundle_id": bid }));
+    assert_eq!(overview["display_width"], 1080);
+    assert_eq!(overview["display_height"], 2400);
+    assert_eq!(
+        overview["epoch_frame_ranges"].as_array().map(Vec::len),
+        Some(2)
+    );
+    assert_eq!(
+        overview["taps"][0]["frame_index"], 18,
+        "epoch-1 tap must map to frame 18 inside epoch 1"
+    );
+
+    // Tap crop WITHOUT caller-supplied display_width/display_height must automatically scale
+    // (540, 1200) from bundle metadata 1080x2400 onto 128x128 video center (64, 64)!
+    let crop = rpc.call(
+        "media.inspect_frames",
+        &json!({
+            "bundle_id": bid,
+            "mode": "tap_crop",
+            "tap_index": 0
+        }),
+    );
+    assert_eq!(crop["frame_indices_rendered"], json!([18]));
+    assert_eq!(crop["tap_crop"]["tap_x"], 64);
+    assert_eq!(crop["tap_crop"]["tap_y"], 64);
+
+    // Contact sheet with include_tap_marker: true also automatically scales without error.
+    let sheet = rpc.call(
+        "media.inspect_frames",
+        &json!({
+            "bundle_id": bid,
+            "mode": "contact_sheet",
+            "frame_indices": [0, 18],
+            "include_tap_marker": true
+        }),
+    );
+    assert_eq!(sheet["frame_indices_rendered"], json!([0, 18]));
 
     server.shutdown();
 }

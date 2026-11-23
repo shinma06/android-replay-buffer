@@ -60,6 +60,10 @@
                     text="ARB v2: 直前のログのみ保存"
                     description="映像キャプチャを中断せず直前のログのみを保存します"/>
             <separator/>
+            <action id="io.github.shinma06.arb.LaunchTray"
+                    class="io.github.shinma06.arb.ide.ArbLaunchTrayAction"
+                    text="ARB v2: メニューバー (arb-tray) を起動"
+                    description="同梱の arb-tray をターミナル不要で起動します"/>
             <action id="io.github.shinma06.arb.OpenBundleDir"
                     class="io.github.shinma06.arb.ide.ArbOpenBundleAction"
                     text="ARB v2: バンドルフォルダを開く..."

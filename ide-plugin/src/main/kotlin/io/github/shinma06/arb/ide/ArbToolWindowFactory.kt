@@ -28,5 +28,6 @@ class ArbToolWindowFactory : ToolWindowFactory, DumbAware {
         val content = ContentFactory.getInstance().createContent(panel, "", false)
         Disposer.register(content, panel)
         toolWindow.contentManager.addContent(content)
+        toolWindow.setTitleActions(listOf(ArbLaunchTrayAction()))
     }
 }

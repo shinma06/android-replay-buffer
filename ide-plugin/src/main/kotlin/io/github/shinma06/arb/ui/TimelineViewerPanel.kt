@@ -433,6 +433,8 @@ class TimelineViewerPanel(
             image = image,
             taps = next.activeTapsAtFrame(),
             showTaps = next.showTapOverlay,
+            displayWidth = next.summary.streams.video?.displayWidth,
+            displayHeight = next.summary.streams.video?.displayHeight,
         )
         ArbTheme.styleFilterChip(tapOverlayToggleButton, active = next.showTapOverlay)
 

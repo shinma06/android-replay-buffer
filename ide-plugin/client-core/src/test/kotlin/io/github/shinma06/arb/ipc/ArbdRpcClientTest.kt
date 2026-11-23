@@ -107,6 +107,55 @@ class ArbdRpcClientTest {
     }
 
     @Test
+    fun `long running export and audio decode RPCs use generous per-call timeout`() {
+        assertEquals(120_000L, LONG_RUNNING_READ_TIMEOUT_MS)
+        // Slow transport takes 180ms: exceeds short readTimeoutMs (60ms) but succeeds under
+        // longRunningReadTimeoutMs (1000ms) for export.share_mp4 / export.trim / media.decode_audio_pcm!
+        val slowTransport = object : LocalIpcTransport {
+            override val endpoint: String = "fake://slow"
+            private val responses = ArrayDeque(
+                listOf(
+                    okResponse(
+                        1,
+                        """{"share_mp4_path":"/tmp/share.mp4","audio_included":true,"video_frame_count":10,"edts_box_count":0,"elst_box_count":0,"output_bytes":1234,"original_trashed":false}""",
+                    ),
+                    okResponse(
+                        2,
+                        """{"available":true,"wav_path":"/tmp/a.wav","sample_rate_hz":48000,"channels":2,"duration_ns":1000000000,"av_offset_ms":0,"audio_lead_in_offset_ns":0,"cached":false}""",
+                    ),
+                    okResponse(3, """{"ok":true}"""),
+                ),
+            )
+            override fun writeLine(jsonLine: String) = Unit
+            override fun readLine(): String? {
+                Thread.sleep(180)
+                return responses.removeFirstOrNull()
+            }
+            override fun close() = Unit
+        }
+        val client = ArbdRpcClient(
+            transport = slowTransport,
+            readTimeoutMs = 60L,
+            longRunningReadTimeoutMs = 1_000L,
+        )
+        try {
+            val share = client.exportShareMp4(ExportShareMp4Params("b-1"))
+            assertEquals("/tmp/share.mp4", share.shareMp4Path)
+
+            val pcm = client.mediaDecodeAudioPcm("b-1")
+            assertTrue(pcm.available)
+
+            // Normal RPC still enforces the short default readTimeoutMs (60ms) and times out cleanly!
+            val err = assertFailsWith<IOException> {
+                client.callRaw("system.status", JsonObject())
+            }
+            assertTrue(err.message.orEmpty().contains("timed out"))
+        } finally {
+            client.close()
+        }
+    }
+
+    @Test
     fun `t1 rpc methods and t2b graceful fallbacks serialize and deserialize accurately`() {
         val responses = listOf(
             okResponse(

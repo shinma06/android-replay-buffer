@@ -372,7 +372,9 @@ pub fn extract_crash_markers(logs: &[LogRecord], frames: &[FrameRecord]) -> Vec<
         if let Some(parsed) = parse_am_crash_text_for_event_tag(log.tag.as_deref(), &log.message) {
             if parsed.is_fatal() {
                 let boottime_ns = log_boottime_hint(log);
-                let frame_index_hint = boottime_ns.and_then(|bt| nearest_frame_index(frames, bt));
+                let boot_id = log_boot_id_hint(log);
+                let frame_index_hint =
+                    boottime_ns.and_then(|bt| nearest_frame_index_for_boot(frames, boot_id, bt));
                 am_crashes.push(CrashMarker {
                     boottime_ns,
                     frame_index_hint,
@@ -401,7 +403,9 @@ pub fn extract_crash_markers(logs: &[LogRecord], frames: &[FrameRecord]) -> Vec<
             })
         {
             let boottime_ns = log_boottime_hint(log);
-            let frame_index_hint = boottime_ns.and_then(|bt| nearest_frame_index(frames, bt));
+            let boot_id = log_boot_id_hint(log);
+            let frame_index_hint =
+                boottime_ns.and_then(|bt| nearest_frame_index_for_boot(frames, boot_id, bt));
             fatal_fallbacks.push(CrashMarker {
                 boottime_ns,
                 frame_index_hint,
@@ -968,9 +972,23 @@ fn frame_boottime_hint(frame: &FrameRecord) -> Option<i64> {
     }
 }
 
-fn nearest_frame_index(frames: &[FrameRecord], target_boottime_ns: i64) -> Option<u64> {
+fn log_boot_id_hint(log: &LogRecord) -> Option<&str> {
+    log.boot_id.as_deref().or(match &log.alignment {
+        TimeAlignment::Anchored { boot_id, .. } | TimeAlignment::Bounded { boot_id, .. } => {
+            Some(boot_id.as_str())
+        }
+        TimeAlignment::Unanchored { .. } => None,
+    })
+}
+
+fn nearest_frame_index_for_boot(
+    frames: &[FrameRecord],
+    boot_id: Option<&str>,
+    target_boottime_ns: i64,
+) -> Option<u64> {
     frames
         .iter()
+        .filter(|f| boot_id.is_none_or(|want| f.boot_id == want))
         .filter_map(|f| {
             let bt = frame_boottime_hint(f)?;
             let dist = (i128::from(bt) - i128::from(target_boottime_ns)).unsigned_abs();
@@ -1722,5 +1740,75 @@ mod tests {
             "FATAL EXCEPTION: main\nProcess: com.victim, PID: 111\njava.lang.Error: x",
         );
         assert_eq!(extract_crash_markers(&[own], &[]).len(), 1);
+    }
+
+    #[test]
+    fn multi_epoch_crash_markers_map_within_matching_boot_id_without_bleed() {
+        let make_frame = |frame_index: u64, boot: &str, bt_ns: i64| FrameRecord {
+            frame_index,
+            boot_id: boot.to_owned(),
+            pts_device_mono_ns: bt_ns,
+            pc_ingest_cont_ns: bt_ns,
+            alignment: TimeAlignment::Anchored {
+                boot_id: boot.to_owned(),
+                boottime_ns: bt_ns,
+                half_width_ns: 1_000_000,
+                semantics: TimestampSemantics::VideoEncoderInputEstimate,
+            },
+            is_keyframe: frame_index == 0 || frame_index == 10,
+            gop_id: u64::from(frame_index >= 10),
+            mp4_sample_offset: 0,
+            mp4_sample_size: 100,
+        };
+        // Epoch 0: frames 0..=2 at boottime 10s..12s; Epoch 1 (after reboot): frames 10..=12 at 10s..12s
+        let frames = vec![
+            make_frame(0, "boot-0", 10 * SEC),
+            make_frame(1, "boot-0", 11 * SEC),
+            make_frame(2, "boot-0", 12 * SEC),
+            make_frame(10, "boot-1", 10 * SEC),
+            make_frame(11, "boot-1", 11 * SEC),
+            make_frame(12, "boot-1", 12 * SEC),
+        ];
+        let mut crash_e0 = make_log(
+            1,
+            11 * SEC,
+            "am_crash",
+            1000,
+            "[0,101,com.app,0,java.lang.RuntimeException,e0,A.kt,10,0]",
+        );
+        crash_e0.boot_id = Some("boot-0".to_owned());
+        crash_e0.alignment = TimeAlignment::Anchored {
+            boot_id: "boot-0".to_owned(),
+            boottime_ns: 11 * SEC,
+            half_width_ns: 1_000_000,
+            semantics: TimestampSemantics::LogcatDeviceReadBoottime,
+        };
+        let mut crash_e1 = make_log(
+            2,
+            11 * SEC,
+            "am_crash",
+            1000,
+            "[0,202,com.app,0,java.lang.IllegalStateException,e1,B.kt,20,0]",
+        );
+        crash_e1.boot_id = Some("boot-1".to_owned());
+        crash_e1.alignment = TimeAlignment::Anchored {
+            boot_id: "boot-1".to_owned(),
+            boottime_ns: 11 * SEC,
+            half_width_ns: 1_000_000,
+            semantics: TimestampSemantics::LogcatDeviceReadBoottime,
+        };
+
+        let markers = extract_crash_markers(&[crash_e0, crash_e1], &frames);
+        assert_eq!(markers.len(), 2);
+        assert_eq!(
+            markers[0].frame_index_hint,
+            Some(1),
+            "epoch-0 crash must map to epoch-0 frame"
+        );
+        assert_eq!(
+            markers[1].frame_index_hint,
+            Some(11),
+            "epoch-1 crash must map to epoch-1 frame without bleeding to epoch-0"
+        );
     }
 }

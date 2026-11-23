@@ -29,7 +29,7 @@ use arb_storage::catalog::{BundleEntry, Catalog, CatalogFormatVersion, LeaseHold
 use arb_storage::sha256_hex;
 
 use crate::error::DaemonError;
-use crate::media_engine::{ExportContext, export_trim};
+use crate::media_engine::{ExportContext, compute_epoch_frame_ranges, export_trim};
 use crate::protocol::{
     DEFAULT_OVERVIEW_ERROR_LOGS, ErrorLogHighlight, ExportShareMp4Params, ExportShareMp4Response,
     ExportTrimParams, InspectFramesMode, MAX_OVERVIEW_ERROR_LOGS, MediaDecodeAudioPcmResponse,
@@ -533,6 +533,13 @@ pub fn build_timeline_overview(
         .map_or(StreamStatus::Absent, |a| a.status);
     let av_offset_ms = summary.streams.audio.as_ref().map_or(0, |a| a.av_offset_ms);
     let logcat_completeness = summary.streams.logcat.as_ref().map(|l| l.completeness);
+    let display_width = summary.streams.video.as_ref().and_then(|v| v.display_width);
+    let display_height = summary
+        .streams
+        .video
+        .as_ref()
+        .and_then(|v| v.display_height);
+    let epoch_frame_ranges = compute_epoch_frame_ranges(&frames, &summary.epochs);
 
     Ok(TimelineOverviewResponse {
         bundle_id,
@@ -542,6 +549,9 @@ pub fn build_timeline_overview(
         duration_ms,
         width,
         height,
+        display_width,
+        display_height,
+        epoch_frame_ranges,
         fps_estimate,
         audio_status,
         av_offset_ms,
@@ -588,6 +598,17 @@ pub fn inspect_frames(
 
     let video_w = u32::from(track.width());
     let video_h = u32::from(track.height());
+    let effective_display_w = params
+        .display_width
+        .or_else(|| summary.streams.video.as_ref().and_then(|v| v.display_width));
+    let effective_display_h = params.display_height.or_else(|| {
+        summary
+            .streams
+            .video
+            .as_ref()
+            .and_then(|v| v.display_height)
+    });
+    let display_dims = (effective_display_w, effective_display_h);
     let mut gop_cache = GopLruCache::new(INSPECT_GOP_CACHE_GOPS, INSPECT_GOP_CACHE_BYTES);
 
     let (png_bytes, frame_indices_rendered, tap_crop) = match params.mode {
@@ -599,6 +620,7 @@ pub fn inspect_frames(
             params,
             video_w,
             video_h,
+            display_dims,
         )?,
         InspectFramesMode::Single => render_inspect_single(
             reader.as_ref(),
@@ -608,6 +630,7 @@ pub fn inspect_frames(
             params,
             video_w,
             video_h,
+            display_dims,
         )?,
         InspectFramesMode::TapCrop => render_inspect_tap_crop(
             reader.as_ref(),
@@ -617,6 +640,7 @@ pub fn inspect_frames(
             params,
             video_w,
             video_h,
+            display_dims,
         )?,
     };
 
@@ -765,6 +789,10 @@ pub fn query_logs_filtered(
 
 type InspectRenderOutput = (Vec<u8>, Vec<u64>, Option<TapCropMeta>);
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "internal helper threading decoded track, cache, backend, and display dimensions"
+)]
 fn render_inspect_contact_sheet(
     reader: &dyn BundleReader,
     track: &Mp4VideoTrack,
@@ -773,6 +801,7 @@ fn render_inspect_contact_sheet(
     params: &MediaInspectFramesParams,
     video_w: u32,
     video_h: u32,
+    display_dims: (Option<u32>, Option<u32>),
 ) -> Result<InspectRenderOutput, DaemonError> {
     let frame_count = track.frame_count();
     let indices = if let Some(explicit) = &params.frame_indices {
@@ -811,7 +840,7 @@ fn render_inspect_contact_sheet(
     };
 
     let tap_map = if params.include_tap_marker {
-        build_frame_tap_map(reader, video_w, video_h, params)?
+        build_frame_tap_map(reader, video_w, video_h, display_dims)?
     } else {
         BTreeMap::new()
     };
@@ -845,6 +874,10 @@ fn render_inspect_contact_sheet(
     Ok((png, indices, None))
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "internal helper threading decoded track, cache, backend, and display dimensions"
+)]
 fn render_inspect_single(
     reader: &dyn BundleReader,
     track: &Mp4VideoTrack,
@@ -853,6 +886,7 @@ fn render_inspect_single(
     params: &MediaInspectFramesParams,
     video_w: u32,
     video_h: u32,
+    display_dims: (Option<u32>, Option<u32>),
 ) -> Result<InspectRenderOutput, DaemonError> {
     let frame_count = track.frame_count();
     let idx = params
@@ -875,7 +909,7 @@ fn render_inspect_single(
     let tap_point = if let (Some(tx), Some(ty)) = (params.tap_x, params.tap_y) {
         Some((tx, ty))
     } else if params.include_tap_marker {
-        build_frame_tap_map(reader, video_w, video_h, params)?
+        build_frame_tap_map(reader, video_w, video_h, display_dims)?
             .get(&idx)
             .copied()
     } else {
@@ -885,6 +919,10 @@ fn render_inspect_single(
     Ok((png, vec![idx], None))
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "internal helper threading decoded track, cache, backend, and display dimensions"
+)]
 fn render_inspect_tap_crop(
     reader: &dyn BundleReader,
     track: &Mp4VideoTrack,
@@ -893,8 +931,10 @@ fn render_inspect_tap_crop(
     params: &MediaInspectFramesParams,
     video_w: u32,
     video_h: u32,
+    display_dims: (Option<u32>, Option<u32>),
 ) -> Result<InspectRenderOutput, DaemonError> {
     let frame_count = track.frame_count();
+    let (display_w, display_h) = display_dims;
     let (idx, tx, ty) = if let Some(tap_idx) = params.tap_index {
         let frames = reader.frames()?;
         let main_taps = reader.query_taps(Some(RecordBucket::Main), TimeRange::all(), None)?;
@@ -908,7 +948,7 @@ fn render_inspect_tap_crop(
         let frame_idx = match params.frame_index {
             Some(f) => f,
             None => tap_boottime_ns(tap)
-                .and_then(|bt| nearest_frame_index(&frames, bt))
+                .and_then(|bt| nearest_frame_index_for_epoch(&frames, tap_boot_id(tap), bt))
                 .ok_or_else(|| {
                     DaemonError::InvalidParams(format!(
                         "tap_index {tap_idx} cannot be aligned to a video frame; pass an explicit frame_index"
@@ -929,14 +969,11 @@ fn render_inspect_tap_crop(
         };
         let x = match params.tap_x {
             Some(x) => x,
-            None => {
-                map_tap_coord_to_frame(raw_x, params.display_width, video_w).ok_or_else(unmapped)?
-            }
+            None => map_tap_coord_to_frame(raw_x, display_w, video_w).ok_or_else(unmapped)?,
         };
         let y = match params.tap_y {
             Some(y) => y,
-            None => map_tap_coord_to_frame(raw_y, params.display_height, video_h)
-                .ok_or_else(unmapped)?,
+            None => map_tap_coord_to_frame(raw_y, display_h, video_h).ok_or_else(unmapped)?,
         };
         (frame_idx, x, y)
     } else {
@@ -988,17 +1025,18 @@ fn build_frame_tap_map(
     reader: &dyn BundleReader,
     video_w: u32,
     video_h: u32,
-    params: &MediaInspectFramesParams,
+    display_dims: (Option<u32>, Option<u32>),
 ) -> Result<BTreeMap<u64, (u32, u32)>, DaemonError> {
+    let (display_w, display_h) = display_dims;
     let frames = reader.frames()?;
     let main_taps = reader.query_taps(Some(RecordBucket::Main), TimeRange::all(), None)?;
     let mut map = BTreeMap::new();
     for tap in select_overview_taps(&main_taps) {
         if let (Some(rx), Some(ry), Some(bt)) = (tap.x, tap.y, tap_boottime_ns(tap))
-            && let Some(fi) = nearest_frame_index(&frames, bt)
+            && let Some(fi) = nearest_frame_index_for_epoch(&frames, tap_boot_id(tap), bt)
         {
-            let mapped = map_tap_coord_to_frame(rx, params.display_width, video_w)
-                .zip(map_tap_coord_to_frame(ry, params.display_height, video_h));
+            let mapped = map_tap_coord_to_frame(rx, display_w, video_w)
+                .zip(map_tap_coord_to_frame(ry, display_h, video_h));
             if let Some(point) = mapped {
                 map.entry(fi).or_insert(point);
             }
@@ -1033,7 +1071,8 @@ fn build_overview_taps(
         .enumerate()
         .map(|(tap_index, tap)| {
             let bt = tap_boottime_ns(tap);
-            let frame_index = bt.and_then(|t| nearest_frame_index(frames, t));
+            let frame_index =
+                bt.and_then(|t| nearest_frame_index_for_epoch(frames, tap_boot_id(tap), t));
             let t_ms =
                 bt.and_then(|t| base_boottime_ns.map(|base| t.saturating_sub(base) / 1_000_000));
             OverviewTapItem {
@@ -1068,7 +1107,8 @@ fn build_error_log_highlights(
             continue;
         }
         let bt = log_boottime_ns(log);
-        let frame_index_hint = bt.and_then(|t| nearest_frame_index(frames, t));
+        let frame_index_hint =
+            bt.and_then(|t| nearest_frame_index_for_epoch(frames, log_boot_id(log), t));
         let t_ms = bt.and_then(|t| base_boottime_ns.map(|base| t.saturating_sub(base) / 1_000_000));
         out.push(ErrorLogHighlight {
             seq: log.seq,
@@ -1145,9 +1185,36 @@ fn log_boottime_ns(log: &LogRecord) -> Option<i64> {
     }
 }
 
-fn nearest_frame_index(frames: &[FrameRecord], target_bt_ns: i64) -> Option<u64> {
+fn tap_boot_id(tap: &TapRecord) -> Option<&str> {
+    tap.boot_id.as_deref().or(match &tap.alignment {
+        TimeAlignment::Anchored { boot_id, .. } | TimeAlignment::Bounded { boot_id, .. } => {
+            Some(boot_id.as_str())
+        }
+        _ => None,
+    })
+}
+
+fn log_boot_id(log: &LogRecord) -> Option<&str> {
+    log.boot_id.as_deref().or(match &log.alignment {
+        TimeAlignment::Anchored { boot_id, .. } | TimeAlignment::Bounded { boot_id, .. } => {
+            Some(boot_id.as_str())
+        }
+        _ => None,
+    })
+}
+
+fn nearest_frame_index_for_epoch(
+    frames: &[FrameRecord],
+    boot_id: Option<&str>,
+    target_bt_ns: i64,
+) -> Option<u64> {
     let mut best: Option<(u64, u64)> = None;
     for frame in frames {
+        if let Some(want) = boot_id
+            && frame.boot_id != want
+        {
+            continue;
+        }
         let Some(bt) = frame_boottime_ns(frame) else {
             continue;
         };
@@ -1408,5 +1475,47 @@ mod tests {
         assert_eq!(base64_encode(b"fo"), "Zm8=", "2-byte vector");
         assert_eq!(base64_encode(b"foo"), "Zm9v", "3-byte vector");
         assert_eq!(base64_encode(b"foobar"), "Zm9vYmFy", "6-byte vector");
+    }
+
+    #[test]
+    fn nearest_frame_index_for_epoch_prevents_cross_epoch_bleed() {
+        use arb_core::bundle::FrameRecord;
+        use arb_core::time::{TimeAlignment, TimestampSemantics};
+
+        let mk = |frame_index: u64, boot: &str, bt: i64| FrameRecord {
+            frame_index,
+            boot_id: boot.to_owned(),
+            pts_device_mono_ns: bt,
+            pc_ingest_cont_ns: bt,
+            alignment: TimeAlignment::Anchored {
+                boot_id: boot.to_owned(),
+                boottime_ns: bt,
+                half_width_ns: 1_000,
+                semantics: TimestampSemantics::VideoEncoderInputEstimate,
+            },
+            is_keyframe: frame_index == 0 || frame_index == 10,
+            gop_id: u64::from(frame_index >= 10),
+            mp4_sample_offset: 0,
+            mp4_sample_size: 100,
+        };
+        let frames = vec![
+            mk(0, "boot-0", 10_000_000_000),
+            mk(1, "boot-0", 11_000_000_000),
+            mk(10, "boot-1", 10_000_000_000),
+            mk(11, "boot-1", 11_000_000_000),
+        ];
+        assert_eq!(
+            super::nearest_frame_index_for_epoch(&frames, Some("boot-0"), 11_000_000_000),
+            Some(1)
+        );
+        assert_eq!(
+            super::nearest_frame_index_for_epoch(&frames, Some("boot-1"), 11_000_000_000),
+            Some(11)
+        );
+        assert_eq!(
+            super::nearest_frame_index_for_epoch(&frames, Some("boot-missing"), 11_000_000_000),
+            None,
+            "unknown epoch must not bleed into frames from another boot"
+        );
     }
 }

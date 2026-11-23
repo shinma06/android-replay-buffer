@@ -151,6 +151,14 @@ pub struct VideoStreamMeta {
     pub tail_may_be_incomplete: bool,
     /// Timestamp semantics for frame PTS values.
     pub semantics: TimestampSemantics,
+    /// Physical device display width in pixels (e.g., from `wm size`), used to scale raw
+    /// touch coordinates onto downscaled video. `None` on legacy or pre-T-6A bundles.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_width: Option<u32>,
+    /// Physical device display height in pixels (e.g., from `wm size`), used to scale raw
+    /// touch coordinates onto downscaled video. `None` on legacy or pre-T-6A bundles.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_height: Option<u32>,
 }
 
 /// Calibration status of audio-to-video synchronization offset.
@@ -538,6 +546,14 @@ impl ManifestV2 {
             });
         }
 
+        if let Some(video) = &self.streams.video
+            && (video.display_width == Some(0) || video.display_height == Some(0))
+        {
+            return Err(ValidationError::InconsistentStreamMeta {
+                reason: "video display_width and display_height must be > 0 when present",
+            });
+        }
+
         if let Some(logcat) = &self.streams.logcat
             && logcat.completeness == LogCompleteness::VerifiedNoOverflow
             && logcat.overflow_events > 0
@@ -635,6 +651,8 @@ mod tests {
                     frame_count: 900,
                     tail_may_be_incomplete: false,
                     semantics: TimestampSemantics::VideoEncoderInputEstimate,
+                    display_width: Some(1080),
+                    display_height: Some(2400),
                 }),
                 audio: Some(AudioStreamMeta {
                     status: StreamStatus::Partial,
@@ -729,5 +747,33 @@ mod tests {
             ),
             "verified_no_overflow with overflow_events > 0 must be rejected"
         );
+
+        let mut m = valid_manifest();
+        if let Some(video) = m.streams.video.as_mut() {
+            video.display_width = Some(0);
+        }
+        assert!(
+            matches!(
+                m.validate(),
+                Err(ValidationError::InconsistentStreamMeta { .. })
+            ),
+            "zero display_width must be rejected"
+        );
+    }
+
+    #[test]
+    fn video_meta_without_display_dimensions_deserializes_for_legacy_compatibility() {
+        let mut m = valid_manifest();
+        if let Some(video) = m.streams.video.as_mut() {
+            video.display_width = None;
+            video.display_height = None;
+        }
+        let json = serde_json::to_string(&m).expect("serialize");
+        assert!(
+            !json.contains("display_width"),
+            "None display_width should be omitted from JSON"
+        );
+        let parsed: ManifestV2 = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(parsed, m);
     }
 }

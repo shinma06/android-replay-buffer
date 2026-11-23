@@ -294,6 +294,12 @@ struct SaveJobMaterializeParams {
     device: DeviceInfo,
     video_width: u16,
     video_height: u16,
+    /// Physical device display width in pixels (from `wm size`), if observed.
+    #[serde(default)]
+    display_width: Option<u32>,
+    /// Physical device display height in pixels (from `wm size`), if observed.
+    #[serde(default)]
+    display_height: Option<u32>,
     fallback_video_config: Option<Vec<u8>>,
     /// Discontinuities that never reached a ring chunk (`StoragePressureStop`, failed ring
     /// writes) and overlap the save window. They are merged into the saved bundle.
@@ -531,6 +537,8 @@ pub struct CapturePipeline {
     device: DeviceInfo,
     video_width: u16,
     video_height: u16,
+    display_width: Option<u32>,
+    display_height: Option<u32>,
     latest_video_config: Option<Vec<u8>>,
     timeline: ClockTimeline,
     pending_events: Vec<CaptureEvent>,
@@ -542,6 +550,7 @@ pub struct CapturePipeline {
     discontinuities_seen: usize,
     static_hold_seen: usize,
     ring_write_errors: usize,
+    session_first_event_cont_ns: Option<i64>,
     latest_heartbeat_boottime_ns: Option<i64>,
     latest_heartbeat_pc_cont_ns: Option<i64>,
     latest_pc_cont_ns: Option<i64>,
@@ -584,6 +593,8 @@ impl CapturePipeline {
             },
             video_width: 1920,
             video_height: 1080,
+            display_width: None,
+            display_height: None,
             latest_video_config: None,
             timeline: ClockTimeline::new(ClockTimelineConfig::new()),
             pending_events: Vec::new(),
@@ -595,6 +606,7 @@ impl CapturePipeline {
             discontinuities_seen: 0,
             static_hold_seen: 0,
             ring_write_errors: 0,
+            session_first_event_cont_ns: None,
             latest_heartbeat_boottime_ns: None,
             latest_heartbeat_pc_cont_ns: None,
             latest_pc_cont_ns: None,
@@ -654,6 +666,22 @@ impl CapturePipeline {
         self.begin_session_inner(serial.into(), ClockDomain::HostLive)
     }
 
+    /// Records the physical device display resolution (e.g., from `adb shell wm size`) for the
+    /// current capture session so downstream viewers and contact sheets can map touch coordinates.
+    pub const fn set_display_size(&mut self, width: u32, height: u32) {
+        if width > 0 && height > 0 {
+            self.display_width = Some(width);
+            self.display_height = Some(height);
+        }
+    }
+
+    /// Generation-scoped variant of [`Self::set_display_size`] for live ADB supervisor threads.
+    pub const fn set_display_size_for_session(&mut self, generation: u64, width: u32, height: u32) {
+        if generation == self.session_generation {
+            self.set_display_size(width, height);
+        }
+    }
+
     fn begin_session_inner(&mut self, serial: String, clock_domain: ClockDomain) -> u64 {
         self.session_generation = self.session_generation.wrapping_add(1);
         self.active = true;
@@ -662,6 +690,9 @@ impl CapturePipeline {
         self.clock_domain = clock_domain;
         self.serial = Some(serial.clone());
         self.device.serial = serial;
+        self.display_width = None;
+        self.display_height = None;
+        self.session_first_event_cont_ns = None;
         self.session_generation
     }
 
@@ -749,6 +780,53 @@ impl CapturePipeline {
         Ok((chunks.len(), total_bytes, pinned_count))
     }
 
+    /// Computes the honest elapsed duration currently retained in the Zone-1 ring buffer (in
+    /// whole seconds), scoped to the active capture session when one is running and bounded by
+    /// the configured ring duration cap.
+    #[must_use]
+    pub fn buffered_secs(&self) -> u64 {
+        let chunks = self.ring.chunks();
+        let session_floor = self.session_first_event_cont_ns;
+        let mut oldest: Option<i64> = None;
+        let mut newest: Option<i64> = None;
+
+        for chunk in &chunks {
+            if let Some(floor) = session_floor
+                && chunk.created_cont_ns < floor
+            {
+                continue;
+            }
+            let start = chunk.created_cont_ns;
+            let end = start.saturating_add(i64::try_from(chunk.duration_ns).unwrap_or(i64::MAX));
+            oldest = Some(oldest.map_or(start, |prev| prev.min(start)));
+            newest = Some(newest.map_or(end, |prev| prev.max(end)));
+        }
+
+        for event in &self.pending_events {
+            if let Some(ts) = capture_event_pc_cont_ns(event) {
+                if let Some(floor) = session_floor
+                    && ts < floor
+                {
+                    continue;
+                }
+                oldest = Some(oldest.map_or(ts, |prev| prev.min(ts)));
+                newest = Some(newest.map_or(ts, |prev| prev.max(ts)));
+            }
+        }
+
+        let (Some(lo), Some(hi)) = (oldest, newest) else {
+            return 0;
+        };
+        let span_ns = u64::try_from(hi.saturating_sub(lo).max(0)).unwrap_or(0);
+        let max_duration_ns = self.ring.policy().max_ring_duration_ns;
+        let bounded_ns = if max_duration_ns > 0 {
+            span_ns.min(max_duration_ns)
+        } else {
+            span_ns
+        };
+        bounded_ns / 1_000_000_000
+    }
+
     /// Returns a shared reference to the Zone-1 [`RingStore`].
     #[must_use]
     pub const fn ring_store(&self) -> &RingStore<SharedDiskSpaceProvider> {
@@ -798,6 +876,9 @@ impl CapturePipeline {
 
         let event_pc_ns = capture_event_pc_cont_ns(&event);
         if let Some(ts) = event_pc_ns {
+            if self.session_first_event_cont_ns.is_none() {
+                self.session_first_event_cont_ns = Some(ts);
+            }
             self.latest_pc_cont_ns = Some(self.latest_pc_cont_ns.map_or(ts, |prev| prev.max(ts)));
         }
 
@@ -1201,6 +1282,8 @@ impl CapturePipeline {
             device: self.device.clone(),
             video_width: self.video_width,
             video_height: self.video_height,
+            display_width: self.display_width,
+            display_height: self.display_height,
             fallback_video_config: self.latest_video_config.clone(),
             extra_discontinuities: self
                 .carried_discontinuities_for(&pending.window, &pending.policy),
@@ -2114,9 +2197,16 @@ impl ReplayCollector {
         };
 
         let frame_count = u64::try_from(media.frames.len()).unwrap_or(0);
+        let (display_width, display_height) = if params.mode == SaveMode::LogsOnly {
+            (None, None)
+        } else {
+            (params.display_width, params.display_height)
+        };
         let streams = build_streams_summary(&StreamSummaryCounts {
             frame_count,
             video_status: media.video_status,
+            display_width,
+            display_height,
             audio_status: media.audio_status,
             logs_count: final_logs.len(),
             log_completeness: self.log_completeness,
@@ -2290,6 +2380,8 @@ fn av_lead_in_offset_ns(video: &SelectedVideo, audio: &SelectedAudio) -> i64 {
 struct StreamSummaryCounts {
     frame_count: u64,
     video_status: StreamStatus,
+    display_width: Option<u32>,
+    display_height: Option<u32>,
     audio_status: StreamStatus,
     logs_count: usize,
     log_completeness: LogCompleteness,
@@ -2311,6 +2403,8 @@ fn build_streams_summary(counts: &StreamSummaryCounts) -> StreamsSummary {
             frame_count: counts.frame_count,
             tail_may_be_incomplete,
             semantics: TimestampSemantics::VideoEncoderInputEstimate,
+            display_width: counts.display_width,
+            display_height: counts.display_height,
         }),
         audio: Some(AudioStreamMeta {
             // Computed by `mux_selected_audio`: `Present` only when `audio.m4a` was
@@ -3175,6 +3269,49 @@ mod tests {
             replayed_markers,
             vec![0xAA, 0xBB],
             "video frames must replay in exact FIFO capture order"
+        );
+    }
+
+    #[test]
+    fn buffered_secs_reports_honest_ring_span_and_resets_for_new_session() {
+        let tmp = TempDir::new().expect("tempdir");
+        let mut pipeline = CapturePipeline::open(
+            tmp.path(),
+            RingBudgetPolicy::default(),
+            SharedDiskSpaceProvider::new(Arc::new(PlentyOfDisk)),
+        )
+        .expect("open pipeline");
+        assert_eq!(pipeline.buffered_secs(), 0, "fresh empty ring must be 0s");
+
+        let _ = pipeline.begin_session("serial-buf");
+        pipeline.set_display_size(1080, 2400);
+        // Simulate static screen: only 2 video frames spanning 12 real seconds.
+        pipeline
+            .ingest_event(video_event(10_000_000_000, vec![0, 0, 0, 1, 0x65]))
+            .expect("ingest start");
+        pipeline.flush_pending_chunk().expect("flush start");
+        pipeline
+            .ingest_event(video_event(22_000_000_000, vec![0, 0, 0, 1, 0x41]))
+            .expect("ingest end");
+        pipeline.flush_pending_chunk().expect("flush end");
+        assert_eq!(
+            pipeline.buffered_secs(),
+            12,
+            "buffered_secs must reflect real ring span (12s), not video_frames/fps (0s)"
+        );
+
+        // Starting a fresh session resets the honest buffered span to 0s until new events arrive.
+        let _ = pipeline.begin_session("serial-buf");
+        pipeline
+            .ingest_event(video_event(100_000_000_000, vec![0, 0, 0, 1, 0x65]))
+            .expect("ingest s2 start");
+        pipeline
+            .ingest_event(video_event(103_000_000_000, vec![0, 0, 0, 1, 0x41]))
+            .expect("ingest s2 end");
+        assert_eq!(
+            pipeline.buffered_secs(),
+            3,
+            "new session must report only its own buffered span (3s)"
         );
     }
 }

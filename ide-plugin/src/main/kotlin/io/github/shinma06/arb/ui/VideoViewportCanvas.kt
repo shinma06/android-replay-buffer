@@ -26,6 +26,8 @@ import kotlin.math.abs
 class VideoViewportCanvas : JPanel(BorderLayout()) {
     private var currentImage: BufferedImage? = null
     private var currentMeta: ShmFrameMeta? = null
+    private var displayWidth: Int? = null
+    private var displayHeight: Int? = null
     private var activeTaps: List<ActiveTapOverlay> = emptyList()
     private var tapOverlayEnabled: Boolean = true
     private var approximateVisible: Boolean = false
@@ -92,15 +94,29 @@ class VideoViewportCanvas : JPanel(BorderLayout()) {
         image: BufferedImage?,
         taps: List<ActiveTapOverlay> = emptyList(),
         showTaps: Boolean = tapOverlayEnabled,
+        displayWidth: Int? = this.displayWidth,
+        displayHeight: Int? = this.displayHeight,
     ) {
         currentMeta = meta
         if (image != null) {
             currentImage = image
         }
+        this.displayWidth = displayWidth?.takeIf { it > 0 }
+        this.displayHeight = displayHeight?.takeIf { it > 0 }
         activeTaps = taps
         tapOverlayEnabled = showTaps
         approximateVisible = meta?.isApproximate == true
         stageSurface.repaint()
+    }
+
+    fun setDisplayDimensions(width: Int?, height: Int?) {
+        val nextW = width?.takeIf { it > 0 }
+        val nextH = height?.takeIf { it > 0 }
+        if (displayWidth != nextW || displayHeight != nextH) {
+            displayWidth = nextW
+            displayHeight = nextH
+            stageSurface.repaint()
+        }
     }
 
     fun setTapOverlay(taps: List<ActiveTapOverlay>, enabled: Boolean) {
@@ -132,15 +148,19 @@ class VideoViewportCanvas : JPanel(BorderLayout()) {
         videoW: Int,
         videoH: Int,
     ) {
-        val srcW = (currentMeta?.width ?: videoW).coerceAtLeast(1)
-        val srcH = (currentMeta?.height ?: videoH).coerceAtLeast(1)
+        val frameW = (currentMeta?.width ?: videoW).coerceAtLeast(1)
+        val frameH = (currentMeta?.height ?: videoH).coerceAtLeast(1)
 
         for (tap in activeTaps) {
-            // Coordinates may be in device pixel space or normalized [0..1]
-            val normX = if (tap.x in 0.0..1.0 && tap.y in 0.0..1.0) tap.x else (tap.x / srcW.toDouble())
-            val normY = if (tap.x in 0.0..1.0 && tap.y in 0.0..1.0) tap.y else (tap.y / srcH.toDouble())
-            val cx = drawRect.x + (normX.coerceIn(0.0, 1.0) * drawRect.width).toInt()
-            val cy = drawRect.y + (normY.coerceIn(0.0, 1.0) * drawRect.height).toInt()
+            val (cx, cy) = mapTapToCanvasPoint(
+                tapX = tap.x,
+                tapY = tap.y,
+                drawRect = drawRect,
+                videoW = frameW,
+                videoH = frameH,
+                displayW = displayWidth,
+                displayH = displayHeight,
+            )
 
             val proximity = (1.0 - (abs(tap.deltaMs).toDouble() / 250.0)).coerceIn(0.2, 1.0)
             val outerR = JBUI.scale((14 + (1.0 - proximity) * 14).toInt())
@@ -199,5 +219,33 @@ class VideoViewportCanvas : JPanel(BorderLayout()) {
         g2.drawRoundRect(x, y, pillW, pillH, arc, arc)
         g2.color = Color(0xFE, 0xF3, 0xC7)
         g2.drawString(text, x + padH, y + padV + fm.ascent)
+    }
+
+    companion object {
+        /**
+         * Maps a recorded tap coordinate onto canvas pixels inside [drawRect].
+         *
+         * Prefers physical device display dimensions ([displayW] x [displayH]) when recorded in
+         * bundle metadata so raw touch points map accurately onto downscaled video; falls back
+         * cleanly to video frame dimensions ([videoW] x [videoH]) for legacy bundles.
+         */
+        internal fun mapTapToCanvasPoint(
+            tapX: Double,
+            tapY: Double,
+            drawRect: Rectangle,
+            videoW: Int,
+            videoH: Int,
+            displayW: Int? = null,
+            displayH: Int? = null,
+        ): Pair<Int, Int> {
+            val isNormalized = tapX in 0.0..1.0 && tapY in 0.0..1.0
+            val srcW = (displayW?.takeIf { it > 0 } ?: videoW).coerceAtLeast(1)
+            val srcH = (displayH?.takeIf { it > 0 } ?: videoH).coerceAtLeast(1)
+            val normX = if (isNormalized) tapX else (tapX / srcW.toDouble())
+            val normY = if (isNormalized) tapY else (tapY / srcH.toDouble())
+            val cx = drawRect.x + (normX.coerceIn(0.0, 1.0) * drawRect.width).toInt()
+            val cy = drawRect.y + (normY.coerceIn(0.0, 1.0) * drawRect.height).toInt()
+            return cx to cy
+        }
     }
 }

@@ -127,6 +127,14 @@ impl LiveSink {
         }
     }
 
+    fn set_display_size(&self, width: u32, height: u32) {
+        if let Ok(mut guard) = self.pipeline.lock() {
+            guard.set_display_size_for_session(self.generation, width, height);
+        } else {
+            self.failed.store(true, Ordering::Release);
+        }
+    }
+
     /// `true` while this sink's session is still the current, active capture session.
     fn session_is_current(&self) -> bool {
         if self.failed.load(Ordering::Acquire) {
@@ -290,6 +298,10 @@ fn resolve_agent_jar(
             let direct = dir.join(file_name);
             if direct.is_file() {
                 return Ok(direct);
+            }
+            let in_agent_dir = dir.join("device-agent").join(file_name);
+            if in_agent_dir.is_file() {
+                return Ok(in_agent_dir);
             }
             let in_build = dir.join("device-agent").join("build").join(file_name);
             if in_build.is_file() {
@@ -689,6 +701,9 @@ fn run_single_adb_session(
         launch_and_handshake_companion(adb, cfg, &session_token, &mut guard, stop_flag)?;
     let api_level = hello.api_level;
     sink.push_all(tracker.on_hello(supervisor, hello, sample_cont_ns()));
+    if let Some((display_w, display_h)) = adb.query_display_size(&cfg.serial) {
+        sink.set_display_size(display_w, display_h);
+    }
 
     // 2. Launch scrcpy-server-v5.0.1 for H.264 video (and optional AAC audio on API >= 33).
     let session_stop = Arc::new(AtomicBool::new(false));

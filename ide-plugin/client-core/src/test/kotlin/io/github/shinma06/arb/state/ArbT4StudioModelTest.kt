@@ -405,4 +405,156 @@ class ArbT4StudioModelTest {
         assertEquals(listOf("crash-1"), catalog.copy(activeFilter = BundleFilter.CRASH).filteredItems.map { it.bundleId })
         assertEquals(listOf("trash-1"), catalog.copy(activeFilter = BundleFilter.TRASH).filteredItems.map { it.bundleId })
     }
+
+    @Test
+    fun multiEpochFrameRangesMapLogsTapsCrashesWithoutCrossEpochBleed() {
+        val base = healthySummary()
+        // Epoch 0: frames 0..50 spanning boottime 100s..110s
+        // Epoch 1 (post-reboot! boottime resets back to 5s..15s): frames 51..100
+        val epoch0 = io.github.shinma06.arb.model.EpochFrameRange(
+            epochIndex = 0,
+            bootId = "boot-0",
+            startFrameIndex = 0L,
+            endFrameIndex = 50L,
+            startBoottimeNs = 100_000_000_000L,
+            endBoottimeNs = 110_000_000_000L,
+        )
+        val epoch1 = io.github.shinma06.arb.model.EpochFrameRange(
+            epochIndex = 1,
+            bootId = "boot-1",
+            startFrameIndex = 51L,
+            endFrameIndex = 100L,
+            startBoottimeNs = 5_000_000_000L,
+            endBoottimeNs = 15_000_000_000L,
+        )
+        val summary = base.copy(
+            epochs = listOf(
+                EpochSpan("boot-0", 100_000_000_000L, 110_000_000_000L),
+                EpochSpan("boot-1", 5_000_000_000L, 15_000_000_000L),
+            ),
+            epochFrameRanges = listOf(epoch0, epoch1),
+            frameCount = 101,
+        )
+
+        val tapE0 = TapRecord(
+            seq = 1L,
+            bootId = "boot-0",
+            pcIngestContNs = 1L,
+            alignment = TimeAlignment.Anchored("boot-0", 105_000_000_000L, 1_000_000L, TimestampSemantics.INPUT_EVENT_TIME),
+            bucket = RecordBucket.MAIN,
+            action = "DOWN",
+            x = 540.0,
+            y = 1200.0,
+        )
+        val tapE1 = TapRecord(
+            seq = 2L,
+            bootId = "boot-1",
+            pcIngestContNs = 2L,
+            alignment = TimeAlignment.Anchored("boot-1", 10_000_000_000L, 1_000_000L, TimestampSemantics.INPUT_EVENT_TIME),
+            bucket = RecordBucket.MAIN,
+            action = "DOWN",
+            x = 200.0,
+            y = 400.0,
+        )
+        val logE0 = LogRecord(
+            seq = 10L,
+            bootId = "boot-0",
+            pcIngestContNs = 3L,
+            alignment = TimeAlignment.Anchored("boot-0", 105_100_000_000L, 1_000_000L, TimestampSemantics.LOGCAT_DEVICE_READ_BOOTTIME),
+            bucket = RecordBucket.MAIN,
+            level = "I",
+            tag = "Epoch0",
+            message = "right after tap 1 in epoch 0",
+        )
+        val logE1 = LogRecord(
+            seq = 11L,
+            bootId = "boot-1",
+            pcIngestContNs = 4L,
+            alignment = TimeAlignment.Anchored("boot-1", 10_100_000_000L, 1_000_000L, TimestampSemantics.LOGCAT_DEVICE_READ_BOOTTIME),
+            bucket = RecordBucket.MAIN,
+            level = "E",
+            tag = "Epoch1",
+            message = "right after tap 2 in epoch 1",
+        )
+        val crashE1 = CrashMarker(
+            boottimeNs = 10_000_000_000L,
+            frameIndexHint = null, // Force epoch lookup via sourceLogSeq -> boot-1
+            processName = "com.app",
+            packageName = "com.app",
+            pid = 42,
+            exceptionClass = "java.lang.IllegalStateException",
+            message = "post-reboot crash",
+            sourceLogSeq = 11L,
+        )
+
+        val state = TimelineViewerState(
+            bundleId = "b-reboot",
+            path = "/tmp/b-reboot",
+            format = BundleFormat.V2,
+            isLegacy = false,
+            leaseId = "l-r",
+            summary = summary,
+            frameCount = 101L,
+            crashes = listOf(crashE1),
+            mainTaps = listOf(tapE0, tapE1),
+            mainLogs = listOf(logE0, logE1),
+        )
+
+        // Exact per-epoch frame mapping (midpoint of epoch 0 = 25; midpoint of epoch 1 = 76)
+        assertEquals(25L, state.boottimeNsToFrameIndex(105_000_000_000L, "boot-0"))
+        assertTrue(state.boottimeNsToFrameIndex(10_000_000_000L, "boot-1") in 75L..76L)
+        // Unknown epoch must return null (zero cross-epoch bleed!)
+        assertNull(state.boottimeNsToFrameIndex(105_000_000_000L, "boot-unknown"))
+
+        // Total duration sums both epochs cleanly (10s + 10s = 20s) even though epoch 1 reset boottime!
+        assertEquals(20_000L, state.totalDurationMs)
+        assertTrue(state.primaryCrashFrameIndex() in 75L..76L)
+
+        // Tap overlay at epoch-0 frame 25 shows ONLY Tap #1; at epoch-1 frame 76 shows ONLY Tap #2.
+        assertEquals(listOf(1), state.activeTapsAtFrame(25L).map { it.tapIndex1Based })
+        assertEquals(listOf(2), state.activeTapsAtFrame(76L).map { it.tapIndex1Based })
+
+        // Synced event rows keep epoch 0 strictly before epoch 1 and correlate only within same epoch.
+        val rows = state.buildSyncedEventRows()
+        val rowLog0 = rows.first { it.kind == SyncedEventKind.LOG && it.seq == 10L }
+        val rowLog1 = rows.first { it.kind == SyncedEventKind.LOG && it.seq == 11L }
+        assertEquals(1, rowLog0.correlatedTapIndex)
+        assertEquals(2, rowLog1.correlatedTapIndex)
+        assertTrue(rows.indexOf(rowLog0) < rows.indexOf(rowLog1), "epoch 0 events must sort before epoch 1")
+    }
+
+    @Test
+    fun honestBufferedSecsFromSystemStatusOverridesFrameEstimateAndLabelsFilling() {
+        val status = SystemStatusResponse(
+            pid = 1L,
+            uptimeMs = 8_000L,
+            capture = CaptureStatusView(
+                active = true,
+                connected = true,
+                serial = "emulator-5554",
+                storagePressureStopped = false,
+                videoFrames = 2L, // static screen -> frame estimate would falsely say 0s!
+                audioFrames = 0L,
+                logRecords = 20L,
+                tapRecords = 0L,
+                discontinuities = 0L,
+                staticHoldEvents = 0L,
+            ),
+            ringChunkCount = 2L,
+            ringTotalBytes = 2L * 1024L * 1024L,
+            ringPinnedChunkCount = 0L,
+            bufferedSecs = 8L,
+            activeViewports = 0L,
+            activeSaveJobs = 0L,
+            recovery = RecoverySummaryView(),
+        )
+        val filling = CaptureBarReducer.fromStatus(CaptureBarState(), status)
+        assertEquals(8L, filling.bufferedWindowSecs)
+        assertEquals("8s / 300s · 2.0 MB (蓄積中)", filling.ringMeterText)
+        assertFalse(ArbFormatters.containsEmoji(filling.ringMeterText))
+
+        val full = CaptureBarReducer.fromStatus(CaptureBarState(), status.copy(bufferedSecs = 350L))
+        assertEquals(300L, full.bufferedWindowSecs, "must clamp to saveWindowSecs")
+        assertEquals("300s / 300s · 2.0 MB", full.ringMeterText)
+    }
 }

@@ -84,6 +84,7 @@ data class SystemStatusResponse(
     val ringChunkCount: Long,
     val ringTotalBytes: Long,
     val ringPinnedChunkCount: Long,
+    val bufferedSecs: Long? = null,
     val activeViewports: Long,
     val activeSaveJobs: Long,
     val recovery: RecoverySummaryView,
@@ -613,11 +614,22 @@ data class EpochSpan(
     val endBoottimeNs: Long,
 )
 
+data class EpochFrameRange(
+    val epochIndex: Int,
+    val bootId: String,
+    val startFrameIndex: Long,
+    val endFrameIndex: Long,
+    val startBoottimeNs: Long,
+    val endBoottimeNs: Long,
+)
+
 data class VideoStreamMeta(
     val status: StreamStatus,
     val frameCount: Long,
     val tailMayBeIncomplete: Boolean,
     val semantics: TimestampSemantics,
+    val displayWidth: Int? = null,
+    val displayHeight: Int? = null,
 )
 
 data class AudioStreamMeta(
@@ -658,6 +670,7 @@ data class TimelineSummaryResponse(
     val streams: StreamsSummary,
     val unanchoredSummary: UnanchoredSummary,
     val epochs: List<EpochSpan>,
+    val epochFrameRanges: List<EpochFrameRange> = emptyList(),
     val frameCount: Int,
     val keyframeCount: Int,
     val logMainCount: Int,

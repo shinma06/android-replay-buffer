@@ -235,6 +235,8 @@ fn seed_bundle(work_dir: &Path, dest_dir: &Path, bundle_id: &str) -> PathBuf {
                 frame_count: 18,
                 tail_may_be_incomplete: false,
                 semantics: TimestampSemantics::VideoEncoderInputEstimate,
+                display_width: None,
+                display_height: None,
             }),
             audio: Some(AudioStreamMeta {
                 status: StreamStatus::Present,

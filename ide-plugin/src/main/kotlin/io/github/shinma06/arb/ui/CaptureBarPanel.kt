@@ -2,6 +2,8 @@ package io.github.shinma06.arb.ui
 
 import com.intellij.icons.AllIcons
 import com.intellij.util.ui.JBUI
+import io.github.shinma06.arb.model.AdbDeviceInfo
+import io.github.shinma06.arb.model.AdbDeviceState
 import io.github.shinma06.arb.model.IdeDefaultSaveAction
 import io.github.shinma06.arb.state.ArbFormatters
 import io.github.shinma06.arb.state.CaptureBanner
@@ -10,9 +12,10 @@ import io.github.shinma06.arb.state.CaptureBarState
 import java.awt.BorderLayout
 import java.awt.Color
 import java.awt.Dimension
-import java.awt.FlowLayout
 import java.awt.Graphics
 import java.awt.Graphics2D
+import java.awt.GridBagConstraints
+import java.awt.GridBagLayout
 import java.awt.GridLayout
 import java.awt.RenderingHints
 import javax.swing.BorderFactory
@@ -20,6 +23,7 @@ import javax.swing.Box
 import javax.swing.BoxLayout
 import javax.swing.JButton
 import javax.swing.JComboBox
+import javax.swing.JComponent
 import javax.swing.JLabel
 import javax.swing.JPanel
 
@@ -42,18 +46,49 @@ class CaptureBarPanel(
     private val onSaveLogs: (durationSec: Long) -> Unit = {},
     private val onOpenConfig: () -> Unit = {},
 ) : JPanel(BorderLayout(0, 6)) {
-    private val deviceCombo = JComboBox<String>().apply {
+    private val deviceCombo = DeviceSelectorComboBox().apply {
         font = ArbTheme.uiFont(11.5f)
+        val rowH = JBUI.scale(HEADER_ROW_HEIGHT_PX)
+        preferredSize = Dimension(JBUI.scale(140), rowH)
+        minimumSize = Dimension(JBUI.scale(80), rowH)
+        maximumSize = Dimension(Int.MAX_VALUE, rowH)
+        renderer = object : javax.swing.DefaultListCellRenderer() {
+            override fun getListCellRendererComponent(
+                list: javax.swing.JList<*>?,
+                value: Any?,
+                index: Int,
+                isSelected: Boolean,
+                cellHasFocus: Boolean,
+            ): java.awt.Component {
+                val comp = super.getListCellRendererComponent(list, value, index, isSelected, cellHasFocus)
+                val raw = value as? String
+                if (raw != null && hasRealDevices) {
+                    val info = devicesBySerial[raw]
+                    text = if (info != null) formatDeviceLabel(info) else raw
+                    if (!isSelected && info != null && info.state != AdbDeviceState.Device) {
+                        foreground = ArbTheme.warningAmber
+                    }
+                }
+                return comp
+            }
+        }
     }
 
     private val statusPill = StatusPillLabel()
 
-    private val settingsButton = ArbTheme.styleSecondaryButton(
-        JButton(AllIcons.General.GearPlain).apply {
-            toolTipText = "ARB 設定（保存秒数・主ボタン・クラッシュ自動保存）"
-        },
-        compact = true,
-    )
+    private val settingsButton = JButton(AllIcons.General.GearPlain).apply {
+        isFocusPainted = false
+        background = ArbTheme.elevatedBg
+        foreground = ArbTheme.primaryText
+        isOpaque = true
+        margin = JBUI.emptyInsets()
+        border = BorderFactory.createLineBorder(ArbTheme.hairlineBorder, 1)
+        toolTipText = "ARB 設定（保存秒数・主ボタン・クラッシュ自動保存）"
+        val sq = JBUI.scale(HEADER_ROW_HEIGHT_PX)
+        preferredSize = Dimension(sq, sq)
+        minimumSize = Dimension(sq, sq)
+        maximumSize = Dimension(sq, sq)
+    }
 
     private val ringProgressBar = RingFillBar()
 
@@ -110,18 +145,50 @@ class CaptureBarPanel(
             border = ArbTheme.cardBorder(8, 10)
         }
 
-        // Row 1: Device dropdown + status pill + settings gear
-        val headerRow = JPanel(BorderLayout(6, 0)).apply {
+        // Row 1: Device dropdown (weightx=1.0) + compact status pill + crisp square settings gear
+        val rowH = JBUI.scale(HEADER_ROW_HEIGHT_PX)
+        val headerRow = JPanel(GridBagLayout()).apply {
             isOpaque = false
-            maximumSize = Dimension(Int.MAX_VALUE, JBUI.scale(28))
-            add(deviceCombo, BorderLayout.CENTER)
-            val rightBox = JPanel(FlowLayout(FlowLayout.RIGHT, 4, 0)).apply {
-                isOpaque = false
-                add(statusPill)
-                add(settingsButton)
-            }
-            add(rightBox, BorderLayout.EAST)
+            preferredSize = Dimension(JBUI.scale(260), rowH)
+            minimumSize = Dimension(JBUI.scale(160), rowH)
+            maximumSize = Dimension(Int.MAX_VALUE, rowH)
+            add(
+                deviceCombo,
+                GridBagConstraints().apply {
+                    gridx = 0
+                    gridy = 0
+                    weightx = 1.0
+                    weighty = 1.0
+                    fill = GridBagConstraints.HORIZONTAL
+                    anchor = GridBagConstraints.CENTER
+                },
+            )
+            add(
+                statusPill,
+                GridBagConstraints().apply {
+                    gridx = 1
+                    gridy = 0
+                    weightx = 0.0
+                    weighty = 1.0
+                    fill = GridBagConstraints.NONE
+                    anchor = GridBagConstraints.CENTER
+                    insets = JBUI.insetsLeft(6)
+                },
+            )
+            add(
+                settingsButton,
+                GridBagConstraints().apply {
+                    gridx = 2
+                    gridy = 0
+                    weightx = 0.0
+                    weighty = 1.0
+                    fill = GridBagConstraints.NONE
+                    anchor = GridBagConstraints.CENTER
+                    insets = JBUI.insetsLeft(4)
+                },
+            )
         }
+        applyEmptyDevicePlaceholder()
 
         // Row 2: Slim ring meter bar + tabular seconds readout
         val ringMetaRow = JPanel(BorderLayout(6, 0)).apply {
@@ -200,8 +267,25 @@ class CaptureBarPanel(
         }
     }
 
-    private fun selectedDeviceSerial(): String? =
-        (deviceCombo.selectedItem as? String)?.takeIf { it.isNotBlank() }
+    private fun selectedDeviceSerial(): String? {
+        if (!deviceCombo.hasRealDevices) return null
+        return (deviceCombo.selectedItem as? String)?.takeIf { it.isNotBlank() }
+    }
+
+    private fun applyEmptyDevicePlaceholder() {
+        val alreadyPlaceholder = !deviceCombo.hasRealDevices &&
+            deviceCombo.itemCount == 1 &&
+            deviceCombo.getItemAt(0) == NO_DEVICES_PLACEHOLDER
+        deviceCombo.hasRealDevices = false
+        if (!alreadyPlaceholder) {
+            deviceCombo.removeAllItems()
+            deviceCombo.addItem(NO_DEVICES_PLACEHOLDER)
+        }
+        deviceCombo.selectedItem = NO_DEVICES_PLACEHOLDER
+        deviceCombo.isEnabled = false
+        deviceCombo.foreground = ArbTheme.dimmedText
+        deviceCombo.toolTipText = NO_DEVICES_PLACEHOLDER
+    }
 
     fun render(state: CaptureBarState) {
         currentState = state
@@ -210,7 +294,9 @@ class CaptureBarPanel(
         statusPill.update(
             text = state.statusBadgeText,
             isRecording = state.isRecordingHealthy,
-            isWarning = cap?.storagePressureStopped == true || (cap?.active == true && !cap.connected),
+            isWarning = cap?.storagePressureStopped == true ||
+                (cap?.active == true && !cap.connected) ||
+                (cap?.active != true && state.devices.isNotEmpty() && !state.hasOnlineDevice),
         )
 
         ringProgressBar.update(state.ringFillRatio, state.isRecordingHealthy)
@@ -221,24 +307,59 @@ class CaptureBarPanel(
         primarySaveButton.text = state.primarySaveLabel
         secondarySaveButton.text = state.secondarySaveLabel
 
+        val newSerials = state.devices.map { it.serial }
+        deviceCombo.devicesBySerial = state.devices.associateBy { it.serial }
+        if (newSerials.isEmpty()) {
+            applyEmptyDevicePlaceholder()
+        } else {
+            val existingItems = if (deviceCombo.hasRealDevices) {
+                (0 until deviceCombo.itemCount).map { deviceCombo.getItemAt(it) }
+            } else {
+                emptyList()
+            }
+            deviceCombo.hasRealDevices = true
+            deviceCombo.isEnabled = true
+            deviceCombo.foreground = ArbTheme.primaryText
+            val selectedInfo = state.selectedDevice
+            deviceCombo.toolTipText = when (selectedInfo?.state) {
+                AdbDeviceState.Unauthorized -> "端末で「USB デバッグを許可」をタップしてください (${selectedInfo.serial})"
+                AdbDeviceState.Offline -> "端末がオフラインです (${selectedInfo.serial})"
+                else -> "録画・スクリーンショット対象端末"
+            }
+            if (existingItems != newSerials) {
+                deviceCombo.removeAllItems()
+                for (s in newSerials) {
+                    deviceCombo.addItem(s)
+                }
+            }
+            if (state.selectedSerial != null && newSerials.contains(state.selectedSerial)) {
+                deviceCombo.selectedItem = state.selectedSerial
+            } else if (deviceCombo.selectedItem == null && newSerials.isNotEmpty()) {
+                deviceCombo.selectedItem = newSerials.first()
+            }
+            deviceCombo.repaint()
+        }
+
+        val canUseSelectedDevice = state.daemonConnected && state.isSelectedDeviceOnline
         if (cap?.active == true) {
             startStopButton.text = ArbFormatters.SECONDARY_STOP_CAPTURE_LABEL
             startStopButton.icon = AllIcons.Actions.Suspend
+            startStopButton.isEnabled = state.daemonConnected
+            startStopButton.toolTipText = "ライブキャプチャを停止"
+            screenshotButton.isEnabled = state.daemonConnected
         } else {
             startStopButton.text = ArbFormatters.SECONDARY_START_CAPTURE_LABEL
             startStopButton.icon = AllIcons.Actions.Execute
-        }
-
-        val existingItems = (0 until deviceCombo.itemCount).map { deviceCombo.getItemAt(it) }
-        val newSerials = state.devices.map { it.serial }
-        if (existingItems != newSerials) {
-            deviceCombo.removeAllItems()
-            for (s in newSerials) {
-                deviceCombo.addItem(s)
+            startStopButton.isEnabled = canUseSelectedDevice
+            screenshotButton.isEnabled = canUseSelectedDevice
+            val disabledHint = when (state.selectedDevice?.state) {
+                AdbDeviceState.Unauthorized -> "端末が未承認です。端末画面で USB デバッグを許可してください。"
+                AdbDeviceState.Offline -> "端末がオフラインです。USB / ワイヤレス ADB 接続を確認してください。"
+                null -> NO_DEVICES_PLACEHOLDER
+                else -> null
             }
-        }
-        if (state.selectedSerial != null && newSerials.contains(state.selectedSerial)) {
-            deviceCombo.selectedItem = state.selectedSerial
+            startStopButton.toolTipText = disabledHint ?: "ライブキャプチャを開始"
+            screenshotButton.toolTipText = disabledHint ?: "対象端末の現在画面を PNG 保存"
         }
 
         renderBanners(state.banners)
@@ -257,6 +378,23 @@ class CaptureBarPanel(
     fun ringMeterDisplayText(): String = ringMeterLabel.text
 
     fun statusBadgeDisplayText(): String = statusPill.currentText
+
+    fun deviceComboEnabled(): Boolean = deviceCombo.isEnabled
+
+    fun deviceComboSelectedText(): String? = deviceCombo.selectedItem as? String
+
+    fun deviceComboItemCount(): Int = deviceCombo.itemCount
+
+    fun selectedDeviceSerialForTest(): String? = selectedDeviceSerial()
+
+    fun isDevicePopupBlockedForTest(): Boolean = !deviceCombo.hasRealDevices
+
+    fun isStartStopButtonEnabledForTest(): Boolean = startStopButton.isEnabled
+
+    fun isScreenshotButtonEnabledForTest(): Boolean = screenshotButton.isEnabled
+
+    fun headerControlsForLayoutTest(): Triple<JComponent, JComponent, JComponent> =
+        Triple(deviceCombo, statusPill, settingsButton)
 
     fun clickPrimarySave() = primarySaveButton.doClick()
 
@@ -310,6 +448,17 @@ class CaptureBarPanel(
         bannerContainer.repaint()
     }
 
+    /** Device selector ComboBox that blocks opening an empty popup when 0 devices are attached. */
+    private class DeviceSelectorComboBox : JComboBox<String>() {
+        var hasRealDevices: Boolean = false
+        var devicesBySerial: Map<String, AdbDeviceInfo> = emptyMap()
+
+        override fun setPopupVisible(v: Boolean) {
+            if (v && !hasRealDevices) return
+            super.setPopupVisible(v)
+        }
+    }
+
     /** Crisp vector REC / status pill (zero emoji). */
     private class StatusPillLabel : JPanel() {
         var currentText: String = "未接続"
@@ -319,7 +468,15 @@ class CaptureBarPanel(
 
         init {
             isOpaque = false
-            preferredSize = Dimension(JBUI.scale(68), JBUI.scale(22))
+            applyCompactSize(JBUI.scale(58))
+        }
+
+        private fun applyCompactSize(widthPx: Int) {
+            val h = JBUI.scale(24)
+            val dim = Dimension(widthPx, h)
+            preferredSize = dim
+            minimumSize = dim
+            maximumSize = dim
         }
 
         fun update(text: String, isRecording: Boolean, isWarning: Boolean) {
@@ -329,7 +486,7 @@ class CaptureBarPanel(
             val fm = getFontMetrics(ArbTheme.monoFont(10.5f, bold = true))
             val textW = fm.stringWidth(text)
             val dotSpace = if (isRecording) JBUI.scale(10) else 0
-            preferredSize = Dimension(textW + dotSpace + JBUI.scale(16), JBUI.scale(22))
+            applyCompactSize(textW + dotSpace + JBUI.scale(16))
             revalidate()
             repaint()
         }
@@ -416,6 +573,20 @@ class CaptureBarPanel(
             } finally {
                 g2.dispose()
             }
+        }
+    }
+
+    companion object {
+        const val NO_DEVICES_PLACEHOLDER: String = "端末未検出（USB / エミュレータを接続）"
+        const val HEADER_ROW_HEIGHT_PX: Int = 28
+
+        fun formatDeviceLabel(device: AdbDeviceInfo): String = when (val st = device.state) {
+            AdbDeviceState.Device -> device.serial
+            AdbDeviceState.Unauthorized -> "${device.serial} (未承認: USB デバッグを許可)"
+            AdbDeviceState.Offline -> "${device.serial} (オフライン)"
+            AdbDeviceState.Recovery -> "${device.serial} (recovery)"
+            AdbDeviceState.Bootloader -> "${device.serial} (bootloader)"
+            is AdbDeviceState.Unknown -> "${device.serial} (${st.value})"
         }
     }
 }

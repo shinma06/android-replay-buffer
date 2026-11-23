@@ -78,24 +78,25 @@ jobs:
         run: python3 core/scripts/check-licenses.py --manifest-path core/Cargo.toml
       - name: Player-matrix helper self-test
         run: python3 core/scripts/devin_verify_player_matrix.py --self-test
+      - name: Distribution packager self-test (3-OS)
+        run: python3 core/scripts/package_distribution.py --self-test
       - name: Build release binaries
         run: cargo build --manifest-path core/Cargo.toml --release -p arbd -p arb-cli -p arb-tray
-      - name: Collect binaries
+      - name: Package self-contained 3-OS distribution ZIP
         run: |
           set -euo pipefail
-          out="dist/arb-${{ runner.os }}-${{ runner.arch }}"
-          mkdir -p "$out"
-          for b in arbd arb-cli arb-tray; do
-            for f in "core/target/release/$b" "core/target/release/$b.exe"; do
-              [ -f "$f" ] && cp "$f" "$out/"
-            done
-          done
-          ls -l "$out"
-          [ "$(ls "$out" | wc -l)" -ge 3 ]
+          python3 core/scripts/package_distribution.py \
+            --target-os "${{ runner.os }}" \
+            --arch "${{ runner.arch }}" \
+            --bin-dir core/target/release \
+            --out-dir dist \
+            --allow-missing-ide-plugin \
+            --allow-missing-device-agent
+          ls -lh dist/arb-v2-*.zip
       - uses: actions/upload-artifact@v7.0.2
         with:
-          name: arb-${{ runner.os }}-${{ runner.arch }}-${{ github.sha }}
-          path: dist/arb-*
+          name: arb-v2-${{ runner.os }}-${{ runner.arch }}-${{ github.sha }}
+          path: dist/arb-v2-*.zip
           if-no-files-found: error
           retention-days: 14
 
@@ -197,15 +198,73 @@ jobs:
         if: steps.detect.outputs.present == 'true'
         with:
           workspaces: core
-      - name: Build arbd + arb-cli for real IPC/SHM integration tests
+      - name: Prepare pinned Android SDK for self-contained plugin device-agent bundling
         if: steps.detect.outputs.present == 'true'
-        run: cargo build --manifest-path core/Cargo.toml --release -p arbd -p arb-cli
-      - name: ./gradlew test
+        run: |
+          set -euo pipefail
+          sdk_dir="$(mktemp -d "$RUNNER_TEMP/replay-android-sdk.XXXXXX")"
+          archive="$sdk_dir/platform-37.2_r01.zip"
+          curl --fail --location --max-time 120 --output "$archive" \
+            https://dl.google.com/android/repository/platform-37.2_r01.zip
+          echo "916410633df92a98da56aa7c87a1955f865f4d3b888373660794ef8173f72972  $archive" | sha256sum -c -
+          mkdir -p "$sdk_dir/platforms/android-37.2"
+          jar="$sdk_dir/platforms/android-37.2/android.jar"
+          unzip -p "$archive" android-37.2/android.jar > "$jar"
+          echo "1db2419dbd45457f83b90ef8a7ef41e118174782c9a5c2185b55899df022767f  $jar" | sha256sum -c -
+          rm -f "$archive"
+          runner_sdk="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          ln -s "$runner_sdk/build-tools" "$sdk_dir/build-tools"
+          echo "ANDROID_HOME=$sdk_dir" >> "$GITHUB_ENV"
+      - name: Build device-agent DEX jars (companion + scrcpy-audio)
+        if: steps.detect.outputs.present == 'true'
+        run: ./device-agent/build.sh --with-scrcpy-audio --skip-tests
+      - name: Build arbd + arb-cli + arb-tray for real IPC/SHM tests & zero-zsh bundling
+        if: steps.detect.outputs.present == 'true'
+        run: cargo build --manifest-path core/Cargo.toml --release -p arbd -p arb-cli -p arb-tray
+      - name: ./gradlew test buildPlugin (self-contained zero-zsh plugin ZIP)
         if: steps.detect.outputs.present == 'true'
         working-directory: ide-plugin
         env:
           ARB_BIN_DIR: ${{ github.workspace }}/core/target/release
-        run: ./gradlew test --no-daemon
+        run: |
+          set -euo pipefail
+          ./gradlew test buildPlugin --no-daemon
+          python3 - <<'PY'
+          import glob, zipfile
+          zips = sorted(glob.glob("build/distributions/arb-ide-plugin-*.zip"))
+          assert zips, "missing built arb-ide-plugin-*.zip"
+          with zipfile.ZipFile(zips[-1]) as zf:
+              names = zf.namelist()
+          for suffix in (
+              "/native/linux-x86_64/arbd",
+              "/native/linux-x86_64/arb-cli",
+              "/native/linux-x86_64/arb-tray",
+              "/device-agent/arb-companion.dex.jar",
+              "/device-agent/replay-scrcpy-audio.dex.jar",
+          ):
+              assert any(n.endswith(suffix) for n in names), f"missing {suffix} in {zips[-1]}"
+          print(f"Verified self-contained zero-zsh plugin ZIP: {zips[-1]}")
+          PY
+      - name: Package self-contained Linux bundle with IDE plugin ZIP & device-agent
+        if: steps.detect.outputs.present == 'true'
+        run: |
+          set -euo pipefail
+          python3 core/scripts/package_distribution.py \
+            --target-os linux \
+            --arch "${{ runner.arch }}" \
+            --bin-dir core/target/release \
+            --device-agent-dir device-agent/build \
+            --out-dir dist
+          ls -lh dist/arb-v2-*.zip ide-plugin/build/distributions/arb-ide-plugin-*.zip
+      - uses: actions/upload-artifact@v7.0.2
+        if: steps.detect.outputs.present == 'true'
+        with:
+          name: arb-v2-ide-bundle-linux-${{ runner.arch }}-${{ github.sha }}
+          path: |
+            dist/arb-v2-*.zip
+            ide-plugin/build/distributions/arb-ide-plugin-*.zip
+          if-no-files-found: error
+          retention-days: 14
 
   ide-plugin-client-core-windows:
     name: ide-plugin client-core tests (Windows)
