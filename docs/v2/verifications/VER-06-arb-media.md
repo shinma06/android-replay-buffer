@@ -73,3 +73,23 @@ Spike S1 の全実測知見と `SPEC-03` に基づき、GPL/AGPL 非依存の純
 - **外部プレイヤー・他 OS での結合 MP4 再生互換**: 本テストでは `OpenH264Backend` と Apple `VideoToolboxBackend` の相互復号までを検証済み。Windows Media Player / Chrome / VLC / Android ExoPlayer での実機再生確認は別フェーズのマルチ OS 検証対象。
 - **B フレーム（`ctts`）含むストリームの末尾 GOP 再エンコード**: 現状は `has_b_frames() == true` を確実に検知し `MediaError::UnsupportedFeature` で安全に拒否する設計であり、B フレーム出力端末向けの末尾 GOP 再エンコード対応は必要時に拡張予定。
 - **実機音声出力デバイスとの接続**: `PresentationClock` は `AudioClockSource` トレイト経由のモッククロックで検証済みであり、実オーディオ出力ストリーム（OS オーディオ API）との結合は上位再生エンジン統合フェーズで検証予定。
+
+## 4. R2 独立レビュー修正（S1〜S12）
+
+`./core/scripts/verify.sh` 6 ゲート全合格（`arb-media` ライブラリ 10 件・統合 12 件）。回帰テストは `core/crates/arb-media/src/r2_regression_tests.rs` と `tests/media_pipeline.rs`。
+
+| 指摘 | 修正 | 回帰テスト |
+|---|---|---|
+| S1 | VideoToolbox のコールバック状態を `Box::into_raw` 由来の `NonNull` で保持し、セッション無効化後に解放（エンコーダは `CompleteFrames` → `Invalidate` の順） | macOS で `default_codec_backend` を使う全デコードテスト（FFI のため Miri 未実行） |
+| S2・S5 | デコード・mux の全サンプルを 4 バイト NAL 長に正規化し、`avcC` も 4 バイトを宣言 | `two_byte_nal_length_sources_decode_and_trim_to_consistent_4byte_tracks` |
+| S3 | 色差面を `div_ceil(2)` で扱い、CoreVideo の面サイズを使用。変換は範囲外参照で panic しない。OpenH264 の奇数サイズエンコードはエラー | `odd_dimension_frames_convert_without_panicking`（19x13）、`odd_dimension_nv12_conversions_never_panic`（macOS 専用 API） |
+| S4 | 最初の同期サンプルより前のフレームのトリム・デコードを拒否 | `trim_and_decode_refuse_frames_before_the_first_sync_sample` |
+| S6 | 出力 = 入力を拒否し、一時ファイル + fsync + 置換なし公開で書き出す | `trim_and_png_export_refuse_to_overwrite_input_or_existing_output` |
+| S7 | ストリームコピー部分を元ファイルから 1 サンプルずつ書き出す（サイズを先に確定） | 上記 S5 テスト・既存のバーコード一致テスト |
+| S8 | サンプルテーブルの件数をボックス長と 1,000 万サンプル上限で事前検証 | `crafted_huge_sample_table_counts_return_err_without_allocating` |
+| S9 | B フレームのトラックを `decode_frame`・`decode_gop`・PNG 出力・`GopLruCache` で一律に拒否 | `b_frame_ctts_is_detected_and_explicitly_rejected_by_trim` |
+| S10 | GOP をデコードする前にメモリ量を見積もり、超える場合は 1 フレームだけデコードしてキャッシュしない | `gop_cache_never_decodes_a_gop_larger_than_max_bytes_into_memory` |
+| S11 | `bundle_id` を `[A-Za-z0-9_-]{1,64}`（予約名を除く）に限定し、キャッシュ先がバンドル外であることを確認 | `filmstrip_bundle_id_is_whitelisted_and_cache_must_be_outside_bundle` |
+| S12 | 再生中の位置を単調にし、seek 前の古いオーディオ位置を再同期まで無視 | `presentation_clock_is_monotonic_and_ignores_stale_pre_seek_audio` |
+
+未検証: 実機・他 OS（Linux/Windows）での VideoToolbox 以外の実行、Miri による S1 の検証。

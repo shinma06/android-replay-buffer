@@ -405,7 +405,7 @@ fn crafted_huge_sample_table_counts_return_err_without_allocating() {
 
     // stts entry_count far beyond the box (would read/allocate billions of entries).
     let r = open_patched("stts-entries.mp4", &|b| {
-        patch_u32(b, *b"stts", 4, 0x7FFF_FFFF)
+        patch_u32(b, *b"stts", 4, 0x7FFF_FFFF);
     });
     assert!(
         matches!(r, Err(MediaError::InvalidContainer(_))),

@@ -79,3 +79,19 @@ verifies:
 
 - **Linux / Windows 実機ファイルシステム実行**: 本環境は macOS arm64 であり、Linux (`statvfs` / ext4) および Windows (`GetDiskFreeSpaceExW` / NTFS における AV 一時ロック下のリトライリネーム) での実機実行は CI ランナー（`ubuntu-latest` / `windows-latest`）で検証する。
 - **`arbd` / `arb-media` との E2E 実機キャプチャ統合**: 実 MP4 マルチプレクス出力と端末連続取得からの Zone 1→2→3 連結は後続ワークストリーム（W5 以降）で検証する。
+
+## 5. R2 独立レビュー修正（S13〜S19）
+
+`./core/scripts/verify.sh` 6 ゲート全合格（`arb-storage` ライブラリ 8 件・統合 16 件）。
+
+| 指摘 | 修正 | 回帰テスト |
+|---|---|---|
+| S13 | `Catalog::reconcile_pins`（`recover_on_startup_with_pins`）で完了・破棄・不明ジョブのジャーナルを解放し、ジャーナルを失った進行中ジョブを再ピン | `r2_s13_pin_journals_and_catalog_jobs_are_reconciled_on_startup` |
+| S14 | 古い `.staging-<job>` を削除し、同じ `bundle_id` の健全なバンドルが既にあれば既存マニフェストを返す（冪等な再試行） | `r2_s14_retry_after_post_rename_crash_is_idempotent_and_stale_staging_is_removed` |
+| S15 | `timeline.sqlite`（と Present の映像・音声）が `manifest.files` に載っていることを必須にし、未記載のメディアは返さない | `r2_s15_v2_integrity_requires_timeline_and_present_media_in_manifest` |
+| S16 | 旧形式マニフェストの全ファイル名を検証し、正規化後のパスがバンドル内にあることを確認 | `r2_s16_legacy_manifest_paths_cannot_escape_the_bundle_folder`（`../../secret.jsonl`・`/etc/passwd` など） |
+| S17 | 書き込み失敗時は既知の長さまで切り詰めてチャンクを封印。close はメタデータ確定後にだけハンドルを解放。起動時に孤立チャンクを確定・孤立メタデータを削除 | `failed_append_seals_the_chunk_instead_of_leaving_a_zombie`、`close_chunk_keeps_the_handle_until_metadata_is_durable`、`reopen_finalizes_orphan_chunks_and_drops_orphan_metadata` |
+| S18 | `StoragePressureStop` は逼迫期間ごとに 1 件。`take_discontinuities()` を追加 | `storage_pressure_stop_is_recorded_once_per_episode` |
+| S19 | GC はバンドル単位の失敗を `GcReport.failed` に記録して続行、`Purging` を再試行、時刻を数値で比較 | `r2_s19_gc_survives_failures_retries_purging_and_compares_time_numerically` |
+
+未検証: Windows の AV ロック・共有違反の実発生（通常ファイルをバンドルパスに置いて削除失敗を再現）、macOS 以外での実行（CI `os-parity` で確認予定）。
