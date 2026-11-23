@@ -7,15 +7,14 @@
 //! - [`export_frame_png`] / [`export_frame_png_with_metadata`] decodes the exact `frame_index`
 //!   and writes a standard PNG with `tEXt` provenance chunks.
 
-use std::fs::File;
-use std::io::BufWriter;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
 use crate::codec::{EncodeParams, PixelFormat, VideoCodecBackend};
 use crate::error::MediaError;
-use crate::mp4::{Mp4VideoTrack, MuxSample, MuxSegment, write_single_stsd_avc1_mp4};
+use crate::mp4::{Mp4VideoTrack, MuxSample, MuxSegment, write_trim_mp4};
+use crate::output::{Publish, ensure_output_is_not_input, write_atomically};
 
 /// Summary returned after completing a frame-accurate [`trim_video`] operation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -43,12 +42,20 @@ pub struct TrimReport {
 /// Trims `input_mp4` to the exact inclusive integer frame range `[in_frame_index..=out_frame_index]`
 /// and writes a new faststart zero-`elst` MP4 to `output_mp4` without modifying `input_mp4`.
 ///
+/// The output is written to a temp sibling, `fsync`ed and published **without replacing** an
+/// existing file; `output_mp4` resolving to `input_mp4` is refused. The stream-copied remainder
+/// is streamed from the source file sample by sample (never held in memory), and every output
+/// sample uses 4-byte NAL lengths.
+///
 /// # Errors
 ///
 /// Returns:
 /// - [`MediaError::InvalidFrameRange`] if `in_frame_index > out_frame_index` or `out_frame_index >= frame_count`.
 /// - [`MediaError::UnsupportedFeature`] if the input track contains B-frame reordering (`has_b_frames == true`),
-///   preventing silent frame corruption.
+///   preventing silent frame corruption, or if `in_frame_index` precedes the first sync sample
+///   (no IDR to start the output from).
+/// - [`MediaError::InvalidArgument`] if `output_mp4` is the input file, or [`MediaError::Io`]
+///   (`AlreadyExists`) if `output_mp4` already exists.
 /// - [`MediaError::Codec`], [`MediaError::InvalidContainer`], or [`MediaError::Io`] on decode, encode,
 ///   or container I/O failure.
 pub fn trim_video(
@@ -58,7 +65,10 @@ pub fn trim_video(
     out_frame_index: u64,
     backend: &dyn VideoCodecBackend,
 ) -> Result<TrimReport, MediaError> {
-    let track = Mp4VideoTrack::open(input_mp4)?;
+    let input_path = input_mp4.as_ref();
+    let output_path = output_mp4.as_ref();
+    ensure_output_is_not_input(input_path, output_path)?;
+    let track = Mp4VideoTrack::open(input_path)?;
     let frame_count = track.frame_count();
     if frame_count == 0 || in_frame_index > out_frame_index || out_frame_index >= frame_count {
         return Err(MediaError::InvalidFrameRange {
@@ -75,13 +85,15 @@ pub fn trim_video(
         ));
     }
 
-    let (gop_start, next_gop_opt) = track.gop_bounds(in_frame_index)?;
+    let (_, next_gop_opt) = track.gop_bounds(in_frame_index)?;
+    // A stream-copy (or head decode) must start on a real sync sample (R2 S4).
+    let gop_start = track.decodable_gop_start(in_frame_index)?;
     let splice_point = match next_gop_opt {
         Some(next_kf) if next_kf <= out_frame_index => next_kf,
         _ => out_frame_index + 1,
     };
 
-    let mut segments: Vec<MuxSegment> = Vec::with_capacity(2);
+    let mut head_segment: Option<MuxSegment> = None;
     let mut head_decoded_frames = 0u64;
     let mut reencoded_frames = 0u64;
 
@@ -103,7 +115,7 @@ pub fn trim_video(
                 is_keyframe: sm.is_keyframe,
             })
             .collect();
-        segments.push(MuxSegment {
+        head_segment = Some(MuxSegment {
             avcc_payload: encoded_head.avcc_payload,
             samples: head_samples,
         });
@@ -115,36 +127,9 @@ pub fn trim_video(
         splice_point
     };
 
-    let stream_copied_frames = if copy_start <= out_frame_index {
-        let copy_count = out_frame_index - copy_start + 1;
-        let copy_cap = usize::try_from(copy_count).unwrap_or(0);
-        let mut copy_samples = Vec::with_capacity(copy_cap);
-        for idx in copy_start..=out_frame_index {
-            let mut data = Vec::new();
-            track.read_sample_into(idx, &mut data)?;
-            let info = track.frame(idx)?;
-            copy_samples.push(MuxSample {
-                data,
-                duration_ticks: info.duration_ticks,
-                is_keyframe: info.is_keyframe,
-            });
-        }
-        segments.push(MuxSegment {
-            avcc_payload: track.avcc().raw_avcc.clone(),
-            samples: copy_samples,
-        });
-        copy_count
-    } else {
-        0
-    };
-
-    write_single_stsd_avc1_mp4(
-        output_mp4,
-        track.width(),
-        track.height(),
-        track.timescale(),
-        &segments,
-    )?;
+    let copy_range = (copy_start <= out_frame_index).then_some((copy_start, out_frame_index));
+    let stream_copied_frames =
+        write_trim_mp4(output_path, &track, head_segment.as_ref(), copy_range)?;
 
     Ok(TrimReport {
         in_frame_index,
@@ -211,7 +196,9 @@ pub fn export_frame_png(
 /// # Errors
 ///
 /// Returns [`MediaError::FrameOutOfRange`], [`MediaError::Codec`], [`MediaError::Png`], or
-/// [`MediaError::Io`] on failure.
+/// [`MediaError::Io`] on failure; [`MediaError::UnsupportedFeature`] for B-frame tracks;
+/// [`MediaError::InvalidArgument`] if `output_png` is the input file; and `Io(AlreadyExists)`
+/// if `output_png` already exists (the PNG is published crash-safely, never replacing a file).
 pub fn export_frame_png_with_metadata(
     input_mp4: impl AsRef<Path>,
     frame_index: u64,
@@ -219,14 +206,32 @@ pub fn export_frame_png_with_metadata(
     metadata: &PngExportMetadata,
     backend: &dyn VideoCodecBackend,
 ) -> Result<PngExportReport, MediaError> {
-    let track = Mp4VideoTrack::open(input_mp4)?;
+    let input_path = input_mp4.as_ref();
+    let out_path = output_png.as_ref();
+    ensure_output_is_not_input(input_path, out_path)?;
+    let track = Mp4VideoTrack::open(input_path)?;
+    track.require_no_b_frames("export_frame_png")?;
     let decoded = backend.decode_frame(&track, frame_index, PixelFormat::Rgb24)?;
     let rgb = decoded.to_rgb24()?;
 
-    let out_path = output_png.as_ref();
-    let file = File::create(out_path)?;
-    let writer = BufWriter::new(file);
+    let output_bytes = write_atomically(out_path, Publish::NoReplace, |writer| {
+        write_png(writer, &rgb, frame_index, metadata)
+    })?;
+    Ok(PngExportReport {
+        frame_index,
+        width: rgb.width,
+        height: rgb.height,
+        backend_name: backend.name().to_owned(),
+        output_bytes,
+    })
+}
 
+fn write_png(
+    writer: &mut impl std::io::Write,
+    rgb: &crate::codec::RgbImage,
+    frame_index: u64,
+    metadata: &PngExportMetadata,
+) -> Result<(), MediaError> {
     let mut encoder = png::Encoder::new(writer, rgb.width, rgb.height);
     encoder.set_color(png::ColorType::Rgb);
     encoder.set_depth(png::BitDepth::Eight);
@@ -255,13 +260,5 @@ pub fn export_frame_png_with_metadata(
     png_writer
         .finish()
         .map_err(|err| MediaError::Png(format!("failed to finalize PNG stream: {err}")))?;
-
-    let output_bytes = std::fs::metadata(out_path)?.len();
-    Ok(PngExportReport {
-        frame_index,
-        width: rgb.width,
-        height: rgb.height,
-        backend_name: backend.name().to_owned(),
-        output_bytes,
-    })
+    Ok(())
 }

@@ -70,3 +70,16 @@ verifies:
 
 - ライブ `AdbSessionSource` の実機 USB 抜き差し・エミュレータ再起動での自動復帰時間は未計測（本作業はホスト単体・決定論的ハーネスの範囲。ADB コマンドは差し替え可能な `AdbCommandRunner` で検証）。ライブ Device Agent 側の実測は [VER-04](VER-04-device-agent.md) を参照。
 - Linux / Windows でのテスト実行は本記録では未実施（CI `os-parity` で確認予定）。
+
+## 6. R2 独立レビュー修正（M1・M2・S20・S21）
+
+`r2-phase3-review.md` の指摘に対する修正と回帰テスト。`./core/scripts/verify.sh` 6 ゲート全合格（`arb-adb` ライブラリ 35 件・統合 6 件）。
+
+| 指摘 | 修正 | 回帰テスト |
+|---|---|---|
+| M1 | `AdbSessionSource` が companion・video・audio をそれぞれ専用スレッドで読み、1 本の有界チャネルへ送る。`pc_cont_ns` は読み取り完了時に各スレッドで打刻 | `live_loopback_tcp_reads_streams_concurrently_and_reports_transport_loss`（実 localhost TCP。companion を開いたまま Heartbeat と H.264 フレームが交互に届くことを確認） |
+| M2 | companion の EOF / ワイヤエラーで `on_disconnect` と `ConnectionLost`、video/audio の EOF / エラーで `StreamGap`（Heartbeat では `Running` に戻らない）。周期的な liveness 評価を追加 | 同上（無音で開いたままの video は `StaticHold`、video ソケット切断は `StreamGap`、companion 切断は `ConnectionLost`）、`live_source_after_shutdown_treats_transport_ends_as_graceful` |
+| S20 | `boot_id` は同じ `boot_id_source` 同士のときだけ比較。`ContinuityUnverified` ではタイムラインの `DeviceReboot` を抑止（ライブ・モック両方） | `boot_id_source_change_is_continuity_unverified_not_device_reboot`、`fallback_random_uuid_reconnect_suppresses_timeline_device_reboot` |
+| S21 | `SystemAdbRunner` にタイムアウト（期限切れで kill + wait）、部分デプロイ時の push 済み jar 削除、ポート解析失敗時の forward 削除、リモート `sh` 引数の厳格検証（`try_*_launch_command`） | `run_command_with_timeout_kills_wedged_subprocess`、`partial_deploy_failure_removes_already_pushed_remote_jars`、`unparsable_forward_output_removes_orphan_forward`、`remote_shell_arguments_are_strictly_validated` |
+
+未検証: 実機 USB・エミュレータでのソケット切断時間と再接続（ホスト単体のループバック TCP で検証）。

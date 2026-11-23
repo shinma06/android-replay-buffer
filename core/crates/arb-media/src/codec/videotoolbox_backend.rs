@@ -8,7 +8,7 @@
 #![cfg(target_os = "macos")]
 
 use std::ffi::c_void;
-use std::ptr::{null, null_mut};
+use std::ptr::{NonNull, null, null_mut};
 
 use crate::codec::{
     DecodedFrame, EncodeParams, EncodedGop, EncodedSample, PixelFormat, RgbImage,
@@ -150,6 +150,8 @@ unsafe extern "C" {
     ) -> usize;
     fn CVPixelBufferGetWidth(pixel_buffer: CVPixelBufferRef) -> usize;
     fn CVPixelBufferGetHeight(pixel_buffer: CVPixelBufferRef) -> usize;
+    fn CVPixelBufferGetWidthOfPlane(pixel_buffer: CVPixelBufferRef, plane_index: usize) -> usize;
+    fn CVPixelBufferGetHeightOfPlane(pixel_buffer: CVPixelBufferRef, plane_index: usize) -> usize;
 }
 
 #[link(name = "CoreMedia", kind = "framework")]
@@ -403,6 +405,17 @@ impl<'a> PixelBufferReadLock<'a> {
         unsafe { CVPixelBufferGetHeight(self.0.0) }
     }
 
+    /// Returns `(bytes, bytes_per_row, plane_width, plane_height)` for `plane_index`, using
+    /// `CoreVideo`'s own plane extents (`ceil(h/2)` chroma rows for odd heights).
+    fn plane(&self, plane_index: usize) -> Result<(&[u8], usize, usize), MediaError> {
+        // SAFETY: `self.0.0` is a locked, valid `CVPixelBufferRef`.
+        let row_count = unsafe { CVPixelBufferGetHeightOfPlane(self.0.0, plane_index) };
+        // SAFETY: `self.0.0` is a locked, valid `CVPixelBufferRef`.
+        let plane_width = unsafe { CVPixelBufferGetWidthOfPlane(self.0.0, plane_index) };
+        let (bytes, stride) = self.plane_bytes(plane_index, row_count)?;
+        Ok((bytes, stride, plane_width))
+    }
+
     fn plane_bytes(
         &self,
         plane_index: usize,
@@ -442,8 +455,8 @@ impl RetainedPixelBuffer {
         let lock = PixelBufferReadLock::acquire(self)?;
         let width = lock.width();
         let height = lock.height();
-        let (y_slice, y_stride) = lock.plane_bytes(0, height)?;
-        let (uv_slice, uv_stride) = lock.plane_bytes(1, height / 2)?;
+        let (y_slice, y_stride, _) = lock.plane(0)?;
+        let (uv_slice, uv_stride, _) = lock.plane(1)?;
         let w_u32 = u32::try_from(width)
             .map_err(|_| MediaError::Codec("pixel buffer width overflows u32".to_owned()))?;
         let h_u32 = u32::try_from(height)
@@ -484,8 +497,8 @@ impl RetainedPixelBuffer {
         let lock = PixelBufferReadLock::acquire(self)?;
         let width = lock.width();
         let height = lock.height();
-        let (y_slice, y_stride) = lock.plane_bytes(0, height)?;
-        let (uv_slice, uv_stride) = lock.plane_bytes(1, height / 2)?;
+        let (y_slice, y_stride, _) = lock.plane(0)?;
+        let (uv_slice, uv_stride, _) = lock.plane(1)?;
         let data = nv12_to_thumb_rgb24(
             y_slice, uv_slice, y_stride, uv_stride, width, height, dst_w, dst_h,
         );
@@ -519,8 +532,9 @@ extern "C" fn vt_decode_callback(
         if refcon.is_null() {
             return;
         }
-        // SAFETY: `refcon` points to the heap-boxed `DecodeState` owned by `VtDecoder`, which
-        // outlives the synchronous `VTDecompressionSessionDecodeFrame` call.
+        // SAFETY: `refcon` is the `Box::into_raw` allocation owned by `VtDecoder::state`, which
+        // is freed only after the session is invalidated. `VtDecoder` never holds a reference
+        // into it while `VTDecompressionSessionDecodeFrame` (and thus this callback) runs.
         let state = unsafe { &mut *refcon.cast::<DecodeState>() };
         state.last_status = status;
         if status == 0
@@ -535,13 +549,21 @@ extern "C" fn vt_decode_callback(
     }));
 }
 
+/// NAL length prefix size the decoder's `CMFormatDescription` is always created with.
+/// Every source sample is normalised to 4-byte lengths before decoding (R2 S2).
+const DECODER_NAL_LENGTH_SIZE: usize = 4;
+
 struct VtDecoder {
     fmt_desc: OwnedCfRef,
     session: VTDecompressionSessionRef,
-    state: Box<DecodeState>,
+    /// Callback state from `Box::into_raw`: never accessed through a `Box` (whose `noalias`
+    /// retags would invalidate the pointer `VideoToolbox` holds); freed in `Drop` strictly after
+    /// `VTDecompressionSessionInvalidate`.
+    state: NonNull<DecodeState>,
     active_sps: Vec<Vec<u8>>,
     active_pps: Vec<Vec<u8>>,
-    nal_length_size: usize,
+    /// NAL length prefix size of the *source* samples (`avcC lengthSizeMinusOne + 1`).
+    src_nal_length_size: usize,
     width: u16,
     height: u16,
 }
@@ -558,6 +580,9 @@ impl Drop for VtDecoder {
                 CFRelease(self.session.cast_const());
             }
         }
+        // SAFETY: `state` came from `Box::into_raw` in `VtDecoder::new` and is freed exactly
+        // once, here, after the session was invalidated so no callback can still use it.
+        drop(unsafe { Box::from_raw(self.state.as_ptr()) });
     }
 }
 
@@ -565,10 +590,15 @@ impl VtDecoder {
     fn new(
         sps: &[Vec<u8>],
         pps: &[Vec<u8>],
-        nal_length_size: usize,
+        src_nal_length_size: usize,
         width: u16,
         height: u16,
     ) -> Result<Self, MediaError> {
+        if !(1..=4).contains(&src_nal_length_size) || src_nal_length_size == 3 {
+            return Err(MediaError::UnsupportedFeature(format!(
+                "unsupported avcC NAL length size {src_nal_length_size} (expected 1, 2 or 4)"
+            )));
+        }
         let mut ptrs: Vec<*const u8> = Vec::with_capacity(sps.len() + pps.len());
         let mut sizes: Vec<usize> = Vec::with_capacity(sps.len() + pps.len());
         for s in sps {
@@ -585,7 +615,7 @@ impl VtDecoder {
             ));
         }
 
-        let nalu_hdr_len = i32::try_from(nal_length_size).map_err(|_| {
+        let nalu_hdr_len = i32::try_from(DECODER_NAL_LENGTH_SIZE).map_err(|_| {
             MediaError::InvalidContainer("NAL length size overflows i32".to_owned())
         })?;
         let mut fmt_desc_raw: CMFormatDescriptionRef = null();
@@ -622,18 +652,18 @@ impl VtDecoder {
         dst_attrs.set_value(w_key, num_w.as_ptr());
         dst_attrs.set_value(h_key, num_h.as_ptr());
 
-        let mut state = Box::new(DecodeState {
+        let state = NonNull::from(Box::leak(Box::new(DecodeState {
             last_buf: None,
             last_status: 0,
-        });
+        })));
         let cb_rec = VTDecompressionOutputCallbackRecord {
             decompression_output_callback: vt_decode_callback,
-            decompression_output_ref_con: (&raw mut *state).cast(),
+            decompression_output_ref_con: state.as_ptr().cast(),
         };
 
         let mut session: VTDecompressionSessionRef = null_mut();
-        // SAFETY: `fmt_desc`, `dst_attrs`, and `cb_rec` are valid; `state` is heap-pinned in
-        // `Box<DecodeState>` and dropped strictly after `self.session` is invalidated in `Drop`.
+        // SAFETY: `fmt_desc`, `dst_attrs`, and `cb_rec` are valid; `state` is a raw heap
+        // allocation freed only after the session is invalidated (`Drop`) or below on failure.
         let st = unsafe {
             VTDecompressionSessionCreate(
                 null(),
@@ -645,6 +675,14 @@ impl VtDecoder {
             )
         };
         if st != 0 || session.is_null() {
+            if !session.is_null() {
+                // SAFETY: a non-null session returned alongside an error is still owned by us.
+                unsafe { VTDecompressionSessionInvalidate(session) };
+                // SAFETY: Balances the ownership obtained from `VTDecompressionSessionCreate`.
+                unsafe { CFRelease(session.cast_const()) };
+            }
+            // SAFETY: no session references `state` any more; reclaim the leaked allocation.
+            drop(unsafe { Box::from_raw(state.as_ptr()) });
             return Err(MediaError::Codec(format!(
                 "VTDecompressionSessionCreate failed: {st}"
             )));
@@ -656,10 +694,18 @@ impl VtDecoder {
             state,
             active_sps: sps.to_vec(),
             active_pps: pps.to_vec(),
-            nal_length_size,
+            src_nal_length_size,
             width,
             height,
         })
+    }
+
+    /// Exclusive access to the callback state while no decode call is in flight.
+    fn state_mut(&mut self) -> &mut DecodeState {
+        // SAFETY: `state` is a live allocation owned by `self`; VideoToolbox only touches it
+        // inside the synchronous `VTDecompressionSessionDecodeFrame`, during which this
+        // reference is never held (`&mut self` is not re-borrowed across that call).
+        unsafe { &mut *self.state.as_ptr() }
     }
 
     /// Ensures the active `CMFormatDescription` matches any in-band SPS/PPS carried by `sample`
@@ -672,18 +718,24 @@ impl VtDecoder {
         timescale: u32,
         duration_ticks: u32,
     ) -> Result<RetainedPixelBuffer, MediaError> {
+        // Always normalise to 4-byte NAL lengths (the decoder is created with 4), whatever the
+        // source `lengthSizeMinusOne` and whether or not the sample carries SPS/PPS (R2 S2).
         let (seq_sets, pic_sets, stripped) =
-            extract_inband_param_sets_and_strip(avcc_sample, self.nal_length_size);
-        let payload = if !seq_sets.is_empty() && !pic_sets.is_empty() {
-            if seq_sets != self.active_sps || pic_sets != self.active_pps {
-                *self = Self::new(&seq_sets, &pic_sets, 4, self.width, self.height)?;
-            }
-            &stripped
-        } else {
-            avcc_sample
-        };
+            extract_inband_param_sets_and_strip(avcc_sample, self.src_nal_length_size);
+        if !seq_sets.is_empty()
+            && !pic_sets.is_empty()
+            && (seq_sets != self.active_sps || pic_sets != self.active_pps)
+        {
+            *self = Self::new(
+                &seq_sets,
+                &pic_sets,
+                self.src_nal_length_size,
+                self.width,
+                self.height,
+            )?;
+        }
 
-        self.decode_vcl_sample_sync(payload, pts_ticks, timescale, duration_ticks)
+        self.decode_vcl_sample_sync(&stripped, pts_ticks, timescale, duration_ticks)
     }
 
     fn decode_vcl_sample_sync(
@@ -698,8 +750,11 @@ impl VtDecoder {
                 "cannot decode empty AVCC VCL sample".to_owned(),
             ));
         }
-        self.state.last_buf = None;
-        self.state.last_status = 0;
+        {
+            let state = self.state_mut();
+            state.last_buf = None;
+            state.last_status = 0;
+        }
 
         // SAFETY: `kCFAllocatorNull` is a CoreFoundation process-lifetime constant.
         let null_alloc = unsafe { kCFAllocatorNull };
@@ -775,13 +830,14 @@ impl VtDecoder {
                 "VTDecompressionSessionDecodeFrame failed: {st}"
             )));
         }
-        if self.state.last_status != 0 {
+        let state = self.state_mut();
+        if state.last_status != 0 {
             return Err(MediaError::Codec(format!(
                 "VideoToolbox decode callback error: {}",
-                self.state.last_status
+                state.last_status
             )));
         }
-        self.state.last_buf.take().ok_or_else(|| {
+        state.last_buf.take().ok_or_else(|| {
             MediaError::Codec("VideoToolbox decode produced no pixel buffer".to_owned())
         })
     }
@@ -854,8 +910,9 @@ extern "C" fn vt_encode_callback(
         if refcon.is_null() {
             return;
         }
-        // SAFETY: `refcon` points to the heap-boxed `EncodeState` owned by `VtEncoder`, which
-        // outlives `VTCompressionSessionCompleteFrames`.
+        // SAFETY: `refcon` is the `Box::into_raw` allocation owned by `VtEncoder::state`, freed
+        // only after `CompleteFrames` + `Invalidate`; `VtEncoder` holds no reference into it
+        // while VideoToolbox may run this callback.
         let state = unsafe { &mut *refcon.cast::<EncodeState>() };
         if status != 0 {
             state.error = Some(status);
@@ -900,12 +957,17 @@ extern "C" fn vt_encode_callback(
 
 struct VtEncoder {
     session: VTCompressionSessionRef,
-    state: Box<EncodeState>,
+    /// Callback state from `Box::into_raw` (see [`VtDecoder::state`]); freed in `Drop` strictly
+    /// after `VTCompressionSessionCompleteFrames` + `VTCompressionSessionInvalidate`.
+    state: NonNull<EncodeState>,
 }
 
 impl Drop for VtEncoder {
     fn drop(&mut self) {
         if !self.session.is_null() {
+            // SAFETY: `self.session` is valid; draining every pending frame first guarantees no
+            // encode callback is still in flight when the session is torn down (R2 C16).
+            let _ = unsafe { VTCompressionSessionCompleteFrames(self.session, K_CM_TIME_INVALID) };
             // SAFETY: `self.session` is a valid compression session created by VideoToolbox.
             unsafe {
                 VTCompressionSessionInvalidate(self.session);
@@ -915,20 +977,23 @@ impl Drop for VtEncoder {
                 CFRelease(self.session.cast_const());
             }
         }
+        // SAFETY: `state` came from `Box::into_raw` in `VtEncoder::new` and is freed exactly
+        // once, here, after the session was completed and invalidated.
+        drop(unsafe { Box::from_raw(self.state.as_ptr()) });
     }
 }
 
 impl VtEncoder {
     fn new(width: u16, height: u16, bitrate_bps: u32) -> Result<Self, MediaError> {
-        let mut state = Box::new(EncodeState {
+        let state = NonNull::from(Box::leak(Box::new(EncodeState {
             sps: None,
             pps: None,
             samples: Vec::new(),
             error: None,
-        });
+        })));
         let mut session: VTCompressionSessionRef = null_mut();
-        // SAFETY: `state` is heap-pinned in `Box<EncodeState>` and dropped strictly after
-        // `self.session` is invalidated in `Drop`.
+        // SAFETY: `state` is a raw heap allocation freed only after the session is completed
+        // and invalidated (`Drop`) or below on failure.
         let st = unsafe {
             VTCompressionSessionCreate(
                 null(),
@@ -939,11 +1004,19 @@ impl VtEncoder {
                 null(),
                 null(),
                 vt_encode_callback,
-                (&raw mut *state).cast(),
+                state.as_ptr().cast(),
                 &raw mut session,
             )
         };
         if st != 0 || session.is_null() {
+            if !session.is_null() {
+                // SAFETY: a non-null session returned alongside an error is still owned by us.
+                unsafe { VTCompressionSessionInvalidate(session) };
+                // SAFETY: Balances ownership obtained from `VTCompressionSessionCreate`.
+                unsafe { CFRelease(session.cast_const()) };
+            }
+            // SAFETY: no session references `state` any more; reclaim the leaked allocation.
+            drop(unsafe { Box::from_raw(state.as_ptr()) });
             return Err(MediaError::Codec(format!(
                 "VTCompressionSessionCreate failed: {st}"
             )));
@@ -1034,7 +1107,7 @@ impl VtEncoder {
         Ok(())
     }
 
-    fn finish(mut self) -> Result<VtEncodedStream, MediaError> {
+    fn finish(self) -> Result<VtEncodedStream, MediaError> {
         // SAFETY: `self.session` is valid; `K_CM_TIME_INVALID` flushes all pending frames synchronously.
         let st = unsafe { VTCompressionSessionCompleteFrames(self.session, K_CM_TIME_INVALID) };
         if st != 0 {
@@ -1042,20 +1115,23 @@ impl VtEncoder {
                 "VTCompressionSessionCompleteFrames failed: {st}"
             )));
         }
-        if let Some(err) = self.state.error {
+        // SAFETY: `CompleteFrames` returned, so every callback has finished; the allocation is
+        // live and owned by `self`, and no other reference into it exists.
+        let state = unsafe { &mut *self.state.as_ptr() };
+        if let Some(err) = state.error {
             return Err(MediaError::Codec(format!(
                 "VideoToolbox encode callback error: {err}"
             )));
         }
-        let sps =
-            self.state.sps.take().ok_or_else(|| {
-                MediaError::Codec("VideoToolbox encoder emitted no SPS".to_owned())
-            })?;
-        let pps =
-            self.state.pps.take().ok_or_else(|| {
-                MediaError::Codec("VideoToolbox encoder emitted no PPS".to_owned())
-            })?;
-        let samples = std::mem::take(&mut self.state.samples);
+        let sps = state
+            .sps
+            .take()
+            .ok_or_else(|| MediaError::Codec("VideoToolbox encoder emitted no SPS".to_owned()))?;
+        let pps = state
+            .pps
+            .take()
+            .ok_or_else(|| MediaError::Codec("VideoToolbox encoder emitted no PPS".to_owned()))?;
+        let samples = std::mem::take(&mut state.samples);
         Ok(VtEncodedStream { sps, pps, samples })
     }
 }
@@ -1101,7 +1177,7 @@ impl VideoCodecBackend for VideoToolboxBackend {
         frame_index: u64,
         output_format: PixelFormat,
     ) -> Result<DecodedFrame, MediaError> {
-        let (gop_start, _) = track.gop_bounds(frame_index)?;
+        let gop_start = track.decodable_gop_start(frame_index)?;
         let avcc = track.avcc();
         let mut dec = VtDecoder::new(
             &avcc.sps,
@@ -1136,9 +1212,7 @@ impl VideoCodecBackend for VideoToolboxBackend {
         gop_id: u64,
         output_format: PixelFormat,
     ) -> Result<Vec<DecodedFrame>, MediaError> {
-        let (gop_start, gop_end) = track.gop_range(gop_id).ok_or_else(|| {
-            MediaError::InvalidArgument(format!("gop_id {gop_id} does not exist in track"))
-        })?;
+        let (gop_start, gop_end) = track.decodable_gop_range(gop_id)?;
         let avcc = track.avcc();
         let mut dec = VtDecoder::new(
             &avcc.sps,
@@ -1257,7 +1331,7 @@ impl VideoCodecBackend for VideoToolboxBackend {
             });
         }
 
-        let (gop_start, _) = track.gop_bounds(start_frame)?;
+        let gop_start = track.decodable_gop_start(start_frame)?;
         let avcc = track.avcc();
         let mut dec = VtDecoder::new(
             &avcc.sps,

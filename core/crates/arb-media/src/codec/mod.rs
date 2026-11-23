@@ -134,8 +134,8 @@ impl DecodedFrame {
                     planes.u,
                     planes.v,
                     width,
-                    width / 2,
-                    width / 2,
+                    width.div_ceil(2),
+                    width.div_ceil(2),
                     width,
                     height,
                     &mut rgb,
@@ -427,7 +427,8 @@ pub(crate) fn split_yuv420p_planes(
     height: usize,
 ) -> Result<Yuv420pPlanes<'_>, MediaError> {
     let y_len = width.saturating_mul(height);
-    let uv_len = (width / 2).saturating_mul(height / 2);
+    // 4:2:0 chroma planes cover odd edges too: ceil(w/2) x ceil(h/2) (R2 S3).
+    let uv_len = width.div_ceil(2).saturating_mul(height.div_ceil(2));
     let total = y_len.saturating_add(uv_len.saturating_mul(2));
     if data.len() < total {
         return Err(MediaError::Codec(
@@ -439,6 +440,26 @@ pub(crate) fn split_yuv420p_planes(
         u: &data[y_len..y_len + uv_len],
         v: &data[y_len + uv_len..total],
     })
+}
+
+/// Bounds-checked luma sample read (black when out of range, never a panic).
+#[inline]
+fn luma_at(plane: &[u8], idx: usize) -> u8 {
+    plane.get(idx).copied().unwrap_or(16)
+}
+
+/// Bounds-checked chroma sample read (neutral when out of range, never a panic).
+#[inline]
+fn chroma_at(plane: &[u8], idx: usize) -> u8 {
+    plane.get(idx).copied().unwrap_or(128)
+}
+
+/// Writes one RGB pixel at `dst` if it fits in `out`.
+#[inline]
+fn put_rgb(out: &mut [u8], dst: usize, (r, g, b): (u8, u8, u8)) {
+    if let Some(px) = out.get_mut(dst..dst + 3) {
+        px.copy_from_slice(&[r, g, b]);
+    }
 }
 
 #[inline]
@@ -479,14 +500,12 @@ pub(crate) fn yuv420p_to_rgb24(
         let u_row = (row >> 1) * u_stride;
         let v_row = (row >> 1) * v_stride;
         for col in 0..width {
-            let (r, g, b) = yuv_pixel_to_rgb(
-                y_plane[y_row + col],
-                u_plane[u_row + (col >> 1)],
-                v_plane[v_row + (col >> 1)],
+            let rgb = yuv_pixel_to_rgb(
+                luma_at(y_plane, y_row + col),
+                chroma_at(u_plane, u_row + (col >> 1)),
+                chroma_at(v_plane, v_row + (col >> 1)),
             );
-            out_rgb[dst] = r;
-            out_rgb[dst + 1] = g;
-            out_rgb[dst + 2] = b;
+            put_rgb(out_rgb, dst, rgb);
             dst += 3;
         }
     }
@@ -517,14 +536,12 @@ pub(crate) fn yuv420p_to_thumb_rgb24(
         let v_row = (sy >> 1) * v_stride;
         for tx in 0..dst_width {
             let sx = ((tx * src_width + src_width / 2) / dst_width).min(src_width - 1);
-            let (r, g, b) = yuv_pixel_to_rgb(
-                y_plane[y_row + sx],
-                u_plane[u_row + (sx >> 1)],
-                v_plane[v_row + (sx >> 1)],
+            let rgb = yuv_pixel_to_rgb(
+                luma_at(y_plane, y_row + sx),
+                chroma_at(u_plane, u_row + (sx >> 1)),
+                chroma_at(v_plane, v_row + (sx >> 1)),
             );
-            out[dst] = r;
-            out[dst + 1] = g;
-            out[dst + 2] = b;
+            put_rgb(&mut out, dst, rgb);
             dst += 3;
         }
     }
@@ -547,11 +564,12 @@ pub(crate) fn nv12_to_rgb24(
         let uv_row = (row >> 1) * uv_stride;
         for col in 0..width {
             let uv_idx = uv_row + (col & !1);
-            let (r, g, b) =
-                yuv_pixel_to_rgb(y_plane[y_row + col], uv_plane[uv_idx], uv_plane[uv_idx + 1]);
-            out_rgb[dst] = r;
-            out_rgb[dst + 1] = g;
-            out_rgb[dst + 2] = b;
+            let rgb = yuv_pixel_to_rgb(
+                luma_at(y_plane, y_row + col),
+                chroma_at(uv_plane, uv_idx),
+                chroma_at(uv_plane, uv_idx + 1),
+            );
+            put_rgb(out_rgb, dst, rgb);
             dst += 3;
         }
     }
@@ -581,11 +599,12 @@ pub(crate) fn nv12_to_thumb_rgb24(
         for tx in 0..dst_width {
             let sx = ((tx * src_width + src_width / 2) / dst_width).min(src_width - 1);
             let uv_idx = uv_row + (sx & !1);
-            let (r, g, b) =
-                yuv_pixel_to_rgb(y_plane[y_row + sx], uv_plane[uv_idx], uv_plane[uv_idx + 1]);
-            out[dst] = r;
-            out[dst + 1] = g;
-            out[dst + 2] = b;
+            let rgb = yuv_pixel_to_rgb(
+                luma_at(y_plane, y_row + sx),
+                chroma_at(uv_plane, uv_idx),
+                chroma_at(uv_plane, uv_idx + 1),
+            );
+            put_rgb(&mut out, dst, rgb);
             dst += 3;
         }
     }
@@ -602,24 +621,44 @@ pub(crate) fn nv12_to_yuv420p(
     height: usize,
 ) -> Vec<u8> {
     let y_len = width.saturating_mul(height);
-    let cw = width / 2;
-    let ch = height / 2;
+    let cw = width.div_ceil(2);
+    let ch = height.div_ceil(2);
     let uv_len = cw.saturating_mul(ch);
     let mut out = vec![0u8; y_len + uv_len * 2];
-    for row in 0..height {
-        out[row * width..(row + 1) * width]
-            .copy_from_slice(&y_plane[row * y_stride..row * y_stride + width]);
-    }
+    copy_plane_rows(&mut out[..y_len], y_plane, y_stride, width, height, 16);
     let u_base = y_len;
     let v_base = y_len + uv_len;
     for row in 0..ch {
         let uv_row = row * uv_stride;
         for col in 0..cw {
-            out[u_base + row * cw + col] = uv_plane[uv_row + col * 2];
-            out[v_base + row * cw + col] = uv_plane[uv_row + col * 2 + 1];
+            out[u_base + row * cw + col] = chroma_at(uv_plane, uv_row + col * 2);
+            out[v_base + row * cw + col] = chroma_at(uv_plane, uv_row + col * 2 + 1);
         }
     }
     out
+}
+
+/// Copies `rows` rows of `row_bytes` from a strided `src` plane into tightly packed `dst`,
+/// filling any bytes the source cannot provide with `fill` (never panics on short planes).
+pub(crate) fn copy_plane_rows(
+    dst: &mut [u8],
+    src: &[u8],
+    src_stride: usize,
+    row_bytes: usize,
+    rows: usize,
+    fill: u8,
+) {
+    for row in 0..rows {
+        let Some(dst_row) = dst.get_mut(row * row_bytes..(row + 1) * row_bytes) else {
+            return;
+        };
+        let start = row.saturating_mul(src_stride);
+        let avail = src
+            .get(start..)
+            .map_or(&[][..], |rest| &rest[..rest.len().min(row_bytes)]);
+        dst_row[..avail.len()].copy_from_slice(avail);
+        dst_row[avail.len()..].fill(fill);
+    }
 }
 
 pub(crate) fn convert_from_yuv420p(

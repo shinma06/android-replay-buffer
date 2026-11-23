@@ -506,7 +506,12 @@ impl MockDeviceSource {
             classification,
             ReconnectClassification::ConnectionRestored { .. }
         );
-        if matches!(classification, ReconnectClassification::DeviceReboot { .. }) {
+        if matches!(
+            classification,
+            ReconnectClassification::DeviceReboot { .. }
+                | ReconnectClassification::ContinuityUnverified { .. }
+        ) {
+            // PROTOCOL §3.1: an unverified boot_id change must never surface as DeviceReboot.
             self.suppress_next_timeline_reboot_for = Some(payload.boot_id.clone());
         }
         let boot_id = payload.boot_id.clone();

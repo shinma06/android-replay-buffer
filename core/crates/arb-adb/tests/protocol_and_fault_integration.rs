@@ -481,10 +481,32 @@ fn live_adb_session_source_and_mock_source_share_device_event_source_trait() {
     );
     let mut mock_source = MockDeviceSource::from_scenario(FaultScenario::NormalFhd30);
 
+    let live_events = live_source.drain_all().expect("live drain must succeed");
+    let data_events = live_events
+        .iter()
+        .filter(|ev| {
+            matches!(
+                ev,
+                CaptureEvent::Hello { .. }
+                    | CaptureEvent::VideoSession { .. }
+                    | CaptureEvent::VideoFrame { .. }
+                    | CaptureEvent::AudioConfig { .. }
+                    | CaptureEvent::AudioFrame { .. }
+            )
+        })
+        .count();
     assert_eq!(
-        collect_event_count(&mut live_source),
-        5,
+        data_events, 5,
         "live source must yield Hello + VideoSession + VideoFrame + AudioConfig + AudioFrame"
+    );
+    // Every transport ends without a Shutdown: each end must be reported (M2), never swallowed.
+    let ends = live_events
+        .iter()
+        .filter(|ev| matches!(ev, CaptureEvent::Discontinuity(_)))
+        .count();
+    assert_eq!(
+        ends, 3,
+        "companion EOF (ConnectionLost) + video EOF + audio EOF (StreamGap) must be reported"
     );
     assert!(
         collect_event_count(&mut mock_source) > 80,

@@ -3,14 +3,17 @@
 //!
 //! Safety invariant: this module NEVER invokes `adb kill-server`.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::env;
 use std::ffi::OsStr;
 use std::io::Read;
-use std::net::TcpStream;
+use std::net::{Shutdown, TcpStream};
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::time::Duration;
+use std::process::{Command, Stdio};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, sync_channel};
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use arb_core::time::{
     ClockTimeline, ClockTimelineConfig, DeviceClockTriple, DiscontinuityEvent, DiscontinuityKind,
@@ -21,11 +24,12 @@ use thiserror::Error;
 
 use crate::mock::{CaptureEvent, CaptureSourceError, DeviceEventSource};
 use crate::scrcpy::{
-    AudioPacketKind, AudioTunnelReader, ScrcpyLaunchOptions, VideoRecord, VideoTunnelReader,
+    AudioPacket, AudioPacketKind, AudioTunnelReader, ScrcpyError, ScrcpyLaunchOptions, VideoRecord,
+    VideoTunnelReader,
 };
 use crate::wire::{
     BootIdSource, DEFAULT_MAX_PAYLOAD_LEN, HeartbeatPayload, HelloPayload, StreamId,
-    StreamLifecycleState, StreamStatePayload, WireFrame, WireMessage,
+    StreamLifecycleState, StreamStatePayload, WireError, WireFrame, WireMessage,
 };
 
 /// Environment variable overriding host `adb` binary discovery.
@@ -42,6 +46,19 @@ pub const DEFAULT_STATIC_HOLD_THRESHOLD_NS: i64 = 2_000_000_000;
 
 /// Default maximum age of the most recent companion heartbeat before declaring a beacon timeout (`1.5s`).
 pub const DEFAULT_BEACON_TIMEOUT_NS: i64 = 1_500_000_000;
+
+/// Default wall-clock bound for one host `adb` subprocess invocation (`60s`).
+///
+/// Generous enough for `adb push` of the session DEX jars over slow USB, while
+/// guaranteeing a wedged `adb` (unauthorized device, hung shell, server restart)
+/// can never block the caller (and therefore the reconnect backoff) forever.
+pub const DEFAULT_ADB_COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Default period of the live [`AdbSessionSource`] video liveness tick (`250ms`).
+pub const DEFAULT_LIVENESS_TICK_INTERVAL: Duration = Duration::from_millis(250);
+
+/// Capacity of the bounded channel shared by the live per-stream reader threads.
+pub const LIVE_EVENT_CHANNEL_CAPACITY: usize = 1_024;
 
 /// Errors returned by host `adb` discovery, command execution, and agent deployment.
 #[non_exhaustive]
@@ -86,6 +103,16 @@ pub enum AdbError {
     InvalidSessionToken {
         /// Rejected token string.
         token: String,
+    },
+    /// A value interpolated into a remote `sh` command line contained unsafe characters.
+    #[error("invalid remote shell argument {name}='{value}': {rule}")]
+    InvalidShellArgument {
+        /// Logical argument name (e.g., `socket_name`, `remote_jar`, `scid`).
+        name: &'static str,
+        /// Rejected value.
+        value: String,
+        /// Human-readable validation rule that was violated.
+        rule: &'static str,
     },
 }
 
@@ -300,18 +327,105 @@ pub trait AdbCommandRunner: std::fmt::Debug {
 }
 
 /// Production [`AdbCommandRunner`] backed by [`std::process::Command`].
+///
+/// Every invocation is bounded by [`DEFAULT_ADB_COMMAND_TIMEOUT`]; on expiry the child
+/// is killed and reaped, and [`std::io::ErrorKind::TimedOut`] is returned.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct SystemAdbRunner;
 
 impl AdbCommandRunner for SystemAdbRunner {
     fn run(&self, program: &Path, args: &[String]) -> Result<AdbCommandOutput, std::io::Error> {
-        let out = Command::new(program).args(args).output()?;
-        Ok(AdbCommandOutput {
-            exit_code: out.status.code(),
-            stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
-            stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
-        })
+        let mut cmd = Command::new(program);
+        cmd.args(args);
+        run_command_with_timeout(cmd, DEFAULT_ADB_COMMAND_TIMEOUT)
     }
+}
+
+/// [`AdbCommandRunner`] backed by [`std::process::Command`] with a caller-chosen timeout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TimeoutAdbRunner {
+    /// Wall-clock bound for each subprocess invocation.
+    pub timeout: Duration,
+}
+
+impl TimeoutAdbRunner {
+    /// Creates a runner bounding each invocation by `timeout`.
+    pub const fn new(timeout: Duration) -> Self {
+        Self { timeout }
+    }
+}
+
+impl AdbCommandRunner for TimeoutAdbRunner {
+    fn run(&self, program: &Path, args: &[String]) -> Result<AdbCommandOutput, std::io::Error> {
+        let mut cmd = Command::new(program);
+        cmd.args(args);
+        run_command_with_timeout(cmd, self.timeout)
+    }
+}
+
+/// Spawns `cmd` with piped stdout/stderr and waits at most `timeout` for it to exit.
+///
+/// Output pipes are drained on helper threads so a chatty child can never deadlock on
+/// a full pipe. On expiry the child is `kill()`ed and `wait()`ed (no zombie), and an
+/// [`std::io::ErrorKind::TimedOut`] error is returned.
+///
+/// # Errors
+///
+/// Returns [`std::io::Error`] if spawning or waiting fails, or `TimedOut` on expiry.
+pub fn run_command_with_timeout(
+    mut cmd: Command,
+    timeout: Duration,
+) -> Result<AdbCommandOutput, std::io::Error> {
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = cmd.spawn()?;
+    let stdout_handle = child.stdout.take().map(spawn_pipe_drain);
+    let stderr_handle = child.stderr.take().map(spawn_pipe_drain);
+
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        let now = Instant::now();
+        if now >= deadline {
+            // Best effort: the child may have exited between try_wait and kill.
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!("adb subprocess exceeded timeout of {timeout:?}"),
+            ));
+        }
+        thread::sleep((deadline - now).min(Duration::from_millis(10)));
+    };
+
+    // A grandchild (e.g. a freshly forked adb server) may inherit the pipes; never let
+    // that block the caller past the deadline (with a small grace for the final bytes).
+    let drain_deadline = deadline.max(Instant::now() + Duration::from_millis(500));
+    let stdout = stdout_handle.map_or_else(Vec::new, |rx| recv_until(&rx, drain_deadline));
+    let stderr = stderr_handle.map_or_else(Vec::new, |rx| recv_until(&rx, drain_deadline));
+    Ok(AdbCommandOutput {
+        exit_code: status.code(),
+        stdout: String::from_utf8_lossy(&stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&stderr).into_owned(),
+    })
+}
+
+fn recv_until(rx: &Receiver<Vec<u8>>, deadline: Instant) -> Vec<u8> {
+    let wait = deadline.saturating_duration_since(Instant::now());
+    rx.recv_timeout(wait).unwrap_or_default()
+}
+
+fn spawn_pipe_drain<R: Read + Send + 'static>(mut pipe: R) -> Receiver<Vec<u8>> {
+    let (tx, rx) = sync_channel(1);
+    thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = pipe.read_to_end(&mut buf);
+        let _ = tx.send(buf);
+    });
+    rx
 }
 
 /// Toggle for optional companion sub-streams without boolean parameters.
@@ -408,26 +522,43 @@ impl<R: AdbCommandRunner> AdbClient<R> {
     /// # Errors
     ///
     /// Returns [`AdbError`] if forwarding fails or `adb` does not return a valid `u16` port.
+    /// When `adb` succeeded but its output could not be parsed, every forward pointing at
+    /// `localabstract:<abstract_name>` for `serial` is removed (best effort) so no orphan
+    /// forward outlives the failed call.
     pub fn forward_tcp_to_abstract(
         &self,
         serial: &str,
         abstract_name: &str,
     ) -> Result<u16, AdbError> {
+        validate_remote_shell_arg("abstract_name", abstract_name)?;
         let target = format!("localabstract:{abstract_name}");
         let args = vec![
             "-s".to_owned(),
             serial.to_owned(),
             "forward".to_owned(),
             "tcp:0".to_owned(),
-            target,
+            target.clone(),
         ];
         let out = self.exec(&args)?;
         let trimmed = out.stdout.trim();
-        trimmed
-            .parse::<u16>()
-            .map_err(|_| AdbError::InvalidForwardedPort {
-                output: trimmed.to_owned(),
-            })
+        if let Ok(port) = trimmed.parse::<u16>() {
+            return Ok(port);
+        }
+        self.remove_forwards_to(serial, &target);
+        Err(AdbError::InvalidForwardedPort {
+            output: trimmed.to_owned(),
+        })
+    }
+
+    /// Best-effort removal of every forward for `serial` whose remote end is `target`
+    /// (parsed from `adb forward --list`: `<serial> tcp:<port> <target>`).
+    fn remove_forwards_to(&self, serial: &str, target: &str) {
+        let Ok(list) = self.exec(&["forward".to_owned(), "--list".to_owned()]) else {
+            return;
+        };
+        for port in parse_forward_list_ports(&list.stdout, serial, target) {
+            let _ = self.remove_forward(serial, port);
+        }
     }
 
     /// Removes a forwarded local TCP port via `adb -s <serial> forward --remove tcp:<port>`.
@@ -480,11 +611,22 @@ impl<R: AdbCommandRunner> AdbClient<R> {
     ) -> Result<DeployedAgentPaths, AdbError> {
         validate_session_token(session_token)?;
         let remote_companion = format!("/data/local/tmp/arb-{session_token}-companion.dex.jar");
-        self.push(serial, companion_jar, &remote_companion)?;
+        if let Err(err) = self.push(serial, companion_jar, &remote_companion) {
+            // A failed push may still have left a partial file behind.
+            let _ = self.shell(serial, &["rm", "-f", remote_companion.as_str()]);
+            return Err(err);
+        }
 
         let remote_scrcpy = if let Some(local_scrcpy) = scrcpy_jar {
             let remote = format!("/data/local/tmp/arb-{session_token}-scrcpy-audio.dex.jar");
-            self.push(serial, local_scrcpy, &remote)?;
+            if let Err(err) = self.push(serial, local_scrcpy, &remote) {
+                // Never leak the already-pushed companion (or a partial scrcpy) jar.
+                let _ = self.shell(
+                    serial,
+                    &["rm", "-f", remote_companion.as_str(), remote.as_str()],
+                );
+                return Err(err);
+            }
             Some(remote)
         } else {
             None
@@ -524,6 +666,10 @@ impl<R: AdbCommandRunner> AdbClient<R> {
     }
 
     /// Builds the exact `app_process` command string to launch `arb-companion`.
+    ///
+    /// Prefer [`Self::try_companion_launch_command`], which rejects unsafe values. This
+    /// infallible form never interpolates an unvalidated value verbatim: anything outside
+    /// `[A-Za-z0-9._/-]` is single-quoted for the remote `sh`.
     pub fn companion_launch_command(
         remote_jar: &str,
         socket_name: &str,
@@ -531,6 +677,8 @@ impl<R: AdbCommandRunner> AdbClient<R> {
         logcat: StreamEnable,
         input: StreamEnable,
     ) -> String {
+        let remote_jar = shell_word(remote_jar);
+        let socket_name = shell_word(socket_name);
         let clamped_hb = heartbeat_ms.clamp(100, 5_000);
         let mut cmd = format!(
             "CLASSPATH={remote_jar} app_process / --nice-name=arb-companion \
@@ -546,18 +694,63 @@ impl<R: AdbCommandRunner> AdbClient<R> {
         cmd
     }
 
+    /// Validating form of [`Self::companion_launch_command`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AdbError::InvalidShellArgument`] if `remote_jar` or `socket_name` is not
+    /// strictly `^[A-Za-z0-9._/-]+$` (at most 255 bytes).
+    pub fn try_companion_launch_command(
+        remote_jar: &str,
+        socket_name: &str,
+        heartbeat_ms: u32,
+        logcat: StreamEnable,
+        input: StreamEnable,
+    ) -> Result<String, AdbError> {
+        validate_remote_shell_arg("remote_jar", remote_jar)?;
+        validate_remote_shell_arg("socket_name", socket_name)?;
+        Ok(Self::companion_launch_command(
+            remote_jar,
+            socket_name,
+            heartbeat_ms,
+            logcat,
+            input,
+        ))
+    }
+
     /// Builds the exact `app_process` command string to launch `scrcpy-server-v5.0.1`.
+    ///
+    /// Prefer [`Self::try_scrcpy_launch_command`], which rejects unsafe values. This
+    /// infallible form single-quotes any value outside the safe character set.
     pub fn scrcpy_launch_command(
         remote_jar: &str,
         options: &ScrcpyLaunchOptions,
         api_level: u32,
     ) -> String {
         let (server_args, _audio_status) = options.build_server_args(api_level);
+        let quoted: Vec<String> = server_args.iter().map(|a| shell_word(a)).collect();
         format!(
-            "CLASSPATH={remote_jar} app_process / --nice-name=arb-scrcpy \
+            "CLASSPATH={} app_process / --nice-name=arb-scrcpy \
              com.genymobile.scrcpy.Server {}",
-            server_args.join(" ")
+            shell_word(remote_jar),
+            quoted.join(" ")
         )
+    }
+
+    /// Validating form of [`Self::scrcpy_launch_command`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AdbError::InvalidShellArgument`] if `remote_jar` is not strictly
+    /// `^[A-Za-z0-9._/-]+$` or `options.scid` is not exactly `^[0-9a-f]{8}$`.
+    pub fn try_scrcpy_launch_command(
+        remote_jar: &str,
+        options: &ScrcpyLaunchOptions,
+        api_level: u32,
+    ) -> Result<String, AdbError> {
+        validate_remote_shell_arg("remote_jar", remote_jar)?;
+        validate_scid(&options.scid)?;
+        Ok(Self::scrcpy_launch_command(remote_jar, options, api_level))
     }
 
     fn exec(&self, args: &[String]) -> Result<AdbCommandOutput, AdbError> {
@@ -591,6 +784,77 @@ fn validate_session_token(token: &str) -> Result<(), AdbError> {
         });
     }
     Ok(())
+}
+
+fn is_safe_shell_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'/' | b'-')
+}
+
+/// Validates a value interpolated into a remote `sh` command (`^[A-Za-z0-9._/-]{1,255}$`).
+///
+/// # Errors
+///
+/// Returns [`AdbError::InvalidShellArgument`] when `value` is empty, too long, or contains
+/// any byte outside the safe set.
+pub fn validate_remote_shell_arg(name: &'static str, value: &str) -> Result<(), AdbError> {
+    if value.is_empty() || value.len() > 255 || !value.bytes().all(is_safe_shell_byte) {
+        return Err(AdbError::InvalidShellArgument {
+            name,
+            value: value.to_owned(),
+            rule: "must match ^[A-Za-z0-9._/-]{1,255}$",
+        });
+    }
+    Ok(())
+}
+
+/// Validates a `scrcpy` session id (`^[0-9a-f]{8}$`).
+///
+/// # Errors
+///
+/// Returns [`AdbError::InvalidShellArgument`] when `scid` is not exactly 8 lowercase hex digits.
+pub fn validate_scid(scid: &str) -> Result<(), AdbError> {
+    let valid = scid.len() == 8
+        && scid
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
+    if !valid {
+        return Err(AdbError::InvalidShellArgument {
+            name: "scid",
+            value: scid.to_owned(),
+            rule: "must match ^[0-9a-f]{8}$",
+        });
+    }
+    Ok(())
+}
+
+/// Returns `value` verbatim when every byte is in the safe set (plus `=`, `,` and `:` used
+/// by `key=value` server options), otherwise a single-quoted POSIX `sh` word.
+fn shell_word(value: &str) -> String {
+    let safe = !value.is_empty()
+        && value
+            .bytes()
+            .all(|b| is_safe_shell_byte(b) || matches!(b, b'=' | b',' | b':'));
+    if safe {
+        value.to_owned()
+    } else {
+        format!("'{}'", value.replace('\'', "'\\''"))
+    }
+}
+
+/// Parses `adb forward --list` output, returning local TCP ports forwarded for `serial`
+/// to exactly `target` (e.g., `localabstract:arb-companion-x`).
+fn parse_forward_list_ports(stdout: &str, serial: &str, target: &str) -> Vec<u16> {
+    stdout
+        .lines()
+        .filter_map(|line| {
+            let mut parts = line.split_whitespace();
+            let (s, local, remote) = (parts.next()?, parts.next()?, parts.next()?);
+            if s != serial || remote != target {
+                return None;
+            }
+            local.strip_prefix("tcp:")?.parse::<u16>().ok()
+        })
+        .collect()
 }
 
 // ---------------- Auto-Reconnect Policy & SessionSupervisor ----------------
@@ -772,6 +1036,7 @@ pub struct SessionSupervisor {
     last_beacon_boottime_ns: Option<i64>,
     last_video_frame_pc_cont_ns: Option<i64>,
     stream_states: BTreeMap<StreamId, StreamLifecycleState>,
+    media_transport_lost: BTreeSet<StreamId>,
 }
 
 impl SessionSupervisor {
@@ -788,6 +1053,7 @@ impl SessionSupervisor {
             last_beacon_boottime_ns: None,
             last_video_frame_pc_cont_ns: None,
             stream_states: BTreeMap::new(),
+            media_transport_lost: BTreeSet::new(),
         }
     }
 
@@ -848,8 +1114,8 @@ impl SessionSupervisor {
                     None,
                 ),
                 (Some(prev_id), Some(prev_src))
-                    if prev_src.is_reliable_for_reboot_detection()
-                        && hello.boot_id_source.is_reliable_for_reboot_detection() =>
+                    if prev_src == hello.boot_id_source
+                        && prev_src.is_reliable_for_reboot_detection() =>
                 {
                     if prev_id == hello.boot_id {
                         (
@@ -882,16 +1148,25 @@ impl SessionSupervisor {
                         )
                     }
                 }
-                (prev_id, _) => (
-                    ReconnectClassification::ContinuityUnverified {
-                        previous_boot_id: prev_id.map(str::to_owned),
-                        new_boot_id: hello.boot_id.clone(),
-                        reason:
-                            "boot_id_source is FallbackRandomUuid; reboot vs restore unverified"
-                                .to_owned(),
-                    },
-                    None,
-                ),
+                (prev_id, prev_src) => {
+                    let reason = match prev_src {
+                        Some(prev) if prev != hello.boot_id_source => format!(
+                            "boot_id_source changed from {prev:?} to {:?}; boot_id formats are \
+                             not comparable, reboot vs restore unverified",
+                            hello.boot_id_source
+                        ),
+                        _ => "boot_id_source is FallbackRandomUuid; reboot vs restore unverified"
+                            .to_owned(),
+                    };
+                    (
+                        ReconnectClassification::ContinuityUnverified {
+                            previous_boot_id: prev_id.map(str::to_owned),
+                            new_boot_id: hello.boot_id.clone(),
+                            reason,
+                        },
+                        None,
+                    )
+                }
             };
 
         self.last_boot_id = Some(hello.boot_id.clone());
@@ -900,6 +1175,12 @@ impl SessionSupervisor {
         self.stream_states.clear();
         self.stream_states
             .insert(StreamId::Control, StreamLifecycleState::Running);
+        // Host-observed media transport loss (scrcpy socket EOF) is independent of the
+        // companion connection and survives a companion reconnect.
+        for lost in &self.media_transport_lost {
+            self.stream_states
+                .insert(*lost, StreamLifecycleState::Error);
+        }
         self.state = SupervisorState::Connected {
             boot_id: hello.boot_id.clone(),
             boot_id_source: hello.boot_id_source,
@@ -969,6 +1250,11 @@ impl SessionSupervisor {
         self.last_beacon_pc_cont_ns = Some(pc_cont_ns);
         self.last_beacon_boottime_ns = Some(hb.boottime_ns);
         for entry in &hb.streams {
+            // The companion cannot observe the scrcpy sockets: never let a heartbeat
+            // resurrect a media stream whose host-side transport is known dead.
+            if self.media_transport_lost.contains(&entry.stream_id) {
+                continue;
+            }
             self.stream_states.insert(entry.stream_id, entry.state);
         }
     }
@@ -976,8 +1262,38 @@ impl SessionSupervisor {
     /// Records arrival of a decoded video frame on `pc_cont_ns`.
     pub fn on_video_frame(&mut self, pc_cont_ns: i64) {
         self.last_video_frame_pc_cont_ns = Some(pc_cont_ns);
+        self.media_transport_lost.remove(&StreamId::Video);
         self.stream_states
             .insert(StreamId::Video, StreamLifecycleState::Running);
+    }
+
+    /// Records that the host-side transport of media stream `stream_id` (`Video` / `Audio`
+    /// scrcpy socket) ended or failed, transitions it to [`StreamLifecycleState::Error`],
+    /// and returns the [`DiscontinuityKind::StreamGap`] to record.
+    ///
+    /// After this, [`Self::evaluate_video_liveness`] reports `StreamGap` (never
+    /// `StaticHold`) for a dead video encoder, and heartbeats cannot flip it back to
+    /// `Running`; only a newly received frame ([`Self::on_video_frame`]) does.
+    pub fn on_media_transport_lost(
+        &mut self,
+        stream_id: StreamId,
+        pc_cont_ns: i64,
+        reason: &str,
+    ) -> DiscontinuityEvent {
+        self.media_transport_lost.insert(stream_id);
+        self.stream_states
+            .insert(stream_id, StreamLifecycleState::Error);
+        DiscontinuityEvent {
+            kind: DiscontinuityKind::StreamGap,
+            stream: stream_id.to_core_stream_kind(),
+            boot_id: self.last_boot_id.clone(),
+            start_boottime_ns: self.last_beacon_boottime_ns,
+            end_boottime_ns: None,
+            pc_cont_start_ns: pc_cont_ns,
+            pc_cont_end_ns: None,
+            delta_ns: None,
+            detail: Some(format!("{stream_id:?} transport lost on host: {reason}")),
+        }
     }
 
     /// Applies an explicit `StreamState` transition and emits a [`DiscontinuityKind::StreamGap`]
@@ -1072,26 +1388,95 @@ impl SessionSupervisor {
 
 // ---------------- Live AdbSessionSource (Implements DeviceEventSource) ----------------
 
+/// Host clock shared by the live reader threads (each stamps `pc_cont_ns` on read completion).
+type SharedClock = Arc<Mutex<Box<dyn FnMut() -> i64 + Send>>>;
+
+fn stamp(clock: &SharedClock) -> i64 {
+    let mut guard = clock
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    (guard)()
+}
+
+/// One read completion from a live per-stream reader thread, stamped on that thread.
+#[derive(Debug)]
+enum LiveMsg {
+    Companion(i64, Result<Option<WireFrame>, WireError>),
+    Video(i64, Result<Option<VideoRecord>, ScrcpyError>),
+    Audio(i64, Result<Option<AudioPacket>, ScrcpyError>),
+}
+
+/// Pumps `read` on a dedicated thread until EOF/error, stamping each completion with
+/// the shared host clock immediately after the read returns.
+fn spawn_live_reader<T: 'static, E: 'static>(
+    name: &str,
+    tx: SyncSender<LiveMsg>,
+    clock: SharedClock,
+    mut read: impl FnMut() -> Result<Option<T>, E> + Send + 'static,
+    wrap: fn(i64, Result<Option<T>, E>) -> LiveMsg,
+) {
+    let spawned = thread::Builder::new()
+        .name(format!("arb-live-{name}"))
+        .spawn(move || {
+            loop {
+                let result = read();
+                let pc_cont_ns = stamp(&clock);
+                let finished = !matches!(result, Ok(Some(_)));
+                if tx.send(wrap(pc_cont_ns, result)).is_err() || finished {
+                    break;
+                }
+            }
+        });
+    // Thread creation only fails on OS resource exhaustion; the session cannot work then.
+    spawned.expect("failed to spawn live AdbSessionSource reader thread");
+}
+
+/// Zero-sized marker keeping the transport type parameters (always `Send + Sync`).
+type TransportMarker<C, V, A> = std::marker::PhantomData<fn() -> (C, V, A)>;
+
+/// Coarse classification of [`VideoLivenessStatus`] used to emit one event per episode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LivenessKind {
+    Active,
+    StaticHold,
+    StreamGap,
+}
+
 /// Live [`DeviceEventSource`] ingesting framed companion wire messages and optional
 /// `scrcpy-server-v5.0.1` video/audio tunnels through [`SessionSupervisor`] and [`ClockTimeline`].
+///
+/// Each transport (companion, video, audio) is read on its own thread feeding one bounded
+/// channel, so the scrcpy sockets are drained continuously while the companion stays open
+/// (independent error boundaries per SPEC-03 §1), and `pc_cont_ns` is stamped the moment
+/// each read completes. [`DeviceEventSource::next_event`] only pops from that channel and
+/// runs a periodic video liveness tick ([`Self::with_liveness_tick_interval`]).
+///
+/// Transport ends are reported, never swallowed:
+/// - companion EOF / wire error → [`SessionSupervisor::on_disconnect`] and a
+///   [`DiscontinuityKind::ConnectionLost`] event;
+/// - video / audio EOF / error → [`SessionSupervisor::on_media_transport_lost`] and a
+///   [`DiscontinuityKind::StreamGap`] for that stream (a dead scrcpy-server is never
+///   reported as `StaticHold`).
+///
+/// After a companion `Shutdown`, transport ends are treated as graceful teardown.
 pub struct AdbSessionSource<C, V = std::io::Empty, A = std::io::Empty> {
-    companion: C,
-    video: Option<VideoTunnelReader<V>>,
-    audio: Option<AudioTunnelReader<A>>,
-    max_payload_len: u64,
+    rx: Receiver<LiveMsg>,
     supervisor: SessionSupervisor,
     timeline: ClockTimeline,
-    clock_fn: Box<dyn FnMut() -> i64 + Send>,
+    clock: SharedClock,
     pending: VecDeque<CaptureEvent>,
     companion_eof: bool,
     video_eof: bool,
     audio_eof: bool,
     suppress_next_timeline_reboot_for: Option<String>,
+    liveness_tick_interval: Duration,
+    last_liveness_tick: Instant,
+    last_liveness_kind: Option<LivenessKind>,
+    shutdown_handles: Vec<TcpStream>,
+    _transports: TransportMarker<C, V, A>,
 }
 
-impl<C: std::fmt::Debug, V: std::fmt::Debug, A: std::fmt::Debug> std::fmt::Debug
-    for AdbSessionSource<C, V, A>
-{
+impl<C, V, A> std::fmt::Debug for AdbSessionSource<C, V, A> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AdbSessionSource")
             .field("serial", &self.supervisor.serial())
@@ -1104,8 +1489,28 @@ impl<C: std::fmt::Debug, V: std::fmt::Debug, A: std::fmt::Debug> std::fmt::Debug
     }
 }
 
-impl<C: Read, V: Read, A: Read> AdbSessionSource<C, V, A> {
-    /// Creates an [`AdbSessionSource`] from arbitrary [`Read`] transports and a host clock provider.
+impl<C, V, A> Drop for AdbSessionSource<C, V, A> {
+    fn drop(&mut self) {
+        // Unblock reader threads parked in a socket read; they exit once the channel
+        // receiver is gone. Best effort: the peer may already have closed.
+        for handle in &self.shutdown_handles {
+            let _ = handle.shutdown(Shutdown::Both);
+        }
+    }
+}
+
+impl<C, V, A> AdbSessionSource<C, V, A>
+where
+    C: Read + Send + 'static,
+    V: Read + Send + 'static,
+    A: Read + Send + 'static,
+{
+    /// Creates an [`AdbSessionSource`] from arbitrary [`Read`] transports and a host clock
+    /// provider, and immediately starts one reader thread per present transport.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the OS refuses to create a reader thread.
     pub fn new(
         serial: impl Into<String>,
         companion: C,
@@ -1115,22 +1520,65 @@ impl<C: Read, V: Read, A: Read> AdbSessionSource<C, V, A> {
         timeline_config: ClockTimelineConfig,
         clock_fn: impl FnMut() -> i64 + Send + 'static,
     ) -> Self {
+        let clock: SharedClock = Arc::new(Mutex::new(Box::new(clock_fn)));
+        let (tx, rx) = sync_channel(LIVE_EVENT_CHANNEL_CAPACITY);
         let video_eof = video.is_none();
         let audio_eof = audio.is_none();
+
+        let mut companion = companion;
+        spawn_live_reader(
+            "companion",
+            tx.clone(),
+            Arc::clone(&clock),
+            move || WireFrame::read_from(&mut companion, DEFAULT_MAX_PAYLOAD_LEN),
+            LiveMsg::Companion,
+        );
+        if let Some(mut video_reader) = video {
+            spawn_live_reader(
+                "video",
+                tx.clone(),
+                Arc::clone(&clock),
+                move || video_reader.read_next(),
+                LiveMsg::Video,
+            );
+        }
+        if let Some(mut audio_reader) = audio {
+            spawn_live_reader(
+                "audio",
+                tx.clone(),
+                Arc::clone(&clock),
+                move || audio_reader.read_next(),
+                LiveMsg::Audio,
+            );
+        }
+        drop(tx);
+
         Self {
-            companion,
-            video,
-            audio,
-            max_payload_len: DEFAULT_MAX_PAYLOAD_LEN,
+            rx,
             supervisor: SessionSupervisor::new(serial, supervisor_config),
             timeline: ClockTimeline::new(timeline_config),
-            clock_fn: Box::new(clock_fn),
+            clock,
             pending: VecDeque::new(),
             companion_eof: false,
             video_eof,
             audio_eof,
             suppress_next_timeline_reboot_for: None,
+            liveness_tick_interval: DEFAULT_LIVENESS_TICK_INTERVAL,
+            last_liveness_tick: Instant::now(),
+            last_liveness_kind: None,
+            shutdown_handles: Vec::new(),
+            _transports: std::marker::PhantomData,
         }
+    }
+}
+
+impl<C, V, A> AdbSessionSource<C, V, A> {
+    /// Overrides the wall-clock period of the live video liveness tick
+    /// (default [`DEFAULT_LIVENESS_TICK_INTERVAL`]).
+    #[must_use]
+    pub fn with_liveness_tick_interval(mut self, interval: Duration) -> Self {
+        self.liveness_tick_interval = interval.max(Duration::from_millis(1));
+        self
     }
 
     /// Returns a reference to the underlying [`SessionSupervisor`].
@@ -1157,7 +1605,14 @@ impl<C: Read, V: Read, A: Read> AdbSessionSource<C, V, A> {
             classification,
             ReconnectClassification::ConnectionRestored { .. }
         );
-        if matches!(classification, ReconnectClassification::DeviceReboot { .. }) {
+        if matches!(
+            classification,
+            ReconnectClassification::DeviceReboot { .. }
+                | ReconnectClassification::ContinuityUnverified { .. }
+        ) {
+            // DeviceReboot: already reported by the supervisor. ContinuityUnverified:
+            // PROTOCOL §3.1 forbids asserting a reboot. Either way the timeline must not
+            // emit its own DeviceReboot for this boot_id.
             self.suppress_next_timeline_reboot_for = Some(hello.boot_id.clone());
         }
         let boot_id = hello.boot_id.clone();
@@ -1265,90 +1720,180 @@ impl<C: Read, V: Read, A: Read> AdbSessionSource<C, V, A> {
         Ok(())
     }
 
-    fn pull_next_media_event(&mut self) -> Result<bool, CaptureSourceError> {
-        if !self.video_eof
-            && let Some(video_reader) = self.video.as_mut()
-        {
-            match video_reader.read_next()? {
-                Some(VideoRecord::SessionMeta(meta)) => {
-                    let pc_cont_ns = (self.clock_fn)();
-                    let boot_id = self
-                        .supervisor
-                        .current_boot_id()
-                        .unwrap_or("unknown")
-                        .to_owned();
-                    self.pending.push_back(CaptureEvent::VideoSession {
-                        pc_cont_ns,
-                        boot_id,
-                        meta,
-                    });
-                    return Ok(true);
-                }
-                Some(VideoRecord::Packet(packet)) => {
-                    let pc_cont_ns = (self.clock_fn)();
-                    if !packet.is_config() {
-                        self.supervisor.on_video_frame(pc_cont_ns);
+    fn is_shutting_down(&self) -> bool {
+        matches!(self.supervisor.state(), SupervisorState::Stopped)
+    }
+
+    fn on_companion_end(&mut self, pc_cont_ns: i64, reason: &str) {
+        self.companion_eof = true;
+        if self.is_shutting_down() {
+            return;
+        }
+        let (_backoff, disc) = self.supervisor.on_disconnect(pc_cont_ns, reason);
+        self.pending.push_back(CaptureEvent::Discontinuity(disc));
+    }
+
+    fn on_media_end(&mut self, stream_id: StreamId, pc_cont_ns: i64, reason: &str) {
+        match stream_id {
+            StreamId::Video => {
+                self.video_eof = true;
+                // The gap is reported here; the liveness tick must not re-report it.
+                self.last_liveness_kind = Some(LivenessKind::StreamGap);
+            }
+            _ => self.audio_eof = true,
+        }
+        if self.is_shutting_down() {
+            return;
+        }
+        let disc = self
+            .supervisor
+            .on_media_transport_lost(stream_id, pc_cont_ns, reason);
+        self.pending.push_back(CaptureEvent::Discontinuity(disc));
+    }
+
+    fn ingest_live_msg(&mut self, msg: LiveMsg) -> Result<(), CaptureSourceError> {
+        match msg {
+            LiveMsg::Companion(pc_cont_ns, Ok(Some(frame))) => {
+                self.ingest_companion_frame(&frame, pc_cont_ns)?;
+            }
+            LiveMsg::Companion(pc_cont_ns, Ok(None)) => {
+                self.on_companion_end(pc_cont_ns, "companion_eof");
+            }
+            LiveMsg::Companion(pc_cont_ns, Err(err)) => {
+                self.on_companion_end(pc_cont_ns, &format!("companion_wire_error: {err}"));
+            }
+            LiveMsg::Video(pc_cont_ns, Ok(Some(record))) => {
+                let boot_id = self.current_boot_id();
+                match record {
+                    VideoRecord::SessionMeta(meta) => {
+                        self.pending.push_back(CaptureEvent::VideoSession {
+                            pc_cont_ns,
+                            boot_id,
+                            meta,
+                        });
                     }
-                    let boot_id = self
-                        .supervisor
-                        .current_boot_id()
-                        .unwrap_or("unknown")
-                        .to_owned();
-                    self.pending.push_back(CaptureEvent::VideoFrame {
+                    VideoRecord::Packet(packet) => {
+                        if !packet.is_config() {
+                            self.supervisor.on_video_frame(pc_cont_ns);
+                        }
+                        self.pending.push_back(CaptureEvent::VideoFrame {
+                            pc_cont_ns,
+                            boot_id,
+                            packet,
+                        });
+                    }
+                }
+            }
+            LiveMsg::Video(pc_cont_ns, Ok(None)) => {
+                self.on_media_end(StreamId::Video, pc_cont_ns, "scrcpy_video_eof");
+            }
+            LiveMsg::Video(pc_cont_ns, Err(err)) => {
+                self.on_media_end(
+                    StreamId::Video,
+                    pc_cont_ns,
+                    &format!("scrcpy_video_error: {err}"),
+                );
+            }
+            LiveMsg::Audio(pc_cont_ns, Ok(Some(packet))) => {
+                let boot_id = self.current_boot_id();
+                let event = match packet.kind {
+                    AudioPacketKind::Config => CaptureEvent::AudioConfig {
                         pc_cont_ns,
                         boot_id,
                         packet,
-                    });
-                    return Ok(true);
-                }
-                None => {
-                    self.video_eof = true;
-                }
+                    },
+                    AudioPacketKind::Frame => CaptureEvent::AudioFrame {
+                        pc_cont_ns,
+                        boot_id,
+                        packet,
+                    },
+                };
+                self.pending.push_back(event);
+            }
+            LiveMsg::Audio(pc_cont_ns, Ok(None)) => {
+                self.on_media_end(StreamId::Audio, pc_cont_ns, "scrcpy_audio_eof");
+            }
+            LiveMsg::Audio(pc_cont_ns, Err(err)) => {
+                self.on_media_end(
+                    StreamId::Audio,
+                    pc_cont_ns,
+                    &format!("scrcpy_audio_error: {err}"),
+                );
             }
         }
+        Ok(())
+    }
 
-        if !self.audio_eof
-            && let Some(audio_reader) = self.audio.as_mut()
+    /// Periodic video liveness evaluation (the live counterpart of the mock's
+    /// `EvaluateVideoLiveness` step). Emits one event per liveness episode.
+    fn maybe_tick_liveness(&mut self) {
+        if self.video_eof || self.last_liveness_tick.elapsed() < self.liveness_tick_interval {
+            return;
+        }
+        self.last_liveness_tick = Instant::now();
+        let connected = matches!(self.supervisor.state(), SupervisorState::Connected { .. });
+        if !connected
+            || self.supervisor.last_beacon_pc_cont_ns.is_none()
+            || self.supervisor.last_video_frame_pc_cont_ns.is_none()
         {
-            match audio_reader.read_next()? {
-                Some(packet) => {
-                    let pc_cont_ns = (self.clock_fn)();
-                    let boot_id = self
-                        .supervisor
-                        .current_boot_id()
-                        .unwrap_or("unknown")
-                        .to_owned();
-                    let event = match packet.kind {
-                        AudioPacketKind::Config => CaptureEvent::AudioConfig {
-                            pc_cont_ns,
-                            boot_id,
-                            packet,
-                        },
-                        AudioPacketKind::Frame => CaptureEvent::AudioFrame {
-                            pc_cont_ns,
-                            boot_id,
-                            packet,
-                        },
-                    };
-                    self.pending.push_back(event);
-                    return Ok(true);
-                }
-                None => {
-                    self.audio_eof = true;
-                }
+            return;
+        }
+        let now_pc = stamp(&self.clock);
+        let status = self.supervisor.evaluate_video_liveness(now_pc);
+        let kind = match status {
+            VideoLivenessStatus::Active => LivenessKind::Active,
+            VideoLivenessStatus::StaticHold { .. } => LivenessKind::StaticHold,
+            VideoLivenessStatus::StreamGap { .. } => LivenessKind::StreamGap,
+        };
+        if self.last_liveness_kind == Some(kind) {
+            return;
+        }
+        self.last_liveness_kind = Some(kind);
+        let boot_id = self.current_boot_id();
+        match status {
+            VideoLivenessStatus::Active => {}
+            VideoLivenessStatus::StaticHold { silent_duration_ns } => {
+                self.pending.push_back(CaptureEvent::StaticHold {
+                    pc_cont_ns: now_pc,
+                    boot_id,
+                    silent_duration_ns,
+                });
+            }
+            VideoLivenessStatus::StreamGap { reason } => {
+                self.pending
+                    .push_back(CaptureEvent::Discontinuity(DiscontinuityEvent {
+                        kind: DiscontinuityKind::StreamGap,
+                        stream: Some(StreamKind::Video),
+                        boot_id: Some(boot_id),
+                        start_boottime_ns: None,
+                        end_boottime_ns: None,
+                        pc_cont_start_ns: now_pc,
+                        pc_cont_end_ns: None,
+                        delta_ns: None,
+                        detail: Some(reason),
+                    }));
             }
         }
+    }
 
-        Ok(false)
+    const fn all_transports_finished(&self) -> bool {
+        self.companion_eof && self.video_eof && self.audio_eof
     }
 }
 
 impl AdbSessionSource<TcpStream, TcpStream, TcpStream> {
     /// Connects live forwarded TCP sockets (`adb forward tcp:0 localabstract:...`) into an [`AdbSessionSource`].
     ///
+    /// Dropping the returned source shuts the sockets down so the reader threads exit.
+    ///
     /// # Errors
     ///
-    /// Returns [`CaptureSourceError::Scrcpy`] if the video or audio tunnel handshake fails.
+    /// Returns [`CaptureSourceError::Scrcpy`] if the video or audio tunnel handshake fails,
+    /// or [`CaptureSourceError::Io`] if a socket handle cannot be duplicated.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the OS refuses to create a reader thread.
     pub fn from_tcp_streams(
         serial: impl Into<String>,
         companion: TcpStream,
@@ -1358,15 +1903,22 @@ impl AdbSessionSource<TcpStream, TcpStream, TcpStream> {
         timeline_config: ClockTimelineConfig,
         clock_fn: impl FnMut() -> i64 + Send + 'static,
     ) -> Result<Self, CaptureSourceError> {
+        let mut shutdown_handles = vec![companion.try_clone()?];
         let video_reader = match video {
-            Some(stream) => Some(VideoTunnelReader::handshake(stream)?),
+            Some(stream) => {
+                shutdown_handles.push(stream.try_clone()?);
+                Some(VideoTunnelReader::handshake(stream)?)
+            }
             None => None,
         };
         let audio_reader = match audio {
-            Some(stream) => Some(AudioTunnelReader::handshake(stream)?),
+            Some(stream) => {
+                shutdown_handles.push(stream.try_clone()?);
+                Some(AudioTunnelReader::handshake(stream)?)
+            }
             None => None,
         };
-        Ok(Self::new(
+        let mut source = Self::new(
             serial,
             companion,
             video_reader,
@@ -1374,11 +1926,13 @@ impl AdbSessionSource<TcpStream, TcpStream, TcpStream> {
             supervisor_config,
             timeline_config,
             clock_fn,
-        ))
+        );
+        source.shutdown_handles = shutdown_handles;
+        Ok(source)
     }
 }
 
-impl<C: Read, V: Read, A: Read> DeviceEventSource for AdbSessionSource<C, V, A> {
+impl<C, V, A> DeviceEventSource for AdbSessionSource<C, V, A> {
     fn serial(&self) -> &str {
         self.supervisor.serial()
     }
@@ -1388,25 +1942,35 @@ impl<C: Read, V: Read, A: Read> DeviceEventSource for AdbSessionSource<C, V, A> 
             if let Some(ev) = self.pending.pop_front() {
                 return Ok(Some(ev));
             }
-
-            if !self.companion_eof {
-                match WireFrame::read_from(&mut self.companion, self.max_payload_len)? {
-                    Some(frame) => {
-                        let pc_cont_ns = (self.clock_fn)();
-                        self.ingest_companion_frame(&frame, pc_cont_ns)?;
-                        continue;
+            if self.all_transports_finished() {
+                return Ok(None);
+            }
+            self.maybe_tick_liveness();
+            if !self.pending.is_empty() {
+                continue;
+            }
+            let wait = self
+                .liveness_tick_interval
+                .saturating_sub(self.last_liveness_tick.elapsed())
+                .max(Duration::from_millis(1));
+            match self.rx.recv_timeout(wait) {
+                Ok(msg) => self.ingest_live_msg(msg)?,
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => {
+                    // Every reader thread is gone (they always report their end first,
+                    // so this only follows an abnormal exit): report what is left.
+                    let pc_cont_ns = stamp(&self.clock);
+                    if !self.companion_eof {
+                        self.on_companion_end(pc_cont_ns, "companion_reader_exited");
                     }
-                    None => {
-                        self.companion_eof = true;
+                    if !self.video_eof {
+                        self.on_media_end(StreamId::Video, pc_cont_ns, "video_reader_exited");
+                    }
+                    if !self.audio_eof {
+                        self.on_media_end(StreamId::Audio, pc_cont_ns, "audio_reader_exited");
                     }
                 }
             }
-
-            if self.pull_next_media_event()? {
-                continue;
-            }
-
-            return Ok(None);
         }
     }
 }
@@ -1904,22 +2468,44 @@ R5CX123456A            unauthorized usb:1-1 transport_id:2
         );
 
         let events = source.drain_all().expect("drain live source");
+        let pos = |pred: &dyn Fn(&CaptureEvent) -> bool| events.iter().position(pred);
+        let hello = pos(&|e| matches!(e, CaptureEvent::Hello { .. }));
+        let session = pos(&|e| matches!(e, CaptureEvent::VideoSession { .. }));
+        let frame = pos(&|e| matches!(e, CaptureEvent::VideoFrame { .. }));
+        assert!(hello.is_some(), "must yield Hello");
+        assert!(
+            session.is_some() && frame.is_some() && session < frame,
+            "VideoSession must precede VideoFrame (per-stream order is preserved)"
+        );
+        let lost = events
+            .iter()
+            .filter(|e| {
+                matches!(e, CaptureEvent::Discontinuity(d) if d.kind == DiscontinuityKind::ConnectionLost)
+            })
+            .count();
+        let video_gap = events
+            .iter()
+            .filter(|e| {
+                matches!(e, CaptureEvent::Discontinuity(d)
+                    if d.kind == DiscontinuityKind::StreamGap && d.stream == Some(StreamKind::Video))
+            })
+            .count();
+        assert_eq!(
+            lost, 1,
+            "companion EOF must emit exactly one ConnectionLost"
+        );
+        assert_eq!(
+            video_gap, 1,
+            "video EOF must emit exactly one StreamGap(Video)"
+        );
         assert_eq!(
             events.len(),
-            3,
-            "must yield Hello + VideoSession + VideoFrame"
-        );
-        assert!(
-            matches!(events[0], CaptureEvent::Hello { .. }),
-            "first event must be Hello"
-        );
-        assert!(
-            matches!(events[1], CaptureEvent::VideoSession { .. }),
-            "second event must be VideoSession"
-        );
-        assert!(
-            matches!(events[2], CaptureEvent::VideoFrame { .. }),
-            "third event must be VideoFrame"
+            5,
+            "3 data events + 2 transport-end discontinuities"
         );
     }
 }
+
+#[cfg(test)]
+#[path = "adb_live_tests.rs"]
+mod live_tests;

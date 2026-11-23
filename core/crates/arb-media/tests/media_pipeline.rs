@@ -778,7 +778,9 @@ fn filmstrip_cache_writes_externally_and_reloads_without_touching_source() {
 #[test]
 fn scrub_controller_transitions_approximate_to_exact_and_honors_latest_wins() {
     let tmp = TempDir::new().expect("tempdir creation must succeed");
-    let src_path = tmp.path().join("source.mp4");
+    let bundle_dir = tmp.path().join("bundle");
+    std::fs::create_dir_all(&bundle_dir).expect("create bundle dir");
+    let src_path = bundle_dir.join("source.mp4");
     let cache_dir = tmp.path().join("cache");
     build_synthetic_fixture_mp4(&src_path);
 
@@ -1058,6 +1060,52 @@ fn b_frame_ctts_is_detected_and_explicitly_rejected_by_trim() {
         matches!(err, Err(MediaError::UnsupportedFeature(_))),
         "trim_video must return explicit UnsupportedFeature on B-frame stream instead of corrupting frames"
     );
+
+    // R2 S9: every frame-index addressed entry point refuses B-frame tracks identically on all
+    // OSes (VideoToolbox numbers decode order, OpenH264 presentation order).
+    let openh264: Box<dyn VideoCodecBackend> = Box::new(OpenH264Backend::new());
+    for backend in [openh264, default_codec_backend()] {
+        assert!(
+            matches!(
+                backend.decode_frame(&track, 12, PixelFormat::Rgb24),
+                Err(MediaError::UnsupportedFeature(_))
+            ),
+            "{}: decode_frame must reject B-frame tracks",
+            backend.name()
+        );
+        assert!(
+            matches!(
+                backend.decode_gop(&track, 1, PixelFormat::Rgb24),
+                Err(MediaError::UnsupportedFeature(_))
+            ),
+            "{}: decode_gop must reject B-frame tracks",
+            backend.name()
+        );
+        let png = tmp.path().join(format!("bframe-{}.png", backend.name()));
+        assert!(
+            matches!(
+                export_frame_png(&bframe_path, 12, &png, backend.as_ref()),
+                Err(MediaError::UnsupportedFeature(_))
+            ),
+            "{}: export_frame_png must reject B-frame tracks",
+            backend.name()
+        );
+        assert!(!png.exists(), "rejected export must not create a file");
+        let mut cache = GopLruCache::new(4, usize::MAX);
+        assert!(
+            matches!(
+                cache.fetch_frame(&track, 12, PixelFormat::Rgb24, backend.as_ref()),
+                Err(MediaError::UnsupportedFeature(_))
+            ),
+            "{}: GopLruCache must reject B-frame tracks",
+            backend.name()
+        );
+    }
+    assert_eq!(
+        PresentationClock::frame_index_for_position(&track, 100_000_000),
+        None,
+        "frame_index_for_position must refuse B-frame tracks"
+    );
 }
 
 /// Inserts a valid 2-entry `ctts` box (non-monotonic composition offsets) into `stbl` of a
@@ -1192,7 +1240,9 @@ fn single_gop_mid_gop_trim_and_bounds_validation() {
 #[test]
 fn corrupt_filmstrip_cache_is_safely_regenerated() {
     let tmp = TempDir::new().expect("tempdir creation must succeed");
-    let src_path = tmp.path().join("source.mp4");
+    let bundle_dir = tmp.path().join("bundle");
+    std::fs::create_dir_all(&bundle_dir).expect("create bundle dir");
+    let src_path = bundle_dir.join("source.mp4");
     let cache_dir = tmp.path().join("cache");
     build_synthetic_fixture_mp4(&src_path);
 

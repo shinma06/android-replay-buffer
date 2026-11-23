@@ -3,8 +3,8 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::fmt::Debug;
-use std::fs::{self, File};
-use std::io::{BufWriter, Write as _};
+use std::fs;
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use crate::codec::{DecodedFrame, PixelFormat, RgbImage, VideoCodecBackend};
 use crate::error::MediaError;
 use crate::mp4::Mp4VideoTrack;
+use crate::output::{Publish, write_atomically};
 
 /// File magic header for external `filmstrip.bin` caches.
 const FILMSTRIP_MAGIC: &[u8; 8] = b"ARBFS001";
@@ -106,15 +107,42 @@ impl FilmstripCache {
         Ok(cache_dir.join(bundle_id).join("filmstrip.bin"))
     }
 
-    /// Loads `<cache_dir>/<bundle_id>/filmstrip.bin` if valid for `track`, or generates it via
-    /// parallel keyframe decoding and writes it atomically into the external cache directory.
-    ///
-    /// Never writes inside the bundle directory containing the source MP4.
+    /// Fails unless `cache_dir` lies strictly outside `bundle_dir` (both resolved through
+    /// symlinks, even when `cache_dir` does not exist yet), so the external cache can never be
+    /// written into an immutable WORM bundle (SPEC-02 §3).
     ///
     /// # Errors
     ///
-    /// Returns [`MediaError::InvalidArgument`] for an invalid `bundle_id` or zero thumbnail
-    /// dimensions, or [`MediaError::Codec`] / [`MediaError::Io`] on decode or disk failure.
+    /// Returns [`MediaError::InvalidArgument`] if `cache_dir` is (inside) `bundle_dir`, or
+    /// [`MediaError::Io`] if `bundle_dir` cannot be resolved.
+    pub fn ensure_cache_outside_bundle(
+        cache_dir: &Path,
+        bundle_dir: &Path,
+    ) -> Result<(), MediaError> {
+        let bundle = fs::canonicalize(bundle_dir)?;
+        let cache = canonicalize_lenient(cache_dir)?;
+        if cache.starts_with(&bundle) {
+            return Err(MediaError::InvalidArgument(format!(
+                "filmstrip cache_dir {} must be outside the bundle directory {}",
+                cache_dir.display(),
+                bundle_dir.display()
+            )));
+        }
+        Ok(())
+    }
+
+    /// Loads `<cache_dir>/<bundle_id>/filmstrip.bin` if valid for `track`, or generates it via
+    /// parallel keyframe decoding and writes it atomically into the external cache directory.
+    ///
+    /// Never writes inside the bundle directory containing the source MP4: `cache_dir` must
+    /// resolve outside the directory holding `track`'s file
+    /// ([`Self::ensure_cache_outside_bundle`]).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MediaError::InvalidArgument`] for an invalid `bundle_id`, a `cache_dir` inside
+    /// the source bundle directory, or zero thumbnail dimensions, or [`MediaError::Codec`] /
+    /// [`MediaError::Io`] on decode or disk failure.
     pub fn load_or_generate(
         cache_dir: impl AsRef<Path>,
         bundle_id: &str,
@@ -123,6 +151,14 @@ impl FilmstripCache {
         backend: &dyn VideoCodecBackend,
     ) -> Result<FilmstripLoadResult, MediaError> {
         let path = Self::cache_path(cache_dir.as_ref(), bundle_id)?;
+        if let Some(bundle_dir) = track.path().parent() {
+            let bundle_dir = if bundle_dir.as_os_str().is_empty() {
+                Path::new(".")
+            } else {
+                bundle_dir
+            };
+            Self::ensure_cache_outside_bundle(cache_dir.as_ref(), bundle_dir)?;
+        }
         if path.exists()
             && let Ok(cached) = Self::load_from_file(&path, track.file_len(), track.frame_count())
         {
@@ -282,22 +318,13 @@ impl FilmstripCache {
         let checksum = fnv1a_64(&buf);
         buf.extend_from_slice(&checksum.to_le_bytes());
 
-        let tmp_path = path.with_extension("bin.tmp");
-        {
-            let file = File::create(&tmp_path)?;
-            let mut writer = BufWriter::new(file);
+        // Unique temp sibling + fsync + atomic replace (concurrent generators never share a
+        // temp file, and a crash never leaves a truncated cache).
+        write_atomically(path, Publish::Replace, |writer| {
             writer.write_all(&buf)?;
             writer.flush()?;
-        }
-        if let Err(rename_err) = fs::rename(&tmp_path, path) {
-            if path.exists() {
-                fs::remove_file(path)?;
-                fs::rename(&tmp_path, path)?;
-            } else {
-                let _ = fs::remove_file(&tmp_path);
-                return Err(MediaError::Io(rename_err));
-            }
-        }
+            Ok(())
+        })?;
         Ok(())
     }
 
@@ -343,19 +370,58 @@ impl FilmstripCache {
     }
 }
 
+/// Strict whitelist `[A-Za-z0-9_-]{1,64}`: rejects separators, `..`, drive prefixes
+/// (`C:evil` would replace the base path on Windows), `:` (NTFS alternate data streams) and
+/// dots, so `cache_dir.join(bundle_id)` always stays inside `cache_dir` on every OS (R2 S11).
 fn validate_bundle_id(bundle_id: &str) -> Result<(), MediaError> {
-    if bundle_id.is_empty()
-        || bundle_id == "."
-        || bundle_id == ".."
-        || bundle_id.contains('/')
-        || bundle_id.contains('\\')
-        || bundle_id.contains("..")
-    {
+    let valid = (1..=64).contains(&bundle_id.len())
+        && bundle_id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        && !is_windows_reserved_name(bundle_id);
+    if !valid {
         return Err(MediaError::InvalidArgument(format!(
             "invalid bundle_id for external filmstrip cache: {bundle_id:?}"
         )));
     }
     Ok(())
+}
+
+/// Windows reserved device names (`CON`, `NUL`, `COM1`, ...), rejected on every OS so cache
+/// layouts behave identically everywhere.
+fn is_windows_reserved_name(name: &str) -> bool {
+    let upper = name.to_ascii_uppercase();
+    matches!(upper.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || ((upper.starts_with("COM") || upper.starts_with("LPT"))
+            && upper.len() == 4
+            && upper.as_bytes()[3].is_ascii_digit())
+}
+
+/// Canonicalises `path`, resolving the deepest existing ancestor when `path` does not exist yet.
+fn canonicalize_lenient(path: &Path) -> Result<PathBuf, MediaError> {
+    let mut tail = Vec::new();
+    let mut cur = path;
+    loop {
+        match fs::canonicalize(cur) {
+            Ok(mut canon) => {
+                for part in tail.iter().rev() {
+                    canon.push(part);
+                }
+                return Ok(canon);
+            }
+            Err(err) => {
+                let (Some(parent), Some(name)) = (cur.parent(), cur.file_name()) else {
+                    return Err(MediaError::Io(err));
+                };
+                tail.push(name.to_os_string());
+                cur = if parent.as_os_str().is_empty() {
+                    Path::new(".")
+                } else {
+                    parent
+                };
+            }
+        }
+    }
 }
 
 fn fnv1a_64(data: &[u8]) -> u64 {
@@ -450,6 +516,18 @@ pub struct GopLruCache {
     cache_hits: u64,
     cache_misses: u64,
     evictions: u64,
+    bypassed_decodes: u64,
+    uncached: Option<DecodedFrame>,
+}
+
+/// Decoded byte size of one `width x height` frame in `format` (4:2:0 chroma rounded up).
+fn estimated_frame_bytes(width: u16, height: u16, format: PixelFormat) -> usize {
+    let (w, h) = (usize::from(width), usize::from(height));
+    match format {
+        PixelFormat::Yuv420p => w * h + 2 * w.div_ceil(2) * h.div_ceil(2),
+        PixelFormat::Rgb24 => w * h * 3,
+        PixelFormat::Rgba8 | PixelFormat::Bgra8 => w * h * 4,
+    }
 }
 
 impl GopLruCache {
@@ -467,7 +545,15 @@ impl GopLruCache {
             cache_hits: 0,
             cache_misses: 0,
             evictions: 0,
+            bypassed_decodes: 0,
+            uncached: None,
         }
+    }
+
+    /// Number of misses served by a single-frame decode **without caching** because the GOP
+    /// would not fit in `max_bytes` (sparse-IDR legacy files, R2 S10).
+    pub const fn bypassed_decodes(&self) -> u64 {
+        self.bypassed_decodes
     }
 
     /// Returns a cached frame if its GOP is currently resident with matching `format` (or any
@@ -494,8 +580,13 @@ impl GopLruCache {
     ///
     /// # Errors
     ///
-    /// Returns [`MediaError::FrameOutOfRange`] if `frame_index` is invalid, or [`MediaError::Codec`]
-    /// / [`MediaError::Io`] if decoding fails.
+    /// Returns [`MediaError::FrameOutOfRange`] if `frame_index` is invalid,
+    /// [`MediaError::UnsupportedFeature`] for B-frame tracks or frames without a leading IDR,
+    /// or [`MediaError::Codec`] / [`MediaError::Io`] if decoding fails.
+    ///
+    /// Memory is bounded **before** decoding: when `frame_bytes x gop_len` would exceed
+    /// `max_bytes`, only the requested frame is decoded and it is returned without being cached
+    /// (reported as [`CacheLookup::Miss`]; see [`Self::bypassed_decodes`]).
     pub fn fetch_frame(
         &mut self,
         track: &Mp4VideoTrack,
@@ -503,6 +594,7 @@ impl GopLruCache {
         output_format: PixelFormat,
         backend: &dyn VideoCodecBackend,
     ) -> Result<(&DecodedFrame, CacheLookup), MediaError> {
+        track.require_no_b_frames("GopLruCache::fetch_frame")?;
         let info = track.frame(frame_index)?;
         let gop_id = info.gop_id;
 
@@ -518,6 +610,15 @@ impl GopLruCache {
             return Ok((frame, CacheLookup::Hit));
         }
 
+        let (gop_start, gop_end) = track.decodable_gop_range(gop_id)?;
+        let gop_len = usize::try_from(gop_end - gop_start + 1).unwrap_or(usize::MAX);
+        let estimate = estimated_frame_bytes(track.width(), track.height(), output_format)
+            .saturating_mul(gop_len);
+        if estimate > self.max_bytes {
+            let frame = backend.decode_frame(track, frame_index, output_format)?;
+            return Ok(self.serve_uncached(frame));
+        }
+
         let decoded_gop = backend.decode_gop(track, gop_id, output_format)?;
         let Some(first) = decoded_gop.first() else {
             return Err(MediaError::Codec(format!(
@@ -526,6 +627,15 @@ impl GopLruCache {
         };
         let start_frame_index = first.frame_index;
         let total_bytes: usize = decoded_gop.iter().map(DecodedFrame::byte_len).sum();
+        if total_bytes > self.max_bytes {
+            // Decoded output larger than estimated (e.g. cropping metadata): never cache it.
+            let offset = usize::try_from(frame_index.saturating_sub(start_frame_index))
+                .unwrap_or(usize::MAX);
+            let frame = decoded_gop.into_iter().nth(offset).ok_or_else(|| {
+                MediaError::Codec(format!("frame {frame_index} missing from GOP {gop_id}"))
+            })?;
+            return Ok(self.serve_uncached(frame));
+        }
 
         if let Some(prev) = self.entries.remove(&gop_id) {
             self.cached_bytes = self.cached_bytes.saturating_sub(prev.total_bytes);
@@ -556,6 +666,12 @@ impl GopLruCache {
         self.lru_order.push_back(gop_id);
         self.cached_bytes = self.cached_bytes.saturating_add(total_bytes);
         self.cache_misses += 1;
+        debug_assert!(
+            self.cached_bytes <= self.max_bytes,
+            "GopLruCache exceeded max_bytes: {} > {}",
+            self.cached_bytes,
+            self.max_bytes
+        );
 
         let frame = self.lookup_frame_unchecked(gop_id, frame_index)?;
         Ok((frame, CacheLookup::Miss))
@@ -577,6 +693,13 @@ impl GopLruCache {
         self.entries.clear();
         self.lru_order.clear();
         self.cached_bytes = 0;
+        self.uncached = None;
+    }
+
+    fn serve_uncached(&mut self, frame: DecodedFrame) -> (&DecodedFrame, CacheLookup) {
+        self.cache_misses += 1;
+        self.bypassed_decodes += 1;
+        (&*self.uncached.insert(frame), CacheLookup::Miss)
     }
 
     fn touch_gop(&mut self, gop_id: u64) {
@@ -905,7 +1028,15 @@ pub struct PresentationClock {
     base_media_ns: i64,
     anchor_mono_ns: i64,
     last_drive_mode: ClockDriveMode,
+    last_reported_ns: Option<i64>,
+    seek_generation: u64,
+    audio_resync_target_ns: Option<i64>,
 }
+
+/// After a `seek`/`play`, an audio clock reading is trusted again only once it lands within
+/// `[target, fallback_position + AUDIO_RESYNC_TOLERANCE_NS]`; stale pre-seek positions (ahead or
+/// behind) are ignored until then.
+pub const AUDIO_RESYNC_TOLERANCE_NS: i64 = 500_000_000;
 
 impl Default for PresentationClock {
     fn default() -> Self {
@@ -932,7 +1063,30 @@ impl PresentationClock {
             base_media_ns: 0,
             anchor_mono_ns: now,
             last_drive_mode: ClockDriveMode::MonotonicFallback,
+            last_reported_ns: None,
+            seek_generation: 0,
+            audio_resync_target_ns: None,
         }
+    }
+
+    /// Monotonic counter incremented by every [`Self::seek`] / [`Self::play`]; audio clock
+    /// samples from before the latest one are ignored until the audio clock re-synchronises.
+    pub const fn seek_generation(&self) -> u64 {
+        self.seek_generation
+    }
+
+    /// Re-anchors the clock at `media_ns` and resets the monotonic clamp.
+    fn rebase(&mut self, media_ns: i64) {
+        self.base_media_ns = media_ns;
+        self.anchor_mono_ns = self.time_source.now_ns();
+        self.last_reported_ns = None;
+    }
+
+    /// [`Self::rebase`] plus a new seek generation: audio must re-synchronise to `media_ns`.
+    fn rebase_and_await_audio(&mut self, media_ns: i64) {
+        self.rebase(media_ns);
+        self.seek_generation = self.seek_generation.wrapping_add(1);
+        self.audio_resync_target_ns = Some(media_ns);
     }
 
     /// Returns the configured A/V offset in milliseconds (default `0`).
@@ -980,24 +1134,25 @@ impl PresentationClock {
 
     /// Starts or resumes playback anchored at `start_media_ns`.
     pub fn play(&mut self, start_media_ns: i64) {
-        self.base_media_ns = start_media_ns;
-        self.anchor_mono_ns = self.time_source.now_ns();
+        self.rebase_and_await_audio(start_media_ns);
         self.playing = true;
     }
 
     /// Pauses playback and freezes the current position (sampling `audio_clock` if active).
     pub fn pause(&mut self, audio_clock: Option<&dyn AudioClockSource>) -> i64 {
         let reading = self.sample_position(audio_clock);
-        self.base_media_ns = reading.media_position_ns;
-        self.anchor_mono_ns = self.time_source.now_ns();
+        self.rebase(reading.media_position_ns);
         self.playing = false;
         reading.media_position_ns
     }
 
     /// Seeks the clock to `media_ns` while preserving playing/paused state.
+    ///
+    /// Resets the monotonic clamp and starts a new seek generation: audio clock positions that
+    /// still reflect the pre-seek playhead are ignored (monotonic fallback drives the clock)
+    /// until the audio clock reports a position consistent with the seek target.
     pub fn seek(&mut self, media_ns: i64) {
-        self.base_media_ns = media_ns;
-        self.anchor_mono_ns = self.time_source.now_ns();
+        self.rebase_and_await_audio(media_ns);
     }
 
     /// Samples the current media presentation position.
@@ -1016,40 +1171,56 @@ impl PresentationClock {
             };
         }
 
-        if let Some(audio_pos_ns) = audio_clock.and_then(AudioClockSource::position_ns) {
-            let offset_ns = self.av_offset_ms.saturating_mul(1_000_000);
-            let media_position_ns = audio_pos_ns.saturating_add(offset_ns);
-            // Keep monotonic fallback continuously anchored to audio master for glitch-free fallback.
-            self.base_media_ns = media_position_ns;
-            self.anchor_mono_ns = now_mono;
-            self.last_drive_mode = ClockDriveMode::AudioMaster;
-            return ClockReading {
-                media_position_ns,
-                drive_mode: ClockDriveMode::AudioMaster,
-                av_offset_ms: self.av_offset_ms,
-                av_offset_status: self.av_offset_status,
-            };
-        }
-
         let elapsed_mono_ns = now_mono.saturating_sub(self.anchor_mono_ns).max(0);
         let scaled_delta =
             i128::from(elapsed_mono_ns) * i128::from(self.speed_permille) / 1_000i128;
         let delta_ns = i64::try_from(scaled_delta).unwrap_or(i64::MAX);
-        let media_position_ns = self.base_media_ns.saturating_add(delta_ns);
-        self.last_drive_mode = ClockDriveMode::MonotonicFallback;
+        let fallback_position_ns = self.base_media_ns.saturating_add(delta_ns);
+
+        let audio_position_ns = audio_clock
+            .and_then(AudioClockSource::position_ns)
+            .map(|pos| pos.saturating_add(self.av_offset_ms.saturating_mul(1_000_000)))
+            .filter(|&pos| match self.audio_resync_target_ns {
+                None => true,
+                Some(target) => {
+                    pos >= target
+                        && pos <= fallback_position_ns.saturating_add(AUDIO_RESYNC_TOLERANCE_NS)
+                }
+            });
+
+        let (raw_position_ns, drive_mode) = if let Some(audio_pos_ns) = audio_position_ns {
+            // Keep monotonic fallback continuously anchored to audio master for glitch-free fallback.
+            self.audio_resync_target_ns = None;
+            self.base_media_ns = audio_pos_ns;
+            self.anchor_mono_ns = now_mono;
+            (audio_pos_ns, ClockDriveMode::AudioMaster)
+        } else {
+            (fallback_position_ns, ClockDriveMode::MonotonicFallback)
+        };
+        self.last_drive_mode = drive_mode;
+
+        // Never report a position earlier than one already reported in this play segment
+        // (audio jitter / fallback-to-audio hand-over), so frame indices never oscillate.
+        let media_position_ns = self
+            .last_reported_ns
+            .map_or(raw_position_ns, |last| last.max(raw_position_ns));
+        self.last_reported_ns = Some(media_position_ns);
 
         ClockReading {
             media_position_ns,
-            drive_mode: ClockDriveMode::MonotonicFallback,
+            drive_mode,
             av_offset_ms: self.av_offset_ms,
             av_offset_status: self.av_offset_status,
         }
     }
 
     /// Resolves the active `frame_index` whose `pts_ns` is greatest `<= position_ns`.
+    ///
+    /// Returns `None` for an empty track and for B-frame tracks (decode order is not
+    /// presentation order there, so the mapping is refused like every frame-addressed API).
     pub fn frame_index_for_position(track: &Mp4VideoTrack, position_ns: i64) -> Option<u64> {
         let frames = track.frames();
-        if frames.is_empty() {
+        if frames.is_empty() || track.has_b_frames() {
             return None;
         }
         let idx = frames.partition_point(|f| f.pts_ns <= position_ns);
