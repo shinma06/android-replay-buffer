@@ -297,36 +297,42 @@ pub struct AdbDeviceInfo {
     pub transport_id: Option<String>,
 }
 
-/// Parses the stdout of `adb shell wm size` into active display `(width, height)` pixels.
+/// Parses the stdout of `adb shell wm size` into physical display `(width, height)` pixels.
 ///
-/// Prefers `Override size: WxH` over `Physical size: WxH` when present (handles devices and
-/// emulators configured with display size overrides), falling back to `Physical size: WxH`.
-/// Returns `None` when dimensions are absent, malformed, or zero.
+/// Prefers `Physical size: WxH` (raw `getevent` touch coordinates live in the physical panel
+/// space, so tap mapping must not use a `wm size` override), falling back to
+/// `Override size: WxH` if only an override line is valid. Returns `None` when dimensions are
+/// absent, malformed, or zero.
 #[must_use]
 pub fn parse_wm_size_output(stdout: &str) -> Option<(u32, u32)> {
     let mut physical_size: Option<(u32, u32)> = None;
     let mut override_size: Option<(u32, u32)> = None;
     for raw_line in stdout.lines() {
         let line = raw_line.trim();
-        if let Some(rest) = line.strip_prefix("Override size:")
-            && let Some(dims) = parse_wxh_dims(rest.trim())
-        {
-            override_size = Some(dims);
-        } else if let Some(rest) = line.strip_prefix("Physical size:")
+        if let Some(rest) = line.strip_prefix("Physical size:")
             && let Some(dims) = parse_wxh_dims(rest.trim())
         {
             physical_size = Some(dims);
+        } else if let Some(rest) = line.strip_prefix("Override size:")
+            && let Some(dims) = parse_wxh_dims(rest.trim())
+        {
+            override_size = Some(dims);
         }
     }
-    override_size.or(physical_size)
+    physical_size.or(override_size)
 }
 
 /// Parses `adb shell cmd package list packages -U` stdout into a `uid -> package_name` map.
 ///
 /// Expected line format: `package:<pkg_name> uid:<uid>` (or comma-separated UIDs for multi-user).
+///
+/// Only unambiguous application UIDs are returned: system UIDs (app id below
+/// [`FIRST_APPLICATION_UID`], e.g. `1000` = `system_server`) and UIDs shared by several packages
+/// (`sharedUserId`) are dropped so their logs are never attributed to an arbitrary package.
 #[must_use]
 pub fn parse_package_uid_list(stdout: &str) -> BTreeMap<u32, String> {
-    let mut map = BTreeMap::new();
+    let mut map: BTreeMap<u32, String> = BTreeMap::new();
+    let mut ambiguous: BTreeSet<u32> = BTreeSet::new();
     for raw_line in stdout.lines() {
         let line = raw_line.trim();
         let Some(rest) = line.strip_prefix("package:") else {
@@ -340,13 +346,33 @@ pub fn parse_package_uid_list(stdout: &str) -> BTreeMap<u32, String> {
             continue;
         };
         for uid_str in uid_token.split(',') {
-            if let Ok(uid) = uid_str.trim().parse::<u32>() {
-                map.entry(uid).or_insert_with(|| pkg.to_owned());
+            let Ok(uid) = uid_str.trim().parse::<u32>() else {
+                continue;
+            };
+            if uid % PER_USER_UID_RANGE < FIRST_APPLICATION_UID {
+                continue;
+            }
+            match map.get(&uid) {
+                Some(existing) if existing != pkg => {
+                    ambiguous.insert(uid);
+                }
+                Some(_) => {}
+                None => {
+                    map.insert(uid, pkg.to_owned());
+                }
             }
         }
     }
+    for uid in ambiguous {
+        map.remove(&uid);
+    }
     map
 }
+
+/// First Android application UID (`android.os.Process.FIRST_APPLICATION_UID`).
+pub const FIRST_APPLICATION_UID: u32 = 10_000;
+/// Per-user UID range (`android.os.UserHandle.PER_USER_RANGE`).
+pub const PER_USER_UID_RANGE: u32 = 100_000;
 
 fn parse_wxh_dims(token: &str) -> Option<(u32, u32)> {
     let (w_str, h_str) = token.split_once('x').or_else(|| token.split_once('X'))?;
@@ -694,7 +720,7 @@ impl<R: AdbCommandRunner> AdbClient<R> {
         Ok(out.stdout)
     }
 
-    /// Best-effort query of the device's active display size via `adb -s <serial> shell wm size`.
+    /// Best-effort query of the device's physical display size via `adb -s <serial> shell wm size`.
     ///
     /// Returns `None` if the command fails or produces unrecognized output.
     #[must_use]
@@ -2625,29 +2651,35 @@ R5CX123456A            unauthorized usb:1-1 transport_id:2
     }
 
     #[test]
-    fn parse_wm_size_output_prefers_override_over_physical_size() {
+    fn parse_wm_size_output_prefers_physical_and_handles_overrides() {
+        // Raw getevent touch coordinates live in the physical panel space, so the physical
+        // size must win over a (lower) `wm size` override for tap mapping.
         assert_eq!(
             super::parse_wm_size_output("Physical size: 1080x2400\r\n"),
             Some((1080, 2400))
         );
         assert_eq!(
-            super::parse_wm_size_output("Physical size: 1080x2400\nOverride size: 720x1600\n"),
-            Some((720, 1600)),
-            "Override size must take precedence over Physical size when present"
+            super::parse_wm_size_output("Physical size: 1440x3200\nOverride size: 1080x2400\n"),
+            Some((1440, 3200)),
+            "Physical size must take precedence over Override size"
         );
         assert_eq!(
-            super::parse_wm_size_output("Override size: 720x1600\nPhysical size: 1080x2400\n"),
-            Some((720, 1600)),
-            "Override size must take precedence regardless of line order"
+            super::parse_wm_size_output("Override size: 1080x2400\nPhysical size: 1440x3200\n"),
+            Some((1440, 3200)),
+            "Physical size must take precedence regardless of line order"
         );
         assert_eq!(
             super::parse_wm_size_output("Override size: 720x1600\n"),
             Some((720, 1600))
         );
         assert_eq!(
-            super::parse_wm_size_output("Physical size: 1080x2400\nOverride size: 0x0\n"),
-            Some((1080, 2400)),
-            "malformed/zero Override size must fall back to Physical size"
+            super::parse_wm_size_output("Physical size: 0x0\nOverride size: 720x1600\n"),
+            Some((720, 1600)),
+            "malformed Physical size falls back to Override size"
+        );
+        assert_eq!(
+            super::parse_wm_size_output("Physical size: garbage\nOverride size: 1x\n"),
+            None
         );
         assert_eq!(super::parse_wm_size_output("Physical size: 0x2400\n"), None);
         assert_eq!(super::parse_wm_size_output(""), None);
@@ -2673,6 +2705,34 @@ malformed line without prefix\n";
         assert_eq!(
             map.get(&10012).map(String::as_str),
             Some("com.google.android.gms")
+        );
+    }
+
+    #[test]
+    fn parse_package_uid_list_drops_system_and_shared_uids() {
+        let raw = "\
+package:android uid:1000\n\
+package:com.android.settings uid:1000\n\
+package:com.android.phone uid:1001\n\
+package:com.google.android.gms uid:10012\n\
+package:com.google.android.gsf uid:10012\n\
+package:com.example.app uid:10234,1010234\n";
+        let map = super::parse_package_uid_list(raw);
+        assert_eq!(
+            map.get(&1000),
+            None,
+            "system_server uid must never map to an app"
+        );
+        assert_eq!(
+            map.get(&1001),
+            None,
+            "system uids below 10000 are not app uids"
+        );
+        assert_eq!(map.get(&10012), None, "sharedUserId uids are ambiguous");
+        assert_eq!(map.get(&10234).map(String::as_str), Some("com.example.app"));
+        assert_eq!(
+            map.get(&1_010_234).map(String::as_str),
+            Some("com.example.app")
         );
     }
 

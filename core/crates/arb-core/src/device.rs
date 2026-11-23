@@ -31,7 +31,10 @@ pub enum SerialValidationError {
 /// Validates an ADB device transport serial, accepting USB serials (`R3CN1234`, `emulator-5554`),
 /// IPv4 Wi-Fi ADB (`192.168.1.50:5555`), IPv6 Wi-Fi ADB (`[fe80::1]:5555`), and mDNS TLS serials
 /// (`adb-R3CN1234-AbCdEf._adb-tls-connect._tcp`) while strictly rejecting whitespace, control
-/// characters, shell metacharacters, leading `-`, or `..` traversal segments.
+/// characters, shell metacharacters, leading `-`, or `..` traversal segments. `%` is accepted
+/// only as a single IPv6 zone-id separator inside brackets (`[fe80::1%wlan0]:5555`).
+///
+/// Kept 1:1 with the Kotlin `DeviceSelectionPolicy.isValidAdbSerial` in `ide-plugin/client-core`.
 ///
 /// # Errors
 ///
@@ -61,13 +64,13 @@ pub fn validate_adb_serial(serial: &str) -> Result<(), SerialValidationError> {
             reason: "serial must not contain '..'",
         });
     }
-    let allowed = serial
-        .bytes()
-        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-' | b':' | b'[' | b']'));
+    let allowed = serial.bytes().all(|b| {
+        b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-' | b':' | b'[' | b']' | b'%')
+    });
     if !allowed {
         return Err(SerialValidationError::Invalid {
             value: serial.to_owned(),
-            reason: "serial contains disallowed characters (only ASCII alphanumerics and . _ - : [ ] are allowed)",
+            reason: "serial contains disallowed characters (only ASCII alphanumerics and . _ - : [ ] % are allowed)",
         });
     }
     // Validate optional IPv6 bracket syntax: at most one leading '[' paired with ']' before optional ':port'.
@@ -98,6 +101,20 @@ pub fn validate_adb_serial(serial: &str) -> Result<(), SerialValidationError> {
                 reason: "IPv6 host inside brackets must not be empty",
             });
         }
+        if let Some((host, zone)) = inside.split_once('%')
+            && (host.is_empty() || zone.is_empty() || zone.contains('%'))
+        {
+            return Err(SerialValidationError::Invalid {
+                value: serial.to_owned(),
+                reason: "IPv6 zone id must be a single non-empty '%zone' after the host",
+            });
+        }
+        if after.contains('%') {
+            return Err(SerialValidationError::Invalid {
+                value: serial.to_owned(),
+                reason: "'%' is only allowed as an IPv6 zone id inside brackets",
+            });
+        }
         if !after.is_empty() {
             let Some(port_str) = after.strip_prefix(':') else {
                 return Err(SerialValidationError::Invalid {
@@ -112,6 +129,11 @@ pub fn validate_adb_serial(serial: &str) -> Result<(), SerialValidationError> {
                 });
             }
         }
+    } else if serial.contains('%') {
+        return Err(SerialValidationError::Invalid {
+            value: serial.to_owned(),
+            reason: "'%' is only allowed as an IPv6 zone id inside brackets",
+        });
     }
     Ok(())
 }
@@ -215,6 +237,8 @@ mod tests {
             "192.168.1.50:5555",
             "[fe80::1]:5555",
             "[2001:db8::42]:37891",
+            "[fe80::1]",
+            "[fe80::1%wlan0]:5555",
             "adb-R3CN1234-AbCdEf._adb-tls-connect._tcp",
             "adb-2A121FDH200ABC-xYz123._adb-tls-connect._tcp.",
         ];
@@ -249,7 +273,19 @@ mod tests {
             "fe80::1]:5555",
             "[]:5555",
             "[fe80::1]:abc",
+            "[fe80::1]:",
+            "[fe80::1]x",
+            "x[fe80::1]",
+            "[[a]]",
             "a b",
+            "-e",
+            "--help",
+            "émulator-5554",
+            "dev%41",
+            "[%eth0]:5555",
+            "[fe80::1%]:5555",
+            "[fe80::1%a%b]:5555",
+            "[fe80::1]%eth0",
         ];
         for serial in invalid {
             assert!(

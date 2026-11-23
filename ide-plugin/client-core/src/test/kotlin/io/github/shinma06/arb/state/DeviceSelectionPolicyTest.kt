@@ -288,4 +288,48 @@ class DeviceSelectionPolicyTest {
             "newer on-disk mtime at the same path must trigger seamless auto-upgrade",
         )
     }
+    @Test
+    fun `serial validation mirrors Rust validate_adb_serial exactly`() {
+        // Same accept / reject vectors as `arb_core::device` tests (GUI / CLI / daemon parity).
+        val valid = listOf(
+            "emulator-5554",
+            "R3CN1234567",
+            "192.168.1.50:5555",
+            "[fe80::1]:5555",
+            "[2001:db8::42]:37891",
+            "[fe80::1]",
+            "[fe80::1%wlan0]:5555",
+            "adb-R3CN1234-AbCdEf._adb-tls-connect._tcp",
+            "adb-2A121FDH200ABC-xYz123._adb-tls-connect._tcp.",
+            "a".repeat(255),
+        )
+        for (serial in valid) {
+            assertTrue(DeviceSelectionPolicy.isValidAdbSerial(serial), "expected valid: $serial")
+        }
+        val invalid = listOf(
+            "", " ", "emulator-5554;rm -rf /", "192.168.1.50:5555 && id", "dev|cat",
+            "dev\$(whoami)", "dev`id`", "dev\nline2", "dev\u0000null", "../escape", "foo..bar",
+            "-flag-injection", "-e", "--help", "foo/bar", "foo\\bar", "[fe80::1", "fe80::1]:5555",
+            "[]:5555", "[fe80::1]:abc", "[fe80::1]:", "[fe80::1]x", "x[fe80::1]", "[[a]]", "a b",
+            // ASCII only; '%' only as a single IPv6 zone-id separator inside brackets.
+            "émulator-5554", "端末1", "١٢٣", "dev%41", "[%eth0]:5555", "[fe80::1%]:5555",
+            "[fe80::1%a%b]:5555", "[fe80::1]%eth0",
+            "a".repeat(256),
+        )
+        for (serial in invalid) {
+            assertFalse(DeviceSelectionPolicy.isValidAdbSerial(serial), "expected invalid: ${serial.take(40)}")
+        }
+    }
+
+    @Test
+    fun `online serials are trimmed and blank entries ignored like Rust`() {
+        assertEquals(
+            DeviceSelectionOutcome.Selected(serial = "emulator-5554", autoSelected = true),
+            DeviceSelectionPolicy.evaluateOnlineSerials(null, listOf(" emulator-5554 ", "  ")),
+        )
+        assertEquals(
+            DeviceSelectionOutcome.Selected(serial = "emulator-5554", autoSelected = false),
+            DeviceSelectionPolicy.evaluateOnlineSerials(" emulator-5554", listOf("emulator-5554 ", "R3CN")),
+        )
+    }
 }

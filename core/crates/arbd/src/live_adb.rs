@@ -978,23 +978,32 @@ impl MediaThreadCtx {
 fn spawn_scrcpy_stderr_collector(stderr: ChildStderr, buf: Arc<Mutex<String>>) {
     let _ = thread::Builder::new()
         .name("arbd-scrcpy-stderr".to_owned())
-        .spawn(move || {
-            let mut reader = BufReader::new(stderr);
-            let mut line = String::new();
-            while let Ok(n) = reader.read_line(&mut line) {
-                if n == 0 {
-                    break;
-                }
-                if let Ok(mut guard) = buf.lock()
-                    && guard.len() < MAX_SCRCPY_STDERR_BYTES
-                {
-                    let remaining = MAX_SCRCPY_STDERR_BYTES - guard.len();
-                    let take = line.floor_char_boundary(remaining.min(line.len()));
-                    guard.push_str(&line[..take]);
-                }
-                line.clear();
-            }
-        });
+        .spawn(move || collect_scrcpy_stderr(BufReader::new(stderr), &buf));
+}
+
+/// Drains `reader` to EOF, retaining at most [`MAX_SCRCPY_STDERR_BYTES`] of its text in `buf`.
+///
+/// Reads raw bytes (lossily decoded) so invalid UTF-8 never stops the drain: the child's stderr
+/// is a pipe, and an undrained pipe would eventually block `scrcpy-server`'s writes.
+fn collect_scrcpy_stderr<R: BufRead>(mut reader: R, buf: &Mutex<String>) {
+    let mut raw = Vec::new();
+    loop {
+        raw.clear();
+        match reader.read_until(b'\n', &mut raw) {
+            Ok(0) => break,
+            Ok(_) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => break,
+        }
+        if let Ok(mut guard) = buf.lock()
+            && guard.len() < MAX_SCRCPY_STDERR_BYTES
+        {
+            let line = String::from_utf8_lossy(&raw);
+            let remaining = MAX_SCRCPY_STDERR_BYTES - guard.len();
+            let take = line.floor_char_boundary(remaining.min(line.len()));
+            guard.push_str(&line[..take]);
+        }
+    }
 }
 
 /// Launches scrcpy and its reader threads.
@@ -2066,5 +2075,33 @@ mod tests {
         let plain = super::classify_scrcpy_video_error("connection reset by peer", None);
         assert!(plain.contains("connection reset by peer"));
         assert!(!plain.contains("Running Devices mirroring"));
+    }
+
+    #[test]
+    fn t6c_scrcpy_stderr_collector_keeps_draining_after_invalid_utf8_and_caps_bytes() {
+        use std::io::Cursor;
+        use std::sync::Mutex;
+
+        let mut raw = b"first\n\xff\xfe broken\n".to_vec();
+        raw.extend_from_slice(b"MediaCodec configure failed\n");
+        let reader = Cursor::new(raw);
+        let buf = Mutex::new(String::new());
+        super::collect_scrcpy_stderr(reader, &buf);
+        let text = buf.lock().expect("buf").clone();
+        assert!(text.contains("first"), "text={text:?}");
+        assert!(
+            text.contains("MediaCodec configure failed"),
+            "collector must keep draining past invalid UTF-8 (pipe must never back up): {text:?}"
+        );
+
+        let mut cursor_consumed = Cursor::new(vec![b'x'; super::MAX_SCRCPY_STDERR_BYTES * 3]);
+        let capped = Mutex::new(String::new());
+        super::collect_scrcpy_stderr(&mut cursor_consumed, &capped);
+        assert!(capped.lock().expect("capped").len() <= super::MAX_SCRCPY_STDERR_BYTES);
+        assert_eq!(
+            usize::try_from(cursor_consumed.position()).expect("pos"),
+            super::MAX_SCRCPY_STDERR_BYTES * 3,
+            "collector must drain the whole stream to EOF"
+        );
     }
 }

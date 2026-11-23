@@ -917,8 +917,30 @@ pub fn sanitize_package_filename(package_name: &str) -> String {
     let trimmed = out.trim_matches(['.', '_']);
     if trimmed.is_empty() {
         "unknown".to_owned()
+    } else if is_windows_reserved_stem(trimmed) {
+        // Windows refuses to create files whose first dot-separated segment is a legacy device
+        // name (`CON.jsonl`, `nul.app.jsonl`, ...); keep the save identical on every OS.
+        format!("_{trimmed}")
     } else {
         trimmed.to_owned()
+    }
+}
+
+/// Returns `true` when the first dot-separated segment of `stem` is a Windows reserved
+/// device name (`CON`, `PRN`, `AUX`, `NUL`, `COM0`-`COM9`, `LPT0`-`LPT9`), in any case.
+fn is_windows_reserved_stem(stem: &str) -> bool {
+    let first = stem
+        .split('.')
+        .next()
+        .unwrap_or_default()
+        .to_ascii_uppercase();
+    match first.as_str() {
+        "CON" | "PRN" | "AUX" | "NUL" => true,
+        other => {
+            other.len() == 4
+                && (other.starts_with("COM") || other.starts_with("LPT"))
+                && other.as_bytes()[3].is_ascii_digit()
+        }
     }
 }
 
@@ -1153,9 +1175,11 @@ pub fn extract_foreground_app_logs(
             continue;
         }
         let stem = sanitize_package_filename(pkg);
+        // De-duplicate case-insensitively: macOS / Windows filesystems would otherwise map
+        // `com.Example.app` and `com.example.app` onto the same staged file.
         let mut rel_path = format!("app-logs/{stem}.jsonl");
         let mut suffix = 2_u32;
-        while !used_paths.insert(rel_path.clone()) {
+        while !used_paths.insert(rel_path.to_ascii_lowercase()) {
             rel_path = format!("app-logs/{stem}-{suffix}.jsonl");
             suffix = suffix.saturating_add(1);
         }
@@ -2260,5 +2284,80 @@ mod tests {
 
         let filtered = filter_logs_by_package(&all_logs, &all_logs, "com.example.shop");
         assert_eq!(filtered.len(), shop.logs.len());
+    }
+
+    #[test]
+    fn t6c_app_log_paths_are_case_insensitively_unique_and_never_windows_reserved() {
+        use super::{extract_foreground_app_logs, sanitize_package_filename};
+
+        // Windows reserved device names (checked on the first dot-separated segment, any case).
+        for reserved in [
+            "CON",
+            "nul",
+            "Aux",
+            "PRN",
+            "com1",
+            "LPT9",
+            "con.example",
+            "NUL.app",
+        ] {
+            let stem = sanitize_package_filename(reserved);
+            let first = stem
+                .split('.')
+                .next()
+                .unwrap_or_default()
+                .to_ascii_uppercase();
+            assert!(
+                !matches!(
+                    first.as_str(),
+                    "CON" | "PRN" | "AUX" | "NUL" | "COM1" | "LPT9"
+                ),
+                "{reserved:?} sanitized to Windows-reserved stem {stem:?}"
+            );
+            assert_ne!(stem, "", "sanitized stem must not be empty");
+        }
+        assert_eq!(
+            sanitize_package_filename("com.console.app"),
+            "com.console.app"
+        );
+        assert_eq!(sanitize_package_filename("console"), "console");
+
+        // Two foreground packages that differ only by case must never share a file on
+        // case-insensitive filesystems (macOS / Windows).
+        let sec = 1_000_000_000_i64;
+        let frames = vec![make_frame(0, 10 * sec), make_frame(1, 11 * sec)];
+        let logs = vec![
+            make_log(
+                1,
+                10 * sec,
+                "wm_resumed_activity",
+                1000,
+                "[0,1,com.Example.app/.Main]",
+            ),
+            make_log(2, 10 * sec + 10, "com.Example.app", 4100, "upper"),
+            make_log(
+                3,
+                10 * sec + 20,
+                "wm_resumed_activity",
+                1000,
+                "[0,2,com.example.app/.Main]",
+            ),
+            make_log(4, 10 * sec + 30, "com.example.app", 4200, "lower"),
+        ];
+        let extracted = extract_foreground_app_logs(&logs, &frames);
+        assert_eq!(extracted.len(), 2, "both case-variant packages extracted");
+        let lowered: std::collections::BTreeSet<String> = extracted
+            .iter()
+            .map(|e| e.relative_path.to_ascii_lowercase())
+            .collect();
+        assert_eq!(
+            lowered.len(),
+            extracted.len(),
+            "app-log paths must be unique case-insensitively: {:?}",
+            extracted
+                .iter()
+                .map(|e| &e.relative_path)
+                .collect::<Vec<_>>()
+        );
     }
 }

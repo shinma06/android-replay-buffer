@@ -36,7 +36,8 @@ sealed class DeviceSelectionOutcome {
  * USB / mDNS ADB serial validation.
  */
 object DeviceSelectionPolicy {
-    private const val MAX_ADB_SERIAL_LEN: Int = 256
+    /** Mirrors Rust `arb_core::device::MAX_ADB_SERIAL_LEN` (bytes; serials are ASCII-only). */
+    private const val MAX_ADB_SERIAL_LEN: Int = 255
 
     /**
      * Evaluates the target device given an optional [preferredSerial] and the currently visible
@@ -57,6 +58,7 @@ object DeviceSelectionPolicy {
         preferredSerial: String?,
         onlineSerials: List<String>,
     ): DeviceSelectionOutcome {
+        val onlineSerials = onlineSerials.map { it.trim() }.filter { it.isNotEmpty() }
         val normalizedPreferred = preferredSerial?.trim()?.takeIf { it.isNotEmpty() }
         if (normalizedPreferred != null) {
             return if (normalizedPreferred in onlineSerials) {
@@ -82,14 +84,46 @@ object DeviceSelectionPolicy {
      * - Wi-Fi TCP/IP IPv6 (`[fe80::1]:5555`)
      * - Wireless Debugging mDNS TLS (`adb-R3CN1234-AbCdEf._adb-tls-connect._tcp`)
      *
-     * Strictly rejects empty strings, leading `-`, `..` traversal, whitespace, control characters,
-     * and shell metacharacters.
+     * A 1:1 port of Rust `arb_core::device::validate_adb_serial` so the GUI never accepts a
+     * serial that `arbd` / the CLI reject: ASCII alphanumerics and `. _ - : [ ] %` only, at most
+     * 255 bytes, no leading `-`, no `..`, and at most one leading `[host]` (optionally with a
+     * single `%zone` id) optionally followed by a numeric `:port`.
      */
     fun isValidAdbSerial(serial: String): Boolean {
         if (serial.isEmpty() || serial.length > MAX_ADB_SERIAL_LEN) return false
         if (serial.startsWith("-") || serial.contains("..")) return false
-        return serial.all { ch ->
-            ch.isLetterOrDigit() || ch in charArrayOf('-', '_', '.', ':', '[', ']', '%')
+        val allowed = serial.all { ch ->
+            ch in 'a'..'z' || ch in 'A'..'Z' || ch in '0'..'9' || ch in ALLOWED_SERIAL_PUNCTUATION
         }
+        if (!allowed) return false
+        val openCount = serial.count { it == '[' }
+        val closeCount = serial.count { it == ']' }
+        if (openCount != closeCount || openCount > 1) return false
+        if (openCount == 1) {
+            if (!serial.startsWith("[")) return false
+            val rest = serial.substring(1)
+            val closeIdx = rest.indexOf(']')
+            if (closeIdx < 0) return false
+            val inside = rest.substring(0, closeIdx)
+            val after = rest.substring(closeIdx + 1)
+            if (inside.isEmpty()) return false
+            val zoneIdx = inside.indexOf('%')
+            if (zoneIdx >= 0) {
+                val host = inside.substring(0, zoneIdx)
+                val zone = inside.substring(zoneIdx + 1)
+                if (host.isEmpty() || zone.isEmpty() || zone.contains('%')) return false
+            }
+            if (after.contains('%')) return false
+            if (after.isNotEmpty()) {
+                if (!after.startsWith(":")) return false
+                val port = after.substring(1)
+                if (port.isEmpty() || !port.all { it in '0'..'9' }) return false
+            }
+        } else if (serial.contains('%')) {
+            return false
+        }
+        return true
     }
+
+    private val ALLOWED_SERIAL_PUNCTUATION = charArrayOf('.', '_', '-', ':', '[', ']', '%')
 }

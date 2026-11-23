@@ -633,7 +633,14 @@ impl ManifestV2 {
                 });
             }
         }
+        let mut seen_app_log_paths = std::collections::BTreeSet::new();
         for app_log in &self.app_logs {
+            if !seen_app_log_paths.insert(app_log.relative_path.to_ascii_lowercase()) {
+                return Err(ValidationError::InvalidFilePath {
+                    path: app_log.relative_path.clone(),
+                    reason: "app_logs relative_path must be unique (case-insensitively)",
+                });
+            }
             if app_log.package_name.trim().is_empty() {
                 return Err(ValidationError::EmptyField {
                     field: "app_logs[].package_name",
@@ -893,6 +900,42 @@ mod tests {
                 Err(ValidationError::InvalidFilePath { .. })
             ),
             "app_logs outside app-logs/ must fail validation"
+        );
+    }
+
+    #[test]
+    fn app_logs_manifest_validation_rejects_case_insensitive_duplicate_paths() {
+        use super::AppLogSummary;
+
+        let mut m = valid_manifest();
+        for (pkg, path, sha) in [
+            (
+                "com.Example.app",
+                "app-logs/com.Example.app.jsonl",
+                "e".repeat(64),
+            ),
+            (
+                "com.example.app",
+                "app-logs/com.example.app.jsonl",
+                "f".repeat(64),
+            ),
+        ] {
+            m.files.push(FileDigest {
+                path: path.into(),
+                bytes: 1,
+                sha256: sha.clone(),
+            });
+            m.app_logs.push(AppLogSummary {
+                package_name: pkg.into(),
+                relative_path: path.into(),
+                line_count: 1,
+                crash_count: 0,
+                sha256: sha,
+            });
+        }
+        assert!(
+            matches!(m.validate(), Err(ValidationError::InvalidFilePath { .. })),
+            "app_logs paths colliding on case-insensitive filesystems must fail validation"
         );
     }
 }
