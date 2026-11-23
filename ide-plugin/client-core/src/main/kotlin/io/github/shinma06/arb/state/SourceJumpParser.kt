@@ -59,7 +59,7 @@ object SourceJumpParser {
     fun parseLogText(text: String): SourceJumpTarget? {
         if (text.isBlank()) return null
 
-        STACK_FRAME_REGEX.find(text)?.let { m ->
+        STACK_FRAME_REGEX.findAll(text).firstOrNull { !isSystemNoiseClass(it.groupValues[1]) }?.let { m ->
             val rawClass = m.groupValues[1]
             val outerClass = rawClass.substringBefore('$')
             val fileName = m.groupValues[3]
@@ -88,10 +88,8 @@ object SourceJumpParser {
             )
         }
 
-        FQN_CLASS_REGEX.find(text)?.let { m ->
+        FQN_CLASS_REGEX.findAll(text).firstOrNull { !isSystemNoiseClass(it.groupValues[1]) }?.let { m ->
             val fqn = m.groupValues[1]
-            // Skip core JDK/Android framework noise unless no other match exists, except app packages
-            if (isSystemNoiseClass(fqn)) return null
             val shortName = fqn.substringAfterLast('.')
             return SourceJumpTarget(
                 displayLabel = shortName,
@@ -109,5 +107,9 @@ object SourceJumpParser {
             fqn.startsWith("kotlin.") ||
             fqn.startsWith("kotlinx.") ||
             fqn.startsWith("dalvik.") ||
+            fqn.startsWith("android.") ||
+            fqn.startsWith("androidx.") ||
+            fqn.startsWith("com.android.") ||
+            fqn.startsWith("com.google.android.") ||
             fqn.startsWith("sun.")
 }

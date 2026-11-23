@@ -54,10 +54,10 @@ object ArbQuickConfigDialog {
         }
         val audioCheckbox = JCheckBox("端末音声を録音する (API 33+)", current.audioEnabled)
         val crashCheckbox = JCheckBox("アプリクラッシュ (am_crash) 時に自動保存する", current.crashAutosaveEnabled)
-        val maxFpsCombo = ComboBox(arrayOf(15, 30, 60)).apply {
+        val maxFpsCombo = ComboBox((listOf(15, 30, 60) + current.videoMaxFps).distinct().sorted().toTypedArray()).apply {
             selectedItem = current.videoMaxFps
         }
-        val maxSizeCombo = ComboBox(arrayOf(1024, 1280, 1920)).apply {
+        val maxSizeCombo = ComboBox((listOf(1024, 1280, 1920) + current.videoMaxSize).distinct().sorted().toTypedArray()).apply {
             selectedItem = current.videoMaxSize
         }
 

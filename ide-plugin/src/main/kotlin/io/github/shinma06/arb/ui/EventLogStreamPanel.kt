@@ -291,9 +291,11 @@ class EventLogStreamPanel(
     fun render(state: TimelineViewerState) {
         currentState = state
         rebuildSyncedRows()
-        populateUnanchored(state.unanchoredLogs)
-
-        tabbedPane.setTitleAt(1, "$UNANCHORED_TAB_TITLE (${state.unanchoredLogs.size})")
+        if (state.unanchoredLogs !== lastUnanchoredRecords) {
+            lastUnanchoredRecords = state.unanchoredLogs
+            populateUnanchored(state.unanchoredLogs)
+            tabbedPane.setTitleAt(1, "$UNANCHORED_TAB_TITLE (${state.unanchoredLogs.size})")
+        }
 
         val truncNotice = state.unanchoredTruncatedNotice
         unanchoredTruncatedBanner.isVisible = truncNotice != null
@@ -318,14 +320,50 @@ class EventLogStreamPanel(
         discontinuityBar.render(state.discontinuities)
     }
 
+    private var lastUnanchoredRecords: List<LogRecord>? = null
+    private var lastStructureKey: List<Any?>? = null
+    private var lastFlagKey: List<Any?>? = null
+
+    /**
+     * Rows are re-derived (regex parse + tap correlation over up to thousands of records) only when
+     * the records, filter, keyword or time mapping change. Per-frame playhead / trim-range changes
+     * only re-flag the existing rows, so the list keeps its selection and scroll position.
+     */
     private fun rebuildSyncedRows() {
         val s = currentState ?: return
-        val rows = s.buildSyncedEventRows(filter = activeFilter, keyword = searchField.text)
-        displayedRows = rows
-        syncedListModel.clear()
-        for (row in rows) {
-            syncedListModel.addElement(row)
+        val keyword = searchField.text
+        val structureKey = listOf(
+            System.identityHashCode(s.mainLogs), System.identityHashCode(s.mainTaps),
+            System.identityHashCode(s.crashes), System.identityHashCode(s.screens),
+            System.identityHashCode(s.summary.epochs), System.identityHashCode(s.filmstrip),
+            s.frameCount, activeFilter, keyword,
+        )
+        if (structureKey != lastStructureKey) {
+            lastStructureKey = structureKey
+            lastFlagKey = listOf(s.currentFrameIndex, s.inFrameIndex, s.outFrameIndex)
+            val rows = s.buildSyncedEventRows(filter = activeFilter, keyword = keyword)
+            displayedRows = rows
+            syncedListModel.clear()
+            for (row in rows) {
+                syncedListModel.addElement(row)
+            }
+            return
         }
+        val flagKey = listOf(s.currentFrameIndex, s.inFrameIndex, s.outFrameIndex)
+        if (flagKey == lastFlagKey) return
+        lastFlagKey = flagKey
+        val hasRange = s.frameCount > 0L
+        val updated = displayedRows.mapIndexed { i, row ->
+            val f = row.frameIndex
+            val inRange = f == null || !hasRange || f in s.inFrameIndex..s.outFrameIndex
+            val atPlayhead = f != null && f == s.currentFrameIndex
+            if (row.isInTrimRange == inRange && row.isAtPlayhead == atPlayhead) {
+                row
+            } else {
+                row.copy(isInTrimRange = inRange, isAtPlayhead = atPlayhead).also { syncedListModel.set(i, it) }
+            }
+        }
+        displayedRows = updated
     }
 
     private fun populateUnanchored(records: List<LogRecord>) {

@@ -67,8 +67,14 @@ class ArbBundleFileEditor(
         onTrimExport = { inFrame, outFrame -> performTrim(inFrame, outFrame) },
         onPngExport = { frameIndex, outputPath -> performPngExport(frameIndex, outputPath) },
         onRangeChanged = { inFrame, outFrame, playhead ->
-            playbackController?.setInFrame(inFrame)
-            playbackController?.setOutFrame(outFrame)
+            // setIn/OutFrame may perform a blocking exact seek (IPC + SHM read): never on the EDT.
+            state = state?.copy(inFrameIndex = inFrame, outFrameIndex = outFrame, currentFrameIndex = playhead)
+            worker.submit {
+                runCatching {
+                    playbackController?.setInFrame(inFrame)
+                    playbackController?.setOutFrame(outFrame)
+                }.onFailure { logger.debug("ARB range update failed", it) }
+            }
             persistEditSession(inFrame, outFrame, playhead)
         },
         onPlayPauseToggle = {
@@ -136,6 +142,9 @@ class ArbBundleFileEditor(
     @Volatile
     private var editSessionId: String? = null
 
+    @Volatile
+    private var disposed = false
+
     init {
         loadBundleAsync()
     }
@@ -149,6 +158,22 @@ class ArbBundleFileEditor(
                         holderKind = LeaseHolderKind.IDE_VIEWER,
                         holderPid = ProcessHandle.current().pid(),
                     )
+                }
+
+                // Take ownership of the lease immediately so a tab closed mid-load cannot leak it.
+                val openedViewportId = java.util.concurrent.atomic.AtomicReference<String?>(null)
+                leaseController = BundleLeaseController(
+                    leaseId = opened.leaseId,
+                    renewAction = { id -> daemonService.withClient { it.bundleLeaseRenew(id) } },
+                    closeLeaseAction = { id -> daemonService.withClient { it.bundleClose(id) } },
+                    closeViewportAction = {
+                        openedViewportId.get()?.let { vpId -> daemonService.withClient { it.mediaCloseViewport(vpId) } }
+                    },
+                    onHeartbeatError = { err -> logger.warn("ARB lease heartbeat failed", err) },
+                )
+                if (disposed) {
+                    releaseResources()
+                    return@submit
                 }
 
                 val sessionId = "ide-${opened.bundleId}"
@@ -187,22 +212,17 @@ class ArbBundleFileEditor(
                 if (opened.summary.videoPath != null && frameCount > 0L) {
                     val vp = daemonService.withClient { it.mediaOpenViewport(opened.bundleId) }
                     viewportId = vp.viewportId
+                    openedViewportId.set(vp.viewportId)
                     frameCount = vp.frameCount
                     shmReader = ShmFrameRingReader.open(Path.of(vp.shmPath))
+                    if (disposed) {
+                        releaseResources()
+                        return@submit
+                    }
                     filmstrip = runCatching {
                         daemonService.withClient { it.mediaFilmstrip(vp.viewportId) }.entries
                     }.getOrDefault(emptyList())
                 }
-
-                leaseController = BundleLeaseController(
-                    leaseId = opened.leaseId,
-                    renewAction = { id -> daemonService.withClient { it.bundleLeaseRenew(id) } },
-                    closeLeaseAction = { id -> daemonService.withClient { it.bundleClose(id) } },
-                    closeViewportAction = viewportId?.let { vpId ->
-                        { daemonService.withClient { it.mediaCloseViewport(vpId) } }
-                    },
-                    onHeartbeatError = { err -> logger.warn("ARB lease heartbeat failed", err) },
-                )
 
                 val initialIn = existingSession?.inFrameIndex ?: 0L
                 val initialOut = existingSession?.outFrameIndex ?: (frameCount - 1L).coerceAtLeast(0L)
@@ -263,6 +283,10 @@ class ArbBundleFileEditor(
                         SwingUtilities.invokeLater { panel.renderPlaybackState(pb) }
                     }
                     playbackController = ctrl
+                    if (disposed) {
+                        releaseResources()
+                        return@submit
+                    }
                 }
 
                 SwingUtilities.invokeLater {
@@ -354,7 +378,9 @@ class ArbBundleFileEditor(
                 val updated = (state ?: current).copy(inFrameIndex = pb.inFrameIndex, outFrameIndex = pb.outFrameIndex)
                 state = updated
                 persistEditSession(pb.inFrameIndex, pb.outFrameIndex, pb.currentFrameIndex)
-                SwingUtilities.invokeLater { panel.renderState(updated, image = null) }
+                SwingUtilities.invokeLater {
+                    panel.updateState { it.copy(inFrameIndex = pb.inFrameIndex, outFrameIndex = pb.outFrameIndex) }
+                }
             }
         }
     }
@@ -377,7 +403,15 @@ class ArbBundleFileEditor(
                 )
                 state = updated
                 persistEditSession(pb.inFrameIndex, pb.outFrameIndex, pb.currentFrameIndex)
-                SwingUtilities.invokeLater { panel.renderState(updated, image = null) }
+                SwingUtilities.invokeLater {
+                    panel.updateState {
+                        it.copy(
+                            inFrameIndex = pb.inFrameIndex,
+                            outFrameIndex = pb.outFrameIndex,
+                            currentFrameIndex = pb.currentFrameIndex,
+                        )
+                    }
+                }
             }
         }
     }
@@ -390,7 +424,7 @@ class ArbBundleFileEditor(
             val updated = (state ?: current).copy(inFrameIndex = 0L, outFrameIndex = maxF)
             state = updated
             persistEditSession(0L, maxF, updated.currentFrameIndex)
-            SwingUtilities.invokeLater { panel.renderState(updated, image = null) }
+            SwingUtilities.invokeLater { panel.updateState { it.copy(inFrameIndex = 0L, outFrameIndex = maxF) } }
         }
     }
 
@@ -399,9 +433,9 @@ class ArbBundleFileEditor(
         val frame = reader.readLatest() ?: return
         val image = frame.toBufferedImage()
         val prev = state ?: return
-        val next = TimelineViewerReducer.onFramePublished(prev, frame.meta)
-        state = next
-        SwingUtilities.invokeLater { panel.renderState(next, image) }
+        state = TimelineViewerReducer.onFramePublished(prev, frame.meta)
+        // The panel owns UI-edited state (export bar, tap overlay, in/out): merge the frame there.
+        SwingUtilities.invokeLater { panel.applyFramePublished(frame.meta, image) }
     }
 
     private fun performTrim(inFrameIndex: Long, outFrameIndex: Long) {
@@ -423,10 +457,15 @@ class ArbBundleFileEditor(
                 // Non-destructive Trash of the original bundle happens ONLY after export succeeds,
                 // and is strictly forbidden for Legacy (RO) bundles.
                 val trashedNote = if (shouldTrashOriginal && !current.isLegacy) {
-                    val trashed = runCatching {
+                    val failure = runCatching {
                         daemonService.withClient { it.bundleTrash(current.bundleId) }
-                    }.isSuccess
-                    if (trashed) " · 元のバンドルをゴミ箱へ移動しました（復元可）" else ""
+                    }.exceptionOrNull()
+                    if (failure == null) {
+                        " · 元のバンドルをゴミ箱へ移動しました（復元可）"
+                    } else {
+                        logger.warn("ARB bundle.trash after export failed", failure)
+                        " · 元のバンドルをゴミ箱へ移動できませんでした: ${failure.message}"
+                    }
                 } else {
                     ""
                 }
@@ -443,7 +482,9 @@ class ArbBundleFileEditor(
                     lastActionMessage = summaryText,
                 )
                 state = updated
-                SwingUtilities.invokeLater { panel.renderState(updated, image = null) }
+                SwingUtilities.invokeLater {
+                    panel.updateState { it.copy(exportCompletion = completion, lastActionMessage = summaryText) }
+                }
             } catch (t: Throwable) {
                 logger.warn("ARB export.trim failed", t)
                 SwingUtilities.invokeLater { panel.showError("書き出しに失敗しました: ${t.message}") }
@@ -476,7 +517,9 @@ class ArbBundleFileEditor(
                     lastActionMessage = summaryText,
                 )
                 state = updated
-                SwingUtilities.invokeLater { panel.renderState(updated, image = null) }
+                SwingUtilities.invokeLater {
+                    panel.updateState { it.copy(exportCompletion = completion, lastActionMessage = summaryText) }
+                }
             } catch (t: Throwable) {
                 logger.warn("ARB export.png failed", t)
                 SwingUtilities.invokeLater { panel.showError("PNG 書き出しに失敗しました: ${t.message}") }
@@ -525,13 +568,20 @@ class ArbBundleFileEditor(
     override fun getFile(): VirtualFile = virtualFile
 
     override fun dispose() {
+        disposed = true
+        worker.shutdownNow()
+        releaseResources()
+    }
+
+    /** Idempotent and thread-safe: called from [dispose] and from the load task if it finishes after dispose. */
+    @Synchronized
+    private fun releaseResources() {
         val ctrl = playbackController
         playbackController = null
         runCatching { ctrl?.close() }
-
-        worker.shutdownNow()
-        runCatching { shmReader?.close() }
+        val reader = shmReader
         shmReader = null
+        runCatching { reader?.close() }
         val lease = leaseController
         leaseController = null
         if (lease != null) {

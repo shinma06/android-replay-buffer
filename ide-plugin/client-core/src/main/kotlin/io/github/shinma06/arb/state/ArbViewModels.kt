@@ -508,12 +508,40 @@ data class TimelineViewerState(
     fun boottimeNsToFrameIndex(boottimeNs: Long): Long? {
         if (frameCount <= 0L) return null
         if (frameCount == 1L) return 0L
+        // Multi-epoch bundles (reboots/gaps) have unrelated boottime bases: a single linear span is
+        // meaningless, so map through per-frame PTS (filmstrip) when it is available.
+        if (summary.epochs.size > 1 && filmstrip.size >= 2) {
+            return boottimeNsToFrameIndexViaFilmstrip(boottimeNs)
+        }
         val start = timelineStartBoottimeNs
         val end = timelineEndBoottimeNs
         val span = end - start
         if (span <= 0L) return 0L
         val ratio = ((boottimeNs - start).toDouble() / span.toDouble()).coerceIn(0.0, 1.0)
         return (ratio * (frameCount - 1L).toDouble()).roundToLong().coerceIn(0L, frameCount - 1L)
+    }
+
+    private fun boottimeNsToFrameIndexViaFilmstrip(boottimeNs: Long): Long {
+        val entries = filmstrip.sortedBy { it.frameIndex }
+        val maxFrame = frameCount - 1L
+        val upperIdx = entries.indexOfFirst { it.ptsNs >= boottimeNs }
+        val result = when {
+            upperIdx < 0 -> entries.last().frameIndex
+            upperIdx == 0 -> entries.first().frameIndex
+            else -> {
+                val lo = entries[upperIdx - 1]
+                val hi = entries[upperIdx]
+                val span = hi.ptsNs - lo.ptsNs
+                // A PTS jump across an epoch boundary must not be interpolated: snap to the nearer frame.
+                if (span <= 0L || hi.ptsNs - boottimeNs > boottimeNs - lo.ptsNs && span > 2_000_000_000L) {
+                    if (boottimeNs - lo.ptsNs <= hi.ptsNs - boottimeNs) lo.frameIndex else hi.frameIndex
+                } else {
+                    val ratio = (boottimeNs - lo.ptsNs).toDouble() / span.toDouble()
+                    lo.frameIndex + (ratio * (hi.frameIndex - lo.frameIndex).toDouble()).roundToLong()
+                }
+            }
+        }
+        return result.coerceIn(0L, maxFrame)
     }
 
     val selectedDurationMs: Long

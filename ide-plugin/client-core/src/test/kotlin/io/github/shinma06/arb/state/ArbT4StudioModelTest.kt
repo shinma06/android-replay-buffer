@@ -287,6 +287,45 @@ class ArbT4StudioModelTest {
     }
 
     @Test
+    fun sourceJumpParserSkipsFrameworkFramesAndPrefersAppFrames() {
+        val target = SourceJumpParser.parseLogText(
+            "at android.os.Handler.dispatchMessage(Handler.java:106)\n" +
+                "at java.lang.Thread.run(Thread.java:1012)\n" +
+                "at com.example.app.MainActivity.onCreate(MainActivity.kt:12)",
+        )
+        assertNotNull(target)
+        assertEquals("com.example.app.MainActivity", target.classFqn)
+        assertEquals(12, target.lineNumber)
+        val fqn = SourceJumpParser.parseLogText("java.lang.IllegalStateException wrapped com.example.app.Foo failed")
+        assertNotNull(fqn)
+        assertEquals("com.example.app.Foo", fqn.classFqn)
+    }
+
+    @Test
+    fun boottimeMappingUsesFilmstripAcrossEpochs() {
+        val base = healthySummary()
+        val summary = base.copy(
+            epochs = listOf(
+                io.github.shinma06.arb.model.EpochSpan("a", 1_000_000_000L, 11_000_000_000L),
+                io.github.shinma06.arb.model.EpochSpan("b", 900_000_000_000L, 910_000_000_000L),
+            ),
+        )
+        val state = TimelineViewerState(
+            bundleId = "b-multi", path = "/tmp/b-multi", format = BundleFormat.V2, isLegacy = false,
+            leaseId = "l", summary = summary, frameCount = 101L,
+            filmstrip = listOf(
+                io.github.shinma06.arb.model.FilmstripEntryMeta(0L, 1_000_000_000L, 1, 1),
+                io.github.shinma06.arb.model.FilmstripEntryMeta(50L, 11_000_000_000L, 1, 1),
+                io.github.shinma06.arb.model.FilmstripEntryMeta(51L, 900_000_000_000L, 1, 1),
+                io.github.shinma06.arb.model.FilmstripEntryMeta(100L, 910_000_000_000L, 1, 1),
+            ),
+        )
+        assertEquals(25L, state.boottimeNsToFrameIndex(6_000_000_000L))
+        assertTrue(state.boottimeNsToFrameIndex(905_000_000_000L) in 74L..76L)
+        assertEquals(100L, state.boottimeNsToFrameIndex(2_000_000_000_000L))
+    }
+
+    @Test
     fun sourceJumpParserHandlesStackTracesFileLinesActivitiesAndCrashes() {
         val stack = SourceJumpParser.parseLogText(
             "    at com.example.app.ui.CheckoutViewModel\$submit\$1.invokeSuspend(CheckoutViewModel.kt:84)",

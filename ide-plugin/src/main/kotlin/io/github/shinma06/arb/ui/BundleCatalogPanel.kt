@@ -137,7 +137,7 @@ class BundleCatalogPanel(
                     if (idx !in displayedItems.indices) return
                     bundleList.selectedIndex = idx
                     val item = displayedItems[idx]
-                    if (SwingUtilities.isLeftMouseButton(e) && e.clickCount == 1) {
+                    if (SwingUtilities.isLeftMouseButton(e) && e.clickCount == 2) {
                         onOpenBundle(item)
                     }
                 }

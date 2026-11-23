@@ -421,6 +421,18 @@ class TimelineViewerPanel(
         pngButton.isEnabled = hasVideo
     }
 
+    /** Merges a newly published frame into the panel-owned state (keeps UI-only edits like the export bar). */
+    fun applyFramePublished(meta: io.github.shinma06.arb.shm.ShmFrameMeta, image: BufferedImage?) {
+        val s = state ?: return
+        renderState(TimelineViewerReducer.onFramePublished(s, meta), image)
+    }
+
+    /** Applies an editor-originated change on top of the panel-owned state. */
+    fun updateState(transform: (TimelineViewerState) -> TimelineViewerState) {
+        val s = state ?: return
+        renderState(transform(s), image = null)
+    }
+
     fun renderPlaybackState(pb: PlaybackState) {
         playbackState = pb
         val isPlaying = pb.mode == PlaybackMode.PLAYING

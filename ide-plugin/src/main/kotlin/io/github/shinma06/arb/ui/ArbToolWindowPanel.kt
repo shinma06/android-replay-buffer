@@ -227,6 +227,10 @@ class ArbToolWindowPanel(
         }
     }
 
+    private data class BundleMeta(val kind: BundleKind, val durationSecs: Long?, val crashed: Boolean)
+
+    private val metaCache = java.util.concurrent.ConcurrentHashMap<String, BundleMeta>()
+
     private fun refreshAll(catalogNote: String? = null) {
         try {
             val status = daemonService.withClient { it.systemStatus() }
@@ -239,28 +243,36 @@ class ArbToolWindowPanel(
             val jobs = daemonService.withClient { it.saveListJobs().jobs }
             val bundles = daemonService.withClient { it.bundleList().bundles }
 
+            // Bundles are WORM: derived metadata never changes, so it is fetched once per bundleId
+            // (at most META_BUDGET_PER_POLL new bundles per poll, the rest on following polls).
+            var budget = META_BUDGET_PER_POLL
+            for (entry in bundles) {
+                if (metaCache.containsKey(entry.bundleId)) continue
+                if (budget-- <= 0) break
+                val summary = runCatching {
+                    daemonService.withClient { it.timelineSummary(entry.bundleId) }
+                }.getOrNull() ?: continue
+                val spanNs = summary.epochs.firstOrNull()?.let { ep ->
+                    (ep.endBoottimeNs - ep.startBoottimeNs).coerceAtLeast(0L)
+                }
+                val secs = when {
+                    spanNs != null && spanNs > 0L -> (spanNs / 1_000_000_000L).coerceAtLeast(1L)
+                    summary.frameCount > 0 -> (summary.frameCount / config.videoMaxFps.coerceAtLeast(1)).toLong().coerceAtLeast(1L)
+                    else -> null
+                }
+                val crashed = runCatching {
+                    daemonService.withClient { it.timelineCrashes(entry.bundleId).crashes }.isNotEmpty()
+                }.getOrDefault(false)
+                metaCache[entry.bundleId] = BundleMeta(summary.bundleKind, secs, crashed)
+            }
             val crashIds = mutableSetOf<String>()
             val durations = mutableMapOf<String, Long>()
             val kinds = mutableMapOf<String, BundleKind>()
-
-            for (entry in bundles.take(24)) {
-                runCatching {
-                    val summary = daemonService.withClient { it.timelineSummary(entry.bundleId) }
-                    kinds[entry.bundleId] = summary.bundleKind
-                    val spanNs = summary.epochs.firstOrNull()?.let { ep ->
-                        (ep.endBoottimeNs - ep.startBoottimeNs).coerceAtLeast(0L)
-                    }
-                    val secs = when {
-                        spanNs != null && spanNs > 0L -> (spanNs / 1_000_000_000L).coerceAtLeast(1L)
-                        summary.frameCount > 0 -> (summary.frameCount / config.videoMaxFps.coerceAtLeast(1)).toLong().coerceAtLeast(1L)
-                        else -> null
-                    }
-                    if (secs != null) durations[entry.bundleId] = secs
-                }
-                runCatching {
-                    val crashes = daemonService.withClient { it.timelineCrashes(entry.bundleId).crashes }
-                    if (crashes.isNotEmpty()) crashIds.add(entry.bundleId)
-                }
+            for (entry in bundles) {
+                val meta = metaCache[entry.bundleId] ?: continue
+                kinds[entry.bundleId] = meta.kind
+                meta.durationSecs?.let { durations[entry.bundleId] = it }
+                if (meta.crashed) crashIds.add(entry.bundleId)
             }
 
             val nextCapture = CaptureBarReducer.fromStatus(
@@ -313,5 +325,9 @@ class ArbToolWindowPanel(
 
     override fun dispose() {
         executor.shutdownNow()
+    }
+
+    private companion object {
+        const val META_BUDGET_PER_POLL = 24
     }
 }
