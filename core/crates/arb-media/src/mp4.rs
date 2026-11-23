@@ -982,11 +982,14 @@ pub fn build_avcc_payload(sps: &[u8], pps: &[u8]) -> Result<Vec<u8>, MediaError>
     Ok(out)
 }
 
-/// Iterates length-prefixed NAL unit slices inside an AVCC sample.
-pub(crate) fn split_avcc_nals(sample: &[u8], nal_length_size: usize) -> Vec<&[u8]> {
-    let mut nals = Vec::new();
+/// Visits each non-empty length-prefixed NAL unit slice inside an AVCC sample without allocating.
+pub(crate) fn for_each_avcc_nal<'a>(
+    sample: &'a [u8],
+    nal_length_size: usize,
+    mut f: impl FnMut(&'a [u8]) -> Result<(), MediaError>,
+) -> Result<(), MediaError> {
     if nal_length_size == 0 || nal_length_size > 4 {
-        return nals;
+        return Ok(());
     }
     let mut pos = 0usize;
     while pos + nal_length_size <= sample.len() {
@@ -1002,10 +1005,20 @@ pub(crate) fn split_avcc_nals(sample: &[u8], nal_length_size: usize) -> Vec<&[u8
             break;
         }
         if nal_len > 0 {
-            nals.push(&sample[pos..end]);
+            f(&sample[pos..end])?;
         }
         pos = end;
     }
+    Ok(())
+}
+
+/// Iterates length-prefixed NAL unit slices inside an AVCC sample.
+pub(crate) fn split_avcc_nals(sample: &[u8], nal_length_size: usize) -> Vec<&[u8]> {
+    let mut nals = Vec::new();
+    let _ = for_each_avcc_nal(sample, nal_length_size, |nal| {
+        nals.push(nal);
+        Ok(())
+    });
     nals
 }
 
@@ -1276,7 +1289,7 @@ pub fn write_single_stsd_avc1_mp4(
 
 /// Rejects `avcC` NAL length sizes that ISO/IEC 14496-15 does not allow (`3`) or that are
 /// out of range.
-fn require_supported_nal_length_size(nal_length_size: usize) -> Result<(), MediaError> {
+pub(crate) fn require_supported_nal_length_size(nal_length_size: usize) -> Result<(), MediaError> {
     if matches!(nal_length_size, 1 | 2 | 4) {
         Ok(())
     } else {
@@ -1286,18 +1299,20 @@ fn require_supported_nal_length_size(nal_length_size: usize) -> Result<(), Media
     }
 }
 
-/// Re-emits every NAL unit of an AVCC `sample` with 4-byte length prefixes.
+/// Re-emits every NAL unit of an AVCC `sample` with 4-byte length prefixes into `out` (reusing its
+/// allocation).
 ///
 /// # Errors
 ///
 /// Returns [`MediaError::InvalidContainer`] if the sample is not a well-formed sequence of
 /// `nal_length_size`-prefixed NAL units.
-pub fn normalize_avcc_nal_lengths(
+pub(crate) fn normalize_avcc_nal_lengths_into(
     sample: &[u8],
     nal_length_size: usize,
-) -> Result<Vec<u8>, MediaError> {
+    out: &mut Vec<u8>,
+) -> Result<(), MediaError> {
     require_supported_nal_length_size(nal_length_size)?;
-    let mut out = Vec::with_capacity(sample.len() + 16);
+    out.clear();
     let mut pos = 0usize;
     while pos < sample.len() {
         let prefix = sample.get(pos..pos + nal_length_size).ok_or_else(|| {
@@ -1322,11 +1337,65 @@ pub fn normalize_avcc_nal_lengths(
         }
         pos += nal_len;
     }
+    Ok(())
+}
+
+/// Computes the byte length that [`normalize_avcc_nal_lengths_into`] would emit without
+/// materialising the rewritten sample.
+pub(crate) fn normalized_avcc_sample_len(
+    sample: &[u8],
+    nal_length_size: usize,
+) -> Result<usize, MediaError> {
+    require_supported_nal_length_size(nal_length_size)?;
+    let mut total = 0usize;
+    let mut pos = 0usize;
+    while pos < sample.len() {
+        let prefix = sample.get(pos..pos + nal_length_size).ok_or_else(|| {
+            MediaError::InvalidContainer("AVCC sample has a truncated NAL length prefix".to_owned())
+        })?;
+        let nal_len = prefix
+            .iter()
+            .fold(0usize, |acc, &byte| (acc << 8) | usize::from(byte));
+        pos += nal_length_size;
+        let nal = pos
+            .checked_add(nal_len)
+            .and_then(|end| sample.get(pos..end))
+            .ok_or_else(|| {
+                MediaError::InvalidContainer("AVCC NAL unit exceeds the sample".to_owned())
+            })?;
+        if !nal.is_empty() {
+            let _ = u32::try_from(nal.len()).map_err(|_| {
+                MediaError::InvalidContainer("NAL unit exceeds u32::MAX".to_owned())
+            })?;
+            total = total
+                .checked_add(4)
+                .and_then(|n| n.checked_add(nal.len()))
+                .ok_or_else(|| {
+                    MediaError::InvalidContainer("normalized sample length overflow".to_owned())
+                })?;
+        }
+        pos += nal_len;
+    }
+    Ok(total)
+}
+
+/// Re-emits every NAL unit of an AVCC `sample` with 4-byte length prefixes.
+///
+/// # Errors
+///
+/// Returns [`MediaError::InvalidContainer`] if the sample is not a well-formed sequence of
+/// `nal_length_size`-prefixed NAL units.
+pub fn normalize_avcc_nal_lengths(
+    sample: &[u8],
+    nal_length_size: usize,
+) -> Result<Vec<u8>, MediaError> {
+    let mut out = Vec::with_capacity(sample.len() + 16);
+    normalize_avcc_nal_lengths_into(sample, nal_length_size, &mut out)?;
     Ok(out)
 }
 
 /// Returns a copy of `avcc` whose `lengthSizeMinusOne` is 3 (4-byte NAL lengths).
-fn avcc_with_4byte_lengths(avcc: &[u8]) -> Vec<u8> {
+pub(crate) fn avcc_with_4byte_lengths(avcc: &[u8]) -> Vec<u8> {
     let mut out = avcc.to_vec();
     if let Some(byte) = out.get_mut(4) {
         *byte |= 0x03;
@@ -1334,10 +1403,14 @@ fn avcc_with_4byte_lengths(avcc: &[u8]) -> Vec<u8> {
     out
 }
 
-/// [`prepend_avcc_sps_pps_inband`] with an already parsed `avcC` (output is 4-byte lengths).
-fn prepend_param_sets_4byte(cfg: &AvccConfig, sample: &[u8]) -> Result<Vec<u8>, MediaError> {
-    let (_, _, stripped) = extract_inband_param_sets_and_strip(sample, cfg.nal_length_size);
-    let mut out = Vec::with_capacity(stripped.len() + 128);
+/// [`prepend_avcc_sps_pps_inband`] with an already parsed `avcC`, writing directly into `out`
+/// (output uses 4-byte NAL lengths; reuses `out`'s allocation).
+pub(crate) fn prepend_param_sets_4byte_into(
+    cfg: &AvccConfig,
+    sample: &[u8],
+    out: &mut Vec<u8>,
+) -> Result<(), MediaError> {
+    out.clear();
     for ps in cfg.sps.iter().chain(&cfg.pps) {
         let len_u32 = u32::try_from(ps.len()).map_err(|_| {
             MediaError::InvalidContainer("parameter set length exceeds u32::MAX".to_owned())
@@ -1345,7 +1418,63 @@ fn prepend_param_sets_4byte(cfg: &AvccConfig, sample: &[u8]) -> Result<Vec<u8>, 
         out.extend_from_slice(&len_u32.to_be_bytes());
         out.extend_from_slice(ps);
     }
-    out.extend_from_slice(&stripped);
+    for_each_avcc_nal(sample, cfg.nal_length_size, |nal| {
+        let nal_type = nal[0] & 0x1F;
+        if nal_type != 7 && nal_type != 8 {
+            let len_u32 = u32::try_from(nal.len()).map_err(|_| {
+                MediaError::InvalidContainer("NAL unit exceeds u32::MAX".to_owned())
+            })?;
+            out.extend_from_slice(&len_u32.to_be_bytes());
+            out.extend_from_slice(nal);
+        }
+        Ok(())
+    })?;
+    Ok(())
+}
+
+/// Computes the byte length that [`prepend_param_sets_4byte_into`] would emit without
+/// materialising the rewritten sample.
+pub(crate) fn prepended_param_sets_4byte_len(
+    cfg: &AvccConfig,
+    sample: &[u8],
+) -> Result<usize, MediaError> {
+    let mut total = 0usize;
+    for ps in cfg.sps.iter().chain(&cfg.pps) {
+        let _ = u32::try_from(ps.len()).map_err(|_| {
+            MediaError::InvalidContainer("parameter set length exceeds u32::MAX".to_owned())
+        })?;
+        total = total
+            .checked_add(4)
+            .and_then(|n| n.checked_add(ps.len()))
+            .ok_or_else(|| {
+                MediaError::InvalidContainer("parameter-set sample length overflow".to_owned())
+            })?;
+    }
+    for_each_avcc_nal(sample, cfg.nal_length_size, |nal| {
+        let nal_type = nal[0] & 0x1F;
+        if nal_type != 7 && nal_type != 8 {
+            let _ = u32::try_from(nal.len()).map_err(|_| {
+                MediaError::InvalidContainer("NAL unit exceeds u32::MAX".to_owned())
+            })?;
+            total = total
+                .checked_add(4)
+                .and_then(|n| n.checked_add(nal.len()))
+                .ok_or_else(|| {
+                    MediaError::InvalidContainer("parameter-set sample length overflow".to_owned())
+                })?;
+        }
+        Ok(())
+    })?;
+    Ok(total)
+}
+
+/// [`prepend_avcc_sps_pps_inband`] with an already parsed `avcC` (output is 4-byte lengths).
+pub(crate) fn prepend_param_sets_4byte(
+    cfg: &AvccConfig,
+    sample: &[u8],
+) -> Result<Vec<u8>, MediaError> {
+    let mut out = Vec::with_capacity(sample.len() + 128);
+    prepend_param_sets_4byte_into(cfg, sample, &mut out)?;
     Ok(out)
 }
 
@@ -1622,7 +1751,7 @@ pub(crate) struct Avc1TrackHeader<'a> {
     pub(crate) avcc_payload: &'a [u8],
 }
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ChunkOffsetMode {
     Stco32,
     Co64,
@@ -1657,7 +1786,11 @@ pub(crate) fn full_box_wrap(
     Ok(out)
 }
 
-fn build_avc1_entry(width: u16, height: u16, avcc_payload: &[u8]) -> Result<Vec<u8>, MediaError> {
+pub(crate) fn build_avc1_entry(
+    width: u16,
+    height: u16,
+    avcc_payload: &[u8],
+) -> Result<Vec<u8>, MediaError> {
     let mut body = Vec::with_capacity(VISUAL_SAMPLE_ENTRY_HEADER_LEN + 8 + avcc_payload.len());
     body.extend_from_slice(&[0u8; 6]); // reserved
     body.extend_from_slice(&1u16.to_be_bytes()); // data_reference_index = 1
@@ -1677,6 +1810,15 @@ fn build_avc1_entry(width: u16, height: u16, avcc_payload: &[u8]) -> Result<Vec<
 }
 
 pub(crate) fn build_mvhd(timescale: u32, total_duration: u64) -> Result<Vec<u8>, MediaError> {
+    build_mvhd_with_next_track_id(timescale, total_duration, 2)
+}
+
+/// [`build_mvhd`] with an explicit `next_track_ID` (3 for a two-track `share.mp4`).
+pub(crate) fn build_mvhd_with_next_track_id(
+    timescale: u32,
+    total_duration: u64,
+    next_track_id: u32,
+) -> Result<Vec<u8>, MediaError> {
     let mut payload = Vec::with_capacity(112);
     let version = if let Ok(dur32) = u32::try_from(total_duration) {
         payload.extend_from_slice(&0u32.to_be_bytes()); // creation_time
@@ -1698,7 +1840,7 @@ pub(crate) fn build_mvhd(timescale: u32, total_duration: u64) -> Result<Vec<u8>,
         payload.extend_from_slice(&v.to_be_bytes());
     }
     payload.extend_from_slice(&[0u8; 24]); // pre_defined
-    payload.extend_from_slice(&2u32.to_be_bytes()); // next_track_ID
+    payload.extend_from_slice(&next_track_id.to_be_bytes()); // next_track_ID
     full_box_wrap(*b"mvhd", version, 0, &payload)
 }
 

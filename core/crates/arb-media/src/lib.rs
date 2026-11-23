@@ -5,6 +5,10 @@
 //!   parser/builder, `Mp4AudioTrack` indexer, and zero-`elst` time-range trimmer.
 //! - [`mp4`]: Pure-Rust ISO-BMFF parser, frame/GOP indexer, raw H.264 muxer, and faststart
 //!   single-`stsd` `avc1` + in-band SPS/PPS splice muxer with strictly zero `edts`/`elst` boxes.
+//! - [`mux_av`]: Single-file H.264 + AAC-LC faststart zero-`elst` `share.mp4` muxer
+//!   ([`mux_share_mp4`]) with honest `audio_lead_in_offset_ns` handling.
+//! - [`contact_sheet`]: Zero-dependency AI contact-sheet, tap-crop PNG renderer and deterministic
+//!   frame selector (`arb_inspect_frames`).
 //! - [`codec`]: Trait-abstracted [`codec::VideoCodecBackend`] with universal [`codec::OpenH264Backend`]
 //!   (`BSD-2-Clause`) and macOS hardware `codec::VideoToolboxBackend` (direct C FFI, zero crates).
 //! - [`trim`]: Frame-accurate integer `frame_index` trim and PNG frame export with `tEXt` metadata.
@@ -13,8 +17,10 @@
 
 pub mod audio;
 pub mod codec;
+pub mod contact_sheet;
 pub mod error;
 pub mod mp4;
+pub mod mux_av;
 mod output;
 pub mod playback;
 pub mod trim;
@@ -25,7 +31,12 @@ pub use crate::audio::{
     Mp4AudioTrack, build_aac_lc_audio_specific_config, build_mp4a_sample_entry, mux_aac_to_m4a,
     parse_audio_specific_config, strip_adts_header, trim_audio_m4a,
 };
+pub use crate::contact_sheet::{
+    ContactSheetOptions, ContactSheetTile, MAX_CONTACT_SHEET_TILES, TapCropOptions, TapCropResult,
+    render_contact_sheet_png, render_tap_crop_png, select_contact_sheet_indices,
+};
 pub use crate::error::MediaError;
+pub use crate::mux_av::{AvMuxReport, mux_share_mp4};
 
 #[cfg(test)]
 mod r2_regression_tests;
