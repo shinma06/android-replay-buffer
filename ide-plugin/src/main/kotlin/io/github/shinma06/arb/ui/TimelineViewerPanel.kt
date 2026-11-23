@@ -358,7 +358,12 @@ class TimelineViewerPanel(
             actionMap.put(
                 name,
                 object : AbstractAction() {
-                    override fun actionPerformed(e: ActionEvent?) = block()
+                    override fun actionPerformed(e: ActionEvent?) {
+                        // Never steal Space / I / O while the user is typing in the log search box.
+                        val owner = java.awt.KeyboardFocusManager.getCurrentKeyboardFocusManager().focusOwner
+                        if (owner is javax.swing.text.JTextComponent) return
+                        block()
+                    }
                 },
             )
         }
@@ -450,11 +455,9 @@ class TimelineViewerPanel(
 
         val s = state
         if (s != null) {
-            val synced = s.copy(
-                currentFrameIndex = pb.currentFrameIndex,
-                inFrameIndex = pb.inFrameIndex,
-                outFrameIndex = pb.outFrameIndex,
-            )
+            // The panel owns the trim range (handle drags; presets arrive via updateState): only the
+            // playhead comes from the controller, otherwise a drag snaps back to the old range.
+            val synced = s.copy(currentFrameIndex = pb.currentFrameIndex)
             state = synced
             renderDerivedViews(synced)
         }

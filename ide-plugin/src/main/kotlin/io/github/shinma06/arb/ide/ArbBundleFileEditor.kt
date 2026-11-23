@@ -103,6 +103,8 @@ class ArbBundleFileEditor(
         onSelectAroundCrash = { applySelectAroundCrash() },
         onResetFullRange = { applyResetFullRange() },
         onTrashOriginalToggled = { enabled ->
+            // Dedicated volatile flag: `state` is also rewritten by the playback thread on every frame.
+            trashOriginalRequested = enabled
             state = state?.let { TimelineViewerReducer.setTrashOriginalAfterExport(it, enabled) }
         },
         onRevealInFinder = { path ->
@@ -144,6 +146,9 @@ class ArbBundleFileEditor(
 
     @Volatile
     private var disposed = false
+
+    @Volatile
+    private var trashOriginalRequested = false
 
     init {
         loadBundleAsync()
@@ -440,7 +445,7 @@ class ArbBundleFileEditor(
 
     private fun performTrim(inFrameIndex: Long, outFrameIndex: Long) {
         val current = state ?: return
-        val shouldTrashOriginal = current.effectiveTrashOriginalAfterExport
+        val shouldTrashOriginal = trashOriginalRequested && !current.isLegacy
         worker.submit {
             try {
                 val res = daemonService.withClient {
@@ -578,16 +583,15 @@ class ArbBundleFileEditor(
     private fun releaseResources() {
         val ctrl = playbackController
         playbackController = null
-        runCatching { ctrl?.close() }
         val reader = shmReader
         shmReader = null
-        runCatching { reader?.close() }
         val lease = leaseController
         leaseController = null
-        if (lease != null) {
-            ApplicationManager.getApplication().executeOnPooledThread {
-                runCatching { lease.close() }
-            }
+        // Closing the controller joins the playback loop (possibly blocked in an IPC call): never on the EDT.
+        ApplicationManager.getApplication().executeOnPooledThread {
+            runCatching { ctrl?.close() }
+            runCatching { reader?.close() }
+            runCatching { lease?.close() }
         }
     }
 }

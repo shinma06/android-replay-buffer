@@ -75,6 +75,9 @@ object SourceJumpParser {
             )
         }
 
+        // Stack frames were present but all framework noise: no fallback to a framework file:line.
+        if (STACK_FRAME_REGEX.containsMatchIn(text)) return null
+
         FILE_LINE_REGEX.find(text)?.let { m ->
             val fileName = m.groupValues[1]
             val line = m.groupValues[2].toIntOrNull()?.takeIf { it > 0 }

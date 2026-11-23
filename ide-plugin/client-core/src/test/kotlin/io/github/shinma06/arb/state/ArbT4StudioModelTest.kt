@@ -296,6 +296,7 @@ class ArbT4StudioModelTest {
         assertNotNull(target)
         assertEquals("com.example.app.MainActivity", target.classFqn)
         assertEquals(12, target.lineNumber)
+        assertEquals(null, SourceJumpParser.parseLogText("at android.os.Looper.loop(Looper.java:223)"))
         val fqn = SourceJumpParser.parseLogText("java.lang.IllegalStateException wrapped com.example.app.Foo failed")
         assertNotNull(fqn)
         assertEquals("com.example.app.Foo", fqn.classFqn)
