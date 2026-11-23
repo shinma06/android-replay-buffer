@@ -3,7 +3,7 @@
 //! Deploys `arb-companion.dex.jar` and `replay-scrcpy-audio.dex.jar` via
 //! [`AdbClient`], runs concurrent companion/video/audio reader threads feeding
 //! [`CapturePipeline`], performs periodic `Ping`/`Pong` sync probes, supervises
-//! automatic reconnects with [`ReconnectPolicy`] (`200ms -> 500ms -> 1s -> 2s`),
+//! automatic reconnects with [`arb_adb::adb::ReconnectPolicy`] (`200ms -> 500ms -> 1s -> 2s`),
 //! and guarantees remote `/data/local/tmp/arb-*` and `adb forward` cleanup on stop.
 
 use std::io::{BufRead, BufReader};

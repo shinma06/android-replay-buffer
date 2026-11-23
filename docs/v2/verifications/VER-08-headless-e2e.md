@@ -103,3 +103,11 @@ verifies:
 - Windows（Named Pipe / Win32 API）および Linux（UDS / OpenH264 フォールバック）でのネイティブ実行は本 macOS arm64 環境では未実施（CI `os-parity` で確認予定）。
 - IDE プラグイン UI（Android Studio ツールウィンドウ / トレイ GUI）との結合は Phase 5（W8 以降）で検証予定。
 - 実エミュレータ初回コールド `seek_exact`（26 フレーム進行）は 231.55 ms であり、30fps 1 秒 GOP 全展開（最悪 30 フレーム）を 150 ms 以内に収める追加最適化（ハードウェアデコードの先行プリフェッチや並列 BGRA 変換）は Phase 5 でのチューニング余地として記録する。
+
+## Phase 4 統合補足（R2 厳格 API の `arbd` への配線）
+
+- 起動時リカバリは `Catalog::recover_on_startup_with_pins(&PinJournal)` を使用（S13）。解放・再作成したピンジャーナル件数を `system.status.recovery.released_pin_journals` / `repinned_jobs` に表示。
+- `bundle.gc` 応答に `failed`（`bundle_id` / `error`）を追加し、パージ失敗（例: Windows の共有違反）を隠さず返す（S19）。
+- `CapturePipeline` が `RingStore::take_discontinuities()` を書き込みごとに排出（メモリ有界化）し、`StoragePressureStop` をライブ表示と以降の保存バンドルの discontinuities に統合（S18）。シナリオ 12 で検証。
+- R2 の `verify_integrity`（S15）は音声 `Present` に `audio.m4a` を要求する。`arbd` は AAC を `audio.m4a` へ多重化していないため、音声ストリームは `Present` ではなく `Partial` と誠実に報告する（トリム時も同様）。
+

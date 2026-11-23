@@ -35,8 +35,9 @@ use arb_os::paths::ArbPaths;
 use arb_storage::bundle_io::{TimeRange, open_bundle};
 use arb_storage::catalog::{
     BundleEntry, Catalog, CatalogFormatVersion, EditSession, LeaseHolderKind, NewBundleEntry,
-    RecoveryReport,
+    PinReconcileReport, RecoveryReport,
 };
+use arb_storage::ring::PinJournal;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
@@ -47,16 +48,16 @@ use crate::error::{DaemonError, RPC_ERR_INVALID_REQUEST, RPC_ERR_PARSE};
 use crate::live_adb::{LiveCaptureHandle, start_live_adb_capture};
 use crate::media_engine::{MediaEngine, build_timeline_summary};
 use crate::protocol::{
-    BundleEntryView, BundleGcParams, BundleGcResponse, BundleIdParams, BundleListParams,
-    BundleListResponse, BundleOpenParams, BundleOpenResponse, BundleRefParams, CaptureStartParams,
-    CaptureStartResponse, CaptureStopResponse, DeviceListResponse, EditGetSessionParams,
-    EditSessionView, EditUpdateSessionParams, ExportPngParams, ExportTrimParams,
-    IPC_PROTOCOL_VERSION, JSONRPC_VERSION, LeaseIdParams, MediaCloseViewportParams,
-    MediaFilmstripParams, MediaFrameRequestParams, MediaOpenViewportParams, QueryBucket,
-    RecoverySummaryView, RpcRequest, RpcResponse, SaveJobIdParams, SaveListJobsResponse,
-    SaveRetargetParams, SaveTriggerParams, SystemHelloResponse, SystemStatusResponse,
-    TimelineDiscontinuitiesResponse, TimelineLogsResponse, TimelineQueryParams,
-    TimelineTapsResponse,
+    BundleEntryView, BundleGcFailure, BundleGcParams, BundleGcResponse, BundleIdParams,
+    BundleListParams, BundleListResponse, BundleOpenParams, BundleOpenResponse, BundleRefParams,
+    CaptureStartParams, CaptureStartResponse, CaptureStopResponse, DeviceListResponse,
+    EditGetSessionParams, EditSessionView, EditUpdateSessionParams, ExportPngParams,
+    ExportTrimParams, IPC_PROTOCOL_VERSION, JSONRPC_VERSION, LeaseIdParams,
+    MediaCloseViewportParams, MediaFilmstripParams, MediaFrameRequestParams,
+    MediaOpenViewportParams, QueryBucket, RecoverySummaryView, RpcRequest, RpcResponse,
+    SaveJobIdParams, SaveListJobsResponse, SaveRetargetParams, SaveTriggerParams,
+    SystemHelloResponse, SystemStatusResponse, TimelineDiscontinuitiesResponse,
+    TimelineLogsResponse, TimelineQueryParams, TimelineTapsResponse,
 };
 use crate::time_util::utc_now_iso8601;
 
@@ -104,6 +105,7 @@ struct DaemonState {
     paths: ArbPaths,
     started_at: Instant,
     recovery: RecoveryReport,
+    pin_reconcile: PinReconcileReport,
     catalog: Catalog,
     capture: Arc<Mutex<CapturePipeline>>,
     live_capture: Mutex<Option<LiveCaptureHandle>>,
@@ -241,6 +243,8 @@ impl DaemonState {
                 reaped_leases: self.recovery.reaped_lease_ids.len(),
                 recovered_jobs: self.recovery.recovered_job_ids.len(),
                 completed_purging_bundles: self.recovery.completed_purging_bundle_ids.len(),
+                released_pin_journals: self.pin_reconcile.released_job_ids.len(),
+                repinned_jobs: self.pin_reconcile.repinned_job_ids.len(),
             },
         })?)
     }
@@ -505,6 +509,14 @@ impl DaemonState {
             skipped_active_job_bundle_ids: report.skipped_active_job_bundle_ids,
             skipped_unmanaged_or_legacy_bundle_ids: report.skipped_unmanaged_or_legacy_bundle_ids,
             skipped_in_grace_bundle_ids: report.skipped_in_grace_bundle_ids,
+            failed: report
+                .failed
+                .into_iter()
+                .map(|f| BundleGcFailure {
+                    bundle_id: f.bundle_id,
+                    error: f.error,
+                })
+                .collect(),
         })?)
     }
 
@@ -675,7 +687,7 @@ pub struct DaemonServer {
 impl DaemonServer {
     /// Starts `arbd` with the given [`DaemonConfig`]:
     /// 1. Acquires [`SingleInstanceLock`] at `<runtime_dir>/arbd.lock`.
-    /// 2. Opens [`Catalog`] and runs [`Catalog::recover_on_startup`].
+    /// 2. Opens [`Catalog`] and runs [`Catalog::recover_on_startup_with_pins`].
     /// 3. Opens Zone-1 [`CapturePipeline`] (`RingStore`) and [`MediaEngine`].
     /// 4. Binds [`LocalIpcListener`] and spawns the concurrent accept loop.
     ///
@@ -692,7 +704,12 @@ impl DaemonServer {
         let catalog_db = config.paths.data_dir.join("catalog.sqlite");
         let managed_bundles = config.paths.data_dir.join("bundles");
         let catalog = Catalog::open(&catalog_db, &managed_bundles)?;
-        let recovery = catalog.recover_on_startup(&utc_now_iso8601())?;
+        // Catalog recovery AND pin-journal reconciliation (S13): journals of completed /
+        // discarded / unknown jobs are released and journals missing for active jobs are
+        // re-created, so a crash between `complete_job` and `unpin_job` cannot leak pins.
+        let pin_journal = PinJournal::open(&config.paths.data_dir)?;
+        let (recovery, pin_reconcile) =
+            catalog.recover_on_startup_with_pins(&utc_now_iso8601(), &pin_journal)?;
 
         let capture = CapturePipeline::open(
             &config.paths.data_dir,
@@ -709,6 +726,7 @@ impl DaemonServer {
             paths: config.paths,
             started_at: Instant::now(),
             recovery,
+            pin_reconcile,
             catalog,
             capture: Arc::new(Mutex::new(capture)),
             live_capture: Mutex::new(None),

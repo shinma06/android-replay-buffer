@@ -574,7 +574,15 @@ fn build_trimmed_bundle_draft(
                 tail_may_be_incomplete: false,
                 semantics: TimestampSemantics::VideoEncoderInputEstimate,
             }),
-            audio: summary.streams.audio.clone(),
+            // The trimmed bundle carries no `audio.m4a` (audio is not cut), and
+            // `verify_integrity` requires the file for a `Present` audio stream, so a
+            // `Present` source is downgraded to `Partial`.
+            audio: summary.streams.audio.clone().map(|mut audio| {
+                if audio.status == StreamStatus::Present {
+                    audio.status = StreamStatus::Partial;
+                }
+                audio
+            }),
             logcat: summary.streams.logcat.clone(),
             input: summary.streams.input.clone(),
         },

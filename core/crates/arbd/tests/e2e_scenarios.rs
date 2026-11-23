@@ -47,7 +47,7 @@ use arb_os::ipc::{DEFAULT_MAX_IPC_LINE_BYTES, LocalIpcStream, read_frame_line, w
 use arb_os::paths::ArbPaths;
 use arb_os::shm::ShmFrameRingReader;
 use arb_storage::bundle_io::V2BundleReader;
-use arb_storage::ring::DiskSpaceProvider;
+use arb_storage::ring::{DiskSpaceProvider, PinJournal, PinJournalRecord};
 use arbd::capture::SharedDiskSpaceProvider;
 use arbd::{DaemonConfig, DaemonServer};
 use serde_json::{Value, json};
@@ -1390,6 +1390,89 @@ fn scenario_10_disk_pressure_storage_pressure_stop_protects_saved_and_pinned() {
         "pinned chunks must survive StoragePressureStop and allow save.retarget to succeed"
     );
 
+    server.shutdown();
+}
+
+#[test]
+fn scenario_12_pressure_stop_merged_into_later_bundle_and_startup_pin_leak_recovered() {
+    let tmp = TempDir::new().expect("tempdir");
+    let free_bytes = Arc::new(AtomicU64::new(10 * 1024 * 1024 * 1024));
+    let make_config = |free: &Arc<AtomicU64>| {
+        DaemonConfig::new(isolated_paths(&tmp))
+            .with_ring_policy(RingBudgetPolicy {
+                max_ring_bytes: 64 * 1024 * 1024,
+                max_ring_duration_ns: 600_000_000_000,
+                min_free_disk_bytes: 3 * 1024 * 1024 * 1024,
+            })
+            .with_disk_provider(SharedDiskSpaceProvider::new(Arc::new(
+                AtomicMockDiskSpace {
+                    available_bytes: Arc::clone(free),
+                    total_bytes: 50 * 1024 * 1024 * 1024,
+                },
+            )))
+    };
+    let server = DaemonServer::start(make_config(&free_bytes)).expect("start arbd");
+
+    let mut source1 = build_barcode_mock_source("boot-s12", 30, WallClockMode::Steady);
+    server
+        .ingest_device_source(&mut source1)
+        .expect("ingest initial");
+
+    // S18: pressure stop must be drained from the ring and merged into later saved bundles.
+    free_bytes.store(1024 * 1024 * 1024, Ordering::Release);
+    let mut source2 = MockDeviceSource::from_scenario(FaultScenario::NormalFhd30);
+    server
+        .ingest_device_source(&mut source2)
+        .expect("pressure must halt cleanly");
+    let pressure_events = server
+        .live_discontinuities()
+        .iter()
+        .filter(|d| d.kind == DiscontinuityKind::StoragePressureStop)
+        .count();
+    assert_eq!(
+        pressure_events, 1,
+        "exactly one StoragePressureStop per pressure episode"
+    );
+
+    let mut client = TestIpcClient::connect(server.endpoint());
+    let saved = client.call("save.trigger", &json!({ "duration_sec": 30 }));
+    let bundle_id = saved["bundle_id"].as_str().expect("bundle_id").to_owned();
+    let discs = client.call(
+        "timeline.discontinuities",
+        &json!({ "bundle_id_or_path": bundle_id }),
+    );
+    assert!(
+        discs["discontinuities"]
+            .as_array()
+            .expect("discontinuities")
+            .iter()
+            .any(|d| d["kind"] == "storage_pressure_stop"),
+        "saved bundle must carry StoragePressureStop discontinuity: {discs}"
+    );
+
+    // S13: a pin journal left behind for an unknown job must be released on restart.
+    drop(client);
+    server.shutdown();
+    let journal = PinJournal::open(tmp.path().join("data")).expect("open journal");
+    journal
+        .pin(&PinJournalRecord {
+            job_id: "job-leaked-s13".to_owned(),
+            destination_path: tmp.path().join("nowhere"),
+            pinned_chunk_ids: vec!["chunk-does-not-matter".to_owned()],
+            created_at_utc: "2026-01-01T00:00:00Z".to_owned(),
+        })
+        .expect("write leaked journal");
+    let server = DaemonServer::start(make_config(&free_bytes)).expect("restart arbd");
+    let mut client = TestIpcClient::connect(server.endpoint());
+    let status = client.call("system.status", &json!({}));
+    assert_eq!(
+        status["recovery"]["released_pin_journals"], 1,
+        "startup must reconcile (release) the leaked pin journal: {status}"
+    );
+    assert!(
+        journal.load("job-leaked-s13").is_err(),
+        "leaked pin journal must be removed"
+    );
     server.shutdown();
 }
 

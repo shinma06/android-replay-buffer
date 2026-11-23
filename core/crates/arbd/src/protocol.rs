@@ -150,6 +150,12 @@ pub struct RecoverySummaryView {
     pub recovered_jobs: usize,
     /// Count of previously `Purging` bundles finalized at startup.
     pub completed_purging_bundles: usize,
+    /// Count of pin journals released at startup (job completed/discarded/unknown).
+    #[serde(default)]
+    pub released_pin_journals: usize,
+    /// Count of pin journals re-created at startup for active/retryable jobs.
+    #[serde(default)]
+    pub repinned_jobs: usize,
 }
 
 /// Response payload for `system.status`.
@@ -385,6 +391,15 @@ pub struct BundleGcParams {
     pub now_utc: Option<String>,
 }
 
+/// One bundle whose purge failed during `bundle.gc`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BundleGcFailure {
+    /// Bundle identifier left in `purging` for retry.
+    pub bundle_id: String,
+    /// Human-readable failure description.
+    pub error: String,
+}
+
 /// Response payload for `bundle.gc`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BundleGcResponse {
@@ -398,6 +413,10 @@ pub struct BundleGcResponse {
     pub skipped_unmanaged_or_legacy_bundle_ids: Vec<String>,
     /// Trashed bundles still within grace period.
     pub skipped_in_grace_bundle_ids: Vec<String>,
+    /// Bundles whose physical purge failed this run (e.g. a Windows sharing violation).
+    /// They stay `purging` and are retried by the next `bundle.gc`.
+    #[serde(default)]
+    pub failed: Vec<BundleGcFailure>,
 }
 
 // ---------------- Timeline ----------------

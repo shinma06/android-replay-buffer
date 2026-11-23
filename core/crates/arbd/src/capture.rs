@@ -1,6 +1,6 @@
 //! Live capture ingestion pipeline, Zone-1 ring chunk persistence, and two-phase save engine.
 //!
-//! Bridges [`DeviceEventSource`] (both live ADB sessions and deterministic
+//! Bridges [`arb_adb::mock::DeviceEventSource`] (both live ADB sessions and deterministic
 //! [`arb_adb::mock::MockDeviceSource`]) into [`ClockTimeline`], [`RingStore`],
 //! [`arb_core::selection::select_records`], [`arb_media::mp4::mux_raw_h264_to_mp4`],
 //! and [`V2BundleWriter`].
@@ -42,6 +42,8 @@ const MP4_TIMESCALE: u32 = 90_000;
 const MP4_DEFAULT_FRAME_DURATION_TICKS: u32 = 3_000; // 30 fps
 const MAX_BATCH_EVENTS: usize = 32;
 const MAX_BATCH_BYTES: usize = 128 * 1024;
+/// Upper bound on retained storage-pressure discontinuities carried into saved bundles.
+const MAX_PRESSURE_DISCONTINUITIES: usize = 64;
 const EV_SYN: u16 = 0x0000;
 const EV_KEY: u16 = 0x0001;
 const EV_ABS: u16 = 0x0003;
@@ -116,6 +118,11 @@ struct SaveJobMaterializeParams {
     video_width: u16,
     video_height: u16,
     fallback_video_config: Option<Vec<u8>>,
+    /// Storage-pressure discontinuities (`StoragePressureStop`) known at pin time. They never
+    /// reach a ring chunk (the write that triggered them failed), so they are carried here and
+    /// merged into the saved bundle's discontinuities (S18).
+    #[serde(default)]
+    extra_discontinuities: Vec<DiscontinuityEvent>,
 }
 
 /// Tracks multi-touch `getevent -lt` raw Linux input events into normalized taps.
@@ -228,6 +235,7 @@ pub struct CapturePipeline {
     latest_heartbeat_pc_cont_ns: Option<i64>,
     latest_pc_cont_ns: Option<i64>,
     last_discontinuities: Vec<DiscontinuityEvent>,
+    pressure_discontinuities: Vec<DiscontinuityEvent>,
 }
 
 impl CapturePipeline {
@@ -272,6 +280,7 @@ impl CapturePipeline {
             latest_heartbeat_pc_cont_ns: None,
             latest_pc_cont_ns: None,
             last_discontinuities: Vec::new(),
+            pressure_discontinuities: Vec::new(),
         })
     }
 
@@ -507,28 +516,15 @@ impl CapturePipeline {
             duration_ns,
             &payload,
         ) {
-            Ok((_desc, _evicted)) => Ok(()),
-            Err(StorageError::StoragePressureStop {
-                host_free_bytes,
-                min_free_disk_bytes,
-                ..
-            }) => {
+            Ok((_desc, _evicted)) => {
+                self.drain_ring_discontinuities();
+                Ok(())
+            }
+            Err(StorageError::StoragePressureStop { .. }) => {
                 self.storage_pressure_stopped = true;
                 self.active = false;
-                self.discontinuities_seen += 1;
-                self.last_discontinuities.push(DiscontinuityEvent {
-                    kind: DiscontinuityKind::StoragePressureStop,
-                    stream: None,
-                    boot_id: self.timeline.current_boot_id().map(str::to_owned),
-                    start_boottime_ns: self.latest_heartbeat_boottime_ns,
-                    end_boottime_ns: self.latest_heartbeat_boottime_ns,
-                    pc_cont_start_ns: created_cont_ns,
-                    pc_cont_end_ns: Some(created_cont_ns),
-                    delta_ns: None,
-                    detail: Some(format!(
-                        "host free space ({host_free_bytes} bytes) below floor ({min_free_disk_bytes} bytes); pinned & saved data protected"
-                    )),
-                });
+                // The ring recorded one `StoragePressureStop` for this episode; drain it below.
+                self.drain_ring_discontinuities();
                 Ok(())
             }
             Err(StorageError::RingFullPinned {
@@ -538,13 +534,12 @@ impl CapturePipeline {
             }) => {
                 self.storage_pressure_stopped = true;
                 self.active = false;
-                self.discontinuities_seen += 1;
-                self.last_discontinuities.push(DiscontinuityEvent {
+                self.record_pressure_discontinuity(DiscontinuityEvent {
                     kind: DiscontinuityKind::StoragePressureStop,
                     stream: None,
-                    boot_id: self.timeline.current_boot_id().map(str::to_owned),
-                    start_boottime_ns: self.latest_heartbeat_boottime_ns,
-                    end_boottime_ns: self.latest_heartbeat_boottime_ns,
+                    boot_id: None,
+                    start_boottime_ns: None,
+                    end_boottime_ns: None,
                     pc_cont_start_ns: created_cont_ns,
                     pc_cont_end_ns: Some(created_cont_ns),
                     delta_ns: None,
@@ -555,6 +550,35 @@ impl CapturePipeline {
                 Ok(())
             }
             Err(other) => Err(DaemonError::Storage(other)),
+        }
+    }
+
+    /// Drains the ring store's discontinuity buffer (S18). `RingStore` accumulates one
+    /// `StoragePressureStop` per pressure episode; draining each time keeps its memory bounded
+    /// during long sessions, and the events are retained (bounded) here so they are shown live
+    /// and merged into every bundle saved afterwards.
+    fn drain_ring_discontinuities(&mut self) {
+        for event in self.ring.take_discontinuities() {
+            self.record_pressure_discontinuity(event);
+        }
+    }
+
+    fn record_pressure_discontinuity(&mut self, mut event: DiscontinuityEvent) {
+        if event.boot_id.is_none() {
+            event.boot_id = self.timeline.current_boot_id().map(str::to_owned);
+        }
+        if event.start_boottime_ns.is_none() {
+            event.start_boottime_ns = self.latest_heartbeat_boottime_ns;
+            event.end_boottime_ns = self.latest_heartbeat_boottime_ns;
+        }
+        self.storage_pressure_stopped = true;
+        self.active = false;
+        self.discontinuities_seen += 1;
+        self.last_discontinuities.push(event.clone());
+        self.pressure_discontinuities.push(event);
+        if self.pressure_discontinuities.len() > MAX_PRESSURE_DISCONTINUITIES {
+            let excess = self.pressure_discontinuities.len() - MAX_PRESSURE_DISCONTINUITIES;
+            self.pressure_discontinuities.drain(..excess);
         }
     }
 
@@ -607,6 +631,7 @@ impl CapturePipeline {
             video_width: self.video_width,
             video_height: self.video_height,
             fallback_video_config: self.latest_video_config.clone(),
+            extra_discontinuities: self.pressure_discontinuities.clone(),
         };
         write_job_params(&self.data_dir, &job_id, &params)?;
 
@@ -617,7 +642,7 @@ impl CapturePipeline {
     /// Executes Phase-2 materialization for `job_id` from its durably pinned Zone-1 chunks.
     ///
     /// On write/commit failure (e.g., unwritable destination), cleans staging automatically,
-    /// preserves pins in both [`PinJournal`] and [`Catalog`], and transitions the job to
+    /// preserves pins in both [`arb_storage::ring::PinJournal`] and [`Catalog`], and transitions the job to
     /// [`SaveJobState::FailedRetryable`] so `save.retry` / `save.retarget` / `save.discard`
     /// can recover cleanly.
     ///
@@ -865,7 +890,7 @@ impl ReplayCollector {
             audio_gap: false,
             raw_logs: Vec::new(),
             raw_taps: Vec::new(),
-            discontinuities: Vec::new(),
+            discontinuities: params.extra_discontinuities.clone(),
             log_completeness: LogCompleteness::Unverified,
             log_overflow_events: 0,
             touch_normalizer: TouchNormalizer::default(),
@@ -1207,7 +1232,6 @@ impl ReplayCollector {
             frame_count,
             video_status,
             audio_frames_count: self.audio_frames_count,
-            audio_partial: self.audio_gap || self.audio_unavailable,
             logs_count: final_logs.len(),
             log_completeness: self.log_completeness,
             log_overflow_events: self.log_overflow_events,
@@ -1261,7 +1285,6 @@ struct StreamSummaryCounts {
     frame_count: u64,
     video_status: StreamStatus,
     audio_frames_count: usize,
-    audio_partial: bool,
     logs_count: usize,
     log_completeness: LogCompleteness,
     log_overflow_events: u64,
@@ -1285,10 +1308,12 @@ fn build_streams_summary(counts: &StreamSummaryCounts) -> StreamsSummary {
         audio: Some(AudioStreamMeta {
             status: if counts.audio_frames_count == 0 {
                 StreamStatus::Absent
-            } else if counts.audio_partial {
-                StreamStatus::Partial
             } else {
-                StreamStatus::Present
+                // `arbd` does not mux AAC frames into `audio.m4a` yet (no audio muxer in
+                // `arb-media`), and `V2BundleReader::verify_integrity` (R2 S15) requires
+                // `audio.m4a` whenever audio is `Present`. Frames that were captured but not
+                // persisted are therefore reported honestly as `Partial`, never `Present`.
+                StreamStatus::Partial
             },
             av_offset_status: AvOffsetStatus::Uncalibrated,
             av_offset_ms: 0,
