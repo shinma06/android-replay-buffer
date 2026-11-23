@@ -202,11 +202,9 @@ class ShmFrameRingReaderTest {
                             }
                             gen++
                             slot = (slot + 1) % ShmFrameRingReader.SHM_SLOT_COUNT
-                            // Yield periodically so a 2-vCPU CI runner does not starve the reader
-                            // thread while keeping real overlapping concurrent writes active.
-                            if ((gen and 0x7L) == 0L) {
-                                Thread.yield()
-                            }
+                            // Pace every generation (a tight writer starves the reader on 2-vCPU
+                            // Windows runners). 20us still overlaps writes with reads many times.
+                            java.util.concurrent.locks.LockSupport.parkNanos(20_000L)
                         }
                     },
                     "shm-test-writer-$round",
@@ -218,8 +216,8 @@ class ShmFrameRingReaderTest {
                         var observed = 0
                         var lastGen = -1L
                         var distinctGenerations = 0
-                        val deadlineNs = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
-                        while (observed < 200 && System.nanoTime() < deadlineNs) {
+                        val deadlineNs = System.nanoTime() + TimeUnit.SECONDS.toNanos(30)
+                        while ((observed < 200 || distinctGenerations < 2) && System.nanoTime() < deadlineNs) {
                             val frame = reader.readLatest() ?: continue
                             val expectedByte = (frame.meta.generation and 0xFFL).toByte()
                             assertEquals(frame.meta.generation, frame.meta.frameIndex)
@@ -233,7 +231,7 @@ class ShmFrameRingReaderTest {
                             }
                             observed++
                         }
-                        assertEquals(200, observed, "Expected 200 consistent concurrent reads in round $round")
+                        assertTrue(observed >= 200, "Expected >=200 consistent concurrent reads in round $round, got $observed")
                         assertTrue(
                             distinctGenerations >= 2,
                             "Expected concurrent writer progress across multiple generations, got $distinctGenerations",

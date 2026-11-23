@@ -1,16 +1,25 @@
 package io.github.shinma06.arb.ui
 
+import com.intellij.ide.actions.RevealFileAction
+import com.intellij.notification.NotificationGroupManager
+import com.intellij.notification.NotificationType
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.diagnostic.Logger
 import io.github.shinma06.arb.ide.ArbdDaemonService
+import io.github.shinma06.arb.model.ArbConfig
+import io.github.shinma06.arb.model.BundleKind
 import io.github.shinma06.arb.model.CaptureStartParams
+import io.github.shinma06.arb.model.SaveLogsParams
+import io.github.shinma06.arb.model.SaveScreenshotParams
 import io.github.shinma06.arb.model.SaveTriggerParams
+import io.github.shinma06.arb.state.ArbFormatters
 import io.github.shinma06.arb.state.BundleCatalogState
 import io.github.shinma06.arb.state.CaptureBarReducer
 import io.github.shinma06.arb.state.CaptureBarState
 import io.github.shinma06.arb.state.FailedSaveRecoveryReducer
 import io.github.shinma06.arb.state.FailedSaveRecoveryState
 import java.awt.BorderLayout
+import java.nio.file.Path
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import javax.swing.BoxLayout
@@ -18,13 +27,14 @@ import javax.swing.JPanel
 import javax.swing.SwingUtilities
 
 /**
- * Root ToolWindow panel (`ARB v2`) composing the Capture Bar, Failed-Save Recovery panel,
- * and Bundle Catalog panel. All business logic delegates strictly to `arbd` via IPC.
+ * Root ToolWindow panel (`ARB`) composing the Live Capture Cockpit Card, conditional Tier-2
+ * banners / Failed-Save Recovery panel, and Compact Filterable Library List.
+ * All business logic delegates strictly to `arbd` via IPC.
  */
 class ArbToolWindowPanel(
     private val daemonService: ArbdDaemonService,
     private val onOpenBundle: (bundleIdOrPath: String, title: String, isLegacy: Boolean) -> Unit,
-) : JPanel(BorderLayout(6, 6)), Disposable {
+) : JPanel(BorderLayout(0, 4)), Disposable {
     private val logger = Logger.getInstance(ArbToolWindowPanel::class.java)
     private val executor = Executors.newSingleThreadScheduledExecutor { r ->
         Thread(r, "arb-toolwindow-worker").apply { isDaemon = true }
@@ -34,16 +44,57 @@ class ArbToolWindowPanel(
     private var recoveryState = FailedSaveRecoveryState()
     private var catalogState = BundleCatalogState()
 
-    val captureBarPanel = CaptureBarPanel(
-        onStartCapture = { serial -> runAsync { daemonService.withClient { it.captureStart(CaptureStartParams(serial = serial)) }; refreshAll() } },
-        onStopCapture = { runAsync { daemonService.withClient { it.captureStop() }; refreshAll() } },
-        onSaveNow = { durationSec ->
+    val captureBarPanel: CaptureBarPanel = CaptureBarPanel(
+        onStartCapture = { serial ->
             runAsync {
-                daemonService.withClient { it.saveTrigger(SaveTriggerParams(durationSec = durationSec)) }
+                daemonService.withClient { it.captureStart(CaptureStartParams(serial = serial)) }
                 refreshAll()
             }
         },
+        onStopCapture = {
+            runAsync {
+                daemonService.withClient { it.captureStop() }
+                refreshAll()
+            }
+        },
+        onSaveNow = { durationSec -> triggerSave(durationSec, openEditor = true) },
         onRefresh = { runAsync { refreshAll() } },
+        onSaveAndOpen = { durationSec -> triggerSave(durationSec, openEditor = true) },
+        onSaveOnly = { durationSec -> triggerSave(durationSec, openEditor = false) },
+        onScreenshot = { serial ->
+            runAsync {
+                val res = daemonService.withClient {
+                    it.saveScreenshot(SaveScreenshotParams(serial = serial))
+                }
+                notifyBalloon("スクリーンショットを保存しました: ${res.path} (${res.width}x${res.height})")
+                refreshAll()
+            }
+        },
+        onSaveLogs = { durationSec ->
+            runAsync {
+                val res = daemonService.withClient {
+                    it.saveLogs(SaveLogsParams(windowSecs = durationSec))
+                }
+                val detail = res.bundleId ?: res.job.state.wire
+                notifyBalloon("直前 ${ArbFormatters.formatSeconds(durationSec)} のログを保存しました: $detail")
+                refreshAll()
+            }
+        },
+        onOpenConfig = {
+            SwingUtilities.invokeLater {
+                ArbQuickConfigDialog.show(this, captureState.config) { patch ->
+                    runAsync {
+                        val updated = daemonService.withClient { it.configUpdate(patch) }.config
+                        captureState = CaptureBarReducer.withConfig(captureState, updated)
+                        SwingUtilities.invokeLater { captureBarPanel.render(captureState) }
+                        notifyBalloon(
+                            "設定を保存しました（保持ウィンドウ: ${ArbFormatters.formatSeconds(updated.saveWindowSecs)}）",
+                        )
+                        refreshAll()
+                    }
+                }
+            }
+        },
     )
 
     val failedSaveRecoveryPanel = FailedSaveRecoveryPanel(
@@ -92,9 +143,19 @@ class ArbToolWindowPanel(
     )
 
     val bundleCatalogPanel = BundleCatalogPanel(
-        onOpenBundle = { item -> onOpenBundle(item.bundleId, item.bundleId, item.isLegacyReadOnly) },
-        onTrashBundle = { bundleId -> runAsync { daemonService.withClient { it.bundleTrash(bundleId) }; refreshAll() } },
-        onRestoreBundle = { bundleId -> runAsync { daemonService.withClient { it.bundleRestore(bundleId) }; refreshAll() } },
+        onOpenBundle = { item -> onOpenBundle(item.bundleId, item.displayTitle, item.isLegacyReadOnly) },
+        onTrashBundle = { bundleId ->
+            runAsync {
+                daemonService.withClient { it.bundleTrash(bundleId) }
+                refreshAll(catalogNote = "ゴミ箱へ移動しました（ゴミ箱フィルタから復元可）")
+            }
+        },
+        onRestoreBundle = { bundleId ->
+            runAsync {
+                daemonService.withClient { it.bundleRestore(bundleId) }
+                refreshAll(catalogNote = "バンドルを復元しました")
+            }
+        },
         onRunGc = {
             runAsync {
                 val gc = daemonService.withClient { it.bundleGc() }
@@ -102,11 +163,19 @@ class ArbToolWindowPanel(
                 refreshAll(catalogNote = note)
             }
         },
+        onRevealInFinder = { path ->
+            runCatching { RevealFileAction.openFile(Path.of(path)) }
+                .onFailure { logger.warn("Failed to reveal $path", it) }
+        },
     )
 
     init {
+        background = ArbTheme.surfaceBg
+        isOpaque = true
+
         val northStack = JPanel().apply {
             layout = BoxLayout(this, BoxLayout.Y_AXIS)
+            isOpaque = false
             add(captureBarPanel)
             add(failedSaveRecoveryPanel)
         }
@@ -119,6 +188,30 @@ class ArbToolWindowPanel(
             3L,
             TimeUnit.SECONDS,
         )
+    }
+
+    private fun triggerSave(durationSec: Long, openEditor: Boolean) {
+        runAsync {
+            val res = daemonService.withClient {
+                it.saveTrigger(SaveTriggerParams(durationSec = durationSec))
+            }
+            refreshAll()
+            val savedId = res.bundleId
+            if (savedId != null) {
+                if (openEditor) {
+                    SwingUtilities.invokeLater {
+                        onOpenBundle(savedId, savedId, false)
+                    }
+                } else {
+                    notifyBalloon("直前 ${ArbFormatters.formatSeconds(durationSec)} を保存しました: $savedId")
+                }
+            } else {
+                notifyBalloon(
+                    "保存ジョブ状態: ${res.job.state.wire} (${res.job.lastError ?: "詳細を確認してください"})",
+                    NotificationType.WARNING,
+                )
+            }
+        }
     }
 
     private fun runAsync(action: () -> Unit) {
@@ -134,18 +227,68 @@ class ArbToolWindowPanel(
         }
     }
 
+    private data class BundleMeta(val kind: BundleKind, val durationSecs: Long?, val crashed: Boolean)
+
+    private val metaCache = java.util.concurrent.ConcurrentHashMap<String, BundleMeta>()
+
     private fun refreshAll(catalogNote: String? = null) {
         try {
             val status = daemonService.withClient { it.systemStatus() }
+            val config = runCatching {
+                daemonService.withClient { it.configGet().config }
+            }.getOrDefault(captureState.config)
             val devices = runCatching {
                 daemonService.withClient { it.deviceList().devices }
             }.getOrDefault(captureState.devices)
             val jobs = daemonService.withClient { it.saveListJobs().jobs }
             val bundles = daemonService.withClient { it.bundleList().bundles }
 
-            val nextCapture = CaptureBarReducer.fromStatus(captureState, status, devices)
+            // Bundles are WORM: derived metadata never changes, so it is fetched once per bundleId
+            // (at most META_BUDGET_PER_POLL new bundles per poll, the rest on following polls).
+            var budget = META_BUDGET_PER_POLL
+            for (entry in bundles) {
+                if (metaCache.containsKey(entry.bundleId)) continue
+                if (budget-- <= 0) break
+                val summary = runCatching {
+                    daemonService.withClient { it.timelineSummary(entry.bundleId) }
+                }.getOrNull() ?: continue
+                val spanNs = summary.epochs.firstOrNull()?.let { ep ->
+                    (ep.endBoottimeNs - ep.startBoottimeNs).coerceAtLeast(0L)
+                }
+                val secs = when {
+                    spanNs != null && spanNs > 0L -> (spanNs / 1_000_000_000L).coerceAtLeast(1L)
+                    summary.frameCount > 0 -> (summary.frameCount / config.videoMaxFps.coerceAtLeast(1)).toLong().coerceAtLeast(1L)
+                    else -> null
+                }
+                val crashed = runCatching {
+                    daemonService.withClient { it.timelineCrashes(entry.bundleId).crashes }.isNotEmpty()
+                }.getOrDefault(false)
+                metaCache[entry.bundleId] = BundleMeta(summary.bundleKind, secs, crashed)
+            }
+            val crashIds = mutableSetOf<String>()
+            val durations = mutableMapOf<String, Long>()
+            val kinds = mutableMapOf<String, BundleKind>()
+            for (entry in bundles) {
+                val meta = metaCache[entry.bundleId] ?: continue
+                kinds[entry.bundleId] = meta.kind
+                meta.durationSecs?.let { durations[entry.bundleId] = it }
+                if (meta.crashed) crashIds.add(entry.bundleId)
+            }
+
+            val nextCapture = CaptureBarReducer.fromStatus(
+                previous = captureState,
+                status = status,
+                devices = devices,
+                config = config,
+            )
             val nextRecovery = FailedSaveRecoveryReducer.withJobs(recoveryState, jobs)
-            val nextCatalog = BundleCatalogState.fromEntries(bundles)
+            val nextCatalog = BundleCatalogState.fromEntries(
+                entries = bundles,
+                activeFilter = bundleCatalogPanel.activeFilter(),
+                crashBundleIds = crashIds,
+                durationsByBundleId = durations,
+                kindsByBundleId = kinds,
+            )
 
             captureState = nextCapture
             recoveryState = nextRecovery
@@ -169,7 +312,22 @@ class ArbToolWindowPanel(
         SwingUtilities.invokeLater { failedSaveRecoveryPanel.render(next) }
     }
 
+    private fun notifyBalloon(content: String, type: NotificationType = NotificationType.INFORMATION) {
+        runCatching {
+            NotificationGroupManager.getInstance()
+                .getNotificationGroup("ARB v2")
+                .createNotification("Android Replay Buffer", content, type)
+                .notify(null)
+        }.onFailure {
+            logger.info("ARB notification: $content")
+        }
+    }
+
     override fun dispose() {
         executor.shutdownNow()
+    }
+
+    private companion object {
+        const val META_BUDGET_PER_POLL = 24
     }
 }

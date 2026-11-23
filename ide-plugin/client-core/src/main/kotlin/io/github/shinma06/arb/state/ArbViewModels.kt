@@ -1,16 +1,20 @@
 package io.github.shinma06.arb.state
 
 import io.github.shinma06.arb.model.AdbDeviceInfo
+import io.github.shinma06.arb.model.ArbConfig
 import io.github.shinma06.arb.model.AudioStreamMeta
 import io.github.shinma06.arb.model.AvOffsetStatus
 import io.github.shinma06.arb.model.BundleEntryView
 import io.github.shinma06.arb.model.BundleFormat
+import io.github.shinma06.arb.model.BundleKind
 import io.github.shinma06.arb.model.BundleLifecycleState
 import io.github.shinma06.arb.model.CaptureStatusView
 import io.github.shinma06.arb.model.CatalogFormatVersion
+import io.github.shinma06.arb.model.CrashMarker
 import io.github.shinma06.arb.model.DiscontinuityEvent
 import io.github.shinma06.arb.model.DiscontinuityKind
 import io.github.shinma06.arb.model.FilmstripEntryMeta
+import io.github.shinma06.arb.model.IdeDefaultSaveAction
 import io.github.shinma06.arb.model.LogCompleteness
 import io.github.shinma06.arb.model.LogRecord
 import io.github.shinma06.arb.model.LogcatStreamMeta
@@ -18,18 +22,23 @@ import io.github.shinma06.arb.model.Provenance
 import io.github.shinma06.arb.model.RecordBucket
 import io.github.shinma06.arb.model.SaveJobState
 import io.github.shinma06.arb.model.SaveJobView
+import io.github.shinma06.arb.model.ScreenSpan
 import io.github.shinma06.arb.model.StreamStatus
-import io.github.shinma06.arb.model.StreamsSummary
 import io.github.shinma06.arb.model.SystemStatusResponse
 import io.github.shinma06.arb.model.TapRecord
+import io.github.shinma06.arb.model.TimeAlignment
 import io.github.shinma06.arb.model.TimelineSummaryResponse
 import io.github.shinma06.arb.model.TimestampSemantics
 import io.github.shinma06.arb.model.VideoStreamMeta
 import io.github.shinma06.arb.shm.ShmFrameMeta
+import kotlin.math.abs
+import kotlin.math.roundToLong
 
 const val APPROXIMATE_PREVIEW_BADGE_TEXT: String = "近似プレビュー（位置確定前）"
 const val LEGACY_READ_ONLY_BADGE_TEXT: String = "Legacy (RO)"
-const val UNANCHORED_TAB_TITLE: String = "時刻不明の記録 (Unanchored)"
+const val UNANCHORED_TAB_TITLE: String = "時刻不明"
+const val TAP_LOG_CORRELATION_WINDOW_NS: Long = 300_000_000L // 0..300ms
+const val TAP_OVERLAY_WINDOW_NS: Long = 250_000_000L // +/-250ms
 
 // ---------------- Capture Bar & Live Status Banners ----------------
 
@@ -38,6 +47,7 @@ enum class CaptureBannerKind {
     CONNECTION_LOST,
     STREAM_GAP,
     STATIC_HOLD,
+    CONFIG_WARNING,
 }
 
 data class CaptureBanner(
@@ -52,13 +62,56 @@ data class CaptureBarState(
     val devices: List<AdbDeviceInfo> = emptyList(),
     val selectedSerial: String? = null,
     val capture: CaptureStatusView? = null,
+    val config: ArbConfig = ArbConfig(),
     val ringChunkCount: Long = 0,
     val ringTotalBytes: Long = 0,
     val ringPinnedChunkCount: Long = 0,
-    val saveDurationSec: Long = 30L,
+    val saveDurationSec: Long = ArbConfig.DEFAULT_SAVE_WINDOW_SECS.toLong(),
     val banners: List<CaptureBanner> = emptyList(),
     val lastStatusMessage: String? = null,
-)
+) {
+    val saveWindowSecs: Int
+        get() = config.saveWindowSecs
+
+    val defaultSaveAction: IdeDefaultSaveAction
+        get() = config.ideDefaultSaveAction
+
+    val bufferedWindowSecs: Long
+        get() {
+            val frames = capture?.videoFrames ?: 0L
+            if (frames <= 0L) return 0L
+            val fps = config.videoMaxFps.coerceAtLeast(1).toLong()
+            return (frames / fps).coerceIn(0L, saveWindowSecs.toLong())
+        }
+
+    val ringFillRatio: Double
+        get() = if (saveWindowSecs <= 0) 0.0 else (bufferedWindowSecs.toDouble() / saveWindowSecs.toDouble()).coerceIn(0.0, 1.0)
+
+    val ringMeterText: String
+        get() = ArbFormatters.formatRingMeter(bufferedWindowSecs, saveWindowSecs, ringTotalBytes)
+
+    val primarySaveLabel: String
+        get() = ArbFormatters.formatPrimarySaveLabel(saveWindowSecs, defaultSaveAction)
+
+    val secondarySaveLabel: String
+        get() = ArbFormatters.formatSecondarySaveLabel(defaultSaveAction)
+
+    val statusBadgeText: String
+        get() = when {
+            !daemonConnected -> "未接続"
+            capture == null -> "待機中"
+            capture.storagePressureStopped -> "容量停止"
+            capture.active && capture.connected -> "REC"
+            capture.active && !capture.connected -> "再接続中"
+            else -> "待機中"
+        }
+
+    val isRecordingHealthy: Boolean
+        get() = daemonConnected && capture?.active == true && capture.connected && !capture.storagePressureStopped
+
+    val hasVisibleBanners: Boolean
+        get() = banners.isNotEmpty()
+}
 
 object CaptureBarReducer {
     fun fromStatus(
@@ -66,6 +119,7 @@ object CaptureBarReducer {
         status: SystemStatusResponse,
         devices: List<AdbDeviceInfo> = previous.devices,
         liveDiscontinuities: List<DiscontinuityEvent> = emptyList(),
+        config: ArbConfig = previous.config,
     ): CaptureBarState {
         val banners = buildList {
             // STORAGE_PRESSURE_STOP must remain strictly distinct from CONNECTION_LOST!
@@ -82,8 +136,8 @@ object CaptureBarReducer {
                 add(
                     CaptureBanner(
                         kind = CaptureBannerKind.CONNECTION_LOST,
-                        title = "CONNECTION_LOST: 端末との接続が切断されました",
-                        detail = "自動再接続を待機しています。切断前のリングバッファはそのまま保存できます。",
+                        title = "USB/ADB 切断 — 自動再接続待機中（ギャップ記録中）",
+                        detail = "切断前のリングバッファはそのまま保存できます。",
                     ),
                 )
             }
@@ -105,6 +159,15 @@ object CaptureBarReducer {
                     ),
                 )
             }
+            if (!status.configWarning.isNullOrBlank()) {
+                add(
+                    CaptureBanner(
+                        kind = CaptureBannerKind.CONFIG_WARNING,
+                        title = "設定ファイル警告（既定値で稼働中）",
+                        detail = status.configWarning,
+                    ),
+                )
+            }
         }
 
         val resolvedSerial = previous.selectedSerial
@@ -117,12 +180,19 @@ object CaptureBarReducer {
             devices = devices,
             selectedSerial = resolvedSerial,
             capture = status.capture,
+            config = config,
+            saveDurationSec = config.saveWindowSecs.toLong(),
             ringChunkCount = status.ringChunkCount,
             ringTotalBytes = status.ringTotalBytes,
             ringPinnedChunkCount = status.ringPinnedChunkCount,
             banners = banners,
         )
     }
+
+    fun withConfig(previous: CaptureBarState, config: ArbConfig): CaptureBarState = previous.copy(
+        config = config,
+        saveDurationSec = config.saveWindowSecs.toLong(),
+    )
 
     fun disconnected(previous: CaptureBarState, reason: String): CaptureBarState = previous.copy(
         daemonConnected = false,
@@ -163,7 +233,14 @@ object FailedSaveRecoveryReducer {
     }
 }
 
-// ---------------- Bundle Catalog State ----------------
+// ---------------- Bundle Catalog State & Filterable Library ----------------
+
+enum class BundleFilter(val label: String) {
+    ALL("すべて"),
+    TRIMMED("トリム済み"),
+    CRASH("クラッシュ"),
+    TRASH("ゴミ箱"),
+}
 
 data class BundleCatalogItem(
     val bundleId: String,
@@ -173,9 +250,28 @@ data class BundleCatalogItem(
     val activeLeases: Int,
     val createdAtUtc: String,
     val parentBundleId: String?,
+    val durationSecs: Long? = null,
+    val hasCrash: Boolean = false,
+    val bundleKind: BundleKind = BundleKind.FULL,
+    val displayTitle: String = bundleId,
 ) {
     val formatBadge: String
         get() = if (isLegacyReadOnly) LEGACY_READ_ONLY_BADGE_TEXT else "v2"
+
+    val isTrimmed: Boolean
+        get() = !parentBundleId.isNullOrBlank()
+
+    val semanticTags: List<String>
+        get() = buildList {
+            if (isTrimmed) add("トリム済み")
+            if (hasCrash) add("クラッシュ")
+            if (bundleKind == BundleKind.LOGS_ONLY) add("ログのみ")
+            if (isLegacyReadOnly) add(LEGACY_READ_ONLY_BADGE_TEXT)
+            if (isProtectedByLease) add("使用中")
+        }
+
+    val durationText: String
+        get() = durationSecs?.let { ArbFormatters.formatSeconds(it) } ?: "--"
 
     val canTrash: Boolean
         get() = state == BundleLifecycleState.ACTIVE
@@ -190,28 +286,121 @@ data class BundleCatalogItem(
 data class BundleCatalogState(
     val items: List<BundleCatalogItem> = emptyList(),
     val showTrashed: Boolean = true,
+    val activeFilter: BundleFilter = BundleFilter.ALL,
 ) {
     val visibleItems: List<BundleCatalogItem>
         get() = if (showTrashed) items else items.filter { it.state == BundleLifecycleState.ACTIVE }
 
+    /** Items matching the active Library filter chip (`すべて` / `トリム済み` / `クラッシュ` / `ゴミ箱`). */
+    val filteredItems: List<BundleCatalogItem>
+        get() = when (activeFilter) {
+            BundleFilter.ALL -> items.filter { it.state == BundleLifecycleState.ACTIVE }
+            BundleFilter.TRIMMED -> items.filter { it.state == BundleLifecycleState.ACTIVE && it.isTrimmed }
+            BundleFilter.CRASH -> items.filter { it.state == BundleLifecycleState.ACTIVE && it.hasCrash }
+            BundleFilter.TRASH -> items.filter { it.state == BundleLifecycleState.TRASHED }
+        }
+
+    fun countFor(filter: BundleFilter): Int = when (filter) {
+        BundleFilter.ALL -> items.count { it.state == BundleLifecycleState.ACTIVE }
+        BundleFilter.TRIMMED -> items.count { it.state == BundleLifecycleState.ACTIVE && it.isTrimmed }
+        BundleFilter.CRASH -> items.count { it.state == BundleLifecycleState.ACTIVE && it.hasCrash }
+        BundleFilter.TRASH -> items.count { it.state == BundleLifecycleState.TRASHED }
+    }
+
     companion object {
-        fun fromEntries(entries: List<BundleEntryView>, showTrashed: Boolean = true): BundleCatalogState =
-            BundleCatalogState(
-                items = entries.map { e ->
-                    BundleCatalogItem(
-                        bundleId = e.bundleId,
-                        path = e.path,
-                        isLegacyReadOnly = e.formatVersion == CatalogFormatVersion.LEGACY_RO,
-                        state = e.state,
-                        activeLeases = e.activeLeases,
-                        createdAtUtc = e.createdAtUtc,
-                        parentBundleId = e.parentBundleId,
-                    )
-                },
-                showTrashed = showTrashed,
-            )
+        fun fromEntries(
+            entries: List<BundleEntryView>,
+            showTrashed: Boolean = true,
+            activeFilter: BundleFilter = BundleFilter.ALL,
+            crashBundleIds: Set<String> = emptySet(),
+            durationsByBundleId: Map<String, Long> = emptyMap(),
+            kindsByBundleId: Map<String, BundleKind> = emptyMap(),
+        ): BundleCatalogState = BundleCatalogState(
+            items = entries.map { e ->
+                BundleCatalogItem(
+                    bundleId = e.bundleId,
+                    path = e.path,
+                    isLegacyReadOnly = e.formatVersion == CatalogFormatVersion.LEGACY_RO,
+                    state = e.state,
+                    activeLeases = e.activeLeases,
+                    createdAtUtc = e.createdAtUtc,
+                    parentBundleId = e.parentBundleId,
+                    durationSecs = durationsByBundleId[e.bundleId],
+                    hasCrash = e.bundleId in crashBundleIds,
+                    bundleKind = kindsByBundleId[e.bundleId] ?: BundleKind.FULL,
+                )
+            },
+            showTrashed = showTrashed,
+            activeFilter = activeFilter,
+        )
     }
 }
+
+// ---------------- Studio Tier-2 Honesty Chips, Tap Overlay & Event Correlation ----------------
+
+enum class HonestyChipKind {
+    AUDIO_OFFSET,
+    LOG_COMPLETENESS,
+    DISCONTINUITY_GAP,
+    LEGACY_READ_ONLY,
+}
+
+enum class HonestySeverity {
+    INFO,
+    WARNING,
+    ERROR,
+}
+
+data class Tier2HonestyChip(
+    val kind: HonestyChipKind,
+    val label: String,
+    val detail: String,
+    val severity: HonestySeverity,
+)
+
+enum class EventStreamFilter(val label: String) {
+    ALL("すべて"),
+    TAPS("タップ"),
+    ERRORS_CRASHES("エラー・クラッシュ"),
+}
+
+enum class SyncedEventKind {
+    TAP,
+    CRASH,
+    SCREEN_TRANSITION,
+    LOG,
+}
+
+data class SyncedEventRow(
+    val kind: SyncedEventKind,
+    val seq: Long,
+    val boottimeNs: Long?,
+    val relativeMs: Long?,
+    val frameIndex: Long?,
+    val title: String,
+    val detail: String,
+    val level: String? = null,
+    val tag: String? = null,
+    val isInTrimRange: Boolean = true,
+    val isAtPlayhead: Boolean = false,
+    val correlatedTapIndex: Int? = null,
+    val sourceJumpTarget: SourceJumpTarget? = null,
+)
+
+data class ActiveTapOverlay(
+    val tapIndex1Based: Int,
+    val x: Double,
+    val y: Double,
+    val deltaMs: Long,
+    val label: String,
+)
+
+data class ExportCompletionInfo(
+    val summaryText: String,
+    val outputPath: String,
+    val bundleId: String? = null,
+    val isTrimBundle: Boolean = false,
+)
 
 // ---------------- Timeline & Video Viewport State ----------------
 
@@ -230,10 +419,15 @@ data class TimelineViewerState(
     val currentFrameMeta: ShmFrameMeta? = null,
     val filmstrip: List<FilmstripEntryMeta> = emptyList(),
     val discontinuities: List<DiscontinuityEvent> = emptyList(),
+    val crashes: List<CrashMarker> = emptyList(),
+    val screens: List<ScreenSpan> = emptyList(),
     val mainLogs: List<LogRecord> = emptyList(),
     val unanchoredLogs: List<LogRecord> = emptyList(),
     val mainTaps: List<TapRecord> = emptyList(),
     val unanchoredTaps: List<TapRecord> = emptyList(),
+    val trashOriginalAfterExport: Boolean = false,
+    val showTapOverlay: Boolean = true,
+    val exportCompletion: ExportCompletionInfo? = null,
     val lastActionMessage: String? = null,
 ) {
     /**
@@ -246,6 +440,19 @@ data class TimelineViewerState(
     val approximateBadgeText: String?
         get() = if (showApproximatePreviewBadge) APPROXIMATE_PREVIEW_BADGE_TEXT else null
 
+    /** Non-destructive Trash-Original option is strictly disabled for Legacy (RO) bundles! */
+    val canTrashOriginalAfterExport: Boolean
+        get() = !isLegacy
+
+    val effectiveTrashOriginalAfterExport: Boolean
+        get() = trashOriginalAfterExport && !isLegacy
+
+    val canSelectTapRange: Boolean
+        get() = mainTaps.isNotEmpty() && frameCount > 0L
+
+    val canSelectAroundCrash: Boolean
+        get() = crashes.isNotEmpty() && frameCount > 0L
+
     val unanchoredTruncatedCount: Long
         get() = summary.unanchoredSummary.truncatedCount
 
@@ -255,6 +462,389 @@ data class TimelineViewerState(
         } else {
             null
         }
+
+    /** First known device boottime anchor in ns, used for deterministic frame <-> timestamp mapping. */
+    val timelineStartBoottimeNs: Long
+        get() {
+            summary.epochs.firstOrNull()?.let { return it.startBoottimeNs }
+            filmstrip.firstOrNull()?.let { return it.ptsNs }
+            return 0L
+        }
+
+    /** End boottime anchor in ns. */
+    val timelineEndBoottimeNs: Long
+        get() {
+            summary.epochs.lastOrNull()?.let { return it.endBoottimeNs }
+            val fallbackDurNs = (frameCount - 1L).coerceAtLeast(0L) * DEFAULT_FRAME_STEP_NS
+            return timelineStartBoottimeNs + fallbackDurNs
+        }
+
+    val totalDurationMs: Long
+        get() {
+            if (frameCount <= 1L) return 0L
+            val spanNs = timelineEndBoottimeNs - timelineStartBoottimeNs
+            return if (spanNs > 0L) spanNs / 1_000_000L else ((frameCount - 1L) * DEFAULT_FRAME_STEP_NS) / 1_000_000L
+        }
+
+    val estimatedFps: Double
+        get() {
+            val durMs = totalDurationMs
+            return if (frameCount > 1L && durMs > 0L) {
+                ((frameCount - 1L).toDouble() * 1_000.0 / durMs.toDouble()).coerceIn(1.0, 120.0)
+            } else {
+                30.0
+            }
+        }
+
+    fun frameToRelativeMs(frameIndex: Long): Long {
+        if (frameCount <= 1L) return 0L
+        val clamped = frameIndex.coerceIn(0L, frameCount - 1L)
+        return ((clamped.toDouble() / (frameCount - 1L).toDouble()) * totalDurationMs.toDouble()).roundToLong()
+    }
+
+    fun frameToBoottimeNs(frameIndex: Long): Long =
+        timelineStartBoottimeNs + frameToRelativeMs(frameIndex) * 1_000_000L
+
+    fun boottimeNsToFrameIndex(boottimeNs: Long): Long? {
+        if (frameCount <= 0L) return null
+        if (frameCount == 1L) return 0L
+        // Multi-epoch bundles (reboots/gaps) have unrelated boottime bases: a single linear span is
+        // meaningless, so map through per-frame PTS (filmstrip) when it is available.
+        if (summary.epochs.size > 1 && filmstrip.size >= 2) {
+            return boottimeNsToFrameIndexViaFilmstrip(boottimeNs)
+        }
+        val start = timelineStartBoottimeNs
+        val end = timelineEndBoottimeNs
+        val span = end - start
+        if (span <= 0L) return 0L
+        val ratio = ((boottimeNs - start).toDouble() / span.toDouble()).coerceIn(0.0, 1.0)
+        return (ratio * (frameCount - 1L).toDouble()).roundToLong().coerceIn(0L, frameCount - 1L)
+    }
+
+    private fun boottimeNsToFrameIndexViaFilmstrip(boottimeNs: Long): Long {
+        val entries = filmstrip.sortedBy { it.frameIndex }
+        val maxFrame = frameCount - 1L
+        val upperIdx = entries.indexOfFirst { it.ptsNs >= boottimeNs }
+        val result = when {
+            upperIdx < 0 -> entries.last().frameIndex
+            upperIdx == 0 -> entries.first().frameIndex
+            else -> {
+                val lo = entries[upperIdx - 1]
+                val hi = entries[upperIdx]
+                val span = hi.ptsNs - lo.ptsNs
+                // A PTS jump across an epoch boundary must not be interpolated: snap to the nearer frame.
+                if (span <= 0L || hi.ptsNs - boottimeNs > boottimeNs - lo.ptsNs && span > 2_000_000_000L) {
+                    if (boottimeNs - lo.ptsNs <= hi.ptsNs - boottimeNs) lo.frameIndex else hi.frameIndex
+                } else {
+                    val ratio = (boottimeNs - lo.ptsNs).toDouble() / span.toDouble()
+                    lo.frameIndex + (ratio * (hi.frameIndex - lo.frameIndex).toDouble()).roundToLong()
+                }
+            }
+        }
+        return result.coerceIn(0L, maxFrame)
+    }
+
+    val selectedDurationMs: Long
+        get() = (frameToRelativeMs(outFrameIndex) - frameToRelativeMs(inFrameIndex)).coerceAtLeast(0L)
+
+    val exportCtaLabel: String
+        get() = ArbFormatters.formatExportCtaLabel(inFrameIndex, outFrameIndex, frameCount, selectedDurationMs)
+
+    val selectionSummaryText: String
+        get() = ArbFormatters.formatSelectionSummary(
+            inMs = frameToRelativeMs(inFrameIndex),
+            outMs = frameToRelativeMs(outFrameIndex),
+            inFrameIndex = inFrameIndex,
+            outFrameIndex = outFrameIndex,
+        )
+
+    /**
+     * Conditional Tier-2 honesty chips for the Top Action Bar.
+     * Healthy v2 bundles with calibrated 0ms audio, verified logcat, and 0 gaps yield an empty list!
+     */
+    val tier2HonestyChips: List<Tier2HonestyChip>
+        get() = buildList {
+            summary.streams.audio?.let { audio ->
+                if (audio.status != StreamStatus.ABSENT && audio.status != StreamStatus.EXCLUDED) {
+                    when {
+                        audio.avOffsetStatus == AvOffsetStatus.UNCALIBRATED -> add(
+                            Tier2HonestyChip(
+                                kind = HonestyChipKind.AUDIO_OFFSET,
+                                label = if (audio.avOffsetMs != 0L) "音声 ±${abs(audio.avOffsetMs)}ms" else "音声 未校正",
+                                detail = ProvenanceFormatter.formatAudio(audio),
+                                severity = HonestySeverity.WARNING,
+                            ),
+                        )
+                        audio.avOffsetMs != 0L -> add(
+                            Tier2HonestyChip(
+                                kind = HonestyChipKind.AUDIO_OFFSET,
+                                label = "音声 ±${abs(audio.avOffsetMs)}ms",
+                                detail = ProvenanceFormatter.formatAudio(audio),
+                                severity = HonestySeverity.INFO,
+                            ),
+                        )
+                    }
+                }
+            }
+            summary.streams.logcat?.let { logcat ->
+                when (logcat.completeness) {
+                    LogCompleteness.UNVERIFIED -> add(
+                        Tier2HonestyChip(
+                            kind = HonestyChipKind.LOG_COMPLETENESS,
+                            label = "ログ UNVERIFIED",
+                            detail = ProvenanceFormatter.formatLogcat(logcat),
+                            severity = HonestySeverity.WARNING,
+                        ),
+                    )
+                    LogCompleteness.OVERFLOW_DETECTED -> add(
+                        Tier2HonestyChip(
+                            kind = HonestyChipKind.LOG_COMPLETENESS,
+                            label = "ログ欠落 ${logcat.overflowEvents} 件",
+                            detail = ProvenanceFormatter.formatLogcat(logcat),
+                            severity = HonestySeverity.ERROR,
+                        ),
+                    )
+                    LogCompleteness.VERIFIED_NO_OVERFLOW -> Unit
+                }
+            }
+            val gapCount = maxOf(discontinuities.size, summary.discontinuityCount)
+            if (gapCount > 0) {
+                add(
+                    Tier2HonestyChip(
+                        kind = HonestyChipKind.DISCONTINUITY_GAP,
+                        label = "ギャップ $gapCount 件",
+                        detail = "タイムラインに $gapCount 件の不連続・欠損イベントがあります。",
+                        severity = HonestySeverity.WARNING,
+                    ),
+                )
+            }
+            if (isLegacy) {
+                add(
+                    Tier2HonestyChip(
+                        kind = HonestyChipKind.LEGACY_READ_ONLY,
+                        label = LEGACY_READ_ONLY_BADGE_TEXT,
+                        detail = "旧形式バンドル（読取専用）。元バンドル保護のためゴミ箱移動は無効です。",
+                        severity = HonestySeverity.INFO,
+                    ),
+                )
+            }
+        }
+
+    /** Returns recorded main-bucket taps within ±[windowNs] (default ±250ms) of [frameIndex]. */
+    fun activeTapsAtFrame(
+        frameIndex: Long = currentFrameIndex,
+        windowNs: Long = TAP_OVERLAY_WINDOW_NS,
+    ): List<ActiveTapOverlay> {
+        if (!showTapOverlay || mainTaps.isEmpty()) return emptyList()
+        val frameBt = currentFrameMeta?.takeIf { it.frameIndex == frameIndex && it.boottimeNs > 0L }?.boottimeNs
+            ?: frameToBoottimeNs(frameIndex)
+        return mainTaps.mapIndexedNotNull { idx, tap ->
+            val x = tap.x ?: return@mapIndexedNotNull null
+            val y = tap.y ?: return@mapIndexedNotNull null
+            val tapBt = alignmentBoottimeNs(tap.alignment) ?: return@mapIndexedNotNull null
+            val deltaNs = tapBt - frameBt
+            if (abs(deltaNs) <= windowNs) {
+                val n = idx + 1
+                ActiveTapOverlay(
+                    tapIndex1Based = n,
+                    x = x,
+                    y = y,
+                    deltaMs = deltaNs / 1_000_000L,
+                    label = "#$n",
+                )
+            } else {
+                null
+            }
+        }
+    }
+
+    /** Integer frame indices of all recorded main-bucket taps (for `PlaybackController.selectTapRange`). */
+    fun mainTapFrameIndices(): List<Long> =
+        mainTaps.mapNotNull { tap -> alignmentBoottimeNs(tap.alignment)?.let(::boottimeNsToFrameIndex) }
+
+    /** Primary crash frame index (for `PlaybackController.selectAroundCrash`). */
+    fun primaryCrashFrameIndex(): Long? {
+        val crash = crashes.firstOrNull() ?: return null
+        return crash.frameIndexHint ?: crash.boottimeNs?.let(::boottimeNsToFrameIndex)
+    }
+
+    /**
+     * Builds the unified chronological event & log stream for the right-hand `"操作＆ログ"` tab:
+     * - Strictly `MAIN` bucket only (never mixes `unanchored` records!)
+     * - Tags each row with real-time trim range membership (`inFrameIndex..=outFrameIndex`)
+     * - Correlates logs occurring within `0..300ms` after a preceding tap (`correlatedTapIndex`)
+     * - Extracts PC-side PSI source-jump targets for Activities, stack traces, and crashes
+     */
+    fun buildSyncedEventRows(
+        filter: EventStreamFilter = EventStreamFilter.ALL,
+        keyword: String = "",
+    ): List<SyncedEventRow> {
+        val startBt = timelineStartBoottimeNs
+        val tapEntries = mainTaps.mapIndexed { idx, tap ->
+            val bt = alignmentBoottimeNs(tap.alignment)
+            val tapNum = idx + 1
+            Triple(tapNum, bt, tap)
+        }
+
+        val allRows = mutableListOf<SyncedEventRow>()
+
+        // 1. Tap rows (honest "Tap #N (x, y)" only)
+        for ((tapNum, bt, tap) in tapEntries) {
+            val frame = bt?.let(::boottimeNsToFrameIndex)
+            val relMs = bt?.let { ((it - startBt) / 1_000_000L).coerceAtLeast(0L) }
+            allRows.add(
+                SyncedEventRow(
+                    kind = SyncedEventKind.TAP,
+                    seq = tap.seq,
+                    boottimeNs = bt,
+                    relativeMs = relMs,
+                    frameIndex = frame,
+                    title = ArbFormatters.formatTapDisplay(tapNum, tap),
+                    detail = "action=${tap.action}",
+                    level = "TAP",
+                    tag = "Input",
+                    isInTrimRange = isFrameInTrimRange(frame),
+                    isAtPlayhead = frame != null && frame == currentFrameIndex,
+                    correlatedTapIndex = tapNum,
+                ),
+            )
+        }
+
+        // 2. Crash markers
+        for (crash in crashes) {
+            val bt = crash.boottimeNs
+            val frame = crash.frameIndexHint ?: bt?.let(::boottimeNsToFrameIndex)
+            val relMs = bt?.let { ((it - startBt) / 1_000_000L).coerceAtLeast(0L) }
+            allRows.add(
+                SyncedEventRow(
+                    kind = SyncedEventKind.CRASH,
+                    seq = crash.sourceLogSeq,
+                    boottimeNs = bt,
+                    relativeMs = relMs,
+                    frameIndex = frame,
+                    title = "${crash.exceptionClass.substringAfterLast('.')} (${crash.packageName})",
+                    detail = crash.message.ifBlank { crash.processName },
+                    level = "F",
+                    tag = "am_crash",
+                    isInTrimRange = isFrameInTrimRange(frame),
+                    isAtPlayhead = frame != null && frame == currentFrameIndex,
+                    sourceJumpTarget = SourceJumpParser.fromCrashMarker(crash),
+                ),
+            )
+        }
+
+        // 3. Screen transitions (from PC-derived ScreenSpan)
+        for ((idx, span) in screens.withIndex()) {
+            val frame = span.startFrameIndex ?: boottimeNsToFrameIndex(span.startNs)
+            val relMs = ((span.startNs - startBt) / 1_000_000L).coerceAtLeast(0L)
+            allRows.add(
+                SyncedEventRow(
+                    kind = SyncedEventKind.SCREEN_TRANSITION,
+                    seq = -1_000L - idx.toLong(),
+                    boottimeNs = span.startNs,
+                    relativeMs = relMs,
+                    frameIndex = frame,
+                    title = span.shortName,
+                    detail = span.activityName,
+                    level = "SCR",
+                    tag = "Screen",
+                    isInTrimRange = isFrameInTrimRange(frame),
+                    isAtPlayhead = frame != null && frame == currentFrameIndex,
+                    sourceJumpTarget = SourceJumpParser.fromScreenSpan(span),
+                ),
+            )
+        }
+
+        // 4. Main-bucket logs with 0..300ms Tap -> Following Logs correlation
+        for (log in mainLogs) {
+            val bt = alignmentBoottimeNs(log.alignment)
+            val frame = bt?.let(::boottimeNsToFrameIndex)
+            val relMs = bt?.let { ((it - startBt) / 1_000_000L).coerceAtLeast(0L) }
+            val corrTap = if (bt != null) findCorrelatedTapIndex(bt, tapEntries) else null
+            allRows.add(
+                SyncedEventRow(
+                    kind = SyncedEventKind.LOG,
+                    seq = log.seq,
+                    boottimeNs = bt,
+                    relativeMs = relMs,
+                    frameIndex = frame,
+                    title = log.tag ?: "-",
+                    detail = log.message,
+                    level = log.level ?: "I",
+                    tag = log.tag,
+                    isInTrimRange = isFrameInTrimRange(frame),
+                    isAtPlayhead = frame != null && frame == currentFrameIndex,
+                    correlatedTapIndex = corrTap,
+                    sourceJumpTarget = SourceJumpParser.parseLogText(log.message),
+                ),
+            )
+        }
+
+        val sorted = allRows.sortedWith(
+            compareBy<SyncedEventRow>(
+                { it.boottimeNs ?: Long.MAX_VALUE },
+                { kindSortOrder(it.kind) },
+                { it.seq },
+            ),
+        )
+
+        val q = keyword.trim().lowercase()
+        return sorted.filter { row ->
+            val filterMatch = when (filter) {
+                EventStreamFilter.ALL -> true
+                EventStreamFilter.TAPS -> row.kind == SyncedEventKind.TAP || row.correlatedTapIndex != null
+                EventStreamFilter.ERRORS_CRASHES -> row.kind == SyncedEventKind.CRASH ||
+                    row.level.equals("E", ignoreCase = true) ||
+                    row.level.equals("F", ignoreCase = true) ||
+                    row.level.equals("W", ignoreCase = true) ||
+                    row.detail.contains("Exception", ignoreCase = true)
+            }
+            if (!filterMatch) return@filter false
+            if (q.isEmpty()) return@filter true
+            row.title.lowercase().contains(q) ||
+                row.detail.lowercase().contains(q) ||
+                (row.tag?.lowercase()?.contains(q) == true)
+        }
+    }
+
+    private fun isFrameInTrimRange(frameIndex: Long?): Boolean {
+        if (frameIndex == null || frameCount <= 0L) return true
+        return frameIndex in inFrameIndex..outFrameIndex
+    }
+
+    private fun findCorrelatedTapIndex(
+        logBtNs: Long,
+        tapEntries: List<Triple<Int, Long?, TapRecord>>,
+    ): Int? {
+        var bestTap: Int? = null
+        var bestDelta = Long.MAX_VALUE
+        for ((tapNum, tapBt, _) in tapEntries) {
+            if (tapBt == null) continue
+            val delta = logBtNs - tapBt
+            if (delta in 0L..TAP_LOG_CORRELATION_WINDOW_NS && delta < bestDelta) {
+                bestDelta = delta
+                bestTap = tapNum
+            }
+        }
+        return bestTap
+    }
+
+    private fun kindSortOrder(kind: SyncedEventKind): Int = when (kind) {
+        SyncedEventKind.SCREEN_TRANSITION -> 0
+        SyncedEventKind.TAP -> 1
+        SyncedEventKind.CRASH -> 2
+        SyncedEventKind.LOG -> 3
+    }
+
+    companion object {
+        private const val DEFAULT_FRAME_STEP_NS: Long = 33_333_333L
+
+        fun alignmentBoottimeNs(alignment: TimeAlignment): Long? = when (alignment) {
+            is TimeAlignment.Anchored -> alignment.boottimeNs
+            is TimeAlignment.Bounded -> (alignment.minBoottimeNs + alignment.maxBoottimeNs) / 2L
+            is TimeAlignment.Unanchored -> null
+        }
+    }
 }
 
 object TimelineViewerReducer {
@@ -283,6 +873,9 @@ object TimelineViewerReducer {
         val adjustedIn = if (state.inFrameIndex > clamped) clamped else state.inFrameIndex
         return state.copy(inFrameIndex = adjustedIn, outFrameIndex = clamped)
     }
+
+    fun setTrashOriginalAfterExport(state: TimelineViewerState, enabled: Boolean): TimelineViewerState =
+        state.copy(trashOriginalAfterExport = if (state.isLegacy) false else enabled)
 
     fun withBucketedRecords(
         state: TimelineViewerState,

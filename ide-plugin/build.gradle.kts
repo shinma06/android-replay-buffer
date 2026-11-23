@@ -29,6 +29,7 @@ dependencies {
             androidStudio("2026.2.2.8")
         }
         bundledPlugin("org.jetbrains.android")
+        bundledPlugin("com.intellij.java")
     }
 
     testImplementation(kotlin("test-junit5"))

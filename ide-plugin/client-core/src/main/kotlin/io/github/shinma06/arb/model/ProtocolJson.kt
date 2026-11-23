@@ -6,6 +6,7 @@ import com.google.gson.GsonBuilder
 import com.google.gson.JsonDeserializationContext
 import com.google.gson.JsonDeserializer
 import com.google.gson.JsonElement
+import com.google.gson.JsonNull
 import com.google.gson.JsonObject
 import com.google.gson.JsonParseException
 import com.google.gson.JsonPrimitive
@@ -20,6 +21,10 @@ object ProtocolJson {
     val gson: Gson = GsonBuilder()
         .setFieldNamingPolicy(FieldNamingPolicy.LOWER_CASE_WITH_UNDERSCORES)
         .disableHtmlEscaping()
+        .registerWireEnum(IdeDefaultSaveAction::class.java, IdeDefaultSaveAction::wire, IdeDefaultSaveAction::fromWire)
+        .registerWireEnum(SaveMode::class.java, SaveMode::wire, SaveMode::fromWire)
+        .registerWireEnum(SaveTriggerKind::class.java, SaveTriggerKind::wire, SaveTriggerKind::fromWire)
+        .registerWireEnum(BundleKind::class.java, BundleKind::wire, BundleKind::fromWire)
         .registerWireEnum(SaveJobState::class.java, SaveJobState::wire, SaveJobState::fromWire)
         .registerWireEnum(CatalogFormatVersion::class.java, CatalogFormatVersion::wire, CatalogFormatVersion::fromWire)
         .registerWireEnum(BundleLifecycleState::class.java, BundleLifecycleState::wire, BundleLifecycleState::fromWire)
@@ -34,6 +39,7 @@ object ProtocolJson {
         .registerWireEnum(LogCompleteness::class.java, LogCompleteness::wire, LogCompleteness::fromWire)
         .registerWireEnum(DiscontinuityKind::class.java, DiscontinuityKind::wire, DiscontinuityKind::fromWire)
         .registerWireEnum(UncertaintyReason::class.java, UncertaintyReason::wire, UncertaintyReason::fromWire)
+        .registerTypeAdapter(ArbConfigPatch::class.java, ArbConfigPatchAdapter)
         .registerTypeHierarchyAdapter(AdbDeviceState::class.java, AdbDeviceStateAdapter)
         .registerTypeHierarchyAdapter(Provenance::class.java, ProvenanceAdapter)
         .registerTypeHierarchyAdapter(TimeAlignment::class.java, TimeAlignmentAdapter)
@@ -179,6 +185,31 @@ object ProtocolJson {
                 else -> throw JsonParseException("Unknown TimeAlignment certainty: $certainty")
             }
         }
+    }
+
+    fun toConfigPatchJson(src: ArbConfigPatch): JsonObject = JsonObject().apply {
+        src.saveWindowSecs?.let { addProperty("save_window_secs", it) }
+        src.ringBudgetBytes?.let { addProperty("ring_budget_bytes", it) }
+        src.minFreeDiskBytes?.let { addProperty("min_free_disk_bytes", it) }
+        src.videoMaxSize?.let { addProperty("video_max_size", it) }
+        src.videoMaxFps?.let { addProperty("video_max_fps", it) }
+        src.audioEnabled?.let { addProperty("audio_enabled", it) }
+        src.crashAutosaveEnabled?.let { addProperty("crash_autosave_enabled", it) }
+        src.crashAutosaveCooldownSecs?.let { addProperty("crash_autosave_cooldown_secs", it) }
+        when (val dir = src.outputDirOverride) {
+            OutputDirPatch.Unchanged -> Unit
+            OutputDirPatch.Clear -> add("output_dir_override", JsonNull.INSTANCE)
+            is OutputDirPatch.Set -> addProperty("output_dir_override", dir.path)
+        }
+        src.ideDefaultSaveAction?.let { addProperty("ide_default_save_action", it.wire) }
+    }
+
+    private object ArbConfigPatchAdapter : JsonSerializer<ArbConfigPatch> {
+        override fun serialize(
+            src: ArbConfigPatch,
+            typeOfSrc: Type,
+            context: JsonSerializationContext,
+        ): JsonElement = toConfigPatchJson(src)
     }
 
     private fun JsonObject.requireString(key: String): String =

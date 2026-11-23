@@ -1,9 +1,11 @@
 package io.github.shinma06.arb.ipc
 
+import com.google.gson.GsonBuilder
 import com.google.gson.JsonElement
 import com.google.gson.JsonNull
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
+import io.github.shinma06.arb.model.ArbConfigPatch
 import io.github.shinma06.arb.model.ArbdRpcException
 import io.github.shinma06.arb.model.BundleEntryView
 import io.github.shinma06.arb.model.BundleGcResponse
@@ -13,12 +15,15 @@ import io.github.shinma06.arb.model.BundleOpenResponse
 import io.github.shinma06.arb.model.CaptureStartParams
 import io.github.shinma06.arb.model.CaptureStartResponse
 import io.github.shinma06.arb.model.CaptureStopResponse
+import io.github.shinma06.arb.model.ConfigResponse
 import io.github.shinma06.arb.model.DeviceListResponse
 import io.github.shinma06.arb.model.EditSessionEnvelope
 import io.github.shinma06.arb.model.EditSessionView
 import io.github.shinma06.arb.model.EditUpdateSessionParams
 import io.github.shinma06.arb.model.ExportPngParams
 import io.github.shinma06.arb.model.ExportPngResponse
+import io.github.shinma06.arb.model.ExportShareMp4Params
+import io.github.shinma06.arb.model.ExportShareMp4Response
 import io.github.shinma06.arb.model.ExportTrimParams
 import io.github.shinma06.arb.model.ExportTrimResponse
 import io.github.shinma06.arb.model.IPC_PROTOCOL_VERSION
@@ -27,6 +32,8 @@ import io.github.shinma06.arb.model.LeaseCloseResponse
 import io.github.shinma06.arb.model.LeaseHolderKind
 import io.github.shinma06.arb.model.LeaseRenewResponse
 import io.github.shinma06.arb.model.MediaCloseViewportResponse
+import io.github.shinma06.arb.model.MediaDecodeAudioPcmParams
+import io.github.shinma06.arb.model.MediaDecodeAudioPcmResponse
 import io.github.shinma06.arb.model.MediaFilmstripResponse
 import io.github.shinma06.arb.model.MediaOpenViewportResponse
 import io.github.shinma06.arb.model.MediaScrubResponse
@@ -35,13 +42,18 @@ import io.github.shinma06.arb.model.ProtocolJson
 import io.github.shinma06.arb.model.QueryBucket
 import io.github.shinma06.arb.model.SaveJobView
 import io.github.shinma06.arb.model.SaveListJobsResponse
+import io.github.shinma06.arb.model.SaveLogsParams
 import io.github.shinma06.arb.model.SaveOutcomeResponse
+import io.github.shinma06.arb.model.SaveScreenshotParams
 import io.github.shinma06.arb.model.SaveTriggerParams
+import io.github.shinma06.arb.model.ScreenshotResult
 import io.github.shinma06.arb.model.ShutdownResponse
 import io.github.shinma06.arb.model.SystemHelloResponse
 import io.github.shinma06.arb.model.SystemStatusResponse
+import io.github.shinma06.arb.model.TimelineCrashesResponse
 import io.github.shinma06.arb.model.TimelineDiscontinuitiesResponse
 import io.github.shinma06.arb.model.TimelineLogsResponse
+import io.github.shinma06.arb.model.TimelineScreensResponse
 import io.github.shinma06.arb.model.TimelineSummaryResponse
 import io.github.shinma06.arb.model.TimelineTapsResponse
 import java.io.Closeable
@@ -74,6 +86,9 @@ class ArbdRpcClient(
     private val readTimeoutMs: Long = DEFAULT_READ_TIMEOUT_MS,
 ) : Closeable {
     private val gson = ProtocolJson.gson
+    // Preserves explicit JsonNull entries placed intentionally by adapters (e.g. OutputDirPatch.Clear)
+    // while normal DTOs serialized via ProtocolJson.gson.toJsonTree(...) omit null properties.
+    private val envelopeGson = GsonBuilder().serializeNulls().disableHtmlEscaping().create()
     private val nextId = AtomicLong(1L)
     private val callLock = Any()
     private val readExecutor = Executors.newSingleThreadExecutor { runnable ->
@@ -101,6 +116,14 @@ class ArbdRpcClient(
     fun systemShutdown(): ShutdownResponse =
         call("system.shutdown", JsonObject(), ShutdownResponse::class.java)
 
+    // ---------------- Persisted Config (T-1) ----------------
+
+    fun configGet(): ConfigResponse =
+        call("config.get", JsonObject(), ConfigResponse::class.java)
+
+    fun configUpdate(patch: ArbConfigPatch): ConfigResponse =
+        call("config.update", ProtocolJson.toConfigPatchJson(patch), ConfigResponse::class.java)
+
     // ---------------- Device & Capture ----------------
 
     fun deviceList(): DeviceListResponse =
@@ -116,6 +139,12 @@ class ArbdRpcClient(
 
     fun saveTrigger(params: SaveTriggerParams = SaveTriggerParams()): SaveOutcomeResponse =
         call("save.trigger", gson.toJsonTree(params), SaveOutcomeResponse::class.java)
+
+    fun saveLogs(params: SaveLogsParams = SaveLogsParams()): SaveOutcomeResponse =
+        call("save.logs", gson.toJsonTree(params), SaveOutcomeResponse::class.java)
+
+    fun saveScreenshot(params: SaveScreenshotParams = SaveScreenshotParams()): ScreenshotResult =
+        call("save.screenshot", gson.toJsonTree(params), ScreenshotResult::class.java)
 
     fun saveListJobs(): SaveListJobsResponse =
         call("save.list_jobs", JsonObject(), SaveListJobsResponse::class.java)
@@ -206,6 +235,20 @@ class ArbdRpcClient(
             TimelineDiscontinuitiesResponse::class.java,
         )
 
+    fun timelineCrashes(bundleIdOrPath: String): TimelineCrashesResponse =
+        call(
+            "timeline.crashes",
+            jsonObj("bundle_id_or_path" to bundleIdOrPath),
+            TimelineCrashesResponse::class.java,
+        )
+
+    fun timelineScreens(bundleIdOrPath: String): TimelineScreensResponse =
+        call(
+            "timeline.screens",
+            jsonObj("bundle_id_or_path" to bundleIdOrPath),
+            TimelineScreensResponse::class.java,
+        )
+
     // ---------------- Edit Session ----------------
 
     fun editGetSession(sessionId: String): EditSessionView? =
@@ -222,6 +265,17 @@ class ArbdRpcClient(
 
     fun exportPng(params: ExportPngParams): ExportPngResponse =
         call("export.png", gson.toJsonTree(params), ExportPngResponse::class.java)
+
+    /**
+     * Forward-compatible T-2B RPC (`export.share_mp4`). Returns `null` cleanly when connected
+     * to a daemon build that has not implemented `export.share_mp4` yet (`-32601`), so callers
+     * can fall back seamlessly to `export.trim`.
+     */
+    fun exportShareMp4OrNull(params: ExportShareMp4Params): ExportShareMp4Response? = try {
+        call("export.share_mp4", gson.toJsonTree(params), ExportShareMp4Response::class.java)
+    } catch (e: ArbdRpcException) {
+        if (e.isMethodNotFound) null else throw e
+    }
 
     // ---------------- Media / SHM Viewport ----------------
 
@@ -264,6 +318,23 @@ class ArbdRpcClient(
     fun mediaCloseViewport(viewportId: String): MediaCloseViewportResponse =
         call("media.close_viewport", jsonObj("viewport_id" to viewportId), MediaCloseViewportResponse::class.java)
 
+    /**
+     * Forward-compatible T-2B RPC (`media.decode_audio_pcm`). Returns `null` cleanly when the
+     * daemon does not expose this RPC yet (`-32601`), allowing video-only playback without error.
+     */
+    fun mediaDecodeAudioPcmOrNull(
+        bundleIdOrPath: String,
+        outputPath: String? = null,
+    ): MediaDecodeAudioPcmResponse? = try {
+        call(
+            "media.decode_audio_pcm",
+            gson.toJsonTree(MediaDecodeAudioPcmParams(bundleIdOrPath, outputPath)),
+            MediaDecodeAudioPcmResponse::class.java,
+        )
+    } catch (e: ArbdRpcException) {
+        if (e.isMethodNotFound) null else throw e
+    }
+
     // ---------------- Low-level JSON-RPC 2.0 ----------------
 
     fun <T> call(method: String, params: JsonElement, responseType: Class<T>): T {
@@ -281,7 +352,7 @@ class ArbdRpcClient(
             add("params", params)
         }
         val rawLine = try {
-            transport.writeLine(gson.toJson(req))
+            transport.writeLine(envelopeGson.toJson(req))
             readResponseLine()
                 ?: throw IOException("arbd closed IPC connection before responding to '$method'")
         } catch (e: IOException) {
