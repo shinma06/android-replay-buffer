@@ -177,6 +177,9 @@ fn run_mock_arbd_server(listener: &LocalIpcListener, call_tx: &mpsc::Sender<Obse
         ),
         "client must send save.retry"
     );
+    // Let the client consume the last reply first: on Windows, dropping the pipe runs
+    // `DisconnectNamedPipe`, which discards unread bytes.
+    writer.drain().expect("drain server replies");
     // Simulate an unexpected socket drop: close both ends of connection 1 by dropping them.
     drop(reader);
     drop(writer);
